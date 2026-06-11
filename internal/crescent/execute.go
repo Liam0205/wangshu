@@ -3,12 +3,16 @@
 package crescent
 
 import (
+	"fmt"
 	"math"
 
 	"github.com/Liam0205/wangshu/internal/bytecode"
 	"github.com/Liam0205/wangshu/internal/object"
 	"github.com/Liam0205/wangshu/internal/value"
 )
+
+// TraceExec 打开逐指令 trace(调试用,默认关)。
+var TraceExec = false
 
 // execute 跑当前栈顶 fresh CallInfo 直到它退出(05 §7.3 entry edge)。
 //
@@ -24,6 +28,11 @@ func (st *State) execute(th *thread) *LuaError {
 			return errf("interpreter: pc out of range")
 		}
 		i := code[ci.pc]
+		if TraceExec {
+			fmt.Printf("[trace] ciDepth=%d base=%d pc=%d top=%d %s A=%d B=%d C=%d\n",
+				len(th.cis), ci.base, ci.pc, th.top,
+				bytecode.Op(i), bytecode.A(i), bytecode.B(i), bytecode.C(i))
+		}
 		ci.pc++
 
 		switch bytecode.Op(i) {

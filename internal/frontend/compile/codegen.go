@@ -155,17 +155,14 @@ func (fs *funcState) compileArgList(args []ast.Expr, line int32) int {
 	}
 	last := fs.expr(args[n-1])
 	switch last.k {
-	case eCall, eVararg:
+	case eCall:
+		// CALL 的 A 已是 fnReg(结果落点),不可覆盖;只设 C=0(到 top)。
 		fs.setReturns(&last, -1)
-		// 调用结果落 R(freereg);水位由 CALL/VARARG 自身决定的"到 top",此处保留 freereg
-		// 不显式 +1,但需要把 last.info 处的指令 A 字段覆盖为 freereg(B/C 已设)。
-		switch last.k {
-		case eCall:
-			fs.proto.Code[last.info] = bytecode.SetA(fs.proto.Code[last.info], fs.freereg)
-		case eVararg:
-			fs.proto.Code[last.info] = bytecode.SetA(fs.proto.Code[last.info], fs.freereg)
-		}
-		// 多值不 reserveRegs:caller 会决定 fixed C 后再调整水位
+		return -1
+	case eVararg:
+		// VARARG 发射时 A=0 占位,这里回填为当前 freereg(多值起点)。
+		fs.setReturns(&last, -1)
+		fs.proto.Code[last.info] = bytecode.SetA(fs.proto.Code[last.info], fs.freereg)
 		return -1
 	default:
 		fs.exp2NextReg(line, &last)
@@ -195,14 +192,23 @@ func (fs *funcState) exprBin(e *ast.BinExpr) expDesc {
 		return fs.exprConcat(e)
 	}
 	// 算术
+	// 对齐 Lua 5.1 luaK_infix:左操作数(非数字字面量)必须在编译右子表达式之前
+	// 物化为 RK——否则右子的 CALL/GETGLOBAL 等会覆盖左结果将要落的寄存器。
 	l := fs.expr(e.L)
+	lrk := -1
+	if l.k != eKNum {
+		lrk = fs.exp2RK(e.Line, &l)
+	}
 	r := fs.expr(e.R)
 	if folded, ok := constFold(e.Op, &l, &r); ok {
 		out := newExp(eKNum, 0)
 		out.nval = folded
 		return out
 	}
-	rb := fs.exp2RK(e.Line, &l)
+	rb := lrk
+	if rb < 0 {
+		rb = fs.exp2RK(e.Line, &l)
+	}
 	rc := fs.exp2RK(e.Line, &r)
 	// 顺序:先归还高位临时再归还低位(维持栈式)
 	if !bytecode.IsK(rc) {
@@ -281,8 +287,15 @@ func (fs *funcState) exprCompare(e *ast.BinExpr) expDesc {
 		swap = true
 	}
 	l := fs.expr(e.L)
+	lrk := -1
+	if l.k != eKNum {
+		lrk = fs.exp2RK(e.Line, &l)
+	}
 	r := fs.expr(e.R)
-	rb := fs.exp2RK(e.Line, &l)
+	rb := lrk
+	if rb < 0 {
+		rb = fs.exp2RK(e.Line, &l)
+	}
 	rc := fs.exp2RK(e.Line, &r)
 	if !bytecode.IsK(rc) {
 		fs.freeReg(rc)

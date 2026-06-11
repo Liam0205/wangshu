@@ -36,6 +36,7 @@ type State struct {
 	globals       arena.GCRef                // _G(globals 表)
 	tableSides    map[arena.GCRef]*tableSide // M9 旁路存储(M10 替换为原生哈希)
 	runningThread *thread                    // 当前正在执行的 thread(GC ExtraValues 来源)
+	hostFns       hostFnRegistry             // host function 注册表(M12)
 }
 
 // New constructs a fresh State (arena + collector + empty globals)。
@@ -118,6 +119,36 @@ func (st *State) Globals() arena.GCRef { return st.globals }
 // API (11 §1.3 字符串常量惰性 intern;Value 桥接需要)。
 func (st *State) InternForEmbed(b []byte) arena.GCRef {
 	return st.gc.Intern(b)
+}
+
+// NewError 构造一个带消息的 LuaError(供 stdlib 等 host 函数使用)。
+func NewError(msg string) *LuaError {
+	return &LuaError{Msg: msg}
+}
+
+// NewErrorVal 构造一个携带 Lua Value 的错误(对应 error(v) 内建)。
+func NewErrorVal(v value.Value, msg string) *LuaError {
+	return &LuaError{Value: v, Msg: msg}
+}
+
+// TypeNameOf 暴露内部 typeName 给 stdlib 实现 type() 内建。
+func TypeNameOf(v value.Value) string { return typeName(v) }
+
+// NewLibTable 给 stdlib 提供一个新表(挂 stdlib 命名空间用)。
+func (st *State) NewLibTable(approxFields uint32) arena.GCRef {
+	hsz := uint32(8)
+	for hsz < approxFields {
+		hsz *= 2
+	}
+	t := st.allocTable(0, hsz)
+	return t
+}
+
+// SetTableField 给 stdlib 提供"以字符串键写入表字段"的便捷接口。
+func (st *State) SetTableField(t arena.GCRef, name string, v value.Value) {
+	ref := st.gc.Intern([]byte(name))
+	key := value.MakeGC(value.TagString, ref)
+	_ = st.tableSet(t, key, v)
 }
 
 // LoadProgram registers the compiled Protos and lazy-interns their string

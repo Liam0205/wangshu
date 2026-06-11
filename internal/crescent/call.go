@@ -12,7 +12,7 @@ import (
 )
 
 // doCall 执行一条 CALL,返回新的 ci(若进入了一个新 Lua 帧);
-// 若调用走 host 路径(M9 暂未支持),返回 nil ci 加 LuaError。
+// 若调用走 host 路径,host 函数同步执行后返回 (nil, nil),主循环不切 ci。
 func (st *State) doCall(th *thread, ci *callInfo, i bytecode.Instruction) (*callInfo, *LuaError) {
 	a := bytecode.A(i)
 	b := bytecode.B(i)
@@ -31,7 +31,8 @@ func (st *State) doCall(th *thread, ci *callInfo, i bytecode.Instruction) (*call
 	}
 	cl := value.GCRefOf(callee)
 	if object.IsHostClosure(st.arena, cl) {
-		return nil, errf("call: host closure not yet supported (M12)")
+		// 同步调用 host;调用后 ci 不变(主循环 next=nil 表示不切帧)
+		return nil, st.callHost(th, funcIdx, nargs, nresults)
 	}
 	if e := st.enterLuaFrame(th, funcIdx, nargs, nresults, false); e != nil {
 		return nil, e
@@ -56,7 +57,10 @@ func (st *State) doTailCall(th *thread, ci *callInfo, i bytecode.Instruction) (*
 	}
 	cl := value.GCRefOf(callee)
 	if object.IsHostClosure(st.arena, cl) {
-		return nil, errf("call: host closure not yet supported (M12)")
+		// host 尾调用 = 普通 host 调用,结果作为本帧返回值。M12 简化:落到原 funcIdx 起,
+		// 然后让本帧 RETURN(主循环紧随会执行 RETURN A=funcIdx, B=0,但 codegen 紧跟一条
+		// RETURN A B=0 设计文档承诺存在);所以这里完成 host 后让 ci 继续即可。
+		return nil, st.callHost(th, funcIdx, nargs, ci.nresults)
 	}
 	st.closeUpvals(th, ci.base)
 	dst := ci.funcIdx

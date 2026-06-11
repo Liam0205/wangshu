@@ -23,6 +23,7 @@ import (
 	"github.com/Liam0205/wangshu/internal/frontend/lex"
 	"github.com/Liam0205/wangshu/internal/frontend/parse"
 	"github.com/Liam0205/wangshu/internal/object"
+	"github.com/Liam0205/wangshu/internal/stdlib"
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
@@ -44,9 +45,11 @@ type State struct {
 	core *crescent.State
 }
 
-// NewState creates a fresh VM。
+// NewState creates a fresh VM with the P1 minimal stdlib loaded.
 func NewState(_ Options) *State {
-	return &State{core: crescent.New()}
+	st := &State{core: crescent.New()}
+	stdlib.OpenAll(st.core)
+	return st
 }
 
 // Program is an immutable compilation product (11 §1.4)。可跨 goroutine 共享;
