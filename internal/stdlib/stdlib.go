@@ -33,9 +33,27 @@ func OpenAll(st *crescent.State) {
 		cl := st.MakeHostClosure(id)
 		st.SetGlobal("__ipairs_iter", value.MakeGC(value.TagFunction, cl))
 	}
-	registerNamespaced(st, "math", mathFns)
+	registerNamespaced(st, "math", append(mathFns, mathExtraFns...))
 	strTbl := registerNamespaced(st, "string", stringFns)
 	st.SetStringLib(strTbl) // string 值的 per-type __index(`("x"):upper()`)
+	tblTbl := registerNamespaced(st, "table", tableFns)
+	// table.unpack 别名(5.1 主入口是全局 unpack,5.2+ 是 table.unpack;两者都给)
+	{
+		id := st.RegisterHostFn(baseFnUnpackImpl)
+		cl := st.MakeHostClosure(id)
+		st.SetTableField(tblTbl, "unpack", value.MakeGC(value.TagFunction, cl))
+	}
+	registerNamespaced(st, "os", osFns)
+	registerNamespaced(st, "io", ioFns)
+	// math 常量
+	{
+		mathTblV, _ := st.RawGet(st.Globals(), intern(st, "math"))
+		if value.Tag(mathTblV) == value.TagTable {
+			mt := value.GCRefOf(mathTblV)
+			st.SetTableField(mt, "pi", value.NumberValue(luaPi))
+			st.SetTableField(mt, "huge", value.NumberValue(luaHuge()))
+		}
+	}
 }
 
 type entry struct {
@@ -118,6 +136,7 @@ var baseFns = []entry{
 	{"next", baseFnNext},
 	{"pairs", baseFnPairs},
 	{"ipairs", baseFnIpairs},
+	{"xpcall", baseFnXpcall},
 }
 
 // baseFnNext:next(t [, key]) → (nextKey, nextVal) | nil。
@@ -329,13 +348,9 @@ func baseFnSelect(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 	return args[idx:], nil
 }
 
-func baseFnUnpack(_ *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
-	if len(args) == 0 {
-		return nil, nil
-	}
-	// M12 简化:只支持"已存在的连续数组键 1..n";完整版 M11/M12 元表 + table 接入后再做。
-	// 当前直接报错让用户使用 table.unpack 之类的替代(P1 简化)。
-	return nil, crescent.NewError("unpack: not yet supported (M14)")
+// baseFnUnpack:unpack(t [, i [, j]])(实现委托 tablelib 的 baseFnUnpackImpl)。
+func baseFnUnpack(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
+	return baseFnUnpackImpl(st, args)
 }
 
 // ----- math 子库 -----
