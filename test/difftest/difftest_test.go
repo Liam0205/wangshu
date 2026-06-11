@@ -244,6 +244,27 @@ func TestDiff_SeedCorpus(t *testing.T) {
 	}
 }
 
+// TestDiff_RandomScripts 随机脚本对拍(12 §3.2 generator)。
+//
+// 200 个确定性种子(CI 可复现);失败时打印 seed 与脚本全文供重放。
+func TestDiff_RandomScripts(t *testing.T) {
+	oracle := findOracle()
+	if oracle == "" {
+		t.Skip("lua5.1 oracle not found on PATH; skipping difftest")
+	}
+	const nScripts = 200
+	for seed := int64(0); seed < nScripts; seed++ {
+		src := generateScript(seed)
+		oracleSrc := wrapForOracle(src)
+		want := runOracle(t, oracle, oracleSrc)
+		got := runWangshu(t, src)
+		if got != want {
+			t.Errorf("seed %d byte-diff:\n  wangshu: %q\n  oracle:  %q\n--- script ---\n%s",
+				seed, got, want, src)
+		}
+	}
+}
+
 // wrapForOracle 把 `return expr` 脚本变成 oracle 侧的 print 形态:
 // 把 chunk 当函数调用,返回值逐个 tostring 后用 \t join print。
 func wrapForOracle(src string) string {
