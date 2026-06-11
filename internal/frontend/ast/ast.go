@@ -60,10 +60,18 @@ type IndexExpr struct {
 	Key  Expr
 }
 
+// ParenExpr 包裹括号表达式:`(f())` 强制单值(04 §9.4 / Lua 5.1 语义)。
+type ParenExpr struct {
+	Line int32
+	E    Expr
+}
+
 func (e *NameExpr) Pos() int32  { return e.Line }
 func (e *IndexExpr) Pos() int32 { return e.Line }
+func (e *ParenExpr) Pos() int32 { return e.Line }
 func (*NameExpr) exprNode()     {}
 func (*IndexExpr) exprNode()    {}
+func (*ParenExpr) exprNode()    {}
 
 // ----- Calls -----
 

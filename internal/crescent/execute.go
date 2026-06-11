@@ -381,19 +381,9 @@ func (st *State) doCompare(th *thread, ci *callInfo, i bytecode.Instruction) (bo
 }
 
 func (st *State) rawEqual(a, b value.Value) bool {
-	if a == b {
-		return true
-	}
-	// 数字:bits 不等但语义可能相等(+0/-0;NaN 永不等)
+	// 数字必须先走浮点比较:canonNaN bits 相等但 NaN ≠ NaN(IEEE);+0 == -0。
 	if value.IsNumber(a) && value.IsNumber(b) {
-		x, y := value.AsNumber(a), value.AsNumber(b)
-		return x == y
+		return value.AsNumber(a) == value.AsNumber(b)
 	}
-	// 异类不等
-	if value.Tag(a) != value.Tag(b) {
-		return false
-	}
-	// string:GCRef 已 intern 相等(由 a==b 命中);但 intern 可能在不同 Program 加载时复用,
-	// 仍走对比 bytes 兜底以保正确(M9 简化:同 GCRef 即等,不等则不等)。
-	return false
+	return a == b
 }

@@ -14,8 +14,6 @@
 package wangshu
 
 import (
-	"fmt"
-
 	"github.com/Liam0205/wangshu/internal/arena"
 	"github.com/Liam0205/wangshu/internal/bytecode"
 	"github.com/Liam0205/wangshu/internal/crescent"
@@ -147,7 +145,7 @@ func (v Value) GoString() string {
 		}
 		return "false"
 	case kNumber:
-		return fmt.Sprintf("%g", v.num)
+		return crescent.FormatLuaNumber(v.num)
 	case kString:
 		return string(v.str)
 	}

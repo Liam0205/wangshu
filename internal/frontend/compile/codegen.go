@@ -78,6 +78,11 @@ func (fs *funcState) expr(node ast.Expr) expDesc {
 		return newExp(eVararg, pc)
 	case *ast.NameExpr:
 		return fs.resolveName(e.Line, e.Name)
+	case *ast.ParenExpr:
+		// 括号强制单值:把内部的 Call/Vararg 收敛为单值形态(04 §9.4)
+		inner := fs.expr(e.E)
+		fs.dischargeVars(e.Line, &inner)
+		return inner
 	case *ast.IndexExpr:
 		return fs.exprIndex(e)
 	case *ast.CallExpr:
@@ -177,13 +182,17 @@ func (fs *funcState) exprBin(e *ast.BinExpr) expDesc {
 		l := fs.expr(e.L)
 		fs.goIfTrue(e.Line, &l) // l 为假则跳(链入 fJmp);真则继续(落到右子)
 		r := fs.expr(e.R)
-		// 合流:把左侧的 fJmp 接到右侧的 fJmp 上;tJmp 只用右侧
+		// 对齐 Lua 5.1 luaK_posfix(OPR_AND):先 dischargeVars(e2) 把 VCALL/VVARARG
+		// 收敛为单值形态——否则带跳转链的 eCall 会被 adjustExprList 误走多值分支,
+		// 跳转链永不回填(JMP sBx=-1 死循环)。
+		fs.dischargeVars(e.Line, &r)
 		fs.concat(&r.fJmp, l.fJmp)
 		return r
 	case ast.OpOr:
 		l := fs.expr(e.L)
 		fs.goIfFalse(e.Line, &l)
 		r := fs.expr(e.R)
+		fs.dischargeVars(e.Line, &r)
 		fs.concat(&r.tJmp, l.tJmp)
 		return r
 	case ast.OpEq, ast.OpNe, ast.OpLt, ast.OpLe, ast.OpGt, ast.OpGe:

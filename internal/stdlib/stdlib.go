@@ -48,7 +48,7 @@ func registerNamespaced(st *crescent.State, ns string, fns []entry) {
 // 通用辅助:把 Value 转 string(用于 print/tostring)。
 func valueToString(st *crescent.State, v value.Value) string {
 	if value.IsNumber(v) {
-		return strconv.FormatFloat(value.AsNumber(v), 'g', 14, 64)
+		return crescent.FormatLuaNumber(value.AsNumber(v))
 	}
 	switch value.Tag(v) {
 	case value.TagNil:

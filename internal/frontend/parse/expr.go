@@ -169,16 +169,23 @@ func (p *Parser) parsePrefixExpr() (ast.Expr, error) {
 			return nil, err
 		}
 	case token.LPAREN:
+		line := p.tok.Line
 		if err := p.next(); err != nil {
 			return nil, err
 		}
-		var err error
-		e, err = p.parseExpr(0)
+		inner, err := p.parseExpr(0)
 		if err != nil {
 			return nil, err
 		}
 		if err := p.expect(token.RPAREN); err != nil {
 			return nil, err
+		}
+		// 括号强制单值:仅当内部是多值源(Call/Vararg)时需要 ParenExpr 包裹
+		switch inner.(type) {
+		case *ast.CallExpr, *ast.MethodCallExpr, *ast.VarargExpr:
+			e = &ast.ParenExpr{Line: line, E: inner}
+		default:
+			e = inner
 		}
 	default:
 		return nil, p.errorf("unexpected symbol near %s", p.tok.String())

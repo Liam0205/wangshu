@@ -5,6 +5,7 @@
 package crescent
 
 import (
+	"math"
 	"strconv"
 
 	"github.com/Liam0205/wangshu/internal/arena"
@@ -151,8 +152,24 @@ func (st *State) toStringBytes(v value.Value) ([]byte, bool) {
 	return nil, false
 }
 
+// FormatLuaNumber 暴露 %.14g 格式(stdlib tostring 与 difftest 共用一套,
+// 保证 tostring(x) 与 CONCAT 的数字格式逐字节一致)。
+func FormatLuaNumber(f float64) string { return formatLuaNumber(f) }
+
 // formatLuaNumber 用 %.14g 格式化(05 §4.6)。
+//
+// Inf/NaN 措辞对齐 Lua 5.1 C printf:"inf" / "-inf" / "nan"(Go 默认 "+Inf"
+// 等,差分会 byte-diff,12 §10 口径)。
 func formatLuaNumber(f float64) string {
+	if math.IsInf(f, 1) {
+		return "inf"
+	}
+	if math.IsInf(f, -1) {
+		return "-inf"
+	}
+	if f != f {
+		return "nan"
+	}
 	return strconv.FormatFloat(f, 'g', 14, 64)
 }
 
