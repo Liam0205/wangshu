@@ -29,3 +29,4 @@ P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 met
 - 总览:[docs/design/architecture.md](docs/design/architecture.md)(包布局/组件依赖/tier 映射)
 - P1 解释器详细设计(可实现深度,13 篇):[docs/design/p1-interpreter/](docs/design/p1-interpreter/),从 [00-overview](docs/design/p1-interpreter/00-overview.md) 进入
 - P2-P5 阶段设计:[p2-bridge](docs/design/p2-bridge.md) · [p3-wasm-tier](docs/design/p3-wasm-tier.md) · [p4-method-jit](docs/design/p4-method-jit.md) · [p5-trace-jit](docs/design/p5-trace-jit.md)
+- 工程化机制(hooks/CI/Makefile/发布):[engineering](docs/design/engineering.md)

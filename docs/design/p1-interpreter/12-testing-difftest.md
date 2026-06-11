@@ -728,7 +728,7 @@ P1 建立的三套机制(conformance / 差分 fuzz / 基准)如何复用到 P2-P
 
 ## 8. CI 门禁(收口 architecture §4 不变式 2)
 
-[architecture](../architecture.md) §4 不变式 2:**「层间逐字节差分是 CI 必过门禁」**。P1 的 CI 流程:
+[architecture](../architecture.md) §4 不变式 2:**「层间逐字节差分是 CI 必过门禁」**。本节定**门禁逻辑**(测什么、什么必过);workflow/job/hooks 等**机制载体**在 [engineering](../engineering.md)(其 §3.1 的 ci.yml 与本节五步一一对应)。P1 的 CI 流程:
 
 ```
 每个 PR 触发:

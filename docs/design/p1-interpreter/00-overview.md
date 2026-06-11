@@ -48,6 +48,7 @@
 
 | M | 内容 | 对应文档 | 验收(完成定义) |
 |---|---|---|---|
+| M0 | 工程地基:go.mod/目录骨架/Makefile/.githooks 三件套/ci.yml/lint/oracle 校验脚本 | [engineering](../engineering.md) §6 | `make all`/`make hooks` 可跑;hooks 拦截生效;lint+test(-race)+fuzz-smoke 三 job 绿 |
 | M1 | `arena`:线性内存 + bump/freelist 分配器(backing 经 `newBacking()` 注入点) | 06 §1-§3 | 分配/对齐/扩容/偏移稳定性单测;grow 后旧 GCRef 全部有效 |
 | M2 | `value`:NaN-box 编解码 + canonicalize | 01 §3 | round-trip 全类型单测;负 NaN 注入后恒规范;`IsNumber`/`IsCollectable` 边界值表 |
 | M3 | `object`:六类对象布局读写 helper(含 Table gen / Upvalue nextOpen / WeakMode) | 01 §4-§5 | 手动分配下逐字段读写单测;布局字数与 06 §1.3 公式一致 |
@@ -63,7 +64,7 @@
 | M13 | `wangshu` 公共 API + arena ABI | 11 | Compile/Program.Call 端到端;arena 列读写 + presence bitmap;per-item API 对标用例 |
 | M14 | `test/conformance` + `test/difftest` + `benchmarks` | 12 | **P1 总验收**:三档 ≥2x over gopher-lua;差分 fuzz 逐字节一致(口径总表);CI 门禁就绪 |
 
-> M1-M5 是「值世界地基」(architecture §5:必须在解释器前完全自洽);M9 故意先于 M10(先跑通无 GC 的快路径,再接 GC——错误隔离)。M14 不是最后才开始:difftest harness 应在 M9 后即搭建,随里程碑增量接入用例(12 §1 金字塔)。
+> **M0 先于一切**(工程地基:hooks/CI/Makefile,详见 [engineering](../engineering.md),估算 ≤0.25 人月);M1-M5 是「值世界地基」(architecture §5:必须在解释器前完全自洽);M9 故意先于 M10(先跑通无 GC 的快路径,再接 GC——错误隔离)。M14 不是最后才开始:difftest harness 应在 M9 后即搭建,随里程碑增量接入用例(12 §1 金字塔);其 CI 门禁占位 job 在 M0 已建,M5/M9/M14 逐步启用。
 
 ---
 
