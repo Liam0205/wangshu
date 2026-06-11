@@ -15,6 +15,10 @@
 
 - **无任何代码可交叉验证** — 全部内容仍为设计意图。一旦开始实现,需新增构建/测试/差分 fuzz 的 guides,并把架构文档从「规划」措辞更新为「实现现状」。
 
+- **stdlib 提供面逐函数核对待实现期兑现** — 评审轮已定「默认面 = gopher-lua 的 OpenLibs 提供面」(见 `decisions/2026-06-11-design-review-decisions.md` 第 6 项),不再是「P1 范围待宿主确认」;但与 gopher 提供面的逐函数核对清单需实现期落实(`docs/design/p1-interpreter/10-stdlib.md` §4.7)。
+
+- **P3 开工前置确认(待办)** — P3 开工前须向首个宿主确认「列内核是否跑在协程里」,决定协程不升层是否成立(决策第 7 项;`docs/design/p3-wasm-tier.md` §5.4)。依赖宿主,设计期无法收口。
+
 ## 已收口(留作审计)
 
 - ~~arena ABI 字段级 spec 缺失~~ — 已由 `docs/design/p1-interpreter/11-embedding-arena-abi.md` §3-§6 定稿(列描述符/字符串区 offset 表+字节池/presence bitmap/args 与 arena 关系/句柄表/per-item API)。[[embedding-contract]] 的缺口标注已同步为指针(2026-06-11)。

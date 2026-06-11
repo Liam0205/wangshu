@@ -38,6 +38,7 @@
 
 - **首个目标宿主**:一个**多运行时规则引擎**(其 Go 运行时现用 gopher-lua);但接口**不绑定任何宿主**。
 - **P1 解释器即可作为 gopher-lua 的 drop-in 候选**(见 [[evolution-roadmap]] P1)。
+- **stdlib 默认面对齐 gopher-lua 的 OpenLibs 提供面**(兑现 drop-in 宣称);宿主可经 Options 三层收紧:**LibsSafe 预设 / Libs 位掩码 / Exclude 函数级**——收紧能力是 VM 责任,收紧决策是宿主责任。细节见 `docs/design/p1-interpreter/10-stdlib.md` §12.1、`11-embedding-arena-abi.md` §1.2;决策背景见 `memory/decisions/2026-06-11-design-review-decisions.md` 第 6 项。
 
 ---
 

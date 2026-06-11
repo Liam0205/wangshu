@@ -39,7 +39,7 @@
 | **wazero** | 纯 Go 运行时 codegen **存在性证明**;exec mmap / W^X / 自管栈 / trampoline 参考实现;系统管线采石场 |
 | **LuaJ luajc** | 「编译到宿主已有 codegen 引擎」范式(P3 精神来源);**try-compile-fallback 策略** |
 | **LuaJIT** | **NaN-boxing**、**trace JIT 架构**、**Lua 5.1 语义基准** |
-| **gopher-lua** | **反面教材**:interface 装箱 + switch dispatch 的成本上限;**P1 的差分基准** |
+| **gopher-lua** | **反面教材**:interface 装箱 + switch dispatch 的成本上限;**P1 的性能基准与同生态参照**(语义 oracle 是官方 Lua 5.1.5,gopher 偏离官方处登记豁免) |
 | **goja(纯 Go ES5)** | 纯 Go 解释器路线的**天花板参照** |
 | **Pallene** | **typed-subset 编译 + fallback** 的可行性先例(贯穿原则 4 的先例) |
 | **V8 Ignition→TurboFan / JSC Baseline→DFG→FTL** | 分层 VM 标准阶梯;**解释器先行**;P4 取 JSC Baseline 风格 |
