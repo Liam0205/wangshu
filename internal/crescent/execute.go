@@ -23,7 +23,17 @@ func (st *State) execute(th *thread) *LuaError {
 }
 
 // executeFrom 以指定 entry 深度跑主循环(协程 resume 恢复时复用,08 §3.5)。
+//
+// 出错时(非 yield 哨兵)统一加 "chunkname:line:" 位置前缀(09)。
 func (st *State) executeFrom(th *thread, entryDepth int) *LuaError {
+	e := st.executeLoop(th, entryDepth)
+	if e != nil && e != errYieldSentinel && len(th.cis) > 0 {
+		e = st.annotateError(e, currentCI(th))
+	}
+	return e
+}
+
+func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 	ci := currentCI(th)
 	code := ci.proto.Code
 

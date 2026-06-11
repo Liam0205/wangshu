@@ -2,6 +2,7 @@
 package wangshu_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/Liam0205/wangshu"
@@ -73,7 +74,8 @@ func TestCo_ErrorInsideBecomesFalse(t *testing.T) {
 local co = coroutine.create(function() error("inside") end)
 local ok, err = coroutine.resume(co)
 return tostring(ok), err, coroutine.status(co)`)
-	if r[0].String_() != "false" || r[1].String_() != "inside" || r[2].String_() != "dead" {
+	// error(string) 自动加 chunkname:line: 前缀(5.1)
+	if r[0].String_() != "false" || !strings.HasSuffix(r[1].String_(), ": inside") || r[2].String_() != "dead" {
 		t.Errorf("got %q %q %q", r[0].GoString(), r[1].GoString(), r[2].GoString())
 	}
 }

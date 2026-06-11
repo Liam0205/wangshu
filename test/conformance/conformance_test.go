@@ -121,8 +121,11 @@ local ok1 = pcall(function()
 end)
 return tostring(ok1)`, "false"},
 	{"error_value_passthrough", `
-local _, e = pcall(function() error("custom-msg") end)
-return e`, "custom-msg"},
+local _, e = pcall(function() error("custom-msg", 0) end)
+return e`, "custom-msg"}, // level=0 不加位置前缀(5.1)
+	{"error_with_position", `
+local _, e = pcall(function() error("pfx") end)
+return (string.find(e, ": pfx") ~= nil)`, "true"}, // 默认 level=1 带 chunkname:line:
 
 	// —— 覆盖率审计补充(2026-06-12):此前无测试覆盖的语法/库路径 ——
 	{"method_call_self", `

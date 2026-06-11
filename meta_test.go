@@ -2,6 +2,7 @@
 package wangshu_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/Liam0205/wangshu"
@@ -80,8 +81,9 @@ local ok, err = pcall(function() error("kaboom") end)
 if ok then return "no-error" end
 return err
 `)
-	if !got.IsString() || got.String_() != "kaboom" {
-		t.Errorf("got %v, want 'kaboom'", got.GoString())
+	// 5.1 语义:error(string) 自动加 chunkname:line: 前缀
+	if !got.IsString() || !strings.HasSuffix(got.String_(), ": kaboom") {
+		t.Errorf("got %v, want suffix ': kaboom'", got.GoString())
 	}
 }
 

@@ -18,11 +18,19 @@ import (
 
 // LuaError carries a Lua-level error value (05 §9.2)。
 type LuaError struct {
-	Value value.Value
-	Msg   string // 缓存给 Go 错误接口
+	Value     value.Value
+	Msg       string // 缓存给 Go 错误接口
+	Traceback string // 错误冒泡到顶层时构建(09;pcall 捕获的错误不带)
+	Level     int    // error(msg, level) 的 level(09);0 = 不加位置前缀
+	annotated bool   // 已加 chunkname:line: 前缀(只加一次)
 }
 
-func (e *LuaError) Error() string { return e.Msg }
+func (e *LuaError) Error() string {
+	if e.Traceback != "" {
+		return e.Msg + "\n" + e.Traceback
+	}
+	return e.Msg
+}
 
 // State is the embedding-facing VM state.
 //
@@ -133,8 +141,11 @@ func NewError(msg string) *LuaError {
 
 // NewErrorVal 构造一个携带 Lua Value 的错误(对应 error(v) 内建)。
 func NewErrorVal(v value.Value, msg string) *LuaError {
-	return &LuaError{Value: v, Msg: msg}
+	return &LuaError{Value: v, Msg: msg, Level: 1}
 }
+
+// MarkAnnotated 阻止位置前缀注解(error(v, 0) / 非字符串错误值)。
+func (e *LuaError) MarkAnnotated() { e.annotated = true }
 
 // TypeNameOf 暴露内部 typeName 给 stdlib 实现 type() 内建。
 func TypeNameOf(v value.Value) string { return typeName(v) }
@@ -213,6 +224,9 @@ func (st *State) Call(cl arena.GCRef, args []value.Value, nresults int) ([]value
 		return nil, err
 	}
 	if err := st.execute(th); err != nil {
+		if err.Traceback == "" {
+			err.Traceback = st.buildTraceback(th)
+		}
 		return nil, err
 	}
 	// 顶层执行结束后返回值在栈底起若干个(由 RETURN 落点 dst=funcIdx 决定)

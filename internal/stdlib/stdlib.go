@@ -327,7 +327,20 @@ func baseFnError(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 		return nil, crescent.NewErrorVal(value.Nil, "")
 	}
 	v := args[0]
-	return nil, crescent.NewErrorVal(v, valueToString(st, v))
+	level := 1
+	if len(args) >= 2 {
+		if f, ok := toNumberStr(st, args[1]); ok {
+			level = int(f)
+		}
+	}
+	e := crescent.NewErrorVal(v, valueToString(st, v))
+	e.Level = level
+	if level == 0 || value.Tag(v) != value.TagString {
+		// level=0 或非字符串错误值:不加位置前缀(5.1 语义)
+		e.Level = 0
+		e.MarkAnnotated()
+	}
+	return nil, e
 }
 
 func baseFnSelect(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
