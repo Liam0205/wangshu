@@ -1,0 +1,5 @@
+{
+  "enabledPlugins": {
+    "llmdoc@llmdoc-cc-plugin": true
+  }
+}
