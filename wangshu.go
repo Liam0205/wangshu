@@ -87,6 +87,19 @@ func Compile(source []byte, chunkname string) (*Program, error) {
 // 同一 Program 在同一 State 上重复 Run 复用首次装载的 closure(惰性 intern
 // 只发生一次,IC 跨 Run 持续生效)。
 func (prog *Program) Run(state *State, args ...Value) ([]Value, error) {
+	return prog.call(state, nil, args)
+}
+
+// Call 在 state 上执行 prog,并把宿主列数据 arena 暴露给脚本(11 §1.5)。
+//
+// arena 以全局名 `arena` 注入:`arena.<col>[i]` 读第 i 行(1-based,Lua 习惯),
+// 零拷贝即时装箱;null 行读出 nil;`arena.rows` 是行数。列只读(11 §5.3)。
+// arena 为 nil 等价 Run。
+func (prog *Program) Call(state *State, arena *Arena, args ...Value) ([]Value, error) {
+	return prog.call(state, arena, args)
+}
+
+func (prog *Program) call(state *State, ar *Arena, args []Value) ([]Value, error) {
 	lp, ok := state.loaded[prog]
 	if !ok {
 		cl := state.core.LoadProgram(prog.mainID, prog.protos)
@@ -95,6 +108,9 @@ func (prog *Program) Run(state *State, args ...Value) ([]Value, error) {
 			state.loaded = map[*Program]loadedProg{}
 		}
 		state.loaded[prog] = lp
+	}
+	if ar != nil {
+		state.mountArena(ar)
 	}
 	innerArgs := make([]value.Value, len(args))
 	for i, a := range args {
@@ -109,6 +125,68 @@ func (prog *Program) Run(state *State, args ...Value) ([]Value, error) {
 		out[i] = fromInner(state, v)
 	}
 	return out, nil
+}
+
+// mountArena 把宿主 Arena 映射进 VM 可读视图(11 §5.1-§5.3)。
+//
+// P1 形态:arena = Lua table { rows = n, <col> = 列代理 };列代理 = 空表 +
+// metatable{__index = ReadCell 闭包, __newindex = 只读报错}。整列从不复制,
+// proxy[i] 每次读即时 NaN-box(11 §4.1 零拷贝读)。
+func (st *State) mountArena(ar *Arena) {
+	core := st.core
+	arenaTbl := core.NewLibTable(uint32(len(ar.cols) + 1))
+	core.SetTableField(arenaTbl, "rows", value.NumberValue(float64(ar.nrows)))
+	for ci := range ar.cols {
+		col := &ar.cols[ci]
+		proxy := core.NewLibTable(0)
+		meta := core.NewLibTable(2)
+		colRef := col // 闭包捕获列指针
+		nrows := ar.nrows
+		strBytes := ar.strBytes
+		readCell := func(ist *crescent.State, cargs []value.Value) ([]value.Value, *crescent.LuaError) {
+			// __index(proxy, i)
+			if len(cargs) < 2 || !value.IsNumber(cargs[1]) {
+				return []value.Value{value.Nil}, nil
+			}
+			i := int64(value.AsNumber(cargs[1]))
+			if i < 1 || uint32(i) > nrows {
+				return []value.Value{value.Nil}, nil
+			}
+			row := uint32(i - 1)
+			if !colRef.present(row) {
+				return []value.Value{value.Nil}, nil
+			}
+			switch colRef.tag {
+			case colFloat64:
+				return []value.Value{value.NumberValue(colRef.f64[row])}, nil
+			case colInt64:
+				v := colRef.i64[row]
+				if v > 1<<53 || v < -(1<<53) {
+					return nil, crescent.NewError("arena int64 value exceeds 2^53 precision range")
+				}
+				return []value.Value{value.NumberValue(float64(v))}, nil
+			case colBool:
+				bit := colRef.boolBits[row/64]&(1<<(row%64)) != 0
+				return []value.Value{value.BoolValue(bit)}, nil
+			case colString:
+				slot := colRef.strSlots[row]
+				b := strBytes[slot.off : slot.off+slot.len]
+				ref := ist.InternForEmbed(b)
+				return []value.Value{value.MakeGC(value.TagString, ref)}, nil
+			}
+			return []value.Value{value.Nil}, nil
+		}
+		readonly := func(_ *crescent.State, _ []value.Value) ([]value.Value, *crescent.LuaError) {
+			return nil, crescent.NewError("arena column is read-only")
+		}
+		idxID := core.RegisterHostFn(readCell)
+		nwID := core.RegisterHostFn(readonly)
+		core.SetTableField(meta, "__index", value.MakeGC(value.TagFunction, core.MakeHostClosure(idxID)))
+		core.SetTableField(meta, "__newindex", value.MakeGC(value.TagFunction, core.MakeHostClosure(nwID)))
+		core.SetMeta(proxy, meta)
+		core.SetTableField(arenaTbl, col.name, value.MakeGC(value.TagTable, proxy))
+	}
+	core.SetGlobal("arena", value.MakeGC(value.TagTable, arenaTbl))
 }
 
 // Value 是公共 API 的多类型值(11 §4.5)。
