@@ -1,6 +1,6 @@
 # Wangshu llmdoc 文档地图
 
-> 项目状态:**纯设计阶段**。仓库唯一实质内容是设计文档 `docs/design/roadmap.md`,无任何代码实现。本文档库忠实记录的是**设计意图与规划**,不是已交付能力。
+> 项目状态:**设计文档集全卷齐备,无代码实现**。`docs/design/` 共 19 篇约 1.37 万行(P1 全卷 00-12 可实现深度、P2/P3 详细设计、P4/P5 架构决策)。本文档库是设计文档之上的**知识压缩层**,记录设计意图与路由,不是已交付能力。
 > 启动阅读顺序请看 [[startup]](本文件不重复有序启动清单)。
 
 ## 类别用途
@@ -8,9 +8,9 @@
 - **`must/`** —— 每次任务都应先读的微型启动文档。只放跨任务、稳定、几乎每次都用得上的知识。
 - **`overview/`** —— 项目/大特性的身份、边界与角色。
 - **`architecture/`** —— 检索地图、所有权边界、流程与不变式。
-- **`guides/`** —— 一篇一个工作流。**当前为空**(设计阶段,尚无可操作工作流;有了实现/构建/测试流程再补)。
+- **`guides/`** —— 一篇一个工作流。
 - **`reference/`** —— 稳定查阅事实:契约、schema、约定、术语。
-- **`memory/`** —— 历史过程记忆。`memory/reflections/` 归 reflector 所有;`memory/decisions/` 与 `memory/doc-gaps.md` 归 recorder 所有。当前 reflections 与 decisions **均为空**。
+- **`memory/`** —— 历史过程记忆。`memory/reflections/` 归 reflector 所有;`memory/decisions/` 与 `memory/doc-gaps.md` 归 recorder 所有。decisions 当前为空。
 
 ## 现有文档与路由提示
 
@@ -25,14 +25,22 @@
 - [[value-representation]] — 值表示与内存模型:NaN-boxing vs Go tagged struct 决策、自管 arena、自写 mark-sweep GC、同一块内存使编译层成增量。**问值/内存/GC/为什么这样选看这篇。**
 
 ### reference/
-- [[embedding-contract]] — 宿主嵌入契约:`Compile→Program`、`Program.Call(arena,args)`、arena ABI(类型化扁平列 + 字符串区 + presence bitmap,零拷贝读)、per-item 简易 API、drop-in 定位。**问宿主怎么嵌入、API 形状看这篇。**
+- [[embedding-contract]] — 宿主嵌入契约:`Compile→Program`、`Program.Call(arena,args)`、arena ABI(类型化扁平列 + 字符串区 + presence bitmap,零拷贝读)、per-item 简易 API、drop-in 定位。字段级 spec 在 `docs/design/p1-interpreter/11-embedding-arena-abi.md`。**问宿主怎么嵌入、API 形状看这篇。**
 - [[glossary]] — 术语表 + prior art 借鉴点。**遇到 NaN-boxing/arena/tier/月相/deopt/列内核等术语,或问参照项目看这篇。**
 
+### guides/
+- [[multi-doc-drafting]] — 多文档并行起草工作流:回填请求节协议、单点收口、验收口径收口点指定、子代理失败恢复纪律。**要一次起草多篇互引文档时看这篇。**
+
 ### memory/
-- `memory/doc-gaps.md` — 已识别的文档缺口(随实现推进收敛)。
+- `memory/doc-gaps.md` — 已识别的文档缺口(随实现推进收敛;含已收口审计记录)。
 - `memory/decisions/` — 决策记录(recorder 所有),当前为空。
-- `memory/reflections/` — 反思记录(reflector 所有),当前为空。
+- `memory/reflections/2026-06-11-design-doc-completion.md` — 设计文档集补齐(P1 全卷 + P2-P5)的过程反思:并行起草+单点收口模式、子代理中断恢复教训。
 
 ---
 
-源设计文档:`docs/design/roadmap.md`(引用时用 `docs/design/roadmap.md` (§N))。
+## 设计文档集路由(llmdoc 之外的源文档)
+
+- **入口**:`docs/design/architecture.md` §0 是文档集地图(包布局/组件图/tier 映射);`docs/design/p1-interpreter/00-overview.md` 是 P1 施工计划与**跨文档定稿决策速查**(§4)。
+- **战略层**:`docs/design/roadmap.md`(引用时用 `docs/design/roadmap.md` (§N))。
+- **验收口径**:`docs/design/p1-interpreter/12-testing-difftest.md` §10 是 25 条验收口径总表(所有「待定口径」的收口点)。
+- llmdoc 不搬运设计文档内容,只做压缩与路由;深入实现细节一律回源文档。

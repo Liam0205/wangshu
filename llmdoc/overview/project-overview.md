@@ -1,6 +1,6 @@
 # 项目概览:Wangshu(望舒)
 
-> 状态:**设计阶段**。仓库内唯一实质内容是设计文档 `docs/design/roadmap.md`(约 200 行);无任何 Go 源码实现。本文档描述的是项目身份与规划意图,不是已交付的能力。
+> 状态:**设计文档集全卷齐备,无代码实现**。`docs/design/` 共 19 篇约 1.37 万行:P1 全卷 00-12 可实现深度、P2/P3 详细设计、P4/P5 架构决策。本文档描述的是项目身份与设计意图,不是已交付的能力。
 
 ## 一句话定位
 
@@ -42,8 +42,9 @@ Wangshu(望舒)是一个**纯 Go 实现的高性能嵌入式 Lua 虚拟机**,关
 
 ## 当前状态
 
-- 纯设计阶段:仅 `docs/design/roadmap.md` + `README.md`(单行标题)+ `CLAUDE.md`(工作流约定)。
-- 无源码、无 `benchmarks/baseline/`(校准测量原始数据当前留存于发起方仓库工作区,正式立项后整理入库)。
+- **设计文档集全卷齐备**(2026-06-11):`docs/design/` 19 篇约 1.37 万行——`roadmap.md`(战略)+ `architecture.md`(跨阶段总览/包布局,§0 是文档集地图)+ `p1-interpreter/` 13 篇(00 总览/跨文档决策速查 + 01-12 全部子系统,可实现深度,12 为验收口径收口点)+ p2-bridge / p3-wasm-tier(详细设计)+ p4-method-jit / p5-trace-jit(架构决策)。
+- `README.md` 已重写为项目简介 + 文档导航。
+- **仍无任何 Go 源码实现**、无 `benchmarks/baseline/`(校准测量原始数据留存于发起方仓库工作区,入库规划见 `docs/design/p1-interpreter/12-testing-difftest.md` §6)。
 
 ---
 
