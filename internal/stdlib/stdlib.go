@@ -45,6 +45,7 @@ func OpenAll(st *crescent.State) {
 	}
 	registerNamespaced(st, "os", osFns)
 	registerNamespaced(st, "io", ioFns)
+	registerNamespaced(st, "coroutine", coroutineFns)
 	// math 常量
 	{
 		mathTblV, _ := st.RawGet(st.Globals(), intern(st, "math"))
@@ -300,6 +301,9 @@ func baseFnToNumber(st *crescent.State, args []value.Value) ([]value.Value, *cre
 func baseFnType(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	if len(args) == 0 {
 		return nil, crescent.NewError("bad argument #1 to 'type' (value expected)")
+	}
+	if st.IsCoroutineHandle(args[0]) {
+		return []value.Value{intern(st, "thread")}, nil
 	}
 	return []value.Value{intern(st, crescent.TypeNameOf(args[0]))}, nil
 }

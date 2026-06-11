@@ -32,12 +32,33 @@ func (st *State) doCall(th *thread, ci *callInfo, i bytecode.Instruction) (*call
 	cl := value.GCRefOf(callee)
 	if object.IsHostClosure(st.arena, cl) {
 		// 同步调用 host;调用后 ci 不变(主循环 next=nil 表示不切帧)
-		return nil, st.callHost(th, funcIdx, nargs, nresults)
+		e := st.callHost(th, funcIdx, nargs, nresults)
+		if e == errYieldSentinel {
+			// yield 冒泡(08 §3.4):记录恢复信息(从本 CALL 的下一条恢复;
+			// resume 参数将写到本 CALL 的结果寄存器)。
+			th.pendingResume = &pendingResumeInfo{
+				ciIndex:    len(th.cis) - 1,
+				dst:        funcIdx,
+				nresults:   nresults,
+				entryDepth: st.entryDepthOf(th),
+			}
+		}
+		return nil, e
 	}
 	if e := st.enterLuaFrame(th, funcIdx, nargs, nresults, false); e != nil {
 		return nil, e
 	}
 	return currentCI(th), nil
+}
+
+// entryDepthOf 找当前最内层 fresh 帧的深度(yield 恢复后的冒泡边界)。
+func (st *State) entryDepthOf(th *thread) int {
+	for i := len(th.cis) - 1; i >= 0; i-- {
+		if th.cis[i].fresh {
+			return i
+		}
+	}
+	return 0
 }
 
 // doTailCall 复用当前帧执行新 closure 的调用。

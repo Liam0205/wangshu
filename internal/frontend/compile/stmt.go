@@ -408,7 +408,13 @@ func (fs *funcState) stmtReturn(s *ast.ReturnStmt) {
 	}
 	last := fs.expr(s.Exprs[n-1])
 	switch last.k {
-	case eCall, eVararg:
+	case eCall:
+		// CALL 的 A 已是 fnReg(= 当前连续区的下一槽),C=0 到 top;不可覆盖 A。
+		fs.setReturns(&last, -1)
+		fs.emitABC(s.Line, bytecode.RETURN, base, 0, 0)
+		return
+	case eVararg:
+		// VARARG 的 A 是占位 0,落点回填为 freereg(连续区下一槽)。
 		fs.setReturns(&last, -1)
 		fs.proto.Code[last.info] = bytecode.SetA(fs.proto.Code[last.info], fs.freereg)
 		fs.emitABC(s.Line, bytecode.RETURN, base, 0, 0)

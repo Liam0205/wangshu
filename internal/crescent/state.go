@@ -37,6 +37,12 @@ type State struct {
 	runningThread *thread           // 当前正在执行的 thread(GC ExtraValues 来源)
 	hostFns       hostFnRegistry    // host function 注册表(M12)
 	stringLib     arena.GCRef       // string 库表(string 值的 per-type __index,07 §1.2)
+	cos           coRegistry        // 协程注册表(08;coID = lightuserdata 句柄)
+
+	// uvOwner 记录每个【开放】upvalue 属于哪个 thread 的栈(01 §5.4 的
+	// (threadRef, stackIdx) 二元组的 Go 侧形态;值栈 arena 化后改存 threadRef)。
+	// 关闭后从此表删除(自持值不再依赖 thread)。
+	uvOwner map[arena.GCRef]*thread
 }
 
 // SetStringLib 注册 string 库表为 string 值的 per-type 元表 __index
@@ -231,6 +237,10 @@ type thread struct {
 	top     int // 当前栈顶(超过 ci.top 的临时区)
 	cis     []callInfo
 	openUvs map[uint32]arena.GCRef // stackIdx → open Upvalue ref(M9 简化,M10 改降序链)
+
+	// pendingResume 在 yield 冒泡出 execute 时记录恢复信息(08 §3.3 saveFrame
+	// 的 P1 形态);resume 时由 executeResume 消费。
+	pendingResume *pendingResumeInfo
 }
 
 func newThread() *thread {

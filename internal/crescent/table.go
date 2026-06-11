@@ -30,12 +30,16 @@ func (st *State) tableSetInt(t arena.GCRef, idx uint32, val value.Value) {
 }
 
 // upvalGet / upvalSet:开放/关闭分派(05 §8.1)。
+//
+// 开放 upvalue 经 uvOwner 找属主 thread 的栈(协程各有独立栈,01 §5.4 的
+// threadRef 语义);属主缺失时回退当前 thread(主线程场景)。
 func (st *State) upvalGet(th *thread, uv arena.GCRef) value.Value {
 	if object.UpvalIsClosed(st.arena, uv) {
 		return object.UpvalClosedValue(st.arena, uv)
 	}
+	owner := st.uvOwnerOf(uv, th)
 	idx := object.UpvalStackIdx(st.arena, uv)
-	return th.stack[idx]
+	return owner.stack[idx]
 }
 
 func (st *State) upvalSet(th *thread, uv arena.GCRef, v value.Value) {
@@ -43,8 +47,18 @@ func (st *State) upvalSet(th *thread, uv arena.GCRef, v value.Value) {
 		st.arena.SetWordAt(uv+8*2, uint64(v))
 		return
 	}
+	owner := st.uvOwnerOf(uv, th)
 	idx := object.UpvalStackIdx(st.arena, uv)
-	th.stack[idx] = v
+	owner.stack[idx] = v
+}
+
+func (st *State) uvOwnerOf(uv arena.GCRef, fallback *thread) *thread {
+	if st.uvOwner != nil {
+		if o, ok := st.uvOwner[uv]; ok {
+			return o
+		}
+	}
+	return fallback
 }
 
 // findOrCreateUpval 查找或新建一个指向 thread.stack[stackIdx] 的开放 upvalue
@@ -61,6 +75,10 @@ func (st *State) findOrCreateUpval(th *thread, stackIdx uint32) arena.GCRef {
 	}
 	uv := st.allocOpenUpvalue(0, stackIdx, 0)
 	th.openUvs[stackIdx] = uv
+	if st.uvOwner == nil {
+		st.uvOwner = map[arena.GCRef]*thread{}
+	}
+	st.uvOwner[uv] = th
 	return uv
 }
 
@@ -74,6 +92,7 @@ func (st *State) closeUpvals(th *thread, level int) {
 			val := th.stack[idx]
 			object.CloseUpvalue(st.arena, uv, val)
 			delete(th.openUvs, idx)
+			delete(st.uvOwner, uv)
 		}
 	}
 }

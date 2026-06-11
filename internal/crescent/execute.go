@@ -19,7 +19,11 @@ var TraceExec = false
 // reentry 模型:Lua-call-Lua 通过修改 ci/proto/code 局部变量在同一个 Go 栈帧里
 // 重入 — Go 栈深度恒为 1(05 §7.1)。
 func (st *State) execute(th *thread) *LuaError {
-	entryDepth := len(th.cis) - 1
+	return st.executeFrom(th, len(th.cis)-1)
+}
+
+// executeFrom 以指定 entry 深度跑主循环(协程 resume 恢复时复用,08 §3.5)。
+func (st *State) executeFrom(th *thread, entryDepth int) *LuaError {
 	ci := currentCI(th)
 	code := ci.proto.Code
 
