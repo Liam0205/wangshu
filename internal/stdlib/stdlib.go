@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Liam0205/wangshu/internal/arena"
 	"github.com/Liam0205/wangshu/internal/crescent"
 	"github.com/Liam0205/wangshu/internal/object"
 	"github.com/Liam0205/wangshu/internal/value"
@@ -33,7 +34,8 @@ func OpenAll(st *crescent.State) {
 		st.SetGlobal("__ipairs_iter", value.MakeGC(value.TagFunction, cl))
 	}
 	registerNamespaced(st, "math", mathFns)
-	registerNamespaced(st, "string", stringFns)
+	strTbl := registerNamespaced(st, "string", stringFns)
+	st.SetStringLib(strTbl) // string 值的 per-type __index(`("x"):upper()`)
 }
 
 type entry struct {
@@ -41,7 +43,7 @@ type entry struct {
 	fn   crescent.HostFn
 }
 
-func registerNamespaced(st *crescent.State, ns string, fns []entry) {
+func registerNamespaced(st *crescent.State, ns string, fns []entry) arena.GCRef {
 	tbl := st.NewLibTable(uint32(len(fns)))
 	for _, e := range fns {
 		id := st.RegisterHostFn(e.fn)
@@ -49,6 +51,7 @@ func registerNamespaced(st *crescent.State, ns string, fns []entry) {
 		st.SetTableField(tbl, e.name, value.MakeGC(value.TagFunction, cl))
 	}
 	st.SetGlobal(ns, value.MakeGC(value.TagTable, tbl))
+	return tbl
 }
 
 // 通用辅助:把 Value 转 string(用于 print/tostring)。
@@ -407,6 +410,13 @@ var stringFns = []entry{
 	{"sub", stringFnSub},
 	{"rep", stringFnRep},
 	{"reverse", stringFnReverse},
+	{"find", stringFnFind},
+	{"match", stringFnMatch},
+	{"gmatch", stringFnGmatch},
+	{"gsub", stringFnGsub},
+	{"format", stringFnFormat},
+	{"byte", stringFnByte},
+	{"char", stringFnChar},
 }
 
 func stringFnLen(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {

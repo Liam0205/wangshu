@@ -190,6 +190,39 @@ end
 return i`},
 	{"string_sub_neg", `return string.sub("hello", -3)`},
 	{"string_rep", `return string.rep("ab", 3)`},
+	// —— pattern matcher 对拍(P1 收尾轮) ——
+	{"find_plain", `return string.find("hello world", "world", 1, true)`},
+	{"find_pattern", `return string.find("hello123", "%d+")`},
+	{"find_anchored", `return string.find("hello", "^h")`},
+	{"find_nomatch", `return tostring(string.find("abc", "z"))`},
+	{"match_single", `return string.match("hello123", "%d+")`},
+	{"match_caps", `return string.match("2026-06-12", "(%d+)-(%d+)-(%d+)")`},
+	{"match_pos_capture", `return string.match("abc", "a()b")`},
+	{"gsub_count", `return string.gsub("hello world", "o", "0")`},
+	{"gsub_caps_ref", `return string.gsub("hello world", "(%w+)", "<%1>")`},
+	{"gsub_limit", `return string.gsub("aaa", "a", "b", 2)`},
+	{"gsub_percent", `return string.gsub("abc", "b", "%%")`},
+	{"gmatch_iter", `
+local out = ""
+for w in string.gmatch("one two three", "%a+") do out = out .. w .. ";" end
+return out`},
+	{"gmatch_caps", `
+local out = ""
+for k, v in string.gmatch("a=1,b=2", "(%w+)=(%w+)") do out = out .. k .. v end
+return out`},
+	{"format_dsf", `return string.format("%d|%s|%.3f", 42, "x", 3.14159)`},
+	{"format_x", `return string.format("%x/%X/%o", 255, 255, 8)`},
+	{"format_pad", `return string.format("[%5d][%-5s]", 42, "ab")`},
+	{"byte_char_rt", `return string.char(72, 105) .. tostring(string.byte("A"))`},
+	{"byte_range", `
+local a, b, c = string.byte("abc", 1, 3)
+return a + b + c`},
+	{"balance_match", `return string.match("(foo(bar))baz", "%b()")`},
+	{"class_sets", `return string.match("hello42", "[%a]+") .. string.match("hello42", "[0-9]+")`},
+	{"quantifier_lazy", `return string.match("<<a>>", "<(.-)>")`},
+	{"quantifier_greedy", `return string.match("<<a>>", "<(.*)>")`},
+	{"string_method_sugar", `return ("hello"):upper()`},
+	{"backref", `return tostring(string.match("abcabc", "(abc)%1"))`},
 }
 
 // TestDiff_SeedCorpus 对拍固定脚本集(Wangshu vs 官方 5.1.5)。

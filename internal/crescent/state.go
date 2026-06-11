@@ -36,7 +36,12 @@ type State struct {
 	globals       arena.GCRef       // _G(globals 表)
 	runningThread *thread           // 当前正在执行的 thread(GC ExtraValues 来源)
 	hostFns       hostFnRegistry    // host function 注册表(M12)
+	stringLib     arena.GCRef       // string 库表(string 值的 per-type __index,07 §1.2)
 }
+
+// SetStringLib 注册 string 库表为 string 值的 per-type 元表 __index
+// (`("x"):upper()` 语法支撑,07 §1.2)。
+func (st *State) SetStringLib(t arena.GCRef) { st.stringLib = t }
 
 // New constructs a fresh State (arena + collector + empty globals)。
 func New() *State {

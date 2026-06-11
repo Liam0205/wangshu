@@ -42,7 +42,7 @@ func (st *State) metaFieldOfValue(v value.Value, name string) value.Value {
 
 // indexWithMeta 实现 GETTABLE 的完整语义:raw get → __index 链(07 §3)。
 //
-// 链上限 100 层(防 __index 环)。
+// 链上限 100 层(防 __index 环)。string 值的 __index = string 库表(07 §1.2)。
 func (st *State) indexWithMeta(th *thread, obj, key value.Value) (value.Value, *LuaError) {
 	for depth := 0; depth < 100; depth++ {
 		if value.Tag(obj) == value.TagTable {
@@ -64,7 +64,11 @@ func (st *State) indexWithMeta(th *thread, obj, key value.Value) (value.Value, *
 			obj = h // __index 是表:沿链重查
 			continue
 		}
-		// 非 table:查其元方法(M11 只支持显式挂的 metatable;非 table 直接报错)
+		if value.Tag(obj) == value.TagString && st.stringLib != 0 {
+			// string 的 per-type __index = string 库(`("x"):upper()`)
+			obj = value.MakeGC(value.TagTable, st.stringLib)
+			continue
+		}
 		return value.Nil, errf("attempt to index a %s value", typeName(obj))
 	}
 	return value.Nil, errf("'__index' chain too long; possible loop")
@@ -196,6 +200,12 @@ func (st *State) ProtectedCall(fn value.Value, args []value.Value) ([]value.Valu
 		return nil, errf("pcall: no running thread")
 	}
 	return st.callLuaFromHost(th, fn, args)
+}
+
+// ProtectedCallDirect 与 ProtectedCall 同构(供 stdlib 内部回调 Lua 函数,
+// 如 gsub 的 function repl、table.sort 的比较器)。
+func (st *State) ProtectedCallDirect(fn value.Value, args []value.Value) ([]value.Value, *LuaError) {
+	return st.ProtectedCall(fn, args)
 }
 
 // MetaOf 暴露 metaOf(stdlib getmetatable 用)。
