@@ -1,0 +1,444 @@
+// codegen — AST → bytecode.Proto 的主遍历(04 §5-§9)。
+//
+// expr 路径:expr() 返回 expDesc,延迟物化由调用方按需 exp2NextReg / exp2RK / goIfTrue 等驱动。
+// stmt 路径:stmt() 直接产生指令并维护 freereg / nactvar 不变式。
+package compile
+
+import (
+	"math"
+
+	"github.com/Liam0205/wangshu/internal/bytecode"
+	"github.com/Liam0205/wangshu/internal/frontend/ast"
+)
+
+// resolveName 在词法链上解析一个 NameExpr,返回 expDesc 与匹配类型(local/upval/global)。
+//
+// 04 §8.4 词法作用域链查找:本函数局部 → 已捕获 upvalue → 外层链(沿 prev) → 全局穿透。
+func (fs *funcState) resolveName(line int32, name string) expDesc {
+	// 1) 本函数局部
+	if r := fs.findLocal(name); r >= 0 {
+		return newExp(eLocal, r)
+	}
+	// 2) 已登记 upvalue
+	if u := fs.findUpval(name); u >= 0 {
+		return newExp(eUpval, u)
+	}
+	// 3) 沿外层链
+	if fs.prev != nil {
+		outer := fs.prev.resolveName(line, name)
+		switch outer.k {
+		case eLocal:
+			// 标记外层 block hasUpval,使其退出时 CLOSE
+			fs.prev.markUpvalCapture(outer.info)
+			idx := fs.addUpval(line, name, true, uint8(outer.info))
+			return newExp(eUpval, idx)
+		case eUpval:
+			idx := fs.addUpval(line, name, false, uint8(outer.info))
+			return newExp(eUpval, idx)
+		case eGlobal:
+			// 全局穿透
+		}
+	}
+	// 4) 全局
+	k := fs.strK(line, name)
+	return newExp(eGlobal, k)
+}
+
+// markUpvalCapture 把第 reg 个局部所在 block(及其所有更内层块)标 hasUpval(04 §6.1 / §8.4)。
+func (fs *funcState) markUpvalCapture(reg int) {
+	for b := fs.bl; b != nil; b = b.prev {
+		if reg >= b.nactvarSnap {
+			b.hasUpval = true
+			return
+		}
+	}
+}
+
+// expr 把一个 ast.Expr 编译为 expDesc(延迟物化)。
+func (fs *funcState) expr(node ast.Expr) expDesc {
+	switch e := node.(type) {
+	case *ast.NilExpr:
+		return newExp(eNil, 0)
+	case *ast.TrueExpr:
+		return newExp(eTrue, 0)
+	case *ast.FalseExpr:
+		return newExp(eFalse, 0)
+	case *ast.NumberExpr:
+		exp := newExp(eKNum, 0)
+		exp.nval = e.Val
+		return exp
+	case *ast.StringExpr:
+		k := fs.strK(e.Line, e.Val)
+		return newExp(eK, k)
+	case *ast.VarargExpr:
+		if !fs.isVararg {
+			raise(fs, e.Line, "cannot use '...' outside a vararg function")
+		}
+		pc := fs.emitABC(e.Line, bytecode.VARARG, 0, 1, 0)
+		return newExp(eVararg, pc)
+	case *ast.NameExpr:
+		return fs.resolveName(e.Line, e.Name)
+	case *ast.IndexExpr:
+		return fs.exprIndex(e)
+	case *ast.CallExpr:
+		return fs.exprCall(e)
+	case *ast.MethodCallExpr:
+		return fs.exprMethodCall(e)
+	case *ast.BinExpr:
+		return fs.exprBin(e)
+	case *ast.UnExpr:
+		return fs.exprUn(e)
+	case *ast.FuncExpr:
+		return fs.exprFunc(e)
+	case *ast.TableExpr:
+		return fs.exprTable(e)
+	}
+	raise(fs, 0, "compile: unsupported expr node %T", node)
+	return expDesc{}
+}
+
+// exprIndex 编译 t[k] / t.field。
+func (fs *funcState) exprIndex(e *ast.IndexExpr) expDesc {
+	obj := fs.expr(e.Obj)
+	tableReg := fs.exp2AnyReg(e.Line, &obj)
+	key := fs.expr(e.Key)
+	rk := fs.exp2RK(e.Line, &key)
+	exp := newExp(eIndexed, tableReg)
+	exp.aux = rk
+	return exp
+}
+
+// exprCall 编译 f(args...);末位多值时设 B=0(到 top)。
+func (fs *funcState) exprCall(e *ast.CallExpr) expDesc {
+	fnReg := fs.freereg
+	fnExp := fs.expr(e.Fn)
+	fs.exp2NextReg(e.Line, &fnExp)
+	nargs := fs.compileArgList(e.Args, e.Line)
+	b := nargs + 1
+	if nargs < 0 { // 末位多值
+		b = 0
+	}
+	pc := fs.emitABC(e.Line, bytecode.CALL, fnReg, b, 2) // C=2 默认单值,后续可改
+	fs.freereg = fnReg + 1                               // 调用结果默认占 R(fnReg) 1 个
+	return expDesc{k: eCall, info: pc, tJmp: NoJump, fJmp: NoJump}
+}
+
+// exprMethodCall 编译 obj:m(args)— SELF + CALL。
+func (fs *funcState) exprMethodCall(e *ast.MethodCallExpr) expDesc {
+	baseReg := fs.freereg
+	recv := fs.expr(e.Recv)
+	fs.exp2NextReg(e.Line, &recv) // R(baseReg) = obj
+	// 方法名走 RK 常量
+	method := newExp(eK, fs.strK(e.Line, e.Method))
+	rk := fs.exp2RK(e.Line, &method)
+	fs.emitABC(e.Line, bytecode.SELF, baseReg, baseReg, rk)
+	fs.reserveRegs(e.Line, 1) // SELF 额外占 R(baseReg+1)(self)
+	nargs := fs.compileArgList(e.Args, e.Line)
+	b := nargs + 1 + 1 // self + nargs
+	if nargs < 0 {
+		b = 0
+	}
+	pc := fs.emitABC(e.Line, bytecode.CALL, baseReg, b, 2)
+	fs.freereg = baseReg + 1
+	return expDesc{k: eCall, info: pc, tJmp: NoJump, fJmp: NoJump}
+}
+
+// compileArgList 把 args 落到连续寄存器;末位多值返回 -1,固定个数返回个数。
+func (fs *funcState) compileArgList(args []ast.Expr, line int32) int {
+	n := len(args)
+	if n == 0 {
+		return 0
+	}
+	for i := 0; i < n-1; i++ {
+		ai := fs.expr(args[i])
+		fs.exp2NextReg(line, &ai)
+	}
+	last := fs.expr(args[n-1])
+	switch last.k {
+	case eCall, eVararg:
+		fs.setReturns(&last, -1)
+		// 调用结果落 R(freereg);水位由 CALL/VARARG 自身决定的"到 top",此处保留 freereg
+		// 不显式 +1,但需要把 last.info 处的指令 A 字段覆盖为 freereg(B/C 已设)。
+		switch last.k {
+		case eCall:
+			fs.proto.Code[last.info] = bytecode.SetA(fs.proto.Code[last.info], fs.freereg)
+		case eVararg:
+			fs.proto.Code[last.info] = bytecode.SetA(fs.proto.Code[last.info], fs.freereg)
+		}
+		// 多值不 reserveRegs:caller 会决定 fixed C 后再调整水位
+		return -1
+	default:
+		fs.exp2NextReg(line, &last)
+		return n
+	}
+}
+
+// exprBin 编译二元表达式;算术折叠,比较走 EQ/LT/LE,逻辑走短路。
+func (fs *funcState) exprBin(e *ast.BinExpr) expDesc {
+	switch e.Op {
+	case ast.OpAnd:
+		l := fs.expr(e.L)
+		fs.goIfTrue(e.Line, &l) // l 为假则跳(链入 fJmp);真则继续(落到右子)
+		r := fs.expr(e.R)
+		// 合流:把左侧的 fJmp 接到右侧的 fJmp 上;tJmp 只用右侧
+		fs.concat(&r.fJmp, l.fJmp)
+		return r
+	case ast.OpOr:
+		l := fs.expr(e.L)
+		fs.goIfFalse(e.Line, &l)
+		r := fs.expr(e.R)
+		fs.concat(&r.tJmp, l.tJmp)
+		return r
+	case ast.OpEq, ast.OpNe, ast.OpLt, ast.OpLe, ast.OpGt, ast.OpGe:
+		return fs.exprCompare(e)
+	case ast.OpConcat:
+		return fs.exprConcat(e)
+	}
+	// 算术
+	l := fs.expr(e.L)
+	r := fs.expr(e.R)
+	if folded, ok := constFold(e.Op, &l, &r); ok {
+		out := newExp(eKNum, 0)
+		out.nval = folded
+		return out
+	}
+	rb := fs.exp2RK(e.Line, &l)
+	rc := fs.exp2RK(e.Line, &r)
+	// 顺序:先归还高位临时再归还低位(维持栈式)
+	if !bytecode.IsK(rc) {
+		fs.freeReg(rc)
+	}
+	if !bytecode.IsK(rb) {
+		fs.freeReg(rb)
+	}
+	op := arithOpcode(e.Op)
+	pc := fs.emitABC(e.Line, op, 0, rb, rc)
+	return expDesc{k: eRelocable, info: pc, tJmp: NoJump, fJmp: NoJump}
+}
+
+func arithOpcode(op ast.BinOp) bytecode.OpCode {
+	switch op {
+	case ast.OpAdd:
+		return bytecode.ADD
+	case ast.OpSub:
+		return bytecode.SUB
+	case ast.OpMul:
+		return bytecode.MUL
+	case ast.OpDiv:
+		return bytecode.DIV
+	case ast.OpMod:
+		return bytecode.MOD
+	case ast.OpPow:
+		return bytecode.POW
+	}
+	return bytecode.ADD
+}
+
+// constFold 在双方都是 EKNum 的前提下编译期算结果;返回值已 NaN 规范化是 numK 的事。
+func constFold(op ast.BinOp, l, r *expDesc) (float64, bool) {
+	if l.k != eKNum || r.k != eKNum {
+		return 0, false
+	}
+	a, b := l.nval, r.nval
+	switch op {
+	case ast.OpAdd:
+		return a + b, true
+	case ast.OpSub:
+		return a - b, true
+	case ast.OpMul:
+		return a * b, true
+	case ast.OpDiv:
+		return a / b, true
+	case ast.OpMod:
+		return a - math.Floor(a/b)*b, true
+	case ast.OpPow:
+		return math.Pow(a, b), true
+	}
+	return 0, false
+}
+
+// exprCompare 编译比较;EQ/LT/LE 三档,?= / > / >= 通过交换+取反映射。
+func (fs *funcState) exprCompare(e *ast.BinExpr) expDesc {
+	op := e.Op
+	swap := false
+	want := 1
+	var ic bytecode.OpCode
+	switch op {
+	case ast.OpEq:
+		ic = bytecode.EQ
+	case ast.OpNe:
+		ic = bytecode.EQ
+		want = 0
+	case ast.OpLt:
+		ic = bytecode.LT
+	case ast.OpLe:
+		ic = bytecode.LE
+	case ast.OpGt:
+		ic = bytecode.LT
+		swap = true
+	case ast.OpGe:
+		ic = bytecode.LE
+		swap = true
+	}
+	l := fs.expr(e.L)
+	r := fs.expr(e.R)
+	rb := fs.exp2RK(e.Line, &l)
+	rc := fs.exp2RK(e.Line, &r)
+	if !bytecode.IsK(rc) {
+		fs.freeReg(rc)
+	}
+	if !bytecode.IsK(rb) {
+		fs.freeReg(rb)
+	}
+	if swap {
+		rb, rc = rc, rb
+	}
+	fs.emitABC(e.Line, ic, want, rb, rc)
+	pc := fs.jump(e.Line)
+	return expDesc{k: eJmp, info: pc, tJmp: NoJump, fJmp: NoJump}
+}
+
+// exprConcat 编译 a..b..c — 右结合,折叠为单条 CONCAT(B..C)。
+func (fs *funcState) exprConcat(e *ast.BinExpr) expDesc {
+	// 收集右展开的所有操作数:a..(b..(c..d)) 平铺为 [a,b,c,d]
+	parts := []ast.Expr{e.L}
+	cur := e.R
+	for {
+		if be, ok := cur.(*ast.BinExpr); ok && be.Op == ast.OpConcat {
+			parts = append(parts, be.L)
+			cur = be.R
+			continue
+		}
+		parts = append(parts, cur)
+		break
+	}
+	base := fs.freereg
+	for _, p := range parts {
+		pe := fs.expr(p)
+		fs.exp2NextReg(e.Line, &pe)
+	}
+	last := fs.freereg - 1
+	pc := fs.emitABC(e.Line, bytecode.CONCAT, 0, base, last)
+	// 释放 base..last(待 exp2reg 时回填 A,寄存器水位先回到 base 之前)
+	for fs.freereg > base {
+		fs.freereg--
+	}
+	return expDesc{k: eRelocable, info: pc, tJmp: NoJump, fJmp: NoJump}
+}
+
+// exprUn 编译一元;-/not/#。
+func (fs *funcState) exprUn(e *ast.UnExpr) expDesc {
+	sub := fs.expr(e.E)
+	switch e.Op {
+	case ast.OpUnm:
+		// 常量折叠:-数字字面量
+		if sub.k == eKNum {
+			out := newExp(eKNum, 0)
+			out.nval = -sub.nval
+			return out
+		}
+		fs.exp2AnyReg(e.Line, &sub)
+		fs.freeExp(&sub)
+		pc := fs.emitABC(e.Line, bytecode.UNM, 0, sub.info, 0)
+		return expDesc{k: eRelocable, info: pc, tJmp: NoJump, fJmp: NoJump}
+	case ast.OpNot:
+		// 短路:对带跳转链的表达式直接交换 t/f
+		fs.exp2AnyReg(e.Line, &sub)
+		fs.freeExp(&sub)
+		pc := fs.emitABC(e.Line, bytecode.NOT, 0, sub.info, 0)
+		out := expDesc{k: eRelocable, info: pc, tJmp: sub.fJmp, fJmp: sub.tJmp}
+		return out
+	case ast.OpLen:
+		fs.exp2AnyReg(e.Line, &sub)
+		fs.freeExp(&sub)
+		pc := fs.emitABC(e.Line, bytecode.LEN, 0, sub.info, 0)
+		return expDesc{k: eRelocable, info: pc, tJmp: NoJump, fJmp: NoJump}
+	}
+	return expDesc{}
+}
+
+// exprFunc 编译函数字面量(嵌套 Proto + CLOSURE)。
+func (fs *funcState) exprFunc(e *ast.FuncExpr) expDesc {
+	proto := fs.cg.compileFunc(fs, e)
+	idx := uint32(len(fs.cg.protos) - 1) // 最近登记的 ProtoID
+	fs.proto.Protos = append(fs.proto.Protos, idx)
+	closureIdx := len(fs.proto.Protos) - 1
+	pc := fs.emitABx(e.Line, bytecode.CLOSURE, 0, closureIdx)
+	// 紧跟 nupvals 条伪指令
+	for _, u := range proto.UpvalDescs {
+		if u.InStack {
+			fs.emitABC(e.Line, bytecode.MOVE, 0, int(u.Idx), 0)
+		} else {
+			fs.emitABC(e.Line, bytecode.GETUPVAL, 0, int(u.Idx), 0)
+		}
+	}
+	return expDesc{k: eRelocable, info: pc, tJmp: NoJump, fJmp: NoJump}
+}
+
+// exprTable 编译表构造:NEWTABLE + SETLIST(批量数组) + SETTABLE(哈希字段)。
+func (fs *funcState) exprTable(e *ast.TableExpr) expDesc {
+	tReg := fs.freereg
+	pc := fs.emitABC(e.Line, bytecode.NEWTABLE, tReg, 0, 0) // B/C 后续回填
+	fs.reserveRegs(e.Line, 1)
+
+	// —— 数组部分 ——
+	nArr := len(e.AKeys)
+	flush := bytecode.FieldsPerFlush
+	pending := 0 // 当前批已落到 R(tReg+1+pending) 的项数
+	batchNo := 1 // 批号(SETLIST 的 C)
+	for i, v := range e.AKeys {
+		isLast := i == nArr-1
+		ve := fs.expr(v)
+		if isLast {
+			switch ve.k {
+			case eCall, eVararg:
+				fs.setReturns(&ve, -1)
+				fs.proto.Code[ve.info] = bytecode.SetA(fs.proto.Code[ve.info], fs.freereg)
+				// SETLIST B=0 表示到 top
+				fs.emitABC(e.Line, bytecode.SETLIST, tReg, 0, batchNo)
+				fs.freereg = tReg + 1
+				pending = 0
+				continue
+			}
+		}
+		fs.exp2NextReg(e.Line, &ve)
+		pending++
+		if pending == flush {
+			fs.emitABC(e.Line, bytecode.SETLIST, tReg, flush, batchNo)
+			fs.freereg = tReg + 1
+			pending = 0
+			batchNo++
+		}
+	}
+	if pending > 0 {
+		fs.emitABC(e.Line, bytecode.SETLIST, tReg, pending, batchNo)
+		fs.freereg = tReg + 1
+	}
+
+	// —— 哈希部分 ——
+	for i := range e.HKeys {
+		ke := fs.expr(e.HKeys[i])
+		rkK := fs.exp2RK(e.Line, &ke)
+		ve := fs.expr(e.HVals[i])
+		rkV := fs.exp2RK(e.Line, &ve)
+		fs.emitABC(e.Line, bytecode.SETTABLE, tReg, rkK, rkV)
+		// 释放哈希字段的临时
+		if !bytecode.IsK(rkV) {
+			fs.freeReg(rkV)
+		}
+		if !bytecode.IsK(rkK) {
+			fs.freeReg(rkK)
+		}
+	}
+
+	// 回填 NEWTABLE 的 B/C
+	asz := uint32(nArr)
+	hsz := uint32(len(e.HKeys))
+	ins := fs.proto.Code[pc]
+	ins = bytecode.SetB(ins, int(bytecode.Int2Fb(asz)))
+	ins = bytecode.SetC(ins, int(bytecode.Int2Fb(hsz)))
+	fs.proto.Code[pc] = ins
+
+	// 把 NEWTABLE 落点暴露为 ENonReloc(已在 R(tReg))
+	return expDesc{k: eNonReloc, info: tReg, tJmp: NoJump, fJmp: NoJump}
+}

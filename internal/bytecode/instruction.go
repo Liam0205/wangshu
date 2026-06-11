@@ -91,3 +91,33 @@ func EncodeABx(op OpCode, a, bx int) Instruction {
 func EncodeAsBx(op OpCode, a, sbx int) Instruction {
 	return EncodeABx(op, a, sbx+SBxBias)
 }
+
+// NoRegister marks "no destination register yet" in TESTSET A field (04 §5.6)。
+//
+// 取 0xFF(超过 MaxStack=250),保证不会与任何合法寄存器号撞车,后续
+// patchTestReg/exp2reg 时回填具体 reg 或退化为 TEST(无 A)。
+const NoRegister = int(AMask) // 255
+
+// SetA returns ins with the A field rewritten to a, keeping the OP/B/C/Bx region intact.
+//
+// 用于 codegen 的"占位指令回填"路径(GETGLOBAL/GETTABLE/算术 ABC、LOADK 的 ABx 等
+// 指令在发射时 A 不知,后续 exp2reg 时回填——保留 B/C/Bx 共占的 18-bit 高位段)。
+func SetA(ins Instruction, a int) Instruction {
+	return Instruction((uint32(ins) &^ (AMask << AShift)) | (uint32(a)&AMask)<<AShift)
+}
+
+// SetSBx returns ins with the sBx field rewritten (keeps OP/A intact).
+func SetSBx(ins Instruction, sbx int) Instruction {
+	return Instruction((uint32(ins) &^ (BxMask << BxShift)) |
+		(uint32(sbx+SBxBias)&BxMask)<<BxShift)
+}
+
+// SetB returns ins with the B field rewritten (keeps OP/A/C intact).
+func SetB(ins Instruction, b int) Instruction {
+	return Instruction((uint32(ins) &^ (BCMask << BShift)) | (uint32(b)&BCMask)<<BShift)
+}
+
+// SetC returns ins with the C field rewritten (keeps OP/A/B intact).
+func SetC(ins Instruction, c int) Instruction {
+	return Instruction((uint32(ins) &^ (BCMask << CShift)) | (uint32(c)&BCMask)<<CShift)
+}
