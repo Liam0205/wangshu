@@ -44,4 +44,5 @@
 - **入口**:`docs/design/architecture.md` §0 是文档集地图(包布局/组件图/tier 映射);`docs/design/p1-interpreter/00-overview.md` 是 P1 施工计划与**跨文档定稿决策速查**(§4)。
 - **战略层**:`docs/design/roadmap.md`(引用时用 `docs/design/roadmap.md` (§N))。
 - **验收口径**:`docs/design/p1-interpreter/12-testing-difftest.md` §10 是 26 条验收口径总表(所有「待定口径」的收口点;评审轮新增第 26 条 ColInt64,勿引用旧版 25 条说法)。
+- **工程化机制**:`docs/design/engineering.md`——Git hooks(三件套含 commit-msg 强制 `type(scope):`)/CI workflows(ci + nightly-diff-fuzz 自动开 issue + nightly-benchmark)/Makefile 唯一任务入口/`-race` 硬门禁/oracle 供给(lua5.1=5.1.5 校验 fail-fast)/M0 工程地基里程碑。与 12 的分工:12 管「测什么」,engineering 管「机制怎么搭」。
 - llmdoc 不搬运设计文档内容,只做压缩与路由;深入实现细节一律回源文档。
