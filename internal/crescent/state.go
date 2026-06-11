@@ -29,12 +29,13 @@ func (e *LuaError) Error() string { return e.Msg }
 // M9 范围简化:值栈用 Go slice,后续 M13 切到 arena 上的视图(arena backing
 // 注入点;05 §1.3 / 06 §1.1 留口)。
 type State struct {
-	arena      *arena.Arena
-	gc         *gc.Collector
-	protos     []*bytecode.Proto          // ProtoID → Proto(由 Compile 注入,见 LoadProgram)
-	strRefs    [][]arena.GCRef            // protos[id] 内字面量 → 已 intern 的 GCRef(R6 根,详见 11 §1.4)
-	globals    arena.GCRef                // _G(globals 表)
-	tableSides map[arena.GCRef]*tableSide // M9 旁路存储(M10 替换为原生哈希)
+	arena         *arena.Arena
+	gc            *gc.Collector
+	protos        []*bytecode.Proto          // ProtoID → Proto(由 Compile 注入,见 LoadProgram)
+	strRefs       [][]arena.GCRef            // protos[id] 内字面量 → 已 intern 的 GCRef(R6 根,详见 11 §1.4)
+	globals       arena.GCRef                // _G(globals 表)
+	tableSides    map[arena.GCRef]*tableSide // M9 旁路存储(M10 替换为原生哈希)
+	runningThread *thread                    // 当前正在执行的 thread(GC ExtraValues 来源)
 }
 
 // New constructs a fresh State (arena + collector + empty globals)。
@@ -43,7 +44,68 @@ func New() *State {
 	c := gc.New(a, gc.Options{})
 	st := &State{arena: a, gc: c}
 	st.globals = object.AllocTable(a, 0, 8)
+	c.LinkSweep(st.globals)
+	st.installRoots()
 	return st
+}
+
+// installRoots 把当前 State 的根集合注入 collector。
+//
+// M9/M10 thread 值栈住 Go 切片,经 ExtraValues 暴露;tableSides 旁路 map 上的
+// 所有 Value 也走 ExtraValues(M11 切到 arena 哈希后撤销)。
+func (st *State) installRoots() {
+	st.gc.SetRoots(gc.Roots{
+		Globals:           st.globals,
+		ProgramStringRefs: st.visitProgramStringRefs,
+		ExtraValues:       st.visitExtraValues,
+		ExtraRefs:         st.visitExtraRefs,
+	})
+}
+
+// visitProgramStringRefs 暴露 R6:每个 Proto 内字符串字面量的 intern GCRef。
+func (st *State) visitProgramStringRefs(visit func(arena.GCRef)) {
+	for _, refs := range st.strRefs {
+		for _, r := range refs {
+			if !r.IsNull() {
+				visit(r)
+			}
+		}
+	}
+}
+
+// visitExtraValues 暴露 thread 栈、tableSides 中持有的 Value(M9/M10 旁路根)。
+func (st *State) visitExtraValues(visit func(value.Value)) {
+	if st.runningThread != nil {
+		th := st.runningThread
+		for i := 0; i < th.top; i++ {
+			visit(th.stack[i])
+		}
+	}
+	for tref, side := range st.tableSides {
+		visit(value.MakeGC(value.TagTable, tref))
+		for kBits, v := range side.data {
+			k := value.Value(kBits)
+			visit(k)
+			visit(v)
+		}
+	}
+}
+
+// visitExtraRefs 暴露 thread 上 ci/openUvs 直接以 GCRef 形式持有的对象。
+func (st *State) visitExtraRefs(visit func(arena.GCRef)) {
+	if st.runningThread != nil {
+		th := st.runningThread
+		for _, ci := range th.cis {
+			if !ci.cl.IsNull() {
+				visit(ci.cl)
+			}
+		}
+		for _, uv := range th.openUvs {
+			if !uv.IsNull() {
+				visit(uv)
+			}
+		}
+	}
 }
 
 // Arena exposes the underlying arena (for tests / embedding APIs)。
@@ -76,7 +138,7 @@ func (st *State) LoadProgram(mainID uint32, protos []*bytecode.Proto) arena.GCRe
 		}
 		st.strRefs = append(st.strRefs, refs)
 	}
-	cl := object.AllocLuaClosure(st.arena, base+mainID, 0)
+	cl := st.allocLuaClosure(base+mainID, 0)
 	return cl
 }
 
@@ -89,6 +151,8 @@ func (st *State) Call(cl arena.GCRef, args []value.Value, nresults int) ([]value
 		return nil, fmt.Errorf("Call: host closure not yet supported (M12)")
 	}
 	th := newThread()
+	st.runningThread = th
+	defer func() { st.runningThread = nil }()
 	// 推 callee + args 到栈底
 	th.push(value.MakeGC(value.TagFunction, cl))
 	for _, v := range args {

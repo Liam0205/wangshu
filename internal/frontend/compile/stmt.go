@@ -106,8 +106,13 @@ func (fs *funcState) adjustExprList(line int32, exprs []ast.Expr, nWant int) {
 	case eCall, eVararg:
 		extra := nWant - (n - 1)
 		fs.setReturns(&last, extra)
-		fs.proto.Code[last.info] = bytecode.SetA(fs.proto.Code[last.info], fs.freereg)
-		fs.reserveRegs(line, extra)
+		// CALL 的 A 已在 exprCall 设为 fnReg(= freereg-1 当时),其结果就落 R(fnReg);
+		// 这里只需把"额外占用的连续寄存器"通过 reserveRegs 抬高水位即可。
+		// extra=1 时 freereg 原本已 =fnReg+1,reserveRegs(0) 就够;但 extra>1 时(多值)
+		// 还需把 freereg 抬高到容纳全部返回值。
+		if extra > 1 {
+			fs.reserveRegs(line, extra-1)
+		}
 	default:
 		fs.exp2NextReg(line, &last)
 		if nWant > n {

@@ -119,7 +119,7 @@ func (st *State) doReturn(th *thread, ci *callInfo, i bytecode.Instruction, entr
 func (st *State) makeClosure(th *thread, ci *callInfo, i bytecode.Instruction) arena.GCRef {
 	pid := ci.proto.Protos[bytecode.Bx(i)]
 	subProto := st.protos[pid]
-	cl := object.AllocLuaClosure(st.arena, pid, uint16(len(subProto.UpvalDescs)))
+	cl := st.allocLuaClosure(pid, uint16(len(subProto.UpvalDescs)))
 	for j := uint16(0); j < uint16(len(subProto.UpvalDescs)); j++ {
 		pseudo := ci.proto.Code[ci.pc]
 		ci.pc++

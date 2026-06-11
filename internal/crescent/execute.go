@@ -67,6 +67,7 @@ func (st *State) execute(th *thread) *LuaError {
 			if e := st.tableSet(st.globals, key, reg(th, ci, bytecode.A(i))); e != nil {
 				return e
 			}
+			st.safepoint(th, ci)
 
 		case bytecode.GETTABLE:
 			tbl := reg(th, ci, bytecode.B(i))
@@ -90,12 +91,15 @@ func (st *State) execute(th *thread) *LuaError {
 			if e := st.tableSet(value.GCRefOf(tbl), key, val); e != nil {
 				return e
 			}
+			st.safepoint(th, ci)
 
 		case bytecode.NEWTABLE:
 			asz := bytecode.Fb2Int(uint32(bytecode.B(i)))
 			hsz := bytecode.Fb2Int(uint32(bytecode.C(i)))
-			t := object.AllocTable(st.arena, asz, hsz)
+			// Lua 5.1 NEWTABLE 的 hsize 在 fb 解码后未必是 2 的幂;allocTable 要求 2 的幂。
+			t := st.allocTable(asz, roundUpPow2(hsz))
 			setReg(th, ci, bytecode.A(i), value.MakeGC(value.TagTable, t))
+			st.safepoint(th, ci)
 
 		case bytecode.SELF:
 			tbl := reg(th, ci, bytecode.B(i))
@@ -147,6 +151,7 @@ func (st *State) execute(th *thread) *LuaError {
 			if e := st.doConcat(th, ci, i); e != nil {
 				return e
 			}
+			st.safepoint(th, ci)
 
 		case bytecode.JMP:
 			ci.pc += int32(bytecode.SBx(i))
@@ -246,6 +251,7 @@ func (st *State) execute(th *thread) *LuaError {
 			if e := st.doSetList(th, ci, i); e != nil {
 				return e
 			}
+			st.safepoint(th, ci)
 
 		case bytecode.CLOSE:
 			st.closeUpvals(th, ci.base+bytecode.A(i))
@@ -253,6 +259,7 @@ func (st *State) execute(th *thread) *LuaError {
 		case bytecode.CLOSURE:
 			cl := st.makeClosure(th, ci, i)
 			setReg(th, ci, bytecode.A(i), value.MakeGC(value.TagFunction, cl))
+			st.safepoint(th, ci)
 
 		case bytecode.VARARG:
 			if e := st.doVararg(th, ci, i); e != nil {

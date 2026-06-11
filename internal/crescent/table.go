@@ -118,7 +118,7 @@ func (st *State) findOrCreateUpval(th *thread, stackIdx uint32) arena.GCRef {
 	if uv, ok := th.openUvs[stackIdx]; ok {
 		return uv
 	}
-	uv := object.AllocOpenUpvalue(st.arena, 0, stackIdx, 0)
+	uv := st.allocOpenUpvalue(0, stackIdx, 0)
 	th.openUvs[stackIdx] = uv
 	return uv
 }

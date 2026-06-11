@@ -22,6 +22,12 @@ func (c *Collector) markRoots() {
 	for _, mt := range c.roots.TypeMetatables {
 		c.markRef(mt)
 	}
+	if c.roots.ExtraValues != nil {
+		c.roots.ExtraValues(func(v value.Value) { c.markValue(v) })
+	}
+	if c.roots.ExtraRefs != nil {
+		c.roots.ExtraRefs(func(ref arena.GCRef) { c.markRef(ref) })
+	}
 	// shadow stack(R7)。
 	for _, v := range c.shadow {
 		c.markValue(v)

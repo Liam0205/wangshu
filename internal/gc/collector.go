@@ -70,6 +70,16 @@ type Roots struct {
 	Threads           []arena.GCRef                 // R4:其它活跃 Thread(协程链)
 	ProgramStringRefs func(visit func(arena.GCRef)) // R6:State 中所有 programStringRefs 的字符串 GCRef(承 01 §5.7 / 06 §5.1 R6 改写)
 	TypeMetatables    [9]arena.GCRef                // R9:per-type 元表(07 §1.2)
+
+	// ExtraValues 暴露 Go 侧持有的活跃 Value(M9/M10 thread 值栈住 Go 切片时使用;
+	// M13 切到 arena 视图后改由 RunningThread 扫栈接管)。任何 Go 堆上 transient
+	// Value(table get/set 中 callInfo 暂存值、CONCAT 半成品等)也走这条根。
+	ExtraValues func(visit func(value.Value))
+
+	// ExtraRefs 暴露 Go 侧持有的活跃 GCRef(用于 thread 上的 open upvalue 等
+	// 直接以 GCRef 形式持有的对象)。
+	ExtraRefs func(visit func(arena.GCRef))
+
 	// R7 shadow stack 由 Collector 自己持有;R8 临时根落在 R5/R7,无需独立字段。
 }
 
