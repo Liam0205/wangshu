@@ -1,6 +1,6 @@
 # 参考:宿主嵌入契约
 
-> 状态:字段级 spec 定稿于 `docs/design/p1-interpreter/11-embedding-arena-abi.md`;**P1 已落地最小子集,与设计形状有差异(见下「P1 实际落地差异」)**。概念源:`docs/design/roadmap.md` (§8),量化背景见 (§1)。本文只保留契约形状,字段细节查 11。
+> 状态:字段级 spec 定稿于 `docs/design/p1-interpreter/11-embedding-arena-abi.md`;**收尾轮后 `Program.Call(state, arena, args)` 与 arena 列接口已落地,剩余差异见下「P1 实际落地差异」**。概念源:`docs/design/roadmap.md` (§8),量化背景见 (§1)。本文只保留契约形状,字段细节查 11。
 > 这套接口**刻意设计为鼓励「列内核」形状**——为什么必须如此,见 [[design-premises]]。
 
 ## 设计意图:逼着宿主走列内核形状
@@ -12,12 +12,12 @@
 | 接口 | 语义 |
 |---|---|
 | `Compile(script) → Program` | **一次编译**,含**可编译性探测与层级决定** |
-| `Program.Call(arena, args)` | **一次调用一次跨界**;批量数据经 arena 传递 |
+| `Program.Call(state, arena, args)` | **一次调用一次跨界**;批量数据经 arena 传递 |
 
 - `Compile` 在编译期就完成可编译性探测与升层决策(对应 [[evolution-roadmap]] P2 的静态可编译性分析)。
 - `Program.Call` 的设计要点是把「跨界」压缩到每批一次——这是列内核形状在 API 层面的落地。
 
-> **P1 实际落地差异**:`wangshu.go` 当前公共面是 `Compile(source, chunkname) → *Program` + `Program.Run(state *State, args ...Value) → ([]Value, error)` + `NewState(Options)` + sum-type `Value`——**arena 参数与列数据 ABI 尚未接入**(`Program.Call(arena, args)` 形状留待 arena ABI 列接口落地时引入),可编译性探测/升层决策属 P2。简化清单见 `docs/design/p1-interpreter/implementation-progress.md`。
+> **P1 实际落地差异**(收尾轮后):`Program.Call(state *State, arena *Arena, args ...Value)` **已按 11 §1.5 签名落地**(`wangshu.go`),arena 列数据接口可用——`NewArena` + 四类型列(`AddFloatColumn`/`AddInt64Column`/`AddBoolColumn`/`AddStringColumn`,见 `arena_abi.go`)+ presence bitmap + VM 内只读访问;另有 `Program.Run(state, args...)`(无 arena 便捷形)与 `NewState(Options)`。**per-item 简易 API(11 §7)仍未做**;可编译性探测/升层决策属 P2。实现形态与 11 的字段级差异见 `docs/design/p1-interpreter/implementation-progress.md` 对账表。
 
 ## arena ABI
 
@@ -33,7 +33,7 @@
 
 ## 不强制 arena 的简易 API
 
-- **per-item 风格的简易 API 照常提供**(对标 gopher-lua 易用性);
+- **per-item 风格的简易 API 照常提供**(对标 gopher-lua 易用性;设计承诺,**P1 尚未落地**,见上差异标注);
 - 但文档**明确标注其性能档位**——它走的是 per-item 跨界形态,落在被边界成本主导的那一档(见 [[design-premises]] 前提一)。
 
 ## 宿主绑定与 drop-in
