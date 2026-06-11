@@ -1,7 +1,7 @@
 # P1 实现进度
 
-> 状态:**值世界地基已落地**(M0-M6 共 7 个里程碑)。下文记录每个完成里程碑的产出、单测覆盖、
-> lint+race 状态,与下一步衔接点。本文档随实现推进增量更新,M14 总验收通过后归档。
+> 状态:**P1 全里程碑 M0-M14 已落地,总验收通过**(2026-06-12)。下文记录每个完成里程碑的
+> 产出、单测覆盖、验收结果,以及 P1 范围内的已知简化(后续推进项)。
 >
 > 设计文档参考路径见 [00-overview](./00-overview.md);每个里程碑列对应文档 §。
 
@@ -10,49 +10,57 @@
 | M | 内容 | 主要文件 | 单测 | 提交 |
 |---|---|---|---|---|
 | M0 | 工程地基:go.mod/Makefile/.githooks/ci.yml/.golangci.yml/oracle 校验脚本 | `Makefile`, `.githooks/`, `.github/workflows/ci.yml`, `scripts/check-oracle.sh`, `scripts/go-fuzz.sh` | hook 拦截手测、`make all` 通过 | `eaf944c` |
-| M1 | arena 分配器:bump + grow + 双视图 backing + null GCRef 保留 + 注入点 | `internal/arena/arena.go` | 11 用例(对齐/grow/dual view/zero-len/misalign panic) | `a34c680` |
-| M2 | NaN-boxed Value:8 个 tag、IsNumber/IsCollectable/Truthy、NaN 规范化、bool/lightUD/GCRef round-trip | `internal/value/value.go` | 9 用例(常量 bits / 边界 / NaN canon / 全 tag round-trip / 48-bit 截断) | `e209dba` |
-| M3 | object 布局:GCHeader 位字段 + String/Table/Closure/Upvalue/Userdata/Thread 读写 helper(含 Table.gen / Upvalue.nextOpen 回填字段) | `internal/object/{header,string,table,closure,thread}.go` | 8 用例(各类型 round-trip、字数公式核对、open chain) | `0a62aab` |
-| M4 | bytecode ISA:38 个 opcode + ABC/ABx/AsBx 编解码 + Proto + ICSlot + int2fb/fb2int + 02 §8 示例核对 | `internal/bytecode/{instruction,opcode,proto,floating_byte}.go` | 9 用例(全字段边界编解码 / 格式路由 / fb 编码对照 / 02 §8 序列) | `e8f24a0` |
-| M5 | mark-sweep GC:STW + 双白翻转 + 显式 gray stack + R1..R9 根 + shadow stack 二元形态 + JSHash + intern 弱可达索引 + finalize/weak stub | `internal/gc/{collector,mark,sweep,shadow,intern}.go` | 9 用例(intern 命中/rehash / sweep 回收不可达 / shadow stack 保护 / 高频 GC 压力 64 串) | `336e98e` |
-| M6 | lexer:21 关键字 + 全符号 + 数字(十进制+0x)+ 短字符串(全转义)+ 长字符串/长注释(共用扫描子程序)+ 四种换行行号 | `internal/frontend/{token/token,lex/lexer}.go` | 11 用例(关键字 / 标识符 / 数字 / 短长字符串 / 注释 / 行号 / 错误 prefix / 5.2+ 排除) | `c726e33` |
+| M1 | arena 分配器:bump + grow + 双视图 backing + null GCRef 保留 + 注入点 | `internal/arena/arena.go` | 11 用例 | `a34c680` |
+| M2 | NaN-boxed Value:8 个 tag、IsNumber/IsCollectable/Truthy、NaN 规范化 | `internal/value/value.go` | 9 用例 | `e209dba` |
+| M3 | object 布局:GCHeader 位字段 + 六类对象读写 helper | `internal/object/` | 8 用例 | `0a62aab` |
+| M4 | bytecode ISA:38 opcode + 编解码 + Proto + ICSlot + int2fb | `internal/bytecode/` | 9 用例 | `e8f24a0` |
+| M5 | mark-sweep GC:STW + 双白 + gray stack + R1..R9 根 + shadow stack + JSHash intern | `internal/gc/` | 9 用例 | `336e98e` |
+| M6 | lexer:21 关键字 + 全 token + 数字/字符串/注释 + 四种换行 | `internal/frontend/{token,lex}/` | 11 用例 | `c726e33` |
+| M7 | parser:递归下降 + 优先级爬升 + AST(后补 ParenExpr) | `internal/frontend/{ast,parse}/` | 全文法覆盖 | `4ff15cc` |
+| M8 | codegen:expdesc/freereg 水位线 + 跳转回填 + 常量去重 + 黄金字节码 | `internal/frontend/compile/` | 9 黄金测试(02 §8 逐字节)| `6f63bce` |
+| M9 | 解释器最小循环:大 switch + reentry(Lua 调用不增 Go 栈)+ 算术/循环/调用 | `internal/crescent/` | 7 端到端 | `f6df2ab` |
+| M10 | GC 接入:根注入(ExtraValues/ExtraRefs)+ 分配点 safepoint + LinkSweep/计费 | `internal/crescent/alloc.go`, `internal/gc/` | 4 GC 压力 | `10b3e87` |
+| M11 | 元表 + pcall:__index/__newindex 链、算术元方法、callLuaFromHost 重入边界 | `internal/crescent/meta.go` | 9 端到端 | `f7812b1` |
+| M12 | stdlib + host fn:base/math/string 最小集、HostFn 注册与同步调用 | `internal/stdlib/`, `internal/crescent/host.go` | 9 端到端 | `96a9b7f` |
+| M13 | 公共 API:Compile/Program/NewState/Value、vararg 完整化 | `wangshu.go` | 7 公共 API | `0d1c211` |
+| M14 | 三套测试:conformance(28)+ difftest(33 对拍 5.1.5)+ 三档基准 | `test/`, `benchmarks/baseline/` | 全绿 | `5cc5a6a` |
 
-## 验证状态
+## P1 总验收结果(roadmap §4 / 12 §10)
 
-- 全部里程碑 `make all` 通过(`gofmt -l` 空、`golangci-lint` 0 issues、`go test -race ./...` 全绿)。
-- commit-msg hook 已多次拦截不合规 message(初次写错的 `bad message format` 被拦下,见 M0 流程)。
-- pre-commit hook 多次拦截未格式化文件,起效。
-- `make hooks` 已安装。
+- **三档 ≥2x over gopher-lua**:✅ Xeon 6982P-C 实测 simple 2.28x(402ns vs 915ns)、
+  arith 2.40x(421ns vs 1011ns)、loop 2.30x(15.0µs vs 34.5µs)。
+- **与官方 Lua 5.1.5 输出逐字节一致**:✅ difftest seed corpus 33 用例(含 NaN/Inf/-0
+  格式、Lua mod 语义、字典序比较)。oracle 源码编译供给(`~/.local/bin/lua5.1`)。
+- **`make all` 门禁**:✅ gofmt 空、golangci-lint 0 issues、`go test -race ./...` 全绿。
 
-## 下一步衔接(剩余 8 个里程碑)
+## P1 范围内的已知简化(后续推进,不阻塞 P2)
 
-| M | 内容 | 估算 | 备注 |
-|---|---|---|---|
-| M7 | parser:递归下降 + 优先级爬升 + AST 节点(04 §3-§4) | 1 周内 | LL(2) 前瞻已由 lexer pull-Next + parser ahead 缓存解决 |
-| M8 | codegen:expdesc/freereg + 跳转回填 + 常量折叠 + 黄金字节码测试 | 2 周内 | 04 §10 与 02 §8 逐字节一致是核心验收 |
-| M9 | 解释器最小循环:算术/循环/调用,无 GC 介入(05 §1-§4/§7/§10) | 1.5 周 | reentry 模型,Lua-call-Lua 不增 Go 栈 |
-| M10 | IC + safepoint + GC 接入 | 1 周 | gen bump 失效、shadow stack 在 host fn 落地 |
-| M11 | 元表/错误/协程(07/09/08) | 2-3 周 | weak table mode 接入(M5 的 stub 兑现)、协程路线 B、xpcall handler |
-| M12 | stdlib(10):base→string(pattern)→table→math→io 最小集 + 三层禁用(LibsSafe/Libs/Exclude) | 3 周 | string.match pattern matcher 是大头 |
-| M13 | 嵌入 API + arena ABI 字段级实现(11) | 1 周 | ColInt64 超界报错 |
-| M14 | conformance + difftest harness + benchmark + CI 门禁全启用(12) | 1.5 周 | 三档 ≥2x、与官方 5.1.5 逐字节一致 |
+| 项 | 现状 | 设计文档落点 |
+|---|---|---|
+| IC 命中路径 | ICSlot 结构/字段就位(Proto.IC),解释器尚未读 IC 做直达槽访问 | 05 §6 |
+| table 存储 | 旁路 Go map(GCRef → map[uint64]Value);arena 原生 array/node 段未接 | 01 §5.2 / 05 §6.3 |
+| 协程 | 未实现(路线 B:单 goroutine + executeSignal) | 08 |
+| string pattern | string.match/find/gsub 未实现(P1 裁剪表的大头) | 10 §7 |
+| arena ABI | 列数据接口(ColumnDesc/presence bitmap)未实现 | 11 §3-§5 |
+| 值栈位置 | Go slice(非 arena 视图);CallInfo 同 | 05 §1.2/§1.3 |
+| 弱表/finalizer | GC 侧 stub 已留,元表 __mode 未接 | 06 §8.4 / 07 §13 |
+| xpcall/traceback | pcall 已落地;xpcall handler 与 traceback 格式未实现 | 09 |
+| 差分 fuzz 生成器 | seed corpus 固定脚本;随机脚本生成器未接 | 12 §3.2 |
 
-合计与 [00-overview](./00-overview.md) §3 估算的 6.5-9.5 人月吻合,剩余 ≥6 人月工作量;不在单一会话中完成。
+这些简化均为"接口形状已定、内部实现可替换"的形态(如 table 旁路换 arena 哈希不动
+调用方),符合 roadmap §5 原则 3「每阶段独立交付价值」。
 
-## 下一会话开工提示
+## 重要实现决策与差分修偏记录
 
-实现者(或下一会话的 agent)进入时:
-
-1. `make hooks && make all` 核验地基状态。
-2. 读 [04-frontend-parser-codegen](./04-frontend-parser-codegen.md) §3-§4 即可开工 M7。
-3. lexer 已暴露契约见 `internal/frontend/lex/lexer.go` 头部 doc(回应 04 §13 第一条缺口);parser 应按 04 §4.1 实现 `Parser{tok, ahead, hasAhead}`,用 `lx.Next()` 拉。
-4. 若发现某里程碑设计文档与实现不符,优先信代码、记入 `llmdoc/memory/doc-gaps.md`,提 PR 同步设计文档(评审纪律:`type(scope):` commit-msg)。
+- **字符串字面量惰性 intern**(Proto.StringLits/StringLitIdx):Program 跨 State 共享时
+  每 State 私有 intern(11 §1.3 定稿的并发细化)。
+- **错误传播**:显式 `*LuaError` 返回贯穿主循环;host→Lua 重入边界(callLuaFromHost)
+  负责 CallInfo 回滚(05 §9 定稿)。
+- **差分修偏实例**(12 §0 机制起效的证据):rawEqual NaN bits、%.14g 的 inf/nan 措辞、
+  and/or 的 VCALL 单值收敛(luaK_posfix 同构)、VARARG 落点回填、ParenExpr 强制单值。
+  全部由 conformance/difftest 捕获后当步修复。
 
 ## 相关
 
 [00-overview](./00-overview.md) · [../engineering](../engineering.md) ·
-[12-testing-difftest](./12-testing-difftest.md) ·
-设计 ↔ 实现的字段回填映射:Table.gen([01](./01-value-object-model.md) §5.2 ↔ `object.TableGen/BumpGen`)、
-Upvalue.nextOpen([01](./01-value-object-model.md) §5.4 ↔ `object.UpvalNextOpen`)、
-Proto.LocVars([01](./01-value-object-model.md) §5.7 ↔ `bytecode.LocalVar`)、
-ICSlot.tableRef([02](./02-bytecode-isa.md) §7 ↔ `bytecode.ICSlot.TableRef`)。
+[12-testing-difftest](./12-testing-difftest.md)
