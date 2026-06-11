@@ -148,25 +148,33 @@ func (st *State) SetTableField(t arena.GCRef, name string, v value.Value) {
 // LoadProgram registers the compiled Protos and lazy-interns their string
 // literals (Proto §字面量惰性 intern;06 §5.1 R6 改写)。返回 mainID 对应的
 // closure GCRef(0 upvalue;主 chunk)。
+//
+// Program 不可变、可跨 State 共享(11 §1.4):这里对每个 Proto 做 State 私有
+// 浅拷贝——共享只读的 Code/StringLits/LineInfo,私有化 Consts(intern 进本
+// State arena)、IC(运行期可写)与 Protos(相对下标 → 本 State 绝对 ProtoID)。
 func (st *State) LoadProgram(mainID uint32, protos []*bytecode.Proto) arena.GCRef {
 	base := uint32(len(st.protos))
 	for _, p := range protos {
-		// 把 Proto.Protos 的相对下标修正为绝对 ProtoID。
-		fixed := make([]uint32, len(p.Protos))
+		cp := *p // 浅拷贝:Code/StringLits/LineInfo/UpvalDescs/LocVars 共享只读底层数组
+		// 私有 Protos:相对下标修正为绝对 ProtoID
+		cp.Protos = make([]uint32, len(p.Protos))
 		for i, id := range p.Protos {
-			fixed[i] = base + id
+			cp.Protos[i] = base + id
 		}
-		p.Protos = fixed
-		st.protos = append(st.protos, p)
-		// 惰性 intern 字符串字面量(R6)
+		// 私有 Consts:字符串字面量 intern 进本 State arena
+		cp.Consts = make([]value.Value, len(p.Consts))
+		copy(cp.Consts, p.Consts)
 		refs := make([]arena.GCRef, len(p.Consts))
-		for i := range p.Consts {
+		for i := range cp.Consts {
 			if p.IsStringConst(i) {
 				lit := p.StringLits[p.StringLitIdx[i]]
 				refs[i] = st.gc.Intern([]byte(lit))
-				p.Consts[i] = value.MakeGC(value.TagString, refs[i])
+				cp.Consts[i] = value.MakeGC(value.TagString, refs[i])
 			}
 		}
+		// 私有 IC(运行期可写;不能跨 State 共享)
+		cp.IC = make([]bytecode.ICSlot, len(p.Code))
+		st.protos = append(st.protos, &cp)
 		st.strRefs = append(st.strRefs, refs)
 	}
 	cl := st.allocLuaClosure(base+mainID, 0)

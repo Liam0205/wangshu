@@ -41,6 +41,14 @@ type Options struct {
 // 句柄表/string intern/GC collector。State 含可变状态,**每 goroutine 一个**。
 type State struct {
 	core *crescent.State
+	// loaded 缓存"已在本 State 装载过的 Program"(11 §1.3:字符串常量首次
+	// Call 时惰性 intern,此后复用同一 closure;每次 Run 重复 LoadProgram
+	// 会重复拷贝 Proto + 分配 IC)。
+	loaded map[*Program]loadedProg
+}
+
+type loadedProg struct {
+	cl arena.GCRef
 }
 
 // NewState creates a fresh VM with the P1 minimal stdlib loaded.
@@ -76,13 +84,23 @@ func Compile(source []byte, chunkname string) (*Program, error) {
 // Run 在 state 上执行 prog 的主 chunk,可选传入参数(args 是 Value 切片)。
 //
 // 返回主 chunk 的全部返回值。Lua 运行期错误被转成 Go error。
+// 同一 Program 在同一 State 上重复 Run 复用首次装载的 closure(惰性 intern
+// 只发生一次,IC 跨 Run 持续生效)。
 func (prog *Program) Run(state *State, args ...Value) ([]Value, error) {
-	cl := state.core.LoadProgram(prog.mainID, prog.protos)
+	lp, ok := state.loaded[prog]
+	if !ok {
+		cl := state.core.LoadProgram(prog.mainID, prog.protos)
+		lp = loadedProg{cl: cl}
+		if state.loaded == nil {
+			state.loaded = map[*Program]loadedProg{}
+		}
+		state.loaded[prog] = lp
+	}
 	innerArgs := make([]value.Value, len(args))
 	for i, a := range args {
 		innerArgs[i] = a.toInner(state)
 	}
-	results, err := state.core.Call(cl, innerArgs, -1)
+	results, err := state.core.Call(lp.cl, innerArgs, -1)
 	if err != nil {
 		return nil, err
 	}

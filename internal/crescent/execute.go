@@ -65,23 +65,29 @@ func (st *State) execute(th *thread) *LuaError {
 
 		case bytecode.GETGLOBAL:
 			key := ci.proto.Consts[bytecode.Bx(i)]
-			v, e := st.tableGet(st.globals, key)
+			gv := value.MakeGC(value.TagTable, st.globals)
+			v, e := st.icGetTable(th, ci, ci.pc-1, gv, key)
 			if e != nil {
 				return e
 			}
+			ci = currentCI(th)
+			code = ci.proto.Code
 			setReg(th, ci, bytecode.A(i), v)
 
 		case bytecode.SETGLOBAL:
 			key := ci.proto.Consts[bytecode.Bx(i)]
-			if e := st.tableSet(st.globals, key, reg(th, ci, bytecode.A(i))); e != nil {
+			gv := value.MakeGC(value.TagTable, st.globals)
+			if e := st.icSetTable(th, ci, ci.pc-1, gv, key, reg(th, ci, bytecode.A(i))); e != nil {
 				return e
 			}
+			ci = currentCI(th)
+			code = ci.proto.Code
 			st.safepoint(th, ci)
 
 		case bytecode.GETTABLE:
 			tbl := reg(th, ci, bytecode.B(i))
 			key := rk(th, ci, bytecode.C(i))
-			v, e := st.indexWithMeta(th, tbl, key)
+			v, e := st.icGetTable(th, ci, ci.pc-1, tbl, key)
 			if e != nil {
 				return e
 			}
@@ -94,7 +100,7 @@ func (st *State) execute(th *thread) *LuaError {
 			tbl := reg(th, ci, bytecode.A(i))
 			key := rk(th, ci, bytecode.B(i))
 			val := rk(th, ci, bytecode.C(i))
-			if e := st.setIndexWithMeta(th, tbl, key, val); e != nil {
+			if e := st.icSetTable(th, ci, ci.pc-1, tbl, key, val); e != nil {
 				return e
 			}
 			ci = currentCI(th)
@@ -113,7 +119,7 @@ func (st *State) execute(th *thread) *LuaError {
 			tbl := reg(th, ci, bytecode.B(i))
 			setReg(th, ci, bytecode.A(i)+1, tbl)
 			key := rk(th, ci, bytecode.C(i))
-			v, e := st.indexWithMeta(th, tbl, key)
+			v, e := st.icGetTable(th, ci, ci.pc-1, tbl, key)
 			if e != nil {
 				return e
 			}
