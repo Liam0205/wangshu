@@ -1,6 +1,6 @@
 # 参考:宿主嵌入契约
 
-> 状态:**设计阶段,字段级 spec 已定稿**于 `docs/design/p1-interpreter/11-embedding-arena-abi.md`。概念源:`docs/design/roadmap.md` (§8),量化背景见 (§1)。本文只保留契约形状,字段细节查 11。
+> 状态:字段级 spec 定稿于 `docs/design/p1-interpreter/11-embedding-arena-abi.md`;**P1 已落地最小子集,与设计形状有差异(见下「P1 实际落地差异」)**。概念源:`docs/design/roadmap.md` (§8),量化背景见 (§1)。本文只保留契约形状,字段细节查 11。
 > 这套接口**刻意设计为鼓励「列内核」形状**——为什么必须如此,见 [[design-premises]]。
 
 ## 设计意图:逼着宿主走列内核形状
@@ -16,6 +16,8 @@
 
 - `Compile` 在编译期就完成可编译性探测与升层决策(对应 [[evolution-roadmap]] P2 的静态可编译性分析)。
 - `Program.Call` 的设计要点是把「跨界」压缩到每批一次——这是列内核形状在 API 层面的落地。
+
+> **P1 实际落地差异**:`wangshu.go` 当前公共面是 `Compile(source, chunkname) → *Program` + `Program.Run(state *State, args ...Value) → ([]Value, error)` + `NewState(Options)` + sum-type `Value`——**arena 参数与列数据 ABI 尚未接入**(`Program.Call(arena, args)` 形状留待 arena ABI 列接口落地时引入),可编译性探测/升层决策属 P2。简化清单见 `docs/design/p1-interpreter/implementation-progress.md`。
 
 ## arena ABI
 

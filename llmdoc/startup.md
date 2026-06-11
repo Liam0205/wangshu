@@ -17,4 +17,4 @@
 - 要理解**宿主如何嵌入、API 与 arena ABI** → [[embedding-contract]]。
 - 遇到不认识的术语或想查参照项目 → [[glossary]]。
 
-> 提醒:项目处于**设计阶段(文档全卷齐备、无代码)**,以上均为设计意图;设计文档集入口与路由见 [[index]] 的「设计文档集路由」节。
+> 提醒:**P1(crescent 解释器)已落地(M0-M14,总验收通过),P2+ 未开始**;设计文档集仍是规范源,实现现状与已知简化见 `docs/design/p1-interpreter/implementation-progress.md`。设计文档集入口与路由见 [[index]] 的「设计文档集路由」节。

@@ -1,6 +1,6 @@
 # 架构:分层 VM 演进路线(P1→P5)
 
-> 状态:**设计阶段,均为规划而非已交付**。源:`docs/design/roadmap.md` (§4)。**全阶段详细设计文档已就位**:P1 见 `docs/design/p1-interpreter/`(全卷 00-12),P2-P5 见 `docs/design/p2-bridge.md` / `p3-wasm-tier.md` / `p4-method-jit.md` / `p5-trace-jit.md`。
+> 状态:**P1 已交付(M0-M14,验收过线),P2-P5 仍为规划**。源:`docs/design/roadmap.md` (§4)。**全阶段详细设计文档已就位**:P1 见 `docs/design/p1-interpreter/`(全卷 00-12,实现现状见同目录 implementation-progress.md),P2-P5 见 `docs/design/p2-bridge.md` / `p3-wasm-tier.md` / `p4-method-jit.md` / `p5-trace-jit.md`。
 > 前置约束(为什么是分层、为什么倍率以列内核为口径):见 [[design-premises]]。值表示如何在各层共见同一块内存:见 [[value-representation]]。
 
 ## 流水线全景
@@ -47,7 +47,7 @@ P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 met
 - **closure-compilation 或 computed-goto 风格 dispatch**(替代大 switch);
 - 全局/表访问 **inline cache**;stdlib 以 **host function** 形式提供;
 - Lua 5.1 conformance 测试套。
-- **验收**:简单/算术/循环三档脚本全部 ≥2x over gopher-lua;与官方 Lua 5.1.5 差分 fuzz 输出逐字节一致(官方为最终 oracle,gopher-lua 偏差登记豁免,见 12 号文档)。
+- **验收**:简单/算术/循环三档脚本全部 ≥2x over gopher-lua;与官方 Lua 5.1.5 差分 fuzz 输出逐字节一致(官方为最终 oracle,gopher-lua 偏差登记豁免,见 12 号文档)。**已通过(2026-06-12)**:simple 2.28x / arith 2.40x / loop 2.30x,difftest seed corpus 逐字节一致;已知简化见 implementation-progress.md。
 - **独立价值**:止步于此也成立——一个「更好的 gopher-lua」,可作 drop-in 候选(见 [[embedding-contract]])。
 
 ### P2:分层桥(1-2 人月,定位为基建)

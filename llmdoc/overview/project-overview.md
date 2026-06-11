@@ -1,6 +1,6 @@
 # 项目概览:Wangshu(望舒)
 
-> 状态:**设计文档集全卷齐备,无代码实现**。`docs/design/` 共 19 篇约 1.37 万行:P1 全卷 00-12 可实现深度、P2/P3 详细设计、P4/P5 架构决策。本文档描述的是项目身份与设计意图,不是已交付的能力。
+> 状态:**P1(crescent 解释器)已交付,P2+ 未开始**。`docs/design/` 19 篇约 1.37 万行设计文档仍是规范源:P1 全卷 00-12 可实现深度、P2/P3 详细设计、P4/P5 架构决策。本文档描述项目身份与边界;实现现状见下「当前状态」节。
 
 ## 一句话定位
 
@@ -42,9 +42,10 @@ Wangshu(望舒)是一个**纯 Go 实现的高性能嵌入式 Lua 虚拟机**,关
 
 ## 当前状态
 
-- **设计文档集全卷齐备**(2026-06-11):`docs/design/` 19 篇约 1.37 万行——`roadmap.md`(战略)+ `architecture.md`(跨阶段总览/包布局,§0 是文档集地图)+ `p1-interpreter/` 13 篇(00 总览/跨文档决策速查 + 01-12 全部子系统,可实现深度,12 为验收口径收口点)+ p2-bridge / p3-wasm-tier(详细设计)+ p4-method-jit / p5-trace-jit(架构决策)。
-- `README.md` 已重写为项目简介 + 文档导航。
-- **仍无任何 Go 源码实现**、无 `benchmarks/baseline/`(校准测量原始数据留存于发起方仓库工作区,入库规划见 `docs/design/p1-interpreter/12-testing-difftest.md` §6)。
+- **P1(crescent 解释器)已交付**(2026-06-12):M0-M14 全里程碑完成,总验收通过——三档基准 ≥2x over gopher-lua(simple 2.28x / arith 2.40x / loop 2.30x,Xeon 6982P-C)、与官方 Lua 5.1.5 difftest 逐字节一致、`make all` 全绿。代码:`internal/`(frontend/crescent/stdlib 等)+ `wangshu.go`(公共 API)+ `test/conformance`(28 用例)+ `test/difftest`(33 对拍用例)+ `benchmarks/baseline`(三档基准)。
+- **P1 范围内有已知简化**(接口已定、实现可换):table 走 Go map 旁路、值栈用 Go slice、IC 未读、协程/pattern matcher/arena ABI 列接口/xpcall/弱表未实现。**清单与设计文档落点见 `docs/design/p1-interpreter/implementation-progress.md`**(后续推进的工单来源)。
+- **设计文档集仍是规范源**(2026-06-11 全卷齐备):`roadmap.md`(战略)+ `architecture.md`(跨阶段总览,§0 是文档集地图)+ `p1-interpreter/` 13 篇 + p2-p5 各卷。
+- **P2+ 未开始**。
 
 ---
 
