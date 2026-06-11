@@ -1,6 +1,6 @@
 # 参考:宿主嵌入契约
 
-> 状态:**设计阶段,接口为设计意图,字段级 spec 尚未定稿**。源:`docs/design/roadmap.md` (§8),量化背景见 (§1)。
+> 状态:**设计阶段,字段级 spec 已定稿**于 `docs/design/p1-interpreter/11-embedding-arena-abi.md`。概念源:`docs/design/roadmap.md` (§8),量化背景见 (§1)。本文只保留契约形状,字段细节查 11。
 > 这套接口**刻意设计为鼓励「列内核」形状**——为什么必须如此,见 [[design-premises]]。
 
 ## 设计意图:逼着宿主走列内核形状
@@ -25,7 +25,7 @@
 - **字符串区**;
 - **presence bitmap**(标记每个槽位是否有值)。
 
-> ABI 字段级细节(字符串区编码、presence bitmap 布局、`args` 与 arena 的精确关系)在源文档中**仅给概念,未给 spec**,属当前文档缺口。
+> ABI 字段级细节已定稿于 `docs/design/p1-interpreter/11-embedding-arena-abi.md`:类型化扁平列编码(§3.3)、字符串区 offset 表+字节池(§3.3.4)、presence bitmap 位序(§3.4)、`args` 与 arena 的精确关系(§4.3)、句柄表(§6)、per-item 简易 API(§7)。本文不搬运字段细节,查 11。
 
 这块 arena 与 [[value-representation]] 的自管线性内存是同一份内存的不同视角——「零拷贝读」之所以成立,正因为 VM 各层值世界本就住在这块共见内存里(Arrow 数据搬家模型,替代「让 Lua 直访 Go 堆」,见 [[project-overview]] 非目标)。
 
