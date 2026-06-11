@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# pre-commit:staged-only gofmt 检查(秒级)。engineering.md §2.1。
+set -euo pipefail
+
+# CI 环境短路
+if [ -n "${CI:-}" ] || [ -n "${GITHUB_ACTIONS:-}" ]; then exit 0; fi
+# 工具缺失静默跳过(不绑架无 Go 环境的文档提交)
+command -v gofmt >/dev/null 2>&1 || exit 0
+
+mapfile -t staged < <(git diff --cached --name-only --diff-filter=ACM -- '*.go')
+[ ${#staged[@]} -eq 0 ] && exit 0
+
+unformatted=$(gofmt -l "${staged[@]}")
+if [ -n "$unformatted" ]; then
+    echo "✗ gofmt 未通过:"
+    echo "$unformatted"
+    echo ""
+    # shellcheck disable=SC2086
+    echo "fix: gofmt -w $(echo $unformatted | tr '\n' ' ')&& git add $(echo $unformatted | tr '\n' ' ')"
+    exit 1
+fi

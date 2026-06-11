@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# commit-msg:强制 conventional commits 'type(scope): subject'。engineering.md §2.2。
+set -euo pipefail
+
+if [ -n "${CI:-}" ] || [ -n "${GITHUB_ACTIONS:-}" ]; then exit 0; fi
+
+msg=$(head -1 "$1")
+
+# merge/revert/fixup 的自动消息放行
+case "$msg" in
+    Merge\ *|Revert\ *|fixup!\ *|squash!\ *) exit 0 ;;
+esac
+
+pattern='^(feat|fix|doc|docs|test|chore|perf|refactor|ci|bench|build|revert)(\([a-z0-9/_.-]+\))?: .+'
+if ! [[ "$msg" =~ $pattern ]]; then
+    echo "✗ commit message 不符合 'type(scope): subject' 格式:"
+    echo "    $msg"
+    echo "允许的 type:feat fix doc docs test chore perf refactor ci bench build revert"
+    echo "示例:feat(arena): bump allocator with size-class freelist"
+    exit 1
+fi

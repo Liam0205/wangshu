@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# pre-push:全仓 lint(十秒级)。完整测试/差分/基准交给 CI。engineering.md §2.3。
+set -euo pipefail
+
+if [ -n "${CI:-}" ] || [ -n "${GITHUB_ACTIONS:-}" ]; then exit 0; fi
+command -v go >/dev/null 2>&1 || exit 0
+
+if command -v golangci-lint >/dev/null 2>&1; then
+    echo "pre-push: golangci-lint run ./..."
+    if ! golangci-lint run ./...; then
+        echo "✗ lint 未通过;fix 后重新 push(跳过:git push --no-verify,仅紧急情况)"
+        exit 1
+    fi
+else
+    echo "pre-push: golangci-lint 未安装,降级 go vet"
+fi
+go vet ./...
