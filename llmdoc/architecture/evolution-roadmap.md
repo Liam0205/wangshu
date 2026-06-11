@@ -1,0 +1,90 @@
+# 架构:分层 VM 演进路线(P1→P5)
+
+> 状态:**设计阶段,均为规划而非已交付**。源:`docs/design/roadmap.md` (§4)。
+> 前置约束(为什么是分层、为什么倍率以列内核为口径):见 [[design-premises]]。值表示如何在各层共见同一块内存:见 [[value-representation]]。
+
+## 流水线全景
+
+```
+P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 method JIT ──► P5 trace JIT
+(2-4x)        (基建)        (4-8x)             (trace 收益~70%)   (10-30x,开放式)
+```
+
+- 括号内是**流水线图倍率**,口径为 **over gopher-lua,列内核负载形状下**。
+- 人力从人月级(P1/P2/P3)升到人年级(P4/P5)。
+- 每阶段**独立交付价值,任何闸门处停下都不亏**(贯穿原则 3,见 [[design-premises]])。
+
+> **坐标系警告**:流水线图的倍率(如 P3「4-8x」、P4「trace 收益 ~70%」)与各阶段正文的**验收门槛**(如 P3「相对 P1 再 ≥2x」、P4「≥ LuaJ-luajc 档」)**不在同一坐标系**,不要混为一谈。下文速查表已分列两栏。
+
+## 月相 tier 命名映射
+
+执行层沿用月相命名(与项目名同一意象系,**代码与文档统一使用**);日志/诊断输出形如 `function promoted to gibbous`,文档称其「比裸 tier 编号自释」。
+
+| tier | 月相名 | 对应阶段 |
+|---|---|---|
+| tier-0 | **crescent**(新月) | P1 解释器 |
+| tier-1 | **gibbous**(凸月) | P3 Wasm 编译层 / P4 method JIT |
+| tier-2 | **fullmoon**(满月) | P5 trace JIT |
+
+**注意 tier 比阶段粗一层**:tier-1(gibbous)**同时覆盖 P3 与 P4**;**P2 是分层桥基建,不是执行层,未分配月相**。映射关系:P1→tier-0、P3+P4→tier-1、P5→tier-2。
+
+## 速查表(人力 / 流水线图倍率 / 验收门槛 / 前置 spike)
+
+| 阶段 | 名称 | 人力估算 | 流水线图倍率 | 关键验收门槛(正文) | 前置 spike |
+|---|---|---|---|---|---|
+| P1 | 现代解释器 | 6-9 人月 | 2-4x | 简单/算术/循环三档脚本全 ≥2x over gopher-lua;与 gopher-lua 差分 fuzz 逐字节一致 | 无(起点) |
+| P2 | 分层桥 | 1-2 人月 | 基建(无量化) | 文档未给独立量化门槛 | 无 |
+| P3 | Wasm 编译层 | 6-12 人月 | 4-8x | 循环密集脚本相对 P1 再 ≥2x;两层差分 fuzz 逐字节一致 | **wazero call boundary 实测 `<150ns`;不达标则跳过本阶段直接做 P4** |
+| P4 | method JIT(JSC Baseline 风格) | +1-2 人年 | trace 收益 ~70% | 列内核负载 ≥ LuaJ-luajc 档;Wasm 层退役或留作可移植中层 | 无(继承 P3 管线) |
+| P5 | trace JIT | +2-4 人年到可信 v1(开放式) | 10-30x | 列内核负载 10-30x over gopher-lua | 仅在 P4 收益不够时启动 |
+
+## 各阶段正文
+
+### P1:现代解释器(6-9 人月,目标 2-4x)
+
+- lexer / parser / **寄存器式字节码**(对解释器友好,日后翻译为 Wasm locals 也直白);
+- NaN-boxed 值世界 + arena + 自管 mark-sweep GC(见 [[value-representation]]);
+- **closure-compilation 或 computed-goto 风格 dispatch**(替代大 switch);
+- 全局/表访问 **inline cache**;stdlib 以 **host function** 形式提供;
+- Lua 5.1 conformance 测试套。
+- **验收**:简单/算术/循环三档脚本全部 ≥2x over gopher-lua;与 gopher-lua 差分 fuzz 输出逐字节一致。
+- **独立价值**:止步于此也成立——一个「更好的 gopher-lua」,可作 drop-in 候选(见 [[embedding-contract]])。
+
+### P2:分层桥(1-2 人月,定位为基建)
+
+- 函数级**热度计数**(loop back-edge 计数);
+- **inline cache 反馈记录**(类型 feedback,为编译层供料);
+- **静态可编译性分析器**:把 varargs / coroutine / debug 等形状标记「不升层」,永远走解释。
+- 策略:**try-compile-fallback-interpret**(LuaJ luajc 同款),换来**零 deopt 机器**。
+- **验收**:文档未对 P2 给出独立量化验收(无倍率门槛,定位为基建)。
+
+### P3:Wasm 编译层(6-12 人月,流水线图 4-8x)
+
+- **字节码→Wasm 编译器,wazero 执行**;值世界 = linear memory(**P1 的 arena 直接映射,两层共见**);
+- 跨层 **trampoline**;解释器↔编译层互调协议。
+- **开工前置 spike**:**wazero call boundary 实测,目标 `<150ns`;不达标则跳过本阶段直接做 P4**。
+- **验收**:循环密集脚本相对 P1 再 ≥2x;两层差分 fuzz 逐字节一致。
+- **战略价值**:在不用调试机器码的后端上,先把分层机器(升层/降层/fallback)整体跑通。
+
+### P4:带 IC 反馈的投机 method JIT(+1-2 人年,流水线图「trace 收益 ~70%」)
+
+- **JSC Baseline 风格**,per-function 模板编译;IC 反馈做类型投机(**f64 快速路径 + guard**);**deopt 简单**(函数级 **OSR exit** 回解释器);
+- 继承 P3 的全部分层结构,**只换发射后端**(Wasm 发射 → 原生发射);
+- **amd64 + arm64 双后端**;系统管线参考 wazero。
+- **验收**:列内核负载 ≥ LuaJ-luajc 档;Wasm 层退役,**或**留作可移植中层(未移植架构、禁 exec-mmap 环境)。
+
+### P5:trace-based JIT(+2-4 人年到可信 v1,开放式,目标 10-30x)
+
+- **trace 录制**(从字节码)、**IR 优化**(CSE / 循环不变量外提 / 分配下沉)、**寄存器分配**、**snapshot + deopt 机器**——文档称这是「LuaJIT 的真正护城河,无处抄」。
+- **启动条件**:只在 P4 的收益不够时启动。
+- **验收**:列内核负载 10-30x over gopher-lua。
+
+## 贯穿全程的不变式
+
+- **解释器永不退役**(贯穿原则 1):是所有编译层的 deopt 着陆点与语义 oracle。
+- **层间逐字节差分测试**(贯穿原则 2):直接对应 P1/P3 验收里的「差分 fuzz 逐字节一致」。
+- 详见 [[design-premises]]。
+
+---
+
+相关:[[design-premises]] · [[value-representation]] · [[embedding-contract]] · [[project-overview]] · [[glossary]]
