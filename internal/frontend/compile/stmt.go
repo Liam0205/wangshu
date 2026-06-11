@@ -285,9 +285,12 @@ func (fs *funcState) stmtRepeat(s *ast.RepeatStmt) {
 }
 
 // stmtNumFor:数值 for(04 §6.5)。占 4 槽 R(base..base+3)。
+//
+// 对齐 Lua 5.1 forstat/forbody 的两层块:外层 breakable 块包含 FORLOOP
+// (break 跳到 FORLOOP 之后),内层非 breakable 块只是循环体变量作用域。
 func (fs *funcState) stmtNumFor(s *ast.NumForStmt) {
+	fs.enterBlock(true) // 外层 breakable(含三个内部控制槽)
 	base := fs.freereg
-	// 三槽的匿名内部局部
 	initE := fs.expr(s.Init)
 	fs.exp2NextReg(s.Line, &initE) // R(base)
 	limitE := fs.expr(s.Limit)
@@ -300,37 +303,32 @@ func (fs *funcState) stmtNumFor(s *ast.NumForStmt) {
 		fs.emitABx(s.Line, bytecode.LOADK, base+2, k)
 		fs.reserveRegs(s.Line, 1)
 	}
-	// 三个内部匿名 local("(for index)/(for limit)/(for step)")— 只为占住 nactvar
 	fs.registerLocal(s.Line, "(for index)")
 	fs.registerLocal(s.Line, "(for limit)")
 	fs.registerLocal(s.Line, "(for step)")
 	prep := fs.emitAsBx(s.Line, bytecode.FORPREP, base, NoJump)
-	fs.enterBlock(true)
-	// 可见循环变量 v 占 R(base+3)
+	fs.enterBlock(false) // 内层:循环体变量作用域
 	fs.registerLocal(s.Line, s.Var)
 	fs.reserveRegs(s.Line, 1)
 	fs.block(s.Body)
-	fs.leaveBlock(s.Line)
-	// FORLOOP 回跳到 prep+1
+	fs.leaveBlock(s.Line) // 关闭 v 作用域(FORLOOP 之前)
 	loopPC := fs.pc()
 	fs.fixJump(s.Line, prep, loopPC)
 	fs.emitAsBx(s.Line, bytecode.FORLOOP, base, prep+1-(loopPC+1))
-	// 退出三槽匿名局部
-	fs.removeVars(fs.nactvar - 3)
-	fs.freereg = fs.nactvar
+	fs.leaveBlock(s.Line) // 外层:break 落到 FORLOOP 之后;退三个控制槽
 }
 
-// stmtGenFor:泛型 for(04 §6.6)。占 R(base..base+2) + 循环变量。
+// stmtGenFor:泛型 for(04 §6.6)。占 R(base..base+2) + 循环变量。两层块同上。
 func (fs *funcState) stmtGenFor(s *ast.GenForStmt) {
+	fs.enterBlock(true)
 	base := fs.freereg
-	// 三元组迭代器
 	fs.adjustExprList(s.Line, s.Exprs, 3)
 	fs.registerLocal(s.Line, "(for generator)")
 	fs.registerLocal(s.Line, "(for state)")
 	fs.registerLocal(s.Line, "(for control)")
 	prep := fs.jump(s.Line) // 跳到 TFORLOOP
 	bodyPC := fs.pc()
-	fs.enterBlock(true)
+	fs.enterBlock(false)
 	for _, n := range s.Names {
 		fs.registerLocal(s.Line, n)
 		fs.reserveRegs(s.Line, 1)
@@ -339,11 +337,9 @@ func (fs *funcState) stmtGenFor(s *ast.GenForStmt) {
 	fs.leaveBlock(s.Line)
 	fs.patchToHere(prep)
 	fs.emitABC(s.Line, bytecode.TFORLOOP, base, 0, len(s.Names))
-	// 紧跟回边 JMP
 	back := fs.jump(s.Line)
 	fs.patchList(back, bodyPC)
-	fs.removeVars(fs.nactvar - 3)
-	fs.freereg = fs.nactvar
+	fs.leaveBlock(s.Line)
 }
 
 // stmtFunc:function a.b.c:m() ...end(04 §8.2)
@@ -379,6 +375,14 @@ func (fs *funcState) stmtReturn(s *ast.ReturnStmt) {
 			fs.proto.Code[e.info] = bytecode.EncodeABC(bytecode.TAILCALL,
 				bytecode.A(ins), bytecode.B(ins), 0)
 			fs.emitABC(s.Line, bytecode.RETURN, bytecode.A(ins), 0, 0)
+			return
+		case *ast.VarargExpr:
+			// return ... 返回全部 vararg(多值到 top),不可收敛单值
+			base := fs.freereg
+			ve := fs.expr(ce)
+			fs.setReturns(&ve, -1)
+			fs.proto.Code[ve.info] = bytecode.SetA(fs.proto.Code[ve.info], base)
+			fs.emitABC(s.Line, bytecode.RETURN, base, 0, 0)
 			return
 		}
 		// 单值非 Call:若是 ELocal/ENonReloc 直接用其寄存器(避免无意义 MOVE)

@@ -113,3 +113,49 @@ func TestStdlib_AssertFail(t *testing.T) {
 		t.Fatalf("expected error")
 	}
 }
+
+func TestStdlib_StringLowerReverseLen(t *testing.T) {
+	got := runOne(t, `return string.lower("AbC") .. string.reverse("xyz") .. tostring(string.len("hello"))`)
+	if !got.IsString() || got.String_() != "abczyx5" {
+		t.Errorf("got %v, want 'abczyx5'", got.GoString())
+	}
+}
+
+func TestStdlib_SelectVariants(t *testing.T) {
+	got := runOne(t, `return select("#", "a", "b")`)
+	if !got.IsNumber() || got.Number() != 2 {
+		t.Errorf("select('#') = %v, want 2", got.GoString())
+	}
+	got2 := runOne(t, `return select(2, "a", "b", "c")`)
+	if !got2.IsString() || got2.String_() != "b" {
+		t.Errorf("select(2,...) first = %v, want 'b'", got2.GoString())
+	}
+}
+
+func TestStdlib_RawEqual(t *testing.T) {
+	got := runOne(t, `
+local t = {}
+return tostring(rawequal(t, t)) .. tostring(rawequal({}, {}))`)
+	if !got.IsString() || got.String_() != "truefalse" {
+		t.Errorf("got %v, want 'truefalse'", got.GoString())
+	}
+}
+
+func TestStdlib_Print(t *testing.T) {
+	// print 输出进 stdout,这里只验证不报错且返回 0 值。
+	prog, err := wangshu.Compile([]byte(`print("hello", 42, nil, true)`), "p")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	st := wangshu.NewState(wangshu.Options{})
+	if _, err := prog.Run(st); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+}
+
+func TestStdlib_ToStringAllTypes(t *testing.T) {
+	got := runOne(t, `return tostring(nil) .. tostring(true) .. tostring(false)`)
+	if !got.IsString() || got.String_() != "niltruefalse" {
+		t.Errorf("got %v", got.GoString())
+	}
+}

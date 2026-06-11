@@ -6,6 +6,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Liam0205/wangshu/internal/bytecode"
+	"github.com/Liam0205/wangshu/internal/frontend/compile"
+	"github.com/Liam0205/wangshu/internal/frontend/lex"
+	"github.com/Liam0205/wangshu/internal/frontend/parse"
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
@@ -84,4 +88,85 @@ result = t[1] + t[2] + t[3]
 	if !value.IsNumber(v) || value.AsNumber(v) != 600 {
 		t.Errorf("result = %v, want 600", debugVal(st, v))
 	}
+}
+
+// TestGC_CollectMidExecution 在脚本执行中(通过 host fn)强制触发 Collect,
+// 验证活跃闭包/upvalue 经 mark(scanClosure 路径)后仍可用——这是
+// "GC 在解释器运行现场不误回收"的主防线测试(06 §6 / 05 §5.3)。
+func TestGC_CollectMidExecution(t *testing.T) {
+	src := `
+local function makeAdder(x)
+  return function(y) return x + y end
+end
+local add10 = makeAdder(10)
+collectgarbage_test()
+result = add10(5)
+`
+	lxSrc := []byte(src)
+	st := New()
+	// 注册一个测试用 host fn:执行中强制 full GC
+	id := st.RegisterHostFn(func(s *State, _ []value.Value) ([]value.Value, *LuaError) {
+		s.gc.Collect()
+		return nil, nil
+	})
+	cl := st.MakeHostClosure(id)
+	st.SetGlobal("collectgarbage_test", value.MakeGC(value.TagFunction, cl))
+
+	prog := mustCompile(t, lxSrc)
+	mainCl := st.LoadProgram(prog.mainID, prog.protos)
+	if _, err := st.Call(mainCl, nil, 0); err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	v, _ := st.tableGet(st.globals, st.makeStringValue("result"))
+	if !value.IsNumber(v) || value.AsNumber(v) != 15 {
+		t.Errorf("result = %v, want 15 (closed upvalue x=10 must survive GC)", debugVal(st, v))
+	}
+}
+
+// TestGC_CollectWithOpenUpvalue 在 upvalue 仍开放(指向活跃栈槽)时触发 GC。
+func TestGC_CollectWithOpenUpvalue(t *testing.T) {
+	src := `
+local n = 0
+local function inc() n = n + 1; return n end
+inc()
+collectgarbage_test()
+inc()
+result = inc()
+`
+	st := New()
+	id := st.RegisterHostFn(func(s *State, _ []value.Value) ([]value.Value, *LuaError) {
+		s.gc.Collect()
+		return nil, nil
+	})
+	cl := st.MakeHostClosure(id)
+	st.SetGlobal("collectgarbage_test", value.MakeGC(value.TagFunction, cl))
+
+	prog := mustCompile(t, []byte(src))
+	mainCl := st.LoadProgram(prog.mainID, prog.protos)
+	if _, err := st.Call(mainCl, nil, 0); err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	v, _ := st.tableGet(st.globals, st.makeStringValue("result"))
+	if !value.IsNumber(v) || value.AsNumber(v) != 3 {
+		t.Errorf("result = %v, want 3 (open upvalue n must survive GC)", debugVal(st, v))
+	}
+}
+
+type compiled struct {
+	mainID uint32
+	protos []*bytecode.Proto
+}
+
+func mustCompile(t *testing.T, src []byte) compiled {
+	t.Helper()
+	lx := lex.New(src, "gctest")
+	block, err := parse.Parse(lx, "gctest")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	mainID, protos, err := compile.Compile(block, "gctest")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	return compiled{mainID: mainID, protos: protos}
 }

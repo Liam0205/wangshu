@@ -148,7 +148,7 @@ func (st *State) execute(th *thread) *LuaError {
 				setReg(th, ci, bytecode.A(i), value.NumberValue(float64(n)))
 			case value.TagTable:
 				// border:M9 简化为线性扫描 array 部分
-				border := tableBorder(st.arena, value.GCRefOf(b))
+				border := st.tableBorder(value.GCRefOf(b))
 				setReg(th, ci, bytecode.A(i), value.NumberValue(float64(border)))
 			default:
 				if value.IsNumber(b) {

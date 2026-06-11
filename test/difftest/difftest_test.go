@@ -152,6 +152,44 @@ return tostring(ok)`},
 	{"nan_compare", `return tostring(0/0 == 0/0)`},
 	{"inf_div", `return tostring(1/0)`},
 	{"neg_zero", `return tostring(-0)`},
+	// —— 覆盖率审计补充(2026-06-12) ——
+	{"method_call", `
+local t = { v = 10 }
+function t.get(self) return self.v end
+return t:get()`},
+	{"method_def_colon", `
+local obj = { n = 5 }
+function obj:bump() self.n = self.n + 1; return self.n end
+obj:bump()
+return obj:bump()`},
+	{"func_stmt_global", `
+function double(x) return x * 2 end
+return double(21)`},
+	{"table_len", `return #{1, 2, 3}`},
+	{"return_vararg", `
+local function f(...) return ... end
+return f(1, 2, 3)`},
+	{"vararg_forward", `
+local function sum3(a, b, c) return a + b + c end
+local function fwd(...) return sum3(...) end
+return fwd(1, 2, 3)`},
+	{"select_hash", `return select("#", 1, 2, 3)`},
+	{"break_in_for", `
+local n = 0
+for i = 1, 10 do
+  n = i
+  if i >= 4 then break end
+end
+return n`},
+	{"break_in_while", `
+local i = 0
+while true do
+  i = i + 1
+  if i >= 3 then break end
+end
+return i`},
+	{"string_sub_neg", `return string.sub("hello", -3)`},
+	{"string_rep", `return string.rep("ab", 3)`},
 }
 
 // TestDiff_SeedCorpus 对拍固定脚本集(Wangshu vs 官方 5.1.5)。

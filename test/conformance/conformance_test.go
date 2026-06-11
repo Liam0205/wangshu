@@ -123,6 +123,69 @@ return tostring(ok1)`, "false"},
 	{"error_value_passthrough", `
 local _, e = pcall(function() error("custom-msg") end)
 return e`, "custom-msg"},
+
+	// —— 覆盖率审计补充(2026-06-12):此前无测试覆盖的语法/库路径 ——
+	{"method_call_self", `
+local t = { v = 10 }
+function t.get(self) return self.v end
+return t:get()`, "10"},
+	{"method_def_colon", `
+local obj = { n = 5 }
+function obj:bump() self.n = self.n + 1; return self.n end
+obj:bump()
+return obj:bump()`, "7"},
+	{"func_stmt_global", `
+function double(x) return x * 2 end
+return double(21)`, "42"},
+	{"func_stmt_dotted", `
+local m = {}
+function m.f(x) return x + 1 end
+return m.f(1)`, "2"},
+	{"table_len_border", `return #{1, 2, 3}`, "3"},
+	{"table_len_empty", `return #{}`, "0"},
+	{"string_arg_sugar", `return string.upper"abc"`, "ABC"},
+	{"table_arg_sugar", `
+local function id(t) return t[1] end
+return id{ 99 }`, "99"},
+	{"return_vararg_all", `
+local function f(...) return ... end
+local a, b, c = f(1, 2, 3)
+return a + b + c`, "6"},
+	{"vararg_in_call_args", `
+local function sum3(a, b, c) return a + b + c end
+local function fwd(...) return sum3(...) end
+return fwd(1, 2, 3)`, "6"},
+	{"vararg_in_table", `
+local function f(...) return { ... } end
+local t = f(7, 8)
+return t[1] + t[2]`, "15"},
+	{"select_hash", `return select("#", 1, 2, 3)`, "3"},
+	{"select_index", `return select(2, "a", "b", "c")`, "b\tc"},
+	{"string_lib_rest", `
+return string.lower("ABC") .. string.reverse("xy") .. tostring(string.len("hello"))`, "abcyx5"},
+	{"rawequal_basic", `
+local t = {}
+return tostring(rawequal(t, t)) .. tostring(rawequal(1, 1)) .. tostring(rawequal({}, {}))`,
+		"truetruefalse"},
+	{"not_operator", `return tostring(not nil) .. tostring(not 0)`, "truefalse"},
+	{"len_string", `return #"hello"`, "5"},
+	{"nested_table_constructor", `
+local t = { a = { b = { c = 42 } } }
+return t.a.b.c`, "42"},
+	{"numeric_for_inner_break", `
+local n = 0
+for i = 1, 10 do
+  n = i
+  if i >= 4 then break end
+end
+return n`, "4"},
+	{"while_break", `
+local i = 0
+while true do
+  i = i + 1
+  if i >= 3 then break end
+end
+return i`, "3"},
 }
 
 func TestConformance(t *testing.T) {

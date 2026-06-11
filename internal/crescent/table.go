@@ -83,11 +83,23 @@ func (st *State) tableSetInt(t arena.GCRef, idx uint32, val value.Value) {
 	}
 }
 
-// tableBorder 计算 # 运算的 border:满足 t[n]≠nil 且 t[n+1]==nil 的最大 n(简单线性)。
-func tableBorder(_ *arena.Arena, _ arena.GCRef) uint32 {
-	// M9 简化版:旁路存储里没法快速找 border;返回 0(够 string len 不依赖即可)。
-	// M10 切到 arena 哈希后做正确 border 二分。
-	return 0
+// tableBorder 计算 # 运算的 border:满足 t[n]≠nil 且 t[n+1]==nil 的最大 n。
+//
+// M14 旁路 map 版:从 1 起线性探测(旁路存储无序,无法二分)。切回 arena
+// 原生 array 段后改用 5.1 的二分 border。
+func (st *State) tableBorder(t arena.GCRef) uint32 {
+	side := st.tableSides[t]
+	if side == nil {
+		return 0
+	}
+	n := uint32(0)
+	for {
+		key := value.NumberValue(float64(n + 1))
+		if _, ok := side.data[keyHash(key)]; !ok {
+			return n
+		}
+		n++
+	}
 }
 
 // upvalGet / upvalSet:开放/关闭分派(05 §8.1)。
