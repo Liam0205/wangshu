@@ -26,6 +26,12 @@ func OpenAll(st *crescent.State) {
 		cl := st.MakeHostClosure(id)
 		st.SetGlobal(e.name, value.MakeGC(value.TagFunction, cl))
 	}
+	// ipairs 的内部步进迭代器(经全局名间接引用,脚本不可见性不作要求——5.1 也暴露 next)
+	{
+		id := st.RegisterHostFn(ipairsIter)
+		cl := st.MakeHostClosure(id)
+		st.SetGlobal("__ipairs_iter", value.MakeGC(value.TagFunction, cl))
+	}
 	registerNamespaced(st, "math", mathFns)
 	registerNamespaced(st, "string", stringFns)
 }
@@ -106,6 +112,62 @@ var baseFns = []entry{
 	{"rawget", baseFnRawGet},
 	{"rawset", baseFnRawSet},
 	{"rawequal", baseFnRawEqual},
+	{"next", baseFnNext},
+	{"pairs", baseFnPairs},
+	{"ipairs", baseFnIpairs},
+}
+
+// baseFnNext:next(t [, key]) → (nextKey, nextVal) | nil。
+func baseFnNext(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
+	if len(args) == 0 || value.Tag(args[0]) != value.TagTable {
+		return nil, crescent.NewError("bad argument #1 to 'next' (table expected)")
+	}
+	key := value.Nil
+	if len(args) >= 2 {
+		key = args[1]
+	}
+	k, v, ok, e := st.RawNext(value.GCRefOf(args[0]), key)
+	if e != nil {
+		return nil, e
+	}
+	if !ok {
+		return []value.Value{value.Nil}, nil
+	}
+	return []value.Value{k, v}, nil
+}
+
+// baseFnPairs:pairs(t) → (next, t, nil)。
+func baseFnPairs(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
+	if len(args) == 0 || value.Tag(args[0]) != value.TagTable {
+		return nil, crescent.NewError("bad argument #1 to 'pairs' (table expected)")
+	}
+	nextFn, _ := st.RawGet(st.Globals(), intern(st, "next"))
+	return []value.Value{nextFn, args[0], value.Nil}, nil
+}
+
+// baseFnIpairs:ipairs(t) → (iter, t, 0);iter(t, i) → (i+1, t[i+1]) | nil。
+func baseFnIpairs(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
+	if len(args) == 0 || value.Tag(args[0]) != value.TagTable {
+		return nil, crescent.NewError("bad argument #1 to 'ipairs' (table expected)")
+	}
+	iterFn, _ := st.RawGet(st.Globals(), intern(st, "__ipairs_iter"))
+	return []value.Value{iterFn, args[0], value.NumberValue(0)}, nil
+}
+
+// ipairsIter 是 ipairs 的步进迭代器(注册为内部全局 __ipairs_iter)。
+func ipairsIter(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
+	if len(args) < 2 || value.Tag(args[0]) != value.TagTable || !value.IsNumber(args[1]) {
+		return nil, crescent.NewError("bad argument to ipairs iterator")
+	}
+	i := value.AsNumber(args[1]) + 1
+	v, e := st.RawGet(value.GCRefOf(args[0]), value.NumberValue(i))
+	if e != nil {
+		return nil, e
+	}
+	if v == value.Nil {
+		return []value.Value{value.Nil}, nil
+	}
+	return []value.Value{value.NumberValue(i), v}, nil
 }
 
 // baseFnPcall:pcall(f, ...) → (true, results...) | (false, errval)(09 §pcall;05 §9.3)。

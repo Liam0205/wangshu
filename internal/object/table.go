@@ -142,6 +142,46 @@ func SetTableLastFree(a *arena.Arena, t arena.GCRef, lf uint32) {
 	setWordAt(a, t, tableLastFreeGen, uint64(lf)|(w&0xFFFFFFFF00000000))
 }
 
+// SetTableArray 替换数组段(rehash 用):arrayRef 0 = 无数组段。
+func SetTableArray(a *arena.Arena, t arena.GCRef, arrayRef arena.GCRef, asize uint32) {
+	w := wordAt(a, t, tableSizesIdx)
+	setWordAt(a, t, tableSizesIdx, uint64(asize)|(w&0xFFFFFFFF00000000))
+	setWordAt(a, t, tableArrayIdx, uint64(arrayRef))
+}
+
+// SetTableNode 替换哈希段(rehash 用):nodeRef 0 = 无哈希段(hmask 同时清 0)。
+func SetTableNode(a *arena.Arena, t arena.GCRef, nodeRef arena.GCRef, hsize uint32) {
+	hmask := uint32(0)
+	if hsize > 0 {
+		hmask = hsize - 1
+	}
+	w := wordAt(a, t, tableSizesIdx)
+	setWordAt(a, t, tableSizesIdx, (w&0xFFFFFFFF)|uint64(hmask)<<32)
+	setWordAt(a, t, tableNodeIdx, uint64(nodeRef))
+}
+
+// AllocTableArray 分配一个 asize 槽的数组附属块(全 Nil 初始化)。
+func AllocTableArray(a *arena.Arena, asize uint32) arena.GCRef {
+	ref := a.AllocWords(asize)
+	for i := uint32(0); i < asize; i++ {
+		a.SetWordAt(ref+arena.GCRef(i*8), uint64(value.Nil))
+	}
+	return ref
+}
+
+// AllocTableNode 分配一个 hsize 槽的哈希附属块(key/val=Nil, next=-1)。
+// hsize 必须是 2 的幂。
+func AllocTableNode(a *arena.Arena, hsize uint32) arena.GCRef {
+	ref := a.AllocWords(nodeWords * hsize)
+	for i := uint32(0); i < hsize; i++ {
+		base := ref + arena.GCRef(i*nodeWords*8)
+		a.SetWordAt(base, uint64(value.Nil))
+		a.SetWordAt(base+8, uint64(value.Nil))
+		a.SetWordAt(base+16, uint64(uint32(0xFFFFFFFF)))
+	}
+	return ref
+}
+
 // 数组段访问。
 func TableArrayAt(a *arena.Arena, t arena.GCRef, i uint32) value.Value {
 	arr := TableArrayRef(a, t)

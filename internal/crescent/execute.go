@@ -148,7 +148,7 @@ func (st *State) execute(th *thread) *LuaError {
 				setReg(th, ci, bytecode.A(i), value.NumberValue(float64(n)))
 			case value.TagTable:
 				// border:M9 简化为线性扫描 array 部分
-				border := st.tableBorder(value.GCRefOf(b))
+				border := st.rawBorder(value.GCRefOf(b))
 				setReg(th, ci, bytecode.A(i), value.NumberValue(float64(border)))
 			default:
 				if value.IsNumber(b) {
@@ -261,7 +261,33 @@ func (st *State) execute(th *thread) *LuaError {
 			ci.pc += int32(bytecode.SBx(i))
 
 		case bytecode.TFORLOOP:
-			return errf("TFORLOOP: generic for not yet supported (M12)")
+			// 调用迭代器 R(A)(R(A+1), R(A+2)),结果落 R(A+3..A+2+C)(05 §10.2)。
+			// 迭代器经 callLuaFromHost 同步取结果(Lua 迭代器走 host→Lua 重入;
+			// next 等 host 迭代器走 host 直调)。
+			a := bytecode.A(i)
+			c := bytecode.C(i)
+			iter := reg(th, ci, a)
+			state := reg(th, ci, a+1)
+			ctrl := reg(th, ci, a+2)
+			results, e := st.callLuaFromHost(th, iter, []value.Value{state, ctrl})
+			if e != nil {
+				return e
+			}
+			ci = currentCI(th)
+			code = ci.proto.Code
+			for k := 0; k < c; k++ {
+				v := value.Nil
+				if k < len(results) {
+					v = results[k]
+				}
+				setReg(th, ci, a+3+k, v)
+			}
+			if c >= 1 && len(results) >= 1 && results[0] != value.Nil {
+				setReg(th, ci, a+2, results[0]) // 控制变量 = 首返回值
+				// 落到紧随的回边 JMP
+			} else {
+				ci.pc++ // 首值 nil:跳过回边,退出循环
+			}
 
 		case bytecode.SETLIST:
 			if e := st.doSetList(th, ci, i); e != nil {

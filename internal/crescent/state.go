@@ -31,12 +31,11 @@ func (e *LuaError) Error() string { return e.Msg }
 type State struct {
 	arena         *arena.Arena
 	gc            *gc.Collector
-	protos        []*bytecode.Proto          // ProtoID → Proto(由 Compile 注入,见 LoadProgram)
-	strRefs       [][]arena.GCRef            // protos[id] 内字面量 → 已 intern 的 GCRef(R6 根,详见 11 §1.4)
-	globals       arena.GCRef                // _G(globals 表)
-	tableSides    map[arena.GCRef]*tableSide // M9 旁路存储(M10 替换为原生哈希)
-	runningThread *thread                    // 当前正在执行的 thread(GC ExtraValues 来源)
-	hostFns       hostFnRegistry             // host function 注册表(M12)
+	protos        []*bytecode.Proto // ProtoID → Proto(由 Compile 注入,见 LoadProgram)
+	strRefs       [][]arena.GCRef   // protos[id] 内字面量 → 已 intern 的 GCRef(R6 根,详见 11 §1.4)
+	globals       arena.GCRef       // _G(globals 表)
+	runningThread *thread           // 当前正在执行的 thread(GC ExtraValues 来源)
+	hostFns       hostFnRegistry    // host function 注册表(M12)
 }
 
 // New constructs a fresh State (arena + collector + empty globals)。
@@ -52,7 +51,7 @@ func New() *State {
 
 // installRoots 把当前 State 的根集合注入 collector。
 //
-// M9/M10 thread 值栈住 Go 切片,经 ExtraValues 暴露;tableSides 旁路 map 上的
+// 值栈住 Go 切片期间经 ExtraValues 暴露;表数据已住 arena 原生布局,
 // 所有 Value 也走 ExtraValues(M11 切到 arena 哈希后撤销)。
 func (st *State) installRoots() {
 	st.gc.SetRoots(gc.Roots{
@@ -74,20 +73,15 @@ func (st *State) visitProgramStringRefs(visit func(arena.GCRef)) {
 	}
 }
 
-// visitExtraValues 暴露 thread 栈、tableSides 中持有的 Value(M9/M10 旁路根)。
+// visitExtraValues 暴露 thread 栈持有的 Value(值栈住 Go 切片期间的旁路根)。
+//
+// 表数据已住 arena 原生布局,经 Globals/栈上的表引用从 markRef 正常扫到,
+// 不再需要旁路根。
 func (st *State) visitExtraValues(visit func(value.Value)) {
 	if st.runningThread != nil {
 		th := st.runningThread
 		for i := 0; i < th.top; i++ {
 			visit(th.stack[i])
-		}
-	}
-	for tref, side := range st.tableSides {
-		visit(value.MakeGC(value.TagTable, tref))
-		for kBits, v := range side.data {
-			k := value.Value(kBits)
-			visit(k)
-			visit(v)
 		}
 	}
 }

@@ -1,6 +1,6 @@
 // Metatable support — __index / __newindex 链 + 算术 metamethod(07 的 M11 最小集)。
 //
-// M11 简化:metatable 存在 tableSide.meta(旁路存储与 table 数据同生命周期);
+// metatable 经 object.TableMetaRef 存取(arena 原生 Table 布局 word4);
 // 完整 arena 哈希接入时迁回 object.TableMetaRef。
 package crescent
 
@@ -12,15 +12,12 @@ import (
 
 // metaOf 返回 t 的 metatable GCRef(无则 0)。
 func (st *State) metaOf(t arena.GCRef) arena.GCRef {
-	if side, ok := st.tableSides[t]; ok {
-		return side.meta
-	}
-	return 0
+	return object.TableMetaRef(st.arena, t)
 }
 
-// SetMeta 设置 t 的 metatable(0 = 清除)。
+// SetMeta 设置 t 的 metatable(0 = 清除)。object.SetTableMeta 内部 BumpGen。
 func (st *State) SetMeta(t, meta arena.GCRef) {
-	st.sideOf(t).meta = meta
+	object.SetTableMeta(st.arena, t, meta)
 }
 
 // metaField 查 t 的 metatable[name];无 metatable 或无该域返回 Nil。
@@ -212,3 +209,11 @@ func (st *State) RawGet(t arena.GCRef, key value.Value) (value.Value, *LuaError)
 func (st *State) RawSet(t arena.GCRef, key, val value.Value) *LuaError {
 	return st.tableSet(t, key, val)
 }
+
+// RawNext 暴露迭代(stdlib next/pairs 用)。
+func (st *State) RawNext(t arena.GCRef, key value.Value) (value.Value, value.Value, bool, *LuaError) {
+	return st.rawNext(t, key)
+}
+
+// RawBorder 暴露 #t(stdlib table.* 用)。
+func (st *State) RawBorder(t arena.GCRef) uint32 { return st.rawBorder(t) }

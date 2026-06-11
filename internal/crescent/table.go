@@ -1,7 +1,8 @@
 // Table get/set / upvalue / string utilities.
 //
-// M9 简化:table 操作用 Go map 旁路实现(GCRef → map[Value]Value),
-// 不走 arena 的 array/hash 节点段。M10 接入 IC 时换原生哈希实现。
+// tableGet/tableSet 是 raw 访问入口(不触发元方法;元方法链在 meta.go)。
+// 自 P1 收尾轮起,表数据走 arena 原生 array+hash 布局(rawtable.go),
+// 旁路 Go map 已移除。
 package crescent
 
 import (
@@ -13,93 +14,19 @@ import (
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
-// tableSide 是 M9 的临时旁路存储(M10 用 arena 原生哈希取代)。
-//
-// 注:此处用 Go 堆 + map[uint64]Value,key 是 NaN-boxed Value 的 bits。
-// 等价键(数字 +0/-0、不同 GCRef 的同值字符串)在此简化实现里不会合并,
-// 但 M9 范围内不会触发(string 走 intern,数字键也不会有 +0/-0 用例)。
-type tableSide struct {
-	data map[uint64]value.Value
-	meta arena.GCRef // metatable(M11;0 = 无)
-}
-
-func (st *State) sideOf(t arena.GCRef) *tableSide {
-	if st.tableSides == nil {
-		st.tableSides = map[arena.GCRef]*tableSide{}
-	}
-	s := st.tableSides[t]
-	if s == nil {
-		s = &tableSide{data: map[uint64]value.Value{}}
-		st.tableSides[t] = s
-	}
-	return s
-}
-
-// keyHash 把 Value 当作哈希键的 uint64 bits。number 走 canonical bits;string 走 GCRef bits;
-// nil/false/true 也是 bits。这与 Lua 5.1 的 raw equal 在 M9 范围内一致(不处理 +0/-0)。
-func keyHash(v value.Value) uint64 { return uint64(v) }
-
-// tableGet 实现 raw get(M9 不走 __index 元方法)。
+// tableGet 实现 raw get。
 func (st *State) tableGet(t arena.GCRef, key value.Value) (value.Value, *LuaError) {
-	if key == value.Nil {
-		return value.Nil, nil
-	}
-	s := st.sideOf(t)
-	v, ok := s.data[keyHash(key)]
-	if !ok {
-		return value.Nil, nil
-	}
-	return v, nil
+	return st.rawGet(t, key), nil
 }
 
-// tableSet 实现 raw set(M9 不走 __newindex 元方法)。
+// tableSet 实现 raw set。
 func (st *State) tableSet(t arena.GCRef, key, val value.Value) *LuaError {
-	if key == value.Nil {
-		return errf("table index is nil")
-	}
-	if value.IsNumber(key) {
-		x := value.AsNumber(key)
-		if x != x { // NaN
-			return errf("table index is NaN")
-		}
-	}
-	s := st.sideOf(t)
-	if val == value.Nil {
-		delete(s.data, keyHash(key))
-	} else {
-		s.data[keyHash(key)] = val
-	}
-	return nil
+	return st.rawSet(t, key, val)
 }
 
 // tableSetInt 是 SETLIST 的快路径:整数键写入。
 func (st *State) tableSetInt(t arena.GCRef, idx uint32, val value.Value) {
-	key := value.NumberValue(float64(idx))
-	s := st.sideOf(t)
-	if val == value.Nil {
-		delete(s.data, keyHash(key))
-	} else {
-		s.data[keyHash(key)] = val
-	}
-}
-
-// tableBorder 计算 # 运算的 border:满足 t[n]≠nil 且 t[n+1]==nil 的最大 n。
-//
-// M14 旁路 map 版:从 1 起线性探测(旁路存储无序,无法二分)。切回 arena
-// 原生 array 段后改用 5.1 的二分 border。
-func (st *State) tableBorder(t arena.GCRef) uint32 {
-	side := st.tableSides[t]
-	if side == nil {
-		return 0
-	}
-	n := uint32(0)
-	for {
-		key := value.NumberValue(float64(n + 1))
-		if _, ok := side.data[keyHash(key)]; !ok {
-			return n
-		}
-		n++
-	}
+	_ = st.rawSet(t, value.NumberValue(float64(idx)), val)
 }
 
 // upvalGet / upvalSet:开放/关闭分派(05 §8.1)。
@@ -123,8 +50,8 @@ func (st *State) upvalSet(th *thread, uv arena.GCRef, v value.Value) {
 // findOrCreateUpval 查找或新建一个指向 thread.stack[stackIdx] 的开放 upvalue
 // (按 stackIdx 降序链;05 §8.3)。
 //
-// M9 简化:用 thread 上的 Go map 缓存 stackIdx → uvRef,不构建降序链(不影响
-// 共享语义);完整链结构在 M10 接入闭合时切换。
+// P1 简化:用 thread 上的 Go map 缓存 stackIdx → uvRef(不影响共享语义);
+// 完整降序链结构是值栈 arena 化的一部分(见 implementation-progress)。
 func (st *State) findOrCreateUpval(th *thread, stackIdx uint32) arena.GCRef {
 	if th.openUvs == nil {
 		th.openUvs = map[uint32]arena.GCRef{}
@@ -154,7 +81,6 @@ func (st *State) closeUpvals(th *thread, level int) {
 // toStringBytes 把 Value 转为 []byte(用于 CONCAT)。
 func (st *State) toStringBytes(v value.Value) ([]byte, bool) {
 	if value.IsNumber(v) {
-		// %.14g 格式(05 §4.6)
 		f := value.AsNumber(v)
 		return []byte(formatLuaNumber(f)), true
 	}
