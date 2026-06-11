@@ -23,11 +23,11 @@ P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 met
 
 ## 当前状态
 
-**P1(crescent 解释器)全里程碑 M0-M14 已落地**,P1 总验收通过:
+**P1(crescent 解释器)完整交付**:全里程碑 M0-M14 + 收尾轮(协程/pattern matcher/IC/arena ABI 等)落地,P1 总验收通过:
 
-- 三档基准 ≥2x over gopher-lua(Xeon 6982P-C 实测:simple 2.28x / arith 2.40x / loop 2.30x);
-- 与官方 Lua 5.1.5 差分对拍(seed corpus)逐字节一致;
-- conformance 套(28 个语义角落用例)全绿;`make all`(gofmt + lint + race)全绿。
+- 三档基准 ≥2x over gopher-lua(Xeon 6982P-C 实测:simple **3.18x** / arith **3.10x** / loop **2.28x**);
+- 与官方 Lua 5.1.5 差分对拍(70 个种子用例 + 200 个随机生成脚本)逐字节一致;
+- conformance 套(67 个语义角落用例)全绿;`make all`(gofmt + lint + race)全绿。
 
 ### 快速开始
 
@@ -44,13 +44,28 @@ results, err := prog.Run(st)
 // results[0].Number() == 338350
 ```
 
-`Program` 不可变、可跨 State 复用;`State` 每 goroutine 一个。最小 stdlib(base/math/string 子集)默认装载。
+列内核形状(批量数据一次跨界,循环全在 VM 内):
 
-### P1 范围说明
+```go
+ar := wangshu.NewArena(nrows)
+ar.AddFloatColumn("price", prices, nil)
+ar.AddInt64Column("qty", qtys, nil)
+prog, _ := wangshu.Compile([]byte(`
+    local price, qty = arena.price, arena.qty
+    local total = 0
+    for i = 1, arena.rows do total = total + price[i] * qty[i] end
+    return total
+`), "kernel")
+results, err := prog.Call(st, ar) // 一次调用一次跨界
+```
 
-已实现:NaN-boxed 值表示、arena + mark-sweep GC、完整前端(lexer/parser/codegen 与 luac 同构寄存器分配)、大 switch 解释器(reentry 模型,Lua 调用不增 Go 栈)、元表(__index/__newindex/算术)、pcall/error、host function、最小 stdlib、公共嵌入 API、三套测试机制(conformance/difftest/benchmark)。
+`Program` 不可变、可跨 State 复用;`State` 每 goroutine 一个。
 
-P1 内待推进(不阻塞 P2 开工):IC 真实命中路径(目前结构就位、解释器未读)、协程(路线 B)、string pattern matcher、arena ABI 列数据接口、table 旁路存储切回 arena 原生哈希。
+### P1 能力面
+
+NaN-boxed 值表示、arena + mark-sweep GC(弱表/finalizer)、完整前端(寄存器分配与 luac 同构)、大 switch 解释器(reentry,Lua 调用不增 Go 栈)、inline cache(表/全局访问直达槽)、元表全套、协程(create/resume/yield/wrap)、pcall/xpcall/error(位置前缀+traceback)、Lua 5.1 pattern matcher、stdlib(base/string/table/math/os/io/coroutine)、arena ABI 列数据零拷贝读、公共嵌入 API、三套测试机制(conformance/difftest 随机生成 + 官方对拍/benchmark)。
+
+P3 迁移留口(对账记录见 [implementation-progress](docs/design/p1-interpreter/implementation-progress.md)):值栈/CallInfo 的 arena 物理搬迁(backing 注入点已就位)、upvalue 降序链。
 
 - 战略层:[docs/design/roadmap.md](docs/design/roadmap.md)(动机/校准测量/演进路线/非目标)
 - 总览:[docs/design/architecture.md](docs/design/architecture.md)(包布局/组件依赖/tier 映射)
