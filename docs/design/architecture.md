@@ -156,7 +156,7 @@ P1 内部依赖(箭头 = 依赖方向,A → B 表示 A 依赖 B):
 10. stdlib          base 库 → 逐步补齐 string/table/math/...
 11. 元表/协程/错误   metamethod、coroutine、pcall
 12. embedding       Compile/Program.Call + arena ABI
-13. test/difftest   与 gopher-lua 差分 fuzz,锁定验收
+13. test/difftest   与官方 5.1.5 差分 fuzz(gopher-lua 为参照),锁定验收
 ```
 
 关键:**第 1-5 步是值世界地基**,必须在写解释器循环前完全自洽——这正是「第 1 天的架构承诺」的工程含义。

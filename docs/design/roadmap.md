@@ -104,8 +104,9 @@ P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 met
 - closure-compilation 或 computed-goto 风格 dispatch(替代大 switch)
 - 全局/表访问 inline cache;stdlib 以 host function 形式提供
 - Lua 5.1 conformance 测试套
-- **验收**:简单/算术/循环三档脚本全部 ≥2x over gopher-lua;与 gopher-lua
-  差分 fuzz 输出逐字节一致
+- **验收**:简单/算术/循环三档脚本全部 ≥2x over gopher-lua;与官方 Lua 5.1.5 差分
+  fuzz 输出逐字节一致(官方为最终语义 oracle;gopher-lua 为同生态参照与性能基准,
+  其自身偏离官方处登记豁免——口径细则见 `p1-interpreter/12-testing-difftest.md`)
 - 止步于此也成立:一个"更好的 gopher-lua"
 
 ### P2:分层桥(1-2 人月)

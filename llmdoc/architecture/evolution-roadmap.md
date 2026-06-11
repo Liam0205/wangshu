@@ -32,7 +32,7 @@ P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 met
 
 | 阶段 | 名称 | 人力估算 | 流水线图倍率 | 关键验收门槛(正文) | 前置 spike |
 |---|---|---|---|---|---|
-| P1 | 现代解释器 | 6-9 人月 | 2-4x | 简单/算术/循环三档脚本全 ≥2x over gopher-lua;与 gopher-lua 差分 fuzz 逐字节一致 | 无(起点) |
+| P1 | 现代解释器 | 6-9 人月 | 2-4x | 简单/算术/循环三档脚本全 ≥2x over gopher-lua;与官方 5.1.5 差分 fuzz 逐字节一致(gopher 偏差豁免) | 无(起点) |
 | P2 | 分层桥 | 1-2 人月 | 基建(无量化) | 文档未给独立量化门槛 | 无 |
 | P3 | Wasm 编译层 | 6-12 人月 | 4-8x | 循环密集脚本相对 P1 再 ≥2x;两层差分 fuzz 逐字节一致 | **wazero call boundary 实测 `<150ns`;不达标则跳过本阶段直接做 P4** |
 | P4 | method JIT(JSC Baseline 风格) | +1-2 人年 | trace 收益 ~70% | 列内核负载 ≥ LuaJ-luajc 档;Wasm 层退役或留作可移植中层 | 无(继承 P3 管线) |
@@ -47,7 +47,7 @@ P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 met
 - **closure-compilation 或 computed-goto 风格 dispatch**(替代大 switch);
 - 全局/表访问 **inline cache**;stdlib 以 **host function** 形式提供;
 - Lua 5.1 conformance 测试套。
-- **验收**:简单/算术/循环三档脚本全部 ≥2x over gopher-lua;与 gopher-lua 差分 fuzz 输出逐字节一致。
+- **验收**:简单/算术/循环三档脚本全部 ≥2x over gopher-lua;与官方 Lua 5.1.5 差分 fuzz 输出逐字节一致(官方为最终 oracle,gopher-lua 偏差登记豁免,见 12 号文档)。
 - **独立价值**:止步于此也成立——一个「更好的 gopher-lua」,可作 drop-in 候选(见 [[embedding-contract]])。
 
 ### P2:分层桥(1-2 人月,定位为基建)

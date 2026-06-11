@@ -3,7 +3,7 @@
 > 状态:**设计阶段,详细设计已齐备**。本文是 P1 文档集(01-12)的导航与施工计划:每篇文档的定位、
 > 组件依赖与构建顺序的细化、里程碑验收门槛、人月分解、跨文档定稿决策速查。
 > 上游:`docs/design/roadmap.md` (§4 P1)、[architecture](../architecture.md)(§3 依赖图/§5 构建顺序)。
-> P1 目标一句话:**简单/算术/循环三档脚本全部 ≥2x over gopher-lua,与 gopher-lua 差分 fuzz 输出逐字节一致**;
+> P1 目标一句话:**简单/算术/循环三档脚本全部 ≥2x over gopher-lua,与官方 Lua 5.1.5 差分 fuzz 输出逐字节一致(gopher-lua 为同生态参照,偏差豁免——12 §3.3)**;
 > 止步于此也成立——一个「更好的 gopher-lua」(roadmap §5 原则 3)。
 
 ---
