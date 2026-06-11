@@ -31,9 +31,11 @@ const (
 	nodeWords        = 3
 )
 
-// 标志位(GCHeader.flags,4 bit;01 §5.2 仅用 bit0)
+// 标志位(GCHeader.flags,4 bit;01 §5.2 bit0 = hasMeta,bit1/bit2 = weak k/v 缓存)
 const (
 	tableFlagHasMeta uint8 = 1 << 0
+	tableFlagWeakKey uint8 = 1 << 1
+	tableFlagWeakVal uint8 = 1 << 2
 )
 
 // AllocTable allocates a Table head with the given pre-allocated array/hash sizes.
@@ -218,13 +220,35 @@ func SetNode(a *arena.Arena, t arena.GCRef, idx uint32, key, val value.Value, ne
 	a.SetWordAt(base+16, uint64(uint32(next)))
 }
 
-// TableWeakMode 读元表的 __mode 字段(06 §8.4 弱表协作);返回 'k'/'v'/0(无 / 强表)。
+// TableWeakMode 返回弱表模式:'k'/'v'/'a'(both)/0(强表)。
 //
-// M3 stub:返回 0(无 metatable 即非弱表);完整实现需访问元表与 string intern,留 M11 元表落地后接入。
+// 模式缓存在 GCHeader.flags 的 bit1/bit2(setmetatable 时由 SetTableWeakFlags
+// 写入——GC 不在 mark 阶段解析 __mode 字符串,06 §8.4 协作纪律)。
 func TableWeakMode(a *arena.Arena, t arena.GCRef) byte {
-	if !TableHasMeta(a, t) {
-		return 0
+	f := FlagsOf(HeaderOf(a, t))
+	wk := f&tableFlagWeakKey != 0
+	wv := f&tableFlagWeakVal != 0
+	switch {
+	case wk && wv:
+		return 'a'
+	case wk:
+		return 'k'
+	case wv:
+		return 'v'
 	}
-	// 占位:metatable 中查 __mode 的逻辑在 M11 接入(需要 string intern + key 比较)。
 	return 0
+}
+
+// SetTableWeakFlags 写弱表模式缓存位(setmetatable 时调用,07 §13)。
+func SetTableWeakFlags(a *arena.Arena, t arena.GCRef, weakKey, weakVal bool) {
+	h := HeaderOf(a, t)
+	f := FlagsOf(h)
+	f &^= tableFlagWeakKey | tableFlagWeakVal
+	if weakKey {
+		f |= tableFlagWeakKey
+	}
+	if weakVal {
+		f |= tableFlagWeakVal
+	}
+	SetHeader(a, t, SetFlags(h, f))
 }

@@ -50,7 +50,8 @@ type Collector struct {
 	// finalizer 队列(06 §10)。
 	finalizeList    []arena.GCRef // 已登记 __gc 的 userdata(创建序)
 	hasFinalizer    map[arena.GCRef]bool
-	toRunFinalizers []arena.GCRef // 本轮待运行的 __gc(创建逆序遍历时反向)
+	toRunFinalizers []arena.GCRef     // 本轮待运行的 __gc(创建逆序遍历时反向)
+	runFinalizer    func(arena.GCRef) // __gc 调度回调(State 注入,M11+)
 
 	// string intern 表(06 §9.1)。
 	strBuckets [][]arena.GCRef
@@ -109,6 +110,18 @@ func New(a *arena.Arena, opts Options) *Collector {
 // and whenever RunningThread changes).
 func (c *Collector) SetRoots(r Roots) { c.roots = r }
 
+// SetFinalizerRunner 注入 __gc 调度回调(06 §10;State 在 init 时注入)。
+func (c *Collector) SetFinalizerRunner(fn func(arena.GCRef)) { c.runFinalizer = fn }
+
+// RegisterFinalizer 登记一个带 __gc 的 userdata(setmetatable 含 __gc 时调用)。
+func (c *Collector) RegisterFinalizer(ud arena.GCRef) {
+	if c.hasFinalizer[ud] {
+		return
+	}
+	c.hasFinalizer[ud] = true
+	c.finalizeList = append(c.finalizeList, ud)
+}
+
 // LinkSweep 把新分配的对象挂入 sweep 全链头部(06 §2.1)。
 //
 // 必须在「写完 GCHeader 之后」立刻调用——这是 collector 看到新对象的唯一渠道。
@@ -150,8 +163,15 @@ func (c *Collector) Collect() {
 	c.separateFinalizers()
 	c.clearWeakTables()
 	c.sweep()
-	// runFinalizers 由 caller 在安全点逐个调度(M11 接入 host fn)——M5 阶段先把队列搬走。
-	c.toRunFinalizers, c.finalizeList = c.finalizeList, c.toRunFinalizers[:0]
+	// 运行 finalizer(06 §10):separateFinalizers 已把本轮死白的 userdata
+	// 复活并搬入 toRunFinalizers;此处经回调逐个调度(回调由 State 注入,
+	// 调用 __gc 元方法)。创建逆序执行(5.1 语义)。
+	if len(c.toRunFinalizers) > 0 && c.runFinalizer != nil {
+		for i := len(c.toRunFinalizers) - 1; i >= 0; i-- {
+			c.runFinalizer(c.toRunFinalizers[i])
+		}
+	}
+	c.toRunFinalizers = c.toRunFinalizers[:0]
 	// pacing:本轮存活字节由 sweep 时累加在 c.liveBytesAfterSweep。
 	c.threshold = c.liveBytesAfterSweep * uint64(c.gcPauseRatio) / 100
 	if c.threshold < uint64(c.a.Cap())/16 {

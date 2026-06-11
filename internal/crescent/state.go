@@ -65,6 +65,21 @@ func New() *State {
 	st.globals = object.AllocTable(a, 0, 8)
 	c.LinkSweep(st.globals)
 	st.installRoots()
+	// __gc finalizer 调度(06 §10):userdata 死亡复活后调用其 __gc 元方法。
+	c.SetFinalizerRunner(func(ud arena.GCRef) {
+		meta := object.UserdataMetaRef(st.arena, ud)
+		if meta.IsNull() {
+			return
+		}
+		key := value.MakeGC(value.TagString, st.gc.Intern([]byte("__gc")))
+		h, _ := st.tableGet(meta, key)
+		if value.Tag(h) != value.TagFunction || st.runningThread == nil {
+			return
+		}
+		udv := value.MakeGC(value.TagUserdata, ud)
+		// finalizer 出错被吞(5.1:错误不传播,GC 流程继续)
+		_, _ = st.callLuaFromHost(st.runningThread, h, []value.Value{udv})
+	})
 	return st
 }
 

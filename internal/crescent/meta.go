@@ -16,8 +16,26 @@ func (st *State) metaOf(t arena.GCRef) arena.GCRef {
 }
 
 // SetMeta 设置 t 的 metatable(0 = 清除)。object.SetTableMeta 内部 BumpGen。
+//
+// 同步解析 metatable.__mode 写入弱表缓存位(07 §13:GC 不在 mark 阶段解析
+// 字符串,setmetatable 是唯一写入口)。
 func (st *State) SetMeta(t, meta arena.GCRef) {
 	object.SetTableMeta(st.arena, t, meta)
+	weakKey, weakVal := false, false
+	if meta != 0 {
+		mode := st.metaField(t, "__mode")
+		if value.Tag(mode) == value.TagString {
+			for _, c := range object.StringBytes(st.arena, value.GCRefOf(mode)) {
+				if c == 'k' {
+					weakKey = true
+				}
+				if c == 'v' {
+					weakVal = true
+				}
+			}
+		}
+	}
+	object.SetTableWeakFlags(st.arena, t, weakKey, weakVal)
 }
 
 // metaField 查 t 的 metatable[name];无 metatable 或无该域返回 Nil。
