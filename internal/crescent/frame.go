@@ -26,10 +26,14 @@ func (st *State) enterLuaFrame(th *thread, funcIdx, nargs, nresults int, entry b
 	base := funcIdx + 1
 	// vararg 与多/少补 nil
 	numFixed := int(proto.NumParams)
+	var varargs []value.Value
 	switch {
 	case nargs > numFixed && proto.IsVararg:
-		// vararg 处理(M9 简化:vararg 区在固定参之上,VARARG 指令 M11 完整化;
-		// 目前不取 vararg 时不会越界)。
+		// 把超出固定参的部分拷贝到 ci.varargs(M13 简化版,详细布局见 05 §8.5)
+		varargs = make([]value.Value, nargs-numFixed)
+		for i := 0; i < nargs-numFixed; i++ {
+			varargs[i] = th.stack[base+numFixed+i]
+		}
 	case nargs > numFixed && !proto.IsVararg:
 		// 实参超出固定形参,直接丢弃(Lua 5.1 行为)
 	case nargs < numFixed:
@@ -59,6 +63,7 @@ func (st *State) enterLuaFrame(th *thread, funcIdx, nargs, nresults int, entry b
 		nresults: nresults,
 		fresh:    entry,
 		pc:       0,
+		varargs:  varargs,
 	}
 	th.cis = append(th.cis, ci)
 	th.top = base + int(proto.MaxStack)

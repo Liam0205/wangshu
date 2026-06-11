@@ -181,16 +181,33 @@ func (st *State) doConcat(th *thread, ci *callInfo, i bytecode.Instruction) *Lua
 	return nil
 }
 
-// doVararg M9 简化版:只把目标寄存器置 nil(满足"无 vararg"主 chunk 的隐式 IsVararg)。
-// 真实 ... 多值传播留 M11。
+// doVararg 实现 VARARG A B:把 ci.varargs 的内容拷到 R(A..A+B-2);
+// B=0 时全部拷贝并按 top 传播(主循环读 ci.top,M9 暂以单值场景为主)。
 func (st *State) doVararg(th *thread, ci *callInfo, i bytecode.Instruction) *LuaError {
 	a := bytecode.A(i)
 	b := bytecode.B(i)
+	n := len(ci.varargs)
 	if b == 0 {
+		// 全部 vararg 到 top
+		need := ci.base + a + n
+		if need > len(th.stack) {
+			th.ensureStack(need)
+		}
+		for k := 0; k < n; k++ {
+			th.stack[ci.base+a+k] = ci.varargs[k]
+		}
+		if need > th.top {
+			th.top = need
+		}
 		return nil
 	}
-	for k := 0; k < b-1; k++ {
-		setReg(th, ci, a+k, value.Nil)
+	want := b - 1
+	for k := 0; k < want; k++ {
+		if k < n {
+			setReg(th, ci, a+k, ci.varargs[k])
+		} else {
+			setReg(th, ci, a+k, value.Nil)
+		}
 	}
 	return nil
 }

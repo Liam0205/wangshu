@@ -114,6 +114,12 @@ func (st *State) Arena() *arena.Arena { return st.arena }
 // Globals returns the GCRef of the globals table.
 func (st *State) Globals() arena.GCRef { return st.globals }
 
+// InternForEmbed exposes the collector's string intern path for the embedding
+// API (11 §1.3 字符串常量惰性 intern;Value 桥接需要)。
+func (st *State) InternForEmbed(b []byte) arena.GCRef {
+	return st.gc.Intern(b)
+}
+
 // LoadProgram registers the compiled Protos and lazy-interns their string
 // literals (Proto §字面量惰性 intern;06 §5.1 R6 改写)。返回 mainID 对应的
 // closure GCRef(0 upvalue;主 chunk)。
@@ -239,5 +245,9 @@ type callInfo struct {
 	nresults int             // 调用者期望的返回数;-1 = 可变
 	tailcall bool
 	fresh    bool // execute 重入边界
-	pc       int32
+
+	// vararg 区(M13 接入):IsVararg 函数的多余实参(数量 nVarargs)拷贝到一个独立
+	// Go 切片(简化版,后续 M14 切到栈下区)。这样 VARARG 指令直接读 ci.varargs。
+	varargs []value.Value
+	pc      int32
 }
