@@ -154,23 +154,23 @@ func stringFnGmatch(st *crescent.State, args []value.Value) ([]value.Value, *cre
 	p := append([]byte(nil), pat...)
 	pos := 0
 	iter := func(ist *crescent.State, _ []value.Value) ([]value.Value, *crescent.LuaError) {
-		for pos <= len(src) {
-			start, end, caps, found, err := patternFind(src, p, pos)
-			if err != nil {
-				return nil, crescent.NewError(err.Error())
-			}
-			if !found {
-				return []value.Value{value.Nil}, nil
-			}
-			if end == pos && end == start {
-				// 空匹配:推进一格防死循环
-				pos = end + 1
-			} else {
-				pos = end
-			}
-			return capsToValues(ist, src, start, end, caps), nil
+		if pos > len(src) {
+			return []value.Value{value.Nil}, nil
 		}
-		return []value.Value{value.Nil}, nil
+		start, end, caps, found, err := patternFind(src, p, pos)
+		if err != nil {
+			return nil, crescent.NewError(err.Error())
+		}
+		if !found {
+			pos = len(src) + 1
+			return []value.Value{value.Nil}, nil
+		}
+		if end == pos && end == start {
+			pos = end + 1 // 空匹配:推进一格防死循环
+		} else {
+			pos = end
+		}
+		return capsToValues(ist, src, start, end, caps), nil
 	}
 	id := st.RegisterHostFn(iter)
 	cl := st.MakeHostClosure(id)

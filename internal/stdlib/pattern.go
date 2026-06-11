@@ -334,12 +334,13 @@ func (ms *matchState) matchBalance(s, p int) (int, error) {
 	cont := 1
 	i := s + 1
 	for i < len(ms.src) {
-		if ms.src[i] == e {
+		switch ms.src[i] {
+		case e:
 			cont--
 			if cont == 0 {
 				return ms.match(i+1, p+2)
 			}
-		} else if ms.src[i] == b {
+		case b:
 			cont++
 		}
 		i++
