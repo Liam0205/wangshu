@@ -189,6 +189,84 @@ while true do
   if i >= 3 then break end
 end
 return i`, "3"},
+
+	// —— P1 收尾轮新功能(2026-06-12) ——
+	{"generic_for_ipairs", `
+local t = { 5, 6, 7 }
+local sum = 0
+for i, v in ipairs(t) do sum = sum + i * v end
+return sum`, "38"}, // 1*5+2*6+3*7
+	{"generic_for_pairs_count", `
+local t = { a = 1, b = 2, c = 3, 10, 20 }
+local n = 0
+for k, v in pairs(t) do n = n + 1 end
+return n`, "5"},
+	{"next_manual", `
+local t = { x = 1 }
+local k, v = next(t)
+return k, v, tostring(next(t, k))`, "x\t1\tnil"},
+	{"table_insert_remove", `
+local t = {}
+table.insert(t, "a")
+table.insert(t, "b")
+table.insert(t, 1, "z")
+local r = table.remove(t, 2)
+return table.concat(t, ","), r`, "z,b\ta"},
+	{"table_sort_default", `
+local t = { 3, 1, 2 }
+table.sort(t)
+return table.concat(t, "")`, "123"},
+	{"table_sort_comparator", `
+local t = { 1, 3, 2 }
+table.sort(t, function(a, b) return a > b end)
+return table.concat(t, "")`, "321"},
+	{"unpack_range", `
+local a, b = unpack({10, 20, 30}, 2, 3)
+return a, b`, "20\t30"},
+	{"string_find_captures", `
+local s, e, cap = string.find("hello=world", "(%a+)=")
+return s, e, cap`, "1\t6\thello"},
+	{"string_gsub_func_repl", `
+return (string.gsub("abc", "%a", function(c) return c:upper() end))`, "ABC"},
+	{"string_gmatch_collect", `
+local out = {}
+for w in string.gmatch("a,b,c", "[^,]+") do out[#out+1] = w end
+return table.concat(out, "|")`, "a|b|c"},
+	{"string_format_mixed", `
+return string.format("%d-%s-%.2f", 7, "x", 1.5)`, "7-x-1.50"},
+	{"string_byte_char_roundtrip", `
+return string.char(string.byte("Q"))`, "Q"},
+	{"method_sugar_on_literal", `
+return ("mixed"):upper():lower()`, "mixed"},
+	{"coroutine_pingpong", `
+local co = coroutine.create(function(x)
+  local y = coroutine.yield(x * 2)
+  return y + 1
+end)
+local _, a = coroutine.resume(co, 5)
+local _, b = coroutine.resume(co, 100)
+return a, b`, "10\t101"},
+	{"coroutine_wrap_iterator", `
+local function range(n)
+  return coroutine.wrap(function()
+    for i = 1, n do coroutine.yield(i) end
+  end)
+end
+local sum = 0
+for i in range(4) do sum = sum + i end
+return sum`, "10"},
+	{"xpcall_handler_transforms", `
+local ok, r = xpcall(function() error("E", 0) end, function(e) return "<" .. e .. ">" end)
+return tostring(ok), r`, "false\t<E>"},
+	{"weak_table_mode_set", `
+local t = setmetatable({}, { __mode = "v" })
+t.x = "still here before gc"
+return t.x`, "still here before gc"},
+	{"math_extras", `
+return math.fmod(7, 3), math.max(1, 9, 5), math.floor(math.pi)`, "1\t9\t3"},
+	{"select_tail", `
+local function f(...) return select(2, ...) end
+return f("a", "b", "c")`, "b\tc"},
 }
 
 func TestConformance(t *testing.T) {
