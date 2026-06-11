@@ -799,8 +799,9 @@ P1 建立的三套机制(conformance / 差分 fuzz / 基准)如何复用到 P2-P
 | 23 | **lexer 标识符 locale 字节** | 03 §11/§13 | **ASCII-only 口径锁定**:生成器只产 ASCII 标识符;gopher 高位字节偏差豁免 | locale 无法稳定对拍,ASCII-only 是可复现最小公约(03 §11);非豁免而是口径(§4.6) |
 | 24 | **opcode 特化变体**(GETTABLE_N/_S 等) | 02 §10 | **P1 不做**(保持 5.1 最小集);若做须 byte-equal 于基线 opcode | 特化是提速 spike,采纳口径同 dispatch A/B(byte-equal + 不更慢,§6.6) |
 | 25 | **weak table / ephemeron 语义** | 07 §1081 | **P1 简化(键活则值无条件标活)**;触及精确 ephemeron 的用例标 P1 限制豁免 | P1 范围裁剪;真实嵌入负载罕用 ephemeron(§4.1 cleartable 归本质未定义) |
+| 26 | **ColInt64 超界报错**(`\|v\| > 2^53` 抛错,望舒扩展) | 11 §3.3.2(经评审定稿) | **登记为望舒扩展行为**:官方/gopher 无 arena ABI 故无对应;错误措辞 `int64 column value out of exact range` 由本表锁定,差分豁免(arena 路径不参与三方差分) | 宁报错不错果(原则 2 精神):静默丢精度对 ID 类数据 = 静默错果且差分测不出 |
 
-**收口统计**:本表收口 **25 条**被各文档指向 12 的口径问题,覆盖 01/02/03/04/05/06/07/08/09/10 全部 P1 文档的「待 12 定」标注。其中**严格逐字节**类 11 条(pairs严格部分/format/pattern/sort/措辞/位置/coercion/库存在性/折叠/fmod/finalizer)、**豁免/部分豁免**类 7 条(地址/random/GC数值/date/ephemeron/libc文本/gopher偏差)、**口径锁定 + 机制定稿**类 7 条(pairs混合/GC透明性+压力fuzz/dispatch A-B/寄存器同构/mono IC/step0/ASCII)。
+**收口统计**:本表收口 **26 条**口径问题(25 条来自各文档「待 12 定」标注 + 1 条评审新增),覆盖 01/02/03/04/05/06/07/08/09/10/11 全部 P1 文档。其中**严格逐字节**类 11 条(pairs严格部分/format/pattern/sort/措辞/位置/coercion/库存在性/折叠/fmod/finalizer)、**豁免/部分豁免**类 7 条(地址/random/GC数值/date/ephemeron/libc文本/gopher偏差)、**口径锁定 + 机制定稿**类 7 条(pairs混合/GC透明性+压力fuzz/dispatch A-B/寄存器同构/mono IC/step0/ASCII)。
 
 ---
 

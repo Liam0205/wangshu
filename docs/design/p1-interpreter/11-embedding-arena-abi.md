@@ -71,7 +71,8 @@ type Options struct {
     MaxCallDepth      int    // Lua 调用深度上限(CallInfo 数,05 §7.4;默认如 200000)
     MaxCCalls         int    // host→Lua 重入深度上限(真 Go 栈,05 §7.4;默认 200)
     GCPause           int    // GC pacing,存活量百分比(默认 200 = 2.0x,06 §8.3)
-    OpenLibs          bool   // 是否自动 open 标准库(base/string/table/math/...,见 10)
+    Libs              Lib      // 标准库位掩码(零值=LibsDefault 对齐 gopher-lua 面;LibsSafe=计算沙箱;见 10 §12.1)
+    Exclude           []string // 函数级排除路径(注册后删除),如 {"os.execute","io.open"}(10 §12.1 三层粒度)
 }
 
 // NewState 创建一个独立 VM 实例。它持有:
@@ -264,7 +265,7 @@ ColumnDesc(16 字节):
 | tag | 名称 | 元素宽 | 数据区元素类型 | 读出为 Lua | canonicalize |
 |---|---|---|---|---|---|
 | `1` | `ColFloat64` | 8 B | `float64` | number(double) | **是**(§4.1,过 [01](./01-value-object-model.md) §3.4) |
-| `2` | `ColInt64` | 8 B | `int64` | number(double)+ 精度边界缺口,或 lightuserdata(**关键决策**,§3.3.2) | — |
+| `2` | `ColInt64` | 8 B | `int64` | number(double);`|v| > 2^53` **超界报错**(§3.3.2 定稿) | — |
 | `3` | `ColBool` | 1 B(打包见 §3.3.3) | `bool` | boolean | — |
 | `4` | `ColString` | 8 B(strslot) | `StrSlot{off u32, len u32}` → 字符串区 | string | — |
 
@@ -293,20 +294,21 @@ data[dataOff..]: nrows 个 float64(IEEE-754 double,小端),连续。
 data[dataOff..]: nrows 个 int64(小端补码),连续。
 ```
 
-**关键决策**(任务点名,Lua number 是 double,int64 进 VM 转 double 会丢 >2^53 精度):
+**关键决策**(Lua number 是 double,int64 进 VM 转 double 会丢 >2^53 精度;**经评审定稿:超界报错,宁报错不错果**):
 
-> **决策:P1 的 ColInt64 读出时转 double(`value.NumberValue(float64(v))`),并明确记录精度边界缺口;`|v| > 2^53` 的精确整数会丢低位。** 这是 Lua 5.1 的内在约束(roadmap §6 锁定「无整数子类型」,Lua number 恒 double),不是望舒的缺陷。
+> **决策:P1 的 ColInt64 读出时检查 `|v| ≤ 2^53`——范围内转 double(`value.NumberValue(float64(v))`);超界抛运行期错误**(措辞建议 `int64 column value out of exact range (|v| > 2^53)`,带列名/行号,精确措辞待 [12](./12-testing-difftest.md) 登记——此错误是望舒扩展,官方/gopher 无对应,差分豁免)。Lua 5.1 无整数子类型(roadmap §6)是内在约束,但**静默丢精度对 ID 类数据(雪花 ID/纳秒时间戳,量级 2^63)意味着相等比较悄悄错果且差分测不出**——这违背贯穿原则 2 的精神(防静默错果),故 P1 选报错而非截断。
 
-理由与权衡(讨论两条路):
+理由与权衡(三条路):
 
 | 路 | 读出 | 优点 | 代价 |
 |---|---|---|---|
-| **(i) 转 double(P1 选定)** | `NumberValue(float64(v))` | 脚本里 int64 列就是普通 number,可直接算术/比较(快路径,[05](./05-interpreter-loop.md) §4.1);与 Lua 5.1 数值语义一致 | `|v| > 2^53`(9 千万亿)丢精度——大整数 ID、纳秒时间戳、大计数会失真 |
-| **(ii) 作为 lightuserdata 透传** | `value.LightUDValue(uint64(v) & payloadMask)`,48-bit 截断 | 48-bit 内整数精确保留 | 脚本里它是 userdata,**不能直接算术**(要调 host 函数解包);48-bit 仍不够 full int64(63-bit);破坏「int64 列是 number」的直觉 |
+| (i) 静默转 double | `NumberValue(float64(v))` | 实现最简 | `|v| > 2^53` 静默丢低位——ID 类数据**静默错果**,排查成本极高 |
+| **(ii) 超界报错(P1 选定)** | 范围内同 (i);超界抛错 | 范围内零额外语义负担;**超界宁报错不错果**,错误在首次读出即暴露 | 每元素读出多一次范围比较(可接受:与 NaN canonicalize 同级别的逐元素开销);宿主须为大整数列显式改道 |
+| (iii) 作为 lightuserdata 透传 | `LightUDValue(...)`,48-bit 截断 | 48-bit 内精确 | 脚本里不能直接算术(要 host 解包,per-item 跨界反前提一);48-bit 仍不够 full int64 |
 
-P1 选 (i),并把精度边界作为**显式契约**告知宿主:**ColInt64 适合「值域在 ±2^53 内的整数」(绝大多数业务整数:行号、小计数、价格分、百分比)**;若宿主的 int64 是「大 ID / 纳秒时间戳 / 哈希值」且需精确,应改用 **ColString 列**(把整数格式化成字符串)或 **句柄表 + lightuserdata**(§6,宿主自管解包)。
+**对宿主的契约**:ColInt64 适合「值域在 ±2^53 内的整数」(行号、小计数、价格分、百分比)。若宿主的 int64 是**大 ID / 纳秒时间戳 / 哈希值**,**禁止**走 ColInt64(会在首次读出时报错),应改用 **ColString 列**(整数格式化为字符串,相等比较语义精确)或 **句柄表 + lightuserdata**(§6,宿主自管解包)。报错而非静默,使「选错列类型」在联调期即暴露,而非在生产数据撞上 2^53 时静默错果。
 
-> 为什么不默认 (ii):列内核负载的整数列绝大多数在 ±2^53 内(roadmap §1 的 Horner/计数形状),(i) 让它们走 number 快路径(零额外开销)。把所有 int64 都当 lightuserdata 会逼脚本对每个整数调 host 解包(per-item 跨界,反 [design-premises](../../../llmdoc/must/design-premises.md) 前提一)。**(i) 是性能与语义的占优选择,精度边界以文档契约兜底。** 记 §12 缺口:「ColInt64 是否需要一个 `ColInt64Exact` 变体(读出为不可直算的精确整数 box)」待真实宿主反馈。
+> 记 §12 缺口:「ColInt64 是否需要 `ColInt64Exact` 变体(读出为不可直算的精确整数 box)」与「超界检查的批量优化(列级 min/max 预检替代逐元素比较)」待真实宿主反馈。
 
 #### 3.3.3 ColBool(`[]bool`,位打包)
 
@@ -387,7 +389,10 @@ bitmap[bitmapOff..]: ceil(nrows/64) 个 u64(小端 u64 字数组):
       return value.Nil                         // null 槽 → Lua nil
   switch desc.tag:
     case ColFloat64: return value.NumberValue(data_f64[i])          // §3.3.1 + canonicalize
-    case ColInt64:   return value.NumberValue(float64(data_i64[i])) // §3.3.2 转 double(精度边界)
+    case ColInt64:
+        v := data_i64[i]
+        if v > 1<<53 || v < -(1<<53) { return errInt64OutOfExactRange(col, i) } // §3.3.2 超界报错
+        return value.NumberValue(float64(v))
     case ColBool:    return value.BoolValue((data[i>>3]>>(i&7))&1==1) // §3.3.3
     case ColString:  return internStrSlot(slot[i])                  // §3.3.4 拷贝+intern(口径)
 ```
@@ -728,7 +733,7 @@ func (s *State) CallGlobal(name string, args ...Value) ([]Value, error)
 用法(对标 gopher-lua 的 `L.CallByParam` 风格):
 
 ```go
-state := wangshu.NewState(wangshu.Options{OpenLibs: true})
+state := wangshu.NewState(wangshu.Options{})  // 零值 Libs = LibsDefault(对齐 gopher-lua 面,10 §12.1)
 prog, _ := wangshu.Compile([]byte(`function score(x) return x*x+1 end`), "rules")
 prog.Call(state, nil)                       // 先跑顶层定义 score 全局函数
 // per-item 调用(每次跨界一次):
