@@ -20,6 +20,12 @@ type LocalVar struct {
 }
 
 // Proto is the immutable compilation unit (one per Lua function).
+//
+// 字符串字面量惰性 intern(承 01 §5.7 / 06 §5.1 R6 改写):codegen 期间 Consts 中字符串
+// 槽位置 Nil 占位,真实字面量原文在 StringLits;StringLitIdx[i] >= 0 表示 Consts[i] 是
+// 字符串占位且原文在 StringLits[StringLitIdx[i]];= -1 表示真常量(Number/Bool/Nil)。
+// 每个 State 首次执行该 Proto 时把 StringLits 逐个 intern 进自己的 arena,得到该 State
+// 私有的 GCRef 表(GC 根,R6)。这使一个 Program 可被多 State / 多 goroutine 复用(11 §1.4)。
 type Proto struct {
 	Source      string // 源名(chunkname),用于错误回溯前缀
 	LineDefined int32  // 函数定义起始行
@@ -29,10 +35,12 @@ type Proto struct {
 	IsVararg  bool  // 是否 vararg 函数
 	MaxStack  uint8 // 寄存器水位线(04 §5.3),解释器进帧时备栈
 
-	Code       []Instruction // 32-bit 指令流
-	Consts     []value.Value // 常量池:数字直接 boxed;字符串常量是 arena GCRef(GC 根)
-	Protos     []uint32      // 嵌套 Proto 的 ProtoID(下标,见 protos 注册表)
-	UpvalDescs []UpvalDesc
+	Code         []Instruction // 32-bit 指令流
+	Consts       []value.Value // 常量槽:数字直接 boxed;字符串槽是 Nil 占位(由 State 装载期惰性替换)
+	StringLits   []string      // 字符串字面量原文(Compile 期间收集,跨 State 共享只读)
+	StringLitIdx []int32       // Consts 中字符串槽 → StringLits 下标的映射;非字符串槽 = -1
+	Protos       []uint32      // 嵌套 Proto 的 ProtoID(下标,见 protos 注册表)
+	UpvalDescs   []UpvalDesc
 
 	// 调试信息(可选;按 [架构] 选择是否保留——P1 保留以支持 traceback / 错误变量名后缀)。
 	LineInfo []int32    // 每条指令对应的源行(len(LineInfo) == len(Code) 或为 0 = 无调试信息)
@@ -41,6 +49,12 @@ type Proto struct {
 	// IC slots(02 §7,按 pc 索引)。
 	// 长度 == len(Code);非 IC 指令对应槽空闲(可挪用为 P2 算术 IC 双计数,见 02 §7)。
 	IC []ICSlot
+}
+
+// IsStringConst reports whether Consts[i] is a string literal placeholder.
+// 调用方在 LOADK 路径根据这个判定决定走 State.programStringRefs 还是直接读 Consts[i]。
+func (p *Proto) IsStringConst(i int) bool {
+	return i < len(p.StringLitIdx) && p.StringLitIdx[i] >= 0
 }
 
 // ICSlot 是 inline cache 槽(02 §7 + 05 §6 定稿,含 tableRef / 双计数挪用)。

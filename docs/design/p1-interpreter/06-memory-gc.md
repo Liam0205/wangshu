@@ -287,7 +287,7 @@ GC 根 = **不经其它对象就能被程序直接触达的 arena 对象**。漏
 | R3 | **主线程**(main thread) | `State.mainThread GCRef` | 该 Thread(连带其栈/CallInfo,见 §5.2) | 主协程 |
 | R4 | **所有活跃 thread** | 由 R3 经 resume 链 / 被引用可达,**或** 显式 running-thread 寄存器 | 各 Thread | 当前 running thread 必须当根(见下) |
 | R5 | **当前 running thread 的值栈与 CallInfo** | running Thread 的 valueStackRef / callInfoRef | 栈上 `[0,top)` 的所有 Value + 各 CallInfo 引用的 closure/Value | **解释器执行现场**;§5.2 详述 |
-| R6 | **Proto 注册表的常量 GCRef** | `State.protos []*Proto`,每个 `Proto.Consts []Value` 中的字符串元素 + `Proto.Source` | 各字符串常量、源名字符串 | [01](./01-value-object-model.md) §1/§5.7 已点名「Proto 注册表的常量/源名 GCRef 是 GC 根」 |
+| R6 | **Program 字符串常量在该 State 的 intern 表** | `State.programStringRefs[*Proto]` —— 每张表是该 Program 中所有字符串字面量在本 State arena intern 后的 GCRef(承 [01](./01-value-object-model.md) §5.7 字符串惰性 intern 决策) | 各字符串常量的 String GCRef | M8 起 `Proto.Consts` 不直接持字符串 GCRef(那样跨 State 无法共享 Program);本表是 State 私有的字符串解析缓存,字符串字面量的 GC 根在此 |
 | R7 | **shadow stack** | `Collector.shadowStack`(host fn 执行期临时持有的 arena 引用) | 各登记的 GCRef / Value | §6 详述;host 在 Go 栈上持有的引用,GC 看不见,靠此登记 |
 | R8 | **临时根 / 构造中的对象** | 解释器在多步构造(如 CONCAT 中间串、表构造中途)持有的尚未挂入任何对象的引用 | 这些临时 GCRef | 见 §7 safepoint 一致性;多数情况落在 R5(已在栈上)或 R7 |
 | R9 | **per-type 元表槽** | `State.typeMetatables[9]`([07](./07-metatables-metamethods.md) §1.2:string 公共元表、debug.setmetatable 设的各类型元表) | 各槽指向的 metatable Table(非 0 槽) | 承 07 回填请求:不当根则 string 元表(挂着 string 库)会被误回收 |
@@ -308,14 +308,14 @@ GC 根 = **不经其它对象就能被程序直接触达的 arena 对象**。漏
 > 这是 `docs/design/roadmap.md` (§3)「根放 shadow stack」的精确含义——shadow stack 补的是 GC 精确栈扫描**看不见 arena 引用**的盲区
 > (四项税的「GC 精确栈扫描」税在我们这儿的具体形态:Go 能精确扫 Go 栈,但 arena 引用是整数,Go 扫不出,VM 自己补)。
 
-**fixed 串决策(R6 的优化):** R6 要求每轮 GC 都遍历整个 Proto 注册表标记常量串/源名。两种实现:
+**fixed 串决策(R6 的优化):** R6 要求每轮 GC 都遍历每个 State 的 `programStringRefs` 标记字符串常量。两种实现:
 
-- **(A)纯根扫描**:每轮 mark 时遍历 `protos[]`,标记每个 `Consts` 里的字符串 GCRef + `Source`。简单,但 Proto 多时每轮 O(常量总数)。
-- **(B)intern 时标 fixed**:字符串成为某 Proto 常量时,在其 GCHeader 标 `fixed`(§4.4),sweep 永久跳过,**无需每轮根扫**。
+- **(A)纯根扫描**:每轮 mark 时遍历 `state.programStringRefs`,标记每个 GCRef。简单,但 Program 多时每轮 O(字符串总数)。
+- **(B)intern 时标 fixed**:字符串首次为某 Program 常量 intern 时,在其 GCHeader 标 `fixed`(§4.4),sweep 永久跳过,**无需每轮根扫**。
   代价:Proto 卸载(P1 无此操作,Proto 与 State 同生命周期)时这些串不随之回收——P1 可接受(Proto 不卸载)。
 
 **P1 定稿:走 (A) 纯根扫描**(简单、与「Proto 不卸载」假设解耦、未来支持 Proto 卸载时无需改 sweep)。`fixed` 位**P1 保留但不使用**
-(留给 §10 评估:若 Proto 注册表常量很多导致根扫描成 mark 热点,再切 (B))。这与 [01](./01-value-object-model.md) §4「Proto 引用的常量串可标 fixed」是**可选**优化的措辞一致(「可标」非「必标」)。
+(留给 §10 评估:若 Program 字符串常量很多导致根扫描成 mark 热点,再切 (B))。这与 [01](./01-value-object-model.md) §4「Proto 引用的常量串可标 fixed」是**可选**优化的措辞一致(「可标」非「必标」)。
 
 ### 5.2 各对象类型要扫的 GCRef 字段(本文定稿,逐类给出)
 

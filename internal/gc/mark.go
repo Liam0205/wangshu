@@ -16,8 +16,8 @@ func (c *Collector) markRoots() {
 	for _, th := range c.roots.Threads {
 		c.markRef(th)
 	}
-	if c.roots.ProtoConstants != nil {
-		c.roots.ProtoConstants(func(v value.Value) { c.markValue(v) })
+	if c.roots.ProgramStringRefs != nil {
+		c.roots.ProgramStringRefs(func(ref arena.GCRef) { c.markRef(ref) })
 	}
 	for _, mt := range c.roots.TypeMetatables {
 		c.markRef(mt)

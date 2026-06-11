@@ -280,23 +280,35 @@ word8: resumeFrom / caller thread ref(resume 链)
 逻辑结构(Go struct,非 arena;字段语义见 [02-bytecode-isa](./02-bytecode-isa.md)):
 ```go
 type Proto struct {
-    Code       []Instruction // uint32 指令流
-    Consts     []Value       // 常量:数字直接 boxed;字符串是 arena GCRef(GC 根)
-    Protos     []ProtoID     // 嵌套函数原型
-    UpvalDescs []UpvalDesc   // upvalue 来源描述(inStack? idx + name 调试名,见 04 §8.3)
-    NumParams  uint8
-    IsVararg   bool
-    MaxStack   uint8         // 该函数需要的寄存器数
-    LineInfo   []int32       // 调试:每指令源行
-    LocVars    []LocalVar    // 调试:局部变量名 + 活跃区间 [startpc,endpc)(04 §5.9 产出)
-    Source     GCRef         // 源名字符串(GC 根)
+    Code         []Instruction // uint32 指令流
+    Consts       []Value       // 常量槽:数字直接 boxed;字符串槽存占位(见下),由 State 装载期惰性替换为 GCRef
+    StringLits   []string      // 字符串字面量原文(Compile 期间收集,跨 State 不可变共享)
+    StringLitIdx []int32       // Consts 中字符串槽 → StringLits 下标的映射;非字符串槽 = -1
+    Protos       []ProtoID     // 嵌套函数原型
+    UpvalDescs   []UpvalDesc   // upvalue 来源描述(inStack? idx + name 调试名,见 04 §8.3)
+    NumParams    uint8
+    IsVararg     bool
+    MaxStack     uint8         // 该函数需要的寄存器数
+    LineInfo     []int32       // 调试:每指令源行
+    LocVars      []LocalVar    // 调试:局部变量名 + 活跃区间 [startpc,endpc)(04 §5.9 产出)
+    Source       string        // 源名(chunkname),Go 堆;运行期 traceback 使用,不进 arena
 }
 
 type LocalVar struct { Name string; StartPC, EndPC int32 }
 ```
-`LocVars` 承 [04](./04-frontend-parser-codegen.md) §13 与 [09](./09-errors-pcall.md) §8.4 的回填请求:codegen 的 `removeVars` 闭合活跃区间后写入(04 §5.9),供错误信息变量名后缀与 traceback 的 `local 'x'` 推断(09 §8)。upvalue 名复用 `UpvalDescs` 的 `name` 字段(04 §8.3 已含),不再单列 `UpvalNames`。两表均为 Go 堆调试数据,不入 arena、不参与 GC(`Name` 是 Go string 而非 GCRef)。
+`LocVars` 承 [04](./04-frontend-parser-codegen.md) §13 与 [09](./09-errors-pcall.md) §8.4 的回填请求:codegen 的 `removeVars` 闭合活跃区间后写入(04 §5.9),供错误信息变量名后缀与 traceback 的 `local 'x'` 推断(09 §8)。upvalue 名复用 `UpvalDescs` 的 `name` 字段(04 §8.3 已含),不再单列 `UpvalNames`。LocVars 是 Go 堆调试数据,不入 arena、不参与 GC(`Name` 是 Go string)。
 
-`Program` / `State` 持有 `protos []*Proto` 注册表,`protoID` 即下标。注册表内所有 `Consts`/`Source` 的 GCRef 是 GC 根。
+**字符串常量的惰性 intern**(承 [11](./11-embedding-arena-abi.md) §1.3 多 State 复用 Program 的并发承诺,M8 codegen 落地需要):
+
+- codegen 阶段产出的 Proto 持 `StringLits []string`(原始字节,Go 堆),`Consts` 中字符串字面量槽位**留占位**(实际值由 `StringLitIdx[槽] = StringLits 下标` 间接寻址)。
+- 占位 bit pattern:`Consts[i] = value.Nil`(表示"该槽待装载"),并由 `StringLitIdx[i] >= 0` 区分"是字符串占位"vs"是真 nil 常量";真 nil 常量令 `StringLitIdx[i] = -1`。
+- `Program` 不可变共享:codegen 完成后 `StringLits` / `StringLitIdx` 写满,只读。
+- 每个 `State` 首次执行某 Program 时(M13 装载路径):遍历 `StringLits` 逐个 intern 进 State arena,得到 GCRef 表 `programStringRefs map[*Proto][]value.Value`;运行期 `LOADK Bx` 命中字符串槽(`StringLitIdx[Bx] >= 0`)→ 读 State 的 GCRef 表;否则直接读 `Consts[Bx]`。
+- 工程权衡:首次 Call 在每个 State 上做一次 N 个 intern(不可省,GCRef 是 arena 私有的);Program 只多持 N 个 Go string(L 字节级),不多持一份 String 对象副本。Lua C 实现"Proto 持 TString 指针"的方案在此被替换为"Proto 持原文 + State 持 GCRef 表",代价是 Consts 读取多一次间接。
+
+`Source` 是 Go string(chunkname),不再是 GCRef——它只供 traceback 用,不需要进值世界。
+
+`Program` / `State` 持有 `protos []*Proto` 注册表,`protoID` 即下标。`State.programStringRefs[*Proto]` 持有该 State 私有的字符串 GCRef 表(运行期 GC 根,加入 [06](./06-memory-gc.md) §5.1 的根集合,与 R6 同级)。
 
 ---
 

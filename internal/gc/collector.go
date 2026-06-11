@@ -63,13 +63,13 @@ type Collector struct {
 // 字段名按 R 编号(R5 = running thread 经其 valueStack/CallInfo 自动覆盖,无需显式列出栈
 // 槽——只要登记 RunningThread,mark 阶段顺着 Thread 头扫到栈即可)。
 type Roots struct {
-	Globals        arena.GCRef                   // R1
-	Registry       arena.GCRef                   // R2
-	MainThread     arena.GCRef                   // R3
-	RunningThread  arena.GCRef                   // R4 / R5(顺其 valueStack/CallInfo 扫到全部活跃寄存器)
-	Threads        []arena.GCRef                 // R4:其它活跃 Thread(协程链)
-	ProtoConstants func(visit func(value.Value)) // R6:遍历 Proto 注册表的常量 GCRef + Source
-	TypeMetatables [9]arena.GCRef                // R9:per-type 元表(07 §1.2)
+	Globals           arena.GCRef                   // R1
+	Registry          arena.GCRef                   // R2
+	MainThread        arena.GCRef                   // R3
+	RunningThread     arena.GCRef                   // R4 / R5(顺其 valueStack/CallInfo 扫到全部活跃寄存器)
+	Threads           []arena.GCRef                 // R4:其它活跃 Thread(协程链)
+	ProgramStringRefs func(visit func(arena.GCRef)) // R6:State 中所有 programStringRefs 的字符串 GCRef(承 01 §5.7 / 06 §5.1 R6 改写)
+	TypeMetatables    [9]arena.GCRef                // R9:per-type 元表(07 §1.2)
 	// R7 shadow stack 由 Collector 自己持有;R8 临时根落在 R5/R7,无需独立字段。
 }
 
