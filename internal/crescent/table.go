@@ -19,6 +19,7 @@ import (
 // 但 M9 范围内不会触发(string 走 intern,数字键也不会有 +0/-0 用例)。
 type tableSide struct {
 	data map[uint64]value.Value
+	meta arena.GCRef // metatable(M11;0 = 无)
 }
 
 func (st *State) sideOf(t arena.GCRef) *tableSide {

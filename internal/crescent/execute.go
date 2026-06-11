@@ -80,26 +80,25 @@ func (st *State) execute(th *thread) *LuaError {
 
 		case bytecode.GETTABLE:
 			tbl := reg(th, ci, bytecode.B(i))
-			if value.Tag(tbl) != value.TagTable {
-				return errf("attempt to index a %s value", typeName(tbl))
-			}
 			key := rk(th, ci, bytecode.C(i))
-			v, e := st.tableGet(value.GCRefOf(tbl), key)
+			v, e := st.indexWithMeta(th, tbl, key)
 			if e != nil {
 				return e
 			}
+			// __index handler 可能重入 execute(append cis)→ 刷新 ci 指针
+			ci = currentCI(th)
+			code = ci.proto.Code
 			setReg(th, ci, bytecode.A(i), v)
 
 		case bytecode.SETTABLE:
 			tbl := reg(th, ci, bytecode.A(i))
-			if value.Tag(tbl) != value.TagTable {
-				return errf("attempt to index a %s value", typeName(tbl))
-			}
 			key := rk(th, ci, bytecode.B(i))
 			val := rk(th, ci, bytecode.C(i))
-			if e := st.tableSet(value.GCRefOf(tbl), key, val); e != nil {
+			if e := st.setIndexWithMeta(th, tbl, key, val); e != nil {
 				return e
 			}
+			ci = currentCI(th)
+			code = ci.proto.Code
 			st.safepoint(th, ci)
 
 		case bytecode.NEWTABLE:
@@ -113,20 +112,22 @@ func (st *State) execute(th *thread) *LuaError {
 		case bytecode.SELF:
 			tbl := reg(th, ci, bytecode.B(i))
 			setReg(th, ci, bytecode.A(i)+1, tbl)
-			if value.Tag(tbl) != value.TagTable {
-				return errf("attempt to index a %s value", typeName(tbl))
-			}
 			key := rk(th, ci, bytecode.C(i))
-			v, e := st.tableGet(value.GCRefOf(tbl), key)
+			v, e := st.indexWithMeta(th, tbl, key)
 			if e != nil {
 				return e
 			}
+			ci = currentCI(th)
+			code = ci.proto.Code
 			setReg(th, ci, bytecode.A(i), v)
 
 		case bytecode.ADD, bytecode.SUB, bytecode.MUL, bytecode.DIV, bytecode.MOD, bytecode.POW:
 			if e := st.doArith(th, ci, i); e != nil {
 				return e
 			}
+			// __add 等 handler 可能重入 execute → 刷新
+			ci = currentCI(th)
+			code = ci.proto.Code
 
 		case bytecode.UNM:
 			b := reg(th, ci, bytecode.B(i))
@@ -195,8 +196,12 @@ func (st *State) execute(th *thread) *LuaError {
 			}
 			if next != nil {
 				ci = next
-				code = ci.proto.Code
+			} else {
+				// host 路径:host 内部可能重入 execute(pcall 等),th.cis 底层数组
+				// 可能因 append 重分配 — 旧 ci 指针失效,必须刷新。
+				ci = currentCI(th)
 			}
+			code = ci.proto.Code
 
 		case bytecode.TAILCALL:
 			next, e := st.doTailCall(th, ci, i)
@@ -205,8 +210,10 @@ func (st *State) execute(th *thread) *LuaError {
 			}
 			if next != nil {
 				ci = next
-				code = ci.proto.Code
+			} else {
+				ci = currentCI(th)
 			}
+			code = ci.proto.Code
 
 		case bytecode.RETURN:
 			next, terminate := st.doReturn(th, ci, i, entryDepth)
@@ -290,34 +297,56 @@ func toNumber(v value.Value) (float64, bool) {
 	return 0, false
 }
 
-// 算术辅助。
+// 算术辅助。快路径双 number;慢路径走 __add 等元方法(M11)。
 func (st *State) doArith(th *thread, ci *callInfo, i bytecode.Instruction) *LuaError {
 	b := rk(th, ci, bytecode.B(i))
 	c := rk(th, ci, bytecode.C(i))
-	if !value.IsNumber(b) {
-		return errf("attempt to perform arithmetic on a %s value", typeName(b))
+	if value.IsNumber(b) && value.IsNumber(c) {
+		x, y := value.AsNumber(b), value.AsNumber(c)
+		var r float64
+		switch bytecode.Op(i) {
+		case bytecode.ADD:
+			r = x + y
+		case bytecode.SUB:
+			r = x - y
+		case bytecode.MUL:
+			r = x * y
+		case bytecode.DIV:
+			r = x / y
+		case bytecode.MOD:
+			r = x - math.Floor(x/y)*y
+		case bytecode.POW:
+			r = math.Pow(x, y)
+		}
+		setReg(th, ci, bytecode.A(i), value.NumberValue(r))
+		return nil
 	}
-	if !value.IsNumber(c) {
-		return errf("attempt to perform arithmetic on a %s value", typeName(c))
+	// 慢路径:__add 等元方法
+	name := arithMetaName(bytecode.Op(i))
+	res, e := st.arithMeta(th, name, b, c)
+	if e != nil {
+		return e
 	}
-	x, y := value.AsNumber(b), value.AsNumber(c)
-	var r float64
-	switch bytecode.Op(i) {
-	case bytecode.ADD:
-		r = x + y
-	case bytecode.SUB:
-		r = x - y
-	case bytecode.MUL:
-		r = x * y
-	case bytecode.DIV:
-		r = x / y
-	case bytecode.MOD:
-		r = x - math.Floor(x/y)*y
-	case bytecode.POW:
-		r = math.Pow(x, y)
-	}
-	setReg(th, ci, bytecode.A(i), value.NumberValue(r))
+	setReg(th, ci, bytecode.A(i), res)
 	return nil
+}
+
+func arithMetaName(op bytecode.OpCode) string {
+	switch op {
+	case bytecode.ADD:
+		return "__add"
+	case bytecode.SUB:
+		return "__sub"
+	case bytecode.MUL:
+		return "__mul"
+	case bytecode.DIV:
+		return "__div"
+	case bytecode.MOD:
+		return "__mod"
+	case bytecode.POW:
+		return "__pow"
+	}
+	return "__add"
 }
 
 // 比较辅助。

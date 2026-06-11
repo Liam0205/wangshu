@@ -100,6 +100,90 @@ var baseFns = []entry{
 	{"error", baseFnError},
 	{"select", baseFnSelect},
 	{"unpack", baseFnUnpack},
+	{"pcall", baseFnPcall},
+	{"setmetatable", baseFnSetMetatable},
+	{"getmetatable", baseFnGetMetatable},
+	{"rawget", baseFnRawGet},
+	{"rawset", baseFnRawSet},
+	{"rawequal", baseFnRawEqual},
+}
+
+// baseFnPcall:pcall(f, ...) → (true, results...) | (false, errval)(09 §pcall;05 §9.3)。
+func baseFnPcall(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
+	if len(args) == 0 {
+		return nil, crescent.NewError("bad argument #1 to 'pcall' (value expected)")
+	}
+	results, e := st.ProtectedCall(args[0], args[1:])
+	if e != nil {
+		errVal := e.Value
+		if errVal == value.Value(0) || errVal == value.Nil {
+			errVal = intern(st, e.Msg)
+		}
+		return []value.Value{value.False, errVal}, nil
+	}
+	out := make([]value.Value, 0, len(results)+1)
+	out = append(out, value.True)
+	out = append(out, results...)
+	return out, nil
+}
+
+func baseFnSetMetatable(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
+	if len(args) < 2 || value.Tag(args[0]) != value.TagTable {
+		return nil, crescent.NewError("bad argument #1 to 'setmetatable' (table expected)")
+	}
+	t := value.GCRefOf(args[0])
+	switch value.Tag(args[1]) {
+	case value.TagTable:
+		st.SetMeta(t, value.GCRefOf(args[1]))
+	case value.TagNil:
+		st.SetMeta(t, 0)
+	default:
+		return nil, crescent.NewError("bad argument #2 to 'setmetatable' (nil or table expected)")
+	}
+	return []value.Value{args[0]}, nil
+}
+
+func baseFnGetMetatable(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
+	if len(args) == 0 || value.Tag(args[0]) != value.TagTable {
+		return []value.Value{value.Nil}, nil
+	}
+	mt := st.MetaOf(value.GCRefOf(args[0]))
+	if mt == 0 {
+		return []value.Value{value.Nil}, nil
+	}
+	return []value.Value{value.MakeGC(value.TagTable, mt)}, nil
+}
+
+func baseFnRawGet(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
+	if len(args) < 2 || value.Tag(args[0]) != value.TagTable {
+		return nil, crescent.NewError("bad argument to 'rawget'")
+	}
+	v, e := st.RawGet(value.GCRefOf(args[0]), args[1])
+	if e != nil {
+		return nil, e
+	}
+	return []value.Value{v}, nil
+}
+
+func baseFnRawSet(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
+	if len(args) < 3 || value.Tag(args[0]) != value.TagTable {
+		return nil, crescent.NewError("bad argument to 'rawset'")
+	}
+	if e := st.RawSet(value.GCRefOf(args[0]), args[1], args[2]); e != nil {
+		return nil, e
+	}
+	return []value.Value{args[0]}, nil
+}
+
+func baseFnRawEqual(_ *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
+	if len(args) < 2 {
+		return nil, crescent.NewError("bad argument to 'rawequal'")
+	}
+	eq := args[0] == args[1]
+	if !eq && value.IsNumber(args[0]) && value.IsNumber(args[1]) {
+		eq = value.AsNumber(args[0]) == value.AsNumber(args[1])
+	}
+	return []value.Value{value.BoolValue(eq)}, nil
 }
 
 func baseFnPrint(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {

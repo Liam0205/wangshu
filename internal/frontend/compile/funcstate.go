@@ -330,17 +330,13 @@ func (fs *funcState) concat(l1 *int, l2 int) {
 	fs.proto.Code[cur] = bytecode.SetSBx(fs.proto.Code[cur], l2-(cur+1))
 }
 
-// patchList 把整条链 list 全部回填到 target。
+// patchList 把整条链 list 全部回填到 target(经 patchListAux 退化无主 TESTSET)。
 func (fs *funcState) patchList(list, target int) {
 	if target == fs.pc() {
 		fs.patchToHere(list)
 		return
 	}
-	for list != NoJump {
-		nxt := fs.getJump(list)
-		fs.fixJump(0, list, target)
-		list = nxt
-	}
+	fs.patchListAux(list, target, bytecode.NoRegister, target)
 }
 
 // patchToHere 把 list 合并进 jpc(下一条指令时一起回填)。
@@ -350,18 +346,16 @@ func (fs *funcState) patchToHere(list int) {
 }
 
 // dischargeJpc 在每次发射前把 jpc 全部回填到当前 pc。
+//
+// 对齐 Lua 5.1 dischargejpc:必须走 patchListAux(reg=NoRegister),让链上
+// 无主 TESTSET 退化为 TEST——否则 TESTSET 的 A=255 占位会写越界寄存器。
 func (fs *funcState) dischargeJpc() {
 	if fs.jpc == NoJump {
 		return
 	}
-	target := fs.pc()
 	list := fs.jpc
 	fs.jpc = NoJump
-	for list != NoJump {
-		nxt := fs.getJump(list)
-		fs.fixJump(0, list, target)
-		list = nxt
-	}
+	fs.patchListAux(list, fs.pc(), bytecode.NoRegister, fs.pc())
 }
 
 // getLabel 返回当前 pc 并标记为跳转目标(刷新 lastTarget,顺带把待 jpc 回填)。

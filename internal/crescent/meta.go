@@ -1,0 +1,214 @@
+// Metatable support — __index / __newindex 链 + 算术 metamethod(07 的 M11 最小集)。
+//
+// M11 简化:metatable 存在 tableSide.meta(旁路存储与 table 数据同生命周期);
+// 完整 arena 哈希接入时迁回 object.TableMetaRef。
+package crescent
+
+import (
+	"github.com/Liam0205/wangshu/internal/arena"
+	"github.com/Liam0205/wangshu/internal/object"
+	"github.com/Liam0205/wangshu/internal/value"
+)
+
+// metaOf 返回 t 的 metatable GCRef(无则 0)。
+func (st *State) metaOf(t arena.GCRef) arena.GCRef {
+	if side, ok := st.tableSides[t]; ok {
+		return side.meta
+	}
+	return 0
+}
+
+// SetMeta 设置 t 的 metatable(0 = 清除)。
+func (st *State) SetMeta(t, meta arena.GCRef) {
+	st.sideOf(t).meta = meta
+}
+
+// metaField 查 t 的 metatable[name];无 metatable 或无该域返回 Nil。
+func (st *State) metaField(t arena.GCRef, name string) value.Value {
+	mt := st.metaOf(t)
+	if mt == 0 {
+		return value.Nil
+	}
+	key := value.MakeGC(value.TagString, st.gc.Intern([]byte(name)))
+	v, _ := st.tableGet(mt, key)
+	return v
+}
+
+// metaFieldOfValue 对任意 Value 查元方法(M11 仅支持 table;string 等 per-type
+// 元表留 P1 后续)。
+func (st *State) metaFieldOfValue(v value.Value, name string) value.Value {
+	if value.Tag(v) == value.TagTable {
+		return st.metaField(value.GCRefOf(v), name)
+	}
+	return value.Nil
+}
+
+// indexWithMeta 实现 GETTABLE 的完整语义:raw get → __index 链(07 §3)。
+//
+// 链上限 100 层(防 __index 环)。
+func (st *State) indexWithMeta(th *thread, obj, key value.Value) (value.Value, *LuaError) {
+	for depth := 0; depth < 100; depth++ {
+		if value.Tag(obj) == value.TagTable {
+			tref := value.GCRefOf(obj)
+			v, e := st.tableGet(tref, key)
+			if e != nil {
+				return value.Nil, e
+			}
+			if v != value.Nil {
+				return v, nil
+			}
+			h := st.metaField(tref, "__index")
+			if h == value.Nil {
+				return value.Nil, nil // raw miss,无 __index
+			}
+			if value.Tag(h) == value.TagFunction {
+				return st.callMetaHandler(th, h, []value.Value{obj, key}, 1)
+			}
+			obj = h // __index 是表:沿链重查
+			continue
+		}
+		// 非 table:查其元方法(M11 只支持显式挂的 metatable;非 table 直接报错)
+		return value.Nil, errf("attempt to index a %s value", typeName(obj))
+	}
+	return value.Nil, errf("'__index' chain too long; possible loop")
+}
+
+// setIndexWithMeta 实现 SETTABLE 的完整语义:raw set → __newindex 链(07 §4)。
+func (st *State) setIndexWithMeta(th *thread, obj, key, val value.Value) *LuaError {
+	for depth := 0; depth < 100; depth++ {
+		if value.Tag(obj) == value.TagTable {
+			tref := value.GCRefOf(obj)
+			v, e := st.tableGet(tref, key)
+			if e != nil {
+				return e
+			}
+			if v != value.Nil {
+				// 已存在键:直接 raw set,不触发 __newindex
+				return st.tableSet(tref, key, val)
+			}
+			h := st.metaField(tref, "__newindex")
+			if h == value.Nil {
+				return st.tableSet(tref, key, val)
+			}
+			if value.Tag(h) == value.TagFunction {
+				_, e := st.callMetaHandler(th, h, []value.Value{obj, key, val}, 0)
+				return e
+			}
+			obj = h
+			continue
+		}
+		return errf("attempt to index a %s value", typeName(obj))
+	}
+	return errf("'__newindex' chain too long; possible loop")
+}
+
+// arithMeta 算术慢路径:b/c 任一带 __add 等元方法时调用(07 §5)。
+//
+// name 形如 "__add"。返回结果值。
+func (st *State) arithMeta(th *thread, name string, b, c value.Value) (value.Value, *LuaError) {
+	h := st.metaFieldOfValue(b, name)
+	if h == value.Nil {
+		h = st.metaFieldOfValue(c, name)
+	}
+	if h == value.Nil {
+		bad := b
+		if value.IsNumber(b) {
+			bad = c
+		}
+		return value.Nil, errf("attempt to perform arithmetic on a %s value", typeName(bad))
+	}
+	if value.Tag(h) != value.TagFunction {
+		return value.Nil, errf("attempt to call a %s value", typeName(h))
+	}
+	return st.callMetaHandler(th, h, []value.Value{b, c}, 1)
+}
+
+// callMetaHandler 调用一个元方法 handler(Lua 或 host),取 nWant 个返回值
+// (nWant=1 取首值;0 不取)。
+//
+// Lua handler 走 host→Lua 重入(05 §7.3:新一层 execute,Go 栈 +1)。
+func (st *State) callMetaHandler(th *thread, fn value.Value, args []value.Value, nWant int) (value.Value, *LuaError) {
+	results, e := st.callLuaFromHost(th, fn, args)
+	if e != nil {
+		return value.Nil, e
+	}
+	if nWant == 0 || len(results) == 0 {
+		return value.Nil, nil
+	}
+	return results[0], nil
+}
+
+// callLuaFromHost 从 host 上下文发起一次 Lua/host 调用(05 §7.3)。
+//
+// 把 fn+args 推到栈顶,enterLuaFrame(entry=true) 后新起一层 execute。
+// 这是"Go 栈 +1"的 host→Lua 重入边界。
+func (st *State) callLuaFromHost(th *thread, fn value.Value, args []value.Value) ([]value.Value, *LuaError) {
+	if value.Tag(fn) != value.TagFunction {
+		return nil, errf("attempt to call a %s value", typeName(fn))
+	}
+	cl := value.GCRefOf(fn)
+	funcIdx := th.top
+	need := funcIdx + 1 + len(args)
+	th.ensureStack(need)
+	th.stack[funcIdx] = fn
+	for i, a := range args {
+		th.stack[funcIdx+1+i] = a
+	}
+	th.top = need
+	if isHost := st.isHostClosure(cl); isHost {
+		if e := st.callHost(th, funcIdx, len(args), -1); e != nil {
+			return nil, e
+		}
+		n := th.top - funcIdx
+		out := make([]value.Value, n)
+		copy(out, th.stack[funcIdx:th.top])
+		th.top = funcIdx
+		return out, nil
+	}
+	savedDepth := len(th.cis)
+	if e := st.enterLuaFrame(th, funcIdx, len(args), -1, true); e != nil {
+		return nil, e
+	}
+	if e := st.execute(th); e != nil {
+		// 失败:回滚 CallInfo 到进入前(05 §9.3 protected 边界清理职责)
+		th.cis = th.cis[:savedDepth]
+		th.top = funcIdx
+		return nil, e
+	}
+	// execute 返回后,返回值在 funcIdx 起(doReturn dst=funcIdx),top 已设
+	n := th.top - funcIdx
+	if n < 0 {
+		n = 0
+	}
+	out := make([]value.Value, n)
+	copy(out, th.stack[funcIdx:funcIdx+n])
+	th.top = funcIdx
+	return out, nil
+}
+
+func (st *State) isHostClosure(cl arena.GCRef) bool {
+	return object.IsHostClosure(st.arena, cl)
+}
+
+// ProtectedCall 是 pcall 的实现核心(05 §9.3):在受保护边界内调用 fn。
+//
+// 错误被捕获并返回(*LuaError 非 nil);CallInfo 回滚已由 callLuaFromHost 处理。
+func (st *State) ProtectedCall(fn value.Value, args []value.Value) ([]value.Value, *LuaError) {
+	th := st.runningThread
+	if th == nil {
+		return nil, errf("pcall: no running thread")
+	}
+	return st.callLuaFromHost(th, fn, args)
+}
+
+// MetaOf 暴露 metaOf(stdlib getmetatable 用)。
+func (st *State) MetaOf(t arena.GCRef) arena.GCRef { return st.metaOf(t) }
+
+// RawGet / RawSet 暴露 raw 表访问(stdlib rawget/rawset 用)。
+func (st *State) RawGet(t arena.GCRef, key value.Value) (value.Value, *LuaError) {
+	return st.tableGet(t, key)
+}
+
+func (st *State) RawSet(t arena.GCRef, key, val value.Value) *LuaError {
+	return st.tableSet(t, key, val)
+}
