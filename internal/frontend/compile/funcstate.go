@@ -364,7 +364,9 @@ type CompileError struct {
 	Msg    string
 }
 
-func (e *CompileError) Error() string { return fmt.Sprintf("%s:%d: %s", e.Source, e.Line, e.Msg) }
+func (e *CompileError) Error() string {
+	return fmt.Sprintf("%s:%d: %s", bytecode.ChunkID(e.Source), e.Line, e.Msg)
+}
 
 // raise 通过 panic(*CompileError) 抛出,顶层 Compile 用 recover 捕获。
 func raise(fs *funcState, line int32, format string, args ...any) {

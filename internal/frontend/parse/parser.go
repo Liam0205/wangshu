@@ -8,6 +8,7 @@ package parse
 import (
 	"fmt"
 
+	"github.com/Liam0205/wangshu/internal/bytecode"
 	"github.com/Liam0205/wangshu/internal/frontend/ast"
 	"github.com/Liam0205/wangshu/internal/frontend/lex"
 	"github.com/Liam0205/wangshu/internal/frontend/token"
@@ -20,7 +21,9 @@ type Error struct {
 	Msg    string
 }
 
-func (e *Error) Error() string { return fmt.Sprintf("%s:%d: %s", e.Source, e.Line, e.Msg) }
+func (e *Error) Error() string {
+	return fmt.Sprintf("%s:%d: %s", bytecode.ChunkID(e.Source), e.Line, e.Msg)
+}
 
 // Parser holds the lexer + a one-token lookahead (04 §4.1, 03 §2).
 type Parser struct {
@@ -41,6 +44,11 @@ type Parser struct {
 	// (对齐 Lua 5.1 LUAI_MAXCCALLS 思路;fatal stack overflow 不可恢复,
 	// 必须在之前用可恢复错误拦下)。
 	depth int
+
+	// loopDepth 是当前循环嵌套层数(官方 fs->bl 的 isbreakable 链等价):
+	// break 不在循环内时 parse 期报 "no loop to break"(官方 breakstat)。
+	// 函数体边界保存/重置(break 不跨函数)。
+	loopDepth int
 }
 
 // maxParseDepth 是语法嵌套上限(5.1 的 200 偏保守,Go 栈帧更大,取同值)。
@@ -71,7 +79,7 @@ func Parse(lx *lex.Lexer, source string) (*ast.Block, error) {
 		return nil, err
 	}
 	if p.tok.Kind != token.EOF {
-		return nil, p.errorf("'<eof>' expected near %s", p.tok.String())
+		return nil, p.errorf("'<eof>' expected near '%s'", p.tok.String())
 	}
 	return body, nil
 }
@@ -119,7 +127,7 @@ func (p *Parser) errorf(format string, args ...any) *Error {
 // expect consumes the current token if it matches kind; otherwise errors.
 func (p *Parser) expect(k token.Kind) error {
 	if p.tok.Kind != k {
-		return p.errorf("'%s' expected near %s", token.KindName(k), p.tok.String())
+		return p.errorf("'%s' expected near '%s'", token.KindName(k), p.tok.String())
 	}
 	return p.next()
 }
@@ -143,12 +151,10 @@ func (p *Parser) parseBlock() (*ast.Block, error) {
 	defer p.leaveDepth()
 	block := &ast.Block{}
 	for !isBlockEnd(p.tok.Kind) {
-		// `;` 空语句直接吃掉。
+		// 5.1 文法:';' 只能作语句分隔符(chunk ::= {stat [';']}),不能
+		// 独立成句——`;` / `a=1;;` 官方报 unexpected symbol(5.2 才放开)。
 		if p.match(token.SEMI) {
-			if err := p.next(); err != nil {
-				return nil, err
-			}
-			continue
+			return nil, p.errorf("unexpected symbol near '%s'", p.tok.String())
 		}
 		// `return` / `break` 是 block 的最后一句(Lua 5.1 限制)。
 		if p.match(token.KW_RETURN) {
@@ -168,6 +174,9 @@ func (p *Parser) parseBlock() (*ast.Block, error) {
 			if err := p.next(); err != nil {
 				return nil, err
 			}
+			if p.loopDepth == 0 {
+				return nil, p.errorf("no loop to break near '%s'", p.tok.String())
+			}
 			block.Stmts = append(block.Stmts, &ast.BreakStmt{Line: line})
 			if _, err := p.consume(token.SEMI); err != nil {
 				return nil, err
@@ -180,6 +189,10 @@ func (p *Parser) parseBlock() (*ast.Block, error) {
 		}
 		if stmt != nil {
 			block.Stmts = append(block.Stmts, stmt)
+		}
+		// 语句后缀分隔符(至多一个)
+		if _, err := p.consume(token.SEMI); err != nil {
+			return nil, err
 		}
 	}
 	return block, nil

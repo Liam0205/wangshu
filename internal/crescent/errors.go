@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Liam0205/wangshu/internal/bytecode"
 	"github.com/Liam0205/wangshu/internal/object"
 	"github.com/Liam0205/wangshu/internal/value"
 )
@@ -18,7 +19,7 @@ func (st *State) annotateError(e *LuaError, ci *callInfo) *LuaError {
 		return e
 	}
 	e.annotated = true
-	src := ci.proto.Source
+	src := bytecode.ChunkID(ci.proto.Source)
 	line := int32(0)
 	pc := int(ci.pc) - 1
 	if pc >= 0 && pc < len(ci.proto.LineInfo) {
@@ -62,7 +63,7 @@ func (st *State) buildTraceback(th *thread) string {
 		if ci.tailcall {
 			sb.WriteString("(...tail calls...)\n\t")
 		}
-		fmt.Fprintf(&sb, "%s:%d: in %s", ci.proto.Source, line, what)
+		fmt.Fprintf(&sb, "%s:%d: in %s", bytecode.ChunkID(ci.proto.Source), line, what)
 	}
 	return sb.String()
 }
