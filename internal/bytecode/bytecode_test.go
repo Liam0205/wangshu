@@ -146,3 +146,28 @@ func TestProtoExample8_FByteCodeSequence(t *testing.T) {
 		t.Errorf("RETURN corrupted")
 	}
 }
+
+// TestFb2Int_Full9BitDomain 对照官方 luaO_fb2int 在全部 9-bit 输入上等价。
+// 历史 bug:缺 &31 掩码时 [256,511] 区间分歧——fb=256 官方 256/旧实现 0,
+// fb=257 官方 257/旧实现移位 31 溢出。luac 同构软承诺下外部字节码可达此区间。
+func TestFb2Int_Full9BitDomain(t *testing.T) {
+	official := func(x uint32) uint32 {
+		e := (x >> 3) & 31
+		if e == 0 {
+			return x
+		}
+		return ((x & 7) + 8) << (e - 1)
+	}
+	for fb := uint32(0); fb < 512; fb++ {
+		if got, want := Fb2Int(fb), official(fb); got != want {
+			t.Fatalf("Fb2Int(%d) = %d, want %d (luaO_fb2int)", fb, got, want)
+		}
+	}
+	// 关键分歧点显式钉住
+	if Fb2Int(256) != 256 {
+		t.Errorf("Fb2Int(256) = %d, want 256", Fb2Int(256))
+	}
+	if Fb2Int(257) != 257 {
+		t.Errorf("Fb2Int(257) = %d, want 257", Fb2Int(257))
+	}
+}

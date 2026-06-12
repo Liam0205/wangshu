@@ -26,9 +26,12 @@ func Int2Fb(x uint32) uint32 {
 }
 
 // Fb2Int decodes an fb back to its (rounded-up) integer value.
+// 严格对齐官方 luaO_fb2int:e = (x>>3) & 31 —— 9-bit 字段的高位区
+// [256,511] 若漏掩码会移位 31 位溢出(luac 同构软承诺下是真实解码入口)。
 func Fb2Int(x uint32) uint32 {
-	if x < 8 {
+	e := (x >> 3) & 31
+	if e == 0 {
 		return x
 	}
-	return (8 | (x & 7)) << ((x >> 3) - 1)
+	return ((x & 7) + 8) << (e - 1)
 }
