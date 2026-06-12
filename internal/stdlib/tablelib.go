@@ -381,39 +381,42 @@ var mathExtraFns = []entry{
 	{"fmod", mathFnFmod},
 	{"mod", mathFnFmod}, // LUA_COMPAT_MOD:5.0 别名(官方 5.1.5 默认带)
 	{"modf", mathFnModf},
-	{"atan2", mathFn2(atan2)},
-	{"sinh", mathFn1(sinh)},
-	{"cosh", mathFn1(cosh)},
-	{"tanh", mathFn1(tanh)},
+	{"atan2", mathFn2("atan2", atan2)},
+	{"sinh", mathFn1("sinh", sinh)},
+	{"cosh", mathFn1("cosh", cosh)},
+	{"tanh", mathFn1("tanh", tanh)},
 	{"frexp", mathFnFrexp},
-	{"ldexp", mathFn2(func(m, e float64) float64 { return ldexp(m, int(e)) })},
-	{"pow", mathFn2(func(a, b float64) float64 { return pow(a, b) })},
+	{"ldexp", mathFn2("ldexp", func(m, e float64) float64 { return ldexp(m, int(e)) })},
+	{"pow", mathFn2("pow", func(a, b float64) float64 { return pow(a, b) })},
 	{"random", mathFnRandom},
 	{"randomseed", mathFnRandomSeed},
-	{"atan", mathFn1(atan)},
-	{"asin", mathFn1(asin)},
-	{"acos", mathFn1(acos)},
-	{"deg", mathFn1(deg)},
-	{"rad", mathFn1(rad)},
-	{"log10", mathFn1(log10)},
+	{"atan", mathFn1("atan", atan)},
+	{"asin", mathFn1("asin", asin)},
+	{"acos", mathFn1("acos", acos)},
+	{"deg", mathFn1("deg", deg)},
+	{"rad", mathFn1("rad", rad)},
+	{"log10", mathFn1("log10", log10)},
 }
 
-func mathFn2(f func(a, b float64) float64) crescent.HostFn {
+func mathFn2(name string, f func(a, b float64) float64) crescent.HostFn {
 	return func(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 		if len(args) < 2 {
-			return nil, crescent.NewError("bad argument (2 numbers expected)")
+			return nil, crescent.NewError(fmt.Sprintf("bad argument #%d to '%s' (number expected, got no value)", len(args)+1, name))
 		}
 		a, ok1 := toNumberStr(st, args[0])
+		if !ok1 {
+			return nil, crescent.NewError(fmt.Sprintf("bad argument #1 to '%s' (number expected, got %s)", name, crescent.TypeNameOf(args[0])))
+		}
 		b, ok2 := toNumberStr(st, args[1])
-		if !ok1 || !ok2 {
-			return nil, crescent.NewError("bad argument (number expected)")
+		if !ok2 {
+			return nil, crescent.NewError(fmt.Sprintf("bad argument #2 to '%s' (number expected, got %s)", name, crescent.TypeNameOf(args[1])))
 		}
 		return []value.Value{value.NumberValue(f(a, b))}, nil
 	}
 }
 
 func mathFnFmod(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
-	return mathFn2(fmod)(st, args)
+	return mathFn2("fmod", fmod)(st, args)
 }
 
 func mathFnFrexp(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {

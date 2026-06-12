@@ -583,27 +583,29 @@ func baseFnUnpack(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 // ----- math 子库 -----
 
 var mathFns = []entry{
-	{"abs", mathFn1(math.Abs)},
-	{"ceil", mathFn1(math.Ceil)},
-	{"floor", mathFn1(math.Floor)},
-	{"sqrt", mathFn1(math.Sqrt)},
-	{"sin", mathFn1(math.Sin)},
-	{"cos", mathFn1(math.Cos)},
-	{"tan", mathFn1(math.Tan)},
-	{"exp", mathFn1(math.Exp)},
-	{"log", mathFn1(math.Log)},
+	{"abs", mathFn1("abs", math.Abs)},
+	{"ceil", mathFn1("ceil", math.Ceil)},
+	{"floor", mathFn1("floor", math.Floor)},
+	{"sqrt", mathFn1("sqrt", math.Sqrt)},
+	{"sin", mathFn1("sin", math.Sin)},
+	{"cos", mathFn1("cos", math.Cos)},
+	{"tan", mathFn1("tan", math.Tan)},
+	{"exp", mathFn1("exp", math.Exp)},
+	{"log", mathFn1("log", math.Log)},
 	{"max", mathFnMax},
 	{"min", mathFnMin},
 }
 
-func mathFn1(f func(float64) float64) crescent.HostFn {
+// mathFn1 包装一元 math 函数;错误措辞对齐官方 luaL_checknumber
+// (bad argument #1 to 'sin' (number expected, got string))。
+func mathFn1(name string, f func(float64) float64) crescent.HostFn {
 	return func(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 		if len(args) == 0 {
-			return nil, crescent.NewError("bad argument")
+			return nil, crescent.NewError(fmt.Sprintf("bad argument #1 to '%s' (number expected, got no value)", name))
 		}
 		x, ok := toNumberStr(st, args[0])
 		if !ok {
-			return nil, crescent.NewError("bad argument (number expected)")
+			return nil, crescent.NewError(fmt.Sprintf("bad argument #1 to '%s' (number expected, got %s)", name, crescent.TypeNameOf(args[0])))
 		}
 		return []value.Value{value.NumberValue(f(x))}, nil
 	}
