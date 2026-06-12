@@ -92,6 +92,15 @@ type State struct {
 	// mainTh 是主线程缓存(State.Call 跨 Run 复用,免每次 newThread)。
 	mainTh *thread
 
+	// pinnedRefs 是公共面 Value 持有的 GCRef 句柄表(R8 类常驻根:门面
+	// GetGlobal 取出 function/table 后由用户长期持有,不入根则 globals 覆盖
+	// 旧值就会被回收 → freelist 复用 → Value 调用即 UAF)。
+	// 槽位回收:UnpinRef 把槽置 Null 并推入 freePins,PinRef 优先复用空闲槽
+	// (公共面 Value.Release 显式释放走这条路;不 Release 仅累积槽 + GCRef,
+	// 小害,见 wangshu.go godoc 提示)。
+	pinnedRefs []arena.GCRef
+	freePins   []uint32
+
 	// allowFileLoad:loadfile/dofile 是否允许读宿主文件系统。默认 false
 	// (嵌入式 VM 接不可信脚本,文件读是越权探测面;10 §12.1 LibsSafe 思路
 	// 的最小落地)。宿主经 Options.AllowFileLoad 显式开启。
@@ -233,10 +242,15 @@ func (st *State) visitThreadValues(th *thread, seen map[*thread]bool, visit func
 }
 
 // visitExtraRefs 暴露所有活线程上 ci/openUvs 直接以 GCRef 形式持有的对象,
-// 以及 LoadProgram 产物 closure(loaded 缓存常驻根)。
+// 以及 LoadProgram 产物 closure(loaded 缓存常驻根)、公共面 Value pin 表。
 func (st *State) visitExtraRefs(visit func(arena.GCRef)) {
 	for _, cl := range st.loadedCls {
 		visit(cl)
+	}
+	for _, r := range st.pinnedRefs {
+		if !r.IsNull() {
+			visit(r)
+		}
 	}
 	if len(st.cos.cos) == 0 && len(st.threadChain) == 0 {
 		st.visitThreadRefs(st.runningThread, nil, visit)

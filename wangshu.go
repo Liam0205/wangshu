@@ -175,6 +175,83 @@ func (prog *Program) call(state *State, ar *Arena, args []Value) (results []Valu
 	return out, nil
 }
 
+// SetGlobal 把一个值挂到全局表的 name 键上(对标 gopher-lua `L.SetGlobal`)。
+//
+// 形态:per-item 栈式 API 的「按名写全局」一项(11 §7.1 / §9.1)。配合
+// GetGlobal/Call 完成 gopher-lua drop-in 形式的最小调用循环。
+//
+// 性能档位:gopher-lua 风格 per-item 跨界,落在被边界成本主导的那一档
+// (design-premises 前提一)。低频/原型/迁移期可用;高频热路径请改 arena 列轨。
+func (st *State) SetGlobal(name string, v Value) {
+	st.core.SetGlobal(name, v.toInner(st))
+}
+
+// GetGlobal 读取全局表的 name 键(对标 gopher-lua `L.GetGlobal`)。
+//
+// 缺失键返回 Nil。若读出的是 function,其底层引用经 State pin 表登记
+// 为 GC 根——Value 析构前请配合 v.Release() 显式释放槽位(可选;不释放
+// 仅在长驻 State 反复 GetGlobal 不同名 fn 时累积小量内存)。table /
+// userdata 本轮仍不暴露,会被映射为 Nil(本期范围,见 issue #1 决策)。
+func (st *State) GetGlobal(name string) Value {
+	v := st.core.GetGlobal(name)
+	return fromInnerWithPin(st, v)
+}
+
+// Call 在 state 上调用一个 function Value(对标 gopher-lua
+// `L.CallByParam(P{Fn: fn, NRet: -1, Protect: true}, args...)`)。
+//
+// 典型用法(对标 pineapple transform_by_lua 形态):
+//
+//	prog, _ := wangshu.Compile([]byte(`function f(x) return x*2 end`), "rules")
+//	prog.Run(st)                                // 顶层定义 f 进 globals
+//	fn := st.GetGlobal("f")
+//	defer fn.Release()
+//	for _, x := range items {
+//	    r, _ := st.Call(fn, wangshu.Number(x))
+//	    use(r[0])
+//	}
+//
+// 形态(11 §7.1 / §9.1):per-item 跨界,落在被边界成本主导的那一档
+// (design-premises 前提一)。低频/原型/迁移期用,高频热路径请改 arena 列轨。
+//
+// 约束:
+//   - fn 必须 IsFunction() 且来自同一 State(GetGlobal 取出);跨 State 报错
+//   - 仅支持 Lua function(脚本里 `function f() end` 定义)。Register 注册的
+//     host closure 从 Go 端 Call 暂未支持(只能从 Lua 内调用)。
+//
+// 返回:被调函数 RETURN 的全部值;运行期错误转 Go error(含 traceback)。
+// Go panic 兜底转 error(防线纵深,同 Program.Call)。
+func (st *State) Call(fn Value, args ...Value) (results []Value, err error) {
+	if !fn.IsFunction() {
+		return nil, fmt.Errorf("wangshu: Call: value is not a function (kind=%s)", fn.Display())
+	}
+	if fn.fnState != st {
+		return nil, fmt.Errorf("wangshu: Call: function belongs to a different State")
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			results, err = nil, fmt.Errorf("wangshu: internal VM panic: %v", r)
+		}
+	}()
+	ref := st.core.PinnedRefAt(fn.pinIdx)
+	if ref.IsNull() {
+		return nil, fmt.Errorf("wangshu: Call: function has been released")
+	}
+	innerArgs := make([]value.Value, len(args))
+	for i, a := range args {
+		innerArgs[i] = a.toInner(st)
+	}
+	inner, callErr := st.core.Call(ref, innerArgs, -1)
+	if callErr != nil {
+		return nil, callErr
+	}
+	out := make([]Value, len(inner))
+	for i, v := range inner {
+		out[i] = fromInner(st, v)
+	}
+	return out, nil
+}
+
 // mountArena 把宿主 Arena 映射进 VM 可读视图(11 §5.1-§5.3)。
 //
 // P1 形态:arena = Lua table { rows = n, <col> = 列代理 };列代理 = 空表 +
@@ -240,8 +317,9 @@ func (st *State) mountArena(ar *Arena) {
 // Value 是公共 API 的多类型值(11 §4.5)。
 //
 // P1/M13 简化版:用一个 sum-type Go struct 表示。GC 解耦:Value 持的
-// 字符串/表内容已从 VM arena 拷出(string)或经 GCRef 间接持有(table:
-// 暂不导出原生 table 字段,只支持读出 string/number/bool/nil)。
+// 字符串内容已从 VM arena 拷出(string),函数值通过所属 State 的 pin
+// 表间接持有(kFunction:外部不可构造,只能从 GetGlobal 取出再传给 Call)。
+// 表/userdata 仍不暴露。
 type Value struct {
 	kind kind
 	// number 字段
@@ -250,6 +328,10 @@ type Value struct {
 	str []byte
 	// bool 字段
 	b bool
+	// function 字段:fnState 为所属 State,pinIdx 是其 pin 表索引。
+	// fnState != nil 表示有效;Release 后置 nil。
+	fnState *State
+	pinIdx  uint32
 }
 
 type kind uint8
@@ -259,24 +341,38 @@ const (
 	kBool
 	kNumber
 	kString
+	kFunction
 )
 
-// 构造器。
+// 构造器(function 没有公共构造器,只能由 GetGlobal 取出)。
 func Nil() Value             { return Value{kind: kNil} }
 func Bool(b bool) Value      { return Value{kind: kBool, b: b} }
 func Number(f float64) Value { return Value{kind: kNumber, num: f} }
 func String(s string) Value  { return Value{kind: kString, str: []byte(s)} }
 
 // 类型判定。
-func (v Value) IsNil() bool    { return v.kind == kNil }
-func (v Value) IsBool() bool   { return v.kind == kBool }
-func (v Value) IsNumber() bool { return v.kind == kNumber }
-func (v Value) IsString() bool { return v.kind == kString }
+func (v Value) IsNil() bool      { return v.kind == kNil }
+func (v Value) IsBool() bool     { return v.kind == kBool }
+func (v Value) IsNumber() bool   { return v.kind == kNumber }
+func (v Value) IsString() bool   { return v.kind == kString }
+func (v Value) IsFunction() bool { return v.kind == kFunction && v.fnState != nil }
 
 // 读出。
 func (v Value) Bool() bool      { return v.b }
 func (v Value) Number() float64 { return v.num }
 func (v Value) Str() string     { return string(v.str) }
+
+// Release 显式释放 function Value 的 pin 表槽位。重复 Release / 非
+// function Value 上调用均无副作用。长驻 State 下若 GetGlobal 反复取出
+// 不同名函数且不 Release,pin 表会按槽位累积——pineapple 一类「每脚本
+// 一次 GetGlobal」的形态无此问题,可以省略 Release;高吞吐场景应配对。
+func (v *Value) Release() {
+	if v.kind != kFunction || v.fnState == nil {
+		return
+	}
+	v.fnState.core.UnpinRef(v.pinIdx)
+	v.fnState = nil
+}
 
 // String 输出 Lua 风格(便于错误消息)。
 func (v Value) Display() string {
@@ -292,11 +388,17 @@ func (v Value) Display() string {
 		return crescent.FormatLuaNumber(v.num)
 	case kString:
 		return string(v.str)
+	case kFunction:
+		return "function"
 	}
 	return "<unknown>"
 }
 
 // toInner / fromInner 桥接公共 Value 与 internal value.Value。
+//
+// kFunction 桥接到内部 TagFunction 时,直接复用所属 State 的 pin 表槽
+// (caller 已在 State.Call 层校验 fnState == 目标 state);跨 State 的
+// function Value 在此被映射为 Nil 兜底(防 GCRef 错绑 arena 引发 UAF)。
 func (v Value) toInner(state *State) value.Value {
 	switch v.kind {
 	case kNil:
@@ -309,6 +411,15 @@ func (v Value) toInner(state *State) value.Value {
 		// 经 collector intern 进 state arena
 		ref := state.coreInternBytes(v.str)
 		return value.MakeGC(value.TagString, ref)
+	case kFunction:
+		if v.fnState != state {
+			return value.Nil
+		}
+		ref := state.core.PinnedRefAt(v.pinIdx)
+		if ref.IsNull() {
+			return value.Nil
+		}
+		return value.MakeGC(value.TagFunction, ref)
 	}
 	return value.Nil
 }
@@ -329,8 +440,21 @@ func fromInner(state *State, v value.Value) Value {
 		copy(out, bytes)
 		return Value{kind: kString, str: out}
 	}
-	// table/function/userdata 暂不向公共面暴露;返回 nil
+	// table/function/userdata 默认不暴露(返回 nil);
+	// function 的暴露由专门 GetGlobal 路径走 pin 表,避免静默副作用。
 	return Nil()
+}
+
+// fromInnerWithPin 是「可携带 function 引用」的桥接,仅 GetGlobal 一类
+// 「公共面取出全局值供 Go 长期持有」的入口调用。function 走 PinRef 登记
+// 到 State pin 表(GC 根)以隔离 globals 覆盖与 freelist 复用风险。
+func fromInnerWithPin(state *State, v value.Value) Value {
+	if value.Tag(v) == value.TagFunction {
+		ref := value.GCRefOf(v)
+		idx := state.core.PinRef(ref)
+		return Value{kind: kFunction, fnState: state, pinIdx: idx}
+	}
+	return fromInner(state, v)
 }
 
 // coreInternBytes / coreStringBytes 是 State 内部的便捷桥(避免暴露 internal/gc)。

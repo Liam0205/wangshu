@@ -73,11 +73,58 @@ func (st *State) releaseHostFn(id uint32) {
 	}
 }
 
-// SetGlobal 把一个值挂到 globals 表的字符串键上(供 stdlib 注册)。
+// SetGlobal 把一个值挂到 globals 表的字符串键上(供 stdlib 注册 / 公共面转发)。
 func (st *State) SetGlobal(name string, v value.Value) {
 	ref := st.gc.Intern([]byte(name))
 	key := value.MakeGC(value.TagString, ref)
 	_ = st.tableSet(st.globals, key, v)
+}
+
+// GetGlobal 读取 globals 表的字符串键(与 SetGlobal 对称,公共面转发用)。
+// 缺失键返回 value.Nil(对齐 Lua 5.1 `_G[k]` 语义)。
+func (st *State) GetGlobal(name string) value.Value {
+	ref := st.gc.Intern([]byte(name))
+	key := value.MakeGC(value.TagString, ref)
+	v, _ := st.tableGet(st.globals, key)
+	return v
+}
+
+// PinRef 在 pin 表中登记一个 GCRef,返回句柄索引。pin 表被 GC mark 为根,
+// 保证宿主 Go 侧持有期间该对象不被回收(globals 覆盖旧值后旧值仍可调)。
+// 复用 freePins 空闲槽,槽位无界增长仅在「长驻 State 反复 GetGlobal 不同名
+// 函数且不 Release」时出现——公共 API 用户应配套调用 Release(11 §6.2 mind)。
+func (st *State) PinRef(ref arena.GCRef) uint32 {
+	if n := len(st.freePins); n > 0 {
+		idx := st.freePins[n-1]
+		st.freePins = st.freePins[:n-1]
+		st.pinnedRefs[idx] = ref
+		return idx
+	}
+	idx := uint32(len(st.pinnedRefs))
+	st.pinnedRefs = append(st.pinnedRefs, ref)
+	return idx
+}
+
+// UnpinRef 释放 pin 句柄。越界 / 已释放槽位为 no-op(公共面 Value.Release
+// 可能被重复调用,容错)。
+func (st *State) UnpinRef(idx uint32) {
+	if int(idx) >= len(st.pinnedRefs) {
+		return
+	}
+	if st.pinnedRefs[idx].IsNull() {
+		return
+	}
+	st.pinnedRefs[idx] = arena.GCRef(0)
+	st.freePins = append(st.freePins, idx)
+}
+
+// PinnedRefAt 取回 pin 句柄对应的 GCRef;越界 / 已释放返回 Null。
+// 供门面 State.Call 在用 Value(function) 实参时取出底层 closure。
+func (st *State) PinnedRefAt(idx uint32) arena.GCRef {
+	if int(idx) >= len(st.pinnedRefs) {
+		return arena.GCRef(0)
+	}
+	return st.pinnedRefs[idx]
 }
 
 // callHost 同步调用一个 host closure(05 §7.5)。
