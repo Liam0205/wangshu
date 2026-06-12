@@ -46,6 +46,7 @@ func OpenAll(st *crescent.State) {
 	registerNamespaced(st, "os", osFns)
 	registerNamespaced(st, "io", ioFns)
 	registerNamespaced(st, "coroutine", coroutineFns)
+	registerBaseEnv(st) // _G/_VERSION/collectgarbage/gcinfo/loadfile/dofile
 	// math 常量
 	{
 		mathTblV, _ := st.RawGet(st.Globals(), intern(st, "math"))
@@ -165,7 +166,51 @@ var baseFns = []entry{
 	{"ipairs", baseFnIpairs},
 	{"xpcall", baseFnXpcall},
 	{"loadstring", baseFnLoadstring},
-	{"load", baseFnLoadstring}, // 5.1 的 load(func) 渐进读取形态不支持;字符串形态与 loadstring 同
+	{"load", baseFnLoad},
+}
+
+// baseFnLoad:load(func [, chunkname])(10 §4.7 reader 循环完整形态)。
+//
+// 5.1:反复调 reader 函数拿源码片段,返回 nil/空串/无值表示结束,拼成完整
+// chunk 再编译。字符串实参也容(等价 loadstring,宽容形态)。
+func baseFnLoad(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
+	if len(args) == 0 {
+		return nil, crescent.NewError("bad argument #1 to 'load' (function expected)")
+	}
+	if value.Tag(args[0]) == value.TagString {
+		return baseFnLoadstring(st, args)
+	}
+	if value.Tag(args[0]) != value.TagFunction {
+		return nil, crescent.NewError("bad argument #1 to 'load' (function expected, got " +
+			crescent.TypeNameOf(args[0]) + ")")
+	}
+	chunkname := "=(load)"
+	if len(args) >= 2 && value.Tag(args[1]) == value.TagString {
+		chunkname = string(object.StringBytes(st.Arena(), value.GCRefOf(args[1])))
+	}
+	var srcBuf []byte
+	for i := 0; i < 1<<20; i++ { // reader 循环上限护栏
+		results, e := st.ProtectedCallDirect(args[0], nil)
+		if e != nil {
+			return nil, e
+		}
+		if len(results) == 0 || results[0] == value.Nil {
+			break
+		}
+		if value.Tag(results[0]) != value.TagString {
+			return []value.Value{value.Nil, intern(st, "reader function must return a string")}, nil
+		}
+		piece := object.StringBytes(st.Arena(), value.GCRefOf(results[0]))
+		if len(piece) == 0 {
+			break // 空串 = 结束(5.1)
+		}
+		srcBuf = append(srcBuf, piece...)
+	}
+	fn, err := st.CompileAndLoad(srcBuf, chunkname)
+	if err != nil {
+		return []value.Value{value.Nil, intern(st, err.Error())}, nil
+	}
+	return []value.Value{fn}, nil
 }
 
 // baseFnLoadstring:loadstring(s [, chunkname]) → function | (nil, errmsg)。

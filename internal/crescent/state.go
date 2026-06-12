@@ -174,6 +174,15 @@ func (st *State) InternForEmbed(b []byte) arena.GCRef {
 // SetGCStressMode 开关高频 GC 压力模式(12 §5 GC 透明性 fuzz 用)。
 func (st *State) SetGCStressMode(on bool) { st.gc.SetStressMode(on) }
 
+// GCCollect 触发一次 full GC(collectgarbage("collect") 用)。
+func (st *State) GCCollect() { st.gc.Collect() }
+
+// GCCountKB 返回 arena 当前已用 KB 数(collectgarbage("count") / gcinfo;
+// bump 指针即"已分配字节",含死对象——可观察但不可逐字节比项,10 §13)。
+func (st *State) GCCountKB() float64 {
+	return float64(st.arena.Bump()) / 1024.0
+}
+
 // NewError 构造一个带消息的 LuaError(供 stdlib 等 host 函数使用)。
 func NewError(msg string) *LuaError {
 	return &LuaError{Msg: msg}
