@@ -19,6 +19,26 @@
 
 > **P1 实际落地差异**(长稳/审查修复轮后):`Program.Call(state *State, arena *Arena, args ...Value)` **已按 11 §1.5 签名落地**(`wangshu.go`),arena 列数据接口可用——`NewArena` + 四类型列(`AddFloatColumn`/`AddInt64Column`/`AddBoolColumn`/`AddStringColumn`,见 `arena_abi.go`)+ presence bitmap + VM 内只读访问;另有 `Program.Run(state, args...)`(无 arena 便捷形)与 `NewState(Options)`。增量更新:① **公共 Value API 更名**——`String_()` → `Str()`、`GoString()` → `Display()`;② **`Options.AllowFileLoad` 安全门控**——`loadfile`/`dofile` 默认禁用,须显式开启(豁免注册表已登记);③ **`State.SetStepBudget`**——回边指令预算,超限抛可恢复 "instruction budget exceeded",宿主脚本配额的种子机制;④ **同一 Program 多 State 多 goroutine 并发已验证**(`test/.../concurrency_test.go`,`-race` 通过);⑤ hostFn 注册表槽回收(引用计数 + GC 回调,长驻 State 不再泄漏);⑥ **per-item drop-in 子集已落地**(issue #1):`State.SetGlobal/GetGlobal/Call(fn, args...)` + `State.Register/RegisterModule` + 公共 `HostFn = func(*State,[]Value)([]Value,error)`;`Value` 加 `kFunction` kind(外部不可构造,只由 `GetGlobal` 取出,经 State pin 表登记为 GC 根;`v.Release()` 显式释放);⑦ **公共 Table API 已落地**(issue #2):`State.NewTable` + `Value.AsTable` + `Table.Set/SetIndex/Get/GetIndex/Len`;`Value` 加 `kTable` kind(同 kFunction 经 pin 表挂 GC 根);`Program.Run/Call` 与 `State.Call` 返回路径已升级到 `fromInnerWithPin` → 脚本返回 table/function 可在 Go 端读出;⑧ **`Options.HideFileLoaders` 严格沙箱**(issue #3):置 true 时从 globals 刮除 `loadfile`/`dofile`/`loadstring`/`load` 四件套(置 Nil),脚本调用 fatal `attempt to call global 'X' (a nil value)`,对位 gopher-lua;与 `AllowFileLoad=true` 同设 panic fail-fast;⑨ **`State.SetContext/RemoveContext` 取消钩子**(issue #4):context.Context 注入,VM 在 chargeStep 同一抢占点检查 `ctx.Err()`,事件触发(wall-clock timeout / 上游 Cancel)中止 Run/Call 返回包装 ctx.Err 的 Go error,pcall 可捕获,跨 goroutine 由 atomic.Pointer 保护。`§7.1` 草图里的 Push/Pop/CallFn 栈机风格未做(pineapple 实际用法不依赖,见 [memory/reflections/2026-06-12-official-suite-perf-round](../memory/reflections/2026-06-12-official-suite-perf-round.md));host closure 的 Go 端直接 Call(`state.Call(hostFn,…)`)仍未开(internal `State.Call` 拒);HostFn 收到的 args 中 table/function/userdata 仍映射为 Nil。可编译性探测/升层决策属 P2。实现形态与 11 的字段级差异见 `docs/design/p1-interpreter/implementation-progress.md` 对账表。
 
+## 公共 first-class GCRef-bearing value:必须接 GC 根(契约级不变式)
+
+> 状态:**契约级硬规则**——任何让宿主 Go 端长期持有 VM 内部 `GCRef` 的公共 API,该 `GCRef` 必须经 `State` pin 表(`pinnedRefs` + `freePins` + `visitExtraRefs`)登记为 GC 根。两次样本(issue #1 kFunction / issue #2 kTable)用同款机制零额外接根工作,验证为通用不变式而非一次性手法。
+
+**覆盖面**:本期已落地 `kFunction`(issue #1)/ `kTable`(issue #2);未来若新增 `kUserdata`/`kThread`/`kCoroutine` 或其它公共 first-class kind,前置约束相同——实现前先核对 pin 表是否覆盖。
+
+**为什么是契约级而非工作流级**:
+
+- shadow stack 是 LIFO,公共 API 的持有期是任意的,LIFO 假设不适用;
+- `globals` 覆盖同名 + freelist 复用会把潜伏的根管理 bug 从良性(死对象躺 arena)升级为致命(UAF 或串台执行);
+- 两次样本用同款 `pinnedRefs / freePins / visitExtraRefs` 通道零额外接根工作——是机制级保证,不是 kind 特殊路径。
+
+**如何识别违约**:Go 端取出 first-class 复合 Value 后,`globals` 覆盖同名 + GC 压力模式(`SetGCStressMode(true)`)→ 重新读 Value/调用 → 若访问 panic 或返回错值,即接根缺失。
+
+**释放纪律**:`Value.Release()` 显式释放可选——不释放仅累积少量 pin 槽,致命的是没接根。长驻 State 高吞吐场景应配对调用以防 pin 表无界增长。
+
+**与对偶面**:与长稳轮「内存复用类变更配套清单」对偶——后者管 VM 内部 freelist 内的根全审计,本条款管公共 API 暴露的长持 GCRef。两面同根:**任何让某对象在「VM 自己的生命周期管理之外」被持有,都必须显式接根**。
+
+**锚点**:`87031c2`(kFunction 立项)/ `2b55e11`(kTable 验证机制通用);源反思 `memory/reflections/2026-06-12-issue1-api-gap-round.md` 教训 2 + `2026-06-12-issue234-api-gap-round-2.md` Q2 评估。工作流维度的落地纪律(怎么判断该接根、怎么验证)见 [[public-api-incremental-delivery]] §2。
+
 ## arena ABI
 
 宿主直接写,**VM(解释器与编译层)零拷贝读**。布局:
