@@ -115,6 +115,13 @@ type State struct {
 	pinnedRefs []arena.GCRef
 	freePins   []uint32
 
+	// baseline 是 globals 快照(issue #6):MarkGlobalsBaseline 拍下,
+	// ResetGlobalsToBaseline 用之恢复。baseline 中的复合 value(table/
+	// function GCRef)经 visitExtraValues 入 GC 根防 globals 覆盖后被
+	// 回收(同 pin 表对偶面:pin 表管「公共 API 暴露的长持 GCRef」,
+	// baseline 管「内部状态恢复需要的长持 GCRef」)。
+	baseline []baselineEntry
+
 	// allowFileLoad:loadfile/dofile 是否允许读宿主文件系统。默认 false
 	// (嵌入式 VM 接不可信脚本,文件读是越权探测面;10 §12.1 LibsSafe 思路
 	// 的最小落地)。宿主经 Options.AllowFileLoad 显式开启。
@@ -201,7 +208,12 @@ func (st *State) visitProgramStringRefs(visit func(arena.GCRef)) {
 // freelist 复用内存后,漏根即 use-after-free:除 runningThread 外,
 // resume 链上挂起的调用者线程(threadChain)、全部非 dead 协程的栈、
 // 协程主函数(首次 resume 前仅 Go struct 持有)与 xfer 传值区都必须可达。
+// globals baseline 的复合值(issue #6 ResetGlobalsToBaseline 的根)也在此扫。
 func (st *State) visitExtraValues(visit func(value.Value)) {
+	// globals baseline:复合值不接根 → 下次 Reset 时写进 _G 就是已死 GCRef
+	for i := range st.baseline {
+		visit(st.baseline[i].val)
+	}
 	// 快路径(绝大多数负载):无协程、无 resume 链 → 直扫 runningThread,
 	// 零 map 分配(每轮 Collect 都走根扫描,慢路径的 seen map 是 GC 自伤)。
 	if len(st.cos.cos) == 0 && len(st.threadChain) == 0 {

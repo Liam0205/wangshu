@@ -116,6 +116,44 @@ func (st *State) GCCountKB() float64 { return st.core.GCCountKB() }
 // "instruction budget exceeded" 终止。宿主对不可信脚本的执行配额。
 func (st *State) SetStepBudget(n int64) { st.core.SetStepBudget(n) }
 
+// MarkGlobalsBaseline 拍下当前 _G 的快照作为基线(issue #6,gopher-lua
+// 对位 sync.Pool 复用 State 时的脚本隔离机制)。
+//
+// 典型时机:`NewState` 装载 stdlib 之后立即调用一次,把 stdlib 提供面
+// 定为基线。之后 `ResetGlobalsToBaseline` 可在每次 Borrow / Return 之间
+// 把 _G 复位——脚本 hijack(`tostring = "pwned"`)与 leak
+// (`new_global = 123`)都被兜住,下次 Borrow 看到的 _G 干净如 stdlib
+// 加载后。
+//
+// 重复调用覆盖旧 baseline(无副作用,但前一基线的复合值 root 释放后
+// 可能被 GC)。
+//
+// 限定:仅快照字符串 key——stdlib 与宿主自己的全局都是字符串 key,
+// 数字/表/函数等 key 跳过(非典型,实际场景不存在)。基线中的复合值
+// (table/function GCRef)经 visitExtraValues 入 GC 根,Reset 时写回 _G
+// 的不是 dangling ref。
+func (st *State) MarkGlobalsBaseline() { st.core.MarkGlobalsBaseline() }
+
+// ResetGlobalsToBaseline 把 _G 恢复到上一次 `MarkGlobalsBaseline` 拍下
+// 的状态(issue #6):
+//
+//   - 非 baseline 字符串 key 删除(写 Nil,Lua 表语义等价 `_G[k] = nil`)
+//   - baseline 字符串 key 写回 baseline 当时的值
+//
+// 未 `MarkGlobalsBaseline` 过(基线空)时等价「全部字符串 key globals
+// 清空」——慎用,会把 stdlib 也清掉。
+//
+// pineapple sync.Pool 用法对位 gopher-lua statePool.Return 路径:
+//
+//	st := wangshu.NewState(opts)
+//	st.MarkGlobalsBaseline()           // stdlib 装载后立刻定基线
+//	// 多次 Borrow / Return 循环:
+//	for i := 0; i < N; i++ {
+//	    prog.Run(st)                   // 脚本可能 hijack 或泄漏
+//	    st.ResetGlobalsToBaseline()    // 下次 Borrow 看到干净 _G
+//	}
+func (st *State) ResetGlobalsToBaseline() { st.core.ResetGlobalsToBaseline() }
+
 // SetContext 绑定一个 context.Context 到 State——VM 在每个抢占点
 // (回边 / 函数进帧 / TFORLOOP 等)检查 ctx.Err();非空时中止当前
 // Run/Call,返回包装 ctx.Err() 的 Go error(可被 Lua 端 pcall 捕获,

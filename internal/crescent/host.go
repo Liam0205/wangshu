@@ -127,6 +127,90 @@ func (st *State) PinnedRefAt(idx uint32) arena.GCRef {
 	return st.pinnedRefs[idx]
 }
 
+// baselineEntry 是 globals baseline 的一项:key 是字符串(intern 后),
+// val 是 baseline 时的 value。复合值(table/function)的 GCRef 在 val 内,
+// 但 baseline 表本身常驻 State,经 visitBaselineRefs 加入 GC 根防回收
+// (issue #6:不接根则 baseline value 在两次 Reset 之间被 GC 死掉)。
+type baselineEntry struct {
+	key string
+	val value.Value
+}
+
+// MarkGlobalsBaseline 拍下当前 _G 的快照作为基线(issue #6)。
+// 重复调用覆盖旧 baseline。RawNext 遍历当前 globals 把所有 (string key,
+// value) 拷到 State 上的 baseline 切片。
+//
+// 调用方契约:典型时机是 NewState 装载 stdlib 完成后立即调用,
+// 把 stdlib 提供面定为基线。之后 ResetGlobalsToBaseline 可在每次
+// Borrow 之间恢复该基线。
+//
+// **限定**:仅遍历字符串 key(stdlib 与宿主自己的全局都是字符串 key);
+// 数字 / 表 / 函数等 key 跳过(stdlib 不用,实际场景不存在)。这样可
+// 避免把 baseline 设计扩到任意 key 形态、保持转换简单。
+func (st *State) MarkGlobalsBaseline() {
+	st.baseline = st.baseline[:0]
+	key := value.Nil
+	for {
+		nextKey, nextVal, ok, e := st.rawNext(st.globals, key)
+		if e != nil || !ok {
+			break
+		}
+		if value.Tag(nextKey) == value.TagString {
+			// key 已 intern,直接拷字节(intern 池保证后续 lookup 同 ref)
+			keyStr := string(object.StringBytes(st.arena, value.GCRefOf(nextKey)))
+			st.baseline = append(st.baseline, baselineEntry{key: keyStr, val: nextVal})
+		}
+		key = nextKey
+	}
+}
+
+// ResetGlobalsToBaseline 把 _G 恢复到上一次 MarkGlobalsBaseline 拍下的
+// 状态(issue #6):非 baseline 字符串 key 删除(置 Nil),baseline 字符串
+// key 写回 baseline value。未 Mark 过(baseline 空)则等价 ClearScriptGlobals
+// 行为——全部字符串 key globals 删除,慎用。
+//
+// 实现:① 先 rawNext 遍历当前 globals 收集所有字符串 key;② 对 baseline
+// 中的 key 写 baseline value;③ 对未在 baseline 的 key 写 Nil。
+func (st *State) ResetGlobalsToBaseline() {
+	// 用 baseline 建 set(短表 O(N) 线性扫即可,无需 map)
+	inBaseline := func(k string) (value.Value, bool) {
+		for i := range st.baseline {
+			if st.baseline[i].key == k {
+				return st.baseline[i].val, true
+			}
+		}
+		return value.Nil, false
+	}
+	// 步骤 1:遍历当前 _G 收集字符串 key(rawNext 期间不改 globals,
+	// 避免迭代器失效)
+	var currentKeys []string
+	key := value.Nil
+	for {
+		nextKey, _, ok, e := st.rawNext(st.globals, key)
+		if e != nil || !ok {
+			break
+		}
+		if value.Tag(nextKey) == value.TagString {
+			currentKeys = append(currentKeys,
+				string(object.StringBytes(st.arena, value.GCRefOf(nextKey))))
+		}
+		key = nextKey
+	}
+	// 步骤 2:删除非 baseline keys
+	for _, k := range currentKeys {
+		if _, in := inBaseline(k); !in {
+			st.SetGlobal(k, value.Nil)
+		}
+	}
+	// 步骤 3:恢复 baseline keys 到 baseline values
+	for i := range st.baseline {
+		st.SetGlobal(st.baseline[i].key, st.baseline[i].val)
+	}
+}
+
+// BaselineSize 报告当前 baseline 中的 key 数(诊断/测试用)。
+func (st *State) BaselineSize() int { return len(st.baseline) }
+
 // callHost 同步调用一个 host closure(05 §7.5)。
 //
 // funcIdx:host closure 在栈上的索引;参数紧随其后;
