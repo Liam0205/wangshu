@@ -291,6 +291,166 @@ end
 	}
 }
 
+func TestTable_ForEach_MixedKeys(t *testing.T) {
+	// pineapple 「return map」场景:string-key map + 整数 key 混在一表,
+	// adapter 桥到 map[string]any。
+	st := wangshu.NewState(wangshu.Options{})
+	prog, _ := wangshu.Compile([]byte(`
+function f() return { name = "alice", age = 30, [1] = "first" } end
+`), "def")
+	if _, err := prog.Run(st); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	fn := st.GetGlobal("f")
+	defer fn.Release()
+	r, err := st.Call(fn)
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	defer r[0].Release()
+
+	got := map[string]any{}
+	err = r[0].AsTable().ForEach(func(k, v wangshu.Value) bool {
+		switch {
+		case k.IsString():
+			if v.IsString() {
+				got[k.Str()] = v.Str()
+			} else if v.IsNumber() {
+				got[k.Str()] = v.Number()
+			}
+		case k.IsNumber():
+			if v.IsString() {
+				got[wangshu.Number(k.Number()).Display()] = v.Str()
+			}
+		}
+		return true
+	})
+	if err != nil {
+		t.Fatalf("ForEach: %v", err)
+	}
+	if got["name"] != "alice" || got["age"] != float64(30) || got["1"] != "first" {
+		t.Errorf("got = %v", got)
+	}
+}
+
+func TestTable_ForEach_EmptyTable(t *testing.T) {
+	st := wangshu.NewState(wangshu.Options{})
+	tv := st.NewTable()
+	defer tv.Release()
+	count := 0
+	err := tv.AsTable().ForEach(func(_, _ wangshu.Value) bool {
+		count++
+		return true
+	})
+	if err != nil {
+		t.Fatalf("ForEach empty: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("count = %d, want 0", count)
+	}
+}
+
+func TestTable_ForEach_EarlyTerminate(t *testing.T) {
+	// fn 返 false 提前终止;只收集前 2 项。
+	st := wangshu.NewState(wangshu.Options{})
+	tv := st.NewTable()
+	defer tv.Release()
+	tbl := tv.AsTable()
+	for i := 1; i <= 5; i++ {
+		mustSet(t, tbl.SetIndex(i, wangshu.Number(float64(i*10))))
+	}
+	seen := 0
+	err := tbl.ForEach(func(_, _ wangshu.Value) bool {
+		seen++
+		return seen < 2 // 收到第 2 项后下次返 false
+	})
+	if err != nil {
+		t.Fatalf("ForEach: %v", err)
+	}
+	if seen != 2 {
+		t.Errorf("seen = %d, want 2", seen)
+	}
+}
+
+func TestTable_ForEach_NestedTable(t *testing.T) {
+	// fn 内拿到 nested table val,继续 ForEach 子表;复合值 Release。
+	st := wangshu.NewState(wangshu.Options{})
+	prog, _ := wangshu.Compile([]byte(`
+function f() return { inner = { 100, 200, 300 } } end
+`), "def")
+	if _, err := prog.Run(st); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	fn := st.GetGlobal("f")
+	defer fn.Release()
+	r, _ := st.Call(fn)
+	defer r[0].Release()
+
+	var sum float64
+	err := r[0].AsTable().ForEach(func(k, v wangshu.Value) bool {
+		if !v.IsTable() {
+			return true
+		}
+		defer v.Release()
+		_ = v.AsTable().ForEach(func(_, inner wangshu.Value) bool {
+			if inner.IsNumber() {
+				sum += inner.Number()
+			}
+			return true
+		})
+		return true
+	})
+	if err != nil {
+		t.Fatalf("ForEach: %v", err)
+	}
+	if sum != 600 {
+		t.Errorf("sum = %v, want 600", sum)
+	}
+}
+
+func TestTable_ForEach_AfterRelease(t *testing.T) {
+	st := wangshu.NewState(wangshu.Options{})
+	tv := st.NewTable()
+	tbl := tv.AsTable()
+	mustSet(t, tbl.Set(wangshu.String("k"), wangshu.Number(1)))
+	tv.Release()
+	err := tbl.ForEach(func(_, _ wangshu.Value) bool { return true })
+	if err == nil || !strings.Contains(err.Error(), "released") {
+		t.Errorf("after release err = %v", err)
+	}
+}
+
+func TestTable_ForEach_DeterministicOrder(t *testing.T) {
+	// rawNext 序确定性:同形状下迭代序稳定(12 pairs 序口径)
+	st := wangshu.NewState(wangshu.Options{})
+	tv := st.NewTable()
+	defer tv.Release()
+	tbl := tv.AsTable()
+	for i := 1; i <= 3; i++ {
+		mustSet(t, tbl.SetIndex(i, wangshu.Number(float64(i))))
+	}
+	collect := func() []float64 {
+		out := []float64{}
+		_ = tbl.ForEach(func(_, v wangshu.Value) bool {
+			if v.IsNumber() {
+				out = append(out, v.Number())
+			}
+			return true
+		})
+		return out
+	}
+	a := collect()
+	b := collect()
+	if len(a) != len(b) {
+		t.Fatalf("len mismatch: %d vs %d", len(a), len(b))
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			t.Errorf("序不稳:run1[%d]=%v run2[%d]=%v", i, a[i], i, b[i])
+		}
+	}
+}
+
 func mustSet(t *testing.T, err error) {
 	t.Helper()
 	if err != nil {

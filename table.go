@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	"github.com/Liam0205/wangshu/internal/arena"
+	"github.com/Liam0205/wangshu/internal/value"
 )
 
 // Table 是公共面对 Lua 表的不透明句柄,经 State.NewTable 创建或由
@@ -96,4 +97,44 @@ func (t *Table) Len() int {
 		return 0
 	}
 	return int(t.st.core.RawBorder(ref))
+}
+
+// ForEach 遍历表的所有键值对(raw 迭代,不触发元方法;与 stdlib
+// next/pairs 同源)。fn 返 false 提前终止遍历,返 true 继续。
+//
+// 迭代序:先数组段(索引序),后哈希段(槽序)——同一表同一形状下序
+// 稳定(12 pairs 序口径)。fn 在 ForEach 调用栈内同步执行;并发上同
+// State 单 goroutine(11 §8)。
+//
+// key/val 走 fromInnerWithPin 自动登记 pin 槽——若 fn 收到的 key/val
+// 是复合值(table/function)且需在 fn 外保留,调用方负责 Release()。
+// fn 不在外保留(典型 ForEach 用法:遍历到桥到 Go 端数据结构)时,
+// 可在 fn 末尾顺手 Release 复合 val 防 pin 槽累积。
+//
+// 错误:表已 Release / internal RawNext 错(罕见:迭代中表结构被改),
+// 返回 Go error;否则返 nil。
+func (t *Table) ForEach(fn func(key, val Value) bool) error {
+	if t.st == nil {
+		return fmt.Errorf("wangshu: Table.ForEach: table has been released")
+	}
+	ref := t.ref()
+	if ref.IsNull() {
+		return fmt.Errorf("wangshu: Table.ForEach: table has been released")
+	}
+	key := value.Nil
+	for {
+		nextKey, nextVal, ok, e := t.st.core.RawNext(ref, key)
+		if e != nil {
+			return fmt.Errorf("wangshu: Table.ForEach: %s", e.Msg)
+		}
+		if !ok {
+			return nil
+		}
+		pubKey := fromInnerWithPin(t.st, nextKey)
+		pubVal := fromInnerWithPin(t.st, nextVal)
+		if !fn(pubKey, pubVal) {
+			return nil
+		}
+		key = nextKey
+	}
 }
