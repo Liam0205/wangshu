@@ -194,13 +194,31 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 			ci.pc += int32(bytecode.SBx(i))
 
 		case bytecode.EQ, bytecode.LT, bytecode.LE:
-			res, e := st.doCompare(th, ci, i)
-			if e != nil {
-				return e
+			// 快路径内联:双 number 直比,零函数调用、零 ci 刷新
+			// (loop 档热路径 `i < n` 每迭代一次,05 §3.4)。
+			b := rk(th, ci, bytecode.B(i))
+			c := rk(th, ci, bytecode.C(i))
+			var res bool
+			if value.IsNumber(b) && value.IsNumber(c) {
+				x, y := value.AsNumber(b), value.AsNumber(c)
+				switch bytecode.Op(i) {
+				case bytecode.EQ:
+					res = x == y
+				case bytecode.LT:
+					res = x < y
+				default:
+					res = x <= y
+				}
+			} else {
+				var e *LuaError
+				res, e = st.doCompare(th, ci, i)
+				if e != nil {
+					return e
+				}
+				// __eq/__lt/__le handler 可能重入 execute → 刷新 ci
+				ci = currentCI(th)
+				code = ci.proto.Code
 			}
-			// __eq/__lt/__le handler 可能重入 execute → 刷新 ci
-			ci = currentCI(th)
-			code = ci.proto.Code
 			if res != (bytecode.A(i) != 0) {
 				ci.pc++
 			}
@@ -361,6 +379,33 @@ func (st *State) toNumberCoerce(v value.Value) (float64, bool) {
 func (st *State) doArith(th *thread, ci *callInfo, i bytecode.Instruction) *LuaError {
 	b := rk(th, ci, bytecode.B(i))
 	c := rk(th, ci, bytecode.C(i))
+	// 快路径:双 number 直算(单比较判定,无 coercion 开销;05 §4.1)
+	if value.IsNumber(b) && value.IsNumber(c) {
+		x, y := value.AsNumber(b), value.AsNumber(c)
+		var r float64
+		switch bytecode.Op(i) {
+		case bytecode.ADD:
+			r = x + y
+		case bytecode.SUB:
+			r = x - y
+		case bytecode.MUL:
+			r = x * y
+		case bytecode.DIV:
+			r = x / y
+		case bytecode.MOD:
+			r = x - math.Floor(x/y)*y
+		case bytecode.POW:
+			r = math.Pow(x, y)
+		}
+		setReg(th, ci, bytecode.A(i), value.NumberValue(r))
+		return nil
+	}
+	return st.doArithSlow(th, ci, i, b, c)
+}
+
+// doArithSlow:string coercion → 元方法 → 带名字报错(从快路径拆出,
+// 保持 doArith 可内联进主循环)。
+func (st *State) doArithSlow(th *thread, ci *callInfo, i bytecode.Instruction, b, c value.Value) *LuaError {
 	x, okB := st.toNumberCoerce(b)
 	y, okC := st.toNumberCoerce(c)
 	if okB && okC {
