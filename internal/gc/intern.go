@@ -46,7 +46,7 @@ func (c *Collector) Intern(b []byte) arena.GCRef {
 	// 未命中:分配新 String + 入表。这次分配可能触发 GC——见调用方契约。
 	ref := object.AllocString(c.a, b, h)
 	c.LinkSweep(ref) // 挂入 sweep 链
-	c.AllocCharge(uint32(16 + (uint32(len(b))+1+7) & ^uint32(7)))
+	c.AllocCharge(object.StringObjectBytes(uint32(len(b))))
 	c.strBuckets[bucket] = append(c.strBuckets[bucket], ref)
 	c.strCount++
 	if c.strCount > c.strMask+1 {

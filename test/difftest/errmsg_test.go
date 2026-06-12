@@ -2,7 +2,7 @@
 //
 // 对拍规则:errmsg 含 "chunkname:line:" 前缀——两边 chunkname 不同(wangshu
 // 用 chunkname 参数,oracle 经 stdin 是 "stdin"),归一化:截掉首个 ": " 之前
-// 的位置段后逐字节比较。位置段本身(行号)也单独断言一致。
+// 的 chunkname 段,行号段与正文分别断言一致。
 package difftest
 
 import (
@@ -54,6 +54,11 @@ var errCorpus = []errCase{
 	// table 索引键错误
 	{"table_index_nil_key", `local t = {}; local k; t[k] = 1`},
 	{"table_index_nan_key", `local t = {}; t[0/0] = 1`},
+	// upvalue 名字形态(expr 内再嵌一层函数,外层局部被捕获为 upvalue;
+	// 官方 getobjname 走 getupvalname 分支报 "upvalue 'x'")
+	{"arith_on_upvalue", `local up; local f = function() return up + 1 end; return f()`},
+	{"call_upvalue", `local upf; local f = function() return upf() end; return f()`},
+	{"index_upvalue", `local upt; local f = function() return upt.k end; return f()`},
 }
 
 // stripPos 截掉 "chunkname:line: " 位置前缀,返回 (line 段, 余下消息)。
@@ -67,7 +72,8 @@ func stripPos(msg string) (string, string) {
 	return m[1], m[2]
 }
 
-// TestDiff_ErrorMessages 对拍错误消息正文(归一化位置前缀后逐字节)。
+// TestDiff_ErrorMessages 对拍错误消息:正文逐字节 + 行号段也断言一致
+// (两边脚本结构相同,行号应相等;LineInfo 错位类 bug 经此防线)。
 func TestDiff_ErrorMessages(t *testing.T) {
 	oracle := findOracle()
 	if oracle == "" {
@@ -79,7 +85,7 @@ func TestDiff_ErrorMessages(t *testing.T) {
 			// oracle
 			oracleSrc := wrapForOracle(script)
 			wantRaw := runOracle(t, oracle, oracleSrc)
-			_, want := stripPos(wantRaw)
+			wantLine, want := stripPos(wantRaw)
 			// wangshu
 			prog, err := wangshu.Compile([]byte(script), "errdiff")
 			if err != nil {
@@ -90,9 +96,12 @@ func TestDiff_ErrorMessages(t *testing.T) {
 			if err != nil {
 				t.Fatalf("run: %v", err)
 			}
-			_, got := stripPos(results[0].GoString())
+			gotLine, got := stripPos(results[0].GoString())
 			if got != want {
 				t.Errorf("error message diff:\n  wangshu: %q\n  oracle:  %q", got, want)
+			}
+			if gotLine != wantLine {
+				t.Errorf("error line diff: wangshu %q vs oracle %q (msg %q)", gotLine, wantLine, want)
 			}
 		})
 	}

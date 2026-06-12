@@ -66,6 +66,14 @@ func describeRegDepth(proto *bytecode.Proto, pc int32, reg int, depth int) strin
 			if name, ok := constStringAt(proto, bytecode.Bx(ins)); ok {
 				return fmt.Sprintf("global '%s'", name)
 			}
+		case bytecode.GETUPVAL:
+			// 闭包捕获的外层变量(官方 getupvalname 分支):
+			// `local x; pcall(function() return x + 1 end)` 中 x 是 upvalue。
+			if idx := bytecode.B(ins); idx < len(proto.UpvalDescs) {
+				if name := proto.UpvalDescs[idx].Name; name != "" {
+					return fmt.Sprintf("upvalue '%s'", name)
+				}
+			}
 		case bytecode.GETTABLE:
 			if rk := bytecode.C(ins); bytecode.IsK(rk) {
 				if name, ok := constStringAt(proto, bytecode.KIdx(rk)); ok {

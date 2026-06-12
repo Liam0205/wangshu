@@ -16,7 +16,9 @@ func (c *Collector) Push(v value.Value) int {
 	return len(c.shadow)
 }
 
-// Pop 弹出到指定深度。配对校验:popTo 必须等于 Push 返回的 handle,防漏配对。
+// Pop 弹出到深度 handle-1。只做范围校验,不校验"等于最近一次 Push 的返回值":
+// 乱序弹出(先 Pop 外层 handle)会静默截掉更深层登记——LIFO 配对由调用方
+// defer 纪律保证(06 §6.3),此处仅兜越界。
 func (c *Collector) Pop(handle int) {
 	if handle <= 0 || handle > len(c.shadow) {
 		// 防御:漏配对的链路被截断,后续 Push/Pop 的 handle 都将偏移。

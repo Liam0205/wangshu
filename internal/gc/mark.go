@@ -100,7 +100,7 @@ func (c *Collector) scanObject(ref arena.GCRef, ot object.OBJType) {
 // M5 阶段:object.TableWeakMode 是 stub(返回 0),故全部走强引用语义;M11 接入元表后此分支生效。
 func (c *Collector) scanTable(t arena.GCRef) {
 	mode := object.TableWeakMode(c.a, t)
-	weakKey := mode == 'k' || mode == 'a' // 'a' 仅占位:某些约定用 'k'+'v' 表 both
+	weakKey := mode == 'k' || mode == 'a' // 'a' = key+value 双弱(TableWeakMode 定稿值)
 	weakVal := mode == 'v' || mode == 'a'
 	// 数组段:键是数字,弱键不影响;值受 weakVal 控。
 	asize := object.TableASize(c.a, t)

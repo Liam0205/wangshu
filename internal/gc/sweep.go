@@ -49,65 +49,49 @@ func (c *Collector) unlinkSweep(prev, ref, next arena.GCRef) {
 
 // freeObject 回收一个死对象:类型相关索引清理 + 字节归还 arena freelist。
 //
+// 尺寸一律走 object.SizeOf / 附属块 Bytes helper(单一事实源)——释放尺寸
+// 错一个字,freelist 就把块放错 size-class 桶,复用时相邻对象内存重叠。
+//
 //   - String:先从 intern 表摘除(读 hash 须在 Free 覆写 word0/word1 之前)。
-//   - Table:附属 array/node 块一并归还(附属块无 GCHeader,由头对象独占,
-//     rehash 换段时旧段已由 rawtable 显式归还,此处只剩当前段,无双重释放)。
+//   - Table:附属 array/node 块一并归还(附属块由头对象独占;rehash 换段时
+//     旧段已由 rawtable 显式归还,此处只剩当前段,无双重释放)。
+//   - Closure:host closure 通知注册表释放槽位引用。
 //   - Userdata:清 hasFinalizer 登记(防块复用后新 userdata 的 __gc 注册被旧记录挡掉)。
 //   - Thread:头 + 值栈/CallInfo 附属块(P1 运行期协程在 Go 侧,此类型仅测试触达)。
 func (c *Collector) freeObject(ref arena.GCRef, ot object.OBJType) {
 	switch ot {
 	case object.OBJ_STRING:
 		c.removeFromStringTable(ref)
-		c.a.Free(ref, 16+(object.StringLen(c.a, ref)+1+7)&^7)
 	case object.OBJ_TABLE:
-		asize := object.TableASize(c.a, ref)
 		if arr := object.TableArrayRef(c.a, ref); !arr.IsNull() {
-			c.a.Free(arr, asize*8)
+			c.a.Free(arr, object.TableArrayBytes(object.TableASize(c.a, ref)))
 		}
-		hsize := object.TableHSize(c.a, ref)
 		if node := object.TableNodeRef(c.a, ref); !node.IsNull() {
-			c.a.Free(node, hsize*3*8)
+			c.a.Free(node, object.TableNodeBytes(object.TableHSize(c.a, ref)))
 		}
-		c.a.Free(ref, 48)
 	case object.OBJ_CLOSURE:
 		if c.releaseHostFn != nil && object.IsHostClosure(c.a, ref) {
 			c.releaseHostFn(object.ClosureProtoID(c.a, ref))
 		}
-		c.a.Free(ref, 16+uint32(object.ClosureNUpvals(c.a, ref))*8)
 	case object.OBJ_USERDATA:
 		delete(c.hasFinalizer, ref)
-		c.a.Free(ref, 32+(object.UserdataLen(c.a, ref)+7)&^7)
 	case object.OBJ_THREAD:
 		if stk := object.ThreadValueStackRef(c.a, ref); !stk.IsNull() {
-			c.a.Free(stk, object.ThreadStackCap(c.a, ref)*8)
+			c.a.Free(stk, object.ThreadStackBytes(object.ThreadStackCap(c.a, ref)))
 		}
 		if cis := object.ThreadCallInfoRef(c.a, ref); !cis.IsNull() {
-			c.a.Free(cis, object.ThreadCICap(c.a, ref)*4*8)
+			c.a.Free(cis, object.ThreadCIBytes(object.ThreadCICap(c.a, ref)))
 		}
-		c.a.Free(ref, 72)
-	case object.OBJ_UPVAL:
-		c.a.Free(ref, 24)
 	}
+	// 头对象自身。SizeOf 读头部字段,必须在 Free 覆写 word0 之前完成上面的清理。
+	c.a.Free(ref, object.SizeOf(c.a, ref, ot))
 	// Userdata 的 __gc 已在 separateFinalizers 中分流(06 §10),此处不再处理。
 }
 
-// objectBytes 估算一个头对象的字节数(用于 pacing 统计)。
+// objectBytes 返回头对象自身字节数(pacing 统计;Table/Thread 附属块经
+// 其它对象间接计入,P1 简化口径)。与 freeObject 共用 SizeOf 单一事实源。
 func (c *Collector) objectBytes(ref arena.GCRef, ot object.OBJType) uint32 {
-	switch ot {
-	case object.OBJ_STRING:
-		return 16 + (object.StringLen(c.a, ref)+1+7)&^7
-	case object.OBJ_TABLE:
-		return 48 // 6 字头部;附属块字节由其他对象的 GCRef 间接计入(P1 简化,不精确)
-	case object.OBJ_CLOSURE:
-		return 16 + uint32(object.ClosureNUpvals(c.a, ref))*8
-	case object.OBJ_USERDATA:
-		return 32 + (object.UserdataLen(c.a, ref)+7)&^7
-	case object.OBJ_THREAD:
-		return 72
-	case object.OBJ_UPVAL:
-		return 24
-	}
-	return 0
+	return object.SizeOf(c.a, ref, ot)
 }
 
 // separateFinalizers (06 §10):把 finalizeList 中本轮死白的 userdata 分出,标记其可达图复活,
