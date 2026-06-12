@@ -110,6 +110,26 @@ func (fs *funcState) setReturns(e *expDesc, nResults int) {
 	}
 }
 
+// openMultiRet 把末位多值源(eCall/eVararg)展开为 nResults 个值(<0 = 到 top),
+// 返回 true 表示 e 确实是多值源(调用方走多值分支)。
+//
+// 同构逻辑单点收口——历史上 stmtReturn / compileArgList / exprTable 三处手写,
+// 同族 bug 出了三次(eCall 误 SetA 把"函数所在槽"改写,返回值落错寄存器):
+//   - eCall:CALL 的 A 已是 fnReg(结果落点),绝不可改写;
+//   - eVararg:VARARG 发射时 A=0 占位,此处统一回填 A=freereg(多值起点)。
+func (fs *funcState) openMultiRet(e *expDesc, nResults int) bool {
+	switch e.k {
+	case eCall:
+		fs.setReturns(e, nResults)
+		return true
+	case eVararg:
+		fs.setReturns(e, nResults)
+		fs.proto.Code[e.info] = bytecode.SetA(fs.proto.Code[e.info], fs.freereg)
+		return true
+	}
+	return false
+}
+
 // dischargeToAnyReg 把 e 物化到某寄存器(若已在则原地)。
 func (fs *funcState) dischargeToAnyReg(line int32, e *expDesc) {
 	if e.k != eNonReloc {

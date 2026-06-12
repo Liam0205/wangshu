@@ -163,20 +163,11 @@ func (fs *funcState) compileArgList(args []ast.Expr, line int32) int {
 		fs.exp2NextReg(line, &ai)
 	}
 	last := fs.expr(args[n-1])
-	switch last.k {
-	case eCall:
-		// CALL 的 A 已是 fnReg(结果落点),不可覆盖;只设 C=0(到 top)。
-		fs.setReturns(&last, -1)
+	if fs.openMultiRet(&last, -1) {
 		return -1
-	case eVararg:
-		// VARARG 发射时 A=0 占位,这里回填为当前 freereg(多值起点)。
-		fs.setReturns(&last, -1)
-		fs.proto.Code[last.info] = bytecode.SetA(fs.proto.Code[last.info], fs.freereg)
-		return -1
-	default:
-		fs.exp2NextReg(line, &last)
-		return n
 	}
+	fs.exp2NextReg(line, &last)
+	return n
 }
 
 // exprBin 编译二元表达式;算术折叠,比较走 EQ/LT/LE,逻辑走短路。
@@ -410,6 +401,19 @@ func (fs *funcState) exprFunc(e *ast.FuncExpr) expDesc {
 	return expDesc{k: eRelocable, info: pc, tJmp: NoJump, fJmp: NoJump}
 }
 
+// emitSetList 发射 SETLIST(对齐官方 luaK_setlist):批号 c 超 9-bit C 字段
+// (MaxBC=511)时发 C=0 + 后随一条裸批号指令——旧实现 EncodeABC 对 C 静默
+// &0x1FF 截断,第 512 批回绕成 0,解释器把下一条正常指令当批号吞掉
+// (>25550 项的表构造挂死)。
+func (fs *funcState) emitSetList(line int32, tReg, b, batchNo int) {
+	if batchNo <= bytecode.MaxBC {
+		fs.emitABC(line, bytecode.SETLIST, tReg, b, batchNo)
+		return
+	}
+	fs.emitABC(line, bytecode.SETLIST, tReg, b, 0)
+	fs.emit(line, bytecode.Instruction(batchNo)) // 官方同走 luaK_code 裸字
+}
+
 // exprTable 编译表构造:NEWTABLE + SETLIST(批量数组) + SETTABLE(哈希字段)。
 func (fs *funcState) exprTable(e *ast.TableExpr) expDesc {
 	tReg := fs.freereg
@@ -424,36 +428,23 @@ func (fs *funcState) exprTable(e *ast.TableExpr) expDesc {
 	for i, v := range e.AKeys {
 		isLast := i == nArr-1
 		ve := fs.expr(v)
-		if isLast {
-			switch ve.k {
-			case eCall:
-				// CALL 的 A 已是 fnReg(= 连续区下一槽),不可覆盖;只设 C=0 到 top。
-				fs.setReturns(&ve, -1)
-				fs.emitABC(e.Line, bytecode.SETLIST, tReg, 0, batchNo)
-				fs.freereg = tReg + 1
-				pending = 0
-				continue
-			case eVararg:
-				// VARARG 的 A 是占位 0,落点回填为 freereg。
-				fs.setReturns(&ve, -1)
-				fs.proto.Code[ve.info] = bytecode.SetA(fs.proto.Code[ve.info], fs.freereg)
-				fs.emitABC(e.Line, bytecode.SETLIST, tReg, 0, batchNo)
-				fs.freereg = tReg + 1
-				pending = 0
-				continue
-			}
+		if isLast && fs.openMultiRet(&ve, -1) {
+			fs.emitSetList(e.Line, tReg, 0, batchNo)
+			fs.freereg = tReg + 1
+			pending = 0
+			continue
 		}
 		fs.exp2NextReg(e.Line, &ve)
 		pending++
 		if pending == flush {
-			fs.emitABC(e.Line, bytecode.SETLIST, tReg, flush, batchNo)
+			fs.emitSetList(e.Line, tReg, flush, batchNo)
 			fs.freereg = tReg + 1
 			pending = 0
 			batchNo++
 		}
 	}
 	if pending > 0 {
-		fs.emitABC(e.Line, bytecode.SETLIST, tReg, pending, batchNo)
+		fs.emitSetList(e.Line, tReg, pending, batchNo)
 		fs.freereg = tReg + 1
 	}
 

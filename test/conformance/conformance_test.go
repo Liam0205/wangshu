@@ -5,6 +5,7 @@
 package conformance
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -298,5 +299,33 @@ func TestConformance(t *testing.T) {
 				t.Errorf("got %q, want %q", got, c.want)
 			}
 		})
+	}
+}
+
+// TestSetListBatchOverflow:>25550 项表构造的 SETLIST 批号超 9-bit C 字段,
+// codegen 须按官方 luaK_setlist 发 C=0 + 后随裸批号指令。旧实现 C 被静默
+// &0x1FF 截断回绕,解释器把下一条正常指令当批号吞掉(挂死/错果)。
+func TestSetListBatchOverflow(t *testing.T) {
+	const n = 25551 // 511 批 × 50 + 1,第 512 批触发溢出路径
+	var sb strings.Builder
+	sb.WriteString("local t = {")
+	for i := 1; i <= n; i++ {
+		fmt.Fprintf(&sb, "%d,", i)
+	}
+	sb.WriteString("}\nreturn #t, t[1], t[25550], t[25551]")
+	prog, err := wangshu.Compile([]byte(sb.String()), "bigctor")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	st := wangshu.NewState(wangshu.Options{})
+	results, err := prog.Run(st)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	want := []float64{n, 1, 25550, 25551}
+	for i, w := range want {
+		if results[i].Number() != w {
+			t.Errorf("result[%d] = %s, want %v", i, results[i].GoString(), w)
+		}
 	}
 }

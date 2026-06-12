@@ -102,27 +102,23 @@ func (fs *funcState) adjustExprList(line int32, exprs []ast.Expr, nWant int) {
 		return
 	}
 	// nWant >= n:末位可能多值,补 nWant - n 个 nil
-	switch last.k {
-	case eCall:
-		extra := nWant - (n - 1)
-		fs.setReturns(&last, extra)
-		// CALL 的 A 已在 exprCall 设为 fnReg(= freereg-1 当时),其结果就落 R(fnReg);
-		// extra>1 时把 freereg 抬高到容纳全部返回值。
-		if extra > 1 {
-			fs.reserveRegs(line, extra-1)
+	if extra := nWant - (n - 1); fs.openMultiRet(&last, extra) {
+		// openMultiRet 统一处理 A 字段纪律(eCall 的 A 不可改;eVararg 回填
+		// freereg)。预留差异:CALL 结果落 fnReg(已占 1 槽)再多留 extra-1;
+		// VARARG 落 freereg(未占槽)留 extra。
+		if last.k == eCall {
+			if extra > 1 {
+				fs.reserveRegs(line, extra-1)
+			}
+		} else {
+			fs.reserveRegs(line, extra)
 		}
-	case eVararg:
-		extra := nWant - (n - 1)
-		fs.setReturns(&last, extra)
-		// VARARG 的 A 是发射时的占位 0,落点 = 当前 freereg(多值起点)。
-		fs.proto.Code[last.info] = bytecode.SetA(fs.proto.Code[last.info], fs.freereg)
-		fs.reserveRegs(line, extra)
-	default:
-		fs.exp2NextReg(line, &last)
-		if nWant > n {
-			fs.emitABC(line, bytecode.LOADNIL, fs.freereg, fs.freereg+(nWant-n)-1, 0)
-			fs.reserveRegs(line, nWant-n)
-		}
+		return
+	}
+	fs.exp2NextReg(line, &last)
+	if nWant > n {
+		fs.emitABC(line, bytecode.LOADNIL, fs.freereg, fs.freereg+(nWant-n)-1, 0)
+		fs.reserveRegs(line, nWant-n)
 	}
 }
 
@@ -380,8 +376,7 @@ func (fs *funcState) stmtReturn(s *ast.ReturnStmt) {
 			// return ... 返回全部 vararg(多值到 top),不可收敛单值
 			base := fs.freereg
 			ve := fs.expr(ce)
-			fs.setReturns(&ve, -1)
-			fs.proto.Code[ve.info] = bytecode.SetA(fs.proto.Code[ve.info], base)
+			fs.openMultiRet(&ve, -1)
 			fs.emitABC(s.Line, bytecode.RETURN, base, 0, 0)
 			return
 		}
@@ -407,16 +402,7 @@ func (fs *funcState) stmtReturn(s *ast.ReturnStmt) {
 		fs.exp2NextReg(s.Line, &ei)
 	}
 	last := fs.expr(s.Exprs[n-1])
-	switch last.k {
-	case eCall:
-		// CALL 的 A 已是 fnReg(= 当前连续区的下一槽),C=0 到 top;不可覆盖 A。
-		fs.setReturns(&last, -1)
-		fs.emitABC(s.Line, bytecode.RETURN, base, 0, 0)
-		return
-	case eVararg:
-		// VARARG 的 A 是占位 0,落点回填为 freereg(连续区下一槽)。
-		fs.setReturns(&last, -1)
-		fs.proto.Code[last.info] = bytecode.SetA(fs.proto.Code[last.info], fs.freereg)
+	if fs.openMultiRet(&last, -1) {
 		fs.emitABC(s.Line, bytecode.RETURN, base, 0, 0)
 		return
 	}
