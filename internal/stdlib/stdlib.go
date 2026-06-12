@@ -410,7 +410,9 @@ func baseFnToNumber(st *crescent.State, args []value.Value) ([]value.Value, *cre
 		return []value.Value{value.Nil}, nil
 	}
 	if len(args) >= 2 && args[1] != value.Nil {
-		// tonumber(s, base):base 2-36,逐字符按进制解析(5.1 strtoul 语义)
+		// tonumber(s, base):base 2-36,逐字符按进制解析(5.1 strtoul 语义,
+		// 负数回绕除外——官方 '-ff' 经 C strtoul 回绕成 2^64-255,本实现取
+		// 直觉的 -255;已登记差分豁免)
 		baseF, ok := toNumberStr(st, args[1])
 		if !ok {
 			return nil, crescent.NewError("bad argument #2 to 'tonumber' (number expected)")

@@ -58,6 +58,9 @@ var exemptions = []struct {
 	{"load(func) 渐进分块语义差", "已实现 reader 循环全量拼接;与 5.1 流式编译的差异仅在超大 chunk 内存峰值,语义等价"},
 	{"os.exit 真退出", "10 §11:默认不真退出宿主进程(嵌入式安全)"},
 	{"collectgarbage step/setstepmul 精确语义", "10 §13:STW GC 无增量调参,占位返回;数值不可逐字节比"},
+	{"pattern 灾难性回溯有界失败", "回溯预算 1<<20 步:`.*.+%A*x` 级灾难回溯报 'pattern too complex',oracle 慢速算完——嵌入式防挂起裁量(官方成功/本实现报错的有意分歧)"},
+	{"tonumber 负数 strtoul 回绕", "tonumber('-ff',16) 官方经 C strtoul 回绕返回 1.8446744073710e+19,本实现返回 -255——C 未定义行为的暴露,drop-in 价值低于困惑度,有意取直觉语义"},
+	{"loadfile/dofile 默认禁用", "文件系统读默认关(不可信脚本越权探测面);Options.AllowFileLoad 显式开启后行为对齐官方"},
 }
 
 // TestDiff_CornerProbes 对拍手册边角必做项。

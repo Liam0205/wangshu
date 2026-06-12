@@ -187,6 +187,11 @@ return string.find("a.b", ".", 1, true), string.find("a.b", "%."),
 	{"probe_string_gsub_anchors", `return string.gsub("aaa", "^a", "b")`},
 	{"probe_string_gsub_empty_pat", `return ("abc"):gsub("", "-")`},
 	{"probe_string_match_init_neg", `return string.match("hello", "l+", -2)`},
+	{"probe_string_class_literal_bracket", `
+return ("a]b"):match("[]]"), ("a]b"):match("[^]]"), ("x]y["):gsub("[][]", "#")`},
+	{"probe_string_frontier", `
+return ("abc"):find("%f[%a]"), ("hello world"):find("%f[%w]world"),
+  ("THE (quick) fox"):gsub("%f[%a]%u+%f[%A]", "X")`},
 	{"probe_string_method_chain", `return ("a,b,c"):gsub(",", ";"):upper()`},
 
 	// ===== §5.5 table 库 =====

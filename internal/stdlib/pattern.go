@@ -1,8 +1,8 @@
 // Lua 5.1 pattern matcher (10 §7) — 对齐 lstrlib.c 的 match 引擎。
 //
-// 支持:字符类(%a %d %s %w %x %p %c %l %u + 取反大写)、集合 [..]/[^..]、
-// 量词(* + - ?)、锚点 ^ / $、捕获 () 与位置捕获、%b 平衡匹配、%1-%9 反向引用。
-// P1 不做 %f(frontier,5.1 未文档化特性)。
+// 支持:字符类(%a %d %s %w %x %p %c %l %u + 取反大写)、集合 [..]/[^..]
+// (含 []] 首字面 ])、量词(* + - ?)、锚点 ^ / $、捕获 () 与位置捕获、
+// %b 平衡匹配、%f[set] frontier、%1-%9 反向引用。
 package stdlib
 
 import (
@@ -100,22 +100,22 @@ func (ms *matchState) classEnd(p int) (int, error) {
 		if p < len(ms.pat) && ms.pat[p] == '^' {
 			p++
 		}
-		// 找配对 ]:首字符可以是 ](字面量)
+		// 对齐官方 do-while:先无条件消费一个字符再查终结 ']'——
+		// `[` / `[^` 后的第一个 `]` 因此是字面量([]] = 含 ] 的类)。
 		for {
 			if p >= len(ms.pat) {
 				return 0, fmt.Errorf("malformed pattern (missing ']')")
 			}
 			cc := ms.pat[p]
 			p++
-			if cc == '%' {
-				if p >= len(ms.pat) {
-					return 0, fmt.Errorf("malformed pattern (ends with '%%')")
-				}
-				p++
-			} else if cc == ']' && p > 0 {
-				// 注意:跳过开头紧跟 ^ 后的第一个 ](Lua 允许 []] 形式)
-				// 此处简化:cc==']' 即结束;开头第一个字符若是 ] 由调用序覆盖。
-				return p, nil
+			if cc == '%' && p < len(ms.pat) {
+				p++ // 跳过转义(如 %])
+			}
+			if p < len(ms.pat) && ms.pat[p] == ']' {
+				return p + 1, nil
+			}
+			if p >= len(ms.pat) {
+				return 0, fmt.Errorf("malformed pattern (missing ']')")
 			}
 		}
 	}
@@ -208,6 +208,31 @@ func (ms *matchState) match(s, p int) (int, error) {
 				nc := ms.pat[p+1]
 				if nc == 'b' {
 					return ms.matchBalance(s, p+2)
+				}
+				if nc == 'f' {
+					// %f[set] frontier(5.1 有,手册 5.2 才文档化):前一字符
+					// 不在 set(串首视作 '\0')且当前字符在 set 时零宽匹配。
+					fp := p + 2
+					if fp >= len(ms.pat) || ms.pat[fp] != '[' {
+						return -1, fmt.Errorf("missing '[' after '%%f' in pattern")
+					}
+					fep, err := ms.classEnd(fp)
+					if err != nil {
+						return -1, err
+					}
+					var prev byte // 串首 = '\0'
+					if s > 0 {
+						prev = ms.src[s-1]
+					}
+					var cur byte // 串尾 = '\0'(官方 *s 在 NUL 终止串上)
+					if s < len(ms.src) {
+						cur = ms.src[s]
+					}
+					if !ms.matchClass(prev, fp, fep-1) && ms.matchClass(cur, fp, fep-1) {
+						p = fep
+						continue
+					}
+					return -1, nil
 				}
 				if nc >= '1' && nc <= '9' {
 					return ms.matchCapture(s, p, int(nc-'1'))
