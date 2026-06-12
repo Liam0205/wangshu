@@ -89,6 +89,9 @@ type State struct {
 	// 池中空闲切片不持活跃 Value(归还即逻辑失效),不入 GC 根。
 	argsPool [][]value.Value
 
+	// mainTh 是主线程缓存(State.Call 跨 Run 复用,免每次 newThread)。
+	mainTh *thread
+
 	// allowFileLoad:loadfile/dofile 是否允许读宿主文件系统。默认 false
 	// (嵌入式 VM 接不可信脚本,文件读是越权探测面;10 §12.1 LibsSafe 思路
 	// 的最小落地)。宿主经 Options.AllowFileLoad 显式开启。
@@ -429,7 +432,25 @@ func (st *State) Call(cl arena.GCRef, args []value.Value, nresults int) ([]value
 	if object.IsHostClosure(st.arena, cl) {
 		return nil, fmt.Errorf("Call: host closure not yet supported (M12)")
 	}
-	th := newThread()
+	// 复用主 thread(规则引擎形状 = 长驻 State 高频 Run 短脚本;每次
+	// newThread 的栈切片/扩容是无谓的 Go 堆 churn)。State 单 goroutine,
+	// 主 thread 不会重入(host→Lua 重入走同一 th 的 execute 叠层,协程
+	// 各有独立 th)。复位:top/cis 清零,openUvs 沿用(上次 Run 末
+	// closeUpvals 已清空)。
+	th := st.mainTh
+	if th == nil {
+		th = newThread()
+		st.mainTh = th
+	} else {
+		th.top = 0
+		th.cis = th.cis[:0]
+		th.pendingResume = nil
+		// 上次 Run 经错误退出时 unwind 不走 closeUpvals,openUvs 可能残留
+		// 指向已失效栈位的开放 uv——关闭它们(自持快照值),清 uvOwner。
+		if len(th.openUvs) > 0 {
+			st.closeUpvals(th, 0)
+		}
+	}
 	st.runningThread = th
 	defer func() { st.runningThread = nil }()
 	// 推 callee + args 到栈底
