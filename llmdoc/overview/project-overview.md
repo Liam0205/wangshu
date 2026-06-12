@@ -42,7 +42,7 @@ Wangshu(望舒)是一个**纯 Go 实现的高性能嵌入式 Lua 虚拟机**,关
 
 ## 当前状态
 
-- **P1(crescent 解释器)完整交付**(2026-06-12):M0-M14 全里程碑 + 收尾轮完成,后续历经测试加固轮、完整性补全轮、长稳承诺轮(freelist 内存复用/调用深度上限/GC 根加固/并发验证)与外部审查修复轮(12 轮审查 22+ 项发现全核销)。验收:三档基准 **simple 3.18x / arith 3.10x / loop 2.30x** over gopher-lua(IC + Program 装载缓存把 simple/arith 档从 ~2.3x 拉升至 3.1-3.2x);与官方 Lua 5.1.5 difftest **70 种子 + 200 随机脚本逐字节一致**;`make all` 全绿。代码:`internal/`(frontend/crescent/stdlib 等)+ `wangshu.go` / `arena_abi.go`(公共 API 含 `Program.Call(state, arena, args)` 与 arena 列接口)+ `test/conformance` + `test/difftest`(固定用例 + 随机生成器)+ `benchmarks/baseline`(三档基准)。
+- **P1(crescent 解释器)完整交付**(2026-06-12):M0-M14 全里程碑 + 收尾轮完成,后续历经测试加固轮、完整性补全轮、长稳承诺轮(freelist 内存复用/调用深度上限/GC 根加固/并发验证)、外部审查修复轮(12 轮审查 22+ 项发现全核销)与官方测试套与性能轮(官方 5.1.5 套移植扫出 20 项分歧全修 + profile 驱动六项优化)。验收:三档基准 **simple 9.0x / arith 7.0x / loop 2.45x** over gopher-lua(性能轮主增益来自 State.Call 复用主 thread 消短脚本固定开销与 closeUpvals 快路径,归因见 `benchmarks/` 与 README);realworld 五项中四项反超 gopher-lua(fannkuch 0.82x 为剩余短板);与官方 Lua 5.1.5 difftest **70 种子 + 200 随机脚本逐字节一致**;`make all` 全绿。代码:`internal/`(frontend/crescent/stdlib 等)+ `wangshu.go` / `arena_abi.go`(公共 API 含 `Program.Call(state, arena, args)` 与 arena 列接口)+ `test/conformance` + `test/difftest`(固定用例 + 随机生成器 + probe corpus)+ `test/luasuite`(官方测试套,stopAt 棘轮)+ `benchmarks/baseline` 三档 + `benchmarks/realworld` 五脚本。
 - **收尾轮已把原「已知简化」清单全部落地**(arena 原生表存储、IC 命中路径、协程、pattern matcher、stdlib 补全、错误前缀+traceback、弱表/finalizer、arena ABI 列接口、difftest 随机生成器)。实现形态与设计文档的差异(均接口等价)及 **P3 迁移留口**(值栈/CallInfo arena 化等)见 `docs/design/p1-interpreter/implementation-progress.md` 对账表。
 - **设计文档集仍是规范源**(2026-06-11 全卷齐备):`roadmap.md`(战略)+ `architecture.md`(跨阶段总览,§0 是文档集地图)+ `p1-interpreter/` 13 篇 + p2-p5 各卷。
 - **P2+ 未开始**。

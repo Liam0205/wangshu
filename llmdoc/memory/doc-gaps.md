@@ -1,13 +1,13 @@
 # 文档缺口
 
 > recorder 维护。记录已知但当前无法稳定成文的缺口。随实现/设计推进收敛。
-> 项目状态:**P1 完整交付(M0-M14 + 收尾轮 + 测试加固轮 + 完整性补全轮 + 长稳承诺轮 + 外部审查修复轮),P2+ 未开始**。早期「源文档只给概念未给 spec」类缺口已大半被 `docs/design/` 详细设计填补;「无代码可验证」类缺口已随 P1 交付收口;原「已知简化」清单已在收尾轮全部落地。
+> 项目状态:**P1 完整交付(M0-M14 + 收尾轮 + 测试加固轮 + 完整性补全轮 + 长稳承诺轮 + 外部审查修复轮 + 官方测试套与性能轮),P2+ 未开始**。早期「源文档只给概念未给 spec」类缺口已大半被 `docs/design/` 详细设计填补;「无代码可验证」类缺口已随 P1 交付收口;原「已知简化」清单已在收尾轮全部落地。
 
 ## 当前缺口
 
-- **设计文档回填待办(P2 开工前,recorder 执行,十项合一轮)** — 五轮反思的 promotion 候选合并清单,均为 `docs/design/` 回填(非 llmdoc):
+- **设计文档回填待办(P2 开工前,recorder 执行,十项合一轮)** — 六轮反思的 promotion 候选合并清单,均为 `docs/design/` 回填(非 llmdoc):
   - 源自 `reflections/2026-06-12-p1-implementation-sprint.md`:
-    1. `04-frontend-parser-codegen.md` 补「lcode.c 同构必须到 helper 层」纪律 + 五个实例坑(goIfTrue 对 eJmp 须 invertJmp、luaK_infix 时机的左操作数提前物化、patchListAux 让无主 TESTSET 退化为 TEST、fixJump 不得硬编码 JMP opcode;加固轮追加:「末位多值源 A 处理」即 luaK_setreturns 对应物在 stmtReturn/compileArgList/exprTable 三调用点同族踩坑——eCall 不动 A、eVararg 回填 A,须单点收口为 helper);
+    1. `04-frontend-parser-codegen.md` 补「lcode.c 同构必须到 helper 层」纪律 + 五个实例坑(goIfTrue 对 eJmp 须 invertJmp、luaK_infix 时机的左操作数提前物化、patchListAux 让无主 TESTSET 退化为 TEST、fixJump 不得硬编码 JMP opcode;加固轮追加:「末位多值源 A 处理」即 luaK_setreturns 对应物在 stmtReturn/compileArgList/exprTable 三调用点同族踩坑——eCall 不动 A、eVararg 回填 A,须单点收口为 helper)。官方套轮追加第三维度「**快路径家族审计**」:同形态快路径在代码库多处分布,修一处时 grep 全家族——eNonReloc 直用快路径漏 `hasJumps()` 检查,exp2AnyReg 有正确写法而 stmtReturn 漏,悬空 JMP 非确定性挂死(`cbaae3f` 反例);与 helper 层(本项)、时序层(第 9 项)并列为同构纪律三维度;
     2. `05-interpreter-loop.md` 补 ci 指针刷新不变式(所有可能重入的 opcode 之后 `ci = currentCI(th)`,根因是 Go slice append 搬迁使 C 式指针稳定性假设失效);
     3. `engineering.md` oracle 供给节补源码编译实操路径(brew 无 lua@5.1,源码编 lua-5.1.5 `make posix` 装 `~/.local/bin/lua5.1`;difftest 在 oracle 缺失时 skip 不挡 CI)。
   - 源自 `reflections/2026-06-12-p1-closeout-round.md`:
@@ -17,10 +17,10 @@
   - 源自 `reflections/2026-06-12-test-hardening-round.md`:
     7. `05-interpreter-loop.md` §7.6 增补 callHost「top 恢复纪律」条款:定长结果路径必须恢复 top 到当前帧逻辑顶(对齐 5.1 `L->top = ci->top`),附反例——前一条多值 CALL(C=0)留下低 top 使后续 callLuaFromHost 脚手架覆写 TFORLOOP 迭代器三槽,症状(pairs 收到 number)离根因极远。落地修复见 `internal/crescent/host.go` (`callHost`)。
   - 源自 `reflections/2026-06-12-completeness-gap-round.md`:
-    8. `12-testing-difftest.md` §3 增补「特性探测 corpus」机制:差分 fuzz 两轴正交模型(随机生成器=已实现行为的正确性,文法跟实现走对缺特性结构性失明;probe corpus=按**官方手册**逐节写,测特性面完整性)、probe 先过 oracle 纪律(每项须是 oracle 可执行的合法且确定性 5.1 程序)、新特性「probe 转绿 → 编入生成器文法」护栏闭环。落地见 `test/difftest/probes_test.go` (`featureProbes`);动因:probe 上线在 570+ 随机脚本全绿状态下一次扫出 25 个完整性缺口。**与第 9-10 项同源的三轴扩展**:长稳/审查轮证明外部审查是与 fuzz/probe 正交的第三轴(review=规范同构+形态组合),回填时应一并写成三轴防线模型,避免两处各写一半(见 `reflections/2026-06-12-longevity-review-fix-round.md`)。
+    8. `12-testing-difftest.md` §3 增补「特性探测 corpus」机制:差分 fuzz 两轴正交模型(随机生成器=已实现行为的正确性,文法跟实现走对缺特性结构性失明;probe corpus=按**官方手册**逐节写,测特性面完整性)、probe 先过 oracle 纪律(每项须是 oracle 可执行的合法且确定性 5.1 程序)、新特性「probe 转绿 → 编入生成器文法」护栏闭环。落地见 `test/difftest/probes_test.go` (`featureProbes`);动因:probe 上线在 570+ 随机脚本全绿状态下一次扫出 25 个完整性缺口。**与第 9-10 项同源,回填时应写成完整的四轴防线模型**:① fuzz=已实现行为自洽 ② probe=特性面完整性 ③ 外部审查=规范同构+形态组合(见 `reflections/2026-06-12-longevity-review-fix-round.md`)④ **官方测试套**=作者写的语义断言(`test/luasuite/`,见 `reflections/2026-06-12-official-suite-perf-round.md`)——第四轴独有**负断言**能力:正向对拍只能验「该给的给了」,不能验「不该给的没给」(实证:describeReg 启发式误命名多轮正向对拍全绿,被 errors.lua 负断言抓出);移植即在前三轴全绿下扫出 20 项分歧。须一并注明**棘轮机制是常驻 CI 资产**:未登记 stopAt 的文件 fatal、豁免线只许前移、testdata 与官方逐字节一致,P2+ 换执行层时同批重跑且不得新增豁免。避免四轴内容在多处各写一半。
   - 源自 `reflections/2026-06-12-longevity-review-fix-round.md`:
     9. `04-frontend-parser-codegen.md` 增补「同构到时序层」条款,与第 1 项「helper 层同构」并列为两个维度:移植 C 代码时**操作顺序本身就是规范**——constFold 必须在 exp2RK(跳转链合流)之后,提前折叠制造「eKNum 带未决跳转链」非法中间态,TESTSET A=255 占位永不回填,`(true and 7 or -1) + 1` 一行脚本 Go panic(`4467881` 反例);改变语句顺序须证明交换律成立,否则按原序。
-    10. `06-memory-gc.md` 增补「内存复用类变更配套清单」条款:资源复用会把潜伏的根管理 bug 从良性(死对象躺 arena)升级为致命(UAF/串台执行),复用类变更前先列「哪些 bug 此前良性、之后变致命」清单逐项加固——GC 根全量审计 / top 恢复纪律 / 对象尺寸单一事实源(`internal/object/size.go`)/ debugFreelist 类排障设施与特性同批落地。长稳轮(`62d4bb3`/`2eb44fb`)已实战走通一遍。
+    10. `06-memory-gc.md` 增补「内存复用类变更配套清单」条款:资源复用会把潜伏的根管理 bug 从良性(死对象躺 arena)升级为致命(UAF/串台执行),复用类变更前先列「哪些 bug 此前良性、之后变致命」清单逐项加固——GC 根全量审计 / top 恢复纪律 / 对象尺寸单一事实源(`internal/object/size.go`)/ debugFreelist 类排障设施与特性同批落地。长稳轮(`62d4bb3`/`2eb44fb`)已实战走通一遍。官方套轮追加池化条目:「**资源池化的 API 契约必须出现在公共类型文档**」——callHost 实参池上线后「args 仅本次调用有效」的契约一度只在实现侧注释,第三方宿主注册 HostFn 看不到,违约症状(返回值被覆写)离根因极远;落地 `e5b72ab`(契约写入 `internal/crescent/host.go` (`HostFn`) 类型文档 + wangshu_trace 构建毒值防护)。契约位置决定使用者能否看见,与「注释承诺审计」呼应。
 
 - **值栈/CallInfo arena 化属 P3** — 收尾轮对账确认:值栈/CallInfo 仍是 Go slice(05 §1.2 设计形态是住 arena),开放 upvalue 链/arena Thread 对象同批;**接口等价、迁移点已留**(`arena.Options.NewBacking` 注入点就位),物理搬迁是 P3 wazero memory 收养时的工作。唯一对账落点:`docs/design/p1-interpreter/implementation-progress.md`「与设计文档的对账」表。
 
@@ -36,7 +36,7 @@
 
 - **P3 开工前置确认(待办)** — P3 开工前须向首个宿主确认「列内核是否跑在协程里」,决定协程不升层是否成立(决策第 7 项;`docs/design/p3-wasm-tier.md` §5.4)。依赖宿主,设计期无法收口。
 
-- **engineering.md 的脚本协议待定稿** — 测试加固轮已落地其中一项:nightly 长跑 + INFRA/DIVERGENCE 分流自动开 issue 已由 `.github/workflows/nightly-diff-fuzz.yml` 实现(triage 判据内联在 workflow 而非独立 `fuzz-triage.sh`);审查修复轮区间内的 `a8bdca3` 把分流判据改为**机器可读 DIVERGENCE 标记**——测试侧输出 `seed=`/`kind=` 三类标记,workflow 只 grep 该标记,不再靠 grep "byte-diff" 文本启发式;**该新判据仍未经真实失败检验**,首次真实告警时需验证。仍待定:非 Ubuntu runner 的 oracle 源码编译缓存、bench-gate 回退阈值、agentic workflows 接入时机(见 `docs/design/engineering.md` §7);engineering.md §3.2 文本与落地形态(内联 vs 独立脚本、标记协议)的差异待回填轮顺手对账。
+- **engineering.md 的脚本协议待定稿** — 测试加固轮已落地其中一项:nightly 长跑 + INFRA/DIVERGENCE 分流自动开 issue 已由 `.github/workflows/nightly-diff-fuzz.yml` 实现(triage 判据内联在 workflow 而非独立 `fuzz-triage.sh`);审查修复轮区间内的 `a8bdca3` 把分流判据改为**机器可读 DIVERGENCE 标记**——测试侧输出 `seed=`/`kind=` 三类标记,workflow 只 grep 该标记,不再靠 grep "byte-diff" 文本启发式;**该新判据仍未经真实失败检验**,首次真实告警时需验证。仍待定:非 Ubuntu runner 的 oracle 源码编译缓存、bench-gate 回退阈值、agentic workflows 接入时机(见 `docs/design/engineering.md` §7);engineering.md §3.2 文本与落地形态(内联 vs 独立脚本、标记协议)的差异待回填轮顺手对账。nightly-benchmark 待办现已有现成基础:`benchmarks/realworld/` 五脚本 + `benchmarks/baseline/` 三档可直接作为夜跑基准面。
 
 - **三层禁用机制(LibsSafe/Libs/Exclude)未完整落地** — 评审轮定稿的 stdlib 三层收紧机制(`docs/design/p1-interpreter/10-stdlib.md` §12.1:LibsSafe 预设 / Libs 位掩码 / Exclude 函数级)当前只落地了单点门控 `Options.AllowFileLoad`(loadfile/dofile 默认禁用,显式开启;豁免注册表已登记);完整位掩码机制留待首个宿主接入前落地。[[embedding-contract]] 措辞已同步为「设计承诺三层、现状单点门控」。
 

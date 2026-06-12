@@ -1,6 +1,6 @@
 # Wangshu llmdoc 文档地图
 
-> 项目状态:**P1(crescent 解释器)完整交付**——M0-M14 + 收尾轮(原「已知简化」清单全部落地)+ 测试加固轮 + 完整性补全轮 + 长稳承诺轮(arena freelist 内存复用 / 调用深度上限 / GC 根加固 / 同一 Program 多 State 并发 `-race` 验证)+ 外部审查修复轮(12 轮逐提交审查 22+ 项发现全核销,含 DoS 级 Go panic 与挂死);验收:simple 3.18x / arith 3.10x / loop 2.30x over gopher-lua,70 种子 + 随机脚本对拍官方 5.1.5 逐字节一致。测试体系现状:4 个 go-fuzz 目标(lex/parse/pattern/端到端)+ 差分 fuzz(500 固定种子 PR 门禁 / 2 万每晚日期滚动,生成器三期 19 类语句)+ **特性探测 corpus 100 项全绿常驻对拍**(按 5.1 手册逐节,测特性面完整性,与生成器正交)+ 豁免注册表 15 项显式登记(probe/exempt/approx 三类,可审计)+ GC 压力双模式对照 + 26 条错误消息逐字节对拍 + nightly 自动分流开 issue(机器可读 DIVERGENCE 标记)+ 三平台交叉编译冒烟 + longevity/并发承诺测试;**P2+ 未开始**。`docs/design/` 共 19 篇约 1.37 万行设计文档仍是规范源(P1 全卷 00-12 可实现深度、P2/P3 详细设计、P4/P5 架构决策);实现现状与 P3 迁移留口见 `docs/design/p1-interpreter/implementation-progress.md` 对账表。本文档库是源文档之上的**知识压缩层**,记录意图与路由。
+> 项目状态:**P1(crescent 解释器)完整交付**——M0-M14 + 收尾轮(「已知简化」全落地)+ 测试加固轮 + 完整性补全轮 + 长稳承诺轮(freelist 复用 / 深度上限 / GC 根加固 / 多 State 并发 `-race`)+ 外部审查修复轮(12 轮 22+ 项全核销)+ 官方测试套与性能轮(`test/luasuite/` 移植官方 5.1.5 套 14 文件——vararg/sort/pm 整文件 + gc.lua 前 110 行 + 其余 10 个豁免线截断,stopAt 棘轮只许前移,移植扫出 20 项分歧全修;`benchmarks/realworld/` benchmark-game 五脚本对拍 + vs gopher-lua;profile 驱动六项优化落地、IC DataOff 实测回退否决)。验收:simple 9.0x / arith 7.0x / loop 2.45x over gopher-lua;realworld 五项中四项反超(fib 1.31x / binary-trees 1.09x / spectral-norm 1.43x / nbody 1.08x;fannkuch 0.82x 为剩余短板);70 种子 + 随机脚本对拍官方 5.1.5 逐字节一致。测试体系为**四轴防线**——fuzz(行为自洽:4 个 go-fuzz 目标 + 差分 fuzz 500 种子门禁 / 2 万每晚,生成器 19 类语句)/ probe corpus(特性面完整性:100 项按手册逐节)/ 外部审查(规范同构 + 形态组合)/ 官方测试套(作者语义断言,独有负断言能力)——外加豁免注册表 15 项显式登记、GC 压力双模式、26 条错误消息对拍、nightly 自动分流开 issue、三平台冒烟、longevity/并发承诺测试;**P2+ 未开始**。`docs/design/` 共 19 篇约 1.37 万行设计文档仍是规范源(P1 全卷 00-12 可实现深度、P2/P3 详细设计、P4/P5 架构决策);实现现状与 P3 迁移留口见 `docs/design/p1-interpreter/implementation-progress.md` 对账表。本文档库是源文档之上的**知识压缩层**,记录意图与路由。
 > 启动阅读顺序请看 [[startup]](本文件不重复有序启动清单)。
 
 ## 类别用途
@@ -30,6 +30,7 @@
 
 ### guides/
 - [[multi-doc-drafting]] — 多文档并行起草工作流:回填请求节协议、单点收口、验收口径收口点指定、子代理失败恢复纪律、收尾主动盘点不确定决策、向用户提问自包含契约。**要一次起草多篇互引文档、或大型设计任务收尾时看这篇。**
+- [[perf-optimization-workflow]] — 性能优化工作流:profile 先行(预判清单会被推翻)、每项独立 benchmark 验证 + 单域提交、可疑优化 benchmark 否决门 + 快 revert、归因诚实、池化/复用类优化配套清单。**做性能优化前看这篇。**
 
 ### memory/
 - `memory/doc-gaps.md` — 已识别的文档缺口与待外部确认事项(随实现推进收敛;含已收口审计记录)。
@@ -41,6 +42,7 @@
 - `memory/reflections/2026-06-12-test-hardening-round.md` — 测试加固轮(go-fuzz 目标/生成器两期/GC 压力/错误消息对拍/nightly)过程教训:每类 fuzz 上线当天即抓到 5 个真实 bug——fuzz 目标空转(脚本在跑但无 `func Fuzz*`)是最危险的虚假安全感、「末位多值源 A 处理」同族 bug 三处分布证明同构逻辑须抽 helper、top 恢复纪律(`L->top = ci->top`)是 5.1 调用约定的一部分且症状离根因极远、GC 压力模式让正常模式难触发的时序 bug 必现(弱表链截断实例)。**搭新防线、写调用桥、或评估「防线是否真在防」时看这篇。**
 - `memory/reflections/2026-06-12-completeness-gap-round.md` — 完整性补全轮(特性探测 corpus + 25 缺口修复)过程教训:**差分 fuzz 两轴正交模型**——随机生成器文法跟实现走,只测「已实现行为的正确性」,对「缺特性」结构性失明;特性探测 corpus 按官方手册逐节写,测「特性面完整性」;probe 上线在 570+ 随机脚本全绿下一次扫出 25 个缺口。另含:probe 先过 oracle 纪律(两例笔误)、goIfTrue/goIfFalse 恒跳丢值 bug(`nil and 2` 错产 false)、pattern 灾难性回溯有界失败裁量、「probe 转绿 → 进生成器文法」护栏闭环。**设计新防线选参照系、评估 diff-fuzz 覆盖含义、或 P2+ 接新执行层时看这篇。**
 - `memory/reflections/2026-06-12-longevity-review-fix-round.md` — 长稳与审查核销轮(freelist 复用 + 12 轮外部审查 22+ 项全核销)过程教训:**三轴防线模型**(fuzz=行为自洽 / probe=特性面完整性 / review=规范同构+形态组合,前两轴全绿不构成第三轴可省略的理由)、**同构须到时序层**(constFold 须在 exp2RK 之后,操作顺序本身就是规范)、**注释承诺审计**(注释声称的防线不存在就是 bug 预告,四实例)、**内存复用类变更的「良性→致命」升级清单纪律**(复用前先列哪些潜伏 bug 会从良性变 UAF,根审计/尺寸单一源/debug 设施同批)、修复轮收尾的历史 bug 保护测试盘点。**做资源复用类变更、引入外部审查、或写 C→Go 移植代码前看这篇。**
+- `memory/reflections/2026-06-12-official-suite-perf-round.md` — 官方测试套与性能轮(luasuite 移植扫出 20 项分歧全修 + profile 驱动六项优化 + IC DataOff 实测回退否决)过程教训:三轴升级为**四轴防线模型**(官方套=作者语义断言,独有负断言能力)、stopAt 棘轮机制、profile 先行(最大收益项 closeUpvals 不在预判清单)、benchmark 否决门 + 快 revert、归因诚实(9.0x 主因是 thread 复用消固定开销)、快路径家族审计(cbaae3f 反例)。**做性能优化、接官方测试套、或评估防线覆盖时看这篇。**
 
 ---
 

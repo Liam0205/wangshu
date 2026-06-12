@@ -47,7 +47,7 @@ P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 met
 - **closure-compilation 或 computed-goto 风格 dispatch**(替代大 switch);
 - 全局/表访问 **inline cache**;stdlib 以 **host function** 形式提供;
 - Lua 5.1 conformance 测试套。
-- **验收**:简单/算术/循环三档脚本全部 ≥2x over gopher-lua;与官方 Lua 5.1.5 差分 fuzz 输出逐字节一致(官方为最终 oracle,gopher-lua 偏差登记豁免,见 12 号文档)。**已通过,长稳轮性能回收后数字(2026-06-12)**:simple 3.18x / arith 3.10x / loop 2.30x;70 种子 + 200 随机脚本对拍逐字节一致。实现对账与 P3 迁移留口见 implementation-progress.md。
+- **验收**:简单/算术/循环三档脚本全部 ≥2x over gopher-lua;与官方 Lua 5.1.5 差分 fuzz 输出逐字节一致(官方为最终 oracle,gopher-lua 偏差登记豁免,见 12 号文档)。**已通过,P1 性能轮后数字(2026-06-12)**:simple 9.0x / arith 7.0x / loop 2.45x(simple 档大幅拉升主因是 State.Call 复用主 thread 消去短脚本固定开销,非解释器本身倍率);realworld 五项四项反超;70 种子 + 200 随机脚本对拍逐字节一致。实现对账与 P3 迁移留口见 implementation-progress.md。
 - **独立价值**:止步于此也成立——一个「更好的 gopher-lua」,可作 drop-in 候选(见 [[embedding-contract]])。
 
 ### P2:分层桥(1-2 人月,定位为基建)
