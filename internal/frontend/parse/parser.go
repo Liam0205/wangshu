@@ -32,7 +32,26 @@ type Parser struct {
 
 	// 在 vararg 函数体内 → 允许 `...`(VarargExpr)。enterFuncBody 切换。
 	insideVararg bool
+
+	// depth 是语法嵌套深度(表达式递归 + 块嵌套),护栏防深嵌套打爆 Go 栈
+	// (对齐 Lua 5.1 LUAI_MAXCCALLS 思路;fatal stack overflow 不可恢复,
+	// 必须在之前用可恢复错误拦下)。
+	depth int
 }
+
+// maxParseDepth 是语法嵌套上限(5.1 的 200 偏保守,Go 栈帧更大,取同值)。
+const maxParseDepth = 200
+
+// enterDepth 进入一层语法递归;超限报 5.1 同款措辞。
+func (p *Parser) enterDepth() error {
+	p.depth++
+	if p.depth > maxParseDepth {
+		return p.errorf("chunk has too many syntax levels")
+	}
+	return nil
+}
+
+func (p *Parser) leaveDepth() { p.depth-- }
 
 // Parse parses an entire chunk (top-level Block) into AST.
 //
@@ -113,6 +132,10 @@ func (p *Parser) consume(k token.Kind) (bool, error) {
 
 // parseBlock parses a stmt list until a block-terminating token (04 §4.2).
 func (p *Parser) parseBlock() (*ast.Block, error) {
+	if err := p.enterDepth(); err != nil {
+		return nil, err
+	}
+	defer p.leaveDepth()
 	block := &ast.Block{}
 	for !isBlockEnd(p.tok.Kind) {
 		// `;` 空语句直接吃掉。

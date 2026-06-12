@@ -73,6 +73,10 @@ func tokenToUnOp(k token.Kind) (ast.UnOp, bool) {
 
 // parseExpr is precedence-climbing subexpr (04 §4.3)。limit = 0 时解析完整表达式。
 func (p *Parser) parseExpr(limit uint8) (ast.Expr, error) {
+	if err := p.enterDepth(); err != nil {
+		return nil, err
+	}
+	defer p.leaveDepth()
 	var e ast.Expr
 	if uop, ok := tokenToUnOp(p.tok.Kind); ok {
 		line := p.tok.Line

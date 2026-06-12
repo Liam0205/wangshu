@@ -349,8 +349,10 @@ func (ms *matchState) matchBalance(s, p int) (int, error) {
 }
 
 // matchCapture %1-%9:反向引用已闭合捕获。
+//
+// 位置捕获(len=capPosition)不可被反向引用(5.1 报 invalid capture)。
 func (ms *matchState) matchCapture(s, p, l int) (int, error) {
-	if l >= ms.level || ms.captures[l].len == capUnfinished {
+	if l >= ms.level || ms.captures[l].len < 0 {
 		return -1, fmt.Errorf("invalid capture index %%%d", l+1)
 	}
 	clen := ms.captures[l].len

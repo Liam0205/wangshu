@@ -1,0 +1,3 @@
+go test fuzz v1
+[]byte("abca00")
+[]byte("()%1")
