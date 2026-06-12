@@ -71,11 +71,11 @@ return tostring(ok), tostring(err)`
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if results[0].String_() != "false" {
-		t.Errorf("pcall ok = %s, want false", results[0].GoString())
+	if results[0].Str() != "false" {
+		t.Errorf("pcall ok = %s, want false", results[0].Display())
 	}
-	if !strings.Contains(results[1].String_(), "stack overflow") {
-		t.Errorf("err = %q, want contains 'stack overflow'", results[1].String_())
+	if !strings.Contains(results[1].Str(), "stack overflow") {
+		t.Errorf("err = %q, want contains 'stack overflow'", results[1].Str())
 	}
 }
 
@@ -95,10 +95,10 @@ return f(19000), loop(1000000, 0)`
 		t.Fatalf("run: %v", err)
 	}
 	if results[0].Number() != 19000 {
-		t.Errorf("f(19000) = %s, want 19000", results[0].GoString())
+		t.Errorf("f(19000) = %s, want 19000", results[0].Display())
 	}
 	if results[1].Number() != 1000000 {
-		t.Errorf("tailcall loop = %s, want 1000000 (proper tail call must not consume depth)", results[1].GoString())
+		t.Errorf("tailcall loop = %s, want 1000000 (proper tail call must not consume depth)", results[1].Display())
 	}
 }
 
@@ -121,8 +121,8 @@ return tostring(ok), tostring(e)`
 	}
 	// 最深一层 pcall 返回 (false, "C stack overflow"),其外层 pcall 全部
 	// 成功返回 true —— 顶层观察 ok=true(与官方 5.1 行为一致)。
-	if results[0].String_() != "true" {
-		t.Errorf("top ok = %s, want true", results[0].GoString())
+	if results[0].Str() != "true" {
+		t.Errorf("top ok = %s, want true", results[0].Display())
 	}
 }
 
@@ -144,14 +144,14 @@ func TestLongevity_StateReuse(t *testing.T) {
 			t.Fatalf("progA run %d: %v", i, err)
 		}
 		if ra[0].Number() != 2 {
-			t.Fatalf("progA = %s", ra[0].GoString())
+			t.Fatalf("progA = %s", ra[0].Display())
 		}
 		rb, err := progB.Run(st)
 		if err != nil {
 			t.Fatalf("progB run %d: %v", i, err)
 		}
 		if rb[0].Number() != 7 {
-			t.Fatalf("progB = %s", rb[0].GoString())
+			t.Fatalf("progB = %s", rb[0].Display())
 		}
 	}
 }

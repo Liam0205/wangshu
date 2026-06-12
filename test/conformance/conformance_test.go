@@ -15,7 +15,7 @@ import (
 type confCase struct {
 	name string
 	src  string
-	want string // return 值的 GoString,用 \t join
+	want string // return 值的 Display 形态,用 \t join
 }
 
 var cases = []confCase{
@@ -276,6 +276,26 @@ return math.fmod(7, 3), math.max(1, 9, 5), math.floor(math.pi)`, "1\t9\t3"},
 	{"select_tail", `
 local function f(...) return select(2, ...) end
 return f("a", "b", "c")`, "b\tc"},
+
+	// —— 历史 bug 保护(集中修复轮固化) ——
+	// infix 求值顺序:左操作数须在右子(含 CALL)编译前物化为 RK(luaK_infix),
+	// 否则右子的副作用改写左值后才读取——曾返回 100(求值序错误)。
+	{"infix_eval_order_left_first", `
+local a = { 1 }
+local function g() a[1] = 99; return 1 end
+return a[1] + g()`, "2"},
+	// pcall 双返回值(`local ok, e = pcall(...)`)曾触发末位多值源 A 覆盖崩溃。
+	{"pcall_two_returns", `
+local ok, e = pcall(function() local x = nil + 1 end)
+return tostring(ok), (e:gsub("^[^:]+:%d+: ", ""))`,
+		"false\tattempt to perform arithmetic on a nil value"},
+	// 字符串算术强转(luaV_tonumber):曾报 attempt to perform arithmetic。
+	{"string_arith_coercion", `return "10" + 1, "3" * "4"`, "11\t12"},
+	// 多返回值传给多目标(return-vararg 路径曾把末位收敛单值致 c=nil)。
+	{"multi_assign_from_call", `
+local function f(...) return ... end
+local a, b, c = f(1, 2, 3)
+return c`, "3"},
 }
 
 func TestConformance(t *testing.T) {
@@ -292,7 +312,7 @@ func TestConformance(t *testing.T) {
 			}
 			parts := make([]string, len(results))
 			for i, r := range results {
-				parts[i] = r.GoString()
+				parts[i] = r.Display()
 			}
 			got := strings.Join(parts, "\t")
 			if got != c.want {
@@ -325,7 +345,7 @@ func TestSetListBatchOverflow(t *testing.T) {
 	want := []float64{n, 1, 25550, 25551}
 	for i, w := range want {
 		if results[i].Number() != w {
-			t.Errorf("result[%d] = %s, want %v", i, results[i].GoString(), w)
+			t.Errorf("result[%d] = %s, want %v", i, results[i].Display(), w)
 		}
 	}
 }

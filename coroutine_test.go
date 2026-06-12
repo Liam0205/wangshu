@@ -33,8 +33,8 @@ local ok2, double = coroutine.resume(co, 10)
 return tostring(ok1), sum, tostring(ok2), double, coroutine.status(co)`)
 	want := []string{"true", "7", "true", "20", "dead"}
 	for i, w := range want {
-		if r[i].GoString() != w {
-			t.Errorf("r[%d] = %q, want %q", i, r[i].GoString(), w)
+		if r[i].Display() != w {
+			t.Errorf("r[%d] = %q, want %q", i, r[i].Display(), w)
 		}
 	}
 }
@@ -51,8 +51,8 @@ for i = 1, 4 do
   out = out .. tostring(v) .. ";"
 end
 return out, coroutine.status(co)`)
-	if r[0].String_() != "1;2;3;done;" || r[1].String_() != "dead" {
-		t.Errorf("got %q %q", r[0].GoString(), r[1].GoString())
+	if r[0].Str() != "1;2;3;done;" || r[1].Str() != "dead" {
+		t.Errorf("got %q %q", r[0].Display(), r[1].Display())
 	}
 }
 
@@ -65,7 +65,7 @@ local gen = coroutine.wrap(function()
 end)
 return gen() + gen() + gen()`)
 	if r[0].Number() != 6 {
-		t.Errorf("got %v, want 6", r[0].GoString())
+		t.Errorf("got %v, want 6", r[0].Display())
 	}
 }
 
@@ -75,8 +75,8 @@ local co = coroutine.create(function() error("inside") end)
 local ok, err = coroutine.resume(co)
 return tostring(ok), err, coroutine.status(co)`)
 	// error(string) 自动加 chunkname:line: 前缀(5.1)
-	if r[0].String_() != "false" || !strings.HasSuffix(r[1].String_(), ": inside") || r[2].String_() != "dead" {
-		t.Errorf("got %q %q %q", r[0].GoString(), r[1].GoString(), r[2].GoString())
+	if r[0].Str() != "false" || !strings.HasSuffix(r[1].Str(), ": inside") || r[2].Str() != "dead" {
+		t.Errorf("got %q %q %q", r[0].Display(), r[1].Display(), r[2].Display())
 	}
 }
 
@@ -86,8 +86,8 @@ local co = coroutine.create(function() return 1 end)
 coroutine.resume(co)
 local ok, err = coroutine.resume(co)
 return tostring(ok), err`)
-	if r[0].String_() != "false" {
-		t.Errorf("ok = %q, want false", r[0].GoString())
+	if r[0].Str() != "false" {
+		t.Errorf("ok = %q, want false", r[0].Display())
 	}
 }
 
@@ -95,8 +95,8 @@ func TestCo_TypeIsThread(t *testing.T) {
 	r := runMulti(t, `
 local co = coroutine.create(function() end)
 return type(co)`)
-	if r[0].String_() != "thread" {
-		t.Errorf("type = %q, want thread", r[0].GoString())
+	if r[0].Str() != "thread" {
+		t.Errorf("type = %q, want thread", r[0].Display())
 	}
 }
 
@@ -107,8 +107,8 @@ local co = coroutine.create(function() inner(); return "after" end)
 local ok1, v1 = coroutine.resume(co)
 local ok2, v2 = coroutine.resume(co)
 return v1, v2`)
-	if r[0].String_() != "deep" || r[1].String_() != "after" {
-		t.Errorf("got %q %q", r[0].GoString(), r[1].GoString())
+	if r[0].Str() != "deep" || r[1].Str() != "after" {
+		t.Errorf("got %q %q", r[0].Display(), r[1].Display())
 	}
 }
 
@@ -125,7 +125,7 @@ local _, a = coroutine.resume(co)
 local _, b = coroutine.resume(co)
 return a, b, x`)
 	if r[0].Number() != 101 || r[1].Number() != 102 || r[2].Number() != 102 {
-		t.Errorf("got %v %v %v", r[0].GoString(), r[1].GoString(), r[2].GoString())
+		t.Errorf("got %v %v %v", r[0].Display(), r[1].Display(), r[2].Display())
 	}
 }
 
@@ -149,7 +149,7 @@ co = coroutine.create(function()
 end)
 local _, s = coroutine.resume(co)
 return s`)
-	if r[0].String_() != "running" {
-		t.Errorf("status inside = %q, want running", r[0].GoString())
+	if r[0].Str() != "running" {
+		t.Errorf("status inside = %q, want running", r[0].Display())
 	}
 }

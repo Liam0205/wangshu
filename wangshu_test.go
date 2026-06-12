@@ -22,7 +22,7 @@ func TestCompileAndRun_Simple(t *testing.T) {
 		t.Fatalf("results len=%d, want 1", len(results))
 	}
 	if !results[0].IsNumber() || results[0].Number() != 3 {
-		t.Errorf("result = %v, want 3", results[0].GoString())
+		t.Errorf("result = %v, want 3", results[0].Display())
 	}
 }
 
@@ -40,7 +40,7 @@ return a * b + 1
 		t.Fatalf("run: %v", err)
 	}
 	if len(results) != 1 || !results[0].IsNumber() || results[0].Number() != 43 {
-		t.Errorf("result = %s", results[0].GoString())
+		t.Errorf("result = %s", results[0].Display())
 	}
 }
 
@@ -57,8 +57,8 @@ return s .. "world"
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if len(results) != 1 || !results[0].IsString() || results[0].String_() != "hello, world" {
-		t.Errorf("result = %v", results[0].GoString())
+	if len(results) != 1 || !results[0].IsString() || results[0].Str() != "hello, world" {
+		t.Errorf("result = %v", results[0].Display())
 	}
 }
 
@@ -84,7 +84,7 @@ return f(10)
 		want += float64(i * i)
 	}
 	if results[0].Number() != want {
-		t.Errorf("result = %v, want %v", results[0].GoString(), want)
+		t.Errorf("result = %v, want %v", results[0].Display(), want)
 	}
 }
 
@@ -125,7 +125,7 @@ func TestProgram_ReusableAcrossStates(t *testing.T) {
 			t.Fatalf("run %d: %v", i, err)
 		}
 		if r[0].Number() != 42 {
-			t.Errorf("run %d: %v", i, r[0].GoString())
+			t.Errorf("run %d: %v", i, r[0].Display())
 		}
 	}
 }

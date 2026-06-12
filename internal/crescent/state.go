@@ -290,7 +290,8 @@ func (st *State) chargeBackEdge() *LuaError {
 func (st *State) GCCollect() { st.gc.Collect() }
 
 // GCCountKB 返回 arena 当前已用 KB 数(collectgarbage("count") / gcinfo;
-// bump 指针即"已分配字节",含死对象——可观察但不可逐字节比项,10 §13)。
+// bump 指针即"已分配字节",含死对象与 freelist 空闲块——与官方 totalbytes
+// (GC 后回落)口径不同,可观察但永不可入精确对拍,10 §13)。
 func (st *State) GCCountKB() float64 {
 	return float64(st.arena.Bump()) / 1024.0
 }

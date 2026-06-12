@@ -96,7 +96,7 @@ func TestDiff_ErrorMessages(t *testing.T) {
 			if err != nil {
 				t.Fatalf("run: %v", err)
 			}
-			gotLine, got := stripPos(results[0].GoString())
+			gotLine, got := stripPos(results[0].Display())
 			if got != want {
 				t.Errorf("error message diff:\n  wangshu: %q\n  oracle:  %q", got, want)
 			}

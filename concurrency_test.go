@@ -51,7 +51,7 @@ return acc`
 				}
 				if len(results) != 1 || results[0].Number() != want {
 					errs <- fmt.Errorf("goroutine %d round %d: got %s want %v",
-						id, r, results[0].GoString(), want)
+						id, r, results[0].Display(), want)
 					return
 				}
 			}
@@ -102,7 +102,7 @@ return s`, i+1)
 					}
 					if results[0].Number() != wants[pi] {
 						errs <- fmt.Errorf("goroutine %d prog %d: got %s want %v",
-							id, pi, results[0].GoString(), wants[pi])
+							id, pi, results[0].Display(), wants[pi])
 						return
 					}
 				}
@@ -149,7 +149,7 @@ return count, sum`
 					errs <- fmt.Errorf("goroutine %d round %d: %v", id, r, err)
 					return
 				}
-				got := results[0].GoString() + "|" + results[1].GoString()
+				got := results[0].Display() + "|" + results[1].Display()
 				if r == 0 {
 					first = got
 				} else if got != first {

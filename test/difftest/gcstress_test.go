@@ -28,7 +28,7 @@ func runWithStress(t *testing.T, src string, stress bool) (string, error) {
 	}
 	parts := make([]string, len(results))
 	for i, r := range results {
-		parts[i] = r.GoString()
+		parts[i] = r.Display()
 	}
 	return strings.Join(parts, "\t"), nil
 }
@@ -132,6 +132,35 @@ for n = 1, 10 do
   out = out + v
 end
 return out`},
+		// freelist UAF 回归两例(随机 fuzz 撞出后定值固化):
+		// ① 协程 churn 后 setmetatable——top 之上残值复活 + SETLIST 多值窗
+		//    top 未恢复曾让 __index 表被误回收(压力模式 nil);
+		{"uaf_coroutine_then_meta", `
+local cov = coroutine.create(function(z)
+  for i = 1, 4 do z = coroutine.yield(z + i) end
+  return z
+end)
+local v0 = ""
+for i = 1, 5 do
+  local ok, v = coroutine.resume(cov, 9)
+  v0 = v0 .. tostring(v) .. ";"
+end
+local function mk()
+  local n = 4
+  return function() n = n + 1; return n end
+end
+local c = mk()
+local base = { v = 807 }
+local probe1 = base.v
+local tv = setmetatable({}, { __index = base })
+return v0, tostring(probe1), tostring(tv.v)`},
+		// ② 表构造含 host 调用(SETLIST B=0 消费多值窗)后 setmetatable。
+		{"uaf_setlist_then_meta", `
+local v1 = { 650, math.floor(math.max(#"abc", #"42")) }
+v1[#v1 + 1] = 34.6561
+local base = { v = 672 }
+local tv = setmetatable({}, { __index = base })
+return tostring(tv.v)`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

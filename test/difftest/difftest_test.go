@@ -65,7 +65,7 @@ func runWangshu(t *testing.T, src string) string {
 	}
 	parts := make([]string, len(results))
 	for i, r := range results {
-		parts[i] = r.GoString()
+		parts[i] = r.Display()
 	}
 	return strings.Join(parts, "\t") + "\n"
 }

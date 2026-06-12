@@ -276,10 +276,10 @@ func (v Value) IsString() bool { return v.kind == kString }
 // 读出。
 func (v Value) Bool() bool      { return v.b }
 func (v Value) Number() float64 { return v.num }
-func (v Value) String_() string { return string(v.str) }
+func (v Value) Str() string     { return string(v.str) }
 
 // String 输出 Lua 风格(便于错误消息)。
-func (v Value) GoString() string {
+func (v Value) Display() string {
 	switch v.kind {
 	case kNil:
 		return "nil"

@@ -35,7 +35,7 @@ return total
 	}
 	want := 1.5*2 + 2.0*3 + 3.0*1 + 4.5*2
 	if r[0].Number() != want {
-		t.Errorf("total = %v, want %v", r[0].GoString(), want)
+		t.Errorf("total = %v, want %v", r[0].Display(), want)
 	}
 }
 
@@ -61,7 +61,7 @@ return sum, nulls
 		t.Fatalf("call: %v", err)
 	}
 	if r[0].Number() != 40 || r[1].Number() != 2 {
-		t.Errorf("got sum=%v nulls=%v, want 40/2", r[0].GoString(), r[1].GoString())
+		t.Errorf("got sum=%v nulls=%v, want 40/2", r[0].Display(), r[1].Display())
 	}
 }
 
@@ -90,8 +90,8 @@ return out
 	if err != nil {
 		t.Fatalf("call: %v", err)
 	}
-	if r[0].String_() != "a;c;" {
-		t.Errorf("got %q, want 'a;c;'", r[0].String_())
+	if r[0].Str() != "a;c;" {
+		t.Errorf("got %q, want 'a;c;'", r[0].Str())
 	}
 }
 
@@ -165,8 +165,8 @@ return n[1] .. n[2] .. n[3]`), "dedup")
 	if err != nil {
 		t.Fatalf("call: %v", err)
 	}
-	if r[0].String_() != "dupdupuniq" {
-		t.Errorf("got %q", r[0].String_())
+	if r[0].Str() != "dupdupuniq" {
+		t.Errorf("got %q", r[0].Str())
 	}
 }
 
@@ -183,7 +183,7 @@ return tostring(arena.v[0]) .. tostring(arena.v[99]) .. tostring(arena.v["x"])`)
 	if err != nil {
 		t.Fatalf("call: %v", err)
 	}
-	if r[0].String_() != "nilnilnil" {
-		t.Errorf("got %q, want 'nilnilnil'", r[0].String_())
+	if r[0].Str() != "nilnilnil" {
+		t.Errorf("got %q, want 'nilnilnil'", r[0].Str())
 	}
 }

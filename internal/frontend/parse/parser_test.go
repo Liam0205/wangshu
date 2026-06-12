@@ -347,3 +347,18 @@ func TestIndexExprLineIsOperatorLine(t *testing.T) {
 		t.Errorf("bracket-index line = %d, want 3 (operator line)", ie2.Line)
 	}
 }
+
+// 深嵌套护栏:官方 200 层报 chunk has too many syntax levels;无护栏时
+// 20 万层嵌套括号曾打爆 goroutine 栈(不可恢复 fatal,DoS 入口)。
+func TestParseDepthGuard(t *testing.T) {
+	deep := strings.Repeat("(", 300) + "1" + strings.Repeat(")", 300)
+	err := parseErr(t, "return "+deep)
+	if err == nil || !strings.Contains(err.Error(), "too many syntax levels") {
+		t.Errorf("want 'chunk has too many syntax levels', got %v", err)
+	}
+	// 上限内正常
+	ok := strings.Repeat("(", 100) + "1" + strings.Repeat(")", 100)
+	if err := parseErr(t, "return "+ok); err != nil {
+		t.Errorf("100-deep nesting should parse: %v", err)
+	}
+}
