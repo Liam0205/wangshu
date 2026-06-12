@@ -149,6 +149,9 @@ func (st *State) InternForEmbed(b []byte) arena.GCRef {
 	return st.gc.Intern(b)
 }
 
+// SetGCStressMode 开关高频 GC 压力模式(12 §5 GC 透明性 fuzz 用)。
+func (st *State) SetGCStressMode(on bool) { st.gc.SetStressMode(on) }
+
 // NewError 构造一个带消息的 LuaError(供 stdlib 等 host 函数使用)。
 func NewError(msg string) *LuaError {
 	return &LuaError{Msg: msg}

@@ -58,6 +58,10 @@ func NewState(_ Options) *State {
 	return st
 }
 
+// SetGCStressMode 开关高频 GC 压力模式(每个 safepoint 强制 full Collect)。
+// GC 透明性测试用:压力模式下输出必须与正常模式 byte-equal(12 §5)。
+func (st *State) SetGCStressMode(on bool) { st.core.SetGCStressMode(on) }
+
 // Program is an immutable compilation product (11 §1.4)。可跨 goroutine 共享;
 // 字符串常量首次被某 State Run 时惰性 intern 进该 State 的 arena。
 type Program struct {

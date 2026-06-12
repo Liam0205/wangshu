@@ -131,12 +131,16 @@ func (c *Collector) clearWeakTables() {
 			}
 		}
 		// 哈希段。
+		// 清条目时必须保留 next 链:节点可能位于冲突链中段,重置 next=-1 会
+		// 截断链,链上后续活条目从此查不到(物理还在,逻辑丢失)。死条目
+		// 保链直到 rehash 回收(与 rawSet 删除路径、Lua 5.1 一致)。
 		hsize := object.TableHSize(c.a, t)
 		for i := uint32(0); i < hsize; i++ {
 			k := object.NodeKey(c.a, t, i)
 			v := object.NodeVal(c.a, t, i)
 			if (weakKey && c.refIsDead(k, dead)) || (weakVal && c.refIsDead(v, dead)) {
-				object.SetNode(c.a, t, i, value.Nil, value.Nil, -1)
+				next := object.NodeNext(c.a, t, i)
+				object.SetNode(c.a, t, i, value.Nil, value.Nil, next)
 			}
 		}
 	}
