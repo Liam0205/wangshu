@@ -44,6 +44,18 @@
 | **Pallene** | **typed-subset 编译 + fallback** 的可行性先例(贯穿原则 4 的先例) |
 | **V8 Ignition→TurboFan / JSC Baseline→DFG→FTL** | 分层 VM 标准阶梯;**解释器先行**;P4 取 JSC Baseline 风格 |
 
+## 与对位差异相关的三类术语
+
+差分测试场景下「望舒行为与对位 backend(PUC 5.1.5 / gopher-lua)不一致」可能源自三种性质不同的原因。三者落点与裁判机制都不同,务必区分。
+
+| 术语 | 是什么 | 何时适用 | 落点 |
+|---|---|---|---|
+| **嵌入式 hardening 阈值** | **主动偏离对位 backend**,fail-fast 返 Lua 错误(可被 pcall 兜住);因为对位行为是**不可恢复 runtime 崩溃**(`out of memory` / stack overflow,`defer recover` 都兜不住) | **宿主进程不可崩优先于字节一致**(roadmap §0 / `12-testing-difftest.md §4.9`);仅性能/效率差异不触发 hardening | `string.rep` / `string.format` 等阻断;阈值口径分配类 1 GiB、循环类 1<<24;commit message 与 godoc 写明背景 |
+| **豁免** | **合法的不比对**——某点本质不可比(地址脱敏 / random / locale / GC 数值 / libc 文本) | 差分 fuzz 不应对这些点失败(`12-testing-difftest.md §4.3-§4.7`) | `test/difftest/exemptions.go` 集中维护,15 项显式登记 |
+| **设计差异**(已知微差) | **语义上有意不同**,行为偏离对位但不算 bug(如 P1 xpcall handler 时机:对位栈展开前、望舒栈展开后) | 接受为永久差异,登记对账 | `docs/design/p1-interpreter/implementation-progress.md` 对账表 |
+
+**易混点**:hardening 与豁免的边界——hardening 是「我们主动偏离,因为对位的不防御不可接受」(底线优先级冲突),豁免是「不比对,因为该点本来就不可比」。前者主动改变行为(fail-fast 报错),后者从差分门禁中剔除该比较点。详细背景见 [[drift-audit-and-fuzz-hardening-round]] 教训 5。
+
 ---
 
 相关:[[design-premises]] · [[value-representation]] · [[evolution-roadmap]] · [[embedding-contract]] · [[project-overview]]

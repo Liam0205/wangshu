@@ -28,9 +28,9 @@
 
 ```makefile
 # Makefile(仓库根)——唯一任务入口,CI 与本地共用。
-.PHONY: all fmt lint test race cover fuzz bench conformance difftest hooks tidy
+.PHONY: all fmt lint test bench-test race cover fuzz bench conformance difftest hooks tidy
 
-all: fmt lint test                                  ## 默认:提交前本地全检
+all: fmt lint test fuzz conformance difftest bench-test      ## 默认:提交前本地全检(主模块 + benchmarks 子模块)
 
 fmt:                                                ## 格式化(写回)
 	gofmt -w $(shell git ls-files '*.go')
@@ -67,6 +67,7 @@ tidy:
 
 - 借鉴 pineapple 的 `go-fuzz.sh`(grep 自动发现 `^func Fuzz` 目标逐个跑),但入口统一挂 Makefile。
 - `make hooks` 替代 pineapple 的"README 一行指引"——新人 clone 后 `make hooks` 一步完成,README 与 [00-overview](./p1-interpreter/00-overview.md) 都指向它。
+- **`make all` 是「本地提交前全检」**——七件套含 `fuzz / conformance / difftest` 全部跑一遍(耗时 ~2-3 min),目的是把 nightly 才跑的强度拉到本地强制,与 CI 门禁口径对齐。日常小改动若不想每次等三分钟,用 `make test` 跑主模块 race + `make fmt lint` 即可;commit/push 前再过一次 `make all`。
 
 ### 1.1 fuzz seed 纪律(`make fuzz` 兜底机制)
 
