@@ -25,9 +25,10 @@ P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 met
 
 **P1(crescent 解释器)完整交付**:全里程碑 M0-M14 + 收尾轮(协程/pattern matcher/IC/arena ABI 等)落地,P1 总验收通过:
 
-- 三档基准 ≥2x over gopher-lua(Xeon 6982P-C 实测:simple **3.18x** / arith **3.10x** / loop **2.28x**);
-- 与官方 Lua 5.1.5 差分对拍(70 个种子用例 + 200 个随机生成脚本)逐字节一致;
-- conformance 套(67 个语义角落用例)全绿;`make all`(gofmt + lint + race)全绿。
+- 三档基准 ≥2x over gopher-lua(Xeon 6982P-C 实测:simple **3.17x** / arith **3.04x** / loop **2.30x**);
+- 与官方 Lua 5.1.5 差分对拍逐字节一致:100 项手册逐节特性探测 + 10 项边角探测 + 26 条错误消息 + 70 种子用例 + 500 随机脚本(nightly 每晚 200 万滚动);
+- 特性面三列全落地:必做列 probe 全绿、简化列存在性验证、缺口列 12 项显式豁免(`TestExemptions_Documented` 可审计);
+- conformance 套全绿;GC 双模式透明性对照全绿;`make all`(gofmt + lint + race)全绿。
 
 ### 快速开始
 
