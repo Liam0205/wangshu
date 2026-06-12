@@ -38,7 +38,7 @@ func coFnResume(st *crescent.State, args []value.Value) ([]value.Value, *crescen
 		errVal := value.Nil
 		if e != nil {
 			errVal = e.Value
-			if errVal == value.Value(0) || errVal == value.Nil {
+			if !e.HasValue {
 				errVal = intern(st, e.Msg)
 			}
 		}

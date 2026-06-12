@@ -26,9 +26,12 @@ func (st *State) annotateError(e *LuaError, ci *callInfo) *LuaError {
 	}
 	prefix := fmt.Sprintf("%s:%d: ", src, line)
 	e.Msg = prefix + e.Msg
-	// 若 Value 是字符串(或未设置),同步加前缀;非字符串错误值保持原样(5.1)
-	if e.Value == value.Value(0) || e.Value == value.Nil {
+	// 解释器内在错误(HasValue=false):错误值 = 加前缀后的 Msg;
+	// error(v) 携带的字符串值(Level≠0)同步加前缀;非字符串错误值
+	// (含 nil/false/0——HasValue 区分"携带 nil"与"未设置")保持原样(5.1)。
+	if !e.HasValue {
 		e.Value = value.MakeGC(value.TagString, st.gc.Intern([]byte(e.Msg)))
+		e.HasValue = true
 	} else if value.Tag(e.Value) == value.TagString && e.Level != 0 {
 		raw := object.StringBytes(st.arena, value.GCRefOf(e.Value))
 		e.Value = value.MakeGC(value.TagString, st.gc.Intern(append([]byte(prefix), raw...)))

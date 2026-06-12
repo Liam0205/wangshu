@@ -93,8 +93,11 @@ func tableFnRemove(st *crescent.State, args []value.Value) ([]value.Value, *cres
 		}
 		pos = int(posF)
 	}
-	if n == 0 {
-		return []value.Value{value.Nil}, nil
+	// 越界 pos(含空表):返回 0 个值且不动表(官方 tremove
+	// `!(1 <= pos && pos <= e) return 0`)。旧实现无此检查,位移循环
+	// 不执行但 t[n]=nil 仍执行——静默删掉了末元素(数据损坏)。
+	if pos < 1 || pos > n {
+		return nil, nil
 	}
 	removed, _ := st.RawGet(t, value.NumberValue(float64(pos)))
 	// 左移 [pos+1, n] → [pos, n-1]
@@ -446,7 +449,7 @@ func baseFnXpcall(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 		return out, nil
 	}
 	errVal := e.Value
-	if errVal == value.Value(0) || errVal == value.Nil {
+	if !e.HasValue {
 		errVal = intern(st, e.Msg)
 	}
 	hres, he := st.ProtectedCall(handler, []value.Value{errVal})

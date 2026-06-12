@@ -29,14 +29,17 @@ import (
 
 // Options configures a State (11 §1.2)。
 //
-// P1/M13 实现的字段:GCPause(传给 collector)。其它字段保留接口形状,后续
-// 里程碑接入。
+// P1 实现的字段:GCPause(传给 collector)、AllowFileLoad(loadfile/dofile
+// 的文件系统读门控,默认关)。其它字段保留接口形状,后续里程碑接入。
 type Options struct {
 	InitialArenaBytes uint32
 	MaxArenaBytes     uint32
 	MaxCallDepth      int
 	MaxCCalls         int
 	GCPause           int
+	// AllowFileLoad 开启 loadfile/dofile 读宿主文件系统的能力。
+	// 默认 false:嵌入式 VM 接不可信脚本时文件读是越权探测面。
+	AllowFileLoad bool
 }
 
 // State is a VM instance (11 §1.2)。它持有 globals/registry/arena/host 注册表/
@@ -47,6 +50,10 @@ type State struct {
 	// Call 时惰性 intern,此后复用同一 closure;每次 Run 重复 LoadProgram
 	// 会重复拷贝 Proto + 分配 IC)。
 	loaded map[*Program]loadedProg
+	// mounted 缓存"已挂载过的宿主 Arena"→ 挂载时的列数:同一 *Arena 重复
+	// Call 不重复 RegisterHostFn/建代理表(列内核负载是「每批一次 Call」,
+	// 否则每批泄漏 2×列数 个闭包 + 表);列数变化(挂载后 AddColumn)重挂。
+	mounted map[*Arena]int
 }
 
 type loadedProg struct {
@@ -54,8 +61,9 @@ type loadedProg struct {
 }
 
 // NewState creates a fresh VM with the P1 minimal stdlib loaded.
-func NewState(_ Options) *State {
+func NewState(opts Options) *State {
 	st := &State{core: crescent.New()}
+	st.core.SetAllowFileLoad(opts.AllowFileLoad)
 	// loadstring 的编译回调(经门面注入,避免 crescent → frontend 反向依赖)
 	st.core.SetCompileFn(func(src []byte, chunkname string) (uint32, []*bytecode.Proto, error) {
 		lx := lex.New(src, chunkname)
@@ -140,7 +148,17 @@ func (prog *Program) call(state *State, ar *Arena, args []Value) (results []Valu
 		state.loaded[prog] = lp
 	}
 	if ar != nil {
-		state.mountArena(ar)
+		// 同一 Arena 只挂载一次:挂载产物(代理表 + HostFn)被 `arena` 全局
+		// 持有,重复挂载即重复注册泄漏。Arena 数据就地更新(宿主复用同一
+		// *Arena 填下一批)时代理闭包读到的就是新数据,无需重挂;挂载后
+		// AddColumn(列数变化)则重挂以暴露新列。
+		if state.mounted == nil {
+			state.mounted = map[*Arena]int{}
+		}
+		if n, ok := state.mounted[ar]; !ok || n != len(ar.cols) {
+			state.mountArena(ar)
+			state.mounted[ar] = len(ar.cols)
+		}
 	}
 	innerArgs := make([]value.Value, len(args))
 	for i, a := range args {

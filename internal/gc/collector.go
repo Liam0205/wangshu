@@ -54,6 +54,10 @@ type Collector struct {
 	toRunFinalizers []arena.GCRef     // 本轮待运行的 __gc(创建逆序遍历时反向)
 	runFinalizer    func(arena.GCRef) // __gc 调度回调(State 注入,M11+)
 
+	// host closure 回收回调(State 注入):sweep 回收 host closure 时通知
+	// 注册表释放槽位引用(hostFn 槽复用,防长驻 State 注册表无界增长)。
+	releaseHostFn func(hostFnID uint32)
+
 	// string intern 表(06 §9.1)。
 	strBuckets [][]arena.GCRef
 	strMask    uint32
@@ -113,6 +117,9 @@ func (c *Collector) SetRoots(r Roots) { c.roots = r }
 
 // SetFinalizerRunner 注入 __gc 调度回调(06 §10;State 在 init 时注入)。
 func (c *Collector) SetFinalizerRunner(fn func(arena.GCRef)) { c.runFinalizer = fn }
+
+// SetHostFnReleaser 注入 host closure 槽位释放回调(State 在 init 时注入)。
+func (c *Collector) SetHostFnReleaser(fn func(uint32)) { c.releaseHostFn = fn }
 
 // RegisterFinalizer 登记一个带 __gc 的 userdata(setmetatable 含 __gc 时调用)。
 func (c *Collector) RegisterFinalizer(ud arena.GCRef) {

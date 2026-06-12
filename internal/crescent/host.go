@@ -19,14 +19,30 @@ import (
 type HostFn func(st *State, args []value.Value) ([]value.Value, *LuaError)
 
 // hostFnRegistry 是 State 上的 host function 注册表(整数 HostFnID 引用)。
+//
+// 槽位可回收:每个槽带引用计数(MakeHostClosure +1 / host closure 被 GC -1),
+// 归零的槽进 free 链供 RegisterHostFn 复用。否则 gmatch 每次调用、mountArena
+// 每次 Call 都永久追加闭包(长驻 State 反复执行的规则引擎形态下无界泄漏,
+// 且每个 entry 经 Go 闭包持有 src/pat 字节拷贝)。
 type hostFnRegistry struct {
-	fns []HostFn
+	fns  []HostFn
+	refs []int32  // 槽位引用计数(活跃 host closure 数)
+	free []uint32 // 已归零可复用的槽位
 }
 
-// RegisterHostFn 注册一个 HostFn,返回它在 State 内的 HostFnID。
+// RegisterHostFn 注册一个 HostFn,返回它在 State 内的 HostFnID(复用空闲槽)。
 func (st *State) RegisterHostFn(fn HostFn) uint32 {
-	id := uint32(len(st.hostFns.fns))
-	st.hostFns.fns = append(st.hostFns.fns, fn)
+	r := &st.hostFns
+	if n := len(r.free); n > 0 {
+		id := r.free[n-1]
+		r.free = r.free[:n-1]
+		r.fns[id] = fn
+		r.refs[id] = 0
+		return id
+	}
+	id := uint32(len(r.fns))
+	r.fns = append(r.fns, fn)
+	r.refs = append(r.refs, 0)
 	return id
 }
 
@@ -35,7 +51,21 @@ func (st *State) MakeHostClosure(id uint32) arena.GCRef {
 	cl := object.AllocHostClosure(st.arena, id, 0)
 	st.gc.LinkSweep(cl)
 	st.gc.AllocCharge(2 * 8)
+	st.hostFns.refs[id]++
 	return cl
+}
+
+// releaseHostFn 在 host closure 被 GC 回收时释放其槽位引用(gc 包回调)。
+func (st *State) releaseHostFn(id uint32) {
+	r := &st.hostFns
+	if int(id) >= len(r.refs) || r.refs[id] <= 0 {
+		return
+	}
+	r.refs[id]--
+	if r.refs[id] == 0 {
+		r.fns[id] = nil // 释放 Go 闭包(及其捕获的 src/pat 等)
+		r.free = append(r.free, id)
+	}
 }
 
 // SetGlobal 把一个值挂到 globals 表的字符串键上(供 stdlib 注册)。

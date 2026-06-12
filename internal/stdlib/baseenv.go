@@ -58,7 +58,14 @@ func baseFnGcInfo(st *crescent.State, _ []value.Value) ([]value.Value, *crescent
 }
 
 // baseFnLoadfile:loadfile([filename]) → function | (nil, errmsg)(10 §4.7)。
+//
+// 文件系统读默认关闭(嵌入式 VM 接不可信脚本时,loadfile("/etc/passwd")
+// 是越权探测面;官方 standalone 才默认开放)。宿主经 Options.AllowFileLoad
+// 显式开启;关闭时与"文件不存在"同形态返回 (nil, errmsg) 软错误。
 func baseFnLoadfile(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
+	if !st.AllowFileLoad() {
+		return []value.Value{value.Nil, intern(st, "loadfile disabled (enable with Options.AllowFileLoad)")}, nil
+	}
 	if len(args) == 0 || args[0] == value.Nil {
 		return []value.Value{value.Nil, intern(st, "loadfile: reading stdin not supported")}, nil
 	}

@@ -189,12 +189,15 @@ func baseFnLoad(st *crescent.State, args []value.Value) ([]value.Value, *crescen
 		chunkname = string(object.StringBytes(st.Arena(), value.GCRefOf(args[1])))
 	}
 	var srcBuf []byte
-	for i := 0; i < 1<<20; i++ { // reader 循环上限护栏
+	const maxReaderPieces = 1 << 20 // 护栏:防恶意 reader 永不返回 nil
+	done := false
+	for i := 0; i < maxReaderPieces; i++ {
 		results, e := st.ProtectedCallDirect(args[0], nil)
 		if e != nil {
 			return nil, e
 		}
 		if len(results) == 0 || results[0] == value.Nil {
+			done = true
 			break
 		}
 		if value.Tag(results[0]) != value.TagString {
@@ -202,9 +205,15 @@ func baseFnLoad(st *crescent.State, args []value.Value) ([]value.Value, *crescen
 		}
 		piece := object.StringBytes(st.Arena(), value.GCRefOf(results[0]))
 		if len(piece) == 0 {
+			done = true
 			break // 空串 = 结束(5.1)
 		}
 		srcBuf = append(srcBuf, piece...)
+	}
+	if !done {
+		// 超限静默截断会把不完整源码当完整 chunk 编译(莫名 syntax error,
+		// 或截断点恰好语法完整时静默错果)——显式报错。
+		return []value.Value{value.Nil, intern(st, "reader function: too many pieces")}, nil
 	}
 	fn, err := st.CompileAndLoad(srcBuf, chunkname)
 	if err != nil {
@@ -291,7 +300,7 @@ func baseFnPcall(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 	results, e := st.ProtectedCall(args[0], args[1:])
 	if e != nil {
 		errVal := e.Value
-		if errVal == value.Value(0) || errVal == value.Nil {
+		if !e.HasValue {
 			errVal = intern(st, e.Msg)
 		}
 		return []value.Value{value.False, errVal}, nil
@@ -423,6 +432,14 @@ func baseFnToNumber(st *crescent.State, args []value.Value) ([]value.Value, *cre
 			neg = s[0] == '-'
 			s = s[1:]
 		}
+		// strtoul 接受 base=16 的可选 0x/0X 前缀(tonumber("0x10", 16) = 16;
+		// 配置写 "0xff" 再按 16 转换是常见形态)。
+		if base == 16 && len(s) >= 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X') {
+			s = s[2:]
+		}
+		if s == "" {
+			return []value.Value{value.Nil}, nil
+		}
 		acc := 0.0
 		for i := 0; i < len(s); i++ {
 			c := s[i]
@@ -499,6 +516,11 @@ func baseFnError(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 		if f, ok := toNumberStr(st, args[1]); ok {
 			level = int(f)
 		}
+	}
+	// 官方 luaB_error 的加前缀条件是 lua_isstring(对 number 也真,
+	// lua_concat 把它转成字符串):error(0) → "file:line: 0" 字符串。
+	if level > 0 && value.IsNumber(v) {
+		v = intern(st, crescent.FormatLuaNumber(value.AsNumber(v)))
 	}
 	e := crescent.NewErrorVal(v, valueToString(st, v))
 	e.Level = level
@@ -577,33 +599,29 @@ func mathFn1(f func(float64) float64) crescent.HostFn {
 }
 
 func mathFnMax(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
-	if len(args) == 0 {
-		return nil, crescent.NewError("bad argument")
-	}
-	out, _ := toNumberStr(st, args[0])
-	for _, a := range args[1:] {
-		f, ok := toNumberStr(st, a)
-		if !ok {
-			return nil, crescent.NewError("bad argument (number expected)")
-		}
-		if f > out {
-			out = f
-		}
-	}
-	return []value.Value{value.NumberValue(out)}, nil
+	return mathMinMax(st, args, "max", func(a, b float64) bool { return a > b })
 }
 
 func mathFnMin(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
+	return mathMinMax(st, args, "min", func(a, b float64) bool { return a < b })
+}
+
+// mathMinMax 收口 max/min:全部参数(含首参)统一校验,错误措辞对齐官方
+// luaL_checknumber(首参曾被静默吞错:math.max("x", 2) 错误地返回 2)。
+func mathMinMax(st *crescent.State, args []value.Value, name string, better func(a, b float64) bool) ([]value.Value, *crescent.LuaError) {
 	if len(args) == 0 {
-		return nil, crescent.NewError("bad argument")
+		return nil, crescent.NewError(fmt.Sprintf("bad argument #1 to '%s' (number expected, got no value)", name))
 	}
-	out, _ := toNumberStr(st, args[0])
-	for _, a := range args[1:] {
+	out, ok := toNumberStr(st, args[0])
+	if !ok {
+		return nil, crescent.NewError(fmt.Sprintf("bad argument #1 to '%s' (number expected, got %s)", name, crescent.TypeNameOf(args[0])))
+	}
+	for i, a := range args[1:] {
 		f, ok := toNumberStr(st, a)
 		if !ok {
-			return nil, crescent.NewError("bad argument (number expected)")
+			return nil, crescent.NewError(fmt.Sprintf("bad argument #%d to '%s' (number expected, got %s)", i+2, name, crescent.TypeNameOf(a)))
 		}
-		if f < out {
+		if better(f, out) {
 			out = f
 		}
 	}

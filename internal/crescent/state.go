@@ -18,7 +18,11 @@ import (
 
 // LuaError carries a Lua-level error value (05 §9.2)。
 type LuaError struct {
-	Value     value.Value
+	Value value.Value
+	// HasValue:Value 字段是否携带真实错误值。不能用 Value 的零值判
+	// "未设置"——NaN-boxing 下 bits 0 恰是合法数字 +0.0,error(0, 0)
+	// 的错误值会被误判替换成 Msg 字符串。
+	HasValue  bool
 	Msg       string // 缓存给 Go 错误接口
 	Traceback string // 错误冒泡到顶层时构建(09;pcall 捕获的错误不带)
 	Level     int    // error(msg, level) 的 level(09);0 = 不加位置前缀
@@ -75,6 +79,11 @@ type State struct {
 	// 宿主侧脚本配额特性的种子;fuzz 用它替代脆弱的源码子串过滤。
 	stepBudget int64
 	stepUsed   int64
+
+	// allowFileLoad:loadfile/dofile 是否允许读宿主文件系统。默认 false
+	// (嵌入式 VM 接不可信脚本,文件读是越权探测面;10 §12.1 LibsSafe 思路
+	// 的最小落地)。宿主经 Options.AllowFileLoad 显式开启。
+	allowFileLoad bool
 }
 
 // SetCompileFn 注入编译回调(wangshu.NewState 时装配;loadstring 用)。
@@ -107,6 +116,9 @@ func New() *State {
 	st.globals = object.AllocTable(a, 0, 8)
 	c.LinkSweep(st.globals)
 	st.installRoots()
+	// host closure 槽位回收(gmatch 迭代器、mountArena 列代理等动态注册的
+	// HostFn 在其 closure 被 GC 后释放槽,注册表有界)。
+	c.SetHostFnReleaser(st.releaseHostFn)
 	// __gc finalizer 调度(06 §10):userdata 死亡复活后调用其 __gc 元方法。
 	c.SetFinalizerRunner(func(ud arena.GCRef) {
 		meta := object.UserdataMetaRef(st.arena, ud)
@@ -259,6 +271,12 @@ func (st *State) SetStepBudget(n int64) {
 	st.stepUsed = 0
 }
 
+// SetAllowFileLoad 开关 loadfile/dofile 的文件系统读能力(默认关)。
+func (st *State) SetAllowFileLoad(on bool) { st.allowFileLoad = on }
+
+// AllowFileLoad 查询文件读开关(stdlib loadfile/dofile 用)。
+func (st *State) AllowFileLoad() bool { return st.allowFileLoad }
+
 // chargeBackEdge 回边计费:每条回边记 1,超 stepBudget 抛可恢复错误。
 func (st *State) chargeBackEdge() *LuaError {
 	st.stepUsed++
@@ -284,7 +302,7 @@ func NewError(msg string) *LuaError {
 
 // NewErrorVal 构造一个携带 Lua Value 的错误(对应 error(v) 内建)。
 func NewErrorVal(v value.Value, msg string) *LuaError {
-	return &LuaError{Value: v, Msg: msg, Level: 1}
+	return &LuaError{Value: v, HasValue: true, Msg: msg, Level: 1}
 }
 
 // MarkAnnotated 阻止位置前缀注解(error(v, 0) / 非字符串错误值)。

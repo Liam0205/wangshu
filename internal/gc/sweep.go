@@ -70,6 +70,9 @@ func (c *Collector) freeObject(ref arena.GCRef, ot object.OBJType) {
 		}
 		c.a.Free(ref, 48)
 	case object.OBJ_CLOSURE:
+		if c.releaseHostFn != nil && object.IsHostClosure(c.a, ref) {
+			c.releaseHostFn(object.ClosureProtoID(c.a, ref))
+		}
 		c.a.Free(ref, 16+uint32(object.ClosureNUpvals(c.a, ref))*8)
 	case object.OBJ_USERDATA:
 		delete(c.hasFinalizer, ref)
