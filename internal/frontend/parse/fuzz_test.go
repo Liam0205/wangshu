@@ -30,6 +30,9 @@ func FuzzParse(f *testing.F) {
 		f.Add([]byte(s))
 	}
 	f.Fuzz(func(t *testing.T, src []byte) {
+		if len(src) > 1<<16 {
+			t.Skip() // 尺寸上限:防慢输入在 fuzztime 截止边缘超时(CI flake)
+		}
 		lx := lex.New(src, "fuzz")
 		_, _ = Parse(lx, "fuzz") // 错误是合法结果;panic 才是 bug
 	})

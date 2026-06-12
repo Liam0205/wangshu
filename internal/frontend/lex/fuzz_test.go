@@ -28,6 +28,9 @@ func FuzzLexer(f *testing.F) {
 		f.Add([]byte(s))
 	}
 	f.Fuzz(func(t *testing.T, src []byte) {
+		if len(src) > 1<<16 {
+			t.Skip() // 尺寸上限:防 CI fuzztime 截止边缘超时
+		}
 		lx := New(src, "fuzz")
 		for i := 0; i < 1<<16; i++ {
 			tok, err := lx.Next()

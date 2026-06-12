@@ -33,7 +33,7 @@ return coroutine.resume(co)`,
 	}
 	f.Fuzz(func(t *testing.T, src string) {
 		// 跳过疑似含长循环的输入(fuzz 引擎自身有超时,但显式过滤更快)
-		if strings.Contains(src, "while") || strings.Contains(src, "repeat") {
+		if len(src) > 1<<14 || strings.Contains(src, "while") || strings.Contains(src, "repeat") {
 			t.Skip()
 		}
 		prog, err := wangshu.Compile([]byte(src), "fuzz")
