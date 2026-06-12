@@ -25,7 +25,7 @@ P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 met
 
 **P1(crescent 解释器)完整交付**:全里程碑 M0-M14 + 收尾轮(协程/pattern matcher/IC/arena ABI 等)+ 长稳轮(freelist 内存复用/调用深度上限/并发验证)+ 审查核销轮(22+ 项逐函数对照官方源码的发现全量修复)落地,P1 总验收通过:
 
-- 三档基准 ≥2x over gopher-lua(Xeon 6982P-C 实测:simple **3.17x** / arith **3.04x** / loop **2.30x**);benchmark-game 真实负载(fib/binary-trees/spectral-norm/fannkuch/n-body)与 gopher-lua 大体相当(0.77x-1.17x),分配密集形态是 P2/P3 优化输入;
+- 三档基准 ≥2x over gopher-lua(Xeon 6982P-C 实测,P1 性能轮后:simple **9.0x** / arith **7.0x** / loop **2.45x**);benchmark-game 真实负载(fib/binary-trees/spectral-norm/fannkuch/n-body)1.31x/1.09x/1.43x/0.82x/1.08x——五项中四项反超 gopher-lua,表索引密集(fannkuch)是剩余短板;
 - 与官方 Lua 5.1.5 差分对拍逐字节一致:**官方测试套 13 文件**(vararg/sort/pm 整文件,其余截至豁免线)+ 100 项手册逐节特性探测 + 12 项边角探测 + 29 条错误消息(含行号断言)+ 70 种子用例 + 500 随机脚本(nightly 每晚 200 万滚动)+ benchmark-game 五脚本返回值;
 - 特性面三列全落地:必做列 probe 全绿、简化列存在性验证、缺口列 15 项显式豁免(`TestExemptions_Documented` 可审计);
 - 长稳承诺:freelist 循环复用(22000 轮分配密集脚本 arena 稳定 17.4KB)、深递归报 `stack overflow` 可恢复(LUAI_MAXCALLS=20000 等价)、`-race` 下 Program 跨 goroutine 共享验证;

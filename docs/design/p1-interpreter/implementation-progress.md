@@ -45,11 +45,17 @@
 - **三档 ≥2x over gopher-lua**:✅ Xeon 6982P-C 实测(IC 落地后):
   simple 275ns vs 874ns = **3.18x**;arith 311ns vs 966ns = **3.10x**;
   loop 15.1µs vs 34.4µs = **2.28x**。分配 5 allocs/op vs gopher 8-124。
-- **benchmark-game 真实负载**(benchmarks/realworld):fib 1.17x、nbody 1.09x、
-  spectral-norm ~1.0x、fannkuch 0.83x、binary-trees 0.77x over gopher-lua。
-  真实负载混合下大体相当;分配/GC 密集形态(binary-trees)是短板
-  (STW full GC vs Go 增量 GC),记 P2/P3 优化输入。五脚本返回值与官方
+- **benchmark-game 真实负载**(benchmarks/realworld,P1 性能轮后):
+  fib 1.31x、binary-trees 1.09x、spectral-norm 1.43x、fannkuch 0.82x、
+  nbody 1.08x over gopher-lua——五项中四项反超(性能轮前 0.77x-1.17x,
+  binary-trees/fannkuch/spectral-norm 曾落后)。剩余短板 fannkuch(表
+  索引/交换密集):IC 命中仍付 accessor 间接层,直达偏移方案(DataOff)
+  实测因校验复杂度反噬被否决,记 P2 IC 演进输入。五脚本返回值与官方
   lua5.1 逐字节一致(TestRealWorld_OracleParity)。
+- **P1 性能轮**(同 commit 区间):closeUpvals maxOpenIdx 快路径
+  (binary-trees -30%)、GC pacing 补附属块统计、根扫描免 map 分配、
+  callHost 实参池(spectral-norm -36%)、State.Call 跨 Run 复用主 thread
+  (simple 275→98ns)、表槽初始化批量化。
 - **与官方 Lua 5.1.5 输出逐字节一致**:✅ seed corpus 70 用例 + 随机生成
   500 种子全部 byte-equal。oracle 源码编译供给(`~/.local/bin/lua5.1`)。
 - **官方测试套移植**(test/luasuite):lua-5.1-tests 13 文件原样运行,
