@@ -5,6 +5,8 @@
 package difftest
 
 import (
+	"os"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -53,10 +55,16 @@ func TestGCStress_SeedCorpus(t *testing.T) {
 	}
 }
 
-// TestGCStress_RandomScripts 对随机生成脚本做双模式对照(200 种子;
-// 与 oracle 对拍的 500 种子共享 generator,这里只对照自身两模式)。
+// TestGCStress_RandomScripts 对随机生成脚本做双模式对照(默认 200 种子;
+// nightly 经 WANGSHU_GCSTRESS_N 放大;与 oracle 对拍的种子共享 generator,
+// 这里只对照自身两模式)。
 func TestGCStress_RandomScripts(t *testing.T) {
-	const nScripts = 200
+	nScripts := int64(200)
+	if v := os.Getenv("WANGSHU_GCSTRESS_N"); v != "" {
+		if p, err := strconv.ParseInt(v, 10, 64); err == nil {
+			nScripts = p
+		}
+	}
 	for seed := int64(0); seed < nScripts; seed++ {
 		src := generateScript(seed)
 		normal, err1 := runWithStress(t, src, false)

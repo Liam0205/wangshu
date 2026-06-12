@@ -11,11 +11,14 @@ on:
   workflow_dispatch:
     inputs:
       rounds:
-        description: 'random scripts per suite'
-        default: '20000'
+        description: 'random scripts (oracle differential)'
+        default: '2000000'
+      gcstress:
+        description: 'random scripts (GC stress dual-mode)'
+        default: '200000'
       gofuzztime:
-        description: 'go-fuzz time per target'
-        default: '10m'
+        description: 'go-fuzz time per target (4 targets)'
+        default: '45m'
 
 permissions:
   contents: read
@@ -43,26 +46,28 @@ jobs:
       - name: rolling-seed differential fuzz
         id: difffuzz
         run: |
-          # 日期纪元作滚动种子基:每天一段新种子空间,失败可精确重放
-          SEED_BASE=$(( $(date -u +%s) / 86400 * 100000 ))
-          ROUNDS="${{ github.event.inputs.rounds || '20000' }}"
+          # 日期纪元作滚动种子基:每天一段新种子空间,失败可精确重放。
+          # 种子段间距 1e7,按每晚 200 万脚本(本地实测 ~1ms/脚本,约 35-60 分钟)留 5 倍余量。
+          SEED_BASE=$(( $(date -u +%s) / 86400 * 10000000 ))
+          ROUNDS="${{ github.event.inputs.rounds || '2000000' }}"
           echo "seed_base=$SEED_BASE" >> "$GITHUB_OUTPUT"
           echo "rounds=$ROUNDS" >> "$GITHUB_OUTPUT"
           set -o pipefail
           WANGSHU_FUZZ_SEED_BASE=$SEED_BASE WANGSHU_FUZZ_N=$ROUNDS \
-            go test ./test/difftest/ -run 'TestDiff_RandomScripts' -timeout 300m -v 2>&1 | tee difffuzz.log
+            go test ./test/difftest/ -run 'TestDiff_RandomScripts' -timeout 150m 2>&1 | tee difffuzz.log
 
       - name: GC-stress transparency fuzz
         if: always()
         run: |
           set -o pipefail
-          go test ./test/difftest/ -run 'TestGCStress' -timeout 60m 2>&1 | tee gcstress.log
+          WANGSHU_GCSTRESS_N="${{ github.event.inputs.gcstress || '200000' }}" \
+            go test ./test/difftest/ -run 'TestGCStress' -timeout 60m 2>&1 | tee gcstress.log
 
       - name: native go-fuzz long run
         if: always()
         run: |
           set -o pipefail
-          ./scripts/go-fuzz.sh "${{ github.event.inputs.gofuzztime || '10m' }}" 2>&1 | tee gofuzz.log
+          ./scripts/go-fuzz.sh "${{ github.event.inputs.gofuzztime || '45m' }}" 2>&1 | tee gofuzz.log
 
       - name: upload logs and crash corpus
         if: always()
