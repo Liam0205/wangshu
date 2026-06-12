@@ -160,12 +160,15 @@ func (st *State) Resume(id uint64, args []value.Value) ([]value.Value, bool, *Lu
 			co.xfer = nil
 			return out, true, nil
 		}
-		// 错误:协程死亡
+		// 错误:协程死亡(xfer 残值随死协程驻留注册表——注册表不收缩,
+		// 清掉与池归还同一卫生标准)
 		co.status = CoDead
+		co.xfer = nil
 		return nil, false, sig
 	}
 	// 正常结束:返回值在 co.th 栈上 [0, top)
 	co.status = CoDead
+	co.xfer = nil
 	out := make([]value.Value, co.th.top)
 	copy(out, co.th.stack[:co.th.top])
 	return out, true, nil
