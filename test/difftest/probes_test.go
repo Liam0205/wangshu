@@ -229,6 +229,22 @@ return coroutine.resume(co)`},
 local co = coroutine.create(function(...) return select("#", ...) end)
 local _, n = coroutine.resume(co, 1, 2, 3, 4)
 return n`},
+	{"probe_coroutine_yield_across_pcall", `
+local co = coroutine.create(function()
+  local ok, e = pcall(function() coroutine.yield(1) end)
+  return tostring(ok), e
+end)
+local a, b, c = coroutine.resume(co)
+return tostring(a), tostring(b), tostring(c)`},
+	{"probe_coroutine_nested_resume_status", `
+local co1, co2, s1, s2
+co1 = coroutine.create(function() coroutine.resume(co2) end)
+co2 = coroutine.create(function()
+  s1 = coroutine.status(co1)
+  s2 = coroutine.status(co2)
+end)
+coroutine.resume(co1)
+return s1, s2, coroutine.status(co1), coroutine.status(co2)`},
 
 	// ===== 闭包/upvalue 语义 =====
 	{"probe_upvalue_shared", `

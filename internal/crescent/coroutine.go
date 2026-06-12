@@ -115,6 +115,13 @@ func (st *State) Resume(id uint64, args []value.Value) ([]value.Value, bool, *Lu
 	st.nCcalls++
 	defer func() { st.nCcalls-- }()
 
+	// 嵌套 resume:调用者协程转 normal(5.1 状态机;coroutine.status 可见,
+	// findRunningCo 也依赖"只有一个 CoRunning"判 yield 归属)。
+	if resumer := st.findRunningCo(); resumer != nil {
+		resumer.status = CoNormal
+		defer func() { resumer.status = CoRunning }()
+	}
+
 	// 挂起的调用者线程入 resume 链(GC 根;06 §5.1 R4)。
 	if resumerTh != nil {
 		st.threadChain = append(st.threadChain, resumerTh)
