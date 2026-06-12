@@ -158,15 +158,19 @@ func (a *Arena) popSizeClass(c int) GCRef {
 	return ref
 }
 
-// popLarge 首次适配:精确命中直接取;块更大时仅当剩余 >64 字才切分
-// (剩余独立成 LARGE 块),否则跳过(避免把非桶代表尺寸的小余块塞进定长桶)。
+// popLarge 首次适配。取块条件:精确命中,或剩余可独立利用:
+//   - 剩余 > 64 字:独立成 LARGE 块;
+//   - 剩余 ∈ [1, 64] 字:向下取整到最近 size-class 桶代表字数入定长桶,
+//     桶代表与剩余之间的尾巴(< 下一桶步长,≤7 字)就地丢弃——浪费有界,
+//     换取"略大块"不再永久滞留(否则链上长期只有略大块时 freelist 名义
+//     有空闲、实际不可达,新分配持续走 bump)。
 func (a *Arena) popLarge(needWords uint32) GCRef {
 	var prev GCRef
 	ref := a.largeHead
 	for !ref.IsNull() {
 		next := GCRef(a.words[ref>>3])
 		bw := uint32(a.words[(ref>>3)+1])
-		if bw == needWords || bw > needWords+largeThresholdWords {
+		if bw >= needWords {
 			if prev.IsNull() {
 				a.largeHead = next
 			} else {
@@ -178,14 +182,22 @@ func (a *Arena) popLarge(needWords uint32) GCRef {
 					delete(a.freeSet, ref+GCRef(w*8))
 				}
 			}
-			if bw > needWords {
-				rem := ref + GCRef(needWords*8)
-				if debugFreelist {
-					for w := uint32(0); w < bw-needWords; w++ {
-						a.freeSet[rem+GCRef(w*8)] = 1
+			if rem := bw - needWords; rem > 0 {
+				remRef := ref + GCRef(needWords*8)
+				if rem > largeThresholdWords {
+					if debugFreelist {
+						for w := uint32(0); w < rem; w++ {
+							a.freeSet[remRef+GCRef(w*8)] = 1
+						}
 					}
+					a.pushLarge(remRef, rem)
+				} else {
+					// 向下取整入定长桶(floorClass:桶代表 ≤ rem 的最大桶)
+					if c := floorClass(rem); c >= 0 {
+						a.Free(remRef, classWords(c)*8)
+					}
+					// rem < 1 桶最小字数不可能(rem ≥ 1 字即 class 0);尾巴丢弃
 				}
-				a.pushLarge(rem, bw-needWords)
 			}
 			return ref
 		}
@@ -193,6 +205,18 @@ func (a *Arena) popLarge(needWords uint32) GCRef {
 		ref = next
 	}
 	return 0
+}
+
+// floorClass 返回桶代表字数 ≤ words 的最大 size-class(无则 -1)。
+func floorClass(words uint32) int {
+	if words == 0 {
+		return -1
+	}
+	c := sizeClass(words)
+	for c >= 0 && classWords(c) > words {
+		c--
+	}
+	return c
 }
 
 // FreeBytes 返回当前 freelist 上的总空闲字节(测试/观测用)。

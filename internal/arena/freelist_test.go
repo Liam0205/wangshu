@@ -73,7 +73,7 @@ func TestFreelist_LargeFirstFit(t *testing.T) {
 		t.Fatalf("LARGE exact-fit reuse failed: want %d got %d", big, got)
 	}
 	a.Free(got, 200*8)
-	// 200 字块对 70 字请求:剩 130 > 64 可切分
+	// 200 字块对 70 字请求:剩 130 > 64 独立成 LARGE 块
 	part := a.AllocBytes(70 * 8)
 	if part != big {
 		t.Fatalf("LARGE split reuse failed: want %d got %d", big, part)
@@ -81,11 +81,16 @@ func TestFreelist_LargeFirstFit(t *testing.T) {
 	if a.FreeBytes() == 0 {
 		t.Fatal("split remainder not returned to freelist")
 	}
-	// 100 字块对 70 字请求:剩 30 ≤ 64 不可独立成块 → 保守跳过,走 bump
+	// 100 字块对 70 字请求:剩 30 ≤ 64 → 向下取整入定长桶(不再滞留)
 	small := a.AllocBytes(100 * 8)
 	a.Free(small, 100*8)
-	skip := a.AllocBytes(70 * 8)
-	if skip == small {
-		t.Fatal("LARGE must not split when remainder <= 64 words (would strand a non-class fragment)")
+	taken := a.AllocBytes(70 * 8)
+	if taken != small {
+		t.Fatalf("slightly-larger LARGE block must be taken (no stranding): want %d got %d", small, taken)
+	}
+	// 剩余 30 字进了桶:28 字(class 14 代表)请求应命中该余块
+	rem := a.AllocBytes(28 * 8)
+	if rem != small+GCRef(70*8) {
+		t.Fatalf("remainder not bucketed: want %d got %d", small+GCRef(70*8), rem)
 	}
 }
