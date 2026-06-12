@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Liam0205/wangshu/internal/bytecode"
 	"github.com/Liam0205/wangshu/internal/frontend/token"
 )
 
@@ -49,7 +50,9 @@ type Error struct {
 	Msg    string
 }
 
-func (e *Error) Error() string { return fmt.Sprintf("%s:%d: %s", e.Source, e.Line, e.Msg) }
+func (e *Error) Error() string {
+	return fmt.Sprintf("%s:%d: %s", bytecode.ChunkID(e.Source), e.Line, e.Msg)
+}
 
 func (l *Lexer) errorf(format string, args ...any) *Error {
 	return &Error{Source: l.source, Line: l.line, Msg: fmt.Sprintf(format, args...)}
@@ -224,7 +227,8 @@ func (l *Lexer) Next() (token.Token, error) {
 			if err != nil {
 				return token.Token{}, err
 			}
-			return token.Token{Kind: token.STRING, Line: startLine, Str: s}, nil
+			return token.Token{Kind: token.STRING, Line: startLine, Str: s,
+				Raw: string(l.src[saved:l.pos])}, nil
 		}
 		l.pos = saved + 1
 		return token.Token{Kind: token.LBRACK, Line: startLine}, nil
@@ -293,7 +297,7 @@ func (l *Lexer) scanNumber(startLine int32) (token.Token, error) {
 	if !ok {
 		return token.Token{}, l.errorf("malformed number near '%s'", lit)
 	}
-	return token.Token{Kind: token.NUMBER, Line: startLine, Num: f}, nil
+	return token.Token{Kind: token.NUMBER, Line: startLine, Num: f, Raw: lit}, nil
 }
 
 // parseNumeral 等价官方 luaO_str2d(整段消费,不尽即失败):
@@ -365,6 +369,7 @@ func hexDigitVal(c byte) int {
 }
 
 func (l *Lexer) scanShortString(startLine int32, quote byte) (token.Token, error) {
+	rawStart := l.pos
 	l.pos++ // 吃掉开始的引号
 	var buf []byte
 	for {
@@ -374,7 +379,8 @@ func (l *Lexer) scanShortString(startLine int32, quote byte) (token.Token, error
 		c := l.src[l.pos]
 		if c == quote {
 			l.pos++
-			return token.Token{Kind: token.STRING, Line: startLine, Str: string(buf)}, nil
+			return token.Token{Kind: token.STRING, Line: startLine, Str: string(buf),
+				Raw: string(l.src[rawStart:l.pos])}, nil
 		}
 		if c == '\\' {
 			l.pos++

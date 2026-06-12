@@ -80,17 +80,26 @@ type Token struct {
 	// 其它 token 不使用这两个字段。
 	Num float64
 	Str string
+
+	// Raw 是 NUMBER/STRING 的源文原样切片(官方 llex.c txtToken 语义:
+	// 错误消息 near '1.000' / near ''aa'' 用原文,不用解析后的值)。
+	Raw string
 }
 
-// String returns a human-readable rendering for diagnostics.
+// String returns the official-5.1 "near" rendering(parser 错误消息直接
+// 拼本输出):NAME/NUMBER/STRING 用源文原样(txtToken),其余用 kind 名。
 func (t Token) String() string {
 	switch t.Kind {
-	case NUMBER:
-		return fmt.Sprintf("NUMBER(%v)", t.Num)
-	case STRING:
-		return fmt.Sprintf("STRING(%q)", t.Str)
+	case NUMBER, STRING:
+		if t.Raw != "" {
+			return t.Raw
+		}
+		if t.Kind == NUMBER {
+			return fmt.Sprintf("%v", t.Num)
+		}
+		return t.Str
 	case NAME:
-		return fmt.Sprintf("NAME(%s)", t.Str)
+		return t.Str
 	default:
 		return KindName(t.Kind)
 	}
