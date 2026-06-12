@@ -38,7 +38,7 @@ func (p *Parser) parseLocal() (ast.Stmt, error) {
 			return nil, err
 		}
 		if !p.match(token.NAME) {
-			return nil, p.errorf("<name> expected near %s", p.tok.String())
+			return nil, p.errorf("<name> expected near '%s'", p.tok.String())
 		}
 		name := p.tok.Str
 		if err := p.next(); err != nil {
@@ -54,7 +54,7 @@ func (p *Parser) parseLocal() (ast.Stmt, error) {
 	names := []string{}
 	for {
 		if !p.match(token.NAME) {
-			return nil, p.errorf("<name> expected near %s", p.tok.String())
+			return nil, p.errorf("<name> expected near '%s'", p.tok.String())
 		}
 		names = append(names, p.tok.Str)
 		if err := p.next(); err != nil {
@@ -139,7 +139,9 @@ func (p *Parser) parseWhile() (ast.Stmt, error) {
 	if err := p.expect(token.KW_DO); err != nil {
 		return nil, err
 	}
+	p.loopDepth++
 	body, err := p.parseBlock()
+	p.loopDepth--
 	if err != nil {
 		return nil, err
 	}
@@ -171,7 +173,9 @@ func (p *Parser) parseRepeat() (ast.Stmt, error) {
 	if err := p.next(); err != nil {
 		return nil, err
 	}
+	p.loopDepth++
 	body, err := p.parseBlock()
+	p.loopDepth--
 	if err != nil {
 		return nil, err
 	}
@@ -193,7 +197,7 @@ func (p *Parser) parseFor() (ast.Stmt, error) {
 		return nil, err
 	}
 	if !p.match(token.NAME) {
-		return nil, p.errorf("<name> expected near %s", p.tok.String())
+		return nil, p.errorf("<name> expected near '%s'", p.tok.String())
 	}
 	first := p.tok.Str
 	if err := p.next(); err != nil {
@@ -229,7 +233,9 @@ func (p *Parser) parseFor() (ast.Stmt, error) {
 		if err := p.expect(token.KW_DO); err != nil {
 			return nil, err
 		}
+		p.loopDepth++
 		body, err := p.parseBlock()
+		p.loopDepth--
 		if err != nil {
 			return nil, err
 		}
@@ -245,7 +251,7 @@ func (p *Parser) parseFor() (ast.Stmt, error) {
 				return nil, err
 			}
 			if !p.match(token.NAME) {
-				return nil, p.errorf("<name> expected near %s", p.tok.String())
+				return nil, p.errorf("<name> expected near '%s'", p.tok.String())
 			}
 			names = append(names, p.tok.Str)
 			if err := p.next(); err != nil {
@@ -262,7 +268,9 @@ func (p *Parser) parseFor() (ast.Stmt, error) {
 		if err := p.expect(token.KW_DO); err != nil {
 			return nil, err
 		}
+		p.loopDepth++
 		body, err := p.parseBlock()
+		p.loopDepth--
 		if err != nil {
 			return nil, err
 		}
@@ -271,7 +279,7 @@ func (p *Parser) parseFor() (ast.Stmt, error) {
 		}
 		return &ast.GenForStmt{Line: line, Names: names, Exprs: exprs, Body: body}, nil
 	default:
-		return nil, p.errorf("'=' or 'in' expected near %s", p.tok.String())
+		return nil, p.errorf("'=' or 'in' expected near '%s'", p.tok.String())
 	}
 }
 
@@ -284,7 +292,7 @@ func (p *Parser) parseFunctionStmt() (ast.Stmt, error) {
 		return nil, err
 	}
 	if !p.match(token.NAME) {
-		return nil, p.errorf("<name> expected near %s", p.tok.String())
+		return nil, p.errorf("<name> expected near '%s'", p.tok.String())
 	}
 	var target ast.Expr = &ast.NameExpr{Line: p.tok.Line, Name: p.tok.Str}
 	if err := p.next(); err != nil {
@@ -295,7 +303,7 @@ func (p *Parser) parseFunctionStmt() (ast.Stmt, error) {
 			return nil, err
 		}
 		if !p.match(token.NAME) {
-			return nil, p.errorf("<name> expected near %s", p.tok.String())
+			return nil, p.errorf("<name> expected near '%s'", p.tok.String())
 		}
 		target = &ast.IndexExpr{Line: p.tok.Line, Obj: target, Key: &ast.StringExpr{Line: p.tok.Line, Val: p.tok.Str}}
 		if err := p.next(); err != nil {
@@ -308,7 +316,7 @@ func (p *Parser) parseFunctionStmt() (ast.Stmt, error) {
 			return nil, err
 		}
 		if !p.match(token.NAME) {
-			return nil, p.errorf("<name> expected near %s", p.tok.String())
+			return nil, p.errorf("<name> expected near '%s'", p.tok.String())
 		}
 		target = &ast.IndexExpr{Line: p.tok.Line, Obj: target, Key: &ast.StringExpr{Line: p.tok.Line, Val: p.tok.Str}}
 		isMethod = true
@@ -349,7 +357,7 @@ func (p *Parser) parseExprStmt() (ast.Stmt, error) {
 	if p.match(token.EQ) || p.match(token.COMMA) {
 		// 赋值。
 		if !isAssignable(first) {
-			return nil, p.errorf("syntax error near %s", p.tok.String())
+			return nil, p.errorf("syntax error near '%s'", p.tok.String())
 		}
 		targets := []ast.Expr{first}
 		for p.match(token.COMMA) {
@@ -361,7 +369,7 @@ func (p *Parser) parseExprStmt() (ast.Stmt, error) {
 				return nil, err
 			}
 			if !isAssignable(t) {
-				return nil, p.errorf("syntax error near %s", p.tok.String())
+				return nil, p.errorf("syntax error near '%s'", p.tok.String())
 			}
 			targets = append(targets, t)
 		}
@@ -379,7 +387,7 @@ func (p *Parser) parseExprStmt() (ast.Stmt, error) {
 	case *ast.CallExpr, *ast.MethodCallExpr:
 		return &ast.CallStmt{Line: line, Call: first}, nil
 	default:
-		return nil, p.errorf("syntax error near %s", p.tok.String())
+		return nil, p.errorf("syntax error near '%s'", p.tok.String())
 	}
 }
 

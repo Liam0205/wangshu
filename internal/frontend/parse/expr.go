@@ -189,7 +189,7 @@ func (p *Parser) parsePrefixExpr() (ast.Expr, error) {
 		// 解包会还原成 NameExpr 被错误接受)。codegen 对单值内核零开销。
 		e = &ast.ParenExpr{Line: line, E: inner}
 	default:
-		return nil, p.errorf("unexpected symbol near %s", p.tok.String())
+		return nil, p.errorf("unexpected symbol near '%s'", p.tok.String())
 	}
 	for {
 		switch p.tok.Kind {
@@ -199,7 +199,7 @@ func (p *Parser) parsePrefixExpr() (ast.Expr, error) {
 				return nil, err
 			}
 			if !p.match(token.NAME) {
-				return nil, p.errorf("<name> expected near %s", p.tok.String())
+				return nil, p.errorf("<name> expected near '%s'", p.tok.String())
 			}
 			e = &ast.IndexExpr{Line: opLine, Obj: e, Key: &ast.StringExpr{Line: p.tok.Line, Val: p.tok.Str}}
 			if err := p.next(); err != nil {
@@ -223,7 +223,7 @@ func (p *Parser) parsePrefixExpr() (ast.Expr, error) {
 				return nil, err
 			}
 			if !p.match(token.NAME) {
-				return nil, p.errorf("<name> expected near %s", p.tok.String())
+				return nil, p.errorf("<name> expected near '%s'", p.tok.String())
 			}
 			method := p.tok.Str
 			line := p.tok.Line
@@ -289,7 +289,7 @@ func (p *Parser) parseArgs() ([]ast.Expr, error) {
 		}
 		return []ast.Expr{&ast.StringExpr{Line: line, Val: s}}, nil
 	}
-	return nil, p.errorf("function arguments expected near %s", p.tok.String())
+	return nil, p.errorf("function arguments expected near '%s'", p.tok.String())
 }
 
 // explist ::= expr {',' expr}
@@ -417,7 +417,7 @@ func (p *Parser) parseFuncBody(startLine int32, isMethod bool) (*ast.FuncExpr, e
 				break
 			}
 			if !p.match(token.NAME) {
-				return nil, p.errorf("<name> expected near %s", p.tok.String())
+				return nil, p.errorf("<name> expected near '%s'", p.tok.String())
 			}
 			params = append(params, p.tok.Str)
 			if err := p.next(); err != nil {
@@ -434,11 +434,14 @@ func (p *Parser) parseFuncBody(startLine int32, isMethod bool) (*ast.FuncExpr, e
 	if err := p.expect(token.RPAREN); err != nil {
 		return nil, err
 	}
-	// 进入函数体:切换 insideVararg 上下文。
+	// 进入函数体:切换 insideVararg 上下文;loopDepth 重置(break 不跨函数边界)。
 	saved := p.insideVararg
+	savedLoop := p.loopDepth
 	p.insideVararg = isVararg
+	p.loopDepth = 0
 	body, err := p.parseBlock()
 	p.insideVararg = saved
+	p.loopDepth = savedLoop
 	if err != nil {
 		return nil, err
 	}
