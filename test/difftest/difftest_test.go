@@ -278,21 +278,3 @@ for i = 1, #__r do __parts[i] = tostring(__r[i]) end
 print(table.concat(__parts, "\t"))
 `
 }
-
-// runWangshuNoFatal 与 runWangshu 同构但出错返回错误文本(调试用)。
-func runWangshuNoFatal(src string) string {
-	prog, err := wangshu.Compile([]byte(src), "difftest")
-	if err != nil {
-		return "COMPILE-ERR: " + err.Error()
-	}
-	st := wangshu.NewState(wangshu.Options{})
-	results, err := prog.Run(st)
-	if err != nil {
-		return "RUN-ERR: " + err.Error()
-	}
-	parts := make([]string, len(results))
-	for i, r := range results {
-		parts[i] = r.GoString()
-	}
-	return strings.Join(parts, "\t")
-}
