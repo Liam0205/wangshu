@@ -281,16 +281,22 @@ func TestDiff_RandomScripts(t *testing.T) {
 	}
 }
 
-// wrapForOracle 把 `return expr` 脚本变成 oracle 侧的 print 形态:
-// 把 chunk 当函数调用,返回值逐个 tostring 后用 \t join print。
+// wrapForOracle 把 `return expr` 脚本变成 oracle 侧的 print 形态。
+//
+// 两个对拍保真细节:
+//   - 行号对齐:wrapper 头与 src 第一行拼在同一物理行(不前置换行),
+//     使 src 第 n 行在 oracle 端仍是第 n 行——错误消息里的行号才可比;
+//   - 真实返回个数:用 select("#", ...) 取个数(table 构造 {f()} 的 # 会
+//     截断尾 nil,导致 `return nil` 与 `return` 不可区分)。
 func wrapForOracle(src string) string {
-	return `
-local function __chunk()
-` + src + `
+	return `local function __chunk() ` + src + `
 end
-local __r = { __chunk() }
-local __parts = {}
-for i = 1, #__r do __parts[i] = tostring(__r[i]) end
-print(table.concat(__parts, "\t"))
+local function __collect(...)
+  local n = select("#", ...)
+  local parts = {}
+  for i = 1, n do parts[i] = tostring(select(i, ...)) end
+  return table.concat(parts, "\t")
+end
+print(__collect(__chunk()))
 `
 }

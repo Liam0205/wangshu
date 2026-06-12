@@ -27,7 +27,15 @@ func (st *State) doCall(th *thread, ci *callInfo, i bytecode.Instruction) (*call
 	nresults := c - 1
 	callee := th.stack[funcIdx]
 	if value.Tag(callee) != value.TagFunction {
-		return nil, st.errWithName(ci, "call", a, callee)
+		// __call 元方法(07):args 右移一格,原 callee 变第 1 实参,handler 上位
+		h := st.metaFieldOfValue(callee, "__call")
+		if value.Tag(h) != value.TagFunction {
+			return nil, st.errWithName(ci, "call", a, callee)
+		}
+		st.insertCallSelf(th, funcIdx, nargs)
+		th.stack[funcIdx] = h
+		callee = h
+		nargs++
 	}
 	cl := value.GCRefOf(callee)
 	if object.IsHostClosure(st.arena, cl) {
@@ -61,6 +69,19 @@ func (st *State) entryDepthOf(th *thread) int {
 	return 0
 }
 
+// insertCallSelf 为 __call 重排栈:args 右移一格,原 callee 留在 funcIdx+1
+// 作第 1 实参,handler 由调用方写入 funcIdx(07 __call 语义)。
+func (st *State) insertCallSelf(th *thread, funcIdx, nargs int) {
+	need := funcIdx + 2 + nargs
+	th.ensureStack(need)
+	for k := nargs; k >= 0; k-- {
+		th.stack[funcIdx+1+k] = th.stack[funcIdx+k]
+	}
+	if need > th.top {
+		th.top = need
+	}
+}
+
 // doTailCall 复用当前帧执行新 closure 的调用。
 func (st *State) doTailCall(th *thread, ci *callInfo, i bytecode.Instruction) (*callInfo, *LuaError) {
 	a := bytecode.A(i)
@@ -74,7 +95,15 @@ func (st *State) doTailCall(th *thread, ci *callInfo, i bytecode.Instruction) (*
 	}
 	callee := th.stack[funcIdx]
 	if value.Tag(callee) != value.TagFunction {
-		return nil, st.errWithName(ci, "call", a, callee)
+		// __call 元方法(07):与 doCall 同构
+		h := st.metaFieldOfValue(callee, "__call")
+		if value.Tag(h) != value.TagFunction {
+			return nil, st.errWithName(ci, "call", a, callee)
+		}
+		st.insertCallSelf(th, funcIdx, nargs)
+		th.stack[funcIdx] = h
+		callee = h
+		nargs++
 	}
 	cl := value.GCRefOf(callee)
 	if object.IsHostClosure(st.arena, cl) {

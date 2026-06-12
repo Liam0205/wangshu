@@ -198,6 +198,9 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 			if e != nil {
 				return e
 			}
+			// __eq/__lt/__le handler 可能重入 execute → 刷新 ci
+			ci = currentCI(th)
+			code = ci.proto.Code
 			if res != (bytecode.A(i) != 0) {
 				ci.pc++
 			}
@@ -414,13 +417,29 @@ func arithMetaName(op bytecode.OpCode) string {
 	return "__add"
 }
 
-// 比较辅助。
+// 比较辅助。快路径双 number / 双 string;慢路径 __eq/__lt/__le 元方法(07)。
 func (st *State) doCompare(th *thread, ci *callInfo, i bytecode.Instruction) (bool, *LuaError) {
 	b := rk(th, ci, bytecode.B(i))
 	c := rk(th, ci, bytecode.C(i))
 	switch bytecode.Op(i) {
 	case bytecode.EQ:
-		return st.rawEqual(b, c), nil
+		if st.rawEqual(b, c) {
+			return true, nil
+		}
+		// __eq:仅两操作数同为 table(或同为 userdata)且【两边元方法是同一个
+		// 函数】才触发(5.1 get_compTM:handler 不同 → 直接 false)
+		if value.Tag(b) == value.TagTable && value.Tag(c) == value.TagTable {
+			h := st.metaFieldOfValue(b, "__eq")
+			h2 := st.metaFieldOfValue(c, "__eq")
+			if value.Tag(h) == value.TagFunction && h == h2 {
+				res, e := st.callMetaHandler(th, h, []value.Value{b, c}, 1)
+				if e != nil {
+					return false, e
+				}
+				return value.Truthy(res), nil
+			}
+		}
+		return false, nil
 	case bytecode.LT, bytecode.LE:
 		if value.IsNumber(b) && value.IsNumber(c) {
 			x, y := value.AsNumber(b), value.AsNumber(c)
@@ -436,7 +455,45 @@ func (st *State) doCompare(th *thread, ci *callInfo, i bytecode.Instruction) (bo
 			}
 			return cmp <= 0, nil
 		}
-		// 混合类型不自动转(05 §4.4);同类报 "two X values",异类报 "X with Y"(5.1)
+		// 元方法慢路径(07):__lt / __le;5.1 特有:无 __le 用 not __lt(c, b) 回退
+		if bytecode.Op(i) == bytecode.LT {
+			h := st.metaFieldOfValue(b, "__lt")
+			if h == value.Nil {
+				h = st.metaFieldOfValue(c, "__lt")
+			}
+			if value.Tag(h) == value.TagFunction {
+				res, e := st.callMetaHandler(th, h, []value.Value{b, c}, 1)
+				if e != nil {
+					return false, e
+				}
+				return value.Truthy(res), nil
+			}
+		} else {
+			h := st.metaFieldOfValue(b, "__le")
+			if h == value.Nil {
+				h = st.metaFieldOfValue(c, "__le")
+			}
+			if value.Tag(h) == value.TagFunction {
+				res, e := st.callMetaHandler(th, h, []value.Value{b, c}, 1)
+				if e != nil {
+					return false, e
+				}
+				return value.Truthy(res), nil
+			}
+			// __le→__lt 回退:a <= b ⟺ not (b < a)
+			h = st.metaFieldOfValue(b, "__lt")
+			if h == value.Nil {
+				h = st.metaFieldOfValue(c, "__lt")
+			}
+			if value.Tag(h) == value.TagFunction {
+				res, e := st.callMetaHandler(th, h, []value.Value{c, b}, 1)
+				if e != nil {
+					return false, e
+				}
+				return !value.Truthy(res), nil
+			}
+		}
+		// 无元方法:同类报 "two X values",异类报 "X with Y"(5.1)
 		tb, tc := typeName(b), typeName(c)
 		if tb == tc {
 			return false, errf("attempt to compare two %s values", tb)

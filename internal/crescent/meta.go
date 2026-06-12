@@ -160,10 +160,15 @@ func (st *State) callMetaHandler(th *thread, fn value.Value, args []value.Value,
 // callLuaFromHost 从 host 上下文发起一次 Lua/host 调用(05 §7.3)。
 //
 // 把 fn+args 推到栈顶,enterLuaFrame(entry=true) 后新起一层 execute。
-// 这是"Go 栈 +1"的 host→Lua 重入边界。
+// 这是"Go 栈 +1"的 host→Lua 重入边界。非函数经 __call 转发(07)。
 func (st *State) callLuaFromHost(th *thread, fn value.Value, args []value.Value) ([]value.Value, *LuaError) {
 	if value.Tag(fn) != value.TagFunction {
-		return nil, errf("attempt to call a %s value", typeName(fn))
+		h := st.metaFieldOfValue(fn, "__call")
+		if value.Tag(h) != value.TagFunction {
+			return nil, errf("attempt to call a %s value", typeName(fn))
+		}
+		args = append([]value.Value{fn}, args...)
+		fn = h
 	}
 	cl := value.GCRefOf(fn)
 	funcIdx := th.top
@@ -228,6 +233,11 @@ func (st *State) ProtectedCallDirect(fn value.Value, args []value.Value) ([]valu
 
 // MetaOf 暴露 metaOf(stdlib getmetatable 用)。
 func (st *State) MetaOf(t arena.GCRef) arena.GCRef { return st.metaOf(t) }
+
+// MetaFieldOf 暴露任意 Value 的元方法查找(stdlib __tostring 等用)。
+func (st *State) MetaFieldOf(v value.Value, name string) value.Value {
+	return st.metaFieldOfValue(v, name)
+}
 
 // RawGet / RawSet 暴露 raw 表访问(stdlib rawget/rawset 用)。
 func (st *State) RawGet(t arena.GCRef, key value.Value) (value.Value, *LuaError) {

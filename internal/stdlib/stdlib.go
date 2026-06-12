@@ -73,7 +73,8 @@ func registerNamespaced(st *crescent.State, ns string, fns []entry) arena.GCRef 
 	return tbl
 }
 
-// 通用辅助:把 Value 转 string(用于 print/tostring)。
+// 通用辅助:把 Value 转 string(用于 print/tostring;__tostring 经
+// valueToStringMeta,本函数是无元方法的 raw 形态)。
 func valueToString(st *crescent.State, v value.Value) string {
 	if value.IsNumber(v) {
 		return crescent.FormatLuaNumber(value.AsNumber(v))
@@ -89,11 +90,36 @@ func valueToString(st *crescent.State, v value.Value) string {
 	case value.TagString:
 		return string(object.StringBytes(st.Arena(), value.GCRefOf(v)))
 	case value.TagFunction:
-		return "function: 0x?"
+		return fmt.Sprintf("function: 0x%08x", uint64(value.GCRefOf(v)))
 	case value.TagTable:
-		return "table: 0x?"
+		return fmt.Sprintf("table: 0x%08x", uint64(value.GCRefOf(v)))
+	case value.TagLightUD:
+		if st.IsCoroutineHandle(v) {
+			return fmt.Sprintf("thread: 0x%08x", value.AsLightUD(v))
+		}
+		return fmt.Sprintf("userdata: 0x%08x", value.AsLightUD(v))
+	case value.TagUserdata:
+		return fmt.Sprintf("userdata: 0x%08x", uint64(value.GCRefOf(v)))
 	}
 	return "<?>"
+}
+
+// valueToStringMeta 是 tostring 的完整语义:先查 __tostring 元方法(07)。
+func valueToStringMeta(st *crescent.State, v value.Value) (string, *crescent.LuaError) {
+	if value.Tag(v) == value.TagTable {
+		h := st.MetaFieldOf(v, "__tostring")
+		if value.Tag(h) == value.TagFunction {
+			results, e := st.ProtectedCallDirect(h, []value.Value{v})
+			if e != nil {
+				return "", e
+			}
+			if len(results) > 0 {
+				return valueToString(st, results[0]), nil
+			}
+			return "nil", nil
+		}
+	}
+	return valueToString(st, v), nil
 }
 
 // 通用辅助:Value → float64(数字 + 可转字符串);失败返回 (0, false)。
@@ -217,6 +243,12 @@ func baseFnSetMetatable(st *crescent.State, args []value.Value) ([]value.Value, 
 		return nil, crescent.NewError("bad argument #1 to 'setmetatable' (table expected)")
 	}
 	t := value.GCRefOf(args[0])
+	// 受保护元表(__metatable 域)不可改(5.1)
+	if old := st.MetaOf(t); old != 0 {
+		if shield, e := st.RawGet(old, intern(st, "__metatable")); e == nil && shield != value.Nil {
+			return nil, crescent.NewError("cannot change a protected metatable")
+		}
+	}
 	switch value.Tag(args[1]) {
 	case value.TagTable:
 		st.SetMeta(t, value.GCRefOf(args[1]))
@@ -235,6 +267,11 @@ func baseFnGetMetatable(st *crescent.State, args []value.Value) ([]value.Value, 
 	mt := st.MetaOf(value.GCRefOf(args[0]))
 	if mt == 0 {
 		return []value.Value{value.Nil}, nil
+	}
+	// __metatable shield(5.1):元表带 __metatable 域时返回该域而非元表本身
+	shield, e := st.RawGet(mt, intern(st, "__metatable"))
+	if e == nil && shield != value.Nil {
+		return []value.Value{shield}, nil
 	}
 	return []value.Value{value.MakeGC(value.TagTable, mt)}, nil
 }
@@ -274,7 +311,11 @@ func baseFnRawEqual(_ *crescent.State, args []value.Value) ([]value.Value, *cres
 func baseFnPrint(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	parts := make([]string, len(args))
 	for i, a := range args {
-		parts[i] = valueToString(st, a)
+		s, e := valueToStringMeta(st, a) // print 经 tostring 语义(__tostring 生效)
+		if e != nil {
+			return nil, e
+		}
+		parts[i] = s
 	}
 	fmt.Println(strings.Join(parts, "\t"))
 	return nil, nil
@@ -284,7 +325,11 @@ func baseFnToString(st *crescent.State, args []value.Value) ([]value.Value, *cre
 	if len(args) == 0 {
 		return nil, crescent.NewError("bad argument #1 to 'tostring' (value expected)")
 	}
-	return []value.Value{intern(st, valueToString(st, args[0]))}, nil
+	s, e := valueToStringMeta(st, args[0])
+	if e != nil {
+		return nil, e
+	}
+	return []value.Value{intern(st, s)}, nil
 }
 
 func baseFnToNumber(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {

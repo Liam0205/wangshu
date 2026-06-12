@@ -291,13 +291,17 @@ func (fs *funcState) exp2Val(line int32, e *expDesc) {
 }
 
 // goIfTrue:若 e 为真则继续,为假则跳(把跳链入 e.fJmp)。配合 04 §5.6 短路。
+//
+// 严格对齐 5.1 luaK_goiftrue:VK/VKNUM/VTRUE 常真不跳;VFALSE 恒跳(短路值
+// 恰为 false,LOADBOOL 物化正确);VNIL 落 default jumpOnCond(TESTSET 保留
+// 原值——`nil and 2` 须返回 nil,LOADBOOL 会错产 false)。
 func (fs *funcState) goIfTrue(line int32, e *expDesc) {
 	fs.dischargeVars(line, e)
 	var pc int
 	switch e.k {
 	case eK, eKNum, eTrue:
 		pc = NoJump
-	case eFalse, eNil:
+	case eFalse:
 		pc = fs.jump(line)
 	case eJmp:
 		fs.invertJmp(e)
@@ -311,13 +315,17 @@ func (fs *funcState) goIfTrue(line int32, e *expDesc) {
 }
 
 // goIfFalse:若 e 为假则继续,为真则跳(把跳链入 e.tJmp)。
+//
+// 严格对齐 5.1 luaK_goiffalse:VNIL/VFALSE 常假不跳;VTRUE 恒跳(短路值恰为
+// true);VK/VKNUM 落 default jumpOnCond(TESTSET 保留原值——`1 or 2` 须返回
+// 1 而非 true)。
 func (fs *funcState) goIfFalse(line int32, e *expDesc) {
 	fs.dischargeVars(line, e)
 	var pc int
 	switch e.k {
 	case eNil, eFalse:
 		pc = NoJump
-	case eK, eKNum, eTrue:
+	case eTrue:
 		pc = fs.jump(line)
 	case eJmp:
 		pc = e.info
