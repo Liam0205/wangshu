@@ -48,20 +48,11 @@ func AllocTable(a *arena.Arena, asize, hsize uint32) arena.GCRef {
 	var arrayRef, nodeRef arena.GCRef
 	if asize > 0 {
 		arrayRef = a.AllocWords(asize) // 附属块,无 GCHeader
-		// 数组槽初始化为 Nil:raw 0 会被解读为数字 +0.0(合法 Value),
-		// 不能依赖零值,必须显式写 NaN-boxed Nil。
-		for i := uint32(0); i < asize; i++ {
-			a.SetWordAt(arrayRef+arena.GCRef(i*8), uint64(value.Nil))
-		}
+		initArraySlots(a, arrayRef, asize)
 	}
 	if hsize > 0 {
 		nodeRef = a.AllocWords(nodeWords * hsize)
-		for i := uint32(0); i < hsize; i++ {
-			base := nodeRef + arena.GCRef(i*nodeWords*8)
-			a.SetWordAt(base, uint64(value.Nil))             // key
-			a.SetWordAt(base+8, uint64(value.Nil))           // val
-			a.SetWordAt(base+16, uint64(uint32(0xFFFFFFFF))) // next = -1
-		}
+		initNodeSlots(a, nodeRef, hsize)
 	}
 	hmask := uint32(0)
 	if hsize > 0 {
@@ -163,12 +154,31 @@ func SetTableNode(a *arena.Arena, t arena.GCRef, nodeRef arena.GCRef, hsize uint
 	setWordAt(a, t, tableNodeIdx, uint64(nodeRef))
 }
 
+// initArraySlots 批量把数组段初始化为 Nil:raw 0 会被解读为数字 +0.0
+// (合法 Value),不能依赖零值。直接拿字视图切片紧循环写,免逐槽
+// SetWordAt 的对齐/边界检查(NEWTABLE 是分配热路径)。
+func initArraySlots(a *arena.Arena, ref arena.GCRef, asize uint32) {
+	w := a.Words()[ref>>3 : (ref>>3)+arena.GCRef(asize)]
+	for i := range w {
+		w[i] = uint64(value.Nil)
+	}
+}
+
+// initNodeSlots 批量初始化哈希段(key/val=Nil, next=-1)。
+func initNodeSlots(a *arena.Arena, ref arena.GCRef, hsize uint32) {
+	w := a.Words()[ref>>3 : (ref>>3)+arena.GCRef(hsize*nodeWords)]
+	for i := uint32(0); i < hsize; i++ {
+		base := i * nodeWords
+		w[base] = uint64(value.Nil)
+		w[base+1] = uint64(value.Nil)
+		w[base+2] = uint64(uint32(0xFFFFFFFF))
+	}
+}
+
 // AllocTableArray 分配一个 asize 槽的数组附属块(全 Nil 初始化)。
 func AllocTableArray(a *arena.Arena, asize uint32) arena.GCRef {
 	ref := a.AllocWords(asize)
-	for i := uint32(0); i < asize; i++ {
-		a.SetWordAt(ref+arena.GCRef(i*8), uint64(value.Nil))
-	}
+	initArraySlots(a, ref, asize)
 	return ref
 }
 
@@ -176,12 +186,7 @@ func AllocTableArray(a *arena.Arena, asize uint32) arena.GCRef {
 // hsize 必须是 2 的幂。
 func AllocTableNode(a *arena.Arena, hsize uint32) arena.GCRef {
 	ref := a.AllocWords(nodeWords * hsize)
-	for i := uint32(0); i < hsize; i++ {
-		base := ref + arena.GCRef(i*nodeWords*8)
-		a.SetWordAt(base, uint64(value.Nil))
-		a.SetWordAt(base+8, uint64(value.Nil))
-		a.SetWordAt(base+16, uint64(uint32(0xFFFFFFFF)))
-	}
+	initNodeSlots(a, ref, hsize)
 	return ref
 }
 
