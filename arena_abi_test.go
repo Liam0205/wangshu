@@ -142,3 +142,48 @@ func TestArena_LengthMismatchRejected(t *testing.T) {
 		t.Fatalf("expected length mismatch error")
 	}
 }
+
+func TestArena_RowsAccessor(t *testing.T) {
+	ar := wangshu.NewArena(7)
+	if ar.Rows() != 7 {
+		t.Errorf("Rows() = %d, want 7", ar.Rows())
+	}
+}
+
+func TestArena_StringDedupShared(t *testing.T) {
+	// 相同字符串去重(共享字节池):脚本侧读出仍正确
+	prog, err := wangshu.Compile([]byte(`
+local n = arena.name
+return n[1] .. n[2] .. n[3]`), "dedup")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	ar := wangshu.NewArena(3)
+	_ = ar.AddStringColumn("name", []string{"dup", "dup", "uniq"}, nil)
+	st := wangshu.NewState(wangshu.Options{})
+	r, err := prog.Call(st, ar)
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if r[0].String_() != "dupdupuniq" {
+		t.Errorf("got %q", r[0].String_())
+	}
+}
+
+func TestArena_OutOfRangeReadsNil(t *testing.T) {
+	prog, err := wangshu.Compile([]byte(`
+return tostring(arena.v[0]) .. tostring(arena.v[99]) .. tostring(arena.v["x"])`), "oob")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	ar := wangshu.NewArena(1)
+	_ = ar.AddFloatColumn("v", []float64{1}, nil)
+	st := wangshu.NewState(wangshu.Options{})
+	r, err := prog.Call(st, ar)
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if r[0].String_() != "nilnilnil" {
+		t.Errorf("got %q, want 'nilnilnil'", r[0].String_())
+	}
+}

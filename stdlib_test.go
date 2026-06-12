@@ -159,3 +159,88 @@ func TestStdlib_ToStringAllTypes(t *testing.T) {
 		t.Errorf("got %v", got.GoString())
 	}
 }
+
+func TestStdlib_MathExtended(t *testing.T) {
+	cases := map[string]float64{
+		`return math.fmod(7, 3)`:             1,
+		`return math.pow(2, 10)`:             1024,
+		`return math.atan(0)`:                0,
+		`return math.asin(0)`:                0,
+		`return math.acos(1)`:                0,
+		`return math.deg(math.pi)`:           180,
+		`return math.rad(180) - math.pi`:     0,
+		`return math.log10(100)`:             2,
+		`return select("#", math.modf(3.7))`: 2,
+		`return (math.modf(3.7))`:            3,
+		`return math.sqrt(16) + math.exp(0)`: 5,
+		`return math.sin(0) + math.cos(0)`:   1,
+		`return math.tan(0) + math.log(1)`:   0,
+	}
+	for src, want := range cases {
+		got := runOne(t, src)
+		if !got.IsNumber() || got.Number() != want {
+			t.Errorf("%s = %v, want %v", src, got.GoString(), want)
+		}
+	}
+}
+
+func TestStdlib_MathRandomDeterministic(t *testing.T) {
+	// randomseed 后序列确定;range 形态各值都在界内
+	got := runOne(t, `
+math.randomseed(7)
+local a = math.random()
+local b = math.random(10)
+local c = math.random(5, 8)
+return tostring(a >= 0 and a < 1) .. tostring(b >= 1 and b <= 10) .. tostring(c >= 5 and c <= 8)`)
+	if got.String_() != "truetruetrue" {
+		t.Errorf("got %v", got.GoString())
+	}
+}
+
+func TestStdlib_GsubTableRepl(t *testing.T) {
+	got := runOne(t, `return (string.gsub("a b c", "%a", { a = "X", c = "Z" }))`)
+	if !got.IsString() || got.String_() != "X b Z" {
+		t.Errorf("got %v, want 'X b Z'", got.GoString())
+	}
+}
+
+func TestStdlib_OsDateGetenv(t *testing.T) {
+	got := runOne(t, `return #os.date("%Y") == 4`)
+	if !got.IsBool() || !got.Bool() {
+		t.Errorf("os.date('%%Y') length: got %v", got.GoString())
+	}
+	got2 := runOne(t, `return tostring(os.getenv("__WANGSHU_NOT_SET_ENV__"))`)
+	if got2.String_() != "nil" {
+		t.Errorf("unset env should be nil, got %v", got2.GoString())
+	}
+	got3 := runOne(t, `return os.clock() >= 0 and os.time() > 0`)
+	if !got3.IsBool() || !got3.Bool() {
+		t.Errorf("os.clock/time: got %v", got3.GoString())
+	}
+}
+
+func TestStdlib_CoroutineRunningInside(t *testing.T) {
+	got := runOne(t, `
+local co = coroutine.create(function()
+  return coroutine.running() ~= nil
+end)
+local _, inside = coroutine.resume(co)
+return tostring(inside) .. tostring(coroutine.running() == nil)`)
+	if got.String_() != "truetrue" {
+		t.Errorf("got %v, want 'truetrue'", got.GoString())
+	}
+}
+
+func TestStdlib_StringFormatEdge(t *testing.T) {
+	got := runOne(t, `return string.format("%c%c", 65, 66) .. string.format("%5.1f", 3.14)`)
+	if !got.IsString() || got.String_() != "AB  3.1" {
+		t.Errorf("got %q", got.String_())
+	}
+}
+
+func TestStdlib_TonumberEdge(t *testing.T) {
+	got := runOne(t, `return tostring(tonumber("  42  ")) .. tostring(tonumber(true))`)
+	if got.String_() != "42nil" {
+		t.Errorf("got %v", got.GoString())
+	}
+}
