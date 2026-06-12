@@ -393,11 +393,13 @@ func (fs *funcState) stmtReturn(s *ast.ReturnStmt) {
 			fs.emitABC(s.Line, bytecode.RETURN, base, 0, 0)
 			return
 		}
-		// 单值非 Call:若是 ELocal/ENonReloc 直接用其寄存器(避免无意义 MOVE)
+		// 单值非 Call:若是 ELocal/ENonReloc 直接用其寄存器(避免无意义 MOVE)。
+		// 带未决跳转链的表达式(如 `return (not c) and m` 的短路链)不可走
+		// 快路径——直接 RETURN 跳过 exp2reg 的链回填,链中 JMP 落点悬空
+		// (sBx 自旋,运行期死循环挂死)。
 		single := fs.expr(s.Exprs[0])
 		fs.dischargeVars(s.Line, &single)
-		switch single.k {
-		case eNonReloc:
+		if single.k == eNonReloc && !single.hasJumps() {
 			fs.emitABC(s.Line, bytecode.RETURN, single.info, 2, 0)
 			return
 		}
