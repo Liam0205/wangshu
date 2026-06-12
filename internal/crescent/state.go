@@ -338,9 +338,15 @@ func (st *State) getArgsBuf(n int) []value.Value {
 }
 
 func (st *State) putArgsBuf(buf []value.Value) {
-	// 清引用防池中切片延长 arena 对象的 Go 侧可见性(非 GC 根,纯卫生)
+	// 清引用防池中切片延长 arena 对象的 Go 侧可见性(非 GC 根,纯卫生)。
+	// trace 构建下填毒值:HostFn 违约保留 args 时读到毒值立即显形,
+	// 而非"被后续调用静默覆写"的远端症状。
+	poison := value.Nil
+	if traceExec {
+		poison = value.NumberValue(-6.66e66)
+	}
 	for i := range buf {
-		buf[i] = value.Nil
+		buf[i] = poison
 	}
 	st.argsPool = append(st.argsPool, buf)
 }

@@ -14,8 +14,13 @@ import (
 // HostFn 是宿主 Go 函数签名(10 §3 的 P1 版本)。
 //
 // args 是被调时的实参快照(由 callHost 拷出);返回 results / error。
-// HostFn 不直接操作 thread 栈,这避免了对 Go callback 的栈协议依赖,代价是
-// 多值传递时多一次小切片分配——M12 范围内可接受。
+// HostFn 不直接操作 thread 栈,这避免了对 Go callback 的栈协议依赖。
+//
+// **args 生命期契约**:args 来自 State 的实参缓冲池,仅在本次调用内有效
+// (含作为返回值返回——callHost 在结果拷贝进栈之后才归还缓冲)。不得把
+// args(或其子切片)存进任何越过本次调用的位置(闭包、全局、协程传值区
+// 等);需要保留请显式拷贝。违约症状是"返回值被后续 host 调用覆写",
+// 离根因极远,排障时可开 wangshu_trace 构建(归还时填毒值,违约即现)。
 type HostFn func(st *State, args []value.Value) ([]value.Value, *LuaError)
 
 // hostFnRegistry 是 State 上的 host function 注册表(整数 HostFnID 引用)。
