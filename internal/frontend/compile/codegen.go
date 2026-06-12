@@ -413,10 +413,17 @@ func (fs *funcState) exprTable(e *ast.TableExpr) expDesc {
 		ve := fs.expr(v)
 		if isLast {
 			switch ve.k {
-			case eCall, eVararg:
+			case eCall:
+				// CALL 的 A 已是 fnReg(= 连续区下一槽),不可覆盖;只设 C=0 到 top。
+				fs.setReturns(&ve, -1)
+				fs.emitABC(e.Line, bytecode.SETLIST, tReg, 0, batchNo)
+				fs.freereg = tReg + 1
+				pending = 0
+				continue
+			case eVararg:
+				// VARARG 的 A 是占位 0,落点回填为 freereg。
 				fs.setReturns(&ve, -1)
 				fs.proto.Code[ve.info] = bytecode.SetA(fs.proto.Code[ve.info], fs.freereg)
-				// SETLIST B=0 表示到 top
 				fs.emitABC(e.Line, bytecode.SETLIST, tReg, 0, batchNo)
 				fs.freereg = tReg + 1
 				pending = 0
