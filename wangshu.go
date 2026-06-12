@@ -31,7 +31,7 @@ import (
 // Options configures a State (11 §1.2)。
 //
 // P1 实现的字段:GCPause(传给 collector)、AllowFileLoad(loadfile/dofile
-// 的文件系统读门控,默认关)、HideFileLoaders(从 globals 刮除 loader 三件
+// 的文件系统读门控,默认关)、HideFileLoaders(从 globals 刮除 loader 四件
 // 套,gopher-lua 对位)。其它字段保留接口形状,后续里程碑接入。
 type Options struct {
 	InitialArenaBytes uint32
@@ -43,7 +43,7 @@ type Options struct {
 	// 默认 false:嵌入式 VM 接不可信脚本时文件读是越权探测面。
 	AllowFileLoad bool
 	// HideFileLoaders 严格沙箱模式:NewState 装载 stdlib 后,从 globals
-	// 表里刮除 loadfile / dofile / loadstring 三件套(置 Nil)。脚本调用
+	// 表里刮除 loadfile / dofile / loadstring / load 四件套(置 Nil)。脚本调用
 	// 它们会得到 "attempt to call a nil value (global 'X')" fatal 错误,
 	// 对齐 gopher-lua 嵌入式沙箱传统(issue #3)——无法以 (nil, errmsg)
 	// 形式优雅降级。
@@ -93,7 +93,7 @@ func NewState(opts Options) *State {
 	})
 	stdlib.OpenAll(st.core)
 	if opts.HideFileLoaders {
-		// gopher-lua 对位:把 loader 三件套从 globals 刮除(置 Nil),
+		// gopher-lua 对位:把 loader 四件套从 globals 刮除(置 Nil),
 		// 脚本调用 → "attempt to call a nil value"。loadstring 同源风险
 		// 面一并刮(动态编译亦是嵌入式沙箱常见关注点)。
 		st.core.SetGlobal("loadfile", value.Nil)
@@ -175,6 +175,12 @@ func Compile(source []byte, chunkname string) (*Program, error) {
 // 返回主 chunk 的全部返回值。Lua 运行期错误被转成 Go error。
 // 同一 Program 在同一 State 上重复 Run 复用首次装载的 closure(惰性 intern
 // 只发生一次,IC 跨 Run 持续生效)。
+//
+// 返回值生命期:脚本返回 table / function 时,返回的 Value 经 State pin 表
+// 登记为 GC 根——调用方应配套 v.Release() 释放,否则长驻 State 下 pin 槽
+// 累积。**v0.1.1 → v0.1.2 行为变更**:此前 table / function 返回值被静默
+// 映射为 Nil,现在能在 Go 端读出(table 经 v.AsTable()、function 经
+// state.Call(v, ...))。只消费标量(nil/bool/number/string)的宿主无需改动。
 func (prog *Program) Run(state *State, args ...Value) ([]Value, error) {
 	return prog.call(state, nil, args)
 }
@@ -184,6 +190,8 @@ func (prog *Program) Run(state *State, args ...Value) ([]Value, error) {
 // arena 以全局名 `arena` 注入:`arena.<col>[i]` 读第 i 行(1-based,Lua 习惯),
 // 零拷贝即时装箱;null 行读出 nil;`arena.rows` 是行数。列只读(11 §5.3)。
 // arena 为 nil 等价 Run。
+//
+// 返回值生命期同 Run:复合值(table/function)调用方应配套 Release()。
 func (prog *Program) Call(state *State, arena *Arena, args ...Value) ([]Value, error) {
 	return prog.call(state, arena, args)
 }
@@ -248,8 +256,8 @@ func (st *State) SetGlobal(name string, v Value) {
 //
 // 缺失键返回 Nil。若读出的是 function,其底层引用经 State pin 表登记
 // 为 GC 根——Value 析构前请配合 v.Release() 显式释放槽位(可选;不释放
-// 仅在长驻 State 反复 GetGlobal 不同名 fn 时累积小量内存)。table /
-// userdata 本轮仍不暴露,会被映射为 Nil(本期范围,见 issue #1 决策)。
+// 仅在长驻 State 反复 GetGlobal 不同名 fn 时累积小量内存)。table 自 v0.1.2
+// 起经 v.AsTable() 暴露(issue #2);userdata 仍不暴露,映射为 Nil。
 func (st *State) GetGlobal(name string) Value {
 	v := st.core.GetGlobal(name)
 	return fromInnerWithPin(st, v)
@@ -279,6 +287,9 @@ func (st *State) GetGlobal(name string) Value {
 //
 // 返回:被调函数 RETURN 的全部值;运行期错误转 Go error(含 traceback)。
 // Go panic 兜底转 error(防线纵深,同 Program.Call)。
+//
+// 返回值生命期同 Program.Run/Call:复合值(table/function)经 pin 表登记,
+// 调用方应配套 Release()。
 func (st *State) Call(fn Value, args ...Value) (results []Value, err error) {
 	if !fn.IsFunction() {
 		return nil, fmt.Errorf("wangshu: Call: value is not a function (kind=%s)", fn.Display())
