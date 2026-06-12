@@ -71,6 +71,10 @@ func NewState(_ Options) *State {
 // GC 透明性测试用:压力模式下输出必须与正常模式 byte-equal(12 §5)。
 func (st *State) SetGCStressMode(on bool) { st.core.SetGCStressMode(on) }
 
+// GCCountKB 返回 arena 当前已用 KB(= bump 指针;含 freelist 上待复用的空闲块)。
+// 长稳观测用:稳态下 freelist 循环复用,本值应有界。
+func (st *State) GCCountKB() float64 { return st.core.GCCountKB() }
+
 // Program is an immutable compilation product (11 §1.4)。可跨 goroutine 共享;
 // 字符串常量首次被某 State Run 时惰性 intern 进该 State 的 arena。
 type Program struct {

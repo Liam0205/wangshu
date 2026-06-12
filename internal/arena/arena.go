@@ -62,6 +62,16 @@ type Arena struct {
 	cap     uint32   // 当前容量(字节,= len(words)*8)
 	maxCap  uint32   // 上限(字节)
 	backing BackingFn
+
+	// freelist(06 §2):20 个 size-class 定长桶 + LARGE 首次适配链。
+	// 空闲块以 GCRef 偏移串链(word0 = next),grow 后偏移不失效。
+	freeHeads [numSizeClasses]GCRef
+	largeHead GCRef
+	freeBytes uint64 // freelist 上的总空闲字节(观测/测试)
+
+	// freeSet/freeSite(debugFreelist 排障用):当前空闲的全部字偏移与释放点。
+	freeSet  map[GCRef]uint32
+	freeSite map[GCRef]string
 }
 
 // New creates an Arena with the given options.
@@ -126,14 +136,31 @@ func (a *Arena) Bytes() []byte { return a.bytes }
 
 // AllocBytes 分配 nbytes 字节(自动向上对齐到 8),返回起始字节偏移 GCRef。
 //
-// 不写 GCHeader、不挂 sweep 链——那是 gc 包(M5)的责任。本函数只负责"切走 N 字节"。
+// 两级:freelist 命中(size-class 定长桶 / LARGE 首次适配)→ bump 线性切分。
+// 不写 GCHeader、不挂 sweep 链——那是 gc 包的责任。
 //
-// 容量不足 → 触发 grow(P1 不在此触发 GC,GC 在 gc 包接入时由其 maybeCollect 在 grow 前介入,
-// 见 06 §2.1 / §7;M1 阶段无 GC,直接 grow)。超 maxCap → panic(后续可改返回 error)。
+// 注意:freelist 复用的内存是脏的(残留旧对象内容/链指针),调用方(object
+// 构造函数)必须显式初始化全部字段。
+//
+// 容量不足 → 触发 grow(GC 由 gc 包的 MaybeCollect 在分配计费路径介入)。
+// 超 maxCap → panic。
 func (a *Arena) AllocBytes(nbytes uint32) GCRef {
 	need := roundUp8(nbytes)
 	if need == 0 {
 		need = 8 // 至少分配一字,避免零长引用
+	}
+	words := need / 8
+	if words <= largeThresholdWords {
+		c := sizeClass(words)
+		if ref := a.popSizeClass(c); !ref.IsNull() {
+			a.zeroFill(ref, classWords(c))
+			return ref
+		}
+		// 桶内尺寸统一:bump 也按桶代表字数切(保证未来 Free 回桶可复用)
+		need = classWords(c) * 8
+	} else if ref := a.popLarge(words); !ref.IsNull() {
+		a.zeroFill(ref, words)
+		return ref
 	}
 	if a.bump+need > a.cap {
 		a.grow(a.bump + need)
@@ -141,6 +168,15 @@ func (a *Arena) AllocBytes(nbytes uint32) GCRef {
 	ref := GCRef(a.bump)
 	a.bump += need
 	return ref
+}
+
+// zeroFill 清零一个复用块(freelist 内存是脏的;bump 区新内存天然是零,
+// 统一在此清使两路分配对调用方等价)。
+func (a *Arena) zeroFill(ref GCRef, words uint32) {
+	base := ref >> 3
+	for i := uint32(0); i < words; i++ {
+		a.words[base+GCRef(i)] = 0
+	}
 }
 
 // AllocWords is a convenience wrapper for AllocBytes(words*8).
@@ -152,6 +188,9 @@ func (a *Arena) WordAt(ref GCRef) uint64 {
 	if ref&7 != 0 {
 		panic(fmt.Sprintf("arena: misaligned GCRef %#x", uint64(ref)))
 	}
+	if debugFreelist && a.freeSet[ref] != 0 {
+		panic(fmt.Sprintf("arena: read of freed word %#x freed at %s", uint64(ref), a.FreeSiteOf(ref)))
+	}
 	return a.words[ref>>3]
 }
 
@@ -159,6 +198,9 @@ func (a *Arena) WordAt(ref GCRef) uint64 {
 func (a *Arena) SetWordAt(ref GCRef, v uint64) {
 	if ref&7 != 0 {
 		panic(fmt.Sprintf("arena: misaligned GCRef %#x", uint64(ref)))
+	}
+	if debugFreelist && a.freeSet[ref] != 0 {
+		panic(fmt.Sprintf("arena: write to freed word %#x", uint64(ref)))
 	}
 	a.words[ref>>3] = v
 }

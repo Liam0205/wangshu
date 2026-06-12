@@ -205,14 +205,23 @@ func (st *State) doSetList(th *thread, ci *callInfo, i bytecode.Instruction) *Lu
 	}
 	tref := value.GCRefOf(tbl)
 	var n int
+	restoreTop := false
 	if b == 0 {
 		n = th.top - (ci.base + a) - 1
+		restoreTop = true
 	} else {
 		n = b
 	}
 	base0 := uint32((c - 1) * bytecode.FieldsPerFlush)
 	for j := 1; j <= n; j++ {
 		st.tableSetInt(tref, base0+uint32(j), reg(th, ci, a+j))
+	}
+	if restoreTop {
+		// 消费完"到 top"的多值窗口后恢复帧逻辑顶(对齐 lvm.c OP_SETLIST
+		// `L->top = L->ci->top`):否则后续指令写 top 之上的寄存器,GC 扫根
+		// 只见 [0,top) → 活值漏标,freelist 复用内存下即 use-after-free。
+		th.ensureStack(ci.base + int(ci.proto.MaxStack))
+		th.top = ci.base + int(ci.proto.MaxStack)
 	}
 	return nil
 }

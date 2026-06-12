@@ -55,6 +55,15 @@ type State struct {
 	// compileFn 是 loadstring/load 的编译回调(由 wangshu 门面注入,
 	// 避免 crescent → frontend 反向依赖)。返回 (mainID, protos, err)。
 	compileFn func(src []byte, chunkname string) (uint32, []*bytecode.Proto, error)
+
+	// nCcalls 是 host→Lua 重入深度(真 Go 栈消耗;05 §7.4 LUAI_MAXCCALLS 等价)。
+	// callLuaFromHost 进入 +1 / 返回 -1;超 maxCCallDepth 抛 "C stack overflow"。
+	nCcalls int
+
+	// threadChain 是 resume 链上被挂起的调用者线程(06 §5.1 R4/R5:
+	// runningThread 只覆盖当前线程,链上其余线程的栈也必须是根——
+	// freelist 复用内存后漏根即 use-after-free)。Resume 进入时压入、返回时弹出。
+	threadChain []*thread
 }
 
 // SetCompileFn 注入编译回调(wangshu.NewState 时装配;loadstring 用)。
@@ -129,34 +138,87 @@ func (st *State) visitProgramStringRefs(visit func(arena.GCRef)) {
 	}
 }
 
-// visitExtraValues 暴露 thread 栈持有的 Value(值栈住 Go 切片期间的旁路根)。
+// visitExtraValues 暴露所有活线程栈持有的 Value(值栈住 Go 切片期间的旁路根)。
 //
-// 表数据已住 arena 原生布局,经 Globals/栈上的表引用从 markRef 正常扫到,
-// 不再需要旁路根。
+// freelist 复用内存后,漏根即 use-after-free:除 runningThread 外,
+// resume 链上挂起的调用者线程(threadChain)、全部非 dead 协程的栈、
+// 协程主函数(首次 resume 前仅 Go struct 持有)与 xfer 传值区都必须可达。
 func (st *State) visitExtraValues(visit func(value.Value)) {
-	if st.runningThread != nil {
-		th := st.runningThread
-		for i := 0; i < th.top; i++ {
-			visit(th.stack[i])
+	seen := st.visitThreadValues(st.runningThread, nil, visit)
+	for _, th := range st.threadChain {
+		seen = st.visitThreadValues(th, seen, visit)
+	}
+	for _, co := range st.cos.cos {
+		if co.status == CoDead {
+			continue
+		}
+		seen = st.visitThreadValues(co.th, seen, visit)
+		visit(co.fn)
+		for _, v := range co.xfer {
+			visit(v)
 		}
 	}
 }
 
-// visitExtraRefs 暴露 thread 上 ci/openUvs 直接以 GCRef 形式持有的对象。
-func (st *State) visitExtraRefs(visit func(arena.GCRef)) {
-	if st.runningThread != nil {
-		th := st.runningThread
-		for _, ci := range th.cis {
-			if !ci.cl.IsNull() {
-				visit(ci.cl)
-			}
-		}
-		for _, uv := range th.openUvs {
-			if !uv.IsNull() {
-				visit(uv)
-			}
+func (st *State) visitThreadValues(th *thread, seen map[*thread]bool, visit func(value.Value)) map[*thread]bool {
+	if th == nil || seen[th] {
+		return seen
+	}
+	if seen == nil {
+		seen = map[*thread]bool{}
+	}
+	seen[th] = true
+	for i := 0; i < th.top; i++ {
+		visit(th.stack[i])
+	}
+	// top 之上的陈旧残值清 nil(对齐官方 lgc.c traversestack):否则死引用
+	// 留在槽里,top 回涨覆盖后下轮 GC 会把它当活根扫——freelist 复用内存下
+	// 即 use-after-free(mark 写已释放块 = 腐蚀 freelist 链)。
+	for i := th.top; i < len(th.stack); i++ {
+		th.stack[i] = value.Nil
+	}
+	// ci.varargs 住 Go 切片(M13 简化),不在 stack[:top] 区间,必须单列为根。
+	for i := range th.cis {
+		for _, v := range th.cis[i].varargs {
+			visit(v)
 		}
 	}
+	return seen
+}
+
+// visitExtraRefs 暴露所有活线程上 ci/openUvs 直接以 GCRef 形式持有的对象。
+func (st *State) visitExtraRefs(visit func(arena.GCRef)) {
+	seen := st.visitThreadRefs(st.runningThread, nil, visit)
+	for _, th := range st.threadChain {
+		seen = st.visitThreadRefs(th, seen, visit)
+	}
+	for _, co := range st.cos.cos {
+		if co.status == CoDead {
+			continue
+		}
+		seen = st.visitThreadRefs(co.th, seen, visit)
+	}
+}
+
+func (st *State) visitThreadRefs(th *thread, seen map[*thread]bool, visit func(arena.GCRef)) map[*thread]bool {
+	if th == nil || seen[th] {
+		return seen
+	}
+	if seen == nil {
+		seen = map[*thread]bool{}
+	}
+	seen[th] = true
+	for _, ci := range th.cis {
+		if !ci.cl.IsNull() {
+			visit(ci.cl)
+		}
+	}
+	for _, uv := range th.openUvs {
+		if !uv.IsNull() {
+			visit(uv)
+		}
+	}
+	return seen
 }
 
 // Arena exposes the underlying arena (for tests / embedding APIs)。

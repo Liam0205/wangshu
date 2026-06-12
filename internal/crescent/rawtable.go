@@ -306,7 +306,11 @@ func (st *State) rehash(t arena.GCRef, extraKey value.Value) {
 	if nHash == 0 {
 		newHSize = 0
 	}
-	// 4) 分配新段并替换
+	// 4) 分配新段并替换;旧段归还 freelist(附属块由头对象独占,无别名)
+	oldArr := object.TableArrayRef(st.arena, t)
+	oldASize := asize
+	oldNode := object.TableNodeRef(st.arena, t)
+	oldHSize := hsize
 	var newArr arena.GCRef
 	if bestASize > 0 {
 		newArr = object.AllocTableArray(st.arena, bestASize)
@@ -321,6 +325,12 @@ func (st *State) rehash(t arena.GCRef, extraKey value.Value) {
 	object.SetTableNode(st.arena, t, newNode, newHSize)
 	object.SetTableLastFree(st.arena, t, newHSize)
 	object.BumpGen(st.arena, t) // 形状变化 → IC 失效(05 §6.5)
+	if !oldArr.IsNull() {
+		st.arena.Free(oldArr, oldASize*8)
+	}
+	if !oldNode.IsNull() {
+		st.arena.Free(oldNode, oldHSize*3*8)
+	}
 	// 5) 重插全部键值
 	for _, e := range all {
 		_ = st.rawSet(t, e.k, e.v)

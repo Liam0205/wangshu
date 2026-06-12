@@ -7,12 +7,23 @@ import (
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
+// 调用深度上限(05 §7.4,对齐官方 5.1.5 luaconf.h)。
+const (
+	maxLuaCallDepth = 20000 // LUAI_MAXCALLS:CallInfo 链长上限,超限抛 "stack overflow"
+	maxCCallDepth   = 200   // LUAI_MAXCCALLS:host→Lua 重入(真 Go 栈)上限,超限抛 "C stack overflow"
+)
+
 // enterLuaFrame 准备一帧并压 CallInfo(05 §1.4)。
 //
 // funcIdx 是被调 closure 在栈上的索引;实参紧随其后(funcIdx+1..funcIdx+1+nargs)。
 // nresults<0 表示调用者要"全部返回"。entry=true 标 callStatus_fresh(execute 边界,
 // RETURN 退到此帧之下即终止 execute)。
 func (st *State) enterLuaFrame(th *thread, funcIdx, nargs, nresults int, entry bool) *LuaError {
+	// Lua 调用深度上限(05 §7.4;LUAI_MAXCALLS=20000 等价,对齐 5.1.5 luaconf.h)。
+	// TAILCALL 先 pop 再 enter,净深度不变,proper tail call 不受限。
+	if len(th.cis) >= maxLuaCallDepth {
+		return errf("stack overflow")
+	}
 	v := th.stack[funcIdx]
 	if value.Tag(v) != value.TagFunction {
 		return errf("attempt to call a %s value", typeName(v))
@@ -52,6 +63,17 @@ func (st *State) enterLuaFrame(th *thread, funcIdx, nargs, nresults int, entry b
 	// 把 base..base+MaxStack 的剩余区清 nil(防止读到旧值)
 	for i := base + numFixed; i < base+int(proto.MaxStack); i++ {
 		th.stack[i] = value.Nil
+	}
+	// LUA_COMPAT_VARARG:隐式 arg 表(5.1 默认 compat;arg = {n=#varargs, ...},
+	// 占形参后第一个寄存器,codegen 已 registerLocal("arg") 预留)
+	if proto.NeedsArg {
+		argTbl := st.allocTable(uint32(len(varargs)), 8)
+		for i, v := range varargs {
+			st.tableSetInt(argTbl, uint32(i+1), v)
+		}
+		nKey := value.MakeGC(value.TagString, st.gc.Intern([]byte("n")))
+		_ = st.tableSet(argTbl, nKey, value.NumberValue(float64(len(varargs))))
+		th.stack[base+numFixed] = value.MakeGC(value.TagTable, argTbl)
 	}
 	// 压 CallInfo
 	ci := callInfo{

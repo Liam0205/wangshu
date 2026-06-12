@@ -162,6 +162,13 @@ func (st *State) callMetaHandler(th *thread, fn value.Value, args []value.Value,
 // 把 fn+args 推到栈顶,enterLuaFrame(entry=true) 后新起一层 execute。
 // 这是"Go 栈 +1"的 host→Lua 重入边界。非函数经 __call 转发(07)。
 func (st *State) callLuaFromHost(th *thread, fn value.Value, args []value.Value) ([]value.Value, *LuaError) {
+	// host→Lua 重入深度上限(05 §7.4):防「Lua 调 host 调 Lua …」交替真把
+	// Go 栈打爆(Go maxstacksize fatal 不可恢复,必须先用可恢复错误拦下)。
+	if st.nCcalls >= maxCCallDepth {
+		return nil, errf("C stack overflow")
+	}
+	st.nCcalls++
+	defer func() { st.nCcalls-- }()
 	if value.Tag(fn) != value.TagFunction {
 		h := st.metaFieldOfValue(fn, "__call")
 		if value.Tag(h) != value.TagFunction {

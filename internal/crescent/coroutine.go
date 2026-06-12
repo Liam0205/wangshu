@@ -106,6 +106,21 @@ func (st *State) Resume(id uint64, args []value.Value) ([]value.Value, bool, *Lu
 	resumerTh := st.runningThread
 	co.status = CoRunning
 
+	// resume 新起一层 execute(Go 栈 +1),嵌套 resume 链与 host→Lua 重入
+	// 共享同一上限(05 §7.4)。
+	if st.nCcalls >= maxCCallDepth {
+		co.status = CoSuspended
+		return nil, false, errf("C stack overflow")
+	}
+	st.nCcalls++
+	defer func() { st.nCcalls-- }()
+
+	// 挂起的调用者线程入 resume 链(GC 根;06 §5.1 R4)。
+	if resumerTh != nil {
+		st.threadChain = append(st.threadChain, resumerTh)
+		defer func() { st.threadChain = st.threadChain[:len(st.threadChain)-1] }()
+	}
+
 	var sig *LuaError
 	if !co.started {
 		// 首次 resume:在 co 的 thread 上启动主函数

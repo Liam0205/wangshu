@@ -8,10 +8,8 @@ import (
 
 // sweep walks the gcnext sweep chain, reclaiming dead-white objects (06 §8.1).
 //
-// P1 简化:不回填 size-class freelist(M1 arena 暂未提供 freelist 接口);
-// 回收 = 把对象从 sweep 链中摘除,bytes 留在 arena(下次 grow 时被压缩——P1 不做 compaction,
-// 06 §2.4 / §12 已记缺口)。这意味着 P1 实际上不真正"回收"内存,但**正确性**依然成立:
-// 死对象不再有 GCRef 引用它们,语义上等同于回收;真正的内存复用留给 freelist 接入(M5+ 增量)。
+// 回收 = 从 sweep 链摘除 + 字节归还 arena freelist(06 §2:size-class 定长桶 /
+// LARGE 首次适配)。归还后块内容视为脏内存,复用时由 AllocBytes 清零。
 //
 // 注意:本函数仍统计 liveBytesAfterSweep 以驱动 pacing(06 §8.3)。
 func (c *Collector) sweep() {
@@ -25,7 +23,7 @@ func (c *Collector) sweep() {
 		h := object.HeaderOf(c.a, ref)
 		next := object.GCNextOf(h)
 		if object.ColorOf(h) == dead && !object.IsFixed(h) {
-			// 死对象:从链摘除。
+			// 死对象:从链摘除 + 归还 freelist。
 			c.unlinkSweep(prev, ref, next)
 			c.freeObject(ref, object.OTypeOf(h))
 		} else {
@@ -49,15 +47,43 @@ func (c *Collector) unlinkSweep(prev, ref, next arena.GCRef) {
 	object.SetHeader(c.a, prev, object.SetGCNext(hp, next))
 }
 
-// freeObject 处理类型相关的回收副作用(string intern 表摘除、userdata finalizer 已分流等)。
+// freeObject 回收一个死对象:类型相关索引清理 + 字节归还 arena freelist。
 //
-// P1 不归还 freelist(见 sweep 注);本函数主要负责"索引清理":
-//   - String:从 string intern 表摘除。
-//   - 其它类型:无侧效(头对象被摘出 sweep 链已足够)。
+//   - String:先从 intern 表摘除(读 hash 须在 Free 覆写 word0/word1 之前)。
+//   - Table:附属 array/node 块一并归还(附属块无 GCHeader,由头对象独占,
+//     rehash 换段时旧段已由 rawtable 显式归还,此处只剩当前段,无双重释放)。
+//   - Userdata:清 hasFinalizer 登记(防块复用后新 userdata 的 __gc 注册被旧记录挡掉)。
+//   - Thread:头 + 值栈/CallInfo 附属块(P1 运行期协程在 Go 侧,此类型仅测试触达)。
 func (c *Collector) freeObject(ref arena.GCRef, ot object.OBJType) {
 	switch ot {
 	case object.OBJ_STRING:
 		c.removeFromStringTable(ref)
+		c.a.Free(ref, 16+(object.StringLen(c.a, ref)+1+7)&^7)
+	case object.OBJ_TABLE:
+		asize := object.TableASize(c.a, ref)
+		if arr := object.TableArrayRef(c.a, ref); !arr.IsNull() {
+			c.a.Free(arr, asize*8)
+		}
+		hsize := object.TableHSize(c.a, ref)
+		if node := object.TableNodeRef(c.a, ref); !node.IsNull() {
+			c.a.Free(node, hsize*3*8)
+		}
+		c.a.Free(ref, 48)
+	case object.OBJ_CLOSURE:
+		c.a.Free(ref, 16+uint32(object.ClosureNUpvals(c.a, ref))*8)
+	case object.OBJ_USERDATA:
+		delete(c.hasFinalizer, ref)
+		c.a.Free(ref, 32+(object.UserdataLen(c.a, ref)+7)&^7)
+	case object.OBJ_THREAD:
+		if stk := object.ThreadValueStackRef(c.a, ref); !stk.IsNull() {
+			c.a.Free(stk, object.ThreadStackCap(c.a, ref)*8)
+		}
+		if cis := object.ThreadCallInfoRef(c.a, ref); !cis.IsNull() {
+			c.a.Free(cis, object.ThreadCICap(c.a, ref)*4*8)
+		}
+		c.a.Free(ref, 72)
+	case object.OBJ_UPVAL:
+		c.a.Free(ref, 24)
 	}
 	// Userdata 的 __gc 已在 separateFinalizers 中分流(06 §10),此处不再处理。
 }
