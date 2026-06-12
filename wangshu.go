@@ -30,7 +30,8 @@ import (
 // Options configures a State (11 §1.2)。
 //
 // P1 实现的字段:GCPause(传给 collector)、AllowFileLoad(loadfile/dofile
-// 的文件系统读门控,默认关)。其它字段保留接口形状,后续里程碑接入。
+// 的文件系统读门控,默认关)、HideFileLoaders(从 globals 刮除 loader 三件
+// 套,gopher-lua 对位)。其它字段保留接口形状,后续里程碑接入。
 type Options struct {
 	InitialArenaBytes uint32
 	MaxArenaBytes     uint32
@@ -40,6 +41,18 @@ type Options struct {
 	// AllowFileLoad 开启 loadfile/dofile 读宿主文件系统的能力。
 	// 默认 false:嵌入式 VM 接不可信脚本时文件读是越权探测面。
 	AllowFileLoad bool
+	// HideFileLoaders 严格沙箱模式:NewState 装载 stdlib 后,从 globals
+	// 表里刮除 loadfile / dofile / loadstring 三件套(置 Nil)。脚本调用
+	// 它们会得到 "attempt to call a nil value (global 'X')" fatal 错误,
+	// 对齐 gopher-lua 嵌入式沙箱传统(issue #3)——无法以 (nil, errmsg)
+	// 形式优雅降级。
+	//
+	// 默认 false:保留 PUC Lua 5.1.5 对位行为(AllowFileLoad=false 时
+	// loadfile 返回 (nil, errmsg)),官方 5.1.5 oracle 对拍不退化。
+	//
+	// 与 AllowFileLoad=true 同时设为 true 自相矛盾(允许读文件但刮除
+	// 入口函数),NewState 检测后 panic fail-fast。
+	HideFileLoaders bool
 }
 
 // State is a VM instance (11 §1.2)。它持有 globals/registry/arena/host 注册表/
@@ -62,6 +75,10 @@ type loadedProg struct {
 
 // NewState creates a fresh VM with the P1 minimal stdlib loaded.
 func NewState(opts Options) *State {
+	if opts.AllowFileLoad && opts.HideFileLoaders {
+		// 语义自相矛盾:允许读文件但刮除入口函数,这种组合永远是配置错。
+		panic("wangshu: NewState: AllowFileLoad and HideFileLoaders are mutually exclusive")
+	}
 	st := &State{core: crescent.New()}
 	st.core.SetAllowFileLoad(opts.AllowFileLoad)
 	// loadstring 的编译回调(经门面注入,避免 crescent → frontend 反向依赖)
@@ -74,6 +91,15 @@ func NewState(opts Options) *State {
 		return compile.Compile(block, chunkname)
 	})
 	stdlib.OpenAll(st.core)
+	if opts.HideFileLoaders {
+		// gopher-lua 对位:把 loader 三件套从 globals 刮除(置 Nil),
+		// 脚本调用 → "attempt to call a nil value"。loadstring 同源风险
+		// 面一并刮(动态编译亦是嵌入式沙箱常见关注点)。
+		st.core.SetGlobal("loadfile", value.Nil)
+		st.core.SetGlobal("dofile", value.Nil)
+		st.core.SetGlobal("loadstring", value.Nil)
+		st.core.SetGlobal("load", value.Nil)
+	}
 	return st
 }
 
