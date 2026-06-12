@@ -17,4 +17,4 @@
 - 要理解**宿主如何嵌入、API 与 arena ABI** → [[embedding-contract]]。
 - 遇到不认识的术语或想查参照项目 → [[glossary]]。
 
-> 提醒:**P1(crescent 解释器)完整交付(M0-M14 + 收尾轮),P2+ 未开始**;设计文档集仍是规范源,实现现状与 P3 迁移留口见 `docs/design/p1-interpreter/implementation-progress.md` 对账表。设计文档集入口与路由见 [[index]] 的「设计文档集路由」节。
+> 提醒:**P1(crescent 解释器)完整交付(M0-M14 + 收尾轮 + 测试加固轮),P2+ 未开始**;设计文档集仍是规范源,实现现状与 P3 迁移留口见 `docs/design/p1-interpreter/implementation-progress.md` 对账表。设计文档集入口与路由见 [[index]] 的「设计文档集路由」节。

@@ -1,19 +1,21 @@
 # 文档缺口
 
 > recorder 维护。记录已知但当前无法稳定成文的缺口。随实现/设计推进收敛。
-> 项目状态:**P1 完整交付(M0-M14 + 收尾轮),P2+ 未开始**。早期「源文档只给概念未给 spec」类缺口已大半被 `docs/design/` 详细设计填补;「无代码可验证」类缺口已随 P1 交付收口;原「已知简化」清单已在收尾轮全部落地。
+> 项目状态:**P1 完整交付(M0-M14 + 收尾轮 + 测试加固轮),P2+ 未开始**。早期「源文档只给概念未给 spec」类缺口已大半被 `docs/design/` 详细设计填补;「无代码可验证」类缺口已随 P1 交付收口;原「已知简化」清单已在收尾轮全部落地。
 
 ## 当前缺口
 
-- **设计文档回填待办(P2 开工前,recorder 执行,六项合一轮)** — 两轮反思的 promotion 候选合并清单,均为 `docs/design/` 回填(非 llmdoc):
+- **设计文档回填待办(P2 开工前,recorder 执行,七项合一轮)** — 三轮反思的 promotion 候选合并清单,均为 `docs/design/` 回填(非 llmdoc):
   - 源自 `reflections/2026-06-12-p1-implementation-sprint.md`:
-    1. `04-frontend-parser-codegen.md` 补「lcode.c 同构必须到 helper 层」纪律 + 四个实例坑(goIfTrue 对 eJmp 须 invertJmp、luaK_infix 时机的左操作数提前物化、patchListAux 让无主 TESTSET 退化为 TEST、fixJump 不得硬编码 JMP opcode);
+    1. `04-frontend-parser-codegen.md` 补「lcode.c 同构必须到 helper 层」纪律 + 五个实例坑(goIfTrue 对 eJmp 须 invertJmp、luaK_infix 时机的左操作数提前物化、patchListAux 让无主 TESTSET 退化为 TEST、fixJump 不得硬编码 JMP opcode;加固轮追加:「末位多值源 A 处理」即 luaK_setreturns 对应物在 stmtReturn/compileArgList/exprTable 三调用点同族踩坑——eCall 不动 A、eVararg 回填 A,须单点收口为 helper);
     2. `05-interpreter-loop.md` 补 ci 指针刷新不变式(所有可能重入的 opcode 之后 `ci = currentCI(th)`,根因是 Go slice append 搬迁使 C 式指针稳定性假设失效);
     3. `engineering.md` oracle 供给节补源码编译实操路径(brew 无 lua@5.1,源码编 lua-5.1.5 `make posix` 装 `~/.local/bin/lua5.1`;difftest 在 oracle 缺失时 skip 不挡 CI)。
   - 源自 `reflections/2026-06-12-p1-closeout-round.md`:
     4. `05-interpreter-loop.md` §6.3 增补 IC 命中**同键校验**条款(动态 key 指令 array 命中验 `arrayIndex(key)==Index`、node 命中验 `NodeKey==key`,附 `t[i]` 轮换反例;P2 编译层实现 IC 以回填后版本为准);
     5. `11-embedding-arena-abi.md` §1.3 增补「Program 上运行期可写字段一律随 State 私有浅拷贝」一般规则(IC/Consts 实例;共享只读 Code/StringLits/LineInfo);
     6. `12-testing-difftest.md` §3.2 增补随机生成器「类型封闭」纪律(局部变量池按 num/str 分型,产生式输出落回同型池)。
+  - 源自 `reflections/2026-06-12-test-hardening-round.md`:
+    7. `05-interpreter-loop.md` §7.6 增补 callHost「top 恢复纪律」条款:定长结果路径必须恢复 top 到当前帧逻辑顶(对齐 5.1 `L->top = ci->top`),附反例——前一条多值 CALL(C=0)留下低 top 使后续 callLuaFromHost 脚手架覆写 TFORLOOP 迭代器三槽,症状(pairs 收到 number)离根因极远。落地修复见 `internal/crescent/host.go` (`callHost`)。
 
 - **值栈/CallInfo arena 化属 P3** — 收尾轮对账确认:值栈/CallInfo 仍是 Go slice(05 §1.2 设计形态是住 arena),开放 upvalue 链/arena Thread 对象同批;**接口等价、迁移点已留**(`arena.Options.NewBacking` 注入点就位),物理搬迁是 P3 wazero memory 收养时的工作。唯一对账落点:`docs/design/p1-interpreter/implementation-progress.md`「与设计文档的对账」表。
 
@@ -29,9 +31,9 @@
 
 - **P3 开工前置确认(待办)** — P3 开工前须向首个宿主确认「列内核是否跑在协程里」,决定协程不升层是否成立(决策第 7 项;`docs/design/p3-wasm-tier.md` §5.4)。依赖宿主,设计期无法收口。
 
-- **engineering.md 的脚本协议待定稿** — `fuzz-triage.sh` 的 FAIL/INFRA 分类判据、非 Ubuntu runner 的 oracle 源码编译缓存、bench-gate 回退阈值、agentic workflows 接入时机,均待随 fuzz 生成器/CI 演进校准(见 `docs/design/engineering.md` §7)。
+- **engineering.md 的脚本协议待定稿** — 测试加固轮已落地其中一项:nightly 长跑 + INFRA/DIVERGENCE 分流自动开 issue 已由 `.github/workflows/nightly-diff-fuzz.yml` 实现(triage 判据内联在 workflow 而非独立 `fuzz-triage.sh`,grep "byte-diff" 区分真分歧与 oracle 环境失败 + 同标题去重),**但分流判据未经真实失败检验**,首次真实告警时需验证。仍待定:非 Ubuntu runner 的 oracle 源码编译缓存、bench-gate 回退阈值、agentic workflows 接入时机(见 `docs/design/engineering.md` §7);engineering.md §3.2 文本与落地形态(内联 vs 独立脚本)的差异待回填轮顺手对账。
 
-- **CI runner Node 20→24 迁移期** — GitHub 已宣布 2026-09-16 移除 runner 上的 Node 20。当前 ci.yml 用的 `actions/checkout@v4` / `actions/setup-go@v5` / `actions/upload-artifact@v4` 跑在 Node 20 上,会有弃用警告。无须现在动,2026-09 前升 action 主版本即可(目前主版本 v4/v5 已是最新,upstream 推 Node 24 时跟随升)。
+- **CI runner Node 20→24 迁移期** — GitHub 已宣布 2026-09-16 移除 runner 上的 Node 20。当前 ci.yml 与 nightly-diff-fuzz.yml 用的 `actions/checkout@v4` / `actions/setup-go@v5` / `actions/upload-artifact@v4` 跑在 Node 20 上,会有弃用警告。无须现在动,2026-09 前升 action 主版本即可(目前主版本 v4/v5 已是最新,upstream 推 Node 24 时跟随升)。
 
 ## 已收口(留作审计)
 
