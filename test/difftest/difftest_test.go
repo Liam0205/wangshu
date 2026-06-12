@@ -8,7 +8,9 @@ package difftest
 
 import (
 	"bytes"
+	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -246,14 +248,28 @@ func TestDiff_SeedCorpus(t *testing.T) {
 
 // TestDiff_RandomScripts 随机脚本对拍(12 §3.2 generator)。
 //
-// 500 个确定性种子(CI 可复现);失败时打印 seed 与脚本全文供重放。
+// 默认 500 个确定性种子(PR 门禁防回归,CI 可复现);nightly 长跑经环境变量
+// 拓新:WANGSHU_FUZZ_SEED_BASE 滚动起始种子(如日期纪元),WANGSHU_FUZZ_N
+// 放大数量。失败时打印 seed 与脚本全文;重放:
+// WANGSHU_FUZZ_SEED_BASE=<seed> WANGSHU_FUZZ_N=1 go test -run TestDiff_RandomScripts ./test/difftest/
 func TestDiff_RandomScripts(t *testing.T) {
 	oracle := findOracle()
 	if oracle == "" {
 		t.Skip("lua5.1 oracle not found on PATH; skipping difftest")
 	}
-	const nScripts = 500
-	for seed := int64(0); seed < nScripts; seed++ {
+	base := int64(0)
+	n := int64(500)
+	if v := os.Getenv("WANGSHU_FUZZ_SEED_BASE"); v != "" {
+		if p, err := strconv.ParseInt(v, 10, 64); err == nil {
+			base = p
+		}
+	}
+	if v := os.Getenv("WANGSHU_FUZZ_N"); v != "" {
+		if p, err := strconv.ParseInt(v, 10, 64); err == nil {
+			n = p
+		}
+	}
+	for seed := base; seed < base+n; seed++ {
 		src := generateScript(seed)
 		oracleSrc := wrapForOracle(src)
 		want := runOracle(t, oracle, oracleSrc)
