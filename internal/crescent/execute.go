@@ -132,7 +132,7 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 			key := rk(th, ci, bytecode.C(i))
 			v, e := st.icGetTable(th, ci, ci.pc-1, tbl, key)
 			if e != nil {
-				return e
+				return st.enhanceIndexErr(e, ci, bytecode.B(i), tbl)
 			}
 			ci = currentCI(th)
 			code = ci.proto.Code
