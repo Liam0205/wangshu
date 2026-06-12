@@ -133,21 +133,12 @@ func symbexec(proto *bytecode.Proto, lastpc int32, reg int) (bytecode.Instructio
 			if a == reg {
 				last = pc
 			}
-			// 跳过 upvalue 伪指令(MOVE/GETUPVAL 不是真实执行)
-			if idx := bytecode.Bx(ins); idx < len(proto.Protos) {
-				// 子 Proto 的 upvalue 数 = 伪指令数;Protos 存 ProtoID,
-				// 装载后是绝对 ID,无法直接取子 proto——按"后随连续
-				// MOVE/GETUPVAL 形态"跳过(codegen 紧跟发射)。
-				for pc+1 < lastpc {
-					nxt := bytecode.Op(proto.Code[pc+1])
-					if nxt == bytecode.MOVE || nxt == bytecode.GETUPVAL {
-						// 仅当它是伪指令(A=0 占位)时跳;真实 MOVE 的 A
-						// 可能也是 0,保守起见只在 CLOSURE 后紧跟时跳过。
-						pc++
-						continue
-					}
-					break
-				}
+			// 精确跳过 upvalue 伪指令(官方经 p->p[bx]->nups;本实现 codegen
+			// 把伪指令数随 CLOSURE 存进 SubNUps,按 Protos 下标对齐)。
+			// 形态猜测会把 0-upvalue CLOSURE 后的真实 MOVE/GETUPVAL 吞掉,
+			// 丢失实参装载的命名信息。
+			if idx := bytecode.Bx(ins); idx < len(proto.SubNUps) {
+				pc += int32(proto.SubNUps[idx])
 			}
 		case bytecode.SETLIST:
 			if bytecode.C(ins) == 0 {

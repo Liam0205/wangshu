@@ -388,6 +388,7 @@ func (fs *funcState) exprFunc(e *ast.FuncExpr) expDesc {
 	proto := fs.cg.compileFunc(fs, e)
 	idx := uint32(len(fs.cg.protos) - 1) // 最近登记的 ProtoID
 	fs.proto.Protos = append(fs.proto.Protos, idx)
+	fs.proto.SubNUps = append(fs.proto.SubNUps, uint8(len(proto.UpvalDescs)))
 	closureIdx := len(fs.proto.Protos) - 1
 	pc := fs.emitABx(e.Line, bytecode.CLOSURE, 0, closureIdx)
 	// 紧跟 nupvals 条伪指令

@@ -41,6 +41,7 @@ type Proto struct {
 	StringLits   []string      // 字符串字面量原文(Compile 期间收集,跨 State 共享只读)
 	StringLitIdx []int32       // Consts 中字符串槽 → StringLits 下标的映射;非字符串槽 = -1
 	Protos       []uint32      // 嵌套 Proto 的 ProtoID(下标,见 protos 注册表)
+	SubNUps      []uint8       // 与 Protos 下标对齐:子函数 upvalue 数(= CLOSURE 后随伪指令数;symbexec 精确跳过用,官方经 p->p[bx]->nups 取)
 	UpvalDescs   []UpvalDesc
 
 	// 调试信息(可选;按 [架构] 选择是否保留——P1 保留以支持 traceback / 错误变量名后缀)。
