@@ -54,6 +54,15 @@ type loadedProg struct {
 // NewState creates a fresh VM with the P1 minimal stdlib loaded.
 func NewState(_ Options) *State {
 	st := &State{core: crescent.New()}
+	// loadstring 的编译回调(经门面注入,避免 crescent → frontend 反向依赖)
+	st.core.SetCompileFn(func(src []byte, chunkname string) (uint32, []*bytecode.Proto, error) {
+		lx := lex.New(src, chunkname)
+		block, err := parse.Parse(lx, chunkname)
+		if err != nil {
+			return 0, nil, err
+		}
+		return compile.Compile(block, chunkname)
+	})
 	stdlib.OpenAll(st.core)
 	return st
 }

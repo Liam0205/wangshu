@@ -164,6 +164,25 @@ var baseFns = []entry{
 	{"pairs", baseFnPairs},
 	{"ipairs", baseFnIpairs},
 	{"xpcall", baseFnXpcall},
+	{"loadstring", baseFnLoadstring},
+	{"load", baseFnLoadstring}, // 5.1 的 load(func) 渐进读取形态不支持;字符串形态与 loadstring 同
+}
+
+// baseFnLoadstring:loadstring(s [, chunkname]) → function | (nil, errmsg)。
+func baseFnLoadstring(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
+	if len(args) == 0 || value.Tag(args[0]) != value.TagString {
+		return nil, crescent.NewError("bad argument #1 to 'loadstring' (string expected)")
+	}
+	src := object.StringBytes(st.Arena(), value.GCRefOf(args[0]))
+	chunkname := "=(loadstring)"
+	if len(args) >= 2 && value.Tag(args[1]) == value.TagString {
+		chunkname = string(object.StringBytes(st.Arena(), value.GCRefOf(args[1])))
+	}
+	fn, err := st.CompileAndLoad(src, chunkname)
+	if err != nil {
+		return []value.Value{value.Nil, intern(st, err.Error())}, nil
+	}
+	return []value.Value{fn}, nil
 }
 
 // baseFnNext:next(t [, key]) → (nextKey, nextVal) | nil。
@@ -336,11 +355,69 @@ func baseFnToNumber(st *crescent.State, args []value.Value) ([]value.Value, *cre
 	if len(args) == 0 {
 		return []value.Value{value.Nil}, nil
 	}
-	f, ok := toNumberStr(st, args[0])
+	if len(args) >= 2 && args[1] != value.Nil {
+		// tonumber(s, base):base 2-36,逐字符按进制解析(5.1 strtoul 语义)
+		baseF, ok := toNumberStr(st, args[1])
+		if !ok {
+			return nil, crescent.NewError("bad argument #2 to 'tonumber' (number expected)")
+		}
+		base := int(baseF)
+		if base < 2 || base > 36 {
+			return nil, crescent.NewError("bad argument #2 to 'tonumber' (base out of range)")
+		}
+		if value.Tag(args[0]) != value.TagString {
+			return nil, crescent.NewError("bad argument #1 to 'tonumber' (string expected, got " +
+				crescent.TypeNameOf(args[0]) + ")")
+		}
+		s := strings.TrimSpace(string(object.StringBytes(st.Arena(), value.GCRefOf(args[0]))))
+		if s == "" {
+			return []value.Value{value.Nil}, nil
+		}
+		neg := false
+		if s[0] == '+' || s[0] == '-' {
+			neg = s[0] == '-'
+			s = s[1:]
+		}
+		acc := 0.0
+		for i := 0; i < len(s); i++ {
+			c := s[i]
+			var d int
+			switch {
+			case c >= '0' && c <= '9':
+				d = int(c - '0')
+			case c >= 'a' && c <= 'z':
+				d = int(c-'a') + 10
+			case c >= 'A' && c <= 'Z':
+				d = int(c-'A') + 10
+			default:
+				return []value.Value{value.Nil}, nil
+			}
+			if d >= base {
+				return []value.Value{value.Nil}, nil
+			}
+			acc = acc*float64(base) + float64(d)
+		}
+		if neg {
+			acc = -acc
+		}
+		return []value.Value{value.NumberValue(acc)}, nil
+	}
+	f, ok := crescentToNumber(st, args[0])
 	if !ok {
 		return []value.Value{value.Nil}, nil
 	}
 	return []value.Value{value.NumberValue(f)}, nil
+}
+
+// crescentToNumber 走 ParseLuaNumber 唯一入口(支持 0x 十六进制,07 §5.2)。
+func crescentToNumber(st *crescent.State, v value.Value) (float64, bool) {
+	if value.IsNumber(v) {
+		return value.AsNumber(v), true
+	}
+	if value.Tag(v) == value.TagString {
+		return crescent.ParseLuaNumber(string(object.StringBytes(st.Arena(), value.GCRefOf(v))))
+	}
+	return 0, false
 }
 
 func baseFnType(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
@@ -404,7 +481,17 @@ func baseFnSelect(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 		return nil, crescent.NewError("bad argument #1 to 'select' (number expected)")
 	}
 	idx := int(f)
-	if idx < 1 || idx > len(args)-1 {
+	n := len(args) - 1
+	if idx < 0 {
+		// 负索引:从尾部数(5.1);越界报错
+		idx = n + idx + 1
+		if idx < 1 {
+			return nil, crescent.NewError("bad argument #1 to 'select' (index out of range)")
+		}
+	} else if idx == 0 {
+		return nil, crescent.NewError("bad argument #1 to 'select' (index out of range)")
+	}
+	if idx > n {
 		return nil, nil
 	}
 	return args[idx:], nil

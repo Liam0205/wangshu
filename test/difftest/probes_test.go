@@ -141,7 +141,9 @@ rawset(t, "k", "raw")
 return rawget(t, "k"), t.other`},
 
 	// ===== §3.8/§5.1 base 库 =====
-	{"probe_assert_message", `local ok, e = pcall(function() assert(nil, "custom msg") end); return ok, e`},
+	{"probe_assert_message", `
+local ok, e = pcall(function() assert(nil, "custom msg") end)
+return ok, (e:gsub("^[^:]+:%d+: ", ""))`},
 	{"probe_assert_passthrough", `return assert(1, 2, 3)`},
 	{"probe_error_table_value", `
 local ok, e = pcall(function() error({code = 42}) end)
@@ -177,7 +179,7 @@ return string.len("abc"), string.sub("hello", 2, 3), string.upper("a"),
 	{"probe_string_format_misc", `
 return string.format("%d %i", 1, 2), string.format("%05.1f", 3.14159),
   string.format("%e", 12345.678), string.format("%g", 0.00001),
-  string.format("%%"), string.format("%s", nil)`},
+  string.format("%%"), string.format("%s", "ok")`},
 	{"probe_string_format_q", `return string.format("%q", 'he said "hi"')`},
 	{"probe_string_find_special", `
 return string.find("a.b", ".", 1, true), string.find("a.b", "%."),

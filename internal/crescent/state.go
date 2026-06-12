@@ -51,6 +51,28 @@ type State struct {
 	// (threadRef, stackIdx) 二元组的 Go 侧形态;值栈 arena 化后改存 threadRef)。
 	// 关闭后从此表删除(自持值不再依赖 thread)。
 	uvOwner map[arena.GCRef]*thread
+
+	// compileFn 是 loadstring/load 的编译回调(由 wangshu 门面注入,
+	// 避免 crescent → frontend 反向依赖)。返回 (mainID, protos, err)。
+	compileFn func(src []byte, chunkname string) (uint32, []*bytecode.Proto, error)
+}
+
+// SetCompileFn 注入编译回调(wangshu.NewState 时装配;loadstring 用)。
+func (st *State) SetCompileFn(fn func(src []byte, chunkname string) (uint32, []*bytecode.Proto, error)) {
+	st.compileFn = fn
+}
+
+// CompileAndLoad 编译一段源码并装载为 closure(loadstring 的核心)。
+func (st *State) CompileAndLoad(src []byte, chunkname string) (value.Value, error) {
+	if st.compileFn == nil {
+		return value.Nil, errf("loadstring: compiler not available")
+	}
+	mainID, protos, err := st.compileFn(src, chunkname)
+	if err != nil {
+		return value.Nil, err
+	}
+	cl := st.LoadProgram(mainID, protos)
+	return value.MakeGC(value.TagFunction, cl), nil
 }
 
 // SetStringLib 注册 string 库表为 string 值的 per-type 元表 __index

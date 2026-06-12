@@ -21,6 +21,7 @@ var tableFns = []entry{
 	{"concat", tableFnConcat},
 	{"sort", tableFnSort},
 	{"getn", tableFnGetn},
+	{"maxn", tableFnMaxn},
 }
 
 func tblArg(args []value.Value, n int, fname string) (value.Value, *crescent.LuaError) {
@@ -189,6 +190,33 @@ func tableFnGetn(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 		return nil, e
 	}
 	return []value.Value{value.NumberValue(float64(st.RawBorder(value.GCRefOf(tv))))}, nil
+}
+
+// tableFnMaxn:table.maxn(t)= 最大正数键(遍历全表,5.1)。
+func tableFnMaxn(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
+	tv, e := tblArg(args, 0, "maxn")
+	if e != nil {
+		return nil, e
+	}
+	t := value.GCRefOf(tv)
+	maxn := 0.0
+	key := value.Nil
+	for {
+		k, _, ok, err := st.RawNext(t, key)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			break
+		}
+		if value.IsNumber(k) {
+			if f := value.AsNumber(k); f > maxn {
+				maxn = f
+			}
+		}
+		key = k
+	}
+	return []value.Value{value.NumberValue(maxn)}, nil
 }
 
 // ----- os / io 最小集 -----

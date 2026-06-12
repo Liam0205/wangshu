@@ -202,12 +202,14 @@ func stringFnGsub(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 	var out []byte
 	pos := 0
 	count := 0
+	anchored := len(pat) > 0 && pat[0] == '^'
 	for (maxN < 0 || count < maxN) && pos <= len(s) {
 		start, end, caps, found, err := patternFind(s, pat, pos)
 		if err != nil {
 			return nil, crescent.NewError(err.Error())
 		}
-		if !found {
+		// 锚点模式只在 pos 处匹配(patternFind 已保证);未中或非串首中皆停
+		if !found || (anchored && start != pos) {
 			break
 		}
 		out = append(out, s[pos:start]...)
@@ -224,6 +226,9 @@ func stringFnGsub(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 			pos = start + 1
 		} else {
 			pos = end
+		}
+		if anchored {
+			break // lstrlib:锚点 gsub 至多替换一次
 		}
 	}
 	if pos < len(s) {
