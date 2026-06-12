@@ -234,7 +234,9 @@ func baseFnLoadstring(st *crescent.State, args []value.Value) ([]value.Value, *c
 		return nil, crescent.NewError("bad argument #1 to 'loadstring' (string expected)")
 	}
 	src := object.StringBytes(st.Arena(), value.GCRefOf(args[0]))
-	chunkname := "=(loadstring)"
+	// 默认 chunkname = 源串本身(官方 luaL_optstring(L,2,s)),错误前缀
+	// 显示为 [string "首行..."](luaO_chunkid 截断)。
+	chunkname := string(src)
 	if len(args) >= 2 && value.Tag(args[1]) == value.TagString {
 		chunkname = string(object.StringBytes(st.Arena(), value.GCRefOf(args[1])))
 	}
@@ -413,7 +415,8 @@ func baseFnToString(st *crescent.State, args []value.Value) ([]value.Value, *cre
 
 func baseFnToNumber(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	if len(args) == 0 {
-		return []value.Value{value.Nil}, nil
+		// 官方 luaL_checkany:无参是错误(≠ tonumber(nil) 的返回 nil)
+		return nil, crescent.NewError("bad argument #1 to 'tonumber' (value expected)")
 	}
 	if len(args) >= 2 && args[1] != value.Nil {
 		// tonumber(s, base):base 2-36,逐字符按进制解析(5.1 strtoul 语义,
