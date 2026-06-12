@@ -47,8 +47,9 @@ func AllocTable(a *arena.Arena, asize, hsize uint32) arena.GCRef {
 	headRef := allocateRaw(a, OBJ_TABLE, tableHeadWords, 0)
 	var arrayRef, nodeRef arena.GCRef
 	if asize > 0 {
-		arrayRef = a.AllocWords(asize) // 附属块,无 GCHeader,初值 0(= Nil 不算合法 Value;表读取时按 asize 解释)
-		// 数组槽初始化为 Nil(NaN-boxed)。
+		arrayRef = a.AllocWords(asize) // 附属块,无 GCHeader
+		// 数组槽初始化为 Nil:raw 0 会被解读为数字 +0.0(合法 Value),
+		// 不能依赖零值,必须显式写 NaN-boxed Nil。
 		for i := uint32(0); i < asize; i++ {
 			a.SetWordAt(arrayRef+arena.GCRef(i*8), uint64(value.Nil))
 		}

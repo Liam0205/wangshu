@@ -23,18 +23,25 @@ func stringWords(byteLen uint32) uint32 {
 	return 2 + contentWords
 }
 
+// maxStrBytes 是 String 内容长度上限:留出 2 字头 + 1 NUL + 对齐余量,
+// 保证 stringWords 的 byteLen+1 与字数乘法不回绕(尺寸入口校验约定)。
+const maxStrBytes = uint64(arena.MaxBytes) - 64
+
 // AllocString allocates a String object holding the given bytes. The caller is responsible
 // for interning policy (06 §9):this helper merely places content and computes hash slot.
 //
 // hash 必须由调用方算好(JSHash;06 §9.3 单一事实源)并传入,这里不重复实现散列算法。
 func AllocString(a *arena.Arena, b []byte, hash32 uint32) arena.GCRef {
-	if len(b) > 0xFFFFFFFF {
+	// uint64 域比较:① 32 位 GOARCH 上 len(b) 是 32 位 int,untyped 常量
+	// 0xFFFFFFFF 直接溢出 int 编译失败;② len == 0xFFFFFFFF 时 byteLen+1
+	// 回绕成 0 → 只分配 2 字、len 记录超长,StringBytes 越界(off-by-one)。
+	if uint64(len(b)) > maxStrBytes {
 		panic("object: string too long")
 	}
 	ref := allocateRaw(a, OBJ_STRING, stringWords(uint32(len(b))), 0)
 	setWordAt(a, ref, strHashLenIdx, uint64(hash32)|uint64(uint32(len(b)))<<32)
 	if len(b) > 0 {
-		// 通过字节视图写入内容;末尾的对齐填充字节天然是零,NUL 终止天然成立。
+		// 通过字节视图写入内容;复用块尾部已由 AllocBytes 清零,NUL 终止成立。
 		dst := a.Bytes()[uint32(ref)+strDataIdx*8:]
 		copy(dst, b)
 	}

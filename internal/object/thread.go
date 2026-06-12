@@ -41,7 +41,13 @@ func userdataWords(payloadLen uint32) uint32 {
 	return 4 + (payloadLen+7)/8
 }
 
+// maxUDPayload 是 userdata payload 上限(尺寸入口校验:防 payloadLen+7 回绕)。
+const maxUDPayload = uint32(1)<<31 - 64
+
 func AllocUserdata(a *arena.Arena, payloadLen uint32) arena.GCRef {
+	if payloadLen > maxUDPayload {
+		panic("object: userdata payload too long")
+	}
 	ref := allocateRaw(a, OBJ_USERDATA, userdataWords(payloadLen), 0)
 	setWordAt(a, ref, udLenIdx, uint64(payloadLen))
 	setWordAt(a, ref, udMetaIdx, 0)

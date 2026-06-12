@@ -119,7 +119,7 @@ func UpvalStackIdx(a *arena.Arena, uv arena.GCRef) uint32 {
 }
 
 // UpvalThreadRefLo returns the low 32 bits of the thread reference (open state).
-// 假设 thread 落在 4 GiB arena 内,32 位足够还原全 GCRef(高 16 bit 始终是 0xFFFF tag)。
+// arena 上限 2 GiB(MaxBytes),GCRef 实际 ≤ 31 bit,低 32 位无损还原。
 func UpvalThreadRefLo(a *arena.Arena, uv arena.GCRef) uint32 {
 	return uint32(wordAt(a, uv, upvalLocIdx) >> 32)
 }

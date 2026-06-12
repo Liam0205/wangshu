@@ -26,10 +26,11 @@ type GCRef uint64
 // IsNull reports whether ref is the null reference.
 func (r GCRef) IsNull() bool { return r == 0 }
 
-// 上限。bump/cap 用 uint32 ⇒ 单 arena 最大 4 GiB(06 §3)。
+// 上限。bump/cap 用 uint32 ⇒ uint32 寻址理论上限 4 GiB,实际取 2 GiB
+// 留一半 headroom 防 uint32 边界溢出(06 §3)。
 const (
-	// MaxBytes 是单 arena 容量上限(uint32 寻址)。
-	MaxBytes uint32 = 1 << 31 // 2 GiB,留一半 headroom 防 uint32 边界溢出
+	// MaxBytes 是单 arena 容量上限。
+	MaxBytes uint32 = 1 << 31 // 2 GiB
 	// nullReserve 是 offset 0 保留区(字节)。bump 初值 = 8。
 	nullReserve uint32 = 8
 )
@@ -75,6 +76,7 @@ type Arena struct {
 }
 
 // New creates an Arena with the given options.
+// InitialBytes > MaxBytes 直接 panic(fail-fast,与 grow 超限一致,不静默截断)。
 func New(opts Options) *Arena {
 	cap := opts.InitialBytes
 	if cap == 0 {
@@ -86,7 +88,7 @@ func New(opts Options) *Arena {
 		max = MaxBytes
 	}
 	if cap > max {
-		cap = max
+		panic(fmt.Sprintf("arena: InitialBytes %d exceeds MaxBytes %d", cap, max))
 	}
 	bf := opts.NewBacking
 	if bf == nil {
@@ -122,8 +124,8 @@ func (a *Arena) setBacking(words []uint64) {
 // Cap returns the current capacity in bytes.
 func (a *Arena) Cap() uint32 { return a.cap }
 
-// Bump returns the next unallocated byte offset (also = total allocated bytes from offset 0,
-// minus the nullReserve at the start).
+// Bump returns the next unallocated byte offset (includes the leading
+// nullReserve; NOT net allocated bytes — subtract nullReserve for that).
 func (a *Arena) Bump() uint32 { return a.bump }
 
 // Words returns the word view of the entire backing. **The returned slice is invalidated
@@ -143,8 +145,13 @@ func (a *Arena) Bytes() []byte { return a.bytes }
 // 构造函数)必须显式初始化全部字段。
 //
 // 容量不足 → 触发 grow(GC 由 gc 包的 MaybeCollect 在分配计费路径介入)。
-// 超 maxCap → panic。
+// 超 maxCap(含 uint32 回绕级请求)→ panic(fail-fast,不静默错果)。
 func (a *Arena) AllocBytes(nbytes uint32) GCRef {
+	// 尺寸检查在 uint64 域:nbytes 接近 0xFFFFFFFF 时 roundUp8 / bump+need
+	// 都会回绕成小值,4 GiB 请求被静默"成功"切走 8 字节(错误别名)。
+	if uint64(nbytes) > uint64(a.maxCap) {
+		panic(fmt.Sprintf("arena: allocation of %d bytes exceeds max capacity %d", nbytes, a.maxCap))
+	}
 	need := roundUp8(nbytes)
 	if need == 0 {
 		need = 8 // 至少分配一字,避免零长引用
@@ -162,8 +169,8 @@ func (a *Arena) AllocBytes(nbytes uint32) GCRef {
 		a.zeroFill(ref, words)
 		return ref
 	}
-	if a.bump+need > a.cap {
-		a.grow(a.bump + need)
+	if uint64(a.bump)+uint64(need) > uint64(a.cap) {
+		a.grow64(uint64(a.bump) + uint64(need))
 	}
 	ref := GCRef(a.bump)
 	a.bump += need
@@ -180,7 +187,13 @@ func (a *Arena) zeroFill(ref GCRef, words uint32) {
 }
 
 // AllocWords is a convenience wrapper for AllocBytes(words*8).
-func (a *Arena) AllocWords(words uint32) GCRef { return a.AllocBytes(words * 8) }
+// words > MaxBytes/8 级请求在乘法回绕前拦截(fail-fast)。
+func (a *Arena) AllocWords(words uint32) GCRef {
+	if uint64(words)*8 > uint64(a.maxCap) {
+		panic(fmt.Sprintf("arena: allocation of %d words exceeds max capacity %d bytes", words, a.maxCap))
+	}
+	return a.AllocBytes(words * 8)
+}
 
 // WordAt returns the uint64 at the given GCRef (interpreted as a word offset by ref/8).
 // Panics on misaligned ref.
@@ -205,14 +218,18 @@ func (a *Arena) SetWordAt(ref GCRef, v uint64) {
 	a.words[ref>>3] = v
 }
 
-// grow doubles the capacity until at least minBytes is available, then copies the old
+// grow64 doubles the capacity until at least minBytes is available, then copies the old
 // backing into the new one. GCRefs/bump remain valid (offset addressing's payoff).
-func (a *Arena) grow(minBytes uint32) {
+// minBytes 在 uint64 域(调用方 bump+need 可能超 uint32)。
+func (a *Arena) grow64(minBytes uint64) {
+	if minBytes > uint64(a.maxCap) {
+		panic(fmt.Sprintf("arena: cannot grow to %d bytes (max %d)", minBytes, a.maxCap))
+	}
 	newCap := a.cap
 	if newCap == 0 {
 		newCap = nullReserve
 	}
-	for newCap < minBytes {
+	for uint64(newCap) < minBytes {
 		// 翻倍直到够用。注意 uint32 溢出。
 		if newCap > a.maxCap/2 {
 			newCap = a.maxCap
@@ -220,7 +237,7 @@ func (a *Arena) grow(minBytes uint32) {
 		}
 		newCap *= 2
 	}
-	if newCap < minBytes {
+	if uint64(newCap) < minBytes {
 		panic(fmt.Sprintf("arena: cannot grow to %d bytes (max %d)", minBytes, a.maxCap))
 	}
 	newWords := a.backing(newCap / 8)
