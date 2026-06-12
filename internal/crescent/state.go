@@ -87,7 +87,7 @@ type State struct {
 	stepBudget int64
 	stepUsed   int64
 
-	// ctx 是 SetContext 注入的取消信号(issue #4):chargeStep 的同一抢占
+	// ctx 是 SetContext 注入的取消信号(issue #4):preempt 的同一抢占
 	// 点(回边 / 函数进帧 / CALL)做 ctx.Err() 检查。Atomic 包裹是因为
 	// 跨 goroutine 取消的常见模式:VM 在 goroutine A 跑,timer/ctx 在
 	// goroutine B 调 cancel()——context 实现本身已 race-safe,但我们这
@@ -347,16 +347,24 @@ func (st *State) SetAllowFileLoad(on bool) { st.allowFileLoad = on }
 // AllowFileLoad 查询文件读开关(stdlib loadfile/dofile 用)。
 func (st *State) AllowFileLoad() bool { return st.allowFileLoad }
 
-// chargeStep 预算计费 + 取消检查(回边 + 函数进帧 + CALL 各记 1)。
-// 超 stepBudget 抛 "instruction budget exceeded";ctx.Err() 非空抛
-// "context canceled: <err>"。三处抢占点共用同一入口。
+// preempt 是 VM 抢占点入口(回边 / 函数进帧 / TFORLOOP 各调一次)。
+// 对齐 Go runtime preemption 语义:抢占点是「在指令边界检查是否要让
+// 出执行权」。本实现的让出条件:
+//   - stepBudget > 0 且 stepUsed 超额 → "instruction budget exceeded"
+//   - ctx 注入且 ctx.Err() 非空 → "context canceled: <err>"
 //
-// 调用方契约:必须在指令边界(opcode/帧间)调用——一致命名 chargeStep
-// 但实际兼"步进进度 + 资源/取消门",未来 P3+ JIT 同名抢占点共用。
+// 调用方契约:必须在指令边界(opcode/帧间)调用,不能在 opcode 中段。
+// 三处抢占点(execute.go JMP 回边 / execute.go TFORLOOP 续跑 / frame.go
+// enterLuaFrame 函数进帧)共用同一入口——P3+ JIT 生成代码里同款抢占点
+// 也走这条逻辑(可直接复制或 inline 为机器码)。
 //
-// 快路径:无 budget、无 ctx 时为「读两个字段判 nil/0 → return nil」,
-// 已被 inline,简单加法 + 比较的开销可忽略(性能轮基准未观测影响)。
-func (st *State) chargeStep() *LuaError {
+// 性能:无 budget、无 ctx 的快路径是「两个字段判 0/nil → return nil」,
+// 已被 inline;启用任一时多一次 atomic.Load 或 int 比较,性能轮基准
+// 未观测可见影响。
+//
+// 历史:v0.1.2 前命名为 chargeStep(只算 budget),issue #4 上 SetContext
+// 时并入 ctx 检查,审计后改名 preempt 反映「抢占点」而非「计费」语义。
+func (st *State) preempt() *LuaError {
 	if st.stepBudget > 0 {
 		st.stepUsed++
 		if st.stepUsed > st.stepBudget {

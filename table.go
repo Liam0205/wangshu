@@ -16,6 +16,13 @@ import (
 // 的 Release() 控制(同 kFunction 的 pin 表机制)。
 //
 // 并发:同 State,单 goroutine(11 §8)。
+//
+// 性能档位:Set/Get/SetIndex/GetIndex/ForEach 每次跨 Go ↔ VM 边界
+// 一次(per-item 形态,design-premises 前提一)。适合「构造一次投喂」
+// 「脚本返一次读出」类 setup/teardown 形态;**不适合**在 Go 端循环里
+// 反复 SetIndex/GetIndex 大批量数据(那是 arena 列轨场景,见
+// [[embedding-contract]] arena ABI 节,零拷贝读)。Len 是 O(log N)
+// 数组段二分,可低频用。
 type Table struct {
 	st     *State
 	pinIdx uint32

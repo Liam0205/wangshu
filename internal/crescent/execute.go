@@ -189,7 +189,7 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 
 		case bytecode.JMP:
 			if bytecode.SBx(i) < 0 {
-				if e := st.chargeStep(); e != nil {
+				if e := st.preempt(); e != nil {
 					return e
 				}
 			}
@@ -286,7 +286,7 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 				cont = idx >= limit
 			}
 			if cont {
-				if e := st.chargeStep(); e != nil {
+				if e := st.preempt(); e != nil {
 					return e
 				}
 				setReg(th, ci, a, value.NumberValue(idx))

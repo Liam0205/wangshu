@@ -25,9 +25,9 @@ func (st *State) enterLuaFrame(th *thread, funcIdx, nargs, nresults int, entry b
 		return errf("stack overflow")
 	}
 	// 指令预算的调用计费点:纯递归风暴(蹦床式互递归在深度限内反复进出)
-	// 不经回边,只在此计费才兜得住。预算关闭且 ctx 未注入时 chargeStep
+	// 不经回边,只在此计费才兜得住。预算关闭且 ctx 未注入时 preempt
 	// 内部短路。
-	if e := st.chargeStep(); e != nil {
+	if e := st.preempt(); e != nil {
 		return e
 	}
 	v := th.stack[funcIdx]

@@ -48,6 +48,13 @@ type Options struct {
 	// 对齐 gopher-lua 嵌入式沙箱传统(issue #3)——无法以 (nil, errmsg)
 	// 形式优雅降级。
 	//
+	// **字段名 vs 实际刮范围**:字段名带 "File" 但实际刮的四件套包括
+	// loadstring 与 load——这两个不读文件,但作为**同源 dynamic
+	// code-loading 风险面**(运行期动态编译/装载代码,沙箱外能力相
+	// 当),与 loadfile/dofile 一并刮才能兜住完整 "load arbitrary
+	// code at runtime" 攻击面。若只需禁文件读保留 loadstring/load,
+	// 用 `AllowFileLoad=false`(默认)而非本字段。
+	//
 	// 默认 false:保留 PUC Lua 5.1.5 对位行为(AllowFileLoad=false 时
 	// loadfile 返回 (nil, errmsg)),官方 5.1.5 oracle 对拍不退化。
 	//
@@ -152,6 +159,11 @@ func (st *State) MarkGlobalsBaseline() { st.core.MarkGlobalsBaseline() }
 //	    prog.Run(st)                   // 脚本可能 hijack 或泄漏
 //	    st.ResetGlobalsToBaseline()    // 下次 Borrow 看到干净 _G
 //	}
+//
+// 性能档位:每次 Reset 遍历当前 _G 全部字符串 key 两遍(收集 + 删非
+// baseline + 写 baseline),O(N) for N=globals 数。typical N ~ 100-200
+// (stdlib + 宿主 helper),每次 Reset 微秒级——sync.Pool Borrow/Return
+// 边界开销可摊薄。绝不在脚本热路径中调用。
 func (st *State) ResetGlobalsToBaseline() { st.core.ResetGlobalsToBaseline() }
 
 // SetContext 绑定一个 context.Context 到 State——VM 在每个抢占点
@@ -296,6 +308,10 @@ func (st *State) SetGlobal(name string, v Value) {
 // 为 GC 根——Value 析构前请配合 v.Release() 显式释放槽位(可选;不释放
 // 仅在长驻 State 反复 GetGlobal 不同名 fn 时累积小量内存)。table 自 v0.1.2
 // 起经 v.AsTable() 暴露(issue #2);userdata 仍不暴露,映射为 Nil。
+//
+// 性能档位:同 SetGlobal——per-item 跨界(design-premises 前提一)。
+// 低频/原型/迁移期可用;高频热路径请改 arena 列轨([[embedding-contract]]
+// arena ABI 节)。
 func (st *State) GetGlobal(name string) Value {
 	v := st.core.GetGlobal(name)
 	return fromInnerWithPin(st, v)
