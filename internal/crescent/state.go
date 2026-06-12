@@ -85,6 +85,10 @@ type State struct {
 	gcSeen     map[*thread]bool
 	gcSeenRefs map[*thread]bool
 
+	// argsPool 是 callHost 实参缓冲池(LIFO;host→Lua→host 嵌套自然加深)。
+	// 池中空闲切片不持活跃 Value(归还即逻辑失效),不入 GC 根。
+	argsPool [][]value.Value
+
 	// allowFileLoad:loadfile/dofile 是否允许读宿主文件系统。默认 false
 	// (嵌入式 VM 接不可信脚本,文件读是越权探测面;10 §12.1 LibsSafe 思路
 	// 的最小落地)。宿主经 Options.AllowFileLoad 显式开启。
@@ -314,6 +318,29 @@ func (st *State) GCCollect() { st.gc.Collect() }
 
 // GCSetStopped 暂停/恢复自动 GC(collectgarbage("stop"/"restart"))。
 func (st *State) GCSetStopped(on bool) { st.gc.SetStopped(on) }
+
+// getArgsBuf / putArgsBuf:callHost 实参缓冲池。
+func (st *State) getArgsBuf(n int) []value.Value {
+	if last := len(st.argsPool) - 1; last >= 0 {
+		buf := st.argsPool[last]
+		st.argsPool = st.argsPool[:last]
+		if cap(buf) >= n {
+			return buf[:n]
+		}
+	}
+	if n < 8 {
+		return make([]value.Value, n, 8)
+	}
+	return make([]value.Value, n)
+}
+
+func (st *State) putArgsBuf(buf []value.Value) {
+	// 清引用防池中切片延长 arena 对象的 Go 侧可见性(非 GC 根,纯卫生)
+	for i := range buf {
+		buf[i] = value.Nil
+	}
+	st.argsPool = append(st.argsPool, buf)
+}
 
 // GCCountKB 返回 arena 当前活跃 KB 数(collectgarbage("count") / gcinfo):
 // bump - freelist 空闲字节,逼近官方 totalbytes 语义(GC 回收后回落,

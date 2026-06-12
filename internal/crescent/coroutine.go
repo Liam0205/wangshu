@@ -144,8 +144,9 @@ func (st *State) Resume(id uint64, args []value.Value) ([]value.Value, bool, *Lu
 		}
 		sig = st.execute(co.th)
 	} else {
-		// 从 yield 恢复:把 resume 参数作为 yield 的返回值传入
-		co.xfer = args
+		// 从 yield 恢复:把 resume 参数作为 yield 的返回值传入。
+		// 拷贝:args 可能来自 callHost 的池化缓冲,不得越过调用保留。
+		co.xfer = append(co.xfer[:0], args...)
 		st.runningThread = co.th
 		sig = st.executeResume(co.th)
 	}
@@ -183,7 +184,7 @@ func (st *State) Yield(args []value.Value) *LuaError {
 	if co == nil {
 		return errf("attempt to yield from outside a coroutine")
 	}
-	co.xfer = args
+	co.xfer = append(co.xfer[:0], args...) // 拷贝:args 是池化缓冲
 	return errYieldSentinel
 }
 

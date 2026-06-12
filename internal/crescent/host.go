@@ -83,7 +83,12 @@ func (st *State) callHost(th *thread, funcIdx, nargs, nresults int) *LuaError {
 	cl := value.GCRefOf(th.stack[funcIdx])
 	hid := object.ClosureProtoID(st.arena, cl)
 	fn := st.hostFns.fns[hid]
-	args := make([]value.Value, nargs)
+	// args 走 State 缓冲池(host 调用是 nbody 级负载的分配大头,91%)。
+	// HostFn 契约:不得越过本次调用保留 args 切片(返回 args 子切片如
+	// select 合法——归还在结果拷贝进栈之后);coroutine xfer 已改拷贝。
+	// host→Lua→host 嵌套时池 LIFO 自然加深。
+	args := st.getArgsBuf(nargs)
+	defer st.putArgsBuf(args)
 	for i := 0; i < nargs; i++ {
 		args[i] = th.stack[funcIdx+1+i]
 	}
