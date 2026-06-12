@@ -22,6 +22,13 @@ var tableFns = []entry{
 	{"sort", tableFnSort},
 	{"getn", tableFnGetn},
 	{"maxn", tableFnMaxn},
+	{"setn", tableFnSetn},
+}
+
+// tableFnSetn:table.setn —— 5.1.5 实测直接报 "'setn' is obsolete"
+// (10 §11 △ 列写"空操作",但 oracle 行为优先:对齐报错措辞保差分)。
+func tableFnSetn(_ *crescent.State, _ []value.Value) ([]value.Value, *crescent.LuaError) {
+	return nil, crescent.NewError("'setn' is obsolete") // 带位置前缀(executeFrom 注解)
 }
 
 func tblArg(args []value.Value, n int, fname string) (value.Value, *crescent.LuaError) {
@@ -226,6 +233,27 @@ var osFns = []entry{
 	{"clock", osFnClock},
 	{"date", osFnDate},
 	{"getenv", osFnGetenv},
+	{"difftime", osFnDifftime},
+}
+
+// osFnDifftime:os.difftime(t2, t1) = t2 - t1(POSIX 秒,5.1)。
+func osFnDifftime(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
+	if len(args) < 1 {
+		return nil, crescent.NewError("bad argument #1 to 'difftime'")
+	}
+	t2, ok := toNumberStr(st, args[0])
+	if !ok {
+		return nil, crescent.NewError("bad argument #1 to 'difftime' (number expected)")
+	}
+	t1 := 0.0
+	if len(args) >= 2 && args[1] != value.Nil {
+		var ok2 bool
+		t1, ok2 = toNumberStr(st, args[1])
+		if !ok2 {
+			return nil, crescent.NewError("bad argument #2 to 'difftime' (number expected)")
+		}
+	}
+	return []value.Value{value.NumberValue(t2 - t1)}, nil
 }
 
 func osFnTime(_ *crescent.State, _ []value.Value) ([]value.Value, *crescent.LuaError) {
@@ -293,6 +321,12 @@ func ioFnWrite(st *crescent.State, args []value.Value) ([]value.Value, *crescent
 var mathExtraFns = []entry{
 	{"fmod", mathFnFmod},
 	{"modf", mathFnModf},
+	{"atan2", mathFn2(atan2)},
+	{"sinh", mathFn1(sinh)},
+	{"cosh", mathFn1(cosh)},
+	{"tanh", mathFn1(tanh)},
+	{"frexp", mathFnFrexp},
+	{"ldexp", mathFn2(func(m, e float64) float64 { return ldexp(m, int(e)) })},
 	{"pow", mathFn2(func(a, b float64) float64 { return pow(a, b) })},
 	{"random", mathFnRandom},
 	{"randomseed", mathFnRandomSeed},
@@ -320,6 +354,18 @@ func mathFn2(f func(a, b float64) float64) crescent.HostFn {
 
 func mathFnFmod(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	return mathFn2(fmod)(st, args)
+}
+
+func mathFnFrexp(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
+	if len(args) < 1 {
+		return nil, crescent.NewError("bad argument #1 to 'frexp'")
+	}
+	x, ok := toNumberStr(st, args[0])
+	if !ok {
+		return nil, crescent.NewError("bad argument #1 to 'frexp' (number expected)")
+	}
+	m, e := frexp(x)
+	return []value.Value{value.NumberValue(m), value.NumberValue(float64(e))}, nil
 }
 
 func mathFnModf(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {

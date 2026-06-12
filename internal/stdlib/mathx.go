@@ -43,6 +43,21 @@ func deg(x float64) float64   { return x * 180 / math.Pi }
 func rad(x float64) float64   { return x * math.Pi / 180 }
 func log10(x float64) float64 { return math.Log10(x) }
 
+func atan2(y, x float64) float64 { return math.Atan2(y, x) }
+func sinh(x float64) float64     { return math.Sinh(x) }
+func cosh(x float64) float64     { return math.Cosh(x) }
+func tanh(x float64) float64     { return math.Tanh(x) }
+func frexp(x float64) (float64, int) {
+	f := math.Abs(x)
+	if f == 0 || math.IsInf(f, 0) || math.IsNaN(f) {
+		return x, 0
+	}
+	exp := int(math.Floor(math.Log2(f))) + 1
+	m := x / math.Ldexp(1, exp)
+	return m, exp
+}
+func ldexp(m float64, e int) float64 { return math.Ldexp(m, e) }
+
 const luaPi = math.Pi
 
 // luaHuge = +Inf(math.huge,5.1)。
