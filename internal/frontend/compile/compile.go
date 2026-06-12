@@ -29,10 +29,11 @@ func Compile(block *ast.Block, source string) (mainID uint32, protos []*bytecode
 	}()
 	cg := &codegen{source: source}
 	mainExpr := &ast.FuncExpr{
-		Line:     1,
-		Params:   nil,
-		IsVararg: true,
-		Body:     block,
+		Line:       1,
+		Params:     nil,
+		IsVararg:   true,
+		NoArgTable: true, // main chunk 无隐式 arg 表(官方 VARARG_ISVARARG only)
+		Body:       block,
 	}
 	cg.compileFunc(nil, mainExpr)
 	mainID = uint32(len(cg.protos) - 1)
@@ -46,12 +47,17 @@ func (cg *codegen) compileFunc(outerFS *funcState, fe *ast.FuncExpr) *bytecode.P
 	fs := newFuncState(cg, outerFS, cg.source, fe.Line)
 	fs.proto.NumParams = uint8(len(fe.Params))
 	fs.proto.IsVararg = fe.IsVararg
+	fs.proto.NeedsArg = fe.IsVararg && !fe.NoArgTable // LUA_COMPAT_VARARG 隐式 arg 表
 	fs.proto.LineEnd = fe.EndLine
 	fs.isVararg = fe.IsVararg
 
 	// 形参注册为 R(0..NumParams-1) 上的局部
 	for _, p := range fe.Params {
 		fs.registerLocal(fe.Line, p)
+	}
+	// 隐式 arg 表占形参后第一个寄存器(官方 "arg" 局部;进帧时由解释器填表)
+	if fs.proto.NeedsArg {
+		fs.registerLocal(fe.Line, "arg")
 	}
 	fs.freereg = fs.nactvar
 	if int(fs.proto.MaxStack) < fs.freereg {

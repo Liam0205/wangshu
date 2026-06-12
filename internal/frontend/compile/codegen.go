@@ -74,6 +74,10 @@ func (fs *funcState) expr(node ast.Expr) expDesc {
 		if !fs.isVararg {
 			raise(fs, e.Line, "cannot use '...' outside a vararg function")
 		}
+		// LUA_COMPAT_VARARG:函数体用了 `...` 即不再需要隐式 arg 表
+		// (官方 lparser:fs->f->is_vararg &= ~VARARG_NEEDSARG;
+		// "arg" 局部仍占寄存器,值留 nil)。
+		fs.proto.NeedsArg = false
 		pc := fs.emitABC(e.Line, bytecode.VARARG, 0, 1, 0)
 		return newExp(eVararg, pc)
 	case *ast.NameExpr:

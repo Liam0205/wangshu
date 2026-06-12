@@ -272,9 +272,15 @@ func (l *Lexer) scanNumber(startLine int32) (token.Token, error) {
 			return token.Token{}, l.errorf("malformed number near '%s'", string(l.src[start:l.pos]))
 		}
 		// 十六进制后不允许小数点 / 指数(P1 严格 5.1)。
+		// 超 64-bit 的十六进制按 strtoul 溢出语义取浮点近似(5.1:
+		// 0xFFFFFFFFFFFFFFFFF 合法,= 2.95e19 级浮点)。
 		n, err := strconv.ParseUint(string(l.src[hexStart:l.pos]), 16, 64)
 		if err != nil {
-			return token.Token{}, l.errorf("malformed number near '%s'", string(l.src[start:l.pos]))
+			f, ferr := hexToFloat(l.src[hexStart:l.pos])
+			if ferr != nil {
+				return token.Token{}, l.errorf("malformed number near '%s'", string(l.src[start:l.pos]))
+			}
+			return token.Token{Kind: token.NUMBER, Line: startLine, Num: f}, nil
 		}
 		return token.Token{Kind: token.NUMBER, Line: startLine, Num: float64(n)}, nil
 	}
@@ -304,9 +310,35 @@ func (l *Lexer) scanNumber(startLine int32) (token.Token, error) {
 	}
 	n, err := strconv.ParseFloat(string(l.src[start:l.pos]), 64)
 	if err != nil {
+		// 溢出(10e500)按 C strtod 语义取 ±Inf(5.1 合法字面量);
+		// 真正畸形(ParseFloat 语法错)才报 malformed。
+		if ne, ok := err.(*strconv.NumError); ok && ne.Err == strconv.ErrRange {
+			return token.Token{Kind: token.NUMBER, Line: startLine, Num: n}, nil
+		}
 		return token.Token{}, l.errorf("malformed number near '%s'", string(l.src[start:l.pos]))
 	}
 	return token.Token{Kind: token.NUMBER, Line: startLine, Num: n}, nil
+}
+
+// hexToFloat 把超 64-bit 的十六进制字面量按逐位累乘取浮点近似
+// (C strtoul 溢出后 5.1 经 lua_str2number 的 double 路径)。
+func hexToFloat(digits []byte) (float64, error) {
+	f := 0.0
+	for _, c := range digits {
+		var d int
+		switch {
+		case c >= '0' && c <= '9':
+			d = int(c - '0')
+		case c >= 'a' && c <= 'f':
+			d = int(c-'a') + 10
+		case c >= 'A' && c <= 'F':
+			d = int(c-'A') + 10
+		default:
+			return 0, strconv.ErrSyntax
+		}
+		f = f*16 + float64(d)
+	}
+	return f, nil
 }
 
 func (l *Lexer) scanShortString(startLine int32, quote byte) (token.Token, error) {

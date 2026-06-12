@@ -144,8 +144,11 @@ type FuncExpr struct {
 	Line     int32
 	Params   []string
 	IsVararg bool
-	Body     *Block
-	EndLine  int32
+	// NoArgTable:main chunk 合成的 FuncExpr 置 true——官方 main 只有
+	// VARARG_ISVARARG,不带 HASARG(无隐式 arg 表;LUA_COMPAT_VARARG)。
+	NoArgTable bool
+	Body       *Block
+	EndLine    int32
 }
 
 func (e *FuncExpr) Pos() int32 { return e.Line }

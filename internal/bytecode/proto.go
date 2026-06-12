@@ -33,6 +33,7 @@ type Proto struct {
 
 	NumParams uint8 // 形参个数
 	IsVararg  bool  // 是否 vararg 函数
+	NeedsArg  bool  // LUA_COMPAT_VARARG:vararg 函数隐式 arg 表(5.1 默认 compat;main chunk 无)
 	MaxStack  uint8 // 寄存器水位线(04 §5.3),解释器进帧时备栈
 
 	Code         []Instruction // 32-bit 指令流
