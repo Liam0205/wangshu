@@ -1,7 +1,7 @@
 # Makefile —— 唯一任务入口,CI 与本地共用(docs/design/engineering.md §1)
-.PHONY: all fmt lint test race cover fuzz bench conformance difftest hooks tidy
+.PHONY: all fmt lint test bench-test race cover fuzz bench conformance difftest hooks tidy
 
-all: fmt lint test                                  ## 默认:提交前本地全检
+all: fmt lint test bench-test                       ## 默认:提交前本地全检(主模块 + benchmarks 子模块)
 
 fmt:                                                ## 格式化(写回)
 	@files=$$(git ls-files '*.go'); [ -z "$$files" ] || gofmt -w $$files
@@ -9,8 +9,11 @@ fmt:                                                ## 格式化(写回)
 lint:                                               ## 全仓静态检查
 	golangci-lint run ./...
 
-test:                                               ## 全部单测(含 race)
+test:                                               ## 主模块单测(含 race)
 	go test -race ./...
+
+bench-test:                                         ## benchmarks 子模块的测试(realworld oracle parity)
+	cd benchmarks && go test -race ./...
 
 cover:                                              ## 覆盖率(coverage.out + 终端摘要)
 	go test -race -coverprofile=coverage.out -covermode=atomic ./...
@@ -26,12 +29,14 @@ difftest:                                           ## 一轮固定时长差分 
 	./scripts/check-oracle.sh
 	go test ./test/difftest/... -count=1
 
-bench:                                              ## 三档基准(12 §6)
-	go test -bench=. -benchmem -count=1 -run='^$$' ./benchmarks/...
+bench:                                              ## 三档微基准 + benchmark-game 真实负载(12 §6;benchmarks 独立子模块,gopher-lua 仅基准用,不污染主模块依赖图)
+	cd benchmarks && go test -bench=. -benchmem -count=1 -run='^$$' ./...
 
 hooks:                                              ## 安装 git hooks(一次性)
 	git config core.hooksPath .githooks
 	@echo "hooks installed: $$(git config core.hooksPath)"
 
-tidy:
-	go mod tidy && git diff --exit-code go.mod
+tidy:                                               ## 主模块 + benchmarks 子模块的 go mod tidy
+	go mod tidy
+	cd benchmarks && go mod tidy
+	git diff --exit-code go.mod go.sum benchmarks/go.mod benchmarks/go.sum

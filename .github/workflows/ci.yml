@@ -31,6 +31,11 @@ jobs:
           go-version-file: go.mod
       # -race 是硬门禁(经评审定稿,engineering.md §3.1)
       - run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
+      # benchmarks 子模块(独立 go.mod;gopher-lua 仅基准用,不污染主模块依赖图)。
+      # realworld 的 oracle parity 是真测试,必须随 CI 跑;oracle 在 difftest job
+      # 同步装,这里需要时单独装一次。
+      - run: sudo apt-get update && sudo apt-get install -y lua5.1
+      - run: cd benchmarks && go test -race ./...
       # 交叉编译冒烟:项目承诺「不依赖 cgo,保持交叉编译能力」,32 位
       # GOARCH 的 int 宽度差异曾导致编译失败而 amd64 门禁抓不到
       - run: GOOS=linux GOARCH=386 go build ./...
