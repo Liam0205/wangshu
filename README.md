@@ -23,12 +23,13 @@ P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 met
 
 ## 当前状态
 
-**P1(crescent 解释器)完整交付**:全里程碑 M0-M14 + 收尾轮(协程/pattern matcher/IC/arena ABI 等)落地,P1 总验收通过:
+**P1(crescent 解释器)完整交付**:全里程碑 M0-M14 + 收尾轮(协程/pattern matcher/IC/arena ABI 等)+ 长稳轮(freelist 内存复用/调用深度上限/并发验证)+ 审查核销轮(22+ 项逐函数对照官方源码的发现全量修复)落地,P1 总验收通过:
 
-- 三档基准 ≥2x over gopher-lua(Xeon 6982P-C 实测:simple **3.17x** / arith **3.04x** / loop **2.30x**);
-- 与官方 Lua 5.1.5 差分对拍逐字节一致:100 项手册逐节特性探测 + 10 项边角探测 + 26 条错误消息 + 70 种子用例 + 500 随机脚本(nightly 每晚 200 万滚动);
-- 特性面三列全落地:必做列 probe 全绿、简化列存在性验证、缺口列 12 项显式豁免(`TestExemptions_Documented` 可审计);
-- conformance 套全绿;GC 双模式透明性对照全绿;`make all`(gofmt + lint + race)全绿。
+- 三档基准 ≥2x over gopher-lua(Xeon 6982P-C 实测:simple **3.17x** / arith **3.04x** / loop **2.30x**);benchmark-game 真实负载(fib/binary-trees/spectral-norm/fannkuch/n-body)与 gopher-lua 大体相当(0.77x-1.17x),分配密集形态是 P2/P3 优化输入;
+- 与官方 Lua 5.1.5 差分对拍逐字节一致:**官方测试套 13 文件**(vararg/sort/pm 整文件,其余截至豁免线)+ 100 项手册逐节特性探测 + 12 项边角探测 + 29 条错误消息(含行号断言)+ 70 种子用例 + 500 随机脚本(nightly 每晚 200 万滚动)+ benchmark-game 五脚本返回值;
+- 特性面三列全落地:必做列 probe 全绿、简化列存在性验证、缺口列 15 项显式豁免(`TestExemptions_Documented` 可审计);
+- 长稳承诺:freelist 循环复用(22000 轮分配密集脚本 arena 稳定 17.4KB)、深递归报 `stack overflow` 可恢复(LUAI_MAXCALLS=20000 等价)、`-race` 下 Program 跨 goroutine 共享验证;
+- conformance 套全绿;GC 双模式透明性对照全绿;三平台交叉编译冒烟(386/windows/darwin-arm64);`make all`(gofmt + lint + race)全绿。
 
 ### 快速开始
 
@@ -64,7 +65,7 @@ results, err := prog.Call(st, ar) // 一次调用一次跨界
 
 ### P1 能力面
 
-NaN-boxed 值表示、arena + mark-sweep GC(弱表/finalizer)、完整前端(寄存器分配与 luac 同构)、大 switch 解释器(reentry,Lua 调用不增 Go 栈)、inline cache(表/全局访问直达槽)、元表全套、协程(create/resume/yield/wrap)、pcall/xpcall/error(位置前缀+traceback)、Lua 5.1 pattern matcher、stdlib(base/string/table/math/os/io/coroutine)、arena ABI 列数据零拷贝读、公共嵌入 API、三套测试机制(conformance/difftest 随机生成 + 官方对拍/benchmark)。
+NaN-boxed 值表示、arena + mark-sweep GC(弱表/finalizer/size-class freelist 内存复用)、完整前端(寄存器分配与 luac 同构)、大 switch 解释器(reentry,Lua 调用不增 Go 栈;调用深度上限可恢复)、inline cache(表/全局访问直达槽)、元表全套、协程(create/resume/yield/wrap)、pcall/xpcall/error(位置前缀+traceback+luaO_chunkid 同构)、Lua 5.1 pattern matcher(含 %f frontier/%z)、stdlib(base/string/table/math/os/io/coroutine + 5.0 兼容别名)、回边指令预算(不可信脚本配额)、arena ABI 列数据零拷贝读、公共嵌入 API、四套测试机制(conformance/官方测试套/difftest 随机生成 + 官方对拍/benchmark)。
 
 P3 迁移留口(对账记录见 [implementation-progress](docs/design/p1-interpreter/implementation-progress.md)):值栈/CallInfo 的 arena 物理搬迁(backing 注入点已就位)、upvalue 降序链。
 

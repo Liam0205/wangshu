@@ -45,9 +45,44 @@
 - **三档 ≥2x over gopher-lua**:✅ Xeon 6982P-C 实测(IC 落地后):
   simple 275ns vs 874ns = **3.18x**;arith 311ns vs 966ns = **3.10x**;
   loop 15.1µs vs 34.4µs = **2.28x**。分配 5 allocs/op vs gopher 8-124。
+- **benchmark-game 真实负载**(benchmarks/realworld):fib 1.17x、nbody 1.09x、
+  spectral-norm ~1.0x、fannkuch 0.83x、binary-trees 0.77x over gopher-lua。
+  真实负载混合下大体相当;分配/GC 密集形态(binary-trees)是短板
+  (STW full GC vs Go 增量 GC),记 P2/P3 优化输入。五脚本返回值与官方
+  lua5.1 逐字节一致(TestRealWorld_OracleParity)。
 - **与官方 Lua 5.1.5 输出逐字节一致**:✅ seed corpus 70 用例 + 随机生成
-  200 种子全部 byte-equal。oracle 源码编译供给(`~/.local/bin/lua5.1`)。
-- **`make all` 门禁**:✅ gofmt 空、golangci-lint 0 issues、`go test -race` 全绿。
+  500 种子全部 byte-equal。oracle 源码编译供给(`~/.local/bin/lua5.1`)。
+- **官方测试套移植**(test/luasuite):lua-5.1-tests 13 文件原样运行,
+  vararg/sort/pm 整文件通过,其余 10 个截断到豁免线(setfenv/debug/
+  io 对象/setlocale/string.dump/require,均对应豁免注册表),前缀全过;
+  stopAt 表强制登记、豁免线只许前移。
+- **长稳承诺**:freelist 循环复用(22000 轮分配密集脚本 arena 稳定
+  17.4KB);深递归 `stack overflow` 可恢复(LUAI_MAXCALLS=20000 等价);
+  pcall 自递归 `C stack overflow`(LUAI_MAXCCALLS=200 等价)先于 Go 栈
+  fatal;`-race` 下 Program 跨 16 goroutine 共享验证。
+- **`make all` 门禁**:✅ gofmt 空、golangci-lint 0 issues、`go test -race` 全绿;
+  三平台交叉编译冒烟(386/windows-amd64/darwin-arm64)进 CI。
+
+## 审查核销轮(外部逐提交审查 → 集中修复)
+
+外部代码审查逐函数对照官方源码,12 轮报告共发现 22+ 项真实问题,
+集中修复轮全量核销(每项独立提交,`95b51a3..`)。重点:
+
+- **DoS 级**:constFold 丢弃带跳转链的 eKNum(`(true and 7 or -1)+1` 一行
+  Go panic 崩宿主,潜伏自 M8)→ isnumeral 同构 + Program.call recover 兜底;
+  SETLIST 批号超 9-bit 截断挂死 → 官方 C=0+裸批号路径;深嵌套/无限循环 →
+  parse 深度护栏 + 回边指令预算。
+- **静默错果**:lexer 数字非贪心(`return 1or 2` 被接受执行)→ 官方
+  read_numeral 贪心重写;`(a)=5` 被接受 → ParenExpr 全包;table.remove
+  越界删末元素;math.max 首参吞错;Fb2Int 缺 &31 掩码。
+- **内存/资源**:arena 尺寸入口 uint32 回绕(4GiB 请求"成功"切 8 字节)→
+  uint64 域检查 fail-fast;对象尺寸公式四处手写 → object.SizeOf 单源;
+  hostFn 注册表无界增长(gmatch/mountArena)→ 引用计数槽回收。
+- **官方测试套驱动**(test/luasuite 移植扫出):break/repeat 漏发 CLOSE
+  (闭包捕获循环变量后 break 读脏值)、return 短路链快路径挂死、pattern
+  %z/未闭合捕获 panic/%q 格式、gsub/sort 走元方法、gmatch 空匹配推进、
+  near 原文(txtToken)、luaO_chunkid 同构、错误措辞 luaL_checknumber
+  格式、5.0 兼容别名(math.mod/foreach/gfind)。
 
 ## 与设计文档的对账(实现形态差异,均为接口等价)
 
