@@ -420,6 +420,12 @@ type thread struct {
 	cis     []callInfo
 	openUvs map[uint32]arena.GCRef // stackIdx → open Upvalue ref(M9 简化,M10 改降序链)
 
+	// maxOpenIdx 是 openUvs 中最大的 stackIdx(官方降序链表头的等价物):
+	// closeUpvals(level) 在 level > maxOpenIdx 时 O(1) 返回——RETURN 每帧
+	// 都调 closeUpvals,无此快路径时每次都全量迭代 map(曾占 20% CPU)。
+	// 不变式:openUvs 非空 ⇒ maxOpenIdx = max(keys);空 ⇒ 值无意义。
+	maxOpenIdx uint32
+
 	// pendingResume 在 yield 冒泡出 execute 时记录恢复信息(08 §3.3 saveFrame
 	// 的 P1 形态);resume 时由 executeResume 消费。
 	pendingResume *pendingResumeInfo

@@ -74,6 +74,9 @@ func (st *State) findOrCreateUpval(th *thread, stackIdx uint32) arena.GCRef {
 		return uv
 	}
 	uv := st.allocOpenUpvalue(0, stackIdx, 0)
+	if len(th.openUvs) == 0 || stackIdx > th.maxOpenIdx {
+		th.maxOpenIdx = stackIdx
+	}
 	th.openUvs[stackIdx] = uv
 	if st.uvOwner == nil {
 		st.uvOwner = map[arena.GCRef]*thread{}
@@ -83,18 +86,25 @@ func (st *State) findOrCreateUpval(th *thread, stackIdx uint32) arena.GCRef {
 }
 
 // closeUpvals 关闭所有 stackIdx ≥ level 的开放 upvalue。
+//
+// 快路径:level > maxOpenIdx(或无开放 uv)时 O(1) 返回——RETURN 每帧
+// 都经此,深递归负载下慢路径的 map 全量迭代是真实热点。
 func (st *State) closeUpvals(th *thread, level int) {
-	if th.openUvs == nil {
+	if len(th.openUvs) == 0 || level > int(th.maxOpenIdx) {
 		return
 	}
+	remainMax := uint32(0)
 	for idx, uv := range th.openUvs {
 		if int(idx) >= level {
 			val := th.stack[idx]
 			object.CloseUpvalue(st.arena, uv, val)
 			delete(th.openUvs, idx)
 			delete(st.uvOwner, uv)
+		} else if idx > remainMax {
+			remainMax = idx
 		}
 	}
+	th.maxOpenIdx = remainMax
 }
 
 // toStringBytes 把 Value 转为 []byte(用于 CONCAT)。
