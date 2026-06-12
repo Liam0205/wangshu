@@ -17,7 +17,7 @@
 - `Compile` 在编译期就完成可编译性探测与升层决策(对应 [[evolution-roadmap]] P2 的静态可编译性分析)。
 - `Program.Call` 的设计要点是把「跨界」压缩到每批一次——这是列内核形状在 API 层面的落地。
 
-> **P1 实际落地差异**(长稳/审查修复轮后):`Program.Call(state *State, arena *Arena, args ...Value)` **已按 11 §1.5 签名落地**(`wangshu.go`),arena 列数据接口可用——`NewArena` + 四类型列(`AddFloatColumn`/`AddInt64Column`/`AddBoolColumn`/`AddStringColumn`,见 `arena_abi.go`)+ presence bitmap + VM 内只读访问;另有 `Program.Run(state, args...)`(无 arena 便捷形)与 `NewState(Options)`。增量更新:① **公共 Value API 更名**——`String_()` → `Str()`、`GoString()` → `Display()`;② **`Options.AllowFileLoad` 安全门控**——`loadfile`/`dofile` 默认禁用,须显式开启(豁免注册表已登记);③ **`State.SetStepBudget`**——回边指令预算,超限抛可恢复 "instruction budget exceeded",宿主脚本配额的种子机制;④ **同一 Program 多 State 多 goroutine 并发已验证**(`test/.../concurrency_test.go`,`-race` 通过);⑤ hostFn 注册表槽回收(引用计数 + GC 回调,长驻 State 不再泄漏)。**per-item 简易 API(11 §7)仍未做**;可编译性探测/升层决策属 P2。实现形态与 11 的字段级差异见 `docs/design/p1-interpreter/implementation-progress.md` 对账表。
+> **P1 实际落地差异**(长稳/审查修复轮后):`Program.Call(state *State, arena *Arena, args ...Value)` **已按 11 §1.5 签名落地**(`wangshu.go`),arena 列数据接口可用——`NewArena` + 四类型列(`AddFloatColumn`/`AddInt64Column`/`AddBoolColumn`/`AddStringColumn`,见 `arena_abi.go`)+ presence bitmap + VM 内只读访问;另有 `Program.Run(state, args...)`(无 arena 便捷形)与 `NewState(Options)`。增量更新:① **公共 Value API 更名**——`String_()` → `Str()`、`GoString()` → `Display()`;② **`Options.AllowFileLoad` 安全门控**——`loadfile`/`dofile` 默认禁用,须显式开启(豁免注册表已登记);③ **`State.SetStepBudget`**——回边指令预算,超限抛可恢复 "instruction budget exceeded",宿主脚本配额的种子机制;④ **同一 Program 多 State 多 goroutine 并发已验证**(`test/.../concurrency_test.go`,`-race` 通过);⑤ hostFn 注册表槽回收(引用计数 + GC 回调,长驻 State 不再泄漏);⑥ **per-item drop-in 子集已落地**(issue #1):`State.SetGlobal/GetGlobal/Call(fn, args...)` + `State.Register/RegisterModule` + 公共 `HostFn = func(*State,[]Value)([]Value,error)`;`Value` 加 `kFunction` kind(外部不可构造,只由 `GetGlobal` 取出,经 State pin 表登记为 GC 根;`v.Release()` 显式释放)。`§7.1` 草图里的 Push/Pop/CallFn 栈机风格未做(pineapple 实际用法不依赖,见 [memory/reflections/2026-06-12-official-suite-perf-round](../memory/reflections/2026-06-12-official-suite-perf-round.md));host closure 的 Go 端直接 Call(`state.Call(hostFn,…)`)仍未开(internal `State.Call` 拒);HostFn 收到的 args 中 table/function/userdata 仍映射为 Nil。可编译性探测/升层决策属 P2。实现形态与 11 的字段级差异见 `docs/design/p1-interpreter/implementation-progress.md` 对账表。
 
 ## arena ABI
 
@@ -33,7 +33,7 @@
 
 ## 不强制 arena 的简易 API
 
-- **per-item 风格的简易 API 照常提供**(对标 gopher-lua 易用性;设计承诺,**P1 尚未落地**,见上差异标注);
+- **per-item 风格的简易 API 子集已落地**(对标 gopher-lua 易用性):`State.SetGlobal/GetGlobal/Call(fn, args...)` + `Register/RegisterModule`(见上差异标注 ⑥);未落地的 Push/Pop 栈机风格按 `§7.1` 草图保留承诺;
 - 但文档**明确标注其性能档位**——它走的是 per-item 跨界形态,落在被边界成本主导的那一档(见 [[design-premises]] 前提一)。
 
 ## 宿主绑定与 drop-in
