@@ -727,6 +727,14 @@ func stringFnRep(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 	if n < 0 {
 		n = 0
 	}
+	// 嵌入式 hardening:阻断脚本经 string.rep 触发宿主进程 OOM crash。
+	// 1 GiB 阈值是「实际使用足够 + 拦住上亿变体」的折中,与 PUC 5.1.5 /
+	// gopher-lua 不一致(两者均不防御直接 OOM),但「宿主进程不可崩」
+	// 优先级高于字节一致(12 §10 豁免)。可被 pcall 兜住。
+	const maxRepBytes = 1 << 30
+	if len(s) > 0 && n > 0 && len(s) > maxRepBytes/n {
+		return nil, crescent.NewError("string length overflow")
+	}
 	return []value.Value{intern(st, strings.Repeat(s, n))}, nil
 }
 

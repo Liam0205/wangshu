@@ -1,0 +1,2 @@
+go test fuzz v1
+string("string.rep(\"k\",100000000000000)")

@@ -189,6 +189,14 @@ func tableFnConcat(st *crescent.State, args []value.Value) ([]value.Value, *cres
 	}
 	iF, _ := numArg(st, args, 2, 1)
 	jF, _ := numArg(st, args, 3, float64(st.RawBorder(t)))
+	// 嵌入式 hardening:j 由脚本控制,1e14 等极大值会让 parts append 循环
+	// 耗尽宿主内存。table.concat 实际工程语义只在表 # 范围内有意义,
+	// 1<<24(~16M)是 hardening 上限——大于表长无意义(为 nil 索引),
+	// 让循环一开始就被裁口,实际工作循环仍由表元素数决定。
+	const maxConcatRange = 1 << 24
+	if jF-iF > maxConcatRange {
+		return nil, crescent.NewError("table.concat range too large")
+	}
 	var parts []string
 	for k := int(iF); k <= int(jF); k++ {
 		v, _ := st.RawGet(t, value.NumberValue(float64(k)))

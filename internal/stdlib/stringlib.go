@@ -356,21 +356,34 @@ func stringFnFormat(st *crescent.State, args []value.Value) ([]value.Value, *cre
 			continue
 		}
 		// 取 flags/width/precision
+		// 嵌入式 hardening:width/precision 拼装在 spec 里直接交给 fmt.Sprintf,
+		// `%.99999999999d` 会让 Go runtime 分配巨量字节直至 OOM 崩宿主。
+		// 与 string.rep 同源,1 GiB 阈值兜住上亿位变体(width/precision 是
+		// 十进制字符数,1<<30 = ~10 亿,记 maxFormatNumeric = 1 << 30)。
+		const maxFormatNumeric = 1 << 30
 		spec := []byte{'%'}
 		for i < len(f) && strings.ContainsRune("-+ #0", rune(f[i])) {
 			spec = append(spec, f[i])
 			i++
 		}
+		widthStart := i
 		for i < len(f) && isdigit(f[i]) {
 			spec = append(spec, f[i])
 			i++
 		}
+		if i-widthStart > 10 || (i > widthStart && atoiSimple(f[widthStart:i]) > maxFormatNumeric) {
+			return nil, crescent.NewError("invalid format width (too large)")
+		}
 		if i < len(f) && f[i] == '.' {
 			spec = append(spec, f[i])
 			i++
+			precStart := i
 			for i < len(f) && isdigit(f[i]) {
 				spec = append(spec, f[i])
 				i++
+			}
+			if i-precStart > 10 || (i > precStart && atoiSimple(f[precStart:i]) > maxFormatNumeric) {
+				return nil, crescent.NewError("invalid format precision (too large)")
 			}
 		}
 		if i >= len(f) {
