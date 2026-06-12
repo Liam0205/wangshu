@@ -450,7 +450,9 @@ func (st *State) LoadProgram(mainID uint32, protos []*bytecode.Proto) arena.GCRe
 // nresults < 0 表示"全部返回";否则按个数裁剪/补 nil。
 func (st *State) Call(cl arena.GCRef, args []value.Value, nresults int) ([]value.Value, error) {
 	if object.IsHostClosure(st.arena, cl) {
-		return nil, fmt.Errorf("Call: host closure not yet supported (M12)")
+		// 从 Go 端直接 Call host closure 需要临时栈帧脚手架,本期未做;
+		// 已 Register 的 host fn 由 Lua 内调用闭环工作(callHost 路径)。
+		return nil, fmt.Errorf("Call: host closure cannot be called from Go end; invoke it from Lua side instead")
 	}
 	// 复用主 thread(规则引擎形状 = 长驻 State 高频 Run 短脚本;每次
 	// newThread 的栈切片/扩容是无谓的 Go 堆 churn)。State 单 goroutine,

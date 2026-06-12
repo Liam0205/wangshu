@@ -37,7 +37,9 @@ func (st *State) enterLuaFrame(th *thread, funcIdx, nargs, nresults int, entry b
 	}
 	cl := value.GCRefOf(v)
 	if object.IsHostClosure(st.arena, cl) {
-		return errf("call: host closure not yet supported (M12)")
+		// 防御:正常 Lua → host 走 doCall/doTailCall 的 callHost 分支;
+		// 走到 enterLuaFrame 意味着调用入口绕过了 dispatch(internal bug)。
+		return errf("call: host closure cannot enter Lua frame (internal dispatch bug)")
 	}
 	pid := object.ClosureProtoID(st.arena, cl)
 	proto := st.protos[pid]

@@ -48,6 +48,29 @@ return ok, err
 	}
 }
 
+func TestCall_HostClosureRejected(t *testing.T) {
+	// 当前裁口:Register 注册的 host fn 只能 Lua 内调,Go 端经 GetGlobal
+	// 取出 + state.Call 直接调用应被清晰拒绝(internal callHost 入口
+	// 未对接 Go 端临时栈帧)。本测试保护这条边界 — 未来真做了支持时,
+	// 错误措辞同步移除即可。
+	st := wangshu.NewState(wangshu.Options{})
+	st.Register("noop", func(_ *wangshu.State, _ []wangshu.Value) ([]wangshu.Value, error) {
+		return nil, nil
+	})
+	fn := st.GetGlobal("noop")
+	defer fn.Release()
+	if !fn.IsFunction() {
+		t.Fatalf("noop not a function: %s", fn.Display())
+	}
+	_, err := st.Call(fn)
+	if err == nil {
+		t.Fatalf("Call(host closure): want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "host closure") {
+		t.Errorf("err = %q, want contain 'host closure'", err.Error())
+	}
+}
+
 func TestRegisterModule_NamespaceLookup(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{})
 	st.RegisterModule("math2", map[string]wangshu.HostFn{
