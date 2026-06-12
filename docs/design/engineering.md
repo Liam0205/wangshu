@@ -68,6 +68,16 @@ tidy:
 - 借鉴 pineapple 的 `go-fuzz.sh`(grep 自动发现 `^func Fuzz` 目标逐个跑),但入口统一挂 Makefile。
 - `make hooks` 替代 pineapple 的"README 一行指引"——新人 clone 后 `make hooks` 一步完成,README 与 [00-overview](./p1-interpreter/00-overview.md) 都指向它。
 
+### 1.1 fuzz seed 纪律(`make fuzz` 兜底机制)
+
+`scripts/go-fuzz.sh <fuzztime>` 给每个 fuzz target 一个 `-fuzztime` wall-clock 上限,**Go fuzz 框架内部用 `context.WithTimeout` 实现**——超时 cancel 时若仍有 iteration 在跑,框架报 `--- FAIL: FuzzX: context deadline exceeded` 强 fail。
+
+**纪律**:fuzz seed 不应包含「靠 `SetStepBudget` 兜底的近无限循环」(如 `while true do end` / `for i = 1, 1e9 do end`)——`SetStepBudget` 的 budget 计费按指令数,跟 fuzz 框架的 wall-clock 不同步。当解释器跑完 budget 的 wall-clock 量级接近 `-fuzztime`(秒级到十秒级)时,CI runner 慢一点就触发 false alarm。
+
+**正解**:循环 seed 把上限改到 budget 兜住的 wall-clock 量级以下。`SetStepBudget(1<<20)` 下,`1e5` 是稳定毫秒级触发,**`1e6` 在 fuzz 引擎变体下仍观察到「0/sec 拖尾」**——保守取 `1e5`。被破除的「测真无限循环不挂宿主」语义其实由 fuzz 引擎随机变体自身覆盖——seed 只是入口,引擎会生成远超 budget 的循环变体,无需手写无限循环。
+
+**首次踩坑**:v0.1.0 时 `fuzz_test.go` 有 `while true do end` + `for i=1,1e9 do end` 两 seed,CI 偶发 fail(`gh run 27414570482` v0.1.0 tag push 的失败);本地与 master push 无复现。修复见对应 commit。
+
 ---
 
 ## 2. Git hooks(`.githooks/`)

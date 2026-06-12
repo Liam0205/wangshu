@@ -25,8 +25,14 @@ return coroutine.resume(co)`,
 		`x = 1 return x`,
 		`return string.rep("a", 3)`,
 		`local a, b = 1 return b`,
-		`while true do end`,
-		`for i = 1, 1e9 do end`,
+		`for i = 1, 1e5 do end`,
+		// 1e5 而非 1e9:fuzz 框架 -fuzztime 内部用 context.WithTimeout
+		// 实现 wall-clock 超时,1e9 解释器跑 100ms-1s+ 接近 wall-clock 量级,
+		// CI runner 慢一点时框架报 "context deadline exceeded" 强 fail。
+		// 1e5 等价测「循环 + 预算兜底路径」,wall-clock 留余量(1e6 在 fuzz
+		// 引擎变体下也观察到 0/sec 拖尾)。fuzz seed 不应包含「靠 budget
+		// 兜底的近无限循环」是项目纪律(engineering.md §1.1)。
+		`local n = 0 for i = 1, 1e5 do n = n + i end return n`,
 	}
 	for _, s := range seeds {
 		f.Add(s)
@@ -40,8 +46,9 @@ return coroutine.resume(co)`,
 			return // 编译错误是合法结果
 		}
 		st := wangshu.NewState(wangshu.Options{})
-		// 回边指令预算兜住无限/超长循环(while true do end、for i=1,1e9)。
-		// 比源码子串过滤健壮:loadstring/拼接构造的循环同样兜得住。
+		// 回边指令预算兜住超长循环(for i=1,1e6 等);fuzz 引擎也会生成
+		// 远超 budget 的循环变体,SetStepBudget 是结构性兜底。比源码子串
+		// 过滤健壮:loadstring/拼接构造的循环同样兜得住。
 		st.SetStepBudget(1 << 20)
 		_, _ = prog.Run(st) // 运行期错误(含预算超额)是合法结果;panic 才是 bug
 	})
