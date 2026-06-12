@@ -1,6 +1,7 @@
 package parse
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/Liam0205/wangshu/internal/frontend/ast"
@@ -282,5 +283,67 @@ func TestLexErrorPropagates(t *testing.T) {
 	}
 	if pe.Source != "test" || pe.Line != 1 {
 		t.Errorf("source/line: %q/%d", pe.Source, pe.Line)
+	}
+}
+
+// 括号表达式是 rvalue,不可作赋值目标(官方 lparser 只接受 VLOCAL/VGLOBAL/
+// VINDEXED)。单值内核解包会把 `(a)` 还原成 NameExpr 被错误接受执行。
+func TestParenNotAssignable(t *testing.T) {
+	for _, src := range []string{
+		"local a = 1; (a) = 5",
+		"local a, b = 1, 2; a, (b) = 3, 4",
+	} {
+		if err := parseErr(t, src); err == nil {
+			t.Errorf("%q: expected syntax error (paren expr is rvalue)", src)
+		}
+	}
+	// `(t).x = 1` 合法:索引链落在括号外,目标是 IndexExpr。
+	if err := parseErr(t, "local t = {}; (t).x = 1"); err != nil {
+		t.Errorf("(t).x = 1 should parse: %v", err)
+	}
+}
+
+// 5.1 特设检查(lparser.c funcargs):'(' 与函数前缀不同行报 ambiguous
+// syntax(5.2 移除;锁 5.1 保留)。同行调用、STRING/LBRACE 实参不受影响。
+func TestAmbiguousSyntaxCrossLineCall(t *testing.T) {
+	for _, src := range []string{
+		"local f = print\nf\n(3)",
+		"local t = {m = print}\nt:m\n(3)",
+	} {
+		err := parseErr(t, src)
+		if err == nil || !strings.Contains(err.Error(), "ambiguous syntax") {
+			t.Errorf("%q: want ambiguous syntax error, got %v", src, err)
+		}
+	}
+	for _, src := range []string{
+		"local f = print f(3)",
+		"local f = print\nf \"x\"",
+		"local f = print\nf {1}",
+		"local f = print\nf(\n3)", // 跨行的是实参,不是 '('
+	} {
+		if err := parseErr(t, src); err != nil {
+			t.Errorf("%q: should parse, got %v", src, err)
+		}
+	}
+}
+
+// 索引链行号统一取运算符('.'/'[')所在行(对齐官方 5.1)。
+func TestIndexExprLineIsOperatorLine(t *testing.T) {
+	b := parseSrc(t, "local t = {}\nlocal v = t\n .x")
+	ls, ok := b.Stmts[1].(*ast.LocalStmt)
+	if !ok {
+		t.Fatalf("stmt type: %T", b.Stmts[1])
+	}
+	ie, ok := ls.Exprs[0].(*ast.IndexExpr)
+	if !ok {
+		t.Fatalf("expr type: %T", ls.Exprs[0])
+	}
+	if ie.Line != 3 {
+		t.Errorf("dot-index line = %d, want 3 (operator line)", ie.Line)
+	}
+	b2 := parseSrc(t, "local t = {}\nlocal v = t\n [1]")
+	ie2 := b2.Stmts[1].(*ast.LocalStmt).Exprs[0].(*ast.IndexExpr)
+	if ie2.Line != 3 {
+		t.Errorf("bracket-index line = %d, want 3 (operator line)", ie2.Line)
 	}
 }

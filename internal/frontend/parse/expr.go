@@ -184,30 +184,29 @@ func (p *Parser) parsePrefixExpr() (ast.Expr, error) {
 		if err := p.expect(token.RPAREN); err != nil {
 			return nil, err
 		}
-		// 括号强制单值:仅当内部是多值源(Call/Vararg)时需要 ParenExpr 包裹
-		switch inner.(type) {
-		case *ast.CallExpr, *ast.MethodCallExpr, *ast.VarargExpr:
-			e = &ast.ParenExpr{Line: line, E: inner}
-		default:
-			e = inner
-		}
+		// 一律包 ParenExpr:① 多值源收敛单值;② 括号表达式是 rvalue,
+		// isAssignable 须能识别拒绝 `(a) = 5`(官方 syntax error;单值内核
+		// 解包会还原成 NameExpr 被错误接受)。codegen 对单值内核零开销。
+		e = &ast.ParenExpr{Line: line, E: inner}
 	default:
 		return nil, p.errorf("unexpected symbol near %s", p.tok.String())
 	}
 	for {
 		switch p.tok.Kind {
 		case token.DOT:
+			opLine := p.tok.Line
 			if err := p.next(); err != nil {
 				return nil, err
 			}
 			if !p.match(token.NAME) {
 				return nil, p.errorf("<name> expected near %s", p.tok.String())
 			}
-			e = &ast.IndexExpr{Line: p.tok.Line, Obj: e, Key: &ast.StringExpr{Line: p.tok.Line, Val: p.tok.Str}}
+			e = &ast.IndexExpr{Line: opLine, Obj: e, Key: &ast.StringExpr{Line: p.tok.Line, Val: p.tok.Str}}
 			if err := p.next(); err != nil {
 				return nil, err
 			}
 		case token.LBRACK:
+			opLine := p.tok.Line
 			if err := p.next(); err != nil {
 				return nil, err
 			}
@@ -218,7 +217,7 @@ func (p *Parser) parsePrefixExpr() (ast.Expr, error) {
 			if err := p.expect(token.RBRACK); err != nil {
 				return nil, err
 			}
-			e = &ast.IndexExpr{Line: e.Pos(), Obj: e, Key: key}
+			e = &ast.IndexExpr{Line: opLine, Obj: e, Key: key}
 		case token.COLON:
 			if err := p.next(); err != nil {
 				return nil, err
@@ -252,6 +251,13 @@ func (p *Parser) parsePrefixExpr() (ast.Expr, error) {
 func (p *Parser) parseArgs() ([]ast.Expr, error) {
 	switch p.tok.Kind {
 	case token.LPAREN:
+		// 5.1 特设检查(lparser.c funcargs):'(' 与函数前缀末 token 不同行报
+		// ambiguous syntax——`f\n(3)` 既像调用又像新语句,官方编译期拒绝
+		// (5.2 移除;锁 5.1 保留)。STRING/LBRACE 实参形式不检查。
+		// 普通调用与 obj:m\n(3) 方法调用路径都经此处。
+		if p.tok.Line != p.lastLine {
+			return nil, p.errorf("ambiguous syntax (function call x new statement) near '('")
+		}
 		if err := p.next(); err != nil {
 			return nil, err
 		}

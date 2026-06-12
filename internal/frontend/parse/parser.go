@@ -30,6 +30,10 @@ type Parser struct {
 	ahead    token.Token
 	hasAhead bool
 
+	// lastLine 是上一个已消费 token 的行号(官方 ls->lastline 等价;
+	// funcargs 的 ambiguous syntax 检查用)。
+	lastLine int32
+
 	// 在 vararg 函数体内 → 允许 `...`(VarargExpr)。enterFuncBody 切换。
 	insideVararg bool
 
@@ -74,6 +78,7 @@ func Parse(lx *lex.Lexer, source string) (*ast.Block, error) {
 
 // next advances to the next token: from ahead if buffered, else pull from lexer.
 func (p *Parser) next() error {
+	p.lastLine = p.tok.Line
 	if p.hasAhead {
 		p.tok = p.ahead
 		p.hasAhead = false
