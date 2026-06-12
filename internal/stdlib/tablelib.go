@@ -487,10 +487,10 @@ func baseFnUnpackImpl(st *crescent.State, args []value.Value) ([]value.Value, *c
 	if i > j {
 		return nil, nil // 空区间
 	}
-	// 范围上限(官方经 lua_checkstack 拒绝):2^30 级区间会分配巨型切片
-	// 把进程拖死,先于分配报错。
+	// 范围上限对齐官方 LUAI_MAXCSTACK(luaconf.h,经 lua_checkstack 拒绝):
+	// unpack({},1,100000) 官方报错;同时防 2^30 级区间分配巨型切片拖死进程。
 	n := j - i + 1
-	if n <= 0 || n > 1<<20 {
+	if n <= 0 || n > 8000 {
 		return nil, crescent.NewError("too many results to unpack")
 	}
 	out := make([]value.Value, 0, n)
