@@ -1,6 +1,7 @@
 package lex
 
 import (
+	"math"
 	"strings"
 	"testing"
 
@@ -84,12 +85,50 @@ func TestNumbers(t *testing.T) {
 }
 
 func TestNumberMalformed(t *testing.T) {
-	for _, s := range []string{"0x", "1ee", "1e+"} {
+	// 官方 read_numeral 是「贪心吃完 + 整体校验」:数字后紧跟字母/多余的点
+	// 整段进入校验并报 malformed number。结构化扫描"吃不动就停"会把这些
+	// 拆成相邻 token 静默接受——`return 1or 2` 曾被错误执行返回 1。
+	for _, s := range []string{
+		"0x", "1ee", "1e+",
+		"1or", "3..5", "1.2.3", "1abc",
+		"0x.8", "1_000", "0x1p+4", "0xGG",
+	} {
 		lx := New([]byte(s), "test")
 		_, err := lx.Next()
 		if err == nil {
-			t.Errorf("%q: expected lex error", s)
+			t.Errorf("%q: expected lex error (malformed number)", s)
 		}
+	}
+}
+
+func TestNumberGreedyEdges(t *testing.T) {
+	// 与 oracle 5.1.5 逐项核对的合法边角:
+	// 1. = 1 / 1.e2 = 100(尾点合法);0x1p4 = 16(系统 strtod 的 C99 hex float);
+	// 超 64-bit hex 取浮点近似;10e500 溢出取 +Inf。
+	cases := []struct {
+		src string
+		num float64
+	}{
+		{"1.", 1},
+		{"1.e2", 100},
+		{"0x1p4", 16},
+		{"0xFFFFFFFFFFFFFFFFF", 2.9514790517935283e+20},
+		{"10e500", math.Inf(1)},
+	}
+	for _, c := range cases {
+		toks := scanAll(t, c.src)
+		if len(toks) != 1 || toks[0].Kind != token.NUMBER {
+			t.Fatalf("%q → %v", c.src, toks)
+		}
+		if toks[0].Num != c.num {
+			t.Errorf("%q: got %v, want %v", c.src, toks[0].Num, c.num)
+		}
+	}
+	// `1e5.5`:贪心段在第二个点前停止(指数后不吃点),官方同样是
+	// NUMBER(1e5) 后跟 parser 级 syntax error,词法层不报错。
+	toks := scanAll(t, "1e5.5")
+	if len(toks) != 2 || toks[0].Num != 1e5 {
+		t.Errorf("1e5.5: got %v, want NUMBER(100000) NUMBER(0.5)", toks)
 	}
 }
 

@@ -16,7 +16,9 @@ package lex
 
 import (
 	"fmt"
+	"math"
 	"strconv"
+	"strings"
 
 	"github.com/Liam0205/wangshu/internal/frontend/token"
 )
@@ -259,86 +261,107 @@ func (l *Lexer) scanIdentifierOrKeyword(startLine int32) token.Token {
 	return token.Token{Kind: token.NAME, Line: startLine, Str: name}
 }
 
+// scanNumber 对齐官方 llex.c read_numeral 的「贪心吃完 + 整体校验」(03 §5.2):
+// 先吃所有数字与小数点,可选指数标记(eE 后可带 +-),再吃尾随的字母数字与
+// 下划线,整段交 parseNumeral 校验;解析不尽即 malformed number。
+// `1or`/`3..5`/`1.2.3`/`1abc` 等与官方一致拒绝——结构化扫描"吃不动就停"会把
+// 它们拆成相邻 token 静默接受(`return 1or 2` 错误地执行返回 1)。
 func (l *Lexer) scanNumber(startLine int32) (token.Token, error) {
 	start := l.pos
-	if l.src[l.pos] == '0' && (l.peek(1) == 'x' || l.peek(1) == 'X') {
-		// 十六进制整数(Lua 5.1:不支持 hex float;那是 5.2+)。
-		l.pos += 2
-		hexStart := l.pos
-		for !l.atEnd() && isHexDigit(l.src[l.pos]) {
-			l.pos++
-		}
-		if l.pos == hexStart {
-			return token.Token{}, l.errorf("malformed number near '%s'", string(l.src[start:l.pos]))
-		}
-		// 十六进制后不允许小数点 / 指数(P1 严格 5.1)。
-		// 超 64-bit 的十六进制按 strtoul 溢出语义取浮点近似(5.1:
-		// 0xFFFFFFFFFFFFFFFFF 合法,= 2.95e19 级浮点)。
-		n, err := strconv.ParseUint(string(l.src[hexStart:l.pos]), 16, 64)
-		if err != nil {
-			f, ferr := hexToFloat(l.src[hexStart:l.pos])
-			if ferr != nil {
-				return token.Token{}, l.errorf("malformed number near '%s'", string(l.src[start:l.pos]))
-			}
-			return token.Token{Kind: token.NUMBER, Line: startLine, Num: f}, nil
-		}
-		return token.Token{Kind: token.NUMBER, Line: startLine, Num: float64(n)}, nil
-	}
-
-	// 十进制(可含小数点与指数)。
-	for !l.atEnd() && isDigit(l.src[l.pos]) {
+	// 贪心一段:数字与 '.'(官方 do-while isdigit || '.')
+	for !l.atEnd() && (isDigit(l.src[l.pos]) || l.src[l.pos] == '.') {
 		l.pos++
 	}
-	if !l.atEnd() && l.src[l.pos] == '.' {
-		l.pos++
-		for !l.atEnd() && isDigit(l.src[l.pos]) {
-			l.pos++
-		}
-	}
+	// 可选指数标记(官方 check_next "Ee" + check_next "+-",各至多一次)
 	if !l.atEnd() && (l.src[l.pos] == 'e' || l.src[l.pos] == 'E') {
 		l.pos++
 		if !l.atEnd() && (l.src[l.pos] == '+' || l.src[l.pos] == '-') {
 			l.pos++
 		}
-		expStart := l.pos
-		for !l.atEnd() && isDigit(l.src[l.pos]) {
+	}
+	// 贪心二段:字母数字与下划线(`1or` 的 or、`0x10` 的 x10 都吃进来整体校验)
+	for !l.atEnd() {
+		c := l.src[l.pos]
+		if isAlpha(c) || isDigit(c) || c == '_' {
 			l.pos++
+			continue
 		}
-		if l.pos == expStart {
-			return token.Token{}, l.errorf("malformed number near '%s'", string(l.src[start:l.pos]))
-		}
+		break
 	}
-	n, err := strconv.ParseFloat(string(l.src[start:l.pos]), 64)
-	if err != nil {
-		// 溢出(10e500)按 C strtod 语义取 ±Inf(5.1 合法字面量);
-		// 真正畸形(ParseFloat 语法错)才报 malformed。
-		if ne, ok := err.(*strconv.NumError); ok && ne.Err == strconv.ErrRange {
-			return token.Token{Kind: token.NUMBER, Line: startLine, Num: n}, nil
-		}
-		return token.Token{}, l.errorf("malformed number near '%s'", string(l.src[start:l.pos]))
+	lit := string(l.src[start:l.pos])
+	f, ok := parseNumeral(lit)
+	if !ok {
+		return token.Token{}, l.errorf("malformed number near '%s'", lit)
 	}
-	return token.Token{Kind: token.NUMBER, Line: startLine, Num: n}, nil
+	return token.Token{Kind: token.NUMBER, Line: startLine, Num: f}, nil
 }
 
-// hexToFloat 把超 64-bit 的十六进制字面量按逐位累乘取浮点近似
-// (C strtoul 溢出后 5.1 经 lua_str2number 的 double 路径)。
-func hexToFloat(digits []byte) (float64, error) {
-	f := 0.0
-	for _, c := range digits {
-		var d int
-		switch {
-		case c >= '0' && c <= '9':
-			d = int(c - '0')
-		case c >= 'a' && c <= 'f':
-			d = int(c-'a') + 10
-		case c >= 'A' && c <= 'F':
-			d = int(c-'A') + 10
-		default:
-			return 0, strconv.ErrSyntax
-		}
-		f = f*16 + float64(d)
+// parseNumeral 等价官方 luaO_str2d(整段消费,不尽即失败):
+//   - 0x/0X 前缀走 hex 路径(任意位数累乘取浮点近似,可带 C99 p 指数——
+//     oracle 5.1.5 经系统 strtod 接受 `0x1p4` = 16);
+//   - 十进制走 strtod 语义(溢出 ErrRange 取 ±Inf,5.1 合法字面量);
+//   - 下划线分组是 Go 字面量扩展,C strtod 不接受,先行拒绝。
+func parseNumeral(s string) (float64, bool) {
+	if strings.IndexByte(s, '_') >= 0 {
+		return 0, false
 	}
-	return f, nil
+	if len(s) >= 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X') {
+		return parseHexNumeral(s[2:])
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		if ne, ok := err.(*strconv.NumError); ok && ne.Err == strconv.ErrRange {
+			return f, true
+		}
+		return 0, false
+	}
+	return f, true
+}
+
+// parseHexNumeral 解析 0x 后的部分:hexdigits(≥1,任意位数,float64 域累乘
+// 容忍精度丢失),可选 [pP][decdigits](二进制指数)。负指数不可达:贪心
+// 二段在 '-' 处停止,官方 read_numeral 缓冲同样到不了符号。
+func parseHexNumeral(s string) (float64, bool) {
+	i := 0
+	f := 0.0
+	for i < len(s) && isHexDigit(s[i]) {
+		f = f*16 + float64(hexDigitVal(s[i]))
+		i++
+	}
+	if i == 0 {
+		return 0, false
+	}
+	if i == len(s) {
+		return f, true
+	}
+	if s[i] != 'p' && s[i] != 'P' {
+		return 0, false
+	}
+	i++
+	expStart := i
+	exp := 0
+	for i < len(s) && isDigit(s[i]) {
+		exp = exp*10 + int(s[i]-'0')
+		if exp > 1<<16 {
+			exp = 1 << 16 // Ldexp 饱和 ±Inf,防 int 溢出
+		}
+		i++
+	}
+	if i == expStart || i != len(s) {
+		return 0, false
+	}
+	return math.Ldexp(f, exp), true
+}
+
+func hexDigitVal(c byte) int {
+	switch {
+	case c >= '0' && c <= '9':
+		return int(c - '0')
+	case c >= 'a' && c <= 'f':
+		return int(c-'a') + 10
+	default:
+		return int(c-'A') + 10
+	}
 }
 
 func (l *Lexer) scanShortString(startLine int32, quote byte) (token.Token, error) {
