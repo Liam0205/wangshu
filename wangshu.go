@@ -170,7 +170,7 @@ func (prog *Program) call(state *State, ar *Arena, args []Value) (results []Valu
 	}
 	out := make([]Value, len(inner))
 	for i, v := range inner {
-		out[i] = fromInner(state, v)
+		out[i] = fromInnerWithPin(state, v)
 	}
 	return out, nil
 }
@@ -247,7 +247,7 @@ func (st *State) Call(fn Value, args ...Value) (results []Value, err error) {
 	}
 	out := make([]Value, len(inner))
 	for i, v := range inner {
-		out[i] = fromInner(st, v)
+		out[i] = fromInnerWithPin(st, v)
 	}
 	return out, nil
 }
@@ -317,9 +317,10 @@ func (st *State) mountArena(ar *Arena) {
 // Value 是公共 API 的多类型值(11 §4.5)。
 //
 // P1/M13 简化版:用一个 sum-type Go struct 表示。GC 解耦:Value 持的
-// 字符串内容已从 VM arena 拷出(string),函数值通过所属 State 的 pin
-// 表间接持有(kFunction:外部不可构造,只能从 GetGlobal 取出再传给 Call)。
-// 表/userdata 仍不暴露。
+// 字符串内容已从 VM arena 拷出(string),函数 / 表值通过所属 State 的
+// pin 表间接持有(kFunction / kTable:外部不可直接构造 GCRef,只能从
+// NewTable / GetGlobal / Call 返回值取出,经 pin 表登记为 GC 根)。
+// userdata 仍不暴露。
 type Value struct {
 	kind kind
 	// number 字段
@@ -328,7 +329,7 @@ type Value struct {
 	str []byte
 	// bool 字段
 	b bool
-	// function 字段:fnState 为所属 State,pinIdx 是其 pin 表索引。
+	// function / table 字段:fnState 为所属 State,pinIdx 是其 pin 表索引。
 	// fnState != nil 表示有效;Release 后置 nil。
 	fnState *State
 	pinIdx  uint32
@@ -342,9 +343,11 @@ const (
 	kNumber
 	kString
 	kFunction
+	kTable
 )
 
-// 构造器(function 没有公共构造器,只能由 GetGlobal 取出)。
+// 构造器(function/table 无公共构造器:function 由 GetGlobal 取出,
+// table 由 State.NewTable 创建)。
 func Nil() Value             { return Value{kind: kNil} }
 func Bool(b bool) Value      { return Value{kind: kBool, b: b} }
 func Number(f float64) Value { return Value{kind: kNumber, num: f} }
@@ -356,18 +359,22 @@ func (v Value) IsBool() bool     { return v.kind == kBool }
 func (v Value) IsNumber() bool   { return v.kind == kNumber }
 func (v Value) IsString() bool   { return v.kind == kString }
 func (v Value) IsFunction() bool { return v.kind == kFunction && v.fnState != nil }
+func (v Value) IsTable() bool    { return v.kind == kTable && v.fnState != nil }
 
 // 读出。
 func (v Value) Bool() bool      { return v.b }
 func (v Value) Number() float64 { return v.num }
 func (v Value) Str() string     { return string(v.str) }
 
-// Release 显式释放 function Value 的 pin 表槽位。重复 Release / 非
-// function Value 上调用均无副作用。长驻 State 下若 GetGlobal 反复取出
-// 不同名函数且不 Release,pin 表会按槽位累积——pineapple 一类「每脚本
-// 一次 GetGlobal」的形态无此问题,可以省略 Release;高吞吐场景应配对。
+// Release 显式释放 function / table Value 的 pin 表槽位。重复 Release /
+// 其它 kind 上调用均无副作用。长驻 State 下若反复 NewTable / GetGlobal
+// 取出 function 且不 Release,pin 表会按槽位累积——pineapple 一类「每脚本
+// 一次取出」的形态无此问题,可以省略 Release;高吞吐场景应配对。
 func (v *Value) Release() {
-	if v.kind != kFunction || v.fnState == nil {
+	if v.fnState == nil {
+		return
+	}
+	if v.kind != kFunction && v.kind != kTable {
 		return
 	}
 	v.fnState.core.UnpinRef(v.pinIdx)
@@ -390,15 +397,18 @@ func (v Value) Display() string {
 		return string(v.str)
 	case kFunction:
 		return "function"
+	case kTable:
+		return "table"
 	}
 	return "<unknown>"
 }
 
 // toInner / fromInner 桥接公共 Value 与 internal value.Value。
 //
-// kFunction 桥接到内部 TagFunction 时,直接复用所属 State 的 pin 表槽
-// (caller 已在 State.Call 层校验 fnState == 目标 state);跨 State 的
-// function Value 在此被映射为 Nil 兜底(防 GCRef 错绑 arena 引发 UAF)。
+// kFunction / kTable 桥接到内部 TagFunction / TagTable 时,直接复用所属
+// State 的 pin 表槽(caller 已在 State.Call 层校验 fnState == 目标 state);
+// 跨 State 的 function/table Value 在此被映射为 Nil 兜底(防 GCRef 错绑
+// arena 引发 UAF)。
 func (v Value) toInner(state *State) value.Value {
 	switch v.kind {
 	case kNil:
@@ -420,6 +430,15 @@ func (v Value) toInner(state *State) value.Value {
 			return value.Nil
 		}
 		return value.MakeGC(value.TagFunction, ref)
+	case kTable:
+		if v.fnState != state {
+			return value.Nil
+		}
+		ref := state.core.PinnedRefAt(v.pinIdx)
+		if ref.IsNull() {
+			return value.Nil
+		}
+		return value.MakeGC(value.TagTable, ref)
 	}
 	return value.Nil
 }
@@ -441,18 +460,25 @@ func fromInner(state *State, v value.Value) Value {
 		return Value{kind: kString, str: out}
 	}
 	// table/function/userdata 默认不暴露(返回 nil);
-	// function 的暴露由专门 GetGlobal 路径走 pin 表,避免静默副作用。
+	// function/table 的暴露由 fromInnerWithPin 经 pin 表显式登记,
+	// 避免静默副作用(每次 raw 读都把 GCRef 钉住会无界泄漏)。
 	return Nil()
 }
 
-// fromInnerWithPin 是「可携带 function 引用」的桥接,仅 GetGlobal 一类
-// 「公共面取出全局值供 Go 长期持有」的入口调用。function 走 PinRef 登记
+// fromInnerWithPin 是「可携带 function / table 引用」的桥接,仅
+// GetGlobal / NewTable / State.Call 返回值一类「公共面取出 / 创建
+// 复合值供 Go 长期持有」的入口调用。function / table 走 PinRef 登记
 // 到 State pin 表(GC 根)以隔离 globals 覆盖与 freelist 复用风险。
 func fromInnerWithPin(state *State, v value.Value) Value {
-	if value.Tag(v) == value.TagFunction {
+	switch value.Tag(v) {
+	case value.TagFunction:
 		ref := value.GCRefOf(v)
 		idx := state.core.PinRef(ref)
 		return Value{kind: kFunction, fnState: state, pinIdx: idx}
+	case value.TagTable:
+		ref := value.GCRefOf(v)
+		idx := state.core.PinRef(ref)
+		return Value{kind: kTable, fnState: state, pinIdx: idx}
 	}
 	return fromInner(state, v)
 }
