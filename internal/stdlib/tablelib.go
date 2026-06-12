@@ -480,8 +480,18 @@ func baseFnUnpackImpl(st *crescent.State, args []value.Value) ([]value.Value, *c
 	t := value.GCRefOf(tv)
 	iF, _ := numArg(st, args, 1, 1)
 	jF, _ := numArg(st, args, 2, float64(st.RawBorder(t)))
-	var out []value.Value
-	for k := int(iF); k <= int(jF); k++ {
+	i, j := int(iF), int(jF)
+	if i > j {
+		return nil, nil // 空区间
+	}
+	// 范围上限(官方经 lua_checkstack 拒绝):2^30 级区间会分配巨型切片
+	// 把进程拖死,先于分配报错。
+	n := j - i + 1
+	if n <= 0 || n > 1<<20 {
+		return nil, crescent.NewError("too many results to unpack")
+	}
+	out := make([]value.Value, 0, n)
+	for k := i; k <= j; k++ {
 		v, _ := st.RawGet(t, value.NumberValue(float64(k)))
 		out = append(out, v)
 	}
