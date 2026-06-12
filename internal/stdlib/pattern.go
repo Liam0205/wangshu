@@ -25,10 +25,17 @@ type matchState struct {
 	pat      []byte
 	level    int
 	captures [maxCaptures]capture
-	depth    int // 递归保护
+	depth    int // 递归保护(深度)
+	steps    int // 回溯预算(宽度):多层量词的组合回溯是指数级,必须有界
 }
 
-const maxMatchDepth = 200
+const (
+	maxMatchDepth = 200
+	// maxMatchSteps 是单次 patternFind 的 match 调用总预算。
+	// 灾难性回溯(如 ".*.+%A*" 对长主语)在 5.1 C 实现里会真跑很久;
+	// 纯 Go 实现选择有界失败("pattern too complex"),保证 fuzz/嵌入场景不挂起。
+	maxMatchSteps = 1 << 20
+)
 
 // classMatch 判定字符 c 是否属于类 cl(%a 等单字母类)。
 func classMatch(c byte, cl byte) bool {
@@ -171,6 +178,10 @@ func (ms *matchState) match(s, p int) (int, error) {
 		return -1, fmt.Errorf("pattern too complex")
 	}
 	defer func() { ms.depth-- }()
+	ms.steps++
+	if ms.steps > maxMatchSteps {
+		return -1, fmt.Errorf("pattern too complex")
+	}
 
 	for {
 		if p >= len(ms.pat) {
@@ -377,6 +388,9 @@ func bytesEqual(a, b []byte) bool {
 
 // patternFind 在 src[init:] 中找 pat 的首个匹配。
 // 返回 (start, end, captures, found):start/end 是 0-based 字节区间 [start, end)。
+//
+// 回溯预算(maxMatchSteps)横跨全部起点共享:逐起点重试不重置 steps,
+// 保证单次 find 总耗时有界。
 func patternFind(src, pat []byte, init int) (int, int, []capResult, bool, error) {
 	anchored := len(pat) > 0 && pat[0] == '^'
 	p := 0
@@ -384,8 +398,9 @@ func patternFind(src, pat []byte, init int) (int, int, []capResult, bool, error)
 		p = 1
 	}
 	s := init
+	ms := &matchState{src: src, pat: pat}
 	for {
-		ms := &matchState{src: src, pat: pat}
+		ms.level = 0
 		r, err := ms.match(s, p)
 		if err != nil {
 			return 0, 0, nil, false, err
