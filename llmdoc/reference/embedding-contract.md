@@ -37,6 +37,8 @@
 
 **与对偶面**:与长稳轮「内存复用类变更配套清单」对偶——后者管 VM 内部 freelist 内的根全审计,本条款管公共 API 暴露的长持 GCRef。两面同根:**任何让某对象在「VM 自己的生命周期管理之外」被持有,都必须显式接根**。
 
+**baseline 维度**:globals baseline(issue #6)是同一不变式在「内部状态恢复」维度的落地——baseline 快照持有的复合值(table/function)同样是 GC 可达对象,经 `visitExtraValues`(而非 pin 表的 `visitExtraRefs`)入 GC 根。pin 表管「公共 API 暴露的长持 GCRef」,baseline 管「内部状态恢复需要的长持 GCRef」,两者分通道但同一不变式:长持 GCRef 必须接根。
+
 **锚点**:`87031c2`(kFunction 立项)/ `2b55e11`(kTable 验证机制通用);源反思 `memory/reflections/2026-06-12-issue1-api-gap-round.md` 教训 2 + `2026-06-12-issue234-api-gap-round-2.md` Q2 评估。工作流维度的落地纪律(怎么判断该接根、怎么验证)见 [[public-api-incremental-delivery]] §2。
 
 ## arena ABI
@@ -53,14 +55,19 @@
 
 ## 不强制 arena 的简易 API
 
-- **per-item 风格的简易 API 子集已落地**(对标 gopher-lua 易用性):`State.SetGlobal/GetGlobal/Call(fn, args...)` + `Register/RegisterModule`(见上差异标注 ⑥);未落地的 Push/Pop 栈机风格按 `§7.1` 草图保留承诺;
+- **per-item 风格的简易 API 子集已落地**(对标 gopher-lua 易用性):`State.SetGlobal/GetGlobal/Call(fn, args...)` + `Register/RegisterModule`(见上差异标注 ⑥);
+- **Table 读写全闭环已落地**:`NewTable` / `Set/SetIndex/Get/GetIndex/Len` + `ForEach` 任意 key 迭代(见差异标注 ⑦ ⑩)——写入与迭代读出对称,宿主端完整操作 Lua table 无需 Push/Pop;
+- **globals baseline 状态隔离已落地**:`MarkGlobalsBaseline/ResetGlobalsToBaseline`(见差异标注 ⑪)——sync.Pool 复用 State 形态下宿主端一行调用恢复干净 _G,drop-in 配套能力;
+- 未落地的 Push/Pop 栈机风格按 `§7.1` 草图保留承诺;
 - 但文档**明确标注其性能档位**——它走的是 per-item 跨界形态,落在被边界成本主导的那一档(见 [[design-premises]] 前提一)。
 
 ## 宿主绑定与 drop-in
 
 - **首个目标宿主**:一个**多运行时规则引擎**(其 Go 运行时现用 gopher-lua);但接口**不绑定任何宿主**。
 - **P1 解释器即可作为 gopher-lua 的 drop-in 候选**(见 [[evolution-roadmap]] P1)。
-- **stdlib 默认面对齐 gopher-lua 的 OpenLibs 提供面**(兑现 drop-in 宣称);宿主收紧机制的设计承诺是三层:**LibsSafe 预设 / Libs 位掩码 / Exclude 函数级**——收紧能力是 VM 责任,收紧决策是宿主责任。**当前实际落地是单点门控 `Options.AllowFileLoad`**(loadfile/dofile 默认禁用),完整三层机制留待宿主接入前落地(见 doc-gaps)。细节见 `docs/design/p1-interpreter/10-stdlib.md` §12.1、`11-embedding-arena-abi.md` §1.2;决策背景见 `memory/decisions/2026-06-11-design-review-decisions.md` 第 6 项。
+- **stdlib 默认面对齐 gopher-lua 的 OpenLibs 提供面**(兑现 drop-in 宣称);宿主收紧机制的设计承诺是三层:**LibsSafe 预设 / Libs 位掩码 / Exclude 函数级**——收紧能力是 VM 责任,收紧决策是宿主责任。**当前实际落地是双门控**:`Options.AllowFileLoad`(loadfile/dofile 默认禁用)+ `Options.HideFileLoaders`(issue #3,严格沙箱:从 globals 刮除 loadfile/dofile/loadstring/load 四件套,见差异标注 ⑧),完整三层机制留待宿主接入前落地(见 doc-gaps)。
+- **sync.Pool 复用 State 配套**:`MarkGlobalsBaseline/ResetGlobalsToBaseline`(issue #6)提供 pool 取出→跑脚本→重置→放回的状态隔离闭环,对位 gopher-lua statePool snapshotBaselineValues + resetToBaseline 模式(见差异标注 ⑪)。
+- 细节见 `docs/design/p1-interpreter/10-stdlib.md` §12.1、`11-embedding-arena-abi.md` §1.2;决策背景见 `memory/decisions/2026-06-11-design-review-decisions.md` 第 6 项。
 
 ---
 

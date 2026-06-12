@@ -57,6 +57,12 @@ internal 包要接受「外部世界」对象(context / io / timer / net 等)时
 
 反例:`27b4f2e` 用 `SetCancelHook(fn func() error)` 而非 `SetContext(ctx context.Context)`,`context` 依赖只在 `wangshu.go` 注入(`st.core.SetCancelHook(ctx.Err)`),`internal/crescent` 保持零标准库非基础包依赖。
 
+## 9. 对称面检查——交付时扫读写/创建迭代/挂入取出闭环
+
+交付公共 API issue 时,检查该 API 触及的数据结构是否在**写入/读出、创建/迭代、挂入/取出**等对称面同时闭环。若某一面只做了一半(只有写入没有迭代读出,或只有创建没有遍历),要么在同 issue 补齐,要么在 commit message / issue 评论显式标注「X 面留口,后续 issue 补」——不允许静默留半闭环。
+
+反例:issue #2 关闭时只有 `Set/SetIndex/Get/GetIndex/Len` 写入与单键读出能力,缺任意 key 迭代(`ForEach`),直到 issue #5 才补齐。脚本返回 map 的场景下宿主无法遍历——这是典型的「写入闭环但迭代读出缺失」半闭环。若 issue #2 交付时做过对称面检查,ForEach 可以提前识别为同批交付或显式留口。
+
 ## 落点文件参考
 
 - 反思原始样本:
@@ -66,4 +72,7 @@ internal 包要接受「外部世界」对象(context / io / timer / net 等)时
 - 锚点 commit:
   - issue #1 三件套:`87031c2` feat / `cb6e1ae` Register / `5d8d2c2` doc / `031ec06` 评审跟进
   - issue #2/#3/#4 四件套:`2b55e11` Table / `09fdd72` HideFileLoaders / `27b4f2e` SetContext / `584db8e` doc / `bb1e9a8` 评审跟进
+  - issue #5:`4f855d2` ForEach
+  - issue #6:`3d34839` baseline
+  - doc:`755d5ce`
 - 同族 guide:[[perf-optimization-workflow]]——「快路径家族审计」(优化扫同族)与本 guide 「范围扩张顺手收口」(裁口扫同族)是同一纪律在不同维度的两个落地。

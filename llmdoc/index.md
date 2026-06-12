@@ -25,13 +25,13 @@
 - [[value-representation]] — 值表示与内存模型:NaN-boxing vs Go tagged struct 决策、自管 arena、自写 mark-sweep GC、同一块内存使编译层成增量。**问值/内存/GC/为什么这样选看这篇。**
 
 ### reference/
-- [[embedding-contract]] — 宿主嵌入契约:`Compile→Program`、`Program.Call(state, arena, args)`(收尾轮已落地,差异标注见该篇)、arena ABI(类型化扁平列 + 字符串区 + presence bitmap,零拷贝读)、per-item 简易 API(未做)、drop-in 定位。字段级 spec 在 `docs/design/p1-interpreter/11-embedding-arena-abi.md`。**问宿主怎么嵌入、API 形状看这篇。**
+- [[embedding-contract]] — 宿主嵌入契约:`Compile→Program`、`Program.Call(state, arena, args)`(收尾轮已落地,差异标注见该篇)、arena ABI(类型化扁平列 + 字符串区 + presence bitmap,零拷贝读)、per-item 简易 API 子集已落地(含 Table 读写全闭环 + ForEach + globals baseline 状态隔离)、drop-in 定位。字段级 spec 在 `docs/design/p1-interpreter/11-embedding-arena-abi.md`。**问宿主怎么嵌入、API 形状看这篇。**
 - [[glossary]] — 术语表 + prior art 借鉴点。**遇到 NaN-boxing/arena/tier/月相/deopt/列内核等术语,或问参照项目看这篇。**
 
 ### guides/
 - [[multi-doc-drafting]] — 多文档并行起草工作流:回填请求节协议、单点收口、验收口径收口点指定、子代理失败恢复纪律、收尾主动盘点不确定决策、向用户提问自包含契约。**要一次起草多篇互引文档、或大型设计任务收尾时看这篇。**
 - [[perf-optimization-workflow]] — 性能优化工作流:profile 先行(预判清单会被推翻)、每项独立 benchmark 验证 + 单域提交、可疑优化 benchmark 否决门 + 快 revert、归因诚实、池化/复用类优化配套清单。**做性能优化前看这篇。**
-- [[public-api-incremental-delivery]] — 公共 API 增量交付工作流:设计承诺源三角验证(issue 字面 vs 设计承诺源 vs 真实场景三角不自洽时 AskUserQuestion 三档拍板)、GCRef 接根(指向 [[embedding-contract]] 不变式条款)、单域物理隔离手法(按文件抽取再分次 commit)、错误消息稳定语义、行为变更显式标注、范围扩张顺手收口、对位测试断言先 grep oracle、internal 接口签名避免反向依赖标准库。**接公共面 issue / 扩 ABI 表面 / drop-in 对位补面 / 给 Program 加字段时看这篇。**
+- [[public-api-incremental-delivery]] — 公共 API 增量交付工作流(9 条纪律):设计承诺源三角验证、GCRef 接根(指向 [[embedding-contract]] 不变式条款)、单域物理隔离手法、错误消息稳定语义、行为变更显式标注、范围扩张顺手收口、对位测试断言先 grep oracle、internal 接口签名避免反向依赖标准库、**对称面检查**(写入/读出闭环)。**接公共面 issue / 扩 ABI 表面 / drop-in 对位补面 / 给 Program 加字段时看这篇。**
 
 ### memory/
 - `memory/doc-gaps.md` — 已识别的文档缺口与待外部确认事项(随实现推进收敛;含已收口审计记录)。
@@ -45,6 +45,7 @@
 - `memory/reflections/2026-06-12-longevity-review-fix-round.md` — 长稳与审查核销轮(freelist 复用 + 12 轮外部审查 22+ 项全核销)过程教训:**三轴防线模型**(fuzz=行为自洽 / probe=特性面完整性 / review=规范同构+形态组合,前两轴全绿不构成第三轴可省略的理由)、**同构须到时序层**(constFold 须在 exp2RK 之后,操作顺序本身就是规范)、**注释承诺审计**(注释声称的防线不存在就是 bug 预告,四实例)、**内存复用类变更的「良性→致命」升级清单纪律**(复用前先列哪些潜伏 bug 会从良性变 UAF,根审计/尺寸单一源/debug 设施同批)、修复轮收尾的历史 bug 保护测试盘点。**做资源复用类变更、引入外部审查、或写 C→Go 移植代码前看这篇。**
 - `memory/reflections/2026-06-12-official-suite-perf-round.md` — 官方测试套与性能轮(luasuite 移植扫出 20 项分歧全修 + profile 驱动六项优化 + IC DataOff 实测回退否决)过程教训:三轴升级为**四轴防线模型**(官方套=作者语义断言,独有负断言能力)、stopAt 棘轮机制、profile 先行(最大收益项 closeUpvals 不在预判清单)、benchmark 否决门 + 快 revert、归因诚实(9.0x 主因是 thread 复用消固定开销)、快路径家族审计(cbaae3f 反例)。**做性能优化、接官方测试套、或评估防线覆盖时看这篇。**
 - `memory/reflections/2026-06-12-issue1-api-gap-round.md` — issue #1 公共面 API 缺口轮(per-item drop-in 子集 + Register/Module + 公共 HostFn + Value.kFunction + pin 表 GC 根)过程教训:**「设计承诺源回看」纪律**(issue 字面边界与 issue 描述的业务场景不自洽是常见根因,从设计承诺源反推真实最小可用集)、**宿主长持 GCRef 必须接 GC 根**(first-class function value 暴露的对偶面,pin 表/`visitExtraRefs` 接 R8 类常驻根,Release 可选但根必须有)、**单域提交的物理隔离手法**(一锅写完后按文件抽取再 git add 分次,比 git add -p 选 hunks 更可靠)、**错误消息稳定语义纪律**(不带里程碑编号/hash/时态承诺,公共面措辞与实现状态解耦);附带短评:**主库 go.mod 零外部依赖**(benchmark oracle 依赖按用途拆独立子模块,`d1ff096`)。**两条 promotion 候选(增量交付 guide 立项、GCRef 接根升 reference 不变式)已在 issue234 反思轮拍板落地。**
+- `memory/reflections/2026-07-14-issue56-api-gap-round-3.md` — issue #5/#6 公共面 API 缺口轮 3(Table.ForEach + globals baseline 状态隔离)过程教训:对称面缺口延迟发现(写入/读出闭环检查)、GC 根两条通道(pin 表 visitExtraRefs vs baseline visitExtraValues)、线性扫描量级显式注明、同款工作流三轮零阻塞验证 guide 已稳定。**promotion 已落地**:[[public-api-incremental-delivery]] 第 9 条对称面检查 + [[embedding-contract]] 不变式段补 baseline GC 根指针。
 - `memory/reflections/2026-06-12-issue234-api-gap-round-2.md` — issue #2/#3/#4 公共面 API 缺口轮 2(Table / HideFileLoaders 沙箱 / Context 取消钩子)过程教训:同款工作流第二轮验证「设计承诺源回看 / GCRef 接根 / 单域物理隔离 / 错误消息稳定」四条纪律可复用(尤其 kTable 复用 kFunction 同款 pin 表零额外成本,验证机制级通用),**新增四条**:**行为变更显式标注**(`fromInner → fromInnerWithPin` 静默扩面被评审抓出,`bb1e9a8` godoc 补 v0.1.1→v0.1.2 行为变更段,是错误稳定语义纪律的对偶面)、**范围扩张顺手收口**(发现上轮裁口阻挡本轮 spec 时现场收掉比留 trick 跨 issue 强 100 倍,但 commit message 必须显式标注)、**对位测试断言先 grep oracle**(PUC 5.1 实际错误带变量名前缀,印象写法反而验证了实现已对齐官方)、**internal 接口签名避免反向依赖标准库**(`SetCancelHook(func() error)` 抽象签名留在门面层注入 context,保持 internal 零标准库非基础包依赖,P3+ JIT 同款机制可共用)。**两条 promotion 已落地**:[[public-api-incremental-delivery]] guide 立项聚合 8 条纪律 + [[embedding-contract]] 升级公共 first-class GCRef-bearing value 接 GC 根为契约级不变式。**做公共 API 演进对外披露评审、规划「相对前版静默改了什么」时看这篇。**
 
 ---
