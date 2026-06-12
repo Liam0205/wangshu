@@ -86,12 +86,14 @@ func (st *State) callHost(th *thread, funcIdx, nargs, nresults int) *LuaError {
 			th.stack[dst+k] = value.Nil
 		}
 	}
-	// 调用者期望固定个数:把 top 收缩回 caller 帧的逻辑顶(等于 base+MaxStack 由
-	// caller 保留;CALL 后 top 不应越过这个)。最稳妥的是恢复到 dst+want。
-	if th.top > dst+want {
-		// 不能强行收 top,可能影响 caller 局部寄存器读。但 CALL 之后没人读 funcIdx 之上
-		// 的栈槽(除非紧跟 multret 指令);保守做法是 top 不动。
-		_ = want
+	// 定长结果:恢复 top 到当前帧逻辑顶(05 §1.2 CallInfo.top 维护;对齐
+	// 5.1 "L->top = ci->top")。否则前一条多值 CALL(C=0)留下的低 top 会让
+	// 后续 callLuaFromHost 的脚手架覆写活跃寄存器(TFORLOOP state 槽被毁)。
+	if len(th.cis) > 0 {
+		ci := currentCI(th)
+		frameTop := ci.base + int(ci.proto.MaxStack)
+		th.ensureStack(frameTop)
+		th.top = frameTop
 	}
 	return nil
 }

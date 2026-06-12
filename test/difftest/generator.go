@@ -54,7 +54,7 @@ func generateScript(seed int64) string {
 }
 
 func (g *genState) stmt() {
-	switch g.rng.Intn(10) {
+	switch g.rng.Intn(15) {
 	case 0:
 		g.declNum()
 	case 1:
@@ -75,6 +75,16 @@ func (g *genState) stmt() {
 		g.closureDef()
 	case 9:
 		g.multiAssign()
+	case 10:
+		g.genericFor()
+	case 11:
+		g.nestedFunc()
+	case 12:
+		g.patternStmt()
+	case 13:
+		g.metaIndex()
+	case 14:
+		g.coroutineStmt()
 	}
 }
 
@@ -85,6 +95,9 @@ func (g *genState) newLocal(k localKind) string {
 }
 
 // pickLocal 找一个指定类型的局部;没有则新建。
+//
+// 新建路径必须按"声明语句产生的局部下标"回查(decl* 内部可能级联新建其它
+// 类型局部,len-1 不一定是目标类型)。
 func (g *genState) pickLocal(k localKind) string {
 	var cand []int
 	for i, lk := range g.locals {
@@ -101,7 +114,12 @@ func (g *genState) pickLocal(k localKind) string {
 		case localTbl:
 			g.declTbl()
 		}
-		return fmt.Sprintf("v%d", len(g.locals)-1)
+		// 重新扫描:取新建后第一个该类型局部
+		for i, lk := range g.locals {
+			if lk == k {
+				return fmt.Sprintf("v%d", i)
+			}
+		}
 	}
 	return fmt.Sprintf("v%d", cand[g.rng.Intn(len(cand))])
 }
@@ -208,6 +226,89 @@ func (g *genState) multiAssign() {
 	b := g.newLocal(localNum)
 	fmt.Fprintf(&g.sb, "local function two%s() return %s, %s end\nlocal %s, %s = two%s()\n",
 		a, g.numExpr(), g.numExpr(), a, b, a)
+}
+
+// genericFor 泛型 for:ipairs 序确定可直接对拍;pairs 用序无关聚合(求和/计数)。
+func (g *genState) genericFor() {
+	t := g.pickLocal(localTbl)
+	acc := g.pickLocal(localNum)
+	if g.rng.Intn(2) == 0 {
+		// ipairs:序确定
+		fmt.Fprintf(&g.sb, "for i, x in ipairs(%s) do %s = %s + i * (x %% 97) end\n", t, acc, acc)
+	} else {
+		// pairs:只做序无关聚合(键计数 + 数值求和)
+		fmt.Fprintf(&g.sb, "for k, x in pairs(%s) do %s = %s + 1 + (type(x) == \"number\" and (x %% 89) or 0) end\n",
+			t, acc, acc)
+	}
+}
+
+// nestedFunc 两层嵌套函数定义(内层捕获外层形参)。
+func (g *genState) nestedFunc() {
+	name := g.newLocal(localNum)
+	fmt.Fprintf(&g.sb, `local function outer%s(a)
+  local function inner(b) return a + b end
+  return inner(%s)
+end
+local %s = outer%s(%d)
+`, name, g.numExpr(), name, name, g.rng.Intn(100))
+}
+
+// patternStmt 受控模式集的 string.find/match/gsub(模式固定白名单,主语随机)。
+func (g *genState) patternStmt() {
+	name := g.newLocal(localStr)
+	subjects := []string{
+		`"abc 123 def"`, `"key=value;x=y"`, `"  spaced  "`, `"UPPER lower"`,
+		`"a1b2c3"`, `"hello-world"`, `"[bracket]"`,
+	}
+	subj := subjects[g.rng.Intn(len(subjects))]
+	switch g.rng.Intn(4) {
+	case 0:
+		pats := []string{`"%d+"`, `"%a+"`, `"%w+"`, `"[a-z]+"`}
+		fmt.Fprintf(&g.sb, "local %s = tostring(string.match(%s, %s))\n",
+			name, subj, pats[g.rng.Intn(len(pats))])
+	case 1:
+		pats := []string{`"%s"`, `"="`, `"%d"`}
+		fmt.Fprintf(&g.sb, "local %s = tostring(string.find(%s, %s))\n",
+			name, subj, pats[g.rng.Intn(len(pats))])
+	case 2:
+		fmt.Fprintf(&g.sb, "local %s = string.gsub(%s, \"%%a\", \"_\")\n", name, subj)
+	case 3:
+		fmt.Fprintf(&g.sb, `local %s = ""
+for w in string.gmatch(%s, "%%w+") do %s = %s .. w .. "," end
+`, name, subj, name, name)
+	}
+}
+
+// metaIndex 元表 __index 两形态(表链 / 函数)。
+func (g *genState) metaIndex() {
+	name := g.newLocal(localNum)
+	if g.rng.Intn(2) == 0 {
+		fmt.Fprintf(&g.sb, `local base%s = { v = %d }
+local t%s = setmetatable({}, { __index = base%s })
+local %s = t%s.v
+`, name, g.rng.Intn(1000), name, name, name, name)
+	} else {
+		fmt.Fprintf(&g.sb, `local t%s = setmetatable({}, { __index = function(_, k) return #k + %d end })
+local %s = t%s.somekey
+`, name, g.rng.Intn(50), name, name)
+	}
+}
+
+// coroutineStmt 协程 yield 次序对拍(yield 序确定)。
+func (g *genState) coroutineStmt() {
+	name := g.newLocal(localStr)
+	n := 2 + g.rng.Intn(3)
+	fmt.Fprintf(&g.sb, `local co%s = coroutine.create(function(z)
+  for i = 1, %d do z = coroutine.yield(z + i) end
+  return z
+end)
+local %s = ""
+local arg%s = %d
+for i = 1, %d do
+  local ok, v = coroutine.resume(co%s, arg%s)
+  %s = %s .. tostring(v) .. ";"
+end
+`, name, n, name, name, g.rng.Intn(20), n+1, name, name, name, name)
 }
 
 // numExpr 产一个安全的数值表达式。
