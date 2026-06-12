@@ -17,7 +17,7 @@
 - `Compile` 在编译期就完成可编译性探测与升层决策(对应 [[evolution-roadmap]] P2 的静态可编译性分析)。
 - `Program.Call` 的设计要点是把「跨界」压缩到每批一次——这是列内核形状在 API 层面的落地。
 
-> **P1 实际落地差异**(收尾轮后):`Program.Call(state *State, arena *Arena, args ...Value)` **已按 11 §1.5 签名落地**(`wangshu.go`),arena 列数据接口可用——`NewArena` + 四类型列(`AddFloatColumn`/`AddInt64Column`/`AddBoolColumn`/`AddStringColumn`,见 `arena_abi.go`)+ presence bitmap + VM 内只读访问;另有 `Program.Run(state, args...)`(无 arena 便捷形)与 `NewState(Options)`。**per-item 简易 API(11 §7)仍未做**;可编译性探测/升层决策属 P2。实现形态与 11 的字段级差异见 `docs/design/p1-interpreter/implementation-progress.md` 对账表。
+> **P1 实际落地差异**(长稳/审查修复轮后):`Program.Call(state *State, arena *Arena, args ...Value)` **已按 11 §1.5 签名落地**(`wangshu.go`),arena 列数据接口可用——`NewArena` + 四类型列(`AddFloatColumn`/`AddInt64Column`/`AddBoolColumn`/`AddStringColumn`,见 `arena_abi.go`)+ presence bitmap + VM 内只读访问;另有 `Program.Run(state, args...)`(无 arena 便捷形)与 `NewState(Options)`。增量更新:① **公共 Value API 更名**——`String_()` → `Str()`、`GoString()` → `Display()`;② **`Options.AllowFileLoad` 安全门控**——`loadfile`/`dofile` 默认禁用,须显式开启(豁免注册表已登记);③ **`State.SetStepBudget`**——回边指令预算,超限抛可恢复 "instruction budget exceeded",宿主脚本配额的种子机制;④ **同一 Program 多 State 多 goroutine 并发已验证**(`test/.../concurrency_test.go`,`-race` 通过);⑤ hostFn 注册表槽回收(引用计数 + GC 回调,长驻 State 不再泄漏)。**per-item 简易 API(11 §7)仍未做**;可编译性探测/升层决策属 P2。实现形态与 11 的字段级差异见 `docs/design/p1-interpreter/implementation-progress.md` 对账表。
 
 ## arena ABI
 
@@ -40,7 +40,7 @@
 
 - **首个目标宿主**:一个**多运行时规则引擎**(其 Go 运行时现用 gopher-lua);但接口**不绑定任何宿主**。
 - **P1 解释器即可作为 gopher-lua 的 drop-in 候选**(见 [[evolution-roadmap]] P1)。
-- **stdlib 默认面对齐 gopher-lua 的 OpenLibs 提供面**(兑现 drop-in 宣称);宿主可经 Options 三层收紧:**LibsSafe 预设 / Libs 位掩码 / Exclude 函数级**——收紧能力是 VM 责任,收紧决策是宿主责任。细节见 `docs/design/p1-interpreter/10-stdlib.md` §12.1、`11-embedding-arena-abi.md` §1.2;决策背景见 `memory/decisions/2026-06-11-design-review-decisions.md` 第 6 项。
+- **stdlib 默认面对齐 gopher-lua 的 OpenLibs 提供面**(兑现 drop-in 宣称);宿主收紧机制的设计承诺是三层:**LibsSafe 预设 / Libs 位掩码 / Exclude 函数级**——收紧能力是 VM 责任,收紧决策是宿主责任。**当前实际落地是单点门控 `Options.AllowFileLoad`**(loadfile/dofile 默认禁用),完整三层机制留待宿主接入前落地(见 doc-gaps)。细节见 `docs/design/p1-interpreter/10-stdlib.md` §12.1、`11-embedding-arena-abi.md` §1.2;决策背景见 `memory/decisions/2026-06-11-design-review-decisions.md` 第 6 项。
 
 ---
 
