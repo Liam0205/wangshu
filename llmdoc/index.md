@@ -1,6 +1,6 @@
 # Wangshu llmdoc 文档地图
 
-> 项目状态:**P1(crescent 解释器)完整交付**——M0-M14 + 收尾轮(原「已知简化」清单全部落地)+ 测试加固轮;验收:simple 3.18x / arith 3.10x / loop 2.28x over gopher-lua,70 种子 + 随机脚本对拍官方 5.1.5 逐字节一致。测试体系现状:4 个 go-fuzz 目标(lex/parse/pattern/端到端)+ 差分 fuzz(500 固定种子 PR 门禁 / 2 万每晚日期滚动)+ GC 压力双模式对照 + 26 条错误消息逐字节对拍 + nightly 自动分流开 issue(真分歧/环境失败);**P2+ 未开始**。`docs/design/` 共 19 篇约 1.37 万行设计文档仍是规范源(P1 全卷 00-12 可实现深度、P2/P3 详细设计、P4/P5 架构决策);实现现状与 P3 迁移留口见 `docs/design/p1-interpreter/implementation-progress.md` 对账表。本文档库是源文档之上的**知识压缩层**,记录意图与路由。
+> 项目状态:**P1(crescent 解释器)完整交付**——M0-M14 + 收尾轮(原「已知简化」清单全部落地)+ 测试加固轮 + 完整性补全轮;验收:simple 3.18x / arith 3.10x / loop 2.28x over gopher-lua,70 种子 + 随机脚本对拍官方 5.1.5 逐字节一致。测试体系现状:4 个 go-fuzz 目标(lex/parse/pattern/端到端)+ 差分 fuzz(500 固定种子 PR 门禁 / 2 万每晚日期滚动,生成器三期 19 类语句)+ **特性探测 corpus 100 项全绿常驻对拍**(按 5.1 手册逐节,测特性面完整性,与生成器正交)+ GC 压力双模式对照 + 26 条错误消息逐字节对拍 + nightly 自动分流开 issue(真分歧/环境失败);**P2+ 未开始**。`docs/design/` 共 19 篇约 1.37 万行设计文档仍是规范源(P1 全卷 00-12 可实现深度、P2/P3 详细设计、P4/P5 架构决策);实现现状与 P3 迁移留口见 `docs/design/p1-interpreter/implementation-progress.md` 对账表。本文档库是源文档之上的**知识压缩层**,记录意图与路由。
 > 启动阅读顺序请看 [[startup]](本文件不重复有序启动清单)。
 
 ## 类别用途
@@ -39,6 +39,7 @@
 - `memory/reflections/2026-06-12-p1-implementation-sprint.md` — P1 实现冲刺(M8-M14 单会话收口)过程反思:difftest 后置的代价(5 个单测漏掉的语义 bug)、lcode.c 同构须到 helper 层、ci 指针刷新不变式、「简化实现+接口留口」模式。**做实现冲刺或 P2 接 difftest 前看这篇。**
 - `memory/reflections/2026-06-12-p1-closeout-round.md` — P1 收尾轮(「已知简化」9 项全量落地)过程教训:对称机制复用通道(yield 借 error 哨兵)、IC 命中必须验同键(动态 key 指令)、Program 运行期可写字段须 State 私有化规则、生成器类型封闭纪律。**P2 实现 IC、给 Program 加字段、或写受控文法生成器前看这篇。**
 - `memory/reflections/2026-06-12-test-hardening-round.md` — 测试加固轮(go-fuzz 目标/生成器两期/GC 压力/错误消息对拍/nightly)过程教训:每类 fuzz 上线当天即抓到 5 个真实 bug——fuzz 目标空转(脚本在跑但无 `func Fuzz*`)是最危险的虚假安全感、「末位多值源 A 处理」同族 bug 三处分布证明同构逻辑须抽 helper、top 恢复纪律(`L->top = ci->top`)是 5.1 调用约定的一部分且症状离根因极远、GC 压力模式让正常模式难触发的时序 bug 必现(弱表链截断实例)。**搭新防线、写调用桥、或评估「防线是否真在防」时看这篇。**
+- `memory/reflections/2026-06-12-completeness-gap-round.md` — 完整性补全轮(特性探测 corpus + 25 缺口修复)过程教训:**差分 fuzz 两轴正交模型**——随机生成器文法跟实现走,只测「已实现行为的正确性」,对「缺特性」结构性失明;特性探测 corpus 按官方手册逐节写,测「特性面完整性」;probe 上线在 570+ 随机脚本全绿下一次扫出 25 个缺口。另含:probe 先过 oracle 纪律(两例笔误)、goIfTrue/goIfFalse 恒跳丢值 bug(`nil and 2` 错产 false)、pattern 灾难性回溯有界失败裁量、「probe 转绿 → 进生成器文法」护栏闭环。**设计新防线选参照系、评估 diff-fuzz 覆盖含义、或 P2+ 接新执行层时看这篇。**
 
 ---
 

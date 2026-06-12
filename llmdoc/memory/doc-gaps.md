@@ -1,11 +1,11 @@
 # 文档缺口
 
 > recorder 维护。记录已知但当前无法稳定成文的缺口。随实现/设计推进收敛。
-> 项目状态:**P1 完整交付(M0-M14 + 收尾轮 + 测试加固轮),P2+ 未开始**。早期「源文档只给概念未给 spec」类缺口已大半被 `docs/design/` 详细设计填补;「无代码可验证」类缺口已随 P1 交付收口;原「已知简化」清单已在收尾轮全部落地。
+> 项目状态:**P1 完整交付(M0-M14 + 收尾轮 + 测试加固轮 + 完整性补全轮),P2+ 未开始**。早期「源文档只给概念未给 spec」类缺口已大半被 `docs/design/` 详细设计填补;「无代码可验证」类缺口已随 P1 交付收口;原「已知简化」清单已在收尾轮全部落地。
 
 ## 当前缺口
 
-- **设计文档回填待办(P2 开工前,recorder 执行,七项合一轮)** — 三轮反思的 promotion 候选合并清单,均为 `docs/design/` 回填(非 llmdoc):
+- **设计文档回填待办(P2 开工前,recorder 执行,八项合一轮)** — 四轮反思的 promotion 候选合并清单,均为 `docs/design/` 回填(非 llmdoc):
   - 源自 `reflections/2026-06-12-p1-implementation-sprint.md`:
     1. `04-frontend-parser-codegen.md` 补「lcode.c 同构必须到 helper 层」纪律 + 五个实例坑(goIfTrue 对 eJmp 须 invertJmp、luaK_infix 时机的左操作数提前物化、patchListAux 让无主 TESTSET 退化为 TEST、fixJump 不得硬编码 JMP opcode;加固轮追加:「末位多值源 A 处理」即 luaK_setreturns 对应物在 stmtReturn/compileArgList/exprTable 三调用点同族踩坑——eCall 不动 A、eVararg 回填 A,须单点收口为 helper);
     2. `05-interpreter-loop.md` 补 ci 指针刷新不变式(所有可能重入的 opcode 之后 `ci = currentCI(th)`,根因是 Go slice append 搬迁使 C 式指针稳定性假设失效);
@@ -16,6 +16,8 @@
     6. `12-testing-difftest.md` §3.2 增补随机生成器「类型封闭」纪律(局部变量池按 num/str 分型,产生式输出落回同型池)。
   - 源自 `reflections/2026-06-12-test-hardening-round.md`:
     7. `05-interpreter-loop.md` §7.6 增补 callHost「top 恢复纪律」条款:定长结果路径必须恢复 top 到当前帧逻辑顶(对齐 5.1 `L->top = ci->top`),附反例——前一条多值 CALL(C=0)留下低 top 使后续 callLuaFromHost 脚手架覆写 TFORLOOP 迭代器三槽,症状(pairs 收到 number)离根因极远。落地修复见 `internal/crescent/host.go` (`callHost`)。
+  - 源自 `reflections/2026-06-12-completeness-gap-round.md`:
+    8. `12-testing-difftest.md` §3 增补「特性探测 corpus」机制:差分 fuzz 两轴正交模型(随机生成器=已实现行为的正确性,文法跟实现走对缺特性结构性失明;probe corpus=按**官方手册**逐节写,测特性面完整性)、probe 先过 oracle 纪律(每项须是 oracle 可执行的合法且确定性 5.1 程序)、新特性「probe 转绿 → 编入生成器文法」护栏闭环。落地见 `test/difftest/probes_test.go` (`featureProbes`);动因:probe 上线在 570+ 随机脚本全绿状态下一次扫出 25 个完整性缺口。
 
 - **值栈/CallInfo arena 化属 P3** — 收尾轮对账确认:值栈/CallInfo 仍是 Go slice(05 §1.2 设计形态是住 arena),开放 upvalue 链/arena Thread 对象同批;**接口等价、迁移点已留**(`arena.Options.NewBacking` 注入点就位),物理搬迁是 P3 wazero memory 收养时的工作。唯一对账落点:`docs/design/p1-interpreter/implementation-progress.md`「与设计文档的对账」表。
 
@@ -33,9 +35,10 @@
 
 - **engineering.md 的脚本协议待定稿** — 测试加固轮已落地其中一项:nightly 长跑 + INFRA/DIVERGENCE 分流自动开 issue 已由 `.github/workflows/nightly-diff-fuzz.yml` 实现(triage 判据内联在 workflow 而非独立 `fuzz-triage.sh`,grep "byte-diff" 区分真分歧与 oracle 环境失败 + 同标题去重),**但分流判据未经真实失败检验**,首次真实告警时需验证。仍待定:非 Ubuntu runner 的 oracle 源码编译缓存、bench-gate 回退阈值、agentic workflows 接入时机(见 `docs/design/engineering.md` §7);engineering.md §3.2 文本与落地形态(内联 vs 独立脚本)的差异待回填轮顺手对账。
 
-- **CI runner Node 20→24 迁移期** — GitHub 已宣布 2026-09-16 移除 runner 上的 Node 20。当前 ci.yml 与 nightly-diff-fuzz.yml 用的 `actions/checkout@v4` / `actions/setup-go@v5` / `actions/upload-artifact@v4` 跑在 Node 20 上,会有弃用警告。无须现在动,2026-09 前升 action 主版本即可(目前主版本 v4/v5 已是最新,upstream 推 Node 24 时跟随升)。
-
 ## 已收口(留作审计)
+
+- ~~CI runner Node 20→24 迁移期~~ — 原计划 2026-09 前升 action 主版本,完整性补全轮顺手提前完成(`1379319`):ci.yml 与 nightly-diff-fuzz.yml 全部升至 Node 24 线(`actions/checkout@v6` / `actions/setup-go@v6` / `actions/upload-artifact@v7`),弃用警告消除(2026-06-12)。
+- ~~差分 fuzz 随机生成器跟实现走的结构性盲区~~ — 用户指出「官方有而我们没有的功能,diff-fuzz 测不出来;若不修,diff-fuzz 是假的」。完整性补全轮落地特性探测 corpus(`test/difftest/probes_test.go`,按官方 5.1 手册逐节,100 项全绿常驻对拍),上线即在 570+ 随机脚本全绿状态下扫出 25 个完整性缺口(元方法面/loadstring/select 负索引等),全部修复;新特性同步编入生成器文法(三期 15→19 类)形成「probe 转绿 → 进文法」护栏闭环。两轴正交模型的设计文档回填见当前缺口第 8 项(2026-06-12)。
 
 - ~~P1 已知简化清单~~ — 收尾轮全部落地(提交区间 `1ab4beb..5ad59fc`):arena 原生表存储、IC 命中路径、协程、pattern matcher、stdlib 补全、错误前缀+traceback、弱表/finalizer、arena ABI 列接口、difftest 随机生成器。实现形态与设计文档的差异(均接口等价)见 `implementation-progress.md`「与设计文档的对账」表;P3 迁移留口另立当前缺口条目(2026-06-12)。
 - ~~差分 fuzz 随机生成器未接~~ — 收尾轮落地(`e1ddf2f`):受控文法随机脚本生成器 + 200 确定性种子,对拍官方 5.1.5 全部逐字节一致;12 §3.2 的「持续 fuzz」语义已兑现。生成器「类型封闭」纪律的设计文档回填见当前缺口第 6 项(2026-06-12)。
