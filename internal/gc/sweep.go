@@ -88,10 +88,30 @@ func (c *Collector) freeObject(ref arena.GCRef, ot object.OBJType) {
 	// Userdata 的 __gc 已在 separateFinalizers 中分流(06 §10),此处不再处理。
 }
 
-// objectBytes 返回头对象自身字节数(pacing 统计;Table/Thread 附属块经
-// 其它对象间接计入,P1 简化口径)。与 freeObject 共用 SizeOf 单一事实源。
+// objectBytes 返回头对象的存活字节数(pacing 统计),**含 Table/Thread 的
+// 附属块**:分配侧 AllocCharge 计全尺寸,统计侧只计头会让常驻大表的
+// liveBytesAfterSweep 低估几个数量级 → threshold = live×pause 过小 →
+// GC 频率远超设计意图(binary-trees 形态的主要拖累)。
+// 头对象自身走 object.SizeOf 单一事实源,附属块按布局另加。
 func (c *Collector) objectBytes(ref arena.GCRef, ot object.OBJType) uint32 {
-	return object.SizeOf(c.a, ref, ot)
+	n := object.SizeOf(c.a, ref, ot)
+	switch ot {
+	case object.OBJ_TABLE:
+		if !object.TableArrayRef(c.a, ref).IsNull() {
+			n += object.TableArrayBytes(object.TableASize(c.a, ref))
+		}
+		if !object.TableNodeRef(c.a, ref).IsNull() {
+			n += object.TableNodeBytes(object.TableHSize(c.a, ref))
+		}
+	case object.OBJ_THREAD:
+		if !object.ThreadValueStackRef(c.a, ref).IsNull() {
+			n += object.ThreadStackBytes(object.ThreadStackCap(c.a, ref))
+		}
+		if !object.ThreadCallInfoRef(c.a, ref).IsNull() {
+			n += object.ThreadCIBytes(object.ThreadCICap(c.a, ref))
+		}
+	}
+	return n
 }
 
 // separateFinalizers (06 §10):把 finalizeList 中本轮死白的 userdata 分出,标记其可达图复活,
