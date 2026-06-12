@@ -7,7 +7,6 @@ package crescent
 
 import (
 	"github.com/Liam0205/wangshu/internal/arena"
-	"github.com/Liam0205/wangshu/internal/bytecode"
 	"github.com/Liam0205/wangshu/internal/object"
 	"github.com/Liam0205/wangshu/internal/value"
 )
@@ -97,7 +96,3 @@ func (st *State) callHost(th *thread, funcIdx, nargs, nresults int) *LuaError {
 	}
 	return nil
 }
-
-// patchCallForHost 在 doCall / doTailCall 里识别 host closure 并走 callHost。
-// 注:本函数不存在 — 直接修改 doCall 的 host 分支即可。
-var _ = bytecode.MOVE // keep import used

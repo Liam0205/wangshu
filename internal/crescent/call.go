@@ -289,13 +289,14 @@ func (st *State) doConcat(th *thread, ci *callInfo, i bytecode.Instruction) *Lua
 }
 
 // doVararg 实现 VARARG A B:把 ci.varargs 的内容拷到 R(A..A+B-2);
-// B=0 时全部拷贝并按 top 传播(主循环读 ci.top,M9 暂以单值场景为主)。
+// B=0 时全部拷贝并把 top 设到多值区末(对齐官方 `L->top = ra + n`)。
 func (st *State) doVararg(th *thread, ci *callInfo, i bytecode.Instruction) *LuaError {
 	a := bytecode.A(i)
 	b := bytecode.B(i)
 	n := len(ci.varargs)
 	if b == 0 {
-		// 全部 vararg 到 top
+		// 全部 vararg 到 top。top 必须双向设置(不只抬不降):此前更高的
+		// 残留 top 会让消费方(doCall 的 nargs = top-funcIdx-1)高估实参数。
 		need := ci.base + a + n
 		if need > len(th.stack) {
 			th.ensureStack(need)
@@ -303,9 +304,7 @@ func (st *State) doVararg(th *thread, ci *callInfo, i bytecode.Instruction) *Lua
 		for k := 0; k < n; k++ {
 			th.stack[ci.base+a+k] = ci.varargs[k]
 		}
-		if need > th.top {
-			th.top = need
-		}
+		th.top = need
 		return nil
 	}
 	want := b - 1

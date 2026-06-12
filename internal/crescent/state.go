@@ -69,6 +69,12 @@ type State struct {
 	// Go 侧 loaded 缓存持有,不入根会被回收,freelist 下块复用 = 串台执行
 	// 另一个 Program)。State 生命周期内不清除(11 §1.3 loaded 不逐出)。
 	loadedCls []arena.GCRef
+
+	// stepBudget > 0 时启用指令预算:回边(JMP/FORLOOP 负位移)每跨过
+	// stepQuantum 条指令检查一次,超额抛 "instruction budget exceeded"。
+	// 宿主侧脚本配额特性的种子;fuzz 用它替代脆弱的源码子串过滤。
+	stepBudget int64
+	stepUsed   int64
 }
 
 // SetCompileFn 注入编译回调(wangshu.NewState 时装配;loadstring 用)。
@@ -244,6 +250,23 @@ func (st *State) InternForEmbed(b []byte) arena.GCRef {
 
 // SetGCStressMode 开关高频 GC 压力模式(12 §5 GC 透明性 fuzz 用)。
 func (st *State) SetGCStressMode(on bool) { st.gc.SetStressMode(on) }
+
+// SetStepBudget 设置回边指令预算(<=0 关闭)。超额时脚本以
+// "instruction budget exceeded" 可恢复错误终止——宿主侧脚本配额特性,
+// fuzz 用它替代脆弱的源码子串过滤兜住无限/超长循环。
+func (st *State) SetStepBudget(n int64) {
+	st.stepBudget = n
+	st.stepUsed = 0
+}
+
+// chargeBackEdge 回边计费:每条回边记 1,超 stepBudget 抛可恢复错误。
+func (st *State) chargeBackEdge() *LuaError {
+	st.stepUsed++
+	if st.stepUsed > st.stepBudget {
+		return errf("instruction budget exceeded")
+	}
+	return nil
+}
 
 // GCCollect 触发一次 full GC(collectgarbage("collect") 用)。
 func (st *State) GCCollect() { st.gc.Collect() }

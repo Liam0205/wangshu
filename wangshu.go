@@ -77,6 +77,10 @@ func (st *State) SetGCStressMode(on bool) { st.core.SetGCStressMode(on) }
 // 长稳观测用:稳态下 freelist 循环复用,本值应有界。
 func (st *State) GCCountKB() float64 { return st.core.GCCountKB() }
 
+// SetStepBudget 设置回边指令预算(<=0 关闭):超额时脚本以可恢复错误
+// "instruction budget exceeded" 终止。宿主对不可信脚本的执行配额。
+func (st *State) SetStepBudget(n int64) { st.core.SetStepBudget(n) }
+
 // Program is an immutable compilation product (11 §1.4)。可跨 goroutine 共享;
 // 字符串常量首次被某 State Run 时惰性 intern 进该 State 的 arena。
 type Program struct {

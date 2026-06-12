@@ -11,9 +11,6 @@ import (
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
-// TraceExec 打开逐指令 trace(调试用,默认关)。
-var TraceExec = false
-
 // execute 跑当前栈顶 fresh CallInfo 直到它退出(05 §7.3 entry edge)。
 //
 // reentry 模型:Lua-call-Lua 通过修改 ci/proto/code 局部变量在同一个 Go 栈帧里
@@ -42,7 +39,7 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 			return errf("interpreter: pc out of range")
 		}
 		i := code[ci.pc]
-		if TraceExec {
+		if traceExec {
 			fmt.Printf("[trace] ciDepth=%d base=%d pc=%d top=%d %s A=%d B=%d C=%d\n",
 				len(th.cis), ci.base, ci.pc, th.top,
 				bytecode.Op(i), bytecode.A(i), bytecode.B(i), bytecode.C(i))
@@ -191,6 +188,11 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 			st.safepoint(th, ci)
 
 		case bytecode.JMP:
+			if bytecode.SBx(i) < 0 && st.stepBudget > 0 {
+				if e := st.chargeBackEdge(); e != nil {
+					return e
+				}
+			}
 			ci.pc += int32(bytecode.SBx(i))
 
 		case bytecode.EQ, bytecode.LT, bytecode.LE:
@@ -284,6 +286,11 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 				cont = idx >= limit
 			}
 			if cont {
+				if st.stepBudget > 0 {
+					if e := st.chargeBackEdge(); e != nil {
+						return e
+					}
+				}
 				setReg(th, ci, a, value.NumberValue(idx))
 				setReg(th, ci, a+3, value.NumberValue(idx))
 				ci.pc += int32(bytecode.SBx(i))
