@@ -88,14 +88,17 @@ jobs:
           SEED_BASE: ${{ steps.difffuzz.outputs.seed_base }}
           ROUNDS: ${{ steps.difffuzz.outputs.rounds }}
         run: |
-          # 分流:oracle 供给失败(INFRA)vs 真分歧(DIVERGENCE)
-          if grep -q "oracle run: " difffuzz.log 2>/dev/null && ! grep -q "byte-diff" difffuzz.log 2>/dev/null; then
-            TITLE="difftest infra failure: oracle error ($(date -u +%F))"
+          # 分流(机器可读标记 API,与测试侧约定):
+          #   DIVERGENCE seed=<n> kind=<bytediff|gcstress|oracle-error> = 真分歧
+          #   findOracle 失败(测试 skip,不会 failure)/ 其它无标记失败 = INFRA
+          if ! grep -q "DIVERGENCE" difffuzz.log gcstress.log 2>/dev/null; then
+            TITLE="difftest infra failure ($(date -u +%F))"
             LABEL="ci"
-            BODY="nightly difftest 因 oracle 环境失败中止(非真分歧)。日志见 run artifacts:${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            BODY="nightly difftest 失败但无 DIVERGENCE 标记(环境/基础设施类,非真分歧)。日志见 run artifacts:${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           else
-            FIRST_SEED=$(grep -oP 'seed \K\d+(?= byte-diff)' difffuzz.log 2>/dev/null | head -1 || true)
-            TITLE="difftest divergence: seed ${FIRST_SEED:-unknown} ($(date -u +%F))"
+            FIRST_SEED=$(grep -ohP 'DIVERGENCE seed=\K\d+' difffuzz.log gcstress.log 2>/dev/null | head -1 || true)
+            FIRST_KIND=$(grep -ohP 'DIVERGENCE seed=\d+ kind=\K\S+' difffuzz.log gcstress.log 2>/dev/null | head -1 || true)
+            TITLE="difftest divergence: seed ${FIRST_SEED:-unknown} kind ${FIRST_KIND:-unknown} ($(date -u +%F))"
             LABEL="bug"
             BODY=$(cat <<EOF
           nightly 差分 fuzz 撞出与官方 Lua 5.1.5 的输出分歧(或 GC 透明性破坏/go-fuzz crash)。

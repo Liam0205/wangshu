@@ -28,6 +28,10 @@ func findOracle() string {
 }
 
 // runOracle 用官方 lua5.1 跑脚本,返回 stdout。
+//
+// oracle 进程对脚本 exit 非 0 = 「官方拒绝/报错而本实现可能接受」——这是
+// 真分歧的一种(非 INFRA),输出 DIVERGENCE 标记供 nightly triage 正确分类
+// (oracle 不可用才是 INFRA,由 findOracle 兜)。
 func runOracle(t *testing.T, oracle, src string) string {
 	t.Helper()
 	cmd := exec.Command(oracle, "-")
@@ -37,7 +41,8 @@ func runOracle(t *testing.T, oracle, src string) string {
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		t.Fatalf("oracle run: %v\nstderr: %s", err, stderr.String())
+		t.Fatalf("DIVERGENCE kind=oracle-error\noracle run: %v\nstderr: %s\n--- script ---\n%s",
+			err, stderr.String(), src)
 	}
 	return out.String()
 }
@@ -275,7 +280,9 @@ func TestDiff_RandomScripts(t *testing.T) {
 		want := runOracle(t, oracle, oracleSrc)
 		got := runWangshu(t, src)
 		if got != want {
-			t.Errorf("seed %d byte-diff:\n  wangshu: %q\n  oracle:  %q\n--- script ---\n%s",
+			// DIVERGENCE 行是 nightly triage 的机器可读 API(workflow 只
+			// grep 此标记;勿改格式)。
+			t.Errorf("DIVERGENCE seed=%d kind=bytediff\n  wangshu: %q\n  oracle:  %q\n--- script ---\n%s",
 				seed, got, want, src)
 		}
 	}

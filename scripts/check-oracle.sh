@@ -1,14 +1,12 @@
 #!/usr/bin/env bash
 # check-oracle.sh:校验官方 Lua 5.1.5 oracle 可用(12 §2.6 / engineering.md §4)。
-# CI 必过;本地无 lua5.1 给安装指引(本地可跳,CI 必过)。
+# 无 oracle 一律 fail(本地与 CI 同标准;difftest 自身对无 oracle 会 skip,
+# 但显式跑本脚本即要求 oracle 在位)。
 set -euo pipefail
 
 if ! command -v lua5.1 >/dev/null 2>&1; then
     echo "✗ lua5.1 未安装(差分 oracle 不可用)" >&2
     echo "  Ubuntu/Debian: sudo apt-get install -y lua5.1" >&2
-    if [ -n "${CI:-}" ] || [ -n "${GITHUB_ACTIONS:-}" ]; then
-        exit 1   # CI 必须有 oracle
-    fi
     exit 1
 fi
 

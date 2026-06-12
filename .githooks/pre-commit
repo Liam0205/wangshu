@@ -16,6 +16,6 @@ if [ -n "$unformatted" ]; then
     echo "$unformatted"
     echo ""
     # shellcheck disable=SC2086
-    echo "fix: gofmt -w $(echo $unformatted | tr '\n' ' ')&& git add $(echo $unformatted | tr '\n' ' ')"
+    echo "fix: gofmt -w $(echo $unformatted | tr '\n' ' ') && git add $(echo $unformatted | tr '\n' ' ')"
     exit 1
 fi

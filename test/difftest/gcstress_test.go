@@ -70,14 +70,14 @@ func TestGCStress_RandomScripts(t *testing.T) {
 		normal, err1 := runWithStress(t, src, false)
 		stressed, err2 := runWithStress(t, src, true)
 		if (err1 == nil) != (err2 == nil) {
-			t.Fatalf("seed %d error divergence: normal=%v stressed=%v\n--- script ---\n%s",
+			t.Fatalf("DIVERGENCE seed=%d kind=gcstress\nerror divergence: normal=%v stressed=%v\n--- script ---\n%s",
 				seed, err1, err2, src)
 		}
 		if err1 != nil {
 			continue
 		}
 		if normal != stressed {
-			t.Errorf("seed %d GC transparency violated:\n  normal:   %q\n  stressed: %q\n--- script ---\n%s",
+			t.Errorf("DIVERGENCE seed=%d kind=gcstress\nGC transparency violated:\n  normal:   %q\n  stressed: %q\n--- script ---\n%s",
 				seed, normal, stressed, src)
 		}
 	}
