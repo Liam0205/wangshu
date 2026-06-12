@@ -80,6 +80,11 @@ type State struct {
 	stepBudget int64
 	stepUsed   int64
 
+	// gcSeen/gcSeenRefs 是根扫描去重 map 的缓存(多线程慢路径用;每轮
+	// Collect 复用 clear,避免根扫描自身制造 Go 堆垃圾)。
+	gcSeen     map[*thread]bool
+	gcSeenRefs map[*thread]bool
+
 	// allowFileLoad:loadfile/dofile 是否允许读宿主文件系统。默认 false
 	// (嵌入式 VM 接不可信脚本,文件读是越权探测面;10 §12.1 LibsSafe 思路
 	// 的最小落地)。宿主经 Options.AllowFileLoad 显式开启。
@@ -167,7 +172,17 @@ func (st *State) visitProgramStringRefs(visit func(arena.GCRef)) {
 // resume 链上挂起的调用者线程(threadChain)、全部非 dead 协程的栈、
 // 协程主函数(首次 resume 前仅 Go struct 持有)与 xfer 传值区都必须可达。
 func (st *State) visitExtraValues(visit func(value.Value)) {
-	seen := st.visitThreadValues(st.runningThread, nil, visit)
+	// 快路径(绝大多数负载):无协程、无 resume 链 → 直扫 runningThread,
+	// 零 map 分配(每轮 Collect 都走根扫描,慢路径的 seen map 是 GC 自伤)。
+	if len(st.cos.cos) == 0 && len(st.threadChain) == 0 {
+		st.visitThreadValues(st.runningThread, nil, visit)
+		return
+	}
+	if st.gcSeen == nil {
+		st.gcSeen = map[*thread]bool{}
+	}
+	clear(st.gcSeen)
+	seen := st.visitThreadValues(st.runningThread, st.gcSeen, visit)
 	for _, th := range st.threadChain {
 		seen = st.visitThreadValues(th, seen, visit)
 	}
@@ -183,14 +198,15 @@ func (st *State) visitExtraValues(visit func(value.Value)) {
 	}
 }
 
+// visitThreadValues 扫一个线程的栈/varargs;seen=nil 表示单线程快路径
+// (不去重、不分配)。
 func (st *State) visitThreadValues(th *thread, seen map[*thread]bool, visit func(value.Value)) map[*thread]bool {
-	if th == nil || seen[th] {
+	if th == nil || (seen != nil && seen[th]) {
 		return seen
 	}
-	if seen == nil {
-		seen = map[*thread]bool{}
+	if seen != nil {
+		seen[th] = true
 	}
-	seen[th] = true
 	for i := 0; i < th.top; i++ {
 		visit(th.stack[i])
 	}
@@ -215,7 +231,15 @@ func (st *State) visitExtraRefs(visit func(arena.GCRef)) {
 	for _, cl := range st.loadedCls {
 		visit(cl)
 	}
-	seen := st.visitThreadRefs(st.runningThread, nil, visit)
+	if len(st.cos.cos) == 0 && len(st.threadChain) == 0 {
+		st.visitThreadRefs(st.runningThread, nil, visit)
+		return
+	}
+	if st.gcSeenRefs == nil {
+		st.gcSeenRefs = map[*thread]bool{}
+	}
+	clear(st.gcSeenRefs)
+	seen := st.visitThreadRefs(st.runningThread, st.gcSeenRefs, visit)
 	for _, th := range st.threadChain {
 		seen = st.visitThreadRefs(th, seen, visit)
 	}
@@ -228,13 +252,12 @@ func (st *State) visitExtraRefs(visit func(arena.GCRef)) {
 }
 
 func (st *State) visitThreadRefs(th *thread, seen map[*thread]bool, visit func(arena.GCRef)) map[*thread]bool {
-	if th == nil || seen[th] {
+	if th == nil || (seen != nil && seen[th]) {
 		return seen
 	}
-	if seen == nil {
-		seen = map[*thread]bool{}
+	if seen != nil {
+		seen[th] = true
 	}
-	seen[th] = true
 	for _, ci := range th.cis {
 		if !ci.cl.IsNull() {
 			visit(ci.cl)
