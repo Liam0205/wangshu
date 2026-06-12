@@ -189,7 +189,7 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 
 		case bytecode.JMP:
 			if bytecode.SBx(i) < 0 && st.stepBudget > 0 {
-				if e := st.chargeBackEdge(); e != nil {
+				if e := st.chargeStep(); e != nil {
 					return e
 				}
 			}
@@ -287,7 +287,7 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 			}
 			if cont {
 				if st.stepBudget > 0 {
-					if e := st.chargeBackEdge(); e != nil {
+					if e := st.chargeStep(); e != nil {
 						return e
 					}
 				}

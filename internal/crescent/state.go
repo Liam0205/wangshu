@@ -277,8 +277,8 @@ func (st *State) SetAllowFileLoad(on bool) { st.allowFileLoad = on }
 // AllowFileLoad 查询文件读开关(stdlib loadfile/dofile 用)。
 func (st *State) AllowFileLoad() bool { return st.allowFileLoad }
 
-// chargeBackEdge 回边计费:每条回边记 1,超 stepBudget 抛可恢复错误。
-func (st *State) chargeBackEdge() *LuaError {
+// chargeStep 预算计费(回边 + 函数进帧各记 1),超 stepBudget 抛可恢复错误。
+func (st *State) chargeStep() *LuaError {
 	st.stepUsed++
 	if st.stepUsed > st.stepBudget {
 		return errf("instruction budget exceeded")
@@ -289,11 +289,16 @@ func (st *State) chargeBackEdge() *LuaError {
 // GCCollect 触发一次 full GC(collectgarbage("collect") 用)。
 func (st *State) GCCollect() { st.gc.Collect() }
 
-// GCCountKB 返回 arena 当前已用 KB 数(collectgarbage("count") / gcinfo;
-// bump 指针即"已分配字节",含死对象与 freelist 空闲块——与官方 totalbytes
-// (GC 后回落)口径不同,可观察但永不可入精确对拍,10 §13)。
+// GCSetStopped 暂停/恢复自动 GC(collectgarbage("stop"/"restart"))。
+func (st *State) GCSetStopped(on bool) { st.gc.SetStopped(on) }
+
+// GCCountKB 返回 arena 当前活跃 KB 数(collectgarbage("count") / gcinfo):
+// bump - freelist 空闲字节,逼近官方 totalbytes 语义(GC 回收后回落,
+// 官方测试套 gc.lua 的 "run until gc" 循环依赖该回落)。仍属可观察不可
+// 逐字节比项(10 §13:freelist 粒度/附属块口径与官方分配器不同)。
 func (st *State) GCCountKB() float64 {
-	return float64(st.arena.Bump()) / 1024.0
+	used := uint64(st.arena.Bump()) - st.arena.FreeBytes()
+	return float64(used) / 1024.0
 }
 
 // NewError 构造一个带消息的 LuaError(供 stdlib 等 host 函数使用)。
