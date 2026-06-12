@@ -189,6 +189,16 @@ func tableFnConcat(st *crescent.State, args []value.Value) ([]value.Value, *cres
 	}
 	iF, _ := numArg(st, args, 2, 1)
 	jF, _ := numArg(st, args, 3, float64(st.RawBorder(t)))
+	// NaN 规范化:NaN-X=NaN、NaN>x 恒 false 会绕过下面的范围检查;且
+	// Go int(NaN)=MIN_INT64 与 PUC 5.1.5 int(NaN)=0 不一致(对位分歧)。
+	// 统一把 NaN 当 0(对齐 PUC luaL_checkint 的 NaN→0),让越界索引走
+	// 正常的 "invalid value (nil) at index" 路径而非实现定义行为。
+	if iF != iF {
+		iF = 0
+	}
+	if jF != jF {
+		jF = 0
+	}
 	// 嵌入式 hardening:j 由脚本控制,1e14 等极大值会让 parts append 循环
 	// 耗尽宿主内存。table.concat 实际工程语义只在表 # 范围内有意义,
 	// 1<<24(~16M)是 hardening 上限——大于表长无意义(为 nil 索引),
