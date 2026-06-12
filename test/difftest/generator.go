@@ -388,7 +388,7 @@ func (g *genState) numExpr() string {
 	}
 	g.depth++
 	defer func() { g.depth-- }()
-	switch g.rng.Intn(9) {
+	switch g.rng.Intn(10) {
 	case 0:
 		return fmt.Sprintf("%d", g.rng.Intn(1000))
 	case 1:
@@ -408,6 +408,12 @@ func (g *genState) numExpr() string {
 		return fmt.Sprintf("(%s %% %d)", g.numExpr(), 1+g.rng.Intn(9)) // mod 非零
 	case 8:
 		return fmt.Sprintf("#%s", g.strExpr()) // 字符串长度
+	case 9:
+		// 短路表达式嵌入算术:`(cond and K1 or K2) op K3`——带跳转链的
+		// eKNum 不可折叠(isnumeral),此形态曾绕过全部防线触发 Go panic。
+		cond := []string{"true", "false", "(1 < 2)", "(2 < 1)"}[g.rng.Intn(4)]
+		return fmt.Sprintf("((%s and %d or %d) + %d)",
+			cond, g.rng.Intn(100), g.rng.Intn(100), g.rng.Intn(100))
 	}
 	return "0"
 }

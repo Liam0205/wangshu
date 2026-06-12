@@ -205,11 +205,14 @@ func (fs *funcState) exprBin(e *ast.BinExpr) expDesc {
 		return fs.exprConcat(e)
 	}
 	// 算术
-	// 对齐 Lua 5.1 luaK_infix:左操作数(非数字字面量)必须在编译右子表达式之前
-	// 物化为 RK——否则右子的 CALL/GETGLOBAL 等会覆盖左结果将要落的寄存器。
+	// 对齐 Lua 5.1 luaK_infix:左操作数必须在编译右子表达式之前物化为 RK
+	// ——否则右子的 CALL/GETGLOBAL 等会覆盖左结果将要落的寄存器。
+	// 豁免条件 = 官方 isnumeral:eKNum 且无未决跳转链。带链的 eKNum
+	// (如 `(a and 7 or -1)`)若延迟物化,链中 TESTSET 会跳过右子指令
+	// (求值序错误),折叠则直接丢链(NoRegister 占位越界 panic)。
 	l := fs.expr(e.L)
 	lrk := -1
-	if l.k != eKNum {
+	if !isNumeral(&l) {
 		lrk = fs.exp2RK(e.Line, &l)
 	}
 	r := fs.expr(e.R)
@@ -253,9 +256,15 @@ func arithOpcode(op ast.BinOp) bytecode.OpCode {
 	return bytecode.ADD
 }
 
-// constFold 在双方都是 EKNum 的前提下编译期算结果;返回值已 NaN 规范化是 numK 的事。
+// isNumeral 等价官方 lcode.c isnumeral:纯数字字面量(无未决跳转链)
+// 才可延迟物化 / 参与常量折叠。
+func isNumeral(e *expDesc) bool {
+	return e.k == eKNum && !e.hasJumps()
+}
+
+// constFold 在双方都是纯数字字面量(isNumeral)时编译期算结果。
 func constFold(op ast.BinOp, l, r *expDesc) (float64, bool) {
-	if l.k != eKNum || r.k != eKNum {
+	if !isNumeral(l) || !isNumeral(r) {
 		return 0, false
 	}
 	a, b := l.nval, r.nval
@@ -301,7 +310,7 @@ func (fs *funcState) exprCompare(e *ast.BinExpr) expDesc {
 	}
 	l := fs.expr(e.L)
 	lrk := -1
-	if l.k != eKNum {
+	if !isNumeral(&l) {
 		lrk = fs.exp2RK(e.Line, &l)
 	}
 	r := fs.expr(e.R)
@@ -357,8 +366,8 @@ func (fs *funcState) exprUn(e *ast.UnExpr) expDesc {
 	sub := fs.expr(e.E)
 	switch e.Op {
 	case ast.OpUnm:
-		// 常量折叠:-数字字面量
-		if sub.k == eKNum {
+		// 常量折叠:-数字字面量(isnumeral:带跳转链不可折,链会被丢弃)
+		if isNumeral(&sub) {
 			out := newExp(eKNum, 0)
 			out.nval = -sub.nval
 			return out

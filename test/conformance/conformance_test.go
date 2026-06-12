@@ -44,6 +44,14 @@ local called = false
 local function f() called = true; return true end
 local r = false and f()
 return tostring(called)`, "false"},
+	// 短路结果直接参与算术/取负:带跳转链的 eKNum 不可常量折叠(官方
+	// isnumeral 语义)——折叠丢链曾让 TESTSET 的 255 占位越界,Go 级 panic。
+	{"shortcircuit_into_arith", `return (true and 7 or -1) + 1`, "8"},
+	{"shortcircuit_into_arith_var", `local a = true return (a and 7 or -1) + 1`, "8"},
+	{"shortcircuit_into_unm", `return -(true and 1 or 2)`, "-1"},
+	{"shortcircuit_into_mul", `return (false and 7 or -1) * 2`, "-2"},
+	{"shortcircuit_into_concat", `return (true and 7 or -1) .. ""`, "7"},
+	{"shortcircuit_into_compare", `return tostring((true and 7 or -1) < 8)`, "true"},
 
 	// —— 作用域 / 闭包(04 §5.8) ——
 	{"local_shadow", `

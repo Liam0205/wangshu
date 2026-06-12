@@ -14,6 +14,8 @@
 package wangshu
 
 import (
+	"fmt"
+
 	"github.com/Liam0205/wangshu/internal/arena"
 	"github.com/Liam0205/wangshu/internal/bytecode"
 	"github.com/Liam0205/wangshu/internal/crescent"
@@ -116,7 +118,14 @@ func (prog *Program) Call(state *State, arena *Arena, args ...Value) ([]Value, e
 	return prog.call(state, arena, args)
 }
 
-func (prog *Program) call(state *State, ar *Arena, args []Value) ([]Value, error) {
+func (prog *Program) call(state *State, ar *Arena, args []Value) (results []Value, err error) {
+	// 防线纵深:VM 内部缺陷导致的 Go panic 兜底转 error——嵌入式 VM 的
+	// 「宿主进程不可崩」是底线承诺,即使未来再有编译器/解释器漏洞也不带崩宿主。
+	defer func() {
+		if r := recover(); r != nil {
+			results, err = nil, fmt.Errorf("wangshu: internal VM panic: %v", r)
+		}
+	}()
 	lp, ok := state.loaded[prog]
 	if !ok {
 		cl := state.core.LoadProgram(prog.mainID, prog.protos)
@@ -133,12 +142,12 @@ func (prog *Program) call(state *State, ar *Arena, args []Value) ([]Value, error
 	for i, a := range args {
 		innerArgs[i] = a.toInner(state)
 	}
-	results, err := state.core.Call(lp.cl, innerArgs, -1)
+	inner, err := state.core.Call(lp.cl, innerArgs, -1)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]Value, len(results))
-	for i, v := range results {
+	out := make([]Value, len(inner))
+	for i, v := range inner {
 		out[i] = fromInner(state, v)
 	}
 	return out, nil
