@@ -1,7 +1,7 @@
 # Makefile —— 唯一任务入口,CI 与本地共用(docs/design/engineering.md §1)
 .PHONY: all fmt lint test bench-test race cover fuzz bench conformance difftest hooks tidy
 
-all: fmt lint test bench-test                       ## 默认:提交前本地全检(主模块 + benchmarks 子模块)
+all: fmt lint test fuzz conformance difftest bench-test      ## 默认:提交前本地全检(主模块 + benchmarks 子模块)
 
 fmt:                                                ## 格式化(写回)
 	@files=$$(git ls-files '*.go'); [ -z "$$files" ] || gofmt -w $$files
