@@ -64,6 +64,11 @@ type State struct {
 	// runningThread 只覆盖当前线程,链上其余线程的栈也必须是根——
 	// freelist 复用内存后漏根即 use-after-free)。Resume 进入时压入、返回时弹出。
 	threadChain []*thread
+
+	// loadedCls 是 LoadProgram 返回的主 chunk closure(R8 类常驻根:仅被
+	// Go 侧 loaded 缓存持有,不入根会被回收,freelist 下块复用 = 串台执行
+	// 另一个 Program)。State 生命周期内不清除(11 §1.3 loaded 不逐出)。
+	loadedCls []arena.GCRef
 }
 
 // SetCompileFn 注入编译回调(wangshu.NewState 时装配;loadstring 用)。
@@ -186,8 +191,12 @@ func (st *State) visitThreadValues(th *thread, seen map[*thread]bool, visit func
 	return seen
 }
 
-// visitExtraRefs 暴露所有活线程上 ci/openUvs 直接以 GCRef 形式持有的对象。
+// visitExtraRefs 暴露所有活线程上 ci/openUvs 直接以 GCRef 形式持有的对象,
+// 以及 LoadProgram 产物 closure(loaded 缓存常驻根)。
 func (st *State) visitExtraRefs(visit func(arena.GCRef)) {
+	for _, cl := range st.loadedCls {
+		visit(cl)
+	}
 	seen := st.visitThreadRefs(st.runningThread, nil, visit)
 	for _, th := range st.threadChain {
 		seen = st.visitThreadRefs(th, seen, visit)
@@ -311,6 +320,7 @@ func (st *State) LoadProgram(mainID uint32, protos []*bytecode.Proto) arena.GCRe
 		st.strRefs = append(st.strRefs, refs)
 	}
 	cl := st.allocLuaClosure(base+mainID, 0)
+	st.loadedCls = append(st.loadedCls, cl)
 	return cl
 }
 
