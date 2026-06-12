@@ -45,7 +45,13 @@ func baseFnCollectGarbage(st *crescent.State, args []value.Value) ([]value.Value
 		return []value.Value{value.NumberValue(0)}, nil
 	case "count":
 		return []value.Value{value.NumberValue(st.GCCountKB())}, nil
-	case "stop", "restart", "setpause", "setstepmul":
+	case "stop":
+		st.GCSetStopped(true)
+		return []value.Value{value.NumberValue(0)}, nil
+	case "restart":
+		st.GCSetStopped(false)
+		return []value.Value{value.NumberValue(0)}, nil
+	case "setpause", "setstepmul":
 		// STW GC 无增量调参;占位返回 0(可观察但不可逐字节比项,10 §13)
 		return []value.Value{value.NumberValue(0)}, nil
 	}

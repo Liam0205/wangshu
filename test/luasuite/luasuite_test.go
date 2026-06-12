@@ -49,6 +49,10 @@ var stopAt = map[string]int{
 	"strings.lua": 147,
 	// setfenv(closure.lua:165)
 	"closure.lua": 163,
+	// 增量 step 真实步进语义(gc.lua:111 dosteps 断言多步完成;STW full GC
+	// 的 step 恒一步,10 §13 豁免:collectgarbage step/setstepmul)。
+	// 前 110 行(表/字符串/函数 churn、gcinfo 回落循环)必须全过。
+	"gc.lua": 111,
 }
 
 func TestOfficialSuite(t *testing.T) {

@@ -44,6 +44,7 @@ type Collector struct {
 	bytesAllocSince     uint64 // 距上次 GC 的累计分配量(包含已被 sweep 回收的)
 	liveBytesAfterSweep uint64 // 本轮 sweep 末的存活字节(由 sweep 累加)
 	stressMode          bool   // 高频压力模式:每个 safepoint 强制 Collect(12 §5)
+	stopped             bool   // collectgarbage("stop"):自动 GC 暂停(显式 Collect 不受影响)
 
 	// 弱表登记(06 §8.4 / 07 §13)。
 	weakList []arena.GCRef
@@ -159,10 +160,17 @@ func (c *Collector) AllocCharge(nbytes uint32) {
 // 调用方契约:调用前所有活跃 Value 必须从根可达(在 Lua 栈上,或已 push 进 shadow stack);
 // 否则它们会被误回收。这是 06 §6.3 host function 纪律的实现侧。
 func (c *Collector) MaybeCollect() {
+	if c.stopped {
+		return
+	}
 	if c.stressMode || c.bytesAllocSince >= c.threshold {
 		c.Collect()
 	}
 }
+
+// SetStopped 暂停/恢复自动 GC(collectgarbage("stop"/"restart");官方语义:
+// stop 后只有显式 collectgarbage 触发回收,分配不再自动 GC)。
+func (c *Collector) SetStopped(on bool) { c.stopped = on }
 
 // SetStressMode 开关高频 GC 压力模式(06 §11 / 12 §5):每个 safepoint 都
 // 强制 full Collect。GC 透明性 fuzz 用——压力模式下输出必须与正常模式
