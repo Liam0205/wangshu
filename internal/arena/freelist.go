@@ -208,9 +208,13 @@ func (a *Arena) popLarge(needWords uint32) GCRef {
 }
 
 // floorClass 返回桶代表字数 ≤ words 的最大 size-class(无则 -1)。
+// 入参 >64 字 clamp 到 64(sizeClass 的入参契约是 1..64,越界下标 panic)。
 func floorClass(words uint32) int {
 	if words == 0 {
 		return -1
+	}
+	if words > largeThresholdWords {
+		words = largeThresholdWords
 	}
 	c := sizeClass(words)
 	for c >= 0 && classWords(c) > words {

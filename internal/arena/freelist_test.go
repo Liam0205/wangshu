@@ -94,3 +94,20 @@ func TestFreelist_LargeFirstFit(t *testing.T) {
 		t.Fatalf("remainder not bucketed: want %d got %d", small+GCRef(70*8), rem)
 	}
 }
+
+// floorClass 边界:入参契约 1..64,>64 须 clamp 而非越界 panic。
+func TestFloorClassBounds(t *testing.T) {
+	if c := floorClass(0); c != -1 {
+		t.Errorf("floorClass(0) = %d, want -1", c)
+	}
+	if c := floorClass(1); c != 0 || classWords(c) != 1 {
+		t.Errorf("floorClass(1) = %d (rep %d), want class 0 rep 1", c, classWords(c))
+	}
+	if c := floorClass(64); classWords(c) > 64 {
+		t.Errorf("floorClass(64) rep %d exceeds 64", classWords(c))
+	}
+	// >64 clamp 到 64,不 panic
+	if c := floorClass(100); classWords(c) > 64 {
+		t.Errorf("floorClass(100) rep %d exceeds 64 (clamp failed)", classWords(c))
+	}
+}
