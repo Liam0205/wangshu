@@ -54,7 +54,7 @@ func generateScript(seed int64) string {
 }
 
 func (g *genState) stmt() {
-	switch g.rng.Intn(15) {
+	switch g.rng.Intn(19) {
 	case 0:
 		g.declNum()
 	case 1:
@@ -85,6 +85,14 @@ func (g *genState) stmt() {
 		g.metaIndex()
 	case 14:
 		g.coroutineStmt()
+	case 15:
+		g.metaOperators()
+	case 16:
+		g.metaCallable()
+	case 17:
+		g.loadstringStmt()
+	case 18:
+		g.tostringMeta()
 	}
 }
 
@@ -309,6 +317,68 @@ for i = 1, %d do
   %s = %s .. tostring(v) .. ";"
 end
 `, name, n, name, name, g.rng.Intn(20), n+1, name, name, name, name)
+}
+
+// metaOperators 算术/比较元方法(__add/__lt/__le/__eq 随机一种,行为确定)。
+func (g *genState) metaOperators() {
+	name := g.newLocal(localStr)
+	switch g.rng.Intn(4) {
+	case 0:
+		// __add:b 可能是裸 number,须 type 判别后取值(number 不可索引)
+		fmt.Fprintf(&g.sb, `local mt%s = { __add = function(a, b)
+  local av = type(a) == "table" and a.v or a
+  local bv = type(b) == "table" and b.v or b
+  return av + bv
+end }
+local o%s = setmetatable({ v = %d }, mt%s)
+local %s = tostring(o%s + %d)
+`, name, name, g.rng.Intn(50), name, name, name, g.rng.Intn(50))
+	case 1:
+		fmt.Fprintf(&g.sb, `local mt%s = { __lt = function(a, b) return a.v < b.v end }
+local a%s = setmetatable({ v = %d }, mt%s)
+local b%s = setmetatable({ v = %d }, mt%s)
+local %s = tostring(a%s < b%s)
+`, name, name, g.rng.Intn(50), name, name, g.rng.Intn(50), name, name, name, name)
+	case 2:
+		// __le 经 __lt 回退(5.1 特有)
+		fmt.Fprintf(&g.sb, `local mt%s = { __lt = function(a, b) return a.v < b.v end }
+local a%s = setmetatable({ v = %d }, mt%s)
+local b%s = setmetatable({ v = %d }, mt%s)
+local %s = tostring(a%s <= b%s)
+`, name, name, g.rng.Intn(50), name, name, g.rng.Intn(50), name, name, name, name)
+	case 3:
+		fmt.Fprintf(&g.sb, `local mt%s = { __eq = function(a, b) return a.v == b.v end }
+local a%s = setmetatable({ v = %d }, mt%s)
+local b%s = setmetatable({ v = %d }, mt%s)
+local %s = tostring(a%s == b%s)
+`, name, name, g.rng.Intn(3), name, name, g.rng.Intn(3), name, name, name, name)
+	}
+}
+
+// metaCallable __call 可调用对象。
+func (g *genState) metaCallable() {
+	name := g.newLocal(localNum)
+	op := []string{"+", "*", "-"}[g.rng.Intn(3)]
+	fmt.Fprintf(&g.sb, `local c%s = setmetatable({ base = %d }, { __call = function(self, x) return self.base %s x end })
+local %s = c%s(%d)
+`, name, g.rng.Intn(100), op, name, name, 1+g.rng.Intn(100))
+}
+
+// loadstringStmt 动态编译执行(代码串确定)。
+func (g *genState) loadstringStmt() {
+	name := g.newLocal(localNum)
+	a, b := g.rng.Intn(100), 1+g.rng.Intn(100)
+	op := []string{"+", "*", "-"}[g.rng.Intn(3)]
+	fmt.Fprintf(&g.sb, "local f%s = loadstring(\"return %d %s %d\")\nlocal %s = f%s()\n",
+		name, a, op, b, name, name)
+}
+
+// tostringMeta __tostring 元方法。
+func (g *genState) tostringMeta() {
+	name := g.newLocal(localStr)
+	fmt.Fprintf(&g.sb, `local o%s = setmetatable({}, { __tostring = function() return "obj<%d>" end })
+local %s = tostring(o%s)
+`, name, g.rng.Intn(1000), name, name)
 }
 
 // numExpr 产一个安全的数值表达式。
