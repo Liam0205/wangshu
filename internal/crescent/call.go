@@ -27,7 +27,7 @@ func (st *State) doCall(th *thread, ci *callInfo, i bytecode.Instruction) (*call
 	nresults := c - 1
 	callee := th.stack[funcIdx]
 	if value.Tag(callee) != value.TagFunction {
-		return nil, errf("attempt to call a %s value", typeName(callee))
+		return nil, st.errWithName(ci, "call", a, callee)
 	}
 	cl := value.GCRefOf(callee)
 	if object.IsHostClosure(st.arena, cl) {
@@ -74,7 +74,7 @@ func (st *State) doTailCall(th *thread, ci *callInfo, i bytecode.Instruction) (*
 	}
 	callee := th.stack[funcIdx]
 	if value.Tag(callee) != value.TagFunction {
-		return nil, errf("attempt to call a %s value", typeName(callee))
+		return nil, st.errWithName(ci, "call", a, callee)
 	}
 	cl := value.GCRefOf(callee)
 	if object.IsHostClosure(st.arena, cl) {
@@ -188,21 +188,65 @@ func (st *State) doSetList(th *thread, ci *callInfo, i bytecode.Instruction) *Lu
 	return nil
 }
 
-// doConcat 实现 R(A) := R(B) .. .. R(C) — M9 仅支持 string + number 路径。
+// doConcat 实现 R(A) := R(B) .. .. R(C)。
+//
+// 快路径全 string/number 一次线性拼接;遇到非法操作数走 __concat 元方法
+// (右结合,07);仍无则报带名字描述的错误(09 §8.3)。
 func (st *State) doConcat(th *thread, ci *callInfo, i bytecode.Instruction) *LuaError {
 	bIdx := bytecode.B(i)
 	cIdx := bytecode.C(i)
-	parts := make([]byte, 0, 64)
+	// 快路径检查:全部可串化
+	allPlain := true
 	for k := bIdx; k <= cIdx; k++ {
 		v := reg(th, ci, k)
-		s, ok := st.toStringBytes(v)
-		if !ok {
-			return errf("attempt to concatenate a %s value", typeName(v))
+		if !value.IsNumber(v) && value.Tag(v) != value.TagString {
+			allPlain = false
+			break
 		}
-		parts = append(parts, s...)
 	}
-	ref := st.gc.Intern(parts)
-	setReg(th, ci, bytecode.A(i), value.MakeGC(value.TagString, ref))
+	if allPlain {
+		parts := make([]byte, 0, 64)
+		for k := bIdx; k <= cIdx; k++ {
+			s, _ := st.toStringBytes(reg(th, ci, k))
+			parts = append(parts, s...)
+		}
+		ref := st.gc.Intern(parts)
+		setReg(th, ci, bytecode.A(i), value.MakeGC(value.TagString, ref))
+		return nil
+	}
+	// 慢路径:从右向左两两折叠(右结合);__concat 先左后右查
+	acc := reg(th, ci, cIdx)
+	for k := cIdx - 1; k >= bIdx; k-- {
+		l := reg(th, ci, k)
+		lOK := value.IsNumber(l) || value.Tag(l) == value.TagString
+		rOK := value.IsNumber(acc) || value.Tag(acc) == value.TagString
+		if lOK && rOK {
+			lb, _ := st.toStringBytes(l)
+			rb, _ := st.toStringBytes(acc)
+			ref := st.gc.Intern(append(append([]byte{}, lb...), rb...))
+			acc = value.MakeGC(value.TagString, ref)
+			continue
+		}
+		h := st.metaFieldOfValue(l, "__concat")
+		if h == value.Nil {
+			h = st.metaFieldOfValue(acc, "__concat")
+		}
+		if h == value.Nil {
+			bad := l
+			badRK := k
+			if lOK {
+				bad = acc
+				badRK = k + 1
+			}
+			return st.errWithName(ci, "concatenate", badRK, bad)
+		}
+		res, e := st.callMetaHandler(th, h, []value.Value{l, acc}, 1)
+		if e != nil {
+			return e
+		}
+		acc = res
+	}
+	setReg(th, ci, bytecode.A(i), acc)
 	return nil
 }
 

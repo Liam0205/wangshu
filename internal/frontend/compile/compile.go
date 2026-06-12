@@ -66,6 +66,16 @@ func (cg *codegen) compileFunc(outerFS *funcState, fe *ast.FuncExpr) *bytecode.P
 	// 关闭尚活的局部
 	fs.removeVars(0)
 
+	// 回填局部变量调试表(01 §5.7 LocVars;09 §8.4 错误名字推断用)
+	fs.proto.LocVars = make([]bytecode.LocalVar, len(fs.locvars))
+	for i, lv := range fs.locvars {
+		fs.proto.LocVars[i] = bytecode.LocalVar{
+			Name:    lv.name,
+			StartPC: lv.startPC,
+			EndPC:   lv.endPC,
+		}
+	}
+
 	// MaxStack 至少 2(Lua 5.1 LUA_MINSTACK 余量;调用至少需放函数+1参,04 §5.3)
 	if fs.proto.MaxStack < 2 {
 		fs.proto.MaxStack = 2

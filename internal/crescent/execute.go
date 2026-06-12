@@ -103,7 +103,7 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 			key := rk(th, ci, bytecode.C(i))
 			v, e := st.icGetTable(th, ci, ci.pc-1, tbl, key)
 			if e != nil {
-				return e
+				return st.enhanceIndexErr(e, ci, bytecode.B(i), tbl)
 			}
 			// __index handler 可能重入 execute(append cis)→ 刷新 ci 指针
 			ci = currentCI(th)
@@ -115,7 +115,7 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 			key := rk(th, ci, bytecode.B(i))
 			val := rk(th, ci, bytecode.C(i))
 			if e := st.icSetTable(th, ci, ci.pc-1, tbl, key, val); e != nil {
-				return e
+				return st.enhanceIndexErr(e, ci, bytecode.A(i), tbl)
 			}
 			ci = currentCI(th)
 			code = ci.proto.Code
@@ -151,10 +151,21 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 
 		case bytecode.UNM:
 			b := reg(th, ci, bytecode.B(i))
-			if !value.IsNumber(b) {
-				return errf("attempt to perform arithmetic on a %s value", typeName(b))
+			if f, ok := st.toNumberCoerce(b); ok {
+				setReg(th, ci, bytecode.A(i), value.NumberValue(-f))
+			} else {
+				h := st.metaFieldOfValue(b, "__unm")
+				if h == value.Nil {
+					return st.errWithName(ci, "perform arithmetic on", bytecode.B(i), b)
+				}
+				res, e := st.callMetaHandler(th, h, []value.Value{b, b}, 1)
+				if e != nil {
+					return e
+				}
+				ci = currentCI(th)
+				code = ci.proto.Code
+				setReg(th, ci, bytecode.A(i), res)
 			}
-			setReg(th, ci, bytecode.A(i), value.NumberValue(-value.AsNumber(b)))
 
 		case bytecode.NOT:
 			b := reg(th, ci, bytecode.B(i))
@@ -167,14 +178,10 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 				n := object.StringLen(st.arena, value.GCRefOf(b))
 				setReg(th, ci, bytecode.A(i), value.NumberValue(float64(n)))
 			case value.TagTable:
-				// border:M9 简化为线性扫描 array 部分
 				border := st.rawBorder(value.GCRefOf(b))
 				setReg(th, ci, bytecode.A(i), value.NumberValue(float64(border)))
 			default:
-				if value.IsNumber(b) {
-					return errf("attempt to get length of a number value")
-				}
-				return errf("attempt to get length of a %s value", typeName(b))
+				return st.errWithName(ci, "get length of", bytecode.B(i), b)
 			}
 
 		case bytecode.CONCAT:
@@ -263,9 +270,10 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 
 		case bytecode.FORPREP:
 			a := bytecode.A(i)
-			init, ok1 := toNumber(reg(th, ci, a))
-			limit, ok2 := toNumber(reg(th, ci, a+1))
-			step, ok3 := toNumber(reg(th, ci, a+2))
+			// 三槽校验:可经 string coercion(5.1 对 for 也做 tonumber,07 §5.2)
+			init, ok1 := st.toNumberCoerce(reg(th, ci, a))
+			limit, ok2 := st.toNumberCoerce(reg(th, ci, a+1))
+			step, ok3 := st.toNumberCoerce(reg(th, ci, a+2))
 			if !ok1 {
 				return errf("'for' initial value must be a number")
 			}
@@ -335,20 +343,24 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 }
 
 // toNumber 把 Value 转 float64;成功返回值 + true。number 直接转;
-// string 在 M9 暂只 raw bytes 经过 strconv 一种简单路径(M11 拉齐 parseLuaNumber)。
-func toNumber(v value.Value) (float64, bool) {
+// string 经 ParseLuaNumber(07 §5.2 唯一入口:算术/数值 for/tonumber 共用)。
+func (st *State) toNumberCoerce(v value.Value) (float64, bool) {
 	if value.IsNumber(v) {
 		return value.AsNumber(v), true
+	}
+	if value.Tag(v) == value.TagString {
+		return parseLuaNumberBytes(object.StringBytes(st.arena, value.GCRefOf(v)))
 	}
 	return 0, false
 }
 
-// 算术辅助。快路径双 number;慢路径走 __add 等元方法(M11)。
+// 算术辅助。快路径双 number;string coercion(07 §5.2);慢路径 __add 等元方法。
 func (st *State) doArith(th *thread, ci *callInfo, i bytecode.Instruction) *LuaError {
 	b := rk(th, ci, bytecode.B(i))
 	c := rk(th, ci, bytecode.C(i))
-	if value.IsNumber(b) && value.IsNumber(c) {
-		x, y := value.AsNumber(b), value.AsNumber(c)
+	x, okB := st.toNumberCoerce(b)
+	y, okC := st.toNumberCoerce(c)
+	if okB && okC {
 		var r float64
 		switch bytecode.Op(i) {
 		case bytecode.ADD:
@@ -367,9 +379,16 @@ func (st *State) doArith(th *thread, ci *callInfo, i bytecode.Instruction) *LuaE
 		setReg(th, ci, bytecode.A(i), value.NumberValue(r))
 		return nil
 	}
-	// 慢路径:__add 等元方法
-	name := arithMetaName(bytecode.Op(i))
-	res, e := st.arithMeta(th, name, b, c)
+	// 慢路径:__add 等元方法;无元方法时报带名字描述的错误(09 §8.3)
+	mmName := arithMetaName(bytecode.Op(i))
+	h := st.metaFieldOfValue(b, mmName)
+	if h == value.Nil {
+		h = st.metaFieldOfValue(c, mmName)
+	}
+	if h == value.Nil {
+		return st.arithErrWithName(ci, i, b, c)
+	}
+	res, e := st.arithMeta(th, mmName, b, c)
 	if e != nil {
 		return e
 	}
@@ -417,11 +436,12 @@ func (st *State) doCompare(th *thread, ci *callInfo, i bytecode.Instruction) (bo
 			}
 			return cmp <= 0, nil
 		}
-		// 混合类型不自动转(05 §4.4)
-		if value.IsNumber(b) || value.Tag(b) == value.TagString {
-			return false, errf("attempt to compare %s with %s", typeName(b), typeName(c))
+		// 混合类型不自动转(05 §4.4);同类报 "two X values",异类报 "X with Y"(5.1)
+		tb, tc := typeName(b), typeName(c)
+		if tb == tc {
+			return false, errf("attempt to compare two %s values", tb)
 		}
-		return false, errf("attempt to compare %s with %s", typeName(b), typeName(c))
+		return false, errf("attempt to compare %s with %s", tb, tc)
 	}
 	return false, errf("interpreter: bad compare op")
 }
