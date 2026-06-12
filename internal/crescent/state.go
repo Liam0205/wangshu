@@ -8,6 +8,7 @@ package crescent
 
 import (
 	"fmt"
+	"sync/atomic"
 
 	"github.com/Liam0205/wangshu/internal/arena"
 	"github.com/Liam0205/wangshu/internal/bytecode"
@@ -15,6 +16,12 @@ import (
 	"github.com/Liam0205/wangshu/internal/object"
 	"github.com/Liam0205/wangshu/internal/value"
 )
+
+// ctxHolder 包裹 context.Context,通过 atomic.Pointer 跨 goroutine 安全
+// 替换。剥离接口签名,避免 internal/crescent 直接依赖标准库 context。
+type ctxHolder struct {
+	err func() error
+}
 
 // LuaError carries a Lua-level error value (05 §9.2)。
 type LuaError struct {
@@ -79,6 +86,13 @@ type State struct {
 	// 宿主侧脚本配额特性的种子;fuzz 用它替代脆弱的源码子串过滤。
 	stepBudget int64
 	stepUsed   int64
+
+	// ctx 是 SetContext 注入的取消信号(issue #4):chargeStep 的同一抢占
+	// 点(回边 / 函数进帧 / CALL)做 ctx.Err() 检查。Atomic 包裹是因为
+	// 跨 goroutine 取消的常见模式:VM 在 goroutine A 跑,timer/ctx 在
+	// goroutine B 调 cancel()——context 实现本身已 race-safe,但我们这
+	// 边对 ctx 字段的读写跨 goroutine,需 atomic 包裹避免 data race。
+	ctx atomic.Pointer[ctxHolder]
 
 	// gcSeen/gcSeenRefs 是根扫描去重 map 的缓存(多线程慢路径用;每轮
 	// Collect 复用 clear,避免根扫描自身制造 Go 堆垃圾)。
@@ -321,14 +335,43 @@ func (st *State) SetAllowFileLoad(on bool) { st.allowFileLoad = on }
 // AllowFileLoad 查询文件读开关(stdlib loadfile/dofile 用)。
 func (st *State) AllowFileLoad() bool { return st.allowFileLoad }
 
-// chargeStep 预算计费(回边 + 函数进帧各记 1),超 stepBudget 抛可恢复错误。
+// chargeStep 预算计费 + 取消检查(回边 + 函数进帧 + CALL 各记 1)。
+// 超 stepBudget 抛 "instruction budget exceeded";ctx.Err() 非空抛
+// "context canceled: <err>"。三处抢占点共用同一入口。
+//
+// 调用方契约:必须在指令边界(opcode/帧间)调用——一致命名 chargeStep
+// 但实际兼"步进进度 + 资源/取消门",未来 P3+ JIT 同名抢占点共用。
+//
+// 快路径:无 budget、无 ctx 时为「读两个字段判 nil/0 → return nil」,
+// 已被 inline,简单加法 + 比较的开销可忽略(性能轮基准未观测影响)。
 func (st *State) chargeStep() *LuaError {
-	st.stepUsed++
-	if st.stepUsed > st.stepBudget {
-		return errf("instruction budget exceeded")
+	if st.stepBudget > 0 {
+		st.stepUsed++
+		if st.stepUsed > st.stepBudget {
+			return errf("instruction budget exceeded")
+		}
+	}
+	if h := st.ctx.Load(); h != nil {
+		if err := h.err(); err != nil {
+			return errf("context canceled: %s", err.Error())
+		}
 	}
 	return nil
 }
+
+// SetCancelHook 注入一个取消回调(issue #4 公共 SetContext 的内部桥)。
+// fn 返回非 nil error 时,VM 在下一个抢占点中止当前 Call/Run。原子
+// 替换,跨 goroutine 安全;传 nil 等价 RemoveCancelHook。
+func (st *State) SetCancelHook(fn func() error) {
+	if fn == nil {
+		st.ctx.Store(nil)
+		return
+	}
+	st.ctx.Store(&ctxHolder{err: fn})
+}
+
+// CancelHookActive 报告是否当前安装了取消回调(诊断/测试用)。
+func (st *State) CancelHookActive() bool { return st.ctx.Load() != nil }
 
 // GCCollect 触发一次 full GC(collectgarbage("collect") 用)。
 func (st *State) GCCollect() { st.gc.Collect() }

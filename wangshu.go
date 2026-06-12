@@ -14,6 +14,7 @@
 package wangshu
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/Liam0205/wangshu/internal/arena"
@@ -114,6 +115,37 @@ func (st *State) GCCountKB() float64 { return st.core.GCCountKB() }
 // SetStepBudget 设置回边指令预算(<=0 关闭):超额时脚本以可恢复错误
 // "instruction budget exceeded" 终止。宿主对不可信脚本的执行配额。
 func (st *State) SetStepBudget(n int64) { st.core.SetStepBudget(n) }
+
+// SetContext 绑定一个 context.Context 到 State——VM 在每个抢占点
+// (回边 / 函数进帧 / TFORLOOP 等)检查 ctx.Err();非空时中止当前
+// Run/Call,返回包装 ctx.Err() 的 Go error(可被 Lua 端 pcall 捕获,
+// err.Error() 含 "context canceled: <原始 ctx 文本>")。对位 gopher-lua
+// `L.SetContext`(issue #4)。
+//
+// 形态:精确到 wall-clock 中断(`ctx.WithTimeout` / 上游 `Cancel` 都生效);
+// 与 SetStepBudget 并存,谁先触发谁终止——后者按指令计数,前者按事件。
+//
+// 跨 goroutine:context 取消的典型用法是 goroutine A 跑 VM,goroutine B
+// 调 `cancel()`——内部用 atomic.Pointer 包裹,跨 goroutine 安全。VM
+// State 本身仍单 goroutine。
+//
+// Return-to-pool:State 复用前(若做 State 池)应 RemoveContext 清掉,
+// 否则下次 Borrow 复用陈旧 ctx。
+//
+// 性能:开销在 chargeStep 的同一抢占点,加一个 atomic.Pointer.Load +
+// nil 判;未注入 ctx 时为 nil 比较快路径,接近零成本(性能轮基准未
+// 观测影响)。
+func (st *State) SetContext(ctx context.Context) {
+	if ctx == nil {
+		st.core.SetCancelHook(nil)
+		return
+	}
+	st.core.SetCancelHook(ctx.Err)
+}
+
+// RemoveContext 清除当前 State 上绑定的 Context(SetContext 配对)。
+// 重复调用、未 SetContext 直接 Remove 都无副作用。
+func (st *State) RemoveContext() { st.core.SetCancelHook(nil) }
 
 // Program is an immutable compilation product (11 §1.4)。可跨 goroutine 共享;
 // 字符串常量首次被某 State Run 时惰性 intern 进该 State 的 arena。
