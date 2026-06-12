@@ -165,8 +165,11 @@ func stringFnGmatch(st *crescent.State, args []value.Value) ([]value.Value, *cre
 			pos = len(src) + 1
 			return []value.Value{value.Nil}, nil
 		}
-		if end == pos && end == start {
-			pos = end + 1 // 空匹配:推进一格防死循环
+		if end == start {
+			// 空匹配:从命中位置 +1 推进(官方 gmatch_aux `if (e==src) newstart++`;
+			// 注意命中位置可能在 pos 之后——条件是 end==start 而非 end==pos,
+			// 否则扫描前进后的空匹配不推进,迭代器原地死循环重复输出)。
+			pos = end + 1
 		} else {
 			pos = end
 		}
@@ -266,7 +269,17 @@ func st2gsubRepl(st *crescent.State, src []byte, s, e int, caps []capResult, rep
 					if c == '0' {
 						out = append(out, whole...)
 					} else {
-						v := capVal(int(c - '1'))
+						// %n 越界(超出捕获数;无显式捕获时仅 %1 合法 = 整匹配)
+						// 官方 push_onecapture 报 invalid capture index。
+						idx := int(c - '1')
+						nCaps := len(caps)
+						if nCaps == 0 {
+							nCaps = 1 // 无显式捕获:捕获 1 = 整个匹配
+						}
+						if idx >= nCaps {
+							return nil, crescent.NewError(fmt.Sprintf("invalid capture index %%%c", c))
+						}
+						v := capVal(idx)
 						b, _ := valueToBytesForGsub(st, v)
 						out = append(out, b...)
 					}
@@ -294,7 +307,8 @@ func st2gsubRepl(st *crescent.State, src []byte, s, e int, caps []capResult, rep
 		return b, nil
 	case value.Tag(repl) == value.TagTable:
 		key := capVal(0)
-		v, le := st.RawGet(value.GCRefOf(repl), key)
+		// 经 __index 链(官方 gsub 走 lua_gettable,元方法可见)
+		v, le := st.IndexWithMeta(repl, key)
 		if le != nil {
 			return nil, le
 		}
@@ -412,21 +426,21 @@ func stringFnFormat(st *crescent.State, args []value.Value) ([]value.Value, *cre
 	return []value.Value{intern(st, string(out))}, nil
 }
 
-// quoteLuaString 实现 %q(对齐 5.1 的安全引号转义)。
+// quoteLuaString 实现 %q(逐字节对齐官方 addquoted):
+// `"` `\` 前置反斜杠;`\n` 输出为反斜杠+真实换行(非 \n 两字符);
+// `\r` → \r;NUL → \000(三位,防后随数字粘连)。
 func quoteLuaString(s []byte) []byte {
 	out := []byte{'"'}
 	for _, c := range s {
 		switch c {
-		case '"':
-			out = append(out, '\\', '"')
-		case '\\':
-			out = append(out, '\\', '\\')
+		case '"', '\\':
+			out = append(out, '\\', c)
 		case '\n':
-			out = append(out, '\\', 'n')
+			out = append(out, '\\', '\n')
 		case '\r':
 			out = append(out, '\\', 'r')
 		case 0:
-			out = append(out, '\\', '0')
+			out = append(out, '\\', '0', '0', '0')
 		default:
 			out = append(out, c)
 		}

@@ -36,6 +36,12 @@ func OpenAll(st *crescent.State) {
 	registerNamespaced(st, "math", append(mathFns, mathExtraFns...))
 	strTbl := registerNamespaced(st, "string", stringFns)
 	st.SetStringLib(strTbl) // string 值的 per-type __index(`("x"):upper()`)
+	// LUA_COMPAT_GFIND:gfind 必须与 gmatch 是同一函数对象
+	// (官方测试套断言 string.gfind == string.gmatch)
+	{
+		gm, _ := st.RawGet(strTbl, intern(st, "gmatch"))
+		st.SetTableField(strTbl, "gfind", gm)
+	}
 	tblTbl := registerNamespaced(st, "table", tableFns)
 	// table.unpack 别名(5.1 主入口是全局 unpack,5.2+ 是 table.unpack;两者都给)
 	{

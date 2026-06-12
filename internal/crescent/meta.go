@@ -254,6 +254,43 @@ func (st *State) ProtectedCallDirect(fn value.Value, args []value.Value) ([]valu
 // MetaOf 暴露 metaOf(stdlib getmetatable 用)。
 func (st *State) MetaOf(t arena.GCRef) arena.GCRef { return st.metaOf(t) }
 
+// IndexWithMeta 暴露带 __index 链的表读(stdlib gsub 的 table repl 用——
+// 官方 gsub 经 lua_gettable 取替换值,会触发元方法)。
+func (st *State) IndexWithMeta(obj, key value.Value) (value.Value, *LuaError) {
+	th := st.runningThread
+	if th == nil {
+		return value.Nil, errf("IndexWithMeta: no running thread")
+	}
+	return st.indexWithMeta(th, obj, key)
+}
+
+// LessThan 暴露完整的 `<` 语义(数字/字符串快路径 + __lt 元方法;
+// table.sort 默认比较器用——官方 sort_comp 走 lua_lessthan)。
+func (st *State) LessThan(a, b value.Value) (bool, *LuaError) {
+	if value.IsNumber(a) && value.IsNumber(b) {
+		return value.AsNumber(a) < value.AsNumber(b), nil
+	}
+	if value.Tag(a) == value.TagString && value.Tag(b) == value.TagString {
+		return stringCompare(st, value.GCRefOf(a), value.GCRefOf(b)) < 0, nil
+	}
+	th := st.runningThread
+	if th == nil {
+		return false, errf("LessThan: no running thread")
+	}
+	h := st.metaFieldOfValue(a, "__lt")
+	if h == value.Nil {
+		h = st.metaFieldOfValue(b, "__lt")
+	}
+	if value.Tag(h) == value.TagFunction {
+		res, e := st.callMetaHandler(th, h, []value.Value{a, b}, 1)
+		if e != nil {
+			return false, e
+		}
+		return value.Truthy(res), nil
+	}
+	return false, errf("attempt to compare two %s values", typeName(a))
+}
+
 // MetaFieldOf 暴露任意 Value 的元方法查找(stdlib __tostring 等用)。
 func (st *State) MetaFieldOf(v value.Value, name string) value.Value {
 	return st.metaFieldOfValue(v, name)

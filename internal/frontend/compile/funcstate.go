@@ -265,16 +265,6 @@ func (fs *funcState) leaveBlock(line int32) {
 	}
 }
 
-// innerLoopBlock 找最内层 isLoop=true 的块(用于 break)。
-func (fs *funcState) innerLoopBlock() *blockCnt {
-	for b := fs.bl; b != nil; b = b.prev {
-		if b.isLoop {
-			return b
-		}
-	}
-	return nil
-}
-
 // ----- 跳转链 -----
 
 // jump 发射一条 JMP,sBx 临时存 jpc 链入(链表嵌指令流,04 §5.4)。

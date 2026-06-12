@@ -23,6 +23,65 @@ var tableFns = []entry{
 	{"getn", tableFnGetn},
 	{"maxn", tableFnMaxn},
 	{"setn", tableFnSetn},
+	{"foreach", tableFnForeach},   // LUA_COMPAT 5.0 遗留(官方 5.1.5 默认带)
+	{"foreachi", tableFnForeachi}, // 同上
+}
+
+// tableFnForeach:table.foreach(t, f) —— 对每个键值对调 f(k, v),f 返回
+// 非 nil 即中止并返回该值(官方 ltablib foreach)。
+func tableFnForeach(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
+	tv, e := tblArg(args, 0, "foreach")
+	if e != nil {
+		return nil, e
+	}
+	if len(args) < 2 || value.Tag(args[1]) != value.TagFunction {
+		return nil, crescent.NewError("bad argument #2 to 'foreach' (function expected)")
+	}
+	t := value.GCRefOf(tv)
+	key := value.Nil
+	for {
+		k, v, ok, err := st.RawNext(t, key)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			break
+		}
+		rs, e := st.ProtectedCallDirect(args[1], []value.Value{k, v})
+		if e != nil {
+			return nil, e
+		}
+		if len(rs) > 0 && rs[0] != value.Nil {
+			return []value.Value{rs[0]}, nil
+		}
+		key = k
+	}
+	return nil, nil
+}
+
+// tableFnForeachi:table.foreachi(t, f) —— 对 1..#t 调 f(i, t[i]),返回值
+// 语义同 foreach。
+func tableFnForeachi(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
+	tv, e := tblArg(args, 0, "foreachi")
+	if e != nil {
+		return nil, e
+	}
+	if len(args) < 2 || value.Tag(args[1]) != value.TagFunction {
+		return nil, crescent.NewError("bad argument #2 to 'foreachi' (function expected)")
+	}
+	t := value.GCRefOf(tv)
+	n := int(st.RawBorder(t))
+	for i := 1; i <= n; i++ {
+		v, _ := st.RawGet(t, value.NumberValue(float64(i)))
+		rs, e := st.ProtectedCallDirect(args[1], []value.Value{value.NumberValue(float64(i)), v})
+		if e != nil {
+			return nil, e
+		}
+		if len(rs) > 0 && rs[0] != value.Nil {
+			return []value.Value{rs[0]}, nil
+		}
+	}
+	return nil, nil
 }
 
 // tableFnSetn:table.setn —— 5.1.5 实测直接报 "'setn' is obsolete"
@@ -169,17 +228,14 @@ func tableFnSort(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 			}
 			return len(rs) > 0 && value.Truthy(rs[0])
 		}
-		// 默认 <:数字或字符串
-		if value.IsNumber(a) && value.IsNumber(b) {
-			return value.AsNumber(a) < value.AsNumber(b)
+		// 默认比较走完整 `<` 语义(数字/字符串快路径 + __lt 元方法,
+		// 官方 sort_comp 经 lua_lessthan;带 __lt 的对象表可直接 sort)
+		r, e := st.LessThan(a, b)
+		if e != nil {
+			sortErr = e
+			return false
 		}
-		if value.Tag(a) == value.TagString && value.Tag(b) == value.TagString {
-			sa := string(object.StringBytes(st.Arena(), value.GCRefOf(a)))
-			sb := string(object.StringBytes(st.Arena(), value.GCRefOf(b)))
-			return sa < sb
-		}
-		sortErr = crescent.NewError("attempt to compare two incompatible values in 'sort'")
-		return false
+		return r
 	}
 	sort.SliceStable(vals, func(i, j int) bool { return less(vals[i], vals[j]) })
 	if sortErr != nil {
@@ -323,6 +379,7 @@ func ioFnWrite(st *crescent.State, args []value.Value) ([]value.Value, *crescent
 
 var mathExtraFns = []entry{
 	{"fmod", mathFnFmod},
+	{"mod", mathFnFmod}, // LUA_COMPAT_MOD:5.0 别名(官方 5.1.5 默认带)
 	{"modf", mathFnModf},
 	{"atan2", mathFn2(atan2)},
 	{"sinh", mathFn1(sinh)},

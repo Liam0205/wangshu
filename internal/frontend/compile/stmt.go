@@ -268,16 +268,29 @@ func (fs *funcState) stmtWhile(s *ast.WhileStmt) {
 }
 
 func (fs *funcState) stmtRepeat(s *ast.RepeatStmt) {
+	// 对齐官方 repeatstat 的两层块:外层 loop(breakable),内层 scope。
+	// cond 在 scope 内求值(until 可见 body 局部)。scope 含 upvalue 捕获时
+	// 走"完整语义":cond 真 → break(CLOSE+跳出);假 → leaveBlock 发
+	// CLOSE 再回跳——每次迭代关闭本迭代局部的捕获,否则全部迭代的闭包
+	// 共享同一开放栈槽(repeat 中 `local x=i; f=function() return x end`
+	// 各迭代应各捕一份)。
 	loopStart := fs.getLabel()
-	fs.enterBlock(true)
+	fs.enterBlock(true)  // loop block
+	fs.enterBlock(false) // scope block
 	fs.block(s.Body)
-	// cond 在 body 作用域内可见局部
 	ce := fs.expr(s.Cond)
 	fs.goIfTrue(s.Cond.Pos(), &ce)
-	// cond 假 ⇒ 回跳;真 ⇒ 落出
-	fs.patchList(ce.fJmp, loopStart)
-	// 注意:Lua 5.1 在 cond 求值之后才 leaveBlock(允许 until x>0 中 x 是 body 局部)
-	fs.leaveBlock(s.Line)
+	if !fs.bl.hasUpval {
+		fs.leaveBlock(s.Line)            // finish scope(无 CLOSE)
+		fs.patchList(ce.fJmp, loopStart) // cond 假 ⇒ 回跳
+	} else {
+		// cond 真 ⇒ break 路径(stmtBreak 发 CLOSE 并入 breakList)
+		fs.stmtBreak(&ast.BreakStmt{Line: s.Line})
+		fs.patchToHere(ce.fJmp)                  // cond 假落到此
+		fs.leaveBlock(s.Line)                    // finish scope(发 CLOSE)
+		fs.patchList(fs.jump(s.Line), loopStart) // 再回跳
+	}
+	fs.leaveBlock(s.Line) // finish loop(break 落点)
 }
 
 // stmtNumFor:数值 for(04 §6.5)。占 4 槽 R(base..base+3)。
@@ -412,11 +425,22 @@ func (fs *funcState) stmtReturn(s *ast.ReturnStmt) {
 }
 
 func (fs *funcState) stmtBreak(s *ast.BreakStmt) {
-	bl := fs.innerLoopBlock()
+	// 对齐官方 breakstat:从最内层块走到 breakable 块,沿途累计 upval 标志
+	// ——循环变量/体内局部的捕获标记在内层块上,只看 loop 块自身会漏发
+	// CLOSE,break 后开放 upvalue 仍指着将被覆写的栈槽(读出脏值/nil)。
+	upval := false
+	var bl *blockCnt
+	for b := fs.bl; b != nil; b = b.prev {
+		if b.isLoop {
+			bl = b
+			break
+		}
+		upval = upval || b.hasUpval
+	}
 	if bl == nil {
 		raise(fs, s.Line, "no loop to break")
 	}
-	if bl.hasUpval {
+	if upval || bl.hasUpval {
 		fs.emitABC(s.Line, bytecode.CLOSE, bl.nactvarSnap, 0, 0)
 	}
 	pc := fs.jump(s.Line)

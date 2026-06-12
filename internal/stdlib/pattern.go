@@ -59,6 +59,10 @@ func classMatch(c byte, cl byte) bool {
 		res = isalnum(c)
 	case 'x':
 		res = isxdigit(c)
+	case 'z':
+		// 5.1 特有(5.2 移除):%z 匹配 NUL(模式串自身经 C 字符串传递
+		// 放不下 \0,用 %z 表达);%Z 取反 = 任意非 NUL。
+		res = c == 0
 	default:
 		return cl == c
 	}
@@ -234,7 +238,12 @@ func (ms *matchState) match(s, p int) (int, error) {
 					}
 					return -1, nil
 				}
-				if nc >= '1' && nc <= '9' {
+				if nc >= '0' && nc <= '9' {
+					// %0 在模式中不是合法反向引用(官方 check_capture
+					// l==-1 报 invalid capture index);%1-%9 正常。
+					if nc == '0' {
+						return -1, fmt.Errorf("invalid capture index")
+					}
 					return ms.matchCapture(s, p, int(nc-'1'))
 				}
 			}
@@ -431,7 +440,10 @@ func patternFind(src, pat []byte, init int) (int, int, []capResult, bool, error)
 			return 0, 0, nil, false, err
 		}
 		if r != -1 {
-			caps := collectCaptures(ms, s, r)
+			caps, err := collectCaptures(ms, s, r)
+			if err != nil {
+				return 0, 0, nil, false, err
+			}
 			return s, r, caps, true, nil
 		}
 		s++
@@ -448,19 +460,24 @@ type capResult struct {
 	len   int
 }
 
-func collectCaptures(ms *matchState, s, e int) []capResult {
+func collectCaptures(ms *matchState, s, e int) ([]capResult, error) {
 	if ms.level == 0 {
 		// 无显式捕获:整个匹配作为捕获 0(由调用方决定如何呈现)
-		return nil
+		return nil, nil
 	}
 	out := make([]capResult, ms.level)
 	for i := 0; i < ms.level; i++ {
 		c := ms.captures[i]
-		if c.len == capPosition {
+		switch c.len {
+		case capPosition:
 			out[i] = capResult{pos: true, start: c.init}
-		} else {
+		case capUnfinished:
+			// `"(."`:匹配成功但捕获未闭合(官方 push_onecapture 报此错;
+			// len=-1 物化切片会越界 panic)
+			return nil, fmt.Errorf("unfinished capture")
+		default:
 			out[i] = capResult{start: c.init, len: c.len}
 		}
 	}
-	return out
+	return out, nil
 }
