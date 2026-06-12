@@ -40,6 +40,18 @@
 
 - **三层禁用机制(LibsSafe/Libs/Exclude)未完整落地** — 评审轮定稿的 stdlib 三层收紧机制(`docs/design/p1-interpreter/10-stdlib.md` §12.1:LibsSafe 预设 / Libs 位掩码 / Exclude 函数级)当前只落地了单点门控 `Options.AllowFileLoad`(loadfile/dofile 默认禁用,显式开启;豁免注册表已登记);完整位掩码机制留待首个宿主接入前落地。[[embedding-contract]] 措辞已同步为「设计承诺三层、现状单点门控」。
 
+- **【v0.1.0 → v0.1.3 累积偏移审计】P2+ 工作时收口的四项负债** — 2026-06-12 累积偏移审计(详见 [[issue234-api-gap-round-2]] 与 issue #5/#6 round-3 反思)在三轮 pineapple 接入后扫出 4 处不算硬违设但应在 P2+ 工作触达对应代码时顺手收口的负债:
+
+  1. **A2 drop-in 绑定漂移监控** — 三轮共 7 个公共 API 改动(`Options.HideFileLoaders` / `SetContext` / `MarkGlobalsBaseline` / `ForEach` / `Register` / `SetGlobal` / `GetGlobal`)都明确写「对位 gopher-lua」,但若再加 5 个「pineapple 要、gopher-lua 有、PUC 5.1 没有」的开关,wangshu 就会从「Lua VM with drop-in option」漂移到「gopher-lua-clone with 9x perf」。**收口动作**:在 [[embedding-contract]] §宿主绑定与 drop-in 节加一行「单一驱动源接入轮数上限」纪律——同一宿主驱动的累积 issue 超 N 轮(暂记 N=4)时应暂停接入需求,做 「reverse drop-in」审计:把已加的对位开关回写进 [[evolution-roadmap]] 的 drop-in 定位段验证。P2+ 接入第二个宿主时是检验本纪律的时机。
+
+  2. **B3 host closure 公共面对称缺口** — `Value.IsFunction() == true` 当前**不**蕴含「`state.Call(v)` 可调」:Lua closure 可,host closure(`Register` 注册的 Go fn)报错 "host closure cannot be called from Go end"(`031ec06`)。godoc 已写,但公共 API 表面破对称。**收口选项**(P2+ 二选一):① 实现 host closure 从 Go 端 Call,需在 `internal/crescent.State.Call` 入口对 host closure 加临时栈帧脚手架(callHost 已有,补 Go 端入口即可);② 公共面分裂 `IsLuaFunction()` / `IsHostFunction()`,让用户能预判。落点 `docs/design/p1-interpreter/11-embedding-arena-abi.md` §1.5 `Program.Call` 与 §10 host function 注册节回填一段「Go 端 Call host closure 的支持现状」决策。
+
+  3. **B4 baseline 非字符串 key 静默跳过** — `MarkGlobalsBaseline` 仅快照字符串 key 全局,这是基于「stdlib 与宿主自己的全局都是字符串 key」的事实但**没有强制**——若未来 stdlib 或宿主 `Register` 加 number/table key 全局(Lua 合法但罕见),baseline 静默漏拍,Reset 后泄漏。**收口动作**(P2+):① conformance 测试集加一条「stdlib `OpenAll` 后 _G 中不含非字符串 key」固化裁口;② godoc 补 panic 路径——若 Mark 时遇到非字符串 key,fail-fast(让漏洞显形而非静默)。落点 `internal/crescent/host.go` `MarkGlobalsBaseline` + `internal/stdlib/` 任何后续新增。
+
+  4. **B7 State 字段并发模型分级** — `ctx atomic.Pointer[ctxHolder]` 是 `*State` 上第一个跨 goroutine 字段([[embedding-contract]] §8.1 并发约定整体仍是「单 goroutine」),其余字段(arena/globals/cis/runningThread)都假设单生产单消费。实际无 bug 但语义不一致——以后再加跨 goroutine 字段(e.g., 跨 goroutine 状态查询、外部 trace hook)若不分级会让 State 字段并发模型混乱。**收口动作**:在 `internal/crescent/state.go State struct` 顶部把字段按并发等级分组(`// goroutine-local:`/`// cross-goroutine (atomic):`)注释;[[embedding-contract]] §8.1 表里加一行注明 `ctx` 字段是显式例外。落点纯文档+注释,P2+ 加新跨 goroutine 字段时强制对账。
+
+  以上四项**不阻塞 v0.1.3 发布**,审计判定为「中-轻偏差」;P2 接 wazero 编译层时大概率触达 §1/§10/§8 三段设计文档,触达即顺手回填。
+
 ## 已收口(留作审计)
 
 - ~~CI runner Node 20→24 迁移期~~ — 原计划 2026-09 前升 action 主版本,完整性补全轮顺手提前完成(`1379319`):ci.yml 与 nightly-diff-fuzz.yml 全部升至 Node 24 线(`actions/checkout@v6` / `actions/setup-go@v6` / `actions/upload-artifact@v7`),弃用警告消除(2026-06-12)。
