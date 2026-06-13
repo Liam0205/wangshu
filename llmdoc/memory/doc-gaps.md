@@ -52,6 +52,12 @@
 
   以上四项**不阻塞 v0.1.3 发布**,审计判定为「中-轻偏差」;P2 接 wazero 编译层时大概率触达 §1/§10/§8 三段设计文档,触达即顺手回填。
 
+- **【P2 文档扩展轮 promotion 候选,首次样本暂留观察】** — 2026-06-13 P2 文档扩展轮(详见 [[p2-doc-expansion-round]])新发现两条工作流纪律,首次样本不立即 promote,等下一轮大型起草任务(可能是 P3 详细设计扩展)再次撞中后正式入 [[multi-doc-drafting]] guide:
+
+  1. **子代理工具卡死的 Bash heredoc 兜底协议** — 子代理在某些累积状态下 Write/Edit 工具会卡死不响应,但 Bash 工具仍可用。本轮 04-try-compile-fallback 子代理通过自救协议「`cat >> file <<'EOF' ... EOF` 续写」绕过卡点;主助理「停子代理 + 派新子代理续写(只追加不重写)」是合法救援动作,介于「子代理重写一次」与「主助理亲写」之间的中间档。**候选促成位置**:[[multi-doc-drafting]] guide §「子代理失败恢复纪律」补一段「Write/Edit 卡死的 Bash heredoc 兜底」+「停子代理 + 派新子代理续写」中间档。
+
+  2. **拆子目录前必须做章节映射表** — 单文件设计稿 → 子目录拆分时,带 §X 章节号的引用不能批量指向总览(章节不存在 = 断链),必须按章节映射表迁移到对应子文档(本轮 §3 IC→02-ic-feedback / §4 可编译性→03-compilability / §5/§6 状态机→04-try-compile-fallback / §7 接口→05-p3-p4-interface / §8/§9→00-overview §9)。**候选促成位置**:[[multi-doc-drafting]] guide 新增「文档拆分纪律」节(目前 guide 只覆盖起草,不覆盖拆分);若 P3 详细设计扩展时再次撞中,此时正式立节。
+
 ## 已收口(留作审计)
 
 - ~~CI runner Node 20→24 迁移期~~ — 原计划 2026-09 前升 action 主版本,完整性补全轮顺手提前完成(`1379319`):ci.yml 与 nightly-diff-fuzz.yml 全部升至 Node 24 线(`actions/checkout@v6` / `actions/setup-go@v6` / `actions/upload-artifact@v7`),弃用警告消除(2026-06-12)。
@@ -63,4 +69,4 @@
 - ~~无任何代码可交叉验证~~ — P1 已交付(M0-M14):`internal/` + `wangshu.go` + conformance 28 用例 + difftest 33 用例 + 三档基准全部落地,验收过线。各 llmdoc 状态措辞已同步为「P1 已落地,P2+ 未开始」;原条目预告的「构建/测试 guides」暂未立(`make all` 单入口 + engineering.md 已覆盖,第二次实现冲刺时再评估是否成文,见 2026-06-12 反思 promotion 节)(2026-06-12)。
 - ~~go.sum 缺失警告(CI cache restore 失败)~~ — M14 引入 gopher-lua v1.1.2(差分基准)后 go.sum 已产出,警告自然消解(2026-06-12)。
 - ~~arena ABI 字段级 spec 缺失~~ — 已由 `docs/design/p1-interpreter/11-embedding-arena-abi.md` §3-§6 定稿(列描述符/字符串区 offset 表+字节池/presence bitmap/args 与 arena 关系/句柄表/per-item API)。[[embedding-contract]] 的缺口标注已同步为指针(2026-06-11)。
-- ~~P2 无独立量化验收门槛~~ — `docs/design/p2-bridge.md` §0 已正面定调:P2 是分层决策基建、不在执行热路径发力,「无量化门槛」是定位而非疏漏。[[evolution-roadmap]] 标注保持一致,不再算缺口(2026-06-11)。
+- ~~P2 无独立量化验收门槛~~ — `docs/design/p2-bridge/00-overview.md` §0 已正面定调:P2 是分层决策基建、不在执行热路径发力,「无量化门槛」是定位而非疏漏。[[evolution-roadmap]] 标注保持一致,不再算缺口(2026-06-11)。
