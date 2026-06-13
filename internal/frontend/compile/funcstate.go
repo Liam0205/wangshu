@@ -170,6 +170,13 @@ func numConstKey(f float64) constKey {
 	if f != f {
 		return constKey{kind: 0, bits: value.CanonNaN()}
 	}
+	// 零归一:PUC addk 用数值相等(luaH_set 数字键)去重,+0.0 == -0.0
+	// 命中同槽,物理存先到的零(保留其符号)。Float64bits 区分 ±0 的符号位
+	// 会让两者分占常量槽,折叠出的 -0.0 不再复用先到的 +0.0 → tostring 错出
+	// "-0"(应 "0")。归一 ±0 共享键,addConst 先到先得自动保留首次符号。
+	if f == 0 {
+		return constKey{kind: 0, bits: 0}
+	}
 	return constKey{kind: 0, bits: math.Float64bits(f)}
 }
 func strConstKey(s string) constKey { return constKey{kind: 1, str: s} }

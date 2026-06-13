@@ -159,6 +159,11 @@ return tostring(ok)`},
 	{"nan_compare", `return tostring(0/0 == 0/0)`},
 	{"inf_div", `return tostring(1/0)`},
 	{"neg_zero", `return tostring(-0)`},
+	// 负零常量表去重(nightly fuzz seed 206160008016,issue #7):前置 +0 常量
+	// 后,折叠出的 -0.0 须复用 +0 槽 → "0"(PUC addk 数值相等去重)。
+	{"neg_zero_fold_after_poszero", `local z = 0; return tostring(0.0 * -1)`},
+	{"neg_zero_first_poszero_reuses", `local a = -0.0; return tostring(a) .. "|" .. tostring(0.0)`},
+
 	// —— 覆盖率审计补充(2026-06-12) ——
 	{"method_call", `
 local t = { v = 10 }

@@ -30,6 +30,14 @@ var cases = []confCase{
 	{"div_is_float", `return 7 / 2`, "3.5"},        // 浮点除
 	{"pow_right_assoc", `return 2 ^ 3 ^ 2`, "512"}, // 右结合 2^(3^2)
 	{"unm_neg_zero", `return tostring(-0)`, "-0"},  // Lua 5.1 tostring(-0) = "-0"
+	// 负零常量表去重(nightly fuzz seed 206160008016,issue #7):PUC addk 用
+	// 数值相等去重(+0.0 == -0.0 命中同槽),物理存先到的零、保留其符号,后到
+	// 复用。折叠出的 -0.0 在前置 +0 常量后复用 +0 槽 → "0"(不是 "-0")。
+	{"negzero_fold_after_poszero", `local z = 0; return tostring(0.0 * -1)`, "0"},                           // +0 先到,折叠 -0 复用 → 0
+	{"negzero_literal_after_poszero", `local z = 0; return tostring(-0.0)`, "0"},                            // +0 先到,-0 字面量复用 → 0
+	{"negzero_first_poszero_reuses", `local a = -0.0; return tostring(a) .. "|" .. tostring(0.0)`, "-0|-0"}, // -0 先到,+0 复用 → -0
+	{"negzero_runtime_not_folded", `local z = 0; local m = -1; return tostring(0.0 * m)`, "-0"},             // 运行期 -0 不经常量表 → -0
+
 	{"concat_right_assoc", `return "a" .. "b" .. "c"`, "abc"},
 
 	// —— 比较语义(05 §4.4) ——
