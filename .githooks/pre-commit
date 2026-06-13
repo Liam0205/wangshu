@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# pre-commit:staged-only gofmt 检查(秒级)。engineering.md §2.1。
+# pre-commit:staged-only gofmt + golangci-lint 检查。engineering.md §2.1。
 set -euo pipefail
 
 # CI 环境短路
@@ -10,6 +10,7 @@ command -v gofmt >/dev/null 2>&1 || exit 0
 mapfile -t staged < <(git diff --cached --name-only --diff-filter=ACM -- '*.go')
 [ ${#staged[@]} -eq 0 ] && exit 0
 
+# 1) gofmt 格式检查
 unformatted=$(gofmt -l "${staged[@]}")
 if [ -n "$unformatted" ]; then
     echo "✗ gofmt 未通过:"
@@ -18,4 +19,15 @@ if [ -n "$unformatted" ]; then
     # shellcheck disable=SC2086
     echo "fix: gofmt -w $(echo $unformatted | tr '\n' ' ') && git add $(echo $unformatted | tr '\n' ' ')"
     exit 1
+fi
+
+# 2) golangci-lint 静态检查(仅 staged 文件涉及的包)
+command -v golangci-lint >/dev/null 2>&1 || exit 0
+mapfile -t pkgs < <(printf '%s\n' "${staged[@]}" | xargs -I{} dirname {} | sort -u | sed 's|^|./|')
+if [ ${#pkgs[@]} -gt 0 ]; then
+    if ! golangci-lint run "${pkgs[@]}" 2>&1; then
+        echo ""
+        echo "✗ golangci-lint 未通过"
+        exit 1
+    fi
 fi
