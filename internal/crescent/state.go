@@ -139,6 +139,11 @@ type State struct {
 	// 多 goroutine 并发不共享:01 §6.3 (B) 方案——profileTable 挂 State
 	// 私有;-race 自然通过(00 §4 PB7 验收(d))。
 	bridge *bridge.Bridge
+
+	// arenaCleanup: State 销毁时释放 arena backing 持有的外部资源
+	// (wangshu_p3 build 下 = 关闭收养的 wazero memory holder + runtime;
+	// 默认 build 下 = nil)。由 newStateArena 返回,Close 时调。
+	arenaCleanup func()
 }
 
 // SetCompileFn 注入编译回调(wangshu.NewState 时装配;loadstring 用)。
@@ -173,9 +178,9 @@ func (st *State) SetStringLib(t arena.GCRef) { st.stringLib = t }
 
 // New constructs a fresh State (arena + collector + empty globals)。
 func New() *State {
-	a := arena.New(arena.Options{})
+	a, cleanup := newStateArena()
 	c := gc.New(a, gc.Options{})
-	st := &State{arena: a, gc: c, bridge: bridge.NewBridge()}
+	st := &State{arena: a, gc: c, bridge: bridge.NewBridge(), arenaCleanup: cleanup}
 	st.globals = object.AllocTable(a, 0, 8)
 	c.LinkSweep(st.globals)
 	st.installRoots()
