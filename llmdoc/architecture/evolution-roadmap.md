@@ -1,6 +1,6 @@
 # 架构:分层 VM 演进路线(P1→P5)
 
-> 状态:**P1 已交付(M0-M14,验收过线),P2-P5 仍为规划**。源:`docs/design/roadmap.md` (§4)。**全阶段详细设计文档已就位**:P1 见 `docs/design/p1-interpreter/`(全卷 00-12,实现现状见同目录 implementation-progress.md),P2-P5 见 `docs/design/p2-bridge/`(子目录) / `p3-wasm-tier.md` / `p4-method-jit.md` / `p5-trace-jit.md`。
+> 状态:**P1 已交付(M0-M14,验收过线),P2-P5 仍为规划**。源:`docs/design/roadmap.md` (§4)。**全阶段详细设计文档已就位**:P1 见 `docs/design/p1-interpreter/`(全卷 00-12,实现现状见同目录 implementation-progress.md),P2-P5 见 `docs/design/p2-bridge/`(子目录) / `p3-wasm-tier/`(子目录 9 文件)/ `p4-method-jit.md` / `p5-trace-jit.md`。
 > 前置约束(为什么是分层、为什么倍率以列内核为口径):见 [[design-premises]]。值表示如何在各层共见同一块内存:见 [[value-representation]]。
 
 ## 流水线全景

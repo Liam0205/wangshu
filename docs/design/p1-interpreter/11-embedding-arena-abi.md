@@ -903,7 +903,7 @@ func myHostFn(ctx *wangshu.HostCtx) int {
 [value-representation](../../../llmdoc/architecture/value-representation.md) 主线「两层共见同一块内存」在 P3 的形态:**P1 的 arena 列布局 ABI(§3.1-§3.4)直接映射为 P3 Wasm 编译层的 linear memory 布局**。
 
 - **P1**:arena 列数据物理住宿主 Go slice(§3.0 方案 B),VM 零拷贝读元素装箱(§4)。「共见」是逻辑的(VM 读列即时进值世界)。
-- **P3**(见 [../p3-wasm-tier](../p3-wasm-tier.md)):值世界 = Wasm linear memory(roadmap §4 P3「P1 的 arena 直接映射,两层共见」)。此时 arena 列**序列化进 linear memory**——按 §3.1-§3.4 的**二进制布局**(ArenaHeader/ColumnDesc/数据区/字符串区/bitmap),Wasm 编译码直接 `i32.load`/`f64.load` 读列元素。**P1 定的字节布局就是 P3 的 linear memory 布局**,无需重新设计 ABI。
+- **P3**(见 [../p3-wasm-tier](../p3-wasm-tier/03-memory-model.md)):值世界 = Wasm linear memory(roadmap §4 P3「P1 的 arena 直接映射,两层共见」)。此时 arena 列**序列化进 linear memory**——按 §3.1-§3.4 的**二进制布局**(ArenaHeader/ColumnDesc/数据区/字符串区/bitmap),Wasm 编译码直接 `i32.load`/`f64.load` 读列元素。**P1 定的字节布局就是 P3 的 linear memory 布局**,无需重新设计 ABI。
 
 > 这是「为什么 §3 即使 P1 用 Go slice 也要定二进制布局」的根本原因(§3.0 双重身份):**ABI 布局 spec 是 P1/P3 共同契约**。P1 用 Go slice 承载它(`wangshu.Arena` 的 column 字段是 §3.1-§3.4 逻辑结构的 Go 化),P3 用 linear memory 承载它(序列化成连续字节块)。**布局不变,承载不同**——这正是 [value-representation](../../../llmdoc/architecture/value-representation.md)「同一份内存的不同视角」「上编译层是纯增量」在 arena ABI 维度的兑现:P3 不重新定义列布局,只换承载介质。
 
@@ -932,7 +932,7 @@ func myHostFn(ctx *wangshu.HostCtx) int {
 - **ColInt64 精度处理**(§3.3.2):P1 定「转 double,精度边界 |v|>2^53 丢精度」。是否需 `ColInt64Exact` 变体(读出为不可直算的精确整数 box,或拆高低 32 位双列)待真实宿主反馈——若宿主大量用大整数 ID/纳秒时间戳且需精确,当前方案不足。**倾向:先转 double + 文档契约,按反馈再加变体。**
 - **字符串零拷贝口径**(§3.3.4 / §4.2):P1 定「拷贝进 arena intern + intern 缓存」;「特殊不可变 String 视图对象」(零拷贝读 arena 字符串区但破坏 string=GCRef 不变式)留 P3+ 评估。当前 string 列是次于数值列的性能档,**长期运行下 intern 缓存的命中率与内存**无数据,需实现后压测。
 - **字符串区编码 α vs β**(§3.3.4):P1 定方案 α(StrSlot{off,len}+ 共享字节池 + 去重);Arrow 标准 β(offsets[n+1]+values,4 字节/行,不共享)在 P3 linear memory 与 Arrow 互操作时是否更优,留 P3 评估。
-- **arena 列数据物理位置 A vs B**(§3.0):P1 定方案 B(宿主 Go slice,零拷贝读)。P3 转 linear memory(更接近 A 的「物理同一块」)。P1/P3 过渡的具体序列化时机与零拷贝边界(linear memory 与宿主 buffer 是否还需一次拷贝进 linear memory)留 [../p3-wasm-tier](../p3-wasm-tier.md) 定。
+- **arena 列数据物理位置 A vs B**(§3.0):P1 定方案 B(宿主 Go slice,零拷贝读)。P3 转 linear memory(更接近 A 的「物理同一块」)。P1/P3 过渡的具体序列化时机与零拷贝边界(linear memory 与宿主 buffer 是否还需一次拷贝进 linear memory)留 [../p3-wasm-tier](../p3-wasm-tier/03-memory-model.md) 定。
 - **arena 在脚本内暴露形式的细节**(§5.2):定「full userdata + `__index` 两级(arena.col[i])+ 列代理缓存」。列代理对象的精确生命周期、`pairs(arena)` 是否支持(遍历所有列/行)、`ipairs(arena.col)` 迭代器是否提供,待 stdlib([10](./10-stdlib.md))与元表([07](./07-metatables-metamethods.md))协同定稿。
 - **可写 arena 列(脚本产出回写宿主)**(§5.3):P1 全只读。脚本产出列回写宿主 buffer 的反向通道(VM Value → 宿主列类型 + 写 buffer)留 P2+。
 - **公共 Value 对 table/function 的往返**(§4.4 / §4.5):P1 不支持 table/function 作 args/results 直接往返(列内核以标量+string 往返)。「深拷成 Go map/slice」或「不透明 handle」的精确设计待真实宿主需求驱动。
@@ -950,7 +950,7 @@ func myHostFn(ctx *wangshu.HostCtx) int {
 [09-errors-pcall](./09-errors-pcall.md)(LuaError → Go error) ·
 [10-stdlib](./10-stdlib.md)(host function 调用约定 / 与 Register 统一) ·
 [12-testing-difftest](./12-testing-difftest.md)(gopher-lua 差分基准 / drop-in 行为兼容) ·
-[../p3-wasm-tier](../p3-wasm-tier.md)(arena ABI = linear memory 布局) ·
+[../p3-wasm-tier](../p3-wasm-tier/03-memory-model.md)(arena ABI = linear memory 布局) ·
 [architecture](../architecture.md)(包布局:公共 API 在 root package) ·
 [embedding-contract](../../../llmdoc/reference/embedding-contract.md)(本文落地的上游契约) ·
 [design-premises](../../../llmdoc/must/design-premises.md)(前提一列内核 / 前提二边界成本) ·

@@ -645,7 +645,7 @@ func (vm *VM) assembleErrorResult(resumer, co *Thread, lerr *LuaError) int {
   的 `repl` 函数里 yield;元方法(`__index`/`__add` 等)里 yield。这些 Lua 函数都是被 **host function 回调**
   进入的,它们的 yield 要穿过 host 的 Go 帧。
 
-> **P3+ 前瞻(承 [../p3-wasm-tier](../p3-wasm-tier.md) §5.4 回填)**:gibbous(Wasm 编译码)帧与 host 帧同理——core Wasm 帧无法挂起后复原,yield 信号同样穿不过。P3 以「线程级 tier 规则」(协程线程上一律走 crescent)使该情形不会发生;对 P1 无影响。
+> **P3+ 前瞻(承 [../p3-wasm-tier](../p3-wasm-tier/07-coroutine-thread-rule.md) 回填)**:gibbous(Wasm 编译码)帧与 host 帧同理——core Wasm 帧无法挂起后复原,yield 信号同样穿不过。P3 以「线程级 tier 规则」(协程线程上一律走 crescent)使该情形不会发生;对 P1 无影响。
 
 ```
 为什么穿不过(路线 B 的物理原因):

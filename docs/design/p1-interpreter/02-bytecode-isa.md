@@ -215,4 +215,4 @@ RETURN    R0  1              ; 隐式 return(B=1 ⇒ 0 个值)
 ---
 
 相关:[01-value-object-model](./01-value-object-model.md) · [04-frontend-parser-codegen](./04-frontend-parser-codegen.md) ·
-[05-interpreter-loop](./05-interpreter-loop.md) · [../p2-bridge/00-overview](../p2-bridge/00-overview.md) · [../p3-wasm-tier](../p3-wasm-tier.md)
+[05-interpreter-loop](./05-interpreter-loop.md) · [../p2-bridge/00-overview](../p2-bridge/00-overview.md) · [../p3-wasm-tier](../p3-wasm-tier/00-overview.md)

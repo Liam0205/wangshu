@@ -388,7 +388,7 @@ type GopherLua struct{}        // 基准:github.com/yuin/gopher-lua
 type OfficialLua struct{}      // oracle:exec lua5.1 子进程(或 golden 文件)
 
 // P3+ 新增(本文预留,不实现):
-// type WangshuGibbous struct{} // 同一 Proto 走 Wasm 层(p3-wasm-tier)
+// type WangshuGibbous struct{} // 同一 Proto 走 Wasm 层(p3-wasm-tier/08-testing-strategy.md)
 // type WangshuFullmoon struct{} // 同一 Proto 走 trace JIT(p5-trace-jit)
 
 func DiffN(src string, runners ...Runner) DiffResult { /* N 方比对,§3.3 矩阵推广 */ }

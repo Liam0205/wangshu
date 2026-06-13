@@ -34,7 +34,7 @@
 
 - **stdlib 提供面逐函数核对待兑现** — 评审轮已定「默认面 = gopher-lua 的 OpenLibs 提供面」(见 `decisions/2026-06-11-design-review-decisions.md` 第 6 项);收尾轮已补 table/os/io/math 全量与 string 完整面,baseenv 补全轮(`423d690`)再补 _G/_VERSION/collectgarbage/gcinfo/loadfile/dofile/load 等;豁免注册表 15 项显式登记(`test/difftest/corners_test.go` 的 `TestExemptions_Documented`,probe/exempt/approx 三类镜像 10 §11 三列)已提供部分审计面,但与 gopher 提供面的**逐函数核对清单**(`docs/design/p1-interpreter/10-stdlib.md` §4.7)仍待落实。
 
-- **P3 开工前置确认(待办)** — P3 开工前须向首个宿主确认「列内核是否跑在协程里」,决定协程不升层是否成立(决策第 7 项;`docs/design/p3-wasm-tier.md` §5.4)。依赖宿主,设计期无法收口。
+- **P3 开工前置确认(待办)** — P3 开工前须向首个宿主确认「列内核是否跑在协程里」,决定协程不升层是否成立(决策第 7 项;`docs/design/p3-wasm-tier/07-coroutine-thread-rule.md` §3.2)。依赖宿主,设计期无法收口。
 
 - **engineering.md 的脚本协议待定稿** — 测试加固轮已落地其中一项:nightly 长跑 + INFRA/DIVERGENCE 分流自动开 issue 已由 `.github/workflows/nightly-diff-fuzz.yml` 实现(triage 判据内联在 workflow 而非独立 `fuzz-triage.sh`);审查修复轮区间内的 `a8bdca3` 把分流判据改为**机器可读 DIVERGENCE 标记**——测试侧输出 `seed=`/`kind=` 三类标记,workflow 只 grep 该标记,不再靠 grep "byte-diff" 文本启发式;**该新判据仍未经真实失败检验**,首次真实告警时需验证。仍待定:非 Ubuntu runner 的 oracle 源码编译缓存、bench-gate 回退阈值、agentic workflows 接入时机(见 `docs/design/engineering.md` §7);engineering.md §3.2 文本与落地形态(内联 vs 独立脚本、标记协议)的差异待回填轮顺手对账。nightly-benchmark 待办现已有现成基础:`benchmarks/realworld/` 五脚本 + `benchmarks/baseline/` 三档可直接作为夜跑基准面。
 

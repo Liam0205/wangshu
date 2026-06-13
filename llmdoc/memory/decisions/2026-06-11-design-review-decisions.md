@@ -8,4 +8,4 @@
 4. **【修订】luac 同构降为软承诺**:寄存器分配与官方 luac 同构是追求目标非硬验收,边角难对齐登记「同构差异黑名单」不死磕;运行期输出差分仍硬门禁。落点:`docs/design/p1-interpreter/04-frontend-parser-codegen.md` §1.1。
 5. **【维持】pairs 混合口径**:键集确定用例严格逐字节(JSHash/rehash/Brent/遍历序四环对齐 ltable.c),本质未定义用排序豁免(经评审确认)。落点:`docs/design/p1-interpreter/12-testing-difftest.md` §4.1。
 6. **【修订·方向性反转】stdlib 默认面 = gopher-lua 的 OpenLibs 提供面**(原为「最小集+安全默认」;require/package 对齐 gopher 层级、os 默认完整含 execute/exit),以兑现 drop-in 宣称。同时新增**三层禁用机制**(用户追加的产品需求):LibsSafe 预设 / Libs 位掩码 / Exclude 函数级——收紧能力是 VM 责任,收紧决策是宿主责任。落点:`docs/design/p1-interpreter/10-stdlib.md` §4.7/§9.3/§12.1;`11-embedding-arena-abi.md` §1.2 Options。
-7. **【维持】P3 协程不升层**;P3 开工前向首个宿主确认「列内核是否跑在协程里」。落点:`docs/design/p3-wasm-tier.md` §5.4。
+7. **【维持】P3 协程不升层**;P3 开工前向首个宿主确认「列内核是否跑在协程里」。落点:`docs/design/p3-wasm-tier/07-coroutine-thread-rule.md`(§5.4 已扩展为该子文档)。

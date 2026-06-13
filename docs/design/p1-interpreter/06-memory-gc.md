@@ -51,7 +51,7 @@ type Arena struct {
 **不要**反过来从 `[]byte` 派生 `[]uint64`——`[]byte` 不保证 8 对齐起始地址,在某些平台读 `uint64` 会触发非对齐访问。
 backing 本身是 Go 堆上的 `[]uint64`,但**其元素是纯整数**(NaN-boxed Value 与偏移),不含 Go 指针,故 Go GC 扫描这块 slice 时不追踪任何内部引用——这是 arena 对 Go GC「不可见对象图」的兑现。
 
-> **backing 来源抽象为注入点**(承 [../p3-wasm-tier](../p3-wasm-tier.md) §4.2 回填请求):backing 的分配收口到一个可替换函数 `newBacking(minBytes uint32) []uint64`——P1 实现为 `make`;P3 替换为「收养 wazero linear memory 的 buffer」适配器(使 arena 与 Wasm 两层共见同一块内存)。§3 的 grow 同经此注入点。**P1 实现期就按此留口**,避免 P3 在固化的分配器里动手术。
+> **backing 来源抽象为注入点**(承 [../p3-wasm-tier](../p3-wasm-tier/03-memory-model.md) §1 回填请求):backing 的分配收口到一个可替换函数 `newBacking(minBytes uint32) []uint64`——P1 实现为 `make`;P3 替换为「收养 wazero linear memory 的 buffer」适配器(使 arena 与 Wasm 两层共见同一块内存)。§3 的 grow 同经此注入点。**P1 实现期就按此留口**,避免 P3 在固化的分配器里动手术。
 
 ### 1.2 偏移 0 的保留(null GCRef)
 
@@ -829,7 +829,7 @@ GC 主流程(§8.2)的两个终结相关步骤:
   **未定**:超大字符串集(百万串)下 Go 侧 bucket 内存与 rehash 开销是否需改「侵入式 + arena 内链」。记缺口。
 - **层边界 safepoint 的具体形态**:§7.1 说层边界是可选 GC 检查点,但 P1 只有解释器层,层边界退化为 VM↔host 边界。
   「长时间纯计算不分配的循环如何周期 GC」——P1 靠分配点,无分配的死循环不会 GC(也无需,因没产生垃圾)。
-  P3+ 跨层时 safepoint 形态(回边检查点 vs 调用边界,对齐 `docs/design/roadmap.md` (§2) 异步抢占税解法)在 [p3-wasm-tier](../p3-wasm-tier.md) 定。
+  P3+ 跨层时 safepoint 形态(回边检查点 vs 调用边界,对齐 `docs/design/roadmap.md` (§2) 异步抢占税解法)在 [p3-wasm-tier](../p3-wasm-tier/03-memory-model.md) 定。
 - **与 [05-interpreter-loop](./05-interpreter-loop.md) 的接口**:本文假设 05 提供「running thread 寄存器」「CallInfo 帧布局(mark 需知帧内哪些字是 Value)」
   「CONCAT/多步构造把中间结果落寄存器槽(§7.2)」。05 尚未创建,这些接口**待 05 定稿后回填校验**。
 

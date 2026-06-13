@@ -205,7 +205,7 @@ deopt(guard_k):
 [architecture](./architecture.md)(§1 包布局 `internal/fullmoon/trace` / §2 tier 映射 / §4 三不变式) ·
 [p4-method-jit](./p4-method-jit.md)(基建来源 / §3 OSR 对照 / §7.1 luajc 档与 ~70% 锚点) ·
 [p2-bridge](./p2-bridge/00-overview.md)(热度与 feedback 前端 / F1..F7 闸门 / §5.1 投机谱系表) ·
-[p3-wasm-tier](./p3-wasm-tier.md)(分层机器的首个验证场) ·
+[p3-wasm-tier](./p3-wasm-tier/00-overview.md)(分层机器的首个验证场) ·
 [05-interpreter-loop](./p1-interpreter/05-interpreter-loop.md)(录制宿主 / CallInfo——snapshot 重建目标) ·
 [06-memory-gc](./p1-interpreter/06-memory-gc.md)(分配下沉与 GC 交互) ·
 [12-testing-difftest](./p1-interpreter/12-testing-difftest.md)(§3.8 fullmoon runner 预留 / §7 P5 行 / 持续 fuzz) ·

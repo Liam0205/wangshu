@@ -216,7 +216,7 @@ P2 验收三条主轴:
 [../p1-interpreter/04-frontend-parser-codegen](../p1-interpreter/04-frontend-parser-codegen.md)(AST 利于可编译性) ·
 [../p1-interpreter/11-embedding-arena-abi](../p1-interpreter/11-embedding-arena-abi.md)(Compile 占位 §1.3) ·
 [../p1-interpreter/implementation-progress](../p1-interpreter/implementation-progress.md)(P1 已落地的前瞻义务对账) ·
-[../p3-wasm-tier](../p3-wasm-tier.md)(P2 喂 P3:编译哪些 + feedback) ·
+[../p3-wasm-tier/00-overview](../p3-wasm-tier/00-overview.md)(P2 喂 P3:编译哪些 + feedback) ·
 [../p4-method-jit](../p4-method-jit.md)(P2 喂 P4:类型投机供料) ·
 [../roadmap.md](../roadmap.md) (§4 P2 定义 / §5 五条原则) ·
 [evolution-roadmap](../../llmdoc/architecture/evolution-roadmap.md)(P2 无独立量化验收 / tier 映射 / P2 无月相) ·

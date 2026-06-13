@@ -13,7 +13,7 @@
 > [02-ic-feedback](./02-ic-feedback.md)(`TypeFeedback` shape 是 P3/P4 的核心契约,本文是消费侧对接);
 > [03-compilability-analysis](./03-compilability-analysis.md) §3.7(F7 P3 后端能力 / `SupportsAllOpcodes` 接口本文给出完整定义);
 > [04-try-compile-fallback](./04-try-compile-fallback.md)(状态机调本文 `P3Compiler.Compile` 是升层入口);
-> 下游:[../p3-wasm-tier](../p3-wasm-tier.md)(P3Compiler 的 wazero 实现);[../p4-method-jit](../p4-method-jit.md)(P4 投机消费 P4Feedback,deopt 自管)。
+> 下游:[../p3-wasm-tier/02-translation](../p3-wasm-tier/02-translation.md)(P3Compiler 的 wazero 实现);[../p4-method-jit](../p4-method-jit.md)(P4 投机消费 P4Feedback,deopt 自管)。
 > P1 依赖面:[01 §5.7](../p1-interpreter/01-value-object-model.md)(`Proto` 字段——P3/P4 接到的 Proto 是什么);
 > [05 §1.2](../p1-interpreter/05-interpreter-loop.md)(CallInfo bit50 `callStatus_gibbous`——P3 trampoline 的入口判定,P2 在 [04](./04-try-compile-fallback.md) `installGibbous` 时写 1);
 > [11 §1.3](../p1-interpreter/11-embedding-arena-abi.md)(`Compile` 占位与可编译性探测——P3/P4 编译触发口径)。
@@ -43,7 +43,7 @@ P2 与 P3/P4 的接口分两份:
 | `P3Compiler` | P2 调下去:把 Proto 喂给后端编译 | P3(wazero)/ P4(原生) / mock(本文 §7) | 本文 §2 |
 | `P4Feedback` | P4 反向读上来:从 P2 取 TypeFeedback 做投机 | P4 自身实现(读 P2 的 ProfileData.feedback) | 本文 §4 |
 
-> **为什么 P3 不需要对偶的 `P3Feedback`**?P3 是 try-compile 非投机,**不依赖** feedback 正确性([../p3-wasm-tier](../p3-wasm-tier.md) §3 第 1 条)。它在 `P3Compiler.Compile` 调用入参里**顺带**接到 feedback(可选用),不需要再开一条反向通道。P4 不同——P4 是投机 JIT,deopt 失败 + 重编译时需要重新读 feedback,所以 P4 主动开「反向读」接口(本文 §4)。**两条接口形态不对称,反映 P3/P4 用法不对称**(详见 §1)。
+> **为什么 P3 不需要对偶的 `P3Feedback`**?P3 是 try-compile 非投机,**不依赖** feedback 正确性([../p3-wasm-tier/06-ic-feedback-consume](../p3-wasm-tier/06-ic-feedback-consume.md) §1)。它在 `P3Compiler.Compile` 调用入参里**顺带**接到 feedback(可选用),不需要再开一条反向通道。P4 不同——P4 是投机 JIT,deopt 失败 + 重编译时需要重新读 feedback,所以 P4 主动开「反向读」接口(本文 §4)。**两条接口形态不对称,反映 P3/P4 用法不对称**(详见 §1)。
 
 ### 0.3 接口稳定性即「共享前端」的硬约束
 
@@ -59,7 +59,7 @@ P2 与 P3/P4 的接口分两份:
 
 | 关注点 | 本文(05)拥有 | 不属于本文 |
 |---|---|---|
-| **`P3Compiler` 接口形状** | ✅ 字段级签名 + 错误返回语义 + `SupportsAllOpcodes` 的契约规范 | 真 P3 实现细节(wazero 集成,字节码→Wasm)→ [../p3-wasm-tier](../p3-wasm-tier.md) |
+| **`P3Compiler` 接口形状** | ✅ 字段级签名 + 错误返回语义 + `SupportsAllOpcodes` 的契约规范 | 真 P3 实现细节(wazero 集成,字节码→Wasm)→ [../p3-wasm-tier/02-translation](../p3-wasm-tier/02-translation.md) |
 | **`P4Feedback` 接口形状** | ✅ `FeedbackFor` 取 feedback 的契约 + confidence 消费协议 | 真 P4 实现(模板编译 / OSR exit / 自管栈)→ [../p4-method-jit](../p4-method-jit.md) |
 | **`GibbousCode` 抽象类型** | ✅ 共同接口(`Run` / `Dispose` / `GetTrampoline`) | P3 / P4 各自的具体类型(wazero `api.Function` / 原生码段)→ 各自后端文档 |
 | **mock P3 实现** | ✅ 完整代码骨架,PB6 引入 | — |
@@ -88,7 +88,7 @@ P2 与 P3/P4 的接口分两份:
 
 ### 1.2 P3 不依赖 feedback 正确性的硬证据
 
-[../p3-wasm-tier](../p3-wasm-tier.md) §3 原话:
+[../p3-wasm-tier/06-ic-feedback-consume](../p3-wasm-tier/06-ic-feedback-consume.md) §1 原话:
 
 > **「快路径检查 = 语义分发,不是投机 guard」**——P3 的 ADD 翻译里 `IsNumber×2`、GETTABLE 的「同表同代次」检查与解释器快路径([05](../p1-interpreter/05-interpreter-loop.md) §4.1/§6.3)是**同一组判定**——失败走慢路径助手得到正确结果,**不存在 deopt**。feedback 只影响「内联哪条快路径、固化哪份 IC 快照」,即代码形状,不影响语义覆盖面。
 
@@ -235,7 +235,7 @@ func (c *Compiler) SupportsAllOpcodes(proto *bytecode.Proto) bool {
 }
 
 // supported 表在 P3 后端初始化时建立——只有「明确实现 Wasm 翻译」的 opcode
-// 才进表(详见 [../p3-wasm-tier](../p3-wasm-tier.md) §2.3)。
+// 才进表(详见 [../p3-wasm-tier/02-translation](../p3-wasm-tier/02-translation.md) §3.4)。
 // P3 开发期渐进扩充此表,自然反映「后端能力成长」到 P2 的可编译性判定上。
 ```
 
@@ -319,7 +319,7 @@ P2 调 `P3Compiler.Compile` 时守的契约:
 
 P3 用 feedback 的「可选」是说:**P3 在 feedback 存在时可以发更紧凑的 Wasm 代码,在 feedback 不存在(nil)或 feedback 错时仍发正确的 Wasm 代码**。
 
-这里「正确」的标准来自 [../p3-wasm-tier](../p3-wasm-tier.md) §3:Wasm 代码对**所有合法 Lua 输入**给出与解释器逐字节一致的结果。feedback 不影响这个标准的兑现,只影响:
+这里「正确」的标准来自 [../p3-wasm-tier/06-ic-feedback-consume](../p3-wasm-tier/06-ic-feedback-consume.md) §1:Wasm 代码对**所有合法 Lua 输入**给出与解释器逐字节一致的结果。feedback 不影响这个标准的兑现,只影响:
 
 1. **代码形状**(同样的语义,不同的字节布局);
 2. **icache 友好度**(快路径前置/后置 vs 通用分发);
@@ -327,7 +327,7 @@ P3 用 feedback 的「可选」是说:**P3 在 feedback 存在时可以发更紧
 
 ### 3.2 用法形态:稳定算术点的紧凑翻译
 
-[../p3-wasm-tier](../p3-wasm-tier.md) §2.3 ADD 翻译是 feedback 在 P3 的典型用法:
+[../p3-wasm-tier/02-translation](../p3-wasm-tier/02-translation.md) §3.2 ADD 翻译是 feedback 在 P3 的典型用法:
 
 ```wat
 ;; 不带 feedback 时:P3 发完整快慢分发
@@ -350,17 +350,17 @@ P3 用 feedback 的「可选」是说:**P3 在 feedback 存在时可以发更紧
 
 ### 3.3 不投机的纪律
 
-**P3 不存在「投机 guard」**——所有「类型检查」都是 `语义分发`(检查通过 → 快路径,失败 → 慢路径,**两路都正确**)。承 [../p3-wasm-tier](../p3-wasm-tier.md) §3 第 1 条:
+**P3 不存在「投机 guard」**——所有「类型检查」都是 `语义分发`(检查通过 → 快路径,失败 → 慢路径,**两路都正确**)。承 [../p3-wasm-tier/06-ic-feedback-consume](../p3-wasm-tier/06-ic-feedback-consume.md) §1:
 
 > 「快路径检查 = 语义分发,不是投机 guard。失败走慢路径助手得到正确结果,不存在 deopt。」
 
 物理体现:**P3 编译产物里没有任何「OSR exit 出 JIT 世界」的代码路径**——失败永远在 Wasm 函数内部走慢路径,该函数仍跑到底,RETURN 才退出。这与 P4 的「guard 失败 ⇒ 出 JIT」根本不同(§1.3)。
 
-> **P3 没有 deopt 通道是 P3 战略价值的核心**(承 [../p3-wasm-tier](../p3-wasm-tier.md) §0):P3 不需要实现 OSR exit、snapshot、guard 失败恢复——这些复杂机器全留给 P4。**P3 享受 P2 的零 deopt 简化**(单向状态机,[04] §2)与 wazero 的成熟后端(§9 [../p3-wasm-tier](../p3-wasm-tier.md) §9 四项税外包),专心把分层骨架跑通。
+> **P3 没有 deopt 通道是 P3 战略价值的核心**(承 [../p3-wasm-tier/00-overview](../p3-wasm-tier/00-overview.md) §0):P3 不需要实现 OSR exit、snapshot、guard 失败恢复——这些复杂机器全留给 P4。**P3 享受 P2 的零 deopt 简化**(单向状态机,[04] §2)与 wazero 的成熟后端(§9 [../p3-wasm-tier/00-overview](../p3-wasm-tier/00-overview.md) §8 四项税外包),专心把分层骨架跑通。
 
 ### 3.4 例子:GETTABLE 单态点的 IC 快照固化
 
-[../p3-wasm-tier](../p3-wasm-tier.md) §2.3 GETTABLE 翻译:
+[../p3-wasm-tier/02-translation](../p3-wasm-tier/02-translation.md) §3.4 GETTABLE 翻译:
 
 ```wat
 ;; 编译期固化 IC 快照 = (tableRef, gen, kind, index)
@@ -716,13 +716,13 @@ type GibbousCode interface {
     // Run 进入编译码执行该帧。
     //
     // 调用方:[04] installGibbous 后,crescent 的 doCall(05 §7.1)在
-    //   detect 到 callee 的 tierState == TierGibbous 时调用([../p3-wasm-tier]
+    //   detect 到 callee 的 tierState == TierGibbous 时调用([../p3-wasm-tier/04-trampoline]
     //   §5.2 trampoline 协议)。
     //
     // 入参:
     //   - state:当前 State,持 thread/arena/CallInfo 等运行期上下文;
     //   - base:本帧 R0 在 thread.valueStack 的字节偏移
-    //     (P3 的 trampoline 入参,[../p3-wasm-tier] §5.2)。
+    //     (P3 的 trampoline 入参,[../p3-wasm-tier/04-trampoline] §2)。
     //
     // 返回:
     //   - status:0=OK(返回值已回填 R(A..)),1=ERR(state.pendingErr 已置);
@@ -771,7 +771,7 @@ type p3Code struct {
 }
 
 func (c *p3Code) Run(state *State, base int32) int32 {
-    // 进入 wazero 执行(一次跨层,目标 <150ns,详见 [../p3-wasm-tier] §1)
+    // 进入 wazero 执行(一次跨层,目标 <150ns,详见 [../p3-wasm-tier/01-spike-gate] §1)
     results, err := c.fn.Call(state.ctx, uint64(base))
     if err != nil {
         // wazero 内部错误(罕见)→ 设 pendingErr 返 ERR
@@ -1064,7 +1064,7 @@ mock 写好的测试套(§7.5)对真 P3 也适用:
 | F7 闸门 | NewWithSupport 注入过滤 | 真 P3 的 supported 表(初期渐进扩充) |
 | 编译失败 | NewWithFail 注入失败 | 真 P3 的资源耗尽测试(用极小 wazero memory limit) |
 | feedback 传递 | dummyCode 字段比对 | 真 P3 编译产物的 IC 快照与 feedback 一致 |
-| byte-equal 差分 | mock Run 调解释器,自然一致 | crescent vs gibbous 逐字节差分([../p3-wasm-tier](../p3-wasm-tier.md) §7) |
+| byte-equal 差分 | mock Run 调解释器,自然一致 | crescent vs gibbous 逐字节差分([../p3-wasm-tier/08-testing-strategy](../p3-wasm-tier/08-testing-strategy.md) §2) |
 
 **Bridge 测试 + mock P3 → Bridge 测试 + 真 P3,测试代码不变**,只是 P3Compiler 实现切换。这种「测试可移植性」是接口稳定的副产品——同一份测试通过两种实现都能跑。
 
@@ -1236,10 +1236,10 @@ if notifier, ok := b.p3.(P3DeoptNotifier); ok {
 
 | # | 文档 | 节 | 内容 |
 |---|---|---|---|
-| RB-1 | `../p3-wasm-tier.md` | §2.1(P3Compiler 接口形状) | 把 P3Compiler 实装的「实现方契约」(本文 §2.2)与本文同源化;`SupportsAllOpcodes` / `Compile` 的错误返回语义、并发语义、panic 兜底纪律以本文 §2 为准 |
-| RB-2 | `../p3-wasm-tier.md` | §3(IC 与 TypeFeedback) | 与本文 §3「P3 用 feedback 的语义」对齐;明确 P3 不读 confidence 是常态,即便读 confidence 也只用于代码形状决策;feedback 错的容忍性来自本文 §1.1 |
-| RB-3 | `../p3-wasm-tier.md` | §5.2(crescent → gibbous 入口) | 与本文 §6.2 P3 GibbousCode 实现对齐;`fn.Call` 入参与 Run(state, base) 一致,status 0/1 返回值语义同本文 §6.1 |
-| RB-4 | `../p3-wasm-tier.md` | §11 缺口 | 把「mock P3 与真 P3 并存」(本文 §8.3)记入 P3 文档缺口;mock 留作测试 + fallback build |
+| RB-1 | `../p3-wasm-tier/02-translation.md` | §5(P3Compiler 接口形状) | 把 P3Compiler 实装的「实现方契约」(本文 §2.2)与本文同源化;`SupportsAllOpcodes` / `Compile` 的错误返回语义、并发语义、panic 兜底纪律以本文 §2 为准 |
+| RB-2 | `../p3-wasm-tier/06-ic-feedback-consume.md` | 全文(IC 与 TypeFeedback) | 与本文 §3「P3 用 feedback 的语义」对齐;明确 P3 不读 confidence 是常态,即便读 confidence 也只用于代码形状决策;feedback 错的容忍性来自本文 §1.1 |
+| RB-3 | `../p3-wasm-tier/04-trampoline.md` | §2(crescent → gibbous 入口) | 与本文 §6.2 P3 GibbousCode 实现对齐;`fn.Call` 入参与 Run(state, base) 一致,status 0/1 返回值语义同本文 §6.1 |
+| RB-4 | `../p3-wasm-tier/implementation-progress.md` | §2 缺口 | 把「mock P3 与真 P3 并存」(本文 §8.3)记入 P3 文档缺口;mock 留作测试 + fallback build |
 | RB-5 | `../p4-method-jit.md` | §2.1(供料链) | 与本文 §1.3 / §5 对齐:P4 通过 `P4Feedback.FeedbackFor`(本文 §4)反向读 feedback,而非 Compile 入参;deopt 后调 RequestRefresh |
 | RB-6 | `../p4-method-jit.md` | §3.4(deopt 后再训练) | 与本文 §5.5 对齐:P4 自管 deopt 计数,过阈值后调 P2 RequestRefresh 触发重聚合;P2 状态机不参与 P4 投机生命周期 |
 | RB-7 | `../p4-method-jit.md` | §4(系统管线) | P4 也实现 `bridge.P3Compiler` 接口(本文 §0.4 边界表「实现方」一行)——这是「共享前端」的物理体现:P4 也接受 Proto + feedback,产出 GibbousCode;只是 GibbousCode 的实现是原生码段而非 wazero module(§6.3) |
@@ -1275,7 +1275,7 @@ if notifier, ok := b.p3.(P3DeoptNotifier); ok {
 - [04-try-compile-fallback](./04-try-compile-fallback.md)(状态机调本文 P3Compiler.Compile;升层日志格式)
 - [06-testing-strategy](./06-testing-strategy.md)(PB6/PB7 mock P3 测试套验收口径)
 - [../p2-bridge/00-overview](./00-overview.md) §7(本文种子,P2 单文件原稿)
-- [../p3-wasm-tier](../p3-wasm-tier.md)(P3Compiler 的 wazero 实现 + GibbousCode P3 形态)
+- [../p3-wasm-tier/00-overview](../p3-wasm-tier/00-overview.md)(P3 总览;02-translation P3Compiler 实现 + 04-trampoline GibbousCode P3 形态)
 - [../p4-method-jit](../p4-method-jit.md)(P4 投机消费 P4Feedback;P4 也实现 P3Compiler;deopt 与重训练)
 - [../p1-interpreter/01-value-object-model.md](../p1-interpreter/01-value-object-model.md) §5.7(Proto 字段——P3/P4 接到的 Proto 是什么)
 - [../p1-interpreter/05-interpreter-loop.md](../p1-interpreter/05-interpreter-loop.md) §1.2(CallInfo bit50 callStatus_gibbous,P3 trampoline 入口判定)

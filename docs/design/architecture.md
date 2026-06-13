@@ -31,7 +31,7 @@ docs/design/
     11-embedding-arena-abi.md      嵌入 API + arena ABI 字段级 spec
     12-testing-difftest.md         conformance + 层间差分 fuzz + 基准
   p2-bridge/         P2 分层桥(子目录:00-06):热度计数/IC反馈/可编译性分析/fallback
-  p3-wasm-tier.md                  P3 Wasm 编译层:字节码→Wasm/linear memory/trampoline
+  p3-wasm-tier/                    P3 Wasm 编译层:字节码→Wasm/linear memory/trampoline(子目录 9 文件)
   p4-method-jit.md                 P4 method JIT 架构决策(JSC Baseline 风格)
   p5-trace-jit.md                  P5 trace JIT 架构决策(开放式)
 ```

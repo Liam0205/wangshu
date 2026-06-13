@@ -50,7 +50,7 @@ CallInfo[i]  (arena 内,32 字节):
        | [47:32] nresults (调用者期望的返回值个数;C-1,0xFFFF 表示「可变/到top」)
        | [48]    callStatus_tailcall (本帧是尾调用产生,RETURN 时特殊处理)
        | [49]    callStatus_fresh    (本帧是「reentry 边界」,见 §7.3)
-       | [50]    callStatus_gibbous  (P3+:本帧在 gibbous 编译码中执行,承 [../p3-wasm-tier](../p3-wasm-tier.md) §5.1;P1 恒 0)
+       | [50]    callStatus_gibbous  (P3+:本帧在 gibbous 编译码中执行,承 [../p3-wasm-tier](../p3-wasm-tier/04-trampoline.md) §1;P1 恒 0)
        | [63:51] reserved
   word3: errfuncBase / 保护点字段(pcall 设置的消息处理器栈位,见 §9.3;0=无)
 ```
