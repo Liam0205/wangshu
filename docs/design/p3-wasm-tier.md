@@ -4,7 +4,7 @@
 > 本文是 tier-1 首个发射后端的单一事实源:开工闸门 spike、字节码→Wasm 翻译范式、
 > 值世界=linear memory 的两层共见机制、跨层 trampoline 与互调协议、跨层 safepoint
 > (收口 [06](./p1-interpreter/06-memory-gc.md) §12 缺口)、层间差分接入、四项税的 wazero 外包。
-> 上游契约:`docs/design/roadmap.md` (§4 P3、§2 四项税)、[p2-bridge](./p2-bridge.md)
+> 上游契约:`docs/design/roadmap.md` (§4 P3、§2 四项税)、[p2-bridge](./p2-bridge/00-overview.md)
 > (§5 try-compile-fallback 零 deopt、§6 TierState、§7.1 `P3Compiler` 接口——本文实现方)、
 > [02-bytecode-isa](./p1-interpreter/02-bytecode-isa.md)(源 ISA)、
 > [01-value-object-model](./p1-interpreter/01-value-object-model.md)(值编码,两层同一份)。
@@ -24,7 +24,7 @@ P3 继承 P2 的全部决策产物,自己只做「翻译 + 执行 + 跨层」:
 
 | 关注点 | 归属 | P3 的角色 |
 |---|---|---|
-| 编译哪些 Proto(热度/可编译性) | P2([p2-bridge](./p2-bridge.md) §2/§4/§6) | 只接收,不判定 |
+| 编译哪些 Proto(热度/可编译性) | P2([p2-bridge: profiling/compilability/state-machine](./p2-bridge/00-overview.md) (§2→01-profiling / §4→03-compilability / §6→04-try-compile-fallback)) | 只接收,不判定 |
 | 类型 feedback | P2 产出(§3.4) | **可选**消费,发更紧的 Wasm(§3) |
 | 零 deopt(fallback 而非投机) | P2 决策(§5.1) | 严格遵守:快路径=语义分发,非投机 guard(§3) |
 | 字节码→Wasm 翻译 | **本文** §2 | |
@@ -95,9 +95,9 @@ P3 继承 P2 的全部决策产物,自己只做「翻译 + 执行 + 跨层」:
 | **每 Proto 一个 module**(每函数独立编译实例化) | 增量升层自然;失败隔离(单 Proto 编译失败只 fallback 自己) | module 实例化有固定开销;Proto 间直调要经 Go 中转 | **P3 基线** |
 | 批量:N 个热 Proto 合一个 module | gibbous→gibbous 可 `call`/`call_indirect` 直调,免 Go 往返 | 升层时机不同步,批次划分引入策略复杂度;一损俱损 | 优化项,spike 后评估(§11) |
 
-基线选「每 Proto 一个 module」:**正确性与隔离优先**(与 [05](./p1-interpreter/05-interpreter-loop.md) §2.2 选基线 switch 同一哲学)。实例化开销发生在升层时刻(一次性),计入 P2 的编译预算([p2-bridge](./p2-bridge.md) §2.5),不在热路径。
+基线选「每 Proto 一个 module」:**正确性与隔离优先**(与 [05](./p1-interpreter/05-interpreter-loop.md) §2.2 选基线 switch 同一哲学)。实例化开销发生在升层时刻(一次性),计入 P2 的编译预算([p2-bridge: profiling §5 编译预算](./p2-bridge/01-profiling.md)),不在热路径。
 
-实现 [p2-bridge](./p2-bridge.md) §7.1 的接口:
+实现 [p2-bridge: 05-p3-p4-interface §2 P3Compiler 接口](./p2-bridge/05-p3-p4-interface.md) 的接口:
 
 ```go
 // internal/gibbous/wasm —— P2 §7.1 P3Compiler 的实现方
@@ -201,9 +201,9 @@ Lua 寄存器 `R(i)` 在解释器里就是 arena 值栈槽([01](./p1-interpreter
 
 ## 3. IC 与 TypeFeedback:非投机消费(与 P2 零 deopt 口径严格一致)
 
-[p2-bridge](./p2-bridge.md) §7.1 已定:P3 是 try-compile,**不依赖 feedback 正确性**。本文落实为两条纪律:
+[p2-bridge: 05-p3-p4-interface §2 P3Compiler 接口](./p2-bridge/05-p3-p4-interface.md) 已定:P3 是 try-compile,**不依赖 feedback 正确性**。本文落实为两条纪律:
 
-1. **快路径检查 = 语义分发,不是投机 guard**。§2.3 ADD 的 `IsNumber×2`、GETTABLE 的「同表同代次」与解释器快路径([05](./p1-interpreter/05-interpreter-loop.md) §4.1/§6.3)是**同一组判定**——失败走慢路径助手得到正确结果,**不存在 deopt**([p2-bridge](./p2-bridge.md) §5.1 的 fallback ≠ deopt 表)。feedback 只影响「内联哪条快路径、固化哪份 IC 快照」,即**代码形状**,不影响**语义覆盖面**。
+1. **快路径检查 = 语义分发,不是投机 guard**。§2.3 ADD 的 `IsNumber×2`、GETTABLE 的「同表同代次」与解释器快路径([05](./p1-interpreter/05-interpreter-loop.md) §4.1/§6.3)是**同一组判定**——失败走慢路径助手得到正确结果,**不存在 deopt**([p2-bridge: 04-try-compile-fallback §1 fallback ≠ deopt](./p2-bridge/04-try-compile-fallback.md) 的 fallback ≠ deopt 表)。feedback 只影响「内联哪条快路径、固化哪份 IC 快照」,即**代码形状**,不影响**语义覆盖面**。
 2. **IC 快照编译期固化,失效自然降级**。解释器的 IC slot 是运行期可变的(mono IC 重填,[05](./p1-interpreter/05-interpreter-loop.md) §6.3);gibbous 把编译时刻的快照烧进代码。此后表形状变化(gen bump)→ 快照永久 miss → 该点每次走助手 ≈ 解释器无 IC 的水平,**正确但慢**。是否值得「IC 失效计数 → 重编译」留待 P4 一并评估(§11;P4 有同样问题且有 deopt 基建,统一解决)。
 
 ---
@@ -347,12 +347,12 @@ roadmap §5 原则 2 在 P3 第一次有了「层间」含义([architecture](./a
 
 ## 10. 不变式清单(实现与差分须守)
 
-1. **语义分发非投机**:gibbous 快路径判定与解释器同款(IsNumber/同表同代次),失败走助手而非 deopt——零 deopt([p2-bridge](./p2-bridge.md) §5)在代码层的兑现。
+1. **语义分发非投机**:gibbous 快路径判定与解释器同款(IsNumber/同表同代次),失败走助手而非 deopt——零 deopt([p2-bridge: 04-try-compile-fallback §1/§8 零 deopt](./p2-bridge/04-try-compile-fallback.md))在代码层的兑现。
 2. **值编码/GCRef 两层逐位同一**:Wasm 侧不引入任何私有值表示([01](./p1-interpreter/01-value-object-model.md) §7「值表示一次定死」)。
 3. **CallInfo 唯一真相**:gibbous 帧压 CallInfo(bit50),跨层只传 base;traceback/错误定位与解释器逐字节一致(§2.4 pc 物化)。
 4. **错误可穿越、yield 不可穿越**:status 链冒泡 vs 线程级 tier 规则(§5.3/§5.4)。
 5. **基线 memory-resident**:寄存器=共见栈槽;locals 缓存必须满足写回纪律(§6.3)。
-6. **升层单向**:gibbous 代码无运行期退回路径(零 deopt);fallback 都发生在编译前/编译时([p2-bridge](./p2-bridge.md) §5.3)。
+6. **升层单向**:gibbous 代码无运行期退回路径(零 deopt);fallback 都发生在编译前/编译时([p2-bridge: 04-try-compile-fallback §5 编译失败 fallback](./p2-bridge/04-try-compile-fallback.md))。
 7. **解释器永不退役**:任何 Proto 始终保有可解释字节码([architecture](./architecture.md) §4 不变式 1);gibbous 只是可选加速面。
 
 ---
@@ -370,7 +370,7 @@ roadmap §5 原则 2 在 P3 第一次有了「层间」含义([architecture](./a
 
 ---
 
-相关:[p2-bridge](./p2-bridge.md) · [p4-method-jit](./p4-method-jit.md) · [p5-trace-jit](./p5-trace-jit.md) ·
+相关:[p2-bridge](./p2-bridge/00-overview.md) · [p4-method-jit](./p4-method-jit.md) · [p5-trace-jit](./p5-trace-jit.md) ·
 [01-value-object-model](./p1-interpreter/01-value-object-model.md) · [02-bytecode-isa](./p1-interpreter/02-bytecode-isa.md) ·
 [05-interpreter-loop](./p1-interpreter/05-interpreter-loop.md) · [06-memory-gc](./p1-interpreter/06-memory-gc.md) ·
 [08-coroutines](./p1-interpreter/08-coroutines.md) · [11-embedding-arena-abi](./p1-interpreter/11-embedding-arena-abi.md) ·
