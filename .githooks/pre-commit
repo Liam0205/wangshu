@@ -58,9 +58,18 @@ done
 for root in "${!pkgs_by_root[@]}"; do
     mapfile -t rels < <(printf '%s' "${pkgs_by_root[$root]}" | sort -u | grep -v '^$')
     [ ${#rels[@]} -eq 0 ] && continue
-    if ! (cd "$root" && golangci-lint run "${rels[@]}" 2>&1); then
-        echo ""
-        echo "✗ golangci-lint 未通过(module: $root)"
-        exit 1
+    # 捕获输出:整包在非默认 build tag 下时(如 //go:build wangshu_p3),默认
+    # lint 报「build constraints exclude all Go files」——这不是真 lint 错误
+    # (该包只是不在默认 build),应放行。真 lint issue 仍失败。
+    out=$(cd "$root" && golangci-lint run "${rels[@]}" 2>&1) && continue
+    # 失败了:过滤掉「build constraints exclude all」误报行,看是否还有真错误
+    real=$(printf '%s\n' "$out" | grep -v "build constraints exclude all Go files" | grep -iE "level=error|\.go:[0-9]+:" || true)
+    if [ -z "$real" ]; then
+        # 仅 build-constraint 误报(包在别的 build tag 下)→ 放行
+        continue
     fi
+    echo "$out"
+    echo ""
+    echo "✗ golangci-lint 未通过(module: $root)"
+    exit 1
 done
