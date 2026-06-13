@@ -512,6 +512,21 @@ func (st *State) LoadProgram(mainID uint32, protos []*bytecode.Proto) arena.GCRe
 // args 是按值传入的实参;返回值数受被调函数控制(显式 RETURN 给出多少返回多少)。
 // nresults < 0 表示"全部返回";否则按个数裁剪/补 nil。
 func (st *State) Call(cl arena.GCRef, args []value.Value, nresults int) ([]value.Value, error) {
+	rets, err := st.callOnStack(cl, args, nresults)
+	if err != nil {
+		return nil, err
+	}
+	// 拷出独立 slice:旧契约下返回值在下次 Call 后仍可读(调用方可长持)。
+	return append([]value.Value(nil), rets...), nil
+}
+
+// callOnStack 执行闭包,返回值直接是主 thread 栈上的活动切片(零拷贝)。
+//
+// ⚠️ 切片底层是复用的 th.stack:下次 Call/Run 复位 top 后会被覆写。调用方
+// 必须在下次进入 VM 前消费完(读出标量 / 拷贝 / 经 pin 表登记复合值)。
+// runningThread 复位为 nil 后 mainTh 仍是 loadedCls 同级常驻根 → 返回值在
+// GC 下保持可达(栈未缩容,槽位值仍被 mainTh.stack 引用)。
+func (st *State) callOnStack(cl arena.GCRef, args []value.Value, nresults int) ([]value.Value, error) {
 	if object.IsHostClosure(st.arena, cl) {
 		// 从 Go 端直接 Call host closure 需要临时栈帧脚手架,本期未做;
 		// 已 Register 的 host fn 由 Lua 内调用闭环工作(callHost 路径)。
@@ -553,18 +568,27 @@ func (st *State) Call(cl arena.GCRef, args []value.Value, nresults int) ([]value
 		}
 		return nil, err
 	}
-	// 顶层执行结束后返回值在栈底起若干个(由 RETURN 落点 dst=funcIdx 决定)
-	rets := append([]value.Value(nil), th.stack[:th.top]...)
+	// 顶层执行结束后返回值在栈底起若干个(由 RETURN 落点 dst=funcIdx 决定)。
+	// 零拷贝:直接切 th.stack 活动区(契约见 callOnStack 文档)。
+	rets := th.stack[:th.top]
 	if nresults >= 0 {
 		if len(rets) > nresults {
 			rets = rets[:nresults]
 		} else {
 			for len(rets) < nresults {
-				rets = append(rets, value.Nil)
+				th.push(value.Nil)
 			}
+			rets = th.stack[:nresults]
 		}
 	}
 	return rets, nil
+}
+
+// CallOnStack 是 callOnStack 的导出形,供门面层零分配 CallInto 使用。
+// 返回值是主 thread 栈上的活动切片(零拷贝,下次进入 VM 前有效),契约
+// 见 callOnStack 文档。
+func (st *State) CallOnStack(cl arena.GCRef, args []value.Value, nresults int) ([]value.Value, error) {
+	return st.callOnStack(cl, args, nresults)
 }
 
 // thread 是 M9 简化版的执行线程:值栈与 CallInfo 都住 Go 切片。

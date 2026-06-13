@@ -115,6 +115,128 @@ func TestCall_PerItemLoop(t *testing.T) {
 	}
 }
 
+func TestCallInto_Scalars(t *testing.T) {
+	// CallInto 多返回值写入调用方 dst(issue #8 零分配边界路径)。
+	prog, _ := wangshu.Compile([]byte(`function f() return 1, 2.5, true, "hi" end`), "ci")
+	st := wangshu.NewState(wangshu.Options{})
+	if _, err := prog.Run(st); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	fn := st.GetGlobal("f")
+	defer fn.Release()
+	var dst [8]wangshu.Value
+	n, err := st.CallInto(dst[:], fn)
+	if err != nil {
+		t.Fatalf("CallInto: %v", err)
+	}
+	if n != 4 {
+		t.Fatalf("n = %d, want 4", n)
+	}
+	if dst[0].Number() != 1 || dst[1].Number() != 2.5 || dst[2].Bool() != true || dst[3].Str() != "hi" {
+		t.Errorf("dst = %v/%v/%v/%q", dst[0].Number(), dst[1].Number(), dst[2].Bool(), dst[3].Str())
+	}
+}
+
+func TestCallInto_DstTruncates(t *testing.T) {
+	// dst 容量不足:只写 len(dst) 个,n 反映实写数。
+	prog, _ := wangshu.Compile([]byte(`function f() return 1, 2, 3 end`), "ci")
+	st := wangshu.NewState(wangshu.Options{})
+	if _, err := prog.Run(st); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	fn := st.GetGlobal("f")
+	defer fn.Release()
+	var dst [2]wangshu.Value
+	n, err := st.CallInto(dst[:], fn)
+	if err != nil {
+		t.Fatalf("CallInto: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("n = %d, want 2 (truncated to dst cap)", n)
+	}
+}
+
+func TestCallInto_PerItemReuseDst(t *testing.T) {
+	// pineapple 形态:fn 一次取出,循环里复用同一 dst(零分配热路径)。
+	prog, _ := wangshu.Compile([]byte(`function f() return item_x * 0.85 + 10.0 end`), "ci")
+	st := wangshu.NewState(wangshu.Options{})
+	if _, err := prog.Run(st); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	fn := st.GetGlobal("f")
+	defer fn.Release()
+	var dst [1]wangshu.Value
+	for i := 0; i < 100; i++ {
+		st.SetGlobal("item_x", wangshu.Number(float64(i)))
+		n, err := st.CallInto(dst[:], fn)
+		if err != nil {
+			t.Fatalf("CallInto[%d]: %v", i, err)
+		}
+		want := float64(i)*0.85 + 10.0
+		if n != 1 || dst[0].Number() != want {
+			t.Errorf("f[%d] = %v, want %v", i, dst[0].Number(), want)
+		}
+	}
+}
+
+func TestCallInto_GCStressStringNoUAF(t *testing.T) {
+	// string 返回值在 GC stress + 复用 dst 下必须仍可读(已拷出 arena 字节)。
+	prog, _ := wangshu.Compile([]byte(`function mk(s) return s .. "-suffix" end`), "ci")
+	st := wangshu.NewState(wangshu.Options{})
+	st.SetGCStressMode(true)
+	if _, err := prog.Run(st); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	fn := st.GetGlobal("mk")
+	defer fn.Release()
+	var dst [4]wangshu.Value
+	for i := 0; i < 500; i++ {
+		n, err := st.CallInto(dst[:], fn, wangshu.String("item"))
+		if err != nil {
+			t.Fatalf("CallInto[%d]: %v", i, err)
+		}
+		if n != 1 || dst[0].Str() != "item-suffix" {
+			t.Fatalf("iter %d: got %q", i, dst[0].Str())
+		}
+	}
+}
+
+func TestCallInto_ZeroAlloc(t *testing.T) {
+	// 标量返回的边界路径必须真正零分配(issue #8 验收口径)。
+	prog, _ := wangshu.Compile([]byte(`function f() return x ~= nil end`), "ci")
+	st := wangshu.NewState(wangshu.Options{})
+	if _, err := prog.Run(st); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	fn := st.GetGlobal("f")
+	defer fn.Release()
+	var dst [1]wangshu.Value
+	got := testing.AllocsPerRun(1000, func() {
+		st.SetGlobal("x", wangshu.Number(1))
+		_, _ = st.CallInto(dst[:], fn)
+		_ = dst[0].Bool()
+	})
+	if got != 0 {
+		t.Errorf("CallInto scalar path = %v allocs/op, want 0", got)
+	}
+}
+
+func TestCallInto_RejectsForeignFn(t *testing.T) {
+	// 跨 State 的 fn 被拒(与 Call 同款防护)。
+	prog, _ := wangshu.Compile([]byte(`function f() return 1 end`), "ci")
+	st1 := wangshu.NewState(wangshu.Options{})
+	st2 := wangshu.NewState(wangshu.Options{})
+	if _, err := prog.Run(st1); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	fn := st1.GetGlobal("f")
+	defer fn.Release()
+	var dst [1]wangshu.Value
+	if _, err := st2.CallInto(dst[:], fn); err == nil {
+		t.Error("CallInto on foreign State should error")
+	}
+}
+
 func TestCall_LuaRuntimeErrorToGoError(t *testing.T) {
 	prog, _ := wangshu.Compile([]byte(`function bad() error("boom") end`), "err")
 	st := wangshu.NewState(wangshu.Options{})

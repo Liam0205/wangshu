@@ -75,6 +75,10 @@ type State struct {
 	// Call 不重复 RegisterHostFn/建代理表(列内核负载是「每批一次 Call」,
 	// 否则每批泄漏 2×列数 个闭包 + 表);列数变化(挂载后 AddColumn)重挂。
 	mounted map[*Arena]int
+	// innerArgsBuf 是 CallInto 的实参缓冲复用区(零分配边界路径,issue #8):
+	// 每次 CallInto 重置 [:0] 后填充,避免每调用 make([]value.Value, len(args))。
+	// State 单 goroutine,CallInto 不重入,复用安全。
+	innerArgsBuf []value.Value
 }
 
 type loadedProg struct {
@@ -334,6 +338,11 @@ func (st *State) GetGlobal(name string) Value {
 // 形态(11 §7.1 / §9.1):per-item 跨界,落在被边界成本主导的那一档
 // (design-premises 前提一)。低频/原型/迁移期用,高频热路径请改 arena 列轨。
 //
+// 边界成本(issue #8):Call 每次 round-trip 固定 2 allocs(VM 栈→inner
+// slice→public slice 双拷贝),与返回值数 / 脚本复杂度无关。boundary-dominated
+// 嵌入(per-item 短调用)被这个地板成本主导。需要零分配热路径时改用
+// CallInto——复用调用方 dst,标量返回(bool/number)整条路径 0 alloc。
+//
 // 约束:
 //   - fn 必须 IsFunction() 且来自同一 State(GetGlobal 取出);跨 State 报错
 //   - 仅支持 Lua function(脚本里 `function f() end` 定义)。Register 注册的
@@ -373,6 +382,50 @@ func (st *State) Call(fn Value, args ...Value) (results []Value, err error) {
 		out[i] = fromInnerWithPin(st, v)
 	}
 	return out, nil
+}
+
+// CallInto 是 Call 的零分配变体:返回值写进调用方拥有的 dst,返回写入个数 n
+// (dst[:n] 有效)。dst 容量不足的多余返回值被丢弃(只写 len(dst) 个)。
+//
+// 边界成本优化(issue #8):Call 每次 round-trip 固定 2 allocs(VM 栈→inner
+// slice→public slice 双拷贝),boundary-dominated 嵌入(per-item 短调用)被这
+// 个地板成本主导。CallInto 让调用方复用 dst(如 pineapple 的 [1]Value),标量
+// 返回(bool/number)整条路径 0 alloc。
+//
+// ⚠️ string 返回值仍拷贝 arena 字节进 dst 元素(public Value 持有独立 []byte);
+// 复合值(table/function)仍经 pin 表登记(需 Release)。标量是纯零分配路径。
+func (st *State) CallInto(dst []Value, fn Value, args ...Value) (n int, err error) {
+	if !fn.IsFunction() {
+		return 0, fmt.Errorf("wangshu: CallInto: value is not a function (kind=%s)", fn.Display())
+	}
+	if fn.fnState != st {
+		return 0, fmt.Errorf("wangshu: CallInto: function belongs to a different State")
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			n, err = 0, fmt.Errorf("wangshu: internal VM panic: %v", r)
+		}
+	}()
+	ref := st.core.PinnedRefAt(fn.pinIdx)
+	if ref.IsNull() {
+		return 0, fmt.Errorf("wangshu: CallInto: function has been released")
+	}
+	st.innerArgsBuf = st.innerArgsBuf[:0]
+	for _, a := range args {
+		st.innerArgsBuf = append(st.innerArgsBuf, a.toInner(st))
+	}
+	inner, callErr := st.core.CallOnStack(ref, st.innerArgsBuf, -1)
+	if callErr != nil {
+		return 0, callErr
+	}
+	n = len(inner)
+	if n > len(dst) {
+		n = len(dst)
+	}
+	for i := 0; i < n; i++ {
+		dst[i] = fromInnerWithPin(st, inner[i])
+	}
+	return n, nil
 }
 
 // mountArena 把宿主 Arena 映射进 VM 可读视图(11 §5.1-§5.3)。
