@@ -61,6 +61,9 @@ func NewBridge() *Bridge {
 // 但**实际编译触发**(considerPromotion 走 try-compile 路径)前必须装好。
 func (b *Bridge) SetP3Compiler(p3 P3Compiler) { b.p3 = p3 }
 
+// SetLogger 注入升层日志接口(测试可捕获;门面层装 stdLogger 默认实现)。
+func (b *Bridge) SetLogger(l Logger) { b.logger = l }
+
 // Aggregator 暴露 IC 反馈聚合器供 considerPromotion 升层路径调
 // (Aggregate(proto) → *TypeFeedback)。**P2 写不消费**(02 §7):
 // installFeedback 写 ProfileData.Feedback,P2 自身不读此字段。
