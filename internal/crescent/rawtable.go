@@ -262,7 +262,7 @@ func (st *State) rehash(t arena.GCRef, extraKey value.Value) {
 		}
 		// 落入桶 ceil(log2(u))。脚本控制的整数 key 可达 uint32 边界(2^32-1),
 		// 此时 `(1 << 32) = 0` 在 Go 也回卷为 0(uint32 移位语义),`< u` 恒真,
-		// 朴素 `for (1<<b) < u` 死循环——故加 b < 32 守卫:超 31 直接归到桶 31
+		// 朴素 `for (1<<b) < u` 死循环——故加 b < 31 守卫:b 最大到 31 直接退出
 		// (size 1<<31 = 2^31 已超嵌入式 hardening 数组上限 maxArraySize,
 		// 后续 §2 选 asize 时被裁口)。fuzz corpus 5095a0fd13d76273
 		// (`t[3333170000]=""`)即此路径,触发死循环从而表面像 OOM(实为 CPU 死循环)。
