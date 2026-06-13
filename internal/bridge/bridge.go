@@ -38,6 +38,10 @@ type Bridge struct {
 	// logger: 升层日志诊断接口(04 §6.4)。注入式;nil 时 silentLogger
 	// 替代(单测默认场景)。
 	logger Logger
+
+	// aggregator: IC 反馈聚合器(02 §6.4)。Bridge 内嵌一份,considerPromotion
+	// 升层时调 Aggregate(proto) 产 TypeFeedback 喂给 P3。
+	aggregator *Aggregator
 }
 
 // NewBridge 构造一个空 Bridge,挂在 State 上(crescent 端 setter 注入)。
@@ -48,6 +52,7 @@ func NewBridge() *Bridge {
 	return &Bridge{
 		profileTable: make(map[*bytecode.Proto]*ProfileData),
 		gibbousCodes: make(map[*bytecode.Proto]GibbousCode),
+		aggregator:   NewAggregator(),
 	}
 }
 
@@ -55,8 +60,10 @@ func NewBridge() *Bridge {
 // 但**实际编译触发**(considerPromotion 走 try-compile 路径)前必须装好。
 func (b *Bridge) SetP3Compiler(p3 P3Compiler) { b.p3 = p3 }
 
-// SetLogger 注入升层日志接口(测试可捕获;门面层装 stdLogger 默认实现)。
-func (b *Bridge) SetLogger(l Logger) { b.logger = l }
+// Aggregator 暴露 IC 反馈聚合器供 considerPromotion 升层路径调
+// (Aggregate(proto) → *TypeFeedback)。**P2 写不消费**(02 §7):
+// installFeedback 写 ProfileData.Feedback,P2 自身不读此字段。
+func (b *Bridge) Aggregator() *Aggregator { return b.aggregator }
 
 // ProfileOf 返回 Proto 在本 State 上的 ProfileData,惰性建表。
 //
