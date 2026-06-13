@@ -192,6 +192,9 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 				if e := st.preempt(); e != nil {
 					return e
 				}
+				if profileEnabled {
+					st.bridge.OnBackEdge(ci.proto, ci.pc+int32(bytecode.SBx(i)))
+				}
 			}
 			ci.pc += int32(bytecode.SBx(i))
 
@@ -292,6 +295,9 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 				setReg(th, ci, a, value.NumberValue(idx))
 				setReg(th, ci, a+3, value.NumberValue(idx))
 				ci.pc += int32(bytecode.SBx(i))
+				if profileEnabled {
+					st.bridge.OnBackEdge(ci.proto, ci.pc)
+				}
 			}
 
 		case bytecode.FORPREP:

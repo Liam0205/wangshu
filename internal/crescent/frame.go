@@ -97,6 +97,9 @@ func (st *State) enterLuaFrame(th *thread, funcIdx, nargs, nresults int, entry b
 	}
 	th.cis = append(th.cis, ci)
 	th.top = base + int(proto.MaxStack)
+	if profileEnabled {
+		st.bridge.OnEnter(proto)
+	}
 	return nil
 }
 
