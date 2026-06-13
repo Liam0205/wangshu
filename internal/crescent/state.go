@@ -673,6 +673,10 @@ func max(a, b int) int {
 // pc 字段在 M9 是"当前正在执行的指令位置"(主循环直接读写它,不像设计文档的
 // savedPC 是"返回时恢复的 pc")。M11 协程接入时把 pc/top 落回 ci 与 saveFrame
 // 抽象拉齐(05 §1.3 reloadFrame/saveFrame 对称约定)。
+//
+// **gibbous 标识位**(p2-bridge/04 §4.4 word2 bit50 callStatus_gibbous)
+// 当前**未在 callInfo 上预留字段**——P3 trampoline 真落地时再加,以免本期
+// 引入无人读写的死字段被 lint 抓出。预留语义记在 installGibbous 注释里。
 type callInfo struct {
 	base     int             // R0 在 stack 的绝对索引
 	funcIdx  int             // 被调 closure 槽(funcIdx = base-1)
@@ -682,16 +686,6 @@ type callInfo struct {
 	nresults int             // 调用者期望的返回数;-1 = 可变
 	tailcall bool
 	fresh    bool // execute 重入边界
-
-	// gibbous 是 P2/P3 跨层标识位(05 §1.2 word2 bit50 callStatus_gibbous 的
-	// 简化字段形态)。P1 恒 false——P2 PB0 阶段不会有任何路径写 true。
-	// P3 trampoline 落地后(P2 PB7+ / P3 阶段),`installGibbous` 在该 Proto
-	// 进帧时把 bit 置 true,让跨层判流向走 P3 编译码而非 crescent 解释。
-	//
-	// 注意:**不在升层瞬间改现存帧的此字段**——现存 CallInfo 仍跑 crescent,
-	// 突然变 gibbous 会破坏「同一帧执行体」语义(04 §4.4 末尾)。新进帧的
-	// 新 CallInfo 才标 gibbous=true。
-	gibbous bool
 
 	// vararg 区(M13 接入):IsVararg 函数的多余实参(数量 nVarargs)拷贝到一个独立
 	// Go 切片(简化版,后续 M14 切到栈下区)。这样 VARARG 指令直接读 ci.varargs。
