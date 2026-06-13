@@ -29,7 +29,7 @@ difftest:                                           ## 一轮固定时长差分 
 	./scripts/check-oracle.sh
 	go test ./test/difftest/... -count=1
 
-bench:                                              ## 三档微基准 + benchmark-game 真实负载(12 §6;benchmarks 独立子模块,gopher-lua 仅基准用,不污染主模块依赖图)
+bench:                                              ## 四档基准:纯VM micro(baseline)+ 真实负载纯VM(realworld)+ 边界 mini(embedded/Mini)+ 真实负载 embedded(embedded/Realworld);benchmarks 独立子模块,gopher-lua 仅基准用不污染主模块依赖图
 	cd benchmarks && go test -bench=. -benchmem -count=1 -run='^$$' ./...
 
 hooks:                                              ## 安装 git hooks(一次性)
