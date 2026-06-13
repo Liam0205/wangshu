@@ -22,12 +22,45 @@ if [ -n "$unformatted" ]; then
 fi
 
 # 2) golangci-lint 静态检查(仅 staged 文件涉及的包)
+#
+# 按 go.mod 边界分组:独立子模块(spike/ benchmarks/ 等有自己 go.mod)
+# 的包路径不能喂给主库 golangci-lint(报「main module does not contain
+# package」)——必须 cd 进各自 module 根目录跑。算法:每个 staged .go 文件
+# 向上找最近的 go.mod 确定其 module 根,同根的包分一组在该根下跑。
 command -v golangci-lint >/dev/null 2>&1 || exit 0
-mapfile -t pkgs < <(printf '%s\n' "${staged[@]}" | xargs -I{} dirname {} | sort -u | sed 's|^|./|')
-if [ ${#pkgs[@]} -gt 0 ]; then
-    if ! golangci-lint run "${pkgs[@]}" 2>&1; then
+
+# 找一个目录向上最近的 go.mod 所在目录(module 根)
+module_root() {
+    local d="$1"
+    while [ "$d" != "." ] && [ "$d" != "/" ]; do
+        if [ -f "$d/go.mod" ]; then echo "$d"; return; fi
+        d=$(dirname "$d")
+    done
+    echo "."  # 兜底:仓库根
+}
+
+# 收集 (module_root, 相对该根的包路径) 对,按 module_root 分组
+declare -A pkgs_by_root
+for f in "${staged[@]}"; do
+    dir=$(dirname "$f")
+    root=$(module_root "$dir")
+    # 包相对 module 根的路径
+    if [ "$root" = "." ]; then
+        rel="./$dir"
+    elif [ "$dir" = "$root" ]; then
+        rel="."  # 文件直接在 module 根目录
+    else
+        rel="./${dir#"$root"/}"
+    fi
+    pkgs_by_root["$root"]+="$rel"$'\n'
+done
+
+for root in "${!pkgs_by_root[@]}"; do
+    mapfile -t rels < <(printf '%s' "${pkgs_by_root[$root]}" | sort -u | grep -v '^$')
+    [ ${#rels[@]} -eq 0 ] && continue
+    if ! (cd "$root" && golangci-lint run "${rels[@]}" 2>&1); then
         echo ""
-        echo "✗ golangci-lint 未通过"
+        echo "✗ golangci-lint 未通过(module: $root)"
         exit 1
     fi
-fi
+done
