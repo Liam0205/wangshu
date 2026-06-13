@@ -88,20 +88,18 @@ jobs:
           SEED_BASE: ${{ steps.difffuzz.outputs.seed_base }}
           ROUNDS: ${{ steps.difffuzz.outputs.rounds }}
         run: |
-          # 分流(机器可读标记 API,与测试侧约定):
-          #   DIVERGENCE seed=<n> kind=<bytediff|gcstress|oracle-error> = 真分歧
-          #   findOracle 失败(测试 skip,不会 failure)/ 其它无标记失败 = INFRA
-          if ! grep -q "DIVERGENCE" difffuzz.log gcstress.log 2>/dev/null; then
-            TITLE="difftest infra failure ($(date -u +%F))"
-            LABEL="ci"
-            BODY="nightly difftest 失败但无 DIVERGENCE 标记(环境/基础设施类,非真分歧)。日志见 run artifacts:${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          else
+          # 三档分流(机器可读标记 API,与测试侧约定):
+          #   1. DIVERGENCE seed=<n> kind=<bytediff|gcstress|oracle-error>(差分/GC 透明性)→ bug
+          #   2. go-fuzz crash:gofuzz.log 含 "Failing input written to <path>" → bug + crash corpus 路径
+          #   3. 其它无标记失败(oracle 装不上、环境问题) → ci
+          # 优先级:DIVERGENCE > go-fuzz crash > INFRA(同时撞中只开 1 个 issue,以 DIVERGENCE 为准)
+          if grep -q "DIVERGENCE" difffuzz.log gcstress.log 2>/dev/null; then
             FIRST_SEED=$(grep -ohP 'DIVERGENCE seed=\K\d+' difffuzz.log gcstress.log 2>/dev/null | head -1 || true)
             FIRST_KIND=$(grep -ohP 'DIVERGENCE seed=\d+ kind=\K\S+' difffuzz.log gcstress.log 2>/dev/null | head -1 || true)
             TITLE="difftest divergence: seed ${FIRST_SEED:-unknown} kind ${FIRST_KIND:-unknown} ($(date -u +%F))"
             LABEL="bug"
             BODY=$(cat <<EOF
-          nightly 差分 fuzz 撞出与官方 Lua 5.1.5 的输出分歧(或 GC 透明性破坏/go-fuzz crash)。
+          nightly 差分 fuzz 撞出与官方 Lua 5.1.5 的输出分歧(或 GC 透明性破坏)。
 
           **本地复现**:
           \`\`\`bash
@@ -117,6 +115,36 @@ jobs:
           日志与 crash corpus 见 run artifacts:${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           EOF
           )
+          elif grep -q "Failing input written to" gofuzz.log 2>/dev/null; then
+            CRASH_PATH=$(grep -ohP 'Failing input written to \K\S+' gofuzz.log 2>/dev/null | head -1 || true)
+            CRASH_NAME=$(basename "$CRASH_PATH")
+            TITLE="go-fuzz crash: ${CRASH_NAME:-unknown} ($(date -u +%F))"
+            LABEL="bug"
+            BODY=$(cat <<EOF
+          nightly go-fuzz 长跑撞出 crash(子进程异常退出/死循环/panic)。corpus 已写入仓库
+          \`testdata/fuzz/\` 路径,可本地精确重放定位根因。
+
+          **crash corpus 路径**:\`$CRASH_PATH\`
+
+          **本地复现**:
+          \`\`\`bash
+          # 从 run artifact 下载 corpus(若仓库还没入库)
+          gh run download ${{ github.run_id }} --repo ${{ github.repository }}
+          # 复制到对应路径
+          cp nightly-fuzz-${{ github.run_id }}/$CRASH_PATH $CRASH_PATH
+          # 重放
+          go test . -run='${CRASH_NAME%/*}' -timeout 60s -v
+          \`\`\`
+
+          **后续**(12 §4.9 嵌入式 hardening 阈值纪律):定位触发 crash 的 stdlib/VM 路径,加 fail-fast 阈值;
+          补回归用例入 \`hardening_test.go\`;crash corpus 留在 \`testdata/fuzz/\` 作常驻回归。
+          日志与 crash corpus 见 run artifacts:${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EOF
+          )
+          else
+            TITLE="nightly-fuzz infra failure ($(date -u +%F))"
+            LABEL="ci"
+            BODY="nightly fuzz 失败但无 DIVERGENCE 标记 / 无 go-fuzz crash(环境/基础设施类:oracle 不可用、超时、依赖装不上等)。日志见 run artifacts:${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           fi
           # 同标题去重:已有 open issue 则追加评论而非新开
           EXISTING=$(gh issue list --state open --search "in:title \"$TITLE\"" --json number --jq '.[0].number' || true)
