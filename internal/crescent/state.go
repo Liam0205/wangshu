@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 
 	"github.com/Liam0205/wangshu/internal/arena"
+	"github.com/Liam0205/wangshu/internal/bridge"
 	"github.com/Liam0205/wangshu/internal/bytecode"
 	"github.com/Liam0205/wangshu/internal/gc"
 	"github.com/Liam0205/wangshu/internal/object"
@@ -126,12 +127,32 @@ type State struct {
 	// (嵌入式 VM 接不可信脚本,文件读是越权探测面;10 §12.1 LibsSafe 思路
 	// 的最小落地)。宿主经 Options.AllowFileLoad 显式开启。
 	allowFileLoad bool
+
+	// bridge: P2 分层桥(`docs/design/p2-bridge/`)。State 私有,挂在
+	// 这里让回边 / 入口采样钩点(crescent 主循环 + enterLuaFrame)调到
+	// `bridge.OnBackEdge` / `OnEnter`(profileEnabled=true 时;否则编译期
+	// 整段消去,零开销)。bridge 包不依赖 crescent(基建非执行层),反
+	// 向钩点经此字段以接口形式注入。
+	//
+	// 生命期:与 State 同生(New 时构造;State 销毁则 Bridge 一同释放,
+	// 包括其 profileTable / gibbousCodes 引用)。
+	// 多 goroutine 并发不共享:01 §6.3 (B) 方案——profileTable 挂 State
+	// 私有;-race 自然通过(00 §4 PB7 验收(d))。
+	bridge *bridge.Bridge
 }
 
 // SetCompileFn 注入编译回调(wangshu.NewState 时装配;loadstring 用)。
 func (st *State) SetCompileFn(fn func(src []byte, chunkname string) (uint32, []*bytecode.Proto, error)) {
 	st.compileFn = fn
 }
+
+// Bridge 暴露 P2 分层桥(`docs/design/p2-bridge/`)给 internal 包内部使用
+// (主循环采样钩点 / Compile 期 AnalyzeProto)。
+//
+// **不暴露给公共 API**——门面层 wangshu.go 通过 SetBridgeP3Compiler /
+// SetBridgeLogger 等 setter 注入,不直接拿 *bridge.Bridge,避免公共面对
+// internal/bridge 类型形成依赖。
+func (st *State) Bridge() *bridge.Bridge { return st.bridge }
 
 // CompileAndLoad 编译一段源码并装载为 closure(loadstring 的核心)。
 func (st *State) CompileAndLoad(src []byte, chunkname string) (value.Value, error) {
@@ -154,7 +175,7 @@ func (st *State) SetStringLib(t arena.GCRef) { st.stringLib = t }
 func New() *State {
 	a := arena.New(arena.Options{})
 	c := gc.New(a, gc.Options{})
-	st := &State{arena: a, gc: c}
+	st := &State{arena: a, gc: c, bridge: bridge.NewBridge()}
 	st.globals = object.AllocTable(a, 0, 8)
 	c.LinkSweep(st.globals)
 	st.installRoots()
