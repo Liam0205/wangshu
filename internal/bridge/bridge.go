@@ -3,6 +3,7 @@
 package bridge
 
 import (
+	"fmt"
 	"sync"
 
 	"github.com/Liam0205/wangshu/internal/bytecode"
@@ -142,20 +143,123 @@ func (b *Bridge) OnEnter(proto *bytecode.Proto) {
 
 // considerPromotion 升层决策入口(04 §3)。
 //
-// 当前 PB0 实装是**no-op 占位**——状态机本体在 PB4 落地。
-// 占位的语义保留:任何越阈值都不真正升层(留 TierInterp),但下次再越阈值
-// 仍会再次进入此函数——这与 PB4 实装期的「TierStuck 后不再触发」是不同
-// 的(PB0 占位下没有 Stuck 转移,无防抖)。**PB1 接钩点后跑差分时,
-// profileEnabled 被翻 true 但 considerPromotion 仍 no-op,byte-equal 应当
-// 仍然成立**(没有真正改变执行行为,只是计数)。
+// 调用契约(参考 [04 §3.1] + [01 §4.3]):
+//  1. 幂等:多次调用不出错——本函数自身用 pd.TierState != TierInterp 守卫;
+//  2. 不重载 frame——onBackEdge/onEnter 调用方无需 reloadFrame;
+//  3. 不在最热路径——只在阈值临界点发生,摊薄到每回边几十 ns;
+//  4. 无返回值——升/留/失败都通过 pd.TierState 表达。
 //
-//nolint:unused // PB4 实装时填实,PB0 占位保留接口形状。
+// 处理路径(四条,对应 04 §3.2):
+//
+//	(P1) 已经在吸收态(TierGibbous / TierStuck) → 直接 return(防抖)
+//	(P2) Compilable != CompCompilable(含 CompUnknown / CompNotCompilable)→ 转 Stuck
+//	(P3) 可编译 → try-compile;成功转 Gibbous 安装;失败转 Stuck。
 func (b *Bridge) considerPromotion(proto *bytecode.Proto, pd *ProfileData) {
-	// PB0 no-op:占位,留 TierState=TierInterp,不进 try-compile 路径。
-	// PB4 实装时按 04 §3.2 完整四路径:
-	//   (P1) 已吸收态守卫
-	//   (P2/P3) Compilability ≠ CompCompilable → TierStuck
-	//   (P4) try-compile + installGibbous
-	_ = proto
-	_ = pd
+	// (P1) 已转吸收态 → no-op(双重防抖,onBackEdge/OnEnter 守卫已先拦一道)
+	if pd.TierState != TierInterp {
+		return
+	}
+
+	comp := pd.Compilable
+	if comp != CompCompilable {
+		// (P2) 不可编译 / 未分析 → 永久解释(04 §1.4 静态 fallback)
+		pd.TierState = TierStuck
+		pd.CompileTried = true
+		if b.logger != nil {
+			b.logger.LogStuck(proto, pd, comp)
+		}
+		return
+	}
+
+	// (P3) try-compile
+	// 加锁:多 State 共享 Proto 时只让一个 State 真正编译(04 §4.5 (A) 方案)。
+	// profileTable 是 State 私有,但 gibbousCodes 是 Bridge 共享——锁守住后者
+	// 与 trampoline 注册的关键段。
+	b.compileMu.Lock()
+	defer b.compileMu.Unlock()
+
+	// 加锁后双重检查 gibbousCodes:别的 State 抢先编译并安装了 → 复用现有
+	// GibbousCode,不重复编译(04 §4.5)。
+	if existing, ok := b.gibbousCodes[proto]; ok {
+		_ = existing
+		pd.TierState = TierGibbous
+		pd.CompileTried = true
+		if b.logger != nil {
+			b.logger.LogPromoted(proto, pd)
+		}
+		return
+	}
+
+	// 聚合 IC feedback 喂给 P3(02 §4.5 一次性聚合)
+	fb := b.aggregator.Aggregate(proto)
+	pd.Feedback = fb
+	pd.CompileTried = true
+
+	code, err := b.tryCompile(proto, fb)
+	if err != nil {
+		// (P3-fail)编译失败 → 永久解释(04 §1.4 try-compile fallback)
+		pd.TierState = TierStuck
+		if b.logger != nil {
+			b.logger.LogCompileFail(proto, pd, err)
+		}
+		return
+	}
+
+	// (P3-success)升层成功:登记 gibbous 代码 + 转 TierGibbous
+	b.installGibbous(proto, code)
+	pd.TierState = TierGibbous
+	if b.logger != nil {
+		b.logger.LogPromoted(proto, pd)
+	}
 }
+
+// tryCompile 包装 P3.Compile + defer recover 兜底(04 §5.2)。
+//
+// **后端 panic 不穿越本接口**——P2 不能因后端 bug 让 P1 主循环崩溃,
+// 只能 fallback 该 Proto。recover 把 panic 转成 *CompileError(Kind=Panic),
+// considerPromotion 见到 err != nil 走 fallback 路径转 Stuck。
+func (b *Bridge) tryCompile(proto *bytecode.Proto, fb *TypeFeedback) (code GibbousCode, err error) {
+	if b.p3 == nil {
+		// 没注入 P3 不应走到这里(F7 应在 AnalyzeProto 阶段拦),防御性兜底。
+		return nil, &CompileError{
+			Kind:   CompileErrBackendUnsupported(),
+			Proto:  proto,
+			Reason: "P3 compiler not injected",
+		}
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			err = &CompileError{
+				Kind:   CompileErrBackendPanic,
+				Proto:  proto,
+				Reason: fmtPanic(r),
+			}
+			code = nil
+			if b.logger != nil {
+				b.logger.LogPanic(proto, r)
+			}
+		}
+	}()
+	return b.p3.Compile(proto, fb)
+}
+
+// installGibbous 升层成功后安装 gibbous 代码(04 §4.4)。
+//
+// 当前简化版:只挂 gibbousCodes map(GC 防早释)。**P3 trampoline 注册**与
+// **CallInfo bit50 写入**都在 PB6/P3 落地时补上——本期 P3 还没真存在,
+// installGibbous 没有「下一帧改流向」的实际效果(P1 主循环不读 callInfo.gibbous,
+// 见 callInfo 字段注释)。
+func (b *Bridge) installGibbous(proto *bytecode.Proto, code GibbousCode) {
+	b.gibbousCodes[proto] = code
+}
+
+// fmtPanic 把 recover 拿到的 panic 值格式化(避免直接对 interface{} 用 %v
+// 错过 stack 信息)。简化版——P2 PB5 落地完整 stack 时升级。
+func fmtPanic(r interface{}) string {
+	return fmt.Sprintf("%v", r)
+}
+
+// CompileErrBackendUnsupported 是「P3 未注入」的内部错误码(04 §5.2 边角)。
+// 不暴露在 CompileErrKind 枚举常量里——用一个 helper 函数避免 enum 增加
+// 不必要的对外语义(P3 注入是 Bridge 装配阶段的事,不是运行期常态)。
+func CompileErrBackendUnsupported() CompileErrKind { return CompileErrBackendDeclined }
