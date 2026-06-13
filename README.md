@@ -23,7 +23,9 @@ P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 met
 
 ## 当前状态
 
-**P1(crescent 解释器)完整交付**:全里程碑 M0-M14 + 收尾轮(协程/pattern matcher/IC/arena ABI 等)+ 长稳轮(freelist 内存复用/调用深度上限/并发验证)+ 审查核销轮(22+ 项逐函数对照官方源码的发现全量修复)落地,P1 总验收通过:
+**P1(crescent 解释器)完整交付 + P2(bridge 分层桥)PB0-PB7 全过线**:P1 全里程碑 M0-M14 + 收尾轮(协程/pattern matcher/IC/arena ABI 等)+ 长稳轮(freelist 内存复用/调用深度上限/并发验证)+ 审查核销轮(22+ 项逐函数对照官方源码的发现全量修复)落地;**P2 全卷 PB0-PB7**(2026-06-13 单会话冲刺:bridge 包骨架 + 回边/入口采样钩 + 算术 IC 双计数 + IC 反馈聚合 + F1-F7 可编译性闸门 + TierState 状态机 + 升层日志 + mock P3 + e2e 验收)落地。**P2 后续优化轮**(精确 yield 调用图分析 / 阈值实测校准 / sync.Pool (C) 双表混合 / megamorphic 主动识别;设计文档原称 `P2+`,**不是 P3 阶段**)规划中。
+
+P1 总验收通过:
 
 - 性能四档实测见下「性能基准」节——纯 VM 微基准 5-6x over gopher-lua,真实负载纯 VM 五项中四项反超,边界密集嵌入经零分配 `CallInto` 反超;
 - 与官方 Lua 5.1.5 差分对拍逐字节一致:**官方测试套 13 文件**(vararg/sort/pm 整文件,其余截至豁免线)+ 100 项手册逐节特性探测 + 12 项边角探测 + 29 条错误消息(含行号断言)+ 70 种子用例 + 500 随机脚本(nightly 每晚 200 万滚动)+ benchmark-game 五脚本返回值;
@@ -118,5 +120,6 @@ P3 迁移留口(对账记录见 [implementation-progress](docs/design/p1-interpr
 - 战略层:[docs/design/roadmap.md](docs/design/roadmap.md)(动机/校准测量/演进路线/非目标)
 - 总览:[docs/design/architecture.md](docs/design/architecture.md)(包布局/组件依赖/tier 映射)
 - P1 解释器详细设计(13 篇):[docs/design/p1-interpreter/](docs/design/p1-interpreter/),从 [00-overview](docs/design/p1-interpreter/00-overview.md) 进入;实现进度:[implementation-progress](docs/design/p1-interpreter/implementation-progress.md)
-- P2-P5 阶段设计:[p2-bridge](docs/design/p2-bridge.md) · [p3-wasm-tier](docs/design/p3-wasm-tier.md) · [p4-method-jit](docs/design/p4-method-jit.md) · [p5-trace-jit](docs/design/p5-trace-jit.md)
+- P2 分层桥详细设计(7 篇):[docs/design/p2-bridge/](docs/design/p2-bridge/),从 [00-overview](docs/design/p2-bridge/00-overview.md) 进入;实现进度:[implementation-progress](docs/design/p2-bridge/implementation-progress.md)(PB0-PB7 全 ✅,P2 后续优化轮规划中)
+- P3-P5 阶段设计:[p3-wasm-tier](docs/design/p3-wasm-tier.md) · [p4-method-jit](docs/design/p4-method-jit.md) · [p5-trace-jit](docs/design/p5-trace-jit.md)
 - 工程化机制(hooks/CI/Makefile/发布):[engineering](docs/design/engineering.md)

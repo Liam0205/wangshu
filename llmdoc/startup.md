@@ -17,4 +17,4 @@
 - 要理解**宿主如何嵌入、API 与 arena ABI** → [[embedding-contract]]。
 - 遇到不认识的术语或想查参照项目 → [[glossary]]。
 
-> 提醒:**P1(crescent 解释器)完整交付(M0-M14 + 收尾轮 + 测试加固轮 + 完整性补全轮 + 长稳承诺轮 + 外部审查修复轮 + 官方测试套与性能轮),P2 详细设计已齐备(`docs/design/p2-bridge/` 子目录 8 文件 7453 行,2026-06-13 起草轮),实现未启动;P3+ 仍在规划**。设计文档集仍是规范源,P1 实现现状与 P3 迁移留口见 `docs/design/p1-interpreter/implementation-progress.md` 对账表;P2 实施现状对账表见 `docs/design/p2-bridge/implementation-progress.md`。设计文档集入口与路由见 [[index]] 的「设计文档集路由」节。
+> 提醒:**P1(crescent 解释器)完整交付 + P2(bridge 分层桥)PB0-PB7 全过线**(M0-M14 + P1 收尾轮 + P2 PB0-PB7 单会话冲刺,2026-06-13)。**P2 后续优化轮**(精确 yield 分析 / 阈值实测校准 / sync.Pool (C) / megamorphic;设计文档原称 `P2+`,**不是 P3**)规划中。P3+ 仍在规划。设计文档集仍是规范源,P1 实现现状与 P3 迁移留口见 `docs/design/p1-interpreter/implementation-progress.md` 对账表;P2 实施现状对账表见 `docs/design/p2-bridge/implementation-progress.md`(PB0-PB7 全部 ✅,P2 后续优化轮规划中)。设计文档集入口与路由见 [[index]] 的「设计文档集路由」节。
