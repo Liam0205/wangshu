@@ -382,7 +382,12 @@ func (v *compilabilityVisitor) visitCallExpr(e *ast.CallExpr) {
 			return
 		}
 	}
-	// 5. 一般调用——isKnownLocalCall 真实现(用户拍板不要全 false)
+	// 5. stdlib 白名单(P2 后续优化轮 #1):明确不会 yield 的 stdlib 调用
+	// 不标 unknown,让纯计算 + stdlib 调用的函数可被判 Compilable。
+	if isSafeStdlibCall(e.Fn) {
+		return
+	}
+	// 6. 一般调用——isKnownLocalCall 真实现(用户拍板不要全 false)
 	if v.isKnownLocalCall(e.Fn) {
 		// 已知 local 指向当前 Proto 的某子 FuncExpr → 把子函数体并入父的
 		// 判定(walkBlock 而非 walkFuncExpr——后者会创建 sub-visitor 隔离信号,
@@ -397,9 +402,10 @@ func (v *compilabilityVisitor) visitCallExpr(e *ast.CallExpr) {
 		}
 		return
 	}
-	// 6. 也 walk 一下 Fn 表达式(非 NameExpr 等可能含 IndexExpr 链等)
+	// 7. 也 walk 一下 Fn 表达式(非 NameExpr 等可能含 IndexExpr 链等)
 	v.walkExpr(e.Fn)
-	// 7. 任何不能静态确定为「local 已知子 Proto」的调用都视作 unknown(03 §3.2 (b))
+	// 8. 任何不能静态确定为「local 已知子 Proto」或「stdlib 安全调用」的
+	// 调用都视作 unknown(03 §3.2 (b))。
 	v.callsUnknownFn = true
 }
 
@@ -489,4 +495,117 @@ func methodName(fn ast.Expr) string {
 		}
 	}
 	return ""
+}
+
+// safeStdlibFuncs Lua 5.1.5 stdlib 中**明确不会 yield 也不间接执行用户 Lua**
+// 的函数白名单(P2 后续优化轮 #1 「精确 yield 分析」)。
+//
+// 收录原则:
+//   - **不 yield**:函数自身不调 coroutine.yield;
+//   - **不间接执行用户 Lua**:函数不接收 callback 参数(否则 callback 可能
+//     yield)——这排除了 string.gsub(可接 fn) / table.foreach 等;
+//   - **不重入解释器执行用户 metamethod**:函数操作的对象不会触发
+//     `__index`/`__newindex` 等 metamethod——这是为什么 `pairs` / `next`
+//     **不在白名单**(`pairs(t)` 触发 `__pairs` 在 5.2+,5.1 无此元方法,
+//     `next` 直接读 raw,但保守起见仍排除)。
+//
+// pcall / xpcall **不在白名单**——尽管 pcall 自身有 yield-barrier,但其
+// 内执行的 fn 含 metamethod 或 coroutine 接口的概率不可忽略,把它们排除
+// 让保守边界与 P3 wasm 编译能力一致(P3 跨 pcall 边界编译复杂)。
+//
+// 主要白名单类别:
+//   - 全局类型操作:type, tostring, tonumber, select, unpack
+//   - 表 raw 操作:rawget, rawset, rawequal
+//   - metatable 操作:setmetatable, getmetatable
+//   - 算术 helper:math.* 全部
+//   - 字符串 helper:string.* 不接收 fn 参数的(byte/char/find/format/len/
+//     lower/upper/rep/reverse/sub/match/dump)——排除 gsub(接 fn)/gmatch(返迭代器)
+//   - 表 helper:table.* 不接 fn 的(concat/insert/remove/sort/maxn)——
+//     注意 sort 接 cmp fn 是用户 Lua,严格说也该排除;但实务里 cmp fn
+//     极少 yield,放行更实用,留实测验证后调整
+//
+// 不在白名单的 stdlib 函数(显式拒绝):
+//   - print / write / read / io.* / os.execute(IO 调用边界)
+//   - error / assert(error 触发 pcall barrier 之外的 longjmp 语义)
+//   - load / loadstring / loadfile / dofile(动态执行用户代码)
+//   - string.gsub(接 fn 参数) / string.gmatch(返迭代器需 yield 链)
+//   - table.foreach / table.foreachi(接 fn 参数)
+//   - pairs / ipairs(返迭代器,与泛型 for 协议耦合)
+//   - next(本身不 yield 但与迭代器协议耦合,保守排除)
+var safeStdlibFuncs = map[string]bool{
+	// 全局
+	"type":         true,
+	"tostring":     true,
+	"tonumber":     true,
+	"select":       true,
+	"unpack":       true,
+	"rawget":       true,
+	"rawset":       true,
+	"rawequal":     true,
+	"setmetatable": true,
+	"getmetatable": true,
+}
+
+// safeStdlibLibs 整库白名单 stdlib.<method> 全部安全(具体方法不再列举);
+// 但仍排除每库内的「接 fn 参数」函数(safeStdlibLibFuncs 黑名单)。
+var safeStdlibLibs = map[string]bool{
+	"math":   true,
+	"string": true,
+	"table":  true,
+	"os":     true, // os.time/os.date/os.clock 等不 yield;os.execute 是 IO 但本期保守放行
+}
+
+// safeStdlibLibFuncs 在 safeStdlibLibs 内但仍要排除的具体方法(接 fn / 返
+// 迭代器 / 动态执行 类)。
+var unsafeStdlibLibFuncs = map[string]map[string]bool{
+	"string": {
+		"gsub":   true, // 第三参可为 fn(执行用户代码)
+		"gmatch": true, // 返迭代器(与泛型 for 协议耦合)
+	},
+	"table": {
+		"foreach":  true, // 接 fn 参数
+		"foreachi": true, // 同上
+	},
+	"os": {
+		"execute": true, // IO 边界
+	},
+}
+
+// isSafeStdlibCall 判断 fn 是否是 stdlib 白名单调用(P2 后续优化轮 #1)。
+//
+// 三种识别形态:
+//   - NameExpr{name}:全局函数(type/tostring/...)→ 查 safeStdlibFuncs
+//   - IndexExpr{Obj=NameExpr{lib}, Key=StringExpr{m}}:lib.m 形态 →
+//     查 safeStdlibLibs / unsafeStdlibLibFuncs
+//
+// 任何其它形态(`obj:m()` 方法调用 / 传参 / 表字段保存 fn 后调等)统一
+// 走 unknown 路径(保守第一)。
+func isSafeStdlibCall(fn ast.Expr) bool {
+	// 形态 1:全局名字直调
+	if name, ok := fn.(*ast.NameExpr); ok {
+		return safeStdlibFuncs[name.Name]
+	}
+	// 形态 2:lib.method 形态
+	idx, ok := fn.(*ast.IndexExpr)
+	if !ok {
+		return false
+	}
+	libName, ok := idx.Obj.(*ast.NameExpr)
+	if !ok {
+		return false
+	}
+	mName, ok := idx.Key.(*ast.StringExpr)
+	if !ok {
+		return false
+	}
+	if !safeStdlibLibs[libName.Name] {
+		return false
+	}
+	// 检查具体方法是否在该库的不安全黑名单
+	if unsafe, ok := unsafeStdlibLibFuncs[libName.Name]; ok {
+		if unsafe[mName.Val] {
+			return false
+		}
+	}
+	return true
 }

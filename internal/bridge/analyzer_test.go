@@ -381,6 +381,150 @@ func TestAnalyze_VarargMismatchPanic(t *testing.T) {
 	b.AnalyzeProto(fn, p)
 }
 
+// TestAnalyze_F2_StdlibSafeCalls P2 后续优化轮 #1:stdlib 白名单生效后,
+// 调用 type / tostring / math.sqrt / string.format / table.insert 等不再标
+// unknown,纯计算 + stdlib 调用的函数应判 Compilable。
+func TestAnalyze_F2_StdlibSafeCalls(t *testing.T) {
+	cases := []struct {
+		name string
+		call *ast.CallExpr
+	}{
+		{
+			"type-global",
+			&ast.CallExpr{
+				Fn:   &ast.NameExpr{Name: "type"},
+				Args: []ast.Expr{&ast.NameExpr{Name: "x"}},
+			},
+		},
+		{
+			"tostring-global",
+			&ast.CallExpr{
+				Fn:   &ast.NameExpr{Name: "tostring"},
+				Args: []ast.Expr{&ast.NumberExpr{Val: 1}},
+			},
+		},
+		{
+			"math-sqrt",
+			&ast.CallExpr{
+				Fn: &ast.IndexExpr{
+					Obj: &ast.NameExpr{Name: "math"},
+					Key: &ast.StringExpr{Val: "sqrt"},
+				},
+				Args: []ast.Expr{&ast.NumberExpr{Val: 16}},
+			},
+		},
+		{
+			"string-format",
+			&ast.CallExpr{
+				Fn: &ast.IndexExpr{
+					Obj: &ast.NameExpr{Name: "string"},
+					Key: &ast.StringExpr{Val: "format"},
+				},
+				Args: []ast.Expr{&ast.StringExpr{Val: "%d"}, &ast.NumberExpr{Val: 1}},
+			},
+		},
+		{
+			"table-insert",
+			&ast.CallExpr{
+				Fn: &ast.IndexExpr{
+					Obj: &ast.NameExpr{Name: "table"},
+					Key: &ast.StringExpr{Val: "insert"},
+				},
+				Args: []ast.Expr{&ast.NameExpr{Name: "t"}, &ast.NumberExpr{Val: 1}},
+			},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			b := NewBridge()
+			b.SetP3Compiler(allowAllOpcodes{})
+			fn := makeFuncBody(&ast.CallStmt{Call: c.call})
+			p := makeProto()
+			got := b.AnalyzeProto(fn, p)
+			if got != CompCompilable {
+				pd := b.ProfileOf(p)
+				t.Errorf("safe stdlib %q should be Compilable, got %v reasons=%016b",
+					c.name, got, pd.Reasons)
+			}
+		})
+	}
+}
+
+// TestAnalyze_F2_StdlibUnsafeCalls 不在白名单的 stdlib(string.gsub /
+// table.foreach / pcall / pairs / print / error)仍判 unknown(F2 触发)。
+func TestAnalyze_F2_StdlibUnsafeCalls(t *testing.T) {
+	cases := []*ast.CallExpr{
+		// string.gsub 第三参可为 fn ⇒ 不安全
+		{
+			Fn: &ast.IndexExpr{
+				Obj: &ast.NameExpr{Name: "string"},
+				Key: &ast.StringExpr{Val: "gsub"},
+			},
+		},
+		// table.foreach 接 fn ⇒ 不安全
+		{
+			Fn: &ast.IndexExpr{
+				Obj: &ast.NameExpr{Name: "table"},
+				Key: &ast.StringExpr{Val: "foreach"},
+			},
+		},
+		// os.execute IO 边界 ⇒ 不安全
+		{
+			Fn: &ast.IndexExpr{
+				Obj: &ast.NameExpr{Name: "os"},
+				Key: &ast.StringExpr{Val: "execute"},
+			},
+		},
+		// pcall 不在白名单(执行任意 Lua,可能含 yield/coroutine)
+		{
+			Fn: &ast.NameExpr{Name: "pcall"},
+		},
+		// pairs 与迭代器协议耦合 ⇒ 不在白名单
+		{
+			Fn: &ast.NameExpr{Name: "pairs"},
+		},
+		// print 是 IO 边界 ⇒ 不在白名单
+		{
+			Fn: &ast.NameExpr{Name: "print"},
+		},
+		// error 触发 longjmp ⇒ 不在白名单
+		{
+			Fn: &ast.NameExpr{Name: "error"},
+		},
+	}
+	for _, c := range cases {
+		t.Run(funcExprName(c.Fn), func(t *testing.T) {
+			b := NewBridge()
+			b.SetP3Compiler(allowAllOpcodes{})
+			fn := makeFuncBody(&ast.CallStmt{Call: c})
+			p := makeProto()
+			got := b.AnalyzeProto(fn, p)
+			if got != CompNotCompilable {
+				t.Errorf("unsafe stdlib should be NotCompilable, got %v", got)
+			}
+			pd := b.ProfileOf(p)
+			if pd.Reasons&ReasonUnknownCall == 0 {
+				t.Errorf("ReasonUnknownCall bit should be set, got %016b", pd.Reasons)
+			}
+		})
+	}
+}
+
+// funcExprName 给 unsafe stdlib 测试用名(便于失败时显示)。
+func funcExprName(fn ast.Expr) string {
+	if name, ok := fn.(*ast.NameExpr); ok {
+		return name.Name
+	}
+	if idx, ok := fn.(*ast.IndexExpr); ok {
+		if obj, ok := idx.Obj.(*ast.NameExpr); ok {
+			if key, ok := idx.Key.(*ast.StringExpr); ok {
+				return obj.Name + "." + key.Val
+			}
+		}
+	}
+	return "unknown"
+}
+
 // allowAllOpcodes 是 mock P3 编译器,SupportsAllOpcodes 永远返 true。
 // 用于测试 F1-F6 的判定不被 F7 兜底影响。
 type allowAllOpcodes struct{}
