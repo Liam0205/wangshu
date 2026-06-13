@@ -260,9 +260,14 @@ func (st *State) rehash(t arena.GCRef, extraKey value.Value) {
 		if u > maxKey {
 			maxKey = u
 		}
-		// 落入桶 ceil(log2(u))
+		// 落入桶 ceil(log2(u))。脚本控制的整数 key 可达 uint32 边界(2^32-1),
+		// 此时 `(1 << 32) = 0` 在 Go 也回卷为 0(uint32 移位语义),`< u` 恒真,
+		// 朴素 `for (1<<b) < u` 死循环——故加 b < 32 守卫:超 31 直接归到桶 31
+		// (size 1<<31 = 2^31 已超嵌入式 hardening 数组上限 maxArraySize,
+		// 后续 §2 选 asize 时被裁口)。fuzz corpus 5095a0fd13d76273
+		// (`t[3333170000]=""`)即此路径,触发死循环从而表面像 OOM(实为 CPU 死循环)。
 		b := uint32(0)
-		for (uint32(1) << b) < u {
+		for b < 31 && (uint32(1)<<b) < u {
 			b++
 		}
 		intCount[b]++
@@ -272,11 +277,19 @@ func (st *State) rehash(t arena.GCRef, extraKey value.Value) {
 	}
 	countIntKey(extraKey)
 	// 选 asize = 最大的 2^b 使 [1..2^b] 内整数键 > 2^(b-1)
+	// 嵌入式 hardening:数组段大小封顶 maxArraySize(1<<24,~16M 槽位 = ~128 MiB)。
+	// 与 stdlib 主线 table.concat range / string.rep 等的循环类阈值口径一致
+	// (12 §4.9 嵌入式 hardening 阈值纪律:宿主进程不可崩 > 与对位字节一致)。
+	// 大于阈值的稀疏键数组化无意义——超出部分自然落 hash 段,行为正确无溢出风险。
+	const maxArraySize = uint32(1 << 24)
 	bestASize := uint32(0)
 	acc := uint32(0)
 	for b := uint32(0); b <= 31; b++ {
 		acc += intCount[b]
 		size := uint32(1) << b
+		if size > maxArraySize {
+			break
+		}
 		if acc > size/2 {
 			bestASize = size
 		}

@@ -114,3 +114,32 @@ func TestHardening_TableConcatNormal(t *testing.T) {
 		t.Errorf("got %q", r[0].Str())
 	}
 }
+
+func TestHardening_TableLargeIntKey(t *testing.T) {
+	// fuzz corpus testdata/fuzz/FuzzCompileRun/5095a0fd13d76273:
+	// `t={} t[3333170000]=""` 触发 rehash → countIntKey 内 `for (1<<b) < u`
+	// 死循环(uint32(1)<<32=0,b 永远 < u)。表面像 OOM 实为 CPU 死循环。
+	// 修复:循环加 b<31 守卫 + bestASize 封顶 1<<24(与主线 hardening 阈值口径一致)。
+	st := wangshu.NewState(wangshu.Options{})
+	prog, _ := wangshu.Compile([]byte(`local t={} t[3333170000]="" return "ok"`), "h")
+	r, err := prog.Run(st)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if r[0].Str() != "ok" {
+		t.Errorf("got %q, want 'ok' (大整数 key 应正常落 hash 段)", r[0].Str())
+	}
+}
+
+func TestHardening_TableUint32MaxKey(t *testing.T) {
+	// uint32 边界值 4294967295 = 2^32-1,确认 b=31 守卫不漏 + 不死循环。
+	st := wangshu.NewState(wangshu.Options{})
+	prog, _ := wangshu.Compile([]byte(`local t={} t[4294967295]="x" return t[4294967295]`), "h")
+	r, err := prog.Run(st)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if r[0].Str() != "x" {
+		t.Errorf("got %q, want 'x'", r[0].Str())
+	}
+}
