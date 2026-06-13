@@ -683,6 +683,16 @@ type callInfo struct {
 	tailcall bool
 	fresh    bool // execute 重入边界
 
+	// gibbous 是 P2/P3 跨层标识位(05 §1.2 word2 bit50 callStatus_gibbous 的
+	// 简化字段形态)。P1 恒 false——P2 PB0 阶段不会有任何路径写 true。
+	// P3 trampoline 落地后(P2 PB7+ / P3 阶段),`installGibbous` 在该 Proto
+	// 进帧时把 bit 置 true,让跨层判流向走 P3 编译码而非 crescent 解释。
+	//
+	// 注意:**不在升层瞬间改现存帧的此字段**——现存 CallInfo 仍跑 crescent,
+	// 突然变 gibbous 会破坏「同一帧执行体」语义(04 §4.4 末尾)。新进帧的
+	// 新 CallInfo 才标 gibbous=true。
+	gibbous bool
+
 	// vararg 区(M13 接入):IsVararg 函数的多余实参(数量 nVarargs)拷贝到一个独立
 	// Go 切片(简化版,后续 M14 切到栈下区)。这样 VARARG 指令直接读 ci.varargs。
 	varargs []value.Value
