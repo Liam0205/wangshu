@@ -78,17 +78,23 @@ func (p *Proto) IsStringConst(i int) bool {
 //   - Index:命中槽位(array 下标 / node 下标)
 //   - TableRef:目标表 arena 偏移低 32 位(身份比对,非 GC 根)
 //   - Kind:0/未初始化  1/array hit  2/node hit  3/mono-meta  4/megamorphic
+//   - Refill:换表/换形重填计数(P2 后续优化轮 #4 megamorphic 主动识别,
+//     02 §6.2 方案 (B) 简化版):P1 ic.go 在 miss-after-fill(本来命中
+//     某表/形,但当前操作目标不同表/不同 gen)路径累计;P2 聚合时若
+//     ≥ MegamorphicRefillThreshold 主动翻译为 FBTableMega(02 §6.3)。
 //
 // 算术 IC(ADD..POW、UNM、CONCAT 的快/慢路径计数):
 //   - 字段挪用:Shape = numHits(快路径命中数)
 //     Index = metaHits(元方法慢路径命中数)
 //     TableRef 闲置(置 0)
+//     Refill 闲置(置 0)
 //     Kind 仍按 P2 类型 feedback 语义使用
 type ICSlot struct {
 	Shape    uint32
 	Index    uint32
 	TableRef uint32
 	Kind     uint8
+	Refill   uint8 // P2+ #4 重填计数(表 IC 用;饱和到 255)
 }
 
 // IC kind 常量(02 §7)。

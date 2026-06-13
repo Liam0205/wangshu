@@ -24,6 +24,13 @@ const (
 	// MinObservations 算术 IC 样本量下限:numHits+metaHits < 此值视为统计
 	// 无意义,直接判 FBUnstable(02 §5.3,100 次给 ±10% 置信区间)。
 	MinObservations uint64 = 100
+
+	// MegamorphicRefillThreshold 表 IC 重填次数阈值(P2 后续优化轮 #4,
+	// 02 §6.2 方案 (B) 简化版):同一 IC slot 经历过 N 次以上「miss-after-fill
+	// 重填」(目标表/形不同 ⇒ 必须丢旧 slot 重建)即标 megamorphic。
+	// 默认 3 次:首次填(Kind=0→1/2)不算,从第 1 次重填起累计;3 次重填
+	// 大致对应「该点访问过 4 个不同表/形」,statistic 上已是多态。
+	MegamorphicRefillThreshold uint8 = 3
 )
 
 // Aggregator 是 IC 反馈聚合器(02 §6.4)。无状态,纯函数封装;每次新建一个
@@ -149,6 +156,16 @@ func (a *Aggregator) extractTableFeedback(pc int32, slot *bytecode.ICSlot, opTyp
 		StableShape:  slot.Shape,
 		StableIndex:  slot.Index,
 		Observations: 1, // 02 §5.1:表 IC P1 不计数,填占位 1
+	}
+	// P2+ #4 megamorphic 主动识别:Refill 重填次数超阈值 ⇒ 该点多态,
+	// 主动翻译为 FBTableMega(覆盖原本 mono kind 判定)。这弥补 P1 当前
+	// 不主动写 ICKindMegamorphic 的差距(02 §6.2 方案 (A) → (B) 升级)。
+	if slot.Refill >= MegamorphicRefillThreshold {
+		pf.Kind = FBTableMega
+		pf.Confidence = 0.0
+		pf.StableShape = 0
+		pf.StableIndex = 0
+		return pf
 	}
 	switch slot.Kind {
 	case bytecode.ICKindArrayHit, bytecode.ICKindNodeHit, bytecode.ICKindMonoMeta:

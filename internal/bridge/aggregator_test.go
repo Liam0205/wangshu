@@ -181,6 +181,50 @@ func TestAggregator_TableMega(t *testing.T) {
 	}
 }
 
+// TestAggregator_RefillTriggersMega P2+ #4:Refill ≥ MegamorphicRefillThreshold
+// (默认 3)即便 Kind 仍是 mono 也主动翻译为 FBTableMega。
+func TestAggregator_RefillTriggersMega(t *testing.T) {
+	p := makeProtoWithCode(bytecode.GETTABLE)
+	// Kind=NodeHit 看似单态,但 Refill=5 表示历史经过多次重填(多态)
+	p.IC[0] = bytecode.ICSlot{
+		Shape:    42,
+		Index:    7,
+		TableRef: 0xdeadbeef,
+		Kind:     bytecode.ICKindNodeHit,
+		Refill:   5,
+	}
+
+	a := NewAggregator()
+	fb := a.Aggregate(p)
+	got := fb.Points[0]
+	if got.Kind != FBTableMega {
+		t.Errorf("Refill=5 should trigger FBTableMega, got %v", got.Kind)
+	}
+	if got.StableShape != 0 || got.StableIndex != 0 {
+		t.Errorf("stable shape/index should be cleared on Refill-mega")
+	}
+}
+
+// TestAggregator_RefillBelowThresholdStillMono Refill < threshold 时仍按
+// kind 判 mono(单态命中虽偶有重填但不算多态)。
+func TestAggregator_RefillBelowThresholdStillMono(t *testing.T) {
+	p := makeProtoWithCode(bytecode.GETTABLE)
+	p.IC[0] = bytecode.ICSlot{
+		Shape:    42,
+		Index:    7,
+		TableRef: 0xdeadbeef,
+		Kind:     bytecode.ICKindNodeHit,
+		Refill:   2, // < 3 阈值
+	}
+
+	a := NewAggregator()
+	fb := a.Aggregate(p)
+	got := fb.Points[0]
+	if got.Kind != FBTableMono {
+		t.Errorf("Refill=2 (<threshold) should stay FBTableMono, got %v", got.Kind)
+	}
+}
+
 // TestAggregator_NonICOpsAreUnstable 非 IC 指令对应槽是 FBUnstable 零值
 // (LOADK/MOVE/RETURN/...)——P3/P4 应跳过。
 func TestAggregator_NonICOpsAreUnstable(t *testing.T) {

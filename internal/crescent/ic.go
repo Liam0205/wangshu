@@ -48,6 +48,16 @@ func (st *State) icGetTable(th *thread, ci *callInfo, pc int32, obj, key value.V
 	// —— 未命中:完整查找 + 回填 ——
 	v, where, idx := st.rawGetWithLoc(t, key)
 	if where != locNone && v != value.Nil {
+		// P2+ #4 megamorphic 主动识别:若该 slot 已被填过(kind != 0)且
+		// 当前要重填的目标表不同(TableRef != t)或代次不同(Shape != gen),
+		// 即「miss-after-fill 重填」事件——累计 Refill 计数,P2 聚合时阈值
+		// 触发翻译为 FBTableMega(02 §6.2 方案 (B) 简化版)。
+		if slot.Kind != bytecode.ICKindNone &&
+			(slot.TableRef != uint32(t) || slot.Shape != object.TableGen(st.arena, t)) {
+			if slot.Refill < ^uint8(0) {
+				slot.Refill++
+			}
+		}
 		slot.TableRef = uint32(t)
 		slot.Shape = object.TableGen(st.arena, t)
 		slot.Index = idx
@@ -96,6 +106,13 @@ func (st *State) icSetTable(th *thread, ci *callInfo, pc int32, obj, key, val va
 	}
 	if val != value.Nil {
 		if _, where, idx := st.rawGetWithLoc(t, key); where != locNone {
+			// P2+ #4 同 doGetTable:miss-after-fill 重填计数
+			if slot.Kind != bytecode.ICKindNone &&
+				(slot.TableRef != uint32(t) || slot.Shape != object.TableGen(st.arena, t)) {
+				if slot.Refill < ^uint8(0) {
+					slot.Refill++
+				}
+			}
 			slot.TableRef = uint32(t)
 			slot.Shape = object.TableGen(st.arena, t)
 			slot.Index = idx
