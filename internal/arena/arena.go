@@ -50,6 +50,16 @@ type Options struct {
 	MaxBytes uint32
 	// NewBacking backing 工厂,nil 用 DefaultBacking。
 	NewBacking BackingFn
+	// InPlaceBacking 标记 NewBacking 是「原地扩展」语义(P3 收养 wazero
+	// linear memory:memory.grow 原地扩,返回的新视图已含旧数据)而非
+	// 「realloc」语义(P1 默认 make:新地址,需 copy 旧内容)。
+	//
+	// false(P1 默认):grow 时 copy(newWords, oldWords) 迁移旧数据。
+	// true(P3 收养):grow 时**不 copy**——新视图已含旧数据,且旧视图在
+	//   wazero memory.grow 后已 disconnect(PW0 spike 实测),copy 源是 UB。
+	//
+	// 详见 docs/design/p3-wasm-tier/03-memory-model.md §1.6。
+	InPlaceBacking bool
 }
 
 // Arena 是自管线性内存。包含 backing 双视图与 bump 指针。
@@ -63,6 +73,7 @@ type Arena struct {
 	cap     uint32   // 当前容量(字节,= len(words)*8)
 	maxCap  uint32   // 上限(字节)
 	backing BackingFn
+	inPlace bool // Options.InPlaceBacking:grow 时是否跳过 copy(P3 收养语义)
 
 	// freelist(06 §2):20 个 size-class 定长桶 + LARGE 首次适配链。
 	// 空闲块以 GCRef 偏移串链(word0 = next),grow 后偏移不失效。
@@ -99,6 +110,7 @@ func New(opts Options) *Arena {
 		cap:     cap,
 		maxCap:  max,
 		backing: bf,
+		inPlace: opts.InPlaceBacking,
 	}
 	a.setBacking(bf(cap / 8))
 	return a
@@ -241,7 +253,12 @@ func (a *Arena) grow64(minBytes uint64) {
 		panic(fmt.Sprintf("arena: cannot grow to %d bytes (max %d)", minBytes, a.maxCap))
 	}
 	newWords := a.backing(newCap / 8)
-	copy(newWords, a.words)
+	// P1 默认(realloc 语义):新 backing 是新地址,copy 迁移旧数据。
+	// P3 收养(InPlaceBacking):memory.grow 原地扩,newWords 已含旧数据,
+	// 且旧 a.words 视图在 grow 后已 disconnect(PW0 spike 实测),不能 copy。
+	if !a.inPlace {
+		copy(newWords, a.words)
+	}
 	a.cap = newCap
 	a.setBacking(newWords)
 }
