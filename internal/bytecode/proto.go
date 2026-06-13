@@ -51,6 +51,18 @@ type Proto struct {
 	// IC slots(02 §7,按 pc 索引)。
 	// 长度 == len(Code);非 IC 指令对应槽空闲(可挪用为 P2 算术 IC 双计数,见 02 §7)。
 	IC []ICSlot
+
+	// Compilability:P2 静态可编译性判定(`docs/design/p2-bridge/03-compilability-analysis.md`
+	// §5.5)。Compile 时一次写、跨 State 只读共享(Go memory model 自动保证
+	// write-once before any reader 的可见性)。值含义见 internal/bridge.Compilability:
+	//   0 = CompUnknown(默认,P1-only build / Compile 未跑 AnalyzeProto)
+	//   1 = CompCompilable
+	//   2 = CompNotCompilable
+	// 用 uint8 存值而非引入 bridge 类型,避免 bytecode → bridge 反向依赖。
+	Compilability uint8
+	// CompReasons:CompNotCompilable 时的拒因位掩码(F1-F7 对应位,与
+	// internal/bridge.ReasonsBitmap 同语义)。诊断/日志用,非热路径。
+	CompReasons uint16
 }
 
 // IsStringConst reports whether Consts[i] is a string literal placeholder.

@@ -88,5 +88,9 @@ func (cg *codegen) compileFunc(outerFS *funcState, fe *ast.FuncExpr) *bytecode.P
 	}
 
 	cg.protos = append(cg.protos, fs.proto)
+	// P2 PB7 接线:profile build 下跑可编译性分析,把结果写进
+	// Proto.Compilability + Proto.CompReasons(03 §6.3 接线 + 02 §2.4 AST 用
+	// 完即弃方案 ①)。!wangshu_profile build 下 no-op,Proto 字段留零值。
+	analyzeCompilability(fe, fs.proto)
 	return fs.proto
 }

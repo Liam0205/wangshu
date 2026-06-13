@@ -77,10 +77,16 @@ func (b *Bridge) ProfileOf(proto *bytecode.Proto) *ProfileData { return b.profil
 
 // profileOf 是 ProfileOf 的内部别名。命名一致性:Bridge 内私有 helper 用
 // 小写,公共 API 大写。
+//
+// 惰性建表时从 Proto 旁字段同步 Compilability(Compile 时已经写过,跨 State
+// 一致;profileTable 是 State 私有副本,首次见 Proto 时复制一次)。
 func (b *Bridge) profileOf(proto *bytecode.Proto) *ProfileData {
 	pd, ok := b.profileTable[proto]
 	if !ok {
-		pd = &ProfileData{Compilable: CompUnknown} // 03 §5.5 占位
+		pd = &ProfileData{
+			Compilable: Compilability(proto.Compilability),
+			Reasons:    ReasonsBitmap(proto.CompReasons),
+		}
 		b.profileTable[proto] = pd
 	}
 	return pd
@@ -88,8 +94,15 @@ func (b *Bridge) profileOf(proto *bytecode.Proto) *ProfileData {
 
 // CompilabilityOf 04 状态机查询入口(只读,03 §5.3)。
 //
+// 优先读 Proto 旁字段(Compile 时一次写,跨 State 共享只读);若 Proto 字段
+// 为零(P1-only 未跑 AnalyzeProto)则回退查 profileTable(支持 considerPromotion
+// 路径中可能出现的 SetCompilability 直接写——主要用于测试)。
+//
 // 字段是编译期一次写、运行期只读(03 §5.4),无需 atomic / mutex。
 func (b *Bridge) CompilabilityOf(proto *bytecode.Proto) Compilability {
+	if c := Compilability(proto.Compilability); c != CompUnknown {
+		return c
+	}
 	pd, ok := b.profileTable[proto]
 	if !ok {
 		return CompUnknown
@@ -99,9 +112,15 @@ func (b *Bridge) CompilabilityOf(proto *bytecode.Proto) Compilability {
 
 // SetCompilability Compile 时一次写入(由 AnalyzeProto 调用,PB3 落地)。
 //
+// 优先写 Proto 旁字段(跨 State 共享只读);同时写 profileTable 副本以便
+// considerPromotion 内的 pd.Compilable 读取一致(本期实装让 considerPromotion
+// 走 pd.Compilable 而非 CompilabilityOf,故需保持二者同步)。
+//
 // **不变式**(03 §5.4):字段只在 Compile 阶段一次写;运行期任何路径都不
 // 修改 Compilable / Reasons。
 func (b *Bridge) SetCompilability(proto *bytecode.Proto, c Compilability, r ReasonsBitmap) {
+	proto.Compilability = uint8(c)
+	proto.CompReasons = uint16(r)
 	pd := b.profileOf(proto)
 	pd.Compilable = c
 	pd.Reasons = r
