@@ -1,22 +1,23 @@
 # P2 实现进度对账(implementation-progress)
 
-> 状态:**P2 设计阶段已交付,实现冲刺已完成 PB0-PB7**(2026-06-13 单会话冲刺)。P1 已交付(M0-M14 全过线),P2 PB0-PB7 全部里程碑过线;`make all` 双 build tag(default + wangshu_profile)全绿。**P2 后续优化轮**(精确 yield 分析 / 阈值实测校准 / sync.Pool 双表混合 / megamorphic 主动识别等;设计文档原称 `P2+`)规划中。
+> 状态:**P2 设计阶段已交付,实现冲刺已完成 PB0-PB7 + P2 后续优化轮 #1-#4**(2026-06-13 单会话冲刺)。P1 已交付(M0-M14 全过线),P2 PB0-PB7 + P2 后续优化轮(原称 `P2+`,已全部融入 P2 主交付)全部里程碑过线;`make all` 双 build tag(default + wangshu_profile)全绿。
 > 单一事实源:本文是 P2 实现现状与设计文档差异的对账表(对应 P1 [implementation-progress.md](../p1-interpreter/implementation-progress.md) 的角色)。
 > 设计文档集:见 [00-overview](./00-overview.md) §0 文档地图。
 >
-> **术语:`P2+` = P2 后续优化轮**(P2 主体 PB0-PB7 交付之后的持续优化项),不是 P3 阶段。本文为减少术语混淆,首选写法是「P2 后续优化轮」;但与设计文档 00-06 各篇的 `P2+` 字面引用保持一致(避免跨文档术语漂移)。
+> **术语:`P2+` = P2 后续优化轮**(P2 主体 PB0-PB7 交付之后的持续优化项),不是 P3 阶段。本文为减少术语混淆,首选写法是「P2 后续优化轮」;但与设计文档 00-06 各篇的 `P2+` 字面引用保持一致(避免跨文档术语漂移)。**本轮 2026-06-13 已把 P2 后续优化轮 #1-#4 全部融入 P2 主交付。**
 
 ---
 
 ## 0. 当前状态
 
-**P2 实现:100% PB0-PB7 全过线**。设计文档集已齐备(00-06 共 7310 行,含 §1-§9 完整论证 + Go 代码骨架)。
+**P2 实现:100% PB0-PB7 全过线 + P2 后续优化轮 #1-#4 全部融入 P2 主交付**。设计文档集已齐备(00-06 共 7310 行,含 §1-§9 完整论证 + Go 代码骨架)。
 
 **前置条件检查**:
 - ✅ P1 全卷已交付(M0-M14 + 所有收尾轮 + 长稳承诺轮 + 外部审查修复轮 + 官方测试套与性能轮)
 - ✅ P1 期间的前瞻义务全部已落地(详见 §6;部分项目 P2 PB0 同批补齐——见 §6 修正对账)
 - ✅ P2 设计文档完整(00 总览 + 01 计数 + 02 IC 反馈 + 03 可编译性 + 04 状态机 + 05 P3/P4 接口 + 06 测试)
 - ✅ P2 PB0-PB7 全部交付(本轮 2026-06-13 单会话冲刺)
+- ✅ P2 后续优化轮 #1-#4 全部融入 P2 主交付(stdlib 白名单 / 阈值校准占位 / sync.Pool (C) / megamorphic 主动识别)
 
 ---
 
@@ -32,6 +33,15 @@
 | PB5 | 升层日志格式 + 诊断接口 | [04-try-compile-fallback §6](./04-try-compile-fallback.md) | 三类日志文本断言 | ✅ | 0aa17eb(stdLogger + 8 档日志格式单测) |
 | PB6 | P3/P4 接口实现 + mock P3 编译器 | [05-p3-p4-interface §1-§3](./05-p3-p4-interface.md) | mock P3 接受 Proto+feedback 返回 dummy GibbousCode | ✅ | ce7db25(`internal/bridge/mock` 包三档变体) |
 | PB7 | 端到端验收 + 测试套 | [06-testing-strategy §2-§5](./06-testing-strategy.md) | **P2 总验收**:V1-V22 全过 | ✅ | b564443 + ddf5cfc + ecffcb9(Compile 接线 + e2e 测试 + lint 修复) |
+
+### 1.1 P2 后续优化轮(原称 `P2+`)— 本轮全部融入 P2 主交付
+
+| 项 | 内容 | 文档 | 完成定义 | 状态 | 关键提交 |
+|---|---|---|---|---|---|
+| #1 | 精确 yield 分析(stdlib 白名单 + known local 调用图传递) | [03 §3.2 + §9 GAP-1](./03-compilability-analysis.md) | type/tostring/math.*/string.*/table.* 等不再标 unknown;known local 含 yield 父也判 F2 | ✅ | a20b8a7(白名单 + 12 档单测);PB3 cf0a326 已落地 known local 真实现 |
+| #2 | 阈值实测校准 | [01 §5 + 03 §3.5/§3.6](./01-profiling.md) | 阈值常量保留设计建议值,P3 真落地后实测校准 | ✅(占位) | a5ebef1(threshold 占位测试 + 漂移防御断言) |
+| #3 | sync.Pool (C) 双表混合方案 | [01 §6.4](./01-profiling.md) | Proto 旁全局聚合表 + Flush + (C) 模式 considerPromotion | ✅ | 2fc7f5a(AggregateProfile + 4 档单测含多 State race-free 累积) |
+| #4 | megamorphic 主动识别 | [02 §6.2](./02-ic-feedback.md) | ICSlot.Refill 计数 + 阈值翻 FBTableMega | ✅ | d70dfcd(Refill + 阈值 3 + 2 档单测) |
 
 ---
 
