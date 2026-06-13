@@ -148,8 +148,16 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 
 		case bytecode.UNM:
 			b := reg(th, ci, bytecode.B(i))
-			if f, ok := st.toNumberCoerce(b); ok {
+			if value.IsNumber(b) {
+				setReg(th, ci, bytecode.A(i), value.NumberValue(-value.AsNumber(b)))
+				if profileEnabled {
+					recordArithNumHit(&ci.proto.IC[ci.pc-1])
+				}
+			} else if f, ok := st.toNumberCoerce(b); ok {
 				setReg(th, ci, bytecode.A(i), value.NumberValue(-f))
+				if profileEnabled {
+					recordArithMetaHit(&ci.proto.IC[ci.pc-1])
+				}
 			} else {
 				h := st.metaFieldOfValue(b, "__unm")
 				if h == value.Nil {
@@ -162,6 +170,9 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 				ci = currentCI(th)
 				code = ci.proto.Code
 				setReg(th, ci, bytecode.A(i), res)
+				if profileEnabled {
+					recordArithMetaHit(&ci.proto.IC[ci.pc-1])
+				}
 			}
 
 		case bytecode.NOT:
@@ -214,6 +225,12 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 				default:
 					res = x <= y
 				}
+				// 算术 IC 双计数:LT/LE 双 number 走快路径(02 §2.4 注:LT/LE
+				// 的 numHits 不区分 number/string 子分支,粒度损失 §9.2 已记)。
+				// EQ 不带 IC(02 §1.2 注 1)。
+				if profileEnabled && bytecode.Op(i) != bytecode.EQ {
+					recordArithNumHit(&ci.proto.IC[ci.pc-1])
+				}
 			} else {
 				var e *LuaError
 				res, e = st.doCompare(th, ci, i)
@@ -223,6 +240,9 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 				// __eq/__lt/__le handler 可能重入 execute → 刷新 ci
 				ci = currentCI(th)
 				code = ci.proto.Code
+				if profileEnabled && bytecode.Op(i) != bytecode.EQ {
+					recordArithMetaHit(&ci.proto.IC[ci.pc-1])
+				}
 			}
 			if res != (bytecode.A(i) != 0) {
 				ci.pc++
@@ -409,6 +429,9 @@ func (st *State) doArith(th *thread, ci *callInfo, i bytecode.Instruction) *LuaE
 			r = math.Pow(x, y)
 		}
 		setReg(th, ci, bytecode.A(i), value.NumberValue(r))
+		if profileEnabled {
+			recordArithNumHit(&ci.proto.IC[ci.pc-1])
+		}
 		return nil
 	}
 	return st.doArithSlow(th, ci, i, b, c)
@@ -436,6 +459,10 @@ func (st *State) doArithSlow(th *thread, ci *callInfo, i bytecode.Instruction, b
 			r = math.Pow(x, y)
 		}
 		setReg(th, ci, bytecode.A(i), value.NumberValue(r))
+		// 触发 string coercion 即「不是稳定 number」——记 metaHits(02 §3.3 注 3)
+		if profileEnabled {
+			recordArithMetaHit(&ci.proto.IC[ci.pc-1])
+		}
 		return nil
 	}
 	// 慢路径:__add 等元方法;无元方法时报带名字描述的错误(09 §8.3)
@@ -452,6 +479,9 @@ func (st *State) doArithSlow(th *thread, ci *callInfo, i bytecode.Instruction, b
 		return e
 	}
 	setReg(th, ci, bytecode.A(i), res)
+	if profileEnabled {
+		recordArithMetaHit(&ci.proto.IC[ci.pc-1])
+	}
 	return nil
 }
 
