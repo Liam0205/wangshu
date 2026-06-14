@@ -61,6 +61,7 @@ func (m *mockHost) Self(base, pc, a, b, c int32) int32      { return 0 }
 func (m *mockHost) NewTable(base, pc, a, b, c int32) int32  { return 0 }
 func (m *mockHost) SetList(base, pc, a, b, c int32) int32   { return 0 }
 func (m *mockHost) DoCall(base, pc, a, b, c int32) int64    { return int64(base) }
+func (m *mockHost) TailCall(base, pc, a, b, c int32) int32  { return 0 }
 func (m *mockHost) GlobalsRaw() uint64                      { return m.globalsRaw }
 
 // setupTranslator 建一个完整可执行的 P3 编译环境:wazero runtime + memadapter

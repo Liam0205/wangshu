@@ -111,8 +111,8 @@ func typeSection() []byte {
 // function index 空间。
 func importSection() []byte {
 	var p []byte
-	// count = 1 memory + 19 funcs = 20
-	p = append(p, uleb32(20)...)
+	// count = 1 memory + 20 funcs = 21
+	p = append(p, uleb32(21)...)
 
 	// import env.memory : memory(limits flags=0 min=1)——共享 holder 的 memory
 	p = append(p, importEntry("env", "memory", 0x02, []byte{0x00, 0x01})...)
@@ -139,6 +139,7 @@ func importSection() []byte {
 	p = append(p, importFuncEntry("host", "h_newtable", typeConcat)...)
 	p = append(p, importFuncEntry("host", "h_setlist", typeConcat)...)
 	p = append(p, importFuncEntry("host", "h_call", typeCall)...)
+	p = append(p, importFuncEntry("host", "h_tailcall", typeConcat)...) // (i32×5→i32 status)
 
 	return sectionOf(0x02, p)
 }

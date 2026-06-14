@@ -82,6 +82,12 @@ type HostState interface {
 	// 错误 = 负哨兵 -1(pendingErr 已置,status 链冒泡)。
 	DoCall(base, pc, a, b, c int32) int64
 
+	// TailCall 处理 TAILCALL A B C(尾调用复用帧,04-trampoline §2.5)。
+	// 复用 doTailCall 关 upvalue + 下移参数 + 改写当前 CallInfo,然后同步驱动
+	// 复用帧到完成(executeFrom,保持 proper tail call O(1) 栈)。返回值已落
+	// 调用者期望槽。返回 status(0=OK gibbous 函数应直接 return 0 / 1=ERR)。
+	TailCall(base, pc, a, b, c int32) int32
+
 	// GlobalsRaw 返回 globals 表的 NaN-box u64(编译期烧立即数,GETGLOBAL/SETGLOBAL
 	// inline 用)。globals 在 State 生命期内身份恒定不移动。名带 Raw 避开 State
 	// 公有 API Globals() arena.GCRef 冲突。
@@ -188,4 +194,8 @@ func (h *helperSet) goSetList(base, pc, a, b, c int32) int32 {
 
 func (h *helperSet) goCall(base, pc, a, b, c int32) int64 {
 	return h.host.DoCall(base, pc, a, b, c)
+}
+
+func (h *helperSet) goTailCall(base, pc, a, b, c int32) int32 {
+	return h.host.TailCall(base, pc, a, b, c)
 }

@@ -464,3 +464,46 @@ func (st *State) DoCall(base, pc, a, b, c int32) int64 {
 	ci = currentCI(th)
 	return int64((th.stackBaseW + uint32(ci.base)) * 8)
 }
+
+// TailCall 处理 gibbous 帧内的 TAILCALL A B C(尾调用复用帧,04-trampoline §2.5)。
+//
+// 复用 doTailCall:
+//   - 普通 Lua closure / __call:doTailCall 关 upvalue + 下移参数 + 弹本帧(G)+
+//     压 callee 帧(复用 G 的 funcIdx,nresults 继承 G 的 nresults)。本函数随后
+//     executeFrom 同步驱动 callee 链到完成——**尾递归在解释器内 O(1) 栈/CallInfo
+//     深度迭代**(callee 自身再 TAILCALL 时 doTailCall 弹+压同深度,同一 execute
+//     循环续跑),返回 0;gibbous 函数据此直接 return 0(本帧已被替换,跳过尾随
+//     RETURN)。
+//   - host fn:doTailCall 内 callHost(结果落 base+a),G 帧不弹 → 返回 2,
+//     gibbous 落到尾随 RETURN 由 DoReturn 完成最终返回(镜像解释器)。
+//
+// 返回:0=Lua 尾调用完成(gibbous return 0)/ 1=ERR / 2=host(落尾随 RETURN)。
+func (st *State) TailCall(base, pc, a, b, c int32) int32 {
+	th := st.runningThread
+	ci := currentCI(th)
+	ci.pc = pc
+	ins := bytecode.EncodeABC(bytecode.TAILCALL, int(a), int(b), int(c))
+	next, e := st.doTailCall(th, ci, ins)
+	if e != nil {
+		st.gibbousPendingErr = e
+		return 1
+	}
+	if next == nil {
+		// host 尾调用:结果已落 base+a,G 帧未弹 → 回退给尾随 RETURN(DoReturn)。
+		return 2
+	}
+	// Lua 尾调用:G 已被 callee 帧替换。同步驱动 callee 链到完成。
+	if st.nCcalls >= maxCCallDepth {
+		st.gibbousPendingErr = errf("C stack overflow")
+		return 1
+	}
+	st.nCcalls++
+	entryDepth := len(th.cis) - 1
+	e2 := st.executeFrom(th, entryDepth)
+	st.nCcalls--
+	if e2 != nil {
+		st.gibbousPendingErr = e2
+		return 1
+	}
+	return 0
+}

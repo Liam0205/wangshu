@@ -497,3 +497,50 @@ func (c *Compiler) emitCall(em *emitter, ins bytecode.Instruction, pc int32) {
 	em.i32WrapI64()
 	em.localSet(localBase)
 }
+
+// emitTailCall TAILCALL A B C —— 尾调用复用帧(PW6-b,02 §3.6.2)。
+//
+//	(local.set $i32 (call h_tailcall(base,pc,a,b,c)))
+//	(if (i32.eq $i32 1) (then (return 1)))      ;; ERR 冒泡
+//	(if (i32.eq $i32 2) (then                   ;; host 尾调用:落尾随 RETURN
+//	      (return (call h_return(base,pc,a,0))) ))
+//	(return 0)                                  ;; Lua 尾调用完成,直接 return
+//
+// status 三态(gibbous_host.TailCall):0=Lua 尾调用已完成 / 1=ERR / 2=host(落 RETURN)。
+// TAILCALL 是 BB 终结指令(无后继),自带 return,故 emitTailCall 自闭(不依赖
+// 尾随 RETURN 指令——host 路径自调 h_return)。
+func (c *Compiler) emitTailCall(em *emitter, ins bytecode.Instruction, pc int32) {
+	a := int32(bytecode.A(ins))
+	b := int32(bytecode.B(ins))
+	cc := int32(bytecode.C(ins))
+	em.localGet(localBase)
+	em.i32Const(pc)
+	em.i32Const(a)
+	em.i32Const(b)
+	em.i32Const(cc)
+	em.call(helperTailCall)
+	em.localSet(localI32)
+	// status==1 → return 1(ERR)
+	em.localGet(localI32)
+	em.i32Const(1)
+	em.i32Eq()
+	em.ifVoid()
+	em.i32Const(1)
+	em.ret()
+	em.end()
+	// status==2 → host 尾调用:落尾随 RETURN A 0(到 top),return 其 status
+	em.localGet(localI32)
+	em.i32Const(2)
+	em.i32Eq()
+	em.ifVoid()
+	em.localGet(localBase)
+	em.i32Const(pc)
+	em.i32Const(a)
+	em.i32Const(0) // B=0:返回 R(A..top)(host 结果多值窗口)
+	em.call(helperReturn)
+	em.ret()
+	em.end()
+	// status==0 → Lua 尾调用已完成,直接 return 0
+	em.i32Const(0)
+	em.ret()
+}

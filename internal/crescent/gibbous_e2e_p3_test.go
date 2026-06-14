@@ -592,3 +592,59 @@ return f`
 		t.Errorf("gibbous f(7) = %v, want 107 (base 刷新后读对 a=7;若 base 陈旧则错)", got[0])
 	}
 }
+
+// TestPW6b_TailCall PW6-b:gibbous 帧内 TAILCALL byte-equal + 栈深度恒定。
+// 尾递归 f(n,acc):升层后经 h_tailcall 复用帧,proper tail call O(1) 栈
+// (executeFrom 在解释器内迭代尾调用链),深度 1e5 不溢出。
+//
+// 注:深尾递归 baseline 会触发自然升层(回边越阈)→ 编译期 NotCompilable →
+// TierStuck 吸收态,使后续 promoteProto 失效。故 oracle 与 gibbous 各用独立
+// State:gibbous State 在任何深递归运行前先 promoteProto。
+func TestPW6b_TailCall(t *testing.T) {
+	src := `
+local function f(n, acc)
+  if n == 0 then return acc else return f(n-1, acc+n) end
+end
+return f`
+	loadF := func() (*State, value.Value) {
+		st, mainCl := loadFn(t, src)
+		rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+		if err != nil {
+			t.Fatalf("run main: %v", err)
+		}
+		return st, rets[0]
+	}
+	args := []value.Value{value.NumberValue(1000), value.NumberValue(0)}
+	// oracle:独立 State 跑解释器。
+	stO, fO := loadF()
+	base, e := stO.Call(value.GCRefOf(fO), args, 1)
+	if e != nil {
+		t.Fatalf("interp: %v", e)
+	}
+	if value.AsNumber(base[0]) != 500500 {
+		t.Fatalf("interp f(1000,0) = %v, want 500500", base[0])
+	}
+	// gibbous:独立 State,深递归前先 promoteProto(避免自然升层 stuck)。
+	st, fVal := loadF()
+	pid := object.ClosureProtoID(st.arena, value.GCRefOf(fVal))
+	if !promoteProto(st, pid) {
+		t.Skip("f not supported")
+	}
+	got, e2 := st.Call(value.GCRefOf(fVal), args, 1)
+	if e2 != nil {
+		t.Fatalf("gibbous: %v", e2)
+	}
+	if value.AsNumber(got[0]) != 500500 {
+		t.Errorf("gibbous f(1000,0) = %v, want 500500 (tail call byte-equal)", got[0])
+	}
+
+	// 深尾递归(1e5):proper tail call 不溢出(若误当普通 CALL 会 stack overflow)。
+	deep := []value.Value{value.NumberValue(100000), value.NumberValue(0)}
+	gotDeep, e3 := st.Call(value.GCRefOf(fVal), deep, 1)
+	if e3 != nil {
+		t.Fatalf("gibbous deep tail recursion: %v (proper tail call 应 O(1) 栈)", e3)
+	}
+	if value.AsNumber(gotDeep[0]) != 5000050000 {
+		t.Errorf("gibbous f(1e5,0) = %v, want 5000050000", gotDeep[0])
+	}
+}

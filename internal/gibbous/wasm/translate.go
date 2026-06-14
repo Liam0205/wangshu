@@ -100,9 +100,14 @@ func (c *Compiler) emitBlockBody(em *emitter, proto *bytecode.Proto, cfg *cfg, p
 	}
 
 	switch termOp {
-	case bytecode.RETURN, bytecode.TAILCALL:
-		// 自带 return,无后继边。TAILCALL 留 PW6;此处仅 RETURN。
+	case bytecode.RETURN:
+		// 自带 return,无后继边。
 		return c.emitOpcode(em, proto, lastPC)
+
+	case bytecode.TAILCALL:
+		// 尾调用复用帧(PW6-b):自闭 return(Lua 完成/host 落 RETURN/ERR 冒泡)。
+		c.emitTailCall(em, proto.Code[lastPC], lastPC)
+		return nil
 
 	case bytecode.JMP:
 		// 无条件跳:发射边到唯一后继。
