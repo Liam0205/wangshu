@@ -1,0 +1,189 @@
+//go:build wangshu_p3
+
+package wasm
+
+// gibbous module 二进制组装(02-translation §7 wazero 适配)。
+//
+// 把翻译产物(function body 字节,translate.go)包成一个完整的 Wasm module
+// 二进制:import memory(共享 arena 收养的那块)+ import helpers(env.h_*)+
+// 一个导出的入口函数 proto_entry。
+//
+// module 结构(section 顺序按 Wasm spec):
+//   Type(1)     :函数签名(入口 + 各 helper)
+//   Import(2)   :env.memory + env.h_getupval/h_setupval/h_return/h_safepoint
+//   Function(3) :本地函数(入口)的 type 索引
+//   Export(7)   :导出入口函数 "run"
+//   Code(10)    :入口函数体
+
+// helper 签名(对应 helpers_index.go 的 import 顺序)。
+// 每个 helper 一个 type;入口函数也一个 type。
+//
+// type 索引布局:
+//   type 0: (i32, i32) -> (i64)        h_getupval
+//   type 1: (i32, i32, i64) -> ()      h_setupval
+//   type 2: (i32, i32, i32, i32) -> (i32)  h_return
+//   type 3: (i32, i32) -> ()           h_safepoint
+//   type 4: (i32) -> (i32)             入口 run(base) -> status
+
+const (
+	typeGetUpval  = 0
+	typeSetUpval  = 1
+	typeReturn    = 2
+	typeSafepoint = 3
+	typeEntry     = 4
+	numTypes      = 5
+)
+
+// Wasm value type 编码。
+const (
+	wvtI32 byte = 0x7f
+	wvtI64 byte = 0x7e
+)
+
+// buildGibbousModuleBinary 组装完整 module 二进制。
+//
+// body 是 translate 产出的入口函数体(不含 local decl 与末尾 end)。
+func buildGibbousModuleBinary(body []byte) []byte {
+	var b []byte
+	b = append(b, 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00) // magic+version
+
+	b = append(b, typeSection()...)
+	b = append(b, importSection()...)
+	b = append(b, functionSection()...)
+	b = append(b, exportSection()...)
+	b = append(b, codeSectionEntry(body)...)
+	return b
+}
+
+// typeSection 声明 5 个函数类型。
+func typeSection() []byte {
+	var p []byte
+	p = append(p, uleb32(numTypes)...) // count
+
+	// type 0: (i32,i32)->(i64)
+	p = append(p, 0x60, 0x02, wvtI32, wvtI32, 0x01, wvtI64)
+	// type 1: (i32,i32,i64)->()
+	p = append(p, 0x60, 0x03, wvtI32, wvtI32, wvtI64, 0x00)
+	// type 2: (i32,i32,i32,i32)->(i32)
+	p = append(p, 0x60, 0x04, wvtI32, wvtI32, wvtI32, wvtI32, 0x01, wvtI32)
+	// type 3: (i32,i32)->()
+	p = append(p, 0x60, 0x02, wvtI32, wvtI32, 0x00)
+	// type 4: (i32)->(i32)
+	p = append(p, 0x60, 0x01, wvtI32, 0x01, wvtI32)
+
+	return sectionOf(0x01, p)
+}
+
+// importSection 声明 import memory + 4 个 helper。
+//
+// memory 从 "env" module(memadapter holder,普通 module export memory);
+// helper 从 "host" module(wazero HostModuleBuilder 注册的 Go 函数)。
+// 两个 module name 不同——wazero HostModuleBuilder 不能 export memory,
+// 普通 module 不能注册 Go host 函数,故 memory 与 helper 分属不同 module
+// (PW2-c 跨 module memory 共享已 spike 验证)。
+//
+// import 顺序决定 helper 的 function index(helpers_index.go 常量):
+// h_getupval=0, h_setupval=1, h_return=2, h_safepoint=3。memory import 不占
+// function index 空间。
+func importSection() []byte {
+	var p []byte
+	// count = 1 memory + 4 funcs = 5
+	p = append(p, uleb32(5)...)
+
+	// import env.memory : memory(limits flags=0 min=1)——共享 holder 的 memory
+	p = append(p, importEntry("env", "memory", 0x02, []byte{0x00, 0x01})...)
+
+	// import host.h_* : func
+	p = append(p, importFuncEntry("host", "h_getupval", typeGetUpval)...)
+	p = append(p, importFuncEntry("host", "h_setupval", typeSetUpval)...)
+	p = append(p, importFuncEntry("host", "h_return", typeReturn)...)
+	p = append(p, importFuncEntry("host", "h_safepoint", typeSafepoint)...)
+
+	return sectionOf(0x02, p)
+}
+
+// functionSection 声明本地函数(入口 run)的 type 索引。
+// 入口是 import 之后的 function index = numHelpers(4)。
+func functionSection() []byte {
+	var p []byte
+	p = append(p, uleb32(1)...)         // count = 1 本地函数
+	p = append(p, uleb32(typeEntry)...) // 入口用 type 4
+	return sectionOf(0x03, p)
+}
+
+// exportSection 导出入口函数 "run"。
+func exportSection() []byte {
+	var p []byte
+	p = append(p, uleb32(1)...) // count
+	name := "run"
+	p = append(p, byte(len(name)))
+	p = append(p, name...)
+	p = append(p, 0x00)                  // kind=func
+	p = append(p, uleb32(numHelpers)...) // 入口 function index = 4(import 后第一个本地)
+	return sectionOf(0x07, p)
+}
+
+// codeSectionEntry 入口函数 code(local decl + body + end)。
+func codeSectionEntry(body []byte) []byte {
+	// local decl:numLocals-1 个非 param local。PW2 用 localTmp64(i64)+
+	// localTmp32(i32)。声明为 1 组 i64 + 1 组 i32。
+	var locals []byte
+	locals = append(locals, uleb32(2)...) // 2 个 local 组
+	locals = append(locals, uleb32(1)...) // 1 个 i64
+	locals = append(locals, wvtI64)
+	locals = append(locals, uleb32(1)...) // 1 个 i32
+	locals = append(locals, wvtI32)
+
+	funcBody := append([]byte{}, locals...)
+	funcBody = append(funcBody, body...)
+	funcBody = append(funcBody, opEnd)
+
+	var p []byte
+	p = append(p, uleb32(1)...) // count = 1 函数
+	p = append(p, uleb32(uint32(len(funcBody)))...)
+	p = append(p, funcBody...)
+	return sectionOf(0x0a, p)
+}
+
+// --- section / import 编码 helper ---
+
+func sectionOf(id byte, payload []byte) []byte {
+	out := []byte{id}
+	out = append(out, uleb32(uint32(len(payload)))...)
+	return append(out, payload...)
+}
+
+// importEntry 拼一个 import 项:mod_name + field_name + kind + desc。
+//   - memory: kind=0x02, desc=limits(flags+min[+max])
+//   - func:   kind=0x00, desc=type index(uleb)
+func importEntry(mod, name string, kind byte, desc []byte) []byte {
+	var p []byte
+	p = append(p, byte(len(mod)))
+	p = append(p, mod...)
+	p = append(p, byte(len(name)))
+	p = append(p, name...)
+	p = append(p, kind)
+	p = append(p, desc...)
+	return p
+}
+
+func importFuncEntry(mod, name string, typeIdx uint32) []byte {
+	return importEntry(mod, name, 0x00, uleb32(typeIdx))
+}
+
+// uleb32 unsigned LEB128(module 组装用,与 emitter.uleb 同算法,独立函数
+// 避免依赖 emitter 实例)。
+func uleb32(v uint32) []byte {
+	var out []byte
+	for {
+		c := byte(v & 0x7f)
+		v >>= 7
+		if v != 0 {
+			c |= 0x80
+		}
+		out = append(out, c)
+		if v == 0 {
+			return out
+		}
+	}
+}

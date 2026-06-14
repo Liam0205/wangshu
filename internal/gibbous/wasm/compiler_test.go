@@ -12,85 +12,99 @@ import (
 	"github.com/Liam0205/wangshu/internal/bytecode"
 )
 
-// PW1 验收(02-translation §1.3 + 00-overview §4 PW1 完成定义):
-// SupportsAllOpcodes 永远 false ⇒ 无 Proto 升层 ⇒ 与 P1-only byte-equal。
+// PW1/PW2 Compiler 基础验收。SupportsAllOpcodes 白名单随 PW 推进扩充。
 
 func newTestCompiler(t *testing.T) (*Compiler, func()) {
 	t.Helper()
 	ctx := context.Background()
 	rt := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfigCompiler())
-	c := NewCompiler(ctx, rt)
+	c := NewCompiler(ctx, rt, &mockHost{})
 	return c, func() { _ = rt.Close(ctx) }
 }
 
-// TestPW1_SupportsAllOpcodes_AlwaysFalse PW1 supported 全 false ⇒ 任何含
-// 指令的 Proto 都判不支持(F7 拦下,无 Proto 升层)。
-func TestPW1_SupportsAllOpcodes_AlwaysFalse(t *testing.T) {
+// TestCompiler_SupportsWhitelist PW2 白名单:直线 opcode 支持,未实装的拒。
+func TestCompiler_SupportsWhitelist(t *testing.T) {
 	c, cleanup := newTestCompiler(t)
 	defer cleanup()
 
-	cases := []struct {
+	// 单 BB 直线 opcode → 支持
+	supported := []struct {
 		name string
 		code []bytecode.Instruction
 	}{
-		{"single MOVE", []bytecode.Instruction{bytecode.Instruction(uint32(bytecode.MOVE))}},
-		{"single ADD", []bytecode.Instruction{bytecode.Instruction(uint32(bytecode.ADD))}},
-		{"single RETURN", []bytecode.Instruction{bytecode.Instruction(uint32(bytecode.RETURN))}},
-		{"multi op", []bytecode.Instruction{
-			bytecode.Instruction(uint32(bytecode.LOADK)),
-			bytecode.Instruction(uint32(bytecode.ADD)),
-			bytecode.Instruction(uint32(bytecode.RETURN)),
+		{"MOVE+RETURN", []bytecode.Instruction{
+			bytecode.EncodeABC(bytecode.MOVE, 1, 0, 0),
+			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
+		}},
+		{"LOADNIL+RETURN", []bytecode.Instruction{
+			bytecode.EncodeABC(bytecode.LOADNIL, 0, 1, 0),
+			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
 		}},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			p := &bytecode.Proto{Code: tc.code}
-			if c.SupportsAllOpcodes(p) {
-				t.Errorf("PW1 SupportsAllOpcodes must be false for %q (supported 全 false)", tc.name)
+	for _, tc := range supported {
+		t.Run("yes/"+tc.name, func(t *testing.T) {
+			if !c.SupportsAllOpcodes(&bytecode.Proto{Code: tc.code}) {
+				t.Errorf("%q should be supported in PW2", tc.name)
 			}
 		})
 	}
+
+	// 未实装 opcode(ADD 是 PW3)→ 拒
+	notYet := []bytecode.Instruction{
+		bytecode.EncodeABC(bytecode.ADD, 0, 0, 1),
+		bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
+	}
+	if c.SupportsAllOpcodes(&bytecode.Proto{Code: notYet}) {
+		t.Error("ADD (PW3) should NOT be supported in PW2")
+	}
 }
 
-// TestPW1_Compile_DeclinesGracefully PW1 Compile 占位返回 BackendDeclined
-// error(不 panic,不崩溃)——即便 F7 漏判调到它,P2 也能转 TierStuck。
-func TestPW1_Compile_DeclinesGracefully(t *testing.T) {
+// TestCompiler_ImplementsP3Compiler 编译期断言 Compiler 实现接口。
+func TestCompiler_ImplementsP3Compiler(t *testing.T) {
+	c, cleanup := newTestCompiler(t)
+	defer cleanup()
+	var _ bridge.P3Compiler = c
+}
+
+// TestCompiler_PanicRecover Compile 内部 panic 被 defer recover 兜底转
+// *CompileError(BackendPanic),不穿越接口(02 §1.4)。
+//
+// 用一个会让 translate panic 的畸形 Proto 触发(Consts 越界:LOADK 引用
+// 不存在的常量索引)。SupportsAllOpcodes 先放行(数字常量假设),Compile
+// 翻译时 Consts[bx] 越界 panic → recover。
+func TestCompiler_PanicRecover(t *testing.T) {
 	c, cleanup := newTestCompiler(t)
 	defer cleanup()
 
-	p := &bytecode.Proto{Code: []bytecode.Instruction{
-		bytecode.Instruction(uint32(bytecode.RETURN)),
-	}}
-	gc, err := c.Compile(p, nil)
+	// LOADK 引用 Consts[5] 但 Consts 为空 → translate emitLoadK 越界 panic
+	proto := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABx(bytecode.LOADK, 0, 5),
+			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
+		},
+		Consts: nil, // 空 → Consts[5] 越界
+	}
+	// SupportsAllOpcodes:LOADK 非字符串常量(StringLitIdx 空)→ 放行;单 BB。
+	if !c.SupportsAllOpcodes(proto) {
+		t.Skip("proto not supported, panic path not reachable")
+	}
+	gc, err := c.Compile(proto, nil)
 	if gc != nil {
-		t.Errorf("PW1 Compile must return nil GibbousCode, got %v", gc)
+		t.Error("panic path should return nil GibbousCode")
 	}
 	if err == nil {
-		t.Fatal("PW1 Compile must return error (declined)")
+		t.Fatal("panic should be recovered to error")
 	}
-	ce, ok := err.(*bridge.CompileError)
-	if !ok {
-		t.Fatalf("expected *bridge.CompileError, got %T", err)
-	}
-	if ce.Kind != bridge.CompileErrBackendDeclined {
-		t.Errorf("expected BackendDeclined, got %v", ce.Kind)
+	if ce, ok := err.(*bridge.CompileError); !ok || ce.Kind != bridge.CompileErrBackendPanic {
+		t.Errorf("expected BackendPanic CompileError, got %v", err)
 	}
 }
 
-// TestPW1_Compiler_ImplementsP3Compiler 编译期断言 Compiler 实现接口
-// (静态保证 bridge.P3Compiler 契约完整)。
-func TestPW1_Compiler_ImplementsP3Compiler(t *testing.T) {
-	c, cleanup := newTestCompiler(t)
-	defer cleanup()
-	var _ bridge.P3Compiler = c // 不编译即接口不满足
-}
-
-// TestPW1_EmptyProto_SupportedVacuously 空 Proto(无指令)vacuously supported
-// ——但 PW1 实际不会有空 Proto 过 F7(P2 不判空 Proto 为热点)。仅记录语义。
-func TestPW1_EmptyProto_SupportedVacuously(t *testing.T) {
+// TestCompiler_EmptyProtoVacuous 空 Proto vacuously supported(无 unsupported op)。
+func TestCompiler_EmptyProtoVacuous(t *testing.T) {
 	c, cleanup := newTestCompiler(t)
 	defer cleanup()
 	if !c.SupportsAllOpcodes(&bytecode.Proto{Code: nil}) {
-		t.Error("empty Proto should be vacuously supported (no unsupported op)")
+		t.Error("empty Proto should be vacuously supported")
 	}
 }

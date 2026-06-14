@@ -59,7 +59,10 @@ func New(ctx context.Context, runtime wazero.Runtime, initialBytes, maxBytes uin
 	if err != nil {
 		return nil, fmt.Errorf("memadapter: compile holder module: %w", err)
 	}
-	mod, err := runtime.InstantiateModule(ctx, compiled, wazero.NewModuleConfig())
+	// 命名 "env":gibbous module 经 `import "env" "memory"` 共享这块 memory
+	// (PW2 跨 module memory 共享,03 §3.1)。
+	mod, err := runtime.InstantiateModule(ctx, compiled,
+		wazero.NewModuleConfig().WithName("env"))
 	if err != nil {
 		return nil, fmt.Errorf("memadapter: instantiate holder: %w", err)
 	}
