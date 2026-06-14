@@ -34,6 +34,7 @@
 - [[multi-doc-drafting]] — 多文档并行起草工作流:回填请求节协议、单点收口、验收口径收口点指定、子代理失败恢复纪律、收尾主动盘点不确定决策、向用户提问自包含契约。**要一次起草多篇互引文档、或大型设计任务收尾时看这篇。**
 - [[perf-optimization-workflow]] — 性能优化工作流:profile 先行(预判清单会被推翻)、每项独立 benchmark 验证 + 单域提交、可疑优化 benchmark 否决门 + 快 revert、归因诚实、池化/复用类优化配套清单。**做性能优化前看这篇。**
 - [[public-api-incremental-delivery]] — 公共 API 增量交付工作流(9 条纪律):设计承诺源三角验证、GCRef 接根(指向 [[embedding-contract]] 不变式条款)、单域物理隔离手法、错误消息稳定语义、行为变更显式标注、范围扩张顺手收口、对位测试断言先 grep oracle、internal 接口签名避免反向依赖标准库、**对称面检查**(写入/读出闭环)。**接公共面 issue / 扩 ABI 表面 / drop-in 对位补面 / 给 Program 加字段时看这篇。**
+- [[design-claims-vs-codebase-physics]] — 设计稿主张须对本码库 physics 重新验证(4 维判据):设计稿抽象记号只表语义不带物理不变式,热路径主张实现前逐条重核——① 边界成本预算(~143ns/跨层,`(call $x)` 能否塌成 inline)② arena 段重定位(跨层固定 token/视图会不会被 grow 搬走、谁刷新)③ 成本归类(架构成本 vs 实现浪费,援引前提判否优化前先分类)④ GC 根可达性(复用栈/共享 arena 返回值的根)。横跨性能(死优化)+ 正确性(UAF),聚合 issue8/PW5/PW6 三实例。**照抄设计稿热路径上的 `(call $x)`/固定 token/成本主张前看这篇。**
 
 ### memory/
 - `memory/doc-gaps.md` — 已识别的文档缺口与待外部确认事项(随实现推进收敛;含已收口审计记录)。

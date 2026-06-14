@@ -77,7 +77,7 @@ block $done {
 
 ## promotion 候选(首次样本,暂留观察)
 
-- **教训 1**(设计稿热路径 `$helper` WAT 伪码须按边界成本预算重判)——这是 P3 翻译全程都会复发的判断(PW6 LEN/CONCAT、PW7 CALL/RETURN 的伪码里还有更多 `(call $...)`),若再遇一两例可考虑提进性能/翻译类 guide,或并入 [[issue8-boundary-cost-round]] 「实现浪费 vs 架构成本」框架的对偶面(「设计记法的边界成本未预算」)。本轮首次样本,暂留 memory。
+- **教训 1**(设计稿热路径 `$helper` WAT 伪码须按边界成本预算重判)——这是 P3 翻译全程都会复发的判断(PW6 LEN/CONCAT、PW7 CALL/RETURN 的伪码里还有更多 `(call $...)`)。**已落地** → [[design-claims-vs-codebase-physics]] §1 边界成本预算维度(连同 issue8 成本归类 / PW6 段重定位聚合成 4 维判断框架)。
 - **教训 4**(inline-proof 须用毒化/哨兵助手证明走了哪条路径)——「验收口径是路径被走到,而非结果正确」是 P3 投机/分级 inline 全程通用的测试技术,候选进测试类 guide。本轮首次样本,暂留 memory 观察。
 
 ## 触发场景

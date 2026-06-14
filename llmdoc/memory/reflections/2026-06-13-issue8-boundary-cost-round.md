@@ -61,7 +61,7 @@ issue #8 表面是「per-item 跨界慢于 gopher-lua」,而 [[design-premises]]
 
 ## promotion 候选(暂留观察)
 
-- 「实现浪费 vs 架构成本」辨析(教训 1)是性能 issue 处置的通用判断框架,若再遇一两例(P2/P3 边界优化大概率会),可考虑提进 [[perf-optimization-workflow]] guide。本轮首次样本,暂留 memory 观察。
+- 「实现浪费 vs 架构成本」辨析(教训 1)是性能 issue 处置的通用判断框架。**已落地** → [[design-claims-vs-codebase-physics]](成本归类维度 §3 + 零拷贝根可达性 §4),连同 PW5 边界成本 / PW6 段重定位聚合成 4 维判断框架,不再暂留观察。
 - 「benchmark 覆盖真实交互形态」(教训 3)同理,候选进 perf guide。
 
 ## 关联
