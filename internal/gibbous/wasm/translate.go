@@ -181,6 +181,10 @@ func (c *Compiler) emitOpcode(em *emitter, proto *bytecode.Proto, pc int32) erro
 		c.emitSetTable(em, proto, ins, pc)
 	case bytecode.SELF:
 		c.emitSelf(em, proto, ins, pc)
+	case bytecode.NEWTABLE:
+		c.emitNewTable(em, ins, pc)
+	case bytecode.SETLIST:
+		c.emitSetList(em, ins, pc)
 	default:
 		return &translateError{reason: fmt.Sprintf("p3 PW3: opcode %s not implemented (pc=%d)", op, pc)}
 	}

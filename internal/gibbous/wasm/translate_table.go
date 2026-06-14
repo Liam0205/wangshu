@@ -435,3 +435,27 @@ func (c *Compiler) emitSelf(em *emitter, proto *bytecode.Proto, ins bytecode.Ins
 	c.emitHelperEpilogue5(em, helperSelf, pc, a, b, cc)
 	em.end() // $done
 }
+
+// --- NEWTABLE / SETLIST(PW5-d,无 IC,纯助手)---
+//
+// gibbous 代码自身从不分配(00-overview §8);分配 + GC + 批量写 + 可能 rehash
+// 全在 imported 助手内同步完成,助手返回时 GC 已完成,Wasm 侧无感。
+// 内联翻译复杂且收益低(表构造非热循环主体)→ 走助手最简(02 §3.4.6/§3.4.7)。
+
+// emitNewTable NEWTABLE A B C —— R(A) := {}(经 h_newtable,分配+setReg+safepoint
+// 全助手内)。
+func (c *Compiler) emitNewTable(em *emitter, ins bytecode.Instruction, pc int32) {
+	a := int32(bytecode.A(ins))
+	b := int32(bytecode.B(ins))
+	cc := int32(bytecode.C(ins))
+	c.emitHelperEpilogue5(em, helperNewTable, pc, a, b, cc)
+}
+
+// emitSetList SETLIST A B C —— 表构造批量填数组(经 h_setlist;C=0 取下一指令为
+// 大批次号,助手内自取 Proto.Code[pc])。
+func (c *Compiler) emitSetList(em *emitter, ins bytecode.Instruction, pc int32) {
+	a := int32(bytecode.A(ins))
+	b := int32(bytecode.B(ins))
+	cc := int32(bytecode.C(ins))
+	c.emitHelperEpilogue5(em, helperSetList, pc, a, b, cc)
+}

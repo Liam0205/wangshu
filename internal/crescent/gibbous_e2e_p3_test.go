@@ -369,6 +369,50 @@ func TestPW5b_TableIC(t *testing.T) {
 	})
 }
 
+// TestPW5d_NewTableSetList PW5-d:NEWTABLE/SETLIST 经助手(分配+批量写+GC 助手内)。
+// 表构造 {10,20,30} 后取元素,升 gibbous byte-equal。
+func TestPW5d_NewTableSetList(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want float64
+	}{
+		// NEWTABLE + LOADK×3(数字)+ SETLIST(B=3,C=1)+ GETTABLE t[2]
+		{"array-ctor", `local function f() local t={10,20,30} return t[2] end; return f`, 20},
+		// 数组求和(NEWTABLE + SETLIST + for 遍历)
+		{"array-sum", `local function f() local t={1,2,3,4} local s=0 for i=1,4 do s=s+t[i] end return s end; return f`, 10},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st, mainCl := loadFn(t, tc.src)
+			st.SetGCStressMode(true) // 分配密集:freelist 复用暴露漏根/残值
+			rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+			if err != nil {
+				t.Fatalf("run main: %v", err)
+			}
+			fVal := rets[0]
+			pid := object.ClosureProtoID(st.arena, value.GCRefOf(fVal))
+			base, e := st.Call(value.GCRefOf(fVal), nil, 1)
+			if e != nil {
+				t.Fatalf("interp: %v", e)
+			}
+			if !value.IsNumber(base[0]) || value.AsNumber(base[0]) != tc.want {
+				t.Fatalf("interp = %v, want %v", base[0], tc.want)
+			}
+			if !promoteProto(st, pid) {
+				t.Skipf("%s proto not supported", tc.name)
+			}
+			got, e2 := st.Call(value.GCRefOf(fVal), nil, 1)
+			if e2 != nil {
+				t.Fatalf("gibbous: %v", e2)
+			}
+			if !value.IsNumber(got[0]) || value.AsNumber(got[0]) != tc.want {
+				t.Errorf("gibbous = %v, want %v (byte-equal)", got[0], tc.want)
+			}
+		})
+	}
+}
+
 // newTableArg 构造一个测试表(string→number 字段 + 数组段),返回其 value。
 func (st *State) newTableArg(fields map[string]float64, arr []float64) value.Value {
 	asz := uint32(len(arr))

@@ -99,6 +99,8 @@ func NewCompiler(ctx context.Context, runtime wazero.Runtime, host HostState) *C
 	c.supported[bytecode.GETTABLE] = true
 	c.supported[bytecode.SETTABLE] = true
 	c.supported[bytecode.SELF] = true
+	c.supported[bytecode.NEWTABLE] = true
+	c.supported[bytecode.SETLIST] = true
 	// PW5+ 逐档解锁(02-translation §1.3)。VARARG 永不加入。
 	return c
 }
@@ -139,6 +141,14 @@ func (c *Compiler) SupportsAllOpcodes(proto *bytecode.Proto) bool {
 			if op == bytecode.LOADK {
 				bx := bytecode.Bx(ins)
 				if proto.IsStringConst(bx) {
+					return false
+				}
+			}
+			// SETLIST C=0:下一指令字是大批次号(数据,非 opcode)——线性发射器
+			// 会误当 opcode 翻译 → 拒。B=0(填到 top)依赖 gibbous 帧 top 维护
+			// (PW7 前未接)→ 拒。常见 {1,2,3}(B≥1,C≥1)放行。
+			if op == bytecode.SETLIST {
+				if bytecode.C(ins) == 0 || bytecode.B(ins) == 0 {
 					return false
 				}
 			}

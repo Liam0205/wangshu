@@ -10,7 +10,7 @@
 
 ## 0. 当前状态
 
-**P3 实现:PW0 spike 闸门通过 + PW1/PW2/PW3/PW4 已交付(含 VS0 值栈 arena 化),PW4 的 TFORLOOP + PW5-PW9 未启动。** PW2 落地 crescent→gibbous trampoline 端到端;PW3 落地算术+比较 opcode;PW4 落地 relooper 结构化生成(循环/分支/嵌套 byte-equal)。设计文档集已齐备(00-08 共约 8800 行)。
+**P3 实现:PW0 spike 闸门通过 + PW1/PW2/PW3/PW4/PW5 已交付(含 VS0 值栈 arena 化),PW4 的 TFORLOOP + PW6-PW9 未启动。** PW2 落地 crescent→gibbous trampoline 端到端;PW3 落地算术+比较 opcode;PW4 落地 relooper 结构化生成(循环/分支/嵌套 byte-equal);PW5 落地表 IC opcode(inline 快照固化跳哈希 + 失效降级助手)。设计文档集已齐备(00-08 共约 8800 行)。
 
 **前置条件检查**:
 - ✅ P1 全卷已交付(M0-M14 + 所有收尾轮 + 长稳承诺轮 + 外部审查修复轮 + 官方测试套与性能轮)
@@ -21,6 +21,7 @@
 - ✅ **PW2 直线 opcode 翻译器 + trampoline 端到端 + VS0 值栈 arena 化**(`538e717`;见 §6 VS0 表)
 - ✅ **PW3 算术 opcode**(`e33a1fd`;ADD/SUB/MUL/DIV/MOD/POW/UNM/NOT/LEN/CONCAT 快路径 f64 + 慢路径助手)
 - ✅ **PW4 控制流 + relooper + 比较 opcode**(`c6102f0`;structurize.go relooper 结构化生成,FORPREP/FORLOOP + EQ/LT/LE/TEST/TESTSET;TFORLOOP 留 PW4b)
+- ✅ **PW5 表 IC opcode**(`bb3f16f`/`1ae8fa1`/`e9814e7`/本提交;GETGLOBAL/SETGLOBAL/GETTABLE/SETTABLE/SELF inline IC 快照固化跳哈希,NEWTABLE/SETLIST 经助手;gen bump/换表失效降级助手 byte-equal,零 deopt)
 - ⏳ **P3 开工前置确认(待外部)**:向首个宿主确认「列内核是否跑在协程里」,决定线程级 tier 规则是否成立([07 §3.2](./07-coroutine-thread-rule.md))
 
 ---
@@ -79,7 +80,7 @@
 | PW2 | 翻译器骨架 + 直线 opcode(MOVE/LOADK/LOADBOOL/LOADNIL/GETUPVAL/SETUPVAL/RETURN)+ trampoline 入口 + **值栈 arena 化(VS0)** | [02 §3.1](./02-translation.md) + [04 §2](./04-trampoline.md) + [03 §1](./03-memory-model.md) | 直线 Proto 升层后 byte-equal;crescent→gibbous trampoline 端到端 | ✅ **通过**(`538e717`;PW2-a~d 见 §6 VS0 表;值栈迁 arena 解锁端到端;`id(x)`/常量返回 e2e byte-equal + 升层确认) |
 | PW3 | 算术 + 比较 opcode + NaN 规范化 + 慢路径助手回 Go | [02 §3.2-§3.3](./02-translation.md) + [04 §3](./04-trampoline.md) | 双 number 快路径直发 f64;混合类型走助手且 byte-equal | ✅ **全过线**(算术 `e33a1fd` + 比较 `c6102f0`;ADD/SUB/MUL/DIV/MOD/POW/UNM/NOT/LEN/CONCAT + EQ/LT/LE/TEST/TESTSET 双 number 快路径 f64 + NaN 规范化,混合类型走 h_arith/h_compare/h_eq 等 byte-equal)。比较 opcode 随 PW4 relooper 多 BB 解锁同批落地 |
 | PW4 | 控制流(FORPREP/FORLOOP/TFORLOOP)+ 回边 safepoint | [02 §3.5](./02-translation.md) + [05 §1.3](./05-safepoint-gc.md) | 数值 for 编译后 ≥2x 解释器;回边 GC 触发 byte-equal | ✅ **relooper + for + 比较分支过线**(`c6102f0`;structurize.go relooper 结构化生成——CFGSort 循环连续序 + loop/block 作用域 + br depth + 可约简守卫;FORPREP/FORLOOP + 回边 h_safepoint;EQ/LT/LE/TEST/TESTSET 比较+JMP 合并)。e2e:sum-for/abs/max/nested-for/while 全真升层 byte-equal。**TFORLOOP(泛型 for)+ 回边 safepoint gcPending 全局优化留 PW4b/PW9** |
-| PW5 | 表 IC opcode + feedback 消费(IC 快照固化)+ 失效降级 | [02 §3.4](./02-translation.md) + [06](./06-ic-feedback-consume.md) | 单态表访问跳过哈希;gen bump 后走助手仍正确 | ⏳ |
+| PW5 | 表 IC opcode + feedback 消费(IC 快照固化)+ 失效降级 | [02 §3.4](./02-translation.md) + [06](./06-ic-feedback-consume.md) | 单态表访问跳过哈希;gen bump 后走助手仍正确 | ✅ **inline IC 过线**(`bb3f16f`+`1ae8fa1`+`e9814e7`+本提交;GETGLOBAL/SETGLOBAL/GETTABLE/SETTABLE/SELF inline 快照固化跳哈希,NEWTABLE/SETLIST 经助手;失效 gen bump/换表降级助手 byte-equal。MonoMeta/寄存器键 NodeHit/SETLIST C=0,B=0 留助手或拒) |
 | PW6 | CALL/TAILCALL/RETURN + 跨层互调 + status 链 + **CallInfo bit50 落地** | [04 §2-§4](./04-trampoline.md) | gibbous 内调未编译 Proto 经 trampoline;错误从 Wasm 帧穿越冒泡到 pcall | ⏳ |
 | PW7 | CLOSURE/CLOSE/VARARG + 闭包/upvalue 编译协议 | [02 §3.7](./02-translation.md) | 闭包构造 + 开放/关闭 upvalue byte-equal | ⏳ |
 | PW8 | 线程级 tier 规则 + 协程不升层 + **P2 04 considerPromotion 加线程上下文** | [07](./07-coroutine-thread-rule.md) | 协程内即便 hot + Compilable 也保持 TierInterp;主线程同 Proto 正常升层 | ⏳ |
@@ -207,6 +208,27 @@ PW0 启动后,本文按以下协议更新:
 | 单 BB 判定 | [02 §3.1](./02-translation.md) 「单 basic block」 | Lua codegen 在 RETURN 后追加兜底 RETURN 死代码,使其成不可达第 2 BB;改为数**可达** BB(`cfg.reachableBlocks` BFS),`translate`/`SupportsAllOpcodes` 只发射/扫描可达入口 BB | `538e717` |
 | CallInfo bit50 | [04 §1.5](./04-trampoline.md) 形态 (a) 位打包 / (b) bool | 取 (b):`callInfo.gibbous bool`(与 tailcall/fresh 同款) | `538e717` |
 | 运行期可编译性重分析 | [analyze_on.go] 留「P3 注入后重跑 AnalyzeProto」 | **未实装**:compile 期无 P3 恒标 NotCompilable,运行期自动重分析需 AST 保留(已弃);PW2-d e2e 经 `SetCompilability` 手工模拟「真 P3 下 F7 放行」+ 驱动 OnEnter 触发真升层 | 留后续(AST 保留或 Proto 级重分析) |
+
+---
+
+## 7. PW5 表 IC 实现现状与设计文档差异
+
+> 02 §3.4 给的是「全形态 inline」理想形态;PW5 实装按 byte-equal 可证性分级——
+> inline 只覆盖能逐字节同构的形态,其余降级助手(正确性平凡兜底,06 §1 铁律)。
+
+| 维度 | 设计文档(02 §3.4 / 06) | 实现现状(PW5) | 收口 |
+|---|---|---|---|
+| 控制结构 | §3.4.2 嵌套 if-then + `br $L_done` | GETTABLE/SETTABLE/SELF 用 `block $done{ block $slow{ guard;br_if 0;命中 br 1 } helper }`——**br 深度恒定 0/1**,避开深嵌套 br 计数脆弱 | `1ae8fa1` |
+| 键匹配 inline | §3.4.2 `$ic_key_match`(array/node 全 inline) | inline 仅 ① 常量键(同表同 gen ⟹ 缓存 Index 仍映射同键,**省键匹配**)② 寄存器键 ArrayHit(`f64==Index+1`,避开 uint32 截断)。寄存器键 NodeHit(normKey/keyEqual/string-intern inline 脆弱)→ 助手 | `1ae8fa1` |
+| MonoMeta(Kind=3) | §3.2.1 SNAP_KIND=3 mono-meta 直达 | PW5 基线路由助手(`__index` 元方法直达 inline 复杂,留后续) | helper 兜底 |
+| 表字段 inline 寻址 | §3.4.1 `$gcref_low32`/`$table_gen`/`$ic_slot_load` 抽象助手 | **全 inline Wasm load**(非 imported 助手——跨层 ~143ns 会废掉跳哈希收益):gen=`i64.load[t+40]>>32`,nodeRef=`[t+24]`,array=`[t+16]`,槽 offset 编译期立即数 | `bb3f16f` |
+| SETTABLE 值烧不出 | (未提) | RK(C) 字符串常量编译期烧不出 GCRef → 整条降级 h_settable(助手经 rk() 正确取) | `1ae8fa1` |
+| SETLIST C=0 / B=0 | §3.4.7 助手内读下一指令为批次号 | C=0(下一字是数据非 opcode,线性发射器会误译)/ B=0(填到 top,gibbous 帧 top 维护 PW7 前未接)→ SupportsAllOpcodes 拒 | 留 PW6/PW7 |
+| globals 立即数 | §3.4.4 编译期烧 globals GCRef | `HostState.GlobalsRaw()` 取 `MakeGC(TagTable, st.globals)`(单 State 私有,身份恒定不移动) | `bb3f16f` |
+| feedback 消费 | 06 §4.4 fb 决定路径 + ICSlot 填立即数 | PW5 基线**只读 ICSlot**(snapshotICSlot,atomic race-tolerant);fb 双源选取留 PW9 实测(06 §6.2) | `bb3f16f` |
+
+**RW 回填**:RW 表无 PW5 专项条目(IC feedback 消费是 06 自包含设计,不回填 P1/P2)。
+P1 [05 §6](../p1-interpreter/05-interpreter-loop.md) IC 机制本文 inline 与之逐字节同构,差分门(difftest 70 种子)保证。
 
 ---
 
