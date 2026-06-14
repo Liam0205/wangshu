@@ -459,3 +459,41 @@ func (c *Compiler) emitSetList(em *emitter, ins bytecode.Instruction, pc int32) 
 	cc := int32(bytecode.C(ins))
 	c.emitHelperEpilogue5(em, helperSetList, pc, a, b, cc)
 }
+
+// --- CALL(PW6-a,三向分派 + base 刷新)---
+//
+// CALL A B C —— R(A)(R(A+1..A+B-1)),返回回填 R(A..A+C-2)。统一经 h_call 三向
+// 分派(crescent/gibbous/host,04-trampoline §3),助手内跑被调帧到完成、返回值留
+// 共见栈槽。
+//
+// **base 刷新(本里程碑核心)**:被调帧可能 growStack 使值栈段在 arena 重定位
+// (state.go growStack),本帧 $base 随之失效。h_call 返回刷新后的新 base 字节偏移
+// (成功)或负哨兵(错误)。gibbous 据此 local.set $base 续算,免陈旧 base UAF。
+//
+//	(local.set $i64c (call h_call(base,pc,a,b,c)))
+//	(if (i64.lt_s $i64c 0) (then (return 1)))          ;; 负哨兵 → status 链冒泡
+//	(local.set $base (i32.wrap_i64 $i64c))             ;; 刷新 base
+func (c *Compiler) emitCall(em *emitter, ins bytecode.Instruction, pc int32) {
+	a := int32(bytecode.A(ins))
+	b := int32(bytecode.B(ins))
+	cc := int32(bytecode.C(ins))
+	em.localGet(localBase)
+	em.i32Const(pc)
+	em.i32Const(a)
+	em.i32Const(b)
+	em.i32Const(cc)
+	em.call(helperCall)
+	em.localTee(localI64c)
+	// 负哨兵 → 错误冒泡
+	em.localGet(localI64c)
+	em.i64Const(0)
+	em.i64LtS()
+	em.ifVoid()
+	em.i32Const(1)
+	em.ret()
+	em.end()
+	// 刷新 base = i32.wrap(newbase)
+	em.localGet(localI64c)
+	em.i32WrapI64()
+	em.localSet(localBase)
+}

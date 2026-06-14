@@ -75,6 +75,13 @@ type HostState interface {
 	// SetList 处理 SETLIST A B C(doSetList 批量写 + 可能 rehash + safepoint)。
 	SetList(base, pc, a, b, c int32) int32
 
+	// Call 处理 CALL A B C 三向分派(crescent/gibbous/host,04-trampoline §3)。
+	// 跑被调帧到完成,返回值留 R(A..) 共见栈槽。
+	// 返回:成功 = **刷新后的本帧 base 字节偏移**(嵌套调用可能 growStack 段重定位,
+	// gibbous 须用此新 base 续算寻址,否则陈旧 $base 指向已 Free 旧段 = UAF);
+	// 错误 = 负哨兵 -1(pendingErr 已置,status 链冒泡)。
+	DoCall(base, pc, a, b, c int32) int64
+
 	// GlobalsRaw 返回 globals 表的 NaN-box u64(编译期烧立即数,GETGLOBAL/SETGLOBAL
 	// inline 用)。globals 在 State 生命期内身份恒定不移动。名带 Raw 避开 State
 	// 公有 API Globals() arena.GCRef 冲突。
@@ -177,4 +184,8 @@ func (h *helperSet) goNewTable(base, pc, a, b, c int32) int32 {
 
 func (h *helperSet) goSetList(base, pc, a, b, c int32) int32 {
 	return h.host.SetList(base, pc, a, b, c)
+}
+
+func (h *helperSet) goCall(base, pc, a, b, c int32) int64 {
+	return h.host.DoCall(base, pc, a, b, c)
 }

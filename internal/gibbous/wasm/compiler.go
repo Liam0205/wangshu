@@ -101,6 +101,8 @@ func NewCompiler(ctx context.Context, runtime wazero.Runtime, host HostState) *C
 	c.supported[bytecode.SELF] = true
 	c.supported[bytecode.NEWTABLE] = true
 	c.supported[bytecode.SETLIST] = true
+	// PW6:CALL 三向分派 + base 刷新(跨层互调)。
+	c.supported[bytecode.CALL] = true
 	// PW5+ 逐档解锁(02-translation §1.3)。VARARG 永不加入。
 	return c
 }
@@ -148,6 +150,14 @@ func (c *Compiler) SupportsAllOpcodes(proto *bytecode.Proto) bool {
 			// 会误当 opcode 翻译 → 拒。B=0(填到 top)依赖 gibbous 帧 top 维护
 			// (PW7 前未接)→ 拒。常见 {1,2,3}(B≥1,C≥1)放行。
 			if op == bytecode.SETLIST {
+				if bytecode.C(ins) == 0 || bytecode.B(ins) == 0 {
+					return false
+				}
+			}
+			// CALL B=0(参数到 top)/ C=0(返回到 top)是多值窗口,依赖 th.top
+			// 跨 opcode 维护——gibbous 直线代码不维护 top → 拒。定参定返(B≥1,C≥1)
+			// 放行(常见 local x = f(a,b) 形态)。多值传播留后续。
+			if op == bytecode.CALL {
 				if bytecode.C(ins) == 0 || bytecode.B(ins) == 0 {
 					return false
 				}
@@ -260,6 +270,7 @@ func (c *Compiler) ensureHostModule() error {
 		NewFunctionBuilder().WithFunc(hs.goSelf).Export("h_self").
 		NewFunctionBuilder().WithFunc(hs.goNewTable).Export("h_newtable").
 		NewFunctionBuilder().WithFunc(hs.goSetList).Export("h_setlist").
+		NewFunctionBuilder().WithFunc(hs.goCall).Export("h_call").
 		Instantiate(c.ctx)
 	if err != nil {
 		return err

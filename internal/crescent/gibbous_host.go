@@ -420,3 +420,47 @@ func (st *State) SetList(base, pc, a, b, c int32) int32 {
 func (st *State) GlobalsRaw() uint64 {
 	return uint64(value.MakeGC(value.TagTable, st.globals))
 }
+
+// Call 处理 gibbous 帧内的 CALL A B C 三向分派(04-trampoline §3)。
+//
+// 复用 doCall 的统一分派(host / __call / gibbous 升层 / 普通 Lua 四向):
+//   - host / gibbous 升层:doCall 内同步跑完,返回值已落 R(A..),next==nil;
+//   - 普通 Lua closure:doCall 压新帧返回 next!=nil——gibbous 语境无外层解释器
+//     主循环续跑它,故本函数起一层 executeFrom 同步驱动该帧(及其子帧)到完成,
+//     返回值留 R(A..) 共见栈槽。
+//
+// **base 刷新(PW6 核心)**:被调帧可能 growStack 使值栈段在 arena 重定位
+// (state.go growStack 改 stackBaseW),本帧 $base 随之失效。返回时按当前
+// stackBaseW + ci.base 重算新 base 字节偏移,gibbous 据此续算寻址。
+// 返回:成功 = 新 base 字节偏移(≥0);错误 = -1(pendingErr 已置,status 链冒泡)。
+func (st *State) DoCall(base, pc, a, b, c int32) int64 {
+	th := st.runningThread
+	ci := currentCI(th)
+	ci.pc = pc
+	ins := bytecode.EncodeABC(bytecode.CALL, int(a), int(b), int(c))
+	next, e := st.doCall(th, ci, ins)
+	if e != nil {
+		st.gibbousPendingErr = e
+		return -1
+	}
+	if next != nil {
+		// 进入一个新 Lua 帧(被调是未升层 closure)——同步驱动到完成。
+		// nCcalls 计费:executeFrom 是新的 Go 栈重入边界,防 gibbous↔crescent
+		// 交替递归打爆 Go 栈(meta.go callLuaFromHost 同款守卫)。
+		if st.nCcalls >= maxCCallDepth {
+			st.gibbousPendingErr = errf("C stack overflow")
+			return -1
+		}
+		st.nCcalls++
+		entryDepth := len(th.cis) - 1
+		e2 := st.executeFrom(th, entryDepth)
+		st.nCcalls--
+		if e2 != nil {
+			st.gibbousPendingErr = e2
+			return -1
+		}
+	}
+	// 刷新 base(嵌套帧可能 growStack 段重定位,陈旧 base 指向已 Free 段 = UAF)。
+	ci = currentCI(th)
+	return int64((th.stackBaseW + uint32(ci.base)) * 8)
+}

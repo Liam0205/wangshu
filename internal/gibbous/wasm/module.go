@@ -41,7 +41,8 @@ const (
 	typeLen       = 7
 	typeConcat    = 8
 	typeForPrep   = 9
-	numTypes      = 10
+	typeCall      = 10 // (i32×5)->(i64)  h_call 返回新 base / 负哨兵
+	numTypes      = 11
 )
 
 // Wasm value type 编码。
@@ -91,6 +92,8 @@ func typeSection() []byte {
 	p = append(p, 0x60, 0x05, wvtI32, wvtI32, wvtI32, wvtI32, wvtI32, 0x01, wvtI32)
 	// type 9: (i32,i32,i32)->(i32)  h_forprep
 	p = append(p, 0x60, 0x03, wvtI32, wvtI32, wvtI32, 0x01, wvtI32)
+	// type 10: (i32,i32,i32,i32,i32)->(i64)  h_call(base,pc,a,b,c → newbase/-1)
+	p = append(p, 0x60, 0x05, wvtI32, wvtI32, wvtI32, wvtI32, wvtI32, 0x01, wvtI64)
 
 	return sectionOf(0x01, p)
 }
@@ -108,8 +111,8 @@ func typeSection() []byte {
 // function index 空间。
 func importSection() []byte {
 	var p []byte
-	// count = 1 memory + 18 funcs = 19
-	p = append(p, uleb32(19)...)
+	// count = 1 memory + 19 funcs = 20
+	p = append(p, uleb32(20)...)
 
 	// import env.memory : memory(limits flags=0 min=1)——共享 holder 的 memory
 	p = append(p, importEntry("env", "memory", 0x02, []byte{0x00, 0x01})...)
@@ -135,6 +138,7 @@ func importSection() []byte {
 	p = append(p, importFuncEntry("host", "h_self", typeConcat)...)
 	p = append(p, importFuncEntry("host", "h_newtable", typeConcat)...)
 	p = append(p, importFuncEntry("host", "h_setlist", typeConcat)...)
+	p = append(p, importFuncEntry("host", "h_call", typeCall)...)
 
 	return sectionOf(0x02, p)
 }

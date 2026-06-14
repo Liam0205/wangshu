@@ -486,3 +486,109 @@ func TestPW4_ControlFlowE2E(t *testing.T) {
 		})
 	}
 }
+
+// TestPW6a_CallDispatch PW6-a:gibbous 帧内 CALL 三向分派 byte-equal。
+// 外层 f 升 gibbous,调用 ① 未升层 crescent helper ② 另一升层 gibbous ③ host。
+func TestPW6a_CallDispatch(t *testing.T) {
+	t.Run("call-crescent", func(t *testing.T) {
+		// f 调未升层 helper(crescent fresh reentry 路径)
+		src := `
+local function helper(x) return x * 2 end
+local function f(a) return helper(a) + 1 end
+return f`
+		st, mainCl := loadFn(t, src)
+		rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+		if err != nil {
+			t.Fatalf("run main: %v", err)
+		}
+		fVal := rets[0]
+		pid := object.ClosureProtoID(st.arena, value.GCRefOf(fVal))
+		args := []value.Value{value.NumberValue(20)}
+		base, e := st.Call(value.GCRefOf(fVal), args, 1)
+		if e != nil {
+			t.Fatalf("interp: %v", e)
+		}
+		if value.AsNumber(base[0]) != 41 {
+			t.Fatalf("interp f(20) = %v, want 41", base[0])
+		}
+		if !promoteProto(st, pid) {
+			t.Skip("f not supported")
+		}
+		got, e2 := st.Call(value.GCRefOf(fVal), args, 1)
+		if e2 != nil {
+			t.Fatalf("gibbous: %v", e2)
+		}
+		if value.AsNumber(got[0]) != 41 {
+			t.Errorf("gibbous f(20) = %v, want 41 (call crescent helper byte-equal)", got[0])
+		}
+	})
+
+	t.Run("call-gibbous", func(t *testing.T) {
+		// f 与 helper 都升层(gibbous→gibbous 经 h_call 再 enterGibbous)
+		src := `
+local function helper(x) return x * 2 end
+local function f(a) return helper(a) + 1 end
+return f, helper`
+		st, mainCl := loadFn(t, src)
+		rets, err := st.Call(value.GCRefOf(mainCl), nil, 2)
+		if err != nil {
+			t.Fatalf("run main: %v", err)
+		}
+		fVal, hVal := rets[0], rets[1]
+		fPid := object.ClosureProtoID(st.arena, value.GCRefOf(fVal))
+		hPid := object.ClosureProtoID(st.arena, value.GCRefOf(hVal))
+		args := []value.Value{value.NumberValue(20)}
+		base, _ := st.Call(value.GCRefOf(fVal), args, 1)
+		if value.AsNumber(base[0]) != 41 {
+			t.Fatalf("interp f(20) = %v, want 41", base[0])
+		}
+		if !promoteProto(st, hPid) || !promoteProto(st, fPid) {
+			t.Skip("f/helper not supported")
+		}
+		got, e2 := st.Call(value.GCRefOf(fVal), args, 1)
+		if e2 != nil {
+			t.Fatalf("gibbous: %v", e2)
+		}
+		if value.AsNumber(got[0]) != 41 {
+			t.Errorf("gibbous→gibbous f(20) = %v, want 41", got[0])
+		}
+	})
+}
+
+// TestPW6a_CallBaseRefresh PW6-a 核心:被调帧深递归撑爆初始栈(64 槽)触发
+// growStack 段重定位后,gibbous 续算用刷新后的 base 读对寄存器。GC stress 下
+// 若 base 没刷新会读到已 Free 旧段 → 值错乱/UAF。
+func TestPW6a_CallBaseRefresh(t *testing.T) {
+	// helper 递归深度 100(每层一个 Lua 帧,撑爆初始 64 槽必 growStack);
+	// f 调 helper 后再 + 7,验返回后 f 的寄存器(base 相对)仍读对。
+	src := `
+local function helper(n) if n <= 0 then return 0 else return helper(n-1) + 1 end end
+local function f(a) local r = helper(100) return r + a end
+return f`
+	st, mainCl := loadFn(t, src)
+	st.SetGCStressMode(true)
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("run main: %v", err)
+	}
+	fVal := rets[0]
+	pid := object.ClosureProtoID(st.arena, value.GCRefOf(fVal))
+	args := []value.Value{value.NumberValue(7)}
+	base, e := st.Call(value.GCRefOf(fVal), args, 1)
+	if e != nil {
+		t.Fatalf("interp: %v", e)
+	}
+	if value.AsNumber(base[0]) != 107 {
+		t.Fatalf("interp f(7) = %v, want 107 (helper(100)=100 + 7)", base[0])
+	}
+	if !promoteProto(st, pid) {
+		t.Skip("f not supported")
+	}
+	got, e2 := st.Call(value.GCRefOf(fVal), args, 1)
+	if e2 != nil {
+		t.Fatalf("gibbous: %v", e2)
+	}
+	if value.AsNumber(got[0]) != 107 {
+		t.Errorf("gibbous f(7) = %v, want 107 (base 刷新后读对 a=7;若 base 陈旧则错)", got[0])
+	}
+}

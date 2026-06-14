@@ -31,6 +31,7 @@ const (
 	helperSelf                    // host.h_self     (base,pc,a,b,c i32) -> (i32 status)     PW5
 	helperNewTable                // host.h_newtable (base,pc,a,b,c i32) -> (i32 status)     PW5
 	helperSetList                 // host.h_setlist  (base,pc,a,b,c i32) -> (i32 status)     PW5
+	helperCall                    // host.h_call     (base,pc,a,b,c i32) -> (i64 newbase/-1) PW6
 	numHelpers
 )
 

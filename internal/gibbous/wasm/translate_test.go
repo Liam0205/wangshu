@@ -60,6 +60,7 @@ func (m *mockHost) DoSetGlobal(base, pc, a, bx int32) int32 { return 0 }
 func (m *mockHost) Self(base, pc, a, b, c int32) int32      { return 0 }
 func (m *mockHost) NewTable(base, pc, a, b, c int32) int32  { return 0 }
 func (m *mockHost) SetList(base, pc, a, b, c int32) int32   { return 0 }
+func (m *mockHost) DoCall(base, pc, a, b, c int32) int64    { return int64(base) }
 func (m *mockHost) GlobalsRaw() uint64                      { return m.globalsRaw }
 
 // setupTranslator 建一个完整可执行的 P3 编译环境:wazero runtime + memadapter
@@ -217,7 +218,7 @@ func TestPW4_AcceptMultiBB(t *testing.T) {
 	}
 }
 
-// TestPW4_RejectUnsupportedOpcode 含未实装 opcode(CALL 是 PW6)的多 BB 被拒。
+// TestPW4_RejectUnsupportedOpcode 含未实装 opcode(VARARG 永不支持)的多 BB 被拒。
 func TestPW4_RejectUnsupportedOpcode(t *testing.T) {
 	c, _, cleanup := setupTranslator(t)
 	defer cleanup()
@@ -226,12 +227,12 @@ func TestPW4_RejectUnsupportedOpcode(t *testing.T) {
 		Code: []bytecode.Instruction{
 			bytecode.EncodeABC(bytecode.TEST, 0, 0, 0),
 			bytecode.EncodeAsBx(bytecode.JMP, 0, 1),
-			bytecode.EncodeABC(bytecode.CALL, 0, 1, 1), // PW6,未实装
+			bytecode.EncodeABC(bytecode.VARARG, 0, 1, 0), // 永不支持(F1 排除 vararg)
 			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
 		},
 	}
 	if c.SupportsAllOpcodes(proto) {
-		t.Error("proto with CALL (PW6) should NOT be supported yet")
+		t.Error("proto with VARARG should NOT be supported")
 	}
 }
 
