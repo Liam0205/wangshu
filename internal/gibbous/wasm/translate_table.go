@@ -389,3 +389,49 @@ func (c *Compiler) emitSetTable(em *emitter, proto *bytecode.Proto, ins bytecode
 	c.emitHelperEpilogue5(em, helperSetTable, pc, a, b, cc)
 	em.end() // $done
 }
+
+// emitSelf SELF A B C —— R(A+1) := R(B); R(A) := R(B)[RK(C)](02 §3.4.5)。
+//
+// self 传递 R(A+1):=R(B) 必须先于 IC 查找(execute.go:136),A+1≠B 无冲突。
+// IC 查找与 GETTABLE 同构;miss → h_self(助手内含 self 传递,幂等)。
+// 方法名键通常是字符串常量 → NodeHit const-key(省键匹配)。
+func (c *Compiler) emitSelf(em *emitter, proto *bytecode.Proto, ins bytecode.Instruction, pc int32) {
+	a := int32(bytecode.A(ins))
+	b := int32(bytecode.B(ins))
+	cc := int32(bytecode.C(ins))
+	snap := snapshotICSlot(proto, pc)
+	regKey := !bytecode.IsK(int(cc))
+
+	// ① self 传递:R(A+1) := R(B)(无条件,先于 IC)。
+	em.localGet(localBase)
+	em.localGet(localBase)
+	em.i64Load(8 * uint32(b))
+	em.i64Store(8 * uint32(a+1))
+
+	if !tableInlineable(snap, regKey) {
+		c.emitHelperEpilogue5(em, helperSelf, pc, a, b, cc)
+		return
+	}
+
+	// ② R(A) := R(B)[RK(C)](与 GETTABLE 同构)。
+	em.block() // $done
+	em.block() // $slow
+	c.emitTableGuard(em, int(b), snap)
+	if regKey && snap.kind == bytecode.ICKindArrayHit {
+		c.emitArrayKeyMatch(em, int(cc), snap)
+	}
+	slotOff := c.emitSlotBase(em, snap)
+	em.i64Load(slotOff)
+	em.localTee(localI64c)
+	em.i64Const(nilRawU64())
+	em.i64Ne()
+	em.i32Eqz()
+	em.brIf(0) // 槽 nil → $slow
+	em.localGet(localBase)
+	em.localGet(localI64c)
+	em.i64Store(8 * uint32(a))
+	em.br(1) // → $done
+	em.end() // $slow
+	c.emitHelperEpilogue5(em, helperSelf, pc, a, b, cc)
+	em.end() // $done
+}

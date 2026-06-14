@@ -98,6 +98,7 @@ func NewCompiler(ctx context.Context, runtime wazero.Runtime, host HostState) *C
 	c.supported[bytecode.SETGLOBAL] = true
 	c.supported[bytecode.GETTABLE] = true
 	c.supported[bytecode.SETTABLE] = true
+	c.supported[bytecode.SELF] = true
 	// PW5+ 逐档解锁(02-translation §1.3)。VARARG 永不加入。
 	return c
 }

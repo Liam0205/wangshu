@@ -498,3 +498,73 @@ func TestPW5_GetTableInlineHit(t *testing.T) {
 		t.Errorf("GETTABLE inline ArrayHit R0 = %#x, want %#x (mock 助手不写 R(A),非 sentinel 即 inline 命中)", got, arrVal)
 	}
 }
+
+// TestPW5_SelfInlineHit 证明 SELF inline:R(A+1):=R(B) self 传递 + R(A) 经 IC
+// 直达方法槽(NodeHit const-key)。poison 靠 sentinel:mock 助手不写 R(A),命中
+// 得方法值即证 inline 执行。
+func TestPW5_SelfInlineHit(t *testing.T) {
+	ctx := context.Background()
+	rt := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfigCompiler())
+	defer rt.Close(ctx)
+	holder, err := memadapter.New(ctx, rt, 64*1024, 1<<31)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Close()
+	mem := holder.Memory()
+
+	const tblOff = 768
+	const nodeOff = tblOff + 48
+	const gen = 3
+	const methodVal = uint64(0xFFFA_0000_0000_0042) // 假 closure value(tag=Function)
+
+	mem.WriteUint64Le(tblOff+8, 0)                      // sizes: asize=0|hmask=0
+	mem.WriteUint64Le(tblOff+16, 0)                     // arrayRef
+	mem.WriteUint64Le(tblOff+24, uint64(nodeOff))       // nodeRef
+	mem.WriteUint64Le(tblOff+40, uint64(gen)<<32)       // gen
+	mem.WriteUint64Le(nodeOff+0, 0xFFFB_0000_0000_0009) // key(string-ish)
+	mem.WriteUint64Le(nodeOff+8, methodVal)             // val(方法)
+	mem.WriteUint64Le(nodeOff+16, 0xFFFFFFFF)           // next=-1
+
+	tblRaw := uint64(value.TagTable)<<48 | uint64(tblOff)
+	mh := &mockHost{}
+	c := NewCompiler(ctx, rt, mh)
+
+	// Proto: SELF R0 R2 K0(obj=R2, method 名=K0);RETURN R0 3(返回 R0,R1)
+	proto := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABC(bytecode.SELF, 0, 2, bytecode.MaxK), // C=MaxK = K0(常量键)
+			bytecode.EncodeABC(bytecode.RETURN, 0, 3, 0),
+		},
+		Consts: []value.Value{value.Nil}, // K0 占位
+		IC:     make([]bytecode.ICSlot, 2),
+	}
+	proto.IC[0] = bytecode.ICSlot{Kind: bytecode.ICKindNodeHit, Shape: gen, Index: 0, TableRef: uint32(tblOff)}
+
+	if !c.SupportsAllOpcodes(proto) {
+		t.Fatal("SELF proto should be supported")
+	}
+	gc, err := c.Compile(proto, nil)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	defer func() { _ = gc.(*p3Code).Dispose() }()
+
+	const sentinel = uint64(0xDEAD_BEEF_0000_0000)
+	mem.WriteUint64Le(0, sentinel) // R0 sentinel(方法槽)
+	mem.WriteUint64Le(8, sentinel) // R1 sentinel(self 槽 A+1)
+	mem.WriteUint64Le(16, tblRaw)  // R2 = obj
+
+	stack := make([]uint64, 1)
+	if status := gc.(*p3Code).Run(stack, 0); status != 0 {
+		t.Fatalf("run status=%d pendingErr=%v", status, gc.(*p3Code).PendingErr())
+	}
+	r0, _ := mem.ReadUint64Le(0)
+	r1, _ := mem.ReadUint64Le(8)
+	if r1 != tblRaw {
+		t.Errorf("SELF self 传递 R1 = %#x, want obj %#x", r1, tblRaw)
+	}
+	if r0 != methodVal {
+		t.Errorf("SELF inline R0 = %#x, want method %#x (非 sentinel 即 inline 命中)", r0, methodVal)
+	}
+}
