@@ -421,6 +421,12 @@ func (st *State) GlobalsRaw() uint64 {
 	return uint64(value.MakeGC(value.TagTable, st.globals))
 }
 
+// GCPendingAddr 返回 gcPending 标志字的 linear memory 字节地址(P3 PW9)。
+// gibbous FORLOOP 回边 inline 读它(i32.load),非 0 才跨层调 h_safepoint。
+func (st *State) GCPendingAddr() uint32 {
+	return uint32(st.gcPendingRef)
+}
+
 // --- PW7 闭包构造 + 作用域 upvalue 关闭(全经助手,复用解释器)---
 
 // Closure 处理 CLOSURE A Bx(execute.go:394-397 同款)。makeClosure 读后随伪指令

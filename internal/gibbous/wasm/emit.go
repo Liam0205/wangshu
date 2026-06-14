@@ -125,6 +125,9 @@ func (e *emitter) i64Const(v uint64) { e.raw(opI64Const); e.sleb64(int64(v)) }
 // i64Load (align=3 自然对齐) offset:栈顶是地址。
 func (e *emitter) i64Load(offset uint32) { e.raw(opI64Load, 0x03); e.uleb(offset) }
 
+// i32Load (align=2) offset:栈顶是地址。读 u64 标志字低 4 字节(小端,0/1 在低位)。
+func (e *emitter) i32Load(offset uint32) { e.raw(0x28, 0x02); e.uleb(offset) }
+
 // i64Store (align=3) offset:栈上 [addr, value]。
 func (e *emitter) i64Store(offset uint32) { e.raw(opI64Store, 0x03); e.uleb(offset) }
 

@@ -158,6 +158,11 @@ type State struct {
 	// (newStateArena 建,wireP3 取来构造 gibbous Compiler 共享同一 runtime/
 	// memory)。默认 build 恒 nil。类型擦除为 any 避免全 build 依赖 wazero。
 	p3env any
+
+	// gcPendingRef 是 gcPending 标志字的 arena GCRef(P3 PW9):collector 在
+	// GC 状态转移点把「是否 due」镜像到此字(linear memory),gibbous FORLOOP
+	// 回边 inline i32.load 它,只在 due 时才跨层调 h_safepoint。0 = 未分配。
+	gcPendingRef arena.GCRef
 }
 
 // SetCompileFn 注入编译回调(wangshu.NewState 时装配;loadstring 用)。
@@ -197,6 +202,12 @@ func New() *State {
 	st := &State{arena: a, gc: c, bridge: bridge.NewBridge(), arenaCleanup: cleanup, p3env: p3env}
 	st.globals = object.AllocTable(a, 0, 8)
 	c.LinkSweep(st.globals)
+	// gcPending 标志字(P3 PW9):分配一个 arena 字,collector 镜像 GC due 状态,
+	// gibbous FORLOOP 回边 inline 读它(免每迭代无条件跨层 h_safepoint)。
+	// 早分配 → 偏移稳定;非 p3 build 也分配(1 字开销可忽略,offset 逻辑统一)。
+	st.gcPendingRef = a.AllocWords(1)
+	a.SetWordAt(st.gcPendingRef, 0)
+	c.SetGCPendingRef(st.gcPendingRef)
 	st.installRoots()
 	st.wireP3() // wangshu_p3 build:构造 gibbous Compiler 注入 bridge;默认 build no-op
 	// host closure 槽位回收(gmatch 迭代器、mountArena 列代理等动态注册的

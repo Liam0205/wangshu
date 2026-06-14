@@ -46,6 +46,15 @@ type Collector struct {
 	stressMode          bool   // 高频压力模式:每个 safepoint 强制 Collect(12 §5)
 	stopped             bool   // collectgarbage("stop"):自动 GC 暂停(显式 Collect 不受影响)
 
+	// gcPending 标志(P3 PW9):反映「MaybeCollect 是否会真正 Collect」,镜像到
+	// arena 一个固定字(linear memory),供 gibbous FORLOOP 回边 inline i32.load
+	// 检查——只在 GC 真正 due 时才跨层调 h_safepoint(否则热循环每迭代无条件跨层
+	// 吞掉消灭 dispatch 的收益,05 §3 / 08 §5.1.2)。**保守正确**:flag 为真覆盖
+	// 「stressMode 或 bytesAllocSince≥threshold」,GC 该触发时 flag 必为 1(漏置 1
+	// 才危险,多置 1 只是多一次无害跨层)。gcPendingRef=0 时全 no-op(非 p3 build)。
+	gcPendingRef  arena.GCRef // 标志字在 arena 的 GCRef(字节偏移);0 = 未装(gibbous 不读)
+	gcPendingLast bool        // 上次写入标志字的值(transition-only 写,免每 alloc 重复 store)
+
 	// 弱表登记(06 §8.4 / 07 §13)。
 	weakList []arena.GCRef
 
@@ -153,6 +162,43 @@ func (c *Collector) LinkSweep(ref arena.GCRef) {
 // 触发判定见 MaybeCollect。
 func (c *Collector) AllocCharge(nbytes uint32) {
 	c.bytesAllocSince += uint64(nbytes)
+	c.updateGCPending()
+}
+
+// SetGCPendingRef 装入 gcPending 标志字的 arena GCRef(P3 PW9,wangshu_p3 build
+// 由 State 在 init 时分配一个 arena 字并传入)。装入后 collector 在状态转移点
+// (越阈值 / Collect / stressMode 切换)把 flag 镜像到该字,gibbous inline 读它。
+func (c *Collector) SetGCPendingRef(ref arena.GCRef) {
+	c.gcPendingRef = ref
+	c.gcPendingLast = false
+	c.updateGCPending()
+}
+
+// gcPendingNow 当前是否「MaybeCollect 会真正 Collect」(stopped 时恒 false)。
+func (c *Collector) gcPendingNow() bool {
+	if c.stopped {
+		return false
+	}
+	return c.stressMode || c.bytesAllocSince >= c.threshold
+}
+
+// updateGCPending 把 gcPendingNow() 镜像到 arena 标志字——仅在值变化时写
+// (transition-only,免每次 AllocCharge 都 store)。gcPendingRef=0(非 p3 build)
+// 时 no-op。
+func (c *Collector) updateGCPending() {
+	if c.gcPendingRef == 0 {
+		return
+	}
+	now := c.gcPendingNow()
+	if now == c.gcPendingLast {
+		return
+	}
+	c.gcPendingLast = now
+	v := uint64(0)
+	if now {
+		v = 1
+	}
+	c.a.SetWordAt(c.gcPendingRef, v)
 }
 
 // MaybeCollect 在分配点检查阈值,必要时启动一次 STW full GC(06 §7.1)。
@@ -175,7 +221,7 @@ func (c *Collector) SetStopped(on bool) { c.stopped = on }
 // SetStressMode 开关高频 GC 压力模式(06 §11 / 12 §5):每个 safepoint 都
 // 强制 full Collect。GC 透明性 fuzz 用——压力模式下输出必须与正常模式
 // byte-equal,否则就是漏根/早回收。
-func (c *Collector) SetStressMode(on bool) { c.stressMode = on }
+func (c *Collector) SetStressMode(on bool) { c.stressMode = on; c.updateGCPending() }
 
 // Collect 执行一次 STW full GC(06 §8.2 主流程)。
 func (c *Collector) Collect() {
@@ -201,6 +247,8 @@ func (c *Collector) Collect() {
 	c.bytesAllocSince = 0
 	// 翻转 currentWhite。
 	c.currentWhite ^= 1
+	// Collect 后 bytesAllocSince 归零 → gcPending 落 0(除非 stressMode 恒置 1)。
+	c.updateGCPending()
 }
 
 // liveBytesAfterSweep 字段定义见结构体(由 sweep() 在每轮末赋值,Collect() 读取)。

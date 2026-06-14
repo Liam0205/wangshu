@@ -267,11 +267,10 @@ func (c *Compiler) emitForLoopTerm(em *emitter, proto *bytecode.Proto, cfg *cfg,
 	em.localGet(localF64)
 	em.i64ReinterpretF64()
 	em.i64Store(8 * (a + 3))
-	// 回边 safepoint(方案 a:无条件 h_safepoint;baseline memory-resident 下
-	// 三槽已写回栈槽,GC 根经 R5 覆盖)。
-	em.localGet(localBase)
-	em.i32Const(lastPC)
-	em.call(helperSafepoint)
+	// 回边 safepoint(P3 PW9 优化):inline 检查 gcPending 标志,非 0 才跨层调
+	// h_safepoint。热循环每迭代无 GC due 时此分支恒不跳,零跨层(05 §3 / 08 §5.1.2)。
+	// baseline memory-resident 下三槽已写回栈槽,GC 根经 R5 覆盖。
+	c.emitGCPendingSafepoint(em, lastPC)
 	// br 回 loop header(回边)。
 	if e := c.emitEdge(em, plan, *stack, bb, idBody); e != nil {
 		return e
@@ -376,4 +375,28 @@ func (c *Compiler) emitTForLoopTerm(em *emitter, cfg *cfg, plan *structPlan, sta
 	em.end()
 	*stack = (*stack)[:len(*stack)-1]
 	return nil
+}
+
+// emitGCPendingSafepoint 发回边 safepoint 的 inline gcPending 检查(P3 PW9):
+//
+//	(if (i32.load offset=gcPendingAddr (i32.const 0))
+//	  (then (call h_safepoint (base) (pc))))
+//
+// gcPending 标志字由 collector 在 GC 状态转移点镜像(due 时置 1)。热循环无 GC due
+// 时此分支恒不跳,零跨层——只在 GC 真正 due 时才跨层调 h_safepoint(否则每迭代无
+// 条件跨层 ~143ns 吞掉消灭 dispatch 的收益,05 §3 / 08 §5.1.2)。
+//
+// 正确性:flag 保守覆盖「stressMode 或 bytesAllocSince≥threshold」(collector
+// updateGCPending),GC 该触发时 flag 必为 1;跳过仅发生在「无分配 due」时,此时
+// h_safepoint 的 MaybeCollect 本就 no-op,跳过等价。stressMode 下 flag 恒 1,每迭代
+// 仍跨层 → GC 压力测试(V5/V13)语义不变。
+func (c *Compiler) emitGCPendingSafepoint(em *emitter, pc int32) {
+	addr := c.host.GCPendingAddr()
+	em.i32Const(0)   // 地址操作数(基址 0 + offset=addr 立即数)
+	em.i32Load(addr) // i32.load offset=gcPendingAddr:读标志字低 4 字节
+	em.ifVoid()
+	em.localGet(localBase)
+	em.i32Const(pc)
+	em.call(helperSafepoint)
+	em.end()
 }

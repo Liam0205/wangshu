@@ -102,6 +102,11 @@ type HostState interface {
 	// inline 用)。globals 在 State 生命期内身份恒定不移动。名带 Raw 避开 State
 	// 公有 API Globals() arena.GCRef 冲突。
 	GlobalsRaw() uint64
+
+	// GCPendingAddr 返回 gcPending 标志字在 linear memory 的字节地址(arena GCRef,
+	// P3 PW9)。gibbous FORLOOP 回边 inline `i32.load(GCPendingAddr)`——非 0 才跨层调
+	// h_safepoint(否则热循环每迭代无条件跨层吞掉收益,05 §3)。State 生命期内恒定。
+	GCPendingAddr() uint32
 }
 
 // helperSet 持有注入的 HostState,提供给 wazero 注册的 Go callback。
