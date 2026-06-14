@@ -888,3 +888,93 @@ return hot, body`
 		t.Fatal("主线程升层后 GibbousCodeOf 应非 nil")
 	}
 }
+
+// TestPW9_ForceAllPromoteReal 验证 SetForceAllPromote 真实路径(PW9-b 非空保证)。
+//
+// **为何关键**:层间差分套(test/difftest/p3_test.go)靠 force-all 把核函数升 gibbous,
+// 若 force-all 实际没升任何 Proto,则 crescent==gibbous 退化为 crescent==crescent 的
+// 假阳性。本测经**真实公共路径**(SetForceAllPromote + 反复调用触发 OnEnter,而非
+// promoteProto 的手工 SetCompilability)断言核函数真达 TierGibbous,锁死非空性。
+//
+// 同时验证 recheckCompilabilityForce:编译期 F7 因无 P3 注入把 hot 烧成
+// CompNotCompilable,force-all 重判后(F1-F6 无、真实后端 SupportsAllOpcodes 放行)
+// 升层成功——证明「绕编译期 F7 占位、不绕 F1-F6」逻辑生效。
+func TestPW9_ForceAllPromoteReal(t *testing.T) {
+	src := `
+local function hot(a) return a + 1 end
+local function body()
+  local s = 0
+  for i = 1, 5 do s = hot(s) end
+  return s
+end
+return hot, body`
+	st, mainCl := loadFn(t, src)
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 2)
+	if err != nil {
+		t.Fatalf("run main: %v", err)
+	}
+	hotVal, bodyVal := rets[0], rets[1]
+	hotPid := object.ClosureProtoID(st.arena, value.GCRefOf(hotVal))
+
+	// 前置:编译期 F7(无 P3 注入)应已把 hot 烧成 NotCompilable——这是 force-all
+	// 必须翻越的历史包袱。若不是,本测的「重判」语义就失去验证意义。
+	if st.bridge.CompilabilityOf(st.protos[hotPid]) == bridge.CompCompilable {
+		t.Fatal("前置假设破:hot 编译期不应是 CompCompilable(无 P3 注入 F7 应触发)")
+	}
+
+	// 真实公共路径:开 force-all,反复调 body(body 调 hot)驱动 OnEnter 触发升层。
+	st.SetForceAllPromote(true)
+	for k := 0; k < 3; k++ {
+		if _, e := st.Call(value.GCRefOf(bodyVal), nil, 1); e != nil {
+			t.Fatalf("body() call %d: %v", k, e)
+		}
+	}
+
+	// ★ force-all 经 recheckCompilabilityForce 重判 + 升层:hot 应已是 TierGibbous。
+	if st.bridge.GibbousCodeOf(st.protos[hotPid]) == nil {
+		t.Fatal("force-all 下 hot 应升 gibbous(重判 F7 放行),但 GibbousCodeOf 为 nil —— 层间差分套将退化为假阳性")
+	}
+
+	// 结果正确性:gibbous 执行 hot 五次自增,body() == 5,与解释器一致。
+	got, e := st.Call(value.GCRefOf(bodyVal), nil, 1)
+	if e != nil {
+		t.Fatalf("gibbous body(): %v", e)
+	}
+	if value.AsNumber(got[0]) != 5 {
+		t.Errorf("force-all body() = %v, want 5", got[0])
+	}
+}
+
+// TestPW9_ForceAllRespectsStructuralGates 验证 force-all **不绕** F1-F6 真实闸门。
+//
+// vararg 函数(F1)即便 force-all 也必须留 crescent——recheckCompilabilityForce 只清
+// 编译期 F7 占位,F1-F6 结构性排除原样保留(08 §2.3.1 / §2.2 「不绕可编译性闸门」)。
+func TestPW9_ForceAllRespectsStructuralGates(t *testing.T) {
+	src := `
+local function va(...) local a, b = ...; return (a or 0) + (b or 0) end
+local function body()
+  local s = 0
+  for i = 1, 5 do s = s + va(i, i) end
+  return s
+end
+return va, body`
+	st, mainCl := loadFn(t, src)
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 2)
+	if err != nil {
+		t.Fatalf("run main: %v", err)
+	}
+	vaVal, bodyVal := rets[0], rets[1]
+	vaPid := object.ClosureProtoID(st.arena, value.GCRefOf(vaVal))
+
+	st.SetForceAllPromote(true)
+	for k := 0; k < 3; k++ {
+		if _, e := st.Call(value.GCRefOf(bodyVal), nil, 1); e != nil {
+			t.Fatalf("body() call %d: %v", k, e)
+		}
+	}
+
+	// ★ vararg 函数即便 force-all 也不升层(F1 真实排除,recheck 保留 ReasonVararg)。
+	if st.bridge.GibbousCodeOf(st.protos[vaPid]) != nil {
+		t.Error("vararg 函数 force-all 下不应升层(F1 真实闸门;recheckCompilabilityForce 只清 F7 占位,保留 F1-F6)")
+	}
+}

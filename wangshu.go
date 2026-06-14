@@ -119,6 +119,15 @@ func NewState(opts Options) *State {
 // GC 透明性测试用:压力模式下输出必须与正常模式 byte-equal(12 §5)。
 func (st *State) SetGCStressMode(on bool) { st.core.SetGCStressMode(on) }
 
+// SetForceAllPromote 开关强制全升模式(P3 层间差分测试入口,p3-testing-strategy
+// 08 §2.2)。置位后所有可编译 Proto 首次执行即升 gibbous(绕过热度阈值,**不绕
+// 可编译性闸门**)——使 crescent vs gibbous 层间差分可复现 + 覆盖最大化。
+//
+// **testing-only**:仅供 difftest 层间对拍消除「哪些 Proto 够热」的时序不确定性,
+// 非支持的生产运行模式。非 wangshu_p3 build / 未注入 P3 时,可编译性闸门 F7 永久
+// 判不可编译 → 全留 crescent,本开关 no-op。
+func (st *State) SetForceAllPromote(on bool) { st.core.SetForceAllPromote(on) }
+
 // GCCountKB 返回 arena 当前已用 KB(= bump 指针;含 freelist 上待复用的空闲块)。
 // 长稳观测用:稳态下 freelist 循环复用,本值应有界。
 func (st *State) GCCountKB() float64 { return st.core.GCCountKB() }

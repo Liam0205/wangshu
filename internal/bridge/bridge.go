@@ -43,6 +43,13 @@ type Bridge struct {
 	// aggregator: IC 反馈聚合器(02 §6.4)。Bridge 内嵌一份,considerPromotion
 	// 升层时调 Aggregate(proto) 产 TypeFeedback 喂给 P3。
 	aggregator *Aggregator
+
+	// forceAll: 强制全升模式(P3 PW9 测试入口,08 §2.2)。置位后 OnEnter/
+	// OnBackEdge 首次调用即触发 considerPromotion(绕过热度阈值),所有
+	// CompCompilable Proto 在首次执行时直接编译——消除「哪些 Proto 够热」的
+	// 时序不确定性,使层间差分可复现 + 覆盖最大化。**不绕可编译性闸门**
+	// (F1-F7 排除形状仍走 crescent,08 §2.3.1)。testing-only。
+	forceAll bool
 }
 
 // NewBridge 构造一个空 Bridge,挂在 State 上(crescent 端 setter 注入)。
@@ -126,6 +133,46 @@ func (b *Bridge) SetCompilability(proto *bytecode.Proto, c Compilability, r Reas
 	pd.Reasons = r
 }
 
+// SetForceAllPromote 开关强制全升模式(P3 PW9 测试入口,08 §2.2)。
+//
+// on=true:此后 OnEnter/OnBackEdge 首次调用即触发 considerPromotion(绕过热度
+// 阈值)——所有 CompCompilable Proto 在首次执行时直接编译。用于层间差分消除
+// 「哪些 Proto 够热」的时序不确定性(可复现 + 覆盖最大化)。
+//
+// **不绕可编译性闸门**:F1-F7 排除形状(vararg/coroutine/SupportsAllOpcodes 不支持
+// 等)即便 forceAll 也走 crescent(considerPromotion 内 comp != CompCompilable → Stuck,
+// 08 §2.3.1)。**testing-only**——不进 wangshu 公共 API(强制全升是测试用消除时序的
+// 开关,非支持的运行模式)。
+func (b *Bridge) SetForceAllPromote(on bool) { b.forceAll = on }
+
+// recheckCompilabilityForce 强制全升模式下对真实后端重判可编译性(08 §2.2)。
+//
+// **为何需要**:编译期 analyzeCompilability 用临时 Bridge 跑 F7(checkF7BackendSupport),
+// 那时 b.p3 == nil → F7 恒触发 → 所有 Proto 被烧成 CompNotCompilable + ReasonBackendUnsupp
+// (analyze_on.go §F7 行为)。这不是「后端真不支持」的陈述,只是「编译期还不知道运行期
+// 注入哪个 P3」的占位。运行期重跑 F7 本是 analyze_on.go 留的「P3 注入后扩展」(留 P3 PR
+// 收口)。本函数在 forceAll 测试入口下补上这一步。
+//
+// **不绕真实可编译性闸门**:只清「编译期无 P3 的 F7 占位位」(ReasonBackendUnsupp),
+// F1-F6 结构性排除(vararg/coroutine/debug/setfenv/oversize/nested,已烧进 proto.CompReasons,
+// 不依赖 AST)原样保留——任一仍置位即留 CompNotCompilable。清掉 F7 后再对**真实注入的
+// 后端**查 SupportsAllOpcodes(F7 的正解)。二者全过才判 CompCompilable。
+//
+// 仅 forceAll 调用——生产升层路径不动(编译期 all-Stuck,byte-equal P1,运行期重分析仍
+// 是后续项)。
+func (b *Bridge) recheckCompilabilityForce(proto *bytecode.Proto) Compilability {
+	// 取编译期烧的 F1-F6 结构性排除位(去掉 F7 占位)。
+	structural := ReasonsBitmap(proto.CompReasons) &^ ReasonBackendUnsupp
+	if structural.HasAny() {
+		return CompNotCompilable // F1-F6 真实排除,留解释
+	}
+	// F7 对真实后端重判(b.p3 已注入)。
+	if b.checkF7BackendSupport(proto) {
+		return CompNotCompilable // 真实后端不支持此 Proto 的 opcode 形状
+	}
+	return CompCompilable
+}
+
 // OnBackEdge 回边采样钩点(01 §4.1)。
 //
 // 调用契约(由 crescent 主循环 FORLOOP / JMP 回跳后调用,PB1 接线):
@@ -144,7 +191,7 @@ func (b *Bridge) OnBackEdge(proto *bytecode.Proto, pc int32, onMain bool) {
 		return // 防御性边界检查(理论上不该发生)
 	}
 	pd.BackEdge[pc]++
-	if pd.BackEdge[pc] >= HotBackEdgeThreshold {
+	if pd.BackEdge[pc] >= HotBackEdgeThreshold || b.forceAll {
 		b.considerPromotion(proto, pd, onMain)
 	}
 }
@@ -161,7 +208,7 @@ func (b *Bridge) OnEnter(proto *bytecode.Proto, onMain bool) {
 		return
 	}
 	pd.EntryCount++
-	if pd.EntryCount >= HotEntryThreshold {
+	if pd.EntryCount >= HotEntryThreshold || b.forceAll {
 		b.considerPromotion(proto, pd, onMain)
 	}
 }
@@ -194,6 +241,11 @@ func (b *Bridge) considerPromotion(proto *bytecode.Proto, pd *ProfileData, onMai
 	}
 
 	comp := pd.Compilable
+	if comp != CompCompilable && b.forceAll {
+		// 强制全升:对真实后端重判可编译性(编译期 F7 因无 P3 注入恒失败,
+		// 是历史包袱非真实能力陈述,08 §2.2 / analyze_on.go「P3 注入后重跑 F7」)。
+		comp = b.recheckCompilabilityForce(proto)
+	}
 	if comp != CompCompilable {
 		// (P2) 不可编译 / 未分析 → 永久解释(04 §1.4 静态 fallback)
 		pd.TierState = TierStuck

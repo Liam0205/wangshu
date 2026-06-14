@@ -385,6 +385,18 @@ func (st *State) InternForEmbed(b []byte) arena.GCRef {
 // SetGCStressMode 开关高频 GC 压力模式(12 §5 GC 透明性 fuzz 用)。
 func (st *State) SetGCStressMode(on bool) { st.gc.SetStressMode(on) }
 
+// SetForceAllPromote 开关强制全升模式(P3 PW9 层间差分测试入口,08 §2.2)。
+//
+// 转发到 Bridge.SetForceAllPromote:置位后所有可编译 Proto 首次执行即升 gibbous
+// (绕过热度阈值,**不绕可编译性闸门**),消除「哪些 Proto 够热」的时序不确定性,
+// 使 crescent vs gibbous 层间差分可复现 + 覆盖最大化。bridge 为 nil(P1-only build)
+// 时 no-op。**testing-only**——经门面层 testing 入口暴露,非支持的运行模式。
+func (st *State) SetForceAllPromote(on bool) {
+	if st.bridge != nil {
+		st.bridge.SetForceAllPromote(on)
+	}
+}
+
 // SetStepBudget 设置回边指令预算(<=0 关闭)。超额时脚本以
 // "instruction budget exceeded" 可恢复错误终止——宿主侧脚本配额特性,
 // fuzz 用它替代脆弱的源码子串过滤兜住无限/超长循环。
