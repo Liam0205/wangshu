@@ -74,7 +74,18 @@ func NewCompiler(ctx context.Context, runtime wazero.Runtime, host HostState) *C
 	c.supported[bytecode.SETUPVAL] = true
 	c.supported[bytecode.JMP] = true
 	c.supported[bytecode.RETURN] = true // 单 BB Proto 出口必需
-	// PW3+ 逐档解锁(02-translation §1.3)。VARARG 永不加入。
+	// PW3:直线算术(不切 BB)。比较 EQ/LT/LE/TEST/TESTSET 切 BB,留 PW4。
+	c.supported[bytecode.ADD] = true
+	c.supported[bytecode.SUB] = true
+	c.supported[bytecode.MUL] = true
+	c.supported[bytecode.DIV] = true
+	c.supported[bytecode.MOD] = true
+	c.supported[bytecode.POW] = true
+	c.supported[bytecode.UNM] = true
+	c.supported[bytecode.NOT] = true
+	c.supported[bytecode.LEN] = true
+	c.supported[bytecode.CONCAT] = true
+	// PW4+ 逐档解锁(02-translation §1.3)。VARARG 永不加入。
 	return c
 }
 
@@ -207,6 +218,10 @@ func (c *Compiler) ensureHostModule() error {
 		NewFunctionBuilder().WithFunc(hs.goSetUpval).Export("h_setupval").
 		NewFunctionBuilder().WithFunc(hs.goReturn).Export("h_return").
 		NewFunctionBuilder().WithFunc(hs.goSafepoint).Export("h_safepoint").
+		NewFunctionBuilder().WithFunc(hs.goArith).Export("h_arith").
+		NewFunctionBuilder().WithFunc(hs.goUnm).Export("h_unm").
+		NewFunctionBuilder().WithFunc(hs.goLen).Export("h_len").
+		NewFunctionBuilder().WithFunc(hs.goConcat).Export("h_concat").
 		Instantiate(c.ctx)
 	if err != nil {
 		return err

@@ -4,6 +4,7 @@ package wasm
 
 import (
 	"context"
+	"math"
 	"testing"
 
 	"github.com/tetratelabs/wazero"
@@ -34,6 +35,11 @@ func (m *mockHost) DoReturn(base, pc, a, b int32) int32 {
 }
 func (m *mockHost) Safepoint(base, pc int32)  {}
 func (m *mockHost) SetSavedPC(base, pc int32) {}
+
+func (m *mockHost) Arith(base, pc, op, b, c, a int32) int32 { return 0 }
+func (m *mockHost) Unm(base, pc, b, a int32) int32          { return 0 }
+func (m *mockHost) Len(base, pc, b, a int32) int32          { return 0 }
+func (m *mockHost) Concat(base, pc, a, b, c int32) int32    { return 0 }
 
 // setupTranslator 建一个完整可执行的 P3 编译环境:wazero runtime + memadapter
 // holder(提供 env.memory)+ Compiler(mock host)。
@@ -206,5 +212,107 @@ func TestPW2_RejectStringConst(t *testing.T) {
 	}
 	if c.SupportsAllOpcodes(proto) {
 		t.Error("proto with string const LOADK should NOT be supported in PW2")
+	}
+}
+
+// TestPW3_ArithFastPath 双 number 算术快路径(Wasm 内直发 f64,不调助手):
+// 验证 ADD/SUB/MUL/DIV/MOD 各 opcode 编译执行 + 结果 byte-equal value.NumberValue。
+func TestPW3_ArithFastPath(t *testing.T) {
+	cases := []struct {
+		name string
+		op   bytecode.OpCode
+		x, y float64
+		want float64
+	}{
+		{"ADD", bytecode.ADD, 3, 4, 7},
+		{"SUB", bytecode.SUB, 10, 3, 7},
+		{"MUL", bytecode.MUL, 6, 7, 42},
+		{"DIV", bytecode.DIV, 20, 4, 5},
+		{"MOD", bytecode.MOD, 17, 5, 2},
+		{"MOD-neg", bytecode.MOD, -3, 5, 2}, // Lua 语义 a-floor(a/b)*b
+		{"DIV-zero", bytecode.DIV, 1, 0, 0}, // +Inf,下面特判
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, holder, cleanup := setupTranslator(t)
+			defer cleanup()
+			// R0=x, R1=y; R2 := R0 op R1; RETURN R2 2
+			proto := &bytecode.Proto{
+				Code: []bytecode.Instruction{
+					bytecode.EncodeABC(tc.op, 2, 0, 1),
+					bytecode.EncodeABC(bytecode.RETURN, 2, 2, 0),
+				},
+			}
+			if !c.SupportsAllOpcodes(proto) {
+				t.Fatalf("%s proto should be supported", tc.name)
+			}
+			gc, err := c.Compile(proto, nil)
+			if err != nil {
+				t.Fatalf("Compile: %v", err)
+			}
+			defer func() { _ = gc.(*p3Code).Dispose() }()
+
+			mem := holder.Memory()
+			mem.WriteUint64Le(0, uint64(value.NumberValue(tc.x)))
+			mem.WriteUint64Le(8, uint64(value.NumberValue(tc.y)))
+			stack := make([]uint64, 1)
+			if status := gc.(*p3Code).Run(stack, 0); status != 0 {
+				t.Fatalf("run status=%d pendingErr=%v", status, gc.(*p3Code).PendingErr())
+			}
+			gotRaw, _ := mem.ReadUint64Le(16) // R2
+			// byte-equal:与解释器侧 value.NumberValue(want) 逐位一致
+			if tc.name == "DIV-zero" {
+				// 1/0 = +Inf
+				wantRaw := uint64(value.NumberValue(math.Inf(1)))
+				if gotRaw != wantRaw {
+					t.Errorf("%s = %#x, want +Inf %#x", tc.name, gotRaw, wantRaw)
+				}
+				return
+			}
+			wantRaw := uint64(value.NumberValue(tc.want))
+			if gotRaw != wantRaw {
+				t.Errorf("%s = %#x (%v), want %#x (%v)", tc.name,
+					gotRaw, value.AsNumber(value.Value(gotRaw)), wantRaw, tc.want)
+			}
+		})
+	}
+}
+
+// TestPW3_UnmNotFastPath UNM/NOT 直线翻译(快路径,不调助手)。
+func TestPW3_UnmNotFastPath(t *testing.T) {
+	c, holder, cleanup := setupTranslator(t)
+	defer cleanup()
+	// R1 := -R0; R2 := not R1; RETURN R0 1
+	proto := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABC(bytecode.UNM, 1, 0, 0),
+			bytecode.EncodeABC(bytecode.NOT, 2, 1, 0),
+			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
+		},
+	}
+	if !c.SupportsAllOpcodes(proto) {
+		t.Fatal("UNM+NOT proto should be supported")
+	}
+	gc, err := c.Compile(proto, nil)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	defer func() { _ = gc.(*p3Code).Dispose() }()
+
+	mem := holder.Memory()
+	mem.WriteUint64Le(0, uint64(value.NumberValue(5)))
+	stack := make([]uint64, 1)
+	if status := gc.(*p3Code).Run(stack, 0); status != 0 {
+		t.Fatalf("run status=%d pendingErr=%v", status, gc.(*p3Code).PendingErr())
+	}
+	// R1 = -5
+	r1, _ := mem.ReadUint64Le(8)
+	if r1 != uint64(value.NumberValue(-5)) {
+		t.Errorf("UNM R1 = %v, want -5", value.AsNumber(value.Value(r1)))
+	}
+	// R2 = not(-5) = false(-5 是 truthy)
+	r2, _ := mem.ReadUint64Le(16)
+	if r2 != falseRawU64() {
+		t.Errorf("NOT R2 = %#x, want false %#x", r2, falseRawU64())
 	}
 }

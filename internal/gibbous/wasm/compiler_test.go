@@ -40,22 +40,26 @@ func TestCompiler_SupportsWhitelist(t *testing.T) {
 			bytecode.EncodeABC(bytecode.LOADNIL, 0, 1, 0),
 			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
 		}},
+		{"ADD+RETURN(PW3)", []bytecode.Instruction{
+			bytecode.EncodeABC(bytecode.ADD, 0, 0, 1),
+			bytecode.EncodeABC(bytecode.RETURN, 0, 2, 0),
+		}},
 	}
 	for _, tc := range supported {
 		t.Run("yes/"+tc.name, func(t *testing.T) {
 			if !c.SupportsAllOpcodes(&bytecode.Proto{Code: tc.code}) {
-				t.Errorf("%q should be supported in PW2", tc.name)
+				t.Errorf("%q should be supported", tc.name)
 			}
 		})
 	}
 
-	// 未实装 opcode(ADD 是 PW3)→ 拒
+	// 未实装 opcode(GETTABLE 是 PW5)→ 拒
 	notYet := []bytecode.Instruction{
-		bytecode.EncodeABC(bytecode.ADD, 0, 0, 1),
+		bytecode.EncodeABC(bytecode.GETTABLE, 0, 0, 1),
 		bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
 	}
 	if c.SupportsAllOpcodes(&bytecode.Proto{Code: notYet}) {
-		t.Error("ADD (PW3) should NOT be supported in PW2")
+		t.Error("GETTABLE (PW5) should NOT be supported yet")
 	}
 }
 

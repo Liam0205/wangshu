@@ -17,6 +17,10 @@ const (
 	helperSetUpval                // env.h_setupval (base i32, b i32, val i64) -> ()
 	helperReturn                  // env.h_return   (base i32, pc i32, a i32, b i32) -> (i32)
 	helperSafepoint               // env.h_safepoint(base i32, pc i32) -> ()  (PW4 回边用,先声明)
+	helperArith                   // host.h_arith   (base,pc,op,b,c,a i32) -> (i32 status)  PW3
+	helperUnm                     // host.h_unm     (base,pc,b,a i32) -> (i32 status)        PW3
+	helperLen                     // host.h_len     (base,pc,b,a i32) -> (i32 status)        PW3
+	helperConcat                  // host.h_concat  (base,pc,a,b,c i32) -> (i32 status)      PW3
 	numHelpers
 )
 
@@ -24,3 +28,16 @@ const (
 func nilRawU64() uint64   { return uint64(value.Nil) }
 func trueRawU64() uint64  { return uint64(value.True) }
 func falseRawU64() uint64 { return uint64(value.False) }
+
+// tagShift / tag 常量:NOT/LEN 的 tag 提取(value.Tag = v>>48)。
+const (
+	tagShiftBits = 48
+	tagStringU64 = uint64(value.TagString) // 0xFFFB
+	tagTableU64  = uint64(value.TagTable)  // 0xFFFC
+)
+
+// qNanBoxBase 是 IsNumber 判定边界(value.IsNumber: v < 0xFFF8...)。
+const qNanBoxBase uint64 = 0xFFF8_0000_0000_0000
+
+// canonNaNU64 是规范 NaN(value 包 canonicalize 目标,01 §3.4)。
+const canonNaNU64 uint64 = 0x7FF8_0000_0000_0000

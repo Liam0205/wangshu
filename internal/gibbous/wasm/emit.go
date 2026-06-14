@@ -10,18 +10,49 @@ package wasm
 //
 // Wasm 指令编码参考:https://webassembly.github.io/spec/core/binary/instructions.html
 
-// wasmOp 常用 Wasm 指令 opcode(只列 P3 PW2 用到的;PW3 控制流补充)。
+// wasmOp 常用 Wasm 指令 opcode。
 const (
+	opBlock    byte = 0x02
+	opLoop     byte = 0x03
+	opIf       byte = 0x04
+	opElse     byte = 0x05
+	opEnd      byte = 0x0b
+	opBr       byte = 0x0c
+	opBrIf     byte = 0x0d
 	opReturn   byte = 0x0f
 	opCall     byte = 0x10
 	opLocalGet byte = 0x20
 	opLocalSet byte = 0x21
+	opLocalTee byte = 0x22
 	opI64Load  byte = 0x29
 	opI64Store byte = 0x37
 	opI32Const byte = 0x41
 	opI64Const byte = 0x42
-	opEnd      byte = 0x0b
+
+	// 比较 / 算术 / 类型转换(PW3)。
+	opI32Eqz byte = 0x45
+	opI32And byte = 0x71
+	opI64Ne  byte = 0x52
+	opI64LtU byte = 0x54
+
+	opF64Lt        byte = 0x63
+	opF64Ne        byte = 0x62
+	opF64Add       byte = 0xa0
+	opF64Sub       byte = 0xa1
+	opF64Mul       byte = 0xa2
+	opF64Div       byte = 0xa3
+	opF64Floor     byte = 0x9c
+	opF64Neg       byte = 0x9a
+	opF64ConvI32U  byte = 0xb8 // f64.convert_i32_u
+	opF64ReintI64  byte = 0xbf // f64.reinterpret_i64
+	opI64ReintF64  byte = 0xbd // i64.reinterpret_f64
+	opI32WrapI64   byte = 0xa7
+	opI64ShrU      byte = 0x88
+	opI64ExtendI32 byte = 0xac // i64.extend_i32_s(不用 _u 因 status 是 i32)
 )
+
+// blockType 编码:0x40 = 空(无返回值),或单值类型(i32=0x7f 等)。
+const btVoid byte = 0x40
 
 // emitter 累积一个 gibbous 函数体的 Wasm 字节码。
 type emitter struct {
@@ -92,5 +123,30 @@ func (e *emitter) call(funcidx uint32) { e.raw(opCall); e.uleb(funcidx) }
 // ret(return 当前栈顶 i32 status)
 func (e *emitter) ret() { e.raw(opReturn) }
 
-// 注:结构化控制流(block/loop/br/br_if)与 i32 比较等指令原语留 PW3 控制流
-// (relooper 结构化生成)落地时再加 —— 不预先引入未使用的 emit 方法。
+// --- PW3 算术 / 比较 / 类型转换 / 结构化块 ---
+
+func (e *emitter) localTee(idx uint32) { e.raw(opLocalTee); e.uleb(idx) }
+
+// 二元 / 一元数值与比较指令(操作数已在 Wasm 栈上)。
+func (e *emitter) f64Add()            { e.raw(opF64Add) }
+func (e *emitter) f64Sub()            { e.raw(opF64Sub) }
+func (e *emitter) f64Mul()            { e.raw(opF64Mul) }
+func (e *emitter) f64Div()            { e.raw(opF64Div) }
+func (e *emitter) f64Neg()            { e.raw(opF64Neg) }
+func (e *emitter) f64Floor()          { e.raw(opF64Floor) }
+func (e *emitter) f64Ne()             { e.raw(opF64Ne) }
+func (e *emitter) f64ReinterpretI64() { e.raw(opF64ReintI64) }
+func (e *emitter) i64ReinterpretF64() { e.raw(opI64ReintF64) }
+func (e *emitter) i64LtU()            { e.raw(opI64LtU) }
+func (e *emitter) i64Ne()             { e.raw(opI64Ne) }
+func (e *emitter) i32And()            { e.raw(opI32And) }
+func (e *emitter) i32Eqz()            { e.raw(opI32Eqz) }
+
+// ifVoid 开一个无返回值的 if 块(条件 i32 已在栈顶)。配对 elseOp/end。
+func (e *emitter) ifVoid()       { e.raw(opIf, btVoid) }
+func (e *emitter) elseOp()       { e.raw(opElse) }
+func (e *emitter) end()          { e.raw(opEnd) }
+func (e *emitter) brIf(d uint32) { e.raw(opBrIf); e.uleb(d) }
+
+// 注:结构化控制流(loop/block 多 BB)留 PW4 relooper;本组 if/else 仅用于
+// 算术 opcode 的「快/慢路径」单 BB 内分支(不切 Lua pc)。

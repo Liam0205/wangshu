@@ -30,6 +30,19 @@ type HostState interface {
 	Safepoint(base int32, pc int32)
 	// SetSavedPC 写回 CallInfo.savedPC(pc 物化,02 §4.2)。
 	SetSavedPC(base int32, pc int32)
+
+	// --- PW3 算术慢路径助手(快路径双 number 在 Wasm 内直发 f64,失败回 Go)---
+
+	// Arith 处理算术 opcode 慢路径(ADD/SUB/MUL/DIV/MOD/POW)的 coercion +
+	// 元方法链(复用 execute.go doArithSlow)。op 是 bytecode.OpCode 值。
+	// 返回 status(0=OK / 1=ERR)。
+	Arith(base, pc, op, b, c, a int32) int32
+	// Unm 处理 UNM 慢路径(string coercion + __unm)。
+	Unm(base, pc, b, a int32) int32
+	// Len 处理 LEN(string 长度 / table border / 异类报错;复用 execute.go LEN 段)。
+	Len(base, pc, b, a int32) int32
+	// Concat 处理 CONCAT(复用 execute.go doConcat 全逻辑 + safepoint)。
+	Concat(base, pc, a, b, c int32) int32
 }
 
 // helperSet 持有注入的 HostState,提供给 wazero 注册的 Go callback。
@@ -63,4 +76,24 @@ func (h *helperSet) goReturn(base int32, pc int32, a int32, b int32) int32 {
 // goSafepoint: (base i32, pc i32) -> ()  对应 type 3 / h_safepoint(PW4 用)。
 func (h *helperSet) goSafepoint(base int32, pc int32) {
 	h.host.Safepoint(base, pc)
+}
+
+// goArith: (base,pc,op,b,c,a i32) -> (i32)  对应 type 5 / h_arith(PW3)。
+func (h *helperSet) goArith(base, pc, op, b, c, a int32) int32 {
+	return h.host.Arith(base, pc, op, b, c, a)
+}
+
+// goUnm: (base,pc,b,a i32) -> (i32)  对应 type 6 / h_unm(PW3)。
+func (h *helperSet) goUnm(base, pc, b, a int32) int32 {
+	return h.host.Unm(base, pc, b, a)
+}
+
+// goLen: (base,pc,b,a i32) -> (i32)  对应 type 7 / h_len(PW3)。
+func (h *helperSet) goLen(base, pc, b, a int32) int32 {
+	return h.host.Len(base, pc, b, a)
+}
+
+// goConcat: (base,pc,a,b,c i32) -> (i32)  对应 type 8 / h_concat(PW3)。
+func (h *helperSet) goConcat(base, pc, a, b, c int32) int32 {
+	return h.host.Concat(base, pc, a, b, c)
 }

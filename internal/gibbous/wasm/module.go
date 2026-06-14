@@ -19,11 +19,15 @@ package wasm
 // 每个 helper 一个 type;入口函数也一个 type。
 //
 // type 索引布局:
-//   type 0: (i32, i32) -> (i64)        h_getupval
-//   type 1: (i32, i32, i64) -> ()      h_setupval
+//   type 0: (i32, i32) -> (i64)            h_getupval
+//   type 1: (i32, i32, i64) -> ()          h_setupval
 //   type 2: (i32, i32, i32, i32) -> (i32)  h_return
-//   type 3: (i32, i32) -> ()           h_safepoint
-//   type 4: (i32) -> (i32)             入口 run(base) -> status
+//   type 3: (i32, i32) -> ()               h_safepoint
+//   type 4: (i32) -> (i32)                 入口 run(base) -> status
+//   type 5: (i32,i32,i32,i32,i32,i32)->(i32) h_arith(base,pc,op,b,c,a)
+//   type 6: (i32,i32,i32,i32) -> (i32)     h_unm(base,pc,b,a)
+//   type 7: (i32,i32,i32,i32) -> (i32)     h_len(base,pc,b,a)
+//   type 8: (i32,i32,i32,i32,i32) -> (i32) h_concat(base,pc,a,b,c)
 
 const (
 	typeGetUpval  = 0
@@ -31,13 +35,18 @@ const (
 	typeReturn    = 2
 	typeSafepoint = 3
 	typeEntry     = 4
-	numTypes      = 5
+	typeArith     = 5
+	typeUnm       = 6 // 同 typeReturn 形状(i32×4→i32)但单列以便阅读
+	typeLen       = 7
+	typeConcat    = 8
+	numTypes      = 9
 )
 
 // Wasm value type 编码。
 const (
 	wvtI32 byte = 0x7f
 	wvtI64 byte = 0x7e
+	wvtF64 byte = 0x7c
 )
 
 // buildGibbousModuleBinary 组装完整 module 二进制。
@@ -70,6 +79,14 @@ func typeSection() []byte {
 	p = append(p, 0x60, 0x02, wvtI32, wvtI32, 0x00)
 	// type 4: (i32)->(i32)
 	p = append(p, 0x60, 0x01, wvtI32, 0x01, wvtI32)
+	// type 5: (i32,i32,i32,i32,i32,i32)->(i32)  h_arith
+	p = append(p, 0x60, 0x06, wvtI32, wvtI32, wvtI32, wvtI32, wvtI32, wvtI32, 0x01, wvtI32)
+	// type 6: (i32,i32,i32,i32)->(i32)  h_unm
+	p = append(p, 0x60, 0x04, wvtI32, wvtI32, wvtI32, wvtI32, 0x01, wvtI32)
+	// type 7: (i32,i32,i32,i32)->(i32)  h_len
+	p = append(p, 0x60, 0x04, wvtI32, wvtI32, wvtI32, wvtI32, 0x01, wvtI32)
+	// type 8: (i32,i32,i32,i32,i32)->(i32)  h_concat
+	p = append(p, 0x60, 0x05, wvtI32, wvtI32, wvtI32, wvtI32, wvtI32, 0x01, wvtI32)
 
 	return sectionOf(0x01, p)
 }
@@ -87,17 +104,21 @@ func typeSection() []byte {
 // function index 空间。
 func importSection() []byte {
 	var p []byte
-	// count = 1 memory + 4 funcs = 5
-	p = append(p, uleb32(5)...)
+	// count = 1 memory + 8 funcs = 9
+	p = append(p, uleb32(9)...)
 
 	// import env.memory : memory(limits flags=0 min=1)——共享 holder 的 memory
 	p = append(p, importEntry("env", "memory", 0x02, []byte{0x00, 0x01})...)
 
-	// import host.h_* : func
+	// import host.h_* : func(顺序 = function index = helpers_index.go 常量)
 	p = append(p, importFuncEntry("host", "h_getupval", typeGetUpval)...)
 	p = append(p, importFuncEntry("host", "h_setupval", typeSetUpval)...)
 	p = append(p, importFuncEntry("host", "h_return", typeReturn)...)
 	p = append(p, importFuncEntry("host", "h_safepoint", typeSafepoint)...)
+	p = append(p, importFuncEntry("host", "h_arith", typeArith)...)
+	p = append(p, importFuncEntry("host", "h_unm", typeUnm)...)
+	p = append(p, importFuncEntry("host", "h_len", typeLen)...)
+	p = append(p, importFuncEntry("host", "h_concat", typeConcat)...)
 
 	return sectionOf(0x02, p)
 }
@@ -125,14 +146,18 @@ func exportSection() []byte {
 
 // codeSectionEntry 入口函数 code(local decl + body + end)。
 func codeSectionEntry(body []byte) []byte {
-	// local decl:numLocals-1 个非 param local。PW2 用 localTmp64(i64)+
-	// localTmp32(i32)。声明为 1 组 i64 + 1 组 i32。
+	// local decl(顺序决定 local index,param $base=0 之后):
+	//   组1: 2×i64 → index 1,2(localI64a/localI64b)
+	//   组2: 1×i32 → index 3(localI32,helper status)
+	//   组3: 1×f64 → index 4(localF64,算术结果)
 	var locals []byte
-	locals = append(locals, uleb32(2)...) // 2 个 local 组
-	locals = append(locals, uleb32(1)...) // 1 个 i64
+	locals = append(locals, uleb32(3)...) // 3 个 local 组
+	locals = append(locals, uleb32(2)...) // 2 个 i64
 	locals = append(locals, wvtI64)
 	locals = append(locals, uleb32(1)...) // 1 个 i32
 	locals = append(locals, wvtI32)
+	locals = append(locals, uleb32(1)...) // 1 个 f64
+	locals = append(locals, wvtF64)
 
 	funcBody := append([]byte{}, locals...)
 	funcBody = append(funcBody, body...)

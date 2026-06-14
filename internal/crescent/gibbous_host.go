@@ -13,6 +13,7 @@ package crescent
 
 import (
 	"github.com/Liam0205/wangshu/internal/bridge"
+	"github.com/Liam0205/wangshu/internal/bytecode"
 	"github.com/Liam0205/wangshu/internal/object"
 	"github.com/Liam0205/wangshu/internal/value"
 )
@@ -139,4 +140,84 @@ func (st *State) Safepoint(base int32, pc int32) {
 // SetSavedPC 写回当前帧 savedPC(pc 物化,04 §4.5)。
 func (st *State) SetSavedPC(base int32, pc int32) {
 	currentCI(st.runningThread).pc = pc
+}
+
+// --- PW3 算术慢路径助手(快路径双 number 在 Wasm 内直发,失败回 Go)---
+//
+// 重建 bytecode.Instruction 复用解释器 doArith/doArithSlow/doConcat/LEN 逻辑,
+// 保证 gibbous 慢路径与 crescent 逐字节同构。helper 内 currentCI(th) 即 gibbous
+// 帧(enterGibbous 已压),寄存器寻址经 reg/setReg(已 VS0-c arena 化)。
+
+// Arith 算术慢路径(ADD/SUB/MUL/DIV/MOD/POW)。op 是 bytecode.OpCode 值;
+// 直接调 doArith(含快路径再判 + 慢路径 coercion/元方法),与解释器同构。
+func (st *State) Arith(base, pc, op, b, c, a int32) int32 {
+	th := st.runningThread
+	ci := currentCI(th)
+	ci.pc = pc
+	ins := bytecode.EncodeABC(bytecode.OpCode(op), int(a), int(b), int(c))
+	if e := st.doArith(th, ci, ins); e != nil {
+		st.gibbousPendingErr = e
+		return 1
+	}
+	return 0
+}
+
+// Unm UNM 慢路径(string coercion + __unm)。重建 UNM 指令复用 execute.go
+// UNM 段逻辑(此处直接重跑该段的慢路径分支)。
+func (st *State) Unm(base, pc, b, a int32) int32 {
+	th := st.runningThread
+	ci := currentCI(th)
+	ci.pc = pc
+	bv := reg(th, ci, int(b))
+	if f, ok := st.toNumberCoerce(bv); ok {
+		setReg(th, ci, int(a), value.NumberValue(-f))
+		return 0
+	}
+	h := st.metaFieldOfValue(bv, "__unm")
+	if h == value.Nil {
+		st.gibbousPendingErr = st.errWithName(ci, "perform arithmetic on", int(b), bv)
+		return 1
+	}
+	res, e := st.callMetaHandler(th, h, []value.Value{bv, bv}, 1)
+	if e != nil {
+		st.gibbousPendingErr = e
+		return 1
+	}
+	setReg(th, ci, int(a), res)
+	return 0
+}
+
+// Len LEN(string 长度 / table border / 异类报错;复用 execute.go LEN 段)。
+func (st *State) Len(base, pc, b, a int32) int32 {
+	th := st.runningThread
+	ci := currentCI(th)
+	ci.pc = pc
+	bv := reg(th, ci, int(b))
+	switch value.Tag(bv) {
+	case value.TagString:
+		n := object.StringLen(st.arena, value.GCRefOf(bv))
+		setReg(th, ci, int(a), value.NumberValue(float64(n)))
+		return 0
+	case value.TagTable:
+		border := st.rawBorder(value.GCRefOf(bv))
+		setReg(th, ci, int(a), value.NumberValue(float64(border)))
+		return 0
+	default:
+		st.gibbousPendingErr = st.errWithName(ci, "get length of", int(b), bv)
+		return 1
+	}
+}
+
+// Concat CONCAT(复用 execute.go doConcat 全逻辑 + safepoint)。
+func (st *State) Concat(base, pc, a, b, c int32) int32 {
+	th := st.runningThread
+	ci := currentCI(th)
+	ci.pc = pc
+	ins := bytecode.EncodeABC(bytecode.CONCAT, int(a), int(b), int(c))
+	if e := st.doConcat(th, ci, ins); e != nil {
+		st.gibbousPendingErr = e
+		return 1
+	}
+	st.safepoint(th, ci)
+	return 0
 }

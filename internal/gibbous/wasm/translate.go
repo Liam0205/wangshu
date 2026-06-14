@@ -21,12 +21,18 @@ import (
 )
 
 // Wasm 函数 local 槽位分配(gibbous 函数体内用的临时 local)。
-// 入参 $base 占 local 0;翻译用的临时 i64/i32 从 1 起。
+// 入参 $base 占 local 0;翻译用的临时从 1 起。声明顺序(module.go
+// codeSectionEntry)必须与此一致:2×i64 + 1×i32 + 1×f64。
 const (
-	localBase  = 0 // param $base i32
-	localTmp64 = 1 // i64 临时(load/store 中转)
-	localTmp32 = 2 // i32 临时(status 等)
-	numLocals  = 3 // 函数体声明的 local 总数(不含 param)
+	localBase = 0 // param $base i32
+	localI64a = 1 // i64 临时 a(load/store 中转 / 算术操作数 vb)
+	localI64b = 2 // i64 临时 b(算术操作数 vc)
+	localI32  = 3 // i32 临时(helper status 等)
+	localF64  = 4 // f64 临时(算术结果)
+
+	// 兼容旧名(PW2 直线 opcode 用 localTmp64/localTmp32)。
+	localTmp64 = localI64a
+	localTmp32 = localI32
 )
 
 // translateError 表示某 Proto 无法被 PW2 翻译(控制流过复杂 / 含未实装
@@ -84,10 +90,251 @@ func (c *Compiler) emitOpcode(em *emitter, proto *bytecode.Proto, pc int32) erro
 		return &translateError{reason: "p3 PW2: JMP in single-BB path (unexpected)"}
 	case bytecode.RETURN:
 		c.emitReturn(em, ins, pc)
+	case bytecode.ADD, bytecode.SUB, bytecode.MUL, bytecode.DIV, bytecode.MOD, bytecode.POW:
+		c.emitArith(em, proto, ins, pc)
+	case bytecode.UNM:
+		c.emitUnm(em, ins, pc)
+	case bytecode.NOT:
+		c.emitNot(em, ins)
+	case bytecode.LEN:
+		c.emitLen(em, ins, pc)
+	case bytecode.CONCAT:
+		c.emitConcat(em, ins, pc)
 	default:
-		return &translateError{reason: fmt.Sprintf("p3 PW2: opcode %s not implemented (pc=%d)", op, pc)}
+		return &translateError{reason: fmt.Sprintf("p3 PW3: opcode %s not implemented (pc=%d)", op, pc)}
 	}
 	return nil
+}
+
+// loadRK 把 RK 操作数(寄存器 R(rk) 或常量 K(rk-256))压到 Wasm 栈顶(i64)。
+//   - 寄存器(rk<MaxK):i64.load offset=8*rk (base)
+//   - 常量(rk≥MaxK):i64.const 常量 raw u64(字符串常量已被 SupportsAllOpcodes 拒)
+func (c *Compiler) loadRK(em *emitter, proto *bytecode.Proto, rk int) {
+	if rk < bytecode.MaxK {
+		em.localGet(localBase)
+		em.i64Load(8 * uint32(rk))
+		return
+	}
+	em.i64Const(uint64(proto.Consts[rk-bytecode.MaxK]))
+}
+
+// emitArith ADD/SUB/MUL/DIV/MOD/POW —— 双 number 快路径(Wasm 内直发 f64 +
+// NaN 规范化)+ 慢路径助手(02 §3.2.1)。
+//
+//	vb := RK(B); vc := RK(C)
+//	if IsNumber(vb) && IsNumber(vc):
+//	  r := f64(vb) op f64(vc); canonicalizeNaN(r); R(A) := r
+//	else:
+//	  status := h_arith(base,pc,op,b,c,a); if status==1 return 1
+func (c *Compiler) emitArith(em *emitter, proto *bytecode.Proto, ins bytecode.Instruction, pc int32) {
+	a := uint32(bytecode.A(ins))
+	b := bytecode.B(ins)
+	cc := bytecode.C(ins)
+	op := bytecode.Op(ins)
+
+	// POW 无 f64.pow 指令:整条走慢路径助手(Go math.Pow,byte-equal),
+	// 不发快路径(02 §3.2.2:POW 基线走助手最简)。
+	if op == bytecode.POW {
+		c.emitArithSlow(em, op, b, cc, a, pc)
+		return
+	}
+
+	// vb, vc → local
+	c.loadRK(em, proto, b)
+	em.localSet(localI64a)
+	c.loadRK(em, proto, cc)
+	em.localSet(localI64b)
+
+	// IsNumber(vb) && IsNumber(vc):vb < qNanBoxBase && vc < qNanBoxBase
+	em.localGet(localI64a)
+	em.i64Const(qNanBoxBase)
+	em.i64LtU()
+	em.localGet(localI64b)
+	em.i64Const(qNanBoxBase)
+	em.i64LtU()
+	em.i32And()
+	em.ifVoid()
+	// --- 快路径:f64 算术 ---
+	c.emitArithFast(em, op, a)
+	em.elseOp()
+	// --- 慢路径:h_arith ---
+	c.emitArithSlow(em, op, b, cc, a, pc)
+	em.end()
+}
+
+// emitArithSlow 发射算术慢路径助手调用:h_arith(base,pc,op,b,c,a)→status;
+// status==1 则 return 1(错误冒泡,04 §4.1)。
+func (c *Compiler) emitArithSlow(em *emitter, op bytecode.OpCode, b, cc int, a uint32, pc int32) {
+	em.localGet(localBase)
+	em.i32Const(pc)
+	em.i32Const(int32(op))
+	em.i32Const(int32(b))
+	em.i32Const(int32(cc))
+	em.i32Const(int32(a))
+	em.call(helperArith)
+	em.localTee(localI32)
+	em.i32Const(1)
+	em.raw(0x46) // i32.eq
+	em.ifVoid()
+	em.i32Const(1)
+	em.ret()
+	em.end()
+}
+
+// emitArithFast 发射双 number 快路径:f64(vb) op f64(vc) → 规范化 → store R(A)。
+// 操作数在 localI64a/localI64b(POW 不走此路,无 f64.pow)。
+func (c *Compiler) emitArithFast(em *emitter, op bytecode.OpCode, a uint32) {
+	switch op {
+	case bytecode.MOD:
+		// Lua MOD:a - floor(a/b)*b。
+		em.localGet(localI64a)
+		em.f64ReinterpretI64()
+		em.localGet(localI64a)
+		em.f64ReinterpretI64()
+		em.localGet(localI64b)
+		em.f64ReinterpretI64()
+		em.f64Div()
+		em.f64Floor()
+		em.localGet(localI64b)
+		em.f64ReinterpretI64()
+		em.f64Mul()
+		em.f64Sub() // (vb) - (floor(vb/vc)*vc)
+	default:
+		em.localGet(localI64a)
+		em.f64ReinterpretI64()
+		em.localGet(localI64b)
+		em.f64ReinterpretI64()
+		switch op {
+		case bytecode.ADD:
+			em.f64Add()
+		case bytecode.SUB:
+			em.f64Sub()
+		case bytecode.MUL:
+			em.f64Mul()
+		case bytecode.DIV:
+			em.f64Div()
+		}
+	}
+	// canonicalizeNaN:if r != r then r = canonNaN
+	em.localTee(localF64)
+	em.localGet(localF64)
+	em.f64Ne()
+	em.ifVoid()
+	em.i64Const(canonNaNU64)
+	em.f64ReinterpretI64()
+	em.localSet(localF64)
+	em.end()
+	// store R(A) = i64.reinterpret(r)
+	em.localGet(localBase)
+	em.localGet(localF64)
+	em.i64ReinterpretF64()
+	em.i64Store(8 * a)
+}
+
+// emitUnm UNM A B —— R(A) := -R(B)(02 §3.2.3)。
+// 快路径 f64.neg(不产生新 NaN,不需规范化);否则 h_unm。
+func (c *Compiler) emitUnm(em *emitter, ins bytecode.Instruction, pc int32) {
+	a := uint32(bytecode.A(ins))
+	b := uint32(bytecode.B(ins))
+	em.localGet(localBase)
+	em.i64Load(8 * b)
+	em.localSet(localI64a)
+	// IsNumber(vb)
+	em.localGet(localI64a)
+	em.i64Const(qNanBoxBase)
+	em.i64LtU()
+	em.ifVoid()
+	// 快路径:f64.neg
+	em.localGet(localBase)
+	em.localGet(localI64a)
+	em.f64ReinterpretI64()
+	em.f64Neg()
+	em.i64ReinterpretF64()
+	em.i64Store(8 * a)
+	em.elseOp()
+	// 慢路径:h_unm(base,pc,b,a)
+	em.localGet(localBase)
+	em.i32Const(pc)
+	em.i32Const(int32(b))
+	em.i32Const(int32(a))
+	em.call(helperUnm)
+	em.localTee(localI32)
+	em.i32Const(1)
+	em.raw(0x46) // i32.eq
+	em.ifVoid()
+	em.i32Const(1)
+	em.ret()
+	em.end()
+	em.end()
+}
+
+// emitNot NOT A B —— R(A) := not R(B)(02 §3.2.4,无元方法)。
+// Truthy(v) = v != Nil && v != False;not Truthy → BoolValue。
+func (c *Compiler) emitNot(em *emitter, ins bytecode.Instruction) {
+	a := uint32(bytecode.A(ins))
+	b := uint32(bytecode.B(ins))
+	em.localGet(localBase)
+	em.i64Load(8 * b)
+	em.localSet(localI64a)
+	// vt = (vb != Nil) && (vb != False)
+	em.localGet(localI64a)
+	em.i64Const(nilRawU64())
+	em.i64Ne()
+	em.localGet(localI64a)
+	em.i64Const(falseRawU64())
+	em.i64Ne()
+	em.i32And()
+	// if !vt then R(A)=True else R(A)=False
+	em.i32Eqz()
+	em.ifVoid()
+	em.localGet(localBase)
+	em.i64Const(trueRawU64())
+	em.i64Store(8 * a)
+	em.elseOp()
+	em.localGet(localBase)
+	em.i64Const(falseRawU64())
+	em.i64Store(8 * a)
+	em.end()
+}
+
+// emitLen LEN A B —— R(A) := #R(B)(02 §3.2.5)。全经 h_len(string 长度 /
+// table border / 异类报错——内联过复杂,助手复用 execute.go LEN 段)。
+func (c *Compiler) emitLen(em *emitter, ins bytecode.Instruction, pc int32) {
+	a := uint32(bytecode.A(ins))
+	b := uint32(bytecode.B(ins))
+	em.localGet(localBase)
+	em.i32Const(pc)
+	em.i32Const(int32(b))
+	em.i32Const(int32(a))
+	em.call(helperLen)
+	em.localTee(localI32)
+	em.i32Const(1)
+	em.raw(0x46) // i32.eq
+	em.ifVoid()
+	em.i32Const(1)
+	em.ret()
+	em.end()
+}
+
+// emitConcat CONCAT A B C —— R(A) := R(B)..…..R(C)(02 §3.2.6)。
+// 全经 h_concat(复用 execute.go doConcat 全逻辑 + safepoint)。
+func (c *Compiler) emitConcat(em *emitter, ins bytecode.Instruction, pc int32) {
+	a := uint32(bytecode.A(ins))
+	b := uint32(bytecode.B(ins))
+	cc := uint32(bytecode.C(ins))
+	em.localGet(localBase)
+	em.i32Const(pc)
+	em.i32Const(int32(a))
+	em.i32Const(int32(b))
+	em.i32Const(int32(cc))
+	em.call(helperConcat)
+	em.localTee(localI32)
+	em.i32Const(1)
+	em.raw(0x46) // i32.eq
+	em.ifVoid()
+	em.i32Const(1)
+	em.ret()
+	em.end()
 }
 
 // emitMove MOVE A B —— R(A) := R(B)(02 §3.1.1)。

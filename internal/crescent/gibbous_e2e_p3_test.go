@@ -154,3 +154,76 @@ return id
 		t.Fatal("升层后 GibbousCodeOf 应返回非 nil")
 	}
 }
+
+// TestPW3_ArithE2E `local function f(a,b) return a+b end`:ADD 双 number 快路径
+// 升 gibbous 后经 trampoline 跳 wazero,结果与解释器逐字节一致。
+func TestPW3_ArithE2E(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		args []value.Value
+		want float64
+	}{
+		{"add", `local function f(a,b) return a+b end; return f`,
+			[]value.Value{value.NumberValue(3), value.NumberValue(4)}, 7},
+		{"sub", `local function f(a,b) return a-b end; return f`,
+			[]value.Value{value.NumberValue(10), value.NumberValue(3)}, 7},
+		{"muladd", `local function f(a,b) return a*b end; return f`,
+			[]value.Value{value.NumberValue(6), value.NumberValue(7)}, 42},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st, mainCl := loadFn(t, tc.src)
+			rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+			if err != nil {
+				t.Fatalf("run main: %v", err)
+			}
+			fVal := rets[0]
+			pid := object.ClosureProtoID(st.arena, value.GCRefOf(fVal))
+
+			// 解释器基线。
+			base, e := st.Call(value.GCRefOf(fVal), tc.args, 1)
+			if e != nil {
+				t.Fatalf("interp call: %v", e)
+			}
+			if !value.IsNumber(base[0]) || value.AsNumber(base[0]) != tc.want {
+				t.Fatalf("interp f = %v, want %v", base[0], tc.want)
+			}
+
+			if !promoteProto(st, pid) {
+				t.Skipf("%s proto not supported by gibbous whitelist", tc.name)
+			}
+			// 升层后:经 trampoline 跳 wazero,byte-equal。
+			got, e2 := st.Call(value.GCRefOf(fVal), tc.args, 1)
+			if e2 != nil {
+				t.Fatalf("gibbous call: %v", e2)
+			}
+			if len(got) != 1 || !value.IsNumber(got[0]) || value.AsNumber(got[0]) != tc.want {
+				t.Errorf("gibbous f = %v, want %v (byte-equal)", got[0], tc.want)
+			}
+		})
+	}
+}
+
+// TestPW3_ArithSlowPathE2E 混合类型(string coercion)走慢路径助手 h_arith,
+// 与解释器 doArithSlow 逐字节一致。
+func TestPW3_ArithSlowPathE2E(t *testing.T) {
+	// "10" + 5:string coercion → 15(Lua 5.1 算术 coercion)
+	src := `local function f(a,b) return a+b end; return f`
+	st, mainCl := loadFn(t, src)
+	rets, _ := st.Call(value.GCRefOf(mainCl), nil, 1)
+	fVal := rets[0]
+	pid := object.ClosureProtoID(st.arena, value.GCRefOf(fVal))
+	if !promoteProto(st, pid) {
+		t.Skip("proto not supported")
+	}
+	// "10" 是字符串:gibbous ADD 快路径 IsNumber 失败 → h_arith 慢路径 coercion。
+	strV := value.MakeGC(value.TagString, st.gc.Intern([]byte("10")))
+	got, e := st.Call(value.GCRefOf(fVal), []value.Value{strV, value.NumberValue(5)}, 1)
+	if e != nil {
+		t.Fatalf("gibbous slow-path call: %v", e)
+	}
+	if !value.IsNumber(got[0]) || value.AsNumber(got[0]) != 15 {
+		t.Errorf(`gibbous f("10",5) = %v, want 15 (string coercion via h_arith)`, got[0])
+	}
+}
