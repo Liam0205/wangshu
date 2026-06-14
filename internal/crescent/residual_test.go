@@ -101,7 +101,7 @@ func TestRawTable_DeleteExistingKey(t *testing.T) {
 // (覆盖 RegisterFinalizer + separateFinalizers 复活 + runFinalizer 回调)。
 func TestFinalizer_GCRunsUserDataGC(t *testing.T) {
 	st := New()
-	th := newThread()
+	th := st.newThread()
 	st.runningThread = th
 	defer func() { st.runningThread = nil }()
 

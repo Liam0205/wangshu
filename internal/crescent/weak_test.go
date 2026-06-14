@@ -11,7 +11,7 @@ import (
 // TestWeak_ValueModeCleared:__mode="v" 的表,GC 后不可达的值条目被清。
 func TestWeak_ValueModeCleared(t *testing.T) {
 	st := New()
-	th := newThread()
+	th := st.newThread()
 	st.runningThread = th
 	defer func() { st.runningThread = nil }()
 
@@ -59,7 +59,7 @@ func TestWeak_ValueModeCleared(t *testing.T) {
 // TestWeak_KeyModeCleared:__mode="k" 的表,键死则条目清。
 func TestWeak_KeyModeCleared(t *testing.T) {
 	st := New()
-	th := newThread()
+	th := st.newThread()
 	st.runningThread = th
 	defer func() { st.runningThread = nil }()
 
@@ -86,7 +86,7 @@ func TestWeak_KeyModeCleared(t *testing.T) {
 // TestWeak_StrongTableKeepsAll:无 __mode 的表完全不受影响。
 func TestWeak_StrongTableKeepsAll(t *testing.T) {
 	st := New()
-	th := newThread()
+	th := st.newThread()
 	st.runningThread = th
 	defer func() { st.runningThread = nil }()
 

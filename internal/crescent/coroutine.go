@@ -55,7 +55,7 @@ func (st *State) NewCoroutine(fn value.Value) (uint64, *LuaError) {
 		return 0, errf("bad argument #1 to 'create' (function expected)")
 	}
 	co := &coroutine{
-		th:     newThread(),
+		th:     st.newThread(),
 		status: CoSuspended,
 		fn:     fn,
 	}

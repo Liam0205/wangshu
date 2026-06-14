@@ -9,6 +9,7 @@ package crescent
 import (
 	"fmt"
 	"sync/atomic"
+	"unsafe"
 
 	"github.com/Liam0205/wangshu/internal/arena"
 	"github.com/Liam0205/wangshu/internal/bridge"
@@ -565,7 +566,7 @@ func (st *State) callOnStack(cl arena.GCRef, args []value.Value, nresults int) (
 	// closeUpvals 已清空)。
 	th := st.mainTh
 	if th == nil {
-		th = newThread()
+		th = st.newThread()
 		st.mainTh = th
 	} else {
 		th.top = 0
@@ -617,14 +618,25 @@ func (st *State) CallOnStack(cl arena.GCRef, args []value.Value, nresults int) (
 	return st.callOnStack(cl, args, nresults)
 }
 
-// thread 是 M9 简化版的执行线程:值栈与 CallInfo 都住 Go 切片。
+// thread 是执行线程:值栈住 arena 段(VS0-c 形态 Y),CallInfo 仍住 Go 切片。
 //
-// 后续 M13 把 stack/cis 切到 arena 上(走 newBacking 注入点)即可保留接口形状。
+// **值栈 arena 化(VS0-c)**:stack 不再是 Go slice,而是 arena 内一段
+// Value[stackCap](01 §5.6 valueStackRef)。寄存器 R(i) = arena 段第 i 槽
+// (stackBaseW 字偏移 + i)。物理上与 gibbous wasm 的 i64.load offset=8*i
+// 读写同一块 linear memory(P3 build 下)——这是端到端共见的基础。
+//
+// 形态 Y:slot/setSlot 每次经 arena.Words() 当前视图寻址(不缓存派生切片),
+// 免疫 arena grow(grow 时 arena.words 字段由 setBacking 更新,下次 Words()
+// 取到新视图)。段满时 growStack 在 arena 内重分配更大段 + 拷旧 + Free 旧;
+// 开放 upvalue 经 owner.slot(idx) 寻址,stackBaseW 更新后自动指向新段同位置
+// (无需额外重定位)。
 type thread struct {
-	stack   []value.Value
-	top     int // 当前栈顶(超过 ci.top 的临时区)
-	cis     []callInfo
-	openUvs map[uint32]arena.GCRef // stackIdx → open Upvalue ref(M9 简化,M10 改降序链)
+	arena      *arena.Arena // 值栈段所在 arena(段寻址 + grow 用)
+	stackBaseW uint32       // 值栈段在 arena 的字偏移(= valueStackRef>>3)
+	stackCap   int          // 段容量(槽数;= size())
+	top        int          // 当前栈顶(超过 ci.top 的临时区)
+	cis        []callInfo
+	openUvs    map[uint32]arena.GCRef // stackIdx → open Upvalue ref(M9 简化,M10 改降序链)
 
 	// maxOpenIdx 是 openUvs 中最大的 stackIdx(官方降序链表头的等价物):
 	// closeUpvals(level) 在 level > maxOpenIdx 时 O(1) 返回——RETURN 每帧
@@ -637,67 +649,107 @@ type thread struct {
 	pendingResume *pendingResumeInfo
 }
 
-func newThread() *thread {
-	return &thread{
-		stack: make([]value.Value, 0, 64),
-	}
+// initialStackSlots 是 thread 值栈段的初始槽数(对齐旧 Go slice cap 64)。
+const initialStackSlots = 64
+
+// newThread 建一个值栈住 arena 段的 thread(VS0-c)。主线程与协程统一经此
+// 入口,故主线程栈与协程栈一并 arena 化。
+func (st *State) newThread() *thread {
+	th := &thread{arena: st.arena}
+	ref := st.arena.AllocWords(initialStackSlots)
+	th.stackBaseW = uint32(ref) >> 3
+	th.stackCap = initialStackSlots
+	return th
 }
 
 // --- 值栈访问收口(VS0 形态 Y)---
 //
 // slot/setSlot 是值栈槽的唯一标量读写收口;size/copyOut/copyIn/activeSlice
-// 覆盖容量查询与批量搬移。VS0-a 阶段后端仍是 Go slice(纯收口,零行为变更);
-// VS0-c 值栈进 arena 后,这些 helper 内部改 arena.WordAt 偏移寻址(形态 Y:
-// 不缓存派生视图,免疫 arena grow),opcode 与调用约定代码不动。
+// 覆盖容量查询与批量搬移。形态 Y:每次经 arena.Words() 当前视图偏移寻址,
+// 不缓存派生切片(免疫 arena grow),opcode 与调用约定代码经 VS0-a 收口后不动。
 
-// slot 读绝对栈位 i 的值。
-func (th *thread) slot(i int) value.Value { return th.stack[i] }
+// slot 读绝对栈位 i 的值(arena 段第 stackBaseW+i 字)。
+func (th *thread) slot(i int) value.Value {
+	return value.Value(th.arena.Words()[th.stackBaseW+uint32(i)])
+}
 
 // setSlot 写绝对栈位 i。
-func (th *thread) setSlot(i int, v value.Value) { th.stack[i] = v }
+func (th *thread) setSlot(i int, v value.Value) {
+	th.arena.Words()[th.stackBaseW+uint32(i)] = uint64(v)
+}
 
-// size 返回值栈当前长度(容量边界判断用;arena 化后 = stackCap)。
-func (th *thread) size() int { return len(th.stack) }
+// size 返回值栈段容量(= stackCap;容量边界判断用)。
+func (th *thread) size() int { return th.stackCap }
 
-// copyOut 把 [lo,hi) 槽拷进调用方 Go slice dst(返回值搬移)。copy 即时消费、
-// 中间不分配,arena 化后经短寿命 arena 段切片安全。
-func (th *thread) copyOut(dst []value.Value, lo, hi int) { copy(dst, th.stack[lo:hi]) }
+// copyOut 把 [lo,hi) 槽拷进调用方 Go slice dst(返回值搬移)。
+func (th *thread) copyOut(dst []value.Value, lo, hi int) {
+	w := th.arena.Words()
+	for i := lo; i < hi; i++ {
+		dst[i-lo] = value.Value(w[th.stackBaseW+uint32(i)])
+	}
+}
 
-// copyIn 把 src 拷进 [lo,...) 槽(resume 写值)。同 copyOut 的短寿命视图纪律。
-func (th *thread) copyIn(lo int, src []value.Value) { copy(th.stack[lo:], src) }
+// copyIn 把 src 拷进 [lo,...) 槽(resume 写值)。
+func (th *thread) copyIn(lo int, src []value.Value) {
+	w := th.arena.Words()
+	for i, v := range src {
+		w[th.stackBaseW+uint32(lo+i)] = uint64(v)
+	}
+}
 
 // activeSlice 返回 [0,hi) 的零拷贝活动切片(callOnStack 返回值;契约见
-// callOnStack 文档:下次进 VM 前消费完;arena 化后是 arena 段切片)。
-func (th *thread) activeSlice(hi int) []value.Value { return th.stack[:hi] }
-
-func (th *thread) push(v value.Value) {
-	if cap(th.stack) <= th.top {
-		ns := make([]value.Value, th.top, max(cap(th.stack)*2, th.top+8))
-		copy(ns, th.stack)
-		th.stack = ns
+// callOnStack 文档:下次进 VM 前消费完——grow 只在进 VM 时发生,故此切片
+// 在消费窗口内有效)。形态 Y 下经 unsafe 别名 arena 段(Value 底层 = uint64)。
+func (th *thread) activeSlice(hi int) []value.Value {
+	if hi == 0 {
+		return nil
 	}
-	th.stack = th.stack[:th.top+1]
-	th.stack[th.top] = v
+	w := th.arena.Words()
+	return unsafe.Slice((*value.Value)(unsafe.Pointer(&w[th.stackBaseW])), hi)
+}
+
+// push 压一个值到栈顶(段满则 growStack)。
+func (th *thread) push(v value.Value) {
+	if th.top >= th.stackCap {
+		th.growStack(th.top + 1)
+	}
+	th.setSlot(th.top, v)
 	th.top++
 }
 
+// ensureStack 确保段容量 ≥ n(段满则 growStack)。
 func (th *thread) ensureStack(n int) {
-	if cap(th.stack) >= n {
-		if len(th.stack) < n {
-			th.stack = th.stack[:n]
-		}
-		return
+	if n > th.stackCap {
+		th.growStack(n)
 	}
-	ns := make([]value.Value, n, max(cap(th.stack)*2, n+8))
-	copy(ns, th.stack)
-	th.stack = ns
 }
 
-func max(a, b int) int {
-	if a > b {
-		return a
+// growStack 在 arena 内重分配更大段、拷旧槽、改 stackBaseW、Free 旧段
+// (lua_realloc stack 风格)。
+//
+// **grow 视图陷阱**:AllocWords 可能触发 arena 物理 grow64 使旧视图失效;
+// 拷贝经 WordAt/SetWordAt 现算地址(读 arena.words 当前值,grow 后偏移不变),
+// 不缓存任何派生切片(形态 Y 免疫的兑现)。
+//
+// **upvalue 自动重定位**:开放 upvalue 经 owner.slot(idx) 寻址,stackBaseW
+// 更新后自动指向新段同位置,无需改 openUvs 的 stackIdx 键。
+func (th *thread) growStack(need int) {
+	newCap := need + 8
+	if d := th.stackCap * 2; d > newCap {
+		newCap = d
 	}
-	return b
+	a := th.arena
+	newRef := a.AllocWords(uint32(newCap))
+	oldRef := arena.GCRef(th.stackBaseW) << 3
+	for i := 0; i < th.top; i++ {
+		a.SetWordAt(newRef+arena.GCRef(i*8), a.WordAt(oldRef+arena.GCRef(i*8)))
+	}
+	oldCap := th.stackCap
+	th.stackBaseW = uint32(newRef) >> 3
+	th.stackCap = newCap
+	if !oldRef.IsNull() {
+		a.Free(oldRef, uint32(oldCap)*8)
+	}
 }
 
 // callInfo 持久化每个活跃 Lua 调用的状态(05 §1.2)。M9 简化字段。
