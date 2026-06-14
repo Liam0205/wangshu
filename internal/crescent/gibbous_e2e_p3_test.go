@@ -648,3 +648,45 @@ return f`
 		t.Errorf("gibbous f(1e5,0) = %v, want 5000050000", gotDeep[0])
 	}
 }
+
+// TestPW6c_ErrorCrossesGibbous PW6-c:错误穿越 gibbous 帧冒泡到 pcall 边界
+// byte-equal(错误消息 + 是否被捕获)。
+func TestPW6c_ErrorCrossesGibbous(t *testing.T) {
+	// f 调 helper,helper 对 nil 做算术报错;错误经 h_call status 链冒泡出 f,
+	// 再经 ProtectedCall 边界捕获。gibbous 与解释器错误消息逐字节一致。
+	src := `
+local function helper(x) return x + 1 end   -- helper(nil) → 对 nil 算术报错
+local function f(a) return helper(a) end
+return f`
+	loadF := func() (*State, value.Value) {
+		st, mainCl := loadFn(t, src)
+		rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+		if err != nil {
+			t.Fatalf("run main: %v", err)
+		}
+		return st, rets[0]
+	}
+	badArg := []value.Value{value.Nil}
+
+	// oracle:解释器跑 f(nil),经 ProtectedCall 捕获错误消息。
+	stO, fO := loadF()
+	_, eO := stO.ProtectedCall(fO, badArg)
+	if eO == nil {
+		t.Fatal("interp f(nil) 应报错(对 nil 算术)")
+	}
+	wantMsg := eO.Msg
+
+	// gibbous:f 升层后,错误经 h_call status 链冒泡,ProtectedCall 捕获,消息同款。
+	st, fVal := loadF()
+	pid := object.ClosureProtoID(st.arena, value.GCRefOf(fVal))
+	if !promoteProto(st, pid) {
+		t.Skip("f not supported")
+	}
+	_, eG := st.ProtectedCall(fVal, badArg)
+	if eG == nil {
+		t.Fatal("gibbous f(nil) 应报错(错误经 status 链穿越 gibbous 帧冒泡)")
+	}
+	if eG.Msg != wantMsg {
+		t.Errorf("gibbous 错误消息 = %q, want %q (byte-equal traceback)", eG.Msg, wantMsg)
+	}
+}

@@ -166,6 +166,10 @@ func (c *Compiler) emitOpcode(em *emitter, proto *bytecode.Proto, pc int32) erro
 		c.emitSetUpval(em, ins, pc)
 	case bytecode.RETURN:
 		c.emitReturn(em, ins, pc)
+	case bytecode.TAILCALL:
+		// 单 BB 路径(TAILCALL 后仅死代码 RETURN,reachableBlocks==1)的尾调用。
+		// 多 BB 路径由 emitBlockBody 终结分派(两路均调 emitTailCall,自闭 return)。
+		c.emitTailCall(em, ins, pc)
 	case bytecode.ADD, bytecode.SUB, bytecode.MUL, bytecode.DIV, bytecode.MOD, bytecode.POW:
 		c.emitArith(em, proto, ins, pc)
 	case bytecode.UNM:
