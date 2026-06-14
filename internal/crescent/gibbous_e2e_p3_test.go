@@ -317,6 +317,71 @@ func TestPW5a_GlobalIC(t *testing.T) {
 	})
 }
 
+// TestPW5b_TableIC PW5-b:GETTABLE/SETTABLE inline IC(键匹配)。
+// const-key NodeHit(t.x)/ register-key ArrayHit(t[1])命中 inline 跳哈希;
+// 升层前跑解释器基线填 IC + byte-equal 对拍。
+func TestPW5b_TableIC(t *testing.T) {
+	run := func(t *testing.T, src string, setup func(*State) []value.Value, want float64) {
+		st, mainCl := loadFn(t, src)
+		rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+		if err != nil {
+			t.Fatalf("run main: %v", err)
+		}
+		fVal := rets[0]
+		pid := object.ClosureProtoID(st.arena, value.GCRefOf(fVal))
+		args := setup(st)
+		base, e := st.Call(value.GCRefOf(fVal), args, 1)
+		if e != nil {
+			t.Fatalf("interp: %v", e)
+		}
+		if !value.IsNumber(base[0]) || value.AsNumber(base[0]) != want {
+			t.Fatalf("interp = %v, want %v", base[0], want)
+		}
+		if !promoteProto(st, pid) {
+			t.Skip("proto not supported")
+		}
+		got, e2 := st.Call(value.GCRefOf(fVal), args, 1)
+		if e2 != nil {
+			t.Fatalf("gibbous: %v", e2)
+		}
+		if !value.IsNumber(got[0]) || value.AsNumber(got[0]) != want {
+			t.Errorf("gibbous = %v, want %v (byte-equal)", got[0], want)
+		}
+	}
+
+	t.Run("gettable-field", func(t *testing.T) {
+		run(t, `local function f(t) return t.x end; return f`, func(st *State) []value.Value {
+			tv := st.newTableArg(map[string]float64{"x": 42}, nil)
+			return []value.Value{tv}
+		}, 42)
+	})
+	t.Run("gettable-array", func(t *testing.T) {
+		run(t, `local function f(t) return t[1] end; return f`, func(st *State) []value.Value {
+			tv := st.newTableArg(nil, []float64{7, 8, 9})
+			return []value.Value{tv}
+		}, 7)
+	})
+	t.Run("settable-field", func(t *testing.T) {
+		run(t, `local function f(t) t.x = 5; return t.x end; return f`, func(st *State) []value.Value {
+			tv := st.newTableArg(map[string]float64{"x": 0}, nil)
+			return []value.Value{tv}
+		}, 5)
+	})
+}
+
+// newTableArg 构造一个测试表(string→number 字段 + 数组段),返回其 value。
+func (st *State) newTableArg(fields map[string]float64, arr []float64) value.Value {
+	asz := uint32(len(arr))
+	t := st.allocTable(asz, roundUpPow2(uint32(len(fields))))
+	for i, v := range arr {
+		st.tableSetInt(t, uint32(i+1), value.NumberValue(v))
+	}
+	for k, v := range fields {
+		st.SetTableField(t, k, value.NumberValue(v))
+	}
+	return value.MakeGC(value.TagTable, t)
+}
+
 // TestPW4_ControlFlowE2E PW4 relooper:含分支/循环的函数升 gibbous 后经
 // trampoline 跳 wazero,与解释器逐字节一致。
 func TestPW4_ControlFlowE2E(t *testing.T) {

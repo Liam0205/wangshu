@@ -427,3 +427,74 @@ func TestPW5_GetGlobalInlineHit(t *testing.T) {
 		t.Errorf("GETGLOBAL inline R0 = %#x, want node val %#x", got, nodeVal)
 	}
 }
+
+// TestPW5_GetTableInlineHit 证明 GETTABLE inline 快路径真跳哈希(不调助手)。
+// 手工布表(头 + array 段 + node 段),poison h_gettable;命中则零助手调用。
+func TestPW5_GetTableInlineHit(t *testing.T) {
+	ctx := context.Background()
+	rt := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfigCompiler())
+	defer rt.Close(ctx)
+	holder, err := memadapter.New(ctx, rt, 64*1024, 1<<31)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Close()
+	mem := holder.Memory()
+
+	const tblOff = 512
+	const arrOff = tblOff + 48 // 头 6 字
+	const gen = 7
+	const arrVal = uint64(0x4010_0000_0000_0000) // f64 4.0
+
+	// 表头:asize=4 | hmask=0;arrayRef=arrOff;nodeRef=0;gen<<32
+	mem.WriteUint64Le(tblOff+8, uint64(4))        // sizes: asize=4
+	mem.WriteUint64Le(tblOff+16, uint64(arrOff))  // arrayRef(word2)
+	mem.WriteUint64Le(tblOff+24, 0)               // nodeRef
+	mem.WriteUint64Le(tblOff+40, uint64(gen)<<32) // gen
+	// array 段:idx0 = arrVal
+	mem.WriteUint64Le(arrOff+0, arrVal)
+
+	tblRaw := uint64(value.TagTable)<<48 | uint64(tblOff)
+	poison := 0
+	mh := &mockHost{}
+	c := NewCompiler(ctx, rt, mh)
+	// 用 GetTable poison:复用 mockHost.getGlobalFn 不行,加一个计数器闭包不便;
+	// 改为断言 R(A) 命中值即可(poison 通过让助手返回错值难做;这里靠 R(A) 正确性 +
+	// 助手返回 0 不写 R(A) 来区分:把 R0 预置成 sentinel,命中改成 arrVal,
+	// 助手 mock 返回 0 但不写 R(A) → R0 仍 sentinel → 区分 inline vs helper)。
+	_ = poison
+
+	// Proto: GETTABLE R0 R1 R2(t=R1, key=R2);RETURN R0 2
+	proto := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABC(bytecode.GETTABLE, 0, 1, 2),
+			bytecode.EncodeABC(bytecode.RETURN, 0, 2, 0),
+		},
+		IC: make([]bytecode.ICSlot, 2),
+	}
+	// ArrayHit:Index=0(键 1);gen=7
+	proto.IC[0] = bytecode.ICSlot{Kind: bytecode.ICKindArrayHit, Shape: gen, Index: 0, TableRef: uint32(tblOff)}
+
+	if !c.SupportsAllOpcodes(proto) {
+		t.Fatal("GETTABLE proto should be supported")
+	}
+	gc, err := c.Compile(proto, nil)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	defer func() { _ = gc.(*p3Code).Dispose() }()
+
+	const sentinel = uint64(0xDEAD_BEEF_0000_0000)
+	mem.WriteUint64Le(0, sentinel)               // R0 sentinel
+	mem.WriteUint64Le(8, tblRaw)                 // R1 = table
+	mem.WriteUint64Le(16, 0x3FF0_0000_0000_0000) // R2 = f64 1.0 (key 1 → ArrayHit idx0)
+
+	stack := make([]uint64, 1)
+	if status := gc.(*p3Code).Run(stack, 0); status != 0 {
+		t.Fatalf("run status=%d pendingErr=%v", status, gc.(*p3Code).PendingErr())
+	}
+	got, _ := mem.ReadUint64Le(0)
+	if got != arrVal {
+		t.Errorf("GETTABLE inline ArrayHit R0 = %#x, want %#x (mock 助手不写 R(A),非 sentinel 即 inline 命中)", got, arrVal)
+	}
+}

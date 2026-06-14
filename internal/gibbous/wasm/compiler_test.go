@@ -44,6 +44,10 @@ func TestCompiler_SupportsWhitelist(t *testing.T) {
 			bytecode.EncodeABC(bytecode.ADD, 0, 0, 1),
 			bytecode.EncodeABC(bytecode.RETURN, 0, 2, 0),
 		}},
+		{"GETTABLE+RETURN(PW5)", []bytecode.Instruction{
+			bytecode.EncodeABC(bytecode.GETTABLE, 0, 0, 1),
+			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
+		}},
 	}
 	for _, tc := range supported {
 		t.Run("yes/"+tc.name, func(t *testing.T) {
@@ -53,13 +57,13 @@ func TestCompiler_SupportsWhitelist(t *testing.T) {
 		})
 	}
 
-	// 未实装 opcode(GETTABLE 是 PW5)→ 拒
+	// 未实装 opcode(VARARG 永不支持,02 §1.3)→ 拒
 	notYet := []bytecode.Instruction{
-		bytecode.EncodeABC(bytecode.GETTABLE, 0, 0, 1),
+		bytecode.EncodeABC(bytecode.VARARG, 0, 0, 0),
 		bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
 	}
 	if c.SupportsAllOpcodes(&bytecode.Proto{Code: notYet}) {
-		t.Error("GETTABLE (PW5) should NOT be supported yet")
+		t.Error("VARARG should NOT be supported")
 	}
 }
 

@@ -175,6 +175,10 @@ func (c *Compiler) emitOpcode(em *emitter, proto *bytecode.Proto, pc int32) erro
 		c.emitGetGlobal(em, proto, ins, pc)
 	case bytecode.SETGLOBAL:
 		c.emitSetGlobal(em, proto, ins, pc)
+	case bytecode.GETTABLE:
+		c.emitGetTable(em, proto, ins, pc)
+	case bytecode.SETTABLE:
+		c.emitSetTable(em, proto, ins, pc)
 	default:
 		return &translateError{reason: fmt.Sprintf("p3 PW3: opcode %s not implemented (pc=%d)", op, pc)}
 	}

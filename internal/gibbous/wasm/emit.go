@@ -36,7 +36,6 @@ const (
 	opI32Eq  byte = 0x46
 	opI32Ne  byte = 0x47
 	opI32And byte = 0x71
-	opI64Add byte = 0x7c
 	opI64And byte = 0x83
 	opI64Eq  byte = 0x51
 	opI64Ne  byte = 0x52
@@ -164,7 +163,6 @@ func (e *emitter) i64ReinterpretF64() { e.raw(opI64ReintF64) }
 func (e *emitter) i64LtU()            { e.raw(opI64LtU) }
 func (e *emitter) i64Ne()             { e.raw(opI64Ne) }
 func (e *emitter) i64Eq()             { e.raw(opI64Eq) }
-func (e *emitter) i64Add()            { e.raw(opI64Add) }
 func (e *emitter) i64And()            { e.raw(opI64And) }
 func (e *emitter) i64ShrU()           { e.raw(opI64ShrU) }
 func (e *emitter) i32WrapI64()        { e.raw(opI32WrapI64) }

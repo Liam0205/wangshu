@@ -96,6 +96,8 @@ func NewCompiler(ctx context.Context, runtime wazero.Runtime, host HostState) *C
 	// PW5:表 IC opcode(inline 快照固化 + 失效降级助手)。
 	c.supported[bytecode.GETGLOBAL] = true
 	c.supported[bytecode.SETGLOBAL] = true
+	c.supported[bytecode.GETTABLE] = true
+	c.supported[bytecode.SETTABLE] = true
 	// PW5+ 逐档解锁(02-translation §1.3)。VARARG 永不加入。
 	return c
 }

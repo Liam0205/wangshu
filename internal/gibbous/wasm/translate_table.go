@@ -197,3 +197,195 @@ func (c *Compiler) emitSetGlobal(em *emitter, proto *bytecode.Proto, ins bytecod
 	c.emitHelperEpilogue4(em, helperSetGlobal, pc, a, bx)
 	em.end() // block $done
 }
+
+// --- GETTABLE / SETTABLE(PW5-b,动态键匹配)---
+//
+// 控制结构(br 深度恒定,避免深嵌套计数):
+//
+//	block $done        ; depth 1(成功:跳过助手)
+//	  block $slow      ; depth 0(放弃 inline:落到助手)
+//	    <表 guard + 键匹配 + 槽非 nil,任一失败 br_if 0 → $slow>
+//	    <命中:store / load;br 1 → $done>
+//	  end ; $slow
+//	  <helper>
+//	end ; $done
+//
+// inline 仅覆盖 byte-equal 可证形态:① 常量键(同表同 gen ⟹ 缓存 Index 仍映射
+// 同键,省键匹配,同 GETGLOBAL);② 寄存器键 + ArrayHit(数值 f64 == Index+1)。
+// 寄存器键 + NodeHit(normKey/keyEqual inline 脆弱)/ MonoMeta → 纯助手。
+
+// tableInlineable 判某表 IC 点是否走 inline 快路径(否则纯助手)。
+// regKey=true 表示键是寄存器(动态),false 表示常量键。
+func tableInlineable(snap icSnapshot, regKey bool) bool {
+	switch snap.kind {
+	case bytecode.ICKindArrayHit:
+		return true // 常量键省匹配;寄存器键走数值匹配
+	case bytecode.ICKindNodeHit:
+		return !regKey // 仅常量键(寄存器键 NodeHit 走助手)
+	default:
+		return false // None / MonoMeta / Mega
+	}
+}
+
+// emitTableGuard 发表 guard:IsTable + 同 TableRef + 同 gen(任一失败 br_if 0)。
+// 入口栈空;出口:localI64c=表值(已消费),localI32b=表字节地址(taddr,i32)。
+// 前置:必须在 block $slow(depth 0)内调用。
+func (c *Compiler) emitTableGuard(em *emitter, regB int, snap icSnapshot) {
+	// vt := R(B);localI64c = vt;localI32b = taddr(低 48 位 wrap i32)
+	em.localGet(localBase)
+	em.i64Load(8 * uint32(regB))
+	em.localTee(localI64c)
+	em.i64Const(payloadMaskU64)
+	em.i64And()
+	em.i32WrapI64()
+	em.localSet(localI32b)
+	// IsTable: (vt >> 48) == TagTable
+	em.localGet(localI64c)
+	em.i64Const(48)
+	em.i64ShrU()
+	em.i64Const(uint64(tagTableU64))
+	em.i64Eq()
+	em.i32Eqz()
+	em.brIf(0) // → $slow
+	// 同 TableRef: taddr(i32) == SNAP_TABLEREF
+	em.localGet(localI32b)
+	em.i32Const(int32(snap.tableRef))
+	em.i32Eq()
+	em.i32Eqz()
+	em.brIf(0)
+	// 同 gen: (i64.load[taddr+40] >> 32) wrap == SNAP_GEN
+	em.localGet(localI32b)
+	em.i64Load(tblGenOff)
+	em.i64Const(32)
+	em.i64ShrU()
+	em.i32WrapI64()
+	em.i32Const(int32(snap.gen))
+	em.i32Eq()
+	em.i32Eqz()
+	em.brIf(0)
+}
+
+// emitArrayKeyMatch 发寄存器键 ArrayHit 数值匹配:IsNumber(key) 且 f64(key) ==
+// Index+1(arrayIndex 命中 ⟺ 整数键 == Index+1)。失败 br_if 0 → $slow。
+func (c *Compiler) emitArrayKeyMatch(em *emitter, regC int, snap icSnapshot) {
+	em.localGet(localBase)
+	em.i64Load(8 * uint32(regC))
+	em.localTee(localI64c)
+	// IsNumber: key < qNanBoxBase
+	em.i64Const(qNanBoxBase)
+	em.i64LtU()
+	em.i32Eqz()
+	em.brIf(0)
+	// f64(key) == Index+1
+	em.localGet(localI64c)
+	em.f64ReinterpretI64()
+	em.f64Const(float64(snap.index) + 1)
+	em.f64Eq()
+	em.i32Eqz()
+	em.brIf(0)
+}
+
+// emitSlotAddr 把命中槽的字节地址压栈(i32):
+//
+//	ArrayHit: wrap(i64.load[taddr+16]) + Index*8
+//	NodeHit:  wrap(i64.load[taddr+24]) + (Index*24+8)
+//
+// 返回该槽相对附属块基址的字节 offset(供 i64.load/store 立即数)与基址在栈顶。
+// 实装:压栈基址 i32,offset 由调用方作 i64.load/store 立即数。
+func (c *Compiler) emitSlotBase(em *emitter, snap icSnapshot) uint32 {
+	if snap.kind == bytecode.ICKindArrayHit {
+		em.localGet(localI32b)
+		em.i64Load(tblArrayOff)
+		em.i32WrapI64()
+		return snap.index * 8
+	}
+	// NodeHit
+	em.localGet(localI32b)
+	em.i64Load(tblNodeOff)
+	em.i32WrapI64()
+	return snap.index*nodeStrideBytes + nodeValOff
+}
+
+// emitGetTable GETTABLE A B C —— R(A) := R(B)[RK(C)](02 §3.4.2)。
+func (c *Compiler) emitGetTable(em *emitter, proto *bytecode.Proto, ins bytecode.Instruction, pc int32) {
+	a := int32(bytecode.A(ins))
+	b := int32(bytecode.B(ins))
+	cc := int32(bytecode.C(ins))
+	snap := snapshotICSlot(proto, pc)
+	regKey := !bytecode.IsK(int(cc))
+
+	if !tableInlineable(snap, regKey) {
+		c.emitHelperEpilogue5(em, helperGetTable, pc, a, b, cc)
+		return
+	}
+
+	em.block() // $done
+	em.block() // $slow
+	c.emitTableGuard(em, int(b), snap)
+	if regKey && snap.kind == bytecode.ICKindArrayHit {
+		c.emitArrayKeyMatch(em, int(cc), snap)
+	}
+	// 槽值 → localI64c;非 nil 校验
+	slotOff := c.emitSlotBase(em, snap)
+	em.i64Load(slotOff)
+	em.localTee(localI64c)
+	em.i64Const(nilRawU64())
+	em.i64Ne()
+	em.i32Eqz()
+	em.brIf(0) // 槽 nil → $slow(可能 __index)
+	// 命中:R(A) := localI64c;br $done
+	em.localGet(localBase)
+	em.localGet(localI64c)
+	em.i64Store(8 * uint32(a))
+	em.br(1) // → $done
+	em.end() // $slow
+	c.emitHelperEpilogue5(em, helperGetTable, pc, a, b, cc)
+	em.end() // $done
+}
+
+// emitSetTable SETTABLE A B C —— R(A)[RK(B)] := RK(C)(02 §3.4.3)。
+// 改已存在键的快路径(改值不 bump gen)。删除(val nil)/新增/串常量值 → 助手。
+func (c *Compiler) emitSetTable(em *emitter, proto *bytecode.Proto, ins bytecode.Instruction, pc int32) {
+	a := int32(bytecode.A(ins))
+	b := int32(bytecode.B(ins))
+	cc := int32(bytecode.C(ins))
+	snap := snapshotICSlot(proto, pc)
+	regKey := !bytecode.IsK(int(b))
+
+	// 值 RK(C) 是字符串常量 → 编译期烧不出真 GCRef → 整条降级助手。
+	valStrConst := bytecode.IsK(int(cc)) && proto.IsStringConst(bytecode.KIdx(int(cc)))
+	if valStrConst || !tableInlineable(snap, regKey) {
+		c.emitHelperEpilogue5(em, helperSetTable, pc, a, b, cc)
+		return
+	}
+
+	em.block() // $done
+	em.block() // $slow
+	// 值非 nil(置 nil = 删除 → 助手);先取值到 localI64a(避免被 guard 覆盖 localI64c)
+	c.loadRK(em, proto, int(cc))
+	em.localTee(localI64a)
+	em.i64Const(nilRawU64())
+	em.i64Ne()
+	em.i32Eqz()
+	em.brIf(0) // val nil → $slow
+	c.emitTableGuard(em, int(a), snap)
+	if regKey && snap.kind == bytecode.ICKindArrayHit {
+		c.emitArrayKeyMatch(em, int(b), snap)
+	}
+	// 当前槽非 nil(键已存在,改值快路径);slotBase 压栈,留作后续 store 基址
+	slotOff := c.emitSlotBase(em, snap)
+	em.localTee(localI32b) // 槽附属块基址 → localI32b(复用:guard 后 taddr 已不需)
+	em.i64Load(slotOff)
+	em.i64Const(nilRawU64())
+	em.i64Ne()
+	em.i32Eqz()
+	em.brIf(0) // 当前槽 nil → $slow(新增键,可能 rehash)
+	// 命中:slot := val(localI64a);br $done
+	em.localGet(localI32b)
+	em.localGet(localI64a)
+	em.i64Store(slotOff)
+	em.br(1) // → $done
+	em.end() // $slow
+	c.emitHelperEpilogue5(em, helperSetTable, pc, a, b, cc)
+	em.end() // $done
+}

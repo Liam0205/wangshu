@@ -57,11 +57,8 @@ const (
 	// payloadMaskU64 = GCRefOf 的低 48 位掩码(value.go payloadMask)——
 	// NaN-box value 的低 48 位即对象 arena 字节偏移(GCRef)。
 	payloadMaskU64 uint64 = 0x0000_FFFF_FFFF_FFFF
-	// tagTableShifted 是 IsTable 的比对值(Tag(v)=v>>48 == TagTable)。
-	tagTableU64Tag = uint64(value.TagTable) // 0xFFFC
 
 	// 表对象字段字节偏移(object/table.go 布局:word_n offset=8*n)。
-	tblSizesOff = 8  // word1: asize | hmask
 	tblArrayOff = 16 // word2: arrayRef
 	tblNodeOff  = 24 // word3: nodeRef
 	tblGenOff   = 40 // word5: lastfree | gen(gen 在高 32 位)
