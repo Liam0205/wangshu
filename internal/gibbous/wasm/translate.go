@@ -29,6 +29,8 @@ const (
 	localI64b = 2 // i64 临时 b(算术操作数 vc)
 	localI32  = 3 // i32 临时(helper status 等)
 	localF64  = 4 // f64 临时(算术结果)
+	localI32b = 5 // i32 临时 b(PW5 表字节地址)
+	localI64c = 6 // i64 临时 c(PW5 键 / 槽值中转)
 
 	// 兼容旧名(PW2 直线 opcode 用 localTmp64/localTmp32)。
 	localTmp64 = localI64a
@@ -169,6 +171,10 @@ func (c *Compiler) emitOpcode(em *emitter, proto *bytecode.Proto, pc int32) erro
 		c.emitLen(em, ins, pc)
 	case bytecode.CONCAT:
 		c.emitConcat(em, ins, pc)
+	case bytecode.GETGLOBAL:
+		c.emitGetGlobal(em, proto, ins, pc)
+	case bytecode.SETGLOBAL:
+		c.emitSetGlobal(em, proto, ins, pc)
 	default:
 		return &translateError{reason: fmt.Sprintf("p3 PW3: opcode %s not implemented (pc=%d)", op, pc)}
 	}

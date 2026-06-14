@@ -55,6 +55,30 @@ type HostState interface {
 	// ForPrep 处理 FORPREP:三槽校验 + coercion + 预减(复用 execute.go
 	// FORPREP 段,byte-equal 错误消息)。返回 status(0=OK / 1=ERR)。
 	ForPrep(base, pc, a int32) int32
+
+	// --- PW5 表 IC 慢路径助手(快路径 inline 跳哈希,失效/复杂形态回 Go)---
+
+	// GetTable 处理 GETTABLE A B C 慢路径(icGetTable 完整查找 + __index)。
+	// 返回 status(0=OK / 1=ERR)。
+	GetTable(base, pc, a, b, c int32) int32
+	// SetTable 处理 SETTABLE A B C 慢路径(icSetTable 完整写 + __newindex + safepoint)。
+	SetTable(base, pc, a, b, c int32) int32
+	// GetGlobal 处理 GETGLOBAL A Bx 慢路径(globals 表 icGetTable)。
+	// 名带 Do 前缀避开 State 公有 API GetGlobal(name string) 冲突。
+	DoGetGlobal(base, pc, a, bx int32) int32
+	// SetGlobal 处理 SETGLOBAL A Bx 慢路径(globals 表 icSetTable + safepoint)。
+	DoSetGlobal(base, pc, a, bx int32) int32
+	// Self 处理 SELF A B C(R(A+1):=R(B) + icGetTable;助手内含 self 传递,幂等)。
+	Self(base, pc, a, b, c int32) int32
+	// NewTable 处理 NEWTABLE A B C(allocTable + setReg + safepoint,全助手内分配)。
+	NewTable(base, pc, a, b, c int32) int32
+	// SetList 处理 SETLIST A B C(doSetList 批量写 + 可能 rehash + safepoint)。
+	SetList(base, pc, a, b, c int32) int32
+
+	// GlobalsRaw 返回 globals 表的 NaN-box u64(编译期烧立即数,GETGLOBAL/SETGLOBAL
+	// inline 用)。globals 在 State 生命期内身份恒定不移动。名带 Raw 避开 State
+	// 公有 API Globals() arena.GCRef 冲突。
+	GlobalsRaw() uint64
 }
 
 // helperSet 持有注入的 HostState,提供给 wazero 注册的 Go callback。
@@ -123,4 +147,34 @@ func (h *helperSet) goEq(base, pc, b, c int32) int32 {
 // goForPrep: (base,pc,a i32) -> (i32 status)  对应 type 9 / h_forprep(PW4)。
 func (h *helperSet) goForPrep(base, pc, a int32) int32 {
 	return h.host.ForPrep(base, pc, a)
+}
+
+// --- PW5 表 IC 助手 callback ---
+
+func (h *helperSet) goGetTable(base, pc, a, b, c int32) int32 {
+	return h.host.GetTable(base, pc, a, b, c)
+}
+
+func (h *helperSet) goSetTable(base, pc, a, b, c int32) int32 {
+	return h.host.SetTable(base, pc, a, b, c)
+}
+
+func (h *helperSet) goGetGlobal(base, pc, a, bx int32) int32 {
+	return h.host.DoGetGlobal(base, pc, a, bx)
+}
+
+func (h *helperSet) goSetGlobal(base, pc, a, bx int32) int32 {
+	return h.host.DoSetGlobal(base, pc, a, bx)
+}
+
+func (h *helperSet) goSelf(base, pc, a, b, c int32) int32 {
+	return h.host.Self(base, pc, a, b, c)
+}
+
+func (h *helperSet) goNewTable(base, pc, a, b, c int32) int32 {
+	return h.host.NewTable(base, pc, a, b, c)
+}
+
+func (h *helperSet) goSetList(base, pc, a, b, c int32) int32 {
+	return h.host.SetList(base, pc, a, b, c)
 }

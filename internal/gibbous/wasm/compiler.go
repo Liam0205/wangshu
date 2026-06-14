@@ -93,6 +93,9 @@ func NewCompiler(ctx context.Context, runtime wazero.Runtime, host HostState) *C
 	c.supported[bytecode.TESTSET] = true
 	c.supported[bytecode.FORPREP] = true
 	c.supported[bytecode.FORLOOP] = true
+	// PW5:表 IC opcode(inline 快照固化 + 失效降级助手)。
+	c.supported[bytecode.GETGLOBAL] = true
+	c.supported[bytecode.SETGLOBAL] = true
 	// PW5+ 逐档解锁(02-translation §1.3)。VARARG 永不加入。
 	return c
 }
@@ -237,6 +240,13 @@ func (c *Compiler) ensureHostModule() error {
 		NewFunctionBuilder().WithFunc(hs.goCompare).Export("h_compare").
 		NewFunctionBuilder().WithFunc(hs.goEq).Export("h_eq").
 		NewFunctionBuilder().WithFunc(hs.goForPrep).Export("h_forprep").
+		NewFunctionBuilder().WithFunc(hs.goGetTable).Export("h_gettable").
+		NewFunctionBuilder().WithFunc(hs.goSetTable).Export("h_settable").
+		NewFunctionBuilder().WithFunc(hs.goGetGlobal).Export("h_getglobal").
+		NewFunctionBuilder().WithFunc(hs.goSetGlobal).Export("h_setglobal").
+		NewFunctionBuilder().WithFunc(hs.goSelf).Export("h_self").
+		NewFunctionBuilder().WithFunc(hs.goNewTable).Export("h_newtable").
+		NewFunctionBuilder().WithFunc(hs.goSetList).Export("h_setlist").
 		Instantiate(c.ctx)
 	if err != nil {
 		return err

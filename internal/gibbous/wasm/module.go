@@ -108,8 +108,8 @@ func typeSection() []byte {
 // function index 空间。
 func importSection() []byte {
 	var p []byte
-	// count = 1 memory + 11 funcs = 12
-	p = append(p, uleb32(12)...)
+	// count = 1 memory + 18 funcs = 19
+	p = append(p, uleb32(19)...)
 
 	// import env.memory : memory(limits flags=0 min=1)——共享 holder 的 memory
 	p = append(p, importEntry("env", "memory", 0x02, []byte{0x00, 0x01})...)
@@ -126,6 +126,15 @@ func importSection() []byte {
 	p = append(p, importFuncEntry("host", "h_compare", typeConcat)...) // (i32×5→i32)
 	p = append(p, importFuncEntry("host", "h_eq", typeUnm)...)         // (i32×4→i32)
 	p = append(p, importFuncEntry("host", "h_forprep", typeForPrep)...)
+	// PW5 表 IC 助手:gettable/settable/self/newtable/setlist 是 (base,pc,a,b,c)
+	// = i32×5→i32 = typeConcat;getglobal/setglobal 是 (base,pc,a,bx) = i32×4→i32 = typeUnm。
+	p = append(p, importFuncEntry("host", "h_gettable", typeConcat)...)
+	p = append(p, importFuncEntry("host", "h_settable", typeConcat)...)
+	p = append(p, importFuncEntry("host", "h_getglobal", typeUnm)...)
+	p = append(p, importFuncEntry("host", "h_setglobal", typeUnm)...)
+	p = append(p, importFuncEntry("host", "h_self", typeConcat)...)
+	p = append(p, importFuncEntry("host", "h_newtable", typeConcat)...)
+	p = append(p, importFuncEntry("host", "h_setlist", typeConcat)...)
 
 	return sectionOf(0x02, p)
 }
@@ -155,16 +164,25 @@ func exportSection() []byte {
 func codeSectionEntry(body []byte) []byte {
 	// local decl(顺序决定 local index,param $base=0 之后):
 	//   组1: 2×i64 → index 1,2(localI64a/localI64b)
-	//   组2: 1×i32 → index 3(localI32,helper status)
+	//   组2: 2×i32 → index 3,5(localI32 helper status / localI32b 表地址)
 	//   组3: 1×f64 → index 4(localF64,算术结果)
+	//   组4: 1×i64 → index 6(localI64c,PW5 键/槽值中转)
+	// 注:local index 由声明顺序决定(组内连号)。组2 声明 2×i32 占 3,4? 否——
+	// 组顺序即 index 顺序:组1 i64 占 1,2;组2 i32 占 3,4;组3 f64 占 5;组4 i64 占 6。
+	// 为保持 PW2-PW4 既有 index(localI32=3 / localF64=4)不变,组顺序须为:
+	//   组1 2×i64(1,2) / 组2 1×i32(3) / 组3 1×f64(4) / 组4 1×i32(5) / 组5 1×i64(6)。
 	var locals []byte
-	locals = append(locals, uleb32(3)...) // 3 个 local 组
-	locals = append(locals, uleb32(2)...) // 2 个 i64
+	locals = append(locals, uleb32(5)...) // 5 个 local 组
+	locals = append(locals, uleb32(2)...) // 2 个 i64 → index 1,2
 	locals = append(locals, wvtI64)
-	locals = append(locals, uleb32(1)...) // 1 个 i32
+	locals = append(locals, uleb32(1)...) // 1 个 i32 → index 3(localI32)
 	locals = append(locals, wvtI32)
-	locals = append(locals, uleb32(1)...) // 1 个 f64
+	locals = append(locals, uleb32(1)...) // 1 个 f64 → index 4(localF64)
 	locals = append(locals, wvtF64)
+	locals = append(locals, uleb32(1)...) // 1 个 i32 → index 5(localI32b,PW5 表地址)
+	locals = append(locals, wvtI32)
+	locals = append(locals, uleb32(1)...) // 1 个 i64 → index 6(localI64c,PW5 键/槽值)
+	locals = append(locals, wvtI64)
 
 	funcBody := append([]byte{}, locals...)
 	funcBody = append(funcBody, body...)

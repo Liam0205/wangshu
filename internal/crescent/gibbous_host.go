@@ -286,3 +286,137 @@ func (st *State) ForPrep(base, pc, a int32) int32 {
 	setReg(th, ci, ra+2, value.NumberValue(step))
 	return 0
 }
+
+// --- PW5 表 IC 慢路径助手(快路径 inline 跳哈希,失效/复杂形态回 Go)---
+//
+// pc 物化:gibbous 传 opcode 索引 pc;解释器执行该 opcode 时 ci.pc 已 ++(指向
+// 下一条),故设 ci.pc=pc+1 使 enhanceIndexErr 的 ci.pc-1 == pc(describeReg
+// 取本指令)。icGetTable/icSetTable 的 pc 参数 = IC slot 索引 = opcode 索引。
+// icGetTable 经 __index 元方法可能重入 execute(append cis)→ 返回后刷新 ci。
+
+// GetTable 处理 GETTABLE A B C 慢路径(execute.go :101-112 同款)。
+func (st *State) GetTable(base, pc, a, b, c int32) int32 {
+	th := st.runningThread
+	ci := currentCI(th)
+	ci.pc = pc + 1
+	proto := st.protoOf(ci)
+	tbl := reg(th, ci, int(b))
+	key := rk(th, ci, proto, int(c))
+	v, e := st.icGetTable(th, ci, pc, tbl, key)
+	if e != nil {
+		st.gibbousPendingErr = st.enhanceIndexErr(e, ci, int(b), tbl)
+		return 1
+	}
+	ci = currentCI(th)
+	setReg(th, ci, int(a), v)
+	return 0
+}
+
+// SetTable 处理 SETTABLE A B C 慢路径(execute.go :114-124 同款 + safepoint)。
+func (st *State) SetTable(base, pc, a, b, c int32) int32 {
+	th := st.runningThread
+	ci := currentCI(th)
+	ci.pc = pc + 1
+	proto := st.protoOf(ci)
+	tbl := reg(th, ci, int(a))
+	key := rk(th, ci, proto, int(b))
+	val := rk(th, ci, proto, int(c))
+	if e := st.icSetTable(th, ci, pc, tbl, key, val); e != nil {
+		st.gibbousPendingErr = st.enhanceIndexErr(e, ci, int(a), tbl)
+		return 1
+	}
+	ci = currentCI(th)
+	st.safepoint(th, ci)
+	return 0
+}
+
+// DoGetGlobal 处理 GETGLOBAL A Bx 慢路径(execute.go :78-88 同款)。
+func (st *State) DoGetGlobal(base, pc, a, bx int32) int32 {
+	th := st.runningThread
+	ci := currentCI(th)
+	ci.pc = pc + 1
+	proto := st.protoOf(ci)
+	key := proto.Consts[bx]
+	gv := value.MakeGC(value.TagTable, st.globals)
+	v, e := st.icGetTable(th, ci, pc, gv, key)
+	if e != nil {
+		st.gibbousPendingErr = e
+		return 1
+	}
+	ci = currentCI(th)
+	setReg(th, ci, int(a), v)
+	return 0
+}
+
+// DoSetGlobal 处理 SETGLOBAL A Bx 慢路径(execute.go :90-99 同款 + safepoint)。
+func (st *State) DoSetGlobal(base, pc, a, bx int32) int32 {
+	th := st.runningThread
+	ci := currentCI(th)
+	ci.pc = pc + 1
+	proto := st.protoOf(ci)
+	key := proto.Consts[bx]
+	gv := value.MakeGC(value.TagTable, st.globals)
+	if e := st.icSetTable(th, ci, pc, gv, key, reg(th, ci, int(a))); e != nil {
+		st.gibbousPendingErr = e
+		return 1
+	}
+	ci = currentCI(th)
+	st.safepoint(th, ci)
+	return 0
+}
+
+// Self 处理 SELF A B C(execute.go :134-144 同款)。助手内含 self 传递 R(A+1):=R(B),
+// 与 inline 快路径的 store 幂等(inline miss 时已 store,助手重做无副作用)。
+func (st *State) Self(base, pc, a, b, c int32) int32 {
+	th := st.runningThread
+	ci := currentCI(th)
+	ci.pc = pc + 1
+	proto := st.protoOf(ci)
+	tbl := reg(th, ci, int(b))
+	setReg(th, ci, int(a)+1, tbl)
+	key := rk(th, ci, proto, int(c))
+	v, e := st.icGetTable(th, ci, pc, tbl, key)
+	if e != nil {
+		st.gibbousPendingErr = st.enhanceIndexErr(e, ci, int(b), tbl)
+		return 1
+	}
+	ci = currentCI(th)
+	setReg(th, ci, int(a), v)
+	return 0
+}
+
+// NewTable 处理 NEWTABLE A B C(execute.go :126-132 同款,分配+GC 全助手内)。
+func (st *State) NewTable(base, pc, a, b, c int32) int32 {
+	th := st.runningThread
+	ci := currentCI(th)
+	ci.pc = pc + 1
+	asz := bytecode.Fb2Int(uint32(b))
+	hsz := bytecode.Fb2Int(uint32(c))
+	t := st.allocTable(asz, roundUpPow2(hsz))
+	setReg(th, ci, int(a), value.MakeGC(value.TagTable, t))
+	st.safepoint(th, ci)
+	return 0
+}
+
+// SetList 处理 SETLIST A B C(execute.go :385-386 / doSetList 同款 + safepoint)。
+// doSetList 可能消费 C=0 的「下一指令为大批次号」→ 读 Proto.Code[ci.pc] 并 ci.pc++,
+// 故须先把 ci.pc 设成 opcode 之后(pc+1),与解释器取指后状态一致。
+func (st *State) SetList(base, pc, a, b, c int32) int32 {
+	th := st.runningThread
+	ci := currentCI(th)
+	ci.pc = pc + 1
+	ins := bytecode.EncodeABC(bytecode.SETLIST, int(a), int(b), int(c))
+	if e := st.doSetList(th, ci, ins); e != nil {
+		st.gibbousPendingErr = e
+		return 1
+	}
+	ci = currentCI(th)
+	st.safepoint(th, ci)
+	return 0
+}
+
+// GlobalsRaw 返回 globals 表的 NaN-box u64(编译期烧立即数;GETGLOBAL/SETGLOBAL
+// inline 快路径用)。globals 在 State 生命期内身份恒定不移动(arena 对象不迁移)。
+func (st *State) GlobalsRaw() uint64 {
+	return uint64(value.MakeGC(value.TagTable, st.globals))
+}

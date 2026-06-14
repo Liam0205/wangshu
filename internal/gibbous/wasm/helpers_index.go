@@ -24,6 +24,13 @@ const (
 	helperCompare                 // host.h_compare (base,pc,op,b,c i32) -> (i32 packed)     PW4
 	helperEq                      // host.h_eq      (base,pc,b,c i32) -> (i32 packed)        PW4
 	helperForPrep                 // host.h_forprep (base,pc,a i32) -> (i32 status)          PW4
+	helperGetTable                // host.h_gettable (base,pc,a,b,c i32) -> (i32 status)     PW5
+	helperSetTable                // host.h_settable (base,pc,a,b,c i32) -> (i32 status)     PW5
+	helperGetGlobal               // host.h_getglobal(base,pc,a,bx i32) -> (i32 status)      PW5
+	helperSetGlobal               // host.h_setglobal(base,pc,a,bx i32) -> (i32 status)      PW5
+	helperSelf                    // host.h_self     (base,pc,a,b,c i32) -> (i32 status)     PW5
+	helperNewTable                // host.h_newtable (base,pc,a,b,c i32) -> (i32 status)     PW5
+	helperSetList                 // host.h_setlist  (base,pc,a,b,c i32) -> (i32 status)     PW5
 	numHelpers
 )
 
@@ -44,3 +51,21 @@ const qNanBoxBase uint64 = 0xFFF8_0000_0000_0000
 
 // canonNaNU64 是规范 NaN(value 包 canonicalize 目标,01 §3.4)。
 const canonNaNU64 uint64 = 0x7FF8_0000_0000_0000
+
+// PW5 表 IC inline 用常量。
+const (
+	// payloadMaskU64 = GCRefOf 的低 48 位掩码(value.go payloadMask)——
+	// NaN-box value 的低 48 位即对象 arena 字节偏移(GCRef)。
+	payloadMaskU64 uint64 = 0x0000_FFFF_FFFF_FFFF
+	// tagTableShifted 是 IsTable 的比对值(Tag(v)=v>>48 == TagTable)。
+	tagTableU64Tag = uint64(value.TagTable) // 0xFFFC
+
+	// 表对象字段字节偏移(object/table.go 布局:word_n offset=8*n)。
+	tblSizesOff = 8  // word1: asize | hmask
+	tblArrayOff = 16 // word2: arrayRef
+	tblNodeOff  = 24 // word3: nodeRef
+	tblGenOff   = 40 // word5: lastfree | gen(gen 在高 32 位)
+	// node 槽步长(3 字 = 24 字节);key=+0 val=+8 next=+16。
+	nodeStrideBytes = 24
+	nodeValOff      = 8
+)

@@ -228,6 +228,95 @@ func TestPW3_ArithSlowPathE2E(t *testing.T) {
 	}
 }
 
+// TestPW5a_GlobalIC PW5-a:GETGLOBAL/SETGLOBAL inline IC 快照固化。
+// 升层前跑解释器基线填 IC(NodeHit)→ 升层 inline 快路径(同 gen 直达 node 槽
+// 跳哈希)→ byte-equal。失效路径:新增全局触发 globals rehash → gen bump →
+// inline gen 校验失败 → 走 h_getglobal/h_setglobal 助手仍正确。
+func TestPW5a_GlobalIC(t *testing.T) {
+	t.Run("getglobal-hit", func(t *testing.T) {
+		src := `local function f() return gx end; return f`
+		st, mainCl := loadFn(t, src)
+		st.SetGlobal("gx", value.NumberValue(99))
+		rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+		if err != nil {
+			t.Fatalf("run main: %v", err)
+		}
+		fVal := rets[0]
+		pid := object.ClosureProtoID(st.arena, value.GCRefOf(fVal))
+
+		// 解释器基线(同时填充 GETGLOBAL 的 IC slot 为 NodeHit)。
+		base, e := st.Call(value.GCRefOf(fVal), nil, 1)
+		if e != nil {
+			t.Fatalf("interp: %v", e)
+		}
+		if !value.IsNumber(base[0]) || value.AsNumber(base[0]) != 99 {
+			t.Fatalf("interp f() = %v, want 99", base[0])
+		}
+
+		if !promoteProto(st, pid) {
+			t.Skip("f proto not supported by gibbous whitelist")
+		}
+		// inline IC 快路径:同 gen 直达 node 槽。
+		got, e2 := st.Call(value.GCRefOf(fVal), nil, 1)
+		if e2 != nil {
+			t.Fatalf("gibbous: %v", e2)
+		}
+		if !value.IsNumber(got[0]) || value.AsNumber(got[0]) != 99 {
+			t.Errorf("gibbous f() = %v, want 99 (inline IC hit)", got[0])
+		}
+
+		// 改既有全局值(改值不 bump gen,IC 持续命中)。
+		st.SetGlobal("gx", value.NumberValue(7))
+		got2, _ := st.Call(value.GCRefOf(fVal), nil, 1)
+		if !value.IsNumber(got2[0]) || value.AsNumber(got2[0]) != 7 {
+			t.Errorf("gibbous f() after value change = %v, want 7", got2[0])
+		}
+
+		// 失效路径:新增大量全局触发 rehash → gen bump → inline 校验失败 → 助手仍正确。
+		for i := 0; i < 32; i++ {
+			st.SetGlobal("pad"+string(rune('a'+i)), value.NumberValue(float64(i)))
+		}
+		got3, e3 := st.Call(value.GCRefOf(fVal), nil, 1)
+		if e3 != nil {
+			t.Fatalf("gibbous after rehash: %v", e3)
+		}
+		if !value.IsNumber(got3[0]) || value.AsNumber(got3[0]) != 7 {
+			t.Errorf("gibbous f() after rehash = %v, want 7 (helper fallback)", got3[0])
+		}
+	})
+
+	t.Run("setglobal-hit", func(t *testing.T) {
+		src := `local function f(v) gy = v; return gy end; return f`
+		st, mainCl := loadFn(t, src)
+		st.SetGlobal("gy", value.NumberValue(0)) // 预存键(SETGLOBAL 改值快路径要求键存在)
+		rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+		if err != nil {
+			t.Fatalf("run main: %v", err)
+		}
+		fVal := rets[0]
+		pid := object.ClosureProtoID(st.arena, value.GCRefOf(fVal))
+
+		base, e := st.Call(value.GCRefOf(fVal), []value.Value{value.NumberValue(11)}, 1)
+		if e != nil {
+			t.Fatalf("interp: %v", e)
+		}
+		if !value.IsNumber(base[0]) || value.AsNumber(base[0]) != 11 {
+			t.Fatalf("interp f(11) = %v, want 11", base[0])
+		}
+
+		if !promoteProto(st, pid) {
+			t.Skip("f proto not supported")
+		}
+		got, e2 := st.Call(value.GCRefOf(fVal), []value.Value{value.NumberValue(22)}, 1)
+		if e2 != nil {
+			t.Fatalf("gibbous: %v", e2)
+		}
+		if !value.IsNumber(got[0]) || value.AsNumber(got[0]) != 22 {
+			t.Errorf("gibbous f(22) = %v, want 22 (inline SETGLOBAL+GETGLOBAL hit)", got[0])
+		}
+	})
+}
+
 // TestPW4_ControlFlowE2E PW4 relooper:含分支/循环的函数升 gibbous 后经
 // trampoline 跳 wazero,与解释器逐字节一致。
 func TestPW4_ControlFlowE2E(t *testing.T) {

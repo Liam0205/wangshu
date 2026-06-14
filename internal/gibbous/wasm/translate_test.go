@@ -16,8 +16,11 @@ import (
 
 // mockHost 是 HostState 的测试替身,记录 helper 调用并提供可控行为。
 type mockHost struct {
-	returnCalls []retCall
-	getUpvalFn  func(base, b int32) uint64
+	returnCalls    []retCall
+	getUpvalFn     func(base, b int32) uint64
+	globalsRaw     uint64
+	getGlobalCalls int
+	getGlobalFn    func(base, pc, a, bx int32) int32
 }
 
 type retCall struct{ base, pc, a, b int32 }
@@ -43,6 +46,21 @@ func (m *mockHost) Concat(base, pc, a, b, c int32) int32    { return 0 }
 func (m *mockHost) Compare(base, pc, op, b, c int32) int32  { return 0 }
 func (m *mockHost) Eq(base, pc, b, c int32) int32           { return 0 }
 func (m *mockHost) ForPrep(base, pc, a int32) int32         { return 0 }
+
+func (m *mockHost) GetTable(base, pc, a, b, c int32) int32 { return 0 }
+func (m *mockHost) SetTable(base, pc, a, b, c int32) int32 { return 0 }
+func (m *mockHost) DoGetGlobal(base, pc, a, bx int32) int32 {
+	m.getGlobalCalls++
+	if m.getGlobalFn != nil {
+		return m.getGlobalFn(base, pc, a, bx)
+	}
+	return 0
+}
+func (m *mockHost) DoSetGlobal(base, pc, a, bx int32) int32 { return 0 }
+func (m *mockHost) Self(base, pc, a, b, c int32) int32      { return 0 }
+func (m *mockHost) NewTable(base, pc, a, b, c int32) int32  { return 0 }
+func (m *mockHost) SetList(base, pc, a, b, c int32) int32   { return 0 }
+func (m *mockHost) GlobalsRaw() uint64                      { return m.globalsRaw }
 
 // setupTranslator 建一个完整可执行的 P3 编译环境:wazero runtime + memadapter
 // holder(提供 env.memory)+ Compiler(mock host)。
@@ -335,5 +353,77 @@ func TestPW3_UnmNotFastPath(t *testing.T) {
 	r2, _ := mem.ReadUint64Le(16)
 	if r2 != falseRawU64() {
 		t.Errorf("NOT R2 = %#x, want false %#x", r2, falseRawU64())
+	}
+}
+
+// TestPW5_GetGlobalInlineHit 证明 GETGLOBAL inline 快路径**真跳哈希**(不调助手)。
+// 手工在共见 memory 里布一张 globals 表(头 6 字 + 1 个 node 槽),IC 快照预填
+// NodeHit;poison 助手(调用即 return 1 失败)。若 Run 成功且 R(A) 得 node 值,
+// 证明 inline gen 校验 + node 槽直读路径执行,**助手零调用**(getGlobalCalls==0)。
+func TestPW5_GetGlobalInlineHit(t *testing.T) {
+	ctx := context.Background()
+	rt := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfigCompiler())
+	defer rt.Close(ctx)
+	holder, err := memadapter.New(ctx, rt, 64*1024, 1<<31)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Close()
+	mem := holder.Memory()
+
+	// 表头放 memory offset 256(避开值栈低区);node 段紧随其后。
+	const tblOff = 256
+	const nodeOff = tblOff + 48 // 头 6 字 = 48 字节
+	const gen = 42
+	const nodeVal = uint64(0x3FF0_0000_0000_0000) // f64 1.0 的 bits(合法 number value)
+
+	// word1: asize=0 | hmask=0(单 node);word3: nodeRef=nodeOff;word5: gen<<32
+	mem.WriteUint64Le(tblOff+8, 0)                // sizes
+	mem.WriteUint64Le(tblOff+16, 0)               // arrayRef
+	mem.WriteUint64Le(tblOff+24, uint64(nodeOff)) // nodeRef(word3)
+	mem.WriteUint64Le(tblOff+40, uint64(gen)<<32) // word5 gen
+	// node 槽 0:key(任意)/val=nodeVal/next=-1
+	mem.WriteUint64Le(nodeOff+0, 0xFFFB_0000_0000_0001) // key(string-ish,inline 不校验)
+	mem.WriteUint64Le(nodeOff+8, nodeVal)               // val
+	mem.WriteUint64Le(nodeOff+16, 0xFFFFFFFF)           // next=-1
+
+	globalsRaw := uint64(value.TagTable)<<48 | uint64(tblOff)
+	mh := &mockHost{
+		globalsRaw:  globalsRaw,
+		getGlobalFn: func(base, pc, a, bx int32) int32 { return 1 }, // poison:调即失败
+	}
+	c := NewCompiler(ctx, rt, mh)
+
+	// Proto: GETGLOBAL R0 K0; RETURN R0 2。预填 IC[0] = NodeHit/gen=42/index=0。
+	proto := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABx(bytecode.GETGLOBAL, 0, 0),
+			bytecode.EncodeABC(bytecode.RETURN, 0, 2, 0),
+		},
+		Consts: []value.Value{value.Nil}, // K0 占位(inline 不读 key)
+		IC:     make([]bytecode.ICSlot, 2),
+	}
+	proto.IC[0] = bytecode.ICSlot{Kind: bytecode.ICKindNodeHit, Shape: gen, Index: 0, TableRef: uint32(tblOff)}
+
+	if !c.SupportsAllOpcodes(proto) {
+		t.Fatal("GETGLOBAL+RETURN proto should be supported")
+	}
+	gc, err := c.Compile(proto, nil)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	defer func() { _ = gc.(*p3Code).Dispose() }()
+
+	stack := make([]uint64, 1)
+	if status := gc.(*p3Code).Run(stack, 0); status != 0 {
+		t.Fatalf("run status=%d (inline 快路径应不调 poison 助手;pendingErr=%v)",
+			status, gc.(*p3Code).PendingErr())
+	}
+	if mh.getGlobalCalls != 0 {
+		t.Errorf("h_getglobal 被调 %d 次,inline 快路径应跳哈希零调用", mh.getGlobalCalls)
+	}
+	got, _ := mem.ReadUint64Le(0) // R0
+	if got != nodeVal {
+		t.Errorf("GETGLOBAL inline R0 = %#x, want node val %#x", got, nodeVal)
 	}
 }
