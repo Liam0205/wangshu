@@ -40,6 +40,9 @@ func (m *mockHost) Arith(base, pc, op, b, c, a int32) int32 { return 0 }
 func (m *mockHost) Unm(base, pc, b, a int32) int32          { return 0 }
 func (m *mockHost) Len(base, pc, b, a int32) int32          { return 0 }
 func (m *mockHost) Concat(base, pc, a, b, c int32) int32    { return 0 }
+func (m *mockHost) Compare(base, pc, op, b, c int32) int32  { return 0 }
+func (m *mockHost) Eq(base, pc, b, c int32) int32           { return 0 }
+func (m *mockHost) ForPrep(base, pc, a int32) int32         { return 0 }
 
 // setupTranslator 建一个完整可执行的 P3 编译环境:wazero runtime + memadapter
 // holder(提供 env.memory)+ Compiler(mock host)。
@@ -176,13 +179,13 @@ func TestPW2_ReturnHelperCalled(t *testing.T) {
 	}
 }
 
-// TestPW2_RejectMultiBB 含 JMP 的多 BB Proto 被 SupportsAllOpcodes 拒
-// (PW2 单 BB 限制;PW3 relooper 解锁)。
-func TestPW2_RejectMultiBB(t *testing.T) {
+// TestPW4_AcceptMultiBB 含 JMP/TEST 的多 BB(if-then)Proto 现被支持
+// (PW4 relooper 解锁可约简多 BB)。
+func TestPW4_AcceptMultiBB(t *testing.T) {
 	c, _, cleanup := setupTranslator(t)
 	defer cleanup()
 
-	// TEST + JMP + MOVE + RETURN(多 BB)
+	// TEST + JMP + MOVE + RETURN(if cond then R1:=R0 end;多 BB,可约简)
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
 			bytecode.EncodeABC(bytecode.TEST, 0, 0, 0),
@@ -191,8 +194,26 @@ func TestPW2_RejectMultiBB(t *testing.T) {
 			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
 		},
 	}
+	if !c.SupportsAllOpcodes(proto) {
+		t.Error("reducible multi-BB proto (TEST+JMP) should be supported in PW4")
+	}
+}
+
+// TestPW4_RejectUnsupportedOpcode 含未实装 opcode(CALL 是 PW6)的多 BB 被拒。
+func TestPW4_RejectUnsupportedOpcode(t *testing.T) {
+	c, _, cleanup := setupTranslator(t)
+	defer cleanup()
+
+	proto := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABC(bytecode.TEST, 0, 0, 0),
+			bytecode.EncodeAsBx(bytecode.JMP, 0, 1),
+			bytecode.EncodeABC(bytecode.CALL, 0, 1, 1), // PW6,未实装
+			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
+		},
+	}
 	if c.SupportsAllOpcodes(proto) {
-		t.Error("multi-BB proto (with JMP) should NOT be supported in PW2")
+		t.Error("proto with CALL (PW6) should NOT be supported yet")
 	}
 }
 

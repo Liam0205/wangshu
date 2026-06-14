@@ -25,9 +25,10 @@ package wasm
 //   type 3: (i32, i32) -> ()               h_safepoint
 //   type 4: (i32) -> (i32)                 入口 run(base) -> status
 //   type 5: (i32,i32,i32,i32,i32,i32)->(i32) h_arith(base,pc,op,b,c,a)
-//   type 6: (i32,i32,i32,i32) -> (i32)     h_unm(base,pc,b,a)
+//   type 6: (i32,i32,i32,i32) -> (i32)     h_unm(base,pc,b,a) / h_eq(base,pc,b,c)
 //   type 7: (i32,i32,i32,i32) -> (i32)     h_len(base,pc,b,a)
-//   type 8: (i32,i32,i32,i32,i32) -> (i32) h_concat(base,pc,a,b,c)
+//   type 8: (i32,i32,i32,i32,i32) -> (i32) h_concat(base,pc,a,b,c) / h_compare(base,pc,op,b,c)
+//   type 9: (i32,i32,i32) -> (i32)         h_forprep(base,pc,a)
 
 const (
 	typeGetUpval  = 0
@@ -39,7 +40,8 @@ const (
 	typeUnm       = 6 // 同 typeReturn 形状(i32×4→i32)但单列以便阅读
 	typeLen       = 7
 	typeConcat    = 8
-	numTypes      = 9
+	typeForPrep   = 9
+	numTypes      = 10
 )
 
 // Wasm value type 编码。
@@ -85,8 +87,10 @@ func typeSection() []byte {
 	p = append(p, 0x60, 0x04, wvtI32, wvtI32, wvtI32, wvtI32, 0x01, wvtI32)
 	// type 7: (i32,i32,i32,i32)->(i32)  h_len
 	p = append(p, 0x60, 0x04, wvtI32, wvtI32, wvtI32, wvtI32, 0x01, wvtI32)
-	// type 8: (i32,i32,i32,i32,i32)->(i32)  h_concat
+	// type 8: (i32,i32,i32,i32,i32)->(i32)  h_concat / h_compare
 	p = append(p, 0x60, 0x05, wvtI32, wvtI32, wvtI32, wvtI32, wvtI32, 0x01, wvtI32)
+	// type 9: (i32,i32,i32)->(i32)  h_forprep
+	p = append(p, 0x60, 0x03, wvtI32, wvtI32, wvtI32, 0x01, wvtI32)
 
 	return sectionOf(0x01, p)
 }
@@ -104,8 +108,8 @@ func typeSection() []byte {
 // function index 空间。
 func importSection() []byte {
 	var p []byte
-	// count = 1 memory + 8 funcs = 9
-	p = append(p, uleb32(9)...)
+	// count = 1 memory + 11 funcs = 12
+	p = append(p, uleb32(12)...)
 
 	// import env.memory : memory(limits flags=0 min=1)——共享 holder 的 memory
 	p = append(p, importEntry("env", "memory", 0x02, []byte{0x00, 0x01})...)
@@ -119,6 +123,9 @@ func importSection() []byte {
 	p = append(p, importFuncEntry("host", "h_unm", typeUnm)...)
 	p = append(p, importFuncEntry("host", "h_len", typeLen)...)
 	p = append(p, importFuncEntry("host", "h_concat", typeConcat)...)
+	p = append(p, importFuncEntry("host", "h_compare", typeConcat)...) // (i32×5→i32)
+	p = append(p, importFuncEntry("host", "h_eq", typeUnm)...)         // (i32×4→i32)
+	p = append(p, importFuncEntry("host", "h_forprep", typeForPrep)...)
 
 	return sectionOf(0x02, p)
 }

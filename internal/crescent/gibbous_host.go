@@ -221,3 +221,68 @@ func (st *State) Concat(base, pc, a, b, c int32) int32 {
 	st.safepoint(th, ci)
 	return 0
 }
+
+// Compare LT/LE 慢路径(string 比较 / __lt/__le 元方法;复用 doCompare)。
+// 返回 packed:bit0=比较结果,bit1=错误标志。
+func (st *State) Compare(base, pc, op, b, c int32) int32 {
+	th := st.runningThread
+	ci := currentCI(th)
+	ci.pc = pc
+	ins := bytecode.EncodeABC(bytecode.OpCode(op), 0, int(b), int(c))
+	res, e := st.doCompare(th, ci, ins)
+	if e != nil {
+		st.gibbousPendingErr = e
+		return 2 // bit1 = error
+	}
+	if res {
+		return 1 // bit0 = true
+	}
+	return 0
+}
+
+// Eq EQ 的 __eq 元方法路径(raw 不等时;复用 doCompare EQ 分支)。
+// 返回 packed:bit0=结果,bit1=错误。
+func (st *State) Eq(base, pc, b, c int32) int32 {
+	th := st.runningThread
+	ci := currentCI(th)
+	ci.pc = pc
+	ins := bytecode.EncodeABC(bytecode.EQ, 0, int(b), int(c))
+	res, e := st.doCompare(th, ci, ins)
+	if e != nil {
+		st.gibbousPendingErr = e
+		return 2
+	}
+	if res {
+		return 1
+	}
+	return 0
+}
+
+// ForPrep FORPREP 三槽校验 + coercion + 预减(复用 execute.go FORPREP 段逻辑)。
+// 返回 status(0=OK / 1=ERR)。
+func (st *State) ForPrep(base, pc, a int32) int32 {
+	th := st.runningThread
+	ci := currentCI(th)
+	ci.pc = pc
+	ra := int(a)
+	init, ok1 := st.toNumberCoerce(reg(th, ci, ra))
+	limit, ok2 := st.toNumberCoerce(reg(th, ci, ra+1))
+	step, ok3 := st.toNumberCoerce(reg(th, ci, ra+2))
+	if !ok1 {
+		st.gibbousPendingErr = errf("'for' initial value must be a number")
+		return 1
+	}
+	if !ok2 {
+		st.gibbousPendingErr = errf("'for' limit must be a number")
+		return 1
+	}
+	if !ok3 {
+		st.gibbousPendingErr = errf("'for' step must be a number")
+		return 1
+	}
+	// 预减 + 三槽规范化为 number(进入 FORLOOP 后快路径无须再校验类型)。
+	setReg(th, ci, ra, value.NumberValue(init-step))
+	setReg(th, ci, ra+1, value.NumberValue(limit))
+	setReg(th, ci, ra+2, value.NumberValue(step))
+	return 0
+}

@@ -10,6 +10,8 @@ package wasm
 //
 // Wasm 指令编码参考:https://webassembly.github.io/spec/core/binary/instructions.html
 
+import "math"
+
 // wasmOp 常用 Wasm 指令 opcode。
 const (
 	opBlock    byte = 0x02
@@ -31,12 +33,18 @@ const (
 
 	// 比较 / 算术 / 类型转换(PW3)。
 	opI32Eqz byte = 0x45
+	opI32Ne  byte = 0x47
 	opI32And byte = 0x71
+	opI64Eq  byte = 0x51
 	opI64Ne  byte = 0x52
 	opI64LtU byte = 0x54
 
+	opF64Eq        byte = 0x61
 	opF64Lt        byte = 0x63
+	opF64Le        byte = 0x65
+	opF64Ge        byte = 0x66
 	opF64Ne        byte = 0x62
+	opF64Const     byte = 0x44
 	opF64Add       byte = 0xa0
 	opF64Sub       byte = 0xa1
 	opF64Mul       byte = 0xa2
@@ -128,18 +136,33 @@ func (e *emitter) ret() { e.raw(opReturn) }
 func (e *emitter) localTee(idx uint32) { e.raw(opLocalTee); e.uleb(idx) }
 
 // 二元 / 一元数值与比较指令(操作数已在 Wasm 栈上)。
-func (e *emitter) f64Add()            { e.raw(opF64Add) }
-func (e *emitter) f64Sub()            { e.raw(opF64Sub) }
-func (e *emitter) f64Mul()            { e.raw(opF64Mul) }
-func (e *emitter) f64Div()            { e.raw(opF64Div) }
-func (e *emitter) f64Neg()            { e.raw(opF64Neg) }
-func (e *emitter) f64Floor()          { e.raw(opF64Floor) }
-func (e *emitter) f64Ne()             { e.raw(opF64Ne) }
+func (e *emitter) f64Add()   { e.raw(opF64Add) }
+func (e *emitter) f64Sub()   { e.raw(opF64Sub) }
+func (e *emitter) f64Mul()   { e.raw(opF64Mul) }
+func (e *emitter) f64Div()   { e.raw(opF64Div) }
+func (e *emitter) f64Neg()   { e.raw(opF64Neg) }
+func (e *emitter) f64Floor() { e.raw(opF64Floor) }
+func (e *emitter) f64Ne()    { e.raw(opF64Ne) }
+func (e *emitter) f64Lt()    { e.raw(opF64Lt) }
+func (e *emitter) f64Le()    { e.raw(opF64Le) }
+func (e *emitter) f64Ge()    { e.raw(opF64Ge) }
+func (e *emitter) f64Eq()    { e.raw(opF64Eq) }
+
+// f64Const 发 f64.const(8 字节小端 IEEE-754)。
+func (e *emitter) f64Const(v float64) {
+	e.raw(opF64Const)
+	bits := math.Float64bits(v)
+	for i := 0; i < 8; i++ {
+		e.buf = append(e.buf, byte(bits>>(8*uint(i))))
+	}
+}
 func (e *emitter) f64ReinterpretI64() { e.raw(opF64ReintI64) }
 func (e *emitter) i64ReinterpretF64() { e.raw(opI64ReintF64) }
 func (e *emitter) i64LtU()            { e.raw(opI64LtU) }
 func (e *emitter) i64Ne()             { e.raw(opI64Ne) }
+func (e *emitter) i64Eq()             { e.raw(opI64Eq) }
 func (e *emitter) i32And()            { e.raw(opI32And) }
+func (e *emitter) i32Ne()             { e.raw(opI32Ne) }
 func (e *emitter) i32Eqz()            { e.raw(opI32Eqz) }
 
 // ifVoid 开一个无返回值的 if 块(条件 i32 已在栈顶)。配对 elseOp/end。
@@ -147,6 +170,13 @@ func (e *emitter) ifVoid()       { e.raw(opIf, btVoid) }
 func (e *emitter) elseOp()       { e.raw(opElse) }
 func (e *emitter) end()          { e.raw(opEnd) }
 func (e *emitter) brIf(d uint32) { e.raw(opBrIf); e.uleb(d) }
+
+// block / loop:开一个无返回值的结构化块(PW4 relooper 嵌套)。配对 end。
+//   - block:br N 跳到其 end(前向跳/汇合)
+//   - loop :br N 跳到其起点(回边/continue)
+func (e *emitter) block()      { e.raw(opBlock, btVoid) }
+func (e *emitter) loop()       { e.raw(opLoop, btVoid) }
+func (e *emitter) br(d uint32) { e.raw(opBr); e.uleb(d) }
 
 // 注:结构化控制流(loop/block 多 BB)留 PW4 relooper;本组 if/else 仅用于
 // 算术 opcode 的「快/慢路径」单 BB 内分支(不切 Lua pc)。

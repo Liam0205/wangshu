@@ -227,3 +227,64 @@ func TestPW3_ArithSlowPathE2E(t *testing.T) {
 		t.Errorf(`gibbous f("10",5) = %v, want 15 (string coercion via h_arith)`, got[0])
 	}
 }
+
+// TestPW4_ControlFlowE2E PW4 relooper:含分支/循环的函数升 gibbous 后经
+// trampoline 跳 wazero,与解释器逐字节一致。
+func TestPW4_ControlFlowE2E(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		args []value.Value
+		want float64
+	}{
+		// 数值 for 循环(FORPREP/FORLOOP + 回边 safepoint)
+		{"sum-for", `local function f(n) local s=0 for i=1,n do s=s+i end return s end; return f`,
+			[]value.Value{value.NumberValue(100)}, 5050},
+		// if-then-else(TEST/JMP 比较 + 分支)
+		{"abs-pos", `local function f(x) if x<0 then return -x else return x end end; return f`,
+			[]value.Value{value.NumberValue(7)}, 7},
+		{"abs-neg", `local function f(x) if x<0 then return -x else return x end end; return f`,
+			[]value.Value{value.NumberValue(-7)}, 7},
+		// 比较 LT 快路径 + 分支
+		{"max", `local function f(a,b) if a<b then return b else return a end end; return f`,
+			[]value.Value{value.NumberValue(3), value.NumberValue(8)}, 8},
+		// 嵌套 for(PW4b 形态,可能 Skip 若 relooper 不支持)
+		{"nested-for", `local function f(n) local s=0 for i=1,n do for j=1,n do s=s+1 end end return s end; return f`,
+			[]value.Value{value.NumberValue(10)}, 100},
+		// while 循环
+		{"while", `local function f(n) local s=0 local i=1 while i<=n do s=s+i i=i+1 end return s end; return f`,
+			[]value.Value{value.NumberValue(10)}, 55},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st, mainCl := loadFn(t, tc.src)
+			rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+			if err != nil {
+				t.Fatalf("run main: %v", err)
+			}
+			fVal := rets[0]
+			pid := object.ClosureProtoID(st.arena, value.GCRefOf(fVal))
+
+			// 解释器基线。
+			base, e := st.Call(value.GCRefOf(fVal), tc.args, 1)
+			if e != nil {
+				t.Fatalf("interp call: %v", e)
+			}
+			if !value.IsNumber(base[0]) || value.AsNumber(base[0]) != tc.want {
+				t.Fatalf("interp f = %v, want %v", base[0], tc.want)
+			}
+
+			if !promoteProto(st, pid) {
+				t.Skipf("%s proto not supported by gibbous relooper (fallback interp)", tc.name)
+			}
+			// 升层后:经 trampoline 跳 wazero,byte-equal。
+			got, e2 := st.Call(value.GCRefOf(fVal), tc.args, 1)
+			if e2 != nil {
+				t.Fatalf("gibbous call: %v", e2)
+			}
+			if len(got) != 1 || !value.IsNumber(got[0]) || value.AsNumber(got[0]) != tc.want {
+				t.Errorf("gibbous f = %v, want %v (byte-equal with interp)", got[0], tc.want)
+			}
+		})
+	}
+}

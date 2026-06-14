@@ -44,30 +44,103 @@ func (e *translateError) Error() string { return e.reason }
 // translate 把 Proto.Code 翻译成 Wasm 函数体字节(不含 local decl 与末尾
 // end,由 module 组装包裹)。返回 (body, error)。
 //
-// PW2:只支持单 BB Proto。多 BB(有跳转)返 translateError。
+// 单可达 BB 走 PW2/PW3 直线路径;多 BB 走 PW4 relooper 结构化生成。
 func (c *Compiler) translate(proto *bytecode.Proto) ([]byte, error) {
 	cfg := buildCFG(proto)
 	reach := cfg.reachableBlocks()
-	if len(reach) != 1 {
-		return nil, &translateError{reason: fmt.Sprintf(
-			"p3 PW2: control flow not yet structurable (%d reachable basic blocks; PW3 relooper)", len(reach))}
+	em := newEmitter()
+
+	if len(reach) == 1 {
+		// 单可达 BB:直线翻译(死代码块——RETURN 后兜底 RETURN——不发射)。
+		entry := cfg.blocks[cfg.entry]
+		for pc := entry.startPC; pc < entry.endPC; pc++ {
+			if err := c.emitOpcode(em, proto, pc); err != nil {
+				return nil, err
+			}
+		}
+		em.i32Const(0)
+		em.ret()
+		return em.bytes(), nil
 	}
 
-	// 只翻译可达的入口 BB(死代码块——RETURN 后的兜底 RETURN——不发射)。
-	entry := cfg.blocks[cfg.entry]
-	em := newEmitter()
-	for pc := entry.startPC; pc < entry.endPC; pc++ {
-		if err := c.emitOpcode(em, proto, pc); err != nil {
-			return nil, err
-		}
+	// 多 BB:PW4 relooper 结构化生成。
+	plan, err := buildStructPlan(cfg)
+	if err != nil {
+		return nil, &translateError{reason: err.Error()}
 	}
-	// 入口 BB 末尾若不是 RETURN(理论上 codegen 总发尾 RETURN),兜底 return 0。
+	if err := c.emitStructured(em, proto, cfg, plan); err != nil {
+		return nil, &translateError{reason: err.Error()}
+	}
+	// 兜底 return 0(理论上每条出口 BB 已发 RETURN;防御 wasm 校验「函数末尾
+	// 缺值」——结构化发射后控制流可能落到函数体末)。
 	em.i32Const(0)
 	em.ret()
 	return em.bytes(), nil
 }
 
-// emitOpcode 翻译一条指令(PW2 七个直线 opcode)。
+// emitBlockBody 发射一个 BB:直线指令(经 emitOpcode)+ 终结边(由结构化生成
+// 层据后继与作用域栈处理)。终结指令(JMP / 比较 / FOR* / RETURN)不在
+// emitOpcode 里发控制流——只有本层知道后继 BB 的 br depth。
+func (c *Compiler) emitBlockBody(em *emitter, proto *bytecode.Proto, cfg *cfg, plan *structPlan, bb int, stack *[]scope) error {
+	blk := cfg.blocks[bb]
+	if blk.startPC >= blk.endPC {
+		return nil
+	}
+	lastPC := blk.endPC - 1
+	term := proto.Code[lastPC]
+	termOp := bytecode.Op(term)
+
+	// 直线前缀(终结指令之前的所有指令)。
+	for pc := blk.startPC; pc < lastPC; pc++ {
+		if err := c.emitOpcode(em, proto, pc); err != nil {
+			return err
+		}
+	}
+
+	switch termOp {
+	case bytecode.RETURN, bytecode.TAILCALL:
+		// 自带 return,无后继边。TAILCALL 留 PW6;此处仅 RETURN。
+		return c.emitOpcode(em, proto, lastPC)
+
+	case bytecode.JMP:
+		// 无条件跳:发射边到唯一后继。
+		return c.emitJmpTerm(em, cfg, plan, stack, bb)
+
+	case bytecode.EQ, bytecode.LT, bytecode.LE, bytecode.TEST, bytecode.TESTSET:
+		return c.emitCompareTerm(em, proto, cfg, plan, stack, bb, term, lastPC)
+
+	case bytecode.FORPREP:
+		return c.emitForPrepTerm(em, cfg, plan, stack, bb, lastPC)
+
+	case bytecode.FORLOOP:
+		return c.emitForLoopTerm(em, proto, cfg, plan, stack, bb, term, lastPC)
+
+	default:
+		// 普通 op 因「下一条是 leader」切 BB(单后继 fallthrough)。先发该 op,
+		// 再发 fallthrough 边。
+		if err := c.emitOpcode(em, proto, lastPC); err != nil {
+			return err
+		}
+		if len(blk.succs) == 1 {
+			return c.emitEdge(em, plan, *stack, bb, blk.succs[0])
+		}
+		if len(blk.succs) == 0 {
+			return nil
+		}
+		return &translateError{reason: fmt.Sprintf("p4: unexpected %d succs after %s", len(blk.succs), termOp)}
+	}
+}
+
+// emitJmpTerm JMP 终结:唯一后继(jumpTarget)。
+func (c *Compiler) emitJmpTerm(em *emitter, cfg *cfg, plan *structPlan, stack *[]scope, bb int) error {
+	blk := cfg.blocks[bb]
+	if len(blk.succs) != 1 {
+		return &translateError{reason: fmt.Sprintf("p4: JMP BB %d has %d succs", bb, len(blk.succs))}
+	}
+	return c.emitEdge(em, plan, *stack, bb, blk.succs[0])
+}
+
+// emitOpcode 翻译一条非终结直线指令。
 func (c *Compiler) emitOpcode(em *emitter, proto *bytecode.Proto, pc int32) error {
 	ins := proto.Code[pc]
 	op := bytecode.Op(ins)
@@ -84,10 +157,6 @@ func (c *Compiler) emitOpcode(em *emitter, proto *bytecode.Proto, pc int32) erro
 		c.emitGetUpval(em, ins, pc)
 	case bytecode.SETUPVAL:
 		c.emitSetUpval(em, ins, pc)
-	case bytecode.JMP:
-		// 单 BB 内不应有 JMP(JMP 会切 BB);走到这里说明 translate 的
-		// 单 BB 假设被违反(防御性)。
-		return &translateError{reason: "p3 PW2: JMP in single-BB path (unexpected)"}
 	case bytecode.RETURN:
 		c.emitReturn(em, ins, pc)
 	case bytecode.ADD, bytecode.SUB, bytecode.MUL, bytecode.DIV, bytecode.MOD, bytecode.POW:

@@ -85,44 +85,56 @@ func NewCompiler(ctx context.Context, runtime wazero.Runtime, host HostState) *C
 	c.supported[bytecode.NOT] = true
 	c.supported[bytecode.LEN] = true
 	c.supported[bytecode.CONCAT] = true
-	// PW4+ 逐档解锁(02-translation §1.3)。VARARG 永不加入。
+	// PW4:控制流 + 比较(relooper 解锁多 BB)。
+	c.supported[bytecode.EQ] = true
+	c.supported[bytecode.LT] = true
+	c.supported[bytecode.LE] = true
+	c.supported[bytecode.TEST] = true
+	c.supported[bytecode.TESTSET] = true
+	c.supported[bytecode.FORPREP] = true
+	c.supported[bytecode.FORLOOP] = true
+	// PW5+ 逐档解锁(02-translation §1.3)。VARARG 永不加入。
 	return c
 }
 
 // SupportsAllOpcodes 实现 F7 后端能力查询(03 §3.7 + 02 §5.2)。
 //
-// O(N) 单遍扫 proto.Code;任一 opcode 不在 supported 即返 false。
 // 纯只读、不修改 Proto、不 panic(越界 opcode 编号天然落 false)。
 //
-// PW2 额外限制(单 BB 路径 + 可烧常量):
-//   - 含 JMP 的 Proto:虽 JMP 在白名单,但 buildCFG 会切多 BB,translate
-//     的单 BB 路径处理不了 → 这里提前拒(多 BB 留 PW3 完整 relooper);
+// 限制:
+//   - 所有可达 BB 的 opcode 都在 supported 白名单;
+//   - 多 BB 时 CFG 必须可约简(relooper 只处理 reducible CFG,PW4);
 //   - 含字符串常量的 LOADK:Consts 是 State 私有惰性 intern(编译期 Nil
 //     占位),烧不出真 GCRef → 拒(留 PW5 经助手取)。
 func (c *Compiler) SupportsAllOpcodes(proto *bytecode.Proto) bool {
 	if len(proto.Code) == 0 {
 		return true // 空 Proto vacuously supported(实际不会被 P2 判热点)
 	}
-	// PW2 单 BB 限制:只数**可达** BB(死代码块——RETURN 后的兜底 RETURN——
-	// 不可达,不算多 BB)。多可达 BB(有控制流)留 PW3 relooper。
 	cfg := buildCFG(proto)
 	reach := cfg.reachableBlocks()
-	if len(reach) != 1 {
-		return false
-	}
-	// 只扫可达入口 BB 的 opcode(死代码块的指令永不执行,不影响支持判定)。
-	entry := cfg.blocks[cfg.entry]
-	for pc := entry.startPC; pc < entry.endPC; pc++ {
-		ins := proto.Code[pc]
-		op := bytecode.Op(ins)
-		if int(op) >= numOpcodes || !c.supported[op] {
+	// 多 BB:必须可约简(relooper 只处理 reducible CFG)。
+	if len(reach) > 1 {
+		if !analyzeRelooper(cfg).isReducible() {
 			return false
 		}
-		// LOADK 字符串常量:编译期烧不出真值
-		if op == bytecode.LOADK {
-			bx := bytecode.Bx(ins)
-			if proto.IsStringConst(bx) {
+	}
+	// 扫所有**可达** BB 的 opcode(死代码块永不执行,不影响支持判定)。
+	for _, blk := range cfg.blocks {
+		if !reach[blk.id] {
+			continue
+		}
+		for pc := blk.startPC; pc < blk.endPC; pc++ {
+			ins := proto.Code[pc]
+			op := bytecode.Op(ins)
+			if int(op) >= numOpcodes || !c.supported[op] {
 				return false
+			}
+			// LOADK 字符串常量:编译期烧不出真值
+			if op == bytecode.LOADK {
+				bx := bytecode.Bx(ins)
+				if proto.IsStringConst(bx) {
+					return false
+				}
 			}
 		}
 	}
@@ -222,6 +234,9 @@ func (c *Compiler) ensureHostModule() error {
 		NewFunctionBuilder().WithFunc(hs.goUnm).Export("h_unm").
 		NewFunctionBuilder().WithFunc(hs.goLen).Export("h_len").
 		NewFunctionBuilder().WithFunc(hs.goConcat).Export("h_concat").
+		NewFunctionBuilder().WithFunc(hs.goCompare).Export("h_compare").
+		NewFunctionBuilder().WithFunc(hs.goEq).Export("h_eq").
+		NewFunctionBuilder().WithFunc(hs.goForPrep).Export("h_forprep").
 		Instantiate(c.ctx)
 	if err != nil {
 		return err

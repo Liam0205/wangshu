@@ -21,6 +21,9 @@ const (
 	helperUnm                     // host.h_unm     (base,pc,b,a i32) -> (i32 status)        PW3
 	helperLen                     // host.h_len     (base,pc,b,a i32) -> (i32 status)        PW3
 	helperConcat                  // host.h_concat  (base,pc,a,b,c i32) -> (i32 status)      PW3
+	helperCompare                 // host.h_compare (base,pc,op,b,c i32) -> (i32 packed)     PW4
+	helperEq                      // host.h_eq      (base,pc,b,c i32) -> (i32 packed)        PW4
+	helperForPrep                 // host.h_forprep (base,pc,a i32) -> (i32 status)          PW4
 	numHelpers
 )
 

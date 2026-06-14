@@ -43,6 +43,18 @@ type HostState interface {
 	Len(base, pc, b, a int32) int32
 	// Concat 处理 CONCAT(复用 execute.go doConcat 全逻辑 + safepoint)。
 	Concat(base, pc, a, b, c int32) int32
+
+	// --- PW4 控制流慢路径助手 ---
+
+	// Compare 处理 LT/LE 慢路径(string 比较 / __lt/__le 元方法)。op 是
+	// bytecode.OpCode。返回 packed:bit0=比较结果(0/1),bit1=错误标志。
+	Compare(base, pc, op, b, c int32) int32
+	// Eq 处理 EQ 的 __eq 元方法路径(raw 不等时;复用 rawEqual + __eq)。
+	// 返回 packed:bit0=结果,bit1=错误。
+	Eq(base, pc, b, c int32) int32
+	// ForPrep 处理 FORPREP:三槽校验 + coercion + 预减(复用 execute.go
+	// FORPREP 段,byte-equal 错误消息)。返回 status(0=OK / 1=ERR)。
+	ForPrep(base, pc, a int32) int32
 }
 
 // helperSet 持有注入的 HostState,提供给 wazero 注册的 Go callback。
@@ -96,4 +108,19 @@ func (h *helperSet) goLen(base, pc, b, a int32) int32 {
 // goConcat: (base,pc,a,b,c i32) -> (i32)  对应 type 8 / h_concat(PW3)。
 func (h *helperSet) goConcat(base, pc, a, b, c int32) int32 {
 	return h.host.Concat(base, pc, a, b, c)
+}
+
+// goCompare: (base,pc,op,b,c i32) -> (i32 packed)  对应 type 8 / h_compare(PW4)。
+func (h *helperSet) goCompare(base, pc, op, b, c int32) int32 {
+	return h.host.Compare(base, pc, op, b, c)
+}
+
+// goEq: (base,pc,b,c i32) -> (i32 packed)  对应 type 6 / h_eq(PW4)。
+func (h *helperSet) goEq(base, pc, b, c int32) int32 {
+	return h.host.Eq(base, pc, b, c)
+}
+
+// goForPrep: (base,pc,a i32) -> (i32 status)  对应 type 9 / h_forprep(PW4)。
+func (h *helperSet) goForPrep(base, pc, a int32) int32 {
+	return h.host.ForPrep(base, pc, a)
 }
