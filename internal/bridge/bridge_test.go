@@ -93,7 +93,7 @@ func TestOnBackEdgeAccumulates(t *testing.T) {
 	p := &bytecode.Proto{Code: make([]bytecode.Instruction, 8)}
 
 	for i := uint32(0); i < 5; i++ {
-		b.OnBackEdge(p, 3)
+		b.OnBackEdge(p, 3, true)
 	}
 	pd := b.ProfileOf(p)
 	if pd.BackEdge[3] != 5 {
@@ -110,7 +110,7 @@ func TestOnEnterAccumulates(t *testing.T) {
 	p := &bytecode.Proto{Code: make([]bytecode.Instruction, 4)}
 
 	for i := 0; i < 3; i++ {
-		b.OnEnter(p)
+		b.OnEnter(p, true)
 	}
 	pd := b.ProfileOf(p)
 	if pd.EntryCount != 3 {
@@ -127,8 +127,8 @@ func TestTierGuardBlocksCounting(t *testing.T) {
 	pd := b.ProfileOf(p)
 
 	pd.TierState = TierStuck
-	b.OnBackEdge(p, 0)
-	b.OnEnter(p)
+	b.OnBackEdge(p, 0, true)
+	b.OnEnter(p, true)
 
 	if pd.EntryCount != 0 {
 		t.Errorf("entryCount must stay 0 under TierStuck guard, got %d", pd.EntryCount)

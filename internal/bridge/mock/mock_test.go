@@ -24,7 +24,7 @@ func TestMock_DummyCompile_PromotesToGibbous(t *testing.T) {
 	pd.Compilable = bridge.CompCompilable
 
 	for i := uint32(0); i < bridge.HotEntryThreshold; i++ {
-		b.OnEnter(p)
+		b.OnEnter(p, true)
 	}
 	if pd.TierState != bridge.TierGibbous {
 		t.Errorf("DummyCompile should promote to Gibbous, got %v", pd.TierState)
@@ -41,7 +41,7 @@ func TestMock_RejectAll_F7Stuck(t *testing.T) {
 
 	pd := b.ProfileOf(p)
 	for i := uint32(0); i < bridge.HotEntryThreshold; i++ {
-		b.OnEnter(p)
+		b.OnEnter(p, true)
 	}
 	if pd.TierState != bridge.TierStuck {
 		t.Errorf("RejectAll should leave Proto in Stuck, got %v", pd.TierState)
@@ -64,7 +64,7 @@ func TestMock_PanicOnce_RecoveredToStuck(t *testing.T) {
 	}()
 
 	for i := uint32(0); i < bridge.HotEntryThreshold; i++ {
-		b.OnEnter(p)
+		b.OnEnter(p, true)
 	}
 	if pd.TierState != bridge.TierStuck {
 		t.Errorf("PanicOnce should leave Proto in Stuck, got %v", pd.TierState)

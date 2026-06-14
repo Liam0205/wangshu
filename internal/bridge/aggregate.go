@@ -104,7 +104,7 @@ func ResetAggregate() {
 // 待 wangshu 公共 API 落地)。
 //
 //nolint:unused // 留 wangshu 公共 API 接通时启用;当前接口预设占位。
-func (b *Bridge) considerPromotionWithAggregate(proto *bytecode.Proto, pd *ProfileData) {
+func (b *Bridge) considerPromotionWithAggregate(proto *bytecode.Proto, pd *ProfileData, onMain bool) {
 	if pd.TierState != TierInterp {
 		return
 	}
@@ -123,6 +123,6 @@ func (b *Bridge) considerPromotionWithAggregate(proto *bytecode.Proto, pd *Profi
 		pd.MaxBackEdge() >= HotBackEdgeThreshold ||
 		aggEntry >= HotEntryThreshold ||
 		aggMaxBack >= HotBackEdgeThreshold {
-		b.considerPromotion(proto, pd)
+		b.considerPromotion(proto, pd, onMain)
 	}
 }

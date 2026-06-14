@@ -50,7 +50,7 @@ func promoteProto(st *State, pid uint32) bool {
 	b := st.bridge
 	b.SetCompilability(proto, bridge.CompCompilable, 0)
 	for i := uint32(0); i < bridge.HotEntryThreshold+1; i++ {
-		b.OnEnter(proto)
+		b.OnEnter(proto, true)
 	}
 	return b.GibbousCodeOf(proto) != nil
 }
@@ -837,5 +837,54 @@ return f`, 2001000},
 				t.Errorf("gibbous = %v, want %v (TFORLOOP byte-equal)", got[0], tc.want)
 			}
 		})
+	}
+}
+
+// TestPW8_CoroutineNoPromote PW8 线程级 tier 规则:协程线程上的执行不升层
+// (07-coroutine-thread-rule §2)。协程内 hot 函数越阈值后保持 TierInterp
+// (考虑升层入口的 onMain 守卫拦下);同 Proto 在主线程驱动则正常升层。
+func TestPW8_CoroutineNoPromote(t *testing.T) {
+	src := `
+local function hot(a) return a + 1 end
+local function body()
+  local s = 0
+  for i = 1, 100000 do s = hot(s) end   -- hot 在协程内被反复调用(越入口阈值)
+  return s
+end
+return hot, body`
+	st, mainCl := loadFn(t, src)
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 2)
+	if err != nil {
+		t.Fatalf("run main: %v", err)
+	}
+	hotVal, bodyVal := rets[0], rets[1]
+	hotPid := object.ClosureProtoID(st.arena, value.GCRefOf(hotVal))
+	// hot 可编译(单 BB ADD + RETURN);手工标 Compilable 模拟真 P3 F7 放行。
+	st.bridge.SetCompilability(st.protos[hotPid], bridge.CompCompilable, 0)
+
+	// 在协程线程上跑 body(body 内调 hot 十万次,远超 HotEntryThreshold)。
+	coID, ce := st.NewCoroutine(bodyVal)
+	if ce != nil {
+		t.Fatalf("NewCoroutine: %v", ce)
+	}
+	res, ok, re := st.Resume(coID, nil)
+	if re != nil || !ok {
+		t.Fatalf("Resume: ok=%v err=%v", ok, re)
+	}
+	if value.AsNumber(res[0]) != 100000 {
+		t.Fatalf("coroutine body() = %v, want 100000", res[0])
+	}
+	// ★ 协程内 hot 极热,但线程级 tier 规则使其不升层(onMain 守卫拦考虑升层入口)。
+	if st.bridge.GibbousCodeOf(st.protos[hotPid]) != nil {
+		t.Error("协程内 hot 函数不应升层(线程级 tier 规则;onMain 守卫应拦下 considerPromotion)")
+	}
+
+	// 对照:同 Proto 在主线程驱动升层成功(证明 hot 本身可编译,上面不升层是
+	// 线程门禁而非不可编译)。
+	if !promoteProto(st, hotPid) {
+		t.Fatal("hot 在主线程应能升层(单 BB ADD+RETURN),onMain=true 门禁放行")
+	}
+	if st.bridge.GibbousCodeOf(st.protos[hotPid]) == nil {
+		t.Fatal("主线程升层后 GibbousCodeOf 应非 nil")
 	}
 }

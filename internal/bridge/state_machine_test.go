@@ -29,7 +29,7 @@ func TestStateMachine_NotCompilable_Stuck(t *testing.T) {
 
 	// 触发越阈值 considerPromotion
 	for i := uint32(0); i < HotEntryThreshold; i++ {
-		b.OnEnter(p)
+		b.OnEnter(p, true)
 	}
 
 	if pd.TierState != TierStuck {
@@ -49,7 +49,7 @@ func TestStateMachine_Unknown_Stuck(t *testing.T) {
 	// 默认 CompUnknown(P1 占位)
 
 	for i := uint32(0); i < HotEntryThreshold; i++ {
-		b.OnEnter(p)
+		b.OnEnter(p, true)
 	}
 
 	if pd.TierState != TierStuck {
@@ -67,7 +67,7 @@ func TestStateMachine_Compilable_Promoted(t *testing.T) {
 	pd.Compilable = CompCompilable
 
 	for i := uint32(0); i < HotEntryThreshold; i++ {
-		b.OnEnter(p)
+		b.OnEnter(p, true)
 	}
 
 	if pd.TierState != TierGibbous {
@@ -91,7 +91,7 @@ func TestStateMachine_CompileFail_Stuck(t *testing.T) {
 	pd.Compilable = CompCompilable
 
 	for i := uint32(0); i < HotEntryThreshold; i++ {
-		b.OnEnter(p)
+		b.OnEnter(p, true)
 	}
 
 	if pd.TierState != TierStuck {
@@ -115,7 +115,7 @@ func TestStateMachine_BackendPanic_Stuck(t *testing.T) {
 	}()
 
 	for i := uint32(0); i < HotEntryThreshold; i++ {
-		b.OnEnter(p)
+		b.OnEnter(p, true)
 	}
 
 	if pd.TierState != TierStuck {
@@ -135,7 +135,7 @@ func TestStateMachine_Idempotent_Stuck(t *testing.T) {
 
 	// 跑足够多回 EntryCount,守卫每次都直接 return
 	for i := 0; i < 10*int(HotEntryThreshold); i++ {
-		b.OnEnter(p)
+		b.OnEnter(p, true)
 	}
 	if mock.compileCalls != 0 {
 		t.Errorf("Stuck should never trigger Compile, got %d calls", mock.compileCalls)
@@ -144,7 +144,7 @@ func TestStateMachine_Idempotent_Stuck(t *testing.T) {
 	// 切到 Compilable 后仍守住——TierState 已是 Stuck,守卫继续拦
 	pd.Compilable = CompCompilable
 	for i := 0; i < int(HotEntryThreshold); i++ {
-		b.OnEnter(p)
+		b.OnEnter(p, true)
 	}
 	if pd.TierState != TierStuck {
 		t.Errorf("Stuck must not transition to anything else, got %v", pd.TierState)
@@ -162,7 +162,7 @@ func TestStateMachine_Idempotent_Gibbous(t *testing.T) {
 	pd.Compilable = CompCompilable
 
 	for i := uint32(0); i < HotEntryThreshold; i++ {
-		b.OnEnter(p)
+		b.OnEnter(p, true)
 	}
 	if pd.TierState != TierGibbous {
 		t.Fatalf("first round should promote, got %v", pd.TierState)
@@ -173,7 +173,7 @@ func TestStateMachine_Idempotent_Gibbous(t *testing.T) {
 
 	// 持续 OnEnter ⇒ 守卫拦下,不再调 Compile
 	for i := 0; i < 10*int(HotEntryThreshold); i++ {
-		b.OnEnter(p)
+		b.OnEnter(p, true)
 	}
 	if mock.compileCalls != 1 {
 		t.Errorf("Gibbous should not re-compile, got %d calls", mock.compileCalls)
@@ -194,7 +194,7 @@ func TestStateMachine_NoReverseEdge(t *testing.T) {
 	pd.Compilable = CompCompilable
 
 	for i := uint32(0); i < HotEntryThreshold; i++ {
-		b.OnEnter(p)
+		b.OnEnter(p, true)
 	}
 	if pd.TierState != TierGibbous {
 		t.Fatalf("expected Gibbous, got %v", pd.TierState)
@@ -202,8 +202,8 @@ func TestStateMachine_NoReverseEdge(t *testing.T) {
 
 	// 模拟许多次后续事件——TierGibbous 应保持
 	for i := 0; i < 1000; i++ {
-		b.OnEnter(p)
-		b.OnBackEdge(p, 0)
+		b.OnEnter(p, true)
+		b.OnBackEdge(p, 0, true)
 	}
 	if pd.TierState != TierGibbous {
 		t.Errorf("Gibbous broken by subsequent events, got %v", pd.TierState)

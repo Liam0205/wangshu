@@ -49,7 +49,7 @@ func TestLogger_PromotedFormat(t *testing.T) {
 	pd.Compilable = CompCompilable
 
 	for i := uint32(0); i < HotEntryThreshold; i++ {
-		b.OnEnter(p)
+		b.OnEnter(p, true)
 	}
 
 	got := buf.String()
@@ -81,7 +81,7 @@ func TestLogger_StuckFormat(t *testing.T) {
 	pd.Reasons = ReasonVararg | ReasonOverSize
 
 	for i := uint32(0); i < HotEntryThreshold; i++ {
-		b.OnEnter(p)
+		b.OnEnter(p, true)
 	}
 
 	got := buf.String()
@@ -112,7 +112,7 @@ func TestLogger_CompileFailFormat(t *testing.T) {
 	pd.Compilable = CompCompilable
 
 	for i := uint32(0); i < HotEntryThreshold; i++ {
-		b.OnEnter(p)
+		b.OnEnter(p, true)
 	}
 
 	got := buf.String()
@@ -146,7 +146,7 @@ func TestLogger_PanicFormat(t *testing.T) {
 	}()
 
 	for i := uint32(0); i < HotEntryThreshold; i++ {
-		b.OnEnter(p)
+		b.OnEnter(p, true)
 	}
 
 	got := buf.String()
@@ -176,8 +176,8 @@ func TestLogger_CaptureViaCustom(t *testing.T) {
 	b.ProfileOf(pStuck).Compilable = CompNotCompilable
 
 	for i := uint32(0); i < HotEntryThreshold; i++ {
-		b.OnEnter(pPromoted)
-		b.OnEnter(pStuck)
+		b.OnEnter(pPromoted, true)
+		b.OnEnter(pStuck, true)
 	}
 
 	if len(cap.promoted) != 1 || !strings.Contains(cap.promoted[0], "ok.lua") {
@@ -240,7 +240,7 @@ func TestSilentLogger(t *testing.T) {
 	pd.Compilable = CompCompilable
 
 	for i := uint32(0); i < HotEntryThreshold; i++ {
-		b.OnEnter(p)
+		b.OnEnter(p, true)
 	}
 	if pd.TierState != TierGibbous {
 		t.Errorf("silent logger should not affect state machine")

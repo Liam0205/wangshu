@@ -134,7 +134,7 @@ func (b *Bridge) SetCompilability(proto *bytecode.Proto, c Compilability, r Reas
 //
 // **保证零分配**(常态未越阈值):map 查找 + 切片索引 + 自增 + 比较——一次
 // 函数调用约 24ns 预算(01 §4.5 估算)。
-func (b *Bridge) OnBackEdge(proto *bytecode.Proto, pc int32) {
+func (b *Bridge) OnBackEdge(proto *bytecode.Proto, pc int32, onMain bool) {
 	pd := b.profileOf(proto)
 	if pd.TierState != TierInterp {
 		return // 已升 Gibbous / 已卡 Stuck:无需再计数(01 §4.1 守卫)
@@ -145,21 +145,24 @@ func (b *Bridge) OnBackEdge(proto *bytecode.Proto, pc int32) {
 	}
 	pd.BackEdge[pc]++
 	if pd.BackEdge[pc] >= HotBackEdgeThreshold {
-		b.considerPromotion(proto, pd)
+		b.considerPromotion(proto, pd, onMain)
 	}
 }
 
 // OnEnter 函数入口采样钩点(01 §4.2)。
 //
 // 调用契约(由 crescent enterLuaFrame / TAILCALL 重载后调用,PB1 接线)。
-func (b *Bridge) OnEnter(proto *bytecode.Proto) {
+//
+// onMain:当前执行线程是否为主线程(线程级 tier 规则,07 §2.4)。协程线程上
+// profile 仍累加(诊断价值,07 §2.4 选 (A)),但越阈值不触发升层。
+func (b *Bridge) OnEnter(proto *bytecode.Proto, onMain bool) {
 	pd := b.profileOf(proto)
 	if pd.TierState != TierInterp {
 		return
 	}
 	pd.EntryCount++
 	if pd.EntryCount >= HotEntryThreshold {
-		b.considerPromotion(proto, pd)
+		b.considerPromotion(proto, pd, onMain)
 	}
 }
 
@@ -176,9 +179,17 @@ func (b *Bridge) OnEnter(proto *bytecode.Proto) {
 //	(P1) 已经在吸收态(TierGibbous / TierStuck) → 直接 return(防抖)
 //	(P2) Compilable != CompCompilable(含 CompUnknown / CompNotCompilable)→ 转 Stuck
 //	(P3) 可编译 → try-compile;成功转 Gibbous 安装;失败转 Stuck。
-func (b *Bridge) considerPromotion(proto *bytecode.Proto, pd *ProfileData) {
+func (b *Bridge) considerPromotion(proto *bytecode.Proto, pd *ProfileData, onMain bool) {
 	// (P1) 已转吸收态 → no-op(双重防抖,onBackEdge/OnEnter 守卫已先拦一道)
 	if pd.TierState != TierInterp {
+		return
+	}
+
+	// (P0') 线程级 tier 规则(07 §2.4):协程线程上即便热度越阈值也不升层——
+	// 协程内即便升 gibbous 也用不上(doCall gibbous 分支 th==mainTh 守卫强制走
+	// crescent),编译工作浪费;且 gibbous 帧不可穿越 yield(07 §1),协程必须
+	// 留在 crescent。profile 已累加(诊断保留,07 §2.4 选 (A)),此处仅决策门禁。
+	if !onMain {
 		return
 	}
 

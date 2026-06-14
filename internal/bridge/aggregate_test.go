@@ -98,7 +98,7 @@ func TestAggregate_ConsiderPromotionWithAggregate(t *testing.T) {
 	// 本 State 只跑了 5 次(远低 200 阈值)
 	pd.EntryCount = 5
 
-	b.considerPromotionWithAggregate(p, pd)
+	b.considerPromotionWithAggregate(p, pd, true)
 
 	if pd.TierState != TierGibbous {
 		t.Errorf("aggregate-driven promotion failed: TierState = %v, want TierGibbous", pd.TierState)

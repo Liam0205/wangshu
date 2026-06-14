@@ -212,7 +212,7 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 					return e
 				}
 				if profileEnabled {
-					st.bridge.OnBackEdge(proto, ci.pc+int32(bytecode.SBx(i)))
+					st.bridge.OnBackEdge(proto, ci.pc+int32(bytecode.SBx(i)), th == st.mainTh)
 				}
 			}
 			ci.pc += int32(bytecode.SBx(i))
@@ -328,7 +328,7 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 				setReg(th, ci, a+3, value.NumberValue(idx))
 				ci.pc += int32(bytecode.SBx(i))
 				if profileEnabled {
-					st.bridge.OnBackEdge(proto, ci.pc)
+					st.bridge.OnBackEdge(proto, ci.pc, th == st.mainTh)
 				}
 			}
 
