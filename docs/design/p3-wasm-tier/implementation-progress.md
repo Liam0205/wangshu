@@ -10,7 +10,7 @@
 
 ## 0. 当前状态
 
-**P3 实现:PW0 spike 闸门通过 + PW1/PW2 已交付(含 VS0 值栈 arena 化),PW3-PW9 未启动。** PW2 落地 crescent→gibbous trampoline 端到端(直线 opcode Proto 升 gibbous 后经 wazero 执行,byte-equal)。设计文档集已齐备(00-08 共约 8800 行)。
+**P3 实现:PW0 spike 闸门通过 + PW1/PW2/PW3(算术) 已交付(含 VS0 值栈 arena 化),PW3 比较类 + PW4-PW9 未启动。** PW2 落地 crescent→gibbous trampoline 端到端;PW3 落地直线算术 opcode(双 number 快路径直发 f64 + 慢路径助手)。设计文档集已齐备(00-08 共约 8800 行)。
 
 **前置条件检查**:
 - ✅ P1 全卷已交付(M0-M14 + 所有收尾轮 + 长稳承诺轮 + 外部审查修复轮 + 官方测试套与性能轮)
@@ -19,6 +19,7 @@
 - ✅ **P3 PW0(wazero call boundary spike < 150ns)闸门通过**——S2 主指标 36.7ns ≪ 150ns(详见 §0.1 spike 数据存档);**P3 开工放行**
 - ✅ **PW1 包骨架 + arena 收养 wazero memory**(`6fd9a1a`)
 - ✅ **PW2 直线 opcode 翻译器 + trampoline 端到端 + VS0 值栈 arena 化**(`538e717`;见 §6 VS0 表)
+- ✅ **PW3 算术 opcode**(`e33a1fd`;ADD/SUB/MUL/DIV/MOD/POW/UNM/NOT/LEN/CONCAT 快路径 f64 + 慢路径助手;比较类切 BB 留 PW4)
 - ⏳ **P3 开工前置确认(待外部)**:向首个宿主确认「列内核是否跑在协程里」,决定线程级 tier 规则是否成立([07 §3.2](./07-coroutine-thread-rule.md))
 
 ---
@@ -75,7 +76,7 @@
 | PW0 | 开工前置 spike(wazero call boundary S1/S2/S3 实测) | [01](./01-spike-gate.md) | S2 < 150ns 且 S3 同档 ⇒ 开工;否则跳 P4 或边缘混合 | ✅ **通过**(S2=36.7ns;S3=202ns 走边缘修正,见 §0.1) |
 | PW1 | `internal/gibbous/wasm` 包骨架 + arena 收养 wazero memory + 零 opcode 翻译器 | [02 §1](./02-translation.md) + [03 §1](./03-memory-model.md) | bridge 注入真 P3 后所有 Proto 仍走 crescent(F7 拦下);arena/wazero memory 共见验证 | ✅ **通过**(`6fd9a1a`;wazero v1.12.0 build-tag 隔离;三 build tag 全套零回归;收养 grow GCRef 不失效) |
 | PW2 | 翻译器骨架 + 直线 opcode(MOVE/LOADK/LOADBOOL/LOADNIL/GETUPVAL/SETUPVAL/RETURN)+ trampoline 入口 + **值栈 arena 化(VS0)** | [02 §3.1](./02-translation.md) + [04 §2](./04-trampoline.md) + [03 §1](./03-memory-model.md) | 直线 Proto 升层后 byte-equal;crescent→gibbous trampoline 端到端 | ✅ **通过**(`538e717`;PW2-a~d 见 §6 VS0 表;值栈迁 arena 解锁端到端;`id(x)`/常量返回 e2e byte-equal + 升层确认) |
-| PW3 | 算术 + 比较 opcode + NaN 规范化 + 慢路径助手回 Go | [02 §3.2-§3.3](./02-translation.md) + [04 §3](./04-trampoline.md) | 双 number 快路径直发 f64;混合类型走助手且 byte-equal | ⏳ |
+| PW3 | 算术 + 比较 opcode + NaN 规范化 + 慢路径助手回 Go | [02 §3.2-§3.3](./02-translation.md) + [04 §3](./04-trampoline.md) | 双 number 快路径直发 f64;混合类型走助手且 byte-equal | ✅ **算术过线**(`e33a1fd`;ADD/SUB/MUL/DIV/MOD/POW/UNM/NOT/LEN/CONCAT 双 number 快路径直发 f64 + NaN 规范化,混合类型走 h_arith/h_unm/h_len/h_concat byte-equal)。**比较 EQ/LT/LE/TEST/TESTSET 切 BB,留 PW4 relooper 同批**(见 §1 注) |
 | PW4 | 控制流(FORPREP/FORLOOP/TFORLOOP)+ 回边 safepoint | [02 §3.5](./02-translation.md) + [05 §1.3](./05-safepoint-gc.md) | 数值 for 编译后 ≥2x 解释器;回边 GC 触发 byte-equal | ⏳ |
 | PW5 | 表 IC opcode + feedback 消费(IC 快照固化)+ 失效降级 | [02 §3.4](./02-translation.md) + [06](./06-ic-feedback-consume.md) | 单态表访问跳过哈希;gen bump 后走助手仍正确 | ⏳ |
 | PW6 | CALL/TAILCALL/RETURN + 跨层互调 + status 链 + **CallInfo bit50 落地** | [04 §2-§4](./04-trampoline.md) | gibbous 内调未编译 Proto 经 trampoline;错误从 Wasm 帧穿越冒泡到 pcall | ⏳ |
