@@ -57,10 +57,24 @@ type P3Compiler interface {
 // trampoline 表;P2 不解读其内部字段。具体类型由 P3(wazero CompiledModule)
 // 或 P4(原生码段)实现。
 //
-// 当前接口只暴露 P2 需要的最小面;P3 落地后扩充(详见 [../p3-wasm-tier] §2.5)。
+// **Run/PendingErr 跨层执行入口(VS0-d)**:crescent 的 trampoline 在 doCall
+// 检测到 Proto 已升 gibbous 时,经此接口跳进编译产物执行(05 §6.2)。把 Run
+// 放接口上(而非让 crescent 类型断言到 gibbous 私有类型)使 trampoline 逻辑
+// 留在 crescent 全 build 代码,不 import p3-build-only 的 gibbous 包——P3/P4
+// 共用同一套 trampoline(04-trampoline §0.4)。
 type GibbousCode interface {
 	// Proto 反向指针,trampoline 校验用——确保 GibbousCode 与 Proto 配对。
 	Proto() *bytecode.Proto
+
+	// Run 是 crescent→gibbous 跨层入口(04-trampoline §2.2 step3)。
+	//   - stack:复用栈(CallWithStack 零分配路径,len≥1);stack[0]=base 入参,
+	//     返回后 stack[0]=status。
+	//   - base:本帧 R0 在共见 linear memory 的字节偏移(= stackSegByte+base*8)。
+	//   - 返回 status:0=OK / 1=ERR(05 §2.1)。P3 永不返回 2(deopt 是 P4 专用)。
+	Run(stack []uint64, base uint32) int32
+
+	// PendingErr 返回最近一次 Run 的 wazero 内部错误(trampoline ERR 时读)。
+	PendingErr() error
 }
 
 // CompileErrKind 编译失败的类别(05 §2.2.2 错误返回语义 / 04 §4.3)。

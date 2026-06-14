@@ -54,7 +54,10 @@ func (PanicOnce) Compile(_ *bytecode.Proto, _ *bridge.TypeFeedback) (bridge.Gibb
 	panic("synthetic backend bug for testing")
 }
 
-// dummyCode 是 GibbousCode 的最小实现(只持 Proto 反向指针,P2 视角不透明)。
+// dummyCode 是 GibbousCode 的最小实现(P2 视角不透明)。Run 是 no-op 占位
+// (mock 不真执行;trampoline 端到端测试用真 P3 gibbous,见 wangshu_p3 build)。
 type dummyCode struct{ proto *bytecode.Proto }
 
-func (d dummyCode) Proto() *bytecode.Proto { return d.proto }
+func (d dummyCode) Proto() *bytecode.Proto         { return d.proto }
+func (d dummyCode) Run(_ []uint64, _ uint32) int32 { return 0 }
+func (d dummyCode) PendingErr() error              { return nil }

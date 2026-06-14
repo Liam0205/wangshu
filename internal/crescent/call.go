@@ -53,6 +53,16 @@ func (st *State) doCall(th *thread, ci *callInfo, i bytecode.Instruction) (*call
 		}
 		return nil, e
 	}
+	// gibbous 升层分支(VS0-d / 04-trampoline §2.2):被调 Proto 已升 gibbous
+	// 且在主线程(§5 线程级 tier 规则:协程不升层)→ 经 trampoline 跳 wazero。
+	// 返回值回填 + 弹帧由 gibbous RETURN 经 h_return 完成,与 host 路径同款
+	// 返回 (nil, e)——execute 主循环 reload ci=currentCI 继续解释调用者帧。
+	if profileEnabled && th == st.mainTh {
+		pid := object.ClosureProtoID(st.arena, cl)
+		if code := st.bridge.GibbousCodeOf(st.protos[pid]); code != nil {
+			return nil, st.enterGibbous(th, code, funcIdx, nargs, nresults)
+		}
+	}
 	if e := st.enterLuaFrame(th, funcIdx, nargs, nresults, false); e != nil {
 		return nil, e
 	}

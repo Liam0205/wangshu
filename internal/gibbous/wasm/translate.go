@@ -41,18 +41,21 @@ func (e *translateError) Error() string { return e.reason }
 // PW2:只支持单 BB Proto。多 BB(有跳转)返 translateError。
 func (c *Compiler) translate(proto *bytecode.Proto) ([]byte, error) {
 	cfg := buildCFG(proto)
-	if len(cfg.blocks) != 1 {
+	reach := cfg.reachableBlocks()
+	if len(reach) != 1 {
 		return nil, &translateError{reason: fmt.Sprintf(
-			"p3 PW2: control flow not yet structurable (%d basic blocks; PW3 relooper)", len(cfg.blocks))}
+			"p3 PW2: control flow not yet structurable (%d reachable basic blocks; PW3 relooper)", len(reach))}
 	}
 
+	// 只翻译可达的入口 BB(死代码块——RETURN 后的兜底 RETURN——不发射)。
+	entry := cfg.blocks[cfg.entry]
 	em := newEmitter()
-	for pc := int32(0); pc < int32(len(proto.Code)); pc++ {
+	for pc := entry.startPC; pc < entry.endPC; pc++ {
 		if err := c.emitOpcode(em, proto, pc); err != nil {
 			return nil, err
 		}
 	}
-	// 单 BB 末尾若不是 RETURN(理论上 codegen 总发尾 RETURN),兜底 return 0。
+	// 入口 BB 末尾若不是 RETURN(理论上 codegen 总发尾 RETURN),兜底 return 0。
 	em.i32Const(0)
 	em.ret()
 	return em.bytes(), nil

@@ -267,12 +267,26 @@ func (b *Bridge) tryCompile(proto *bytecode.Proto, fb *TypeFeedback) (code Gibbo
 
 // installGibbous 升层成功后安装 gibbous 代码(04 §4.4)。
 //
-// 当前简化版:只挂 gibbousCodes map(GC 防早释)。**P3 trampoline 注册**与
-// **CallInfo bit50 写入**都在 PB6/P3 落地时补上——本期 P3 还没真存在,
-// installGibbous 没有「下一帧改流向」的实际效果(P1 主循环不读 callInfo.gibbous,
-// 见 callInfo 字段注释)。
+// 挂 gibbousCodes map(GC 防早释 + trampoline 查询源)。Proto 的 tierState
+// 转 TierGibbous 由 considerPromotion 写 ProfileData.TierState;crescent
+// doCall 经 GibbousCodeOf 查此表决定是否走 gibbous 分支(VS0-d)。
 func (b *Bridge) installGibbous(proto *bytecode.Proto, code GibbousCode) {
 	b.gibbousCodes[proto] = code
+}
+
+// GibbousCodeOf 查 Proto 是否已升层并取其 GibbousCode(VS0-d trampoline 入口)。
+//
+// crescent doCall 在 Lua closure 分支调此查询:返回非 nil ⇒ 该 Proto 已升
+// gibbous,走 trampoline 跳 wazero 执行;nil ⇒ 走解释器(未升 / TierStuck)。
+//
+// 读 gibbousCodes map(installGibbous 后只增不减,运行期稳定;多 State 共享
+// 同一 GibbousCode,04 §6.4)。热路径查询——map 命中是一次哈希;profileEnabled
+// 关闭时 crescent 整段不调此函数(编译期消去)。
+func (b *Bridge) GibbousCodeOf(proto *bytecode.Proto) GibbousCode {
+	if len(b.gibbousCodes) == 0 {
+		return nil
+	}
+	return b.gibbousCodes[proto]
 }
 
 // fmtPanic 把 recover 拿到的 panic 值格式化(避免直接对 interface{} 用 %v

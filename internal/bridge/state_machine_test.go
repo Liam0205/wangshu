@@ -222,7 +222,9 @@ func (dummyCompileP3) Compile(p *bytecode.Proto, _ *TypeFeedback) (GibbousCode, 
 
 type dummyCode struct{ proto *bytecode.Proto }
 
-func (d dummyCode) Proto() *bytecode.Proto { return d.proto }
+func (d dummyCode) Proto() *bytecode.Proto         { return d.proto }
+func (d dummyCode) Run(_ []uint64, _ uint32) int32 { return 0 }
+func (d dummyCode) PendingErr() error              { return nil }
 
 // failingP3:Compile 总返指定 err。
 type failingP3 struct{ err error }

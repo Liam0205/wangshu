@@ -8,23 +8,25 @@ import (
 	"github.com/tetratelabs/wazero"
 
 	"github.com/Liam0205/wangshu/internal/arena"
+	"github.com/Liam0205/wangshu/internal/gibbous/wasm"
 	"github.com/Liam0205/wangshu/internal/gibbous/wasm/memadapter"
 )
+
+// p3Env 持 wangshu_p3 build 下与 State arena 同源的 wazero Runtime + holder,
+// 供 wireP3 构造 gibbous Compiler 共享同一 runtime/linear memory。
+type p3Env struct {
+	ctx    context.Context
+	rt     wazero.Runtime
+	holder *memadapter.MemoryHolder
+}
 
 // newStateArena 建 State 主 arena —— wangshu_p3 build 下收养 wazero linear
 // memory 作 backing(docs/design/p3-wasm-tier/03-memory-model.md §1)。
 //
 // 流程:① 建 wazero Runtime(编译模式)② memadapter 建 MemoryHolder 分配
 // linear memory ③ arena.Options 注入 holder.Backing() + InPlaceBacking=true
-// (收养语义:grow 原地扩不 copy)。
-//
-// 返回 cleanup 在 State 销毁时关闭 holder + runtime。
-//
-// **注意**:wazero Runtime 这里建但 PW1 阶段除了 holder module 外不装载任何
-// gibbous module(SupportsAllOpcodes 全 false,无 Proto 升层)。Runtime 还要
-// 传给 Compiler(PW1-c 接线;PW2+ 翻译产物经它加载)——当前 State 暂存
-// runtime 供后续取(见 State.p3Runtime 字段,p3 build 专属)。
-func newStateArena() (*arena.Arena, func()) {
+// (收养语义:grow 原地扩不 copy)。返回 p3Env 供 wireP3 取 runtime 构造 Compiler。
+func newStateArena() (*arena.Arena, func(), any) {
 	ctx := context.Background()
 	rt := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfigCompiler())
 
@@ -47,7 +49,22 @@ func newStateArena() (*arena.Arena, func()) {
 		_ = holder.Close()
 		_ = rt.Close(ctx)
 	}
-	return a, cleanup
+	return a, cleanup, &p3Env{ctx: ctx, rt: rt, holder: holder}
+}
+
+// wireP3 构造 gibbous Compiler 并注入 bridge(VS0-d / PW2-d)。
+//
+// Compiler 与 State arena 共享同一 wazero Runtime(p3Env.rt)——gibbous module
+// 经 import "env" "memory" 共享 holder 那块 linear memory(= State 值栈所在),
+// 故 trampoline 传的 base 字节偏移在 gibbous wasm 里寻址到的就是真实寄存器。
+// host 抽象注入 *State(实现 HostState:GetUpval/SetUpval/DoReturn/...)。
+func (st *State) wireP3() {
+	env, ok := st.p3env.(*p3Env)
+	if !ok || env == nil {
+		return
+	}
+	c := wasm.NewCompiler(env.ctx, env.rt, st)
+	st.bridge.SetP3Compiler(c)
 }
 
 // arena 容量默认值(与 arena 包默认对齐;p3 build 显式传以保证 holder 与

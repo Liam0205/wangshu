@@ -92,7 +92,17 @@ func (c *Compiler) SupportsAllOpcodes(proto *bytecode.Proto) bool {
 	if len(proto.Code) == 0 {
 		return true // 空 Proto vacuously supported(实际不会被 P2 判热点)
 	}
-	for pc, ins := range proto.Code {
+	// PW2 单 BB 限制:只数**可达** BB(死代码块——RETURN 后的兜底 RETURN——
+	// 不可达,不算多 BB)。多可达 BB(有控制流)留 PW3 relooper。
+	cfg := buildCFG(proto)
+	reach := cfg.reachableBlocks()
+	if len(reach) != 1 {
+		return false
+	}
+	// 只扫可达入口 BB 的 opcode(死代码块的指令永不执行,不影响支持判定)。
+	entry := cfg.blocks[cfg.entry]
+	for pc := entry.startPC; pc < entry.endPC; pc++ {
+		ins := proto.Code[pc]
 		op := bytecode.Op(ins)
 		if int(op) >= numOpcodes || !c.supported[op] {
 			return false
@@ -104,11 +114,6 @@ func (c *Compiler) SupportsAllOpcodes(proto *bytecode.Proto) bool {
 				return false
 			}
 		}
-		_ = pc
-	}
-	// PW2 单 BB 限制:多 BB(有控制流)留 PW3 relooper。
-	if len(buildCFG(proto).blocks) != 1 {
-		return false
 	}
 	return true
 }

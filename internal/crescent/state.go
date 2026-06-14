@@ -145,6 +145,19 @@ type State struct {
 	// (wangshu_p3 build 下 = 关闭收养的 wazero memory holder + runtime;
 	// 默认 build 下 = nil)。由 newStateArena 返回,Close 时调。
 	arenaCleanup func()
+
+	// gibStack 是 crescent→gibbous 跨层复用栈缓冲(CallWithStack 零分配路径,
+	// 04-trampoline §2.2)。惰性建,单 goroutine 复用。
+	gibStack []uint64
+
+	// gibbousPendingErr 是 gibbous helper(DoReturn/h_raise)冒泡的错误暂存
+	// (04 §4 status 链):helper 内置 pendingErr,trampoline ERR 时取走。
+	gibbousPendingErr *LuaError
+
+	// p3env 持 wangshu_p3 build 下的 wazero Runtime + memadapter holder
+	// (newStateArena 建,wireP3 取来构造 gibbous Compiler 共享同一 runtime/
+	// memory)。默认 build 恒 nil。类型擦除为 any 避免全 build 依赖 wazero。
+	p3env any
 }
 
 // SetCompileFn 注入编译回调(wangshu.NewState 时装配;loadstring 用)。
@@ -179,12 +192,13 @@ func (st *State) SetStringLib(t arena.GCRef) { st.stringLib = t }
 
 // New constructs a fresh State (arena + collector + empty globals)。
 func New() *State {
-	a, cleanup := newStateArena()
+	a, cleanup, p3env := newStateArena()
 	c := gc.New(a, gc.Options{})
-	st := &State{arena: a, gc: c, bridge: bridge.NewBridge(), arenaCleanup: cleanup}
+	st := &State{arena: a, gc: c, bridge: bridge.NewBridge(), arenaCleanup: cleanup, p3env: p3env}
 	st.globals = object.AllocTable(a, 0, 8)
 	c.LinkSweep(st.globals)
 	st.installRoots()
+	st.wireP3() // wangshu_p3 build:构造 gibbous Compiler 注入 bridge;默认 build no-op
 	// host closure 槽位回收(gmatch 迭代器、mountArena 列代理等动态注册的
 	// HostFn 在其 closure 被 GC 后释放槽,注册表有界)。
 	c.SetHostFnReleaser(st.releaseHostFn)
@@ -764,8 +778,9 @@ func (th *thread) growStack(need int) {
 //
 // **gibbous 标识位**(p2-bridge/04 §4.4 word2 bit50 callStatus_gibbous):
 // gibbous 帧入口 trampoline 压新 CallInfo 时置 1,标识此帧走 Wasm 路径
-// (04 §1.2)。当前未预留字段——VS0-d trampoline 落地时加(形态 b bool,
-// 与 tailcall/fresh 同款),以免引入无读者的死字段被 lint 抓出。
+// (04 §1.2)。P1 解释器主循环不读它(对它透明,04 §1.3);trampoline 在
+// 跨层调度/错误冒泡时读它判流向。形态 b 简化版(bool,与 tailcall/fresh
+// 同款;word 位打包延后到 VS0-e)。
 type callInfo struct {
 	base     int         // R0 在 stack 的绝对索引
 	funcIdx  int         // 被调 closure 槽(funcIdx = base-1)
@@ -775,6 +790,7 @@ type callInfo struct {
 	nresults int         // 调用者期望的返回数;-1 = 可变
 	tailcall bool
 	fresh    bool // execute 重入边界
+	gibbous  bool // 本帧在 gibbous(Wasm)编译码中执行(04 §1.2;P1 恒 false)
 
 	// vararg 区(M13 接入):IsVararg 函数的多余实参(数量 nVarargs)拷贝到一个独立
 	// Go 切片(简化版,后续 M14 切到栈下区)。这样 VARARG 指令直接读 ci.varargs。

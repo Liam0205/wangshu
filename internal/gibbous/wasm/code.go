@@ -7,8 +7,12 @@ import (
 
 	"github.com/tetratelabs/wazero/api"
 
+	"github.com/Liam0205/wangshu/internal/bridge"
 	"github.com/Liam0205/wangshu/internal/bytecode"
 )
+
+// 编译期断言:p3Code 实现 bridge.GibbousCode(Proto/Run/PendingErr)。
+var _ bridge.GibbousCode = (*p3Code)(nil)
 
 // p3Code 是 P3 的 bridge.GibbousCode 实现(02-translation §5.3)。
 type p3Code struct {

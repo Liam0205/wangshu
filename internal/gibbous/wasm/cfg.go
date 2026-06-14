@@ -123,6 +123,27 @@ func buildCFG(proto *bytecode.Proto) *cfg {
 	return c
 }
 
+// reachableBlocks 从 entry 出发 BFS 求可达 BB id 集合。
+//
+// Lua codegen 在每个 RETURN 后追加一条「兜底 RETURN A 1」(返回 0 值)死
+// 代码——它使 RETURN 后一条 pc 成 leader,切出一个**不可达** BB。判定「单
+// 直线 BB」时须只数可达 BB(死代码块永不执行,不影响翻译正确性)。
+func (c *cfg) reachableBlocks() map[int]bool {
+	seen := map[int]bool{c.entry: true}
+	stack := []int{c.entry}
+	for len(stack) > 0 {
+		u := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		for _, s := range c.blocks[u].succs {
+			if !seen[s] {
+				seen[s] = true
+				stack = append(stack, s)
+			}
+		}
+	}
+	return seen
+}
+
 // linkSuccs 给一个 BB 连后继边(按末指令语义)。
 func (c *cfg) linkSuccs(bb *basicBlock) {
 	code := c.proto.Code
