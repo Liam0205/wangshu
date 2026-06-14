@@ -127,6 +127,9 @@ func (c *Compiler) emitBlockBody(em *emitter, proto *bytecode.Proto, cfg *cfg, p
 	case bytecode.FORLOOP:
 		return c.emitForLoopTerm(em, proto, cfg, plan, stack, bb, term, lastPC)
 
+	case bytecode.TFORLOOP:
+		return c.emitTForLoopTerm(em, cfg, plan, stack, bb, lastPC)
+
 	default:
 		// 普通 op 因「下一条是 leader」切 BB(单后继 fallthrough)。先发该 op,
 		// 再发 fallthrough 边。(普通 op skip=0;CLOSURE 不会落此分支——它后随

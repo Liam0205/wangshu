@@ -107,6 +107,8 @@ func NewCompiler(ctx context.Context, runtime wazero.Runtime, host HostState) *C
 	// PW7:闭包构造 + 作用域 upvalue 关闭(全经助手)。
 	c.supported[bytecode.CLOSURE] = true
 	c.supported[bytecode.CLOSE] = true
+	// PW4b:TFORLOOP 泛型 for(经 h_tforloop 调迭代器 + base 刷新)。
+	c.supported[bytecode.TFORLOOP] = true
 	// PW5+ 逐档解锁(02-translation §1.3)。VARARG 永不加入。
 	return c
 }

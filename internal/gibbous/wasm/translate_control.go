@@ -318,3 +318,62 @@ func boolToI32(v int) int32 {
 	}
 	return 0
 }
+
+// emitTForLoopTerm TFORLOOP A C(PW4b,02 §3.5.3):调迭代器 R(A)(R(A+1),R(A+2)),
+// 结果落 R(A+3..A+2+C);首值非 nil → 控制变量 R(A+2):=首值,落回边 JMP(继续);
+// 首值 nil → 跳过回边(退出)。全经 h_tforloop(跨层调迭代器,复用 callLuaFromHost)。
+//
+// h_tforloop 返回 i64:≥0=刷新后 base(继续,迭代器调用可能 growStack 段重定位)/
+// -1=ERR / -2=退出。结构:
+//
+//	(local.set $i64c (call h_tforloop(base,pc,a,c)))
+//	(if (i64.eq $i64c -1) (then (return 1)))            ;; ERR 冒泡
+//	(if (i64.eq $i64c -2)
+//	  (then <emitEdge succSkip 退出>)
+//	  (else (local.set $base (i32.wrap $i64c)) <emitEdge succExec 回边>))
+//
+// succExec = lastPC+1(回边 JMP BB),succSkip = lastPC+2(退出 BB);同比较终结。
+func (c *Compiler) emitTForLoopTerm(em *emitter, cfg *cfg, plan *structPlan, stack *[]scope, bb int, lastPC int32) error {
+	succExec, succSkip, err := c.compareSuccs(cfg, lastPC)
+	if err != nil {
+		return err
+	}
+	a := bytecode.A(cfg.proto.Code[lastPC])
+	cc := bytecode.C(cfg.proto.Code[lastPC])
+
+	// $i64c = h_tforloop(base, pc, a, c)
+	em.localGet(localBase)
+	em.i32Const(lastPC)
+	em.i32Const(int32(a))
+	em.i32Const(int32(cc))
+	em.call(helperTForLoop)
+	em.localSet(localI64c)
+	// ERR(== -1)→ return 1
+	em.localGet(localI64c)
+	em.i64Const(^uint64(0)) // -1 的 i64 位模式
+	em.i64Eq()
+	em.ifVoid()
+	em.i32Const(1)
+	em.ret()
+	em.end()
+	// 退出(== -2)→ succSkip;否则刷新 base + 回边 succExec
+	em.localGet(localI64c)
+	em.i64Const(^uint64(0) - 1) // -2 的 i64 位模式
+	em.i64Eq()
+	em.ifVoid()
+	*stack = append(*stack, scope{kind: scIf, target: -1})
+	if e := c.emitEdge(em, plan, *stack, bb, succSkip); e != nil {
+		return e
+	}
+	em.elseOp()
+	// 继续:刷新 base(迭代器调用可能 growStack 段重定位,见 PW6 / design-vs-physics §2)
+	em.localGet(localI64c)
+	em.i32WrapI64()
+	em.localSet(localBase)
+	if e := c.emitEdge(em, plan, *stack, bb, succExec); e != nil {
+		return e
+	}
+	em.end()
+	*stack = (*stack)[:len(*stack)-1]
+	return nil
+}

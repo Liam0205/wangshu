@@ -573,3 +573,21 @@ func TestPW5_SelfInlineHit(t *testing.T) {
 		t.Errorf("SELF inline R0 = %#x, want method %#x (非 sentinel 即 inline 命中)", r0, methodVal)
 	}
 }
+
+// TestPW7_VarargRejected PW7-b:含 VARARG 的 Proto 不升层(白名单不含 VARARG,
+// 02 §3.7.3「不可达路径不被走到」由白名单保证——vararg 函数 P2 F1 已排除,
+// 即便漏判到达 P3,SupportsAllOpcodes 也返 false fallback 解释器)。
+func TestPW7_VarargRejected(t *testing.T) {
+	c, _, cleanup := setupTranslator(t)
+	defer cleanup()
+	// 单 BB:VARARG + RETURN。
+	proto := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABC(bytecode.VARARG, 0, 2, 0),
+			bytecode.EncodeABC(bytecode.RETURN, 0, 2, 0),
+		},
+	}
+	if c.SupportsAllOpcodes(proto) {
+		t.Error("含 VARARG 的 Proto 不应被支持(白名单不含 VARARG)")
+	}
+}

@@ -754,3 +754,88 @@ return f`, 7, 8},
 		})
 	}
 }
+
+// TestPW4b_TForLoop PW4b:gibbous 帧内 TFORLOOP 泛型 for byte-equal。
+// 迭代器经 h_tforloop 跨层调(复用 callLuaFromHost);base 刷新(迭代器调用可能
+// growStack)。用自定义迭代器(crescent 测试无 stdlib,ipairs/pairs 是 nil 全局;
+// TFORLOOP opcode 不关心迭代器来源,均为 R(A)(R(A+1),R(A+2)),自定义迭代器走完全
+// 相同的 TFORLOOP 路径)。
+func TestPW4b_TForLoop(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want float64
+	}{
+		// 自定义范围迭代器(无状态,闭包计数)
+		{"range-sum", `
+local function range(n)
+  local i = 0
+  return function() i = i + 1; if i <= n then return i end end
+end
+local function f()
+  local s = 0
+  for x in range(5) do s = s + x end
+  return s
+end
+return f`, 15},
+		// 经典 stateless iterator(iter, state, control 三元组,模拟 ipairs)
+		{"stateful-iter", `
+local function iter(t, i)
+  i = i + 1
+  local v = t[i]
+  if v ~= nil then return i, v end
+end
+local function f()
+  local t = {10, 20, 30, 40}
+  local s = 0
+  for i, v in iter, t, 0 do s = s + v end
+  return s
+end
+return f`, 100},
+		// 深迭代(撑爆初始栈,验 base 刷新)
+		{"deep-iter", `
+local function range(n)
+  local i = 0
+  return function() i = i + 1; if i <= n then return i end end
+end
+local function f()
+  local s = 0
+  for x in range(2000) do s = s + x end
+  return s
+end
+return f`, 2001000},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			loadF := func() (*State, value.Value) {
+				st, mainCl := loadFn(t, tc.src)
+				rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+				if err != nil {
+					t.Fatalf("run main: %v", err)
+				}
+				return st, rets[0]
+			}
+			stO, fO := loadF()
+			base, e := stO.Call(value.GCRefOf(fO), nil, 1)
+			if e != nil {
+				t.Fatalf("interp: %v", e)
+			}
+			if value.AsNumber(base[0]) != tc.want {
+				t.Fatalf("interp = %v, want %v", base[0], tc.want)
+			}
+			st, fVal := loadF()
+			st.SetGCStressMode(true) // 迭代器调用密集分配,freelist 复用暴露 base/根问题
+			pid := object.ClosureProtoID(st.arena, value.GCRefOf(fVal))
+			if !promoteProto(st, pid) {
+				t.Skipf("%s f not supported", tc.name)
+			}
+			got, e2 := st.Call(value.GCRefOf(fVal), nil, 1)
+			if e2 != nil {
+				t.Fatalf("gibbous: %v", e2)
+			}
+			if value.AsNumber(got[0]) != tc.want {
+				t.Errorf("gibbous = %v, want %v (TFORLOOP byte-equal)", got[0], tc.want)
+			}
+		})
+	}
+}

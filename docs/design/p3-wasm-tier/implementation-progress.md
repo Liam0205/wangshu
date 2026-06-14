@@ -10,7 +10,7 @@
 
 ## 0. 当前状态
 
-**P3 实现:PW0 spike 闸门通过 + PW1/PW2/PW3/PW4/PW5/PW6 已交付(含 VS0 值栈 arena 化),PW4 的 TFORLOOP + PW7-PW9 未启动。** PW2 落地 crescent→gibbous trampoline 端到端;PW3 落地算术+比较 opcode;PW4 落地 relooper 结构化生成;PW5 落地表 IC opcode(inline 快照固化跳哈希);PW6 落地 CALL/TAILCALL 跨层三向互调(base 刷新解 growStack 段重定位 + 错误 status 链穿越冒泡)。设计文档集已齐备(00-08 共约 8800 行)。
+**P3 实现:PW0 spike 闸门通过 + PW1-PW7 + PW4b 已交付(含 VS0 值栈 arena 化),PW8-PW9 未启动。** PW2 落地 trampoline 端到端;PW3 算术+比较;PW4 relooper 结构化生成 + FORPREP/FORLOOP;PW4b TFORLOOP 泛型 for;PW5 表 IC inline 跳哈希;PW6 CALL/TAILCALL 跨层三向互调;PW7 CLOSURE/CLOSE(VARARG 白名单拒)。**全 38 个 opcode 中,除 VARARG(F1 排除)外全部可翻译。** 设计文档集已齐备(00-08 共约 8800 行)。
 
 **前置条件检查**:
 - ✅ P1 全卷已交付(M0-M14 + 所有收尾轮 + 长稳承诺轮 + 外部审查修复轮 + 官方测试套与性能轮)
@@ -23,6 +23,7 @@
 - ✅ **PW4 控制流 + relooper + 比较 opcode**(`c6102f0`;structurize.go relooper 结构化生成,FORPREP/FORLOOP + EQ/LT/LE/TEST/TESTSET;TFORLOOP 留 PW4b)
 - ✅ **PW5 表 IC opcode**(`bb3f16f`/`1ae8fa1`/`e9814e7`/本提交;GETGLOBAL/SETGLOBAL/GETTABLE/SETTABLE/SELF inline IC 快照固化跳哈希,NEWTABLE/SETLIST 经助手;gen bump/换表失效降级助手 byte-equal,零 deopt)
 - ✅ **PW6 CALL/TAILCALL 跨层互调**(`6546e45`/`5a86294`;h_call 三向分派(crescent/gibbous/host)复用 doCall/executeFrom,h_tailcall 复用 doTailCall proper TCO;**base 刷新解 growStack 段重定位 UAF**;错误经 status 链穿越 gibbous 帧冒泡 pcall byte-equal)
+- ✅ **PW7 CLOSURE/CLOSE + PW4b TFORLOOP**(`6f2fd0e`/`5436e22`;CLOSURE/CLOSE 经助手复用 makeClosure/closeUpvals,emitOpcode skip 机制跳过 CLOSURE 后随伪指令;TFORLOOP 调迭代器复用 callLuaFromHost + base 刷新;VARARG 白名单拒)
 - ⏳ **P3 开工前置确认(待外部)**:向首个宿主确认「列内核是否跑在协程里」,决定线程级 tier 规则是否成立([07 §3.2](./07-coroutine-thread-rule.md))
 
 ---
@@ -80,10 +81,8 @@
 | PW1 | `internal/gibbous/wasm` 包骨架 + arena 收养 wazero memory + 零 opcode 翻译器 | [02 §1](./02-translation.md) + [03 §1](./03-memory-model.md) | bridge 注入真 P3 后所有 Proto 仍走 crescent(F7 拦下);arena/wazero memory 共见验证 | ✅ **通过**(`6fd9a1a`;wazero v1.12.0 build-tag 隔离;三 build tag 全套零回归;收养 grow GCRef 不失效) |
 | PW2 | 翻译器骨架 + 直线 opcode(MOVE/LOADK/LOADBOOL/LOADNIL/GETUPVAL/SETUPVAL/RETURN)+ trampoline 入口 + **值栈 arena 化(VS0)** | [02 §3.1](./02-translation.md) + [04 §2](./04-trampoline.md) + [03 §1](./03-memory-model.md) | 直线 Proto 升层后 byte-equal;crescent→gibbous trampoline 端到端 | ✅ **通过**(`538e717`;PW2-a~d 见 §6 VS0 表;值栈迁 arena 解锁端到端;`id(x)`/常量返回 e2e byte-equal + 升层确认) |
 | PW3 | 算术 + 比较 opcode + NaN 规范化 + 慢路径助手回 Go | [02 §3.2-§3.3](./02-translation.md) + [04 §3](./04-trampoline.md) | 双 number 快路径直发 f64;混合类型走助手且 byte-equal | ✅ **全过线**(算术 `e33a1fd` + 比较 `c6102f0`;ADD/SUB/MUL/DIV/MOD/POW/UNM/NOT/LEN/CONCAT + EQ/LT/LE/TEST/TESTSET 双 number 快路径 f64 + NaN 规范化,混合类型走 h_arith/h_compare/h_eq 等 byte-equal)。比较 opcode 随 PW4 relooper 多 BB 解锁同批落地 |
-| PW4 | 控制流(FORPREP/FORLOOP/TFORLOOP)+ 回边 safepoint | [02 §3.5](./02-translation.md) + [05 §1.3](./05-safepoint-gc.md) | 数值 for 编译后 ≥2x 解释器;回边 GC 触发 byte-equal | ✅ **relooper + for + 比较分支过线**(`c6102f0`;structurize.go relooper 结构化生成——CFGSort 循环连续序 + loop/block 作用域 + br depth + 可约简守卫;FORPREP/FORLOOP + 回边 h_safepoint;EQ/LT/LE/TEST/TESTSET 比较+JMP 合并)。e2e:sum-for/abs/max/nested-for/while 全真升层 byte-equal。**TFORLOOP(泛型 for)+ 回边 safepoint gcPending 全局优化留 PW4b/PW9** |
-| PW5 | 表 IC opcode + feedback 消费(IC 快照固化)+ 失效降级 | [02 §3.4](./02-translation.md) + [06](./06-ic-feedback-consume.md) | 单态表访问跳过哈希;gen bump 后走助手仍正确 | ✅ **inline IC 过线**(`bb3f16f`+`1ae8fa1`+`e9814e7`+本提交;GETGLOBAL/SETGLOBAL/GETTABLE/SETTABLE/SELF inline 快照固化跳哈希,NEWTABLE/SETLIST 经助手;失效 gen bump/换表降级助手 byte-equal。MonoMeta/寄存器键 NodeHit/SETLIST C=0,B=0 留助手或拒) |
-| PW6 | CALL/TAILCALL/RETURN + 跨层互调 + status 链 + **CallInfo bit50 落地** | [04 §2-§4](./04-trampoline.md) | gibbous 内调未编译 Proto 经 trampoline;错误从 Wasm 帧穿越冒泡到 pcall | ✅ **CALL/TAILCALL 三向互调过线**(`6546e45`+`5a86294`+本提交;h_call 三向分派复用 doCall/executeFrom,h_tailcall 复用 doTailCall proper TCO;**base 刷新解 growStack 段重定位 UAF**;错误经 status 链穿越 gibbous 帧冒泡 pcall byte-equal。bit50=callInfo.gibbous bool 形态 VS0-b 已落地。CALL B=0/C=0、TAILCALL B=0 多值窗口留后续) |
-| PW7 | CLOSURE/CLOSE/VARARG + 闭包/upvalue 编译协议 | [02 §3.7](./02-translation.md) | 闭包构造 + 开放/关闭 upvalue byte-equal | ⏳ |
+| PW4 | 控制流(FORPREP/FORLOOP/TFORLOOP)+ 回边 safepoint | [02 §3.5](./02-translation.md) + [05 §1.3](./05-safepoint-gc.md) | 数值 for 编译后 ≥2x 解释器;回边 GC 触发 byte-equal | ✅ **全过线**(`c6102f0` relooper + FORPREP/FORLOOP + 比较;**TFORLOOP `5436e22`(PW4b)**:h_tforloop 调迭代器(复用 callLuaFromHost)+ i64 三态(newbase≥0 继续/-1 ERR/-2 退出)+ base 刷新)。e2e:sum-for/abs/max/nested-for/while + 自定义迭代器/深迭代 全 byte-equal。回边 safepoint gcPending 全局优化留 PW9 |
+| PW7 | CLOSURE/CLOSE/VARARG + 闭包/upvalue 编译协议 | [02 §3.7](./02-translation.md) | 闭包构造 + 开放/关闭 upvalue byte-equal | ✅ **过线**(`6f2fd0e`+`5436e22`;CLOSURE/CLOSE 经助手复用 makeClosure/closeUpvals;emitOpcode 加 skip 机制跳过 CLOSURE 后随 SubNUps 条伪指令;upvalue 难点已被 VS0-c 形态 Y 解掉;VARARG 白名单拒(F1 排除 vararg + SupportsAllOpcodes 防御)) |
 | PW8 | 线程级 tier 规则 + 协程不升层 + **P2 04 considerPromotion 加线程上下文** | [07](./07-coroutine-thread-rule.md) | 协程内即便 hot + Compilable 也保持 TierInterp;主线程同 Proto 正常升层 | ⏳ |
 | PW9 | 端到端验收 + 测试套(差分 + 强制全升 + GC 压力 fuzz + 性能 ≥2x) | [08](./08-testing-strategy.md) | **P3 总验收**:V1-V18 全过 | ⏳ |
 
@@ -250,6 +249,24 @@ P1 [05 §6](../p1-interpreter/05-interpreter-loop.md) IC 机制本文 inline 与
 
 **RW 回填**:RW-1(bit50 语义,callInfo.gibbous bool 形态 (b) `538e717` 已落地)、
 RW-8(multi-State trampoline 幂等,GibbousCode 全局唯一天然成立)——见 §2.1 表。
+
+---
+
+## 9. PW7 + PW4b 实现现状与设计文档差异
+
+> PW7 设计标注 0.5-1 人月(02 §3.7 担心「开放/关闭 upvalue 在 linear memory 形态的存储
+> 协议」),实际比 PW5/PW6 小——该难点已被 VS0-c 解掉。唯一非平凡点是 CLOSURE 伪指令翻译跳过。
+
+| 维度 | 设计文档(02 §3.7 / §3.5.3) | 实现现状(PW7 / PW4b) | 收口 |
+|---|---|---|---|
+| upvalue 编译协议 | §3.7.1 留「开放/关闭 upvalue 在 wazero memory 形态的存储待定」 | **难点已被 VS0-c 解掉**:值栈住 arena,开放 upvalue 经 `owner.slot(idx)` 形态 Y 寻址(stackBaseW 更新自动重定位);CLOSURE/CLOSE 全经助手复用 makeClosure/closeUpvals,无新 upvalue 物理协议 | `6f2fd0e` |
+| CLOSURE 伪指令跳过 | §3.7.1 「翻译器跳过后随 nupvals 条伪指令」 | emitOpcode 改返回 `(skip,err)`,CLOSURE 返回 `SubNUps[Bx]`(父 Proto 自带子 upvalue 数);两处发射循环(单 BB 直线 + emitBlockBody 前缀)`pc += 1 + skip`。机械重构先验零回归再加 opcode | `6f2fd0e` |
+| VARARG | §3.7.3 双重保险(白名单拒 + Wasm unreachable 防御) | 白名单不含 VARARG → SupportsAllOpcodes 返 false fallback,**无需任何 VARARG emit**;F1 也排除 vararg 函数。补 TestPW7_VarargRejected 坐实 | `6f2fd0e` |
+| TFORLOOP base 刷新 | §3.5.3 助手三态 status(0/1/3) | 迭代器调用经 callLuaFromHost 可能 growStack 段重定位 → **改 i64 三态**(newbase≥0 继续 / -1 ERR / -2 退出),emitTForLoopTerm 解三态 + 刷新 base(同 PW6 h_call,见 [[design-claims-vs-codebase-physics]] §2)。复用 compareSuccs(succExec=回边/succSkip=退出) | `5436e22` |
+| TFORLOOP 迭代器调用 | §3.5.3 「迭代器若 gibbous 编译过助手内再 trampoline」 | 复用 callLuaFromHost(host→Lua 重入),迭代器升 gibbous 则其内部 doCall 再 enterGibbous——**自动复用 PW6 跨层机制**,TForLoop 无特殊处理 | `5436e22` |
+
+**RW 回填**:RW-3(P1 08 gibbous 帧不可穿越 yield)留 PW8(线程级 tier 规则)。
+upvalue/闭包 byte-equal 由差分门(difftest 70 种子)+ e2e(捕获栈局部/父 upvalue/嵌套)保证。
 
 ---
 
