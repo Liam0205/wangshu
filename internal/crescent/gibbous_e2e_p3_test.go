@@ -690,3 +690,67 @@ return f`
 		t.Errorf("gibbous 错误消息 = %q, want %q (byte-equal traceback)", eG.Msg, wantMsg)
 	}
 }
+
+// TestPW7a_Closure PW7-a:gibbous 帧内 CLOSURE 造闭包 byte-equal。
+// 外层 f 升 gibbous,内部 CLOSURE 造 g 捕获局部 x(MOVE 伪指令),调用 g。
+func TestPW7a_Closure(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		arg  float64
+		want float64
+	}{
+		// CLOSURE 捕获栈局部 x(MOVE 伪指令)
+		{"capture-local", `
+local function f(a)
+  local x = a + 10
+  local function g() return x * 2 end
+  return g()
+end
+return f`, 5, 30},
+		// 嵌套捕获:g 捕获 x,h 经 g 的 upvalue 捕获 x(GETUPVAL 伪指令)
+		{"capture-upval", `
+local function f(a)
+  local x = a
+  local function g()
+    local function h() return x + 1 end
+    return h()
+  end
+  return g()
+end
+return f`, 7, 8},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			loadF := func() (*State, value.Value) {
+				st, mainCl := loadFn(t, tc.src)
+				rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+				if err != nil {
+					t.Fatalf("run main: %v", err)
+				}
+				return st, rets[0]
+			}
+			args := []value.Value{value.NumberValue(tc.arg)}
+			stO, fO := loadF()
+			base, e := stO.Call(value.GCRefOf(fO), args, 1)
+			if e != nil {
+				t.Fatalf("interp: %v", e)
+			}
+			if value.AsNumber(base[0]) != tc.want {
+				t.Fatalf("interp = %v, want %v", base[0], tc.want)
+			}
+			st, fVal := loadF()
+			pid := object.ClosureProtoID(st.arena, value.GCRefOf(fVal))
+			if !promoteProto(st, pid) {
+				t.Skipf("%s f not supported", tc.name)
+			}
+			got, e2 := st.Call(value.GCRefOf(fVal), args, 1)
+			if e2 != nil {
+				t.Fatalf("gibbous: %v", e2)
+			}
+			if value.AsNumber(got[0]) != tc.want {
+				t.Errorf("gibbous = %v, want %v (CLOSURE byte-equal)", got[0], tc.want)
+			}
+		})
+	}
+}

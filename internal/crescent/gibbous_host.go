@@ -421,6 +421,66 @@ func (st *State) GlobalsRaw() uint64 {
 	return uint64(value.MakeGC(value.TagTable, st.globals))
 }
 
+// --- PW7 闭包构造 + 作用域 upvalue 关闭(全经助手,复用解释器)---
+
+// Closure 处理 CLOSURE A Bx(execute.go:394-397 同款)。makeClosure 读后随伪指令
+// (ci.pc 处的 MOVE/GETUPVAL)消化 upvalue 捕获——故须先把 ci.pc 设到 CLOSURE 之后
+// (pc+1),与解释器取指后状态一致。无需 base 刷新(不进嵌套帧、不 growStack)。
+func (st *State) Closure(base, pc, a, bx int32) int32 {
+	th := st.runningThread
+	ci := currentCI(th)
+	ci.pc = pc + 1
+	ins := bytecode.EncodeABx(bytecode.CLOSURE, int(a), int(bx))
+	cl := st.makeClosure(th, ci, ins)
+	setReg(th, ci, int(a), value.MakeGC(value.TagFunction, cl))
+	st.safepoint(th, ci)
+	return 0
+}
+
+// Close 处理 CLOSE A(execute.go:391-392 同款):关闭所有 ≥ base+A 的开放 upvalue。
+func (st *State) Close(base, pc, a int32) int32 {
+	th := st.runningThread
+	ci := currentCI(th)
+	st.closeUpvals(th, ci.base+int(a))
+	return 0
+}
+
+// TForLoop 处理 TFORLOOP A C(execute.go:355-383 同款):调迭代器 R(A)(R(A+1),R(A+2)),
+// 结果落 R(A+3..A+2+C)。首值非 nil → 控制变量 R(A+2):=首值,继续;首值 nil → 退出。
+//
+// **base 刷新(PW4b 核心)**:迭代器调用经 callLuaFromHost 可能 growStack 使值栈段
+// 在 arena 重定位(stackBaseW 变),陈旧 base 失效 = UAF(同 PW6 h_call,见
+// design-claims-vs-codebase-physics §2)。返回 i64:
+//
+//	≥0 = 刷新后的本帧 base 字节偏移(继续循环)/ -1 = ERR / -2 = 退出(首值 nil)。
+func (st *State) TForLoop(base, pc, a, c int32) int64 {
+	th := st.runningThread
+	ci := currentCI(th)
+	ci.pc = pc + 1
+	ra := int(a)
+	iter := reg(th, ci, ra)
+	state := reg(th, ci, ra+1)
+	ctrl := reg(th, ci, ra+2)
+	results, e := st.callLuaFromHost(th, iter, []value.Value{state, ctrl})
+	if e != nil {
+		st.gibbousPendingErr = e
+		return -1
+	}
+	ci = currentCI(th)
+	for k := 0; k < int(c); k++ {
+		v := value.Nil
+		if k < len(results) {
+			v = results[k]
+		}
+		setReg(th, ci, ra+3+k, v)
+	}
+	if c >= 1 && len(results) >= 1 && results[0] != value.Nil {
+		setReg(th, ci, ra+2, results[0]) // 控制变量 = 首返回值,继续循环
+		return int64((th.stackBaseW + uint32(ci.base)) * 8)
+	}
+	return -2 // 首值 nil:退出循环
+}
+
 // Call 处理 gibbous 帧内的 CALL A B C 三向分派(04-trampoline §3)。
 //
 // 复用 doCall 的统一分派(host / __call / gibbous 升层 / 普通 Lua 四向):

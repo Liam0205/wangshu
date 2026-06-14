@@ -33,6 +33,9 @@ const (
 	helperSetList                 // host.h_setlist  (base,pc,a,b,c i32) -> (i32 status)     PW5
 	helperCall                    // host.h_call     (base,pc,a,b,c i32) -> (i64 newbase/-1) PW6
 	helperTailCall                // host.h_tailcall (base,pc,a,b,c i32) -> (i32 0/1/2)       PW6
+	helperClosure                 // host.h_closure  (base,pc,a,bx i32) -> (i32 status)       PW7
+	helperClose                   // host.h_close    (base,pc,a i32) -> (i32 status)          PW7
+	helperTForLoop                // host.h_tforloop (base,pc,a,c i32) -> (i64 newbase/-1/-2)  PW4b
 	numHelpers
 )
 

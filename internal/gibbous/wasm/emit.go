@@ -134,6 +134,9 @@ func (e *emitter) call(funcidx uint32) { e.raw(opCall); e.uleb(funcidx) }
 // ret(return 当前栈顶 i32 status)
 func (e *emitter) ret() { e.raw(opReturn) }
 
+// drop 丢弃栈顶一个值(0x1a)。
+func (e *emitter) drop() { e.raw(0x1a) }
+
 // --- PW3 算术 / 比较 / 类型转换 / 结构化块 ---
 
 func (e *emitter) localTee(idx uint32) { e.raw(opLocalTee); e.uleb(idx) }

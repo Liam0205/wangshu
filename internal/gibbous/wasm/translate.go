@@ -55,10 +55,12 @@ func (c *Compiler) translate(proto *bytecode.Proto) ([]byte, error) {
 	if len(reach) == 1 {
 		// 单可达 BB:直线翻译(死代码块——RETURN 后兜底 RETURN——不发射)。
 		entry := cfg.blocks[cfg.entry]
-		for pc := entry.startPC; pc < entry.endPC; pc++ {
-			if err := c.emitOpcode(em, proto, pc); err != nil {
+		for pc := entry.startPC; pc < entry.endPC; {
+			skip, err := c.emitOpcode(em, proto, pc)
+			if err != nil {
 				return nil, err
 			}
+			pc += 1 + int32(skip) // CLOSURE 跳过后随伪指令
 		}
 		em.i32Const(0)
 		em.ret()
@@ -93,16 +95,19 @@ func (c *Compiler) emitBlockBody(em *emitter, proto *bytecode.Proto, cfg *cfg, p
 	termOp := bytecode.Op(term)
 
 	// 直线前缀(终结指令之前的所有指令)。
-	for pc := blk.startPC; pc < lastPC; pc++ {
-		if err := c.emitOpcode(em, proto, pc); err != nil {
+	for pc := blk.startPC; pc < lastPC; {
+		skip, err := c.emitOpcode(em, proto, pc)
+		if err != nil {
 			return err
 		}
+		pc += 1 + int32(skip) // CLOSURE 跳过后随伪指令
 	}
 
 	switch termOp {
 	case bytecode.RETURN:
 		// 自带 return,无后继边。
-		return c.emitOpcode(em, proto, lastPC)
+		_, err := c.emitOpcode(em, proto, lastPC)
+		return err
 
 	case bytecode.TAILCALL:
 		// 尾调用复用帧(PW6-b):自闭 return(Lua 完成/host 落 RETURN/ERR 冒泡)。
@@ -124,8 +129,9 @@ func (c *Compiler) emitBlockBody(em *emitter, proto *bytecode.Proto, cfg *cfg, p
 
 	default:
 		// 普通 op 因「下一条是 leader」切 BB(单后继 fallthrough)。先发该 op,
-		// 再发 fallthrough 边。
-		if err := c.emitOpcode(em, proto, lastPC); err != nil {
+		// 再发 fallthrough 边。(普通 op skip=0;CLOSURE 不会落此分支——它后随
+		// 伪指令,其 BB 边界在伪指令之后,CLOSURE 不是 BB 末指令。)
+		if _, err := c.emitOpcode(em, proto, lastPC); err != nil {
 			return err
 		}
 		if len(blk.succs) == 1 {
@@ -147,8 +153,10 @@ func (c *Compiler) emitJmpTerm(em *emitter, cfg *cfg, plan *structPlan, stack *[
 	return c.emitEdge(em, plan, *stack, bb, blk.succs[0])
 }
 
-// emitOpcode 翻译一条非终结直线指令。
-func (c *Compiler) emitOpcode(em *emitter, proto *bytecode.Proto, pc int32) error {
+// emitOpcode 翻译一条非终结直线指令。返回 (skip, err):skip = 本指令额外消耗的
+// 后随指令数(CLOSURE 后随 SubNUps 条伪指令 = 数据非 opcode,须跳过不翻译),
+// 其余 opcode skip=0。调用方据 skip 步进 pc(pc += 1 + skip)。
+func (c *Compiler) emitOpcode(em *emitter, proto *bytecode.Proto, pc int32) (int, error) {
 	ins := proto.Code[pc]
 	op := bytecode.Op(ins)
 	switch op {
@@ -196,10 +204,21 @@ func (c *Compiler) emitOpcode(em *emitter, proto *bytecode.Proto, pc int32) erro
 		c.emitSetList(em, ins, pc)
 	case bytecode.CALL:
 		c.emitCall(em, ins, pc)
+	case bytecode.CLOSE:
+		c.emitClose(em, ins, pc)
+	case bytecode.CLOSURE:
+		// 后随 SubNUps[Bx] 条伪指令(MOVE/GETUPVAL,描述 upvalue 捕获)是数据非
+		// opcode,翻译跳过(makeClosure 在助手内读它们);返回 skip 让调用方步 pc。
+		c.emitClosure(em, ins, pc)
+		bx := bytecode.Bx(ins)
+		if bx < len(proto.SubNUps) {
+			return int(proto.SubNUps[bx]), nil
+		}
+		return 0, nil
 	default:
-		return &translateError{reason: fmt.Sprintf("p3 PW3: opcode %s not implemented (pc=%d)", op, pc)}
+		return 0, &translateError{reason: fmt.Sprintf("p3 PW3: opcode %s not implemented (pc=%d)", op, pc)}
 	}
-	return nil
+	return 0, nil
 }
 
 // loadRK 把 RK 操作数(寄存器 R(rk) 或常量 K(rk-256))压到 Wasm 栈顶(i64)。

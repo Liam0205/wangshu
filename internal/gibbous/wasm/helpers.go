@@ -88,6 +88,16 @@ type HostState interface {
 	// 调用者期望槽。返回 status(0=OK gibbous 函数应直接 return 0 / 1=ERR)。
 	TailCall(base, pc, a, b, c int32) int32
 
+	// Closure 处理 CLOSURE A Bx(makeClosure + setReg + safepoint,分配在助手内)。
+	// 后随伪指令由 makeClosure 读 ci.pc 消化(发射侧已跳过翻译)。返回 status(0/1)。
+	Closure(base, pc, a, bx int32) int32
+	// Close 处理 CLOSE A(关闭 ≥ base+A 的开放 upvalue,纯状态操作)。返回 status(恒 0)。
+	Close(base, pc, a int32) int32
+	// TForLoop 处理 TFORLOOP A C(调迭代器 R(A)(R(A+1),R(A+2)),结果落 R(A+3..))。
+	// 迭代器调用经 callLuaFromHost 可能 growStack 段重定位 → 返回刷新后的本帧 base:
+	//   ≥0 = 新 base 字节偏移(首值非 nil,继续循环);-1 = ERR;-2 = 退出(首值 nil)。
+	TForLoop(base, pc, a, c int32) int64
+
 	// GlobalsRaw 返回 globals 表的 NaN-box u64(编译期烧立即数,GETGLOBAL/SETGLOBAL
 	// inline 用)。globals 在 State 生命期内身份恒定不移动。名带 Raw 避开 State
 	// 公有 API Globals() arena.GCRef 冲突。
@@ -198,4 +208,16 @@ func (h *helperSet) goCall(base, pc, a, b, c int32) int64 {
 
 func (h *helperSet) goTailCall(base, pc, a, b, c int32) int32 {
 	return h.host.TailCall(base, pc, a, b, c)
+}
+
+func (h *helperSet) goClosure(base, pc, a, bx int32) int32 {
+	return h.host.Closure(base, pc, a, bx)
+}
+
+func (h *helperSet) goClose(base, pc, a int32) int32 {
+	return h.host.Close(base, pc, a)
+}
+
+func (h *helperSet) goTForLoop(base, pc, a, c int32) int64 {
+	return h.host.TForLoop(base, pc, a, c)
 }

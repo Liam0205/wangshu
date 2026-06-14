@@ -104,6 +104,9 @@ func NewCompiler(ctx context.Context, runtime wazero.Runtime, host HostState) *C
 	// PW6:CALL 三向分派 + base 刷新(跨层互调)。
 	c.supported[bytecode.CALL] = true
 	c.supported[bytecode.TAILCALL] = true
+	// PW7:闭包构造 + 作用域 upvalue 关闭(全经助手)。
+	c.supported[bytecode.CLOSURE] = true
+	c.supported[bytecode.CLOSE] = true
 	// PW5+ 逐档解锁(02-translation §1.3)。VARARG 永不加入。
 	return c
 }
@@ -279,6 +282,9 @@ func (c *Compiler) ensureHostModule() error {
 		NewFunctionBuilder().WithFunc(hs.goSetList).Export("h_setlist").
 		NewFunctionBuilder().WithFunc(hs.goCall).Export("h_call").
 		NewFunctionBuilder().WithFunc(hs.goTailCall).Export("h_tailcall").
+		NewFunctionBuilder().WithFunc(hs.goClosure).Export("h_closure").
+		NewFunctionBuilder().WithFunc(hs.goClose).Export("h_close").
+		NewFunctionBuilder().WithFunc(hs.goTForLoop).Export("h_tforloop").
 		Instantiate(c.ctx)
 	if err != nil {
 		return err
