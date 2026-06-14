@@ -154,7 +154,7 @@ func (st *State) doReturn(th *thread, ci *callInfo, i bytecode.Instruction, entr
 		}
 		if len(th.cis) > entryDepth {
 			caller := currentCI(th)
-			th.top = caller.base + int(caller.proto.MaxStack)
+			th.top = caller.base + int(st.protoOf(caller).MaxStack)
 		} else {
 			th.top = dst + wantedN
 		}
@@ -171,11 +171,11 @@ func (st *State) doReturn(th *thread, ci *callInfo, i bytecode.Instruction, entr
 
 // makeClosure 构造一个 Lua closure 并按后随伪指令(MOVE/GETUPVAL)填充 upvalue。
 func (st *State) makeClosure(th *thread, ci *callInfo, i bytecode.Instruction) arena.GCRef {
-	pid := ci.proto.Protos[bytecode.Bx(i)]
+	pid := st.protoOf(ci).Protos[bytecode.Bx(i)]
 	subProto := st.protos[pid]
 	cl := st.allocLuaClosure(pid, uint16(len(subProto.UpvalDescs)))
 	for j := uint16(0); j < uint16(len(subProto.UpvalDescs)); j++ {
-		pseudo := ci.proto.Code[ci.pc]
+		pseudo := st.protoOf(ci).Code[ci.pc]
 		ci.pc++
 		switch bytecode.Op(pseudo) {
 		case bytecode.MOVE:
@@ -196,7 +196,7 @@ func (st *State) doSetList(th *thread, ci *callInfo, i bytecode.Instruction) *Lu
 	b := bytecode.B(i)
 	c := bytecode.C(i)
 	if c == 0 {
-		c = int(ci.proto.Code[ci.pc])
+		c = int(st.protoOf(ci).Code[ci.pc])
 		ci.pc++
 	}
 	tbl := reg(th, ci, a)
@@ -220,8 +220,8 @@ func (st *State) doSetList(th *thread, ci *callInfo, i bytecode.Instruction) *Lu
 		// 消费完"到 top"的多值窗口后恢复帧逻辑顶(对齐 lvm.c OP_SETLIST
 		// `L->top = L->ci->top`):否则后续指令写 top 之上的寄存器,GC 扫根
 		// 只见 [0,top) → 活值漏标,freelist 复用内存下即 use-after-free。
-		th.ensureStack(ci.base + int(ci.proto.MaxStack))
-		th.top = ci.base + int(ci.proto.MaxStack)
+		th.ensureStack(ci.base + int(st.protoOf(ci).MaxStack))
+		th.top = ci.base + int(st.protoOf(ci).MaxStack)
 	}
 	return nil
 }

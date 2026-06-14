@@ -250,7 +250,7 @@ func (st *State) executeResume(th *thread) *LuaError {
 				th.setSlot(pr.dst+k, value.Nil)
 			}
 		}
-		th.top = ci.base + int(ci.proto.MaxStack)
+		th.top = ci.base + int(st.protoOf(ci).MaxStack)
 	}
 	// 从 yield 的下一条指令继续(pc 已指向下一条;entryDepth 用 fresh 帧深度)
 	return st.executeFrom(th, pr.entryDepth)

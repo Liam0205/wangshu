@@ -261,7 +261,7 @@ func (st *State) callHost(th *thread, funcIdx, nargs, nresults int) *LuaError {
 	// 后续 callLuaFromHost 的脚手架覆写活跃寄存器(TFORLOOP state 槽被毁)。
 	if len(th.cis) > 0 {
 		ci := currentCI(th)
-		frameTop := ci.base + int(ci.proto.MaxStack)
+		frameTop := ci.base + int(st.protoOf(ci).MaxStack)
 		th.ensureStack(frameTop)
 		th.top = frameTop
 	}

@@ -187,7 +187,7 @@ func (st *State) errWithName(ci *callInfo, verb string, rkOperand int, v value.V
 	name := ""
 	if !bytecode.IsK(rkOperand) {
 		// pc-1:出错指令本身(主循环已自增)
-		name = describeReg(ci.proto, ci.pc-1, rkOperand)
+		name = describeReg(st.protoOf(ci), ci.pc-1, rkOperand)
 	}
 	if name != "" {
 		return errf("attempt to %s %s (a %s value)", verb, name, typeName(v))
@@ -225,7 +225,7 @@ func (st *State) enhanceIndexErr(e *LuaError, ci *callInfo, reg int, obj value.V
 	if e.Msg != plain {
 		return e
 	}
-	if name := describeReg(ci.proto, ci.pc-1, reg); name != "" {
+	if name := describeReg(st.protoOf(ci), ci.pc-1, reg); name != "" {
 		e.Msg = fmt.Sprintf("attempt to index %s (a %s value)", name, typeName(obj))
 	}
 	return e

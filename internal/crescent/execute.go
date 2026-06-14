@@ -32,7 +32,8 @@ func (st *State) executeFrom(th *thread, entryDepth int) *LuaError {
 
 func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 	ci := currentCI(th)
-	code := ci.proto.Code
+	proto := st.protoOf(ci)
+	code := proto.Code
 
 	for {
 		if int(ci.pc) >= len(code) {
@@ -52,7 +53,7 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 			setReg(th, ci, bytecode.A(i), reg(th, ci, bytecode.B(i)))
 
 		case bytecode.LOADK:
-			setReg(th, ci, bytecode.A(i), ci.proto.Consts[bytecode.Bx(i)])
+			setReg(th, ci, bytecode.A(i), proto.Consts[bytecode.Bx(i)])
 
 		case bytecode.LOADBOOL:
 			setReg(th, ci, bytecode.A(i), value.BoolValue(bytecode.B(i) != 0))
@@ -75,47 +76,51 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 			st.upvalSet(th, uv, reg(th, ci, bytecode.A(i)))
 
 		case bytecode.GETGLOBAL:
-			key := ci.proto.Consts[bytecode.Bx(i)]
+			key := proto.Consts[bytecode.Bx(i)]
 			gv := value.MakeGC(value.TagTable, st.globals)
 			v, e := st.icGetTable(th, ci, ci.pc-1, gv, key)
 			if e != nil {
 				return e
 			}
 			ci = currentCI(th)
-			code = ci.proto.Code
+			proto = st.protoOf(ci)
+			code = proto.Code
 			setReg(th, ci, bytecode.A(i), v)
 
 		case bytecode.SETGLOBAL:
-			key := ci.proto.Consts[bytecode.Bx(i)]
+			key := proto.Consts[bytecode.Bx(i)]
 			gv := value.MakeGC(value.TagTable, st.globals)
 			if e := st.icSetTable(th, ci, ci.pc-1, gv, key, reg(th, ci, bytecode.A(i))); e != nil {
 				return e
 			}
 			ci = currentCI(th)
-			code = ci.proto.Code
+			proto = st.protoOf(ci)
+			code = proto.Code
 			st.safepoint(th, ci)
 
 		case bytecode.GETTABLE:
 			tbl := reg(th, ci, bytecode.B(i))
-			key := rk(th, ci, bytecode.C(i))
+			key := rk(th, ci, proto, bytecode.C(i))
 			v, e := st.icGetTable(th, ci, ci.pc-1, tbl, key)
 			if e != nil {
 				return st.enhanceIndexErr(e, ci, bytecode.B(i), tbl)
 			}
 			// __index handler 可能重入 execute(append cis)→ 刷新 ci 指针
 			ci = currentCI(th)
-			code = ci.proto.Code
+			proto = st.protoOf(ci)
+			code = proto.Code
 			setReg(th, ci, bytecode.A(i), v)
 
 		case bytecode.SETTABLE:
 			tbl := reg(th, ci, bytecode.A(i))
-			key := rk(th, ci, bytecode.B(i))
-			val := rk(th, ci, bytecode.C(i))
+			key := rk(th, ci, proto, bytecode.B(i))
+			val := rk(th, ci, proto, bytecode.C(i))
 			if e := st.icSetTable(th, ci, ci.pc-1, tbl, key, val); e != nil {
 				return st.enhanceIndexErr(e, ci, bytecode.A(i), tbl)
 			}
 			ci = currentCI(th)
-			code = ci.proto.Code
+			proto = st.protoOf(ci)
+			code = proto.Code
 			st.safepoint(th, ci)
 
 		case bytecode.NEWTABLE:
@@ -129,13 +134,14 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 		case bytecode.SELF:
 			tbl := reg(th, ci, bytecode.B(i))
 			setReg(th, ci, bytecode.A(i)+1, tbl)
-			key := rk(th, ci, bytecode.C(i))
+			key := rk(th, ci, proto, bytecode.C(i))
 			v, e := st.icGetTable(th, ci, ci.pc-1, tbl, key)
 			if e != nil {
 				return st.enhanceIndexErr(e, ci, bytecode.B(i), tbl)
 			}
 			ci = currentCI(th)
-			code = ci.proto.Code
+			proto = st.protoOf(ci)
+			code = proto.Code
 			setReg(th, ci, bytecode.A(i), v)
 
 		case bytecode.ADD, bytecode.SUB, bytecode.MUL, bytecode.DIV, bytecode.MOD, bytecode.POW:
@@ -144,19 +150,20 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 			}
 			// __add 等 handler 可能重入 execute → 刷新
 			ci = currentCI(th)
-			code = ci.proto.Code
+			proto = st.protoOf(ci)
+			code = proto.Code
 
 		case bytecode.UNM:
 			b := reg(th, ci, bytecode.B(i))
 			if value.IsNumber(b) {
 				setReg(th, ci, bytecode.A(i), value.NumberValue(-value.AsNumber(b)))
 				if profileEnabled {
-					recordArithNumHit(&ci.proto.IC[ci.pc-1])
+					recordArithNumHit(&proto.IC[ci.pc-1])
 				}
 			} else if f, ok := st.toNumberCoerce(b); ok {
 				setReg(th, ci, bytecode.A(i), value.NumberValue(-f))
 				if profileEnabled {
-					recordArithMetaHit(&ci.proto.IC[ci.pc-1])
+					recordArithMetaHit(&proto.IC[ci.pc-1])
 				}
 			} else {
 				h := st.metaFieldOfValue(b, "__unm")
@@ -168,10 +175,11 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 					return e
 				}
 				ci = currentCI(th)
-				code = ci.proto.Code
+				proto = st.protoOf(ci)
+				code = proto.Code
 				setReg(th, ci, bytecode.A(i), res)
 				if profileEnabled {
-					recordArithMetaHit(&ci.proto.IC[ci.pc-1])
+					recordArithMetaHit(&proto.IC[ci.pc-1])
 				}
 			}
 
@@ -204,7 +212,7 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 					return e
 				}
 				if profileEnabled {
-					st.bridge.OnBackEdge(ci.proto, ci.pc+int32(bytecode.SBx(i)))
+					st.bridge.OnBackEdge(proto, ci.pc+int32(bytecode.SBx(i)))
 				}
 			}
 			ci.pc += int32(bytecode.SBx(i))
@@ -212,8 +220,8 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 		case bytecode.EQ, bytecode.LT, bytecode.LE:
 			// 快路径内联:双 number 直比,零函数调用、零 ci 刷新
 			// (loop 档热路径 `i < n` 每迭代一次,05 §3.4)。
-			b := rk(th, ci, bytecode.B(i))
-			c := rk(th, ci, bytecode.C(i))
+			b := rk(th, ci, proto, bytecode.B(i))
+			c := rk(th, ci, proto, bytecode.C(i))
 			var res bool
 			if value.IsNumber(b) && value.IsNumber(c) {
 				x, y := value.AsNumber(b), value.AsNumber(c)
@@ -229,7 +237,7 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 				// 的 numHits 不区分 number/string 子分支,粒度损失 §9.2 已记)。
 				// EQ 不带 IC(02 §1.2 注 1)。
 				if profileEnabled && bytecode.Op(i) != bytecode.EQ {
-					recordArithNumHit(&ci.proto.IC[ci.pc-1])
+					recordArithNumHit(&proto.IC[ci.pc-1])
 				}
 			} else {
 				var e *LuaError
@@ -239,9 +247,10 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 				}
 				// __eq/__lt/__le handler 可能重入 execute → 刷新 ci
 				ci = currentCI(th)
-				code = ci.proto.Code
+				proto = st.protoOf(ci)
+				code = proto.Code
 				if profileEnabled && bytecode.Op(i) != bytecode.EQ {
-					recordArithMetaHit(&ci.proto.IC[ci.pc-1])
+					recordArithMetaHit(&proto.IC[ci.pc-1])
 				}
 			}
 			if res != (bytecode.A(i) != 0) {
@@ -274,7 +283,8 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 				// 可能因 append 重分配 — 旧 ci 指针失效,必须刷新。
 				ci = currentCI(th)
 			}
-			code = ci.proto.Code
+			proto = st.protoOf(ci)
+			code = proto.Code
 
 		case bytecode.TAILCALL:
 			next, e := st.doTailCall(th, ci, i)
@@ -286,7 +296,8 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 			} else {
 				ci = currentCI(th)
 			}
-			code = ci.proto.Code
+			proto = st.protoOf(ci)
+			code = proto.Code
 
 		case bytecode.RETURN:
 			next, terminate := st.doReturn(th, ci, i, entryDepth)
@@ -294,7 +305,8 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 				return nil
 			}
 			ci = next
-			code = ci.proto.Code
+			proto = st.protoOf(ci)
+			code = proto.Code
 
 		case bytecode.FORLOOP:
 			a := bytecode.A(i)
@@ -316,7 +328,7 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 				setReg(th, ci, a+3, value.NumberValue(idx))
 				ci.pc += int32(bytecode.SBx(i))
 				if profileEnabled {
-					st.bridge.OnBackEdge(ci.proto, ci.pc)
+					st.bridge.OnBackEdge(proto, ci.pc)
 				}
 			}
 
@@ -354,7 +366,8 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 				return e
 			}
 			ci = currentCI(th)
-			code = ci.proto.Code
+			proto = st.protoOf(ci)
+			code = proto.Code
 			for k := 0; k < c; k++ {
 				v := value.Nil
 				if k < len(results) {
@@ -408,8 +421,9 @@ func (st *State) toNumberCoerce(v value.Value) (float64, bool) {
 
 // 算术辅助。快路径双 number;string coercion(07 §5.2);慢路径 __add 等元方法。
 func (st *State) doArith(th *thread, ci *callInfo, i bytecode.Instruction) *LuaError {
-	b := rk(th, ci, bytecode.B(i))
-	c := rk(th, ci, bytecode.C(i))
+	proto := st.protoOf(ci)
+	b := rk(th, ci, proto, bytecode.B(i))
+	c := rk(th, ci, proto, bytecode.C(i))
 	// 快路径:双 number 直算(单比较判定,无 coercion 开销;05 §4.1)
 	if value.IsNumber(b) && value.IsNumber(c) {
 		x, y := value.AsNumber(b), value.AsNumber(c)
@@ -430,7 +444,7 @@ func (st *State) doArith(th *thread, ci *callInfo, i bytecode.Instruction) *LuaE
 		}
 		setReg(th, ci, bytecode.A(i), value.NumberValue(r))
 		if profileEnabled {
-			recordArithNumHit(&ci.proto.IC[ci.pc-1])
+			recordArithNumHit(&proto.IC[ci.pc-1])
 		}
 		return nil
 	}
@@ -440,6 +454,7 @@ func (st *State) doArith(th *thread, ci *callInfo, i bytecode.Instruction) *LuaE
 // doArithSlow:string coercion → 元方法 → 带名字报错(从快路径拆出,
 // 保持 doArith 可内联进主循环)。
 func (st *State) doArithSlow(th *thread, ci *callInfo, i bytecode.Instruction, b, c value.Value) *LuaError {
+	proto := st.protoOf(ci)
 	x, okB := st.toNumberCoerce(b)
 	y, okC := st.toNumberCoerce(c)
 	if okB && okC {
@@ -461,7 +476,7 @@ func (st *State) doArithSlow(th *thread, ci *callInfo, i bytecode.Instruction, b
 		setReg(th, ci, bytecode.A(i), value.NumberValue(r))
 		// 触发 string coercion 即「不是稳定 number」——记 metaHits(02 §3.3 注 3)
 		if profileEnabled {
-			recordArithMetaHit(&ci.proto.IC[ci.pc-1])
+			recordArithMetaHit(&proto.IC[ci.pc-1])
 		}
 		return nil
 	}
@@ -480,7 +495,7 @@ func (st *State) doArithSlow(th *thread, ci *callInfo, i bytecode.Instruction, b
 	}
 	setReg(th, ci, bytecode.A(i), res)
 	if profileEnabled {
-		recordArithMetaHit(&ci.proto.IC[ci.pc-1])
+		recordArithMetaHit(&proto.IC[ci.pc-1])
 	}
 	return nil
 }
@@ -505,8 +520,9 @@ func arithMetaName(op bytecode.OpCode) string {
 
 // 比较辅助。快路径双 number / 双 string;慢路径 __eq/__lt/__le 元方法(07)。
 func (st *State) doCompare(th *thread, ci *callInfo, i bytecode.Instruction) (bool, *LuaError) {
-	b := rk(th, ci, bytecode.B(i))
-	c := rk(th, ci, bytecode.C(i))
+	proto := st.protoOf(ci)
+	b := rk(th, ci, proto, bytecode.B(i))
+	c := rk(th, ci, proto, bytecode.C(i))
 	switch bytecode.Op(i) {
 	case bytecode.EQ:
 		if st.rawEqual(b, c) {

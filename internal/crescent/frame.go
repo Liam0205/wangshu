@@ -88,7 +88,7 @@ func (st *State) enterLuaFrame(th *thread, funcIdx, nargs, nresults int, entry b
 		base:     base,
 		funcIdx:  funcIdx,
 		top:      base + numFixed,
-		proto:    proto,
+		protoID:  pid,
 		cl:       cl,
 		nresults: nresults,
 		fresh:    entry,
@@ -114,11 +114,12 @@ func (st *State) popCallInfo(th *thread) callInfo {
 func currentCI(th *thread) *callInfo { return &th.cis[len(th.cis)-1] }
 
 // rk 取一个 RK 操作数:< 256 取寄存器 R(rk);>=256 取常量 K(rk-256)。
-func rk(th *thread, ci *callInfo, rk int) value.Value {
+// proto 由调用方传入(VS0-b:ci 不再持 *Proto,常量表经 proto.Consts 取)。
+func rk(th *thread, ci *callInfo, proto *bytecode.Proto, rk int) value.Value {
 	if rk < bytecode.MaxK {
 		return th.slot(ci.base + rk)
 	}
-	return ci.proto.Consts[rk-bytecode.MaxK]
+	return proto.Consts[rk-bytecode.MaxK]
 }
 
 // reg 简便寄存器读。

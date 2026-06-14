@@ -24,7 +24,7 @@ func (st *State) icGetTable(th *thread, ci *callInfo, pc int32, obj, key value.V
 		return st.indexWithMeta(th, obj, key)
 	}
 	t := value.GCRefOf(obj)
-	slot := &ci.proto.IC[pc]
+	slot := &st.protoOf(ci).IC[pc]
 	if slot.Kind == bytecode.ICKindArrayHit &&
 		slot.TableRef == uint32(t) &&
 		slot.Shape == object.TableGen(st.arena, t) {
@@ -79,7 +79,7 @@ func (st *State) icSetTable(th *thread, ci *callInfo, pc int32, obj, key, val va
 		return st.setIndexWithMeta(th, obj, key, val)
 	}
 	t := value.GCRefOf(obj)
-	slot := &ci.proto.IC[pc]
+	slot := &st.protoOf(ci).IC[pc]
 	if val != value.Nil { // 删除(置 nil)走慢路径(可能 rehash 语义)
 		if slot.Kind == bytecode.ICKindArrayHit &&
 			slot.TableRef == uint32(t) &&

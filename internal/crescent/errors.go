@@ -19,11 +19,12 @@ func (st *State) annotateError(e *LuaError, ci *callInfo) *LuaError {
 		return e
 	}
 	e.annotated = true
-	src := bytecode.ChunkID(ci.proto.Source)
+	proto := st.protoOf(ci)
+	src := bytecode.ChunkID(proto.Source)
 	line := int32(0)
 	pc := int(ci.pc) - 1
-	if pc >= 0 && pc < len(ci.proto.LineInfo) {
-		line = ci.proto.LineInfo[pc]
+	if pc >= 0 && pc < len(proto.LineInfo) {
+		line = proto.LineInfo[pc]
 	}
 	prefix := fmt.Sprintf("%s:%d: ", src, line)
 	e.Msg = prefix + e.Msg
@@ -47,14 +48,12 @@ func (st *State) buildTraceback(th *thread) string {
 	for i := len(th.cis) - 1; i >= 0; i-- {
 		ci := &th.cis[i]
 		sb.WriteString("\n\t")
-		if ci.proto == nil {
-			sb.WriteString("[C]: in ?")
-			continue
-		}
+		// 所有压入 cis 的都是 Lua 帧(host 帧不压 cis);protoID 恒有效。
+		proto := st.protoOf(ci)
 		line := int32(0)
 		pc := int(ci.pc) - 1
-		if pc >= 0 && pc < len(ci.proto.LineInfo) {
-			line = ci.proto.LineInfo[pc]
+		if pc >= 0 && pc < len(proto.LineInfo) {
+			line = proto.LineInfo[pc]
 		}
 		what := "function"
 		if i == 0 {
@@ -63,7 +62,7 @@ func (st *State) buildTraceback(th *thread) string {
 		if ci.tailcall {
 			sb.WriteString("(...tail calls...)\n\t")
 		}
-		fmt.Fprintf(&sb, "%s:%d: in %s", bytecode.ChunkID(ci.proto.Source), line, what)
+		fmt.Fprintf(&sb, "%s:%d: in %s", bytecode.ChunkID(proto.Source), line, what)
 	}
 	return sb.String()
 }

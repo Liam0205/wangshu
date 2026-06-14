@@ -706,16 +706,21 @@ func max(a, b int) int {
 // savedPC 是"返回时恢复的 pc")。M11 协程接入时把 pc/top 落回 ci 与 saveFrame
 // 抽象拉齐(05 §1.3 reloadFrame/saveFrame 对称约定)。
 //
-// **gibbous 标识位**(p2-bridge/04 §4.4 word2 bit50 callStatus_gibbous)
-// 当前**未在 callInfo 上预留字段**——P3 trampoline 真落地时再加,以免本期
-// 引入无人读写的死字段被 lint 抓出。预留语义记在 installGibbous 注释里。
+// **proto 经 protoID 引用(VS0-b)**:Go 指针 *bytecode.Proto 不能进 linear
+// memory(03-memory-model §5 Go 堆侧资产划界);改存 protoID(uint32),用时
+// st.protos[id] 查。这与 P3 trampoline 的 ci.protoID 接口拉齐(04 §2.2)。
+//
+// **gibbous 标识位**(p2-bridge/04 §4.4 word2 bit50 callStatus_gibbous):
+// gibbous 帧入口 trampoline 压新 CallInfo 时置 1,标识此帧走 Wasm 路径
+// (04 §1.2)。当前未预留字段——VS0-d trampoline 落地时加(形态 b bool,
+// 与 tailcall/fresh 同款),以免引入无读者的死字段被 lint 抓出。
 type callInfo struct {
-	base     int             // R0 在 stack 的绝对索引
-	funcIdx  int             // 被调 closure 槽(funcIdx = base-1)
-	top      int             // 本帧逻辑顶
-	proto    *bytecode.Proto // 当前 Proto
-	cl       arena.GCRef     // 当前 closure
-	nresults int             // 调用者期望的返回数;-1 = 可变
+	base     int         // R0 在 stack 的绝对索引
+	funcIdx  int         // 被调 closure 槽(funcIdx = base-1)
+	top      int         // 本帧逻辑顶
+	protoID  uint32      // 当前 Proto 的 ID(st.protos[protoID];VS0-b 替换 *Proto)
+	cl       arena.GCRef // 当前 closure
+	nresults int         // 调用者期望的返回数;-1 = 可变
 	tailcall bool
 	fresh    bool // execute 重入边界
 
@@ -724,3 +729,6 @@ type callInfo struct {
 	varargs []value.Value
 	pc      int32
 }
+
+// protoOf 取 callInfo 的 Proto(VS0-b:protoID → *Proto 收口)。
+func (st *State) protoOf(ci *callInfo) *bytecode.Proto { return st.protos[ci.protoID] }
