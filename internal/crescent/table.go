@@ -39,7 +39,7 @@ func (st *State) upvalGet(th *thread, uv arena.GCRef) value.Value {
 	}
 	owner := st.uvOwnerOf(uv, th)
 	idx := object.UpvalStackIdx(st.arena, uv)
-	return owner.stack[idx]
+	return owner.slot(int(idx))
 }
 
 func (st *State) upvalSet(th *thread, uv arena.GCRef, v value.Value) {
@@ -49,7 +49,7 @@ func (st *State) upvalSet(th *thread, uv arena.GCRef, v value.Value) {
 	}
 	owner := st.uvOwnerOf(uv, th)
 	idx := object.UpvalStackIdx(st.arena, uv)
-	owner.stack[idx] = v
+	owner.setSlot(int(idx), v)
 }
 
 func (st *State) uvOwnerOf(uv arena.GCRef, fallback *thread) *thread {
@@ -96,7 +96,7 @@ func (st *State) closeUpvals(th *thread, level int) {
 	remainMax := uint32(0)
 	for idx, uv := range th.openUvs {
 		if int(idx) >= level {
-			val := th.stack[idx]
+			val := th.slot(int(idx))
 			object.CloseUpvalue(st.arena, uv, val)
 			delete(th.openUvs, idx)
 			delete(st.uvOwner, uv)

@@ -25,7 +25,7 @@ func (st *State) doCall(th *thread, ci *callInfo, i bytecode.Instruction) (*call
 		nargs = b - 1
 	}
 	nresults := c - 1
-	callee := th.stack[funcIdx]
+	callee := th.slot(funcIdx)
 	if value.Tag(callee) != value.TagFunction {
 		// __call 元方法(07):args 右移一格,原 callee 变第 1 实参,handler 上位
 		h := st.metaFieldOfValue(callee, "__call")
@@ -33,7 +33,7 @@ func (st *State) doCall(th *thread, ci *callInfo, i bytecode.Instruction) (*call
 			return nil, st.errWithName(ci, "call", a, callee)
 		}
 		st.insertCallSelf(th, funcIdx, nargs)
-		th.stack[funcIdx] = h
+		th.setSlot(funcIdx, h)
 		callee = h
 		nargs++
 	}
@@ -75,7 +75,7 @@ func (st *State) insertCallSelf(th *thread, funcIdx, nargs int) {
 	need := funcIdx + 2 + nargs
 	th.ensureStack(need)
 	for k := nargs; k >= 0; k-- {
-		th.stack[funcIdx+1+k] = th.stack[funcIdx+k]
+		th.setSlot(funcIdx+1+k, th.slot(funcIdx+k))
 	}
 	if need > th.top {
 		th.top = need
@@ -93,7 +93,7 @@ func (st *State) doTailCall(th *thread, ci *callInfo, i bytecode.Instruction) (*
 	} else {
 		nargs = b - 1
 	}
-	callee := th.stack[funcIdx]
+	callee := th.slot(funcIdx)
 	if value.Tag(callee) != value.TagFunction {
 		// __call 元方法(07):与 doCall 同构
 		h := st.metaFieldOfValue(callee, "__call")
@@ -101,7 +101,7 @@ func (st *State) doTailCall(th *thread, ci *callInfo, i bytecode.Instruction) (*
 			return nil, st.errWithName(ci, "call", a, callee)
 		}
 		st.insertCallSelf(th, funcIdx, nargs)
-		th.stack[funcIdx] = h
+		th.setSlot(funcIdx, h)
 		callee = h
 		nargs++
 	}
@@ -115,7 +115,7 @@ func (st *State) doTailCall(th *thread, ci *callInfo, i bytecode.Instruction) (*
 	st.closeUpvals(th, ci.base)
 	dst := ci.funcIdx
 	for k := 0; k < nargs+1; k++ {
-		th.stack[dst+k] = th.stack[funcIdx+k]
+		th.setSlot(dst+k, th.slot(funcIdx+k))
 	}
 	parentNRes := ci.nresults
 	parentFresh := ci.fresh
@@ -142,7 +142,7 @@ func (st *State) doReturn(th *thread, ci *callInfo, i bytecode.Instruction, entr
 	dst := ci.funcIdx
 	src := ci.base + a
 	for k := 0; k < nret; k++ {
-		th.stack[dst+k] = th.stack[src+k]
+		th.setSlot(dst+k, th.slot(src+k))
 	}
 	wantedN := ci.nresults
 	st.popCallInfo(th)
@@ -150,7 +150,7 @@ func (st *State) doReturn(th *thread, ci *callInfo, i bytecode.Instruction, entr
 		th.top = dst + nret
 	} else {
 		for k := nret; k < wantedN; k++ {
-			th.stack[dst+k] = value.Nil
+			th.setSlot(dst+k, value.Nil)
 		}
 		if len(th.cis) > entryDepth {
 			caller := currentCI(th)
@@ -298,11 +298,11 @@ func (st *State) doVararg(th *thread, ci *callInfo, i bytecode.Instruction) *Lua
 		// 全部 vararg 到 top。top 必须双向设置(不只抬不降):此前更高的
 		// 残留 top 会让消费方(doCall 的 nargs = top-funcIdx-1)高估实参数。
 		need := ci.base + a + n
-		if need > len(th.stack) {
+		if need > th.size() {
 			th.ensureStack(need)
 		}
 		for k := 0; k < n; k++ {
-			th.stack[ci.base+a+k] = ci.varargs[k]
+			th.setSlot(ci.base+a+k, ci.varargs[k])
 		}
 		th.top = need
 		return nil

@@ -170,7 +170,7 @@ func (st *State) Resume(id uint64, args []value.Value) ([]value.Value, bool, *Lu
 	co.status = CoDead
 	co.xfer = nil
 	out := make([]value.Value, co.th.top)
-	copy(out, co.th.stack[:co.th.top])
+	co.th.copyOut(out, 0, co.th.top)
 	return out, true, nil
 }
 
@@ -239,15 +239,15 @@ func (st *State) executeResume(th *thread) *LuaError {
 		// 可变:全部落下并设 top
 		need := pr.dst + len(vals)
 		th.ensureStack(need)
-		copy(th.stack[pr.dst:], vals)
+		th.copyIn(pr.dst, vals)
 		th.top = need
 	} else {
 		th.ensureStack(pr.dst + want)
 		for k := 0; k < want; k++ {
 			if k < len(vals) {
-				th.stack[pr.dst+k] = vals[k]
+				th.setSlot(pr.dst+k, vals[k])
 			} else {
-				th.stack[pr.dst+k] = value.Nil
+				th.setSlot(pr.dst+k, value.Nil)
 			}
 		}
 		th.top = ci.base + int(ci.proto.MaxStack)

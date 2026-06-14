@@ -30,7 +30,7 @@ func (st *State) enterLuaFrame(th *thread, funcIdx, nargs, nresults int, entry b
 	if e := st.preempt(); e != nil {
 		return e
 	}
-	v := th.stack[funcIdx]
+	v := th.slot(funcIdx)
 	if value.Tag(v) != value.TagFunction {
 		return errf("attempt to call a %s value", typeName(v))
 	}
@@ -51,26 +51,26 @@ func (st *State) enterLuaFrame(th *thread, funcIdx, nargs, nresults int, entry b
 		// 把超出固定参的部分拷贝到 ci.varargs(M13 简化版,详细布局见 05 §8.5)
 		varargs = make([]value.Value, nargs-numFixed)
 		for i := 0; i < nargs-numFixed; i++ {
-			varargs[i] = th.stack[base+numFixed+i]
+			varargs[i] = th.slot(base + numFixed + i)
 		}
 	case nargs > numFixed && !proto.IsVararg:
 		// 实参超出固定形参,直接丢弃(Lua 5.1 行为)
 	case nargs < numFixed:
 		for i := nargs; i < numFixed; i++ {
-			if base+i >= len(th.stack) {
+			if base+i >= th.size() {
 				th.ensureStack(base + i + 1)
 			}
-			th.stack[base+i] = value.Nil
+			th.setSlot(base+i, value.Nil)
 		}
 	}
 	// 备栈到 MaxStack
 	need := base + int(proto.MaxStack)
-	if need > len(th.stack) {
+	if need > th.size() {
 		th.ensureStack(need)
 	}
 	// 把 base..base+MaxStack 的剩余区清 nil(防止读到旧值)
 	for i := base + numFixed; i < base+int(proto.MaxStack); i++ {
-		th.stack[i] = value.Nil
+		th.setSlot(i, value.Nil)
 	}
 	// LUA_COMPAT_VARARG:隐式 arg 表(5.1 默认 compat;arg = {n=#varargs, ...},
 	// 占形参后第一个寄存器,codegen 已 registerLocal("arg") 预留)
@@ -81,7 +81,7 @@ func (st *State) enterLuaFrame(th *thread, funcIdx, nargs, nresults int, entry b
 		}
 		nKey := value.MakeGC(value.TagString, st.gc.Intern([]byte("n")))
 		_ = st.tableSet(argTbl, nKey, value.NumberValue(float64(len(varargs))))
-		th.stack[base+numFixed] = value.MakeGC(value.TagTable, argTbl)
+		th.setSlot(base+numFixed, value.MakeGC(value.TagTable, argTbl))
 	}
 	// 压 CallInfo
 	ci := callInfo{
@@ -116,17 +116,17 @@ func currentCI(th *thread) *callInfo { return &th.cis[len(th.cis)-1] }
 // rk 取一个 RK 操作数:< 256 取寄存器 R(rk);>=256 取常量 K(rk-256)。
 func rk(th *thread, ci *callInfo, rk int) value.Value {
 	if rk < bytecode.MaxK {
-		return th.stack[ci.base+rk]
+		return th.slot(ci.base + rk)
 	}
 	return ci.proto.Consts[rk-bytecode.MaxK]
 }
 
 // reg 简便寄存器读。
-func reg(th *thread, ci *callInfo, r int) value.Value { return th.stack[ci.base+r] }
+func reg(th *thread, ci *callInfo, r int) value.Value { return th.slot(ci.base + r) }
 
 // setReg 简便寄存器写。
 func setReg(th *thread, ci *callInfo, r int, v value.Value) {
-	th.stack[ci.base+r] = v
+	th.setSlot(ci.base+r, v)
 }
 
 // errf 构造一个 LuaError(M9 简化:Value 直接是错误字符串内容,

@@ -181,9 +181,9 @@ func (st *State) callLuaFromHost(th *thread, fn value.Value, args []value.Value)
 	funcIdx := th.top
 	need := funcIdx + 1 + len(args)
 	th.ensureStack(need)
-	th.stack[funcIdx] = fn
+	th.setSlot(funcIdx, fn)
 	for i, a := range args {
-		th.stack[funcIdx+1+i] = a
+		th.setSlot(funcIdx+1+i, a)
 	}
 	th.top = need
 	if isHost := st.isHostClosure(cl); isHost {
@@ -192,7 +192,7 @@ func (st *State) callLuaFromHost(th *thread, fn value.Value, args []value.Value)
 		}
 		n := th.top - funcIdx
 		out := make([]value.Value, n)
-		copy(out, th.stack[funcIdx:th.top])
+		th.copyOut(out, funcIdx, th.top)
 		th.top = funcIdx
 		return out, nil
 	}
@@ -225,7 +225,7 @@ func (st *State) callLuaFromHost(th *thread, fn value.Value, args []value.Value)
 		n = 0
 	}
 	out := make([]value.Value, n)
-	copy(out, th.stack[funcIdx:funcIdx+n])
+	th.copyOut(out, funcIdx, funcIdx+n)
 	th.top = funcIdx
 	return out, nil
 }

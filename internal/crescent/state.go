@@ -276,13 +276,13 @@ func (st *State) visitThreadValues(th *thread, seen map[*thread]bool, visit func
 		seen[th] = true
 	}
 	for i := 0; i < th.top; i++ {
-		visit(th.stack[i])
+		visit(th.slot(i))
 	}
 	// top 之上的陈旧残值清 nil(对齐官方 lgc.c traversestack):否则死引用
 	// 留在槽里,top 回涨覆盖后下轮 GC 会把它当活根扫——freelist 复用内存下
 	// 即 use-after-free(mark 写已释放块 = 腐蚀 freelist 链)。
-	for i := th.top; i < len(th.stack); i++ {
-		th.stack[i] = value.Nil
+	for i := th.top; i < th.size(); i++ {
+		th.setSlot(i, value.Nil)
 	}
 	// ci.varargs 住 Go 切片(M13 简化),不在 stack[:top] 区间,必须单列为根。
 	for i := range th.cis {
@@ -596,7 +596,7 @@ func (st *State) callOnStack(cl arena.GCRef, args []value.Value, nresults int) (
 	}
 	// 顶层执行结束后返回值在栈底起若干个(由 RETURN 落点 dst=funcIdx 决定)。
 	// 零拷贝:直接切 th.stack 活动区(契约见 callOnStack 文档)。
-	rets := th.stack[:th.top]
+	rets := th.activeSlice(th.top)
 	if nresults >= 0 {
 		if len(rets) > nresults {
 			rets = rets[:nresults]
@@ -604,7 +604,7 @@ func (st *State) callOnStack(cl arena.GCRef, args []value.Value, nresults int) (
 			for len(rets) < nresults {
 				th.push(value.Nil)
 			}
-			rets = th.stack[:nresults]
+			rets = th.activeSlice(nresults)
 		}
 	}
 	return rets, nil
@@ -642,6 +642,33 @@ func newThread() *thread {
 		stack: make([]value.Value, 0, 64),
 	}
 }
+
+// --- 值栈访问收口(VS0 形态 Y)---
+//
+// slot/setSlot 是值栈槽的唯一标量读写收口;size/copyOut/copyIn/activeSlice
+// 覆盖容量查询与批量搬移。VS0-a 阶段后端仍是 Go slice(纯收口,零行为变更);
+// VS0-c 值栈进 arena 后,这些 helper 内部改 arena.WordAt 偏移寻址(形态 Y:
+// 不缓存派生视图,免疫 arena grow),opcode 与调用约定代码不动。
+
+// slot 读绝对栈位 i 的值。
+func (th *thread) slot(i int) value.Value { return th.stack[i] }
+
+// setSlot 写绝对栈位 i。
+func (th *thread) setSlot(i int, v value.Value) { th.stack[i] = v }
+
+// size 返回值栈当前长度(容量边界判断用;arena 化后 = stackCap)。
+func (th *thread) size() int { return len(th.stack) }
+
+// copyOut 把 [lo,hi) 槽拷进调用方 Go slice dst(返回值搬移)。copy 即时消费、
+// 中间不分配,arena 化后经短寿命 arena 段切片安全。
+func (th *thread) copyOut(dst []value.Value, lo, hi int) { copy(dst, th.stack[lo:hi]) }
+
+// copyIn 把 src 拷进 [lo,...) 槽(resume 写值)。同 copyOut 的短寿命视图纪律。
+func (th *thread) copyIn(lo int, src []value.Value) { copy(th.stack[lo:], src) }
+
+// activeSlice 返回 [0,hi) 的零拷贝活动切片(callOnStack 返回值;契约见
+// callOnStack 文档:下次进 VM 前消费完;arena 化后是 arena 段切片)。
+func (th *thread) activeSlice(hi int) []value.Value { return th.stack[:hi] }
 
 func (th *thread) push(v value.Value) {
 	if cap(th.stack) <= th.top {

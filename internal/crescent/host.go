@@ -216,7 +216,7 @@ func (st *State) BaselineSize() int { return len(st.baseline) }
 // funcIdx:host closure 在栈上的索引;参数紧随其后;
 // nresults < 0 = 调用者要可变(栈上保留全部);否则按个数补/裁。
 func (st *State) callHost(th *thread, funcIdx, nargs, nresults int) *LuaError {
-	cl := value.GCRefOf(th.stack[funcIdx])
+	cl := value.GCRefOf(th.slot(funcIdx))
 	hid := object.ClosureProtoID(st.arena, cl)
 	fn := st.hostFns.fns[hid]
 	// args 走 State 缓冲池(host 调用是 nbody 级负载的分配大头,91%)。
@@ -226,7 +226,7 @@ func (st *State) callHost(th *thread, funcIdx, nargs, nresults int) *LuaError {
 	args := st.getArgsBuf(nargs)
 	defer st.putArgsBuf(args)
 	for i := 0; i < nargs; i++ {
-		args[i] = th.stack[funcIdx+1+i]
+		args[i] = th.slot(funcIdx + 1 + i)
 	}
 	results, e := fn(st, args)
 	if e != nil {
@@ -236,24 +236,24 @@ func (st *State) callHost(th *thread, funcIdx, nargs, nresults int) *LuaError {
 	n := len(results)
 	if nresults < 0 {
 		// 可变:全部 results 落 dst,top = dst + n
-		if dst+n > len(th.stack) {
+		if dst+n > th.size() {
 			th.ensureStack(dst + n)
 		}
 		for k := 0; k < n; k++ {
-			th.stack[dst+k] = results[k]
+			th.setSlot(dst+k, results[k])
 		}
 		th.top = dst + n
 		return nil
 	}
 	want := nresults
-	if dst+want > len(th.stack) {
+	if dst+want > th.size() {
 		th.ensureStack(dst + want)
 	}
 	for k := 0; k < want; k++ {
 		if k < n {
-			th.stack[dst+k] = results[k]
+			th.setSlot(dst+k, results[k])
 		} else {
-			th.stack[dst+k] = value.Nil
+			th.setSlot(dst+k, value.Nil)
 		}
 	}
 	// 定长结果:恢复 top 到当前帧逻辑顶(05 §1.2 CallInfo.top 维护;对齐
