@@ -1182,7 +1182,7 @@ gibbous 帧入口的诊断**复用 P2 升层日志格式**——本节链 [../p2
 
 | 缺口 | 内容 | 收口时机 |
 |---|---|---|
-| **gibbous → gibbous 同 module 内 call_indirect 直调** | 批量 module([02-translation](./02-translation.md) §1.2 优化项)下,同 module 内的 gibbous→gibbous 调用用 `call_indirect` 直调,免 Go 往返(§3.1 表第一行的「优化」列)——能否兑现「免 Go 往返」收益取决于实测跨层成本与同 Program 内函数互调密度 | 留 PW9(§3.1) |
+| **gibbous → gibbous 同 module 内 call_indirect 直调** | 批量 module([02-translation](./02-translation.md) §1.2 优化项)下,同 module 内的 gibbous→gibbous 调用用 `call_indirect` 直调,免 Go 往返(§3.1 表第一行的「优化」列)——能否兑现「免 Go 往返」收益取决于实测跨层成本与同 Program 内函数互调密度 | **PW10 spike 闸门先行**(PW9 实测密度论据已坐实:call 核小叶函数每调经 `h_call` 双跨层 ~143ns → gibbous 比 crescent 慢 7x;loop 计算密集核 2.58x 达标。investigator 确认为里程碑级架构改(每 Proto 独立 module + Lua 帧住 Go `th.cis`),生死未知数 = wazero 增量 module 可行性,故 spike 先行验 call_indirect 成本 + 增量重编生命周期,绿则重写、红则退守拒升小叶函数启发式) |
 | **helper 数量增长后是否拆 trait** | per-helper Go 函数 vs 单一 dispatcher(`h_dispatch(opcode, base, pc)` 统一入口)——单一 dispatcher 减少 imported 函数数量但每次调用多一次 switch;per-helper 直达但 imported 表膨胀 | 留 PW6 实测后定(§3.3) |
 | **对 P1 05 的回填:bit50 字段语义登记** | 把 [../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §1.2 bit50 从「P1 恒 0 预留」升级为「P3 trampoline 写,P1 不读;语义见 P3 04 §1」;crescent callInfo struct 加 gibbous 标识字段(§1.5 (a)/(b) 之一) | **记录,P3 落地时同批补**(PW6,§1.6) |
 | **对 P2 04 的回填:installGibbous 增 multi-State 共享 Proto trampoline 注册幂等保证** | [../p2-bridge/04](../p2-bridge/04-try-compile-fallback.md) §4.5 已有 compileMu 锁 + 双重检查;P3 落地时补「各 State trampoline.Register 同一 GibbousCode 是幂等的(GibbousCode 全局唯一)」的显式登记 | **记录,P3 落地时同批补**(§6.4) |

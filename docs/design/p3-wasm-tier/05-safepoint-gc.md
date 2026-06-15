@@ -198,7 +198,7 @@ crescent ↔ gibbous 的 trampoline([04 §2 crescent→gibbous](./04-trampoline.
     )
   ```
 
-  代价是每次跨层进入 gibbous 多一次 `i32.load` + 恒不跳分支——**留 PW9 验收时按实测定**(记入 §8 缺口)。基线下不插此检查(助手路径已覆盖)。
+  代价是每次跨层进入 gibbous 多一次 `i32.load` + 恒不跳分支——**PW9 验收未观察到此边角触发**(差分 + GC stress 层间全 byte-equal),P3 首版基线下不插此检查(助手路径 + 回边 gcPending 已覆盖)。若 PW10/后续实测发现极端长函数内存增长异常再启用(记入 §8 缺口)。
 
 **一句话**:层边界 safepoint 在 P3 是「可选的额外触发机会」(同 [06 §7.1](../p1-interpreter/06-memory-gc.md) 对 P1 层边界的定性),基线不启用,助手路径已足够覆盖。
 
@@ -659,7 +659,7 @@ helper 返回后:gibbous 用 $cache_5 访问那个 Table ⇒ 悬垂 GCRef
 
 **所以**:**本文 §4 是「若将来启用,纪律是什么」的前瞻定稿;P3 首版的 GC 安全完全靠 §3 的基线机制(零新增、自动可见),不依赖 §4 的任何写回纪律。** 这把 P3 首版的 GC 正确性风险压到最低——与 §3.3「把一个工程问题降级为不存在的问题」呼应。
 
-> **启用决策留 PW9 实测后定**(记 §8):PW9 性能基准(循环密集 ≥2x over P1,[08 §1](./08-testing-strategy.md))若达标,则 locals 缓存无需启用(目标已达);若某些循环形态卡在 2x 以下且分析显示瓶颈在 `i64.load/store`,再评估对 FORLOOP 三槽启用 locals 缓存 + 本节写回纪律 + GC 压力 fuzz 兜底。
+> **启用决策已由 PW9 实测定:不启用**(记 §8)。PW9 性能基准 loop 核 **2.58x** over 解释器(循环密集 ≥2x,[08 §1](./08-testing-strategy.md))——全 memory-resident 下 V14 已达标,locals 缓存无需启用。真实退化是跨层调用税(call 核 0.14x,gibbous→gibbous 经 `h_call` 双跨层 ~143ns),与 `i64.load/store` 寄存器访问正交,locals 缓存治不了——拆 PW10(单 module + call_indirect 直调)。故本节 §4 写回纪律保持「前瞻定稿、不启用」。
 
 ---
 
@@ -800,13 +800,13 @@ func (c *Collector) writeBarrier(parent value.GCRef, child value.Value) {
 
 - **locals 缓存写回算法的精确定义**(§4.3.2):活跃性分析精度、W4 的 CFG 分析深度、helper clobber 集标注、缓存槽选择(FORLOOP 三槽之外是否扩展)——**留 PW5/PW9 实测后定**(承 [02 §2.2B](./02-translation.md) + [00-overview §10](./00-overview.md))。P3 首版不启用 locals 缓存(§4.6),此为前瞻设计。
 
-- **locals 缓存的启用决策**(§4.6):PW9 性能基准达标则无需启用;若某些循环形态卡在 2x 以下且瓶颈在 `i64.load/store`,再评估对 FORLOOP 三槽启用 + 写回纪律 + GC 压力 fuzz 兜底。**留 PW9 实测后定。**
+- **locals 缓存的启用决策**(§4.6):**PW9 实测定为不启用**——loop 核 2.58x 达标(V14 ≥2x),全 memory-resident 已够;真实退化(call 核 0.14x)是跨层调用税非寄存器访问,locals 缓存正交、拆 PW10(单 module + call_indirect)。§4 写回纪律保持前瞻定稿。
 
 - **助手内手工根登记 vs 编译器自动覆盖**(§1.1.3 / §6.1):助手体(= P1 opcode 实现)内若把 GCRef 暂存 Go 局部(如 CONCAT 中间串),需登记 shadow stack(R7)防误回收——这是 P1 已有的纪律,但 gibbous 经助手的路径需确认覆盖完整。**手工根登记是否需要为 gibbous 路径补充、还是 P1 纪律自然覆盖,留 PW3 实装时定**(PW3 = 算术 + 慢路径助手回 Go,[00-overview §4](./00-overview.md))。
 
 - **`$gcPending` 的 wazero global 暴露 API**(§1.3.4):`module.ExportedGlobal("gcPending").Set(...)` vs 经 imported 函数副作用;global 读成本是否 ≤ linear memory 读(否则退化为 linear memory 约定偏移)——**待 spike 验证**(同 [03 §3](./03-memory-model.md) wazero API 待验证项,[01 §1.4](./01-spike-gate.md) 顺带项)。
 
-- **层边界 safepoint 的极端长函数兜底**(§1.2.3):若 PW9 实测发现「既不分配也无回边的长 gibbous 函数」导致内存增长异常,在 trampoline 进出 gibbous 加 safepoint 检查——**留 PW9 验收时按实测定**。
+- **层边界 safepoint 的极端长函数兜底**(§1.2.3):**PW9 验收未观察到**「既不分配也无回边的长 gibbous 函数」导致内存增长异常(差分 + GC stress 层间全 byte-equal),P3 首版不插进出 gibbous 的 safepoint 检查。若 PW10/后续实测发现再启用。
 
 - **增量 GC 的 gibbous 屏障插桩**(§5.3.1):增量 GC 启用后(P3 之后),gibbous SETTABLE/SETLIST 直达槽快路径需插逻辑屏障(`$h_writebarrier`),编译器据「是否启用增量 GC」开关决定是否插——**留 P3 之后增量 GC 评估时定**。
 
