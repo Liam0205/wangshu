@@ -45,7 +45,20 @@ type Compiler struct {
 	// PW1:全 false(保守缺省,02-translation §1.3 + §5.2)。
 	// PW2:直线 opcode(MOVE/LOADK/LOADBOOL/LOADNIL/GETUPVAL/SETUPVAL/JMP)。
 	supported [numOpcodes]bool
+
+	// slotOf:Proto → 共享 env.table 槽号(PW10 Arch-2)。每个升层 Proto 在
+	// Compile 时分配一个单调递增 slot,其 module 经 element 段把 run 注册进该槽;
+	// gibbous→gibbous CALL 据被调 Proto 的 slot 经 call_indirect 跨 module 直达
+	// (R3 接线)。-1(不在表内)= 未升层/超容量 → 回退 h_call。
+	slotOf   map[*bytecode.Proto]uint32
+	nextSlot uint32
 }
+
+// maxTableSlots 是 Compiler 可分配的 slot 上限(= memadapter.TableSlots,env
+// 共享表容量)。超出则该 Proto 不分配 slot(回退 h_call,正确性不破)。
+// 硬编码避免 wasm 包反向 import memadapter 形成 import 环倒置;两值须一致
+// (有 TestPW10 断言对齐)。
+const maxTableSlots = 8192
 
 // numOpcodes 是 P1 活跃 opcode 数(0..37)+ 预留区上界守卫。
 // bytecode.OpCode 是 6-bit(0..63);supported 数组按 64 长度建,
@@ -65,6 +78,7 @@ func NewCompiler(ctx context.Context, runtime wazero.Runtime, host HostState) *C
 		ctx:     ctx,
 		runtime: runtime,
 		host:    host,
+		slotOf:  make(map[*bytecode.Proto]uint32),
 	}
 	c.supported[bytecode.MOVE] = true
 	c.supported[bytecode.LOADK] = true
@@ -111,6 +125,16 @@ func NewCompiler(ctx context.Context, runtime wazero.Runtime, host HostState) *C
 	c.supported[bytecode.TFORLOOP] = true
 	// PW5+ 逐档解锁(02-translation §1.3)。VARARG 永不加入。
 	return c
+}
+
+// SlotOf 返回 Proto 在共享 env.table 的槽号 + 是否已登记(PW10 Arch-2)。
+//
+// R3 CALL 翻译用:被调 Proto 已升 gibbous 且有有效 slot(< maxTableSlots)⟹
+// 经 call_indirect <slot> 跨 module 直达;否则(未登记 / 表满哨兵)回退 h_call。
+// ok=false 表示该 Proto 尚未编译过(无 slot);返回 maxTableSlots 表示表满未入表。
+func (c *Compiler) SlotOf(proto *bytecode.Proto) (uint32, bool) {
+	s, ok := c.slotOf[proto]
+	return s, ok
 }
 
 // SupportsAllOpcodes 实现 F7 后端能力查询(03 §3.7 + 02 §5.2)。
@@ -216,8 +240,25 @@ func (c *Compiler) Compile(proto *bytecode.Proto, fb *bridge.TypeFeedback) (gc b
 		}
 	}
 
-	// ③ 组 module 二进制
-	bin := buildGibbousModuleBinary(body)
+	// 分配共享 env.table 槽(PW10 Arch-2):本 module 的 run 经 element 段注册进
+	// table[slot],gibbous→gibbous 经 call_indirect 此槽跨 module 直达(R3)。
+	// 幂等:同 Proto 复编(多 State 共享同 Proto,理论上各 Compiler 独立)复用既有 slot。
+	slot, ok := c.slotOf[proto]
+	if !ok {
+		if c.nextSlot >= maxTableSlots {
+			// 表满:不分配 slot,该 Proto 的 run 不进表(R3 据「无 slot」回退 h_call)。
+			// 仍可编译执行,只是 gibbous→它 走慢路径。用哨兵 maxTableSlots 标记。
+			slot = maxTableSlots
+		} else {
+			slot = c.nextSlot
+			c.nextSlot++
+		}
+		c.slotOf[proto] = slot
+	}
+
+	// ③ 组 module 二进制(slot 注册进 element 段;表满哨兵时仍发 element 写
+	// table[maxTableSlots] 会越界——故表满时不发 element,见 buildGibbousModuleBinary)。
+	bin := buildGibbousModuleBinary(body, slot)
 
 	// ④ wazero 编译 + 实例化
 	compiled, cerr := c.runtime.CompileModule(c.ctx, bin)

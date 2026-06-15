@@ -56,7 +56,11 @@ const (
 // buildGibbousModuleBinary 组装完整 module 二进制。
 //
 // body 是 translate 产出的入口函数体(不含 local decl 与末尾 end)。
-func buildGibbousModuleBinary(body []byte) []byte {
+// slot 是本 module 的 run 在共享 env.table 里的槽号(PW10 Arch-2):Element 段
+// active 写 table[slot] = run,使 gibbous→gibbous 可经 call_indirect 跨 module 直达。
+// slot == maxTableSlots(表满哨兵)时不发 Element 段(避免越界写),该 module 仍可
+// 编译执行,只是不进表(gibbous→它 回退 h_call)。
+func buildGibbousModuleBinary(body []byte, slot uint32) []byte {
 	var b []byte
 	b = append(b, 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00) // magic+version
 
@@ -64,8 +68,44 @@ func buildGibbousModuleBinary(body []byte) []byte {
 	b = append(b, importSection()...)
 	b = append(b, functionSection()...)
 	b = append(b, exportSection()...)
+	if slot < maxTableSlots {
+		b = append(b, elementSection(slot)...)
+	}
 	b = append(b, codeSectionEntry(body)...)
 	return b
+}
+
+// elementSection 把入口 run(function index = numHelpers,import 后第一个本地函数)
+// active 注册进共享 env.table 的 slot(PW10 Arch-2 自注册)。
+//
+//	(elem (i32.const slot) func $run)
+//
+// flags=0:active,table 0(唯一 import 表),offset 由 const expr 给。
+func elementSection(slot uint32) []byte {
+	var p []byte
+	p = append(p, uleb32(1)...)                // 1 个 segment
+	p = append(p, 0x00)                        // flags=0(active, table 0, offset expr)
+	p = append(p, 0x41)                        // i32.const
+	p = append(p, sleb32Bytes(int32(slot))...) // offset = slot
+	p = append(p, 0x0b)                        // end(offset expr 结束)
+	p = append(p, uleb32(1)...)                // 1 个 funcidx
+	p = append(p, uleb32(numHelpers)...)       // run = import 后第一个本地 func
+	return sectionOf(0x09, p)
+}
+
+// sleb32Bytes 有符号 LEB128(i32.const 立即数;slot 是非负小数,但走通用编码)。
+func sleb32Bytes(v int32) []byte {
+	var out []byte
+	for {
+		c := byte(v & 0x7f)
+		v >>= 7
+		signBit := c&0x40 != 0
+		if (v == 0 && !signBit) || (v == -1 && signBit) {
+			out = append(out, c)
+			return out
+		}
+		out = append(out, c|0x80)
+	}
 }
 
 // typeSection 声明 5 个函数类型。
@@ -114,11 +154,18 @@ func typeSection() []byte {
 // function index 空间。
 func importSection() []byte {
 	var p []byte
-	// count = 1 memory + 23 funcs = 24
-	p = append(p, uleb32(24)...)
+	// count = 1 memory + 1 table + 23 funcs = 25(PW10 加 env.table 共享升层注册表)
+	p = append(p, uleb32(25)...)
 
 	// import env.memory : memory(limits flags=0 min=1)——共享 holder 的 memory
 	p = append(p, importEntry("env", "memory", 0x02, []byte{0x00, 0x01})...)
+
+	// import env.table : funcref table(PW10 Arch-2)——共享 holder 那张升层函数
+	// 注册表。本 module 的 run 经 element 段自注册进一个 slot;gibbous→gibbous
+	// CALL 经 call_indirect 此表跨 module 直达被调 run(R3 接线)。import 表不占
+	// function index 空间(同 memory),故 helper / entry func index 不变。
+	// limits flags=0 min=0(import 声明「至少 0」,env 实供 TableSlots)。
+	p = append(p, importEntry("env", "table", 0x01, []byte{0x70, 0x00, 0x00})...)
 
 	// import host.h_* : func(顺序 = function index = helpers_index.go 常量)
 	p = append(p, importFuncEntry("host", "h_getupval", typeGetUpval)...)

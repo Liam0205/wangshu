@@ -83,6 +83,79 @@ func setupTranslator(t *testing.T) (*Compiler, *memadapter.MemoryHolder, func())
 	return c, holder, func() { _ = holder.Close(); _ = rt.Close(ctx) }
 }
 
+// TestPW10_SlotRegistration 验证 R1b:每个升层 Proto 编译时分配单调 slot,且其
+// run 经 element 段真注册进共享 env.table[slot]——另一 caller module 经 env.table
+// call_indirect 该 slot 能跨 module 调到这个 Proto 的 run(R3 直调的物理基础)。
+func TestPW10_SlotRegistration(t *testing.T) {
+	c, holder, cleanup := setupTranslator(t)
+	defer cleanup()
+	mem := holder.Memory()
+
+	// 两个直线 Proto:各把 R0 搬到 R1(MOVE)再 RETURN。编译后各占一个 slot。
+	mkProto := func() *bytecode.Proto {
+		return &bytecode.Proto{Code: []bytecode.Instruction{
+			bytecode.EncodeABC(bytecode.MOVE, 1, 0, 0),
+			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
+		}}
+	}
+	p0, p1 := mkProto(), mkProto()
+	gc0, err := c.Compile(p0, nil)
+	if err != nil {
+		t.Fatalf("compile p0: %v", err)
+	}
+	defer func() { _ = gc0.(*p3Code).Dispose() }()
+	gc1, err := c.Compile(p1, nil)
+	if err != nil {
+		t.Fatalf("compile p1: %v", err)
+	}
+	defer func() { _ = gc1.(*p3Code).Dispose() }()
+
+	// 单调分配:p0=slot0, p1=slot1。
+	s0, ok0 := c.SlotOf(p0)
+	s1, ok1 := c.SlotOf(p1)
+	if !ok0 || !ok1 || s0 != 0 || s1 != 1 {
+		t.Fatalf("slot allocation: p0=(%d,%v) p1=(%d,%v), want 0/1", s0, ok0, s1, ok1)
+	}
+	// 未编译的 Proto 无 slot。
+	if _, ok := c.SlotOf(mkProto()); ok {
+		t.Error("未编译 Proto 不应有 slot")
+	}
+
+	// 实测 element 注册生效:caller module 经 env.table call_indirect slot0,跨
+	// module 调到 p0 的 run(签名 (i32 base)->(i32 status))。p0 run 把 R0→R1。
+	// 在 base=0 处布 R0=0xABCD,call_indirect slot0 后 R1(offset 8)应得 R0 值。
+	const r0 = uint64(0xABCD_1234_5678_9EF0)
+	mem.WriteUint64Le(0, r0)
+	mem.WriteUint64Le(8, 0)
+
+	caller := []byte{
+		0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+		// type0 (i32)->(i32)
+		0x01, 0x06, 0x01, 0x60, 0x01, 0x7f, 0x01, 0x7f,
+		// import env.table (funcref flags=0 min=0)
+		0x02, 0x0f, 0x01, 0x03, 'e', 'n', 'v', 0x05, 't', 'a', 'b', 'l', 'e', 0x01, 0x70, 0x00, 0x00,
+		// func0 type0
+		0x03, 0x02, 0x01, 0x00,
+		// export "call0"
+		0x07, 0x09, 0x01, 0x05, 'c', 'a', 'l', 'l', '0', 0x00, 0x00,
+		// call0(base)= call_indirect[table0,type0]( base, (i32.const 0) )
+		0x0a, 0x0b, 0x01, 0x09, 0x00, 0x20, 0x00, 0x41, 0x00, 0x11, 0x00, 0x00, 0x0b,
+	}
+	cmod, err := c.runtime.InstantiateWithConfig(c.ctx, caller,
+		wazero.NewModuleConfig().WithName("pw10caller"))
+	if err != nil {
+		t.Fatalf("caller instantiate: %v", err)
+	}
+	defer func() { _ = cmod.Close(c.ctx) }()
+	if _, err := cmod.ExportedFunction("call0").Call(c.ctx, 0); err != nil {
+		t.Fatalf("call_indirect slot0 → p0.run: %v", err)
+	}
+	got, _ := mem.ReadUint64Le(8) // R1
+	if got != r0 {
+		t.Errorf("call_indirect slot0 did not run p0 (MOVE R1=R0): R1=%#x want %#x", got, r0)
+	}
+}
+
 // TestPW2_TranslateMoveReturn 端到端:翻译 MOVE + RETURN 的 Proto,wazero
 // 编译执行,验证 ① 编译成功 ② 运行不报错 ③ MOVE 真的把 R(B) 搬到 R(A)
 // (经共见 memory 读回)。
