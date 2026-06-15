@@ -22,6 +22,11 @@ type p3Code struct {
 	proto    *bytecode.Proto
 	ctx      context.Context
 
+	// slot 是本 module 的 run 在共享 env.table 的槽号(PW10 R3 Arch-2);hasSlot
+	// 为 false 表示表满哨兵(未入表)→ gibbous→它 回退同步 Run。
+	slot    uint32
+	hasSlot bool
+
 	// pendingErr 记录 wazero 内部错误(罕见;run 返回非 nil err 时)。
 	pendingErr error
 }
@@ -45,6 +50,10 @@ func (c *p3Code) Run(stack []uint64, base uint32) int32 {
 
 // PendingErr 返回最近一次 Run 的 wazero 内部错误(trampoline 读)。
 func (c *p3Code) PendingErr() error { return c.pendingErr }
+
+// Slot 实现 bridge.GibbousCode(PW10 R3):返回 run 在共享 env.table 的槽号 +
+// 是否已登记。hasSlot=false(表满哨兵)⟹ gibbous→它 回退同步 Run。
+func (c *p3Code) Slot() (uint32, bool) { return c.slot, c.hasSlot }
 
 // Dispose 释放 wazero 资源(幂等)。
 func (c *p3Code) Dispose() error {

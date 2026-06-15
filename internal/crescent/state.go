@@ -163,6 +163,13 @@ type State struct {
 	// GC 状态转移点把「是否 due」镜像到此字(linear memory),gibbous FORLOOP
 	// 回边 inline i32.load 它,只在 due 时才跨层调 h_safepoint。0 = 未分配。
 	gcPendingRef arena.GCRef
+
+	// ciTransferRef 是 gibbous→gibbous call_indirect 直调的 base 中转字(PW10 R3)。
+	// DoCall 判被调已升 gibbous 时,把被调帧 base 字节偏移写入此字 + 返回 indirect
+	// 哨兵;caller wasm 读它作 call_indirect 实参。call_indirect 返回后 DoReturn 已
+	// 把刷新后的 caller base 写回此字,caller 读它续算寻址。LIFO 安全(每次写后紧跟
+	// 唯一读者,无交错)。0 = 未分配(非 p3 build 也分配,offset 逻辑统一)。
+	ciTransferRef arena.GCRef
 }
 
 // SetCompileFn 注入编译回调(wangshu.NewState 时装配;loadstring 用)。
@@ -208,6 +215,10 @@ func New() *State {
 	st.gcPendingRef = a.AllocWords(1)
 	a.SetWordAt(st.gcPendingRef, 0)
 	c.SetGCPendingRef(st.gcPendingRef)
+	// ci-transfer 中转字(P3 PW10 R3):gibbous→gibbous call_indirect 直调经此字
+	// 传被调/刷新后 base 字节偏移(详见字段注释)。早分配 → 偏移稳定。
+	st.ciTransferRef = a.AllocWords(1)
+	a.SetWordAt(st.ciTransferRef, 0)
 	st.installRoots()
 	st.wireP3() // wangshu_p3 build:构造 gibbous Compiler 注入 bridge;默认 build no-op
 	// host closure 槽位回收(gmatch 迭代器、mountArena 列代理等动态注册的

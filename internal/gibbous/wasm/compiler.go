@@ -292,6 +292,8 @@ func (c *Compiler) Compile(proto *bytecode.Proto, fb *bridge.TypeFeedback) (gc b
 		fn:       fn,
 		proto:    proto,
 		ctx:      c.ctx,
+		slot:     slot,
+		hasSlot:  slot < maxTableSlots,
 	}, nil
 }
 

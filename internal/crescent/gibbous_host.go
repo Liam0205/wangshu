@@ -428,6 +428,12 @@ func (st *State) GCPendingAddr() uint32 {
 	return uint32(st.gcPendingRef)
 }
 
+// CITransferAddr 返回 ci-transfer 中转字的 linear memory 字节地址(P3 PW10 R3)。
+// gibbous→gibbous call_indirect 直调经此字传被调/刷新后 base 字节偏移。
+func (st *State) CITransferAddr() uint32 {
+	return uint32(st.ciTransferRef)
+}
+
 // --- PW7 闭包构造 + 作用域 upvalue 关闭(全经助手,复用解释器)---
 
 // Closure 处理 CLOSURE A Bx(execute.go:394-397 同款)。makeClosure 读后随伪指令

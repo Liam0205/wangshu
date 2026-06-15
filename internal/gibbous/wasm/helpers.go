@@ -107,6 +107,12 @@ type HostState interface {
 	// P3 PW9)。gibbous FORLOOP 回边 inline `i32.load(GCPendingAddr)`——非 0 才跨层调
 	// h_safepoint(否则热循环每迭代无条件跨层吞掉收益,05 §3)。State 生命期内恒定。
 	GCPendingAddr() uint32
+
+	// CITransferAddr 返回 ci-transfer 中转字在 linear memory 的字节地址(arena GCRef,
+	// P3 PW10 R3)。gibbous→gibbous call_indirect 直调经此字传被调帧 base(DoCall 写,
+	// caller wasm 读作 call_indirect 实参)与刷新后 caller base(DoReturn 写,call_indirect
+	// 返回后 caller 读续算)。State 生命期内恒定。
+	CITransferAddr() uint32
 }
 
 // helperSet 持有注入的 HostState,提供给 wazero 注册的 Go callback。

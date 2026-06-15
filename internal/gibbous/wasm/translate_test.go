@@ -20,6 +20,7 @@ type mockHost struct {
 	getUpvalFn     func(base, b int32) uint64
 	globalsRaw     uint64
 	gcPendingAddr  uint32
+	ciTransferAddr uint32
 	getGlobalCalls int
 	getGlobalFn    func(base, pc, a, bx int32) int32
 }
@@ -68,6 +69,7 @@ func (m *mockHost) Close(base, pc, a int32) int32           { return 0 }
 func (m *mockHost) TForLoop(base, pc, a, c int32) int64     { return -2 }
 func (m *mockHost) GlobalsRaw() uint64                      { return m.globalsRaw }
 func (m *mockHost) GCPendingAddr() uint32                   { return m.gcPendingAddr }
+func (m *mockHost) CITransferAddr() uint32                  { return m.ciTransferAddr }
 
 // setupTranslator 建一个完整可执行的 P3 编译环境:wazero runtime + memadapter
 // holder(提供 env.memory)+ Compiler(mock host)。

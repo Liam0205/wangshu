@@ -75,6 +75,12 @@ type GibbousCode interface {
 
 	// PendingErr 返回最近一次 Run 的 wazero 内部错误(trampoline ERR 时读)。
 	PendingErr() error
+
+	// Slot 返回本编译产物 run 在共享 env.table 的槽号 + 是否已登记(P3 PW10 R3
+	// Arch-2)。gibbous→gibbous CALL 据被调 GibbousCode 的 slot 经 call_indirect
+	// 跨 module 直达(免 h_call 双跨层)。ok=false(表满哨兵 / 未入表)⟹ 回退
+	// 同步 Run(baseline)。P4 原生码无 wasm 表概念,返 (0,false) 即可(永走回退)。
+	Slot() (uint32, bool)
 }
 
 // CompileErrKind 编译失败的类别(05 §2.2.2 错误返回语义 / 04 §4.3)。
