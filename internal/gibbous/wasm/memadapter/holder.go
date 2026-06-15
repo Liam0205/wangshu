@@ -39,6 +39,14 @@ type MemoryHolder struct {
 	maxPage uint32
 }
 
+// TableSlots 是共享 funcref 表的容量(PW10 Arch-2 升层函数注册表的 slot 上限)。
+//
+// 表在 env holder module 声明一次(固定容量,无 max);每个升层 Proto 占一个 slot
+// (单调分配,Compiler 维护 Proto→slot 注册表)。8192 远超单 State 内热点 Proto 数的
+// 现实量级(典型 Program 升层函数 ≪ 百级);越界由 Compiler 在分配时检测(超出则该
+// Proto 不经 call_indirect 直调、回退 h_call,正确性不破)。
+const TableSlots = 8192
+
 // New 构造 MemoryHolder,分配 initialBytes(向上对齐 64 KiB 页)的 linear
 // memory,上限 maxBytes。
 func New(ctx context.Context, runtime wazero.Runtime, initialBytes, maxBytes uint32) (*MemoryHolder, error) {
@@ -54,7 +62,7 @@ func New(ctx context.Context, runtime wazero.Runtime, initialBytes, maxBytes uin
 		return nil, fmt.Errorf("memadapter: maxBytes %d exceeds wasm32 4 GiB", maxBytes)
 	}
 
-	bin := buildMemoryHolderModuleBinary(initPage, maxPage)
+	bin := buildMemoryHolderModuleBinary(initPage, maxPage, TableSlots)
 	compiled, err := runtime.CompileModule(ctx, bin)
 	if err != nil {
 		return nil, fmt.Errorf("memadapter: compile holder module: %w", err)

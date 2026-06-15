@@ -151,3 +151,59 @@ func TestPW1_MemoryShared_GoWasmView(t *testing.T) {
 		t.Errorf("two-layer view mismatch: arena wrote 0x77778888, wazero read %#x", got)
 	}
 }
+
+// TestPW10_EnvTableExported 验证 env holder module 导出共享 funcref 表(PW10
+// Arch-2 升层函数注册表的物理底座)——表声明须使 holder 二进制仍能实例化,且
+// 表可被后续 gibbous module 经 `import env.table` 共享 + active element 自注册。
+func TestPW10_EnvTableExported(t *testing.T) {
+	ctx := context.Background()
+	rt := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfigCompiler())
+	defer rt.Close(ctx)
+	h, err := New(ctx, rt, 64*1024, 1<<31)
+	if err != nil {
+		t.Fatalf("memadapter.New: %v", err)
+	}
+	defer h.Close()
+
+	// 实测:一个 import env.table 的 module 经 active element 把 func 注册进
+	// table[0],另一个 import env.table 的 module call_indirect table[0] 调到它。
+	// 这复刻 spike S-C,锚定 holder 的表确实是「可被跨 module 共享 + element 写」的表。
+	provider := []byte{
+		0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+		// type: (i32)->(i32)
+		0x01, 0x06, 0x01, 0x60, 0x01, 0x7f, 0x01, 0x7f,
+		// import env.table (funcref, flags=0 min=0)
+		0x02, 0x0f, 0x01, 0x03, 'e', 'n', 'v', 0x05, 't', 'a', 'b', 'l', 'e', 0x01, 0x70, 0x00, 0x00,
+		// func: 1 func type0
+		0x03, 0x02, 0x01, 0x00,
+		// element: active table0 offset=(i32.const 0) func[0]
+		0x09, 0x07, 0x01, 0x00, 0x41, 0x00, 0x0b, 0x01, 0x00,
+		// code: leaf(x)=x+1
+		0x0a, 0x09, 0x01, 0x07, 0x00, 0x20, 0x00, 0x41, 0x01, 0x6a, 0x0b,
+	}
+	if _, err := rt.InstantiateWithConfig(ctx, provider,
+		wazero.NewModuleConfig().WithName("p")); err != nil {
+		t.Fatalf("provider import env.table + element register failed: %v", err)
+	}
+	caller := []byte{
+		0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+		0x01, 0x06, 0x01, 0x60, 0x01, 0x7f, 0x01, 0x7f,
+		0x02, 0x0f, 0x01, 0x03, 'e', 'n', 'v', 0x05, 't', 'a', 'b', 'l', 'e', 0x01, 0x70, 0x00, 0x00,
+		0x03, 0x02, 0x01, 0x00,
+		0x07, 0x07, 0x01, 0x03, 'r', 'u', 'n', 0x00, 0x00,
+		// run(x) = call_indirect[table0,type0]( x, (i32.const 0) )
+		0x0a, 0x0b, 0x01, 0x09, 0x00, 0x20, 0x00, 0x41, 0x00, 0x11, 0x00, 0x00, 0x0b,
+	}
+	cmod, err := rt.InstantiateWithConfig(ctx, caller,
+		wazero.NewModuleConfig().WithName("c"))
+	if err != nil {
+		t.Fatalf("caller import env.table failed: %v", err)
+	}
+	res, err := cmod.ExportedFunction("run").Call(ctx, 41)
+	if err != nil {
+		t.Fatalf("cross-module call_indirect via env.table: %v", err)
+	}
+	if res[0] != 42 { // leaf(41)=42
+		t.Errorf("env.table call_indirect = %d, want 42", res[0])
+	}
+}
