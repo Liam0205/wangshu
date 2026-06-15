@@ -338,8 +338,11 @@ func (st *State) visitThreadValues(th *thread, seen map[*thread]bool, visit func
 		th.setSlot(i, value.Nil)
 	}
 	// varargs 住 Go th.ciVarargs(不进 linear memory),不在 stack[:top] 区间,
-	// 必须单列为根。索引 = 帧深度,只扫活跃帧 [0,ciDepth)。
-	for d := 0; d < th.ciDepth && d < len(th.ciVarargs); d++ {
+	// 必须单列为根。索引 = 帧深度,只扫活跃帧 [0,ciDepth)。PW10 Stage 1c:读
+	// liveCIDepth(Wasm 改深度后段为权威);Wasm 帧无 varargs(定参快路径),
+	// ciVarargs[d] 缺位由 d < len 守。
+	live := th.liveCIDepth()
+	for d := 0; d < live && d < len(th.ciVarargs); d++ {
 		for _, v := range th.ciVarargs[d] {
 			visit(v)
 		}
@@ -388,7 +391,9 @@ func (st *State) visitThreadRefs(th *thread, seen map[*thread]bool, visit func(a
 	// PW10 R2b-3:每帧 closure 根从 arena ci 段读(word3),段是根权威源。
 	// cl 在 push 时写段、之后不变,故段对全部活跃帧 [0,ciDepth) 持正确 cl
 	// (含当前帧——th.cur 是热镜像,但 cl 不在热路径改)。形态 Y 现算寻址。
-	for depth := 0; depth < th.ciDepth; depth++ {
+	// PW10 Stage 1c:深度读 liveCIDepth(Wasm 侧帧建拆改深度后段为权威,否则
+	// Wasm 新压帧的 closure 漏扫 = UAF;Wasm 弹帧后即时减字 = 不过扫)。
+	for depth := 0; depth < th.liveCIDepth(); depth++ {
 		if cl := th.ciSegCl(depth); !cl.IsNull() {
 			visit(cl)
 		}
@@ -891,6 +896,25 @@ func (th *thread) ciAt(depth int) callInfo {
 	th.readCISegInto(depth, &ci)
 	ci.varargs = th.varargsAt(depth)
 	return ci
+}
+
+// liveCIDepth 返回 GC 根扫描应采纳的权威帧深度(PW10 零跨界 Stage 1c)。
+//
+// **为何读字而非 th.ciDepth**:Stage 2/3 起 Wasm 侧帧建拆在 Wasm 执行期 increment/
+// decrement ciDepth 字 + 写段帧,**全程不回 Go**,故此刻 th.ciDepth(Go 字段)落后于
+// 真实深度。gibbous 帧体内可命中 safepoint(alloc/回边)触发 GC——此时 GC 必须按
+// **字**的深度扫段帧 closure 根,否则 Wasm 新压的活跃帧漏扫 = closure 被误回收 = UAF。
+// mainTh 读字(ciDepthWordRef≠0);协程 th 无字镜像(不升层),退回 th.ciDepth。
+//
+// 安全性:Stage 3 Wasm 建帧发射顺序「先写段帧 4 字、再 ciDepth++」保证字增时段帧
+// closure 已就位(不漏扫);Stage 2 拆帧「先减 ciDepth」使弹出帧不再被扫(不过扫)。
+// Stage 1c 落地时 Wasm 尚未写字(Stage 2/3 才写),故 liveCIDepth 恒等 th.ciDepth,
+// 翻转是零行为变更;wangshu_trace 自检(syncCurFromSeg/setCIDepth)守字与 Go 一致。
+func (th *thread) liveCIDepth() int {
+	if th.ciDepthWordRef != 0 {
+		return int(uint32(th.arena.WordAt(th.ciDepthWordRef)))
+	}
+	return th.ciDepth
 }
 
 // setCIDepth 设帧深度 + 镜像到 linear-memory 字(PW10 零跨界 Stage 1a)。
