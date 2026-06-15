@@ -523,6 +523,12 @@ func (st *State) ProtoCacheBaseAddr() uint32 {
 	return uint32(st.protoCacheBaseRef)
 }
 
+// FastCallHitsAddr 返回 ④ emitCall 守卫快路径命中计数字的字节地址(PW10 零跨界
+// ④ 验证用)。Wasm 命中后 i64 ++;Go 测试读字合 indirectCalls 一起断言路径命中。
+func (st *State) FastCallHitsAddr() uint32 {
+	return uint32(st.fastCallHitsRef)
+}
+
 // --- PW7 闭包构造 + 作用域 upvalue 关闭(全经助手,复用解释器)---
 
 // Closure 处理 CLOSURE A Bx(execute.go:394-397 同款)。makeClosure 读后随伪指令

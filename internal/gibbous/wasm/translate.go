@@ -229,7 +229,7 @@ func (c *Compiler) emitOpcode(em *emitter, proto *bytecode.Proto, pc int32) (int
 	case bytecode.SETLIST:
 		c.emitSetList(em, ins, pc)
 	case bytecode.CALL:
-		c.emitCall(em, ins, pc)
+		c.emitCall(em, proto, ins, pc)
 	case bytecode.CLOSE:
 		c.emitClose(em, ins, pc)
 	case bytecode.CLOSURE:

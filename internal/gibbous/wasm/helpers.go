@@ -145,6 +145,10 @@ type HostState interface {
 	// callee Proto 的 MaxStack/NumParams/IsVararg/NeedsArg,免 Go map。
 	ProtoCacheBaseAddr() uint32
 
+	// FastCallHitsAddr 返回 ④ emitCall 守卫快路径命中计数字的字节地址(PW10 零跨界
+	// ④ 验证用)。Wasm 命中后 i64 ++;Go 测试读字合 indirectCalls 一起断言。
+	FastCallHitsAddr() uint32
+
 	// PopErrFrame 在 call_indirect 直调失败时补弹遗留的 gibbous 被调帧(PW10 R3)。
 	// 被调出错自身 return 1 不弹帧,caller wasm 据 status≠0 调本助手补弹——精确复刻
 	// baseline enterGibbous ERR 路径的弹帧条件(currentCI 是 gibbous 帧才弹)。

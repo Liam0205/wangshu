@@ -71,6 +71,12 @@ const (
 	opI32Mul byte = 0x6c
 	opI32LtS byte = 0x48
 	opI64Eqz byte = 0x50
+
+	// ④ emitCall 守卫快路径:i64.shl(帧字打包)+ i64.extend_i32_u(无符号扩展,
+	// 槽/funcIdx 等正整数 → i64)+ i32.gt_s(MaxStack 余量守卫)+ i32.ge_s(深度守卫)。
+	opI64Shl        byte = 0x86
+	opI64ExtendUI32 byte = 0xad // i64.extend_i32_u(无符号 i32→i64,高 32 位清零)
+	opI32GtS        byte = 0x4a
 )
 
 // blockType 编码:0x40 = 空(无返回值),或单值类型(i32=0x7f 等)。
@@ -208,6 +214,11 @@ func (e *emitter) i32Sub() { e.raw(opI32Sub) }
 func (e *emitter) i32Mul() { e.raw(opI32Mul) }
 func (e *emitter) i32LtS() { e.raw(opI32LtS) }
 func (e *emitter) i64Eqz() { e.raw(opI64Eqz) }
+
+// PW10 零跨界 ④:i64 移位 + 无符号扩展 + i32 大于(帧字打包 + MaxStack 余量守卫)。
+func (e *emitter) i64Shl()        { e.raw(opI64Shl) }
+func (e *emitter) i64ExtendUI32() { e.raw(opI64ExtendUI32) }
+func (e *emitter) i32GtS()        { e.raw(opI32GtS) }
 
 // ifVoid 开一个无返回值的 if 块(条件 i32 已在栈顶)。配对 elseOp/end。
 func (e *emitter) ifVoid()       { e.raw(opIf, btVoid) }

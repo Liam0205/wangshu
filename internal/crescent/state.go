@@ -205,6 +205,12 @@ type State struct {
 	protoCacheBaseRef arena.GCRef
 	protoCacheLen     uint32 // 当前 protoCacheRef 段字数(Free 旧段用)
 
+	// fastCallHitsRef 是 ④ emitCall 守卫快路径命中次数 mirror 字(PW10 零跨界 ④
+	// 验证用)。Wasm 内 i64 ++(单线程 mainTh 无 race),Go 测试侧读字。当 ④ 命中
+	// 时不调 helperCall,故 indirectCalls 不增长——本字补「快路径命中可见性」,使
+	// R3/PW10 测试断言可放宽为「indirectCalls + fastCallHits ≥ before+1」。生产无功能。
+	fastCallHitsRef arena.GCRef
+
 	// indirectCalls 计 gibbous→gibbous call_indirect 直调命中次数(PW10 R3 验证用,
 	// tryIndirectCallee 返 indirect 哨兵时 ++)。仅测试读,确认直调路径真走到(非
 	// 静默回退 code.Run)。生产无功能含义,1 个 int 开销可忽略。
@@ -284,6 +290,10 @@ func New() *State {
 	// (重)分配段后更新。Wasm ④ emitCall 守卫快路径现读此基址 + protoID*8 取 cache 字。
 	st.protoCacheBaseRef = a.AllocWords(1)
 	a.SetWordAt(st.protoCacheBaseRef, 0)
+	// fast-call hits 计数字(PW10 零跨界 ④ 验证用):Wasm ④ 命中时内 ++,测试合 R3
+	// indirectCalls 一起断言 R3/④ 路径命中可见性。
+	st.fastCallHitsRef = a.AllocWords(1)
+	a.SetWordAt(st.fastCallHitsRef, 0)
 	st.installRoots()
 	st.wireP3() // wangshu_p3 build:构造 gibbous Compiler 注入 bridge;默认 build no-op
 	// host closure 槽位回收(gmatch 迭代器、mountArena 列代理等动态注册的

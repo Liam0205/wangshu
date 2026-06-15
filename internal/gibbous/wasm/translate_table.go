@@ -475,11 +475,25 @@ func (c *Compiler) emitSetList(em *emitter, ins bytecode.Instruction, pc int32) 
 //
 // **base 刷新**:被调(回退同步路径 / R3 直调路径的 DoReturn)可能 growStack 使值栈
 // 段在 arena 重定位,本帧 $base 失效。两路均刷新 base 后续算,免陈旧 base UAF。
-func (c *Compiler) emitCall(em *emitter, ins bytecode.Instruction, pc int32) {
+func (c *Compiler) emitCall(em *emitter, proto *bytecode.Proto, ins bytecode.Instruction, pc int32) {
 	a := int32(bytecode.A(ins))
 	b := int32(bytecode.B(ins))
 	cc := int32(bytecode.C(ins))
 	xfer := c.host.CITransferAddr()
+
+	// PW10 零跨界 ④ 守卫快路径(待 ④-ii 填守卫 + 帧建体):仅定额(B≠0 且 C≠0)
+	// 尝试 Wasm 内建帧 + call_indirect 免 h_call 跨界。任一守卫失败 br $slow →
+	// fallthrough 到下方 R3 indirect 慢路径(零行为变更回退)。④-i 阶段块体为空,
+	// 守卫全过(空)即 fallthrough,行为等同直接走慢路径——纯结构占位,准备
+	// ④-ii 填入守卫(tag/host/slot/vararg/needsArg/arity/MaxStack 余量)+ fast body
+	// (段帧 4 word 写 + ciDepth++ + top 字 + call_indirect + 错误处理 + fastCallHits ++)。
+	_ = proto // ④-ii 用 proto.MaxStack 作 caller 帧余量编译期常量
+	fastEligible := b != 0 && cc != 0
+	if fastEligible {
+		em.block() // $slow: 守卫失败落点;块尾后接慢路径
+		// ④-ii: emitCallFast(em, proto, a, b-1, cc-1) 在此发射
+		em.end() // $slow 块尾,fallthrough 到下方 R3 indirect
+	}
 
 	// ret = h_call(base,pc,a,b,c)
 	em.localGet(localBase)
