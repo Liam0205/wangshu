@@ -25,7 +25,20 @@
 
 对外验收数字必须可归因。实例:simple 档 3.2x→9.0x 的主因是 State.Call 跨 Run 复用主 thread 消去了短脚本的固定开销(newThread/栈分配,275→98ns),**不是解释器本身快了 3 倍**——README 措辞如实标注。微基准倍率不外推到真实负载(realworld 首轮三项落后也诚实入库)。基准叙事失真比数字本身错误更难纠正。
 
-## 5. 池化/复用类优化的配套清单
+## 5. 跨机器/跨参数 perf 基线对照
+
+> 来源:`memory/reflections/2026-06-15-p3-pw10-zerocross-stage3-round.md` 教训 3。承 §1「profile 先行」/ §3「benchmark 否决门」配成 perf 判定纪律三件套。
+
+任何性能数字判定**回归 / 收益** 前,必须**同 commit 同硬件同参数复测对照**——绝不拿 memory/reflection/implementation-progress 里的历史数字直接下结论。手法:
+
+- 用 `git worktree add` 切到对比 commit、**同一机器同一 bench 参数(`-count=N -benchtime=Ts`)** 跑,3 分钟得到对照数据;
+- 对照数据**写进本轮提交 / reflection**(同 commit 旧 ns / 新 ns 并列),不依赖外部「历史读数」。
+
+**实例**(PW10 零跨界 ③ Stage 4):一开始误判 ③b 引起 table/mixed 回归(基线对比读数掉了 30+%),经 worktree 切 ③ 前 commit、同硬件 2s×3 count 复测,「无 ③ 基线」也同样掉了 30%——差异源自硬件 / bench 参数(本机 Xeon 6982P vs R3.5 当时机器),非 ③ 引入的回归;**对照内自洽** ⟹ ③ 真实收益是 loop +10%(crescent 5.61→4.96ms / gibbous 2.17→1.68ms,2.65x→2.95x)。
+
+**次纪律——memory/reflection 写 perf 数字时必须标硬件/参数/日期**:本轮发现 `llmdoc/index.md` / `llmdoc/startup.md` / `docs/design/p3-wasm-tier/implementation-progress.md` 三处均缺标 ⟹ 历史读数被当成「现行基线」直接下结论。纪律:任何对外验收 / 对内对账数字三件套必标:① 硬件型号(CPU 系列)② bench 参数(`-count` / `-benchtime`)③ 日期(commit 哈希更佳)。
+
+## 6. 池化/复用类优化的配套清单
 
 衔接 `06-memory-gc.md` 回填条款(doc-gaps 第 10 项)与长稳轮「良性→致命」升级清单纪律,池化/复用类优化每项落地时同批完成:
 

@@ -65,6 +65,7 @@ P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 met
 - **开工前置 spike**:**wazero call boundary 实测,目标 `<150ns`;不达标则跳过本阶段直接做 P4**。
 - **验收**:循环密集脚本相对 P1 再 ≥2x;两层差分 fuzz 逐字节一致。
 - **战略价值**:在不用调试机器码的后端上,先把分层机器(升层/降层/fallback)整体跑通。
+- **现状(2026-06-15)**:PW0-PW9 + PW4b 全过线(spike 闸门 → 翻译器全 38 opcode 除 VARARG → 跨层互调 → 升层门禁 → V1-V18 验收;loop 核 2.58x V14 达标);**PW10 跨层调用税消除进行中**——R1-R3.5 已付(共享 funcref 表 + CallInfo→linear-memory + `call_indirect` 直调 + host helper 零分配)+ **零跨界 ①(top mirror 字基建)/ 基建-a(closure slot 缓存)/ ③a(savedTop)/ ③b(emitReturn 守卫快路径,在 Wasm 内拆帧)** 已付;**本机 Xeon 6982P 2s×3 count 实测基线**:loop 2.95x / table 0.88x / call 0.52x / mixed 0.99x;剩 **④ CALL 建帧快路径(消 `h_call`)+ R5 re-bench** 待实现(call 0.52x 是唯一短板)。详 `docs/design/p3-wasm-tier/implementation-progress.md`。
 
 ### P4:带 IC 反馈的投机 method JIT(+1-2 人年,流水线图「trace 收益 ~70%」)
 
