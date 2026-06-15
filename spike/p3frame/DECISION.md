@@ -67,6 +67,23 @@ Go 做**——隔离「两次跨界本身」的净成本。host 桩用 `WithGoMo
 4. **byte-equal 契约**:spike 只验计算自洽 + ciDepth 配平;生产每 Stage 须 V1-V13 层间
    byte-equal + 错误路径 byte-equal + 四 build + `-race`,守不住即收口为已知限制。
 
+## 3.5 S-F3 实测:带完整运行期守卫的内联帧建拆——守卫不吞收益(Stage 2 设计期补测)
+
+Stage 2(RETURN 快路径)设计时,生产快路径须读 **3 个镜像字**(ciDepth/段基址/maxOpenIdx)+
+段帧做运行期守卫(段基址现读因段可重定位、maxOpenIdx 守卫分支判「无开放 upvalue」、
+caller gibbous 位检查),比 spike 的 minimal inwasm 形态重。**承反思教训「先量再做」**,加
+`driver_guarded` 档量「带完整守卫的内联帧建拆」是否仍显著快过 2 跨界:
+
+| 形态 | 单次 dispatch+建拆帧 | vs twocross | 判定 |
+|---|---|---|---|
+| inwasm(minimal) | ~8.5 ns | 10.6x 快 | — |
+| **guarded(段基址现读 + maxOpenIdx 守卫分支 + caller gibbous 位检查)** | **~9.4 ns** | **9.6x 快** | ✅ 守卫仅 +0.9ns |
+| twocross(2 host 跨界) | ~90 ns | 基线 | — |
+
+**结论**:完整运行期守卫只加 **~0.9ns**(8.5→9.4),guarded 仍比 2 跨界快 **9.6x**——
+**守卫开销不吞收益**。Stage 2+3 可放心带全守卫实现(读 3 字 + 守卫分支),call 核 ≥1x
+预期不变。这也定调 **Stage 2/3 合并实现**(共享段字机器 + 守卫,一次 re-bench 验收)。
+
 ## 4. 附:S-F2(Option A resync 税)备注
 
 Option A(段为权威 + 跨界边界 resync `th.cur`)每次 Go 跨界(回退路径 / GC / traceback)

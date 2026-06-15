@@ -25,11 +25,12 @@ package p3frame
 // Wasm binary 格式:https://webassembly.github.io/spec/core/binary/
 
 const (
-	ciWords    = 4      // 每帧 4 word(对齐生产 R2 段布局)
-	segBase    = 256    // CallInfo 段起始字节偏移(避开前面的标志字)
-	ciDepthOff = 8      // ciDepth 字字节偏移
-	maxOpenOff = 16     // maxOpenIdx 字字节偏移
-	leafN      = 100000 // driver 紧循环调 leaf 次数(摊外层 fn.Call)
+	ciWords        = 4      // 每帧 4 word(对齐生产 R2 段布局)
+	segBase        = 256    // CallInfo 段起始字节偏移(避开前面的标志字)
+	ciDepthOff     = 8      // ciDepth 字字节偏移
+	maxOpenOff     = 16     // maxOpenIdx 字字节偏移
+	segBaseWordOff = 24     // segBase 镜像字字节偏移(guarded 形态从此现读段基址)
+	leafN          = 100000 // driver 紧循环调 leaf 次数(摊外层 fn.Call)
 )
 
 // driverKind 区分两形态。
@@ -38,6 +39,7 @@ type driverKind int
 const (
 	kindInwasm   driverKind = iota // 建拆帧全 Wasm 内
 	kindTwocross                   // 建拆帧经 h_call/h_return 两次 host 跨界
+	kindGuarded                    // 建拆帧全 Wasm 内 + 真实运行期守卫(读 segBase/maxOpen 字 + 守卫分支)
 )
 
 // buildFrameModule 生成 spike module 二进制。
@@ -72,24 +74,26 @@ func buildFrameModule() []byte {
 		importFuncEntry("host", "h_return", 1),
 	))...)
 
-	// Function section:leaf(type0) + driver_inwasm(type0) + driver_twocross(type0)。
-	b = append(b, sec(0x03, concat(uleb(3), uleb(0), uleb(0), uleb(0)))...)
+	// Function section:leaf + driver_inwasm + driver_twocross + driver_guarded(全 type0)。
+	b = append(b, sec(0x03, concat(uleb(4), uleb(0), uleb(0), uleb(0), uleb(0)))...)
 
 	// Table section:1 张 funcref 表 min=1(放 leaf 供 call_indirect)。
 	b = append(b, sec(0x04, concat(
 		uleb(1), []byte{0x70}, []byte{0x00}, uleb(1),
 	))...)
 
-	// leaf 的 func index = 2(import 2 个 func 占 0/1)。driver_inwasm=3, driver_twocross=4。
+	// leaf 的 func index = 2(import 2 个 func 占 0/1)。driver_inwasm=3, driver_twocross=4, driver_guarded=5。
 	const leafIdx = 2
 	const driverInwasmIdx = 3
 	const driverTwocrossIdx = 4
+	const driverGuardedIdx = 5
 
-	// Export section:两 driver。
+	// Export section:三 driver。
 	b = append(b, sec(0x07, concat(
-		uleb(2),
+		uleb(3),
 		[]byte{0x0d}, []byte("driver_inwasm"), []byte{0x00}, uleb(driverInwasmIdx),
 		[]byte{0x0f}, []byte("driver_twocross"), []byte{0x00}, uleb(driverTwocrossIdx),
+		[]byte{0x0e}, []byte("driver_guarded"), []byte{0x00}, uleb(driverGuardedIdx),
 	))...)
 
 	// Element section:table[0] = leaf。
@@ -99,11 +103,12 @@ func buildFrameModule() []byte {
 		uleb(1), uleb(leafIdx),
 	))...)
 
-	// Code section:leaf + driver_inwasm + driver_twocross。
+	// Code section:leaf + driver_inwasm + driver_twocross + driver_guarded。
 	bodies := [][]byte{
 		leafBody(),
 		driverBody(kindInwasm),
 		driverBody(kindTwocross),
+		driverBody(kindGuarded),
 	}
 	code := uleb(uint32(len(bodies)))
 	for _, body := range bodies {
@@ -152,6 +157,9 @@ func driverBody(kind driverKind) []byte {
 	case kindTwocross:
 		buildSeq = twocrossBuild()
 		teardownSeq = twocrossTeardown()
+	case kindGuarded:
+		buildSeq = guardedBuild()
+		teardownSeq = guardedTeardown()
 	}
 
 	loop := concat(
@@ -218,6 +226,66 @@ func inwasmTeardown() []byte {
 		[]byte{0x28, 0x02, 0x00}, // i32.load → depth
 		[]byte{0x41, 0x01, 0x6b}, // i32.const 1; i32.sub → depth-1
 		[]byte{0x36, 0x02, 0x00}, // i32.store
+	)
+}
+
+// --- guarded 形态:建拆帧全 Wasm 内 + 真实运行期守卫(模拟生产 Stage 2/3 守卫开销)---
+//
+// 与 inwasm 的差异:段基址从 segBase 字**现读**(模拟生产 CI 段可重定位,Wasm 读
+// ciSegBaseRef 字现算地址,而非烧立即数);拆帧含**真实 maxOpenIdx 守卫分支**(读字
+// 比较 + if,模拟「无开放 upvalue 才走快路径」);建帧含**caller gibbous 位检查**
+// (读段帧 word2 bit50 模拟「caller 是 gibbous 才内联」)。守卫恒过(spike 置字使
+// 快路径恒走),量「带完整运行期守卫的内联帧建拆」是否仍显著快过 2 跨界。
+
+// segWordStoreVar — 同 segWordStore 但段基址从 segBase 字现读(非常量 segBase)。
+func segWordStoreVar(w int, val byte) []byte {
+	return concat(
+		// addr = load(segBaseWordOff) + depth*32 + w*8
+		[]byte{0x41, segBaseWordOff},   // i32.const segBaseWordOff
+		[]byte{0x28, 0x02, 0x00},       // i32.load → segBase(现读)
+		[]byte{0x41, ciDepthOff},       // i32.const ciDepthOff
+		[]byte{0x28, 0x02, 0x00},       // i32.load → depth
+		[]byte{0x41, 0x20, 0x6c},       // i32.const 32; i32.mul → depth*32
+		[]byte{0x6a},                   // add → segBase + depth*32
+		i32ConstSeq(w*8), []byte{0x6a}, // + w*8
+		[]byte{0x42, val},        // i64.const val
+		[]byte{0x37, 0x03, 0x00}, // i64.store
+	)
+}
+
+// guardedBuild — 建帧 + caller gibbous 位检查(读段帧 word2 现判)。
+func guardedBuild() []byte {
+	return concat(
+		// caller gibbous 位检查:读 depth 帧的 word2(此处 depth 是 caller),
+		// 取 bit50 模拟「caller 是 gibbous 才走内联」(spike 恒真)。
+		// addr = load(segBase) + depth*32 + 16(word2)
+		[]byte{0x41, segBaseWordOff}, []byte{0x28, 0x02, 0x00}, // load segBase
+		[]byte{0x41, ciDepthOff}, []byte{0x28, 0x02, 0x00}, // load depth
+		[]byte{0x41, 0x20, 0x6c}, []byte{0x6a}, // depth*32 + segBase
+		[]byte{0x41, 0x10, 0x6a}, // + 16 (word2 offset)
+		[]byte{0x29, 0x03, 0x00}, // i64.load → word2
+		[]byte{0x42, 0x00},       // i64.const 0(spike:不真测 bit50,读取 + drop 量成本)
+		[]byte{0x84},             // i64.or(消费 word2 + 0,留结果)
+		[]byte{0x1a},             // drop
+		// 段字写(段基址现读)+ ciDepth++
+		segWordStoreVar(0, 0x11), segWordStoreVar(1, 0x22),
+		segWordStoreVar(2, 0x33), segWordStoreVar(3, 0x44),
+		[]byte{0x41, ciDepthOff}, []byte{0x41, ciDepthOff},
+		[]byte{0x28, 0x02, 0x00}, []byte{0x41, 0x01, 0x6a}, []byte{0x36, 0x02, 0x00},
+	)
+}
+
+// guardedTeardown — 拆帧 + 真实 maxOpenIdx 守卫分支(读字 + if,恒过)。
+func guardedTeardown() []byte {
+	return concat(
+		// maxOpenIdx 守卫:if load(maxOpenOff) != 0 { (慢路径,spike 恒不进) }
+		[]byte{0x41, maxOpenOff}, []byte{0x28, 0x02, 0x00}, // load maxOpenIdx
+		[]byte{0x04, 0x40}, // if (void)  —— 真实守卫分支(恒假,不进)
+		// 慢路径体(spike 空,生产是 h_return 回退)。
+		[]byte{0x0b}, // end if
+		// ciDepth--(段基址现读不影响 ciDepth 字,直接减)
+		[]byte{0x41, ciDepthOff}, []byte{0x41, ciDepthOff},
+		[]byte{0x28, 0x02, 0x00}, []byte{0x41, 0x01, 0x6b}, []byte{0x36, 0x02, 0x00},
 	)
 }
 

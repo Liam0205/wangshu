@@ -110,6 +110,7 @@ func BenchmarkFrame_Twocross(b *testing.B) {
 	ctx := context.Background()
 	mem.WriteUint32Le(ciDepthOff, 0)
 	mem.WriteUint32Le(maxOpenOff, 0)
+	mem.WriteUint32Le(segBaseWordOff, segBase)
 	stack := make([]uint64, 1)
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -117,6 +118,54 @@ func BenchmarkFrame_Twocross(b *testing.B) {
 		stack[0] = 0
 		if err := twocross.CallWithStack(ctx, stack); err != nil {
 			b.Fatalf("twocross: %v", err)
+		}
+	}
+	b.StopTimer()
+	b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N)/leafN, "ns/call")
+}
+
+// BenchmarkFrame_Guarded:建拆帧全 Wasm 内 + 真实运行期守卫(段基址现读字 +
+// maxOpenIdx 守卫分支 + caller gibbous 位检查)。量「带完整守卫的内联帧建拆」是否
+// 仍显著快过 2 跨界——守卫开销会不会吞掉收益。
+func BenchmarkFrame_Guarded(b *testing.B) {
+	setup3 := func() (api.Function, api.Memory, func()) {
+		ctx := context.Background()
+		rt := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfigCompiler())
+		envMod, err := rt.InstantiateWithConfig(ctx, buildEnvModule(),
+			wazero.NewModuleConfig().WithName("env"))
+		if err != nil {
+			b.Fatal(err)
+		}
+		mem := envMod.Memory()
+		hs := &hostState{mem: mem}
+		if _, err := rt.NewHostModuleBuilder("host").
+			NewFunctionBuilder().WithGoModuleFunction(api.GoModuleFunc(hs.hCall),
+			[]api.ValueType{api.ValueTypeI32}, []api.ValueType{api.ValueTypeI32}).Export("h_call").
+			NewFunctionBuilder().WithGoModuleFunction(api.GoModuleFunc(hs.hReturn),
+			[]api.ValueType{api.ValueTypeI32}, nil).Export("h_return").
+			Instantiate(ctx); err != nil {
+			b.Fatal(err)
+		}
+		mod, err := rt.InstantiateWithConfig(ctx, buildFrameModule(),
+			wazero.NewModuleConfig().WithName("spike"))
+		if err != nil {
+			b.Fatal(err)
+		}
+		return mod.ExportedFunction("driver_guarded"), mem, func() { _ = rt.Close(ctx) }
+	}
+	guarded, mem, closer := setup3()
+	defer closer()
+	ctx := context.Background()
+	mem.WriteUint32Le(ciDepthOff, 0)
+	mem.WriteUint32Le(maxOpenOff, 0)
+	mem.WriteUint32Le(segBaseWordOff, segBase) // 段基址镜像字(guarded 现读)
+	stack := make([]uint64, 1)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		stack[0] = 0
+		if err := guarded.CallWithStack(ctx, stack); err != nil {
+			b.Fatalf("guarded: %v", err)
 		}
 	}
 	b.StopTimer()
@@ -151,12 +200,13 @@ func TestFrame_BothComputeSame(t *testing.T) {
 	}
 	mem.WriteUint32Le(ciDepthOff, 0)
 	mem.WriteUint32Le(maxOpenOff, 0)
+	mem.WriteUint32Le(segBaseWordOff, segBase)
 	// Σ_{n=1..leafN} (3n+1) = 3*N(N+1)/2 + N
 	var want uint32
 	for n := 1; n <= leafN; n++ {
 		want += uint32(3*n + 1)
 	}
-	for _, name := range []string{"driver_inwasm", "driver_twocross"} {
+	for _, name := range []string{"driver_inwasm", "driver_twocross", "driver_guarded"} {
 		mem.WriteUint32Le(ciDepthOff, 0)
 		out, err := mod.ExportedFunction(name).Call(ctx, 0)
 		if err != nil {
