@@ -36,7 +36,57 @@ func TestR2b1_CISegPackRoundTrip(t *testing.T) {
 	}
 }
 
-// TestR2b1_CISegMirrorCoherent 真实执行中:每次进帧后 ci 段与 Go cis[depth] 的
+// TestR2b2_GrowCISegDeepRecursion 深递归(>initialCISlots=64 帧)触发 growCISeg
+// 多次重分配 ci 段,验证:① 不崩 ② 结果正确(段只写,行为透明)③ wangshu_trace
+// 构建下每帧 verifyCISeg 跨重定位仍逐字段一致(形态 Y 现算寻址免疫 grow)。
+func TestR2b2_GrowCISegDeepRecursion(t *testing.T) {
+	// 尾递归会 O(1) 复用帧(不加深),故用非尾递归累加,深度 = n 帧。
+	src := `
+local function sum(n)
+  if n == 0 then return 0 end
+  return n + sum(n - 1)
+end
+return sum(300)`
+	st, mainCl := loadFn(t, src)
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("run (深递归 growCISeg): %v", err)
+	}
+	want := float64(300 * 301 / 2) // Σ1..300 = 45150
+	if len(rets) != 1 || !value.IsNumber(rets[0]) || value.AsNumber(rets[0]) != want {
+		t.Fatalf("sum(300) = %v, want %v(growCISeg 不应改行为)", rets[0], want)
+	}
+}
+
+// TestR2b2_GrowCISegUnit 单元:手工压超过 initialCISlots 帧,验证 growCISeg 重分配后
+// 旧帧经 readCISegInto 仍读回原值(拷贝 + ciBaseW 重定位正确)。
+func TestR2b2_GrowCISegUnit(t *testing.T) {
+	st := New()
+	th := st.newThread()
+	const n = 200 // > initialCISlots(64),触发多次 growCISeg
+	for d := 0; d < n; d++ {
+		ci := callInfo{base: d*7 + 1, funcIdx: d * 7, top: d*7 + 3, protoID: uint32(d * 11), cl: 0, nresults: d % 4, pc: int32(d * 13)}
+		th.cis = append(th.cis, ci)
+		if depth := len(th.cis) - 1; depth >= th.ciCap {
+			th.growCISeg(depth + 1)
+		}
+		th.writeCISeg(d, &th.cis[d])
+	}
+	// 全部帧回读校验(多次 grow + 重定位后旧帧数据无损)。
+	for d := 0; d < n; d++ {
+		var got callInfo
+		th.readCISegInto(d, &got)
+		w := th.cis[d]
+		if got.base != w.base || got.funcIdx != w.funcIdx || got.top != w.top ||
+			got.protoID != w.protoID || got.nresults != w.nresults || got.pc != w.pc {
+			t.Fatalf("frame %d post-grow mismatch: got %+v want %+v", d, got, w)
+		}
+	}
+	if th.ciCap < n {
+		t.Errorf("ciCap=%d < %d,growCISeg 未充分扩容", th.ciCap, n)
+	}
+}
+
 // cold 字段(+ 进帧瞬间的 base/pc)逐字段一致。钩在一个递归脚本上,覆盖多层帧。
 func TestR2b1_CISegMirrorCoherent(t *testing.T) {
 	src := `

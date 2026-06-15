@@ -97,14 +97,15 @@ func (st *State) enterLuaFrame(th *thread, funcIdx, nargs, nresults int, entry b
 	}
 	th.cis = append(th.cis, ci)
 	th.top = base + int(proto.MaxStack)
-	// PW10 R2b-1:把新帧 cold 字段镜像进 arena ci 段(只写;Go cis 仍权威)。
-	// depth < ciCap 守卫:R2b-1 ci 段固定 initialCISlots 容量,超出暂跳过镜像
-	// (段未被读,跳过安全);R2b-3 growCISeg 落地后去守卫(段可动态增长)。
-	if depth := len(th.cis) - 1; depth < th.ciCap {
-		th.writeCISeg(depth, &th.cis[depth])
-		if ciMirrorCheck {
-			th.verifyCISeg(depth, &th.cis[depth])
-		}
+	// PW10 R2b:把新帧 cold 字段镜像进 arena ci 段(只写;Go cis 仍权威,R2b-3 翻转读)。
+	// 段满则 growCISeg 重分配(R2b-2),保证段对全部帧深度有覆盖(读段前置)。
+	depth := len(th.cis) - 1
+	if depth >= th.ciCap {
+		th.growCISeg(depth + 1)
+	}
+	th.writeCISeg(depth, &th.cis[depth])
+	if ciMirrorCheck {
+		th.verifyCISeg(depth, &th.cis[depth])
 	}
 	if profileEnabled {
 		st.bridge.OnEnter(proto, th == st.mainTh)

@@ -779,11 +779,41 @@ func (th *thread) readCISegInto(depth int, out *callInfo) {
 	out.cl = arena.GCRef(a.WordAt(wordRef(3)))
 }
 
-// reMirrorTop 重镜像栈顶帧到 ci 段(cold 字段变更后调,R2b-1)。depth<ciCap 守卫
-// 同 enterLuaFrame(R2b-3 growCISeg 后去守卫)。
+// reMirrorTop 重镜像栈顶帧到 ci 段(cold 字段变更后调,R2b)。栈顶帧在
+// enterLuaFrame 已 growCISeg 保证 depth<ciCap,故无需再守卫。
 func (th *thread) reMirrorTop() {
-	if depth := len(th.cis) - 1; depth >= 0 && depth < th.ciCap {
+	if depth := len(th.cis) - 1; depth >= 0 {
 		th.writeCISeg(depth, &th.cis[depth])
+	}
+}
+
+// growCISeg 在 ci 段容量不足 need 帧时重分配更大段(仿 growStack,PW10 R2b-2)。
+//
+// 形态 Y:经 WordAt/SetWordAt 现算地址拷旧帧(读 arena.words 当前值,免缓存
+// 派生切片,免疫 AllocWords 触发的物理 grow)。ci 段不持「跨 grow 存活的派生
+// 指针」——currentCI 返回 *callInfo 指向 Go cis(R2b-4 才改句柄),段本身只经
+// ciBaseW + depth 现算寻址,故重定位后下次 writeCISeg/readCISegInto 自动指向新段。
+func (th *thread) growCISeg(need int) {
+	newCap := need + 8
+	if d := th.ciCap * 2; d > newCap {
+		newCap = d
+	}
+	a := th.arena
+	newRef := a.AllocWords(uint32(newCap * ciWords))
+	oldRef := arena.GCRef(th.ciBaseW) << 3
+	// 拷已有帧(0..len(cis)-1 已镜像的帧;新帧由调用方随后 writeCISeg)。
+	copyFrames := len(th.cis) - 1
+	if copyFrames > th.ciCap {
+		copyFrames = th.ciCap
+	}
+	for w := 0; w < copyFrames*ciWords; w++ {
+		a.SetWordAt(newRef+arena.GCRef(w*8), a.WordAt(oldRef+arena.GCRef(w*8)))
+	}
+	oldCap := th.ciCap
+	th.ciBaseW = uint32(newRef) >> 3
+	th.ciCap = newCap
+	if !oldRef.IsNull() {
+		a.Free(oldRef, uint32(oldCap*ciWords)*8)
 	}
 }
 
