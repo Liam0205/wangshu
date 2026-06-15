@@ -130,6 +130,11 @@ type HostState interface {
 	// Wasm 侧帧建拆读它现算帧地址。**字地址恒定**,字内容(段基址)随段重定位变。
 	CISegBaseAddr() uint32
 
+	// OpenGuardAddr 返回 open-upvalue 守卫字在 linear memory 的字节地址(arena GCRef,
+	// P3 PW10 零跨界 Stage 2)。字值 = maxOpenIdx+1(有开放 upvalue)/ 0(无);Wasm
+	// RETURN 快路径守卫 frameBase ≥ 此值 ⟺ 本帧无须关闭的开放 upvalue。
+	OpenGuardAddr() uint32
+
 	// PopErrFrame 在 call_indirect 直调失败时补弹遗留的 gibbous 被调帧(PW10 R3)。
 	// 被调出错自身 return 1 不弹帧,caller wasm 据 status≠0 调本助手补弹——精确复刻
 	// baseline enterGibbous ERR 路径的弹帧条件(currentCI 是 gibbous 帧才弹)。

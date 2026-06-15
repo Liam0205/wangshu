@@ -489,6 +489,13 @@ func (st *State) CISegBaseAddr() uint32 {
 	return uint32(st.ciSegBaseRef)
 }
 
+// OpenGuardAddr 返回 open-upvalue 守卫字的 linear memory 字节地址(P3 PW10 零跨界
+// Stage 2)。字值 = maxOpenIdx+1(有开放 upvalue)/ 0(无);Wasm RETURN 快路径守卫
+// frameBase ≥ 此值 ⟺ 本帧无须关闭的开放 upvalue(closeUpvals no-op)。
+func (st *State) OpenGuardAddr() uint32 {
+	return uint32(st.openGuardRef)
+}
+
 // --- PW7 闭包构造 + 作用域 upvalue 关闭(全经助手,复用解释器)---
 
 // Closure 处理 CLOSURE A Bx(execute.go:394-397 同款)。makeClosure 读后随伪指令

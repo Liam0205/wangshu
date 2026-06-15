@@ -78,6 +78,7 @@ func (st *State) findOrCreateUpval(th *thread, stackIdx uint32) arena.GCRef {
 		th.maxOpenIdx = stackIdx
 	}
 	th.openUvs[stackIdx] = uv
+	th.syncOpenGuard() // PW10 Stage 2:openUvs/maxOpenIdx 变更后镜像守卫字
 	if st.uvOwner == nil {
 		st.uvOwner = map[arena.GCRef]*thread{}
 	}
@@ -105,6 +106,7 @@ func (st *State) closeUpvals(th *thread, level int) {
 		}
 	}
 	th.maxOpenIdx = remainMax
+	th.syncOpenGuard() // PW10 Stage 2:关闭后镜像守卫字(可能转空 → 守卫值 0)
 }
 
 // toStringBytes 把 Value 转为 []byte(用于 CONCAT)。

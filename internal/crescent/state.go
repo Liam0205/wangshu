@@ -183,6 +183,12 @@ type State struct {
 	// (经 ciSegBaseWordRef),growCISeg/newThread 更新。0 = 未分配。
 	ciSegBaseRef arena.GCRef
 
+	// openGuardRef 是「开放 upvalue 守卫值」的 linear-memory 镜像字(PW10 零跨界
+	// Stage 2)。值 = maxOpenIdx+1(openUvs 非空)/ 0(空)。Wasm 侧 RETURN 快路径守卫
+	// 「本帧无开放 upvalue 须关闭」⟺ frameBase ≥ openGuard(空时 ≥0 恒真;非空时
+	// ≥maxOpenIdx+1 ⟺ >maxOpenIdx = closeUpvals 的 no-op 条件)。仅 mainTh 写。
+	openGuardRef arena.GCRef
+
 	// indirectCalls 计 gibbous→gibbous call_indirect 直调命中次数(PW10 R3 验证用,
 	// tryIndirectCallee 返 indirect 哨兵时 ++)。仅测试读,确认直调路径真走到(非
 	// 静默回退 code.Run)。生产无功能含义,1 个 int 开销可忽略。
@@ -245,6 +251,10 @@ func New() *State {
 	// 后更新,Wasm 侧帧建拆读它现算帧地址(段可重定位,不能烧立即数)。
 	st.ciSegBaseRef = a.AllocWords(1)
 	a.SetWordAt(st.ciSegBaseRef, 0)
+	// open-upvalue 守卫字(PW10 零跨界 Stage 2):maxOpenIdx+1 / 0,Wasm RETURN 快路径
+	// 守卫「本帧无开放 upvalue」用。
+	st.openGuardRef = a.AllocWords(1)
+	a.SetWordAt(st.openGuardRef, 0)
 	st.installRoots()
 	st.wireP3() // wangshu_p3 build:构造 gibbous Compiler 注入 bridge;默认 build no-op
 	// host closure 槽位回收(gmatch 迭代器、mountArena 列代理等动态注册的
@@ -655,8 +665,10 @@ func (st *State) callOnStack(cl arena.GCRef, args []value.Value, nresults int) (
 		// 协程 th 恒不镜像(协程不升层)。setCIDepth 据此字段决定是否写字。
 		th.ciDepthWordRef = st.ciDepthRef
 		th.ciSegBaseWordRef = st.ciSegBaseRef // Stage 2:CI 段基址镜像(Wasm 现算帧地址)
+		th.openGuardWordRef = st.openGuardRef // Stage 2:开放 upvalue 守卫字
 		th.setCIDepth(0)                      // 初始化字 = 0(与新线程 ciDepth=0 同步)
 		th.syncCISegBase()                    // 初始化段基址字(newThread 已建段)
+		th.syncOpenGuard()                    // 初始化守卫字(新线程无开放 upvalue → 0)
 	} else {
 		th.top = 0
 		th.truncateCI(0)
@@ -743,6 +755,9 @@ type thread struct {
 	// ciSegBaseWordRef 非零时,syncCISegBase 把 CI 段当前字节基址(ciBaseW*8)镜像到此
 	// arena 字(PW10 零跨界 Stage 2),Wasm 侧帧建拆现算帧地址用。仅 mainTh 接通。
 	ciSegBaseWordRef arena.GCRef
+	// openGuardWordRef 非零时,syncOpenGuard 把开放 upvalue 守卫值(maxOpenIdx+1 / 0)
+	// 镜像到此 arena 字(PW10 零跨界 Stage 2),Wasm RETURN 快路径守卫用。仅 mainTh。
+	openGuardWordRef arena.GCRef
 	// ciVarargs 每帧 varargs(GC 根)。varargs 是 Go []value.Value,不进 linear
 	// memory(VS0-e 子piece);与帧深度对齐(索引 = depth)。
 	ciVarargs [][]value.Value
@@ -939,6 +954,21 @@ func (th *thread) syncCISegBase() {
 	if th.ciSegBaseWordRef != 0 {
 		th.arena.SetWordAt(th.ciSegBaseWordRef, uint64(th.ciBaseW*8))
 	}
+}
+
+// syncOpenGuard 把开放 upvalue 守卫值镜像到 linear-memory 字(PW10 零跨界 Stage 2)。
+// 值 = maxOpenIdx+1(openUvs 非空)/ 0(空)。Wasm RETURN 快路径守卫 frameBase ≥ 此值
+// ⟺ 本帧无 ≥base 的开放 upvalue 须关闭(= closeUpvals no-op)。openUvs / maxOpenIdx
+// 任一变更后调(findOrCreateUpval / closeUpvals)。仅 mainTh 接通。
+func (th *thread) syncOpenGuard() {
+	if th.openGuardWordRef == 0 {
+		return
+	}
+	var g uint32
+	if len(th.openUvs) != 0 {
+		g = th.maxOpenIdx + 1
+	}
+	th.arena.SetWordAt(th.openGuardWordRef, uint64(g))
 }
 
 // setCIDepth 设帧深度 + 镜像到 linear-memory 字(PW10 零跨界 Stage 1a)。
