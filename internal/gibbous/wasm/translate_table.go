@@ -538,6 +538,15 @@ func (c *Compiler) emitCall(em *emitter, ins bytecode.Instruction, pc int32) {
 	em.localGet(localI64c)
 	em.i32WrapI64()
 	em.localSet(localBase)
+	// PW10 零跨界 ③b:done 臂也自恢复 top(仅定额 C≠0)。done 臂可达「caller 是
+	// gibbous、callee 无 slot 经 code.Run 同步跑完」——此时 callee 的 emitReturn 快
+	// 路径(③b)按 G2(caller gibbous)走、跳过 top 恢复 → 须 F 在此自恢复。③a 下
+	// DoReturn 已恢复同值(幂等);两臂对称,与 OK 臂同 savedTop 快照。
+	if cc != 0 {
+		em.i32Const(0)
+		em.localGet(localSavedTop)
+		em.i32Store(c.host.TopAddr())
+	}
 	em.end()
 }
 

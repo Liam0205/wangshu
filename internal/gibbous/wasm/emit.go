@@ -64,6 +64,13 @@ const (
 
 	// i32.store(PW10 零跨界 ③a:savedTop 写回 top mirror 字低 32 位)。
 	opI32Store byte = 0x36
+
+	// i32 算术 / 比较 + i64.eqz(PW10 零跨界 ③b:段帧动态寻址 + RETURN 守卫)。
+	opI32Add byte = 0x6a
+	opI32Sub byte = 0x6b
+	opI32Mul byte = 0x6c
+	opI32LtS byte = 0x48
+	opI64Eqz byte = 0x50
 )
 
 // blockType 编码:0x40 = 空(无返回值),或单值类型(i32=0x7f 等)。
@@ -194,6 +201,13 @@ func (e *emitter) i32And()            { e.raw(opI32And) }
 func (e *emitter) i32Ne()             { e.raw(opI32Ne) }
 func (e *emitter) i32Eq()             { e.raw(opI32Eq) }
 func (e *emitter) i32Eqz()            { e.raw(opI32Eqz) }
+
+// i32 算术 / 比较 + i64.eqz(PW10 零跨界 ③b:段帧寻址 + 守卫;操作数已在栈上)。
+func (e *emitter) i32Add() { e.raw(opI32Add) }
+func (e *emitter) i32Sub() { e.raw(opI32Sub) }
+func (e *emitter) i32Mul() { e.raw(opI32Mul) }
+func (e *emitter) i32LtS() { e.raw(opI32LtS) }
+func (e *emitter) i64Eqz() { e.raw(opI64Eqz) }
 
 // ifVoid 开一个无返回值的 if 块(条件 i32 已在栈顶)。配对 elseOp/end。
 func (e *emitter) ifVoid()       { e.raw(opIf, btVoid) }

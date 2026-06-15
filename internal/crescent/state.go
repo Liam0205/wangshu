@@ -200,6 +200,11 @@ type State struct {
 	// tryIndirectCallee 返 indirect 哨兵时 ++)。仅测试读,确认直调路径真走到(非
 	// 静默回退 code.Run)。生产无功能含义,1 个 int 开销可忽略。
 	indirectCalls uint64
+
+	// doReturnHits 计 h_return(DoReturn)被调次数(PW10 零跨界 ③b 验证用)。Wasm 内
+	// RETURN 守卫快路径命中时**不**调 DoReturn,故此计数停滞证明快路径真生效(非全
+	// 程 helperReturn 回退的假绿)。仅测试读。生产无功能含义。
+	doReturnHits uint64
 }
 
 // SetCompileFn 注入编译回调(wangshu.NewState 时装配;loadstring 用)。

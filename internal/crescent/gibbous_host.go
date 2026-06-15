@@ -32,7 +32,7 @@ func (st *State) enterGibbous(th *thread, code bridge.GibbousCode, funcIdx, narg
 	if e := st.enterLuaFrame(th, funcIdx, nargs, nresults, false); e != nil {
 		return e
 	}
-	ci := currentCI(th)
+	ci := st.gibCI(th)
 	ci.SetGibbous(true) // bit50 callStatus_gibbous(04 §1.2):本帧走 Wasm 路径
 	th.reMirrorTop()    // PW10 R2b-1:cold 字段(gibbous)变更后重镜像 ci 段
 
@@ -82,10 +82,21 @@ func (st *State) gibbousStack() []uint64 {
 // *State 作 HostState。所有方法以 base(本帧 R0 字节偏移)或 runningThread
 // 当前帧为坐标——gibbous 帧与解释器帧共享同一值栈(03-memory-model)。
 
+// gibCI 取 gibbous 边界的当前帧(PW10 零跨界 ③b)。先 syncCurFromSeg 以**段为准**
+// 反向同步——Wasm RETURN 快路径(emitReturnFast)在 wasm 执行期减段 ciDepth 字 +
+// 拆帧、全程不回 Go,故 Go 的 th.cur/th.ciDepth 被冻结而段是活的。所有 HostState
+// helper 入口经此取 ci,确保 Wasm 改段后 Go 侧读到最新帧(非陈旧的已死帧 → 寄存器
+// 寻址错位腐蚀,Option A 风险 #1)。syncCurFromSeg 幂等廉价(字==Go 时 no-op),
+// 慢路径 helper 本就已跨界,开销可忽略。
+func (st *State) gibCI(th *thread) *callInfo {
+	th.syncCurFromSeg()
+	return &th.cur
+}
+
 // GetUpval 取当前 closure 的 upvalue b(execute.go GETUPVAL 段同款)。
 func (st *State) GetUpval(base int32, b int32) uint64 {
 	th := st.runningThread
-	ci := currentCI(th)
+	ci := st.gibCI(th)
 	uv := object.ClosureUpvalRef(st.arena, ci.Cl(), uint16(b))
 	return uint64(st.upvalGet(th, uv))
 }
@@ -93,7 +104,7 @@ func (st *State) GetUpval(base int32, b int32) uint64 {
 // SetUpval 写当前 closure 的 upvalue b(execute.go SETUPVAL 段同款)。
 func (st *State) SetUpval(base int32, b int32, val uint64) {
 	th := st.runningThread
-	ci := currentCI(th)
+	ci := st.gibCI(th)
 	uv := object.ClosureUpvalRef(st.arena, ci.Cl(), uint16(b))
 	st.upvalSet(th, uv, value.Value(val))
 }
@@ -105,7 +116,8 @@ func (st *State) SetUpval(base int32, b int32, val uint64) {
 // gibbous 帧由 trampoline 经此弹出(对称于 enterLuaFrame 压入);返回 status=0。
 func (st *State) DoReturn(base int32, pc int32, a int32, b int32) int32 {
 	th := st.runningThread
-	ci := currentCI(th)
+	st.doReturnHits++ // PW10 零跨界 ③b 验证:快路径命中时不经此(计数停滞证快路径生效)
+	ci := st.gibCI(th)
 	ci.pc = pc // pc 物化(savedPC,04 §4.5;traceback 用)
 	var nret int
 	if b == 0 {
@@ -128,7 +140,7 @@ func (st *State) DoReturn(base int32, pc int32, a int32, b int32) int32 {
 			th.setSlot(dst+k, value.Nil)
 		}
 		if th.ciDepth > 0 {
-			caller := currentCI(th)
+			caller := st.gibCI(th)
 			th.setTop(caller.base + int(st.protoOf(caller).MaxStack))
 		} else {
 			th.setTop(dst + wantedN)
@@ -138,7 +150,7 @@ func (st *State) DoReturn(base int32, pc int32, a int32, b int32) int32 {
 	// 返回后读取续算(caller 是 gibbous-via-call_indirect 时需要刷新 base——被调可能
 	// growStack 段重定位)。caller 非 gibbous 或走 baseline Run 路径时此写被忽略,无害。
 	if th.ciDepth > 0 {
-		caller := currentCI(th)
+		caller := st.gibCI(th)
 		st.arena.SetWordAt(st.ciTransferRef, uint64((th.stackBaseW+uint32(caller.base))*8))
 	}
 	return 0 // OK
@@ -184,7 +196,7 @@ func (st *State) raiseGibbous(e *LuaError) int32 {
 // 出错遗留)时不弹——与 baseline enterGibbous 同条件(留给 protected 边界 truncateCI)。
 func (st *State) PopErrFrame() {
 	th := st.runningThread
-	if th.ciDepth > 0 && currentCI(th).Gibbous() {
+	if th.ciDepth > 0 && st.gibCI(th).Gibbous() {
 		st.popCallInfo(th)
 	}
 }
@@ -196,20 +208,20 @@ func (st *State) Safepoint(base int32, pc int32) {
 
 // SetSavedPC 写回当前帧 savedPC(pc 物化,04 §4.5)。
 func (st *State) SetSavedPC(base int32, pc int32) {
-	currentCI(st.runningThread).pc = pc
+	st.gibCI(st.runningThread).pc = pc
 }
 
 // --- PW3 算术慢路径助手(快路径双 number 在 Wasm 内直发,失败回 Go)---
 //
 // 重建 bytecode.Instruction 复用解释器 doArith/doArithSlow/doConcat/LEN 逻辑,
-// 保证 gibbous 慢路径与 crescent 逐字节同构。helper 内 currentCI(th) 即 gibbous
+// 保证 gibbous 慢路径与 crescent 逐字节同构。helper 内经 gibCI 取的即 gibbous
 // 帧(enterGibbous 已压),寄存器寻址经 reg/setReg(已 VS0-c arena 化)。
 
 // Arith 算术慢路径(ADD/SUB/MUL/DIV/MOD/POW)。op 是 bytecode.OpCode 值;
 // 直接调 doArith(含快路径再判 + 慢路径 coercion/元方法),与解释器同构。
 func (st *State) Arith(base, pc, op, b, c, a int32) int32 {
 	th := st.runningThread
-	ci := currentCI(th)
+	ci := st.gibCI(th)
 	ci.pc = pc + 1 // pc 物化:解释器执行该 op 时 ci.pc 已 ++,errWithName 的 ci.pc-1==pc(R3c-fix)
 	ins := bytecode.EncodeABC(bytecode.OpCode(op), int(a), int(b), int(c))
 	if e := st.doArith(th, ci, ins); e != nil {
@@ -222,7 +234,7 @@ func (st *State) Arith(base, pc, op, b, c, a int32) int32 {
 // UNM 段逻辑(此处直接重跑该段的慢路径分支)。
 func (st *State) Unm(base, pc, b, a int32) int32 {
 	th := st.runningThread
-	ci := currentCI(th)
+	ci := st.gibCI(th)
 	ci.pc = pc + 1 // R3c-fix:errWithName 的 ci.pc-1==pc(失败 op 索引)
 	bv := reg(th, ci, int(b))
 	if f, ok := st.toNumberCoerce(bv); ok {
@@ -244,7 +256,7 @@ func (st *State) Unm(base, pc, b, a int32) int32 {
 // Len LEN(string 长度 / table border / 异类报错;复用 execute.go LEN 段)。
 func (st *State) Len(base, pc, b, a int32) int32 {
 	th := st.runningThread
-	ci := currentCI(th)
+	ci := st.gibCI(th)
 	ci.pc = pc + 1 // R3c-fix
 	bv := reg(th, ci, int(b))
 	switch value.Tag(bv) {
@@ -264,7 +276,7 @@ func (st *State) Len(base, pc, b, a int32) int32 {
 // Concat CONCAT(复用 execute.go doConcat 全逻辑 + safepoint)。
 func (st *State) Concat(base, pc, a, b, c int32) int32 {
 	th := st.runningThread
-	ci := currentCI(th)
+	ci := st.gibCI(th)
 	ci.pc = pc + 1 // R3c-fix
 	ins := bytecode.EncodeABC(bytecode.CONCAT, int(a), int(b), int(c))
 	if e := st.doConcat(th, ci, ins); e != nil {
@@ -278,7 +290,7 @@ func (st *State) Concat(base, pc, a, b, c int32) int32 {
 // 返回 packed:bit0=比较结果,bit1=错误标志。
 func (st *State) Compare(base, pc, op, b, c int32) int32 {
 	th := st.runningThread
-	ci := currentCI(th)
+	ci := st.gibCI(th)
 	ci.pc = pc + 1 // R3c-fix
 	ins := bytecode.EncodeABC(bytecode.OpCode(op), 0, int(b), int(c))
 	res, e := st.doCompare(th, ci, ins)
@@ -296,7 +308,7 @@ func (st *State) Compare(base, pc, op, b, c int32) int32 {
 // 返回 packed:bit0=结果,bit1=错误。
 func (st *State) Eq(base, pc, b, c int32) int32 {
 	th := st.runningThread
-	ci := currentCI(th)
+	ci := st.gibCI(th)
 	ci.pc = pc + 1 // R3c-fix
 	ins := bytecode.EncodeABC(bytecode.EQ, 0, int(b), int(c))
 	res, e := st.doCompare(th, ci, ins)
@@ -314,7 +326,7 @@ func (st *State) Eq(base, pc, b, c int32) int32 {
 // 返回 status(0=OK / 1=ERR)。
 func (st *State) ForPrep(base, pc, a int32) int32 {
 	th := st.runningThread
-	ci := currentCI(th)
+	ci := st.gibCI(th)
 	ci.pc = pc + 1 // R3c-fix
 	ra := int(a)
 	init, ok1 := st.toNumberCoerce(reg(th, ci, ra))
@@ -346,7 +358,7 @@ func (st *State) ForPrep(base, pc, a int32) int32 {
 // GetTable 处理 GETTABLE A B C 慢路径(execute.go :101-112 同款)。
 func (st *State) GetTable(base, pc, a, b, c int32) int32 {
 	th := st.runningThread
-	ci := currentCI(th)
+	ci := st.gibCI(th)
 	ci.pc = pc + 1
 	proto := st.protoOf(ci)
 	tbl := reg(th, ci, int(b))
@@ -355,7 +367,7 @@ func (st *State) GetTable(base, pc, a, b, c int32) int32 {
 	if e != nil {
 		return st.raiseGibbous(st.enhanceIndexErr(e, ci, int(b), tbl))
 	}
-	ci = currentCI(th)
+	ci = st.gibCI(th)
 	setReg(th, ci, int(a), v)
 	return 0
 }
@@ -363,7 +375,7 @@ func (st *State) GetTable(base, pc, a, b, c int32) int32 {
 // SetTable 处理 SETTABLE A B C 慢路径(execute.go :114-124 同款 + safepoint)。
 func (st *State) SetTable(base, pc, a, b, c int32) int32 {
 	th := st.runningThread
-	ci := currentCI(th)
+	ci := st.gibCI(th)
 	ci.pc = pc + 1
 	proto := st.protoOf(ci)
 	tbl := reg(th, ci, int(a))
@@ -372,7 +384,7 @@ func (st *State) SetTable(base, pc, a, b, c int32) int32 {
 	if e := st.icSetTable(th, ci, pc, tbl, key, val); e != nil {
 		return st.raiseGibbous(st.enhanceIndexErr(e, ci, int(a), tbl))
 	}
-	ci = currentCI(th)
+	ci = st.gibCI(th)
 	st.safepoint(th, ci)
 	return 0
 }
@@ -380,7 +392,7 @@ func (st *State) SetTable(base, pc, a, b, c int32) int32 {
 // DoGetGlobal 处理 GETGLOBAL A Bx 慢路径(execute.go :78-88 同款)。
 func (st *State) DoGetGlobal(base, pc, a, bx int32) int32 {
 	th := st.runningThread
-	ci := currentCI(th)
+	ci := st.gibCI(th)
 	ci.pc = pc + 1
 	proto := st.protoOf(ci)
 	key := proto.Consts[bx]
@@ -389,7 +401,7 @@ func (st *State) DoGetGlobal(base, pc, a, bx int32) int32 {
 	if e != nil {
 		return st.raiseGibbous(e)
 	}
-	ci = currentCI(th)
+	ci = st.gibCI(th)
 	setReg(th, ci, int(a), v)
 	return 0
 }
@@ -397,7 +409,7 @@ func (st *State) DoGetGlobal(base, pc, a, bx int32) int32 {
 // DoSetGlobal 处理 SETGLOBAL A Bx 慢路径(execute.go :90-99 同款 + safepoint)。
 func (st *State) DoSetGlobal(base, pc, a, bx int32) int32 {
 	th := st.runningThread
-	ci := currentCI(th)
+	ci := st.gibCI(th)
 	ci.pc = pc + 1
 	proto := st.protoOf(ci)
 	key := proto.Consts[bx]
@@ -405,7 +417,7 @@ func (st *State) DoSetGlobal(base, pc, a, bx int32) int32 {
 	if e := st.icSetTable(th, ci, pc, gv, key, reg(th, ci, int(a))); e != nil {
 		return st.raiseGibbous(e)
 	}
-	ci = currentCI(th)
+	ci = st.gibCI(th)
 	st.safepoint(th, ci)
 	return 0
 }
@@ -414,7 +426,7 @@ func (st *State) DoSetGlobal(base, pc, a, bx int32) int32 {
 // 与 inline 快路径的 store 幂等(inline miss 时已 store,助手重做无副作用)。
 func (st *State) Self(base, pc, a, b, c int32) int32 {
 	th := st.runningThread
-	ci := currentCI(th)
+	ci := st.gibCI(th)
 	ci.pc = pc + 1
 	proto := st.protoOf(ci)
 	tbl := reg(th, ci, int(b))
@@ -424,7 +436,7 @@ func (st *State) Self(base, pc, a, b, c int32) int32 {
 	if e != nil {
 		return st.raiseGibbous(st.enhanceIndexErr(e, ci, int(b), tbl))
 	}
-	ci = currentCI(th)
+	ci = st.gibCI(th)
 	setReg(th, ci, int(a), v)
 	return 0
 }
@@ -432,7 +444,7 @@ func (st *State) Self(base, pc, a, b, c int32) int32 {
 // NewTable 处理 NEWTABLE A B C(execute.go :126-132 同款,分配+GC 全助手内)。
 func (st *State) NewTable(base, pc, a, b, c int32) int32 {
 	th := st.runningThread
-	ci := currentCI(th)
+	ci := st.gibCI(th)
 	ci.pc = pc + 1
 	asz := bytecode.Fb2Int(uint32(b))
 	hsz := bytecode.Fb2Int(uint32(c))
@@ -447,13 +459,13 @@ func (st *State) NewTable(base, pc, a, b, c int32) int32 {
 // 故须先把 ci.pc 设成 opcode 之后(pc+1),与解释器取指后状态一致。
 func (st *State) SetList(base, pc, a, b, c int32) int32 {
 	th := st.runningThread
-	ci := currentCI(th)
+	ci := st.gibCI(th)
 	ci.pc = pc + 1
 	ins := bytecode.EncodeABC(bytecode.SETLIST, int(a), int(b), int(c))
 	if e := st.doSetList(th, ci, ins); e != nil {
 		return st.raiseGibbous(e)
 	}
-	ci = currentCI(th)
+	ci = st.gibCI(th)
 	st.safepoint(th, ci)
 	return 0
 }
@@ -510,7 +522,7 @@ func (st *State) TopAddr() uint32 {
 // (pc+1),与解释器取指后状态一致。无需 base 刷新(不进嵌套帧、不 growStack)。
 func (st *State) Closure(base, pc, a, bx int32) int32 {
 	th := st.runningThread
-	ci := currentCI(th)
+	ci := st.gibCI(th)
 	ci.pc = pc + 1
 	ins := bytecode.EncodeABx(bytecode.CLOSURE, int(a), int(bx))
 	cl := st.makeClosure(th, ci, ins)
@@ -522,7 +534,7 @@ func (st *State) Closure(base, pc, a, bx int32) int32 {
 // Close 处理 CLOSE A(execute.go:391-392 同款):关闭所有 ≥ base+A 的开放 upvalue。
 func (st *State) Close(base, pc, a int32) int32 {
 	th := st.runningThread
-	ci := currentCI(th)
+	ci := st.gibCI(th)
 	st.closeUpvals(th, ci.base+int(a))
 	return 0
 }
@@ -537,7 +549,7 @@ func (st *State) Close(base, pc, a int32) int32 {
 //	≥0 = 刷新后的本帧 base 字节偏移(继续循环)/ -1 = ERR / -2 = 退出(首值 nil)。
 func (st *State) TForLoop(base, pc, a, c int32) int64 {
 	th := st.runningThread
-	ci := currentCI(th)
+	ci := st.gibCI(th)
 	ci.pc = pc + 1
 	ra := int(a)
 	iter := reg(th, ci, ra)
@@ -548,7 +560,7 @@ func (st *State) TForLoop(base, pc, a, c int32) int64 {
 		st.raiseGibbous(e) // 锚定行号(callLuaFromHost 错误若未标注则按当前 TFORLOOP 帧标)
 		return -1
 	}
-	ci = currentCI(th)
+	ci = st.gibCI(th)
 	for k := 0; k < int(c); k++ {
 		v := value.Nil
 		if k < len(results) {
@@ -613,7 +625,7 @@ func (st *State) tryIndirectCallee(th *thread, ci *callInfo, a, b, c int32) (int
 		st.raiseGibbous(e) // 锚定行号(currentCI 仍是调用者帧)
 		return -1, true
 	}
-	cci := currentCI(th)
+	cci := st.gibCI(th)
 	cci.SetGibbous(true)
 	th.reMirrorTop()
 	// 被调帧 base 字节偏移写中转字,供 caller wasm 读作 call_indirect 实参。
@@ -643,7 +655,7 @@ func (st *State) tryIndirectCallee(th *thread, ci *callInfo, a, b, c int32) (int
 //   - 偶数(8 的倍数):done,值 = 刷新后的本帧 base 字节偏移(回退路径同步跑完)。
 func (st *State) DoCall(base, pc, a, b, c int32) int64 {
 	th := st.runningThread
-	ci := currentCI(th)
+	ci := st.gibCI(th)
 	ci.pc = pc
 	// R3 快路径:被调 gibbous-有-slot ⟹ 压帧 + 返 indirect 哨兵(caller call_indirect)。
 	if ret, handled := st.tryIndirectCallee(th, ci, a, b, c); handled {
@@ -674,7 +686,7 @@ func (st *State) DoCall(base, pc, a, b, c int32) int64 {
 		}
 	}
 	// 刷新 base(嵌套帧可能 growStack 段重定位,陈旧 base 指向已 Free 段 = UAF)。
-	ci = currentCI(th)
+	ci = st.gibCI(th)
 	return int64((th.stackBaseW + uint32(ci.base)) * 8)
 }
 
@@ -693,7 +705,7 @@ func (st *State) DoCall(base, pc, a, b, c int32) int64 {
 // 返回:0=Lua 尾调用完成(gibbous return 0)/ 1=ERR / 2=host(落尾随 RETURN)。
 func (st *State) TailCall(base, pc, a, b, c int32) int32 {
 	th := st.runningThread
-	ci := currentCI(th)
+	ci := st.gibCI(th)
 	ci.pc = pc
 	ins := bytecode.EncodeABC(bytecode.TAILCALL, int(a), int(b), int(c))
 	next, e := st.doTailCall(th, ci, ins)

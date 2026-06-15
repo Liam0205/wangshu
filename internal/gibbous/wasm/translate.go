@@ -567,17 +567,130 @@ func (c *Compiler) emitSetUpval(em *emitter, ins bytecode.Instruction, pc int32)
 	em.call(helperSetUpval)
 }
 
-// emitReturn RETURN A B —— 返回 R(A..A+B-2)(02 §3.6.3,经助手 + Wasm return)。
+// emitReturn RETURN A B(02 §3.6.3)。PW10 零跨界 ③b:定额返回(B≠0 且 nret≤8)
+// 发守卫快路径(Wasm 内拆帧免 h_return 跨界),任一守卫失败 br 回退 helperReturn;
+// 变长返回(B==0 到 top)/ 超长 nret 只发 helperReturn。
 //
-//	(local.set $st (call $h_return (base, pc, A, B)))
-//	(return (local.get $st))
+// **逐字节镜像 DoReturn**(gibbous_host.go):nret=B-1 个结果 R(A..)→funcIdx 起,
+// 减 ciDepth,写 caller base 中转字。**不碰 top**(caller 经 ③a savedTop 自恢复)、
+// 不物化 pc(RETURN 不抛错,弹后段帧不再读)、无 safepoint(快路径无分配/GC 窗口)。
+//
+// **守卫**(任一失败 br $slow → helperReturn,逐字节回退):
+//   - G5 ciDepth<2:无 gibbous caller 可直拆(最外帧 RETURN 回 crescent)→ Go 拆。
+//     须最先判,否则后续读 caller 段帧(depth-2)越界。
+//   - G3 openGuard≠0:本帧有开放 upvalue,closeUpvals 非 no-op → Go 关闭。
+//   - G2 caller 段 word2 bit50==0:caller 非 gibbous(top/中转字须 Go 处理)→ Go。
+//   - G4 callee 段 nresults≠nret:多退少补 / want-all(nresults=-1)→ Go 调整。
 func (c *Compiler) emitReturn(em *emitter, ins bytecode.Instruction, pc int32) {
 	a := int32(bytecode.A(ins))
 	b := int32(bytecode.B(ins))
+	nret := b - 1
+	if b != 0 && nret >= 0 && nret <= maxReturnFast {
+		c.emitReturnFast(em, a, nret)
+	}
+	// 回退(慢路径 / 守卫 miss 落点):h_return(base,pc,a,b)。
 	em.localGet(localBase)
 	em.i32Const(pc)
 	em.i32Const(a)
 	em.i32Const(b)
 	em.call(helperReturn)
 	em.ret() // return status(h_return 的返回值)
+}
+
+// emitCIFrameAddr 发射「第 (depth + idxDelta) 帧的段字节地址」到 Wasm 栈(PW10 零跨界
+// ③b)。地址 = load(ciSegBaseAddr) + (load(ciDepthAddr)+idxDelta)*ciFrameBytes。idxDelta
+// 为 -1(callee 顶帧)或 -2(caller)。段基址/深度每次现读(段可重定位,免缓存悬垂)。
+func (c *Compiler) emitCIFrameAddr(em *emitter, idxDelta int32) {
+	em.i32Const(0)
+	em.i32Load(c.host.CISegBaseAddr()) // segBase 字节基址
+	em.i32Const(0)
+	em.i32Load(c.host.CIDepthAddr()) // depth
+	em.i32Const(idxDelta)
+	em.i32Add() // depth + idxDelta
+	em.i32Const(ciFrameBytes)
+	em.i32Mul() // *32
+	em.i32Add() // segBase + (depth+idxDelta)*32
+}
+
+// emitReturnFast 发射 ③b 守卫快路径(见 emitReturn 文档)。在 block $slow 内:任一
+// 守卫 br_if 0 落到 block 末(= emitReturn 的 helperReturn 回退);全过则快路径体
+// return 0 退出函数。
+func (c *Compiler) emitReturnFast(em *emitter, a, nret int32) {
+	em.block() // $slow:守卫失败跳到此 block 末(深度 0)
+
+	// G5:ciDepth < 2 → slow(无 gibbous caller 帧;须先判防 caller 段帧越界)。
+	em.i32Const(0)
+	em.i32Load(c.host.CIDepthAddr())
+	em.i32Const(2)
+	em.i32LtS()
+	em.brIf(0)
+
+	// G3:openGuard ≠ 0 → slow(有开放 upvalue,closeUpvals 非 no-op)。
+	em.i32Const(0)
+	em.i32Load(c.host.OpenGuardAddr())
+	em.brIf(0)
+
+	// G2:caller 段 word2 bit50(gibbous)清 → slow。
+	c.emitCIFrameAddr(em, -2) // caller 帧地址
+	em.i64Load(ciWord2Off)
+	em.i64Const(ciGibbousBit)
+	em.i64And()
+	em.i64Eqz() // (callerW2 & bit50)==0 → 1
+	em.brIf(0)
+
+	// G4:callee 段 nresults([47:32]) ≠ nret → slow(含 want-all nresults=-1)。
+	c.emitCIFrameAddr(em, -1) // callee 帧地址
+	em.i64Load(ciWord2Off)
+	em.i64Const(32)
+	em.i64ShrU()
+	em.i32WrapI64()
+	em.i32Const(0xffff)
+	em.i32And() // nresults 16 位字段
+	em.i32Const(nret)
+	em.i32Ne()
+	em.brIf(0)
+
+	// --- 快路径体(逐字节镜像 DoReturn:moveResults → 中转字 → ciDepth--)---
+	// moveResults:dstBase = funcIdx 字节址 = localBase - 8(base = funcIdx+1)。
+	em.localGet(localBase)
+	em.i32Const(8)
+	em.i32Sub()
+	em.localSet(localI32b) // dstBase
+	// nret 个结果:mem[dstBase + 8k] = mem[localBase + 8*(a+k)](前向拷贝,源在目标之上,
+	// 无写后读破坏——同 DoReturn for k:=0..nret 升序)。
+	for k := int32(0); k < nret; k++ {
+		em.localGet(localI32b)
+		em.localGet(localBase)
+		em.i64Load(uint32(8 * (a + k)))
+		em.i64Store(uint32(8 * k))
+	}
+
+	// 中转字 = (stackBaseW+caller.base)*8 = localBase + (callerBase - calleeBase)*8
+	// (两 base 槽自各自段 word0 低 32 读差值,免 stackBaseW;承 R3 base 刷新契约)。
+	// 须在 ciDepth-- 之前(emitCIFrameAddr 现读 depth)。
+	em.i32Const(0) // i32.store 地址操作数(基 0 + offset=ciTransferAddr)
+	em.localGet(localBase)
+	c.emitCIFrameAddr(em, -2) // caller 帧
+	em.i32Load(0)             // callerBase(word0 低 32)
+	c.emitCIFrameAddr(em, -1) // callee 帧
+	em.i32Load(0)             // calleeBase
+	em.i32Sub()               // callerBase - calleeBase
+	em.i32Const(8)
+	em.i32Mul() // *8
+	em.i32Add() // localBase + (callerBase-calleeBase)*8
+	em.i32Store(c.host.CITransferAddr())
+
+	// ciDepth--(popCallInfo;快路径无 GC 窗口,顺序对 GC 不敏感,置最后)。
+	em.i32Const(0) // store 地址操作数
+	em.i32Const(0)
+	em.i32Load(c.host.CIDepthAddr())
+	em.i32Const(1)
+	em.i32Sub()
+	em.i32Store(c.host.CIDepthAddr())
+
+	// 快路径完成:return 0(OK status)。
+	em.i32Const(0)
+	em.ret()
+
+	em.end() // $slow 末:落到此 = 守卫 miss,继续 emitReturn 的 helperReturn 回退
 }
