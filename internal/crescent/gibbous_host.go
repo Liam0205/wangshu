@@ -140,6 +140,33 @@ func (st *State) DoReturn(base int32, pc int32, a int32, b int32) int32 {
 	return 0 // OK
 }
 
+// raiseGibbous 锚定并暂存 gibbous 帧抛出的错误(PW10 R3c-fix)。
+//
+// **为何在出错点锚定**:gibbous 错误经 status 链冒泡时,沿途各帧(gibbous 被调
+// 由 PopErrFrame、gibbous caller 由其 enterGibbous launcher)会被弹出 → 等冒泡到
+// 顶层 executeFrom 时 currentCI 已不是出错帧,annotateError 读到错的帧 → 行号/
+// traceback 漂移(R3c 已知回归)。解法:在出错点(currentCI 仍是出错帧)立即
+// annotateError 锚定 "chunkname:line:" 前缀 + 物化 traceback,并标 annotated;
+// 顶层 executeFrom 见 annotated 跳过重标,行号不再受后续弹帧影响。
+//
+// 与解释器一致:解释器在顶层 executeFrom 标注时 currentCI 恰是出错帧(解释器不在
+// 错误路径弹帧),故标注行号 = 出错帧行号。gibbous 在出错点标注达成同一行号,使
+// gibbous 错误消息追平解释器(层间 byte-equal)。
+//
+// 幂等:e 已 annotated(来自更深 metamethod 子调用的解释器标注)时 annotateError
+// 直接返回,不重复加前缀。返回 1(status 链 ERR 码),调用点 `return st.raiseGibbous(e)`。
+func (st *State) raiseGibbous(e *LuaError) int32 {
+	th := st.runningThread
+	if th.ciDepth > 0 {
+		e = st.annotateError(e, currentCI(th))
+		if e != nil && e.Traceback == "" {
+			e.Traceback = st.buildTraceback(th)
+		}
+	}
+	st.gibbousPendingErr = e
+	return 1
+}
+
 // PopErrFrame 弹出 call_indirect 直调失败时遗留的 gibbous 被调帧(PW10 R3)。
 //
 // gibbous 被调出错时自身 `return 1` 不弹帧(对称于 baseline:被调的 enterGibbous
@@ -179,11 +206,10 @@ func (st *State) SetSavedPC(base int32, pc int32) {
 func (st *State) Arith(base, pc, op, b, c, a int32) int32 {
 	th := st.runningThread
 	ci := currentCI(th)
-	ci.pc = pc
+	ci.pc = pc + 1 // pc 物化:解释器执行该 op 时 ci.pc 已 ++,errWithName 的 ci.pc-1==pc(R3c-fix)
 	ins := bytecode.EncodeABC(bytecode.OpCode(op), int(a), int(b), int(c))
 	if e := st.doArith(th, ci, ins); e != nil {
-		st.gibbousPendingErr = e
-		return 1
+		return st.raiseGibbous(e)
 	}
 	return 0
 }
@@ -193,7 +219,7 @@ func (st *State) Arith(base, pc, op, b, c, a int32) int32 {
 func (st *State) Unm(base, pc, b, a int32) int32 {
 	th := st.runningThread
 	ci := currentCI(th)
-	ci.pc = pc
+	ci.pc = pc + 1 // R3c-fix:errWithName 的 ci.pc-1==pc(失败 op 索引)
 	bv := reg(th, ci, int(b))
 	if f, ok := st.toNumberCoerce(bv); ok {
 		setReg(th, ci, int(a), value.NumberValue(-f))
@@ -201,13 +227,11 @@ func (st *State) Unm(base, pc, b, a int32) int32 {
 	}
 	h := st.metaFieldOfValue(bv, "__unm")
 	if h == value.Nil {
-		st.gibbousPendingErr = st.errWithName(ci, "perform arithmetic on", int(b), bv)
-		return 1
+		return st.raiseGibbous(st.errWithName(ci, "perform arithmetic on", int(b), bv))
 	}
 	res, e := st.callMetaHandler(th, h, []value.Value{bv, bv}, 1)
 	if e != nil {
-		st.gibbousPendingErr = e
-		return 1
+		return st.raiseGibbous(e)
 	}
 	setReg(th, ci, int(a), res)
 	return 0
@@ -217,7 +241,7 @@ func (st *State) Unm(base, pc, b, a int32) int32 {
 func (st *State) Len(base, pc, b, a int32) int32 {
 	th := st.runningThread
 	ci := currentCI(th)
-	ci.pc = pc
+	ci.pc = pc + 1 // R3c-fix
 	bv := reg(th, ci, int(b))
 	switch value.Tag(bv) {
 	case value.TagString:
@@ -229,8 +253,7 @@ func (st *State) Len(base, pc, b, a int32) int32 {
 		setReg(th, ci, int(a), value.NumberValue(float64(border)))
 		return 0
 	default:
-		st.gibbousPendingErr = st.errWithName(ci, "get length of", int(b), bv)
-		return 1
+		return st.raiseGibbous(st.errWithName(ci, "get length of", int(b), bv))
 	}
 }
 
@@ -238,11 +261,10 @@ func (st *State) Len(base, pc, b, a int32) int32 {
 func (st *State) Concat(base, pc, a, b, c int32) int32 {
 	th := st.runningThread
 	ci := currentCI(th)
-	ci.pc = pc
+	ci.pc = pc + 1 // R3c-fix
 	ins := bytecode.EncodeABC(bytecode.CONCAT, int(a), int(b), int(c))
 	if e := st.doConcat(th, ci, ins); e != nil {
-		st.gibbousPendingErr = e
-		return 1
+		return st.raiseGibbous(e)
 	}
 	st.safepoint(th, ci)
 	return 0
@@ -253,12 +275,12 @@ func (st *State) Concat(base, pc, a, b, c int32) int32 {
 func (st *State) Compare(base, pc, op, b, c int32) int32 {
 	th := st.runningThread
 	ci := currentCI(th)
-	ci.pc = pc
+	ci.pc = pc + 1 // R3c-fix
 	ins := bytecode.EncodeABC(bytecode.OpCode(op), 0, int(b), int(c))
 	res, e := st.doCompare(th, ci, ins)
 	if e != nil {
-		st.gibbousPendingErr = e
-		return 2 // bit1 = error
+		st.raiseGibbous(e)
+		return 2 // bit1 = error(raiseGibbous 已置 pendingErr + 锚定行号)
 	}
 	if res {
 		return 1 // bit0 = true
@@ -271,11 +293,11 @@ func (st *State) Compare(base, pc, op, b, c int32) int32 {
 func (st *State) Eq(base, pc, b, c int32) int32 {
 	th := st.runningThread
 	ci := currentCI(th)
-	ci.pc = pc
+	ci.pc = pc + 1 // R3c-fix
 	ins := bytecode.EncodeABC(bytecode.EQ, 0, int(b), int(c))
 	res, e := st.doCompare(th, ci, ins)
 	if e != nil {
-		st.gibbousPendingErr = e
+		st.raiseGibbous(e)
 		return 2
 	}
 	if res {
@@ -289,22 +311,19 @@ func (st *State) Eq(base, pc, b, c int32) int32 {
 func (st *State) ForPrep(base, pc, a int32) int32 {
 	th := st.runningThread
 	ci := currentCI(th)
-	ci.pc = pc
+	ci.pc = pc + 1 // R3c-fix
 	ra := int(a)
 	init, ok1 := st.toNumberCoerce(reg(th, ci, ra))
 	limit, ok2 := st.toNumberCoerce(reg(th, ci, ra+1))
 	step, ok3 := st.toNumberCoerce(reg(th, ci, ra+2))
 	if !ok1 {
-		st.gibbousPendingErr = errf("'for' initial value must be a number")
-		return 1
+		return st.raiseGibbous(errf("'for' initial value must be a number"))
 	}
 	if !ok2 {
-		st.gibbousPendingErr = errf("'for' limit must be a number")
-		return 1
+		return st.raiseGibbous(errf("'for' limit must be a number"))
 	}
 	if !ok3 {
-		st.gibbousPendingErr = errf("'for' step must be a number")
-		return 1
+		return st.raiseGibbous(errf("'for' step must be a number"))
 	}
 	// 预减 + 三槽规范化为 number(进入 FORLOOP 后快路径无须再校验类型)。
 	setReg(th, ci, ra, value.NumberValue(init-step))
@@ -330,8 +349,7 @@ func (st *State) GetTable(base, pc, a, b, c int32) int32 {
 	key := rk(th, ci, proto, int(c))
 	v, e := st.icGetTable(th, ci, pc, tbl, key)
 	if e != nil {
-		st.gibbousPendingErr = st.enhanceIndexErr(e, ci, int(b), tbl)
-		return 1
+		return st.raiseGibbous(st.enhanceIndexErr(e, ci, int(b), tbl))
 	}
 	ci = currentCI(th)
 	setReg(th, ci, int(a), v)
@@ -348,8 +366,7 @@ func (st *State) SetTable(base, pc, a, b, c int32) int32 {
 	key := rk(th, ci, proto, int(b))
 	val := rk(th, ci, proto, int(c))
 	if e := st.icSetTable(th, ci, pc, tbl, key, val); e != nil {
-		st.gibbousPendingErr = st.enhanceIndexErr(e, ci, int(a), tbl)
-		return 1
+		return st.raiseGibbous(st.enhanceIndexErr(e, ci, int(a), tbl))
 	}
 	ci = currentCI(th)
 	st.safepoint(th, ci)
@@ -366,8 +383,7 @@ func (st *State) DoGetGlobal(base, pc, a, bx int32) int32 {
 	gv := value.MakeGC(value.TagTable, st.globals)
 	v, e := st.icGetTable(th, ci, pc, gv, key)
 	if e != nil {
-		st.gibbousPendingErr = e
-		return 1
+		return st.raiseGibbous(e)
 	}
 	ci = currentCI(th)
 	setReg(th, ci, int(a), v)
@@ -383,8 +399,7 @@ func (st *State) DoSetGlobal(base, pc, a, bx int32) int32 {
 	key := proto.Consts[bx]
 	gv := value.MakeGC(value.TagTable, st.globals)
 	if e := st.icSetTable(th, ci, pc, gv, key, reg(th, ci, int(a))); e != nil {
-		st.gibbousPendingErr = e
-		return 1
+		return st.raiseGibbous(e)
 	}
 	ci = currentCI(th)
 	st.safepoint(th, ci)
@@ -403,8 +418,7 @@ func (st *State) Self(base, pc, a, b, c int32) int32 {
 	key := rk(th, ci, proto, int(c))
 	v, e := st.icGetTable(th, ci, pc, tbl, key)
 	if e != nil {
-		st.gibbousPendingErr = st.enhanceIndexErr(e, ci, int(b), tbl)
-		return 1
+		return st.raiseGibbous(st.enhanceIndexErr(e, ci, int(b), tbl))
 	}
 	ci = currentCI(th)
 	setReg(th, ci, int(a), v)
@@ -433,8 +447,7 @@ func (st *State) SetList(base, pc, a, b, c int32) int32 {
 	ci.pc = pc + 1
 	ins := bytecode.EncodeABC(bytecode.SETLIST, int(a), int(b), int(c))
 	if e := st.doSetList(th, ci, ins); e != nil {
-		st.gibbousPendingErr = e
-		return 1
+		return st.raiseGibbous(e)
 	}
 	ci = currentCI(th)
 	st.safepoint(th, ci)
@@ -501,7 +514,7 @@ func (st *State) TForLoop(base, pc, a, c int32) int64 {
 	ctrl := reg(th, ci, ra+2)
 	results, e := st.callLuaFromHost(th, iter, []value.Value{state, ctrl})
 	if e != nil {
-		st.gibbousPendingErr = e
+		st.raiseGibbous(e) // 锚定行号(callLuaFromHost 错误若未标注则按当前 TFORLOOP 帧标)
 		return -1
 	}
 	ci = currentCI(th)
@@ -563,7 +576,7 @@ func (st *State) tryIndirectCallee(th *thread, ci *callInfo, a, b, c int32) (int
 	nresults := int(c) - 1
 	// 压帧(等价 enterGibbous:enterLuaFrame + 置 gibbous 位 + 重镜像)。
 	if e := st.enterLuaFrame(th, funcIdx, nargs, nresults, false); e != nil {
-		st.gibbousPendingErr = e
+		st.raiseGibbous(e) // 锚定行号(currentCI 仍是调用者帧)
 		return -1, true
 	}
 	cci := currentCI(th)
@@ -606,7 +619,7 @@ func (st *State) DoCall(base, pc, a, b, c int32) int64 {
 	ins := bytecode.EncodeABC(bytecode.CALL, int(a), int(b), int(c))
 	next, e := st.doCall(th, ci, ins)
 	if e != nil {
-		st.gibbousPendingErr = e
+		st.raiseGibbous(e)
 		return -1
 	}
 	if next != nil {
@@ -614,7 +627,7 @@ func (st *State) DoCall(base, pc, a, b, c int32) int64 {
 		// nCcalls 计费:executeFrom 是新的 Go 栈重入边界,防 gibbous↔crescent
 		// 交替递归打爆 Go 栈(meta.go callLuaFromHost 同款守卫)。
 		if st.nCcalls >= maxCCallDepth {
-			st.gibbousPendingErr = errf("C stack overflow")
+			st.raiseGibbous(errf("C stack overflow"))
 			return -1
 		}
 		st.nCcalls++
@@ -622,7 +635,7 @@ func (st *State) DoCall(base, pc, a, b, c int32) int64 {
 		e2 := st.executeFrom(th, entryDepth)
 		st.nCcalls--
 		if e2 != nil {
-			st.gibbousPendingErr = e2
+			st.raiseGibbous(e2)
 			return -1
 		}
 	}
@@ -651,7 +664,7 @@ func (st *State) TailCall(base, pc, a, b, c int32) int32 {
 	ins := bytecode.EncodeABC(bytecode.TAILCALL, int(a), int(b), int(c))
 	next, e := st.doTailCall(th, ci, ins)
 	if e != nil {
-		st.gibbousPendingErr = e
+		st.raiseGibbous(e)
 		return 1
 	}
 	if next == nil {
@@ -660,7 +673,7 @@ func (st *State) TailCall(base, pc, a, b, c int32) int32 {
 	}
 	// Lua 尾调用:G 已被 callee 帧替换。同步驱动 callee 链到完成。
 	if st.nCcalls >= maxCCallDepth {
-		st.gibbousPendingErr = errf("C stack overflow")
+		st.raiseGibbous(errf("C stack overflow"))
 		return 1
 	}
 	st.nCcalls++
@@ -668,7 +681,7 @@ func (st *State) TailCall(base, pc, a, b, c int32) int32 {
 	e2 := st.executeFrom(th, entryDepth)
 	st.nCcalls--
 	if e2 != nil {
-		st.gibbousPendingErr = e2
+		st.raiseGibbous(e2)
 		return 1
 	}
 	return 0

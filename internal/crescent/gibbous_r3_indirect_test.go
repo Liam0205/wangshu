@@ -74,18 +74,13 @@ return g, f, helper`
 }
 
 // TestPW10R3_IndirectErrorByteEqual:错误穿越 gibbous→gibbous(helper 对 nil
-// 算术报错)冒泡,消息与 **PW6 crescent→gibbous 基线** byte-equal(验 R3 不引入
-// 错误轨迹回归——PopErrFrame 每层补弹后 currentCI 轨迹与基线逐帧一致)。
+// 算术报错)冒泡,消息 + traceback 与**纯解释器** byte-equal(R3c-fix 在出错点
+// 锚定行号 + 物化 traceback,使后续弹帧不影响错误位置 → gibbous 追平解释器)。
 //
-// **oracle 取 crescent→gibbous 基线而非纯解释器**:gibbous 帧的错误报告精度本就
-// 弱于解释器(PW6c 既有限制——gibbous 经 h_arith 设错误,traceback 在跨层边界截断,
-// 无 'local x' 名;见 TestPW6c_ErrorCrossesGibbous)。R3 的正确性义务是「与既有
-// gibbous 基线 byte-equal」,不是「追平解释器」。故双路径都让 helper 升 gibbous:
-// 基线只升 helper(f→helper 走 enterGibbous);R3 升 g+f+helper(f→helper 走
-// call_indirect)。两者错误消息必须逐字节一致。
+// R3c-fix 前此测因弹帧后 currentCI 偏移而行号漂移(已知回归);修复后 gibbous
+// 错误位置/traceback 与解释器逐字节一致(优于 PW6c 既有 crescent→gibbous 基线的
+// 截断 traceback)。oracle = 纯解释器(同入口 g(nil),全不升层)。
 func TestPW10R3_IndirectErrorByteEqual(t *testing.T) {
-	t.Skip("R3c 已知回归:嵌套 gibbous→gibbous 出错时错误行号比基线略糙(弹帧后 currentCI 偏移);" +
-		"R3c-fix 在出错点锚定行号修复,届时去 Skip 并改 oracle 为纯解释器(行号应追平)。")
 	src := `
 local function helper(x) return x + 1 end   -- helper(nil) → 对 nil 算术报错
 local function f(a) local r = helper(a); return r end       -- 非尾 CALL(经 h_call/DoCall)
@@ -101,21 +96,16 @@ return g, f, helper`
 	}
 	badArg := []value.Value{value.Nil}
 
-	// oracle:PW6 基线 crescent→gibbous —— 只升 helper(f 跑解释器调 gibbous helper),
-	// 经**同一入口 g(nil)** 跑(g→f crescent→crescent,f→helper crescent→gibbous)。
-	// 与 R3 路径同深度同入口,唯一变量是 f→helper 用 enterGibbous 还是 call_indirect。
-	stO, gO, _, hO := loadF()
-	hPidO := object.ClosureProtoID(stO.arena, value.GCRefOf(hO))
-	if !promoteProto(stO, hPidO) {
-		t.Skip("helper 升层不被支持")
-	}
+	// oracle:纯解释器 g(nil)(全不升层),消息 + traceback 是 byte-equal 基准。
+	stO, gO, _, _ := loadF()
 	_, eO := stO.Call(value.GCRefOf(gO), badArg, 1)
 	if eO == nil {
-		t.Fatal("基线 g(nil) 应报错(对 nil 算术)")
+		t.Fatal("interp g(nil) 应报错(对 nil 算术)")
 	}
 	wantMsg := eO.Error()
 
-	// R3:三升 g+f+helper,f→helper 经 call_indirect status 链 + PopErrFrame 补弹冒泡。
+	// R3:三升 g+f+helper,f→helper 经 call_indirect status 链 + PopErrFrame 补弹冒泡;
+	// 错误经 raiseGibbous 在出错帧锚定行号 → 与解释器 byte-equal。
 	st, gVal, fVal, hVal := loadF()
 	gPid := object.ClosureProtoID(st.arena, value.GCRefOf(gVal))
 	fPid := object.ClosureProtoID(st.arena, value.GCRefOf(fVal))
@@ -132,7 +122,7 @@ return g, f, helper`
 		t.Fatalf("错误路径 call_indirect 未命中(疑似回退)")
 	}
 	if eG.Error() != wantMsg {
-		t.Errorf("gibbous→gibbous 错误消息 = %q, want %q (与 crescent→gibbous 基线 byte-equal)", eG.Error(), wantMsg)
+		t.Errorf("gibbous→gibbous 错误消息 = %q, want %q (与纯解释器 byte-equal)", eG.Error(), wantMsg)
 	}
 }
 
