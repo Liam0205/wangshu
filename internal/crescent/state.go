@@ -196,6 +196,15 @@ type State struct {
 	// 的兑现:不缓存派生绝对地址)。仅 mainTh 写(经 topWordRef)。0 = 未分配。
 	topRef arena.GCRef
 
+	// protoCacheRef 是 proto 字段缓存段(PW10 零跨界基建-b)。长度 = len(st.protos)
+	// words,每 proto 一字,布局:[15:0]MaxStack | [23:16]NumParams | [24]IsVararg |
+	// [25]NeedsArg | [63:26]reserved。④ emitCall 守卫快路径读此免 Go map 取 Proto 字段。
+	// LoadProgram 时(重)分配 + 写所有 cache 字;运行期不再变更(proto 字段编译期固定)。
+	// 段可重定位 → 基址经 protoCacheBaseRef 镜像字给 Wasm 现读。
+	protoCacheRef     arena.GCRef
+	protoCacheBaseRef arena.GCRef
+	protoCacheLen     uint32 // 当前 protoCacheRef 段字数(Free 旧段用)
+
 	// indirectCalls 计 gibbous→gibbous call_indirect 直调命中次数(PW10 R3 验证用,
 	// tryIndirectCallee 返 indirect 哨兵时 ++)。仅测试读,确认直调路径真走到(非
 	// 静默回退 code.Run)。生产无功能含义,1 个 int 开销可忽略。
@@ -271,6 +280,10 @@ func New() *State {
 	// Wasm 侧帧建拆写它免回 Go 改 th.top(GC 栈根扫描上界)。存槽索引 → grow 安全。
 	st.topRef = a.AllocWords(1)
 	a.SetWordAt(st.topRef, 0)
+	// proto cache 基址镜像字(PW10 零跨界基建-b):protoCacheRef 段字节基址,LoadProgram
+	// (重)分配段后更新。Wasm ④ emitCall 守卫快路径现读此基址 + protoID*8 取 cache 字。
+	st.protoCacheBaseRef = a.AllocWords(1)
+	a.SetWordAt(st.protoCacheBaseRef, 0)
 	st.installRoots()
 	st.wireP3() // wangshu_p3 build:构造 gibbous Compiler 注入 bridge;默认 build no-op
 	// host closure 槽位回收(gmatch 迭代器、mountArena 列代理等动态注册的
@@ -643,7 +656,50 @@ func (st *State) LoadProgram(mainID uint32, protos []*bytecode.Proto) arena.GCRe
 	}
 	cl := st.allocLuaClosure(base+mainID, 0)
 	st.loadedCls = append(st.loadedCls, cl)
+	st.rebuildProtoCache()
 	return cl
+}
+
+// rebuildProtoCache (重)分配 protoCacheRef 段并填入所有 protos 的字段缓存(PW10
+// 零跨界基建-b)。多次 LoadProgram 时旧段 Free + 新段全表重填,protoCacheBaseRef
+// 镜像字同步更新(段可重定位,Wasm ④ 现读基址 + protoID*8 寻址)。
+//
+// 字布局(每 proto 一 u64 字):
+//
+//	[15:0]  MaxStack(uint8 但留 16 位余量)
+//	[23:16] NumParams(uint8)
+//	[24]    IsVararg
+//	[25]    NeedsArg
+//	[63:26] reserved
+//
+// 不在 Wasm 执行期调用(LoadProgram 是顶层 API 边界),故 Free 旧段 + 写新基址安全。
+func (st *State) rebuildProtoCache() {
+	a := st.arena
+	if st.protoCacheRef != 0 {
+		a.Free(st.protoCacheRef, st.protoCacheLen*8)
+		st.protoCacheRef = 0
+		st.protoCacheLen = 0
+	}
+	n := uint32(len(st.protos))
+	if n == 0 {
+		a.SetWordAt(st.protoCacheBaseRef, 0)
+		return
+	}
+	st.protoCacheRef = a.AllocWords(n)
+	st.protoCacheLen = n
+	a.SetWordAt(st.protoCacheBaseRef, uint64(uint32(st.protoCacheRef)))
+	for pid := uint32(0); pid < n; pid++ {
+		p := st.protos[pid]
+		w := uint64(p.MaxStack) | uint64(p.NumParams)<<16
+		if p.IsVararg {
+			w |= 1 << 24
+		}
+		if p.NeedsArg {
+			w |= 1 << 25
+		}
+		ref := arena.GCRef(uint32(st.protoCacheRef) + pid*8)
+		a.SetWordAt(ref, w)
+	}
 }
 
 // Call executes a Lua closure with the given args, returning all results.

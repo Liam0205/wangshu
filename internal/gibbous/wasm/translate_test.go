@@ -16,17 +16,18 @@ import (
 
 // mockHost 是 HostState 的测试替身,记录 helper 调用并提供可控行为。
 type mockHost struct {
-	returnCalls    []retCall
-	getUpvalFn     func(base, b int32) uint64
-	globalsRaw     uint64
-	gcPendingAddr  uint32
-	ciTransferAddr uint32
-	ciDepthAddr    uint32
-	ciSegBaseAddr  uint32
-	openGuardAddr  uint32
-	topAddr        uint32
-	getGlobalCalls int
-	getGlobalFn    func(base, pc, a, bx int32) int32
+	returnCalls        []retCall
+	getUpvalFn         func(base, b int32) uint64
+	globalsRaw         uint64
+	gcPendingAddr      uint32
+	ciTransferAddr     uint32
+	ciDepthAddr        uint32
+	ciSegBaseAddr      uint32
+	openGuardAddr      uint32
+	topAddr            uint32
+	protoCacheBaseAddr uint32
+	getGlobalCalls     int
+	getGlobalFn        func(base, pc, a, bx int32) int32
 }
 
 type retCall struct{ base, pc, a, b int32 }
@@ -78,6 +79,7 @@ func (m *mockHost) CIDepthAddr() uint32                     { return m.ciDepthAd
 func (m *mockHost) CISegBaseAddr() uint32                   { return m.ciSegBaseAddr }
 func (m *mockHost) OpenGuardAddr() uint32                   { return m.openGuardAddr }
 func (m *mockHost) TopAddr() uint32                         { return m.topAddr }
+func (m *mockHost) ProtoCacheBaseAddr() uint32              { return m.protoCacheBaseAddr }
 func (m *mockHost) PopErrFrame()                            {}
 
 // setupTranslator 建一个完整可执行的 P3 编译环境:wazero runtime + memadapter

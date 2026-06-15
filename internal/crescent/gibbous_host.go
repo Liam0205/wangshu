@@ -515,6 +515,14 @@ func (st *State) TopAddr() uint32 {
 	return uint32(st.topRef)
 }
 
+// ProtoCacheBaseAddr 返回 proto 字段缓存段基址镜像字的字节地址(PW10 零跨界
+// 基建-b)。Wasm ④ emitCall 守卫快路径现读此基址 + protoID*8 取 callee Proto 的
+// MaxStack/NumParams/IsVararg/NeedsArg 缓存,免 Go map 查 Proto 字段。State 生命期
+// 内此 mirror 字地址恒定;段本身可重定位(LoadProgram 重分配)经此字现读。
+func (st *State) ProtoCacheBaseAddr() uint32 {
+	return uint32(st.protoCacheBaseRef)
+}
+
 // --- PW7 闭包构造 + 作用域 upvalue 关闭(全经助手,复用解释器)---
 
 // Closure 处理 CLOSURE A Bx(execute.go:394-397 同款)。makeClosure 读后随伪指令
