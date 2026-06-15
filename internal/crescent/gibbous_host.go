@@ -122,16 +122,16 @@ func (st *State) DoReturn(base int32, pc int32, a int32, b int32) int32 {
 	wantedN := ci.NResults()
 	st.popCallInfo(th)
 	if wantedN < 0 {
-		th.top = dst + nret
+		th.setTop(dst + nret)
 	} else {
 		for k := nret; k < wantedN; k++ {
 			th.setSlot(dst+k, value.Nil)
 		}
 		if th.ciDepth > 0 {
 			caller := currentCI(th)
-			th.top = caller.base + int(st.protoOf(caller).MaxStack)
+			th.setTop(caller.base + int(st.protoOf(caller).MaxStack))
 		} else {
-			th.top = dst + wantedN
+			th.setTop(dst + wantedN)
 		}
 	}
 	// PW10 R3:把弹帧后的 caller base 字节偏移写中转字,供 caller 的 call_indirect
@@ -494,6 +494,13 @@ func (st *State) CISegBaseAddr() uint32 {
 // frameBase ≥ 此值 ⟺ 本帧无须关闭的开放 upvalue(closeUpvals no-op)。
 func (st *State) OpenGuardAddr() uint32 {
 	return uint32(st.openGuardRef)
+}
+
+// TopAddr 返回 top 镜像字的 linear memory 字节地址(P3 PW10 零跨界 ①)。字值 =
+// th.top(槽索引);Wasm 建帧设 callee 帧顶 / caller 自恢复 top 时写它,GC 栈根
+// 扫描读它定 [0,top) 上界。槽索引坐标(grow 安全)。State 生命期内地址恒定。
+func (st *State) TopAddr() uint32 {
+	return uint32(st.topRef)
 }
 
 // --- PW7 闭包构造 + 作用域 upvalue 关闭(全经助手,复用解释器)---

@@ -111,7 +111,7 @@ func (st *State) enterLuaFrame(th *thread, funcIdx, nargs, nresults int, entry b
 		// wangshu_trace 安全网:回读段自检打包/解包与 th.cur 逐字段一致(R2b-1)。
 		th.verifyCISeg(depth, &th.cur)
 	}
-	th.top = base + int(proto.MaxStack)
+	th.setTop(base + int(proto.MaxStack))
 	if profileEnabled {
 		st.bridge.OnEnter(proto, th == st.mainTh)
 	}

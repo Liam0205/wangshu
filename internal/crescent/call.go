@@ -89,7 +89,7 @@ func (st *State) insertCallSelf(th *thread, funcIdx, nargs int) {
 		th.setSlot(funcIdx+1+k, th.slot(funcIdx+k))
 	}
 	if need > th.top {
-		th.top = need
+		th.setTop(need)
 	}
 }
 
@@ -159,21 +159,21 @@ func (st *State) doReturn(th *thread, ci *callInfo, i bytecode.Instruction, entr
 	wantedN := ci.NResults()
 	st.popCallInfo(th)
 	if wantedN < 0 {
-		th.top = dst + nret
+		th.setTop(dst + nret)
 	} else {
 		for k := nret; k < wantedN; k++ {
 			th.setSlot(dst+k, value.Nil)
 		}
 		if th.ciDepth > entryDepth {
 			caller := currentCI(th)
-			th.top = caller.base + int(st.protoOf(caller).MaxStack)
+			th.setTop(caller.base + int(st.protoOf(caller).MaxStack))
 		} else {
-			th.top = dst + wantedN
+			th.setTop(dst + wantedN)
 		}
 	}
 	if th.ciDepth <= entryDepth {
 		if wantedN >= 0 {
-			th.top = dst + wantedN
+			th.setTop(dst + wantedN)
 		}
 		return nil, true
 	}
@@ -233,7 +233,7 @@ func (st *State) doSetList(th *thread, ci *callInfo, i bytecode.Instruction) *Lu
 		// `L->top = L->ci->top`):否则后续指令写 top 之上的寄存器,GC 扫根
 		// 只见 [0,top) → 活值漏标,freelist 复用内存下即 use-after-free。
 		th.ensureStack(ci.base + int(st.protoOf(ci).MaxStack))
-		th.top = ci.base + int(st.protoOf(ci).MaxStack)
+		th.setTop(ci.base + int(st.protoOf(ci).MaxStack))
 	}
 	return nil
 }
@@ -316,7 +316,7 @@ func (st *State) doVararg(th *thread, ci *callInfo, i bytecode.Instruction) *Lua
 		for k := 0; k < n; k++ {
 			th.setSlot(ci.base+a+k, ci.Varargs()[k])
 		}
-		th.top = need
+		th.setTop(need)
 		return nil
 	}
 	want := b - 1

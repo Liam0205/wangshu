@@ -135,6 +135,11 @@ type HostState interface {
 	// RETURN 快路径守卫 frameBase ≥ 此值 ⟺ 本帧无须关闭的开放 upvalue。
 	OpenGuardAddr() uint32
 
+	// TopAddr 返回 top 镜像字在 linear memory 的字节地址(arena GCRef,P3 PW10 零跨界
+	// ①)。字值 = th.top(槽索引);Wasm 建帧设 callee 帧顶 / caller 自恢复 top 时写它,
+	// Go 侧 GC 栈根扫描读它定 [0,top) 上界。槽索引坐标(grow 安全)。State 生命期内恒定。
+	TopAddr() uint32
+
 	// PopErrFrame 在 call_indirect 直调失败时补弹遗留的 gibbous 被调帧(PW10 R3)。
 	// 被调出错自身 return 1 不弹帧,caller wasm 据 status≠0 调本助手补弹——精确复刻
 	// baseline enterGibbous ERR 路径的弹帧条件(currentCI 是 gibbous 帧才弹)。

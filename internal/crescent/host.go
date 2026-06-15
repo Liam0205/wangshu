@@ -242,7 +242,7 @@ func (st *State) callHost(th *thread, funcIdx, nargs, nresults int) *LuaError {
 		for k := 0; k < n; k++ {
 			th.setSlot(dst+k, results[k])
 		}
-		th.top = dst + n
+		th.setTop(dst + n)
 		return nil
 	}
 	want := nresults
@@ -263,7 +263,7 @@ func (st *State) callHost(th *thread, funcIdx, nargs, nresults int) *LuaError {
 		ci := currentCI(th)
 		frameTop := ci.base + int(st.protoOf(ci).MaxStack)
 		th.ensureStack(frameTop)
-		th.top = frameTop
+		th.setTop(frameTop)
 	}
 	return nil
 }

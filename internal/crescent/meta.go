@@ -185,7 +185,7 @@ func (st *State) callLuaFromHost(th *thread, fn value.Value, args []value.Value)
 	for i, a := range args {
 		th.setSlot(funcIdx+1+i, a)
 	}
-	th.top = need
+	th.setTop(need)
 	if isHost := st.isHostClosure(cl); isHost {
 		if e := st.callHost(th, funcIdx, len(args), -1); e != nil {
 			return nil, e
@@ -193,7 +193,7 @@ func (st *State) callLuaFromHost(th *thread, fn value.Value, args []value.Value)
 		n := th.top - funcIdx
 		out := make([]value.Value, n)
 		th.copyOut(out, funcIdx, th.top)
-		th.top = funcIdx
+		th.setTop(funcIdx)
 		return out, nil
 	}
 	savedDepth := th.ciDepth
@@ -206,7 +206,7 @@ func (st *State) callLuaFromHost(th *thread, fn value.Value, args []value.Value)
 		// 不拦截则哨兵被 pcall 当普通错误捕获,内部字符串 "<yield>" 泄漏给脚本。
 		if e == errYieldSentinel {
 			th.truncateCI(savedDepth)
-			th.top = funcIdx
+			th.setTop(funcIdx)
 			// 清掉 doCall/Yield 在冒泡途中登记的恢复信息与传值区
 			th.pendingResume = nil
 			if co := st.findRunningCo(); co != nil {
@@ -216,7 +216,7 @@ func (st *State) callLuaFromHost(th *thread, fn value.Value, args []value.Value)
 		}
 		// 失败:回滚 CallInfo 到进入前(05 §9.3 protected 边界清理职责)
 		th.truncateCI(savedDepth)
-		th.top = funcIdx
+		th.setTop(funcIdx)
 		return nil, e
 	}
 	// execute 返回后,返回值在 funcIdx 起(doReturn dst=funcIdx),top 已设
@@ -226,7 +226,7 @@ func (st *State) callLuaFromHost(th *thread, fn value.Value, args []value.Value)
 	}
 	out := make([]value.Value, n)
 	th.copyOut(out, funcIdx, funcIdx+n)
-	th.top = funcIdx
+	th.setTop(funcIdx)
 	return out, nil
 }
 

@@ -189,6 +189,13 @@ type State struct {
 	// ≥maxOpenIdx+1 ⟺ >maxOpenIdx = closeUpvals 的 no-op 条件)。仅 mainTh 写。
 	openGuardRef arena.GCRef
 
+	// topRef 是主线程栈顶 th.top 的 linear-memory 镜像字(PW10 零跨界 ①)。Wasm 侧
+	// 帧建拆(④建帧设 callee 帧顶 / ③拆帧由 caller 自恢复)写它免回 Go 改 th.top。
+	// **存槽索引(非字节地址)**:th.top 是相对 stackBaseW 的槽索引,growStack 改
+	// stackBaseW 但槽索引不变 → 存槽索引则 grow 安全、零 re-sync(arena 视图别名雷区
+	// 的兑现:不缓存派生绝对地址)。仅 mainTh 写(经 topWordRef)。0 = 未分配。
+	topRef arena.GCRef
+
 	// indirectCalls 计 gibbous→gibbous call_indirect 直调命中次数(PW10 R3 验证用,
 	// tryIndirectCallee 返 indirect 哨兵时 ++)。仅测试读,确认直调路径真走到(非
 	// 静默回退 code.Run)。生产无功能含义,1 个 int 开销可忽略。
@@ -255,6 +262,10 @@ func New() *State {
 	// 守卫「本帧无开放 upvalue」用。
 	st.openGuardRef = a.AllocWords(1)
 	a.SetWordAt(st.openGuardRef, 0)
+	// top 镜像字(PW10 零跨界 ①):主线程栈顶 th.top(槽索引)的 linear-memory 镜像,
+	// Wasm 侧帧建拆写它免回 Go 改 th.top(GC 栈根扫描上界)。存槽索引 → grow 安全。
+	st.topRef = a.AllocWords(1)
+	a.SetWordAt(st.topRef, 0)
 	st.installRoots()
 	st.wireP3() // wangshu_p3 build:构造 gibbous Compiler 注入 bridge;默认 build no-op
 	// host closure 槽位回收(gmatch 迭代器、mountArena 列代理等动态注册的
@@ -348,13 +359,16 @@ func (st *State) visitThreadValues(th *thread, seen map[*thread]bool, visit func
 	if seen != nil {
 		seen[th] = true
 	}
-	for i := 0; i < th.top; i++ {
+	// PW10 零跨界 ①:GC 栈根扫描上界读 liveTop()(Wasm 帧建拆改 top 字后段为权威);
+	// ①落地时 Wasm 尚未写字,liveTop 恒等 th.top,翻转零行为变更。
+	top := th.liveTop()
+	for i := 0; i < top; i++ {
 		visit(th.slot(i))
 	}
 	// top 之上的陈旧残值清 nil(对齐官方 lgc.c traversestack):否则死引用
 	// 留在槽里,top 回涨覆盖后下轮 GC 会把它当活根扫——freelist 复用内存下
 	// 即 use-after-free(mark 写已释放块 = 腐蚀 freelist 链)。
-	for i := th.top; i < th.size(); i++ {
+	for i := top; i < th.size(); i++ {
 		th.setSlot(i, value.Nil)
 	}
 	// varargs 住 Go th.ciVarargs(不进 linear memory),不在 stack[:top] 区间,
@@ -664,13 +678,15 @@ func (st *State) callOnStack(cl arena.GCRef, args []value.Value, nresults int) (
 		// 主线程帧深度镜像到 ciDepthRef(PW10 零跨界 Stage 1a):仅 mainTh 接通,
 		// 协程 th 恒不镜像(协程不升层)。setCIDepth 据此字段决定是否写字。
 		th.ciDepthWordRef = st.ciDepthRef
+		th.topWordRef = st.topRef             // ①:栈顶 th.top 镜像(Wasm 帧建拆写/GC 读)
+		th.setTop(0)                          // 初始化 top 镜像字(newThread 已 top=0)
 		th.ciSegBaseWordRef = st.ciSegBaseRef // Stage 2:CI 段基址镜像(Wasm 现算帧地址)
 		th.openGuardWordRef = st.openGuardRef // Stage 2:开放 upvalue 守卫字
 		th.setCIDepth(0)                      // 初始化字 = 0(与新线程 ciDepth=0 同步)
 		th.syncCISegBase()                    // 初始化段基址字(newThread 已建段)
 		th.syncOpenGuard()                    // 初始化守卫字(新线程无开放 upvalue → 0)
 	} else {
-		th.top = 0
+		th.setTop(0)
 		th.truncateCI(0)
 		th.pendingResume = nil
 		// 上次 Run 经错误退出时 unwind 不走 closeUpvals,openUvs 可能残留
@@ -758,6 +774,9 @@ type thread struct {
 	// openGuardWordRef 非零时,syncOpenGuard 把开放 upvalue 守卫值(maxOpenIdx+1 / 0)
 	// 镜像到此 arena 字(PW10 零跨界 Stage 2),Wasm RETURN 快路径守卫用。仅 mainTh。
 	openGuardWordRef arena.GCRef
+	// topWordRef 非零时,setTop 把 th.top(槽索引)镜像到此 arena 字(PW10 零跨界 ①)。
+	// Wasm 侧帧建拆写它,GC 栈根扫描读 liveTop()。仅 mainTh 接通;协程 th 恒 0。
+	topWordRef arena.GCRef
 	// ciVarargs 每帧 varargs(GC 根)。varargs 是 Go []value.Value,不进 linear
 	// memory(VS0-e 子piece);与帧深度对齐(索引 = depth)。
 	ciVarargs [][]value.Value
@@ -989,6 +1008,35 @@ func (th *thread) setCIDepth(n int) {
 	}
 }
 
+// setTop 设栈顶 + 镜像到 linear-memory 字(PW10 零跨界 ①)。所有 th.top 写经此收口
+// (call/return/meta/host 各路径),使 topWordRef(mainTh)与 Go th.top 同步。
+// ① 只写影子(GC 读 liveTop,Wasm 尚不写字);④ Wasm 建帧 / ③ caller 自恢复 top
+// 起 Wasm 侧写该字、Go 边界经 syncCurFromSeg 邻接读回。**存槽索引**(grow 安全)。
+func (th *thread) setTop(n int) {
+	th.top = n
+	if th.topWordRef != 0 {
+		th.arena.SetWordAt(th.topWordRef, uint64(uint32(n)))
+		if ciMirrorCheck {
+			if got := uint32(th.arena.WordAt(th.topWordRef)); got != uint32(n) {
+				panic(fmt.Sprintf("crescent: top 字镜像不一致 got=%d want=%d", got, n))
+			}
+		}
+	}
+}
+
+// liveTop 返回 GC 栈根扫描该用的栈顶(槽索引)。Stage ④ 起 Wasm 侧帧建拆在 Wasm
+// 执行期写 top 字(建 callee 帧设帧顶 / caller 自恢复),全程不回 Go,故 th.top
+// (Go 字段)落后真实值;gibbous 帧体内 safepoint 触发 GC 必须按**字**的 top 扫
+// [0,top) 栈根 + nil-clear [top,size),否则 Wasm 新压活跃槽漏扫 / 误清 = UAF。
+// mainTh 读字(topWordRef≠0);协程 th 无字镜像(不升层),退回 th.top。①落地时
+// Wasm 尚未写字,liveTop 恒等 th.top,翻转零行为变更。
+func (th *thread) liveTop() int {
+	if th.topWordRef != 0 {
+		return int(uint32(th.arena.WordAt(th.topWordRef)))
+	}
+	return th.top
+}
+
 // truncateCI 把帧深度回退到 newDepth(pcall/元方法/yield 边界清理,替代旧
 // th.cis = th.cis[:newDepth])。回退后从段重载新栈顶帧到 th.cur。R2b-4。
 func (th *thread) truncateCI(newDepth int) {
@@ -1114,7 +1162,7 @@ func (th *thread) push(v value.Value) {
 		th.growStack(th.top + 1)
 	}
 	th.setSlot(th.top, v)
-	th.top++
+	th.setTop(th.top + 1)
 }
 
 // ensureStack 确保段容量 ≥ n(段满则 growStack)。
