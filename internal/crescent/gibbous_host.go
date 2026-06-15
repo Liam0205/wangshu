@@ -482,6 +482,13 @@ func (st *State) CIDepthAddr() uint32 {
 	return uint32(st.ciDepthRef)
 }
 
+// CISegBaseAddr 返回 ci-seg-base 字的 linear memory 字节地址(P3 PW10 零跨界 Stage 2)。
+// 此字内含 CI 段当前字节基址(可重定位);Wasm 侧帧建拆读它现算帧地址(段基址 +
+// depth*ciWords*8 + word*8)。
+func (st *State) CISegBaseAddr() uint32 {
+	return uint32(st.ciSegBaseRef)
+}
+
 // --- PW7 闭包构造 + 作用域 upvalue 关闭(全经助手,复用解释器)---
 
 // Closure 处理 CLOSURE A Bx(execute.go:394-397 同款)。makeClosure 读后随伪指令

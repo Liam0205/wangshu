@@ -177,6 +177,12 @@ type State struct {
 	// 接通。0 = 未分配(非 p3 build 也分配,offset 逻辑统一)。
 	ciDepthRef arena.GCRef
 
+	// ciSegBaseRef 是主线程 CI 段当前字节基址(ciBaseW*8)的 linear-memory 镜像字
+	// (PW10 零跨界 Stage 2)。CI 段经 growCISeg 可重定位,Wasm 侧帧建拆须读此字现算
+	// 帧地址(段基址 + depth*ciWords*8 + word*8),不能烧编译期立即数。仅 mainTh 写
+	// (经 ciSegBaseWordRef),growCISeg/newThread 更新。0 = 未分配。
+	ciSegBaseRef arena.GCRef
+
 	// indirectCalls 计 gibbous→gibbous call_indirect 直调命中次数(PW10 R3 验证用,
 	// tryIndirectCallee 返 indirect 哨兵时 ++)。仅测试读,确认直调路径真走到(非
 	// 静默回退 code.Run)。生产无功能含义,1 个 int 开销可忽略。
@@ -235,6 +241,10 @@ func New() *State {
 	// 偏移稳定;非 p3 build 也分配(1 字开销可忽略)。仅 mainTh 写它(协程不升层)。
 	st.ciDepthRef = a.AllocWords(1)
 	a.SetWordAt(st.ciDepthRef, 0)
+	// ci-seg-base 字(PW10 零跨界 Stage 2):主线程 CI 段当前字节基址,growCISeg 重定位
+	// 后更新,Wasm 侧帧建拆读它现算帧地址(段可重定位,不能烧立即数)。
+	st.ciSegBaseRef = a.AllocWords(1)
+	a.SetWordAt(st.ciSegBaseRef, 0)
 	st.installRoots()
 	st.wireP3() // wangshu_p3 build:构造 gibbous Compiler 注入 bridge;默认 build no-op
 	// host closure 槽位回收(gmatch 迭代器、mountArena 列代理等动态注册的
@@ -644,7 +654,9 @@ func (st *State) callOnStack(cl arena.GCRef, args []value.Value, nresults int) (
 		// 主线程帧深度镜像到 ciDepthRef(PW10 零跨界 Stage 1a):仅 mainTh 接通,
 		// 协程 th 恒不镜像(协程不升层)。setCIDepth 据此字段决定是否写字。
 		th.ciDepthWordRef = st.ciDepthRef
-		th.setCIDepth(0) // 初始化字 = 0(与新线程 ciDepth=0 同步)
+		th.ciSegBaseWordRef = st.ciSegBaseRef // Stage 2:CI 段基址镜像(Wasm 现算帧地址)
+		th.setCIDepth(0)                      // 初始化字 = 0(与新线程 ciDepth=0 同步)
+		th.syncCISegBase()                    // 初始化段基址字(newThread 已建段)
 	} else {
 		th.top = 0
 		th.truncateCI(0)
@@ -728,6 +740,9 @@ type thread struct {
 	// ciDepthWordRef 非零时,setCIDepth 把 ciDepth 镜像到此 arena 字(PW10 零跨界
 	// Stage 1a)。仅 mainTh 接通(State.New 后 = st.ciDepthRef);协程 th 恒 0(不镜像)。
 	ciDepthWordRef arena.GCRef
+	// ciSegBaseWordRef 非零时,syncCISegBase 把 CI 段当前字节基址(ciBaseW*8)镜像到此
+	// arena 字(PW10 零跨界 Stage 2),Wasm 侧帧建拆现算帧地址用。仅 mainTh 接通。
+	ciSegBaseWordRef arena.GCRef
 	// ciVarargs 每帧 varargs(GC 根)。varargs 是 Go []value.Value,不进 linear
 	// memory(VS0-e 子piece);与帧深度对齐(索引 = depth)。
 	ciVarargs [][]value.Value
@@ -917,6 +932,15 @@ func (th *thread) liveCIDepth() int {
 	return th.ciDepth
 }
 
+// syncCISegBase 把 CI 段当前字节基址(ciBaseW*8)镜像到 linear-memory 字(PW10
+// 零跨界 Stage 2)。newThread(mainTh)+ growCISeg 重定位后调,使 Wasm 侧帧建拆读到
+// 最新段基址现算帧地址。仅 mainTh 接通(ciSegBaseWordRef≠0)。
+func (th *thread) syncCISegBase() {
+	if th.ciSegBaseWordRef != 0 {
+		th.arena.SetWordAt(th.ciSegBaseWordRef, uint64(th.ciBaseW*8))
+	}
+}
+
 // setCIDepth 设帧深度 + 镜像到 linear-memory 字(PW10 零跨界 Stage 1a)。
 // 所有 th.ciDepth 写经此收口(enterLuaFrame ++ / popCallInfo -- / truncateCI =),
 // 使 ciDepthWordRef(mainTh)与 Go ciDepth 同步。Stage 1a 只写影子(Go 仍读 ciDepth);
@@ -981,6 +1005,7 @@ func (th *thread) growCISeg(need int) {
 	oldCap := th.ciCap
 	th.ciBaseW = uint32(newRef) >> 3
 	th.ciCap = newCap
+	th.syncCISegBase() // PW10 Stage 2:段重定位后更新 Wasm 可见的段基址字
 	if !oldRef.IsNull() {
 		a.Free(oldRef, uint32(oldCap*ciWords)*8)
 	}

@@ -22,6 +22,7 @@ type mockHost struct {
 	gcPendingAddr  uint32
 	ciTransferAddr uint32
 	ciDepthAddr    uint32
+	ciSegBaseAddr  uint32
 	getGlobalCalls int
 	getGlobalFn    func(base, pc, a, bx int32) int32
 }
@@ -72,6 +73,7 @@ func (m *mockHost) GlobalsRaw() uint64                      { return m.globalsRa
 func (m *mockHost) GCPendingAddr() uint32                   { return m.gcPendingAddr }
 func (m *mockHost) CITransferAddr() uint32                  { return m.ciTransferAddr }
 func (m *mockHost) CIDepthAddr() uint32                     { return m.ciDepthAddr }
+func (m *mockHost) CISegBaseAddr() uint32                   { return m.ciSegBaseAddr }
 func (m *mockHost) PopErrFrame()                            {}
 
 // setupTranslator 建一个完整可执行的 P3 编译环境:wazero runtime + memadapter
