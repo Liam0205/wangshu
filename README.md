@@ -23,7 +23,9 @@ P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 met
 
 ## 当前状态
 
-**P1(crescent 解释器)完整交付 + P2(bridge 分层桥)PB0-PB7 + P2 后续优化轮 #1-#4 全过线**:P1 全里程碑 M0-M14 + 收尾轮(协程/pattern matcher/IC/arena ABI 等)+ 长稳轮(freelist 内存复用/调用深度上限/并发验证)+ 审查核销轮(22+ 项逐函数对照官方源码的发现全量修复)落地;**P2 全卷 PB0-PB7 + 后续优化轮 #1-#4**(2026-06-13 单会话冲刺:bridge 包骨架 + 回边/入口采样钩 + 算术 IC 双计数 + IC 反馈聚合 + F1-F7 可编译性闸门 + TierState 状态机 + 升层日志 + mock P3 + e2e 验收 + stdlib 白名单 + 阈值校准占位 + sync.Pool (C) 双表混合 + megamorphic 主动识别)落地。
+**P1(crescent 解释器)完整交付 + P2(bridge 分层桥)PB0-PB7 + 后续优化轮 #1-#4 + P3(gibbous/Wasm 编译层)PW0-PW9 全过线**:P1 全里程碑 M0-M14 + 收尾轮(协程/pattern matcher/IC/arena ABI 等)+ 长稳轮(freelist 内存复用/调用深度上限/并发验证)+ 审查核销轮(22+ 项逐函数对照官方源码的发现全量修复)落地;**P2 全卷 PB0-PB7 + 后续优化轮 #1-#4**(2026-06-13 单会话冲刺:bridge 包骨架 + 回边/入口采样钩 + 算术 IC 双计数 + IC 反馈聚合 + F1-F7 可编译性闸门 + TierState 状态机 + 升层日志 + mock P3 + e2e 验收 + stdlib 白名单 + 阈值校准占位 + sync.Pool (C) 双表混合 + megamorphic 主动识别)落地;**P3 全卷 PW0-PW9 + PW4b**(wazero call boundary spike 闸门 36.7ns<150ns → 包骨架 + arena 收养 wazero linear memory → 全 38 opcode 除 VARARG 外翻译成 Wasm(算术/比较/控制流 relooper/表 IC inline 跳哈希/CALL·TAILCALL 跨层互调/CLOSURE·CLOSE/数值·泛型 for)→ 线程级 tier 规则(协程不升层)→ gcPending inline 回边零跨层 → V1-V18 端到端总验收:层间逐字节差分 + 四 build + `-race` + 性能 loop 核 **2.58x** over 解释器)落地。
+
+P3 后续(对账见 [p3 implementation-progress](docs/design/p3-wasm-tier/implementation-progress.md) §11):性能 loop 核 ≥2x 达标,但跨层调用密集核(gibbous→gibbous 经 host 双跨层 ~143ns/次)退化 → **PW10** 消除跨层调用税(单 module + `call_indirect` 直调 + CallInfo arena 化,spike 闸门先行)。
 
 P1 总验收通过:
 
@@ -69,7 +71,7 @@ results, err := prog.Call(st, ar) // 一次调用一次跨界
 
 NaN-boxed 值表示、arena + mark-sweep GC(弱表/finalizer/size-class freelist 内存复用)、完整前端(寄存器分配与 luac 同构)、大 switch 解释器(reentry,Lua 调用不增 Go 栈;调用深度上限可恢复)、inline cache(表/全局访问直达槽)、元表全套、协程(create/resume/yield/wrap)、pcall/xpcall/error(位置前缀+traceback+luaO_chunkid 同构)、Lua 5.1 pattern matcher(含 %f frontier/%z)、stdlib(base/string/table/math/os/io/coroutine + 5.0 兼容别名)、回边指令预算(不可信脚本配额)、arena ABI 列数据零拷贝读、公共嵌入 API、四套测试机制(conformance/官方测试套/difftest 随机生成 + 官方对拍/benchmark)。
 
-P3 迁移留口(对账记录见 [implementation-progress](docs/design/p1-interpreter/implementation-progress.md)):值栈/CallInfo 的 arena 物理搬迁(backing 注入点已就位)、upvalue 降序链。
+P3 迁移留口(对账记录见 [implementation-progress](docs/design/p1-interpreter/implementation-progress.md)):主线程值栈已迁入 arena(VS0-a/b/c,gibbous 与解释器共见同一块 linear memory);协程栈 + varargs + CallInfo 全 arena 化(VS0-e)随 PW10 跨层调用税收口一并推进。
 
 ### 性能基准
 
