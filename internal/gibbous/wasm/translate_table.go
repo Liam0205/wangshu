@@ -523,6 +523,16 @@ func (c *Compiler) emitCall(em *emitter, ins bytecode.Instruction, pc int32) {
 	em.i32Const(0)
 	em.i32Load(xfer)
 	em.localSet(localBase)
+	// PW10 零跨界 ③a:caller 自恢复 top(仅定额 C≠0)。直调返回后 th.top 须回到本帧
+	// base+MaxStack(localSavedTop 快照,槽索引 grow 不变)。③a 阶段被调 helperReturn
+	// 已恢复同值(幂等);③b 被调快路径不再恢复时此写回成唯一恢复点。C==0(多值到
+	// top)不写——DoReturn 已设多值末尾 top,写回会破坏。
+	//   (i32.store offset=topAddr (i32.const 0) (local.get $savedTop))
+	if cc != 0 {
+		em.i32Const(0)
+		em.localGet(localSavedTop)
+		em.i32Store(c.host.TopAddr())
+	}
 	em.elseOp()
 	// --- 偶:done(回退同步跑完)刷新 base = i32.wrap(ret) ---
 	em.localGet(localI64c)

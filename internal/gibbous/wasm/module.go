@@ -229,12 +229,14 @@ func codeSectionEntry(body []byte) []byte {
 	//   组2: 2×i32 → index 3,5(localI32 helper status / localI32b 表地址)
 	//   组3: 1×f64 → index 4(localF64,算术结果)
 	//   组4: 1×i64 → index 6(localI64c,PW5 键/槽值中转)
+	//   组5: 1×i32 → index 7(localSavedTop,PW10 零跨界 ③a:caller 自恢复 top 快照)
 	// 注:local index 由声明顺序决定(组内连号)。组2 声明 2×i32 占 3,4? 否——
 	// 组顺序即 index 顺序:组1 i64 占 1,2;组2 i32 占 3,4;组3 f64 占 5;组4 i64 占 6。
 	// 为保持 PW2-PW4 既有 index(localI32=3 / localF64=4)不变,组顺序须为:
-	//   组1 2×i64(1,2) / 组2 1×i32(3) / 组3 1×f64(4) / 组4 1×i32(5) / 组5 1×i64(6)。
+	//   组1 2×i64(1,2) / 组2 1×i32(3) / 组3 1×f64(4) / 组4 1×i32(5) / 组5 1×i64(6)
+	//   / 组6 1×i32(7,PW10 零跨界 ③a localSavedTop)。
 	var locals []byte
-	locals = append(locals, uleb32(5)...) // 5 个 local 组
+	locals = append(locals, uleb32(6)...) // 6 个 local 组
 	locals = append(locals, uleb32(2)...) // 2 个 i64 → index 1,2
 	locals = append(locals, wvtI64)
 	locals = append(locals, uleb32(1)...) // 1 个 i32 → index 3(localI32)
@@ -245,6 +247,8 @@ func codeSectionEntry(body []byte) []byte {
 	locals = append(locals, wvtI32)
 	locals = append(locals, uleb32(1)...) // 1 个 i64 → index 6(localI64c,PW5 键/槽值)
 	locals = append(locals, wvtI64)
+	locals = append(locals, uleb32(1)...) // 1 个 i32 → index 7(localSavedTop,PW10 零跨界 ③a)
+	locals = append(locals, wvtI32)
 
 	funcBody := append([]byte{}, locals...)
 	funcBody = append(funcBody, body...)

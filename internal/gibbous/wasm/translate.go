@@ -32,6 +32,13 @@ const (
 	localI32b = 5 // i32 临时 b(PW5 表字节地址)
 	localI64c = 6 // i64 临时 c(PW5 键 / 槽值中转)
 
+	// localSavedTop 是 caller 自恢复 top 的快照(PW10 零跨界 ③a)。函数 prologue
+	// 读 top 镜像字一次存入(此刻 = 本帧 base+MaxStack 槽索引,enterLuaFrame 刚设);
+	// 每个定额(C≠0)CALL 经 call_indirect 直调返回后写回 top 字——被调 emitReturn
+	// 快路径(③b)不再恢复 caller top,由 caller 自恢复。存槽索引(grow 安全:被调
+	// 嵌套 growStack 改 stackBaseW 但槽索引不变,免 stackBaseW 换算)。
+	localSavedTop = 7
+
 	// 兼容旧名(PW2 直线 opcode 用 localTmp64/localTmp32)。
 	localTmp64 = localI64a
 	localTmp32 = localI32
@@ -51,6 +58,7 @@ func (c *Compiler) translate(proto *bytecode.Proto) ([]byte, error) {
 	cfg := buildCFG(proto)
 	reach := cfg.reachableBlocks()
 	em := newEmitter()
+	c.emitPrologue(em)
 
 	if len(reach) == 1 {
 		// 单可达 BB:直线翻译(死代码块——RETURN 后兜底 RETURN——不发射)。
@@ -82,7 +90,22 @@ func (c *Compiler) translate(proto *bytecode.Proto) ([]byte, error) {
 	return em.bytes(), nil
 }
 
-// emitBlockBody 发射一个 BB:直线指令(经 emitOpcode)+ 终结边(由结构化生成
+// emitPrologue 发射函数入口序言(PW10 零跨界 ③a):快照 top 镜像字进 localSavedTop。
+//
+//	(local.set $savedTop (i32.load offset=topAddr (i32.const 0)))
+//
+// 此刻(run 入口,enterLuaFrame 刚 setTop(base+MaxStack))top 字 = 本帧 base+MaxStack
+// 槽索引,正是本帧每个定额 CALL 返回后须恢复的 th.top。caller 据此自恢复,使被调
+// emitReturn 快路径(③b)无须跨函数取 caller.MaxStack / 换算 stackBaseW。
+//
+// **③a 零行为变更**:本阶段被调仍走 helperReturn(DoReturn 已恢复同值 base+MaxStack),
+// caller 写回 = 写同值,纯幂等;③b 落地后被调不再恢复,caller 写回成为唯一恢复点。
+func (c *Compiler) emitPrologue(em *emitter) {
+	em.i32Const(0)
+	em.i32Load(c.host.TopAddr())
+	em.localSet(localSavedTop)
+}
+
 // 层据后继与作用域栈处理)。终结指令(JMP / 比较 / FOR* / RETURN)不在
 // emitOpcode 里发控制流——只有本层知道后继 BB 的 br depth。
 func (c *Compiler) emitBlockBody(em *emitter, proto *bytecode.Proto, cfg *cfg, plan *structPlan, bb int, stack *[]scope) error {
