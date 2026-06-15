@@ -1,6 +1,6 @@
 # P3 实现进度对账(implementation-progress)
 
-> 状态:**P3 详细设计已齐备(2026-06-13 子目录 9 文件约 8800 行),PW0-PW9 + PW4b 全部交付;PW10 消除 gibbous→gibbous 跨层调用税进行中(Phase 0 spike + R1 共享 funcref 表 + R2 CallInfo→linear-memory 迁移已交付,R3 `call_indirect` 直调 + R4 + R5 待实现)**。P1 全卷(M0-M14)+ P2 PB0-PB7 + 后续优化轮 #1-#4 全过线;P3 翻译器 + 跨层 + 升层门禁 + 端到端总验收全链路就绪——正确性轴(V1-V13 层间 byte-equal + V17 四 build + V18 -race)+ 性能轴 V14(loop 核 2.58x ≥2x)全过。**PW10 在飞行中**:Phase 0 spike 裁定 Arch-2「共享 imported funcref 表」(`spike/p3indirect/`,见 §0.2)+ R1 共享 funcref 表基建 + R2 完整 CallInfo→linear-memory 迁移(= 长期延后的 VS0-e)已交付;剩 R3(`call_indirect` 直接分派——真正付清性能)+ R4 + R5(re-bench)。
+> 状态:**P3 详细设计已齐备(2026-06-13 子目录 9 文件约 8800 行),PW0-PW9 + PW4b 全部交付;PW10 消除 gibbous→gibbous 跨层调用税进行中(Phase 0 spike + R1 共享 funcref 表 + R2 CallInfo→linear-memory 迁移 + R3 `call_indirect` 直调 + R3.5 host helper 零分配已交付,R4 + R5 待实现)**。P1 全卷(M0-M14)+ P2 PB0-PB7 + 后续优化轮 #1-#4 全过线;P3 翻译器 + 跨层 + 升层门禁 + 端到端总验收全链路就绪——正确性轴(V1-V13 层间 byte-equal + V17 四 build + V18 -race)+ 性能轴 V14(loop 核 2.58x ≥2x)全过。**PW10 在飞行中**:Phase 0 spike 裁定 Arch-2「共享 imported funcref 表」(`spike/p3indirect/`,见 §0.2)+ R1 共享 funcref 表基建 + R2 完整 CallInfo→linear-memory 迁移(= 长期延后的 VS0-e)+ **R3 gibbous→gibbous `call_indirect` 直调(消 `code.Run` 重入)+ R3.5 host helper 改 wazero 零分配 API(消反射装箱,真正付清性能)** 已交付;**四核全翻面**(loop 2.65x / table 1.26x / mixed 1.14x 已 ≥1x;call 0.49x 仍为唯一短板,真实 `h_call`+`h_return` 双跨界,留 R4/Option B);剩 R4(消 `h_return`)+ R5(re-bench)。
 > 单一事实源:本文是 P3 实现现状与设计文档差异的对账表(对应 P1/P2 [implementation-progress.md](../p1-interpreter/implementation-progress.md) 的角色)。
 > 设计文档集:见 [00-overview](./00-overview.md) §0 文档地图。
 >
@@ -14,7 +14,7 @@
 
 **PW9 性能实测的关键发现(§11 详)**:loop 核 gibbous 2.58x 快于 crescent(V14 ≥2x 达标),推翻 PW9 早期「memory-resident 下 dispatch 消除不足 2x」的结论(那次测的是不升层的 vararg 顶层 chunk = 空测)。但**跨层调用密集核退化**(call 核 0.14x / table 核 0.68x / geomean 0.79x):gibbous→gibbous 经 `h_call` 双跨层(~143ns/次)吃光小叶函数收益。**消除跨层调用税立为后续里程碑 PW10(spike 闸门先行)。**
 
-**PW10 进行中(Phase 0 + R1 + R2 已交付,R3-R5 待实现,§12 详)**:Phase 0 spike(`spike/p3indirect/` S-A/S-B/S-C,§0.2 存档)裁定架构走 **Arch-2「共享 imported funcref 表」**(各 Proto 模块共享 env holder 导出的同一张 funcref 表、active element 段自注册 `run`,gibbous→gibbous = 经共享表 `call_indirect`),**而非 Arch-1 rebuild-all**(后者代际实例/跨代守卫/O(N²) 重编复杂,被 S-C 探出的更简分支取代)。**R1** memadapter env holder 导出共享 funcref 表(TableSlots=8192)+ 各 gibbous module 自注册 `run` 进 Compiler 分配的单调槽(`Compiler.slotOf`/`SlotOf`);零行为变更(尚无 `call_indirect`,R3 接线)。**R2(= 长期延后的 VS0-e)** 完整 CallInfo 从 Go `[]callInfo` 物理迁入每线程 arena 段(4 word/帧,word2 位打包承 [04 §1.2](./04-trampoline.md)),经 R2a→R2b-1~4「收口→只写影子→翻转→退役」剧本落地(R2b-3 GC 根扫描翻转为从段读 `cl` 是唯一 UAF-风险步、单独隔离)。**剩 R3(`call_indirect` 直接分派——gibbous→gibbous 免 Go 往返,真正付清性能)+ R4 + R5(re-bench)**:R3 未做前基准已显 gibbous 计算/循环密集核反超(loop 2.45x / arith-in-loop 1.88x),调用密集核仍亏(spectralnorm ~0.21x)因 gibbous→gibbous 仍付 `h_call` 双跨层税——正是 R3 要修的。
+**PW10 进行中(Phase 0 + R1 + R2 + R3 + R3.5 已交付,R4-R5 待实现,§12/§13 详)**:Phase 0 spike(`spike/p3indirect/` S-A/S-B/S-C,§0.2 存档)裁定架构走 **Arch-2「共享 imported funcref 表」**(各 Proto 模块共享 env holder 导出的同一张 funcref 表、active element 段自注册 `run`,gibbous→gibbous = 经共享表 `call_indirect`),**而非 Arch-1 rebuild-all**(后者代际实例/跨代守卫/O(N²) 重编复杂,被 S-C 探出的更简分支取代)。**R1** memadapter env holder 导出共享 funcref 表(TableSlots=8192)+ 各 gibbous module 自注册 `run` 进 Compiler 分配的单调槽(`Compiler.slotOf`/`SlotOf`);零行为变更。**R2(= 长期延后的 VS0-e)** 完整 CallInfo 从 Go `[]callInfo` 物理迁入每线程 arena 段(4 word/帧），经 R2a→R2b-1~4「收口→只写影子→翻转→退役」剧本落地。**R3** gibbous→gibbous CALL 从经 `h_call` 做一次完整 `code.Run` **重入** 改为经 R1 共享表 `call_indirect` **直接分派**(`DoCall` 改返 3 路 i64 sentinel:-1 错 / 偶≥0 已完成回传刷新 base / 奇 `(slot<<1)|1` indirect;`ciTransferRef` 中转字传刷新 base;`h_callerr`/`PopErrFrame` 弹失败 call_indirect 的孤立 gibbous 帧;**R3c-fix** 经 `raiseGibbous` 失败点就地标注使 gibbous→gibbous 错误**逐字节等于纯解释器**)。**R3.5** 把全部 25 个 host helper 从 `WithFunc`(反射装箱,每跨界 boxing 每个实参)改成 `WithGoFunction(api.GoFunc(...))`(零反射,stack-based)——这才是真正付清性能的步骤:R3 做完后基准纹丝没动(call 核仍 ~6x 慢、1.4M allocs/op),memprofile 揭穿主导项是 wazero `WithFunc` 反射装箱而非分派延迟,改完 allocs/op 对齐解释器、**四核全翻面**。**剩 R4(消 `h_return` 单跨界)+ R5(re-bench)**:R3.5 后 loop 2.65x / table 1.26x / mixed 1.14x 已 ≥1x;**call 核仍 0.49x(<1x)是真实 `h_call`(建帧)+`h_return`(拆帧)双跨界**——R4/Option B 的靶子。
 
 **前置条件检查**:
 - ✅ P1 全卷已交付(M0-M14 + 所有收尾轮 + 长稳承诺轮 + 外部审查修复轮 + 官方测试套与性能轮)
@@ -30,7 +30,7 @@
 - ✅ **PW7 CLOSURE/CLOSE + PW4b TFORLOOP**(`6f2fd0e`/`5436e22`;CLOSURE/CLOSE 经助手复用 makeClosure/closeUpvals,emitOpcode skip 机制跳过 CLOSURE 后随伪指令;TFORLOOP 调迭代器复用 callLuaFromHost + base 刷新;VARARG 白名单拒)
 - ✅ **PW8 线程级 tier 规则**(`d8fbf06`;运行期守卫 `th==st.mainTh`(PW6 起已落地)+ 升层门禁 onMain bool;协程内 hot 函数保持 TierInterp,主线程同 Proto 升层;RW-6/RW-7 回填)
 - ✅ **PW9 端到端总验收**(`bb39b06`/`e94a80e`/`f556c19`;PW9-a gcPending inline 回边零跨层 + PW9-b force-all 层间差分套(V1-V13/V17/V18)+ 性能基准:loop 核 **2.58x** V14 达标。跨层调用税(call 核 0.14x)拆 PW10,§11 对账)
-- 🔶 **PW10 消除 gibbous→gibbous 跨层调用税(进行中,§12 对账)**:Phase 0 spike(`457559b`/`096da5b`/`01dfc0f`;`spike/p3indirect/` S-A/S-B/S-C 裁定 Arch-2 共享 funcref 表,决策报告 `spike/p3indirect/DECISION.md`,§0.2 存档)✅ + **R1** 共享 funcref 表基建(`4d063e8`/`adab492`/`8bbf510`;memadapter env holder 导出 TableSlots=8192 + 各 module active element 段自注册 `run`)✅ + **R2** 完整 CallInfo→linear-memory 迁移 = 长期延后的 VS0-e(`e7fc9b2`/`04ce9a8`/`cb7f625`/`10bcaa1`/`1a786ee`;4 word/帧,R2a→R2b-1~4「收口→只写影子→翻转→退役」+ R2b-3 UAF-风险隔离)✅。剩 **R3** `call_indirect` 直接分派(真正付清性能)+ **R4** + **R5** re-bench ⏳
+- 🔶 **PW10 消除 gibbous→gibbous 跨层调用税(进行中,§12/§13 对账)**:Phase 0 spike(`457559b`/`096da5b`/`01dfc0f`;`spike/p3indirect/` S-A/S-B/S-C 裁定 Arch-2 共享 funcref 表,决策报告 `spike/p3indirect/DECISION.md`,§0.2 存档)✅ + **R1** 共享 funcref 表基建(`4d063e8`/`adab492`/`8bbf510`;memadapter env holder 导出 TableSlots=8192 + 各 module active element 段自注册 `run`)✅ + **R2** 完整 CallInfo→linear-memory 迁移 = 长期延后的 VS0-e(`e7fc9b2`/`04ce9a8`/`cb7f625`/`10bcaa1`/`1a786ee`;4 word/帧,R2a→R2b-1~4「收口→只写影子→翻转→退役」+ R2b-3 UAF-风险隔离)✅ + **R3** gibbous→gibbous `call_indirect` 直调消 `code.Run` 重入(`6f2712e`/`4f1002a`/`2abdf18`;3 路 i64 sentinel + `ciTransferRef` 中转字 + `h_callerr`/`PopErrFrame` 弹孤立帧)+ **R3c-fix** 出错点就地标注使错误逐字节等纯解释器(`86e39c9`)+ **R3.5** host helper `WithFunc`→`WithGoFunction` 消反射装箱(`1bf9d53`;真正付清性能,四核全翻面)✅。剩 **R4** 消 `h_return` 单跨界 + **R5** re-bench ⏳(call 核仍 0.49x 是真实双跨界)
 - ⏳ **P3 开工前置确认(待外部)**:向首个宿主确认「列内核是否跑在协程里」,决定线程级 tier 规则是否成立([07 §3.2](./07-coroutine-thread-rule.md))
 
 ---
@@ -110,7 +110,7 @@
 | PW7 | CLOSURE/CLOSE/VARARG + 闭包/upvalue 编译协议 | [02 §3.7](./02-translation.md) | 闭包构造 + 开放/关闭 upvalue byte-equal | ✅ **过线**(`6f2fd0e`+`5436e22`;CLOSURE/CLOSE 经助手复用 makeClosure/closeUpvals;emitOpcode 加 skip 机制跳过 CLOSURE 后随 SubNUps 条伪指令;upvalue 难点已被 VS0-c 形态 Y 解掉;VARARG 白名单拒(F1 排除 vararg + SupportsAllOpcodes 防御)) |
 | PW8 | 线程级 tier 规则 + 协程不升层 + **P2 04 considerPromotion 加线程上下文** | [07](./07-coroutine-thread-rule.md) | 协程内即便 hot + Compilable 也保持 TierInterp;主线程同 Proto 正常升层 | ✅ **过线**(本提交;运行期守卫 `th==st.mainTh`(call.go:60 PW6 起已落地)+ 升层门禁 onMain bool(OnEnter/OnBackEdge/considerPromotion 加参数,协程线程 profile 累加但不进升层决策)。bridge 收 bool 不感知 thread 类型,保持解耦。e2e:协程内 hot 函数十万次调用保持 TierInterp,同 Proto 主线程升层) |
 | PW9 | 端到端验收 + 测试套(差分 + 强制全升 + GC 压力 fuzz + 性能 ≥2x) | [08](./08-testing-strategy.md) | **P3 总验收**:V1-V18 | ✅ **正确性 + V14 过线**(`bb39b06`/`e94a80e`/`f556c19`;§11 对账)。PW9-a gcPending inline 回边零跨层;PW9-b force-all 三方对拍(oracle/crescent/gibbous byte-equal,V1-V13)+ 非空保证 + GC stress 层间(V5/V13)+ 并发 -race(V18)+ 四 build 零回归(V17);**性能 V14 loop 2.58x ≥2x 达标**(推翻空测)。**V15 geomean 0.79x 未达**——跨层调用税(call 核 0.14x)拆 PW10 |
-| PW10 | 消除 gibbous→gibbous 跨层调用税(共享 funcref 表 + call_indirect 直调 + CallInfo→linear-memory) | [04 §9](./04-trampoline.md) 缺口 + [02 §1.2](./02-translation.md) | Phase 0 spike 闸门(call_indirect <30ns + 增量 module 可行)→ call/table 核 ≥1x + geomean ≥1.5x | 🔶 **进行中(Phase 0 + R1 + R2 ✅,R3-R5 ⏳;§12 对账)**。Phase 0 spike(`457559b`/`096da5b`/`01dfc0f`;S-A call_indirect ~2.5ns ≪30ns 比 raw host 快 14x / S-B rebuild-all 1.2ms@256fn 可行 / **S-C 裁定 Arch-2 共享 imported funcref 表**远简于 rebuild-all,§0.2 + `DECISION.md`)→ **R1** 共享 funcref 表基建(`4d063e8`/`adab492`/`8bbf510`;env holder 导出 TableSlots=8192 + 各 module 自注册 `run`,零行为变更)→ **R2** CallInfo→linear-memory = 延后的 VS0-e(`e7fc9b2`/`04ce9a8`/`cb7f625`/`10bcaa1`/`1a786ee`;4 word/帧 + 收口→只写影子→翻转→退役 + R2b-3 UAF-隔离)。剩 **R3** `call_indirect` 直接分派(gibbous→gibbous 免 Go 往返,真正付清性能)+ **R4** + **R5** re-bench |
+| PW10 | 消除 gibbous→gibbous 跨层调用税(共享 funcref 表 + call_indirect 直调 + CallInfo→linear-memory) | [04 §9](./04-trampoline.md) 缺口 + [02 §1.2](./02-translation.md) | Phase 0 spike 闸门(call_indirect <30ns + 增量 module 可行)→ call/table 核 ≥1x + geomean ≥1.5x | 🔶 **进行中(Phase 0 + R1 + R2 + R3 + R3.5 ✅,R4-R5 ⏳;§12/§13 对账)**。Phase 0 spike(`457559b`/`096da5b`/`01dfc0f`;S-A call_indirect ~2.5ns ≪30ns 比 raw host 快 14x / S-B rebuild-all 1.2ms@256fn 可行 / **S-C 裁定 Arch-2 共享 imported funcref 表**远简于 rebuild-all,§0.2 + `DECISION.md`)→ **R1** 共享 funcref 表基建(`4d063e8`/`adab492`/`8bbf510`)→ **R2** CallInfo→linear-memory = 延后的 VS0-e(`e7fc9b2`/`04ce9a8`/`cb7f625`/`10bcaa1`/`1a786ee`;4 word/帧 + 收口→只写影子→翻转→退役 + R2b-3 UAF-隔离)→ **R3** gibbous→gibbous `call_indirect` 直调消 `code.Run` 重入(`6f2712e`/`4f1002a`/`2abdf18`;3 路 i64 sentinel + ci-transfer 中转字 + `h_callerr` 弹孤立帧)+ **R3c-fix** 出错点就地标注(`86e39c9`,错误逐字节等纯解释器)+ **R3.5** host helper 改 wazero 零分配 API 消反射装箱(`1bf9d53`,四核全翻面 loop 2.65x/table 1.26x/mixed 1.14x/call 0.49x)。剩 **R4** 消 `h_return` 单跨界 + **R5** re-bench(call 核仍 0.49x<1x 是真实 `h_call`+`h_return` 双跨界)⏳ |
 
 ---
 
@@ -371,7 +371,7 @@ upvalue/闭包 byte-equal 由差分门(difftest 70 种子)+ e2e(捕获栈局部/
 
 ## 12. PW10 R1-R2 实现对账(消除跨层调用税进行中)
 
-> PW10 要消除 §11.3 暴露的 gibbous→gibbous 跨层调用税。**本轮交付 Phase 0(spike 闸门)+ R1(共享 funcref 表基建)+ R2(完整 CallInfo→linear-memory 迁移 = 长期延后的 VS0-e)。R3(`call_indirect` 直接分派——真正付清性能的步骤)+ R4 + R5(re-bench)尚未做——PW10 仍在飞行中。** 13 提交 `457559b..9d70247`。承 [04-trampoline](./04-trampoline.md) 跨层机制 + [02-translation](./02-translation.md) VS0-e + 反思 `2026-06-15-p3-pw10-r1-r2-callinfo-migration-round`。
+> PW10 要消除 §11.3 暴露的 gibbous→gibbous 跨层调用税。**本节对账其第一轮交付:Phase 0(spike 闸门)+ R1(共享 funcref 表基建)+ R2(完整 CallInfo→linear-memory 迁移 = 长期延后的 VS0-e)。R3(`call_indirect` 直调)+ R3.5(host helper 零分配)在第二轮交付,对账见 §13;R4 + R5(re-bench)仍待实现——PW10 仍在飞行中。** 本轮 13 提交 `457559b..9d70247`。承 [04-trampoline](./04-trampoline.md) 跨层机制 + [02-translation](./02-translation.md) VS0-e + 反思 `2026-06-15-p3-pw10-r1-r2-callinfo-migration-round`。
 
 ### 12.1 Phase 0 spike 裁定 Arch-2「共享 imported funcref 表」(非 rebuild-all)
 
@@ -404,9 +404,9 @@ PW10 真解(gibbous→gibbous 直接分派、不经 host)被两条码库 physics
 
 **`th.cur` 稳定地址消解重定位雷区**:旧 `currentCI` 返回 `&th.cis[len-1]`(指进 Go slice,append 搬家 = [[design-claims-vs-codebase-physics]] §2 雷区对偶——那里 arena grow 搬走 `$base`,这里 slice append 搬走 `&th.cis[i]`)。`th.cur` 把当前帧放进地址恒定的固定 struct 字段,雷区被**构造性消除**而非靠纪律绕——是 §2 从「翻转后回传刷新值」(PW6 `$base`/PW7 TFORLOOP 纪律档)到「稳定地址 + 值快照」(结构档)的升级应对。
 
-### 12.3 基准现状(R3 未做,性能收益尚未兑现)
+### 12.3 R1-R2 轮基准快照(R3 未做时,性能收益尚未兑现 —— 已被 §13.3 R3.5 后数据取代)
 
-> 4 个 benchmark 文件均加 gibbous(凸月)列(build-tag 门控 `wangshu_p3 wangshu_profile`)+ 新 `make bench-gibbous`/`make bench-all`。`wangshu_profile` 给 crescent 加 ~28% 采样税,故 bench-all 让 **crescent/gopher 跑默认 tag、gibbous 跑 p3+profile 分开**(统一 tag 会扭曲 crescent 基线)。
+> 4 个 benchmark 文件均加 gibbous(凸月)列(build-tag 门控 `wangshu_p3 wangshu_profile`)+ 新 `make bench-gibbous`/`make bench-all`。`wangshu_profile` 给 crescent 加 ~28% 采样税,故 bench-all 让 **crescent/gopher 跑默认 tag、gibbous 跑 p3+profile 分开**(统一 tag 会扭曲 crescent 基线)。**注意**:下表是 R1-R2 轮(R3 未做)的历史快照,R3.5 后的最新四核数据见 §13.3。
 
 **R3-未做基线**:gibbous 在**计算/循环密集**核已反超解释器,但**调用密集**核仍亏——因 gibbous→gibbous 仍付 `h_call` 双跨层税(R3 将以 `call_indirect` 直调消除):
 
@@ -418,9 +418,68 @@ PW10 真解(gibbous→gibbous 直接分派、不经 host)被两条码库 physics
 
 > 加 gibbous 列时跳出 baseline loop「慢 20 倍」/ arith「慢 5 倍」均**非真回归**,是基准工作负载错配(apples-to-oranges:wrapped×50 vs bare / call-entry vs in-loop)——加匹配的 `_WangshuKernel` 列 + 隔离探针后数字自洽(详反思教训 5)。
 
-**R3-R5 待实现**:R3 接 `call_indirect` 直接分派(gibbous→gibbous 经 R1 共享表免 Go 往返)→ R4 → R5 re-bench(目标 call/table 核 ≥1x + geomean ≥1.5x)。**性能收益要到 R3 才兑现。**
+**R3-R5 后续**:R3 接 `call_indirect` 直接分派 + R3.5 host helper 零分配已交付,四核全翻面(§13.3);剩 R4 → R5 re-bench(目标 call 核 ≥1x + geomean ≥1.5x)。
 
 ---
+
+## 13. PW10 R3 + R3.5 实现对账(call_indirect 直调 + host helper 零分配)
+
+> 承 §12(R1-R2)。**本轮交付 R3(gibbous→gibbous `call_indirect` 直调,消 `code.Run` 重入)+ R3c-fix(出错点就地标注,错误逐字节等纯解释器)+ R3.5(host helper 改 wazero 零分配 API,消反射装箱——真正付清性能的步骤)。R4(消 `h_return`)+ R5(re-bench)仍待实现——PW10 仍在飞行中。** 6 提交 `6f2712e..1bf9d53`(中间夹 `836a3c9` untrack 瞬态锁文件):R3a(`6f2712e`)→ R3b-1(`4f1002a`)→ R3c(`2abdf18`)→ R3c-fix(`86e39c9`)→ R3.5(`1bf9d53`)。承 [04-trampoline](./04-trampoline.md) 跨层机制 + §12 R1 共享表/R2 CallInfo→linear-memory 两块基建 + 反思 `2026-06-15-p3-pw10-r3-call-indirect-round`。
+
+### 13.1 R3 gibbous→gibbous `call_indirect` 直调(消 `code.Run` 重入)
+
+> 旧路径:每次 gibbous→gibbous CALL 经 `h_call` host 回调做一次完整 `code.Run` **重入**(Wasm→Go→Wasm)。新路径:经 R1 共享 funcref 表 + R2 linear-memory CallInfo 的 `call_indirect` **直接分派**,callee 不再经 Go 重入。
+
+| 维度 | 旧实现(PW6) | R3 实现 | 收口 |
+|---|---|---|---|
+| `DoCall`(h_call)返回值 | i64 新 base / 负哨兵(PW6 §8) | **3 路 i64 sentinel**:`-1`=错误 / **偶 ≥0** = "已完成,值为刷新后的 caller base"(host/crescent/`__call`/无槽 fallback,同步跑完如旧)/ **奇 `(slot<<1)|1`** = "indirect"(callee 是 gibbous-with-slot:DoCall 做帧 push + 置 gibbous bit + 把 callee base 写进 `ciTransferRef` 中转字,但**不**跑 callee) | `4f1002a`/`2abdf18` |
+| Wasm 侧 `emitCall` | 发 `call h_call` | 解 sentinel:奇数 case 发 `call_indirect <typeEntry> table0`(经 R1 共享表直调 callee 的 `run`),偶数 case 走原同步刷新 base 路径 | `2abdf18` |
+| 槽号暴露 | (无) | `bridge.GibbousCode.Slot()` 暴露每 module 的共享表槽(供 DoCall 编出 `(slot<<1)|1`);`HostState.CITransferAddr()` 暴露中转字 linear-memory 地址(镜像既有 `gcPendingRef`/`GCPendingAddr` 模式) | `6f2712e` |
+| 失败 call_indirect 的孤立帧 | (旧路径无 indirect) | 新 `PopErrFrame` host shim(`h_callerr`)弹掉失败 call_indirect 留下的孤立 gibbous callee 帧——复刻 baseline `enterGibbous` 的逐层错误弹帧 | `4f1002a`/`2abdf18` |
+| 成功 indirect 后 base 刷新 | h_call 返回值直接给 | `DoReturn` 弹帧后把刷新的 caller base 写进 `ciTransferRef` 中转字(LIFO-safe:深度回溯各帧依序写读) | `4f1002a` |
+
+**机制要点**:`ciTransferRef` 中转字是 arena 一个固定 word(地址恒定,镜像 gcPending 模式),承载「indirect 调用前 callee base 入 / 调用返回后刷新的 caller base 出」两个方向的单值传递。`DoCall` 在 indirect case **只做帧 push 不跑 callee**——跑 callee 由 Wasm 侧 `call_indirect` 完成,这才是消掉 `code.Run` 重入的关键(callee 直接在当前 Wasm 栈上跑,不再下一层 Go)。
+
+### 13.2 R3c-fix 出错点锚定错误行号(gibbous→gibbous 错误逐字节等纯解释器)
+
+> R3c 引入逐层弹帧后,嵌套 gibbous→gibbous 错误报了**错的源码行 + 截断 traceback**——这是一个由 R3 触发暴露的潜伏失配,R3c-fix 修复且使错误质量**严格优于**旧 PW6c crescent→gibbous baseline。
+
+| 维度 | R3c 后(回归) | R3c-fix | 收口 |
+|---|---|---|---|
+| 错误标注时机 | 错误**未标注**存进 pending,顶层 `executeFrom` 用 `currentCI` **延迟标注**——但 R3 逐层弹帧使标注时 `currentCI` 已非失败帧 ⟹ 读到错误帧行号 + 截断 traceback | 新 `raiseGibbous(e)` 收口点在**失败点就地标注**(失败帧仍是 `currentCI` 时)+ 物化 traceback + 标记「已标注」;所有 gibbous 错误助手路由经它;顶层据标记跳过重标注 | `86e39c9` |
+| `ci.pc` 约定 | arith 族部分 helper 用 `ci.pc=pc`(与解释器「pc 执行中已自增」约定不一致),`errWithName` 的 `ci.pc-1` 指错指令 ⟹ `:0:` 行号 + 丢变量名 | 统一改 `ci.pc=pc+1` 对齐解释器约定 | `86e39c9` |
+| 净结果 | (回归:错行号/截断 traceback) | gibbous→gibbous 错误**逐字节等于纯解释器**——**严格优于**旧 PW6c crescent→gibbous baseline(那个有截断 traceback、无变量名)。**是正确性改进,非仅回归修复** | `86e39c9` |
+
+**根因**(详反思教训 3):「延迟标注」依赖隐含不变式「从产生错误到标注的路上当前帧一直是产生错误的帧」——解释器满足(错误路径不弹帧),R3 逐层弹帧打破之。修复本质是把标注从「延迟到高层」改成「就地、在失败帧仍是当前帧时」。
+
+### 13.3 R3.5 host helper 改 wazero 零分配 API(真正付清性能)
+
+> R3 做完且 e2e 逐字节一致后**重新跑基准——纹丝没动**(call 核仍 ~6x 慢、1.4M allocs/op)。memprofile 揭穿主导项:wazero `WithFunc` host-function 注册**用反射**,每次 host 跨界把每个实参装箱成 `reflect.Value`(`callGoFunc → reflect.Value.call → reflect.New`)——spike 当初归给「边界」的成本主导项是 **per-call 反射分配,不是分派延迟**。
+
+| 维度 | R3.5 前(`WithFunc` 反射) | R3.5 后(`WithGoFunction`) | 收口 |
+|---|---|---|---|
+| host helper 注册 | 全部 25 个 helper 用 `WithFunc`(反射,每跨界 boxing 每个 i32 实参成 `reflect.Value`) | 全部改 `WithGoFunction(api.GoFunc(func(ctx, stack []uint64)))`(零反射,stack-based:实参经 `api.DecodeI32` 从 `stack[i]` 解、结果写 `stack[0]`) | `1bf9d53` |
+| allocs/op | call 1.4M / table 1.6M / loop 2602 | **对齐解释器**:call 1.4M→**2** / table 1.6M→**6810** / loop 2602→**2** | `1bf9d53` |
+
+**四核全翻面**(R3.5 后,gibbous/crescent 比值):
+
+| 核形态 | R3.5 前 | R3.5 后 | ns 变化 | 判定 |
+|---|---|---|---|---|
+| loop(循环密集) | ~2.5x | **2.65x** | — | ✅ |
+| table(表增长) | 0.64x | **1.26x** | 99→51ms | ✅ 翻面 |
+| mixed(算术+表+分支) | ~0.68x | **1.14x** | — | ✅ 翻面 |
+| call(小叶函数高频调) | 0.17x(6x 慢) | **0.49x**(2x 慢) | 115→38ms | 仍 <1x(唯一短板) |
+
+**call 核残留 0.49x 的诚实归因**:不再是反射装箱,而是**真实的 per-call `h_call`(建帧)+`h_return`(拆帧)双跨界**作用在小叶叶函数上——这是 R4(消 `h_return`)/ Option B(inline frame-build 消 `h_call`)的真实靶子。**用户在「先修零分配 helper」与「先做 R4」之间显式选了前者**(R3.5),R4/Option B 留后续。
+
+### 13.4 验证
+
+V1-V13 层间 byte-equal + 四 build + `-race` difftest + lint 全绿。新增 e2e `internal/crescent/gibbous_r3_indirect_test.go`:
+- **HappyPath**——经 `indirectCalls` 计数器**实证 `call_indirect` 真被走到**(`prove-the-path` 纪律,区分 indirect 直调 vs 同步 fallback)；
+- **ErrorByteEqual**——合成嵌套错误断言行号 + traceback + 变量名**逐字节等于纯解释器**(补上 §12/全成功语料 difftest 的错误路径盲区,详反思教训 4);
+- **BaseRefresh**——经 `growStack` 段重定位验 indirect 调用返回后 caller base 经中转字正确刷新。
+
+**R4-R5 待实现**:R4 消 `h_return` 单跨界(call 核拆帧免一次往返)+ R5 re-bench(目标 call 核 ≥1x + geomean ≥1.5x)。**call 核 0.49x 短板要到 R4 才进一步收。**
 
 相关:
 - [00-overview](./00-overview.md)(P3 总览,本文是其 §4 PW 表的运行期对账)
@@ -429,3 +488,4 @@ PW10 真解(gibbous→gibbous 直接分派、不经 host)被两条码库 physics
 - [../p2-bridge/implementation-progress](../p2-bridge/implementation-progress.md)(P2 同款,作维护协议参考)
 - [../../../llmdoc/guides/multi-doc-drafting](../../../llmdoc/guides/multi-doc-drafting.md)(主动盘点不确定决策的纪律来源)
 - [../../../llmdoc/memory/doc-gaps](../../../llmdoc/memory/doc-gaps.md)(P3 开工前置确认 / P3 迁移留口)
+- 反思:`../../../llmdoc/memory/reflections/2026-06-15-p3-pw10-r1-r2-callinfo-migration-round.md`(R1-R2,§12)、`../../../llmdoc/memory/reflections/2026-06-15-p3-pw10-r3-call-indirect-round.md`(R3+R3.5,§13)

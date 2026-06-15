@@ -52,6 +52,8 @@
 
   以上四项**不阻塞 v0.1.3 发布**,审计判定为「中-轻偏差」;P2 接 wazero 编译层时大概率触达 §1/§10/§8 三段设计文档,触达即顺手回填。
 
+- **【P3 difftest 错误路径覆盖缺口,部分已补待通用化】** — 2026-06-15 P3 PW10 R3 轮(详见 [[p3-pw10-r3-call-indirect-round]] 教训 4)暴露:P3 层间差分套(`test/difftest/p3_test.go` 的 V1-V13 + 71 种子)的 harness `runWangshuTiered` 在脚本出错时直接 `t.Fatalf`——即**整个对拍语料都是「成功执行」的脚本,无一例的黄金输出本身是一条错误**(带特定行号/traceback/变量名)。于是「错误信息(行号、traceback、变量名)在 gibbous vs 解释器 vs oracle 三方逐字节一致」这一整个维度**在结构上从未被对拍覆盖**——R3c 的错误行号回归正是只在错误路径浮现、被全成功语料全绿放过,靠本轮一个合成 3 层嵌套错误测试(`internal/crescent/gibbous_r3_indirect_test.go` 的 ErrorByteEqual)才抓到。**现状**:该合成测试只点状覆盖 gibbous→gibbous 一种错误形态,**通用化仍未做**——差分套本身仍缺「预期结果就是一条错误」的对拍用例类。**收口动作**(P3 后续 / R4-R5 或 difftest 轮顺手):给 `test/difftest/p3_test.go` 显式补一类「黄金输出本身是错误」的层间对拍用例(harness 不再对错误 `Fatalf`,而是断言三方产出逐字节相同的错误消息);落点 `docs/design/p3-wasm-tier/08-testing-strategy.md`(V1-V13 错误路径口径)。**与第 8 项「特性探测 corpus」同家族**(测试套在其语料形状之外结构性失明,全绿对盲区零信号),强化 `prove-the-path-under-test`「错误路径也要被对拍语料覆盖」维度。
+
 - **【P2 文档扩展轮 promotion 候选,首次样本暂留观察】** — 2026-06-13 P2 文档扩展轮(详见 [[p2-doc-expansion-round]])新发现两条工作流纪律,首次样本不立即 promote,等下一轮大型起草任务(可能是 P3 详细设计扩展)再次撞中后正式入 [[multi-doc-drafting]] guide:
 
   1. **子代理工具卡死的 Bash heredoc 兜底协议** — 子代理在某些累积状态下 Write/Edit 工具会卡死不响应,但 Bash 工具仍可用。本轮 04-try-compile-fallback 子代理通过自救协议「`cat >> file <<'EOF' ... EOF` 续写」绕过卡点;主助理「停子代理 + 派新子代理续写(只追加不重写)」是合法救援动作,介于「子代理重写一次」与「主助理亲写」之间的中间档。**候选促成位置**:[[multi-doc-drafting]] guide §「子代理失败恢复纪律」补一段「Write/Edit 卡死的 Bash heredoc 兜底」+「停子代理 + 派新子代理续写」中间档。
