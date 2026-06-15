@@ -597,6 +597,9 @@ func (st *State) tryIndirectCallee(th *thread, ci *callInfo, a, b, c int32) (int
 	if !ok {
 		return 0, false // 表满哨兵(无 slot)→ 回退走 code.Run(baseline)
 	}
+	// PW10 零跨界惰性填充 IC:把 slot 缓存进 closure word1 高 16 位,后续 Wasm 侧
+	// emitCall 直读免本路径的 Go map 查找(GibbousCodeOf + Slot)。幂等(每次写同值)。
+	object.SetClosureGibbousSlot(st.arena, cl, slot)
 	// nargs/nresults 解码(与 doCall 同款:B=0 取到 top,C=0 留到 top)。
 	var nargs int
 	if b == 0 {

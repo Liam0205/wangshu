@@ -3,7 +3,7 @@
 // Lua 闭包:
 //
 //	word0: GCHeader (otype=CLOSURE; flags bit0=0)
-//	word1: [31:0] protoID | [47:32] nupvals | [63:48] reserved
+//	word1: [31:0] protoID | [47:32] nupvals | [63:48] gibbousSlot+1(0=未填充,PW10 零跨界)
 //	word2..: upvalRef[nupvals]  (各 GCRef→ Upvalue 对象)
 //
 // Host 闭包:
@@ -32,6 +32,12 @@ const (
 
 	closureFlagHost uint8 = 1 << 0
 	upvalFlagClosed uint8 = 1 << 0
+
+	// closureSlotShift 是 gibbous slot 缓存在 closure word1 内的位移([63:48]
+	// reserved 区,PW10 零跨界)。存 slot+1(0=未填充);Wasm 侧 emitCall 读此 16 位
+	// 免 Go map 查找(bridge.GibbousCodeOf+Slot)。掩码 0xffff,故 slot ≤ 65534。
+	closureSlotShift uint   = 48
+	closureSlotMask  uint64 = 0xffff << closureSlotShift
 )
 
 // AllocLuaClosure allocates a Lua closure with `nupvals` upvalue slots, all 0-initialized.
@@ -69,6 +75,30 @@ func ClosureProtoID(a *arena.Arena, c arena.GCRef) uint32 {
 // ClosureNUpvals returns the upvalue count.
 func ClosureNUpvals(a *arena.Arena, c arena.GCRef) uint16 {
 	return uint16(wordAt(a, c, closureMetaIdx) >> 32)
+}
+
+// ClosureGibbousSlot 返回缓存的 gibbous table slot(PW10 零跨界惰性填充 IC)。
+// 返回 (slot, true) 表示已填充;(0, false) 表示未填充(未升层 / 首次调用前 /
+// host closure)。Wasm 侧 emitCall 读 closure word1 高 16 位 == 此编码,免 Go map。
+func ClosureGibbousSlot(a *arena.Arena, c arena.GCRef) (uint32, bool) {
+	enc := uint32(wordAt(a, c, closureMetaIdx) >> closureSlotShift)
+	if enc == 0 {
+		return 0, false
+	}
+	return enc - 1, true
+}
+
+// SetClosureGibbousSlot 缓存 gibbous slot 进 closure word1 高 16 位(存 slot+1,
+// 0=未填充)。tryIndirectCallee 首次经 Go map 查到 slot 后回写;只动高 16 位,保
+// protoID([31:0])/nupvals([47:32]) 不变。slot 超 0xfffe(不可能,maxTableSlots=8192)
+// 则不缓存(返回原值不变),Wasm 永走回退,正确性不破。
+func SetClosureGibbousSlot(a *arena.Arena, c arena.GCRef, slot uint32) {
+	if slot >= 0xffff {
+		return // 超 16 位编码域(理论不可达);不缓存,Wasm 回退 h_call
+	}
+	w := wordAt(a, c, closureMetaIdx)
+	w = (w &^ closureSlotMask) | (uint64(slot+1) << closureSlotShift)
+	setWordAt(a, c, closureMetaIdx, w)
 }
 
 // ClosureUpvalRef returns the GCRef of the i-th Upvalue (Lua closure only).
