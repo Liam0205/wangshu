@@ -170,6 +170,11 @@ type State struct {
 	// 把刷新后的 caller base 写回此字,caller 读它续算寻址。LIFO 安全(每次写后紧跟
 	// 唯一读者,无交错)。0 = 未分配(非 p3 build 也分配,offset 逻辑统一)。
 	ciTransferRef arena.GCRef
+
+	// indirectCalls 计 gibbous→gibbous call_indirect 直调命中次数(PW10 R3 验证用,
+	// tryIndirectCallee 返 indirect 哨兵时 ++)。仅测试读,确认直调路径真走到(非
+	// 静默回退 code.Run)。生产无功能含义,1 个 int 开销可忽略。
+	indirectCalls uint64
 }
 
 // SetCompileFn 注入编译回调(wangshu.NewState 时装配;loadstring 用)。

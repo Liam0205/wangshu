@@ -14,22 +14,23 @@ import "math"
 
 // wasmOp 常用 Wasm 指令 opcode。
 const (
-	opBlock    byte = 0x02
-	opLoop     byte = 0x03
-	opIf       byte = 0x04
-	opElse     byte = 0x05
-	opEnd      byte = 0x0b
-	opBr       byte = 0x0c
-	opBrIf     byte = 0x0d
-	opReturn   byte = 0x0f
-	opCall     byte = 0x10
-	opLocalGet byte = 0x20
-	opLocalSet byte = 0x21
-	opLocalTee byte = 0x22
-	opI64Load  byte = 0x29
-	opI64Store byte = 0x37
-	opI32Const byte = 0x41
-	opI64Const byte = 0x42
+	opBlock        byte = 0x02
+	opLoop         byte = 0x03
+	opIf           byte = 0x04
+	opElse         byte = 0x05
+	opEnd          byte = 0x0b
+	opBr           byte = 0x0c
+	opBrIf         byte = 0x0d
+	opReturn       byte = 0x0f
+	opCall         byte = 0x10
+	opCallIndirect byte = 0x11
+	opLocalGet     byte = 0x20
+	opLocalSet     byte = 0x21
+	opLocalTee     byte = 0x22
+	opI64Load      byte = 0x29
+	opI64Store     byte = 0x37
+	opI32Const     byte = 0x41
+	opI64Const     byte = 0x42
 
 	// 比较 / 算术 / 类型转换(PW3)。
 	opI32Eqz byte = 0x45
@@ -133,6 +134,15 @@ func (e *emitter) i64Store(offset uint32) { e.raw(opI64Store, 0x03); e.uleb(offs
 
 // call $funcidx
 func (e *emitter) call(funcidx uint32) { e.raw(opCall); e.uleb(funcidx) }
+
+// callIndirect typeidx tableidx —— 经表间接调用(0x11 typeidx tableidx)。
+// 栈顶须先压完实参再压 funcref 表索引(i32);typeidx 给被调签名,tableidx=0
+// 是唯一 import 表。PW10 R3:gibbous→gibbous 经共享 env.table[slot] 直达。
+func (e *emitter) callIndirect(typeidx, tableidx uint32) {
+	e.raw(opCallIndirect)
+	e.uleb(typeidx)
+	e.uleb(tableidx)
+}
 
 // ret(return 当前栈顶 i32 status)
 func (e *emitter) ret() { e.raw(opReturn) }

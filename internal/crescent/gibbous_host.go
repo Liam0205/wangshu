@@ -519,22 +519,90 @@ func (st *State) TForLoop(base, pc, a, c int32) int64 {
 	return -2 // 首值 nil:退出循环
 }
 
-// Call 处理 gibbous 帧内的 CALL A B C 三向分派(04-trampoline §3)。
+// tryIndirectCallee 判被调是否「gibbous-有-slot 的 Lua closure(主线程)」——是则
+// 自己压帧 + 置 gibbous 位 + 写被调帧 base 到中转字,返回 (sentinel, true) 让 caller
+// wasm 经 call_indirect 直达(免 code.Run 双跨层);否则返回 (0, false) 走回退。
 //
-// 复用 doCall 的统一分派(host / __call / gibbous 升层 / 普通 Lua 四向):
-//   - host / gibbous 升层:doCall 内同步跑完,返回值已落 R(A..),next==nil;
-//   - 普通 Lua closure:doCall 压新帧返回 next!=nil——gibbous 语境无外层解释器
-//     主循环续跑它,故本函数起一层 executeFrom 同步驱动该帧(及其子帧)到完成,
-//     返回值留 R(A..) 共见栈槽。
+// 与 doCall 的被调解析严格同构(nargs/nresults 解码、funcIdx 定位),但**只**拦截
+// 「普通 Lua closure + 已升 gibbous + 有 slot」这一种;host / __call / 未升层 / 表满
+// gibbous 一律不拦(handled=false),由 DoCall 回退路径的 doCall 统一分派,保正确性。
 //
-// **base 刷新(PW6 核心)**:被调帧可能 growStack 使值栈段在 arena 重定位
-// (state.go growStack 改 stackBaseW),本帧 $base 随之失效。返回时按当前
-// stackBaseW + ci.base 重算新 base 字节偏移,gibbous 据此续算寻址。
-// 返回:成功 = 新 base 字节偏移(≥0);错误 = -1(pendingErr 已置,status 链冒泡)。
+// **压帧等价 enterGibbous**:enterLuaFrame(标 fresh=false)+ SetGibbous(true) +
+// reMirrorTop——与 crescent→gibbous 入口的 enterGibbous(gibbous_host.go)逐字段同款,
+// 差别仅在「不在此处 code.Run,改由 caller call_indirect 跑」。被调 RETURN 经 DoReturn
+// 弹本帧 + 写刷新后 caller base 到中转字(对称 enterGibbous 由 trampoline 弹帧)。
+func (st *State) tryIndirectCallee(th *thread, ci *callInfo, a, b, c int32) (int64, bool) {
+	if !profileEnabled || th != st.mainTh {
+		return 0, false // 协程线程不升层(§5),非 profile build 无 gibbous
+	}
+	funcIdx := ci.base + int(a)
+	callee := th.slot(funcIdx)
+	if value.Tag(callee) != value.TagFunction {
+		return 0, false // __call 元方法 / 非可调用 → 回退(doCall 处理)
+	}
+	cl := value.GCRefOf(callee)
+	if object.IsHostClosure(st.arena, cl) {
+		return 0, false // host fn → 回退
+	}
+	pid := object.ClosureProtoID(st.arena, cl)
+	code := st.bridge.GibbousCodeOf(st.protos[pid])
+	if code == nil {
+		return 0, false // 未升层(crescent)→ 回退
+	}
+	slot, ok := code.Slot()
+	if !ok {
+		return 0, false // 表满哨兵(无 slot)→ 回退走 code.Run(baseline)
+	}
+	// nargs/nresults 解码(与 doCall 同款:B=0 取到 top,C=0 留到 top)。
+	var nargs int
+	if b == 0 {
+		nargs = th.top - funcIdx - 1
+	} else {
+		nargs = int(b) - 1
+	}
+	nresults := int(c) - 1
+	// 压帧(等价 enterGibbous:enterLuaFrame + 置 gibbous 位 + 重镜像)。
+	if e := st.enterLuaFrame(th, funcIdx, nargs, nresults, false); e != nil {
+		st.gibbousPendingErr = e
+		return -1, true
+	}
+	cci := currentCI(th)
+	cci.SetGibbous(true)
+	th.reMirrorTop()
+	// 被调帧 base 字节偏移写中转字,供 caller wasm 读作 call_indirect 实参。
+	calleeBaseByte := (th.stackBaseW + uint32(cci.base)) * 8
+	st.arena.SetWordAt(st.ciTransferRef, uint64(calleeBaseByte))
+	st.indirectCalls++              // 计直调命中(R3 验证用)
+	return int64(slot)<<1 | 1, true // indirect 哨兵(奇数)
+}
+
+// Call 处理 gibbous 帧内的 CALL A B C(04-trampoline §3 + PW10 R3 直调)。
+//
+// **R3 快路径**:被调是 gibbous-有-slot 的 Lua closure ⟹ tryIndirectCallee 自己
+// 压帧 + 置 gibbous 位 + 把被调帧 base 写中转字,返回 indirect 哨兵——caller wasm
+// 据此 `call_indirect <slot>` 跨 module 直达(免 code.Run ~143ns 双跨层重入)。
+//
+// **回退**:host / crescent(未升层)/ __call 元方法 / 无-slot gibbous(表满)⟹
+// 复用 doCall 统一分派同步跑完(baseline,返回值已落 R(A..),next==nil 或起一层
+// executeFrom 驱动未升层 Lua 帧)。
+//
+// **base 刷新(PW6 核心,回退路径)**:被调帧可能 growStack 使值栈段在 arena 重定位,
+// 本帧 $base 随之失效。回退路径返回时按当前 stackBaseW + ci.base 重算新 base 字节
+// 偏移(偶数);R3 直调路径的 base 刷新由被调 RETURN 经 DoReturn 写中转字完成。
+//
+// 返回(i64 三态,Wasm 侧据此分派,负检查须先于奇偶):
+//   - < 0(-1):错误,pendingErr 已置,status 链冒泡;
+//   - 奇数 (slot<<1)|1:indirect 直调,被调帧 base 已写中转字;
+//   - 偶数(8 的倍数):done,值 = 刷新后的本帧 base 字节偏移(回退路径同步跑完)。
 func (st *State) DoCall(base, pc, a, b, c int32) int64 {
 	th := st.runningThread
 	ci := currentCI(th)
 	ci.pc = pc
+	// R3 快路径:被调 gibbous-有-slot ⟹ 压帧 + 返 indirect 哨兵(caller call_indirect)。
+	if ret, handled := st.tryIndirectCallee(th, ci, a, b, c); handled {
+		return ret
+	}
+	// 回退:host / crescent / __call / 无-slot gibbous —— 同步跑完(baseline)。
 	ins := bytecode.EncodeABC(bytecode.CALL, int(a), int(b), int(c))
 	next, e := st.doCall(th, ci, ins)
 	if e != nil {

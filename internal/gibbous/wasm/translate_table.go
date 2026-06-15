@@ -460,23 +460,28 @@ func (c *Compiler) emitSetList(em *emitter, ins bytecode.Instruction, pc int32) 
 	c.emitHelperEpilogue5(em, helperSetList, pc, a, b, cc)
 }
 
-// --- CALL(PW6-a,三向分派 + base 刷新)---
+// --- CALL(PW6-a 三向分派 + PW10 R3 call_indirect 直调)---
 //
-// CALL A B C —— R(A)(R(A+1..A+B-1)),返回回填 R(A..A+C-2)。统一经 h_call 三向
-// 分派(crescent/gibbous/host,04-trampoline §3),助手内跑被调帧到完成、返回值留
-// 共见栈槽。
+// CALL A B C —— R(A)(R(A+1..A+B-1)),返回回填 R(A..A+C-2)。经 h_call(DoCall)
+// 三态分派(04-trampoline §3 + PW10 R3):
+//   - < 0(-1):错误 → 自身 return 1(status 链冒泡,§4.1);
+//   - 偶数(8 倍数):done —— host/crescent/__call/无-slot gibbous 已同步跑完,
+//     值 = 刷新后本帧 base 字节偏移(PW6 base 刷新),local.set $base 续算;
+//   - 奇数 (slot<<1)|1:indirect —— 被调是 gibbous-有-slot,DoCall 已压帧 + 把
+//     被调帧 base 写中转字。本帧据 slot 经 `call_indirect <typeEntry> table0` 跨
+//     module 直达被调 run(免 code.Run ~143ns 双跨层重入,PW10 R3 核心收益)。
+//     被调 run 返 status:≠0 ⟹ 调 h_callerr 补弹遗留帧 + return 1;=0 ⟹ 从中转字
+//     读刷新后的本帧 base(DoReturn 已写)续算。
 //
-// **base 刷新(本里程碑核心)**:被调帧可能 growStack 使值栈段在 arena 重定位
-// (state.go growStack),本帧 $base 随之失效。h_call 返回刷新后的新 base 字节偏移
-// (成功)或负哨兵(错误)。gibbous 据此 local.set $base 续算,免陈旧 base UAF。
-//
-//	(local.set $i64c (call h_call(base,pc,a,b,c)))
-//	(if (i64.lt_s $i64c 0) (then (return 1)))          ;; 负哨兵 → status 链冒泡
-//	(local.set $base (i32.wrap_i64 $i64c))             ;; 刷新 base
+// **base 刷新**:被调(回退同步路径 / R3 直调路径的 DoReturn)可能 growStack 使值栈
+// 段在 arena 重定位,本帧 $base 失效。两路均刷新 base 后续算,免陈旧 base UAF。
 func (c *Compiler) emitCall(em *emitter, ins bytecode.Instruction, pc int32) {
 	a := int32(bytecode.A(ins))
 	b := int32(bytecode.B(ins))
 	cc := int32(bytecode.C(ins))
+	xfer := c.host.CITransferAddr()
+
+	// ret = h_call(base,pc,a,b,c)
 	em.localGet(localBase)
 	em.i32Const(pc)
 	em.i32Const(a)
@@ -484,18 +489,46 @@ func (c *Compiler) emitCall(em *emitter, ins bytecode.Instruction, pc int32) {
 	em.i32Const(cc)
 	em.call(helperCall)
 	em.localTee(localI64c)
-	// 负哨兵 → 错误冒泡
-	em.localGet(localI64c)
+	// ret < 0 → 错误冒泡
 	em.i64Const(0)
 	em.i64LtS()
 	em.ifVoid()
 	em.i32Const(1)
 	em.ret()
 	em.end()
-	// 刷新 base = i32.wrap(newbase)
+	// 奇偶分派:ret & 1(奇 = indirect / 偶 = done)
+	em.localGet(localI64c)
+	em.i64Const(1)
+	em.i64And()
+	em.i32WrapI64()
+	em.ifVoid()
+	// --- 奇:call_indirect 直调 ---
+	// 实参 calleeBase = i32.load(xfer)(DoCall 写的被调帧 base)
+	em.i32Const(0)
+	em.i32Load(xfer)
+	// 表索引 slot = i32.wrap(ret >> 1)
+	em.localGet(localI64c)
+	em.i64Const(1)
+	em.i64ShrU()
+	em.i32WrapI64()
+	em.callIndirect(typeEntry, 0)
+	// status = 被调 run 返回值;≠0 → 补弹遗留帧 + 冒泡
+	em.localTee(localI32)
+	em.ifVoid()
+	em.call(helperCallErr) // h_callerr:补弹遗留 gibbous 被调帧
+	em.i32Const(1)
+	em.ret()
+	em.end()
+	// OK:刷新本帧 base = i32.load(xfer)(DoReturn 已写刷新后 caller base)
+	em.i32Const(0)
+	em.i32Load(xfer)
+	em.localSet(localBase)
+	em.elseOp()
+	// --- 偶:done(回退同步跑完)刷新 base = i32.wrap(ret) ---
 	em.localGet(localI64c)
 	em.i32WrapI64()
 	em.localSet(localBase)
+	em.end()
 }
 
 // emitTailCall TAILCALL A B C —— 尾调用复用帧(PW6-b,02 §3.6.2)。
