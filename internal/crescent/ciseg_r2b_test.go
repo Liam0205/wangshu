@@ -58,7 +58,42 @@ return sum(300)`
 	}
 }
 
-// TestR2b2_GrowCISegUnit 单元:手工压超过 initialCISlots 帧,验证 growCISeg 重分配后
+// TestR2b3_SegClRootSurvivesGC R2b-3 核心验收:GC 根扫描从 arena ci 段读每帧
+// closure 根。构造「闭包仅经活跃帧可达」+ 深调用链中途强制 full GC + GC stress,
+// 验证闭包不被误回收(漏根/读错段 = UAF)。这是把 ci 段确立为 GC 根权威源的回归锚。
+func TestR2b3_SegClRootSurvivesGC(t *testing.T) {
+	// 深递归链:每层一个不同 closure 帧在 ci 段;最深处 host fn 强制 Collect。
+	// 若某帧 closure 根没从段正确扫到 → 其 Proto/upvalue 被回收 → 返回错值或崩。
+	src := `
+local function chain(n)
+  if n == 0 then collectgarbage_test(); return 0 end
+  local k = n * 2          -- 每帧一个 upvalue,被内层闭包捕获 = 帧 closure 必须是活根
+  local function step() return k end
+  return step() + chain(n - 1)
+end
+result = chain(120)        -- 120 层帧(> initialCISlots 64,跨 growCISeg)`
+	st := New()
+	st.SetGCStressMode(true) // 每个 safepoint 强制 full Collect(根扫描高频触发)
+	id := st.RegisterHostFn(func(s *State, _ []value.Value) ([]value.Value, *LuaError) {
+		s.gc.Collect() // 最深帧(120 层活跃帧在 ci 段)强制扫根
+		return nil, nil
+	})
+	cl := st.MakeHostClosure(id)
+	st.SetGlobal("collectgarbage_test", value.MakeGC(value.TagFunction, cl))
+
+	prog := mustCompile(t, []byte(src))
+	mainCl := st.LoadProgram(prog.mainID, prog.protos)
+	if _, err := st.Call(mainCl, nil, 0); err != nil {
+		t.Fatalf("call (深链 GC stress + 段根扫描): %v", err)
+	}
+	v, _ := st.tableGet(st.globals, st.makeStringValue("result"))
+	// chain(n) = Σ step() = Σ (k=2n) for n=120..1 = 2*(120*121/2) = 14520
+	want := float64(14520)
+	if !value.IsNumber(v) || value.AsNumber(v) != want {
+		t.Errorf("result = %v, want %v(段 closure 根漏扫 = 闭包被误回收)", debugVal(st, v), want)
+	}
+}
+
 // 旧帧经 readCISegInto 仍读回原值(拷贝 + ciBaseW 重定位正确)。
 func TestR2b2_GrowCISegUnit(t *testing.T) {
 	st := New()

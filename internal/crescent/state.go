@@ -357,9 +357,12 @@ func (st *State) visitThreadRefs(th *thread, seen map[*thread]bool, visit func(a
 	if seen != nil {
 		seen[th] = true
 	}
-	for _, ci := range th.cis {
-		if !ci.Cl().IsNull() {
-			visit(ci.Cl())
+	// PW10 R2b-3:每帧 closure 根从 arena ci 段读(word3),而非 Go cis[i].cl。
+	// 这是把 ci 段确立为 GC 根权威源的关键翻转——漏根/读错 = closure 被误回收 →
+	// freelist 复用 = UAF(debugFreelist 在 stress 下抓)。形态 Y 现算寻址免缓存。
+	for depth := range th.cis {
+		if cl := th.ciSegCl(depth); !cl.IsNull() {
+			visit(cl)
 		}
 	}
 	for _, uv := range th.openUvs {
@@ -817,7 +820,14 @@ func (th *thread) growCISeg(need int) {
 	}
 }
 
-// verifyCISeg 回读 ci 段第 depth 帧,断言与 Go cis 权威值逐字段一致
+// ciSegCl 从 ci 段第 depth 帧读 cl(word3,GCRef)。R2b-3 GC 根扫描经此从 arena
+// 段读每帧 closure 根(而非 Go cis[depth].cl)——证明段是正确的 GC 根源(漏根=UAF)。
+// 形态 Y:WordAt 现算地址免缓存。
+func (th *thread) ciSegCl(depth int) arena.GCRef {
+	ref := arena.GCRef(th.ciBaseW+uint32(depth*ciWords+3)) << 3
+	return arena.GCRef(th.arena.WordAt(ref))
+}
+
 // (PW10 R2b-1 安全网,仅 ciMirrorCheck=wangshu_trace 构建启用)。打包/解包
 // bug 在此立即 panic 显形,而非 R2b-2 翻转读段后症状离根因很远。
 func (th *thread) verifyCISeg(depth int, want *callInfo) {
