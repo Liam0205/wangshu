@@ -216,7 +216,12 @@ func (c *Collector) MaybeCollect() {
 
 // SetStopped 暂停/恢复自动 GC(collectgarbage("stop"/"restart");官方语义:
 // stop 后只有显式 collectgarbage 触发回收,分配不再自动 GC)。
-func (c *Collector) SetStopped(on bool) { c.stopped = on }
+//
+// updateGCPending:与 SetStressMode / Collect 同——stopped 是 gcPendingNow 的
+// 输入(stopped 时恒返 false),状态转移后须同步标志字,否则 restart 后
+// (停期已累积 bytesAllocSince≥threshold)标志滞留 0 → gibbous 回边漏跨层
+// (虽下次 AllocCharge 自愈,但对称处理消除滞后窗口)。
+func (c *Collector) SetStopped(on bool) { c.stopped = on; c.updateGCPending() }
 
 // SetStressMode 开关高频 GC 压力模式(06 §11 / 12 §5):每个 safepoint 都
 // 强制 full Collect。GC 透明性 fuzz 用——压力模式下输出必须与正常模式
