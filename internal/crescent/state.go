@@ -852,6 +852,33 @@ func (th *thread) varargsAt(depth int) []value.Value {
 	return nil
 }
 
+// syncCurFromSeg 把段为权威翻转的「Go 侧反向同步」收口(PW10 零跨界 Stage 1b)。
+//
+// **段为权威**:Stage 2/3 起 Wasm 侧帧建拆 increment/decrement ciDepth 字 + 写段帧,
+// 全程不回 Go,故 Go 的 th.ciDepth / th.cur 在 Wasm 执行期被冻结而段是活的。控制权
+// 跨回 Go 时(code.Run 返回 / 回退 helper 入口),Go 必须以段为准反向同步:读 ciDepth
+// 字,若与 th.ciDepth 不同(Wasm 改过),采纳字深度 + 从段重载 th.cur。
+//
+// **Stage 1b 是验证性 no-op**:此阶段无 Wasm 写,字恒等于 th.ciDepth,故同步不触发
+// (wangshu_trace 下断言一致)。其目的是先把「段为权威」的反向同步纪律收口,使
+// Stage 2/3 落 Wasm 写后此处自动生效。th.cur 的 pc/top 在 gibbous 帧执行期住 Wasm
+// local(非 th.cur),故重载 th.cur 不丢「比段新」的信息——gibbous 帧从不靠 th.cur 续算。
+func (th *thread) syncCurFromSeg() {
+	if th.ciDepthWordRef == 0 {
+		return // 非 mainTh(协程不升层,无字镜像)
+	}
+	wd := int(uint32(th.arena.WordAt(th.ciDepthWordRef)))
+	if wd == th.ciDepth {
+		return // 字与 Go 一致(Stage 1b 恒走此路;Stage 2/3 Wasm 未改深度时也走此)
+	}
+	// Wasm 改过深度(Stage 2/3):采纳字深度 + 从段重载栈顶帧。
+	th.ciDepth = wd
+	if wd > 0 {
+		th.readCISegInto(wd-1, &th.cur)
+		th.cur.varargs = th.varargsAt(wd - 1)
+	}
+}
+
 // ciAt 读第 depth 帧的 callInfo 值副本(非当前帧只读访问:traceback / 协程恢复)。
 // 当前栈顶帧(depth==ciDepth-1)直接返回热镜像 th.cur(它可能 pc/top 比段新);
 // 其余帧从段解包 + 补 varargs。**返回值副本**——调用方不得缓存指针跨分配

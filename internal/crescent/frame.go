@@ -136,6 +136,13 @@ func (st *State) popCallInfo(th *thread) callInfo {
 // slice 元素)——故热循环持此指针跨 CALL/分配永不悬垂(PW10 R2b-4 消除 append
 // 重定位雷区,design-claims-vs-codebase-physics §2)。修改经它直接改 th.cur,
 // 下次 push/pop 边界由 writeCISeg 刷回段。
+//
+// **PW10 零跨界 Stage 1b 持有者审计**:Wasm 侧帧建拆(Stage 2/3)在 Wasm 执行期改
+// ciDepth 字 + 段帧,但 th.cur 是**地址稳定**的固定 struct 字段——syncCurFromSeg 在
+// 跨回 Go 的边界**原地更新 th.cur 内容**(非换地址),故任何持 &th.cur 的指针自动
+// 见到 resync 后的内容、不悬垂。Go helper 仅在 Wasm 跨回时运行(此时 Wasm 不在栈上),
+// 入口 fresh 取 currentCI;解释器调 gibbous 后按既有纪律 reload ci(execute.go)。
+// ⟹ 无新陈旧持有者雷区。
 func currentCI(th *thread) *callInfo { return &th.cur }
 
 // rk 取一个 RK 操作数:< 256 取寄存器 R(rk);>=256 取常量 K(rk-256)。

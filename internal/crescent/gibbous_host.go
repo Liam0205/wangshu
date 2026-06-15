@@ -42,6 +42,10 @@ func (st *State) enterGibbous(th *thread, code bridge.GibbousCode, funcIdx, narg
 	baseByte := (th.stackBaseW + uint32(ci.base)) * 8
 
 	status := code.Run(st.gibbousStack(), baseByte)
+	// 段为权威反向同步(PW10 零跨界 Stage 1b):Wasm 执行期可能 increment/decrement
+	// ciDepth 字 + 写段帧(Stage 2/3),此处以段为准重载 th.ciDepth/th.cur。Stage 1b
+	// 无 Wasm 写,字恒等 ciDepth → 验证性 no-op。
+	th.syncCurFromSeg()
 	if status != 0 {
 		// ERR:DoReturn/h_raise 已置 pendingErr,或 wazero 内部错误(PendingErr)。
 		if st.gibbousPendingErr == nil {
