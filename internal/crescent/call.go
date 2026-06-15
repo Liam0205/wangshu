@@ -72,7 +72,7 @@ func (st *State) doCall(th *thread, ci *callInfo, i bytecode.Instruction) (*call
 // entryDepthOf 找当前最内层 fresh 帧的深度(yield 恢复后的冒泡边界)。
 func (st *State) entryDepthOf(th *thread) int {
 	for i := len(th.cis) - 1; i >= 0; i-- {
-		if th.cis[i].fresh {
+		if th.cis[i].Fresh() {
 			return i
 		}
 	}
@@ -120,21 +120,21 @@ func (st *State) doTailCall(th *thread, ci *callInfo, i bytecode.Instruction) (*
 		// host 尾调用 = 普通 host 调用,结果作为本帧返回值。M12 简化:落到原 funcIdx 起,
 		// 然后让本帧 RETURN(主循环紧随会执行 RETURN A=funcIdx, B=0,但 codegen 紧跟一条
 		// RETURN A B=0 设计文档承诺存在);所以这里完成 host 后让 ci 继续即可。
-		return nil, st.callHost(th, funcIdx, nargs, ci.nresults)
+		return nil, st.callHost(th, funcIdx, nargs, ci.NResults())
 	}
 	st.closeUpvals(th, ci.base)
-	dst := ci.funcIdx
+	dst := ci.FuncIdx()
 	for k := 0; k < nargs+1; k++ {
 		th.setSlot(dst+k, th.slot(funcIdx+k))
 	}
-	parentNRes := ci.nresults
-	parentFresh := ci.fresh
+	parentNRes := ci.NResults()
+	parentFresh := ci.Fresh()
 	st.popCallInfo(th)
 	if e := st.enterLuaFrame(th, dst, nargs, parentNRes, parentFresh); e != nil {
 		return nil, e
 	}
 	cci := currentCI(th)
-	cci.tailcall = true
+	cci.SetTailcall(true)
 	return cci, nil
 }
 
@@ -149,12 +149,12 @@ func (st *State) doReturn(th *thread, ci *callInfo, i bytecode.Instruction, entr
 		nret = b - 1
 	}
 	st.closeUpvals(th, ci.base)
-	dst := ci.funcIdx
+	dst := ci.FuncIdx()
 	src := ci.base + a
 	for k := 0; k < nret; k++ {
 		th.setSlot(dst+k, th.slot(src+k))
 	}
-	wantedN := ci.nresults
+	wantedN := ci.NResults()
 	st.popCallInfo(th)
 	if wantedN < 0 {
 		th.top = dst + nret
@@ -193,7 +193,7 @@ func (st *State) makeClosure(th *thread, ci *callInfo, i bytecode.Instruction) a
 			uv := st.findOrCreateUpval(th, stackIdx)
 			object.SetClosureUpvalRef(st.arena, cl, j, uv)
 		case bytecode.GETUPVAL:
-			parent := object.ClosureUpvalRef(st.arena, ci.cl, uint16(bytecode.B(pseudo)))
+			parent := object.ClosureUpvalRef(st.arena, ci.Cl(), uint16(bytecode.B(pseudo)))
 			object.SetClosureUpvalRef(st.arena, cl, j, parent)
 		}
 	}
@@ -303,7 +303,7 @@ func (st *State) doConcat(th *thread, ci *callInfo, i bytecode.Instruction) *Lua
 func (st *State) doVararg(th *thread, ci *callInfo, i bytecode.Instruction) *LuaError {
 	a := bytecode.A(i)
 	b := bytecode.B(i)
-	n := len(ci.varargs)
+	n := len(ci.Varargs())
 	if b == 0 {
 		// 全部 vararg 到 top。top 必须双向设置(不只抬不降):此前更高的
 		// 残留 top 会让消费方(doCall 的 nargs = top-funcIdx-1)高估实参数。
@@ -312,7 +312,7 @@ func (st *State) doVararg(th *thread, ci *callInfo, i bytecode.Instruction) *Lua
 			th.ensureStack(need)
 		}
 		for k := 0; k < n; k++ {
-			th.setSlot(ci.base+a+k, ci.varargs[k])
+			th.setSlot(ci.base+a+k, ci.Varargs()[k])
 		}
 		th.top = need
 		return nil
@@ -320,7 +320,7 @@ func (st *State) doVararg(th *thread, ci *callInfo, i bytecode.Instruction) *Lua
 	want := b - 1
 	for k := 0; k < want; k++ {
 		if k < n {
-			setReg(th, ci, a+k, ci.varargs[k])
+			setReg(th, ci, a+k, ci.Varargs()[k])
 		} else {
 			setReg(th, ci, a+k, value.Nil)
 		}

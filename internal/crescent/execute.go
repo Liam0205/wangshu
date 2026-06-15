@@ -68,11 +68,11 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 			}
 
 		case bytecode.GETUPVAL:
-			uv := object.ClosureUpvalRef(st.arena, ci.cl, uint16(bytecode.B(i)))
+			uv := object.ClosureUpvalRef(st.arena, ci.Cl(), uint16(bytecode.B(i)))
 			setReg(th, ci, bytecode.A(i), st.upvalGet(th, uv))
 
 		case bytecode.SETUPVAL:
-			uv := object.ClosureUpvalRef(st.arena, ci.cl, uint16(bytecode.B(i)))
+			uv := object.ClosureUpvalRef(st.arena, ci.Cl(), uint16(bytecode.B(i)))
 			st.upvalSet(th, uv, reg(th, ci, bytecode.A(i)))
 
 		case bytecode.GETGLOBAL:

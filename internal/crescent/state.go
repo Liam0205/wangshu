@@ -312,7 +312,7 @@ func (st *State) visitThreadValues(th *thread, seen map[*thread]bool, visit func
 	}
 	// ci.varargs 住 Go 切片(M13 简化),不在 stack[:top] 区间,必须单列为根。
 	for i := range th.cis {
-		for _, v := range th.cis[i].varargs {
+		for _, v := range th.cis[i].Varargs() {
 			visit(v)
 		}
 	}
@@ -358,8 +358,8 @@ func (st *State) visitThreadRefs(th *thread, seen map[*thread]bool, visit func(a
 		seen[th] = true
 	}
 	for _, ci := range th.cis {
-		if !ci.cl.IsNull() {
-			visit(ci.cl)
+		if !ci.Cl().IsNull() {
+			visit(ci.Cl())
 		}
 	}
 	for _, uv := range th.openUvs {
@@ -823,3 +823,29 @@ type callInfo struct {
 
 // protoOf 取 callInfo 的 Proto(VS0-b:protoID → *Proto 收口)。
 func (st *State) protoOf(ci *callInfo) *bytecode.Proto { return st.protos[ci.protoID] }
+
+// --- CallInfo 字段访问收口(R2a,PW10 VS0-e 前置)---
+//
+// 所有 callInfo 字段读写经以下 accessor,使 R2b 把 ci 物理迁入 linear memory
+// 时只改方法体 + struct,不动 ~171 处调用点(同 VS0-a 值栈寻址收口的纪律)。
+//
+// **热/冷分野(R2b 物理布局依据)**:Base/SetBase 与 Pc/SetPc 是热寄存器(每
+// 指令经 reg/setReg/主循环读写),R2b 拟保留为当前帧的 Go 镜像、仅在 push/pop/
+// 层边界与 arena ci 段同步;其余字段(cl/nresults/funcIdx/protoID/top/flags/
+// varargs)是冷字段(仅调用边界触),R2b 直接 arena 段读写。本轮 accessor 全部
+// 是直通(返回/写 Go 字段),零行为变更。
+func (ci *callInfo) Base() int              { return ci.base }
+func (ci *callInfo) FuncIdx() int           { return ci.funcIdx }
+func (ci *callInfo) Top() int               { return ci.top }
+func (ci *callInfo) SetTop(v int)           { ci.top = v }
+func (ci *callInfo) ProtoID() uint32        { return ci.protoID }
+func (ci *callInfo) Cl() arena.GCRef        { return ci.cl }
+func (ci *callInfo) NResults() int          { return ci.nresults }
+func (ci *callInfo) Tailcall() bool         { return ci.tailcall }
+func (ci *callInfo) SetTailcall(v bool)     { ci.tailcall = v }
+func (ci *callInfo) Fresh() bool            { return ci.fresh }
+func (ci *callInfo) Gibbous() bool          { return ci.gibbous }
+func (ci *callInfo) SetGibbous(v bool)      { ci.gibbous = v }
+func (ci *callInfo) Pc() int32              { return ci.pc }
+func (ci *callInfo) SetPc(v int32)          { ci.pc = v }
+func (ci *callInfo) Varargs() []value.Value { return ci.varargs }

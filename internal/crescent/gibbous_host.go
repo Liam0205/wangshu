@@ -33,7 +33,7 @@ func (st *State) enterGibbous(th *thread, code bridge.GibbousCode, funcIdx, narg
 		return e
 	}
 	ci := currentCI(th)
-	ci.gibbous = true // bit50 callStatus_gibbous(04 §1.2):本帧走 Wasm 路径
+	ci.SetGibbous(true) // bit50 callStatus_gibbous(04 §1.2):本帧走 Wasm 路径
 
 	// base 字节偏移:R0 在共见 linear memory 的字节地址 =
 	//   (值栈段字偏移 stackBaseW + 帧 base 槽) * 8(每槽 8 字节 NaN-box u64)。
@@ -53,7 +53,7 @@ func (st *State) enterGibbous(th *thread, code bridge.GibbousCode, funcIdx, narg
 		e := st.gibbousPendingErr
 		st.gibbousPendingErr = nil
 		// 弹本帧 CallInfo(若 DoReturn 未弹——ERR 路径不经 RETURN)。
-		if len(th.cis) > 0 && currentCI(th).gibbous {
+		if len(th.cis) > 0 && currentCI(th).Gibbous() {
 			st.popCallInfo(th)
 		}
 		return e
@@ -81,7 +81,7 @@ func (st *State) gibbousStack() []uint64 {
 func (st *State) GetUpval(base int32, b int32) uint64 {
 	th := st.runningThread
 	ci := currentCI(th)
-	uv := object.ClosureUpvalRef(st.arena, ci.cl, uint16(b))
+	uv := object.ClosureUpvalRef(st.arena, ci.Cl(), uint16(b))
 	return uint64(st.upvalGet(th, uv))
 }
 
@@ -89,7 +89,7 @@ func (st *State) GetUpval(base int32, b int32) uint64 {
 func (st *State) SetUpval(base int32, b int32, val uint64) {
 	th := st.runningThread
 	ci := currentCI(th)
-	uv := object.ClosureUpvalRef(st.arena, ci.cl, uint16(b))
+	uv := object.ClosureUpvalRef(st.arena, ci.Cl(), uint16(b))
 	st.upvalSet(th, uv, value.Value(val))
 }
 
@@ -109,12 +109,12 @@ func (st *State) DoReturn(base int32, pc int32, a int32, b int32) int32 {
 		nret = int(b) - 1
 	}
 	st.closeUpvals(th, ci.base)
-	dst := ci.funcIdx
+	dst := ci.FuncIdx()
 	src := ci.base + int(a)
 	for k := 0; k < nret; k++ {
 		th.setSlot(dst+k, th.slot(src+k))
 	}
-	wantedN := ci.nresults
+	wantedN := ci.NResults()
 	st.popCallInfo(th)
 	if wantedN < 0 {
 		th.top = dst + nret

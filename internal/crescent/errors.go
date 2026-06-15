@@ -59,7 +59,7 @@ func (st *State) buildTraceback(th *thread) string {
 		if i == 0 {
 			what = "main chunk"
 		}
-		if ci.tailcall {
+		if ci.Tailcall() {
 			sb.WriteString("(...tail calls...)\n\t")
 		}
 		fmt.Fprintf(&sb, "%s:%d: in %s", bytecode.ChunkID(proto.Source), line, what)
