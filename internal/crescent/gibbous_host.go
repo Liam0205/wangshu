@@ -472,6 +472,12 @@ func (st *State) CITransferAddr() uint32 {
 	return uint32(st.ciTransferRef)
 }
 
+// CIDepthAddr 返回 ci-depth 游标字的 linear memory 字节地址(P3 PW10 零跨界 Stage 1a)。
+// Wasm 侧帧建拆 increment/decrement 此 i32 字免回 Go 改 th.ciDepth。
+func (st *State) CIDepthAddr() uint32 {
+	return uint32(st.ciDepthRef)
+}
+
 // --- PW7 闭包构造 + 作用域 upvalue 关闭(全经助手,复用解释器)---
 
 // Closure 处理 CLOSURE A Bx(execute.go:394-397 同款)。makeClosure 读后随伪指令

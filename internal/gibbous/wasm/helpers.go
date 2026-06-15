@@ -120,6 +120,11 @@ type HostState interface {
 	// 返回后 caller 读续算)。State 生命期内恒定。
 	CITransferAddr() uint32
 
+	// CIDepthAddr 返回 ci-depth 游标字在 linear memory 的字节地址(arena GCRef,
+	// P3 PW10 零跨界 Stage 1a)。Wasm 侧帧建拆(Stage 2/3)increment/decrement 此 i32
+	// 字免回 Go 改 th.ciDepth。State 生命期内恒定。
+	CIDepthAddr() uint32
+
 	// PopErrFrame 在 call_indirect 直调失败时补弹遗留的 gibbous 被调帧(PW10 R3)。
 	// 被调出错自身 return 1 不弹帧,caller wasm 据 status≠0 调本助手补弹——精确复刻
 	// baseline enterGibbous ERR 路径的弹帧条件(currentCI 是 gibbous 帧才弹)。

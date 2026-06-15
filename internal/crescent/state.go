@@ -171,6 +171,12 @@ type State struct {
 	// 唯一读者,无交错)。0 = 未分配(非 p3 build 也分配,offset 逻辑统一)。
 	ciTransferRef arena.GCRef
 
+	// ciDepthRef 是主线程帧深度 th.ciDepth 的 linear-memory 镜像字(PW10 零跨界
+	// Stage 1a)。Wasm 侧帧建拆(Stage 2/3)increment/decrement 它免回 Go 改 ciDepth。
+	// 仅 mainTh 写它(协程不升层,gibbous 只在 mainTh 跑)——经 mainTh.ciDepthWordRef
+	// 接通。0 = 未分配(非 p3 build 也分配,offset 逻辑统一)。
+	ciDepthRef arena.GCRef
+
 	// indirectCalls 计 gibbous→gibbous call_indirect 直调命中次数(PW10 R3 验证用,
 	// tryIndirectCallee 返 indirect 哨兵时 ++)。仅测试读,确认直调路径真走到(非
 	// 静默回退 code.Run)。生产无功能含义,1 个 int 开销可忽略。
@@ -224,6 +230,11 @@ func New() *State {
 	// 传被调/刷新后 base 字节偏移(详见字段注释)。早分配 → 偏移稳定。
 	st.ciTransferRef = a.AllocWords(1)
 	a.SetWordAt(st.ciTransferRef, 0)
+	// ci-depth 游标字(P3 PW10 零跨界 Stage 1a):主线程帧深度 th.ciDepth 的 linear-
+	// memory 镜像,Wasm 侧帧建拆(Stage 2/3)increment/decrement 它免回 Go。早分配 →
+	// 偏移稳定;非 p3 build 也分配(1 字开销可忽略)。仅 mainTh 写它(协程不升层)。
+	st.ciDepthRef = a.AllocWords(1)
+	a.SetWordAt(st.ciDepthRef, 0)
 	st.installRoots()
 	st.wireP3() // wangshu_p3 build:构造 gibbous Compiler 注入 bridge;默认 build no-op
 	// host closure 槽位回收(gmatch 迭代器、mountArena 列代理等动态注册的
@@ -625,6 +636,10 @@ func (st *State) callOnStack(cl arena.GCRef, args []value.Value, nresults int) (
 	if th == nil {
 		th = st.newThread()
 		st.mainTh = th
+		// 主线程帧深度镜像到 ciDepthRef(PW10 零跨界 Stage 1a):仅 mainTh 接通,
+		// 协程 th 恒不镜像(协程不升层)。setCIDepth 据此字段决定是否写字。
+		th.ciDepthWordRef = st.ciDepthRef
+		th.setCIDepth(0) // 初始化字 = 0(与新线程 ciDepth=0 同步)
 	} else {
 		th.top = 0
 		th.truncateCI(0)
@@ -705,6 +720,9 @@ type thread struct {
 	ciDepth int // 逻辑帧深度(= 旧 len(th.cis));段[0..ciDepth-1] 是活跃帧
 	ciBaseW uint32
 	ciCap   int
+	// ciDepthWordRef 非零时,setCIDepth 把 ciDepth 镜像到此 arena 字(PW10 零跨界
+	// Stage 1a)。仅 mainTh 接通(State.New 后 = st.ciDepthRef);协程 th 恒 0(不镜像)。
+	ciDepthWordRef arena.GCRef
 	// ciVarargs 每帧 varargs(GC 根)。varargs 是 Go []value.Value,不进 linear
 	// memory(VS0-e 子piece);与帧深度对齐(索引 = depth)。
 	ciVarargs [][]value.Value
@@ -848,13 +866,31 @@ func (th *thread) ciAt(depth int) callInfo {
 	return ci
 }
 
+// setCIDepth 设帧深度 + 镜像到 linear-memory 字(PW10 零跨界 Stage 1a)。
+// 所有 th.ciDepth 写经此收口(enterLuaFrame ++ / popCallInfo -- / truncateCI =),
+// 使 ciDepthWordRef(mainTh)与 Go ciDepth 同步。Stage 1a 只写影子(Go 仍读 ciDepth);
+// Stage 2/3 Wasm 侧增减该字、Go 侧经 syncCIDepthFromWord 反向读回(段为权威翻转)。
+func (th *thread) setCIDepth(n int) {
+	th.ciDepth = n
+	if th.ciDepthWordRef != 0 {
+		th.arena.SetWordAt(th.ciDepthWordRef, uint64(uint32(n)))
+		if ciMirrorCheck {
+			// wangshu_trace 安全网:回读字自检镜像与 Go ciDepth 一致(Stage 1a),
+			// 捕 wrong-ref / 编码 bug;Stage 1c 翻转读字后此自检防回归。
+			if got := uint32(th.arena.WordAt(th.ciDepthWordRef)); got != uint32(n) {
+				panic(fmt.Sprintf("crescent: ciDepth 字镜像不一致 got=%d want=%d", got, n))
+			}
+		}
+	}
+}
+
 // truncateCI 把帧深度回退到 newDepth(pcall/元方法/yield 边界清理,替代旧
 // th.cis = th.cis[:newDepth])。回退后从段重载新栈顶帧到 th.cur。R2b-4。
 func (th *thread) truncateCI(newDepth int) {
 	for d := newDepth; d < th.ciDepth; d++ {
 		th.clearVarargs(d)
 	}
-	th.ciDepth = newDepth
+	th.setCIDepth(newDepth)
 	if newDepth > 0 {
 		th.readCISegInto(newDepth-1, &th.cur)
 		th.cur.varargs = th.varargsAt(newDepth - 1)

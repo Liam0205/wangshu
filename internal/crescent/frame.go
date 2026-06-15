@@ -104,7 +104,7 @@ func (st *State) enterLuaFrame(th *thread, funcIdx, nargs, nresults int, entry b
 		th.growCISeg(depth + 1)
 	}
 	th.cur = ci
-	th.ciDepth++
+	th.setCIDepth(depth + 1)
 	th.setVarargs(depth, varargs)
 	th.writeCISeg(depth, &th.cur)
 	if ciMirrorCheck {
@@ -123,7 +123,7 @@ func (st *State) enterLuaFrame(th *thread, funcIdx, nargs, nresults int, entry b
 func (st *State) popCallInfo(th *thread) callInfo {
 	ci := th.cur
 	th.clearVarargs(th.ciDepth - 1)
-	th.ciDepth--
+	th.setCIDepth(th.ciDepth - 1)
 	if th.ciDepth > 0 {
 		th.readCISegInto(th.ciDepth-1, &th.cur)
 		// varargs 不在段内(住 Go ciVarargs),从影子恢复 caller 的 varargs。
