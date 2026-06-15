@@ -36,6 +36,7 @@ const (
 	helperClosure                 // host.h_closure  (base,pc,a,bx i32) -> (i32 status)       PW7
 	helperClose                   // host.h_close    (base,pc,a i32) -> (i32 status)          PW7
 	helperTForLoop                // host.h_tforloop (base,pc,a,c i32) -> (i64 newbase/-1/-2)  PW4b
+	helperCallErr                 // host.h_callerr  () -> ()  PW10 R3:call_indirect 直调失败补弹遗留 gibbous 帧
 	numHelpers
 )
 

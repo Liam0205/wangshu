@@ -113,6 +113,11 @@ type HostState interface {
 	// caller wasm 读作 call_indirect 实参)与刷新后 caller base(DoReturn 写,call_indirect
 	// 返回后 caller 读续算)。State 生命期内恒定。
 	CITransferAddr() uint32
+
+	// PopErrFrame 在 call_indirect 直调失败时补弹遗留的 gibbous 被调帧(PW10 R3)。
+	// 被调出错自身 return 1 不弹帧,caller wasm 据 status≠0 调本助手补弹——精确复刻
+	// baseline enterGibbous ERR 路径的弹帧条件(currentCI 是 gibbous 帧才弹)。
+	PopErrFrame()
 }
 
 // helperSet 持有注入的 HostState,提供给 wazero 注册的 Go callback。
@@ -231,4 +236,9 @@ func (h *helperSet) goClose(base, pc, a int32) int32 {
 
 func (h *helperSet) goTForLoop(base, pc, a, c int32) int64 {
 	return h.host.TForLoop(base, pc, a, c)
+}
+
+// goCallErr: () -> ()  对应 type 12 / h_callerr(PW10 R3)。
+func (h *helperSet) goCallErr() {
+	h.host.PopErrFrame()
 }

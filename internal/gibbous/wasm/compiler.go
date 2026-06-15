@@ -330,6 +330,7 @@ func (c *Compiler) ensureHostModule() error {
 		NewFunctionBuilder().WithFunc(hs.goClosure).Export("h_closure").
 		NewFunctionBuilder().WithFunc(hs.goClose).Export("h_close").
 		NewFunctionBuilder().WithFunc(hs.goTForLoop).Export("h_tforloop").
+		NewFunctionBuilder().WithFunc(hs.goCallErr).Export("h_callerr").
 		Instantiate(c.ctx)
 	if err != nil {
 		return err

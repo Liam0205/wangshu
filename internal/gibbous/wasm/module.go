@@ -43,7 +43,8 @@ const (
 	typeForPrep   = 9
 	typeCall      = 10 // (i32×5)->(i64)  h_call 返回新 base / 负哨兵
 	typeTForLoop  = 11 // (i32×4)->(i64)  h_tforloop 返回新 base / -1 ERR / -2 退出
-	numTypes      = 12
+	typeCallErr   = 12 // ()->()  h_callerr:call_indirect 直调失败补弹遗留 gibbous 帧(PW10 R3)
+	numTypes      = 13
 )
 
 // Wasm value type 编码。
@@ -137,6 +138,8 @@ func typeSection() []byte {
 	p = append(p, 0x60, 0x05, wvtI32, wvtI32, wvtI32, wvtI32, wvtI32, 0x01, wvtI64)
 	// type 11: (i32,i32,i32,i32)->(i64)  h_tforloop(base,pc,a,c → newbase/-1/-2)
 	p = append(p, 0x60, 0x04, wvtI32, wvtI32, wvtI32, wvtI32, 0x01, wvtI64)
+	// type 12: ()->()  h_callerr(PW10 R3:无参无返,补弹遗留 gibbous 帧)
+	p = append(p, 0x60, 0x00, 0x00)
 
 	return sectionOf(0x01, p)
 }
@@ -154,8 +157,8 @@ func typeSection() []byte {
 // function index 空间。
 func importSection() []byte {
 	var p []byte
-	// count = 1 memory + 1 table + 23 funcs = 25(PW10 加 env.table 共享升层注册表)
-	p = append(p, uleb32(25)...)
+	// count = 1 memory + 1 table + 24 funcs = 26(PW10 R3 加 env.h_callerr)
+	p = append(p, uleb32(26)...)
 
 	// import env.memory : memory(limits flags=0 min=1)——共享 holder 的 memory
 	p = append(p, importEntry("env", "memory", 0x02, []byte{0x00, 0x01})...)
@@ -193,6 +196,7 @@ func importSection() []byte {
 	p = append(p, importFuncEntry("host", "h_closure", typeUnm)...)       // (i32×4→i32 status)
 	p = append(p, importFuncEntry("host", "h_close", typeForPrep)...)     // (i32×3→i32 status)
 	p = append(p, importFuncEntry("host", "h_tforloop", typeTForLoop)...) // (i32×4→i64)
+	p = append(p, importFuncEntry("host", "h_callerr", typeCallErr)...)   // ()→()  PW10 R3
 
 	return sectionOf(0x02, p)
 }

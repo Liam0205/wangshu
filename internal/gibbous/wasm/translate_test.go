@@ -70,6 +70,7 @@ func (m *mockHost) TForLoop(base, pc, a, c int32) int64     { return -2 }
 func (m *mockHost) GlobalsRaw() uint64                      { return m.globalsRaw }
 func (m *mockHost) GCPendingAddr() uint32                   { return m.gcPendingAddr }
 func (m *mockHost) CITransferAddr() uint32                  { return m.ciTransferAddr }
+func (m *mockHost) PopErrFrame()                            {}
 
 // setupTranslator 建一个完整可执行的 P3 编译环境:wazero runtime + memadapter
 // holder(提供 env.memory)+ Compiler(mock host)。

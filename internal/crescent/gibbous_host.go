@@ -130,7 +130,32 @@ func (st *State) DoReturn(base int32, pc int32, a int32, b int32) int32 {
 			th.top = dst + wantedN
 		}
 	}
+	// PW10 R3:把弹帧后的 caller base 字节偏移写中转字,供 caller 的 call_indirect
+	// 返回后读取续算(caller 是 gibbous-via-call_indirect 时需要刷新 base——被调可能
+	// growStack 段重定位)。caller 非 gibbous 或走 baseline Run 路径时此写被忽略,无害。
+	if th.ciDepth > 0 {
+		caller := currentCI(th)
+		st.arena.SetWordAt(st.ciTransferRef, uint64((th.stackBaseW+uint32(caller.base))*8))
+	}
 	return 0 // OK
+}
+
+// PopErrFrame 弹出 call_indirect 直调失败时遗留的 gibbous 被调帧(PW10 R3)。
+//
+// gibbous 被调出错时自身 `return 1` 不弹帧(对称于 baseline:被调的 enterGibbous
+// launcher 才弹)。R3 call_indirect 直调免去了中间 launcher,故 caller wasm 在
+// call_indirect 返回非 0 时调本助手补弹——精确复刻 baseline enterGibbous 错误路径
+// 的「currentCI 是 gibbous 帧才弹」条件(gibbous_host.go enterGibbous ERR 分支),使
+// ciDepth/currentCI 轨迹逐帧一致。否则顶层 executeFrom 的 annotateError 读到错的
+// currentCI → 错误行号前缀变 → 破层间 byte-equal 差分(V1-V13)。
+//
+// 被调出错却 currentCI 非 gibbous(被调经 fallback 同步路径跑 crescent 子帧、子帧
+// 出错遗留)时不弹——与 baseline enterGibbous 同条件(留给 protected 边界 truncateCI)。
+func (st *State) PopErrFrame() {
+	th := st.runningThread
+	if th.ciDepth > 0 && currentCI(th).Gibbous() {
+		st.popCallInfo(th)
+	}
 }
 
 // Safepoint 回边 GC 检查点(h_safepoint,04 §3.3;PW4 回边落地时接通,PW2 桩)。
