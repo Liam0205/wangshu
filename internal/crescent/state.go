@@ -675,6 +675,19 @@ type thread struct {
 	cis        []callInfo
 	openUvs    map[uint32]arena.GCRef // stackIdx → open Upvalue ref(M9 简化,M10 改降序链)
 
+	// ciBaseW/ciCap:CallInfo 的 arena 段(PW10 R2b VS0-e)。每帧 ciWords 字,
+	// 字偏移 ciBaseW + depth*ciWords。R2b-1 起作 cold 字段的「只写镜像」(Go
+	// cis 仍权威);R2b-2 翻转 cold accessor + GC 根扫描读此段;R2b-4 退役 Go
+	// cis。段满经 growCISeg 重分配(R2b-3,仿 growStack 形态 Y 现算寻址)。
+	//
+	// **物理布局(ciWords=4 word/帧,承 04-trampoline §1.2 word2 packing)**:
+	//   word0 [31:0]base   [63:32]funcIdx
+	//   word1 [31:0]top    [63:32]pc(savedPC)
+	//   word2 [31:0]protoID [47:32]nresults [48]tailcall [49]fresh [50]gibbous
+	//   word3 cl(GCRef)
+	ciBaseW uint32
+	ciCap   int
+
 	// maxOpenIdx 是 openUvs 中最大的 stackIdx(官方降序链表头的等价物):
 	// closeUpvals(level) 在 level > maxOpenIdx 时 O(1) 返回——RETURN 每帧
 	// 都调 closeUpvals,无此快路径时每次都全量迭代 map(曾占 20% CPU)。
@@ -689,6 +702,12 @@ type thread struct {
 // initialStackSlots 是 thread 值栈段的初始槽数(对齐旧 Go slice cap 64)。
 const initialStackSlots = 64
 
+// ciWords 是每个 CallInfo 在 arena ci 段占的字数(4 word/帧,布局见 thread.ciBaseW)。
+const ciWords = 4
+
+// initialCISlots 是 ci 段初始帧数(典型程序调用深度 ≪ 此值;深则 growCISeg)。
+const initialCISlots = 64
+
 // newThread 建一个值栈住 arena 段的 thread(VS0-c)。主线程与协程统一经此
 // 入口,故主线程栈与协程栈一并 arena 化。
 func (st *State) newThread() *thread {
@@ -696,7 +715,90 @@ func (st *State) newThread() *thread {
 	ref := st.arena.AllocWords(initialStackSlots)
 	th.stackBaseW = uint32(ref) >> 3
 	th.stackCap = initialStackSlots
+	// CallInfo arena 段(PW10 R2b):每帧 ciWords 字,初始 initialCISlots 帧。
+	ciRef := st.arena.AllocWords(initialCISlots * ciWords)
+	th.ciBaseW = uint32(ciRef) >> 3
+	th.ciCap = initialCISlots
 	return th
+}
+
+// --- CallInfo arena 段写入(PW10 R2b-1:cold 字段只写镜像)---
+//
+// writeCISeg 把一个 callInfo 的字段打包进 ci 段第 depth 帧(4 word,布局见
+// thread.ciBaseW)。R2b-1 在 enterLuaFrame 压帧后 + 任何 cold 字段变更后调,
+// 使段与 Go cis 镜像同步;R2b-2 起 cold accessor 改读此段。
+//
+// 形态 Y:经 SetWordAt 现算地址(读 arena.words 当前值),不缓存派生切片,
+// 免疫 grow(growCISeg / 任何 alloc 触发的物理 grow)。
+func (th *thread) writeCISeg(depth int, ci *callInfo) {
+	a := th.arena
+	wordRef := func(w int) arena.GCRef {
+		return arena.GCRef(th.ciBaseW+uint32(depth*ciWords+w)) << 3
+	}
+	a.SetWordAt(wordRef(0), uint64(uint32(ci.base))|uint64(uint32(ci.funcIdx))<<32)
+	a.SetWordAt(wordRef(1), uint64(uint32(ci.top))|uint64(uint32(ci.pc))<<32)
+	a.SetWordAt(wordRef(2), packCIWord2(ci))
+	a.SetWordAt(wordRef(3), uint64(ci.cl))
+}
+
+// packCIWord2 打包 protoID/nresults/flags 进 word2(04-trampoline §1.2 布局)。
+// nresults 是 int(-1 表可变),取低 16 位存(C-1 语义 ≤ 0xFFFF;-1 → 0xFFFF)。
+func packCIWord2(ci *callInfo) uint64 {
+	w := uint64(ci.protoID)
+	w |= uint64(uint16(ci.nresults)) << 32
+	if ci.tailcall {
+		w |= 1 << 48
+	}
+	if ci.fresh {
+		w |= 1 << 49
+	}
+	if ci.gibbous {
+		w |= 1 << 50
+	}
+	return w
+}
+
+// readCISegInto 从 ci 段第 depth 帧解包到 out(R2b-1 往返自检 + R2b-2 起 accessor 用)。
+func (th *thread) readCISegInto(depth int, out *callInfo) {
+	a := th.arena
+	wordRef := func(w int) arena.GCRef {
+		return arena.GCRef(th.ciBaseW+uint32(depth*ciWords+w)) << 3
+	}
+	w0 := a.WordAt(wordRef(0))
+	w1 := a.WordAt(wordRef(1))
+	w2 := a.WordAt(wordRef(2))
+	out.base = int(int32(uint32(w0)))
+	out.funcIdx = int(int32(uint32(w0 >> 32)))
+	out.top = int(int32(uint32(w1)))
+	out.pc = int32(uint32(w1 >> 32))
+	out.protoID = uint32(w2)
+	out.nresults = int(int16(uint16(w2 >> 32))) // 符号扩展(-1 → 0xFFFF → -1)
+	out.tailcall = w2&(1<<48) != 0
+	out.fresh = w2&(1<<49) != 0
+	out.gibbous = w2&(1<<50) != 0
+	out.cl = arena.GCRef(a.WordAt(wordRef(3)))
+}
+
+// reMirrorTop 重镜像栈顶帧到 ci 段(cold 字段变更后调,R2b-1)。depth<ciCap 守卫
+// 同 enterLuaFrame(R2b-3 growCISeg 后去守卫)。
+func (th *thread) reMirrorTop() {
+	if depth := len(th.cis) - 1; depth >= 0 && depth < th.ciCap {
+		th.writeCISeg(depth, &th.cis[depth])
+	}
+}
+
+// verifyCISeg 回读 ci 段第 depth 帧,断言与 Go cis 权威值逐字段一致
+// (PW10 R2b-1 安全网,仅 ciMirrorCheck=wangshu_trace 构建启用)。打包/解包
+// bug 在此立即 panic 显形,而非 R2b-2 翻转读段后症状离根因很远。
+func (th *thread) verifyCISeg(depth int, want *callInfo) {
+	var got callInfo
+	th.readCISegInto(depth, &got)
+	if got.base != want.base || got.funcIdx != want.funcIdx || got.top != want.top ||
+		got.protoID != want.protoID || got.cl != want.cl || got.nresults != want.nresults ||
+		got.tailcall != want.tailcall || got.fresh != want.fresh || got.gibbous != want.gibbous ||
+		got.pc != want.pc {
+		panic(fmt.Sprintf("crescent: ci 段镜像不一致 depth=%d\n got  %+v\n want %+v", depth, got, *want))
+	}
 }
 
 // --- 值栈访问收口(VS0 形态 Y)---

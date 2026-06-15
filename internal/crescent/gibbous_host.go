@@ -34,6 +34,7 @@ func (st *State) enterGibbous(th *thread, code bridge.GibbousCode, funcIdx, narg
 	}
 	ci := currentCI(th)
 	ci.SetGibbous(true) // bit50 callStatus_gibbous(04 §1.2):本帧走 Wasm 路径
+	th.reMirrorTop()    // PW10 R2b-1:cold 字段(gibbous)变更后重镜像 ci 段
 
 	// base 字节偏移:R0 在共见 linear memory 的字节地址 =
 	//   (值栈段字偏移 stackBaseW + 帧 base 槽) * 8(每槽 8 字节 NaN-box u64)。

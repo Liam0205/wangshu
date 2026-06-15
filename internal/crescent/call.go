@@ -135,6 +135,7 @@ func (st *State) doTailCall(th *thread, ci *callInfo, i bytecode.Instruction) (*
 	}
 	cci := currentCI(th)
 	cci.SetTailcall(true)
+	th.reMirrorTop() // PW10 R2b-1:cold 字段(tailcall)变更后重镜像 ci 段
 	return cci, nil
 }
 
