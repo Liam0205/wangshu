@@ -16,7 +16,7 @@ import (
 // reentry 模型:Lua-call-Lua 通过修改 ci/proto/code 局部变量在同一个 Go 栈帧里
 // 重入 — Go 栈深度恒为 1(05 §7.1)。
 func (st *State) execute(th *thread) *LuaError {
-	return st.executeFrom(th, len(th.cis)-1)
+	return st.executeFrom(th, th.ciDepth-1)
 }
 
 // executeFrom 以指定 entry 深度跑主循环(协程 resume 恢复时复用,08 §3.5)。
@@ -24,7 +24,7 @@ func (st *State) execute(th *thread) *LuaError {
 // 出错时(非 yield 哨兵)统一加 "chunkname:line:" 位置前缀(09)。
 func (st *State) executeFrom(th *thread, entryDepth int) *LuaError {
 	e := st.executeLoop(th, entryDepth)
-	if e != nil && e != errYieldSentinel && len(th.cis) > 0 {
+	if e != nil && e != errYieldSentinel && th.ciDepth > 0 {
 		e = st.annotateError(e, currentCI(th))
 	}
 	return e
@@ -42,7 +42,7 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 		i := code[ci.pc]
 		if traceExec {
 			fmt.Printf("[trace] ciDepth=%d base=%d pc=%d top=%d %s A=%d B=%d C=%d\n",
-				len(th.cis), ci.base, ci.pc, th.top,
+				th.ciDepth, ci.base, ci.pc, th.top,
 				bytecode.Op(i), bytecode.A(i), bytecode.B(i), bytecode.C(i))
 		}
 		ci.pc++
@@ -279,8 +279,8 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 			if next != nil {
 				ci = next
 			} else {
-				// host 路径:host 内部可能重入 execute(pcall 等),th.cis 底层数组
-				// 可能因 append 重分配 — 旧 ci 指针失效,必须刷新。
+				// host 路径:host 内部可能重入 execute(pcall 等)改变帧深度,
+				// 旧 ci 指针在 R2b-4 前来自可重定位段——刷新到稳定的 th.cur。
 				ci = currentCI(th)
 			}
 			proto = st.protoOf(ci)

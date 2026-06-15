@@ -99,19 +99,23 @@ func TestR2b2_GrowCISegUnit(t *testing.T) {
 	st := New()
 	th := st.newThread()
 	const n = 200 // > initialCISlots(64),触发多次 growCISeg
+	// R2b-4:th.cis Go 切片已退役,段为权威。用 want 本地切片作期望值预言机
+	// (此前用 th.cis 充当),按 ciDepth 现算寻址写段。
+	want := make([]callInfo, 0, n)
 	for d := 0; d < n; d++ {
 		ci := callInfo{base: d*7 + 1, funcIdx: d * 7, top: d*7 + 3, protoID: uint32(d * 11), cl: 0, nresults: d % 4, pc: int32(d * 13)}
-		th.cis = append(th.cis, ci)
-		if depth := len(th.cis) - 1; depth >= th.ciCap {
-			th.growCISeg(depth + 1)
+		want = append(want, ci)
+		th.ciDepth = d + 1
+		if d >= th.ciCap {
+			th.growCISeg(d + 1)
 		}
-		th.writeCISeg(d, &th.cis[d])
+		th.writeCISeg(d, &want[d])
 	}
 	// 全部帧回读校验(多次 grow + 重定位后旧帧数据无损)。
 	for d := 0; d < n; d++ {
 		var got callInfo
 		th.readCISegInto(d, &got)
-		w := th.cis[d]
+		w := want[d]
 		if got.base != w.base || got.funcIdx != w.funcIdx || got.top != w.top ||
 			got.protoID != w.protoID || got.nresults != w.nresults || got.pc != w.pc {
 			t.Fatalf("frame %d post-grow mismatch: got %+v want %+v", d, got, w)
@@ -149,18 +153,21 @@ return fib(8)`
 	}
 
 	// 手工压帧验证镜像逐字段一致(覆盖 enterLuaFrame 镜像点 + readback)。
+	// R2b-4:th.cis 已退役,用 want 本地切片作期望值预言机,按 ciDepth 写段。
 	th2 := st.newThread()
 	st.runningThread = th2
 	defer func() { st.runningThread = st.mainTh }()
+	want := make([]callInfo, 0, 5)
 	for d := 0; d < 5; d++ {
 		ci := callInfo{base: d*10 + 1, funcIdx: d * 10, top: d*10 + 4, protoID: uint32(d), cl: 0, nresults: d % 3, fresh: d == 0, pc: int32(d)}
-		th2.cis = append(th2.cis, ci)
-		th2.writeCISeg(d, &th2.cis[d])
+		want = append(want, ci)
+		th2.ciDepth = d + 1
+		th2.writeCISeg(d, &want[d])
 	}
 	for d := 0; d < 5; d++ {
 		var got callInfo
 		th2.readCISegInto(d, &got)
-		w := th2.cis[d]
+		w := want[d]
 		if got.base != w.base || got.protoID != w.protoID || got.nresults != w.nresults || got.fresh != w.fresh {
 			t.Errorf("depth %d mirror incoherent: got %+v want %+v", d, got, w)
 		}

@@ -259,7 +259,7 @@ func (st *State) callHost(th *thread, funcIdx, nargs, nresults int) *LuaError {
 	// 定长结果:恢复 top 到当前帧逻辑顶(05 §1.2 CallInfo.top 维护;对齐
 	// 5.1 "L->top = ci->top")。否则前一条多值 CALL(C=0)留下的低 top 会让
 	// 后续 callLuaFromHost 的脚手架覆写活跃寄存器(TFORLOOP state 槽被毁)。
-	if len(th.cis) > 0 {
+	if th.ciDepth > 0 {
 		ci := currentCI(th)
 		frameTop := ci.base + int(st.protoOf(ci).MaxStack)
 		th.ensureStack(frameTop)

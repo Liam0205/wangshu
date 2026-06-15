@@ -21,7 +21,7 @@ const (
 func (st *State) enterLuaFrame(th *thread, funcIdx, nargs, nresults int, entry bool) *LuaError {
 	// Lua 调用深度上限(05 §7.4;LUAI_MAXCALLS=20000 等价,对齐 5.1.5 luaconf.h)。
 	// TAILCALL 先 pop 再 enter,净深度不变,proper tail call 不受限。
-	if len(th.cis) >= maxLuaCallDepth {
+	if th.ciDepth >= maxLuaCallDepth {
 		return errf("stack overflow")
 	}
 	// 指令预算的调用计费点:纯递归风暴(蹦床式互递归在深度限内反复进出)
@@ -83,7 +83,7 @@ func (st *State) enterLuaFrame(th *thread, funcIdx, nargs, nresults int, entry b
 		_ = st.tableSet(argTbl, nKey, value.NumberValue(float64(len(varargs))))
 		th.setSlot(base+numFixed, value.MakeGC(value.TagTable, argTbl))
 	}
-	// 压 CallInfo
+	// 压 CallInfo(PW10 R2b-4:arena 段为权威,th.cur 是栈顶帧热镜像)。
 	ci := callInfo{
 		base:     base,
 		funcIdx:  funcIdx,
@@ -95,33 +95,48 @@ func (st *State) enterLuaFrame(th *thread, funcIdx, nargs, nresults int, entry b
 		pc:       0,
 		varargs:  varargs,
 	}
-	th.cis = append(th.cis, ci)
-	th.top = base + int(proto.MaxStack)
-	// PW10 R2b:把新帧 cold 字段镜像进 arena ci 段(只写;Go cis 仍权威,R2b-3 翻转读)。
-	// 段满则 growCISeg 重分配(R2b-2),保证段对全部帧深度有覆盖(读段前置)。
-	depth := len(th.cis) - 1
+	// 先把当前栈顶帧(th.cur,可能 pc/top 已推进)刷回段,再载入新帧。
+	if th.ciDepth > 0 {
+		th.writeCISeg(th.ciDepth-1, &th.cur)
+	}
+	depth := th.ciDepth
 	if depth >= th.ciCap {
 		th.growCISeg(depth + 1)
 	}
-	th.writeCISeg(depth, &th.cis[depth])
+	th.cur = ci
+	th.ciDepth++
+	th.setVarargs(depth, varargs)
+	th.writeCISeg(depth, &th.cur)
 	if ciMirrorCheck {
-		th.verifyCISeg(depth, &th.cis[depth])
+		// wangshu_trace 安全网:回读段自检打包/解包与 th.cur 逐字段一致(R2b-1)。
+		th.verifyCISeg(depth, &th.cur)
 	}
+	th.top = base + int(proto.MaxStack)
 	if profileEnabled {
 		st.bridge.OnEnter(proto, th == st.mainTh)
 	}
 	return nil
 }
 
-// popCallInfo 弹出栈顶 CallInfo,返回它(供 doReturn 拿 nresults 等)。
+// popCallInfo 弹出栈顶帧,返回其副本(供 doReturn 拿 nresults 等)。弹出后从段
+// 重载 caller 帧到 th.cur(若仍有 caller)。PW10 R2b-4。
 func (st *State) popCallInfo(th *thread) callInfo {
-	ci := th.cis[len(th.cis)-1]
-	th.cis = th.cis[:len(th.cis)-1]
+	ci := th.cur
+	th.clearVarargs(th.ciDepth - 1)
+	th.ciDepth--
+	if th.ciDepth > 0 {
+		th.readCISegInto(th.ciDepth-1, &th.cur)
+		// varargs 不在段内(住 Go ciVarargs),从影子恢复 caller 的 varargs。
+		th.cur.varargs = th.varargsAt(th.ciDepth - 1)
+	}
 	return ci
 }
 
-// currentCI 返回栈顶 CallInfo 的指针(便于直接修改 pc/top)。
-func currentCI(th *thread) *callInfo { return &th.cis[len(th.cis)-1] }
+// currentCI 返回栈顶帧热镜像的指针。**地址稳定**(指向 th.cur,非可重定位的段/
+// slice 元素)——故热循环持此指针跨 CALL/分配永不悬垂(PW10 R2b-4 消除 append
+// 重定位雷区,design-claims-vs-codebase-physics §2)。修改经它直接改 th.cur,
+// 下次 push/pop 边界由 writeCISeg 刷回段。
+func currentCI(th *thread) *callInfo { return &th.cur }
 
 // rk 取一个 RK 操作数:< 256 取寄存器 R(rk);>=256 取常量 K(rk-256)。
 // proto 由调用方传入(VS0-b:ci 不再持 *Proto,常量表经 proto.Consts 取)。

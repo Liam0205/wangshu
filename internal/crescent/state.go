@@ -310,9 +310,10 @@ func (st *State) visitThreadValues(th *thread, seen map[*thread]bool, visit func
 	for i := th.top; i < th.size(); i++ {
 		th.setSlot(i, value.Nil)
 	}
-	// ci.varargs 住 Go 切片(M13 简化),不在 stack[:top] 区间,必须单列为根。
-	for i := range th.cis {
-		for _, v := range th.cis[i].Varargs() {
+	// varargs 住 Go th.ciVarargs(不进 linear memory),不在 stack[:top] 区间,
+	// 必须单列为根。索引 = 帧深度,只扫活跃帧 [0,ciDepth)。
+	for d := 0; d < th.ciDepth && d < len(th.ciVarargs); d++ {
+		for _, v := range th.ciVarargs[d] {
 			visit(v)
 		}
 	}
@@ -357,10 +358,10 @@ func (st *State) visitThreadRefs(th *thread, seen map[*thread]bool, visit func(a
 	if seen != nil {
 		seen[th] = true
 	}
-	// PW10 R2b-3:每帧 closure 根从 arena ci 段读(word3),而非 Go cis[i].cl。
-	// 这是把 ci 段确立为 GC 根权威源的关键翻转——漏根/读错 = closure 被误回收 →
-	// freelist 复用 = UAF(debugFreelist 在 stress 下抓)。形态 Y 现算寻址免缓存。
-	for depth := range th.cis {
+	// PW10 R2b-3:每帧 closure 根从 arena ci 段读(word3),段是根权威源。
+	// cl 在 push 时写段、之后不变,故段对全部活跃帧 [0,ciDepth) 持正确 cl
+	// (含当前帧——th.cur 是热镜像,但 cl 不在热路径改)。形态 Y 现算寻址。
+	for depth := 0; depth < th.ciDepth; depth++ {
 		if cl := th.ciSegCl(depth); !cl.IsNull() {
 			visit(cl)
 		}
@@ -602,15 +603,15 @@ func (st *State) callOnStack(cl arena.GCRef, args []value.Value, nresults int) (
 	// 复用主 thread(规则引擎形状 = 长驻 State 高频 Run 短脚本;每次
 	// newThread 的栈切片/扩容是无谓的 Go 堆 churn)。State 单 goroutine,
 	// 主 thread 不会重入(host→Lua 重入走同一 th 的 execute 叠层,协程
-	// 各有独立 th)。复位:top/cis 清零,openUvs 沿用(上次 Run 末
-	// closeUpvals 已清空)。
+	// 各有独立 th)。复位:top 清零 + 帧深度回退到 0(truncateCI),openUvs
+	// 沿用(上次 Run 末 closeUpvals 已清空)。
 	th := st.mainTh
 	if th == nil {
 		th = st.newThread()
 		st.mainTh = th
 	} else {
 		th.top = 0
-		th.cis = th.cis[:0]
+		th.truncateCI(0)
 		th.pendingResume = nil
 		// 上次 Run 经错误退出时 unwind 不走 closeUpvals,openUvs 可能残留
 		// 指向已失效栈位的开放 uv——关闭它们(自持快照值),清 uvOwner。
@@ -671,25 +672,26 @@ func (st *State) CallOnStack(cl arena.GCRef, args []value.Value, nresults int) (
 // 开放 upvalue 经 owner.slot(idx) 寻址,stackBaseW 更新后自动指向新段同位置
 // (无需额外重定位)。
 type thread struct {
-	arena      *arena.Arena // 值栈段所在 arena(段寻址 + grow 用)
-	stackBaseW uint32       // 值栈段在 arena 的字偏移(= valueStackRef>>3)
-	stackCap   int          // 段容量(槽数;= size())
-	top        int          // 当前栈顶(超过 ci.top 的临时区)
-	cis        []callInfo
+	arena      *arena.Arena           // 值栈段所在 arena(段寻址 + grow 用)
+	stackBaseW uint32                 // 值栈段在 arena 的字偏移(= valueStackRef>>3)
+	stackCap   int                    // 段容量(槽数;= size())
+	top        int                    // 当前栈顶(超过 ci.top 的临时区)
 	openUvs    map[uint32]arena.GCRef // stackIdx → open Upvalue ref(M9 简化,M10 改降序链)
 
-	// ciBaseW/ciCap:CallInfo 的 arena 段(PW10 R2b VS0-e)。每帧 ciWords 字,
-	// 字偏移 ciBaseW + depth*ciWords。R2b-1 起作 cold 字段的「只写镜像」(Go
-	// cis 仍权威);R2b-2 翻转 cold accessor + GC 根扫描读此段;R2b-4 退役 Go
-	// cis。段满经 growCISeg 重分配(R2b-3,仿 growStack 形态 Y 现算寻址)。
+	// --- CallInfo 状态(PW10 R2b-4:退役 Go []callInfo,arena 段为权威)---
 	//
-	// **物理布局(ciWords=4 word/帧,承 04-trampoline §1.2 word2 packing)**:
-	//   word0 [31:0]base   [63:32]funcIdx
-	//   word1 [31:0]top    [63:32]pc(savedPC)
-	//   word2 [31:0]protoID [47:32]nresults [48]tailcall [49]fresh [50]gibbous
-	//   word3 cl(GCRef)
+	// cur 是当前栈顶帧的工作副本(热镜像)。currentCI 返回 &cur——**地址稳定**,
+	// 故热循环持 ci 指针永不悬垂(消除旧 &th.cis[len-1] 的 append 重定位雷区,
+	// design-claims-vs-codebase-physics §2 构造性消解)。push/pop 同步 cur ↔ 段:
+	// push 先把 cur 刷回段[ciDepth-1](保 caller pc/base/top)再载入 callee;
+	// pop 弹 cur 后从段重载 caller。
+	cur     callInfo
+	ciDepth int // 逻辑帧深度(= 旧 len(th.cis));段[0..ciDepth-1] 是活跃帧
 	ciBaseW uint32
 	ciCap   int
+	// ciVarargs 每帧 varargs(GC 根)。varargs 是 Go []value.Value,不进 linear
+	// memory(VS0-e 子piece);与帧深度对齐(索引 = depth)。
+	ciVarargs [][]value.Value
 
 	// maxOpenIdx 是 openUvs 中最大的 stackIdx(官方降序链表头的等价物):
 	// closeUpvals(level) 在 level > maxOpenIdx 时 O(1) 返回——RETURN 每帧
@@ -705,7 +707,17 @@ type thread struct {
 // initialStackSlots 是 thread 值栈段的初始槽数(对齐旧 Go slice cap 64)。
 const initialStackSlots = 64
 
-// ciWords 是每个 CallInfo 在 arena ci 段占的字数(4 word/帧,布局见 thread.ciBaseW)。
+// ciWords 是每个 CallInfo 在 arena ci 段占的字数(4 word/帧)。
+//
+// **物理布局(承 04-trampoline §1.2 word2 packing)**:
+//
+//	word0 [31:0]base   [63:32]funcIdx
+//	word1 [31:0]top    [63:32]pc(savedPC)
+//	word2 [31:0]protoID [47:32]nresults [48]tailcall [49]fresh [50]gibbous
+//	word3 cl(GCRef)
+//
+// ci 段是冷字段 + GC 根的权威源(R2b-3 起);varargs 住 Go th.ciVarargs(不进
+// linear memory)。当前栈顶帧的工作副本在 th.cur(热镜像,currentCI 返回 &cur)。
 const ciWords = 4
 
 // initialCISlots 是 ci 段初始帧数(典型程序调用深度 ≪ 此值;深则 growCISeg)。
@@ -722,6 +734,7 @@ func (st *State) newThread() *thread {
 	ciRef := st.arena.AllocWords(initialCISlots * ciWords)
 	th.ciBaseW = uint32(ciRef) >> 3
 	th.ciCap = initialCISlots
+	th.ciVarargs = make([][]value.Value, 0, initialCISlots)
 	return th
 }
 
@@ -782,20 +795,70 @@ func (th *thread) readCISegInto(depth int, out *callInfo) {
 	out.cl = arena.GCRef(a.WordAt(wordRef(3)))
 }
 
-// reMirrorTop 重镜像栈顶帧到 ci 段(cold 字段变更后调,R2b)。栈顶帧在
-// enterLuaFrame 已 growCISeg 保证 depth<ciCap,故无需再守卫。
+// setVarargs 记录第 depth 帧的 varargs 到 Go 影子(GC 根;索引 = 深度)。
+func (th *thread) setVarargs(depth int, va []value.Value) {
+	for len(th.ciVarargs) <= depth {
+		th.ciVarargs = append(th.ciVarargs, nil)
+	}
+	th.ciVarargs[depth] = va
+}
+
+// clearVarargs 弹帧时清第 depth 帧 varargs 引用(防 GC 误扫已死帧 + 防泄漏)。
+func (th *thread) clearVarargs(depth int) {
+	if depth >= 0 && depth < len(th.ciVarargs) {
+		th.ciVarargs[depth] = nil
+	}
+}
+
+// varargsAt 取第 depth 帧的 varargs(pop 后恢复 caller th.cur.varargs 用)。
+func (th *thread) varargsAt(depth int) []value.Value {
+	if depth >= 0 && depth < len(th.ciVarargs) {
+		return th.ciVarargs[depth]
+	}
+	return nil
+}
+
+// ciAt 读第 depth 帧的 callInfo 值副本(非当前帧只读访问:traceback / 协程恢复)。
+// 当前栈顶帧(depth==ciDepth-1)直接返回热镜像 th.cur(它可能 pc/top 比段新);
+// 其余帧从段解包 + 补 varargs。**返回值副本**——调用方不得缓存指针跨分配
+// (form-Y:每次按 depth 现读,消除 *callInfo 悬垂)。
+func (th *thread) ciAt(depth int) callInfo {
+	if depth == th.ciDepth-1 {
+		return th.cur
+	}
+	var ci callInfo
+	th.readCISegInto(depth, &ci)
+	ci.varargs = th.varargsAt(depth)
+	return ci
+}
+
+// truncateCI 把帧深度回退到 newDepth(pcall/元方法/yield 边界清理,替代旧
+// th.cis = th.cis[:newDepth])。回退后从段重载新栈顶帧到 th.cur。R2b-4。
+func (th *thread) truncateCI(newDepth int) {
+	for d := newDepth; d < th.ciDepth; d++ {
+		th.clearVarargs(d)
+	}
+	th.ciDepth = newDepth
+	if newDepth > 0 {
+		th.readCISegInto(newDepth-1, &th.cur)
+		th.cur.varargs = th.varargsAt(newDepth - 1)
+	}
+}
+
+// reMirrorTop 把当前栈顶帧热镜像(th.cur)刷回 ci 段(cold 字段经 currentCI 改
+// th.cur 后调,如 SetTailcall/SetGibbous,R2b-4)。
 func (th *thread) reMirrorTop() {
-	if depth := len(th.cis) - 1; depth >= 0 {
-		th.writeCISeg(depth, &th.cis[depth])
+	if th.ciDepth > 0 {
+		th.writeCISeg(th.ciDepth-1, &th.cur)
 	}
 }
 
 // growCISeg 在 ci 段容量不足 need 帧时重分配更大段(仿 growStack,PW10 R2b-2)。
 //
 // 形态 Y:经 WordAt/SetWordAt 现算地址拷旧帧(读 arena.words 当前值,免缓存
-// 派生切片,免疫 AllocWords 触发的物理 grow)。ci 段不持「跨 grow 存活的派生
-// 指针」——currentCI 返回 *callInfo 指向 Go cis(R2b-4 才改句柄),段本身只经
-// ciBaseW + depth 现算寻址,故重定位后下次 writeCISeg/readCISegInto 自动指向新段。
+// 派生切片,免疫 AllocWords 触发的物理 grow)。ci 段只经 ciBaseW + depth 现算
+// 寻址(无跨 grow 存活的派生指针),重定位后下次 writeCISeg/readCISegInto 自动
+// 指向新段;栈顶帧热镜像在 th.cur(地址稳定,不受段重定位影响)。
 func (th *thread) growCISeg(need int) {
 	newCap := need + 8
 	if d := th.ciCap * 2; d > newCap {
@@ -804,8 +867,8 @@ func (th *thread) growCISeg(need int) {
 	a := th.arena
 	newRef := a.AllocWords(uint32(newCap * ciWords))
 	oldRef := arena.GCRef(th.ciBaseW) << 3
-	// 拷已有帧(0..len(cis)-1 已镜像的帧;新帧由调用方随后 writeCISeg)。
-	copyFrames := len(th.cis) - 1
+	// 拷已有活跃帧 [0,ciDepth)(已镜像);新帧由调用方随后 writeCISeg。
+	copyFrames := th.ciDepth
 	if copyFrames > th.ciCap {
 		copyFrames = th.ciCap
 	}

@@ -196,7 +196,7 @@ func (st *State) callLuaFromHost(th *thread, fn value.Value, args []value.Value)
 		th.top = funcIdx
 		return out, nil
 	}
-	savedDepth := len(th.cis)
+	savedDepth := th.ciDepth
 	if e := st.enterLuaFrame(th, funcIdx, len(args), -1, true); e != nil {
 		return nil, e
 	}
@@ -205,7 +205,7 @@ func (st *State) callLuaFromHost(th *thread, fn value.Value, args []value.Value)
 		// 5.1 不支持(那是 5.2 lua_yieldk 的事),官方报此错且协程不挂起;
 		// 不拦截则哨兵被 pcall 当普通错误捕获,内部字符串 "<yield>" 泄漏给脚本。
 		if e == errYieldSentinel {
-			th.cis = th.cis[:savedDepth]
+			th.truncateCI(savedDepth)
 			th.top = funcIdx
 			// 清掉 doCall/Yield 在冒泡途中登记的恢复信息与传值区
 			th.pendingResume = nil
@@ -215,7 +215,7 @@ func (st *State) callLuaFromHost(th *thread, fn value.Value, args []value.Value)
 			return nil, errf("attempt to yield across metamethod/C-call boundary")
 		}
 		// 失败:回滚 CallInfo 到进入前(05 §9.3 protected 边界清理职责)
-		th.cis = th.cis[:savedDepth]
+		th.truncateCI(savedDepth)
 		th.top = funcIdx
 		return nil, e
 	}

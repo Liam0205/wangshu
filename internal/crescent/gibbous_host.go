@@ -54,7 +54,7 @@ func (st *State) enterGibbous(th *thread, code bridge.GibbousCode, funcIdx, narg
 		e := st.gibbousPendingErr
 		st.gibbousPendingErr = nil
 		// 弹本帧 CallInfo(若 DoReturn 未弹——ERR 路径不经 RETURN)。
-		if len(th.cis) > 0 && currentCI(th).Gibbous() {
+		if th.ciDepth > 0 && currentCI(th).Gibbous() {
 			st.popCallInfo(th)
 		}
 		return e
@@ -123,7 +123,7 @@ func (st *State) DoReturn(base int32, pc int32, a int32, b int32) int32 {
 		for k := nret; k < wantedN; k++ {
 			th.setSlot(dst+k, value.Nil)
 		}
-		if len(th.cis) > 0 {
+		if th.ciDepth > 0 {
 			caller := currentCI(th)
 			th.top = caller.base + int(st.protoOf(caller).MaxStack)
 		} else {
@@ -519,7 +519,7 @@ func (st *State) DoCall(base, pc, a, b, c int32) int64 {
 			return -1
 		}
 		st.nCcalls++
-		entryDepth := len(th.cis) - 1
+		entryDepth := th.ciDepth - 1
 		e2 := st.executeFrom(th, entryDepth)
 		st.nCcalls--
 		if e2 != nil {
@@ -565,7 +565,7 @@ func (st *State) TailCall(base, pc, a, b, c int32) int32 {
 		return 1
 	}
 	st.nCcalls++
-	entryDepth := len(th.cis) - 1
+	entryDepth := th.ciDepth - 1
 	e2 := st.executeFrom(th, entryDepth)
 	st.nCcalls--
 	if e2 != nil {

@@ -45,11 +45,11 @@ func (st *State) annotateError(e *LuaError, ci *callInfo) *LuaError {
 func (st *State) buildTraceback(th *thread) string {
 	var sb strings.Builder
 	sb.WriteString("stack traceback:")
-	for i := len(th.cis) - 1; i >= 0; i-- {
-		ci := &th.cis[i]
+	for i := th.ciDepth - 1; i >= 0; i-- {
+		ci := th.ciAt(i)
 		sb.WriteString("\n\t")
 		// 所有压入 cis 的都是 Lua 帧(host 帧不压 cis);protoID 恒有效。
-		proto := st.protoOf(ci)
+		proto := st.protoOf(&ci)
 		line := int32(0)
 		pc := int(ci.pc) - 1
 		if pc >= 0 && pc < len(proto.LineInfo) {

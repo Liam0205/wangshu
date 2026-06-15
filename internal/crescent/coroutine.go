@@ -233,7 +233,11 @@ func (st *State) executeResume(th *thread) *LuaError {
 		vals = co.xfer
 		co.xfer = nil
 	}
-	ci := &th.cis[pr.ciIndex]
+	// resume 路径:pr.ciIndex 是 yield CALL 所在帧(yield 经 callHost 同步冒泡,
+	// 不压新 Lua 帧也不弹帧)→ 它就是当前栈顶帧(pr.ciIndex == th.ciDepth-1),
+	// ciAt 对栈顶帧返回 th.cur 热镜像。此处只读 ci.base / protoOf(只读快照,
+	// 不经 ci 改帧)。
+	ci := th.ciAt(pr.ciIndex)
 	want := pr.nresults
 	if want < 0 {
 		// 可变:全部落下并设 top
@@ -250,7 +254,7 @@ func (st *State) executeResume(th *thread) *LuaError {
 				th.setSlot(pr.dst+k, value.Nil)
 			}
 		}
-		th.top = ci.base + int(st.protoOf(ci).MaxStack)
+		th.top = ci.base + int(st.protoOf(&ci).MaxStack)
 	}
 	// 从 yield 的下一条指令继续(pc 已指向下一条;entryDepth 用 fresh 帧深度)
 	return st.executeFrom(th, pr.entryDepth)
