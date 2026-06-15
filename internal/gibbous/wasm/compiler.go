@@ -19,6 +19,7 @@ import (
 	"runtime/debug"
 
 	"github.com/tetratelabs/wazero"
+	"github.com/tetratelabs/wazero/api"
 
 	"github.com/Liam0205/wangshu/internal/bridge"
 	"github.com/Liam0205/wangshu/internal/bytecode"
@@ -301,38 +302,58 @@ func (c *Compiler) Compile(proto *bytecode.Proto, fb *bridge.TypeFeedback) (gc b
 //
 // helper callback 经 c.host(HostState)转发到执行期状态(crescent.State)。
 // module name "host",与 gibbous module 的 `import "host" "h_*"` 对应。
+//
+// **零分配注册(PW10 R3.5)**:用 WithGoFunction(api.GoFunc,stack-based)而非
+// WithFunc(反射)——后者每次跨层 callGoFunc 都 reflect.New 逐参装箱(call 核
+// ~14 allocs/调,支配退化)。stack-based 从 []uint64 直接解参/回写,零反射零分配。
+// params/results ValueType 必须与 module.go 的 type 声明逐位对齐。
 func (c *Compiler) ensureHostModule() error {
 	if c.hostModReady {
 		return nil
 	}
 	hs := &helperSet{host: c.host}
-	_, err := c.runtime.NewHostModuleBuilder("host").
-		NewFunctionBuilder().WithFunc(hs.goGetUpval).Export("h_getupval").
-		NewFunctionBuilder().WithFunc(hs.goSetUpval).Export("h_setupval").
-		NewFunctionBuilder().WithFunc(hs.goReturn).Export("h_return").
-		NewFunctionBuilder().WithFunc(hs.goSafepoint).Export("h_safepoint").
-		NewFunctionBuilder().WithFunc(hs.goArith).Export("h_arith").
-		NewFunctionBuilder().WithFunc(hs.goUnm).Export("h_unm").
-		NewFunctionBuilder().WithFunc(hs.goLen).Export("h_len").
-		NewFunctionBuilder().WithFunc(hs.goConcat).Export("h_concat").
-		NewFunctionBuilder().WithFunc(hs.goCompare).Export("h_compare").
-		NewFunctionBuilder().WithFunc(hs.goEq).Export("h_eq").
-		NewFunctionBuilder().WithFunc(hs.goForPrep).Export("h_forprep").
-		NewFunctionBuilder().WithFunc(hs.goGetTable).Export("h_gettable").
-		NewFunctionBuilder().WithFunc(hs.goSetTable).Export("h_settable").
-		NewFunctionBuilder().WithFunc(hs.goGetGlobal).Export("h_getglobal").
-		NewFunctionBuilder().WithFunc(hs.goSetGlobal).Export("h_setglobal").
-		NewFunctionBuilder().WithFunc(hs.goSelf).Export("h_self").
-		NewFunctionBuilder().WithFunc(hs.goNewTable).Export("h_newtable").
-		NewFunctionBuilder().WithFunc(hs.goSetList).Export("h_setlist").
-		NewFunctionBuilder().WithFunc(hs.goCall).Export("h_call").
-		NewFunctionBuilder().WithFunc(hs.goTailCall).Export("h_tailcall").
-		NewFunctionBuilder().WithFunc(hs.goClosure).Export("h_closure").
-		NewFunctionBuilder().WithFunc(hs.goClose).Export("h_close").
-		NewFunctionBuilder().WithFunc(hs.goTForLoop).Export("h_tforloop").
-		NewFunctionBuilder().WithFunc(hs.goCallErr).Export("h_callerr").
-		Instantiate(c.ctx)
-	if err != nil {
+	// 复用的 wasm 值类型签名(对齐 module.go type 声明)。
+	i32 := api.ValueTypeI32
+	i64 := api.ValueTypeI64
+	var (
+		p2     = []api.ValueType{i32, i32}
+		p3     = []api.ValueType{i32, i32, i32}
+		p4     = []api.ValueType{i32, i32, i32, i32}
+		p5     = []api.ValueType{i32, i32, i32, i32, i32}
+		p6     = []api.ValueType{i32, i32, i32, i32, i32, i32}
+		retI32 = []api.ValueType{i32}
+		retI64 = []api.ValueType{i64}
+		none   = []api.ValueType(nil)
+	)
+	b := c.runtime.NewHostModuleBuilder("host")
+	add := func(name string, fn api.GoFunc, params, results []api.ValueType) {
+		b.NewFunctionBuilder().WithGoFunction(fn, params, results).Export(name)
+	}
+	add("h_getupval", hs.goGetUpval, p2, retI64)
+	add("h_setupval", hs.goSetUpval, []api.ValueType{i32, i32, i64}, none)
+	add("h_return", hs.goReturn, p4, retI32)
+	add("h_safepoint", hs.goSafepoint, p2, none)
+	add("h_arith", hs.goArith, p6, retI32)
+	add("h_unm", hs.goUnm, p4, retI32)
+	add("h_len", hs.goLen, p4, retI32)
+	add("h_concat", hs.goConcat, p5, retI32)
+	add("h_compare", hs.goCompare, p5, retI32)
+	add("h_eq", hs.goEq, p4, retI32)
+	add("h_forprep", hs.goForPrep, p3, retI32)
+	add("h_gettable", hs.goGetTable, p5, retI32)
+	add("h_settable", hs.goSetTable, p5, retI32)
+	add("h_getglobal", hs.goGetGlobal, p4, retI32)
+	add("h_setglobal", hs.goSetGlobal, p4, retI32)
+	add("h_self", hs.goSelf, p5, retI32)
+	add("h_newtable", hs.goNewTable, p5, retI32)
+	add("h_setlist", hs.goSetList, p5, retI32)
+	add("h_call", hs.goCall, p5, retI64)
+	add("h_tailcall", hs.goTailCall, p5, retI32)
+	add("h_closure", hs.goClosure, p4, retI32)
+	add("h_close", hs.goClose, p3, retI32)
+	add("h_tforloop", hs.goTForLoop, p4, retI64)
+	add("h_callerr", hs.goCallErr, none, none)
+	if _, err := b.Instantiate(c.ctx); err != nil {
 		return err
 	}
 	c.hostModReady = true

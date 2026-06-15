@@ -12,6 +12,12 @@ package wasm
 //
 // PW2 helper 集:h_getupval / h_setupval / h_return / h_safepoint。
 
+import (
+	"context"
+
+	"github.com/tetratelabs/wazero/api"
+)
+
 // HostState 是 gibbous helper 操作执行期状态的最小抽象(crescent.State 实现)。
 //
 // 所有方法以 base(当前帧 R0 的字节偏移)为坐标 —— gibbous 帧与解释器帧
@@ -128,117 +134,148 @@ type helperSet struct {
 	host HostState
 }
 
-// --- wazero host function callback(签名匹配 module.go 的 type 声明)---
+// --- wazero host function callback(零分配 stack-based,PW10 R3.5)---
 //
-// wazero 用反射匹配 Go 函数签名到 Wasm 类型:i32→int32/uint32,i64→uint64。
-// callback 参数顺序与 module.go import 声明的 type 一致。
+// 用 wazero `api.GoFunc`(WithGoFunction 注册)而非 `WithFunc`(反射):反射路径
+// 每次跨层 callGoFunc 都 make([]reflect.Value) + 逐参 reflect.New 装箱(实测调用
+// 密集核 ~14 allocs/调,支配 call 核退化);stack-based 路径从 []uint64 直接解参/
+// 回写结果,零反射零分配。
+//
+// 约定:stack[i] 是第 i 个入参的原始 u64(i32 经 api.DecodeI32 取低 32 位;i64 裸取);
+// 结果写回 stack[0](i32 经 api.EncodeI32;i64 裸写)。参数顺序 = module.go import
+// 声明的 type 形参顺序。
 
-// goGetUpval: (base i32, b i32) -> (i64)  对应 type 0 / h_getupval。
-func (h *helperSet) goGetUpval(base int32, b int32) uint64 {
-	return h.host.GetUpval(base, b)
+// goGetUpval: (base i32, b i32) -> (i64)  type 0 / h_getupval。
+func (h *helperSet) goGetUpval(_ context.Context, stack []uint64) {
+	base := api.DecodeI32(stack[0])
+	b := api.DecodeI32(stack[1])
+	stack[0] = h.host.GetUpval(base, b)
 }
 
-// goSetUpval: (base i32, b i32, val i64) -> ()  对应 type 1 / h_setupval。
-func (h *helperSet) goSetUpval(base int32, b int32, val uint64) {
-	h.host.SetUpval(base, b, val)
+// goSetUpval: (base i32, b i32, val i64) -> ()  type 1 / h_setupval。
+func (h *helperSet) goSetUpval(_ context.Context, stack []uint64) {
+	h.host.SetUpval(api.DecodeI32(stack[0]), api.DecodeI32(stack[1]), stack[2])
 }
 
-// goReturn: (base i32, pc i32, a i32, b i32) -> (i32)  对应 type 2 / h_return。
-func (h *helperSet) goReturn(base int32, pc int32, a int32, b int32) int32 {
-	return h.host.DoReturn(base, pc, a, b)
+// goReturn: (base i32, pc i32, a i32, b i32) -> (i32)  type 2 / h_return。
+func (h *helperSet) goReturn(_ context.Context, stack []uint64) {
+	st := h.host.DoReturn(api.DecodeI32(stack[0]), api.DecodeI32(stack[1]), api.DecodeI32(stack[2]), api.DecodeI32(stack[3]))
+	stack[0] = api.EncodeI32(st)
 }
 
-// goSafepoint: (base i32, pc i32) -> ()  对应 type 3 / h_safepoint(PW4 用)。
-func (h *helperSet) goSafepoint(base int32, pc int32) {
-	h.host.Safepoint(base, pc)
+// goSafepoint: (base i32, pc i32) -> ()  type 3 / h_safepoint。
+func (h *helperSet) goSafepoint(_ context.Context, stack []uint64) {
+	h.host.Safepoint(api.DecodeI32(stack[0]), api.DecodeI32(stack[1]))
 }
 
-// goArith: (base,pc,op,b,c,a i32) -> (i32)  对应 type 5 / h_arith(PW3)。
-func (h *helperSet) goArith(base, pc, op, b, c, a int32) int32 {
-	return h.host.Arith(base, pc, op, b, c, a)
+// goArith: (base,pc,op,b,c,a i32) -> (i32)  type 5 / h_arith。
+func (h *helperSet) goArith(_ context.Context, stack []uint64) {
+	st := h.host.Arith(api.DecodeI32(stack[0]), api.DecodeI32(stack[1]), api.DecodeI32(stack[2]),
+		api.DecodeI32(stack[3]), api.DecodeI32(stack[4]), api.DecodeI32(stack[5]))
+	stack[0] = api.EncodeI32(st)
 }
 
-// goUnm: (base,pc,b,a i32) -> (i32)  对应 type 6 / h_unm(PW3)。
-func (h *helperSet) goUnm(base, pc, b, a int32) int32 {
-	return h.host.Unm(base, pc, b, a)
+// goUnm: (base,pc,b,a i32) -> (i32)  type 6 / h_unm。
+func (h *helperSet) goUnm(_ context.Context, stack []uint64) {
+	st := h.host.Unm(api.DecodeI32(stack[0]), api.DecodeI32(stack[1]), api.DecodeI32(stack[2]), api.DecodeI32(stack[3]))
+	stack[0] = api.EncodeI32(st)
 }
 
-// goLen: (base,pc,b,a i32) -> (i32)  对应 type 7 / h_len(PW3)。
-func (h *helperSet) goLen(base, pc, b, a int32) int32 {
-	return h.host.Len(base, pc, b, a)
+// goLen: (base,pc,b,a i32) -> (i32)  type 7 / h_len。
+func (h *helperSet) goLen(_ context.Context, stack []uint64) {
+	st := h.host.Len(api.DecodeI32(stack[0]), api.DecodeI32(stack[1]), api.DecodeI32(stack[2]), api.DecodeI32(stack[3]))
+	stack[0] = api.EncodeI32(st)
 }
 
-// goConcat: (base,pc,a,b,c i32) -> (i32)  对应 type 8 / h_concat(PW3)。
-func (h *helperSet) goConcat(base, pc, a, b, c int32) int32 {
-	return h.host.Concat(base, pc, a, b, c)
+// goConcat: (base,pc,a,b,c i32) -> (i32)  type 8 / h_concat。
+func (h *helperSet) goConcat(_ context.Context, stack []uint64) {
+	st := h.host.Concat(api.DecodeI32(stack[0]), api.DecodeI32(stack[1]), api.DecodeI32(stack[2]), api.DecodeI32(stack[3]), api.DecodeI32(stack[4]))
+	stack[0] = api.EncodeI32(st)
 }
 
-// goCompare: (base,pc,op,b,c i32) -> (i32 packed)  对应 type 8 / h_compare(PW4)。
-func (h *helperSet) goCompare(base, pc, op, b, c int32) int32 {
-	return h.host.Compare(base, pc, op, b, c)
+// goCompare: (base,pc,op,b,c i32) -> (i32 packed)  type 8 / h_compare。
+func (h *helperSet) goCompare(_ context.Context, stack []uint64) {
+	st := h.host.Compare(api.DecodeI32(stack[0]), api.DecodeI32(stack[1]), api.DecodeI32(stack[2]), api.DecodeI32(stack[3]), api.DecodeI32(stack[4]))
+	stack[0] = api.EncodeI32(st)
 }
 
-// goEq: (base,pc,b,c i32) -> (i32 packed)  对应 type 6 / h_eq(PW4)。
-func (h *helperSet) goEq(base, pc, b, c int32) int32 {
-	return h.host.Eq(base, pc, b, c)
+// goEq: (base,pc,b,c i32) -> (i32 packed)  type 6 / h_eq。
+func (h *helperSet) goEq(_ context.Context, stack []uint64) {
+	st := h.host.Eq(api.DecodeI32(stack[0]), api.DecodeI32(stack[1]), api.DecodeI32(stack[2]), api.DecodeI32(stack[3]))
+	stack[0] = api.EncodeI32(st)
 }
 
-// goForPrep: (base,pc,a i32) -> (i32 status)  对应 type 9 / h_forprep(PW4)。
-func (h *helperSet) goForPrep(base, pc, a int32) int32 {
-	return h.host.ForPrep(base, pc, a)
+// goForPrep: (base,pc,a i32) -> (i32 status)  type 9 / h_forprep。
+func (h *helperSet) goForPrep(_ context.Context, stack []uint64) {
+	st := h.host.ForPrep(api.DecodeI32(stack[0]), api.DecodeI32(stack[1]), api.DecodeI32(stack[2]))
+	stack[0] = api.EncodeI32(st)
 }
 
 // --- PW5 表 IC 助手 callback ---
 
-func (h *helperSet) goGetTable(base, pc, a, b, c int32) int32 {
-	return h.host.GetTable(base, pc, a, b, c)
+func (h *helperSet) goGetTable(_ context.Context, stack []uint64) {
+	st := h.host.GetTable(api.DecodeI32(stack[0]), api.DecodeI32(stack[1]), api.DecodeI32(stack[2]), api.DecodeI32(stack[3]), api.DecodeI32(stack[4]))
+	stack[0] = api.EncodeI32(st)
 }
 
-func (h *helperSet) goSetTable(base, pc, a, b, c int32) int32 {
-	return h.host.SetTable(base, pc, a, b, c)
+func (h *helperSet) goSetTable(_ context.Context, stack []uint64) {
+	st := h.host.SetTable(api.DecodeI32(stack[0]), api.DecodeI32(stack[1]), api.DecodeI32(stack[2]), api.DecodeI32(stack[3]), api.DecodeI32(stack[4]))
+	stack[0] = api.EncodeI32(st)
 }
 
-func (h *helperSet) goGetGlobal(base, pc, a, bx int32) int32 {
-	return h.host.DoGetGlobal(base, pc, a, bx)
+func (h *helperSet) goGetGlobal(_ context.Context, stack []uint64) {
+	st := h.host.DoGetGlobal(api.DecodeI32(stack[0]), api.DecodeI32(stack[1]), api.DecodeI32(stack[2]), api.DecodeI32(stack[3]))
+	stack[0] = api.EncodeI32(st)
 }
 
-func (h *helperSet) goSetGlobal(base, pc, a, bx int32) int32 {
-	return h.host.DoSetGlobal(base, pc, a, bx)
+func (h *helperSet) goSetGlobal(_ context.Context, stack []uint64) {
+	st := h.host.DoSetGlobal(api.DecodeI32(stack[0]), api.DecodeI32(stack[1]), api.DecodeI32(stack[2]), api.DecodeI32(stack[3]))
+	stack[0] = api.EncodeI32(st)
 }
 
-func (h *helperSet) goSelf(base, pc, a, b, c int32) int32 {
-	return h.host.Self(base, pc, a, b, c)
+func (h *helperSet) goSelf(_ context.Context, stack []uint64) {
+	st := h.host.Self(api.DecodeI32(stack[0]), api.DecodeI32(stack[1]), api.DecodeI32(stack[2]), api.DecodeI32(stack[3]), api.DecodeI32(stack[4]))
+	stack[0] = api.EncodeI32(st)
 }
 
-func (h *helperSet) goNewTable(base, pc, a, b, c int32) int32 {
-	return h.host.NewTable(base, pc, a, b, c)
+func (h *helperSet) goNewTable(_ context.Context, stack []uint64) {
+	st := h.host.NewTable(api.DecodeI32(stack[0]), api.DecodeI32(stack[1]), api.DecodeI32(stack[2]), api.DecodeI32(stack[3]), api.DecodeI32(stack[4]))
+	stack[0] = api.EncodeI32(st)
 }
 
-func (h *helperSet) goSetList(base, pc, a, b, c int32) int32 {
-	return h.host.SetList(base, pc, a, b, c)
+func (h *helperSet) goSetList(_ context.Context, stack []uint64) {
+	st := h.host.SetList(api.DecodeI32(stack[0]), api.DecodeI32(stack[1]), api.DecodeI32(stack[2]), api.DecodeI32(stack[3]), api.DecodeI32(stack[4]))
+	stack[0] = api.EncodeI32(st)
 }
 
-func (h *helperSet) goCall(base, pc, a, b, c int32) int64 {
-	return h.host.DoCall(base, pc, a, b, c)
+// goCall: (base,pc,a,b,c i32) -> (i64)  type 10 / h_call(返回 3 态哨兵,裸 i64)。
+func (h *helperSet) goCall(_ context.Context, stack []uint64) {
+	ret := h.host.DoCall(api.DecodeI32(stack[0]), api.DecodeI32(stack[1]), api.DecodeI32(stack[2]), api.DecodeI32(stack[3]), api.DecodeI32(stack[4]))
+	stack[0] = uint64(ret)
 }
 
-func (h *helperSet) goTailCall(base, pc, a, b, c int32) int32 {
-	return h.host.TailCall(base, pc, a, b, c)
+func (h *helperSet) goTailCall(_ context.Context, stack []uint64) {
+	st := h.host.TailCall(api.DecodeI32(stack[0]), api.DecodeI32(stack[1]), api.DecodeI32(stack[2]), api.DecodeI32(stack[3]), api.DecodeI32(stack[4]))
+	stack[0] = api.EncodeI32(st)
 }
 
-func (h *helperSet) goClosure(base, pc, a, bx int32) int32 {
-	return h.host.Closure(base, pc, a, bx)
+func (h *helperSet) goClosure(_ context.Context, stack []uint64) {
+	st := h.host.Closure(api.DecodeI32(stack[0]), api.DecodeI32(stack[1]), api.DecodeI32(stack[2]), api.DecodeI32(stack[3]))
+	stack[0] = api.EncodeI32(st)
 }
 
-func (h *helperSet) goClose(base, pc, a int32) int32 {
-	return h.host.Close(base, pc, a)
+func (h *helperSet) goClose(_ context.Context, stack []uint64) {
+	st := h.host.Close(api.DecodeI32(stack[0]), api.DecodeI32(stack[1]), api.DecodeI32(stack[2]))
+	stack[0] = api.EncodeI32(st)
 }
 
-func (h *helperSet) goTForLoop(base, pc, a, c int32) int64 {
-	return h.host.TForLoop(base, pc, a, c)
+// goTForLoop: (base,pc,a,c i32) -> (i64)  type 11 / h_tforloop(裸 i64 哨兵)。
+func (h *helperSet) goTForLoop(_ context.Context, stack []uint64) {
+	ret := h.host.TForLoop(api.DecodeI32(stack[0]), api.DecodeI32(stack[1]), api.DecodeI32(stack[2]), api.DecodeI32(stack[3]))
+	stack[0] = uint64(ret)
 }
 
-// goCallErr: () -> ()  对应 type 12 / h_callerr(PW10 R3)。
-func (h *helperSet) goCallErr() {
+// goCallErr: () -> ()  type 12 / h_callerr(PW10 R3:补弹遗留 gibbous 帧)。
+func (h *helperSet) goCallErr(_ context.Context, _ []uint64) {
 	h.host.PopErrFrame()
 }
