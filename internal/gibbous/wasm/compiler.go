@@ -56,8 +56,8 @@ type Compiler struct {
 
 // maxTableSlots 是 Compiler 可分配的 slot 上限(= memadapter.TableSlots,env
 // 共享表容量)。超出则该 Proto 不分配 slot(回退 h_call,正确性不破)。
-// 硬编码避免 wasm 包反向 import memadapter 形成 import 环倒置;两值须一致
-// (有 TestPW10 断言对齐)。
+// 硬编码避免 wasm 包(非测试代码)反向 import memadapter 形成 import 环倒置;
+// 两值须一致(TestPW10_SlotCapAligned 断言对齐)。
 const maxTableSlots = 8192
 
 // numOpcodes 是 P1 活跃 opcode 数(0..37)+ 预留区上界守卫。

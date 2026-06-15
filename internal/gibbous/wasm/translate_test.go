@@ -83,6 +83,18 @@ func setupTranslator(t *testing.T) (*Compiler, *memadapter.MemoryHolder, func())
 	return c, holder, func() { _ = holder.Close(); _ = rt.Close(ctx) }
 }
 
+// TestPW10_SlotCapAligned 兑现 compiler.go maxTableSlots 注释承诺:它必须与
+// env 共享表实际容量 memadapter.TableSlots 一致。两值手工硬编码(wasm 包不反向
+// import memadapter 避免 import 环倒置),本测是防「只改一处」的安全网——若
+// maxTableSlots > TableSlots,Compile 会分配超出 env.table 容量的 slot,
+// elementSection active 写 table[slot] 在实例化时越界失败,且表满哨兵判定失效。
+func TestPW10_SlotCapAligned(t *testing.T) {
+	if maxTableSlots != memadapter.TableSlots {
+		t.Fatalf("maxTableSlots(%d) != memadapter.TableSlots(%d):两值须一致,否则越界 slot 实例化失败",
+			maxTableSlots, memadapter.TableSlots)
+	}
+}
+
 // TestPW10_SlotRegistration 验证 R1b:每个升层 Proto 编译时分配单调 slot,且其
 // run 经 element 段真注册进共享 env.table[slot]——另一 caller module 经 env.table
 // call_indirect 该 slot 能跨 module 调到这个 Proto 的 run(R3 直调的物理基础)。
