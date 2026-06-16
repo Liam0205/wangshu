@@ -220,6 +220,10 @@ func (e *emitter) i64Shl()        { e.raw(opI64Shl) }
 func (e *emitter) i64ExtendUI32() { e.raw(opI64ExtendUI32) }
 func (e *emitter) i32GtS()        { e.raw(opI32GtS) }
 
+// PW10 零跨界 ④:i64 算术(段帧字打包 + 偏移加)/ 逻辑或(标志位合并)。
+func (e *emitter) i64Add() { e.raw(0x7c) }
+func (e *emitter) i64Or()  { e.raw(0x84) }
+
 // ifVoid 开一个无返回值的 if 块(条件 i32 已在栈顶)。配对 elseOp/end。
 func (e *emitter) ifVoid()       { e.raw(opIf, btVoid) }
 func (e *emitter) elseOp()       { e.raw(opElse) }
