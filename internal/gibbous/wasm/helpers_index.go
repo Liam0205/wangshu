@@ -74,12 +74,13 @@ const (
 )
 
 // CI 段帧布局常量(PW10 零跨界 ③b:Wasm 内 RETURN 拆帧动态读段帧)。与 crescent
-// state.go 的 ciWords / writeCISeg / packCIWord2 布局**严格一致**:每帧 4 word=32
-// 字节;word0[31:0]=base|[63:32]=funcIdx;word1[31:0]=top|[63:32]=pc;word2 低 32
-// =protoID、[47:32]=nresults(int16)、bit50=gibbous;word3=cl。帧字节地址 =
+// state.go 的 ciWords / writeCISeg / packCIWord2 布局**严格一致**:VS0-e 子步 ②
+// 起每帧 5 word=40 字节(word4 = nVarargs 镜像);word0[31:0]=base|[63:32]=funcIdx;
+// word1[31:0]=top|[63:32]=pc;word2 低 32=protoID、[47:32]=nresults(int16)、
+// bit50=gibbous;word3=cl;word4[15:0]=nVarargs。帧字节地址 =
 // load(ciSegBaseAddr) + depth*ciFrameBytes + word*8。
 const (
-	ciFrameBytes  = 32 // ciWords(4) * 8
+	ciFrameBytes  = 40 // ciWords(5) * 8;VS0-e 子步 ②:4→5
 	ciWord1Off    = 8  // word1: top | pc
 	ciWord2Off    = 16 // word2: protoID | nresults | flags
 	ciGibbousBit  = uint64(1) << 50

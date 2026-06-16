@@ -905,18 +905,20 @@ type thread struct {
 // initialStackSlots 是 thread 值栈段的初始槽数(对齐旧 Go slice cap 64)。
 const initialStackSlots = 64
 
-// ciWords 是每个 CallInfo 在 arena ci 段占的字数(4 word/帧)。
+// ciWords 是每个 CallInfo 在 arena ci 段占的字数(VS0-e 子步 ②:4 → 5)。
 //
-// **物理布局(承 04-trampoline §1.2 word2 packing)**:
+// **物理布局(承 04-trampoline §1.2 word2 packing;VS0-e 子步 ② 扩 word4)**:
 //
 //	word0 [31:0]base   [63:32]funcIdx
 //	word1 [31:0]top    [63:32]pc(savedPC)
 //	word2 [31:0]protoID [47:32]nresults [48]tailcall [49]fresh [50]gibbous
 //	word3 cl(GCRef)
+//	word4 [15:0]nVarargs (VS0-e 子步 ②;子步 ③ 之后栈下区 [base-nVarargs..base) 是 vararg 区权威)
 //
-// ci 段是冷字段 + GC 根的权威源(R2b-3 起);varargs 住 Go th.ciVarargs(不进
-// linear memory)。当前栈顶帧的工作副本在 th.cur(热镜像,currentCI 返回 &cur)。
-const ciWords = 4
+// ci 段是冷字段 + GC 根的权威源(R2b-3 起)。**Wasm 端段帧步长**:
+// internal/gibbous/wasm/helpers_index.go ciFrameBytes 须严格等于 ciWords*8(本轮 40)。
+// 当前栈顶帧的工作副本在 th.cur(热镜像,currentCI 返回 &cur)。
+const ciWords = 5
 
 // initialCISlots 是 ci 段初始帧数(典型程序调用深度 ≪ 此值;深则 growCISeg)。
 const initialCISlots = 64
@@ -953,6 +955,7 @@ func (th *thread) writeCISeg(depth int, ci *callInfo) {
 	a.SetWordAt(wordRef(1), uint64(uint32(ci.top))|uint64(uint32(ci.pc))<<32)
 	a.SetWordAt(wordRef(2), packCIWord2(ci))
 	a.SetWordAt(wordRef(3), uint64(ci.cl))
+	a.SetWordAt(wordRef(4), uint64(ci.nVarargs)) // VS0-e 子步 ②:nVarargs 镜像(其他位预留)
 }
 
 // packCIWord2 打包 protoID/nresults/flags 进 word2(04-trampoline §1.2 布局)。
@@ -991,6 +994,7 @@ func (th *thread) readCISegInto(depth int, out *callInfo) {
 	out.fresh = w2&(1<<49) != 0
 	out.gibbous = w2&(1<<50) != 0
 	out.cl = arena.GCRef(a.WordAt(wordRef(3)))
+	out.nVarargs = uint16(a.WordAt(wordRef(4))) // VS0-e 子步 ②:从 word4 解包 nVarargs
 }
 
 // setVarargs 记录第 depth 帧的 varargs 到 Go 影子(GC 根;索引 = 深度)。
@@ -1215,7 +1219,7 @@ func (th *thread) verifyCISeg(depth int, want *callInfo) {
 	if got.base != want.base || got.funcIdx != want.funcIdx || got.top != want.top ||
 		got.protoID != want.protoID || got.cl != want.cl || got.nresults != want.nresults ||
 		got.tailcall != want.tailcall || got.fresh != want.fresh || got.gibbous != want.gibbous ||
-		got.pc != want.pc {
+		got.pc != want.pc || got.nVarargs != want.nVarargs {
 		panic(fmt.Sprintf("crescent: ci 段镜像不一致 depth=%d\n got  %+v\n want %+v", depth, got, *want))
 	}
 }
