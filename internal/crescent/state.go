@@ -253,8 +253,15 @@ func (st *State) CompileAndLoad(src []byte, chunkname string) (value.Value, erro
 func (st *State) SetStringLib(t arena.GCRef) { st.stringLib = t }
 
 // New constructs a fresh State (arena + collector + empty globals)。
-func New() *State {
-	a, cleanup, p3env := newStateArena()
+// New 建一个 State,arena 用默认容量(64 KiB 初始 / 2 GiB 上限)。
+// 含 arena 容量定制需求时用 NewWithOptions。
+func New() *State { return NewWithOptions(arena.Options{}) }
+
+// NewWithOptions 建一个 State,arenaOpts 透传 wangshu.Options.{InitialArenaBytes,
+// MaxArenaBytes} 到 arena.New(零值由 arena.New 内部回落默认 64 KiB / 2 GiB,
+// issue #11 方向 2)。
+func NewWithOptions(arenaOpts arena.Options) *State {
+	a, cleanup, p3env := newStateArena(arenaOpts)
 	c := gc.New(a, gc.Options{})
 	st := &State{arena: a, gc: c, bridge: bridge.NewBridge(), arenaCleanup: cleanup, p3env: p3env}
 	st.globals = object.AllocTable(a, 0, 8)
@@ -593,6 +600,29 @@ func (st *State) putArgsBuf(buf []value.Value) {
 func (st *State) GCCountKB() float64 {
 	used := uint64(st.arena.Bump()) - st.arena.FreeBytes()
 	return float64(used) / 1024.0
+}
+
+// ArenaCapKB 返回 arena backing 当前**容量** KB(issue #11 方向 3)。
+// 与 GCCountKB 的区别:GCCountKB 测「live bytes」会被 Collect 缩;ArenaCapKB
+// 测「backing slab 容量」反映真实 Go 堆驻留(grow-only 时单调上涨)。pool 层
+// 据此阈值化决定是否 drop fat state。
+func (st *State) ArenaCapKB() float64 {
+	return float64(st.arena.Cap()) / 1024.0
+}
+
+// Collect 强制触发一次 full GC sweep(对应 Lua collectgarbage("collect"))。
+// issue #9 方向 2:让 host 嵌入层显式驱动 GC 节奏,免去走 collectgarbage 脚本
+// 调用的迂回路径。短脚本 / host-driven allocation 形态下定期调用可使 arena
+// 内部账面保持有界(但 backing 容量不缩,见 ArenaCapKB / issue #11)。
+func (st *State) Collect() {
+	st.gc.Collect()
+}
+
+// MaybeCollectNow 按 GC 阈值条件触发(可能 collect 也可能 no-op)。等价于 host
+// 触发一次 safepoint 检查——issue #9 方向 2 最小安全表面。短脚本嵌入下定期调
+// 用替代 VM opcode safepoint 触发频率不足的 starvation。
+func (st *State) MaybeCollectNow() {
+	st.gc.MaybeCollect()
 }
 
 // NewError 构造一个带消息的 LuaError(供 stdlib 等 host 函数使用)。

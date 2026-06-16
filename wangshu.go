@@ -91,7 +91,10 @@ func NewState(opts Options) *State {
 		// 语义自相矛盾:允许读文件但刮除入口函数,这种组合永远是配置错。
 		panic("wangshu: NewState: AllowFileLoad and HideFileLoaders are mutually exclusive")
 	}
-	st := &State{core: crescent.New()}
+	st := &State{core: crescent.NewWithOptions(arena.Options{
+		InitialBytes: opts.InitialArenaBytes,
+		MaxBytes:     opts.MaxArenaBytes,
+	})}
 	st.core.SetAllowFileLoad(opts.AllowFileLoad)
 	// loadstring 的编译回调(经门面注入,避免 crescent → frontend 反向依赖)
 	st.core.SetCompileFn(func(src []byte, chunkname string) (uint32, []*bytecode.Proto, error) {
@@ -131,6 +134,35 @@ func (st *State) SetForceAllPromote(on bool) { st.core.SetForceAllPromote(on) }
 // GCCountKB 返回 arena 当前已用 KB(= bump 指针;含 freelist 上待复用的空闲块)。
 // 长稳观测用:稳态下 freelist 循环复用,本值应有界。
 func (st *State) GCCountKB() float64 { return st.core.GCCountKB() }
+
+// ArenaCapKB 返回 arena backing 当前**容量** KB(issue #11 方向 3)。
+//
+// 与 GCCountKB 的区别:GCCountKB 测「live bytes」会随 Collect 回落;ArenaCapKB
+// 测「backing slab 容量」反映真实 Go 堆驻留——grow-only 模式下单调上涨,不被
+// Collect 缩(arena copy-compact 待 issue #11 方向 1)。
+//
+// 典型用法:long-running State pool 层据此判 fat state 阈值,超阈则 drop 状态而非
+// 缓存。比 GCCountKB 更准——后者被 sweep 隐藏了 latched high-water。
+func (st *State) ArenaCapKB() float64 { return st.core.ArenaCapKB() }
+
+// Collect 强制触发一次 full GC sweep(对应 Lua collectgarbage("collect"))。
+//
+// issue #9 方向 2:host 嵌入层显式驱动 GC 节奏,免去走 collectgarbage 脚本调用的
+// 迂回路径。**典型场景**:boundary-dominated 工作负载(host 反复构造大表 + 短
+// 脚本)下,VM opcode safepoint 触发频率不足以让 GC 跟上 host-driven allocation
+// 节奏 → arena 内部账面单调上涨。host 在 pool 归还点 / 批次完成点定期调用本方法
+// 可保持 GCCountKB 有界。**代价**:每次 ~微秒级到毫秒级(取决于 live object 规模)。
+// 不缩 backing 容量(见 ArenaCapKB / issue #11 方向 1)。
+func (st *State) Collect() { st.core.Collect() }
+
+// MaybeCollectNow 按 GC 阈值条件触发(可能 collect 也可能 no-op)。等价于让 host
+// 触发一次 safepoint 检查。
+//
+// issue #9 方向 2 最小安全表面:适合「想周期性放手让 GC 自动管理但 VM opcode
+// safepoint 触发不到」的形态(短脚本 + 高频 host-driven allocation)。比 Collect()
+// 廉价(命中阈值才真 collect),但触发不到时不保证 sweep。强约束需 sweep 的形态
+// 直接调 Collect。
+func (st *State) MaybeCollectNow() { st.core.MaybeCollectNow() }
 
 // SetStepBudget 设置回边指令预算(<=0 关闭):超额时脚本以可恢复错误
 // "instruction budget exceeded" 终止。宿主对不可信脚本的执行配额。

@@ -26,11 +26,19 @@ type p3Env struct {
 // 流程:① 建 wazero Runtime(编译模式)② memadapter 建 MemoryHolder 分配
 // linear memory ③ arena.Options 注入 holder.Backing() + InPlaceBacking=true
 // (收养语义:grow 原地扩不 copy)。返回 p3Env 供 wireP3 取 runtime 构造 Compiler。
-func newStateArena() (*arena.Arena, func(), any) {
+func newStateArena(arenaOpts arena.Options) (*arena.Arena, func(), any) {
 	ctx := context.Background()
 	rt := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfigCompiler())
 
-	holder, err := memadapter.New(ctx, rt, defaultInitialArenaBytes, defaultMaxArenaBytes)
+	initial := arenaOpts.InitialBytes
+	if initial == 0 {
+		initial = defaultInitialArenaBytes
+	}
+	maxB := arenaOpts.MaxBytes
+	if maxB == 0 {
+		maxB = defaultMaxArenaBytes
+	}
+	holder, err := memadapter.New(ctx, rt, initial, maxB)
 	if err != nil {
 		// holder 建失败是 P3 环境问题(wazero 不可用 / 内存上限非法)——
 		// fail-fast,不静默退回 Go 堆(那会让 P3 build 静默跑成 P1 形态)。
@@ -39,8 +47,8 @@ func newStateArena() (*arena.Arena, func(), any) {
 	}
 
 	a := arena.New(arena.Options{
-		InitialBytes:   defaultInitialArenaBytes,
-		MaxBytes:       defaultMaxArenaBytes,
+		InitialBytes:   initial,
+		MaxBytes:       maxB,
 		NewBacking:     holder.Backing(),
 		InPlaceBacking: true, // 收养语义:memory.grow 原地扩,grow64 不 copy
 	})
