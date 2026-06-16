@@ -94,6 +94,7 @@ func (st *State) enterLuaFrame(th *thread, funcIdx, nargs, nresults int, entry b
 		fresh:    entry,
 		pc:       0,
 		varargs:  varargs,
+		nVarargs: uint16(len(varargs)), // VS0-e 子步 ①:零行为变更基建;子步 ② 进 word4,子步 ③ 之后栈下区为权威
 	}
 	// 先把当前栈顶帧(th.cur,可能 pc/top 已推进)刷回段,再载入新帧。
 	if th.ciDepth > 0 {

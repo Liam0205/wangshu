@@ -1340,6 +1340,11 @@ type callInfo struct {
 	// Go 切片(简化版,后续 M14 切到栈下区)。这样 VARARG 指令直接读 ci.varargs。
 	varargs []value.Value
 	pc      int32
+
+	// nVarargs 是本帧 vararg 区长度(VS0-e 子步 ①:enterLuaFrame 计算 = len(varargs))。
+	// 子步 ① 仅作零行为变更基建,任何路径不读;子步 ② 起进 word4;子步 ③ 之后栈
+	// 下区 [base-nVarargs..base) 是 vararg 区权威 source,ci.varargs Go 切片退役。
+	nVarargs uint16
 }
 
 // protoOf 取 callInfo 的 Proto(VS0-b:protoID → *Proto 收口)。
@@ -1369,4 +1374,6 @@ func (ci *callInfo) Gibbous() bool          { return ci.gibbous }
 func (ci *callInfo) SetGibbous(v bool)      { ci.gibbous = v }
 func (ci *callInfo) Pc() int32              { return ci.pc }
 func (ci *callInfo) SetPc(v int32)          { ci.pc = v }
+func (ci *callInfo) NVarargs() uint16       { return ci.nVarargs }
+func (ci *callInfo) SetNVarargs(v uint16)   { ci.nVarargs = v }
 func (ci *callInfo) Varargs() []value.Value { return ci.varargs }
