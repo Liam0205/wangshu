@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# build-test-bins.sh <variant>
+#
+# 把所有含 test 的包编译为 `.test` binary,落到 test-bin/<variant>/。
+# 配合 run-test-bins.sh 把 build 与 run 分阶段——`go test -c` 编一次,
+# 后续 `make test` / `make bench` 跑同一份 binary,避免每次重编。
+#
+# variant:
+#   p1  默认 build(新月解释器,P3 完全 dead-code)
+#   p3  wangshu_p3 + wangshu_profile build(P1 解释器 + P3 凸月编译层)
+#   future: p4 / p5 同款接入。
+#
+# 主模块 + benchmarks 子模块都编(子模块独立 go.mod)。包名经
+# `path-to-name` 规范化:`github.com/Liam0205/wangshu/internal/arena` →
+# `internal-arena.test`,root 包(`github.com/Liam0205/wangshu`)→ `root.test`,
+# 子模块包前缀化为 `bench-`。
+set -uo pipefail
+
+variant="${1:-}"
+case "$variant" in
+    p1)
+        tags=""
+        ;;
+    p3)
+        tags="wangshu_p3 wangshu_profile"
+        ;;
+    "")
+        echo "usage: $0 <variant>  (variant: p1 | p3)" >&2
+        exit 2
+        ;;
+    *)
+        echo "✗ unknown variant: $variant (allowed: p1 | p3)" >&2
+        exit 2
+        ;;
+esac
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+outdir="$repo_root/test-bin/$variant"
+mkdir -p "$outdir"
+
+# pkg_to_name <full import path>
+# 主模块 root(`github.com/Liam0205/wangshu`)→ `root`
+# 主模块子包(`...wangshu/internal/arena`)→ `internal-arena`
+# benchmarks 子模块(`...wangshu/benchmarks/baseline`)→ `bench-baseline`
+pkg_to_name() {
+    local p=$1
+    p=${p#github.com/Liam0205/wangshu}
+    p=${p#/}
+    [ -z "$p" ] && { echo "root"; return; }
+    # benchmarks/ → bench-,扁平到一级
+    p=${p#benchmarks/}
+    echo "${p//\//-}"
+}
+
+# build_pkg <full import path> <module_root_dir>
+# 写入 binary + 把它的源码 dir 记到 manifest.txt(供 run 阶段 cd 进去,
+# 因为预编译 binary 跑时 cwd 是调用方,不是 `go test` 默认那样自动 cd 到
+# 包目录——`testdata/` 等相对路径需要在跑前手工 cd 兜住)。
+build_pkg() {
+    local pkg=$1
+    local mod_root=$2
+    local name
+    name=$(pkg_to_name "$pkg")
+    local out="$outdir/$name.test"
+
+    local -a args=(-race -c -o "$out")
+    if [ -n "$tags" ]; then
+        args+=(-tags "$tags")
+    fi
+
+    # `go test -c` 在没 test 的包上会写空 binary 也不报错;为避免后续 run 阶段
+    # 误以为是有效 binary 跑出 "no tests to run" 噪音,这里先按 .TestGoFiles +
+    # .XTestGoFiles 过滤。调用方保证只传含 test 的包。
+    if ! go test "${args[@]}" "$pkg"; then
+        echo "✗ build failed: $pkg ($variant)" >&2
+        return 1
+    fi
+
+    # 把包源码 dir(绝对路径)记到 manifest;run-test-bins.sh 据此 cd。
+    local src_dir
+    src_dir=$(go list -f '{{.Dir}}' "$pkg" 2>/dev/null)
+    if [ -z "$src_dir" ]; then
+        echo "✗ go list -f {{.Dir}} failed for $pkg" >&2
+        return 1
+    fi
+    echo "$name.test $src_dir" >> "$outdir/manifest.txt"
+
+    echo "  $name.test  ←  $pkg"
+}
+
+# 第一阶段:主模块
+echo "===== build $variant test binaries → test-bin/$variant/ ====="
+rm -f "$outdir/manifest.txt"
+echo "[1/2] main module"
+mapfile -t main_pkgs < <(cd "$repo_root" && \
+    go list -f '{{if or (len .TestGoFiles) (len .XTestGoFiles)}}{{.ImportPath}}{{end}}' ./... 2>/dev/null)
+for pkg in "${main_pkgs[@]}"; do
+    [ -z "$pkg" ] && continue
+    (cd "$repo_root" && build_pkg "$pkg" "$repo_root") || exit 1
+done
+
+# 第二阶段:benchmarks 子模块(独立 go.mod)
+echo "[2/2] benchmarks submodule"
+mapfile -t bench_pkgs < <(cd "$repo_root/benchmarks" && \
+    go list -f '{{if or (len .TestGoFiles) (len .XTestGoFiles)}}{{.ImportPath}}{{end}}' ./... 2>/dev/null)
+for pkg in "${bench_pkgs[@]}"; do
+    [ -z "$pkg" ] && continue
+    (cd "$repo_root/benchmarks" && build_pkg "$pkg" "$repo_root/benchmarks") || exit 1
+done
+
+count=$(find "$outdir" -name '*.test' -type f | wc -l)
+echo "===== done: $count binaries in $outdir ====="

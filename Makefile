@@ -1,7 +1,24 @@
 # Makefile —— 唯一任务入口,CI 与本地共用(docs/design/engineering.md §1)
-.PHONY: all fmt lint test test-p3 test-trace bench-test race cover fuzz fuzz-p3 bench bench-gibbous bench-all conformance difftest difftest-p3 hooks tidy release
+#
+# 命名约定(P1 / P3 / 未来 P4 / P5 等多 build variant 统一形态):
+#   make <verb>          = <verb>-all 的语义(跑所有 variant)
+#   make <verb>-all      = 跑全部 variant(显式)
+#   make <verb>-p1       = 只跑 P1(默认 build,新月解释器,P3 dead-code)
+#   make <verb>-p3       = 只跑 P3(wangshu_p3+wangshu_profile,P1 解释器+P3 凸月编译层)
+#   (未来追加 P4 / P5 时同款扩 -p4 / -p5,with -all 顺手聚合)
+#
+# 涉及 verb:build / test / bench / fuzz / difftest
+# (test/bench 走预编译 .test binary 流;fuzz/difftest 留 `go test` 原生路径——
+#  fuzz corpus 依赖 source tree、difftest 依赖外部 lua5.1 oracle 不易 binary 化)
+.PHONY: all fmt lint \
+        build build-all build-p1 build-p3 build-clean \
+        test test-all test-p1 test-p3 test-trace \
+        bench bench-all bench-p1 bench-p3 bench-test \
+        fuzz fuzz-all fuzz-p1 fuzz-p3 \
+        difftest difftest-all difftest-p1 difftest-p3 \
+        cover conformance hooks tidy release
 
-all: fmt lint test test-p3 fuzz fuzz-p3 conformance difftest difftest-p3 bench-test      ## 默认:提交前本地全检(主模块 + benchmarks 子模块);凸月 build 与默认 build 并列(`*-p3` 目标覆盖凸月升层后路径)
+all: fmt lint build-all test-all fuzz-all conformance difftest-all bench-test      ## 默认:提交前本地全检(主模块 + benchmarks 子模块);build-all 一次编两 variant 的 .test binary,后续 test/bench 复用
 
 fmt:                                                ## 格式化(写回)
 	@files=$$(git ls-files '*.go'); [ -z "$$files" ] || gofmt -w $$files
@@ -9,51 +26,83 @@ fmt:                                                ## 格式化(写回)
 lint:                                               ## 全仓静态检查
 	golangci-lint run ./...
 
-test:                                               ## 主模块单测(默认 build,新月解释器路径,含 race)
-	go test -race ./...
+# ─── build ─────────────────────────────────────────────────────────────────
+build: build-all                                    ## 别名:make build = build-all
 
-test-p3:                                            ## 主模块单测(凸月 build,wangshu_p3+wangshu_profile;force-all 升层后路径,补 ci `test` job 凸月覆盖缺口)
-	go test -race -tags "wangshu_p3 wangshu_profile" ./...
+build-all: build-p1 build-p3                        ## 编全部 variant 的 .test binary
 
-test-trace:                                         ## 主模块单测(wangshu_trace build:verifyCISeg 等 trace-gated 安全网激活)
+build-p1:                                           ## 编 P1 .test binary 到 test-bin/p1/(默认 build)
+	./scripts/build-test-bins.sh p1
+
+build-p3:                                           ## 编 P3 .test binary 到 test-bin/p3/(wangshu_p3+wangshu_profile)
+	./scripts/build-test-bins.sh p3
+
+build-clean:                                        ## 清空 test-bin/
+	rm -rf test-bin
+
+# ─── test ──────────────────────────────────────────────────────────────────
+test: test-all                                      ## 别名:make test = test-all
+
+test-all: build-all                                 ## 跑全部 variant 的单测(从 test-bin/ 跑预编 binary)
+	./scripts/run-test-bins.sh test
+
+test-p1: build-p1                                   ## 只跑 P1 variant 的单测
+	./scripts/run-test-bins.sh test p1
+
+test-p3: build-p3                                   ## 只跑 P3 variant 的单测
+	./scripts/run-test-bins.sh test p3
+
+test-trace:                                         ## 主模块单测(wangshu_trace build:verifyCISeg 等 trace-gated 安全网激活)走原生 go test 路径
 	go test -race -tags wangshu_trace ./...
 
-bench-test:                                         ## benchmarks 子模块的测试(realworld oracle parity)
+bench-test:                                         ## benchmarks 子模块的功能测试(realworld oracle parity)走原生 go test 路径
 	cd benchmarks && go test -race ./...
 
-cover:                                              ## 覆盖率(coverage.out + 终端摘要)
+cover:                                              ## 覆盖率(coverage.out + 终端摘要)走原生 go test 路径(coverage profile 合并复杂,不上 binary 模式)
 	go test -race -coverprofile=coverage.out -covermode=atomic ./...
 	go tool cover -func=coverage.out | tail -1
 
-fuzz:                                               ## 全部 fuzz 目标各跑一轮冒烟(默认 build,自动发现 func Fuzz*)
+# ─── fuzz(走 go test 原生路径——fuzz corpus 依赖 source tree)──────────────
+fuzz: fuzz-all                                      ## 别名:make fuzz = fuzz-all
+
+fuzz-all: fuzz-p1 fuzz-p3                           ## 跑全部 variant 的 fuzz 冒烟
+
+fuzz-p1:                                            ## P1 build 下全部 fuzz 目标各跑一轮冒烟(默认 build)
 	./scripts/go-fuzz.sh 30s
 
-fuzz-p3:                                            ## 凸月 build 下全部 fuzz 目标冒烟(force-all 升层后路径,补 fuzz 凸月覆盖缺口)
+fuzz-p3:                                            ## P3 build 下全部 fuzz 目标各跑一轮冒烟(wangshu_p3+wangshu_profile,force-all 升层后路径)
 	./scripts/go-fuzz.sh 30s "wangshu_p3 wangshu_profile"
 
-conformance:                                        ## conformance 套(12 §2)
+# ─── conformance ───────────────────────────────────────────────────────────
+conformance:                                        ## conformance 套(12 §2)——目前只默认 build,p3 conformance 由 difftest-p3 提供等价覆盖
 	go test ./test/conformance/...
 
-difftest:                                           ## 一轮固定时长差分 fuzz(默认 build vs 官方 5.1.5;12 §3;需本机 lua5.1)
+# ─── difftest(走 go test 原生路径——依赖外部 lua5.1 oracle)─────────────────
+difftest: difftest-all                              ## 别名:make difftest = difftest-all
+
+difftest-all: difftest-p1 difftest-p3               ## 跑全部 variant 的差分 fuzz
+
+difftest-p1:                                        ## P1 build 差分 fuzz(默认 build vs 官方 5.1.5;12 §3;需本机 lua5.1)
 	./scripts/check-oracle.sh
 	go test ./test/difftest/... -count=1
 
-difftest-p3:                                        ## 凸月 build 差分 fuzz(force-all 升层后凸月 wasm 输出 vs gopher/官方,V1-V13 三方逐字节)
+difftest-p3:                                        ## P3 build 差分 fuzz(force-all 升层后凸月 wasm 输出 vs gopher/官方,V1-V13 三方逐字节)
 	./scripts/check-oracle.sh
 	go test -tags "wangshu_p3 wangshu_profile" ./test/difftest/... -count=1
 
-bench:                                              ## 四档基准:纯VM micro(baseline)+ 真实负载纯VM(realworld)+ 边界 mini(embedded/Mini)+ 真实负载 embedded(embedded/Realworld);benchmarks 独立子模块,gopher-lua 仅基准用不污染主模块依赖图
-	cd benchmarks && go test -bench=. -benchmem -count=1 -run='^$$' ./...
+# ─── bench ─────────────────────────────────────────────────────────────────
+bench: bench-all                                    ## 别名:make bench = bench-all
 
-bench-gibbous:                                      ## 凸月(gibbous)档基准(需 wangshu_p3+profile;force-all 升 wazero)
-	cd benchmarks && go test -tags "wangshu_p3 wangshu_profile" -bench=Gibbous -benchmem -count=1 -run='^$$' ./...
+bench-all: build-all                                ## 跑全部 variant 的全部 benchmark
+	./scripts/run-test-bins.sh bench
 
-bench-all:                                           ## 大一统:一条命令出 gopher/新月/凸月三方表。注意分两段跑——新月/gopher 用默认 tag(无 profiling 税,反映真实 baseline);凸月用 p3+profile tag(force-all 需采样钩)。profiling 会给新月加 ~28% 税,故不混跑同一 tag。
-	@echo "===== 新月(crescent)+ gopher:默认 tag(无 profiling 税)====="
-	cd benchmarks && go test -bench=. -benchmem -count=1 -run='^$$' ./...
-	@echo "===== 凸月(gibbous):wangshu_p3 wangshu_profile + force-all ====="
-	cd benchmarks && go test -tags "wangshu_p3 wangshu_profile" -bench=Gibbous -benchmem -count=1 -run='^$$' ./...
+bench-p1: build-p1                                  ## 只跑 P1 variant 的 benchmark
+	./scripts/run-test-bins.sh bench p1
 
+bench-p3: build-p3                                  ## 只跑 P3 variant 的 benchmark
+	./scripts/run-test-bins.sh bench p3
+
+# ─── 其他 ──────────────────────────────────────────────────────────────────
 hooks:                                              ## 安装 git hooks(一次性)
 	git config core.hooksPath .githooks
 	@echo "hooks installed: $$(git config core.hooksPath)"
