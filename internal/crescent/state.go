@@ -454,8 +454,11 @@ func (st *State) visitThreadRefs(th *thread, seen map[*thread]bool, visit func(a
 	// cl 在 push 时写段、之后不变,故段对全部活跃帧 [0,ciDepth) 持正确 cl
 	// (含当前帧——th.cur 是热镜像,但 cl 不在热路径改)。形态 Y 现算寻址。
 	// PW10 Stage 1c:深度读 liveCIDepth(Wasm 侧帧建拆改深度后段为权威,否则
-	// Wasm 新压帧的 closure 漏扫 = UAF;Wasm 弹帧后即时减字 = 不过扫)。
-	for depth := 0; depth < th.liveCIDepth(); depth++ {
+	// Wasm 新压帧的 closure 漏扫 = UAF;Wasm 弹帧后即时减字 = 不过扫)。GC 单
+	// goroutine + Wasm 不在栈上,扫描期间 live 不变 → 提循环不变量,与上方
+	// visitThreadValues 同款风格(state.go:406)。
+	live := th.liveCIDepth()
+	for depth := 0; depth < live; depth++ {
 		if cl := th.ciSegCl(depth); !cl.IsNull() {
 			visit(cl)
 		}
@@ -1100,7 +1103,7 @@ func (th *thread) syncOpenGuard() {
 // setCIDepth 设帧深度 + 镜像到 linear-memory 字(PW10 零跨界 Stage 1a)。
 // 所有 th.ciDepth 写经此收口(enterLuaFrame ++ / popCallInfo -- / truncateCI =),
 // 使 ciDepthWordRef(mainTh)与 Go ciDepth 同步。Stage 1a 只写影子(Go 仍读 ciDepth);
-// Stage 2/3 Wasm 侧增减该字、Go 侧经 syncCIDepthFromWord 反向读回(段为权威翻转)。
+// Stage 2/3 Wasm 侧增减该字、Go 侧经 syncCurFromSeg 反向读回(段为权威翻转)。
 func (th *thread) setCIDepth(n int) {
 	th.ciDepth = n
 	if th.ciDepthWordRef != 0 {
