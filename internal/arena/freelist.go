@@ -11,7 +11,10 @@
 // (AllocString 的 NUL 填充已改显式清零)。
 package arena
 
-import "runtime"
+import (
+	"math/bits"
+	"runtime"
+)
 
 // size-class 划分(06 §2.2):20 small 桶 + LARGE 多桶(power-of-2 字数)。
 const (
@@ -26,15 +29,16 @@ const (
 // largeSizeClass 把 words > 64 映射到 power-of-2 桶号(0..23)。
 // 桶 0 = 65..128 字,桶 1 = 129..256,桶 2 = 257..512,...
 // 越界 clamp 到最后一桶(超 maxCap 已由 AllocBytes 拒绝)。
+//
+// 实现:桶 = ceil(log2(words)) - 7 = bits.Len32(words-1) - 7。
+// (bits.Len32(x-1) == ceil(log2(x)) 对 x>=2 成立——含 x=2^n 时取该幂次)
+// 调用契约 words > 64 ⟹ words-1 ≥ 64 ⟹ Len32 ≥ 7 ⟹ c ≥ 0,无需下界守卫。
 func largeSizeClass(words uint32) int {
-	b := uint32(7) // 1<<7 = 128
-	for (uint32(1) << b) < words {
-		b++
-		if b >= 7+uint32(numLargeClasses) {
-			return numLargeClasses - 1
-		}
+	c := int(bits.Len32(words-1)) - 7
+	if c >= numLargeClasses {
+		return numLargeClasses - 1
 	}
-	return int(b - 7)
+	return c
 }
 
 // sizeClass 把字数(1..64)映射到桶号。
