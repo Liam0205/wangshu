@@ -27,6 +27,15 @@ P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 met
 
 性能基线(Xeon 6982P-C,2026-06-16):新月对位 gopher-lua 嵌入式真实形态 1.03–7.06× + realworld 五项中两项反超(spectral 1.20×、nbody 1.05×);P3 凸月可选层在循环密集 hot function 形态 ~2.96× over 新月(详「性能基准」节末「P3 凸月编译层」)。详细对账见 [p3 implementation-progress](docs/design/p3-wasm-tier/implementation-progress.md)。
 
+**embedding admin API**(2026-06-16,issue #9 / #10 / #11 三件套全交付):
+- `Table.Preallocate(n)` + `State.NewArrayTable(vals)`(issue #10):一次性 array 段预分配,绕过反复 SetIndex 的 O(N²) rehash 风暴(N=1000 实测 25-60× 加速,详「性能基准」)。
+- `Options.InitialArenaBytes` / `MaxArenaBytes`(issue #11):接通 arena 容量定制 + fail-fast 上限。
+- `State.ArenaCapKB()` / `State.GCCountKB()`(issue #11):pool 层据 cap 判 fat state 阈值。
+- `State.Collect()` / `State.MaybeCollectNow()`(issue #9):显式驱动 GC cadence,避免 boundary-dominated 短脚本下 VM safepoint starvation。
+- `State.SetHostTriggeredCollect(on)`(issue #9 experimental,opt-in):host alloc 跨阈直接触发 collect,需调用方保证 transient GCRef 全 pin。
+- arena LARGE freelist 改 multi-bucket size-class(底层 root fix):naive `NewTable + SetIndex(1..N)` 形态从 O(N²) 回到 O(N) 摊销(N=1000 ns/elem 824 → 59,**25× 加速**)。
+- arena Compact 在 Collect 末尾缩 backing slab 到 max(bump, 64 KiB):缓解 grow doubling 高水位 latched 现象,Go runtime 回收旧大 slab(默认 build 生效;P3 收养 wazero linear memory 模式 no-op)。
+
 P1 总验收通过:
 
 - 性能四档实测见下「性能基准」节——纯 VM 微基准 5-6x over gopher-lua,真实负载纯 VM 五项中四项反超,边界密集嵌入经零分配 `CallInto` 反超;
