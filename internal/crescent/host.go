@@ -89,6 +89,24 @@ func (st *State) GetGlobal(name string) value.Value {
 	return v
 }
 
+// SetGlobalByRef 用预先 intern 好的 string GCRef 作 key 写 globals,跳过
+// `gc.Intern([]byte(name))` 一步(issue #13 B 件)。`nameRef` 必须是同一
+// State 的 gc.Intern 产物——跨 State / 非 string-tag GCRef 行为未定义。
+// 公共面经 wangshu.GlobalsSlot 间接调用,Slot 持 pinned 引用保活该 nameRef。
+func (st *State) SetGlobalByRef(nameRef arena.GCRef, v value.Value) {
+	key := value.MakeGC(value.TagString, nameRef)
+	_ = st.tableSet(st.globals, key, v)
+}
+
+// GetGlobalByRef 用预先 intern 好的 string GCRef 作 key 读 globals(对偶
+// SetGlobalByRef)。约束同 SetGlobalByRef,公共面经 wangshu.GlobalsSlot
+// 间接调用。
+func (st *State) GetGlobalByRef(nameRef arena.GCRef) value.Value {
+	key := value.MakeGC(value.TagString, nameRef)
+	v, _ := st.tableGet(st.globals, key)
+	return v
+}
+
 // PinRef 在 pin 表中登记一个 GCRef,返回句柄索引。pin 表被 GC mark 为根,
 // 保证宿主 Go 侧持有期间该对象不被回收(globals 覆盖旧值后旧值仍可调)。
 // 复用 freePins 空闲槽,槽位无界增长仅在「长驻 State 反复 GetGlobal 不同名
