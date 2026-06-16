@@ -75,11 +75,15 @@ type Arena struct {
 	backing BackingFn
 	inPlace bool // Options.InPlaceBacking:grow 时是否跳过 copy(P3 收养语义)
 
-	// freelist(06 §2):20 个 size-class 定长桶 + LARGE 首次适配链。
-	// 空闲块以 GCRef 偏移串链(word0 = next),grow 后偏移不失效。
-	freeHeads [numSizeClasses]GCRef
-	largeHead GCRef
-	freeBytes uint64 // freelist 上的总空闲字节(观测/测试)
+	// freelist(06 §2):20 个 small size-class 定长桶 + LARGE 多桶(power-of-2
+	// 字数,桶 0=65..128 字 / 桶 1=129..256 / .../桶 23=...)。空闲块以 GCRef 偏移
+	// 串链(word0 = next, word1 = words),grow 后偏移不失效。
+	// **LARGE 多桶(issue #10 root fix)**:旧单链 first-fit 在反复分配单调递增
+	// 尺寸(如 rehash array 段 doublings)下产生 O(N) 链长 + O(N) 扫描成本 ⟹ O(N²)
+	// 整体退化;multi-bucket 后每次 alloc 扫桶内短链,典型 power-of-2 alloc O(1) 命中。
+	freeHeads      [numSizeClasses]GCRef
+	largeFreeHeads [numLargeClasses]GCRef
+	freeBytes      uint64 // freelist 上的总空闲字节(观测/测试)
 
 	// freeSet/freeSite(debugFreelist 排障用):当前空闲的全部字偏移与释放点。
 	freeSet  map[GCRef]uint32

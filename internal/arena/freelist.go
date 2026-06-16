@@ -13,11 +13,29 @@ package arena
 
 import "runtime"
 
-// size-class 划分(06 §2.2):20 桶 + LARGE。
+// size-class 划分(06 §2.2):20 small 桶 + LARGE 多桶(power-of-2 字数)。
 const (
 	numSizeClasses      = 20
 	largeThresholdWords = 64
+	// LARGE multi-bucket(issue #10 root fix):桶 i 对应 words ∈ ((1<<(6+i)),
+	// (1<<(7+i))],覆盖 65..maxAlloc。numLargeClasses=24 → 桶 23 = (1<<29)..(1<<30) 字
+	// = 4..8 GB,远超 MaxBytes=2 GiB(无溢出风险)。
+	numLargeClasses = 24
 )
+
+// largeSizeClass 把 words > 64 映射到 power-of-2 桶号(0..23)。
+// 桶 0 = 65..128 字,桶 1 = 129..256,桶 2 = 257..512,...
+// 越界 clamp 到最后一桶(超 maxCap 已由 AllocBytes 拒绝)。
+func largeSizeClass(words uint32) int {
+	b := uint32(7) // 1<<7 = 128
+	for (uint32(1) << b) < words {
+		b++
+		if b >= 7+uint32(numLargeClasses) {
+			return numLargeClasses - 1
+		}
+	}
+	return int(b - 7)
+}
 
 // sizeClass 把字数(1..64)映射到桶号。
 func sizeClass(words uint32) int {
@@ -134,11 +152,13 @@ func callerSite() string {
 	return out
 }
 
-// pushLarge 把一个 >64 字块挂入 LARGE 链头(word0=next, word1=words)。
+// pushLarge 把一个 >64 字块挂入对应 LARGE 桶头(word0=next, word1=words)。
+// 按 largeSizeClass(words) 分桶,典型 power-of-2 字 alloc 单桶命中 O(1)。
 func (a *Arena) pushLarge(ref GCRef, words uint32) {
-	a.words[ref>>3] = uint64(a.largeHead)
+	c := largeSizeClass(words)
+	a.words[ref>>3] = uint64(a.largeFreeHeads[c])
 	a.words[(ref>>3)+1] = uint64(words)
-	a.largeHead = ref
+	a.largeFreeHeads[c] = ref
 	a.freeBytes += uint64(words) * 8
 }
 
@@ -158,51 +178,55 @@ func (a *Arena) popSizeClass(c int) GCRef {
 	return ref
 }
 
-// popLarge 首次适配。取块条件:精确命中,或剩余可独立利用:
-//   - 剩余 > 64 字:独立成 LARGE 块;
-//   - 剩余 ∈ [1, 64] 字:向下取整到最近 size-class 桶代表字数入定长桶,
-//     桶代表与剩余之间的尾巴(< 下一桶步长,≤7 字)就地丢弃——浪费有界,
-//     换取"略大块"不再永久滞留(否则链上长期只有略大块时 freelist 名义
-//     有空闲、实际不可达,新分配持续走 bump)。
+// popLarge 多桶首次适配(issue #10 root fix)。流程:
+//
+//	① 计算需求桶 c0 = largeSizeClass(needWords)
+//	② 桶 c0 内 first-fit 扫描(bw ≥ needWords 即用)
+//	③ 不命中 → 升桶 c0+1, c0+2, ...
+//	④ 命中后切剩余:> 64 字进对应桶,≤ 64 字向下取整入 small 桶,尾巴 ≤7 字丢弃
+//
+// 与旧单链 first-fit 相比:扫描范围限于桶内短链,典型 power-of-2 alloc 桶 c0
+// 头部精确命中 O(1)。N=1000 rehash 反复 doublings 不再爆 LARGE 链长。
 func (a *Arena) popLarge(needWords uint32) GCRef {
-	var prev GCRef
-	ref := a.largeHead
-	for !ref.IsNull() {
-		next := GCRef(a.words[ref>>3])
-		bw := uint32(a.words[(ref>>3)+1])
-		if bw >= needWords {
-			if prev.IsNull() {
-				a.largeHead = next
-			} else {
-				a.words[prev>>3] = uint64(next)
-			}
-			a.freeBytes -= uint64(bw) * 8
-			if debugFreelist {
-				for w := uint32(0); w < bw; w++ {
-					delete(a.freeSet, ref+GCRef(w*8))
+	c0 := largeSizeClass(needWords)
+	for cc := c0; cc < numLargeClasses; cc++ {
+		var prev GCRef
+		ref := a.largeFreeHeads[cc]
+		for !ref.IsNull() {
+			next := GCRef(a.words[ref>>3])
+			bw := uint32(a.words[(ref>>3)+1])
+			if bw >= needWords {
+				if prev.IsNull() {
+					a.largeFreeHeads[cc] = next
+				} else {
+					a.words[prev>>3] = uint64(next)
 				}
-			}
-			if rem := bw - needWords; rem > 0 {
-				remRef := ref + GCRef(needWords*8)
-				if rem > largeThresholdWords {
-					if debugFreelist {
-						for w := uint32(0); w < rem; w++ {
-							a.freeSet[remRef+GCRef(w*8)] = 1
+				a.freeBytes -= uint64(bw) * 8
+				if debugFreelist {
+					for w := uint32(0); w < bw; w++ {
+						delete(a.freeSet, ref+GCRef(w*8))
+					}
+				}
+				if rem := bw - needWords; rem > 0 {
+					remRef := ref + GCRef(needWords*8)
+					if rem > largeThresholdWords {
+						if debugFreelist {
+							for w := uint32(0); w < rem; w++ {
+								a.freeSet[remRef+GCRef(w*8)] = 1
+							}
+						}
+						a.pushLarge(remRef, rem)
+					} else {
+						if c := floorClass(rem); c >= 0 {
+							a.Free(remRef, classWords(c)*8)
 						}
 					}
-					a.pushLarge(remRef, rem)
-				} else {
-					// 向下取整入定长桶(floorClass:桶代表 ≤ rem 的最大桶)
-					if c := floorClass(rem); c >= 0 {
-						a.Free(remRef, classWords(c)*8)
-					}
-					// rem < 1 桶最小字数不可能(rem ≥ 1 字即 class 0);尾巴丢弃
 				}
+				return ref
 			}
-			return ref
+			prev = ref
+			ref = next
 		}
-		prev = ref
-		ref = next
 	}
 	return 0
 }
