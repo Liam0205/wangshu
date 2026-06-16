@@ -43,13 +43,14 @@ func (st *State) enterLuaFrame(th *thread, funcIdx, nargs, nresults int, entry b
 	pid := object.ClosureProtoID(st.arena, cl)
 	proto := st.protos[pid]
 	numFixed := int(proto.NumParams)
-	// VS0-e 子步 ③:base 重排(官方 Lua 5.1 真栈布局)。
+	// VS0-e:base 重排(官方 Lua 5.1 真栈布局)。
 	//
 	// 原布局: [funcIdx | fix0..fixN-1 | extra0..extraM-1 | gap..MaxStack-1]
 	// 新布局: [funcIdx | vararg0..varargM-1 | R(0)=fix0..R(N-1)=fixN-1 | gap..MaxStack-1]
 	//         base = funcIdx + 1 + nVarargs
-	// vararg 落栈下区 stack[base-nVarargs..base);子步 ④ doVararg 改读此区,本子步
-	// 仍走 ci.varargs Go slice(双份存放,行为不变)。
+	// vararg 区在栈下区 stack[base-nVarargs..base);VARARG 经 th.slot(base-nV+k) 现读;
+	// GC 扫栈 [0, top) 自然覆盖(vararg < base < top)。无独立 ciVarargs / ci.varargs
+	// Go 切片(VS0-e 子步 ④ 退役)。
 	nVarargs := 0
 	if nargs > numFixed && proto.IsVararg {
 		nVarargs = nargs - numFixed
@@ -61,21 +62,20 @@ func (st *State) enterLuaFrame(th *thread, funcIdx, nargs, nresults int, entry b
 	if need > th.size() {
 		th.ensureStack(need)
 	}
-	var varargs []value.Value
 	if nVarargs > 0 {
 		// 重排三步(避免覆盖):
-		// ① 读 vararg 到 Go 临时(子步 ④ 前 ci.varargs Go slice 仍是 VARARG 数据 source)
-		// ② 固参从高到低搬到新位置 stack[base+i] = stack[funcIdx+1+i](dst > src 防覆盖)
-		// ③ vararg 写栈下区 stack[funcIdx+1+i] = varargs[i]
-		varargs = make([]value.Value, nVarargs)
+		// ① vararg 临时读到 Go slice(短临时;子步 ④ 内 enterLuaFrame 本地,不入 ci/thread)
+		// ② 固参从高到低搬到 stack[base+i] = stack[funcIdx+1+i](dst > src 防覆盖)
+		// ③ vararg 写栈下区 stack[funcIdx+1+i] = vararg[i]
+		buf := make([]value.Value, nVarargs)
 		for i := 0; i < nVarargs; i++ {
-			varargs[i] = th.slot(funcIdx + 1 + numFixed + i)
+			buf[i] = th.slot(funcIdx + 1 + numFixed + i)
 		}
 		for i := numFixed - 1; i >= 0; i-- {
 			th.setSlot(base+i, th.slot(funcIdx+1+i))
 		}
 		for i := 0; i < nVarargs; i++ {
-			th.setSlot(funcIdx+1+i, varargs[i])
+			th.setSlot(funcIdx+1+i, buf[i])
 		}
 	} else if nargs < numFixed {
 		// 实参不足:nVarargs=0 ⟹ base=funcIdx+1=原,固参就位,补 nil 到 numFixed。
@@ -91,14 +91,15 @@ func (st *State) enterLuaFrame(th *thread, funcIdx, nargs, nresults int, entry b
 		th.setSlot(i, value.Nil)
 	}
 	// LUA_COMPAT_VARARG:隐式 arg 表(5.1 默认 compat;arg = {n=#varargs, ...},
-	// 占形参后第一个寄存器,codegen 已 registerLocal("arg") 预留)
+	// 占形参后第一个寄存器,codegen 已 registerLocal("arg") 预留)。VS0-e:从栈下区
+	// stack[base-nVarargs..base) 现读 vararg(子步 ③ 落地后栈下区是权威 source)。
 	if proto.NeedsArg {
-		argTbl := st.allocTable(uint32(len(varargs)), 8)
-		for i, v := range varargs {
-			st.tableSetInt(argTbl, uint32(i+1), v)
+		argTbl := st.allocTable(uint32(nVarargs), 8)
+		for i := 0; i < nVarargs; i++ {
+			st.tableSetInt(argTbl, uint32(i+1), th.slot(base-nVarargs+i))
 		}
 		nKey := value.MakeGC(value.TagString, st.gc.Intern([]byte("n")))
-		_ = st.tableSet(argTbl, nKey, value.NumberValue(float64(len(varargs))))
+		_ = st.tableSet(argTbl, nKey, value.NumberValue(float64(nVarargs)))
 		th.setSlot(base+numFixed, value.MakeGC(value.TagTable, argTbl))
 	}
 	// 压 CallInfo(PW10 R2b-4:arena 段为权威,th.cur 是栈顶帧热镜像)。
@@ -111,8 +112,7 @@ func (st *State) enterLuaFrame(th *thread, funcIdx, nargs, nresults int, entry b
 		nresults: nresults,
 		fresh:    entry,
 		pc:       0,
-		varargs:  varargs,
-		nVarargs: uint16(nVarargs), // VS0-e 子步 ③:与栈下区 [base-nVarargs..base) 严格对齐
+		nVarargs: uint16(nVarargs), // 与栈下区 [base-nVarargs..base) 严格对齐 + 段 word4 镜像
 	}
 	// 先把当前栈顶帧(th.cur,可能 pc/top 已推进)刷回段,再载入新帧。
 	if th.ciDepth > 0 {
@@ -124,7 +124,6 @@ func (st *State) enterLuaFrame(th *thread, funcIdx, nargs, nresults int, entry b
 	}
 	th.cur = ci
 	th.setCIDepth(depth + 1)
-	th.setVarargs(depth, varargs)
 	th.writeCISeg(depth, &th.cur)
 	if ciMirrorCheck {
 		// wangshu_trace 安全网:回读段自检打包/解包与 th.cur 逐字段一致(R2b-1)。
@@ -138,15 +137,13 @@ func (st *State) enterLuaFrame(th *thread, funcIdx, nargs, nresults int, entry b
 }
 
 // popCallInfo 弹出栈顶帧,返回其副本(供 doReturn 拿 nresults 等)。弹出后从段
-// 重载 caller 帧到 th.cur(若仍有 caller)。PW10 R2b-4。
+// 重载 caller 帧到 th.cur(若仍有 caller)。PW10 R2b-4 + VS0-e:vararg 区住栈下区
+// 不再需要 ciVarargs 影子恢复;nVarargs 经段 word4 与 caller 一并解出。
 func (st *State) popCallInfo(th *thread) callInfo {
 	ci := th.cur
-	th.clearVarargs(th.ciDepth - 1)
 	th.setCIDepth(th.ciDepth - 1)
 	if th.ciDepth > 0 {
 		th.readCISegInto(th.ciDepth-1, &th.cur)
-		// varargs 不在段内(住 Go ciVarargs),从影子恢复 caller 的 varargs。
-		th.cur.varargs = th.varargsAt(th.ciDepth - 1)
 	}
 	return ci
 }

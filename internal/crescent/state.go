@@ -399,16 +399,9 @@ func (st *State) visitThreadValues(th *thread, seen map[*thread]bool, visit func
 	for i := top; i < th.size(); i++ {
 		th.setSlot(i, value.Nil)
 	}
-	// varargs 住 Go th.ciVarargs(不进 linear memory),不在 stack[:top] 区间,
-	// 必须单列为根。索引 = 帧深度,只扫活跃帧 [0,ciDepth)。PW10 Stage 1c:读
-	// liveCIDepth(Wasm 改深度后段为权威);Wasm 帧无 varargs(定参快路径),
-	// ciVarargs[d] 缺位由 d < len 守。
-	live := th.liveCIDepth()
-	for d := 0; d < live && d < len(th.ciVarargs); d++ {
-		for _, v := range th.ciVarargs[d] {
-			visit(v)
-		}
-	}
+	// VS0-e 后 vararg 区住栈下区 stack[base-nVarargs..base),与寄存器同段。栈扫
+	// [0, top) 自然覆盖所有活跃帧的 vararg(vararg 槽 < base < top),无独立 ciVarargs
+	// 根扫;旧 ciVarargs scan 退役。
 	return seen
 }
 
@@ -887,10 +880,6 @@ type thread struct {
 	// topWordRef 非零时,setTop 把 th.top(槽索引)镜像到此 arena 字(PW10 零跨界 ①)。
 	// Wasm 侧帧建拆写它,GC 栈根扫描读 liveTop()。仅 mainTh 接通;协程 th 恒 0。
 	topWordRef arena.GCRef
-	// ciVarargs 每帧 varargs(GC 根)。varargs 是 Go []value.Value,不进 linear
-	// memory(VS0-e 子piece);与帧深度对齐(索引 = depth)。
-	ciVarargs [][]value.Value
-
 	// maxOpenIdx 是 openUvs 中最大的 stackIdx(官方降序链表头的等价物):
 	// closeUpvals(level) 在 level > maxOpenIdx 时 O(1) 返回——RETURN 每帧
 	// 都调 closeUpvals,无此快路径时每次都全量迭代 map(曾占 20% CPU)。
@@ -934,7 +923,6 @@ func (st *State) newThread() *thread {
 	ciRef := st.arena.AllocWords(initialCISlots * ciWords)
 	th.ciBaseW = uint32(ciRef) >> 3
 	th.ciCap = initialCISlots
-	th.ciVarargs = make([][]value.Value, 0, initialCISlots)
 	return th
 }
 
@@ -997,29 +985,6 @@ func (th *thread) readCISegInto(depth int, out *callInfo) {
 	out.nVarargs = uint16(a.WordAt(wordRef(4))) // VS0-e 子步 ②:从 word4 解包 nVarargs
 }
 
-// setVarargs 记录第 depth 帧的 varargs 到 Go 影子(GC 根;索引 = 深度)。
-func (th *thread) setVarargs(depth int, va []value.Value) {
-	for len(th.ciVarargs) <= depth {
-		th.ciVarargs = append(th.ciVarargs, nil)
-	}
-	th.ciVarargs[depth] = va
-}
-
-// clearVarargs 弹帧时清第 depth 帧 varargs 引用(防 GC 误扫已死帧 + 防泄漏)。
-func (th *thread) clearVarargs(depth int) {
-	if depth >= 0 && depth < len(th.ciVarargs) {
-		th.ciVarargs[depth] = nil
-	}
-}
-
-// varargsAt 取第 depth 帧的 varargs(pop 后恢复 caller th.cur.varargs 用)。
-func (th *thread) varargsAt(depth int) []value.Value {
-	if depth >= 0 && depth < len(th.ciVarargs) {
-		return th.ciVarargs[depth]
-	}
-	return nil
-}
-
 // syncCurFromSeg 把段为权威翻转的「Go 侧反向同步」收口(PW10 零跨界 Stage 1b)。
 //
 // **段为权威**:Stage 2/3 起 Wasm 侧帧建拆 increment/decrement ciDepth 字 + 写段帧,
@@ -1039,25 +1004,26 @@ func (th *thread) syncCurFromSeg() {
 	if wd == th.ciDepth {
 		return // 字与 Go 一致(Stage 1b 恒走此路;Stage 2/3 Wasm 未改深度时也走此)
 	}
-	// Wasm 改过深度(Stage 2/3):采纳字深度 + 从段重载栈顶帧。
+	// Wasm 改过深度(Stage 2/3):采纳字深度 + 从段重载栈顶帧。VS0-e 后 vararg 区
+	// 住栈下区(stack[base-nVarargs..base)),syncCurFromSeg 不再恢复 cur.varargs
+	// Go 切片(已退役);nVarargs 经 readCISegInto 从 word4 解出 + 栈访问拿数据。
 	th.ciDepth = wd
 	if wd > 0 {
 		th.readCISegInto(wd-1, &th.cur)
-		th.cur.varargs = th.varargsAt(wd - 1)
 	}
 }
 
 // ciAt 读第 depth 帧的 callInfo 值副本(非当前帧只读访问:traceback / 协程恢复)。
 // 当前栈顶帧(depth==ciDepth-1)直接返回热镜像 th.cur(它可能 pc/top 比段新);
-// 其余帧从段解包 + 补 varargs。**返回值副本**——调用方不得缓存指针跨分配
-// (form-Y:每次按 depth 现读,消除 *callInfo 悬垂)。
+// 其余帧从段解包(VS0-e 后 nVarargs 经 word4 解出,vararg 区在栈下区现读)。
+// **返回值副本**——调用方不得缓存指针跨分配(form-Y:每次按 depth 现读,消除
+// *callInfo 悬垂)。
 func (th *thread) ciAt(depth int) callInfo {
 	if depth == th.ciDepth-1 {
 		return th.cur
 	}
 	var ci callInfo
 	th.readCISegInto(depth, &ci)
-	ci.varargs = th.varargsAt(depth)
 	return ci
 }
 
@@ -1152,15 +1118,13 @@ func (th *thread) liveTop() int {
 }
 
 // truncateCI 把帧深度回退到 newDepth(pcall/元方法/yield 边界清理,替代旧
-// th.cis = th.cis[:newDepth])。回退后从段重载新栈顶帧到 th.cur。R2b-4。
+// th.cis = th.cis[:newDepth])。回退后从段重载新栈顶帧到 th.cur。VS0-e 后 vararg
+// 区住栈下区,无独立 ciVarargs 清理(被截断帧的栈区在 setTop 缩 top 之后由
+// visitThreadValues 的 [top, size) nil-clear 覆盖)。R2b-4 + VS0-e。
 func (th *thread) truncateCI(newDepth int) {
-	for d := newDepth; d < th.ciDepth; d++ {
-		th.clearVarargs(d)
-	}
 	th.setCIDepth(newDepth)
 	if newDepth > 0 {
 		th.readCISegInto(newDepth-1, &th.cur)
-		th.cur.varargs = th.varargsAt(newDepth - 1)
 	}
 }
 
@@ -1340,14 +1304,11 @@ type callInfo struct {
 	fresh    bool // execute 重入边界
 	gibbous  bool // 本帧在 gibbous(Wasm)编译码中执行(04 §1.2;P1 恒 false)
 
-	// vararg 区(M13 接入):IsVararg 函数的多余实参(数量 nVarargs)拷贝到一个独立
-	// Go 切片(简化版,后续 M14 切到栈下区)。这样 VARARG 指令直接读 ci.varargs。
-	varargs []value.Value
-	pc      int32
+	pc int32
 
-	// nVarargs 是本帧 vararg 区长度(VS0-e 子步 ①:enterLuaFrame 计算 = len(varargs))。
-	// 子步 ① 仅作零行为变更基建,任何路径不读;子步 ② 起进 word4;子步 ③ 之后栈
-	// 下区 [base-nVarargs..base) 是 vararg 区权威 source,ci.varargs Go 切片退役。
+	// nVarargs 是本帧 vararg 区长度(VS0-e 子步 ④:M14 留口落地)。vararg 区在栈
+	// 下区 stack[base-nVarargs..base);doVararg 直接 th.slot(base-nVarargs+k) 读;
+	// GC 扫栈 [0, top) 自然覆盖(vararg < base < top)。段 word4 镜像。
 	nVarargs uint16
 }
 
@@ -1362,22 +1323,21 @@ func (st *State) protoOf(ci *callInfo) *bytecode.Proto { return st.protos[ci.pro
 // **热/冷分野(R2b 物理布局依据)**:Base/SetBase 与 Pc/SetPc 是热寄存器(每
 // 指令经 reg/setReg/主循环读写),R2b 拟保留为当前帧的 Go 镜像、仅在 push/pop/
 // 层边界与 arena ci 段同步;其余字段(cl/nresults/funcIdx/protoID/top/flags/
-// varargs)是冷字段(仅调用边界触),R2b 直接 arena 段读写。本轮 accessor 全部
+// nVarargs)是冷字段(仅调用边界触),R2b 直接 arena 段读写。本轮 accessor 全部
 // 是直通(返回/写 Go 字段),零行为变更。
-func (ci *callInfo) Base() int              { return ci.base }
-func (ci *callInfo) FuncIdx() int           { return ci.funcIdx }
-func (ci *callInfo) Top() int               { return ci.top }
-func (ci *callInfo) SetTop(v int)           { ci.top = v }
-func (ci *callInfo) ProtoID() uint32        { return ci.protoID }
-func (ci *callInfo) Cl() arena.GCRef        { return ci.cl }
-func (ci *callInfo) NResults() int          { return ci.nresults }
-func (ci *callInfo) Tailcall() bool         { return ci.tailcall }
-func (ci *callInfo) SetTailcall(v bool)     { ci.tailcall = v }
-func (ci *callInfo) Fresh() bool            { return ci.fresh }
-func (ci *callInfo) Gibbous() bool          { return ci.gibbous }
-func (ci *callInfo) SetGibbous(v bool)      { ci.gibbous = v }
-func (ci *callInfo) Pc() int32              { return ci.pc }
-func (ci *callInfo) SetPc(v int32)          { ci.pc = v }
-func (ci *callInfo) NVarargs() uint16       { return ci.nVarargs }
-func (ci *callInfo) SetNVarargs(v uint16)   { ci.nVarargs = v }
-func (ci *callInfo) Varargs() []value.Value { return ci.varargs }
+func (ci *callInfo) Base() int            { return ci.base }
+func (ci *callInfo) FuncIdx() int         { return ci.funcIdx }
+func (ci *callInfo) Top() int             { return ci.top }
+func (ci *callInfo) SetTop(v int)         { ci.top = v }
+func (ci *callInfo) ProtoID() uint32      { return ci.protoID }
+func (ci *callInfo) Cl() arena.GCRef      { return ci.cl }
+func (ci *callInfo) NResults() int        { return ci.nresults }
+func (ci *callInfo) Tailcall() bool       { return ci.tailcall }
+func (ci *callInfo) SetTailcall(v bool)   { ci.tailcall = v }
+func (ci *callInfo) Fresh() bool          { return ci.fresh }
+func (ci *callInfo) Gibbous() bool        { return ci.gibbous }
+func (ci *callInfo) SetGibbous(v bool)    { ci.gibbous = v }
+func (ci *callInfo) Pc() int32            { return ci.pc }
+func (ci *callInfo) SetPc(v int32)        { ci.pc = v }
+func (ci *callInfo) NVarargs() uint16     { return ci.nVarargs }
+func (ci *callInfo) SetNVarargs(v uint16) { ci.nVarargs = v }

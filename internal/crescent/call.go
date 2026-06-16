@@ -300,12 +300,15 @@ func (st *State) doConcat(th *thread, ci *callInfo, i bytecode.Instruction) *Lua
 	return nil
 }
 
-// doVararg 实现 VARARG A B:把 ci.varargs 的内容拷到 R(A..A+B-2);
-// B=0 时全部拷贝并把 top 设到多值区末(对齐官方 `L->top = ra + n`)。
+// doVararg 实现 VARARG A B:把栈下区 [base-nVarargs..base) vararg 内容拷到
+// R(A..A+B-2);B=0 时全部拷贝并把 top 设到多值区末(对齐官方 `L->top = ra + n`)。
+// VS0-e:vararg 数据 source 从 ci.varargs Go slice 迁到栈下区,直接经 th.slot
+// 现读(对齐官方 lvm.c `OP_VARARG`)。
 func (st *State) doVararg(th *thread, ci *callInfo, i bytecode.Instruction) *LuaError {
 	a := bytecode.A(i)
 	b := bytecode.B(i)
-	n := len(ci.Varargs())
+	n := int(ci.nVarargs)
+	vbase := ci.base - n // 栈下区起点(vararg0 槽位)
 	if b == 0 {
 		// 全部 vararg 到 top。top 必须双向设置(不只抬不降):此前更高的
 		// 残留 top 会让消费方(doCall 的 nargs = top-funcIdx-1)高估实参数。
@@ -314,7 +317,7 @@ func (st *State) doVararg(th *thread, ci *callInfo, i bytecode.Instruction) *Lua
 			th.ensureStack(need)
 		}
 		for k := 0; k < n; k++ {
-			th.setSlot(ci.base+a+k, ci.Varargs()[k])
+			th.setSlot(ci.base+a+k, th.slot(vbase+k))
 		}
 		th.setTop(need)
 		return nil
@@ -322,7 +325,7 @@ func (st *State) doVararg(th *thread, ci *callInfo, i bytecode.Instruction) *Lua
 	want := b - 1
 	for k := 0; k < want; k++ {
 		if k < n {
-			setReg(th, ci, a+k, ci.Varargs()[k])
+			setReg(th, ci, a+k, th.slot(vbase+k))
 		} else {
 			setReg(th, ci, a+k, value.Nil)
 		}
