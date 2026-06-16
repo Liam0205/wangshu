@@ -27,7 +27,7 @@
 - [[value-representation]] — 值表示与内存模型:NaN-boxing vs Go tagged struct 决策、自管 arena、自写 mark-sweep GC、同一块内存使编译层成增量。**问值/内存/GC/为什么这样选看这篇。**
 
 ### reference/
-- [[embedding-contract]] — 宿主嵌入契约:`Compile→Program`、`Program.Call(state, arena, args)`(收尾轮已落地,差异标注见该篇)、arena ABI(类型化扁平列 + 字符串区 + presence bitmap,零拷贝读)、per-item 简易 API 子集已落地(含 Table 读写全闭环 + ForEach + globals baseline 状态隔离 + `CallInto` 零分配边界路径)、drop-in 定位。字段级 spec 在 `docs/design/p1-interpreter/11-embedding-arena-abi.md`。**问宿主怎么嵌入、API 形状、边界成本/CallInto 看这篇。**
+- [[embedding-contract]] — 宿主嵌入契约:`Compile→Program`、`Program.Call(state, arena, args)`(收尾轮已落地,差异标注见该篇)、arena ABI(类型化扁平列 + 字符串区 + presence bitmap,零拷贝读)、per-item 简易 API 子集已落地(含 Table 读写全闭环 + ForEach + globals baseline 状态隔离 + `CallInto` 零分配边界路径 + issue #13 parity-friendly 快路径 typed-array table 族 / `GlobalsSlot` + issue #10 批量 array table 构造 `NewArrayTable`/`Preallocate`)、State 生命周期 admin API(issue #9/#11:`Options.{Initial,Max}ArenaBytes` + `ArenaCapKB`/`GCCountKB` 观测 + `Collect`/`MaybeCollectNow` GC 节奏显式驱动 + `SetHostTriggeredCollect` experimental)、drop-in 定位。字段级 spec 在 `docs/design/p1-interpreter/11-embedding-arena-abi.md`。**问宿主怎么嵌入、API 形状、边界成本/CallInto、GC 节奏/arena 容量管理看这篇。**
 - [[glossary]] — 术语表 + prior art 借鉴点。**遇到 NaN-boxing/arena/tier/月相/deopt/列内核等术语,或问参照项目看这篇。**
 
 ### guides/
