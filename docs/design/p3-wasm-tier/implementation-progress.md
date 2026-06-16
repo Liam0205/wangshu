@@ -1,6 +1,6 @@
 # P3 实现进度对账(implementation-progress)
 
-> 状态:**P3 详细设计已齐备(2026-06-13 子目录 9 文件约 8800 行),PW0-PW9 + PW4b 全部交付;PW10 消除 gibbous→gibbous 跨层调用税进行中(Phase 0 spike + R1 共享 funcref 表 + R2 CallInfo→linear-memory 迁移 + R3 `call_indirect` 直调 + R3.5 host helper 零分配已交付,R4 + R5 待实现)**。P1 全卷(M0-M14)+ P2 PB0-PB7 + 后续优化轮 #1-#4 全过线;P3 翻译器 + 跨层 + 升层门禁 + 端到端总验收全链路就绪——正确性轴(V1-V13 层间 byte-equal + V17 四 build + V18 -race)+ 性能轴 V14(loop 核 2.58x ≥2x)全过。**PW10 在飞行中**:Phase 0 spike 裁定 Arch-2「共享 imported funcref 表」(`spike/p3indirect/`,见 §0.2)+ R1 共享 funcref 表基建 + R2 完整 CallInfo→linear-memory 迁移(= 长期延后的 VS0-e)+ **R3 gibbous→gibbous `call_indirect` 直调(消 `code.Run` 重入)+ R3.5 host helper 改 wazero 零分配 API(消反射装箱,真正付清性能)** 已交付;**四核全翻面**(loop 2.65x / table 1.26x / mixed 1.14x 已 ≥1x;call 0.49x 仍为唯一短板,真实 `h_call`+`h_return` 双跨界,留 R4/Option B);剩 R4(消 `h_return`)+ R5(re-bench)。
+> 状态:**P3 PW0-PW10 全卷已收口(2026-06-16)**。详细设计齐备(子目录 9 文件约 8800 行);P1 全卷(M0-M14)+ P2 PB0-PB7 + 后续优化轮 #1-#4 全过线;P3 翻译器 + 跨层 + 升层门禁 + 端到端总验收全链路就绪——正确性轴(V1-V13 层间 byte-equal + V17 四 build + V18 -race)+ 性能轴 V14(loop 核 2.58x ≥2x)全过。**PW10 收口**:R1(共享 funcref 表)+ R2(CallInfo→linear-memory = 长期延后的 VS0-e)+ R3(`call_indirect` 直调消 `code.Run` 重入)+ R3c-fix(出错点就地标注)+ R3.5(host helper `WithFunc`→`WithGoFunction` 消反射装箱)+ 零跨界 ①(top mirror 字)+ 基建-a(closure slot 缓存)+ 基建-b(proto cache 段)+ ③a(savedTop)+ ③b(emitReturn 守卫快路径,Wasm 内拆帧)+ ④-i(emitCall 守卫骨架 + fastCallHits mirror 字)+ callOnStack 顶层升层(cl 直接走 enterGibbous + TopLevelUplift 探针)全付;emit 原语 i64.add/i64.or 已保留供未来 ④-ii。**本机 Xeon 6982P 2s×3 count 实测基线(2026-06-16)**:loop 2.95x(+10% over R3.5 2.67x,③ RETURN 拆帧真实收益)/ table 0.88x / call 0.52x / mixed 0.99x。**call 0.52x 是 bench kernel 结构性架构边界**——profile `/tmp/call.prof` 实证四 kernel body 含 ReasonUnknownCall(F2-b 静态分析不能确定被调函数不 yield)→ body 不可升 → 顶层升层 + ④ emitCall fast body 均对 bench kernel 无显著效果;**④-ii fast body 留 followup**(预估上限 0.57x 仍 <1x,实现复杂度 ~200 行 wasm 字节级 codegen,UAF 高,ROI/UAF 不利)。**PW10 收口为「已落地子里程碑 + 架构边界文档化」**(详 §14.10),旧文档所述「四核全翻面 table 1.26x / mixed 1.14x」系不同硬件/参数快照,以本机实测为现行基线;「剩 R4/R5 待实现」失实——R4 概念被零跨界 ③b 重新分包为「Wasm 内拆帧 + 守卫快路径」+ ④-i 骨架 + ④-ii followup,R5 re-bench 已并入本节实测基线收口。
 > 单一事实源:本文是 P3 实现现状与设计文档差异的对账表(对应 P1/P2 [implementation-progress.md](../p1-interpreter/implementation-progress.md) 的角色)。
 > 设计文档集:见 [00-overview](./00-overview.md) §0 文档地图。
 >
@@ -14,7 +14,7 @@
 
 **PW9 性能实测的关键发现(§11 详)**:loop 核 gibbous 2.58x 快于 crescent(V14 ≥2x 达标),推翻 PW9 早期「memory-resident 下 dispatch 消除不足 2x」的结论(那次测的是不升层的 vararg 顶层 chunk = 空测)。但**跨层调用密集核退化**(call 核 0.14x / table 核 0.68x / geomean 0.79x):gibbous→gibbous 经 `h_call` 双跨层(~143ns/次)吃光小叶函数收益。**消除跨层调用税立为后续里程碑 PW10(spike 闸门先行)。**
 
-**PW10 进行中(Phase 0 + R1 + R2 + R3 + R3.5 已交付,R4-R5 待实现,§12/§13 详)**:Phase 0 spike(`spike/p3indirect/` S-A/S-B/S-C,§0.2 存档)裁定架构走 **Arch-2「共享 imported funcref 表」**(各 Proto 模块共享 env holder 导出的同一张 funcref 表、active element 段自注册 `run`,gibbous→gibbous = 经共享表 `call_indirect`),**而非 Arch-1 rebuild-all**(后者代际实例/跨代守卫/O(N²) 重编复杂,被 S-C 探出的更简分支取代)。**R1** memadapter env holder 导出共享 funcref 表(TableSlots=8192)+ 各 gibbous module 自注册 `run` 进 Compiler 分配的单调槽(`Compiler.slotOf`/`SlotOf`);零行为变更。**R2(= 长期延后的 VS0-e)** 完整 CallInfo 从 Go `[]callInfo` 物理迁入每线程 arena 段(4 word/帧），经 R2a→R2b-1~4「收口→只写影子→翻转→退役」剧本落地。**R3** gibbous→gibbous CALL 从经 `h_call` 做一次完整 `code.Run` **重入** 改为经 R1 共享表 `call_indirect` **直接分派**(`DoCall` 改返 3 路 i64 sentinel:-1 错 / 偶≥0 已完成回传刷新 base / 奇 `(slot<<1)|1` indirect;`ciTransferRef` 中转字传刷新 base;`h_callerr`/`PopErrFrame` 弹失败 call_indirect 的孤立 gibbous 帧;**R3c-fix** 经 `raiseGibbous` 失败点就地标注使 gibbous→gibbous 错误**逐字节等于纯解释器**)。**R3.5** 把全部 25 个 host helper 从 `WithFunc`(反射装箱,每跨界 boxing 每个实参)改成 `WithGoFunction(api.GoFunc(...))`(零反射,stack-based)——这才是真正付清性能的步骤:R3 做完后基准纹丝没动(call 核仍 ~6x 慢、1.4M allocs/op),memprofile 揭穿主导项是 wazero `WithFunc` 反射装箱而非分派延迟,改完 allocs/op 对齐解释器、**四核全翻面**(R3.5 当时硬件/参数下读数 loop 2.65x / table 1.26x / mixed 1.14x / call 0.49x;**注**:本机 Xeon 6982P 2s×3 count 复测 2026-06-15 得 loop 2.95x / table 0.88x / call 0.52x / mixed 1.00x,与历史数字差异源自不同硬件/bench 参数,**以本机实测为现行基线**,历史数字保留作演化对照,§14 详)。**零跨界 ① top mirror 字基建 + 基建-a closure slot 缓存 + ③a savedTop 基建 + ③b emitReturn 守卫快路径(Wasm 内拆帧)已交付,§14 对账。剩 ④ CALL 建帧快路径(消 `h_call`)+ R5(re-bench)**:本机基线 loop 2.95x / table 0.88x / mixed 0.99x 已立但波动较大;**call 核仍 0.52x(<1x)是真实 `h_call`(建帧)双跨界**——④ 的真实靶子(③b 已消 `h_return` 主流量)。
+**PW10 收口(2026-06-16,§12/§13/§14 详)**:Phase 0 spike(`spike/p3indirect/` S-A/S-B/S-C,§0.2 存档)裁定架构走 **Arch-2「共享 imported funcref 表」**(各 Proto 模块共享 env holder 导出的同一张 funcref 表、active element 段自注册 `run`,gibbous→gibbous = 经共享表 `call_indirect`),**而非 Arch-1 rebuild-all**。**R1/R2/R3/R3c-fix/R3.5** 已交付(R1 共享 funcref 表 + R2 CallInfo→linear-memory 迁移 = VS0-e + R3 `call_indirect` 直调消 `code.Run` 重入 + R3c-fix 出错点就地标注使错误逐字节等纯解释器 + R3.5 host helper 改 `WithGoFunction` 消反射装箱;详 §12/§13)。**零跨界 ①(top mirror 字基建)+ 基建-a(closure slot 缓存)+ 基建-b(proto cache 段)+ ③a(savedTop)+ ③b(emitReturn 守卫快路径,Wasm 内拆帧)+ ④-i(emitCall 守卫骨架 + fastCallHits mirror 字)+ callOnStack 顶层升层(cl 直接走 enterGibbous + TopLevelUplift 探针)全付**(详 §14)。**本机 Xeon 6982P 2s×3 count 实测基线(2026-06-16)**:loop 2.95x(+10% over R3.5 2.67x,③ RETURN 拆帧真实收益)/ table 0.88x / call 0.52x / mixed 0.99x。**call 0.52x 是 bench kernel 结构性架构边界**(详 §14.10):profile `/tmp/call.prof` 实证 call 核 52% 在 enterGibbous + 38% 在 wazero CallWithStack,根因四 kernel 结构均为 `body → fn`,body 调内层触发 ReasonUnknownCall(F2-b 静态分析不能确定被调函数不 yield)→ body 不可升 → 顶层升层 + ④ emitCall fast body 对 bench kernel 无显著效果;**④-ii fast body 未交付**(预估上限 0.57x 仍 <1x,实现复杂度 ~200 行 wasm 字节级 codegen,UAF 高,ROI/UAF 不利,emit 原语 i64.add/i64.or 已保留供未来 ④-ii)。**PW10 收口为「已落地子里程碑 + 架构边界文档化」**——旧文档「四核全翻面 table 1.26x / mixed 1.14x」系不同硬件/参数快照(以本机实测为现行基线,历史数字保留作演化对照);「剩 R4/R5 待实现」失实——R4 概念被零跨界 ③b 重新分包为「Wasm 内拆帧 + 守卫快路径」+ ④-i 骨架 + ④-ii followup,R5 re-bench 已并入本节实测基线收口。
 
 **前置条件检查**:
 - ✅ P1 全卷已交付(M0-M14 + 所有收尾轮 + 长稳承诺轮 + 外部审查修复轮 + 官方测试套与性能轮)
@@ -110,7 +110,7 @@
 | PW7 | CLOSURE/CLOSE/VARARG + 闭包/upvalue 编译协议 | [02 §3.7](./02-translation.md) | 闭包构造 + 开放/关闭 upvalue byte-equal | ✅ **过线**(`6f2fd0e`+`5436e22`;CLOSURE/CLOSE 经助手复用 makeClosure/closeUpvals;emitOpcode 加 skip 机制跳过 CLOSURE 后随 SubNUps 条伪指令;upvalue 难点已被 VS0-c 形态 Y 解掉;VARARG 白名单拒(F1 排除 vararg + SupportsAllOpcodes 防御)) |
 | PW8 | 线程级 tier 规则 + 协程不升层 + **P2 04 considerPromotion 加线程上下文** | [07](./07-coroutine-thread-rule.md) | 协程内即便 hot + Compilable 也保持 TierInterp;主线程同 Proto 正常升层 | ✅ **过线**(本提交;运行期守卫 `th==st.mainTh`(call.go:60 PW6 起已落地)+ 升层门禁 onMain bool(OnEnter/OnBackEdge/considerPromotion 加参数,协程线程 profile 累加但不进升层决策)。bridge 收 bool 不感知 thread 类型,保持解耦。e2e:协程内 hot 函数十万次调用保持 TierInterp,同 Proto 主线程升层) |
 | PW9 | 端到端验收 + 测试套(差分 + 强制全升 + GC 压力 fuzz + 性能 ≥2x) | [08](./08-testing-strategy.md) | **P3 总验收**:V1-V18 | ✅ **正确性 + V14 过线**(`bb39b06`/`e94a80e`/`f556c19`;§11 对账)。PW9-a gcPending inline 回边零跨层;PW9-b force-all 三方对拍(oracle/crescent/gibbous byte-equal,V1-V13)+ 非空保证 + GC stress 层间(V5/V13)+ 并发 -race(V18)+ 四 build 零回归(V17);**性能 V14 loop 2.58x ≥2x 达标**(推翻空测)。**V15 geomean 0.79x 未达**——跨层调用税(call 核 0.14x)拆 PW10 |
-| PW10 | 消除 gibbous→gibbous 跨层调用税(共享 funcref 表 + call_indirect 直调 + CallInfo→linear-memory + 零跨界 RETURN 拆帧 + ④ CALL 建帧) | [04 §9](./04-trampoline.md) 缺口 + [02 §1.2](./02-translation.md) | Phase 0 spike 闸门(call_indirect <30ns + 增量 module 可行)→ call 核 ≥1x + geomean ≥1.5x | 🔶 **进行中(R1-R3.5 ✅ + 零跨界 ①/基建-a/③a/③b ✅,④ CALL 建帧 + R5 ⏳;§12/§13/§14 对账)**。Phase 0 spike(`457559b`/`096da5b`/`01dfc0f`;S-A call_indirect ~2.5ns ≪30ns / S-B rebuild-all 1.2ms@256fn / **S-C 裁定 Arch-2 共享 imported funcref 表**,§0.2 + `DECISION.md`)→ **R1** 共享 funcref 表基建(`4d063e8`/`adab492`/`8bbf510`)→ **R2** CallInfo→linear-memory = 延后的 VS0-e(`e7fc9b2`/`04ce9a8`/`cb7f625`/`10bcaa1`/`1a786ee`)→ **R3** gibbous→gibbous `call_indirect` 直调消 `code.Run` 重入(`6f2712e`/`4f1002a`/`2abdf18`)+ **R3c-fix** 出错点就地标注(`86e39c9`)+ **R3.5** host helper 零分配 API(`1bf9d53`)→ **零跨界 ① top mirror 字基建**(`a309a4f`)→ **基建-a closure slot 缓存**(`8aa4c02`,word1 高 16 位 [63:48] 存 slot+1,惰性填充 IC)→ **③a savedTop 基建**(`455d1bd`,caller prologue 快照,emitCall OK/done 两臂条件写回)→ **③b emitReturn 守卫快路径**(`1bff7d2`,5 守卫 + Wasm 内拆帧体 + helperReturn 兜底)。剩 **④ CALL 建帧快路径** 消 `h_call` + **R5** re-bench(本机基线 loop 2.95x / table 0.88x / call 0.52x / mixed 0.99x;call 0.52x 仍唯一短板,需 ④ 拉到 ≥1x)⏳ |
+| PW10 | 消除 gibbous→gibbous 跨层调用税(共享 funcref 表 + call_indirect 直调 + CallInfo→linear-memory + 零跨界 RETURN 拆帧 + ④ CALL 建帧 + 顶层升层) | [04 §9](./04-trampoline.md) 缺口 + [02 §1.2](./02-translation.md) | Phase 0 spike 闸门(call_indirect <30ns + 增量 module 可行)→ call 核 ≥1x + geomean ≥1.5x | ✅ **收口(2026-06-16):已落地子里程碑 + 架构边界文档化(§12/§13/§14 详)**。Phase 0 spike(`457559b`/`096da5b`/`01dfc0f`;S-A call_indirect ~2.5ns ≪30ns / S-B rebuild-all 1.2ms@256fn / **S-C 裁定 Arch-2 共享 imported funcref 表**,§0.2 + `DECISION.md`)→ **R1** 共享 funcref 表基建(`4d063e8`/`adab492`/`8bbf510`)→ **R2** CallInfo→linear-memory = 延后的 VS0-e(`e7fc9b2`/`04ce9a8`/`cb7f625`/`10bcaa1`/`1a786ee`)→ **R3** gibbous→gibbous `call_indirect` 直调消 `code.Run` 重入(`6f2712e`/`4f1002a`/`2abdf18`)+ **R3c-fix** 出错点就地标注(`86e39c9`)+ **R3.5** host helper 零分配 API(`1bf9d53`)→ **零跨界 ① top mirror 字基建**(`a309a4f`)→ **基建-a closure slot 缓存**(`8aa4c02`,word1 高 16 位 [63:48] 存 slot+1,惰性填充 IC)→ **③a savedTop 基建**(`455d1bd`,caller prologue 快照,emitCall OK/done 两臂条件写回)→ **③b emitReturn 守卫快路径**(`1bff7d2`,5 守卫 + Wasm 内拆帧体 + helperReturn 兜底)→ **基建-b proto cache 段 + ④-i emitCall 守卫骨架 + fastCallHits mirror 字**(`8e820fd`+`bff1630`)→ **callOnStack 顶层升层 cl 直接走 enterGibbous + TopLevelUplift 探针**(`6bb9771`)→ 收口 HEAD `9ab0dba`。**④-ii fast body ⏳ 留 followup,架构边界**(预估上限 0.57x 仍 <1x,~200 行 wasm 字节级 codegen,ROI/UAF 不利,emit 原语 i64.add/i64.or 已保留)。本机 Xeon 6982P 2s×3 count 实测基线 2026-06-16:loop 2.95x(+10% over R3.5 2.67x)/ table 0.88x / call 0.52x / mixed 0.99x;call 0.52x 是 bench kernel 结构性架构边界(profile `/tmp/call.prof` 实证,详 §14.10)|
 
 ---
 
@@ -568,9 +568,115 @@ V1-V13 层间 byte-equal + 四 build + `-race` difftest + lint 全绿。新增 e
 2. **difftest 快路径命中盲区(第 2 实例,跨过提升阈值)**——V1-V13 force-all 语料**不覆盖 ③b 守卫命中形态**(A/B 实证:禁 gibCI resync 时 difftest 仍全绿、R3 三件套全挂),根因 difftest 只保证「输出 byte-equal」**不保证「快路径走到」**。承 PW9/R3 错误路径盲区同家族,**`prove-the-path-under-test` 第 5 实例**(PW5 inline-proof / PW6 TierStuck / PW9 vararg 空测 / R3 错误路径 / 本轮快路径命中);留 followup 加针对性语料。
 3. **跨机器 perf 基线漂移**——Stage 4 一开始误判 ③ 引起 table/mixed 回归,经同 commit 同硬件复测证差异源自硬件而非代码。纪律:任何 perf 数字判定回归/收益前,必须同 commit 同硬件同参数复测;memory/reflection 写 perf 数字时必须标硬件/参数/日期(本轮发现 index/startup/implementation-progress 三处缺标,本节起补)。
 
-**④ CALL 建帧快路径 + R5 re-bench 待实现**:
-- ④ CALL 建帧(消 `h_call` 单跨界):callee.MaxStack/NumParams 缓存进 closure word2 或 proto 段,`emitCall` 守卫建帧——call 核 0.52x 仍唯一短板(③b 已消 `h_return` 主流量,残留是 `h_call` 建帧侧);
-- R5 re-bench(目标 call 核 ≥1x + geomean ≥1.5x)。
+### 14.8 ④-i emitCall 守卫骨架 + fastCallHits mirror 字 + 基建-b proto cache 段(`8e820fd`+`bff1630`)
+
+> 承 §14.4 ③b emitReturn 守卫快路径。④ 概念被分包为 **④-i 守卫骨架(本节交付)+ ④-ii fast body(留 followup,§14.10 详)**。
+> ④-i 把 `emitCall` 的守卫部分(判断 callee 是否可走零跨界建帧)和性能探针(`fastCallHits` 镜像字)铺好,fast body(经守卫后在 Wasm 内组帧)留待 ④-ii。
+
+| 维度 | 内容 |
+|---|---|
+| **基建-b proto cache 段** | 每个 Proto 在 arena 一个固定段(地址恒定,镜像 closure slot IC 思路),缓存 callee 的 MaxStack/NumParams/IsVararg/Compilable 等冷查询字段,供 emitCall 守卫 inline 读(否则每次穿 host 读 Go 侧 Proto 结构体 = 边界税回归) |
+| **④-i emitCall 守卫骨架** | 5 守卫(callee 同 module / callee compilable / 非 vararg / nargs 匹配 NumParams / arena 容量充足);全过 → 写 fastCallHits 镜像字 +1 → **当前**回退 `h_call`(④-ii 才接 fast body);任一失败 → 走 `h_call`(R3 既有的 host 路径作兜底) |
+| **fastCallHits mirror 字** | arena 一个固定 i32 字(地址恒定,镜像 gcPending 模式),emitCall 守卫全过时 inline 自增——既是 ④-ii fast body 上线后命中率监控点,**也是当下 ④-i 已生效的"哪些 call site 命中守卫"探针**(用于 §14.10 架构边界判据:bench kernel call site 命中数是否非零) |
+| **对称性** | 守卫覆盖率 + helperCall 兜底语义不变 + difftest byte-equal——零行为变更基线,与 ④-ii fast body 解耦,可独立验证 |
+
+**为什么先 ④-i 后 ④-ii**:守卫骨架是结构性铺底(proto cache 段 + mirror 字 + 守卫判据),可逐字节同构验证;fast body 是 wasm 字节级 codegen(组帧 + 绑 ciTransferRef + IC mirror 写回 + 错误路径展开),复杂度峰值远高于 ③b。把 ④-i 单独交付让骨架先稳,fast body 留待复杂度峰值评估(§14.10)。
+
+### 14.9 callOnStack 顶层升层(`6bb9771`)
+
+> 上层 hot path 升层:caller 顶层 closure 已升 gibbous 时,绕开 `h_call` 经 host 重入 callee,直接走 `enterGibbous`(等价于 callee 已经在 gibbous 栈上、当前调用 = 同栈 `call_indirect`)。
+
+| 维度 | 内容 |
+|---|---|
+| **callOnStack 触发条件** | caller 顶层 closure 已升 gibbous(`cl.tier==TierGibbous`)+ callee 也满足升层条件(callee 可经共享表 indirect)⟹ 顶层经 `enterGibbous` 直接进 gibbous 栈而非走 crescent.doCall → h_call → gibbous |
+| **TopLevelUplift 探针** | bridge 侧 `TopLevelUplift` 计数器(testing-only)记录顶层升层触发次数,**实证路径真被走到**(prove-the-path-under-test 纪律) |
+| **架构动机** | R3.5 + ③b 后 call 核仍 0.52x,profile 揭示 52% 在 enterGibbous + 38% 在 wazero CallWithStack;原假设「② 顶层升层 + ④ emitCall fast body 能消掉这两块」⟹ ② 单独交付后看是否对 bench kernel 有效(§14.10 给出否定证据) |
+| **覆盖面** | 仅顶层 hot path(caller 已 gibbous + callee gibbous-with-slot);body 内部的内层 call 是 ④ 的靶子 |
+
+### 14.10 ④-ii 架构边界与未交付决策
+
+> **PW10 收口的核心判据节**。承 ④-i 骨架(§14.8) + 顶层升层(§14.9)。本节文档化「为什么 ④-ii fast body 未交付,call 0.52x 是 bench kernel 结构性架构边界而非实现不足」。
+
+#### 14.10.1 profile 实证(`/tmp/call.prof`)
+
+call 核 cpuprofile 主导项分布:
+- **52% enterGibbous**——gibbous 帧 entry 开销(arena 段 push + R2/③a savedTop 写 + 镜像字同步);
+- **38% wazero CallWithStack**——wazero 跨 Go/Wasm 边界本身(R3.5 已消反射装箱,残留是 stack-based call 不可避免的固定成本)。
+
+#### 14.10.2 bench kernel 不可升根因(F2-b)
+
+四 kernel 结构均为 `body → fn`(body 调内层 fn):
+
+```
+function call_bench()
+  local function fn() return 1 end       -- 内层叶函数
+  local function body()
+    for i=1,N do fn() end                 -- body 调 fn
+  end
+  body()                                  -- 顶层调 body
+end
+```
+
+- **body 含 `fn()` 调用**——P2 F2-b 静态分析无法静态确定 `fn` 不 yield(unknown call target 形态)⟹ body 标 ReasonUnknownCall → **body 不可升层**(crescent 跑);
+- **fn 是叶函数可升层**,但顶层升层(②,§14.9)只升 caller `body`,body 不可升 ⟹ body 走 crescent → body 内调 fn 仍经 crescent.doCall → `h_call` → gibbous(fn)→ 跨界税未消;
+- **④ emitCall fast body 即使完成**,需在 body 的 gibbous 翻译里 inline 建帧——但 **body 根本没翻译进 gibbous**(F2-b 不可升),fast body 无处发射 ⟹ 对 bench kernel 无效。
+
+#### 14.10.3 ④-ii 实现复杂度 vs 预估 ROI
+
+| 维度 | 估值 |
+|---|---|
+| **代码复杂度** | ~200 行 wasm 字节级 codegen(组帧 + 绑 ciTransferRef + IC mirror 写回 + 错误路径展开 + base 刷新对称) |
+| **UAF 风险面** | 高——wasm 字节级操作 linear memory 段(ci-seg 写 callee 帧 + open upvalue 链接 + savedTop 对称写)+ 跨守卫失败/成功路径状态一致性(任一守卫失败必须把已部分写的状态退掉) |
+| **预估上限** | 即使 ④-ii 完成,call 核约 **0.57x**(仅消掉 0.52x 中 ~10% 的 h_call 建帧延迟,反射装箱已在 R3.5 消掉、剩余 enterGibbous 开销 ④-ii 不动)——**仍 <1x** |
+| **触达面** | 仅对「body 可升 + 内层 fn 频繁调」的 kernel 形态有效——bench 四 kernel 全部不满足(F2-b 已剥离 body) |
+
+#### 14.10.4 收口决策
+
+**决策:留 followup,emit 原语 i64.add/i64.or 已保留供未来 ④-ii**。
+
+判据:
+- profile 已实证 ④-ii 对 bench kernel 无显著效果(根因 F2-b 不可升,与 ④-ii 实现层无关);
+- 0.57x 上限仍 <1x ⟹ 即便实现也不到 PW10 原立项「call 核 ≥1x」数字目标;
+- 实现复杂度峰值(~200 行 wasm 字节级 codegen + 高 UAF)远超 ③b(③b 仅 5 守卫 + 拆帧体)⟹ ROI/UAF 不利;
+- **call 0.52x 是 bench kernel 结构性架构边界**——不是实现不足,要拉到 ≥1x 须改 bench kernel 形态(让 body 可升)或改 F2-b 静态分析口径(扩大「不 yield 可证明」集合),均超出 PW10 范围。
+
+承 [[2026-06-16-p3-pw10-architectural-ceiling-round]] 反思教训 1「**profile 才是合同(不是立项数字)**」+ 教训 3「**wasm codegen 复杂度峰值需前置编排**」——立项数字目标 `call 0.52x → ≥1x` 是「方向陈述」,profile 实测主导项(enterGibbous 52% + CallWithStack 38%)证明立项数字事实上不可达,**收口为「已落地子里程碑 + 架构边界文档化」**,绝不硬上高 UAF 的 ④-ii fast body 追不可达数字。promotion 落地:[[perf-optimization-workflow]] §7「立项数字目标 vs profile 实测瓶颈」新立节。
+
+#### 14.10.5 followup 触达条件
+
+未来 ④-ii fast body 若要交付,需满足以下一项之一:
+- **bench kernel 形态调整**:让 body 可升(去掉 unknown call,或抽出独立非调用层让 body 是纯叶),使 ④-ii 有处发射;
+- **F2-b 静态分析口径扩张**:扩大「不 yield 可证明」集合(如局部 closure 不引出 + 不调 yield 系)使 body 可升;
+- **emit 原语扩展**:在 i64.add/i64.or 基础上扩展 wasm 内 GC root barrier inline 化(让 ④-ii UAF 面降下来)。
+
+**emit 原语 i64.add/i64.or 已保留**(本轮 ④-i 骨架引入,后续 ④-ii 直接复用),不需重新打通。
+
+### 14.11 验证 + PW10 收口总结
+
+**新增 ③b 命中探针**:`TestPW10ZeroCross_ReturnFastHit`——经 `doReturnHits` 计数器 + 「helper→f 不增 = 快路径命中」断言,**实证 ③b 守卫快路径真被走到**(承 PW9/R3 `prove-the-path-under-test` 纪律,本轮第 5 个独立实例)。
+
+**新增 TopLevelUplift 探针**(§14.9):bridge 侧计数器记录顶层升层触发次数,**实证 callOnStack 路径真被走到**(本轮第 6 个独立实例)。
+
+**fastCallHits mirror 字**(§14.8):④-i 守卫命中实证——bench kernel 上读到 0 命中 = ④ 即使做完 fast body 也对 bench kernel 无效的强信号(与 §14.10.2 F2-b 不可升根因一致)。
+
+**难点教训(承反思 `2026-06-15-p3-pw10-zerocross-stage3-round` 三条 + 本轮 `2026-06-16-p3-pw10-architectural-ceiling-round` 三条)**:
+
+承前轮三条:
+1. **已识别未触发风险须配套触发用例**——计划文件标了「caller==gibbous + ciDepth≥2 触发解嵌套陷阱」风险列表但未配最小触发用例;Stage 4 difftest 全绿只证明守卫**未被触发**,真要测的陷阱处于结构盲区。纪律:计划文件每个风险标记末尾加「触发该风险的最小测试用例 = ___」,空白当场补。
+2. **difftest 快路径命中盲区(第 2 实例,跨过提升阈值)**——V1-V13 force-all 语料**不覆盖 ③b 守卫命中形态**(A/B 实证:禁 gibCI resync 时 difftest 仍全绿、R3 三件套全挂),根因 difftest 只保证「输出 byte-equal」**不保证「快路径走到」**。承 PW9/R3 错误路径盲区同家族,**`prove-the-path-under-test` 第 5 实例**(PW5 inline-proof / PW6 TierStuck / PW9 vararg 空测 / R3 错误路径 / 本轮快路径命中);留 followup 加针对性语料。
+3. **跨机器 perf 基线漂移**——Stage 4 一开始误判 ③ 引起 table/mixed 回归,经同 commit 同硬件复测证差异源自硬件而非代码。纪律:任何 perf 数字判定回归/收益前,必须同 commit 同硬件同参数复测;memory/reflection 写 perf 数字时必须标硬件/参数/日期。
+
+**本轮新增三条**(承 `2026-06-16-p3-pw10-architectural-ceiling-round`,详 §14.10):
+4. **profile 才是合同(不是立项数字)**——立项时数字目标(0.X x → ≥Y x)是「方向陈述」,落地中 profile 揭示「立项假设的瓶颈 ≠ 实测主导项」或「立项数字事实上不可达」时,**先重评目标可达性再决定继续/止损/换路径**,绝不硬上高 UAF 实现追不可达数字。promotion **已落地** [[perf-optimization-workflow]] §7。
+5. **stop hook 诚实解读**——/goal stop hook 强制不结束时若 profile 证明数字不可达,收口应是「已落地子里程碑 + 文档化不可达边界」,绝不硬上 UAF 代码追数字。(首次样本,留反思)
+6. **wasm codegen 复杂度峰值需前置编排**——④-ii fast body 需在 wasm 字节级直接组帧、绑 ciTransferRef、IC mirror 写回、错误路径展开,复杂度峰值远超 ③b 守卫快路径,**前置编排成本** vs **ROI** 须在立项时就算清。(首次样本,留反思)
+
+**PW10 收口状态**(2026-06-16,HEAD `9ab0dba`):
+- ✅ R1/R2/R3/R3.5 + 零跨界 ①/基建-a/基建-b/③a/③b/④-i 骨架 + 顶层升层 callOnStack 全付;
+- ✅ 本机 Xeon 6982P 2s×3 count 实测基线:loop 2.95x / table 0.88x / call 0.52x / mixed 0.99x;
+- ✅ call 0.52x 架构边界文档化(§14.10 profile 实证 + 决策依据);
+- ⏳ ④-ii fast body 留 followup(架构边界,ROI/UAF 不利,emit 原语 i64.add/i64.or 已保留);
+- **PW10 收口为「已落地子里程碑 + 架构边界文档化」**,旧文档「四核全翻面」+「剩 R4/R5 待实现」失实须替换。
 
 相关:
 - [00-overview](./00-overview.md)(P3 总览,本文是其 §4 PW 表的运行期对账)
@@ -578,5 +684,6 @@ V1-V13 层间 byte-equal + 四 build + `-race` difftest + lint 全绿。新增 e
 - [../p1-interpreter/implementation-progress](../p1-interpreter/implementation-progress.md)(P1 同款)
 - [../p2-bridge/implementation-progress](../p2-bridge/implementation-progress.md)(P2 同款,作维护协议参考)
 - [../../../llmdoc/guides/multi-doc-drafting](../../../llmdoc/guides/multi-doc-drafting.md)(主动盘点不确定决策的纪律来源)
+- [../../../llmdoc/guides/perf-optimization-workflow](../../../llmdoc/guides/perf-optimization-workflow.md)(§7「立项数字目标 vs profile 实测瓶颈」承本轮教训 1)
 - [../../../llmdoc/memory/doc-gaps](../../../llmdoc/memory/doc-gaps.md)(P3 开工前置确认 / P3 迁移留口)
-- 反思:`../../../llmdoc/memory/reflections/2026-06-15-p3-pw10-r1-r2-callinfo-migration-round.md`(R1-R2,§12)、`../../../llmdoc/memory/reflections/2026-06-15-p3-pw10-r3-call-indirect-round.md`(R3+R3.5,§13)、`../../../llmdoc/memory/reflections/2026-06-15-p3-pw10-zerocross-stage3-round.md`(零跨界 ③,§14)
+- 反思:`../../../llmdoc/memory/reflections/2026-06-15-p3-pw10-r1-r2-callinfo-migration-round.md`(R1-R2,§12)、`../../../llmdoc/memory/reflections/2026-06-15-p3-pw10-r3-call-indirect-round.md`(R3+R3.5,§13)、`../../../llmdoc/memory/reflections/2026-06-15-p3-pw10-zerocross-stage3-round.md`(零跨界 ③,§14.1-§14.7)、`../../../llmdoc/memory/reflections/2026-06-16-p3-pw10-architectural-ceiling-round.md`(架构边界收口,§14.8-§14.10)
