@@ -24,38 +24,69 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false # 默认 build / 凸月 build 独立跑,一个失败不阻塞另一个收集
+      matrix:
+        include:
+          - name: default
+            tags: ''
+            cov_name: coverage-default.out
+          - name: p3-profile
+            tags: 'wangshu_p3 wangshu_profile'
+            cov_name: coverage-p3.out
+    name: test (${{ matrix.name }})
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
       # -race 是硬门禁(经评审定稿,engineering.md §3.1)
-      - run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
-      # benchmarks 子模块(独立 go.mod;gopher-lua 仅基准用,不污染主模块依赖图)。
-      # realworld 的 oracle parity 是真测试,必须随 CI 跑;oracle 在 difftest job
-      # 同步装,这里需要时单独装一次。
-      - run: sudo apt-get update && sudo apt-get install -y lua5.1
-      - run: cd benchmarks && go test -race ./...
+      # 矩阵覆盖:default = 新月解释器路径;p3-profile = 凸月升层 wasm 路径
+      - name: go test (${{ matrix.name }} build)
+        run: |
+          if [ -n "${{ matrix.tags }}" ]; then
+            go test -race -tags "${{ matrix.tags }}" -coverprofile=${{ matrix.cov_name }} -covermode=atomic ./...
+          else
+            go test -race -coverprofile=${{ matrix.cov_name }} -covermode=atomic ./...
+          fi
+      # benchmarks 子模块只在 default build 跑(凸月 baseline bench 经 make bench-gibbous;
+      # 这里只测 realworld oracle parity,不需要凸月覆盖)
+      - if: matrix.name == 'default'
+        run: sudo apt-get update && sudo apt-get install -y lua5.1
+      - if: matrix.name == 'default'
+        run: cd benchmarks && go test -race ./...
       # 交叉编译冒烟:项目承诺「不依赖 cgo,保持交叉编译能力」,32 位
       # GOARCH 的 int 宽度差异曾导致编译失败而 amd64 门禁抓不到
-      - run: GOOS=linux GOARCH=386 go build ./...
-      - run: GOOS=windows GOARCH=amd64 go build ./...
-      - run: GOOS=darwin GOARCH=arm64 go build ./...
+      - if: matrix.name == 'default'
+        run: GOOS=linux GOARCH=386 go build ./...
+      - if: matrix.name == 'default'
+        run: GOOS=windows GOARCH=amd64 go build ./...
+      - if: matrix.name == 'default'
+        run: GOOS=darwin GOARCH=arm64 go build ./...
       - uses: actions/upload-artifact@v7
         with:
-          name: coverage
-          path: coverage.out
+          name: coverage-${{ matrix.name }}
+          path: ${{ matrix.cov_name }}
           retention-days: 30
 
   fuzz-smoke:
     needs: test
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false # 默认 build / 凸月 build 独立 fuzz,一个失败不阻塞另一个收集
+      matrix:
+        include:
+          - name: default
+            tags: ''
+          - name: p3-profile
+            tags: 'wangshu_p3 wangshu_profile'
+    name: fuzz-smoke (${{ matrix.name }})
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - run: ./scripts/go-fuzz.sh 30s
+      - run: ./scripts/go-fuzz.sh 30s "${{ matrix.tags }}"
 
   conformance:
     # M5/M9 后启用实际用例;占位 job 保持绿(test/conformance 空包时 go test 直接过)
@@ -69,18 +100,29 @@ jobs:
 
   difftest:
     # M14 启用差分 fuzz;此前只校验 oracle 供给路径
+    # 矩阵覆盖:default = 新月 vs gopher/官方;p3-profile = 凸月升层 wasm vs gopher/官方
+    # (V1-V13 三方逐字节验收口径,p3-testing-strategy §1)
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: default
+            target: difftest
+          - name: p3-profile
+            target: difftest-p3
+    name: difftest (${{ matrix.name }})
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
       - run: sudo apt-get update && sudo apt-get install -y lua5.1
-      - run: make difftest
+      - run: make ${{ matrix.target }}
       - if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: difftest-failure
+          name: difftest-failure-${{ matrix.name }}
           path: test/difftest/testdata/
           if-no-files-found: ignore
 

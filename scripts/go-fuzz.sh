@@ -1,16 +1,27 @@
 #!/usr/bin/env bash
-# go-fuzz.sh <fuzztime>:自动发现全部 func Fuzz* 目标,各跑一轮冒烟。engineering.md §1。
+# go-fuzz.sh <fuzztime> [build_tags]:自动发现全部 func Fuzz* 目标,各跑一轮冒烟。
+# engineering.md §1。
+#
+# build_tags(可选,默认空 = 默认 build):传给 go test -tags。典型用法:
+#   ./scripts/go-fuzz.sh 30s                          # 默认 build(新月解释器)
+#   ./scripts/go-fuzz.sh 30s "wangshu_p3 wangshu_profile"  # 凸月 build(force-all 升层后路径)
 set -euo pipefail
 
 fuzztime="${1:-30s}"
+tags="${2:-}"
 found=0
+
+tags_arg=()
+if [ -n "$tags" ]; then
+    tags_arg=(-tags "$tags")
+fi
 
 while IFS=: read -r file line decl; do
     func=$(echo "$decl" | sed -E 's/^func (Fuzz[A-Za-z0-9_]*).*/\1/')
     pkg=$(dirname "$file")
     found=1
-    echo "fuzz: $pkg :: $func ($fuzztime)"
-    go test "./$pkg" -run='^$' -fuzz="^${func}\$" -fuzztime="$fuzztime" -timeout=120s -parallel=4
+    echo "fuzz: $pkg :: $func ($fuzztime) tags=${tags:-default}"
+    go test "${tags_arg[@]}" "./$pkg" -run='^$' -fuzz="^${func}\$" -fuzztime="$fuzztime" -timeout=120s -parallel=4
 done < <(grep -rn --include='*_test.go' -E '^func Fuzz[A-Za-z0-9_]*\(f \*testing\.F\)' . 2>/dev/null || true)
 
 if [ "$found" -eq 0 ]; then

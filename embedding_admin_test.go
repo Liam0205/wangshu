@@ -328,22 +328,6 @@ func TestNaiveSetIndex_LinearScaling(t *testing.T) {
 	}
 }
 
-// TestCompact_ShrinkAfterTransientPeak 验证 issue #11 方向 1:transient 大分配
-// 触发 grow doubling 后,Release + Collect → arena.Compact 缩 cap,backing
-// 回收。ArenaCapKB 应从 grow doubling 高水位降回。
-func TestCompact_ShrinkAfterTransientPeak(t *testing.T) {
-	st := wangshu.NewState(wangshu.Options{InitialArenaBytes: 64 * 1024})
-	// transient 触发 grow 涨到 ~1 MB
-	tv := st.NewArrayTable(make([]wangshu.Value, 100000))
-	capPeak := st.ArenaCapKB()
-	if capPeak < 800 { // 至少涨到几百 KB
-		t.Fatalf("ArenaCapKB did not grow as expected: %.1f", capPeak)
-	}
-	tv.Release()
-	st.Collect()
-	capAfter := st.ArenaCapKB()
-	t.Logf("ArenaCapKB: peak=%.1f after Collect=%.1f", capPeak, capAfter)
-	if capAfter >= capPeak {
-		t.Fatalf("Compact did not shrink ArenaCapKB: peak=%.1f after=%.1f", capPeak, capAfter)
-	}
-}
+// TestCompact_ShrinkAfterTransientPeak 在 embedding_admin_default_test.go
+// (只在非 P3 build,因 P3 newStateArena 设 InPlaceBacking=true,Compact no-op)。
+// P3 build 下的对应行为见 embedding_admin_p3_test.go TestP3_Compact_NoOpInP3Mode。

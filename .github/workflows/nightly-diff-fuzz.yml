@@ -26,6 +26,18 @@ permissions:
 
 jobs:
   diff-fuzz:
+    # 矩阵覆盖:default = 新月解释器路径;p3-profile = 凸月升层 wasm 路径
+    # 凸月升层后代码与新月共用同一套 fuzz 输入,但跑不同的 VM 路径——补 nightly fuzz
+    # 的凸月覆盖缺口(此前完全不在矩阵中)。
+    strategy:
+      fail-fast: false # 一个 build 撞 divergence 不阻塞另一个继续撞
+      matrix:
+        include:
+          - name: default
+            tags: ''
+          - name: p3-profile
+            tags: 'wangshu_p3 wangshu_profile'
+    name: diff-fuzz (${{ matrix.name }})
     runs-on: ubuntu-latest
     timeout-minutes: 350
     steps:
@@ -43,37 +55,46 @@ jobs:
           sudo cp lua-5.1.5/src/lua /usr/local/bin/lua5.1
           ./scripts/check-oracle.sh
 
-      - name: rolling-seed differential fuzz
+      - name: rolling-seed differential fuzz (${{ matrix.name }})
         id: difffuzz
         run: |
           # 日期纪元作滚动种子基:每天一段新种子空间,失败可精确重放。
           # 种子段间距 1e7,按每晚 200 万脚本(本地实测 ~1ms/脚本,约 35-60 分钟)留 5 倍余量。
+          # 凸月 build 速度可能略慢(wazero 初始化 + 升层 + wasm dispatch),timeout 相同
           SEED_BASE=$(( $(date -u +%s) / 86400 * 10000000 ))
           ROUNDS="${{ github.event.inputs.rounds || '2000000' }}"
           echo "seed_base=$SEED_BASE" >> "$GITHUB_OUTPUT"
           echo "rounds=$ROUNDS" >> "$GITHUB_OUTPUT"
           set -o pipefail
-          WANGSHU_FUZZ_SEED_BASE=$SEED_BASE WANGSHU_FUZZ_N=$ROUNDS \
-            go test ./test/difftest/ -run 'TestDiff_RandomScripts' -timeout 150m 2>&1 | tee difffuzz.log
+          TAGS_ARG=""
+          if [ -n "${{ matrix.tags }}" ]; then
+            TAGS_ARG="-tags \"${{ matrix.tags }}\""
+          fi
+          eval WANGSHU_FUZZ_SEED_BASE=$SEED_BASE WANGSHU_FUZZ_N=$ROUNDS \
+            go test $TAGS_ARG ./test/difftest/ -run 'TestDiff_RandomScripts' -timeout 150m 2>&1 | tee difffuzz.log
 
-      - name: GC-stress transparency fuzz
+      - name: GC-stress transparency fuzz (${{ matrix.name }})
         if: always()
         run: |
           set -o pipefail
-          WANGSHU_GCSTRESS_N="${{ github.event.inputs.gcstress || '200000' }}" \
-            go test ./test/difftest/ -run 'TestGCStress' -timeout 60m 2>&1 | tee gcstress.log
+          TAGS_ARG=""
+          if [ -n "${{ matrix.tags }}" ]; then
+            TAGS_ARG="-tags \"${{ matrix.tags }}\""
+          fi
+          eval WANGSHU_GCSTRESS_N="${{ github.event.inputs.gcstress || '200000' }}" \
+            go test $TAGS_ARG ./test/difftest/ -run 'TestGCStress' -timeout 60m 2>&1 | tee gcstress.log
 
-      - name: native go-fuzz long run
+      - name: native go-fuzz long run (${{ matrix.name }})
         if: always()
         run: |
           set -o pipefail
-          ./scripts/go-fuzz.sh "${{ github.event.inputs.gofuzztime || '45m' }}" 2>&1 | tee gofuzz.log
+          ./scripts/go-fuzz.sh "${{ github.event.inputs.gofuzztime || '45m' }}" "${{ matrix.tags }}" 2>&1 | tee gofuzz.log
 
       - name: upload logs and crash corpus
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: nightly-fuzz-${{ github.run_id }}
+          name: nightly-fuzz-${{ matrix.name }}-${{ github.run_id }}
           path: |
             difffuzz.log
             gcstress.log
@@ -96,7 +117,7 @@ jobs:
           if grep -q "DIVERGENCE" difffuzz.log gcstress.log 2>/dev/null; then
             FIRST_SEED=$(grep -ohP 'DIVERGENCE seed=\K\d+' difffuzz.log gcstress.log 2>/dev/null | head -1 || true)
             FIRST_KIND=$(grep -ohP 'DIVERGENCE seed=\d+ kind=\K\S+' difffuzz.log gcstress.log 2>/dev/null | head -1 || true)
-            TITLE="difftest divergence: seed ${FIRST_SEED:-unknown} kind ${FIRST_KIND:-unknown} ($(date -u +%F))"
+            TITLE="difftest divergence (${{ matrix.name }}): seed ${FIRST_SEED:-unknown} kind ${FIRST_KIND:-unknown} ($(date -u +%F))"
             LABEL="bug"
             BODY=$(cat <<EOF
           nightly 差分 fuzz 撞出与官方 Lua 5.1.5 的输出分歧(或 GC 透明性破坏)。
@@ -118,7 +139,7 @@ jobs:
           elif grep -q "Failing input written to" gofuzz.log 2>/dev/null; then
             CRASH_PATH=$(grep -ohP 'Failing input written to \K\S+' gofuzz.log 2>/dev/null | head -1 || true)
             CRASH_NAME=$(basename "$CRASH_PATH")
-            TITLE="go-fuzz crash: ${CRASH_NAME:-unknown} ($(date -u +%F))"
+            TITLE="go-fuzz crash (${{ matrix.name }}): ${CRASH_NAME:-unknown} ($(date -u +%F))"
             LABEL="bug"
             BODY=$(cat <<EOF
           nightly go-fuzz 长跑撞出 crash(子进程异常退出/死循环/panic)。corpus 已写入仓库
@@ -142,7 +163,7 @@ jobs:
           EOF
           )
           else
-            TITLE="nightly-fuzz infra failure ($(date -u +%F))"
+            TITLE="nightly-fuzz infra failure (${{ matrix.name }}, $(date -u +%F))"
             LABEL="ci"
             BODY="nightly fuzz 失败但无 DIVERGENCE 标记 / 无 go-fuzz crash(环境/基础设施类:oracle 不可用、超时、依赖装不上等)。日志见 run artifacts:${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           fi
