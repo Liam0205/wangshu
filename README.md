@@ -36,6 +36,10 @@ P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 met
 - arena LARGE freelist 改 multi-bucket size-class(底层 root fix):naive `NewTable + SetIndex(1..N)` 形态从 O(N²) 回到 O(N) 摊销(N=1000 ns/elem 824 → 59,**25× 加速**)。
 - arena Compact 在 Collect 末尾缩 backing slab 到 max(bump, 64 KiB):缓解 grow doubling 高水位 latched 现象,Go runtime 回收旧大 slab(默认 build 生效;P3 收养 wazero linear memory 模式 no-op)。
 
+**boundary-dominated 嵌入快路径**(issue #13,parity-friendly:不破跨引擎 `lua_script` 字节对等):
+- `State.NewFloatArrayTable / NewInt64ArrayTable / NewBoolArrayTable / NewStringArrayTable`:从 typed slice 一次性 NaN-box 进 arena 数组段,跳过 `[]Value` 中转。脚本侧看到的是普通 array table(`xs[i]` / `#xs`),**不是** arena 列轨的 `__index` 代理——pineapple 一类 common-mode 灌列形态可以原脚本不动消掉 `[]any → []Value` 中转。
+- `State.GlobalsSlot(name)` + `SetBySlot / GetBySlot` + `Slot.Release()`:固定字段名场景下把 `gc.Intern([]byte(name))` 摊销到 Init 期一次性,热循环 SetGlobal 跳过 `[]byte` 分配 + intern 哈希查找(pineapple `LuaOp.Init` 期取 slot,`Execute` 热循环里 `SetBySlot(slot, v)`)。仅消除宿主端 intern 成本;globals rawtable 本身查找仍 per-key irreducible。
+
 P1 总验收通过:
 
 - 性能四档实测见下「性能基准」节——纯 VM 微基准 5-6x over gopher-lua,真实负载纯 VM 五项中四项反超,边界密集嵌入经零分配 `CallInto` 反超;
