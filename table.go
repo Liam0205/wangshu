@@ -44,6 +44,54 @@ func (st *State) NewTable() Value {
 	return Value{kind: kTable, fnState: st, pinIdx: idx}
 }
 
+// NewArrayTable 一次性从 Go slice 构建 Lua array table(issue #10 方向 2)。
+//
+// 内部分配 array 段 = len(vals),写入 vals,无 rehash 风暴。**远快于** NewTable +
+// 反复 SetIndex(rehash 风暴 → O(N²);本方法 O(N))。返回 table-kind Value,经
+// pin 表登记 GC 根。
+//
+// 典型用法:host 把 []float64 / []string 列数据 lift 进 Lua table 投喂脚本。
+//
+//	tv := st.NewArrayTable([]wangshu.Value{
+//	    wangshu.Number(1.0), wangshu.Number(2.0), wangshu.Number(3.0),
+//	})
+//	defer tv.Release()
+//	st.SetGlobal("xs", tv)
+func (st *State) NewArrayTable(vals []Value) Value {
+	inner := make([]value.Value, len(vals))
+	for i, v := range vals {
+		inner[i] = v.toInner(st)
+	}
+	ref := st.core.NewArrayTableFromVals(inner)
+	idx := st.core.PinRef(ref)
+	return Value{kind: kTable, fnState: st, pinIdx: idx}
+}
+
+// Preallocate 预分配 table 的 array 段到 n 槽(issue #10 方向 2)。
+//
+// 典型用法:NewTable + Preallocate(N) + SetIndex(1..N) 绕过反复 rehash 风暴。
+// 仅扩不缩(n ≤ 当前 asize → no-op);原 array 段数据保留。原 hash 段不动。
+//
+//	tv := st.NewTable()
+//	tv.AsTable().Preallocate(1000)
+//	for i := 1; i <= 1000; i++ {
+//	    tv.AsTable().SetIndex(i, wangshu.Number(float64(i)))  // 全部 O(1) 落 array
+//	}
+//
+// 已知大小直接走 NewArrayTable 更简(无需逐项 SetIndex);Preallocate 适合「分次
+// 填充但已知最终大小」的场景。
+func (t *Table) Preallocate(n uint32) error {
+	if t.st == nil {
+		return fmt.Errorf("wangshu: Table.Preallocate: table has been released")
+	}
+	ref := t.ref()
+	if ref.IsNull() {
+		return fmt.Errorf("wangshu: Table.Preallocate: table has been released")
+	}
+	t.st.core.PreallocateArray(ref, n)
+	return nil
+}
+
 // ref 取出 pin 表中的 GCRef;调用方保证 t.st 非 nil。
 func (t *Table) ref() arena.GCRef { return t.st.core.PinnedRefAt(t.pinIdx) }
 
