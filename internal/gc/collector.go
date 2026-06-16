@@ -45,6 +45,8 @@ type Collector struct {
 	liveBytesAfterSweep uint64 // 本轮 sweep 末的存活字节(由 sweep 累加)
 	stressMode          bool   // 高频压力模式:每个 safepoint 强制 Collect(12 §5)
 	stopped             bool   // collectgarbage("stop"):自动 GC 暂停(显式 Collect 不受影响)
+	collecting          bool   // Collect 期间为 true(host-trigger AllocCharge 防递归,issue #9 方向 1)
+	hostTrigger         bool   // host alloc 跨阈触发 collect(issue #9 方向 1,opt-in;现有 stdlib/intern 路径有 mid-construction transient GCRef 未 pin,默认 false 不破坏)
 
 	// gcPending 标志(P3 PW9):反映「MaybeCollect 是否会真正 Collect」,镜像到
 	// arena 一个固定字(linear memory),供 gibbous FORLOOP 回边 inline i32.load
@@ -158,12 +160,48 @@ func (c *Collector) LinkSweep(ref arena.GCRef) {
 
 // AllocCharge 通知 collector 一次分配的字节数(供 pacing 使用)。
 //
-// State 的 Alloc helper 在每次 arena.AllocBytes 之后调用本函数累加。本函数不直接触发 GC;
-// 触发判定见 MaybeCollect。
+// State 的 Alloc helper 在每次 arena.AllocBytes 之后调用本函数累加。
+//
+// **issue #9 方向 1**:跨 threshold 时直接触发 collect。这避免 boundary-dominated
+// 工作负载(host 反复 NewTable + 短脚本,VM opcode safepoint 不被频繁穿过)下
+// 「accounting 上涨但 sweep 触发不到」的 starvation。
+//
+// **半构造对象安全**:host 公共 API 在调 AllocCharge 之前:① 已 pin 的对象(NewTable
+// 返回的 Table 经 PinRef 立即登记)在 GC 根可达;② 中间分配的 transient GCRef(如
+// rehash 内 newArr/newNode)虽未挂 sweep chain,但 sweep 只走 chain → 不被回收。
+// 故 host 路径的「中段触发 collect」对所有合法路径都是安全的。
+//
+// **不重入保护**:collect 内部触发任何 AllocCharge(如 finalizer 调宿主代码,
+// 进而调宿主公共 API)由 collecting 守卫拦截,避免递归 collect。
 func (c *Collector) AllocCharge(nbytes uint32) {
 	c.bytesAllocSince += uint64(nbytes)
 	c.updateGCPending()
+	if c.hostTrigger && !c.stopped && !c.collecting && c.bytesAllocSince >= c.threshold {
+		c.Collect()
+	}
 }
+
+// SetHostTriggeredCollect 切换 host alloc 跨阈直接触发 collect(issue #9 方向 1)。
+//
+// **opt-in 契约**:开启后,任何 AllocCharge 调用都可能在 bytesAllocSince 跨阈时
+// 立即 Collect。调用方(host 公共 API / stdlib 等)必须保证:** all transient
+// GCRef are reachable from a GC root**(pin 表 / shadow stack push / 已挂 sweep
+// chain 且 mark-able)。否则 mid-construction 的 GCRef 会被误回收 = UAF。
+//
+// **wangshu 公共 API 安全性**(以 wangshu.NewState 开启为目标):
+//   - NewTable/NewArrayTable 返回值经 PinRef 立即登记 GC 根 ✓
+//   - rehash 中 transient newArr/newNode 未 LinkSweep → sweep 不回收 ✓
+//   - SetGlobal 路径 globals 是 R5 根 ✓
+//
+// **不安全**(默认 false,故现 stdlib/intern 通过):
+//   - intern 中段(b []byte 还在 Go 栈,新 strRef 未挂表)
+//   - 元方法回调持 transient Lua-level Value
+//   - 公共面 fromInnerWithPin 之前的 transient
+//
+// 故 SetHostTriggeredCollect(true) 仅在「调用者保证全程 pin」时安全开启。
+// 推荐:host 嵌入层每周期手动 st.Collect() / st.MaybeCollectNow() 作 cadence
+// 控制(issue #9 方向 2,已经过 #60 提供)。
+func (c *Collector) SetHostTriggeredCollect(on bool) { c.hostTrigger = on }
 
 // SetGCPendingRef 装入 gcPending 标志字的 arena GCRef(P3 PW9,wangshu_p3 build
 // 由 State 在 init 时分配一个 arena 字并传入)。装入后 collector 在状态转移点
@@ -230,6 +268,11 @@ func (c *Collector) SetStressMode(on bool) { c.stressMode = on; c.updateGCPendin
 
 // Collect 执行一次 STW full GC(06 §8.2 主流程)。
 func (c *Collector) Collect() {
+	if c.collecting {
+		return // 防递归(host-trigger AllocCharge 在 Collect 内 finalizer/sweep alloc 时)
+	}
+	c.collecting = true
+	defer func() { c.collecting = false }()
 	c.markRoots()
 	c.markAll()
 	c.separateFinalizers()
@@ -244,6 +287,13 @@ func (c *Collector) Collect() {
 		}
 	}
 	c.toRunFinalizers = c.toRunFinalizers[:0]
+	// issue #11 方向 1:sweep 后尝试缩 backing slab 放回 Go 堆。
+	// Compact 内部判定 cap 可缩(cap > bump + 余量)才动;P3 InPlaceBacking 模式
+	// 与紧 cap 稳态下都 no-op O(1)。典型受益:transient peak 触发 grow doubling
+	// 后,Release 让 bump-area 大头空闲 → Compact 缩 cap 到 bump 量级,Go runtime
+	// 回收旧大 slab(latched high-water 解除,pineapple#105 类长寿命 pool fat
+	// state 现象缓解)。
+	c.a.Compact()
 	// pacing:本轮存活字节由 sweep 时累加在 c.liveBytesAfterSweep。
 	c.threshold = c.liveBytesAfterSweep * uint64(c.gcPauseRatio) / 100
 	if c.threshold < uint64(c.a.Cap())/16 {

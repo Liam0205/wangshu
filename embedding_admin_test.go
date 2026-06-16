@@ -94,3 +94,57 @@ func TestMaybeCollectNow_Idempotent(t *testing.T) {
 		t.Fatalf("MaybeCollectNow changed ArenaCapKB unexpectedly: before=%.1f after=%.1f", cap0, cap1)
 	}
 }
+
+// TestSetHostTriggeredCollect_OptInOffByDefault 验证 #9 方向 1 默认 off,
+// 开启后 AllocCharge 跨阈真触发 collect。
+func TestSetHostTriggeredCollect_OptInOffByDefault(t *testing.T) {
+	// 默认 off:NewTable 反复后 GCCountKB 持续涨(host 路径累积,VM safepoint 不触发)
+	st := wangshu.NewState(wangshu.Options{})
+	used0 := st.GCCountKB()
+	for r := 0; r < 50; r++ {
+		tv := st.NewTable()
+		for i := 0; i < 50; i++ {
+			_ = tv.AsTable().SetIndex(i+1, wangshu.Number(float64(i)))
+		}
+		tv.Release()
+	}
+	usedOff := st.GCCountKB()
+	t.Logf("host-trigger OFF: GCCountKB %.1f → %.1f", used0, usedOff)
+
+	// 开启:同样负载下 GCCountKB 应被 auto-collect 控制
+	st2 := wangshu.NewState(wangshu.Options{})
+	st2.SetHostTriggeredCollect(true)
+	used2_0 := st2.GCCountKB()
+	for r := 0; r < 50; r++ {
+		tv := st2.NewTable()
+		for i := 0; i < 50; i++ {
+			_ = tv.AsTable().SetIndex(i+1, wangshu.Number(float64(i)))
+		}
+		tv.Release()
+	}
+	usedOn := st2.GCCountKB()
+	t.Logf("host-trigger ON: GCCountKB %.1f → %.1f", used2_0, usedOn)
+	if usedOn >= usedOff {
+		t.Errorf("host-trigger ON did not reduce accumulated GCCountKB: off=%.1f on=%.1f", usedOff, usedOn)
+	}
+}
+
+// TestCompact_ShrinkAfterTransientPeak 验证 issue #11 方向 1:transient 大分配
+// 触发 grow doubling 后,Release + Collect → arena.Compact 缩 cap,backing
+// 回收。ArenaCapKB 应从 grow doubling 高水位降回。
+func TestCompact_ShrinkAfterTransientPeak(t *testing.T) {
+	st := wangshu.NewState(wangshu.Options{InitialArenaBytes: 64 * 1024})
+	// transient 触发 grow 涨到 ~1 MB
+	tv := st.NewArrayTable(make([]wangshu.Value, 100000))
+	capPeak := st.ArenaCapKB()
+	if capPeak < 800 { // 至少涨到几百 KB
+		t.Fatalf("ArenaCapKB did not grow as expected: %.1f", capPeak)
+	}
+	tv.Release()
+	st.Collect()
+	capAfter := st.ArenaCapKB()
+	t.Logf("ArenaCapKB: peak=%.1f after Collect=%.1f", capPeak, capAfter)
+	if capAfter >= capPeak {
+		t.Fatalf("Compact did not shrink ArenaCapKB: peak=%.1f after=%.1f", capPeak, capAfter)
+	}
+}

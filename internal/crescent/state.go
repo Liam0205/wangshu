@@ -625,6 +625,15 @@ func (st *State) MaybeCollectNow() {
 	st.gc.MaybeCollect()
 }
 
+// SetHostTriggeredCollect 开关 host alloc 跨阈直接触发 collect(issue #9 方向 1)。
+// **opt-in,默认 off**——开启需调用方保证所有 transient GCRef 均 pin/shadow stack
+// 可达。详细安全契约见 gc.Collector.SetHostTriggeredCollect godoc。
+// 现 stdlib/intern 路径有 mid-construction transient,**未经审计前不建议生产开启**;
+// 推荐用 Collect() / MaybeCollectNow() 显式 cadence 控制(issue #9 方向 2)。
+func (st *State) SetHostTriggeredCollect(on bool) {
+	st.gc.SetHostTriggeredCollect(on)
+}
+
 // NewError 构造一个带消息的 LuaError(供 stdlib 等 host 函数使用)。
 func NewError(msg string) *LuaError {
 	return &LuaError{Msg: msg}

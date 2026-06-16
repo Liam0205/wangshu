@@ -152,6 +152,40 @@ func (a *Arena) Words() []uint64 { return a.words }
 // Bytes returns the byte view of the entire backing. Same invalidation rule as Words.
 func (a *Arena) Bytes() []byte { return a.bytes }
 
+// Compact 缩 backing 容量到 max(bump, 64 KiB)(issue #11 方向 1)。GCRef offset
+// 不变(语义保留),仅是 backing slab 物理换一个较小的——Go runtime 把旧 slab
+// (可能很大,如曾因一次 transient 大分配 doubling 到高水位)收回堆,缓解长寿命
+// State pool 里 fat state 永驻问题。
+//
+// **生效条件**:
+//   - 非 InPlaceBacking 模式(P3 wangshu_p3 收养 wazero linear memory 不可缩,
+//     本方法 no-op)
+//   - cap > max(bump, 64 KiB)(否则没有可缩空间)
+//
+// 调用时机:Collector.Collect 之后触发(freelist 已经把死区累积进 freeBytes,
+// 但 bump 单调增不回退;Compact 把 cap 从「曾经的 high-water」缩到「当前 bump」。
+//
+// **不动 bump,不重映射 GCRef**:本方法不是 copy-compact GC,只换 slab。仍然
+// 留下「freelist 上 [bump 内的死块]」的逻辑碎片(待 freelist 复用)——这部分
+// 是 issue #11 方向 1 真实 copy-compact 的剩余目标,留 followup。
+func (a *Arena) Compact() {
+	if a.inPlace {
+		return // P3 收养 wazero linear memory 不可缩
+	}
+	const minCap = uint32(64 * 1024)
+	targetCap := roundUp8(a.bump)
+	if targetCap < minCap {
+		targetCap = minCap
+	}
+	if targetCap >= a.cap {
+		return // 没有可缩空间
+	}
+	newWords := a.backing(targetCap / 8)
+	copy(newWords, a.words[:a.bump/8]) // 只拷 [0..bump),后面是未分配区
+	a.cap = targetCap
+	a.setBacking(newWords)
+}
+
 // AllocBytes 分配 nbytes 字节(自动向上对齐到 8),返回起始字节偏移 GCRef。
 //
 // 两级:freelist 命中(size-class 定长桶 / LARGE 首次适配)→ bump 线性切分。

@@ -164,6 +164,24 @@ func (st *State) Collect() { st.core.Collect() }
 // 直接调 Collect。
 func (st *State) MaybeCollectNow() { st.core.MaybeCollectNow() }
 
+// SetHostTriggeredCollect 开关 host alloc 跨阈直接触发 GC(issue #9 方向 1,
+// **experimental opt-in**)。
+//
+// **默认 off**——开启后任何 alloc(NewTable/SetIndex/rehash/intern/stdlib alloc...)
+// 跨 GC threshold 时立即 sweep。**安全契约**:调用方保证所有 transient GCRef 都
+// reachable from GC root(pin 表 / shadow stack / 已挂 sweep chain)。
+//
+// **未审计 mid-construction pin 安全前不建议生产开启**:current stdlib(string.gsub
+// 等)+ string intern 的 transient GCRef 未全经 pin/shadow stack 显式登记,开启会
+// 引入 UAF 风险。已知 break:luasuite gc.lua / literals.lua / nextvar.lua / pm.lua /
+// strings.lua 等(2026-06-16 实测)。
+//
+// **推荐替代**:用 Collect() / MaybeCollectNow() 显式 cadence 控制(issue #9 方向 2,
+// production-safe)。host 嵌入层在 pool 归还点 / 批次完成点定期调用即可。本方法
+// 仅在「未来 mid-construction pin 审计完成 + 调用方对 transient 安全有充分把握」
+// 时考虑开启,作为零额外 cadence-control 代码的便利路径。
+func (st *State) SetHostTriggeredCollect(on bool) { st.core.SetHostTriggeredCollect(on) }
+
 // SetStepBudget 设置回边指令预算(<=0 关闭):超额时脚本以可恢复错误
 // "instruction budget exceeded" 终止。宿主对不可信脚本的执行配额。
 func (st *State) SetStepBudget(n int64) { st.core.SetStepBudget(n) }
