@@ -219,13 +219,13 @@ PW0 启动后,本文按以下协议更新:
 | VS0-b | callInfo 去 Go 指针:`proto *Proto` → `protoID uint32`(Go 指针不能进 linear memory,03 §5);`st.protoOf(ci)` 收口;execute 热循环维护 proto 局部 | `fafbafd` |
 | VS0-c | 主线程 + 协程栈进 arena(统一经 `st.newThread()` 分配 arena 段);**形态 Y**(`slot/setSlot` 经 `arena.Words()` 偏移寻址,不缓存派生视图,免疫 arena grow);`growStack` 段内 relocate(WordAt 读旧段避免失效别名);upvalue 经 `owner.slot(idx)` 自动重定位 | `771afdc` |
 | VS0-d | trampoline 接通(= PW2-d);见 §1 PW2 行 | `538e717` |
-| VS0-e | 协程栈/varargs/CallInfo word 位打包全 arena 化(01 §5.6 完整布局)——**PW10 R2 交付**(协程栈早随 VS0-c 进 arena;**本轮把 CallInfo 从 Go `[]callInfo` 物理迁入每线程 arena 段,4 word/帧,word2 位打包**;varargs 仍留 Go 影子 `th.ciVarargs`——值非 GC 临时,留 Go 堆。详 §12.2) | `e7fc9b2`/`04ce9a8`/`cb7f625`/`10bcaa1`/`1a786ee`(PW10 R2a/R2b-1~4)|
+| VS0-e | 协程栈/varargs/CallInfo word 位打包全 arena 化(01 §5.6 完整布局)——**全量交付**:① 协程栈随 VS0-c 进 arena;② CallInfo 经 PW10 R2 物理迁入每线程 arena 段(4 word/帧 + word2 位打包);③ **varargs 进栈下区**(2026-06-16,VS0-e 子步 ①~④)——`enterLuaFrame` 重排 `base = funcIdx + 1 + nVarargs`,vararg 落 `stack[base-nVarargs..base)`(对齐官方 lvm.c OP_VARARG 布局,与 [05 §8.5](../p1-interpreter/05-interpreter-loop.md) 设计描述一致);ciWords 4→5 + word4 [15:0]=nVarargs 段镜像(wasm 端 `ciFrameBytes` 32→40 同步);退役 `callInfo.varargs` Go slice + `thread.ciVarargs` 影子 + `setVarargs/clearVarargs/varargsAt` 三 API(GC 扫栈 [0, top) 自然覆盖栈下区,无独立 ciVarargs scan)。`doVararg` 直接 `th.slot(base-nVarargs+k)` 现读 | `e7fc9b2`/`04ce9a8`/`cb7f625`/`10bcaa1`/`1a786ee`(R2a/R2b-1~4)+ `c22798b`/`4e50687`/`966318c`/`ed95020`(varargs 子步 ①~④)|
 
 **关键设计决策(实现期定,补充设计文档):**
 
 - **寻址形态 Y(否决 X 别名视图)**:值栈与对象世界**共享同一 arena backing**,任意对象分配触发 `arena.grow64` 会使 Go 端别名视图失效(P3 InPlaceBacking 下旧 buffer disconnect = UB)。execute reloadFrame 只重取 `code` 不重取栈视图,无法集中刷新别名 → 形态 X 有 `MOVE→NEWTABLE(grow)→MOVE` 的 UAF 雷区。形态 Y 每次经 `arena.Words()` 现算地址(`words` 字段由 setBacking 更新),彻底免疫。
 - **base 字节偏移基准修正(对 [04 §2.2](./04-trampoline.md) 回填)**:设计稿 `baseBytes := int32(newBase)*8` 隐含主线程栈段起于 arena offset 0;实际各 thread 栈段经 AllocWords 分配,非零起始。**正确基准 = `(stackBaseW + ci.base) * 8`**(值栈段字偏移 + 帧 base 槽)。`stackBaseW` 是 thread 值栈段在 arena 的字偏移。
-- **callInfo 粒度**:VS0-d 只做 proto→protoID + 加 `gibbous bool`(PW2-d 真实所需);word 位打包(01 §5.6 word2-5)与 cis 数组进 arena **延后到 VS0-e,已由 PW10 R2 交付**(§12.2:4 word/帧物理迁入每线程 arena 段)。`openUvs/uvOwner/pendingResume/protos` 仍是 Go 侧资产留 Go 堆(03 §5 划界);varargs 改留 Go 影子 `th.ciVarargs`。
+- **callInfo 粒度**:VS0-d 只做 proto→protoID + 加 `gibbous bool`(PW2-d 真实所需);word 位打包(01 §5.6 word2-5)与 cis 数组进 arena **延后到 VS0-e,已由 PW10 R2 交付**(§12.2:4 word/帧物理迁入每线程 arena 段)。`openUvs/uvOwner/pendingResume/protos` 仍是 Go 侧资产留 Go 堆(03 §5 划界);**varargs 也已进栈下区**(VS0-e 子步 ①~④,2026-06-16:ciWords 4→5 + word4 nVarargs 镜像 + enterLuaFrame base 重排 + doVararg 读栈下区 + 退役 ciVarargs/ci.varargs Go 影子,对齐官方 5.1 真栈布局 `[func | vararg | R(0)..]`)。
 
 **实现现状与设计文档差异:**
 
