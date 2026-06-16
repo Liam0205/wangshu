@@ -42,33 +42,51 @@ func (st *State) enterLuaFrame(th *thread, funcIdx, nargs, nresults int, entry b
 	}
 	pid := object.ClosureProtoID(st.arena, cl)
 	proto := st.protos[pid]
-	base := funcIdx + 1
-	// vararg 与多/少补 nil
 	numFixed := int(proto.NumParams)
-	var varargs []value.Value
-	switch {
-	case nargs > numFixed && proto.IsVararg:
-		// 把超出固定参的部分拷贝到 ci.varargs(M13 简化版,详细布局见 05 §8.5)
-		varargs = make([]value.Value, nargs-numFixed)
-		for i := 0; i < nargs-numFixed; i++ {
-			varargs[i] = th.slot(base + numFixed + i)
-		}
-	case nargs > numFixed && !proto.IsVararg:
-		// 实参超出固定形参,直接丢弃(Lua 5.1 行为)
-	case nargs < numFixed:
-		for i := nargs; i < numFixed; i++ {
-			if base+i >= th.size() {
-				th.ensureStack(base + i + 1)
-			}
-			th.setSlot(base+i, value.Nil)
-		}
+	// VS0-e 子步 ③:base 重排(官方 Lua 5.1 真栈布局)。
+	//
+	// 原布局: [funcIdx | fix0..fixN-1 | extra0..extraM-1 | gap..MaxStack-1]
+	// 新布局: [funcIdx | vararg0..varargM-1 | R(0)=fix0..R(N-1)=fixN-1 | gap..MaxStack-1]
+	//         base = funcIdx + 1 + nVarargs
+	// vararg 落栈下区 stack[base-nVarargs..base);子步 ④ doVararg 改读此区,本子步
+	// 仍走 ci.varargs Go slice(双份存放,行为不变)。
+	nVarargs := 0
+	if nargs > numFixed && proto.IsVararg {
+		nVarargs = nargs - numFixed
 	}
-	// 备栈到 MaxStack
+	base := funcIdx + 1 + nVarargs
+	// 先备栈到新 base + MaxStack(覆盖重排目标区 + nil-clear 区;ensureStack 触发的段
+	// 重定位经 slot/setSlot 形态 Y 现算寻址自动用新段视图)。
 	need := base + int(proto.MaxStack)
 	if need > th.size() {
 		th.ensureStack(need)
 	}
-	// 把 base..base+MaxStack 的剩余区清 nil(防止读到旧值)
+	var varargs []value.Value
+	if nVarargs > 0 {
+		// 重排三步(避免覆盖):
+		// ① 读 vararg 到 Go 临时(子步 ④ 前 ci.varargs Go slice 仍是 VARARG 数据 source)
+		// ② 固参从高到低搬到新位置 stack[base+i] = stack[funcIdx+1+i](dst > src 防覆盖)
+		// ③ vararg 写栈下区 stack[funcIdx+1+i] = varargs[i]
+		varargs = make([]value.Value, nVarargs)
+		for i := 0; i < nVarargs; i++ {
+			varargs[i] = th.slot(funcIdx + 1 + numFixed + i)
+		}
+		for i := numFixed - 1; i >= 0; i-- {
+			th.setSlot(base+i, th.slot(funcIdx+1+i))
+		}
+		for i := 0; i < nVarargs; i++ {
+			th.setSlot(funcIdx+1+i, varargs[i])
+		}
+	} else if nargs < numFixed {
+		// 实参不足:nVarargs=0 ⟹ base=funcIdx+1=原,固参就位,补 nil 到 numFixed。
+		for i := nargs; i < numFixed; i++ {
+			th.setSlot(base+i, value.Nil)
+		}
+	}
+	// nargs > numFixed && !IsVararg:超额实参在 [base+numFixed..base+nargs-1] 区,被
+	// 下面 nil-clear 覆盖(原 Lua 5.1 行为:丢弃)。
+	//
+	// nil-clear 区 [base+numFixed, base+MaxStack)。
 	for i := base + numFixed; i < base+int(proto.MaxStack); i++ {
 		th.setSlot(i, value.Nil)
 	}
@@ -94,7 +112,7 @@ func (st *State) enterLuaFrame(th *thread, funcIdx, nargs, nresults int, entry b
 		fresh:    entry,
 		pc:       0,
 		varargs:  varargs,
-		nVarargs: uint16(len(varargs)), // VS0-e 子步 ①:零行为变更基建;子步 ② 进 word4,子步 ③ 之后栈下区为权威
+		nVarargs: uint16(nVarargs), // VS0-e 子步 ③:与栈下区 [base-nVarargs..base) 严格对齐
 	}
 	// 先把当前栈顶帧(th.cur,可能 pc/top 已推进)刷回段,再载入新帧。
 	if th.ciDepth > 0 {
