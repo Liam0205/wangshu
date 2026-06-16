@@ -59,6 +59,9 @@
 - **Table 读写全闭环已落地**:`NewTable` / `Set/SetIndex/Get/GetIndex/Len` + `ForEach` 任意 key 迭代(见差异标注 ⑦ ⑩)——写入与迭代读出对称,宿主端完整操作 Lua table 无需 Push/Pop;
 - **globals baseline 状态隔离已落地**:`MarkGlobalsBaseline/ResetGlobalsToBaseline`(见差异标注 ⑪)——sync.Pool 复用 State 形态下宿主端一行调用恢复干净 _G,drop-in 配套能力;
 - **`CallInto` 零分配边界路径已落地**(issue #8):`State.CallInto(dst []Value, fn, args...) (n int, err)` 让调用方拥有返回值 buffer,标量(bool/number)round-trip 0 alloc。旧 `Call` 每次固定 72 B / 2 allocs(VM 栈→inner→public 双拷贝,与脚本复杂度无关),boundary-dominated 嵌入(per-item 短调用)被这地板成本主导、在对标场景反被 gopher-lua 超过;`CallInto` 消除双拷贝(内部零拷贝切复用栈 `th.stack`,门面复用 `innerArgsBuf` + 写调用方 dst),两档边界基准均反超 gopher-lua。⚠️ 契约:返回值底层是复用栈,下次进入 VM 前消费完;string 仍拷 arena 字节、复合值仍经 pin 表。**这是「实现浪费」的消除,非架构成本——不违背列内核前提(前提一仍成立:列内核完全摊薄边界成本是高吞吐首选),而是补上无法列内核化的 per-item 形态的零分配通道**;
+- **boundary-dominated 嵌入快路径已落地**(issue #13,parity-friendly,不破跨引擎 `lua_script` 字节对等):
+  - **类型化 array table 族**:`State.NewFloatArrayTable / NewInt64ArrayTable / NewBoolArrayTable / NewStringArrayTable` —— 从 typed slice 一次性 NaN-box 进 arena 数组段,跳过 `[]Value` 中转。脚本侧看到普通 array table(`xs[i]` / `#xs` / `pairs`),**不是** arena 列轨的 `__index` 代理 —— pineapple 一类 common-mode 灌列形态(`SetGlobal(field, []any) → makeArrayTable`)的下层中转可消,无需脚本改动;Int64 承袭 `Arena.AddInt64Column` 的 |v|>2^53 报错规则。
+  - **`GlobalsSlot` 预解析句柄**:`State.GlobalsSlot(name) → slot` + `SetBySlot(slot, v) / GetBySlot(slot) / slot.Release()` —— 把 `gc.Intern([]byte(name))` 摊销到 Init 期一次性,热循环里 SetGlobal 跳过 `[]byte` 分配 + intern 哈希查找。仅消除宿主端 intern 成本;globals rawtable 本身查找仍 per-key irreducible。跨 State 误用 panic fail-fast(同 `State.Call` 跨 State 函数实参风格)。
 - 未落地的 Push/Pop 栈机风格按 `§7.1` 草图保留承诺;
 - 但文档**明确标注其性能档位**——`Call` 走 per-item 跨界形态,落在被边界成本主导的那一档(见 [[design-premises]] 前提一);高频热路径优先列内核(arena 轨),无法列内核化时用 `CallInto` 走零分配。
 
