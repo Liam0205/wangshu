@@ -52,8 +52,13 @@ echo "pre-push: all lint checks passed."
 # 都能正确处理。
 zero="0000000000000000000000000000000000000000"
 refspecs=()
+# Per-refspec `--force-with-lease=<ref>:<expect>` 参数。**精确形式**比裸
+# `--force-with-lease` 准:裸形式按**远端跟踪引用**(`refs/remotes/origin/*`)
+# 算 lease,本地若没 `fetch` 跟踪引用陈旧,lease 会误判 mismatch 拒掉用户显式
+# 发起的 force push。`remote_sha` 已经从 stdin 拿到了 git 当前看到的远端实际
+# sha,直接用它做 lease 才准。
+force_lease_args=()
 have_update=0   # 至少有一条非删除的 ref ⟹ CI watch 有意义
-needs_force=0   # 至少有一条 ref 是非快进更新 ⟹ 需要 force
 
 while read -r local_ref local_sha remote_ref remote_sha; do
   [ -z "${remote_ref:-}" ] && continue
@@ -64,10 +69,10 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     refspecs+=("${local_ref}:${remote_ref}")
     have_update=1
     # 非快进(远端有本地没有的 commit)⟹ 普通 push 会被拒,用户必然用了 --force。
-    # INNER push 镜像 --force-with-lease,避免被拒。
+    # INNER push 用 `--force-with-lease=<ref>:<remote_sha>` 精确镜像,避免被拒。
     if [ "$remote_sha" != "$zero" ] \
        && ! git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
-      needs_force=1
+      force_lease_args+=("--force-with-lease=${remote_ref}:${remote_sha}")
     fi
   fi
 done
@@ -83,13 +88,12 @@ if [ "$have_update" -eq 0 ]; then
 fi
 
 remote_name="${1:-origin}"
-force_args=()
-if [ "$needs_force" -eq 1 ]; then
-  force_args=(--force-with-lease)
-fi
 
+# bash 3.2(macOS 自带)在 set -u 下展开**空数组** `"${arr[@]}"` 会 unbound 中断。
+# `${arr[@]+"${arr[@]}"}` 形式仅在数组已设时展开,空数组安全无副作用。
+# bash >= 4.4 行为等价。
 echo "post-push: performing real push to '${remote_name}' (${refspecs[*]})..." >&2
-GIT_POSTPUSH=1 git push "${force_args[@]}" "${remote_name}" "${refspecs[@]}"
+GIT_POSTPUSH=1 git push ${force_lease_args[@]+"${force_lease_args[@]}"} "${remote_name}" "${refspecs[@]}"
 push_rc=$?
 if [ "$push_rc" -ne 0 ]; then
   echo "post-push: inner push failed (rc=${push_rc}) — not watching CI." >&2
