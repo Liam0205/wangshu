@@ -380,6 +380,94 @@ func (st *State) GetGlobal(name string) Value {
 	return fromInnerWithPin(st, v)
 }
 
+// GlobalsSlot 是一个预解析的 globals 键句柄(issue #13 B 件)。
+//
+// item-mode 嵌入者每条数据写 M 个 ItemInput 字段时,SetGlobal(name, v) 每调用
+// 都做一次 `gc.Intern([]byte(name))`——`[]byte(name)` Go 端额外分配 + intern
+// 表哈希查找。对固定的字段名(典型:`LuaOp.Init` 时绑定、整个 LuaOp 生命周期
+// 不变),这部分成本可以在 Init 期一次摊销:
+//
+//	slot := st.GlobalsSlot("item_price")  // Init 期解析一次,持有一个 pin 槽
+//	for _, item := range items {
+//	    st.SetBySlot(slot, wangshu.Number(item.price))  // 热循环里跳过 intern
+//	    st.Call(fn, ...)
+//	}
+//
+// 内部持有 pin 表索引,保活已 intern 的 name string GCRef;不调 Release
+// 不影响正确性(StateGC 回收 State 即整批回收 pin 表),但长驻 State 反复
+// 创建大量不同 name 的 slot 应配套 Release。
+//
+// 仅消除宿主端 intern 哈希成本;不动 globals rawtable 本身的查找成本(那是
+// per-key irreducible)。脚本侧 `GETGLOBAL name` 走 IC 已经快,不在本机制
+// 覆盖范围。跨 State 误用 SetBySlot/GetBySlot panic fail-fast。
+type GlobalsSlot struct {
+	st     *State
+	pinIdx uint32
+}
+
+// GlobalsSlot 预解析一个 globals 键名,返回可复用的 slot 句柄
+// (issue #13 B 件,对偶 SetGlobal/GetGlobal 的字符串键)。
+//
+// 内部先 intern name 然后 pin 住引用,使热循环里的 SetBySlot/GetBySlot 可以
+// 跳过 `[]byte(name)` 分配与 intern 表查找。零 name 同 SetGlobal("", v) 合法
+// 等价于 globals[""] 槽。
+//
+// 性能档位:Init 期解析一次,固定一个 pin 槽,后续热循环里调 SetBySlot
+// 成本 = `tableSet(globals, key, v)`,与 per-Set string-intern 摊销路径相比
+// 省一个 alloc + 一个 intern 哈希查找。
+func (st *State) GlobalsSlot(name string) GlobalsSlot {
+	ref := st.core.InternForEmbed([]byte(name))
+	pinIdx := st.core.PinRef(ref)
+	return GlobalsSlot{st: st, pinIdx: pinIdx}
+}
+
+// SetBySlot 用预解析 slot 作键写 globals(对偶 SetGlobal)。
+//
+// 与 SetGlobal("name", v) 行为等价,只差「key 不需要每次 intern」。
+//
+// 同 State 校验:slot 必须由本 State 的 GlobalsSlot() 产生,跨 State 调用
+// panic——同 State.Call 跨 State 函数实参的 fail-fast 风格。
+func (st *State) SetBySlot(s GlobalsSlot, v Value) {
+	if s.st != st {
+		panic("wangshu: SetBySlot: slot belongs to a different State")
+	}
+	ref := st.core.PinnedRefAt(s.pinIdx)
+	if ref.IsNull() {
+		panic("wangshu: SetBySlot: slot has been released")
+	}
+	st.core.SetGlobalByRef(ref, v.toInner(st))
+}
+
+// GetBySlot 用预解析 slot 作键读 globals(对偶 GetGlobal)。
+//
+// 缺失键返回 Nil;function/table 返回经 pin 表登记为 GC 根的 Value(需配套
+// Release)——与 GetGlobal 同款语义。
+//
+// 同 State 校验同 SetBySlot。
+func (st *State) GetBySlot(s GlobalsSlot) Value {
+	if s.st != st {
+		panic("wangshu: GetBySlot: slot belongs to a different State")
+	}
+	ref := st.core.PinnedRefAt(s.pinIdx)
+	if ref.IsNull() {
+		panic("wangshu: GetBySlot: slot has been released")
+	}
+	v := st.core.GetGlobalByRef(ref)
+	return fromInnerWithPin(st, v)
+}
+
+// Release 释放 slot 持有的 pin 槽。Slot 在长驻 State 下不 Release 仍正确,
+// 但反复创建大量不同 name 的 slot 时应配套——同 Value.Release 的 pin 卫生
+// 纪律。释放后再用 SetBySlot/GetBySlot 触发 panic("slot has been released")。
+// 重复 Release 安全(底层 UnpinRef 容错)。
+func (s *GlobalsSlot) Release() {
+	if s.st == nil {
+		return
+	}
+	s.st.core.UnpinRef(s.pinIdx)
+	s.st = nil
+}
+
 // Call 在 state 上调用一个 function Value(对标 gopher-lua
 // `L.CallByParam(P{Fn: fn, NRet: -1, Protect: true}, args...)`)。
 //
