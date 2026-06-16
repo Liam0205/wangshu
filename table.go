@@ -99,7 +99,7 @@ func (st *State) NewFloatArrayTable(vals []float64) Value {
 // 形态同 NewFloatArrayTable;int64 元素先转 float64 再 NaN-box。承袭
 // `Arena.AddInt64Column` 的 |v| > 2^53 报错规则(评审决策第 3 项,见
 // `arena_abi.go` AddInt64Column 节):超出 float64 尾数精度的元素会
-// 在该位置返回错误并退还已 pin 的资源,避免静默精度损失。
+// 在物化与 pin 之前提前返回错误,避免静默精度损失。
 //
 //	tv, err := st.NewInt64ArrayTable([]int64{10, 20, 30})
 //	if err != nil { ... }
