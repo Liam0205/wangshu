@@ -67,6 +67,94 @@ func (st *State) NewArrayTable(vals []Value) Value {
 	return Value{kind: kTable, fnState: st, pinIdx: idx}
 }
 
+// NewFloatArrayTable 从 []float64 一次性构建 Lua array table(issue #13)。
+//
+// 与 NewArrayTable([]Value) 的区别:跳过宿主侧 []Value 物化与逐元素 toInner
+// 类型分支,直接把 float64 NaN-box 进 arena 数组段——pineapple 一类
+// boundary-dominated 嵌入者 common-mode 批量灌列的快路径,免走
+// `[]any → []Value → []value.Value` 三层中转。
+//
+// 脚本侧看到的是普通 array table:`xs[i]`(1-based)、`#xs`、`for k,v in pairs(xs)`
+// 全部正常。**不是** arena 列轨的 `__index` 代理表——零脚本改动,跨引擎
+// `lua_script` 字节对等不受影响。
+//
+// 性能档位:`NewArrayTable` 同款 O(N) bulk 写入(走 internal NewArrayTableFromVals,
+// 跳 rehash 风暴);相比 NewArrayTable 省一个 []Value 中间 slice + N 次类型分支。
+//
+//	tv := st.NewFloatArrayTable([]float64{1.0, 2.0, 3.0})
+//	defer tv.Release()
+//	st.SetGlobal("xs", tv)
+func (st *State) NewFloatArrayTable(vals []float64) Value {
+	inner := make([]value.Value, len(vals))
+	for i, f := range vals {
+		inner[i] = value.NumberValue(f)
+	}
+	ref := st.core.NewArrayTableFromVals(inner)
+	idx := st.core.PinRef(ref)
+	return Value{kind: kTable, fnState: st, pinIdx: idx}
+}
+
+// NewInt64ArrayTable 从 []int64 一次性构建 Lua array table(issue #13)。
+//
+// 形态同 NewFloatArrayTable;int64 元素先转 float64 再 NaN-box。承袭
+// `Arena.AddInt64Column` 的 |v| > 2^53 报错规则(评审决策第 3 项,见
+// `arena_abi.go` AddInt64Column 节):超出 float64 尾数精度的元素会
+// 在该位置返回错误并退还已 pin 的资源,避免静默精度损失。
+//
+//	tv, err := st.NewInt64ArrayTable([]int64{10, 20, 30})
+//	if err != nil { ... }
+//	defer tv.Release()
+//	st.SetGlobal("xs", tv)
+func (st *State) NewInt64ArrayTable(vals []int64) (Value, error) {
+	inner := make([]value.Value, len(vals))
+	for i, v := range vals {
+		if v > 1<<53 || v < -(1<<53) {
+			return Nil(), fmt.Errorf("wangshu: NewInt64ArrayTable: element %d (=%d) exceeds 2^53 precision range", i, v)
+		}
+		inner[i] = value.NumberValue(float64(v))
+	}
+	ref := st.core.NewArrayTableFromVals(inner)
+	idx := st.core.PinRef(ref)
+	return Value{kind: kTable, fnState: st, pinIdx: idx}, nil
+}
+
+// NewBoolArrayTable 从 []bool 一次性构建 Lua array table(issue #13)。
+//
+// 形态同 NewFloatArrayTable;bool 元素直接 NaN-box,无装箱开销。
+//
+//	tv := st.NewBoolArrayTable([]bool{true, false, true})
+//	defer tv.Release()
+//	st.SetGlobal("flags", tv)
+func (st *State) NewBoolArrayTable(vals []bool) Value {
+	inner := make([]value.Value, len(vals))
+	for i, b := range vals {
+		inner[i] = value.BoolValue(b)
+	}
+	ref := st.core.NewArrayTableFromVals(inner)
+	idx := st.core.PinRef(ref)
+	return Value{kind: kTable, fnState: st, pinIdx: idx}
+}
+
+// NewStringArrayTable 从 []string 一次性构建 Lua array table(issue #13)。
+//
+// 形态同 NewFloatArrayTable;每个 string 元素经 InternForEmbed 装入 VM
+// 内部字符串 intern 表(相同字面量自动去重),GCRef 写进 array 段。脚本
+// 读出与 wangshu.String 完全等价。
+//
+//	tv := st.NewStringArrayTable([]string{"alice", "bob", "carol"})
+//	defer tv.Release()
+//	st.SetGlobal("names", tv)
+func (st *State) NewStringArrayTable(vals []string) Value {
+	inner := make([]value.Value, len(vals))
+	for i, s := range vals {
+		ref := st.core.InternForEmbed([]byte(s))
+		inner[i] = value.MakeGC(value.TagString, ref)
+	}
+	ref := st.core.NewArrayTableFromVals(inner)
+	idx := st.core.PinRef(ref)
+	return Value{kind: kTable, fnState: st, pinIdx: idx}
+}
+
 // Preallocate 预分配 table 的 array 段到 n 槽(issue #10 方向 2)。
 //
 // 典型用法:NewTable + Preallocate(N) + SetIndex(1..N) 绕过反复 rehash 风暴。
