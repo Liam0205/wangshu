@@ -89,13 +89,23 @@ jobs:
 
   conformance:
     # M5/M9 后启用实际用例;占位 job 保持绿(test/conformance 空包时 go test 直接过)
+    # 矩阵覆盖:p1 = 新月解释器路径;p3 = 凸月升层后路径
+    # (83 个角落 + SETLIST 大表用例都该在两 build 跑过,与 difftest-p3 互补:
+    #  difftest 撞 oracle 分歧、conformance 钉死历史 bug 回归网)
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false # P1 / P3 独立跑,一个失败不阻塞另一个收集
+      matrix:
+        include:
+          - variant: p1
+          - variant: p3
+    name: conformance (${{ matrix.variant }})
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - run: make conformance
+      - run: make conformance-${{ matrix.variant }}
 
   difftest:
     # M14 启用差分 fuzz;此前只校验 oracle 供给路径
