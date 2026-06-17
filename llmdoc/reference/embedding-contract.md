@@ -62,8 +62,25 @@
 - **boundary-dominated 嵌入快路径已落地**(issue #13,parity-friendly,不破跨引擎 `lua_script` 字节对等):
   - **类型化 array table 族**:`State.NewFloatArrayTable / NewInt64ArrayTable / NewBoolArrayTable / NewStringArrayTable` —— 从 typed slice 一次性 NaN-box 进 arena 数组段,跳过 `[]Value` 中转。脚本侧看到普通 array table(`xs[i]` / `#xs` / `pairs`),**不是** arena 列轨的 `__index` 代理 —— pineapple 一类 common-mode 灌列形态(`SetGlobal(field, []any) → makeArrayTable`)的下层中转可消,无需脚本改动;Int64 承袭 `Arena.AddInt64Column` 的 |v|>2^53 报错规则。
   - **`GlobalsSlot` 预解析句柄**:`State.GlobalsSlot(name) → slot` + `SetBySlot(slot, v) / GetBySlot(slot) / slot.Release()` —— 把 `gc.Intern([]byte(name))` 摊销到 Init 期一次性,热循环里 SetGlobal 跳过 `[]byte` 分配 + intern 哈希查找。仅消除宿主端 intern 成本;globals rawtable 本身查找仍 per-key irreducible。跨 State 误用 panic fail-fast(同 `State.Call` 跨 State 函数实参风格)。
+- **批量 array table 构造已落地**(issue #10,绕 rehash 风暴):`State.NewArrayTable(vals []Value) Value`(一次性分配 array 段 = `len(vals)` 写入,返回 pin 表登记的 table-kind Value)+ `Table.Preallocate(n uint32) error`(预扩 array 段,仅扩不缩、原数据保留)。`naive NewTable + SetIndex(1..N)` 的反复 rehash 是 O(N²);两者把它压回 O(N) 摊销(N=1000 实测 25-60× 加速)。已知最终大小直接 `NewArrayTable`;分次填充但已知大小用 `NewTable + Preallocate(N) + SetIndex`。`vals` 含复合值时同经 pin 表接根。
 - 未落地的 Push/Pop 栈机风格按 `§7.1` 草图保留承诺;
 - 但文档**明确标注其性能档位**——`Call` 走 per-item 跨界形态,落在被边界成本主导的那一档(见 [[design-premises]] 前提一);高频热路径优先列内核(arena 轨),无法列内核化时用 `CallInto` 走零分配。
+
+## State 生命周期:arena 容量与 GC 节奏管理(admin API)
+
+> 状态:**已落地**(issue #9 / #11,2026-06-16)。面向 long-running State pool 嵌入(规则引擎 hot reload / 数据流转换):boundary-dominated 工作负载下 host 反复构造大表 + 短脚本时,VM opcode safepoint 触发频率不足以让 GC 跟上 host-driven allocation 节奏 → arena 账面单调上涨,需 host 侧显式管理。
+
+**arena 容量定制 + 观测**(issue #11):
+
+- `Options.InitialArenaBytes` / `Options.MaxArenaBytes`:`NewState` 时定制 arena 初始容量与 fail-fast 上限;
+- `State.GCCountKB() float64`:返回 arena 当前 **live bytes**(bump 指针,含 freelist 待复用块),随 Collect 回落;
+- `State.ArenaCapKB() float64`:返回 arena **backing slab 容量**,反映真实 Go 堆驻留——grow-only 模式下单调上涨、不被 Collect 缩。pool 层据此判 fat state 阈值(比 GCCountKB 准,后者被 sweep 隐藏了 latched high-water);底层 arena Compact 在 Collect 末尾缩 backing slab 到 `max(bump, 64 KiB)` 缓解高水位 latched(默认 build 生效;P3 收养 wazero linear memory 模式 no-op)。
+
+**GC 节奏显式驱动**(issue #9):
+
+- `State.Collect()`:强制一次 full sweep(对应 `collectgarbage("collect")`),免走脚本调用迂回。典型在 pool 归还点 / 批次完成点周期调用,保持 GCCountKB 有界。代价 ~微秒到毫秒级(取决 live 规模),不缩 backing 容量;
+- `State.MaybeCollectNow()`:按阈值条件触发(命中才 collect,否则 no-op),等价让 host 触发一次 safepoint 检查。比 Collect 廉价但不保证 sweep,强约束需 sweep 直接调 Collect;
+- `State.SetHostTriggeredCollect(on bool)`:**experimental opt-in,默认 off**。开启后任何 host alloc 跨 GC 阈直接 sweep。⚠️ **安全契约**:调用方须保证所有 transient GCRef 都 reachable from GC root——current stdlib + string intern 的 mid-construction transient GCRef 未全经 pin/shadow stack 登记,**未审计前生产开启有 UAF 风险**(已知 break:luasuite gc/literals/nextvar/pm/strings)。**推荐替代**:用 `Collect()` / `MaybeCollectNow()` 显式 cadence 控制(production-safe)。
 
 ## 宿主绑定与 drop-in
 
