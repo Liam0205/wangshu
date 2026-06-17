@@ -37,7 +37,10 @@ func makeItems(n int) []any {
 // buildLuaConfig 复刻 pineapple bench buildLuaConfig:1 recall_static + 1
 // transform_by_lua,组成最简 pipeline。DAG / I/O 开销几乎为 0,LuaOp 占比 ≈100%
 // —— 避免 pipeline framework 稀释凸月差异。
-func buildLuaConfig(luaScript, luaFunc string, items []any) map[string]any {
+//
+// storageMode 选 row / column,对应 pineapple `storage_mode` 顶层字段。
+// 空串等价默认(pineapple 当前默认 row)。
+func buildLuaConfig(luaScript, luaFunc string, items []any, storageMode string) map[string]any {
 	luaOp := map[string]any{
 		"type_name":           "transform_by_lua",
 		"lua_script":          luaScript,
@@ -56,7 +59,7 @@ func buildLuaConfig(luaScript, luaFunc string, items []any) map[string]any {
 			"item_output": []string{"item_price"},
 		},
 	}
-	return map[string]any{
+	cfg := map[string]any{
 		"_PINEAPPLE_VERSION": pine.Version,
 		"pipeline_config": map[string]any{
 			"operators":    map[string]any{"recall": recall, "op": luaOp},
@@ -67,6 +70,10 @@ func buildLuaConfig(luaScript, luaFunc string, items []any) map[string]any {
 		},
 		"flow_contract": map[string]any{},
 	}
+	if storageMode != "" {
+		cfg["storage_mode"] = storageMode
+	}
+	return cfg
 }
 
 // mustBuildEngine:JSON 序列化 config 喂 pine.NewEngine,build 失败 b.Fatal。
@@ -87,10 +94,13 @@ func mustBuildEngine(b *testing.B, cfg map[string]any) *pine.Engine {
 //
 // itemCount = 1000(对位 pineapple bench L2 的 N=1000 那档,boundary 主导且
 // 足够 N 次 Call 触发 wangshu HotEntryThreshold 升层)。
-func runBenchmark(b *testing.B) {
+//
+// storageMode 选 "row" / "column" / ""(默认):对位 pineapple `storage_mode`
+// 顶层字段。
+func runBenchmark(b *testing.B, storageMode string) {
 	const itemCount = 1000
 	items := makeItems(itemCount)
-	eng := mustBuildEngine(b, buildLuaConfig(scriptArith, funcArith, items))
+	eng := mustBuildEngine(b, buildLuaConfig(scriptArith, funcArith, items, storageMode))
 	req := &pine.Request{Common: map[string]any{}}
 	ctx := context.Background()
 

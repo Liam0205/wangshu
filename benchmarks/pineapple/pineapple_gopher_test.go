@@ -10,6 +10,8 @@ package pineapple_bench
 
 import "testing"
 
-func BenchmarkPineappleLuaOp_Gopher(b *testing.B) {
-	runBenchmark(b)
-}
+func BenchmarkPineappleLuaOp_Gopher_Row(b *testing.B)    { runBenchmark(b, "row") }
+func BenchmarkPineappleLuaOp_Gopher_Column(b *testing.B) { runBenchmark(b, "column") }
+
+func BenchmarkPineappleLuaOp_Gopher_CommonRow(b *testing.B)    { runBenchmarkCommon(b, "row") }
+func BenchmarkPineappleLuaOp_Gopher_CommonColumn(b *testing.B) { runBenchmarkCommon(b, "column") }
