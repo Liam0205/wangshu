@@ -13,6 +13,27 @@ const (
 	// HotEntryThreshold:函数入口累计调用数阈值。200 次足以判热——典型
 	// 形态:外层循环 1000 次每次调一个 helper,200 次时已确认 helper 是热点。
 	HotEntryThreshold uint32 = 200
+
+	// MinPromotableCodeLen:Proto 升层候选的最小 opcode 数下限。Proto.Code 长度
+	// 严格小于此值时 OnEnter/OnBackEdge **仍累积 EntryCount/BackEdge counter**
+	// (profile 诊断完整),但在阈值越过后**跳过 considerPromotion 调用**——这类
+	// 「短工作量」proto 升层后 wasm dispatch + host↔wasm boundary 反噬大于解释器
+	// dispatch 收益(实测 pineapple 形态 4-opcode 算术 f 升层后比解释器慢 19%,
+	// 见 issue #21 + `.code-review/pineapple-perf/2026-06-17-profile-investigation.md`
+	// §1.3 profile 实证)。守卫位置选「阈值后但 considerPromotion 前」而非
+	// 「counter 累积前」,保留 profile_test 的诊断断言(EntryCount/MaxBackEdge
+	// 准确反映短 proto 调用次数)。
+	//
+	// **10 经验初值**:覆盖纯算术 4-6 opcodes(GETGLOBAL/MUL/ADD/RETURN 类)+ 一点
+	// 余量,不影响真正含循环 / 多步算术 / 表查找的 10+ opcodes 函数升层。后续可经
+	// micro-benchmark(P3_Kernels 标定形态)精确定值。**不影响正确性**——升层
+	// 决策是 perf 优化,short proto 留解释器路径与 P1-only build 行为等价。
+	//
+	// **与 F1-F7 闸门的关系**:F1-F6 是「不可编译形状」(vararg/coroutine/oversize
+	// 等结构性排除),F7 是「后端能力查询」;MinPromotableCodeLen 是「可编译但不
+	// 值得编译」——独立于可编译性判定,不写 ReasonsBitmap,只是 sampler 入口的
+	// fast-path 守卫。
+	MinPromotableCodeLen = 10
 )
 
 // ProfileData 是一个 Proto 在某 State 上的画像数据(01 §2.2)。

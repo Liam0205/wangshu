@@ -20,14 +20,24 @@ import (
 )
 
 // makeProtoWithCode 造一个含特定 opcode 的 Proto + 等长 IC 数组。
+//
+// **MinPromotableCodeLen padding**(issue #21):若 ops 数少于 MinPromotableCodeLen,
+// 自动 padding 到 MinPromotableCodeLen 长度(用 NOP),让 considerPromotion 路径
+// 测试不被守卫拦截。前 len(ops) 个 opcode 仍是测试指定的形态,IC 索引也对应前
+// len(ops) 个 slot(后续 padding NOP 的 IC slot 都是零值)。
 func makeProtoWithCode(ops ...bytecode.OpCode) *bytecode.Proto {
-	code := make([]bytecode.Instruction, len(ops))
+	n := len(ops)
+	if n < MinPromotableCodeLen {
+		n = MinPromotableCodeLen
+	}
+	code := make([]bytecode.Instruction, n)
 	for i, op := range ops {
 		code[i] = bytecode.Instruction(uint32(op))
 	}
+	// padding 位置默认是 0,即 OpCode=MOVE(实际不会被解析,只是过守卫长度)
 	return &bytecode.Proto{
 		Code: code,
-		IC:   make([]bytecode.ICSlot, len(code)),
+		IC:   make([]bytecode.ICSlot, n),
 	}
 }
 
