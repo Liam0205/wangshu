@@ -256,6 +256,15 @@ func (b *Bridge) considerPromotion(proto *bytecode.Proto, pd *ProfileData, onMai
 		ReasonsBitmap(proto.CompReasons)&ReasonBackendUnsupp != 0
 	if comp != CompCompilable && (b.forceAll || needsAutoRecheck) {
 		comp = b.recheckCompilabilityRuntime(proto)
+		if comp == CompCompilable {
+			// 同步 pd 副本(State 私有):后续 CompilabilityOf / 二次诊断
+			// 路径读 pd 时看到真实结果而非编译期烧的占位。proto.Compilability
+			// 不动——跨 State 共享只读 + 不同 State 注入的 P3 实例能力可能不同,
+			// 这是"编译期一次写"不变式(03 §5.4)与"运行期 State 私有 mutable"
+			// 的边界划分。
+			pd.Compilable = CompCompilable
+			pd.Reasons = 0
+		}
 	}
 	if comp != CompCompilable {
 		// (P2) 不可编译 / 未分析 → 永久解释(04 §1.4 静态 fallback)
