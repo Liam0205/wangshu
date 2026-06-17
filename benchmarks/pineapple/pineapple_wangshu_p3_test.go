@@ -1,7 +1,7 @@
 //go:build wangshu_p3 && wangshu_profile
 
 // pineapple_wangshu_p3_test.go:wangshu p3 build 作 pineapple 默认 lua backend
-// 时的两个 benchmark——P3Force(force-all 升层)+ P3Auto(自然热度升层)。
+// 时的 benchmark——_WangshuP3Auto(自然热度升层)× 4 模式(row/column × per-item/common)。
 //
 // 跑法:`go test -tags="wangshu_p3 wangshu_profile" -bench=. ./benchmarks/pineapple/`。
 //
@@ -11,12 +11,23 @@
 // 让 pineapple 内部 pool 自己造 state 不调 force-all,**让 N=1000 items 的
 // 自然热度推升层** —— 这就是真 auto-lifting 形态。
 //
-// 因此实际上 p3 binary 只跑一个 BenchmarkPineappleLuaOp_WangshuP3Auto:
-// pineapple 内部 pool 创建的 state 没法外部注入 force-all,只能靠自然热度。
+// **issue #18 修复后的行为**(2026-06-17 起):自然热度升层路径真正接通——之前 p3
+// build 的 _Auto benchmarks 实际是「P1 解释器 + 采样钩税」形态(自然热度路径不
+// 工作,所有 Proto 编译期被烧 ReasonBackendUnsupp 占位,运行期 TierStuck)。
+// issue #18 fix 后 considerPromotion 双路守卫接通 recheckCompilabilityRuntime
+// 重判,本文件 benchmarks 测的才是真升层路径。
+//
+// **当前实测**:升层后 pineapple 形态(短工作量 + 频繁 boundary)下 p3 反而比 p1
+// 慢 19%(_Row baseline 660 vs 553 µs),根因是 wasm dispatch + host↔wasm boundary
+// 反噬而非采样钩税。详 `.code-review/pineapple-perf/2026-06-17-profile-investigation.md`
+// §1.3 v4 profile 实证。优化方向:bridge OnEnter/OnBackEdge 加 proto 复杂度阈值
+// 守卫,让 short workload 不升层(报告 §3.2 方向 H,待立项)。
+//
 // 跑前用 PromotionCount() 探针验证 wangshu 在该 build 下确实能升层(独立小
-// test 验);bench loop 跑完后,理论上 pineapple pool 内 state 的 PromotionCount
-// 已 >0,但因为 state 句柄不可达,我们能做的最强断言是「bench 完后 p3 数字
-// 显著 ≠ p1」(隐式证)。
+// test 验,见 `promotion_count_p3_test.go::TestPromotionCount_P3_NoForce_HotEntry_Lifts`,
+// issue #18 修复后此测从 ❌ → ✅);bench loop 跑完后,pineapple pool 内 state
+// 的 PromotionCount 已 >0,但因为 state 句柄不可达,我们能做的最强断言是「bench
+// 完后 p3 数字显著 ≠ p1」(隐式证)。
 //
 // **不在本轮的探针**:让 pineapple 公共 API 暴露 pool/state 句柄供 bench 端
 // 注入 force-all 与读 PromotionCount(),这是 cross-repo 工程,留 pineapple
