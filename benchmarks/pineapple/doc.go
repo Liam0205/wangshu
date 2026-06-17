@@ -8,15 +8,24 @@
 // 公共 API + 最简 pipeline 配置直接跑 LuaOp,反映 wangshu 在真实下游用法下的
 // 性能数字。
 //
-// 对照四路:
+// 对照三路(本轮跑通):
 //   - Gopher       —— pineapple 用 gopher-lua backend(-tags=lua_gopher)
 //   - WangshuP1    —— pineapple 用 wangshu 默认 build(新月解释器,P3 dead-code)
-//   - WangshuP3Force —— pineapple 用 wangshu p3 build + SetForceAllPromote(true)
-//   - WangshuP3Auto  —— pineapple 用 wangshu p3 build + 自然热度升层
+//   - WangshuP3Auto —— pineapple 用 wangshu p3 build + 自然热度升层
 //
-// 真升层探针:wangshu v0.x rcN 起公共面有 State.PromotionCount() testing-only
-// API。P3Auto 路径加白盒断言:跑前=0、跑后>0 才算真升层。否则数字不可读
-// (prove-the-path-under-test guide)。
+// 本轮**未实现**的第四路 WangshuP3Force(force-all 升层)留 follow-up:
+// pineapple 的 wangshu pool 内部管理 state,公共 API 不暴露句柄,wangshu
+// bench 端没法注入 SetForceAllPromote(true)。需 pineapple cross-repo 工作
+// 暴露 backend hook。
+//
+// 真升层验证:wangshu 公共面有 State.PromotionCount() testing-only API
+// (跑前=0、跑后>0 可证 Proto 升层发生)。但 pineapple pool 内 state 句柄
+// 同样不暴露,本包 bench **无法白盒断言**;改用「p1 vs p3 数字差异」
+// 隐式证(prove-the-path-under-test guide):p3 明显快于 p1 → 升了 + wasm
+// 收益压倒采样开销;p3 ≈ p1 或更慢 → 没升或收益不够。
+//
+// wangshu 自身的 PromotionCount() 在 wangshu repo 根目录的
+// promotion_count_p3_test.go 里有独立验证(force-all + 内层函数 → 升)。
 //
 // 依赖管理:pineapple 经 scripts/fetch-pineapple.sh 临时 clone 到 .pineapple/
 // (.gitignore 隐藏)。本地开发者跑 bench 前需先 `make fetch`(或直接调
