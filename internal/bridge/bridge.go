@@ -337,6 +337,23 @@ func (b *Bridge) installGibbous(proto *bytecode.Proto, code GibbousCode) {
 	b.gibbousCodes[proto] = code
 }
 
+// PromotionCount 返回**当前 Bridge 上已升层的 Proto 数量**(testing-only)。
+//
+// 用途:benchmark / e2e test 想白盒断言「这次 run 真触发了升层、不是退化到
+// 解释器」时调用。auto-lifting 形态(SetForceAllPromote(false))下尤其重要——
+// HotEntryThreshold 没触发的话,p3 build 测出来的数字就是解释器路径数字,
+// 跟 p1 几乎无差,数字不可读(参见 prove-the-path-under-test guide)。
+//
+// 形态:non-decreasing(升层只增不减);多 State 共享同一 Bridge 时返回总数;
+// 单 State 下足够作「至少升过一个」的判据。返回值是 installGibbous 调用次数
+// 上界(其实就是 gibbousCodes map 大小,本质等价但语义更清楚)。
+//
+// **testing-only**:非 wangshu_p3 build / P3 未注入时 Bridge 为 nil,
+// 公共面 State.PromotionCount 直接返 0(等价 no-op)。
+func (b *Bridge) PromotionCount() int {
+	return len(b.gibbousCodes)
+}
+
 // GibbousCodeOf 查 Proto 是否已升层并取其 GibbousCode(VS0-d trampoline 入口)。
 //
 // crescent doCall 在 Lua closure 分支调此查询:返回非 nil ⇒ 该 Proto 已升

@@ -498,6 +498,17 @@ func (st *State) SetForceAllPromote(on bool) {
 	}
 }
 
+// PromotionCount 返回当前 State 上已升层的 Proto 数量(testing-only,转发
+// Bridge.PromotionCount)。bridge 为 nil(P1-only build / P3 未注入)→ 返 0。
+//
+// 用途见 bridge.go PromotionCount godoc:auto-lifting 形态下断言「真升过」。
+func (st *State) PromotionCount() int {
+	if st.bridge != nil {
+		return st.bridge.PromotionCount()
+	}
+	return 0
+}
+
 // SetStepBudget 设置回边指令预算(<=0 关闭)。超额时脚本以
 // "instruction budget exceeded" 可恢复错误终止——宿主侧脚本配额特性,
 // fuzz 用它替代脆弱的源码子串过滤兜住无限/超长循环。

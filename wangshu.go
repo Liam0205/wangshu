@@ -131,6 +131,19 @@ func (st *State) SetGCStressMode(on bool) { st.core.SetGCStressMode(on) }
 // 判不可编译 → 全留 crescent,本开关 no-op。
 func (st *State) SetForceAllPromote(on bool) { st.core.SetForceAllPromote(on) }
 
+// PromotionCount 返回当前 State 上已升层(crescent → gibbous)的 Proto 数量
+// (**testing-only**)。
+//
+// 用途:benchmark / e2e test 在 auto-lifting 形态下白盒断言「真升过」——
+// HotEntryThreshold 没触发的话,p3 build 测出来的数字就是解释器路径数字,
+// 跟 p1 几乎无差,数字不可读(参见 prove-the-path-under-test guide)。
+// 拿这个值跑前=0、跑后>0 可证升层发生;p3 force-all 形态下跑后通常等于
+// 可编译 Proto 数。
+//
+// 形态:non-decreasing(升层只增不减,在 State 生命期内单调上涨);非
+// wangshu_p3 build / P3 未注入时永远返 0(等价 no-op)。
+func (st *State) PromotionCount() int { return st.core.PromotionCount() }
+
 // GCCountKB 返回 arena 当前已用 KB(= bump 指针;含 freelist 上待复用的空闲块)。
 // 长稳观测用:稳态下 freelist 循环复用,本值应有界。
 func (st *State) GCCountKB() float64 { return st.core.GCCountKB() }
