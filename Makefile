@@ -18,7 +18,7 @@
         fuzz fuzz-all fuzz-p1 fuzz-p3 \
         difftest difftest-all difftest-p1 difftest-p3 \
         conformance conformance-all conformance-p1 conformance-p3 \
-        cover hooks tidy release
+        cover hooks check-pr-ci tidy release
 
 all: fmt lint build-all test-all fuzz-all conformance difftest-all      ## 默认:提交前本地全检(主模块 + benchmarks 子模块);build-all 一次编两 variant 的 .test binary,后续 test/bench 复用;benchmarks 子模块功能测试(realworld oracle parity)已由 test-all 跑预编 binary 覆盖,bench-test 不重复挂在 all 里
 
@@ -121,6 +121,9 @@ bench-p3: build-p3                                  ## 只跑 P3 variant 的 ben
 hooks:                                              ## 安装 git hooks(一次性)
 	git config core.hooksPath .githooks
 	@echo "hooks installed: $$(git config core.hooksPath)"
+
+check-pr-ci:                                        ## 手动 trigger:阻塞等 PR CI 跑完 + 抓 push 后新 review 活动(同 pre-push self-wrapper 内部调的);新分支首推无 PR 时 exit 2
+	./scripts/check-pr-ci.sh
 
 tidy:                                               ## 主模块 + benchmarks 子模块的 go mod tidy
 	go mod tidy
