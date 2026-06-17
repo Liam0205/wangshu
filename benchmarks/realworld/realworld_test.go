@@ -3,7 +3,13 @@
 // lua5.1 输出为正确性 oracle(TestRealWorld_OracleParity)。
 //
 // 与 baseline 三档微基准互补:这些是调用/分配/浮点/表操作的真实负载混合,
-// 回应「微基准 ≠ 真实负载」的性能故事缺口。运行:`go test -bench . ./benchmarks/realworld`。
+// 回应「微基准 ≠ 真实负载」的性能故事缺口。运行:`make bench-p1`。
+//
+// 本文件无 build tag——`TestRealWorld_OracleParity` 在 p1/p3 两 build 下都需要
+// (验证 wangshu 自身行为对位官方 5.1.5,与 build variant 无关)。
+// Benchmark 部分(`_Wangshu` / `_Gopher`)拆到 `realworld_bench_test.go`,带
+// `!wangshu_p3` 避免 p3 build 的采样钩污染(issue #15 review)。
+// `_Gibbous` benchmark 在 `realworld_gibbous_test.go` 里独有 wangshu_p3 tag。
 package realworld
 
 import (
@@ -13,8 +19,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	lua "github.com/yuin/gopher-lua"
 
 	"github.com/Liam0205/wangshu"
 )
@@ -75,46 +79,3 @@ func TestRealWorld_OracleParity(t *testing.T) {
 		})
 	}
 }
-
-func benchVM(b *testing.B, name string, wangshuSide bool) {
-	src := loadScript(b, name)
-	if wangshuSide {
-		prog, err := wangshu.Compile(src, name)
-		if err != nil {
-			b.Fatalf("compile: %v", err)
-		}
-		st := wangshu.NewState(wangshu.Options{})
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			if _, err := prog.Run(st); err != nil {
-				b.Fatalf("run: %v", err)
-			}
-		}
-		return
-	}
-	L := lua.NewState()
-	defer L.Close()
-	fn, err := L.LoadString(string(src))
-	if err != nil {
-		b.Fatalf("gopher compile: %v", err)
-	}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		L.Push(fn)
-		if err := L.PCall(0, lua.MultRet, nil); err != nil {
-			b.Fatalf("gopher run: %v", err)
-		}
-		L.SetTop(0)
-	}
-}
-
-func BenchmarkFib_Wangshu(b *testing.B)          { benchVM(b, "fib", true) }
-func BenchmarkFib_Gopher(b *testing.B)           { benchVM(b, "fib", false) }
-func BenchmarkBinaryTrees_Wangshu(b *testing.B)  { benchVM(b, "binarytrees", true) }
-func BenchmarkBinaryTrees_Gopher(b *testing.B)   { benchVM(b, "binarytrees", false) }
-func BenchmarkSpectralNorm_Wangshu(b *testing.B) { benchVM(b, "spectralnorm", true) }
-func BenchmarkSpectralNorm_Gopher(b *testing.B)  { benchVM(b, "spectralnorm", false) }
-func BenchmarkFannkuch_Wangshu(b *testing.B)     { benchVM(b, "fannkuch", true) }
-func BenchmarkFannkuch_Gopher(b *testing.B)      { benchVM(b, "fannkuch", false) }
-func BenchmarkNBody_Wangshu(b *testing.B)        { benchVM(b, "nbody", true) }
-func BenchmarkNBody_Gopher(b *testing.B)         { benchVM(b, "nbody", false) }

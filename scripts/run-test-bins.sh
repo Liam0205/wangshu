@@ -9,6 +9,9 @@
 # 默认枚举顺序按目录字典序(p1 → p3 → p4),稳定可读。
 #
 # 跑前若 binary 不存在,提示先 `make build-all`。
+#
+# 兼容性(issue #15 review):脚本避用 GNU `find -printf` / bash 4
+# `mapfile` / `declare -A`,可在 macOS(BSD find + bash 3.2)直接跑。
 set -uo pipefail
 
 mode="${1:-}"
@@ -33,10 +36,22 @@ if [ ! -d "$bindir" ]; then
 fi
 
 # 收集要跑的 variants
+variants=()
 if [ $# -gt 0 ]; then
     variants=("$@")
 else
-    mapfile -t variants < <(find "$bindir" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)
+    # 替代 `find -printf '%f\n'`:用 glob + basename。glob 命中目录为 0 时
+    # `nullglob` 让 `for` 不进入循环,空 variants 由下面的 check 兜住。
+    shopt -s nullglob
+    for d in "$bindir"/*/; do
+        variants+=("$(basename "$d")")
+    done
+    shopt -u nullglob
+    # 按字典序稳定排:p1 → p3 → p4
+    if [ "${#variants[@]}" -gt 0 ]; then
+        IFS=$'\n' variants=($(printf '%s\n' "${variants[@]}" | sort))
+        unset IFS
+    fi
 fi
 
 if [ "${#variants[@]}" -eq 0 ]; then
@@ -44,9 +59,21 @@ if [ "${#variants[@]}" -eq 0 ]; then
     exit 1
 fi
 
-# bench 模式下的子模块识别:benchmarks 子模块独立 go.mod,bench 文件多在其下。
-# 主模块也有少量 Benchmark*(spike 之类),让 -test.bench=. 一并发现即可。
 overall_rc=0
+
+# manifest_lookup <binary basename>:从已加载的 names[]/dirs[] 平行数组里
+# 找对应源码 dir,找不到回空。替代 bash 4 `declare -A`(macOS 默认 bash 3.2
+# 不支持 associative array,issue #15 review)。
+manifest_lookup() {
+    local needle=$1
+    local i
+    for i in "${!_man_names[@]}"; do
+        if [ "${_man_names[$i]}" = "$needle" ]; then
+            echo "${_man_dirs[$i]}"
+            return
+        fi
+    done
+}
 
 for v in "${variants[@]}"; do
     vdir="$bindir/$v"
@@ -56,7 +83,18 @@ for v in "${variants[@]}"; do
         continue
     fi
 
-    mapfile -t bins < <(find "$vdir" -maxdepth 1 -name '*.test' -type f | sort)
+    # 替代 `mapfile -t bins < <(find ... | sort)`:循环读 + glob
+    bins=()
+    shopt -s nullglob
+    for f in "$vdir"/*.test; do
+        [ -f "$f" ] && bins+=("$f")
+    done
+    shopt -u nullglob
+    if [ "${#bins[@]}" -gt 0 ]; then
+        IFS=$'\n' bins=($(printf '%s\n' "${bins[@]}" | sort))
+        unset IFS
+    fi
+
     if [ "${#bins[@]}" -eq 0 ]; then
         echo "✗ variant '$v' 下没有 .test binary" >&2
         overall_rc=1
@@ -66,11 +104,14 @@ for v in "${variants[@]}"; do
     # 读 manifest:`<basename>.test <绝对源码目录>` 一行一项。
     # 预编译 binary 跑时 cwd 是调用方,而非 `go test` 自动 cd 到的包目录,
     # `testdata/*.lua` 类相对路径需要 cd 兜住。
-    declare -A srcdir
+    # 用平行数组 _man_names[] / _man_dirs[](bash 3.2 无 associative array)
+    _man_names=()
+    _man_dirs=()
     if [ -f "$vdir/manifest.txt" ]; then
-        while read -r bname bdir; do
+        while IFS=' ' read -r bname bdir; do
             [ -z "$bname" ] && continue
-            srcdir["$bname"]="$bdir"
+            _man_names+=("$bname")
+            _man_dirs+=("$bdir")
         done < "$vdir/manifest.txt"
     fi
 
@@ -81,7 +122,7 @@ for v in "${variants[@]}"; do
 
     for bin in "${bins[@]}"; do
         name=$(basename "$bin")
-        sdir="${srcdir[$name]:-}"
+        sdir=$(manifest_lookup "$name")
         echo ""
         echo "→ $v/$name${sdir:+  (cwd=$sdir)}"
         case "$mode" in
@@ -115,7 +156,6 @@ for v in "${variants[@]}"; do
                 ;;
         esac
     done
-    unset srcdir
 done
 
 echo ""

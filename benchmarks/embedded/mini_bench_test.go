@@ -1,3 +1,5 @@
+//go:build !wangshu_p3
+
 // Package embedded benchmarks the host↔VM boundary cost — the path an embedder
 // actually exercises (per-item: set inputs, call a function, read the result),
 // on Wangshu vs gopher-lua. This is the "embedded mini-bench" tier from issue #8.
@@ -8,7 +10,12 @@
 // by per-call boundary cost, not VM-core speed. This tier measures that path
 // honestly, and contrasts the allocating Call() against the zero-alloc CallInto().
 //
-// Run: `go test -bench=Mini -benchmem ./benchmarks/embedded`
+// build tag `!wangshu_p3`:与 `embedded_gibbous_test.go`(wangshu_p3)互斥,
+// 避免 p3 build 的 wangshu_profile 采样钩污染 `_Wangshu` / `_Gopher` 数字 +
+// 与 bench-p1 重复(issue #15 review)。共享 const / type / makeItems 在
+// `consts_test.go` 里(无 build tag)。
+//
+// Run: `make bench-p1`
 package embedded
 
 import (
@@ -18,33 +25,6 @@ import (
 
 	"github.com/Liam0205/wangshu"
 )
-
-// official baseline "simple": data hardcoded as locals, no host data passed in.
-const simpleSelfContained = `
-local a, b = 1, 2
-local r = 0
-if a < b then r = a else r = b end
-return r
-`
-
-// pineapple-shaped "if_" predicate: reads a GLOBAL (set by host per call).
-const ifPredicateScript = `
-function evaluate()
-  if (user_id ~= nil and user_id ~= '' and user_id ~= '0') then
-    return false
-  else
-    return true
-  end
-end
-`
-
-// const predicate: same control flow, reads NO globals (isolates call cost).
-const constPredicateScript = `
-function evaluate()
-  local x = 1
-  if x == 1 then return false else return true end
-end
-`
 
 // ── A. PureVM baseline (official methodology, no boundary crossing) ─────────
 
