@@ -54,7 +54,7 @@ P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 met
 
 - 函数级**热度计数**(loop back-edge 计数);
 - **inline cache 反馈记录**(类型 feedback,为编译层供料);
-- **静态可编译性分析器**:把 varargs / coroutine / debug 等形状标记「不升层」,永远走解释。
+- **静态可编译性分析器**:把 varargs / coroutine / debug 等形状标记「不升层」,永远走解释。另有 **MinPromotableCodeLen 启发式守卫**(issue #21,`MinPromotableCodeLen=10`):short proto(Code 长度 <10 opcode)即便过热度阈值也不升层(profile counter 仍累积保诊断完整,只在 considerPromotion 前 return)——wasm 跨层边界成本 > 解释器收益,force-all 测试入口可绕过。见 [[2026-06-17-issue21-short-proto-guard-round]]。
 - 策略:**try-compile-fallback-interpret**(LuaJ luajc 同款),换来**零 deopt 机器**。
 - **验收**:文档未对 P2 给出独立量化验收(无倍率门槛,定位为基建)。
 
@@ -66,6 +66,7 @@ P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 met
 - **验收**:循环密集脚本相对 P1 再 ≥2x;两层差分 fuzz 逐字节一致。
 - **战略价值**:在不用调试机器码的后端上,先把分层机器(升层/降层/fallback)整体跑通。
 - **现状(2026-06-16)**:**PW0-PW10 全卷已收口**(PW0-PW9 + PW4b spike 闸门 → 翻译器全 38 opcode 除 VARARG → 跨层互调 → 升层门禁 → V1-V18 验收;loop 核 2.58x V14 达标)。**PW10 收口**:R1-R3.5(共享 funcref 表 + CallInfo→linear-memory + `call_indirect` 直调 + host helper 零分配)+ 零跨界 ①(top mirror 字)/ 基建-a(closure slot 缓存)/ 基建-b(proto cache 段)/ ③a(savedTop)/ ③b(emitReturn 守卫快路径,Wasm 内拆帧)/ ④-i(emitCall 守卫骨架 + fastCallHits mirror 字)/ callOnStack 顶层升层(cl 直接走 enterGibbous + TopLevelUplift 探针)全付;**本机 Xeon 6982P 2s×3 count 实测基线(2026-06-16)**:loop 2.95x(+10% over R3.5 2.67x,③ RETURN 拆帧真实收益)/ table 0.88x / call 0.52x / mixed 0.99x;**call 0.52x 是 bench kernel 结构性架构边界**——profile `/tmp/call.prof` 证四 kernel body 含 ReasonUnknownCall(F2-b 静态分析不能确定被调函数不 yield)→ body 不可升 → 顶层升层 + ④ emitCall fast body 均对 bench kernel 无显著效果;**④-ii fast body 留 followup**(预估上限 0.57x 仍 <1x,实现复杂度 ~200 行 wasm 字节级 codegen,ROI/UAF 不利,emit 原语 i64.add/i64.or 已保留)。**PW10 收口为「已落地子里程碑 + 架构边界文档化」**。详 `docs/design/p3-wasm-tier/implementation-progress.md`。
+  - **PW10 后续修复轮(2026-06-17,pineapple bench spike 触发)**:① **issue #18 自然热度升层路径接通**——此前 p3 build 下编译期 `analyzeCompilability` 用临时 Bridge(`b.p3==nil`)把所有 Proto 烧成 `ReasonBackendUnsupp` 占位,运行期从不重判 → 任何 Proto 即便过 `HotEntryThreshold` 也直接 Stuck、自然热度升层形同虚设(`SetForceAllPromote(false)` 形态下白盒 `PromotionCount()==0`);`considerPromotion` 现对「占位位 + P3 已注入」子集调 `recheckCompilabilityRuntime`(原 `recheckCompilabilityForce`)清 F7 占位 + 真实后端重判(F1-F6 结构性排除保留),接通生产升层路径。② **issue #21 short-proto 守卫**(见上 P2 静态分析器条)消除 short proto 升层 wasm 反噬。**testing-only 白盒探针** `State.PromotionCount()`:auto-lifting 形态下断言「真升过」(跑前=0、跑后>0),非 wangshu_p3 build / P3 未注入恒返 0。见 [[2026-06-17-issue18-p3-autolift-fix-round]] / [[2026-06-17-issue21-short-proto-guard-round]] / [[2026-06-17-pineapple-bench-batch-wrapper-spike]]。
 
 ### P4:带 IC 反馈的投机 method JIT(+1-2 人年,流水线图「trace 收益 ~70%」)
 
