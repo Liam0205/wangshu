@@ -2,6 +2,13 @@
 //
 // 与 difftest 的分工:conformance 是人写的、有意覆盖语义角落的固定用例
 // (期望值内置,不依赖 oracle 进程);difftest 是对拍官方 5.1.5 的随机/种子脚本。
+//
+// p1/p3 双 build 覆盖(PR #15 review):用例经 `newConformanceState()` 取
+// State,该 helper 在所有用例上调用 `SetForceAllPromote(true)`——默认 build
+// 下是 no-op(P3 后端未注入,可编译性闸门 F7 永久判不可编译);
+// `wangshu_p3 wangshu_profile` build 下兑现「P3 凸月路径覆盖」承诺,
+// 让那 83 个一次性小脚本(入口次数=1,达不到 HotEntryThreshold)也经凸月
+// wasm 执行路径跑,而非退化成 p3-tag 编译的解释器路径。
 package conformance
 
 import (
@@ -11,6 +18,15 @@ import (
 
 	"github.com/Liam0205/wangshu"
 )
+
+// newConformanceState 是所有 conformance 用例的 State 工厂。在 p3 build 下
+// 把 force-all 升层模式打开,以确保每个用例都走凸月 wasm 执行路径;p1 build
+// 下 SetForceAllPromote 是 no-op,行为不变。
+func newConformanceState() *wangshu.State {
+	st := wangshu.NewState(wangshu.Options{})
+	st.SetForceAllPromote(true)
+	return st
+}
 
 type confCase struct {
 	name string
@@ -313,7 +329,7 @@ func TestConformance(t *testing.T) {
 			if err != nil {
 				t.Fatalf("compile: %v", err)
 			}
-			st := wangshu.NewState(wangshu.Options{})
+			st := newConformanceState()
 			results, err := prog.Run(st)
 			if err != nil {
 				t.Fatalf("run: %v", err)
@@ -345,7 +361,7 @@ func TestSetListBatchOverflow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	st := wangshu.NewState(wangshu.Options{})
+	st := newConformanceState()
 	results, err := prog.Run(st)
 	if err != nil {
 		t.Fatalf("run: %v", err)
