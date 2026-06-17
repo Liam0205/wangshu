@@ -25,6 +25,10 @@ package pineapple_bench
 
 import "testing"
 
-func BenchmarkPineappleLuaOp_WangshuP3Auto(b *testing.B) {
-	runBenchmark(b)
+func BenchmarkPineappleLuaOp_WangshuP3Auto_Row(b *testing.B)    { runBenchmark(b, "row") }
+func BenchmarkPineappleLuaOp_WangshuP3Auto_Column(b *testing.B) { runBenchmark(b, "column") }
+
+func BenchmarkPineappleLuaOp_WangshuP3Auto_CommonRow(b *testing.B) { runBenchmarkCommon(b, "row") }
+func BenchmarkPineappleLuaOp_WangshuP3Auto_CommonColumn(b *testing.B) {
+	runBenchmarkCommon(b, "column")
 }
