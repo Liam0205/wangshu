@@ -145,22 +145,26 @@ func (b *Bridge) SetCompilability(proto *bytecode.Proto, c Compilability, r Reas
 // 开关,非支持的运行模式)。
 func (b *Bridge) SetForceAllPromote(on bool) { b.forceAll = on }
 
-// recheckCompilabilityForce 强制全升模式下对真实后端重判可编译性(08 §2.2)。
+// recheckCompilabilityRuntime 运行期对真实后端重判可编译性(issue #18 / 08 §2.2)。
 //
 // **为何需要**:编译期 analyzeCompilability 用临时 Bridge 跑 F7(checkF7BackendSupport),
 // 那时 b.p3 == nil → F7 恒触发 → 所有 Proto 被烧成 CompNotCompilable + ReasonBackendUnsupp
 // (analyze_on.go §F7 行为)。这不是「后端真不支持」的陈述,只是「编译期还不知道运行期
-// 注入哪个 P3」的占位。运行期重跑 F7 本是 analyze_on.go 留的「P3 注入后扩展」(留 P3 PR
-// 收口)。本函数在 forceAll 测试入口下补上这一步。
+// 注入哪个 P3」的占位。**运行期重跑 F7 是 analyze_on.go 留的「P3 注入后扩展」**,本函数
+// 实装这一步。
 //
 // **不绕真实可编译性闸门**:只清「编译期无 P3 的 F7 占位位」(ReasonBackendUnsupp),
 // F1-F6 结构性排除(vararg/coroutine/debug/setfenv/oversize/nested,已烧进 proto.CompReasons,
 // 不依赖 AST)原样保留——任一仍置位即留 CompNotCompilable。清掉 F7 后再对**真实注入的
 // 后端**查 SupportsAllOpcodes(F7 的正解)。二者全过才判 CompCompilable。
 //
-// 仅 forceAll 调用——生产升层路径不动(编译期 all-Stuck,byte-equal P1,运行期重分析仍
-// 是后续项)。
-func (b *Bridge) recheckCompilabilityForce(proto *bytecode.Proto) Compilability {
+// **调用路径**:considerPromotion 在两种场景调本函数:
+//
+//	(a) forceAll 测试入口(08 §2.2 PW9 差分),热度阈值前即 force 升;
+//	(b) 自然热度路径(issue #18):热度过 HotEntryThreshold 后,看到
+//	    pd.Compilable == CompNotCompilable + ReasonBackendUnsupp + b.p3 != nil
+//	    时调本函数重判——这是 p3 build 自然热度升层路径的真正生效点。
+func (b *Bridge) recheckCompilabilityRuntime(proto *bytecode.Proto) Compilability {
 	// 取编译期烧的 F1-F6 结构性排除位(去掉 F7 占位)。
 	structural := ReasonsBitmap(proto.CompReasons) &^ ReasonBackendUnsupp
 	if structural.HasAny() {
@@ -241,10 +245,17 @@ func (b *Bridge) considerPromotion(proto *bytecode.Proto, pd *ProfileData, onMai
 	}
 
 	comp := pd.Compilable
-	if comp != CompCompilable && b.forceAll {
-		// 强制全升:对真实后端重判可编译性(编译期 F7 因无 P3 注入恒失败,
-		// 是历史包袱非真实能力陈述,08 §2.2 / analyze_on.go「P3 注入后重跑 F7」)。
-		comp = b.recheckCompilabilityForce(proto)
+	// 运行期重判可编译性(issue #18):编译期 analyzeCompilability 用临时 Bridge
+	// 没注入 P3,所有 Proto 烧 ReasonBackendUnsupp 占位。运行期 P3 已注入时此位
+	// 需重判,否则任何 Proto 即便达 HotEntryThreshold 也直接 Stuck——p3 build
+	// 自然热度升层路径形同虚设。recheckCompilabilityRuntime 实装了「清 F7 占位 +
+	// 对真实后端重判 + F1-F6 保守保留」,两种场景调它:
+	//   (a) forceAll:测试入口 PW9 差分,绕过热度阈值即 force 升;
+	//   (b) 自然热度 + 占位位:issue #18 修复,生产形态升层路径。
+	needsAutoRecheck := b.p3 != nil &&
+		ReasonsBitmap(proto.CompReasons)&ReasonBackendUnsupp != 0
+	if comp != CompCompilable && (b.forceAll || needsAutoRecheck) {
+		comp = b.recheckCompilabilityRuntime(proto)
 	}
 	if comp != CompCompilable {
 		// (P2) 不可编译 / 未分析 → 永久解释(04 §1.4 静态 fallback)
