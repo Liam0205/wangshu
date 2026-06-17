@@ -1,8 +1,15 @@
+//go:build !wangshu_p3
+
 // Package baseline contains the 3-tier benchmark scripts (12 §6):
 // simple / arith / loop, run on both Wangshu and gopher-lua.
 //
 // 验收口径(roadmap §4):三档脚本全部 ≥2x over gopher-lua(ns/op 比)。
-// 运行:`make bench`。本包基准是相对量;绝对值依机器而异。
+// 运行:`make bench-p1`(或 `make bench`)。本包基准是相对量;绝对值依机器而异。
+//
+// build tag `!wangshu_p3`:`_Wangshu`(crescent)/ `_Gopher` 基准只在 p1 build
+// 编入,避免 p3 build 的 wangshu_profile 采样钩污染新月数字 + 与 bench-p1 重复
+// (issue #15 review 抓出的 brittle convention 改良)。`_Gibbous` benchmark 在
+// `baseline_gibbous_test.go` 里独自有 wangshu_p3 build tag,与本文件互斥。
 package baseline
 
 import (

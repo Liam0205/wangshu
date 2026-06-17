@@ -42,13 +42,19 @@ mkdir -p "$outdir"
 # 主模块 root(`github.com/Liam0205/wangshu`)→ `root`
 # 主模块子包(`...wangshu/internal/arena`)→ `internal-arena`
 # benchmarks 子模块(`...wangshu/benchmarks/baseline`)→ `bench-baseline`
+# 前缀化是隔离手段——避免未来主模块新增顶层包与子模块包名冲突,
+# `.test` 在 test-bin/<variant>/ 平铺时互相覆盖(issue #15 review)。
 pkg_to_name() {
     local p=$1
     p=${p#github.com/Liam0205/wangshu}
     p=${p#/}
     [ -z "$p" ] && { echo "root"; return; }
-    # benchmarks/ → bench-,扁平到一级
-    p=${p#benchmarks/}
+    # benchmarks/baseline → bench-baseline(显式前缀,兑现注释承诺)
+    if [[ "$p" == benchmarks/* ]]; then
+        p=${p#benchmarks/}
+        echo "bench-${p//\//-}"
+        return
+    fi
     echo "${p//\//-}"
 }
 
@@ -92,19 +98,26 @@ build_pkg() {
 echo "===== build $variant test binaries → test-bin/$variant/ ====="
 rm -f "$outdir/manifest.txt"
 echo "[1/2] main module"
-mapfile -t main_pkgs < <(cd "$repo_root" && \
+# 替代 bash 4 `mapfile`:while read 配 process substitution(bash 3.2 兼容)
+main_pkgs=()
+while IFS= read -r pkg; do
+    [ -z "$pkg" ] && continue
+    main_pkgs+=("$pkg")
+done < <(cd "$repo_root" && \
     go list -f '{{if or (len .TestGoFiles) (len .XTestGoFiles)}}{{.ImportPath}}{{end}}' ./... 2>/dev/null)
 for pkg in "${main_pkgs[@]}"; do
-    [ -z "$pkg" ] && continue
     (cd "$repo_root" && build_pkg "$pkg" "$repo_root") || exit 1
 done
 
 # 第二阶段:benchmarks 子模块(独立 go.mod)
 echo "[2/2] benchmarks submodule"
-mapfile -t bench_pkgs < <(cd "$repo_root/benchmarks" && \
+bench_pkgs=()
+while IFS= read -r pkg; do
+    [ -z "$pkg" ] && continue
+    bench_pkgs+=("$pkg")
+done < <(cd "$repo_root/benchmarks" && \
     go list -f '{{if or (len .TestGoFiles) (len .XTestGoFiles)}}{{.ImportPath}}{{end}}' ./... 2>/dev/null)
 for pkg in "${bench_pkgs[@]}"; do
-    [ -z "$pkg" ] && continue
     (cd "$repo_root/benchmarks" && build_pkg "$pkg" "$repo_root/benchmarks") || exit 1
 done
 
