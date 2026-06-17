@@ -14,7 +14,7 @@
 .PHONY: all fmt lint \
         build build-all build-p1 build-p3 build-clean \
         test test-all test-p1 test-p3 test-trace \
-        bench bench-all bench-p1 bench-p3 bench-test \
+        bench bench-all bench-p1 bench-p3 bench-test bench-pineapple bench-pineapple-fetch \
         fuzz fuzz-all fuzz-p1 fuzz-p3 \
         difftest difftest-all difftest-p1 difftest-p3 \
         conformance conformance-all conformance-p1 conformance-p3 \
@@ -102,8 +102,14 @@ difftest-p3:                                        ## P3 build 差分 fuzz(forc
 # ─── bench ─────────────────────────────────────────────────────────────────
 bench: bench-all                                    ## 别名:make bench = bench-all
 
-bench-all: build-all                                ## 跑全部 variant 的全部 benchmark
+bench-all: build-all                                ## 跑全部 variant 的全部 benchmark(主+benchmarks 子模块)
 	./scripts/run-test-bins.sh bench
+
+bench-pineapple:                                    ## 跑 wangshu-as-pineapple-backend 三路对照 benchmark(需先 make bench-pineapple-fetch)
+	$(MAKE) -C benchmarks/pineapple bench
+
+bench-pineapple-fetch:                              ## clone/update pineapple master 到 benchmarks/pineapple/.pineapple/
+	$(MAKE) -C benchmarks/pineapple fetch
 
 bench-p1: build-p1                                  ## 只跑 P1 variant 的 benchmark
 	./scripts/run-test-bins.sh bench p1
