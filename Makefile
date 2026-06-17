@@ -83,7 +83,7 @@ conformance-all: conformance-p1 conformance-p3      ## 跑全部 variant 的 con
 conformance-p1:                                     ## P1 build conformance(默认 build,新月解释器路径)
 	go test ./test/conformance/...
 
-conformance-p3:                                     ## P3 build conformance(wangshu_p3+wangshu_profile,force-all 升层后凸月路径)
+conformance-p3:                                     ## P3 build conformance(wangshu_p3+wangshu_profile,harness 显式 SetForceAllPromote(true) → 真走凸月 wasm 执行路径)
 	go test -tags "wangshu_p3 wangshu_profile" ./test/conformance/...
 
 # ─── difftest(走 go test 原生路径——依赖外部 lua5.1 oracle)─────────────────
