@@ -1,0 +1,3 @@
+# pineapple 仓 clone 落点(scripts/fetch-pineapple.sh 维护)。不进版本控制——
+# 各开发者本地 fetch 自己最新 master HEAD;CI 在 workflow 步骤里 fetch。
+.pineapple/

@@ -22,7 +22,14 @@ while IFS=: read -r file line decl; do
     found=1
     echo "fuzz: $pkg :: $func ($fuzztime) tags=${tags:-default}"
     go test "${tags_arg[@]}" "./$pkg" -run='^$' -fuzz="^${func}\$" -fuzztime="$fuzztime" -timeout=120s -parallel=4
-done < <(grep -rn --include='*_test.go' -E '^func Fuzz[A-Za-z0-9_]*\(f \*testing\.F\)' . 2>/dev/null || true)
+    # --exclude-dir 排除:
+    #   - benchmarks:独立子模块,自家 fuzz 目标已通过 benchmarks/ 单独路径覆盖
+    #   - benchmarks/pineapple/.pineapple:pineapple 仓临时 clone 落点,属另一 module,
+    #     go test 跑会报 "main module does not contain package"
+done < <(grep -rn --include='*_test.go' \
+    --exclude-dir=benchmarks \
+    --exclude-dir=.pineapple \
+    -E '^func Fuzz[A-Za-z0-9_]*\(f \*testing\.F\)' . 2>/dev/null || true)
 
 if [ "$found" -eq 0 ]; then
     echo "no fuzz targets found (func Fuzz*),skip"

@@ -1,2 +1,6 @@
 *.test
 test-bin/
+
+# pineapple repo 临时 clone 落点(benchmarks/pineapple/.pineapple/),
+# 也兜底防御 root 不被误纳入
+.pineapple/
