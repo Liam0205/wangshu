@@ -28,6 +28,8 @@
 // promotion_count_p3_test.go 里有独立验证(force-all + 内层函数 → 升)。
 //
 // 依赖管理:pineapple 经 scripts/fetch-pineapple.sh 临时 clone 到 .pineapple/
-// (.gitignore 隐藏)。本地开发者跑 bench 前需先 `make fetch`(或直接调
-// scripts/fetch-pineapple.sh)。CI 在 workflow 步骤里 fetch。详见 README。
+// (.gitignore 隐藏)。本地开发者跑 bench 前需先 `make bench-pineapple-fetch`
+// (顶层 wangshu Makefile 入口;或 `make fetch` 经 benchmarks/pineapple/
+// 本地 Makefile;或直接调 scripts/fetch-pineapple.sh)。CI 在 workflow
+// 步骤里 fetch。详见 README。
 package pineapple_bench

@@ -32,7 +32,7 @@ go test -tags "wangshu_p3 wangshu_profile" -bench=. -benchmem -count=3 .
 go test -tags lua_gopher -bench=. -benchmem -count=3 .
 ```
 
-或者用 `Makefile`(本目录):
+或者用 `Makefile`(本目录;顶层 wangshu Makefile 也有同款入口,见末尾「与顶层 wangshu Makefile 集成」节):
 
 ```bash
 make fetch          # = ./scripts/fetch-pineapple.sh
@@ -59,3 +59,14 @@ wangshu `v0.x.x` 加了 testing-only `State.PromotionCount()` API,见 wangshu re
 ## 关于 .pineapple/ 不进版本控制的风险
 
 接受 pineapple master 可能 breaking change 让本 bench 编不过的风险 —— 改用户已确认接受。如果撞上,要么本地 checkout pineapple 老 commit 临时跑、要么等本 bench 跟进改。**wangshu 自身的功能测试(make all)不受影响**,因为 `benchmarks/pineapple/` 是独立子模块,主流程不依赖它。
+
+## 与顶层 wangshu Makefile 集成
+
+顶层 wangshu Makefile 有对应转发入口,无需 `cd` 进本目录:
+
+| 顶层 wangshu Makefile | 本目录(`benchmarks/pineapple/Makefile`) |
+|---|---|
+| `make bench-pineapple-fetch` | `make fetch` |
+| `make bench-pineapple` | `make bench` |
+
+两条同款行为(顶层经 `$(MAKE) -C benchmarks/pineapple ...` 转发)。
