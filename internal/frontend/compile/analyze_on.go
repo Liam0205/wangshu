@@ -28,12 +28,14 @@ import (
 // **F7 行为**:本临时 Bridge 没注入 P3 编译器(b.p3 == nil)→ F7 永远
 // 触发 → 所有 Compile-期分析的 Proto 都被标 CompNotCompilable +
 // ReasonBackendUnsupp。这反映「编译期我们还不知道运行期会注入哪个 P3」
-// 的现实。运行期 considerPromotion 在 P3 注入后**重新**调 AnalyzeProto
-// 是 P3 落地后的扩展(当前不实装,留 P3 PR 收口)。
+// 的现实。**运行期 considerPromotion 看到此占位位 + b.p3 已注入时调
+// bridge.recheckCompilabilityRuntime 重判**(issue #18 修复),清掉编译期
+// 烧的 F7 占位,对真实后端重查 SupportsAllOpcodes,F1-F6 结构性排除原样保留。
 //
-// **对 PB7 验收的影响**:byte-equal 差分仍成立(F7 ⇒ Stuck ⇒ 永久解释,
-// 等价 P1-only 行为)。要测试真升层路径,wangshu 主包的 e2e test 直接
-// 用 mock P3 在 LoadProgram 后手工 SetCompilability(...) 模拟可编译形态。
+// **对 PB7 验收的影响**:byte-equal 差分仍成立——P1-only build(无
+// wangshu_profile)整链路 no-op;p3 build 下结构性 NotCompilable(F1-F6)
+// 仍永久解释,只是「编译期 F7 占位 + 运行期 P3 可处理」的子集才走升层
+// 路径,与原 byte-equal 期望一致(F1-F6 子集行为不变)。
 func analyzeCompilability(fn *ast.FuncExpr, proto *bytecode.Proto) {
 	tmp := bridge.NewBridge()
 	tmp.AnalyzeProto(fn, proto)

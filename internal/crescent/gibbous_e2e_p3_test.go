@@ -896,7 +896,7 @@ return hot, body`
 // 假阳性。本测经**真实公共路径**(SetForceAllPromote + 反复调用触发 OnEnter,而非
 // promoteProto 的手工 SetCompilability)断言核函数真达 TierGibbous,锁死非空性。
 //
-// 同时验证 recheckCompilabilityForce:编译期 F7 因无 P3 注入把 hot 烧成
+// 同时验证 recheckCompilabilityRuntime:编译期 F7 因无 P3 注入把 hot 烧成
 // CompNotCompilable,force-all 重判后(F1-F6 无、真实后端 SupportsAllOpcodes 放行)
 // 升层成功——证明「绕编译期 F7 占位、不绕 F1-F6」逻辑生效。
 func TestPW9_ForceAllPromoteReal(t *testing.T) {
@@ -930,7 +930,7 @@ return hot, body`
 		}
 	}
 
-	// ★ force-all 经 recheckCompilabilityForce 重判 + 升层:hot 应已是 TierGibbous。
+	// ★ force-all 经 recheckCompilabilityRuntime 重判 + 升层:hot 应已是 TierGibbous。
 	if st.bridge.GibbousCodeOf(st.protos[hotPid]) == nil {
 		t.Fatal("force-all 下 hot 应升 gibbous(重判 F7 放行),但 GibbousCodeOf 为 nil —— 层间差分套将退化为假阳性")
 	}
@@ -947,7 +947,7 @@ return hot, body`
 
 // TestPW9_ForceAllRespectsStructuralGates 验证 force-all **不绕** F1-F6 真实闸门。
 //
-// vararg 函数(F1)即便 force-all 也必须留 crescent——recheckCompilabilityForce 只清
+// vararg 函数(F1)即便 force-all 也必须留 crescent——recheckCompilabilityRuntime 只清
 // 编译期 F7 占位,F1-F6 结构性排除原样保留(08 §2.3.1 / §2.2 「不绕可编译性闸门」)。
 func TestPW9_ForceAllRespectsStructuralGates(t *testing.T) {
 	src := `
@@ -975,6 +975,6 @@ return va, body`
 
 	// ★ vararg 函数即便 force-all 也不升层(F1 真实排除,recheck 保留 ReasonVararg)。
 	if st.bridge.GibbousCodeOf(st.protos[vaPid]) != nil {
-		t.Error("vararg 函数 force-all 下不应升层(F1 真实闸门;recheckCompilabilityForce 只清 F7 占位,保留 F1-F6)")
+		t.Error("vararg 函数 force-all 下不应升层(F1 真实闸门;recheckCompilabilityRuntime 只清 F7 占位,保留 F1-F6)")
 	}
 }

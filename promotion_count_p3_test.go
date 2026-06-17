@@ -63,3 +63,38 @@ func TestPromotionCount_P3_NoForce_StaysCold(t *testing.T) {
 		t.Errorf("p3 一次性脚本 PromotionCount = %d, want 0(达不到 HotEntryThreshold)", got)
 	}
 }
+
+// TestPromotionCount_P3_NoForce_HotEntry_Lifts 验证 issue #18 修复:p3 build
+// 默认形态(不调 SetForceAllPromote)下,内层函数 f 被同入口调 N>HotEntryThreshold
+// 次时,运行期 considerPromotion 看到编译期 F7 占位(ReasonBackendUnsupp)+ b.p3
+// 已注入,调 recheckCompilabilityRuntime 重判 → f 升 gibbous → PromotionCount > 0。
+//
+// 修复前(issue #18):编译期 analyzeCompilability 用临时 Bridge 无 P3,所有 Proto
+// 被烧 CompNotCompilable + ReasonBackendUnsupp;运行期 considerPromotion 看 comp
+// != CompCompilable && !forceAll → 直接 TierStuck,**任何 Proto 即便达 1000 次
+// 调用也不升层**。本测之前的 reflection 用同样脚本实证 PromotionCount==0,这是
+// 反向断言;修复后此处转正向断言 > 0。
+//
+// HotEntryThreshold=200,N=1000 远超之。f 是 `x*2` 纯算术(F1-F6 全过、F7 真实
+// 后端支持 MUL/RETURN),应升层成功。
+func TestPromotionCount_P3_NoForce_HotEntry_Lifts(t *testing.T) {
+	st := wangshu.NewState(wangshu.Options{})
+	// 故意不调 SetForceAllPromote——本测就是要走自然热度路径
+
+	prog, err := wangshu.Compile([]byte(`
+		local function f(x) return x * 2 end
+		local sum = 0
+		for i = 1, 1000 do sum = sum + f(i) end
+		return sum
+	`), "test")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if _, err := prog.Run(st); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	if got := st.PromotionCount(); got == 0 {
+		t.Errorf("p3 自然热度路径 PromotionCount = 0, want > 0(issue #18 修复后 f 应升 gibbous)")
+	}
+}
