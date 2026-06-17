@@ -185,6 +185,11 @@ func (b *Bridge) recheckCompilabilityRuntime(proto *bytecode.Proto) Compilabilit
 //
 // **保证零分配**(常态未越阈值):map 查找 + 切片索引 + 自增 + 比较——一次
 // 函数调用约 24ns 预算(01 §4.5 估算)。
+//
+// **MinPromotableCodeLen 守卫**(issue #21):short proto(Code 长度 <
+// MinPromotableCodeLen)在阈值越过后**仍累积 counter**,只在调 considerPromotion
+// 前 return——保留 profile 诊断完整(EntryCount / BackEdge 准确,profile_test 期望)
+// 同时跳过升层动作(避免 wasm 反噬)。
 func (b *Bridge) OnBackEdge(proto *bytecode.Proto, pc int32, onMain bool) {
 	pd := b.profileOf(proto)
 	if pd.TierState != TierInterp {
@@ -196,6 +201,9 @@ func (b *Bridge) OnBackEdge(proto *bytecode.Proto, pc int32, onMain bool) {
 	}
 	pd.BackEdge[pc]++
 	if pd.BackEdge[pc] >= HotBackEdgeThreshold || b.forceAll {
+		if !b.forceAll && len(proto.Code) < MinPromotableCodeLen {
+			return // short proto:wasm 反噬 > 解释器收益,跳过升层(issue #21)
+		}
 		b.considerPromotion(proto, pd, onMain)
 	}
 }
@@ -206,6 +214,10 @@ func (b *Bridge) OnBackEdge(proto *bytecode.Proto, pc int32, onMain bool) {
 //
 // onMain:当前执行线程是否为主线程(线程级 tier 规则,07 §2.4)。协程线程上
 // profile 仍累加(诊断价值,07 §2.4 选 (A)),但越阈值不触发升层。
+//
+// **MinPromotableCodeLen 守卫**(issue #21):同 OnBackEdge,short proto 累积
+// EntryCount 后在 considerPromotion 调用前 return——profile 诊断完整,只跳过
+// 升层动作。
 func (b *Bridge) OnEnter(proto *bytecode.Proto, onMain bool) {
 	pd := b.profileOf(proto)
 	if pd.TierState != TierInterp {
@@ -213,6 +225,9 @@ func (b *Bridge) OnEnter(proto *bytecode.Proto, onMain bool) {
 	}
 	pd.EntryCount++
 	if pd.EntryCount >= HotEntryThreshold || b.forceAll {
+		if !b.forceAll && len(proto.Code) < MinPromotableCodeLen {
+			return // short proto:wasm 反噬 > 解释器收益,跳过升层(issue #21)
+		}
 		b.considerPromotion(proto, pd, onMain)
 	}
 }

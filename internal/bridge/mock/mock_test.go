@@ -9,9 +9,16 @@ import (
 )
 
 func makeProto() *bytecode.Proto {
+	// Code 长度 ≥ MinPromotableCodeLen=10(issue #21):mock 测试 driver 自然热度
+	// 路径,short proto 被守卫拦截。具体 opcode 值无关(mock P3 compiler 不解析
+	// proto.Code),只需要长度足够过 MinPromotableCodeLen。
+	code := make([]bytecode.Instruction, bridge.MinPromotableCodeLen)
+	for i := range code {
+		code[i] = bytecode.Instruction(uint32(bytecode.ADD))
+	}
 	return &bytecode.Proto{
-		Code: []bytecode.Instruction{bytecode.Instruction(uint32(bytecode.ADD))},
-		IC:   make([]bytecode.ICSlot, 1),
+		Code: code,
+		IC:   make([]bytecode.ICSlot, bridge.MinPromotableCodeLen),
 	}
 }
 

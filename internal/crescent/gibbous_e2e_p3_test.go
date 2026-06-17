@@ -45,10 +45,17 @@ func loadFn(t *testing.T, src string) (*State, value.Value) {
 // promoteProto 手工驱动一个 Proto 走真升层路径(SetCompilability + OnEnter
 // 越阈值 → considerPromotion → 真 gibbous Compile + installGibbous)。
 // 返回是否成功升层(SupportsAllOpcodes 不支持的形状会 Stuck,返 false)。
+//
+// **forceAll 绕过 MinPromotableCodeLen 守卫**(issue #21):e2e 测试用的 hot
+// proto 普遍是 short(`return x`/`return a+1` 类 1-2 opcodes),自然热度路径
+// 下被守卫拦下。promoteProto 作为 testing helper 显式调 SetForceAllPromote
+// 绕过守卫,符合 forceAll 的"测试入口允许覆盖 perf 优化"语义。
 func promoteProto(st *State, pid uint32) bool {
 	proto := st.protos[pid]
 	b := st.bridge
 	b.SetCompilability(proto, bridge.CompCompilable, 0)
+	b.SetForceAllPromote(true)
+	defer b.SetForceAllPromote(false)
 	for i := uint32(0); i < bridge.HotEntryThreshold+1; i++ {
 		b.OnEnter(proto, true)
 	}
