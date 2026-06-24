@@ -13,7 +13,7 @@
 > [02-ic-feedback](./02-ic-feedback.md)(`TypeFeedback` shape 是 P3/P4 的核心契约,本文是消费侧对接);
 > [03-compilability-analysis](./03-compilability-analysis.md) §3.7(F7 P3 后端能力 / `SupportsAllOpcodes` 接口本文给出完整定义);
 > [04-try-compile-fallback](./04-try-compile-fallback.md)(状态机调本文 `P3Compiler.Compile` 是升层入口);
-> 下游:[../p3-wasm-tier/02-translation](../p3-wasm-tier/02-translation.md)(P3Compiler 的 wazero 实现);[../p4-method-jit](../p4-method-jit.md)(P4 投机消费 P4Feedback,deopt 自管)。
+> 下游:[../p3-wasm-tier/02-translation](../p3-wasm-tier/02-translation.md)(P3Compiler 的 wazero 实现);[../p4-method-jit](../p4-method-jit/00-overview.md)(P4 投机消费 P4Feedback,deopt 自管)。
 > P1 依赖面:[01 §5.7](../p1-interpreter/01-value-object-model.md)(`Proto` 字段——P3/P4 接到的 Proto 是什么);
 > [05 §1.2](../p1-interpreter/05-interpreter-loop.md)(CallInfo bit50 `callStatus_gibbous`——P3 trampoline 的入口判定,P2 在 [04](./04-try-compile-fallback.md) `installGibbous` 时写 1);
 > [11 §1.3](../p1-interpreter/11-embedding-arena-abi.md)(`Compile` 占位与可编译性探测——P3/P4 编译触发口径)。
@@ -60,12 +60,12 @@ P2 与 P3/P4 的接口分两份:
 | 关注点 | 本文(05)拥有 | 不属于本文 |
 |---|---|---|
 | **`P3Compiler` 接口形状** | ✅ 字段级签名 + 错误返回语义 + `SupportsAllOpcodes` 的契约规范 | 真 P3 实现细节(wazero 集成,字节码→Wasm)→ [../p3-wasm-tier/02-translation](../p3-wasm-tier/02-translation.md) |
-| **`P4Feedback` 接口形状** | ✅ `FeedbackFor` 取 feedback 的契约 + confidence 消费协议 | 真 P4 实现(模板编译 / OSR exit / 自管栈)→ [../p4-method-jit](../p4-method-jit.md) |
+| **`P4Feedback` 接口形状** | ✅ `FeedbackFor` 取 feedback 的契约 + confidence 消费协议 | 真 P4 实现(模板编译 / OSR exit / 自管栈)→ [../p4-method-jit](../p4-method-jit/00-overview.md) |
 | **`GibbousCode` 抽象类型** | ✅ 共同接口(`Run` / `Dispose` / `GetTrampoline`) | P3 / P4 各自的具体类型(wazero `api.Function` / 原生码段)→ 各自后端文档 |
 | **mock P3 实现** | ✅ 完整代码骨架,PB6 引入 | — |
 | **共享前端的版本演进** | ✅ shape 字段追加 / `FeedbackKind` 枚举追加的兼容策略 | shape 字段实测后调整的具体内容 → [02-ic-feedback](./02-ic-feedback.md) §9 缺口 |
 | **P3 编译失败回 P2** | ✅ 错误返回语义(`error != nil ⇒ TierStuck`) | TierStuck 转移逻辑 → [04-try-compile-fallback](./04-try-compile-fallback.md) §3 |
-| **P4 deopt 回 P2** | ✅ 接口形状(P4 自己有 deopt,P2 是接受重聚合请求的一方) | deopt 实装 → [../p4-method-jit](../p4-method-jit.md) §3 |
+| **P4 deopt 回 P2** | ✅ 接口形状(P4 自己有 deopt,P2 是接受重聚合请求的一方) | deopt 实装 → [../p4-method-jit/04-osr-deopt](../p4-method-jit/04-osr-deopt.md) |
 
 本文回答的核心问题是:**P2 与 P3/P4 之间,接口是什么形状,各自承担什么职责,接口如何稳定到三阶段共用**。具体的「P3 怎么生成 Wasm」「P4 怎么发原生码」「P4 怎么做 OSR exit」都不在本文,本文只关心「接口面」。
 
@@ -100,7 +100,7 @@ P2 与 P3/P4 的接口分两份:
 
 ### 1.3 P4 必须依赖 feedback 正确性
 
-[../p4-method-jit](../p4-method-jit.md) §2.1 表里 `FBArithStableNumber` 的投机模板:
+[../p4-method-jit/03-speculation-ic](../p4-method-jit/03-speculation-ic.md) §2 表里 `FBArithStableNumber` 的投机模板:
 
 > 投机模板发什么:**直接 f64 运算指令**(如 `mulsd` / `fmul`)+ NaN 规范化;
 > guard 检查什么:两操作数 `IsNumber`(NaN-box 单次 u64 无符号比较)。
@@ -108,7 +108,7 @@ P2 与 P3/P4 的接口分两份:
 注意 P4 的 ADD 投机模板与 P3 的 ADD 翻译的根本区别:
 
 - **P3**:`IsNumber×2` 是**语义分发**(快路径前置检查,失败也是合法路径,落到慢路径助手得到正确结果);
-- **P4**:`IsNumber×2` 是**投机 guard**(失败即「投机前提不成立」,触发 OSR exit 回解释器,**该帧剩余执行整体交还解释器**——[../p4-method-jit](../p4-method-jit.md) §3.1)。
+- **P4**:`IsNumber×2` 是**投机 guard**(失败即「投机前提不成立」,触发 OSR exit 回解释器,**该帧剩余执行整体交还解释器**——[../p4-method-jit/04-osr-deopt](../p4-method-jit/04-osr-deopt.md) §1)。
 
 物理上两者发的都可能是「比较 + 条件跳」,但**语义/机器码后续路径完全不同**:
 
@@ -117,11 +117,11 @@ P2 与 P3/P4 的接口分两份:
 | 后续路径 | 调慢路径 imported helper(同函数内仍跑 Wasm),走 metamethod / coercion → 正确返回 → 直线继续 | OSR exit:写回栈槽真相 + 跳出 JIT 世界 + crescent 接管该帧剩余执行 |
 | 函数边界 | 不离开 Wasm 函数 | 离开 JIT 函数,转给解释器 |
 | 是否「错」 | 不是错(只是慢路径) | 不是错(投机失败 ≠ 错误,只是回到全语义路径) |
-| feedback 错的后果 | 无可观察后果(同样得正确结果) | 频繁 deopt → 性能塌陷,**最终被 P4 拉黑投机**([../p4-method-jit](../p4-method-jit.md) §3.4) |
+| feedback 错的后果 | 无可观察后果(同样得正确结果) | 频繁 deopt → 性能塌陷,**最终被 P4 拉黑投机**([../p4-method-jit/04-osr-deopt](../p4-method-jit/04-osr-deopt.md) §5) |
 
 所以 P4 **必须**依赖 feedback 正确性—— feedback 反映的是「这个点过去 N 次执行的类型分布」,P4 据此判断是否值得发投机模板;若 feedback 严重失真(P2 聚合 bug 或 race-tolerant 读读到坏值),P4 投机失败率高、deopt 风暴、最终 `TierStuck-speculation`。
 
-> **但 P4 仍不会出错**——只是性能塌陷。这正是 deopt 机器的价值:**guard 是兜底**,feedback 错只损性能不损正确性([../p4-method-jit](../p4-method-jit.md) §2.1 末尾「guard 多判损性能,漏判出错」是另一维度的危险性)。
+> **但 P4 仍不会出错**——只是性能塌陷。这正是 deopt 机器的价值:**guard 是兜底**,feedback 错只损性能不损正确性([../p4-method-jit/03-speculation-ic](../p4-method-jit/03-speculation-ic.md) §3 末尾「guard 多判损性能,漏判出错」是另一维度的危险性)。
 
 ### 1.4 confidence 字段在两阶段的角色
 
@@ -595,7 +595,7 @@ P4 用 feedback 的「核心」是说:**P4 的投机机会完全由 feedback 决
 
 ### 5.3 例子:算术 IC 的 f64 投机模板
 
-[../p4-method-jit](../p4-method-jit.md) §2.1 ADD 投机模板(简化):
+[../p4-method-jit/03-speculation-ic](../p4-method-jit/03-speculation-ic.md) §5 ADD 投机模板(简化):
 
 ```asm
 ;; P4 看到 feedback.points[pc].kind == FBArithStableNumber, conf=1.0
@@ -658,7 +658,7 @@ P4 用 feedback 的「核心」是说:**P4 的投机机会完全由 feedback 决
   call $osr_exit_pc_<n>
 ```
 
-**guard 失败的语义边界**(承 [../p4-method-jit](../p4-method-jit.md) §2.1 末):
+**guard 失败的语义边界**(承 [../p4-method-jit/03-speculation-ic](../p4-method-jit/03-speculation-ic.md) §3 末):
 
 > guard 只验证「投机前提」,验证失败**不是错误**,是回到全语义路径——guard **多判**(过于保守)只损性能,**漏判**(该查没查)直接产出错误结果且不崩溃,是 JIT 第一危险源。
 
@@ -668,10 +668,10 @@ P4 投机的 guard 是 P4 自己生成的,不在 P2 接口范围内——但 P2 
 
 承 §4.4 重聚合协议,P4 投机失败后的工作流:
 
-1. **guard 失败 → OSR exit**:[../p4-method-jit](../p4-method-jit.md) §3 物化 = memmove(栈槽真相不变式)。
+1. **guard 失败 → OSR exit**:[../p4-method-jit/04-osr-deopt](../p4-method-jit/04-osr-deopt.md) §2 物化 = memmove(栈槽真相不变式)。
 2. **解释器接管 → IC 重新累积**:解释器跑该帧剩余指令,沿途的 IC 写入更新观测。
 3. **deopt 计数 +1**:P4 自管,本 Proto 的 deopt 计数累积。
-4. **过阈值 → 拉黑投机**:[../p4-method-jit](../p4-method-jit.md) §3.4「TierStuck-speculation」——该 Proto 永久只发无投机的通用模板(仍比解释快——dispatch 税照省)。
+4. **过阈值 → 拉黑投机**:[../p4-method-jit/04-osr-deopt](../p4-method-jit/04-osr-deopt.md) §5「TierStuck-speculation」——该 Proto 永久只发无投机的通用模板(仍比解释快——dispatch 税照省)。
 5. **可选:RequestRefresh + 重编译**:若 P4 判断「feedback 已陈旧」,调 P2 RequestRefresh,等下次 considerPromotion 时按新 feedback 重编译(失效的投机点降级为通用模板)。
 
 **P2 在这个流程中的角色**:
@@ -793,7 +793,7 @@ func (c *p3Code) GetTrampoline() unsafe.Pointer {
 
 ### 6.3 P4 实现:原生机器码段
 
-P4 端的 `GibbousCode` 实现(简化骨架,详见 [../p4-method-jit](../p4-method-jit.md) §4):
+P4 端的 `GibbousCode` 实现(简化骨架,详见 [../p4-method-jit/05-system-pipeline](../p4-method-jit/05-system-pipeline.md) §4):
 
 ```go
 // internal/gibbous/jit —— P4 的 GibbousCode 实现
@@ -1240,10 +1240,10 @@ if notifier, ok := b.p3.(P3DeoptNotifier); ok {
 | RB-2 | `../p3-wasm-tier/06-ic-feedback-consume.md` | 全文(IC 与 TypeFeedback) | 与本文 §3「P3 用 feedback 的语义」对齐;明确 P3 不读 confidence 是常态,即便读 confidence 也只用于代码形状决策;feedback 错的容忍性来自本文 §1.1 |
 | RB-3 | `../p3-wasm-tier/04-trampoline.md` | §2(crescent → gibbous 入口) | 与本文 §6.2 P3 GibbousCode 实现对齐;`fn.Call` 入参与 Run(state, base) 一致,status 0/1 返回值语义同本文 §6.1 |
 | RB-4 | `../p3-wasm-tier/implementation-progress.md` | §2 缺口 | 把「mock P3 与真 P3 并存」(本文 §8.3)记入 P3 文档缺口;mock 留作测试 + fallback build |
-| RB-5 | `../p4-method-jit.md` | §2.1(供料链) | 与本文 §1.3 / §5 对齐:P4 通过 `P4Feedback.FeedbackFor`(本文 §4)反向读 feedback,而非 Compile 入参;deopt 后调 RequestRefresh |
-| RB-6 | `../p4-method-jit.md` | §3.4(deopt 后再训练) | 与本文 §5.5 对齐:P4 自管 deopt 计数,过阈值后调 P2 RequestRefresh 触发重聚合;P2 状态机不参与 P4 投机生命周期 |
-| RB-7 | `../p4-method-jit.md` | §4(系统管线) | P4 也实现 `bridge.P3Compiler` 接口(本文 §0.4 边界表「实现方」一行)——这是「共享前端」的物理体现:P4 也接受 Proto + feedback,产出 GibbousCode;只是 GibbousCode 的实现是原生码段而非 wazero module(§6.3) |
-| RB-8 | `../p4-method-jit.md` | §X(deopt 通知协议) | 若未来需要 P2 收到 P4 deopt 通知(用于诊断/重聚合策略),通过**可选接口** `P3DeoptNotifier`(本文 §9.3)添加,不动 P3Compiler 主接口 |
+| RB-5 | `../p4-method-jit/03-speculation-ic.md` | §1(供料链) | 与本文 §1.3 / §5 对齐:P4 通过 `P4Feedback.FeedbackFor`(本文 §4)反向读 feedback,而非 Compile 入参;deopt 后调 RequestRefresh |
+| RB-6 | `../p4-method-jit/04-osr-deopt.md` | §5(deopt 后再训练) | 与本文 §5.5 对齐:P4 自管 deopt 计数,过阈值后调 P2 RequestRefresh 触发重聚合;P2 状态机不参与 P4 投机生命周期 |
+| RB-7 | `../p4-method-jit/05-system-pipeline.md` | 全文(系统管线) | P4 也实现 `bridge.P3Compiler` 接口(本文 §0.4 边界表「实现方」一行)——这是「共享前端」的物理体现:P4 也接受 Proto + feedback,产出 GibbousCode;只是 GibbousCode 的实现是原生码段而非 wazero module(§6.3) |
+| RB-8 | `../p4-method-jit/04-osr-deopt.md` | §X(deopt 通知协议) | 若未来需要 P2 收到 P4 deopt 通知(用于诊断/重聚合策略),通过**可选接口** `P3DeoptNotifier`(本文 §9.3)添加,不动 P3Compiler 主接口 |
 
 ### 12.2 P2 内部协调请求(本卷其他文档)
 
@@ -1276,7 +1276,7 @@ if notifier, ok := b.p3.(P3DeoptNotifier); ok {
 - [06-testing-strategy](./06-testing-strategy.md)(PB6/PB7 mock P3 测试套验收口径)
 - [../p2-bridge/00-overview](./00-overview.md) §7(本文种子,P2 单文件原稿)
 - [../p3-wasm-tier/00-overview](../p3-wasm-tier/00-overview.md)(P3 总览;02-translation P3Compiler 实现 + 04-trampoline GibbousCode P3 形态)
-- [../p4-method-jit](../p4-method-jit.md)(P4 投机消费 P4Feedback;P4 也实现 P3Compiler;deopt 与重训练)
+- [../p4-method-jit](../p4-method-jit/00-overview.md)(P4 投机消费 P4Feedback;P4 也实现 P3Compiler;deopt 与重训练)
 - [../p1-interpreter/01-value-object-model.md](../p1-interpreter/01-value-object-model.md) §5.7(Proto 字段——P3/P4 接到的 Proto 是什么)
 - [../p1-interpreter/05-interpreter-loop.md](../p1-interpreter/05-interpreter-loop.md) §1.2(CallInfo bit50 callStatus_gibbous,P3 trampoline 入口判定)
 - [../p1-interpreter/11-embedding-arena-abi.md](../p1-interpreter/11-embedding-arena-abi.md) §1.3(Compile 占位填实)

@@ -15,7 +15,7 @@
 > - [../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md) §6(IC 执行机制 — P3 翻译时与之同构)
 > - `internal/bridge/aggregator.go`(P2 已落地的聚合器,产出 PointFeedback)
 >
-> 下游衔接:[../p4-method-jit](../p4-method-jit.md) §3.4(P4 投机失败 deopt + 重训机制 — 本文「IC 失效是否重编译」的统一评估归属)。
+> 下游衔接:[../p4-method-jit/04-osr-deopt](../p4-method-jit/04-osr-deopt.md) §5(P4 投机失败 deopt + 重训机制 — 本文「IC 失效是否重编译」的统一评估归属)。
 
 对应 Go 包:`internal/gibbous/wasm`(本文消费方);上游契约方 `internal/bridge`(`PointFeedback` 产出)、`internal/bytecode`(`ICSlot` 读取)。
 
@@ -298,7 +298,7 @@ Time T3..Tn: 同样比对失败(SNAP_GEN 永远是 42,t.gen() 永远 ≥43)
 **为什么 P3 选 (A) 而不是 (B)**:
 
 1. **(B) 引入了 deopt 通道,违反 P2/P3 零 deopt 口径**。即使 (B) 的「deopt」只是「触发重编译」(不像 P4 那样回到 crescent 解释),仍是「运行期事件让 gibbous 状态发生变化」,这与 [../p2-bridge/04-try-compile-fallback](../p2-bridge/04-try-compile-fallback.md) §2.4 的「无 `Gibbous → Interp` 边」精神冲突——一旦 P3 引入「重编译边」,状态机就不再是单向了。
-2. **(B) 的复杂度溢出 P3 范围**。重编译协议需要:① 失效计数器(挂 ICSlot 还是 ProfileData?);② 重编译预算(避免抖动:同一函数反复重编译);③ 重编译时的旧 gibbous 代码 disposal(避免泄漏);④ 重编译前后 trampoline 切换协议(crescent doCall 在重编译期间走哪个)。这套基建 P4 因投机失败 deopt 必然要建([../p4-method-jit](../p4-method-jit.md) §3.4),**P3 单独建一份没有摊薄收益**。
+2. **(B) 的复杂度溢出 P3 范围**。重编译协议需要:① 失效计数器(挂 ICSlot 还是 ProfileData?);② 重编译预算(避免抖动:同一函数反复重编译);③ 重编译时的旧 gibbous 代码 disposal(避免泄漏);④ 重编译前后 trampoline 切换协议(crescent doCall 在重编译期间走哪个)。这套基建 P4 因投机失败 deopt 必然要建([../p4-method-jit/04-osr-deopt](../p4-method-jit/04-osr-deopt.md) §5),**P3 单独建一份没有摊薄收益**。
 3. **(A) 的性能影响可忍受**。失效后等同解释器无 IC,而 P3 的核心收益不在 IC(IC 是解释器也有的优化),而在 dispatch 与译码的消除([02-translation](./02-translation.md) §2.2「收益来源不靠寄存器提升,而靠消灭 dispatch 与译码」)。即便所有 IC 全部失效,P3 仍比解释器快(每条指令省的「取指 + switch + 操作数解码」是 IC 无关收益)。
 
 **结论:P3 接受「正确但慢」是定式**,失效降级到 helper 是**正常稳态行为**(不是异常,不需要日志),与「IC 命中走快路径」对偶——两者都是合法运行时形态。
@@ -307,7 +307,7 @@ Time T3..Tn: 同样比对失败(SNAP_GEN 永远是 42,t.gen() 永远 ≥43)
 
 承 §2.4 决策(2),P3 不引入失效计数与重编译机制——**留给 P4 一并评估**。理由:
 
-1. **P4 必然有 deopt 基建**([../p4-method-jit](../p4-method-jit.md) §3):投机失败需要 OSR exit + 回 crescent + 后续可能重编译(deopt 风暴时拉黑投机)。
+1. **P4 必然有 deopt 基建**([../p4-method-jit/04-osr-deopt](../p4-method-jit/04-osr-deopt.md)):投机失败需要 OSR exit + 回 crescent + 后续可能重编译(deopt 风暴时拉黑投机)。
 2. **P4 的 deopt 基建可顺带覆盖「IC 快照失效重编译」**:gibbous 代码片段过期(无论是 P3 的 IC 失效永久 miss,还是 P4 的投机 guard 反复失败)都是「该重编译这个 Proto 了」的同质事件,统一在 P4 的「再训练机制」(P4 §3.4)处理。
 3. **P3 阶段做这件事会被 P4 推翻**:P3 自己做的「IC 失效 → 重编译」协议跟 P4 的「投机失败 → 重编译」协议形态不同(触发条件不同、状态机不同),P4 落地时必然得统一成一套。**P3 阶段先不做,P4 阶段一并设计**——避免重复劳动 + 避免协议分裂。
 
@@ -346,7 +346,7 @@ Time T3..Tn: 同样比对失败(SNAP_GEN 永远是 42,t.gen() 永远 ≥43)
 
 **不读 confidence**:P3 emit_add 只看 `fb.Kind == FBArithStableNumber`,不看 `fb.Confidence`。承 [../p2-bridge/05-p3-p4-interface](../p2-bridge/05-p3-p4-interface.md) §1.4 — confidence 是 P4 才用的旋钮(P4 用 ≥0.99 阈值决定是否发投机模板),P3 不投机所以不需要这个旋钮。**这条对 P3 实装是简化**——P3 emit_<op> 函数签名里 `fb` 参数可以只传 `Kind`,不传 `Confidence`(本文 §4.1 接口形态)。
 
-| | **P3 FBArithStableNumber 翻译**(本文) | **P4 FBArithStableNumber 投机模板**([../p4-method-jit](../p4-method-jit.md) §2.1) |
+| | **P3 FBArithStableNumber 翻译**(本文) | **P4 FBArithStableNumber 投机模板**([../p4-method-jit/03-speculation-ic](../p4-method-jit/03-speculation-ic.md) §2) |
 |---|---|---|
 | if-then 分支 | f64.add 快路径 | f64.add 快路径(同形) |
 | if-else 分支 | call $h_arith helper(完整慢路径) | OSR exit:写回栈 + 跳出 JIT + crescent 接管 |
@@ -457,7 +457,7 @@ Time T3..Tn: 同样比对失败(SNAP_GEN 永远是 42,t.gen() 永远 ≥43)
     (br_if $err (call $h_self (local.get $base) (i32.const PC)))))
 ```
 
-**SELF 的 IC 命中率极高**(方法常驻 metatable,实际负载里几乎不变),所以 FBSelfMono 是 P4 内联方法调用的核心入口([../p4-method-jit](../p4-method-jit.md) §2.1)——**P3 阶段先把这层翻译落实,P4 在此基础上加投机内联**。
+**SELF 的 IC 命中率极高**(方法常驻 metatable,实际负载里几乎不变),所以 FBSelfMono 是 P4 内联方法调用的核心入口([../p4-method-jit/03-speculation-ic](../p4-method-jit/03-speculation-ic.md) §2)——**P3 阶段先把这层翻译落实,P4 在此基础上加投机内联**。
 
 #### 3.2.4 失效降级路径汇总
 
@@ -810,7 +810,7 @@ P3 IC feedback 消费的实现期硬性约束,违反即设计失败:
 
 9. **解释器同款判定证据**。承 §1.2 / §1.3。物理表现:P3 IC 翻译形态里的 IsNumber×2 / 同表同代次 / globals gen 校验,与 [../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md) §4.1 / §6.3 / §6.4 解释器原版判定**逐字节同构**(Wasm 指令是 Go 代码的直译)。差分 fuzz([08-testing-strategy](./08-testing-strategy.md))保证两层 byte-equal 输出。
 
-10. **失效后无重编译机制**。承 §2.4 / §2.5。物理表现:P3 翻译产物对「失效后的 helper 调用频率」**不计数 / 不监控 / 不触发任何动作**——helper 调用就是合法运行形态。失效计数 → 重编译协议留 P4 一并评估([../p4-method-jit](../p4-method-jit.md) §3.4)。
+10. **失效后无重编译机制**。承 §2.4 / §2.5。物理表现:P3 翻译产物对「失效后的 helper 调用频率」**不计数 / 不监控 / 不触发任何动作**——helper 调用就是合法运行形态。失效计数 → 重编译协议留 P4 一并评估([../p4-method-jit/04-osr-deopt](../p4-method-jit/04-osr-deopt.md) §5)。
 
 ---
 
@@ -875,7 +875,7 @@ P3 IC feedback 消费的实现期硬性约束,违反即设计失败:
 - [../p2-bridge/05-p3-p4-interface](../p2-bridge/05-p3-p4-interface.md) §1(P3/P4 不对称消费 feedback;§1.4 P3 不读 confidence)
 - [../p1-interpreter/02-bytecode-isa](../p1-interpreter/02-bytecode-isa.md) §7(ICSlot 结构;算术 IC 双计数挪用)
 - [../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md) §6(IC 执行机制 — P3 翻译时与之同构)
-- [../p4-method-jit](../p4-method-jit.md) §2.1(P4 投机模板,本文 §3 各 FeedbackKind 形态的对偶面)+ §3.4(P4 再训练机制,本文 §2.5 失效重编译归属)
+- [../p4-method-jit/03-speculation-ic](../p4-method-jit/03-speculation-ic.md) §2(P4 投机模板,本文 §3 各 FeedbackKind 形态的对偶面)+ [../p4-method-jit/04-osr-deopt](../p4-method-jit/04-osr-deopt.md) §5(P4 再训练机制,本文 §2.5 失效重编译归属)
 - ../p3-wasm-tier(P3 单文件原稿;本文是其 §3 + §10 不变式 1 的详细设计扩展)
 - [../../../llmdoc/must/design-premises](../../../llmdoc/must/design-premises.md)(原则 1 解释器永不退役;原则 2 投机错误静默错果是 JIT 最危险 bug 类别 — P3 通过零投机消除)
 

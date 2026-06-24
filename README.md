@@ -162,5 +162,5 @@ P3 迁移留口**已全部收口**(对账记录见 [implementation-progress](doc
 - 总览:[docs/design/architecture.md](docs/design/architecture.md)(包布局/组件依赖/tier 映射)
 - P1 解释器详细设计(13 篇):[docs/design/p1-interpreter/](docs/design/p1-interpreter/),从 [00-overview](docs/design/p1-interpreter/00-overview.md) 进入;实现进度:[implementation-progress](docs/design/p1-interpreter/implementation-progress.md)
 - P2 分层桥详细设计(7 篇):[docs/design/p2-bridge/](docs/design/p2-bridge/),从 [00-overview](docs/design/p2-bridge/00-overview.md) 进入;实现进度:[implementation-progress](docs/design/p2-bridge/implementation-progress.md)(PB0-PB7 全 ✅,P2 后续优化轮规划中)
-- P3-P5 阶段设计:[p3-wasm-tier](docs/design/p3-wasm-tier/00-overview.md) · [p4-method-jit](docs/design/p4-method-jit.md) · [p5-trace-jit](docs/design/p5-trace-jit.md)
+- P3-P5 阶段设计:[p3-wasm-tier](docs/design/p3-wasm-tier/00-overview.md) · [p4-method-jit](docs/design/p4-method-jit/00-overview.md) · [p5-trace-jit](docs/design/p5-trace-jit.md)
 - 工程化机制(hooks/CI/Makefile/发布):[engineering](docs/design/engineering.md)

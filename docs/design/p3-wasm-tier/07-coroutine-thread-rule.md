@@ -53,8 +53,8 @@ gibbous——主线程上同 Proto 的 gibbous 代码,**协程线程上不进入
   专管。本文只覆盖 P3 阶段(method-style Wasm 编译)。
 - **路线 A 的具体实装代码**:P1 08 §3.2 已论证 P1 选定路线 B,A 仅作风险兜底。本文只在 §4 给「若启用 A,
   P3 协程升层如何重新可行」的代价分析,不出实装代码。
-- **P4 native JIT 下的协程规则**:P4 继承本规则(线程级 tier 规则),具体由 [../p4-method-jit](../p4-method-jit.md)
-  §6 决策矩阵 + 不变式清单确认。本文给 P3 定稿,P4 沿用。
+- **P4 native JIT 下的协程规则**:P4 继承本规则(线程级 tier 规则),具体由 [../p4-method-jit/07-p3-retirement](../p4-method-jit/07-p3-retirement.md)
+  §2 决策矩阵 + 不变式清单确认。本文给 P3 定稿,P4 沿用。
 
 ---
 
@@ -717,7 +717,7 @@ return vm.enterLuaFrame(f, callee)
 
 ### 5.5 对 P4 native JIT 的影响
 
-[P4 native JIT](../p4-method-jit.md) 继承 P3 的全部分层结构,只换发射后端([00-overview §1](./00-overview.md)
+[P4 native JIT](../p4-method-jit/00-overview.md) 继承 P3 的全部分层结构,只换发射后端([00-overview §1](./00-overview.md)
 表「P3 与 P4 同属 tier-1 但发射后端不同」)。线程级 tier 规则**对 P4 同样适用**——
 
 物理原因:**native code 也无 first-class continuation**——P4 发射的 x86_64 / arm64 native code 是普通函数
@@ -935,7 +935,7 @@ func (b *Bridge) considerPromotion(proto *bytecode.Proto, pd *ProfileData, th *T
 [../p1-interpreter/08-coroutines](../p1-interpreter/08-coroutines.md)(coroutine 单一事实源,§3.1-§3.6 路线 A/B 对比 + §5 yield 不跨 C 边界 + §8.2 主线程不能 yield) ·
 [../p2-bridge/04-try-compile-fallback](../p2-bridge/04-try-compile-fallback.md)(升层决策状态机,本文要求扩展 considerPromotion 入口签名) ·
 [../p2-bridge/01-profiling](../p2-bridge/01-profiling.md)(profile 采样,本文要求 onBackEdge/onEnter 透传 Thread) ·
-[../p4-method-jit](../p4-method-jit.md)(P4 native JIT,继承本规则) ·
+[../p4-method-jit](../p4-method-jit/00-overview.md)(P4 native JIT,继承本规则) ·
 [../roadmap.md](../roadmap.md)(§4 P3 阶段 + §5 原则 4 coroutine fallback 形状 + §6 锁 5.1) ·
 [../../../llmdoc/memory/decisions/2026-06-11-design-review-decisions.md](../../../llmdoc/memory/decisions/2026-06-11-design-review-decisions.md)(§7 维持决策) ·
 [../../../llmdoc/memory/doc-gaps](../../../llmdoc/memory/doc-gaps.md)(P3 开工前置确认条目)
