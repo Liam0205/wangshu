@@ -340,8 +340,11 @@ func TestPJ2_CompileLoadKReturnSucceeds(t *testing.T) {
 // 起见怕 string ref 不在 jit 包内单测域稳定。但真实 LoadProgram 路径下
 // `proto.Consts[bx]` 已经是 NaN-box `MakeGC(TagString, intern_ref)`
 // (`state.go::LoadProgram` §私有 Consts 段经 `gc.Intern` 写入),与
-// number/nil/bool 同源——只要 p4Code 持 proto 指针,Consts 是 GC 根的一
-// 部分,string ref 永久活;mmap 段直发 `mov rax, u64; ret` 即可。
+// number/nil/bool 同源——string ref 由 `State.strRefs`(R6 根)经
+// `LoadProgram` 注册保活,经 `visitProgramStringRefs` 扫到 collector;
+// **不**经 `proto.Consts` 本身。p4Code 持 proto 只是保 proto 生命期,
+// 与 string ref 保活机制解耦但同生命期。mmap 段直发
+// `mov rax, u64; ret` 即可。
 //
 // 本测断言:Compile 接受 IsStringConst=true 的 Proto,Run 写回 R(0) = fake
 // string NaN-box(payload 在 jit 包内不解引用,只验值传递正确)。

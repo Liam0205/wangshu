@@ -82,8 +82,9 @@ return 0`
 //
 // **承代码扩展 commit**:analyzeShape 删除 `IsStringConst` 硬拒——proto.Consts
 // 字符串槽在 `state.go::LoadProgram` 已 intern 写入真 NaN-box GCRef,P4
-// mmap 段直发 `mov rax, u64; ret`(与 number/nil/bool 同源),只要
-// p4Code 持 proto 指针,Consts 是 GC 根的一部分,string ref 永久活。
+// mmap 段直发 `mov rax, u64; ret`(与 number/nil/bool 同源)。string ref
+// 由 `State.strRefs`(R6 根)经 `LoadProgram` 注册保活,经
+// `visitProgramStringRefs` 扫到 collector——**不**靠 proto.Consts 自身。
 //
 // 本测断言:`return "abc"` 形态升层后 byte-equal 解释器返回的字符串值
 // (经 DoReturn 弹帧 → caller 拿到与解释器路径同构的 Value)。
@@ -384,4 +385,66 @@ return f(nil, 1)  -- 触发 attempt to index nil`
 		t.Fatal("GETTABLE on nil 应 raise,但 Call 返回 nil err")
 	}
 	t.Logf("PJ7 GETTABLE ERR 路径正确冒泡:err = %v", err)
+}
+
+// TestPJ7_MultiLine_ErrorLineByteEqual 验「多行函数体 prelude 错误路径行号
+// 与解释器逐字节一致」——pc off-by-one 修复实证测试。
+//
+// **背景**:之前 prelude helper 调用传 `pc=retPC=1`(RETURN 的 pc),导致
+// helper 内 `ci.pc=pc+1=2` → `LineInfo[ci.pc-1=1]` 取 RETURN 行而非 prelude
+// op 行。单行函数体 LineInfo[0]==LineInfo[1] 掩盖错位;一旦多行(prelude
+// 与 RETURN 落在不同源码行)就分叉。
+//
+// 修复后传 `preludePC=retPC-1=0`,helper 内 `ci.pc=1` → `LineInfo[0]` 取
+// prelude op 行,与解释器路径(同样 ci.pc-1=0)逐字节一致。
+//
+// 本测构造多行 `return x` 表达式分行(parse 把 `return\n  x + y` 中 ADD
+// 锚定到 `x + y` 行),与解释器结果做 byte-equal 对比。
+func TestPJ7_MultiLine_ErrorLineByteEqual(t *testing.T) {
+	// 多行函数体:ADD 在第 3 行(x + y),RETURN 在第 4 行。
+	// luac 把 ADD 行号锚 LineInfo[0]=3 / RETURN 行号锚 LineInfo[1]=4。
+	// 触发 `f(nil, 1)` 会报「attempt to perform arithmetic」,正确行号是 3,
+	// 错位 off-by-one 会给出 4(RETURN 行)。
+	src := `local function f(x, y)
+  return
+    x + y
+end
+for i = 1, 100 do f(1, 2) end  -- 先升层
+return f({}, 1)  -- 触发 attempt to perform arithmetic on x`
+
+	// P4 路径
+	stP4, mainP4 := loadFnP4(t, src)
+	stP4.bridge.SetForceAllPromote(true)
+	_, errP4 := stP4.Call(value.GCRefOf(mainP4), nil, 1)
+	if errP4 == nil {
+		t.Fatal("P4:ADD on table 应 raise")
+	}
+
+	// 解释器路径(独立 State,profile 关 ⇒ 不升层)
+	stP1 := New()
+	lxP1 := lex.New([]byte(src), "p4-e2e")
+	blockP1, err := parse.Parse(lxP1, "p4-e2e")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	mainIDP1, protosP1, err := compile.Compile(blockP1, "p4-e2e")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	clP1 := stP1.LoadProgram(mainIDP1, protosP1)
+	mainValP1 := value.MakeGC(value.TagFunction, clP1)
+	// 不开 force-all,默认解释器
+	_, errP1 := stP1.Call(value.GCRefOf(mainValP1), nil, 1)
+	if errP1 == nil {
+		t.Fatal("P1:ADD on table 应 raise")
+	}
+
+	// **byte-equal 断言**:两路径错误消息逐字符一致
+	if errP4.Error() != errP1.Error() {
+		t.Errorf("P4 与 P1 错误消息不一致(off-by-one 未修?):\n"+
+			"  P4 = %q\n"+
+			"  P1 = %q",
+			errP4.Error(), errP1.Error())
+	}
+	t.Logf("多行错误 byte-equal 通过:%v", errP4)
 }

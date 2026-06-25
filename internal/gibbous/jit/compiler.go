@@ -359,9 +359,12 @@ func analyzeShape(proto *bytecode.Proto) shapeInfo {
 			// LOADK 字符串常量 OK:`proto.Consts[bx]` 在 State 私有 Proto 上
 			// 已是 NaN-box `MakeGC(TagString, intern_ref)`(State.LoadProgram
 			// 经 gc.Intern 写入,见 state.go::LoadProgram §私有 Consts 段)。
-			// 只要 p4Code 持 proto 指针,proto.Consts 是 GC 根的一部分,
-			// string ref 永远活——与 number/nil/bool 三档同源,直接发 mov
-			// rax, imm64; ret 即可。
+			// **GC 根保活**:string ref 由 `State.strRefs`(R6 根)经
+			// LoadProgram 注册,经 visitProgramStringRefs 扫到 collector;
+			// proto.Consts 自身**不**被当作根遍历,p4Code 持 proto 指针只
+			// 是间接保 proto 活,不是 string ref 保活的机制。但实际效果一致
+			// (LoadProgram 注册的 strRefs 与 proto 同生命期),mmap 烧入的
+			// NaN-box u64 在程序加载期间安全。
 			return shapeInfo{
 				ok: true, retA: uint8(retA), retB: uint8(retB), retPC: 1,
 				value: uint64(proto.Consts[loadBx]), writeRetA: true,

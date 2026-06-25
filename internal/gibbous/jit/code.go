@@ -129,9 +129,20 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 		c.host.SetReg(int32(c.retA), rax)
 	}
 
-	// PJ7 prelude opcode 处理(GETUPVAL / ADD-POW / UNM / LEN / NOT 等
-	// host 调用形态):mmap 段不调 host(避免完整 trampoline 复杂度),
-	// 改在 Go 端 Run 内调。
+	// PJ7 prelude opcode 处理(GETUPVAL / ADD-POW / UNM / LEN / NEWTABLE /
+	// GETTABLE 等 host 调用形态):mmap 段不调 host(避免完整 trampoline 复杂
+	// 度),改在 Go 端 Run 内调。
+	//
+	// **pc 实参规约**(承 gibbous_host.go::Arith/Unm/Len/NewTable/GetTable
+	// 各 helper):pc 是「**被执行 opcode 自身的 index**」——helper 内
+	// `ci.pc = pc + 1` 复刻解释器主循环「取指后 ci.pc 已 ++」纪律,与
+	// errWithName 的 `ci.pc-1==pc(失败 op)` / annotateError 的
+	// `LineInfo[ci.pc-1]` / IC 槽 `proto.IC[pc]` 三处下游对齐。
+	// PJ7 simple-form prelude 恒在 pc 0(retPC 恒为 1,见 analyzeShape),
+	// 故传 `preludePC = retPC-1 = 0`。
+	// **DoReturn 的 pc 实参另算**:DoReturn 处理的就是 RETURN 自身,helper
+	// 内不再 `+1`,直接传 retPC 是正确的——别一起改错。
+	preludePC := int32(c.retPC) - 1
 	if c.preludeOp != 0 && c.host != nil && c.retB >= 2 {
 		switch c.preludeOp {
 		case uint8(bytecode.GETUPVAL):
@@ -140,10 +151,9 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 		case uint8(bytecode.ADD), uint8(bytecode.SUB), uint8(bytecode.MUL),
 			uint8(bytecode.DIV), uint8(bytecode.MOD), uint8(bytecode.POW):
 			// 算术族:调 host.Arith 慢路径 helper(逐字节同构解释器 doArith)。
-			// helper 内部用 base/pc 物化 ci.savedPC + reg/RK 取 B/C + setReg
-			// 写 R(A)。pc 取 retPC(本 Proto 真执行的 RETURN pc——helper 把
-			// `ci.pc = pc + 1` 写入,符合「op 执行完后 pc 指向下一指令」语义)。
-			st := c.host.Arith(int32(base), int32(c.retPC), int32(c.preludeOp),
+			// helper 内用 reg/RK 取 B/C + setReg 写 R(A) + ci.pc=pc+1 物化
+			// 失败 op 索引(用于 errWithName 行号 + IC 反馈槽对齐)。
+			st := c.host.Arith(int32(base), preludePC, int32(c.preludeOp),
 				int32(c.preludeArg), int32(c.preludeC), int32(c.retA))
 			if st != 0 {
 				// raise pending:host 端已置 gibbousPendingErr,enterGibbous
@@ -153,7 +163,7 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 		case uint8(bytecode.UNM):
 			// 一元负号:host.Unm 逐字节同构解释器 UNM 慢路径(string coercion
 			// + __unm 元方法,可 raise)。
-			st := c.host.Unm(int32(base), int32(c.retPC),
+			st := c.host.Unm(int32(base), preludePC,
 				int32(c.preludeArg), int32(c.retA))
 			if st != 0 {
 				return st
@@ -161,7 +171,7 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 		case uint8(bytecode.LEN):
 			// 长度运算:host.Len 逐字节同构解释器 LEN(string 字节长 / table
 			// border / table __len / 异类报错,可 raise)。
-			st := c.host.Len(int32(base), int32(c.retPC),
+			st := c.host.Len(int32(base), preludePC,
 				int32(c.preludeArg), int32(c.retA))
 			if st != 0 {
 				return st
@@ -170,12 +180,14 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 			// 建表:host.NewTable(base, pc, a, b, c)——alloc + safepoint 全
 			// helper 内,B/C 是 Fb 编码的初始数组/哈希段大小提示。永不 raise
 			// (Go runtime OOM 才崩,与本错误协议解耦)。
-			c.host.NewTable(int32(base), int32(c.retPC), int32(c.retA),
+			c.host.NewTable(int32(base), preludePC, int32(c.retA),
 				int32(c.preludeArg), int32(c.preludeC))
 		case uint8(bytecode.GETTABLE):
 			// 表读:host.GetTable(base, pc, a, b, c)——经 IC + 哈希 + __index
 			// 元方法链,可 raise(attempt to index nil/string with key/...)。
-			st := c.host.GetTable(int32(base), int32(c.retPC), int32(c.retA),
+			// 注:pc 也用作 IC 槽索引(proto.IC[pc])——必须 preludePC 才能
+			// 命中 GETTABLE 的私有 IC 槽,而非 RETURN 的空槽(语义正确性)。
+			st := c.host.GetTable(int32(base), preludePC, int32(c.retA),
 				int32(c.preludeArg), int32(c.preludeC))
 			if st != 0 {
 				return st
