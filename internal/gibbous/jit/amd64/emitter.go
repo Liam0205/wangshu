@@ -549,3 +549,25 @@ const EncodedUcomisdLen = 4
 
 // EncodedJccRel32Len 是 0F 8x rel32 条件跳转字节数(6)。
 const EncodedJccRel32Len = 6
+
+// EmitMovRcxImm64 发射「mov rcx, imm64」(REX.W + B9+rd imm64,10 字节)。
+// 用于装 NaN-box 阈值常量到 rcx 后做 cmp rax, rcx 比较。
+func EmitMovRcxImm64(buf []byte, imm uint64) []byte {
+	buf = append(buf, 0x48, 0xB9) // REX.W mov rcx, imm64
+	buf = append(buf,
+		byte(imm), byte(imm>>8), byte(imm>>16), byte(imm>>24),
+		byte(imm>>32), byte(imm>>40), byte(imm>>48), byte(imm>>56))
+	return buf
+}
+
+// EmitCmpRaxRcx 发射「cmp rax, rcx」(REX.W + 39 modrm,3 字节)。
+// 编码:48 39 C8(modrm:mod=11 reg=001=rcx rm=000=rax)。
+func EmitCmpRaxRcx(buf []byte) []byte {
+	return append(buf, 0x48, 0x39, 0xC8)
+}
+
+// EncodedMovRcxImm64Len 是「mov rcx, imm64」字节数(10)。
+const EncodedMovRcxImm64Len = 10
+
+// EncodedCmpRaxRcxLen 是「cmp rax, rcx」字节数(3)。
+const EncodedCmpRaxRcxLen = 3
