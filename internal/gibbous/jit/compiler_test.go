@@ -52,39 +52,72 @@ func TestPJ0_ImplementsP3Compiler(t *testing.T) {
 	}
 }
 
-// TestPJ0_SupportsAllOpcodesAlwaysFalse PJ0/1/2 关键验收:bridge 注入后
-// 所有 Proto 仍走 crescent。PJ3+ 启动时本测试改为「特定形态返 true」。
-func TestPJ0_SupportsAllOpcodesAlwaysFalse(t *testing.T) {
+// TestPJ7_SupportsAllOpcodesGate PJ7 真接入:LOADK+RETURN 单 BB 形态返 true,
+// 其它返 false。
+func TestPJ7_SupportsAllOpcodesGate(t *testing.T) {
 	c := New()
-	cases := []struct {
+	rejectCases := []struct {
 		name string
-		code []bytecode.Instruction
+		p    *bytecode.Proto
 	}{
 		{
+			name: "nil",
+			p:    nil,
+		},
+		{
 			name: "empty",
-			code: []bytecode.Instruction{},
+			p:    &bytecode.Proto{Code: []bytecode.Instruction{}},
 		},
 		{
 			name: "MOVE+RETURN",
-			code: []bytecode.Instruction{
-				bytecode.EncodeABC(bytecode.MOVE, 1, 0, 0),
-				bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
+			p: &bytecode.Proto{
+				Code: []bytecode.Instruction{
+					bytecode.EncodeABC(bytecode.MOVE, 1, 0, 0),
+					bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
+				},
 			},
 		},
 		{
-			name: "LOADK+RETURN(PJ2 Compile 支持但 SupportsAllOpcodes 仍 false)",
-			code: []bytecode.Instruction{
-				bytecode.EncodeABx(bytecode.LOADK, 0, 0),
-				bytecode.EncodeABC(bytecode.RETURN, 0, 2, 0),
+			name: "LOADK+RETURN B!=2",
+			p: &bytecode.Proto{
+				Code: []bytecode.Instruction{
+					bytecode.EncodeABx(bytecode.LOADK, 0, 0),
+					bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0), // B=1 不返回值
+				},
+				Consts:       []value.Value{value.NumberValue(0)},
+				StringLitIdx: []int32{-1},
+			},
+		},
+		{
+			name: "LOADK+RETURN A 不一致",
+			p: &bytecode.Proto{
+				Code: []bytecode.Instruction{
+					bytecode.EncodeABx(bytecode.LOADK, 0, 0),
+					bytecode.EncodeABC(bytecode.RETURN, 1, 2, 0),
+				},
+				Consts:       []value.Value{value.NumberValue(0)},
+				StringLitIdx: []int32{-1},
 			},
 		},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if c.SupportsAllOpcodes(&bytecode.Proto{Code: tc.code}) {
-				t.Errorf("PJ0/1/2: %q should NOT be supported (supported 表初空 / SupportsAllOpcodes 全 false 是验收口径)", tc.name)
+	for _, tc := range rejectCases {
+		t.Run("reject/"+tc.name, func(t *testing.T) {
+			if c.SupportsAllOpcodes(tc.p) {
+				t.Errorf("PJ7: %q should NOT be supported", tc.name)
 			}
 		})
+	}
+
+	acceptCase := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABx(bytecode.LOADK, 0, 0),
+			bytecode.EncodeABC(bytecode.RETURN, 0, 2, 0),
+		},
+		Consts:       []value.Value{value.NumberValue(42)},
+		StringLitIdx: []int32{-1},
+	}
+	if !c.SupportsAllOpcodes(acceptCase) {
+		t.Error("PJ7: LOADK+RETURN single-BB shape should be supported")
 	}
 }
 

@@ -23,6 +23,14 @@ import (
 // Compiler 实现 `bridge.P3Compiler` 接口(`p2-bridge/05-p3-p4-interface.md`
 // §2)。
 type Compiler struct {
+	// hostState 是注入的 host(crescent.State)抽象,供 p4Code.Run 弹帧。
+	//
+	// **per-Compiler 单例**(承 wireP4 单 goroutine 调用契约):每个 State
+	// 一份 *Compiler,wireP4 时经 SetHostState 注入 *State;Compile 产 p4Code
+	// 时把本字段复制到 p4Code.host;p4Code.Run 用自持的 host,与其它 State
+	// 的 *p4Code 独立(无并发 write,V18 -race 友好)。
+	hostState P4HostState
+
 	// PJ3+ 字段位:
 	//   - codePagePool *codePagePool  // exec mmap 代码页池(05 §2.1)
 	//   - emitter      *amd64.Emitter // per-arch 发射器(06 §2.4)
@@ -38,16 +46,53 @@ func New() *Compiler {
 
 // SupportsAllOpcodes 检查 Proto 中所有 opcode 是否都在后端支持集内。
 //
-// **PJ0 / PJ1 / PJ2 实装:全返 false**(supported 表初空,保守缺省承
-// `06-backends.md` §3.8 渐进白名单纪律)。bridge 注入本 Compiler 后所有
-// Proto 经 F7 判 NotCompilable,considerPromotion 进 TierStuck——PJ0/1/2
-// 验收口径(00 §4 PJ0 行)。
+// **PJ7 真接入实装**:开放白名单到「LOADK A K(0); RETURN A 1」单 BB 形态——
+// 这是 spike 闸门 ⊕ trampoline ⊕ emitter 三件套唯一无副作用、无 helper、
+// 无跨层调用的 Lua 子集。
 //
-// PJ3+ 启动时开 LOADK + RETURN 白名单(配合 crescent 端 enterGibbousJIT
-// 路径 + difftest 验证)。
+// 形态约束(必须同时满足):
+//   - len(Code) == 2
+//   - Code[0] = LOADK
+//   - Code[1] = RETURN
+//   - LOADK A == RETURN A(共享寄存器号)
+//   - RETURN B == 2(返回 1 个值)
+//   - LOADK Bx 指向常量池非字符串占位(Compile 期再校验,因 SupportsAllOpcodes
+//     不读 Consts)
+//
+// 任何不满足的 Proto 返 false ⇒ F7 闸门拦下 ⇒ 走 crescent 解释。
+//
+// **关键**:本函数只校验形态轮廓,Compile 期再做严格校验(包含字符串占位
+// 检查)。两层校验:SupportsAllOpcodes 是 hot path 启发式 + Compile 是
+// 真发射前最终把关。
+//
+// PJ8+ 启动时扩 supported(MOVE/LOADBOOL/LOADNIL/JMP → ADD/SUB/...)。
 func (c *Compiler) SupportsAllOpcodes(proto *bytecode.Proto) bool {
-	_ = proto
-	return false
+	if proto == nil || len(proto.Code) != 2 {
+		return false
+	}
+	loadk := proto.Code[0]
+	ret := proto.Code[1]
+	if bytecode.Op(loadk) != bytecode.LOADK {
+		return false
+	}
+	if bytecode.Op(ret) != bytecode.RETURN {
+		return false
+	}
+	if bytecode.A(loadk) != bytecode.A(ret) {
+		return false
+	}
+	if bytecode.B(ret) != 2 {
+		return false
+	}
+	// LOADK Bx 范围 + 字符串占位检查(防御性,Compile 也会再查)
+	loadBx := bytecode.Bx(loadk)
+	if loadBx < 0 || loadBx >= len(proto.Consts) {
+		return false
+	}
+	if proto.IsStringConst(loadBx) {
+		return false
+	}
+	return true
 }
 
 // Compile 把 Proto 编译成 GibbousCode(可执行产物)。
@@ -117,6 +162,7 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 		codePage: page,
 		jitCtx:   NewJITContext(),
 		retA:     uint8(retA),
+		host:     c.hostState, // per-Compiler hostState 拷给 p4Code,避免 global race
 	}, nil
 }
 
