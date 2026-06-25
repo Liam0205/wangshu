@@ -1,7 +1,7 @@
 # P4 总览:gibbous/jit method JIT——文档地图 / 实现里程碑 / 验收 / 人月分解
 
 > 状态:**设计阶段,详细设计已齐备**(2026-06-24 单文件 360 行 → 子目录 10 文件约 8200 行扩展轮 → 审查收口轮)。本文是 P4 文档集(00-08 + implementation-progress)的导航与施工计划:每篇文档的定位、组件依赖、构建顺序、里程碑验收门槛、人月分解、跨文档定稿决策速查、与 P1/P2/P3 的桥接(已落地的前瞻义务对账)。
-> 上游契约:[../roadmap](../roadmap.md)(§4 P4 定义、§2 四项税、§1 校准测量、§7 prior art)、[../architecture](../architecture.md)(§1 包布局 `internal/gibbous/jit`)、[../../llmdoc/architecture/evolution-roadmap](../../../llmdoc/architecture/evolution-roadmap.md)(tier 映射:P4 = gibbous tier-1,与 P3 同层)、[../../llmdoc/must/design-premises](../../../llmdoc/must/design-premises.md)(前提一负载形状 / 前提二四项税 / 前提三五原则 / 前提四第一天 NaN-box 承诺)。
+> 上游契约:[../roadmap](../roadmap.md)(§4 P4 定义、§2 四项税、§1 校准测量、§7 prior art)、[../architecture](../architecture.md)(§1 包布局 `internal/gibbous/jit`)、[../../../llmdoc/architecture/evolution-roadmap](../../../llmdoc/architecture/evolution-roadmap.md)(tier 映射:P4 = gibbous tier-1,与 P3 同层)、[../../../llmdoc/must/design-premises](../../../llmdoc/must/design-premises.md)(前提一负载形状 / 前提二四项税 / 前提三五原则 / 前提四第一天 NaN-box 承诺)。
 > P1 依赖面:[01](../p1-interpreter/01-value-object-model.md)(NaN-box u64 + GCRef offset)、[02](../p1-interpreter/02-bytecode-isa.md)(源 ISA + §7 IC slot)、[05](../p1-interpreter/05-interpreter-loop.md)(§1 CallInfo / §7 调用协议——OSR 着陆面)、[12](../p1-interpreter/12-testing-difftest.md)(§3.8 Runner 抽象 / §7 P4 行 / §8 CI 门禁)。
 > P2 依赖面:[../p2-bridge/00-overview](../p2-bridge/00-overview.md)(P4 是 P2 决策的消费者)、[../p2-bridge/02-ic-feedback](../p2-bridge/02-ic-feedback.md) §4(TypeFeedback shape + confidence)、[../p2-bridge/03-compilability-analysis](../p2-bridge/03-compilability-analysis.md) §3.7(F7 后端能力 SupportsAllOpcodes)、[../p2-bridge/04-try-compile-fallback](../p2-bridge/04-try-compile-fallback.md)(零 deopt 单向状态机基线——P4 在此基础上加 deopt 边)、[../p2-bridge/05-p3-p4-interface](../p2-bridge/05-p3-p4-interface.md)(P3Compiler 接口 + GibbousCode 抽象 + P4Feedback 反向读)。
 > P3 依赖面:[../p3-wasm-tier/00-overview](../p3-wasm-tier/00-overview.md)(P4 继承 P3 全部分层结构;P3 PW0-PW10 已交付,本机 Xeon 6982P 实测基线 loop 2.95x / table 0.88x / call 0.52x / mixed 0.99x;P3 现状是 P4 立项的重要输入)、[../p3-wasm-tier/04-trampoline](../p3-wasm-tier/04-trampoline.md)(跨层协议;P4 继承 bit50 / status 链 / base 刷新)、[../p3-wasm-tier/05-safepoint-gc](../p3-wasm-tier/05-safepoint-gc.md)(三类 safepoint——P4 自付物理)。
@@ -50,7 +50,7 @@
 | **OSR exit 着陆** | — | — | — | ✅ 函数级 exit 回解释([04](./04-osr-deopt.md))| 跨帧 snapshot exit |
 | **自管机器栈** | — | — | — | ✅ Go-allocated `[]byte`,trampoline 切 SP | 同 P4 |
 
-> **tier 坐标系警告**([../../llmdoc/architecture/evolution-roadmap](../../../llmdoc/architecture/evolution-roadmap.md)):月相 tier 比阶段粗一层。P1=tier-0(crescent),P3/P4=tier-1(gibbous),P5=tier-2(fullmoon)。**P3 与 P4 同属 tier-1 但发射后端不同**:P3 发 Wasm(wazero 执行)、P4 发原生码(自管 codegen)。代码包名据此:`internal/gibbous/wasm`(P3)、`internal/gibbous/jit`(P4)。日志统一是 `function promoted to gibbous`(不区分子档)。
+> **tier 坐标系警告**([../../../llmdoc/architecture/evolution-roadmap](../../../llmdoc/architecture/evolution-roadmap.md)):月相 tier 比阶段粗一层。P1=tier-0(crescent),P3/P4=tier-1(gibbous),P5=tier-2(fullmoon)。**P3 与 P4 同属 tier-1 但发射后端不同**:P3 发 Wasm(wazero 执行)、P4 发原生码(自管 codegen)。代码包名据此:`internal/gibbous/wasm`(P3)、`internal/gibbous/jit`(P4)。日志统一是 `function promoted to gibbous`(不区分子档)。
 
 **一句话**:**P2 决策「编谁」+ 产「feedback 料」,P3/P4 都是 P2 决策的兑现机器**(不做热度/可编译性判定);**P4 与 P3 唯一区别是后端**(wazero Wasm vs 自管原生码)和**投机面**(P3 零 deopt / P4 引入 deopt)。投机是 P4 的核心新增,deopt 边是其结构性代价。
 
@@ -113,7 +113,7 @@
    trampoline 弹 CallInfo,继续 crescent 解释 / 或调用方原生码续跑
 ```
 
-**核心物理事实**:① **值表示** NaN-box u64 与 P1/P3 逐位同一,P4 生成码直接操作(承 [../../llmdoc/must/design-premises](../../../llmdoc/must/design-premises.md) 前提四);② **arena = 共见物理内存**(承 P3 [03 §1](../p3-wasm-tier/03-memory-model.md),P4 build 下 backing 切回纯 Go 堆,不经 wazero memory 中介,但偏移寻址协议同 P3);③ **跨层只传 base i32 / i64**(承 P3 [04](../p3-wasm-tier/04-trampoline.md) 协议),其余从共见栈槽自取(参数、返回值、IC slot);④ **OSR exit 物化 = memmove**(承 P1 [01 §7](../p1-interpreter/01-value-object-model.md) 不变式 1「跨 tier 拷贝是 memmove」,P4 兑付该承诺)。
+**核心物理事实**:① **值表示** NaN-box u64 与 P1/P3 逐位同一,P4 生成码直接操作(承 [../../../llmdoc/must/design-premises](../../../llmdoc/must/design-premises.md) 前提四);② **arena = 共见物理内存**(承 P3 [03 §1](../p3-wasm-tier/03-memory-model.md),P4 build 下 backing 切回纯 Go 堆,不经 wazero memory 中介,但偏移寻址协议同 P3);③ **跨层只传 base i32 / i64**(承 P3 [04](../p3-wasm-tier/04-trampoline.md) 协议),其余从共见栈槽自取(参数、返回值、IC slot);④ **OSR exit 物化 = memmove**(承 P1 [01 §7](../p1-interpreter/01-value-object-model.md) 不变式 1「跨 tier 拷贝是 memmove」,P4 兑付该承诺)。
 
 ---
 
@@ -187,7 +187,7 @@
 | PJ10 | luajc 档验收 + 性能调优 | 2 - 4 人月(逼近 luajc 档的实测反复 + 真实宿主负载校准 + locals 寄存器缓存可能展开 + guard 合并窥孔)|
 | **合计** | | **+12 - 24 人月 ≈ +1-2 人年** |
 
-与 [../../llmdoc/architecture/evolution-roadmap](../../../llmdoc/architecture/evolution-roadmap.md) 的「+1-2 人年」吻合。**PJ8 arm64 + PJ10 性能调优是大头**——双架构维护与 luajc 档逼近的实测反复都不可计划:arm64 是 per-arch 全栈第二轮(`MAP_JIT` / icache 是 amd64 不会碰的工程面);PJ10 调优可能要展开 locals 寄存器缓存(详 [04 §3.3 注](./04-osr-deopt.md) / [06 §4](./06-backends.md))或 guard 合并窥孔(详 [03 §3.6](./03-speculation-ic.md))。**PJ0 立项判定**:即便否决也不亏(产出 = 立项报告永久存档,见 [01 §0.3](./01-launch-judgment.md)「闸门双向性」)。
+与 [../../../llmdoc/architecture/evolution-roadmap](../../../llmdoc/architecture/evolution-roadmap.md) 的「+1-2 人年」吻合。**PJ8 arm64 + PJ10 性能调优是大头**——双架构维护与 luajc 档逼近的实测反复都不可计划:arm64 是 per-arch 全栈第二轮(`MAP_JIT` / icache 是 amd64 不会碰的工程面);PJ10 调优可能要展开 locals 寄存器缓存(详 [04 §3.6 / §3.7](./04-osr-deopt.md) / [06 §4](./06-backends.md))或 guard 合并窥孔(详 [03 §3.6](./03-speculation-ic.md))。**PJ0 立项判定**:即便否决也不亏(产出 = 立项报告永久存档,见 [01 §0.3](./01-launch-judgment.md)「闸门双向性」)。
 
 ---
 
@@ -234,7 +234,7 @@ P1 全卷已交付(M0-M14) + P2 PB0-PB7 + 后续优化轮 #1-#4 + P3 PW0-PW10 + 
 | **arena backing**(P4 切回 Go 堆) | ✅ P3 [03 §0.4](../p3-wasm-tier/03-memory-model.md) 已留 P4 build 下 BackingFn = DefaultBacking | [P3 03 §0.4 / §1](../p3-wasm-tier/03-memory-model.md) | P4 不经 wazero memory,Go 堆 backing |
 | **跨层互调协议**(P4 继承) | ✅ P3 PW6 已落地 | [P3 04](../p3-wasm-tier/04-trampoline.md) | P4 同款 trampoline 入口 + status 链 + 错误冒泡 |
 | **差分轨道**(P1 V1-V18 + P3 V1-V18) | ✅ P3 PW9 已落地 | [P3 08](../p3-wasm-tier/08-testing-strategy.md) + [P1 12 §3.8 / §7](../p1-interpreter/12-testing-difftest.md) | P4 接续 V19-V22 增项(承 [08](./08-testing-strategy.md)),`WangshuGibbousJIT` runner 新增 |
-| **prove-the-path 纪律 first-class guide** | ✅ 已 promote | [../../llmdoc/guides/prove-the-path-under-test](../../../llmdoc/guides/prove-the-path-under-test.md) | P4 投机命中 / OSR exit 命中 / deopt 注入路径全要白盒计数器(承 P3 七实例) |
+| **prove-the-path 纪律 first-class guide** | ✅ 已 promote | [../../../llmdoc/guides/prove-the-path-under-test](../../../llmdoc/guides/prove-the-path-under-test.md) | P4 投机命中 / OSR exit 命中 / deopt 注入路径全要白盒计数器(承 P3 七实例) |
 
 **结论**:**P4 启动是条件增量**——P1/P2/P3 全卷已交付,所有前瞻留口已落地;**唯一阻塞**是 P4 立项判定本身(承 [01](./01-launch-judgment.md) + [implementation-progress §0](./implementation-progress.md))。立项前的所有 P1/P2/P3 工作都已铺好;立项即开 PJ0。
 
@@ -269,14 +269,14 @@ P1 全卷已交付(M0-M14) + P2 PB0-PB7 + 后续优化轮 #1-#4 + P3 PW0-PW10 + 
 8. **双架构 CI 双跑**:amd64 / arm64 物理 runner 各跑全套;交叉编译只验构建;Go 版本矩阵 1.25/1.26/tip([06 §5](./06-backends.md) + [08 §6](./08-testing-strategy.md))。
 9. **P4 自管投机生命周期,P2 状态机不感知**:**P2 看 `TierGibbous` 即吸收态**;P4 内部 `p4SpecState[proto]` 子状态机自管(P4Speculative/P4Deoptimized/P4StuckSpeculation),OSR exit 后 P4 端清自身投机产物 + 重训练,P2 `tierState` 不变([03 §4.2 / §8](./03-speculation-ic.md) + [04 §5](./04-osr-deopt.md))。
 10. **P3 去留结构共存零成本**:`internal/gibbous/{wasm,jit}` 并列,P2 `P3Compiler` 接口对两后端同形,策略数据定([07 §5.4](./07-p3-retirement.md))。
-11. **解释器永不退役**:任何 Proto 始终保有可解释字节码(承 [../architecture](../architecture.md) §4 不变式 1);gibbous-jit 只是可选加速面,且 OSR exit 着陆点必为解释器([../../llmdoc/must/design-premises](../../../llmdoc/must/design-premises.md) 原则 1)。
+11. **解释器永不退役**:任何 Proto 始终保有可解释字节码(承 [../architecture](../architecture.md) §4 不变式 1);gibbous-jit 只是可选加速面,且 OSR exit 着陆点必为解释器([../../../llmdoc/must/design-premises](../../../llmdoc/must/design-premises.md) 原则 1)。
 12. **luajc 档 = 列内核形状**:基准必须是列内核形状(一次 Call 进 VM 整批迭代,per-item 测不出 P4);承 [P1 12 §6.1](../p1-interpreter/12-testing-difftest.md) 硬约束([01 §4.2](./01-launch-judgment.md) + [08 §1](./08-testing-strategy.md))。
 
 ---
 
 ## 10. 风险与未决缺口汇总
 
-各子文档 §风险节 + [../../llmdoc/memory/doc-gaps](../../../llmdoc/memory/doc-gaps.md):
+各子文档 §风险节 + [../../../llmdoc/memory/doc-gaps](../../../llmdoc/memory/doc-gaps.md):
 
 - **投机错果(JIT 第 1 危险源)**:guard 漏判静默产错果,有限用例测不出;主防线在 [08 §3 同 Proto 差分](./08-testing-strategy.md) + [08 §5 deopt 注入](./08-testing-strategy.md)(承 [03 §10.1](./03-speculation-ic.md))。
 - **全显式 guard 密度天花板**:guard 成本若实测吃掉投机收益,需展开 guard 合并窥孔(同操作数直线段内只查一次,不引入 IR 的前提下可做)([03 §3.6](./03-speculation-ic.md) + [08 §11.2](./08-testing-strategy.md))。
@@ -311,9 +311,9 @@ P1 全卷已交付(M0-M14) + P2 PB0-PB7 + 后续优化轮 #1-#4 + P3 PW0-PW10 + 
 [../p1-interpreter/12-testing-difftest](../p1-interpreter/12-testing-difftest.md)(§3.8 Runner 抽象 / §7 P4 行 / §8 CI 门禁) ·
 [../roadmap](../roadmap.md)(§4 P4 定义 / §2 四项税 / §1 校准测量 / §7 prior art) ·
 [../architecture](../architecture.md)(§1 包布局 `internal/gibbous/jit` / §4 三不变式) ·
-[../../llmdoc/architecture/evolution-roadmap](../../../llmdoc/architecture/evolution-roadmap.md)(tier 映射 + 坐标系警告) ·
-[../../llmdoc/must/design-premises](../../../llmdoc/must/design-premises.md)(四项税 / 值表示承诺 / 五原则) ·
-[../../llmdoc/guides/prove-the-path-under-test](../../../llmdoc/guides/prove-the-path-under-test.md)(投机/OSR/deopt 路径白盒命中) ·
-[../../llmdoc/guides/design-claims-vs-codebase-physics](../../../llmdoc/guides/design-claims-vs-codebase-physics.md)(主张须证据,P4 立项前重核 P3 现状) ·
-[../../llmdoc/guides/perf-optimization-workflow](../../../llmdoc/guides/perf-optimization-workflow.md)(§7 profile 才是合同——P4 PJ10 调优纪律) ·
-[../../llmdoc/memory/doc-gaps](../../../llmdoc/memory/doc-gaps.md)(P4 启动前置确认 / P4 落地时回填项)
+[../../../llmdoc/architecture/evolution-roadmap](../../../llmdoc/architecture/evolution-roadmap.md)(tier 映射 + 坐标系警告) ·
+[../../../llmdoc/must/design-premises](../../../llmdoc/must/design-premises.md)(四项税 / 值表示承诺 / 五原则) ·
+[../../../llmdoc/guides/prove-the-path-under-test](../../../llmdoc/guides/prove-the-path-under-test.md)(投机/OSR/deopt 路径白盒命中) ·
+[../../../llmdoc/guides/design-claims-vs-codebase-physics](../../../llmdoc/guides/design-claims-vs-codebase-physics.md)(主张须证据,P4 立项前重核 P3 现状) ·
+[../../../llmdoc/guides/perf-optimization-workflow](../../../llmdoc/guides/perf-optimization-workflow.md)(§7 profile 才是合同——P4 PJ10 调优纪律) ·
+[../../../llmdoc/memory/doc-gaps](../../../llmdoc/memory/doc-gaps.md)(P4 启动前置确认 / P4 落地时回填项)

@@ -335,10 +335,11 @@ osrExit(exitPC):
   //   ★ 直接 store 立即数到 CallInfo arena 偏移,几条 mov,O(1)
   ci.savedPC = exitPC
 
-  // step 2: 记 deopt 计数到 ProfileData(§5 再训练用)
-  //   atomic increment(多 State 共享 ProfileData,[../p2-bridge/01-profiling] §5.1)
-  //   ★ 多数情况下也是 O(1) 单条 atomic add
-  atomic_add(&proto.profileData.deoptCount, 1)
+  // step 2: 记 deopt 计数到 P4 自管状态(§5 再训练用,方案 A:P4 端 p4SpecState[proto].deoptCount)
+  //   ★ 多数情况下是 O(1) 单条 atomic add
+  //   注意:计数挂 P4 端 p4SpecState[proto] 字段(internal/gibbous/jit),不挂 P2 ProfileData
+  //   (承本文头注 + §5 + §12 方案 A 决议:RJ-9 撤回,P2 实装零修改)
+  atomic_add(&p4SpecState[proto].deoptCount, 1)
 
   // step 3: 经 trampoline 退出 JIT 世界(§6.2 / §8)
   //   设 status=2(DEOPT,[../p2-bridge/05] §6.1)
@@ -351,6 +352,8 @@ osrExit(exitPC):
 - **三步全是 O(1)**:写一个字段 + atomic add + 设置 status——总计十几条机器指令,远少于 P5 snapshot 重建的几百条(§9.1 复杂度对照)。
 - **不写值栈、不重建任何状态**:因为「待物化集合为空」(§3.2)——这是 P4 简单性的核心。
 - **不同帧的 exit 都共享这三步骨架**:exit stub 的差异只在「step 1 的 exitPC 立即数不同」(§6.3 stub 复用)。
+
+> **引用陷阱提醒**:本节(§3.3)只描述 OSR exit 三步骨架,**不讨论实现自由度与 exit 物化序列**——「FORLOOP 局部缓存 + 静态物化序列」详 §3.6 / §3.7。旧文档若误引「[04 §3.3 注]」实指「§3.6 / §3.7」(本节无注脚)。
 
 ### 3.4 与 P5 trace JIT 对照
 
@@ -489,7 +492,7 @@ exit stub 内(amd64 概念):
 | # | 动作 | 物理位置 |
 |---|---|---|
 | 1 | OSR exit 回解释 | 本文 §3.3 三步;crescent 接管(§7) |
-| 2 | Proto deopt 计数 +1 | atomic add 到 `ProfileData.deoptCount`(§5.6 的字段;P2 ProfileData 扩展点) |
+| 2 | Proto deopt 计数 +1 | atomic add 到 P4 端 `p4SpecState[proto].deoptCount`(§5.6 字段;方案 A:P4 自管,**不**挂 P2 ProfileData) |
 | 3 | 解释期 IC 写入更新 feedback | 解释器跑剩余字节码时 IC 自然采样新观测,confidence 被新数据稀释([../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §6.4 IC 写入纪律) |
 
 要点:
@@ -1058,7 +1061,7 @@ crescent doCall 的 enterGibbous 收到 GibbousCode.Run 返回:
 **开放问题:阈值校准**(参 [../p2-bridge/01-profiling](../p2-bridge/01-profiling.md) §5):
 
 - `DeoptThreshold` / `MaxRecompileTries` / 重编译间冷却期——三个阈值的具体数值,依赖列内核 + 实战脚本实测。
-- ProfileData 字段扩展(`deoptCount` / `recompileCount` / 新 tierState 枚举值)——P2 落地后回填(§12)。
+- P4 端 `p4SpecState[proto]` 字段(`deoptCount` / `recompileCount` / 子状态枚举值)落地形态——P4 PJ4/PJ5 实装时定(承本文头注 + §5 + §12 方案 A 决议:P2 实装零修改,字段全在 `internal/gibbous/jit` 内部 map)。
 
 ### 11.4 P4 编译执行的线程模型
 

@@ -195,7 +195,8 @@ type PointFeedback struct {
 
 ```asm
 ;; emit_add(pc, A, B, C, fb=FBArithStableNumber, conf>=0.99):
-;; 假设 base 寄存器已是 r15(arena 值栈基址,jitContext 注入)
+;; 注:本文伪汇编中 r15/r14 等寄存器仅为示例占位,具体寄存器约定以 [05 §3.3 / 06 §4.1] 为单一事实源
+;; 假设值栈 base 寄存器已是 r15(实际形态见 05 §3.3 jitContext + §4.1 寄存器约定)
   mov rax, [r15 + 8*B]                  ; 加载 vb(NaN-box u64)
   mov rcx, [r15 + 8*C]                  ; 加载 vc
 
