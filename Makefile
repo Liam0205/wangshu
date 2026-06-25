@@ -86,7 +86,7 @@ fuzz-p3:                                            ## P3 build 下全部 fuzz �
 	./scripts/go-fuzz.sh 30s "wangshu_p3 wangshu_profile"
 
 fuzz-p4:                                            ## P4 build 下全部 fuzz 目标各跑一轮冒烟(wangshu_p4,PJ0 阶段与 P1 等价路径)
-	./scripts/go-fuzz.sh 30s "wangshu_p4"
+	./scripts/go-fuzz.sh 30s "wangshu_p4 wangshu_profile"
 
 # ─── conformance ───────────────────────────────────────────────────────────
 conformance: conformance-all                        ## 别名:make conformance = conformance-all
@@ -100,7 +100,7 @@ conformance-p3:                                     ## P3 build conformance(wang
 	go test -tags "wangshu_p3 wangshu_profile" ./test/conformance/...
 
 conformance-p4:                                     ## P4 build conformance(wangshu_p4,PJ0 阶段:SupportsAllOpcodes 全 false ⇒ 行为等价于 P1)
-	go test -tags wangshu_p4 ./test/conformance/...
+	go test -tags "wangshu_p4 wangshu_profile" ./test/conformance/...
 
 # ─── difftest(走 go test 原生路径——依赖外部 lua5.1 oracle)─────────────────
 difftest: difftest-all                              ## 别名:make difftest = difftest-all
@@ -117,7 +117,7 @@ difftest-p3:                                        ## P3 build 差分 fuzz(forc
 
 difftest-p4:                                        ## P4 build 差分 fuzz(wangshu_p4,PJ0 阶段:行为等价 P1,差分仍 byte-equal)
 	./scripts/check-oracle.sh
-	go test -tags wangshu_p4 ./test/difftest/... -count=1
+	go test -tags "wangshu_p4 wangshu_profile" ./test/difftest/... -count=1
 
 # ─── bench ─────────────────────────────────────────────────────────────────
 bench: bench-all                                    ## 别名:make bench = bench-all

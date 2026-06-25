@@ -820,39 +820,41 @@ func (st *State) callOnStack(cl arena.GCRef, args []value.Value, nresults int) (
 	for _, v := range args {
 		th.push(v)
 	}
-	// PW10 零跨界顶层升层:cl 已升 gibbous-有-slot 且非 host → 直接走 enterGibbous
-	// (wasm 内自持执行),免顶层 execute 解释器主循环 + 每条内层 CALL 都过 enterGibbous
-	// 跨界的退化(profile /tmp/call.prof 揭示 call 核 52% 在 enterGibbous + 38% 在
-	// wazero CallWithStack,根因正是顶层走解释器导致内层 100k 调用全付一次跨界税)。
-	// main chunk 是 vararg → 不升层 → 自然走解释器分支,无差异;升层闭包(用户函数,
-	// 内层 forceAll 形态、call 核 body 等)经此走 wasm,内部 gibbous→gibbous 经 R3
-	// indirect 直调,顶层入口跨界从 100k 次降到 1 次。
+	// PW10 零跨界顶层升层 + P4 真接入(承
+	// .code-review/from-7846604/increment-1-to-fb3de19.md 🟠 #1 修复):
+	// 之前 `code.Slot() == ok` 检查是 P3 wasm `call_indirect` 内部直调要求,
+	// 但顶层 enterGibbous 不依赖 slot——任何 GibbousCode(P3 / P4)都能走。
+	// P4 `Slot()` 恒返 (0, false)(原生码无 wasm 表概念),之前的 ok 检查
+	// 让 P4 顶层升层路径永远跳过(host 直调 P4 升层 closure 时 mmap 段不被
+	// 走,profile 数字测的就是解释器,违反 prove-the-path)。
+	//
+	// 现修为「有 GibbousCode 就走 enterGibbous」——P3 / P4 共用此路径;P3
+	// 内部 gibbous→gibbous CALL 仍经 wasm `call_indirect`(R3 协议,要 slot
+	// ok),但那是 enterGibbous 之内 wasm 段执行的细节,不影响顶层入口。
 	if !object.IsHostClosure(st.arena, cl) && profileEnabled && th == st.mainTh && st.bridge != nil {
 		pid := object.ClosureProtoID(st.arena, cl)
 		if code := st.bridge.GibbousCodeOf(st.protos[pid]); code != nil {
-			if _, ok := code.Slot(); ok {
-				// nresults 传 -1(callee 全返回),callOnStack 末尾按用户 nresults 截取/补 nil,
-				// 与解释器路径同款。enterGibbous 内 entry=false(fresh=false),但 wasm 路径不
-				// 进 execute 主循环、不依赖 fresh;DoReturn 不看 fresh,仅按 nresults 处理。
-				if err := st.enterGibbous(th, code, 0 /*funcIdx*/, len(args), -1); err != nil {
-					if err.Traceback == "" {
-						err.Traceback = st.buildTraceback(th)
-					}
-					return nil, err
+			// nresults 传 -1(callee 全返回),callOnStack 末尾按用户 nresults 截取/补 nil,
+			// 与解释器路径同款。enterGibbous 内 entry=false(fresh=false),但 wasm 路径不
+			// 进 execute 主循环、不依赖 fresh;DoReturn 不看 fresh,仅按 nresults 处理。
+			if err := st.enterGibbous(th, code, 0 /*funcIdx*/, len(args), -1); err != nil {
+				if err.Traceback == "" {
+					err.Traceback = st.buildTraceback(th)
 				}
-				rets := th.activeSlice(th.top)
-				if nresults >= 0 {
-					if len(rets) > nresults {
-						rets = rets[:nresults]
-					} else {
-						for len(rets) < nresults {
-							th.push(value.Nil)
-						}
-						rets = th.activeSlice(nresults)
-					}
-				}
-				return rets, nil
+				return nil, err
 			}
+			rets := th.activeSlice(th.top)
+			if nresults >= 0 {
+				if len(rets) > nresults {
+					rets = rets[:nresults]
+				} else {
+					for len(rets) < nresults {
+						th.push(value.Nil)
+					}
+					rets = th.activeSlice(nresults)
+				}
+			}
+			return rets, nil
 		}
 	}
 

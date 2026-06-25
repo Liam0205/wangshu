@@ -73,6 +73,27 @@ type mockP4Host struct {
 	lastCmpC  int32
 	cmpResult bool
 	cmpErr    bool
+	// CallBaseline 调用记录(PJ5 CALL void 形态):
+	callCalls   int
+	lastCallA   int32
+	lastCallB   int32
+	lastCallC   int32
+	lastCallPC  int32
+	callRetCode int32 // 0=OK / 1=ERR(单测预设)
+	// TailCall 调用记录(PJ5 TAILCALL 形态):
+	tailCallCalls   int
+	lastTailCallA   int32
+	lastTailCallB   int32
+	lastTailCallC   int32
+	lastTailCallPC  int32
+	tailCallRetCode int32 // 0=Lua 尾完成 / 1=ERR / 2=host 落尾随 RETURN(单测预设)
+	// Self 调用记录(PJ5 SELF 形态):
+	selfCalls   int
+	lastSelfA   int32
+	lastSelfB   int32
+	lastSelfC   int32
+	lastSelfPC  int32
+	selfRetCode int32 // 0=OK / 1=ERR(单测预设)
 	// PJ2 完整接入预备:arena base 模拟值
 	arenaBase uintptr
 }
@@ -257,8 +278,63 @@ func (m *mockP4Host) ValueStackBaseAddr(base int32) uintptr {
 	return m.arenaBase + uintptr(base)
 }
 
+// CIDepthHostAddr 模拟 host.CIDepthHostAddr(承 §9.20 Option B Spike 1):
+// 返 mock 固定占位地址,单测路径不真触达字节级 inc/dec。
+func (m *mockP4Host) CIDepthHostAddr() uintptr { return 0 }
+
+// CISegBaseHostAddr 模拟 host.CISegBaseHostAddr(承 §9.20)。
+func (m *mockP4Host) CISegBaseHostAddr() uintptr { return 0 }
+
+// TopHostAddr 模拟 host.TopHostAddr(承 §9.20)。
+func (m *mockP4Host) TopHostAddr() uintptr { return 0 }
+
+// ExecuteCalleeFromInlineFrame mock stub(承 §9.20.9 commit-2 + commit-5l/5p/5q 签名修正)。
+// 单测路径不触达(archSupportsFrameInline=false 屏蔽真调用),返 0=OK 兜底。
+func (m *mockP4Host) ExecuteCalleeFromInlineFrame(base, callA, callArgCount, nresults int32) int32 {
+	_ = base
+	_ = callA
+	_ = callArgCount
+	_ = nresults
+	return 0
+}
+
 // ForPrep mock stub(PJ3 reg-limit deopt 路径用,单测路径不触达)。
 func (m *mockP4Host) ForPrep(base, pc, a int32) int32 { _ = base; _ = pc; _ = a; return 0 }
+
+// CallBaseline 模拟 host.CallBaseline:记录入参 + 返回预设 callRetCode。
+func (m *mockP4Host) CallBaseline(base, pc, a, b, c int32) int32 {
+	_ = base
+	m.callCalls++
+	m.lastCallPC = pc
+	m.lastCallA = a
+	m.lastCallB = b
+	m.lastCallC = c
+	return m.callRetCode
+}
+
+// TailCall 模拟 host.TailCall:记录入参 + 返回预设 tailCallRetCode(三态)。
+func (m *mockP4Host) TailCall(base, pc, a, b, c int32) int32 {
+	_ = base
+	m.tailCallCalls++
+	m.lastTailCallPC = pc
+	m.lastTailCallA = a
+	m.lastTailCallB = b
+	m.lastTailCallC = c
+	return m.tailCallRetCode
+}
+
+// Self 模拟 host.Self:记录入参 + 返回预设 selfRetCode。
+// byte-equal 解释器 SELF 段(R(A+1)=R(B) self + R(A)=R(B)[RK(C)] method)的
+// mock 替身,单测不实跑表 IC + __index 元方法链。
+func (m *mockP4Host) Self(base, pc, a, b, c int32) int32 {
+	_ = base
+	m.selfCalls++
+	m.lastSelfPC = pc
+	m.lastSelfA = a
+	m.lastSelfB = b
+	m.lastSelfC = c
+	return m.selfRetCode
+}
 
 // compileWithHost 构造 *Compiler 注入 mock host 后调 Compile。
 func compileWithHost(t *testing.T, p *bytecode.Proto) (bridge.GibbousCode, *mockP4Host) {
