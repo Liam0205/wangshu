@@ -96,6 +96,8 @@ type shapeInfo struct {
 //     SetReg,preludeOp=GETUPVAL)
 //   - 长度 2/3:ADD/SUB/MUL/DIV/MOD/POW A B C + RETURN A 2(Go 端 Run 调
 //     host.Arith,逐字节同构解释器 doArith,preludeOp=算术 op,可 ERR 冒泡)
+//   - 长度 2/3:UNM/LEN A B + RETURN A 2(Go 端 Run 调 host.Unm/Len,逐
+//     字节同构解释器 UNM/LEN 慢路径,可 ERR 冒泡)
 func analyzeShape(proto *bytecode.Proto) shapeInfo {
 	if proto == nil {
 		return shapeInfo{}
@@ -217,6 +219,49 @@ func analyzeShape(proto *bytecode.Proto) shapeInfo {
 			preludeOp:  uint8(bytecode.Op(first)),
 			preludeArg: uint16(arithB),
 			preludeC:   uint16(arithC),
+		}
+
+	case bytecode.UNM, bytecode.LEN:
+		// UNM/LEN A B + RETURN A 2:一元运算族,B 是源寄存器号(无 RK 编码,
+		// 取自 reg)。
+		//
+		//   - UNM:Run 调 host.Unm(逐字节同构解释器 UNM 慢路径,含 string
+		//     coercion + __unm 元方法,可 raise);
+		//   - LEN:Run 调 host.Len(string 字节长 / table border / table
+		//     __len / 异类报错,可 raise)。
+		//
+		// **NOT 暂不支持**(`function(x) return not x end` 形态):NOT 需读
+		// R(B) 取真假性 + setReg(A, BoolValue(!Truthy(b)))——当前 P4HostState
+		// 接口无 GetReg 方法读寄存器,且新加 host helper(State.Not)又比纯
+		// `not` 运算(Go 内 value.Truthy)重 N 倍。最干净裁决是「拒 NOT 形态,
+		// 留 P3 / 解释器处理」——这是 P4 PJ7 简化形态根本约束:host 调用从
+		// mmap 段移到 Go 端 Run,但需要的状态(R(B))Go 端拿不到。后续 PJ
+		// 真接入 jitContext + GetReg 时一并扩。
+		ret := proto.Code[1]
+		if bytecode.Op(ret) != bytecode.RETURN {
+			return shapeInfo{}
+		}
+		retA := bytecode.A(ret)
+		retB := bytecode.B(ret)
+		if retB != 2 {
+			return shapeInfo{}
+		}
+		uA := bytecode.A(first)
+		uB := bytecode.B(first)
+		if uA != retA {
+			return shapeInfo{}
+		}
+		// UNM/LEN 的 B 是寄存器号,取值范围 [0, 254]
+		if uB > 254 {
+			return shapeInfo{}
+		}
+		return shapeInfo{
+			ok:         true,
+			retA:       uint8(retA),
+			retB:       uint8(retB),
+			retPC:      1,
+			preludeOp:  uint8(bytecode.Op(first)),
+			preludeArg: uint16(uB),
 		}
 
 	case bytecode.LOADK, bytecode.LOADBOOL, bytecode.LOADNIL:
@@ -346,4 +391,6 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 //   - 长度 2/3:LOADK/LOADBOOL/LOADNIL A ... + RETURN A 2(常量返)
 //   - 长度 2/3:ADD/SUB/MUL/DIV/MOD/POW A B C + RETURN A 2(prelude 路径
 //     调 host.Arith 慢路径 helper,可 ERR 冒泡)
-var ErrCompileUnsupportedShape = errors.New("internal/gibbous/jit: P4 PJ7 unsupported shape (expected: single RETURN A B / single-BB MOVE|GETUPVAL|LOADK|LOADBOOL|LOADNIL|ADD..POW + RETURN A 2)")
+//   - 长度 2/3:UNM/LEN A B + RETURN A 2(prelude 路径调 host.Unm/Len
+//     慢路径 helper,可 ERR 冒泡)
+var ErrCompileUnsupportedShape = errors.New("internal/gibbous/jit: P4 PJ7 unsupported shape (expected: single RETURN A B / single-BB MOVE|GETUPVAL|LOADK|LOADBOOL|LOADNIL|ADD..POW|UNM|LEN + RETURN A 2)")

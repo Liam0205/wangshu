@@ -240,3 +240,114 @@ func TestPJ7_ArithForm_HostRoute_Err(t *testing.T) {
 		t.Errorf("Arith ERR 路径不应写 R(A),got regs=%v", host.regs)
 	}
 }
+
+// TestPJ7_UnaryForm_HostRoute_OK UNM/LEN A B + RETURN A 2 形态:Run 调
+// host.Unm/Len helper,OK 路径写 R(A)。
+//
+// **背景**:UNM(`function(x) return -x end`)/ LEN(`function(s)
+// return #s end`)是 unary 算术 + 长度运算族,host helper 签名 (base, pc,
+// b, a) int32 与 Arith 的 (base, pc, op, b, c, a) 不同;analyzeShape 走
+// 独立 case + Run 走独立 host helper 接口方法。
+//
+// **prove-the-path 命中证据**:mock host unaryCalls 计数 + lastUnaryOp tag
+// 验证 UNM 调 Unm / LEN 调 Len(不混调)。
+func TestPJ7_UnaryForm_HostRoute_OK(t *testing.T) {
+	cases := []struct {
+		name      string
+		op        bytecode.OpCode
+		expectTag int32 // mock 内 tag:1=Unm / 2=Len
+	}{
+		{"UNM", bytecode.UNM, 1},
+		{"LEN", bytecode.LEN, 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// op A=1 B=0 + RETURN A=1 B=2(`function(x) return op(x) end`
+			// 形态:R(1) = op R(0); return R(1))
+			proto := &bytecode.Proto{
+				Code: []bytecode.Instruction{
+					bytecode.EncodeABC(tc.op, 1, 0, 0),
+					bytecode.EncodeABC(bytecode.RETURN, 1, 2, 0),
+				},
+			}
+			c := New()
+			host := newMockP4Host()
+			c.SetHostState(host)
+			expected := uint64(value.NumberValue(99))
+			host.unaryResult = expected
+			gc, err := c.Compile(proto, nil)
+			if err != nil {
+				t.Fatalf("Compile failed: %v", err)
+			}
+			defer tryDispose(t, gc)
+			stack := make([]uint64, 4)
+			if status := gc.Run(stack, 0); status != 0 {
+				t.Errorf("Run status = %d, want 0", status)
+			}
+			if host.unaryCalls != 1 {
+				t.Errorf("unary helper called %d times, want 1", host.unaryCalls)
+			}
+			if host.lastUnaryOp != tc.expectTag {
+				t.Errorf("called wrong unary helper:tag = %d, want %d(%s)",
+					host.lastUnaryOp, tc.expectTag, tc.name)
+			}
+			if host.lastUnaryA != 1 || host.lastUnaryB != 0 {
+				t.Errorf("unary BA = (%d,%d), want (0,1)", host.lastUnaryB, host.lastUnaryA)
+			}
+			got, ok := host.regs[1]
+			if !ok {
+				t.Fatal("OK 路径:SetReg(1, result) 应被调用")
+			}
+			if got != expected {
+				t.Errorf("R(1) = 0x%x, want 0x%x", got, expected)
+			}
+			if host.doReturnCalls != 1 {
+				t.Errorf("DoReturn 应调 1 次, got %d", host.doReturnCalls)
+			}
+		})
+	}
+}
+
+// TestPJ7_UnaryForm_HostRoute_Err UNM 错误路径(helper 返 1)。
+func TestPJ7_UnaryForm_HostRoute_Err(t *testing.T) {
+	proto := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABC(bytecode.UNM, 1, 0, 0),
+			bytecode.EncodeABC(bytecode.RETURN, 1, 2, 0),
+		},
+	}
+	c := New()
+	host := newMockP4Host()
+	c.SetHostState(host)
+	host.unaryRetCode = 1
+	gc, err := c.Compile(proto, nil)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	defer tryDispose(t, gc)
+	stack := make([]uint64, 4)
+	status := gc.Run(stack, 0)
+	if status != 1 {
+		t.Errorf("Run status = %d, want 1(ERR)", status)
+	}
+	if host.doReturnCalls != 0 {
+		t.Errorf("DoReturn 应跳过(ERR), got %d", host.doReturnCalls)
+	}
+}
+
+// TestPJ7_NotForm_Rejected NOT 形态当前 P4 不接,analyzeShape 应拒
+// (preludeOp 不填,SupportsAllOpcodes 返 false)。承 analyzeShape NOT
+// 注释:GetReg 接口未实装,NOT 留 P3 / 解释器处理。本测断言 NOT 形态
+// 经 SupportsAllOpcodes 是 false——防回归。
+func TestPJ7_NotForm_Rejected(t *testing.T) {
+	c := New()
+	proto := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABC(bytecode.NOT, 1, 0, 0),
+			bytecode.EncodeABC(bytecode.RETURN, 1, 2, 0),
+		},
+	}
+	if c.SupportsAllOpcodes(proto) {
+		t.Error("NOT 形态当前 P4 不接(GetReg 接口未实装),SupportsAllOpcodes 应返 false")
+	}
+}

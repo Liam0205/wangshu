@@ -129,8 +129,9 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 		c.host.SetReg(int32(c.retA), rax)
 	}
 
-	// PJ7 prelude opcode 处理(GETUPVAL / ADD-POW 等 host 调用形态):
-	// mmap 段不调 host(避免完整 trampoline 复杂度),改在 Go 端 Run 内调。
+	// PJ7 prelude opcode 处理(GETUPVAL / ADD-POW / UNM / LEN / NOT 等
+	// host 调用形态):mmap 段不调 host(避免完整 trampoline 复杂度),
+	// 改在 Go 端 Run 内调。
 	if c.preludeOp != 0 && c.host != nil && c.retB >= 2 {
 		switch c.preludeOp {
 		case uint8(bytecode.GETUPVAL):
@@ -147,6 +148,22 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 			if st != 0 {
 				// raise pending:host 端已置 gibbousPendingErr,enterGibbous
 				// 取走冒泡(不调 DoReturn 弹帧,ERR 路径不经 RETURN)。
+				return st
+			}
+		case uint8(bytecode.UNM):
+			// 一元负号:host.Unm 逐字节同构解释器 UNM 慢路径(string coercion
+			// + __unm 元方法,可 raise)。
+			st := c.host.Unm(int32(base), int32(c.retPC),
+				int32(c.preludeArg), int32(c.retA))
+			if st != 0 {
+				return st
+			}
+		case uint8(bytecode.LEN):
+			// 长度运算:host.Len 逐字节同构解释器 LEN(string 字节长 / table
+			// border / table __len / 异类报错,可 raise)。
+			st := c.host.Len(int32(base), int32(c.retPC),
+				int32(c.preludeArg), int32(c.retA))
+			if st != 0 {
 				return st
 			}
 		}

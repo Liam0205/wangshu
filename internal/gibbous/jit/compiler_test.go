@@ -47,6 +47,13 @@ type mockP4Host struct {
 	lastArithA   int32
 	arithResult  uint64 // 模拟「Arith 写回 R(A)」的值
 	arithRetCode int32  // 模拟 Arith 返回(0=OK / 1=ERR);单测预设
+	// Unm/Len 调用记录:
+	unaryCalls   int   // Unm 与 Len 共用计数
+	lastUnaryOp  int32 // 0=未调 / 1=Unm / 2=Len(本 mock 私有 tag,非 bytecode)
+	lastUnaryB   int32
+	lastUnaryA   int32
+	unaryResult  uint64 // 模拟 Unm/Len 写回 R(A) 的值
+	unaryRetCode int32
 }
 
 func newMockP4Host() *mockP4Host {
@@ -88,6 +95,35 @@ func (m *mockP4Host) Arith(base, pc, op, b, c, a int32) int32 {
 		m.regs[a] = m.arithResult
 	}
 	return m.arithRetCode
+}
+
+// Unm 模拟 host.Unm:与 Arith 同款 mock 形态,共用 unaryCalls/unaryResult/
+// unaryRetCode 三个字段(UNM/LEN 单测分文件,无需区分)。
+func (m *mockP4Host) Unm(base, pc, b, a int32) int32 {
+	_ = base
+	_ = pc
+	m.unaryCalls++
+	m.lastUnaryOp = 1 // Unm tag
+	m.lastUnaryB = b
+	m.lastUnaryA = a
+	if m.unaryRetCode == 0 {
+		m.regs[a] = m.unaryResult
+	}
+	return m.unaryRetCode
+}
+
+// Len 模拟 host.Len。
+func (m *mockP4Host) Len(base, pc, b, a int32) int32 {
+	_ = base
+	_ = pc
+	m.unaryCalls++
+	m.lastUnaryOp = 2 // Len tag
+	m.lastUnaryB = b
+	m.lastUnaryA = a
+	if m.unaryRetCode == 0 {
+		m.regs[a] = m.unaryResult
+	}
+	return m.unaryRetCode
 }
 
 // compileWithHost 构造 *Compiler 注入 mock host 后调 Compile。

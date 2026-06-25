@@ -45,6 +45,22 @@ type P4HostState interface {
 	// 用例:P4 ADD/SUB/MUL/... 形态 — Run 在 mmap 段执行后调本接口完成算术 +
 	// 写 R(A),然后调 DoReturn 弹帧。
 	Arith(base int32, pc int32, op int32, b int32, c int32, a int32) int32
+
+	// Unm 一元负号 UNM 慢路径助手(gibbous_host.go::Unm 同款签名,逐字节同构
+	// 于解释器 UNM 段慢路径:string coercion + __unm 元方法)。
+	//
+	// 参数:base/pc 同 Arith;b = 源寄存器号;a = 目标寄存器号(R(A))。
+	//
+	// 返回:0=OK / 1=ERR。用例:P4 UNM A B 形态。
+	Unm(base int32, pc int32, b int32, a int32) int32
+
+	// Len 长度运算 LEN 慢路径助手(gibbous_host.go::Len 同款签名,逐字节同构
+	// 于解释器 LEN 段:string 字节长 / table border / table __len / 异类报错)。
+	//
+	// 参数:base/pc 同 Arith;b = 源寄存器号;a = 目标寄存器号(R(A))。
+	//
+	// 返回:0=OK / 1=ERR。用例:P4 LEN A B 形态。
+	Len(base int32, pc int32, b int32, a int32) int32
 }
 
 // SetHostState 把 host(crescent)抽象注入本 Compiler。
