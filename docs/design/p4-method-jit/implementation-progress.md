@@ -11,7 +11,7 @@
 
 ## 0. 当前状态
 
-**P4 实现:PJ0 包骨架已落地**(2026-06-25,详 §5)。**设计文档集已齐备**(00-08 + implementation-progress 共 10 文件约 8200 行,审查后口径):
+**P4 实现:PJ0 包骨架已落地 + PJ1 spike 闸门 🟢 + amd64 工程组件已落地**(2026-06-25,详 §5/§6)。**设计文档集已齐备**(00-08 + implementation-progress 共 10 文件约 8200 行,审查后口径):
 
 - [00-overview](./00-overview.md)(319 行):文档地图 + PJ 里程碑 + 人月分解 + 跨文档定稿决策速查
 - [01-launch-judgment](./01-launch-judgment.md)(810 行):启动闸门 + luajc 档锚点 + 立项决策树
@@ -29,8 +29,9 @@
 - ✅ **P2 PB0-PB7 + 后续优化轮 #1-#4 全过线**(2026-06-13)
 - ✅ **P3 PW0-PW10 + VS0-e 全卷已交付**(2026-06-16,本机 Xeon 6982P 2s×3 count 实测基线:loop 2.95x / table 0.88x / call 0.52x / mixed 0.99x;call 0.52x 是 bench kernel 结构性架构边界)
 - ✅ **P4 设计文档完整**(00-08 + implementation-progress 共 10 文件)
-- ✅ **P4 PJ0 包骨架落地**(2026-06-25):`internal/gibbous/jit/{,amd64,arm64}` 子包 + bridge 注入(`internal/crescent/arena_p4.go::wireP4`)+ Makefile/build-test-bins.sh `-p4` 系列接入 + V1-V13/V17/V18 在 P4 build 下不豁免(`make test-p4` 全过);PJ0 阶段 SupportsAllOpcodes 全 false ⇒ 行为等价 P1-only(详 §5)
-- ⏳ **P4 立项判定 PJ1+ 启动**:当前需要外部输入(承 [01-launch-judgment §3](./01-launch-judgment.md))——三条硬前置:① 真实宿主负载需求(首个目标宿主规则引擎的列内核确认触及 luajc 档需求)② 资源到位(+1-2 人年人力承诺)③ 设计文档齐备(已就绪)。**P3 现状是 P4 立项的双向信号**:**loop 2.95x over P1(= 7.2x over gopher-lua,已超 luajc 档 4.4x over gopher-lua)**——列内核 loop 形态 P3 已超 luajc 档;但 **table 0.88x / call 0.52x / mixed 0.99x 仍 ≪ luajc 档列内核形态**——P4 立项动机**不在 loop 而在非 loop 形态**(call 0.52x 是 bench kernel 结构性架构边界);⇒ **若真实宿主负载主要是 loop 形态可暂不立项,若需 ≥luajc 档列内核能力(尤其 table/call/mixed 路径)则立项**(详 [01 §3.2 反向问题 / §3.3 P3 现状对照](./01-launch-judgment.md))。
+- ✅ **P4 PJ0 包骨架落地**(2026-06-25):`internal/gibbous/jit/{,amd64,arm64}` 子包 + bridge 注入 + Makefile/build-test-bins.sh `-p4` 系列接入 + V1-V13/V17/V18 在 P4 build 下不豁免(`make test-p4` 全过);PJ0 阶段 SupportsAllOpcodes 全 false ⇒ 行为等价 P1-only(详 §5)
+- 🔶 **P4 PJ1 部分**(2026-06-25):spike 闸门 🟢(`spike/p4tramp/`,4 闸门全过 + 单 CALL ~1.95ns 比 P3 wazero S1 18.9ns 快 ~10x)+ 主库 amd64 codepage / trampoline asm / emitter LOADK/RETURN 工程组件 + 单测 byte-equal 路径已落地;**未接入 GibbousCode.Run end-to-end byte-equal**(SupportsAllOpcodes 仍全 false,等 PJ2+ 完整 trampoline + jitContext 同批);详 §6
+- ⏳ **P4 立项判定 PJ2+ 启动**:当前需要外部输入(承 [01-launch-judgment §3](./01-launch-judgment.md))——三条硬前置:① 真实宿主负载需求(首个目标宿主规则引擎的列内核确认触及 luajc 档需求)② 资源到位(+1-2 人年人力承诺)③ 设计文档齐备(已就绪)。**P3 现状是 P4 立项的双向信号**:**loop 2.95x over P1(= 7.2x over gopher-lua,已超 luajc 档 4.4x over gopher-lua)**——列内核 loop 形态 P3 已超 luajc 档;但 **table 0.88x / call 0.52x / mixed 0.99x 仍 ≪ luajc 档列内核形态**——P4 立项动机**不在 loop 而在非 loop 形态**(call 0.52x 是 bench kernel 结构性架构边界);⇒ **若真实宿主负载主要是 loop 形态可暂不立项,若需 ≥luajc 档列内核能力(尤其 table/call/mixed 路径)则立项**(详 [01 §3.2 反向问题 / §3.3 P3 现状对照](./01-launch-judgment.md))。
 
 ---
 
@@ -39,7 +40,7 @@
 | PJ | 内容 | 文档 | 完成定义 | 状态 |
 |---|---|---|---|---|
 | PJ0 | 立项判定 + 包骨架 + build tag 隔离 | [01](./01-launch-judgment.md) + [06 §6.1](./06-backends.md) | 立项判定通过 + `internal/gibbous/jit/{amd64,arm64}` 骨架 + bridge 注入 P4Compiler 后 SupportsAllOpcodes 全 false | ✅ **2026-06-25 落地**(详 §6 PJ0 实装对账) |
-| PJ1 | amd64 trampoline + 直线模板(6 opcode) | [05](./05-system-pipeline.md) + [06 §3.1](./06-backends.md) | 直线 Proto 升层后 byte-equal;exec mmap + W^X 翻面工作 | ⏳ |
+| PJ1 | amd64 trampoline + 直线模板(6 opcode) | [05](./05-system-pipeline.md) + [06 §3.1](./06-backends.md) | 直线 Proto 升层后 byte-equal;exec mmap + W^X 翻面工作 | 🔶 **2026-06-25 部分**(详 §6 PJ1 实装对账;spike 闸门 🟢 + amd64 mmap+W^X+trampoline+emitter 主库版 + LOADK/RETURN 单测 byte-equal;**未接入 GibbousCode.Run end-to-end byte-equal**——SupportsAllOpcodes 仍全 false,完整接入留 PJ2+) |
 | PJ2 | amd64 算术 + 比较 + IsNumber×2 guard | [03](./03-speculation-ic.md) + [06 §3.2](./06-backends.md) | 双 number 快路径直发 `mulsd` 等;guard 失败 OSR exit 回解释 | ⏳ |
 | PJ3 | amd64 控制流 + FORLOOP + 回边 safepoint | [05 §6.3](./05-system-pipeline.md) + [06 §3.3](./06-backends.md) | 数值 for 编译后 ≥luajc 档单档(**P4 价值首次实证**)| ⏳ |
 | PJ4 | amd64 表 IC 模板 + stableShape/Index 直达槽投机 | [03 §6](./03-speculation-ic.md) + [06 §3.4](./06-backends.md) | 单态表 guard + 直达槽跳哈希;形状变化 deopt + 再训练 | ⏳ |
@@ -249,7 +250,82 @@ PJ1 启动条件:**真实宿主负载需求 + 资源到位**(②③ 前置)。PJ
 
 ---
 
-## 6. 后续维护协议
+## 6. PJ1 实装对账(2026-06-25 部分,承 §1 PJ 表头注)
+
+**状态**:🔶 **PJ1 部分**——spike 闸门 🟢 + amd64 mmap+W^X+trampoline+emitter 主库版 + LOADK/RETURN 单测 byte-equal **已落地**;**未接入 GibbousCode.Run end-to-end byte-equal**——SupportsAllOpcodes 仍全 false,完整端到端接入留 PJ2+(承下文 §6.4 范围裁决)。
+
+### 6.1 spike 闸门 🟢(承 06 §1.7)
+
+`spike/p4tramp/`(独立 module,镜像 spike/p3boundary / spike/p3indirect):
+
+| 闸门 | 内容 | 实测 |
+|---|---|---|
+| ① | exec mmap + W^X 翻面工作 | unix.Mmap PROT_RW → 写 9 字节 mov+ret → unix.Mprotect PROT_RX ✅ |
+| ② | trampoline 进出对称 | S2 同段 10000 次 + S3 8 段 100 轮交叉 全过 ✅ |
+| ③ | 单条直线模板可发射可执行 | S1 5 档 imm64(0/1/0xdeadbeef/0xcafebabedeadbeef/^uint64(0)) ✅ |
+| ④ | 单 CALL ~1.95 ns/op | 比 P3 wazero S1 18.9ns 快 ~10x;P4 自管 codegen 物理收益首次实证 ✅ |
+
+决策报告归档:`spike/p4tramp/DECISION.md`(对位 spike/p3indirect/DECISION.md)。
+
+### 6.2 主库 amd64 后端落地(`internal/gibbous/jit/amd64/`)
+
+| 件 | 落地 | 文件 |
+|---|---|---|
+| codepage(mmap + W^X 翻面 + munmap) | ✅ linux/amd64 | `codepage_linux.go`(主)+ `codepage_other.go`(其它平台占位 stub) |
+| trampoline asm(Plan 9,NOSPLIT|NOFRAME) | ✅ linux/amd64 | `trampoline_amd64.s`(go:noescape)+ `trampoline_linux_amd64.go`(Go 端 callJIT 声明)+ `trampoline_other.go`(其它平台 panic stub) |
+| emitter(EmitMovRaxImm64 + EmitRet) | ✅ amd64 | `emitter.go`——LOADK + RETURN 直线模板原语;PJ2-PJ7 渐进扩(MOVE / 算术 / 表 IC / 控制流) |
+| 单测(端到端 mmap → 执行 → 返回) | ✅ | `emitter_test.go`:TestPJ1_Emitter_MovRaxRet(5 档 imm)/ TestPJ1_RepeatedCalls(1000 次)/ BenchmarkPJ1_CallJIT(实测 1.96ns,与 spike 1.95ns 一致) |
+
+### 6.3 与 spike 形态的关系
+
+主库 amd64 后端 = spike/p4tramp 同款形态 + per-Proto 段释放策略(Munmap + Length API)。**PJ1 简化形态**(承 spike DECISION.md「极简形态的限制」):
+- 不切自管栈、不装 jitContext / r14=arena base / rbx=值栈 base;
+- 不保存 callee-saved(`r12-r15/rbp` Go ABI0)——因模板只跑 mov+ret 不动它们;
+- 不带 GC 安全点纪律(段瞬时执行,Go runtime 异步抢占落 mmap PC 不可恢复——这正是 PJ2+ 完整版要解的);
+- 不引入 codeAddr 校验(nil ptr / 越界检查留 PJ2+ 完整版)。
+
+**PJ1 简化形态适用范围**:LOADK / RETURN 类「无 helper / 无栈帧 / 无外部状态」直线模板。这些 opcode 落地能让 trampoline 单一 CALL+RET 即可,不需要完整 jitContext。PJ2 算术 / PJ4 表 IC 引入 helper 调用时,trampoline 升级到完整版。
+
+### 6.4 范围裁决:为何 SupportsAllOpcodes 仍全 false
+
+PJ1 设计原意「直线 Proto 升层后 byte-equal」需要:
+1. ✅ amd64 mmap+W^X+trampoline+emitter 工程组件(本节 §6.2)
+2. ❌ **GibbousCode.Run 接入 crescent 值栈写回** —— 让 LOADK 烧入的 imm 真的写到 R(A) 槽位,RETURN 把帧弹出
+3. ❌ **完整 jitContext + 切 SP** —— 让模板能从 r14/rbx 读 arena base / 值栈 base
+
+第 2/3 项的复杂度峰值在 trampoline 切 SP 与 jitContext 装载,这块不是 PJ1 简化形态的能做(spike 极简形态明示不验)。**真正的 PJ1 「直线 Proto byte-equal」需要 PJ2 完整 trampoline 同批落地**——单纯 PJ1 范围内做完工程组件而 SupportsAllOpcodes 提前开放(让 LOADK/RETURN 走 P4 路径)会导致 GibbousCode.Run 写不回值栈、产生静默错果(非 byte-equal)。
+
+**PJ1 范围裁决**:本期交付「**spike 闸门 🟢 + amd64 工程组件 + LOADK/RETURN 单测**」三件套——这是 PJ2+ 启动的物理基础;**SupportsAllOpcodes 保持全 false**,等 PJ2+ 完整 trampoline + jitContext 同批落地后开 LOADK/RETURN 白名单。这与「闸门停下不亏」纪律对齐:即便 PJ2+ 永不启动,本期的工程组件已实证 P4 物理可行性。
+
+### 6.5 验收口径(00 §4 PJ1 + §6.1 spike + §6.2 主库):全过
+
+| 验收项 | 实测 | 命令 |
+|---|---|---|
+| spike 四档闸门 | ✅ | `cd spike/p4tramp && go test -v ./... && go test -bench=. -benchtime=2s -count=3 ./...` |
+| 主库 amd64 后端编译 | ✅ | `go build -tags wangshu_p4 ./...`(三 build vet + lint 全过) |
+| 主库 amd64 单测 | ✅ | `go test -tags wangshu_p4 ./internal/gibbous/jit/amd64/...`(TestPJ1_Emitter_MovRaxRet 5 档 + TestPJ1_RepeatedCalls 1000 次) |
+| 主库 amd64 性能基线 | ✅ | `go test -tags wangshu_p4 -bench=BenchmarkPJ1 ./internal/gibbous/jit/amd64/...`:1.96 ns/op(与 spike 1.95ns 一致) |
+| **P4 build 全套测试套与 P1-only 等价** | ✅ | `make test-p4` 跑 21 个 .test binary 全过(新增 internal-gibbous-jit-amd64.test);**PJ0 防线延续**——SupportsAllOpcodes 仍全 false ⇒ 行为等价 P1 |
+
+### 6.6 后续 PJ 路标(承 §6.4 范围裁决)
+
+PJ2+ 启动条件:**真实宿主负载需求 + 资源到位**(承 §5.1 立项判定 ② ③ 前置)。PJ1 已铺好:
+- spike 闸门 🟢 实证 P4 物理可行性(4 闸门 + 性能基线 1.95ns);
+- amd64 工程组件(codepage + trampoline + emitter)已落地;
+- 单测路径(端到端 mmap→执行→返回)已验证;
+
+PJ2 启动时直接补:
+1. `internal/gibbous/jit/jitcontext.go`(jitContext struct,承 05 §3.3)
+2. `trampoline_amd64.s` 升级到完整版(切 SP + 装 jitContext + 保存 callee-saved)
+3. `emitter.go` 扩 ADD/SUB 投机模板 + IsNumber×2 guard(承 03 §2 + 06 §3.2)
+4. SupportsAllOpcodes 开 LOADK/RETURN/MOVE/LOADBOOL/LOADNIL/JMP 白名单
+5. GibbousCode.Run 接入 crescent 值栈(end-to-end byte-equal)
+
+承 [01 §3.4 三档策略](./01-launch-judgment.md):若 ② ③ 一直未到位,P4 最终决议「跳过」时本期产出作未来重启的「PJ1 工程组件已落地,PJ2+ 待启」存档。
+
+---
+
+## 7. 后续维护协议
 
 PJ0 启动后,本文按以下协议更新(承 [P3 implementation-progress §5](../p3-wasm-tier/implementation-progress.md) 范本):
 
