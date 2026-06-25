@@ -71,15 +71,13 @@ const EncodedRetLen = 1
 // EmitMovImm64ToReg 发射「mov regNum, imm64」10 字节序列(承 06 §3.7 直线族,
 // regNum ∈ [0, 7] = RAX/RCX/RDX/RBX/RSP/RBP/RSI/RDI)。
 //
-// amd64 编码:48 (b8 + regNum) ii ii ii ii ii ii ii ii(REX.W + B8+rd opcode)。
-//
-// PJ3+ 用例:MOVE 模板把 R(B) 的 NaN-box u64 装入暂存寄存器(rax/rcx),计算
-// 后 store 回 R(A);LOADK 烧不同寄存器(非 RAX)的常量。
+// **关键防御**(承审查 🟠 #1):reg=4(RSP)/ reg=5(RBP)是 amd64 合法编码,
+// 但语义上 mov rsp/rbp, imm64 会破坏 trampoline 栈协议(返回时 ret 跳无效
+// 地址 SEGV)。本函数对 4/5 兜底为 RAX(0)。reg 6/7(RSI/RDI)合法可用。
 func EmitMovImm64ToReg(buf []byte, regNum uint8, imm uint64) []byte {
-	if regNum > 7 {
-		// 超出 8 个低位寄存器(RAX-RDI)需要 REX.B(承 amd64 编码),PJ3 简化
-		// 形态只支持低 8 个寄存器(RAX/RCX/RDX/RBX/RSP/RBP/RSI/RDI)。
-		regNum = 0 // 防御性兜底为 RAX
+	if regNum > 7 || regNum == 4 || regNum == 5 {
+		// RSP/RBP 不安全,防御性兜底为 RAX
+		regNum = 0
 	}
 	buf = append(buf, 0x48, 0xb8|regNum)
 	for i := 0; i < 8; i++ {
@@ -185,27 +183,20 @@ func EmitCallRel32(buf []byte, rel32 int32) []byte {
 // EmitCallReg 发射「call regN」2 字节序列(承 06 §3.5 间接 CALL helper)。
 //
 // amd64 编码:ff (d0 + regN)(CALL r/m64,FF /2,reg field encoded in modrm)。
-// 仅低 8 个寄存器(RAX-RDI)。
-//
-// PJ5+ 用例:helper 调用主路径——「mov rax, helperPtr; call rax」(11+2=13
-// 字节);helperPtr 经 jitContext.helperTable load(承 05 §4.3 helper 表)。
+// 仅低 8 个寄存器(RAX-RDI);reg=4(RSP)语义不可用(承审查 🟢 #2)防御。
 func EmitCallReg(buf []byte, regNum uint8) []byte {
-	if regNum > 7 {
-		regNum = 0 // 防御性兜底
+	if regNum > 7 || regNum == 4 {
+		regNum = 0 // RSP/超界兜底为 RAX
 	}
 	buf = append(buf, 0xff, 0xd0|regNum)
 	return buf
 }
 
-// EmitPushReg 发射「push regN」1 字节序列(承 06 §4.1 callee-saved 协议;
-// regN ∈ [0, 7])。
-//
-// amd64 编码:50 + regN(PUSH r64)。
-//
-// PJ5+ 用例:trampoline 进入时保存 callee-saved 寄存器(rbx/rbp/r12/r13/r15
-// 的低 4 个;r12-r15 需 REX.B 留 PJ5+ 扩 EmitPushRegHi)。
+// EmitPushReg 发射「push regN」1 字节序列。reg=4(RSP)/ reg=5(RBP)语义
+// 危险——RBP 已被 trampoline 序言保存,业务码不该改;RSP push 无意义。本
+// 函数对 4/5 兜底为 RAX(0)。
 func EmitPushReg(buf []byte, regNum uint8) []byte {
-	if regNum > 7 {
+	if regNum > 7 || regNum == 4 || regNum == 5 {
 		regNum = 0
 	}
 	buf = append(buf, 0x50|regNum)
@@ -213,10 +204,9 @@ func EmitPushReg(buf []byte, regNum uint8) []byte {
 }
 
 // EmitPopReg 发射「pop regN」1 字节序列(对位 EmitPushReg 出栈)。
-//
-// amd64 编码:58 + regN。
+// reg=4/5 同 EmitPushReg 防御。
 func EmitPopReg(buf []byte, regNum uint8) []byte {
-	if regNum > 7 {
+	if regNum > 7 || regNum == 4 || regNum == 5 {
 		regNum = 0
 	}
 	buf = append(buf, 0x58|regNum)
@@ -255,27 +245,27 @@ func EmitLoadKReturnTemplate(buf []byte, konst uint64) []byte {
 // EncodedLoadKReturnTemplateLen 「LOADK + RETURN 单 BB」模板字节数(11)。
 const EncodedLoadKReturnTemplateLen = EncodedMovRaxImm64Len + EncodedRetLen
 
-// EmitProlog 发射 trampoline 进入序言(承 trampoline_full_amd64.s 同款形态:
-// push 5 个 callee-saved 寄存器)。
+// EmitProlog 发射 trampoline 进入序言简化版(push rbx + push rbp,2 字节)。
 //
-// 编码:50 50 50 50 50 风格(实际 5 个不同寄存器,共 5 字节)——仅低 8 寄存器。
-// r12-r15 需 REX.B,本原语只覆盖低 8 寄存器范围;r12/r13/r14/r15 留 PJ7+
-// 加 EmitPushRegHi 扩。
+// **与 trampoline_full_amd64.s 的关系**:本 emitter 原语仅作 emit 接口对齐
+// (让 jit.Compile 在「需要保存 callee-saved 后跑模板」时按需经 emit 路径
+// 生成 trampoline 序言);**完整 5 寄存器序言**(push rbx/rbp/r12/r13/r15,
+// r14=Go G 不动)在 trampoline_full_amd64.s 直接实装。本简化版只覆盖低 8
+// 寄存器(rbx/rbp);r12-r15 需 REX.B 前缀,留 PJ7+ 加 EmitPushRegHi 扩。
 //
-// **当前用例**:trampoline_full_amd64.s 已实装,本 emitter 原语仅作 emit
-// 接口对齐——让 jit.Compile 在「需要保存 callee-saved 后跑模板」时按需
-// 经 emit 路径生成 trampoline 序言(承 06 §2.4 emitter 接口 single source)。
+// **绕过 EmitPushReg/EmitPopReg 的 RBP 防御**:trampoline 序言保存 RBP 是
+// callee-saved 协议合法用法(出口 pop 恢复),与业务码改 RBP 不同。直接发
+// push 字节(0x55 = push rbp / 0x53 = push rbx)。
 func EmitProlog(buf []byte) []byte {
-	// 简化版:push rbx, push rbp(2 字节)——完整 trampoline 已在 asm 实装。
-	buf = EmitPushReg(buf, 3) // push rbx
-	buf = EmitPushReg(buf, 5) // push rbp
+	buf = append(buf, 0x53) // push rbx
+	buf = append(buf, 0x55) // push rbp
 	return buf
 }
 
 // EmitEpilog 发射 trampoline 出口序言(对位 EmitProlog,逆序 pop)。
 func EmitEpilog(buf []byte) []byte {
-	buf = EmitPopReg(buf, 5) // pop rbp
-	buf = EmitPopReg(buf, 3) // pop rbx
+	buf = append(buf, 0x5d) // pop rbp
+	buf = append(buf, 0x5b) // pop rbx
 	return buf
 }
 

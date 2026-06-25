@@ -29,7 +29,7 @@ case "$variant" in
         tags="wangshu_p3 wangshu_profile"
         ;;
     p4)
-        tags="wangshu_p4"
+        tags="wangshu_p4 wangshu_profile"
         ;;
     "")
         echo "usage: $0 <variant>  (variant: p1 | p3 | p4)" >&2

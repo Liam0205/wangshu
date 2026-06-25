@@ -39,19 +39,27 @@ func (st *State) wireP3() {}
 // `docs/design/p4-method-jit/00-overview.md` §4 PJ0 行 + P3 同款
 // arena_p3.go::wireP3 注入协议范本)。
 //
-// **PJ0 阶段:Compiler 是空 struct,SupportsAllOpcodes 全 false** ⇒ 所有
-// Proto 经 F7 闸门判 NotCompilable,considerPromotion 进 TierStuck——P4
-// build 行为与 P1-only 等价(00 §4 PJ0 验收口径:「bridge 注入 P4Compiler
-// 后 SupportsAllOpcodes 全 false ⇒ 所有 Proto 仍走 crescent」)。这是 PJ0
-// 关键防线:本 build 全测试套(V1-V13/V17/V18)与 P1-only build byte-equal。
+// **PJ7 真接入**(2026-06-25):
+//  1. 构造 jit.Compiler;
+//  2. 注入 bridge(b.SetP3Compiler);
+//  3. **注入 P4HostState**(c.SetHostState(st))——P4 的 p4Code.Run 在
+//     mmap 段执行后调 host.DoReturn 完成弹帧 + 移结果(因 P4 简化形态
+//     mmap 段不内调 host helper,需 Go 端拆帧——承
+//     `docs/design/p4-method-jit/05-system-pipeline.md` §4 trampoline 三出口
+//     协议中「Go 端拆帧」选项)。
 //
-// PJ1+ 渐进填实(amd64 trampoline + 直线模板 + 投机 IC + OSR exit)。
+// **PJ7 阶段 SupportsAllOpcodes 已开放**「LOADK A K(0); RETURN A 1」单 BB
+// 白名单——bridge 主路径会经 considerPromotion → P4 Compile → installGibbous
+// 升层该形态 Proto;crescent.doCall 检测 TierGibbous → enterGibbous → 经
+// p4Code.Run 走 P4 路径。
 func (st *State) wireP4() {
 	c := jit.New()
 	if c == nil {
-		// 防御性兜底:Compiler 构造失败(P4 环境问题或 wangshu_p4 build tag 失配),
-		// 不注入 bridge——bridge.p3 保持 nil,行为同 P1-only(F7 永久不通过)。
 		return
 	}
+	// PJ7 真接入:注入 *State 作 P4HostState(*State 实装 DoReturn,
+	// gibbous_host.go 已有,与 P3 共用)。**per-Compiler 单例**(避免 global
+	// hostState 多 State 并发写 race,V18 -race 友好)。
+	c.SetHostState(st)
 	st.bridge.SetP3Compiler(c)
 }

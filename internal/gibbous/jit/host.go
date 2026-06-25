@@ -155,6 +155,68 @@ type P4HostState interface {
 	// 返回:0=OK / 1=ERR(raise pending,'for' init/limit/step must be a number)。
 	ForPrep(base int32, pc int32, a int32) int32
 
+	// CallBaseline 处理 CALL A B C 的 baseline 同步路径(承
+	// docs/design/p4-method-jit/05-system-pipeline.md §4.3,**绕过 P3 R3 indirect
+	// 直调哨兵协议**——简化版只走 baseline doCall 分派 + 同步驱动被调帧到完
+	// 成,免引入段内 call_indirect 通道。
+	//
+	// 参数 base/pc 同 Arith;a/b/c 是 CALL A B C 三字段:
+	//   - a = 被调函数寄存器号(R(A));参数从 R(A+1..A+B-1)
+	//   - b = 参数计数 + 1(B=0 表示「到 top」,B=1 表 0 参数,B=N 表 N-1 参数)
+	//   - c = 返回值计数 + 1(C=0 表「到 top」,C=1 表 0 返回值,C=N 表 N-1 返回值)
+	//
+	// 返回:0=OK(被调帧已完成 + 结果已落 R(A..A+C-2),caller 帧仍活)/
+	//      1=ERR(pendingErr 已置 → 上层 ERR 冒泡)。
+	//
+	// **与 P3 wasm 端 DoCall 的差异**:DoCall 返 i64 三态(<0/odd/even)用于
+	// wasm 端 call_indirect 直调分派;P4 PJ5 简化形态没有 wasm-level 段内
+	// indirect 通道,所以 host 端**必须**走 baseline doCall(host/crescent/__call/
+	// 全形态 gibbous 一律同步跑完),不进 tryIndirectCallee 快路径。
+	//
+	// **简化形态用例**(`function(g) g() end` 类):Run 端 prelude 路径调
+	// 本接口完成调用 + 后续 DoReturn 弹帧。byte-equal P1 解释器 doCall 路径。
+	CallBaseline(base int32, pc int32, a int32, b int32, c int32) int32
+
+	// TailCall 处理 TAILCALL A B C 的 baseline 同步路径(承
+	// docs/design/p4-method-jit/05-system-pipeline.md §4.3 + p1-interpreter/
+	// 05-interpreter-loop.md §8.4 — 尾调用复用帧 + executeFrom 同步驱动 callee 链)。
+	//
+	// 参数 base/pc 同 CallBaseline;a/b/c 是 TAILCALL A B C 三字段(luac 编 C=0):
+	//   - a = 被调函数寄存器号(R(A));参数从 R(A+1..A+B-1)
+	//   - b = 参数计数 + 1(B=0 表「到 top」,B=1 表 0 参数,B=N 表 N-1 参数)
+	//   - c = 返回值计数 + 1(TAILCALL 永远 C=0,luac 编 stmtReturn 强制写 0
+	//     表「到 top」,与尾随 RETURN B=0 衔接)
+	//
+	// 返回(三态分支,与 crescent.State.TailCall 同款):
+	//   - 0 = Lua 尾调用完成。caller 帧已被 callee 帧替换 + executeFrom 同步驱动
+	//     callee 链到完成 + nresults 写回上层 funcIdx。Run 端**跳过 DoReturn**
+	//     (本帧已弹),直接 return 0。
+	//   - 1 = ERR(raise pending → 上层 ERR 冒泡)。
+	//   - 2 = host 尾调用。结果已落 R(A..A+nrets-1),G 帧未弹。Run 端**正常调
+	//     DoReturn**(对位 luac 编的尾随 dead RETURN A B=0,nret 到 top)。
+	//
+	// **简化形态用例**(`function(g) return g() end` / `function() return f() end`
+	// 等):Run 端 prelude 路径调本接口完成 + 三态分支(byte-equal P1 解释器
+	// doTailCall 路径)。
+	TailCall(base int32, pc int32, a int32, b int32, c int32) int32
+
+	// Self 处理 SELF A B C 助手(gibbous_host.go::Self 同款签名,逐字节同构
+	// 解释器 SELF 段:R(A+1)=R(B) self + R(A)=R(B)[RK(C)] method,经
+	// icGetTable IC + 哈希 + __index 元方法链,可 raise:attempt to index nil 等)。
+	//
+	// 参数:
+	//   - base/pc:当前帧 base 字节偏移 + 当前 pc(物化 ci.savedPC,与解释器同款)
+	//   - a:SELF.A(目标寄存器:method 结果到 R(A),self 到 R(A+1))
+	//   - b:SELF.B(receiver 寄存器号 0-255)
+	//   - c:SELF.C(RK 编码 0-511,常量 256 偏移)
+	//
+	// 返回:0=OK / 1=ERR(raise pending,enterGibbous 取走冒泡)。
+	//
+	// 用例:P4 PJ5 SELF + CALL/TAILCALL inline 形态(`obj:method(args)` 类)。
+	// Run 端 prelude 路径调 host.Self 装 method/self,然后调 CallBaseline /
+	// TailCall 完成 byte-equal P1 doCall 分派。
+	Self(base int32, pc int32, a int32, b int32, c int32) int32
+
 	// ArenaBaseAddr 返回 arena `[]byte` 起点的 uintptr(承 05 §3.3)。	//
 	// 用例:PJ2 完整投机模板——mmap 段经 r15+offset 读 arenaBase 字段后
 	// 经字节级 movsd 直接读/写值栈槽位,跳过 host 接口 round-trip。
@@ -176,6 +238,72 @@ type P4HostState interface {
 	// 世界)发生,JIT 内联 bump 越界即出去——回来后从 jitContext 重载
 	// base。PJ2 完整版接入此协议;PJ7 简化形态尚不调用本接口。
 	ValueStackBaseAddr(base int32) uintptr
+
+	// CIDepthHostAddr 返回 thread.ciDepth 镜像字的 host 字节地址(承 §9.20
+	// Option B Spike 1)。
+	//
+	// **复用 P3 PW10 Stage 1a 镜像字**(crescent.State.ciDepthRef):同一镜像字
+	// crescent 端经 setCIDepth 写入,P4 mmap 段经 host addr (uintptr) 读 / inc / dec。
+	// 返回 = arena.Words().bytePtr + (st.ciDepthRef bytes)。
+	//
+	// **arena 重定位风险**:同 ArenaBaseAddr,arena grow 出 JIT 世界后回来从
+	// jitContext 重载;Spike 1 阶段每次 Run 入口注入。
+	CIDepthHostAddr() uintptr
+
+	// CISegBaseHostAddr 返回 CI 段当前字节基址镜像字的 host 字节地址(承 §9.20)。
+	//
+	// **复用 P3 PW10 Stage 2 镜像字**(crescent.State.ciSegBaseRef):CI 段可
+	// 重定位,mmap 段经此镜像字解引出当前 CI 段基址,然后算 CallInfo[depth]
+	// 帧地址(基址 + depth*40)。
+	CISegBaseHostAddr() uintptr
+
+	// TopHostAddr 返回 thread.top 镜像字的 host 字节地址(承 §9.20)。
+	//
+	// **复用 P3 PW10 Stage 1a 镜像字**(crescent.State.topRef):top 是栈槽索引,
+	// enterLuaFrame 设 callee 帧顶时 mmap 段写入(top = base + MaxStack)。
+	TopHostAddr() uintptr
+
+	// ExecuteCalleeFromInlineFrame Spike 1 Step C-1 helper API(承 §9.20.7
+	// 真实装拆解 + §9.20.9 trampoline exit-resume 协议 commit-2 接口 +
+	// commit-5l 签名修正:callA 替代 retA,SELF + CALL 形态下 method 在
+	// R(callA),callA 是 callee 槽位识别的正确字段)。
+	//
+	// **前置条件**(caller mmap 段必须保证):
+	//   - mmap 段 BuildVoid0ArgSkeleton 已写完 CallInfo[depth] 5 word 字段
+	//     (word0 编译期占位 0,helper 内忽略改取 calleeCI.cl word3 反查 callee
+	//     Proto;funcIdx 用 caller.base + callA 算)
+	//   - mmap 段 EmitFrameInlineCIDepthInc 已做 ciDepth++
+	//   - thread.cur 字段未被 mmap 段更新(Go 端冷字段)
+	//
+	// **流程**(对应 crescent.State 实装):
+	//   1. read CI[ciDepth-1].cl(BuildVoid0Arg LoadClosureGCRef 装载的 callee
+	//      closure GCRef)
+	//   2. 反查 callee Proto:object.ClosureProtoID(cl) → st.protos[pid]
+	//   3. ciDepth-- 抵消 BuildVoid0Arg 副作用
+	//   4. funcIdx = th.cur.base + callA(caller frame R(callA) = method 槽位)
+	//   5. nargs=1 + nresults=0(Spike 1 SELF + CALL 0 user-arg setter 形态:
+	//      SELF 已写 R(callA+1)=self,caller CALL.B=2 = 1 nargs(self only),
+	//      enterLuaFrame 期望 nargs=1)
+	//   6. nCcalls++/enterLuaFrame/executeFrom/popCallInfo
+	//   7. 出口 ciDepth++ 平衡 PopVoid0Arg(commit-5m 入口先从 mirror sync Go
+	//      field ciDepth,避免 mmap CIDepthInc 与 Go field 不同步)
+	//
+	// **返**:0=OK(callee 完成 + 返值已落 R(callA..callA+nresults-1))/ 1=ERR
+	// (state.pendingErr 已置,Run 端 dispatcher 走错误路径)。
+	//
+	// **commit-5l 签名修正**(承 PR 评审 + 自检):原 retA 是 RETURN.A(setter
+	// 形态恒 0),无法正确算 funcIdx;改 callA 是 CALL.A(SELF + CALL 形态下
+	// method 槽位置),与 host.CallBaseline 同款语义对齐。
+	//
+	// **commit-5p Spike 2 签名扩**:加 callArgCount 参数,允许 N 参 SELF + CALL
+	// 形态(callArgCount=0..7;helper 内 enterLuaFrame nargs = 1+callArgCount =
+	// self + N user args)。
+	//
+	// **commit-5q Spike 4 签名扩**:加 nresults 参数,允许多返值形态(
+	// callC=1 → 0返 setter / callC=2 → 1返 getter / callC=3..16 → N=2..15 返
+	// drop multi-ret;helper 内 enterLuaFrame nresults 设值 + callee RETURN
+	// doReturn 自动落 R(callA..callA+nresults-1))。
+	ExecuteCalleeFromInlineFrame(base int32, callA int32, callArgCount int32, nresults int32) int32
 }
 
 // SetHostState 把 host(crescent)抽象注入本 Compiler。
