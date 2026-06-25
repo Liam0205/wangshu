@@ -45,9 +45,13 @@ type p4Code struct {
 	retB uint8
 
 	// retPC 是 RETURN 指令的 pc(从 0 起)——DoReturn 用于物化 ci.savedPC。
-	//   - 长度 1 形态(纯 RETURN):retPC = 0
-	//   - 长度 2 形态(LOADK/LOADBOOL/LOADNIL + RETURN):retPC = 1
 	retPC uint8
+
+	// writeRetA 标志 mmap 段执行后是否要把 RAX 写 R(retA):
+	//   - true(LOADK/LOADBOOL/LOADNIL):mmap 段算出新值,需写槽位
+	//   - false(首条 RETURN A B=2,如 `function(x) return x end`):R(retA)
+	//     已经是参数值(由 caller 写入),不应被 mmap 段返回的 dummy RAX 覆盖
+	writeRetA bool
 
 	// host 是注入的 P4HostState(从 *Compiler 拷贝):per-p4Code 持有,无并发
 	// write(只在 Compile 时写一次,Run 时只读)——V18 -race 友好。
@@ -91,13 +95,9 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 	jitCtxAddr := jitContextAddr(c.jitCtx)
 	rax := jitamd64.CallJITFull(c.codePage.Addr(), jitCtxAddr)
 
-	// 写 R(retA) = RAX(仅当返回值个数 >= 1,即 retB >= 2)。
-	// retB = 1 时 0 个返回值,不写值栈。
-	//
-	// **PJ7 真接入:经 host.SetReg 写 arena 值栈本体**——而非直接写 stack 参数
-	// (P3 的 stack 是 wazero CallWithStack 1 槽 buffer 协议,与 P4 不兼容;
-	// gibbous_host.go::gibbousStack 复用 buffer,P4 不应当作真值栈用)。
-	if c.retB >= 2 && c.host != nil {
+	// 写 R(retA) = RAX(仅当 writeRetA = true 且返回值个数 >= 1)。
+	// writeRetA = false 时(首条 RETURN A 形态)R(retA) 已是参数值,不覆盖。
+	if c.writeRetA && c.retB >= 2 && c.host != nil {
 		c.host.SetReg(int32(c.retA), rax)
 	}
 	_ = base  // base 字节偏移在 P4 PJ7 简化形态下不直接使用(经 host.SetReg 算位置)

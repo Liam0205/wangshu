@@ -62,129 +62,129 @@ func New() *Compiler {
 // PJ8+ 启动时扩 supported(MOVE 寄存器拷 + ADD/SUB 算术 + 等)需要 jitContext
 // load/store 值栈,留下一阶段。
 func (c *Compiler) SupportsAllOpcodes(proto *bytecode.Proto) bool {
-	_, _, ok := analyzeShape(proto)
+	_, _, _, ok := analyzeShape(proto)
 	return ok
 }
 
-// analyzeShape 识别支持的「单值产生 + RETURN A 1」形态,返 (retA, value, ok)。
+// analyzeShape 识别支持的「单值产生 + RETURN A 1」形态,返
+// (retA, value, writeRetA, ok)。
 //
-// ok=true 时 retA 是 RETURN 的 A 寄存器号,value 是 R(retA) 的最终 NaN-box
-// u64 值(由首条 opcode 编译期决定)。
+//   - ok=true:形态合法
+//   - retA:RETURN 的 A 寄存器号
+//   - value:R(retA) 的 NaN-box u64 值(若 writeRetA=true 由 mmap 段烧入并经
+//     host.SetReg 写槽位)
+//   - writeRetA:是否需要把 mmap 段返的 RAX 写 R(retA)。**仅 LOADK/LOADBOOL/
+//     LOADNIL 形态需写**;首条 RETURN A 形态(`function(x) return x end` /
+//     `function() end`)R(retA) 已是参数/Nil 槽,不应被覆盖。
 //
 // 支持形态:
 //
-//   - 长度 1:RETURN A 1 (B=1,返回 0 个值,即 `function() end`/`return`)
-//   - 长度 2:LOADK/LOADBOOL/LOADNIL A ... + RETURN A 2(返回 1 个值)
-//   - 长度 3:同长度 2 + 尾部 RETURN(luac 主 chunk 常见冗余尾,编译器加的
-//     dead code:LOADK + RETURN A 2 + RETURN 0 1)。第 3 条 RETURN 永远不
-//     执行(第 2 条 RETURN 已退出),识别即接受。
-func analyzeShape(proto *bytecode.Proto) (uint8, uint64, bool) {
+//   - 长度 1:RETURN A 1 (B=1,返回 0 个值,即 `function() end`/`return`);
+//     writeRetA=false(无需写槽)
+//   - 长度 1/2/3:首条 RETURN A B(B=1 或 B=2,如 `function(x) return x`);
+//     writeRetA=false(R(A) 已是参数值)
+//   - 长度 2/3:LOADK/LOADBOOL/LOADNIL A ... + RETURN A 2(返 1 个值);
+//     writeRetA=true(mmap 段算出新值需写槽)
+func analyzeShape(proto *bytecode.Proto) (uint8, uint64, bool, bool) {
 	if proto == nil {
-		return 0, 0, false
+		return 0, 0, false, false
 	}
 
-	// 形态 0:长度 1,RETURN A B=1(返回 0 个值,空函数)
+	// 形态 0:长度 1,RETURN A B(0 或 1 个返回值)
 	if len(proto.Code) == 1 {
 		ret := proto.Code[0]
 		if bytecode.Op(ret) != bytecode.RETURN {
-			return 0, 0, false
+			return 0, 0, false, false
 		}
 		retB := bytecode.B(ret)
-		if retB != 1 {
-			return 0, 0, false
+		if retB != 1 && retB != 2 {
+			return 0, 0, false, false
 		}
-		return 0, 0, true
+		// retA 不需要,value 不会被写入(writeRetA=false)
+		return uint8(bytecode.A(ret)), 0, false, true
 	}
 
 	// 形态 1/2:长度 2 或 3
 	if len(proto.Code) != 2 && len(proto.Code) != 3 {
-		return 0, 0, false
+		return 0, 0, false, false
 	}
 
-	// 第二条必须是 RETURN A 2(返回 1 个值)
-	ret := proto.Code[1]
-	if bytecode.Op(ret) != bytecode.RETURN {
-		return 0, 0, false
-	}
-	retA := bytecode.A(ret)
-	retB := bytecode.B(ret)
-	if retB != 2 {
-		return 0, 0, false
-	}
+	// 第二条必须是 RETURN A 2(返回 1 个值,长度 2/3 LOADK 形态)或
+	// 直接首条 RETURN(长度 2 luac 优化形态)
+	first := proto.Code[0]
 
-	// 长度 3 时:第 3 条必须是 RETURN(尾部冗余,luac 主 chunk 常见模式)。
-	// 第 3 条 RETURN 永远不执行(第 2 条 RETURN 已退出),不读它的字段。
+	// 长度 3 时:第 3 条必须是 RETURN(尾部冗余)
 	if len(proto.Code) == 3 {
 		if bytecode.Op(proto.Code[2]) != bytecode.RETURN {
-			return 0, 0, false
+			return 0, 0, false, false
 		}
 	}
 
-	first := proto.Code[0]
 	switch bytecode.Op(first) {
 	case bytecode.RETURN:
-		// 长度 2 / 3 + 首条 RETURN A 2:luac 优化形态(无 LOADNIL,直接返
-		// 未初始化栈槽 = nil)。例:`function() end` 编译为 RETURN 0 1
-		// 是长度 1;但 `function() return end` 长度 2:RETURN 0 1 + RETURN 0 1。
-		// 也包括 `local function g() end; ...` 子函数 luac 输出的形态。
-		// 此时第 1 条 RETURN 是真执行的(retPC=0),但是上面已设 retPC=1
-		// (从 Code[1] 取 retInsn)——本 case 须特殊处理:第 1 条 RETURN 真
-		// 执行 → retA / retB 从 Code[0] 读,第 2/3 条 dead。
-		//
-		// 但本函数只返 (retA, value, ok)——retPC 调整在 Compile 处理。
-		// 这里只验证形态:第 1 条 RETURN A B(B=1 或 B=2,与第 2 条不同 A
-		// 也 OK);value 任意(R(A) 是 nil 或不写)。
+		// 首条 RETURN A B(luac 优化形态:`function() end` / `function(x) return x`)
 		retA0 := bytecode.A(first)
 		retB0 := bytecode.B(first)
 		if retB0 != 1 && retB0 != 2 {
-			return 0, 0, false
+			return 0, 0, false, false
 		}
-		// 形态合法——R(A) 是 nil(未初始化栈槽,Lua 初始化栈帧时设 nil),
-		// 但本简化形态恒发 mov rax, value; ret(value 任意,因 retB=1 时 0
-		// 返回值不写;retB=2 时写 R(A)=Nil 是正确语义)。
-		return uint8(retA0), uint64(value.Nil), true
+		return uint8(retA0), 0, false, true // writeRetA=false:R(A) 已是栈值
 
-	case bytecode.LOADK:
-		loadA := bytecode.A(first)
-		loadBx := bytecode.Bx(first)
-		if loadA != retA {
-			return 0, 0, false
+	case bytecode.LOADK, bytecode.LOADBOOL, bytecode.LOADNIL:
+		// 第二条必须是 RETURN A 2
+		ret := proto.Code[1]
+		if bytecode.Op(ret) != bytecode.RETURN {
+			return 0, 0, false, false
 		}
-		if loadBx < 0 || loadBx >= len(proto.Consts) {
-			return 0, 0, false
+		retA := bytecode.A(ret)
+		retB := bytecode.B(ret)
+		if retB != 2 {
+			return 0, 0, false, false
 		}
-		if proto.IsStringConst(loadBx) {
-			return 0, 0, false
-		}
-		return uint8(retA), uint64(proto.Consts[loadBx]), true
 
-	case bytecode.LOADBOOL:
-		loadA := bytecode.A(first)
-		loadB := bytecode.B(first)
-		loadC := bytecode.C(first)
-		if loadA != retA {
-			return 0, 0, false
-		}
-		if loadC != 0 {
-			return 0, 0, false
-		}
-		var v value.Value
-		if loadB != 0 {
-			v = value.BoolValue(true)
-		} else {
-			v = value.BoolValue(false)
-		}
-		return uint8(retA), uint64(v), true
+		switch bytecode.Op(first) {
+		case bytecode.LOADK:
+			loadA := bytecode.A(first)
+			loadBx := bytecode.Bx(first)
+			if loadA != retA {
+				return 0, 0, false, false
+			}
+			if loadBx < 0 || loadBx >= len(proto.Consts) {
+				return 0, 0, false, false
+			}
+			if proto.IsStringConst(loadBx) {
+				return 0, 0, false, false
+			}
+			return uint8(retA), uint64(proto.Consts[loadBx]), true, true
 
-	case bytecode.LOADNIL:
-		loadA := bytecode.A(first)
-		loadB := bytecode.B(first)
-		if loadA != retA || loadA != loadB {
-			return 0, 0, false
+		case bytecode.LOADBOOL:
+			loadA := bytecode.A(first)
+			loadB := bytecode.B(first)
+			loadC := bytecode.C(first)
+			if loadA != retA {
+				return 0, 0, false, false
+			}
+			if loadC != 0 {
+				return 0, 0, false, false
+			}
+			var v value.Value
+			if loadB != 0 {
+				v = value.BoolValue(true)
+			} else {
+				v = value.BoolValue(false)
+			}
+			return uint8(retA), uint64(v), true, true
+
+		case bytecode.LOADNIL:
+			loadA := bytecode.A(first)
+			loadB := bytecode.B(first)
+			if loadA != retA || loadA != loadB {
+				return 0, 0, false, false
+			}
+			return uint8(retA), uint64(value.Nil), true, true
 		}
-		return uint8(retA), uint64(value.Nil), true
 	}
-	return 0, 0, false
+	return 0, 0, false, false
 }
 
 // Compile 把 Proto 编译成 GibbousCode(可执行产物)。
@@ -201,7 +201,7 @@ func analyzeShape(proto *bytecode.Proto) (uint8, uint64, bool) {
 // 后把该 Proto 标 TierStuck(永久解释,不重试)。
 func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback) (bridge.GibbousCode, error) {
 	_ = feedback
-	retA, val, ok := analyzeShape(proto)
+	retA, val, writeRetA, ok := analyzeShape(proto)
 	if !ok {
 		return nil, ErrCompileUnsupportedShape
 	}
@@ -210,37 +210,35 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 	var retPC uint8
 	var retInsn bytecode.Instruction
 	if len(proto.Code) == 1 || bytecode.Op(proto.Code[0]) == bytecode.RETURN {
-		// 长度 1 或长度 ≥ 2 + 首条 RETURN(luac 优化形态)
 		retPC = 0
 		retInsn = proto.Code[0]
 	} else {
-		// 长度 2 / 3:执行的 RETURN 是 Code[1](LOADK/LOADBOOL/LOADNIL + RETURN)
 		retPC = 1
 		retInsn = proto.Code[1]
 	}
 	retB := uint8(bytecode.B(retInsn))
 
 	// 发射:mov rax, val; ret(emitter 内已在 PJ1 实装)。
-	// 即使 retB=1(0 返回值),仍发 mov+ret——mmap 段不能为空,RAX dummy 值
-	// 不会被写入栈(retB=1 时 p4Code.Run 不写 stack)。
+	// writeRetA=false 时 val 不被使用(mmap 段 RAX 是 dummy);仍发 mov+ret
+	// 因为 mmap 段必须非空。
 	var buf []byte
 	buf = jitamd64.EmitMovRaxImm64(buf, val)
 	buf = jitamd64.EmitRet(buf)
 
-	// W^X 翻面 + mmap。
 	page, err := jitamd64.MmapCode(buf)
 	if err != nil {
 		return nil, err
 	}
 
 	return &p4Code{
-		proto:    proto,
-		codePage: page,
-		jitCtx:   NewJITContext(),
-		retA:     retA,
-		retB:     retB,
-		retPC:    retPC,
-		host:     c.hostState,
+		proto:     proto,
+		codePage:  page,
+		jitCtx:    NewJITContext(),
+		retA:      retA,
+		retB:      retB,
+		retPC:     retPC,
+		writeRetA: writeRetA,
+		host:      c.hostState,
 	}, nil
 }
 
