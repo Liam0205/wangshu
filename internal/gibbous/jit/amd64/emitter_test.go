@@ -101,3 +101,253 @@ func BenchmarkPJ1_CallJIT(b *testing.B) {
 		}
 	}
 }
+
+// TestPJ2_SSE_Encoding 验 PJ2 字节级算术 SSE 指令编码符合 Intel x86-64 ISA。
+//
+// 不真执行(完整 mmap+RX 执行需 jitContext 切 SP + 寄存器分配 codegen,
+// 留 PJ2-PJ5 完整版),只断言字节编码与 ISA 文档一致。
+func TestPJ2_SSE_Encoding(t *testing.T) {
+	// MOVSD xmm0, [rax+0]:F2 0F 10 00 + disp32=0(4 字节)= 8 字节
+	t.Run("MovsdXmmFromMem_xmm0_rax_0", func(t *testing.T) {
+		var buf []byte
+		buf = EmitMovsdXmmFromMem(buf, 0, 0, 0)
+		want := []byte{0xF2, 0x0F, 0x10, 0x80, 0x00, 0x00, 0x00, 0x00}
+		if !bytesEqual(buf, want) {
+			t.Errorf("MOVSD xmm0,[rax+0] = %x, want %x", buf, want)
+		}
+	})
+
+	// MOVSD xmm1, [rcx+8]:F2 0F 10 89 08 00 00 00
+	t.Run("MovsdXmmFromMem_xmm1_rcx_8", func(t *testing.T) {
+		var buf []byte
+		buf = EmitMovsdXmmFromMem(buf, 1, 1, 8)
+		want := []byte{0xF2, 0x0F, 0x10, 0x89, 0x08, 0x00, 0x00, 0x00}
+		if !bytesEqual(buf, want) {
+			t.Errorf("MOVSD xmm1,[rcx+8] = %x, want %x", buf, want)
+		}
+	})
+
+	// MOVSD [rax+0], xmm0:F2 0F 11 80 + disp32=0
+	t.Run("MovsdMemFromXmm_xmm0_rax_0", func(t *testing.T) {
+		var buf []byte
+		buf = EmitMovsdMemFromXmm(buf, 0, 0, 0)
+		want := []byte{0xF2, 0x0F, 0x11, 0x80, 0x00, 0x00, 0x00, 0x00}
+		if !bytesEqual(buf, want) {
+			t.Errorf("MOVSD [rax+0],xmm0 = %x, want %x", buf, want)
+		}
+	})
+
+	// ADDSD xmm0, xmm1:F2 0F 58 C1
+	t.Run("AddsdXmmXmm_xmm0_xmm1", func(t *testing.T) {
+		var buf []byte
+		buf = EmitAddsdXmmXmm(buf, 0, 1)
+		want := []byte{0xF2, 0x0F, 0x58, 0xC1}
+		if !bytesEqual(buf, want) {
+			t.Errorf("ADDSD xmm0,xmm1 = %x, want %x", buf, want)
+		}
+	})
+
+	// SUBSD xmm0, xmm1:F2 0F 5C C1
+	t.Run("SubsdXmmXmm_xmm0_xmm1", func(t *testing.T) {
+		var buf []byte
+		buf = EmitSubsdXmmXmm(buf, 0, 1)
+		want := []byte{0xF2, 0x0F, 0x5C, 0xC1}
+		if !bytesEqual(buf, want) {
+			t.Errorf("SUBSD xmm0,xmm1 = %x, want %x", buf, want)
+		}
+	})
+
+	// MULSD xmm0, xmm1:F2 0F 59 C1
+	t.Run("MulsdXmmXmm_xmm0_xmm1", func(t *testing.T) {
+		var buf []byte
+		buf = EmitMulsdXmmXmm(buf, 0, 1)
+		want := []byte{0xF2, 0x0F, 0x59, 0xC1}
+		if !bytesEqual(buf, want) {
+			t.Errorf("MULSD xmm0,xmm1 = %x, want %x", buf, want)
+		}
+	})
+
+	// DIVSD xmm0, xmm1:F2 0F 5E C1
+	t.Run("DivsdXmmXmm_xmm0_xmm1", func(t *testing.T) {
+		var buf []byte
+		buf = EmitDivsdXmmXmm(buf, 0, 1)
+		want := []byte{0xF2, 0x0F, 0x5E, 0xC1}
+		if !bytesEqual(buf, want) {
+			t.Errorf("DIVSD xmm0,xmm1 = %x, want %x", buf, want)
+		}
+	})
+
+	// disp32 范围测试:-128 应负数 LE 编码
+	t.Run("MovsdXmmFromMem_disp32_negative", func(t *testing.T) {
+		var buf []byte
+		buf = EmitMovsdXmmFromMem(buf, 0, 0, -128)
+		// disp32 = -128 = 0xFFFFFF80(LE: 80 FF FF FF)
+		want := []byte{0xF2, 0x0F, 0x10, 0x80, 0x80, 0xFF, 0xFF, 0xFF}
+		if !bytesEqual(buf, want) {
+			t.Errorf("MOVSD xmm0,[rax-128] = %x, want %x", buf, want)
+		}
+	})
+
+	// 字节数常量
+	t.Run("Constants", func(t *testing.T) {
+		if EncodedMovsdMemLen != 8 {
+			t.Errorf("EncodedMovsdMemLen = %d, want 8", EncodedMovsdMemLen)
+		}
+		if EncodedSseBinopLen != 4 {
+			t.Errorf("EncodedSseBinopLen = %d, want 4", EncodedSseBinopLen)
+		}
+	})
+}
+
+func bytesEqual(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// TestPJ2_MovqMemEncoding 验「mov rax, [r15+disp32]」+「mov rax, [reg+disp32]」
+// 字节级 ISA 编码。
+func TestPJ2_MovqMemEncoding(t *testing.T) {
+	// mov rax, [r15+0]:49 8B 87 00 00 00 00
+	t.Run("MovqRaxFromR15Disp_0", func(t *testing.T) {
+		var buf []byte
+		buf = EmitMovqRaxFromR15Disp(buf, 0)
+		want := []byte{0x49, 0x8B, 0x87, 0x00, 0x00, 0x00, 0x00}
+		if !bytesEqual(buf, want) {
+			t.Errorf("MOV rax,[r15+0] = %x, want %x", buf, want)
+		}
+	})
+
+	// mov rax, [r15+16]:49 8B 87 10 00 00 00
+	t.Run("MovqRaxFromR15Disp_16", func(t *testing.T) {
+		var buf []byte
+		buf = EmitMovqRaxFromR15Disp(buf, 16)
+		want := []byte{0x49, 0x8B, 0x87, 0x10, 0x00, 0x00, 0x00}
+		if !bytesEqual(buf, want) {
+			t.Errorf("MOV rax,[r15+16] = %x, want %x", buf, want)
+		}
+	})
+
+	// mov rax, [rax+0]:48 8B 80 00 00 00 00(reg=0=rax)
+	t.Run("MovqRaxFromMemReg_rax_0", func(t *testing.T) {
+		var buf []byte
+		buf = EmitMovqRaxFromMemReg(buf, 0, 0)
+		want := []byte{0x48, 0x8B, 0x80, 0x00, 0x00, 0x00, 0x00}
+		if !bytesEqual(buf, want) {
+			t.Errorf("MOV rax,[rax+0] = %x, want %x", buf, want)
+		}
+	})
+
+	// mov rax, [rcx+24]:48 8B 81 18 00 00 00
+	t.Run("MovqRaxFromMemReg_rcx_24", func(t *testing.T) {
+		var buf []byte
+		buf = EmitMovqRaxFromMemReg(buf, 1, 24)
+		want := []byte{0x48, 0x8B, 0x81, 0x18, 0x00, 0x00, 0x00}
+		if !bytesEqual(buf, want) {
+			t.Errorf("MOV rax,[rcx+24] = %x, want %x", buf, want)
+		}
+	})
+
+	t.Run("Constants", func(t *testing.T) {
+		if EncodedMovqFromR15DispLen != 7 {
+			t.Errorf("EncodedMovqFromR15DispLen = %d, want 7", EncodedMovqFromR15DispLen)
+		}
+		if EncodedMovqFromMemRegLen != 7 {
+			t.Errorf("EncodedMovqFromMemRegLen = %d, want 7", EncodedMovqFromMemRegLen)
+		}
+	})
+}
+
+// TestPJ2_StoreAndJccEncoding 验存 + 比较 + 全档 jcc 字节级编码。
+func TestPJ2_StoreAndJccEncoding(t *testing.T) {
+	t.Run("MovqMemRegFromRax_rax_0", func(t *testing.T) {
+		var buf []byte
+		buf = EmitMovqMemRegFromRax(buf, 0, 0)
+		want := []byte{0x48, 0x89, 0x80, 0x00, 0x00, 0x00, 0x00}
+		if !bytesEqual(buf, want) {
+			t.Errorf("MOV [rax+0],rax = %x, want %x", buf, want)
+		}
+	})
+	t.Run("UcomisdXmmXmm_xmm0_xmm1", func(t *testing.T) {
+		var buf []byte
+		buf = EmitUcomisdXmmXmm(buf, 0, 1)
+		want := []byte{0x66, 0x0F, 0x2E, 0xC1}
+		if !bytesEqual(buf, want) {
+			t.Errorf("UCOMISD xmm0,xmm1 = %x, want %x", buf, want)
+		}
+	})
+	cases := []struct {
+		name string
+		emit func([]byte, int32) []byte
+		op   byte
+	}{
+		{"Je", EmitJeRel32, 0x84},
+		{"Jne", EmitJneRel32, 0x85},
+		{"Jb", EmitJbRel32, 0x82},
+		{"Jbe", EmitJbeRel32, 0x86},
+		{"Ja", EmitJaRel32, 0x87},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name+"_rel0", func(t *testing.T) {
+			var buf []byte
+			buf = tc.emit(buf, 0)
+			want := []byte{0x0F, tc.op, 0x00, 0x00, 0x00, 0x00}
+			if !bytesEqual(buf, want) {
+				t.Errorf("%s rel32=0 = %x, want %x", tc.name, buf, want)
+			}
+		})
+	}
+	t.Run("Constants", func(t *testing.T) {
+		if EncodedMovqMemFromRaxLen != 7 {
+			t.Errorf("EncodedMovqMemFromRaxLen = %d", EncodedMovqMemFromRaxLen)
+		}
+		if EncodedUcomisdLen != 4 {
+			t.Errorf("EncodedUcomisdLen = %d", EncodedUcomisdLen)
+		}
+		if EncodedJccRel32Len != 6 {
+			t.Errorf("EncodedJccRel32Len = %d", EncodedJccRel32Len)
+		}
+	})
+}
+
+// TestPJ2_SpeculativeAddTemplate 验 EmitArithSpeculativeAdd 拼接的
+// 双 number ADD 投机模板字节级序列与 ISA 文档逐字节一致。
+//
+// 不真执行(完整接入需 trampoline 切 SP + rbx 装 valueStackBase + IsNumber
+// guard codegen + OSR exit 路径,留 PJ2 完整版)。本测仅断言字节拼接正确。
+func TestPJ2_SpeculativeAddTemplate(t *testing.T) {
+	// ADD A=2 B=0 C=1 双 number(rbx = valueStackBase):
+	//   movsd xmm0, [rbx+0]    F2 0F 10 83 00 00 00 00
+	//   movsd xmm1, [rbx+8]    F2 0F 10 8B 08 00 00 00
+	//   addsd xmm0, xmm1       F2 0F 58 C1
+	//   movsd [rbx+16], xmm0   F2 0F 11 83 10 00 00 00
+	//   ret                    C3
+	var buf []byte
+	buf = EmitArithSpeculativeAdd(buf, 2, 0, 1)
+
+	if len(buf) != EncodedArithSpecAddLen {
+		t.Fatalf("encoded length = %d, want %d", len(buf), EncodedArithSpecAddLen)
+	}
+
+	want := []byte{
+		// movsd xmm0, [rbx+0]
+		0xF2, 0x0F, 0x10, 0x83, 0x00, 0x00, 0x00, 0x00,
+		// movsd xmm1, [rbx+8]
+		0xF2, 0x0F, 0x10, 0x8B, 0x08, 0x00, 0x00, 0x00,
+		// addsd xmm0, xmm1
+		0xF2, 0x0F, 0x58, 0xC1,
+		// movsd [rbx+16], xmm0
+		0xF2, 0x0F, 0x11, 0x83, 0x10, 0x00, 0x00, 0x00,
+		// ret
+		0xC3,
+	}
+	if !bytesEqual(buf, want) {
+		t.Errorf("EmitArithSpeculativeAdd =\n  %x\nwant\n  %x", buf, want)
+	}
+}

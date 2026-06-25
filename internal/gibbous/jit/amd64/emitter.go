@@ -284,3 +284,324 @@ const EncodedPrologLen = 2
 
 // EncodedEpilogLen 是 EmitEpilog 字节数(2,简化版)。
 const EncodedEpilogLen = 2
+
+// --- PJ2 字节级算术发射原语 ---
+//
+// 承 docs/design/p4-method-jit/03-speculation-ic.md §2 IsNumber×2 投机模板
+// + 06-backends.md §3.2 amd64 算术族:双 number 快路径直发 SSE2 浮点指令
+// (movsd / addsd / subsd / mulsd / divsd),无需调 host helper。
+//
+// **PJ2 物理基础**(本节原语本身可用,但完整投机模板需 jitContext 切 SP +
+// 寄存器分配 + IsNumber guard codegen,留 PJ2-PJ5 完整版接入)。
+
+// EmitMovsdXmmFromMem 发射「movsd xmm0, [reg+disp32]」从内存加载 64-bit
+// double 到 xmm0。指令:F2 REX 0F 10 /0 modrm + disp32(8 字节)。
+//
+// 参数 baseReg 是基址寄存器号([0,7] 低 8 寄存器,高 8 需 REX.B 留 PJ3+)。
+// disp32 是有符号 32-bit 偏移。
+//
+// 编码:F2 0F 10 80+baseReg disp32(若 baseReg<8 + 不需 REX.W;movsd 是
+// SSE2 指令,xmm 寄存器编码不需要 REX.W)。
+func EmitMovsdXmmFromMem(buf []byte, xmmDst uint8, baseReg uint8, disp32 int32) []byte {
+	// 防御性兜底:xmm 范围 [0,7],base 范围 [0,7](高 8 寄存器留 PJ3+)
+	if xmmDst > 7 {
+		xmmDst = 0
+	}
+	if baseReg > 7 {
+		baseReg = 0
+	}
+	// F2 prefix(scalar double),0F 10 = MOVSD xmm, xmm/m64
+	buf = append(buf, 0xF2, 0x0F, 0x10)
+	// modrm:mod=10(disp32) reg=xmmDst rm=baseReg
+	modrm := byte(0x80) | (xmmDst&0x7)<<3 | (baseReg & 0x7)
+	buf = append(buf, modrm)
+	// disp32 LE
+	buf = append(buf,
+		byte(uint32(disp32)),
+		byte(uint32(disp32)>>8),
+		byte(uint32(disp32)>>16),
+		byte(uint32(disp32)>>24))
+	return buf
+}
+
+// EmitMovsdMemFromXmm 发射「movsd [reg+disp32], xmm0」存 xmm0 到内存。
+//
+// 指令:F2 0F 11 modrm + disp32(8 字节)。
+func EmitMovsdMemFromXmm(buf []byte, xmmSrc uint8, baseReg uint8, disp32 int32) []byte {
+	if xmmSrc > 7 {
+		xmmSrc = 0
+	}
+	if baseReg > 7 {
+		baseReg = 0
+	}
+	// F2 0F 11 = MOVSD xmm/m64, xmm
+	buf = append(buf, 0xF2, 0x0F, 0x11)
+	modrm := byte(0x80) | (xmmSrc&0x7)<<3 | (baseReg & 0x7)
+	buf = append(buf, modrm)
+	buf = append(buf,
+		byte(uint32(disp32)),
+		byte(uint32(disp32)>>8),
+		byte(uint32(disp32)>>16),
+		byte(uint32(disp32)>>24))
+	return buf
+}
+
+// EmitAddsdXmmXmm 发射「addsd xmmDst, xmmSrc」(xmm 双 double 加,4 字节)。
+// 指令:F2 0F 58 modrm。
+func EmitAddsdXmmXmm(buf []byte, xmmDst uint8, xmmSrc uint8) []byte {
+	if xmmDst > 7 {
+		xmmDst = 0
+	}
+	if xmmSrc > 7 {
+		xmmSrc = 0
+	}
+	buf = append(buf, 0xF2, 0x0F, 0x58)
+	modrm := byte(0xC0) | (xmmDst&0x7)<<3 | (xmmSrc & 0x7)
+	buf = append(buf, modrm)
+	return buf
+}
+
+// EmitSubsdXmmXmm 发射「subsd xmmDst, xmmSrc」(指令:F2 0F 5C modrm)。
+func EmitSubsdXmmXmm(buf []byte, xmmDst uint8, xmmSrc uint8) []byte {
+	if xmmDst > 7 {
+		xmmDst = 0
+	}
+	if xmmSrc > 7 {
+		xmmSrc = 0
+	}
+	buf = append(buf, 0xF2, 0x0F, 0x5C)
+	modrm := byte(0xC0) | (xmmDst&0x7)<<3 | (xmmSrc & 0x7)
+	buf = append(buf, modrm)
+	return buf
+}
+
+// EmitMulsdXmmXmm 发射「mulsd xmmDst, xmmSrc」(指令:F2 0F 59 modrm)。
+func EmitMulsdXmmXmm(buf []byte, xmmDst uint8, xmmSrc uint8) []byte {
+	if xmmDst > 7 {
+		xmmDst = 0
+	}
+	if xmmSrc > 7 {
+		xmmSrc = 0
+	}
+	buf = append(buf, 0xF2, 0x0F, 0x59)
+	modrm := byte(0xC0) | (xmmDst&0x7)<<3 | (xmmSrc & 0x7)
+	buf = append(buf, modrm)
+	return buf
+}
+
+// EmitDivsdXmmXmm 发射「divsd xmmDst, xmmSrc」(指令:F2 0F 5E modrm)。
+func EmitDivsdXmmXmm(buf []byte, xmmDst uint8, xmmSrc uint8) []byte {
+	if xmmDst > 7 {
+		xmmDst = 0
+	}
+	if xmmSrc > 7 {
+		xmmSrc = 0
+	}
+	buf = append(buf, 0xF2, 0x0F, 0x5E)
+	modrm := byte(0xC0) | (xmmDst&0x7)<<3 | (xmmSrc & 0x7)
+	buf = append(buf, modrm)
+	return buf
+}
+
+// EncodedMovsdMemLen 是 MOVSD xmm <-> [base+disp32] 序列字节数(8)。
+const EncodedMovsdMemLen = 8
+
+// EncodedSseBinopLen 是 ADDSD/SUBSD/MULSD/DIVSD xmm,xmm 字节数(4)。
+const EncodedSseBinopLen = 4
+
+// EmitMovqRaxFromR15Disp 发射「mov rax, [r15+disp32]」从 r15+disp32 加载
+// 64-bit 到 rax(指令:4C 是 REX.WR 不对,我们用 REX.B=1 base=r15;
+// 实际编码 49 8B 87 disp32 = REX.W+B 8B /0 modrm)。
+//
+// 用例:PJ2 完整投机模板——mmap 段经 r15 读 jitContext 字段
+// (arenaBase / valueStackBase / preemptFlag 等)。
+//
+// 编码:49 8B 87 disp32(7 字节)。
+//   - 49 = REX prefix(W=1 64-bit + B=1 让 rm 字段用 r15 而非 r7)
+//   - 8B = MOV r64, r/m64
+//   - 87 = ModR/M:mod=10(disp32) reg=000(rax) rm=111(r15 with REX.B)
+func EmitMovqRaxFromR15Disp(buf []byte, disp32 int32) []byte {
+	// REX.W (0x48) | REX.B (0x01) = 0x49
+	buf = append(buf, 0x49, 0x8B, 0x87)
+	buf = append(buf,
+		byte(uint32(disp32)),
+		byte(uint32(disp32)>>8),
+		byte(uint32(disp32)>>16),
+		byte(uint32(disp32)>>24))
+	return buf
+}
+
+// EmitMovqRaxFromMemReg 发射「mov rax, [reg+disp32]」从指定基址寄存器
+// 加载到 rax(用于读 valueStackBase + reg*8 的值栈槽——但需要先把
+// valueStackBase 装到某 base 寄存器)。
+//
+// 编码示例:48 8B 80+rd disp32(REX.W=1 不需 REX.B,reg<8)。
+// 仅支持低 8 寄存器(rax-rdi,reg<8)——高 8 寄存器需 REX.B 留 PJ3+。
+//
+// **注**:本原语单纯读寄存器+偏移,不做 SIB 寻址(无 [base+index*8]),
+// 故不能直接发「mov rax, [valueStackBase + reg_idx*8]」(那需要 SIB)。
+// PJ2 简化策略是把 reg_idx*8 计算放在 Go 端(emit 时算 disp32 = idx*8),
+// mmap 段只需 base+disp32 寻址。
+func EmitMovqRaxFromMemReg(buf []byte, baseReg uint8, disp32 int32) []byte {
+	if baseReg > 7 {
+		baseReg = 0
+	}
+	buf = append(buf, 0x48, 0x8B)
+	modrm := byte(0x80) | (baseReg & 0x7) // mod=10 reg=000(rax) rm=baseReg
+	buf = append(buf, modrm)
+	buf = append(buf,
+		byte(uint32(disp32)),
+		byte(uint32(disp32)>>8),
+		byte(uint32(disp32)>>16),
+		byte(uint32(disp32)>>24))
+	return buf
+}
+
+// EncodedMovqFromR15DispLen 是「mov rax, [r15+disp32]」字节数(7)。
+const EncodedMovqFromR15DispLen = 7
+
+// EncodedMovqFromMemRegLen 是「mov rax, [low_reg+disp32]」字节数(7)。
+const EncodedMovqFromMemRegLen = 7
+
+// EmitMovqMemRegFromRax 发射「mov [reg+disp32], rax」存 rax 到内存。
+// 编码:48 89 80+r disp32(7 字节)。
+func EmitMovqMemRegFromRax(buf []byte, baseReg uint8, disp32 int32) []byte {
+	if baseReg > 7 {
+		baseReg = 0
+	}
+	buf = append(buf, 0x48, 0x89)
+	modrm := byte(0x80) | (baseReg & 0x7)
+	buf = append(buf, modrm)
+	buf = append(buf,
+		byte(uint32(disp32)),
+		byte(uint32(disp32)>>8),
+		byte(uint32(disp32)>>16),
+		byte(uint32(disp32)>>24))
+	return buf
+}
+
+// EmitUcomisdXmmXmm 发射「ucomisd xmmDst, xmmSrc」(无序比较 SD,设置 ZF/PF/CF)。
+// 用于 IsNumber guard 的 NaN 检测后续 jcc。
+// 指令:66 0F 2E modrm(4 字节)。
+func EmitUcomisdXmmXmm(buf []byte, xmmDst uint8, xmmSrc uint8) []byte {
+	if xmmDst > 7 {
+		xmmDst = 0
+	}
+	if xmmSrc > 7 {
+		xmmSrc = 0
+	}
+	buf = append(buf, 0x66, 0x0F, 0x2E)
+	modrm := byte(0xC0) | (xmmDst&0x7)<<3 | (xmmSrc & 0x7)
+	buf = append(buf, modrm)
+	return buf
+}
+
+// EmitJeRel32 发射「je rel32」(0F 84 rel32,6 字节)等条件跳转。
+func EmitJeRel32(buf []byte, rel32 int32) []byte {
+	buf = append(buf, 0x0F, 0x84)
+	buf = append(buf,
+		byte(uint32(rel32)),
+		byte(uint32(rel32)>>8),
+		byte(uint32(rel32)>>16),
+		byte(uint32(rel32)>>24))
+	return buf
+}
+
+// EmitJneRel32 发射「jne rel32」(0F 85 rel32)。
+func EmitJneRel32(buf []byte, rel32 int32) []byte {
+	buf = append(buf, 0x0F, 0x85)
+	buf = append(buf,
+		byte(uint32(rel32)),
+		byte(uint32(rel32)>>8),
+		byte(uint32(rel32)>>16),
+		byte(uint32(rel32)>>24))
+	return buf
+}
+
+// EmitJbRel32 发射「jb rel32」(0F 82 rel32,unsigned <)。
+func EmitJbRel32(buf []byte, rel32 int32) []byte {
+	buf = append(buf, 0x0F, 0x82)
+	buf = append(buf,
+		byte(uint32(rel32)),
+		byte(uint32(rel32)>>8),
+		byte(uint32(rel32)>>16),
+		byte(uint32(rel32)>>24))
+	return buf
+}
+
+// EmitJbeRel32 发射「jbe rel32」(0F 86 rel32,unsigned <=)。
+func EmitJbeRel32(buf []byte, rel32 int32) []byte {
+	buf = append(buf, 0x0F, 0x86)
+	buf = append(buf,
+		byte(uint32(rel32)),
+		byte(uint32(rel32)>>8),
+		byte(uint32(rel32)>>16),
+		byte(uint32(rel32)>>24))
+	return buf
+}
+
+// EmitJaRel32 发射「ja rel32」(0F 87 rel32,unsigned >)。
+func EmitJaRel32(buf []byte, rel32 int32) []byte {
+	buf = append(buf, 0x0F, 0x87)
+	buf = append(buf,
+		byte(uint32(rel32)),
+		byte(uint32(rel32)>>8),
+		byte(uint32(rel32)>>16),
+		byte(uint32(rel32)>>24))
+	return buf
+}
+
+// EncodedMovqMemFromRaxLen 是「mov [reg+disp32], rax」字节数(7)。
+const EncodedMovqMemFromRaxLen = 7
+
+// EncodedUcomisdLen 是「ucomisd xmm,xmm」字节数(4)。
+const EncodedUcomisdLen = 4
+
+// EncodedJccRel32Len 是 0F 8x rel32 条件跳转字节数(6)。
+const EncodedJccRel32Len = 6
+
+// EmitMovRcxImm64 发射「mov rcx, imm64」(REX.W + B9+rd imm64,10 字节)。
+// 用于装 NaN-box 阈值常量到 rcx 后做 cmp rax, rcx 比较。
+func EmitMovRcxImm64(buf []byte, imm uint64) []byte {
+	buf = append(buf, 0x48, 0xB9) // REX.W mov rcx, imm64
+	buf = append(buf,
+		byte(imm), byte(imm>>8), byte(imm>>16), byte(imm>>24),
+		byte(imm>>32), byte(imm>>40), byte(imm>>48), byte(imm>>56))
+	return buf
+}
+
+// EmitCmpRaxRcx 发射「cmp rax, rcx」(REX.W + 39 modrm,3 字节)。
+// 编码:48 39 C8(modrm:mod=11 reg=001=rcx rm=000=rax)。
+func EmitCmpRaxRcx(buf []byte) []byte {
+	return append(buf, 0x48, 0x39, 0xC8)
+}
+
+// EncodedMovRcxImm64Len 是「mov rcx, imm64」字节数(10)。
+const EncodedMovRcxImm64Len = 10
+
+// EncodedCmpRaxRcxLen 是「cmp rax, rcx」字节数(3)。
+const EncodedCmpRaxRcxLen = 3
+
+// EmitMovqXmmFromRax 发射「movq xmmDst, rax」从 rax 拷贝 64-bit 到 xmm
+// (指令:MOVQ xmm, r/m64 = 66 REX.W 0F 6E /r,5 字节)。
+//
+// 用例:PJ2 reg-K 投机模板——把常量值(经 movabs rax, K_value 烧入 rax)
+// 搬到 xmm1 供 SSE binop 用,避免占用值栈槽。
+//
+// 编码:66 48 0F 6E modrm
+//   - 66 = operand-size prefix(SSE)
+//   - 48 = REX.W(64-bit operand)
+//   - 0F 6E = MOVD/MOVQ xmm, r/m32/64
+//   - modrm = 11_xxx_yyy(mod=11 register direct;reg=xmm 号 0-7;rm=GPR 号)
+//
+// xmm0-7 only(高位寄存器需 REX.R 留 PJ3+);rm 字段恒为 rax(reg=0)。
+func EmitMovqXmmFromRax(buf []byte, xmmDst uint8) []byte {
+	if xmmDst > 7 {
+		xmmDst = 0
+	}
+	modrm := byte(0xC0) | (xmmDst&0x7)<<3 // rm=000 (rax)
+	return append(buf, 0x66, 0x48, 0x0F, 0x6E, modrm)
+}
+
+// EncodedMovqXmmFromRaxLen 是「movq xmm, rax」字节数(5)。
+const EncodedMovqXmmFromRaxLen = 5
