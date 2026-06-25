@@ -54,15 +54,23 @@ type p4Code struct {
 	writeRetA bool
 
 	// preludeOp 是 RETURN 前的预备 opcode(若有,用于 P4 PJ7 简化形态调
-	// host helper 取值再 SetReg 写 R(retA)):
+	// host helper 取值再 SetReg 写 R(retA),或调 host.Arith 完成算术):
 	//   - 0(默认):无 prelude,LOADK/LOADBOOL/LOADNIL 编译期已算出值
 	//   - bytecode.GETUPVAL:Run 调 host.GetUpval(retA, preludeArg) 取值,
 	//     SetReg(retA, val) 写槽。这是「mmap 段调 host」的简化替代——把
 	//     host 调用从 mmap 段移到 Go 端 Run。
+	//   - bytecode.ADD/SUB/MUL/DIV/MOD/POW:Run 调 host.Arith(base, pc, op,
+	//     b=preludeArg, c=preludeC, a=retA) 完成算术 + 写 R(retA)。helper 内
+	//     处理 RK 解码 + double-dispatch + coercion + 元方法;返 1 时 ERR
+	//     冒泡(由 enterGibbous 取 pendingErr)。
 	preludeOp uint8
 
-	// preludeArg 是 prelude opcode 的 B 字段(GETUPVAL 的 upvalue 索引)。
-	preludeArg uint8
+	// preludeArg 是 prelude opcode 的 B 字段(GETUPVAL 的 upvalue 索引 0-255,
+	// 或算术族的 B 字段含 RK 编码 0-511)。
+	preludeArg uint16
+
+	// preludeC 是算术族 prelude 的 C 字段(RK 编码 0-511)。GETUPVAL 形态不用。
+	preludeC uint16
 
 	// host 是注入的 P4HostState(从 *Compiler 拷贝):per-p4Code 持有,无并发
 	// write(只在 Compile 时写一次,Run 时只读)——V18 -race 友好。
@@ -104,6 +112,8 @@ func (c *p4Code) Proto() *bytecode.Proto {
 //   - 首条 RETURN A 2(luac 优化形态:identity 函数)
 //   - MOVE A B + RETURN A 2(retA=B 跳过中转)
 //   - GETUPVAL A B + RETURN A 2(preludeOp=GETUPVAL)
+//   - ADD/SUB/MUL/DIV/MOD/POW A B C + RETURN A 2(preludeOp=算术 op,Run
+//     调 host.Arith helper,可 ERR 冒泡)
 //   - 长度 3 luac 主 chunk 尾部冗余(LOADK + RETURN + RETURN dead)
 func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 	if c.codePage == nil || c.jitCtx == nil {
@@ -119,13 +129,26 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 		c.host.SetReg(int32(c.retA), rax)
 	}
 
-	// PJ7 prelude opcode 处理(GETUPVAL 等 host 调用形态):
+	// PJ7 prelude opcode 处理(GETUPVAL / ADD-POW 等 host 调用形态):
 	// mmap 段不调 host(避免完整 trampoline 复杂度),改在 Go 端 Run 内调。
 	if c.preludeOp != 0 && c.host != nil && c.retB >= 2 {
 		switch c.preludeOp {
 		case uint8(bytecode.GETUPVAL):
 			val := c.host.GetUpval(int32(base), int32(c.preludeArg))
 			c.host.SetReg(int32(c.retA), val)
+		case uint8(bytecode.ADD), uint8(bytecode.SUB), uint8(bytecode.MUL),
+			uint8(bytecode.DIV), uint8(bytecode.MOD), uint8(bytecode.POW):
+			// 算术族:调 host.Arith 慢路径 helper(逐字节同构解释器 doArith)。
+			// helper 内部用 base/pc 物化 ci.savedPC + reg/RK 取 B/C + setReg
+			// 写 R(A)。pc 取 retPC(本 Proto 真执行的 RETURN pc——helper 把
+			// `ci.pc = pc + 1` 写入,符合「op 执行完后 pc 指向下一指令」语义)。
+			st := c.host.Arith(int32(base), int32(c.retPC), int32(c.preludeOp),
+				int32(c.preludeArg), int32(c.preludeC), int32(c.retA))
+			if st != 0 {
+				// raise pending:host 端已置 gibbousPendingErr,enterGibbous
+				// 取走冒泡(不调 DoReturn 弹帧,ERR 路径不经 RETURN)。
+				return st
+			}
 		}
 	}
 

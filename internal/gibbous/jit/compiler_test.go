@@ -39,6 +39,14 @@ type mockP4Host struct {
 	lastReturnA   int32
 	lastReturnB   int32
 	upvals        map[int32]uint64 // 模拟 upvalue 表(GetUpval 用)
+	// Arith 调用记录:
+	arithCalls   int
+	lastArithOp  int32
+	lastArithB   int32
+	lastArithC   int32
+	lastArithA   int32
+	arithResult  uint64 // 模拟「Arith 写回 R(A)」的值
+	arithRetCode int32  // 模拟 Arith 返回(0=OK / 1=ERR);单测预设
 }
 
 func newMockP4Host() *mockP4Host {
@@ -63,6 +71,23 @@ func (m *mockP4Host) SetReg(idx int32, val uint64) {
 func (m *mockP4Host) GetUpval(base int32, b int32) uint64 {
 	_ = base
 	return m.upvals[b]
+}
+
+// Arith 模拟 host.Arith:记录入参 + 经 SetReg 写 R(a) = arithResult + 返回
+// arithRetCode(0=OK 默认 / 1=ERR 单测预设)。真实 host 调 doArith;mock
+// 用预设值跳过算术语义,只验「prelude 路径调通 + 错误冒泡」机械。
+func (m *mockP4Host) Arith(base, pc, op, b, c, a int32) int32 {
+	_ = base
+	_ = pc
+	m.arithCalls++
+	m.lastArithOp = op
+	m.lastArithB = b
+	m.lastArithC = c
+	m.lastArithA = a
+	if m.arithRetCode == 0 {
+		m.regs[a] = m.arithResult
+	}
+	return m.arithRetCode
 }
 
 // compileWithHost 构造 *Compiler 注入 mock host 后调 Compile。

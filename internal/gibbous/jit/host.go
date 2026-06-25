@@ -15,7 +15,8 @@ package jit
 //
 // **与 P3 HostState 的关系**:P3 HostState 是 wasm helper 集(GetUpval /
 // SetUpval / DoReturn / Safepoint / Arith / GetTable 等 ~25 个方法);P4 简化
-// 形态只需 DoReturn 一个,不引入完整 helper 表(留 PJ8+ 算术族真接入时扩)。
+// 形态当前仅需 DoReturn / SetReg / GetUpval / Arith 四个(留 PJ8+ 算术族真
+// 接入 / 表 IC 真接入时扩)。
 type P4HostState interface {
 	// DoReturn 处理 P4 帧 RETURN A B:返回值回填到调用者期望槽 + 弹帧。
 	DoReturn(base int32, pc int32, a int32, b int32) int32
@@ -28,6 +29,22 @@ type P4HostState interface {
 	// 用例:P4 GETUPVAL 形态 — Run 在 mmap 段执行后调本接口取 upvalue 值,
 	// 经 SetReg 写 R(retA)。
 	GetUpval(base int32, b int32) uint64
+
+	// Arith 算术慢路径(ADD/SUB/MUL/DIV/MOD/POW)助手(gibbous_host.go::Arith
+	// 同款签名,与 P3 helper 复用,逐字节同构于解释器 doArith)。
+	//
+	// 参数:
+	//   - base/pc:当前帧 base 字节偏移 + 当前 pc(物化 ci.savedPC,与 P3 同款)
+	//   - op:bytecode.OpCode 值(ADD=12 / SUB=13 / MUL=14 / DIV=15 / MOD=16 /
+	//     POW=17 等)
+	//   - b/c:RK 寄存器 / 常量索引(B/C 字段直传)
+	//   - a:目标 R(A) 寄存器号(helper 内经 setReg 写)
+	//
+	// 返回:0=OK / 1=ERR(raise pending,enterGibbous 取走冒泡)。
+	//
+	// 用例:P4 ADD/SUB/MUL/... 形态 — Run 在 mmap 段执行后调本接口完成算术 +
+	// 写 R(A),然后调 DoReturn 弹帧。
+	Arith(base int32, pc int32, op int32, b int32, c int32, a int32) int32
 }
 
 // SetHostState 把 host(crescent)抽象注入本 Compiler。

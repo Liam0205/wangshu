@@ -132,3 +132,111 @@ func TestPJ7_GetUpvalForm_HostRoute(t *testing.T) {
 		t.Errorf("DoReturn 应调 1 次, got %d", host.doReturnCalls)
 	}
 }
+
+// TestPJ7_ArithForm_HostRoute_OK ADD/SUB/MUL/DIV/MOD/POW + RETURN A 2 形态:
+// Run 调 host.Arith helper 完成算术,OK 路径写 R(A) 经 SetReg + DoReturn 弹帧。
+//
+// **背景**:本批扩 PJ7 支持算术族(`function(x, y) return x + y end` /
+// `function(x) return x + 1 end` 等),mmap 段保持 dummy(`mov rax, _; ret`),
+// 真值在 Go 端 Run prelude 路径调 host.Arith 完成。mock host 跳过算术语义,
+// 只验「prelude 路径调通 + 入参传递正确 + 写 R(A) + DoReturn」机械。
+//
+// **prove-the-path 命中证据**:若 analyzeShape 误回退到拒 ADD/SUB/...
+// (preludeOp 未填),本测立即抓出:arithCalls=0 → R(A) 未被写 → 断言失败。
+func TestPJ7_ArithForm_HostRoute_OK(t *testing.T) {
+	cases := []struct {
+		name string
+		op   bytecode.OpCode
+	}{
+		{"ADD", bytecode.ADD},
+		{"SUB", bytecode.SUB},
+		{"MUL", bytecode.MUL},
+		{"DIV", bytecode.DIV},
+		{"MOD", bytecode.MOD},
+		{"POW", bytecode.POW},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// op A=2 B=0 C=1 + RETURN A=2 B=2(`function(x,y) return x+y end`
+			// 形态:R(2) = R(0) <op> R(1); return R(2))
+			proto := &bytecode.Proto{
+				Code: []bytecode.Instruction{
+					bytecode.EncodeABC(tc.op, 2, 0, 1),
+					bytecode.EncodeABC(bytecode.RETURN, 2, 2, 0),
+				},
+			}
+			c := New()
+			host := newMockP4Host()
+			c.SetHostState(host)
+			expected := uint64(value.NumberValue(42))
+			host.arithResult = expected
+			gc, err := c.Compile(proto, nil)
+			if err != nil {
+				t.Fatalf("Compile failed: %v", err)
+			}
+			defer tryDispose(t, gc)
+			stack := make([]uint64, 8)
+			if status := gc.Run(stack, 0); status != 0 {
+				t.Errorf("Run status = %d, want 0", status)
+			}
+			if host.arithCalls != 1 {
+				t.Errorf("Arith called %d times, want 1", host.arithCalls)
+			}
+			if host.lastArithOp != int32(tc.op) {
+				t.Errorf("Arith op = %d, want %d (%s)", host.lastArithOp, int32(tc.op), tc.name)
+			}
+			if host.lastArithA != 2 || host.lastArithB != 0 || host.lastArithC != 1 {
+				t.Errorf("Arith ABC = (%d,%d,%d), want (2,0,1)", host.lastArithA, host.lastArithB, host.lastArithC)
+			}
+			got, ok := host.regs[2]
+			if !ok {
+				t.Fatal("Arith OK 路径:SetReg(2, result) 应被调用(mock 经 arithResult 写)")
+			}
+			if got != expected {
+				t.Errorf("R(2) = 0x%x, want 0x%x(Arith result)", got, expected)
+			}
+			if host.doReturnCalls != 1 {
+				t.Errorf("DoReturn 应调 1 次, got %d", host.doReturnCalls)
+			}
+		})
+	}
+}
+
+// TestPJ7_ArithForm_HostRoute_Err ADD + RETURN 形态 Arith 错误路径:helper
+// 返 1 → Run 返 1(ERR)→ enterGibbous 取 pendingErr 冒泡。本测验 Run 不
+// 调 DoReturn(ERR 路径绕过弹帧,由 enterGibbous 兜底)。
+//
+// **背景**:算术族 prelude 引入错误路径(perform arithmetic on
+// string/table 等 raise),与 LOADK/MOVE/GETUPVAL 三档「永不错」不同。
+// 本测断言错误冒泡路径机械:status != 0 → DoReturn 跳过。
+func TestPJ7_ArithForm_HostRoute_Err(t *testing.T) {
+	proto := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABC(bytecode.ADD, 0, 0, 1),
+			bytecode.EncodeABC(bytecode.RETURN, 0, 2, 0),
+		},
+	}
+	c := New()
+	host := newMockP4Host()
+	c.SetHostState(host)
+	host.arithRetCode = 1 // 模拟 helper raise
+	gc, err := c.Compile(proto, nil)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	defer tryDispose(t, gc)
+	stack := make([]uint64, 4)
+	status := gc.Run(stack, 0)
+	if status != 1 {
+		t.Errorf("Run status = %d, want 1(ERR 冒泡)", status)
+	}
+	if host.arithCalls != 1 {
+		t.Errorf("Arith called %d times, want 1", host.arithCalls)
+	}
+	if host.doReturnCalls != 0 {
+		t.Errorf("DoReturn 应跳过(ERR 路径不经 RETURN),got %d", host.doReturnCalls)
+	}
+	if _, ok := host.regs[0]; ok {
+		t.Errorf("Arith ERR 路径不应写 R(A),got regs=%v", host.regs)
+	}
+}

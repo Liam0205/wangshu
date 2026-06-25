@@ -56,12 +56,16 @@ func New() *Compiler {
 //     proto.Consts[bx] 已是 NaN-box GCRef,见 analyzeShape 字符串段注)
 //   - LOADBOOL A B 0;RETURN A 1(bool 返回,C=0 不跳)
 //   - LOADNIL A A;RETURN A 1(单 nil 返回,A==B)
+//   - MOVE A B / GETUPVAL A B / ADD..POW A B C + RETURN A 2(详
+//     analyzeShape)
 //
-// **关键**:三档共同点是「编译期能算出 R(A) 的最终 NaN-box u64 值」——
-// 这是 P4 PJ7 简化形态的根本约束(mmap 段只发 mov rax, imm64; ret)。
+// **关键**:常量族(LOADK/LOADBOOL/LOADNIL)共同点是「编译期能算出
+// R(A) 的最终 NaN-box u64 值」(mmap 段只发 mov rax, imm64; ret);
+// MOVE/GETUPVAL/算术族则借 Go 端 prelude 路径调 host helper 完成,mmap
+// 段只是占位 trampoline。
 //
-// PJ8+ 启动时扩 supported(MOVE 寄存器拷 + ADD/SUB 算术 + 等)需要 jitContext
-// load/store 值栈,留下一阶段。
+// PJ8+ 启动时扩 supported(寄存器 IsNumber guard 投机 + 表 IC 直达槽等)
+// 需要 jitContext load/store 值栈 + 投机 deopt 协议,留下一阶段。
 func (c *Compiler) SupportsAllOpcodes(proto *bytecode.Proto) bool {
 	return analyzeShape(proto).ok
 }
@@ -74,8 +78,9 @@ type shapeInfo struct {
 	retPC      uint8  // RETURN 指令 pc
 	value      uint64 // R(retA) 的 NaN-box u64 值(若 writeRetA=true 由 mmap 段烧入)
 	writeRetA  bool   // mmap 段返 RAX 是否需写 R(retA)
-	preludeOp  uint8  // RETURN 前 prelude opcode(0=无,GETUPVAL=4 等)
-	preludeArg uint8  // prelude opcode 的 B 字段
+	preludeOp  uint8  // RETURN 前 prelude opcode(0=无,GETUPVAL=4 / ADD=12 / SUB=13 等)
+	preludeArg uint16 // prelude opcode 的 B 字段(GETUPVAL 的 upvalue 索引 0-255;算术族的 B 字段含 RK 编码 0-511)
+	preludeC   uint16 // 算术族 prelude(ADD/SUB/MUL/DIV/MOD/POW)的 C 字段——可为 RK(常量含 256 偏移),0-511
 }
 
 // analyzeShape 识别支持的「单值产生 + RETURN A 1」形态。
@@ -89,6 +94,8 @@ type shapeInfo struct {
 //   - 长度 2/3:MOVE A B + RETURN A 2(等价 RETURN B 2,retA=B 跳过中转)
 //   - 长度 2/3:GETUPVAL A B + RETURN A 2(Go 端 Run 调 host.GetUpval +
 //     SetReg,preludeOp=GETUPVAL)
+//   - 长度 2/3:ADD/SUB/MUL/DIV/MOD/POW A B C + RETURN A 2(Go 端 Run 调
+//     host.Arith,逐字节同构解释器 doArith,preludeOp=算术 op,可 ERR 冒泡)
 func analyzeShape(proto *bytecode.Proto) shapeInfo {
 	if proto == nil {
 		return shapeInfo{}
@@ -170,7 +177,46 @@ func analyzeShape(proto *bytecode.Proto) shapeInfo {
 			retB:       uint8(retB),
 			retPC:      1,
 			preludeOp:  uint8(bytecode.GETUPVAL),
-			preludeArg: uint8(guvB),
+			preludeArg: uint16(guvB),
+		}
+
+	case bytecode.ADD, bytecode.SUB, bytecode.MUL, bytecode.DIV,
+		bytecode.MOD, bytecode.POW:
+		// ADD/SUB/MUL/DIV/MOD/POW A B C + RETURN A 2:Run 调 host.Arith 慢
+		// 路径 helper(逐字节同构 doArith,含快路径再判 + 慢路径 coercion/
+		// 元方法,可 raise)。本形态把「pure binop + 立即 return」典型形态
+		// (`function(x, y) return x + y end` / `function(x) return x + 1 end`)
+		// 接入 P4 升层,与 P3 同款"翻译走 helper"策略对位。
+		ret := proto.Code[1]
+		if bytecode.Op(ret) != bytecode.RETURN {
+			return shapeInfo{}
+		}
+		retA := bytecode.A(ret)
+		retB := bytecode.B(ret)
+		if retB != 2 {
+			return shapeInfo{}
+		}
+		arithA := bytecode.A(first)
+		arithB := bytecode.B(first)
+		arithC := bytecode.C(first)
+		if arithA != retA {
+			return shapeInfo{}
+		}
+		// RK 字段范围:B/C ∈ [0, 256) 是寄存器号,[256, 256+len(Consts)) 是
+		// 常量索引(MaxK=256)。寄存器号上限 254(luac max stack),常量索引
+		// 上限取决于 proto;无须额外校验—— host.Arith 复用解释器 reg/RK
+		// 解析逻辑,越界时由 helper 自报错。
+		if arithB > 511 || arithC > 511 { // 防御性:RK 最大编码 256+255=511
+			return shapeInfo{}
+		}
+		return shapeInfo{
+			ok:         true,
+			retA:       uint8(retA),
+			retB:       uint8(retB),
+			retPC:      1,
+			preludeOp:  uint8(bytecode.Op(first)),
+			preludeArg: uint16(arithB),
+			preludeC:   uint16(arithC),
 		}
 
 	case bytecode.LOADK, bytecode.LOADBOOL, bytecode.LOADNIL:
@@ -282,6 +328,7 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 		writeRetA:  info.writeRetA,
 		preludeOp:  info.preludeOp,
 		preludeArg: info.preludeArg,
+		preludeC:   info.preludeC,
 		host:       c.hostState,
 	}, nil
 }
@@ -297,4 +344,6 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 //   - 长度 2/3:MOVE A B + RETURN A 2(retA=B 跳过中转)
 //   - 长度 2/3:GETUPVAL A B + RETURN A 2(prelude 路径调 host.GetUpval)
 //   - 长度 2/3:LOADK/LOADBOOL/LOADNIL A ... + RETURN A 2(常量返)
-var ErrCompileUnsupportedShape = errors.New("internal/gibbous/jit: P4 PJ7 unsupported shape (expected: single RETURN A B / single-BB MOVE|GETUPVAL|LOADK|LOADBOOL|LOADNIL + RETURN A 2)")
+//   - 长度 2/3:ADD/SUB/MUL/DIV/MOD/POW A B C + RETURN A 2(prelude 路径
+//     调 host.Arith 慢路径 helper,可 ERR 冒泡)
+var ErrCompileUnsupportedShape = errors.New("internal/gibbous/jit: P4 PJ7 unsupported shape (expected: single RETURN A B / single-BB MOVE|GETUPVAL|LOADK|LOADBOOL|LOADNIL|ADD..POW + RETURN A 2)")

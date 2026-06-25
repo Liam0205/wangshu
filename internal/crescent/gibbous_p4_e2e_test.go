@@ -8,6 +8,7 @@
 package crescent
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/Liam0205/wangshu/internal/frontend/compile"
@@ -131,4 +132,91 @@ return f()`
 		t.Errorf("string value = %q, want \"hello-p4\"", s)
 	}
 	t.Logf("PJ7 LOADK string 真接入证据:升层 %d / DoReturn %d / 返回值 %q(byte-equal 解释器路径)", promoCount, hits, s)
+}
+
+// TestPJ7_ArithForm_E2E_OK 验真实 LoadProgram 路径下 ADD/SUB/MUL/DIV/MOD/POW
+// 单 BB 形态(`function(x, y) return x + y end` 类)经 P4 升层 byte-equal
+// 解释器(prove-the-path 实例)。
+//
+// **背景**:本批扩 PJ7 接 algorithm 族 prelude——analyzeShape 识别
+// ADD..POW + RETURN A 2 形态后,Run 调 host.Arith 慢路径 helper(逐字节
+// 同构解释器 doArith)。本测断言:`f(3, 4) → 12`(MUL)经 P4 升层后
+// 仍返回 12,与解释器路径同构。
+//
+// **prove-the-path 关键**:用单一 `f(x, y)` 函数 + 多档算术验证 prelude
+// 调通 + 返回值正确;若 analyzeShape 误回退则 SupportsAllOpcodes 返 false,
+// proto 不升层,PromotionCount=0 立即抓出。
+func TestPJ7_ArithForm_E2E_OK(t *testing.T) {
+	cases := []struct {
+		name   string
+		op     string
+		x, y   float64
+		expect float64
+	}{
+		{"ADD", "+", 3, 4, 7},
+		{"SUB", "-", 10, 3, 7},
+		{"MUL", "*", 6, 7, 42},
+		{"DIV", "/", 84, 2, 42},
+		{"MOD", "%", 47, 5, 2},
+		{"POW", "^", 2, 5, 32},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := fmt.Sprintf(
+				"local function f(x, y) return x %s y end\n"+
+					"for i = 1, 100 do f(%g, %g) end\n"+
+					"return f(%g, %g)",
+				tc.op, tc.x, tc.y, tc.x, tc.y,
+			)
+			st, mainCl := loadFnP4(t, src)
+			st.bridge.SetForceAllPromote(true)
+
+			beforeHits := st.doReturnHits
+			rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+			if err != nil {
+				t.Fatalf("run: %v", err)
+			}
+			hits := st.doReturnHits - beforeHits
+			promoCount := st.bridge.PromotionCount()
+			t.Logf("%s:PromotionCount=%d, doReturnHits 增量=%d", tc.name, promoCount, hits)
+			if promoCount == 0 {
+				t.Fatalf("%s:PromotionCount=0 → 没 Proto 升层(Compile 未触达)", tc.name)
+			}
+			if hits == 0 {
+				t.Fatalf("%s:doReturnHits=0 → P4 路径未真触达", tc.name)
+			}
+			if len(rets) != 1 {
+				t.Fatalf("%s:rets 长度 = %d, want 1", tc.name, len(rets))
+			}
+			v := value.Value(rets[0])
+			if !value.IsNumber(v) {
+				t.Fatalf("%s:rets[0] = 0x%x 不是 number", tc.name, uint64(v))
+			}
+			got := value.AsNumber(v)
+			if got != tc.expect {
+				t.Errorf("%s:f(%v, %v) = %v, want %v", tc.name, tc.x, tc.y, got, tc.expect)
+			}
+		})
+	}
+}
+
+// TestPJ7_ArithForm_E2E_Err 验算术错误路径(`f({}, 1)`)经 P4 升层后仍能
+// 正确抛错(perform arithmetic on table)+ caller 拿到 LuaError。
+//
+// **背景**:算术族 prelude 引入错误路径(string/table 等 raise)。本测
+// 断言 host.Arith 返 1 → Run 返 1 → enterGibbous 取 pendingErr 冒泡 →
+// caller 拿到 LuaError(含 attempt to perform 字样)。
+func TestPJ7_ArithForm_E2E_Err(t *testing.T) {
+	src := `
+local function f(x) return x + 1 end
+for i = 1, 100 do f(i) end  -- 先升层
+return f({})  -- 触发 attempt to perform arithmetic`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	_, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err == nil {
+		t.Fatal("ADD on table 应 raise,但 Call 返回 nil err")
+	}
+	t.Logf("PJ7 Arith ERR 路径正确冒泡:err = %v", err)
 }
