@@ -18,6 +18,7 @@ import (
 	"github.com/Liam0205/wangshu/internal/bridge"
 	"github.com/Liam0205/wangshu/internal/bytecode"
 	jitamd64 "github.com/Liam0205/wangshu/internal/gibbous/jit/amd64"
+	"github.com/Liam0205/wangshu/internal/value"
 )
 
 // Compiler 实现 `bridge.P3Compiler` 接口(`p2-bridge/05-p3-p4-interface.md`
@@ -46,109 +47,118 @@ func New() *Compiler {
 
 // SupportsAllOpcodes 检查 Proto 中所有 opcode 是否都在后端支持集内。
 //
-// **PJ7 真接入实装**:开放白名单到「LOADK A K(0); RETURN A 1」单 BB 形态——
-// 这是 spike 闸门 ⊕ trampoline ⊕ emitter 三件套唯一无副作用、无 helper、
-// 无跨层调用的 Lua 子集。
+// **PJ7 真接入实装**:开放白名单到「单值产生 + RETURN A 1」单 BB 形态——
+// 这是 spike 闸门 ⊕ trampoline ⊕ emitter 三件套 + Go 端拆帧机制能 byte-equal
+// 验证的 Lua 子集。
 //
-// 形态约束(必须同时满足):
-//   - len(Code) == 2
-//   - Code[0] = LOADK
-//   - Code[1] = RETURN
-//   - LOADK A == RETURN A(共享寄存器号)
-//   - RETURN B == 2(返回 1 个值)
-//   - LOADK Bx 指向常量池非字符串占位(Compile 期再校验,因 SupportsAllOpcodes
-//     不读 Consts)
+// 支持形态(必须满足:Code 长度 == 2,第二条 RETURN A 1):
+//   - LOADK A K(Bx);RETURN A 1(常量返回,K(Bx) 非字符串占位)
+//   - LOADBOOL A B 0;RETURN A 1(bool 返回,C=0 不跳)
+//   - LOADNIL A A;RETURN A 1(单 nil 返回,A==B)
 //
-// 任何不满足的 Proto 返 false ⇒ F7 闸门拦下 ⇒ 走 crescent 解释。
+// **关键**:三档共同点是「编译期能算出 R(A) 的最终 NaN-box u64 值」——
+// 这是 P4 PJ7 简化形态的根本约束(mmap 段只发 mov rax, imm64; ret)。
 //
-// **关键**:本函数只校验形态轮廓,Compile 期再做严格校验(包含字符串占位
-// 检查)。两层校验:SupportsAllOpcodes 是 hot path 启发式 + Compile 是
-// 真发射前最终把关。
-//
-// PJ8+ 启动时扩 supported(MOVE/LOADBOOL/LOADNIL/JMP → ADD/SUB/...)。
+// PJ8+ 启动时扩 supported(MOVE 寄存器拷 + ADD/SUB 算术 + 等)需要 jitContext
+// load/store 值栈,留下一阶段。
 func (c *Compiler) SupportsAllOpcodes(proto *bytecode.Proto) bool {
+	_, _, ok := analyzeShape(proto)
+	return ok
+}
+
+// analyzeShape 识别支持的「单值产生 + RETURN A 1」形态,返 (retA, value, ok)。
+//
+// ok=true 时 retA 是 RETURN 的 A 寄存器号,value 是 R(retA) 的最终 NaN-box
+// u64 值(由首条 opcode 编译期决定)。
+func analyzeShape(proto *bytecode.Proto) (uint8, uint64, bool) {
 	if proto == nil || len(proto.Code) != 2 {
-		return false
+		return 0, 0, false
 	}
-	loadk := proto.Code[0]
+	// 第二条必须是 RETURN A 1
 	ret := proto.Code[1]
-	if bytecode.Op(loadk) != bytecode.LOADK {
-		return false
-	}
 	if bytecode.Op(ret) != bytecode.RETURN {
-		return false
+		return 0, 0, false
 	}
-	if bytecode.A(loadk) != bytecode.A(ret) {
-		return false
+	retA := bytecode.A(ret)
+	retB := bytecode.B(ret)
+	if retB != 2 { // B=2 即返回 1 个值(B-1=1)
+		return 0, 0, false
 	}
-	if bytecode.B(ret) != 2 {
-		return false
+
+	first := proto.Code[0]
+	switch bytecode.Op(first) {
+	case bytecode.LOADK:
+		// LOADK A K(Bx); RETURN A 1
+		loadA := bytecode.A(first)
+		loadBx := bytecode.Bx(first)
+		if loadA != retA {
+			return 0, 0, false
+		}
+		if loadBx < 0 || loadBx >= len(proto.Consts) {
+			return 0, 0, false
+		}
+		if proto.IsStringConst(loadBx) {
+			return 0, 0, false // 字符串常量需要 State 私有 intern,不在 PJ7 范围
+		}
+		return uint8(retA), uint64(proto.Consts[loadBx]), true
+
+	case bytecode.LOADBOOL:
+		// LOADBOOL A B C; RETURN A 1
+		// C != 0 则 pc++,本形态不支持(PJ7 是单 BB,不能跳 pc)
+		// 故要求 C == 0
+		loadA := bytecode.A(first)
+		loadB := bytecode.B(first)
+		loadC := bytecode.C(first)
+		if loadA != retA {
+			return 0, 0, false
+		}
+		if loadC != 0 {
+			return 0, 0, false // C != 0 需 pc++,留 PJ8+ 控制流接入
+		}
+		// R(A) = bool(B):B != 0 即 true,B == 0 即 false
+		var v value.Value
+		if loadB != 0 {
+			v = value.BoolValue(true)
+		} else {
+			v = value.BoolValue(false)
+		}
+		return uint8(retA), uint64(v), true
+
+	case bytecode.LOADNIL:
+		// LOADNIL A B; RETURN A 1
+		// R(A..B) := nil 闭区间。本形态要求 A == B(单寄存器赋 nil)
+		loadA := bytecode.A(first)
+		loadB := bytecode.B(first)
+		if loadA != retA || loadA != loadB {
+			return 0, 0, false
+		}
+		return uint8(retA), uint64(value.Nil), true
 	}
-	// LOADK Bx 范围 + 字符串占位检查(防御性,Compile 也会再查)
-	loadBx := bytecode.Bx(loadk)
-	if loadBx < 0 || loadBx >= len(proto.Consts) {
-		return false
-	}
-	if proto.IsStringConst(loadBx) {
-		return false
-	}
-	return true
+	return 0, 0, false
 }
 
 // Compile 把 Proto 编译成 GibbousCode(可执行产物)。
 //
-// **PJ2 真接入实装**:识别「LOADK A K(0); RETURN A 1」单 BB 形态——
-//  1. 取 K(0) 的 NaN-box uint64 值(常量池第一项);
-//  2. emitter 发射 `mov rax, NaNBoxedConst; ret`(11 字节);
+// **PJ7 真接入实装**(扩展版):识别「单值产生 + RETURN A 1」单 BB 形态——
+// LOADK / LOADBOOL / LOADNIL 三档(承 analyzeShape):
+//  1. 经 analyzeShape 算出 retA + value(NaN-box u64);
+//  2. emitter 发射 `mov rax, value; ret`(11 字节);
 //  3. mmap PROT_RW + 写码 + mprotect PROT_RX(承 05 §2.1);
-//  4. 包装 *p4Code(retA = LOADK 与 RETURN 共享的 A)。
+//  4. 包装 *p4Code(retA + host = c.hostState 拷贝)。
 //
 // 其它形态返 ErrCompileUnsupportedShape(承
 // `p2-bridge/05-p3-p4-interface.md` §2.2.2 错误返回语义)——bridge 收到错误
 // 后把该 Proto 标 TierStuck(永久解释,不重试)。
-//
-// **PJ2 阶段 SupportsAllOpcodes 仍全 false** ⇒ 本路径不被 bridge 在主库
-// 主路径走到;仅 PJ2 内部 prove-the-path 单测会调本函数(承 prove-the-path-under-test
-// 纪律,白盒证明 mmap 段被走到 + 值正确)。
 func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback) (bridge.GibbousCode, error) {
 	_ = feedback
-	if proto == nil {
+	retA, val, ok := analyzeShape(proto)
+	if !ok {
 		return nil, ErrCompileUnsupportedShape
 	}
 
-	// 识别「LOADK A K(0); RETURN A 1」最简单 BB 形态。
-	if len(proto.Code) != 2 {
-		return nil, ErrCompileUnsupportedShape
-	}
-	loadk := proto.Code[0]
-	ret := proto.Code[1]
-	if bytecode.Op(loadk) != bytecode.LOADK {
-		return nil, ErrCompileUnsupportedShape
-	}
-	if bytecode.Op(ret) != bytecode.RETURN {
-		return nil, ErrCompileUnsupportedShape
-	}
-	loadA := bytecode.A(loadk)
-	loadBx := bytecode.Bx(loadk)
-	retA := bytecode.A(ret)
-	retB := bytecode.B(ret)
-	// 形态约束:LOADK 与 RETURN 共享 A;RETURN 返回 1 个值(B=2)。
-	if loadA != retA || retB != 2 {
-		return nil, ErrCompileUnsupportedShape
-	}
-	// 常量必须存在 + 是非 String 占位(PJ2 不处理字符串 intern)。
-	if loadBx < 0 || loadBx >= len(proto.Consts) {
-		return nil, ErrCompileUnsupportedShape
-	}
-	if proto.IsStringConst(loadBx) {
-		// 字符串常量需要 State 私有 intern,不在 PJ2 简化形态内(留 PJ4+)。
-		return nil, ErrCompileUnsupportedShape
-	}
-	constVal := uint64(proto.Consts[loadBx])
-
-	// 发射:mov rax, constVal; ret(emitter 内已在 PJ1 实装)。
+	// 发射:mov rax, val; ret(emitter 内已在 PJ1 实装)。
 	var buf []byte
-	buf = jitamd64.EmitMovRaxImm64(buf, constVal)
+	buf = jitamd64.EmitMovRaxImm64(buf, val)
 	buf = jitamd64.EmitRet(buf)
 
 	// W^X 翻面 + mmap。
@@ -161,7 +171,7 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 		proto:    proto,
 		codePage: page,
 		jitCtx:   NewJITContext(),
-		retA:     uint8(retA),
+		retA:     retA,
 		host:     c.hostState, // per-Compiler hostState 拷给 p4Code,避免 global race
 	}, nil
 }
