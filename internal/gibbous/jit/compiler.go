@@ -17,7 +17,6 @@ import (
 
 	"github.com/Liam0205/wangshu/internal/bridge"
 	"github.com/Liam0205/wangshu/internal/bytecode"
-	jitamd64 "github.com/Liam0205/wangshu/internal/gibbous/jit/amd64"
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
@@ -692,14 +691,13 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 		return nil, ErrCompileUnsupportedShape
 	}
 
-	// 发射:mov rax, val; ret(emitter 内已在 PJ1 实装)。
-	// writeRetA=false 时 val 不被使用(mmap 段 RAX 是 dummy);仍发 mov+ret
-	// 因为 mmap 段必须非空。
+	// 发射:LOADK/RETURN 模板(arch 路由——amd64 mov rax,imm + ret 11 字节;
+	// arm64 movz+movk×3 + ret 20 字节)。writeRetA=false 时 value 不被使用
+	// (mmap 段返回值是 dummy),仍发模板因为 mmap 段必须非空。
 	var buf []byte
-	buf = jitamd64.EmitMovRaxImm64(buf, info.value)
-	buf = jitamd64.EmitRet(buf)
+	buf = archEmitLoadKReturn(buf, info.value)
 
-	page, err := jitamd64.MmapCode(buf)
+	page, err := archMmapCode(buf)
 	if err != nil {
 		return nil, err
 	}

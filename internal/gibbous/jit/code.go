@@ -7,7 +7,6 @@ import (
 
 	"github.com/Liam0205/wangshu/internal/bridge"
 	"github.com/Liam0205/wangshu/internal/bytecode"
-	jitamd64 "github.com/Liam0205/wangshu/internal/gibbous/jit/amd64"
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
@@ -31,7 +30,8 @@ type p4Code struct {
 	proto *bytecode.Proto
 
 	// codePage 是 mmap 出来的 PROT_RX 段(W^X 翻面后),holds 段直到 Dispose。
-	codePage *jitamd64.CodePage
+	// 类型别名 archCodePage 由 arch_*.go 路由(amd64/arm64 各自的 CodePage)。
+	codePage *archCodePage
 
 	// jitCtx 是本编译产物的 JIT 执行上下文(per-Proto 单例)。
 	jitCtx *JITContext
@@ -128,7 +128,7 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 	}
 
 	jitCtxAddr := jitContextAddr(c.jitCtx)
-	rax := jitamd64.CallJITFull(c.codePage.Addr(), jitCtxAddr)
+	rax := archCallJITFull(c.codePage.Addr(), jitCtxAddr)
 
 	// 写 R(retA) = RAX(仅当 writeRetA=true 且 retB ≥ 2)。
 	if c.writeRetA && c.retB >= 2 && c.host != nil {
