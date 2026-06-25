@@ -245,14 +245,13 @@ func EmitLoadKReturnTemplate(buf []byte, konst uint64) []byte {
 // EncodedLoadKReturnTemplateLen 「LOADK + RETURN 单 BB」模板字节数(11)。
 const EncodedLoadKReturnTemplateLen = EncodedMovRaxImm64Len + EncodedRetLen
 
-// EmitProlog 发射 trampoline 进入序言(承 trampoline_full_amd64.s 同款形态:
-// push 5 个 callee-saved 寄存器)。
+// EmitProlog 发射 trampoline 进入序言简化版(push rbx + push rbp,2 字节)。
 //
-// 编码:50 50 50 50 50 风格(实际 5 个不同寄存器,共 5 字节)——仅低 8 寄存器。
-// r12-r15 需 REX.B,本原语只覆盖低 8 寄存器范围;r12/r13/r14/r15 留 PJ7+
-// 加 EmitPushRegHi 扩。
-//
-// 用例:trampoline_full_amd64.s 已实装,本 emitter 原语仅作 emit 接口对齐。
+// **与 trampoline_full_amd64.s 的关系**:本 emitter 原语仅作 emit 接口对齐
+// (让 jit.Compile 在「需要保存 callee-saved 后跑模板」时按需经 emit 路径
+// 生成 trampoline 序言);**完整 5 寄存器序言**(push rbx/rbp/r12/r13/r15,
+// r14=Go G 不动)在 trampoline_full_amd64.s 直接实装。本简化版只覆盖低 8
+// 寄存器(rbx/rbp);r12-r15 需 REX.B 前缀,留 PJ7+ 加 EmitPushRegHi 扩。
 //
 // **绕过 EmitPushReg/EmitPopReg 的 RBP 防御**:trampoline 序言保存 RBP 是
 // callee-saved 协议合法用法(出口 pop 恢复),与业务码改 RBP 不同。直接发

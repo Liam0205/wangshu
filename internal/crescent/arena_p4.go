@@ -42,7 +42,7 @@ func (st *State) wireP3() {}
 // **PJ7 真接入**(2026-06-25):
 //  1. 构造 jit.Compiler;
 //  2. 注入 bridge(b.SetP3Compiler);
-//  3. **注入 P4HostState**(jit.SetP4HostState(st))——P4 的 p4Code.Run 在
+//  3. **注入 P4HostState**(c.SetHostState(st))——P4 的 p4Code.Run 在
 //     mmap 段执行后调 host.DoReturn 完成弹帧 + 移结果(因 P4 简化形态
 //     mmap 段不内调 host helper,需 Go 端拆帧——承
 //     `docs/design/p4-method-jit/05-system-pipeline.md` §4 trampoline 三出口

@@ -1,6 +1,6 @@
 //go:build wangshu_p4 && linux && arm64
 
-// Package arm64 amd64 后端代码页管理(W^X 翻面 + munmap + icache flush)。
+// Package arm64 arm64 后端代码页管理(W^X 翻面 + munmap + icache flush)。
 //
 // 承 docs/design/p4-method-jit/05-system-pipeline.md §2.1 exec mmap 协议 +
 // §2.3 arm64 icache flush 协议 + 06-backends.md §4.2 arm64 寄存器约定。

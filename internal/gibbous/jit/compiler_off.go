@@ -8,6 +8,8 @@
 package jit
 
 import (
+	"errors"
+
 	"github.com/Liam0205/wangshu/internal/bridge"
 	"github.com/Liam0205/wangshu/internal/bytecode"
 )
@@ -29,10 +31,16 @@ func (c *Compiler) SupportsAllOpcodes(proto *bytecode.Proto) bool {
 	return false
 }
 
-// Compile 默认 build 不应被调到(同上);防御性返 nil + nil(让调用方
-// 立即看到 nil GibbousCode 走 TierStuck)。
+// ErrCompileOff 默认 build 占位错误——P4 未启用。
+var ErrCompileOff = errors.New("internal/gibbous/jit: P4 not enabled (build without wangshu_p4)")
+
+// Compile 默认 build 不应被调到(wireP4 not active);防御性返错让调用方
+// fallback 到 TierStuck(承 P3Compiler 接口契约 error != nil ⇒ TierStuck)。
+//
+// 与 wangshu_p4 build 下的 ErrCompileUnsupportedShape 对位返错——确保
+// 「不应被调到却被调到」时违约场景显式可见(承 PR review #1 反馈)。
 func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback) (bridge.GibbousCode, error) {
 	_ = proto
 	_ = feedback
-	return nil, nil
+	return nil, ErrCompileOff
 }
