@@ -598,7 +598,7 @@ p3-wasm-tier.md 原稿 §7 第四点末:**「P3 是 try-compile 非投机,差分
 | 验证难度 | 较低(同输入字节码,无投机,差分必现) | 高(投机路径 + deopt 着陆点要专门 fuzz) |
 | 零 deopt | ✅ gibbous 无运行期退回路径([00-overview §9](./00-overview.md) 不变式 6) | ❌ 引入 deopt(OSR exit 回 crescent) |
 
-**风险阶梯设计的意义**:P3 先在「不用调试机器码 + 非投机」的后端上跑通整套分层骨架(升层/fallback/trampoline/跨层差分),把**最危险的 JIT bug 类(投机错果)排除在外**——P3 的差分只验翻译,验证面窄、必现、好定位。P4 在 P3 已验证的分层骨架上**只换发射后端 + 引入投机**([p4-method-jit](../p4-method-jit.md) §0.2),此时差分面才扩到投机正确性。**先把窄面的 P3 验透,再上宽面的 P4**——这是「每阶段一块硬骨头」(roadmap §5 原则 3)在测试维度的体现。
+**风险阶梯设计的意义**:P3 先在「不用调试机器码 + 非投机」的后端上跑通整套分层骨架(升层/fallback/trampoline/跨层差分),把**最危险的 JIT bug 类(投机错果)排除在外**——P3 的差分只验翻译,验证面窄、必现、好定位。P4 在 P3 已验证的分层骨架上**只换发射后端 + 引入投机**([p4-method-jit/01-launch-judgment](../p4-method-jit/01-launch-judgment.md) §2),此时差分面才扩到投机正确性。**先把窄面的 P3 验透,再上宽面的 P4**——这是「每阶段一块硬骨头」(roadmap §5 原则 3)在测试维度的体现。
 
 > **P3 差分套是 P4 的遗产**:P3 建好的 `Runner` 抽象(§2.1)、强制全升模式(§2.2)、层间 fuzz(§2.5)、GC 压力上 gibbous(§3),P4 **原样继承**——P4 只需加 `WangshuFullmoon`/`WangshuJIT` runner + 投机差分专项(deopt 着陆点 fuzz)。P3 把层间差分框架建好,是给 P4 的「投机主防线」提前铺好轨道(承 P1 [12 §3.8](../p1-interpreter/12-testing-difftest.md) 「P1 给 P3+ 铺轨道」的递归)。
 
@@ -1005,7 +1005,7 @@ P2 [06 §11.1](../p2-bridge/06-testing-strategy.md) 已落地的测试入口(承
 ### 9.1 本文不主管的相邻缺口(指向其它文档)
 
 - **locals 缓存的槽选择与写回插入算法**([02 §2.2B](./02-translation.md) / [05 §4](./05-safepoint-gc.md)):V13 验「漏写回必现」,但写回算法本身由 [02](./02-translation.md)/[05](./05-safepoint-gc.md) 定,本文只验其正确性。
-- **IC 快照失效 → 重编译**([06 §3](./06-ic-feedback-consume.md)):V7 验「失效降级走助手仍正确」,但重编译机制留 P4 统一评估([p4-method-jit](../p4-method-jit.md) §3.4),不在 P3 验收范围。
+- **IC 快照失效 → 重编译**([06 §3](./06-ic-feedback-consume.md)):V7 验「失效降级走助手仍正确」,但重编译机制留 P4 统一评估([p4-method-jit/04-osr-deopt](../p4-method-jit/04-osr-deopt.md) §5),不在 P3 验收范围。
 - **批量 module 优化**([02 §1.2](./02-translation.md)):若 PW9 后启用批量编译,差分套需加「批量 module vs 每 Proto 一 module」对照;本文当前只验基线(每 Proto 一 module)。
 
 ---
@@ -1048,7 +1048,7 @@ P2 [06 §11.1](../p2-bridge/06-testing-strategy.md) 已落地的测试入口(承
 [../p2-bridge/06-testing-strategy](../p2-bridge/06-testing-strategy.md)(**P2 验收单一事实源,本文同款全 V 编号形态对偶面**;§1.5 三套并行不替换) ·
 [../p2-bridge/implementation-progress](../p2-bridge/implementation-progress.md)(P2 测试入口 T1-T6 已落地,§7.1 P3 复用) ·
 [../p1-interpreter/12-testing-difftest](../p1-interpreter/12-testing-difftest.md)(P1 差分测试矩阵,§2 接入 + §3 GC 压力承接 + §4 豁免表原样适用) ·
-[../p4-method-jit](../p4-method-jit.md)(P3 差分套是 P4 遗产,§4.3 风险阶梯) ·
+[../p4-method-jit](../p4-method-jit/00-overview.md)(P3 差分套是 P4 遗产,§4.3 风险阶梯) ·
 [../roadmap.md](../roadmap.md)(§4 P3 验收 ≥2x over P1 / §5 原则 2 层间差分 + 原则 3 阶段独立交付) ·
 [../../../Makefile](../../../Makefile)(make all 入口,§6.4 三套 build tag) ·
 [../../../benchmarks/realworld](../../../benchmarks/realworld/)(P3 性能门实际脚本,§5.4 五脚本) ·

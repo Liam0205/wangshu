@@ -35,7 +35,7 @@ P3 内存模型是「值表示一次定死、两层共享」(`docs/design/roadma
 
 ### 0.4 与 P4(原生 JIT)的关系
 
-P4 仍**复用**这块共见内存——原生码读写同一份 arena,不发明新值表示([../p4-method-jit](../p4-method-jit.md) §0.2 常规路径承诺「只换发射后端」)。P3 的内存模型一旦定稳,P4 阶段不动。**P4 唯一的差异是「不再经 wazero memory 中介」**:P4 build 下 `BackingFn` 切回 `DefaultBacking`(纯 Go 堆 `make`),原生码经 Go 侧暴露的 `[]byte` 起始指针读写。GCRef 偏移寻址在两种 backing 形态下语义同一,从而让发射后端的切换是局部变更。
+P4 仍**复用**这块共见内存——原生码读写同一份 arena,不发明新值表示([../p4-method-jit/01-launch-judgment](../p4-method-jit/01-launch-judgment.md) §2 常规路径承诺「只换发射后端」)。P3 的内存模型一旦定稳,P4 阶段不动。**P4 唯一的差异是「不再经 wazero memory 中介」**:P4 build 下 `BackingFn` 切回 `DefaultBacking`(纯 Go 堆 `make`),原生码经 Go 侧暴露的 `[]byte` 起始指针读写。GCRef 偏移寻址在两种 backing 形态下语义同一,从而让发射后端的切换是局部变更。
 
 ### 0.5 本文与现稿 §4 的关系
 

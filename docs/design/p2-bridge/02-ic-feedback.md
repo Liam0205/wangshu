@@ -4,7 +4,7 @@
 > 单一事实源覆盖:P1 IC 写入复用契约、算术 IC 双计数挪用规约(P1 IC 字段共享方案)、`TypeFeedback` shape 与 `confidence` 计算、megamorphic 标记的 P2 落地。
 > 上游:[00-overview](./00-overview.md) §1(P1/P2/P3 边界:IC 写读分离)/§3(算术 IC 双计数关键耦合点)/§7(P1 前瞻义务对账,IC 双计数 ✅)。
 > P1 依赖面:[02-bytecode-isa §7](../p1-interpreter/02-bytecode-isa.md)(`ICSlot` 结构 + 算术 IC 字段挪用登记)、[05-interpreter-loop §6](../p1-interpreter/05-interpreter-loop.md)(IC 执行机制定稿)、**[05-interpreter-loop §6.4](../p1-interpreter/05-interpreter-loop.md)(算术 IC「P1 写不读纯供料」是本文的核心契约)**、[01-value-object-model §3](../p1-interpreter/01-value-object-model.md)(NaN-box 数字识别)、[implementation-progress](../p1-interpreter/implementation-progress.md)(P1 已落地形态对账)。
-> 下游:[03-compilability-analysis](./03-compilability-analysis.md)(可编译性闸门,与 feedback 正交)、[04-try-compile-fallback](./04-try-compile-fallback.md)(状态机消费 feedback 决定何时升)、[05-p3-p4-interface](./05-p3-p4-interface.md)(`P3Compiler.feedback` 可选 / `P4Feedback` 核心)、[../p4-method-jit](../p4-method-jit.md)(投机消费方,confidence 决定激进度)。
+> 下游:[03-compilability-analysis](./03-compilability-analysis.md)(可编译性闸门,与 feedback 正交)、[04-try-compile-fallback](./04-try-compile-fallback.md)(状态机消费 feedback 决定何时升)、[05-p3-p4-interface](./05-p3-p4-interface.md)(`P3Compiler.feedback` 可选 / `P4Feedback` 核心)、[../p4-method-jit](../p4-method-jit/00-overview.md)(投机消费方,confidence 决定激进度)。
 
 ---
 
@@ -817,7 +817,7 @@ P2 IC 反馈子系统实现期必须守住的硬性约束,违反即设计失败:
 - [../p1-interpreter/05-interpreter-loop.md](../p1-interpreter/05-interpreter-loop.md) §6(IC 执行机制定稿,§6.4 算术 IC 写不读契约)
 - [../p1-interpreter/01-value-object-model.md](../p1-interpreter/01-value-object-model.md) §3(NaN-box 数字识别,算术快路径基石)
 - [../p1-interpreter/implementation-progress.md](../p1-interpreter/implementation-progress.md)(P1 IC 已落地形态对账)
-- [../p4-method-jit.md](../p4-method-jit.md)(投机消费方 / confidence 决定激进度的下游)
+- [../p4-method-jit](../p4-method-jit/00-overview.md)(投机消费方 / confidence 决定激进度的下游)
 - [../roadmap.md](../roadmap.md) §3(编译层是纯增量) / §5(原则 4 fallback 与投机分水岭可调)
 
 

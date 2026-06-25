@@ -1,11 +1,11 @@
 # P3 §1:开工前置 spike——wazero call boundary 实测 < 150ns(闸门)
 
 > 状态:**设计阶段,详细设计**(本文是 P3 文档集 [00-overview](./00-overview.md) §0 列出的「开工闸门」单一事实源;凡涉 wazero 具体 API 处标注「待 spike 验证」)。
-> 本文是 P3 的**生死闸门**:wazero call boundary 实测 < 150ns 才允许 [02-translation](./02-translation.md) 起的 PW1 翻译器开工;不达标走 [../p4-method-jit](../p4-method-jit.md) §0.2 的「跳跃路径」(P4 自建分层骨架)。
+> 本文是 P3 的**生死闸门**:wazero call boundary 实测 < 150ns 才允许 [02-translation](./02-translation.md) 起的 PW1 翻译器开工;不达标走 [../p4-method-jit/01-launch-judgment](../p4-method-jit/01-launch-judgment.md) §2 的「跳跃路径」(P4 自建分层骨架)。
 > 上游契约:[../roadmap.md](../roadmap.md) §1(校准测量——LuaJIT 154μs vs luajc 164μs 仅 6% 是 150ns 阈值的论据)、§2(四项税——wazero 已验证项是 spike 顺带验证的项)、§4(P3 阶段定义与前置 spike 措辞);[00-overview](./00-overview.md) §1(P3 边界——spike 验证的物理事实)、§4 PW0(本文承担)、§8(四项税外包是 P3 选 wazero 的本质)。
 > P1 依赖面:[../p1-interpreter/06-memory-gc](../p1-interpreter/06-memory-gc.md) §1.1(arena backing 来源——spike 顺带验证 [03-memory-model](./03-memory-model.md) 的收养机制)。
 > P2 依赖面:[../p2-bridge/00-overview](../p2-bridge/00-overview.md)(P2 决策机产出——spike 通过即可消费 P2 的 try-compile 请求)。
-> 下游衔接:[02-translation](./02-translation.md)(spike 通过后 PW1 起的翻译器主体)、[../p4-method-jit](../p4-method-jit.md) §0.2(spike 不达标时的跳跃路径接管点)。
+> 下游衔接:[02-translation](./02-translation.md)(spike 通过后 PW1 起的翻译器主体)、[../p4-method-jit/01-launch-judgment](../p4-method-jit/01-launch-judgment.md) §2(spike 不达标时的跳跃路径接管点)。
 >
 > **本文定位一句话**:**P3 不是从写翻译器开始,而是从一次小到极致的 spike 实测开始**——三档样本一次跑完,数据决定 P3 是开工、跳过还是走混合路径。
 
@@ -21,7 +21,7 @@
 
 1. **P3 的全部价值挂在「跨层不贵」这一物理前提上**。[00-overview](./00-overview.md) §1 的一句话定位 P3:「在不用调试机器码的后端上,把 P2 决策机产出的 gibbous 代码请求兑现成 Wasm 可执行码,跑通整套分层骨架(升层 / fallback / trampoline / 跨层差分)」——若 trampoline(crescent↔gibbous)的成本与宿主边界([../roadmap.md §2](../roadmap.md) 的几十~百 ns 固定成本)同档,「解释↔编译交错执行」的形态死亡,P3 退化为「整程序编译」一条路,而那条路 P4 原生后端做得更好(无 Wasm 语义中介)。本文 §3 给出 150ns 阈值的精确论证。
 
-2. **6-12 人月的人力投入不能押在未验证的假设上**([00-overview §5](./00-overview.md))。spike 0.5-1 人月的代价,换 P3 后续 PW1-PW9 是否值得投入的硬数据。即便 spike 不达标(走 P4 跳跃路径,[../p4-method-jit §0.2](../p4-method-jit.md)),这次投入仍**值得**——它把决策建立在实测而非乐观估计上,[../roadmap.md §5](../roadmap.md) 原则 3「每阶段独立交付价值,任何闸门处停下都不亏」的字面体现。
+2. **6-12 人月的人力投入不能押在未验证的假设上**([00-overview §5](./00-overview.md))。spike 0.5-1 人月的代价,换 P3 后续 PW1-PW9 是否值得投入的硬数据。即便 spike 不达标(走 P4 跳跃路径,[../p4-method-jit/01-launch-judgment §2](../p4-method-jit/01-launch-judgment.md)),这次投入仍**值得**——它把决策建立在实测而非乐观估计上,[../roadmap.md §5](../roadmap.md) 原则 3「每阶段独立交付价值,任何闸门处停下都不亏」的字面体现。
 
 3. **wazero 是 P3 选型的物理前提,而不是细节**([00-overview §8](./00-overview.md) + [../roadmap.md §2](../roadmap.md))。P3 把四项税(GC 精确栈扫描 / 异步抢占 / 栈移动 / 写屏障)整体外包给 wazero。wazero 已验证四项税自身的解决方案,但**没有显式表态「跨边界往返成本」适配分层 VM 的频次**——分层 VM 的边界发生频率(列内核外每个慢路径助手 / 未编译被调一次)显著高于「应用→Wasm 模块」常规嵌入用法的边界频次。spike 就是替我们补这一项数据。
 
@@ -40,8 +40,8 @@
 
 [00-overview §1](./00-overview.md) 引用 [../roadmap.md §4](../roadmap.md) 反复强调 P3「战略价值不在倍率,在跑通分层机器」——但这条战略价值的兑现**前提**仍是分层机器各部件能在合理代价下相互调用。spike 闸门是这条前提的**物理校核**:
 
-- **若闸门通过**:P3 的「不用调试机器码就能跑通分层骨架」战略价值兑现路径打通,PW1-PW9 可启动;P4 接力时只换发射后端([../p4-method-jit §0.2](../p4-method-jit.md) 常规路径),节省「分层骨架 + 机器码后端」同步啃两块硬骨头的复杂度。
-- **若闸门不通过**:跳跃路径下,P3 的战略价值移交 P4 自建([../p4-method-jit §0.2](../p4-method-jit.md));但本文 §2-§7 设计的分层协议(trampoline 入口签名、status 链错误冒泡、CallInfo bit50、线程级 tier 规则等)**不丢失**——P4 仍消费这套设计,只把发射后端从 wazero 替成原生 codegen。这是 [../roadmap.md §5](../roadmap.md) 原则 3 的另一面体现:**设计资产的复用性独立于执行后端选择**。
+- **若闸门通过**:P3 的「不用调试机器码就能跑通分层骨架」战略价值兑现路径打通,PW1-PW9 可启动;P4 接力时只换发射后端([../p4-method-jit/01-launch-judgment §2](../p4-method-jit/01-launch-judgment.md) 常规路径),节省「分层骨架 + 机器码后端」同步啃两块硬骨头的复杂度。
+- **若闸门不通过**:跳跃路径下,P3 的战略价值移交 P4 自建([../p4-method-jit/01-launch-judgment §2](../p4-method-jit/01-launch-judgment.md));但本文 §2-§7 设计的分层协议(trampoline 入口签名、status 链错误冒泡、CallInfo bit50、线程级 tier 规则等)**不丢失**——P4 仍消费这套设计,只把发射后端从 wazero 替成原生 codegen。这是 [../roadmap.md §5](../roadmap.md) 原则 3 的另一面体现:**设计资产的复用性独立于执行后端选择**。
 
 ### 0.4 与 P1/P2 落地状态的关系
 
@@ -314,7 +314,7 @@ P4 的跨层成本档位需要 P4 自己的 spike 测——但「与宿主同档
 - 「整程序在 gibbous 跑」与「整程序在 host 直接调一次 wasm 模块跑」无成本差异;
 - 分层(部分 gibbous + 部分 crescent)反而劣于「全 gibbous」——因为多了 crescent ↔ gibbous 边界。
 - 唯一出路是「整程序编译」,而那条路 P4 原生后端做得更好(无 Wasm 语义中介、无 wazero 抽象层)。
-- **结论**:此时直接跳 P4([../p4-method-jit §0.2](../p4-method-jit.md))才是合理选择。
+- **结论**:此时直接跳 P4([../p4-method-jit/01-launch-judgment §2](../p4-method-jit/01-launch-judgment.md))才是合理选择。
 
 ### 3.2 下沿:wazero 已验证档
 
@@ -329,7 +329,7 @@ wazero 项目本身的 benchmark(其 README 与 release notes,**待 spike 实测
 这一事实有两层含义:
 
 1. **边界成本主导,后端再快也有限**——这正是 [../roadmap.md §1](../roadmap.md) 「per-item 跨界形态下边界跨越主导成本」结论的实证。
-2. **如果我们的边界成本与 LuaJIT/luajc 同档(几十~百 ns,因为 Java JNI / LuaJIT C-Lua 边界类似),P3 的天花板就锁定在 luajc 档**——这是 [../p4-method-jit](../p4-method-jit.md) 验收门槛「列内核负载 ≥ LuaJ-luajc 档」的来源。
+2. **如果我们的边界成本与 LuaJIT/luajc 同档(几十~百 ns,因为 Java JNI / LuaJIT C-Lua 边界类似),P3 的天花板就锁定在 luajc 档**——这是 [../p4-method-jit/08-testing-strategy](../p4-method-jit/08-testing-strategy.md) §1 验收门槛「列内核负载 ≥ LuaJ-luajc 档」的来源。
 3. **如果我们的边界成本显著高于这一档(>150ns),P3 连 luajc 档都摸不到**,那么[../roadmap.md §4](../roadmap.md) 的「P3 验收 ≥2x over P1」就成了空中楼阁——P1 已是 2-4x over gopher-lua,再 2x 等于 4-8x over gopher-lua,已经接近 luajc 档(luajc ≈ 4.4x over gopher-lua),边界成本必须在档才可能。
 
 ### 3.4 工程化阈值:为什么是 150 而不是 100 或 200
@@ -546,7 +546,7 @@ func TestSpike_StackMoveSafety(t *testing.T)     { /* §4.3 栈移动 */ }
 | spike 结果 | 决策 | 理由 | 后续动作 |
 |---|---|---|---|
 | **S2 < 150ns 且 S3 同档**(同档 = ±30ns 内) | **开工 P3**(本子文档闸门通过) | 摊销模型预测列内核形态下完整兑现 ≥2x 收益 | 本文 §6.6 写决策报告;启动 PW1([00-overview §4](./00-overview.md))包骨架开发 |
-| **S2 ≥ 150ns**(且不在边缘区) | **跳过 P3 直做 P4** | §3.1 论证:跨层成本与宿主边界同档,P3 加速比天花板被锁死 | 转 [../p4-method-jit §0.2](../p4-method-jit.md) 跳跃路径;本文 §2-§7 设计的分层协议被 P4 继承,只换发射 |
+| **S2 ≥ 150ns**(且不在边缘区) | **跳过 P3 直做 P4** | §3.1 论证:跨层成本与宿主边界同档,P3 加速比天花板被锁死 | 转 [../p4-method-jit/01-launch-judgment §2](../p4-method-jit/01-launch-judgment.md) 跳跃路径;本文 §2-§7 设计的分层协议被 P4 继承,只换发射 |
 | **S2 在 150 ± 30ns 边缘** | **混合策略** | §2.4 论证:理想列内核形态仍可兑现,非理想形态收益打折 | 启动 PW1 但加 §5.3 的「调用密度」约束,扩 P2 可编译性分析 |
 | **S3 比 S2 显著贵**(> 2x) | **PW1 设计调整** | gibbous→host 慢路径成本被放大,影响算术 metamethod / IC miss / 分配等助手 | 不阻断开工,但 §6.4 失败分析需对 wazero imported 函数 dispatch 的实现做调查;PW3 算术助手设计需考虑「合并多个慢路径成一次跨层」 |
 
@@ -761,7 +761,7 @@ PW0 完成定义([00-overview §4](./00-overview.md)):
 
 ### 8.3 spike 不达标后 P4 跳跃路径的具体启动时机
 
-- **跳跃路径的衔接窗口**(§5.4):若闸门否决 P3,P4 立即接管还是等 P2 后续优化轮再启动——本文未细化此节奏,留 [../p4-method-jit §0.2](../p4-method-jit.md) 与主助理协调。
+- **跳跃路径的衔接窗口**(§5.4):若闸门否决 P3,P4 立即接管还是等 P2 后续优化轮再启动——本文未细化此节奏,留 [../p4-method-jit/01-launch-judgment §2](../p4-method-jit/01-launch-judgment.md) 与主助理协调。
 - **跳跃路径下设计资产复用清单**(§5.4 表):粗粒度列出,但精确「哪些设计内容由 P4 直接采纳、哪些需要重写」待 P4 详细设计落地时定。
 
 ### 8.4 回填请求
@@ -795,7 +795,7 @@ PW0 通过后,本子文档与后续 PW 的具体衔接点:
 [implementation-progress](./implementation-progress.md)(进度对账,spike 数据归档点) ·
 [../p2-bridge/00-overview](../p2-bridge/00-overview.md)(P2 决策机,本文闸门通过后的消费链路起点) ·
 [../p2-bridge/03-compilability-analysis](../p2-bridge/03-compilability-analysis.md)(可编译性分析,边缘混合策略 callDensity 启发的回填目标) ·
-[../p4-method-jit](../p4-method-jit.md)(§0.2 跳跃路径,本文闸门否决时接管点) ·
+[../p4-method-jit](../p4-method-jit/00-overview.md)(§0.2 跳跃路径,本文闸门否决时接管点) ·
 [../roadmap.md](../roadmap.md)(§1 校准测量、§2 四项税、§4 P3 阶段定义) ·
 [../architecture.md](../architecture.md)(§3 包布局) ·
 [../../../llmdoc/architecture/evolution-roadmap](../../../llmdoc/architecture/evolution-roadmap.md)(tier-1 映射 + P3 验收 ≥2x over P1 坐标系) ·

@@ -162,7 +162,7 @@ type ICSlot struct {
 - **算术 IC 的字段挪用**(承 [../p2-bridge/00-overview](../p2-bridge/00-overview.md) §3.6 回填):算术指令的 IC slot 无表可缓存,`shape`/`index`/`tableRef` 三字段闲置,挪用为 `numHits`/`metaHits` 双计数(P1 写不读:快路径 `numHits++`、元方法慢路径 `metaHits++`),为 P2 类型 feedback 供料。同一结构、按 kind 区分字段语义,不增尺寸。
 - P1:`GETTABLE` 等命中 IC 时跳过哈希查找,直达槽位 ⇒ 兑现 roadmap §4「全局/表访问 inline cache」。
 - P2:IC 命中分布是**类型 feedback**,记录后供编译层做类型投机(roadmap §4 P2「inline cache 反馈记录」)。
-- 算术 IC 记录操作数实际类型(都是 number ⇒ P4 可发 f64 快路径 + guard,见 [../p4-method-jit](../p4-method-jit.md))。
+- 算术 IC 记录操作数实际类型(都是 number ⇒ P4 可发 f64 快路径 + guard,见 [../p4-method-jit](../p4-method-jit/00-overview.md))。
 
 IC 失效:table 结构变化(rehash / 加 metatable)递增其 shape 版本;全局表写递增全局版本。详见 [05-interpreter-loop](./05-interpreter-loop.md) §IC。
 

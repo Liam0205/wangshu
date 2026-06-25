@@ -503,7 +503,7 @@ func (vm *VM) doGetTable(f *frame, i Instruction) *LuaError {
 - **GETGLOBAL/SETGLOBAL**(ABx,key 是 `K(Bx)` 字符串常量):目标表恒为 globals,`tableRef` 恒等,只需代次比对。命中直达槽位写/读。SETGLOBAL 插入**新**全局键 → globals rehash → globals 代次自增 → 自动失效旧 IC(正确)。
 - **GETTABLE/SETTABLE**:目标表是 `R(B)`/`R(A)`,运行期变,需「同表 + 同代次」双重校验。
 - **SELF**(`R(A+1):=R(B); R(A):=R(B)[RK(C)]`,[02](./02-bytecode-isa.md) §4-11):IC 缓存的是 `R(B)[method]` 的查找(方法通常在 metatable 的 `__index` 表里,常驻不变 → IC 命中率极高,这正是 `obj:m()` 优化的意义)。先做 `R(A+1):=R(B)`(self 传递),再走与 GETTABLE 同构的 IC 取方法。
-- **算术 IC**(ADD 等,[02](./02-bytecode-isa.md) §4-12 仅 ADD 标 IC,但同族适用):**不参与取值快路径**(§4.1 已说明,P1 快路径靠现场 `IsNumber`)。算术 IC slot 记录操作数实际类型分布——承 [../p2-bridge/00-overview](../p2-bridge/00-overview.md) §3.6 回填,定为 **`numHits`/`metaHits` 双计数**(快路径 `numHits++`、元方法慢路径 `metaHits++`,挪用算术 IC 闲置的 shape/index/tableRef 字段,[02](./02-bytecode-isa.md) §7 已登记)——纯为 P2 类型 feedback 与 P4 f64 投机供料([../p4-method-jit](../p4-method-jit.md))。P1 写它、不读它分支。
+- **算术 IC**(ADD 等,[02](./02-bytecode-isa.md) §4-12 仅 ADD 标 IC,但同族适用):**不参与取值快路径**(§4.1 已说明,P1 快路径靠现场 `IsNumber`)。算术 IC slot 记录操作数实际类型分布——承 [../p2-bridge/00-overview](../p2-bridge/00-overview.md) §3.6 回填,定为 **`numHits`/`metaHits` 双计数**(快路径 `numHits++`、元方法慢路径 `metaHits++`,挪用算术 IC 闲置的 shape/index/tableRef 字段,[02](./02-bytecode-isa.md) §7 已登记)——纯为 P2 类型 feedback 与 P4 f64 投机供料([../p4-method-jit](../p4-method-jit/00-overview.md))。P1 写它、不读它分支。
 
 ### 6.5 失效机制(写侧职责)
 
@@ -951,7 +951,7 @@ case bytecode.FORLOOP:
 - **FORLOOP 不是 safepoint**(§5.2):它不分配。循环体若不分配,整个循环一路跑不进 GC——这是好事(热循环不被 GC 打断)。
 - **NaN limit**:若 limit 是 NaN,`idx <= NaN` 恒 false → 循环一次不执行就退出(IEEE 语义,与 Lua 一致)。
 
-> **整数 vs 浮点 for**:Lua 5.1 没有整数子类型(roadmap §6 锁定),for 索引就是 double。大整数循环(`for i=1,2^53`)在 double 精度内精确,超过 2^53 会丢精度——与 Lua 5.1 行为一致,不特殊处理。P4 可在「检测到索引始终是小整数」时投机整数循环(见 [../p4-method-jit](../p4-method-jit.md)),P1 一律 double。
+> **整数 vs 浮点 for**:Lua 5.1 没有整数子类型(roadmap §6 锁定),for 索引就是 double。大整数循环(`for i=1,2^53`)在 double 精度内精确,超过 2^53 会丢精度——与 Lua 5.1 行为一致,不特殊处理。P4 可在「检测到索引始终是小整数」时投机整数循环(见 [../p4-method-jit](../p4-method-jit/00-overview.md)),P1 一律 double。
 
 ### 10.2 泛型 for:TFORLOOP
 
@@ -1142,6 +1142,6 @@ func (vm *VM) safepoint(f *frame) {
 [08-coroutines](./08-coroutines.md) · [09-errors-pcall](./09-errors-pcall.md) ·
 [10-stdlib](./10-stdlib.md) · [11-embedding-arena-abi](./11-embedding-arena-abi.md) ·
 [12-testing-difftest](./12-testing-difftest.md) · [../p2-bridge/00-overview](../p2-bridge/00-overview.md) ·
-[../p4-method-jit](../p4-method-jit.md) ·
+[../p4-method-jit](../p4-method-jit/00-overview.md) ·
 [design-premises](../../../llmdoc/must/design-premises.md) ·
 [value-representation](../../../llmdoc/architecture/value-representation.md)

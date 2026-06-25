@@ -4,7 +4,7 @@
 > 上游:`docs/design/roadmap.md` (§4 P3 定义、§2 四项税、§5 五条原则)、[architecture](../architecture.md)(§3 依赖图、`internal/gibbous/wasm` 包位置)、[evolution-roadmap](../../../llmdoc/architecture/evolution-roadmap.md)(tier-1 = gibbous,P3+P4 同 tier;P3 验收坐标系警告)。
 > P1 依赖面:[01](../p1-interpreter/01-value-object-model.md)(NaN-box u64 + GCRef offset,两层逐位同一)、[02](../p1-interpreter/02-bytecode-isa.md)(源 ISA + IC slot)、[05](../p1-interpreter/05-interpreter-loop.md)(解释器主循环 + CallInfo + 调用约定)、[06](../p1-interpreter/06-memory-gc.md)(arena/GC/safepoint)、[08](../p1-interpreter/08-coroutines.md)(coroutine 路线 B yield 冒泡)、[12](../p1-interpreter/12-testing-difftest.md)(差分测试矩阵)。
 > P2 依赖面:[../p2-bridge/00-overview](../p2-bridge/00-overview.md)(P3 是 P2 决策的消费者)、[../p2-bridge/03](../p2-bridge/03-compilability-analysis.md) §3.7(F7 后端能力 SupportsAllOpcodes)、[../p2-bridge/04](../p2-bridge/04-try-compile-fallback.md)(零 deopt 单向状态机)、[../p2-bridge/05](../p2-bridge/05-p3-p4-interface.md)(P3Compiler 接口 + GibbousCode 抽象)。
-> 下游衔接:[../p4-method-jit](../p4-method-jit.md)(继承 P3 的全部分层结构,只换发射后端;§6 P3 去留决策矩阵)。
+> 下游衔接:[../p4-method-jit](../p4-method-jit/00-overview.md)(继承 P3 的全部分层结构,只换发射后端;§6 P3 去留决策矩阵)。
 >
 > P3 目标一句话:**在「不用调试机器码」的后端上,把 P2 决策机产出的 gibbous 代码请求兑现成 Wasm 可执行码,跑通整套分层骨架(升层 / fallback / trampoline / 跨层差分)**——战略价值不在倍率本身,而在「分层机器第一次全链路运转」(`docs/design/roadmap.md` §4)。P3 把四项税(roadmap §2)外包给 wazero,自己专注「翻译 + 跨层协议」。
 
@@ -125,7 +125,7 @@
 
 4. **线程级 tier 规则**([07](./07-coroutine-thread-rule.md) + [对 08 / P2 的回填](../p1-interpreter/08-coroutines.md)):只有主线程的执行进入 gibbous;协程线程一律走 crescent。doCall 的 gibbous 分支多查一个 `th == mainThread`。**对 P2 [04](../p2-bridge/04-try-compile-fallback.md) 的回填请求**:升层判定加线程上下文输入(协程内即便函数 CompCompilable + 热,也判 TierStuck 或不 considerPromotion)。**对 [08](../p1-interpreter/08-coroutines.md) 的回填请求**:gibbous 帧不可穿越 yield 节(已在 P1 08 §6 注脚预留前瞻引用)。
 
-5. **IC 快照编译期固化**([06 §1](./06-ic-feedback-consume.md) + [02 §3.4 GETTABLE](./02-translation.md)):解释器 IC slot 是运行期可变的(mono IC 重填,[05 §6.3](../p1-interpreter/05-interpreter-loop.md));gibbous 把编译时刻的 `(tableRef, gen, kind, index)` 烧进代码。表形状变化(gen bump)→ 快照永久 miss → 该点每次走助手 ≈ 解释器无 IC 的水平,**正确但慢**。失效计数 → 重编译留 P4 一并评估([../p4-method-jit](../p4-method-jit.md) §3.4)。
+5. **IC 快照编译期固化**([06 §1](./06-ic-feedback-consume.md) + [02 §3.4 GETTABLE](./02-translation.md)):解释器 IC slot 是运行期可变的(mono IC 重填,[05 §6.3](../p1-interpreter/05-interpreter-loop.md));gibbous 把编译时刻的 `(tableRef, gen, kind, index)` 烧进代码。表形状变化(gen bump)→ 快照永久 miss → 该点每次走助手 ≈ 解释器无 IC 的水平,**正确但慢**。失效计数 → 重编译留 P4 一并评估([../p4-method-jit/04-osr-deopt](../p4-method-jit/04-osr-deopt.md) §5)。
 
 6. **pc 物化:traceback 逐字节一致**([02 §4](./02-translation.md)):直线代码无运行期 pc。每个可能出错/调用/safepoint 的点把编译期已知 pc 作为立即数传给助手,助手写回 `CallInfo.savedPC`。差分口径([12](../p1-interpreter/12-testing-difftest.md))不为 gibbous 开任何豁免。
 
@@ -197,7 +197,7 @@
 | 协程升层 | ❌ 不升层(线程级 tier 规则);P3 开工前向首个宿主确认列内核是否跑在协程里 | [07](./07-coroutine-thread-rule.md) + [memory/decisions](../../../llmdoc/memory/decisions/2026-06-11-design-review-decisions.md) 第 7 项 |
 | 性能验收 | 循环密集脚本 ≥2x over P1(以 P1 为基线,不是 gopher-lua) | [08 §1](./08-testing-strategy.md) |
 | 差分口径 | crescent vs gibbous 逐字节一致,gibbous 不开新豁免 | [08 §2](./08-testing-strategy.md) + [12 §10](../p1-interpreter/12-testing-difftest.md) |
-| P3 与 P4 的关系 | P3 兑现分层骨架;P4 继承全部结构,只换发射后端;P3 去留留 P4 验收时定 | [09](../p4-method-jit.md) §6 |
+| P3 与 P4 的关系 | P3 兑现分层骨架;P4 继承全部结构,只换发射后端;P3 去留留 P4 验收时定 | [../p4-method-jit/07-p3-retirement](../p4-method-jit/07-p3-retirement.md) |
 
 ---
 
@@ -234,7 +234,7 @@ P1 全卷已交付 + P2 PB0-PB7 全过线 + P2 后续优化轮 #1-#4 全过线(2
 | 栈移动 | Wasm 栈不在 Go 栈上,morestack 与生成码无关 | 无 |
 | 写屏障 | 值世界在 linear memory,生成码无 Go 指针写 | 无(P1 已兑现,[03](./03-memory-model.md) 延续) |
 
-**P3 选 wazero 的本质 = 把四项税外包给已验证的实现**,自己专注「翻译 + 分层协议」。P4 收回这层外包(原生发射),四项税才需要自己全额兑付([../p4-method-jit](../p4-method-jit.md) §4)——届时 wazero 转为采石场(参考实现)而非依赖。**P3 的去留**(退役 vs 可移植中层)在 P4 验收时用数据定([../p4-method-jit](../p4-method-jit.md) §6 决策矩阵,缺省倾向退役)。
+**P3 选 wazero 的本质 = 把四项税外包给已验证的实现**,自己专注「翻译 + 分层协议」。P4 收回这层外包(原生发射),四项税才需要自己全额兑付([../p4-method-jit/05-system-pipeline](../p4-method-jit/05-system-pipeline.md))——届时 wazero 转为采石场(参考实现)而非依赖。**P3 的去留**(退役 vs 可移植中层)在 P4 验收时用数据定([../p4-method-jit/07-p3-retirement](../p4-method-jit/07-p3-retirement.md) §2 决策矩阵,缺省倾向退役)。
 
 ---
 
@@ -265,7 +265,7 @@ P1 全卷已交付 + P2 PB0-PB7 全过线 + P2 后续优化轮 #1-#4 全过线(2
 - **locals 缓存的槽选择算法**:FORLOOP 三槽之外是否扩展,待基线数据([02 §2.2](./02-translation.md))。
 - **IC 快照失效 → 重编译**:与 P4 的再训练机制统一评估([06 §3](./06-ic-feedback-consume.md))。
 - **边缘 spike 值的混合策略**:「调用密度」启发式进 P2 可编译性分析的精确定义([01 §1.4](./01-spike-gate.md))。
-- **P3 去留**(退役 vs 中层):P4 验收时用数据定([../p4-method-jit](../p4-method-jit.md) §6 决策矩阵)。
+- **P3 去留**(退役 vs 中层):P4 验收时用数据定([../p4-method-jit/07-p3-retirement](../p4-method-jit/07-p3-retirement.md) §2 决策矩阵)。
 
 ---
 
@@ -280,7 +280,7 @@ P1 全卷已交付 + P2 PB0-PB7 全过线 + P2 后续优化轮 #1-#4 全过线(2
 [08-testing-strategy](./08-testing-strategy.md)(差分验收) ·
 [implementation-progress](./implementation-progress.md)(进度对账) ·
 [../p2-bridge/00-overview](../p2-bridge/00-overview.md)(P2 总览,P3 是其消费者) ·
-[../p4-method-jit](../p4-method-jit.md)(P3 继承结构,只换发射后端) ·
+[../p4-method-jit](../p4-method-jit/00-overview.md)(P3 继承结构,只换发射后端) ·
 [../p1-interpreter/00-overview](../p1-interpreter/00-overview.md)(P1 总览,P3 共享值表示与内存模型) ·
 [../roadmap.md](../roadmap.md)(§2 四项税 / §4 P3 定义) ·
 [../architecture.md](../architecture.md)(§3 包布局 + §4 不变式) ·

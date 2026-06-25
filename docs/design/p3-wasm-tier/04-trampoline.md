@@ -56,7 +56,7 @@ P3 工作流是「P2 喂料 → P3 翻译 → wazero 执行」三段式([00-over
 
 ### 0.4 与 P4(原生 JIT)的关系
 
-P4 **继承本文的全部跨层协议**,只换发射后端([../p4-method-jit](../p4-method-jit.md) §0.2 常规路径承诺)。具体地:
+P4 **继承本文的全部跨层协议**,只换发射后端([../p4-method-jit/01-launch-judgment](../p4-method-jit/01-launch-judgment.md) §2 常规路径承诺)。具体地:
 
 - bit50 `callStatus_gibbous` 在 P4 同样标 1(P4 帧也是 gibbous tier,[00-overview](./00-overview.md) §1 坐标系警告:P3/P4 同 tier-1)；
 - 升层入口签名 `(base i32) → status i32` 在 P4 是 asm trampoline stub 的形态([../p2-bridge/05](../p2-bridge/05-p3-p4-interface.md) §6.3 `jitTrampolineEnter`),语义同一；
@@ -1203,5 +1203,5 @@ gibbous 帧入口的诊断**复用 P2 升层日志格式**——本节链 [../p2
 [../p1-interpreter/08-coroutines](../p1-interpreter/08-coroutines.md)(§3 路线 B yield 冒泡 + §5 yield 不跨 host 边界) ·
 [../p2-bridge/04-try-compile-fallback](../p2-bridge/04-try-compile-fallback.md)(§4.4 installGibbous 写 bit50 + §4.5 多 State 锁 + §6 升层日志) ·
 [../p2-bridge/05-p3-p4-interface](../p2-bridge/05-p3-p4-interface.md)(§6 GibbousCode 接口 Run/Dispose/GetTrampoline) ·
-[../p4-method-jit](../p4-method-jit.md)(P4 继承本文全部跨层协议,只换发射后端,§0.4) ·
+[../p4-method-jit](../p4-method-jit/00-overview.md)(P4 继承本文全部跨层协议,只换发射后端,§0.4) ·
 [../../../llmdoc/memory/doc-gaps](../../../llmdoc/memory/doc-gaps.md)(回填请求 + 缺口跟踪)

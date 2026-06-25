@@ -1,7 +1,7 @@
 # P5:trace JIT(fullmoon,开放式)
 
 > 状态:**设计阶段,架构决策深度,且为五阶段中唯一「开放式」阶段**(对齐 [architecture](./architecture.md) §2
-> 状态表与 [roadmap](./roadmap.md) §4「+2-4 人年到可信 v1,开放式」)。本文比 [p4-method-jit](./p4-method-jit.md)
+> 状态表与 [roadmap](./roadmap.md) §4「+2-4 人年到可信 v1,开放式」)。本文比 [p4-method-jit](./p4-method-jit/00-overview.md)
 > 更粗一档:重点回答**何时做、做什么、护城河在哪、为什么无处抄**——是否做、何时做本身就是本文要守住的决策框架。
 > 详细设计待 P4 落地且启动判定(§1)通过后才有资格展开。
 >
@@ -9,7 +9,7 @@
 > 上游契约:[roadmap](./roadmap.md)(§4 P5 定义、§0 终局目标、§7 prior art:LuaJIT=trace JIT 架构范本)、
 > [evolution-roadmap](../../llmdoc/architecture/evolution-roadmap.md)(P5=fullmoon tier-2;**仅在 P4 收益不够时启动**)、
 > [design-premises](../../llmdoc/must/design-premises.md)(前提一的 6% 校准——P5 边际收益的达摩克利斯之剑)。
-> 依赖面:[p4-method-jit](./p4-method-jit.md)(全部系统基建的来源)、[p2-bridge](./p2-bridge/00-overview.md)(热度/feedback 前端)、
+> 依赖面:[p4-method-jit](./p4-method-jit/00-overview.md)(全部系统基建的来源)、[p2-bridge](./p2-bridge/00-overview.md)(热度/feedback 前端)、
 > [05](./p1-interpreter/05-interpreter-loop.md)(解释器=trace 录制宿主与 deopt 着陆点)、
 > [12](./p1-interpreter/12-testing-difftest.md)(投机最重的层,差分主防线在此最关键)。
 
@@ -32,7 +32,7 @@ P5 = **fullmoon(tier-2)**,月相命名的终点(满月),也是 [roadmap](./roadm
 
 ### 1.1 总闸门:负载证据,不是档位差距
 
-P4 验收达标(列内核 ≥ luajc 档,[p4-method-jit](./p4-method-jit.md) §7.1)后,与 LuaJIT 的剩余差距按前提一的校准只有 **~6%**([design-premises](../../llmdoc/must/design-premises.md):154 vs 164μs)——在 Horner 这类标量算术内核上,**P5 几乎没有立项空间**。所以「收益不够」**不可能由这类基准证明**,只能由 P4 结构性吃不下的负载类别证明。启动判定必须同时满足:
+P4 验收达标(列内核 ≥ luajc 档,[p4-method-jit/08-testing-strategy](./p4-method-jit/08-testing-strategy.md) §1)后,与 LuaJIT 的剩余差距按前提一的校准只有 **~6%**([design-premises](../../llmdoc/must/design-premises.md):154 vs 164μs)——在 Horner 这类标量算术内核上,**P5 几乎没有立项空间**。所以「收益不够」**不可能由这类基准证明**,只能由 P4 结构性吃不下的负载类别证明。启动判定必须同时满足:
 
 1. **存在真实宿主负载**(非合成基准)落在 §1.2 的类别中,且在宿主端到端口径上占比显著(警惕前提一校准测量 2 的稀释教训:脚本级 -37% 被端到端 ±5-7% 噪声吞没);
 2. P4 在该负载上与解释器的加速比**明显低于**其在标量内核上的加速比(说明瓶颈不在 dispatch/类型投机,而在 P4 的结构边界);
@@ -99,9 +99,9 @@ P5 **不推倒任何已有层**,fullmoon 是叠在 gibbous 之上的第三执行
 
 | 资产 | 来源 | P5 怎么用 |
 |---|---|---|
-| 自管机器栈 / trampoline / exec mmap / W^X / icache flush | [p4-method-jit](./p4-method-jit.md) §4 | **原样复用**——四项税解法与世界边界不因 trace 而变 |
-| amd64/arm64 发射器(指令编码层) | [p4-method-jit](./p4-method-jit.md) §5 | 复用编码器;regalloc 之后的发射逻辑新写(trace 的码形与模板不同) |
-| OSR 物化路径(寄存器→栈槽→CallInfo→解释器续跑) | [p4-method-jit](./p4-method-jit.md) §3 | 着陆机制复用,**物化内容升级**:从「栈槽已是真相」变成「按 snapshot 重建多帧真相」(§4) |
+| 自管机器栈 / trampoline / exec mmap / W^X / icache flush | [p4-method-jit/05-system-pipeline](./p4-method-jit/05-system-pipeline.md) | **原样复用**——四项税解法与世界边界不因 trace 而变 |
+| amd64/arm64 发射器(指令编码层) | [p4-method-jit/06-backends](./p4-method-jit/06-backends.md) | 复用编码器;regalloc 之后的发射逻辑新写(trace 的码形与模板不同) |
+| OSR 物化路径(寄存器→栈槽→CallInfo→解释器续跑) | [p4-method-jit/04-osr-deopt](./p4-method-jit/04-osr-deopt.md) | 着陆机制复用,**物化内容升级**:从「栈槽已是真相」变成「按 snapshot 重建多帧真相」(§4) |
 | 热度计数 / TypeFeedback / 可编译性闸门 | [p2-bridge](./p2-bridge/00-overview.md) | 复用:trace 阈值另设;feedback 辅助录制期决策;**NYI 黑名单沿用原则 4**——录制遇到不可处理形状(varargs/coroutine/debug 同款清单 + trace 特有的 NYI)弃 trace 走下层,不做完备性 |
 | NaN-box 值表示 / arena / GC | [01](./p1-interpreter/01-value-object-model.md) | 不变式照守([architecture](./architecture.md) §4:值表示一次定死)——IR 值的装拆箱就是 NaN-box 位操作,GC safepoint 纪律同 P4 |
 | 差分 harness | [12](./p1-interpreter/12-testing-difftest.md) §3.8 | 新增 `WangshuFullmoon` runner(12 已预留注释位) |
@@ -115,7 +115,7 @@ P5 **不推倒任何已有层**,fullmoon 是叠在 gibbous 之上的第三执行
 
 ### 4.1 问题:trace 中途退出,真相已被优化拆散
 
-P4 的 deopt 之所以薄([p4-method-jit](./p4-method-jit.md) §3.3),靠的是「每条字节码边界栈槽即真相」。P5 的三项核心优化**逐条拆毁这个前提**:
+P4 的 deopt 之所以薄([p4-method-jit/04-osr-deopt](./p4-method-jit/04-osr-deopt.md) §3),靠的是「每条字节码边界栈槽即真相」。P5 的三项核心优化**逐条拆毁这个前提**:
 
 - 寄存器分配 ⇒ 活值在机器寄存器/spill 槽,**不在栈槽**;
 - trace 内联 ⇒ 一条 trace 中途对应**多个逻辑 Lua 帧**(被调函数的帧从未真实压过 CallInfo);
@@ -175,7 +175,7 @@ deopt(guard_k):
 **差分**(原则 2 在 P5 到达顶点):P5 的每一项机制——录制的类型假设、每个优化 pass 的语义保持、snapshot 的状态重建——都是「静默错果」候选,且组合空间远超 P4。全套接入 [12](./p1-interpreter/12-testing-difftest.md) 既有轨道(§3.8 Runner 新增 fullmoon、§7 P5 行已预留),并加码:
 
 - **同 Proto 三层差分**:crescent vs gibbous vs fullmoon 两两 byte-equal,CI 硬门禁;
-- **deopt 注入**:每 guard 强制失败模式(承 [p4-method-jit](./p4-method-jit.md) §7.2),把每条 side exit + snapshot 恢复路径踩热;snapshot 恢复后的最终输出与一路解释 byte-equal;
+- **deopt 注入**:每 guard 强制失败模式(承 [p4-method-jit/08-testing-strategy](./p4-method-jit/08-testing-strategy.md) §5),把每条 side exit + snapshot 恢复路径踩热;snapshot 恢复后的最终输出与一路解释 byte-equal;
 - **优化 pass 分级差分**:按 pass 开关组合跑差分(只录制不优化 / +CSE / +LICM / +sink…),把「哪个 pass 引入错果」定位成一阶问题;
 - **持续 fuzz 作为常驻基础设施**:P5 的正确性置信度 = fuzz 时长的函数([12](./p1-interpreter/12-testing-difftest.md) §8 的 nightly 长跑在 P5 期间应升格为专用 fuzz 集群)——这是 §4.4 末「收敛时间不可计划」的对策。
 
@@ -187,7 +187,7 @@ deopt(guard_k):
 
 1. **最大风险是「不该做而做了」**:P4 达 luajc 档后,标量内核上距 LuaJIT 仅 ~6%(前提一)——若宿主真实负载不落在 §1.2 的类别里,P5 的 +2-4 人年买不到端到端可见的收益(校准测量 2 的稀释教训)。§1 的判定框架就是本风险的全部对策:**让负载证据而非工程野心做决定**。这正是 roadmap「只在 P4 收益不够时启动」的深意。
 2. **人年开放式的失控面**:snapshot 机器正确性收敛不可排期(§4.4)。对策:P5 内部分闸(录制+基础优化+regalloc+snapshot 为 v1;sink/逃逸为 v2;side trace 树为 v3),每闸独立可停——原则 3 在 P5 内部的递归套用。
-3. **纯 Go 约束对 trace 收益的折损**:全显式 guard(无信号陷阱,承 [p4-method-jit](./p4-method-jit.md) §2.2)在 guard 密集的 trace 码里成本占比高于 method JIT;trace 越长 guard 越多,10-30x 区间的上沿可能因此够不到——验收区间本身已用「10-30x」的宽带表达了这层不确定。
+3. **纯 Go 约束对 trace 收益的折损**:全显式 guard(无信号陷阱,承 [p4-method-jit/03-speculation-ic](./p4-method-jit/03-speculation-ic.md) §3)在 guard 密集的 trace 码里成本占比高于 method JIT;trace 越长 guard 越多,10-30x 区间的上沿可能因此够不到——验收区间本身已用「10-30x」的宽带表达了这层不确定。
 4. **维护性风险**:trace JIT 的复杂度是永久性负债(LuaJIT 社区维护困境是前车)——即便做成,团队是否长期养得起这台机器,应作为启动评审的显性议题。
 
 **开放问题(记入 [doc-gaps](../../llmdoc/memory/doc-gaps.md);多数有意推迟到启动判定之后):**
@@ -203,7 +203,7 @@ deopt(guard_k):
 
 相关:[roadmap](./roadmap.md)(§4 P5 定义 / §0 终局目标 / §7 prior art) ·
 [architecture](./architecture.md)(§1 包布局 `internal/fullmoon/trace` / §2 tier 映射 / §4 三不变式) ·
-[p4-method-jit](./p4-method-jit.md)(基建来源 / §3 OSR 对照 / §7.1 luajc 档与 ~70% 锚点) ·
+[p4-method-jit](./p4-method-jit/00-overview.md)(基建来源 / §3 OSR 对照 / §7.1 luajc 档与 ~70% 锚点) ·
 [p2-bridge](./p2-bridge/00-overview.md)(热度与 feedback 前端 / F1..F7 闸门 / §5.1 投机谱系表) ·
 [p3-wasm-tier](./p3-wasm-tier/00-overview.md)(分层机器的首个验证场) ·
 [05-interpreter-loop](./p1-interpreter/05-interpreter-loop.md)(录制宿主 / CallInfo——snapshot 重建目标) ·
