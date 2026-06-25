@@ -4,10 +4,15 @@
 //
 // **关键技术约束**:
 //   - X28 = Go G 寄存器(Go 1.17+ ABI0 arm64)——必须保持不动;
-//   - X27 装 jitContext(callee-saved,Go ABI0 不预留特殊用途);
-//   - X29 = FP, X30 = LR(arm64 标准);
-//   - NOSPLIT|NOFRAME:trampoline 自身不分配 Go 栈帧,直接动 SP 保存
-//     callee-saved + LR + FP。
+//   - X27 装 jitContext(callee-saved);
+//   - Plan 9 arm64 framesize 决定 Go runtime stack walker 如何 unwind——
+//     framesize > 0 时 Go 自动 prologue/epilogue 管 LR/FP + SP;NOFRAME +
+//     手动 SUB SP 会让 runtime stack walker 错算 caller LR 位置 → sigpanic
+//     时 unwind 失败「unexpected return pc」(承上批 1c74df9 失败教训)。
+//
+// 故本文件用 framesize=$80(80 = 9 callee-saved 寄存器 padded 到 16-byte)
+// 让 Go runtime 自动管 prologue/epilogue + LR 保存,我们仅手存 X19-X27
+// 进 frame 内。
 
 //go:build wangshu_p4 && linux && arm64
 
@@ -16,59 +21,46 @@
 // func callJITFull(codeAddr uintptr, jitCtxAddr uintptr) uint64
 //
 // 入参:
-//   codeAddr   +0(FP)   uintptr  ← mmap 段起点(PROT_RX)
-//   jitCtxAddr +8(FP)   uintptr  ← *JITContext(Go 堆,X27 装载)
+//   codeAddr   +0(FP)   uintptr
+//   jitCtxAddr +8(FP)   uintptr
 // 返回:
-//   ret        +16(FP)  uint64   ← mmap 段执行后 X0 值
+//   ret        +16(FP)  uint64
 //
-// 实现要点(NOFRAME 手动管理):
-//   1. 手动 SUB SP, $96 给本帧分配空间(96 = 80 callee-saved + 16 LR/FP);
-//   2. STP X29, X30 到栈顶(模拟 arm64 ABI 标准 frame 链);
-//   3. STP X19-X27 进 frame 内(8 个寄存器 = 4 对 + 1 单 = 64 字节);
-//   4. ADD X29, SP 让 Go runtime stack walker 能跟链;
-//   5. 装 X27 = jitContext;
-//   6. BLR codeAddr 跳进 mmap 段——段以 RET(0xd65f03c0)收尾,X0 持值;
-//   7. 段返回:LDP 恢复 callee-saved + LR/FP + ADD SP;
-//   8. 写回 X0 + RET(LR 已恢复,跳回 caller)。
+// 实现:
+//   - Go arm64 auto-prologue 自动 STP X29 X30 + SUB SP 96(80 framesize +
+//     16 LR/FP 区);函数体起 SP 指向 user space 起点;
+//   - 我们手存 X19-X27(callee-saved 9 个;X28=G 不动)进 frame 内;
+//   - BL (R8) 跳进 mmap 段,X30 被 BL 改写;
+//   - 段 RET 弹回 BL 下一条;
+//   - 手动 LDP 恢复 X19-X27;
+//   - Go auto-epilogue 自动恢复 X29 X30 + ADD SP + RET。
 
-TEXT ·callJITFull(SB),NOSPLIT|NOFRAME,$0-24
-	// 分配 96 字节栈帧(arm64 SP 16-byte 对齐)
-	SUB	$96, RSP
+TEXT ·callJITFull(SB),NOSPLIT,$80-24
+	// Go auto-prologue 已 STP X29 X30 + SUB SP 96。SP 现指向 user space
+	// 起点,我们用 frame[0..72] 存 X19-X27(9 寄存器,80 字节 16-byte 对齐
+	// 后实际 frame 含 8 字节 padding 在末尾)。
+	STP	(R19, R20), 0(RSP)
+	STP	(R21, R22), 16(RSP)
+	STP	(R23, R24), 32(RSP)
+	STP	(R25, R26), 48(RSP)
+	MOVD	R27, 64(RSP)
 
-	// 存 LR(X30)+ FP(X29)到栈顶(arm64 ABI 标准 frame chain)
-	STP	(R29, R30), 0(RSP)
-
-	// 存 callee-saved X19-X27(9 寄存器,5 对其中末对 R27+0 占位)
-	STP	(R19, R20), 16(RSP)
-	STP	(R21, R22), 32(RSP)
-	STP	(R23, R24), 48(RSP)
-	STP	(R25, R26), 64(RSP)
-	MOVD	R27, 80(RSP)
-
-	// 让 X29 指向当前 frame(stack walker 能 unwind)
-	MOVD	RSP, R29
-
-	// 装 R27 = jitContext
+	// 装 R27 = jitContext(06 §4.2)
 	MOVD	jitCtxAddr+8(FP), R27
 
-	// 取 codeAddr 到 R8(临时,X8 caller-saved)
+	// 取 codeAddr 到 R8(caller-saved)
 	MOVD	codeAddr+0(FP), R8
 
-	// BLR 跳进 mmap 段——X30 被设为下一条指令地址
-	// Plan 9 arm64 用 BL 表 BLR 间接调用
+	// 间接调用 mmap 段——Plan 9 arm64 用 BL (Reg) 表 BLR
 	BL	(R8)
 
-	// 段返回:X0 已是返回值。恢复 callee-saved
-	LDP	0(RSP), (R29, R30)
-	LDP	16(RSP), (R19, R20)
-	LDP	32(RSP), (R21, R22)
-	LDP	48(RSP), (R23, R24)
-	LDP	64(RSP), (R25, R26)
-	MOVD	80(RSP), R27
+	// 段返回:R0 已是返回值。手动恢复 X19-X27(LR/FP 由 epilogue 恢复)
+	LDP	0(RSP), (R19, R20)
+	LDP	16(RSP), (R21, R22)
+	LDP	32(RSP), (R23, R24)
+	LDP	48(RSP), (R25, R26)
+	MOVD	64(RSP), R27
 
-	// 写回返回值
+	// 写回返回值(此时 R0 仍是 mmap 段产生的 X0)
 	MOVD	R0, ret+16(FP)
-
-	// 释放栈帧 + RET(LR 已恢复,跳回 caller)
-	ADD	$96, RSP
 	RET
