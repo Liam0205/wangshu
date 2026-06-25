@@ -48,7 +48,8 @@ func benchGibbousJIT(b *testing.B, body string, force bool) {
 	}
 }
 
-// kernel body —— P4 PJ7 真接入子集(单 BB「值产生 + RETURN」)。
+// kernel body —— P4 PJ7 真接入子集(单 BB「值产生 + RETURN」+ 二段算术
+// 链式 + 比较折叠等)。
 
 // 常量 number 返回(LOADK + RETURN)
 const constBody = `return 42`
@@ -59,9 +60,24 @@ const nilBody = `return nil`
 // 常量 bool 返回(LOADBOOL + RETURN)
 const boolBody = `return true`
 
+// 算术族(单 op):MUL + RETURN
+const mulBody = `local x=7; return x*2`
+
+// 二段算术链式:MUL + ADD + RETURN(`x*2+1` 形态)
+const chainBody = `local x=7; return x*2+1`
+
+// 比较折叠:EQ + JMP + LOADBOOL×2 + RETURN
+const cmpBody = `local x=7; return x == 7`
+
 func BenchmarkGibbousJIT_Const(b *testing.B)      { benchGibbousJIT(b, constBody, true) }
 func BenchmarkGibbousJIT_ConstCresc(b *testing.B) { benchGibbousJIT(b, constBody, false) }
 func BenchmarkGibbousJIT_Nil(b *testing.B)        { benchGibbousJIT(b, nilBody, true) }
 func BenchmarkGibbousJIT_NilCresc(b *testing.B)   { benchGibbousJIT(b, nilBody, false) }
 func BenchmarkGibbousJIT_Bool(b *testing.B)       { benchGibbousJIT(b, boolBody, true) }
 func BenchmarkGibbousJIT_BoolCresc(b *testing.B)  { benchGibbousJIT(b, boolBody, false) }
+func BenchmarkGibbousJIT_Mul(b *testing.B)        { benchGibbousJIT(b, mulBody, true) }
+func BenchmarkGibbousJIT_MulCresc(b *testing.B)   { benchGibbousJIT(b, mulBody, false) }
+func BenchmarkGibbousJIT_Chain(b *testing.B)      { benchGibbousJIT(b, chainBody, true) }
+func BenchmarkGibbousJIT_ChainCresc(b *testing.B) { benchGibbousJIT(b, chainBody, false) }
+func BenchmarkGibbousJIT_Cmp(b *testing.B)        { benchGibbousJIT(b, cmpBody, true) }
+func BenchmarkGibbousJIT_CmpCresc(b *testing.B)   { benchGibbousJIT(b, cmpBody, false) }
