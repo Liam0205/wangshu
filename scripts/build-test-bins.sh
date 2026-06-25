@@ -6,9 +6,13 @@
 # 后续 `make test` / `make bench` 跑同一份 binary,避免每次重编。
 #
 # variant:
-#   p1  默认 build(新月解释器,P3 完全 dead-code)
-#   p3  wangshu_p3 + wangshu_profile build(P1 解释器 + P3 凸月编译层)
-#   future: p4 / p5 同款接入。
+#   p1  默认 build(新月解释器,P3/P4 完全 dead-code)
+#   p3  wangshu_p3 + wangshu_profile build(P1 解释器 + P3 凸月 wasm 编译层)
+#   p4  wangshu_p4 build(P1 解释器 + P4 凸月 jit 编译层;PJ0 阶段:supported 全 false ⇒ 行为等价 P1)
+#   future: p5 同款接入。
+#
+# **P3+P4 互斥 build tag**(用户裁决,docs/design/p4-method-jit/06-backends.md §1):
+# wangshu_p3 与 wangshu_p4 不允许同时启用——本脚本拒此组合。
 #
 # 主模块 + benchmarks 子模块都编(子模块独立 go.mod)。包名经
 # `path-to-name` 规范化:`github.com/Liam0205/wangshu/internal/arena` →
@@ -24,12 +28,15 @@ case "$variant" in
     p3)
         tags="wangshu_p3 wangshu_profile"
         ;;
+    p4)
+        tags="wangshu_p4"
+        ;;
     "")
-        echo "usage: $0 <variant>  (variant: p1 | p3)" >&2
+        echo "usage: $0 <variant>  (variant: p1 | p3 | p4)" >&2
         exit 2
         ;;
     *)
-        echo "✗ unknown variant: $variant (allowed: p1 | p3)" >&2
+        echo "✗ unknown variant: $variant (allowed: p1 | p3 | p4)" >&2
         exit 2
         ;;
 esac
@@ -83,8 +90,15 @@ build_pkg() {
     fi
 
     # 把包源码 dir(绝对路径)记到 manifest;run-test-bins.sh 据此 cd。
+    # **传 -tags 给 go list**:build tag-only 包(如 internal/gibbous/wasm 在
+    # wangshu_p3 build / internal/gibbous/jit 在 wangshu_p4 build)未传
+    # tag 时 `go list` 会跳过解析,失败时报「no Go files」类错。
     local src_dir
-    src_dir=$(go list -f '{{.Dir}}' "$pkg" 2>/dev/null)
+    if [ -n "$tags" ]; then
+        src_dir=$(go list -tags "$tags" -f '{{.Dir}}' "$pkg" 2>/dev/null)
+    else
+        src_dir=$(go list -f '{{.Dir}}' "$pkg" 2>/dev/null)
+    fi
     if [ -z "$src_dir" ]; then
         echo "✗ go list -f {{.Dir}} failed for $pkg" >&2
         return 1
@@ -99,12 +113,19 @@ echo "===== build $variant test binaries → test-bin/$variant/ ====="
 rm -f "$outdir/manifest.txt"
 echo "[1/2] main module"
 # 替代 bash 4 `mapfile`:while read 配 process substitution(bash 3.2 兼容)
+# **传 -tags 给 go list**:build tag-only 包(如 internal/gibbous/wasm 在
+# wangshu_p3 build 下、internal/gibbous/jit 在 wangshu_p4 build 下)经此被
+# 识别;否则 go list 默认 build 不会列出它们(测试漏跑)。
 main_pkgs=()
+list_args=(-f '{{if or (len .TestGoFiles) (len .XTestGoFiles)}}{{.ImportPath}}{{end}}')
+if [ -n "$tags" ]; then
+    list_args+=(-tags "$tags")
+fi
 while IFS= read -r pkg; do
     [ -z "$pkg" ] && continue
     main_pkgs+=("$pkg")
 done < <(cd "$repo_root" && \
-    go list -f '{{if or (len .TestGoFiles) (len .XTestGoFiles)}}{{.ImportPath}}{{end}}' ./... 2>/dev/null)
+    go list "${list_args[@]}" ./... 2>/dev/null)
 for pkg in "${main_pkgs[@]}"; do
     (cd "$repo_root" && build_pkg "$pkg" "$repo_root") || exit 1
 done
@@ -116,7 +137,7 @@ while IFS= read -r pkg; do
     [ -z "$pkg" ] && continue
     bench_pkgs+=("$pkg")
 done < <(cd "$repo_root/benchmarks" && \
-    go list -f '{{if or (len .TestGoFiles) (len .XTestGoFiles)}}{{.ImportPath}}{{end}}' ./... 2>/dev/null)
+    go list "${list_args[@]}" ./... 2>/dev/null)
 for pkg in "${bench_pkgs[@]}"; do
     (cd "$repo_root/benchmarks" && build_pkg "$pkg" "$repo_root/benchmarks") || exit 1
 done
