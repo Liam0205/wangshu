@@ -163,6 +163,45 @@ func (m *mockP4Host) GetTable(base, pc, a, b, c int32) int32 {
 	return m.tableRetCode
 }
 
+// SetTable 模拟 host.SetTable:setter 形态不写 R(A),只记录调用 +
+// 返 tableRetCode。
+func (m *mockP4Host) SetTable(base, pc, a, b, c int32) int32 {
+	_ = base
+	_ = pc
+	m.tableCalls++
+	m.lastTableOp = 3 // SetTable tag
+	m.lastTableA = a
+	m.lastTableB = b
+	m.lastTableC = c
+	return m.tableRetCode
+}
+
+// DoGetGlobal 模拟 host.DoGetGlobal:GETGLOBAL 与 tableCalls/tableResult 共用
+// 计数与结果,但 op tag 区别(4=DoGetGlobal)。
+func (m *mockP4Host) DoGetGlobal(base, pc, a, bx int32) int32 {
+	_ = base
+	_ = pc
+	m.tableCalls++
+	m.lastTableOp = 4 // DoGetGlobal tag
+	m.lastTableA = a
+	m.lastTableB = bx // 复用 B 字段记 Bx
+	if m.tableRetCode == 0 {
+		m.regs[a] = m.tableResult
+	}
+	return m.tableRetCode
+}
+
+// DoSetGlobal 模拟 host.DoSetGlobal:setter,不写 R(A)。
+func (m *mockP4Host) DoSetGlobal(base, pc, a, bx int32) int32 {
+	_ = base
+	_ = pc
+	m.tableCalls++
+	m.lastTableOp = 5 // DoSetGlobal tag
+	m.lastTableA = a
+	m.lastTableB = bx
+	return m.tableRetCode
+}
+
 // compileWithHost 构造 *Compiler 注入 mock host 后调 Compile。
 func compileWithHost(t *testing.T, p *bytecode.Proto) (bridge.GibbousCode, *mockP4Host) {
 	t.Helper()

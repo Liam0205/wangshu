@@ -456,3 +456,103 @@ func TestPJ7_GetTableForm_HostRoute_Err(t *testing.T) {
 		t.Errorf("DoReturn 应跳过(ERR), got %d", host.doReturnCalls)
 	}
 }
+
+// TestPJ7_GetGlobalForm_HostRoute_OK GETGLOBAL A Bx + RETURN A 2 形态。
+func TestPJ7_GetGlobalForm_HostRoute_OK(t *testing.T) {
+	proto := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABx(bytecode.GETGLOBAL, 0, 5),
+			bytecode.EncodeABC(bytecode.RETURN, 0, 2, 0),
+		},
+		Consts:       make([]value.Value, 10), // 占位长度,Bx=5 不越界
+		StringLitIdx: make([]int32, 10),
+	}
+	c := New()
+	host := newMockP4Host()
+	c.SetHostState(host)
+	expected := uint64(value.NumberValue(7))
+	host.tableResult = expected
+	gc, err := c.Compile(proto, nil)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	defer tryDispose(t, gc)
+	stack := make([]uint64, 4)
+	if status := gc.Run(stack, 0); status != 0 {
+		t.Errorf("Run status = %d, want 0", status)
+	}
+	if host.tableCalls != 1 || host.lastTableOp != 4 {
+		t.Errorf("DoGetGlobal not called(calls=%d / tag=%d, want 1/4)", host.tableCalls, host.lastTableOp)
+	}
+	if host.lastTableA != 0 || host.lastTableB != 5 {
+		t.Errorf("DoGetGlobal A/Bx = (%d,%d), want (0,5)", host.lastTableA, host.lastTableB)
+	}
+	got, ok := host.regs[0]
+	if !ok || got != expected {
+		t.Errorf("R(0) = 0x%x (ok=%v), want 0x%x", got, ok, expected)
+	}
+}
+
+// TestPJ7_SetTableForm_HostRoute_OK SETTABLE A B C + RETURN A 1 setter 形态。
+// 验证 retB=1 走 prelude(之前 retB>=2 守卫会拦下,新拆分守卫修复)。
+func TestPJ7_SetTableForm_HostRoute_OK(t *testing.T) {
+	proto := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABC(bytecode.SETTABLE, 0, 1, 2),
+			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0), // setter retB=1
+		},
+	}
+	c := New()
+	host := newMockP4Host()
+	c.SetHostState(host)
+	gc, err := c.Compile(proto, nil)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	defer tryDispose(t, gc)
+	stack := make([]uint64, 8)
+	if status := gc.Run(stack, 0); status != 0 {
+		t.Errorf("Run status = %d, want 0", status)
+	}
+	if host.tableCalls != 1 || host.lastTableOp != 3 {
+		t.Errorf("SetTable not called(calls=%d / tag=%d, want 1/3)", host.tableCalls, host.lastTableOp)
+	}
+	if host.lastTableA != 0 || host.lastTableB != 1 || host.lastTableC != 2 {
+		t.Errorf("SetTable ABC = (%d,%d,%d), want (0,1,2)", host.lastTableA, host.lastTableB, host.lastTableC)
+	}
+	// setter 不写 R(A)
+	if _, ok := host.regs[0]; ok {
+		t.Errorf("setter 不应写 R(A), got regs=%v", host.regs)
+	}
+	// retB=1 → DoReturn 仍调(弹帧)
+	if host.doReturnCalls != 1 {
+		t.Errorf("DoReturn 应调 1 次, got %d", host.doReturnCalls)
+	}
+}
+
+// TestPJ7_SetTableForm_HostRoute_Err SETTABLE 错误路径。
+func TestPJ7_SetTableForm_HostRoute_Err(t *testing.T) {
+	proto := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABC(bytecode.SETTABLE, 0, 1, 2),
+			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
+		},
+	}
+	c := New()
+	host := newMockP4Host()
+	c.SetHostState(host)
+	host.tableRetCode = 1
+	gc, err := c.Compile(proto, nil)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	defer tryDispose(t, gc)
+	stack := make([]uint64, 8)
+	status := gc.Run(stack, 0)
+	if status != 1 {
+		t.Errorf("Run status = %d, want 1(ERR)", status)
+	}
+	if host.doReturnCalls != 0 {
+		t.Errorf("DoReturn 应跳过(ERR), got %d", host.doReturnCalls)
+	}
+}

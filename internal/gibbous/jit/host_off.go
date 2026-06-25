@@ -12,4 +12,7 @@ type P4HostState interface {
 	Len(base int32, pc int32, b int32, a int32) int32
 	NewTable(base int32, pc int32, a int32, b int32, c int32) int32
 	GetTable(base int32, pc int32, a int32, b int32, c int32) int32
+	SetTable(base int32, pc int32, a int32, b int32, c int32) int32
+	DoGetGlobal(base int32, pc int32, a int32, bx int32) int32
+	DoSetGlobal(base int32, pc int32, a int32, bx int32) int32
 }

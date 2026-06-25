@@ -83,6 +83,33 @@ type P4HostState interface {
 	// 返回:0=OK / 1=ERR。用例:P4 GETTABLE A B C 形态(`function(t, k)
 	// return t[k] end` / `function(t) return t.x end` 类)。
 	GetTable(base int32, pc int32, a int32, b int32, c int32) int32
+
+	// SetTable 处理 SETTABLE A B C 慢路径助手(gibbous_host.go::SetTable
+	// 同款签名,经 icSetTable IC + 哈希 + __newindex 元方法链,可 raise)。
+	//
+	// 参数:base/pc 同 Arith;a = 表所在寄存器;b/c = RK 键 / 值(寄存器
+	// 号或常量索引)。
+	//
+	// 返回:0=OK / 1=ERR。用例:P4 SETTABLE A B C 形态(`function(t, k, v)
+	// t[k] = v end` / `function(t) t.x = 1 end` 类——setter 形态 retB=1)。
+	SetTable(base int32, pc int32, a int32, b int32, c int32) int32
+
+	// DoGetGlobal 处理 GETGLOBAL A Bx 慢路径助手(gibbous_host.go::DoGetGlobal
+	// 同款签名,经 icGetTable 在 `_G` 表上查 Consts[bx],可 raise)。
+	//
+	// 参数:base/pc 同 Arith;a = 目标寄存器号;bx = 常量索引(全局变量名)。
+	//
+	// 返回:0=OK / 1=ERR。用例:P4 GETGLOBAL A Bx 形态(`function() return
+	// print end` 等)。
+	DoGetGlobal(base int32, pc int32, a int32, bx int32) int32
+
+	// DoSetGlobal 处理 SETGLOBAL A Bx 慢路径助手(gibbous_host.go::DoSetGlobal
+	// 同款签名,经 icSetTable 在 `_G` 表上写 Consts[bx] = R(a),可 raise)。
+	//
+	// 参数:base/pc 同 Arith;a = 源寄存器号;bx = 常量索引(全局变量名)。
+	//
+	// 返回:0=OK / 1=ERR。用例:P4 SETGLOBAL A Bx 形态(setter retB=1)。
+	DoSetGlobal(base int32, pc int32, a int32, bx int32) int32
 }
 
 // SetHostState 把 host(crescent)抽象注入本 Compiler。

@@ -448,3 +448,132 @@ return f({}, 1)  -- 触发 attempt to perform arithmetic on x`
 	}
 	t.Logf("多行错误 byte-equal 通过:%v", errP4)
 }
+
+// TestPJ7_GetGlobal_E2E_OK 验真实路径下 `function() return print end` 经
+// P4 升层后返回 global。
+func TestPJ7_GetGlobal_E2E_OK(t *testing.T) {
+	src := `
+local function f() return myglobal end
+for i = 1, 100 do f() end
+return f()`
+	st, mainCl := loadFnP4(t, src)
+	// 先注入一个 global
+	st.SetGlobal("myglobal", value.NumberValue(777))
+	st.bridge.SetForceAllPromote(true)
+
+	beforeHits := st.doReturnHits
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	hits := st.doReturnHits - beforeHits
+	promoCount := st.bridge.PromotionCount()
+	t.Logf("GETGLOBAL:PromotionCount=%d, doReturnHits=%d", promoCount, hits)
+	if promoCount == 0 {
+		t.Fatal("GETGLOBAL:PromotionCount=0 → 没 Proto 升层")
+	}
+	if hits == 0 {
+		t.Fatal("GETGLOBAL:doReturnHits=0 → P4 路径未真触达")
+	}
+	if len(rets) != 1 || !value.IsNumber(value.Value(rets[0])) {
+		t.Fatalf("rets = %v, want [number]", rets)
+	}
+	if got := value.AsNumber(value.Value(rets[0])); got != 777 {
+		t.Errorf("f() = %v, want 777(myglobal)", got)
+	}
+}
+
+// TestPJ7_SetTable_E2E_OK 验真实路径下 `function(t,k,v) t[k]=v end` 经 P4
+// 升层(setter 形态 retB=1)+ table 被写入。
+func TestPJ7_SetTable_E2E_OK(t *testing.T) {
+	src := `
+local function f(t, k, v) t[k] = v end
+local tbl = {}
+for i = 1, 100 do f(tbl, "x", i) end  -- 升层 + 写入
+f(tbl, "y", 99)
+return tbl.x, tbl.y`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	beforeHits := st.doReturnHits
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 2)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	hits := st.doReturnHits - beforeHits
+	promoCount := st.bridge.PromotionCount()
+	t.Logf("SETTABLE:PromotionCount=%d, doReturnHits=%d", promoCount, hits)
+	if promoCount == 0 {
+		t.Fatal("SETTABLE:PromotionCount=0 → 没 Proto 升层")
+	}
+	if hits == 0 {
+		t.Fatal("SETTABLE:doReturnHits=0 → P4 路径未真触达")
+	}
+	if len(rets) != 2 {
+		t.Fatalf("rets 长度 = %d, want 2", len(rets))
+	}
+	if got := value.AsNumber(value.Value(rets[0])); got != 100 {
+		t.Errorf("tbl.x = %v, want 100(循环 i=1..100 末次写入)", got)
+	}
+	if got := value.AsNumber(value.Value(rets[1])); got != 99 {
+		t.Errorf("tbl.y = %v, want 99", got)
+	}
+}
+
+// TestPJ7_SetTable_E2E_Err 验 SETTABLE on nil 的错误冒泡。
+func TestPJ7_SetTable_E2E_Err(t *testing.T) {
+	src := `
+local function f(t, k, v) t[k] = v end
+local tbl = {}
+for i = 1, 100 do f(tbl, i, i) end  -- 先升层
+return f(nil, "x", 1)  -- 触发 attempt to index nil`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	_, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err == nil {
+		t.Fatal("SETTABLE on nil 应 raise,但 Call 返回 nil err")
+	}
+	t.Logf("PJ7 SETTABLE ERR 路径正确冒泡:err = %v", err)
+}
+
+// TestPJ7_SetGlobal_E2E_OK 验真实路径下 `function() x = 1 end` 经 P4 升层
+// (LOADK + SETGLOBAL + RETURN,共 3 op,SETGLOBAL 是 prelude 之前还有 LOADK
+//
+//	——本测试用源:`function(v) myglobal = v end` 接近这个形态但 LOADK 用
+//
+// 参数 R 而非 K)。
+//
+// 注:`function(v) myglobal = v end` 编译为 SETGLOBAL A=0 Bx="myglobal" +
+// RETURN——A=0 是寄存器号,源值在 R(0) = 参数 v;无 LOADK prelude。完美
+// 单 prelude + RETURN 形态。
+func TestPJ7_SetGlobal_E2E_OK(t *testing.T) {
+	src := `
+local function f(v) myglobal = v end
+for i = 1, 100 do f(i) end  -- 升层 + 反复写 myglobal
+f(42)
+return myglobal`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	beforeHits := st.doReturnHits
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	hits := st.doReturnHits - beforeHits
+	promoCount := st.bridge.PromotionCount()
+	t.Logf("SETGLOBAL:PromotionCount=%d, doReturnHits=%d", promoCount, hits)
+	if promoCount == 0 {
+		t.Fatal("SETGLOBAL:PromotionCount=0 → 没 Proto 升层")
+	}
+	if hits == 0 {
+		t.Fatal("SETGLOBAL:doReturnHits=0 → P4 路径未真触达")
+	}
+	if len(rets) != 1 || !value.IsNumber(value.Value(rets[0])) {
+		t.Fatalf("rets = %v, want [number]", rets)
+	}
+	if got := value.AsNumber(value.Value(rets[0])); got != 42 {
+		t.Errorf("myglobal = %v, want 42(末次 f(42) 写入)", got)
+	}
+}

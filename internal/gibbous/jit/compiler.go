@@ -78,9 +78,9 @@ type shapeInfo struct {
 	retPC      uint8  // RETURN 指令 pc
 	value      uint64 // R(retA) 的 NaN-box u64 值(若 writeRetA=true 由 mmap 段烧入)
 	writeRetA  bool   // mmap 段返 RAX 是否需写 R(retA)
-	preludeOp  uint8  // RETURN 前 prelude opcode(0=无,GETUPVAL=4 / ADD=12 / SUB=13 等)
-	preludeArg uint16 // prelude opcode 的 B 字段(GETUPVAL 的 upvalue 索引 0-255;算术族的 B 字段含 RK 编码 0-511)
-	preludeC   uint16 // 算术族 prelude(ADD/SUB/MUL/DIV/MOD/POW)的 C 字段——可为 RK(常量含 256 偏移),0-511
+	preludeOp  uint8  // RETURN 前 prelude opcode(0=无,GETUPVAL=4 / ADD=12 / SUB=13 / GETGLOBAL=5 / SETGLOBAL=7 / SETTABLE=9 等)
+	preludeArg uint32 // prelude opcode 的 B 字段(GETUPVAL/UNM/LEN 是寄存器号 0-255;算术族 B 是 RK 0-511;NEWTABLE B 是 Fb 0-255;GETGLOBAL/SETGLOBAL 是 Bx 0-262143,需 18-bit)
+	preludeC   uint16 // 算术族 / 表族 prelude 的 C 字段——可为 RK(常量含 256 偏移),0-511
 }
 
 // analyzeShape 识别支持的「单值产生 + RETURN A 1」形态。
@@ -183,7 +183,7 @@ func analyzeShape(proto *bytecode.Proto) shapeInfo {
 			retB:       uint8(retB),
 			retPC:      1,
 			preludeOp:  uint8(bytecode.GETUPVAL),
-			preludeArg: uint16(guvB),
+			preludeArg: uint32(guvB),
 		}
 
 	case bytecode.ADD, bytecode.SUB, bytecode.MUL, bytecode.DIV,
@@ -221,7 +221,7 @@ func analyzeShape(proto *bytecode.Proto) shapeInfo {
 			retB:       uint8(retB),
 			retPC:      1,
 			preludeOp:  uint8(bytecode.Op(first)),
-			preludeArg: uint16(arithB),
+			preludeArg: uint32(arithB),
 			preludeC:   uint16(arithC),
 		}
 
@@ -265,7 +265,7 @@ func analyzeShape(proto *bytecode.Proto) shapeInfo {
 			retB:       uint8(retB),
 			retPC:      1,
 			preludeOp:  uint8(bytecode.Op(first)),
-			preludeArg: uint16(uB),
+			preludeArg: uint32(uB),
 		}
 
 	case bytecode.NEWTABLE:
@@ -298,7 +298,7 @@ func analyzeShape(proto *bytecode.Proto) shapeInfo {
 			retB:       uint8(retB),
 			retPC:      1,
 			preludeOp:  uint8(bytecode.NEWTABLE),
-			preludeArg: uint16(ntB),
+			preludeArg: uint32(ntB),
 			preludeC:   uint16(ntC),
 		}
 
@@ -331,8 +331,104 @@ func analyzeShape(proto *bytecode.Proto) shapeInfo {
 			retB:       uint8(retB),
 			retPC:      1,
 			preludeOp:  uint8(bytecode.GETTABLE),
-			preludeArg: uint16(gtB),
+			preludeArg: uint32(gtB),
 			preludeC:   uint16(gtC),
+		}
+
+	case bytecode.GETGLOBAL:
+		// GETGLOBAL A Bx + RETURN A 2:`function() return print end` 形态。
+		// host.DoGetGlobal 经 icGetTable 在 `_G` 上查 Consts[bx],可 raise
+		// (元方法路径)。
+		ret := proto.Code[1]
+		if bytecode.Op(ret) != bytecode.RETURN {
+			return shapeInfo{}
+		}
+		retA := bytecode.A(ret)
+		retB := bytecode.B(ret)
+		if retB != 2 {
+			return shapeInfo{}
+		}
+		ggA := bytecode.A(first)
+		ggBx := bytecode.Bx(first)
+		if ggA != retA {
+			return shapeInfo{}
+		}
+		// Bx 18-bit, [0, 262143] —— 须存进 preludeArg (uint32)
+		if ggBx < 0 || ggBx > 262143 {
+			return shapeInfo{}
+		}
+		if ggBx >= len(proto.Consts) {
+			return shapeInfo{}
+		}
+		return shapeInfo{
+			ok:         true,
+			retA:       uint8(retA),
+			retB:       uint8(retB),
+			retPC:      1,
+			preludeOp:  uint8(bytecode.GETGLOBAL),
+			preludeArg: uint32(ggBx),
+		}
+
+	case bytecode.SETGLOBAL:
+		// SETGLOBAL A Bx + RETURN A 1:setter 形态(0 返回值)。
+		// `function() x = 1 end` 编译为 LOADK + SETGLOBAL + RETURN(长度 3),
+		// 故识别 SETGLOBAL 作 prelude 需要前置 LOADK 已写入 R(A)——这违反
+		// 「单 prelude op + RETURN」简化形态。**SETGLOBAL 形态由 LOADK
+		// prelude 覆盖不到,本档暂不接**——需要多 prelude 链(LOADK + SETGLOBAL
+		// 双 op + RETURN)留下一档扩展。这里仅处理「源已在 R(A) 的简化形态」
+		// (实践中罕见),配合 retB=1 setter 守卫。
+		ret := proto.Code[1]
+		if bytecode.Op(ret) != bytecode.RETURN {
+			return shapeInfo{}
+		}
+		retB := bytecode.B(ret)
+		if retB != 1 { // setter 必须 0 返回值
+			return shapeInfo{}
+		}
+		sgA := bytecode.A(first)
+		sgBx := bytecode.Bx(first)
+		if sgBx < 0 || sgBx > 262143 {
+			return shapeInfo{}
+		}
+		if sgBx >= len(proto.Consts) {
+			return shapeInfo{}
+		}
+		return shapeInfo{
+			ok:         true,
+			retA:       uint8(sgA),
+			retB:       uint8(retB),
+			retPC:      1,
+			preludeOp:  uint8(bytecode.SETGLOBAL),
+			preludeArg: uint32(sgBx),
+		}
+
+	case bytecode.SETTABLE:
+		// SETTABLE A B C + RETURN A 1:`function(t,k,v) t[k]=v end` 形态。
+		// host.SetTable 经 icSetTable IC + 哈希 + __newindex,可 raise。
+		// **setter 形态 retB=1**(0 返回值),不写 R(A)。
+		ret := proto.Code[1]
+		if bytecode.Op(ret) != bytecode.RETURN {
+			return shapeInfo{}
+		}
+		retB := bytecode.B(ret)
+		if retB != 1 { // setter 必须 0 返回值
+			return shapeInfo{}
+		}
+		stA := bytecode.A(first)
+		stB := bytecode.B(first)
+		stC := bytecode.C(first)
+		// A 是表寄存器号 [0,254];B/C 是 RK [0,511]
+		if stA > 254 || stB > 511 || stC > 511 {
+			return shapeInfo{}
+		}
+		return shapeInfo{
+			ok:         true,
+			retA:       uint8(stA),
+			retB:       uint8(retB),
+			retPC:      1,
+			preludeOp:  uint8(bytecode.SETTABLE),
+			preludeArg: uint32(stB),
+			preludeC:   uint16(stC),
 		}
 
 	case bytecode.LOADK, bytecode.LOADBOOL, bytecode.LOADNIL:
@@ -471,4 +567,10 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 //     永不 raise)
 //   - 长度 2/3:GETTABLE A B C + RETURN A 2(prelude 路径调 host.GetTable,
 //     经 IC + __index 元方法链,可 ERR 冒泡)
-var ErrCompileUnsupportedShape = errors.New("internal/gibbous/jit: P4 PJ7 unsupported shape (expected: single RETURN A B / single-BB MOVE|GETUPVAL|LOADK|LOADBOOL|LOADNIL|ADD..POW|UNM|LEN|NEWTABLE|GETTABLE + RETURN A 2)")
+//   - 长度 2/3:GETGLOBAL A Bx + RETURN A 2(prelude 路径调 host.DoGetGlobal,
+//     可 ERR 冒泡)
+//   - 长度 2/3:SETTABLE A B C + RETURN A 1(setter 0 返回值,prelude 路径
+//     调 host.SetTable,经 IC + __newindex 元方法链,可 ERR 冒泡)
+//   - 长度 2/3:SETGLOBAL A Bx + RETURN A 1(setter,prelude 路径调
+//     host.DoSetGlobal,可 ERR 冒泡)
+var ErrCompileUnsupportedShape = errors.New("internal/gibbous/jit: P4 PJ7 unsupported shape (expected: single RETURN A B / single-BB MOVE|GETUPVAL|LOADK|LOADBOOL|LOADNIL|ADD..POW|UNM|LEN|NEWTABLE|GETTABLE|GETGLOBAL|SETTABLE|SETGLOBAL + RETURN A 2 (getter) / 1 (setter))")
