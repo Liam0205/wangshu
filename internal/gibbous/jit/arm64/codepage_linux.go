@@ -88,26 +88,17 @@ func (c *CodePage) Length() int {
 	return c.length
 }
 
-// flushICacheArm64 是 arm64 icache flush 占位——完整 asm stub 实装留 PJ8+
-// (本 commit 范围 SupportsAllOpcodes 不开 arm64 白名单,mmap 段不真执行)。
-//
-// 完整实装(承 05 §2.3.1):
-//
-//	for addr := start; addr < end; addr += cacheLineSize {
-//	    DC CVAU, addr  // clean d-cache to point of unification
-//	}
-//	DSB ISH         // 确保 DC 完成
-//	for addr := start; addr < end; addr += cacheLineSize {
-//	    IC IVAU, addr  // invalidate i-cache to point of unification
-//	}
-//	DSB ISH         // 屏障
-//	ISB             // 指令同步屏障,让 CPU 重新 fetch
-//
-// linux/arm64 也可经 syscall `__ARM_NR_cacheflush` 让内核做(慢但简单)。
-//
-// 当前 PJ8 启动版:no-op(段不真执行)——arm64 emitter 真发指令 + SupportsAllOpcodes
-// 开 arm64 白名单时同批落地。
+// flushICacheArm64 真实装(承 05 §2.3.1):写 mmap 段后必须做 DC CVAU +
+// IC IVAU + DSB + ISB,否则取指错(i-cache 仍持旧内容)。实装在
+// flushcache_arm64.s。
 func flushICacheArm64(mem []byte) {
-	_ = mem
-	// PJ8+ 实装 clear_cache(start, end)经 asm stub 或 syscall。
+	if len(mem) == 0 {
+		return
+	}
+	start := uintptr(unsafe.Pointer(&mem[0]))
+	end := start + uintptr(len(mem))
+	flushICacheArm64Asm(start, end)
 }
+
+//go:noescape
+func flushICacheArm64Asm(start, end uintptr)
