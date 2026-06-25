@@ -315,3 +315,39 @@ func TestPJ2_StoreAndJccEncoding(t *testing.T) {
 		}
 	})
 }
+
+// TestPJ2_SpeculativeAddTemplate 验 EmitArithSpeculativeAdd 拼接的
+// 双 number ADD 投机模板字节级序列与 ISA 文档逐字节一致。
+//
+// 不真执行(完整接入需 trampoline 切 SP + rbx 装 valueStackBase + IsNumber
+// guard codegen + OSR exit 路径,留 PJ2 完整版)。本测仅断言字节拼接正确。
+func TestPJ2_SpeculativeAddTemplate(t *testing.T) {
+	// ADD A=2 B=0 C=1 双 number(rbx = valueStackBase):
+	//   movsd xmm0, [rbx+0]    F2 0F 10 83 00 00 00 00
+	//   movsd xmm1, [rbx+8]    F2 0F 10 8B 08 00 00 00
+	//   addsd xmm0, xmm1       F2 0F 58 C1
+	//   movsd [rbx+16], xmm0   F2 0F 11 83 10 00 00 00
+	//   ret                    C3
+	var buf []byte
+	buf = EmitArithSpeculativeAdd(buf, 2, 0, 1)
+
+	if len(buf) != EncodedArithSpecAddLen {
+		t.Fatalf("encoded length = %d, want %d", len(buf), EncodedArithSpecAddLen)
+	}
+
+	want := []byte{
+		// movsd xmm0, [rbx+0]
+		0xF2, 0x0F, 0x10, 0x83, 0x00, 0x00, 0x00, 0x00,
+		// movsd xmm1, [rbx+8]
+		0xF2, 0x0F, 0x10, 0x8B, 0x08, 0x00, 0x00, 0x00,
+		// addsd xmm0, xmm1
+		0xF2, 0x0F, 0x58, 0xC1,
+		// movsd [rbx+16], xmm0
+		0xF2, 0x0F, 0x11, 0x83, 0x10, 0x00, 0x00, 0x00,
+		// ret
+		0xC3,
+	}
+	if !bytesEqual(buf, want) {
+		t.Errorf("EmitArithSpeculativeAdd =\n  %x\nwant\n  %x", buf, want)
+	}
+}
