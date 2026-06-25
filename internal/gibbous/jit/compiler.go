@@ -122,6 +122,28 @@ func analyzeShape(proto *bytecode.Proto) (uint8, uint64, bool) {
 
 	first := proto.Code[0]
 	switch bytecode.Op(first) {
+	case bytecode.RETURN:
+		// 长度 2 / 3 + 首条 RETURN A 2:luac 优化形态(无 LOADNIL,直接返
+		// 未初始化栈槽 = nil)。例:`function() end` 编译为 RETURN 0 1
+		// 是长度 1;但 `function() return end` 长度 2:RETURN 0 1 + RETURN 0 1。
+		// 也包括 `local function g() end; ...` 子函数 luac 输出的形态。
+		// 此时第 1 条 RETURN 是真执行的(retPC=0),但是上面已设 retPC=1
+		// (从 Code[1] 取 retInsn)——本 case 须特殊处理:第 1 条 RETURN 真
+		// 执行 → retA / retB 从 Code[0] 读,第 2/3 条 dead。
+		//
+		// 但本函数只返 (retA, value, ok)——retPC 调整在 Compile 处理。
+		// 这里只验证形态:第 1 条 RETURN A B(B=1 或 B=2,与第 2 条不同 A
+		// 也 OK);value 任意(R(A) 是 nil 或不写)。
+		retA0 := bytecode.A(first)
+		retB0 := bytecode.B(first)
+		if retB0 != 1 && retB0 != 2 {
+			return 0, 0, false
+		}
+		// 形态合法——R(A) 是 nil(未初始化栈槽,Lua 初始化栈帧时设 nil),
+		// 但本简化形态恒发 mov rax, value; ret(value 任意,因 retB=1 时 0
+		// 返回值不写;retB=2 时写 R(A)=Nil 是正确语义)。
+		return uint8(retA0), uint64(value.Nil), true
+
 	case bytecode.LOADK:
 		loadA := bytecode.A(first)
 		loadBx := bytecode.Bx(first)
@@ -184,14 +206,15 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 		return nil, ErrCompileUnsupportedShape
 	}
 
-	// 取 retPC + retB:执行的 RETURN 是第 2 条(长度 1 时是第 1 条)。
+	// 取 retPC + retB:执行的 RETURN 是第 1 条(若 Code[0]=RETURN)或第 2 条。
 	var retPC uint8
 	var retInsn bytecode.Instruction
-	if len(proto.Code) == 1 {
+	if len(proto.Code) == 1 || bytecode.Op(proto.Code[0]) == bytecode.RETURN {
+		// 长度 1 或长度 ≥ 2 + 首条 RETURN(luac 优化形态)
 		retPC = 0
 		retInsn = proto.Code[0]
 	} else {
-		// 长度 2 / 3:执行的 RETURN 是 Code[1](长度 3 时 Code[2] 是 dead code)
+		// 长度 2 / 3:执行的 RETURN 是 Code[1](LOADK/LOADBOOL/LOADNIL + RETURN)
 		retPC = 1
 		retInsn = proto.Code[1]
 	}
