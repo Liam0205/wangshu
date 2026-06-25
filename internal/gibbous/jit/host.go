@@ -142,6 +142,29 @@ type P4HostState interface {
 	// (`function(x) return x == 1 end` 类——经 packed bit0 vs cmpA 折成
 	// BoolValue 直接写 R(A))。
 	Compare(base int32, pc int32, op int32, b int32, c int32) int32
+
+	// ArenaBaseAddr 返回 arena `[]byte` 起点的 uintptr(承 05 §3.3)。
+	//
+	// 用例:PJ2 完整投机模板——mmap 段经 r15+offset 读 arenaBase 字段后
+	// 经字节级 movsd 直接读/写值栈槽位,跳过 host 接口 round-trip。
+	// PJ7 简化形态不调用本接口(mmap 段是 dummy)。
+	ArenaBaseAddr() uintptr
+
+	// ValueStackBaseAddr 返回当前帧 R0 的字节地址(承 05 §3.3 + 06 §4.1
+	// rbx = valueStackBase)。
+	//
+	// 参数 base 是当前帧 R0 字节偏移(承 enterGibbous 计算 baseByte =
+	// (stackBaseW + ci.base) * 8,与 DoReturn 传入的 base 同语义)。
+	//
+	// 返回:arena.Words().bytePtr + base —— 这是 R0 在 Go 进程虚地址空间
+	// 中的真字节地址。mmap 段读 r15+offset 拿本字段后经 movsd
+	// [valueStackBase + reg*8] 寻址 R(reg)。
+	//
+	// **arena 重定位风险**:arena grow 时 Words() 会重新分配,本字段会
+	// stale。承 05 §5 arena base 重载协议:grow 只在分配慢路径(出 JIT
+	// 世界)发生,JIT 内联 bump 越界即出去——回来后从 jitContext 重载
+	// base。PJ2 完整版接入此协议;PJ7 简化形态尚不调用本接口。
+	ValueStackBaseAddr(base int32) uintptr
 }
 
 // SetHostState 把 host(crescent)抽象注入本 Compiler。

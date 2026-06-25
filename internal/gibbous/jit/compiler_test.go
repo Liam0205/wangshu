@@ -73,6 +73,8 @@ type mockP4Host struct {
 	lastCmpC  int32
 	cmpResult bool
 	cmpErr    bool
+	// PJ2 完整接入预备:arena base 模拟值
+	arenaBase uintptr
 }
 
 func newMockP4Host() *mockP4Host {
@@ -244,6 +246,15 @@ func (m *mockP4Host) Compare(base, pc, op, b, c int32) int32 {
 		return 1
 	}
 	return 0
+}
+
+// ArenaBaseAddr 模拟 host.ArenaBaseAddr:返 mock 内 arenaBase 字段
+// (PJ7 简化形态不真用,本 stub 让接口完整即可)。
+func (m *mockP4Host) ArenaBaseAddr() uintptr { return m.arenaBase }
+
+// ValueStackBaseAddr 模拟 host.ValueStackBaseAddr:返 arenaBase + base。
+func (m *mockP4Host) ValueStackBaseAddr(base int32) uintptr {
+	return m.arenaBase + uintptr(base)
 }
 
 // compileWithHost 构造 *Compiler 注入 mock host 后调 Compile。

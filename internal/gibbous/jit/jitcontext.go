@@ -136,3 +136,31 @@ func (c *JITContext) ClearPreemptFlag() {
 func (c *JITContext) PreemptFlagPending() bool {
 	return c.preemptFlag.Load() != 0
 }
+
+// SetArenaBase 设置 arena `[]byte` 起点的 uintptr(承 05 §1.3.3 / §3.3
+// arena base 重载协议)。crescent 端 wireP4 + Run 入口经 host 接口算出
+// 当前 arena.Words() 起点字节地址,经本 setter 注入。
+//
+// **PJ2 完整接入预备**:本字段配合 valueStackBase 在 PJ2 字节级算术
+// codegen 时被 mmap 段经 r15+offset 读取——「movsd xmm0, [r15+arenaBase
+// +vsbase+reg*8]」字节级模板。当前 PJ7 简化形态尚不读本字段(mmap 段
+// 是 dummy mov+ret,prelude 经 host helper 接口取值)。
+func (c *JITContext) SetArenaBase(addr uintptr) {
+	c.arenaBase = addr
+}
+
+// SetValueStackBase 设置当前帧 R0 的 uintptr(承 05 §3.3 + 06 §4.1)。
+//
+// 调用契约:Run 入口算 valueStackBase = arena.Words().bytePtr +
+// (stackBaseW + ci.base) * 8,装入 mmap 段经 r15+offset 间接寻址 R(idx)。
+// 本 setter 在 Run 入口被调,确保每次 P4 帧执行前 valueStackBase 反映
+// 当前帧的真实槽位起点。
+func (c *JITContext) SetValueStackBase(addr uintptr) {
+	c.valueStackBase = addr
+}
+
+// ArenaBase 返回 arena base(测试钩子)。
+func (c *JITContext) ArenaBase() uintptr { return c.arenaBase }
+
+// ValueStackBase 返回当前帧 R0 字节地址(测试钩子)。
+func (c *JITContext) ValueStackBase() uintptr { return c.valueStackBase }

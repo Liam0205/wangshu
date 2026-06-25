@@ -133,6 +133,17 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 		return 1
 	}
 
+	// **PJ2 完整接入预备**:Run 入口算 arena base + valueStackBase 装入
+	// jitContext,让 PJ2+ 字节级算术 codegen 可经 r15+offset 读这两字段
+	// (mmap 段直接寻址值栈槽,跳过 host helper round-trip)。当前 PJ7
+	// 简化形态 mmap 段是 dummy(mov+ret 不读 r15),装值不被使用——但
+	// 装值本身正确无负作用,落实 PJ2 完整接入路径的 Go 端起点(承
+	// 05 §5 arena base 重载协议:每次 Run 入口现算不缓存,grow 安全)。
+	if c.host != nil && c.jitCtx != nil {
+		c.jitCtx.SetArenaBase(c.host.ArenaBaseAddr())
+		c.jitCtx.SetValueStackBase(c.host.ValueStackBaseAddr(int32(base)))
+	}
+
 	jitCtxAddr := jitContextAddr(c.jitCtx)
 	rax := archCallJITFull(c.codePage.Addr(), jitCtxAddr)
 

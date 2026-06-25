@@ -12,6 +12,8 @@
 package crescent
 
 import (
+	"unsafe"
+
 	"github.com/Liam0205/wangshu/internal/bridge"
 	"github.com/Liam0205/wangshu/internal/bytecode"
 	"github.com/Liam0205/wangshu/internal/object"
@@ -128,6 +130,35 @@ func (st *State) SetUpvalFromReg(base int32, a int32, b int32) {
 	ci := st.gibCI(th)
 	uv := object.ClosureUpvalRef(st.arena, ci.Cl(), uint16(b))
 	st.upvalSet(th, uv, reg(th, ci, int(a)))
+}
+
+// ArenaBaseAddr 返回 arena `[]byte` 起点的 uintptr(承 05 §3.3 P4HostState
+// 接口)。PJ2 完整投机模板预备——mmap 段经 r15+offset 读本字段后字节级
+// 寻址值栈槽。当前 PJ7 简化形态不调用。
+//
+// **arena 重定位**:Words() 在 grow 时返新切片,本字段返当前 Words 起点。
+// 调用方(jit.Compile)在 Run 入口现算,不缓存(承 05 §5 arena base 重载
+// 协议——arena 视图别名 grow 雷区,见 [[feedback-arena-view-aliasing]])。
+func (st *State) ArenaBaseAddr() uintptr {
+	words := st.arena.Words()
+	if len(words) == 0 {
+		return 0
+	}
+	return uintptr(unsafe.Pointer(&words[0]))
+}
+
+// ValueStackBaseAddr 返回当前帧 R0 的字节地址(承 05 §3.3 + 06 §4.1
+// rbx = valueStackBase)。
+//
+// 参数 base 是 enterGibbous 算的字节偏移(`(stackBaseW + ci.base) * 8`),
+// 本函数返 arena.Words 起点 uintptr + base。**arena grow 雷区**:同
+// ArenaBaseAddr,需 Run 入口现算不缓存。
+func (st *State) ValueStackBaseAddr(base int32) uintptr {
+	words := st.arena.Words()
+	if len(words) == 0 {
+		return 0
+	}
+	return uintptr(unsafe.Pointer(&words[0])) + uintptr(base)
 }
 
 // GetUpval 取当前 closure 的 upvalue b(execute.go GETUPVAL 段同款)。

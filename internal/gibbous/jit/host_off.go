@@ -18,4 +18,6 @@ type P4HostState interface {
 	DoGetGlobal(base int32, pc int32, a int32, bx int32) int32
 	DoSetGlobal(base int32, pc int32, a int32, bx int32) int32
 	Compare(base int32, pc int32, op int32, b int32, c int32) int32
+	ArenaBaseAddr() uintptr
+	ValueStackBaseAddr(base int32) uintptr
 }
