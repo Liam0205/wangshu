@@ -12,13 +12,14 @@ import (
 // TestPJ7_IdentityForm_NoOverwrite identity 形态(`function(x) return x end`)
 // writeRetA=false 路径专属 prove-the-path 命中证据。
 //
-// 承代码审查 .code-review/from-7846604/increment-3-to-7251925.md 🟠 #1:
-// writeRetA=false 路径只有 e2e 隐性覆盖,缺 jit 包内显式正向单测。本测断言:
+// **背景**:writeRetA=false 路径只有 e2e 隐性覆盖,缺 jit 包内显式正向单测;
+// 加本测确保 identity 函数路径(R(A) 不被 mmap 段 dummy RAX 覆盖)有显式
+// 命中证据。本测断言:
 //   - SetReg 未被调用(R(A) 不被 mmap 段覆盖)
 //   - DoReturn 调 1 次(弹帧路径走到)
 //
-// 这是 [[prove-the-path-under-test]] 第 10 实例修复——避免 writeRetA 逻辑
-// 误改后 identity 函数静默错果(返参 → 返 nil)而 LOADK e2e 测试仍过的盲区。
+// 这是 [[prove-the-path-under-test]] 实例——避免 writeRetA 逻辑误改后
+// identity 函数静默错果(返参 → 返 nil)而 LOADK e2e 测试仍过的盲区。
 func TestPJ7_IdentityForm_NoOverwrite(t *testing.T) {
 	// `function(x) return x end` 编译为 RETURN 0 2(luac 优化形态,长度 1 / 2)
 	proto := &bytecode.Proto{

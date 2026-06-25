@@ -19,9 +19,9 @@
 //
 // **当前实测**:升层后 pineapple 形态(短工作量 + 频繁 boundary)下 p3 反而比 p1
 // 慢 19%(_Row baseline 660 vs 553 µs),根因是 wasm dispatch + host↔wasm boundary
-// 反噬而非采样钩税。详 `.code-review/pineapple-perf/2026-06-17-profile-investigation.md`
-// §1.3 v4 profile 实证。优化方向:bridge OnEnter/OnBackEdge 加 proto 复杂度阈值
-// 守卫,让 short workload 不升层(报告 §3.2 方向 H,待立项)。
+// 反噬而非采样钩税(profile 实证:cpu profile top 200 中 wasm dispatch + boundary
+// 主导,采样钩路径不出现)。优化方向:bridge OnEnter/OnBackEdge 加 proto 复杂度阈值
+// 守卫,让 short workload 不升层(已落地为 issue #21 MinPromotableCodeLen)。
 //
 // 跑前用 PromotionCount() 探针验证 wangshu 在该 build 下确实能升层(独立小
 // test 验,见 `promotion_count_p3_test.go::TestPromotionCount_P3_NoForce_HotEntry_Lifts`,

@@ -19,8 +19,8 @@ const (
 	// (profile 诊断完整),但在阈值越过后**跳过 considerPromotion 调用**——这类
 	// 「短工作量」proto 升层后 wasm dispatch + host↔wasm boundary 反噬大于解释器
 	// dispatch 收益(实测 pineapple 形态 4-opcode 算术 f 升层后比解释器慢 19%,
-	// 见 issue #21 + `.code-review/pineapple-perf/2026-06-17-profile-investigation.md`
-	// §1.3 profile 实证)。守卫位置选「阈值后但 considerPromotion 前」而非
+	// 见 issue #21 profile 实证:cpu profile top 200 中 wasm 反噬主导,
+	// 钩税路径可忽略)。守卫位置选「阈值后但 considerPromotion 前」而非
 	// 「counter 累积前」,保留 profile_test 的诊断断言(EntryCount/MaxBackEdge
 	// 准确反映短 proto 调用次数)。
 	//
