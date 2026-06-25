@@ -41,3 +41,23 @@ func archCallJITFull(codeAddr uintptr, jitCtxAddr uintptr) uint64 {
 	_ = jitCtxAddr
 	panic("internal/gibbous/jit: archCallJITFull called on unsupported GOARCH")
 }
+
+// archCallJITSpec stub:同 archCallJITFull。
+func archCallJITSpec(codeAddr uintptr, jitCtxAddr uintptr, vsBase uintptr) uint64 {
+	_ = codeAddr
+	_ = jitCtxAddr
+	_ = vsBase
+	panic("internal/gibbous/jit: archCallJITSpec called on unsupported GOARCH")
+}
+
+// archEmitArithSpecAddWithGuard 其它 arch 不支持。
+func archEmitArithSpecAddWithGuard(buf []byte, a, b, c uint8, deoptCode uint64) []byte {
+	_ = a
+	_ = b
+	_ = c
+	_ = deoptCode
+	return buf
+}
+
+// archSupportsSpec 其它 arch 不支持。
+func archSupportsSpec() bool { return false }

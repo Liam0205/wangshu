@@ -35,3 +35,23 @@ func archMmapCode(code []byte) (*archCodePage, error) {
 func archCallJITFull(codeAddr uintptr, jitCtxAddr uintptr) uint64 {
 	return jitamd64.CallJITFull(codeAddr, jitCtxAddr)
 }
+
+// archCallJITSpec 跳进 PJ2 投机模板 mmap 段(callJITSpec trampoline 同时
+// 装 r15=jitContext + rbx=valueStackBase)。返 RAX(段最后一条 mov/movsd
+// 的值,或 deopt block 烧入的 deoptCode)。
+//
+// 用例:PJ2 投机模板真接入(ADD/SUB/MUL/DIV 双 number 快路径)。
+func archCallJITSpec(codeAddr uintptr, jitCtxAddr uintptr, vsBase uintptr) uint64 {
+	return jitamd64.CallJITSpec(codeAddr, jitCtxAddr, vsBase)
+}
+
+// archEmitArithSpecAddWithGuard 拼接 PJ2 ADD 投机模板(IsNumber×2 guard +
+// 双 number 快路径 + deopt block)字节级序列。amd64 端代理到
+// jitamd64.EmitArithSpeculativeAddWithGuard(92 字节)。
+func archEmitArithSpecAddWithGuard(buf []byte, a, b, c uint8, deoptCode uint64) []byte {
+	return jitamd64.EmitArithSpeculativeAddWithGuard(buf, a, b, c, deoptCode)
+}
+
+// archSupportsSpec 返 true 当本 arch 支持 PJ2 投机模板真接入。
+// amd64 ✅;arm64/其它 ❌(留 PJ8+)。
+func archSupportsSpec() bool { return true }

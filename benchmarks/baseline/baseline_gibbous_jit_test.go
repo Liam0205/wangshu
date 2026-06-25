@@ -69,6 +69,10 @@ const chainBody = `local x=7; return x*2+1`
 // 比较折叠:EQ + JMP + LOADBOOL×2 + RETURN
 const cmpBody = `local x=7; return x == 7`
 
+// PJ2 投机 ADD 形态:R(B) + R(C) 双寄存器(B/C 都 ≤ 254)→ 命中 spec 模板
+// (mmap 段直发 IsNumber guard×2 + movsd+addsd+movsd+ret 字节级)。
+const specAddBody = `local x=7; local y=11; return x+y`
+
 func BenchmarkGibbousJIT_Const(b *testing.B)      { benchGibbousJIT(b, constBody, true) }
 func BenchmarkGibbousJIT_ConstCresc(b *testing.B) { benchGibbousJIT(b, constBody, false) }
 func BenchmarkGibbousJIT_Nil(b *testing.B)        { benchGibbousJIT(b, nilBody, true) }
@@ -81,3 +85,7 @@ func BenchmarkGibbousJIT_Chain(b *testing.B)      { benchGibbousJIT(b, chainBody
 func BenchmarkGibbousJIT_ChainCresc(b *testing.B) { benchGibbousJIT(b, chainBody, false) }
 func BenchmarkGibbousJIT_Cmp(b *testing.B)        { benchGibbousJIT(b, cmpBody, true) }
 func BenchmarkGibbousJIT_CmpCresc(b *testing.B)   { benchGibbousJIT(b, cmpBody, false) }
+
+// PJ2 投机 ADD reg+reg 形态:命中 spec 模板的真 luajc 档相关数据。
+func BenchmarkGibbousJIT_SpecAdd(b *testing.B)      { benchGibbousJIT(b, specAddBody, true) }
+func BenchmarkGibbousJIT_SpecAddCresc(b *testing.B) { benchGibbousJIT(b, specAddBody, false) }

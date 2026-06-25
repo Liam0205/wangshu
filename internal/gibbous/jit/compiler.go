@@ -780,10 +780,60 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 		return nil, ErrCompileUnsupportedShape
 	}
 
+	// **PJ2 投机 ADD 模板真接入**(承 03-speculation-ic.md §2 IsNumber×2):
+	// 当且仅当本 arch 支持(amd64)+ ADD A B C + RETURN A 2 形态 + B/C 都是
+	// 寄存器(非 RK 常量索引,B/C ≤ 254)+ 真 host(非 mock,ArenaBaseAddr
+	// 非 0)时,emit 92 字节投机模板:
+	//   guard×2 (IsNumber B + C) + 双 number 快路径 (movsd+addsd+movsd+ret)
+	//   + deopt block (mov rax, deoptCode + ret)
+	// Run 检测段返 RAX == specDeoptCode 即降级调 host.Arith 慢路径(byte-equal
+	// 解释器)。本 PJ2 真接入是 PJ10 luajc 档的字节级核心物理基础。
+	//
+	// **mock host 兜底**:Compile 时 c.hostState.ArenaBaseAddr() 返 0(jit
+	// 包内单测 mock 无真 arena)→ 不启用 spec(避免段读 [rbx+0]=读 0 SIGSEGV)。
+	// 真 crescent.State 上 ArenaBaseAddr 在 LoadProgram 后非 0,启用 spec。
+	useSpec := false
+	if archSupportsSpec() && info.preludeOp == uint8(bytecode.ADD) &&
+		info.chainOp == 0 && info.preludeArg <= 254 && info.preludeC <= 254 &&
+		c.hostState != nil && c.hostState.ArenaBaseAddr() != 0 {
+		useSpec = true
+	}
+
+	var buf []byte
+	if useSpec {
+		// 92 字节投机模板。deoptCode 选高位 NaN-box 段且不会被任何合法 Lua
+		// 值碰到的特殊值(0xFFFC_DE0E_AD0E_AD00 = 模仿 deopt 标记)。
+		const deoptCode uint64 = 0xFFFCDEAD_DEADBE00
+		buf = archEmitArithSpecAddWithGuard(buf, info.retA,
+			uint8(info.preludeArg), uint8(info.preludeC), deoptCode)
+		page, err := archMmapCode(buf)
+		if err != nil {
+			return nil, err
+		}
+		return &p4Code{
+			proto:         proto,
+			codePage:      page,
+			jitCtx:        NewJITContext(),
+			retA:          info.retA,
+			retB:          info.retB,
+			retPC:         info.retPC,
+			writeRetA:     info.writeRetA,
+			preludeOp:     info.preludeOp,
+			preludeArg:    info.preludeArg,
+			preludeC:      info.preludeC,
+			cmpA:          info.cmpA,
+			chainOp:       info.chainOp,
+			chainB:        info.chainB,
+			chainC:        info.chainC,
+			host:          c.hostState,
+			useSpec:       true,
+			specDeoptCode: deoptCode,
+		}, nil
+	}
+
 	// 发射:LOADK/RETURN 模板(arch 路由——amd64 mov rax,imm + ret 11 字节;
 	// arm64 movz+movk×3 + ret 20 字节)。writeRetA=false 时 value 不被使用
 	// (mmap 段返回值是 dummy),仍发模板因为 mmap 段必须非空。
-	var buf []byte
 	buf = archEmitLoadKReturn(buf, info.value)
 
 	page, err := archMmapCode(buf)

@@ -87,6 +87,17 @@ type p4Code struct {
 	// host 是注入的 P4HostState(从 *Compiler 拷贝):per-p4Code 持有,无并发
 	// write(只在 Compile 时写一次,Run 时只读)——V18 -race 友好。
 	host P4HostState
+
+	// useSpec 标记本 p4Code 是否用 PJ2 投机模板(承 docs/design/p4-method-jit/
+	// 03-speculation-ic.md §2 IsNumber×2 投机模板)。当前仅 ADD A B C +
+	// RETURN A 2 形态启用,投机失败时 RAX = deoptCode,Run 检测后降级调
+	// host.Arith 慢路径。
+	useSpec bool
+
+	// specDeoptCode 是 PJ2 投机模板 deopt block 烧入的常量(承 04-osr-deopt.md
+	// exit reason code)。Run 检测段返 RAX == specDeoptCode 即走慢路径。
+	// 选 0xFF...FFFE000(NaN-box 非数字段非任何合法 Lua 值)避免误判。
+	specDeoptCode uint64
 }
 
 // Proto 反向指针(trampoline 校验)。
@@ -139,12 +150,36 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 	// 简化形态 mmap 段是 dummy(mov+ret 不读 r15),装值不被使用——但
 	// 装值本身正确无负作用,落实 PJ2 完整接入路径的 Go 端起点(承
 	// 05 §5 arena base 重载协议:每次 Run 入口现算不缓存,grow 安全)。
+	var vsBaseAddr uintptr
 	if c.host != nil && c.jitCtx != nil {
 		c.jitCtx.SetArenaBase(c.host.ArenaBaseAddr())
-		c.jitCtx.SetValueStackBase(c.host.ValueStackBaseAddr(int32(base)))
+		vsBaseAddr = c.host.ValueStackBaseAddr(int32(base))
+		c.jitCtx.SetValueStackBase(vsBaseAddr)
 	}
 
 	jitCtxAddr := jitContextAddr(c.jitCtx)
+
+	// PJ2 投机模板路径(useSpec=true 时,ADD A B C 形态走 callJITSpec + deopt
+	// 检测;失败时降级调 host.Arith 慢路径)
+	//
+	// **mock host 兜底**:host.ArenaBaseAddr 返 0(单测 mock 无真 arena)时
+	// 跳过 spec 路径直接走 host helper——避免段段读 [rbx+0] = 读 0 地址 SIGSEGV。
+	if c.useSpec && c.host != nil && vsBaseAddr != 0 {
+		raxSpec := archCallJITSpec(c.codePage.Addr(), jitCtxAddr, vsBaseAddr)
+		if raxSpec == c.specDeoptCode {
+			// 投机失败 → 降级调 host.Arith 慢路径(byte-equal 解释器)
+			st := c.host.Arith(int32(base), int32(c.retPC)-1, int32(c.preludeOp),
+				int32(c.preludeArg), int32(c.preludeC), int32(c.retA))
+			if st != 0 {
+				return st
+			}
+		}
+		// OK 路径(快路径或 deopt 慢路径都已写 R(retA))
+		_ = stack
+		c.host.DoReturn(int32(base), int32(c.retPC), int32(c.retA), int32(c.retB))
+		return 0
+	}
+
 	rax := archCallJITFull(c.codePage.Addr(), jitCtxAddr)
 
 	// 写 R(retA) = RAX(仅当 writeRetA=true 且 retB ≥ 2)。

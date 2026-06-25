@@ -36,3 +36,28 @@ func archMmapCode(code []byte) (*archCodePage, error) {
 func archCallJITFull(codeAddr uintptr, jitCtxAddr uintptr) uint64 {
 	return jitarm64.CallJITFull(codeAddr, jitCtxAddr)
 }
+
+// archCallJITSpec arm64 端 PJ2 投机模板 stub——arm64 spec trampoline
+// 留 PJ8+(对位 amd64 callJITSpec 同款形态:装 X27=jitContext + X28
+// (or X26)=valueStackBase + BLR + 恢复)。当前 arm64 build 不调到 spec
+// (Compile 不发 useSpec=true 给 arm64;留 PJ8+ 完整版同批)。
+func archCallJITSpec(codeAddr uintptr, jitCtxAddr uintptr, vsBase uintptr) uint64 {
+	_ = codeAddr
+	_ = jitCtxAddr
+	_ = vsBase
+	panic("internal/gibbous/jit/arm64: archCallJITSpec not implemented (PJ8+ arm64 spec trampoline)")
+}
+
+// archEmitArithSpecAddWithGuard arm64 端 stub——arm64 spec 模板 codegen
+// 留 PJ8+(对位 amd64 EmitArithSpeculativeAddWithGuard 同款形态:cmp
+// + b.hs deopt + fmov + fadd + fmov + ret + deopt block)。
+func archEmitArithSpecAddWithGuard(buf []byte, a, b, c uint8, deoptCode uint64) []byte {
+	_ = a
+	_ = b
+	_ = c
+	_ = deoptCode
+	return buf // 空 buf → MmapCode 返错 → Compile 拒,Compile 路径会 fallback 到 host helper
+}
+
+// archSupportsSpec arm64 当前不支持(留 PJ8+)。
+func archSupportsSpec() bool { return false }
