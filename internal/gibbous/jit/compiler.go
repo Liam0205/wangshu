@@ -264,6 +264,11 @@ func analyzeShape(proto *bytecode.Proto) shapeInfo {
 		if moveA != retA {
 			return shapeInfo{}
 		}
+		// B 是寄存器号 [0,254](与 GETTABLE/UNM/LEN 等寄存器号 case 一致防御),
+		// luac MAXSTACK 上限 250 实际不触发,纯防御性兜底。
+		if moveB > 254 {
+			return shapeInfo{}
+		}
 		// retA 设为 B(直接返 R(B)),跳过 R(A) = R(B) 中转
 		return shapeInfo{ok: true, retA: uint8(moveB), retB: uint8(retB), retPC: 1}
 
