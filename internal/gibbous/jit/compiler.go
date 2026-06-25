@@ -130,6 +130,28 @@ func analyzeShape(proto *bytecode.Proto) (uint8, uint64, bool, bool) {
 		}
 		return uint8(retA0), 0, false, true // writeRetA=false:R(A) 已是栈值
 
+	case bytecode.MOVE:
+		// MOVE A B + RETURN A 2:`function(x) local y = x; return y end` 形态。
+		// 等价语义 = 「返 R(B)」(R(A) 是 R(B) 拷贝的中转)。P4 PJ7 简化形态
+		// 把 retA 设为 B(让 DoReturn 经 ci.base+B 取返回值,跳过中转)。
+		// writeRetA=false:R(B) 已是栈值,不需 mmap 段写。
+		ret := proto.Code[1]
+		if bytecode.Op(ret) != bytecode.RETURN {
+			return 0, 0, false, false
+		}
+		retA := bytecode.A(ret)
+		retB := bytecode.B(ret)
+		if retB != 2 {
+			return 0, 0, false, false
+		}
+		moveA := bytecode.A(first)
+		moveB := bytecode.B(first)
+		if moveA != retA {
+			return 0, 0, false, false
+		}
+		// retA 设为 B(直接返 R(B)),跳过 R(A) = R(B) 中转
+		return uint8(moveB), 0, false, true
+
 	case bytecode.LOADK, bytecode.LOADBOOL, bytecode.LOADNIL:
 		// 第二条必须是 RETURN A 2
 		ret := proto.Code[1]
