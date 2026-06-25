@@ -38,10 +38,14 @@ type mockP4Host struct {
 	lastReturnPC  int32
 	lastReturnA   int32
 	lastReturnB   int32
+	upvals        map[int32]uint64 // 模拟 upvalue 表(GetUpval 用)
 }
 
 func newMockP4Host() *mockP4Host {
-	return &mockP4Host{regs: make(map[int32]uint64)}
+	return &mockP4Host{
+		regs:   make(map[int32]uint64),
+		upvals: make(map[int32]uint64),
+	}
 }
 
 func (m *mockP4Host) DoReturn(base int32, pc int32, a int32, b int32) int32 {
@@ -54,6 +58,11 @@ func (m *mockP4Host) DoReturn(base int32, pc int32, a int32, b int32) int32 {
 
 func (m *mockP4Host) SetReg(idx int32, val uint64) {
 	m.regs[idx] = val
+}
+
+func (m *mockP4Host) GetUpval(base int32, b int32) uint64 {
+	_ = base
+	return m.upvals[b]
 }
 
 // compileWithHost 构造 *Compiler 注入 mock host 后调 Compile。

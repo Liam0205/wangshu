@@ -62,106 +62,125 @@ func New() *Compiler {
 // PJ8+ 启动时扩 supported(MOVE 寄存器拷 + ADD/SUB 算术 + 等)需要 jitContext
 // load/store 值栈,留下一阶段。
 func (c *Compiler) SupportsAllOpcodes(proto *bytecode.Proto) bool {
-	_, _, _, ok := analyzeShape(proto)
-	return ok
+	return analyzeShape(proto).ok
 }
 
-// analyzeShape 识别支持的「单值产生 + RETURN A 1」形态,返
-// (retA, value, writeRetA, ok)。
-//
-//   - ok=true:形态合法
-//   - retA:RETURN 的 A 寄存器号
-//   - value:R(retA) 的 NaN-box u64 值(若 writeRetA=true 由 mmap 段烧入并经
-//     host.SetReg 写槽位)
-//   - writeRetA:是否需要把 mmap 段返的 RAX 写 R(retA)。**仅 LOADK/LOADBOOL/
-//     LOADNIL 形态需写**;首条 RETURN A 形态(`function(x) return x end` /
-//     `function() end`)R(retA) 已是参数/Nil 槽,不应被覆盖。
+// shapeInfo 是 analyzeShape 的返回值——P4 PJ7 形态识别结果。
+type shapeInfo struct {
+	ok         bool   // 形态合法
+	retA       uint8  // RETURN A 寄存器号
+	retB       uint8  // RETURN B 字段
+	retPC      uint8  // RETURN 指令 pc
+	value      uint64 // R(retA) 的 NaN-box u64 值(若 writeRetA=true 由 mmap 段烧入)
+	writeRetA  bool   // mmap 段返 RAX 是否需写 R(retA)
+	preludeOp  uint8  // RETURN 前 prelude opcode(0=无,GETUPVAL=4 等)
+	preludeArg uint8  // prelude opcode 的 B 字段
+}
+
+// analyzeShape 识别支持的「单值产生 + RETURN A 1」形态。
 //
 // 支持形态:
 //
-//   - 长度 1:RETURN A 1 (B=1,返回 0 个值,即 `function() end`/`return`);
-//     writeRetA=false(无需写槽)
-//   - 长度 1/2/3:首条 RETURN A B(B=1 或 B=2,如 `function(x) return x`);
-//     writeRetA=false(R(A) 已是参数值)
-//   - 长度 2/3:LOADK/LOADBOOL/LOADNIL A ... + RETURN A 2(返 1 个值);
-//     writeRetA=true(mmap 段算出新值需写槽)
-func analyzeShape(proto *bytecode.Proto) (uint8, uint64, bool, bool) {
+//   - 长度 1:RETURN A 1/2(0 或 1 返回值)——R(A) 已是参数/Nil 槽
+//   - 长度 2/3:LOADK/LOADBOOL/LOADNIL A ... + RETURN A 2(常量返,
+//     writeRetA=true)
+//   - 长度 2/3:首条 RETURN A 2(luac 优化形态,R(A) 已是参数)
+//   - 长度 2/3:MOVE A B + RETURN A 2(等价 RETURN B 2,retA=B 跳过中转)
+//   - 长度 2/3:GETUPVAL A B + RETURN A 2(Go 端 Run 调 host.GetUpval +
+//     SetReg,preludeOp=GETUPVAL)
+func analyzeShape(proto *bytecode.Proto) shapeInfo {
 	if proto == nil {
-		return 0, 0, false, false
+		return shapeInfo{}
 	}
 
 	// 形态 0:长度 1,RETURN A B(0 或 1 个返回值)
 	if len(proto.Code) == 1 {
 		ret := proto.Code[0]
 		if bytecode.Op(ret) != bytecode.RETURN {
-			return 0, 0, false, false
+			return shapeInfo{}
 		}
 		retB := bytecode.B(ret)
 		if retB != 1 && retB != 2 {
-			return 0, 0, false, false
+			return shapeInfo{}
 		}
-		// retA 不需要,value 不会被写入(writeRetA=false)
-		return uint8(bytecode.A(ret)), 0, false, true
+		return shapeInfo{ok: true, retA: uint8(bytecode.A(ret)), retB: uint8(retB), retPC: 0}
 	}
 
 	// 形态 1/2:长度 2 或 3
 	if len(proto.Code) != 2 && len(proto.Code) != 3 {
-		return 0, 0, false, false
+		return shapeInfo{}
 	}
 
-	// 第二条必须是 RETURN A 2(返回 1 个值,长度 2/3 LOADK 形态)或
-	// 直接首条 RETURN(长度 2 luac 优化形态)
 	first := proto.Code[0]
 
 	// 长度 3 时:第 3 条必须是 RETURN(尾部冗余)
 	if len(proto.Code) == 3 {
 		if bytecode.Op(proto.Code[2]) != bytecode.RETURN {
-			return 0, 0, false, false
+			return shapeInfo{}
 		}
 	}
 
 	switch bytecode.Op(first) {
 	case bytecode.RETURN:
-		// 首条 RETURN A B(luac 优化形态:`function() end` / `function(x) return x`)
 		retA0 := bytecode.A(first)
 		retB0 := bytecode.B(first)
 		if retB0 != 1 && retB0 != 2 {
-			return 0, 0, false, false
+			return shapeInfo{}
 		}
-		return uint8(retA0), 0, false, true // writeRetA=false:R(A) 已是栈值
+		return shapeInfo{ok: true, retA: uint8(retA0), retB: uint8(retB0), retPC: 0}
 
 	case bytecode.MOVE:
-		// MOVE A B + RETURN A 2:`function(x) local y = x; return y end` 形态。
-		// 等价语义 = 「返 R(B)」(R(A) 是 R(B) 拷贝的中转)。P4 PJ7 简化形态
-		// 把 retA 设为 B(让 DoReturn 经 ci.base+B 取返回值,跳过中转)。
-		// writeRetA=false:R(B) 已是栈值,不需 mmap 段写。
 		ret := proto.Code[1]
 		if bytecode.Op(ret) != bytecode.RETURN {
-			return 0, 0, false, false
+			return shapeInfo{}
 		}
 		retA := bytecode.A(ret)
 		retB := bytecode.B(ret)
 		if retB != 2 {
-			return 0, 0, false, false
+			return shapeInfo{}
 		}
 		moveA := bytecode.A(first)
 		moveB := bytecode.B(first)
 		if moveA != retA {
-			return 0, 0, false, false
+			return shapeInfo{}
 		}
 		// retA 设为 B(直接返 R(B)),跳过 R(A) = R(B) 中转
-		return uint8(moveB), 0, false, true
+		return shapeInfo{ok: true, retA: uint8(moveB), retB: uint8(retB), retPC: 1}
 
-	case bytecode.LOADK, bytecode.LOADBOOL, bytecode.LOADNIL:
-		// 第二条必须是 RETURN A 2
+	case bytecode.GETUPVAL:
+		// GETUPVAL A B + RETURN A 2:Run 调 host.GetUpval + SetReg。
 		ret := proto.Code[1]
 		if bytecode.Op(ret) != bytecode.RETURN {
-			return 0, 0, false, false
+			return shapeInfo{}
 		}
 		retA := bytecode.A(ret)
 		retB := bytecode.B(ret)
 		if retB != 2 {
-			return 0, 0, false, false
+			return shapeInfo{}
+		}
+		guvA := bytecode.A(first)
+		guvB := bytecode.B(first)
+		if guvA != retA {
+			return shapeInfo{}
+		}
+		return shapeInfo{
+			ok:         true,
+			retA:       uint8(retA),
+			retB:       uint8(retB),
+			retPC:      1,
+			preludeOp:  uint8(bytecode.GETUPVAL),
+			preludeArg: uint8(guvB),
+		}
+
+	case bytecode.LOADK, bytecode.LOADBOOL, bytecode.LOADNIL:
+		ret := proto.Code[1]
+		if bytecode.Op(ret) != bytecode.RETURN {
+			return shapeInfo{}
+		}
+		retA := bytecode.A(ret)
+		retB := bytecode.B(ret)
+		if retB != 2 {
+			return shapeInfo{}
 		}
 
 		switch bytecode.Op(first) {
@@ -169,25 +188,28 @@ func analyzeShape(proto *bytecode.Proto) (uint8, uint64, bool, bool) {
 			loadA := bytecode.A(first)
 			loadBx := bytecode.Bx(first)
 			if loadA != retA {
-				return 0, 0, false, false
+				return shapeInfo{}
 			}
 			if loadBx < 0 || loadBx >= len(proto.Consts) {
-				return 0, 0, false, false
+				return shapeInfo{}
 			}
 			if proto.IsStringConst(loadBx) {
-				return 0, 0, false, false
+				return shapeInfo{}
 			}
-			return uint8(retA), uint64(proto.Consts[loadBx]), true, true
+			return shapeInfo{
+				ok: true, retA: uint8(retA), retB: uint8(retB), retPC: 1,
+				value: uint64(proto.Consts[loadBx]), writeRetA: true,
+			}
 
 		case bytecode.LOADBOOL:
 			loadA := bytecode.A(first)
 			loadB := bytecode.B(first)
 			loadC := bytecode.C(first)
 			if loadA != retA {
-				return 0, 0, false, false
+				return shapeInfo{}
 			}
 			if loadC != 0 {
-				return 0, 0, false, false
+				return shapeInfo{}
 			}
 			var v value.Value
 			if loadB != 0 {
@@ -195,18 +217,24 @@ func analyzeShape(proto *bytecode.Proto) (uint8, uint64, bool, bool) {
 			} else {
 				v = value.BoolValue(false)
 			}
-			return uint8(retA), uint64(v), true, true
+			return shapeInfo{
+				ok: true, retA: uint8(retA), retB: uint8(retB), retPC: 1,
+				value: uint64(v), writeRetA: true,
+			}
 
 		case bytecode.LOADNIL:
 			loadA := bytecode.A(first)
 			loadB := bytecode.B(first)
 			if loadA != retA || loadA != loadB {
-				return 0, 0, false, false
+				return shapeInfo{}
 			}
-			return uint8(retA), uint64(value.Nil), true, true
+			return shapeInfo{
+				ok: true, retA: uint8(retA), retB: uint8(retB), retPC: 1,
+				value: uint64(value.Nil), writeRetA: true,
+			}
 		}
 	}
-	return 0, 0, false, false
+	return shapeInfo{}
 }
 
 // Compile 把 Proto 编译成 GibbousCode(可执行产物)。
@@ -223,28 +251,16 @@ func analyzeShape(proto *bytecode.Proto) (uint8, uint64, bool, bool) {
 // 后把该 Proto 标 TierStuck(永久解释,不重试)。
 func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback) (bridge.GibbousCode, error) {
 	_ = feedback
-	retA, val, writeRetA, ok := analyzeShape(proto)
-	if !ok {
+	info := analyzeShape(proto)
+	if !info.ok {
 		return nil, ErrCompileUnsupportedShape
 	}
-
-	// 取 retPC + retB:执行的 RETURN 是第 1 条(若 Code[0]=RETURN)或第 2 条。
-	var retPC uint8
-	var retInsn bytecode.Instruction
-	if len(proto.Code) == 1 || bytecode.Op(proto.Code[0]) == bytecode.RETURN {
-		retPC = 0
-		retInsn = proto.Code[0]
-	} else {
-		retPC = 1
-		retInsn = proto.Code[1]
-	}
-	retB := uint8(bytecode.B(retInsn))
 
 	// 发射:mov rax, val; ret(emitter 内已在 PJ1 实装)。
 	// writeRetA=false 时 val 不被使用(mmap 段 RAX 是 dummy);仍发 mov+ret
 	// 因为 mmap 段必须非空。
 	var buf []byte
-	buf = jitamd64.EmitMovRaxImm64(buf, val)
+	buf = jitamd64.EmitMovRaxImm64(buf, info.value)
 	buf = jitamd64.EmitRet(buf)
 
 	page, err := jitamd64.MmapCode(buf)
@@ -253,14 +269,16 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 	}
 
 	return &p4Code{
-		proto:     proto,
-		codePage:  page,
-		jitCtx:    NewJITContext(),
-		retA:      retA,
-		retB:      retB,
-		retPC:     retPC,
-		writeRetA: writeRetA,
-		host:      c.hostState,
+		proto:      proto,
+		codePage:   page,
+		jitCtx:     NewJITContext(),
+		retA:       info.retA,
+		retB:       info.retB,
+		retPC:      info.retPC,
+		writeRetA:  info.writeRetA,
+		preludeOp:  info.preludeOp,
+		preludeArg: info.preludeArg,
+		host:       c.hostState,
 	}, nil
 }
 

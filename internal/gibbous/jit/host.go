@@ -18,30 +18,16 @@ package jit
 // 形态只需 DoReturn 一个,不引入完整 helper 表(留 PJ8+ 算术族真接入时扩)。
 type P4HostState interface {
 	// DoReturn 处理 P4 帧 RETURN A B:返回值回填到调用者期望槽 + 弹帧。
-	//
-	// 参数:
-	//   - base:本帧 R0 字节偏移(= P4 编译产物 retA 写入位置的同款基准);
-	//   - pc:RETURN 指令 pc(P4 编译期固化,= 1 即字节码下标 1);
-	//   - a:RETURN A(返回值起点);
-	//   - b:RETURN B(B-1 = 返回值个数,B=2 即返回 1 个值);
-	//
-	// 返回:status(0=OK / 1=ERR)。P4 简化形态下永返 0(无错路径)。
-	//
-	// 实装由 crescent.State 提供(gibbous_host.go::DoReturn,与 P3 共用)。
 	DoReturn(base int32, pc int32, a int32, b int32) int32
 
 	// SetReg 直接写当前帧的 R(idx) 槽位为 val(NaN-box u64)。
-	//
-	// **PJ7 P4 简化形态专用**:p4Code.Run 在 mmap 段执行后,需要把 RAX(NaN-box
-	// 值)写到 R(retA) 槽位(arena 值栈,与 enterGibbous 给的 stack 参数无关——
-	// P3 的 stack 参数是 wazero CallWithStack 1 槽 buffer 协议,与 P4 不兼容)。
-	//
-	// 参数:
-	//   - idx:寄存器号(R(idx))
-	//   - val:NaN-box u64 值
-	//
-	// 实装由 crescent.State 提供(经 thread.cur.base + idx 算 stack 位置写)。
 	SetReg(idx int32, val uint64)
+
+	// GetUpval 读当前 closure 的 upvalue B(execute.go GETUPVAL 段同款语义)。
+	//
+	// 用例:P4 GETUPVAL 形态 — Run 在 mmap 段执行后调本接口取 upvalue 值,
+	// 经 SetReg 写 R(retA)。
+	GetUpval(base int32, b int32) uint64
 }
 
 // SetHostState 把 host(crescent)抽象注入本 Compiler。

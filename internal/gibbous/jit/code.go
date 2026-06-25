@@ -53,6 +53,17 @@ type p4Code struct {
 	//     已经是参数值(由 caller 写入),不应被 mmap 段返回的 dummy RAX 覆盖
 	writeRetA bool
 
+	// preludeOp 是 RETURN 前的预备 opcode(若有,用于 P4 PJ7 简化形态调
+	// host helper 取值再 SetReg 写 R(retA)):
+	//   - 0(默认):无 prelude,LOADK/LOADBOOL/LOADNIL 编译期已算出值
+	//   - bytecode.GETUPVAL:Run 调 host.GetUpval(retA, preludeArg) 取值,
+	//     SetReg(retA, val) 写槽。这是「mmap 段调 host」的简化替代——把
+	//     host 调用从 mmap 段移到 Go 端 Run。
+	preludeOp uint8
+
+	// preludeArg 是 prelude opcode 的 B 字段(GETUPVAL 的 upvalue 索引)。
+	preludeArg uint8
+
 	// host 是注入的 P4HostState(从 *Compiler 拷贝):per-p4Code 持有,无并发
 	// write(只在 Compile 时写一次,Run 时只读)——V18 -race 友好。
 	host P4HostState
@@ -100,9 +111,21 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 	if c.writeRetA && c.retB >= 2 && c.host != nil {
 		c.host.SetReg(int32(c.retA), rax)
 	}
-	_ = base  // base 字节偏移在 P4 PJ7 简化形态下不直接使用(经 host.SetReg 算位置)
-	_ = stack // stack 是 P3 协议参数,P4 不读不写
-	_ = rax   // 0 返回值时 RAX 未被写入(仅作 mmap 段 dummy)
+
+	// **PJ7 prelude opcode 处理**(GETUPVAL 等 host 调用形态):
+	// mmap 段不调 host(避免完整 trampoline 复杂度),改在 Go 端 Run 内调。
+	if c.preludeOp != 0 && c.host != nil && c.retB >= 2 {
+		switch c.preludeOp {
+		case 4 /* bytecode.GETUPVAL */ :
+			// GETUPVAL retA preludeArg:R(retA) = upval[preludeArg]
+			val := c.host.GetUpval(int32(base), int32(c.preludeArg))
+			c.host.SetReg(int32(c.retA), val)
+		}
+	}
+
+	_ = base
+	_ = stack
+	_ = rax
 
 	if c.host != nil {
 		c.host.DoReturn(int32(base), int32(c.retPC) /*retPC*/, int32(c.retA) /*A*/, int32(c.retB) /*B*/)
