@@ -12,13 +12,14 @@ import (
 // TestPJ7_IdentityForm_NoOverwrite identity 形态(`function(x) return x end`)
 // writeRetA=false 路径专属 prove-the-path 命中证据。
 //
-// 承代码审查 .code-review/from-7846604/increment-3-to-7251925.md 🟠 #1:
-// writeRetA=false 路径只有 e2e 隐性覆盖,缺 jit 包内显式正向单测。本测断言:
+// **背景**:writeRetA=false 路径只有 e2e 隐性覆盖,缺 jit 包内显式正向单测;
+// 加本测确保 identity 函数路径(R(A) 不被 mmap 段 dummy RAX 覆盖)有显式
+// 命中证据。本测断言:
 //   - SetReg 未被调用(R(A) 不被 mmap 段覆盖)
 //   - DoReturn 调 1 次(弹帧路径走到)
 //
-// 这是 [[prove-the-path-under-test]] 第 10 实例修复——避免 writeRetA 逻辑
-// 误改后 identity 函数静默错果(返参 → 返 nil)而 LOADK e2e 测试仍过的盲区。
+// 这是 [[prove-the-path-under-test]] 实例——避免 writeRetA 逻辑误改后
+// identity 函数静默错果(返参 → 返 nil)而 LOADK e2e 测试仍过的盲区。
 func TestPJ7_IdentityForm_NoOverwrite(t *testing.T) {
 	// `function(x) return x end` 编译为 RETURN 0 2(luac 优化形态,长度 1 / 2)
 	proto := &bytecode.Proto{
@@ -518,5 +519,330 @@ func TestPJ7_GetTableForm_HostRoute_Err(t *testing.T) {
 	}
 	if host.doReturnCalls != 0 {
 		t.Errorf("DoReturn 应跳过(ERR), got %d", host.doReturnCalls)
+	}
+}
+
+// TestPJ7_GetGlobalForm_HostRoute_OK GETGLOBAL A Bx + RETURN A 2 形态。
+func TestPJ7_GetGlobalForm_HostRoute_OK(t *testing.T) {
+	proto := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABx(bytecode.GETGLOBAL, 0, 5),
+			bytecode.EncodeABC(bytecode.RETURN, 0, 2, 0),
+		},
+		Consts:       make([]value.Value, 10), // 占位长度,Bx=5 不越界
+		StringLitIdx: make([]int32, 10),
+	}
+	c := New()
+	host := newMockP4Host()
+	c.SetHostState(host)
+	expected := uint64(value.NumberValue(7))
+	host.tableResult = expected
+	gc, err := c.Compile(proto, nil)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	defer tryDispose(t, gc)
+	stack := make([]uint64, 4)
+	if status := gc.Run(stack, 0); status != 0 {
+		t.Errorf("Run status = %d, want 0", status)
+	}
+	if host.tableCalls != 1 || host.lastTableOp != 4 {
+		t.Errorf("DoGetGlobal not called(calls=%d / tag=%d, want 1/4)", host.tableCalls, host.lastTableOp)
+	}
+	if host.lastTableA != 0 || host.lastTableB != 5 {
+		t.Errorf("DoGetGlobal A/Bx = (%d,%d), want (0,5)", host.lastTableA, host.lastTableB)
+	}
+	got, ok := host.regs[0]
+	if !ok || got != expected {
+		t.Errorf("R(0) = 0x%x (ok=%v), want 0x%x", got, ok, expected)
+	}
+}
+
+// TestPJ7_SetTableForm_HostRoute_OK SETTABLE A B C + RETURN A 1 setter 形态。
+// 验证 retB=1 走 prelude(之前 retB>=2 守卫会拦下,新拆分守卫修复)。
+func TestPJ7_SetTableForm_HostRoute_OK(t *testing.T) {
+	proto := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABC(bytecode.SETTABLE, 0, 1, 2),
+			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0), // setter retB=1
+		},
+	}
+	c := New()
+	host := newMockP4Host()
+	c.SetHostState(host)
+	gc, err := c.Compile(proto, nil)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	defer tryDispose(t, gc)
+	stack := make([]uint64, 8)
+	if status := gc.Run(stack, 0); status != 0 {
+		t.Errorf("Run status = %d, want 0", status)
+	}
+	if host.tableCalls != 1 || host.lastTableOp != 3 {
+		t.Errorf("SetTable not called(calls=%d / tag=%d, want 1/3)", host.tableCalls, host.lastTableOp)
+	}
+	if host.lastTableA != 0 || host.lastTableB != 1 || host.lastTableC != 2 {
+		t.Errorf("SetTable ABC = (%d,%d,%d), want (0,1,2)", host.lastTableA, host.lastTableB, host.lastTableC)
+	}
+	// setter 不写 R(A)
+	if _, ok := host.regs[0]; ok {
+		t.Errorf("setter 不应写 R(A), got regs=%v", host.regs)
+	}
+	// retB=1 → DoReturn 仍调(弹帧)
+	if host.doReturnCalls != 1 {
+		t.Errorf("DoReturn 应调 1 次, got %d", host.doReturnCalls)
+	}
+}
+
+// TestPJ7_SetTableForm_HostRoute_Err SETTABLE 错误路径。
+func TestPJ7_SetTableForm_HostRoute_Err(t *testing.T) {
+	proto := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABC(bytecode.SETTABLE, 0, 1, 2),
+			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
+		},
+	}
+	c := New()
+	host := newMockP4Host()
+	c.SetHostState(host)
+	host.tableRetCode = 1
+	gc, err := c.Compile(proto, nil)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	defer tryDispose(t, gc)
+	stack := make([]uint64, 8)
+	status := gc.Run(stack, 0)
+	if status != 1 {
+		t.Errorf("Run status = %d, want 1(ERR)", status)
+	}
+	if host.doReturnCalls != 0 {
+		t.Errorf("DoReturn 应跳过(ERR), got %d", host.doReturnCalls)
+	}
+}
+
+// TestPJ7_CompareForm_AnalyzeShape 验 analyzeCompareForm 识别 EQ/LT/LE
+// 6-op 模板形态(承上批审查 🟢:e2e 已覆盖但 jit 包内单元定向回归缺失)。
+//
+// 本测对 analyzeShape 直接断言:
+//   - EQ/LT/LE × cmpA(0/1) 5/6-op 形态 ok=true 且各字段映射正确
+//   - 模板任一槽位偏离(JMP sBx≠1 / LOADBOOL 错序 / RETURN A 不一致 / 长度 ≠ {5,6})
+//     立即 ok=false。
+func TestPJ7_CompareForm_AnalyzeShape(t *testing.T) {
+	// 辅助:构造模板 EQ/LT/LE 6-op 形态(可选 dead RETURN)。
+	build := func(cmpOp bytecode.OpCode, cmpA, cmpB, cmpC, retA int, withDead bool) *bytecode.Proto {
+		code := []bytecode.Instruction{
+			bytecode.EncodeABC(cmpOp, cmpA, cmpB, cmpC),
+			bytecode.EncodeAsBx(bytecode.JMP, 0, 1),
+			bytecode.EncodeABC(bytecode.LOADBOOL, retA, 0, 1),
+			bytecode.EncodeABC(bytecode.LOADBOOL, retA, 1, 0),
+			bytecode.EncodeABC(bytecode.RETURN, retA, 2, 0),
+		}
+		if withDead {
+			code = append(code, bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0))
+		}
+		return &bytecode.Proto{Code: code}
+	}
+
+	// OK 子用例:EQ/LT/LE × cmpA(0/1) × dead(true/false)
+	okCases := []struct {
+		op   bytecode.OpCode
+		cmpA int
+		dead bool
+	}{
+		{bytecode.EQ, 1, true},
+		{bytecode.EQ, 0, false},
+		{bytecode.LT, 1, true},
+		{bytecode.LT, 0, false},
+		{bytecode.LE, 1, true},
+		{bytecode.LE, 0, false},
+	}
+	for _, tc := range okCases {
+		name := tc.op.String()
+		if tc.cmpA == 0 {
+			name += "_cmpA0"
+		} else {
+			name += "_cmpA1"
+		}
+		if tc.dead {
+			name += "_withDead"
+		}
+		t.Run("OK/"+name, func(t *testing.T) {
+			proto := build(tc.op, tc.cmpA, 0, 256, 1, tc.dead)
+			info := analyzeShape(proto)
+			if !info.ok {
+				t.Fatalf("%s 形态应识别成功", name)
+			}
+			if info.preludeOp != uint8(tc.op) {
+				t.Errorf("preludeOp = %d, want %d (%s)", info.preludeOp, tc.op, tc.op)
+			}
+			if info.cmpA != uint8(tc.cmpA) {
+				t.Errorf("cmpA = %d, want %d", info.cmpA, tc.cmpA)
+			}
+			if info.preludeArg != 0 {
+				t.Errorf("preludeArg(B) = %d, want 0", info.preludeArg)
+			}
+			if info.preludeC != 256 {
+				t.Errorf("preludeC(C) = %d, want 256", info.preludeC)
+			}
+			if info.retA != 1 {
+				t.Errorf("retA = %d, want 1", info.retA)
+			}
+			if info.retB != 2 {
+				t.Errorf("retB = %d, want 2", info.retB)
+			}
+			if info.retPC != 4 {
+				t.Errorf("retPC = %d, want 4 (RETURN 在 pc 4)", info.retPC)
+			}
+		})
+	}
+
+	// 拒绝子用例:模板偏离应立即返 ok=false
+	t.Run("Reject/cmpA_outOfRange", func(t *testing.T) {
+		// cmpA=2 越 {0,1}
+		if analyzeShape(build(bytecode.EQ, 2, 0, 1, 1, false)).ok {
+			t.Error("cmpA=2 应被拒")
+		}
+	})
+
+	t.Run("Reject/cmpOp_notSupported", func(t *testing.T) {
+		// 用 ADD 代替 EQ
+		proto := build(bytecode.EQ, 1, 0, 1, 1, false)
+		proto.Code[0] = bytecode.EncodeABC(bytecode.ADD, 1, 0, 1)
+		if analyzeShape(proto).ok {
+			t.Error("非 EQ/LT/LE op 应被拒")
+		}
+	})
+
+	t.Run("Reject/JMP_sBx_notOne", func(t *testing.T) {
+		proto := build(bytecode.EQ, 1, 0, 1, 1, false)
+		proto.Code[1] = bytecode.EncodeAsBx(bytecode.JMP, 0, 2) // sBx=2 不符
+		if analyzeShape(proto).ok {
+			t.Error("JMP sBx≠1 应被拒")
+		}
+	})
+
+	t.Run("Reject/LOADBOOL_falseSlot_wrongBC", func(t *testing.T) {
+		proto := build(bytecode.EQ, 1, 0, 1, 1, false)
+		proto.Code[2] = bytecode.EncodeABC(bytecode.LOADBOOL, 1, 1, 0) // 应是 B=0 C=1
+		if analyzeShape(proto).ok {
+			t.Error("LOADBOOL slot[2] B/C 错应被拒")
+		}
+	})
+
+	t.Run("Reject/LOADBOOL_A_inconsistent", func(t *testing.T) {
+		proto := build(bytecode.EQ, 1, 0, 1, 1, false)
+		proto.Code[3] = bytecode.EncodeABC(bytecode.LOADBOOL, 2, 1, 0) // A=2 ≠ retA=1
+		if analyzeShape(proto).ok {
+			t.Error("LOADBOOL A 不一致应被拒")
+		}
+	})
+
+	t.Run("Reject/RETURN_A_inconsistent", func(t *testing.T) {
+		proto := build(bytecode.EQ, 1, 0, 1, 1, false)
+		proto.Code[4] = bytecode.EncodeABC(bytecode.RETURN, 2, 2, 0) // A=2 ≠ lbTrueA=1
+		if analyzeShape(proto).ok {
+			t.Error("RETURN A 不一致应被拒")
+		}
+	})
+
+	t.Run("Reject/length_4", func(t *testing.T) {
+		// 长度 4 不在 {5,6} 范围
+		proto := &bytecode.Proto{
+			Code: []bytecode.Instruction{
+				bytecode.EncodeABC(bytecode.EQ, 1, 0, 1),
+				bytecode.EncodeAsBx(bytecode.JMP, 0, 1),
+				bytecode.EncodeABC(bytecode.LOADBOOL, 1, 0, 1),
+				bytecode.EncodeABC(bytecode.LOADBOOL, 1, 1, 0),
+			},
+		}
+		if analyzeShape(proto).ok {
+			t.Error("长度 4 应被拒")
+		}
+	})
+
+	t.Run("Reject/length_7", func(t *testing.T) {
+		// 长度 7 不在 {5,6} 范围
+		proto := build(bytecode.EQ, 1, 0, 1, 1, true)
+		proto.Code = append(proto.Code, bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0))
+		if analyzeShape(proto).ok {
+			t.Error("长度 7 应被拒")
+		}
+	})
+}
+
+// TestPJ7_CompareForm_RunFolding 验 Run 路径折叠语义:
+//   - cmpA=1 + cmpResult=1 → True
+//   - cmpA=1 + cmpResult=0 → False
+//   - cmpA=0 + cmpResult=0 → True(取反)
+//   - cmpA=0 + cmpResult=1 → False
+//   - cmpErr → Run 返 1
+func TestPJ7_CompareForm_RunFolding(t *testing.T) {
+	cases := []struct {
+		name       string
+		cmpA       int
+		cmpResult  bool
+		cmpErr     bool
+		wantStatus int32
+		wantRetA   value.Value
+		wantErr    bool
+	}{
+		{"cmpA1_eq_true", 1, true, false, 0, value.True, false},
+		{"cmpA1_eq_false", 1, false, false, 0, value.False, false},
+		{"cmpA0_neg_true", 0, false, false, 0, value.True, false},
+		{"cmpA0_neg_false", 0, true, false, 0, value.False, false},
+		{"err", 1, false, true, 1, 0, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// EQ A=cmpA B=0 C=1 + JMP + LOADBOOL × 2 + RETURN
+			proto := &bytecode.Proto{
+				Code: []bytecode.Instruction{
+					bytecode.EncodeABC(bytecode.EQ, tc.cmpA, 0, 1),
+					bytecode.EncodeAsBx(bytecode.JMP, 0, 1),
+					bytecode.EncodeABC(bytecode.LOADBOOL, 1, 0, 1),
+					bytecode.EncodeABC(bytecode.LOADBOOL, 1, 1, 0),
+					bytecode.EncodeABC(bytecode.RETURN, 1, 2, 0),
+				},
+			}
+			c := New()
+			host := newMockP4Host()
+			c.SetHostState(host)
+			host.cmpResult = tc.cmpResult
+			host.cmpErr = tc.cmpErr
+			gc, err := c.Compile(proto, nil)
+			if err != nil {
+				t.Fatalf("Compile failed: %v", err)
+			}
+			defer tryDispose(t, gc)
+			stack := make([]uint64, 4)
+			status := gc.Run(stack, 0)
+			if status != tc.wantStatus {
+				t.Errorf("Run status = %d, want %d", status, tc.wantStatus)
+			}
+			if host.cmpCalls != 1 {
+				t.Errorf("Compare 应调 1 次, got %d", host.cmpCalls)
+			}
+			if tc.wantErr {
+				if host.doReturnCalls != 0 {
+					t.Errorf("ERR 路径 DoReturn 应跳过, got %d", host.doReturnCalls)
+				}
+				if _, ok := host.regs[1]; ok {
+					t.Errorf("ERR 路径不应写 R(retA)")
+				}
+			} else {
+				got, ok := host.regs[1]
+				if !ok {
+					t.Fatal("OK 路径 SetReg(retA) 应被调用")
+				}
+				if value.Value(got) != tc.wantRetA {
+					t.Errorf("R(1) = 0x%x, want 0x%x", got, uint64(tc.wantRetA))
+				}
+				if host.doReturnCalls != 1 {
+					t.Errorf("DoReturn 应调 1 次, got %d", host.doReturnCalls)
+				}
+			}
+		})
 	}
 }
