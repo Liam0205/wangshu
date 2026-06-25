@@ -61,6 +61,28 @@ type P4HostState interface {
 	//
 	// 返回:0=OK / 1=ERR。用例:P4 LEN A B 形态。
 	Len(base int32, pc int32, b int32, a int32) int32
+
+	// NewTable 处理 NEWTABLE A B C 助手(gibbous_host.go::NewTable 同款签名,
+	// 分配 + safepoint 全 helper 内,永不 raise——只可能 Go 端 OOM)。
+	//
+	// 参数:base/pc 同 Arith;a = 目标寄存器号;b/c = 数组段/哈希段初始大小
+	// 的 Fb 编码(luac 提示)。
+	//
+	// 返回:0=OK / 1=ERR(理论不发生,签名保留与其它 helper 对齐)。
+	// 用例:P4 NEWTABLE A B C 形态(`function() return {} end` 类)。
+	NewTable(base int32, pc int32, a int32, b int32, c int32) int32
+
+	// GetTable 处理 GETTABLE A B C 慢路径助手(gibbous_host.go::GetTable
+	// 同款签名,逐字节同构于解释器 GETTABLE 段:经 icGetTable IC 缓存
+	// 命中 / 哈希查表 / __index 元方法链,可 raise:attempt to index nil
+	// 等)。
+	//
+	// 参数:base/pc 同 Arith;a = 目标寄存器号;b = 表所在寄存器;c = RK
+	// 键(寄存器号或常量索引)。
+	//
+	// 返回:0=OK / 1=ERR。用例:P4 GETTABLE A B C 形态(`function(t, k)
+	// return t[k] end` / `function(t) return t.x end` 类)。
+	GetTable(base int32, pc int32, a int32, b int32, c int32) int32
 }
 
 // SetHostState 把 host(crescent)抽象注入本 Compiler。

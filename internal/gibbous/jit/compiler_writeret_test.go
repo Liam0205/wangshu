@@ -351,3 +351,108 @@ func TestPJ7_NotForm_Rejected(t *testing.T) {
 		t.Error("NOT 形态当前 P4 不接(GetReg 接口未实装),SupportsAllOpcodes 应返 false")
 	}
 }
+
+// TestPJ7_NewTableForm_HostRoute NEWTABLE A B C + RETURN A 2 形态:Run 调
+// host.NewTable helper,永不 raise。
+func TestPJ7_NewTableForm_HostRoute(t *testing.T) {
+	// NEWTABLE A=0 B=0 C=0 + RETURN A=0 B=2(`function() return {} end`)
+	proto := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABC(bytecode.NEWTABLE, 0, 0, 0),
+			bytecode.EncodeABC(bytecode.RETURN, 0, 2, 0),
+		},
+	}
+	c := New()
+	host := newMockP4Host()
+	c.SetHostState(host)
+	expected := uint64(0x1234567890abcdef) // 模拟 NaN-box table ref
+	host.tableResult = expected
+	gc, err := c.Compile(proto, nil)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	defer tryDispose(t, gc)
+	stack := make([]uint64, 4)
+	if status := gc.Run(stack, 0); status != 0 {
+		t.Errorf("Run status = %d, want 0", status)
+	}
+	if host.tableCalls != 1 {
+		t.Errorf("NewTable called %d times, want 1", host.tableCalls)
+	}
+	if host.lastTableOp != 1 {
+		t.Errorf("called wrong helper:tag = %d, want 1(NewTable)", host.lastTableOp)
+	}
+	if host.lastTableA != 0 {
+		t.Errorf("NewTable A = %d, want 0", host.lastTableA)
+	}
+	got, ok := host.regs[0]
+	if !ok || got != expected {
+		t.Errorf("R(0) = 0x%x (ok=%v), want 0x%x", got, ok, expected)
+	}
+	if host.doReturnCalls != 1 {
+		t.Errorf("DoReturn 应调 1 次, got %d", host.doReturnCalls)
+	}
+}
+
+// TestPJ7_GetTableForm_HostRoute_OK GETTABLE A B C + RETURN A 2 形态:Run 调
+// host.GetTable helper,OK 路径写 R(A)。
+func TestPJ7_GetTableForm_HostRoute_OK(t *testing.T) {
+	// GETTABLE A=2 B=0 C=1 + RETURN A=2 B=2(`function(t, k) return t[k] end`)
+	proto := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABC(bytecode.GETTABLE, 2, 0, 1),
+			bytecode.EncodeABC(bytecode.RETURN, 2, 2, 0),
+		},
+	}
+	c := New()
+	host := newMockP4Host()
+	c.SetHostState(host)
+	expected := uint64(value.NumberValue(123))
+	host.tableResult = expected
+	gc, err := c.Compile(proto, nil)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	defer tryDispose(t, gc)
+	stack := make([]uint64, 8)
+	if status := gc.Run(stack, 0); status != 0 {
+		t.Errorf("Run status = %d, want 0", status)
+	}
+	if host.tableCalls != 1 || host.lastTableOp != 2 {
+		t.Errorf("GetTable not called(calls=%d / tag=%d, want 1/2)", host.tableCalls, host.lastTableOp)
+	}
+	if host.lastTableA != 2 || host.lastTableB != 0 || host.lastTableC != 1 {
+		t.Errorf("GetTable ABC = (%d,%d,%d), want (2,0,1)", host.lastTableA, host.lastTableB, host.lastTableC)
+	}
+	got, ok := host.regs[2]
+	if !ok || got != expected {
+		t.Errorf("R(2) = 0x%x (ok=%v), want 0x%x", got, ok, expected)
+	}
+}
+
+// TestPJ7_GetTableForm_HostRoute_Err GETTABLE 错误路径(helper 返 1)。
+func TestPJ7_GetTableForm_HostRoute_Err(t *testing.T) {
+	proto := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABC(bytecode.GETTABLE, 2, 0, 1),
+			bytecode.EncodeABC(bytecode.RETURN, 2, 2, 0),
+		},
+	}
+	c := New()
+	host := newMockP4Host()
+	c.SetHostState(host)
+	host.tableRetCode = 1
+	gc, err := c.Compile(proto, nil)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	defer tryDispose(t, gc)
+	stack := make([]uint64, 8)
+	status := gc.Run(stack, 0)
+	if status != 1 {
+		t.Errorf("Run status = %d, want 1(ERR)", status)
+	}
+	if host.doReturnCalls != 0 {
+		t.Errorf("DoReturn 应跳过(ERR), got %d", host.doReturnCalls)
+	}
+}

@@ -301,3 +301,87 @@ return f(true)  -- 触发 attempt to get length of`
 	}
 	t.Logf("PJ7 LEN ERR 路径正确冒泡:err = %v", err)
 }
+
+// TestPJ7_NewTable_E2E 验真实路径下 `function() return {} end` 经 P4 升层
+// 返新表 + 表非 nil。
+func TestPJ7_NewTable_E2E(t *testing.T) {
+	src := `
+local function f() return {} end
+for i = 1, 100 do f() end
+return f()`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	beforeHits := st.doReturnHits
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	hits := st.doReturnHits - beforeHits
+	promoCount := st.bridge.PromotionCount()
+	t.Logf("NEWTABLE:PromotionCount=%d, doReturnHits=%d", promoCount, hits)
+	if promoCount == 0 {
+		t.Fatal("NEWTABLE:PromotionCount=0 → 没 Proto 升层")
+	}
+	if hits == 0 {
+		t.Fatal("NEWTABLE:doReturnHits=0 → P4 路径未真触达")
+	}
+	if len(rets) != 1 {
+		t.Fatalf("rets 长度 = %d, want 1", len(rets))
+	}
+	v := value.Value(rets[0])
+	if value.Tag(v) != value.TagTable {
+		t.Errorf("rets[0] Tag = 0x%x, want TagTable=0x%x", value.Tag(v), value.TagTable)
+	}
+}
+
+// TestPJ7_GetTable_E2E_OK 验真实路径下 `function(t, k) return t[k] end` 经
+// P4 升层 byte-equal 解释器。
+func TestPJ7_GetTable_E2E_OK(t *testing.T) {
+	src := `
+local function f(t, k) return t[k] end
+local tbl = {x = 42, y = 99}
+for i = 1, 100 do f(tbl, "x") end
+return f(tbl, "y")`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	beforeHits := st.doReturnHits
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	hits := st.doReturnHits - beforeHits
+	promoCount := st.bridge.PromotionCount()
+	t.Logf("GETTABLE:PromotionCount=%d, doReturnHits=%d", promoCount, hits)
+	if promoCount == 0 {
+		t.Fatal("GETTABLE:PromotionCount=0 → 没 Proto 升层")
+	}
+	if hits == 0 {
+		t.Fatal("GETTABLE:doReturnHits=0 → P4 路径未真触达")
+	}
+	if len(rets) != 1 || !value.IsNumber(value.Value(rets[0])) {
+		t.Fatalf("rets = %v, want [number]", rets)
+	}
+	if got := value.AsNumber(value.Value(rets[0])); got != 99 {
+		t.Errorf(`f(tbl, "y") = %v, want 99`, got)
+	}
+}
+
+// TestPJ7_GetTable_E2E_Err 验 GETTABLE 错误路径(`f(nil, 1)` raise "attempt
+// to index ...")经 P4 升层后正确冒泡。
+func TestPJ7_GetTable_E2E_Err(t *testing.T) {
+	src := `
+local function f(t, k) return t[k] end
+local tbl = {x = 1}
+for i = 1, 100 do f(tbl, "x") end  -- 先升层
+return f(nil, 1)  -- 触发 attempt to index nil`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	_, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err == nil {
+		t.Fatal("GETTABLE on nil 应 raise,但 Call 返回 nil err")
+	}
+	t.Logf("PJ7 GETTABLE ERR 路径正确冒泡:err = %v", err)
+}

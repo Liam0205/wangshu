@@ -98,6 +98,10 @@ type shapeInfo struct {
 //     host.Arith,逐字节同构解释器 doArith,preludeOp=算术 op,可 ERR 冒泡)
 //   - 长度 2/3:UNM/LEN A B + RETURN A 2(Go 端 Run 调 host.Unm/Len,逐
 //     字节同构解释器 UNM/LEN 慢路径,可 ERR 冒泡)
+//   - 长度 2/3:NEWTABLE A B C + RETURN A 2(Go 端 Run 调 host.NewTable,
+//     永不 raise——alloc + safepoint 全 helper 内)
+//   - 长度 2/3:GETTABLE A B C + RETURN A 2(Go 端 Run 调 host.GetTable,
+//     经 IC + 哈希 + __index 元方法链,可 ERR 冒泡)
 func analyzeShape(proto *bytecode.Proto) shapeInfo {
 	if proto == nil {
 		return shapeInfo{}
@@ -264,6 +268,73 @@ func analyzeShape(proto *bytecode.Proto) shapeInfo {
 			preludeArg: uint16(uB),
 		}
 
+	case bytecode.NEWTABLE:
+		// NEWTABLE A B C + RETURN A 2:`function() return {} end` /
+		// `function() return {1,2,3} end`(单 NEWTABLE 形态,后者还需 SETLIST
+		// 不在本简化形态)。host.NewTable 永不 raise(alloc + safepoint
+		// 全 helper 内,Go runtime OOM 才崩),与算术族的可 raise 路径不同。
+		ret := proto.Code[1]
+		if bytecode.Op(ret) != bytecode.RETURN {
+			return shapeInfo{}
+		}
+		retA := bytecode.A(ret)
+		retB := bytecode.B(ret)
+		if retB != 2 {
+			return shapeInfo{}
+		}
+		ntA := bytecode.A(first)
+		ntB := bytecode.B(first)
+		ntC := bytecode.C(first)
+		if ntA != retA {
+			return shapeInfo{}
+		}
+		// NEWTABLE B/C 是 Fb 编码的初始大小提示,范围 [0, 255]
+		if ntB > 255 || ntC > 255 {
+			return shapeInfo{}
+		}
+		return shapeInfo{
+			ok:         true,
+			retA:       uint8(retA),
+			retB:       uint8(retB),
+			retPC:      1,
+			preludeOp:  uint8(bytecode.NEWTABLE),
+			preludeArg: uint16(ntB),
+			preludeC:   uint16(ntC),
+		}
+
+	case bytecode.GETTABLE:
+		// GETTABLE A B C + RETURN A 2:`function(t, k) return t[k] end` /
+		// `function(t) return t[1] end` 形态(C 可为 RK 编码)。host.GetTable
+		// 走 IC + 哈希 + __index 元方法链,可 raise(attempt to index nil 等)。
+		ret := proto.Code[1]
+		if bytecode.Op(ret) != bytecode.RETURN {
+			return shapeInfo{}
+		}
+		retA := bytecode.A(ret)
+		retB := bytecode.B(ret)
+		if retB != 2 {
+			return shapeInfo{}
+		}
+		gtA := bytecode.A(first)
+		gtB := bytecode.B(first)
+		gtC := bytecode.C(first)
+		if gtA != retA {
+			return shapeInfo{}
+		}
+		// B 是寄存器号(表对象);C 是 RK 编码(键),取值上限 511
+		if gtB > 254 || gtC > 511 {
+			return shapeInfo{}
+		}
+		return shapeInfo{
+			ok:         true,
+			retA:       uint8(retA),
+			retB:       uint8(retB),
+			retPC:      1,
+			preludeOp:  uint8(bytecode.GETTABLE),
+			preludeArg: uint16(gtB),
+			preludeC:   uint16(gtC),
+		}
+
 	case bytecode.LOADK, bytecode.LOADBOOL, bytecode.LOADNIL:
 		ret := proto.Code[1]
 		if bytecode.Op(ret) != bytecode.RETURN {
@@ -393,4 +464,8 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 //     调 host.Arith 慢路径 helper,可 ERR 冒泡)
 //   - 长度 2/3:UNM/LEN A B + RETURN A 2(prelude 路径调 host.Unm/Len
 //     慢路径 helper,可 ERR 冒泡)
-var ErrCompileUnsupportedShape = errors.New("internal/gibbous/jit: P4 PJ7 unsupported shape (expected: single RETURN A B / single-BB MOVE|GETUPVAL|LOADK|LOADBOOL|LOADNIL|ADD..POW|UNM|LEN + RETURN A 2)")
+//   - 长度 2/3:NEWTABLE A B C + RETURN A 2(prelude 路径调 host.NewTable,
+//     永不 raise)
+//   - 长度 2/3:GETTABLE A B C + RETURN A 2(prelude 路径调 host.GetTable,
+//     经 IC + __index 元方法链,可 ERR 冒泡)
+var ErrCompileUnsupportedShape = errors.New("internal/gibbous/jit: P4 PJ7 unsupported shape (expected: single RETURN A B / single-BB MOVE|GETUPVAL|LOADK|LOADBOOL|LOADNIL|ADD..POW|UNM|LEN|NEWTABLE|GETTABLE + RETURN A 2)")

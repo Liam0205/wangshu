@@ -54,6 +54,14 @@ type mockP4Host struct {
 	lastUnaryA   int32
 	unaryResult  uint64 // 模拟 Unm/Len 写回 R(A) 的值
 	unaryRetCode int32
+	// NewTable/GetTable 调用记录:
+	tableCalls   int   // NewTable 与 GetTable 共用计数
+	lastTableOp  int32 // 0=未调 / 1=NewTable / 2=GetTable(mock 私有 tag)
+	lastTableA   int32
+	lastTableB   int32
+	lastTableC   int32
+	tableResult  uint64 // 模拟写回 R(A) 的值
+	tableRetCode int32  // 模拟 GetTable 返回(NewTable 永 0)
 }
 
 func newMockP4Host() *mockP4Host {
@@ -124,6 +132,35 @@ func (m *mockP4Host) Len(base, pc, b, a int32) int32 {
 		m.regs[a] = m.unaryResult
 	}
 	return m.unaryRetCode
+}
+
+// NewTable 模拟 host.NewTable:记录 + 写 R(A) = tableResult。永不 raise。
+func (m *mockP4Host) NewTable(base, pc, a, b, c int32) int32 {
+	_ = base
+	_ = pc
+	_ = b
+	_ = c
+	m.tableCalls++
+	m.lastTableOp = 1 // NewTable tag
+	m.lastTableA = a
+	m.regs[a] = m.tableResult
+	return 0
+}
+
+// GetTable 模拟 host.GetTable:记录 + 经 SetReg 写 R(A) = tableResult +
+// 返 tableRetCode。
+func (m *mockP4Host) GetTable(base, pc, a, b, c int32) int32 {
+	_ = base
+	_ = pc
+	m.tableCalls++
+	m.lastTableOp = 2 // GetTable tag
+	m.lastTableA = a
+	m.lastTableB = b
+	m.lastTableC = c
+	if m.tableRetCode == 0 {
+		m.regs[a] = m.tableResult
+	}
+	return m.tableRetCode
 }
 
 // compileWithHost 构造 *Compiler 注入 mock host 后调 Compile。

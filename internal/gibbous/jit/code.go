@@ -166,6 +166,20 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 			if st != 0 {
 				return st
 			}
+		case uint8(bytecode.NEWTABLE):
+			// 建表:host.NewTable(base, pc, a, b, c)——alloc + safepoint 全
+			// helper 内,B/C 是 Fb 编码的初始数组/哈希段大小提示。永不 raise
+			// (Go runtime OOM 才崩,与本错误协议解耦)。
+			c.host.NewTable(int32(base), int32(c.retPC), int32(c.retA),
+				int32(c.preludeArg), int32(c.preludeC))
+		case uint8(bytecode.GETTABLE):
+			// 表读:host.GetTable(base, pc, a, b, c)——经 IC + 哈希 + __index
+			// 元方法链,可 raise(attempt to index nil/string with key/...)。
+			st := c.host.GetTable(int32(base), int32(c.retPC), int32(c.retA),
+				int32(c.preludeArg), int32(c.preludeC))
+			if st != 0 {
+				return st
+			}
 		}
 	}
 
