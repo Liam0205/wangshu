@@ -75,6 +75,9 @@ func (c *Compiler) SupportsAllOpcodes(proto *bytecode.Proto) bool {
 //
 //   - 长度 1:RETURN A 1 (B=1,返回 0 个值,即 `function() end`/`return`)
 //   - 长度 2:LOADK/LOADBOOL/LOADNIL A ... + RETURN A 2(返回 1 个值)
+//   - 长度 3:同长度 2 + 尾部 RETURN(luac 主 chunk 常见冗余尾,编译器加的
+//     dead code:LOADK + RETURN A 2 + RETURN 0 1)。第 3 条 RETURN 永远不
+//     执行(第 2 条 RETURN 已退出),识别即接受。
 func analyzeShape(proto *bytecode.Proto) (uint8, uint64, bool) {
 	if proto == nil {
 		return 0, 0, false
@@ -87,18 +90,17 @@ func analyzeShape(proto *bytecode.Proto) (uint8, uint64, bool) {
 			return 0, 0, false
 		}
 		retB := bytecode.B(ret)
-		if retB != 1 { // B=1 即 B-1=0 个返回值
+		if retB != 1 {
 			return 0, 0, false
 		}
-		// 0 返回值无需写值——但本 PJ7 简化形态 mmap 段恒发 mov rax, imm; ret,
-		// 不会写值栈(p4Code.Run 仍调 DoReturn 完成弹帧;DoReturn nret = b-1 = 0
-		// 即不移结果,直接弹帧)。retA 任意,value 任意 (沿用 0)。
 		return 0, 0, true
 	}
 
-	if len(proto.Code) != 2 {
+	// 形态 1/2:长度 2 或 3
+	if len(proto.Code) != 2 && len(proto.Code) != 3 {
 		return 0, 0, false
 	}
+
 	// 第二条必须是 RETURN A 2(返回 1 个值)
 	ret := proto.Code[1]
 	if bytecode.Op(ret) != bytecode.RETURN {
@@ -108,6 +110,14 @@ func analyzeShape(proto *bytecode.Proto) (uint8, uint64, bool) {
 	retB := bytecode.B(ret)
 	if retB != 2 {
 		return 0, 0, false
+	}
+
+	// 长度 3 时:第 3 条必须是 RETURN(尾部冗余,luac 主 chunk 常见模式)。
+	// 第 3 条 RETURN 永远不执行(第 2 条 RETURN 已退出),不读它的字段。
+	if len(proto.Code) == 3 {
+		if bytecode.Op(proto.Code[2]) != bytecode.RETURN {
+			return 0, 0, false
+		}
 	}
 
 	first := proto.Code[0]
@@ -174,8 +184,17 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 		return nil, ErrCompileUnsupportedShape
 	}
 
-	// 取 retB(从最后一条 RETURN 指令读)
-	retInsn := proto.Code[len(proto.Code)-1]
+	// 取 retPC + retB:执行的 RETURN 是第 2 条(长度 1 时是第 1 条)。
+	var retPC uint8
+	var retInsn bytecode.Instruction
+	if len(proto.Code) == 1 {
+		retPC = 0
+		retInsn = proto.Code[0]
+	} else {
+		// 长度 2 / 3:执行的 RETURN 是 Code[1](长度 3 时 Code[2] 是 dead code)
+		retPC = 1
+		retInsn = proto.Code[1]
+	}
 	retB := uint8(bytecode.B(retInsn))
 
 	// 发射:mov rax, val; ret(emitter 内已在 PJ1 实装)。
@@ -197,7 +216,7 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 		jitCtx:   NewJITContext(),
 		retA:     retA,
 		retB:     retB,
-		retPC:    uint8(len(proto.Code) - 1), // RETURN 是最后一条指令
+		retPC:    retPC,
 		host:     c.hostState,
 	}, nil
 }
