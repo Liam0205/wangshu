@@ -78,6 +78,12 @@ type p4Code struct {
 	// `BoolValue(packed.bit0 == cmpA)`)。其它形态不用。
 	cmpA uint8
 
+	// chainOp/chainB/chainC 是二段算术链式形态(MUL+ADD+RETURN 等)的第二
+	// 段 op + B + C。0=无 chain,非零时 Run 串行调 host.Arith 两次。
+	chainOp uint8
+	chainB  uint16
+	chainC  uint16
+
 	// host 是注入的 P4HostState(从 *Compiler 拷贝):per-p4Code 持有,无并发
 	// write(只在 Compile 时写一次,Run 时只读)——V18 -race 友好。
 	host P4HostState
@@ -186,6 +192,16 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 				// raise pending:host 端已置 gibbousPendingErr,enterGibbous
 				// 取走冒泡(不调 DoReturn 弹帧,ERR 路径不经 RETURN)。
 				return st
+			}
+			// 二段算术链式形态(MUL+ADD+RETURN 等):调第二次 host.Arith,
+			// pc=preludePC+1(chainOp 在 op1 之后)。chainB 已是 retA(链式
+			// 输入,已在 op1 写入 R(retA))。
+			if c.chainOp != 0 {
+				st2 := c.host.Arith(int32(base), preludePC+1, int32(c.chainOp),
+					int32(c.chainB), int32(c.chainC), int32(c.retA))
+				if st2 != 0 {
+					return st2
+				}
 			}
 		case uint8(bytecode.UNM):
 			if c.retB < 2 {

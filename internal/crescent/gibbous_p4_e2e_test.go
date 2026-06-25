@@ -719,3 +719,35 @@ return f(nil)  -- 触发 attempt to compare`
 	}
 	t.Logf("PJ7 Compare ERR 路径正确冒泡:err = %v", err)
 }
+
+// TestPJ7_ArithChain_E2E_OK 真实路径 `function(x) return x*2+1 end`(MUL+ADD)
+// 经 P4 升层 byte-equal 解释器。
+func TestPJ7_ArithChain_E2E_OK(t *testing.T) {
+	src := `
+local function f(x) return x*2+1 end
+for i = 1, 100 do f(i) end
+return f(7)`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	beforeHits := st.doReturnHits
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	hits := st.doReturnHits - beforeHits
+	promoCount := st.bridge.PromotionCount()
+	t.Logf("MUL+ADD chain:PromotionCount=%d, doReturnHits=%d", promoCount, hits)
+	if promoCount == 0 {
+		t.Fatal("MUL+ADD:PromotionCount=0 → 没 Proto 升层")
+	}
+	if hits == 0 {
+		t.Fatal("MUL+ADD:doReturnHits=0 → P4 路径未真触达")
+	}
+	if len(rets) != 1 || !value.IsNumber(value.Value(rets[0])) {
+		t.Fatalf("rets = %v, want [number]", rets)
+	}
+	if got := value.AsNumber(value.Value(rets[0])); got != 15 {
+		t.Errorf("f(7) = 7*2+1 = %v, want 15", got)
+	}
+}

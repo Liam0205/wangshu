@@ -81,6 +81,10 @@ type shapeInfo struct {
 	preludeArg uint32 // prelude opcode 的 B 字段(GETUPVAL/UNM/LEN 是寄存器号 0-255;算术族 B 是 RK 0-511;NEWTABLE B 是 Fb 0-255;GETGLOBAL/SETGLOBAL 是 Bx 0-262143,需 18-bit)
 	preludeC   uint16 // 算术族 / 表族 prelude 的 C 字段——可为 RK(常量含 256 偏移),0-511
 	cmpA       uint8  // 比较折叠形态:EQ/LT/LE 的 A 字段(0=结果取反 / 1=直接取结果,用于折成 BoolValue(packed.bit0 == cmpA))
+	// 二段算术链式形态(MUL+ADD+RETURN 等):第二段算术 op + B + C
+	chainOp uint8  // 第二段 op(0=无 chain;ADD/SUB/MUL/DIV/MOD/POW)
+	chainB  uint16 // 第二段 B 字段(RK 0-511)
+	chainC  uint16 // 第二段 C 字段(RK 0-511)
 }
 
 // analyzeCompareForm 识别 EQ/LT/LE + JMP + LOADBOOL + LOADBOOL + RETURN
@@ -184,6 +188,84 @@ func analyzeCompareForm(proto *bytecode.Proto) (shapeInfo, bool) {
 	}, true
 }
 
+// analyzeArithChainForm 识别二段算术链式形态(`function(x) return x*2+1 end`
+// 类),长度 3 或 4:
+//
+//	[0] arith1 A B C    (ADD/SUB/MUL/DIV/MOD/POW;A 不一定 = retA,但 A 必须
+//	                     是 arith2 的 B 输入位置)
+//	[1] arith2 A B C    (B = arith1.A,链式输入;A 一致 retA)
+//	[2] RETURN A 2
+//	[3] dead RETURN(可选)
+//
+// 等价语义:Run 串行调 host.Arith(op1, B1, C1, A1)再调 host.Arith(op2,
+// B2=A1, C2, A2)——中间值经 ci 的 reg 槽自然传递,与解释器执行同源。
+//
+// **关键约束**:arith1.A 必须 == arith2.B(链式输入,且 luac 编码后两 op
+// 的 A 同 retA)。本简化只接 op1.A == op2.A == retA 形态(luac 默认产物)。
+func analyzeArithChainForm(proto *bytecode.Proto) (shapeInfo, bool) {
+	if len(proto.Code) != 3 && len(proto.Code) != 4 {
+		return shapeInfo{}, false
+	}
+	op1 := proto.Code[0]
+	op2 := proto.Code[1]
+	ret := proto.Code[2]
+
+	isArith := func(op bytecode.OpCode) bool {
+		return op == bytecode.ADD || op == bytecode.SUB || op == bytecode.MUL ||
+			op == bytecode.DIV || op == bytecode.MOD || op == bytecode.POW
+	}
+	if !isArith(bytecode.Op(op1)) || !isArith(bytecode.Op(op2)) {
+		return shapeInfo{}, false
+	}
+	if bytecode.Op(ret) != bytecode.RETURN {
+		return shapeInfo{}, false
+	}
+	retA := bytecode.A(ret)
+	retB := bytecode.B(ret)
+	if retB != 2 {
+		return shapeInfo{}, false
+	}
+
+	// op1: A B C; op2: A B C
+	op1A := bytecode.A(op1)
+	op2A := bytecode.A(op2)
+	op2B := bytecode.B(op2)
+	if op1A != retA || op2A != retA {
+		return shapeInfo{}, false
+	}
+	// op2.B 必须读 op1 的输出(=op1.A=retA)——chain 链式输入
+	if op2B != retA {
+		return shapeInfo{}, false
+	}
+
+	op1B := bytecode.B(op1)
+	op1C := bytecode.C(op1)
+	op2C := bytecode.C(op2)
+	if op1B > 511 || op1C > 511 || op2C > 511 {
+		return shapeInfo{}, false
+	}
+
+	// 长度 4 时 [3] 必须是 dead RETURN
+	if len(proto.Code) == 4 {
+		if bytecode.Op(proto.Code[3]) != bytecode.RETURN {
+			return shapeInfo{}, false
+		}
+	}
+
+	return shapeInfo{
+		ok:         true,
+		retA:       uint8(retA),
+		retB:       uint8(retB),
+		retPC:      2, // RETURN 在 pc 2
+		preludeOp:  uint8(bytecode.Op(op1)),
+		preludeArg: uint32(op1B),
+		preludeC:   uint16(op1C),
+		chainOp:    uint8(bytecode.Op(op2)),
+		chainB:     uint16(op2B), // = retA(链式)
+		chainC:     uint16(op2C),
+	}, true
+}
+
 // analyzeShape 识别支持的「单值产生 + RETURN A 1」形态。
 //
 // 支持形态:
@@ -203,6 +285,9 @@ func analyzeCompareForm(proto *bytecode.Proto) (shapeInfo, bool) {
 //     永不 raise——alloc + safepoint 全 helper 内)
 //   - 长度 2/3:GETTABLE A B C + RETURN A 2(Go 端 Run 调 host.GetTable,
 //     经 IC + 哈希 + __index 元方法链,可 ERR 冒泡)
+//   - **长度 3/4 二段算术链式**:arith1 A B C + arith2 A A C2 + RETURN A 2
+//     (`function(x) return x*2+1 end` 类——MUL+ADD+RETURN)。Run 串行调
+//     host.Arith 两次,中间值在 R(A)。
 func analyzeShape(proto *bytecode.Proto) shapeInfo {
 	if proto == nil {
 		return shapeInfo{}
@@ -226,6 +311,10 @@ func analyzeShape(proto *bytecode.Proto) shapeInfo {
 		// 长度 5/6:可能是比较折叠形态 EQ/LT/LE+JMP+LOADBOOL+LOADBOOL+RETURN(+RETURN)
 		if cmp, ok := analyzeCompareForm(proto); ok {
 			return cmp
+		}
+		// 长度 3/4:可能是二段算术链式形态(arith1 + arith2 + RETURN [+dead])
+		if chain, ok := analyzeArithChainForm(proto); ok {
+			return chain
 		}
 		return shapeInfo{}
 	}
@@ -714,6 +803,9 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 		preludeArg: info.preludeArg,
 		preludeC:   info.preludeC,
 		cmpA:       info.cmpA,
+		chainOp:    info.chainOp,
+		chainB:     info.chainB,
+		chainC:     info.chainC,
 		host:       c.hostState,
 	}, nil
 }
