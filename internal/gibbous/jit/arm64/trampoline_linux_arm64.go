@@ -11,7 +11,8 @@ package arm64
 // 实参 codeAddr 必须指向 PROT_READ|PROT_EXEC 段(MmapCode 返回的
 // CodePage.Addr()),且段已 icache flush(否则取指错误)。
 //
-// 实现:trampoline_arm64.s::callJITFull(NOSPLIT|NOFRAME)。
+// 实现:trampoline_arm64.s::callJITFull(NOSPLIT,$80 framesize——LR/FP 由
+// Go 编译器自动管,callee-saved X19-X27 经 5 对 STP 手动保存对齐 16 字节)。
 //
 //go:noescape
 func callJITFull(codeAddr uintptr, jitCtxAddr uintptr) uint64

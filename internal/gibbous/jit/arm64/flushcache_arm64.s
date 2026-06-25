@@ -47,7 +47,7 @@ loopDC:
 	ADD	$64, R3, R3
 	B	loopDC
 doneDC:
-	WORD	$0xd5033b9f  // DSB ISH(0xD503339F → ISH=0xb 故 0xD503339F? 用 0xD5033B9F = DSB ISH)
+	WORD	$0xd5033b9f  // DSB ISH(Data Sync Barrier, Inner Shareable;ARMv8 manual C6.2.91)
 
 	// pass 2: IC IVAU 全段
 	MOVD	R2, R3
