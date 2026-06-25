@@ -82,9 +82,16 @@ jobs:
           retention-days: 30
 
   # PJ9 双架构 CI:用 QEMU user-mode emulation 在 amd64 runner 跑 arm64 jit
-  # 测试。承 06-backends.md §5「双架构 CI 双跑」+ 08-testing-strategy.md §6
-  # —— 物理 arm64 self-hosted runner 留 PJ9+ 基础设施落地;当前用 QEMU 走
-  # 构造性可执行验证(arm64 emitter + trampoline 真发指令 + mmap 段真跑)。
+  # 子包测试。承 06-backends.md §5「双架构 CI 双跑」+ 08-testing-strategy.md
+  # §6 —— 物理 arm64 self-hosted runner 留 PJ9+ 基础设施落地。
+  #
+  # **范围裁决**:本 job 只跑 jit/arm64 子包(emitter/codepage 字节级单测)
+  # —— QEMU user-mode 不真模拟 i-cache(DC CVAU/IC IVAU 在 EL0 user mode 下
+  # 是 NOP),也不真模拟 W^X 翻面后的 PROT_EXEC 取指,故 mmap+RX+execute
+  # 路径(jit 主包 callJITFull + crescent e2e)在 QEMU 下 100% SIGSEGV
+  # 不可信。emitter 字节编码 + codepage struct 一致性等纯计算路径在 QEMU
+  # 可靠运行。真 arm64 端到端等物理 runner(承 06 §5.7「PJ8/9 可滞后真物理
+  # runner」渐进交付)。
   test-arm64:
     runs-on: ubuntu-latest
     needs: test
@@ -99,13 +106,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y qemu-user-static
-      # 跑 arm64 jit 子包 + crescent e2e(GOARCH=arm64 + Go 自带 cross
-      # toolchain;Go 1.22+ 直接 GOARCH=arm64 go test 经 binfmt_misc 调
-      # qemu-aarch64-static)
-      - name: go test arm64 jit + crescent (P4)
+      # 跑 jit/arm64 子包(纯字节编码 + codepage 一致性,无 mmap+RX 执行)
+      - name: go test arm64 jit/arm64 子包(emitter 字节编码)
         run: |
           GOOS=linux GOARCH=arm64 go test -tags 'wangshu_p4 wangshu_profile' \
-            ./internal/gibbous/jit/... ./internal/crescent/...
+            ./internal/gibbous/jit/arm64/...
 
   fuzz-smoke:
     needs: test
