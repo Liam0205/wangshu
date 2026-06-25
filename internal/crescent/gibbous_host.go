@@ -12,6 +12,8 @@
 package crescent
 
 import (
+	"unsafe"
+
 	"github.com/Liam0205/wangshu/internal/bridge"
 	"github.com/Liam0205/wangshu/internal/bytecode"
 	"github.com/Liam0205/wangshu/internal/object"
@@ -91,6 +93,72 @@ func (st *State) gibbousStack() []uint64 {
 func (st *State) gibCI(th *thread) *callInfo {
 	th.syncCurFromSeg()
 	return &th.cur
+}
+
+// SetReg 直接写当前帧的 R(idx) 槽位为 val(NaN-box u64,gibbous-jit P4 PJ7
+// 简化形态专用)。
+//
+// **依赖解环**(P4HostState 接口,jit/host.go):p4Code.Run 在 mmap 段执行后,
+// 需要把 RAX(NaN-box 值)写到 R(retA) 槽位(arena 值栈本体)——不经 P3
+// CallWithStack 的 1 槽 buffer 协议(P3 stack 协议与 P4 不兼容)。
+//
+// 参数:
+//   - idx:寄存器号(R(idx),= ci.base + idx 即 thread 槽位下标)
+//   - val:NaN-box u64 值
+//
+// 实装:经 ci.base + idx 算槽位,直接 setSlot 写入。本方法语义同
+// `execute.go::SETREG`-类操作(arena 值栈直写,无 GC 屏障——因 NaN-box u64
+// 写入是原子单字)。
+func (st *State) SetReg(idx int32, val uint64) {
+	th := st.runningThread
+	ci := st.gibCI(th)
+	th.setSlot(ci.base+int(idx), value.Value(val))
+}
+
+// GetReg 读取当前帧 R(idx)(P4HostState 接口,与 SetReg 对偶)。
+func (st *State) GetReg(idx int32) uint64 {
+	th := st.runningThread
+	ci := st.gibCI(th)
+	return uint64(th.slot(ci.base + int(idx)))
+}
+
+// SetUpvalFromReg 把 R(a) 写入当前 closure 的 upvalue b(execute.go SETUPVAL
+// 段同款,P4HostState 专用「读 reg + 写 upvalue」原子 helper,避免引入
+// 通用 GetReg+SetUpval 的两 round-trip)。
+func (st *State) SetUpvalFromReg(base int32, a int32, b int32) {
+	th := st.runningThread
+	ci := st.gibCI(th)
+	uv := object.ClosureUpvalRef(st.arena, ci.Cl(), uint16(b))
+	st.upvalSet(th, uv, reg(th, ci, int(a)))
+}
+
+// ArenaBaseAddr 返回 arena `[]byte` 起点的 uintptr(承 05 §3.3 P4HostState
+// 接口)。PJ2 完整投机模板预备——mmap 段经 r15+offset 读本字段后字节级
+// 寻址值栈槽。当前 PJ7 简化形态不调用。
+//
+// **arena 重定位**:Words() 在 grow 时返新切片,本字段返当前 Words 起点。
+// 调用方(jit.Compile)在 Run 入口现算,不缓存(承 05 §5 arena base 重载
+// 协议——arena 视图别名 grow 雷区,见 [[feedback-arena-view-aliasing]])。
+func (st *State) ArenaBaseAddr() uintptr {
+	words := st.arena.Words()
+	if len(words) == 0 {
+		return 0
+	}
+	return uintptr(unsafe.Pointer(&words[0]))
+}
+
+// ValueStackBaseAddr 返回当前帧 R0 的字节地址(承 05 §3.3 + 06 §4.1
+// rbx = valueStackBase)。
+//
+// 参数 base 是 enterGibbous 算的字节偏移(`(stackBaseW + ci.base) * 8`),
+// 本函数返 arena.Words 起点 uintptr + base。**arena grow 雷区**:同
+// ArenaBaseAddr,需 Run 入口现算不缓存。
+func (st *State) ValueStackBaseAddr(base int32) uintptr {
+	words := st.arena.Words()
+	if len(words) == 0 {
+		return 0
+	}
+	return uintptr(unsafe.Pointer(&words[0])) + uintptr(base)
 }
 
 // GetUpval 取当前 closure 的 upvalue b(execute.go GETUPVAL 段同款)。

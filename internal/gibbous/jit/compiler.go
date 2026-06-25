@@ -2,13 +2,14 @@
 
 // Package jit —— P4 编译器主体(wangshu_p4 build)。
 //
-// PJ0 阶段:SupportsAllOpcodes 全 false ⇒ 所有 Proto 仍走 crescent。bridge
-// 注入本 Compiler 后,F7 闸门(`docs/design/p2-bridge/03-compilability-analysis.md`
-// §3.7)对所有 Proto 判 NotCompilable,considerPromotion 进 TierStuck 吸收
-// 态——PJ0 验收口径就是「所有 Proto 仍走 crescent」(承 00-overview.md §4
-// PJ0 行)。
+// PJ0 阶段:SupportsAllOpcodes 全 false ⇒ 所有 Proto 仍走 crescent。
+// PJ2 真接入版:Compile 识别「LOADK A K(0); RETURN A 1」最简形态,发射 mmap
+// 段;p4Code.Run 经 callJITFull 拿 RAX 写回 R(A)——但 SupportsAllOpcodes
+// **仍全 false** ⇒ bridge 不在主库路径触达 Compile,本路径仅由 PJ2 内部
+// 单测 prove-the-path 走到(承 implementation-progress.md §6 PJ2 范围裁决)。
 //
-// PJ1 起 amd64 直线模板渐进上线,supported 表逐 PJ 扩。
+// 完整接入 crescent end-to-end byte-equal 留 PJ3+(SupportsAllOpcodes 开
+// 白名单 + crescent.enterGibbousJIT 路径 + 配套 -race / difftest 验证)。
 package jit
 
 import (
@@ -16,74 +17,115 @@ import (
 
 	"github.com/Liam0205/wangshu/internal/bridge"
 	"github.com/Liam0205/wangshu/internal/bytecode"
+	jitamd64 "github.com/Liam0205/wangshu/internal/gibbous/jit/amd64"
 )
 
 // Compiler 实现 `bridge.P3Compiler` 接口(`p2-bridge/05-p3-p4-interface.md`
-// §2)。P3/P4/mock 三方共享同一接口面,P2 实现端零修改——这是「共享前端」
-// 物理体现(05 §0.3 + p4-method-jit/00-overview.md §1)。
+// §2)。
 type Compiler struct {
-	// PJ1+ 字段位:
+	// PJ3+ 字段位:
 	//   - codePagePool *codePagePool  // exec mmap 代码页池(05 §2.1)
 	//   - emitter      *amd64.Emitter // per-arch 发射器(06 §2.4)
 	//   - state        *p4SpecState   // P4 投机子状态机(03 §4 方案 A)
 	//
-	// PJ0 留空——见 New() 注释。
+	// PJ2 留空(p4Code 自持 codePage,Compiler 状态 free)。
 }
 
 // New 构造 P4 Compiler。
-//
-// PJ0:返回空 struct;后续 PJ 渐进填实(codePagePool / emitter / state)。
-//
-// 调用方:`internal/crescent/arena_p4.go` wireP4(`docs/design/p4-method-jit/00-overview.md`
-// §4 PJ0 行 + P3 同款 arena_p3.go 注入协议范本)。
 func New() *Compiler {
 	return &Compiler{}
 }
 
 // SupportsAllOpcodes 检查 Proto 中所有 opcode 是否都在后端支持集内。
 //
-// **PJ0 实装:全返 false**(supported 表初空,保守缺省承
+// **PJ0 / PJ1 / PJ2 实装:全返 false**(supported 表初空,保守缺省承
 // `06-backends.md` §3.8 渐进白名单纪律)。bridge 注入本 Compiler 后所有
-// Proto 经 F7 判 NotCompilable,considerPromotion 进 TierStuck——PJ0 验收
-// 口径(00 §4 PJ0:「bridge 注入 P4Compiler 后 SupportsAllOpcodes 全 false ⇒
-// 所有 Proto 仍走 crescent」)。
+// Proto 经 F7 判 NotCompilable,considerPromotion 进 TierStuck——PJ0/1/2
+// 验收口径(00 §4 PJ0 行)。
 //
-// PJ1 起逐 PJ 扩 supported 表(MOVE/LOADK/LOADBOOL/LOADNIL/JMP/RETURN
-// → ADD/SUB/...)。
-//
-// 实装契约(`p2-bridge/05-p3-p4-interface.md` §2):
-//   - O(N) 单遍扫 proto.Code;
-//   - 调用纯只读,不修改 Proto;
-//   - 不应 panic——遇到无法识别的 opcode 编号(38..63 预留区间)统一返
-//     false(保守拒)。
+// PJ3+ 启动时开 LOADK + RETURN 白名单(配合 crescent 端 enterGibbousJIT
+// 路径 + difftest 验证)。
 func (c *Compiler) SupportsAllOpcodes(proto *bytecode.Proto) bool {
-	// PJ0:supported 表初空 ⇒ 全 false。
-	// 不需要扫 proto.Code(任何 opcode 都不支持)。
 	_ = proto
 	return false
 }
 
 // Compile 把 Proto 编译成 GibbousCode(可执行产物)。
 //
-// **PJ0 实装:返回 ErrCompileNotImplemented**——bridge 不应在 PJ0 调到这里
-// (因 SupportsAllOpcodes 全 false 已在 F7 拦下);本函数返错是防御性兜底,
-// 若 force-all 类测试路径绕过 F7 也能 fallback 到 TierStuck。
+// **PJ2 真接入实装**:识别「LOADK A K(0); RETURN A 1」单 BB 形态——
+//  1. 取 K(0) 的 NaN-box uint64 值(常量池第一项);
+//  2. emitter 发射 `mov rax, NaNBoxedConst; ret`(11 字节);
+//  3. mmap PROT_RW + 写码 + mprotect PROT_RX(承 05 §2.1);
+//  4. 包装 *p4Code(retA = LOADK 与 RETURN 共享的 A)。
 //
-// PJ1 起渐进填实:
-//   - emitter 扫 proto.Code 发射 per-opcode 模板;
-//   - codePagePool 分配 RW 段 → 写码 → mprotect RX;
-//   - 包装 *p4Code 返回。
+// 其它形态返 ErrCompileUnsupportedShape(承
+// `p2-bridge/05-p3-p4-interface.md` §2.2.2 错误返回语义)——bridge 收到错误
+// 后把该 Proto 标 TierStuck(永久解释,不重试)。
+//
+// **PJ2 阶段 SupportsAllOpcodes 仍全 false** ⇒ 本路径不被 bridge 在主库
+// 主路径走到;仅 PJ2 内部 prove-the-path 单测会调本函数(承 prove-the-path-under-test
+// 纪律,白盒证明 mmap 段被走到 + 值正确)。
 func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback) (bridge.GibbousCode, error) {
-	_ = proto
 	_ = feedback
-	return nil, ErrCompileNotImplemented
+	if proto == nil {
+		return nil, ErrCompileUnsupportedShape
+	}
+
+	// 识别「LOADK A K(0); RETURN A 1」最简单 BB 形态。
+	if len(proto.Code) != 2 {
+		return nil, ErrCompileUnsupportedShape
+	}
+	loadk := proto.Code[0]
+	ret := proto.Code[1]
+	if bytecode.Op(loadk) != bytecode.LOADK {
+		return nil, ErrCompileUnsupportedShape
+	}
+	if bytecode.Op(ret) != bytecode.RETURN {
+		return nil, ErrCompileUnsupportedShape
+	}
+	loadA := bytecode.A(loadk)
+	loadBx := bytecode.Bx(loadk)
+	retA := bytecode.A(ret)
+	retB := bytecode.B(ret)
+	// 形态约束:LOADK 与 RETURN 共享 A;RETURN 返回 1 个值(B=2)。
+	if loadA != retA || retB != 2 {
+		return nil, ErrCompileUnsupportedShape
+	}
+	// 常量必须存在 + 是非 String 占位(PJ2 不处理字符串 intern)。
+	if loadBx < 0 || loadBx >= len(proto.Consts) {
+		return nil, ErrCompileUnsupportedShape
+	}
+	if proto.IsStringConst(loadBx) {
+		// 字符串常量需要 State 私有 intern,不在 PJ2 简化形态内(留 PJ4+)。
+		return nil, ErrCompileUnsupportedShape
+	}
+	constVal := uint64(proto.Consts[loadBx])
+
+	// 发射:mov rax, constVal; ret(emitter 内已在 PJ1 实装)。
+	var buf []byte
+	buf = jitamd64.EmitMovRaxImm64(buf, constVal)
+	buf = jitamd64.EmitRet(buf)
+
+	// W^X 翻面 + mmap。
+	page, err := jitamd64.MmapCode(buf)
+	if err != nil {
+		return nil, err
+	}
+
+	return &p4Code{
+		proto:    proto,
+		codePage: page,
+		jitCtx:   NewJITContext(),
+		retA:     uint8(retA),
+	}, nil
 }
 
-// ErrCompileNotImplemented:PJ0 占位错误——P4 后端尚未实装。
-//
-// bridge 收到此错误后把该 Proto 标 TierStuck(承
-// `p2-bridge/04-try-compile-fallback.md` §3 转移规则:Compile 失败 ⇒ 永久
-// 解释,不重试)。**PJ0 不应触发本错误**(SupportsAllOpcodes 已全 false),
-// 触发即说明上游绕过了 F7 闸门(force-all 类测试或 bridge 实装变更),
-// 防御性兜底。
+// ErrCompileNotImplemented:PJ0 占位错误——P4 后端尚未实装(已被 PJ2 真接入
+// 版淘汰,但保留作 PJ2 范围外形态的兜底兼容)。
 var ErrCompileNotImplemented = errors.New("internal/gibbous/jit: PJ0 skeleton — Compile not implemented")
+
+// ErrCompileUnsupportedShape:PJ2 阶段 Compile 拒非「LOADK A K(0); RETURN A 1」
+// 形态——SupportsAllOpcodes 全 false 已在 F7 拦下绝大多数情况;本错误是
+// PJ2 内部 prove-the-path 单测路径绕过 SupportsAllOpcodes 直调 Compile 时
+// 的形态检查兜底。
+var ErrCompileUnsupportedShape = errors.New("internal/gibbous/jit: PJ2 only supports LOADK + RETURN single-BB shape")
