@@ -113,6 +113,23 @@ func (st *State) SetReg(idx int32, val uint64) {
 	th.setSlot(ci.base+int(idx), value.Value(val))
 }
 
+// GetReg 读取当前帧 R(idx)(P4HostState 接口,与 SetReg 对偶)。
+func (st *State) GetReg(idx int32) uint64 {
+	th := st.runningThread
+	ci := st.gibCI(th)
+	return uint64(th.slot(ci.base + int(idx)))
+}
+
+// SetUpvalFromReg 把 R(a) 写入当前 closure 的 upvalue b(execute.go SETUPVAL
+// 段同款,P4HostState 专用「读 reg + 写 upvalue」原子 helper,避免引入
+// 通用 GetReg+SetUpval 的两 round-trip)。
+func (st *State) SetUpvalFromReg(base int32, a int32, b int32) {
+	th := st.runningThread
+	ci := st.gibCI(th)
+	uv := object.ClosureUpvalRef(st.arena, ci.Cl(), uint16(b))
+	st.upvalSet(th, uv, reg(th, ci, int(a)))
+}
+
 // GetUpval 取当前 closure 的 upvalue b(execute.go GETUPVAL 段同款)。
 func (st *State) GetUpval(base int32, b int32) uint64 {
 	th := st.runningThread

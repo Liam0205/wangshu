@@ -6,7 +6,9 @@ package jit
 type P4HostState interface {
 	DoReturn(base int32, pc int32, a int32, b int32) int32
 	SetReg(idx int32, val uint64)
+	GetReg(idx int32) uint64
 	GetUpval(base int32, b int32) uint64
+	SetUpvalFromReg(base int32, a int32, b int32)
 	Arith(base int32, pc int32, op int32, b int32, c int32, a int32) int32
 	Unm(base int32, pc int32, b int32, a int32) int32
 	Len(base int32, pc int32, b int32, a int32) int32

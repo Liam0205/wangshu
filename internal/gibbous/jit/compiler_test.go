@@ -62,6 +62,10 @@ type mockP4Host struct {
 	lastTableC   int32
 	tableResult  uint64 // 模拟写回 R(A) 的值
 	tableRetCode int32  // 模拟 GetTable 返回(NewTable 永 0)
+	// SetUpvalFromReg 调用记录:
+	setUpvalCalls int
+	lastSetUpvalA int32
+	lastSetUpvalB int32
 }
 
 func newMockP4Host() *mockP4Host {
@@ -86,6 +90,21 @@ func (m *mockP4Host) SetReg(idx int32, val uint64) {
 func (m *mockP4Host) GetUpval(base int32, b int32) uint64 {
 	_ = base
 	return m.upvals[b]
+}
+
+// GetReg 模拟 host.GetReg:读 mock 内 regs 表(若未预设则 0)。
+func (m *mockP4Host) GetReg(idx int32) uint64 {
+	return m.regs[idx]
+}
+
+// SetUpvalFromReg 模拟 host.SetUpvalFromReg:setter,记录调用 + 写 upvals[b]
+// 为 mock 内 regs[a]。
+func (m *mockP4Host) SetUpvalFromReg(base, a, b int32) {
+	_ = base
+	m.setUpvalCalls++
+	m.lastSetUpvalA = a
+	m.lastSetUpvalB = b
+	m.upvals[b] = m.regs[a]
 }
 
 // Arith 模拟 host.Arith:记录入参 + 经 SetReg 写 R(a) = arithResult + 返回

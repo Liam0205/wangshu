@@ -8,6 +8,7 @@ import (
 	"github.com/Liam0205/wangshu/internal/bridge"
 	"github.com/Liam0205/wangshu/internal/bytecode"
 	jitamd64 "github.com/Liam0205/wangshu/internal/gibbous/jit/amd64"
+	"github.com/Liam0205/wangshu/internal/value"
 )
 
 // p4Code 实装 `bridge.GibbousCode` 接口(`p2-bridge/05-p3-p4-interface.md`
@@ -243,6 +244,18 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 			if st != 0 {
 				return st
 			}
+		case uint8(bytecode.SETUPVAL):
+			// upvalue 写:host.SetUpvalFromReg(base, a, b)——读 R(a) + upvalSet
+			// 写 upvalue。永不 raise。setter 形态。
+			c.host.SetUpvalFromReg(int32(base), int32(c.retA), int32(c.preludeArg))
+		case uint8(bytecode.NOT):
+			if c.retB < 2 {
+				break
+			}
+			// 逻辑非:pure Truthy(无 metamethod、无 raise)。Run 直接经
+			// host.GetReg 读 R(B) + SetReg(A, BoolValue(!Truthy(...)))。
+			v := value.Value(c.host.GetReg(int32(c.preludeArg)))
+			c.host.SetReg(int32(c.retA), uint64(value.BoolValue(!value.Truthy(v))))
 		}
 	}
 

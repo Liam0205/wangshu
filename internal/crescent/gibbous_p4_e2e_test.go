@@ -577,3 +577,72 @@ return myglobal`
 		t.Errorf("myglobal = %v, want 42(末次 f(42) 写入)", got)
 	}
 }
+
+// TestPJ7_NotForm_E2E_OK 真实路径下 `function(x) return not x end` 经 P4 升层。
+func TestPJ7_NotForm_E2E_OK(t *testing.T) {
+	src := `
+local function f(x) return not x end
+for i = 1, 100 do f(i) end
+return f(nil), f(1), f(false), f("a")`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	beforeHits := st.doReturnHits
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 4)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	hits := st.doReturnHits - beforeHits
+	promoCount := st.bridge.PromotionCount()
+	t.Logf("NOT:PromotionCount=%d, doReturnHits=%d", promoCount, hits)
+	if promoCount == 0 {
+		t.Fatal("NOT:PromotionCount=0")
+	}
+	if hits == 0 {
+		t.Fatal("NOT:doReturnHits=0 → P4 路径未真触达")
+	}
+	if len(rets) != 4 {
+		t.Fatalf("rets 长度 = %d, want 4", len(rets))
+	}
+	expects := []value.Value{value.True, value.False, value.True, value.False}
+	names := []string{"nil", "1", "false", "\"a\""}
+	for i, e := range expects {
+		if value.Value(rets[i]) != e {
+			t.Errorf("not %s = 0x%x, want 0x%x", names[i], rets[i], uint64(e))
+		}
+	}
+}
+
+// TestPJ7_SetUpval_E2E_OK 真实路径下 SETUPVAL(`function(v) upv = v end`,
+// 其中 upv 是外层 local)经 P4 升层后写入 upvalue。
+func TestPJ7_SetUpval_E2E_OK(t *testing.T) {
+	src := `
+local upv = 0
+local function setter(v) upv = v end
+for i = 1, 100 do setter(i) end  -- 升层 + 写 upv 100 次
+setter(42)
+return upv`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	beforeHits := st.doReturnHits
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	hits := st.doReturnHits - beforeHits
+	promoCount := st.bridge.PromotionCount()
+	t.Logf("SETUPVAL:PromotionCount=%d, doReturnHits=%d", promoCount, hits)
+	if promoCount == 0 {
+		t.Fatal("SETUPVAL:PromotionCount=0")
+	}
+	if hits == 0 {
+		t.Fatal("SETUPVAL:doReturnHits=0 → P4 路径未真触达")
+	}
+	if len(rets) != 1 || !value.IsNumber(value.Value(rets[0])) {
+		t.Fatalf("rets = %v, want [number]", rets)
+	}
+	if got := value.AsNumber(value.Value(rets[0])); got != 42 {
+		t.Errorf("upv = %v, want 42(末次 setter(42) 写入)", got)
+	}
+}

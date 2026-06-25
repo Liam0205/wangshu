@@ -431,6 +431,64 @@ func analyzeShape(proto *bytecode.Proto) shapeInfo {
 			preludeC:   uint16(stC),
 		}
 
+	case bytecode.SETUPVAL:
+		// SETUPVAL A B + RETURN A 1:`function(v) upval = v end` 形态,
+		// setter 0 返回值。host.SetUpvalFromReg 经 reg(A) 读源 + upvalSet
+		// 写 upvalue。永不 raise。
+		ret := proto.Code[1]
+		if bytecode.Op(ret) != bytecode.RETURN {
+			return shapeInfo{}
+		}
+		retB := bytecode.B(ret)
+		if retB != 1 { // setter 必须 0 返回值
+			return shapeInfo{}
+		}
+		suvA := bytecode.A(first)
+		suvB := bytecode.B(first)
+		// A 是源寄存器 [0,254];B 是 upvalue 索引 [0,255]
+		if suvA > 254 || suvB > 255 {
+			return shapeInfo{}
+		}
+		return shapeInfo{
+			ok:         true,
+			retA:       uint8(suvA),
+			retB:       uint8(retB),
+			retPC:      1,
+			preludeOp:  uint8(bytecode.SETUPVAL),
+			preludeArg: uint32(suvB),
+		}
+
+	case bytecode.NOT:
+		// NOT A B + RETURN A 2:`function(x) return not x end` 形态。
+		// 纯 Truthy 逻辑(无 metamethod、无 raise),Run 直接经 host.GetReg
+		// 读 R(B) + SetReg(A, BoolValue(!Truthy(...))),不调 host helper
+		// 完成算术(GetReg/SetReg 走 host 接口是因为 jit 不能直接访问 arena)。
+		ret := proto.Code[1]
+		if bytecode.Op(ret) != bytecode.RETURN {
+			return shapeInfo{}
+		}
+		retA := bytecode.A(ret)
+		retB := bytecode.B(ret)
+		if retB != 2 {
+			return shapeInfo{}
+		}
+		notA := bytecode.A(first)
+		notB := bytecode.B(first)
+		if notA != retA {
+			return shapeInfo{}
+		}
+		if notB > 254 {
+			return shapeInfo{}
+		}
+		return shapeInfo{
+			ok:         true,
+			retA:       uint8(retA),
+			retB:       uint8(retB),
+			retPC:      1,
+			preludeOp:  uint8(bytecode.NOT),
+			preludeArg: uint32(notB),
+		}
+
 	case bytecode.LOADK, bytecode.LOADBOOL, bytecode.LOADNIL:
 		ret := proto.Code[1]
 		if bytecode.Op(ret) != bytecode.RETURN {

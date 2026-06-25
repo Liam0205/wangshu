@@ -30,6 +30,24 @@ type P4HostState interface {
 	// 经 SetReg 写 R(retA)。
 	GetUpval(base int32, b int32) uint64
 
+	// SetUpvalFromReg 写当前 closure 的 upvalue b 为 R(a)(execute.go SETUPVAL
+	// 段同款语义)。本接口把「读 R(a) + 写 upvalue」打成原子操作,避免引入
+	// GetReg 通用接口(同等覆盖 NOT/SETUPVAL 等需要读寄存器再写 host 的场景)。
+	//
+	// 与 gibbous_host.go::State.SetUpval(base, b, val) 不同:那个签名要求
+	// caller 先有 val,但 jit/P4HostState 无 GetReg 接口读 R(a)——故包装
+	// 一层「带 reg 读」的对偶 helper。永不 raise。
+	//
+	// 用例:P4 SETUPVAL A B + RETURN A 1 形态(`function(v) upval = v end`)。
+	SetUpvalFromReg(base int32, a int32, b int32)
+
+	// GetReg 读取当前帧 R(idx) 槽位的 NaN-box u64(P4 PJ7 内 Run 完成 host
+	// 依赖运算需要读寄存器的场景)。与 SetReg 对偶。
+	//
+	// 用例:NOT A B + RETURN A 2(`function(x) return not x end`)——Run 需
+	// 读 R(B) 真假性 + SetReg(A, BoolValue(!Truthy(...)))。
+	GetReg(idx int32) uint64
+
 	// Arith 算术慢路径(ADD/SUB/MUL/DIV/MOD/POW)助手(gibbous_host.go::Arith
 	// 同款签名,与 P3 helper 复用,逐字节同构于解释器 doArith)。
 	//

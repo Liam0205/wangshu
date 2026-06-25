@@ -335,20 +335,85 @@ func TestPJ7_UnaryForm_HostRoute_Err(t *testing.T) {
 	}
 }
 
-// TestPJ7_NotForm_Rejected NOT 形态当前 P4 不接,analyzeShape 应拒
-// (preludeOp 不填,SupportsAllOpcodes 返 false)。承 analyzeShape NOT
-// 注释:GetReg 接口未实装,NOT 留 P3 / 解释器处理。本测断言 NOT 形态
-// 经 SupportsAllOpcodes 是 false——防回归。
-func TestPJ7_NotForm_Rejected(t *testing.T) {
-	c := New()
+// TestPJ7_NotForm_HostRoute_OK NOT A B + RETURN A 2 形态——本批 GetReg
+// 接口实装后,NOT 路径走 host.GetReg + value.Truthy + SetReg。
+//
+// **历史**:之前的 TestPJ7_NotForm_Rejected 防回归测试断言「NOT 应被拒」
+// (无 GetReg 接口),本批已加 GetReg → NOT 已可接入,改测「OK 路径」。
+func TestPJ7_NotForm_HostRoute_OK(t *testing.T) {
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
-			bytecode.EncodeABC(bytecode.NOT, 1, 0, 0),
+			bytecode.EncodeABC(bytecode.NOT, 1, 0, 0), // NOT 1 0
 			bytecode.EncodeABC(bytecode.RETURN, 1, 2, 0),
 		},
 	}
-	if c.SupportsAllOpcodes(proto) {
-		t.Error("NOT 形态当前 P4 不接(GetReg 接口未实装),SupportsAllOpcodes 应返 false")
+	c := New()
+	host := newMockP4Host()
+	c.SetHostState(host)
+	// 预设 R(0) = number 0(Truthy=true → NOT = false)
+	host.regs[0] = uint64(value.NumberValue(0))
+	gc, err := c.Compile(proto, nil)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	defer tryDispose(t, gc)
+	stack := make([]uint64, 4)
+	if status := gc.Run(stack, 0); status != 0 {
+		t.Errorf("Run status = %d, want 0", status)
+	}
+	got, ok := host.regs[1]
+	if !ok {
+		t.Fatal("NOT 形态:SetReg(1, BoolValue(!Truthy(R(0)))) 应被调用")
+	}
+	if value.Value(got) != value.False {
+		t.Errorf("R(1) = 0x%x, want False(=0x%x;NOT number 0 = false 因 0 在 Lua 为 truthy)",
+			got, uint64(value.False))
+	}
+	// 再测 nil(Truthy=false → NOT = true)
+	host = newMockP4Host()
+	c.SetHostState(host)
+	host.regs[0] = uint64(value.Nil)
+	gc2, err := c.Compile(proto, nil)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	defer tryDispose(t, gc2)
+	if status := gc2.Run(stack, 0); status != 0 {
+		t.Errorf("Run status = %d, want 0", status)
+	}
+	if value.Value(host.regs[1]) != value.True {
+		t.Errorf("R(1) = 0x%x, want True(NOT nil = true)", host.regs[1])
+	}
+}
+
+// TestPJ7_SetUpvalForm_HostRoute_OK SETUPVAL A B + RETURN A 1 setter 形态。
+func TestPJ7_SetUpvalForm_HostRoute_OK(t *testing.T) {
+	proto := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABC(bytecode.SETUPVAL, 0, 1, 0), // SETUPVAL A=0 B=1
+			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
+		},
+	}
+	c := New()
+	host := newMockP4Host()
+	c.SetHostState(host)
+	gc, err := c.Compile(proto, nil)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	defer tryDispose(t, gc)
+	stack := make([]uint64, 4)
+	if status := gc.Run(stack, 0); status != 0 {
+		t.Errorf("Run status = %d, want 0", status)
+	}
+	if host.setUpvalCalls != 1 {
+		t.Errorf("SetUpvalFromReg 应调 1 次, got %d", host.setUpvalCalls)
+	}
+	if host.lastSetUpvalA != 0 || host.lastSetUpvalB != 1 {
+		t.Errorf("SetUpvalFromReg AB = (%d,%d), want (0,1)", host.lastSetUpvalA, host.lastSetUpvalB)
+	}
+	if host.doReturnCalls != 1 {
+		t.Errorf("DoReturn 应调 1 次, got %d", host.doReturnCalls)
 	}
 }
 
