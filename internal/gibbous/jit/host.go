@@ -29,6 +29,19 @@ type P4HostState interface {
 	//
 	// 实装由 crescent.State 提供(gibbous_host.go::DoReturn,与 P3 共用)。
 	DoReturn(base int32, pc int32, a int32, b int32) int32
+
+	// SetReg 直接写当前帧的 R(idx) 槽位为 val(NaN-box u64)。
+	//
+	// **PJ7 P4 简化形态专用**:p4Code.Run 在 mmap 段执行后,需要把 RAX(NaN-box
+	// 值)写到 R(retA) 槽位(arena 值栈,与 enterGibbous 给的 stack 参数无关——
+	// P3 的 stack 参数是 wazero CallWithStack 1 槽 buffer 协议,与 P4 不兼容)。
+	//
+	// 参数:
+	//   - idx:寄存器号(R(idx))
+	//   - val:NaN-box u64 值
+	//
+	// 实装由 crescent.State 提供(经 thread.cur.base + idx 算 stack 位置写)。
+	SetReg(idx int32, val uint64)
 }
 
 // SetHostState 把 host(crescent)抽象注入本 Compiler。
@@ -42,12 +55,4 @@ type P4HostState interface {
 // 友好,承 design-claims-vs-codebase-physics 纪律——每发现一次 race 修一次)。
 func (c *Compiler) SetHostState(h P4HostState) {
 	c.hostState = h
-}
-
-// SetP4HostState 是 PJ7 早期 API,改为 per-Compiler 模式后保留作 no-op 兼容
-// (避免破坏调用方)。新代码应用 Compiler.SetHostState 替代。
-//
-// Deprecated: 用 (*Compiler).SetHostState 替代。
-func SetP4HostState(h P4HostState) {
-	_ = h // no-op,保留作 API 兼容
 }

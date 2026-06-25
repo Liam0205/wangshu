@@ -244,12 +244,8 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 	}, nil
 }
 
-// ErrCompileNotImplemented:PJ0 占位错误——P4 后端尚未实装(已被 PJ2 真接入
-// 版淘汰,但保留作 PJ2 范围外形态的兜底兼容)。
-var ErrCompileNotImplemented = errors.New("internal/gibbous/jit: PJ0 skeleton — Compile not implemented")
-
-// ErrCompileUnsupportedShape:PJ2 阶段 Compile 拒非「LOADK A K(0); RETURN A 1」
-// 形态——SupportsAllOpcodes 全 false 已在 F7 拦下绝大多数情况;本错误是
-// PJ2 内部 prove-the-path 单测路径绕过 SupportsAllOpcodes 直调 Compile 时
-// 的形态检查兜底。
-var ErrCompileUnsupportedShape = errors.New("internal/gibbous/jit: PJ2 only supports LOADK + RETURN single-BB shape")
+// ErrCompileUnsupportedShape:Compile 拒绝 Proto 形态不在 PJ7 真接入子集的
+// 兜底返错——SupportsAllOpcodes 已在 F7 拦下绝大多数,本错误是 PJ2 内部
+// prove-the-path 单测路径绕过 SupportsAllOpcodes 直调 Compile 时的二次形态
+// 检查兜底。bridge 收到本错误把该 Proto 标 TierStuck(永久解释,不重试)。
+var ErrCompileUnsupportedShape = errors.New("internal/gibbous/jit: P4 PJ7 only supports single-BB shape (LOADK / LOADBOOL / LOADNIL + RETURN A 1 / RETURN A 1)")

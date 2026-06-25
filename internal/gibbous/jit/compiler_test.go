@@ -27,6 +27,48 @@ func tryDispose(t *testing.T, gc bridge.GibbousCode) {
 	}
 }
 
+// mockP4Host 是 P4HostState 的测试替身——记录 SetReg / DoReturn 调用,供
+// 单测断言 Run 路径写值正确。
+//
+// PJ7 真接入路径(p4Code.Run)经 host.SetReg 写 R(retA),host.DoReturn
+// 弹帧。单测用本 mock 验证「mmap 段执行 + 拿值 + SetReg 路径走到 + 值正确」。
+type mockP4Host struct {
+	regs          map[int32]uint64 // 写入的 R(idx) → val
+	doReturnCalls int
+	lastReturnPC  int32
+	lastReturnA   int32
+	lastReturnB   int32
+}
+
+func newMockP4Host() *mockP4Host {
+	return &mockP4Host{regs: make(map[int32]uint64)}
+}
+
+func (m *mockP4Host) DoReturn(base int32, pc int32, a int32, b int32) int32 {
+	m.doReturnCalls++
+	m.lastReturnPC = pc
+	m.lastReturnA = a
+	m.lastReturnB = b
+	return 0
+}
+
+func (m *mockP4Host) SetReg(idx int32, val uint64) {
+	m.regs[idx] = val
+}
+
+// compileWithHost 构造 *Compiler 注入 mock host 后调 Compile。
+func compileWithHost(t *testing.T, p *bytecode.Proto) (bridge.GibbousCode, *mockP4Host) {
+	t.Helper()
+	c := New()
+	host := newMockP4Host()
+	c.SetHostState(host)
+	gc, err := c.Compile(p, nil)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	return gc, host
+}
+
 // `docs/design/p4-method-jit/00-overview.md` §4 + `06-backends.md` §6.1):
 //
 //   - SupportsAllOpcodes 全 false(supported 表初空,06 §3.8 渐进白名单纪律);
@@ -151,10 +193,7 @@ func TestPJ2_CompileLoadKReturnSucceeds(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			c := New()
 			// Proto:LOADK 0 K(0); RETURN 0 2(R(0) = K(0); return R(0))。
-			//   - LOADK A=0 Bx=0
-			//   - RETURN A=0 B=2(返回 1 个值,B-1=1 个 result)
 			proto := &bytecode.Proto{
 				Code: []bytecode.Instruction{
 					bytecode.EncodeABx(bytecode.LOADK, 0, 0),
@@ -163,25 +202,25 @@ func TestPJ2_CompileLoadKReturnSucceeds(t *testing.T) {
 				Consts:       []value.Value{tc.konst},
 				StringLitIdx: []int32{-1}, // 非字符串占位
 			}
-			gc, err := c.Compile(proto, nil)
-			if err != nil {
-				t.Fatalf("Compile failed: %v", err)
-			}
-			if gc == nil {
-				t.Fatal("Compile should return non-nil GibbousCode")
-			}
+			gc, host := compileWithHost(t, proto)
 			defer tryDispose(t, gc)
 
-			// 经真实 Run 路径执行:stack 模拟值栈;base=0 字节(R0 起 stack[0])。
+			// 经真实 Run 路径执行(host.SetReg 接收 R(retA) 值)。
 			stack := make([]uint64, 4)
 			status := gc.Run(stack, 0)
 			if status != 0 {
 				t.Errorf("Run status = %d, want 0(OK)", status)
 			}
-			// stack[0] = R(0) = K(0)(retA = 0)
-			got := value.Value(stack[0])
-			if got != tc.konst {
-				t.Errorf("R(0) after Run = 0x%016x, want 0x%016x (%v)", uint64(got), uint64(tc.konst), tc.konst)
+			// host.SetReg(0, val) 应该被调用,val == tc.konst
+			got, ok := host.regs[0]
+			if !ok {
+				t.Fatal("SetReg(0, ...) not called")
+			}
+			if value.Value(got) != tc.konst {
+				t.Errorf("SetReg(0, 0x%016x), want 0x%016x (%v)", got, uint64(tc.konst), tc.konst)
+			}
+			if host.doReturnCalls != 1 {
+				t.Errorf("DoReturn called %d times, want 1", host.doReturnCalls)
 			}
 		})
 	}
@@ -189,11 +228,9 @@ func TestPJ2_CompileLoadKReturnSucceeds(t *testing.T) {
 
 // TestPJ2_CompileLoadKReturnRetANonZero retA != 0 的形态(R(2) = K(0); return R(2))。
 //
-// 验证 retA 字段被正确传递 + Run 写到正确槽位。
+// 验证 retA 字段被正确传递 + Run 写到正确槽位(经 mock host.SetReg)。
 func TestPJ2_CompileLoadKReturnRetANonZero(t *testing.T) {
-	c := New()
 	konst := value.NumberValue(42)
-	// LOADK 2 K(0); RETURN 2 2
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
 			bytecode.EncodeABx(bytecode.LOADK, 2, 0),
@@ -202,10 +239,7 @@ func TestPJ2_CompileLoadKReturnRetANonZero(t *testing.T) {
 		Consts:       []value.Value{konst},
 		StringLitIdx: []int32{-1},
 	}
-	gc, err := c.Compile(proto, nil)
-	if err != nil {
-		t.Fatalf("Compile failed: %v", err)
-	}
+	gc, host := compileWithHost(t, proto)
 	defer tryDispose(t, gc)
 
 	stack := make([]uint64, 8)
@@ -213,24 +247,23 @@ func TestPJ2_CompileLoadKReturnRetANonZero(t *testing.T) {
 	if status != 0 {
 		t.Errorf("Run status = %d, want 0", status)
 	}
-	// retA = 2,base = 0 → stack[0/8 + 2] = stack[2]
-	got := value.Value(stack[2])
-	if got != konst {
-		t.Errorf("R(2) after Run = 0x%016x, want 0x%016x", uint64(got), uint64(konst))
+	got, ok := host.regs[2]
+	if !ok {
+		t.Fatal("SetReg(2, ...) not called")
 	}
-	// 其它槽不应被污染:stack[0] / stack[1] / stack[3] 仍是初始 0
-	// (PJ2 简化形态下 stack[0] 不被 Run 写回 status,仍是初始 0)。
-	if stack[0] != 0 || stack[1] != 0 || stack[3] != 0 {
-		t.Errorf("non-target slots should be untouched, got stack=[%v %v %v %v ...]", stack[0], stack[1], stack[2], stack[3])
+	if value.Value(got) != konst {
+		t.Errorf("SetReg(2, 0x%x), want 0x%x", got, uint64(konst))
+	}
+	if _, ok := host.regs[0]; ok {
+		t.Errorf("SetReg(0, ...) should NOT be called for retA=2")
 	}
 }
 
 // TestPJ2_CompileBaseNonZero base != 0 的形态(模拟嵌套调用帧)。
 //
-// stack[base/8 + retA] 验证 base 偏移正确——base = 16 字节(2 个 u64 槽)+
-// retA = 0 → 写到 stack[2]。
+// SetReg 接受 idx,Run 路径不再依赖 base 参数(host 经 thread.cur.base 算
+// 真实位置)。本测试验 retA 经 SetReg 传给 host 时不变。
 func TestPJ2_CompileBaseNonZero(t *testing.T) {
-	c := New()
 	konst := value.NumberValue(99)
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
@@ -240,28 +273,20 @@ func TestPJ2_CompileBaseNonZero(t *testing.T) {
 		Consts:       []value.Value{konst},
 		StringLitIdx: []int32{-1},
 	}
-	gc, err := c.Compile(proto, nil)
-	if err != nil {
-		t.Fatalf("Compile failed: %v", err)
-	}
+	gc, host := compileWithHost(t, proto)
 	defer tryDispose(t, gc)
 
 	stack := make([]uint64, 8)
-	// 在前 2 槽写一些「caller 不应被污染」的标记。
-	stack[0] = 0xdead0000
-	stack[1] = 0xdead0001
-	status := gc.Run(stack, 16) // base = 16 字节 = 2 个 u64 槽
+	status := gc.Run(stack, 16) // base = 16 字节(p4Code.Run 不再读 base 参数,SetReg 不依赖它)
 	if status != 0 {
 		t.Errorf("Run status = %d, want 0", status)
 	}
-	// retA = 0,base = 16 → stack[16/8 + 0] = stack[2]
-	got := value.Value(stack[2])
-	if got != konst {
-		t.Errorf("R(0) at base=2 after Run = 0x%016x, want 0x%016x", uint64(got), uint64(konst))
+	got, ok := host.regs[0]
+	if !ok {
+		t.Fatal("SetReg(0, ...) not called")
 	}
-	// caller 槽不应被污染
-	if stack[0] != 0xdead0000 || stack[1] != 0xdead0001 {
-		t.Errorf("caller slots polluted: stack[0]=0x%x stack[1]=0x%x", stack[0], stack[1])
+	if value.Value(got) != konst {
+		t.Errorf("SetReg(0, 0x%x), want 0x%x", got, uint64(konst))
 	}
 }
 

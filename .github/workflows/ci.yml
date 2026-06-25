@@ -35,7 +35,7 @@ jobs:
             tags: 'wangshu_p3 wangshu_profile'
             cov_name: coverage-p3.out
           - variant: p4
-            tags: 'wangshu_p4'
+            tags: 'wangshu_p4 wangshu_profile'
             cov_name: coverage-p4.out
     name: test (${{ matrix.variant }})
     steps:
@@ -72,9 +72,9 @@ jobs:
       - if: matrix.variant == 'p1'
         run: GOOS=darwin GOARCH=arm64 go build ./...
       - if: matrix.variant == 'p4'
-        run: GOOS=linux GOARCH=arm64 go build -tags wangshu_p4 ./...
+        run: GOOS=linux GOARCH=arm64 go build -tags 'wangshu_p4 wangshu_profile' ./...
       - if: matrix.variant == 'p4'
-        run: GOOS=darwin GOARCH=arm64 go build -tags wangshu_p4 ./...
+        run: GOOS=darwin GOARCH=arm64 go build -tags 'wangshu_p4 wangshu_profile' ./...
       - uses: actions/upload-artifact@v7
         with:
           name: coverage-${{ matrix.variant }}

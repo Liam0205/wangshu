@@ -93,6 +93,26 @@ func (st *State) gibCI(th *thread) *callInfo {
 	return &th.cur
 }
 
+// SetReg 直接写当前帧的 R(idx) 槽位为 val(NaN-box u64,gibbous-jit P4 PJ7
+// 简化形态专用)。
+//
+// **依赖解环**(P4HostState 接口,jit/host.go):p4Code.Run 在 mmap 段执行后,
+// 需要把 RAX(NaN-box 值)写到 R(retA) 槽位(arena 值栈本体)——不经 P3
+// CallWithStack 的 1 槽 buffer 协议(P3 stack 协议与 P4 不兼容)。
+//
+// 参数:
+//   - idx:寄存器号(R(idx),= ci.base + idx 即 thread 槽位下标)
+//   - val:NaN-box u64 值
+//
+// 实装:经 ci.base + idx 算槽位,直接 setSlot 写入。本方法语义同
+// `execute.go::SETREG`-类操作(arena 值栈直写,无 GC 屏障——因 NaN-box u64
+// 写入是原子单字)。
+func (st *State) SetReg(idx int32, val uint64) {
+	th := st.runningThread
+	ci := st.gibCI(th)
+	th.setSlot(ci.base+int(idx), value.Value(val))
+}
+
 // GetUpval 取当前 closure 的 upvalue b(execute.go GETUPVAL 段同款)。
 func (st *State) GetUpval(base int32, b int32) uint64 {
 	th := st.runningThread

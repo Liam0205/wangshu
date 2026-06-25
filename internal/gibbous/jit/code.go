@@ -92,11 +92,17 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 	rax := jitamd64.CallJITFull(c.codePage.Addr(), jitCtxAddr)
 
 	// 写 R(retA) = RAX(仅当返回值个数 >= 1,即 retB >= 2)。
-	// retB = 1 时 0 个返回值,不写 stack。
-	if c.retB >= 2 {
-		stack[uint32(c.retA)+base/8] = rax
+	// retB = 1 时 0 个返回值,不写值栈。
+	//
+	// **PJ7 真接入:经 host.SetReg 写 arena 值栈本体**——而非直接写 stack 参数
+	// (P3 的 stack 是 wazero CallWithStack 1 槽 buffer 协议,与 P4 不兼容;
+	// gibbous_host.go::gibbousStack 复用 buffer,P4 不应当作真值栈用)。
+	if c.retB >= 2 && c.host != nil {
+		c.host.SetReg(int32(c.retA), rax)
 	}
-	_ = rax // 0 返回值时 RAX 是 mmap 段 mov 进的 dummy(我们仍发了 mov+ret)
+	_ = base  // base 字节偏移在 P4 PJ7 简化形态下不直接使用(经 host.SetReg 算位置)
+	_ = stack // stack 是 P3 协议参数,P4 不读不写
+	_ = rax   // 0 返回值时 RAX 未被写入(仅作 mmap 段 dummy)
 
 	if c.host != nil {
 		c.host.DoReturn(int32(base), int32(c.retPC) /*retPC*/, int32(c.retA) /*A*/, int32(c.retB) /*B*/)
