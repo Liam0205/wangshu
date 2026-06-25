@@ -1,3 +1,5 @@
+//go:build wangshu_p4 && linux && arm64
+
 // flushcache_arm64.s —— P4 PJ8 arm64 i-cache flush(承 codepage_linux.go
 // flushICacheArm64 占位的真实装)。
 //
