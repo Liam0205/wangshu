@@ -210,3 +210,56 @@ func bytesEqual(a, b []byte) bool {
 	}
 	return true
 }
+
+// TestPJ2_MovqMemEncoding 验「mov rax, [r15+disp32]」+「mov rax, [reg+disp32]」
+// 字节级 ISA 编码。
+func TestPJ2_MovqMemEncoding(t *testing.T) {
+	// mov rax, [r15+0]:49 8B 87 00 00 00 00
+	t.Run("MovqRaxFromR15Disp_0", func(t *testing.T) {
+		var buf []byte
+		buf = EmitMovqRaxFromR15Disp(buf, 0)
+		want := []byte{0x49, 0x8B, 0x87, 0x00, 0x00, 0x00, 0x00}
+		if !bytesEqual(buf, want) {
+			t.Errorf("MOV rax,[r15+0] = %x, want %x", buf, want)
+		}
+	})
+
+	// mov rax, [r15+16]:49 8B 87 10 00 00 00
+	t.Run("MovqRaxFromR15Disp_16", func(t *testing.T) {
+		var buf []byte
+		buf = EmitMovqRaxFromR15Disp(buf, 16)
+		want := []byte{0x49, 0x8B, 0x87, 0x10, 0x00, 0x00, 0x00}
+		if !bytesEqual(buf, want) {
+			t.Errorf("MOV rax,[r15+16] = %x, want %x", buf, want)
+		}
+	})
+
+	// mov rax, [rax+0]:48 8B 80 00 00 00 00(reg=0=rax)
+	t.Run("MovqRaxFromMemReg_rax_0", func(t *testing.T) {
+		var buf []byte
+		buf = EmitMovqRaxFromMemReg(buf, 0, 0)
+		want := []byte{0x48, 0x8B, 0x80, 0x00, 0x00, 0x00, 0x00}
+		if !bytesEqual(buf, want) {
+			t.Errorf("MOV rax,[rax+0] = %x, want %x", buf, want)
+		}
+	})
+
+	// mov rax, [rcx+24]:48 8B 81 18 00 00 00
+	t.Run("MovqRaxFromMemReg_rcx_24", func(t *testing.T) {
+		var buf []byte
+		buf = EmitMovqRaxFromMemReg(buf, 1, 24)
+		want := []byte{0x48, 0x8B, 0x81, 0x18, 0x00, 0x00, 0x00}
+		if !bytesEqual(buf, want) {
+			t.Errorf("MOV rax,[rcx+24] = %x, want %x", buf, want)
+		}
+	})
+
+	t.Run("Constants", func(t *testing.T) {
+		if EncodedMovqFromR15DispLen != 7 {
+			t.Errorf("EncodedMovqFromR15DispLen = %d, want 7", EncodedMovqFromR15DispLen)
+		}
+		if EncodedMovqFromMemRegLen != 7 {
+			t.Errorf("EncodedMovqFromMemRegLen = %d, want 7", EncodedMovqFromMemRegLen)
+		}
+	})
+}

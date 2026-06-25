@@ -398,3 +398,57 @@ const EncodedMovsdMemLen = 8
 
 // EncodedSseBinopLen 是 ADDSD/SUBSD/MULSD/DIVSD xmm,xmm 字节数(4)。
 const EncodedSseBinopLen = 4
+
+// EmitMovqRaxFromR15Disp 发射「mov rax, [r15+disp32]」从 r15+disp32 加载
+// 64-bit 到 rax(指令:4C 是 REX.WR 不对,我们用 REX.B=1 base=r15;
+// 实际编码 49 8B 87 disp32 = REX.W+B 8B /0 modrm)。
+//
+// 用例:PJ2 完整投机模板——mmap 段经 r15 读 jitContext 字段
+// (arenaBase / valueStackBase / preemptFlag 等)。
+//
+// 编码:49 8B 87 disp32(7 字节)。
+//   - 49 = REX prefix(W=1 64-bit + B=1 让 rm 字段用 r15 而非 r7)
+//   - 8B = MOV r64, r/m64
+//   - 87 = ModR/M:mod=10(disp32) reg=000(rax) rm=111(r15 with REX.B)
+func EmitMovqRaxFromR15Disp(buf []byte, disp32 int32) []byte {
+	// REX.W (0x48) | REX.B (0x01) = 0x49
+	buf = append(buf, 0x49, 0x8B, 0x87)
+	buf = append(buf,
+		byte(uint32(disp32)),
+		byte(uint32(disp32)>>8),
+		byte(uint32(disp32)>>16),
+		byte(uint32(disp32)>>24))
+	return buf
+}
+
+// EmitMovqRaxFromMemReg 发射「mov rax, [reg+disp32]」从指定基址寄存器
+// 加载到 rax(用于读 valueStackBase + reg*8 的值栈槽——但需要先把
+// valueStackBase 装到某 base 寄存器)。
+//
+// 编码示例:48 8B 80+rd disp32(REX.W=1 不需 REX.B,reg<8)。
+// 仅支持低 8 寄存器(rax-rdi,reg<8)——高 8 寄存器需 REX.B 留 PJ3+。
+//
+// **注**:本原语单纯读寄存器+偏移,不做 SIB 寻址(无 [base+index*8]),
+// 故不能直接发「mov rax, [valueStackBase + reg_idx*8]」(那需要 SIB)。
+// PJ2 简化策略是把 reg_idx*8 计算放在 Go 端(emit 时算 disp32 = idx*8),
+// mmap 段只需 base+disp32 寻址。
+func EmitMovqRaxFromMemReg(buf []byte, baseReg uint8, disp32 int32) []byte {
+	if baseReg > 7 {
+		baseReg = 0
+	}
+	buf = append(buf, 0x48, 0x8B)
+	modrm := byte(0x80) | (baseReg & 0x7) // mod=10 reg=000(rax) rm=baseReg
+	buf = append(buf, modrm)
+	buf = append(buf,
+		byte(uint32(disp32)),
+		byte(uint32(disp32)>>8),
+		byte(uint32(disp32)>>16),
+		byte(uint32(disp32)>>24))
+	return buf
+}
+
+// EncodedMovqFromR15DispLen 是「mov rax, [r15+disp32]」字节数(7)。
+const EncodedMovqFromR15DispLen = 7
+
+// EncodedMovqFromMemRegLen 是「mov rax, [low_reg+disp32]」字节数(7)。
+const EncodedMovqFromMemRegLen = 7
