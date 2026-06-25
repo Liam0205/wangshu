@@ -283,7 +283,14 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 }
 
 // ErrCompileUnsupportedShape:Compile 拒绝 Proto 形态不在 PJ7 真接入子集的
-// 兜底返错——SupportsAllOpcodes 已在 F7 拦下绝大多数,本错误是 PJ2 内部
+// 兜底返错——SupportsAllOpcodes 已在 F7 拦下绝大多数,本错误是 jit 包内
 // prove-the-path 单测路径绕过 SupportsAllOpcodes 直调 Compile 时的二次形态
 // 检查兜底。bridge 收到本错误把该 Proto 标 TierStuck(永久解释,不重试)。
-var ErrCompileUnsupportedShape = errors.New("internal/gibbous/jit: P4 PJ7 only supports single-BB shape (LOADK / LOADBOOL / LOADNIL + RETURN A 1 / RETURN A 1)")
+//
+// PJ7 真接入支持形态:
+//   - 长度 1:RETURN A B(B=1 空函数 / B=2 identity 返参数)
+//   - 长度 2/3:首条 RETURN A 2(luac 优化形态)
+//   - 长度 2/3:MOVE A B + RETURN A 2(retA=B 跳过中转)
+//   - 长度 2/3:GETUPVAL A B + RETURN A 2(prelude 路径调 host.GetUpval)
+//   - 长度 2/3:LOADK/LOADBOOL/LOADNIL A ... + RETURN A 2(常量返)
+var ErrCompileUnsupportedShape = errors.New("internal/gibbous/jit: P4 PJ7 unsupported shape (expected: single RETURN A B / single-BB MOVE|GETUPVAL|LOADK|LOADBOOL|LOADNIL + RETURN A 2)")

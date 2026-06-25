@@ -74,29 +74,37 @@ func (c *p4Code) Proto() *bytecode.Proto {
 	return c.proto
 }
 
-// Run 是 crescent→gibbous 跨层入口。
+// Run 是 crescent→gibbous 跨层入口(P4 PJ7 真接入)。
 //
-// **PJ2 真接入实装**(承 jitamd64.CallJITFull):
-//  1. 经 callJITFull 跳进 mmap 段(段内只跑 mov rax, NaNBoxedConst; ret);
-//  2. 拿到 RAX = NaN-box const;
-//  3. 写到 stack[base/8 + retA] 槽位(= R(retA));
-//  4. **PJ7 真接入**:调 hostState.DoReturn 完成「按 nresults 移结果到
-//     funcIdx + 弹帧 + 恢复 caller top」——这让 enterGibbous 后栈状态
-//     等同解释器跑完该帧(承 gibbous_host.go::enterGibbous 调用契约);
-//  5. 返 0(OK)。
+// **调用契约**(承 gibbous_host.go::enterGibbous):
+//   - 入参 stack:P3 复用栈([]uint64,len ≥ 1),P4 不读不写——值栈本体经
+//     host.SetReg 操作(P3 wazero CallWithStack 1 槽 buffer 协议与 P4 不
+//     兼容,gibbous_host.go::gibbousStack 提供的 buffer 不能当真值栈用);
+//   - 入参 base:本帧 R0 字节偏移(stackSegByte + base*8),传给 host.DoReturn
+//     用于物化 ci.savedPC + nresults 处理(host 内部经 thread.cur.base 算
+//     真实槽位,与 base 字节偏移无关);
+//   - 返回 status:0=OK / 1=ERR(P4 永不返 2=DEOPT,因 PJ7 无投机 guard)。
 //
-// **PJ7 真接入路径条件**:hostState != nil(由 crescent.State.wireP4 经
-// SetP4HostState 注入)。若 hostState == nil 则跳过 step 4,Run 仍写值但
-// 不弹帧——这是 PJ2 内部 prove-the-path 单测的形态(单测不构造完整 *State,
-// 只验值正确)。
+// **执行流程**:
+//  1. callJITFull 跳进 mmap 段(段内只跑 mov rax, value; ret),拿 RAX;
+//  2. writeRetA=true(LOADK/LOADBOOL/LOADNIL):经 host.SetReg(retA, RAX)
+//     把 mmap 段算出的常量值写进 R(retA);
+//  3. preludeOp 非 0(GETUPVAL):经 host helper 取值再 SetReg(retA, val);
+//  4. host.DoReturn(base, retPC, retA, retB):按 nresults 移结果到 funcIdx
+//     + 弹本帧 CallInfo + 恢复 caller top。
 //
-// 入参:
-//   - stack:复用栈([]uint64),len ≥ 1;
-//   - base:本帧 R0 在共见 linear memory 的字节偏移(= stackSegByte +
-//     base*8);P4 PJ2 简化形态下 stack 起点 = arena Go 堆 backing,base 经
-//     base/8 即 R0 的 uint64 槽下标。
+// **真接入路径条件**:hostState != nil(由 wireP4 经 *Compiler.SetHostState
+// 注入)。host==nil 仅在 jit 包内 prove-the-path 单测路径(单测不构造完整
+// *State,只验值正确路径走到)。bridge 主路径的 wireP4 必经 SetHostState
+// 注入,Run 必经 host.DoReturn 弹帧。
 //
-// 返回 status:0=OK / 1=ERR(P4 永不返 2=DEOPT,因 PJ2 不引入投机 guard)。
+// **PJ7 真接入子集**(承 analyzeShape):
+//   - 长度 1 RETURN A B(空函数 / identity 形态)
+//   - LOADK/LOADBOOL/LOADNIL + RETURN A 2(常量返,writeRetA=true)
+//   - 首条 RETURN A 2(luac 优化形态:identity 函数)
+//   - MOVE A B + RETURN A 2(retA=B 跳过中转)
+//   - GETUPVAL A B + RETURN A 2(preludeOp=GETUPVAL)
+//   - 长度 3 luac 主 chunk 尾部冗余(LOADK + RETURN + RETURN dead)
 func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 	if c.codePage == nil || c.jitCtx == nil {
 		stack[0] = 1
@@ -106,29 +114,25 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 	jitCtxAddr := jitContextAddr(c.jitCtx)
 	rax := jitamd64.CallJITFull(c.codePage.Addr(), jitCtxAddr)
 
-	// 写 R(retA) = RAX(仅当 writeRetA = true 且返回值个数 >= 1)。
-	// writeRetA = false 时(首条 RETURN A 形态)R(retA) 已是参数值,不覆盖。
+	// 写 R(retA) = RAX(仅当 writeRetA=true 且 retB ≥ 2)。
 	if c.writeRetA && c.retB >= 2 && c.host != nil {
 		c.host.SetReg(int32(c.retA), rax)
 	}
 
-	// **PJ7 prelude opcode 处理**(GETUPVAL 等 host 调用形态):
+	// PJ7 prelude opcode 处理(GETUPVAL 等 host 调用形态):
 	// mmap 段不调 host(避免完整 trampoline 复杂度),改在 Go 端 Run 内调。
 	if c.preludeOp != 0 && c.host != nil && c.retB >= 2 {
 		switch c.preludeOp {
-		case 4 /* bytecode.GETUPVAL */ :
-			// GETUPVAL retA preludeArg:R(retA) = upval[preludeArg]
+		case uint8(bytecode.GETUPVAL):
 			val := c.host.GetUpval(int32(base), int32(c.preludeArg))
 			c.host.SetReg(int32(c.retA), val)
 		}
 	}
 
-	_ = base
-	_ = stack
-	_ = rax
+	_ = stack // P3 协议参数,P4 不读不写
 
 	if c.host != nil {
-		c.host.DoReturn(int32(base), int32(c.retPC) /*retPC*/, int32(c.retA) /*A*/, int32(c.retB) /*B*/)
+		c.host.DoReturn(int32(base), int32(c.retPC), int32(c.retA), int32(c.retB))
 	}
 
 	return 0

@@ -120,7 +120,7 @@ func TestPJ7_SupportsAllOpcodesGate(t *testing.T) {
 			p:    &bytecode.Proto{Code: []bytecode.Instruction{}},
 		},
 		{
-			name: "MOVE+RETURN",
+			name: "MOVE+RETURN A 不一致 + B=1(MOVE 形态需 A 一致 + B=2)",
 			p: &bytecode.Proto{
 				Code: []bytecode.Instruction{
 					bytecode.EncodeABC(bytecode.MOVE, 1, 0, 0),
@@ -324,7 +324,7 @@ func TestPJ2_CompileRejectsNonShape(t *testing.T) {
 			},
 		},
 		{
-			name: "MOVE+RETURN(MOVE 不在 PJ2 范围)",
+			name: "MOVE+RETURN A 不一致 + B=1(MOVE 形态需 A 一致 + B=2,本 case 双重不命中)",
 			p: &bytecode.Proto{
 				Code: []bytecode.Instruction{
 					bytecode.EncodeABC(bytecode.MOVE, 1, 0, 0),
