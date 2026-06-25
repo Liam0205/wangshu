@@ -66,6 +66,13 @@ type mockP4Host struct {
 	setUpvalCalls int
 	lastSetUpvalA int32
 	lastSetUpvalB int32
+	// Compare 调用记录:
+	cmpCalls  int
+	lastCmpOp int32
+	lastCmpB  int32
+	lastCmpC  int32
+	cmpResult bool
+	cmpErr    bool
 }
 
 func newMockP4Host() *mockP4Host {
@@ -219,6 +226,24 @@ func (m *mockP4Host) DoSetGlobal(base, pc, a, bx int32) int32 {
 	m.lastTableA = a
 	m.lastTableB = bx
 	return m.tableRetCode
+}
+
+// Compare 模拟 host.Compare:返 cmpResult|cmpErr (packed bit0=result /
+// bit1=err),mock 用 cmpResult/cmpErr 字段单独控制。
+func (m *mockP4Host) Compare(base, pc, op, b, c int32) int32 {
+	_ = base
+	_ = pc
+	m.cmpCalls++
+	m.lastCmpOp = op
+	m.lastCmpB = b
+	m.lastCmpC = c
+	if m.cmpErr {
+		return 2
+	}
+	if m.cmpResult {
+		return 1
+	}
+	return 0
 }
 
 // compileWithHost 构造 *Compiler 注入 mock host 后调 Compile。

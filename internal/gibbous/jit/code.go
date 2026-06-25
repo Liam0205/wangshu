@@ -74,6 +74,10 @@ type p4Code struct {
 	// preludeC 是算术族 prelude 的 C 字段(RK 编码 0-511)。GETUPVAL 形态不用。
 	preludeC uint16
 
+	// cmpA 是比较折叠形态(EQ/LT/LE)的 A 字段(0 或 1,用于折成
+	// `BoolValue(packed.bit0 == cmpA)`)。其它形态不用。
+	cmpA uint8
+
 	// host 是注入的 P4HostState(从 *Compiler 拷贝):per-p4Code 持有,无并发
 	// write(只在 Compile 时写一次,Run 时只读)——V18 -race 友好。
 	host P4HostState
@@ -256,6 +260,30 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 			// host.GetReg 读 R(B) + SetReg(A, BoolValue(!Truthy(...)))。
 			v := value.Value(c.host.GetReg(int32(c.preludeArg)))
 			c.host.SetReg(int32(c.retA), uint64(value.BoolValue(!value.Truthy(v))))
+		case uint8(bytecode.EQ), uint8(bytecode.LT), uint8(bytecode.LE):
+			if c.retB < 2 {
+				break
+			}
+			// 比较折叠形态:6-op 模板 EQ/LT/LE + JMP + LOADBOOL × 2 + RETURN
+			// (+ dead RETURN) 等价 `R(retA) = BoolValue(cmp == (cmpA==1))`。
+			// host.Compare 返 packed:bit0=结果 / bit1=错误标志。
+			//
+			// **pc 实参**:此形态 retPC=4(RETURN 在 pc 4),preludePC=3 是
+			// 错——比较 op 实际在 pc 0。直接传 0 用作 preludePC(行号/IC
+			// 槽锚定到比较 op 自身)。
+			packed := c.host.Compare(int32(base), 0, int32(c.preludeOp),
+				int32(c.preludeArg), int32(c.preludeC))
+			if packed&2 != 0 {
+				// bit1 = ERR pending(raiseGibbous 已置)
+				return 1
+			}
+			cmpResult := packed & 1 // bit0
+			// 折叠:结果与 cmpA 匹配则 true(luac 的 LOADBOOL 序列等价)。
+			boolVal := value.False
+			if cmpResult == int32(c.cmpA) {
+				boolVal = value.True
+			}
+			c.host.SetReg(int32(c.retA), uint64(boolVal))
 		}
 	}
 

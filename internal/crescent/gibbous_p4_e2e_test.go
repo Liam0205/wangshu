@@ -646,3 +646,76 @@ return upv`
 		t.Errorf("upv = %v, want 42(末次 setter(42) 写入)", got)
 	}
 }
+
+// TestPJ7_CompareForm_E2E_OK 真实路径下 EQ/LT/LE 比较折叠形态
+// (`function(x) return x == 1 end`)经 P4 升层 byte-equal 解释器。
+//
+// luac 编码 6 op:EQ + JMP + LOADBOOL × 2 + RETURN + dead RETURN。
+// P4 把整段折成「调 host.Compare 拿 packed,与 cmpA 比较折成 BoolValue」。
+func TestPJ7_CompareForm_E2E_OK(t *testing.T) {
+	cases := []struct {
+		name   string
+		op     string
+		x      float64
+		expect value.Value
+	}{
+		{"EQ true", "==", 1, value.True},
+		{"EQ false", "==", 2, value.False},
+		{"LT true", "<", 0, value.True},
+		{"LT false", "<", 1, value.False},
+		{"LE true equal", "<=", 1, value.True},
+		{"LE true less", "<=", 0, value.True},
+		{"LE false", "<=", 2, value.False},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := fmt.Sprintf(
+				"local function f(x) return x %s 1 end\n"+
+					"for i = 1, 100 do f(%g) end\n"+
+					"return f(%g)",
+				tc.op, tc.x, tc.x,
+			)
+			st, mainCl := loadFnP4(t, src)
+			st.bridge.SetForceAllPromote(true)
+
+			beforeHits := st.doReturnHits
+			rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+			if err != nil {
+				t.Fatalf("run: %v", err)
+			}
+			hits := st.doReturnHits - beforeHits
+			promoCount := st.bridge.PromotionCount()
+			t.Logf("%s:PromotionCount=%d, doReturnHits=%d", tc.name, promoCount, hits)
+			if promoCount == 0 {
+				t.Fatalf("%s:PromotionCount=0", tc.name)
+			}
+			if hits == 0 {
+				t.Fatalf("%s:doReturnHits=0 → P4 路径未真触达", tc.name)
+			}
+			if len(rets) != 1 {
+				t.Fatalf("%s:rets 长度 = %d, want 1", tc.name, len(rets))
+			}
+			if value.Value(rets[0]) != tc.expect {
+				t.Errorf("%s:f(%v) %s 1 = 0x%x, want 0x%x",
+					tc.name, tc.x, tc.op, rets[0], uint64(tc.expect))
+			}
+		})
+	}
+}
+
+// TestPJ7_CompareForm_E2E_Err 验比较错误路径(`f(nil)` 触发 attempt to
+// compare nil with number)。
+func TestPJ7_CompareForm_E2E_Err(t *testing.T) {
+	src := `
+local function f(x) return x < 1 end
+for i = 1, 100 do f(i) end  -- 先升层
+return f(nil)  -- 触发 attempt to compare`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	_, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err == nil {
+		t.Fatal("Compare on nil 应 raise,但 Call 返回 nil err")
+	}
+	t.Logf("PJ7 Compare ERR 路径正确冒泡:err = %v", err)
+}

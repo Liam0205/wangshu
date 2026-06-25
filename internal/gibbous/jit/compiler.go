@@ -81,6 +81,108 @@ type shapeInfo struct {
 	preludeOp  uint8  // RETURN 前 prelude opcode(0=无,GETUPVAL=4 / ADD=12 / SUB=13 / GETGLOBAL=5 / SETGLOBAL=7 / SETTABLE=9 等)
 	preludeArg uint32 // prelude opcode 的 B 字段(GETUPVAL/UNM/LEN 是寄存器号 0-255;算术族 B 是 RK 0-511;NEWTABLE B 是 Fb 0-255;GETGLOBAL/SETGLOBAL 是 Bx 0-262143,需 18-bit)
 	preludeC   uint16 // 算术族 / 表族 prelude 的 C 字段——可为 RK(常量含 256 偏移),0-511
+	cmpA       uint8  // 比较折叠形态:EQ/LT/LE 的 A 字段(0=结果取反 / 1=直接取结果,用于折成 BoolValue(packed.bit0 == cmpA))
+}
+
+// analyzeCompareForm 识别 EQ/LT/LE + JMP + LOADBOOL + LOADBOOL + RETURN
+// (+ dead RETURN)折叠形态(`function(x) return x == 1 end` 类)。
+//
+// luac 编码(以 EQ 为例):
+//
+//	[0] EQ        A=cmpA B C    (cmpA=1:跳过下一条当 R(B)==RK(C);cmpA=0:反之)
+//	[1] JMP       A=0 sBx=1     (跳到 LOADBOOL true,即 [3])
+//	[2] LOADBOOL  A=retA B=0 C=1 (false + 跳过下一条;不到此处则下一条跑)
+//	[3] LOADBOOL  A=retA B=1 C=0 (true)
+//	[4] RETURN    A=retA B=2
+//	[5] RETURN    A=0 B=1       (dead,可选尾部冗余)
+//
+// 等价语义:`R(retA) = BoolValue(cmp(B,C) == (cmpA==1))`(packed bit0 与
+// cmpA 比较,值相等即返回 true)。Run 路径调 host.Compare(B, C) 拿
+// packed 后,折成 BoolValue 经 SetReg 写 R(retA)。
+//
+// 支持 EQ(23)/LT(24)/LE(25) 三个比较 op。
+func analyzeCompareForm(proto *bytecode.Proto) (shapeInfo, bool) {
+	if len(proto.Code) != 5 && len(proto.Code) != 6 {
+		return shapeInfo{}, false
+	}
+
+	cmp := proto.Code[0]
+	jmp := proto.Code[1]
+	lbFalse := proto.Code[2]
+	lbTrue := proto.Code[3]
+	ret := proto.Code[4]
+
+	// op 0:EQ/LT/LE
+	cmpOp := bytecode.Op(cmp)
+	if cmpOp != bytecode.EQ && cmpOp != bytecode.LT && cmpOp != bytecode.LE {
+		return shapeInfo{}, false
+	}
+	cmpA := bytecode.A(cmp)
+	cmpB := bytecode.B(cmp)
+	cmpC := bytecode.C(cmp)
+	if cmpA != 0 && cmpA != 1 {
+		return shapeInfo{}, false
+	}
+	if cmpB > 511 || cmpC > 511 {
+		return shapeInfo{}, false
+	}
+
+	// op 1:JMP sBx=1(跳过下一条)
+	if bytecode.Op(jmp) != bytecode.JMP {
+		return shapeInfo{}, false
+	}
+	if bytecode.SBx(jmp) != 1 {
+		return shapeInfo{}, false
+	}
+
+	// op 2:LOADBOOL A=retA B=0 C=1(false + 跳过下一条)
+	if bytecode.Op(lbFalse) != bytecode.LOADBOOL {
+		return shapeInfo{}, false
+	}
+	lbFalseA := bytecode.A(lbFalse)
+	if bytecode.B(lbFalse) != 0 || bytecode.C(lbFalse) != 1 {
+		return shapeInfo{}, false
+	}
+
+	// op 3:LOADBOOL A=retA B=1 C=0(true)
+	if bytecode.Op(lbTrue) != bytecode.LOADBOOL {
+		return shapeInfo{}, false
+	}
+	lbTrueA := bytecode.A(lbTrue)
+	if lbTrueA != lbFalseA {
+		return shapeInfo{}, false
+	}
+	if bytecode.B(lbTrue) != 1 || bytecode.C(lbTrue) != 0 {
+		return shapeInfo{}, false
+	}
+
+	// op 4:RETURN A=retA B=2
+	if bytecode.Op(ret) != bytecode.RETURN {
+		return shapeInfo{}, false
+	}
+	retA := bytecode.A(ret)
+	retB := bytecode.B(ret)
+	if retA != lbTrueA || retB != 2 {
+		return shapeInfo{}, false
+	}
+
+	// op 5:可选 dead RETURN(B=1)
+	if len(proto.Code) == 6 {
+		if bytecode.Op(proto.Code[5]) != bytecode.RETURN {
+			return shapeInfo{}, false
+		}
+	}
+
+	return shapeInfo{
+		ok:         true,
+		retA:       uint8(retA),
+		retB:       uint8(retB),
+		retPC:      4, // RETURN 在 pc 4
+		preludeOp:  uint8(cmpOp),
+		preludeArg: uint32(cmpB),
+		preludeC:   uint16(cmpC),
+		cmpA:       uint8(cmpA),
+	}, true
 }
 
 // analyzeShape 识别支持的「单值产生 + RETURN A 1」形态。
@@ -122,6 +224,10 @@ func analyzeShape(proto *bytecode.Proto) shapeInfo {
 
 	// 形态 1/2:长度 2 或 3
 	if len(proto.Code) != 2 && len(proto.Code) != 3 {
+		// 长度 5/6:可能是比较折叠形态 EQ/LT/LE+JMP+LOADBOOL+LOADBOOL+RETURN(+RETURN)
+		if cmp, ok := analyzeCompareForm(proto); ok {
+			return cmp
+		}
 		return shapeInfo{}
 	}
 
@@ -602,6 +708,7 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 		preludeOp:  info.preludeOp,
 		preludeArg: info.preludeArg,
 		preludeC:   info.preludeC,
+		cmpA:       info.cmpA,
 		host:       c.hostState,
 	}, nil
 }

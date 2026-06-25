@@ -128,6 +128,20 @@ type P4HostState interface {
 	//
 	// 返回:0=OK / 1=ERR。用例:P4 SETGLOBAL A Bx 形态(setter retB=1)。
 	DoSetGlobal(base int32, pc int32, a int32, bx int32) int32
+
+	// Compare 处理 EQ/LT/LE 比较助手(gibbous_host.go::Compare 同款签名,
+	// 经 doCompare 复刻解释器 EQ/LT/LE 段:string 比较 / __lt/__le 元方法)。
+	//
+	// 参数:base/pc 同 Arith;op = bytecode.OpCode(EQ=23/LT=24/LE=25);
+	// b/c = RK 寄存器 / 常量索引(B/C 字段直传)。
+	//
+	// 返回:packed - bit0=比较结果(0=false / 1=true), bit1=错误标志
+	// (2=ERR pending,enterGibbous 取走冒泡)。
+	//
+	// 用例:P4 EQ/LT/LE + JMP + LOADBOOL×2 + RETURN 折叠形态
+	// (`function(x) return x == 1 end` 类——经 packed bit0 vs cmpA 折成
+	// BoolValue 直接写 R(A))。
+	Compare(base int32, pc int32, op int32, b int32, c int32) int32
 }
 
 // SetHostState 把 host(crescent)抽象注入本 Compiler。
