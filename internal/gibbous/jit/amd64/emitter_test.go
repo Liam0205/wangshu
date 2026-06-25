@@ -263,3 +263,55 @@ func TestPJ2_MovqMemEncoding(t *testing.T) {
 		}
 	})
 }
+
+// TestPJ2_StoreAndJccEncoding 验存 + 比较 + 全档 jcc 字节级编码。
+func TestPJ2_StoreAndJccEncoding(t *testing.T) {
+	t.Run("MovqMemRegFromRax_rax_0", func(t *testing.T) {
+		var buf []byte
+		buf = EmitMovqMemRegFromRax(buf, 0, 0)
+		want := []byte{0x48, 0x89, 0x80, 0x00, 0x00, 0x00, 0x00}
+		if !bytesEqual(buf, want) {
+			t.Errorf("MOV [rax+0],rax = %x, want %x", buf, want)
+		}
+	})
+	t.Run("UcomisdXmmXmm_xmm0_xmm1", func(t *testing.T) {
+		var buf []byte
+		buf = EmitUcomisdXmmXmm(buf, 0, 1)
+		want := []byte{0x66, 0x0F, 0x2E, 0xC1}
+		if !bytesEqual(buf, want) {
+			t.Errorf("UCOMISD xmm0,xmm1 = %x, want %x", buf, want)
+		}
+	})
+	cases := []struct {
+		name string
+		emit func([]byte, int32) []byte
+		op   byte
+	}{
+		{"Je", EmitJeRel32, 0x84},
+		{"Jne", EmitJneRel32, 0x85},
+		{"Jb", EmitJbRel32, 0x82},
+		{"Jbe", EmitJbeRel32, 0x86},
+		{"Ja", EmitJaRel32, 0x87},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name+"_rel0", func(t *testing.T) {
+			var buf []byte
+			buf = tc.emit(buf, 0)
+			want := []byte{0x0F, tc.op, 0x00, 0x00, 0x00, 0x00}
+			if !bytesEqual(buf, want) {
+				t.Errorf("%s rel32=0 = %x, want %x", tc.name, buf, want)
+			}
+		})
+	}
+	t.Run("Constants", func(t *testing.T) {
+		if EncodedMovqMemFromRaxLen != 7 {
+			t.Errorf("EncodedMovqMemFromRaxLen = %d", EncodedMovqMemFromRaxLen)
+		}
+		if EncodedUcomisdLen != 4 {
+			t.Errorf("EncodedUcomisdLen = %d", EncodedUcomisdLen)
+		}
+		if EncodedJccRel32Len != 6 {
+			t.Errorf("EncodedJccRel32Len = %d", EncodedJccRel32Len)
+		}
+	})
+}

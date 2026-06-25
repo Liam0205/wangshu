@@ -452,3 +452,100 @@ const EncodedMovqFromR15DispLen = 7
 
 // EncodedMovqFromMemRegLen 是「mov rax, [low_reg+disp32]」字节数(7)。
 const EncodedMovqFromMemRegLen = 7
+
+// EmitMovqMemRegFromRax 发射「mov [reg+disp32], rax」存 rax 到内存。
+// 编码:48 89 80+r disp32(7 字节)。
+func EmitMovqMemRegFromRax(buf []byte, baseReg uint8, disp32 int32) []byte {
+	if baseReg > 7 {
+		baseReg = 0
+	}
+	buf = append(buf, 0x48, 0x89)
+	modrm := byte(0x80) | (baseReg & 0x7)
+	buf = append(buf, modrm)
+	buf = append(buf,
+		byte(uint32(disp32)),
+		byte(uint32(disp32)>>8),
+		byte(uint32(disp32)>>16),
+		byte(uint32(disp32)>>24))
+	return buf
+}
+
+// EmitUcomisdXmmXmm 发射「ucomisd xmmDst, xmmSrc」(无序比较 SD,设置 ZF/PF/CF)。
+// 用于 IsNumber guard 的 NaN 检测后续 jcc。
+// 指令:66 0F 2E modrm(4 字节)。
+func EmitUcomisdXmmXmm(buf []byte, xmmDst uint8, xmmSrc uint8) []byte {
+	if xmmDst > 7 {
+		xmmDst = 0
+	}
+	if xmmSrc > 7 {
+		xmmSrc = 0
+	}
+	buf = append(buf, 0x66, 0x0F, 0x2E)
+	modrm := byte(0xC0) | (xmmDst&0x7)<<3 | (xmmSrc & 0x7)
+	buf = append(buf, modrm)
+	return buf
+}
+
+// EmitJeRel32 发射「je rel32」(0F 84 rel32,6 字节)等条件跳转。
+func EmitJeRel32(buf []byte, rel32 int32) []byte {
+	buf = append(buf, 0x0F, 0x84)
+	buf = append(buf,
+		byte(uint32(rel32)),
+		byte(uint32(rel32)>>8),
+		byte(uint32(rel32)>>16),
+		byte(uint32(rel32)>>24))
+	return buf
+}
+
+// EmitJneRel32 发射「jne rel32」(0F 85 rel32)。
+func EmitJneRel32(buf []byte, rel32 int32) []byte {
+	buf = append(buf, 0x0F, 0x85)
+	buf = append(buf,
+		byte(uint32(rel32)),
+		byte(uint32(rel32)>>8),
+		byte(uint32(rel32)>>16),
+		byte(uint32(rel32)>>24))
+	return buf
+}
+
+// EmitJbRel32 发射「jb rel32」(0F 82 rel32,unsigned <)。
+func EmitJbRel32(buf []byte, rel32 int32) []byte {
+	buf = append(buf, 0x0F, 0x82)
+	buf = append(buf,
+		byte(uint32(rel32)),
+		byte(uint32(rel32)>>8),
+		byte(uint32(rel32)>>16),
+		byte(uint32(rel32)>>24))
+	return buf
+}
+
+// EmitJbeRel32 发射「jbe rel32」(0F 86 rel32,unsigned <=)。
+func EmitJbeRel32(buf []byte, rel32 int32) []byte {
+	buf = append(buf, 0x0F, 0x86)
+	buf = append(buf,
+		byte(uint32(rel32)),
+		byte(uint32(rel32)>>8),
+		byte(uint32(rel32)>>16),
+		byte(uint32(rel32)>>24))
+	return buf
+}
+
+// EmitJaRel32 发射「ja rel32」(0F 87 rel32,unsigned >)。
+func EmitJaRel32(buf []byte, rel32 int32) []byte {
+	buf = append(buf, 0x0F, 0x87)
+	buf = append(buf,
+		byte(uint32(rel32)),
+		byte(uint32(rel32)>>8),
+		byte(uint32(rel32)>>16),
+		byte(uint32(rel32)>>24))
+	return buf
+}
+
+// EncodedMovqMemFromRaxLen 是「mov [reg+disp32], rax」字节数(7)。
+const EncodedMovqMemFromRaxLen = 7
+
+// EncodedUcomisdLen 是「ucomisd xmm,xmm」字节数(4)。
+const EncodedUcomisdLen = 4
+
+// EncodedJccRel32Len 是 0F 8x rel32 条件跳转字节数(6)。
+const EncodedJccRel32Len = 6
