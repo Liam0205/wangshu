@@ -52,7 +52,8 @@ func New() *Compiler {
 // 验证的 Lua 子集。
 //
 // 支持形态(必须满足:Code 长度 == 2,第二条 RETURN A 1):
-//   - LOADK A K(Bx);RETURN A 1(常量返回,K(Bx) 非字符串占位)
+//   - LOADK A K(Bx);RETURN A 1(常量返回,**含字符串常量**——
+//     proto.Consts[bx] 已是 NaN-box GCRef,见 analyzeShape 字符串段注)
 //   - LOADBOOL A B 0;RETURN A 1(bool 返回,C=0 不跳)
 //   - LOADNIL A A;RETURN A 1(单 nil 返回,A==B)
 //
@@ -193,9 +194,12 @@ func analyzeShape(proto *bytecode.Proto) shapeInfo {
 			if loadBx < 0 || loadBx >= len(proto.Consts) {
 				return shapeInfo{}
 			}
-			if proto.IsStringConst(loadBx) {
-				return shapeInfo{}
-			}
+			// LOADK 字符串常量 OK:`proto.Consts[bx]` 在 State 私有 Proto 上
+			// 已是 NaN-box `MakeGC(TagString, intern_ref)`(State.LoadProgram
+			// 经 gc.Intern 写入,见 state.go::LoadProgram §私有 Consts 段)。
+			// 只要 p4Code 持 proto 指针,proto.Consts 是 GC 根的一部分,
+			// string ref 永远活——与 number/nil/bool 三档同源,直接发 mov
+			// rax, imm64; ret 即可。
 			return shapeInfo{
 				ok: true, retA: uint8(retA), retB: uint8(retB), retPC: 1,
 				value: uint64(proto.Consts[loadBx]), writeRetA: true,

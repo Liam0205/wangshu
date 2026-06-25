@@ -1,13 +1,10 @@
 //go:build wangshu_p4 && wangshu_profile
 
-// PJ7 真接入端到端验证(prove-the-path-under-test 第 8 实例修复):承
-// `.code-review/from-7846604/from-7846604-to-68f27d2.md` 阻塞问题 1 ——
-// 之前 wangshu_p4 build 缺 wangshu_profile,profileEnabled=false,P4 升层
-// 守卫永远 false ⇒ make test-p4 全套绿色但 0 个测试真走 P4。
-//
-// 修复后(wangshu_p4 + wangshu_profile build),本测试经真实公共路径
-// (Compile + Call + SetForceAllPromote)断言 doReturnHits > 0 = bridge 主
-// 路径真触达 P4 GibbousCode.Run + DoReturn 弹帧。
+// PJ7 真接入端到端验证(prove-the-path-under-test 实例):之前 wangshu_p4
+// build 缺 wangshu_profile,profileEnabled=false,P4 升层守卫永远 false ⇒
+// make test-p4 全套绿色但 0 个测试真走 P4。修复后(wangshu_p4 + wangshu_profile
+// build),本测试经真实公共路径(Compile + Call + SetForceAllPromote)断言
+// doReturnHits > 0 = bridge 主路径真触达 P4 GibbousCode.Run + DoReturn 弹帧。
 package crescent
 
 import (
@@ -16,6 +13,7 @@ import (
 	"github.com/Liam0205/wangshu/internal/frontend/compile"
 	"github.com/Liam0205/wangshu/internal/frontend/lex"
 	"github.com/Liam0205/wangshu/internal/frontend/parse"
+	"github.com/Liam0205/wangshu/internal/object"
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
@@ -76,4 +74,61 @@ return 0`
 			"main chunk 经 doCall(f) 应触发 enterGibbous → p4Code.Run → host.DoReturn 全链路。")
 	}
 	t.Logf("PJ7 真接入证据:%d 个 Proto 升层 + %d 次 P4 DoReturn 调用(bridge → enterGibbous → p4Code.Run → host.DoReturn 全链路工作)", promoCount, hits)
+}
+
+// TestPJ7_LoadKStringConst_E2E 验真实 LoadProgram 路径下 LOADK 字符串常量
+// 形态经 P4 升层 byte-equal 解释器(prove-the-path 第 13 实例)。
+//
+// **承代码扩展 commit**:analyzeShape 删除 `IsStringConst` 硬拒——proto.Consts
+// 字符串槽在 `state.go::LoadProgram` 已 intern 写入真 NaN-box GCRef,P4
+// mmap 段直发 `mov rax, u64; ret`(与 number/nil/bool 同源),只要
+// p4Code 持 proto 指针,Consts 是 GC 根的一部分,string ref 永久活。
+//
+// 本测断言:`return "abc"` 形态升层后 byte-equal 解释器返回的字符串值
+// (经 DoReturn 弹帧 → caller 拿到与解释器路径同构的 Value)。
+//
+// **prove-the-path 关键**:string ref payload(arena offset)在 jit 包内
+// 单测不解引用,但 e2e 路径 caller 真消费返回值——若 mmap 段烧入的 u64
+// 不等于解释器路径产生的 NaN-box,本测立即失败。这是 string const 形态
+// 真正"端到端 byte-equal"的实证防线。
+func TestPJ7_LoadKStringConst_E2E(t *testing.T) {
+	src := `
+local function f() return "hello-p4" end
+for i = 1, 100 do f() end
+return f()`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	beforeHits := st.doReturnHits
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	hits := st.doReturnHits - beforeHits
+	promoCount := st.bridge.PromotionCount()
+	t.Logf("PromotionCount=%d, doReturnHits 增量=%d", promoCount, hits)
+	if promoCount == 0 {
+		t.Fatal("PromotionCount=0 → 没 Proto 升层(LOADK string Compile 未被 bridge 主路径触达)")
+	}
+	if hits == 0 {
+		t.Fatal("PJ7 LOADK string 关键证据缺失:doReturnHits 增量 = 0 → P4 路径未真触达")
+	}
+	if len(rets) != 1 {
+		t.Fatalf("rets 长度 = %d, want 1", len(rets))
+	}
+	// 返回的 Value 应是 TagString 的 NaN-box(IsCollectable=true,Tag=TagString)
+	v := value.Value(rets[0])
+	if !value.IsCollectable(v) {
+		t.Fatalf("rets[0] = 0x%x 不是可回收类型(预期 string),Tag=0x%x", uint64(v), value.Tag(v))
+	}
+	if value.Tag(v) != value.TagString {
+		t.Fatalf("rets[0] Tag = 0x%x, want TagString=0x%x", value.Tag(v), value.TagString)
+	}
+	// String 内容由 State.gc 持有,经 `object.StringBytes(arena, ref)` 取
+	// 回比对(直接验 payload 是 arena 内 intern 段偏移指向 "hello-p4")。
+	s := string(object.StringBytes(st.Arena(), value.GCRefOf(v)))
+	if s != "hello-p4" {
+		t.Errorf("string value = %q, want \"hello-p4\"", s)
+	}
+	t.Logf("PJ7 LOADK string 真接入证据:升层 %d / DoReturn %d / 返回值 %q(byte-equal 解释器路径)", promoCount, hits, s)
 }

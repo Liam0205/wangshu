@@ -235,6 +235,64 @@ func TestPJ2_CompileLoadKReturnSucceeds(t *testing.T) {
 	}
 }
 
+// TestPJ7_CompileLoadKStringConst PJ7 扩展:LOADK 字符串常量形态(IsStringConst
+// 真返 true 的路径)。
+//
+// **背景**:之前 PJ7 形态 analyzeShape 在 IsStringConst=true 时硬拒——保守
+// 起见怕 string ref 不在 jit 包内单测域稳定。但真实 LoadProgram 路径下
+// `proto.Consts[bx]` 已经是 NaN-box `MakeGC(TagString, intern_ref)`
+// (`state.go::LoadProgram` §私有 Consts 段经 `gc.Intern` 写入),与
+// number/nil/bool 同源——只要 p4Code 持 proto 指针,Consts 是 GC 根的一
+// 部分,string ref 永久活;mmap 段直发 `mov rax, u64; ret` 即可。
+//
+// 本测断言:Compile 接受 IsStringConst=true 的 Proto,Run 写回 R(0) = fake
+// string NaN-box(payload 在 jit 包内不解引用,只验值传递正确)。
+//
+// **prove-the-path 命中证据**:与 number/nil/bool 同条 mmap 段路径,但走
+// IsStringConst=true 分支——若 analyzeShape 再回退到「IsStringConst 硬拒」
+// 本测立即抓出。
+func TestPJ7_CompileLoadKStringConst(t *testing.T) {
+	c := New()
+	host := newMockP4Host()
+	c.SetHostState(host)
+	// IsStringConst 返 true 需要 StringLitIdx[0] >= 0(承 bytecode.Proto
+	// IsStringConst 实装)
+	fakeStrRef := value.MakeGC(value.TagString, 0x789abc)
+	proto := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABx(bytecode.LOADK, 0, 0),
+			bytecode.EncodeABC(bytecode.RETURN, 0, 2, 0),
+		},
+		Consts:       []value.Value{fakeStrRef},
+		StringLitIdx: []int32{0}, // IsStringConst(0) = true
+	}
+	if !proto.IsStringConst(0) {
+		t.Fatal("test setup: IsStringConst(0) should be true(StringLitIdx[0]=0)")
+	}
+	if !c.SupportsAllOpcodes(proto) {
+		t.Fatal("PJ7: LOADK string const + RETURN should be supported (IsStringConst 硬拒已撤回)")
+	}
+	gc, err := c.Compile(proto, nil)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	defer tryDispose(t, gc)
+	stack := make([]uint64, 4)
+	if status := gc.Run(stack, 0); status != 0 {
+		t.Errorf("Run status = %d, want 0(OK)", status)
+	}
+	got, ok := host.regs[0]
+	if !ok {
+		t.Fatal("SetReg(0, ...) not called")
+	}
+	if got != uint64(fakeStrRef) {
+		t.Errorf("SetReg(0, 0x%x), want 0x%x(string NaN-box passthrough)", got, uint64(fakeStrRef))
+	}
+	if host.doReturnCalls != 1 {
+		t.Errorf("DoReturn called %d times, want 1", host.doReturnCalls)
+	}
+}
+
 // TestPJ2_CompileLoadKReturnRetANonZero retA != 0 的形态(R(2) = K(0); return R(2))。
 //
 // 验证 retA 字段被正确传递 + Run 写到正确槽位(经 mock host.SetReg)。
