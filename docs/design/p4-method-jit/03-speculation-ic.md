@@ -7,7 +7,7 @@
 > 上游契约:
 > [./02-template-direction.md](./02-template-direction.md)(方向裁决——本文 §2 投机模板叠在「per-function 模板编译」基底上、§4 子集内投机的承诺由本文落具体)、
 > [../roadmap](../roadmap.md)(§2 四项税——「runtime 所有权」决定 Go 下信号陷阱不可用,本文 §3 guard 显式化的硬约束源头;§4 P4 验收 = 列内核负载达 luajc 档)、
-> [../../llmdoc/must/design-premises](../../llmdoc/must/design-premises.md)(前提一负载形状 / 前提二四项税 / 前提三五原则——投机错果是 JIT 第一危险源 / **前提四第一天 NaN-box 承诺——guard 物理形态是单次 u64 比较的现金兑现处**)。
+> [../../../llmdoc/must/design-premises](../../../llmdoc/must/design-premises.md)(前提一负载形状 / 前提二四项税 / 前提三五原则——投机错果是 JIT 第一危险源 / **前提四第一天 NaN-box 承诺——guard 物理形态是单次 u64 比较的现金兑现处**)。
 >
 > P3 对位(本文核心镜像章节):
 > [../p3-wasm-tier/06-ic-feedback-consume](../p3-wasm-tier/06-ic-feedback-consume.md)(P3 IC 非投机消费,882 行,**直接对偶面**——P3 全篇论证「快路径检查 = 语义分发,不是投机 guard」,本文 §1 / §2 / §5 系统翻面给出 P4 = 投机 guard 的镜像论证;P3 §3 各 FeedbackKind 形态与本文 §2 是镜像章节,引用明确指向)、
@@ -67,7 +67,7 @@ OSR exit 是投机失败的着陆面,本文与 [./04-osr-deopt.md](./04-osr-deop
 | feedback 各种 Kind 的投机模板 | ✅ §2 全节(快路径 + guard 形态)| — |
 | guard 失败发生时的运行期物化序列 | ❌(只提对位,详 04 §3 / §5) | ✅ 04 §3「物化 = memmove」全展开 |
 | OSR exit stub 的代码生成 | ❌ | ✅ 04 §6 |
-| deopt 计数 + TierStuck-speculation 状态机 | 提对位 §4.2 / §7.2 | ✅ 04 §5 |
+| deopt 计数 + P4StuckSpeculation 状态机 | 提对位 §4.2 / §7.2 | ✅ 04 §5 |
 | 重训练协议(`RequestRefresh`)| ✅ §7.3(从 P4 的 IC 重训需求侧)| 04 §5.5 / P2 [05-p3-p4-interface §4.2.2](../p2-bridge/05-p3-p4-interface.md) |
 | 与 wazero 边界检查的 prior art 对照 | ✅ §3.2 | — |
 
@@ -92,7 +92,7 @@ P1 解释器(crescent,已落地):
    ↓
 P2 bridge(已落地 PB0-PB7):
   aggregator.Aggregate(proto) 读 ICSlot(race-tolerant)→
-    产 TypeFeedback{ Points[pc] = PointFeedback{Kind, Confidence, StableShape, StableIndex, ...} }
+    产 TypeFeedback{ Points[pc] = PointFeedback{kind, confidence, stableShape, stableIndex, ...} }
   CAS 装到 ProfileData.feedback(02-ic-feedback §5.5)
    ↓
 P3 (gibbous/wasm):
@@ -124,22 +124,23 @@ P4 (gibbous/jit,本文):
 
 ### 1.3 P2 聚合产物 TypeFeedback
 
-承 [../p2-bridge/02-ic-feedback](../p2-bridge/02-ic-feedback.md) §4 PointFeedback 完整定义,本节只列 P4 投机消费要用到的字段(完整 Go 结构定义见上游 §4.2):
+承 [../p2-bridge/02-ic-feedback](../p2-bridge/02-ic-feedback.md) §4 PointFeedback 完整定义,本节只列 P4 投机消费要用到的字段(完整 Go 结构定义见上游 §4.2;**字段名以 P2 02 §4.2 实际定义为准——包内私有 `stableShape` / `stableIndex` 等小写,P4 端经 internal package 共享访问**):
 
 ```go
+// 字段大小写以 ../p2-bridge/02-ic-feedback §4.2 实际定义为准(包内私有)。
 type PointFeedback struct {
-    PC           int32         // 对应字节码 pc
-    Kind         FeedbackKind  // FBUnstable / FBArithStableNumber / FBTableMono / FBTableMega / FBGlobalStable / FBSelfMono
-    Confidence   float32       // [0, 1]:Kind 可信度,P4 用作投机激进度旋钮(§2.7)
-    StableShape  uint32        // 表 IC:gen 代次 / 算术 IC:零
-    StableIndex  uint32        // 表 IC:命中槽位下标 / 算术 IC:零
-    Observations uint32        // 该点累积观测次数(诊断用)
+    pc           int32         // 对应字节码 pc
+    kind         FeedbackKind  // FBUnstable / FBArithStableNumber / FBTableMono / FBTableMega / FBGlobalStable / FBSelfMono
+    confidence   float32       // [0, 1]:Kind 可信度,P4 用作投机激进度旋钮(§2.7)
+    stableShape  uint32        // 表 IC:gen 代次 / 算术 IC:零
+    stableIndex  uint32        // 表 IC:命中槽位下标 / 算术 IC:零
+    observations uint32        // 该点累积观测次数(诊断用)
 }
 ```
 
-**P4 消费的核心字段**:**Kind**(决定走哪条投机模板,§2 总表)+ **Confidence**(决定是否投机的旋钮,§2.7 阈值消费)+ **StableShape / StableIndex**(作为投机模板的编译期立即数,§6 直达槽)。**P4 不消费 Observations**(诊断用,confidence 已是更精细的同源信号);**PC** 由 Points 索引隐含。
+**P4 消费的核心字段**:**kind**(决定走哪条投机模板,§2 总表)+ **confidence**(决定是否投机的旋钮,§2.7 阈值消费)+ **stableShape / stableIndex**(作为投机模板的编译期立即数,§6 直达槽)。**P4 不消费 observations**(诊断用,confidence 已是更精细的同源信号);**pc** 由 Points 索引隐含。
 
-`StableShape` / `StableIndex` 是 P4 与 P3 共用的字段,只是 P4 把它包成 guard 比对值,P3 把它包成 if-then 直达槽分发(P3 06 §3.2.1)。
+`stableShape` / `stableIndex` 是 P4 与 P3 共用的字段,只是 P4 把它包成 guard 比对值,P3 把它包成 if-then 直达槽分发(P3 06 §3.2.1)。
 
 ### 1.4 P4 经 P4Feedback.FeedbackFor 反向读
 
@@ -161,7 +162,7 @@ type PointFeedback struct {
 
 承 [../p2-bridge/05-p3-p4-interface](../p2-bridge/05-p3-p4-interface.md) §1.5 总纲:**P2 产出一份对称的 feedback,P3/P4 不对称消费**——P2 不为 P3/P4 各产一份(浪费),也不在 P3 编译时省略 feedback(让 P3 有机会做紧凑翻译)。
 
-落到 P4 视角:Kind 决定走哪条投机模板(§2);Confidence 强消费(≥0.99 才投机,§2.7,而 P3 弱消费可只看 Kind 不读 confidence,P3 06 §3.1);StableShape/StableIndex 用作 guard 比对值与直达槽 offset 立即数(§6,而 P3 用作 if-then 直达槽分发的立即数,P3 06 §3.2.1);feedback nil 容忍(退化为「无投机模板」,失去倍率,但仍省 dispatch 税,05-p3-p4-interface §1.1);feedback 错的代价 = 性能(deopt 开销)+ 反复时拉黑投机(本文 §7.2,而 P3 仅性能损失)。
+落到 P4 视角:Kind 决定走哪条投机模板(§2);Confidence 强消费(≥0.99 才投机,§2.7,而 P3 弱消费可只看 Kind 不读 confidence,P3 06 §3.1);stableShape/stableIndex 用作 guard 比对值与直达槽 offset 立即数(§6,而 P3 用作 if-then 直达槽分发的立即数,P3 06 §3.2.1);feedback nil 容忍(退化为「无投机模板」,失去倍率,但仍省 dispatch 税,05-p3-p4-interface §1.1);feedback 错的代价 = 性能(deopt 开销)+ 反复时拉黑投机(本文 §7.2,而 P3 仅性能损失)。
 
 **这就是「不对称消费」原则在 P4 视角下的兑现**:P4 强依赖 feedback 正确性,但 guard + deopt 兜底确保正确性不损——投机失败不出错,只是触发 OSR exit 回解释器(05-p3-p4-interface §1.3)。
 
@@ -245,7 +246,7 @@ type PointFeedback struct {
 
 ```asm
 ;; emit_gettable(pc, A, B, C, fb=FBTableMono):
-;; 编译期立即数(从 PointFeedback.StableShape/StableIndex + ICSlot 双源选取,详 §6 与 P3 06 §4.4):
+;; 编译期立即数(从 PointFeedback.stableShape/stableIndex + ICSlot 双源选取,详 §6 与 P3 06 §4.4):
 ;;   SNAP_TABLEREF = uint64(slot.tableRef)
 ;;   SNAP_GEN      = uint32(slot.shape)
 ;;   SNAP_KIND     = uint8(slot.kind)
@@ -415,7 +416,7 @@ P4 总览的字面承诺:
 
 ### 3.4 NaN-box guard 的物理形态:单次 u64 无符号比较
 
-承 [../p1-interpreter/01-value-object-model](../p1-interpreter/01-value-object-model.md) §3.2 + [../../llmdoc/must/design-premises](../../llmdoc/must/design-premises.md) 前提四第一天承诺:
+承 [../p1-interpreter/01-value-object-model](../p1-interpreter/01-value-object-model.md) §3.2 + [../../../llmdoc/must/design-premises](../../../llmdoc/must/design-premises.md) 前提四第一天承诺:
 
 > **NaN-boxed u64 + 自管 arena**(线性内存),数字识别 = 单次 u64 无符号比较与 NAN_THRESHOLD。
 
@@ -447,7 +448,7 @@ P4 投机的多判 vs 漏判原则:
 | **多判**(查得太严)| 投机命中率下降,频繁 deopt,性能塌陷 | 可观测(deopt 计数,§7),实测可调阈值缓解 |
 | **漏判**(查得不够)| **静默错果**——产出错误结果不崩溃、不报错 | **差分主防线见 [./08-testing-strategy.md](./08-testing-strategy.md)**|
 
-**这是 [../../llmdoc/must/design-premises](../../llmdoc/must/design-premises.md) 前提三原则 2「投机错误静默错果是 JIT 最危险 bug 类别」的字面对齐**:guard 漏判 = 投机错误。差分主防线在 [./08-testing-strategy.md](./08-testing-strategy.md) 全面展开,本文 §3.5 只点名,不重展开口径。
+**这是 [../../../llmdoc/must/design-premises](../../../llmdoc/must/design-premises.md) 前提三原则 2「投机错误静默错果是 JIT 最危险 bug 类别」的字面对齐**:guard 漏判 = 投机错误。差分主防线在 [./08-testing-strategy.md](./08-testing-strategy.md) 全面展开,本文 §3.5 只点名,不重展开口径。
 
 **对 P4 实装的具体纪律**:
 
@@ -494,41 +495,47 @@ P2/P3 状态机(零 deopt,单向无环):
 
 P3 06 §0.2 已把这条具体兑现到代码层:P3 的所有「IsNumber×2 / 同表同代次 / globals gen 校验」都是**语义分发**——失败也是合法语义路径,落到 helper 得正确结果。
 
-### 4.2 P4 状态机:新增 TierGibbous → TierInterp 边
+### 4.2 P4 状态机:P2 三态不变 + P4 内部 p4SpecState 子状态机叠加(方案 A)
 
-P4 引入投机,「运行期假设可能被打破」第一次出现,deopt 边必须出现。本节展开 P4 状态机增量(加 TierStuck-speculation 吸收态):
+**方案 A 决议**(承 [./04-osr-deopt.md](./04-osr-deopt.md) §5 + 本文 §8 硬纪律):**P2 `tierState` 枚举不变,仍是 `TierInterp / TierGibbous / TierStuck` 三态(单向无环)**;**P4 在 `internal/gibbous/jit` 内部维护独立子状态字段 `p4SpecState[proto]`**——枚举 `P4Speculative / P4Deoptimized / P4StuckSpeculation`——**叠加**在 P2 `TierGibbous` 之上,**P2 不感知**(承 §8.1 / §8.2)。
 
 ```
-P4 状态机(投机,在 P2/P3 基础上新增两条边 + 一个吸收态):
+                P2 状态机(不变,承 ../p2-bridge/04-try-compile-fallback §2):
+                  TierInterp ──► TierGibbous(吸收态)
+                  TierInterp ──► TierStuck   (吸收态)
 
-                 ┌──── (1) 升层 ────►  TierGibbousJIT
-                 │                          │
-  TierInterp ────┤                          │ (2) guard 失败 → OSR exit(本文 §7.1)
-                 │                          ▼
-                 └────────────────────  TierInterp
-                          ▲              (deopt 着陆,继续解释 + 重新积累 feedback)
-                          │                  │
-                          │                  │ deopt 计数 < 阈值
-                          │                  │
-                          │ (3) 重训练后重编译│
-                          └──────────────────┤
-                                             │
-                                             │ deopt 计数 ≥ 阈值
-                                             ▼
-                                    TierStuck-speculation
-                                    (该 Proto 拉黑投机:只发通用模板,
-                                     或永久解释。吸收态,防抖)
+                  P4 升层成功后,P2 看仍是 TierGibbous(从 P2 视角永驻)。
+
+  ┌─────────────────────────────────────────────────────────────────┐
+  │  P4 内部 p4SpecState 子状态机(叠加在 TierGibbous 内):           │
+  │                                                                 │
+  │   (P4 编译成功)──►  P4Speculative                              │
+  │                          │                                      │
+  │                          │ (a) guard 失败 → OSR exit(本文 §7.1)│
+  │                          ▼                                      │
+  │                       P4Deoptimized                             │
+  │                  (P4 内部「降层」语义:                          │
+  │                   该帧由 crescent 续跑剩余字节码 + 计数 +1)     │
+  │                          │                                      │
+  │            ┌─────────────┴─────────────┐                        │
+  │            │ deopt 计数 < 阈值          │ deopt 计数 ≥ 阈值       │
+  │            ▼                           ▼                        │
+  │  (b) RequestRefresh 重训练 +    (c) P4StuckSpeculation          │
+  │      重编译失效投机点 ────►          (P4 内吸收态:不再投机,   │
+  │      回 P4Speculative                  仍发通用模板;P2 看仍   │
+  │                                        是 TierGibbous)         │
+  └─────────────────────────────────────────────────────────────────┘
 ```
 
-**新增的两条边 + 一个吸收态**:
+**新增的子状态与转移**(均在 P4 端,P2 实装零修改):
 
-| # | 边 / 态 | 触发条件 | 动作 |
+| # | 子状态 / 转移 | 触发条件 | 动作 |
 |---|---|---|---|
-| (2) | `TierGibbousJIT → TierInterp`(deopt OSR exit)| guard 失败 | 该帧剩余执行交还 crescent;deopt 计数 +1(本文 §7.1)|
-| (3) | `TierInterp → TierGibbousJIT`(重训练后重编译)| 解释执行期间 IC 重新积累,P4 调 RequestRefresh 后再编 | 失效的投机点降级为通用模板;deopt 计数低则继续保持 gibbous |
-| (S) | `TierStuck-speculation`(吸收态)| deopt 计数 ≥ 阈值,反复 deopt 风暴 | 该 Proto 永久只发无投机的通用模板(仍比解释快——dispatch 税照省),或永久解释;**不重试**(同 [../p2-bridge/04-try-compile-fallback](../p2-bridge/04-try-compile-fallback.md) §7 不重试纪律的对偶)|
+| (a) | `P4Speculative → P4Deoptimized` | guard 失败 | 该帧剩余执行交还 crescent;P4 端 `deoptCount[proto]` +1(本文 §7.1)|
+| (b) | `P4Deoptimized → P4Speculative`(重训练后重编译)| 解释执行期间 IC 重新积累,P4 调 RequestRefresh 后再编 | 失效的投机点降级为通用模板;P4 端覆写 GibbousCode(仍住 P2 `Bridge.gibbousIndex`,P2 视角不动)|
+| (c) | `P4Deoptimized → P4StuckSpeculation`(吸收态)| deopt 计数 ≥ 阈值,反复 deopt 风暴 | 该 Proto 永久只发无投机的通用模板(仍比解释快——dispatch 税照省);**P2 仍看 TierGibbous,不重试投机**(同 [../p2-bridge/04-try-compile-fallback](../p2-bridge/04-try-compile-fallback.md) §7 不重试纪律的对偶)|
 
-**关键观察**:`TierStuck-speculation` 与 P2/P3 的 `TierStuck` 是**两个不同的吸收态**——前者是「投机失败拉黑」(P4 自管),后者是「编译失败拉黑」(P2 管)。两者都是「不重试纪律」家族,但归属不同(详 §8 P4 不依赖 P2 状态机)。
+**关键观察**:`P4StuckSpeculation` 与 P2 的 `TierStuck` 是**两个完全不同的状态机里的两个吸收态**——前者是「P4 投机失败拉黑」(P4 内部状态字段,挂 `p4SpecState[proto]`),后者是「P2 编译失败拉黑」(P2 `tierState` 枚举值)。两者都是「不重试纪律」家族,但**归属不同 + 影响范围不同**(详 §8 P4 不依赖 P2 状态机)。**P2 三态枚举永远不被 P4 写**——这是方案 A 的核心承诺,使「P2 PB6 mock → 真 P3/P4 三阶段切换零修改 P2 实装」(承 [../p2-bridge/05-p3-p4-interface](../p2-bridge/05-p3-p4-interface.md) §0.3)成立。
 
 ### 4.3 与 try-compile fallback 的对照表
 
@@ -539,14 +546,14 @@ P4 状态机(投机,在 P2/P3 基础上新增两条边 + 一个吸收态):
 | 运行期假设 | 无 | 有(类型稳定)| 有且更重(路径稳定)|
 | deopt 机器 | 不需要 | **函数级 OSR exit(详 04-osr-deopt §3)** | 精细 snapshot(详 P5 §4)|
 | 假设错的代价 | 不存在 | 慢(exit + 再训练),不错 | 慢,不错 |
-| 状态机 | 单向无环 | 有 `gibbous→interp` 边 | 同 P4 + trace 黑名单 |
-| 吸收态 | TierStuck(F1-F7 失败)| TierStuck-speculation(投机失败超阈值)| 同 P4 + 黑名单更细粒度(per-trace)|
+| 状态机 | P2 三态单向无环 | **P2 三态不变 + P4 内部 p4SpecState 子状态机叠加**(本文 §4.2) | 同 P4 + trace 黑名单 |
+| 吸收态 | TierStuck(P2 管,F1-F7 失败)| **P4StuckSpeculation**(P4 内部,投机失败超阈值)| 同 P4 + 黑名单更细粒度(per-trace)|
 | 重编译 | 不重试([../p2-bridge/04-try-compile-fallback](../p2-bridge/04-try-compile-fallback.md) §7)| 经 RequestRefresh 重训练后允许(本文 §7.3)| 同 P4 + side trace 在线扩张 |
 
 **关键观察**:P4 与 try-compile 共享 F1-F7 闸门(原则 4 不松动,§4.4),但**新增**「重训练后重编译」机制——这与 P2/P3 的「不重试」纪律是**两条正交线**:
 
-- `TierStuck`(P2 管)= **编译能力上的不可达**(F1 排除 / F7 后端不支持),重试无意义,**永久不重编**;
-- `TierStuck-speculation`(P4 管)= **投机决策上的不收敛**(反复 deopt),**计数未超阈值前 P4 自己重编译**(降级失效投机点),超阈值才转吸收态。
+- `TierStuck`(P2 `tierState` 值,P2 管)= **编译能力上的不可达**(F1 排除 / F7 后端不支持),重试无意义,**永久不重编**;
+- `P4StuckSpeculation`(P4 内部 `p4SpecState[proto]` 值,P4 管)= **投机决策上的不收敛**(反复 deopt),**计数未超阈值前 P4 自己重编译**(降级失效投机点),超阈值才转吸收态。
 
 两者都是「不重试纪律」家族,但触发条件、归属、决策权不同。
 
@@ -560,7 +567,7 @@ P4 状态机(投机,在 P2/P3 基础上新增两条边 + 一个吸收态):
 
 | 维度 | F1-F7 闸门 | 投机决策 |
 |---|---|---|
-| 决策时点 | 编译期(`analyzeCompilability`)| 编译期(每条 IC opcode 按 fb.Kind 决定)|
+| 决策时点 | 编译期(`analyzeCompilability`)| 编译期(每条 IC opcode 按 fb.kind 决定)|
 | 决策依据 | Proto 静态特征(varargs / 元方法形态 / 后端能力等)| 运行期 feedback(numHits/metaHits 比例 / IC kind)|
 | 决策粒度 | 整 Proto(全部可编译 or 全部不可编译)| per-pc(单 IC 点投机 or 不投机)|
 | 失败动作 | 整 Proto 标 TierStuck,永久解释 | 单点 OSR exit,该帧剩余解释,其他点不受影响 |
@@ -656,7 +663,7 @@ P4 同 fb 输入下的投机模板(完整版见 §2.2,本节只摘对偶面):
 
 承 [../p2-bridge/02-ic-feedback](../p2-bridge/02-ic-feedback.md) §2.1 表 IC 提取规则:
 
-| ICSlot.kind | P2 提取的 FeedbackKind | StableShape | StableIndex |
+| ICSlot.kind | P2 提取的 FeedbackKind | stableShape | stableIndex |
 |---|---|---|---|
 | 1 array hit | `FBTableMono` | shape = ICSlot.shape(表 gen 代次)| index = ICSlot.index(array 段下标)|
 | 2 node hit | `FBTableMono` | 同上 | index = ICSlot.index(node 段槽位)|
@@ -681,9 +688,9 @@ P4 同 fb 输入下的投机模板(完整版见 §2.2,本节只摘对偶面):
 ```asm
 ;; 编译期固化的 SNAP_* 立即数:
 ;;   SNAP_TABLEREF = uint64(ICSlot[pc].tableRef)        ;; 从 ICSlot 直接读(P2 字段不含)
-;;   SNAP_GEN      = uint32(PointFeedback.StableShape)  ;; 从 fb 读,等价 ICSlot.shape
-;;   SNAP_KIND     = uint8(ICSlot[pc].kind)             ;; 从 ICSlot 直接读(细粒度,fb.Kind 是粗粒度)
-;;   SNAP_INDEX    = uint32(PointFeedback.StableIndex)  ;; 从 fb 读,等价 ICSlot.index
+;;   SNAP_GEN      = uint32(PointFeedback.stableShape)  ;; 从 fb 读,等价 ICSlot.shape
+;;   SNAP_KIND     = uint8(ICSlot[pc].kind)             ;; 从 ICSlot 直接读(细粒度,fb.kind 是粗粒度)
+;;   SNAP_INDEX    = uint32(PointFeedback.stableIndex)  ;; 从 fb 读,等价 ICSlot.index
 
   mov rax, [r15 + 8*B]                  ; 加载 t
 
@@ -729,9 +736,9 @@ P3 经 wazero 编出来的机器码与 P4 直发的机器码在最优情况下**
 
 | 职责 | 归属 |
 |---|---|
-| 决定哪些 IC 点值得投机 | **P4**(读 fb.Kind + Confidence,对 conf<阈值的点不投机)|
+| 决定哪些 IC 点值得投机 | **P4**(读 fb.kind + Confidence,对 conf<阈值的点不投机)|
 | 生成 guard 机器码 | **P4**(amd64/arm64 各发一段)|
-| 选取 guard 比对值(SNAP_*)| **P4**(从 fb 读 StableShape/StableIndex,从 ICSlot 直接读 tableRef/kind 细粒度)|
+| 选取 guard 比对值(SNAP_*)| **P4**(从 fb 读 stableShape/stableIndex,从 ICSlot 直接读 tableRef/kind 细粒度)|
 | 保证 SNAP_* 反映「真实命中过的快照」 | **P2**([../p2-bridge/02-ic-feedback](../p2-bridge/02-ic-feedback.md) §2.1 字段提取规则)|
 | 在 IC slot 失效时通知 P4 | **不存在该协议**——P4 自管 deopt 计数,不依赖 P2 通知(详 §8)|
 
@@ -747,8 +754,8 @@ P3 经 wazero 编出来的机器码与 P4 直发的机器码在最优情况下**
 
 | 字段 | P2 保证 | 不保证则 P4 后果 |
 |---|---|---|
-| StableShape | 来自 ICSlot.shape(P1 命中时写入)| 永久 guard 失败,deopt 风暴,投机被拉黑(§7.2)|
-| StableIndex | 来自 ICSlot.index(同上)| 同上 |
+| stableShape | 来自 ICSlot.shape(P1 命中时写入)| 永久 guard 失败,deopt 风暴,投机被拉黑(§7.2)|
+| stableIndex | 来自 ICSlot.index(同上)| 同上 |
 | Kind ∈ {Mono, Mega, ...} | 按 ICSlot.kind 字段精确翻译 | P4 选错模板(对 mega 点发 mono guard)→ 永久 guard 失败 |
 
 **P2 端的保护**(承 [../p2-bridge/02-ic-feedback](../p2-bridge/02-ic-feedback.md) §1.3 「P1 写不读纯供料」+ §3.4 提取规则):
@@ -796,7 +803,7 @@ crescent reloadFrame(05 §1.3),从 exitPC 续跑该帧
 - ② **物化是 memmove**——栈槽里就是 NaN-box u64,crescent 直接读相同编码,无重建([./04-osr-deopt.md](./04-osr-deopt.md) §3.2);
 - ③ **上层帧不受影响**——调用链上层帧各自维持自身 tier,P4 deopt 不向上传递(P4 deopt 不是 P5 trace 的「unwind 多帧 snapshot」,是单帧着陆;详 [./04-osr-deopt.md](./04-osr-deopt.md) §3.1)。
 
-### 7.2 过阈值 → 拉黑投机(TierStuck-speculation)
+### 7.2 过阈值 → 拉黑投机(P4StuckSpeculation)
 
 承本文 §4.2 状态机 + [./04-osr-deopt.md](./04-osr-deopt.md) §3.4:
 
@@ -804,20 +811,20 @@ crescent reloadFrame(05 §1.3),从 exitPC 续跑该帧
 |---|---|
 | 单次 guard 失败 | OSR exit 回解释;deopt 计数 +1;解释执行继续写 IC |
 | deopt 计数超低阈值(本文不预设具体数值)| 丢弃当前 gibbous 编译产物,回 `TierInterp` 重新积累 feedback;再热后**重编译**(§7.3 重训练协议)|
-| 重编译后仍反复 deopt | 标 `TierStuck-speculation`:该 Proto 永久只发无投机的通用模板(仍比解释快——dispatch 税照省),或干脆永久解释。**吸收态,防抖** |
+| 重编译后仍反复 deopt | 标 `P4StuckSpeculation`:该 Proto 永久只发无投机的通用模板(仍比解释快——dispatch 税照省),或干脆永久解释。**吸收态,防抖** |
 
 **与 [../p2-bridge/04-try-compile-fallback](../p2-bridge/04-try-compile-fallback.md) §7 不重试纪律的对偶**:
 
-| 维度 | P2 TierStuck(§7 不重试)| P4 TierStuck-speculation(本节)|
+| 维度 | P2 TierStuck(§7 不重试)| P4 P4StuckSpeculation(本节)|
 |---|---|---|
 | 触发条件 | F1-F7 闸门拒 / 编译失败 | 投机反复 deopt 超阈值 |
 | 决策权 | P2 状态机管 | **P4 自管**(不修改 P2 tierState,详 §8)|
 | 是否仍能升 gibbous | 否(永久解释)| **是**——只是「不投机」,仍发通用模板叠在 dispatch 消除上 |
 | 是否需要差分门兜底 | 是([../p2-bridge/04-try-compile-fallback](../p2-bridge/04-try-compile-fallback.md) §7)| 是([./08-testing-strategy.md](./08-testing-strategy.md))|
 
-**关键决策(承 [./04-osr-deopt.md](./04-osr-deopt.md) §3.4)**:`TierStuck-speculation` 不是「永久解释」,是「永久不投机 + 仍发 dispatch 消除模板」——这与 P2 TierStuck 的「永久解释」不同,理由是:**dispatch 税消除是 P4 的非投机收益,与投机正交**(承 [./02-template-direction.md](./02-template-direction.md) §1.1)。即便所有 IC 点都 mega、所有投机都拉黑,P4 仍有「直线机器码 + 编译期立即数操作数」相对解释器的恒定加速——保留这部分收益是合理的。
+**关键决策(承 [./04-osr-deopt.md](./04-osr-deopt.md) §3.4)**:`P4StuckSpeculation` 不是「永久解释」,是「永久不投机 + 仍发 dispatch 消除模板」——这与 P2 TierStuck 的「永久解释」不同,理由是:**dispatch 税消除是 P4 的非投机收益,与投机正交**(承 [./02-template-direction.md](./02-template-direction.md) §1.1)。即便所有 IC 点都 mega、所有投机都拉黑,P4 仍有「直线机器码 + 编译期立即数操作数」相对解释器的恒定加速——保留这部分收益是合理的。
 
-具体阈值数值与 [../p2-bridge/01-profiling §5](../p2-bridge/01-profiling.md) 同款待定:依赖真实负载校准,只影响时机不影响正确性,留 [doc-gaps](../../llmdoc/memory/doc-gaps.md) 跟踪;实装协议详 [./04-osr-deopt.md](./04-osr-deopt.md) §5.4。
+具体阈值数值与 [../p2-bridge/01-profiling §5](../p2-bridge/01-profiling.md) 同款待定:依赖真实负载校准,只影响时机不影响正确性,留 [doc-gaps](../../../llmdoc/memory/doc-gaps.md) 跟踪;实装协议详 [./04-osr-deopt.md](./04-osr-deopt.md) §5.4。
 
 ### 7.3 RequestRefresh + 重编译协议
 
@@ -867,7 +874,7 @@ P2 ProfileData.tierState:
                               │ P4 投机生命周期管理:  │
                               │   deopt 计数        │
                               │   投机版本 vs 通用版本│
-                              │   TierStuck-speculation │
+                              │   P4StuckSpeculation │
                               │   (P2 不感知此细分)   │
                               └─────────────────────┘
 ```
@@ -924,7 +931,7 @@ P2 ProfileData.tierState:
 |---|---|
 | ✅ 通过 `P4Feedback.FeedbackFor` 反向读 feedback | 持 `*Bridge`(实现 P4Feedback),按需调 FeedbackFor(本文 §1.4)|
 | ✅ 通过 `P3Compiler.Compile` 上交编译产物 | P4 实现 P3Compiler 接口,Compile 返回 P4 版 GibbousCode([../p2-bridge/05-p3-p4-interface](../p2-bridge/05-p3-p4-interface.md) §6.3)|
-| ✅ 自管 deopt 计数与 TierStuck-speculation 状态 | P4 在 `internal/gibbous/jit` 内部维护 `deoptCount[proto]`,P2 不参与(§7.2)|
+| ✅ 自管 deopt 计数与 P4StuckSpeculation 状态 | P4 在 `internal/gibbous/jit` 内部维护 `deoptCount[proto]`,P2 不参与(§7.2)|
 | ✅ 通过 `RequestRefresh` 请求 P2 重聚合 | P4 deopt 计数过阈值时调 P2 RequestRefresh(本文 §7.3)|
 | ✅ 在 GibbousCode.Run 内自管「投机版本 vs 通用版本」分流 | P4 的 dummyCode-style 实现可持「投机版 entry」+「通用版 entry」双入口,Run 选哪个由 P4 内部状态决定 |
 
@@ -948,7 +955,7 @@ P4 IC feedback 投机消费的实装期硬性约束,违反即设计失败:
 
 承 §3 全节。物理表现:每个 guard 都形如 `cmp + jcc`(amd64)或 `cmp + b.cond`(arm64),2-3 条机器指令的恒定成本——**没有任何依赖 SIGSEGV / SIGBUS / SIGFPE 的隐式 guard**。
 
-**与 LuaJIT 的对照**:LuaJIT 的「movq xmm0, rax 后 fault → 信号处理器接管」形态在纯 Go 下不可用([../roadmap](../roadmap.md) §2 runtime 所有权),P4 显式化是 [../../llmdoc/must/design-premises](../../llmdoc/must/design-premises.md) 前提二的同源约束。**6% 那一档差距(LuaJIT vs luajc)正是这条约束的微观注脚**(§3.2 末)。
+**与 LuaJIT 的对照**:LuaJIT 的「movq xmm0, rax 后 fault → 信号处理器接管」形态在纯 Go 下不可用([../roadmap](../roadmap.md) §2 runtime 所有权),P4 显式化是 [../../../llmdoc/must/design-premises](../../../llmdoc/must/design-premises.md) 前提二的同源约束。**6% 那一档差距(LuaJIT vs luajc)正是这条约束的微观注脚**(§3.2 末)。
 
 ### 9.3 「投机叠在 F1-F7 子集之内,不松 P2 闸门」
 
@@ -965,7 +972,7 @@ P4 IC feedback 投机消费的实装期硬性约束,违反即设计失败:
 承 §7.4 + §8 全节。物理表现:
 
 - P2 ProfileData.tierState 只有 TierInterp / TierGibbous / TierStuck 三态,**P4 投机 deopt 不修改 tierState**;
-- P4 的 deopt 计数 / TierStuck-speculation / 重训练触发 全部在 `internal/gibbous/jit` 内部状态字段管;
+- P4 的 deopt 计数 / P4StuckSpeculation / 重训练触发 全部在 `internal/gibbous/jit` 内部状态字段管;
 - P2 接收 RequestRefresh 信号(§7.3)是反向通道,与 P2 状态机正交。
 
 **这条不变式确保 P3 / P4 切换零修改 P2 实装**——P3 上线时 mock → 真 P3 切换零修改([../p2-bridge/05-p3-p4-interface](../p2-bridge/05-p3-p4-interface.md) §8.1),P4 上线时同样零修改 P2(§8 P4 不依赖 P2 状态机的硬纪律)。
@@ -974,7 +981,7 @@ P4 IC feedback 投机消费的实装期硬性约束,违反即设计失败:
 
 承 §6.1 / §6.4。物理表现:
 
-- P2 的 PointFeedback.StableShape / StableIndex 必须来自 ICSlot.shape / ICSlot.index(P1 命中时写入的真实数据),**不是凭空构造**;
+- P2 的 PointFeedback.stableShape / stableIndex 必须来自 ICSlot.shape / ICSlot.index(P1 命中时写入的真实数据),**不是凭空构造**;
 - P4 据此发的 guard 在该快照仍有效时命中(投机收益兑现),失效时 deopt(进入 §7 重训练流程);
 - P2 没把 tableRef 编入 fb,P4 必须从 ICSlot 直接读 tableRef 作 SNAP_TABLEREF——这是 P3 06 §4.4 双源选取协议的 P4 同款应用。
 
@@ -1027,17 +1034,17 @@ P4 投机的核心风险——guard 密度天花板:
 
 承 P3 06 §6.5 + [../p2-bridge/02-ic-feedback](../p2-bridge/02-ic-feedback.md) §9.2:P1 算术 IC 双计数对 ADD/SUB/MUL/DIV/MOD/POW/UNM/LT/LE 一视同仁,P2 不区分具体算术 op,P4 emitArith 对所有算术 op 都按 FBArithStableNumber 内联同款 IsNumber×2 guard——**算术 op 之间无粒度损失**(快路径形态相同,仅 f64 指令不同)。
 
-**LT/LE 子分流损失**:LT/LE 的 numHits 不区分「双 number 快路径」与「双 string 快路径」,P4 拿到 FBArithStableNumber 在 LT/LE 上是「快路径稳定」(可能 number 也可能 string)——若 P4 投机时按双 number 发 `f64 cmp` guard,运行期来双 string 时 guard 失败 deopt。解决路径留 P2+ 实测后补:P1 比较 IC 写入加分流字段 → P2 提取为 `FBArithStableString` 新枚举值 → P4 emitCompare 据此发对应内联快路径。**记入 [doc-gaps](../../llmdoc/memory/doc-gaps.md) 与 [../p2-bridge/02-ic-feedback](../p2-bridge/02-ic-feedback.md) §9.2 共享**。
+**LT/LE 子分流损失**:LT/LE 的 numHits 不区分「双 number 快路径」与「双 string 快路径」,P4 拿到 FBArithStableNumber 在 LT/LE 上是「快路径稳定」(可能 number 也可能 string)——若 P4 投机时按双 number 发 `f64 cmp` guard,运行期来双 string 时 guard 失败 deopt。解决路径留 P2+ 实测后补:P1 比较 IC 写入加分流字段 → P2 提取为 `FBArithStableString` 新枚举值 → P4 emitCompare 据此发对应内联快路径。**记入 [doc-gaps](../../../llmdoc/memory/doc-gaps.md) 与 [../p2-bridge/02-ic-feedback](../p2-bridge/02-ic-feedback.md) §9.2 共享**。
 
 ### 10.5 多 State 并发下 P4 deopt 状态的语义
 
-承 [../p2-bridge/05-p3-p4-interface](../p2-bridge/05-p3-p4-interface.md) §6.4 + [../p2-bridge/00-overview §9](../p2-bridge/00-overview.md):多 State 共享 Proto 时,GibbousCode 是只读共享对象;**P4 的 deopt 计数挂哪**(全局 `p4SpecState[proto]` vs per-State)需实装期决策;反复 deopt 拉黑 TierStuck-speculation 后,**所有 State 共享该 Proto 的「不投机」决策**(投机决策是统计性的,所有 State 命中数据共同贡献到 deopt 计数)。**记入 [doc-gaps](../../llmdoc/memory/doc-gaps.md)**——不影响正确性,只影响投机决策粒度。
+承 [../p2-bridge/05-p3-p4-interface](../p2-bridge/05-p3-p4-interface.md) §6.4 + [../p2-bridge/00-overview §9](../p2-bridge/00-overview.md):多 State 共享 Proto 时,GibbousCode 是只读共享对象;**P4 的 deopt 计数挂哪**(全局 `p4SpecState[proto]` vs per-State)需实装期决策;反复 deopt 拉黑 P4StuckSpeculation 后,**所有 State 共享该 Proto 的「不投机」决策**(投机决策是统计性的,所有 State 命中数据共同贡献到 deopt 计数)。**记入 [doc-gaps](../../../llmdoc/memory/doc-gaps.md)**——不影响正确性,只影响投机决策粒度。
 
 ---
 
 ## 11. 回填请求
 
-本节按 [multi-doc-drafting](../../llmdoc/guides/multi-doc-drafting.md) 协议登记本文起草中发现的、需要 P3 / P2 现稿增字段或调整的请求。**主助理任务收尾阶段统一兑现,本文先列明细**。
+本节按 [multi-doc-drafting](../../../llmdoc/guides/multi-doc-drafting.md) 协议登记本文起草中发现的、需要 P3 / P2 现稿增字段或调整的请求。**主助理任务收尾阶段统一兑现,本文先列明细**。
 
 ### 11.1 P2 现稿(02-ic-feedback / 05-p3-p4-interface)
 
@@ -1058,12 +1065,12 @@ P4 投机的核心风险——guard 密度天花板:
 
 | # | 文档 | 节 | 内容 | 优先级 |
 |---|---|---|---|---|
-| RB-6 | [./04-osr-deopt.md](./04-osr-deopt.md) | §5(deopt 计数 + TierStuck-speculation)| 本文 §7.2 给 P4 视角,04 §5 给具体物化协议;两文协同覆盖完整闭环 | 高 |
+| RB-6 | [./04-osr-deopt.md](./04-osr-deopt.md) | §5(deopt 计数 + P4StuckSpeculation)| 本文 §7.2 给 P4 视角,04 §5 给具体物化协议;两文协同覆盖完整闭环 | 高 |
 | RB-7 | [./08-testing-strategy.md](./08-testing-strategy.md) | (差分接入「投机错果」)| 本文 §3.5 提名差分主防线,08 起草时引用本文 §3.5 / §9.1 | 高 |
 | RB-8 | [./06-backends.md](./06-backends.md) | (per-arch 发射函数)| 本文 §2 / §5 给伪汇编示意,06 起草时本文作 amd64 端母版 | 中 |
 | RB-9 | [./02-template-direction.md](./02-template-direction.md) | §2.4 / §4.1 / §4.4「子集内投机」承诺 | 本文 §4.4 落具体形态;02 引用本文作具体兑现处 | 已对接 |
 
-承 [multi-doc-drafting](../../llmdoc/guides/multi-doc-drafting.md) 协议:**本文起草仅在 §11 登记回填请求,不主动修改 P3 / P2 / 其他子目录文档**;所有跨文档同步由主助理收尾时统一处理。
+承 [multi-doc-drafting](../../../llmdoc/guides/multi-doc-drafting.md) 协议:**本文起草仅在 §11 登记回填请求,不主动修改 P3 / P2 / 其他子目录文档**;所有跨文档同步由主助理收尾时统一处理。
 
 ---
 
@@ -1083,8 +1090,8 @@ P4 投机的核心风险——guard 密度天花板:
 - [../p1-interpreter/02-bytecode-isa](../p1-interpreter/02-bytecode-isa.md) §7(ICSlot 结构;算术 IC 双计数挪用)
 - [../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md) §6(IC 执行机制——本文 §1 供料链下游)
 - [../roadmap](../roadmap.md)(§2 四项税 / §4 P4 验收 luajc 档 / §7 prior art:V8 Sparkplug / JSC Baseline JIT)
-- [../../llmdoc/must/design-premises](../../llmdoc/must/design-premises.md)(前提一负载形状 / 前提二四项税 / 前提三五原则——投机错果是 JIT 第一危险源 / 前提四第一天 NaN-box 承诺)
-- [../../llmdoc/architecture/evolution-roadmap](../../llmdoc/architecture/evolution-roadmap.md)(tier 映射:P4 = gibbous tier-1)
+- [../../../llmdoc/must/design-premises](../../../llmdoc/must/design-premises.md)(前提一负载形状 / 前提二四项税 / 前提三五原则——投机错果是 JIT 第一危险源 / 前提四第一天 NaN-box 承诺)
+- [../../../llmdoc/architecture/evolution-roadmap](../../../llmdoc/architecture/evolution-roadmap.md)(tier 映射:P4 = gibbous tier-1)
 
 
 

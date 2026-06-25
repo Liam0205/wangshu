@@ -1,6 +1,6 @@
 # P4 总览:gibbous/jit method JIT——文档地图 / 实现里程碑 / 验收 / 人月分解
 
-> 状态:**设计阶段,详细设计已齐备**(2026-06-24 单文件 360 行 → 子目录 10 文件约 7600 行扩展轮)。本文是 P4 文档集(00-08 + implementation-progress)的导航与施工计划:每篇文档的定位、组件依赖、构建顺序、里程碑验收门槛、人月分解、跨文档定稿决策速查、与 P1/P2/P3 的桥接(已落地的前瞻义务对账)。
+> 状态:**设计阶段,详细设计已齐备**(2026-06-24 单文件 360 行 → 子目录 10 文件约 8200 行扩展轮 → 审查收口轮)。本文是 P4 文档集(00-08 + implementation-progress)的导航与施工计划:每篇文档的定位、组件依赖、构建顺序、里程碑验收门槛、人月分解、跨文档定稿决策速查、与 P1/P2/P3 的桥接(已落地的前瞻义务对账)。
 > 上游契约:[../roadmap](../roadmap.md)(§4 P4 定义、§2 四项税、§1 校准测量、§7 prior art)、[../architecture](../architecture.md)(§1 包布局 `internal/gibbous/jit`)、[../../llmdoc/architecture/evolution-roadmap](../../../llmdoc/architecture/evolution-roadmap.md)(tier 映射:P4 = gibbous tier-1,与 P3 同层)、[../../llmdoc/must/design-premises](../../../llmdoc/must/design-premises.md)(前提一负载形状 / 前提二四项税 / 前提三五原则 / 前提四第一天 NaN-box 承诺)。
 > P1 依赖面:[01](../p1-interpreter/01-value-object-model.md)(NaN-box u64 + GCRef offset)、[02](../p1-interpreter/02-bytecode-isa.md)(源 ISA + §7 IC slot)、[05](../p1-interpreter/05-interpreter-loop.md)(§1 CallInfo / §7 调用协议——OSR 着陆面)、[12](../p1-interpreter/12-testing-difftest.md)(§3.8 Runner 抽象 / §7 P4 行 / §8 CI 门禁)。
 > P2 依赖面:[../p2-bridge/00-overview](../p2-bridge/00-overview.md)(P4 是 P2 决策的消费者)、[../p2-bridge/02-ic-feedback](../p2-bridge/02-ic-feedback.md) §4(TypeFeedback shape + confidence)、[../p2-bridge/03-compilability-analysis](../p2-bridge/03-compilability-analysis.md) §3.7(F7 后端能力 SupportsAllOpcodes)、[../p2-bridge/04-try-compile-fallback](../p2-bridge/04-try-compile-fallback.md)(零 deopt 单向状态机基线——P4 在此基础上加 deopt 边)、[../p2-bridge/05-p3-p4-interface](../p2-bridge/05-p3-p4-interface.md)(P3Compiler 接口 + GibbousCode 抽象 + P4Feedback 反向读)。
@@ -20,9 +20,9 @@
 | [01-launch-judgment](./01-launch-judgment.md) | 启动闸门 | luajc 档量化锚点(164μs)、两条进入路径(常规/跳跃)、立项三档策略(全启/部分前置/跳过)、立项判定决策树、立项前后判定权分离 |
 | [02-template-direction](./02-template-direction.md) | 方向裁决 | JSC Baseline / V8 Sparkplug 风格 per-function 模板编译、候选谱系否决(无 IR / 无跨指令 regalloc)、F1-F7 闸门继续生效、模板编译可行性论证 |
 | [03-speculation-ic](./03-speculation-ic.md) | 类型投机 | IC 反馈消费(P4Feedback 反向读)、按 FeedbackKind 五档投机模板、guard 显式比较硬约束(无信号陷阱)、状态机加 deopt 边(P2/P3 零 deopt 基线打破)、stableShape/stableIndex 直达槽、重训练协议 |
-| [04-osr-deopt](./04-osr-deopt.md) | OSR exit 协议 | 函数级 exit 语义、物化 = memmove(第一天值表示承诺现金兑付)、栈槽真相不变式、exitPC↔字节码映射、再训练防 deopt 风暴、TierGibbousJIT/TierStuckSpeculation 枚举 |
+| [04-osr-deopt](./04-osr-deopt.md) | OSR exit 协议 | 函数级 exit 语义、物化 = memmove(第一天值表示承诺现金兑付)、栈槽真相不变式、exitPC↔字节码映射、再训练防 deopt 风暴、P4 内部 `p4SpecState[proto]` 子状态机(P4Speculative/P4Deoptimized/P4StuckSpeculation)|
 | [05-system-pipeline](./05-system-pipeline.md) | 系统管线 | 四项税逐项自付方案(自管机器栈 / 回边抢占检查 / jitContext 稳定指针 / 写屏障白赚)、exec mmap/W^X/icache flush/trampoline 四件套、JIT 世界边界、trampoline 三出口(正常/OSR exit/慢路径)、arena base 重载协议 |
-| [06-backends](./06-backends.md) | 双后端 | 共享骨架 + per-arch 发射器(否决宏汇编)、寄存器约定、模板分级表达、双架构 CI 双跑、PJ 里程碑、CI 含 Go 1.22/1.24/tip 矩阵 |
+| [06-backends](./06-backends.md) | 双后端 | 共享骨架 + per-arch 发射器(否决宏汇编)、寄存器约定、模板分级表达、双架构 CI 双跑、PJ 里程碑、CI 含 Go 1.25/1.26/tip 矩阵 |
 | [07-p3-retirement](./07-p3-retirement.md) | P3 去留决策框架 | 「留作可移植中层」表面论据 + 关键拆穿(wazero 编译引擎与 P4 共享平台约束)、决策矩阵、缺省倾向退役、P4 验收时定 |
 | [08-testing-strategy](./08-testing-strategy.md) | 验收 + 测试 | luajc 档验收口径、V1-V22 总表(P1 V1-V18 + P4 增项 V19-V22)、同 Proto 差分主防线(P4 接续 P3 force-all 套)、OSR 状态等价 V19、deopt 注入 V20、双架构双跑 V21、prove-the-path 纪律继承 |
 | [implementation-progress](./implementation-progress.md) | 进度 | 立项前置闸门检查、PJ 里程碑(预设占位)、设计期决策盘点(影响 × 不确定度三档)、**跨文档回填请求收口表**(本文档集 §回填请求节聚合) |
@@ -89,7 +89,7 @@
    installGibbous([P2 04 §4.4])
         │
         ▼
-   TierGibbousJIT(吸收态,直到 OSR exit 出现)
+   TierGibbous(P2 视角吸收态;P4 内部 p4SpecState=P4Speculative,直到 OSR exit 后转 P4Deoptimized)
         │
         ▼
    crescent.doCall 检测 tierState ⇒
@@ -136,13 +136,13 @@
 
 4. **寄存器分配的 jitContext**([05 §3.3](./05-system-pipeline.md) + [06 §4](./06-backends.md)):JIT 代码所需的所有 Go 侧能力(arena base、helper 表、preemptFlag、exit reason code)装入 Go 堆上的 `jitContext` struct,经固定寄存器(amd64: r15;arm64: x28 待定)传入;Go 堆对象不移动,故 context 指针稳定(承 P1 [01 §2](../p1-interpreter/01-value-object-model.md)「GCRef 非 Go 指针」纪律的对偶面)。
 
-5. **双架构 CI 双跑**([06 §5](./06-backends.md) + [08 §6](./08-testing-strategy.md)):amd64 与 arm64 物理 runner 各跑全套差分门禁(同 Proto crescent vs gibbous-jit byte-equal),交叉编译只能保证能构建不能代跑差分。**CI 矩阵增项**:Go 1.22 / 1.24 / tip 三版本(承 [06 §8 风险 3](./06-backends.md))。
+5. **双架构 CI 双跑**([06 §5](./06-backends.md) + [08 §6](./08-testing-strategy.md)):amd64 与 arm64 物理 runner 各跑全套差分门禁(同 Proto crescent vs gibbous-jit byte-equal),交叉编译只能保证能构建不能代跑差分。**CI 矩阵增项**:Go 1.25 / 1.26 / tip 三版本(承 [06 §8.2 开放问题](./06-backends.md))。
 
-6. **OSR exit 物化静态生成**([04 §3.3](./04-osr-deopt.md) 注 + [04 §6](./04-osr-deopt.md)):若某些模板为性能在边界间短暂缓存值(如 FORLOOP 循环变量驻留寄存器),则相应 guard 的 exit 需补一段「寄存器→栈槽」写回序列——**每 exit 点编译期生成,固定几条 store**,杜绝运行期 snapshot 解释器(否则 deopt 复杂度直升 P5 量级)。
+6. **OSR exit 物化静态生成**([04 §3.6 / §3.7](./04-osr-deopt.md) + [04 §6](./04-osr-deopt.md)):若某些模板为性能在边界间短暂缓存值(如 FORLOOP 循环变量驻留寄存器),则相应 guard 的 exit 需补一段「寄存器→栈槽」写回序列——**每 exit 点编译期生成,固定几条 store**,杜绝运行期 snapshot 解释器(否则 deopt 复杂度直升 P5 量级)。
 
 ---
 
-## 4. 实现里程碑(细化 [02 §5.2](./02-template-direction.md) / [06 §6](./06-backends.md) PJ 编号施工顺序)
+## 4. 实现里程碑(细化 [02 §5.3](./02-template-direction.md) / [06 §6](./06-backends.md) PJ 编号施工顺序)
 
 每步可独立编译 + 单测通过再进下一步。「验收」列是该步的完成定义;PJ 编号(P-JIT)供排期引用。**P4 核心验收门是性能(列内核负载 ≥164μs luajc 档)**,与 P3(≥2x loop) / P2(决策正确) 不同。
 
@@ -152,17 +152,17 @@
 | PJ1 | amd64 trampoline + 直线模板(MOVE/LOADK/LOADBOOL/LOADNIL/JMP/RETURN) | [05 §4](./05-system-pipeline.md) + [06 §3.1](./06-backends.md) | 一个 6-op 直线 Proto 升层后 byte-equal 解释结果;升层日志 `function promoted to gibbous` 触发;exec mmap + W^X 翻面工作;trampoline 进/出对称 |
 | PJ2 | amd64 算术 + 比较模板 + **IsNumber×2 guard**(投机模板首落地)| [03 §2 / §5](./03-speculation-ic.md) + [06 §3.2](./06-backends.md) | 双 number 快路径直发 `mulsd`/`addsd`(以及对应 cmp)+ NaN 规范化;guard 失败 OSR exit 回解释;混合类型 fallback 走通用模板(语义完备) |
 | PJ3 | amd64 控制流 + FORLOOP + 回边 safepoint | [05 §6.3](./05-system-pipeline.md) + [06 §3.3](./06-backends.md) | 数值 for 循环编译后 ≥**luajc 档**(列内核 ≥164μs 一档,详 [01 §1](./01-launch-judgment.md) + [08 §1](./08-testing-strategy.md));回边 preemptFlag 检查 byte-equal;长循环 STW GC 延迟 < 阈值 |
-| PJ4 | amd64 表 IC 模板(GETTABLE/SETTABLE/GETGLOBAL/SETGLOBAL/SELF)+ **stableShape/stableIndex 直达槽投机** | [03 §6](./03-speculation-ic.md) + [06 §3.4](./06-backends.md) | 单态表(FBTableMono)guard 通过 + 直达槽 load/store 跳哈希;形状变化 deopt + 再训练降级通用模板 |
+| PJ4 | amd64 表 IC 模板(GETTABLE/SETTABLE/GETGLOBAL/SETGLOBAL/SELF + NEWTABLE/LEN/CONCAT/SETLIST)+ **stableShape/stableIndex 直达槽投机** | [03 §6](./03-speculation-ic.md) + [06 §3.4](./06-backends.md) | 单态表(FBTableMono)guard 通过 + 直达槽 load/store 跳哈希;形状变化 deopt + 再训练降级通用模板;NEWTABLE/LEN/CONCAT/SETLIST 走 helper(承 06 §3.8 PJ4 行) |
 | PJ5 | amd64 CALL/TAILCALL + 跨层互调 + **OSR exit 实装** | [04](./04-osr-deopt.md) + [05 §4.3](./05-system-pipeline.md) + [06 §3.5](./06-backends.md) | gibbous-jit 内调未编译 Proto 经 trampoline 走 crescent;gibbous-jit→gibbous-jit / gibbous-jit→host 三向分派;OSR exit 后续跑 exitPC 起的状态等价(V19) |
 | PJ6 | amd64 CLOSURE/CLOSE + upvalue | [06 §3.6](./06-backends.md) | 闭包构造 + 开放/关闭 upvalue 与解释器 byte-equal(P3 同款经 helper 复用 makeClosure/closeUpvals) |
 | PJ7 | amd64 端到端验收 + 性能基准 | [08 §1 / §3](./08-testing-strategy.md) | **单架构 V1-V22 全过**——正确性 V1-V13 byte-equal + V19 OSR 等价 + V20 deopt 注入 + V14 列内核 luajc 档 + V17 四 build + V18 -race |
 | PJ8 | arm64 后端启动 + 同框架渐进交付 | [06 §6 / §3-§6](./06-backends.md) | arm64 各 opcode 模板按族落地(amd64 模板族的 per-arch 镜像);macOS arm64 `MAP_JIT` + `pthread_jit_write_protect_np` 工作;icache flush 序列写入 |
-| PJ9 | arm64 端到端验收 + 双架构差分套 | [06 §5](./06-backends.md) + [08 §6](./08-testing-strategy.md) | **双架构 V1-V22 全过**——amd64/arm64 各自全套差分门禁 byte-equal;Go 1.22/1.24/tip 矩阵 CI 绿 |
+| PJ9 | arm64 端到端验收 + 双架构差分套 | [06 §5](./06-backends.md) + [08 §6](./08-testing-strategy.md) | **双架构 V1-V22 全过**——amd64/arm64 各自全套差分门禁 byte-equal;Go 1.25/1.26/tip 矩阵 CI 绿 |
 | **PJ10** | luajc 档验收 + 性能调优 | [01](./01-launch-judgment.md) + [08 §8](./08-testing-strategy.md) | **P4 总验收**:列内核负载 ≥luajc 档(≥164μs 水位 over gopher-lua 同基准);承 [01 §4](./01-launch-judgment.md) 四个分档约束(列内核形状 + 真实负载 + 双架构 + 不豁免差分) |
 
-> **PJ0 启动条件**:P3 已交付(本机 Xeon 6982P 实测基线 loop 2.95x ≪ luajc 档 4.4x);**立项判定通过**(详 [01 §3.1 三条必备条件](./01-launch-judgment.md):真实宿主负载需求 + 资源到位 + 设计文档齐备)。立项判定本身可能否决 P4(详 [01 §3.4 跳过档](./01-launch-judgment.md))。
+> **PJ0 启动条件**:P3 已交付(本机 Xeon 6982P 实测基线 **loop 2.95x over P1(= 7.2x over gopher-lua,已超 luajc 档 4.4x over gopher-lua) / table 0.88x / call 0.52x / mixed 0.99x;后三档仍 ≪ luajc 档列内核形态——P4 立项动机不在 loop 而在非 loop 形态**,详 [01 §3.3](./01-launch-judgment.md));**立项判定通过**(详 [01 §3.1 三条必备条件](./01-launch-judgment.md):真实宿主负载需求 + 资源到位 + 设计文档齐备)。立项判定本身可能否决 P4(详 [01 §3.4 跳过档](./01-launch-judgment.md))。
 >
-> **PJ7 验收口径**:V1-V22 总表见 [08 §2](./08-testing-strategy.md);P4 增项 V19(OSR 等价)/ V20(deopt 注入)/ V21(双架构)/ V22(由 [08 §2](./08-testing-strategy.md) 确定)。
+> **PJ7 验收口径**:V1-V22 总表见 [08 §2](./08-testing-strategy.md);P4 增项 V19(OSR 等价)/ V20(deopt 注入)/ V21(双架构)/ V22(guard 漏判 fuzz,详 [08 §2.4](./08-testing-strategy.md))。
 >
 > **PJ10 是 P4 总验收**:不达标视情况(详 [01 §4.3 第二闸门](./01-launch-judgment.md)):中途仍可止损改 P5 路径或退守 P3 永久基线。
 
@@ -205,12 +205,13 @@
 | **自管机器栈 + jitContext** | JIT 跑 Go-allocated `[]byte` 栈,trampoline 切 SP;jitContext 经固定寄存器传(amd64 r15)| [05 §1.1.2 / §3.3](./05-system-pipeline.md) |
 | **共享骨架 + per-arch 发射器,不用宏汇编** | 编译驱动 + guard/OSR 逻辑架构无关;每 opcode 发射函数按架构各一份 | [06 §1](./06-backends.md) |
 | **双架构 CI 双跑** | amd64 / arm64 物理 runner 各跑全套差分门禁;交叉编译只验构建 | [06 §5.1](./06-backends.md) + [08 §6](./08-testing-strategy.md) |
-| **引入 deopt 边** | P2/P3 零 deopt 状态机加 `TierGibbousJIT ──guard失败OSR exit──► TierInterp` 边 | [03 §4](./03-speculation-ic.md) + [04 §5.2](./04-osr-deopt.md) |
+| **引入 deopt 边** | P2 状态机仍三态单向无 deopt 边;**P4 内部状态机叠加 deopt 边**(`p4SpecState[proto]`:P4Speculative ─guard失败OSR exit─► P4Deoptimized),不冲击 P2 单一事实源 | [03 §4](./03-speculation-ic.md) + [04 §5.2](./04-osr-deopt.md) |
 | **F1-F7 闸门继续生效** | 投机叠加在「可编译子集之内」,与不可编译走 fallback 正交 | [02 §4.4](./02-template-direction.md) + [03 §4.5](./03-speculation-ic.md) |
 | **P3 去留 P4 验收时定** | 结构上共存零成本(`internal/gibbous/{wasm,jit}` 并列);策略上缺省退役 | [07](./07-p3-retirement.md) |
 | **luajc 档 = 列内核 ≥164μs 一档** | 校准测量 1(Horner 5 次多项式)的 LuaJ-luajc 水位;LuaJIT 仅快 6%,达标即「逼近 LuaJIT 档」 | [01 §1](./01-launch-judgment.md) + [08 §1](./08-testing-strategy.md) + [../roadmap](../roadmap.md) §1 |
 | **P4 build 下 arena backing 切回 Go 堆** | 不经 wazero memory 中介,但偏移寻址协议同 P3 | [05 §3.5](./05-system-pipeline.md) + [P3 03 §0.4](../p3-wasm-tier/03-memory-model.md) |
-| **协程不升层(继承 P3 线程级 tier 规则)** | 主线程才允许走 gibbous;协程线程一律走 crescent;onMain bool 经 considerPromotion 透传 | [P3 07](../p3-wasm-tier/07-coroutine-thread-rule.md) + [04 §8.3](./04-osr-deopt.md) |
+| **协程不升层(继承 P3 线程级 tier 规则)** | 主线程才允许走 gibbous;协程线程一律走 crescent;onMain bool 经 considerPromotion 透传 | [P3 07](../p3-wasm-tier/07-coroutine-thread-rule.md) |
+| **P4 自管投机生命周期,P2 状态机不感知** | 方案 A:P2 三态 `TierInterp/TierGibbous/TierStuck` 不变;P4 内部 `p4SpecState[proto]` 子状态机自管(P4Speculative/P4Deoptimized/P4StuckSpeculation);OSR exit / 重训练 / 拉黑投机全 P4 实装 | [03 §4.2 / §8](./03-speculation-ic.md) + [04 §5](./04-osr-deopt.md) |
 
 ---
 
@@ -225,7 +226,7 @@ P1 全卷已交付(M0-M14) + P2 PB0-PB7 + 后续优化轮 #1-#4 + P3 PW0-PW10 + 
 | **P3Compiler 接口**(P4 复用) | ✅ P2 PB6 已定义 | [P2 05 §2](../p2-bridge/05-p3-p4-interface.md) | PJ0 起 `internal/gibbous/jit` 实现该接口 |
 | **GibbousCode 抽象** | ✅ P2 PB6 已定义 | [P2 05 §6](../p2-bridge/05-p3-p4-interface.md) | PJ0 起包装原生码段 |
 | **GibbousCode.Run status=2 编码**(DEOPT)| ✅ P2 PB6 已预留(`P3 永不返回 2,P4 才返回 2`)| [P2 05 §6.1](../p2-bridge/05-p3-p4-interface.md) | PJ5 OSR exit 返回 status=2 触发 doCall 续解释 |
-| **TierState 单向 + 吸收态** | ✅ P2 PB4 已落地 | [P2 04 §2](../p2-bridge/04-try-compile-fallback.md) | P4 在 TierGibbousJIT 内自管投机状态机(承 [03 §4](./03-speculation-ic.md)),P2 状态机不感知 |
+| **TierState 单向 + 吸收态** | ✅ P2 PB4 已落地 | [P2 04 §2](../p2-bridge/04-try-compile-fallback.md) | P4 在 `TierGibbous` 内自管投机状态机(`p4SpecState[proto]`,承 [03 §4.2](./03-speculation-ic.md));P2 三态枚举不动 |
 | **installGibbous** | ✅ P2 PB4 已落地 | [P2 04 §4.4](../p2-bridge/04-try-compile-fallback.md) | PJ0 起被 P2 调用 |
 | **F1-F7 + SupportsAllOpcodes** | ✅ P2 PB3 + PB6 已落地 | [P2 03 §3.7](../p2-bridge/03-compilability-analysis.md) + [P2 05](../p2-bridge/05-p3-p4-interface.md) | PJ0 起 supported 表初空,逐 PJ 扩充 |
 | **CallInfo bit50 `callStatus_gibbous`** | ✅ P3 PW6 已落地 | [P1 05 §1.2](../p1-interpreter/05-interpreter-loop.md) + [P3 04 §1](../p3-wasm-tier/04-trampoline.md) | P4 trampoline 进帧时同款写 1 |
@@ -265,8 +266,8 @@ P1 全卷已交付(M0-M14) + P2 PB0-PB7 + 后续优化轮 #1-#4 + P3 PW0-PW10 + 
 5. **arena base 在两个 safepoint 之间稳定**:arena 搬迁(扩容)只发生在分配慢路径(= 出了 JIT 世界);JIT 内联 bump 越界即出去,回来从 jitContext 重载 base([05 §5](./05-system-pipeline.md))。
 6. **混层调用走统一 CallInfo 协议**:JIT 函数 CALL 目标若有 JIT 码则同世界内直跳;若是解释 tier 则经 trampoline 出由 crescent 执行;协议同 P3,只换发射后端([05 §4 / §4.3](./05-system-pipeline.md))。
 7. **共享骨架 + per-arch**:编译驱动 + guard/OSR 逻辑架构无关;每 opcode 发射函数按架构各一份;不写宏汇编([06 §1 / §2](./06-backends.md))。
-8. **双架构 CI 双跑**:amd64 / arm64 物理 runner 各跑全套;交叉编译只验构建;Go 版本矩阵 1.22/1.24/tip([06 §5](./06-backends.md) + [08 §6](./08-testing-strategy.md))。
-9. **P4 自管投机生命周期,P2 状态机不感知**:`TierGibbousJIT` 在 P2 看仍是吸收态;投机失败 OSR exit 后该 Proto 在 P4 内回 `TierInterp` 重训练,P2 不参与([03 §8](./03-speculation-ic.md))。
+8. **双架构 CI 双跑**:amd64 / arm64 物理 runner 各跑全套;交叉编译只验构建;Go 版本矩阵 1.25/1.26/tip([06 §5](./06-backends.md) + [08 §6](./08-testing-strategy.md))。
+9. **P4 自管投机生命周期,P2 状态机不感知**:**P2 看 `TierGibbous` 即吸收态**;P4 内部 `p4SpecState[proto]` 子状态机自管(P4Speculative/P4Deoptimized/P4StuckSpeculation),OSR exit 后 P4 端清自身投机产物 + 重训练,P2 `tierState` 不变([03 §4.2 / §8](./03-speculation-ic.md) + [04 §5](./04-osr-deopt.md))。
 10. **P3 去留结构共存零成本**:`internal/gibbous/{wasm,jit}` 并列,P2 `P3Compiler` 接口对两后端同形,策略数据定([07 §5.4](./07-p3-retirement.md))。
 11. **解释器永不退役**:任何 Proto 始终保有可解释字节码(承 [../architecture](../architecture.md) §4 不变式 1);gibbous-jit 只是可选加速面,且 OSR exit 着陆点必为解释器([../../llmdoc/must/design-premises](../../../llmdoc/must/design-premises.md) 原则 1)。
 12. **luajc 档 = 列内核形状**:基准必须是列内核形状(一次 Call 进 VM 整批迭代,per-item 测不出 P4);承 [P1 12 §6.1](../p1-interpreter/12-testing-difftest.md) 硬约束([01 §4.2](./01-launch-judgment.md) + [08 §1](./08-testing-strategy.md))。
@@ -281,11 +282,11 @@ P1 全卷已交付(M0-M14) + P2 PB0-PB7 + 后续优化轮 #1-#4 + P3 PW0-PW10 + 
 - **全显式 guard 密度天花板**:guard 成本若实测吃掉投机收益,需展开 guard 合并窥孔(同操作数直线段内只查一次,不引入 IR 的前提下可做)([03 §3.6](./03-speculation-ic.md) + [08 §11.2](./08-testing-strategy.md))。
 - **arm64 维护矩阵**:双后端 + 双架构 CI 是长期固定成本;PJ8/PJ9 可滞后交付不阻塞 PJ7 单架构验收(发布口径如实标注)([06 §5.7](./06-backends.md) + [08 §11.5](./08-testing-strategy.md))。
 - **人年级投入中途校验**:+1-2 人年是 P1-P3 总和级别投入;**PJ3 内部第二闸门**:amd64 + 仅算术投机的最小 P4 先打通全管线测 Horner 档位,若距 luajc 档仍远立即停下重评([01 §4.3](./01-launch-judgment.md) + [08 §1.6](./08-testing-strategy.md))。
-- **locals 寄存器跨指令缓存**:纯「guard 即栈槽真相」vs 允许循环变量寄存器驻留 + 静态物化序列,**PJ7/PJ10 amd64 原型实测定终稿**([04 §3.6](./04-osr-deopt.md) + [06 §4](./06-backends.md))。
+- **locals 寄存器跨指令缓存**:纯「guard 即栈槽真相」vs 允许循环变量寄存器驻留 + 静态物化序列,**PJ7 定终稿,PJ10 调优可能展开**([04 §3.6 / §3.7](./04-osr-deopt.md) + [06 §4](./06-backends.md))。
 - **arena base 重载协议实测**:跨 safepoint 稳定假设需 PJ3/PJ5 实测验证([05 §5](./05-system-pipeline.md))。
 - **P3 去留 P4 验收时定**:[07](./07-p3-retirement.md) 给框架不给结论;缺省倾向退役但留翻案条件(真实宿主 iOS / 解释模式实测翻盘)。
 - **真实宿主需求待外部确认**:首个目标宿主(规则引擎)的列内核形状是否真在协程外、真在主线程、真触及 luajc 档需求——P4 立项前置硬条件([01 §3.4](./01-launch-judgment.md) + [07 §10.2](./07-p3-retirement.md))。
-- **OSR exit 着陆粒度终稿**:纯函数级 vs 允许局部缓存 + 静态物化序列,PJ7 amd64 原型实测后定([04 §1.5](./04-osr-deopt.md))。
+- **OSR exit 着陆粒度终稿**:纯函数级 vs 允许局部缓存 + 静态物化序列,PJ7 amd64 原型实测后定([04 §3.6 / §3.7](./04-osr-deopt.md))。
 - **编译执行的线程模型**:升层触发线程同步编译(模板编译微秒级)vs 后台 goroutine 编译 + 安装屏障,PJ0 实测定(开放问题)。
 - **多 State 并发下 JIT 代码与 profile 的共享语义**:承 [../p2-bridge/00-overview §9](../p2-bridge/00-overview.md) 同款并发缺口,PJ7 验收期落地。
 

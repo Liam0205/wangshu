@@ -2,6 +2,8 @@
 
 > 状态:**详细设计**(P4 整体仍是「架构决策深度」,但 deopt 机制是 deopt vs snapshot 的分水岭,值表示承诺的现金兑现处,本文按详细设计深度展开)。本文是 P4 子文档集的「deopt 机制」单一事实源——guard 失败如何回到解释器、物化为什么是 memmove、与 P5 snapshot 的复杂度对照、再训练防 deopt 风暴。
 >
+> **方案 A 决议(承 [./03-speculation-ic.md](./03-speculation-ic.md) §4.2 + §8)**:**P2 `tierState` 三态枚举不变**(`TierInterp / TierGibbous / TierStuck`,单向无环);**P4 在 `internal/gibbous/jit` 内部维护独立子状态字段 `p4SpecState[proto]`**——枚举 `P4Speculative / P4Deoptimized / P4StuckSpeculation`——叠加在 P2 `TierGibbous` 之上,**P2 不感知**。OSR exit / 重训练 / 拉黑投机全部 P4 自管。本文 §5 的所有「降层 / 重编译 / 拉黑投机」操作都对应 P4 端 `p4SpecState[proto]` 的转移而非 P2 `pd.tierState` 的写入(承 §5.2 / §5.3 + 本文 §12 回填请求已撤回 RJ-8/9/10)。
+>
 > 上游契约:
 > [../../../llmdoc/must/design-premises](../../../llmdoc/must/design-premises.md)(前提四第一天值表示承诺——物化 = memmove 的现金兑现)、
 > [../roadmap](../roadmap.md)(§4「deopt 简单(函数级 OSR exit 回解释器)」的展开)。
@@ -18,7 +20,7 @@
 > [../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md)(§1 CallInfo + Frame 布局、§1.2 word2 bit50 callStatus_gibbous、§1.3 reloadFrame 协议、§7 调用约定 + §7.3 reentry 边界)。
 >
 > P2 依赖面:
-> [../p2-bridge/04-try-compile-fallback](../p2-bridge/04-try-compile-fallback.md)(§7 不重试纪律——本文 §5.4 的「TierStuck-speculation」与之对位)、
+> [../p2-bridge/04-try-compile-fallback](../p2-bridge/04-try-compile-fallback.md)(§7 不重试纪律——本文 §5.4 的「P4StuckSpeculation」与之对位)、
 > [../p2-bridge/05-p3-p4-interface](../p2-bridge/05-p3-p4-interface.md)(§6 GibbousCode `Run` 返回 `status=2 DEOPT`——本文 §4 / §6 的 trampoline 出口)、
 > [../p2-bridge/01-profiling](../p2-bridge/01-profiling.md)(§5 阈值定标——本文 §5.6 deopt 阈值留 P2 实测校准的对位)。
 >
@@ -70,14 +72,14 @@ P4 是望舒第一个**有运行期假设可能被打破**的层(承 [./03-specu
 | §2 | 物化 = memmove | 第一天值表示承诺的现金兑现 |
 | §3 | 「栈槽真相」不变式 | snapshot 不必存在的物理来源 + osrExit 三步伪码 |
 | §4 | exitPC 与字节码地址映射 | 编译期一次性产出,exit 时回填 CallInfo.savedPC |
-| §5 | 再训练与防 deopt 风暴 | TierStuck-speculation;承 P2 不重试纪律 |
+| §5 | 再训练与防 deopt 风暴 | P4StuckSpeculation;承 P2 不重试纪律 |
 | §6 | exit stub 的物理形态 | 寄存器写回 + 写 exitPC + 经 trampoline 出 |
 | §7 | exit 之后的 crescent 接管 | reloadFrame + bit50 后续语义 |
 | §8 | P4 OSR 接 P3 跨层协议 | status=2 DEOPT 出口扩展 |
 | §9 | snapshot 复杂度对照 | P4 vs P5 五行对照表 |
 | §10 | 不变式清单 | 五条聚合 |
 | §11 | 风险与开放问题 | 着陆粒度终稿 / 阈值校准 / 线程模型 |
-| §12 | 回填请求 | 对 P1 05 / P2 04 现稿的字段补登记 |
+| §12 | 回填请求 | 方案 A 下仅保留 P1 05 / 跨层契约相关项(P2 04 / P2 01 加枚举类已撤回) |
 
 ---
 
@@ -95,7 +97,7 @@ P4 是望舒第一个**有运行期假设可能被打破**的层(承 [./03-specu
 - **不是函数调用链**:不是「这帧投机失败 → 调用者帧也一起退」(§1.3 论证上层帧不受影响)。
 - **是当前帧从 exit 点起的剩余字节码**:从 exit 对应的字节码 pc 起,该帧由 crescent 续跑到自然 RETURN(或在续跑过程中再次进入新帧——新帧自有自己的 tier 决策)。
 
-> **「函数」二字精确含义**:Lua 的「函数」即一个 Proto 的一次激活帧——`ProfileData.tierState == TierGibbousJIT` 是 Proto 级状态,但 OSR exit 是帧级事件。同一个升 P4 的 Proto 可能有多个并发帧在调用栈上(递归 / 多 State),其中一个帧 exit 不影响其余帧——它们各自跑各自的编译码,直到自己的 guard 失败或自然 RETURN。
+> **「函数」二字精确含义**:Lua 的「函数」即一个 Proto 的一次激活帧——`p4SpecState[proto] == P4Speculative`(承方案 A,P4 内部子状态;P2 视角看仍是 `pd.tierState == TierGibbous`)是 Proto 级状态,但 OSR exit 是帧级事件。同一个升 P4 的 Proto 可能有多个并发帧在调用栈上(递归 / 多 State),其中一个帧 exit 不影响其余帧——它们各自跑各自的编译码,直到自己的 guard 失败或自然 RETURN。
 
 ### 1.2 该帧剩余执行整体交还解释器
 
@@ -273,25 +275,29 @@ P4 生成码读写值的形态:
 
 ### 3.1 不变式正式陈述
 
-**P4 不变式 1(栈槽真相)**:
+**P4 不变式 1(栈槽真相,松弛版基线)**:
 
-> 每条字节码边界处,本帧全部 Lua 活值已物化在 arena 值栈槽中——模板必须把结果 store 回栈槽才结束;机器寄存器只在单条模板内部短暂持值,不跨字节码边界。
+> **guard 边界处**,本帧全部 Lua 活值在 arena 值栈槽 ∪ 寄存器写回序列(编译期静态可达)中——guard 失败时物化集合 = 编译期已知的「该 guard 对应的寄存器→栈槽写回脚本」(无运行期解析);严格栈槽真相只在「不启用 §3.6 局部缓存」的模板段成立,启用局部缓存的模板段(如 FORLOOP 循环变量驻留)收窄到「guard 处真相点」。
 
-形式化(用「字节码边界」与「活值集」两个概念):
+形式化(用「字节码边界」「guard 边界」与「活值集」三个概念):
 
 - **字节码边界**:连续两条字节码指令之间的时间点(模板 N 结束、模板 N+1 开始之间)。
 - **活值集 `Live(pc)`**:在 pc 对应的字节码边界处,后续执行可能读到的 Lua 寄存器集(由 codegen liveness 分析得出,[../p1-interpreter/02](../p1-interpreter/02-bytecode-isa.md) §6 寄存器使用约定)。
 - **不变式**:对所有字节码边界 pc,`∀reg ∈ Live(pc), arena.valueStack[base + reg] 持有该寄存器在 pc 时的合法 Lua 值`。
 
-谁来兑现这个不变式:**模板编译器**——每条字节码模板的最后一步必须把它修改的输出寄存器 store 回栈槽([./02-template-direction](./02-template-direction.md) §3「不优化跨指令」直接保证)。具体形态:
+谁来兑现这个不变式:**模板编译器**——每条字节码模板的最后一步必须把它修改的输出寄存器 store 回栈槽([./02-template-direction](./02-template-direction.md) §3「不优化跨指令」直接保证)。具体形态(**伪汇编中 `rsi`/`rbx` 等寄存器仅作示例占位,具体寄存器约定见 [05 §3.3 / 06 §4.1](./05-system-pipeline.md)**):
 
 ```
 ADD A B C 模板(amd64,概念形态):
   ; load 操作数
   mov rax, [rsi + 8*B]      ; rax = R(B) NaN-box
   mov rbx, [rsi + 8*C]      ; rbx = R(C) NaN-box
-  ; guard 双 number([./03-speculation-ic] §2)
-  ...                       ; guard 失败跳 exit_stub_for_this_ADD
+  ; guard 双 number([./03-speculation-ic] §2):IsNumber ≡ u64 < NAN_THRESHOLD,
+  ; 失败 = >= NAN_THRESHOLD,跳出走 jae(高位 tag 命中即出 number 域,与 03 §3.4 一致)
+  cmp rax, NAN_THRESHOLD
+  jae exit_stub_42          ; >= 阈值 ⇒ 不是 number ⇒ guard 失败跳出
+  cmp rbx, NAN_THRESHOLD
+  jae exit_stub_42
   ; f64 fast path
   movq xmm0, rax            ; reinterpret 为 f64(IsNumber 已确保)
   movq xmm1, rbx
@@ -492,82 +498,88 @@ exit stub 内(amd64 概念):
 - **IC 更新是 P4 与 P2 自动的接力**:解释器跑续跑路径时,IC 写入会自然记录「这个算术点见过非 number」(承 [../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §6.4 numHits/metaHits 写入)——这对应 P2 阶段聚合 TypeFeedback 时 confidence 被稀释,使下次重编译看到的 feedback 已不再判定「恒 number」。**这就是「再训练」的物理通道**——不需要 P4 主动通知 P2,IC 写入是常驻的 P1 行为,exit 后续跑的几条 IC 写入即完成训练样本更新。
 - **confidence 稀释速度由 IC 阈值机制决定**:具体阈值(几次稀释 confidence 才掉到不投机线)留 P2 实测校准(§5.6),与不变性论证无关。
 
-### 5.2 deopt 计数超低阈值 → 回 TierInterp + 重新积累 + 再热重编译
+### 5.2 deopt 计数超低阈值 → P4 内 P4Deoptimized + 重训练后重编译
 
-**P4 状态机增量(承 [./03-speculation-ic.md](./03-speculation-ic.md) §4 状态图)**:
+**P4 内部子状态机增量(承 [./03-speculation-ic.md](./03-speculation-ic.md) §4.2 状态图;方案 A——P2 三态不变)**:
 
 ```
                           guard 失败 ─┐
                                      ▼
-P2/P3 状态机:                  P4 状态机:
-TierInterp ──► TierGibbous     TierInterp ──► TierGibbousJIT
+P2 状态机(不变):              P4 内部 p4SpecState 子状态机:
+TierInterp ──► TierGibbous     P4Speculative
                 (吸收态)            ▲              │
                                     │              ▼
-                                    └ 再训练 ── TierInterp
-                                                 (deopt 着陆 + 重新积累)
+                                    └ 再训练 ── P4Deoptimized
+                                                 (P4 内「降层」语义,
+                                                  解释续跑 + 计数 +1)
                                                     │ 反复 deopt
                                                     ▼
-                                              TierStuck-speculation
-                                                 (吸收态,§5.4)
+                                              P4StuckSpeculation
+                                                (P4 内吸收态,§5.4;
+                                                 P2 看仍 TierGibbous)
 ```
 
-**deopt 计数超阈值的处理**:
+**deopt 计数超阈值的处理(P4 端伪码,P2 实装零修改)**:
 
 ```
 onOSRExit(proto, exitInfo):
-  pd := proto.profileData
-  pd.deoptCount++
-  if pd.deoptCount < DeoptThreshold:
+  // P4 内部状态字段(见 internal/gibbous/jit/p4state.go,P2 不感知)
+  s := p4SpecState[proto]
+  s.deoptCount++
+  if s.deoptCount < DeoptThreshold:
       return                              // 单次失败,继续观察
 
-  // 阈值触达:丢弃当前编译产物,回 TierInterp 重新积累 feedback
+  // 阈值触达:P4 端 GibbousCode 失效——丢弃当前投机版编译产物,
+  // P4 子状态置 P4Deoptimized;P2 tierState 不动(仍是 TierGibbous)
   oldCode := proto.gibbousCode             // 留给后台 GC / Dispose
-  proto.gibbousCode = nil
-  pd.tierState = TierInterp                // ★ 回退,这是 P2 状态机的「特赦」
+  proto.gibbousCode = nil                  // 经 bridge.installGibbous(nil) 撤销 P4 版安装
+  p4SpecState[proto] = P4Deoptimized       // ★ P4 端字段,P2 不感知
   scheduleDispose(oldCode)                 // 异步释放 codeSeg([./05-system-pipeline] §6)
 
   // ★ feedback 自然由 IC 写入更新——不显式 reset feedback,
   //   因为「IC 已记到此刻的最新观测」就是新训练样本(§5.1)
-  //   ProfileData.deoptCount 在再升时清零(下一次 install 时重置)
+  //   p4SpecState[proto].deoptCount 在再升时清零(下一次 install 时重置)
 ```
 
 要点:
 
-- **回 TierInterp 不是 P2 状态机的违反**:P2 §2.4 的「无 Gibbous→Interp 边」是指「P2/P3 阶段的零 deopt 状态机」。P4 阶段「有意打破」这个保证(承 [./03-speculation-ic.md](./03-speculation-ic.md) §4),所以新增的 `Gibbous→Interp` 边是 P4 阶段的语义增量,而不是对 P2/P3 不变式的违反。
+- **P4 端「降层」语义不写 P2 tierState**:P2 §2.4 的「无 Gibbous→Interp 边」(单向无环)在方案 A 下被严格遵守——P4 阶段「有意打破投机假设」是**P4 内部状态机增量**,落到 `p4SpecState[proto]` 字段而非 P2 `pd.tierState` 枚举值;P2 视角看该 Proto 仍是 `TierGibbous`,只是当前未安装投机版 GibbousCode(下次升时由 P4 重编后再装,或 stuck 后装通用版)。
 - **再热后重编译,失效投机点降级为通用模板**:重编译时 P4 看到的 TypeFeedback 已被 §5.1 的 IC 更新稀释——之前判 `FBArithStableNumber` 的点现在可能是 `FBUnstable`,P4 据此发**通用模板**(走 helper 慢路径,无 guard,语义完备,承 [./03-speculation-ic.md](./03-speculation-ic.md) §2.1 表)。
-- **新编译产物也可能再 deopt**:若新观测仍未稳定,新编译码的某些点仍会触发 deopt——计数继续累加(deoptCount 在再编译后清零 vs 累计的取舍见 §5.6),累到阈值再回 TierInterp 一次。这条循环最多走两次,因为 §5.3 的吸收态会在循环失控前接管。
+- **新编译产物也可能再 deopt**:若新观测仍未稳定,新编译码的某些点仍会触发 deopt——计数继续累加(deoptCount 在再编译后清零 vs 累计的取舍见 §5.6),累到阈值再回 P4Deoptimized 一次。这条循环最多走两次,因为 §5.3 的吸收态会在循环失控前接管。
 
-### 5.3 重编译后仍反复 deopt → TierStuck-speculation
+### 5.3 重编译后仍反复 deopt → P4StuckSpeculation
 
-**纪律**:重编译后(同 Proto 在 P4 上第二次升 + 再次 deopt 累到阈值)仍反复 deopt → 标 `TierStuck-speculation`。
+**纪律**:重编译后(同 Proto 在 P4 上第二次升 + 再次 deopt 累到阈值)仍反复 deopt → P4 端把 `p4SpecState[proto]` 标 `P4StuckSpeculation`(P2 端 `tierState` 仍是 `TierGibbous`,不动)。
 
 ```
 onOSRExit reaches threshold a second time:
-  if pd.recompileCount >= MaxRecompileTries:   // 通常 1-2 次
-      pd.tierState = TierStuckSpeculation       // 吸收态,§5.4
-      // 该 Proto 永久只发无投机的通用模板,或干脆永久解释
-      installNonSpeculativeOrStayInterp(proto, pd)
+  s := p4SpecState[proto]
+  if s.recompileCount >= MaxRecompileTries:   // 通常 1-2 次
+      p4SpecState[proto] = P4StuckSpeculation  // P4 内吸收态,§5.4
+      // 该 Proto 永久只发无投机的通用模板(P4 端覆写 GibbousCode 为通用版),
+      // P2 视角仍是 TierGibbous(下次 doCall 经统一 P3Compiler 接口装通用版)
+      installNonSpeculativeGibbous(proto)
 ```
 
-`TierStuck-speculation` 的物理含义:
+`P4StuckSpeculation` 的物理含义:
 
-- **该 Proto 永久不再发投机模板**:无 f64 fast path、无 IC 表槽直达、无 confidence 决策——所有点都发通用模板(等价解释器语义,通过 helper 实现的慢路径)。
+- **该 Proto 永久不再发投机模板**:无 f64 fast path、无 IC 表槽直达、无 confidence 决策——所有点都发通用模板(等价解释器语义,通过 helper 实现的慢路径);**P2 视角看仍是 TierGibbous,只是 P4 端永久供应「通用版 GibbousCode」**。
 - **仍比解释快**:通用模板仍消除 dispatch 税(承 [./02-template-direction.md](./02-template-direction.md) §1.1)——取指/译码/dispatch 跳转/pc 维护仍由编译码静态化,只是不再做类型投机。
-- **或干脆永久解释**:更简形态——直接标 TierStuck(同 P2 PB0 的 stuck),永久不再编译该 Proto。两个形态的取舍由 [./07-deployment-strategy](./07-deployment-strategy.md)(若有)裁决,本文承「至少一个吸收态吸收反复 deopt 的 Proto」。
+- **相对 P2 `TierStuck` 的差异**:P2 `TierStuck`(P2 实装管,F1-F7 拒)= 永久解释 + 不再编译;`P4StuckSpeculation`(P4 实装管,投机收敛失败)= 永久不投机 + 仍发通用版编译码。两者位于不同状态机,不互斥(承 [./03-speculation-ic.md](./03-speculation-ic.md) §4.3 表)。
 
 ### 5.4 与 P2 04-try-compile-fallback §7 不重试纪律的对位
 
-**对位表**(承 [../p2-bridge/04-try-compile-fallback](../p2-bridge/04-try-compile-fallback.md) §7):
+**对位表**(承 [../p2-bridge/04-try-compile-fallback](../p2-bridge/04-try-compile-fallback.md) §7;**两个吸收态在两个不同的状态机里**):
 
-| 维度 | P2 PB0 不重试纪律 | P4 TierStuck-speculation |
+| 维度 | P2 PB0 不重试纪律(`TierStuck`)| P4 不重试纪律(`P4StuckSpeculation`)|
 |---|---|---|
+| 状态机归属 | P2 `tierState` 枚举(P2 实装) | P4 内部 `p4SpecState[proto]` 字段(P4 实装,P2 不感知)|
 | 触发场景 | try-compile 失败(F1-F7 不可编译 / Compile err) | 重编译后仍反复 deopt(类型假设始终失败) |
-| 吸收态名 | TierStuck | TierStuck-speculation(或 TierStuck) |
-| 物理依据 | 同 Proto 同 P3 后端 = 同结果(§7.1) | 同 Proto 类型行为不稳定 = 重编译仍 deopt(§5.3) |
+| 物理依据 | 同 Proto 同 P3/P4 后端 = 同结果(§7.1) | 同 Proto 类型行为不稳定 = 重编译仍 deopt(§5.3) |
 | 工程价值 | 防止「不可编译热函数」无限重试 | 防止「投机不稳定 Proto」反复编译/deopt 抖动 |
 | 重评估边界 | 进程重启自然边界 | 同左 |
 
-**两个不重试纪律是 P2 状态机洁净性的两根支柱**——P2 守 stuck 不重试,P4 守 stuck-speculation 不重试。少了任一,反复抖动。
+**两个不重试纪律是同一思想的两根支柱**——P2 守 `TierStuck` 不重试编译,P4 守 `P4StuckSpeculation` 不重试投机。少了任一,反复抖动。
 
 ### 5.5 deopt 风暴的物理学
 
@@ -585,9 +597,9 @@ onOSRExit reaches threshold a second time:
 
 **P4 的防风暴策略**(本节 §5.2-§5.4 总览):
 
-1. **deoptCount 阈值低**:几次 deopt 就回 TierInterp,不让 deopt 一直发生在线上。
+1. **deoptCount 阈值低**:几次 deopt 就置 `P4Deoptimized` + 撤当前投机版编译产物,不让 deopt 一直发生在线上。
 2. **重编译次数硬上限**:`MaxRecompileTries`(典型 1-2 次)——失败次数到了就吸收。
-3. **吸收态 TierStuck-speculation 防抖**:不再尝试投机,转通用模板/纯解释。
+3. **吸收态 P4StuckSpeculation 防抖**:不再尝试投机,P4 端永久供应通用版 GibbousCode。
 
 ### 5.6 阈值数值待 P2 实测校准
 
@@ -595,17 +607,17 @@ onOSRExit reaches threshold a second time:
 
 | 阈值 | 含义 | 默认值预算(待校准) |
 |---|---|---|
-| `DeoptThreshold` | 单次 P4 编译产物上累计 deopt 多少次后回 TierInterp | 数十次量级(类比 V8 `--max-opt-count`) |
+| `DeoptThreshold` | 单次 P4 编译产物上累计 deopt 多少次后置 P4Deoptimized | 数十次量级(类比 V8 `--max-opt-count`) |
 | `MaxRecompileTries` | 同 Proto 在 P4 上重编译的最大次数 | 1-2 次 |
-| 重编译间冷却期 | deopt 触阈到回 TierInterp,新一轮 considerPromotion 触发前最少观察的 onBackEdge 数 | 数千次回边(让 IC 充分稀释) |
+| 重编译间冷却期 | deopt 触阈到置 P4Deoptimized,新一轮 considerPromotion 触发前最少观察的 onBackEdge 数 | 数千次回边(让 IC 充分稀释) |
 
 **校准依赖**:列内核负载 + 实战脚本的 deopt 频次分布——这是 P2 实测后才能定的工程数字,不影响本文协议正确性,只影响时机(承 [../p2-bridge/04-try-compile-fallback](../p2-bridge/04-try-compile-fallback.md) §7.4 跨版本重评估同款)。
 
-**对 P2 ProfileData 的字段扩展请求**(§12 回填):
+**P4 端内部状态字段(方案 A,P2 实装零修改)**:
 
-- `deoptCount uint32`:本 Proto 在当前 P4 编译产物上的累计 deopt 次数(每次重编译时 reset)。
-- `recompileCount uint8`:本 Proto 在 P4 上的重编译次数(累计,不 reset,达 `MaxRecompileTries` 后吸收)。
-- `tierState` 增加 `TierGibbousJIT / TierStuckSpeculation` 枚举值(P4 阶段新增,与 P2 PB0 现有的 `TierInterp/TierGibbous/TierStuck` 兼容)。
+- `p4SpecState[proto].deoptCount uint32`:本 Proto 在当前 P4 编译产物上的累计 deopt 次数(每次重编译时 reset);住 `internal/gibbous/jit` 内部 map,P2 不感知。
+- `p4SpecState[proto].recompileCount uint8`:本 Proto 在 P4 上的重编译次数(累计,不 reset,达 `MaxRecompileTries` 后吸收 P4StuckSpeculation);住同款 P4 端 map。
+- **P2 `tierState` 枚举不动**——不新增 `TierGibbousJIT` / `TierStuckSpeculation`(承本文头注方案 A 决议 + §12 RJ-8/9/10 撤回);P4 内部 `P4Speculative / P4Deoptimized / P4StuckSpeculation` 三态住 P4 实装。
 
 ---
 
@@ -615,7 +627,7 @@ onOSRExit reaches threshold a second time:
 
 ### 6.1 每个 guard 处编译期生成一段 exit stub
 
-**exit stub 的位置**(amd64 概念,arm64 同形态):
+**exit stub 的位置**(amd64 概念,arm64 同形态;**伪汇编中 `r15`/`r14` 等寄存器仅作示例占位,具体寄存器约定见 [05 §3.3 / 06 §4.1](./05-system-pipeline.md);不同节中同一寄存器名指代物在 03/04/05 间不一致——以 05 §3.3 jitContext 寄存器固定纪律为单一事实源**):
 
 ```
 某条投机模板的发射形态:
@@ -623,12 +635,13 @@ onOSRExit reaches threshold a second time:
     ; load 操作数
     mov rax, [rsi + 8*B]
     mov rbx, [rsi + 8*C]
-    ; guard 双 number(IsNumber 单 u64 比较,[../p1-interpreter/01] §3.2)
+    ; guard 双 number(IsNumber 单 u64 比较,[../p1-interpreter/01] §3.2):
+    ; IsNumber ≡ u64 < NAN_THRESHOLD,失败 ≡ >= 阈值 ⇒ 用 jae 跳出(承 03 §3.4)
     movabs rcx, NaN_HIGH_BITS
     cmp rax, rcx
-    jb  exit_stub_42         ; ← guard 失败跳本模板专属 exit stub
+    jae exit_stub_42         ; ← guard 失败(>= 阈值,不是 number)跳本模板专属 exit stub
     cmp rbx, rcx
-    jb  exit_stub_42
+    jae exit_stub_42
     ; f64 fast path
     movq xmm0, rax
     ...
@@ -669,7 +682,9 @@ exit_stub(guardId):
 
   ; ── step 2:写 exitPC + atomic deopt 计数 ──
   mov dword ptr [r15 + ci_savedPC_offset], <exitPC_imm>  ; 写 CallInfo.savedPC
-  lock inc dword ptr [r14 + pd_deoptCount_offset]        ; ProfileData.deoptCount++
+  ; ★ deoptCount 住 P4 端 p4SpecState[proto](方案 A,P4 实装内部 map),
+  ;   非 P2 ProfileData 字段;jitContext 经 r14 间接寻址到本 proto 槽
+  lock inc dword ptr [r14 + p4_deoptCount_offset]        ; p4SpecState[proto].deoptCount++
 
   ; ── step 3:经 trampoline 出 JIT 世界 ──
   ;   设 status=2(DEOPT,[../p2-bridge/05] §6.1 status 编码)
@@ -678,11 +693,11 @@ exit_stub(guardId):
   jmp deopt_exit_trampoline
 ```
 
-寄存器约定(jitContext 固定寄存器,承 [./05-system-pipeline.md](./05-system-pipeline.md) §4.2 trampoline):
+寄存器约定(伪汇编寄存器名仅作示例占位,具体寄存器约定见 [05 §3.3 / 06 §4.1](./05-system-pipeline.md)——本文 r15/r14 与 05 jitContext 单一事实源不一致,以 05 为准):
 
-- `rsi` = base pointer(arena 值栈段的本帧起点)
-- `r15` = 当前 CallInfo 指针(进入帧时由 trampoline 装入)
-- `r14` = ProfileData 指针(deopt 计数挂处;§5.6)
+- `rsi` = base pointer(arena 值栈段的本帧起点;05 实际用 `rbx`)
+- `r15` = 当前 CallInfo 指针(进入帧时由 trampoline 装入;05 实际用 `r15` 装 jitContext,CallInfo 字段经 jitContext 间接寻址)
+- `r14` = P4 端 p4SpecState 槽指针(deopt 计数挂处;§5.6;05 实际用 `r14` 装 arena base,p4SpecState 经 jitContext 间接寻址)
 - `eax` = status 返回值
 
 stub 大小估算:
@@ -1003,8 +1018,14 @@ crescent doCall 的 enterGibbous 收到 GibbousCode.Run 返回:
    - 禁止运行期映射查询、禁止运行期解析配方、禁止 exit 路径分配。
 
 5. **不重试纪律:反复 deopt 拉黑投机,吸收态**(§5.4)
-   - 重编译次数到 `MaxRecompileTries` 后,Proto 标 TierStuck-speculation,永久不再投机(发通用模板或纯解释);
-   - 与 P2 04-try-compile-fallback §7 不重试纪律对位——同款防抖,不同触发原因。
+   - 重编译次数到 `MaxRecompileTries` 后,P4 端把 `p4SpecState[proto]` 标 `P4StuckSpeculation`,永久不再投机(发通用模板或纯解释);P2 `tierState` 不动(仍 `TierGibbous`);
+   - 与 P2 04-try-compile-fallback §7 不重试纪律对位——同款防抖,不同触发原因 + 不同状态机归属(P2 vs P4 实装)。
+
+**P4 不变式 6(松弛版栈槽真相)**(承 §3.1 修订):
+
+   - **guard 边界处**全活值在栈槽 ∪ 寄存器写回序列(编译期静态可达);
+   - 严格栈槽真相在「不启用 §3.6 局部缓存」的模板段成立;启用局部缓存的模板段(如 FORLOOP 循环变量驻留)收窄到「guard 处真相点」+ exit 序列编译期静态生成的「寄存器→栈槽」写回脚本(§3.6 / §3.7);
+   - 否决:exit 路径运行期解析配方;exit 路径分配。
 
 这五条不变式是 P4 deopt 机制的协议骨架——任何实现倾向先过这五条。
 
@@ -1052,9 +1073,9 @@ crescent doCall 的 enterGibbous 收到 GibbousCode.Run 返回:
 
 **新登记开放问题**:
 
-- 多 State 共享同一 Proto + 共享 ProfileData(承 [../p2-bridge/01-profiling](../p2-bridge/01-profiling.md) §5.2 多 State 下 ProfileData 的访问纪律)——deopt 计数 atomic add 已防写竞态,但「触阈 → 回 TierInterp + 重编译」的状态转移可能多线程并发。
+- 多 State 共享同一 Proto——deopt 计数 atomic add 已防写竞态,但「触阈 → P4Deoptimized + 重编译」的子状态转移可能多线程并发(住 P4 端 `p4SpecState[proto]` map,P2 不卷入)。
 - 候选纪律:重编译用 sync.Once 或 compileMu(承 [../p2-bridge/04](../p2-bridge/04-try-compile-fallback.md) §4.5 同款锁)守 single-flight。
-- 留 P2 多 State 实测确认。
+- 留 P4 多 State 实测确认。
 
 ---
 
@@ -1062,11 +1083,13 @@ crescent doCall 的 enterGibbous 收到 GibbousCode.Run 返回:
 
 承 [../../../llmdoc/memory/doc-gaps](../../../llmdoc/memory/doc-gaps.md) 跟踪机制,本文向上游文档登记的回填请求:
 
+> **方案 A 决议(承本文头注 + §5)**:P4 投机生命周期 P4 自管,P2 实装零修改——故撤回原 RJ-8(P2 04 加 `TierGibbousJIT/TierStuckSpeculation` 枚举)/ RJ-9(P2 01 加 `ProfileData.deoptCount`)/ RJ-10(P2 01 加 `ProfileData.recompileCount`)三项;P4 端在 `internal/gibbous/jit` 内部 map `p4SpecState[proto]` 自管(`P4Speculative / P4Deoptimized / P4StuckSpeculation` + `deoptCount` + `recompileCount` 字段)。本文保留下表中跨层契约相关的回填项(P1 05 doCall 出口 / 错误冒泡纪律 / P3 04 bit50 / P2 05 status=2 编码),这些与 tier 状态机分离。
+
 | 回填项 | 上游落点 | 内容 | 状态 |
 |---|---|---|---|
-| `TierGibbousJIT` / `TierStuckSpeculation` 枚举 | [../p2-bridge/04-try-compile-fallback](../p2-bridge/04-try-compile-fallback.md) §2.1 TierState 枚举 | P4 阶段新增两个 tierState 值;与 P2 PB0 现有 `TierInterp/TierGibbous/TierStuck` 兼容(承 §5.2 状态机) | **记录,P4 落地时同批补** |
-| `ProfileData.deoptCount uint32` | [../p2-bridge/01-profiling](../p2-bridge/01-profiling.md) §2.2 ProfileData 字段 | 本 Proto 在当前 P4 编译产物上的累计 deopt 次数;每次重编译时 reset | **记录,P4 落地时同批补** |
-| `ProfileData.recompileCount uint8` | [../p2-bridge/01-profiling](../p2-bridge/01-profiling.md) §2.2 | 本 Proto 在 P4 上的重编译次数;累计不 reset;达 `MaxRecompileTries` 后吸收(§5.3) | **记录,P4 落地时同批补** |
+| ~~`TierGibbousJIT` / `TierStuckSpeculation` 枚举~~ | ~~P2 04 §2.1~~ | **撤回(方案 A)**——P4 内部 `p4SpecState[proto]` 子状态 `P4Speculative/P4Deoptimized/P4StuckSpeculation`,P2 `tierState` 三态不动 | ✅ 撤回 |
+| ~~`ProfileData.deoptCount uint32`~~ | ~~P2 01 §2.2~~ | **撤回(方案 A)**——P4 端 `p4SpecState[proto].deoptCount`,P2 `ProfileData` 不动 | ✅ 撤回 |
+| ~~`ProfileData.recompileCount uint8`~~ | ~~P2 01 §2.2~~ | **撤回(方案 A)**——P4 端 `p4SpecState[proto].recompileCount`,P2 `ProfileData` 不动 | ✅ 撤回 |
 | `callDeoptResume` doCall 出口 | [../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §7 doCall 接口 / callResult 枚举 | doCall 收到 GibbousCode.Run 返回 status=2 时的处理出口(reloadFrame + 续跑同帧);P4 阶段新增,P1/P2/P3 不需要(承 §8.3) | **记录,P4 落地时同批补** |
 | CallInfo bit50 在 OSR exit 后的语义 | [../p3-wasm-tier/04-trampoline](../p3-wasm-tier/04-trampoline.md) §1.2 / §1.4 bit50 写入纪律 | exit 后 bit50 是清 0 还是保留 1(§7.2)——倾向清 0(差分友好);P4 落地时实测确认 | **记录,P4 落地时定** |
 | GibbousCode.Run status=2 编码 | [../p2-bridge/05-p3-p4-interface](../p2-bridge/05-p3-p4-interface.md) §6.1(已有,本文承认接口) | 该字段已在 §6.1 注释中预留(`2=DEOPT(P4 OSR exit;P3 永远不返回 2)`) | **已存在,本文承用** |
