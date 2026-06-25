@@ -302,7 +302,8 @@ func NewWithOptions(arenaOpts arena.Options) *State {
 	st.fastCallHitsRef = a.AllocWords(1)
 	a.SetWordAt(st.fastCallHitsRef, 0)
 	st.installRoots()
-	st.wireP3() // wangshu_p3 build:构造 gibbous Compiler 注入 bridge;默认 build no-op
+	st.wireP3() // wangshu_p3 build:构造 gibbous wasm Compiler 注入 bridge;默认 build / p4 build no-op
+	st.wireP4() // wangshu_p4 build:构造 gibbous jit Compiler 注入 bridge;默认 build / p3 build no-op
 	// host closure 槽位回收(gmatch 迭代器、mountArena 列代理等动态注册的
 	// HostFn 在其 closure 被 GC 后释放槽,注册表有界)。
 	c.SetHostFnReleaser(st.releaseHostFn)

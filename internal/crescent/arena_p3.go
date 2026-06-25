@@ -1,4 +1,4 @@
-//go:build wangshu_p3
+//go:build wangshu_p3 && !wangshu_p4
 
 package crescent
 
@@ -81,3 +81,6 @@ const (
 	defaultInitialArenaBytes = 64 * 1024 // 64 KiB(arena.New 零值同值)
 	defaultMaxArenaBytes     = 1 << 31   // 2 GiB(arena.MaxBytes 量级内,wasm32 4GiB 内)
 )
+
+// wireP4 在 wangshu_p3 build 下 no-op(P3+P4 互斥 build tag,本 build 不启用 P4)。
+func (st *State) wireP4() {}
