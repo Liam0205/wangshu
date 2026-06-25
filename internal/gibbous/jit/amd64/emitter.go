@@ -274,3 +274,127 @@ const EncodedPrologLen = 2
 
 // EncodedEpilogLen 是 EmitEpilog 字节数(2,简化版)。
 const EncodedEpilogLen = 2
+
+// --- PJ2 字节级算术发射原语 ---
+//
+// 承 docs/design/p4-method-jit/03-speculation-ic.md §2 IsNumber×2 投机模板
+// + 06-backends.md §3.2 amd64 算术族:双 number 快路径直发 SSE2 浮点指令
+// (movsd / addsd / subsd / mulsd / divsd),无需调 host helper。
+//
+// **PJ2 物理基础**(本节原语本身可用,但完整投机模板需 jitContext 切 SP +
+// 寄存器分配 + IsNumber guard codegen,留 PJ2-PJ5 完整版接入)。
+
+// EmitMovsdXmmFromMem 发射「movsd xmm0, [reg+disp32]」从内存加载 64-bit
+// double 到 xmm0。指令:F2 REX 0F 10 /0 modrm + disp32(8 字节)。
+//
+// 参数 baseReg 是基址寄存器号([0,7] 低 8 寄存器,高 8 需 REX.B 留 PJ3+)。
+// disp32 是有符号 32-bit 偏移。
+//
+// 编码:F2 0F 10 80+baseReg disp32(若 baseReg<8 + 不需 REX.W;movsd 是
+// SSE2 指令,xmm 寄存器编码不需要 REX.W)。
+func EmitMovsdXmmFromMem(buf []byte, xmmDst uint8, baseReg uint8, disp32 int32) []byte {
+	// 防御性兜底:xmm 范围 [0,7],base 范围 [0,7](高 8 寄存器留 PJ3+)
+	if xmmDst > 7 {
+		xmmDst = 0
+	}
+	if baseReg > 7 {
+		baseReg = 0
+	}
+	// F2 prefix(scalar double),0F 10 = MOVSD xmm, xmm/m64
+	buf = append(buf, 0xF2, 0x0F, 0x10)
+	// modrm:mod=10(disp32) reg=xmmDst rm=baseReg
+	modrm := byte(0x80) | (xmmDst&0x7)<<3 | (baseReg & 0x7)
+	buf = append(buf, modrm)
+	// disp32 LE
+	buf = append(buf,
+		byte(uint32(disp32)),
+		byte(uint32(disp32)>>8),
+		byte(uint32(disp32)>>16),
+		byte(uint32(disp32)>>24))
+	return buf
+}
+
+// EmitMovsdMemFromXmm 发射「movsd [reg+disp32], xmm0」存 xmm0 到内存。
+//
+// 指令:F2 0F 11 modrm + disp32(8 字节)。
+func EmitMovsdMemFromXmm(buf []byte, xmmSrc uint8, baseReg uint8, disp32 int32) []byte {
+	if xmmSrc > 7 {
+		xmmSrc = 0
+	}
+	if baseReg > 7 {
+		baseReg = 0
+	}
+	// F2 0F 11 = MOVSD xmm/m64, xmm
+	buf = append(buf, 0xF2, 0x0F, 0x11)
+	modrm := byte(0x80) | (xmmSrc&0x7)<<3 | (baseReg & 0x7)
+	buf = append(buf, modrm)
+	buf = append(buf,
+		byte(uint32(disp32)),
+		byte(uint32(disp32)>>8),
+		byte(uint32(disp32)>>16),
+		byte(uint32(disp32)>>24))
+	return buf
+}
+
+// EmitAddsdXmmXmm 发射「addsd xmmDst, xmmSrc」(xmm 双 double 加,4 字节)。
+// 指令:F2 0F 58 modrm。
+func EmitAddsdXmmXmm(buf []byte, xmmDst uint8, xmmSrc uint8) []byte {
+	if xmmDst > 7 {
+		xmmDst = 0
+	}
+	if xmmSrc > 7 {
+		xmmSrc = 0
+	}
+	buf = append(buf, 0xF2, 0x0F, 0x58)
+	modrm := byte(0xC0) | (xmmDst&0x7)<<3 | (xmmSrc & 0x7)
+	buf = append(buf, modrm)
+	return buf
+}
+
+// EmitSubsdXmmXmm 发射「subsd xmmDst, xmmSrc」(指令:F2 0F 5C modrm)。
+func EmitSubsdXmmXmm(buf []byte, xmmDst uint8, xmmSrc uint8) []byte {
+	if xmmDst > 7 {
+		xmmDst = 0
+	}
+	if xmmSrc > 7 {
+		xmmSrc = 0
+	}
+	buf = append(buf, 0xF2, 0x0F, 0x5C)
+	modrm := byte(0xC0) | (xmmDst&0x7)<<3 | (xmmSrc & 0x7)
+	buf = append(buf, modrm)
+	return buf
+}
+
+// EmitMulsdXmmXmm 发射「mulsd xmmDst, xmmSrc」(指令:F2 0F 59 modrm)。
+func EmitMulsdXmmXmm(buf []byte, xmmDst uint8, xmmSrc uint8) []byte {
+	if xmmDst > 7 {
+		xmmDst = 0
+	}
+	if xmmSrc > 7 {
+		xmmSrc = 0
+	}
+	buf = append(buf, 0xF2, 0x0F, 0x59)
+	modrm := byte(0xC0) | (xmmDst&0x7)<<3 | (xmmSrc & 0x7)
+	buf = append(buf, modrm)
+	return buf
+}
+
+// EmitDivsdXmmXmm 发射「divsd xmmDst, xmmSrc」(指令:F2 0F 5E modrm)。
+func EmitDivsdXmmXmm(buf []byte, xmmDst uint8, xmmSrc uint8) []byte {
+	if xmmDst > 7 {
+		xmmDst = 0
+	}
+	if xmmSrc > 7 {
+		xmmSrc = 0
+	}
+	buf = append(buf, 0xF2, 0x0F, 0x5E)
+	modrm := byte(0xC0) | (xmmDst&0x7)<<3 | (xmmSrc & 0x7)
+	buf = append(buf, modrm)
+	return buf
+}
+
+// EncodedMovsdMemLen 是 MOVSD xmm <-> [base+disp32] 序列字节数(8)。
+const EncodedMovsdMemLen = 8
+
+// EncodedSseBinopLen 是 ADDSD/SUBSD/MULSD/DIVSD xmm,xmm 字节数(4)。
+const EncodedSseBinopLen = 4

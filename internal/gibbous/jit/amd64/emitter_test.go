@@ -101,3 +101,112 @@ func BenchmarkPJ1_CallJIT(b *testing.B) {
 		}
 	}
 }
+
+// TestPJ2_SSE_Encoding 验 PJ2 字节级算术 SSE 指令编码符合 Intel x86-64 ISA。
+//
+// 不真执行(完整 mmap+RX 执行需 jitContext 切 SP + 寄存器分配 codegen,
+// 留 PJ2-PJ5 完整版),只断言字节编码与 ISA 文档一致。
+func TestPJ2_SSE_Encoding(t *testing.T) {
+	// MOVSD xmm0, [rax+0]:F2 0F 10 00 + disp32=0(4 字节)= 8 字节
+	t.Run("MovsdXmmFromMem_xmm0_rax_0", func(t *testing.T) {
+		var buf []byte
+		buf = EmitMovsdXmmFromMem(buf, 0, 0, 0)
+		want := []byte{0xF2, 0x0F, 0x10, 0x80, 0x00, 0x00, 0x00, 0x00}
+		if !bytesEqual(buf, want) {
+			t.Errorf("MOVSD xmm0,[rax+0] = %x, want %x", buf, want)
+		}
+	})
+
+	// MOVSD xmm1, [rcx+8]:F2 0F 10 89 08 00 00 00
+	t.Run("MovsdXmmFromMem_xmm1_rcx_8", func(t *testing.T) {
+		var buf []byte
+		buf = EmitMovsdXmmFromMem(buf, 1, 1, 8)
+		want := []byte{0xF2, 0x0F, 0x10, 0x89, 0x08, 0x00, 0x00, 0x00}
+		if !bytesEqual(buf, want) {
+			t.Errorf("MOVSD xmm1,[rcx+8] = %x, want %x", buf, want)
+		}
+	})
+
+	// MOVSD [rax+0], xmm0:F2 0F 11 80 + disp32=0
+	t.Run("MovsdMemFromXmm_xmm0_rax_0", func(t *testing.T) {
+		var buf []byte
+		buf = EmitMovsdMemFromXmm(buf, 0, 0, 0)
+		want := []byte{0xF2, 0x0F, 0x11, 0x80, 0x00, 0x00, 0x00, 0x00}
+		if !bytesEqual(buf, want) {
+			t.Errorf("MOVSD [rax+0],xmm0 = %x, want %x", buf, want)
+		}
+	})
+
+	// ADDSD xmm0, xmm1:F2 0F 58 C1
+	t.Run("AddsdXmmXmm_xmm0_xmm1", func(t *testing.T) {
+		var buf []byte
+		buf = EmitAddsdXmmXmm(buf, 0, 1)
+		want := []byte{0xF2, 0x0F, 0x58, 0xC1}
+		if !bytesEqual(buf, want) {
+			t.Errorf("ADDSD xmm0,xmm1 = %x, want %x", buf, want)
+		}
+	})
+
+	// SUBSD xmm0, xmm1:F2 0F 5C C1
+	t.Run("SubsdXmmXmm_xmm0_xmm1", func(t *testing.T) {
+		var buf []byte
+		buf = EmitSubsdXmmXmm(buf, 0, 1)
+		want := []byte{0xF2, 0x0F, 0x5C, 0xC1}
+		if !bytesEqual(buf, want) {
+			t.Errorf("SUBSD xmm0,xmm1 = %x, want %x", buf, want)
+		}
+	})
+
+	// MULSD xmm0, xmm1:F2 0F 59 C1
+	t.Run("MulsdXmmXmm_xmm0_xmm1", func(t *testing.T) {
+		var buf []byte
+		buf = EmitMulsdXmmXmm(buf, 0, 1)
+		want := []byte{0xF2, 0x0F, 0x59, 0xC1}
+		if !bytesEqual(buf, want) {
+			t.Errorf("MULSD xmm0,xmm1 = %x, want %x", buf, want)
+		}
+	})
+
+	// DIVSD xmm0, xmm1:F2 0F 5E C1
+	t.Run("DivsdXmmXmm_xmm0_xmm1", func(t *testing.T) {
+		var buf []byte
+		buf = EmitDivsdXmmXmm(buf, 0, 1)
+		want := []byte{0xF2, 0x0F, 0x5E, 0xC1}
+		if !bytesEqual(buf, want) {
+			t.Errorf("DIVSD xmm0,xmm1 = %x, want %x", buf, want)
+		}
+	})
+
+	// disp32 范围测试:-128 应负数 LE 编码
+	t.Run("MovsdXmmFromMem_disp32_negative", func(t *testing.T) {
+		var buf []byte
+		buf = EmitMovsdXmmFromMem(buf, 0, 0, -128)
+		// disp32 = -128 = 0xFFFFFF80(LE: 80 FF FF FF)
+		want := []byte{0xF2, 0x0F, 0x10, 0x80, 0x80, 0xFF, 0xFF, 0xFF}
+		if !bytesEqual(buf, want) {
+			t.Errorf("MOVSD xmm0,[rax-128] = %x, want %x", buf, want)
+		}
+	})
+
+	// 字节数常量
+	t.Run("Constants", func(t *testing.T) {
+		if EncodedMovsdMemLen != 8 {
+			t.Errorf("EncodedMovsdMemLen = %d, want 8", EncodedMovsdMemLen)
+		}
+		if EncodedSseBinopLen != 4 {
+			t.Errorf("EncodedSseBinopLen = %d, want 4", EncodedSseBinopLen)
+		}
+	})
+}
+
+func bytesEqual(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
