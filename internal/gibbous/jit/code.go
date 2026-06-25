@@ -39,6 +39,16 @@ type p4Code struct {
 	// 把 RAX 写到 stack[base/8 + retA] 槽位(= R(retA) NaN-box)。
 	retA uint8
 
+	// retB 是 RETURN 指令的 B 字段(B-1 = 返回值个数)。
+	//   - retB = 1:0 个返回值(空 RETURN);Run 不写 stack 槽
+	//   - retB = 2:1 个返回值;Run 把 RAX 写到 stack[base/8 + retA]
+	retB uint8
+
+	// retPC 是 RETURN 指令的 pc(从 0 起)——DoReturn 用于物化 ci.savedPC。
+	//   - 长度 1 形态(纯 RETURN):retPC = 0
+	//   - 长度 2 形态(LOADK/LOADBOOL/LOADNIL + RETURN):retPC = 1
+	retPC uint8
+
 	// host 是注入的 P4HostState(从 *Compiler 拷贝):per-p4Code 持有,无并发
 	// write(只在 Compile 时写一次,Run 时只读)——V18 -race 友好。
 	host P4HostState
@@ -81,21 +91,15 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 	jitCtxAddr := jitContextAddr(c.jitCtx)
 	rax := jitamd64.CallJITFull(c.codePage.Addr(), jitCtxAddr)
 
-	// 写 R(retA) = RAX(LOADK A K(0); RETURN A 1 的 LOADK 语义)。
-	stack[uint32(c.retA)+base/8] = rax
+	// 写 R(retA) = RAX(仅当返回值个数 >= 1,即 retB >= 2)。
+	// retB = 1 时 0 个返回值,不写 stack。
+	if c.retB >= 2 {
+		stack[uint32(c.retA)+base/8] = rax
+	}
+	_ = rax // 0 返回值时 RAX 是 mmap 段 mov 进的 dummy(我们仍发了 mov+ret)
 
-	// **PJ7 真接入:调 host DoReturn 弹帧 + 移结果**(承 gibbous_host.go::
-	// enterGibbous 调用契约「Run 内部经 DoReturn 完成弹帧」)。
-	//
-	// retPC 固定 1(本 Proto 是 LOADK + RETURN 两条字节码,RETURN 在 pc=1)。
-	// retB 固定 2(返回 1 个值;B-1=1)——与 Compile 期 retB 校验一致。
-	//
-	// hostState == nil 时跳过弹帧:本路径只在 PJ2 内部 prove-the-path 单测
-	// 走到(单测不注入 hostState)。PJ7 真接入路径(SupportsAllOpcodes 开
-	// LOADK+RETURN 白名单后,bridge 经 considerPromotion 主路径触达 P4
-	// Compile + Run)会经 wireP4 注入 hostState。
 	if c.host != nil {
-		c.host.DoReturn(int32(base), 1 /*retPC*/, int32(c.retA) /*A*/, 2 /*B=2 即 1 ret*/)
+		c.host.DoReturn(int32(base), int32(c.retPC) /*retPC*/, int32(c.retA) /*A*/, int32(c.retB) /*B*/)
 	}
 
 	return 0

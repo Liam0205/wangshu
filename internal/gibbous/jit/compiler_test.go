@@ -282,10 +282,10 @@ func TestPJ2_CompileRejectsNonShape(t *testing.T) {
 			p:    &bytecode.Proto{Code: []bytecode.Instruction{}},
 		},
 		{
-			name: "single RETURN",
+			name: "single RETURN B!=1(2 个返回值,不在 PJ7 形态内)",
 			p: &bytecode.Proto{
 				Code: []bytecode.Instruction{
-					bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
+					bytecode.EncodeABC(bytecode.RETURN, 0, 3, 0), // B=3 即返回 2 个值
 				},
 			},
 		},

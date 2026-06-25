@@ -70,25 +70,49 @@ func (c *Compiler) SupportsAllOpcodes(proto *bytecode.Proto) bool {
 //
 // ok=true 时 retA 是 RETURN 的 A 寄存器号,value 是 R(retA) 的最终 NaN-box
 // u64 值(由首条 opcode 编译期决定)。
+//
+// 支持形态:
+//
+//   - 长度 1:RETURN A 1 (B=1,返回 0 个值,即 `function() end`/`return`)
+//   - 长度 2:LOADK/LOADBOOL/LOADNIL A ... + RETURN A 2(返回 1 个值)
 func analyzeShape(proto *bytecode.Proto) (uint8, uint64, bool) {
-	if proto == nil || len(proto.Code) != 2 {
+	if proto == nil {
 		return 0, 0, false
 	}
-	// 第二条必须是 RETURN A 1
+
+	// 形态 0:长度 1,RETURN A B=1(返回 0 个值,空函数)
+	if len(proto.Code) == 1 {
+		ret := proto.Code[0]
+		if bytecode.Op(ret) != bytecode.RETURN {
+			return 0, 0, false
+		}
+		retB := bytecode.B(ret)
+		if retB != 1 { // B=1 即 B-1=0 个返回值
+			return 0, 0, false
+		}
+		// 0 返回值无需写值——但本 PJ7 简化形态 mmap 段恒发 mov rax, imm; ret,
+		// 不会写值栈(p4Code.Run 仍调 DoReturn 完成弹帧;DoReturn nret = b-1 = 0
+		// 即不移结果,直接弹帧)。retA 任意,value 任意 (沿用 0)。
+		return 0, 0, true
+	}
+
+	if len(proto.Code) != 2 {
+		return 0, 0, false
+	}
+	// 第二条必须是 RETURN A 2(返回 1 个值)
 	ret := proto.Code[1]
 	if bytecode.Op(ret) != bytecode.RETURN {
 		return 0, 0, false
 	}
 	retA := bytecode.A(ret)
 	retB := bytecode.B(ret)
-	if retB != 2 { // B=2 即返回 1 个值(B-1=1)
+	if retB != 2 {
 		return 0, 0, false
 	}
 
 	first := proto.Code[0]
 	switch bytecode.Op(first) {
 	case bytecode.LOADK:
-		// LOADK A K(Bx); RETURN A 1
 		loadA := bytecode.A(first)
 		loadBx := bytecode.Bx(first)
 		if loadA != retA {
@@ -98,14 +122,11 @@ func analyzeShape(proto *bytecode.Proto) (uint8, uint64, bool) {
 			return 0, 0, false
 		}
 		if proto.IsStringConst(loadBx) {
-			return 0, 0, false // 字符串常量需要 State 私有 intern,不在 PJ7 范围
+			return 0, 0, false
 		}
 		return uint8(retA), uint64(proto.Consts[loadBx]), true
 
 	case bytecode.LOADBOOL:
-		// LOADBOOL A B C; RETURN A 1
-		// C != 0 则 pc++,本形态不支持(PJ7 是单 BB,不能跳 pc)
-		// 故要求 C == 0
 		loadA := bytecode.A(first)
 		loadB := bytecode.B(first)
 		loadC := bytecode.C(first)
@@ -113,9 +134,8 @@ func analyzeShape(proto *bytecode.Proto) (uint8, uint64, bool) {
 			return 0, 0, false
 		}
 		if loadC != 0 {
-			return 0, 0, false // C != 0 需 pc++,留 PJ8+ 控制流接入
+			return 0, 0, false
 		}
-		// R(A) = bool(B):B != 0 即 true,B == 0 即 false
 		var v value.Value
 		if loadB != 0 {
 			v = value.BoolValue(true)
@@ -125,8 +145,6 @@ func analyzeShape(proto *bytecode.Proto) (uint8, uint64, bool) {
 		return uint8(retA), uint64(v), true
 
 	case bytecode.LOADNIL:
-		// LOADNIL A B; RETURN A 1
-		// R(A..B) := nil 闭区间。本形态要求 A == B(单寄存器赋 nil)
 		loadA := bytecode.A(first)
 		loadB := bytecode.B(first)
 		if loadA != retA || loadA != loadB {
@@ -156,7 +174,13 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 		return nil, ErrCompileUnsupportedShape
 	}
 
+	// 取 retB(从最后一条 RETURN 指令读)
+	retInsn := proto.Code[len(proto.Code)-1]
+	retB := uint8(bytecode.B(retInsn))
+
 	// 发射:mov rax, val; ret(emitter 内已在 PJ1 实装)。
+	// 即使 retB=1(0 返回值),仍发 mov+ret——mmap 段不能为空,RAX dummy 值
+	// 不会被写入栈(retB=1 时 p4Code.Run 不写 stack)。
 	var buf []byte
 	buf = jitamd64.EmitMovRaxImm64(buf, val)
 	buf = jitamd64.EmitRet(buf)
@@ -172,7 +196,9 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 		codePage: page,
 		jitCtx:   NewJITContext(),
 		retA:     retA,
-		host:     c.hostState, // per-Compiler hostState 拷给 p4Code,避免 global race
+		retB:     retB,
+		retPC:    uint8(len(proto.Code) - 1), // RETURN 是最后一条指令
+		host:     c.hostState,
 	}, nil
 }
 
