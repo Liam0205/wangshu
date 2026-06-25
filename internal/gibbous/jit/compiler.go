@@ -668,12 +668,14 @@ func analyzeShape(proto *bytecode.Proto) shapeInfo {
 
 // Compile 把 Proto 编译成 GibbousCode(可执行产物)。
 //
-// **PJ7 真接入实装**(扩展版):识别「单值产生 + RETURN A 1」单 BB 形态——
-// LOADK / LOADBOOL / LOADNIL 三档(承 analyzeShape):
-//  1. 经 analyzeShape 算出 retA + value(NaN-box u64);
-//  2. emitter 发射 `mov rax, value; ret`(11 字节);
+// **PJ7 真接入实装**:识别 analyzeShape 支持的单 BB 形态(getter/setter/
+// 比较折叠 ~25 类——见 analyzeShape godoc 完整清单 + ErrCompileUnsupportedShape
+// 单档列):
+//  1. 经 analyzeShape 算出 retA/retB/preludeOp/value/cmpA/...;
+//  2. emitter 发射 `mov rax, value; ret`(11 字节,常量族烧 NaN-box,
+//     prelude/比较折叠族 RAX 是 dummy 由 Run 端忽略);
 //  3. mmap PROT_RW + 写码 + mprotect PROT_RX(承 05 §2.1);
-//  4. 包装 *p4Code(retA + host = c.hostState 拷贝)。
+//  4. 包装 *p4Code(retA + 各 prelude 字段 + host = c.hostState 拷贝)。
 //
 // 其它形态返 ErrCompileUnsupportedShape(承
 // `p2-bridge/05-p3-p4-interface.md` §2.2.2 错误返回语义)——bridge 收到错误
