@@ -912,3 +912,65 @@ func TestPJ8_EmitSelfNodeHitArm64_StableShapeBurnedIn(t *testing.T) {
 		}
 	}
 }
+
+// TestPJ8_EmitGetTableArrayHitArm64_StableIndexBurnedIn 验 stableIndex
+// 经 LDR imm12 字段(byteOff/8 scaled offset)烧入到 array[idx] 加载段。
+//
+// GetTableArrayHit:guard 32 + re-load 36 + word5+LSR 8 + stableShape 段
+//
+//	16 + CMP+B.NE 8 + arrayRef LDR+MOV+ADD 12 = 112 → LDR array[stableIndex]
+//	在 [112-115]。
+//
+// LDR Xt, [Xn, #disp] 编码:base 0xF9400000 | imm12<<10 | Rn<<5 | Rt;
+// imm12 = byteOff/8 = stableIndex(因 array word 大小 = 8 字节)。
+func TestPJ8_EmitGetTableArrayHitArm64_StableIndexBurnedIn(t *testing.T) {
+	const stableIndex uint32 = 42
+	var buf []byte
+	buf = EmitGetTableArrayHitArm64(buf, 1, 0, 7, stableIndex, 16, 0xCAFEBABE)
+
+	if len(buf) < 116 {
+		t.Fatalf("buf too short: %d", len(buf))
+	}
+
+	// [112-115] LDR x0, [x2, #stableIndex*8](array[stableIndex])
+	insn := binary.LittleEndian.Uint32(buf[112:116])
+	// imm12 = stableIndex(因 array word 大小 = 8 字节 → scaled offset)
+	wantLdr := uint32(0xF9400000) | uint32(stableIndex)<<10 | uint32(2)<<5
+	if insn != wantLdr {
+		t.Errorf("[112] LDR x0, [x2, #stableIndex*8] = 0x%08x, want 0x%08x", insn, wantLdr)
+	}
+
+	// imm12 字段读出验
+	gotImm12 := (insn >> 10) & 0xFFF
+	if gotImm12 != stableIndex {
+		t.Errorf("[112] LDR imm12 = %d, want %d (stableIndex)", gotImm12, stableIndex)
+	}
+}
+
+// TestPJ8_EmitSetTableArrayHitArm64_StableIndexBurnedIn 验 SETTABLE
+// ArrayHit 反向 store 段 STR x3, [x2, #stableIndex*8] 中 imm12 字段。
+//
+// SET ArrayHit:guard 32 + re-load 36 + word5+LSR+stableShape+CMP+B.NE 32
+//   - arrayRef LDR+MOV+ADD 12 + LDR R(C) 4 = 116 → STR 在 [116-119]。
+func TestPJ8_EmitSetTableArrayHitArm64_StableIndexBurnedIn(t *testing.T) {
+	const stableIndex uint32 = 35
+	var buf []byte
+	buf = EmitSetTableArrayHitArm64(buf, 1, 2, 7, stableIndex, 16, 0xCAFEBABE)
+
+	if len(buf) < 120 {
+		t.Fatalf("buf too short: %d", len(buf))
+	}
+
+	// [116-119] STR x3, [x2, #stableIndex*8]
+	insn := binary.LittleEndian.Uint32(buf[116:120])
+	// STR base 0xF9000000 | imm12<<10 | Rn<<5 | Rt
+	wantStr := uint32(0xF9000000) | uint32(stableIndex)<<10 | uint32(2)<<5 | uint32(3)
+	if insn != wantStr {
+		t.Errorf("[116] STR x3, [x2, #stableIndex*8] = 0x%08x, want 0x%08x", insn, wantStr)
+	}
+
+	gotImm12 := (insn >> 10) & 0xFFF
+	if gotImm12 != stableIndex {
+		t.Errorf("[116] STR imm12 = %d, want %d (stableIndex)", gotImm12, stableIndex)
+	}
+}
