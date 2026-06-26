@@ -168,3 +168,24 @@ func TestPJ4_EmitAndRaxImm32(t *testing.T) {
 		t.Errorf("got %x, want %x", got, want)
 	}
 }
+
+// TestPJ4_EmitShrRaxImm8 —— shr rax, 48(严密 IsTable guard 字节级第一步)。
+// 编码:48 C1 E8 30(30=48 十进制)。Intel SDM Vol.2B SHR /5。
+func TestPJ4_EmitShrRaxImm8(t *testing.T) {
+	got := EmitShrRaxImm8(nil, 48)
+	want := []byte{0x48, 0xC1, 0xE8, 48}
+	if string(got) != string(want) {
+		t.Errorf("got %x, want %x", got, want)
+	}
+}
+
+// TestPJ4_EmitCmpEaxImm32 —— cmp eax, 0xFFFC(严密 IsTable guard 字节级
+// 第二步,验高 16 位 tag = TagTable 0xFFFC)。
+// 编码:3D FC FF 00 00(short form,无 ModRM,RAX/EAX 隐式)。
+func TestPJ4_EmitCmpEaxImm32(t *testing.T) {
+	got := EmitCmpEaxImm32(nil, 0xFFFC)
+	want := []byte{0x3D, 0xFC, 0xFF, 0x00, 0x00}
+	if string(got) != string(want) {
+		t.Errorf("got %x, want %x", got, want)
+	}
+}

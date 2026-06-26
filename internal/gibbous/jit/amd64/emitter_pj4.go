@@ -144,3 +144,41 @@ func EmitCmpEcxImm32(buf []byte, imm32 int32) []byte {
 
 // EncodedCmpEcxImm32Len 是「cmp ecx, imm32」字节数(6)。
 const EncodedCmpEcxImm32Len = 6
+
+// EmitShrRaxImm8 发射「shr rax, imm8」(REX.W + C1 /5 + imm8,4 字节)。
+// 用于从 NaN-box 提取高 16 位 tag——`shr rax, 48` 后 rax 高 48 位清零,
+// 低 16 位是 tag value(0xFFFC = TagTable / 0xFFFB = TagString 等)。
+//
+// 编码:48 C1 E8 imm8
+//   - 48 = REX.W
+//   - C1 = SHR r/m64, imm8
+//   - E8 = ModRM:mod=11 reg=101(/5=SHR) rm=000(rax)
+//
+// 用例:严密 IsTable guard 字节级——`shr rax, 48; cmp eax, 0xFFFC; jne deopt`
+// 替换原简化版 `mov rcx, 0xFFFC<<48; cmp rax, rcx; jb deopt`(string/userdata
+// 等高 tag 假阳),严密版精确验高 16 位 = TagTable,排除所有非 table tag。
+func EmitShrRaxImm8(buf []byte, imm8 byte) []byte {
+	return append(buf, 0x48, 0xC1, 0xE8, imm8)
+}
+
+// EncodedShrRaxImm8Len 是「shr rax, imm8」字节数(4)。
+const EncodedShrRaxImm8Len = 4
+
+// EmitCmpEaxImm32 发射「cmp eax, imm32」(操作 32-bit rax)。
+// 编码:3D imm32(5 字节,无 ModRM——AL/AX/EAX/RAX 是 ALU 立即数指令的
+// 隐式操作数,short form)。
+//
+// 用例:严密 IsTable guard 字节级——`shr rax, 48; cmp eax, 0xFFFC`
+// (高 48 位已经 shr 清零,只比较低 16 位 = tag value)。
+func EmitCmpEaxImm32(buf []byte, imm32 int32) []byte {
+	buf = append(buf, 0x3D)
+	buf = append(buf,
+		byte(uint32(imm32)),
+		byte(uint32(imm32)>>8),
+		byte(uint32(imm32)>>16),
+		byte(uint32(imm32)>>24))
+	return buf
+}
+
+// EncodedCmpEaxImm32Len 是「cmp eax, imm32」字节数(5)。
+const EncodedCmpEaxImm32Len = 5
