@@ -549,7 +549,7 @@ func TestPJ8_EmitForLoopWithRegKBodyArm64_ConstantsBurnedIn(t *testing.T) {
 
 	var buf []byte
 	buf = EmitForLoopWithRegKBodyArm64(buf, kS, kInit, kLimit, kStep, kBody,
-		3, ArithOpAddArm64, -1)
+		3, 0x58 /* SseOpAddsd */, -1)
 
 	verifyMov := func(label string, offset int, want uint64) {
 		expectedImm16 := [4]uint16{
@@ -594,7 +594,7 @@ func TestPJ8_EmitForLoopWithRegKBody2Arm64_ConstantsBurnedIn(t *testing.T) {
 
 	var buf []byte
 	buf = EmitForLoopWithRegKBody2Arm64(buf, kS, kInit, kLimit, kStep,
-		kBody1, kBody2, 3, ArithOpMulArm64, ArithOpAddArm64, -1)
+		kBody1, kBody2, 3, 0x59 /* SseOpMulsd */, 0x58 /* SseOpAddsd */, -1)
 
 	verifyMov := func(label string, offset int, want uint64) {
 		expectedImm16 := [4]uint16{
