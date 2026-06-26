@@ -225,13 +225,12 @@ const EncodedPushRegLen = 1
 // EncodedPopRegLen 是「pop regN」编码后的字节数(常量,固定 1)。
 const EncodedPopRegLen = 1
 
-// EmitHelperCall 发射「mov rax, helperAddr; call rax」复合模板(13 字节)
+// EmitHelperCall 发射「mov rax, helperAddr; call rax」复合模板(12 字节)
 // 用于 PJ5 jit→host helper 间接调用。
 //
 // **背景**:helper 函数地址通常远超 ±2GB 范围,直接 `call rel32` 不可用;
 // 标准做法是装载 64-bit 绝对地址到 rax 后 indirect call。本宏把 PJ5 helper
-// 调用的固定字节序列(`mov rax, imm64` 10 字节 + `call rax` 3 字节,
-// 等于 0x48 0xB8 imm64×8 + 0xFF 0xD0 = 13 字节,但实际看 EmitCallReg 是 2
+// 调用的固定字节序列(`mov rax, imm64` 10 字节 + `call rax` 2 字节 = 12
 // 字节)封装,避免每处 helper 调用站点逐原语拼接。
 //
 // **PJ5 用例**:
