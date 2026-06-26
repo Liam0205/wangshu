@@ -112,6 +112,11 @@ type p4Code struct {
 	forLoopA        uint8
 	forLoopLimitReg uint8
 	forLoopUpvalIdx uint8
+
+	// PJ4 IC ArrayHit 路径标志:
+	//   - icArrayHit = true:Run 端检测 raxSpec==deoptCode 时调 host.GetTable
+	//     (byte-equal 解释器 IC + 哈希 + __index)
+	icArrayHit bool
 }
 
 // Proto 反向指针(trampoline 校验)。
@@ -190,6 +195,21 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 		}
 		raxSpec := archCallJITSpec(c.codePage.Addr(), jitCtxAddr, vsBaseAddr)
 		if raxSpec == c.specDeoptCode {
+			// **PJ4 IC ArrayHit deopt** 路径:调 host.GetTable byte-equal P1
+			// (经 IC + 哈希 + __index 元方法链;preludeOp/Arg/C 已存
+			// GETTABLE 信息)
+			if c.icArrayHit {
+				specPC := int32(c.retPC) - 1
+				st := c.host.GetTable(int32(base), specPC, int32(c.retA),
+					int32(c.preludeArg), int32(c.preludeC))
+				if st != 0 {
+					return st
+				}
+				_ = stack
+				c.host.DoReturn(int32(base), int32(c.retPC), int32(c.retA), int32(c.retB))
+				return 0
+			}
+
 			// **PJ3 FORLOOP reg-limit deopt** 路径分流:调 host.ForPrep
 			// 而非 host.Arith(byte-equal 解释器 raise non-number 错误)
 			if c.forLoopDeopt {

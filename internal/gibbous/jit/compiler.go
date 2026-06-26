@@ -120,6 +120,96 @@ type shapeInfo struct {
 	hasBody2    bool   // true = 二段 body 形态(`s=s op1 K1; s=s op2 K2`)
 	bodyOp2     uint8  // 第二段 op SSE 字节
 	bodyKValue2 uint64 // 第二段 K 值
+
+	// PJ4 表 IC ArrayHit 形态(`function(t) return t[K] end`):
+	//   - icArrayHit = true:走 PJ4 IC 直达槽 inline 模板
+	//   - icAReg / icBReg:GETTABLE A B
+	//   - icStableShape / icStableIndex:编译期从 feedback / IC slot 固化
+	icArrayHit    bool
+	icAReg        uint8
+	icBReg        uint8
+	icStableShape uint32
+	icStableIndex uint32
+}
+
+// analyzeGetTableArrayHit 识别 PJ4 IC ArrayHit 形态:
+// `function(t) return t[K] end`(GETTABLE A B C(常量 K idx)+ RETURN A 2)。
+//
+// 与 analyzeShape 的 GETTABLE 路径**互补**:analyzeShape 走 host.GetTable
+// 慢路径;本函数走字节级 IC ArrayHit 直达槽 inline,跳过哈希。
+//
+// **触发条件**(全部满足才返 true):
+//   - Code 长度 2 或 3([0]=GETTABLE / [1]=RETURN / [2]?=dead RETURN)
+//   - GETTABLE A B C:A==RETURN.A,B<=254,C>=256(K 常量索引)
+//   - RETURN A=GETTABLE.A B=2
+//   - proto.IC[0].Kind == ICKindArrayHit(P1 解释器观测过 array 命中)
+//   - feedback.Points[0].Kind == FBTableMono(P2 聚合后稳定 mono)
+//   - feedback.Points[0].Confidence >= 0.99(投机阈值)
+//   - feedback / proto.IC stableShape & stableIndex 一致(无 race 时一致)
+//
+// 失败任一条件返 (shapeInfo{}, false)— 走原 analyzeShape 路径(host helper)。
+func analyzeGetTableArrayHit(proto *bytecode.Proto, feedback *bridge.TypeFeedback) (shapeInfo, bool) {
+	codeLen := len(proto.Code)
+	if codeLen != 2 && codeLen != 3 {
+		return shapeInfo{}, false
+	}
+	if bytecode.Op(proto.Code[0]) != bytecode.GETTABLE ||
+		bytecode.Op(proto.Code[1]) != bytecode.RETURN {
+		return shapeInfo{}, false
+	}
+	if codeLen == 3 && bytecode.Op(proto.Code[2]) != bytecode.RETURN {
+		return shapeInfo{}, false
+	}
+	gtA := bytecode.A(proto.Code[0])
+	gtB := bytecode.B(proto.Code[0])
+	gtC := bytecode.C(proto.Code[0])
+	retA := bytecode.A(proto.Code[1])
+	retB := bytecode.B(proto.Code[1])
+	if gtA != retA || retB != 2 {
+		return shapeInfo{}, false
+	}
+	if gtB > 254 || gtC < 256 {
+		// C 必须是常量索引(>=256)— 否则 key 是动态 reg,IC slot 可能
+		// 轮换不同 key,字节级 inline 不能假设 stableIndex
+		return shapeInfo{}, false
+	}
+	// IC slot 检查(proto.IC 长度 = len(proto.Code))
+	if len(proto.IC) <= 0 {
+		return shapeInfo{}, false
+	}
+	icSlot := proto.IC[0]
+	if icSlot.Kind != bytecode.ICKindArrayHit {
+		return shapeInfo{}, false
+	}
+	// feedback 检查(可能 nil — wireP4 传入时 mainPath 经 ProfileData,
+	// jit 包内单测可能传 nil)
+	if feedback == nil || len(feedback.Points) < 1 {
+		return shapeInfo{}, false
+	}
+	pf := feedback.Points[0]
+	if pf.Kind != bridge.FBTableMono || pf.Confidence < 0.99 {
+		return shapeInfo{}, false
+	}
+	// stableShape / stableIndex 必须一致(feedback 与 IC slot 同源,
+	// 但 race 时可能略有偏差;严苛要求一致才投机)
+	if pf.StableShape != icSlot.Shape || pf.StableIndex != icSlot.Index {
+		return shapeInfo{}, false
+	}
+
+	return shapeInfo{
+		ok:            true,
+		retA:          uint8(retA),
+		retB:          uint8(retB),
+		retPC:         1,
+		preludeOp:     uint8(bytecode.GETTABLE), // Run 端 deopt 走 host.GetTable
+		preludeArg:    uint32(gtB),
+		preludeC:      uint16(gtC),
+		icArrayHit:    true,
+		icAReg:        uint8(retA),
+		icBReg:        uint8(gtB),
+		icStableShape: pf.StableShape,
+		icStableIndex: pf.StableIndex,
+	}, true
 }
 
 // analyzeForLoopBody2Form 识别二段 body 形态:`local s=K_s; for i=K1,K2 do
@@ -1254,7 +1344,17 @@ func analyzeShape(proto *bytecode.Proto) shapeInfo {
 // `p2-bridge/05-p3-p4-interface.md` §2.2.2 错误返回语义)——bridge 收到错误
 // 后把该 Proto 标 TierStuck(永久解释,不重试)。
 func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback) (bridge.GibbousCode, error) {
-	_ = feedback
+	// **PJ4 IC ArrayHit 优先识别**(承 03 §6 stableShape/Index 直达槽)。
+	// 在 analyzeShape 之前判定:IC 形态长度 2/3 与现有 GETTABLE 形态重叠,
+	// 但 IC 触发需要更严格条件(proto.IC[0].Kind=ArrayHit + feedback
+	// confidence ≥ 0.99 + stableShape/Index 一致),命中即走字节级 inline
+	// 跳哈希,失败 fall-through 到 analyzeShape 的 GETTABLE host helper 路径。
+	if archSupportsSpec() && c.hostState != nil && c.hostState.ArenaBaseAddr() != 0 {
+		if icInfo, ok := analyzeGetTableArrayHit(proto, feedback); ok {
+			return c.compileIcArrayHit(proto, icInfo)
+		}
+	}
+
 	info := analyzeShape(proto)
 	if !info.ok {
 		return nil, ErrCompileUnsupportedShape
@@ -1629,3 +1729,38 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 //   - 长度 2/3:SETGLOBAL A Bx + RETURN A 1(setter,prelude 路径调
 //     host.DoSetGlobal,可 ERR 冒泡)
 var ErrCompileUnsupportedShape = errors.New("internal/gibbous/jit: P4 PJ7 unsupported shape (expected: single RETURN A B / single-BB MOVE|GETUPVAL|LOADK|LOADBOOL|LOADNIL|ADD..POW|UNM|LEN|NEWTABLE|GETTABLE|GETGLOBAL|SETTABLE|SETGLOBAL + RETURN A 2 (getter) / 1 (setter))")
+
+// compileIcArrayHit 编译 PJ4 IC ArrayHit 形态(承 analyzeGetTableArrayHit):
+// emit 129 字节 IC inline 模板,失败 deopt → Run 端调 host.GetTable byte-equal P1。
+//
+// **deopt 路径**:Run 端检测 raxSpec==deoptCode → 调 host.GetTable(经
+// IC + 哈希 + __index 元方法链,与解释器 byte-equal)。p4Code 设
+// icArrayHitDeopt=true 区分 reg-limit FORLOOP 的 host.ForPrep 路径。
+func (c *Compiler) compileIcArrayHit(proto *bytecode.Proto, info shapeInfo) (bridge.GibbousCode, error) {
+	const deoptCode uint64 = 0xFFFCDEAD_DEADBE00
+	arenaBaseOff := int32(JITContextArenaBaseOffset)
+	var buf []byte
+	buf = archEmitGetTableArrayHit(buf, info.icAReg, info.icBReg,
+		info.icStableShape, info.icStableIndex, arenaBaseOff, deoptCode)
+	page, err := archMmapCode(buf)
+	if err != nil {
+		return nil, err
+	}
+	incSpecTableHits()
+	return &p4Code{
+		proto:         proto,
+		codePage:      page,
+		jitCtx:        NewJITContext(),
+		retA:          info.retA,
+		retB:          info.retB,
+		retPC:         info.retPC,
+		writeRetA:     false, // 模板已 mov [rbx+aReg*8], rax 写好 R(A)
+		preludeOp:     info.preludeOp,
+		preludeArg:    info.preludeArg,
+		preludeC:      info.preludeC,
+		host:          c.hostState,
+		useSpec:       true,
+		specDeoptCode: deoptCode,
+		icArrayHit:    true, // Run 端区分 deopt 路径走 host.GetTable
+	}, nil
+}

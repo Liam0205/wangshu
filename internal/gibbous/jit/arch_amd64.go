@@ -130,6 +130,13 @@ func archEmitForLoopWithBody2(buf []byte, kS, kInit, kLimit, kStep, kBody1, kBod
 	return jitamd64.EmitForLoopWithRegKBody2(buf, kS, kInit, kLimit, kStep, kBody1, kBody2, aS, sseOp1, sseOp2, preemptFlagOff)
 }
 
+// archEmitGetTableArrayHit 拼接 PJ4 IC ArrayHit 字节级直达槽模板
+// (129 字节,IsTable guard + arena base load + gen check + array 直达 +
+// nil check + 写 R(A) + deopt block)。amd64 端代理 jitamd64.EmitGetTableArrayHit。
+func archEmitGetTableArrayHit(buf []byte, aReg, bReg uint8, stableShape, stableIndex uint32, arenaBaseOff int32, deoptCode uint64) []byte {
+	return jitamd64.EmitGetTableArrayHit(buf, aReg, bReg, stableShape, stableIndex, arenaBaseOff, deoptCode)
+}
+
 // archSupportsSpec 返 true 当本 arch 支持 PJ2 投机模板真接入。
 // amd64 ✅;arm64/其它 ❌(留 PJ8+)。
 func archSupportsSpec() bool { return true }
