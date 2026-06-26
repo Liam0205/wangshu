@@ -162,6 +162,93 @@ func EmitArithSpeculativeAddWithGuard(buf []byte, a, b, c uint8, deoptCode uint6
 	return EmitArithSpeculativeBinopWithGuard(buf, SseOpAddsd, a, b, c, deoptCode)
 }
 
+// EmitArithSpeculativeBinopRegK 拼接「reg + 常量 投机 BINOP A B kvalue 模板」
+// 字节级序列(B 是 reg ∈ [0,254],kvalue 是编译期烧入的 NaN-box raw bits)。
+//
+// 形态(以 ADD 为例,kvalue = NumberValue(K).bits()):
+//
+//	movsd xmm0, [rbx + B*8]        ; 读 R(B) 到 xmm0(8 字节)
+//	mov rax, imm64=kvalue           ; 烧 K 常量 raw bits 入 rax(10 字节)
+//	movq xmm1, rax                  ; rax → xmm1(5 字节)
+//	<sseOp> xmm0, xmm1              ; xmm0 OP xmm1(4 字节)
+//	movsd [rbx + A*8], xmm0         ; 写回 R(A)(8 字节)
+//	ret                             ; 段返回(1 字节)
+//	——— 总计 36 字节 ———
+//
+// **预设条件**:
+//   - rbx = valueStackBase(在 callJITSpec trampoline 加载)
+//   - R(B) 必须是 number(IsNumber guard 已通过——本模板假设 reg 端
+//     是 number,常量 K 已在编译期校验为 number;失败路径的 deopt jcc 在
+//     WithGuard 版本里发)
+//
+// 参数:sseOp 是 SSE opcode 字节;a/b 是寄存器号 [0,254];kvalue 是 K[c]
+// 的 raw NaN-box bits(由 caller 经 value.NumberValue(K).bits() 算好,
+// 直接 mov rax,imm64 烧入)。
+//
+// 返回追加后的 buf。
+func EmitArithSpeculativeBinopRegK(buf []byte, sseOp byte, a, b uint8, kvalue uint64) []byte {
+	buf = EmitMovsdXmmFromMem(buf, 0, 3 /* rbx */, int32(b)*8) // movsd xmm0, [rbx + B*8]
+	buf = EmitMovRaxImm64(buf, kvalue)                         // mov rax, imm64=kvalue(10)
+	buf = EmitMovqXmmFromRax(buf, 1)                           // movq xmm1, rax(5)
+	buf = append(buf, 0xF2, 0x0F, sseOp, 0xC1)                 // <sseOp> xmm0, xmm1
+	buf = EmitMovsdMemFromXmm(buf, 0, 3 /* rbx */, int32(a)*8) // movsd [rbx + A*8], xmm0
+	buf = EmitRet(buf)                                         // ret
+	return buf
+}
+
+// EncodedArithSpecBinopRegKLen 是 reg-K 模板字节数:
+// 8(movsd xmm0,mem) + 11(mov rax,imm64) + 5(movq xmm1,rax) + 4(sse binop)
+// + 8(movsd mem,xmm0) + 1(ret) = 37 字节。
+//
+// 注:EmitMovRaxImm64 = REX.W 0xB8 imm64 = 1+1+8 = 10 字节,但下面我们用
+// 完整版本(48 B8 + 8 bytes = 10),所以总长 = 8+10+5+4+8+1 = 36。需根据
+// EmitMovRaxImm64 真实长度对齐。
+const EncodedArithSpecBinopRegKLen = EncodedMovsdMemLen + EncodedMovRaxImm64Len +
+	EncodedMovqXmmFromRaxLen + EncodedSseBinopLen + EncodedMovsdMemLen + EncodedRetLen
+
+// EmitArithSpeculativeBinopRegKWithGuard 拼接 reg-K 投机模板带 guard(仅
+// guard reg 端是 number,K 端编译期已校验,不必 runtime guard)。
+//
+// 序列:
+//
+//	[guard-B] mov rax, [rbx+B*8] ; mov rcx, qNanBoxBase ; cmp ; jae deopt
+//	movsd xmm0, [rbx+B*8]
+//	mov rax, imm64=kvalue
+//	movq xmm1, rax
+//	<sseOp> xmm0, xmm1
+//	movsd [rbx+A*8], xmm0
+//	ret
+//	[deopt:] mov rax, deoptCode ; ret
+//
+// 总长 = 26(guard×1) + 36(fast path) + 11(deopt) = 73 字节。
+//
+// 比 reg-reg WithGuard(92 字节)少 19 字节——只 guard 一边 reg。
+func EmitArithSpeculativeBinopRegKWithGuard(buf []byte, sseOp byte, a, b uint8, kvalue uint64, deoptCode uint64) []byte {
+	fastLen := EncodedArithSpecBinopRegKLen
+	// guard1 jcc end = startLen + guardLen
+	// fast 段结束 = startLen + guardLen + fastLen
+	// deopt 起点 = startLen + guardLen + fastLen
+	// jcc1 之后 PC = startLen + guardLen
+	// rel1 = (deopt 起点) - (jcc1 之后 PC) = fastLen
+	rel1 := int32(fastLen)
+
+	buf = EmitIsNumberGuard(buf, b, rel1)
+
+	// fast path(reg-K 形态,36 字节)
+	buf = EmitArithSpeculativeBinopRegK(buf, sseOp, a, b, kvalue)
+
+	// deopt block:mov rax, deoptCode; ret(11 字节)
+	buf = EmitMovRaxImm64(buf, deoptCode)
+	buf = EmitRet(buf)
+
+	return buf
+}
+
+// EncodedArithSpecBinopRegKWithGuardLen 是 reg-K WithGuard 字节数:
+// 26 + 36 + 11 = 73 字节。
+const EncodedArithSpecBinopRegKWithGuardLen = EncodedIsNumberGuardLen +
+	EncodedArithSpecBinopRegKLen + EncodedMovRaxImm64Len + EncodedRetLen
+
 // EncodedArithSpecAddWithGuardLen 是完整投机 ADD 模板(含 IsNumber×2
 // guard + 快路径 + deopt block)字节数:26*2 + 29 + 11 = 92。
 const EncodedArithSpecAddWithGuardLen = 2*EncodedIsNumberGuardLen +

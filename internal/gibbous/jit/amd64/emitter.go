@@ -571,3 +571,27 @@ const EncodedMovRcxImm64Len = 10
 
 // EncodedCmpRaxRcxLen 是「cmp rax, rcx」字节数(3)。
 const EncodedCmpRaxRcxLen = 3
+
+// EmitMovqXmmFromRax 发射「movq xmmDst, rax」从 rax 拷贝 64-bit 到 xmm
+// (指令:MOVQ xmm, r/m64 = 66 REX.W 0F 6E /r,5 字节)。
+//
+// 用例:PJ2 reg-K 投机模板——把常量值(经 movabs rax, K_value 烧入 rax)
+// 搬到 xmm1 供 SSE binop 用,避免占用值栈槽。
+//
+// 编码:66 48 0F 6E modrm
+//   - 66 = operand-size prefix(SSE)
+//   - 48 = REX.W(64-bit operand)
+//   - 0F 6E = MOVD/MOVQ xmm, r/m32/64
+//   - modrm = 11_xxx_yyy(mod=11 register direct;reg=xmm 号 0-7;rm=GPR 号)
+//
+// xmm0-7 only(高位寄存器需 REX.R 留 PJ3+);rm 字段恒为 rax(reg=0)。
+func EmitMovqXmmFromRax(buf []byte, xmmDst uint8) []byte {
+	if xmmDst > 7 {
+		xmmDst = 0
+	}
+	modrm := byte(0xC0) | (xmmDst&0x7)<<3 // rm=000 (rax)
+	return append(buf, 0x66, 0x48, 0x0F, 0x6E, modrm)
+}
+
+// EncodedMovqXmmFromRaxLen 是「movq xmm, rax」字节数(5)。
+const EncodedMovqXmmFromRaxLen = 5
