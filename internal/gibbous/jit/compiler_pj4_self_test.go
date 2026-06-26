@@ -210,3 +210,165 @@ func TestPJ4_SelfArrayHit_FormGuards(t *testing.T) {
 		})
 	}
 }
+
+// TestPJ4_SelfNodeHit_MainPath_Synthesized 合成 SELF NodeHit 形态 proto +
+// IC slot + feedback,真驱动 analyzeSelfNodeHit → compileIcSelfNodeHit 链路。
+//
+// **luac 形态边界**(同 SELF ArrayHit):real-world `obj:method` 必须有
+// 括号 `()` 才是 Lua 合法语法,但 `obj:method()` 编 SELF + CALL + RETURN
+// (3+ op)而非 SELF + RETURN 2-op 形态。即 luac 不真编出此 IC 形态——
+// SELF NodeHit 主路径接入是工程基础,e2e 真升层需要 PJ5 CALL 接入后才能
+// 触达。本测试合成驱动是当前唯一覆盖手段。
+//
+// 形态:SELF A=2 B=0 C=257(K[1] string)+ RETURN A=2 B=2,符合
+// analyzeSelfNodeHit 全部触发条件 + IC[0].Kind=NodeHit + stableKey 从
+// proto.Consts[1] 编译期固化。
+func TestPJ4_SelfNodeHit_MainPath_Synthesized(t *testing.T) {
+	ResetSpecHits()
+
+	// stableKey 用 string NaN-box 模拟(0xFFFB + GCRef offset)
+	const stableKey uint64 = 0xFFFB_0000_0000_0042
+
+	proto := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABC(bytecode.SELF, 2, 0, 257), // SELF A=2 B=0 C=K[1]
+			bytecode.EncodeABC(bytecode.RETURN, 2, 2, 0), // RETURN A=2 B=2
+		},
+		IC: make([]bytecode.ICSlot, 2),
+		Consts: []value.Value{
+			0,                      // K[0] dummy
+			value.Value(stableKey), // K[1] 真 stableKey(string NaN-box)
+		},
+	}
+	proto.IC[0] = bytecode.ICSlot{
+		Kind:  bytecode.ICKindNodeHit,
+		Shape: 7,
+		Index: 1,
+	}
+
+	feedback := &bridge.TypeFeedback{
+		Points: []bridge.PointFeedback{
+			{
+				Kind:        bridge.FBTableMono,
+				Confidence:  1.0,
+				StableShape: 7,
+				StableIndex: 1,
+			},
+		},
+	}
+
+	// 验形态识别
+	info, ok := analyzeSelfNodeHit(proto, feedback)
+	if !ok {
+		t.Fatal("analyzeSelfNodeHit 应返 true(SELF + RETURN A 2 + IC NodeHit + feedback mono)")
+	}
+	if !info.icSelfNodeHit {
+		t.Error("info.icSelfNodeHit 应为 true")
+	}
+	if info.icAReg != 2 || info.icBReg != 0 {
+		t.Errorf("icAReg/icBReg = %d/%d, want 2/0", info.icAReg, info.icBReg)
+	}
+	if info.icStableKey != stableKey {
+		t.Errorf("icStableKey = 0x%x, want 0x%x", info.icStableKey, stableKey)
+	}
+	if info.preludeOp != uint8(bytecode.SELF) {
+		t.Errorf("preludeOp = %d, want SELF=%d", info.preludeOp, bytecode.SELF)
+	}
+
+	// 驱动 compileIcSelfNodeHit
+	c := New()
+	host := newMockP4Host()
+	host.arenaBase = 0x1000
+	c.SetHostState(host)
+
+	hitsBefore := SpecTableHits()
+	gc, err := c.Compile(proto, feedback)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	if gc == nil {
+		t.Fatal("Compile 返 nil GibbousCode")
+	}
+
+	hitsAfter := SpecTableHits()
+	if hitsAfter <= hitsBefore {
+		t.Errorf("SpecTableHits 未增长(%d → %d) → SELF NodeHit compileIc 路径未真触达",
+			hitsBefore, hitsAfter)
+	}
+	t.Logf("SELF NodeHit 主路径合成驱动:SpecTableHits %d → %d",
+		hitsBefore, hitsAfter)
+
+	if gc.Proto() != proto {
+		t.Error("GibbousCode.Proto() 应指向输入 proto")
+	}
+}
+
+// TestPJ4_SetTableNodeHit_MainPath_Synthesized 合成 SETTABLE NodeHit 形态
+// 真驱动主路径(对位 SELF NodeHit 同款形态)。
+//
+// 与 SETTABLE ArrayHit 同款 e2e 真升层路径(`function(t,v) t["x"]=v end`
+// 是 SETTABLE NodeHit 真常见形态,e2e 已覆盖);但合成驱动单测确保
+// analyzer/compileIc 不被误改时仍能抓出。
+func TestPJ4_SetTableNodeHit_MainPath_Synthesized(t *testing.T) {
+	ResetSpecHits()
+
+	const stableKey uint64 = 0xFFFB_0000_0000_0042
+
+	proto := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABC(bytecode.SETTABLE, 0, 257, 1), // SETTABLE A=0 B=K[1] C=R(1)
+			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),     // RETURN A=0 B=1(setter)
+		},
+		IC: make([]bytecode.ICSlot, 2),
+		Consts: []value.Value{
+			0,
+			value.Value(stableKey),
+		},
+	}
+	proto.IC[0] = bytecode.ICSlot{
+		Kind:  bytecode.ICKindNodeHit,
+		Shape: 7,
+		Index: 1,
+	}
+
+	feedback := &bridge.TypeFeedback{
+		Points: []bridge.PointFeedback{
+			{
+				Kind:        bridge.FBTableMono,
+				Confidence:  1.0,
+				StableShape: 7,
+				StableIndex: 1,
+			},
+		},
+	}
+
+	info, ok := analyzeSetTableNodeHit(proto, feedback)
+	if !ok {
+		t.Fatal("analyzeSetTableNodeHit 应返 true")
+	}
+	if !info.icSetNodeHit {
+		t.Error("info.icSetNodeHit 应为 true")
+	}
+	if info.icStableKey != stableKey {
+		t.Errorf("icStableKey = 0x%x, want 0x%x", info.icStableKey, stableKey)
+	}
+
+	c := New()
+	host := newMockP4Host()
+	host.arenaBase = 0x1000
+	c.SetHostState(host)
+
+	hitsBefore := SpecTableHits()
+	gc, err := c.Compile(proto, feedback)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	if gc == nil {
+		t.Fatal("Compile 返 nil GibbousCode")
+	}
+	if SpecTableHits() <= hitsBefore {
+		t.Errorf("SETTABLE NodeHit compileIc 路径未真触达")
+	}
+	t.Logf("SETTABLE NodeHit 主路径合成驱动:SpecTableHits %d → %d",
+		hitsBefore, SpecTableHits())
+}
