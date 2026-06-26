@@ -210,3 +210,44 @@ func TestPJ4_EmitCmpRaxRdx(t *testing.T) {
 		t.Errorf("got %x, want %x", got, want)
 	}
 }
+
+// TestPJ4_EmitMovqMemR14PlusRcxFromRax —— 反向 SIB store:
+// `mov [r14 + rcx*1 + disp32], rax`(8 字节,PJ4 SETTABLE IC inline 用)。
+// 编码:49 89 84 0E disp32(LE)。
+// SIB 0E = scale=00 index=001(rcx) base=110(r14 w/ REX.B)。
+func TestPJ4_EmitMovqMemR14PlusRcxFromRax(t *testing.T) {
+	got := EmitMovqMemR14PlusRcxFromRax(nil, 0x12345678)
+	want := []byte{0x49, 0x89, 0x84, 0x0E, 0x78, 0x56, 0x34, 0x12}
+	if string(got) != string(want) {
+		t.Errorf("got %x, want %x", got, want)
+	}
+
+	// 小 disp 也用 disp32(模板字节布局自洽,即便 disp 较小也保持 8 字节)
+	got2 := EmitMovqMemR14PlusRcxFromRax(nil, 32)
+	want2 := []byte{0x49, 0x89, 0x84, 0x0E, 0x20, 0x00, 0x00, 0x00}
+	if string(got2) != string(want2) {
+		t.Errorf("got %x, want %x", got2, want2)
+	}
+}
+
+// TestPJ4_EmitMovqMemR14PlusRcxFromRdx —— 反向 SIB store 从 rdx:
+// `mov [r14 + rcx*1 + disp32], rdx`(8 字节,PJ4 SETTABLE IC inline value 写)。
+// 编码:49 89 94 0E disp32(LE)。
+// ModRM 94 = mod=10 reg=010(rdx)rm=100(SIB)(对位 84 的 reg=000=rax)。
+func TestPJ4_EmitMovqMemR14PlusRcxFromRdx(t *testing.T) {
+	got := EmitMovqMemR14PlusRcxFromRdx(nil, 0x12345678)
+	want := []byte{0x49, 0x89, 0x94, 0x0E, 0x78, 0x56, 0x34, 0x12}
+	if string(got) != string(want) {
+		t.Errorf("got %x, want %x", got, want)
+	}
+}
+
+// TestPJ4_EmitMovqRdxFromMemRbx —— load rdx from [rbx+disp32](值寻址)。
+// 编码:48 8B 93 disp32(7 字节,ModRM 93=mod=10 reg=010(rdx) rm=011(rbx))。
+func TestPJ4_EmitMovqRdxFromMemRbx(t *testing.T) {
+	got := EmitMovqRdxFromMemRbx(nil, 16) // R(2) = [rbx+16]
+	want := []byte{0x48, 0x8B, 0x93, 0x10, 0x00, 0x00, 0x00}
+	if string(got) != string(want) {
+		t.Errorf("got %x, want %x", got, want)
+	}
+}
