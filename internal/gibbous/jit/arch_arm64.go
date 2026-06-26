@@ -13,6 +13,25 @@ import (
 	jitarm64 "github.com/Liam0205/wangshu/internal/gibbous/jit/arm64"
 )
 
+// arenaBaseOffArm64 验 arenaBaseOff(jitContext 字段 byte 偏移)在 arm64
+// LDR scaled offset unsigned 12-bit + 8 字节对齐范围内,溢出 panic
+// (结构性前提硬化为运行期不变式)。
+//
+// arm64 `LDR Xt, [Xn, #pimm12]` 接收的是 8 字节 scaled offset(实际 byteOff =
+// pimm12 * 8,范围 [0, 32760]),`EmitLdrXtFromXnDisp` 对非法值静默兜底
+// byteOff=0 → 静默读 [x27+0] 误命中错字段。本 helper 把检查从注释提升到
+// 运行期 panic,防 JITContext 未来字段重排把 arenaBase 推到 ≥32760 时静默
+// 失效。
+//
+// 当前 JITContextArenaBaseOffset = 0(arenaBase 是 JITContext 首字段),不可达;
+// 留作未来加固。
+func arenaBaseOffArm64(arenaBaseOff int32) uint16 {
+	if arenaBaseOff < 0 || arenaBaseOff > 32760 || arenaBaseOff%8 != 0 {
+		panic("internal/gibbous/jit/arm64: arenaBaseOff out of range or not 8-byte aligned")
+	}
+	return uint16(arenaBaseOff)
+}
+
 // archCodePage 是 arch 抽象的可执行段——本 build 下别名 jitarm64.CodePage。
 type archCodePage = jitarm64.CodePage
 
@@ -150,7 +169,7 @@ func archEmitForLoopWithBody2(buf []byte, kS, kInit, kLimit, kStep, kBody1, kBod
 // 偏移在数十字节量级)。
 func archEmitGetTableArrayHit(buf []byte, aReg, bReg uint8, stableShape, stableIndex uint32, arenaBaseOff int32, deoptCode uint64) []byte {
 	return jitarm64.EmitGetTableArrayHitArm64(buf, aReg, bReg,
-		stableShape, stableIndex, uint16(arenaBaseOff), deoptCode)
+		stableShape, stableIndex, arenaBaseOffArm64(arenaBaseOff), deoptCode)
 }
 
 // archEmitGetTableNodeHit arm64 端 PJ4 IC NodeHit 字节级直达槽模板
@@ -160,7 +179,7 @@ func archEmitGetTableNodeHit(buf []byte, aReg, bReg uint8,
 	stableShape, stableIndex uint32, stableKey uint64,
 	arenaBaseOff int32, deoptCode uint64) []byte {
 	return jitarm64.EmitGetTableNodeHitArm64(buf, aReg, bReg,
-		stableShape, stableIndex, stableKey, uint16(arenaBaseOff), deoptCode)
+		stableShape, stableIndex, stableKey, arenaBaseOffArm64(arenaBaseOff), deoptCode)
 }
 
 // archEmitSetTableArrayHit arm64 端 PJ4 SETTABLE IC ArrayHit 字节级反向
@@ -168,7 +187,7 @@ func archEmitGetTableNodeHit(buf []byte, aReg, bReg uint8,
 func archEmitSetTableArrayHit(buf []byte, aReg, cReg uint8,
 	stableShape, stableIndex uint32, arenaBaseOff int32, deoptCode uint64) []byte {
 	return jitarm64.EmitSetTableArrayHitArm64(buf, aReg, cReg,
-		stableShape, stableIndex, uint16(arenaBaseOff), deoptCode)
+		stableShape, stableIndex, arenaBaseOffArm64(arenaBaseOff), deoptCode)
 }
 
 // archEmitSelfArrayHit arm64 端 PJ4 SELF IC ArrayHit 字节级 inline 模板
@@ -176,7 +195,7 @@ func archEmitSetTableArrayHit(buf []byte, aReg, cReg uint8,
 func archEmitSelfArrayHit(buf []byte, aReg, bReg uint8,
 	stableShape, stableIndex uint32, arenaBaseOff int32, deoptCode uint64) []byte {
 	return jitarm64.EmitSelfArrayHitArm64(buf, aReg, bReg,
-		stableShape, stableIndex, uint16(arenaBaseOff), deoptCode)
+		stableShape, stableIndex, arenaBaseOffArm64(arenaBaseOff), deoptCode)
 }
 
 // archEmitSetTableNodeHit arm64 端 PJ4 SETTABLE IC NodeHit 字节级反向
@@ -185,7 +204,7 @@ func archEmitSetTableNodeHit(buf []byte, aReg, cReg uint8,
 	stableShape, stableIndex uint32, stableKey uint64,
 	arenaBaseOff int32, deoptCode uint64) []byte {
 	return jitarm64.EmitSetTableNodeHitArm64(buf, aReg, cReg,
-		stableShape, stableIndex, stableKey, uint16(arenaBaseOff), deoptCode)
+		stableShape, stableIndex, stableKey, arenaBaseOffArm64(arenaBaseOff), deoptCode)
 }
 
 // archEmitSelfNodeHit arm64 端 PJ4 SELF IC NodeHit 字节级 inline 模板
@@ -194,7 +213,7 @@ func archEmitSelfNodeHit(buf []byte, aReg, bReg uint8,
 	stableShape, stableIndex uint32, stableKey uint64,
 	arenaBaseOff int32, deoptCode uint64) []byte {
 	return jitarm64.EmitSelfNodeHitArm64(buf, aReg, bReg,
-		stableShape, stableIndex, stableKey, uint16(arenaBaseOff), deoptCode)
+		stableShape, stableIndex, stableKey, arenaBaseOffArm64(arenaBaseOff), deoptCode)
 }
 
 // archSupportsSpec arm64 当前不支持(留 PJ8+)。
