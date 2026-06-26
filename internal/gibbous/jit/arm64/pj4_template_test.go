@@ -826,3 +826,89 @@ func TestPJ8_EmitSelfNodeHitArm64_NodeRefAndKey(t *testing.T) {
 		t.Errorf("[140] B.NE cond = 0x%x, want 0x%x (NE)", insn&0xF, CondNE)
 	}
 }
+
+// TestPJ8_EmitGetTableNodeHitArm64_StableShapeBurnedIn 验 GETTABLE NodeHit
+// 模板 stableShape 烧入位置(NodeHit 与 ArrayHit 形态前缀同款,只是后续
+// 分流到 nodeRef 而非 arrayRef):
+//   - guard 32 + re-load 36 + word5+LSR 8 = 76
+//   - MOV stableShape 在 [76-91]
+func TestPJ8_EmitGetTableNodeHitArm64_StableShapeBurnedIn(t *testing.T) {
+	const stableShape uint32 = 0xBEEF_DEAD
+	var buf []byte
+	buf = EmitGetTableNodeHitArm64(buf, 1, 0, stableShape, 3, 0xFFFD_0000_0000_0042, 16, 0xCAFEBABE)
+
+	if len(buf) < 92 {
+		t.Fatalf("buf too short: %d", len(buf))
+	}
+	expectedImm16 := [4]uint16{
+		uint16(stableShape & 0xFFFF),
+		uint16((stableShape >> 16) & 0xFFFF),
+		0,
+		0,
+	}
+	for i, exp := range expectedImm16 {
+		off := 76 + i*4
+		insn := binary.LittleEndian.Uint32(buf[off : off+4])
+		got := uint16((insn >> 5) & 0xFFFF)
+		if got != exp {
+			t.Errorf("stableShape movz/movk[%d]@%d imm16 = 0x%04x, want 0x%04x",
+				i, off, got, exp)
+		}
+	}
+}
+
+// TestPJ8_EmitSetTableNodeHitArm64_StableShapeBurnedIn 验 SETTABLE NodeHit
+// 模板 stableShape 烧入位置(布局同 GETTABLE NodeHit,前缀 76 字节相同)。
+func TestPJ8_EmitSetTableNodeHitArm64_StableShapeBurnedIn(t *testing.T) {
+	const stableShape uint32 = 0xCAFE_FEED
+	var buf []byte
+	buf = EmitSetTableNodeHitArm64(buf, 1, 2, stableShape, 3, 0xFFFD_0000_0000_0042, 16, 0xCAFEBABE)
+
+	if len(buf) < 92 {
+		t.Fatalf("buf too short: %d", len(buf))
+	}
+	expectedImm16 := [4]uint16{
+		uint16(stableShape & 0xFFFF),
+		uint16((stableShape >> 16) & 0xFFFF),
+		0,
+		0,
+	}
+	for i, exp := range expectedImm16 {
+		off := 76 + i*4
+		insn := binary.LittleEndian.Uint32(buf[off : off+4])
+		got := uint16((insn >> 5) & 0xFFFF)
+		if got != exp {
+			t.Errorf("stableShape movz/movk[%d]@%d imm16 = 0x%04x, want 0x%04x",
+				i, off, got, exp)
+		}
+	}
+}
+
+// TestPJ8_EmitSelfNodeHitArm64_StableShapeBurnedIn 验 SELF NodeHit 模板
+// stableShape 烧入位置。SELF 多 step 2 STR R(A+1) 4 字节,整体后移:
+//   - guard 36 + re-load 36 + word5+LSR 8 = 80
+//   - MOV stableShape 在 [80-95]
+func TestPJ8_EmitSelfNodeHitArm64_StableShapeBurnedIn(t *testing.T) {
+	const stableShape uint32 = 0xBEEF_DEAD
+	var buf []byte
+	buf = EmitSelfNodeHitArm64(buf, 1, 3, stableShape, 2, 0xFFFD_0000_0000_0042, 16, 0xCAFEBABE)
+
+	if len(buf) < 96 {
+		t.Fatalf("buf too short: %d", len(buf))
+	}
+	expectedImm16 := [4]uint16{
+		uint16(stableShape & 0xFFFF),
+		uint16((stableShape >> 16) & 0xFFFF),
+		0,
+		0,
+	}
+	for i, exp := range expectedImm16 {
+		off := 80 + i*4
+		insn := binary.LittleEndian.Uint32(buf[off : off+4])
+		got := uint16((insn >> 5) & 0xFFFF)
+		if got != exp {
+			t.Errorf("stableShape movz/movk[%d]@%d imm16 = 0x%04x, want 0x%04x",
+				i, off, got, exp)
+		}
+	}
+}
