@@ -41,3 +41,181 @@ func archCallJITFull(codeAddr uintptr, jitCtxAddr uintptr) uint64 {
 	_ = jitCtxAddr
 	panic("internal/gibbous/jit: archCallJITFull called on unsupported GOARCH")
 }
+
+// archCallJITSpec stub:同 archCallJITFull。
+func archCallJITSpec(codeAddr uintptr, jitCtxAddr uintptr, vsBase uintptr) uint64 {
+	_ = codeAddr
+	_ = jitCtxAddr
+	_ = vsBase
+	panic("internal/gibbous/jit: archCallJITSpec called on unsupported GOARCH")
+}
+
+// archSseOpForArith 其它 arch 不支持(sentinel 返 false)。
+func archSseOpForArith(op uint8) (byte, bool) {
+	_ = op
+	return 0, false
+}
+
+// archEmitArithSpecBinopWithGuard 其它 arch 不支持。
+func archEmitArithSpecBinopWithGuard(buf []byte, sseOp byte, a, b, c uint8, deoptCode uint64) []byte {
+	_ = sseOp
+	_ = a
+	_ = b
+	_ = c
+	_ = deoptCode
+	return buf
+}
+
+// archEmitArithSpecBinopRegKWithGuard 其它 arch 不支持。
+func archEmitArithSpecBinopRegKWithGuard(buf []byte, sseOp byte, a, b uint8, kvalue, deoptCode uint64) []byte {
+	_ = sseOp
+	_ = a
+	_ = b
+	_ = kvalue
+	_ = deoptCode
+	return buf
+}
+
+// archEmitArithSpecChainKKWithGuard 其它 arch 不支持。
+func archEmitArithSpecChainKKWithGuard(buf []byte, sseOp1, sseOp2 byte, a, b uint8, k1value, k2value, deoptCode uint64) []byte {
+	_ = sseOp1
+	_ = sseOp2
+	_ = a
+	_ = b
+	_ = k1value
+	_ = k2value
+	_ = deoptCode
+	return buf
+}
+
+// archEmitForLoopEmptyConst 其它 arch 不支持。
+func archEmitForLoopEmptyConst(buf []byte, kInit, kLimit, kStep uint64, preemptFlagOff int32) []byte {
+	_ = kInit
+	_ = kLimit
+	_ = kStep
+	_ = preemptFlagOff
+	return buf
+}
+
+// archEmitForLoopRegLimit 其它 arch 不支持。
+func archEmitForLoopRegLimit(buf []byte, kInit, kStep uint64, limitReg uint8, deoptCode uint64, preemptFlagOff int32) []byte {
+	_ = kInit
+	_ = kStep
+	_ = limitReg
+	_ = deoptCode
+	_ = preemptFlagOff
+	return buf
+}
+
+// archEmitForLoopWithBody 其它 arch 不支持。
+func archEmitForLoopWithBody(buf []byte, kS, kInit, kLimit, kStep, kBody uint64,
+	aS uint8, sseOp byte, preemptFlagOff int32) []byte {
+	_ = kS
+	_ = kInit
+	_ = kLimit
+	_ = kStep
+	_ = kBody
+	_ = aS
+	_ = sseOp
+	_ = preemptFlagOff
+	return buf
+}
+
+// archEmitForLoopWithBody2 其它 arch 不支持。
+func archEmitForLoopWithBody2(buf []byte, kS, kInit, kLimit, kStep, kBody1, kBody2 uint64,
+	aS uint8, sseOp1, sseOp2 byte, preemptFlagOff int32) []byte {
+	_ = kS
+	_ = kInit
+	_ = kLimit
+	_ = kStep
+	_ = kBody1
+	_ = kBody2
+	_ = aS
+	_ = sseOp1
+	_ = sseOp2
+	_ = preemptFlagOff
+	return buf
+}
+
+// archEmitGetTableArrayHit 其它 arch 不支持。
+func archEmitGetTableArrayHit(buf []byte, aReg, bReg uint8, stableShape, stableIndex uint32, arenaBaseOff int32, deoptCode uint64) []byte {
+	_ = aReg
+	_ = bReg
+	_ = stableShape
+	_ = stableIndex
+	_ = arenaBaseOff
+	_ = deoptCode
+	return buf
+}
+
+// archEmitGetTableNodeHit 其它 arch 不支持。
+func archEmitGetTableNodeHit(buf []byte, aReg, bReg uint8,
+	stableShape, stableIndex uint32, stableKey uint64,
+	arenaBaseOff int32, deoptCode uint64) []byte {
+	_ = aReg
+	_ = bReg
+	_ = stableShape
+	_ = stableIndex
+	_ = stableKey
+	_ = arenaBaseOff
+	_ = deoptCode
+	return buf
+}
+
+// archEmitSetTableArrayHit 其它 arch 不支持。
+func archEmitSetTableArrayHit(buf []byte, aReg, cReg uint8,
+	stableShape, stableIndex uint32, arenaBaseOff int32, deoptCode uint64) []byte {
+	_ = aReg
+	_ = cReg
+	_ = stableShape
+	_ = stableIndex
+	_ = arenaBaseOff
+	_ = deoptCode
+	return buf
+}
+
+// archEmitSelfArrayHit 其它 arch 不支持。
+func archEmitSelfArrayHit(buf []byte, aReg, bReg uint8,
+	stableShape, stableIndex uint32, arenaBaseOff int32, deoptCode uint64) []byte {
+	_ = aReg
+	_ = bReg
+	_ = stableShape
+	_ = stableIndex
+	_ = arenaBaseOff
+	_ = deoptCode
+	return buf
+}
+
+// archEmitSetTableNodeHit 其它 arch 不支持。
+func archEmitSetTableNodeHit(buf []byte, aReg, cReg uint8,
+	stableShape, stableIndex uint32, stableKey uint64,
+	arenaBaseOff int32, deoptCode uint64) []byte {
+	_ = aReg
+	_ = cReg
+	_ = stableShape
+	_ = stableIndex
+	_ = stableKey
+	_ = arenaBaseOff
+	_ = deoptCode
+	return buf
+}
+
+// archEmitSelfNodeHit 其它 arch 不支持。
+func archEmitSelfNodeHit(buf []byte, aReg, bReg uint8,
+	stableShape, stableIndex uint32, stableKey uint64,
+	arenaBaseOff int32, deoptCode uint64) []byte {
+	_ = aReg
+	_ = bReg
+	_ = stableShape
+	_ = stableIndex
+	_ = stableKey
+	_ = arenaBaseOff
+	_ = deoptCode
+	return buf
+}
+
+// archSupportsSpec 其它 arch 不支持。
+func archSupportsSpec() bool { return false }
+
+// archSupportsForLoop 其它 arch 不支持(无 emitter)。
+func archSupportsForLoop() bool { return false }
