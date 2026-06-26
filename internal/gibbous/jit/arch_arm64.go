@@ -75,19 +75,56 @@ func archSseOpForArith(op uint8) (byte, bool) {
 	return 0, false
 }
 
-// archEmitArithSpecBinopWithGuard arm64 端 stub——同 archEmitArithSpec
-// AddWithGuard,留 PJ8+。
-func archEmitArithSpecBinopWithGuard(buf []byte, sseOp byte, a, b, c uint8, deoptCode uint64) []byte {
-	_ = sseOp
-	_ = a
-	_ = b
-	_ = c
-	_ = deoptCode
-	return buf
+// arm64ArithOpSelForSseOp 把 amd64 SSE opcode 字节(F2 0F xx ModRM 的 xx)
+// 翻译到 arm64 PJ2 投机模板的 opSel 字节(用于
+// EmitArithSpeculativeBinopWithGuardArm64)。承同 jitarm64.ArithOp*Arm64
+// 常量定义。
+//
+//	0x58 ADDSD → ArithOpAddArm64 (0x28)
+//	0x5C SUBSD → ArithOpSubArm64 (0x38)
+//	0x59 MULSD → ArithOpMulArm64 (0x08)
+//	0x5E DIVSD → ArithOpDivArm64 (0x18)
+//
+// 返回 (opSel, true) 若匹配,(0, false) 若未识别(caller 应静默放弃)。
+func arm64ArithOpSelForSseOp(sseOp byte) (uint8, bool) {
+	switch sseOp {
+	case 0x58: // ADDSD
+		return jitarm64.ArithOpAddArm64, true
+	case 0x5C: // SUBSD
+		return jitarm64.ArithOpSubArm64, true
+	case 0x59: // MULSD
+		return jitarm64.ArithOpMulArm64, true
+	case 0x5E: // DIVSD
+		return jitarm64.ArithOpDivArm64, true
+	default:
+		return 0, false
+	}
 }
 
-// archEmitArithSpecBinopRegKWithGuard arm64 端 stub——留 PJ8+(对位 amd64
-// reg-K 形态:fmov + cmp + b.hs deopt + fadd const + 写回 + ret)。
+// archEmitArithSpecBinopWithGuard arm64 端 PJ2 投机 reg-reg 模板真接入
+// (108 字节,对位 amd64 EmitArithSpeculativeBinopWithGuard 92 字节;
+// arm64 因 RISC fixed-length 多 16 字节)。
+//
+// **接入路径未通**(本批仅暴露字节级模板代理,Compile 派发仍由
+// archSupportsSpec()=false 阻止):
+//   - 真启用需 archCallJITSpec arm64 spec trampoline 真实现 +
+//     archSupportsSpec() 翻 true(留 PJ8+ 同批);
+//   - 字节级模板与单测均已落地,本批纯接线降低未来真接入工程量。
+//
+// sseOp 自动翻译:0x58/0x5C/0x59/0x5E → arm64 ArithOpAdd/Sub/Mul/Div;
+// 未识别 op 静默返原 buf(对位 amd64 stub 同款放弃语义)。
+func archEmitArithSpecBinopWithGuard(buf []byte, sseOp byte, a, b, c uint8, deoptCode uint64) []byte {
+	opSel, ok := arm64ArithOpSelForSseOp(sseOp)
+	if !ok {
+		return buf
+	}
+	return jitarm64.EmitArithSpeculativeBinopWithGuardArm64(buf, opSel, a, b, c, deoptCode)
+}
+
+// archEmitArithSpecBinopRegKWithGuard arm64 端 stub——arm64 端 reg-K
+// 形态模板字节级尚未落地(留 PJ8+ 与 spec trampoline 同批,模板形态
+// 见 amd64 EmitArithSpeculativeBinopRegKWithGuard:fmov 装 K + cmp +
+// b.hs deopt + fadd const + 写回 + ret)。
 func archEmitArithSpecBinopRegKWithGuard(buf []byte, sseOp byte, a, b uint8, kvalue, deoptCode uint64) []byte {
 	_ = sseOp
 	_ = a
@@ -97,7 +134,8 @@ func archEmitArithSpecBinopRegKWithGuard(buf []byte, sseOp byte, a, b uint8, kva
 	return buf
 }
 
-// archEmitArithSpecChainKKWithGuard arm64 端 stub。
+// archEmitArithSpecChainKKWithGuard arm64 端 stub——arm64 端 chain-KK
+// 形态模板字节级尚未落地(留 PJ8+ 同批)。
 func archEmitArithSpecChainKKWithGuard(buf []byte, sseOp1, sseOp2 byte, a, b uint8, k1value, k2value, deoptCode uint64) []byte {
 	_ = sseOp1
 	_ = sseOp2
