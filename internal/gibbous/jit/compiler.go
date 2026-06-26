@@ -95,13 +95,18 @@ type shapeInfo struct {
 	//     时需用 forA 算 R(A+3)=i 槽 offset 给 body 内部 ref。
 	//   - forInitK / forLimitK / forStepK:三个常量 NaN-box raw bits(编译期烧 imm64)
 	//   - forLimitReg + forLimitIsReg:reg-limit 形态用 R(limitReg) 而非 K
-	isForLoop     bool
-	forA          uint8
-	forInitK      uint64
-	forLimitK     uint64
-	forStepK      uint64
-	forLimitReg   uint8 // limit 是 reg 时的源寄存器号(forLimitIsReg=true)
-	forLimitIsReg bool  // true = limit 从 R(forLimitReg) 读 + IsNumber guard;false = K 编译期烧 imm
+	//   - forLimitUpvalIdx:upvalue-limit 形态时的 upvalue 索引 + 1(1-based;
+	//     0 表示不走 upvalue 路径,直接走 MOVE/LOADK 形态)。Run 端先调
+	//     host.GetUpval(idx-1) 写 R(forLimitReg) 槽,然后 callJITSpec 走
+	//     reg-limit 模板字节级 inline。
+	isForLoop        bool
+	forA             uint8
+	forInitK         uint64
+	forLimitK        uint64
+	forStepK         uint64
+	forLimitReg      uint8 // limit 是 reg 时的源寄存器号(forLimitIsReg=true)
+	forLimitIsReg    bool  // true = limit 从 R(forLimitReg) 读 + IsNumber guard;false = K 编译期烧 imm
+	forLimitUpvalIdx uint8 // upvalue-limit 形态的 upvalue 索引 + 1(0 = 不走 upval 路径)
 }
 
 // analyzeForLoopForm 识别 PJ3 字节级 FORLOOP inline 最简形态:
@@ -146,11 +151,15 @@ func analyzeForLoopForm(proto *bytecode.Proto) (shapeInfo, bool) {
 		return shapeInfo{}, false
 	}
 	// [0/1/2] LOADK / [3] FORPREP / [4] FORLOOP / [5] RETURN
-	// **limit 支持 LOADK 或 MOVE(reg 形态)**:reg-limit hot path 真实形态
-	// 需 IsNumber guard 字节级 inline
+	// **limit 支持 LOADK / MOVE / GETUPVAL**:
+	//   - LOADK:常量 limit(`for i=1,100 do end`)
+	//   - MOVE :reg-limit hot path(`for i=1,n do end`,n=参数 reg)
+	//   - GETUPVAL:upvalue-limit(closure capture,`local n=100; local
+	//     function f() for i=1,n do end end`,n 是 upvalue)
 	if bytecode.Op(proto.Code[0]) != bytecode.LOADK ||
 		(bytecode.Op(proto.Code[1]) != bytecode.LOADK &&
-			bytecode.Op(proto.Code[1]) != bytecode.MOVE) ||
+			bytecode.Op(proto.Code[1]) != bytecode.MOVE &&
+			bytecode.Op(proto.Code[1]) != bytecode.GETUPVAL) ||
 		bytecode.Op(proto.Code[2]) != bytecode.LOADK ||
 		bytecode.Op(proto.Code[3]) != bytecode.FORPREP ||
 		bytecode.Op(proto.Code[4]) != bytecode.FORLOOP ||
@@ -222,7 +231,7 @@ func analyzeForLoopForm(proto *bytecode.Proto) (shapeInfo, bool) {
 		}
 		si.forLimitK = uint64(kLimit)
 		si.forLimitIsReg = false
-	} else {
+	} else if bytecode.Op(proto.Code[1]) == bytecode.MOVE {
 		// **MOVE A B reg-limit 形态**(luac 编 `for i=1,n do end` 时
 		// limit=n 用 MOVE)。字节级模板 EmitForLoopRegLimit 已实装,deopt
 		// 路径调 host.ForPrep raise(`'for' limit must be a number`)
@@ -233,6 +242,20 @@ func analyzeForLoopForm(proto *bytecode.Proto) (shapeInfo, bool) {
 		}
 		si.forLimitReg = uint8(moveB)
 		si.forLimitIsReg = true
+	} else {
+		// **GETUPVAL A B upvalue-limit 形态**(closure capture):luac 编
+		// closure 内 `for i=1,upval_n do end` 时 [1] = GETUPVAL A B,
+		// A=A_init+1 / B=upvalue 索引。Run 端调 host.GetUpval(B) 取值后
+		// 直接经 host.SetReg 写 R(A_init+1) 槽,然后走 reg-limit 模板。
+		// 因为 host.GetUpval 后写槽位则 limit 已 number(若 upvalue 是
+		// number);否则 reg-limit 模板的 IsNumber guard 自动触发 deopt。
+		guvB := bytecode.B(proto.Code[1])
+		if guvB > 255 {
+			return shapeInfo{}, false
+		}
+		si.forLimitReg = uint8(aLimit)        // 目标槽 = R(A_init+1)
+		si.forLimitIsReg = true               // 仍走 reg-limit 模板
+		si.forLimitUpvalIdx = uint8(guvB) + 1 // 1-based(0 = 不走 upval)
 	}
 
 	return si, true
@@ -954,6 +977,11 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 			// useSpec=true 走 callJITSpec(装 rbx=vsBase + r15=jitCtx)。
 			// deopt 路径调 host.ForPrep raise('for' limit must be a number)
 			// byte-equal 解释器。
+			//
+			// **upvalue-limit 子形态**:forLimitUpvalIdx>0 时 Run 端先调
+			// host.GetUpval(idx-1) + host.SetReg(forLimitReg, val) 把 upval
+			// 值写到 reg-limit 模板期望的 R(forLimitReg) 槽,然后走 reg-limit
+			// 字节级模板(guard + loop)。
 			const deoptCode uint64 = 0xFFFCDEAD_DEADBE00
 			buf = archEmitForLoopRegLimit(buf, info.forInitK, info.forStepK,
 				info.forLimitReg, deoptCode, pfOff)
@@ -963,22 +991,21 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 			}
 			incSpecForLoopHits()
 			return &p4Code{
-				proto:         proto,
-				codePage:      page,
-				jitCtx:        NewJITContext(),
-				retA:          info.retA,
-				retB:          info.retB,
-				retPC:         info.retPC,
-				writeRetA:     false,
-				preludeOp:     0, // 不走 prelude switch
-				host:          c.hostState,
-				useSpec:       true,
-				specDeoptCode: deoptCode,
-				// **forLoopDeopt** 标志区分 reg-limit FORLOOP 的 deopt 路径
-				// — Run 端检测 raxSpec==deoptCode 时调 host.ForPrep 而非
-				// host.Arith。
-				forLoopDeopt: true,
-				forLoopA:     info.forA,
+				proto:           proto,
+				codePage:        page,
+				jitCtx:          NewJITContext(),
+				retA:            info.retA,
+				retB:            info.retB,
+				retPC:           info.retPC,
+				writeRetA:       false,
+				preludeOp:       0, // 不走 prelude switch
+				host:            c.hostState,
+				useSpec:         true,
+				specDeoptCode:   deoptCode,
+				forLoopDeopt:    true,
+				forLoopA:        info.forA,
+				forLoopLimitReg: info.forLimitReg,
+				forLoopUpvalIdx: info.forLimitUpvalIdx,
 			}, nil
 		}
 
