@@ -30,7 +30,7 @@ const qNanBoxBase uint64 = 0xFFF8_0000_0000_0000
 
 // EmitIsNumberGuardArm64 拼接 arm64「IsNumber guard」字节级序列(对位
 // amd64 EmitIsNumberGuard)。验证 R(reg) NaN-box 是 number(< qNanBoxBase),
-// 失败跳 deopt(rel21 字偏移)。
+// 失败跳 deopt(imm19 字偏移)。
 //
 // 序列(28 字节):
 //
@@ -40,15 +40,15 @@ const qNanBoxBase uint64 = 0xFFF8_0000_0000_0000
 //	MOVK x1, qNanBoxBase[47:32] LSL 32  ; 4
 //	MOVK x1, qNanBoxBase[63:48] LSL 48  ; 4(= mov x1, qNanBoxBase imm64,共 16 字节)
 //	CMP x0, x1               ; 4
-//	B.HS deopt (rel21)       ; 4(unsigned >= 跳 deopt,等价 amd64 jae)
+//	B.HS deopt (imm19)       ; 4(unsigned >= 跳 deopt,等价 amd64 jae)
 //	——— 总计 28 字节 ———
 //
-// **rel21 字偏移**:rel21 = (deopt 起点 - 本 B.cond 指令地址) / 4。caller
-// 在 PatchRel21 阶段写入。本函数发 placeholder rel21=0,buf 末位置 - 4 是
-// B.cond 字位置供 patch。
+// **imm19 字偏移**(arm64 B.cond 是 19-bit 字偏移,对位 EmitBCond):
+// imm19 = (deopt 起点 - 本 B.cond 指令地址) / 4。caller 计算后直接写入,
+// 无单独 patch 阶段(本模板 deopt 位置编译期已知)。
 //
 // 用例:PJ2 投机 ADD/SUB/MUL/DIV 双 guard 的每一道。
-func EmitIsNumberGuardArm64(buf []byte, reg uint8, rel21 int32) []byte {
+func EmitIsNumberGuardArm64(buf []byte, reg uint8, imm19 int32) []byte {
 	if reg > 254 {
 		reg = 0
 	}
@@ -58,8 +58,8 @@ func EmitIsNumberGuardArm64(buf []byte, reg uint8, rel21 int32) []byte {
 	buf = EmitMovXdImm64(buf, 1 /*x1*/, qNanBoxBase)
 	// CMP x0, x1
 	buf = EmitCmpXnXm(buf, 0, 1)
-	// B.HS deopt (rel21)
-	buf = EmitBCond(buf, CondHS, rel21)
+	// B.HS deopt (imm19)
+	buf = EmitBCond(buf, CondHS, imm19)
 	return buf
 }
 
@@ -145,11 +145,13 @@ func emitArithOpArm64(buf []byte, opSel uint8, dd, dn, dm uint8) []byte {
 }
 
 // arm64 PJ2 投机算术 op 选择字节(对位 amd64 SseOpAddsd/Subsd/Mulsd/Divsd)。
+// **注**:这是 opcode 判别字节(arm64 浮点 binop 指令格式 bits[15:8] 区分
+// FADD/FSUB/FMUL/FDIV),不是 base 的最低字节(base 最低字节恒 0x00)。
 const (
-	ArithOpAddArm64 uint8 = 0x28 // FADD base low byte
-	ArithOpSubArm64 uint8 = 0x38 // FSUB base low byte
-	ArithOpMulArm64 uint8 = 0x08 // FMUL base low byte
-	ArithOpDivArm64 uint8 = 0x18 // FDIV base low byte
+	ArithOpAddArm64 uint8 = 0x28 // FADD opcode 判别字节(0x1E60_2800)
+	ArithOpSubArm64 uint8 = 0x38 // FSUB opcode 判别字节(0x1E60_3800)
+	ArithOpMulArm64 uint8 = 0x08 // FMUL opcode 判别字节(0x1E60_0800)
+	ArithOpDivArm64 uint8 = 0x18 // FDIV opcode 判别字节(0x1E60_1800)
 )
 
 // EmitArithSpeculativeBinopWithGuardArm64 拼接 PJ2 投机模板完整版(IsNumber
@@ -164,39 +166,36 @@ const (
 //	[deopt]   20 字节:MOV x0, deoptCode + RET
 //	——— 总计 108 字节 ———
 //
-// **rel21 计算**(arm64 B.cond 是 19-bit imm 字偏移,LSL 2 → byte 偏移):
+// **imm19 计算**(arm64 B.cond 是 19-bit 字偏移,LSL 2 → byte 偏移):
 //   - guard1 B.cond 之后 PC = startLen + 28
 //   - guard2 B.cond 之后 PC = startLen + 56
 //   - fast 段结束 PC = startLen + 88
 //   - deopt 起点 PC = startLen + 88
-//   - rel21_1(guard1→deopt 字偏移)= (88 - 24)/4 = 16(B.cond 在 guard1 末偏移 24)
-//   - rel21_2(guard2→deopt 字偏移)= (88 - 52)/4 = 9
+//   - imm19_1(guard1→deopt 字偏移)= (88 - 24)/4 = 16(B.cond 在 guard1 末偏移 24)
+//   - imm19_2(guard2→deopt 字偏移)= (88 - 52)/4 = 9
 //
-// 实际计算:rel21 是 B.cond 相对 PC + 4 的字偏移,等价 (deopt_offset -
-// (b_cond_offset + 4)) / 4 = (deopt_offset - b_cond_offset - 4) / 4。
-// 但 arm64 PC-relative 计算 PC = 本条 B.cond 地址(不是下一条),与 amd64
-// rel32 是 jmp 后 PC 不同。
+// 实际计算:imm19 是 B.cond 相对自身指令地址的字偏移(arm64 PC-relative
+// 计算 PC = 本条 B.cond 地址,与 amd64 rel32 是 jmp 后 PC 不同)。
 //
-// 实际 rel21 = (deopt_offset - b_cond_offset) / 4(B.cond 自身字偏移到
+// 实际 imm19 = (deopt_offset - b_cond_offset) / 4(B.cond 自身字偏移到
 // 目标)。
 //
-//	guard1 B.cond 字偏移 = 24/4 = 6,deopt 字偏移 = 88/4 = 22 → rel21_1 = 22-6 = 16
-//	guard2 B.cond 字偏移 = 52/4 = 13 → rel21_2 = 22-13 = 9
+//	guard1 B.cond 字偏移 = 24/4 = 6,deopt 字偏移 = 88/4 = 22 → imm19_1 = 22-6 = 16
+//	guard2 B.cond 字偏移 = 52/4 = 13 → imm19_2 = 22-13 = 9
 //
-// 本函数发 placeholder rel21,在拼接时直接写入计算值(无单独 PatchRel21
+// 本函数发 placeholder imm19,在拼接时直接写入计算值(无单独 PatchImm19
 // 阶段,因 deopt 位置 emit 时已知)。
 func EmitArithSpeculativeBinopWithGuardArm64(buf []byte, opSel uint8, a, b, c uint8, deoptCode uint64) []byte {
-	startLen := len(buf)
-	// guard 段单段 28 字节,fast 段 32 字节,deopt 起点 = startLen + 28*2 + 32 = 88
-	// guard1 B.cond 自身位置 = startLen + 24(guard1 内 LDR 4 + MOV imm 16 + CMP 4 = 24)
-	// rel21_1 = (88 - 24)/4 = 16
-	// guard2 B.cond 自身位置 = startLen + 28 + 24 = 52
-	// rel21_2 = (88 - 52)/4 = 9
-	rel21Guard1 := int32(16)
-	rel21Guard2 := int32(9)
+	// guard 段单段 28 字节,fast 段 32 字节,deopt 起点 = 28*2 + 32 = 88
+	// guard1 B.cond 自身位置 = 24(guard1 内 LDR 4 + MOV imm 16 + CMP 4 = 24)
+	// imm19_1 = (88 - 24)/4 = 16(字偏移)
+	// guard2 B.cond 自身位置 = 28 + 24 = 52
+	// imm19_2 = (88 - 52)/4 = 9
+	imm19Guard1 := int32(16)
+	imm19Guard2 := int32(9)
 
-	buf = EmitIsNumberGuardArm64(buf, b, rel21Guard1)
-	buf = EmitIsNumberGuardArm64(buf, c, rel21Guard2)
+	buf = EmitIsNumberGuardArm64(buf, b, imm19Guard1)
+	buf = EmitIsNumberGuardArm64(buf, c, imm19Guard2)
 
 	// fast 段(32 字节)
 	buf = EmitArithSpeculativeBinopArm64(buf, opSel, a, b, c)
@@ -205,7 +204,6 @@ func EmitArithSpeculativeBinopWithGuardArm64(buf []byte, opSel uint8, a, b, c ui
 	buf = EmitMovXdImm64(buf, 0, deoptCode)
 	buf = EmitRet(buf)
 
-	_ = startLen
 	return buf
 }
 
