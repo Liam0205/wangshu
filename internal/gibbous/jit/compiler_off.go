@@ -38,7 +38,7 @@ var ErrCompileOff = errors.New("internal/gibbous/jit: P4 not enabled (build with
 // fallback 到 TierStuck(承 P3Compiler 接口契约 error != nil ⇒ TierStuck)。
 //
 // 与 wangshu_p4 build 下的 ErrCompileUnsupportedShape 对位返错——确保
-// 「不应被调到却被调到」时违约场景显式可见(承 PR review #1 反馈)。
+// 「不应被调到却被调到」时违约场景显式可见。
 func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback) (bridge.GibbousCode, error) {
 	_ = proto
 	_ = feedback
