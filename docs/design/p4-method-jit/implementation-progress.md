@@ -569,6 +569,43 @@ st.Call(...)
 
 prove-the-path 纪律扩展到 PJ4:**新 SupportsAllOpcodes 形态 / 新 IC inline 接入 ⇒ 同 commit 必须有 (a) jit 包 mock-host 字节级路径命中证据(已有 mock-test) + (b) crescent e2e 真升层 SpecXxxHits 增量断言(本批补齐)**。
 
+### 9.11 测试覆盖度边界与整套层级 prove-the-path 修复(2026-06-26 落地)
+
+承外部审查 🔴 阻塞反馈:`make test-p4` 全套(conformance / difftest / luasuite)历史上**不真在 P4 路径上运行**——91.6% conformance 用例不升层,且缺 `test/difftest/p4_test.go`(P3 有对位)。这是 P4 工程整体最严重 prove-the-path 缺口(跨越本批与历史多轮)。
+
+**层级区分**:
+- **单形态层**(jit 包字节级单测 + crescent e2e WarmupThenForce 系列):覆盖 P4 单 IC 形态,SpecTableHits++=1 真增长,**优秀,持续消化反馈**。
+- **整套 make 命令层**(conformance / difftest / luasuite):此前 P4 路径未被强制触达,**76/83 conformance 用例 P4 升层数 = 0 + 缺 p4_test.go**——是层级问题,非单 commit 问题。
+
+**修复**(commit 6dc1760 / b4c02d2 / 8e46759):
+
+1. **`test/difftest/p4_test.go`**(全新 290 行)对位 `p3_test.go`:
+   - build tag `wangshu_p4 && wangshu_profile` P4 专属
+   - `runWangshuP4Tiered` helper + p4Corpus 17 用例(精选 P4 SupportsAllOpcodes 真接受形态:LOADK/MOVE/算术/比较/UNM/NOT/FORLOOP/表 IC 六路径/SETUPVAL),每核外层 `for` 循环重复调用 ≥ 20 次
+   - `TestP4_Tiered`:三方对拍(oracle / crescent / p4-jit byte-equal)
+   - `TestP4_ConcurrentForceAll`:8 goroutine 并发 force-all + 结果一致性(V18 -race 守卫)
+   - `TestP4_PromotionTriggered`:fail-stop 兜底,`PromotionCount > 0` 强断言防 P4 路径未触达成静默空绿
+
+2. **`test/conformance/conformance_p4_test.go`**(全新)+ `conformance_test.go` godoc 边界标注:
+   - 顶 godoc 加 "P4 build 边界"章节,诚实标注 ~91% 用例形态不达 P4 升层闸门,真 P4 路径验收以 difftest-p4 为准
+   - `TestConformance_P4PathTriggered`:专为 P4 升层形态设计的 conformance 用例 + PromotionCount > 0 fail-stop
+
+3. **`Makefile` 三条 P4 注释更新**(从陈旧 "PJ0 阶段:行为等价 P1" 改为):
+   - `test-p4`:PJ0-PJ4 + PJ7 + PJ10 已落地:LOADK/MOVE/算术/比较/UNM/LEN/NOT/NEWTABLE/GETTABLE/SETTABLE/SELF/FORLOOP 真接入 + IC 六路径字节级 inline
+   - `conformance-p4`:白名单已扩 ~25 类形态 + IC 六路径,但 conformance 用例多为单次小脚本,~91% 不达 P4 升层闸门 — 真 P4 路径验收以 difftest-p4 为准
+   - `difftest-p4`:test/difftest/p4_test.go P4 专属 harness:force-all + p4Corpus 17 用例每核重复调用 + PromotionCount > 0 兜底
+
+**实测结果**:
+- `TestP4_Tiered` 17/17 用例 byte-equal(crescent vs p4-jit)
+- `TestP4_ConcurrentForceAll` 8 goroutines 不 race + 结果一致
+- `TestP4_PromotionTriggered` `PromotionCount = 1` 真升层
+- `TestConformance_P4PathTriggered` `PromotionCount = 1` 真触达
+- `make test-p4` 全套 21 binary 全过
+
+**单形态 + 整套层 prove-the-path 双层防线完整**:
+- 单形态层:SpecTableHits 增量 = 1 实证(IC 六路径全覆盖)
+- 整套层:PromotionCount > 0 fail-stop(difftest-p4 + conformance-p4 兜底)
+
 ### 9.7 严密 IsTable guard 升级(2026-06-26 落地)
 
 承 §9.5 #1 已知边界:把简化 IsTable guard 字节级升级到严密版。
