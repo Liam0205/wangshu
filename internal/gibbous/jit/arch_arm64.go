@@ -56,15 +56,20 @@ func archCallJITFull(codeAddr uintptr, jitCtxAddr uintptr) uint64 {
 	return jitarm64.CallJITFull(codeAddr, jitCtxAddr)
 }
 
-// archCallJITSpec arm64 端 PJ2 投机模板 stub——arm64 spec trampoline
-// 留 PJ8+(对位 amd64 callJITSpec 同款形态:装 X27=jitContext + X28
-// (or X26)=valueStackBase + BLR + 恢复)。当前 arm64 build 不调到 spec
-// (Compile 不发 useSpec=true 给 arm64;留 PJ8+ 完整版同批)。
+// archCallJITSpec arm64 端 spec trampoline 真实现(对位 amd64 callJITSpec
+// 装 rbx=vsBase + r15=jitCtx + BLR + 恢复)。jitarm64.CallJITSpec 经
+// trampoline_arm64.s::callJITSpec 装 x26=valueStackBase + x27=jitContext
+// 后 BL 跳进 mmap 段执行,期望段以 RET 收尾,返回值在 X0。
+//
+// 启用此真实现允许 archSupportsSpec() 翻 true → PJ2 投机模板(reg-reg /
+// reg-K / chain-KK)+ PJ3 FORLOOP body/body2/RegLimit 三路径在 arm64 上
+// Compile 端构造 useSpec=true 的 p4Code 后,Run 端经此函数跳进段执行。
+//
+// **真启用仍需 archSupportsSpec() 翻 true**(留 PJ8+ 与物理 self-hosted
+// runner 端到端验证同批,QEMU 不真模拟 i-cache + PROT_EXEC 不能可靠
+// e2e)。本批纯实装 trampoline asm + Go 包装,降低未来真启用工程量。
 func archCallJITSpec(codeAddr uintptr, jitCtxAddr uintptr, vsBase uintptr) uint64 {
-	_ = codeAddr
-	_ = jitCtxAddr
-	_ = vsBase
-	panic("internal/gibbous/jit/arm64: archCallJITSpec not implemented (PJ8+ arm64 spec trampoline)")
+	return jitarm64.CallJITSpec(codeAddr, jitCtxAddr, vsBase)
 }
 
 // archSseOpForArith arm64 端 stub——arm64 不用 SSE op 字节(用 fadd/fsub/
