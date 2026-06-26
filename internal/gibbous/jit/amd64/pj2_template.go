@@ -197,12 +197,9 @@ func EmitArithSpeculativeBinopRegK(buf []byte, sseOp byte, a, b uint8, kvalue ui
 }
 
 // EncodedArithSpecBinopRegKLen 是 reg-K 模板字节数:
-// 8(movsd xmm0,mem) + 11(mov rax,imm64) + 5(movq xmm1,rax) + 4(sse binop)
-// + 8(movsd mem,xmm0) + 1(ret) = 37 字节。
-//
-// 注:EmitMovRaxImm64 = REX.W 0xB8 imm64 = 1+1+8 = 10 字节,但下面我们用
-// 完整版本(48 B8 + 8 bytes = 10),所以总长 = 8+10+5+4+8+1 = 36。需根据
-// EmitMovRaxImm64 真实长度对齐。
+// 8(movsd xmm0,mem) + 10(mov rax,imm64 = REX.W 48 B8 + 8 bytes)
+// + 5(movq xmm1,rax) + 4(sse binop F2 0F op C1) + 8(movsd mem,xmm0)
+// + 1(ret) = 36 字节。
 const EncodedArithSpecBinopRegKLen = EncodedMovsdMemLen + EncodedMovRaxImm64Len +
 	EncodedMovqXmmFromRaxLen + EncodedSseBinopLen + EncodedMovsdMemLen + EncodedRetLen
 
@@ -269,7 +266,6 @@ const EncodedArithSpecBinopRegKWithGuardLen = EncodedIsNumberGuardLen +
 // **预设条件**:K1/K2 在编译期已校验为 number,运行期不再 guard;只 guard
 // R(B) 端是 number。chainB == retA(中间值经 xmm0 复用,不写回 stack)。
 func EmitArithSpeculativeChainKKWithGuard(buf []byte, sseOp1, sseOp2 byte, a, b uint8, k1value, k2value, deoptCode uint64) []byte {
-	guardLen := EncodedIsNumberGuardLen
 	// 快路径布局长度:8(movsd load)+ 19(K1 + sseOp1)+ 19(K2 + sseOp2)
 	//                + 8(movsd store)+ 1(ret) = 55 字节
 	fastLen := EncodedMovsdMemLen + // movsd xmm0, [rbx+B*8]
@@ -278,11 +274,8 @@ func EmitArithSpeculativeChainKKWithGuard(buf []byte, sseOp1, sseOp2 byte, a, b 
 		EncodedMovsdMemLen + // movsd [rbx+A*8], xmm0
 		EncodedRetLen
 
-	// rel1 = (deopt 起点) - (jcc1 之后 PC)
-	// deopt 起点 = startLen + guardLen + fastLen
-	// jcc1 之后 PC = startLen + guardLen
-	// → rel1 = fastLen
-	_ = guardLen
+	// rel1 = (deopt 起点) - (jcc1 之后 PC) = fastLen
+	// (deopt 起点 = guardEnd + fastLen,jcc1 之后 PC = guardEnd)
 	rel1 := int32(fastLen)
 
 	buf = EmitIsNumberGuard(buf, b, rel1)
