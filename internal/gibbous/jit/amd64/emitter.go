@@ -595,3 +595,31 @@ func EmitMovqXmmFromRax(buf []byte, xmmDst uint8) []byte {
 
 // EncodedMovqXmmFromRaxLen 是「movq xmm, rax」字节数(5)。
 const EncodedMovqXmmFromRaxLen = 5
+
+// EmitCmpByteR15DispImm8 发射「cmp byte ptr [r15+disp32], imm8」(指令:
+// 41 80 BF disp32 imm8,9 字节)。
+//
+// 用例:PJ3 safepoint check——JIT 模板回边经 r15 (=jitContext) 读
+// preemptFlag(jit.JITContextPreemptFlagOffset)然后 cmp 0,接 jne 到
+// exit stub。
+//
+// 编码:
+//   - 41 = REX.B(让 rm 字段 7 = r15)
+//   - 80 = CMP r/m8, imm8(opcode + /7 编入 ModRM reg 字段)
+//   - BF = ModRM:mod=10(disp32)reg=7(/7=CMP)rm=7(+REX.B=r15)
+//   - disp32 = 4 字节有符号偏移
+//   - imm8 = 1 字节立即数(通常 0)
+func EmitCmpByteR15DispImm8(buf []byte, disp32 int32, imm8 byte) []byte {
+	buf = append(buf, 0x41, 0x80, 0xBF)
+	buf = append(buf,
+		byte(uint32(disp32)),
+		byte(uint32(disp32)>>8),
+		byte(uint32(disp32)>>16),
+		byte(uint32(disp32)>>24))
+	buf = append(buf, imm8)
+	return buf
+}
+
+// EncodedCmpByteR15DispImm8Len 是「cmp byte [r15+disp32], imm8」字节数(8):
+// REX(1) + opcode(1) + ModRM(1) + disp32(4) + imm8(1) = 8。
+const EncodedCmpByteR15DispImm8Len = 8
