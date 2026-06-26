@@ -597,7 +597,7 @@ func EmitMovqXmmFromRax(buf []byte, xmmDst uint8) []byte {
 const EncodedMovqXmmFromRaxLen = 5
 
 // EmitCmpByteR15DispImm8 发射「cmp byte ptr [r15+disp32], imm8」(指令:
-// 41 80 BF disp32 imm8,9 字节)。
+// 41 80 BF disp32 imm8,8 字节)。
 //
 // 用例:PJ3 safepoint check——JIT 模板回边经 r15 (=jitContext) 读
 // preemptFlag(jit.JITContextPreemptFlagOffset)然后 cmp 0,接 jne 到
