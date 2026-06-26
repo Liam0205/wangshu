@@ -473,18 +473,21 @@ func EmitSetTableArrayHit(buf []byte, aReg, cReg uint8,
 //   - bReg:R(B)(obj)寄存器号
 //   - stableShape / stableIndex / arenaBaseOff / deoptCode 同 GETTABLE
 //
-// **字节布局**(~141 字节,ArrayHit 132 字节 + R(A+1) 拷段 9 字节):
+// **字节布局**(139 字节,ArrayHit 132 字节 + R(A+1) 拷段 7 字节):
 //
 //	[0-6]    load R(B) → rax(7 字节,obj NaN-box)
-//	[7-14]   **额外**:store R(A+1) = rax(mov [rbx+(A+1)*8], rax)
+//	[7-13]   **额外**:store R(A+1) = rax(mov [rbx+(A+1)*8], rax)
 //	         (7 字节,EmitMovqMemRegFromRax with reg=rbx)
-//	[14-21]  shr rax, 48(4 字节)+ cmp eax, 0xFFFC(5 字节)+ jne deopt(6 字节)
+//	[14-17]  shr rax, 48(4 字节)
+//	[18-22]  cmp eax, 0xFFFC(5 字节)
+//	[23-28]  jne deopt(6 字节)
 //	         **注**:索引接续 ArrayHit 模板,严密 IsTable guard 沿用
 //	... 同 ArrayHit getter:GCRef extract / gen check / arrayRef /
 //	    array[stableIndex] / nil check / 写 R(A) / ret / deopt
 //
-// 实际总字节数取决于 EmitMovqMemRegFromRax 的 disp 编码(disp32 或 disp8
-// short form)——本批用通用 disp32 路径(实测 132 + 7 = 139 字节估)。
+// 实测精确 139 字节(逐原语累加:7+7+4+5+6+7+10+3+3+7+8+4+5+6+8+3+8+10+3+
+// 6+7+1+10+1=139)。EmitMovqMemRegFromRax 用通用 disp32 编码(7 字节),
+// 不走 disp8 short form(避免模板 length 随 reg 编号波动)。
 //
 // **deopt 路径**:Run 端 raxSpec==deoptCode 时调 host.GetTable byte-equal P1
 // (R(A+1)=R(B) 已 store 成功不需要回滚——R(A+1) 写入是 SELF 第一步,
