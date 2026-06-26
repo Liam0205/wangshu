@@ -301,7 +301,7 @@ const EncodedArithSpecBinopRegKWithGuardArm64Len = 92
 // 字节布局(116 字节):
 //
 //	[ 0-27]  IsNumber guard R(B)        ; 28
-//	[28-67]  fast: LDR/FMOV + K1 段(MOV+FMOV+FOP1)+ K2 段(MOV+FMOV+FOP2)+ FMOV/STR + RET
+//	[28-95]  fast: LDR/FMOV + K1 段(MOV+FMOV+FOP1)+ K2 段(MOV+FMOV+FOP2)+ FMOV/STR + RET
 //	[28-31]  LDR x0, [x26+B*8]          ; 4
 //	[32-35]  FMOV d0, x0                ; 4
 //	[36-51]  MOV x0, K1 imm64           ; 16
