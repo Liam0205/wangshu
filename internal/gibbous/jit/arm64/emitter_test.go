@@ -451,3 +451,149 @@ func TestPJ8_EmitLsrXdImm6(t *testing.T) {
 		})
 	}
 }
+
+// TestPJ8_EmitLdrbWtFromXnDisp 验「ldrb Wt, [Xn, #pimm12]」字节级
+// (32-bit zero-extended byte load,byte-scaled offset)。
+func TestPJ8_EmitLdrbWtFromXnDisp(t *testing.T) {
+	cases := []struct {
+		name    string
+		rt, rn  uint8
+		byteOff uint16
+	}{
+		{"ldrb w0, [x27, #16]", 0, 27, 16},
+		{"ldrb w0, [x27, #0]", 0, 27, 0},
+		{"ldrb w1, [x14, #4095]", 1, 14, 4095},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf []byte
+			buf = EmitLdrbWtFromXnDisp(buf, tc.rt, tc.rn, tc.byteOff)
+			if len(buf) != EncodedLdrbWtFromXnDispLen {
+				t.Fatalf("len = %d, want %d", len(buf), EncodedLdrbWtFromXnDispLen)
+			}
+			insn := binary.LittleEndian.Uint32(buf[0:4])
+			want := uint32(0x39400000) | uint32(tc.byteOff)<<10 |
+				uint32(tc.rn)<<5 | uint32(tc.rt)
+			if insn != want {
+				t.Errorf("%s = 0x%08x, want 0x%08x", tc.name, insn, want)
+			}
+		})
+	}
+}
+
+// TestPJ8_EmitCbnzW 验「cbnz Wt, label」字节级(32-bit compare-branch
+// nonzero)。imm19 是字偏移 sign-extended,目标 = PC + imm19 * 4。
+func TestPJ8_EmitCbnzW(t *testing.T) {
+	cases := []struct {
+		name  string
+		rt    uint8
+		imm19 int32
+	}{
+		{"cbnz w0, +20 (5 words forward)", 0, 5},
+		{"cbnz w1, 0 (placeholder)", 1, 0},
+		{"cbnz w2, -16 (-4 words backward)", 2, -4},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf []byte
+			buf = EmitCbnzW(buf, tc.rt, tc.imm19)
+			if len(buf) != EncodedCbnzWLen {
+				t.Fatalf("len = %d, want %d", len(buf), EncodedCbnzWLen)
+			}
+			insn := binary.LittleEndian.Uint32(buf[0:4])
+			wantBase := uint32(0x35000000)
+			if (insn & 0xFF000000) != wantBase {
+				t.Errorf("%s base = 0x%08x, want prefix 0x35", tc.name, insn&0xFF000000)
+			}
+			gotRt := insn & 0x1F
+			if gotRt != uint32(tc.rt) {
+				t.Errorf("%s Rt = %d, want %d", tc.name, gotRt, tc.rt)
+			}
+			gotImm19 := (insn >> 5) & 0x7FFFF
+			wantImm19 := uint32(tc.imm19) & 0x7FFFF
+			if gotImm19 != wantImm19 {
+				t.Errorf("%s imm19 = 0x%05x, want 0x%05x", tc.name, gotImm19, wantImm19)
+			}
+		})
+	}
+}
+
+// TestPJ8_EmitBlrXn 验「blr Xn」字节级:base 0xD63F0000 + Rn<<5。
+func TestPJ8_EmitBlrXn(t *testing.T) {
+	cases := []struct {
+		name string
+		rn   uint8
+	}{
+		{"blr x0", 0},
+		{"blr x16", 16},
+		{"blr x17", 17},
+		{"blr x30 (LR)", 30},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf []byte
+			buf = EmitBlrXn(buf, tc.rn)
+			if len(buf) != EncodedBlrXnLen {
+				t.Fatalf("len = %d, want %d", len(buf), EncodedBlrXnLen)
+			}
+			insn := binary.LittleEndian.Uint32(buf[0:4])
+			want := uint32(0xD63F0000) | uint32(tc.rn)<<5
+			if insn != want {
+				t.Errorf("%s = 0x%08x, want 0x%08x", tc.name, insn, want)
+			}
+		})
+	}
+}
+
+// TestPJ8_EmitHelperCallArm64_Length 验 helper call 通用宏总长 20 字节
+// (mov X16 imm64 16 + blr X16 4)。
+func TestPJ8_EmitHelperCallArm64_Length(t *testing.T) {
+	var buf []byte
+	buf = EmitHelperCallArm64(buf, 0xDEAD_BEEF_CAFE_BABE)
+	if len(buf) != EncodedHelperCallArm64Len {
+		t.Errorf("len = %d, want %d", len(buf), EncodedHelperCallArm64Len)
+	}
+	if EncodedHelperCallArm64Len != 20 {
+		t.Errorf("EncodedHelperCallArm64Len = %d, want 20", EncodedHelperCallArm64Len)
+	}
+}
+
+// TestPJ8_EmitHelperCallArm64_ByteLayout 验字节布局:
+//   - [0-15]  MOV X16, helperAddr imm64(movz+movk×3,Rd=16)
+//   - [16-19] BLR X16(0xD63F0000 + Rn=16<<5)
+func TestPJ8_EmitHelperCallArm64_ByteLayout(t *testing.T) {
+	const helperAddr uint64 = 0xDEAD_BEEF_CAFE_BABE
+	var buf []byte
+	buf = EmitHelperCallArm64(buf, helperAddr)
+
+	if len(buf) < 20 {
+		t.Fatalf("buf too short: %d", len(buf))
+	}
+
+	// MOV X16 imm64:movz + 3×movk,验各 imm16 字段 + Rd=16
+	expectedImm16 := [4]uint16{
+		uint16(helperAddr & 0xFFFF),
+		uint16((helperAddr >> 16) & 0xFFFF),
+		uint16((helperAddr >> 32) & 0xFFFF),
+		uint16((helperAddr >> 48) & 0xFFFF),
+	}
+	for i, exp := range expectedImm16 {
+		insn := binary.LittleEndian.Uint32(buf[i*4 : (i+1)*4])
+		got := uint16((insn >> 5) & 0xFFFF)
+		if got != exp {
+			t.Errorf("MOV X16 imm64 movz/movk[%d] imm16 = 0x%04x, want 0x%04x",
+				i, got, exp)
+		}
+		if (insn & 0x1F) != 16 {
+			t.Errorf("MOV X16 imm64 movz/movk[%d] Rd = %d, want 16",
+				i, insn&0x1F)
+		}
+	}
+
+	// [16-19] BLR X16
+	insn := binary.LittleEndian.Uint32(buf[16:20])
+	want := uint32(0xD63F0000) | uint32(16)<<5
+	if insn != want {
+		t.Errorf("[16] BLR X16 = 0x%08x, want 0x%08x", insn, want)
+	}
+}
