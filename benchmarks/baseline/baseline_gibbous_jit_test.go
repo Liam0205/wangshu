@@ -106,6 +106,21 @@ const pj3ForLoop100Body = `for i = 1, 100 do end`
 const pj3ForLoop1000Body = `for i = 1, 1000 do end`
 const pj3ForLoop10000Body = `for i = 1, 10000 do end`
 
+// PJ3 reg-limit hot path 形态:`function(n) for i=1,n do end end`(luac
+// 编 limit 为 MOVE A B,B=参数 R(0))。117 字节模板含 IsNumber guard +
+// 浮点 loop + safepoint + deopt block(deopt 时调 host.ForPrep raise
+// byte-equal P1)。
+//
+// **注**:wrapKernelJIT 的 kernel 形态 = `local function kernel()
+// <body> end`,本档 body 应当让 kernel 接受参数。但 wrapKernelJIT 的
+// kernel 是无参——我们用 closure capture n 来传 reg-limit
+// (`local function kernel() for i=1,n do end end`,n upvalue 形态),
+// luac 也编 MOVE A B 但 B 是 GETUPVAL 之后槽。 简化:直接用顶层 for 循环
+// 形式 + wrapKernelJIT 外层为 main chunk(vararg,不升层),inner kernel
+// 必须 paramless。本档跳过 wrap,改用顶层 chunk 加 closure 包参。这块
+// 复杂,留 PJ3+ 完整 benchmark 接入。简化:本会话仅落 reg-limit fast/
+// deopt 单测 + e2e(承上 commit),benchmark 数值留下一会话。
+
 func BenchmarkGibbousJIT_Const(b *testing.B)      { benchGibbousJIT(b, constBody, true) }
 func BenchmarkGibbousJIT_ConstCresc(b *testing.B) { benchGibbousJIT(b, constBody, false) }
 func BenchmarkGibbousJIT_Nil(b *testing.B)        { benchGibbousJIT(b, nilBody, true) }
