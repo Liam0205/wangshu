@@ -149,6 +149,12 @@ type shapeInfo struct {
 	//   - 复用 icAReg(SELF.A,method 结果)/ icBReg(SELF.B,obj)/
 	//     icStableShape / icStableIndex 字段。R(A+1) 由模板从 R(B) 拷写。
 	icSelfArrayHit bool
+
+	// PJ4 SETTABLE NodeHit 形态(`function(t, v) t["x"] = v end`):
+	//   - icSetNodeHit = true:走 PJ4 SETTABLE IC NodeHit 字节级 inline 模板
+	//     (140 字节,hash 段 NodeKey 比对 + 反向 store NodeVal)
+	//   - 复用 icSetCReg(value reg)/ icStableShape / icStableIndex / icStableKey
+	icSetNodeHit bool
 }
 
 // analyzeGetTableArrayHit 识别 PJ4 IC ArrayHit 形态:
@@ -491,6 +497,90 @@ func analyzeSelfArrayHit(proto *bytecode.Proto, feedback *bridge.TypeFeedback) (
 		icBReg:         uint8(selfB),
 		icStableShape:  pf.StableShape,
 		icStableIndex:  pf.StableIndex,
+	}, true
+}
+
+// analyzeSetTableNodeHit 识别 PJ4 SETTABLE IC NodeHit 形态:
+// `function(t, v) t["x"] = v end` 中键是字符串/任意 K 命中 hash 段。
+//
+// **形态**(luac 编 2 op,setter):
+//   - [0] SETTABLE A B C:A=R(t),B=K idx(>=256)key 常量,C=R(v) value reg(<256)
+//   - [1] RETURN A 1(setter 0 返回值)
+//
+// **触发条件**:
+//   - Code 长度 2 或 3
+//   - SETTABLE A B C:A<=254,B>=256(K 常量),C<256(value 是 reg)
+//   - RETURN B=1
+//   - proto.IC[0].Kind == ICKindNodeHit
+//   - feedback FBTableMono + Confidence>=0.99 + shape/index 一致
+//   - stableKey 从 proto.Consts[KIdx] 编译期固化(防 Nil 槽:value.Nil)
+//
+// 失败任一条件返 (shapeInfo{}, false)—— 走 analyzeShape host.SetTable
+// byte-equal P1(经 icSetTable + __newindex 元方法链)。
+func analyzeSetTableNodeHit(proto *bytecode.Proto, feedback *bridge.TypeFeedback) (shapeInfo, bool) {
+	codeLen := len(proto.Code)
+	if codeLen != 2 && codeLen != 3 {
+		return shapeInfo{}, false
+	}
+	if bytecode.Op(proto.Code[0]) != bytecode.SETTABLE ||
+		bytecode.Op(proto.Code[1]) != bytecode.RETURN {
+		return shapeInfo{}, false
+	}
+	if codeLen == 3 && bytecode.Op(proto.Code[2]) != bytecode.RETURN {
+		return shapeInfo{}, false
+	}
+	stA := bytecode.A(proto.Code[0])
+	stB := bytecode.B(proto.Code[0])
+	stC := bytecode.C(proto.Code[0])
+	retB := bytecode.B(proto.Code[1])
+	if retB != 1 {
+		return shapeInfo{}, false
+	}
+	if stA > 254 || stB < 256 || stC > 254 {
+		return shapeInfo{}, false
+	}
+	if len(proto.IC) <= 0 {
+		return shapeInfo{}, false
+	}
+	icSlot := proto.IC[0]
+	if icSlot.Kind != bytecode.ICKindNodeHit {
+		return shapeInfo{}, false
+	}
+	if feedback == nil || len(feedback.Points) < 1 {
+		return shapeInfo{}, false
+	}
+	pf := feedback.Points[0]
+	if pf.Kind != bridge.FBTableMono || pf.Confidence < 0.99 {
+		return shapeInfo{}, false
+	}
+	if pf.StableShape != icSlot.Shape || pf.StableIndex != icSlot.Index {
+		return shapeInfo{}, false
+	}
+	// stableKey 编译期固化(同 GetTable NodeHit)
+	kIdx := bytecode.KIdx(int(stB))
+	if kIdx < 0 || kIdx >= len(proto.Consts) {
+		return shapeInfo{}, false
+	}
+	stableKey := uint64(proto.Consts[kIdx])
+	if stableKey == uint64(value.Nil) {
+		// LoadProgram 未装载字符串槽(罕见但防御)
+		return shapeInfo{}, false
+	}
+
+	return shapeInfo{
+		ok:            true,
+		retA:          uint8(stA),
+		retB:          uint8(retB),
+		retPC:         1,
+		preludeOp:     uint8(bytecode.SETTABLE),
+		preludeArg:    uint32(stB),
+		preludeC:      uint16(stC),
+		icSetNodeHit:  true,
+		icAReg:        uint8(stA),
+		icSetCReg:     uint8(stC),
+		icStableShape: pf.StableShape,
+		icStableIndex: pf.StableIndex,
+		icStableKey:   stableKey,
 	}, true
 }
 
@@ -1675,6 +1765,13 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 		if icInfo, ok := analyzeSelfArrayHit(proto, feedback); ok {
 			return c.compileIcSelfArrayHit(proto, icInfo)
 		}
+		// **PJ4 SETTABLE IC NodeHit 形态**:`function(t,v) t["x"] = v end`
+		// (setter,字符串/任意键 in hash 段),140 字节模板反向写
+		// node[stableIndex].val = R(C);失败 fall through 到 host.SetTable
+		// byte-equal(经 icSetTable + __newindex 元方法链)。
+		if icInfo, ok := analyzeSetTableNodeHit(proto, feedback); ok {
+			return c.compileIcSetNodeHit(proto, icInfo)
+		}
 	}
 
 	info := analyzeShape(proto)
@@ -2197,5 +2294,46 @@ func (c *Compiler) compileIcSelfArrayHit(proto *bytecode.Proto, info shapeInfo) 
 		useSpec:       true,
 		specDeoptCode: deoptCode,
 		icArrayHit:    true, // SELF deopt 复用 host.GetTable 路径(P1 SELF case 已先 setReg(A+1, B))
+	}, nil
+}
+
+// compileIcSetNodeHit 编译 PJ4 SETTABLE IC NodeHit 形态(承 analyzeSetTableNodeHit):
+// emit 140 字节 SETTABLE NodeHit IC inline 反向写模板(GetTable NodeHit
+// 159 - getter 段 34 + setter 段 15),失败 deopt → Run 端调 host.SetTable
+// byte-equal P1(经 icSetTable + __newindex 元方法链)。
+//
+// **setter 形态 retB=1**,Run 端 DoReturn 不读 R(A)。
+//
+// 模板 140 字节:严密 IsTable guard + arena base + gen check + nodeRef
+// + node[stableIndex] + key 比对 + load R(C) → rdx + 反向 store NodeVal
+// + ret + deopt block。设计简化同 SetTable ArrayHit:无 __newindex / 不
+// 验现有 NodeVal(详 EmitSetTableNodeHit godoc)。
+func (c *Compiler) compileIcSetNodeHit(proto *bytecode.Proto, info shapeInfo) (bridge.GibbousCode, error) {
+	const deoptCode uint64 = 0xFFFCDEAD_DEADBE04
+	arenaBaseOff := int32(JITContextArenaBaseOffset)
+	var buf []byte
+	buf = archEmitSetTableNodeHit(buf, info.icAReg, info.icSetCReg,
+		info.icStableShape, info.icStableIndex, info.icStableKey,
+		arenaBaseOff, deoptCode)
+	page, err := archMmapCode(buf)
+	if err != nil {
+		return nil, err
+	}
+	incSpecTableHits() // 复用 SpecTableHits 探针(全 PJ4 路径共计)
+	return &p4Code{
+		proto:         proto,
+		codePage:      page,
+		jitCtx:        NewJITContext(),
+		retA:          info.retA,
+		retB:          info.retB, // setter retB=1
+		retPC:         info.retPC,
+		writeRetA:     false, // setter 无 R(A) 写
+		preludeOp:     info.preludeOp,
+		preludeArg:    info.preludeArg,
+		preludeC:      info.preludeC,
+		host:          c.hostState,
+		useSpec:       true,
+		specDeoptCode: deoptCode,
+		icSetArrayHit: true, // Run 端 deopt 复用 host.SetTable 路径(P1 icSetTable 兼容 ArrayHit+NodeHit)
 	}, nil
 }

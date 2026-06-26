@@ -189,5 +189,19 @@ func archEmitSelfArrayHit(buf []byte, aReg, bReg uint8,
 	return buf
 }
 
+// archEmitSetTableNodeHit arm64 端 stub——留 PJ8+。
+func archEmitSetTableNodeHit(buf []byte, aReg, cReg uint8,
+	stableShape, stableIndex uint32, stableKey uint64,
+	arenaBaseOff int32, deoptCode uint64) []byte {
+	_ = aReg
+	_ = cReg
+	_ = stableShape
+	_ = stableIndex
+	_ = stableKey
+	_ = arenaBaseOff
+	_ = deoptCode
+	return buf
+}
+
 // archSupportsSpec arm64 当前不支持(留 PJ8+)。
 func archSupportsSpec() bool { return false }
