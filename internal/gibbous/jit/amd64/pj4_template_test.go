@@ -386,3 +386,134 @@ func TestPJ4_EmitSelfArrayHit_SelfStore(t *testing.T) {
 	}
 	t.Logf("SELF 模板前 18 字节 = %x", buf[:18])
 }
+
+// TestPJ4_EmitSetTableNodeHit_Length 验 SETTABLE NodeHit 模板字节长度自洽。
+// 预期 140 字节(GetTable NodeHit 159 - getter 段 34 + setter 段 15)。
+func TestPJ4_EmitSetTableNodeHit_Length(t *testing.T) {
+	const stableKey uint64 = 0xFFFB_1234_5678_9ABC
+	var buf []byte
+	buf = EmitSetTableNodeHit(buf,
+		0, // aReg = R(0)(table)
+		1, // cReg = R(1)(value)
+		7, // stableShape
+		2, // stableIndex
+		stableKey,
+		16,         // arenaBaseOff
+		0xCAFEBABE, // deoptCode
+	)
+	if len(buf) == 0 {
+		t.Fatal("EmitSetTableNodeHit returned empty buf")
+	}
+	t.Logf("EmitSetTableNodeHit emitted %d bytes", len(buf))
+	if buf[len(buf)-1] != 0xC3 {
+		t.Errorf("SetTable NodeHit template should end with ret(0xC3), got 0x%02x",
+			buf[len(buf)-1])
+	}
+}
+
+// TestPJ4_EmitSetTableNodeHit_StrictIsTableGuard 验 SETTABLE NodeHit 模板
+// 复用同款严密 IsTable guard。
+func TestPJ4_EmitSetTableNodeHit_StrictIsTableGuard(t *testing.T) {
+	var buf []byte
+	buf = EmitSetTableNodeHit(buf, 0, 1, 7, 2, 0xFFFB_0000_0000_0001,
+		16, 0xCAFEBABE)
+
+	found := false
+	for i := 0; i <= 20-4; i++ {
+		if buf[i] == 0x48 && buf[i+1] == 0xC1 && buf[i+2] == 0xE8 && buf[i+3] == 48 {
+			found = true
+			if i+10 >= len(buf) {
+				t.Fatalf("strict guard 段越界")
+			}
+			if buf[i+4] != 0x3D ||
+				buf[i+5] != 0xFC || buf[i+6] != 0xFF ||
+				buf[i+7] != 0x00 || buf[i+8] != 0x00 {
+				t.Errorf("SetTable NodeHit cmp eax 0xFFFC bytes wrong at %d", i+4)
+			}
+			if buf[i+9] != 0x0F || buf[i+10] != 0x85 {
+				t.Errorf("SetTable NodeHit jne rel32 prefix wrong at %d", i+9)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Errorf("SetTable NodeHit 严密 IsTable guard 字节序列未在模板前 20 字节出现")
+	}
+}
+
+// TestPJ4_EmitSetTableNodeHit_KeyCompareAndReverseStore 验 NodeHit setter
+// 含 key 比对段 + 反向 store NodeVal 段。
+func TestPJ4_EmitSetTableNodeHit_KeyCompareAndReverseStore(t *testing.T) {
+	const stableKey uint64 = 0xFFFB_DEAD_BEEF_CAFE
+	var buf []byte
+	// aReg=0 → R(A)=[rbx+0]
+	// cReg=1 → R(C)=[rbx+8](value)
+	// stableIndex=2 → NodeKey @ rcx+48 / NodeVal @ rcx+56
+	buf = EmitSetTableNodeHit(buf, 0, 1, 7, 2, stableKey, 16, 0xCAFEBABE)
+
+	// 查 mov rdx, stableKey = 48 BA + imm64 LE
+	wantMovRdx := []byte{0x48, 0xBA,
+		0xFE, 0xCA, 0xEF, 0xBE, 0xAD, 0xDE, 0xFB, 0xFF}
+	movRdxOff := -1
+	for i := 0; i+9 < len(buf); i++ {
+		match := true
+		for j, b := range wantMovRdx {
+			if buf[i+j] != b {
+				match = false
+				break
+			}
+		}
+		if match {
+			movRdxOff = i
+			break
+		}
+	}
+	if movRdxOff < 0 {
+		t.Fatal("mov rdx, stableKey 字节序列未在模板出现")
+	}
+	t.Logf("mov rdx stableKey 在 offset %d 找到", movRdxOff)
+
+	// 紧随其后:cmp rax, rdx(3 字节)+ jne rel32(6 字节)= 9 字节 key 比对段
+	if movRdxOff+12 >= len(buf) {
+		t.Fatal("key 比对段越界")
+	}
+	if buf[movRdxOff+10] != 0x48 || buf[movRdxOff+11] != 0x39 || buf[movRdxOff+12] != 0xD0 {
+		t.Errorf("cmp rax, rdx 字节错位")
+	}
+	if buf[movRdxOff+13] != 0x0F || buf[movRdxOff+14] != 0x85 {
+		t.Errorf("jne rel32 prefix 字节错位")
+	}
+
+	// 紧接 key 比对(9 字节)后:load R(C) → rdx(7 字节)+ 反向 store
+	// (8 字节)
+	// load rdx 段:48 8B 93 disp32(cReg=1 → disp=8)
+	loadRdxOff := movRdxOff + 9 + 9 - 1 // movRdx(10) + cmp(3) + jne(6) = 19 字节后开始
+	// 实际:movRdx 起点 movRdxOff,占 10 字节;cmp 3 字节,jne 6 字节
+	// 总 19 字节后是 load R(C) → rdx 段
+	loadRdxStart := movRdxOff + 19
+	if loadRdxStart+6 >= len(buf) {
+		t.Fatal("load R(C) 段越界")
+	}
+	wantLoadRdx := []byte{0x48, 0x8B, 0x93, 0x08, 0x00, 0x00, 0x00}
+	for j, b := range wantLoadRdx {
+		if buf[loadRdxStart+j] != b {
+			t.Errorf("load R(C)→rdx 字节[%d] = 0x%02x, want 0x%02x at offset %d",
+				j, buf[loadRdxStart+j], b, loadRdxStart+j)
+		}
+	}
+
+	// 紧随 load rdx(7 字节)后:反向 store mov [r14+rcx+stableIndex*24+8], rdx
+	// stableIndex=2,24*2+8=56 → 49 89 94 0E 38 00 00 00(8 字节)
+	storeStart := loadRdxStart + 7
+	wantStore := []byte{0x49, 0x89, 0x94, 0x0E, 0x38, 0x00, 0x00, 0x00}
+	if storeStart+7 >= len(buf) {
+		t.Fatal("反向 store 段越界")
+	}
+	for j, b := range wantStore {
+		if buf[storeStart+j] != b {
+			t.Errorf("反向 store 字节[%d] = 0x%02x, want 0x%02x at offset %d",
+				j, buf[storeStart+j], b, storeStart+j)
+		}
+	}
+	_ = loadRdxOff // 保留作未来扩展用,当前不验证
+}

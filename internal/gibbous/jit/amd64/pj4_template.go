@@ -568,3 +568,127 @@ func EmitSelfArrayHit(buf []byte, aReg, bReg uint8,
 
 	return buf
 }
+
+// EmitSetTableNodeHit 拼接 PJ4 SETTABLE IC NodeHit 字节级 inline 反向写
+// 模板(承 03 §6 + GetTable NodeHit + SetTable ArrayHit 同款结构组合)。
+//
+// **形态**:`function(t, v) t[K] = v end` 中 K 是字符串/任意键 in hash 段
+// (luac 编 SETTABLE A B C 中 A=R(t) / B=K idx >=256 / C=R(v))。
+// IC[0].Kind=NodeHit + Shape/Index/Key 命中时,字节级 inline 反向写
+// node[stableIndex].val。
+//
+// 参数:
+//   - aReg:表寄存器号 R(A)(SETTABLE 的 A)
+//   - cReg:value 寄存器号 R(C)(value 是 reg,C<256)
+//   - stableShape:编译期固化的 table.gen 快照
+//   - stableIndex:编译期固化的 node slot 下标
+//   - stableKey:编译期固化的 key NaN-box(从 proto.Consts[KIdx])
+//   - arenaBaseOff / deoptCode 同 GetTable NodeHit
+//
+// **字节布局**(140 字节,GetTable NodeHit 159 - NodeVal/nil/storeRA 34 + load R(C)/反向 store 15):
+//
+//	[0-6]    load R(A) → rax(7 字节)
+//	[7-21]   严密 IsTable guard(15 字节)
+//	[22-44]  re-load + GCRef extract + rcx = offset(23 字节)
+//	[45-51]  load arena base → r14(7 字节)
+//	[52-74]  gen check word5/shr/cmp eax/jne(23 字节)
+//	[75-82]  load table.nodeRef = [r14+rcx+24] → rax(8 字节)
+//	[83-85]  mov rcx, rax(rcx = nodeRef offset)(3 字节)
+//	[86-93]  load NodeKey = [r14+rcx+stableIndex*24] → rax(8 字节)
+//	[94-103] mov rdx, stableKey(10 字节)
+//	[104-106] cmp rax, rdx(3 字节)
+//	[107-112] jne deopt(6 字节,NodeKey != stableKey → deopt)
+//	[113-119] load R(C) → rdx(7 字节,setter 加载 value)
+//	[120-127] mov [r14+rcx+stableIndex*24+8], rdx(8 字节,反向 store NodeVal)
+//	[128]     ret(1 字节)
+//	[129-139] deopt block(mov rax, deoptCode + ret,11 字节)
+//	——— 总计 140 字节 ———
+//
+// **vs SetTable ArrayHit + GetTable NodeHit 复合差异**:
+//   - 比 GetTable NodeHit:删 NodeVal load(getter 用)+ nil check + 写 R(A)
+//   - 比 SetTable ArrayHit:取 word3=nodeRef + 24 步长 + 多 key 比对
+//   - rdx 复用:rdx 先装 stableKey(key 比对)→ 用完后被 R(C) value 覆盖
+//
+// **deopt 路径**:Run 端 raxSpec==deoptCode 时调 host.SetTable byte-equal
+// P1(经 icSetTable + __newindex 元方法链;P1 icSetTable 兼容 NodeHit)。
+// setter 形态 retB=1,Run 端 DoReturn 不读 R(A)。
+//
+// **设计简化**(承 SetTable ArrayHit 同款边界):
+//   - 不验现有 NodeVal != nil(防新键路径)
+//   - 假设无 __newindex 元表
+func EmitSetTableNodeHit(buf []byte, aReg, cReg uint8,
+	stableShape, stableIndex uint32, stableKey uint64,
+	arenaBaseOff int32, deoptCode uint64) []byte {
+	// 1. load R(A) → rax
+	buf = EmitMovqRaxFromMemReg(buf, 3 /*rbx*/, int32(aReg)*8)
+
+	// 2. 严密 IsTable guard
+	buf = EmitShrRaxImm8(buf, 48)
+	buf = EmitCmpEaxImm32(buf, qNanBoxTableTagHigh16)
+	buf = EmitJneRel32(buf, 0)
+	jneTagOff := len(buf) - 4
+
+	// 3. shr 已破坏 rax,重新 load R(A)
+	buf = EmitMovqRaxFromMemReg(buf, 3 /*rbx*/, int32(aReg)*8)
+
+	// 4. GCRef extract
+	const payloadMask uint64 = 0x0000_FFFF_FFFF_FFFF
+	buf = EmitMovRcxImm64(buf, payloadMask)
+	buf = append(buf, 0x48, 0x21, 0xC8) // and rax, rcx
+
+	// 5. mov rcx, rax(rcx = GCRef offset)
+	buf = EmitMovqRcxFromRax(buf)
+
+	// 6. load arena base → r14
+	buf = EmitMovqR14FromR15Disp(buf, arenaBaseOff)
+
+	// 7. gen check
+	buf = EmitMovqRaxFromR14PlusRcxDisp(buf, 40)
+	buf = append(buf, 0x48, 0xC1, 0xE8, 32) // shr rax, 32
+	buf = append(buf, 0x3D)                 // cmp eax, imm32
+	buf = append(buf,
+		byte(stableShape),
+		byte(stableShape>>8),
+		byte(stableShape>>16),
+		byte(stableShape>>24))
+	buf = EmitJneRel32(buf, 0)
+	jneShapeOff := len(buf) - 4
+
+	// 8. **NodeHit 分流**:load table.nodeRef = [r14+rcx+24] → rax
+	buf = EmitMovqRaxFromR14PlusRcxDisp(buf, 24)
+
+	// 9. mov rcx, rax(rcx = nodeRef offset)
+	buf = EmitMovqRcxFromRax(buf)
+
+	// 10. load NodeKey = [r14+rcx+stableIndex*24] → rax
+	buf = EmitMovqRaxFromR14PlusRcxDisp(buf, int32(stableIndex)*24)
+
+	// 11. mov rdx, stableKey
+	buf = EmitMovRdxImm64(buf, stableKey)
+
+	// 12. cmp rax, rdx + jne deopt
+	buf = EmitCmpRaxRdx(buf)
+	buf = EmitJneRel32(buf, 0)
+	jneKeyOff := len(buf) - 4
+
+	// 13. **setter 分流**:load R(C) value → rdx(覆盖 stableKey,rdx 复用)
+	buf = EmitMovqRdxFromMemRbx(buf, int32(cReg)*8)
+
+	// 14. 反向 store:mov [r14+rcx+stableIndex*24+8], rdx(写 NodeVal)
+	buf = EmitMovqMemR14PlusRcxFromRdx(buf, int32(stableIndex)*24+8)
+
+	// 15. ret(setter 无 R(A) 写)
+	buf = EmitRet(buf)
+
+	// 16. deopt block
+	deoptStart := len(buf)
+	buf = EmitMovRaxImm64(buf, deoptCode)
+	buf = EmitRet(buf)
+
+	// 17. patch all forward jcc to deopt start
+	PatchRel32(buf, jneTagOff, int32(deoptStart)-int32(jneTagOff+4))
+	PatchRel32(buf, jneShapeOff, int32(deoptStart)-int32(jneShapeOff+4))
+	PatchRel32(buf, jneKeyOff, int32(deoptStart)-int32(jneKeyOff+4))
+
+	return buf
+}
