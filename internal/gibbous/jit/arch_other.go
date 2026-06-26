@@ -50,15 +50,6 @@ func archCallJITSpec(codeAddr uintptr, jitCtxAddr uintptr, vsBase uintptr) uint6
 	panic("internal/gibbous/jit: archCallJITSpec called on unsupported GOARCH")
 }
 
-// archEmitArithSpecAddWithGuard 其它 arch 不支持。
-func archEmitArithSpecAddWithGuard(buf []byte, a, b, c uint8, deoptCode uint64) []byte {
-	_ = a
-	_ = b
-	_ = c
-	_ = deoptCode
-	return buf
-}
-
 // archSseOpForArith 其它 arch 不支持(sentinel 返 false)。
 func archSseOpForArith(op uint8) (byte, bool) {
 	_ = op
