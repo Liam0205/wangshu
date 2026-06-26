@@ -271,3 +271,113 @@ func TestPJ8_EmitBCond(t *testing.T) {
 		})
 	}
 }
+
+// TestPJ8_EmitFmovDdFromXn 验「fmov Dd, Xn」(GP→FP)字节级。
+// 编码:0x9E670000 base + Xn<<5 + Dd。
+func TestPJ8_EmitFmovDdFromXn(t *testing.T) {
+	var buf []byte
+	buf = EmitFmovDdFromXn(buf, 3, 5) // fmov d3, x5
+
+	if len(buf) != EncodedFmovDdFromXnLen {
+		t.Fatalf("len = %d, want %d", len(buf), EncodedFmovDdFromXnLen)
+	}
+	insn := binary.LittleEndian.Uint32(buf[0:4])
+	wantInsn := uint32(0x9E670000) | uint32(5)<<5 | uint32(3)
+	if insn != wantInsn {
+		t.Errorf("fmov d3, x5 = 0x%08x, want 0x%08x", insn, wantInsn)
+	}
+}
+
+// TestPJ8_EmitFmovXdFromDn 验「fmov Xd, Dn」(FP→GP)字节级。
+// 编码:0x9E660000 base + Dn<<5 + Xd。
+func TestPJ8_EmitFmovXdFromDn(t *testing.T) {
+	var buf []byte
+	buf = EmitFmovXdFromDn(buf, 7, 2) // fmov x7, d2
+
+	if len(buf) != EncodedFmovXdFromDnLen {
+		t.Fatalf("len = %d, want %d", len(buf), EncodedFmovXdFromDnLen)
+	}
+	insn := binary.LittleEndian.Uint32(buf[0:4])
+	wantInsn := uint32(0x9E660000) | uint32(2)<<5 | uint32(7)
+	if insn != wantInsn {
+		t.Errorf("fmov x7, d2 = 0x%08x, want 0x%08x", insn, wantInsn)
+	}
+}
+
+// TestPJ8_EmitFaddDdDnDm 验「fadd Dd, Dn, Dm」(双精度加)字节级。
+// 编码:0x1E602800 base + Dm<<16 + Dn<<5 + Dd。
+func TestPJ8_EmitFaddDdDnDm(t *testing.T) {
+	var buf []byte
+	buf = EmitFaddDdDnDm(buf, 0, 1, 2) // fadd d0, d1, d2
+
+	if len(buf) != EncodedFaddDdDnDmLen {
+		t.Fatalf("len = %d, want %d", len(buf), EncodedFaddDdDnDmLen)
+	}
+	insn := binary.LittleEndian.Uint32(buf[0:4])
+	wantInsn := uint32(0x1E602800) | uint32(2)<<16 | uint32(1)<<5 | uint32(0)
+	if insn != wantInsn {
+		t.Errorf("fadd d0, d1, d2 = 0x%08x, want 0x%08x", insn, wantInsn)
+	}
+}
+
+// TestPJ8_EmitFsubDdDnDm 验「fsub Dd, Dn, Dm」字节级。base 0x1E603800。
+func TestPJ8_EmitFsubDdDnDm(t *testing.T) {
+	var buf []byte
+	buf = EmitFsubDdDnDm(buf, 0, 1, 2)
+
+	if len(buf) != EncodedFsubDdDnDmLen {
+		t.Fatalf("len = %d, want %d", len(buf), EncodedFsubDdDnDmLen)
+	}
+	insn := binary.LittleEndian.Uint32(buf[0:4])
+	wantInsn := uint32(0x1E603800) | uint32(2)<<16 | uint32(1)<<5
+	if insn != wantInsn {
+		t.Errorf("fsub d0, d1, d2 = 0x%08x, want 0x%08x", insn, wantInsn)
+	}
+}
+
+// TestPJ8_EmitFmulDdDnDm 验「fmul Dd, Dn, Dm」字节级。base 0x1E600800。
+func TestPJ8_EmitFmulDdDnDm(t *testing.T) {
+	var buf []byte
+	buf = EmitFmulDdDnDm(buf, 0, 1, 2)
+
+	if len(buf) != EncodedFmulDdDnDmLen {
+		t.Fatalf("len = %d, want %d", len(buf), EncodedFmulDdDnDmLen)
+	}
+	insn := binary.LittleEndian.Uint32(buf[0:4])
+	wantInsn := uint32(0x1E600800) | uint32(2)<<16 | uint32(1)<<5
+	if insn != wantInsn {
+		t.Errorf("fmul d0, d1, d2 = 0x%08x, want 0x%08x", insn, wantInsn)
+	}
+}
+
+// TestPJ8_EmitFdivDdDnDm 验「fdiv Dd, Dn, Dm」字节级。base 0x1E601800。
+func TestPJ8_EmitFdivDdDnDm(t *testing.T) {
+	var buf []byte
+	buf = EmitFdivDdDnDm(buf, 0, 1, 2)
+
+	if len(buf) != EncodedFdivDdDnDmLen {
+		t.Fatalf("len = %d, want %d", len(buf), EncodedFdivDdDnDmLen)
+	}
+	insn := binary.LittleEndian.Uint32(buf[0:4])
+	wantInsn := uint32(0x1E601800) | uint32(2)<<16 | uint32(1)<<5
+	if insn != wantInsn {
+		t.Errorf("fdiv d0, d1, d2 = 0x%08x, want 0x%08x", insn, wantInsn)
+	}
+}
+
+// TestPJ8_EmitFcmpeDnDm 验「fcmpe Dn, Dm」(signaling ordered compare)字节级。
+// 编码:0x1E602010 base + Dm<<16 + Dn<<5。
+// 对位 amd64 ucomisd xmm0, xmm1(F2 0F 2E C0+reg 4 字节)。
+func TestPJ8_EmitFcmpeDnDm(t *testing.T) {
+	var buf []byte
+	buf = EmitFcmpeDnDm(buf, 1, 2) // fcmpe d1, d2
+
+	if len(buf) != EncodedFcmpeDnDmLen {
+		t.Fatalf("len = %d, want %d", len(buf), EncodedFcmpeDnDmLen)
+	}
+	insn := binary.LittleEndian.Uint32(buf[0:4])
+	wantInsn := uint32(0x1E602010) | uint32(2)<<16 | uint32(1)<<5
+	if insn != wantInsn {
+		t.Errorf("fcmpe d1, d2 = 0x%08x, want 0x%08x", insn, wantInsn)
+	}
+}

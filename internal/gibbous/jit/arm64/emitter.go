@@ -290,3 +290,163 @@ const (
 	CondGT uint8 = 0xC // signed >
 	CondLE uint8 = 0xD // signed <=
 )
+
+// =============================================================================
+// arm64 浮点 emit 原语(承 06-backends.md §4.2 + ARMv8 ARM C7.2 FP/SIMD)
+// =============================================================================
+//
+// **arm64 vs amd64 浮点对位**:
+//   - amd64 SSE2 用 xmm0-xmm15 寄存器,操作 movsd / addsd / subsd / mulsd /
+//     divsd / ucomisd 等(F2 0F xx C0+reg 5 字节)
+//   - arm64 用 D0-D31 寄存器(双精度),操作 FMOV / FADD / FSUB / FMUL /
+//     FDIV / FCMPE 等(每条 4 字节)
+//
+// 双精度 NaN-box 转换:Lua number 是 NaN-box uint64(高 16 位标 0x7FF8 普通
+// number / 高 16 位是 NaN-box tag 是 GCRef)。FMOV Dd, Xn 从 GP 寄存器位级
+// 复制到 FP 寄存器,语义等价(IEEE 754 unbox)。
+
+// EmitFmovDdFromXn 发射 arm64「fmov Dd, Xn」(GP→FP 64-bit 位级复制)。
+//
+// 编码:1001_1110_0110_0111_0000_00nn_nnnn_dddd = 0x9E670000 + Rn<<5 + Rd
+//
+// 用例:PJ2 投机模板 arm64 端——把值栈 R(B) load 到 X0(经 LDR)后
+// fmov 到 D0,然后 FADD D0, D0, D1(D1 来自 R(C))算 R(A) = R(B)+R(C)。
+// 对位 amd64 movsd xmm0, [rbx+B*8] + addsd xmm0, [rbx+C*8]。
+func EmitFmovDdFromXn(buf []byte, dd, xn uint8) []byte {
+	if dd > 31 {
+		dd = 0
+	}
+	if xn > 30 {
+		xn = 0
+	}
+	insn := uint32(0x9E670000) | (uint32(xn)&0x1F)<<5 | uint32(dd)&0x1F
+	return appendArm64Insn(buf, insn)
+}
+
+// EncodedFmovDdFromXnLen = 4.
+const EncodedFmovDdFromXnLen = 4
+
+// EmitFmovXdFromDn 发射 arm64「fmov Xd, Dn」(FP→GP 位级复制,对位
+// EmitFmovDdFromXn)。
+//
+// 编码:1001_1110_0110_0110_0000_00nn_nnnn_dddd = 0x9E660000 + Rn<<5 + Rd
+//
+// 用例:PJ2 投机模板 arm64 端 store 回值栈——FADD D0... 后 fmov X0, D0,
+// 然后 STR X0, [Rb_vsBase + A*8]。对位 amd64 movsd [rbx+A*8], xmm0。
+func EmitFmovXdFromDn(buf []byte, xd, dn uint8) []byte {
+	if xd > 30 {
+		xd = 0
+	}
+	if dn > 31 {
+		dn = 0
+	}
+	insn := uint32(0x9E660000) | (uint32(dn)&0x1F)<<5 | uint32(xd)&0x1F
+	return appendArm64Insn(buf, insn)
+}
+
+// EncodedFmovXdFromDnLen = 4.
+const EncodedFmovXdFromDnLen = 4
+
+// EmitFaddDdDnDm 发射 arm64「fadd Dd, Dn, Dm」(双精度加,IEEE 754)。
+//
+// 编码:0001_1110_011_mmmmm_001010_nnnnn_ddddd = 0x1E602800 + Rm<<16 + Rn<<5 + Rd
+//   - size=01(double precision),op=0010(FADD),Rm 操作数 2
+//
+// 用例:PJ2 投机模板 arm64 端核心算术(对位 amd64 ADDSD F2 0F 58 C0+reg)。
+func EmitFaddDdDnDm(buf []byte, dd, dn, dm uint8) []byte {
+	if dd > 31 {
+		dd = 0
+	}
+	if dn > 31 {
+		dn = 0
+	}
+	if dm > 31 {
+		dm = 0
+	}
+	insn := uint32(0x1E602800) | (uint32(dm)&0x1F)<<16 | (uint32(dn)&0x1F)<<5 | uint32(dd)&0x1F
+	return appendArm64Insn(buf, insn)
+}
+
+// EncodedFaddDdDnDmLen = 4.
+const EncodedFaddDdDnDmLen = 4
+
+// EmitFsubDdDnDm 发射 arm64「fsub Dd, Dn, Dm」(双精度减)。
+// 编码:0x1E603800 base(同 FADD 但 op=0011)。对位 amd64 SUBSD。
+func EmitFsubDdDnDm(buf []byte, dd, dn, dm uint8) []byte {
+	if dd > 31 {
+		dd = 0
+	}
+	if dn > 31 {
+		dn = 0
+	}
+	if dm > 31 {
+		dm = 0
+	}
+	insn := uint32(0x1E603800) | (uint32(dm)&0x1F)<<16 | (uint32(dn)&0x1F)<<5 | uint32(dd)&0x1F
+	return appendArm64Insn(buf, insn)
+}
+
+// EncodedFsubDdDnDmLen = 4.
+const EncodedFsubDdDnDmLen = 4
+
+// EmitFmulDdDnDm 发射 arm64「fmul Dd, Dn, Dm」(双精度乘)。
+// 编码:0x1E600800 base(op=0000)。对位 amd64 MULSD。
+func EmitFmulDdDnDm(buf []byte, dd, dn, dm uint8) []byte {
+	if dd > 31 {
+		dd = 0
+	}
+	if dn > 31 {
+		dn = 0
+	}
+	if dm > 31 {
+		dm = 0
+	}
+	insn := uint32(0x1E600800) | (uint32(dm)&0x1F)<<16 | (uint32(dn)&0x1F)<<5 | uint32(dd)&0x1F
+	return appendArm64Insn(buf, insn)
+}
+
+// EncodedFmulDdDnDmLen = 4.
+const EncodedFmulDdDnDmLen = 4
+
+// EmitFdivDdDnDm 发射 arm64「fdiv Dd, Dn, Dm」(双精度除)。
+// 编码:0x1E601800 base(op=0001)。对位 amd64 DIVSD。
+func EmitFdivDdDnDm(buf []byte, dd, dn, dm uint8) []byte {
+	if dd > 31 {
+		dd = 0
+	}
+	if dn > 31 {
+		dn = 0
+	}
+	if dm > 31 {
+		dm = 0
+	}
+	insn := uint32(0x1E601800) | (uint32(dm)&0x1F)<<16 | (uint32(dn)&0x1F)<<5 | uint32(dd)&0x1F
+	return appendArm64Insn(buf, insn)
+}
+
+// EncodedFdivDdDnDmLen = 4.
+const EncodedFdivDdDnDmLen = 4
+
+// EmitFcmpeDnDm 发射 arm64「fcmpe Dn, Dm」(双精度比较 + signaling NaN,
+// 设 NZCV flag 给下一条 B.cond 用)。
+//
+// 编码:0001_1110_011_mmmmm_001000_nnnnn_10000 = 0x1E602010 + Rm<<16 + Rn<<5
+//   - Rd 字段 = 10000(opc2=10000 signaling 模式)
+//   - opcode2 = 10 (signaling QNaN 抛 exception,语义比 fcmp 严格,精确等价
+//     amd64 ucomisd-style ordered compare)
+//
+// 用例:PJ3 FORLOOP arm64 端 limit 比较(对位 amd64 ucomisd xmm0, xmm1
+// 4 字节)。后续 EmitBCond(CondLE/GT/...) 利用 fcmpe 设的 NZCV 跳转。
+func EmitFcmpeDnDm(buf []byte, dn, dm uint8) []byte {
+	if dn > 31 {
+		dn = 0
+	}
+	if dm > 31 {
+		dm = 0
+	}
+	insn := uint32(0x1E602010) | (uint32(dm)&0x1F)<<16 | (uint32(dn)&0x1F)<<5
+	return appendArm64Insn(buf, insn)
+}
+
+// EncodedFcmpeDnDmLen = 4.
+const EncodedFcmpeDnDmLen = 4
