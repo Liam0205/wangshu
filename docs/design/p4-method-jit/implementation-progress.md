@@ -50,7 +50,7 @@
 | PJ1 | amd64 trampoline + 直线模板(6 opcode) | [05](./05-system-pipeline.md) + [06 §3.1](./06-backends.md) | 直线 Proto 升层后 byte-equal;exec mmap + W^X 翻面工作 | 🔶 **2026-06-25 部分**(详 §6 PJ1 实装对账;spike 闸门 🟢 + amd64 mmap+W^X+trampoline+emitter 主库版 + LOADK/RETURN 单测 byte-equal;**未接入 GibbousCode.Run end-to-end byte-equal**——SupportsAllOpcodes 仍全 false,完整接入留 PJ3+) |
 | PJ2 | amd64 算术 + 比较 + IsNumber×2 guard | [03](./03-speculation-ic.md) + [06 §3.2](./06-backends.md) | 双 number 快路径直发 `mulsd` 等;guard 失败 OSR exit 回解释 | ✅ **2026-06-26 完整接入扩展到 12+ 形态**(承 §7;ADD/SUB/MUL/DIV 三种操作数布局:reg-reg(92 字节,实测 1.01-1.03x)+ reg-K(73 字节,实测 1.01-1.02x)+ chain-KK 任意 op1+op2 组合(92 字节,~1.0x 单次调内 boundary 占主导)。e2e 双轨真升层 byte-equal 解释器 + 白盒命中探针 SpecRegKHits / SpecRegRegHits / SpecChainHits 实证非降级 host;deopt fallback 含 chain pc 修复对齐错误消息行号。**真大幅加速**(luajc 档 ≥4.4x)留 PJ3 FORLOOP 字节级内联把多次 boundary 摊出循环) |
 | PJ3 | amd64 控制流 + FORLOOP + 回边 safepoint | [05 §6.3](./05-system-pipeline.md) + [06 §3.3](./06-backends.md) | 数值 for 编译后 ≥luajc 档单档(**P4 价值首次实证**)| ✅ **2026-06-26 真接入 5 类形态——突破 luajc 档**(承 §8;空 body 三类:LOADK常量 + MOVE reg-limit hot path(IsNumber guard + host.ForPrep deopt)+ GETUPVAL upval-limit(Run prelude + reg-limit 模板复用);含 body 二类:单 reg-K body op(135 字节,body 用 xmm3/4)+ 二段 reg-K body op(154 字节,body 共享 xmm3 跨两段省 load/store)。安全点 check 字节级真接入(V18 -race 抢占语义生效)。**Xeon 6982P 实测**:空 body 100/1000/10000 iter 8.11/17.53/20.09x over cres + 7.15/21.20/25.41x over gopher;body+=1 1000/10000 iter 7.23/7.36x over cres + 10.18/10.83x over gopher;**全部远超 luajc 档 4.4x 基线**。**嵌套 / break / 表 IC 留 PJ4+ 扩**) |
-| PJ4 | amd64 表 IC 模板 + stableShape/Index 直达槽投机 | [03 §6](./03-speculation-ic.md) + [06 §3.4](./06-backends.md) | 单态表 guard + 直达槽跳哈希;形状变化 deopt + 再训练 | ✅ **2026-06-26 IC ArrayHit + NodeHit + 严密 IsTable guard 完整接入**(承 §9;ArrayHit 132 字节模板 + NodeHit 159 字节模板,**严密 IsTable guard** `shr rax,48 + cmp eax,0xFFFC + jne deopt`(15 字节)精确排除 string/function/userdata/thread 假阳;analyzeGetTableArrayHit + analyzeGetTableNodeHit 形态识别(ArrayHit 优先 → NodeHit fallback);Compile 主路径接入 + Run deopt 分流 host.GetTable byte-equal P1;**SpecTableHits 探针**经 Warmup-then-Force e2e 两路径实证 IC inline 真编译(`t[1]` ArrayHit + `t["x"]` NodeHit 各 SpecTableHits++=1)。**已知边界**:SETTABLE / SELF 留 PJ4+ 扩) |
+| PJ4 | amd64 表 IC 模板 + stableShape/Index 直达槽投机 | [03 §6](./03-speculation-ic.md) + [06 §3.4](./06-backends.md) | 单态表 guard + 直达槽跳哈希;形状变化 deopt + 再训练 | ✅ **2026-06-26 IC GETTABLE(ArrayHit+NodeHit)+ SETTABLE ArrayHit + 严密 IsTable guard 完整接入**(承 §9;ArrayHit 132 字节模板 + NodeHit 159 字节模板 + SETTABLE ArrayHit 113 字节模板,**严密 IsTable guard** `shr rax,48 + cmp eax,0xFFFC + jne deopt`(15 字节)精确排除 string/function/userdata/thread 假阳;analyzeGetTableArrayHit + analyzeGetTableNodeHit + analyzeSetTableArrayHit 形态识别 + Compile 主路径接入(ArrayHit get → NodeHit get → SETTABLE 三路径分流);Run deopt 分流 host.GetTable / host.SetTable byte-equal P1;**SpecTableHits 探针**经 Warmup-then-Force e2e 三路径实证 IC inline 真编译(`t[1]` / `t["x"]` / `t[1]=v` 各 SpecTableHits++=1)。**已知边界**:NodeHit set / SELF 留 PJ4+ 扩;SETTABLE 简化假设无 __newindex + 不验现有 nil(P1 IC 命中协议保证)) |
 | PJ5 | amd64 CALL/TAILCALL + 跨层互调 + OSR exit 实装 | [04](./04-osr-deopt.md) + [05 §4.3](./05-system-pipeline.md) + [06 §3.5](./06-backends.md) | gibbous-jit 三向分派 + OSR exit 状态等价(V19)| 🔶 **2026-06-25 emitter 部分**(EmitCallRel32/CallReg/PushReg/PopReg;push/pop round-trip 验证;helper call 真接入留 PJ5+) |
 | PJ6 | amd64 CLOSURE/CLOSE + upvalue | [06 §3.6](./06-backends.md) | 闭包 byte-equal(复用 makeClosure/closeUpvals)| 🔶 **2026-06-25 emitter 部分**(EmitLoadKReturnTemplate + EmitProlog/Epilog 模板封装;10000 次 prolog/epilog 栈保护验证;upvalue 真接入留 PJ6+) |
 | PJ7 | amd64 端到端验收 + 性能基准 | [08](./08-testing-strategy.md) | 单架构 V1-V22 全过 + V14 luajc 档 | ✅ **PJ7 真接入 ~25 类形态 byte-equal**(2026-06-25/26,详 §7;`SupportsAllOpcodes` 已扩展到 25 类形态——getter 族(RETURN A 2 / GETUPVAL / GETGLOBAL / GETTABLE / LOADK 含 string / LOADBOOL / LOADNIL / MOVE / ADD..POW 6 op / UNM / LEN / NEWTABLE / NOT)+ setter 族(RETURN A 1 / SETTABLE / SETGLOBAL / SETUPVAL)+ 比较折叠族(EQ/LT/LE 6-op luac 模板折成 BoolValue)。`p4Code.Run` 经 14 个 host helper 调 gibbous_host.go 与解释器 byte-equal;pc off-by-one bug 修复(行号 / IC 槽锚定 prelude op 自身 pc=0);多行错误消息 byte-equal 实证测试通过。**make test-p4 全套 21 binary 全过含 conformance/difftest/luasuite + V18 -race**;V14 luajc 档调优留 PJ10) |
@@ -628,6 +628,52 @@ deopt block                                        (11 字节,复用)
 - `TestPJ4_TableNodeHit_E2E_NumberKey`(`t[7]` 在 dict-style `{[7]=42}` 表,数字键 in hash 段):Phase 2 SpecTableHits 增量 = 1 ✅
 
 **PJ4 IC 完整覆盖**:ArrayHit(数字键 in array 段)+ NodeHit(任意键 in hash 段)两路径字节级 inline 主路径全接入。**SETTABLE / SELF 留下一阶段**(需要反向写槽 + __newindex 元方法 deopt;SELF 是 GETTABLE 变体 + 多写 R(A+1)=R(B))。
+
+### 9.9 PJ4 SETTABLE ArrayHit 字节级 inline 真接入(2026-06-26 落地)
+
+承 §9.8 已知边界:SETTABLE 接入完成 PJ4 SETTABLE 首套实装。
+
+**SETTABLE 形态**:`function(t, v) t[K] = v end` 中 K 是数字常量 + 命中 array 段(luac 编 SETTABLE A B C / RETURN A 1,其中 A=R(t) / B=K idx >=256 / C=R(v))。
+
+**字节级模板**(113 字节,比 GETTABLE ArrayHit 132 字节小 19 字节):
+```
+[0-21]   load R(A) → rax + 严密 IsTable guard (22 字节,复用)
+[22-44]  re-load R(A) + GCRef extract + rcx = offset (23 字节,复用)
+[45-74]  arena base 装 r14 + gen check stableShape (30 字节,复用)
+[75-85]  load table.arrayRef(word2=16)+ rcx = arrayRef offset (11 字节)
+[86-92]  load R(C) value → rdx (7 字节,EmitMovqRdxFromMemRbx 新原语)
+[93-100] 反向 store mov [r14+rcx+stableIndex*8], rdx (8 字节,
+         EmitMovqMemR14PlusRcxFromRdx 新原语)
+[101]    ret (1 字节)
+[102-112] deopt block (11 字节)
+```
+
+vs GETTABLE ArrayHit 关键差异:
+- 不读现有 array[stableIndex](getter 验非 nil + 写 R(A);setter 直接写)
+- 不做 nil check on result(getter 是 read,setter 是 write)
+- 多 load R(C) value 到 rdx + 反向 store from rdx
+
+**新 emit 原语**:`EmitMovqMemR14PlusRcxFromRdx`(反向 store from rdx,8 字节,49 89 94 0E disp32)+ `EmitMovqRdxFromMemRbx`(load rdx,7 字节,48 8B 93 disp32)+ 字节级单测 byte-equal Intel SDM。
+
+**形态识别**(`analyzeSetTableArrayHit`):
+- Code 长度 2/3,[0]=SETTABLE / [1]=RETURN A 1(setter)
+- SETTABLE A B C:A<=254 / B>=256(K 常量) / C<256(value 是 reg)
+- proto.IC[0].Kind=ArrayHit + feedback FBTableMono + shape/index 一致
+
+**Compile 主路径**:`Compile` 内按顺序尝试 GetTable ArrayHit → NodeHit → SetTable ArrayHit。SETTABLE 命中即 compileIcSetArrayHit emit 113 字节模板,Run 端 icSetArrayHit=true 让 deopt 走 host.SetTable byte-equal(经 icSetTable + __newindex 元方法链)。
+
+**e2e 实证**:
+- `TestPJ4_TableSetArrayHit_E2E_WarmupThenForce`(`setter(t, v) t[1] = v`):
+  - Phase 1 P1 跑 100 次 warmup 填 IC[0]=ArrayHit + 反复写值
+  - Phase 2 force-all 升 setter → SETTABLE SpecTableHits 增量 = 1 ✅
+  - 写值正确性:t[1] = 42 byte-equal 解释器
+
+**设计简化**(SETTABLE 工程边界):
+- 不验现有 array[stableIndex] != nil(防新键路径)— 依赖 P1 解释器在键退化场景 bump gen + RequestRefresh
+- 不验 __newindex 元表存在(meta freeze 假设)— 元方法场景应触发 gen change 由 IC 失效路径处理
+- 数字键 in array 段(NodeHit SETTABLE / 字符串键 SETTABLE 留 PJ4+)
+
+**PJ4 IC 三路径完整覆盖**:GetTable ArrayHit + GetTable NodeHit + SetTable ArrayHit 全主路径接入。Set NodeHit / SELF 留下一阶段。
 
 ---
 
