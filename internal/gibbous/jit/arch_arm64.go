@@ -111,5 +111,15 @@ func archEmitForLoopEmptyConst(buf []byte, kInit, kLimit, kStep uint64, preemptF
 	return buf
 }
 
+// archEmitForLoopRegLimit arm64 端 stub。
+func archEmitForLoopRegLimit(buf []byte, kInit, kStep uint64, limitReg uint8, deoptCode uint64, preemptFlagOff int32) []byte {
+	_ = kInit
+	_ = kStep
+	_ = limitReg
+	_ = deoptCode
+	_ = preemptFlagOff
+	return buf
+}
+
 // archSupportsSpec arm64 当前不支持(留 PJ8+)。
 func archSupportsSpec() bool { return false }

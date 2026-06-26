@@ -94,11 +94,14 @@ type shapeInfo struct {
 	//     forStepK 烧入 imm64,不寻址 R(A) 槽);**留 PJ3+ body inline 扩**
 	//     时需用 forA 算 R(A+3)=i 槽 offset 给 body 内部 ref。
 	//   - forInitK / forLimitK / forStepK:三个常量 NaN-box raw bits(编译期烧 imm64)
-	isForLoop bool
-	forA      uint8
-	forInitK  uint64
-	forLimitK uint64
-	forStepK  uint64
+	//   - forLimitReg + forLimitIsReg:reg-limit 形态用 R(limitReg) 而非 K
+	isForLoop     bool
+	forA          uint8
+	forInitK      uint64
+	forLimitK     uint64
+	forStepK      uint64
+	forLimitReg   uint8 // limit 是 reg 时的源寄存器号(forLimitIsReg=true)
+	forLimitIsReg bool  // true = limit 从 R(forLimitReg) 读 + IsNumber guard;false = K 编译期烧 imm
 }
 
 // analyzeForLoopForm 识别 PJ3 字节级 FORLOOP inline 最简形态:
@@ -135,9 +138,11 @@ func analyzeForLoopForm(proto *bytecode.Proto) (shapeInfo, bool) {
 		return shapeInfo{}, false
 	}
 	// [0/1/2] LOADK / [3] FORPREP / [4] FORLOOP / [5] RETURN
-	// **limit 仅 LOADK 形态**(MOVE/reg 形态留 PJ3+ 加 IsNumber guard 时扩)
+	// **limit 支持 LOADK 或 MOVE(reg 形态)**:reg-limit hot path 真实形态
+	// 需 IsNumber guard 字节级 inline
 	if bytecode.Op(proto.Code[0]) != bytecode.LOADK ||
-		bytecode.Op(proto.Code[1]) != bytecode.LOADK ||
+		(bytecode.Op(proto.Code[1]) != bytecode.LOADK &&
+			bytecode.Op(proto.Code[1]) != bytecode.MOVE) ||
 		bytecode.Op(proto.Code[2]) != bytecode.LOADK ||
 		bytecode.Op(proto.Code[3]) != bytecode.FORPREP ||
 		bytecode.Op(proto.Code[4]) != bytecode.FORLOOP ||
@@ -168,18 +173,15 @@ func analyzeForLoopForm(proto *bytecode.Proto) (shapeInfo, bool) {
 		return shapeInfo{}, false
 	}
 
-	// 三个 LOADK 的 Bx 取 K[Bx]
+	// init / step:必须 LOADK + K 是 number
 	kInitIdx := bytecode.Bx(proto.Code[0])
-	kLimitIdx := bytecode.Bx(proto.Code[1])
 	kStepIdx := bytecode.Bx(proto.Code[2])
-	if kInitIdx >= len(proto.Consts) || kLimitIdx >= len(proto.Consts) || kStepIdx >= len(proto.Consts) {
+	if kInitIdx >= len(proto.Consts) || kStepIdx >= len(proto.Consts) {
 		return shapeInfo{}, false
 	}
-
 	kInit := proto.Consts[kInitIdx]
-	kLimit := proto.Consts[kLimitIdx]
 	kStep := proto.Consts[kStepIdx]
-	if !value.IsNumber(kInit) || !value.IsNumber(kLimit) || !value.IsNumber(kStep) {
+	if !value.IsNumber(kInit) || !value.IsNumber(kStep) {
 		return shapeInfo{}, false
 	}
 
@@ -190,7 +192,8 @@ func analyzeForLoopForm(proto *bytecode.Proto) (shapeInfo, bool) {
 		return shapeInfo{}, false
 	}
 
-	return shapeInfo{
+	// limit:LOADK(常量)或 MOVE(reg-limit hot path)
+	si := shapeInfo{
 		ok:        true,
 		retA:      0, // RETURN A=0
 		retB:      1, // 空 return
@@ -198,9 +201,30 @@ func analyzeForLoopForm(proto *bytecode.Proto) (shapeInfo, bool) {
 		isForLoop: true,
 		forA:      uint8(aInit),
 		forInitK:  uint64(kInit),
-		forLimitK: uint64(kLimit),
 		forStepK:  uint64(kStep),
-	}, true
+	}
+	if bytecode.Op(proto.Code[1]) == bytecode.LOADK {
+		kLimitIdx := bytecode.Bx(proto.Code[1])
+		if kLimitIdx >= len(proto.Consts) {
+			return shapeInfo{}, false
+		}
+		kLimit := proto.Consts[kLimitIdx]
+		if !value.IsNumber(kLimit) {
+			return shapeInfo{}, false
+		}
+		si.forLimitK = uint64(kLimit)
+		si.forLimitIsReg = false
+	} else {
+		// **MOVE A B reg-limit 形态识别但暂不接入主路径**:字节级模板
+		// EmitForLoopRegLimit 已实装(amd64/pj3_template.go),deopt 协议
+		// 需要 host.ForPrep/ForLoop helper 接入 P4HostState,留下一 commit。
+		// 当前返 .ok=false 让 SupportsAllOpcodes 拒,走 P1 解释,byte-equal
+		// 保证。
+		_ = aLimit
+		return shapeInfo{}, false
+	}
+
+	return si, true
 }
 
 // analyzeCompareForm 识别 EQ/LT/LE + JMP + LOADBOOL + LOADBOOL + RETURN
@@ -912,6 +936,10 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 		// loop body 末尾插「cmp byte [r15+pfOff], 0; jne after_loop」
 		// (承 05 §1.2.2 抢占纪律 + V18 -race);trampoline 已装 r15。
 		pfOff := int32(JITContextPreemptFlagOffset)
+
+		// **全常量空 body FORLOOP**(本批落地)。reg-limit 形态字节级模板
+		// EmitForLoopRegLimit 已实装但 deopt 协议待 host.ForPrep helper 接入
+		// (analyzeForLoopForm 已返 .ok=false 拒 reg-limit 形态,走 P1)。
 		buf = archEmitForLoopEmptyConst(buf, info.forInitK, info.forLimitK, info.forStepK, pfOff)
 		page, err := archMmapCode(buf)
 		if err != nil {
