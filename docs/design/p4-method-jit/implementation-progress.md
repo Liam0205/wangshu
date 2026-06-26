@@ -49,7 +49,7 @@
 | PJ0 | 立项判定 + 包骨架 + build tag 隔离 | [01](./01-launch-judgment.md) + [06 §6.1](./06-backends.md) | 立项判定通过 + `internal/gibbous/jit/{amd64,arm64}` 骨架 + bridge 注入 P4Compiler 后 SupportsAllOpcodes 全 false | ✅ **2026-06-25 落地**(详 §6 PJ0 实装对账) |
 | PJ1 | amd64 trampoline + 直线模板(6 opcode) | [05](./05-system-pipeline.md) + [06 §3.1](./06-backends.md) | 直线 Proto 升层后 byte-equal;exec mmap + W^X 翻面工作 | 🔶 **2026-06-25 部分**(详 §6 PJ1 实装对账;spike 闸门 🟢 + amd64 mmap+W^X+trampoline+emitter 主库版 + LOADK/RETURN 单测 byte-equal;**未接入 GibbousCode.Run end-to-end byte-equal**——SupportsAllOpcodes 仍全 false,完整接入留 PJ3+) |
 | PJ2 | amd64 算术 + 比较 + IsNumber×2 guard | [03](./03-speculation-ic.md) + [06 §3.2](./06-backends.md) | 双 number 快路径直发 `mulsd` 等;guard 失败 OSR exit 回解释 | ✅ **2026-06-26 完整接入扩展到 12+ 形态**(承 §7;ADD/SUB/MUL/DIV 三种操作数布局:reg-reg(92 字节,实测 1.01-1.03x)+ reg-K(73 字节,实测 1.01-1.02x)+ chain-KK 任意 op1+op2 组合(92 字节,~1.0x 单次调内 boundary 占主导)。e2e 双轨真升层 byte-equal 解释器 + 白盒命中探针 SpecRegKHits / SpecRegRegHits / SpecChainHits 实证非降级 host;deopt fallback 含 chain pc 修复对齐错误消息行号。**真大幅加速**(luajc 档 ≥4.4x)留 PJ3 FORLOOP 字节级内联把多次 boundary 摊出循环) |
-| PJ3 | amd64 控制流 + FORLOOP + 回边 safepoint | [05 §6.3](./05-system-pipeline.md) + [06 §3.3](./06-backends.md) | 数值 for 编译后 ≥luajc 档单档(**P4 价值首次实证**)| ✅ **2026-06-26 真接入最简形态——突破 luajc 档**(承 §8;`function() for i=K1, K2 do end end` 全常量空 body FORLOOP 字节级 inline 真接入:analyzeForLoopForm CFG 识别 + EmitForLoopEmptyConst 69 字节模板(mov rax,K_*; movq xmm,rax × 3 + subsd 预减 + addsd idx+=step + ucomisd limit + ja exit + jmp backward + ret)+ archEmit 路由层 + 主路径 Compile 接入 + SpecForLoopHits 命中探针 + 7 档单测(1..100 / 1..1000 / 1..10000 等)+ 3 档 e2e + 3 档 benchmark。**Xeon 6982P 实测加速比超 luajc 档**:100 iter 8.11x over cresc / 7.15x over gopher;1000 iter 17.53x / 21.20x;10000 iter 20.09x / **25.41x over gopher-lua**(luajc 档 ≥4.4x 早已超越)。**含 body / reg limit / safepoint check 接入留 PJ3+ 扩**) |
+| PJ3 | amd64 控制流 + FORLOOP + 回边 safepoint | [05 §6.3](./05-system-pipeline.md) + [06 §3.3](./06-backends.md) | 数值 for 编译后 ≥luajc 档单档(**P4 价值首次实证**)| ✅ **2026-06-26 真接入 3 类形态——突破 luajc 档**(承 §8;`function() for i=K1, K2 do end end` 全常量空 body 形态(69-83 字节模板)+ `for i=1, n do end` reg-limit hot path(117 字节,IsNumber guard + host.ForPrep deopt byte-equal P1)+ closure capture upvalue-limit(Run prelude host.GetUpval + reg-limit 模板复用)。安全点 check 字节级真接入(cmp byte [r15+preemptFlagOff], 0 + jne after_loop;V18 -race 抢占语义生效,spike 实证 preemptFlag 真切换执行路径)。**Xeon 6982P 实测加速比**:空 body 100/1000/10000 iter 8.11/17.53/20.09x over cres;reg-limit hot path 1000/10000 iter 17.44/20.15x;**全部 over gopher-lua 7-25x,远超 luajc 档 4.4x 基线**。**含 body / 嵌套 / break 留 PJ3+ 扩**) |
 | PJ4 | amd64 表 IC 模板 + stableShape/Index 直达槽投机 | [03 §6](./03-speculation-ic.md) + [06 §3.4](./06-backends.md) | 单态表 guard + 直达槽跳哈希;形状变化 deopt + 再训练 | 🔶 **2026-06-25 emitter 部分**(EmitCmpRaxImm32 + EmitJaeRel32 + EmitJmpRel32;mmap 段验证 cmp+jcc/jmp 真按 flag 跳——IsNumber guard 物理基础;真接入留 PJ4+) |
 | PJ5 | amd64 CALL/TAILCALL + 跨层互调 + OSR exit 实装 | [04](./04-osr-deopt.md) + [05 §4.3](./05-system-pipeline.md) + [06 §3.5](./06-backends.md) | gibbous-jit 三向分派 + OSR exit 状态等价(V19)| 🔶 **2026-06-25 emitter 部分**(EmitCallRel32/CallReg/PushReg/PopReg;push/pop round-trip 验证;helper call 真接入留 PJ5+) |
 | PJ6 | amd64 CLOSURE/CLOSE + upvalue | [06 §3.6](./06-backends.md) | 闭包 byte-equal(复用 makeClosure/closeUpvals)| 🔶 **2026-06-25 emitter 部分**(EmitLoadKReturnTemplate + EmitProlog/Epilog 模板封装;10000 次 prolog/epilog 栈保护验证;upvalue 真接入留 PJ6+) |
@@ -450,14 +450,25 @@ after_loop: ret
 
 ### 8.7 当前 PJ3 形态范围 + 后续扩展
 
-**当前已落地**:
-- ✅ `function() for i=K1, K2 do end end` 全常量空 body
+**当前已落地**(三类 FORLOOP 形态完整 byte-equal P1):
+- ✅ LOADK 常量 limit:`for i=1,100 do end`(69-83 字节)
+- ✅ MOVE reg-limit hot path:`for i=1,n do end` 参数(117 字节 + IsNumber guard + host.ForPrep deopt)
+- ✅ GETUPVAL upvalue-limit:`local n=100; local function f() for i=1,n do end end`(Run prelude + reg-limit 模板复用)
 
 **留 PJ3+ 扩**:
-- ⏳ body 含 reg-K spec op(reg-K 模板已就绪,inline 到 loop body 内即可)
-- ⏳ limit 是 reg(`for i=1,n do end`)+ IsNumber guard
-- ⏳ safepoint check 真接入(emit 原语 EmitCmpByteR15DispImm8 已就绪)
+- ⏳ body 含 reg-K spec op(reg-K 模板已就绪,inline 到 loop body 内需寄存器分配 + R(A) 写槽 emit)
 - ⏳ 嵌套 / break(JMP)
+
+### 8.8 reg-limit hot path benchmark(2026-06-26 实测)
+
+形态:`function(n) for i=1, n do end end`(wrap × 50 调 kernel(N))
+
+| iter | P4 (ns/op) | crescent (ns/op) | **P4 vs cres** | **P4 vs gopher** |
+|---|---|---|---|---|
+| 1000 | 33,193 | 578,891 | **17.44x** | **20.00x** |
+| 10000 | 286,293 | 5,767,130 | **20.15x** | **24.09x** |
+
+reg-limit hot path 形态 P4 真接入与全常量空 body 形态加速比相当(20-24x),只多一次 IsNumber guard 微小开销 ~50ns 一次性。**真实生产 hot path 形态(参数传 limit)完整突破 luajc 档**。
 
 ---
 
