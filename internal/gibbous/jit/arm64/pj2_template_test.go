@@ -166,3 +166,143 @@ func TestPJ8_EmitArithSpeculativeBinopWithGuardArm64_DeoptBlock(t *testing.T) {
 		t.Errorf("deopt RET = 0x%08x, want 0xd65f03c0", retInsn)
 	}
 }
+
+// TestPJ8_EmitArithSpeculativeBinopRegKWithGuardArm64_Length 验 reg-K
+// WithGuard 模板字节长度(92 = 28 + 44 + 20)。
+func TestPJ8_EmitArithSpeculativeBinopRegKWithGuardArm64_Length(t *testing.T) {
+	cases := []struct {
+		name  string
+		opSel uint8
+	}{
+		{"ADD", ArithOpAddArm64},
+		{"SUB", ArithOpSubArm64},
+		{"MUL", ArithOpMulArm64},
+		{"DIV", ArithOpDivArm64},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf []byte
+			buf = EmitArithSpeculativeBinopRegKWithGuardArm64(buf,
+				tc.opSel, 2, 0, 0x3FF0000000000000, 0xCAFEBABE)
+			const wantLen = 92
+			if len(buf) != wantLen {
+				t.Errorf("len = %d, want %d (%s)", len(buf), wantLen, tc.name)
+			}
+		})
+	}
+	if EncodedArithSpecBinopRegKWithGuardArm64Len != 92 {
+		t.Errorf("EncodedArithSpecBinopRegKWithGuardArm64Len = %d, want 92",
+			EncodedArithSpecBinopRegKWithGuardArm64Len)
+	}
+}
+
+// TestPJ8_EmitArithSpeculativeBinopRegKWithGuardArm64_KValueBurnedIn 验
+// kvalue 经 MOVZ+MOVK×3 烧进 [32-47] 段(guard 28 + LDR 4 + FMOV 4 + MOV imm64)。
+func TestPJ8_EmitArithSpeculativeBinopRegKWithGuardArm64_KValueBurnedIn(t *testing.T) {
+	const kvalue uint64 = 0xDEAD_BEEF_CAFE_FACE
+	var buf []byte
+	buf = EmitArithSpeculativeBinopRegKWithGuardArm64(buf,
+		ArithOpAddArm64, 2, 0, kvalue, 0xCAFEBABE)
+
+	if len(buf) < 48 {
+		t.Fatalf("buf too short: %d", len(buf))
+	}
+
+	// MOV imm64 起 offset = 28(guard)+ 4(LDR)+ 4(FMOV) = 36
+	expectedImm16 := [4]uint16{
+		uint16(kvalue & 0xFFFF),         // 0xFACE
+		uint16((kvalue >> 16) & 0xFFFF), // 0xCAFE
+		uint16((kvalue >> 32) & 0xFFFF), // 0xBEEF
+		uint16((kvalue >> 48) & 0xFFFF), // 0xDEAD
+	}
+	for i, exp := range expectedImm16 {
+		off := 36 + i*4
+		insn := binary.LittleEndian.Uint32(buf[off : off+4])
+		got := uint16((insn >> 5) & 0xFFFF)
+		if got != exp {
+			t.Errorf("kvalue movz/movk[%d]@%d imm16 = 0x%04x, want 0x%04x", i, off, got, exp)
+		}
+	}
+}
+
+// TestPJ8_EmitArithSpeculativeBinopRegKWithGuardArm64_DeoptBlock 验 deopt
+// block 在 [72-91]:MOV x0, deoptCode + RET。
+func TestPJ8_EmitArithSpeculativeBinopRegKWithGuardArm64_DeoptBlock(t *testing.T) {
+	const deoptCode uint64 = 0xDEAD_BEEF_CAFE_BABE
+	var buf []byte
+	buf = EmitArithSpeculativeBinopRegKWithGuardArm64(buf,
+		ArithOpAddArm64, 2, 0, 0x3FF0000000000000, deoptCode)
+
+	if len(buf) < 92 {
+		t.Fatalf("buf too short: %d", len(buf))
+	}
+
+	// [72-75] MOVZ x0, deoptCode[15:0]=0xBABE
+	insn := binary.LittleEndian.Uint32(buf[72:76])
+	imm0 := (insn >> 5) & 0xFFFF
+	if imm0 != 0xBABE {
+		t.Errorf("[72] MOVZ x0 imm[15:0] = 0x%04x, want 0xBABE", imm0)
+	}
+
+	// [88-91] RET
+	insn = binary.LittleEndian.Uint32(buf[88:92])
+	if insn != 0xd65f03c0 {
+		t.Errorf("[88] RET = 0x%08x, want 0xd65f03c0", insn)
+	}
+}
+
+// TestPJ8_EmitArithSpeculativeChainKKWithGuardArm64_Length 验 chain-KK
+// WithGuard 模板字节长度(116 = 28 + 68 + 20)。
+func TestPJ8_EmitArithSpeculativeChainKKWithGuardArm64_Length(t *testing.T) {
+	cases := []struct {
+		name     string
+		op1, op2 uint8
+	}{
+		{"MUL+ADD", ArithOpMulArm64, ArithOpAddArm64},
+		{"SUB+DIV", ArithOpSubArm64, ArithOpDivArm64},
+		{"ADD+SUB", ArithOpAddArm64, ArithOpSubArm64},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf []byte
+			buf = EmitArithSpeculativeChainKKWithGuardArm64(buf,
+				tc.op1, tc.op2, 2, 0,
+				0x3FF0000000000000, 0x4000000000000000, 0xCAFEBABE)
+			const wantLen = 116
+			if len(buf) != wantLen {
+				t.Errorf("len = %d, want %d (%s)", len(buf), wantLen, tc.name)
+			}
+		})
+	}
+	if EncodedArithSpecChainKKWithGuardArm64Len != 116 {
+		t.Errorf("EncodedArithSpecChainKKWithGuardArm64Len = %d, want 116",
+			EncodedArithSpecChainKKWithGuardArm64Len)
+	}
+}
+
+// TestPJ8_EmitArithSpeculativeChainKKWithGuardArm64_DeoptBlock 验 deopt
+// block 在 [96-115]。
+func TestPJ8_EmitArithSpeculativeChainKKWithGuardArm64_DeoptBlock(t *testing.T) {
+	const deoptCode uint64 = 0xDEAD_BEEF_CAFE_BABE
+	var buf []byte
+	buf = EmitArithSpeculativeChainKKWithGuardArm64(buf,
+		ArithOpMulArm64, ArithOpAddArm64, 2, 0,
+		0x4000000000000000, 0x3FF0000000000000, deoptCode)
+
+	if len(buf) < 116 {
+		t.Fatalf("buf too short: %d", len(buf))
+	}
+
+	// [96-99] MOVZ x0, deoptCode[15:0]=0xBABE
+	insn := binary.LittleEndian.Uint32(buf[96:100])
+	imm0 := (insn >> 5) & 0xFFFF
+	if imm0 != 0xBABE {
+		t.Errorf("[96] MOVZ x0 imm[15:0] = 0x%04x, want 0xBABE", imm0)
+	}
+
+	// [112-115] RET
+	insn = binary.LittleEndian.Uint32(buf[112:116])
+	if insn != 0xd65f03c0 {
+		t.Errorf("[112] RET = 0x%08x, want 0xd65f03c0", insn)
+	}
+}

@@ -211,3 +211,155 @@ func EmitArithSpeculativeBinopWithGuardArm64(buf []byte, opSel uint8, a, b, c ui
 // (28×2 + 32 + 20 = 108)。
 const EncodedArithSpecBinopWithGuardArm64Len = 2*EncodedIsNumberGuardArm64Len +
 	EncodedArithSpecBinopArm64Len + EncodedMovXdImm64Len + EncodedRetLen
+
+// EmitArithSpeculativeBinopRegKArm64 拼接 arm64 PJ2 投机 reg-K 快路径
+// 核心(无 guard 段,对位 amd64 EmitArithSpeculativeBinopRegK 36 字节)。
+//
+// 序列(44 字节):
+//
+//	LDR x0, [x26 + B*8]      ; 4(load R(B))
+//	FMOV d0, x0              ; 4(GP→FP)
+//	MOV x0, kvalue imm64     ; 16(K NaN-box bits 装入)
+//	FMOV d1, x0              ; 4(GP→FP)
+//	FADD/FSUB/FMUL/FDIV d0, d0, d1  ; 4(双精度 binop)
+//	FMOV x0, d0              ; 4(FP→GP)
+//	STR x0, [x26 + A*8]      ; 4(store R(A))
+//	RET                       ; 4
+//	——— 总计 44 字节 ———
+//
+// **vs amd64 reg-K 36 字节**:arm64 多 8 字节(MOV imm64 序列 16 vs
+// amd64 movq 10 累积 + LDR-then-FMOV vs amd64 movsd 单条多 2 步,
+// 但 RISC fixed-length 抵消部分)。
+func EmitArithSpeculativeBinopRegKArm64(buf []byte, opSel uint8, a, b uint8, kvalue uint64) []byte {
+	if a > 254 {
+		a = 0
+	}
+	if b > 254 {
+		b = 0
+	}
+	// LDR x0, [x26 + B*8] + FMOV d0, x0
+	buf = EmitLdrXtFromXnDisp(buf, 0, 26, uint16(b)*8)
+	buf = EmitFmovDdFromXn(buf, 0, 0)
+	// MOV x0, kvalue + FMOV d1, x0
+	buf = EmitMovXdImm64(buf, 0, kvalue)
+	buf = EmitFmovDdFromXn(buf, 1, 0)
+	// op d0, d0, d1
+	buf = emitArithOpArm64(buf, opSel, 0, 0, 1)
+	// FMOV x0, d0 + STR R(A)
+	buf = EmitFmovXdFromDn(buf, 0, 0)
+	buf = EmitStrXtToXnDisp(buf, 0, 26, uint16(a)*8)
+	buf = EmitRet(buf)
+	return buf
+}
+
+// EncodedArithSpecBinopRegKArm64Len arm64 PJ2 reg-K 快路径字节数(44 =
+// LDR 4 + FMOV 4 + MOV imm64 16 + FMOV 4 + FOP 4 + FMOV 4 + STR 4 + RET 4)。
+const EncodedArithSpecBinopRegKArm64Len = 44
+
+// EmitArithSpeculativeBinopRegKWithGuardArm64 拼接 arm64 PJ2 投机 reg-K
+// 完整模板(含 IsNumber guard + deopt 块,对位 amd64
+// EmitArithSpeculativeBinopRegKWithGuard 73 字节)。
+//
+// 字节布局(92 字节):
+//
+//	[ 0-27]  IsNumber guard R(B)   ; 28(LDR + MOV qNanBoxBase + CMP + B.HS deopt)
+//	[28-71]  reg-K 快路径           ; 44(LDR/FMOV + MOV K/FMOV + FOP + FMOV/STR + RET)
+//	[72-91]  deopt block            ; 20(MOV x0, deoptCode + RET)
+//	——— 总计 92 字节 ———
+//
+// **vs amd64 reg-K WithGuard 73 字节**:arm64 多 19 字节(guard 28 vs
+// amd64 26 +2、fast 44 vs amd64 36 +8、deopt 20 vs amd64 11 +9)。
+//
+// **预设条件**:R(B) 端 IsNumber guard 失败 → 跳 deopt 块返 deoptCode;
+// K 编译期已校验 number,运行期不再 guard(对位 amd64 同款形态)。
+func EmitArithSpeculativeBinopRegKWithGuardArm64(buf []byte, opSel uint8,
+	a, b uint8, kvalue uint64, deoptCode uint64) []byte {
+	// imm19 = (deopt 起点 - guard B.HS 自身) / 4
+	// guard B.HS 在 offset 24(LDR+MOV+CMP+B.HS,B.HS 位于 24-27)
+	// fast 段长 44,deopt 在 offset 28+44 = 72
+	// imm19 = (72 - 24) / 4 = 12
+	const guardBHSPos = 24
+	const deoptStart = 28 + 44
+	imm19Guard := int32(deoptStart-guardBHSPos) / 4
+
+	buf = EmitIsNumberGuardArm64(buf, b, imm19Guard)
+	buf = EmitArithSpeculativeBinopRegKArm64(buf, opSel, a, b, kvalue)
+	// deopt block:MOV x0, deoptCode + RET
+	buf = EmitMovXdImm64(buf, 0, deoptCode)
+	buf = EmitRet(buf)
+	return buf
+}
+
+// EncodedArithSpecBinopRegKWithGuardArm64Len arm64 PJ2 reg-K WithGuard
+// 完整字节数(28 + 44 + 20 = 92)。
+const EncodedArithSpecBinopRegKWithGuardArm64Len = 92
+
+// EmitArithSpeculativeChainKKWithGuardArm64 拼接 arm64 PJ2 投机
+// chain-KK 模板(R(A) = R(B) op1 K1 op2 K2 形态,对位 amd64
+// EmitArithSpeculativeChainKKWithGuard 92 字节)。
+//
+// 字节布局(116 字节):
+//
+//	[ 0-27]  IsNumber guard R(B)        ; 28
+//	[28-67]  fast: LDR/FMOV + K1 段(MOV+FMOV+FOP1)+ K2 段(MOV+FMOV+FOP2)+ FMOV/STR + RET
+//	[28-31]  LDR x0, [x26+B*8]          ; 4
+//	[32-35]  FMOV d0, x0                ; 4
+//	[36-51]  MOV x0, K1 imm64           ; 16
+//	[52-55]  FMOV d1, x0                ; 4
+//	[56-59]  FOP1 d0, d0, d1            ; 4
+//	[60-75]  MOV x0, K2 imm64           ; 16
+//	[76-79]  FMOV d1, x0                ; 4(覆盖 d1)
+//	[80-83]  FOP2 d0, d0, d1            ; 4
+//	[84-87]  FMOV x0, d0                ; 4
+//	[88-91]  STR x0, [x26+A*8]          ; 4
+//	[92-95]  RET                         ; 4
+//	[96-115] deopt block(MOV deopt + RET); 20
+//	——— 总计 116 字节 ———
+//
+// **vs amd64 chain-KK 92 字节**:arm64 多 24 字节(guard +2,fast
+// MOV imm64 序列 16×2 vs amd64 movq 10×2 累积 +12,deopt +9,余 +1)。
+//
+// **chain 优势**:中间值 d0 复用不写回 stack,等价 host.Arith × 2
+// 但省一次 boundary 跨界(承 amd64 同款)。
+func EmitArithSpeculativeChainKKWithGuardArm64(buf []byte, opSel1, opSel2 uint8,
+	a, b uint8, k1value, k2value, deoptCode uint64) []byte {
+	// imm19 = (deopt 起点 - guard B.HS 自身) / 4
+	// fast 段长 = 4(LDR) + 4(FMOV d0) + 20(MOV K1+FMOV d1) + 4(FOP1)
+	//          + 20(MOV K2+FMOV d1) + 4(FOP2) + 4(FMOV x0) + 4(STR) + 4(RET) = 68
+	const guardBHSPos = 24
+	const fastLen = 68
+	const deoptStart = 28 + fastLen
+	imm19Guard := int32(deoptStart-guardBHSPos) / 4
+
+	buf = EmitIsNumberGuardArm64(buf, b, imm19Guard)
+	if a > 254 {
+		a = 0
+	}
+	if b > 254 {
+		b = 0
+	}
+
+	// fast path
+	buf = EmitLdrXtFromXnDisp(buf, 0, 26, uint16(b)*8)
+	buf = EmitFmovDdFromXn(buf, 0, 0)
+	// K1 段
+	buf = EmitMovXdImm64(buf, 0, k1value)
+	buf = EmitFmovDdFromXn(buf, 1, 0)
+	buf = emitArithOpArm64(buf, opSel1, 0, 0, 1)
+	// K2 段(覆盖 d1)
+	buf = EmitMovXdImm64(buf, 0, k2value)
+	buf = EmitFmovDdFromXn(buf, 1, 0)
+	buf = emitArithOpArm64(buf, opSel2, 0, 0, 1)
+	// store R(A) + ret
+	buf = EmitFmovXdFromDn(buf, 0, 0)
+	buf = EmitStrXtToXnDisp(buf, 0, 26, uint16(a)*8)
+	buf = EmitRet(buf)
+	// deopt
+	buf = EmitMovXdImm64(buf, 0, deoptCode)
+	buf = EmitRet(buf)
+	return buf
+}
+
+// EncodedArithSpecChainKKWithGuardArm64Len arm64 PJ2 chain-KK WithGuard
+// 完整字节数(28 + 68 + 20 = 116)。
+const EncodedArithSpecChainKKWithGuardArm64Len = 116

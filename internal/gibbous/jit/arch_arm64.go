@@ -121,30 +121,31 @@ func archEmitArithSpecBinopWithGuard(buf []byte, sseOp byte, a, b, c uint8, deop
 	return jitarm64.EmitArithSpeculativeBinopWithGuardArm64(buf, opSel, a, b, c, deoptCode)
 }
 
-// archEmitArithSpecBinopRegKWithGuard arm64 端 stub——arm64 端 reg-K
-// 形态模板字节级尚未落地(留 PJ8+ 与 spec trampoline 同批,模板形态
-// 见 amd64 EmitArithSpeculativeBinopRegKWithGuard:fmov 装 K + cmp +
-// b.hs deopt + fadd const + 写回 + ret)。
+// archEmitArithSpecBinopRegKWithGuard arm64 端 PJ2 投机 reg-K 模板真接入
+// (92 字节,对位 amd64 EmitArithSpeculativeBinopRegKWithGuard 73 字节;
+// arm64 多 19 字节)。sseOp 自动翻译 amd64→arm64 opSel。
+//
+// 同 reg-reg WithGuard 接线路径,真启用仍需 archCallJITSpec spec
+// trampoline 实现 + archSupportsSpec() 翻 true(留 PJ8+)。
 func archEmitArithSpecBinopRegKWithGuard(buf []byte, sseOp byte, a, b uint8, kvalue, deoptCode uint64) []byte {
-	_ = sseOp
-	_ = a
-	_ = b
-	_ = kvalue
-	_ = deoptCode
-	return buf
+	opSel, ok := arm64ArithOpSelForSseOp(sseOp)
+	if !ok {
+		return buf
+	}
+	return jitarm64.EmitArithSpeculativeBinopRegKWithGuardArm64(buf, opSel, a, b, kvalue, deoptCode)
 }
 
-// archEmitArithSpecChainKKWithGuard arm64 端 stub——arm64 端 chain-KK
-// 形态模板字节级尚未落地(留 PJ8+ 同批)。
+// archEmitArithSpecChainKKWithGuard arm64 端 PJ2 投机 chain-KK 模板
+// 真接入(116 字节,对位 amd64 EmitArithSpeculativeChainKKWithGuard
+// 92 字节;arm64 多 24 字节)。两 sseOp 各翻译,任一未识别静默放弃。
 func archEmitArithSpecChainKKWithGuard(buf []byte, sseOp1, sseOp2 byte, a, b uint8, k1value, k2value, deoptCode uint64) []byte {
-	_ = sseOp1
-	_ = sseOp2
-	_ = a
-	_ = b
-	_ = k1value
-	_ = k2value
-	_ = deoptCode
-	return buf
+	opSel1, ok1 := arm64ArithOpSelForSseOp(sseOp1)
+	opSel2, ok2 := arm64ArithOpSelForSseOp(sseOp2)
+	if !ok1 || !ok2 {
+		return buf
+	}
+	return jitarm64.EmitArithSpeculativeChainKKWithGuardArm64(buf, opSel1, opSel2,
+		a, b, k1value, k2value, deoptCode)
 }
 
 // archEmitForLoopEmptyConst arm64 端 PJ3 FORLOOP 空 body 模板真接入
