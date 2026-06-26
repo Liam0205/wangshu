@@ -624,6 +624,63 @@ func EmitCmpByteR15DispImm8(buf []byte, disp32 int32, imm8 byte) []byte {
 // REX(1) + opcode(1) + ModRM(1) + disp32(4) + imm8(1) = 8。
 const EncodedCmpByteR15DispImm8Len = 8
 
+// EmitIncReg64 发射「inc r64」(指令:REX.W FF /0 modrm,3 字节)。
+//
+// 用例:PJ3 字节级 inline 整数计数器累加(FORLOOP idx 累加)。
+//
+// 编码:48 FF C0+rd(REX.W + FF + ModRM=11_000_rd 即 0xC0|rd)
+//   - 48 = REX.W
+//   - FF = opcode for INC/DEC r/m64
+//   - C0|rd = ModRM:mod=11(reg-direct),reg=0(/0 = INC),rm=rd
+//
+// reg 范围 [0,7](rax-rdi);高 8 寄存器需 REX.B 留 PJ3+。
+func EmitIncReg64(buf []byte, reg uint8) []byte {
+	if reg > 7 {
+		reg = 0
+	}
+	return append(buf, 0x48, 0xFF, 0xC0|(reg&0x7))
+}
+
+// EmitDecReg64 发射「dec r64」(指令:REX.W FF /1 modrm,3 字节)。
+//
+// 编码:48 FF C8+rd(ModRM=11_001_rd 即 0xC8|rd,/1 = DEC)
+func EmitDecReg64(buf []byte, reg uint8) []byte {
+	if reg > 7 {
+		reg = 0
+	}
+	return append(buf, 0x48, 0xFF, 0xC8|(reg&0x7))
+}
+
+// EncodedIncDecReg64Len 是「inc/dec r64」字节数(3)。
+const EncodedIncDecReg64Len = 3
+
+// EmitMovReg64Imm32SignExt 发射「mov r64, imm32-sign-extended」短形态
+// (REX.W C7 /0 modrm imm32,7 字节)——用于装较小 imm 到 r64,比
+// REX.W B8+rd imm64(10 字节)省 3 字节。
+//
+// 编码:48 C7 C0+rd imm32(ModRM=11_000_rd 即 0xC0|rd,/0 = MOV imm)
+//
+// 对负 imm 经符号扩展为 64-bit,对 [0, 2^31) 等价完整 imm64。
+// PJ3 字节级整数 imm(小循环计数等)用本原语省字节;>= 2^32 仍用
+// EmitMovRaxImm64(10 字节,imm64)。
+//
+// reg 范围 [0,7];高 8 寄存器需 REX.B 留 PJ3+。
+func EmitMovReg64Imm32SignExt(buf []byte, reg uint8, imm32 int32) []byte {
+	if reg > 7 {
+		reg = 0
+	}
+	buf = append(buf, 0x48, 0xC7, 0xC0|(reg&0x7))
+	buf = append(buf,
+		byte(uint32(imm32)),
+		byte(uint32(imm32)>>8),
+		byte(uint32(imm32)>>16),
+		byte(uint32(imm32)>>24))
+	return buf
+}
+
+// EncodedMovReg64Imm32SignExtLen 是「mov r64, imm32-sign-extended」字节数(7)。
+const EncodedMovReg64Imm32SignExtLen = 7
+
 // PatchRel32 把 buf 指定位置(rel32 起点)处的 4 字节用 newRel32 覆写。
 // 用例:PJ3 字节级 codegen 时 forward jmp 先发 placeholder rel32=0,然后
 // 跳目标 emit 完知道段内偏移后回填真实 rel32。
