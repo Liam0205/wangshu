@@ -79,6 +79,14 @@ const specSubBody = `local x=11; local y=7; return x-y`
 const specMulBody = `local x=6; local y=7; return x*y`
 const specDivBody = `local x=42; local y=6; return x/y`
 
+// PJ2 投机 reg-K 形态:`R(B) op K` 中 K 编译期烧 imm64 直发段,只 guard
+// reg 端(73 字节模板,比 reg-reg 少 19 字节)。常见 hot path 常量化形态,
+// luac 编 `x+5` 等为 ADD A B(reg) C(>=256 = K idx)。
+const specRegKAddBody = `local x=7; return x+5`
+const specRegKSubBody = `local x=10; return x-3`
+const specRegKMulBody = `local x=7; return x*2`
+const specRegKDivBody = `local x=42; return x/6`
+
 func BenchmarkGibbousJIT_Const(b *testing.B)      { benchGibbousJIT(b, constBody, true) }
 func BenchmarkGibbousJIT_ConstCresc(b *testing.B) { benchGibbousJIT(b, constBody, false) }
 func BenchmarkGibbousJIT_Nil(b *testing.B)        { benchGibbousJIT(b, nilBody, true) }
@@ -103,3 +111,13 @@ func BenchmarkGibbousJIT_SpecMul(b *testing.B)      { benchGibbousJIT(b, specMul
 func BenchmarkGibbousJIT_SpecMulCresc(b *testing.B) { benchGibbousJIT(b, specMulBody, false) }
 func BenchmarkGibbousJIT_SpecDiv(b *testing.B)      { benchGibbousJIT(b, specDivBody, true) }
 func BenchmarkGibbousJIT_SpecDivCresc(b *testing.B) { benchGibbousJIT(b, specDivBody, false) }
+
+// PJ2 投机 reg-K 四档(73 字节模板,单 guard,K 烧 imm64)P4 vs crescent。
+func BenchmarkGibbousJIT_SpecRegKAdd(b *testing.B)      { benchGibbousJIT(b, specRegKAddBody, true) }
+func BenchmarkGibbousJIT_SpecRegKAddCresc(b *testing.B) { benchGibbousJIT(b, specRegKAddBody, false) }
+func BenchmarkGibbousJIT_SpecRegKSub(b *testing.B)      { benchGibbousJIT(b, specRegKSubBody, true) }
+func BenchmarkGibbousJIT_SpecRegKSubCresc(b *testing.B) { benchGibbousJIT(b, specRegKSubBody, false) }
+func BenchmarkGibbousJIT_SpecRegKMul(b *testing.B)      { benchGibbousJIT(b, specRegKMulBody, true) }
+func BenchmarkGibbousJIT_SpecRegKMulCresc(b *testing.B) { benchGibbousJIT(b, specRegKMulBody, false) }
+func BenchmarkGibbousJIT_SpecRegKDiv(b *testing.B)      { benchGibbousJIT(b, specRegKDivBody, true) }
+func BenchmarkGibbousJIT_SpecRegKDivCresc(b *testing.B) { benchGibbousJIT(b, specRegKDivBody, false) }
