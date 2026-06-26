@@ -73,6 +73,12 @@ const cmpBody = `local x=7; return x == 7`
 // (mmap 段直发 IsNumber guard×2 + movsd+addsd+movsd+ret 字节级)。
 const specAddBody = `local x=7; local y=11; return x+y`
 
+// PJ2 投机 SUB/MUL/DIV 形态:reg+reg 双 number 投机模板,字节级 SSE op =
+// F2 0F 5C/59/5E C1(分别 SUBSD/MULSD/DIVSD),与 ADD 同 92 字节模板布局。
+const specSubBody = `local x=11; local y=7; return x-y`
+const specMulBody = `local x=6; local y=7; return x*y`
+const specDivBody = `local x=42; local y=6; return x/y`
+
 func BenchmarkGibbousJIT_Const(b *testing.B)      { benchGibbousJIT(b, constBody, true) }
 func BenchmarkGibbousJIT_ConstCresc(b *testing.B) { benchGibbousJIT(b, constBody, false) }
 func BenchmarkGibbousJIT_Nil(b *testing.B)        { benchGibbousJIT(b, nilBody, true) }
@@ -89,3 +95,11 @@ func BenchmarkGibbousJIT_CmpCresc(b *testing.B)   { benchGibbousJIT(b, cmpBody, 
 // PJ2 投机 ADD reg+reg 形态:命中 spec 模板的真 luajc 档相关数据。
 func BenchmarkGibbousJIT_SpecAdd(b *testing.B)      { benchGibbousJIT(b, specAddBody, true) }
 func BenchmarkGibbousJIT_SpecAddCresc(b *testing.B) { benchGibbousJIT(b, specAddBody, false) }
+
+// PJ2 投机 SUB/MUL/DIV 同款 P4 vs crescent 对比(命中 92 字节 spec 模板)。
+func BenchmarkGibbousJIT_SpecSub(b *testing.B)      { benchGibbousJIT(b, specSubBody, true) }
+func BenchmarkGibbousJIT_SpecSubCresc(b *testing.B) { benchGibbousJIT(b, specSubBody, false) }
+func BenchmarkGibbousJIT_SpecMul(b *testing.B)      { benchGibbousJIT(b, specMulBody, true) }
+func BenchmarkGibbousJIT_SpecMulCresc(b *testing.B) { benchGibbousJIT(b, specMulBody, false) }
+func BenchmarkGibbousJIT_SpecDiv(b *testing.B)      { benchGibbousJIT(b, specDivBody, true) }
+func BenchmarkGibbousJIT_SpecDivCresc(b *testing.B) { benchGibbousJIT(b, specDivBody, false) }
