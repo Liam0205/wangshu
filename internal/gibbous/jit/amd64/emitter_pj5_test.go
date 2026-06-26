@@ -97,6 +97,11 @@ func TestPJ5_EncodedLengths(t *testing.T) {
 			encode:   func() []byte { return EmitPopReg(nil, 0) },
 			expected: EncodedPopRegLen,
 		},
+		{
+			name:     "helper call (mov rax+call rax)",
+			encode:   func() []byte { return EmitHelperCall(nil, 0xDEADBEEFCAFEBABE) },
+			expected: EncodedHelperCallLen,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -105,5 +110,128 @@ func TestPJ5_EncodedLengths(t *testing.T) {
 				t.Errorf("%s encoded %d bytes, want %d", tc.name, len(buf), tc.expected)
 			}
 		})
+	}
+}
+
+// TestPJ5_EmitCallRel32_ByteEqual 验「call rel32」字节级 Intel SDM byte-equal:
+// E8 + imm32 LE(rel32 从下条指令起算的 32 位有符号偏移)。
+func TestPJ5_EmitCallRel32_ByteEqual(t *testing.T) {
+	cases := []struct {
+		name  string
+		rel32 int32
+		want  []byte
+	}{
+		{"forward small", 0x100, []byte{0xE8, 0x00, 0x01, 0x00, 0x00}},
+		{"backward small", -1, []byte{0xE8, 0xFF, 0xFF, 0xFF, 0xFF}},
+		{"forward large", 0x12345678, []byte{0xE8, 0x78, 0x56, 0x34, 0x12}},
+		{"zero", 0, []byte{0xE8, 0x00, 0x00, 0x00, 0x00}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := EmitCallRel32(nil, tc.rel32)
+			if string(got) != string(tc.want) {
+				t.Errorf("got %x, want %x", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPJ5_EmitCallReg_ByteEqual 验「call regN」字节级 byte-equal:
+// FF D0+regNum(reg=4 RSP 兜底 RAX,reg>7 兜底 RAX)。
+func TestPJ5_EmitCallReg_ByteEqual(t *testing.T) {
+	cases := []struct {
+		name   string
+		regNum uint8
+		want   []byte
+	}{
+		{"call rax (reg=0)", 0, []byte{0xFF, 0xD0}},
+		{"call rcx (reg=1)", 1, []byte{0xFF, 0xD1}},
+		{"call rdx (reg=2)", 2, []byte{0xFF, 0xD2}},
+		{"call rbx (reg=3)", 3, []byte{0xFF, 0xD3}},
+		// reg=4 (RSP) 语义不可用 → 兜底 RAX
+		{"call rsp (reg=4) defensive→rax", 4, []byte{0xFF, 0xD0}},
+		{"call rbp (reg=5)", 5, []byte{0xFF, 0xD5}},
+		{"call rsi (reg=6)", 6, []byte{0xFF, 0xD6}},
+		{"call rdi (reg=7)", 7, []byte{0xFF, 0xD7}},
+		// reg>7 超界 → 兜底 RAX
+		{"call r8 (reg=8) defensive→rax", 8, []byte{0xFF, 0xD0}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := EmitCallReg(nil, tc.regNum)
+			if string(got) != string(tc.want) {
+				t.Errorf("got %x, want %x", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPJ5_EmitHelperCall_ByteEqual 验 PJ5 helper call 通用宏字节级:
+// `mov rax, helperAddr; call rax`(12 字节 = MOV 10 + CALL 2)。
+//
+// **PJ5 用例**:jit→host helper 调用(host.DoCall/DoTailCall/Safepoint)。
+// helper 地址通常远超 ±2GB 范围,标准做法是装载 64-bit 绝对地址到 rax
+// 后 indirect call,本宏封装此固定字节序列。
+//
+// 编码精确验:
+//
+//	[0]   0x48 = REX.W
+//	[1]   0xB8 = MOV rax, imm64
+//	[2-9] imm64 LE 8 字节
+//	[10]  0xFF = CALL r/m64
+//	[11]  0xD0 = ModRM mod=11 reg=2 rm=0(rax)
+func TestPJ5_EmitHelperCall_ByteEqual(t *testing.T) {
+	cases := []struct {
+		name       string
+		helperAddr uint64
+		want       []byte
+	}{
+		{
+			"low helperAddr",
+			0x00007F0011223344,
+			[]byte{
+				0x48, 0xB8, // mov rax, imm64
+				0x44, 0x33, 0x22, 0x11, 0x00, 0x7F, 0x00, 0x00, // imm64 LE
+				0xFF, 0xD0, // call rax
+			},
+		},
+		{
+			"high helperAddr (typical Go heap)",
+			0xFFFFC900_0123ABCD,
+			[]byte{
+				0x48, 0xB8,
+				0xCD, 0xAB, 0x23, 0x01, 0x00, 0xC9, 0xFF, 0xFF,
+				0xFF, 0xD0,
+			},
+		},
+		{
+			"zero (defensive)",
+			0,
+			[]byte{
+				0x48, 0xB8,
+				0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+				0xFF, 0xD0,
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := EmitHelperCall(nil, tc.helperAddr)
+			if len(got) != EncodedHelperCallLen {
+				t.Errorf("len = %d, want %d", len(got), EncodedHelperCallLen)
+			}
+			if string(got) != string(tc.want) {
+				t.Errorf("got %x, want %x", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPJ5_EmitHelperCall_LengthConst 验长度常量等于 12(MOV 10 + CALL 2)。
+// 锁死字节布局契约(承 SetTable/Self NodeHit length 精确断言同款纪律)。
+func TestPJ5_EmitHelperCall_LengthConst(t *testing.T) {
+	const wantLen = 12
+	if EncodedHelperCallLen != wantLen {
+		t.Errorf("EncodedHelperCallLen = %d, want %d", EncodedHelperCallLen, wantLen)
 	}
 }
