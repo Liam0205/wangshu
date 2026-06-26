@@ -38,26 +38,34 @@
 package arm64
 
 // EmitForLoopEmptyConstArm64 拼接 arm64「全常量 init/limit/step + 空 body
-// FORLOOP 字节级模板」(对位 amd64 EmitForLoopEmptyConst,但本批不含
-// safepoint check 段——arm64 safepoint 字节级形态留 PJ8+)。
+// FORLOOP 字节级模板」(对位 amd64 EmitForLoopEmptyConst,含可选 safepoint
+// check 段)。
 //
 // 参数:
 //   - kInit / kLimit / kStep:三个常量的 NaN-box raw bits(由 caller 经
 //     value.NumberValue(K).Bits() 算好,与 amd64 同款)
+//   - preemptFlagOff:r27+disp 处的 preempt 字段 byte 偏移
+//   - >= 0:启用 safepoint check(承 V18 -race 抢占纪律)
+//   - <  0:跳过 safepoint(测试用 / 严格单段计算用例)
 //
 // 返回追加后的 buf。
 //
-// **字节布局**(84 字节,无 safepoint 版):承文件头注详细图。
+// **字节布局**(84 字节无 safepoint / 92 字节含 safepoint):
+//   - 无 safepoint:mov+fmov×3 60 + fsub 4 + fadd 4 + fcmpe 4 + b.gt 4
+//   - b 4 + ret 4 = 84
+//   - 含 safepoint:84 + ldrb 4 + cbnz 4 = 92(safepoint check 插在
+//     loop_start 后、fadd 前,对位 amd64 14B safepoint;arm64 仅 8B 因
+//     ldrb+cbnz 等价 cmp+jne 但 RISC 紧凑)
 //
 // **预设条件**:
-//   - arm64 trampoline 协议(承 06 §4.2,留 PJ8+):x27=jitContext /
-//     x26=valueStackBase;但本模板纯浮点循环无值栈寻址,不读 x26/x27
+//   - arm64 trampoline 协议(承 06 §4.2):x27=jitContext / x26=valueStackBase;
+//     启用 safepoint 时读 [x27+preemptFlagOff] 一字节
 //   - R(A) idx 槽不写(空 body 不需要)
 //   - 返回 x0 是 dummy(段返回后 host 不读)
 //
 // 用例:PJ3 FORLOOP 空 body 形态 arm64 端字节级实证(对位 amd64 同款形态
 // 的 7.15-25.41x 加速比留 arm64 物理 runner 实测)。
-func EmitForLoopEmptyConstArm64(buf []byte, kInit, kLimit, kStep uint64) []byte {
+func EmitForLoopEmptyConstArm64(buf []byte, kInit, kLimit, kStep uint64, preemptFlagOff int32) []byte {
 	// 装 init/limit/step 到 d0/d1/d2(各 20 字节:mov x0 imm64 16 + fmov 4)
 	buf = EmitMovXdImm64(buf, 0, kInit) // mov x0, kInit
 	buf = EmitFmovDdFromXn(buf, 0, 0)   // fmov d0, x0
@@ -74,6 +82,16 @@ func EmitForLoopEmptyConstArm64(buf []byte, kInit, kLimit, kStep uint64) []byte 
 	// loop_start label
 	loopStart := len(buf)
 
+	// (可选)safepoint check:ldrb w0, [x27+pfOff]; cbnz w0, after_loop
+	// (对位 amd64 cmp byte [r15+pfOff],0 + jne after_loop 14B;
+	//  arm64 端 ldrb+cbnz 共 8B)
+	var safepointCbnzOff int = -1
+	if preemptFlagOff >= 0 {
+		buf = EmitLdrbWtFromXnDisp(buf, 0, 27, uint16(preemptFlagOff))
+		safepointCbnzOff = len(buf)
+		buf = EmitCbnzW(buf, 0, 0) // placeholder imm19=0
+	}
+
 	// FORLOOP idx+=step:d0 += d2(4 字节)
 	buf = EmitFaddDdDnDm(buf, 0, 0, 2)
 
@@ -81,14 +99,10 @@ func EmitForLoopEmptyConstArm64(buf []byte, kInit, kLimit, kStep uint64) []byte 
 	buf = EmitFcmpeDnDm(buf, 0, 1)
 
 	// b.gt after_loop placeholder(forward,fixup 后)
-	// imm19 = (after_loop - 本 b.gt 指令) / 4 = 距离 4 字节后(b 指令 + ret)
-	// = 2 字节字偏移 (b + ret 共 8 字节 = 2 字)
 	bGtOff := len(buf)
 	buf = EmitBCond(buf, CondGT, 0) // placeholder imm19=0
 
 	// b loop_start backward(4 字节)
-	// imm26 = (loop_start - 本 b 指令) / 4 = (loopStart - len(buf)) / 4
-	// = (loopStart - currentB) / 4(负值)
 	bLoopOff := len(buf)
 	imm26 := int32(loopStart-bLoopOff) / 4
 	buf = EmitB(buf, imm26)
@@ -100,16 +114,21 @@ func EmitForLoopEmptyConstArm64(buf []byte, kInit, kLimit, kStep uint64) []byte 
 	buf = EmitRet(buf)
 
 	// patch b.gt imm19 = (after_loop - b.gt 自身位置) / 4 字数偏移
-	// (arm64 B.cond imm19 是相对本指令地址的字偏移)
 	imm19BGt := int32(afterLoopOff-bGtOff) / 4
 	patchBCondImm19(buf, bGtOff, imm19BGt)
+
+	// patch safepoint cbnz forward(若启用)
+	if safepointCbnzOff >= 0 {
+		safepointImm19 := int32(afterLoopOff-safepointCbnzOff) / 4
+		patchCbnzImm19(buf, safepointCbnzOff, safepointImm19)
+	}
 
 	return buf
 }
 
 // EncodedForLoopEmptyConstArm64Len arm64 PJ3 FORLOOP 空 body 模板字节数
-// (84 字节 = mov+fmov×3 60 + fsub 4 + fadd 4 + fcmpe 4 + b.cond 4 + b 4
-// + ret 4)。
+// (84 字节无 safepoint / 92 字节含 safepoint;指本批 caller 关注的
+// 无 safepoint 上限,含 safepoint 由 caller 经 EncodedSafepointCheckLen 加)。
 const EncodedForLoopEmptyConstArm64Len = 3*(EncodedMovXdImm64Len+EncodedFmovDdFromXnLen) +
 	EncodedFsubDdDnDmLen + EncodedFaddDdDnDmLen + EncodedFcmpeDnDmLen +
 	EncodedBCondLen + EncodedBLen + EncodedRetLen

@@ -20,6 +20,7 @@ func TestPJ8_EmitForLoopEmptyConstArm64_Length(t *testing.T) {
 		0x3FF0000000000000, // 1.0
 		0x4059000000000000, // 100.0
 		0x3FF0000000000000, // 1.0
+		-1,                 // 无 safepoint
 	)
 
 	const wantLen = 84
@@ -46,7 +47,8 @@ func TestPJ8_EmitForLoopEmptyConstArm64_Layout(t *testing.T) {
 	buf = EmitForLoopEmptyConstArm64(buf,
 		0x3FF0000000000000,
 		0x4059000000000000,
-		0x3FF0000000000000)
+		0x3FF0000000000000,
+		-1)
 
 	if len(buf) < 84 {
 		t.Fatalf("buf too short: %d", len(buf))
@@ -132,7 +134,7 @@ func TestPJ8_EmitForLoopEmptyConstArm64_ConstantsBurnedIn(t *testing.T) {
 	const kStep uint64 = 0xFFFF000011112222
 
 	var buf []byte
-	buf = EmitForLoopEmptyConstArm64(buf, kInit, kLimit, kStep)
+	buf = EmitForLoopEmptyConstArm64(buf, kInit, kLimit, kStep, -1)
 
 	// 每 16 字节段 = 1 movz + 3 movk,验各 imm16 字段
 	// [0-15] mov x0, kInit
@@ -155,4 +157,48 @@ func TestPJ8_EmitForLoopEmptyConstArm64_ConstantsBurnedIn(t *testing.T) {
 	verifyMovImm64(t, "kInit", 0, kInit)
 	verifyMovImm64(t, "kLimit", 20, kLimit)
 	verifyMovImm64(t, "kStep", 40, kStep)
+}
+
+// TestPJ8_EmitForLoopEmptyConstArm64_WithSafepoint 验启用 safepoint
+// (preemptFlagOff>=0)模板字节长度 92 = 84 + ldrb 4 + cbnz 4。
+//   - [64-67] LDRB W0, [x27, #pfOff]
+//   - [68-71] CBNZ W0, after_loop(imm19 forward)
+//   - [88-91] RET
+func TestPJ8_EmitForLoopEmptyConstArm64_WithSafepoint(t *testing.T) {
+	var buf []byte
+	const pfOff int32 = 24
+	buf = EmitForLoopEmptyConstArm64(buf,
+		0x3FF0000000000000, 0x4059000000000000, 0x3FF0000000000000, pfOff)
+
+	const wantLen = 92
+	if len(buf) != wantLen {
+		t.Fatalf("总长度 = %d, want %d(含 safepoint)", len(buf), wantLen)
+	}
+
+	// [64-67] LDRB W0, [x27, #24]
+	insn := binary.LittleEndian.Uint32(buf[64:68])
+	wantLdrb := uint32(0x39400000) | uint32(pfOff)<<10 | uint32(27)<<5 | uint32(0)
+	if insn != wantLdrb {
+		t.Errorf("[64] LDRB W0, [x27, #%d] = 0x%08x, want 0x%08x", pfOff, insn, wantLdrb)
+	}
+
+	// [68-71] CBNZ W0, after_loop(forward;after_loop 在 88)
+	insn = binary.LittleEndian.Uint32(buf[68:72])
+	if (insn & 0xFF000000) != 0x35000000 {
+		t.Errorf("[68] CBNZ base wrong: 0x%08x", insn)
+	}
+	if insn&0x1F != 0 {
+		t.Errorf("[68] CBNZ Rt = %d, want 0 (w0)", insn&0x1F)
+	}
+	gotImm19 := (insn >> 5) & 0x7FFFF
+	// imm19 = (88 - 68) / 4 = 5
+	if gotImm19 != 5 {
+		t.Errorf("[68] CBNZ imm19 = %d, want 5 ((88-68)/4)", gotImm19)
+	}
+
+	// [88-91] RET
+	insn = binary.LittleEndian.Uint32(buf[88:92])
+	if insn != 0xd65f03c0 {
+		t.Errorf("[88] RET = 0x%08x, want 0xd65f03c0", insn)
+	}
 }
