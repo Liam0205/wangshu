@@ -215,13 +215,16 @@ func analyzeForLoopForm(proto *bytecode.Proto) (shapeInfo, bool) {
 		si.forLimitK = uint64(kLimit)
 		si.forLimitIsReg = false
 	} else {
-		// **MOVE A B reg-limit 形态识别但暂不接入主路径**:字节级模板
-		// EmitForLoopRegLimit 已实装(amd64/pj3_template.go),deopt 协议
-		// 需要 host.ForPrep/ForLoop helper 接入 P4HostState,留下一 commit。
-		// 当前返 .ok=false 让 SupportsAllOpcodes 拒,走 P1 解释,byte-equal
-		// 保证。
-		_ = aLimit
-		return shapeInfo{}, false
+		// **MOVE A B reg-limit 形态**(luac 编 `for i=1,n do end` 时
+		// limit=n 用 MOVE)。字节级模板 EmitForLoopRegLimit 已实装,deopt
+		// 路径调 host.ForPrep raise(`'for' limit must be a number`)
+		// byte-equal 解释器(若 R(limitReg) 非 number)。
+		moveB := bytecode.B(proto.Code[1])
+		if moveB > 254 {
+			return shapeInfo{}, false
+		}
+		si.forLimitReg = uint8(moveB)
+		si.forLimitIsReg = true
 	}
 
 	return si, true
@@ -937,9 +940,41 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 		// (承 05 §1.2.2 抢占纪律 + V18 -race);trampoline 已装 r15。
 		pfOff := int32(JITContextPreemptFlagOffset)
 
-		// **全常量空 body FORLOOP**(本批落地)。reg-limit 形态字节级模板
-		// EmitForLoopRegLimit 已实装但 deopt 协议待 host.ForPrep helper 接入
-		// (analyzeForLoopForm 已返 .ok=false 拒 reg-limit 形态,走 P1)。
+		if info.forLimitIsReg {
+			// **reg-limit hot path 真接入**(`for i=1,n do end`):117 字节模板
+			// 含 IsNumber guard + 浮点 loop + safepoint + deopt block。
+			// useSpec=true 走 callJITSpec(装 rbx=vsBase + r15=jitCtx)。
+			// deopt 路径调 host.ForPrep raise('for' limit must be a number)
+			// byte-equal 解释器。
+			const deoptCode uint64 = 0xFFFCDEAD_DEADBE00
+			buf = archEmitForLoopRegLimit(buf, info.forInitK, info.forStepK,
+				info.forLimitReg, deoptCode, pfOff)
+			page, err := archMmapCode(buf)
+			if err != nil {
+				return nil, err
+			}
+			incSpecForLoopHits()
+			return &p4Code{
+				proto:         proto,
+				codePage:      page,
+				jitCtx:        NewJITContext(),
+				retA:          info.retA,
+				retB:          info.retB,
+				retPC:         info.retPC,
+				writeRetA:     false,
+				preludeOp:     0, // 不走 prelude switch
+				host:          c.hostState,
+				useSpec:       true,
+				specDeoptCode: deoptCode,
+				// **forLoopDeopt** 标志区分 reg-limit FORLOOP 的 deopt 路径
+				// — Run 端检测 raxSpec==deoptCode 时调 host.ForPrep 而非
+				// host.Arith。
+				forLoopDeopt: true,
+				forLoopA:     info.forA,
+			}, nil
+		}
+
+		// 全常量空 body FORLOOP(本批落地)
 		buf = archEmitForLoopEmptyConst(buf, info.forInitK, info.forLimitK, info.forStepK, pfOff)
 		page, err := archMmapCode(buf)
 		if err != nil {

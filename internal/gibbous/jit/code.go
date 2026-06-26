@@ -98,6 +98,15 @@ type p4Code struct {
 	// exit reason code)。Run 检测段返 RAX == specDeoptCode 即走慢路径。
 	// 选 0xFF...FFFE000(NaN-box 非数字段非任何合法 Lua 值)避免误判。
 	specDeoptCode uint64
+
+	// PJ3 FORLOOP reg-limit deopt 路径标志:
+	//   - forLoopDeopt = true:本 p4Code 是 PJ3 reg-limit FORLOOP 形态,
+	//     Run 端检测 raxSpec==deoptCode 时调 host.ForPrep 而非 host.Arith
+	//     (byte-equal 解释器 raise `'for' limit must be a number` 等)
+	//   - forLoopA:FORPREP/FORLOOP 的 A 字段(R(A)..R(A+2)= init/limit/step
+	//     三槽,host.ForPrep 用本字段定位槽)
+	forLoopDeopt bool
+	forLoopA     uint8
 }
 
 // Proto 反向指针(trampoline 校验)。
@@ -167,6 +176,24 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 	if c.useSpec && c.host != nil && vsBaseAddr != 0 {
 		raxSpec := archCallJITSpec(c.codePage.Addr(), jitCtxAddr, vsBaseAddr)
 		if raxSpec == c.specDeoptCode {
+			// **PJ3 FORLOOP reg-limit deopt** 路径分流:调 host.ForPrep
+			// 而非 host.Arith(byte-equal 解释器 raise non-number 错误)
+			if c.forLoopDeopt {
+				st := c.host.ForPrep(int32(base), int32(c.retPC)-2 /* FORPREP pc=3 */, int32(c.forLoopA))
+				if st != 0 {
+					return st
+				}
+				// host.ForPrep 已置三槽 number + 预减,但 P4 不接 host.ForLoop
+				// (不实装段内迭代器跑剩余循环 — 那需要完整 doForLoop helper)。
+				// 简化:host.ForPrep 成功后直接 DoReturn 返(等同 P4 帧只跑
+				// FORPREP coercion,实际循环在 P1 解释器 — TODO 完整 host.ForLoop)。
+				// **此简化致 reg-limit FORLOOP 在 deopt 路径上 byte-equal 但
+				// 性能等价 P1**(deopt 后不再加速)— 与设计 04 §5 deopt
+				// 协议一致(投机失败即降级解释器)。
+				_ = stack
+				c.host.DoReturn(int32(base), int32(c.retPC), int32(c.retA), int32(c.retB))
+				return 0
+			}
 			// chain 形态 preludePC 算法:op1 真实 pc = retPC - 2(普通单 op
 			// retPC = 1 + chain retPC = 2 两种)
 			specPC := int32(c.retPC) - 1
