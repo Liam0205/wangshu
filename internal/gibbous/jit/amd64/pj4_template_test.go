@@ -59,3 +59,85 @@ func TestPJ4_EmitGetTableArrayHit_DeoptBlockPresent(t *testing.T) {
 		t.Errorf("deopt block tail = 0x%02x, want 0xC3(ret)", tail[10])
 	}
 }
+
+// TestPJ4_EmitGetTableArrayHit_StrictIsTableGuard 验严密 IsTable guard 字节
+// 序列在模板前段(7-22 字节):
+//
+//	[ 0-6 ] mov rax, [rbx + bReg*8]    (7 字节)
+//	[ 7-10] shr rax, 48                (4 字节,48 C1 E8 30)
+//	[11-15] cmp eax, 0xFFFC            (5 字节,3D FC FF 00 00)
+//	[16-21] jne deopt (rel32 placeholder)(6 字节,0F 85 ...)
+//
+// 严密 guard 替换原简化版 mov rcx,0xFFFC<<48 + cmp rax,rcx + jb deopt
+// (10+3+6=19 字节),省 4 字节 + 真严密 IsTable check。
+func TestPJ4_EmitGetTableArrayHit_StrictIsTableGuard(t *testing.T) {
+	var buf []byte
+	buf = EmitGetTableArrayHit(buf, 1, 0, 7, 3, 16, 0xCAFEBABE)
+
+	// 跳过前 7 字节(mov rax, [rbx + 0*8])= 48 8B 03 00 00 00 00
+	// 实际 EmitMovqRaxFromMemReg 可能用 [rbx+disp8] 而非 disp32,断言时
+	// 先看 shr rax, 48 出现位置(48 C1 E8 30)
+	const shrSig = uint32(0x48C1E830) // bytes: 48 C1 E8 30 -> as uint32 LE
+	// 直接在 buf 前 20 字节内 grep shr 字节序列
+	found := false
+	for i := 0; i <= 20-4; i++ {
+		if buf[i] == 0x48 && buf[i+1] == 0xC1 && buf[i+2] == 0xE8 && buf[i+3] == 48 {
+			found = true
+			// 紧随其后应是 cmp eax, 0xFFFC = 3D FC FF 00 00
+			if i+8 >= len(buf) {
+				t.Fatalf("cmp 段越界")
+			}
+			if buf[i+4] != 0x3D ||
+				buf[i+5] != 0xFC || buf[i+6] != 0xFF ||
+				buf[i+7] != 0x00 || buf[i+8] != 0x00 {
+				t.Errorf("cmp eax, 0xFFFC bytes wrong at %d: got %x, want 3D FC FF 00 00",
+					i+4, buf[i+4:i+9])
+			}
+			// 紧随其后应是 jne rel32 = 0F 85 ...(6 字节)
+			if i+10 >= len(buf) {
+				t.Fatalf("jne 段越界")
+			}
+			if buf[i+9] != 0x0F || buf[i+10] != 0x85 {
+				t.Errorf("jne rel32 prefix wrong at %d: got %x %x, want 0F 85",
+					i+9, buf[i+9], buf[i+10])
+			}
+			t.Logf("严密 IsTable guard 字节序列在 offset %d 找到:shr@%d / cmp@%d / jne@%d",
+				i, i, i+4, i+9)
+			break
+		}
+		_ = shrSig
+	}
+	if !found {
+		t.Errorf("严密 IsTable guard 字节序列(shr rax 48 / cmp eax 0xFFFC / jne)未在模板前 20 字节出现 → 模板未升级到严密版")
+	}
+}
+
+// TestPJ4_EmitGetTableArrayHit_NoSimplifiedGuard 反向断言:模板字节不应包含
+// 原简化版 IsTable guard 序列(mov rcx, 0xFFFC<<48 = 48 B9 00 00 00 00 00 00
+// FC FF + cmp rax, rcx = 48 39 C8 + jb rel32 = 0F 82 ...)。
+//
+// 严密版替换简化版后,模板字节序列里不应再出现 0xFFFC<<48 = 0xFFFC_0000_0000_0000
+// 的小端字节 00 00 00 00 00 00 FC FF。注意 nil mask(0xFFFE_...)和
+// stableShape 仍可能出现在模板末尾(nil check + cmp eax stableShape),所以
+// 我们只查特征字节序列 mov rcx, imm64 + cmp rax, rcx + jb 组合的存在。
+//
+// 简化版组合特征:48 B9 [..imm64..] 48 39 C8 0F 82
+func TestPJ4_EmitGetTableArrayHit_NoSimplifiedGuard(t *testing.T) {
+	var buf []byte
+	buf = EmitGetTableArrayHit(buf, 1, 0, 7, 3, 16, 0xCAFEBABE)
+
+	// 简化版特征:48 B9 [imm64 8字节] 48 39 C8 0F 82(共 15 字节)
+	// 严密版替换后,buf 前 25 字节内不应出现这个组合(后续 mov rcx 是 nil
+	// mask 0xFFFE...,但后跟的是 cmp rax rcx + je 而非 jb,所以特征不会
+	// 误匹配)。
+	for i := 0; i+14 < 25; i++ {
+		if buf[i] == 0x48 && buf[i+1] == 0xB9 && // mov rcx, imm64
+			buf[i+10] == 0x48 && buf[i+11] == 0x39 && buf[i+12] == 0xC8 && // cmp rax, rcx
+			buf[i+13] == 0x0F && buf[i+14] == 0x82 { // jb rel32
+			t.Errorf("发现旧简化版 IsTable guard 字节序列在 offset %d "+
+				"(mov rcx imm64 + cmp rax rcx + jb)→ 模板未升级到严密版",
+				i)
+			break
+		}
+	}
+}
