@@ -216,3 +216,6 @@ func archEmitSelfNodeHit(buf []byte, aReg, bReg uint8,
 
 // archSupportsSpec 其它 arch 不支持。
 func archSupportsSpec() bool { return false }
+
+// archSupportsForLoop 其它 arch 不支持(无 emitter)。
+func archSupportsForLoop() bool { return false }

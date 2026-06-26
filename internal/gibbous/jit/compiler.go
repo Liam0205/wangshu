@@ -1887,7 +1887,13 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 	// **mock host 兜底**:同 PJ2 路径,host.ArenaBaseAddr=0 时降级——但
 	// 空 body FORLOOP 完全无寻址(模板不读 rbx),mock 路径也可启用。为统一
 	// 接入规约,仍按 PJ2 同款 mock host 守卫处理。
-	if info.isForLoop && archSupportsSpec() &&
+	//
+	// **arch 闸门**:用 `archSupportsForLoop()` 而非 `archSupportsSpec()`,
+	// 因 FORLOOP 经 `archCallJITFull` 主路径(不经 spec trampoline);
+	// arm64 端 archSupportsSpec=false 不应阻塞 FORLOOP arm64 emitter 调用
+	// (本会话 stub→真接入 PJ3 全四形态后,arm64 archSupportsForLoop 已可
+	// 返 true 启用)。
+	if info.isForLoop && archSupportsForLoop() &&
 		c.hostState != nil && c.hostState.ArenaBaseAddr() != 0 {
 		var buf []byte
 		// safepoint check 接入 — preemptFlag 字段偏移传给模板,模板在

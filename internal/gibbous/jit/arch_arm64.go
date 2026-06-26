@@ -218,3 +218,10 @@ func archEmitSelfNodeHit(buf []byte, aReg, bReg uint8,
 
 // archSupportsSpec arm64 当前不支持(留 PJ8+)。
 func archSupportsSpec() bool { return false }
+
+// archSupportsForLoop arm64 端 PJ3 FORLOOP 模板已真接入(本会话 PJ8
+// arm64 PJ3 全四形态:EmptyConst 84/92B / RegLimit 120/128B /
+// WithRegKBody 144/152B / WithRegKBody2 168/176B,字节级单测全过);
+// FORLOOP 经 archCallJITFull 主路径不经 spec trampoline,所以
+// archSupportsForLoop 与 archSupportsSpec 解耦,arm64 返 true。
+func archSupportsForLoop() bool { return true }

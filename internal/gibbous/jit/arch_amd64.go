@@ -199,3 +199,9 @@ func archEmitSelfNodeHit(buf []byte, aReg, bReg uint8,
 // archSupportsSpec 返 true 当本 arch 支持 PJ2 投机模板真接入。
 // amd64 ✅;arm64/其它 ❌(留 PJ8+)。
 func archSupportsSpec() bool { return true }
+
+// archSupportsForLoop 返 true 当本 arch 支持 PJ3 FORLOOP 模板真接入
+// (经 archCallJITFull 主路径,不经 spec trampoline)。amd64 ✅(本就经
+// archSupportsSpec 启用,本函数为新 arch 提供解耦闸门);arm64 ✅
+// (本会话 PJ8 arm64 PJ3 全四形态字节级模板真接入完整)。
+func archSupportsForLoop() bool { return true }
