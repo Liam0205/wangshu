@@ -143,8 +143,19 @@ type P4HostState interface {
 	// BoolValue 直接写 R(A))。
 	Compare(base int32, pc int32, op int32, b int32, c int32) int32
 
-	// ArenaBaseAddr 返回 arena `[]byte` 起点的 uintptr(承 05 §3.3)。
+	// ForPrep 处理 FORPREP A sBx 助手(gibbous_host.go::ForPrep 同款签名,
+	// 三槽校验 + coercion + 预减,复用 P1 execute.go FORPREP 段)。
 	//
+	// 用例:P4 PJ3 reg-limit FORLOOP 形态 — IsNumber guard 失败时降级调
+	// host.ForPrep + host.ForLoop(模板 deopt 路径,byte-equal 解释器)。
+	//
+	// 参数:base/pc 同 Arith;a = FORPREP 的 A 字段(R(A)..R(A+2) = init/
+	// limit/step 三槽)。
+	//
+	// 返回:0=OK / 1=ERR(raise pending,'for' init/limit/step must be a number)。
+	ForPrep(base int32, pc int32, a int32) int32
+
+	// ArenaBaseAddr 返回 arena `[]byte` 起点的 uintptr(承 05 §3.3)。	//
 	// 用例:PJ2 完整投机模板——mmap 段经 r15+offset 读 arenaBase 字段后
 	// 经字节级 movsd 直接读/写值栈槽位,跳过 host 接口 round-trip。
 	// PJ7 简化形态不调用本接口(mmap 段是 dummy)。

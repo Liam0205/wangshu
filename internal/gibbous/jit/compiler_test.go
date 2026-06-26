@@ -257,6 +257,9 @@ func (m *mockP4Host) ValueStackBaseAddr(base int32) uintptr {
 	return m.arenaBase + uintptr(base)
 }
 
+// ForPrep mock stub(PJ3 reg-limit deopt 路径用,单测路径不触达)。
+func (m *mockP4Host) ForPrep(base, pc, a int32) int32 { _ = base; _ = pc; _ = a; return 0 }
+
 // compileWithHost 构造 *Compiler 注入 mock host 后调 Compile。
 func compileWithHost(t *testing.T, p *bytecode.Proto) (bridge.GibbousCode, *mockP4Host) {
 	t.Helper()

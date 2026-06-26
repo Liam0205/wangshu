@@ -106,5 +106,15 @@ func archEmitForLoopEmptyConst(buf []byte, kInit, kLimit, kStep uint64, preemptF
 	return buf
 }
 
+// archEmitForLoopRegLimit 其它 arch 不支持。
+func archEmitForLoopRegLimit(buf []byte, kInit, kStep uint64, limitReg uint8, deoptCode uint64, preemptFlagOff int32) []byte {
+	_ = kInit
+	_ = kStep
+	_ = limitReg
+	_ = deoptCode
+	_ = preemptFlagOff
+	return buf
+}
+
 // archSupportsSpec 其它 arch 不支持。
 func archSupportsSpec() bool { return false }

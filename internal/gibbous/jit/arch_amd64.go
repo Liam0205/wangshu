@@ -107,6 +107,13 @@ func archEmitForLoopEmptyConst(buf []byte, kInit, kLimit, kStep uint64, preemptF
 	return jitamd64.EmitForLoopEmptyConst(buf, kInit, kLimit, kStep, preemptFlagOff)
 }
 
+// archEmitForLoopRegLimit 拼接 PJ3 reg-limit 空 body FORLOOP 模板(hot path
+// 形态 `for i=1, n do end`):IsNumber guard + 浮点 loop + 可选 safepoint
+// + deopt block。amd64 端代理 jitamd64.EmitForLoopRegLimit。
+func archEmitForLoopRegLimit(buf []byte, kInit, kStep uint64, limitReg uint8, deoptCode uint64, preemptFlagOff int32) []byte {
+	return jitamd64.EmitForLoopRegLimit(buf, kInit, kStep, limitReg, deoptCode, preemptFlagOff)
+}
+
 // archSupportsSpec 返 true 当本 arch 支持 PJ2 投机模板真接入。
 // amd64 ✅;arm64/其它 ❌(留 PJ8+)。
 func archSupportsSpec() bool { return true }

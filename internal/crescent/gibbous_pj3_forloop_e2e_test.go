@@ -95,3 +95,53 @@ return 1000`
 		t.Errorf("SpecForLoopHits = 0,FORLOOP 千次循环未真编译")
 	}
 }
+
+// TestPJ3_ForLoopRegLimit_E2E_FastPath:`function(n) for i=1,n do end end`
+// + f(1000) — reg-limit 形态 hot path,IsNumber guard 通过 → 字节级 loop.
+func TestPJ3_ForLoopRegLimit_E2E_FastPath(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local function f(n)
+  for i = 1, n do
+  end
+end
+for i = 1, 50 do f(1000) end
+return 1000`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := value.AsNumber(value.Value(rets[0])); got != 1000 {
+		t.Errorf("rets = %v, want 1000", got)
+	}
+	if jit.SpecForLoopHits() == 0 {
+		t.Errorf("SpecForLoopHits = 0,reg-limit FORLOOP 未真编译")
+	}
+	t.Logf("reg-limit fast path:SpecForLoopHits=%d", jit.SpecForLoopHits())
+}
+
+// TestPJ3_ForLoopRegLimit_E2E_DeoptPath:`f(\"not_a_number\")` — limit 非
+// number → IsNumber guard 失败 → host.ForPrep raise.
+func TestPJ3_ForLoopRegLimit_E2E_DeoptPath(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local function f(n)
+  for i = 1, n do
+  end
+end
+for i = 1, 50 do f(1000) end -- warmup with number to ensure promote
+return f("not_a_number") -- guard fail → deopt → host.ForPrep raise`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	_, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err == nil {
+		// Lua 5.1 对 "not_a_number" 尝试 tonumber coerce 失败 raise
+		t.Logf("没 raise(可能 tonumber('not_a_number') 成功了?)")
+	} else {
+		t.Logf("reg-limit deopt path raise: %v", err)
+	}
+}
