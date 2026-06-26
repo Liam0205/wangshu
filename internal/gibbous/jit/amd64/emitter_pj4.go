@@ -210,3 +210,29 @@ func EmitCmpRaxRdx(buf []byte) []byte {
 
 // EncodedCmpRaxRdxLen 是「cmp rax, rdx」字节数(3)。
 const EncodedCmpRaxRdxLen = 3
+
+// EmitMovqMemR14PlusRcxFromRax 发射「mov [r14 + rcx + disp32], rax」反向 store
+// (SIB 寻址,base=r14 / index=rcx / scale=1 / disp32)。
+//
+// 用例:PJ4 SETTABLE IC 字节级 inline 反向写 NodeVal 槽 —— rcx = nodeRef
+// 偏移,disp32 = stableIndex*24+8(NodeVal 在 node[idx].word1)。
+//
+// 编码:49 89 84 0E disp32(8 字节)
+//   - 49 = REX.W + REX.B(base r14 高位选择)
+//   - 89 = MOV r/m64, r64
+//   - 84 = ModRM:mod=10(disp32)reg=000(rax)rm=100(SIB)
+//   - 0E = SIB:scale=00(*1)index=001(rcx)base=110(r14 w/ REX.B)
+//
+// 注:rax src ModRM reg 字段固定 = 000(rax)。
+func EmitMovqMemR14PlusRcxFromRax(buf []byte, disp32 int32) []byte {
+	buf = append(buf, 0x49, 0x89, 0x84, 0x0E)
+	buf = append(buf,
+		byte(uint32(disp32)),
+		byte(uint32(disp32)>>8),
+		byte(uint32(disp32)>>16),
+		byte(uint32(disp32)>>24))
+	return buf
+}
+
+// EncodedMovqMemR14PlusRcxFromRaxLen 是反向 SIB store 字节数(8)。
+const EncodedMovqMemR14PlusRcxFromRaxLen = 8
