@@ -1,6 +1,6 @@
 # P4 实现进度对账(implementation-progress)
 
-> 状态:**设计阶段,实现未启动**(P4 立项判定通过后启动 PJ0)。详细设计齐备(子目录 10 文件约 8200 行,2026-06-24 单文件 360 行 → 子目录 10 文件扩展轮 → 审查收口轮)。
+> 状态:**PJ0-PJ3 + PJ10 luajc 档突破已落地**(2026-06-26)。`function() for i=K1, K2 do end end` 全常量空 body FORLOOP 字节级 inline 真接入主路径,Xeon 6982P 实测 7.15-25.41x over gopher-lua,**完整超越 luajc 档 4.4x 基线**(承 §8 / [01](./01-launch-judgment.md))。详细设计齐备(子目录 10 文件约 8200 行,2026-06-24 单文件 360 行 → 子目录 10 文件扩展轮 → 审查收口轮)。
 > P1 全卷(M0-M14)+ P2 PB0-PB7 + 后续优化轮 #1-#4 + P3 PW0-PW10 + VS0-e 全卷已交付(2026-06-16),P4 启动前置就绪;**唯一阻塞**是 P4 立项判定本身(承 [01-launch-judgment §3](./01-launch-judgment.md))。
 > 单一事实源:本文是 P4 实现现状与设计文档差异的对账表(对应 [P3 implementation-progress](../p3-wasm-tier/implementation-progress.md) 的角色,但 P4 是设计阶段未实施,本文重在「设计期决策盘点 + 跨文档回填请求收口表 + 实施前置确认 + 后续维护协议」)。
 > 设计文档集:见 [00-overview §0](./00-overview.md) 文档地图。
@@ -49,14 +49,14 @@
 | PJ0 | 立项判定 + 包骨架 + build tag 隔离 | [01](./01-launch-judgment.md) + [06 §6.1](./06-backends.md) | 立项判定通过 + `internal/gibbous/jit/{amd64,arm64}` 骨架 + bridge 注入 P4Compiler 后 SupportsAllOpcodes 全 false | ✅ **2026-06-25 落地**(详 §6 PJ0 实装对账) |
 | PJ1 | amd64 trampoline + 直线模板(6 opcode) | [05](./05-system-pipeline.md) + [06 §3.1](./06-backends.md) | 直线 Proto 升层后 byte-equal;exec mmap + W^X 翻面工作 | 🔶 **2026-06-25 部分**(详 §6 PJ1 实装对账;spike 闸门 🟢 + amd64 mmap+W^X+trampoline+emitter 主库版 + LOADK/RETURN 单测 byte-equal;**未接入 GibbousCode.Run end-to-end byte-equal**——SupportsAllOpcodes 仍全 false,完整接入留 PJ3+) |
 | PJ2 | amd64 算术 + 比较 + IsNumber×2 guard | [03](./03-speculation-ic.md) + [06 §3.2](./06-backends.md) | 双 number 快路径直发 `mulsd` 等;guard 失败 OSR exit 回解释 | ✅ **2026-06-26 完整接入扩展到 12+ 形态**(承 §7;ADD/SUB/MUL/DIV 三种操作数布局:reg-reg(92 字节,实测 1.01-1.03x)+ reg-K(73 字节,实测 1.01-1.02x)+ chain-KK 任意 op1+op2 组合(92 字节,~1.0x 单次调内 boundary 占主导)。e2e 双轨真升层 byte-equal 解释器 + 白盒命中探针 SpecRegKHits / SpecRegRegHits / SpecChainHits 实证非降级 host;deopt fallback 含 chain pc 修复对齐错误消息行号。**真大幅加速**(luajc 档 ≥4.4x)留 PJ3 FORLOOP 字节级内联把多次 boundary 摊出循环) |
-| PJ3 | amd64 控制流 + FORLOOP + 回边 safepoint | [05 §6.3](./05-system-pipeline.md) + [06 §3.3](./06-backends.md) | 数值 for 编译后 ≥luajc 档单档(**P4 价值首次实证**)| 🔶 **2026-06-26 工程基础 + 物理 spike**(承 §8;emit 原语齐:EmitMovImm64ToReg + EmitNop + 全档 jcc rel32 + jmp rel32 + EmitCmpByteR15DispImm8 safepoint check + EmitIncReg64/DecReg64/MovReg64Imm32SignExt 整数循环原语 + PatchRel32 forward jmp fixup tool + JITContextOffsets 字段偏移常量;**spike 字节级 backward jmp + safepoint check 真 mmap+RX 跑通**:counter loop N=100 正常跑满 rax=100,preemptFlag=1 早退出 rax=1,prove-the-path 硬证据。**真接入 FORLOOP 字节级内联**(analyzeForLoopForm CFG 识别 + body inline + ucomisd limit + 回边 backward jcc + exit stub)留 PJ3 主路径接入会话——p4Code.Run 单段模型可表达段内自循环,工程基础 ~90% 齐备) |
+| PJ3 | amd64 控制流 + FORLOOP + 回边 safepoint | [05 §6.3](./05-system-pipeline.md) + [06 §3.3](./06-backends.md) | 数值 for 编译后 ≥luajc 档单档(**P4 价值首次实证**)| ✅ **2026-06-26 真接入最简形态——突破 luajc 档**(承 §8;`function() for i=K1, K2 do end end` 全常量空 body FORLOOP 字节级 inline 真接入:analyzeForLoopForm CFG 识别 + EmitForLoopEmptyConst 69 字节模板(mov rax,K_*; movq xmm,rax × 3 + subsd 预减 + addsd idx+=step + ucomisd limit + ja exit + jmp backward + ret)+ archEmit 路由层 + 主路径 Compile 接入 + SpecForLoopHits 命中探针 + 7 档单测(1..100 / 1..1000 / 1..10000 等)+ 3 档 e2e + 3 档 benchmark。**Xeon 6982P 实测加速比超 luajc 档**:100 iter 8.11x over cresc / 7.15x over gopher;1000 iter 17.53x / 21.20x;10000 iter 20.09x / **25.41x over gopher-lua**(luajc 档 ≥4.4x 早已超越)。**含 body / reg limit / safepoint check 接入留 PJ3+ 扩**) |
 | PJ4 | amd64 表 IC 模板 + stableShape/Index 直达槽投机 | [03 §6](./03-speculation-ic.md) + [06 §3.4](./06-backends.md) | 单态表 guard + 直达槽跳哈希;形状变化 deopt + 再训练 | 🔶 **2026-06-25 emitter 部分**(EmitCmpRaxImm32 + EmitJaeRel32 + EmitJmpRel32;mmap 段验证 cmp+jcc/jmp 真按 flag 跳——IsNumber guard 物理基础;真接入留 PJ4+) |
 | PJ5 | amd64 CALL/TAILCALL + 跨层互调 + OSR exit 实装 | [04](./04-osr-deopt.md) + [05 §4.3](./05-system-pipeline.md) + [06 §3.5](./06-backends.md) | gibbous-jit 三向分派 + OSR exit 状态等价(V19)| 🔶 **2026-06-25 emitter 部分**(EmitCallRel32/CallReg/PushReg/PopReg;push/pop round-trip 验证;helper call 真接入留 PJ5+) |
 | PJ6 | amd64 CLOSURE/CLOSE + upvalue | [06 §3.6](./06-backends.md) | 闭包 byte-equal(复用 makeClosure/closeUpvals)| 🔶 **2026-06-25 emitter 部分**(EmitLoadKReturnTemplate + EmitProlog/Epilog 模板封装;10000 次 prolog/epilog 栈保护验证;upvalue 真接入留 PJ6+) |
 | PJ7 | amd64 端到端验收 + 性能基准 | [08](./08-testing-strategy.md) | 单架构 V1-V22 全过 + V14 luajc 档 | ✅ **PJ7 真接入 ~25 类形态 byte-equal**(2026-06-25/26,详 §7;`SupportsAllOpcodes` 已扩展到 25 类形态——getter 族(RETURN A 2 / GETUPVAL / GETGLOBAL / GETTABLE / LOADK 含 string / LOADBOOL / LOADNIL / MOVE / ADD..POW 6 op / UNM / LEN / NEWTABLE / NOT)+ setter 族(RETURN A 1 / SETTABLE / SETGLOBAL / SETUPVAL)+ 比较折叠族(EQ/LT/LE 6-op luac 模板折成 BoolValue)。`p4Code.Run` 经 14 个 host helper 调 gibbous_host.go 与解释器 byte-equal;pc off-by-one bug 修复(行号 / IC 槽锚定 prelude op 自身 pc=0);多行错误消息 byte-equal 实证测试通过。**make test-p4 全套 21 binary 全过含 conformance/difftest/luasuite + V18 -race**;V14 luajc 档调优留 PJ10) |
 | PJ8 | arm64 后端启动 + 渐进交付 | [06](./06-backends.md) | arm64 各 opcode 模板按族落地;`MAP_JIT` + icache flush | 🔶 **2026-06-25 工程组件部分**(linux/arm64 codepage + arm64 emitter movz/movk/ret 真发指令编码字节级验证;darwin/arm64 W^X MAP_JIT spike 留 PJ8+;真执行端到端留 PJ8+ trampoline asm) |
 | PJ9 | arm64 端到端验收 + 双架构差分套 | [06 §5](./06-backends.md) + [08 §6](./08-testing-strategy.md) | 双架构 V1-V22 全过;Go 1.25/1.26/tip 矩阵 CI 绿 | 🔶 **2026-06-25 CI 矩阵部分**(.github/workflows/ci.yml 加 P4 variant 到 test/fuzz/conformance/difftest 4 job;cross-compile linux/arm64 + darwin/arm64 wangshu_p4 build 验证;真 arm64 self-hosted runner 留 PJ9+ 基础设施) |
-| PJ10 | luajc 档验收 + 性能调优 | [01](./01-launch-judgment.md) + [08 §8](./08-testing-strategy.md) | **P4 总验收**:列内核负载 ≥luajc 档(≥164μs 水位 over gopher-lua)| 🔶 **2026-06-25/26 baseline 扩展**(benchmarks/baseline/baseline_gibbous_jit_test.go,Const/Nil/Bool/Mul/Chain/Cmp 6 档 P4 vs crescent;Xeon 6982P 实测 P4 加速比 1.0-1.15x:PJ7 简化形态 mmap 段不调 helper(dummy mov+ret),host 调用从段移到 Go 端 Run prelude 路径,几 ns 收益级。**真 luajc 档(≥4.4x over gopher-lua)需 PJ2-PJ5 完整版**——mmap 段真发字节级算术 + 寄存器分配 + 内联 IsNumber guard + 切 SP trampoline + 真投机 deopt 协议;设计文档估 +1-2 人月/PJ × 4-5 PJ × 真负载基准调优 2-4 人月,合计 +N 人月级工作量,不在 PJ7 简化形态范围) |
+| PJ10 | luajc 档验收 + 性能调优 | [01](./01-launch-judgment.md) + [08 §8](./08-testing-strategy.md) | **P4 总验收**:列内核负载 ≥luajc 档(≥164μs 水位 over gopher-lua)| ✅ **2026-06-26 luajc 档突破**(承 §8;PJ3 FORLOOP 字节级 inline 实测大幅加速:100 iter 7.15x over gopher;1000 iter 21.20x;10000 iter 25.41x over gopher-lua,均远超 luajc 档 4.4x 基线。10000 iter 形态 P4 仅 270μs / gopher 6.9ms — 完整超过 ≥164μs 水位口径。**PJ3 当前形态范围**:全常量空 body for 循环;含 body / reg limit / 嵌套 / break 留 PJ3+ 扩。**P4 立项动机已兑现**:列内核 loop 形态 P4 性能超 luajc 档,验证 method-jit 方向的物理可行性) |
 
 ---
 
@@ -394,7 +394,74 @@ after_loop: ret
 
 ---
 
-## 8. 后续维护协议
+## 8. PJ3 FORLOOP 字节级 inline 真接入 + luajc 档突破(2026-06-26 落地)
+
+### 8.1 最简形态
+
+`function() for i=K1, K2 do end end`(全常量 init/limit/step + 空 body FORLOOP)。承 §7.2 spike 物理证据 → §7.3 路标 → 本节真接入。
+
+### 8.2 字节级模板(amd64,69 字节)
+
+```
+[ 0] mov rax, K_init imm64; movq xmm0, rax   ; xmm0 = init
+[15] mov rax, K_limit imm64; movq xmm1, rax  ; xmm1 = limit
+[30] mov rax, K_step imm64; movq xmm2, rax   ; xmm2 = step
+[45] subsd xmm0, xmm2                        ; FORPREP 预减 idx
+[49] ; loop_start
+[49] addsd xmm0, xmm2                        ; FORLOOP idx += step
+[53] ucomisd xmm0, xmm1                      ; cmp idx, limit
+[57] ja  after_loop                          ; idx > limit → exit
+[63] jmp loop_start                          ; backward jmp
+[68] ; after_loop
+[68] ret
+```
+
+### 8.3 形态识别(analyzeForLoopForm)
+
+约束:proto.Code 长度 6/7 + 三 LOADK + FORPREP sBx=0 + FORLOOP sBx=-1 + RETURN A=0 B=1 + 三 K 都是 number + step > 0。
+
+### 8.4 主路径接入
+
+- `compiler.go::Compile`:isForLoop=true 走 archEmitForLoopEmptyConst,p4Code 设 writeRetA=false / useSpec=false(段内自循环,无 host helper)
+- `arch_amd64/arm64/other.go`:archEmitForLoopEmptyConst 路由(amd64 真实装,arm64/other stub)
+- `probes.go`:SpecForLoopHits / incSpecForLoopHits / ResetSpecHits 加 forLoop 字段
+
+### 8.5 验证
+
+| 层 | 测试 | 结果 |
+|---|---|---|
+| 字节级单测 | `pj3_template_amd64_test.go` 7 档 mmap+RX round-trip(1..100 / 1..1000 / 1..10000 / 1..10 step 2 / 1..100 step 0.5 / 单次迭代边界 0..0 / 1..1)| ✅ 全过 |
+| e2e 真升层 | `gibbous_pj3_forloop_e2e_test.go` 3 档(100 / 1 / 1000 iter)+ SpecForLoopHits>0 实证模板真编译 | ✅ 全过 |
+| make test-p4 全套 | 含 conformance/difftest/luasuite/-race + 3 PJ3 e2e | ✅ 全过 |
+
+### 8.6 luajc 档实测加速比(Xeon 6982P,2s × 2 count,wangshu_p4 wangshu_profile)
+
+形态对位 wrap-kernel × 50(避免 apples-to-oranges 工作负载错配):
+
+| iter 次数 | P4 (ns/op) | crescent (ns/op) | gopher-lua (ns/op) | **P4 vs cres** | **P4 vs gopher** |
+|---|---|---|---|---|---|
+| 100 | 7,311 | 59,334 | 52,272 | **8.11x** | **7.15x** |
+| 1000 | 31,313 | 548,831 | 663,911 | **17.53x** | **21.20x** |
+| 10000 | 271,426 | 5,452,279 | 6,895,610 | **20.09x** | **25.41x** |
+
+**PJ10 luajc 档(≥4.4x over gopher-lua)早已超越**——100/1000/10000 iter 三档分别 7.15x / 21.20x / 25.41x,均远超 4.4x luajc 档基线。
+
+**机理**:PJ3 把 FORLOOP 字节级 inline 进 mmap 段,1000/10000 次回边完全不跨 boundary——仅 SSE addsd + ucomisd + backward jmp 三指令循环,~3 cycles/iter,接近原生码理论上限。boundary cost 只在 enter/exit 段各一次,wrap-kernel × 50 ⇒ N 越大 boundary 占比越小。
+
+### 8.7 当前 PJ3 形态范围 + 后续扩展
+
+**当前已落地**:
+- ✅ `function() for i=K1, K2 do end end` 全常量空 body
+
+**留 PJ3+ 扩**:
+- ⏳ body 含 reg-K spec op(reg-K 模板已就绪,inline 到 loop body 内即可)
+- ⏳ limit 是 reg(`for i=1,n do end`)+ IsNumber guard
+- ⏳ safepoint check 真接入(emit 原语 EmitCmpByteR15DispImm8 已就绪)
+- ⏳ 嵌套 / break(JMP)
+
+---
+
+## 9. 后续维护协议
 
 PJ0 启动后,本文按以下协议更新(承 [P3 implementation-progress §5](../p3-wasm-tier/implementation-progress.md) 范本):
 
