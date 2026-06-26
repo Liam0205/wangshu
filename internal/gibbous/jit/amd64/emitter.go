@@ -225,6 +225,44 @@ const EncodedPushRegLen = 1
 // EncodedPopRegLen 是「pop regN」编码后的字节数(常量,固定 1)。
 const EncodedPopRegLen = 1
 
+// EmitHelperCall 发射「mov rax, helperAddr; call rax」复合模板(13 字节)
+// 用于 PJ5 jit→host helper 间接调用。
+//
+// **背景**:helper 函数地址通常远超 ±2GB 范围,直接 `call rel32` 不可用;
+// 标准做法是装载 64-bit 绝对地址到 rax 后 indirect call。本宏把 PJ5 helper
+// 调用的固定字节序列(`mov rax, imm64` 10 字节 + `call rax` 3 字节,
+// 等于 0x48 0xB8 imm64×8 + 0xFF 0xD0 = 13 字节,但实际看 EmitCallReg 是 2
+// 字节)封装,避免每处 helper 调用站点逐原语拼接。
+//
+// **PJ5 用例**:
+//   - CALL helper inline:`mov rax, &host.DoCall; call rax`
+//   - TAILCALL helper inline:`mov rax, &host.DoTailCall; call rax`
+//   - safepoint helper:`mov rax, &host.Safepoint; call rax`
+//
+// **调用约定**(承 06 §3.5 + amd64 SysV ABI):
+//   - 参数经 rdi/rsi/rdx/rcx/r8/r9 传(P4 trampoline 中 r15=jitCtx,
+//     业务参数走 SysV ABI 寄存器)
+//   - 返回值在 rax
+//   - 调用前业务码需把当前寄存器状态保存(callee-clobbered),P4 trampoline
+//     的进入序言已 save r12-r15 + rbx/rbp,helper 内只保 SysV ABI callee-saved
+//
+// 编码:
+//
+//	[0-9]  mov rax, imm64(0x48 0xB8 + imm64 LE × 8 字节 = 10 字节)
+//	[10-11] call rax(0xFF 0xD0 = 2 字节)
+//	——— 总计 12 字节(EmitMovRaxImm64Len=10 + EncodedCallRegLen=2)———
+//
+// 注:EmitCallReg(0)= 0xFF 0xD0 = 2 字节(reg=0=rax)。
+func EmitHelperCall(buf []byte, helperAddr uint64) []byte {
+	buf = EmitMovRaxImm64(buf, helperAddr)
+	buf = EmitCallReg(buf, 0) // call rax(reg=0)
+	return buf
+}
+
+// EncodedHelperCallLen 是「mov rax, helperAddr; call rax」编码后的字节数
+// (常量,固定 12 = 10 + 2)。
+const EncodedHelperCallLen = EncodedMovRaxImm64Len + EncodedCallRegLen
+
 // =============================================================================
 // PJ6+ 模板组合原语(承 06 §3.6 闭包族 + §3.7 直线族 + §3.5 RETURN)
 // =============================================================================
