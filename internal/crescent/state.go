@@ -825,8 +825,7 @@ func (st *State) callOnStack(cl arena.GCRef, args []value.Value, nresults int) (
 	for _, v := range args {
 		th.push(v)
 	}
-	// PW10 零跨界顶层升层 + P4 真接入(承
-	// .code-review/from-7846604/increment-1-to-fb3de19.md 🟠 #1 修复):
+	// PW10 零跨界顶层升层 + P4 真接入:
 	// 之前 `code.Slot() == ok` 检查是 P3 wasm `call_indirect` 内部直调要求,
 	// 但顶层 enterGibbous 不依赖 slot——任何 GibbousCode(P3 / P4)都能走。
 	// P4 `Slot()` 恒返 (0, false)(原生码无 wasm 表概念),之前的 ok 检查
