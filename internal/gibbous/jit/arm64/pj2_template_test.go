@@ -16,7 +16,7 @@ import (
 // (28 字节 = LDR 4 + MOV imm64 16 + CMP 4 + B.cond 4)。
 func TestPJ8_EmitIsNumberGuardArm64_Layout(t *testing.T) {
 	var buf []byte
-	buf = EmitIsNumberGuardArm64(buf, 5, 16) // reg=5, rel21=16(到 deopt)
+	buf = EmitIsNumberGuardArm64(buf, 5, 16) // reg=5, imm19=16(到 deopt)
 
 	if len(buf) != EncodedIsNumberGuardArm64Len {
 		t.Errorf("len = %d, want %d", len(buf), EncodedIsNumberGuardArm64Len)
@@ -52,7 +52,7 @@ func TestPJ8_EmitIsNumberGuardArm64_Layout(t *testing.T) {
 		t.Errorf("guard CMP = 0x%08x, want 0x%08x", insn5, wantCmp)
 	}
 
-	// [24-27] B.HS deopt (rel21=16)
+	// [24-27] B.HS deopt (imm19=16)
 	insn6 := binary.LittleEndian.Uint32(buf[24:28])
 	if (insn6 & 0xFF000000) != 0x54000000 {
 		t.Errorf("guard B.cond base wrong")

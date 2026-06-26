@@ -167,10 +167,10 @@ const (
 //	——— 总计 108 字节 ———
 //
 // **imm19 计算**(arm64 B.cond 是 19-bit 字偏移,LSL 2 → byte 偏移):
-//   - guard1 B.cond 之后 PC = startLen + 28
-//   - guard2 B.cond 之后 PC = startLen + 56
-//   - fast 段结束 PC = startLen + 88
-//   - deopt 起点 PC = startLen + 88
+//   - guard1 B.cond 之后 PC = 28
+//   - guard2 B.cond 之后 PC = 56
+//   - fast 段结束 PC = 88
+//   - deopt 起点 PC = 88
 //   - imm19_1(guard1→deopt 字偏移)= (88 - 24)/4 = 16(B.cond 在 guard1 末偏移 24)
 //   - imm19_2(guard2→deopt 字偏移)= (88 - 52)/4 = 9
 //
