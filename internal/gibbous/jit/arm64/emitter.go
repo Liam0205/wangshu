@@ -450,3 +450,85 @@ func EmitFcmpeDnDm(buf []byte, dn, dm uint8) []byte {
 
 // EncodedFcmpeDnDmLen = 4.
 const EncodedFcmpeDnDmLen = 4
+
+// =============================================================================
+// arm64 PJ4 IC 模板基础原语(承 06-backends.md §4.2 + ARMv8 ARM C5/C6 整数族)
+// =============================================================================
+
+// EmitAddXdXnXm 发射 arm64「add Xd, Xn, Xm」(shifted register,shift=00
+// LSL 0)。
+//
+// 编码:1000_1011_00_mmmmm_000000_nnnnn_ddddd = 0x8B000000 base
+//   - sf=1, op=0(add), S=0, shift=00, imm6=000000(LSL 0)
+//
+// 用例:PJ4 IC 字节级 inline arm64 端——SIB 替代(`add x2, x14, x1`
+// 把 arena base + GCRef offset 加到一起,然后 `ldr x0, [x2, #disp]`
+// 替代 amd64 `mov rax, [r14+rcx+disp]` 单条 SIB 寻址)。
+func EmitAddXdXnXm(buf []byte, rd, rn, rm uint8) []byte {
+	if rd > 30 {
+		rd = 0
+	}
+	if rn > 30 {
+		rn = 0
+	}
+	if rm > 30 {
+		rm = 0
+	}
+	insn := uint32(0x8B000000) | (uint32(rm)&0x1F)<<16 | (uint32(rn)&0x1F)<<5 | uint32(rd)&0x1F
+	return appendArm64Insn(buf, insn)
+}
+
+// EncodedAddXdXnXmLen = 4.
+const EncodedAddXdXnXmLen = 4
+
+// EmitAndXdXnXm 发射 arm64「and Xd, Xn, Xm」(shifted register,shift=00)。
+//
+// 编码:1000_1010_00_mmmmm_000000_nnnnn_ddddd = 0x8A000000 base
+//
+// 用例:PJ4 IC arm64 端——`and x0, x0, x1`(从 NaN-box 提取 GCRef
+// payload,对位 amd64 `and rax, rcx` 3 字节)。
+func EmitAndXdXnXm(buf []byte, rd, rn, rm uint8) []byte {
+	if rd > 30 {
+		rd = 0
+	}
+	if rn > 30 {
+		rn = 0
+	}
+	if rm > 30 {
+		rm = 0
+	}
+	insn := uint32(0x8A000000) | (uint32(rm)&0x1F)<<16 | (uint32(rn)&0x1F)<<5 | uint32(rd)&0x1F
+	return appendArm64Insn(buf, insn)
+}
+
+// EncodedAndXdXnXmLen = 4.
+const EncodedAndXdXnXmLen = 4
+
+// EmitLsrXdImm6 发射 arm64「lsr Xd, Xn, #imm6」(逻辑右移,unsigned 6-bit
+// 位数,等价 UBFM Xd, Xn, #imm6, #63)。
+//
+// 编码:1101_0011_01_immr_111111_nnnnn_ddddd = 0xD340FC00 base
+//   - immr = imm6(右移位数 0-63)
+//   - imms = 0x3F(=63,固定,标识 LSR variant)
+//
+// 用例:PJ4 IC arm64 端——
+//   - `lsr x0, x0, #48`(严密 IsTable guard:shift 让 NaN-box tag 落到
+//     低 16 位,对位 amd64 `shr rax, 48` 4 字节)
+//   - `lsr x0, x0, #32`(table.word5 gen 在高 32 位,对位 amd64
+//     `shr rax, 32` 4 字节)
+func EmitLsrXdImm6(buf []byte, rd, rn uint8, imm6 uint8) []byte {
+	if rd > 30 {
+		rd = 0
+	}
+	if rn > 30 {
+		rn = 0
+	}
+	if imm6 > 63 {
+		imm6 = 0
+	}
+	insn := uint32(0xD340FC00) | (uint32(imm6)&0x3F)<<16 | (uint32(rn)&0x1F)<<5 | uint32(rd)&0x1F
+	return appendArm64Insn(buf, insn)
+}
+
+// EncodedLsrXdImm6Len = 4.
+const EncodedLsrXdImm6Len = 4

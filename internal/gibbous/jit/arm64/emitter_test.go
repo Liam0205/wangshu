@@ -381,3 +381,73 @@ func TestPJ8_EmitFcmpeDnDm(t *testing.T) {
 		t.Errorf("fcmpe d1, d2 = 0x%08x, want 0x%08x", insn, wantInsn)
 	}
 }
+
+// TestPJ8_EmitAddXdXnXm 验「add Xd, Xn, Xm」(shifted register,shift=00)字节级。
+// 编码:0x8B000000 base + Rm<<16 + Rn<<5 + Rd。
+func TestPJ8_EmitAddXdXnXm(t *testing.T) {
+	var buf []byte
+	buf = EmitAddXdXnXm(buf, 2, 14, 1) // add x2, x14, x1
+
+	if len(buf) != EncodedAddXdXnXmLen {
+		t.Fatalf("len = %d, want %d", len(buf), EncodedAddXdXnXmLen)
+	}
+	insn := binary.LittleEndian.Uint32(buf[0:4])
+	wantInsn := uint32(0x8B000000) | uint32(1)<<16 | uint32(14)<<5 | uint32(2)
+	if insn != wantInsn {
+		t.Errorf("add x2, x14, x1 = 0x%08x, want 0x%08x", insn, wantInsn)
+	}
+}
+
+// TestPJ8_EmitAndXdXnXm 验「and Xd, Xn, Xm」字节级。
+// 编码:0x8A000000 base + Rm<<16 + Rn<<5 + Rd。
+func TestPJ8_EmitAndXdXnXm(t *testing.T) {
+	var buf []byte
+	buf = EmitAndXdXnXm(buf, 0, 0, 1) // and x0, x0, x1
+
+	if len(buf) != EncodedAndXdXnXmLen {
+		t.Fatalf("len = %d, want %d", len(buf), EncodedAndXdXnXmLen)
+	}
+	insn := binary.LittleEndian.Uint32(buf[0:4])
+	wantInsn := uint32(0x8A000000) | uint32(1)<<16
+	if insn != wantInsn {
+		t.Errorf("and x0, x0, x1 = 0x%08x, want 0x%08x", insn, wantInsn)
+	}
+}
+
+// TestPJ8_EmitLsrXdImm6 验「lsr Xd, Xn, #imm6」字节级(UBFM 别名)。
+// 编码:0xD340FC00 base + immr=imm6<<16 + Rn<<5 + Rd。
+func TestPJ8_EmitLsrXdImm6(t *testing.T) {
+	cases := []struct {
+		name string
+		imm6 uint8
+	}{
+		{"lsr x0, x0, #48 (IsTable shift)", 48},
+		{"lsr x0, x0, #32 (gen shift)", 32},
+		{"lsr x1, x2, #0 (no-op edge)", 0},
+		{"lsr x3, x4, #63 (max)", 63},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf []byte
+			rd := uint8(0)
+			rn := uint8(0)
+			if tc.name == "lsr x1, x2, #0 (no-op edge)" {
+				rd = 1
+				rn = 2
+			} else if tc.name == "lsr x3, x4, #63 (max)" {
+				rd = 3
+				rn = 4
+			}
+			buf = EmitLsrXdImm6(buf, rd, rn, tc.imm6)
+
+			if len(buf) != EncodedLsrXdImm6Len {
+				t.Fatalf("len = %d, want %d", len(buf), EncodedLsrXdImm6Len)
+			}
+			insn := binary.LittleEndian.Uint32(buf[0:4])
+			wantInsn := uint32(0xD340FC00) | uint32(tc.imm6)<<16 | uint32(rn)<<5 | uint32(rd)
+			if insn != wantInsn {
+				t.Errorf("%s = 0x%08x, want 0x%08x", tc.name, insn, wantInsn)
+			}
+		})
+	}
+}
