@@ -452,3 +452,116 @@ func EmitSetTableArrayHit(buf []byte, aReg, cReg uint8,
 
 	return buf
 }
+
+// EmitSelfArrayHit 拼接 PJ4 SELF IC ArrayHit 字节级 inline 模板(承
+// docs/design/p4-method-jit/03-speculation-ic.md §6 + SELF opcode 语义)。
+//
+// **SELF opcode 语义**(承 bytecode/opcode.go::SELF):
+//
+//	R(A+1) := R(B)
+//	R(A)   := R(B)[RK(C)]
+//
+// 即 `obj:method()` 形态:先把 obj 拷到 R(A+1)(self/this 实参),然后
+// R(A) = R(B).method 取 method 函数。后跟 CALL R(A) R(A+1) ... 调用。
+//
+// IC ArrayHit 命中条件:method key 是数字常量 + array 段命中(罕见但
+// 形态有效);更常见是 NodeHit(字符串键 method name)— 本批先做
+// ArrayHit 作 SELF 工程基础,NodeHit SELF 留下一 commit。
+//
+// 参数:
+//   - aReg:R(A)(method 结果)寄存器号;R(A+1)=R(B) 由模板写入
+//   - bReg:R(B)(obj)寄存器号
+//   - stableShape / stableIndex / arenaBaseOff / deoptCode 同 GETTABLE
+//
+// **字节布局**(~141 字节,ArrayHit 132 字节 + R(A+1) 拷段 9 字节):
+//
+//	[0-6]    load R(B) → rax(7 字节,obj NaN-box)
+//	[7-14]   **额外**:store R(A+1) = rax(mov [rbx+(A+1)*8], rax)
+//	         (7 字节,EmitMovqMemRegFromRax with reg=rbx)
+//	[14-21]  shr rax, 48(4 字节)+ cmp eax, 0xFFFC(5 字节)+ jne deopt(6 字节)
+//	         **注**:索引接续 ArrayHit 模板,严密 IsTable guard 沿用
+//	... 同 ArrayHit getter:GCRef extract / gen check / arrayRef /
+//	    array[stableIndex] / nil check / 写 R(A) / ret / deopt
+//
+// 实际总字节数取决于 EmitMovqMemRegFromRax 的 disp 编码(disp32 或 disp8
+// short form)——本批用通用 disp32 路径(实测 132 + 7 = 139 字节估)。
+//
+// **deopt 路径**:Run 端 raxSpec==deoptCode 时调 host.GetTable byte-equal P1
+// (R(A+1)=R(B) 已 store 成功不需要回滚——R(A+1) 写入是 SELF 第一步,
+// deopt 路径走 host.GetTable 仍需 R(A+1) 已设;P1 解释器 SELF case 同源)。
+// **注**:SELF deopt 路径调 host.GetTable + R(A+1) 已设,与 P1 SELF 路径
+// byte-equal(P1 execute.go SELF case 同款步骤:setReg(A+1, B) → icGetTable
+// → setReg(A))。
+func EmitSelfArrayHit(buf []byte, aReg, bReg uint8,
+	stableShape, stableIndex uint32,
+	arenaBaseOff int32, deoptCode uint64) []byte {
+	// 1. load R(B) → rax(obj NaN-box)
+	buf = EmitMovqRaxFromMemReg(buf, 3 /*rbx*/, int32(bReg)*8)
+
+	// 2. **SELF 额外步骤**:store R(A+1) = rax(self/this 实参)
+	//    R(A+1) 槽偏移 = (aReg+1)*8
+	buf = EmitMovqMemRegFromRax(buf, 3 /*rbx*/, int32(aReg+1)*8)
+
+	// 3. 严密 IsTable guard
+	buf = EmitShrRaxImm8(buf, 48)
+	buf = EmitCmpEaxImm32(buf, qNanBoxTableTagHigh16)
+	buf = EmitJneRel32(buf, 0)
+	jneTagOff := len(buf) - 4
+
+	// 4. shr 已破坏 rax,重新 load R(B)
+	buf = EmitMovqRaxFromMemReg(buf, 3 /*rbx*/, int32(bReg)*8)
+
+	// 5. GCRef extract
+	const payloadMask uint64 = 0x0000_FFFF_FFFF_FFFF
+	buf = EmitMovRcxImm64(buf, payloadMask)
+	buf = append(buf, 0x48, 0x21, 0xC8) // and rax, rcx
+
+	// 6. mov rcx, rax(GCRef offset)
+	buf = EmitMovqRcxFromRax(buf)
+
+	// 7. load arena base → r14
+	buf = EmitMovqR14FromR15Disp(buf, arenaBaseOff)
+
+	// 8. gen check:load word5 + shr + cmp eax + jne
+	buf = EmitMovqRaxFromR14PlusRcxDisp(buf, 40)
+	buf = append(buf, 0x48, 0xC1, 0xE8, 32) // shr rax, 32
+	buf = append(buf, 0x3D)                 // cmp eax, imm32
+	buf = append(buf,
+		byte(stableShape),
+		byte(stableShape>>8),
+		byte(stableShape>>16),
+		byte(stableShape>>24))
+	buf = EmitJneRel32(buf, 0)
+	jneShapeOff := len(buf) - 4
+
+	// 9. load table.arrayRef → rax
+	buf = EmitMovqRaxFromR14PlusRcxDisp(buf, 16)
+	buf = EmitMovqRcxFromRax(buf) // rcx = arrayRef offset
+
+	// 10. load array[stableIndex] → rax
+	buf = EmitMovqRaxFromR14PlusRcxDisp(buf, int32(stableIndex)*8)
+
+	// 11. nil check
+	buf = EmitMovRcxImm64(buf, qNanBoxNilImm)
+	buf = EmitCmpRaxRcx(buf)
+	buf = EmitJeRel32(buf, 0)
+	jeNilOff := len(buf) - 4
+
+	// 12. store R(A) = rax(method 函数)
+	buf = EmitMovqMemRegFromRax(buf, 3 /*rbx*/, int32(aReg)*8)
+
+	// 13. ret(normal exit)
+	buf = EmitRet(buf)
+
+	// 14. deopt block
+	deoptStart := len(buf)
+	buf = EmitMovRaxImm64(buf, deoptCode)
+	buf = EmitRet(buf)
+
+	// 15. patch all forward jcc to deopt start
+	PatchRel32(buf, jneTagOff, int32(deoptStart)-int32(jneTagOff+4))
+	PatchRel32(buf, jneShapeOff, int32(deoptStart)-int32(jneShapeOff+4))
+	PatchRel32(buf, jeNilOff, int32(deoptStart)-int32(jeNilOff+4))
+
+	return buf
+}

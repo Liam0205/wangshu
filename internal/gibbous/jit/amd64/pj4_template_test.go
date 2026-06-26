@@ -336,3 +336,53 @@ func TestPJ4_EmitSetTableArrayHit_ReverseStore(t *testing.T) {
 		}
 	}
 }
+
+// TestPJ4_EmitSelfArrayHit_Length 验 PJ4 SELF ArrayHit 模板字节级长度自洽。
+// 预期 ~141 字节(getter ArrayHit 132 + R(A+1) 拷段 7 字节,实测取决于
+// EmitMovqMemRegFromRax disp 编码)。
+func TestPJ4_EmitSelfArrayHit_Length(t *testing.T) {
+	var buf []byte
+	buf = EmitSelfArrayHit(buf,
+		2,          // aReg = R(2)(method 结果)→ R(A+1)=R(3)
+		0,          // bReg = R(0)(obj)
+		7,          // stableShape
+		1,          // stableIndex
+		16,         // arenaBaseOff
+		0xCAFEBABE, // deoptCode
+	)
+	if len(buf) == 0 {
+		t.Fatal("EmitSelfArrayHit returned empty buf")
+	}
+	t.Logf("EmitSelfArrayHit emitted %d bytes", len(buf))
+	if buf[len(buf)-1] != 0xC3 {
+		t.Errorf("SELF template should end with ret(0xC3), got 0x%02x",
+			buf[len(buf)-1])
+	}
+}
+
+// TestPJ4_EmitSelfArrayHit_SelfStore 验 SELF 模板含「R(A+1) := R(B)」拷段
+// (load rax from [rbx+bReg*8] + store [rbx+(aReg+1)*8] from rax 在模板前部)。
+func TestPJ4_EmitSelfArrayHit_SelfStore(t *testing.T) {
+	var buf []byte
+	// aReg=2 → R(A+1) = R(3) 槽偏移 24
+	// bReg=0 → R(B) 槽偏移 0
+	buf = EmitSelfArrayHit(buf, 2, 0, 7, 1, 16, 0xCAFEBABE)
+
+	// 模板前部应有:
+	// [0-6] load rax from [rbx + 0]  = 48 8B 03 00 00 00 00(7 字节)
+	// [7-13] store [rbx + 24], rax  = 48 89 83 18 00 00 00(7 字节)
+	// 紧跟 shr rax, 48 = 48 C1 E8 30(4 字节)
+	if len(buf) < 18 {
+		t.Fatal("模板太短")
+	}
+	// 第二段 store [rbx+24], rax 字节
+	// EmitMovqMemRegFromRax 编码:48 89 83 (rm=011=rbx) disp32 (or disp8 short)
+	// 用 disp32 时 ModRM=83=mod10 reg=000 rm=011;disp8 时 ModRM=43=mod01 reg=000 rm=011
+	// 实测看哪个
+	storeStart := 7
+	if buf[storeStart] != 0x48 || buf[storeStart+1] != 0x89 {
+		t.Errorf("store R(A+1) 前缀错位 at %d: got %x %x, want 48 89",
+			storeStart, buf[storeStart], buf[storeStart+1])
+	}
+	t.Logf("SELF 模板前 18 字节 = %x", buf[:18])
+}
