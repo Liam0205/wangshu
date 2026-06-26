@@ -655,7 +655,7 @@ const EncodedBlrXnLen = 4
 // MOV imm64 序列 16 vs amd64 mov rax imm64 10 + BLR vs CALL reg)。
 //
 // 用 X16(IP0)作 trampoline scratch 寄存器:ARMv8 ABI 约定 X16/X17 是
-// inter-procedure call scratch,不需要 callee 保留;callee 可被任意改写。
+// intra-procedure-call scratch(过程内调用临时寄存器,承 AAPCS),不需要 callee 保留;callee 可被任意改写。
 // 调用后 X16 不需复原,LR=X30 也由 BLR 自动设。
 //
 // 用例:PJ5 CALL/TAILCALL 真接入 arm64 端(对位 amd64 EmitHelperCall),

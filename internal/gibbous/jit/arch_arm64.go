@@ -297,7 +297,7 @@ func archSupportsForLoop() bool { return true }
 //
 // 用于 PJ5 CALL/TAILCALL 真接入(待 PJ8+ 翻 archSupportsSpec 后启用)。
 // arm64 多 8 字节因 MOV imm64 序列 16 vs amd64 mov rax imm64 10 + BLR
-// vs CALL reg 2。X16 是 ARMv8 IP0 scratch 寄存器(inter-procedure call
+// vs CALL reg 2。X16 是 ARMv8 IP0 scratch 寄存器(intra-procedure-call
 // scratch,callee 可任意改写)。
 func archEmitHelperCall(buf []byte, helperAddr uint64) []byte {
 	return jitarm64.EmitHelperCallArm64(buf, helperAddr)
