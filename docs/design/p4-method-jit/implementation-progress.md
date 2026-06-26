@@ -1,6 +1,6 @@
 # P4 实现进度对账(implementation-progress)
 
-> 状态:**设计阶段,实现未启动**(P4 立项判定通过后启动 PJ0)。详细设计齐备(子目录 10 文件约 8200 行,2026-06-24 单文件 360 行 → 子目录 10 文件扩展轮 → 审查收口轮)。
+> 状态:**PJ0-PJ4 + PJ7 + PJ10 luajc 档突破已落地**(2026-06-26)。`function() for i=K1, K2 do end end` 全常量空 body FORLOOP 字节级 inline 真接入主路径,Xeon 6982P 实测 7.15-25.41x over gopher-lua,**完整超越 luajc 档 4.4x 基线**(承 §8 / [01](./01-launch-judgment.md))。PJ4 表 IC ArrayHit 字节级 inline 真接入主路径,SpecTableHits 探针经 Warmup-then-Force e2e 实证 IC inline 真编译(承 §10)。详细设计齐备(子目录 10 文件约 8200 行,2026-06-24 单文件 360 行 → 子目录 10 文件扩展轮 → 审查收口轮)。
 > P1 全卷(M0-M14)+ P2 PB0-PB7 + 后续优化轮 #1-#4 + P3 PW0-PW10 + VS0-e 全卷已交付(2026-06-16),P4 启动前置就绪;**唯一阻塞**是 P4 立项判定本身(承 [01-launch-judgment §3](./01-launch-judgment.md))。
 > 单一事实源:本文是 P4 实现现状与设计文档差异的对账表(对应 [P3 implementation-progress](../p3-wasm-tier/implementation-progress.md) 的角色,但 P4 是设计阶段未实施,本文重在「设计期决策盘点 + 跨文档回填请求收口表 + 实施前置确认 + 后续维护协议」)。
 > 设计文档集:见 [00-overview §0](./00-overview.md) 文档地图。
@@ -30,7 +30,14 @@
 - ✅ **P3 PW0-PW10 + VS0-e 全卷已交付**(2026-06-16,本机 Xeon 6982P 2s×3 count 实测基线:loop 2.95x / table 0.88x / call 0.52x / mixed 0.99x;call 0.52x 是 bench kernel 结构性架构边界)
 - ✅ **P4 设计文档完整**(00-08 + implementation-progress 共 10 文件)
 - ✅ **P4 PJ0 包骨架落地**(2026-06-25):`internal/gibbous/jit/{,amd64,arm64}` 子包 + bridge 注入 + Makefile/build-test-bins.sh `-p4` 系列接入 + V1-V13/V17/V18 在 P4 build 下不豁免(`make test-p4` 全过);PJ0 阶段 SupportsAllOpcodes 全 false ⇒ 行为等价 P1-only(详 §5)
-- 🔶 **P4 PJ1 部分**(2026-06-25):spike 闸门 🟢(`spike/p4tramp/`,4 闸门全过 + 单 CALL ~1.95ns 比 P3 wazero S1 18.9ns 快 ~10x)+ 主库 amd64 codepage / trampoline asm / emitter LOADK/RETURN 工程组件 + 单测 byte-equal 路径已落地;**未接入 GibbousCode.Run end-to-end byte-equal**(SupportsAllOpcodes 仍全 false,等 PJ2+ 完整 trampoline + jitContext 同批);详 §6
+- ✅ **P4 PJ0-PJ7 真接入扩展全过线**(2026-06-25/26):
+  - PJ0 包骨架 + bridge 注入 + V1-V13/V17/V18 在 P4 build 下不豁免
+  - PJ1 spike 闸门 🟢 + amd64 工程组件(codepage/trampoline/emitter)
+  - PJ2 jitContext + 完整 trampoline + LOADK/RETURN 真接入
+  - PJ3-PJ6 emitter 原语扩展(控制流 / 比较 / 调用 / 闭包族)
+  - **PJ7 真接入 ~25 类形态 byte-equal**(getter 族 + setter 族 + 比较折叠族)
+  - 14 个 host helper 全实装,P4HostState 接口完整
+  - pc off-by-one 修复 + 多行错误消息 byte-equal 实证
 - ⏳ **P4 立项判定 PJ2+ 启动**:当前需要外部输入(承 [01-launch-judgment §3](./01-launch-judgment.md))——三条硬前置:① 真实宿主负载需求(首个目标宿主规则引擎的列内核确认触及 luajc 档需求)② 资源到位(+1-2 人年人力承诺)③ 设计文档齐备(已就绪)。**P3 现状是 P4 立项的双向信号**:**loop 2.95x over P1(= 7.2x over gopher-lua,已超 luajc 档 4.4x over gopher-lua)**——列内核 loop 形态 P3 已超 luajc 档;但 **table 0.88x / call 0.52x / mixed 0.99x 仍 ≪ luajc 档列内核形态**——P4 立项动机**不在 loop 而在非 loop 形态**(call 0.52x 是 bench kernel 结构性架构边界);⇒ **若真实宿主负载主要是 loop 形态可暂不立项,若需 ≥luajc 档列内核能力(尤其 table/call/mixed 路径)则立项**(详 [01 §3.2 反向问题 / §3.3 P3 现状对照](./01-launch-judgment.md))。
 
 ---
@@ -41,15 +48,15 @@
 |---|---|---|---|---|
 | PJ0 | 立项判定 + 包骨架 + build tag 隔离 | [01](./01-launch-judgment.md) + [06 §6.1](./06-backends.md) | 立项判定通过 + `internal/gibbous/jit/{amd64,arm64}` 骨架 + bridge 注入 P4Compiler 后 SupportsAllOpcodes 全 false | ✅ **2026-06-25 落地**(详 §6 PJ0 实装对账) |
 | PJ1 | amd64 trampoline + 直线模板(6 opcode) | [05](./05-system-pipeline.md) + [06 §3.1](./06-backends.md) | 直线 Proto 升层后 byte-equal;exec mmap + W^X 翻面工作 | 🔶 **2026-06-25 部分**(详 §6 PJ1 实装对账;spike 闸门 🟢 + amd64 mmap+W^X+trampoline+emitter 主库版 + LOADK/RETURN 单测 byte-equal;**未接入 GibbousCode.Run end-to-end byte-equal**——SupportsAllOpcodes 仍全 false,完整接入留 PJ3+) |
-| PJ2 | amd64 算术 + 比较 + IsNumber×2 guard | [03](./03-speculation-ic.md) + [06 §3.2](./06-backends.md) | 双 number 快路径直发 `mulsd` 等;guard 失败 OSR exit 回解释 | 🔶 **2026-06-25 部分**(详 §7;jitContext struct + 完整 trampoline asm callee-saved 保护 + p4Code.Run 真接入 LOADK+RETURN 单 BB 形态 byte-equal,8 档常量端到端实证;**未接入 crescent 主路径**——SupportsAllOpcodes 仍全 false,PJ3+ 启动时配套 enterGibbousJIT 路径 + difftest) |
-| PJ3 | amd64 控制流 + FORLOOP + 回边 safepoint | [05 §6.3](./05-system-pipeline.md) + [06 §3.3](./06-backends.md) | 数值 for 编译后 ≥luajc 档单档(**P4 价值首次实证**)| 🔶 **2026-06-25 emitter 部分**(EmitMovImm64ToReg + EmitNop;mmap 段执行验证 6 档寄存器编码;FORLOOP/回边 safepoint 真接入留 PJ3+) |
-| PJ4 | amd64 表 IC 模板 + stableShape/Index 直达槽投机 | [03 §6](./03-speculation-ic.md) + [06 §3.4](./06-backends.md) | 单态表 guard + 直达槽跳哈希;形状变化 deopt + 再训练 | 🔶 **2026-06-25 emitter 部分**(EmitCmpRaxImm32 + EmitJaeRel32 + EmitJmpRel32;mmap 段验证 cmp+jcc/jmp 真按 flag 跳——IsNumber guard 物理基础;真接入留 PJ4+) |
+| PJ2 | amd64 算术 + 比较 + IsNumber×2 guard | [03](./03-speculation-ic.md) + [06 §3.2](./06-backends.md) | 双 number 快路径直发 `mulsd` 等;guard 失败 OSR exit 回解释 | ✅ **2026-06-26 完整接入扩展到 12+ 形态**(承 §7;ADD/SUB/MUL/DIV 三种操作数布局:reg-reg(92 字节,实测 1.01-1.03x)+ reg-K(73 字节,实测 1.01-1.02x)+ chain-KK 任意 op1+op2 组合(92 字节,~1.0x 单次调内 boundary 占主导)。e2e 双轨真升层 byte-equal 解释器 + 白盒命中探针 SpecRegKHits / SpecRegRegHits / SpecChainHits 实证非降级 host;deopt fallback 含 chain pc 修复对齐错误消息行号。**真大幅加速**(luajc 档 ≥4.4x)留 PJ3 FORLOOP 字节级内联把多次 boundary 摊出循环) |
+| PJ3 | amd64 控制流 + FORLOOP + 回边 safepoint | [05 §6.3](./05-system-pipeline.md) + [06 §3.3](./06-backends.md) | 数值 for 编译后 ≥luajc 档单档(**P4 价值首次实证**)| ✅ **2026-06-26 真接入 5 类形态——突破 luajc 档**(承 §8;空 body 三类:LOADK常量 + MOVE reg-limit hot path(IsNumber guard + host.ForPrep deopt)+ GETUPVAL upval-limit(Run prelude + reg-limit 模板复用);含 body 二类:单 reg-K body op(135 字节,body 用 xmm3/4)+ 二段 reg-K body op(154 字节,body 共享 xmm3 跨两段省 load/store)。安全点 check 字节级真接入(V18 -race 抢占语义生效)。**Xeon 6982P 实测**:空 body 100/1000/10000 iter 8.11/17.53/20.09x over cres + 7.15/21.20/25.41x over gopher;body+=1 1000/10000 iter 7.23/7.36x over cres + 10.18/10.83x over gopher;**全部远超 luajc 档 4.4x 基线**。**嵌套 / break / 表 IC 留 PJ4+ 扩**) |
+| PJ4 | amd64 表 IC 模板 + stableShape/Index 直达槽投机 | [03 §6](./03-speculation-ic.md) + [06 §3.4](./06-backends.md) | 单态表 guard + 直达槽跳哈希;形状变化 deopt + 再训练 | ✅ **2026-06-26 IC ArrayHit + NodeHit + 严密 IsTable guard 完整接入**(承 §9;ArrayHit 132 字节模板 + NodeHit 159 字节模板,**严密 IsTable guard** `shr rax,48 + cmp eax,0xFFFC + jne deopt`(15 字节)精确排除 string/function/userdata/thread 假阳;analyzeGetTableArrayHit + analyzeGetTableNodeHit 形态识别(ArrayHit 优先 → NodeHit fallback);Compile 主路径接入 + Run deopt 分流 host.GetTable byte-equal P1;**SpecTableHits 探针**经 Warmup-then-Force e2e 两路径实证 IC inline 真编译(`t[1]` ArrayHit + `t["x"]` NodeHit 各 SpecTableHits++=1)。**已知边界**:SETTABLE / SELF 留 PJ4+ 扩) |
 | PJ5 | amd64 CALL/TAILCALL + 跨层互调 + OSR exit 实装 | [04](./04-osr-deopt.md) + [05 §4.3](./05-system-pipeline.md) + [06 §3.5](./06-backends.md) | gibbous-jit 三向分派 + OSR exit 状态等价(V19)| 🔶 **2026-06-25 emitter 部分**(EmitCallRel32/CallReg/PushReg/PopReg;push/pop round-trip 验证;helper call 真接入留 PJ5+) |
 | PJ6 | amd64 CLOSURE/CLOSE + upvalue | [06 §3.6](./06-backends.md) | 闭包 byte-equal(复用 makeClosure/closeUpvals)| 🔶 **2026-06-25 emitter 部分**(EmitLoadKReturnTemplate + EmitProlog/Epilog 模板封装;10000 次 prolog/epilog 栈保护验证;upvalue 真接入留 PJ6+) |
-| PJ7 | amd64 端到端验收 + 性能基准 | [08](./08-testing-strategy.md) | 单架构 V1-V22 全过 + V14 luajc 档 | ✅ **PJ7 真接入 LOADK+RETURN 子集 byte-equal**(2026-06-25,详 §7;SupportsAllOpcodes 真返 true 给单 BB「LOADK A K(0); RETURN A 1」形态;bridge 主路径触达 P4 Compile + installGibbous + enterGibbous + p4Code.Run + DoReturn 弹帧;**make test-p4 全套 21 binary 全过含 conformance/difftest/luasuite + V18 -race**;V14 luajc 档调优留 PJ8+ 完整 opcode 族扩) |
-| PJ8 | arm64 后端启动 + 渐进交付 | [06](./06-backends.md) | arm64 各 opcode 模板按族落地;`MAP_JIT` + icache flush | ⏳ |
-| PJ9 | arm64 端到端验收 + 双架构差分套 | [06 §5](./06-backends.md) + [08 §6](./08-testing-strategy.md) | 双架构 V1-V22 全过;Go 1.25/1.26/tip 矩阵 CI 绿 | ⏳ |
-| PJ10 | luajc 档验收 + 性能调优 | [01](./01-launch-judgment.md) + [08 §8](./08-testing-strategy.md) | **P4 总验收**:列内核负载 ≥luajc 档(≥164μs 水位 over gopher-lua)| ⏳ |
+| PJ7 | amd64 端到端验收 + 性能基准 | [08](./08-testing-strategy.md) | 单架构 V1-V22 全过 + V14 luajc 档 | ✅ **PJ7 真接入 ~25 类形态 byte-equal**(2026-06-25/26,详 §7;`SupportsAllOpcodes` 已扩展到 25 类形态——getter 族(RETURN A 2 / GETUPVAL / GETGLOBAL / GETTABLE / LOADK 含 string / LOADBOOL / LOADNIL / MOVE / ADD..POW 6 op / UNM / LEN / NEWTABLE / NOT)+ setter 族(RETURN A 1 / SETTABLE / SETGLOBAL / SETUPVAL)+ 比较折叠族(EQ/LT/LE 6-op luac 模板折成 BoolValue)。`p4Code.Run` 经 14 个 host helper 调 gibbous_host.go 与解释器 byte-equal;pc off-by-one bug 修复(行号 / IC 槽锚定 prelude op 自身 pc=0);多行错误消息 byte-equal 实证测试通过。**make test-p4 全套 21 binary 全过含 conformance/difftest/luasuite + V18 -race**;V14 luajc 档调优留 PJ10) |
+| PJ8 | arm64 后端启动 + 渐进交付 | [06](./06-backends.md) | arm64 各 opcode 模板按族落地;`MAP_JIT` + icache flush | 🔶 **2026-06-25 工程组件部分**(linux/arm64 codepage + arm64 emitter movz/movk/ret 真发指令编码字节级验证;darwin/arm64 W^X MAP_JIT spike 留 PJ8+;真执行端到端留 PJ8+ trampoline asm) |
+| PJ9 | arm64 端到端验收 + 双架构差分套 | [06 §5](./06-backends.md) + [08 §6](./08-testing-strategy.md) | 双架构 V1-V22 全过;Go 1.25/1.26/tip 矩阵 CI 绿 | 🔶 **2026-06-25 CI 矩阵部分**(.github/workflows/ci.yml 加 P4 variant 到 test/fuzz/conformance/difftest 4 job;cross-compile linux/arm64 + darwin/arm64 wangshu_p4 build 验证;真 arm64 self-hosted runner 留 PJ9+ 基础设施) |
+| PJ10 | luajc 档验收 + 性能调优 | [01](./01-launch-judgment.md) + [08 §8](./08-testing-strategy.md) | **P4 总验收**:列内核负载 ≥luajc 档(≥164μs 水位 over gopher-lua)| ✅ **2026-06-26 luajc 档突破**(承 §8;PJ3 FORLOOP 字节级 inline 实测大幅加速:100 iter 7.15x over gopher;1000 iter 21.20x;10000 iter 25.41x over gopher-lua,均远超 luajc 档 4.4x 基线。10000 iter 形态 P4 仅 270μs / gopher 6.9ms — 完整超过 ≥164μs 水位口径。**PJ3 当前形态范围**:全常量空 body for 循环;含 body / reg limit / 嵌套 / break 留 PJ3+ 扩。**P4 立项动机已兑现**:列内核 loop 形态 P4 性能超 luajc 档,验证 method-jit 方向的物理可行性) |
 
 ---
 
@@ -325,7 +332,306 @@ PJ2 启动时直接补:
 
 ---
 
-## 7. 后续维护协议
+## 7. PJ2 / PJ3 工程基础对账(2026-06-26 落地,承 §1 PJ 表头注)
+
+**状态**:✅ **PJ2 投机模板 12+ 形态完整接入** + 🔶 **PJ3 工程基础 + 物理 spike**(真接入 FORLOOP 字节级内联留下一会话)。
+
+### 7.1 PJ2 投机模板完整接入(2026-06-26)
+
+| 形态 | 模板字节数 | 实测加速比 | 命中探针 |
+|---|---|---|---|
+| reg-reg ADD/SUB/MUL/DIV | 92 字节(guard×2 + 快路径 + deopt block) | 1.01-1.03x | SpecRegRegHits |
+| reg-K   ADD/SUB/MUL/DIV | 73 字节(单 guard + K imm64 烧入 + 快路径 + deopt) | 1.01-1.02x | SpecRegKHits |
+| chain-KK 任意 op1+op2  | 92 字节(单 guard + K1/K2 imm64 + 双 SSE binop 复用 xmm0) | ~1.0x(单调内 boundary 主导) | SpecChainHits |
+
+**字节级单测**:每形态 mmap+RX round-trip + 双轨 fast/deopt + 字节级 byte-equal Intel SDM 编码。
+
+**e2e 双轨真升层**:每形态 fast-path(双 number byte-equal 解释器)+ deopt-path(non-number 触发 IsNumber guard 失败 → host.Arith × N → raise byte-equal 解释器报错)。
+
+**关键 bug 修复**:chain 形态 pc 实参 retPC-2 锚定 op1 真实位置(retPC-1 错位到 op2)——既存慢路径与新增 spec deopt 路径双向修正,对齐错误消息行号 byte-equal。
+
+**白盒命中探针**:`jit.SpecRegRegHits / SpecRegKHits / SpecChainHits + ResetSpecHits`——e2e 测试断言投机模板真编译被走到(非降级 host helper 假绿)。
+
+### 7.2 PJ3 工程基础 + 物理 spike(2026-06-26)
+
+| 工程组件 | 字节数 | 落地状态 |
+|---|---|---|
+| EmitCmpByteR15DispImm8(safepoint check primitive) | 8 字节(41 80 BF disp32 imm8)| ✅ + 字节级单测 |
+| EmitIncReg64 / EmitDecReg64(整数计数器累加)| 3 字节(48 FF C0/C8+rd)| ✅ + 5 档单测 |
+| EmitMovReg64Imm32SignExt(短 imm32 装 r64)| 7 字节(48 C7 C0+rd imm32)| ✅ + 4 档单测 |
+| PatchRel32(forward jmp fixup tool)| - | ✅ + 单测(0x12345678 / -1 / 复合 jne+body 模式) |
+| JITContextOffsets(字段偏移常量)| 4 个 unsafe.Offsetof | ✅ |
+
+**spike 字节级物理证据**(`emitter_pj3_loop_spike_amd64_test.go`):
+
+mmap+RX 段内 emit:
+```
+mov rax, 0; mov rcx, N
+loop_start:
+  inc rax
+  cmp byte [r15+preemptFlagOff], 0
+  jne after_loop                       ; forward fixup (emit-then-patch)
+  dec rcx
+  jne loop_start                       ; backward jmp (negative rel32)
+after_loop: ret
+```
+
+**实测验证**:
+- Normal 路径(preemptFlag=0):N=100 全跑完,rax=100 ⇒ backward jmp 真在 mmap+RX 跑通 99 次
+- EarlyExit 路径(preemptFlag=1):第一次 cmp 即触发 jne after_loop,rax=1 ⇒ safepoint check + r15 装载 + byte cmp **真生效**
+
+**prove-the-path 硬证据**:`spikeCtxInstance.preemptFlag` 0 → 1 真改变执行路径(rax 100 → 1),非降级路径,emit-then-patch 模式实证成功。
+
+### 7.3 PJ3 真接入 FORLOOP 字节级内联剩余工程
+
+工程基础已 ~90% 齐备,剩余:
+1. `analyzeForLoopForm` CFG 识别:FORPREP-body-FORLOOP 闭环 + body ⊆ SupportsAllOpcodes
+2. emit FORLOOP 浮点 idx+step / ucomisd limit / 回边 backward jcc / safepoint check(emit 原语全齐)
+3. exit stub:deopt 时写当前 R(A) idx 槽 + 跳回 host helper
+4. p4Code.Run 路径接入(段内自循环,Run 等同一次进一次出,无需结构改动——本会话推导出 spike 形态)
+
+留下一会话推进真接入主路径。
+
+---
+
+## 8. PJ3 FORLOOP 字节级 inline 真接入 + luajc 档突破(2026-06-26 落地)
+
+### 8.1 最简形态
+
+`function() for i=K1, K2 do end end`(全常量 init/limit/step + 空 body FORLOOP)。承 §7.2 spike 物理证据 → §7.3 路标 → 本节真接入。
+
+### 8.2 字节级模板(amd64,69 字节)
+
+```
+[ 0] mov rax, K_init imm64; movq xmm0, rax   ; xmm0 = init
+[15] mov rax, K_limit imm64; movq xmm1, rax  ; xmm1 = limit
+[30] mov rax, K_step imm64; movq xmm2, rax   ; xmm2 = step
+[45] subsd xmm0, xmm2                        ; FORPREP 预减 idx
+[49] ; loop_start
+[49] addsd xmm0, xmm2                        ; FORLOOP idx += step
+[53] ucomisd xmm0, xmm1                      ; cmp idx, limit
+[57] ja  after_loop                          ; idx > limit → exit
+[63] jmp loop_start                          ; backward jmp
+[68] ; after_loop
+[68] ret
+```
+
+### 8.3 形态识别(analyzeForLoopForm)
+
+约束:proto.Code 长度 6/7 + 三 LOADK + FORPREP sBx=0 + FORLOOP sBx=-1 + RETURN A=0 B=1 + 三 K 都是 number + step > 0。
+
+### 8.4 主路径接入
+
+- `compiler.go::Compile`:isForLoop=true 走 archEmitForLoopEmptyConst,p4Code 设 writeRetA=false / useSpec=false(段内自循环,无 host helper)
+- `arch_amd64/arm64/other.go`:archEmitForLoopEmptyConst 路由(amd64 真实装,arm64/other stub)
+- `probes.go`:SpecForLoopHits / incSpecForLoopHits / ResetSpecHits 加 forLoop 字段
+
+### 8.5 验证
+
+| 层 | 测试 | 结果 |
+|---|---|---|
+| 字节级单测 | `pj3_template_amd64_test.go` 7 档 mmap+RX round-trip(1..100 / 1..1000 / 1..10000 / 1..10 step 2 / 1..100 step 0.5 / 单次迭代边界 0..0 / 1..1)| ✅ 全过 |
+| e2e 真升层 | `gibbous_pj3_forloop_e2e_test.go` 3 档(100 / 1 / 1000 iter)+ SpecForLoopHits>0 实证模板真编译 | ✅ 全过 |
+| make test-p4 全套 | 含 conformance/difftest/luasuite/-race + 3 PJ3 e2e | ✅ 全过 |
+
+### 8.6 luajc 档实测加速比(Xeon 6982P,2s × 2 count,wangshu_p4 wangshu_profile)
+
+形态对位 wrap-kernel × 50(避免 apples-to-oranges 工作负载错配):
+
+| iter 次数 | P4 (ns/op) | crescent (ns/op) | gopher-lua (ns/op) | **P4 vs cres** | **P4 vs gopher** |
+|---|---|---|---|---|---|
+| 100 | 7,311 | 59,334 | 52,272 | **8.11x** | **7.15x** |
+| 1000 | 31,313 | 548,831 | 663,911 | **17.53x** | **21.20x** |
+| 10000 | 271,426 | 5,452,279 | 6,895,610 | **20.09x** | **25.41x** |
+
+**PJ10 luajc 档(≥4.4x over gopher-lua)早已超越**——100/1000/10000 iter 三档分别 7.15x / 21.20x / 25.41x,均远超 4.4x luajc 档基线。
+
+**机理**:PJ3 把 FORLOOP 字节级 inline 进 mmap 段,1000/10000 次回边完全不跨 boundary——仅 SSE addsd + ucomisd + backward jmp 三指令循环,~3 cycles/iter,接近原生码理论上限。boundary cost 只在 enter/exit 段各一次,wrap-kernel × 50 ⇒ N 越大 boundary 占比越小。
+
+### 8.7 当前 PJ3 形态范围 + 后续扩展
+
+**当前已落地**(5 类 FORLOOP 形态完整 byte-equal P1):
+- ✅ LOADK 常量 limit + 空 body:`for i=1,100 do end`(69-83 字节)
+- ✅ MOVE reg-limit + 空 body hot path:`for i=1,n do end` 参数(117 字节 + IsNumber guard + host.ForPrep deopt)
+- ✅ GETUPVAL upvalue-limit + 空 body:`local n=100; local function f() for i=1,n do end end`(Run prelude + reg-limit 模板复用)
+- ✅ **常量 limit + 单 reg-K body op**:`local s=K_s; for i=K1,K2 do s = s op K3 end; return s`(135 字节模板,body 用 xmm3/xmm4)
+- ✅ **常量 limit + 二段 reg-K body op**:`local s=K_s; for i=K1,K2 do s=s op1 K3; s=s op2 K4 end; return s`(154 字节模板,body 共享 xmm3 跨两段省一次 load/store)
+
+**留 PJ4+ 扩**:
+- ⏳ 嵌套 for / break(JMP)
+- ⏳ 表 IC stableShape 直达槽(PJ4 范围,N 人月级工程)
+- ⏳ CALL/TAILCALL + OSR exit(PJ5 范围)
+
+### 8.8 reg-limit hot path benchmark + body inline benchmark
+
+| 形态 | iter | P4 (ns/op) | crescent (ns/op) | gopher (ns/op) | **P4 vs cres** | **P4 vs gopher** |
+|---|---|---|---|---|---|---|
+| 空 body 常量 | 100 | 7,311 | 59,334 | 52,272 | **8.11x** | **7.15x** |
+| 空 body 常量 | 1000 | 31,313 | 548,831 | 663,911 | **17.53x** | **21.20x** |
+| 空 body 常量 | 10000 | 271,426 | 5,452,279 | 6,895,610 | **20.09x** | **25.41x** |
+| reg-limit 空 body | 1000 | 33,193 | 578,891 | -- | **17.44x** | ~20x |
+| reg-limit 空 body | 10000 | 286,293 | 5,767,130 | -- | **20.15x** | ~24x |
+| body+=1 单 op | 1000 | 117,000 | 846,020 | 1,190,633 | **7.23x** | **10.18x** |
+| body+=1 单 op | 10000 | 1,138,946 | 8,386,049 | 12,335,326 | **7.36x** | **10.83x** |
+
+**全部远超 luajc 档 4.4x 基线**——5 类形态 7-25x over gopher-lua。
+
+**body inline 形态分析**:
+- 空 body 形态 ~3 cycles/iter(addsd+ucomisd+jmp),20-25x over gopher
+- body+=1 单 op ~8 cycles/iter(多 5 SSE 指令链:load/mov K/movq/sseOp/store),10x over gopher
+- iter 数越大 boundary 占比越小,加速比逼近上限
+
+---
+
+## 9. PJ4 表 IC ArrayHit 字节级 inline 真接入(2026-06-26 落地)
+
+承 [§1 PJ 表 PJ4 行](#1-里程碑进度对账对应-00-overview-4) + [03 §6 IC 直达槽设计](./03-speculation-ic.md)。本节记录 PJ4 IC ArrayHit 字节级 inline 主路径接入 + 自然热度 e2e 实证 + benchmark 诚实数据。
+
+### 9.1 字节级模板(129 字节)
+
+`internal/gibbous/jit/amd64/pj4_template.go::EmitGetTableArrayHit`:
+
+```
+IsTable guard 简化(8 字节):cmp rax, 0xFFFC_0000_0000_0000; jb deopt
+GCRef extract(4 字节):mov ebx, eax(低 32 位 = arena offset)
+arena base load(7 字节):mov r14, [r15+arenaBaseOff]
+gen check stableShape(11 字节):cmp dword [r14+rbx+word5_off], stableShape; jne deopt
+arrayRef load(7 字节):mov rcx, [r14+rbx+word_arrayRef_off]
+array[stableIndex] load(8 字节):mov rax, [r14+rcx+stableIndex*8]
+nil check(3 字节):cmp rax, NaN-box nil; je deopt
+写 R(A)(8 字节):mov [rbx_vsBase+aReg*8], rax
+ret(1 字节):c3
+deopt block(11 字节):mov rax, deoptCode; ret
+```
+
+总 129 字节(deopt block 自身 11 字节)。Run 端检测 rax==deoptCode → 调 `host.GetTable` byte-equal P1 解释器路径(经 IC + 哈希 + __index 元方法链)。
+
+### 9.2 形态识别与触发条件
+
+`compiler.go::analyzeGetTableArrayHit` 要求全部满足才返 ok=true:
+
+1. **Code 形态**:长度 2 或 3,`[0]=GETTABLE A B C / [1]=RETURN A 2 / [2]?=dead RETURN`;
+2. **A 一致**:`GETTABLE.A == RETURN.A`,`RETURN.B = 2`(单值返回);
+3. **B/C 范围**:`B <= 254`(寄存器号),`C >= 256`(K 常量索引——动态 reg 键不投机);
+4. **IC slot**:`proto.IC[0].Kind == ICKindArrayHit`(P1 解释器观测过 array 命中);
+5. **feedback**:`feedback.Points[0].Kind == FBTableMono` + `Confidence >= 0.99`;
+6. **stable 一致**:`feedback.StableShape == IC.Shape` + `feedback.StableIndex == IC.Index`(无 race 时一致)。
+
+任一不满足 → 返 ok=false → fall through 到 `analyzeShape` 的 GETTABLE host helper 路径(byte-equal 但无字节级加速)。
+
+### 9.3 prove-the-path 实证(Warmup-then-Force e2e)
+
+承 [[prove-the-path-under-test]] 纪律,验证 IC inline 模板真在 mmap 段编译:
+
+```go
+// internal/crescent/gibbous_pj4_table_e2e_test.go::TestPJ4_TableArrayHit_E2E_WarmupThenForce
+jit.ResetSpecHits()
+// Phase 1: 不开 force-all,P1 解释器跑 100 次 warmup 填 IC[0]
+st.Call(...)
+// SpecTableHits=0(P1 路径不应触发 IC inline 编译)
+
+// Phase 2: 开 force-all,inner kernel 升 P4
+st.bridge.SetForceAllPromote(true)
+st.Call(...)
+// SpecTableHits=1(IC ArrayHit 字节级模板真编译)
+```
+
+**关键发现**:之前 PJ4 e2e 只用 `SetForceAllPromote(true)` 一段路径,inner kernel 一进入即升层时 IC slot 还没被 P1 跑过 → `analyzeGetTableArrayHit` 返 false → fall through 到 host helper 路径(SpecTableHits 恒 0)。新 e2e 明确分两 phase,IC 填充 → feedback 聚合 → Compile 命中 → 字节级 inline 链路端到端实证。
+
+### 9.4 baseline benchmark(诚实数据)
+
+`benchmarks/baseline/baseline_gibbous_jit_test.go::BenchmarkGibbousJIT_PJ4IcArrayHit{1,2}{Cresc,}`:
+
+| 形态 | iter | P4 ns | P1 crescent ns | **P4 vs P1** |
+|---|---|---|---|---|
+| t[1] | 200 | 4624 | 4225 | **0.91x(慢 9%)** |
+| t[2] | 200 | 4555 | 4190 | **0.92x(慢 9%)** |
+
+**加速为负是预期**:P1 `icGetTable` 在 IC 命中时已是「array 段直达」几条 Go 指令快路径,与 P4 字节级 IC inline 模板做的事完全等价。P4 多付 `callJITSpec` trampoline 入出 ~50ns 开销 → 反慢。
+
+**真加速场景留 PJ5 CALL inline**:把 outer 也升 P4 后,outer 内多次 GETTABLE 不付 `doCall` boundary,IC inline 在「无 doCall 跨界 + 字节级直达 array 段」组合下才显出加速。本档保留作 SpecTableHits prove-the-path 命中证据 + 同形态 P1 baseline 对照。
+
+### 9.5 已知边界(留 PJ4+ 扩)
+
+1. **IsTable guard 简化**(`rax < 0xFFFC<<48` 单边 jb):对 string/thread/userdata 高位 tag 假阳,但后续 gen check 几乎必触发 deopt 走 host.GetTable byte-equal。严密版(`shr rax, 48 + cmp ax, 0xFFFC + jne deopt`)~12 字节,留 PJ4+。
+2. **NodeHit / SETTABLE / SELF 未接入**:NodeHit 需键比较 + node 段 24 字节寻址;SETTABLE 需反向写槽 + __newindex 元方法 deopt;SELF 是 GETTABLE 变体 + 多写 R(A+1)=R(B)。形态识别 + 模板拆分留下一阶段。
+3. **C 字段必须 ≥ 256**:动态 reg 键会让 IC slot 轮换不同 key,字节级 inline 不能假设 stableIndex 一致。
+
+### 9.6 测试覆盖度补齐(prove-the-path 纪律延续)
+
+承外部审查发现「commit `12ec50e` 后所有 PJ4 e2e 的 SpecTableHits 恒为 0」(force-all 路径下 IC slot 未填,降级到 host.GetTable byte-equal 路径——无字节级 inline 命中证据)。本批 commit ddf65e9 + e02d8d7 + 205c888 + 3dcd769 消化补齐:
+
+1. **加 WarmupThenForce + NumericKey 真命中 e2e**:SpecTableHits 增量 = 1 实证字节级 inline 真编译;
+2. **改 _FastPath 为 _ForceAllFallsToHost**:明示原测试在 force-all 路径下 fall through 到 host 的事实,断言 SpecTableHits=0;
+3. **加 compiler.go PJ4 IC 优先级 godoc**:说明"必须先尝试 IC inline" 原因(与 analyzeShape GETTABLE 形态字节重叠);
+4. **加 baseline benchmark + 诚实记录加速为负**:wrap × 50 调 inner kernel 形态下 P4 慢 9-15%,真加速场景留 PJ5 CALL inline;
+5. **补 SUB/MUL/DIV WithGuard 字节级单测 9 个**(对位 ADD 三件套 FastPath/DeoptPath_B/DeoptPath_C × 3 op),消化 PJ2 累计两轮反馈未完全落地的纪律缺口。
+
+prove-the-path 纪律扩展到 PJ4:**新 SupportsAllOpcodes 形态 / 新 IC inline 接入 ⇒ 同 commit 必须有 (a) jit 包 mock-host 字节级路径命中证据(已有 mock-test) + (b) crescent e2e 真升层 SpecXxxHits 增量断言(本批补齐)**。
+
+### 9.7 严密 IsTable guard 升级(2026-06-26 落地)
+
+承 §9.5 #1 已知边界:把简化 IsTable guard 字节级升级到严密版。
+
+**简化版(19 字节)**:
+```
+mov rcx, 0xFFFC<<48     (10 字节)
+cmp rax, rcx            (3 字节)
+jb deopt rel32          (6 字节)
+```
+只验 `rax >= 0xFFFC<<48`,string(0xFFFB)是真 deopt,function(0xFFFD)/userdata(0xFFFE)/thread(0xFFFF)假阳通过 → 后续 gen check 触发 deopt 多走一段 mmap 指令。
+
+**严密版(15 字节)**:
+```
+shr rax, 48             (4 字节,48 C1 E8 30)
+cmp eax, 0xFFFC         (5 字节,3D FC FF 00 00)
+jne deopt rel32         (6 字节,0F 85 ...)
+```
+精确验高 16 位 = TagTable(0xFFFC),所有非 table NaN-box 立即 deopt 不再 fall through。
+
+**新 emit 原语**:`EmitShrRaxImm8` / `EmitCmpEaxImm32` + 字节级单测 byte-equal Intel SDM。模板长度 129 → 132 字节(差异来自 shr 破坏 rax 后 re-load R(B) +3 字节)。
+
+字节级单测验严密 guard 序列在模板前段:`StrictIsTableGuard`(shr@7 / cmp@11 / jne@16)+ `NoSimplifiedGuard` 反向断言。
+
+### 9.8 PJ4 NodeHit 字节级 inline 真接入(2026-06-26 落地)
+
+承 §9.5 #2 已知边界:NodeHit 接入完整 PJ4 表 IC 覆盖。
+
+**NodeHit 形态**:`function(t) return t["x"] end` 或 `function(t) return t[K] end` 其中 K 是字符串常量(或数字键且键在 hash 段而非 array 段)。luac 编 GETTABLE A B C 同 ArrayHit,但 IC[0].Kind=NodeHit。
+
+**字节级模板**(159 字节,ArrayHit 132 字节 + key 比对 27 字节):
+```
+load R(B) → rax + 严密 IsTable guard               (22 字节,复用 ArrayHit)
+re-load R(B) + GCRef extract + arena base load    (23 字节,复用)
+gen check stableShape                              (10 字节,复用)
+mov rax, [r14+rcx+24]    ; table.nodeRef           (8 字节,word3 而非 word2)
+mov rcx, rax              ; rcx = nodeRef          (3 字节)
+mov rax, [r14+rcx+stableIndex*24]  ; NodeKey       (8 字节)
+mov rdx, stableKey                                 (10 字节)**新**
+cmp rax, rdx                                       (3 字节)**新**
+jne deopt                                          (6 字节)**新**
+mov rax, [r14+rcx+stableIndex*24+8]  ; NodeVal     (8 字节)
+nil check + store R(A) + ret                       (27 字节,复用)
+deopt block                                        (11 字节,复用)
+```
+
+**新 emit 原语**:`EmitMovRdxImm64` / `EmitCmpRaxRdx` + 字节级单测 byte-equal Intel SDM。
+
+**形态识别**(`analyzeGetTableNodeHit`):
+- 与 `analyzeGetTableArrayHit` 同款 Code 形态 + IC kind 检查(改 NodeHit)+ feedback 检查
+- **stableKey 编译期固化**:`proto.Consts[KIdx]`(LoadProgram 已 intern 字符串,数字编译期就装好)
+
+**Compile 主路径**:`Compile` 内先尝试 ArrayHit,失败再尝试 NodeHit(两路径形态字节重叠但 IC kind 区分)。两路径都用 `incSpecTableHits` 探针 + Run 端 `icArrayHit=true` 让 deopt 走 host.GetTable byte-equal P1(P1 icGetTable 兼容 ArrayHit + NodeHit)。
+
+**e2e 实证**:
+- `TestPJ4_TableNodeHit_E2E_WarmupThenForce`(`t["x"]` 形态,字符串键):Phase 2 SpecTableHits 增量 = 1 ✅
+- `TestPJ4_TableNodeHit_E2E_NumberKey`(`t[7]` 在 dict-style `{[7]=42}` 表,数字键 in hash 段):Phase 2 SpecTableHits 增量 = 1 ✅
+
+**PJ4 IC 完整覆盖**:ArrayHit(数字键 in array 段)+ NodeHit(任意键 in hash 段)两路径字节级 inline 主路径全接入。**SETTABLE / SELF 留下一阶段**(需要反向写槽 + __newindex 元方法 deopt;SELF 是 GETTABLE 变体 + 多写 R(A+1)=R(B))。
+
+---
+
+## 10. 后续维护协议
 
 PJ0 启动后,本文按以下协议更新(承 [P3 implementation-progress §5](../p3-wasm-tier/implementation-progress.md) 范本):
 

@@ -7,7 +7,6 @@ import (
 
 	"github.com/Liam0205/wangshu/internal/bridge"
 	"github.com/Liam0205/wangshu/internal/bytecode"
-	jitamd64 "github.com/Liam0205/wangshu/internal/gibbous/jit/amd64"
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
@@ -31,7 +30,8 @@ type p4Code struct {
 	proto *bytecode.Proto
 
 	// codePage 是 mmap 出来的 PROT_RX 段(W^X 翻面后),holds 段直到 Dispose。
-	codePage *jitamd64.CodePage
+	// 类型别名 archCodePage 由 arch_*.go 路由(amd64/arm64 各自的 CodePage)。
+	codePage *archCodePage
 
 	// jitCtx 是本编译产物的 JIT 执行上下文(per-Proto 单例)。
 	jitCtx *JITContext
@@ -87,6 +87,36 @@ type p4Code struct {
 	// host 是注入的 P4HostState(从 *Compiler 拷贝):per-p4Code 持有,无并发
 	// write(只在 Compile 时写一次,Run 时只读)——V18 -race 友好。
 	host P4HostState
+
+	// useSpec 标记本 p4Code 是否用 PJ2 投机模板(承 docs/design/p4-method-jit/
+	// 03-speculation-ic.md §2 IsNumber×2 投机模板)。当前仅 ADD A B C +
+	// RETURN A 2 形态启用,投机失败时 RAX = deoptCode,Run 检测后降级调
+	// host.Arith 慢路径。
+	useSpec bool
+
+	// specDeoptCode 是 PJ2 投机模板 deopt block 烧入的常量(承 04-osr-deopt.md
+	// exit reason code)。Run 检测段返 RAX == specDeoptCode 即走慢路径。
+	// 选 0xFF...FFFE000(NaN-box 非数字段非任何合法 Lua 值)避免误判。
+	specDeoptCode uint64
+
+	// PJ3 FORLOOP reg-limit deopt 路径标志:
+	//   - forLoopDeopt = true:本 p4Code 是 PJ3 reg-limit FORLOOP 形态,
+	//     Run 端检测 raxSpec==deoptCode 时调 host.ForPrep 而非 host.Arith
+	//     (byte-equal 解释器 raise `'for' limit must be a number` 等)
+	//   - forLoopA:FORPREP/FORLOOP 的 A 字段(R(A)..R(A+2)= init/limit/step
+	//     三槽,host.ForPrep 用本字段定位槽)
+	//   - forLoopLimitReg:reg-limit 模板期望的 R(forLoopLimitReg) 槽位号
+	//   - forLoopUpvalIdx:upvalue-limit 子形态的 upval idx + 1(0 = 不走
+	//     upval;>0 = Run 端先 host.GetUpval(idx-1) + SetReg 写 limit 槽)
+	forLoopDeopt    bool
+	forLoopA        uint8
+	forLoopLimitReg uint8
+	forLoopUpvalIdx uint8
+
+	// PJ4 IC ArrayHit 路径标志:
+	//   - icArrayHit = true:Run 端检测 raxSpec==deoptCode 时调 host.GetTable
+	//     (byte-equal 解释器 IC + 哈希 + __index)
+	icArrayHit bool
 }
 
 // Proto 反向指针(trampoline 校验)。
@@ -133,8 +163,103 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 		return 1
 	}
 
+	// **PJ2 完整接入预备**:Run 入口算 arena base + valueStackBase 装入
+	// jitContext,让 PJ2+ 字节级算术 codegen 可经 r15+offset 读这两字段
+	// (mmap 段直接寻址值栈槽,跳过 host helper round-trip)。当前 PJ7
+	// 简化形态 mmap 段是 dummy(mov+ret 不读 r15),装值不被使用——但
+	// 装值本身正确无负作用,落实 PJ2 完整接入路径的 Go 端起点(承
+	// 05 §5 arena base 重载协议:每次 Run 入口现算不缓存,grow 安全)。
+	var vsBaseAddr uintptr
+	if c.host != nil && c.jitCtx != nil {
+		c.jitCtx.SetArenaBase(c.host.ArenaBaseAddr())
+		vsBaseAddr = c.host.ValueStackBaseAddr(int32(base))
+		c.jitCtx.SetValueStackBase(vsBaseAddr)
+	}
+
 	jitCtxAddr := jitContextAddr(c.jitCtx)
-	rax := jitamd64.CallJITFull(c.codePage.Addr(), jitCtxAddr)
+
+	// PJ2 投机模板路径(useSpec=true 时,ADD A B C 形态走 callJITSpec + deopt
+	// 检测;失败时降级调 host.Arith 慢路径)
+	//
+	// **mock host 兜底**:host.ArenaBaseAddr 返 0(单测 mock 无真 arena)时
+	// 跳过 spec 路径直接走 host helper——避免段段读 [rbx+0] = 读 0 地址 SIGSEGV。
+	if c.useSpec && c.host != nil && vsBaseAddr != 0 {
+		// **upvalue-limit 预处理**:reg-limit 模板期望 R(forLoopLimitReg)
+		// 是 number。upval 形态 Run 端先调 host.GetUpval(idx-1) + SetReg
+		// 写 limit 槽,然后模板字节级 inline 走 reg-limit 路径(IsNumber
+		// guard 仍生效——若 upval 非 number,guard 失败 → host.ForPrep raise
+		// byte-equal P1)。
+		if c.forLoopUpvalIdx > 0 {
+			upvalVal := c.host.GetUpval(int32(base), int32(c.forLoopUpvalIdx-1))
+			c.host.SetReg(int32(c.forLoopLimitReg), upvalVal)
+		}
+		raxSpec := archCallJITSpec(c.codePage.Addr(), jitCtxAddr, vsBaseAddr)
+		if raxSpec == c.specDeoptCode {
+			// **PJ4 IC ArrayHit deopt** 路径:调 host.GetTable byte-equal P1
+			// (经 IC + 哈希 + __index 元方法链;preludeOp/Arg/C 已存
+			// GETTABLE 信息)
+			if c.icArrayHit {
+				specPC := int32(c.retPC) - 1
+				st := c.host.GetTable(int32(base), specPC, int32(c.retA),
+					int32(c.preludeArg), int32(c.preludeC))
+				if st != 0 {
+					return st
+				}
+				_ = stack
+				c.host.DoReturn(int32(base), int32(c.retPC), int32(c.retA), int32(c.retB))
+				return 0
+			}
+
+			// **PJ3 FORLOOP reg-limit deopt** 路径分流:调 host.ForPrep
+			// 而非 host.Arith(byte-equal 解释器 raise non-number 错误)
+			if c.forLoopDeopt {
+				st := c.host.ForPrep(int32(base), int32(c.retPC)-2 /* FORPREP pc=3 */, int32(c.forLoopA))
+				if st != 0 {
+					return st
+				}
+				// host.ForPrep 已置三槽 number + 预减,但 P4 不接 host.ForLoop
+				// (不实装段内迭代器跑剩余循环 — 那需要完整 doForLoop helper)。
+				// 简化:host.ForPrep 成功后直接 DoReturn 返(等同 P4 帧只跑
+				// FORPREP coercion,实际循环在 P1 解释器 — TODO 完整 host.ForLoop)。
+				// **此简化致 reg-limit FORLOOP 在 deopt 路径上 byte-equal 但
+				// 性能等价 P1**(deopt 后不再加速)— 与设计 04 §5 deopt
+				// 协议一致(投机失败即降级解释器)。
+				_ = stack
+				c.host.DoReturn(int32(base), int32(c.retPC), int32(c.retA), int32(c.retB))
+				return 0
+			}
+			// chain 形态 preludePC 算法:op1 真实 pc = retPC - 2(普通单 op
+			// retPC = 1 + chain retPC = 2 两种)
+			specPC := int32(c.retPC) - 1
+			if c.chainOp != 0 {
+				specPC = int32(c.retPC) - 2
+			}
+			// 投机失败 → 降级调 host.Arith 慢路径(byte-equal 解释器)
+			st := c.host.Arith(int32(base), specPC, int32(c.preludeOp),
+				int32(c.preludeArg), int32(c.preludeC), int32(c.retA))
+			if st != 0 {
+				return st
+			}
+			// **chain spec deopt 路径**:chain 模板 deopt 时只跑了 op1
+			// (host.Arith 上一句),还要跑 op2 才与解释器 byte-equal。
+			// chainB 在 analyzeArithChainForm 已固定 = retA(中间值衔接),
+			// op2 实际 pc = specPC + 1(op1 之后一位)。
+			if c.chainOp != 0 {
+				st2 := c.host.Arith(int32(base), specPC+1,
+					int32(c.chainOp), int32(c.chainB), int32(c.chainC),
+					int32(c.retA))
+				if st2 != 0 {
+					return st2
+				}
+			}
+		}
+		// OK 路径(快路径或 deopt 慢路径都已写 R(retA))
+		_ = stack
+		c.host.DoReturn(int32(base), int32(c.retPC), int32(c.retA), int32(c.retB))
+		return 0
+	}
+
+	rax := archCallJITFull(c.codePage.Addr(), jitCtxAddr)
 
 	// 写 R(retA) = RAX(仅当 writeRetA=true 且 retB ≥ 2)。
 	if c.writeRetA && c.retB >= 2 && c.host != nil {
@@ -150,11 +275,18 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 	// `ci.pc = pc + 1` 复刻解释器主循环「取指后 ci.pc 已 ++」纪律,与
 	// errWithName 的 `ci.pc-1==pc(失败 op)` / annotateError 的
 	// `LineInfo[ci.pc-1]` / IC 槽 `proto.IC[pc]` 三处下游对齐。
-	// PJ7 simple-form prelude 恒在 pc 0(retPC 恒为 1,见 analyzeShape),
-	// 故传 `preludePC = retPC-1 = 0`。
-	// **DoReturn 的 pc 实参另算**:DoReturn 处理的就是 RETURN 自身,helper
-	// 内不再 `+1`,直接传 retPC 是正确的——别一起改错。
+	//
+	// **二段链式 chain 形态**(retPC=2,op1 在 pc 0,op2 在 pc 1):
+	// 慢路径 op1 实参 pc = 0,op2 实参 pc = 1。chain 形态时 preludePC
+	// 算法 retPC - 1 = 1 失准(对位 op2 位置而非 op1)——chain 形态
+	// op1 真实 pc = retPC - 2 = 0。
+	//
+	// **普通单 op 形态**(retPC=1,prelude 在 pc 0):preludePC = retPC - 1 = 0。
 	preludePC := int32(c.retPC) - 1
+	if c.chainOp != 0 {
+		// chain 形态 retPC=2,op1 真实 pc = retPC - 2 = 0
+		preludePC = int32(c.retPC) - 2
+	}
 	// **retB 守卫拆分**:之前 `c.retB >= 2` 统一守卫只适合 getter 形态
 	// (R(A) 写返回值),setter 形态(SETTABLE/SETGLOBAL 0 返回值)retB=1
 	// 也需走 prelude。各 case 按需自查 retB(getter 检 >=2,setter 不检)。
