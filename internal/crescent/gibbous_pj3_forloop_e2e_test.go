@@ -175,3 +175,62 @@ return n`
 	}
 	t.Logf("upvalue-limit fast path:SpecForLoopHits=%d", jit.SpecForLoopHits())
 }
+
+// TestPJ3_ForLoopWithBody_E2E_ADD:`local s=0; for i=1,100 do s=s+1 end;
+// return s` 真升层走字节级 body inline → s=100.
+func TestPJ3_ForLoopWithBody_E2E_ADD(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local function f()
+  local s = 0
+  for i = 1, 100 do
+    s = s + 1
+  end
+  return s
+end
+for i = 1, 50 do f() end
+return f()`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := value.AsNumber(value.Value(rets[0])); got != 100 {
+		t.Errorf("rets = %v, want 100", got)
+	}
+	if jit.SpecForLoopHits() == 0 {
+		t.Errorf("SpecForLoopHits = 0,FORLOOP body inline 未真编译")
+	}
+	t.Logf("body inline:SpecForLoopHits=%d", jit.SpecForLoopHits())
+}
+
+// TestPJ3_ForLoopWithBody_E2E_MUL:`local s=1; for i=1,5 do s=s*2 end;
+// return s` → s = 2^5 = 32.
+func TestPJ3_ForLoopWithBody_E2E_MUL(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local function f()
+  local s = 1
+  for i = 1, 5 do
+    s = s * 2
+  end
+  return s
+end
+for i = 1, 50 do f() end
+return f()`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := value.AsNumber(value.Value(rets[0])); got != 32 {
+		t.Errorf("rets = %v, want 32", got)
+	}
+	if jit.SpecForLoopHits() == 0 {
+		t.Errorf("SpecForLoopHits = 0,FORLOOP body inline MUL 未真编译")
+	}
+}

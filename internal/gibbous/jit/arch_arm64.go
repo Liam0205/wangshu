@@ -121,5 +121,19 @@ func archEmitForLoopRegLimit(buf []byte, kInit, kStep uint64, limitReg uint8, de
 	return buf
 }
 
+// archEmitForLoopWithBody arm64 端 stub——留 PJ8+。
+func archEmitForLoopWithBody(buf []byte, kS, kInit, kLimit, kStep, kBody uint64,
+	aS uint8, sseOp byte, preemptFlagOff int32) []byte {
+	_ = kS
+	_ = kInit
+	_ = kLimit
+	_ = kStep
+	_ = kBody
+	_ = aS
+	_ = sseOp
+	_ = preemptFlagOff
+	return buf
+}
+
 // archSupportsSpec arm64 当前不支持(留 PJ8+)。
 func archSupportsSpec() bool { return false }

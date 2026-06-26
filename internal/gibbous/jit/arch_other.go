@@ -116,5 +116,19 @@ func archEmitForLoopRegLimit(buf []byte, kInit, kStep uint64, limitReg uint8, de
 	return buf
 }
 
+// archEmitForLoopWithBody 其它 arch 不支持。
+func archEmitForLoopWithBody(buf []byte, kS, kInit, kLimit, kStep, kBody uint64,
+	aS uint8, sseOp byte, preemptFlagOff int32) []byte {
+	_ = kS
+	_ = kInit
+	_ = kLimit
+	_ = kStep
+	_ = kBody
+	_ = aS
+	_ = sseOp
+	_ = preemptFlagOff
+	return buf
+}
+
 // archSupportsSpec 其它 arch 不支持。
 func archSupportsSpec() bool { return false }

@@ -254,3 +254,111 @@ const EncodedForLoopRegLimitWithSafepointLen = EncodedMovqFromMemRegLen + // loa
 	EncodedJmpRel32Len + // jmp
 	EncodedRetLen + // ret normal
 	EncodedMovRaxImm64Len + EncodedRetLen // deopt block
+
+// EmitForLoopWithRegKBody 拼接「全常量 init/limit/step + reg-K body FORLOOP」
+// 模板(承 hot path 真实生产负载:`local s=K_s; for i=K1,K2 do s=s op K3 end;
+// return s`)。
+//
+// 字节布局(含 safepoint):
+//
+//	[ 0] mov rax, K_s_imm64;  mov [rbx+aS*8], rax     ; 17 (init R(aS)=s)
+//	[17] mov rax, K_init imm64;movq xmm0,rax           ; 15
+//	[32] mov rax, K_limit imm64; movq xmm1,rax         ; 15
+//	[47] mov rax, K_step imm64; movq xmm2,rax          ; 15
+//	[62] subsd xmm0, xmm2                              ; 4
+//	[66] ; loop_start
+//	[66] addsd xmm0, xmm2                              ; 4
+//	[70] ucomisd xmm0, xmm1                            ; 4
+//	[74] ja  after_loop                                ; 6
+//	[80] movsd xmm3, [rbx+aS*8]                        ; 8 (load s)
+//	[88] mov rax, K_body imm64; movq xmm4,rax          ; 15
+//	[103] <sseOp> xmm3, xmm4                           ; 4 (s op K)
+//	[107] movsd [rbx+aS*8], xmm3                       ; 8 (store s)
+//	[115] cmp byte [r15+pfOff], 0                      ; 8 (可选 safepoint)
+//	[123] jne after_loop                               ; 6
+//	[129] jmp loop_start                               ; 5 (backward;rel32=-(66-(129+5))=-68)
+//	[134] ; after_loop
+//	[134] ret                                          ; 1
+//	——— 含 safepoint:135 字节 ———
+//	——— 无 safepoint:135 - 14 = 121 字节 ———
+//
+// **预设条件**:
+//   - rbx = valueStackBase
+//   - aS:s 的寄存器号(R(aS),与 init/limit/step 的 A_init 独立,
+//     由 caller 校验 aS != A_init/+1/+2/+3 避免覆盖)
+//   - sseOp:F2 0F <op> C0 形式 SSE binop(ADD/SUB/MUL/DIV)
+//   - 完全无 guard(K_s/K_body 都是 number 编译期烧 imm,init/limit/step
+//     也是 K;reg-limit + body inline 形态留 PJ3+ 扩)
+//
+// **deopt 路径**:本最简 body 形态无 guard,无 deopt block。
+func EmitForLoopWithRegKBody(buf []byte, kS, kInit, kLimit, kStep, kBody uint64,
+	aS uint8, sseOp byte, preemptFlagOff int32) []byte {
+	// 1. Init R(aS) = K_s
+	buf = EmitMovRaxImm64(buf, kS)
+	buf = EmitMovqMemRegFromRax(buf, 3 /*rbx*/, int32(aS)*8)
+
+	// 2. FORLOOP setup
+	buf = EmitMovRaxImm64(buf, kInit)
+	buf = EmitMovqXmmFromRax(buf, 0)
+	buf = EmitMovRaxImm64(buf, kLimit)
+	buf = EmitMovqXmmFromRax(buf, 1)
+	buf = EmitMovRaxImm64(buf, kStep)
+	buf = EmitMovqXmmFromRax(buf, 2)
+	buf = EmitSubsdXmmXmm(buf, 0, 2)
+
+	// loop_start
+	loopStart := len(buf)
+	buf = EmitAddsdXmmXmm(buf, 0, 2)
+	buf = EmitUcomisdXmmXmm(buf, 0, 1)
+	buf = EmitJaRel32(buf, 0)
+	jaOff := len(buf) - 4
+
+	// body: R(aS) = R(aS) sseOp K (用 xmm3/xmm4,避开 idx/limit/step xmm0/1/2)
+	buf = EmitMovsdXmmFromMem(buf, 3, 3 /*rbx*/, int32(aS)*8)
+	buf = EmitMovRaxImm64(buf, kBody)
+	buf = EmitMovqXmmFromRax(buf, 4)
+	// sseOp xmm3, xmm4:F2 0F <op> ModRM
+	// ModRM = 0xC0 | (3<<3) | 4 = 0xDC
+	buf = append(buf, 0xF2, 0x0F, sseOp, 0xDC)
+	buf = EmitMovsdMemFromXmm(buf, 3, 3 /*rbx*/, int32(aS)*8)
+
+	// safepoint check(可选)
+	var safepointJneOff int = -1
+	if preemptFlagOff >= 0 {
+		buf = EmitCmpByteR15DispImm8(buf, preemptFlagOff, 0)
+		buf = EmitJneRel32(buf, 0)
+		safepointJneOff = len(buf) - 4
+	}
+
+	// backward jmp
+	jmpStart := len(buf)
+	buf = EmitJmpRel32(buf, int32(loopStart-(jmpStart+EncodedJmpRel32Len)))
+
+	// after_loop label
+	afterLoop := len(buf)
+	buf = EmitRet(buf)
+
+	// patch forward fixups
+	PatchRel32(buf, jaOff, int32(afterLoop)-int32(jaOff+4))
+	if safepointJneOff >= 0 {
+		PatchRel32(buf, safepointJneOff, int32(afterLoop)-int32(safepointJneOff+4))
+	}
+
+	return buf
+}
+
+// EncodedForLoopWithRegKBodyWithSafepointLen 含 safepoint 版字节数:
+// 10+7(init R(aS))+10+5+10+5+10+5(setup) + 4(subsd) + 4(addsd)+4(ucomisd)
+// +6(ja) + 8+10+5+4+8(body) + 8+6(safepoint) + 5(jmp) + 1(ret) = 135.
+const EncodedForLoopWithRegKBodyWithSafepointLen = EncodedMovRaxImm64Len + EncodedMovqMemFromRaxLen + // init R(aS)
+	EncodedMovRaxImm64Len + EncodedMovqXmmFromRaxLen + // K_init
+	EncodedMovRaxImm64Len + EncodedMovqXmmFromRaxLen + // K_limit
+	EncodedMovRaxImm64Len + EncodedMovqXmmFromRaxLen + // K_step
+	EncodedSseBinopLen + // subsd
+	EncodedSseBinopLen + // addsd
+	EncodedUcomisdLen + // ucomisd
+	EncodedJccRel32Len + // ja
+	EncodedMovsdMemLen + EncodedMovRaxImm64Len + EncodedMovqXmmFromRaxLen + EncodedSseBinopLen + EncodedMovsdMemLen + // body
+	EncodedCmpByteR15DispImm8Len + EncodedJccRel32Len + // safepoint
+	EncodedJmpRel32Len + // backward jmp
+	EncodedRetLen // ret
