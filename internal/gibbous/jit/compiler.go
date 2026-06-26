@@ -779,10 +779,14 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 
 	// **PJ2 投机算术模板真接入**(承 03-speculation-ic.md §2 IsNumber×2):
 	// 当且仅当本 arch 支持(amd64)+ ADD/SUB/MUL/DIV A B C + RETURN A 2
-	// 形态 + B/C 都是寄存器(非 RK 常量索引,B/C ≤ 254)+ 真 host(非 mock,
-	// ArenaBaseAddr 非 0)时,emit 92 字节投机模板:
-	//   guard×2 (IsNumber B + C) + 双 number 快路径 (movsd+<sseOp>+movsd+ret)
-	//   + deopt block (mov rax, deoptCode + ret)
+	// 形态 + 真 host(非 mock,ArenaBaseAddr 非 0)时,emit 投机模板。
+	//
+	// 操作数形态分流(承 ../bytecode/instruction.go RK 编码):
+	//   - **reg-reg**(B/C ≤ 254 都是寄存器):92 字节模板,IsNumber guard×2
+	//     + 双 number 快路径(movsd+<sseOp>+movsd+ret)+ deopt block;
+	//   - **reg-K**(B ≤ 254 reg + C ≥ 256 是常量索引,K[c-256] 必须是
+	//     number):73 字节模板,单 guard reg 端 + 烧 K 值 imm64 + 快路径
+	//     + deopt block;K 端编译期已校验为 number,运行期不再 guard。
 	// Run 检测段返 RAX == specDeoptCode 即降级调 host.Arith 慢路径(byte-equal
 	// 解释器)。本 PJ2 真接入是 PJ10 luajc 档的字节级核心物理基础。
 	//
@@ -797,13 +801,28 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 	// 包内单测 mock 无真 arena)→ 不启用 spec(避免段读 [rbx+0]=读 0 SIGSEGV)。
 	// 真 crescent.State 上 ArenaBaseAddr 在 LoadProgram 后非 0,启用 spec。
 	useSpec := false
+	useSpecRegK := false
 	var specSseOp byte
+	var regKValue uint64
 	if archSupportsSpec() && info.chainOp == 0 &&
-		info.preludeArg <= 254 && info.preludeC <= 254 &&
 		c.hostState != nil && c.hostState.ArenaBaseAddr() != 0 {
 		if op, ok := archSseOpForArith(info.preludeOp); ok {
-			useSpec = true
 			specSseOp = op
+			// reg-reg 形态:B/C 都 ≤ 254
+			if info.preludeArg <= 254 && info.preludeC <= 254 {
+				useSpec = true
+			} else if info.preludeArg <= 254 && info.preludeC >= 256 &&
+				int(info.preludeC-256) < len(proto.Consts) {
+				// reg-K 形态:B 是 reg,C 是常量索引;K 必须是 number(否则
+				// 降级 host——投机模板只支持 number 常量,string/bool/table
+				// 等需 doArith coercion 逻辑)
+				kIdx := int(info.preludeC - 256)
+				kVal := proto.Consts[kIdx]
+				if value.IsNumber(kVal) {
+					useSpecRegK = true
+					regKValue = uint64(kVal)
+				}
+			}
 		}
 	}
 
@@ -818,6 +837,38 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 		if err != nil {
 			return nil, err
 		}
+		incSpecRegRegHits() // prove-the-path 白盒命中证据
+		return &p4Code{
+			proto:         proto,
+			codePage:      page,
+			jitCtx:        NewJITContext(),
+			retA:          info.retA,
+			retB:          info.retB,
+			retPC:         info.retPC,
+			writeRetA:     info.writeRetA,
+			preludeOp:     info.preludeOp,
+			preludeArg:    info.preludeArg,
+			preludeC:      info.preludeC,
+			cmpA:          info.cmpA,
+			chainOp:       info.chainOp,
+			chainB:        info.chainB,
+			chainC:        info.chainC,
+			host:          c.hostState,
+			useSpec:       true,
+			specDeoptCode: deoptCode,
+		}, nil
+	}
+	if useSpecRegK {
+		// 73 字节 reg-K 投机模板:单 guard B(reg)+ 烧 K imm64 直发段 +
+		// SSE binop + 写回 + deopt block。
+		const deoptCode uint64 = 0xFFFCDEAD_DEADBE00
+		buf = archEmitArithSpecBinopRegKWithGuard(buf, specSseOp, info.retA,
+			uint8(info.preludeArg), regKValue, deoptCode)
+		page, err := archMmapCode(buf)
+		if err != nil {
+			return nil, err
+		}
+		incSpecRegKHits() // prove-the-path 白盒命中证据
 		return &p4Code{
 			proto:         proto,
 			codePage:      page,

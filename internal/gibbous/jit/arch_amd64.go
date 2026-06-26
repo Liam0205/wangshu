@@ -83,6 +83,13 @@ func archEmitArithSpecBinopWithGuard(buf []byte, sseOp byte, a, b, c uint8, deop
 	return jitamd64.EmitArithSpeculativeBinopWithGuard(buf, sseOp, a, b, c, deoptCode)
 }
 
+// archEmitArithSpecBinopRegKWithGuard 拼接 PJ2 reg-K 形态投机模板
+// (B 是 reg + K 编译期烧 imm64,单 guard reg 端)。amd64 端代理到
+// jitamd64.EmitArithSpeculativeBinopRegKWithGuard(73 字节)。
+func archEmitArithSpecBinopRegKWithGuard(buf []byte, sseOp byte, a, b uint8, kvalue uint64, deoptCode uint64) []byte {
+	return jitamd64.EmitArithSpeculativeBinopRegKWithGuard(buf, sseOp, a, b, kvalue, deoptCode)
+}
+
 // archSupportsSpec 返 true 当本 arch 支持 PJ2 投机模板真接入。
 // amd64 ✅;arm64/其它 ❌(留 PJ8+)。
 func archSupportsSpec() bool { return true }

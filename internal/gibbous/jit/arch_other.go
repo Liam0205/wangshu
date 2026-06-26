@@ -75,5 +75,15 @@ func archEmitArithSpecBinopWithGuard(buf []byte, sseOp byte, a, b, c uint8, deop
 	return buf
 }
 
+// archEmitArithSpecBinopRegKWithGuard 其它 arch 不支持。
+func archEmitArithSpecBinopRegKWithGuard(buf []byte, sseOp byte, a, b uint8, kvalue, deoptCode uint64) []byte {
+	_ = sseOp
+	_ = a
+	_ = b
+	_ = kvalue
+	_ = deoptCode
+	return buf
+}
+
 // archSupportsSpec 其它 arch 不支持。
 func archSupportsSpec() bool { return false }
