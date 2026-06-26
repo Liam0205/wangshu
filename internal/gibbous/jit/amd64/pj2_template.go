@@ -249,6 +249,75 @@ func EmitArithSpeculativeBinopRegKWithGuard(buf []byte, sseOp byte, a, b uint8, 
 const EncodedArithSpecBinopRegKWithGuardLen = EncodedIsNumberGuardLen +
 	EncodedArithSpecBinopRegKLen + EncodedMovRaxImm64Len + EncodedRetLen
 
+// EmitArithSpeculativeChainKKWithGuard 拼接「二段算术链式 reg-K-K 投机模板」
+// 字节级序列——形态 `R(A) = R(B) op1 K1 op2 K2`(luac 编 `x*2+1` 等)。
+//
+// 字节布局(以 MUL+ADD 为例,即 x*K1+K2):
+//
+//	[guard-B]   mov rax,[rbx+B*8]; mov rcx,qNanBox; cmp; jae deopt  (26)
+//	movsd xmm0, [rbx+B*8]                                          (8)
+//	mov rax, K1_value; movq xmm1, rax; <sseOp1> xmm0, xmm1         (10+5+4)
+//	mov rax, K2_value; movq xmm1, rax; <sseOp2> xmm0, xmm1         (10+5+4)
+//	movsd [rbx+A*8], xmm0                                          (8)
+//	ret                                                            (1)
+//	[deopt:] mov rax, deoptCode; ret                               (11)
+//	——— 总计 26 + 8 + 19 + 19 + 8 + 1 + 11 = 92 字节 ———
+//
+// 与 reg-reg WithGuard(92 字节)同长但语义不同——这里完成两次 SSE binop,
+// 等价 host.Arith × 2,省一次 boundary 跨界 + reg-stack 中转。
+//
+// **预设条件**:K1/K2 在编译期已校验为 number,运行期不再 guard;只 guard
+// R(B) 端是 number。chainB == retA(中间值经 xmm0 复用,不写回 stack)。
+func EmitArithSpeculativeChainKKWithGuard(buf []byte, sseOp1, sseOp2 byte, a, b uint8, k1value, k2value, deoptCode uint64) []byte {
+	guardLen := EncodedIsNumberGuardLen
+	// 快路径布局长度:8(movsd load)+ 19(K1 + sseOp1)+ 19(K2 + sseOp2)
+	//                + 8(movsd store)+ 1(ret) = 55 字节
+	fastLen := EncodedMovsdMemLen + // movsd xmm0, [rbx+B*8]
+		(EncodedMovRaxImm64Len + EncodedMovqXmmFromRaxLen + EncodedSseBinopLen) + // K1 + sseOp1
+		(EncodedMovRaxImm64Len + EncodedMovqXmmFromRaxLen + EncodedSseBinopLen) + // K2 + sseOp2
+		EncodedMovsdMemLen + // movsd [rbx+A*8], xmm0
+		EncodedRetLen
+
+	// rel1 = (deopt 起点) - (jcc1 之后 PC)
+	// deopt 起点 = startLen + guardLen + fastLen
+	// jcc1 之后 PC = startLen + guardLen
+	// → rel1 = fastLen
+	_ = guardLen
+	rel1 := int32(fastLen)
+
+	buf = EmitIsNumberGuard(buf, b, rel1)
+
+	// fast path
+	buf = EmitMovsdXmmFromMem(buf, 0, 3 /* rbx */, int32(b)*8) // movsd xmm0, [rbx+B*8]
+	// 第一段:xmm0 = xmm0 op1 K1
+	buf = EmitMovRaxImm64(buf, k1value)
+	buf = EmitMovqXmmFromRax(buf, 1)
+	buf = append(buf, 0xF2, 0x0F, sseOp1, 0xC1) // <sseOp1> xmm0, xmm1
+	// 第二段:xmm0 = xmm0 op2 K2
+	buf = EmitMovRaxImm64(buf, k2value)
+	buf = EmitMovqXmmFromRax(buf, 1)
+	buf = append(buf, 0xF2, 0x0F, sseOp2, 0xC1) // <sseOp2> xmm0, xmm1
+	// 写回
+	buf = EmitMovsdMemFromXmm(buf, 0, 3 /* rbx */, int32(a)*8) // movsd [rbx+A*8], xmm0
+	buf = EmitRet(buf)
+
+	// deopt block
+	buf = EmitMovRaxImm64(buf, deoptCode)
+	buf = EmitRet(buf)
+
+	return buf
+}
+
+// EncodedArithSpecChainKKWithGuardLen 是二段链式 reg-K-K 模板字节数:
+// 26(guard) + 55(fast) + 11(deopt) = 92 字节。
+const EncodedArithSpecChainKKWithGuardLen = EncodedIsNumberGuardLen +
+	EncodedMovsdMemLen +
+	(EncodedMovRaxImm64Len + EncodedMovqXmmFromRaxLen + EncodedSseBinopLen) +
+	(EncodedMovRaxImm64Len + EncodedMovqXmmFromRaxLen + EncodedSseBinopLen) +
+	EncodedMovsdMemLen +
+	EncodedRetLen +
+	EncodedMovRaxImm64Len + EncodedRetLen
+
 // EncodedArithSpecAddWithGuardLen 是完整投机 ADD 模板(含 IsNumber×2
 // guard + 快路径 + deopt block)字节数:26*2 + 29 + 11 = 92。
 const EncodedArithSpecAddWithGuardLen = 2*EncodedIsNumberGuardLen +
