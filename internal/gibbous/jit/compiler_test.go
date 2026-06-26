@@ -87,13 +87,6 @@ type mockP4Host struct {
 	lastTailCallC   int32
 	lastTailCallPC  int32
 	tailCallRetCode int32 // 0=Lua 尾完成 / 1=ERR / 2=host 落尾随 RETURN(单测预设)
-	// Self 调用记录(PJ5 SELF 形态):
-	selfCalls   int
-	lastSelfA   int32
-	lastSelfB   int32
-	lastSelfC   int32
-	lastSelfPC  int32
-	selfRetCode int32 // 0=OK / 1=ERR(单测预设)
 	// PJ2 完整接入预备:arena base 模拟值
 	arenaBase uintptr
 }
@@ -301,19 +294,6 @@ func (m *mockP4Host) TailCall(base, pc, a, b, c int32) int32 {
 	m.lastTailCallB = b
 	m.lastTailCallC = c
 	return m.tailCallRetCode
-}
-
-// Self 模拟 host.Self:记录入参 + 返回预设 selfRetCode。
-// byte-equal 解释器 SELF 段(R(A+1)=R(B) self + R(A)=R(B)[RK(C)] method)的
-// mock 替身,单测不实跑表 IC + __index 元方法链。
-func (m *mockP4Host) Self(base, pc, a, b, c int32) int32 {
-	_ = base
-	m.selfCalls++
-	m.lastSelfPC = pc
-	m.lastSelfA = a
-	m.lastSelfB = b
-	m.lastSelfC = c
-	return m.selfRetCode
 }
 
 // compileWithHost 构造 *Compiler 注入 mock host 后调 Compile。

@@ -772,6 +772,50 @@ func (st *State) DoCall(base, pc, a, b, c int32) int64 {
 	return int64((th.stackBaseW + uint32(ci.base)) * 8)
 }
 
+// CallBaseline 处理 P4 PJ5 简化形态的 CALL A B C(承
+// internal/gibbous/jit/host.go::P4HostState.CallBaseline)。
+//
+// **与 DoCall 的差异**:DoCall 经 tryIndirectCallee 走 P3 R3 indirect 快路径
+// (返回 (slot<<1)|1 哨兵让 caller wasm 经 call_indirect 跳被调 run);P4 PJ5
+// 简化形态没有 wasm-level 段内 indirect 通道,所以 CallBaseline 直接走
+// baseline doCall 分派(host/crescent/__call/全形态 gibbous 一律同步跑完),
+// 避免压被调帧但永不执行的悬挂。
+//
+// 返回:0=OK / 1=ERR(pendingErr 已置,raiseGibbous)。本路径完成后被调帧
+// 已结算 + 结果已落 R(A..A+C-2),caller 帧仍活,等待 Run 端 DoReturn 弹帧。
+//
+// **base 刷新**:本简化形态 mmap 段不读 valueStackBase(callBaseline 直走
+// host 同步路径),所以 baseline 内 growStack 段重定位对 P4 段内不可见——
+// 仅 host 端见到 stale base 风险,doCall 内已正确刷新 ci.base 续算。
+func (st *State) CallBaseline(base, pc, a, b, c int32) int32 {
+	th := st.runningThread
+	ci := st.gibCI(th)
+	ci.pc = pc
+	ins := bytecode.EncodeABC(bytecode.CALL, int(a), int(b), int(c))
+	next, e := st.doCall(th, ci, ins)
+	if e != nil {
+		st.raiseGibbous(e)
+		return 1
+	}
+	if next != nil {
+		// 进入新 Lua 帧(被调是未升层 closure 或 gibbous 无-slot)——同步驱动
+		// 到完成。nCcalls 计费同 DoCall(meta.go callLuaFromHost 同款守卫)。
+		if st.nCcalls >= maxCCallDepth {
+			st.raiseGibbous(errf("C stack overflow"))
+			return 1
+		}
+		st.nCcalls++
+		entryDepth := th.ciDepth - 1
+		e2 := st.executeFrom(th, entryDepth)
+		st.nCcalls--
+		if e2 != nil {
+			st.raiseGibbous(e2)
+			return 1
+		}
+	}
+	return 0
+}
+
 // TailCall 处理 gibbous 帧内的 TAILCALL A B C(尾调用复用帧,04-trampoline §2.5)。
 //
 // 复用 doTailCall:

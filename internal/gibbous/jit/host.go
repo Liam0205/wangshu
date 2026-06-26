@@ -200,23 +200,6 @@ type P4HostState interface {
 	// doTailCall 路径)。
 	TailCall(base int32, pc int32, a int32, b int32, c int32) int32
 
-	// Self 处理 SELF A B C 助手(gibbous_host.go::Self 同款签名,逐字节同构
-	// 解释器 SELF 段:R(A+1)=R(B) self + R(A)=R(B)[RK(C)] method,经
-	// icGetTable IC + 哈希 + __index 元方法链,可 raise:attempt to index nil 等)。
-	//
-	// 参数:
-	//   - base/pc:当前帧 base 字节偏移 + 当前 pc(物化 ci.savedPC,与解释器同款)
-	//   - a:SELF.A(目标寄存器:method 结果到 R(A),self 到 R(A+1))
-	//   - b:SELF.B(receiver 寄存器号 0-255)
-	//   - c:SELF.C(RK 编码 0-511,常量 256 偏移)
-	//
-	// 返回:0=OK / 1=ERR(raise pending,enterGibbous 取走冒泡)。
-	//
-	// 用例:P4 PJ5 SELF + CALL/TAILCALL inline 形态(`obj:method(args)` 类)。
-	// Run 端 prelude 路径调 host.Self 装 method/self,然后调 CallBaseline /
-	// TailCall 完成 byte-equal P1 doCall 分派。
-	Self(base int32, pc int32, a int32, b int32, c int32) int32
-
 	// ArenaBaseAddr 返回 arena `[]byte` 起点的 uintptr(承 05 §3.3)。	//
 	// 用例:PJ2 完整投机模板——mmap 段经 r15+offset 读 arenaBase 字段后
 	// 经字节级 movsd 直接读/写值栈槽位,跳过 host 接口 round-trip。
