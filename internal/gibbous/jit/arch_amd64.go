@@ -90,6 +90,12 @@ func archEmitArithSpecBinopRegKWithGuard(buf []byte, sseOp byte, a, b uint8, kva
 	return jitamd64.EmitArithSpeculativeBinopRegKWithGuard(buf, sseOp, a, b, kvalue, deoptCode)
 }
 
+// archEmitArithSpecChainKKWithGuard 拼接 PJ2 二段链式 reg-K-K 投机模板
+// (`R(A) = R(B) op1 K1 op2 K2`)。amd64 端代理 92 字节 chain 模板。
+func archEmitArithSpecChainKKWithGuard(buf []byte, sseOp1, sseOp2 byte, a, b uint8, k1value, k2value, deoptCode uint64) []byte {
+	return jitamd64.EmitArithSpeculativeChainKKWithGuard(buf, sseOp1, sseOp2, a, b, k1value, k2value, deoptCode)
+}
+
 // archSupportsSpec 返 true 当本 arch 支持 PJ2 投机模板真接入。
 // amd64 ✅;arm64/其它 ❌(留 PJ8+)。
 func archSupportsSpec() bool { return true }

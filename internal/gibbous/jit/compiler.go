@@ -802,8 +802,11 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 	// 真 crescent.State 上 ArenaBaseAddr 在 LoadProgram 后非 0,启用 spec。
 	useSpec := false
 	useSpecRegK := false
+	useSpecChain := false
 	var specSseOp byte
+	var specSseOp2 byte
 	var regKValue uint64
+	var chainK1Value, chainK2Value uint64
 	if archSupportsSpec() && info.chainOp == 0 &&
 		c.hostState != nil && c.hostState.ArenaBaseAddr() != 0 {
 		if op, ok := archSseOpForArith(info.preludeOp); ok {
@@ -822,6 +825,28 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 					useSpecRegK = true
 					regKValue = uint64(kVal)
 				}
+			}
+		}
+	}
+	// **chain reg-K-K**:`R(A) = R(B) op1 K1 op2 K2`(luac 编 `x*2+1` 等)。
+	// chainB 在 analyzeArithChainForm 已固定 = retA(中间值衔接),preludeArg
+	// 是 op1.B = 原始 reg。
+	if archSupportsSpec() && info.chainOp != 0 &&
+		c.hostState != nil && c.hostState.ArenaBaseAddr() != 0 {
+		op1, ok1 := archSseOpForArith(info.preludeOp)
+		op2, ok2 := archSseOpForArith(info.chainOp)
+		if ok1 && ok2 && info.preludeArg <= 254 &&
+			info.preludeC >= 256 && info.chainC >= 256 &&
+			int(info.preludeC-256) < len(proto.Consts) &&
+			int(info.chainC-256) < len(proto.Consts) {
+			k1Val := proto.Consts[info.preludeC-256]
+			k2Val := proto.Consts[info.chainC-256]
+			if value.IsNumber(k1Val) && value.IsNumber(k2Val) {
+				useSpecChain = true
+				specSseOp = op1
+				specSseOp2 = op2
+				chainK1Value = uint64(k1Val)
+				chainK2Value = uint64(k2Val)
 			}
 		}
 	}
@@ -882,6 +907,45 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 			preludeC:      info.preludeC,
 			cmpA:          info.cmpA,
 			chainOp:       info.chainOp,
+			chainB:        info.chainB,
+			chainC:        info.chainC,
+			host:          c.hostState,
+			useSpec:       true,
+			specDeoptCode: deoptCode,
+		}, nil
+	}
+	if useSpecChain {
+		// 92 字节 chain 模板:单 guard reg-B + 烧 K1/K2 imm64 + 两次 SSE binop
+		// 经 xmm0 链式衔接 + 写回 + deopt block。一次 mmap 段调用完成两次算术,
+		// 省一次 boundary + reg-stack 中转。
+		//
+		// **chainOp 保留**:Run 路径 deopt 时需要调 host.Arith 两次串行
+		// (op1 + op2)以 byte-equal 解释器。compiler 不能 clear chainOp,
+		// 否则 deopt fallback 只跑 op1 = 错果(chain 模板执行成功路径不读
+		// chainOp;deopt 路径读 chainOp 做双慢调)。writeRetA=false 因 mmap
+		// 段已 movsd [rbx+A*8] xmm0 写好 R(A)。
+		const deoptCode uint64 = 0xFFFCDEAD_DEADBE00
+		buf = archEmitArithSpecChainKKWithGuard(buf, specSseOp, specSseOp2,
+			info.retA, uint8(info.preludeArg),
+			chainK1Value, chainK2Value, deoptCode)
+		page, err := archMmapCode(buf)
+		if err != nil {
+			return nil, err
+		}
+		incSpecChainHits() // prove-the-path 白盒命中证据
+		return &p4Code{
+			proto:         proto,
+			codePage:      page,
+			jitCtx:        NewJITContext(),
+			retA:          info.retA,
+			retB:          info.retB,
+			retPC:         info.retPC,
+			writeRetA:     info.writeRetA,
+			preludeOp:     info.preludeOp,
+			preludeArg:    info.preludeArg,
+			preludeC:      info.preludeC,
+			cmpA:          info.cmpA,
+			chainOp:       info.chainOp, // 保留:Run 端 deopt 时调 host.Arith × 2
 			chainB:        info.chainB,
 			chainC:        info.chainC,
 			host:          c.hostState,

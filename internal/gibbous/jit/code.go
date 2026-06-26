@@ -167,11 +167,29 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 	if c.useSpec && c.host != nil && vsBaseAddr != 0 {
 		raxSpec := archCallJITSpec(c.codePage.Addr(), jitCtxAddr, vsBaseAddr)
 		if raxSpec == c.specDeoptCode {
+			// chain 形态 preludePC 算法:op1 真实 pc = retPC - 2(普通单 op
+			// retPC = 1 + chain retPC = 2 两种)
+			specPC := int32(c.retPC) - 1
+			if c.chainOp != 0 {
+				specPC = int32(c.retPC) - 2
+			}
 			// 投机失败 → 降级调 host.Arith 慢路径(byte-equal 解释器)
-			st := c.host.Arith(int32(base), int32(c.retPC)-1, int32(c.preludeOp),
+			st := c.host.Arith(int32(base), specPC, int32(c.preludeOp),
 				int32(c.preludeArg), int32(c.preludeC), int32(c.retA))
 			if st != 0 {
 				return st
+			}
+			// **chain spec deopt 路径**:chain 模板 deopt 时只跑了 op1
+			// (host.Arith 上一句),还要跑 op2 才与解释器 byte-equal。
+			// chainB 在 analyzeArithChainForm 已固定 = retA(中间值衔接),
+			// op2 实际 pc = specPC + 1(op1 之后一位)。
+			if c.chainOp != 0 {
+				st2 := c.host.Arith(int32(base), specPC+1,
+					int32(c.chainOp), int32(c.chainB), int32(c.chainC),
+					int32(c.retA))
+				if st2 != 0 {
+					return st2
+				}
 			}
 		}
 		// OK 路径(快路径或 deopt 慢路径都已写 R(retA))
@@ -196,11 +214,18 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 	// `ci.pc = pc + 1` 复刻解释器主循环「取指后 ci.pc 已 ++」纪律,与
 	// errWithName 的 `ci.pc-1==pc(失败 op)` / annotateError 的
 	// `LineInfo[ci.pc-1]` / IC 槽 `proto.IC[pc]` 三处下游对齐。
-	// PJ7 simple-form prelude 恒在 pc 0(retPC 恒为 1,见 analyzeShape),
-	// 故传 `preludePC = retPC-1 = 0`。
-	// **DoReturn 的 pc 实参另算**:DoReturn 处理的就是 RETURN 自身,helper
-	// 内不再 `+1`,直接传 retPC 是正确的——别一起改错。
+	//
+	// **二段链式 chain 形态**(retPC=2,op1 在 pc 0,op2 在 pc 1):
+	// 慢路径 op1 实参 pc = 0,op2 实参 pc = 1。chain 形态时 preludePC
+	// 算法 retPC - 1 = 1 失准(对位 op2 位置而非 op1)——chain 形态
+	// op1 真实 pc = retPC - 2 = 0。
+	//
+	// **普通单 op 形态**(retPC=1,prelude 在 pc 0):preludePC = retPC - 1 = 0。
 	preludePC := int32(c.retPC) - 1
+	if c.chainOp != 0 {
+		// chain 形态 retPC=2,op1 真实 pc = retPC - 2 = 0
+		preludePC = int32(c.retPC) - 2
+	}
 	// **retB 守卫拆分**:之前 `c.retB >= 2` 统一守卫只适合 getter 形态
 	// (R(A) 写返回值),setter 形态(SETTABLE/SETGLOBAL 0 返回值)retB=1
 	// 也需走 prelude。各 case 按需自查 retB(getter 检 >=2,setter 不检)。

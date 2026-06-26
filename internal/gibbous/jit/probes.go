@@ -18,17 +18,24 @@ var specRegKHits uint64
 // specRegRegHits 是 reg-reg 投机模板编译命中次数(对照 reg-K)。
 var specRegRegHits uint64
 
+// specChainHits 是二段链式 chain-KK 投机模板编译命中次数。
+var specChainHits uint64
+
 // SpecRegKHits 返回当前累计 reg-K 模板编译命中次数。仅测试用。
 func SpecRegKHits() uint64 { return atomic.LoadUint64(&specRegKHits) }
 
 // SpecRegRegHits 返回当前累计 reg-reg 模板编译命中次数。仅测试用。
 func SpecRegRegHits() uint64 { return atomic.LoadUint64(&specRegRegHits) }
 
+// SpecChainHits 返回当前累计 chain-KK 模板编译命中次数。仅测试用。
+func SpecChainHits() uint64 { return atomic.LoadUint64(&specChainHits) }
+
 // ResetSpecHits 把所有 spec 命中计数清零(测试开始前调,防之前其它测试
 // 残留累积影响断言)。仅测试用。
 func ResetSpecHits() {
 	atomic.StoreUint64(&specRegKHits, 0)
 	atomic.StoreUint64(&specRegRegHits, 0)
+	atomic.StoreUint64(&specChainHits, 0)
 }
 
 // incSpecRegKHits 包内 ++(Compile 触发 useSpecRegK 时调)。
@@ -36,3 +43,6 @@ func incSpecRegKHits() { atomic.AddUint64(&specRegKHits, 1) }
 
 // incSpecRegRegHits 包内 ++(Compile 触发 useSpec reg-reg 时调)。
 func incSpecRegRegHits() { atomic.AddUint64(&specRegRegHits, 1) }
+
+// incSpecChainHits 包内 ++(Compile 触发 useSpecChain 时调)。
+func incSpecChainHits() { atomic.AddUint64(&specChainHits, 1) }

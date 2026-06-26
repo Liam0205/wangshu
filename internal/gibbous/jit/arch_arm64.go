@@ -89,5 +89,17 @@ func archEmitArithSpecBinopRegKWithGuard(buf []byte, sseOp byte, a, b uint8, kva
 	return buf
 }
 
+// archEmitArithSpecChainKKWithGuard arm64 端 stub。
+func archEmitArithSpecChainKKWithGuard(buf []byte, sseOp1, sseOp2 byte, a, b uint8, k1value, k2value, deoptCode uint64) []byte {
+	_ = sseOp1
+	_ = sseOp2
+	_ = a
+	_ = b
+	_ = k1value
+	_ = k2value
+	_ = deoptCode
+	return buf
+}
+
 // archSupportsSpec arm64 当前不支持(留 PJ8+)。
 func archSupportsSpec() bool { return false }
