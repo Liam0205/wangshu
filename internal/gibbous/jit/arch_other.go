@@ -219,3 +219,12 @@ func archSupportsSpec() bool { return false }
 
 // archSupportsForLoop 其它 arch 不支持(无 emitter)。
 func archSupportsForLoop() bool { return false }
+
+// archEmitHelperCall 其它 arch 不支持(无 emitter)。
+func archEmitHelperCall(buf []byte, helperAddr uint64) []byte {
+	_ = helperAddr
+	return buf
+}
+
+// archEncodedHelperCallLen 其它 arch 占位 0(本 build 下不调到)。
+const archEncodedHelperCallLen = 0

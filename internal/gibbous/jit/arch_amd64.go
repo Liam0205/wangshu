@@ -205,3 +205,20 @@ func archSupportsSpec() bool { return true }
 // archSupportsSpec 启用,本函数为新 arch 提供解耦闸门);arm64 ✅
 // (本会话 PJ8 arm64 PJ3 全四形态字节级模板真接入完整)。
 func archSupportsForLoop() bool { return true }
+
+// archEmitHelperCall 发射 helper call 通用宏(amd64 端:`mov rax, helperAddr
+// imm64 + call rax`,12 字节)。对位 arm64 EmitHelperCallArm64(20 字节)。
+//
+// 用于 PJ5 CALL/TAILCALL 真接入 + PJ4 deopt 路径调 host helper(host.DoCall
+// / host.GetTable / host.Arith 等)。helperAddr 是 helper function 物理
+// 地址(经 jit Compile 时编译期求出,reflect.ValueOf(fn).Pointer())。
+//
+// **接入路径**:本函数当前无 caller,留作 PJ5 真接入工程基础——下一步
+// archEmitHelperCall 嵌入 inline CALL 模板时调用本宏。
+func archEmitHelperCall(buf []byte, helperAddr uint64) []byte {
+	return jitamd64.EmitHelperCall(buf, helperAddr)
+}
+
+// archEncodedHelperCallLen 是 helper call 通用宏字节数(amd64 = 12,
+// arm64 = 20)。caller 用于 inline CALL 模板长度预算。
+const archEncodedHelperCallLen = jitamd64.EncodedHelperCallLen
