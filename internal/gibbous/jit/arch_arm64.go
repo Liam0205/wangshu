@@ -112,18 +112,16 @@ func archEmitForLoopRegLimit(buf []byte, kInit, kStep uint64, limitReg uint8, de
 	return jitarm64.EmitForLoopRegLimitArm64(buf, kInit, kStep, limitReg, deoptCode, preemptFlagOff)
 }
 
-// archEmitForLoopWithBody arm64 端 stub——留 PJ8+。
+// archEmitForLoopWithBody arm64 端 PJ3 FORLOOP body 含 reg-K op 形态
+// 模板真接入(144 字节无 safepoint / 152 字节含 safepoint)。对位 amd64
+// EmitForLoopWithRegKBody 121/135 字节,arm64 多 23/17 字节(MOV imm64
+// 序列 + FMOV 中转 GP↔FP)。
+//
+// sseOp 自动翻译:0x58/0x5C/0x59/0x5E → arm64 FADD/FSUB/FMUL/FDIV。
 func archEmitForLoopWithBody(buf []byte, kS, kInit, kLimit, kStep, kBody uint64,
 	aS uint8, sseOp byte, preemptFlagOff int32) []byte {
-	_ = kS
-	_ = kInit
-	_ = kLimit
-	_ = kStep
-	_ = kBody
-	_ = aS
-	_ = sseOp
-	_ = preemptFlagOff
-	return buf
+	return jitarm64.EmitForLoopWithRegKBodyArm64(buf, kS, kInit, kLimit, kStep, kBody,
+		aS, sseOp, preemptFlagOff)
 }
 
 // archEmitForLoopWithBody2 arm64 端 stub。

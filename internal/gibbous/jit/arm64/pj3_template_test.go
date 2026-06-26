@@ -316,3 +316,88 @@ func TestPJ8_EmitForLoopRegLimitArm64_DeoptBlock(t *testing.T) {
 		t.Errorf("[124] RET = 0x%08x, want 0xd65f03c0", insn)
 	}
 }
+
+// TestPJ8_EmitForLoopWithRegKBodyArm64_Length 验 WithRegKBody 模板字节
+// 长度(含/无 safepoint 双形态)。
+func TestPJ8_EmitForLoopWithRegKBodyArm64_Length(t *testing.T) {
+	cases := []struct {
+		name    string
+		sseOp   byte
+		pfOff   int32
+		wantLen int
+	}{
+		{"ADD no safepoint", 0x58, -1, 144},
+		{"ADD with safepoint", 0x58, 24, 152},
+		{"SUB no safepoint", 0x5C, -1, 144},
+		{"MUL with safepoint", 0x59, 24, 152},
+		{"DIV with safepoint", 0x5E, 24, 152},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf []byte
+			buf = EmitForLoopWithRegKBodyArm64(buf,
+				0x0,                // kS=0
+				0x3FF0000000000000, // kInit=1.0
+				0x4059000000000000, // kLimit=100.0
+				0x3FF0000000000000, // kStep=1.0
+				0x3FF0000000000000, // kBody=1.0
+				3,                  // aS
+				tc.sseOp,
+				tc.pfOff)
+			if len(buf) != tc.wantLen {
+				t.Errorf("总长度 = %d, want %d", len(buf), tc.wantLen)
+			}
+		})
+	}
+	if EncodedForLoopWithRegKBodyArm64NoSafepointLen != 144 {
+		t.Errorf("EncodedForLoopWithRegKBodyArm64NoSafepointLen = %d, want 144",
+			EncodedForLoopWithRegKBodyArm64NoSafepointLen)
+	}
+	if EncodedForLoopWithRegKBodyArm64WithSafepointLen != 152 {
+		t.Errorf("EncodedForLoopWithRegKBodyArm64WithSafepointLen = %d, want 152",
+			EncodedForLoopWithRegKBodyArm64WithSafepointLen)
+	}
+}
+
+// TestPJ8_EmitForLoopWithRegKBodyArm64_UnknownOp 验未识别 sseOp 不操作 buf。
+func TestPJ8_EmitForLoopWithRegKBodyArm64_UnknownOp(t *testing.T) {
+	var buf []byte
+	buf = EmitForLoopWithRegKBodyArm64(buf, 0, 0, 0, 0, 0, 0, 0xFF, -1)
+	if len(buf) != 0 {
+		t.Errorf("unknown sseOp 应不操作 buf,实际 len=%d", len(buf))
+	}
+}
+
+// TestPJ8_EmitForLoopWithRegKBodyArm64_BodyFopBytes 验 body 段
+// FADD/FSUB/FMUL/FDIV 编码逐字节匹配 sseOp 选择(body 在 offset 124-127)。
+func TestPJ8_EmitForLoopWithRegKBodyArm64_BodyFopBytes(t *testing.T) {
+	cases := []struct {
+		name    string
+		sseOp   byte
+		fopBase uint32 // arm64 base(不含 Rm/Rn/Rd 字段)
+	}{
+		{"FADD d3, d3, d4", 0x58, 0x1E602800},
+		{"FSUB d3, d3, d4", 0x5C, 0x1E603800},
+		{"FMUL d3, d3, d4", 0x59, 0x1E600800},
+		{"FDIV d3, d3, d4", 0x5E, 0x1E601800},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf []byte
+			buf = EmitForLoopWithRegKBodyArm64(buf,
+				0x0, 0x3FF0000000000000, 0x4059000000000000, 0x3FF0000000000000,
+				0x3FF0000000000000, 3, tc.sseOp, -1)
+
+			if len(buf) < 128 {
+				t.Fatalf("buf too short: %d", len(buf))
+			}
+
+			// [124-127] FOP d3, d3, d4
+			insn := binary.LittleEndian.Uint32(buf[124:128])
+			want := tc.fopBase | uint32(4)<<16 | uint32(3)<<5 | uint32(3)
+			if insn != want {
+				t.Errorf("[124] %s = 0x%08x, want 0x%08x", tc.name, insn, want)
+			}
+		})
+	}
+}
