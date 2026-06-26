@@ -1,20 +1,22 @@
 //go:build wangshu_p4 && arm64
 
 // pj3_template.go —— PJ8 arm64 PJ3 FORLOOP 空 body 字节级模板(对位
-// amd64 pj3_template.go::EmitForLoopEmptyConst 69 字节 SSE2 版的 arm64
+// amd64 pj3_template.go::EmitForLoopEmptyConst 69/83 字节 SSE2 版的 arm64
 // 端镜像)。
 //
-// **不真接入**(承 §9.12 剩余工程量明示):arm64 trampoline asm + mmap+RX
-// 端到端 留物理 self-hosted runner;本批仅做字节级模板拼接 + 字节级单测
-// 验布局,为下一阶段真接入提供基础。
+// **真接入状态**:本批 archEmitForLoopEmptyConst stub→ 真代理已落地,
+// Compile 主路径经 callJITFull 可调本模板;真 mmap+RX 端到端测试留物理
+// self-hosted runner(arm64 trampoline asm 已就绪 trampoline_arm64.s)。
 //
 // **arm64 vs amd64 PJ3 模板对位**:
-//   - amd64 EmitForLoopEmptyConst 69 字节(无 safepoint):
+//   - amd64 EmitForLoopEmptyConst 69/83 字节(无/含 safepoint):
 //     mov+movq×3(15*3=45)+ subsd+addsd+ucomisd+ja+jmp+ret(4+4+4+6+5+1=24)
-//   - arm64 84 字节(无 safepoint):
+//     + safepoint(cmp 8 + jne 6 = 14)
+//   - arm64 84/92 字节(无/含 safepoint):
 //     mov+fmov×3(20*3=60)+ fsub+fadd+fcmpe+b.cond+b+ret(4*6=24)
+//     + safepoint(ldrb 4 + cbnz 4 = 8)
 //
-// 字节布局图(arm64):
+// 字节布局图(arm64,无 safepoint 形态):
 //
 //	[ 0-15]  mov x0, K_init imm64       ; 16
 //	[16-19]  fmov d0, x0                 ; 4
@@ -32,8 +34,9 @@
 //	[80-83]  ret                          ; 4
 //	——— 总长 84 字节(无 safepoint)———
 //
-// **不含 safepoint check**(arm64 端 safepoint 留 PJ8+ 与 arm64 trampoline
-// 协议同批接入)。
+// 含 safepoint 形态(preemptFlagOff>=0,92 字节):loop_start 后 fadd 前
+// 插 ldrb w0,[x27+pfOff] 4 + cbnz w0,after_loop 4 = 8 字节,对位 amd64
+// safepoint check 14 字节但节省 6 字节(RISC fixed-length 紧凑)。
 
 package arm64
 
