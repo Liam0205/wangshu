@@ -389,6 +389,9 @@ func TestPJ4_EmitSelfArrayHit_SelfStore(t *testing.T) {
 
 // TestPJ4_EmitSetTableNodeHit_Length 验 SETTABLE NodeHit 模板字节长度自洽。
 // 预期 140 字节(GetTable NodeHit 159 - getter 段 34 + setter 段 15)。
+//
+// **精确长度断言**(承外部审查 🟢 反馈):锁死布局契约,防未来误改原语导致
+// 长度漂移而 length 测试不能抓出。
 func TestPJ4_EmitSetTableNodeHit_Length(t *testing.T) {
 	const stableKey uint64 = 0xFFFB_1234_5678_9ABC
 	var buf []byte
@@ -401,10 +404,12 @@ func TestPJ4_EmitSetTableNodeHit_Length(t *testing.T) {
 		16,         // arenaBaseOff
 		0xCAFEBABE, // deoptCode
 	)
-	if len(buf) == 0 {
-		t.Fatal("EmitSetTableNodeHit returned empty buf")
+	const wantLen = 140
+	if len(buf) != wantLen {
+		t.Errorf("EmitSetTableNodeHit emitted %d bytes, want %d(精确长度契约)",
+			len(buf), wantLen)
 	}
-	t.Logf("EmitSetTableNodeHit emitted %d bytes", len(buf))
+	t.Logf("EmitSetTableNodeHit emitted %d bytes(=%d ✓)", len(buf), wantLen)
 	if buf[len(buf)-1] != 0xC3 {
 		t.Errorf("SetTable NodeHit template should end with ret(0xC3), got 0x%02x",
 			buf[len(buf)-1])
@@ -520,6 +525,9 @@ func TestPJ4_EmitSetTableNodeHit_KeyCompareAndReverseStore(t *testing.T) {
 
 // TestPJ4_EmitSelfNodeHit_Length 验 SELF NodeHit 模板字节长度自洽。
 // 预期 166 字节(SELF ArrayHit 139 + key 比对段 27)。
+//
+// **精确长度断言**(承外部审查 🟢 反馈):锁死布局契约,防未来误改原语导致
+// 长度漂移而 length 测试不能抓出。
 func TestPJ4_EmitSelfNodeHit_Length(t *testing.T) {
 	const stableKey uint64 = 0xFFFB_1234_5678_9ABC
 	var buf []byte
@@ -532,10 +540,12 @@ func TestPJ4_EmitSelfNodeHit_Length(t *testing.T) {
 		16,         // arenaBaseOff
 		0xCAFEBABE, // deoptCode
 	)
-	if len(buf) == 0 {
-		t.Fatal("EmitSelfNodeHit returned empty buf")
+	const wantLen = 166
+	if len(buf) != wantLen {
+		t.Errorf("EmitSelfNodeHit emitted %d bytes, want %d(精确长度契约)",
+			len(buf), wantLen)
 	}
-	t.Logf("EmitSelfNodeHit emitted %d bytes", len(buf))
+	t.Logf("EmitSelfNodeHit emitted %d bytes(=%d ✓)", len(buf), wantLen)
 	if buf[len(buf)-1] != 0xC3 {
 		t.Errorf("SELF NodeHit template should end with ret(0xC3), got 0x%02x",
 			buf[len(buf)-1])

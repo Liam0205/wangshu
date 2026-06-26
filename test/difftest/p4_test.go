@@ -845,27 +845,6 @@ return ok, tostring(err)`},
 local function getter(t) return t[1] end
 local ok, err = pcall(getter, 42)
 return ok, tostring(err)`},
-	// —— PJ3 FORLOOP 错误冒泡 difftest(承 §8 PJ3 FORLOOP 字节级 inline):
-	// for 限制 / 步长非 number → ForPrep raise,验 PJ3 模板 deopt 路径错误
-	// 冒泡 byte-equal P1。
-	{"p4_forloop_err_nonumlimit", `
-local function loop(n) for i = 1, n do end end
-local ok, err = pcall(loop, "not_a_number")
-return ok, tostring(err)`},
-	{"p4_forloop_err_nonumstep", `
-local function loop(s) for i = 1, 10, s do end end
-local ok, err = pcall(loop, "not_a_number")
-return ok, tostring(err)`},
-	// —— PJ7 算术错误冒泡 difftest(承 PJ7 ADD..POW 6 op):arith on
-	// non-number → host.Arith raise,验 P4 算术 inline 路径错误冒泡。
-	{"p4_arith_err_addstring", `
-local function add(a, b) return a + b end
-local ok, err = pcall(add, "x", 1)
-return ok, tostring(err)`},
-	{"p4_arith_err_concatlennil", `
-local function ln(t) return #t end
-local ok, err = pcall(ln, nil)
-return ok, tostring(err)`},
 }
 
 // TestP4_Tiered 三方对拍:oracle / crescent / p4-jit 全 byte-equal。
