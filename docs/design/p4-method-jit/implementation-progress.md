@@ -741,6 +741,44 @@ R(A)   := R(B)[RK(C)] ; method 函数
 
 **PJ4 IC 四路径覆盖**:GetTable ArrayHit / NodeHit + SetTable ArrayHit + Self ArrayHit。**留 NodeHit set / NodeHit SELF**(常见 `obj:method()` 字符串名)给下一阶段 — 复用现有四路径同款结构,只需 stableKey 编译期固化 + 159 字节 key 比对模板扩展。
 
+### 9.12 PJ5 工程基础 + 剩余 PJ 工程量明示(2026-06-26 落地)
+
+承 stop hook 期望「P4 完全实现」P4 设计文档 §0 自估 +1-2 人年,**single-session 物理不可达**。本节明示已落地的 PJ5 工程基础 + 剩余 PJ5/PJ8/PJ9/PJ3 的完整工程量估算,作为多会话累积路径的清晰指引。
+
+**PJ5 工程基础已落地**(2026-06-26):
+
+- `EmitCallRel32`(5 字节,E8 + imm32 LE):rel32 直接 CALL,fallback 用
+- `EmitCallReg`(2 字节,FF D0+regN):间接 CALL r/m64
+- `EmitPushReg` / `EmitPopReg`(各 1 字节,50/58+regN):栈操作 + 防御
+- **`EmitHelperCall`**(12 字节,新增):`mov rax, helperAddr + call rax` 通用宏,封装 jit→host helper 间接调用固定字节序列。Intel SDM byte-equal 字节级单测全覆盖(call rel32/call reg/push/pop/helper call macro)
+
+**PJ5 剩余真接入工程量**(估 +1.5-3 人月,留多会话):
+
+- **CALL inline**:Lua CALL A B C → mmap 段内 emit `EmitHelperCall(&host.DoCall)` + 参数装载 SysV ABI 寄存器 + base 刷新协议(承 05 §4.3)
+- **TAILCALL inline**:CALL 帧复用 + bit50 协议(承 05 §4.3)
+- **OSR exit 寄存器物化**:deopt 时把 xmm0-xmm7 / 通用寄存器状态写回 arena slot,让解释器从一致状态继续
+
+**PJ8 剩余真接入工程量**(估 +0.5-1 人月 + 物理 runner,留多会话):
+
+- **arm64 浮点原语**:fmov / fadd / fsub / fmul / fdiv / fcmpe + 条件 b.eq/b.gt 等(对位 amd64 SSE binop / ucomisd / jcc)
+- **arm64 FORLOOP 模板**:对位 amd64 EmitForLoopEmptyConst 等 5 类形态
+- **arm64 IC 模板六路径**:对位 amd64 PJ4 全六路径
+- **物理 self-hosted runner**:QEMU 不真模拟 i-cache + PROT_EXEC,需物理 arm64 机器跑端到端
+
+**PJ9 剩余工程量**(估 +0.5-1 人月,依赖 PJ8 物理 runner):
+
+- V14 luajc 档调优(性能档)
+- 双架构差分套(Go 1.25/1.26/tip 矩阵 CI 绿)
+- 真 arm64 self-hosted runner 接入(承 PJ9 完成定义)
+
+**PJ3 嵌套 for / break(JMP)剩余工程量**(估 +2-4 commits / 1-2 人周):
+
+- P4 当前是 single-BB 模型,JMP 跨基本块不真支持
+- 需扩展为多 BB 跳转表 + label patching 协议
+- analyzeForLoopForm 扩识别嵌套形态,FORLOOP 模板嵌套化
+
+**累计剩余工程量**:**+2.5-5.5 人月**(PJ5 + PJ8 + PJ9 + PJ3 扩),与 P4 设计文档 §0 自估 +1-2 人年范围一致。**多会话累积是正确路径**;每会话尽 single-session 上限交付实质 PJ 进展(本会话 34 commits 交付 PJ4 完整六路径 + 整套层级 prove-the-path 修复 + PJ5 工程基础)即合理。
+
 ---
 
 ## 10. 后续维护协议
