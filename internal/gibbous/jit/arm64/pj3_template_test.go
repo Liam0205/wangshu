@@ -497,3 +497,126 @@ func TestPJ8_EmitForLoopWithRegKBody2Arm64_BodyFopsBytes(t *testing.T) {
 		})
 	}
 }
+
+// TestPJ8_EmitForLoopRegLimitArm64_ConstantsBurnedIn 验 K_init / K_step
+// 经 MOVZ+MOVK×3 烧进各段 imm16 字段。RegLimit 形态:
+//   - K_init 在 [28-43](guard 28 后)
+//   - K_step 在 [56-71](K_init 段 16 + FMOV 4 + LDR limit 4 + FMOV 4 = 28 偏移)
+func TestPJ8_EmitForLoopRegLimitArm64_ConstantsBurnedIn(t *testing.T) {
+	const kInit uint64 = 0xDEAD_BEEF_CAFE_FACE
+	const kStep uint64 = 0xFEED_F00D_BABE_C001
+
+	var buf []byte
+	buf = EmitForLoopRegLimitArm64(buf, kInit, kStep, 5, 0xCAFEBABE, -1)
+
+	verifyMov := func(label string, offset int, want uint64) {
+		expectedImm16 := [4]uint16{
+			uint16(want & 0xFFFF),
+			uint16((want >> 16) & 0xFFFF),
+			uint16((want >> 32) & 0xFFFF),
+			uint16((want >> 48) & 0xFFFF),
+		}
+		for i, exp := range expectedImm16 {
+			off := offset + i*4
+			insn := binary.LittleEndian.Uint32(buf[off : off+4])
+			got := uint16((insn >> 5) & 0xFFFF)
+			if got != exp {
+				t.Errorf("%s movz/movk[%d]@%d imm16 = 0x%04x, want 0x%04x",
+					label, i, off, got, exp)
+			}
+		}
+	}
+	// K_init 在 [28-43]
+	verifyMov("K_init", 28, kInit)
+	// K_step 在 [56-71]
+	verifyMov("K_step", 56, kStep)
+}
+
+// TestPJ8_EmitForLoopWithRegKBodyArm64_ConstantsBurnedIn 验 WithRegKBody
+// 四个常量 K_s / K_init / K_limit / K_step / K_body 各 16 字节 imm64 段。
+//   - K_s 在 [0-15]
+//   - K_init 在 [20-35](K_s 16 + STR 4)
+//   - K_limit 在 [40-55]
+//   - K_step 在 [60-75]
+//   - K_body 在 [104-119](init 20 + setup 60 + FSUB/FADD/FCMPE/B.GT 16
+//   - LDR s 4 + FMOV 4)
+func TestPJ8_EmitForLoopWithRegKBodyArm64_ConstantsBurnedIn(t *testing.T) {
+	const kS uint64 = 0x4000_0000_0000_0000
+	const kInit uint64 = 0x3FF0_0000_0000_0000
+	const kLimit uint64 = 0x4059_0000_0000_0000
+	const kStep uint64 = 0x3FF0_0000_0000_0000
+	const kBody uint64 = 0xDEAD_BEEF_CAFE_BABE
+
+	var buf []byte
+	buf = EmitForLoopWithRegKBodyArm64(buf, kS, kInit, kLimit, kStep, kBody,
+		3, ArithOpAddArm64, -1)
+
+	verifyMov := func(label string, offset int, want uint64) {
+		expectedImm16 := [4]uint16{
+			uint16(want & 0xFFFF),
+			uint16((want >> 16) & 0xFFFF),
+			uint16((want >> 32) & 0xFFFF),
+			uint16((want >> 48) & 0xFFFF),
+		}
+		for i, exp := range expectedImm16 {
+			off := offset + i*4
+			insn := binary.LittleEndian.Uint32(buf[off : off+4])
+			got := uint16((insn >> 5) & 0xFFFF)
+			if got != exp {
+				t.Errorf("%s movz/movk[%d]@%d imm16 = 0x%04x, want 0x%04x",
+					label, i, off, got, exp)
+			}
+		}
+	}
+	verifyMov("K_s", 0, kS)
+	verifyMov("K_init", 20, kInit)
+	verifyMov("K_limit", 40, kLimit)
+	verifyMov("K_step", 60, kStep)
+	verifyMov("K_body", 104, kBody)
+}
+
+// TestPJ8_EmitForLoopWithRegKBody2Arm64_ConstantsBurnedIn 验 WithRegKBody2
+// 六个常量 K_s / K_init / K_limit / K_step / K_body1 / K_body2 各 imm64 段。
+//   - K_s 在 [0-15]
+//   - K_init 在 [20-35]
+//   - K_limit 在 [40-55]
+//   - K_step 在 [60-75]
+//   - K_body1 在 [104-119](init 20 + setup 60 + FSUB 4 + FADD/FCMPE/B.GT 12
+//   - LDR s 4 + FMOV d3 4)
+//   - K_body2 在 [128-143](K_body1 16 + FMOV d4 4 + FOP1 4)
+func TestPJ8_EmitForLoopWithRegKBody2Arm64_ConstantsBurnedIn(t *testing.T) {
+	const kS uint64 = 0x4000_0000_0000_0000
+	const kInit uint64 = 0x3FF0_0000_0000_0000
+	const kLimit uint64 = 0x4059_0000_0000_0000
+	const kStep uint64 = 0x3FF0_0000_0000_0000
+	const kBody1 uint64 = 0xDEAD_BEEF_CAFE_BABE
+	const kBody2 uint64 = 0xFEED_F00D_BABE_C001
+
+	var buf []byte
+	buf = EmitForLoopWithRegKBody2Arm64(buf, kS, kInit, kLimit, kStep,
+		kBody1, kBody2, 3, ArithOpMulArm64, ArithOpAddArm64, -1)
+
+	verifyMov := func(label string, offset int, want uint64) {
+		expectedImm16 := [4]uint16{
+			uint16(want & 0xFFFF),
+			uint16((want >> 16) & 0xFFFF),
+			uint16((want >> 32) & 0xFFFF),
+			uint16((want >> 48) & 0xFFFF),
+		}
+		for i, exp := range expectedImm16 {
+			off := offset + i*4
+			insn := binary.LittleEndian.Uint32(buf[off : off+4])
+			got := uint16((insn >> 5) & 0xFFFF)
+			if got != exp {
+				t.Errorf("%s movz/movk[%d]@%d imm16 = 0x%04x, want 0x%04x",
+					label, i, off, got, exp)
+			}
+		}
+	}
+	verifyMov("K_s", 0, kS)
+	verifyMov("K_init", 20, kInit)
+	verifyMov("K_limit", 40, kLimit)
+	verifyMov("K_step", 60, kStep)
+	verifyMov("K_body1", 104, kBody1)
+	verifyMov("K_body2", 128, kBody2)
+}
