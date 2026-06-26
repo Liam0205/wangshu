@@ -492,3 +492,115 @@ func EmitSetTableNodeHitArm64(buf []byte, aReg, cReg uint8,
 
 // EncodedSetTableNodeHitArm64Len arm64 PJ4 SETTABLE NodeHit 模板字节数(172)。
 const EncodedSetTableNodeHitArm64Len = 172
+
+// EmitSelfArrayHitArm64 拼接 arm64 PJ4 IC SELF ArrayHit 字节级 inline 模板
+// (对位 amd64 EmitSelfArrayHit 139 字节版的 arm64 端镜像)。
+//
+// **SELF opcode 语义**(承 bytecode/opcode.go::SELF):
+//
+//	R(A+1) := R(B)
+//	R(A)   := R(B)[RK(C)]
+//
+// 即 `obj:method()` 形态:先把 obj 拷到 R(A+1)(self/this 实参),然后
+// R(A) = R(B).method 取 method 函数。后跟 CALL R(A) R(A+1) ... 调用。
+//
+// IC ArrayHit 命中条件:method key 是数字常量 + array 段命中(罕见但
+// 形态有效);常见是 NodeHit(字符串键 method name)。
+//
+// **字节布局**(172 字节,ArrayHit 168 + R(A+1) 拷段 4):
+//
+//	[ 0-3 ] LDR x0, [x26 + B*8]          ; 4(load R(B) obj NaN-box)
+//	[ 4-7 ] STR x0, [x26 + (A+1)*8]      ; 4(**SELF 额外**:store R(A+1) = obj)
+//	[ 8-39] IsTable guard(LSR/MOV/CMP/B.NE)  ; 32
+//	[40-75] re-load + payloadMask + AND + SIB ; 36
+//	[76-107] word5 + LSR + stableShape + CMP + B.NE ; 32(gen check)
+//	[108-111] LDR x0, [x2, #16]          ; 4(table.arrayRef)
+//	[112-115] MOV x1, x0                  ; 4
+//	[116-119] ADD x2, x14, x1             ; 4(SIB base for array)
+//	[120-123] LDR x0, [x2, #stableIndex*8]; 4(array[stableIndex])
+//	[124-139] MOV x3, qNanBoxNil          ; 16
+//	[140-143] CMP x0, x3                  ; 4
+//	[144-147] B.EQ deopt                  ; 4
+//	[148-151] STR x0, [x26 + A*8]         ; 4(store R(A) method)
+//	[152-155] RET                         ; 4
+//	[156-171] MOV x0, deoptCode + RET     ; 20(deopt block)
+//	——— 总计 172 字节 ———
+//
+// **SELF 设计要点**(承 amd64 SELF ArrayHit 同款):
+//   - R(A+1) 在 IsTable guard **前** 就写,因为 deopt 走 host.GetTable 也需
+//     要 R(A+1) 已设(P1 SELF case 同款步骤:setReg(A+1, B) → icGetTable →
+//     setReg(A));若 deopt 时 R(A+1) 未设会破坏 byte-equal P1 约束
+//   - LDR x0 入口顺序保留:先 load → 立即 STR R(A+1) → 然后 LSR(LSR
+//     破坏 rax 但 R(A+1) 已 store 完毕)
+//
+// **deopt 路径**:Run 端 x0==deoptCode 时调 host.GetTable byte-equal P1
+// (R(A+1)=R(B) 已 store;P1 icGetTable 兼容 ArrayHit + NodeHit)。
+//
+// **预设条件**(承 06 §4.2):x26/x27/x14/x0-x3 同 GETTABLE ArrayHit。
+func EmitSelfArrayHitArm64(buf []byte, aReg, bReg uint8,
+	stableShape, stableIndex uint32,
+	arenaBaseOff uint16, deoptCode uint64) []byte {
+	// 1. LDR x0, [x26+B*8](load R(B) obj)
+	buf = EmitLdrXtFromXnDisp(buf, 0, 26, uint16(bReg)*8)
+
+	// 2. **SELF 额外**:STR x0, [x26+(A+1)*8](self/this 实参)
+	buf = EmitStrXtToXnDisp(buf, 0, 26, uint16(aReg+1)*8)
+
+	// 3-7. 严密 IsTable guard
+	buf = EmitLsrXdImm6(buf, 0, 0, 48)
+	buf = EmitMovXdImm64(buf, 1, qNanBoxTableTagShiftedArm64)
+	buf = EmitCmpXnXm(buf, 0, 1)
+	bNeTagOff := len(buf)
+	buf = EmitBCond(buf, CondNE, 0)
+
+	// 8-13. re-load + GCRef extract + arena base + ADD x2 SIB
+	buf = EmitLdrXtFromXnDisp(buf, 0, 26, uint16(bReg)*8)
+	buf = EmitMovXdImm64(buf, 1, payloadMaskArm64)
+	buf = EmitAndXdXnXm(buf, 0, 0, 1)
+	buf = EmitMovXdFromXn(buf, 1, 0)
+	buf = EmitLdrXtFromXnDisp(buf, 14, 27, arenaBaseOff)
+	buf = EmitAddXdXnXm(buf, 2, 14, 1)
+
+	// 14-18. gen check
+	buf = EmitLdrXtFromXnDisp(buf, 0, 2, 40)
+	buf = EmitLsrXdImm6(buf, 0, 0, 32)
+	buf = EmitMovXdImm64(buf, 3, uint64(stableShape))
+	buf = EmitCmpXnXm(buf, 0, 3)
+	bNeShapeOff := len(buf)
+	buf = EmitBCond(buf, CondNE, 0)
+
+	// 19-21. arrayRef + new SIB base for array
+	buf = EmitLdrXtFromXnDisp(buf, 0, 2, 16)
+	buf = EmitMovXdFromXn(buf, 1, 0)
+	buf = EmitAddXdXnXm(buf, 2, 14, 1)
+
+	// 22. LDR array[stableIndex]
+	buf = EmitLdrXtFromXnDisp(buf, 0, 2, uint16(stableIndex*8))
+
+	// 23-25. nil check + B.EQ deopt
+	buf = EmitMovXdImm64(buf, 3, qNanBoxNilImmArm64)
+	buf = EmitCmpXnXm(buf, 0, 3)
+	bEqNilOff := len(buf)
+	buf = EmitBCond(buf, CondEQ, 0)
+
+	// 26. STR x0, [x26+A*8](store R(A) = method 函数)
+	buf = EmitStrXtToXnDisp(buf, 0, 26, uint16(aReg)*8)
+
+	// 27. RET
+	buf = EmitRet(buf)
+
+	// 28. deopt block
+	deoptStart := len(buf)
+	buf = EmitMovXdImm64(buf, 0, deoptCode)
+	buf = EmitRet(buf)
+
+	// 29. patch B.cond imm19
+	patchBCondImm19(buf, bNeTagOff, int32(deoptStart-bNeTagOff)/4)
+	patchBCondImm19(buf, bNeShapeOff, int32(deoptStart-bNeShapeOff)/4)
+	patchBCondImm19(buf, bEqNilOff, int32(deoptStart-bEqNilOff)/4)
+
+	return buf
+}
+
+// EncodedSelfArrayHitArm64Len arm64 PJ4 SELF ArrayHit 模板字节数(172)。
+const EncodedSelfArrayHitArm64Len = 172

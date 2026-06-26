@@ -377,3 +377,86 @@ func TestPJ8_EmitSetTableNodeHitArm64_DeoptBlock(t *testing.T) {
 		t.Errorf("[168] RET = 0x%08x, want 0xd65f03c0", insn)
 	}
 }
+
+// TestPJ8_EmitSelfArrayHitArm64_Length 验 PJ4 SELF ArrayHit arm64 模板
+// 字节长度(172 字节)。
+func TestPJ8_EmitSelfArrayHitArm64_Length(t *testing.T) {
+	var buf []byte
+	buf = EmitSelfArrayHitArm64(buf,
+		1,          // aReg
+		3,          // bReg
+		7,          // stableShape
+		3,          // stableIndex
+		16,         // arenaBaseOff
+		0xCAFEBABE, // deoptCode
+	)
+	const wantLen = 172
+	if len(buf) != wantLen {
+		t.Errorf("总长度 = %d, want %d", len(buf), wantLen)
+	}
+	if len(buf) != EncodedSelfArrayHitArm64Len {
+		t.Errorf("len = %d, want %d", len(buf), EncodedSelfArrayHitArm64Len)
+	}
+}
+
+// TestPJ8_EmitSelfArrayHitArm64_RAPlus1Store 验 SELF 特征:R(A+1) 先于
+// IsTable guard 写,确保 deopt 路径走 host.GetTable 时 R(A+1) 已设
+// (byte-equal P1 SELF case 同款步骤)。
+//   - [0-3]   LDR x0, [x26 + B*8]            (load R(B) obj)
+//   - [4-7]   STR x0, [x26 + (A+1)*8]        (**SELF 第一步**:R(A+1)=obj)
+//   - [8-11]  LSR x0, x0, #48                (后续 IsTable guard)
+func TestPJ8_EmitSelfArrayHitArm64_RAPlus1Store(t *testing.T) {
+	const aReg, bReg uint8 = 1, 3
+	var buf []byte
+	buf = EmitSelfArrayHitArm64(buf, aReg, bReg, 7, 3, 16, 0xCAFEBABE)
+
+	if len(buf) < 16 {
+		t.Fatalf("buf too short: %d", len(buf))
+	}
+
+	// [0-3] LDR x0, [x26 + B*8](B=3, byteOff=24, imm12=3)
+	insn := binary.LittleEndian.Uint32(buf[0:4])
+	wantLdrB := uint32(0xF9400000) | uint32(3)<<10 | uint32(26)<<5
+	if insn != wantLdrB {
+		t.Errorf("[0] LDR x0, [x26 + B*8] = 0x%08x, want 0x%08x", insn, wantLdrB)
+	}
+
+	// [4-7] STR x0, [x26 + (A+1)*8] = STR base 0xF9000000
+	// ((A+1)*8=2*8=16, imm12=2)
+	insn = binary.LittleEndian.Uint32(buf[4:8])
+	wantStr := uint32(0xF9000000) | uint32(2)<<10 | uint32(26)<<5
+	if insn != wantStr {
+		t.Errorf("[4] STR x0, [x26 + (A+1)*8] = 0x%08x, want 0x%08x", insn, wantStr)
+	}
+
+	// [8-11] LSR x0, x0, #48
+	insn = binary.LittleEndian.Uint32(buf[8:12])
+	wantLsr := uint32(0xD340FC00) | uint32(48)<<16
+	if insn != wantLsr {
+		t.Errorf("[8] LSR x0, x0, #48 = 0x%08x, want 0x%08x", insn, wantLsr)
+	}
+}
+
+// TestPJ8_EmitSelfArrayHitArm64_DeoptBlock 验 deopt block(156-171)。
+func TestPJ8_EmitSelfArrayHitArm64_DeoptBlock(t *testing.T) {
+	const deoptCode uint64 = 0xDEAD_BEEF_CAFE_BABE
+	var buf []byte
+	buf = EmitSelfArrayHitArm64(buf, 1, 3, 7, 3, 16, deoptCode)
+
+	if len(buf) < 172 {
+		t.Fatalf("buf too short: %d", len(buf))
+	}
+
+	// [156-159] MOVZ x0, deoptCode[15:0] = 0xBABE
+	insn := binary.LittleEndian.Uint32(buf[156:160])
+	imm0 := (insn >> 5) & 0xFFFF
+	if imm0 != 0xBABE {
+		t.Errorf("[156] MOVZ x0 imm[15:0] = 0x%04x, want 0xBABE", imm0)
+	}
+
+	// [168-171] RET
+	insn = binary.LittleEndian.Uint32(buf[168:172])
+	if insn != 0xd65f03c0 {
+		t.Errorf("[168] RET = 0x%08x, want 0xd65f03c0", insn)
+	}
+}
