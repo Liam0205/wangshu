@@ -296,3 +296,101 @@ func EmitGetTableNodeHitArm64(buf []byte, aReg, bReg uint8,
 
 // EncodedGetTableNodeHitArm64Len arm64 PJ4 IC NodeHit 模板字节数(196)。
 const EncodedGetTableNodeHitArm64Len = 196
+
+// EmitSetTableArrayHitArm64 拼接 arm64 PJ4 IC SETTABLE ArrayHit 字节级
+// inline 反向写模板(对位 amd64 EmitSetTableArrayHit 113 字节版的 arm64
+// 端镜像)。
+//
+// **形态**:`function(t, v) t[K] = v end`,K 是 array 段命中的数字常量
+// (luac 编 SETTABLE A B C 中 A=R(t) / B=K idx>=256 / C=R(v))。IC[0].Kind
+// = ArrayHit + Shape/Index 命中时,字节级 inline 反向写 array[stableIndex]。
+//
+// **字节布局**(144 字节,GETTABLE ArrayHit 168 减去 nil check 段 24 后
+// 加反向 store 段 0;实际省 LDR/MOV/CMP/B.EQ nil 段 24 字节,但补 load
+// R(C) value + 反向 store 8 字节,净 -16 → 比 GETTABLE ArrayHit 短 24
+// 字节最终 168 - 24 = 144):
+//
+//	[ 0-31] IsTable guard                          ; 32(同 GETTABLE ArrayHit)
+//	[32-67] re-load + payloadMask + AND + SIB base ; 36
+//	[68-99] word5 + LSR + stableShape + CMP + B.NE ; 32(gen check)
+//	[100-103] LDR x0, [x2, #16]                    ; 4(table.arrayRef)
+//	[104-107] MOV x1, x0                           ; 4(rcx = arrayRef offset)
+//	[108-111] ADD x2, x14, x1                      ; 4(SIB 替代:base for array)
+//	[112-115] LDR x3, [x26 + C*8]                  ; 4(load R(C) value → x3)
+//	[116-119] STR x3, [x2, #stableIndex*8]         ; 4(反向 store array[idx])
+//	[120-123] RET                                  ; 4(setter 无 R(A) 写)
+//	[124-139] MOV x0, deoptCode imm64              ; 16(deopt block)
+//	[140-143] RET                                  ; 4
+//	——— 总计 144 字节(amd64 113 + arm64 MOV imm64/SIB 差异约 31 字节)———
+//
+// **设计简化**(承 amd64 SETTABLE ArrayHit 同款工程边界):
+//   - **不验现有 array[stableIndex] != nil**(防新键路径)— P1 解释器 IC
+//     命中协议本身要求该位非 nil
+//   - **假设无 __newindex 元表**(meta freeze 假设)
+//
+// 严密版(再加 ~13 字节验现有 nil + 13 字节验 __newindex)留 PJ4+。
+//
+// **预设条件**(承 06 §4.2 arm64 trampoline 留 PJ8+):
+//   - x26 = valueStackBase / x27 = jitContext / x14 = arena base
+//   - x0/x1/x2/x3 = scratch
+//
+// **deopt 路径**:Run 端 x0==deoptCode 时调 host.SetTable byte-equal P1
+// (P1 icSetTable 兼容 ArrayHit + NodeHit)。setter 形态返 RETURN A 1,
+// Run 端 retB=1 不读 R(A)。
+func EmitSetTableArrayHitArm64(buf []byte, aReg, cReg uint8,
+	stableShape, stableIndex uint32,
+	arenaBaseOff uint16, deoptCode uint64) []byte {
+	// 1-5. 严密 IsTable guard(32 字节)
+	buf = EmitLdrXtFromXnDisp(buf, 0, 26, uint16(aReg)*8)
+	buf = EmitLsrXdImm6(buf, 0, 0, 48)
+	buf = EmitMovXdImm64(buf, 1, qNanBoxTableTagShiftedArm64)
+	buf = EmitCmpXnXm(buf, 0, 1)
+	bNeTagOff := len(buf)
+	buf = EmitBCond(buf, CondNE, 0)
+
+	// 6-11. re-load + GCRef extract + arena base + ADD x2 SIB(36 字节)
+	buf = EmitLdrXtFromXnDisp(buf, 0, 26, uint16(aReg)*8)
+	buf = EmitMovXdImm64(buf, 1, payloadMaskArm64)
+	buf = EmitAndXdXnXm(buf, 0, 0, 1)
+	buf = EmitMovXdFromXn(buf, 1, 0)
+	buf = EmitLdrXtFromXnDisp(buf, 14, 27, arenaBaseOff)
+	buf = EmitAddXdXnXm(buf, 2, 14, 1)
+
+	// 12-13. word5 load + LSR 32
+	buf = EmitLdrXtFromXnDisp(buf, 0, 2, 40)
+	buf = EmitLsrXdImm6(buf, 0, 0, 32)
+
+	// 14-16. gen check + B.NE deopt
+	buf = EmitMovXdImm64(buf, 3, uint64(stableShape))
+	buf = EmitCmpXnXm(buf, 0, 3)
+	bNeShapeOff := len(buf)
+	buf = EmitBCond(buf, CondNE, 0)
+
+	// 17-19. load arrayRef(word2, offset 16)+ 新 SIB base for array
+	buf = EmitLdrXtFromXnDisp(buf, 0, 2, 16)
+	buf = EmitMovXdFromXn(buf, 1, 0)
+	buf = EmitAddXdXnXm(buf, 2, 14, 1)
+
+	// 20. **setter 分流**:load R(C) value → x3(用 x3 避开 x0 复用)
+	buf = EmitLdrXtFromXnDisp(buf, 3, 26, uint16(cReg)*8)
+
+	// 21. 反向 store:STR x3, [x2, #stableIndex*8]
+	buf = EmitStrXtToXnDisp(buf, 3, 2, uint16(stableIndex*8))
+
+	// 22. RET(setter 无 R(A) 写)
+	buf = EmitRet(buf)
+
+	// 23. deopt block
+	deoptStart := len(buf)
+	buf = EmitMovXdImm64(buf, 0, deoptCode)
+	buf = EmitRet(buf)
+
+	// 24. patch B.cond imm19
+	patchBCondImm19(buf, bNeTagOff, int32(deoptStart-bNeTagOff)/4)
+	patchBCondImm19(buf, bNeShapeOff, int32(deoptStart-bNeShapeOff)/4)
+
+	return buf
+}
+
+// EncodedSetTableArrayHitArm64Len arm64 PJ4 SETTABLE ArrayHit 模板字节数(144)。
+const EncodedSetTableArrayHitArm64Len = 144
