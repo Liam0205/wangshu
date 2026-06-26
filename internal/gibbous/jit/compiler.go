@@ -85,6 +85,123 @@ type shapeInfo struct {
 	chainOp uint8  // 第二段 op(0=无 chain;ADD/SUB/MUL/DIV/MOD/POW)
 	chainB  uint16 // 第二段 B 字段(RK 0-511)
 	chainC  uint16 // 第二段 C 字段(RK 0-511)
+
+	// PJ3 FORLOOP 字节级 inline 形态识别(空 body / 全常量 init/limit/step):
+	//   - isForLoop = true:本 shape 是 FORLOOP 形态,Compile 走 emit FORLOOP
+	//     模板(浮点 idx+=step / ucomisd limit / backward jcc)路径
+	//   - forA:FORPREP/FORLOOP 的 A 字段(R(A)..R(A+3) 是 idx/limit/step/i)
+	//   - forInitK / forLimitK / forStepK:三个常量 NaN-box raw bits(编译期烧 imm64)
+	isForLoop bool
+	forA      uint8
+	forInitK  uint64
+	forLimitK uint64
+	forStepK  uint64
+}
+
+// analyzeForLoopForm 识别 PJ3 字节级 FORLOOP inline 最简形态:
+// `function() for i=K1, K2 do end end`(全常量 init/limit/step + 空 body)。
+//
+// luac 编码(以 `for i=1,100 do end` 为例,假设无外部 local):
+//
+//	[0] LOADK    A   -kInit  ; R(A)=init = K[kInit]
+//	[1] LOADK    A+1 -kLimit ; R(A+1)=limit = K[kLimit]
+//	[2] LOADK    A+2 -kStep  ; R(A+2)=step = K[kStep]
+//	[3] FORPREP  A   sBx=0   ; R(A)-=step;jmp 到 FORLOOP
+//	[4] FORLOOP  A   sBx=-1  ; R(A)+=step;cmp limit;jmp 回 [4](空 body)
+//	[5] RETURN   0   1       ; 空 return
+//	[6] RETURN   0   1       ; (可选 dead RETURN,luac 主 chunk 尾部)
+//
+// **形态约束**(为字节级模板简化,只接最简):
+//   - proto.Code 长度 6 或 7(尾部可选 dead RETURN)
+//   - [0] LOADK A_init -kInit
+//   - [1] LOADK A_init+1 -kLimit
+//   - [2] LOADK A_init+2 -kStep
+//   - [3] FORPREP A_init sBx=0(空 body 时 luac 编 0)
+//   - [4] FORLOOP A_init sBx=-1(回边跳自己)
+//   - [5] RETURN A=0 B=1(空 return)
+//   - K[kInit / kLimit / kStep] 必须都是 number(否则降级 host)
+//
+// **不支持**(留 PJ3 真接入扩展):
+//   - body 非空(需 inline body opcodes + 寄存器分配)
+//   - limit 是参数 reg(`for i=1,n do`)— 需 IsNumber guard
+//   - 嵌套 for / 含 break(JMP)
+//   - 非默认 step(step=1 隐含;非默认编码 step 仍走本路径,因 step 也是 K)
+func analyzeForLoopForm(proto *bytecode.Proto) (shapeInfo, bool) {
+	codeLen := len(proto.Code)
+	if codeLen != 6 && codeLen != 7 {
+		return shapeInfo{}, false
+	}
+	// [3] FORPREP A 0 / [4] FORLOOP A -1 / [5] RETURN A=0 B=1
+	if bytecode.Op(proto.Code[0]) != bytecode.LOADK ||
+		bytecode.Op(proto.Code[1]) != bytecode.LOADK &&
+			bytecode.Op(proto.Code[1]) != bytecode.MOVE ||
+		bytecode.Op(proto.Code[2]) != bytecode.LOADK ||
+		bytecode.Op(proto.Code[3]) != bytecode.FORPREP ||
+		bytecode.Op(proto.Code[4]) != bytecode.FORLOOP ||
+		bytecode.Op(proto.Code[5]) != bytecode.RETURN {
+		return shapeInfo{}, false
+	}
+	if codeLen == 7 && bytecode.Op(proto.Code[6]) != bytecode.RETURN {
+		return shapeInfo{}, false
+	}
+	// limit 必须是 LOADK 形态(MOVE 留 PJ3+ 加 IsNumber guard 时扩)
+	if bytecode.Op(proto.Code[1]) != bytecode.LOADK {
+		return shapeInfo{}, false
+	}
+
+	// A 字段一致
+	aInit := bytecode.A(proto.Code[0])
+	aLimit := bytecode.A(proto.Code[1])
+	aStep := bytecode.A(proto.Code[2])
+	aPrep := bytecode.A(proto.Code[3])
+	aLoop := bytecode.A(proto.Code[4])
+	if aLimit != aInit+1 || aStep != aInit+2 || aPrep != aInit || aLoop != aInit {
+		return shapeInfo{}, false
+	}
+
+	// FORPREP sBx == 0, FORLOOP sBx == -1
+	if bytecode.SBx(proto.Code[3]) != 0 || bytecode.SBx(proto.Code[4]) != -1 {
+		return shapeInfo{}, false
+	}
+
+	// RETURN A=0 B=1
+	if bytecode.A(proto.Code[5]) != 0 || bytecode.B(proto.Code[5]) != 1 {
+		return shapeInfo{}, false
+	}
+
+	// 三个 LOADK 的 Bx 取 K[Bx]
+	kInitIdx := bytecode.Bx(proto.Code[0])
+	kLimitIdx := bytecode.Bx(proto.Code[1])
+	kStepIdx := bytecode.Bx(proto.Code[2])
+	if kInitIdx >= len(proto.Consts) || kLimitIdx >= len(proto.Consts) || kStepIdx >= len(proto.Consts) {
+		return shapeInfo{}, false
+	}
+
+	kInit := proto.Consts[kInitIdx]
+	kLimit := proto.Consts[kLimitIdx]
+	kStep := proto.Consts[kStepIdx]
+	if !value.IsNumber(kInit) || !value.IsNumber(kLimit) || !value.IsNumber(kStep) {
+		return shapeInfo{}, false
+	}
+
+	// **step > 0 才支持本简化模板**(jcc 选 ja:idx > limit 退出)。
+	// step ≤ 0 或负 step 留 PJ3+ 扩(jcc 选 jb:idx < limit 退出)。
+	stepF := value.AsNumber(kStep)
+	if stepF <= 0 {
+		return shapeInfo{}, false
+	}
+
+	return shapeInfo{
+		ok:        true,
+		retA:      0, // RETURN A=0
+		retB:      1, // 空 return
+		retPC:     5,
+		isForLoop: true,
+		forA:      uint8(aInit),
+		forInitK:  uint64(kInit),
+		forLimitK: uint64(kLimit),
+		forStepK:  uint64(kStep),
+	}, true
 }
 
 // analyzeCompareForm 识别 EQ/LT/LE + JMP + LOADBOOL + LOADBOOL + RETURN
@@ -315,6 +432,10 @@ func analyzeShape(proto *bytecode.Proto) shapeInfo {
 		// 长度 3/4:可能是二段算术链式形态(arith1 + arith2 + RETURN [+dead])
 		if chain, ok := analyzeArithChainForm(proto); ok {
 			return chain
+		}
+		// 长度 6/7:可能是 PJ3 FORLOOP 空 body 全常量形态
+		if floop, ok := analyzeForLoopForm(proto); ok {
+			return floop
 		}
 		return shapeInfo{}
 	}
@@ -775,6 +896,40 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 	info := analyzeShape(proto)
 	if !info.ok {
 		return nil, ErrCompileUnsupportedShape
+	}
+
+	// **PJ3 FORLOOP 字节级 inline 真接入**(承 05 §6.3 + 06 §3.3):
+	// 全常量 init/limit/step + 空 body FORLOOP 形态(`for i=1,K do end`)走
+	// 字节级 FORLOOP 模板——69 字节 mmap+RX 段内自循环,完整段内 idx+=step
+	// + ucomisd limit + backward jmp,无外部副作用,空 body 不需写 R(A)..
+	//
+	// **mock host 兜底**:同 PJ2 路径,host.ArenaBaseAddr=0 时降级——但
+	// 空 body FORLOOP 完全无寻址(模板不读 rbx),mock 路径也可启用。为统一
+	// 接入规约,仍按 PJ2 同款 mock host 守卫处理。
+	if info.isForLoop && archSupportsSpec() &&
+		c.hostState != nil && c.hostState.ArenaBaseAddr() != 0 {
+		var buf []byte
+		buf = archEmitForLoopEmptyConst(buf, info.forInitK, info.forLimitK, info.forStepK)
+		page, err := archMmapCode(buf)
+		if err != nil {
+			return nil, err
+		}
+		incSpecForLoopHits() // prove-the-path 白盒命中证据
+		return &p4Code{
+			proto:    proto,
+			codePage: page,
+			jitCtx:   NewJITContext(),
+			retA:     info.retA,
+			retB:     info.retB, // 1 = 空 return
+			retPC:    info.retPC,
+			// 空 body FORLOOP 不写 R(A) 任何槽;writeRetA=false + preludeOp=0
+			// → Run 路径不走 prelude switch + 不写 RAX,只调 DoReturn 弹帧
+			writeRetA: false,
+			host:      c.hostState,
+			// useSpec=false 走 archCallJITFull(段内自循环,完整 trampoline
+			// 装 r15 不必需但 OK——模板不读 r15)
+			useSpec: false,
+		}, nil
 	}
 
 	// **PJ2 投机算术模板真接入**(承 03-speculation-ic.md §2 IsNumber×2):

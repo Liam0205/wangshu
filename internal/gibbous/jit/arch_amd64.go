@@ -96,6 +96,13 @@ func archEmitArithSpecChainKKWithGuard(buf []byte, sseOp1, sseOp2 byte, a, b uin
 	return jitamd64.EmitArithSpeculativeChainKKWithGuard(buf, sseOp1, sseOp2, a, b, k1value, k2value, deoptCode)
 }
 
+// archEmitForLoopEmptyConst 拼接 PJ3 全常量 init/limit/step 空 body FORLOOP
+// 模板(69 字节,浮点 idx 累加 + ucomisd limit + backward jcc)。amd64 端
+// 代理 jitamd64.EmitForLoopEmptyConst。
+func archEmitForLoopEmptyConst(buf []byte, kInit, kLimit, kStep uint64) []byte {
+	return jitamd64.EmitForLoopEmptyConst(buf, kInit, kLimit, kStep)
+}
+
 // archSupportsSpec 返 true 当本 arch 支持 PJ2 投机模板真接入。
 // amd64 ✅;arm64/其它 ❌(留 PJ8+)。
 func archSupportsSpec() bool { return true }
