@@ -11,13 +11,10 @@
 // **arm64 vs amd64 PJ3 模板对位**:
 //   - amd64 EmitForLoopEmptyConst 69 字节(无 safepoint):
 //     mov+movq×3(15*3=45)+ subsd+addsd+ucomisd+ja+jmp+ret(4+4+4+6+5+1=24)
-//   - arm64 80 字节(无 safepoint):
-//     mov+fmov×3(20*3=60)+ fsub+fadd+fcmpe+b.cond+b+ret(4*6=24,但 b.cond
-//     + b 都是 4 字节加 ret 4 字节 = 16,加 fsub/fadd/fcmpe 3*4=12,共 28)
-//     **实际 fsub 4 + fadd 4 + fcmpe 4 + b.cond 4 + b 4 + ret 4 = 24,
-//     加 mov+fmov 60 = 84 字节**?
+//   - arm64 84 字节(无 safepoint):
+//     mov+fmov×3(20*3=60)+ fsub+fadd+fcmpe+b.cond+b+ret(4*6=24)
 //
-// 让我精确累加:
+// 字节布局图(arm64):
 //
 //	[ 0-15]  mov x0, K_init imm64       ; 16
 //	[16-19]  fmov d0, x0                 ; 4
