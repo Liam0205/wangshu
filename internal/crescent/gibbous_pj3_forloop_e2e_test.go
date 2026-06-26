@@ -145,3 +145,33 @@ return f("not_a_number") -- guard fail → deopt → host.ForPrep raise`
 		t.Logf("reg-limit deopt path raise: %v", err)
 	}
 }
+
+// TestPJ3_ForLoopUpvalLimit_E2E_FastPath:closure capture limit
+// (`local n=1000; local function f() for i=1,n do end end`)— upvalue-
+// limit 形态:Run 端先调 host.GetUpval 写 limit reg,然后走 reg-limit
+// 模板字节级 inline.
+func TestPJ3_ForLoopUpvalLimit_E2E_FastPath(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local n = 1000
+local function f()
+  for i = 1, n do
+  end
+end
+for i = 1, 50 do f() end
+return n`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := value.AsNumber(value.Value(rets[0])); got != 1000 {
+		t.Errorf("rets = %v, want 1000", got)
+	}
+	if jit.SpecForLoopHits() == 0 {
+		t.Errorf("SpecForLoopHits = 0,upvalue-limit FORLOOP 未真编译")
+	}
+	t.Logf("upvalue-limit fast path:SpecForLoopHits=%d", jit.SpecForLoopHits())
+}
