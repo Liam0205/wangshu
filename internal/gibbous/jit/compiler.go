@@ -433,13 +433,10 @@ func analyzeShape(proto *bytecode.Proto) shapeInfo {
 		//   - LEN:Run 调 host.Len(string 字节长 / table border / table
 		//     __len / 异类报错,可 raise)。
 		//
-		// **NOT 暂不支持**(`function(x) return not x end` 形态):NOT 需读
-		// R(B) 取真假性 + setReg(A, BoolValue(!Truthy(b)))——当前 P4HostState
-		// 接口无 GetReg 方法读寄存器,且新加 host helper(State.Not)又比纯
-		// `not` 运算(Go 内 value.Truthy)重 N 倍。最干净裁决是「拒 NOT 形态,
-		// 留 P3 / 解释器处理」——这是 P4 PJ7 简化形态根本约束:host 调用从
-		// mmap 段移到 Go 端 Run,但需要的状态(R(B))Go 端拿不到。后续 PJ
-		// 真接入 jitContext + GetReg 时一并扩。
+		// **NOT 单独 case 处理**(`function(x) return not x end` 形态):见
+		// 下方 `case bytecode.NOT` 分支——经 host.GetReg(B) 读 R(B) +
+		// SetReg(A, BoolValue(!Truthy(R(B)))),pure Truthy 无 metamethod、
+		// 无 raise,与 UNM/LEN 慢路径解耦故不并入本 case。
 		ret := proto.Code[1]
 		if bytecode.Op(ret) != bytecode.RETURN {
 			return shapeInfo{}
