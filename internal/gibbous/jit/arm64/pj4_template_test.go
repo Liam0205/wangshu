@@ -640,15 +640,16 @@ func TestPJ8_EmitGetTableNodeHitArm64_StableKeyBurnedIn(t *testing.T) {
 }
 
 // TestPJ8_EmitSetTableNodeHitArm64_StableKeyBurnedIn 验 SETTABLE NodeHit
-// 模板 stableKey 烧入位置。SETTABLE NodeHit 字节布局:guard 28 + re-load
-// 36 + word5+LSR 8 + MOV stableShape 16 + CMP 4 + B.NE 4 + LDR nodeRef 4
-// + MOV reg 4 + ADD SIB 4 + LDR NodeKey 4 = 112 → MOV stableKey [112-127]。
+// 模板 stableKey 烧入位置。SETTABLE NodeHit 字节布局:guard 32(LDR+LSR+
+// MOV+CMP+B.NE)+ re-load 36 + word5+LSR 8 + MOV stableShape 16 + CMP 4
+// + B.NE 4 = 100 → nodeRef 段 12(LDR+MOV+ADD)= 112 → LDR NodeKey 4 →
+// MOV stableKey [116-131]。
 func TestPJ8_EmitSetTableNodeHitArm64_StableKeyBurnedIn(t *testing.T) {
 	const stableKey uint64 = 0xFFF8_0000_CAFE_BABE
 	var buf []byte
 	buf = EmitSetTableNodeHitArm64(buf, 1, 2, 7, 2, stableKey, 16, 0xDEADBEEF)
 
-	if len(buf) < 128 {
+	if len(buf) < 132 {
 		t.Fatalf("buf too short: %d", len(buf))
 	}
 	expectedImm16 := [4]uint16{
@@ -658,7 +659,7 @@ func TestPJ8_EmitSetTableNodeHitArm64_StableKeyBurnedIn(t *testing.T) {
 		uint16((stableKey >> 48) & 0xFFFF),
 	}
 	for i, exp := range expectedImm16 {
-		off := 112 + i*4
+		off := 116 + i*4
 		insn := binary.LittleEndian.Uint32(buf[off : off+4])
 		got := uint16((insn >> 5) & 0xFFFF)
 		if got != exp {
