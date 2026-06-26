@@ -54,6 +54,12 @@ local t = 0; for _ = 1, 50 do t = kernel() or 0 end; return t`
 const pj3EmptyLoop10000Src = `local function kernel() for i = 1, 10000 do end end
 local t = 0; for _ = 1, 50 do t = kernel() or 0 end; return t`
 
+// PJ3 body inline 对位 — `local s=0; for i=1,K do s=s+1 end; return s`
+const pj3BodyAdd1000Src = `local function kernel() local s=0; for i=1,1000 do s=s+1 end; return s end
+local t = 0; for _ = 1, 50 do t = kernel() end; return t`
+const pj3BodyAdd10000Src = `local function kernel() local s=0; for i=1,10000 do s=s+1 end; return s end
+local t = 0; for _ = 1, 50 do t = kernel() end; return t`
+
 func benchWangshu(b *testing.B, src string) {
 	prog, err := wangshu.Compile([]byte(src), "bench")
 	if err != nil {
@@ -98,3 +104,7 @@ func BenchmarkLoop_Gopher(b *testing.B)  { benchGopher(b, loopSrc) }
 func BenchmarkPJ3EmptyLoop100_Gopher(b *testing.B)   { benchGopher(b, pj3EmptyLoop100Src) }
 func BenchmarkPJ3EmptyLoop1000_Gopher(b *testing.B)  { benchGopher(b, pj3EmptyLoop1000Src) }
 func BenchmarkPJ3EmptyLoop10000_Gopher(b *testing.B) { benchGopher(b, pj3EmptyLoop10000Src) }
+
+// PJ3 body inline(`local s=0; for i=1,K do s=s+1 end; return s`)gopher 对位:
+func BenchmarkPJ3BodyAdd1000_Gopher(b *testing.B)  { benchGopher(b, pj3BodyAdd1000Src) }
+func BenchmarkPJ3BodyAdd10000_Gopher(b *testing.B) { benchGopher(b, pj3BodyAdd10000Src) }
