@@ -456,3 +456,57 @@ return t.x`
 			"NodeHit set IC inline 模板未真编译,prove-the-path 失败")
 	}
 }
+
+// TestPJ4_TableSelfNodeHit_E2E_LuacBoundary 声明 SELF NodeHit e2e 形态边界。
+//
+// **luac 形态边界**:`obj:method` 必须有括号 `()` 才是 Lua 合法语法,
+// 但 `obj:method()` 编 SELF + CALL + RETURN(3+ op)而非 SELF + RETURN
+// 2-op 形态——后者不匹配 analyzeSelfNodeHit 形态守卫。
+//
+// 即:**luac 不真编出「SELF + RETURN A 2」+ NodeHit 形态**(同 SELF
+// ArrayHit 边界)。SELF NodeHit 主路径接入是工程基础,**真升层 e2e 需要
+// PJ5 CALL 字节级 inline 接入后**(SELF + CALL + RETURN 形态识别)才能
+// 触达。
+//
+// 本测试退化为「跑 `return obj.method` 形态(GETTABLE NodeHit 路径)」
+// 验 SELF NodeHit 主路径接入不破坏现有 NodeHit get 路径。SELF NodeHit
+// 模板字节级 emit + 主路径 Compile 调用链路由合成驱动单测兜底(承
+// jit 包 compiler_pj4_self_test.go 同款形态,留 SELF NodeHit 合成驱动
+// 单测同 commit 补)。
+func TestPJ4_TableSelfNodeHit_E2E_LuacBoundary(t *testing.T) {
+	jit.ResetSpecHits()
+
+	// 形态退化:用 GETTABLE NodeHit 路径(obj.method 是 GETTABLE,不是 SELF)
+	// 验本批接入不破坏 NodeHit get 路径
+	src := `
+local function f(obj) return obj.method end
+local obj = {method = 42, other = 99}
+for i = 1, 100 do f(obj) end
+return f(obj)`
+
+	st, mainCl := loadFnP4(t, src)
+
+	// Phase 1
+	_, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 1 run: %v", err)
+	}
+
+	// Phase 2 force-all
+	st.bridge.SetForceAllPromote(true)
+	hitsBefore := jit.SpecTableHits()
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 2 run: %v", err)
+	}
+	if got := value.AsNumber(value.Value(rets[0])); got != 42 {
+		t.Errorf("f(obj) = %v, want 42", got)
+	}
+	hitsAfter := jit.SpecTableHits()
+	t.Logf("SELF NodeHit edge:实测走 GETTABLE NodeHit 路径,SpecTableHits=%d→%d",
+		hitsBefore, hitsAfter)
+	// 实际走 GETTABLE NodeHit 路径(NodeHit get SpecTableHits 增长)
+	if hitsAfter <= hitsBefore {
+		t.Errorf("GETTABLE NodeHit 路径 SpecTableHits 未增长 → 退化")
+	}
+}

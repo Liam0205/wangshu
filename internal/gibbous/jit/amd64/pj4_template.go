@@ -692,3 +692,134 @@ func EmitSetTableNodeHit(buf []byte, aReg, cReg uint8,
 
 	return buf
 }
+
+// EmitSelfNodeHit 拼接 PJ4 SELF IC NodeHit 字节级 inline 模板(承
+// 03 §6 + SELF ArrayHit + GetTable NodeHit 同款结构组合)。
+//
+// **形态**:`function(obj) obj:method(args) end` 中 method 是字符串 ident
+// (luac 编 SELF A B C 中 A=R(m) / B=R(obj) / C=K(string method name))。
+// 这是 real-world `obj:method()` 调用的典型形态(几乎所有 OOP 风格 Lua
+// 代码都走此路径)。
+//
+// IC[0].Kind=NodeHit + Shape/Index/Key 命中时,字节级 inline:
+//
+//	R(A+1) := R(B)  ; self/this 实参
+//	R(A)   := R(B)[K_string]  ; method 函数(经 hash 段 NodeHit 直达)
+//
+// **字节布局**(166 字节,SELF ArrayHit 139 + key 比对 27):
+//
+//	[0-6]    load R(B) → rax(7 字节)
+//	[7-13]   store R(A+1) = rax(7 字节,SELF 第一步)
+//	[14-28]  严密 IsTable guard(15 字节)
+//	[29-35]  re-load R(B) → rax(7 字节)
+//	[36-51]  GCRef extract + rcx = offset(16 字节)
+//	[52-58]  load arena base → r14(7 字节)
+//	[59-81]  gen check(23 字节)
+//	[82-89]  load nodeRef = [r14+rcx+24] → rax(8 字节,word3)
+//	[90-92]  mov rcx, rax(rcx = nodeRef offset)(3 字节)
+//	[93-100] load NodeKey = [r14+rcx+stableIndex*24] → rax(8 字节)
+//	[101-110] mov rdx, stableKey(10 字节)
+//	[111-113] cmp rax, rdx(3 字节)
+//	[114-119] jne deopt(6 字节)
+//	[120-127] load NodeVal = [r14+rcx+stableIndex*24+8] → rax(8 字节)
+//	[128-137] mov rcx, qNanBoxNil(10 字节)
+//	[138-140] cmp rax, rcx(3 字节)
+//	[141-146] je deopt(6 字节,NodeVal == Nil)
+//	[147-153] store R(A) = rax(7 字节)
+//	[154]    ret(1 字节)
+//	[155-165] deopt block(11 字节)
+//	——— 总计 166 字节 ———
+//
+// vs SELF ArrayHit 关键差异:
+//   - 取 word3=nodeRef(offset 24)而非 word2=arrayRef(offset 16)
+//   - node 步长 24 字节
+//   - 多 key 比对段(mov rdx stableKey + cmp rax rdx + jne)
+//
+// **deopt 路径**:Run 端 raxSpec==deoptCode 时调 host.GetTable byte-equal P1
+// (R(A+1)=R(B) 已 store,P1 SELF case 同款步骤;P1 icGetTable 兼容 NodeHit)。
+func EmitSelfNodeHit(buf []byte, aReg, bReg uint8,
+	stableShape, stableIndex uint32, stableKey uint64,
+	arenaBaseOff int32, deoptCode uint64) []byte {
+	// 1. load R(B) → rax(obj NaN-box)
+	buf = EmitMovqRaxFromMemReg(buf, 3 /*rbx*/, int32(bReg)*8)
+
+	// 2. **SELF 额外**:store R(A+1) = rax(self/this 实参)
+	buf = EmitMovqMemRegFromRax(buf, 3 /*rbx*/, int32(aReg+1)*8)
+
+	// 3. 严密 IsTable guard
+	buf = EmitShrRaxImm8(buf, 48)
+	buf = EmitCmpEaxImm32(buf, qNanBoxTableTagHigh16)
+	buf = EmitJneRel32(buf, 0)
+	jneTagOff := len(buf) - 4
+
+	// 4. shr 已破坏 rax,重新 load R(B)
+	buf = EmitMovqRaxFromMemReg(buf, 3 /*rbx*/, int32(bReg)*8)
+
+	// 5. GCRef extract
+	const payloadMask uint64 = 0x0000_FFFF_FFFF_FFFF
+	buf = EmitMovRcxImm64(buf, payloadMask)
+	buf = append(buf, 0x48, 0x21, 0xC8)
+
+	// 6. mov rcx, rax
+	buf = EmitMovqRcxFromRax(buf)
+
+	// 7. load arena base → r14
+	buf = EmitMovqR14FromR15Disp(buf, arenaBaseOff)
+
+	// 8. gen check
+	buf = EmitMovqRaxFromR14PlusRcxDisp(buf, 40)
+	buf = append(buf, 0x48, 0xC1, 0xE8, 32)
+	buf = append(buf, 0x3D)
+	buf = append(buf,
+		byte(stableShape),
+		byte(stableShape>>8),
+		byte(stableShape>>16),
+		byte(stableShape>>24))
+	buf = EmitJneRel32(buf, 0)
+	jneShapeOff := len(buf) - 4
+
+	// 9. **NodeHit 分流**:load nodeRef = [r14+rcx+24]
+	buf = EmitMovqRaxFromR14PlusRcxDisp(buf, 24)
+
+	// 10. mov rcx, rax(rcx = nodeRef offset)
+	buf = EmitMovqRcxFromRax(buf)
+
+	// 11. load NodeKey = [r14+rcx+stableIndex*24] → rax
+	buf = EmitMovqRaxFromR14PlusRcxDisp(buf, int32(stableIndex)*24)
+
+	// 12. mov rdx, stableKey
+	buf = EmitMovRdxImm64(buf, stableKey)
+
+	// 13. cmp rax, rdx + jne deopt
+	buf = EmitCmpRaxRdx(buf)
+	buf = EmitJneRel32(buf, 0)
+	jneKeyOff := len(buf) - 4
+
+	// 14. load NodeVal = [r14+rcx+stableIndex*24+8] → rax
+	buf = EmitMovqRaxFromR14PlusRcxDisp(buf, int32(stableIndex)*24+8)
+
+	// 15. nil check
+	buf = EmitMovRcxImm64(buf, qNanBoxNilImm)
+	buf = EmitCmpRaxRcx(buf)
+	buf = EmitJeRel32(buf, 0)
+	jeNilOff := len(buf) - 4
+
+	// 16. store R(A) = rax(method 函数)
+	buf = EmitMovqMemRegFromRax(buf, 3 /*rbx*/, int32(aReg)*8)
+
+	// 17. ret
+	buf = EmitRet(buf)
+
+	// 18. deopt block
+	deoptStart := len(buf)
+	buf = EmitMovRaxImm64(buf, deoptCode)
+	buf = EmitRet(buf)
+
+	// 19. patch all forward jcc to deopt start
+	PatchRel32(buf, jneTagOff, int32(deoptStart)-int32(jneTagOff+4))
+	PatchRel32(buf, jneShapeOff, int32(deoptStart)-int32(jneShapeOff+4))
+	PatchRel32(buf, jneKeyOff, int32(deoptStart)-int32(jneKeyOff+4))
+	PatchRel32(buf, jeNilOff, int32(deoptStart)-int32(jeNilOff+4))
+
+	return buf
+}

@@ -517,3 +517,75 @@ func TestPJ4_EmitSetTableNodeHit_KeyCompareAndReverseStore(t *testing.T) {
 	}
 	_ = loadRdxOff // 保留作未来扩展用,当前不验证
 }
+
+// TestPJ4_EmitSelfNodeHit_Length 验 SELF NodeHit 模板字节长度自洽。
+// 预期 166 字节(SELF ArrayHit 139 + key 比对段 27)。
+func TestPJ4_EmitSelfNodeHit_Length(t *testing.T) {
+	const stableKey uint64 = 0xFFFB_1234_5678_9ABC
+	var buf []byte
+	buf = EmitSelfNodeHit(buf,
+		2, // aReg = R(2)(method 结果)→ R(A+1)=R(3)
+		0, // bReg = R(0)(obj)
+		7, // stableShape
+		1, // stableIndex
+		stableKey,
+		16,         // arenaBaseOff
+		0xCAFEBABE, // deoptCode
+	)
+	if len(buf) == 0 {
+		t.Fatal("EmitSelfNodeHit returned empty buf")
+	}
+	t.Logf("EmitSelfNodeHit emitted %d bytes", len(buf))
+	if buf[len(buf)-1] != 0xC3 {
+		t.Errorf("SELF NodeHit template should end with ret(0xC3), got 0x%02x",
+			buf[len(buf)-1])
+	}
+}
+
+// TestPJ4_EmitSelfNodeHit_SelfStoreAndKeyCompare 验 SELF NodeHit 模板含:
+//   - 前部 R(A+1) := R(B) 拷段(对位 SELF ArrayHit)
+//   - 后部 NodeKey 比对段(mov rdx stableKey + cmp rax rdx + jne)
+func TestPJ4_EmitSelfNodeHit_SelfStoreAndKeyCompare(t *testing.T) {
+	const stableKey uint64 = 0xFFFB_AAAA_BBBB_CCCC
+	var buf []byte
+	// aReg=2 → R(A+1)=R(3) 槽偏移 24
+	// bReg=0 → R(B) 槽偏移 0
+	buf = EmitSelfNodeHit(buf, 2, 0, 7, 1, stableKey, 16, 0xCAFEBABE)
+
+	// 前部:load R(B) + store R(A+1) (14 字节)
+	if buf[0] != 0x48 || buf[1] != 0x8B {
+		t.Errorf("SELF NodeHit 前部 load R(B) 字节错位")
+	}
+	if buf[7] != 0x48 || buf[8] != 0x89 {
+		t.Errorf("SELF NodeHit 前部 store R(A+1) 字节错位")
+	}
+
+	// 查 mov rdx, stableKey(中部 key 比对段)
+	wantMovRdx := []byte{0x48, 0xBA,
+		0xCC, 0xCC, 0xBB, 0xBB, 0xAA, 0xAA, 0xFB, 0xFF}
+	found := false
+	for i := 0; i+9 < len(buf); i++ {
+		match := true
+		for j, b := range wantMovRdx {
+			if buf[i+j] != b {
+				match = false
+				break
+			}
+		}
+		if match {
+			found = true
+			// 紧随其后 cmp rax, rdx + jne rel32
+			if buf[i+10] != 0x48 || buf[i+11] != 0x39 || buf[i+12] != 0xD0 {
+				t.Errorf("cmp rax, rdx 字节错位 at %d", i+10)
+			}
+			if buf[i+13] != 0x0F || buf[i+14] != 0x85 {
+				t.Errorf("jne rel32 prefix 字节错位 at %d", i+13)
+			}
+			t.Logf("SELF NodeHit key 比对段在 offset %d 找到", i)
+			break
+		}
+	}
+	if !found {
+		t.Errorf("SELF NodeHit 模板未含 stableKey=0x%x 烧入字节", stableKey)
+	}
+}

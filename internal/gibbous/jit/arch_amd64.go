@@ -182,6 +182,20 @@ func archEmitSetTableNodeHit(buf []byte, aReg, cReg uint8,
 		stableShape, stableIndex, stableKey, arenaBaseOff, deoptCode)
 }
 
+// archEmitSelfNodeHit 拼接 PJ4 SELF IC NodeHit 字节级 inline 模板
+// (166 字节,SELF ArrayHit 139 + key 比对 27 字节)。amd64 端代理
+// jitamd64.EmitSelfNodeHit。
+//
+// **SELF NodeHit 形态**:R(A+1) := R(B);R(A) := R(B)[K_string]
+// (经 hash 段 NodeKey 比对 + NodeVal load)。这是 real-world
+// `obj:method()` 调用的典型 IC 形态(method 是字符串 ident)。
+func archEmitSelfNodeHit(buf []byte, aReg, bReg uint8,
+	stableShape, stableIndex uint32, stableKey uint64,
+	arenaBaseOff int32, deoptCode uint64) []byte {
+	return jitamd64.EmitSelfNodeHit(buf, aReg, bReg,
+		stableShape, stableIndex, stableKey, arenaBaseOff, deoptCode)
+}
+
 // archSupportsSpec 返 true 当本 arch 支持 PJ2 投机模板真接入。
 // amd64 ✅;arm64/其它 ❌(留 PJ8+)。
 func archSupportsSpec() bool { return true }
