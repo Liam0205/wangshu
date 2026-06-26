@@ -34,9 +34,11 @@
 //	[80-83]  ret                          ; 4
 //	——— 总长 84 字节(无 safepoint)———
 //
-// 含 safepoint 形态(preemptFlagOff>=0,92 字节):loop_start 后 fadd 前
-// 插 ldrb w0,[x27+pfOff] 4 + cbnz w0,after_loop 4 = 8 字节,对位 amd64
-// safepoint check 14 字节但节省 6 字节(RISC fixed-length 紧凑)。
+// 含 safepoint 形态(preemptFlagOff>=0,92 字节):b.gt(限退出)**之后**、
+// b loop_start(回边)**之前** 插 ldrb w0,[x27+pfOff] 4 + cbnz w0,
+// after_loop 4 = 8 字节,与 RegLimit/WithBody/WithBody2 + amd64 EmptyConst
+// 同款 hot path 范本(承 review COMMENT 17 S-1 统一位置);对位 amd64 14B
+// safepoint check arm64 仅 8B(RISC fixed-length 紧凑)。
 
 package arm64
 
@@ -57,8 +59,9 @@ package arm64
 //   - 无 safepoint:mov+fmov×3 60 + fsub 4 + fadd 4 + fcmpe 4 + b.gt 4
 //   - b 4 + ret 4 = 84
 //   - 含 safepoint:84 + ldrb 4 + cbnz 4 = 92(safepoint check 插在
-//     loop_start 后、fadd 前,对位 amd64 14B safepoint;arm64 仅 8B 因
-//     ldrb+cbnz 等价 cmp+jne 但 RISC 紧凑)
+//     b.gt **之后**、b loop_start 回边 **之前**——与 RegLimit/WithBody
+//     /WithBody2 + amd64 EmptyConst 同款 hot path 范本,承 review
+//     COMMENT 17 S-1 位置统一)
 //
 // **预设条件**:
 //   - arm64 trampoline 协议(承 06 §4.2):x27=jitContext / x26=valueStackBase;
@@ -85,16 +88,6 @@ func EmitForLoopEmptyConstArm64(buf []byte, kInit, kLimit, kStep uint64, preempt
 	// loop_start label
 	loopStart := len(buf)
 
-	// (可选)safepoint check:ldrb w0, [x27+pfOff]; cbnz w0, after_loop
-	// (对位 amd64 cmp byte [r15+pfOff],0 + jne after_loop 14B;
-	//  arm64 端 ldrb+cbnz 共 8B)
-	var safepointCbnzOff int = -1
-	if preemptFlagOff >= 0 {
-		buf = EmitLdrbWtFromXnDisp(buf, 0, 27, uint16(preemptFlagOff))
-		safepointCbnzOff = len(buf)
-		buf = EmitCbnzW(buf, 0, 0) // placeholder imm19=0
-	}
-
 	// FORLOOP idx+=step:d0 += d2(4 字节)
 	buf = EmitFaddDdDnDm(buf, 0, 0, 2)
 
@@ -104,6 +97,21 @@ func EmitForLoopEmptyConstArm64(buf []byte, kInit, kLimit, kStep uint64, preempt
 	// b.gt after_loop placeholder(forward,fixup 后)
 	bGtOff := len(buf)
 	buf = EmitBCond(buf, CondGT, 0) // placeholder imm19=0
+
+	// (可选)safepoint check:ldrb w0, [x27+pfOff]; cbnz w0, after_loop
+	// (对位 amd64 cmp byte [r15+pfOff],0 + jne after_loop 14B;
+	//  arm64 端 ldrb+cbnz 共 8B)
+	//
+	// **位置**:b.gt(限退出)**之后**、b loop_start(回边)**之前**——与
+	// RegLimit/WithBody/WithBody2 + amd64 EmptyConst 同款 hot path 范本
+	// (先算+判退出再 check,而非 loop_start 后立即 check);避免空 iter
+	// 多一次 ldrb 开销,且与四形态保持位置统一(承 review COMMENT 17 S-1)。
+	var safepointCbnzOff int = -1
+	if preemptFlagOff >= 0 {
+		buf = EmitLdrbWtFromXnDisp(buf, 0, 27, uint16(preemptFlagOff))
+		safepointCbnzOff = len(buf)
+		buf = EmitCbnzW(buf, 0, 0) // placeholder imm19=0
+	}
 
 	// b loop_start backward(4 字节)
 	bLoopOff := len(buf)

@@ -161,8 +161,10 @@ func TestPJ8_EmitForLoopEmptyConstArm64_ConstantsBurnedIn(t *testing.T) {
 
 // TestPJ8_EmitForLoopEmptyConstArm64_WithSafepoint 验启用 safepoint
 // (preemptFlagOff>=0)模板字节长度 92 = 84 + ldrb 4 + cbnz 4。
-//   - [64-67] LDRB W0, [x27, #pfOff]
-//   - [68-71] CBNZ W0, after_loop(imm19 forward)
+// safepoint 位置在 b.gt(限退出)之后、b loop_start 回边之前,
+// 与 RegLimit/WithBody/WithBody2 同款 hot path 范本(承 review S-1):
+//   - [76-79] LDRB W0, [x27, #pfOff]
+//   - [80-83] CBNZ W0, after_loop(imm19 forward)
 //   - [88-91] RET
 func TestPJ8_EmitForLoopEmptyConstArm64_WithSafepoint(t *testing.T) {
 	var buf []byte
@@ -175,25 +177,25 @@ func TestPJ8_EmitForLoopEmptyConstArm64_WithSafepoint(t *testing.T) {
 		t.Fatalf("总长度 = %d, want %d(含 safepoint)", len(buf), wantLen)
 	}
 
-	// [64-67] LDRB W0, [x27, #24]
-	insn := binary.LittleEndian.Uint32(buf[64:68])
+	// [76-79] LDRB W0, [x27, #24]
+	insn := binary.LittleEndian.Uint32(buf[76:80])
 	wantLdrb := uint32(0x39400000) | uint32(pfOff)<<10 | uint32(27)<<5 | uint32(0)
 	if insn != wantLdrb {
-		t.Errorf("[64] LDRB W0, [x27, #%d] = 0x%08x, want 0x%08x", pfOff, insn, wantLdrb)
+		t.Errorf("[76] LDRB W0, [x27, #%d] = 0x%08x, want 0x%08x", pfOff, insn, wantLdrb)
 	}
 
-	// [68-71] CBNZ W0, after_loop(forward;after_loop 在 88)
-	insn = binary.LittleEndian.Uint32(buf[68:72])
+	// [80-83] CBNZ W0, after_loop(forward;after_loop 在 88)
+	insn = binary.LittleEndian.Uint32(buf[80:84])
 	if (insn & 0xFF000000) != 0x35000000 {
-		t.Errorf("[68] CBNZ base wrong: 0x%08x", insn)
+		t.Errorf("[80] CBNZ base wrong: 0x%08x", insn)
 	}
 	if insn&0x1F != 0 {
-		t.Errorf("[68] CBNZ Rt = %d, want 0 (w0)", insn&0x1F)
+		t.Errorf("[80] CBNZ Rt = %d, want 0 (w0)", insn&0x1F)
 	}
 	gotImm19 := (insn >> 5) & 0x7FFFF
-	// imm19 = (88 - 68) / 4 = 5
-	if gotImm19 != 5 {
-		t.Errorf("[68] CBNZ imm19 = %d, want 5 ((88-68)/4)", gotImm19)
+	// imm19 = (88 - 80) / 4 = 2
+	if gotImm19 != 2 {
+		t.Errorf("[80] CBNZ imm19 = %d, want 2 ((88-80)/4)", gotImm19)
 	}
 
 	// [88-91] RET
