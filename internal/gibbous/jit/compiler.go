@@ -94,11 +94,14 @@ type shapeInfo struct {
 	//     forStepK 烧入 imm64,不寻址 R(A) 槽);**留 PJ3+ body inline 扩**
 	//     时需用 forA 算 R(A+3)=i 槽 offset 给 body 内部 ref。
 	//   - forInitK / forLimitK / forStepK:三个常量 NaN-box raw bits(编译期烧 imm64)
-	isForLoop bool
-	forA      uint8
-	forInitK  uint64
-	forLimitK uint64
-	forStepK  uint64
+	//   - forLimitReg + forLimitIsReg:reg-limit 形态用 R(limitReg) 而非 K
+	isForLoop     bool
+	forA          uint8
+	forInitK      uint64
+	forLimitK     uint64
+	forStepK      uint64
+	forLimitReg   uint8 // limit 是 reg 时的源寄存器号(forLimitIsReg=true)
+	forLimitIsReg bool  // true = limit 从 R(forLimitReg) 读 + IsNumber guard;false = K 编译期烧 imm
 }
 
 // analyzeForLoopForm 识别 PJ3 字节级 FORLOOP inline 最简形态:
@@ -114,19 +117,27 @@ type shapeInfo struct {
 //	[5] RETURN   0   1       ; 空 return
 //	[6] RETURN   0   1       ; (可选 dead RETURN,luac 主 chunk 尾部)
 //
-// **形态约束**(为字节级模板简化,只接最简):
+// **形态约束**:
 //   - proto.Code 长度 6 或 7(尾部可选 dead RETURN)
 //   - [0] LOADK A_init -kInit
-//   - [1] LOADK A_init+1 -kLimit
+//   - [1] LOADK A_init+1 -kLimit **或** MOVE A_init+1 limitReg
+//     (reg-limit hot path:`for i=1, n do end` luac 编 MOVE)
 //   - [2] LOADK A_init+2 -kStep
 //   - [3] FORPREP A_init sBx=0(空 body 时 luac 编 0)
 //   - [4] FORLOOP A_init sBx=-1(回边跳自己)
 //   - [5] RETURN A=0 B=1(空 return)
-//   - K[kInit / kLimit / kStep] 必须都是 number(否则降级 host)
+//   - K[kInit / kStep] 必须都是 number(否则降级 host);LOADK 形态下
+//     K[kLimit] 也必须是 number;MOVE 形态下 limitReg 运行期 IsNumber
+//     guard
+//
+// **当前已接入主路径**(承 Compile 端):
+//   - LOADK limit 形态:69/83 字节模板(空 body 全常量),已实测
+//     7-25x over gopher-lua
+//   - MOVE limit 形态:117 字节模板(IsNumber guard + deopt 调
+//     host.ForPrep raise byte-equal P1),hot path 真接入完整
 //
 // **不支持**(留 PJ3 真接入扩展):
 //   - body 非空(需 inline body opcodes + 寄存器分配)
-//   - limit 是参数 reg(`for i=1,n do`)— 需 IsNumber guard
 //   - 嵌套 for / 含 break(JMP)
 //   - 非默认 step(step=1 隐含;非默认编码 step 仍走本路径,因 step 也是 K)
 func analyzeForLoopForm(proto *bytecode.Proto) (shapeInfo, bool) {
@@ -135,9 +146,11 @@ func analyzeForLoopForm(proto *bytecode.Proto) (shapeInfo, bool) {
 		return shapeInfo{}, false
 	}
 	// [0/1/2] LOADK / [3] FORPREP / [4] FORLOOP / [5] RETURN
-	// **limit 仅 LOADK 形态**(MOVE/reg 形态留 PJ3+ 加 IsNumber guard 时扩)
+	// **limit 支持 LOADK 或 MOVE(reg 形态)**:reg-limit hot path 真实形态
+	// 需 IsNumber guard 字节级 inline
 	if bytecode.Op(proto.Code[0]) != bytecode.LOADK ||
-		bytecode.Op(proto.Code[1]) != bytecode.LOADK ||
+		(bytecode.Op(proto.Code[1]) != bytecode.LOADK &&
+			bytecode.Op(proto.Code[1]) != bytecode.MOVE) ||
 		bytecode.Op(proto.Code[2]) != bytecode.LOADK ||
 		bytecode.Op(proto.Code[3]) != bytecode.FORPREP ||
 		bytecode.Op(proto.Code[4]) != bytecode.FORLOOP ||
@@ -168,18 +181,15 @@ func analyzeForLoopForm(proto *bytecode.Proto) (shapeInfo, bool) {
 		return shapeInfo{}, false
 	}
 
-	// 三个 LOADK 的 Bx 取 K[Bx]
+	// init / step:必须 LOADK + K 是 number
 	kInitIdx := bytecode.Bx(proto.Code[0])
-	kLimitIdx := bytecode.Bx(proto.Code[1])
 	kStepIdx := bytecode.Bx(proto.Code[2])
-	if kInitIdx >= len(proto.Consts) || kLimitIdx >= len(proto.Consts) || kStepIdx >= len(proto.Consts) {
+	if kInitIdx >= len(proto.Consts) || kStepIdx >= len(proto.Consts) {
 		return shapeInfo{}, false
 	}
-
 	kInit := proto.Consts[kInitIdx]
-	kLimit := proto.Consts[kLimitIdx]
 	kStep := proto.Consts[kStepIdx]
-	if !value.IsNumber(kInit) || !value.IsNumber(kLimit) || !value.IsNumber(kStep) {
+	if !value.IsNumber(kInit) || !value.IsNumber(kStep) {
 		return shapeInfo{}, false
 	}
 
@@ -190,7 +200,8 @@ func analyzeForLoopForm(proto *bytecode.Proto) (shapeInfo, bool) {
 		return shapeInfo{}, false
 	}
 
-	return shapeInfo{
+	// limit:LOADK(常量)或 MOVE(reg-limit hot path)
+	si := shapeInfo{
 		ok:        true,
 		retA:      0, // RETURN A=0
 		retB:      1, // 空 return
@@ -198,9 +209,33 @@ func analyzeForLoopForm(proto *bytecode.Proto) (shapeInfo, bool) {
 		isForLoop: true,
 		forA:      uint8(aInit),
 		forInitK:  uint64(kInit),
-		forLimitK: uint64(kLimit),
 		forStepK:  uint64(kStep),
-	}, true
+	}
+	if bytecode.Op(proto.Code[1]) == bytecode.LOADK {
+		kLimitIdx := bytecode.Bx(proto.Code[1])
+		if kLimitIdx >= len(proto.Consts) {
+			return shapeInfo{}, false
+		}
+		kLimit := proto.Consts[kLimitIdx]
+		if !value.IsNumber(kLimit) {
+			return shapeInfo{}, false
+		}
+		si.forLimitK = uint64(kLimit)
+		si.forLimitIsReg = false
+	} else {
+		// **MOVE A B reg-limit 形态**(luac 编 `for i=1,n do end` 时
+		// limit=n 用 MOVE)。字节级模板 EmitForLoopRegLimit 已实装,deopt
+		// 路径调 host.ForPrep raise(`'for' limit must be a number`)
+		// byte-equal 解释器(若 R(limitReg) 非 number)。
+		moveB := bytecode.B(proto.Code[1])
+		if moveB > 254 {
+			return shapeInfo{}, false
+		}
+		si.forLimitReg = uint8(moveB)
+		si.forLimitIsReg = true
+	}
+
+	return si, true
 }
 
 // analyzeCompareForm 识别 EQ/LT/LE + JMP + LOADBOOL + LOADBOOL + RETURN
@@ -915,6 +950,42 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 		// loop body 末尾插「cmp byte [r15+pfOff], 0; jne after_loop」
 		// (承 05 §1.2.2 抢占纪律 + V18 -race);trampoline 已装 r15。
 		pfOff := int32(JITContextPreemptFlagOffset)
+
+		if info.forLimitIsReg {
+			// **reg-limit hot path 真接入**(`for i=1,n do end`):117 字节模板
+			// 含 IsNumber guard + 浮点 loop + safepoint + deopt block。
+			// useSpec=true 走 callJITSpec(装 rbx=vsBase + r15=jitCtx)。
+			// deopt 路径调 host.ForPrep raise('for' limit must be a number)
+			// byte-equal 解释器。
+			const deoptCode uint64 = 0xFFFCDEAD_DEADBE00
+			buf = archEmitForLoopRegLimit(buf, info.forInitK, info.forStepK,
+				info.forLimitReg, deoptCode, pfOff)
+			page, err := archMmapCode(buf)
+			if err != nil {
+				return nil, err
+			}
+			incSpecForLoopHits()
+			return &p4Code{
+				proto:         proto,
+				codePage:      page,
+				jitCtx:        NewJITContext(),
+				retA:          info.retA,
+				retB:          info.retB,
+				retPC:         info.retPC,
+				writeRetA:     false,
+				preludeOp:     0, // 不走 prelude switch
+				host:          c.hostState,
+				useSpec:       true,
+				specDeoptCode: deoptCode,
+				// **forLoopDeopt** 标志区分 reg-limit FORLOOP 的 deopt 路径
+				// — Run 端检测 raxSpec==deoptCode 时调 host.ForPrep 而非
+				// host.Arith。
+				forLoopDeopt: true,
+				forLoopA:     info.forA,
+			}, nil
+		}
+
+		// 全常量空 body FORLOOP(本批落地)
 		buf = archEmitForLoopEmptyConst(buf, info.forInitK, info.forLimitK, info.forStepK, pfOff)
 		page, err := archMmapCode(buf)
 		if err != nil {
