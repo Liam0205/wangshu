@@ -102,14 +102,14 @@ func archEmitForLoopEmptyConst(buf []byte, kInit, kLimit, kStep uint64, preemptF
 	return jitarm64.EmitForLoopEmptyConstArm64(buf, kInit, kLimit, kStep, preemptFlagOff)
 }
 
-// archEmitForLoopRegLimit arm64 端 stub。
+// archEmitForLoopRegLimit arm64 端 PJ3 FORLOOP reg-limit 模板真接入
+// (120 字节无 safepoint / 128 字节含 safepoint)。对位 amd64
+// EmitForLoopRegLimit 103/117 字节,arm64 多 17/11 字节(MOV imm64 序列
+// 16B vs amd64 movq 15B 累积 + RISC fixed-length)。
+//
+// guard:LDR R(limitReg) → CMP qNanBoxBase → B.HS deopt(若非 number)。
 func archEmitForLoopRegLimit(buf []byte, kInit, kStep uint64, limitReg uint8, deoptCode uint64, preemptFlagOff int32) []byte {
-	_ = kInit
-	_ = kStep
-	_ = limitReg
-	_ = deoptCode
-	_ = preemptFlagOff
-	return buf
+	return jitarm64.EmitForLoopRegLimitArm64(buf, kInit, kStep, limitReg, deoptCode, preemptFlagOff)
 }
 
 // archEmitForLoopWithBody arm64 端 stub——留 PJ8+。

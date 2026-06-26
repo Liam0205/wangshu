@@ -202,3 +202,117 @@ func TestPJ8_EmitForLoopEmptyConstArm64_WithSafepoint(t *testing.T) {
 		t.Errorf("[88] RET = 0x%08x, want 0xd65f03c0", insn)
 	}
 }
+
+// TestPJ8_EmitForLoopRegLimitArm64_Length 验 RegLimit 模板字节长度
+// (含/无 safepoint 双形态)。
+func TestPJ8_EmitForLoopRegLimitArm64_Length(t *testing.T) {
+	cases := []struct {
+		name    string
+		pfOff   int32
+		wantLen int
+	}{
+		{"no safepoint", -1, 120},
+		{"with safepoint", 24, 128},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf []byte
+			buf = EmitForLoopRegLimitArm64(buf,
+				0x3FF0000000000000, // kInit=1.0
+				0x3FF0000000000000, // kStep=1.0
+				5,                  // limitReg
+				0xCAFEBABE,         // deoptCode
+				tc.pfOff)
+			if len(buf) != tc.wantLen {
+				t.Errorf("总长度 = %d, want %d", len(buf), tc.wantLen)
+			}
+		})
+	}
+	// 常量自洽
+	if EncodedForLoopRegLimitArm64NoSafepointLen != 120 {
+		t.Errorf("EncodedForLoopRegLimitArm64NoSafepointLen = %d, want 120",
+			EncodedForLoopRegLimitArm64NoSafepointLen)
+	}
+	if EncodedForLoopRegLimitArm64WithSafepointLen != 128 {
+		t.Errorf("EncodedForLoopRegLimitArm64WithSafepointLen = %d, want 128",
+			EncodedForLoopRegLimitArm64WithSafepointLen)
+	}
+}
+
+// TestPJ8_EmitForLoopRegLimitArm64_GuardSegment 验 guard 段:
+//   - [0-3]   LDR x0, [x26 + limitReg*8]
+//   - [4-19]  MOV x1, qNanBoxBase imm64(movz+movk×3)
+//   - [20-23] CMP x0, x1
+//   - [24-27] B.HS deopt
+func TestPJ8_EmitForLoopRegLimitArm64_GuardSegment(t *testing.T) {
+	const limitReg uint8 = 5
+	var buf []byte
+	buf = EmitForLoopRegLimitArm64(buf, 0x3FF0000000000000, 0x3FF0000000000000,
+		limitReg, 0xCAFEBABE, -1)
+
+	if len(buf) < 28 {
+		t.Fatalf("buf too short: %d", len(buf))
+	}
+
+	// [0-3] LDR x0, [x26 + 40](limitReg=5 → byteOff 40 → imm12=5)
+	insn := binary.LittleEndian.Uint32(buf[0:4])
+	wantLdr := uint32(0xF9400000) | uint32(5)<<10 | uint32(26)<<5 | uint32(0)
+	if insn != wantLdr {
+		t.Errorf("[0] LDR x0, [x26, #40] = 0x%08x, want 0x%08x", insn, wantLdr)
+	}
+
+	// [4-7] MOVZ x1, qNanBoxBase[15:0]=0x0000
+	insn = binary.LittleEndian.Uint32(buf[4:8])
+	if (insn & 0xFFE00000) != 0xD2800000 {
+		t.Errorf("[4] MOVZ x1 base wrong: 0x%08x", insn)
+	}
+	if (insn & 0x1F) != 1 {
+		t.Errorf("[4] MOVZ Rd = %d, want 1 (x1)", insn&0x1F)
+	}
+
+	// [20-23] CMP x0, x1 = SUBS XZR, x0, x1
+	insn = binary.LittleEndian.Uint32(buf[20:24])
+	wantCmp := uint32(0xEB00001F) | uint32(1)<<16 | uint32(0)<<5
+	if insn != wantCmp {
+		t.Errorf("[20] CMP x0, x1 = 0x%08x, want 0x%08x", insn, wantCmp)
+	}
+
+	// [24-27] B.HS deopt(cond=HS=0x2)
+	insn = binary.LittleEndian.Uint32(buf[24:28])
+	if (insn & 0xFF000000) != 0x54000000 {
+		t.Errorf("[24] B.cond base wrong: 0x%08x", insn)
+	}
+	if insn&0xF != uint32(CondHS) {
+		t.Errorf("[24] B.cond cond = 0x%x, want 0x%x (HS)", insn&0xF, CondHS)
+	}
+	// imm19 = (deoptStart - 24) / 4。deoptStart = 108 → imm19 = (108-24)/4 = 21
+	gotImm19 := (insn >> 5) & 0x7FFFF
+	if gotImm19 != 21 {
+		t.Errorf("[24] B.HS imm19 = %d, want 21 ((108-24)/4)", gotImm19)
+	}
+}
+
+// TestPJ8_EmitForLoopRegLimitArm64_DeoptBlock 验 deopt block 在 [108-127]。
+func TestPJ8_EmitForLoopRegLimitArm64_DeoptBlock(t *testing.T) {
+	const deoptCode uint64 = 0xDEAD_BEEF_CAFE_BABE
+	var buf []byte
+	buf = EmitForLoopRegLimitArm64(buf, 0x3FF0000000000000, 0x3FF0000000000000,
+		5, deoptCode, -1)
+
+	if len(buf) < 128 {
+		t.Fatalf("buf too short: %d", len(buf))
+	}
+
+	// [108-111] MOVZ x0, deoptCode[15:0]=0xBABE
+	insn := binary.LittleEndian.Uint32(buf[108:112])
+	imm0 := (insn >> 5) & 0xFFFF
+	if imm0 != 0xBABE {
+		t.Errorf("[108] MOVZ x0 imm[15:0] = 0x%04x, want 0xBABE", imm0)
+	}
+
+	// [124-127] RET
+	insn = binary.LittleEndian.Uint32(buf[124:128])
+	if insn != 0xd65f03c0 {
+		t.Errorf("[124] RET = 0x%08x, want 0xd65f03c0", insn)
+	}
+}
