@@ -158,3 +158,135 @@ func EmitB(buf []byte, imm26 int32) []byte {
 
 // EncodedBLen = 4.
 const EncodedBLen = 4
+
+// EmitLdrXtFromXnDisp 发射 arm64「ldr Xt, [Xn, #pimm12]」64-bit load with
+// unsigned 12-bit offset(承 ARMv8 ARM A6.2 + 06-backends.md §4.2 arm64
+// load 原语)。
+//
+// arm64 编码:1111_1001_01_iiiiiiiiiiii_nnnnn_ttttt = 0xF9400000 base
+//   - size=11(64-bit)
+//   - V=0(general register)
+//   - opc=01(LDR unsigned offset)
+//   - imm12 是**8-byte scaled offset**(byte offset = imm12 * 8),范围
+//     [0, 32760],步长 8
+//
+// **参数 byteOff** 是字节偏移(必须 8 字节对齐 + ≤ 32760)。本函数自动
+// 除以 8 编入 imm12 字段。超界或非对齐兜底 imm12=0(load Xt from [Xn+0])。
+//
+// 用例:PJ4 表 IC inline arm64 端——load arena base / table.word5 /
+// arrayRef / NodeKey/Val 等(对位 amd64 `mov rax, [r14+rcx+disp]` 8 字节)。
+func EmitLdrXtFromXnDisp(buf []byte, rt, rn uint8, byteOff uint16) []byte {
+	if rt > 30 {
+		rt = 0
+	}
+	if rn > 30 {
+		rn = 0
+	}
+	// byteOff 必须 8 字节对齐 + ≤ 32760(imm12 = byteOff/8 ≤ 4095)
+	if byteOff%8 != 0 || byteOff > 32760 {
+		byteOff = 0
+	}
+	imm12 := uint32(byteOff / 8)
+	insn := uint32(0xF9400000) | (imm12&0xFFF)<<10 | (uint32(rn)&0x1F)<<5 | uint32(rt)&0x1F
+	return appendArm64Insn(buf, insn)
+}
+
+// EncodedLdrXtFromXnDispLen = 4(arm64 一条指令)。
+const EncodedLdrXtFromXnDispLen = 4
+
+// EmitStrXtToXnDisp 发射 arm64「str Xt, [Xn, #pimm12]」64-bit store with
+// unsigned 12-bit offset(对位 EmitLdrXtFromXnDisp,反向写)。
+//
+// arm64 编码:1111_1001_00_iiiiiiiiiiii_nnnnn_ttttt = 0xF9000000 base
+//   - size=11(64-bit),V=0,opc=00(STR unsigned offset)
+//   - imm12 同 LDR 是 8-byte scaled offset
+//
+// 用例:PJ4 表 IC SETTABLE arm64 端——反向 store NodeVal / array[idx]
+// (对位 amd64 `mov [r14+rcx+disp], rdx` 8 字节)。
+func EmitStrXtToXnDisp(buf []byte, rt, rn uint8, byteOff uint16) []byte {
+	if rt > 30 {
+		rt = 0
+	}
+	if rn > 30 {
+		rn = 0
+	}
+	if byteOff%8 != 0 || byteOff > 32760 {
+		byteOff = 0
+	}
+	imm12 := uint32(byteOff / 8)
+	insn := uint32(0xF9000000) | (imm12&0xFFF)<<10 | (uint32(rn)&0x1F)<<5 | uint32(rt)&0x1F
+	return appendArm64Insn(buf, insn)
+}
+
+// EncodedStrXtToXnDispLen = 4.
+const EncodedStrXtToXnDispLen = 4
+
+// EmitCmpXnXm 发射 arm64「cmp Xn, Xm」(寄存器比较,设 NZCV flags 不写
+// 结果)。实际编码 = SUBS XZR, Xn, Xm:
+//
+// 编码:1110_1011_000_mmmmm_000000_nnnnn_11111 = 0xEB00001F base
+//   - sf=1, op=1(sub), S=1(SUBS, set flags), shift=00
+//   - Rd=11111(XZR,丢结果只设 flag)
+//
+// **参数 rn/rm** 均为 0-30。超界兜底 0。
+//
+// 用例:PJ4 表 IC inline arm64 端——验 NodeKey == stableKey / gen ==
+// stableShape 等(对位 amd64 `cmp rax, rdx` 3 字节)。
+func EmitCmpXnXm(buf []byte, rn, rm uint8) []byte {
+	if rn > 30 {
+		rn = 0
+	}
+	if rm > 30 {
+		rm = 0
+	}
+	insn := uint32(0xEB00001F) | (uint32(rm)&0x1F)<<16 | (uint32(rn)&0x1F)<<5
+	return appendArm64Insn(buf, insn)
+}
+
+// EncodedCmpXnXmLen = 4.
+const EncodedCmpXnXmLen = 4
+
+// EmitBCond 发射 arm64「b.cond label」条件分支(承 ARMv8 ARM C6.2.B.cond)。
+// imm19 是字数偏移(目标地址 = PC + imm19 * 4),范围 [-2^20, 2^20-1)。
+//
+// 编码:0101_0100_iiiiiiiiiiiiiiiiiiii_0_cond = 0x54000000 base
+//   - imm19 sign-extended 字偏移(LSL 2 → byte offset)
+//   - cond 4-bit 条件码
+//
+// 常用 cond 码(承 ARMv8 ARM C1.2 Condition codes):
+//   - 0x0 EQ(equal)/ 0x1 NE(not equal)
+//   - 0x2 CS/HS(carry set, unsigned >=)/ 0x3 CC/LO(carry clear, unsigned <)
+//   - 0x4 MI(minus)/ 0x5 PL(plus or zero)
+//   - 0x6 VS(overflow)/ 0x7 VC(no overflow)
+//   - 0x8 HI(unsigned >)/ 0x9 LS(unsigned <=)
+//   - 0xA GE(signed >=)/ 0xB LT(signed <)
+//   - 0xC GT(signed >)/ 0xD LE(signed <=)
+//
+// 用例:PJ4 IC inline arm64 端——`cmp` 后的 deopt branch(对位 amd64
+// jne/je rel32 6 字节)。
+func EmitBCond(buf []byte, cond uint8, imm19 int32) []byte {
+	if cond > 0xF {
+		cond = 0
+	}
+	insn := uint32(0x54000000) | (uint32(imm19)&0x7FFFF)<<5 | uint32(cond)&0xF
+	return appendArm64Insn(buf, insn)
+}
+
+// EncodedBCondLen = 4.
+const EncodedBCondLen = 4
+
+// arm64 condition codes(承 ARMv8 ARM C1.2)。
+const (
+	CondEQ uint8 = 0x0 // equal
+	CondNE uint8 = 0x1 // not equal
+	CondHS uint8 = 0x2 // unsigned >=
+	CondLO uint8 = 0x3 // unsigned <
+	CondMI uint8 = 0x4 // negative
+	CondPL uint8 = 0x5 // positive or zero
+	CondHI uint8 = 0x8 // unsigned >
+	CondLS uint8 = 0x9 // unsigned <=
+	CondGE uint8 = 0xA // signed >=
+	CondLT uint8 = 0xB // signed <
+	CondGT uint8 = 0xC // signed >
+	CondLE uint8 = 0xD // signed <=
+)

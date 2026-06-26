@@ -133,3 +133,141 @@ func TestPJ8_EmitB(t *testing.T) {
 		t.Errorf("b -2 = 0x%08x, want 0x%08x", insn, wantInsn)
 	}
 }
+
+// TestPJ8_EmitLdrXtFromXnDisp 验「ldr Xt, [Xn, #pimm12]」64-bit load。
+// 编码:0xF9400000 base + imm12<<10(scaled by 8)+ Rn<<5 + Rt。
+//
+// 用例:PJ4 IC inline arm64 端——load arena base / table words(对位
+// amd64 `mov rax, [r14+rcx+disp]` 8 字节)。
+func TestPJ8_EmitLdrXtFromXnDisp(t *testing.T) {
+	cases := []struct {
+		name    string
+		rt, rn  uint8
+		byteOff uint16
+		// 期望 insn(LE 32-bit)
+	}{
+		// ldr x0, [x1, #0]:0xF9400020(rt=0 rn=1 imm12=0)
+		{"ldr x0, [x1, #0]", 0, 1, 0}, // imm12=0
+
+		// ldr x2, [x3, #8]:imm12=1 → byte off 8
+		{"ldr x2, [x3, #8]", 2, 3, 8},
+		// ldr x5, [x6, #40]:imm12=5 → byte off 40(table.word5 access)
+		{"ldr x5, [x6, #40] (table.word5)", 5, 6, 40},
+		// ldr x10, [x11, #32760]:imm12=4095(max)→ byte off 32760
+		{"ldr x10, [x11, #max]", 10, 11, 32760},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf []byte
+			buf = EmitLdrXtFromXnDisp(buf, tc.rt, tc.rn, tc.byteOff)
+			if len(buf) != EncodedLdrXtFromXnDispLen {
+				t.Fatalf("len = %d, want %d", len(buf), EncodedLdrXtFromXnDispLen)
+			}
+			insn := binary.LittleEndian.Uint32(buf[0:4])
+			// 验各字段
+			gotImm12 := (insn >> 10) & 0xFFF
+			gotRn := (insn >> 5) & 0x1F
+			gotRt := insn & 0x1F
+			gotBase := insn & 0xFFC003E0 // 高/中部 + Rd/Rn 之外的固定 bits
+			wantImm12 := uint32(tc.byteOff / 8)
+			if gotImm12 != wantImm12 {
+				t.Errorf("imm12 = %d, want %d", gotImm12, wantImm12)
+			}
+			if uint8(gotRn) != tc.rn || uint8(gotRt) != tc.rt {
+				t.Errorf("Rn/Rt = %d/%d, want %d/%d", gotRn, gotRt, tc.rn, tc.rt)
+			}
+			// base bits 高位 + 中位固定部分(忽略 Rn/Rt/imm12 位)
+			// 0xF9400000 高 22 bits = size+V+opc+L+固定
+			if (insn & 0xFFC00000) != 0xF9400000 {
+				t.Errorf("base bits = 0x%08x, want 0xF940 prefix", insn&0xFFC00000)
+			}
+			_ = gotBase
+		})
+	}
+}
+
+// TestPJ8_EmitStrXtToXnDisp 验「str Xt, [Xn, #pimm12]」64-bit store。
+// 编码同 LDR 但 opc=00 → base 0xF9000000。
+func TestPJ8_EmitStrXtToXnDisp(t *testing.T) {
+	var buf []byte
+	buf = EmitStrXtToXnDisp(buf, 5, 6, 56) // str x5, [x6, #56] (SET NodeVal slot)
+
+	if len(buf) != EncodedStrXtToXnDispLen {
+		t.Fatalf("len = %d, want %d", len(buf), EncodedStrXtToXnDispLen)
+	}
+	insn := binary.LittleEndian.Uint32(buf[0:4])
+	if (insn & 0xFFC00000) != 0xF9000000 {
+		t.Errorf("STR base bits = 0x%08x, want 0xF900 prefix", insn&0xFFC00000)
+	}
+	gotImm12 := (insn >> 10) & 0xFFF
+	if gotImm12 != 7 { // 56/8 = 7
+		t.Errorf("imm12 = %d, want 7", gotImm12)
+	}
+	if (insn>>5)&0x1F != 6 || insn&0x1F != 5 {
+		t.Errorf("Rn/Rt fields wrong: 0x%08x", insn)
+	}
+}
+
+// TestPJ8_EmitCmpXnXm 验「cmp Xn, Xm」(实际 SUBS XZR, Xn, Xm)字节级。
+// 编码:0xEB00001F base + Xm<<16 + Xn<<5。
+func TestPJ8_EmitCmpXnXm(t *testing.T) {
+	var buf []byte
+	buf = EmitCmpXnXm(buf, 1, 2) // cmp x1, x2 (SUBS XZR, X1, X2)
+
+	if len(buf) != EncodedCmpXnXmLen {
+		t.Fatalf("len = %d, want %d", len(buf), EncodedCmpXnXmLen)
+	}
+	insn := binary.LittleEndian.Uint32(buf[0:4])
+	// 验 base bits + Rm/Rn 字段
+	// 0xEB00001F + Rm=2 << 16 = 0xEB02001F + Rn=1 << 5 = 0xEB02003F
+	wantInsn := uint32(0xEB00001F) | uint32(2)<<16 | uint32(1)<<5
+	if insn != wantInsn {
+		t.Errorf("cmp x1, x2 = 0x%08x, want 0x%08x", insn, wantInsn)
+	}
+	// Rd 字段 = XZR(31)
+	if insn&0x1F != 31 {
+		t.Errorf("Rd = %d, want 31 (XZR)", insn&0x1F)
+	}
+}
+
+// TestPJ8_EmitBCond 验「b.cond label」条件分支字节级。
+// 编码:0x54000000 base + imm19<<5 + cond.
+func TestPJ8_EmitBCond(t *testing.T) {
+	cases := []struct {
+		name     string
+		cond     uint8
+		imm19    int32
+		condBits uint32
+	}{
+		{"b.eq +4", CondEQ, 1, 0x0}, // forward 1 word (4 bytes)
+		{"b.ne +0", CondNE, 0, 0x1},
+		{"b.lt +8", CondLT, 2, 0xB},
+		{"b.ge -4", CondGE, -1, 0xA}, // backward 1 word
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf []byte
+			buf = EmitBCond(buf, tc.cond, tc.imm19)
+			if len(buf) != EncodedBCondLen {
+				t.Fatalf("len = %d, want %d", len(buf), EncodedBCondLen)
+			}
+			insn := binary.LittleEndian.Uint32(buf[0:4])
+			// base 0x54000000 高 8 bits = 0x54
+			if (insn & 0xFF000000) != 0x54000000 {
+				t.Errorf("base bits = 0x%08x, want 0x54 prefix", insn&0xFF000000)
+			}
+			gotCond := insn & 0xF
+			if gotCond != tc.condBits {
+				t.Errorf("cond = 0x%x, want 0x%x", gotCond, tc.condBits)
+			}
+			gotImm19 := int32((insn >> 5) & 0x7FFFF)
+			// sign-extend 19-bit to 32-bit
+			if gotImm19&0x40000 != 0 { // bit 18 set → negative
+				gotImm19 |= ^int32(0x7FFFF)
+			}
+			if gotImm19 != tc.imm19 {
+				t.Errorf("imm19 = %d, want %d", gotImm19, tc.imm19)
+			}
+		})
+	}
+}
