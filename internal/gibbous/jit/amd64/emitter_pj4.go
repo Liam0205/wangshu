@@ -182,3 +182,31 @@ func EmitCmpEaxImm32(buf []byte, imm32 int32) []byte {
 
 // EncodedCmpEaxImm32Len 是「cmp eax, imm32」字节数(5)。
 const EncodedCmpEaxImm32Len = 5
+
+// EmitMovRdxImm64 发射「mov rdx, imm64」(REX.W + B8+r + imm64,10 字节)。
+// 用例:PJ4 NodeHit 模板烧入 stableKey(IC 命中验 NodeKey == stableKey 时)。
+//
+// 编码:48 BA imm64(REX.W=1 / B8+rd=BA where rd=010=rdx / imm64 LE 8 字节)。
+func EmitMovRdxImm64(buf []byte, imm64 uint64) []byte {
+	buf = append(buf, 0x48, 0xBA)
+	for i := 0; i < 8; i++ {
+		buf = append(buf, byte(imm64>>(i*8)))
+	}
+	return buf
+}
+
+// EncodedMovRdxImm64Len 是「mov rdx, imm64」字节数(10)。
+const EncodedMovRdxImm64Len = 10
+
+// EmitCmpRaxRdx 发射「cmp rax, rdx」(REX.W + 39 / ModRM C2,3 字节)。
+// 用例:PJ4 NodeHit 模板验 NodeKey(rax 装 [r14+rcx+stableIndex*24])
+// 与 stableKey(rdx 装 imm64)是否一致。
+//
+// 编码:48 39 D0(REX.W / opcode 39 = CMP r/m64, r64 / ModRM 0xD0:
+// mod=11 reg=010(rdx) rm=000(rax))。
+func EmitCmpRaxRdx(buf []byte) []byte {
+	return append(buf, 0x48, 0x39, 0xD0)
+}
+
+// EncodedCmpRaxRdxLen 是「cmp rax, rdx」字节数(3)。
+const EncodedCmpRaxRdxLen = 3

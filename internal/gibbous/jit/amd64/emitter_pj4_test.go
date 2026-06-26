@@ -189,3 +189,24 @@ func TestPJ4_EmitCmpEaxImm32(t *testing.T) {
 		t.Errorf("got %x, want %x", got, want)
 	}
 }
+
+// TestPJ4_EmitMovRdxImm64 —— mov rdx, imm64(NodeHit 烧 stableKey)。
+// 编码:48 BA imm64_LE_bytes。
+func TestPJ4_EmitMovRdxImm64(t *testing.T) {
+	got := EmitMovRdxImm64(nil, 0xFFFB_DEAD_BEEF_CAFE) // 模拟 string NaN-box
+	want := []byte{0x48, 0xBA,
+		0xFE, 0xCA, 0xEF, 0xBE, 0xAD, 0xDE, 0xFB, 0xFF}
+	if string(got) != string(want) {
+		t.Errorf("got %x, want %x", got, want)
+	}
+}
+
+// TestPJ4_EmitCmpRaxRdx —— cmp rax, rdx(NodeHit 验 NodeKey == stableKey)。
+// 编码:48 39 D0(REX.W / opcode CMP r/m64,r64 / ModRM mod=11 reg=010 rm=000)。
+func TestPJ4_EmitCmpRaxRdx(t *testing.T) {
+	got := EmitCmpRaxRdx(nil)
+	want := []byte{0x48, 0x39, 0xD0}
+	if string(got) != string(want) {
+		t.Errorf("got %x, want %x", got, want)
+	}
+}
