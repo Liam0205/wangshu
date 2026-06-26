@@ -25,3 +25,27 @@ func callJITFull(codeAddr uintptr, jitCtxAddr uintptr) uint64
 func CallJITFull(codeAddr uintptr, jitCtxAddr uintptr) uint64 {
 	return callJITFull(codeAddr, jitCtxAddr)
 }
+
+// callJITSpec 跳进 mmap 段(spec 模板:PJ2 投机算术 / PJ3 FORLOOP
+// body/RegLimit),期望段以 RET 收尾(返回值在 X0)。trampoline 内
+// 装 X27=jitContext + **X26=valueStackBase**(spec 模板需值栈寻址,
+// 对位 amd64 callJITSpec 装 rbx=vsBase + r15=jitCtx)。
+//
+// **vs callJITFull**:多一个 vsBaseAddr 参 + 装入 X26。FORLOOP body/
+// RegLimit 模板 + PJ2 投机模板都用 [x26+B*8] 寻址值栈。
+//
+// 实现:trampoline_arm64.s::callJITSpec(NOSPLIT,$80-32 framesize 同
+// callJITFull,LR/FP 由 Go 编译器自动管,callee-saved X19-X27 经 5 对
+// STP 手动保存对齐 16 字节)。
+//
+//go:noescape
+func callJITSpec(codeAddr uintptr, jitCtxAddr uintptr, vsBaseAddr uintptr) uint64
+
+// CallJITSpec 是 callJITSpec 的可见包装。Test/调用方经此调用,允许包内
+// 单测断言「mmap 段确实被走到 + 接 spec 形态的值栈寻址」(prove-the-path-
+// under-test 纪律)。
+//
+// 注:同 CallJITFull,mmap 段必须经 flushICacheArm64 后才能执行。
+func CallJITSpec(codeAddr uintptr, jitCtxAddr uintptr, vsBaseAddr uintptr) uint64 {
+	return callJITSpec(codeAddr, jitCtxAddr, vsBaseAddr)
+}
