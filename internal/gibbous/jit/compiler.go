@@ -1910,6 +1910,18 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 		// s = s op1 K3; s = s op2 K4 end; return s`):154 字节模板复用
 		// xmm3 跨两段 SSE op,节省一次 load/store。优先于 hasBody 单 op
 		// 路径判定(因 hasBody2 是 hasBody 的扩展)。
+		//
+		// **spec trampoline 守卫**:body/body2/RegLimit 三路径需 spec
+		// trampoline 装 vsBase 到 callee-saved 寄存器(amd64 rbx / arm64
+		// x26)才能寻址值栈 R(aS)。arm64 callJITFull trampoline 不装
+		// x26 → 必经 archCallJITSpec;`archSupportsSpec()=false` 时
+		// (arm64 当前)直接返 ErrCompileUnsupportedShape,让 Tier 框架
+		// 退回解释器,**避免 fallthrough 到 LoadKReturn 静默错果**
+		// (承上一轮 review 真 bug 教训)。
+		if (info.hasBody2 || info.hasBody || info.forLimitIsReg) && !archSupportsSpec() {
+			return nil, ErrCompileUnsupportedShape
+		}
+
 		if info.hasBody2 {
 			buf = archEmitForLoopWithBody2(buf, info.forBodyKS, info.forInitK,
 				info.forLimitK, info.forStepK,
