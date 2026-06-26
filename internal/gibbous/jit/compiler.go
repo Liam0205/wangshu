@@ -547,7 +547,12 @@ func analyzeForLoopForm(proto *bytecode.Proto) (shapeInfo, bool) {
 		// 因为 host.GetUpval 后写槽位则 limit 已 number(若 upvalue 是
 		// number);否则 reg-limit 模板的 IsNumber guard 自动触发 deopt。
 		guvB := bytecode.B(proto.Code[1])
-		if guvB > 255 {
+		// 上限 254:`uint8(guvB) + 1` 不溢出。255 → uint8(255)+1 = 0,而
+		// 0 在该字段语义里表示「不走 upval 路径」,Run 端跳过 host.GetUpval +
+		// SetReg → reg-limit 模板读到未填充 R(forLimitReg) → 错误循环界或
+		// 误 deopt。触达极低(需第 256 个 upvalue 作 FORLOOP 上界),但属
+		// 边界自相矛盾。
+		if guvB > 254 {
 			return shapeInfo{}, false
 		}
 		si.forLimitReg = uint8(aLimit)        // 目标槽 = R(A_init+1)

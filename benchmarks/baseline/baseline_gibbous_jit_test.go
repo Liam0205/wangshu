@@ -152,6 +152,24 @@ func BenchmarkGibbousJIT_PJ3RegLimit10000Cresc(b *testing.B) {
 	benchGibbousJITWithArg(b, "for i = 1, n do end", "n", 10000, false)
 }
 
+// PJ3 body inline benchmark:`local s=0; for i=1,K do s=s+1 end; return s`
+// 形态(135 字节模板含 safepoint)— 真实生产 hot path,带状态累加循环。
+const pj3BodyAdd1000Body = `local s=0; for i=1,1000 do s=s+1 end; return s`
+const pj3BodyAdd10000Body = `local s=0; for i=1,10000 do s=s+1 end; return s`
+
+func BenchmarkGibbousJIT_PJ3BodyAdd1000(b *testing.B) {
+	benchGibbousJIT(b, pj3BodyAdd1000Body, true)
+}
+func BenchmarkGibbousJIT_PJ3BodyAdd1000Cresc(b *testing.B) {
+	benchGibbousJIT(b, pj3BodyAdd1000Body, false)
+}
+func BenchmarkGibbousJIT_PJ3BodyAdd10000(b *testing.B) {
+	benchGibbousJIT(b, pj3BodyAdd10000Body, true)
+}
+func BenchmarkGibbousJIT_PJ3BodyAdd10000Cresc(b *testing.B) {
+	benchGibbousJIT(b, pj3BodyAdd10000Body, false)
+}
+
 func BenchmarkGibbousJIT_Const(b *testing.B)      { benchGibbousJIT(b, constBody, true) }
 func BenchmarkGibbousJIT_ConstCresc(b *testing.B) { benchGibbousJIT(b, constBody, false) }
 func BenchmarkGibbousJIT_Nil(b *testing.B)        { benchGibbousJIT(b, nilBody, true) }
