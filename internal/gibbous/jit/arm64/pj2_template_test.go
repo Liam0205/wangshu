@@ -306,3 +306,154 @@ func TestPJ8_EmitArithSpeculativeChainKKWithGuardArm64_DeoptBlock(t *testing.T) 
 		t.Errorf("[112] RET = 0x%08x, want 0xd65f03c0", insn)
 	}
 }
+
+// TestPJ8_EmitArithSpeculativeBinopRegKWithGuardArm64_GuardSegment 验
+// guard 段 IsNumber check 在 [0-27]:LDR R(B) + MOV qNanBoxBase + CMP + B.HS。
+//   - [0-3]   LDR x0, [x26 + b*8]
+//   - [4-19]  MOV x1, qNanBoxBase imm64
+//   - [20-23] CMP x0, x1
+//   - [24-27] B.HS deopt (imm19=12 = (72-24)/4)
+func TestPJ8_EmitArithSpeculativeBinopRegKWithGuardArm64_GuardSegment(t *testing.T) {
+	var buf []byte
+	buf = EmitArithSpeculativeBinopRegKWithGuardArm64(buf,
+		ArithOpAddArm64, 2, 5, 0x3FF0000000000000, 0xCAFEBABE)
+
+	if len(buf) < 28 {
+		t.Fatalf("buf too short: %d", len(buf))
+	}
+
+	// [0-3] LDR x0, [x26 + 40](b=5, byteOff=40, imm12=5)
+	insn := binary.LittleEndian.Uint32(buf[0:4])
+	wantLdr := uint32(0xF9400000) | uint32(5)<<10 | uint32(26)<<5
+	if insn != wantLdr {
+		t.Errorf("[0] LDR x0, [x26 + 40] = 0x%08x, want 0x%08x", insn, wantLdr)
+	}
+
+	// [20-23] CMP x0, x1
+	insn = binary.LittleEndian.Uint32(buf[20:24])
+	wantCmp := uint32(0xEB00001F) | uint32(1)<<16 | uint32(0)<<5
+	if insn != wantCmp {
+		t.Errorf("[20] CMP x0, x1 = 0x%08x, want 0x%08x", insn, wantCmp)
+	}
+
+	// [24-27] B.HS deopt
+	insn = binary.LittleEndian.Uint32(buf[24:28])
+	if (insn & 0xFF000000) != 0x54000000 {
+		t.Errorf("[24] B.cond base wrong: 0x%08x", insn)
+	}
+	if insn&0xF != uint32(CondHS) {
+		t.Errorf("[24] B.cond cond = 0x%x, want 0x%x (HS)", insn&0xF, CondHS)
+	}
+	// imm19 = (72 - 24) / 4 = 12(无 safepoint 形态)
+	gotImm19 := (insn >> 5) & 0x7FFFF
+	if gotImm19 != 12 {
+		t.Errorf("[24] B.HS imm19 = %d, want 12 ((72-24)/4)", gotImm19)
+	}
+}
+
+// TestPJ8_EmitArithSpeculativeBinopRegKWithGuardArm64_BodyFopBytes 验
+// body 段 FOP d0,d0,d1 在 offset 56-59 编码逐字节(FADD/FSUB/FMUL/FDIV)。
+func TestPJ8_EmitArithSpeculativeBinopRegKWithGuardArm64_BodyFopBytes(t *testing.T) {
+	cases := []struct {
+		name    string
+		opSel   uint8
+		fopBase uint32
+	}{
+		{"FADD d0, d0, d1", ArithOpAddArm64, 0x1E602800},
+		{"FSUB d0, d0, d1", ArithOpSubArm64, 0x1E603800},
+		{"FMUL d0, d0, d1", ArithOpMulArm64, 0x1E600800},
+		{"FDIV d0, d0, d1", ArithOpDivArm64, 0x1E601800},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf []byte
+			buf = EmitArithSpeculativeBinopRegKWithGuardArm64(buf,
+				tc.opSel, 2, 0, 0x3FF0000000000000, 0xCAFEBABE)
+			if len(buf) < 60 {
+				t.Fatalf("buf too short: %d", len(buf))
+			}
+			// FOP 在 offset 56-59(guard 28 + LDR 4 + FMOV 4 + MOV imm64 16 + FMOV 4)
+			insn := binary.LittleEndian.Uint32(buf[56:60])
+			want := tc.fopBase | uint32(1)<<16 | uint32(0)<<5 | uint32(0)
+			if insn != want {
+				t.Errorf("[56] %s = 0x%08x, want 0x%08x", tc.name, insn, want)
+			}
+		})
+	}
+}
+
+// TestPJ8_EmitArithSpeculativeChainKKWithGuardArm64_K1K2BurnedIn 验
+// K1/K2 经 MOVZ+MOVK×3 烧进 [36-51] / [60-75] 两段(guard 28 + LDR 4 +
+// FMOV 4 后第一段 16 字节 imm64;再 FMOV 4 + FOP 4 后第二段 16 字节 imm64)。
+func TestPJ8_EmitArithSpeculativeChainKKWithGuardArm64_K1K2BurnedIn(t *testing.T) {
+	const k1value uint64 = 0xDEAD_BEEF_CAFE_FACE
+	const k2value uint64 = 0xFEED_F00D_BABE_C001
+	var buf []byte
+	buf = EmitArithSpeculativeChainKKWithGuardArm64(buf,
+		ArithOpMulArm64, ArithOpAddArm64, 2, 0, k1value, k2value, 0xCAFEBABE)
+
+	if len(buf) < 76 {
+		t.Fatalf("buf too short: %d", len(buf))
+	}
+
+	verifyMov := func(label string, offset int, want uint64) {
+		expectedImm16 := [4]uint16{
+			uint16(want & 0xFFFF),
+			uint16((want >> 16) & 0xFFFF),
+			uint16((want >> 32) & 0xFFFF),
+			uint16((want >> 48) & 0xFFFF),
+		}
+		for i, exp := range expectedImm16 {
+			off := offset + i*4
+			insn := binary.LittleEndian.Uint32(buf[off : off+4])
+			got := uint16((insn >> 5) & 0xFFFF)
+			if got != exp {
+				t.Errorf("%s movz/movk[%d]@%d imm16 = 0x%04x, want 0x%04x",
+					label, i, off, got, exp)
+			}
+		}
+	}
+	// K1 在 [36-51](guard 28 + LDR 4 + FMOV 4)
+	verifyMov("K1", 36, k1value)
+	// K2 在 [60-75](K1 段 24 字节 = 16 + FMOV 4 + FOP1 4 后)
+	verifyMov("K2", 60, k2value)
+}
+
+// TestPJ8_EmitArithSpeculativeChainKKWithGuardArm64_BodyFopsBytes 验
+// FOP1 在 offset 56-59 + FOP2 在 offset 80-83。
+func TestPJ8_EmitArithSpeculativeChainKKWithGuardArm64_BodyFopsBytes(t *testing.T) {
+	cases := []struct {
+		name     string
+		op1, op2 uint8
+		fop1Base uint32
+		fop2Base uint32
+	}{
+		{"MUL+ADD", ArithOpMulArm64, ArithOpAddArm64, 0x1E600800, 0x1E602800},
+		{"SUB+DIV", ArithOpSubArm64, ArithOpDivArm64, 0x1E603800, 0x1E601800},
+		{"DIV+MUL", ArithOpDivArm64, ArithOpMulArm64, 0x1E601800, 0x1E600800},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf []byte
+			buf = EmitArithSpeculativeChainKKWithGuardArm64(buf,
+				tc.op1, tc.op2, 2, 0,
+				0x3FF0000000000000, 0x4000000000000000, 0xCAFEBABE)
+			if len(buf) < 84 {
+				t.Fatalf("buf too short: %d", len(buf))
+			}
+
+			// FOP1 在 offset 56-59
+			insn := binary.LittleEndian.Uint32(buf[56:60])
+			want1 := tc.fop1Base | uint32(1)<<16 | uint32(0)<<5 | uint32(0)
+			if insn != want1 {
+				t.Errorf("[56] op1 = 0x%08x, want 0x%08x", insn, want1)
+			}
+			// FOP2 在 offset 80-83
+			insn = binary.LittleEndian.Uint32(buf[80:84])
+			want2 := tc.fop2Base | uint32(1)<<16 | uint32(0)<<5 | uint32(0)
+			if insn != want2 {
+				t.Errorf("[80] op2 = 0x%08x, want 0x%08x", insn, want2)
+			}
+		})
+	}
+}
