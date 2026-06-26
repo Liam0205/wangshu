@@ -10,6 +10,7 @@
 package jit
 
 import (
+	"github.com/Liam0205/wangshu/internal/bytecode"
 	jitamd64 "github.com/Liam0205/wangshu/internal/gibbous/jit/amd64"
 )
 
@@ -50,6 +51,36 @@ func archCallJITSpec(codeAddr uintptr, jitCtxAddr uintptr, vsBase uintptr) uint6
 // jitamd64.EmitArithSpeculativeAddWithGuard(92 字节)。
 func archEmitArithSpecAddWithGuard(buf []byte, a, b, c uint8, deoptCode uint64) []byte {
 	return jitamd64.EmitArithSpeculativeAddWithGuard(buf, a, b, c, deoptCode)
+}
+
+// archSseOpForArith 把 Lua 算术 opcode 映射到 SSE binop opcode 字节。
+// 不支持的 op(MOD/POW——MOD 用 floor-mod 不是单条 SSE,POW 用 pow() helper)
+// 返回 (0, false)。
+//
+// **承 03-speculation-ic.md §2 投机白名单**:f64 快路径投机仅对 ADD/SUB/
+// MUL/DIV(IEEE 754 单条 SSE 指令)成立,其它算术族走 host helper 慢路径
+// (与解释器 byte-equal,无加速但正确性兜底)。
+func archSseOpForArith(op uint8) (byte, bool) {
+	switch bytecode.OpCode(op) {
+	case bytecode.ADD:
+		return jitamd64.SseOpAddsd, true
+	case bytecode.SUB:
+		return jitamd64.SseOpSubsd, true
+	case bytecode.MUL:
+		return jitamd64.SseOpMulsd, true
+	case bytecode.DIV:
+		return jitamd64.SseOpDivsd, true
+	default:
+		return 0, false
+	}
+}
+
+// archEmitArithSpecBinopWithGuard 拼接 PJ2 BINOP 投机模板(IsNumber×2 guard
+// + 双 number 快路径 + deopt block)字节级序列,通用版本——sseOp 由 caller
+// 经 archSseOpForArith 选好。amd64 端代理到 jitamd64.EmitArithSpeculative
+// BinopWithGuard(92 字节,与 op 无关)。
+func archEmitArithSpecBinopWithGuard(buf []byte, sseOp byte, a, b, c uint8, deoptCode uint64) []byte {
+	return jitamd64.EmitArithSpeculativeBinopWithGuard(buf, sseOp, a, b, c, deoptCode)
 }
 
 // archSupportsSpec 返 true 当本 arch 支持 PJ2 投机模板真接入。

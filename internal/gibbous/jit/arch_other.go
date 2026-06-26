@@ -59,5 +59,21 @@ func archEmitArithSpecAddWithGuard(buf []byte, a, b, c uint8, deoptCode uint64) 
 	return buf
 }
 
+// archSseOpForArith 其它 arch 不支持(sentinel 返 false)。
+func archSseOpForArith(op uint8) (byte, bool) {
+	_ = op
+	return 0, false
+}
+
+// archEmitArithSpecBinopWithGuard 其它 arch 不支持。
+func archEmitArithSpecBinopWithGuard(buf []byte, sseOp byte, a, b, c uint8, deoptCode uint64) []byte {
+	_ = sseOp
+	_ = a
+	_ = b
+	_ = c
+	_ = deoptCode
+	return buf
+}
+
 // archSupportsSpec 其它 arch 不支持。
 func archSupportsSpec() bool { return false }

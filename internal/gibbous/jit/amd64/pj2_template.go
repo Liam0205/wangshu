@@ -17,34 +17,54 @@
 
 package amd64
 
-// EmitArithSpeculativeAdd 拼接「双 number 投机 ADD A B C 模板」字节级序列。
+// SSE binop opcode bytes —— F2 0F <op> C1 形态(ADDSD/SUBSD/MULSD/DIVSD
+// xmm0, xmm1)。承 Intel SDM Vol 2:
+//   - ADDSD = F2 0F 58
+//   - MULSD = F2 0F 59
+//   - SUBSD = F2 0F 5C
+//   - DIVSD = F2 0F 5E
+const (
+	SseOpAddsd byte = 0x58
+	SseOpMulsd byte = 0x59
+	SseOpSubsd byte = 0x5C
+	SseOpDivsd byte = 0x5E
+)
+
+// EmitArithSpeculativeBinop 拼接「双 number 投机 BINOP A B C 模板」字节级序列。
 //
-// 形态:
+// 形态(以 ADD 为例):
 //
 //	movsd xmm0, [rbx + B*8]    ; 读 R(B) 到 xmm0(8 字节)
 //	movsd xmm1, [rbx + C*8]    ; 读 R(C) 到 xmm1(8 字节)
-//	addsd xmm0, xmm1           ; xmm0 += xmm1(4 字节)
+//	<sseOp> xmm0, xmm1         ; xmm0 OP xmm1(4 字节;OP = add/sub/mul/div)
 //	movsd [rbx + A*8], xmm0    ; 写回 R(A)(8 字节)
 //	ret                        ; 段返回(1 字节)
 //	——— 总计 29 字节 ———
 //
-// **预设条件**(本批不实装,留 PJ2 完整版):
-//   - rbx = valueStackBase(在 trampoline 切 SP 时由 r15 +
-//     ValueStackBaseOffset 装入)
-//   - R(B)、R(C) 都是 number(IsNumber guard 已通过——本模板假设双
-//     number 快路径,失败路径的 deopt jcc 留 PJ2 完整版)
+// **预设条件**:
+//   - rbx = valueStackBase(在 callJITSpec trampoline 加载)
+//   - R(B)、R(C) 都是 number(IsNumber guard 已通过——本模板假设双 number
+//     快路径,失败路径的 deopt jcc 在 WithGuard 版本里发)
 //
-// 参数:a/b/c 是寄存器号([0,254]);buf 是要追加字节的目标。
+// 参数:sseOp 是 SSE opcode 字节(SseOpAddsd/Subsd/Mulsd/Divsd);a/b/c 是
+// 寄存器号 [0,254];buf 是要追加字节的目标。
 //
 // 返回追加后的 buf。
-func EmitArithSpeculativeAdd(buf []byte, a, b, c uint8) []byte {
+func EmitArithSpeculativeBinop(buf []byte, sseOp byte, a, b, c uint8) []byte {
 	// 假设 valueStackBase 在 rbx,reg*8 是 disp32
 	buf = EmitMovsdXmmFromMem(buf, 0, 3 /* rbx */, int32(b)*8) // movsd xmm0, [rbx + B*8]
 	buf = EmitMovsdXmmFromMem(buf, 1, 3 /* rbx */, int32(c)*8) // movsd xmm1, [rbx + C*8]
-	buf = EmitAddsdXmmXmm(buf, 0, 1)                           // addsd xmm0, xmm1
+	// SSE binop xmm0, xmm1:F2 0F <op> C0|(0<<3)|1 = F2 0F <op> C1
+	buf = append(buf, 0xF2, 0x0F, sseOp, 0xC1)
 	buf = EmitMovsdMemFromXmm(buf, 0, 3 /* rbx */, int32(a)*8) // movsd [rbx + A*8], xmm0
 	buf = EmitRet(buf)                                         // ret
 	return buf
+}
+
+// EmitArithSpeculativeAdd 是 EmitArithSpeculativeBinop(SseOpAddsd, ...) 的
+// 向后兼容 wrapper。新代码用 EmitArithSpeculativeBinop 直接发 op。
+func EmitArithSpeculativeAdd(buf []byte, a, b, c uint8) []byte {
+	return EmitArithSpeculativeBinop(buf, SseOpAddsd, a, b, c)
 }
 
 // EncodedArithSpecAddLen 是 EmitArithSpeculativeAdd 字节数:
@@ -83,26 +103,27 @@ func EmitIsNumberGuard(buf []byte, reg uint8, deoptRel32 int32) []byte {
 const EncodedIsNumberGuardLen = EncodedMovqFromMemRegLen + EncodedMovRcxImm64Len +
 	EncodedCmpRaxRcxLen + EncodedJccRel32Len
 
-// EmitArithSpeculativeAddWithGuard 拼接「IsNumber guard ×2 + 双 number ADD
-// 快路径 + ret」完整投机模板。
+// EmitArithSpeculativeBinopWithGuard 拼接「IsNumber guard ×2 + 双 number
+// BINOP 快路径 + ret」完整投机模板(通用版本,sseOp 选 add/sub/mul/div)。
 //
-// 序列:
+// 序列(以 ADD 为例):
 //
 //	[guard-B] mov rax, [rbx+B*8] ; mov rcx, qNanBoxBase ; cmp ; jae deopt
 //	[guard-C] mov rax, [rbx+C*8] ; mov rcx, qNanBoxBase ; cmp ; jae deopt
 //	movsd xmm0, [rbx+B*8]
 //	movsd xmm1, [rbx+C*8]
-//	addsd xmm0, xmm1
+//	<sseOp> xmm0, xmm1
 //	movsd [rbx+A*8], xmm0
 //	ret
 //	[deopt:] mov rax, deoptCode ; ret
 //
-// 总长 = 26*2 + 29 + 11(deopt block) = 92 字节。
+// 总长 = 26*2 + 29 + 11(deopt block) = 92 字节(与 sseOp 无关——所有
+// SSE binop 都是 F2 0F <op> C1 = 4 字节,模板字节布局不变)。
 //
 // **注**:guard rel32 在拼接时 patch 为「跳到 deopt block 起点」的相对
 // 偏移。deoptCode 是 OSR exit 原因(承 04-osr-deopt.md),caller 出段
 // 后检测 != 0 走 host helper 慢路径。
-func EmitArithSpeculativeAddWithGuard(buf []byte, a, b, c uint8, deoptCode uint64) []byte {
+func EmitArithSpeculativeBinopWithGuard(buf []byte, sseOp byte, a, b, c uint8, deoptCode uint64) []byte {
 	startLen := len(buf)
 
 	// 计算 deopt 块偏移:guard×2 + ADD 模板(去尾 ret 单字节,因 deopt 紧跟段尾)
@@ -123,8 +144,8 @@ func EmitArithSpeculativeAddWithGuard(buf []byte, a, b, c uint8, deoptCode uint6
 	// 第二个 guard 的 rel2 计算:从 guard2 jcc 之后到 deopt 起点 = addLen
 	buf = EmitIsNumberGuard(buf, c, rel2)
 
-	// ADD 快路径(29 字节)
-	buf = EmitArithSpeculativeAdd(buf, a, b, c)
+	// BINOP 快路径(29 字节)
+	buf = EmitArithSpeculativeBinop(buf, sseOp, a, b, c)
 
 	// deopt block:mov rax, deoptCode; ret(11 字节)
 	buf = EmitMovRaxImm64(buf, deoptCode)
@@ -132,6 +153,13 @@ func EmitArithSpeculativeAddWithGuard(buf []byte, a, b, c uint8, deoptCode uint6
 
 	_ = startLen
 	return buf
+}
+
+// EmitArithSpeculativeAddWithGuard 是 EmitArithSpeculativeBinopWithGuard 的
+// ADD 形态向后兼容 wrapper(承既有 PJ2 ADD 真接入路径)。新代码用
+// EmitArithSpeculativeBinopWithGuard 直接发 op。
+func EmitArithSpeculativeAddWithGuard(buf []byte, a, b, c uint8, deoptCode uint64) []byte {
+	return EmitArithSpeculativeBinopWithGuard(buf, SseOpAddsd, a, b, c, deoptCode)
 }
 
 // EncodedArithSpecAddWithGuardLen 是完整投机 ADD 模板(含 IsNumber×2

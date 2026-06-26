@@ -777,31 +777,42 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 		return nil, ErrCompileUnsupportedShape
 	}
 
-	// **PJ2 投机 ADD 模板真接入**(承 03-speculation-ic.md §2 IsNumber×2):
-	// 当且仅当本 arch 支持(amd64)+ ADD A B C + RETURN A 2 形态 + B/C 都是
-	// 寄存器(非 RK 常量索引,B/C ≤ 254)+ 真 host(非 mock,ArenaBaseAddr
-	// 非 0)时,emit 92 字节投机模板:
-	//   guard×2 (IsNumber B + C) + 双 number 快路径 (movsd+addsd+movsd+ret)
+	// **PJ2 投机算术模板真接入**(承 03-speculation-ic.md §2 IsNumber×2):
+	// 当且仅当本 arch 支持(amd64)+ ADD/SUB/MUL/DIV A B C + RETURN A 2
+	// 形态 + B/C 都是寄存器(非 RK 常量索引,B/C ≤ 254)+ 真 host(非 mock,
+	// ArenaBaseAddr 非 0)时,emit 92 字节投机模板:
+	//   guard×2 (IsNumber B + C) + 双 number 快路径 (movsd+<sseOp>+movsd+ret)
 	//   + deopt block (mov rax, deoptCode + ret)
 	// Run 检测段返 RAX == specDeoptCode 即降级调 host.Arith 慢路径(byte-equal
 	// 解释器)。本 PJ2 真接入是 PJ10 luajc 档的字节级核心物理基础。
+	//
+	// **投机范围**(承 03 §2 IEEE 754 单条 SSE 指令):
+	//   - ✅ ADD / SUB / MUL / DIV:单条 SSE binop(F2 0F 58/5C/59/5E C1)
+	//   - ❌ MOD:Lua floor-mod 语义(a - floor(a/b)*b)不是单条 SSE,需
+	//     fpsub + sse round + sse sub 三指令,留 PJ3+
+	//   - ❌ POW:走 math.Pow helper(C runtime),非 SSE 一指令路径
+	// 不在白名单的算术族走 host helper 慢路径(与解释器 byte-equal)。
 	//
 	// **mock host 兜底**:Compile 时 c.hostState.ArenaBaseAddr() 返 0(jit
 	// 包内单测 mock 无真 arena)→ 不启用 spec(避免段读 [rbx+0]=读 0 SIGSEGV)。
 	// 真 crescent.State 上 ArenaBaseAddr 在 LoadProgram 后非 0,启用 spec。
 	useSpec := false
-	if archSupportsSpec() && info.preludeOp == uint8(bytecode.ADD) &&
-		info.chainOp == 0 && info.preludeArg <= 254 && info.preludeC <= 254 &&
+	var specSseOp byte
+	if archSupportsSpec() && info.chainOp == 0 &&
+		info.preludeArg <= 254 && info.preludeC <= 254 &&
 		c.hostState != nil && c.hostState.ArenaBaseAddr() != 0 {
-		useSpec = true
+		if op, ok := archSseOpForArith(info.preludeOp); ok {
+			useSpec = true
+			specSseOp = op
+		}
 	}
 
 	var buf []byte
 	if useSpec {
 		// 92 字节投机模板。deoptCode 选高位 NaN-box 段且不会被任何合法 Lua
-		// 值碰到的特殊值(0xFFFC_DE0E_AD0E_AD00 = 模仿 deopt 标记)。
+		// 值碰到的特殊值(0xFFFC_DEAD_DEADBE00 = 模仿 deopt 标记)。
 		const deoptCode uint64 = 0xFFFCDEAD_DEADBE00
-		buf = archEmitArithSpecAddWithGuard(buf, info.retA,
+		buf = archEmitArithSpecBinopWithGuard(buf, specSseOp, info.retA,
 			uint8(info.preludeArg), uint8(info.preludeC), deoptCode)
 		page, err := archMmapCode(buf)
 		if err != nil {

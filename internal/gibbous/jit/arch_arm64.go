@@ -59,5 +59,24 @@ func archEmitArithSpecAddWithGuard(buf []byte, a, b, c uint8, deoptCode uint64) 
 	return buf // 空 buf → MmapCode 返错 → Compile 拒,Compile 路径会 fallback 到 host helper
 }
 
+// archSseOpForArith arm64 端 stub——arm64 不用 SSE op 字节(用 fadd/fsub/
+// fmul/fdiv aarch64 指令,留 PJ8+ 完整版独立路径)。当前 archSupportsSpec
+// 返 false,本函数不会被调用——sentinel 返 (0, false) 保底。
+func archSseOpForArith(op uint8) (byte, bool) {
+	_ = op
+	return 0, false
+}
+
+// archEmitArithSpecBinopWithGuard arm64 端 stub——同 archEmitArithSpec
+// AddWithGuard,留 PJ8+。
+func archEmitArithSpecBinopWithGuard(buf []byte, sseOp byte, a, b, c uint8, deoptCode uint64) []byte {
+	_ = sseOp
+	_ = a
+	_ = b
+	_ = c
+	_ = deoptCode
+	return buf
+}
+
 // archSupportsSpec arm64 当前不支持(留 PJ8+)。
 func archSupportsSpec() bool { return false }
