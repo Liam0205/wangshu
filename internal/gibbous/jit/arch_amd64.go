@@ -114,6 +114,22 @@ func archEmitForLoopRegLimit(buf []byte, kInit, kStep uint64, limitReg uint8, de
 	return jitamd64.EmitForLoopRegLimit(buf, kInit, kStep, limitReg, deoptCode, preemptFlagOff)
 }
 
+// archEmitForLoopWithBody 拼接 PJ3 FORLOOP body 含 reg-K op 形态模板
+// (`local s=K_s; for i=K1,K2 do s = s op K3 end; return s`)。135 字节
+// 含 safepoint check。
+func archEmitForLoopWithBody(buf []byte, kS, kInit, kLimit, kStep, kBody uint64,
+	aS uint8, sseOp byte, preemptFlagOff int32) []byte {
+	return jitamd64.EmitForLoopWithRegKBody(buf, kS, kInit, kLimit, kStep, kBody, aS, sseOp, preemptFlagOff)
+}
+
+// archEmitForLoopWithBody2 拼接 PJ3 FORLOOP 二段 body 模板
+// (`local s; for i=K1,K2 do s = s op1 K3; s = s op2 K4 end; return s`)。
+// 154 字节复用 xmm3 跨两段省一次 load/store。
+func archEmitForLoopWithBody2(buf []byte, kS, kInit, kLimit, kStep, kBody1, kBody2 uint64,
+	aS uint8, sseOp1, sseOp2 byte, preemptFlagOff int32) []byte {
+	return jitamd64.EmitForLoopWithRegKBody2(buf, kS, kInit, kLimit, kStep, kBody1, kBody2, aS, sseOp1, sseOp2, preemptFlagOff)
+}
+
 // archSupportsSpec 返 true 当本 arch 支持 PJ2 投机模板真接入。
 // amd64 ✅;arm64/其它 ❌(留 PJ8+)。
 func archSupportsSpec() bool { return true }
