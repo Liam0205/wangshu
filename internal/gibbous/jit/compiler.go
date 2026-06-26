@@ -117,19 +117,27 @@ type shapeInfo struct {
 //	[5] RETURN   0   1       ; 空 return
 //	[6] RETURN   0   1       ; (可选 dead RETURN,luac 主 chunk 尾部)
 //
-// **形态约束**(为字节级模板简化,只接最简):
+// **形态约束**:
 //   - proto.Code 长度 6 或 7(尾部可选 dead RETURN)
 //   - [0] LOADK A_init -kInit
-//   - [1] LOADK A_init+1 -kLimit
+//   - [1] LOADK A_init+1 -kLimit **或** MOVE A_init+1 limitReg
+//     (reg-limit hot path:`for i=1, n do end` luac 编 MOVE)
 //   - [2] LOADK A_init+2 -kStep
 //   - [3] FORPREP A_init sBx=0(空 body 时 luac 编 0)
 //   - [4] FORLOOP A_init sBx=-1(回边跳自己)
 //   - [5] RETURN A=0 B=1(空 return)
-//   - K[kInit / kLimit / kStep] 必须都是 number(否则降级 host)
+//   - K[kInit / kStep] 必须都是 number(否则降级 host);LOADK 形态下
+//     K[kLimit] 也必须是 number;MOVE 形态下 limitReg 运行期 IsNumber
+//     guard
+//
+// **当前已接入主路径**(承 Compile 端):
+//   - LOADK limit 形态:69/83 字节模板(空 body 全常量),已实测
+//     7-25x over gopher-lua
+//   - MOVE limit 形态:117 字节模板(IsNumber guard + deopt 调
+//     host.ForPrep raise byte-equal P1),hot path 真接入完整
 //
 // **不支持**(留 PJ3 真接入扩展):
 //   - body 非空(需 inline body opcodes + 寄存器分配)
-//   - limit 是参数 reg(`for i=1,n do`)— 需 IsNumber guard
 //   - 嵌套 for / 含 break(JMP)
 //   - 非默认 step(step=1 隐含;非默认编码 step 仍走本路径,因 step 也是 K)
 func analyzeForLoopForm(proto *bytecode.Proto) (shapeInfo, bool) {
