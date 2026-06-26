@@ -9,6 +9,13 @@
 // `wangshu_p3 wangshu_profile` build 下兑现「P3 凸月路径覆盖」承诺,
 // 让那 83 个一次性小脚本(入口次数=1,达不到 HotEntryThreshold)也经凸月
 // wasm 执行路径跑,而非退化成 p3-tag 编译的解释器路径。
+//
+// **P4 build 边界**(承外部 review 🔴 阻塞):P4 build 下 force-all 形式上
+// 启用,但 conformance 用例多为单次小脚本,~91% 不达 P4 升层闸门
+// (analyzeCompilability / recheckCompilabilityRuntime 闸门 + SupportsAllOpcodes
+// 白名单限制)。这是 conformance 用例形态决定的,**真 P4 路径验收以
+// `test/difftest/p4_test.go` 为准**(重复调用 + PromotionCount>0 守卫)。
+// 本文件 build tag 中立(P1/P3/P4 全 build 跑),但 P4 build 下不强断言升层。
 package conformance
 
 import (
