@@ -294,25 +294,30 @@ return f(t)`
 // 两 phase 形态:Phase 1 warmup 让 P1 解释器跑 setter → icSetTable 填
 // IC[0]=ArrayHit;Phase 2 force-all 升 inner kernel → analyzeSetTable
 // ArrayHit 命中 → SETTABLE 字节级 inline 编译 → SpecTableHits++=1。
+//
+// **值证伪强化**(承外部 review 反馈):Phase 2 末次写值用「与 warmup
+// 末次值不同」的值(99),让 return t[1] 能区分「Phase 2 真写入 vs Phase
+// 2 写错索引/未写依赖 Phase 1 残值」两种情况。
 func TestPJ4_TableSetArrayHit_E2E_WarmupThenForce(t *testing.T) {
 	jit.ResetSpecHits()
 
 	src := `
 local function setter(t, v) t[1] = v end
 local t = {0, 0, 0}
-for i = 1, 100 do setter(t, i) end  -- warmup:P1 填 IC[0]=ArrayHit + 写值
-setter(t, 42)  -- 升 P4 后再调
+for i = 1, 100 do setter(t, i) end  -- warmup:末次写 t[1] = 100
+setter(t, 99)  -- 升 P4 后写不同值,与 warmup 末值(100)区分
 return t[1]`
 
 	st, mainCl := loadFnP4(t, src)
 
-	// Phase 1:不开 force-all,P1 跑 warmup + 末次 setter 调 100 次
+	// Phase 1:不开 force-all,P1 跑 warmup 末次 t[1]=100 + setter(t,99)
+	// 注:Phase 1 实际是 P1 跑完整 chunk(包含末段 setter(t,99))→ t[1]=99
 	rets1, err := st.Call(value.GCRefOf(mainCl), nil, 1)
 	if err != nil {
 		t.Fatalf("Phase 1 run: %v", err)
 	}
-	if got := value.AsNumber(value.Value(rets1[0])); got != 42 {
-		t.Errorf("Phase 1 result = %v, want 42(末次 setter 写入)", got)
+	if got := value.AsNumber(value.Value(rets1[0])); got != 99 {
+		t.Errorf("Phase 1 result = %v, want 99(末次 setter(t,99) 写入)", got)
 	}
 	if jit.SpecTableHits() != 0 {
 		t.Errorf("Phase 1 末:SpecTableHits=%d, want 0", jit.SpecTableHits())
@@ -326,8 +331,8 @@ return t[1]`
 	if err != nil {
 		t.Fatalf("Phase 2 run: %v", err)
 	}
-	if got := value.AsNumber(value.Value(rets2[0])); got != 42 {
-		t.Errorf("Phase 2 result = %v, want 42", got)
+	if got := value.AsNumber(value.Value(rets2[0])); got != 99 {
+		t.Errorf("Phase 2 result = %v, want 99(SETTABLE inline 写入 t[1]=99)", got)
 	}
 	hitsAfter := jit.SpecTableHits()
 	t.Logf("SETTABLE SpecTableHits: %d → %d(Phase 2 增量 = %d)",
