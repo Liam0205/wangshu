@@ -73,6 +73,27 @@ const cmpBody = `local x=7; return x == 7`
 // (mmap 段直发 IsNumber guard×2 + movsd+addsd+movsd+ret 字节级)。
 const specAddBody = `local x=7; local y=11; return x+y`
 
+// PJ2 投机 SUB/MUL/DIV 形态:reg+reg 双 number 投机模板,字节级 SSE op =
+// F2 0F 5C/59/5E C1(分别 SUBSD/MULSD/DIVSD),与 ADD 同 92 字节模板布局。
+const specSubBody = `local x=11; local y=7; return x-y`
+const specMulBody = `local x=6; local y=7; return x*y`
+const specDivBody = `local x=42; local y=6; return x/y`
+
+// PJ2 投机 reg-K 形态:`R(B) op K` 中 K 编译期烧 imm64 直发段,只 guard
+// reg 端(73 字节模板,比 reg-reg 少 19 字节)。常见 hot path 常量化形态,
+// luac 编 `x+5` 等为 ADD A B(reg) C(>=256 = K idx)。
+const specRegKAddBody = `local x=7; return x+5`
+const specRegKSubBody = `local x=10; return x-3`
+const specRegKMulBody = `local x=7; return x*2`
+const specRegKDivBody = `local x=42; return x/6`
+
+// PJ2 投机 chain-KK 二段链式形态:`R(B) op1 K1 op2 K2`,luac 编 `x*2+1`
+// 为 MUL+ADD 链式(op1.C=K1 / op2.C=K2 / op2.B=retA 中间值衔接)。chain
+// 模板复用 xmm0 跨两段 SSE binop,一次 mmap 段调用完成两次算术,省一次
+// boundary 跨界 + reg-stack 中转。
+const specChainMulAddBody = `local x=7; return x*2+1`
+const specChainAddMulBody = `local x=7; return (x+1)*2`
+
 func BenchmarkGibbousJIT_Const(b *testing.B)      { benchGibbousJIT(b, constBody, true) }
 func BenchmarkGibbousJIT_ConstCresc(b *testing.B) { benchGibbousJIT(b, constBody, false) }
 func BenchmarkGibbousJIT_Nil(b *testing.B)        { benchGibbousJIT(b, nilBody, true) }
@@ -89,3 +110,36 @@ func BenchmarkGibbousJIT_CmpCresc(b *testing.B)   { benchGibbousJIT(b, cmpBody, 
 // PJ2 投机 ADD reg+reg 形态:命中 spec 模板的真 luajc 档相关数据。
 func BenchmarkGibbousJIT_SpecAdd(b *testing.B)      { benchGibbousJIT(b, specAddBody, true) }
 func BenchmarkGibbousJIT_SpecAddCresc(b *testing.B) { benchGibbousJIT(b, specAddBody, false) }
+
+// PJ2 投机 SUB/MUL/DIV 同款 P4 vs crescent 对比(命中 92 字节 spec 模板)。
+func BenchmarkGibbousJIT_SpecSub(b *testing.B)      { benchGibbousJIT(b, specSubBody, true) }
+func BenchmarkGibbousJIT_SpecSubCresc(b *testing.B) { benchGibbousJIT(b, specSubBody, false) }
+func BenchmarkGibbousJIT_SpecMul(b *testing.B)      { benchGibbousJIT(b, specMulBody, true) }
+func BenchmarkGibbousJIT_SpecMulCresc(b *testing.B) { benchGibbousJIT(b, specMulBody, false) }
+func BenchmarkGibbousJIT_SpecDiv(b *testing.B)      { benchGibbousJIT(b, specDivBody, true) }
+func BenchmarkGibbousJIT_SpecDivCresc(b *testing.B) { benchGibbousJIT(b, specDivBody, false) }
+
+// PJ2 投机 reg-K 四档(73 字节模板,单 guard,K 烧 imm64)P4 vs crescent。
+func BenchmarkGibbousJIT_SpecRegKAdd(b *testing.B)      { benchGibbousJIT(b, specRegKAddBody, true) }
+func BenchmarkGibbousJIT_SpecRegKAddCresc(b *testing.B) { benchGibbousJIT(b, specRegKAddBody, false) }
+func BenchmarkGibbousJIT_SpecRegKSub(b *testing.B)      { benchGibbousJIT(b, specRegKSubBody, true) }
+func BenchmarkGibbousJIT_SpecRegKSubCresc(b *testing.B) { benchGibbousJIT(b, specRegKSubBody, false) }
+func BenchmarkGibbousJIT_SpecRegKMul(b *testing.B)      { benchGibbousJIT(b, specRegKMulBody, true) }
+func BenchmarkGibbousJIT_SpecRegKMulCresc(b *testing.B) { benchGibbousJIT(b, specRegKMulBody, false) }
+func BenchmarkGibbousJIT_SpecRegKDiv(b *testing.B)      { benchGibbousJIT(b, specRegKDivBody, true) }
+func BenchmarkGibbousJIT_SpecRegKDivCresc(b *testing.B) { benchGibbousJIT(b, specRegKDivBody, false) }
+
+// PJ2 投机 chain-KK 二段链式(92 字节模板,单 guard,双 K imm64,一段段
+// 跑省一次 boundary)P4 vs crescent。
+func BenchmarkGibbousJIT_SpecChainMulAdd(b *testing.B) {
+	benchGibbousJIT(b, specChainMulAddBody, true)
+}
+func BenchmarkGibbousJIT_SpecChainMulAddCresc(b *testing.B) {
+	benchGibbousJIT(b, specChainMulAddBody, false)
+}
+func BenchmarkGibbousJIT_SpecChainAddMul(b *testing.B) {
+	benchGibbousJIT(b, specChainAddMulBody, true)
+}
+func BenchmarkGibbousJIT_SpecChainAddMulCresc(b *testing.B) {
+	benchGibbousJIT(b, specChainAddMulBody, false)
+}
