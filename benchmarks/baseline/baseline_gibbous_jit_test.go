@@ -16,6 +16,7 @@
 package baseline
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/Liam0205/wangshu"
@@ -30,6 +31,14 @@ func wrapKernelJIT(body string) string {
 	return "local function kernel()\n" + body + "\nend\nlocal t = 0\nfor _ = 1, 50 do t = kernel() end\nreturn t"
 }
 
+// wrapKernelJITWithArg 包带参 kernel(用于 reg-limit 形态:`for i=1,n do
+// end`,n 是参数 reg R(0)= luac 编 MOVE R(A+1) R(0))。kernel 接收一个
+// 参数 N 并以 N 跑循环;外层 wrap × 50 调 kernel(N) 摊薄 boundary。
+func wrapKernelJITWithArg(body string, argName string, argValue int) string {
+	return "local function kernel(" + argName + ")\n" + body + "\nend\nlocal t = 0\nfor _ = 1, 50 do t = kernel(" +
+		fmt.Sprint(argValue) + ") end\nreturn t"
+}
+
 func benchGibbousJIT(b *testing.B, body string, force bool) {
 	prog, err := wangshu.Compile([]byte(wrapKernelJIT(body)), "bench-jit")
 	if err != nil {
@@ -38,6 +47,26 @@ func benchGibbousJIT(b *testing.B, body string, force bool) {
 	st := wangshu.NewState(wangshu.Options{})
 	st.SetForceAllPromote(force)
 	if _, err := prog.Run(st); err != nil { // 预热升层
+		b.Fatalf("warmup: %v", err)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := prog.Run(st); err != nil {
+			b.Fatalf("run: %v", err)
+		}
+	}
+}
+
+// benchGibbousJITWithArg 同 benchGibbousJIT 但 wrap 带参 kernel。
+func benchGibbousJITWithArg(b *testing.B, body, argName string, argValue int, force bool) {
+	src := wrapKernelJITWithArg(body, argName, argValue)
+	prog, err := wangshu.Compile([]byte(src), "bench-jit-arg")
+	if err != nil {
+		b.Fatalf("compile: %v", err)
+	}
+	st := wangshu.NewState(wangshu.Options{})
+	st.SetForceAllPromote(force)
+	if _, err := prog.Run(st); err != nil {
 		b.Fatalf("warmup: %v", err)
 	}
 	b.ResetTimer()
@@ -106,20 +135,22 @@ const pj3ForLoop100Body = `for i = 1, 100 do end`
 const pj3ForLoop1000Body = `for i = 1, 1000 do end`
 const pj3ForLoop10000Body = `for i = 1, 10000 do end`
 
-// PJ3 reg-limit hot path 形态:`function(n) for i=1,n do end end`(luac
-// 编 limit 为 MOVE A B,B=参数 R(0))。117 字节模板含 IsNumber guard +
-// 浮点 loop + safepoint + deopt block(deopt 时调 host.ForPrep raise
-// byte-equal P1)。
-//
-// **注**:wrapKernelJIT 的 kernel 形态 = `local function kernel()
-// <body> end`,本档 body 应当让 kernel 接受参数。但 wrapKernelJIT 的
-// kernel 是无参——我们用 closure capture n 来传 reg-limit
-// (`local function kernel() for i=1,n do end end`,n upvalue 形态),
-// luac 也编 MOVE A B 但 B 是 GETUPVAL 之后槽。 简化:直接用顶层 for 循环
-// 形式 + wrapKernelJIT 外层为 main chunk(vararg,不升层),inner kernel
-// 必须 paramless。本档跳过 wrap,改用顶层 chunk 加 closure 包参。这块
-// 复杂,留 PJ3+ 完整 benchmark 接入。简化:本会话仅落 reg-limit fast/
-// deopt 单测 + e2e(承上 commit),benchmark 数值留下一会话。
+// PJ3 reg-limit hot path benchmark:`function(n) for i=1,n do end end`
+// (luac 编 [1] MOVE A_init+1 0,即 limit = R(0) = 参数 n)。117 字节
+// 模板含 IsNumber guard + 浮点 loop + safepoint + deopt block,
+// fast path 与全常量空 body 同款字节级 inline,差别仅多一次 guard。
+func BenchmarkGibbousJIT_PJ3RegLimit1000(b *testing.B) {
+	benchGibbousJITWithArg(b, "for i = 1, n do end", "n", 1000, true)
+}
+func BenchmarkGibbousJIT_PJ3RegLimit1000Cresc(b *testing.B) {
+	benchGibbousJITWithArg(b, "for i = 1, n do end", "n", 1000, false)
+}
+func BenchmarkGibbousJIT_PJ3RegLimit10000(b *testing.B) {
+	benchGibbousJITWithArg(b, "for i = 1, n do end", "n", 10000, true)
+}
+func BenchmarkGibbousJIT_PJ3RegLimit10000Cresc(b *testing.B) {
+	benchGibbousJITWithArg(b, "for i = 1, n do end", "n", 10000, false)
+}
 
 func BenchmarkGibbousJIT_Const(b *testing.B)      { benchGibbousJIT(b, constBody, true) }
 func BenchmarkGibbousJIT_ConstCresc(b *testing.B) { benchGibbousJIT(b, constBody, false) }
