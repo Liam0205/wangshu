@@ -567,3 +567,103 @@ func TestPJ8_EmitSelfNodeHitArm64_DeoptBlock(t *testing.T) {
 		t.Errorf("[196] RET = 0x%08x, want 0xd65f03c0", insn)
 	}
 }
+
+// TestPJ8_EmitGetTableArrayHitArm64_StableShapeBurnedIn 验 stableShape
+// 经 MOVZ+MOVK×3 烧进 [76-91](IC ArrayHit 模板 word5 gen check 段)。
+// 步骤:LDR R(B) 4 + LSR 48 4 + MOV TagTable 16 + CMP 4 + B.NE 4 +
+//
+//	re-load LDR 4 + MOV payloadMask 16 + AND 4 + MOV reg 4 +
+//	LDR x14 4 + ADD SIB 4 + LDR word5 4 + LSR 32 4 = 76 字节
+//
+// → MOV stableShape imm64 在 offset 76-91。
+func TestPJ8_EmitGetTableArrayHitArm64_StableShapeBurnedIn(t *testing.T) {
+	const stableShape uint32 = 0xCAFE_BEEF
+	var buf []byte
+	buf = EmitGetTableArrayHitArm64(buf, 1, 0, stableShape, 3, 16, 0xDEADBEEF)
+
+	if len(buf) < 92 {
+		t.Fatalf("buf too short: %d", len(buf))
+	}
+	// MOV x3, stableShape imm64 段 [76-91]
+	expectedImm16 := [4]uint16{
+		uint16(stableShape & 0xFFFF),
+		uint16((stableShape >> 16) & 0xFFFF),
+		0, // stableShape 是 uint32,高位为 0
+		0,
+	}
+	for i, exp := range expectedImm16 {
+		off := 76 + i*4
+		insn := binary.LittleEndian.Uint32(buf[off : off+4])
+		got := uint16((insn >> 5) & 0xFFFF)
+		if got != exp {
+			t.Errorf("stableShape movz/movk[%d]@%d imm16 = 0x%04x, want 0x%04x",
+				i, off, got, exp)
+		}
+	}
+}
+
+// TestPJ8_EmitGetTableNodeHitArm64_StableKeyBurnedIn 验 stableKey 经
+// MOVZ+MOVK×3 烧进 [116-131](NodeHit 模板 NodeKey 比对段)。
+// 步骤:GetTable ArrayHit 前缀 76 字节(word5+LSR)+ MOV stableShape 16 +
+//
+//	CMP 4 + B.NE 4 + LDR nodeRef 4 + MOV reg 4 + ADD SIB 4 + LDR NodeKey 4
+//
+// = 116 字节 → MOV stableKey 在 offset 116-131。
+func TestPJ8_EmitGetTableNodeHitArm64_StableKeyBurnedIn(t *testing.T) {
+	const stableKey uint64 = 0xFFF8_0000_DEAD_BEEF
+	var buf []byte
+	buf = EmitGetTableNodeHitArm64(buf, 1, 0, 7, 2, stableKey, 16, 0xCAFEBABE)
+
+	if len(buf) < 132 {
+		t.Fatalf("buf too short: %d", len(buf))
+	}
+	expectedImm16 := [4]uint16{
+		uint16(stableKey & 0xFFFF),
+		uint16((stableKey >> 16) & 0xFFFF),
+		uint16((stableKey >> 32) & 0xFFFF),
+		uint16((stableKey >> 48) & 0xFFFF),
+	}
+	for i, exp := range expectedImm16 {
+		off := 116 + i*4
+		insn := binary.LittleEndian.Uint32(buf[off : off+4])
+		got := uint16((insn >> 5) & 0xFFFF)
+		if got != exp {
+			t.Errorf("stableKey movz/movk[%d]@%d imm16 = 0x%04x, want 0x%04x",
+				i, off, got, exp)
+		}
+		// Rd 字段必须是 3(x3)
+		if (insn & 0x1F) != 3 {
+			t.Errorf("stableKey movz/movk[%d]@%d Rd = %d, want 3 (x3)",
+				i, off, insn&0x1F)
+		}
+	}
+}
+
+// TestPJ8_EmitSetTableNodeHitArm64_StableKeyBurnedIn 验 SETTABLE NodeHit
+// 模板 stableKey 烧入位置。SETTABLE NodeHit 字节布局:guard 28 + re-load
+// 36 + word5+LSR 8 + MOV stableShape 16 + CMP 4 + B.NE 4 + LDR nodeRef 4
+// + MOV reg 4 + ADD SIB 4 + LDR NodeKey 4 = 112 → MOV stableKey [112-127]。
+func TestPJ8_EmitSetTableNodeHitArm64_StableKeyBurnedIn(t *testing.T) {
+	const stableKey uint64 = 0xFFF8_0000_CAFE_BABE
+	var buf []byte
+	buf = EmitSetTableNodeHitArm64(buf, 1, 2, 7, 2, stableKey, 16, 0xDEADBEEF)
+
+	if len(buf) < 128 {
+		t.Fatalf("buf too short: %d", len(buf))
+	}
+	expectedImm16 := [4]uint16{
+		uint16(stableKey & 0xFFFF),
+		uint16((stableKey >> 16) & 0xFFFF),
+		uint16((stableKey >> 32) & 0xFFFF),
+		uint16((stableKey >> 48) & 0xFFFF),
+	}
+	for i, exp := range expectedImm16 {
+		off := 112 + i*4
+		insn := binary.LittleEndian.Uint32(buf[off : off+4])
+		got := uint16((insn >> 5) & 0xFFFF)
+		if got != exp {
+			t.Errorf("stableKey movz/movk[%d]@%d imm16 = 0x%04x, want 0x%04x",
+				i, off, got, exp)
+		}
+	}
+}
