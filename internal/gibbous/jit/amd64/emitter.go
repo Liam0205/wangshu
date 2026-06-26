@@ -623,3 +623,21 @@ func EmitCmpByteR15DispImm8(buf []byte, disp32 int32, imm8 byte) []byte {
 // EncodedCmpByteR15DispImm8Len 是「cmp byte [r15+disp32], imm8」字节数(8):
 // REX(1) + opcode(1) + ModRM(1) + disp32(4) + imm8(1) = 8。
 const EncodedCmpByteR15DispImm8Len = 8
+
+// PatchRel32 把 buf 指定位置(rel32 起点)处的 4 字节用 newRel32 覆写。
+// 用例:PJ3 字节级 codegen 时 forward jmp 先发 placeholder rel32=0,然后
+// 跳目标 emit 完知道段内偏移后回填真实 rel32。
+//
+// 参数:
+//   - buf:正在 emit 的 byte slice;
+//   - rel32Off:rel32 起点字节偏移(jcc 形如 `0F 8x rel32` 时 rel32Off
+//     即 jcc 起点 + 2;无前缀 jmp `E9 rel32` 时 rel32Off = jmp 起点 + 1);
+//   - newRel32:回填值(目标地址相对 (rel32Off + 4) 的偏移)。
+//
+// 不做边界检查——caller 经 len(buf) 自查 rel32Off+4 ≤ len(buf)。
+func PatchRel32(buf []byte, rel32Off int, newRel32 int32) {
+	buf[rel32Off+0] = byte(uint32(newRel32))
+	buf[rel32Off+1] = byte(uint32(newRel32) >> 8)
+	buf[rel32Off+2] = byte(uint32(newRel32) >> 16)
+	buf[rel32Off+3] = byte(uint32(newRel32) >> 24)
+}
