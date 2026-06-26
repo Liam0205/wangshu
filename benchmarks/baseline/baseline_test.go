@@ -44,6 +44,16 @@ for i = 1, 1000 do s = s + i * i end
 return s
 `
 
+// PJ3 同款空 body for 循环(对位 wangshu PJ3 FORLOOP inline 比较):
+// **形态对位**——gopher 跑同款 wrap-kernel × 50 形态,与 wangshu_jit
+// wrapKernelJIT 完全对位(避免 apples-to-oranges 工作负载错配)。
+const pj3EmptyLoop100Src = `local function kernel() for i = 1, 100 do end end
+local t = 0; for _ = 1, 50 do t = kernel() or 0 end; return t`
+const pj3EmptyLoop1000Src = `local function kernel() for i = 1, 1000 do end end
+local t = 0; for _ = 1, 50 do t = kernel() or 0 end; return t`
+const pj3EmptyLoop10000Src = `local function kernel() for i = 1, 10000 do end end
+local t = 0; for _ = 1, 50 do t = kernel() or 0 end; return t`
+
 func benchWangshu(b *testing.B, src string) {
 	prog, err := wangshu.Compile([]byte(src), "bench")
 	if err != nil {
@@ -83,3 +93,8 @@ func BenchmarkArith_Gopher(b *testing.B)  { benchGopher(b, arithSrc) }
 
 func BenchmarkLoop_Wangshu(b *testing.B) { benchWangshu(b, loopSrc) }
 func BenchmarkLoop_Gopher(b *testing.B)  { benchGopher(b, loopSrc) }
+
+// PJ3 同款空 body for 循环(gopher 对位):
+func BenchmarkPJ3EmptyLoop100_Gopher(b *testing.B)   { benchGopher(b, pj3EmptyLoop100Src) }
+func BenchmarkPJ3EmptyLoop1000_Gopher(b *testing.B)  { benchGopher(b, pj3EmptyLoop1000Src) }
+func BenchmarkPJ3EmptyLoop10000_Gopher(b *testing.B) { benchGopher(b, pj3EmptyLoop10000Src) }
