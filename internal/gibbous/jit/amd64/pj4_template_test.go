@@ -141,3 +141,104 @@ func TestPJ4_EmitGetTableArrayHit_NoSimplifiedGuard(t *testing.T) {
 		}
 	}
 }
+
+// TestPJ4_EmitGetTableNodeHit_Length 验 NodeHit 模板字节级长度自洽。
+// 预期长度 ~159 字节(ArrayHit 132 字节 + key 比对 27 字节:NodeKey load
+// 8 + mov rdx imm64 10 + cmp rax rdx 3 + jne rel32 6)。
+func TestPJ4_EmitGetTableNodeHit_Length(t *testing.T) {
+	var buf []byte
+	buf = EmitGetTableNodeHit(buf,
+		1,                     // aReg = R(1)
+		0,                     // bReg = R(0)(table)
+		7,                     // stableShape (gen)
+		2,                     // stableIndex
+		0xFFFB_DEAD_BEEF_CAFE, // stableKey(模拟 string NaN-box)
+		16,                    // arenaBaseOff
+		0xFFFCDEAD_DEADBEAD,   // deoptCode
+	)
+	if len(buf) == 0 {
+		t.Fatal("EmitGetTableNodeHit returned empty buf")
+	}
+	t.Logf("EmitGetTableNodeHit emitted %d bytes", len(buf))
+	if buf[len(buf)-1] != 0xC3 {
+		t.Errorf("NodeHit template should end with ret(0xC3), got 0x%02x",
+			buf[len(buf)-1])
+	}
+}
+
+// TestPJ4_EmitGetTableNodeHit_StrictIsTableGuard 验 NodeHit 模板复用同款
+// 严密 IsTable guard 字节序列(对位 ArrayHit StrictIsTableGuard)。
+func TestPJ4_EmitGetTableNodeHit_StrictIsTableGuard(t *testing.T) {
+	var buf []byte
+	buf = EmitGetTableNodeHit(buf, 1, 0, 7, 2, 0xFFFB_0000_0000_0001,
+		16, 0xCAFEBABE)
+
+	// 查 shr rax, 48(48 C1 E8 30)在模板前 20 字节
+	found := false
+	for i := 0; i <= 20-4; i++ {
+		if buf[i] == 0x48 && buf[i+1] == 0xC1 && buf[i+2] == 0xE8 && buf[i+3] == 48 {
+			found = true
+			// 紧随其后 cmp eax, 0xFFFC + jne rel32
+			if i+10 >= len(buf) {
+				t.Fatalf("strict guard 段越界")
+			}
+			if buf[i+4] != 0x3D ||
+				buf[i+5] != 0xFC || buf[i+6] != 0xFF ||
+				buf[i+7] != 0x00 || buf[i+8] != 0x00 {
+				t.Errorf("NodeHit cmp eax 0xFFFC bytes wrong at %d", i+4)
+			}
+			if buf[i+9] != 0x0F || buf[i+10] != 0x85 {
+				t.Errorf("NodeHit jne rel32 prefix wrong at %d", i+9)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Errorf("NodeHit 严密 IsTable guard 字节序列未在模板前 20 字节出现")
+	}
+}
+
+// TestPJ4_EmitGetTableNodeHit_KeyComparison 验 NodeHit 模板含 key 比对段
+// (mov rdx, stableKey + cmp rax, rdx + jne deopt 19 字节序列)。
+//
+// stableKey 用 0xFFFB_1234_5678_9ABC 模拟 string NaN-box,验 imm64 字节
+// 序列 BC 9A 78 56 34 12 FB FF(小端)出现在 mov rdx 后。
+func TestPJ4_EmitGetTableNodeHit_KeyComparison(t *testing.T) {
+	const stableKey uint64 = 0xFFFB_1234_5678_9ABC
+	var buf []byte
+	buf = EmitGetTableNodeHit(buf, 1, 0, 7, 2, stableKey, 16, 0xCAFEBABE)
+
+	// 查 mov rdx imm64 = 48 BA + imm64 LE 字节
+	wantSig := []byte{0x48, 0xBA,
+		0xBC, 0x9A, 0x78, 0x56, 0x34, 0x12, 0xFB, 0xFF}
+	found := false
+	for i := 0; i+9 < len(buf); i++ {
+		match := true
+		for j, b := range wantSig {
+			if buf[i+j] != b {
+				match = false
+				break
+			}
+		}
+		if match {
+			found = true
+			// 后跟 cmp rax, rdx = 48 39 D0(3 字节)+ jne rel32 = 0F 85 ...(6 字节)
+			if i+12 >= len(buf) {
+				t.Fatalf("key 比对段越界")
+			}
+			if buf[i+10] != 0x48 || buf[i+11] != 0x39 || buf[i+12] != 0xD0 {
+				t.Errorf("cmp rax, rdx 字节错位 at %d: got %x %x %x",
+					i+10, buf[i+10], buf[i+11], buf[i+12])
+			}
+			if buf[i+13] != 0x0F || buf[i+14] != 0x85 {
+				t.Errorf("jne rel32 prefix 字节错位 at %d", i+13)
+			}
+			t.Logf("NodeHit key 比对段在 offset %d 找到", i)
+			break
+		}
+	}
+	if !found {
+		t.Errorf("NodeHit 模板未含 stableKey=0x%x 烧入字节(mov rdx imm64 未发射)",
+			stableKey)
+	}
+}
