@@ -124,20 +124,17 @@ func archEmitForLoopWithBody(buf []byte, kS, kInit, kLimit, kStep, kBody uint64,
 		aS, sseOp, preemptFlagOff)
 }
 
-// archEmitForLoopWithBody2 arm64 端 stub。
+// archEmitForLoopWithBody2 arm64 端 PJ3 FORLOOP 二段 body 模板真接入
+// (168 字节无 safepoint / 176 字节含 safepoint)。对位 amd64
+// EmitForLoopWithRegKBody2 140/154 字节,arm64 多 28/22 字节(MOV imm64
+// 累积 + FMOV 中转)。
+//
+// 二段 body 共享 d3 寄存器(对位 amd64 xmm3),节省一次 LDR/STR R(aS)
+// round-trip(节省 8 字节 / iter)。
 func archEmitForLoopWithBody2(buf []byte, kS, kInit, kLimit, kStep, kBody1, kBody2 uint64,
 	aS uint8, sseOp1, sseOp2 byte, preemptFlagOff int32) []byte {
-	_ = kS
-	_ = kInit
-	_ = kLimit
-	_ = kStep
-	_ = kBody1
-	_ = kBody2
-	_ = aS
-	_ = sseOp1
-	_ = sseOp2
-	_ = preemptFlagOff
-	return buf
+	return jitarm64.EmitForLoopWithRegKBody2Arm64(buf, kS, kInit, kLimit, kStep,
+		kBody1, kBody2, aS, sseOp1, sseOp2, preemptFlagOff)
 }
 
 // archEmitGetTableArrayHit arm64 端 PJ4 IC ArrayHit 字节级直达槽模板

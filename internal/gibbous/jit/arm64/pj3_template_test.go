@@ -403,3 +403,95 @@ func TestPJ8_EmitForLoopWithRegKBodyArm64_BodyFopBytes(t *testing.T) {
 		})
 	}
 }
+
+// TestPJ8_EmitForLoopWithRegKBody2Arm64_Length 验 WithRegKBody2 模板
+// 字节长度(含/无 safepoint 双形态)。
+func TestPJ8_EmitForLoopWithRegKBody2Arm64_Length(t *testing.T) {
+	cases := []struct {
+		name     string
+		op1, op2 byte
+		pfOff    int32
+		wantLen  int
+	}{
+		{"ADD+ADD no safepoint", 0x58, 0x58, -1, 168},
+		{"MUL+ADD with safepoint", 0x59, 0x58, 24, 176},
+		{"SUB+MUL no safepoint", 0x5C, 0x59, -1, 168},
+		{"DIV+SUB with safepoint", 0x5E, 0x5C, 24, 176},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf []byte
+			buf = EmitForLoopWithRegKBody2Arm64(buf,
+				0x0,                // kS=0
+				0x3FF0000000000000, // kInit
+				0x4059000000000000, // kLimit
+				0x3FF0000000000000, // kStep
+				0x3FF0000000000000, // kBody1
+				0x4000000000000000, // kBody2=2.0
+				3,                  // aS
+				tc.op1, tc.op2,
+				tc.pfOff)
+			if len(buf) != tc.wantLen {
+				t.Errorf("总长度 = %d, want %d", len(buf), tc.wantLen)
+			}
+		})
+	}
+	if EncodedForLoopWithRegKBody2Arm64NoSafepointLen != 168 {
+		t.Errorf("EncodedForLoopWithRegKBody2Arm64NoSafepointLen = %d, want 168",
+			EncodedForLoopWithRegKBody2Arm64NoSafepointLen)
+	}
+	if EncodedForLoopWithRegKBody2Arm64WithSafepointLen != 176 {
+		t.Errorf("EncodedForLoopWithRegKBody2Arm64WithSafepointLen = %d, want 176",
+			EncodedForLoopWithRegKBody2Arm64WithSafepointLen)
+	}
+}
+
+// TestPJ8_EmitForLoopWithRegKBody2Arm64_UnknownOp 验任一 op 未识别都不操作 buf。
+func TestPJ8_EmitForLoopWithRegKBody2Arm64_UnknownOp(t *testing.T) {
+	var buf []byte
+	buf = EmitForLoopWithRegKBody2Arm64(buf, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0x58, -1)
+	if len(buf) != 0 {
+		t.Errorf("unknown sseOp1 应不操作 buf,实际 len=%d", len(buf))
+	}
+	buf = EmitForLoopWithRegKBody2Arm64(buf, 0, 0, 0, 0, 0, 0, 0, 0x58, 0xFF, -1)
+	if len(buf) != 0 {
+		t.Errorf("unknown sseOp2 应不操作 buf,实际 len=%d", len(buf))
+	}
+}
+
+// TestPJ8_EmitForLoopWithRegKBody2Arm64_BodyFopsBytes 验 body 段 op1
+// (offset 124-127)与 op2(offset 148-151)编码逐字节。
+func TestPJ8_EmitForLoopWithRegKBody2Arm64_BodyFopsBytes(t *testing.T) {
+	cases := []struct {
+		name     string
+		op1, op2 byte
+		fop1Base uint32
+		fop2Base uint32
+	}{
+		{"MUL+ADD", 0x59, 0x58, 0x1E600800, 0x1E602800},
+		{"SUB+DIV", 0x5C, 0x5E, 0x1E603800, 0x1E601800},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf []byte
+			buf = EmitForLoopWithRegKBody2Arm64(buf,
+				0x0, 0x3FF0000000000000, 0x4059000000000000, 0x3FF0000000000000,
+				0x3FF0000000000000, 0x4000000000000000, 3, tc.op1, tc.op2, -1)
+
+			if len(buf) < 152 {
+				t.Fatalf("buf too short: %d", len(buf))
+			}
+
+			insn := binary.LittleEndian.Uint32(buf[124:128])
+			want1 := tc.fop1Base | uint32(4)<<16 | uint32(3)<<5 | uint32(3)
+			if insn != want1 {
+				t.Errorf("[124] op1 = 0x%08x, want 0x%08x", insn, want1)
+			}
+			insn = binary.LittleEndian.Uint32(buf[148:152])
+			want2 := tc.fop2Base | uint32(4)<<16 | uint32(3)<<5 | uint32(3)
+			if insn != want2 {
+				t.Errorf("[148] op2 = 0x%08x, want 0x%08x", insn, want2)
+			}
+		})
+	}
+}

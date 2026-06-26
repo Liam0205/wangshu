@@ -396,3 +396,128 @@ const EncodedForLoopWithRegKBodyArm64NoSafepointLen = 144
 
 // EncodedForLoopWithRegKBodyArm64WithSafepointLen 含 safepoint 形态字节数(152)。
 const EncodedForLoopWithRegKBodyArm64WithSafepointLen = 152
+
+// EmitForLoopWithRegKBody2Arm64 拼接「全常量 + reg-K 二段 body FORLOOP」
+// arm64 模板(对位 amd64 EmitForLoopWithRegKBody2 140/154 字节)。
+//
+// 形态:`local s=K_s; for i=K1,K2,K3 do s = s op1 K_body1; s = s op2 K_body2
+// end; return s`。body 内两段 reg-K op 共享 d3 寄存器跨两段(节省一次
+// LDR/STR R(aS) round-trip,对位 amd64 同款 xmm3 共享形态)。
+//
+// 字节布局(含 safepoint,176 字节):
+//
+//	[ 0-19] MOV K_s + STR R(aS)         ; 20(init s)
+//	[20-79] setup d0/d1/d2 + FORPREP     ; 60
+//	[80-83] FSUB d0,d0,d2                ; 4
+//	[84-87] ; loop_start
+//	[84-95] FADD + FCMPE + B.GT          ; 12
+//	[96-99] LDR x0, [x26+aS*8]           ; 4(load s 一次)
+//	[100-103] FMOV d3, x0                ; 4
+//	[104-119] MOV x0, K_body1 imm64      ; 16
+//	[120-123] FMOV d4, x0                ; 4
+//	[124-127] <FOP1> d3, d3, d4          ; 4(s op1 K1)
+//	[128-143] MOV x0, K_body2 imm64      ; 16
+//	[144-147] FMOV d4, x0                ; 4
+//	[148-151] <FOP2> d3, d3, d4          ; 4(s op2 K2)
+//	[152-155] FMOV x0, d3                ; 4(回 GP)
+//	[156-159] STR x0, [x26+aS*8]         ; 4(store s 一次)
+//	[160-163] LDRB W0, [x27+pfOff]       ; 4(safepoint)
+//	[164-167] CBNZ W0, after_loop        ; 4
+//	[168-171] B loop_start backward      ; 4
+//	[172-175] ; after_loop
+//	[172-175] RET                         ; 4
+//	——— 含 safepoint:176 字节 ———
+//	——— 无 safepoint(pfOff<0):168 字节 ———
+//
+// **预设条件**:
+//   - x26 = valueStackBase,x27 = jitContext
+//   - aS ∈ [0, 254]
+//   - sseOp1/sseOp2 ∈ {0x58 ADDSD, 0x5C SUBSD, 0x59 MULSD, 0x5E DIVSD}
+//
+// **deopt 路径**:无 guard 无 deopt block(K_body1/K_body2 都是常量;
+// 对位 amd64 同款最简形态)。
+func EmitForLoopWithRegKBody2Arm64(buf []byte, kS, kInit, kLimit, kStep, kBody1, kBody2 uint64,
+	aS uint8, sseOp1, sseOp2 byte, preemptFlagOff int32) []byte {
+	emitFop1 := arm64ArithOpForSseOp(sseOp1)
+	emitFop2 := arm64ArithOpForSseOp(sseOp2)
+	if emitFop1 == nil || emitFop2 == nil {
+		return buf
+	}
+
+	// 1. Init R(aS) = K_s
+	buf = EmitMovXdImm64(buf, 0, kS)
+	buf = EmitStrXtToXnDisp(buf, 0, 26, uint16(aS)*8)
+
+	// 2. setup
+	buf = EmitMovXdImm64(buf, 0, kInit)
+	buf = EmitFmovDdFromXn(buf, 0, 0)
+	buf = EmitMovXdImm64(buf, 0, kLimit)
+	buf = EmitFmovDdFromXn(buf, 1, 0)
+	buf = EmitMovXdImm64(buf, 0, kStep)
+	buf = EmitFmovDdFromXn(buf, 2, 0)
+
+	// 3. FORPREP
+	buf = EmitFsubDdDnDm(buf, 0, 0, 2)
+
+	// 4. loop_start
+	loopStart := len(buf)
+
+	// 5. FORLOOP idx+=step + cmp
+	buf = EmitFaddDdDnDm(buf, 0, 0, 2)
+	buf = EmitFcmpeDnDm(buf, 0, 1)
+
+	// 6. b.gt after_loop
+	bGtOff := len(buf)
+	buf = EmitBCond(buf, CondGT, 0)
+
+	// 7. body:load s 一次,然后两段 op 共享 d3
+	buf = EmitLdrXtFromXnDisp(buf, 0, 26, uint16(aS)*8)
+	buf = EmitFmovDdFromXn(buf, 3, 0) // d3 = s
+
+	// op1
+	buf = EmitMovXdImm64(buf, 0, kBody1)
+	buf = EmitFmovDdFromXn(buf, 4, 0)
+	buf = emitFop1(buf, 3, 3, 4) // d3 = d3 op1 d4
+
+	// op2
+	buf = EmitMovXdImm64(buf, 0, kBody2)
+	buf = EmitFmovDdFromXn(buf, 4, 0)
+	buf = emitFop2(buf, 3, 3, 4) // d3 = d3 op2 d4
+
+	// store s 一次
+	buf = EmitFmovXdFromDn(buf, 0, 3)
+	buf = EmitStrXtToXnDisp(buf, 0, 26, uint16(aS)*8)
+
+	// 8. (可选)safepoint
+	var safepointCbnzOff int = -1
+	if preemptFlagOff >= 0 {
+		buf = EmitLdrbWtFromXnDisp(buf, 0, 27, uint16(preemptFlagOff))
+		safepointCbnzOff = len(buf)
+		buf = EmitCbnzW(buf, 0, 0)
+	}
+
+	// 9. b loop_start backward
+	bLoopOff := len(buf)
+	imm26 := int32(loopStart-bLoopOff) / 4
+	buf = EmitB(buf, imm26)
+
+	// 10. after_loop
+	afterLoopOff := len(buf)
+
+	// 11. ret
+	buf = EmitRet(buf)
+
+	// 12. patch forward fixups
+	patchBCondImm19(buf, bGtOff, int32(afterLoopOff-bGtOff)/4)
+	if safepointCbnzOff >= 0 {
+		patchCbnzImm19(buf, safepointCbnzOff, int32(afterLoopOff-safepointCbnzOff)/4)
+	}
+
+	return buf
+}
+
+// EncodedForLoopWithRegKBody2Arm64NoSafepointLen 无 safepoint 形态字节数(168)。
+const EncodedForLoopWithRegKBody2Arm64NoSafepointLen = 168
+
+// EncodedForLoopWithRegKBody2Arm64WithSafepointLen 含 safepoint 形态字节数(176)。
+const EncodedForLoopWithRegKBody2Arm64WithSafepointLen = 176
