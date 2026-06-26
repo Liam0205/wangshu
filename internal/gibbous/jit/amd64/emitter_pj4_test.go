@@ -102,3 +102,69 @@ func TestPJ4_EncodedLengths(t *testing.T) {
 		})
 	}
 }
+
+// —— PJ4 表 IC inline 字节级原语(承 emitter_pj4.go)——
+
+func TestPJ4_EmitMovqR14FromR15Disp(t *testing.T) {
+	cases := []struct {
+		disp int32
+		want []byte
+	}{
+		{0, []byte{0x4D, 0x8B, 0xB7, 0, 0, 0, 0}},
+		{8, []byte{0x4D, 0x8B, 0xB7, 8, 0, 0, 0}},
+		{16, []byte{0x4D, 0x8B, 0xB7, 16, 0, 0, 0}},
+		{-1, []byte{0x4D, 0x8B, 0xB7, 0xFF, 0xFF, 0xFF, 0xFF}},
+	}
+	for i, tc := range cases {
+		got := EmitMovqR14FromR15Disp(nil, tc.disp)
+		if len(got) != EncodedMovqR14FromR15DispLen {
+			t.Errorf("case %d: len=%d, want %d", i, len(got), EncodedMovqR14FromR15DispLen)
+		}
+		if string(got) != string(tc.want) {
+			t.Errorf("case %d disp=%d: got %x, want %x", i, tc.disp, got, tc.want)
+		}
+	}
+}
+
+func TestPJ4_EmitMovqRaxFromR14PlusRcxDisp(t *testing.T) {
+	got := EmitMovqRaxFromR14PlusRcxDisp(nil, 40)
+	want := []byte{0x49, 0x8B, 0x84, 0x0E, 40, 0, 0, 0}
+	if string(got) != string(want) {
+		t.Errorf("got %x, want %x", got, want)
+	}
+	if len(got) != EncodedMovqRaxFromR14PlusRcxDispLen {
+		t.Errorf("len=%d, want %d", len(got), EncodedMovqRaxFromR14PlusRcxDispLen)
+	}
+}
+
+func TestPJ4_EmitMovqRcxFromRax(t *testing.T) {
+	got := EmitMovqRcxFromRax(nil)
+	want := []byte{0x48, 0x89, 0xC1}
+	if string(got) != string(want) {
+		t.Errorf("got %x, want %x", got, want)
+	}
+}
+
+func TestPJ4_EmitShrRcxImm8(t *testing.T) {
+	got := EmitShrRcxImm8(nil, 32)
+	want := []byte{0x48, 0xC1, 0xE9, 32}
+	if string(got) != string(want) {
+		t.Errorf("got %x, want %x", got, want)
+	}
+}
+
+func TestPJ4_EmitCmpEcxImm32(t *testing.T) {
+	got := EmitCmpEcxImm32(nil, 0x12345678)
+	want := []byte{0x81, 0xF9, 0x78, 0x56, 0x34, 0x12}
+	if string(got) != string(want) {
+		t.Errorf("got %x, want %x", got, want)
+	}
+}
+
+func TestPJ4_EmitAndRaxImm32(t *testing.T) {
+	got := EmitAndRaxImm32(nil, -1)
+	want := []byte{0x48, 0x81, 0xE0, 0xFF, 0xFF, 0xFF, 0xFF}
+	if string(got) != string(want) {
+		t.Errorf("got %x, want %x", got, want)
+	}
+}
