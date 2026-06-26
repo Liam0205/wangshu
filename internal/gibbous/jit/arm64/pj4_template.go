@@ -604,3 +604,124 @@ func EmitSelfArrayHitArm64(buf []byte, aReg, bReg uint8,
 
 // EncodedSelfArrayHitArm64Len arm64 PJ4 SELF ArrayHit 模板字节数(172)。
 const EncodedSelfArrayHitArm64Len = 172
+
+// EmitSelfNodeHitArm64 拼接 arm64 PJ4 IC SELF NodeHit 字节级 inline 模板
+// (对位 amd64 EmitSelfNodeHit 166 字节版的 arm64 端镜像)。
+//
+// **SELF opcode 语义**(承 bytecode/opcode.go::SELF):
+//
+//	R(A+1) := R(B)
+//	R(A)   := R(B)[RK(C)]
+//
+// **NodeHit vs ArrayHit**:NodeHit 走 node 链(字符串键 method name 是
+// 常见 luac 形态;数字键 obj:1() 也走 NodeHit 若 hash 段命中),命中
+// 条件多一个 NodeKey == stableKey 比对。
+//
+// **字节布局**(200 字节,NodeHit 196 + R(A+1) 拷段 4):
+//
+//	[ 0-3 ] LDR x0, [x26 + B*8]              ; 4(load R(B) obj)
+//	[ 4-7 ] STR x0, [x26 + (A+1)*8]          ; 4(**SELF 第一步**:R(A+1)=obj)
+//	[ 8-11] LSR x0, x0, #48                  ; 4(IsTable shift)
+//	[12-27] MOV x1, 0xFFFC imm64              ; 16
+//	[28-31] CMP x0, x1                        ; 4
+//	[32-35] B.NE deopt                        ; 4
+//	[36-71] re-load + payloadMask + AND + SIB ; 36
+//	[72-103] word5 + LSR + stableShape + CMP + B.NE ; 32(gen check)
+//	[104-107] LDR x0, [x2, #24]              ; 4(**nodeRef** word3)
+//	[108-111] MOV x1, x0                      ; 4
+//	[112-115] ADD x2, x14, x1                 ; 4(SIB base for node)
+//	[116-119] LDR x0, [x2, #stableIndex*24]   ; 4(NodeKey)
+//	[120-135] MOV x3, stableKey imm64         ; 16
+//	[136-139] CMP x0, x3                      ; 4
+//	[140-143] B.NE deopt                      ; 4(NodeKey != stableKey)
+//	[144-147] LDR x0, [x2, #stableIndex*24+8] ; 4(NodeVal)
+//	[148-163] MOV x3, qNanBoxNil imm64        ; 16
+//	[164-167] CMP x0, x3                      ; 4
+//	[168-171] B.EQ deopt                      ; 4(NodeVal == Nil)
+//	[172-175] STR x0, [x26 + A*8]             ; 4(store R(A) = method)
+//	[176-179] RET                             ; 4
+//	[180-195] MOV x0, deoptCode imm64         ; 16(deopt block)
+//	[196-199] RET                             ; 4
+//	——— 总计 200 字节 ———
+//
+// **SELF 设计要点**(承 SELF ArrayHit 同款 + amd64 SELF NodeHit):
+//   - R(A+1) 在 IsTable guard **前** 就写(byte-equal P1 SELF case 同款步骤)
+//   - 后续 NodeHit 流程完整复用 EmitGetTableNodeHitArm64 模式,但
+//     头部 LDR 已合并到 SELF 入口,不再重复 LDR
+//
+// **deopt 路径**:Run 端 x0==deoptCode 时调 host.GetTable byte-equal P1
+// (R(A+1)=R(B) 已 store;P1 icGetTable 兼容 NodeHit + __index 链)。
+//
+// **预设条件**(承 06 §4.2):x26/x27/x14/x0-x3 同 NodeHit。
+func EmitSelfNodeHitArm64(buf []byte, aReg, bReg uint8,
+	stableShape, stableIndex uint32, stableKey uint64,
+	arenaBaseOff uint16, deoptCode uint64) []byte {
+	// 1. LDR x0, [x26+B*8](load R(B) obj)
+	buf = EmitLdrXtFromXnDisp(buf, 0, 26, uint16(bReg)*8)
+
+	// 2. **SELF 第一步**:STR x0, [x26+(A+1)*8](self/this 实参)
+	buf = EmitStrXtToXnDisp(buf, 0, 26, uint16(aReg+1)*8)
+
+	// 3-6. IsTable guard(LSR + MOV + CMP + B.NE 共 28 字节;
+	//      入口 LDR 已合并到 SELF 第 1 步,不重复)
+	buf = EmitLsrXdImm6(buf, 0, 0, 48)
+	buf = EmitMovXdImm64(buf, 1, qNanBoxTableTagShiftedArm64)
+	buf = EmitCmpXnXm(buf, 0, 1)
+	bNeTagOff := len(buf)
+	buf = EmitBCond(buf, CondNE, 0)
+
+	// 7-12. re-load + GCRef extract + arena base + ADD x2 SIB(36 字节)
+	buf = EmitLdrXtFromXnDisp(buf, 0, 26, uint16(bReg)*8)
+	buf = EmitMovXdImm64(buf, 1, payloadMaskArm64)
+	buf = EmitAndXdXnXm(buf, 0, 0, 1)
+	buf = EmitMovXdFromXn(buf, 1, 0)
+	buf = EmitLdrXtFromXnDisp(buf, 14, 27, arenaBaseOff)
+	buf = EmitAddXdXnXm(buf, 2, 14, 1)
+
+	// 13-17. word5 + LSR + stableShape + CMP + B.NE(32 字节)
+	buf = EmitLdrXtFromXnDisp(buf, 0, 2, 40)
+	buf = EmitLsrXdImm6(buf, 0, 0, 32)
+	buf = EmitMovXdImm64(buf, 3, uint64(stableShape))
+	buf = EmitCmpXnXm(buf, 0, 3)
+	bNeShapeOff := len(buf)
+	buf = EmitBCond(buf, CondNE, 0)
+
+	// 18-20. **NodeHit 分流**:load nodeRef(word3, offset 24)+ 新 SIB base
+	buf = EmitLdrXtFromXnDisp(buf, 0, 2, 24)
+	buf = EmitMovXdFromXn(buf, 1, 0)
+	buf = EmitAddXdXnXm(buf, 2, 14, 1)
+
+	// 21-24. NodeKey load + stableKey 比对 + B.NE deopt
+	buf = EmitLdrXtFromXnDisp(buf, 0, 2, uint16(stableIndex*24))
+	buf = EmitMovXdImm64(buf, 3, stableKey)
+	buf = EmitCmpXnXm(buf, 0, 3)
+	bNeKeyOff := len(buf)
+	buf = EmitBCond(buf, CondNE, 0)
+
+	// 25-28. NodeVal load + nil check + B.EQ deopt
+	buf = EmitLdrXtFromXnDisp(buf, 0, 2, uint16(stableIndex*24+8))
+	buf = EmitMovXdImm64(buf, 3, qNanBoxNilImmArm64)
+	buf = EmitCmpXnXm(buf, 0, 3)
+	bEqNilOff := len(buf)
+	buf = EmitBCond(buf, CondEQ, 0)
+
+	// 29-30. store R(A) = method + RET
+	buf = EmitStrXtToXnDisp(buf, 0, 26, uint16(aReg)*8)
+	buf = EmitRet(buf)
+
+	// 31. deopt block
+	deoptStart := len(buf)
+	buf = EmitMovXdImm64(buf, 0, deoptCode)
+	buf = EmitRet(buf)
+
+	// 32. patch B.cond imm19 = (deoptStart - 本 B.cond 自身) / 4
+	patchBCondImm19(buf, bNeTagOff, int32(deoptStart-bNeTagOff)/4)
+	patchBCondImm19(buf, bNeShapeOff, int32(deoptStart-bNeShapeOff)/4)
+	patchBCondImm19(buf, bNeKeyOff, int32(deoptStart-bNeKeyOff)/4)
+	patchBCondImm19(buf, bEqNilOff, int32(deoptStart-bEqNilOff)/4)
+
+	return buf
+}
+
+// EncodedSelfNodeHitArm64Len arm64 PJ4 SELF NodeHit 模板字节数(200)。
+const EncodedSelfNodeHitArm64Len = 200

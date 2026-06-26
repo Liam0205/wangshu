@@ -460,3 +460,110 @@ func TestPJ8_EmitSelfArrayHitArm64_DeoptBlock(t *testing.T) {
 		t.Errorf("[168] RET = 0x%08x, want 0xd65f03c0", insn)
 	}
 }
+
+// TestPJ8_EmitSelfNodeHitArm64_Length 验 PJ4 SELF NodeHit arm64 模板
+// 字节长度(200 字节)。
+func TestPJ8_EmitSelfNodeHitArm64_Length(t *testing.T) {
+	var buf []byte
+	buf = EmitSelfNodeHitArm64(buf,
+		1,                  // aReg
+		3,                  // bReg
+		7,                  // stableShape
+		2,                  // stableIndex
+		0xFFF80000FEEDBEEF, // stableKey(字符串 method name NaN-box)
+		16,                 // arenaBaseOff
+		0xCAFEBABE,         // deoptCode
+	)
+	const wantLen = 200
+	if len(buf) != wantLen {
+		t.Errorf("总长度 = %d, want %d", len(buf), wantLen)
+	}
+	if len(buf) != EncodedSelfNodeHitArm64Len {
+		t.Errorf("len = %d, want %d", len(buf), EncodedSelfNodeHitArm64Len)
+	}
+}
+
+// TestPJ8_EmitSelfNodeHitArm64_RAPlus1Store 验 SELF 特征:R(A+1) 先于
+// IsTable guard 写。
+//   - [0-3]   LDR x0, [x26 + B*8]      (load R(B) obj)
+//   - [4-7]   STR x0, [x26 + (A+1)*8]  (**SELF 第一步**:R(A+1)=obj)
+//   - [8-11]  LSR x0, x0, #48          (后续 IsTable shift)
+func TestPJ8_EmitSelfNodeHitArm64_RAPlus1Store(t *testing.T) {
+	const aReg, bReg uint8 = 1, 3
+	var buf []byte
+	buf = EmitSelfNodeHitArm64(buf, aReg, bReg, 7, 2, 0xCAFEFEED, 16, 0xCAFEBABE)
+
+	if len(buf) < 16 {
+		t.Fatalf("buf too short: %d", len(buf))
+	}
+
+	insn := binary.LittleEndian.Uint32(buf[0:4])
+	wantLdrB := uint32(0xF9400000) | uint32(3)<<10 | uint32(26)<<5
+	if insn != wantLdrB {
+		t.Errorf("[0] LDR x0, [x26 + B*8] = 0x%08x, want 0x%08x", insn, wantLdrB)
+	}
+
+	insn = binary.LittleEndian.Uint32(buf[4:8])
+	wantStr := uint32(0xF9000000) | uint32(2)<<10 | uint32(26)<<5
+	if insn != wantStr {
+		t.Errorf("[4] STR x0, [x26 + (A+1)*8] = 0x%08x, want 0x%08x", insn, wantStr)
+	}
+
+	insn = binary.LittleEndian.Uint32(buf[8:12])
+	wantLsr := uint32(0xD340FC00) | uint32(48)<<16
+	if insn != wantLsr {
+		t.Errorf("[8] LSR x0, x0, #48 = 0x%08x, want 0x%08x", insn, wantLsr)
+	}
+}
+
+// TestPJ8_EmitSelfNodeHitArm64_StableKeyBurnedIn 验 stableKey 经
+// movz+movk×3 烧进 NodeKey 比对段 [120-135]。
+func TestPJ8_EmitSelfNodeHitArm64_StableKeyBurnedIn(t *testing.T) {
+	const stableKey uint64 = 0xDEAD_BEEF_CAFE_FACE
+	var buf []byte
+	buf = EmitSelfNodeHitArm64(buf, 1, 3, 7, 2, stableKey, 16, 0xCAFEBABE)
+
+	if len(buf) < 136 {
+		t.Fatalf("buf too short: %d", len(buf))
+	}
+
+	expectedImm16 := [4]uint16{
+		uint16(stableKey & 0xFFFF),         // 0xFACE
+		uint16((stableKey >> 16) & 0xFFFF), // 0xCAFE
+		uint16((stableKey >> 32) & 0xFFFF), // 0xBEEF
+		uint16((stableKey >> 48) & 0xFFFF), // 0xDEAD
+	}
+	for i, exp := range expectedImm16 {
+		off := 120 + i*4
+		insn := binary.LittleEndian.Uint32(buf[off : off+4])
+		got := uint16((insn >> 5) & 0xFFFF)
+		if got != exp {
+			t.Errorf("stableKey movz/movk[%d] imm16 = 0x%04x, want 0x%04x", i, got, exp)
+		}
+		if (insn & 0x1F) != 3 {
+			t.Errorf("stableKey movz/movk[%d] Rd = %d, want 3 (x3)", i, insn&0x1F)
+		}
+	}
+}
+
+// TestPJ8_EmitSelfNodeHitArm64_DeoptBlock 验 deopt block 在 [180-199]。
+func TestPJ8_EmitSelfNodeHitArm64_DeoptBlock(t *testing.T) {
+	const deoptCode uint64 = 0xDEAD_BEEF_CAFE_BABE
+	var buf []byte
+	buf = EmitSelfNodeHitArm64(buf, 1, 3, 7, 2, 0xCAFEFEED, 16, deoptCode)
+
+	if len(buf) < 200 {
+		t.Fatalf("buf too short: %d", len(buf))
+	}
+
+	insn := binary.LittleEndian.Uint32(buf[180:184])
+	imm0 := (insn >> 5) & 0xFFFF
+	if imm0 != 0xBABE {
+		t.Errorf("[180] MOVZ x0 imm[15:0] = 0x%04x, want 0xBABE", imm0)
+	}
+
+	insn = binary.LittleEndian.Uint32(buf[196:200])
+	if insn != 0xd65f03c0 {
+		t.Errorf("[196] RET = 0x%08x, want 0xd65f03c0", insn)
+	}
+}
