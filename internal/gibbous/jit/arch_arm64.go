@@ -48,17 +48,6 @@ func archCallJITSpec(codeAddr uintptr, jitCtxAddr uintptr, vsBase uintptr) uint6
 	panic("internal/gibbous/jit/arm64: archCallJITSpec not implemented (PJ8+ arm64 spec trampoline)")
 }
 
-// archEmitArithSpecAddWithGuard arm64 端 stub——arm64 spec 模板 codegen
-// 留 PJ8+(对位 amd64 EmitArithSpeculativeAddWithGuard 同款形态:cmp
-// + b.hs deopt + fmov + fadd + fmov + ret + deopt block)。
-func archEmitArithSpecAddWithGuard(buf []byte, a, b, c uint8, deoptCode uint64) []byte {
-	_ = a
-	_ = b
-	_ = c
-	_ = deoptCode
-	return buf // 空 buf → MmapCode 返错 → Compile 拒,Compile 路径会 fallback 到 host helper
-}
-
 // archSseOpForArith arm64 端 stub——arm64 不用 SSE op 字节(用 fadd/fsub/
 // fmul/fdiv aarch64 指令,留 PJ8+ 完整版独立路径)。当前 archSupportsSpec
 // 返 false,本函数不会被调用——sentinel 返 (0, false) 保底。

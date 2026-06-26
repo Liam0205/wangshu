@@ -131,10 +131,15 @@ return f(t)`
 	t.Logf("NumericKey SpecTableHits=%d → %d", hitsBefore, hitsAfter)
 }
 
-// TestPJ4_TableArrayHit_E2E_FastPath:旧版形态——只开 force-all 不预热,
-// IC slot 未填,fall-through 到 host.GetTable byte-equal 路径。
-// 保留作正确性对照(返回值仍对,只是 SpecTableHits 不增)。
-func TestPJ4_TableArrayHit_E2E_FastPath(t *testing.T) {
+// TestPJ4_TableArrayHit_E2E_ForceAllFallsToHost:旧版形态——只开 force-all
+// 不预热,inner kernel 一进入即升层时 IC slot 还没填(P1 解释器路径被
+// SetForceAllPromote(true) 跳过),analyzeGetTableArrayHit 返 false →
+// fall through 到 analyzeShape 的 GETTABLE host helper 路径,byte-equal
+// 但无字节级 inline 加速。SpecTableHits 应恒为 0(prove-the-path
+// negative side:无证据说 IC inline 路径触达)。
+//
+// 保留作 force-all 路径 byte-equal 正确性对照(返回值仍对)。
+func TestPJ4_TableArrayHit_E2E_ForceAllFallsToHost(t *testing.T) {
 	jit.ResetSpecHits()
 
 	src := `
@@ -153,7 +158,15 @@ return f(t)`
 	if got := value.AsNumber(value.Value(rets[0])); got != 42 {
 		t.Errorf("f(t) = %v, want 42(t[1])", got)
 	}
-	t.Logf("SpecTableHits=%d / SpecForLoopHits=%d / SpecRegKHits=%d",
+	// force-all 路径下 SpecTableHits 应恒为 0(inner kernel 升层时 IC slot
+	// 还没被 P1 解释器填,analyzeGetTableArrayHit 返 false → fall through
+	// 到 GETTABLE host helper 路径)。
+	if jit.SpecTableHits() != 0 {
+		t.Errorf("ForceAllFallsToHost:SpecTableHits=%d, want 0"+
+			"(force-all 应让 inner kernel 一进入即升,IC slot 未填→fall through)",
+			jit.SpecTableHits())
+	}
+	t.Logf("ForceAllFallsToHost:SpecTableHits=%d / SpecForLoopHits=%d / SpecRegKHits=%d",
 		jit.SpecTableHits(), jit.SpecForLoopHits(), jit.SpecRegKHits())
 }
 

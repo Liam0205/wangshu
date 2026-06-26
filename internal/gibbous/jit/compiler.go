@@ -1345,10 +1345,28 @@ func analyzeShape(proto *bytecode.Proto) shapeInfo {
 // 后把该 Proto 标 TierStuck(永久解释,不重试)。
 func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback) (bridge.GibbousCode, error) {
 	// **PJ4 IC ArrayHit 优先识别**(承 03 §6 stableShape/Index 直达槽)。
-	// 在 analyzeShape 之前判定:IC 形态长度 2/3 与现有 GETTABLE 形态重叠,
-	// 但 IC 触发需要更严格条件(proto.IC[0].Kind=ArrayHit + feedback
-	// confidence ≥ 0.99 + stableShape/Index 一致),命中即走字节级 inline
-	// 跳哈希,失败 fall-through 到 analyzeShape 的 GETTABLE host helper 路径。
+	//
+	// **必须先尝试 IC inline(在 analyzeShape 之前判)**:IC 形态长度 2/3 与
+	// analyzeShape 的 GETTABLE host helper 形态(GETTABLE+RETURN A 2)字节
+	// 完全重叠——若不先识别 IC,analyzeShape 的 GETTABLE case 会立即匹配并
+	// 把本 proto 路由到 host.GetTable 慢路径(byte-equal P1 解释器,但无字节
+	// 级直达加速)。
+	//
+	// IC 触发条件比 GETTABLE host helper 严格 4 倍:
+	//   - proto.IC[0].Kind = ArrayHit(P1 解释器观测过 array 命中,不是
+	//     None / NodeHit / MonoMeta)
+	//   - feedback.Points[0].Kind = FBTableMono(P2 聚合确认 mono)
+	//   - feedback.Points[0].Confidence >= 0.99(投机阈值)
+	//   - feedback / proto.IC stableShape & stableIndex 一致
+	//   - C 字段 >= 256(K 常量索引,不是动态 reg)
+	//
+	// 任一不满足 → analyzeGetTableArrayHit 返 false → fall through 到
+	// analyzeShape,GETTABLE case 路由到 host.GetTable byte-equal 慢路径
+	// (正确性兜底)。
+	//
+	// 文档引用:[[03-speculation-ic.md]] §6 ArrayHit 直达槽 + 本仓
+	// gibbous_pj4_table_e2e_test.go::TestPJ4_TableArrayHit_E2E_WarmupThenForce
+	// 实证 IC inline 路径 SpecTableHits 真增长。
 	if archSupportsSpec() && c.hostState != nil && c.hostState.ArenaBaseAddr() != 0 {
 		if icInfo, ok := analyzeGetTableArrayHit(proto, feedback); ok {
 			return c.compileIcArrayHit(proto, icInfo)
