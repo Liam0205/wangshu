@@ -293,3 +293,87 @@ func TestPJ8_EmitSetTableArrayHitArm64_DeoptBlock(t *testing.T) {
 		t.Errorf("[140] RET = 0x%08x, want 0xd65f03c0", insn)
 	}
 }
+
+// TestPJ8_EmitSetTableNodeHitArm64_Length 验 PJ4 SETTABLE NodeHit arm64
+// 模板字节长度(172 字节)。
+func TestPJ8_EmitSetTableNodeHitArm64_Length(t *testing.T) {
+	var buf []byte
+	buf = EmitSetTableNodeHitArm64(buf,
+		1,                  // aReg(table)
+		2,                  // cReg(value)
+		7,                  // stableShape
+		3,                  // stableIndex
+		0xFFFD000000000042, // stableKey
+		16,                 // arenaBaseOff
+		0xCAFEBABE,         // deoptCode
+	)
+	const wantLen = 172
+	if len(buf) != wantLen {
+		t.Errorf("总长度 = %d, want %d", len(buf), wantLen)
+	}
+	if len(buf) != EncodedSetTableNodeHitArm64Len {
+		t.Errorf("len = %d, want %d", len(buf), EncodedSetTableNodeHitArm64Len)
+	}
+}
+
+// TestPJ8_EmitSetTableNodeHitArm64_StoreOp 验 SETTABLE NodeHit 关键
+// store 段:
+//   - [140-143] LDR x3, [x26 + C*8]              (load R(C) value)
+//   - [144-147] STR x3, [x2, #stableIndex*24+8]  (反向 store NodeVal)
+//   - [148-151] RET                              (setter 无 R(A) 写)
+func TestPJ8_EmitSetTableNodeHitArm64_StoreOp(t *testing.T) {
+	var buf []byte
+	buf = EmitSetTableNodeHitArm64(buf, 1, 2, 7, 3, 0xFFFD000000000042,
+		16, 0xCAFEBABE)
+
+	if len(buf) < 172 {
+		t.Fatalf("buf too short: %d", len(buf))
+	}
+
+	// [140-143] LDR x3, [x26 + 16] (C=2, byteOff=16, imm12=2)
+	insn := binary.LittleEndian.Uint32(buf[140:144])
+	wantLdr := uint32(0xF9400000) | uint32(2)<<10 | uint32(26)<<5 | uint32(3)
+	if insn != wantLdr {
+		t.Errorf("[140] LDR x3, [x26 + C*8] = 0x%08x, want 0x%08x", insn, wantLdr)
+	}
+
+	// [144-147] STR x3, [x2, #stableIndex*24+8]
+	// = STR base 0xF9000000 | imm12=(3*24+8)/8=10 | Rn=2<<5 | Rt=3
+	insn = binary.LittleEndian.Uint32(buf[144:148])
+	wantStr := uint32(0xF9000000) | uint32(10)<<10 | uint32(2)<<5 | uint32(3)
+	if insn != wantStr {
+		t.Errorf("[144] STR x3, [x2, #stableIndex*24+8] = 0x%08x, want 0x%08x",
+			insn, wantStr)
+	}
+
+	// [148-151] RET (setter 无 R(A) 写)
+	insn = binary.LittleEndian.Uint32(buf[148:152])
+	if insn != 0xd65f03c0 {
+		t.Errorf("[148] RET = 0x%08x, want 0xd65f03c0", insn)
+	}
+}
+
+// TestPJ8_EmitSetTableNodeHitArm64_DeoptBlock 验 deopt block(152-171)。
+func TestPJ8_EmitSetTableNodeHitArm64_DeoptBlock(t *testing.T) {
+	const deoptCode uint64 = 0xDEAD_BEEF_CAFE_BABE
+	var buf []byte
+	buf = EmitSetTableNodeHitArm64(buf, 1, 2, 7, 3, 0xFFFD000000000042,
+		16, deoptCode)
+
+	if len(buf) < 172 {
+		t.Fatalf("buf too short: %d", len(buf))
+	}
+
+	// [152-155] MOVZ x0, deoptCode[15:0] = 0xBABE
+	insn := binary.LittleEndian.Uint32(buf[152:156])
+	imm0 := (insn >> 5) & 0xFFFF
+	if imm0 != 0xBABE {
+		t.Errorf("[152] MOVZ x0 imm[15:0] = 0x%04x, want 0xBABE", imm0)
+	}
+
+	// [168-171] RET
+	insn = binary.LittleEndian.Uint32(buf[168:172])
+	if insn != 0xd65f03c0 {
+		t.Errorf("[168] RET = 0x%08x, want 0xd65f03c0", insn)
+	}
+}

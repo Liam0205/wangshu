@@ -394,3 +394,101 @@ func EmitSetTableArrayHitArm64(buf []byte, aReg, cReg uint8,
 
 // EncodedSetTableArrayHitArm64Len arm64 PJ4 SETTABLE ArrayHit 模板字节数(144)。
 const EncodedSetTableArrayHitArm64Len = 144
+
+// EmitSetTableNodeHitArm64 拼接 arm64 PJ4 IC SETTABLE NodeHit 字节级
+// inline 反向写模板(对位 amd64 EmitSetTableNodeHit 140 字节版的 arm64
+// 端镜像)。
+//
+// **形态**:`function(t, v) t[K] = v end`,K 是字符串/任意键 in hash 段。
+// IC[0].Kind=NodeHit + Shape/Index/Key 命中时,字节级 inline 反向写
+// node[stableIndex].val。
+//
+// **vs SETTABLE ArrayHit / GETTABLE NodeHit 复合差异**:
+//   - 比 SETTABLE ArrayHit:取 word3=nodeRef(offset 24)而非 word2=arrayRef
+//     (offset 16),node 步长 24 字节,多 key 比对段
+//   - 比 GETTABLE NodeHit:删 NodeVal load + nil check + STR R(A),换 LDR
+//     R(C) value + 反向 STR NodeVal
+//
+// **字节布局**(172 字节,GETTABLE NodeHit 196 - NodeVal/nil/storeRA 24 +
+// store value 0;实际 GETTABLE NodeHit 24 + STR R(A) 4 = 28,SET 段 LDR + STR
+// = 8,净 -20 → 196 - 24 = 172):
+//
+//	[ 0-139] 同 GETTABLE NodeHit 至 B.NE key(IsTable + GCRef + SIB +
+//	         gen check + nodeRef + NodeKey + stableKey + CMP + B.NE)= 140
+//	[140-143] LDR x3, [x26 + C*8]              ; 4(setter:load R(C) value → x3)
+//	[144-147] STR x3, [x2, #stableIndex*24+8]  ; 4(反向 store NodeVal)
+//	[148-151] RET                              ; 4(setter 无 R(A) 写)
+//	[152-167] MOV x0, deoptCode imm64          ; 16(deopt block)
+//	[168-171] RET                              ; 4
+//	——— 总计 172 字节 ———
+//
+// **设计简化**(承 amd64 SETTABLE NodeHit / ArrayHit 同款工程边界):
+//   - 不验现有 NodeVal != nil(防新键路径)
+//   - 假设无 __newindex 元表
+//
+// **deopt 路径**:Run 端 x0==deoptCode 时调 host.SetTable byte-equal P1
+// (P1 icSetTable 兼容 NodeHit;经 IC + 哈希 + __newindex 元方法链)。
+// setter 形态 retB=1,Run 端 DoReturn 不读 R(A)。
+//
+// **预设条件**(承 06 §4.2):x26/x27/x14/x0-x3 同 GETTABLE NodeHit。
+func EmitSetTableNodeHitArm64(buf []byte, aReg, cReg uint8,
+	stableShape, stableIndex uint32, stableKey uint64,
+	arenaBaseOff uint16, deoptCode uint64) []byte {
+	// 1-5. 严密 IsTable guard
+	buf = EmitLdrXtFromXnDisp(buf, 0, 26, uint16(aReg)*8)
+	buf = EmitLsrXdImm6(buf, 0, 0, 48)
+	buf = EmitMovXdImm64(buf, 1, qNanBoxTableTagShiftedArm64)
+	buf = EmitCmpXnXm(buf, 0, 1)
+	bNeTagOff := len(buf)
+	buf = EmitBCond(buf, CondNE, 0)
+
+	// 6-11. re-load + GCRef extract + arena base + ADD x2 SIB
+	buf = EmitLdrXtFromXnDisp(buf, 0, 26, uint16(aReg)*8)
+	buf = EmitMovXdImm64(buf, 1, payloadMaskArm64)
+	buf = EmitAndXdXnXm(buf, 0, 0, 1)
+	buf = EmitMovXdFromXn(buf, 1, 0)
+	buf = EmitLdrXtFromXnDisp(buf, 14, 27, arenaBaseOff)
+	buf = EmitAddXdXnXm(buf, 2, 14, 1)
+
+	// 12-16. gen check
+	buf = EmitLdrXtFromXnDisp(buf, 0, 2, 40)
+	buf = EmitLsrXdImm6(buf, 0, 0, 32)
+	buf = EmitMovXdImm64(buf, 3, uint64(stableShape))
+	buf = EmitCmpXnXm(buf, 0, 3)
+	bNeShapeOff := len(buf)
+	buf = EmitBCond(buf, CondNE, 0)
+
+	// 17-19. **NodeHit 分流**:load nodeRef + 新 SIB base for node
+	buf = EmitLdrXtFromXnDisp(buf, 0, 2, 24)
+	buf = EmitMovXdFromXn(buf, 1, 0)
+	buf = EmitAddXdXnXm(buf, 2, 14, 1)
+
+	// 20-23. NodeKey load + stableKey 比对 + B.NE deopt
+	buf = EmitLdrXtFromXnDisp(buf, 0, 2, uint16(stableIndex*24))
+	buf = EmitMovXdImm64(buf, 3, stableKey)
+	buf = EmitCmpXnXm(buf, 0, 3)
+	bNeKeyOff := len(buf)
+	buf = EmitBCond(buf, CondNE, 0)
+
+	// 24-25. **setter 分流**:LDR R(C) value → x3 + 反向 STR NodeVal
+	buf = EmitLdrXtFromXnDisp(buf, 3, 26, uint16(cReg)*8)
+	buf = EmitStrXtToXnDisp(buf, 3, 2, uint16(stableIndex*24+8))
+
+	// 26. RET(setter 无 R(A) 写)
+	buf = EmitRet(buf)
+
+	// 27. deopt block
+	deoptStart := len(buf)
+	buf = EmitMovXdImm64(buf, 0, deoptCode)
+	buf = EmitRet(buf)
+
+	// 28. patch B.cond imm19
+	patchBCondImm19(buf, bNeTagOff, int32(deoptStart-bNeTagOff)/4)
+	patchBCondImm19(buf, bNeShapeOff, int32(deoptStart-bNeShapeOff)/4)
+	patchBCondImm19(buf, bNeKeyOff, int32(deoptStart-bNeKeyOff)/4)
+
+	return buf
+}
+
+// EncodedSetTableNodeHitArm64Len arm64 PJ4 SETTABLE NodeHit 模板字节数(172)。
+const EncodedSetTableNodeHitArm64Len = 172
