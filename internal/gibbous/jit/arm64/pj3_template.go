@@ -137,3 +137,164 @@ func patchBCondImm19(buf []byte, off int, imm19 int32) {
 const EncodedForLoopEmptyConstArm64Len = 3*(EncodedMovXdImm64Len+EncodedFmovDdFromXnLen) +
 	EncodedFsubDdDnDmLen + EncodedFaddDdDnDmLen + EncodedFcmpeDnDmLen +
 	EncodedBCondLen + EncodedBLen + EncodedRetLen
+
+// =============================================================================
+// PJ4 IC ArrayHit arm64 字节级模板(对位 amd64 EmitGetTableArrayHit 132 字节)
+// =============================================================================
+
+// qNanBoxTableTagShifted arm64 端 NaN-box table tag 高 16 位值(对位 amd64
+// 同名常量但 arm64 模板用 LSR + CMP 严密 guard,直接比较 16-bit 值)。
+const qNanBoxTableTagShiftedArm64 uint64 = 0xFFFC
+
+// qNanBoxNilImmArm64 arm64 端 NaN-box Nil 完整值(对位 amd64 qNanBoxNilImm)。
+const qNanBoxNilImmArm64 uint64 = 0xFFFE_0000_0000_0000
+
+// EmitGetTableArrayHitArm64 拼接 arm64 PJ4 IC ArrayHit 字节级直达槽模板
+// (对位 amd64 EmitGetTableArrayHit 132 字节版的 arm64 端镜像)。
+//
+// **不真接入**(arm64 trampoline asm + mmap+RX 端到端 留物理 self-hosted
+// runner);本批纯字节级模板拼接 + 字节级单测验布局。
+//
+// **字节布局**(168 字节,严密 IsTable guard 版):
+//
+//	[ 0-3 ] LDR x0, [x26 + B*8]          ; 4(load R(B) NaN-box)
+//	[ 4-7 ] LSR x0, x0, #48               ; 4(IsTable shift)
+//	[ 8-23] MOV x1, 0xFFFC imm64          ; 16(load TagTable)
+//	[24-27] CMP x0, x1                    ; 4
+//	[28-31] B.NE deopt                    ; 4
+//	[32-35] LDR x0, [x26 + B*8]           ; 4(re-load R(B))
+//	[36-51] MOV x1, payloadMask imm64     ; 16
+//	[52-55] AND x0, x0, x1                ; 4(GCRef extract)
+//	[56-59] MOV x1, x0(ORR x1, XZR, x0)   ; 4(rcx = GCRef offset)
+//	[60-63] LDR x14, [x27 + arenaBaseOff] ; 4(load arena base → x14)
+//	[64-67] ADD x2, x14, x1               ; 4(SIB 替代:x2 = base + GCRef)
+//	[68-71] LDR x0, [x2, #40]             ; 4(table.word5 → x0)
+//	[72-75] LSR x0, x0, #32               ; 4(gen 在高 32 位)
+//	[76-91] MOV x3, stableShape imm64     ; 16
+//	[92-95] CMP x0, x3                    ; 4
+//	[96-99] B.NE deopt                    ; 4
+//	[100-103] LDR x0, [x2, #16]           ; 4(table.arrayRef → x0)
+//	[104-107] MOV x1, x0                   ; 4(rcx = arrayRef offset)
+//	[108-111] ADD x2, x14, x1              ; 4(SIB 替代:x2 = base + arrayRef)
+//	[112-115] LDR x0, [x2, #stableIndex*8] ; 4(array[stableIndex])
+//	[116-131] MOV x3, qNanBoxNil imm64    ; 16
+//	[132-135] CMP x0, x3                  ; 4
+//	[136-139] B.EQ deopt                  ; 4
+//	[140-143] STR x0, [x26 + A*8]         ; 4(store R(A))
+//	[144-147] RET                          ; 4
+//	[148-163] MOV x0, deoptCode imm64     ; 16(deopt block)
+//	[164-167] RET                          ; 4
+//	——— 总计 168 字节(amd64 132 + arm64 SIB 替代 + MOV imm64 长度差)———
+//
+// **vs amd64 132 字节差 36 字节**:
+//   - arm64 SIB 替代:2 次 ADD + LDR(8 字节)替代 amd64 单条 SIB ldr
+//     (10 字节)→ 实际省 2 字节但多 2 条指令
+//   - arm64 MOV imm64 序列 16 字节(movz+3*movk)vs amd64 10 字节
+//     (mov rax imm64)→ 多 6 字节/次,4 次 MOV imm64 多 24 字节
+//   - 总差 ~36 字节,符合预期
+//
+// **预设条件**(承 06 §4.2 arm64 trampoline 留 PJ8+):
+//   - x26 = valueStackBase
+//   - x27 = jitContext
+//   - x28 = Go G(Go runtime 保留)
+//   - x14 = arena base(本模板入口装入)
+//   - x0/x1/x2/x3 = scratch
+//
+// **deopt 路径**:Run 端 x0==deoptCode 时调 host.GetTable byte-equal P1
+// (P1 icGetTable 兼容 ArrayHit + NodeHit;arm64 端复用)。
+func EmitGetTableArrayHitArm64(buf []byte, aReg, bReg uint8, stableShape, stableIndex uint32,
+	arenaBaseOff uint16, deoptCode uint64) []byte {
+	// 1. LDR x0, [x26 + B*8](load R(B))
+	buf = EmitLdrXtFromXnDisp(buf, 0, 26, uint16(bReg)*8)
+
+	// 2. LSR x0, x0, #48(IsTable shift)
+	buf = EmitLsrXdImm6(buf, 0, 0, 48)
+
+	// 3. MOV x1, 0xFFFC imm64
+	buf = EmitMovXdImm64(buf, 1, qNanBoxTableTagShiftedArm64)
+
+	// 4. CMP x0, x1
+	buf = EmitCmpXnXm(buf, 0, 1)
+
+	// 5. B.NE deopt(placeholder,patch 后)
+	bNeTagOff := len(buf)
+	buf = EmitBCond(buf, CondNE, 0)
+
+	// 6. re-load R(B)
+	buf = EmitLdrXtFromXnDisp(buf, 0, 26, uint16(bReg)*8)
+
+	// 7. MOV x1, payloadMask imm64
+	const payloadMask uint64 = 0x0000_FFFF_FFFF_FFFF
+	buf = EmitMovXdImm64(buf, 1, payloadMask)
+
+	// 8. AND x0, x0, x1
+	buf = EmitAndXdXnXm(buf, 0, 0, 1)
+
+	// 9. MOV x1, x0(rcx = GCRef offset)
+	buf = EmitMovXdFromXn(buf, 1, 0)
+
+	// 10. LDR x14, [x27 + arenaBaseOff](load arena base → x14)
+	buf = EmitLdrXtFromXnDisp(buf, 14, 27, arenaBaseOff)
+
+	// 11. ADD x2, x14, x1(SIB 替代:base + GCRef)
+	buf = EmitAddXdXnXm(buf, 2, 14, 1)
+
+	// 12. LDR x0, [x2, #40](table.word5 → x0)
+	buf = EmitLdrXtFromXnDisp(buf, 0, 2, 40)
+
+	// 13. LSR x0, x0, #32(gen 在高 32 位)
+	buf = EmitLsrXdImm6(buf, 0, 0, 32)
+
+	// 14. MOV x3, stableShape imm64
+	buf = EmitMovXdImm64(buf, 3, uint64(stableShape))
+
+	// 15. CMP x0, x3
+	buf = EmitCmpXnXm(buf, 0, 3)
+
+	// 16. B.NE deopt
+	bNeShapeOff := len(buf)
+	buf = EmitBCond(buf, CondNE, 0)
+
+	// 17. LDR x0, [x2, #16](table.arrayRef → x0)
+	buf = EmitLdrXtFromXnDisp(buf, 0, 2, 16)
+
+	// 18. MOV x1, x0(arrayRef offset)
+	buf = EmitMovXdFromXn(buf, 1, 0)
+
+	// 19. ADD x2, x14, x1(SIB 替代:base + arrayRef)
+	buf = EmitAddXdXnXm(buf, 2, 14, 1)
+
+	// 20. LDR x0, [x2, #stableIndex*8](array[stableIndex])
+	buf = EmitLdrXtFromXnDisp(buf, 0, 2, uint16(stableIndex)*8)
+
+	// 21. MOV x3, qNanBoxNil imm64
+	buf = EmitMovXdImm64(buf, 3, qNanBoxNilImmArm64)
+
+	// 22. CMP x0, x3
+	buf = EmitCmpXnXm(buf, 0, 3)
+
+	// 23. B.EQ deopt(nil → deopt)
+	bEqNilOff := len(buf)
+	buf = EmitBCond(buf, CondEQ, 0)
+
+	// 24. STR x0, [x26 + A*8](store R(A))
+	buf = EmitStrXtToXnDisp(buf, 0, 26, uint16(aReg)*8)
+
+	// 25. RET
+	buf = EmitRet(buf)
+
+	// 26. deopt block
+	deoptStart := len(buf)
+	buf = EmitMovXdImm64(buf, 0, deoptCode)
+	buf = EmitRet(buf)
+
+	// 27. patch B.cond imm19 = (deoptStart - 本 B.cond 自身) / 4
+	patchBCondImm19(buf, bNeTagOff, int32(deoptStart-bNeTagOff)/4)
+	patchBCondImm19(buf, bNeShapeOff, int32(deoptStart-bNeShapeOff)/4)
+	patchBCondImm19(buf, bEqNilOff, int32(deoptStart-bEqNilOff)/4)
+
+	return buf
+}
+
+// EncodedGetTableArrayHitArm64Len arm64 PJ4 IC ArrayHit 模板字节数(168)。
+const EncodedGetTableArrayHitArm64Len = 168
