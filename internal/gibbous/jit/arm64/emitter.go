@@ -621,3 +621,51 @@ func patchBCondImm19(buf []byte, off int, imm19 int32) {
 	buf[off+2] = byte(insn >> 16)
 	buf[off+3] = byte(insn >> 24)
 }
+
+// EmitBlrXn 发射 arm64「blr Xn」(branch with link to register,间接 call,
+// LR=X30 设为返回地址)。对位 amd64 `call regN` 2 字节(`FF D0+reg`)。
+//
+// 编码:1101_0110_0011_1111_0000_00nn_nnn0_0000 = 0xD63F0000 base
+//   - opc=0001(BLR), Rn 占 bit[9:5]
+//
+// **预设条件**:Rn ∈ [0, 30](X31 是 XZR,BLR XZR 行为未定义,sentinel
+// 兜底 Rn=0)。caller 通常先 EmitMovXdImm64 装目标地址进 Xn,再 BLR Xn。
+//
+// 用例:PJ5 helper call macro arm64 端(对位 amd64 `mov rax, imm64 + call
+// rax` 12 字节,arm64 端为 `mov X16/17, imm64 + blr X16/17` 20 字节,
+// X16/X17 是 ARMv8 IP scratch 寄存器 callee-saved 不需要保留)。
+func EmitBlrXn(buf []byte, rn uint8) []byte {
+	if rn > 30 {
+		rn = 0
+	}
+	insn := uint32(0xD63F0000) | (uint32(rn)&0x1F)<<5
+	return appendArm64Insn(buf, insn)
+}
+
+// EncodedBlrXnLen = 4(arm64 一条指令)。
+const EncodedBlrXnLen = 4
+
+// EmitHelperCallArm64 发射 arm64 helper call 通用宏:
+//
+//	mov X16, helperAddr imm64    ; 16 字节(movz+movk×3)
+//	blr X16                      ;  4 字节
+//	——— 总长 20 字节 ———
+//
+// 对位 amd64 `mov rax, imm64 + call rax` 12 字节(arm64 多 8 字节因
+// MOV imm64 序列 16 vs amd64 mov rax imm64 10 + BLR vs CALL reg)。
+//
+// 用 X16(IP0)作 trampoline scratch 寄存器:ARMv8 ABI 约定 X16/X17 是
+// inter-procedure call scratch,不需要 callee 保留;callee 可被任意改写。
+// 调用后 X16 不需复原,LR=X30 也由 BLR 自动设。
+//
+// 用例:PJ5 CALL/TAILCALL 真接入 arm64 端(对位 amd64 EmitHelperCall),
+// 调用 host helper(host.DoCall / host.GetTable / host.Arith 等),helperAddr
+// 是 helper function 物理地址(经 jit Compile 时编译期求出)。
+func EmitHelperCallArm64(buf []byte, helperAddr uint64) []byte {
+	buf = EmitMovXdImm64(buf, 16, helperAddr) // mov x16, helperAddr
+	buf = EmitBlrXn(buf, 16)                  // blr x16
+	return buf
+}
+
+// EncodedHelperCallArm64Len = 20(MOV imm64 16 + BLR 4)。
+const EncodedHelperCallArm64Len = EncodedMovXdImm64Len + EncodedBlrXnLen
