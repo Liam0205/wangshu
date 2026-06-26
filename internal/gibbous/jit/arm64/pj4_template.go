@@ -511,19 +511,19 @@ const EncodedSetTableNodeHitArm64Len = 172
 //
 //	[ 0-3 ] LDR x0, [x26 + B*8]          ; 4(load R(B) obj NaN-box)
 //	[ 4-7 ] STR x0, [x26 + (A+1)*8]      ; 4(**SELF 额外**:store R(A+1) = obj)
-//	[ 8-39] IsTable guard(LSR/MOV/CMP/B.NE)  ; 32
-//	[40-75] re-load + payloadMask + AND + SIB ; 36
-//	[76-107] word5 + LSR + stableShape + CMP + B.NE ; 32(gen check)
-//	[108-111] LDR x0, [x2, #16]          ; 4(table.arrayRef)
-//	[112-115] MOV x1, x0                  ; 4
-//	[116-119] ADD x2, x14, x1             ; 4(SIB base for array)
-//	[120-123] LDR x0, [x2, #stableIndex*8]; 4(array[stableIndex])
-//	[124-139] MOV x3, qNanBoxNil          ; 16
-//	[140-143] CMP x0, x3                  ; 4
-//	[144-147] B.EQ deopt                  ; 4
-//	[148-151] STR x0, [x26 + A*8]         ; 4(store R(A) method)
-//	[152-155] RET                         ; 4
-//	[156-171] MOV x0, deoptCode + RET     ; 20(deopt block)
+//	[ 8-35] IsTable guard(LSR + MOV imm64 + CMP + B.NE)  ; 28(入口 LDR 已用)
+//	[36-71] re-load + payloadMask + AND + SIB ; 36
+//	[72-103] word5 + LSR + stableShape + CMP + B.NE ; 32(gen check)
+//	[104-107] LDR x0, [x2, #16]          ; 4(table.arrayRef)
+//	[108-111] MOV x1, x0                  ; 4
+//	[112-115] ADD x2, x14, x1             ; 4(SIB base for array)
+//	[116-119] LDR x0, [x2, #stableIndex*8]; 4(array[stableIndex])
+//	[120-135] MOV x3, qNanBoxNil          ; 16
+//	[136-139] CMP x0, x3                  ; 4
+//	[140-143] B.EQ deopt                  ; 4
+//	[144-147] STR x0, [x26 + A*8]         ; 4(store R(A) method)
+//	[148-151] RET                         ; 4
+//	[152-171] MOV x0, deoptCode + RET     ; 20(deopt block)
 //	——— 总计 172 字节 ———
 //
 // **SELF 设计要点**(承 amd64 SELF ArrayHit 同款):

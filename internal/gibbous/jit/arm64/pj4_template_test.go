@@ -437,7 +437,7 @@ func TestPJ8_EmitSelfArrayHitArm64_RAPlus1Store(t *testing.T) {
 	}
 }
 
-// TestPJ8_EmitSelfArrayHitArm64_DeoptBlock 验 deopt block(156-171)。
+// TestPJ8_EmitSelfArrayHitArm64_DeoptBlock 验 deopt block 在 [152-171]。
 func TestPJ8_EmitSelfArrayHitArm64_DeoptBlock(t *testing.T) {
 	const deoptCode uint64 = 0xDEAD_BEEF_CAFE_BABE
 	var buf []byte
@@ -447,11 +447,11 @@ func TestPJ8_EmitSelfArrayHitArm64_DeoptBlock(t *testing.T) {
 		t.Fatalf("buf too short: %d", len(buf))
 	}
 
-	// [156-159] MOVZ x0, deoptCode[15:0] = 0xBABE
-	insn := binary.LittleEndian.Uint32(buf[156:160])
+	// [152-155] MOVZ x0, deoptCode[15:0] = 0xBABE
+	insn := binary.LittleEndian.Uint32(buf[152:156])
 	imm0 := (insn >> 5) & 0xFFFF
 	if imm0 != 0xBABE {
-		t.Errorf("[156] MOVZ x0 imm[15:0] = 0x%04x, want 0xBABE", imm0)
+		t.Errorf("[152] MOVZ x0 imm[15:0] = 0x%04x, want 0xBABE", imm0)
 	}
 
 	// [168-171] RET
