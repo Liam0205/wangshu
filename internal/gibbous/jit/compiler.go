@@ -155,6 +155,13 @@ type shapeInfo struct {
 	//     (140 字节,hash 段 NodeKey 比对 + 反向 store NodeVal)
 	//   - 复用 icSetCReg(value reg)/ icStableShape / icStableIndex / icStableKey
 	icSetNodeHit bool
+
+	// PJ4 SELF NodeHit 形态(`function(obj) obj:method() end` 真常见 OOP 调用):
+	//   - icSelfNodeHit = true:走 PJ4 SELF IC NodeHit 字节级 inline 模板
+	//     (166 字节,SELF ArrayHit 139 + key 比对 27)
+	//   - 复用 icAReg(SELF.A 即 method 结果)/ icBReg(SELF.B 即 obj)/
+	//     icStableShape / icStableIndex / icStableKey 字段
+	icSelfNodeHit bool
 }
 
 // analyzeGetTableArrayHit 识别 PJ4 IC ArrayHit 形态:
@@ -578,6 +585,91 @@ func analyzeSetTableNodeHit(proto *bytecode.Proto, feedback *bridge.TypeFeedback
 		icSetNodeHit:  true,
 		icAReg:        uint8(stA),
 		icSetCReg:     uint8(stC),
+		icStableShape: pf.StableShape,
+		icStableIndex: pf.StableIndex,
+		icStableKey:   stableKey,
+	}, true
+}
+
+// analyzeSelfNodeHit 识别 PJ4 SELF IC NodeHit 形态:
+// `local m = obj:method` / `obj:method()` 单 BB 形态——method 是字符串
+// ident → hash 段命中。这是 real-world `obj:method()` 调用的典型形态
+// (luac 编 SELF A=R(m) B=R(obj) C=K(string),IC[0]=NodeHit)。
+//
+// **形态**(luac 编 2 op):
+//   - [0] SELF A B C:A<=253(留 R(A+1) 槽<=254),B<=254,C>=256(K 常量 string)
+//   - [1] RETURN A 2(取 R(A) method 函数)
+//
+// **触发条件**:
+//   - Code 长度 2 或 3
+//   - SELF A B C + RETURN A 2 形态守卫
+//   - proto.IC[0].Kind == ICKindNodeHit
+//   - feedback FBTableMono + Confidence >= 0.99 + shape/index 一致
+//   - stableKey 编译期固化(LoadProgram 已 intern 字符串)
+//
+// 失败任一条件返 (shapeInfo{}, false)—— 走 analyzeShape 路径(若 SELF +
+// RETURN 同款 host helper 支持)或 ErrCompileUnsupportedShape。
+func analyzeSelfNodeHit(proto *bytecode.Proto, feedback *bridge.TypeFeedback) (shapeInfo, bool) {
+	codeLen := len(proto.Code)
+	if codeLen != 2 && codeLen != 3 {
+		return shapeInfo{}, false
+	}
+	if bytecode.Op(proto.Code[0]) != bytecode.SELF ||
+		bytecode.Op(proto.Code[1]) != bytecode.RETURN {
+		return shapeInfo{}, false
+	}
+	if codeLen == 3 && bytecode.Op(proto.Code[2]) != bytecode.RETURN {
+		return shapeInfo{}, false
+	}
+	selfA := bytecode.A(proto.Code[0])
+	selfB := bytecode.B(proto.Code[0])
+	selfC := bytecode.C(proto.Code[0])
+	retA := bytecode.A(proto.Code[1])
+	retB := bytecode.B(proto.Code[1])
+	if selfA != retA || retB != 2 {
+		return shapeInfo{}, false
+	}
+	if selfA > 253 || selfB > 254 || selfC < 256 {
+		return shapeInfo{}, false
+	}
+	if len(proto.IC) <= 0 {
+		return shapeInfo{}, false
+	}
+	icSlot := proto.IC[0]
+	if icSlot.Kind != bytecode.ICKindNodeHit {
+		return shapeInfo{}, false
+	}
+	if feedback == nil || len(feedback.Points) < 1 {
+		return shapeInfo{}, false
+	}
+	pf := feedback.Points[0]
+	if pf.Kind != bridge.FBTableMono || pf.Confidence < 0.99 {
+		return shapeInfo{}, false
+	}
+	if pf.StableShape != icSlot.Shape || pf.StableIndex != icSlot.Index {
+		return shapeInfo{}, false
+	}
+	// stableKey 编译期固化
+	kIdx := bytecode.KIdx(int(selfC))
+	if kIdx < 0 || kIdx >= len(proto.Consts) {
+		return shapeInfo{}, false
+	}
+	stableKey := uint64(proto.Consts[kIdx])
+	if stableKey == uint64(value.Nil) {
+		return shapeInfo{}, false
+	}
+
+	return shapeInfo{
+		ok:            true,
+		retA:          uint8(retA),
+		retB:          uint8(retB),
+		retPC:         1,
+		preludeOp:     uint8(bytecode.SELF), // Run 端 deopt 走 host.GetTable(P1 SELF case 同源)
+		preludeArg:    uint32(selfB),
+		preludeC:      uint16(selfC),
+		icSelfNodeHit: true,
+		icAReg:        uint8(retA),
+		icBReg:        uint8(selfB),
 		icStableShape: pf.StableShape,
 		icStableIndex: pf.StableIndex,
 		icStableKey:   stableKey,
@@ -1772,6 +1864,14 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 		if icInfo, ok := analyzeSetTableNodeHit(proto, feedback); ok {
 			return c.compileIcSetNodeHit(proto, icInfo)
 		}
+		// **PJ4 SELF IC NodeHit 形态**:`local m = obj:method` 等 SELF+RETURN
+		// 形态,method 是字符串 ident → hash 段命中(real-world obj:method()
+		// 典型形态),166 字节模板:R(A+1) := R(B) + NodeKey 比对 + NodeVal
+		// load → R(A);失败 fall through 到 host.GetTable byte-equal(R(A+1)
+		// 已 store,P1 SELF case 同款步骤)。
+		if icInfo, ok := analyzeSelfNodeHit(proto, feedback); ok {
+			return c.compileIcSelfNodeHit(proto, icInfo)
+		}
 	}
 
 	info := analyzeShape(proto)
@@ -2335,5 +2435,43 @@ func (c *Compiler) compileIcSetNodeHit(proto *bytecode.Proto, info shapeInfo) (b
 		useSpec:       true,
 		specDeoptCode: deoptCode,
 		icSetArrayHit: true, // Run 端 deopt 复用 host.SetTable 路径(P1 icSetTable 兼容 ArrayHit+NodeHit)
+	}, nil
+}
+
+// compileIcSelfNodeHit 编译 PJ4 SELF IC NodeHit 形态(承 analyzeSelfNodeHit):
+// emit 166 字节 SELF NodeHit IC inline 模板(SELF ArrayHit 139 + key 比对
+// 段 27),失败 deopt → Run 端调 host.GetTable byte-equal P1(R(A+1) 已
+// store,P1 SELF case 同款步骤;P1 icGetTable 兼容 NodeHit)。
+//
+// **SELF 形态 retB=2**(取 R(A) method 函数)。R(A+1) 由模板从 R(B) 拷写,
+// deopt 路径不需回滚——P1 SELF 路径同样先 setReg(A+1, B)。这是 real-world
+// `obj:method()` 调用的典型形态(method 是字符串 ident)。
+func (c *Compiler) compileIcSelfNodeHit(proto *bytecode.Proto, info shapeInfo) (bridge.GibbousCode, error) {
+	const deoptCode uint64 = 0xFFFCDEAD_DEADBE05
+	arenaBaseOff := int32(JITContextArenaBaseOffset)
+	var buf []byte
+	buf = archEmitSelfNodeHit(buf, info.icAReg, info.icBReg,
+		info.icStableShape, info.icStableIndex, info.icStableKey,
+		arenaBaseOff, deoptCode)
+	page, err := archMmapCode(buf)
+	if err != nil {
+		return nil, err
+	}
+	incSpecTableHits() // 复用 SpecTableHits 探针(全 PJ4 路径共计)
+	return &p4Code{
+		proto:         proto,
+		codePage:      page,
+		jitCtx:        NewJITContext(),
+		retA:          info.retA,
+		retB:          info.retB,
+		retPC:         info.retPC,
+		writeRetA:     false, // 模板已写 R(A)
+		preludeOp:     info.preludeOp,
+		preludeArg:    info.preludeArg,
+		preludeC:      info.preludeC,
+		host:          c.hostState,
+		useSpec:       true,
+		specDeoptCode: deoptCode,
+		icArrayHit:    true, // SELF deopt 复用 host.GetTable 路径(P1 SELF case 已 setReg(A+1, B))
 	}, nil
 }
