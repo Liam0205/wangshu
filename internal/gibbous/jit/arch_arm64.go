@@ -260,7 +260,28 @@ func archEmitSelfNodeHit(buf []byte, aReg, bReg uint8,
 		stableShape, stableIndex, stableKey, arenaBaseOffArm64(arenaBaseOff), deoptCode)
 }
 
-// archSupportsSpec arm64 当前不支持(留 PJ8+)。
+// archSupportsSpec arm64 端 PJ8 工程组件完整就绪但**端到端验证尚未通过**:
+//   - ✅ PJ2 投机三形态字节级模板 byte-tested 完整(reg-reg 108B + reg-K 92B
+//   - chain-KK 116B,13 字节级单测覆盖)
+//   - ✅ archEmitArithSpec 三 stub 真代理(sseOp 翻译 amd64→arm64)
+//   - ✅ archCallJITSpec arm64 spec trampoline asm 实装(framesize $80-32,
+//     装 x26=vsBase + x27=jitCtx + BL + LDP,trampoline_arm64.s::callJITSpec)
+//   - ✅ trampoline_other.go cross-build stub(darwin/arm64 等 panic on call)
+//   - ⏳ 物理 self-hosted runner 端到端 V1-V22 验证(QEMU 不真模拟 i-cache
+//   - PROT_EXEC,本地翻 true 后端到端崩高风险)
+//
+// **翻 true 前置条件**(留 PJ8+ 同批落地):
+//  1. 物理 arm64 self-hosted runner CI 接入(真 mmap + PROT_EXEC + 真
+//     i-cache + 真 d-cache flush)
+//  2. CI test-arm64-physical 跑 main 包测试(经 Compile 派发 + archCall*
+//     路径)+ crescent e2e WarmupThenForce + V1-V22 byte-equal P1
+//  3. 翻 true 后启用范围:Compile 端 arm64 上 PJ2 投机模板 + PJ3 FORLOOP
+//     body/body2/RegLimit 三路径(经 archCallJITSpec)+ PJ4 IC 六模板
+//     (经 archCallJITFull,本就启用)
+//
+// **当前状态**:仍返 false,Compile 端 PJ2 投机 + PJ3 body/body2/RegLimit
+// 路径**编译期返 ErrCompileUnsupportedShape**(承本会话 review 22 ℹ️ 遗留
+// fix),Tier 框架退回 P1 解释器,行为等价 byte-equal P1。
 func archSupportsSpec() bool { return false }
 
 // archSupportsForLoop arm64 端 PJ3 FORLOOP 模板已真接入(本会话 PJ8
