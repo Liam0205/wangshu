@@ -94,6 +94,18 @@ const specRegKDivBody = `local x=42; return x/6`
 const specChainMulAddBody = `local x=7; return x*2+1`
 const specChainAddMulBody = `local x=7; return (x+1)*2`
 
+// PJ3 FORLOOP 字节级 inline:`function() for i=1,K do end end` 形态。
+// P4 首次在 mmap 段内字节级跑控制流(循环),不经任何 host helper round-trip。
+// 模板 69 字节(浮点 idx+step / ucomisd limit / backward jmp)。
+//
+// **注**:wrapKernelJIT 把 body 包进 kernel,然后 `t = kernel()` 调 50 次。
+// 要匹配 analyzeForLoopForm 的「三 LOADK + FORPREP + FORLOOP + RETURN(空)」
+// 6-7 op 闭门形态,kernel body 必须是「for i=1,K do end」无任何返回值/
+// 其它语句——`for ... end`(空 return implied)而非 `for ... end; return 0`。
+const pj3ForLoop100Body = `for i = 1, 100 do end`
+const pj3ForLoop1000Body = `for i = 1, 1000 do end`
+const pj3ForLoop10000Body = `for i = 1, 10000 do end`
+
 func BenchmarkGibbousJIT_Const(b *testing.B)      { benchGibbousJIT(b, constBody, true) }
 func BenchmarkGibbousJIT_ConstCresc(b *testing.B) { benchGibbousJIT(b, constBody, false) }
 func BenchmarkGibbousJIT_Nil(b *testing.B)        { benchGibbousJIT(b, nilBody, true) }
@@ -142,4 +154,26 @@ func BenchmarkGibbousJIT_SpecChainAddMul(b *testing.B) {
 }
 func BenchmarkGibbousJIT_SpecChainAddMulCresc(b *testing.B) {
 	benchGibbousJIT(b, specChainAddMulBody, false)
+}
+
+// PJ3 FORLOOP 字节级 inline(69 字节模板,mmap 段内自循环)P4 vs crescent。
+// 这是 P4 首次「字节级跑控制流不经 host helper」的真大幅加速验证档。
+// 不同 K(100/1000/10000)验证 backward jmp 摊薄 boundary 的真实收益。
+func BenchmarkGibbousJIT_PJ3For100(b *testing.B) {
+	benchGibbousJIT(b, pj3ForLoop100Body, true)
+}
+func BenchmarkGibbousJIT_PJ3For100Cresc(b *testing.B) {
+	benchGibbousJIT(b, pj3ForLoop100Body, false)
+}
+func BenchmarkGibbousJIT_PJ3For1000(b *testing.B) {
+	benchGibbousJIT(b, pj3ForLoop1000Body, true)
+}
+func BenchmarkGibbousJIT_PJ3For1000Cresc(b *testing.B) {
+	benchGibbousJIT(b, pj3ForLoop1000Body, false)
+}
+func BenchmarkGibbousJIT_PJ3For10000(b *testing.B) {
+	benchGibbousJIT(b, pj3ForLoop10000Body, true)
+}
+func BenchmarkGibbousJIT_PJ3For10000Cresc(b *testing.B) {
+	benchGibbousJIT(b, pj3ForLoop10000Body, false)
 }
