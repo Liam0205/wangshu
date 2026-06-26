@@ -668,3 +668,63 @@ func TestPJ8_EmitSetTableNodeHitArm64_StableKeyBurnedIn(t *testing.T) {
 		}
 	}
 }
+
+// TestPJ8_EmitSetTableArrayHitArm64_StableShapeBurnedIn 验 SETTABLE
+// ArrayHit 模板 stableShape 烧入位置。字节布局同 GetTableArrayHit(无
+// SELF STR / 无 nodeRef 分流):guard 32 + re-load 36 + word5+LSR 8 = 76
+// → MOV stableShape 在 [76-91]。
+func TestPJ8_EmitSetTableArrayHitArm64_StableShapeBurnedIn(t *testing.T) {
+	const stableShape uint32 = 0xBEEF_DEAD
+	var buf []byte
+	buf = EmitSetTableArrayHitArm64(buf, 1, 2, stableShape, 3, 16, 0xCAFEBABE)
+
+	if len(buf) < 92 {
+		t.Fatalf("buf too short: %d", len(buf))
+	}
+	expectedImm16 := [4]uint16{
+		uint16(stableShape & 0xFFFF),
+		uint16((stableShape >> 16) & 0xFFFF),
+		0, // uint32 高位
+		0,
+	}
+	for i, exp := range expectedImm16 {
+		off := 76 + i*4
+		insn := binary.LittleEndian.Uint32(buf[off : off+4])
+		got := uint16((insn >> 5) & 0xFFFF)
+		if got != exp {
+			t.Errorf("stableShape movz/movk[%d]@%d imm16 = 0x%04x, want 0x%04x",
+				i, off, got, exp)
+		}
+	}
+}
+
+// TestPJ8_EmitSelfArrayHitArm64_StableShapeBurnedIn 验 SELF ArrayHit
+// 模板 stableShape 烧入位置。SELF 多 step 2 STR R(A+1) 4 字节:
+//   - guard 36(SELF:LDR 4 + STR 4 + LSR 4 + MOV 16 + CMP 4 + B.NE 4)
+//   - re-load 36
+//   - word5+LSR 8
+//   - MOV stableShape 起 [80-95]
+func TestPJ8_EmitSelfArrayHitArm64_StableShapeBurnedIn(t *testing.T) {
+	const stableShape uint32 = 0xBEEF_DEAD
+	var buf []byte
+	buf = EmitSelfArrayHitArm64(buf, 1, 3, stableShape, 2, 16, 0xCAFEBABE)
+
+	if len(buf) < 96 {
+		t.Fatalf("buf too short: %d", len(buf))
+	}
+	expectedImm16 := [4]uint16{
+		uint16(stableShape & 0xFFFF),
+		uint16((stableShape >> 16) & 0xFFFF),
+		0,
+		0,
+	}
+	for i, exp := range expectedImm16 {
+		off := 80 + i*4
+		insn := binary.LittleEndian.Uint32(buf[off : off+4])
+		got := uint16((insn >> 5) & 0xFFFF)
+		if got != exp {
+			t.Errorf("stableShape movz/movk[%d]@%d imm16 = 0x%04x, want 0x%04x",
+				i, off, got, exp)
+		}
+	}
+}
