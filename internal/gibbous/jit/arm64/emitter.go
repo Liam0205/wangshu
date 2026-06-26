@@ -532,3 +532,27 @@ func EmitLsrXdImm6(buf []byte, rd, rn uint8, imm6 uint8) []byte {
 
 // EncodedLsrXdImm6Len = 4.
 const EncodedLsrXdImm6Len = 4
+
+// patchBCondImm19 在 buf[off..off+4] 处的 B.cond 指令字内 patch imm19
+// 字段(bit 5-23)。原指令字 cond 字段(bit 0-3)和 0x54 base(bit 24-31)
+// 保留,只修改 imm19 19 位。
+//
+// 用例:PJ3 FORLOOP / PJ4 表 IC 模板的 forward B.cond 占位 deopt 后回填
+// (placeholder imm19=0 → 实际 (deoptStart - bCondOff) / 4)。
+func patchBCondImm19(buf []byte, off int, imm19 int32) {
+	if off+4 > len(buf) {
+		return
+	}
+	// 读原指令字
+	insn := uint32(buf[off]) | uint32(buf[off+1])<<8 |
+		uint32(buf[off+2])<<16 | uint32(buf[off+3])<<24
+	// 清掉 imm19 字段(bit 5-23,共 19 位 = 0x7FFFF<<5 = 0x00FFFFE0)
+	insn &= 0xFF00001F
+	// 写入新 imm19
+	insn |= (uint32(imm19) & 0x7FFFF) << 5
+	// 写回 buf(LE)
+	buf[off] = byte(insn)
+	buf[off+1] = byte(insn >> 8)
+	buf[off+2] = byte(insn >> 16)
+	buf[off+3] = byte(insn >> 24)
+}
