@@ -103,10 +103,11 @@ func archEmitArithSpecChainKKWithGuard(buf []byte, sseOp1, sseOp2 byte, a, b uin
 
 // archEmitForLoopEmptyConst arm64 端 stub——留 PJ8+(对位 amd64 FORLOOP
 // 模板:fmov + fcmpe + b.gt / b 等)。
-func archEmitForLoopEmptyConst(buf []byte, kInit, kLimit, kStep uint64) []byte {
+func archEmitForLoopEmptyConst(buf []byte, kInit, kLimit, kStep uint64, preemptFlagOff int32) []byte {
 	_ = kInit
 	_ = kLimit
 	_ = kStep
+	_ = preemptFlagOff
 	return buf
 }
 

@@ -20,7 +20,7 @@ package amd64
 // EmitForLoopEmptyConst 拼接「全常量 init/limit/step + 空 body FORLOOP
 // 字节级模板」。
 //
-// 字节布局(承上面文件头注的设计图):
+// 字节布局(承上面文件头注的设计图;preemptFlagOff < 0 时省略 safepoint check):
 //
 //	[ 0] mov rax, K_init_imm64     ; 10 bytes
 //	[10] movq xmm0, rax             ; 5 bytes
@@ -32,15 +32,22 @@ package amd64
 //	[49] ; loop_start
 //	[49] addsd xmm0, xmm2           ; 4 bytes (FORLOOP: idx += step)
 //	[53] ucomisd xmm0, xmm1         ; 4 bytes (cmp idx, limit)
-//	[57] ja  after_loop             ; 6 bytes (forward jcc;rel32 = +5)
-//	[63] jmp loop_start             ; 5 bytes (backward jmp;rel32 = -(49-(63+5)) = -19)
-//	[68] ; after_loop
-//	[68] ret                        ; 1 byte
-//	——— 总长 = 69 字节 ———
+//	[57] ja  after_loop             ; 6 bytes (forward jcc;rel32 = +5 / +19 含 safepoint)
+//	[63] ; (optional safepoint check)
+//	[63] cmp byte [r15+pfOff], 0    ; 8 bytes (仅 preemptFlagOff >= 0 时)
+//	[71] jne after_loop             ; 6 bytes (forward jcc)
+//	[77] jmp loop_start             ; 5 bytes (backward jmp)
+//	[82] ; after_loop
+//	[82] ret                        ; 1 byte
+//	——— 总长 = 69 字节(无 safepoint) / 83 字节(含 safepoint) ———
 //
-// **预设条件**:trampoline 装 r15(本模板不读 r15);R(A) idx 槽不写
-// (空 body 不需要);返回 rax 是 dummy(段返回后 host 不读)。
-func EmitForLoopEmptyConst(buf []byte, kInit, kLimit, kStep uint64) []byte {
+// 参数 preemptFlagOff:r15+disp32 处的 preempt 字段 byte 偏移;
+//   - >= 0:启用 safepoint check(承 V18 -race 抢占纪律)
+//   - <  0:跳过 safepoint(测试用 / 严格单段计算用例)
+//
+// **预设条件**:trampoline 装 r15(safepoint check 读 r15);R(A) idx 槽
+// 不写(空 body 不需要);返回 rax 是 dummy(段返回后 host 不读)。
+func EmitForLoopEmptyConst(buf []byte, kInit, kLimit, kStep uint64, preemptFlagOff int32) []byte {
 	// 装 init/limit/step 到 xmm0/xmm1/xmm2
 	buf = EmitMovRaxImm64(buf, kInit) // mov rax, K_init
 	buf = EmitMovqXmmFromRax(buf, 0)  // movq xmm0, rax
@@ -67,6 +74,14 @@ func EmitForLoopEmptyConst(buf []byte, kInit, kLimit, kStep uint64) []byte {
 	buf = EmitJaRel32(buf, 0)
 	jaRel32Off := len(buf) - 4
 
+	// (可选)safepoint check:cmp byte [r15+pfOff], 0;jne after_loop
+	var safepointJneRel32Off int = -1
+	if preemptFlagOff >= 0 {
+		buf = EmitCmpByteR15DispImm8(buf, preemptFlagOff, 0)
+		buf = EmitJneRel32(buf, 0)
+		safepointJneRel32Off = len(buf) - 4
+	}
+
 	// jmp loop_start backward
 	jmpStart := len(buf)
 	backwardRel32 := int32(loopStart - (jmpStart + EncodedJmpRel32Len))
@@ -82,11 +97,17 @@ func EmitForLoopEmptyConst(buf []byte, kInit, kLimit, kStep uint64) []byte {
 	forwardRel32 := int32(afterLoop) - int32(jaRel32Off+4)
 	PatchRel32(buf, jaRel32Off, forwardRel32)
 
+	// patch safepoint jne forward(若启用)
+	if safepointJneRel32Off >= 0 {
+		safepointRel32 := int32(afterLoop) - int32(safepointJneRel32Off+4)
+		PatchRel32(buf, safepointJneRel32Off, safepointRel32)
+	}
+
 	return buf
 }
 
 // EncodedForLoopEmptyConstLen 是「全常量 init/limit/step + 空 body FORLOOP」
-// 字节数:10*3(mov×3) + 5*3(movq×3) + 4(subsd) + 4(addsd) + 4(ucomisd)
+// 无 safepoint 版本字节数:10*3(mov×3) + 5*3(movq×3) + 4(subsd) + 4(addsd) + 4(ucomisd)
 // + 6(ja) + 5(jmp) + 1(ret) = 69 字节。
 const EncodedForLoopEmptyConstLen = EncodedMovRaxImm64Len*3 +
 	EncodedMovqXmmFromRaxLen*3 +
@@ -96,3 +117,8 @@ const EncodedForLoopEmptyConstLen = EncodedMovRaxImm64Len*3 +
 	EncodedJccRel32Len + // ja
 	EncodedJmpRel32Len + // jmp
 	EncodedRetLen
+
+// EncodedForLoopEmptyConstWithSafepointLen 含 safepoint check 版本字节数:
+// 上面 69 + 8(cmp byte [r15+disp], 0)+ 6(jne)= 83 字节。
+const EncodedForLoopEmptyConstWithSafepointLen = EncodedForLoopEmptyConstLen +
+	EncodedCmpByteR15DispImm8Len + EncodedJccRel32Len

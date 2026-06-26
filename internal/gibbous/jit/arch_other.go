@@ -98,10 +98,11 @@ func archEmitArithSpecChainKKWithGuard(buf []byte, sseOp1, sseOp2 byte, a, b uin
 }
 
 // archEmitForLoopEmptyConst 其它 arch 不支持。
-func archEmitForLoopEmptyConst(buf []byte, kInit, kLimit, kStep uint64) []byte {
+func archEmitForLoopEmptyConst(buf []byte, kInit, kLimit, kStep uint64, preemptFlagOff int32) []byte {
 	_ = kInit
 	_ = kLimit
 	_ = kStep
+	_ = preemptFlagOff
 	return buf
 }
 

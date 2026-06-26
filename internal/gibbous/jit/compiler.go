@@ -89,7 +89,10 @@ type shapeInfo struct {
 	// PJ3 FORLOOP 字节级 inline 形态识别(空 body / 全常量 init/limit/step):
 	//   - isForLoop = true:本 shape 是 FORLOOP 形态,Compile 走 emit FORLOOP
 	//     模板(浮点 idx+=step / ucomisd limit / backward jcc)路径
-	//   - forA:FORPREP/FORLOOP 的 A 字段(R(A)..R(A+3) 是 idx/limit/step/i)
+	//   - forA:FORPREP/FORLOOP 的 A 字段(R(A)..R(A+3) 是 idx/limit/step/i)。
+	//     **当前空 body 形态 emit 不读 forA**(模板只用 forInitK/forLimitK/
+	//     forStepK 烧入 imm64,不寻址 R(A) 槽);**留 PJ3+ body inline 扩**
+	//     时需用 forA 算 R(A+3)=i 槽 offset 给 body 内部 ref。
 	//   - forInitK / forLimitK / forStepK:三个常量 NaN-box raw bits(编译期烧 imm64)
 	isForLoop bool
 	forA      uint8
@@ -131,10 +134,10 @@ func analyzeForLoopForm(proto *bytecode.Proto) (shapeInfo, bool) {
 	if codeLen != 6 && codeLen != 7 {
 		return shapeInfo{}, false
 	}
-	// [3] FORPREP A 0 / [4] FORLOOP A -1 / [5] RETURN A=0 B=1
+	// [0/1/2] LOADK / [3] FORPREP / [4] FORLOOP / [5] RETURN
+	// **limit 仅 LOADK 形态**(MOVE/reg 形态留 PJ3+ 加 IsNumber guard 时扩)
 	if bytecode.Op(proto.Code[0]) != bytecode.LOADK ||
-		bytecode.Op(proto.Code[1]) != bytecode.LOADK &&
-			bytecode.Op(proto.Code[1]) != bytecode.MOVE ||
+		bytecode.Op(proto.Code[1]) != bytecode.LOADK ||
 		bytecode.Op(proto.Code[2]) != bytecode.LOADK ||
 		bytecode.Op(proto.Code[3]) != bytecode.FORPREP ||
 		bytecode.Op(proto.Code[4]) != bytecode.FORLOOP ||
@@ -142,10 +145,6 @@ func analyzeForLoopForm(proto *bytecode.Proto) (shapeInfo, bool) {
 		return shapeInfo{}, false
 	}
 	if codeLen == 7 && bytecode.Op(proto.Code[6]) != bytecode.RETURN {
-		return shapeInfo{}, false
-	}
-	// limit 必须是 LOADK 形态(MOVE 留 PJ3+ 加 IsNumber guard 时扩)
-	if bytecode.Op(proto.Code[1]) != bytecode.LOADK {
 		return shapeInfo{}, false
 	}
 
@@ -909,7 +908,11 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 	if info.isForLoop && archSupportsSpec() &&
 		c.hostState != nil && c.hostState.ArenaBaseAddr() != 0 {
 		var buf []byte
-		buf = archEmitForLoopEmptyConst(buf, info.forInitK, info.forLimitK, info.forStepK)
+		// safepoint check 接入 — preemptFlag 字段偏移传给模板,模板在
+		// loop body 末尾插「cmp byte [r15+pfOff], 0; jne after_loop」
+		// (承 05 §1.2.2 抢占纪律 + V18 -race);trampoline 已装 r15。
+		pfOff := int32(JITContextPreemptFlagOffset)
+		buf = archEmitForLoopEmptyConst(buf, info.forInitK, info.forLimitK, info.forStepK, pfOff)
 		page, err := archMmapCode(buf)
 		if err != nil {
 			return nil, err
