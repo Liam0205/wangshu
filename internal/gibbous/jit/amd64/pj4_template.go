@@ -353,35 +353,31 @@ func EmitGetTableNodeHit(buf []byte, aReg, bReg uint8,
 //
 // 返回追加后的 buf。
 //
-// **字节布局**(~140 字节,基于 ArrayHit getter 132 字节 + 反向 store 调整):
+// **字节布局**(113 字节,getter ArrayHit 132 字节但 setter 省 nil mask/check
+// 段 19 字节,再扩 load R(C) value + 反向 store):
 //
-//	[0-21]   load R(A) → rax + 严密 IsTable guard(复用,22 字节)
+//	[0-21]   load R(A) → rax + 严密 IsTable guard(22 字节,复用)
 //	[22-28]  re-load R(A) → rax(7 字节)
 //	[29-44]  GCRef extract + rcx = offset(16 字节)
 //	[45-51]  load arena base → r14(7 字节)
 //	[52-74]  gen check(load word5 + shr + cmp eax + jne,23 字节)
 //	[75-82]  load table.arrayRef = [r14+rcx+16] → rax(8 字节)
 //	[83-85]  mov rcx, rax(rcx = arrayRef offset,3 字节)
-//	[86-93]  load current array[stableIndex] → rax(8 字节,验现有值非 nil)
-//	[94-103] mov rcx_nil_check_reg, qNanBoxNil(用 rax 装 mask 比较，
-//	         但 rcx 已是 arrayRef,需要小心)
-//	         **简化**:不复用 rcx,改用 r-temp
-//	         实际:再装 rax_compare 处理较复杂,简化用 cmp rax, mov rdx imm 替代
+//	[86-92]  load R(C) → rdx(7 字节,EmitMovqRdxFromMemRbx)
+//	[93-100] mov [r14+rcx+stableIndex*8], rdx(8 字节,反向 store)
+//	[101]    ret(1 字节)
+//	[102-112] deopt block(mov rax deoptCode + ret,11 字节)
+//	——— 总计 113 字节 ———
 //
-// **设计简化**:本批保守不验现有 nil(防新键路径)— P1 解释器 IC 命中
-// 协议本身要求 `array[stableIndex] != nil`,但 IC slot 校验已保证(shape
-// 一致 + slot 未失效),实际新键路径会让 IC 重新填(蓝色复杂);最严密
-// 应再装一次 cmp 但增 ~13 字节。**当前简化**:依赖 P1 解释器在 deopt
-// 路径再次校验,模板假设 IC 命中即可直接写。失败场景(键退化/__newindex
-// 元方法)由 P1 检测并 bump gen / RequestRefresh,本帧已经写错——**设计
-// 边界:本批 SETTABLE 简化假设无 __newindex 元表 + IC slot 未失效**。
+// **设计简化**(本批 SETTABLE 工程边界):
+//   - **不验现有 array[stableIndex] != nil**(防新键路径)— P1 解释器
+//     IC 命中协议本身要求该位非 nil,IC slot 校验(shape 一致 + slot 未
+//     失效)已保证;新键路径会让 IC 重新填,本帧若误投机依赖 P1 解释器
+//     在键退化场景 bump gen + RequestRefresh
+//   - **假设无 __newindex 元表**(meta freeze 假设)— 元方法场景应触发
+//     gen change 由 IC 失效路径处理
 //
-//	[94-101] load R(C) → rdx(7 字节,EmitMovqRdxFromMemRbx)
-//	[102-109] mov [r14+rcx+stableIndex*8], rdx(8 字节,反向 store)
-//	[110] ret(1 字节)
-//	[111-120] mov rax, deoptCode imm64(10 字节,deopt block)
-//	[121] ret(1 字节)
-//	——— 总计 ~122 字节 ———
+// 严密版(再加 ~13 字节验现有 nil + 13 字节验 __newindex)留 PJ4+。
 //
 // **deopt 路径**:Run 端 raxSpec==deoptCode 时调 host.SetTable(byte-equal
 // P1 解释器,经 IC + 哈希 + __newindex 元方法链)。setter 形态返 RETURN A 1
