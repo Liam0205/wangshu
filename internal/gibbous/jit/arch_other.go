@@ -148,5 +148,19 @@ func archEmitGetTableArrayHit(buf []byte, aReg, bReg uint8, stableShape, stableI
 	return buf
 }
 
+// archEmitGetTableNodeHit 其它 arch 不支持。
+func archEmitGetTableNodeHit(buf []byte, aReg, bReg uint8,
+	stableShape, stableIndex uint32, stableKey uint64,
+	arenaBaseOff int32, deoptCode uint64) []byte {
+	_ = aReg
+	_ = bReg
+	_ = stableShape
+	_ = stableIndex
+	_ = stableKey
+	_ = arenaBaseOff
+	_ = deoptCode
+	return buf
+}
+
 // archSupportsSpec 其它 arch 不支持。
 func archSupportsSpec() bool { return false }

@@ -124,10 +124,26 @@ func archEmitForLoopWithBody2(buf []byte, kS, kInit, kLimit, kStep, kBody1, kBod
 }
 
 // archEmitGetTableArrayHit 拼接 PJ4 IC ArrayHit 字节级直达槽模板
-// (129 字节,IsTable guard + arena base load + gen check + array 直达 +
+// (132 字节,IsTable guard + arena base load + gen check + array 直达 +
 // nil check + 写 R(A) + deopt block)。amd64 端代理 jitamd64.EmitGetTableArrayHit。
 func archEmitGetTableArrayHit(buf []byte, aReg, bReg uint8, stableShape, stableIndex uint32, arenaBaseOff int32, deoptCode uint64) []byte {
 	return jitamd64.EmitGetTableArrayHit(buf, aReg, bReg, stableShape, stableIndex, arenaBaseOff, deoptCode)
+}
+
+// archEmitGetTableNodeHit 拼接 PJ4 IC NodeHit 字节级直达槽模板
+// (159 字节,严密 IsTable guard + arena base + gen check + nodeRef +
+// node[stableIndex] + key 比对 + NodeVal load + nil check + 写 R(A) +
+// deopt block)。amd64 端代理 jitamd64.EmitGetTableNodeHit。
+//
+// 与 ArrayHit 关键差异:
+//   - 取 word3=nodeRef(offset 24)而非 word2=arrayRef(offset 16)
+//   - node 步长 24 字节(nodeWords=3)而非 array 8 字节
+//   - 多 key 比对(NodeKey == stableKey 防键退化 / __index 链)
+func archEmitGetTableNodeHit(buf []byte, aReg, bReg uint8,
+	stableShape, stableIndex uint32, stableKey uint64,
+	arenaBaseOff int32, deoptCode uint64) []byte {
+	return jitamd64.EmitGetTableNodeHit(buf, aReg, bReg,
+		stableShape, stableIndex, stableKey, arenaBaseOff, deoptCode)
 }
 
 // archSupportsSpec 返 true 当本 arch 支持 PJ2 投机模板真接入。

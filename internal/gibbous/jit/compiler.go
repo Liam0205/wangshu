@@ -130,6 +130,13 @@ type shapeInfo struct {
 	icBReg        uint8
 	icStableShape uint32
 	icStableIndex uint32
+
+	// PJ4 表 IC NodeHit 形态(对位 ArrayHit 但 IC kind=NodeHit,hash 段):
+	//   - icNodeHit = true:走 PJ4 IC NodeHit 字节级直达槽 inline 模板
+	//   - icStableKey:编译期从 proto.Consts[KIdx] 固化 stableKey NaN-box,
+	//     模板内验 NodeKey == stableKey 防键退化
+	icNodeHit   bool
+	icStableKey uint64
 }
 
 // analyzeGetTableArrayHit 识别 PJ4 IC ArrayHit 形态:
@@ -209,6 +216,96 @@ func analyzeGetTableArrayHit(proto *bytecode.Proto, feedback *bridge.TypeFeedbac
 		icBReg:        uint8(gtB),
 		icStableShape: pf.StableShape,
 		icStableIndex: pf.StableIndex,
+	}, true
+}
+
+// analyzeGetTableNodeHit 识别 PJ4 IC NodeHit 形态:
+// `function(t) return t["x"] end`(GETTABLE A B C(常量 K idx)+ RETURN A 2),
+// 其中 IC[0].Kind=NodeHit(P1 解释器命中 hash 段而非 array 段)。
+//
+// 与 analyzeGetTableArrayHit 几乎同款触发条件,差异:
+//   - proto.IC[0].Kind == ICKindNodeHit(P1 解释器观测过 hash 命中)
+//   - 编译期固化 stableKey = proto.Consts[KIdx]:NodeHit 模板需要验
+//     NodeKey == stableKey,防键退化(__index 链 / rehash 等场景)
+//
+// **stableKey 编译期固化条件**:
+//   - proto.Consts 索引有效(KIdx < len(Consts))
+//   - 该 Const 不是 Nil(LoadProgram 已为字符串常量 intern,数字常量
+//     编译期就装好;Nil 槽是异常 — 不投机)
+//
+// 失败任一条件返 (shapeInfo{}, false)—— 走 analyzeShape host.GetTable 路径
+// (byte-equal P1)。
+func analyzeGetTableNodeHit(proto *bytecode.Proto, feedback *bridge.TypeFeedback) (shapeInfo, bool) {
+	codeLen := len(proto.Code)
+	if codeLen != 2 && codeLen != 3 {
+		return shapeInfo{}, false
+	}
+	if bytecode.Op(proto.Code[0]) != bytecode.GETTABLE ||
+		bytecode.Op(proto.Code[1]) != bytecode.RETURN {
+		return shapeInfo{}, false
+	}
+	if codeLen == 3 && bytecode.Op(proto.Code[2]) != bytecode.RETURN {
+		return shapeInfo{}, false
+	}
+	gtA := bytecode.A(proto.Code[0])
+	gtB := bytecode.B(proto.Code[0])
+	gtC := bytecode.C(proto.Code[0])
+	retA := bytecode.A(proto.Code[1])
+	retB := bytecode.B(proto.Code[1])
+	if gtA != retA || retB != 2 {
+		return shapeInfo{}, false
+	}
+	if gtB > 254 || gtC < 256 {
+		// C 必须是常量索引(>=256)— 否则 key 是动态 reg,IC slot 可能
+		// 轮换不同 key
+		return shapeInfo{}, false
+	}
+	// IC slot 检查
+	if len(proto.IC) <= 0 {
+		return shapeInfo{}, false
+	}
+	icSlot := proto.IC[0]
+	if icSlot.Kind != bytecode.ICKindNodeHit {
+		return shapeInfo{}, false
+	}
+	// feedback 检查
+	if feedback == nil || len(feedback.Points) < 1 {
+		return shapeInfo{}, false
+	}
+	pf := feedback.Points[0]
+	if pf.Kind != bridge.FBTableMono || pf.Confidence < 0.99 {
+		return shapeInfo{}, false
+	}
+	if pf.StableShape != icSlot.Shape || pf.StableIndex != icSlot.Index {
+		return shapeInfo{}, false
+	}
+
+	// **stableKey 编译期固化**(NodeHit 比 ArrayHit 多这一步):
+	// 从 proto.Consts[KIdx] 取 NaN-box 键(LoadProgram 已 intern 字符串)。
+	kIdx := bytecode.KIdx(int(gtC))
+	if kIdx < 0 || kIdx >= len(proto.Consts) {
+		return shapeInfo{}, false
+	}
+	stableKey := uint64(proto.Consts[kIdx])
+	if stableKey == 0 {
+		// Nil 槽(LoadProgram 未装载完成)— 不投机
+		return shapeInfo{}, false
+	}
+
+	return shapeInfo{
+		ok:            true,
+		retA:          uint8(retA),
+		retB:          uint8(retB),
+		retPC:         1,
+		preludeOp:     uint8(bytecode.GETTABLE), // Run 端 deopt 走 host.GetTable
+		preludeArg:    uint32(gtB),
+		preludeC:      uint16(gtC),
+		icNodeHit:     true,
+		icAReg:        uint8(retA),
+		icBReg:        uint8(gtB),
+		icStableShape: pf.StableShape,
+		icStableIndex: pf.StableIndex,
+		icStableKey:   stableKey,
 	}, true
 }
 
@@ -1371,6 +1468,14 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 		if icInfo, ok := analyzeGetTableArrayHit(proto, feedback); ok {
 			return c.compileIcArrayHit(proto, icInfo)
 		}
+		// **PJ4 IC NodeHit 形态**:hash 段直达(`t["x"]` 形态),复用 ArrayHit
+		// 同款 IC + feedback 双校验,差异是 IC[0].Kind=NodeHit + 编译期固化
+		// stableKey from proto.Consts。NodeHit 模板 159 字节(比 ArrayHit
+		// 多 key 比对段 27 字节);命中即字节级 inline,失败 fall through 到
+		// host.GetTable byte-equal P1。
+		if icInfo, ok := analyzeGetTableNodeHit(proto, feedback); ok {
+			return c.compileIcNodeHit(proto, icInfo)
+		}
 	}
 
 	info := analyzeShape(proto)
@@ -1780,5 +1885,43 @@ func (c *Compiler) compileIcArrayHit(proto *bytecode.Proto, info shapeInfo) (bri
 		useSpec:       true,
 		specDeoptCode: deoptCode,
 		icArrayHit:    true, // Run 端区分 deopt 路径走 host.GetTable
+	}, nil
+}
+
+// compileIcNodeHit 编译 PJ4 IC NodeHit 形态(承 analyzeGetTableNodeHit):
+// emit 159 字节 IC NodeHit inline 模板,失败 deopt → Run 端调 host.GetTable
+// byte-equal P1。
+//
+// 比 compileIcArrayHit 多一个 stableKey 编译期固化参数(模板内验
+// NodeKey == stableKey 防键退化)。Run deopt 路径与 ArrayHit 共用 icArrayHit
+// 字段——两者都是 Run 端 raxSpec==deoptCode 时调 host.GetTable byte-equal
+// (P1 解释器同款 icGetTable 路径既支持 ArrayHit 也支持 NodeHit,无需区分)。
+func (c *Compiler) compileIcNodeHit(proto *bytecode.Proto, info shapeInfo) (bridge.GibbousCode, error) {
+	const deoptCode uint64 = 0xFFFCDEAD_DEADBE01 // 与 ArrayHit 区分但 Run 端共用 host.GetTable 路径
+	arenaBaseOff := int32(JITContextArenaBaseOffset)
+	var buf []byte
+	buf = archEmitGetTableNodeHit(buf, info.icAReg, info.icBReg,
+		info.icStableShape, info.icStableIndex, info.icStableKey,
+		arenaBaseOff, deoptCode)
+	page, err := archMmapCode(buf)
+	if err != nil {
+		return nil, err
+	}
+	incSpecTableHits() // 复用 SpecTableHits 探针(ArrayHit + NodeHit 共计)
+	return &p4Code{
+		proto:         proto,
+		codePage:      page,
+		jitCtx:        NewJITContext(),
+		retA:          info.retA,
+		retB:          info.retB,
+		retPC:         info.retPC,
+		writeRetA:     false, // 模板已 mov [rbx+aReg*8], rax 写好 R(A)
+		preludeOp:     info.preludeOp,
+		preludeArg:    info.preludeArg,
+		preludeC:      info.preludeC,
+		host:          c.hostState,
+		useSpec:       true,
+		specDeoptCode: deoptCode,
+		icArrayHit:    true, // Run 端共用 host.GetTable 路径(P1 icGetTable 兼容)
 	}, nil
 }
