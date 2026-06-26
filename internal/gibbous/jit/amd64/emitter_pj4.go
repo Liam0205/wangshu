@@ -144,3 +144,69 @@ func EmitCmpEcxImm32(buf []byte, imm32 int32) []byte {
 
 // EncodedCmpEcxImm32Len 是「cmp ecx, imm32」字节数(6)。
 const EncodedCmpEcxImm32Len = 6
+
+// EmitShrRaxImm8 发射「shr rax, imm8」(REX.W + C1 /5 + imm8,4 字节)。
+// 用于从 NaN-box 提取高 16 位 tag——`shr rax, 48` 后 rax 高 48 位清零,
+// 低 16 位是 tag value(0xFFFC = TagTable / 0xFFFB = TagString 等)。
+//
+// 编码:48 C1 E8 imm8
+//   - 48 = REX.W
+//   - C1 = SHR r/m64, imm8
+//   - E8 = ModRM:mod=11 reg=101(/5=SHR) rm=000(rax)
+//
+// 用例:严密 IsTable guard 字节级——`shr rax, 48; cmp eax, 0xFFFC; jne deopt`
+// 替换原简化版 `mov rcx, 0xFFFC<<48; cmp rax, rcx; jb deopt`(string/userdata
+// 等高 tag 假阳),严密版精确验高 16 位 = TagTable,排除所有非 table tag。
+func EmitShrRaxImm8(buf []byte, imm8 byte) []byte {
+	return append(buf, 0x48, 0xC1, 0xE8, imm8)
+}
+
+// EncodedShrRaxImm8Len 是「shr rax, imm8」字节数(4)。
+const EncodedShrRaxImm8Len = 4
+
+// EmitCmpEaxImm32 发射「cmp eax, imm32」(操作 32-bit rax)。
+// 编码:3D imm32(5 字节,无 ModRM——AL/AX/EAX/RAX 是 ALU 立即数指令的
+// 隐式操作数,short form)。
+//
+// 用例:严密 IsTable guard 字节级——`shr rax, 48; cmp eax, 0xFFFC`
+// (高 48 位已经 shr 清零,只比较低 16 位 = tag value)。
+func EmitCmpEaxImm32(buf []byte, imm32 int32) []byte {
+	buf = append(buf, 0x3D)
+	buf = append(buf,
+		byte(uint32(imm32)),
+		byte(uint32(imm32)>>8),
+		byte(uint32(imm32)>>16),
+		byte(uint32(imm32)>>24))
+	return buf
+}
+
+// EncodedCmpEaxImm32Len 是「cmp eax, imm32」字节数(5)。
+const EncodedCmpEaxImm32Len = 5
+
+// EmitMovRdxImm64 发射「mov rdx, imm64」(REX.W + B8+r + imm64,10 字节)。
+// 用例:PJ4 NodeHit 模板烧入 stableKey(IC 命中验 NodeKey == stableKey 时)。
+//
+// 编码:48 BA imm64(REX.W=1 / B8+rd=BA where rd=010=rdx / imm64 LE 8 字节)。
+func EmitMovRdxImm64(buf []byte, imm64 uint64) []byte {
+	buf = append(buf, 0x48, 0xBA)
+	for i := 0; i < 8; i++ {
+		buf = append(buf, byte(imm64>>(i*8)))
+	}
+	return buf
+}
+
+// EncodedMovRdxImm64Len 是「mov rdx, imm64」字节数(10)。
+const EncodedMovRdxImm64Len = 10
+
+// EmitCmpRaxRdx 发射「cmp rax, rdx」(REX.W + 39 / ModRM C2,3 字节)。
+// 用例:PJ4 NodeHit 模板验 NodeKey(rax 装 [r14+rcx+stableIndex*24])
+// 与 stableKey(rdx 装 imm64)是否一致。
+//
+// 编码:48 39 D0(REX.W / opcode 39 = CMP r/m64, r64 / ModRM 0xD0:
+// mod=11 reg=010(rdx) rm=000(rax))。
+func EmitCmpRaxRdx(buf []byte) []byte {
+	return append(buf, 0x48, 0x39, 0xD0)
+}
+
+// EncodedCmpRaxRdxLen 是「cmp rax, rdx」字节数(3)。
+const EncodedCmpRaxRdxLen = 3
