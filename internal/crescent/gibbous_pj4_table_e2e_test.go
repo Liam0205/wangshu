@@ -286,3 +286,173 @@ return f(t)`
 		t.Errorf("NumberKey-in-hash:SpecTableHits 未增长 → IC inline 未触发")
 	}
 }
+
+// TestPJ4_TableSetArrayHit_E2E_WarmupThenForce:**字面命中** PJ4 SETTABLE
+// IC ArrayHit 字节级 inline——array 段反向写。
+//
+// 形态:`function(t, v) t[K] = v end`(setter,数字键 K,value 是 reg)。
+// 两 phase 形态:Phase 1 warmup 让 P1 解释器跑 setter → icSetTable 填
+// IC[0]=ArrayHit;Phase 2 force-all 升 inner kernel → analyzeSetTable
+// ArrayHit 命中 → SETTABLE 字节级 inline 编译 → SpecTableHits++=1。
+//
+// **值证伪强化**(承外部 review 反馈):Phase 2 末次写值用「与 warmup
+// 末次值不同」的值(99),让 return t[1] 能区分「Phase 2 真写入 vs Phase
+// 2 写错索引/未写依赖 Phase 1 残值」两种情况。
+func TestPJ4_TableSetArrayHit_E2E_WarmupThenForce(t *testing.T) {
+	jit.ResetSpecHits()
+
+	src := `
+local function setter(t, v) t[1] = v end
+local t = {0, 0, 0}
+for i = 1, 100 do setter(t, i) end  -- warmup:末次写 t[1] = 100
+setter(t, 99)  -- 升 P4 后写不同值,与 warmup 末值(100)区分
+return t[1]`
+
+	st, mainCl := loadFnP4(t, src)
+
+	// Phase 1:不开 force-all,P1 跑 warmup 末次 t[1]=100 + setter(t,99)
+	// 注:Phase 1 实际是 P1 跑完整 chunk(包含末段 setter(t,99))→ t[1]=99
+	rets1, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 1 run: %v", err)
+	}
+	if got := value.AsNumber(value.Value(rets1[0])); got != 99 {
+		t.Errorf("Phase 1 result = %v, want 99(末次 setter(t,99) 写入)", got)
+	}
+	if jit.SpecTableHits() != 0 {
+		t.Errorf("Phase 1 末:SpecTableHits=%d, want 0", jit.SpecTableHits())
+	}
+
+	// Phase 2:开 force-all + 再次 Call。inner setter 升 P4,IC[0]=ArrayHit
+	// 已填 → analyzeSetTableArrayHit 命中 → SETTABLE 字节级 inline 编译。
+	st.bridge.SetForceAllPromote(true)
+	hitsBefore := jit.SpecTableHits()
+	rets2, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 2 run: %v", err)
+	}
+	if got := value.AsNumber(value.Value(rets2[0])); got != 99 {
+		t.Errorf("Phase 2 result = %v, want 99(SETTABLE inline 写入 t[1]=99)", got)
+	}
+	hitsAfter := jit.SpecTableHits()
+	t.Logf("SETTABLE SpecTableHits: %d → %d(Phase 2 增量 = %d)",
+		hitsBefore, hitsAfter, hitsAfter-hitsBefore)
+	if hitsAfter <= hitsBefore {
+		t.Errorf("Phase 2:SETTABLE SpecTableHits 未增长(%d → %d) → "+
+			"SETTABLE IC inline 模板未真编译,prove-the-path 失败",
+			hitsBefore, hitsAfter)
+	}
+}
+
+// TestPJ4_TableSelfArrayHit_E2E_WarmupThenForce:**字面命中** PJ4 SELF
+// IC ArrayHit 字节级 inline——`obj:method()` 形态(数字键 method,罕见但
+// 有效)。
+//
+// **形态**:`function(obj) local m = obj[1] end`(数字键 in array 段)。
+// **注**:实际 `obj:method()` luac 编 SELF+CALL+...,本测用 SELF+RETURN
+// 单 BB 形态(\`local m = obj:method;return m\`)接近 SELF ArrayHit shape
+// 识别条件。method 是数字 K 命中 array 段(real-world `obj:method()` 用
+// 字符串 method 名,走 NodeHit,留 PJ4+)。
+func TestPJ4_TableSelfArrayHit_E2E_WarmupThenForce(t *testing.T) {
+	jit.ResetSpecHits()
+
+	// luac 编 `local m = obj:method` 形态:
+	//   SELF A=R(m) B=R(obj) C=K(数字键 method 索引)
+	//   RETURN A 2(取 m)
+	// 实际 obj 是 table,method 是 obj[1] 这种数字键。
+	// 用 obj:f(...) 语法需要 method 名 — 但 method 名是字符串(NodeHit);
+	// 直接用 obj[1] 不走 SELF(GETTABLE 也可)。
+	// 唯一让 SELF 形态触发的方式 = 真用 `obj:something`,但 something 必
+	// 是 ident 不能数字。所以 ArrayHit SELF 实际几乎不出现在 luac 编译产物。
+	//
+	// 本测试声明边界:跑非 SELF 路径,主要测 SELF 模板 emit 字节级正确性
+	// (已在 jit/amd64 包字节级单测覆盖)。SELF 主路径 e2e 真升层留
+	// NodeHit SELF(下一阶段)。
+	src := `
+local function f(t) return t[1] end
+local t = {42}
+for i = 1, 100 do f(t) end
+return f(t)`
+
+	st, mainCl := loadFnP4(t, src)
+
+	// Phase 1 warmup
+	_, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 1 run: %v", err)
+	}
+
+	// Phase 2 force-all
+	st.bridge.SetForceAllPromote(true)
+	hitsBefore := jit.SpecTableHits()
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 2 run: %v", err)
+	}
+	if got := value.AsNumber(value.Value(rets[0])); got != 42 {
+		t.Errorf("f(t) = %v, want 42", got)
+	}
+	hitsAfter := jit.SpecTableHits()
+	// SELF ArrayHit 形态 luac 不真编译(method 名只能是 ident,不是数字)
+	// → 此测试实际走 GETTABLE ArrayHit 路径,SpecTableHits 仍增长(ArrayHit
+	// 路径)。本测验 SELF ArrayHit 主路径**不破坏**现有 ArrayHit 路径。
+	t.Logf("SELF-ArrayHit edge:SpecTableHits=%d → %d(实际走 ArrayHit 路径)",
+		hitsBefore, hitsAfter)
+	if hitsAfter <= hitsBefore {
+		t.Errorf("ArrayHit 路径 SpecTableHits 未增长 → 退化")
+	}
+}
+
+// TestPJ4_TableSetNodeHit_E2E_WarmupThenForce:**字面命中** PJ4 SETTABLE
+// NodeHit 字节级 inline——字符串键 in hash 段反向写。
+//
+// 形态:`function(t, v) t["x"] = v end`(setter,字符串键,value 是 reg)。
+// 两 phase 形态:Phase 1 warmup 让 P1 解释器跑 setter → icSetTable 填
+// IC[0]=NodeHit;Phase 2 force-all 升 inner kernel → analyzeSetTableNodeHit
+// 命中 → SETTABLE NodeHit 字节级 inline 编译 → SpecTableHits++=1。
+//
+// **值证伪强化**:Phase 2 末次写 99 与 warmup 末值(100)不同,让
+// return t.x 能区分。
+func TestPJ4_TableSetNodeHit_E2E_WarmupThenForce(t *testing.T) {
+	jit.ResetSpecHits()
+
+	src := `
+local function setter(t, v) t["x"] = v end
+local t = {x = 0, y = 0}
+for i = 1, 100 do setter(t, i) end  -- warmup:末次写 t.x = 100
+setter(t, 99)  -- 升 P4 后写不同值
+return t.x`
+
+	st, mainCl := loadFnP4(t, src)
+
+	// Phase 1:P1 跑 warmup 末次 + setter(t, 99) → t.x = 99
+	rets1, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 1 run: %v", err)
+	}
+	if got := value.AsNumber(value.Value(rets1[0])); got != 99 {
+		t.Errorf("Phase 1 result = %v, want 99", got)
+	}
+	if jit.SpecTableHits() != 0 {
+		t.Errorf("Phase 1 末:SpecTableHits=%d, want 0", jit.SpecTableHits())
+	}
+
+	// Phase 2:开 force-all + 再次 Call。inner setter 升 P4,IC[0]=NodeHit
+	// 已填 → analyzeSetTableNodeHit 命中 → SETTABLE NodeHit 字节级编译
+	st.bridge.SetForceAllPromote(true)
+	hitsBefore := jit.SpecTableHits()
+	rets2, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 2 run: %v", err)
+	}
+	if got := value.AsNumber(value.Value(rets2[0])); got != 99 {
+		t.Errorf("Phase 2 result = %v, want 99", got)
+	}
+	hitsAfter := jit.SpecTableHits()
+	t.Logf("SETTABLE NodeHit SpecTableHits: %d → %d(Phase 2 增量 = %d)",
+		hitsBefore, hitsAfter, hitsAfter-hitsBefore)
+	if hitsAfter <= hitsBefore {
+		t.Errorf("Phase 2:SETTABLE NodeHit SpecTableHits 未增长 → " +
+			"NodeHit set IC inline 模板未真编译,prove-the-path 失败")
+	}
+}

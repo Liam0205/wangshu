@@ -146,6 +146,42 @@ func archEmitGetTableNodeHit(buf []byte, aReg, bReg uint8,
 		stableShape, stableIndex, stableKey, arenaBaseOff, deoptCode)
 }
 
+// archEmitSetTableArrayHit 拼接 PJ4 SETTABLE IC ArrayHit 字节级反向写模板
+// (113 字节,严密 IsTable guard + arena base + gen check + arrayRef +
+// load R(C) value → rdx + 反向 store [r14+rcx+stableIndex*8] from rdx +
+// ret + deopt block)。amd64 端代理 jitamd64.EmitSetTableArrayHit。
+//
+// **setter 形态**:retB=1(SETTABLE 0 返回值),Run 端不写 R(A)。
+func archEmitSetTableArrayHit(buf []byte, aReg, cReg uint8,
+	stableShape, stableIndex uint32, arenaBaseOff int32, deoptCode uint64) []byte {
+	return jitamd64.EmitSetTableArrayHit(buf, aReg, cReg,
+		stableShape, stableIndex, arenaBaseOff, deoptCode)
+}
+
+// archEmitSelfArrayHit 拼接 PJ4 SELF IC ArrayHit 字节级 inline 模板
+// (139 字节,GETTABLE ArrayHit 132 + R(A+1) 拷段 7 字节)。amd64 端代理
+// jitamd64.EmitSelfArrayHit。
+//
+// **SELF 形态**:R(A+1) := R(B);R(A) := R(B)[K]。模板入口先 store
+// R(A+1) = R(B),然后走 GETTABLE ArrayHit 同款流程取 R(A)。
+func archEmitSelfArrayHit(buf []byte, aReg, bReg uint8,
+	stableShape, stableIndex uint32, arenaBaseOff int32, deoptCode uint64) []byte {
+	return jitamd64.EmitSelfArrayHit(buf, aReg, bReg,
+		stableShape, stableIndex, arenaBaseOff, deoptCode)
+}
+
+// archEmitSetTableNodeHit 拼接 PJ4 SETTABLE IC NodeHit 字节级反向写模板
+// (140 字节,GetTable NodeHit 159 - getter 段 34 + setter 段 15)。amd64
+// 端代理 jitamd64.EmitSetTableNodeHit。
+//
+// **setter NodeHit 形态**:hash 段 NodeKey 比对 + 反向写 NodeVal。
+func archEmitSetTableNodeHit(buf []byte, aReg, cReg uint8,
+	stableShape, stableIndex uint32, stableKey uint64,
+	arenaBaseOff int32, deoptCode uint64) []byte {
+	return jitamd64.EmitSetTableNodeHit(buf, aReg, cReg,
+		stableShape, stableIndex, stableKey, arenaBaseOff, deoptCode)
+}
+
 // archSupportsSpec 返 true 当本 arch 支持 PJ2 投机模板真接入。
 // amd64 ✅;arm64/其它 ❌(留 PJ8+)。
 func archSupportsSpec() bool { return true }

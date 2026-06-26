@@ -210,3 +210,73 @@ func EmitCmpRaxRdx(buf []byte) []byte {
 
 // EncodedCmpRaxRdxLen 是「cmp rax, rdx」字节数(3)。
 const EncodedCmpRaxRdxLen = 3
+
+// EmitMovqMemR14PlusRcxFromRax 发射「mov [r14 + rcx + disp32], rax」反向 store
+// (SIB 寻址,base=r14 / index=rcx / scale=1 / disp32)。
+//
+// 用例:PJ4 SETTABLE IC 字节级 inline 反向写 NodeVal 槽 —— rcx = nodeRef
+// 偏移,disp32 = stableIndex*24+8(NodeVal 在 node[idx].word1)。
+//
+// 编码:49 89 84 0E disp32(8 字节)
+//   - 49 = REX.W + REX.B(base r14 高位选择)
+//   - 89 = MOV r/m64, r64
+//   - 84 = ModRM:mod=10(disp32)reg=000(rax)rm=100(SIB)
+//   - 0E = SIB:scale=00(*1)index=001(rcx)base=110(r14 w/ REX.B)
+//
+// 注:rax src ModRM reg 字段固定 = 000(rax)。
+func EmitMovqMemR14PlusRcxFromRax(buf []byte, disp32 int32) []byte {
+	buf = append(buf, 0x49, 0x89, 0x84, 0x0E)
+	buf = append(buf,
+		byte(uint32(disp32)),
+		byte(uint32(disp32)>>8),
+		byte(uint32(disp32)>>16),
+		byte(uint32(disp32)>>24))
+	return buf
+}
+
+// EncodedMovqMemR14PlusRcxFromRaxLen 是反向 SIB store 字节数(8)。
+const EncodedMovqMemR14PlusRcxFromRaxLen = 8
+
+// EmitMovqMemR14PlusRcxFromRdx 发射「mov [r14 + rcx + disp32], rdx」反向 store
+// (从 rdx)同 ArrayHit 的 SETTABLE 用——rdx 持 value(R(C) 加载到 rdx)。
+//
+// 编码:49 89 94 0E disp32(8 字节)
+//   - 49 = REX.W + REX.B
+//   - 89 = MOV r/m64, r64
+//   - 94 = ModRM:mod=10(disp32)reg=010(rdx)rm=100(SIB)
+//   - 0E = SIB(同 EmitMovqMemR14PlusRcxFromRax)
+func EmitMovqMemR14PlusRcxFromRdx(buf []byte, disp32 int32) []byte {
+	buf = append(buf, 0x49, 0x89, 0x94, 0x0E)
+	buf = append(buf,
+		byte(uint32(disp32)),
+		byte(uint32(disp32)>>8),
+		byte(uint32(disp32)>>16),
+		byte(uint32(disp32)>>24))
+	return buf
+}
+
+// EncodedMovqMemR14PlusRcxFromRdxLen 是反向 SIB store(从 rdx)字节数(8)。
+const EncodedMovqMemR14PlusRcxFromRdxLen = 8
+
+// EmitMovqRdxFromMemReg 发射「mov rdx, [reg+disp32]」从指定基址寄存器
+// (base=reg,disp32)load 到 rdx。用例:PJ4 SETTABLE 加载 R(C) value
+// (从 rbx + C*8)到 rdx 供反向 store。
+//
+// 当 reg=rbx(3):编码 48 8B 93 disp32(7 字节)
+//   - 48 = REX.W
+//   - 8B = MOV r64, r/m64
+//   - 93 = ModRM:mod=10(disp32)reg=010(rdx)rm=011(rbx)
+//
+// 注:本原语仅支持 reg=rbx(3),与 EmitMovqRaxFromMemReg 配套但单一目标。
+func EmitMovqRdxFromMemRbx(buf []byte, disp32 int32) []byte {
+	buf = append(buf, 0x48, 0x8B, 0x93)
+	buf = append(buf,
+		byte(uint32(disp32)),
+		byte(uint32(disp32)>>8),
+		byte(uint32(disp32)>>16),
+		byte(uint32(disp32)>>24))
+	return buf
+}
+
+// EncodedMovqRdxFromMemRbxLen 是「mov rdx, [rbx+disp32]」字节数(7)。
+const EncodedMovqRdxFromMemRbxLen = 7

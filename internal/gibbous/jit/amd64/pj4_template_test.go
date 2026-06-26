@@ -242,3 +242,278 @@ func TestPJ4_EmitGetTableNodeHit_KeyComparison(t *testing.T) {
 			stableKey)
 	}
 }
+
+// TestPJ4_EmitSetTableArrayHit_Length 验 PJ4 SETTABLE ArrayHit 模板字节
+// 级长度自洽。预期 ~122 字节(getter ArrayHit 132 字节但 nil check 改 load
+// R(C)/反向 store + 无 NodeKey 比对,简化掉 nil mask 加载 + cmp + je)。
+func TestPJ4_EmitSetTableArrayHit_Length(t *testing.T) {
+	var buf []byte
+	buf = EmitSetTableArrayHit(buf,
+		0,          // aReg = R(0)(table)
+		1,          // cReg = R(1)(value)
+		7,          // stableShape (gen)
+		3,          // stableIndex
+		16,         // arenaBaseOff
+		0xCAFEBABE, // deoptCode
+	)
+	if len(buf) == 0 {
+		t.Fatal("EmitSetTableArrayHit returned empty buf")
+	}
+	t.Logf("EmitSetTableArrayHit emitted %d bytes", len(buf))
+	if buf[len(buf)-1] != 0xC3 {
+		t.Errorf("SetTable template should end with ret(0xC3), got 0x%02x",
+			buf[len(buf)-1])
+	}
+}
+
+// TestPJ4_EmitSetTableArrayHit_StrictIsTableGuard 验 SETTABLE 模板复用同款
+// 严密 IsTable guard(shr@7 / cmp@11 / jne@16)。
+func TestPJ4_EmitSetTableArrayHit_StrictIsTableGuard(t *testing.T) {
+	var buf []byte
+	buf = EmitSetTableArrayHit(buf, 0, 1, 7, 3, 16, 0xCAFEBABE)
+
+	found := false
+	for i := 0; i <= 20-4; i++ {
+		if buf[i] == 0x48 && buf[i+1] == 0xC1 && buf[i+2] == 0xE8 && buf[i+3] == 48 {
+			found = true
+			if i+10 >= len(buf) {
+				t.Fatalf("strict guard 段越界")
+			}
+			if buf[i+4] != 0x3D ||
+				buf[i+5] != 0xFC || buf[i+6] != 0xFF ||
+				buf[i+7] != 0x00 || buf[i+8] != 0x00 {
+				t.Errorf("SetTable cmp eax 0xFFFC bytes wrong at %d", i+4)
+			}
+			if buf[i+9] != 0x0F || buf[i+10] != 0x85 {
+				t.Errorf("SetTable jne rel32 prefix wrong at %d", i+9)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Errorf("SetTable 严密 IsTable guard 字节序列未在模板前 20 字节出现")
+	}
+}
+
+// TestPJ4_EmitSetTableArrayHit_ReverseStore 验 SETTABLE 模板含反向 store
+// 字节序列(load rdx from [rbx+cReg*8] = 48 8B 93 disp32 + mov [r14+rcx+...]
+// from rdx = 49 89 94 0E disp32)。
+func TestPJ4_EmitSetTableArrayHit_ReverseStore(t *testing.T) {
+	var buf []byte
+	buf = EmitSetTableArrayHit(buf, 0, 1, 7, 3, 16, 0xCAFEBABE) // cReg=1 → disp=8
+
+	// 查 mov rdx, [rbx + 8] = 48 8B 93 08 00 00 00(7 字节)
+	wantLoadRdx := []byte{0x48, 0x8B, 0x93, 0x08, 0x00, 0x00, 0x00}
+	found := -1
+	for i := 0; i+6 < len(buf); i++ {
+		match := true
+		for j, b := range wantLoadRdx {
+			if buf[i+j] != b {
+				match = false
+				break
+			}
+		}
+		if match {
+			found = i
+			break
+		}
+	}
+	if found < 0 {
+		t.Fatal("load rdx from [rbx+cReg*8] 字节序列未在模板出现")
+	}
+	t.Logf("load rdx 在 offset %d 找到", found)
+
+	// 紧随其后:反向 store mov [r14+rcx+stableIndex*8], rdx
+	// stableIndex=3, *8 = 24 → 49 89 94 0E 18 00 00 00(8 字节)
+	wantStoreRdx := []byte{0x49, 0x89, 0x94, 0x0E, 0x18, 0x00, 0x00, 0x00}
+	if found+7+7 >= len(buf) {
+		t.Fatalf("反向 store 段越界")
+	}
+	for j, b := range wantStoreRdx {
+		if buf[found+7+j] != b {
+			t.Errorf("反向 store 字节[%d] = 0x%02x, want 0x%02x",
+				j, buf[found+7+j], b)
+		}
+	}
+}
+
+// TestPJ4_EmitSelfArrayHit_Length 验 PJ4 SELF ArrayHit 模板字节级长度自洽。
+// 预期 ~141 字节(getter ArrayHit 132 + R(A+1) 拷段 7 字节,实测取决于
+// EmitMovqMemRegFromRax disp 编码)。
+func TestPJ4_EmitSelfArrayHit_Length(t *testing.T) {
+	var buf []byte
+	buf = EmitSelfArrayHit(buf,
+		2,          // aReg = R(2)(method 结果)→ R(A+1)=R(3)
+		0,          // bReg = R(0)(obj)
+		7,          // stableShape
+		1,          // stableIndex
+		16,         // arenaBaseOff
+		0xCAFEBABE, // deoptCode
+	)
+	if len(buf) == 0 {
+		t.Fatal("EmitSelfArrayHit returned empty buf")
+	}
+	t.Logf("EmitSelfArrayHit emitted %d bytes", len(buf))
+	if buf[len(buf)-1] != 0xC3 {
+		t.Errorf("SELF template should end with ret(0xC3), got 0x%02x",
+			buf[len(buf)-1])
+	}
+}
+
+// TestPJ4_EmitSelfArrayHit_SelfStore 验 SELF 模板含「R(A+1) := R(B)」拷段
+// (load rax from [rbx+bReg*8] + store [rbx+(aReg+1)*8] from rax 在模板前部)。
+func TestPJ4_EmitSelfArrayHit_SelfStore(t *testing.T) {
+	var buf []byte
+	// aReg=2 → R(A+1) = R(3) 槽偏移 24
+	// bReg=0 → R(B) 槽偏移 0
+	buf = EmitSelfArrayHit(buf, 2, 0, 7, 1, 16, 0xCAFEBABE)
+
+	// 模板前部应有:
+	// [0-6] load rax from [rbx + 0]  = 48 8B 03 00 00 00 00(7 字节)
+	// [7-13] store [rbx + 24], rax  = 48 89 83 18 00 00 00(7 字节)
+	// 紧跟 shr rax, 48 = 48 C1 E8 30(4 字节)
+	if len(buf) < 18 {
+		t.Fatal("模板太短")
+	}
+	// 第二段 store [rbx+24], rax 字节
+	// EmitMovqMemRegFromRax 编码:48 89 83 (rm=011=rbx) disp32 (or disp8 short)
+	// 用 disp32 时 ModRM=83=mod10 reg=000 rm=011;disp8 时 ModRM=43=mod01 reg=000 rm=011
+	// 实测看哪个
+	storeStart := 7
+	if buf[storeStart] != 0x48 || buf[storeStart+1] != 0x89 {
+		t.Errorf("store R(A+1) 前缀错位 at %d: got %x %x, want 48 89",
+			storeStart, buf[storeStart], buf[storeStart+1])
+	}
+	t.Logf("SELF 模板前 18 字节 = %x", buf[:18])
+}
+
+// TestPJ4_EmitSetTableNodeHit_Length 验 SETTABLE NodeHit 模板字节长度自洽。
+// 预期 140 字节(GetTable NodeHit 159 - getter 段 34 + setter 段 15)。
+func TestPJ4_EmitSetTableNodeHit_Length(t *testing.T) {
+	const stableKey uint64 = 0xFFFB_1234_5678_9ABC
+	var buf []byte
+	buf = EmitSetTableNodeHit(buf,
+		0, // aReg = R(0)(table)
+		1, // cReg = R(1)(value)
+		7, // stableShape
+		2, // stableIndex
+		stableKey,
+		16,         // arenaBaseOff
+		0xCAFEBABE, // deoptCode
+	)
+	if len(buf) == 0 {
+		t.Fatal("EmitSetTableNodeHit returned empty buf")
+	}
+	t.Logf("EmitSetTableNodeHit emitted %d bytes", len(buf))
+	if buf[len(buf)-1] != 0xC3 {
+		t.Errorf("SetTable NodeHit template should end with ret(0xC3), got 0x%02x",
+			buf[len(buf)-1])
+	}
+}
+
+// TestPJ4_EmitSetTableNodeHit_StrictIsTableGuard 验 SETTABLE NodeHit 模板
+// 复用同款严密 IsTable guard。
+func TestPJ4_EmitSetTableNodeHit_StrictIsTableGuard(t *testing.T) {
+	var buf []byte
+	buf = EmitSetTableNodeHit(buf, 0, 1, 7, 2, 0xFFFB_0000_0000_0001,
+		16, 0xCAFEBABE)
+
+	found := false
+	for i := 0; i <= 20-4; i++ {
+		if buf[i] == 0x48 && buf[i+1] == 0xC1 && buf[i+2] == 0xE8 && buf[i+3] == 48 {
+			found = true
+			if i+10 >= len(buf) {
+				t.Fatalf("strict guard 段越界")
+			}
+			if buf[i+4] != 0x3D ||
+				buf[i+5] != 0xFC || buf[i+6] != 0xFF ||
+				buf[i+7] != 0x00 || buf[i+8] != 0x00 {
+				t.Errorf("SetTable NodeHit cmp eax 0xFFFC bytes wrong at %d", i+4)
+			}
+			if buf[i+9] != 0x0F || buf[i+10] != 0x85 {
+				t.Errorf("SetTable NodeHit jne rel32 prefix wrong at %d", i+9)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Errorf("SetTable NodeHit 严密 IsTable guard 字节序列未在模板前 20 字节出现")
+	}
+}
+
+// TestPJ4_EmitSetTableNodeHit_KeyCompareAndReverseStore 验 NodeHit setter
+// 含 key 比对段 + 反向 store NodeVal 段。
+func TestPJ4_EmitSetTableNodeHit_KeyCompareAndReverseStore(t *testing.T) {
+	const stableKey uint64 = 0xFFFB_DEAD_BEEF_CAFE
+	var buf []byte
+	// aReg=0 → R(A)=[rbx+0]
+	// cReg=1 → R(C)=[rbx+8](value)
+	// stableIndex=2 → NodeKey @ rcx+48 / NodeVal @ rcx+56
+	buf = EmitSetTableNodeHit(buf, 0, 1, 7, 2, stableKey, 16, 0xCAFEBABE)
+
+	// 查 mov rdx, stableKey = 48 BA + imm64 LE
+	wantMovRdx := []byte{0x48, 0xBA,
+		0xFE, 0xCA, 0xEF, 0xBE, 0xAD, 0xDE, 0xFB, 0xFF}
+	movRdxOff := -1
+	for i := 0; i+9 < len(buf); i++ {
+		match := true
+		for j, b := range wantMovRdx {
+			if buf[i+j] != b {
+				match = false
+				break
+			}
+		}
+		if match {
+			movRdxOff = i
+			break
+		}
+	}
+	if movRdxOff < 0 {
+		t.Fatal("mov rdx, stableKey 字节序列未在模板出现")
+	}
+	t.Logf("mov rdx stableKey 在 offset %d 找到", movRdxOff)
+
+	// 紧随其后:cmp rax, rdx(3 字节)+ jne rel32(6 字节)= 9 字节 key 比对段
+	if movRdxOff+12 >= len(buf) {
+		t.Fatal("key 比对段越界")
+	}
+	if buf[movRdxOff+10] != 0x48 || buf[movRdxOff+11] != 0x39 || buf[movRdxOff+12] != 0xD0 {
+		t.Errorf("cmp rax, rdx 字节错位")
+	}
+	if buf[movRdxOff+13] != 0x0F || buf[movRdxOff+14] != 0x85 {
+		t.Errorf("jne rel32 prefix 字节错位")
+	}
+
+	// 紧接 key 比对(9 字节)后:load R(C) → rdx(7 字节)+ 反向 store
+	// (8 字节)
+	// load rdx 段:48 8B 93 disp32(cReg=1 → disp=8)
+	loadRdxOff := movRdxOff + 9 + 9 - 1 // movRdx(10) + cmp(3) + jne(6) = 19 字节后开始
+	// 实际:movRdx 起点 movRdxOff,占 10 字节;cmp 3 字节,jne 6 字节
+	// 总 19 字节后是 load R(C) → rdx 段
+	loadRdxStart := movRdxOff + 19
+	if loadRdxStart+6 >= len(buf) {
+		t.Fatal("load R(C) 段越界")
+	}
+	wantLoadRdx := []byte{0x48, 0x8B, 0x93, 0x08, 0x00, 0x00, 0x00}
+	for j, b := range wantLoadRdx {
+		if buf[loadRdxStart+j] != b {
+			t.Errorf("load R(C)→rdx 字节[%d] = 0x%02x, want 0x%02x at offset %d",
+				j, buf[loadRdxStart+j], b, loadRdxStart+j)
+		}
+	}
+
+	// 紧随 load rdx(7 字节)后:反向 store mov [r14+rcx+stableIndex*24+8], rdx
+	// stableIndex=2,24*2+8=56 → 49 89 94 0E 38 00 00 00(8 字节)
+	storeStart := loadRdxStart + 7
+	wantStore := []byte{0x49, 0x89, 0x94, 0x0E, 0x38, 0x00, 0x00, 0x00}
+	if storeStart+7 >= len(buf) {
+		t.Fatal("反向 store 段越界")
+	}
+	for j, b := range wantStore {
+		if buf[storeStart+j] != b {
+			t.Errorf("反向 store 字节[%d] = 0x%02x, want 0x%02x at offset %d",
+				j, buf[storeStart+j], b, storeStart+j)
+		}
+	}
+	_ = loadRdxOff // 保留作未来扩展用,当前不验证
+}
