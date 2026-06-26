@@ -183,3 +183,116 @@ func EmitGetTableArrayHitArm64(buf []byte, aReg, bReg uint8, stableShape, stable
 
 // EncodedGetTableArrayHitArm64Len arm64 PJ4 IC ArrayHit 模板字节数(168)。
 const EncodedGetTableArrayHitArm64Len = 168
+
+// EmitGetTableNodeHitArm64 拼接 arm64 PJ4 IC NodeHit 字节级直达槽模板
+// (对位 amd64 EmitGetTableNodeHit 159 字节版的 arm64 端镜像)。
+//
+// **不真接入**(承文件头注同款):arm64 trampoline asm + mmap+RX 端到端
+// 留物理 self-hosted runner;本批纯字节级模板拼接 + 字节级单测验布局。
+//
+// **NodeHit vs ArrayHit 差异**(承 amd64 NodeHit 同款):
+//   - 取 word3=nodeRef(offset 24)而非 word2=arrayRef(offset 16)
+//   - node[idx] 步长 24 字节(nodeWords=3:key/val/next)而非 array[idx] 8 字节
+//   - 多 key 比对(NodeKey == stableKey 验证防键退化 / __index 链)
+//
+// **字节布局**(196 字节,ArrayHit 168 + key 比对段 28):
+//
+//	[ 0-31] IsTable guard(LDR + LSR + MOV imm64 + CMP + B.NE,32 字节)
+//	[32-67] re-load + payloadMask AND + MOV x1,x0 + LDR x14 + ADD x2(36 字节)
+//	[68-71] LDR x0, [x2, #40]                  ; 4(word5)
+//	[72-75] LSR x0, x0, #32                    ; 4
+//	[76-91] MOV x3, stableShape                ; 16
+//	[92-95] CMP x0, x3                         ; 4
+//	[96-99] B.NE deopt                         ; 4
+//	[100-103] LDR x0, [x2, #24]                ; 4(**nodeRef** word3,NodeHit 分流)
+//	[104-107] MOV x1, x0                       ; 4(rcx = nodeRef offset)
+//	[108-111] ADD x2, x14, x1                  ; 4(SIB 替代:新 base for node)
+//	[112-115] LDR x0, [x2, #stableIndex*24]    ; 4(NodeKey)
+//	[116-131] MOV x3, stableKey imm64          ; 16
+//	[132-135] CMP x0, x3                       ; 4
+//	[136-139] B.NE deopt                       ; 4(NodeKey != stableKey)
+//	[140-143] LDR x0, [x2, #stableIndex*24+8]  ; 4(NodeVal)
+//	[144-159] MOV x3, qNanBoxNil imm64         ; 16
+//	[160-163] CMP x0, x3                       ; 4
+//	[164-167] B.EQ deopt                       ; 4(NodeVal == Nil)
+//	[168-171] STR x0, [x26 + A*8]              ; 4
+//	[172-175] RET                              ; 4
+//	[176-191] MOV x0, deoptCode imm64          ; 16(deopt block)
+//	[192-195] RET                              ; 4
+//	——— 总计 196 字节 ———
+//
+// **stableKey 编译期固化**(承 amd64 NodeHit 同款):
+//   - 数字键:value.NumberValue(K) raw bits(IEEE 754 NaN-box)
+//   - 字符串键:value.MakeGC(TagString, ref) NaN-box,ref 编译期已 intern 不变
+//   - 用 NaN-box 整体比较等价于 keyEqual(承 ic.go::keyEqual 同源)
+//
+// **deopt 路径**:Run 端 x0==deoptCode 时调 host.GetTable byte-equal P1
+// (P1 icGetTable 兼容 NodeHit;经 IC + 哈希 + __index 元方法链)。
+func EmitGetTableNodeHitArm64(buf []byte, aReg, bReg uint8,
+	stableShape, stableIndex uint32, stableKey uint64,
+	arenaBaseOff uint16, deoptCode uint64) []byte {
+	// 1-5. 严密 IsTable guard(LDR + LSR + MOV imm64 + CMP + B.NE 共 32 字节)
+	buf = EmitLdrXtFromXnDisp(buf, 0, 26, uint16(bReg)*8)
+	buf = EmitLsrXdImm6(buf, 0, 0, 48)
+	buf = EmitMovXdImm64(buf, 1, qNanBoxTableTagShiftedArm64)
+	buf = EmitCmpXnXm(buf, 0, 1)
+	bNeTagOff := len(buf)
+	buf = EmitBCond(buf, CondNE, 0)
+
+	// 6-11. re-load + GCRef extract + arena base + ADD x2 SIB(36 字节)
+	buf = EmitLdrXtFromXnDisp(buf, 0, 26, uint16(bReg)*8)
+	buf = EmitMovXdImm64(buf, 1, payloadMaskArm64)
+	buf = EmitAndXdXnXm(buf, 0, 0, 1)
+	buf = EmitMovXdFromXn(buf, 1, 0)
+	buf = EmitLdrXtFromXnDisp(buf, 14, 27, arenaBaseOff)
+	buf = EmitAddXdXnXm(buf, 2, 14, 1)
+
+	// 12-13. load word5 + LSR 32(gen 在高 32 位)
+	buf = EmitLdrXtFromXnDisp(buf, 0, 2, 40)
+	buf = EmitLsrXdImm6(buf, 0, 0, 32)
+
+	// 14-16. gen check + B.NE deopt
+	buf = EmitMovXdImm64(buf, 3, uint64(stableShape))
+	buf = EmitCmpXnXm(buf, 0, 3)
+	bNeShapeOff := len(buf)
+	buf = EmitBCond(buf, CondNE, 0)
+
+	// 17-19. **NodeHit 分流**:load nodeRef(word3, offset 24)+ 新 SIB base
+	buf = EmitLdrXtFromXnDisp(buf, 0, 2, 24)
+	buf = EmitMovXdFromXn(buf, 1, 0)
+	buf = EmitAddXdXnXm(buf, 2, 14, 1)
+
+	// 20-23. NodeKey load + stableKey 比对 + B.NE deopt
+	buf = EmitLdrXtFromXnDisp(buf, 0, 2, uint16(stableIndex*24))
+	buf = EmitMovXdImm64(buf, 3, stableKey)
+	buf = EmitCmpXnXm(buf, 0, 3)
+	bNeKeyOff := len(buf)
+	buf = EmitBCond(buf, CondNE, 0)
+
+	// 24-27. NodeVal load + nil check + B.EQ deopt
+	buf = EmitLdrXtFromXnDisp(buf, 0, 2, uint16(stableIndex*24+8))
+	buf = EmitMovXdImm64(buf, 3, qNanBoxNilImmArm64)
+	buf = EmitCmpXnXm(buf, 0, 3)
+	bEqNilOff := len(buf)
+	buf = EmitBCond(buf, CondEQ, 0)
+
+	// 28-29. store R(A) + RET
+	buf = EmitStrXtToXnDisp(buf, 0, 26, uint16(aReg)*8)
+	buf = EmitRet(buf)
+
+	// 30. deopt block
+	deoptStart := len(buf)
+	buf = EmitMovXdImm64(buf, 0, deoptCode)
+	buf = EmitRet(buf)
+
+	// 31. patch B.cond imm19 = (deoptStart - 本 B.cond 自身) / 4
+	patchBCondImm19(buf, bNeTagOff, int32(deoptStart-bNeTagOff)/4)
+	patchBCondImm19(buf, bNeShapeOff, int32(deoptStart-bNeShapeOff)/4)
+	patchBCondImm19(buf, bNeKeyOff, int32(deoptStart-bNeKeyOff)/4)
+	patchBCondImm19(buf, bEqNilOff, int32(deoptStart-bEqNilOff)/4)
+
+	return buf
+}
+
+// EncodedGetTableNodeHitArm64Len arm64 PJ4 IC NodeHit 模板字节数(196)。
+const EncodedGetTableNodeHitArm64Len = 196
