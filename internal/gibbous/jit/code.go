@@ -117,6 +117,12 @@ type p4Code struct {
 	//   - icArrayHit = true:Run 端检测 raxSpec==deoptCode 时调 host.GetTable
 	//     (byte-equal 解释器 IC + 哈希 + __index)
 	icArrayHit bool
+
+	// PJ4 IC SETTABLE ArrayHit 路径标志:
+	//   - icSetArrayHit = true:Run 端 raxSpec==deoptCode 时调 host.SetTable
+	//     (byte-equal 解释器 icSetTable + __newindex)。setter 形态 retB=1
+	//     无 R(A) 写。
+	icSetArrayHit bool
 }
 
 // Proto 反向指针(trampoline 校验)。
@@ -201,6 +207,21 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 			if c.icArrayHit {
 				specPC := int32(c.retPC) - 1
 				st := c.host.GetTable(int32(base), specPC, int32(c.retA),
+					int32(c.preludeArg), int32(c.preludeC))
+				if st != 0 {
+					return st
+				}
+				_ = stack
+				c.host.DoReturn(int32(base), int32(c.retPC), int32(c.retA), int32(c.retB))
+				return 0
+			}
+
+			// **PJ4 IC SETTABLE ArrayHit deopt** 路径:调 host.SetTable
+			// byte-equal P1(经 icSetTable + __newindex 元方法链)。setter 形态
+			// retB=1 无 R(A) 写,DoReturn 不读 R(A)。
+			if c.icSetArrayHit {
+				specPC := int32(c.retPC) - 1
+				st := c.host.SetTable(int32(base), specPC, int32(c.retA),
 					int32(c.preludeArg), int32(c.preludeC))
 				if st != 0 {
 					return st

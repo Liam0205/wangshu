@@ -146,6 +146,18 @@ func archEmitGetTableNodeHit(buf []byte, aReg, bReg uint8,
 		stableShape, stableIndex, stableKey, arenaBaseOff, deoptCode)
 }
 
+// archEmitSetTableArrayHit 拼接 PJ4 SETTABLE IC ArrayHit 字节级反向写模板
+// (113 字节,严密 IsTable guard + arena base + gen check + arrayRef +
+// load R(C) value → rdx + 反向 store [r14+rcx+stableIndex*8] from rdx +
+// ret + deopt block)。amd64 端代理 jitamd64.EmitSetTableArrayHit。
+//
+// **setter 形态**:retB=1(SETTABLE 0 返回值),Run 端不写 R(A)。
+func archEmitSetTableArrayHit(buf []byte, aReg, cReg uint8,
+	stableShape, stableIndex uint32, arenaBaseOff int32, deoptCode uint64) []byte {
+	return jitamd64.EmitSetTableArrayHit(buf, aReg, cReg,
+		stableShape, stableIndex, arenaBaseOff, deoptCode)
+}
+
 // archSupportsSpec 返 true 当本 arch 支持 PJ2 投机模板真接入。
 // amd64 ✅;arm64/其它 ❌(留 PJ8+)。
 func archSupportsSpec() bool { return true }
