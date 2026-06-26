@@ -90,14 +90,16 @@ func archEmitArithSpecChainKKWithGuard(buf []byte, sseOp1, sseOp2 byte, a, b uin
 	return buf
 }
 
-// archEmitForLoopEmptyConst arm64 端 stub——留 PJ8+(对位 amd64 FORLOOP
-// 模板:fmov + fcmpe + b.gt / b 等)。
+// archEmitForLoopEmptyConst arm64 端 PJ3 FORLOOP 空 body 模板真接入
+// (84 字节无 safepoint / 92 字节含 safepoint;preemptFlagOff < 0 跳
+// safepoint,>= 0 启用)。对位 amd64 EmitForLoopEmptyConst 69/83 字节,
+// arm64 因 MOV imm64 序列 16B vs amd64 movq 15B 累积 + RISC fixed-length
+// 共多 15 字节。
+//
+// **接入路径**:Compile 主路径不经 spec trampoline,直接经 callJITFull
+// 路径调本模板;不依赖 archSupportsSpec。真 mmap+RX 端到端等物理 runner。
 func archEmitForLoopEmptyConst(buf []byte, kInit, kLimit, kStep uint64, preemptFlagOff int32) []byte {
-	_ = kInit
-	_ = kLimit
-	_ = kStep
-	_ = preemptFlagOff
-	return buf
+	return jitarm64.EmitForLoopEmptyConstArm64(buf, kInit, kLimit, kStep, preemptFlagOff)
 }
 
 // archEmitForLoopRegLimit arm64 端 stub。
