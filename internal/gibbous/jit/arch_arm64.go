@@ -140,81 +140,64 @@ func archEmitForLoopWithBody2(buf []byte, kS, kInit, kLimit, kStep, kBody1, kBod
 	return buf
 }
 
-// archEmitGetTableArrayHit arm64 端 stub——留 PJ8+ 完整 arm64 真接入。
+// archEmitGetTableArrayHit arm64 端 PJ4 IC ArrayHit 字节级直达槽模板
+// (168 字节,严密 IsTable guard + SIB 替代 + gen check + array 直达 +
+// nil check + 写 R(A) + deopt block)。arm64 端代理
+// jitarm64.EmitGetTableArrayHitArm64。
+//
+// **真接入 vs amd64 差异**:arm64 端经 trampoline_arm64.s 协议(x26=vsBase
+// / x27=jitContext / x28=Go G / x14=arena base);模板因 SIB 替代(ADD+LDR
+// 替代单条 SIB ldr)与 MOV imm64 序列(movz+movk×3)比 amd64 132 字节
+// 长 36 字节。arenaBaseOff 签名 amd64 int32 而 arm64 uint16 因 arm64 LDR
+// 用 unsigned 12-bit scaled offset(int32 安全转 uint16,jitContext 字段
+// 偏移在数十字节量级)。
 func archEmitGetTableArrayHit(buf []byte, aReg, bReg uint8, stableShape, stableIndex uint32, arenaBaseOff int32, deoptCode uint64) []byte {
-	_ = aReg
-	_ = bReg
-	_ = stableShape
-	_ = stableIndex
-	_ = arenaBaseOff
-	_ = deoptCode
-	return buf
+	return jitarm64.EmitGetTableArrayHitArm64(buf, aReg, bReg,
+		stableShape, stableIndex, uint16(arenaBaseOff), deoptCode)
 }
 
-// archEmitGetTableNodeHit arm64 端 stub——留 PJ8+。
+// archEmitGetTableNodeHit arm64 端 PJ4 IC NodeHit 字节级直达槽模板
+// (196 字节,IsTable guard + SIB + gen check + nodeRef + node[stableIndex]
+// + key 比对 + NodeVal load + nil check + 写 R(A) + deopt block)。
 func archEmitGetTableNodeHit(buf []byte, aReg, bReg uint8,
 	stableShape, stableIndex uint32, stableKey uint64,
 	arenaBaseOff int32, deoptCode uint64) []byte {
-	_ = aReg
-	_ = bReg
-	_ = stableShape
-	_ = stableIndex
-	_ = stableKey
-	_ = arenaBaseOff
-	_ = deoptCode
-	return buf
+	return jitarm64.EmitGetTableNodeHitArm64(buf, aReg, bReg,
+		stableShape, stableIndex, stableKey, uint16(arenaBaseOff), deoptCode)
 }
 
-// archEmitSetTableArrayHit arm64 端 stub——留 PJ8+。
+// archEmitSetTableArrayHit arm64 端 PJ4 SETTABLE IC ArrayHit 字节级反向
+// 写模板(144 字节)。
 func archEmitSetTableArrayHit(buf []byte, aReg, cReg uint8,
 	stableShape, stableIndex uint32, arenaBaseOff int32, deoptCode uint64) []byte {
-	_ = aReg
-	_ = cReg
-	_ = stableShape
-	_ = stableIndex
-	_ = arenaBaseOff
-	_ = deoptCode
-	return buf
+	return jitarm64.EmitSetTableArrayHitArm64(buf, aReg, cReg,
+		stableShape, stableIndex, uint16(arenaBaseOff), deoptCode)
 }
 
-// archEmitSelfArrayHit arm64 端 stub——留 PJ8+。
+// archEmitSelfArrayHit arm64 端 PJ4 SELF IC ArrayHit 字节级 inline 模板
+// (172 字节,GETTABLE ArrayHit 168 + R(A+1) 拷段 4)。
 func archEmitSelfArrayHit(buf []byte, aReg, bReg uint8,
 	stableShape, stableIndex uint32, arenaBaseOff int32, deoptCode uint64) []byte {
-	_ = aReg
-	_ = bReg
-	_ = stableShape
-	_ = stableIndex
-	_ = arenaBaseOff
-	_ = deoptCode
-	return buf
+	return jitarm64.EmitSelfArrayHitArm64(buf, aReg, bReg,
+		stableShape, stableIndex, uint16(arenaBaseOff), deoptCode)
 }
 
-// archEmitSetTableNodeHit arm64 端 stub——留 PJ8+。
+// archEmitSetTableNodeHit arm64 端 PJ4 SETTABLE IC NodeHit 字节级反向
+// 写模板(172 字节)。
 func archEmitSetTableNodeHit(buf []byte, aReg, cReg uint8,
 	stableShape, stableIndex uint32, stableKey uint64,
 	arenaBaseOff int32, deoptCode uint64) []byte {
-	_ = aReg
-	_ = cReg
-	_ = stableShape
-	_ = stableIndex
-	_ = stableKey
-	_ = arenaBaseOff
-	_ = deoptCode
-	return buf
+	return jitarm64.EmitSetTableNodeHitArm64(buf, aReg, cReg,
+		stableShape, stableIndex, stableKey, uint16(arenaBaseOff), deoptCode)
 }
 
-// archEmitSelfNodeHit arm64 端 stub——留 PJ8+。
+// archEmitSelfNodeHit arm64 端 PJ4 SELF IC NodeHit 字节级 inline 模板
+// (200 字节,GETTABLE NodeHit 196 + R(A+1) 拷段 4)。
 func archEmitSelfNodeHit(buf []byte, aReg, bReg uint8,
 	stableShape, stableIndex uint32, stableKey uint64,
 	arenaBaseOff int32, deoptCode uint64) []byte {
-	_ = aReg
-	_ = bReg
-	_ = stableShape
-	_ = stableIndex
-	_ = stableKey
-	_ = arenaBaseOff
-	_ = deoptCode
-	return buf
+	return jitarm64.EmitSelfNodeHitArm64(buf, aReg, bReg,
+		stableShape, stableIndex, stableKey, uint16(arenaBaseOff), deoptCode)
 }
 
 // archSupportsSpec arm64 当前不支持(留 PJ8+)。
