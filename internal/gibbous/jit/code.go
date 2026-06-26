@@ -105,8 +105,13 @@ type p4Code struct {
 	//     (byte-equal 解释器 raise `'for' limit must be a number` 等)
 	//   - forLoopA:FORPREP/FORLOOP 的 A 字段(R(A)..R(A+2)= init/limit/step
 	//     三槽,host.ForPrep 用本字段定位槽)
-	forLoopDeopt bool
-	forLoopA     uint8
+	//   - forLoopLimitReg:reg-limit 模板期望的 R(forLoopLimitReg) 槽位号
+	//   - forLoopUpvalIdx:upvalue-limit 子形态的 upval idx + 1(0 = 不走
+	//     upval;>0 = Run 端先 host.GetUpval(idx-1) + SetReg 写 limit 槽)
+	forLoopDeopt    bool
+	forLoopA        uint8
+	forLoopLimitReg uint8
+	forLoopUpvalIdx uint8
 }
 
 // Proto 反向指针(trampoline 校验)。
@@ -174,6 +179,15 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 	// **mock host 兜底**:host.ArenaBaseAddr 返 0(单测 mock 无真 arena)时
 	// 跳过 spec 路径直接走 host helper——避免段段读 [rbx+0] = 读 0 地址 SIGSEGV。
 	if c.useSpec && c.host != nil && vsBaseAddr != 0 {
+		// **upvalue-limit 预处理**:reg-limit 模板期望 R(forLoopLimitReg)
+		// 是 number。upval 形态 Run 端先调 host.GetUpval(idx-1) + SetReg
+		// 写 limit 槽,然后模板字节级 inline 走 reg-limit 路径(IsNumber
+		// guard 仍生效——若 upval 非 number,guard 失败 → host.ForPrep raise
+		// byte-equal P1)。
+		if c.forLoopUpvalIdx > 0 {
+			upvalVal := c.host.GetUpval(int32(base), int32(c.forLoopUpvalIdx-1))
+			c.host.SetReg(int32(c.forLoopLimitReg), upvalVal)
+		}
 		raxSpec := archCallJITSpec(c.codePage.Addr(), jitCtxAddr, vsBaseAddr)
 		if raxSpec == c.specDeoptCode {
 			// **PJ3 FORLOOP reg-limit deopt** 路径分流:调 host.ForPrep
