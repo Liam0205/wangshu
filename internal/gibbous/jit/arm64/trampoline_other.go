@@ -10,3 +10,12 @@ func CallJITFull(codeAddr uintptr, jitCtxAddr uintptr) uint64 {
 	_ = jitCtxAddr
 	panic("internal/gibbous/jit/arm64: CallJITFull not supported on this OS/arch")
 }
+
+// CallJITSpec 非 linux/arm64 平台占位 stub——同 CallJITFull,用于
+// cross-compile 通过;darwin/arm64 spec trampoline 完整支持留 PJ8+ 同批。
+func CallJITSpec(codeAddr uintptr, jitCtxAddr uintptr, vsBaseAddr uintptr) uint64 {
+	_ = codeAddr
+	_ = jitCtxAddr
+	_ = vsBaseAddr
+	panic("internal/gibbous/jit/arm64: CallJITSpec not supported on this OS/arch")
+}
