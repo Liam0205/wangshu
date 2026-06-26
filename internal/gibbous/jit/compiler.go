@@ -287,8 +287,12 @@ func analyzeGetTableNodeHit(proto *bytecode.Proto, feedback *bridge.TypeFeedback
 		return shapeInfo{}, false
 	}
 	stableKey := uint64(proto.Consts[kIdx])
-	if stableKey == 0 {
-		// Nil 槽(LoadProgram 未装载完成)— 不投机
+	// **Nil 槽校验**:`value.Nil = 0xFFFE_0000_0000_0000`(承
+	// internal/value/value.go::Nil)。LoadProgram 未装载完成的字符串槽是
+	// 真 Nil(非 0)。注意:**不能用 stableKey == 0 当 sentinel**——IEEE
+	// 754 数字键 0.0 NaN-box 是 0x0000_0000_0000_0000,与 sentinel 撞型,
+	// 数字键 `t[0]` 会被误拒投机。
+	if stableKey == uint64(value.Nil) {
 		return shapeInfo{}, false
 	}
 
