@@ -49,7 +49,7 @@
 | PJ0 | 立项判定 + 包骨架 + build tag 隔离 | [01](./01-launch-judgment.md) + [06 §6.1](./06-backends.md) | 立项判定通过 + `internal/gibbous/jit/{amd64,arm64}` 骨架 + bridge 注入 P4Compiler 后 SupportsAllOpcodes 全 false | ✅ **2026-06-25 落地**(详 §6 PJ0 实装对账) |
 | PJ1 | amd64 trampoline + 直线模板(6 opcode) | [05](./05-system-pipeline.md) + [06 §3.1](./06-backends.md) | 直线 Proto 升层后 byte-equal;exec mmap + W^X 翻面工作 | 🔶 **2026-06-25 部分**(详 §6 PJ1 实装对账;spike 闸门 🟢 + amd64 mmap+W^X+trampoline+emitter 主库版 + LOADK/RETURN 单测 byte-equal;**未接入 GibbousCode.Run end-to-end byte-equal**——SupportsAllOpcodes 仍全 false,完整接入留 PJ3+) |
 | PJ2 | amd64 算术 + 比较 + IsNumber×2 guard | [03](./03-speculation-ic.md) + [06 §3.2](./06-backends.md) | 双 number 快路径直发 `mulsd` 等;guard 失败 OSR exit 回解释 | ✅ **2026-06-26 完整接入扩展到 12+ 形态**(承 §7;ADD/SUB/MUL/DIV 三种操作数布局:reg-reg(92 字节,实测 1.01-1.03x)+ reg-K(73 字节,实测 1.01-1.02x)+ chain-KK 任意 op1+op2 组合(92 字节,~1.0x 单次调内 boundary 占主导)。e2e 双轨真升层 byte-equal 解释器 + 白盒命中探针 SpecRegKHits / SpecRegRegHits / SpecChainHits 实证非降级 host;deopt fallback 含 chain pc 修复对齐错误消息行号。**真大幅加速**(luajc 档 ≥4.4x)留 PJ3 FORLOOP 字节级内联把多次 boundary 摊出循环) |
-| PJ3 | amd64 控制流 + FORLOOP + 回边 safepoint | [05 §6.3](./05-system-pipeline.md) + [06 §3.3](./06-backends.md) | 数值 for 编译后 ≥luajc 档单档(**P4 价值首次实证**)| 🔶 **2026-06-26 工程基础部分**(EmitMovImm64ToReg + EmitNop emitter 原语 + 全档 jcc rel32 + jmp rel32 + EmitCmpByteR15DispImm8 safepoint check 字节级原语 + PatchRel32 forward jmp fixup tool + JITContextOffsets 字段偏移常量。**真接入 FORLOOP 字节级内联**(CFG 识别 + body inline + 回边 backward jmp + safepoint check + exit stub)留 PJ3+ 真接入——p4Code.Run 单段模型 vs 段内多回边需结构性扩展) |
+| PJ3 | amd64 控制流 + FORLOOP + 回边 safepoint | [05 §6.3](./05-system-pipeline.md) + [06 §3.3](./06-backends.md) | 数值 for 编译后 ≥luajc 档单档(**P4 价值首次实证**)| 🔶 **2026-06-26 工程基础 + 物理 spike**(承 §8;emit 原语齐:EmitMovImm64ToReg + EmitNop + 全档 jcc rel32 + jmp rel32 + EmitCmpByteR15DispImm8 safepoint check + EmitIncReg64/DecReg64/MovReg64Imm32SignExt 整数循环原语 + PatchRel32 forward jmp fixup tool + JITContextOffsets 字段偏移常量;**spike 字节级 backward jmp + safepoint check 真 mmap+RX 跑通**:counter loop N=100 正常跑满 rax=100,preemptFlag=1 早退出 rax=1,prove-the-path 硬证据。**真接入 FORLOOP 字节级内联**(analyzeForLoopForm CFG 识别 + body inline + ucomisd limit + 回边 backward jcc + exit stub)留 PJ3 主路径接入会话——p4Code.Run 单段模型可表达段内自循环,工程基础 ~90% 齐备) |
 | PJ4 | amd64 表 IC 模板 + stableShape/Index 直达槽投机 | [03 §6](./03-speculation-ic.md) + [06 §3.4](./06-backends.md) | 单态表 guard + 直达槽跳哈希;形状变化 deopt + 再训练 | 🔶 **2026-06-25 emitter 部分**(EmitCmpRaxImm32 + EmitJaeRel32 + EmitJmpRel32;mmap 段验证 cmp+jcc/jmp 真按 flag 跳——IsNumber guard 物理基础;真接入留 PJ4+) |
 | PJ5 | amd64 CALL/TAILCALL + 跨层互调 + OSR exit 实装 | [04](./04-osr-deopt.md) + [05 §4.3](./05-system-pipeline.md) + [06 §3.5](./06-backends.md) | gibbous-jit 三向分派 + OSR exit 状态等价(V19)| 🔶 **2026-06-25 emitter 部分**(EmitCallRel32/CallReg/PushReg/PopReg;push/pop round-trip 验证;helper call 真接入留 PJ5+) |
 | PJ6 | amd64 CLOSURE/CLOSE + upvalue | [06 §3.6](./06-backends.md) | 闭包 byte-equal(复用 makeClosure/closeUpvals)| 🔶 **2026-06-25 emitter 部分**(EmitLoadKReturnTemplate + EmitProlog/Epilog 模板封装;10000 次 prolog/epilog 栈保护验证;upvalue 真接入留 PJ6+) |
@@ -332,7 +332,69 @@ PJ2 启动时直接补:
 
 ---
 
-## 7. 后续维护协议
+## 7. PJ2 / PJ3 工程基础对账(2026-06-26 落地,承 §1 PJ 表头注)
+
+**状态**:✅ **PJ2 投机模板 12+ 形态完整接入** + 🔶 **PJ3 工程基础 + 物理 spike**(真接入 FORLOOP 字节级内联留下一会话)。
+
+### 7.1 PJ2 投机模板完整接入(2026-06-26)
+
+| 形态 | 模板字节数 | 实测加速比 | 命中探针 |
+|---|---|---|---|
+| reg-reg ADD/SUB/MUL/DIV | 92 字节(guard×2 + 快路径 + deopt block) | 1.01-1.03x | SpecRegRegHits |
+| reg-K   ADD/SUB/MUL/DIV | 73 字节(单 guard + K imm64 烧入 + 快路径 + deopt) | 1.01-1.02x | SpecRegKHits |
+| chain-KK 任意 op1+op2  | 92 字节(单 guard + K1/K2 imm64 + 双 SSE binop 复用 xmm0) | ~1.0x(单调内 boundary 主导) | SpecChainHits |
+
+**字节级单测**:每形态 mmap+RX round-trip + 双轨 fast/deopt + 字节级 byte-equal Intel SDM 编码。
+
+**e2e 双轨真升层**:每形态 fast-path(双 number byte-equal 解释器)+ deopt-path(non-number 触发 IsNumber guard 失败 → host.Arith × N → raise byte-equal 解释器报错)。
+
+**关键 bug 修复**:chain 形态 pc 实参 retPC-2 锚定 op1 真实位置(retPC-1 错位到 op2)——既存慢路径与新增 spec deopt 路径双向修正,对齐错误消息行号 byte-equal。
+
+**白盒命中探针**:`jit.SpecRegRegHits / SpecRegKHits / SpecChainHits + ResetSpecHits`——e2e 测试断言投机模板真编译被走到(非降级 host helper 假绿)。
+
+### 7.2 PJ3 工程基础 + 物理 spike(2026-06-26)
+
+| 工程组件 | 字节数 | 落地状态 |
+|---|---|---|
+| EmitCmpByteR15DispImm8(safepoint check primitive) | 8 字节(41 80 BF disp32 imm8)| ✅ + 字节级单测 |
+| EmitIncReg64 / EmitDecReg64(整数计数器累加)| 3 字节(48 FF C0/C8+rd)| ✅ + 5 档单测 |
+| EmitMovReg64Imm32SignExt(短 imm32 装 r64)| 7 字节(48 C7 C0+rd imm32)| ✅ + 4 档单测 |
+| PatchRel32(forward jmp fixup tool)| - | ✅ + 单测(0x12345678 / -1 / 复合 jne+body 模式) |
+| JITContextOffsets(字段偏移常量)| 4 个 unsafe.Offsetof | ✅ |
+
+**spike 字节级物理证据**(`emitter_pj3_loop_spike_amd64_test.go`):
+
+mmap+RX 段内 emit:
+```
+mov rax, 0; mov rcx, N
+loop_start:
+  inc rax
+  cmp byte [r15+preemptFlagOff], 0
+  jne after_loop                       ; forward fixup (emit-then-patch)
+  dec rcx
+  jne loop_start                       ; backward jmp (negative rel32)
+after_loop: ret
+```
+
+**实测验证**:
+- Normal 路径(preemptFlag=0):N=100 全跑完,rax=100 ⇒ backward jmp 真在 mmap+RX 跑通 99 次
+- EarlyExit 路径(preemptFlag=1):第一次 cmp 即触发 jne after_loop,rax=1 ⇒ safepoint check + r15 装载 + byte cmp **真生效**
+
+**prove-the-path 硬证据**:`spikeCtxInstance.preemptFlag` 0 → 1 真改变执行路径(rax 100 → 1),非降级路径,emit-then-patch 模式实证成功。
+
+### 7.3 PJ3 真接入 FORLOOP 字节级内联剩余工程
+
+工程基础已 ~90% 齐备,剩余:
+1. `analyzeForLoopForm` CFG 识别:FORPREP-body-FORLOOP 闭环 + body ⊆ SupportsAllOpcodes
+2. emit FORLOOP 浮点 idx+step / ucomisd limit / 回边 backward jcc / safepoint check(emit 原语全齐)
+3. exit stub:deopt 时写当前 R(A) idx 槽 + 跳回 host helper
+4. p4Code.Run 路径接入(段内自循环,Run 等同一次进一次出,无需结构改动——本会话推导出 spike 形态)
+
+留下一会话推进真接入主路径。
+
+---
+
+## 8. 后续维护协议
 
 PJ0 启动后,本文按以下协议更新(承 [P3 implementation-progress §5](../p3-wasm-tier/implementation-progress.md) 范本):
 
