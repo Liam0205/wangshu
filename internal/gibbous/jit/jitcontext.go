@@ -28,6 +28,27 @@ package jit
 
 import (
 	"sync/atomic"
+	"unsafe"
+)
+
+// JITContextPreemptFlagOffset 是 preemptFlag 字段相对 *JITContext 的字节
+// 偏移——JIT 模板字节级 codegen 读取本偏移做 safepoint check
+// (cmp byte ptr [r15 + JITContextPreemptFlagOffset], 0;jne deopt)。
+//
+// **byte 比较纪律**:preemptFlag 是 atomic.Uint32(4 字节)但实际只取
+// 0/1 两值,crescent 端置 1 时设 low byte=1(little-endian),故 `cmpb 0`
+// 检测 !=0 在当前协议下正确——避免发 dword cmp 浪费一字节 + ModRM SIB。
+// 如未来扩展 preemptFlag 用高位 bit 需改 `cmpd` 形态(对位 EmitCmpDword
+// 留 PJ3+ 工程基础)。
+//
+// 用 unsafe.Offsetof 算出而非硬编码:Go runtime 不保证 struct 内字段顺序
+// 跨版本一致(虽然 64-bit 系统 + 顺序对齐通常稳定),Offsetof 一次性算
+// 死编译期常量。PJ3+ FORLOOP 字节级内联回边检查点经本偏移直发。
+const (
+	JITContextArenaBaseOffset      = unsafe.Offsetof(JITContext{}.arenaBase)
+	JITContextValueStackBaseOffset = unsafe.Offsetof(JITContext{}.valueStackBase)
+	JITContextPreemptFlagOffset    = unsafe.Offsetof(JITContext{}.preemptFlag)
+	JITContextExitReasonOffset     = unsafe.Offsetof(JITContext{}.exitReasonCode)
 )
 
 // JITContext 是 P4 跨边界的执行上下文(05 §3.3)。
