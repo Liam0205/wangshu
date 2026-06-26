@@ -46,13 +46,6 @@ func archCallJITSpec(codeAddr uintptr, jitCtxAddr uintptr, vsBase uintptr) uint6
 	return jitamd64.CallJITSpec(codeAddr, jitCtxAddr, vsBase)
 }
 
-// archEmitArithSpecAddWithGuard 拼接 PJ2 ADD 投机模板(IsNumber×2 guard +
-// 双 number 快路径 + deopt block)字节级序列。amd64 端代理到
-// jitamd64.EmitArithSpeculativeAddWithGuard(92 字节)。
-func archEmitArithSpecAddWithGuard(buf []byte, a, b, c uint8, deoptCode uint64) []byte {
-	return jitamd64.EmitArithSpeculativeAddWithGuard(buf, a, b, c, deoptCode)
-}
-
 // archSseOpForArith 把 Lua 算术 opcode 映射到 SSE binop opcode 字节。
 // 不支持的 op(MOD/POW——MOD 用 floor-mod 不是单条 SSE,POW 用 pow() helper)
 // 返回 (0, false)。
