@@ -115,6 +115,153 @@ type shapeInfo struct {
 	bodyKValue       uint64
 	forBodyAS        uint8  // body 的 R(aS) 寄存器号(s 槽)
 	forBodyKS        uint64 // body 形态下 R(aS) 的初始 K 值(K_s)
+	// 二段 body 形态(2 个 reg-K op,共享 R(aS),body2 模板复用 xmm3
+	// 跨两段省一次 load/store):
+	hasBody2    bool   // true = 二段 body 形态(`s=s op1 K1; s=s op2 K2`)
+	bodyOp2     uint8  // 第二段 op SSE 字节
+	bodyKValue2 uint64 // 第二段 K 值
+}
+
+// analyzeForLoopBody2Form 识别二段 body 形态:`local s=K_s; for i=K1,K2 do
+// s = s op1 K3; s = s op2 K4 end; return s`。luac 编 10/11 op,体内含两个
+// 串行 reg-K arith 写到同一 R(aS)。
+//
+// luac 编码(以 `local s=0; for i=1,5 do s=s+1; s=s*2 end; return s` 为例):
+//
+//	[0] LOADK    A_s     -K_s  ; s=0
+//	[1..3] LOADK A_init/+1/+2  ; init/limit/step
+//	[4] FORPREP  A_init  sBx=2 ; jmp 到 body[6]
+//	[5] arith1   A_s A_s C(K_body1)
+//	[6] arith2   A_s A_s C(K_body2)
+//	[7] FORLOOP  A_init  sBx=-3 ; jmp 回 [5]
+//	[8] RETURN   A_s     B=2
+//	[9] dead RETURN(可选)
+func analyzeForLoopBody2Form(proto *bytecode.Proto) (shapeInfo, bool) {
+	codeLen := len(proto.Code)
+	if codeLen != 9 && codeLen != 10 {
+		return shapeInfo{}, false
+	}
+	if bytecode.Op(proto.Code[0]) != bytecode.LOADK ||
+		bytecode.Op(proto.Code[1]) != bytecode.LOADK ||
+		bytecode.Op(proto.Code[2]) != bytecode.LOADK ||
+		bytecode.Op(proto.Code[3]) != bytecode.LOADK ||
+		bytecode.Op(proto.Code[4]) != bytecode.FORPREP ||
+		bytecode.Op(proto.Code[7]) != bytecode.FORLOOP ||
+		bytecode.Op(proto.Code[8]) != bytecode.RETURN {
+		return shapeInfo{}, false
+	}
+	if codeLen == 10 && bytecode.Op(proto.Code[9]) != bytecode.RETURN {
+		return shapeInfo{}, false
+	}
+	bodyOp1 := bytecode.Op(proto.Code[5])
+	bodyOp2 := bytecode.Op(proto.Code[6])
+	if (bodyOp1 != bytecode.ADD && bodyOp1 != bytecode.SUB &&
+		bodyOp1 != bytecode.MUL && bodyOp1 != bytecode.DIV) ||
+		(bodyOp2 != bytecode.ADD && bodyOp2 != bytecode.SUB &&
+			bodyOp2 != bytecode.MUL && bodyOp2 != bytecode.DIV) {
+		return shapeInfo{}, false
+	}
+	// FORPREP sBx=2(body 长度 2)
+	if bytecode.SBx(proto.Code[4]) != 2 {
+		return shapeInfo{}, false
+	}
+	// FORLOOP sBx=-3
+	if bytecode.SBx(proto.Code[7]) != -3 {
+		return shapeInfo{}, false
+	}
+
+	aS := bytecode.A(proto.Code[0])
+	aInit := bytecode.A(proto.Code[1])
+	aLimit := bytecode.A(proto.Code[2])
+	aStep := bytecode.A(proto.Code[3])
+	aPrep := bytecode.A(proto.Code[4])
+	a1A := bytecode.A(proto.Code[5])
+	a1B := bytecode.B(proto.Code[5])
+	a2A := bytecode.A(proto.Code[6])
+	a2B := bytecode.B(proto.Code[6])
+	aLoop := bytecode.A(proto.Code[7])
+	retA := bytecode.A(proto.Code[8])
+	retB := bytecode.B(proto.Code[8])
+
+	if aInit != aS+1 || aLimit != aInit+1 || aStep != aInit+2 ||
+		aPrep != aInit || aLoop != aInit {
+		return shapeInfo{}, false
+	}
+	// 两个 body op:A=B=A_s(s = s op K 形态)
+	if a1A != aS || a1B != aS || a2A != aS || a2B != aS {
+		return shapeInfo{}, false
+	}
+	if retA != aS || retB != 2 {
+		return shapeInfo{}, false
+	}
+
+	// body C 必须都是 K 常量(>= 256)且 K 是 number
+	b1C := bytecode.C(proto.Code[5])
+	b2C := bytecode.C(proto.Code[6])
+	if b1C < 256 || b2C < 256 ||
+		int(b1C-256) >= len(proto.Consts) || int(b2C-256) >= len(proto.Consts) {
+		return shapeInfo{}, false
+	}
+	kBody1 := proto.Consts[b1C-256]
+	kBody2 := proto.Consts[b2C-256]
+	if !value.IsNumber(kBody1) || !value.IsNumber(kBody2) {
+		return shapeInfo{}, false
+	}
+
+	// init/limit/step/s 均 number
+	kSIdx := bytecode.Bx(proto.Code[0])
+	kInitIdx := bytecode.Bx(proto.Code[1])
+	kLimitIdx := bytecode.Bx(proto.Code[2])
+	kStepIdx := bytecode.Bx(proto.Code[3])
+	if kSIdx >= len(proto.Consts) || kInitIdx >= len(proto.Consts) ||
+		kLimitIdx >= len(proto.Consts) || kStepIdx >= len(proto.Consts) {
+		return shapeInfo{}, false
+	}
+	kS := proto.Consts[kSIdx]
+	kInit := proto.Consts[kInitIdx]
+	kLimit := proto.Consts[kLimitIdx]
+	kStep := proto.Consts[kStepIdx]
+	if !value.IsNumber(kS) || !value.IsNumber(kInit) ||
+		!value.IsNumber(kLimit) || !value.IsNumber(kStep) {
+		return shapeInfo{}, false
+	}
+	if value.AsNumber(kStep) <= 0 {
+		return shapeInfo{}, false
+	}
+
+	mapSse := func(op bytecode.OpCode) byte {
+		switch op {
+		case bytecode.ADD:
+			return 0x58
+		case bytecode.SUB:
+			return 0x5C
+		case bytecode.MUL:
+			return 0x59
+		case bytecode.DIV:
+			return 0x5E
+		}
+		return 0
+	}
+
+	return shapeInfo{
+		ok:          true,
+		retA:        uint8(aS),
+		retB:        2,
+		retPC:       8,
+		isForLoop:   true,
+		forA:        uint8(aInit),
+		forInitK:    uint64(kInit),
+		forLimitK:   uint64(kLimit),
+		forStepK:    uint64(kStep),
+		hasBody:     true, // 复用 hasBody 路径,但 hasBody2 控制走 body2 模板
+		hasBody2:    true,
+		bodyOp:      mapSse(bodyOp1),
+		bodyKValue:  uint64(kBody1),
+		bodyOp2:     mapSse(bodyOp2),
+		bodyKValue2: uint64(kBody2),
+		forBodyAS:   uint8(aS),
+		forBodyKS:   uint64(kS),
+	}, true
 }
 
 // analyzeForLoopBodyForm 识别 PJ3 FORLOOP body 含 reg-K op 形态:
@@ -648,6 +795,10 @@ func analyzeShape(proto *bytecode.Proto) shapeInfo {
 		if floopBody, ok := analyzeForLoopBodyForm(proto); ok {
 			return floopBody
 		}
+		// 长度 9/10:可能是 PJ3 FORLOOP body2 二段 reg-K op 形态
+		if floopBody2, ok := analyzeForLoopBody2Form(proto); ok {
+			return floopBody2
+		}
 		return shapeInfo{}
 	}
 
@@ -1124,6 +1275,34 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 		// loop body 末尾插「cmp byte [r15+pfOff], 0; jne after_loop」
 		// (承 05 §1.2.2 抢占纪律 + V18 -race);trampoline 已装 r15。
 		pfOff := int32(JITContextPreemptFlagOffset)
+
+		// **hasBody2 = true:二段 body 形态**(`local s; for i=K1,K2 do
+		// s = s op1 K3; s = s op2 K4 end; return s`):154 字节模板复用
+		// xmm3 跨两段 SSE op,节省一次 load/store。优先于 hasBody 单 op
+		// 路径判定(因 hasBody2 是 hasBody 的扩展)。
+		if info.hasBody2 {
+			buf = archEmitForLoopWithBody2(buf, info.forBodyKS, info.forInitK,
+				info.forLimitK, info.forStepK,
+				info.bodyKValue, info.bodyKValue2,
+				info.forBodyAS, info.bodyOp, info.bodyOp2, pfOff)
+			page, err := archMmapCode(buf)
+			if err != nil {
+				return nil, err
+			}
+			incSpecForLoopHits()
+			return &p4Code{
+				proto:         proto,
+				codePage:      page,
+				jitCtx:        NewJITContext(),
+				retA:          info.retA,
+				retB:          info.retB,
+				retPC:         info.retPC,
+				writeRetA:     false,
+				host:          c.hostState,
+				useSpec:       true,
+				specDeoptCode: 0xFFFCDEAD_DEADFFFF,
+			}, nil
+		}
 
 		// **hasBody = true:body 含 reg-K op 形态**(`local s=K; for i=K1,K2 do
 		// s = s op K3 end; return s`)。135 字节模板:init R(aS)=K_s +

@@ -234,3 +234,37 @@ return f()`
 		t.Errorf("SpecForLoopHits = 0,FORLOOP body inline MUL 未真编译")
 	}
 }
+
+// TestPJ3_ForLoopWithBody2_E2E_AddMul:二段 body 形态
+// `local s=0; for i=1,5 do s=s+1; s=s*2 end; return s`:
+//
+//	iter1: s=(0+1)*2=2 / iter2: (2+1)*2=6 / iter3: (6+1)*2=14
+//	iter4: (14+1)*2=30 / iter5: (30+1)*2=62
+func TestPJ3_ForLoopWithBody2_E2E_AddMul(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local function f()
+  local s = 0
+  for i = 1, 5 do
+    s = s + 1
+    s = s * 2
+  end
+  return s
+end
+for i = 1, 50 do f() end
+return f()`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := value.AsNumber(value.Value(rets[0])); got != 62 {
+		t.Errorf("rets = %v, want 62((((0+1)*2+1)*2+1)*2+1)*2+1)*2)", got)
+	}
+	if jit.SpecForLoopHits() == 0 {
+		t.Errorf("SpecForLoopHits = 0,FORLOOP body2 未真编译")
+	}
+	t.Logf("body2 AddMul:SpecForLoopHits=%d", jit.SpecForLoopHits())
+}

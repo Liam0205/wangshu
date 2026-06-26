@@ -113,3 +113,34 @@ func TestPJ3_ForLoopWithBody_SUB(t *testing.T) {
 		t.Errorf("s = %v, want 70", got)
 	}
 }
+
+// TestPJ3_ForLoopWithBody2_AddMul:s=0; for i=1,5 do s = s+1; s = s*2 end
+// → 每 iter 跑 (s+1)*2:
+//
+//	iter1: s=(0+1)*2=2
+//	iter2: s=(2+1)*2=6
+//	iter3: s=(6+1)*2=14
+//	iter4: s=(14+1)*2=30
+//	iter5: s=(30+1)*2=62
+func TestPJ3_ForLoopWithBody2_AddMul(t *testing.T) {
+	pj2TestStack[0] = 0
+	vsBase := uintptr(unsafe.Pointer(&pj2TestStack[0]))
+
+	var buf []byte
+	buf = EmitForLoopWithRegKBody2(buf,
+		math.Float64bits(0),
+		math.Float64bits(1), math.Float64bits(5), math.Float64bits(1),
+		math.Float64bits(1), // K_body1 = 1 (s+=1)
+		math.Float64bits(2), // K_body2 = 2 (s*=2)
+		0, SseOpAddsd, SseOpMulsd, -1,
+	)
+
+	page, _ := MmapCode(buf)
+	defer page.Munmap()
+	CallJITSpec(page.Addr(), 0, vsBase)
+	runtime.KeepAlive(pj2TestStack)
+
+	if got := math.Float64frombits(pj2TestStack[0]); got != 62 {
+		t.Errorf("s = %v, want 62((((((0+1)*2+1)*2+1)*2+1)*2+1)*2 = 62)", got)
+	}
+}

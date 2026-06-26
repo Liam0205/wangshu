@@ -362,3 +362,81 @@ const EncodedForLoopWithRegKBodyWithSafepointLen = EncodedMovRaxImm64Len + Encod
 	EncodedCmpByteR15DispImm8Len + EncodedJccRel32Len + // safepoint
 	EncodedJmpRel32Len + // backward jmp
 	EncodedRetLen // ret
+
+// EmitForLoopWithRegKBody2 拼接二段 body 模板:`local s; for i=K1,K2 do
+// s = s op1 K3; s = s op2 K4 end; return s`。body 内连续两个 reg-K op,
+// 共享 R(aS) 寄存器(中间值落 R(aS)),用 xmm3 寄存器跨两段(避 load/store
+// 中转)。
+//
+// 字节布局(含 safepoint):
+//
+//	[init]   mov rax, K_s; mov [rbx+aS*8], rax        ; 17
+//	[setup]  init xmm0/1/2 + subsd                     ; 49
+//	[loop_start]
+//	  addsd xmm0, xmm2; ucomisd; ja after_loop         ; 14
+//	  movsd xmm3, [rbx+aS*8]                           ; 8 (load s once)
+//	  mov rax, K1; movq xmm4, rax; <sseOp1> xmm3, xmm4 ; 19
+//	  mov rax, K2; movq xmm4, rax; <sseOp2> xmm3, xmm4 ; 19
+//	  movsd [rbx+aS*8], xmm3                           ; 8 (store s once)
+//	  cmp byte [r15+pfOff], 0; jne after_loop          ; 14
+//	  jmp loop_start                                    ; 5
+//	[after_loop]
+//	  ret                                              ; 1
+//	——— 含 safepoint:154 字节 ———
+//
+// 比单 body 模板节省一次 load+store(共享 xmm3 跨 2 op):每 iter 节省 16 字节
+// 内存访问。
+func EmitForLoopWithRegKBody2(buf []byte, kS, kInit, kLimit, kStep, kBody1, kBody2 uint64,
+	aS uint8, sseOp1, sseOp2 byte, preemptFlagOff int32) []byte {
+	// 1. Init R(aS) = K_s
+	buf = EmitMovRaxImm64(buf, kS)
+	buf = EmitMovqMemRegFromRax(buf, 3, int32(aS)*8)
+
+	// 2. setup
+	buf = EmitMovRaxImm64(buf, kInit)
+	buf = EmitMovqXmmFromRax(buf, 0)
+	buf = EmitMovRaxImm64(buf, kLimit)
+	buf = EmitMovqXmmFromRax(buf, 1)
+	buf = EmitMovRaxImm64(buf, kStep)
+	buf = EmitMovqXmmFromRax(buf, 2)
+	buf = EmitSubsdXmmXmm(buf, 0, 2)
+
+	loopStart := len(buf)
+	buf = EmitAddsdXmmXmm(buf, 0, 2)
+	buf = EmitUcomisdXmmXmm(buf, 0, 1)
+	buf = EmitJaRel32(buf, 0)
+	jaOff := len(buf) - 4
+
+	// body:load s 一次,然后两段 SSE op 共享 xmm3
+	buf = EmitMovsdXmmFromMem(buf, 3, 3, int32(aS)*8)
+	// op1
+	buf = EmitMovRaxImm64(buf, kBody1)
+	buf = EmitMovqXmmFromRax(buf, 4)
+	buf = append(buf, 0xF2, 0x0F, sseOp1, 0xDC) // sseOp1 xmm3, xmm4
+	// op2
+	buf = EmitMovRaxImm64(buf, kBody2)
+	buf = EmitMovqXmmFromRax(buf, 4)
+	buf = append(buf, 0xF2, 0x0F, sseOp2, 0xDC)
+	// store s
+	buf = EmitMovsdMemFromXmm(buf, 3, 3, int32(aS)*8)
+
+	var safepointJneOff int = -1
+	if preemptFlagOff >= 0 {
+		buf = EmitCmpByteR15DispImm8(buf, preemptFlagOff, 0)
+		buf = EmitJneRel32(buf, 0)
+		safepointJneOff = len(buf) - 4
+	}
+
+	jmpStart := len(buf)
+	buf = EmitJmpRel32(buf, int32(loopStart-(jmpStart+EncodedJmpRel32Len)))
+
+	afterLoop := len(buf)
+	buf = EmitRet(buf)
+
+	PatchRel32(buf, jaOff, int32(afterLoop)-int32(jaOff+4))
+	if safepointJneOff >= 0 {
+		PatchRel32(buf, safepointJneOff, int32(afterLoop)-int32(safepointJneOff+4))
+	}
+
+	return buf
+}
