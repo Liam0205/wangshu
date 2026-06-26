@@ -174,5 +174,17 @@ func archEmitSetTableArrayHit(buf []byte, aReg, cReg uint8,
 	return buf
 }
 
+// archEmitSelfArrayHit 其它 arch 不支持。
+func archEmitSelfArrayHit(buf []byte, aReg, bReg uint8,
+	stableShape, stableIndex uint32, arenaBaseOff int32, deoptCode uint64) []byte {
+	_ = aReg
+	_ = bReg
+	_ = stableShape
+	_ = stableIndex
+	_ = arenaBaseOff
+	_ = deoptCode
+	return buf
+}
+
 // archSupportsSpec 其它 arch 不支持。
 func archSupportsSpec() bool { return false }

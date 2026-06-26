@@ -158,6 +158,18 @@ func archEmitSetTableArrayHit(buf []byte, aReg, cReg uint8,
 		stableShape, stableIndex, arenaBaseOff, deoptCode)
 }
 
+// archEmitSelfArrayHit 拼接 PJ4 SELF IC ArrayHit 字节级 inline 模板
+// (139 字节,GETTABLE ArrayHit 132 + R(A+1) 拷段 7 字节)。amd64 端代理
+// jitamd64.EmitSelfArrayHit。
+//
+// **SELF 形态**:R(A+1) := R(B);R(A) := R(B)[K]。模板入口先 store
+// R(A+1) = R(B),然后走 GETTABLE ArrayHit 同款流程取 R(A)。
+func archEmitSelfArrayHit(buf []byte, aReg, bReg uint8,
+	stableShape, stableIndex uint32, arenaBaseOff int32, deoptCode uint64) []byte {
+	return jitamd64.EmitSelfArrayHit(buf, aReg, bReg,
+		stableShape, stableIndex, arenaBaseOff, deoptCode)
+}
+
 // archSupportsSpec 返 true 当本 arch 支持 PJ2 投机模板真接入。
 // amd64 ✅;arm64/其它 ❌(留 PJ8+)。
 func archSupportsSpec() bool { return true }
