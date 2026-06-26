@@ -728,3 +728,101 @@ func TestPJ8_EmitSelfArrayHitArm64_StableShapeBurnedIn(t *testing.T) {
 		}
 	}
 }
+
+// TestPJ8_EmitSetTableNodeHitArm64_NodeRefAndKey 验 SET NodeHit 分流的
+// 关键字节布局(对位 GetTableNodeHit,差异在 setter 段):
+//   - [100-103] LDR x0, [x2, #24]            (nodeRef word3)
+//   - [108-111] ADD x2, x14, x1               (新 SIB base for node)
+//   - [116-131] MOV x3, stableKey imm64       (key 比对段)
+//   - [136-139] B.NE deopt                    (NodeKey 失配)
+func TestPJ8_EmitSetTableNodeHitArm64_NodeRefAndKey(t *testing.T) {
+	const stableKey uint64 = 0xFFFD_BEEF_CAFE_FACE
+	var buf []byte
+	buf = EmitSetTableNodeHitArm64(buf, 1, 2, 7, 3, stableKey, 16, 0xCAFEBABE)
+
+	if len(buf) < 172 {
+		t.Fatalf("buf too short: %d", len(buf))
+	}
+
+	// [100-103] LDR x0, [x2, #24] = base 0xF9400000 | imm12=3<<10 | Rn=2<<5 | Rt=0
+	insn := binary.LittleEndian.Uint32(buf[100:104])
+	wantLdr := uint32(0xF9400000) | uint32(3)<<10 | uint32(2)<<5
+	if insn != wantLdr {
+		t.Errorf("[100] LDR x0, [x2, #24] = 0x%08x, want 0x%08x", insn, wantLdr)
+	}
+
+	// [108-111] ADD x2, x14, x1
+	insn = binary.LittleEndian.Uint32(buf[108:112])
+	wantAdd := uint32(0x8B000000) | uint32(1)<<16 | uint32(14)<<5 | uint32(2)
+	if insn != wantAdd {
+		t.Errorf("[108] ADD x2, x14, x1 = 0x%08x, want 0x%08x", insn, wantAdd)
+	}
+
+	// [116-119] MOVZ x3, stableKey[15:0] = 0xFACE
+	insn = binary.LittleEndian.Uint32(buf[116:120])
+	if (insn & 0xFFE00000) != 0xD2800000 {
+		t.Errorf("[116] MOVZ base wrong: 0x%08x", insn)
+	}
+	imm0 := (insn >> 5) & 0xFFFF
+	if imm0 != 0xFACE {
+		t.Errorf("[116] MOVZ x3 imm[15:0] = 0x%04x, want 0xFACE", imm0)
+	}
+	if insn&0x1F != 3 {
+		t.Errorf("[116] MOVZ Rd = %d, want 3 (x3)", insn&0x1F)
+	}
+
+	// [136-139] B.NE deopt (cond=NE=0x1)
+	insn = binary.LittleEndian.Uint32(buf[136:140])
+	if insn&0xF != uint32(CondNE) {
+		t.Errorf("[136] B.NE cond = 0x%x, want 0x%x (NE)", insn&0xF, CondNE)
+	}
+}
+
+// TestPJ8_EmitSelfNodeHitArm64_NodeRefAndKey 验 SELF NodeHit 分流的
+// 关键字节布局。SELF 多 step 2 STR R(A+1) 4 字节,后续偏移整体 +4:
+//   - [104-107] LDR x0, [x2, #24]            (nodeRef word3)
+//   - [112-115] ADD x2, x14, x1               (新 SIB base for node)
+//   - [120-135] MOV x3, stableKey imm64       (key 比对段)
+//   - [140-143] B.NE deopt
+func TestPJ8_EmitSelfNodeHitArm64_NodeRefAndKey(t *testing.T) {
+	const stableKey uint64 = 0xFFFD_DEAD_CAFE_FEED
+	var buf []byte
+	buf = EmitSelfNodeHitArm64(buf, 1, 3, 7, 2, stableKey, 16, 0xCAFEBABE)
+
+	if len(buf) < 200 {
+		t.Fatalf("buf too short: %d", len(buf))
+	}
+
+	// [104-107] LDR x0, [x2, #24]
+	insn := binary.LittleEndian.Uint32(buf[104:108])
+	wantLdr := uint32(0xF9400000) | uint32(3)<<10 | uint32(2)<<5
+	if insn != wantLdr {
+		t.Errorf("[104] LDR x0, [x2, #24] = 0x%08x, want 0x%08x", insn, wantLdr)
+	}
+
+	// [112-115] ADD x2, x14, x1
+	insn = binary.LittleEndian.Uint32(buf[112:116])
+	wantAdd := uint32(0x8B000000) | uint32(1)<<16 | uint32(14)<<5 | uint32(2)
+	if insn != wantAdd {
+		t.Errorf("[112] ADD x2, x14, x1 = 0x%08x, want 0x%08x", insn, wantAdd)
+	}
+
+	// [120-123] MOVZ x3, stableKey[15:0] = 0xFEED
+	insn = binary.LittleEndian.Uint32(buf[120:124])
+	if (insn & 0xFFE00000) != 0xD2800000 {
+		t.Errorf("[120] MOVZ base wrong: 0x%08x", insn)
+	}
+	imm0 := (insn >> 5) & 0xFFFF
+	if imm0 != 0xFEED {
+		t.Errorf("[120] MOVZ x3 imm[15:0] = 0x%04x, want 0xFEED", imm0)
+	}
+	if insn&0x1F != 3 {
+		t.Errorf("[120] MOVZ Rd = %d, want 3 (x3)", insn&0x1F)
+	}
+
+	// [140-143] B.NE deopt
+	insn = binary.LittleEndian.Uint32(buf[140:144])
+	if insn&0xF != uint32(CondNE) {
+		t.Errorf("[140] B.NE cond = 0x%x, want 0x%x (NE)", insn&0xF, CondNE)
+	}
+}
