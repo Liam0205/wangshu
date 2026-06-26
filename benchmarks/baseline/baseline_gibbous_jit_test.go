@@ -241,3 +241,93 @@ func BenchmarkGibbousJIT_PJ3For10000(b *testing.B) {
 func BenchmarkGibbousJIT_PJ3For10000Cresc(b *testing.B) {
 	benchGibbousJIT(b, pj3ForLoop10000Body, false)
 }
+
+// PJ4 IC ArrayHit benchmark —— `function(t) return t[K] end` 形态字节级 inline。
+//
+// **wrap 形态选择**:PJ4 IC inline 触发需要 P1 解释器先填 IC[0]=ArrayHit,
+// 然后升层时 analyzeGetTableArrayHit 命中。本 wrap 用「内层 inner kernel
+// 函数 + outer 多次调」形态:
+//
+//   - inner kernel 是 PJ4 形态(2 op:GETTABLE + RETURN);
+//   - outer 先经 P1 解释器跑 50 次 warmup 让 IC[0] 填上(force=true 时
+//     warmup 在 benchmark 入口前的两轮 prog.Run 里跑;第一轮 P1 填 IC,
+//     第二轮 force-all 升 inner 让 analyzeGetTableArrayHit 命中);
+//   - benchmark loop 里 inner 已是字节级 inline 模板。
+//
+// **诚实数据**(Xeon 6982P,200 iter):
+//
+//	PJ4IcArrayHit1     4654 ns/op   PJ4IcArrayHit1Cresc  4214 ns/op (slower 10%)
+//	PJ4IcArrayHit2     4906 ns/op   PJ4IcArrayHit2Cresc  4248 ns/op (slower 15%)
+//
+// **加速为负是预期**:P1 解释器 icGetTable 已是「IC 命中即 array 段直达」
+// 的几条 Go 指令快路径(不走完整哈希),与 P4 字节级 IC inline 模板做的事
+// 完全等价。差异点在「P4 多付 callJITSpec trampoline 入出 + 寄存器保存恢复」
+// (~50ns 开销),P1 反而没这开销。
+//
+// **真加速场景留 PJ5 CALL inline**:把 outer 也升 P4 后,outer 内多次
+// GETTABLE 不付 doCall boundary,IC inline 在「无 doCall 跨界 + 字节级
+// 直达 array 段」组合下才显出加速。本档保留作 SpecTableHits prove-the-path
+// 命中证据(SpecTableHits 经 PJ4 e2e test 已断言 > 0)+ 同形态 P1 baseline
+// 对照。
+//
+// 对位 gopher-lua:本档不加 gopher 对位(单 inner kernel 形态对位口径见
+// baseline_test.go 同款 wrap 路径)。
+
+// wrapKernelJITForPJ4IcArray:outer 持表 + 跑 50 次 inner kernel(tbl) 调用。
+// kernel 是 PJ4 IC ArrayHit 升层目标(`function(tb) return tb[idx] end`)。
+// 第一次 P1 跑 outer 时 kernel 内 GETTABLE → icGetTable 填 IC[0]=ArrayHit;
+// 第二次 force-all 升 kernel 时 analyzeGetTableArrayHit 命中 IC slot →
+// 字节级 inline 编译;后续 prog.Run 每次 outer × 50 调直发字节级。
+func wrapKernelJITForPJ4IcArray(idx int) string {
+	return "local t = {42, 43, 44}\n" +
+		"local function kernel(tb) return tb[" + fmt.Sprint(idx) + "] end\n" +
+		"local r = 0\nfor _ = 1, 50 do r = kernel(t) end\nreturn r"
+}
+
+// benchGibbousJITPJ4Table 跑 PJ4 IC ArrayHit benchmark 形态。
+//
+// **关键 phase 顺序**:先关 force-all 跑一次让 P1 解释器填 IC[0],再开
+// force-all + 跑一次升 inner kernel(IC[0] 已填 → analyzeGetTableArrayHit
+// 命中 → IC inline 编译)。第三次起 b.N 循环直接命中已升层的字节级 inline 模板。
+//
+// force=false 时,两次 warmup 都不开 force-all,inner kernel 永远不升层
+// (长度 2 < MinPromotableCodeLen=10,short-proto 守卫拒);b.N 路径仍走
+// P1 解释器 icGetTable host helper,作 crescent 档对照基线。
+func benchGibbousJITPJ4Table(b *testing.B, idx int, force bool) {
+	src := wrapKernelJITForPJ4IcArray(idx)
+	prog, err := wangshu.Compile([]byte(src), "bench-jit-pj4-table")
+	if err != nil {
+		b.Fatalf("compile: %v", err)
+	}
+	st := wangshu.NewState(wangshu.Options{})
+	if _, err := prog.Run(st); err != nil { // P1 预热填 IC slot
+		b.Fatalf("warmup-phase1: %v", err)
+	}
+	st.SetForceAllPromote(force)
+	if _, err := prog.Run(st); err != nil { // force-all 升 inner kernel
+		b.Fatalf("warmup-phase2: %v", err)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := prog.Run(st); err != nil {
+			b.Fatalf("run: %v", err)
+		}
+	}
+}
+
+// PJ4 IC ArrayHit benchmark P4 vs crescent(force=true: P4 字节级 inline;
+// force=false: 同 wrapper 形态下 P1 解释器 icGetTable host helper 路径)。
+//
+// idx=1(t[1])是 hot path 最常见形态;idx=2 验数字键 stableIndex 差异。
+func BenchmarkGibbousJIT_PJ4IcArrayHit1(b *testing.B) {
+	benchGibbousJITPJ4Table(b, 1, true)
+}
+func BenchmarkGibbousJIT_PJ4IcArrayHit1Cresc(b *testing.B) {
+	benchGibbousJITPJ4Table(b, 1, false)
+}
+func BenchmarkGibbousJIT_PJ4IcArrayHit2(b *testing.B) {
+	benchGibbousJITPJ4Table(b, 2, true)
+}
+func BenchmarkGibbousJIT_PJ4IcArrayHit2Cresc(b *testing.B) {
+	benchGibbousJITPJ4Table(b, 2, false)
+}
