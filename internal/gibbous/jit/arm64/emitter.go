@@ -533,6 +533,71 @@ func EmitLsrXdImm6(buf []byte, rd, rn uint8, imm6 uint8) []byte {
 // EncodedLsrXdImm6Len = 4.
 const EncodedLsrXdImm6Len = 4
 
+// EmitLdrbWtFromXnDisp 发射 arm64「ldrb Wt, [Xn, #pimm12]」(32-bit
+// zero-extended byte load with unsigned 12-bit byte offset)。
+//
+// 编码:0011_1001_01_iiiiiiiiiiii_nnnnn_ttttt = 0x39400000 base
+//   - size=00(byte),V=0,opc=01(LDRB unsigned offset)
+//   - imm12 是**byte offset**(无 scale),范围 [0, 4095]
+//
+// 用例:PJ3 FORLOOP safepoint check arm64 端(对位 amd64
+// `cmp byte [r15+pfOff], 0` 8 字节,arm64 端拆 ldrb + cbnz 8 字节同款长)。
+func EmitLdrbWtFromXnDisp(buf []byte, rt, rn uint8, byteOff uint16) []byte {
+	if rt > 30 {
+		rt = 0
+	}
+	if rn > 30 {
+		rn = 0
+	}
+	if byteOff > 4095 {
+		byteOff = 0
+	}
+	insn := uint32(0x39400000) | (uint32(byteOff)&0xFFF)<<10 | (uint32(rn)&0x1F)<<5 | uint32(rt)&0x1F
+	return appendArm64Insn(buf, insn)
+}
+
+// EncodedLdrbWtFromXnDispLen = 4.
+const EncodedLdrbWtFromXnDispLen = 4
+
+// EmitCbnzW 发射 arm64「cbnz Wt, label」(compare-and-branch-if-nonzero,
+// 32-bit register)。imm19 是字偏移(目标地址 = PC + imm19 * 4),范围
+// [-2^20, 2^20-1]。
+//
+// 编码:0011_0101_iiiiiiiiiiiiiiiiiiii_ttttt = 0x35000000 base
+//   - sf=0(32-bit),op=0(CBNZ)
+//   - imm19 sign-extended 字偏移
+//
+// 用例:PJ3 FORLOOP safepoint check arm64 端——
+// 「ldrb W0, [x27+pfOff]; cbnz W0, after_loop」(对位 amd64
+// `cmp byte [r15+pfOff], 0; jne after_loop` 14 字节,arm64 端 8 字节)。
+func EmitCbnzW(buf []byte, rt uint8, imm19 int32) []byte {
+	if rt > 30 {
+		rt = 0
+	}
+	insn := uint32(0x35000000) | (uint32(imm19)&0x7FFFF)<<5 | uint32(rt)&0x1F
+	return appendArm64Insn(buf, insn)
+}
+
+// EncodedCbnzWLen = 4.
+const EncodedCbnzWLen = 4
+
+// patchCbnzImm19 在 buf[off..off+4] 处的 CBNZ/CBZ 指令字内 patch imm19
+// 字段(bit 5-23)。Rt 字段(bit 0-4)和 op/sf base(bit 24-31)保留,
+// 只修改 imm19。
+func patchCbnzImm19(buf []byte, off int, imm19 int32) {
+	if off+4 > len(buf) {
+		return
+	}
+	insn := uint32(buf[off]) | uint32(buf[off+1])<<8 |
+		uint32(buf[off+2])<<16 | uint32(buf[off+3])<<24
+	insn &= 0xFF00001F
+	insn |= (uint32(imm19) & 0x7FFFF) << 5
+	buf[off] = byte(insn)
+	buf[off+1] = byte(insn >> 8)
+	buf[off+2] = byte(insn >> 16)
+	buf[off+3] = byte(insn >> 24)
+}
+
 // patchBCondImm19 在 buf[off..off+4] 处的 B.cond 指令字内 patch imm19
 // 字段(bit 5-23)。原指令字 cond 字段(bit 0-3)和 0x54 base(bit 24-31)
 // 保留,只修改 imm19 19 位。

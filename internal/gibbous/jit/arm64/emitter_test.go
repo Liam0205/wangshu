@@ -451,3 +451,69 @@ func TestPJ8_EmitLsrXdImm6(t *testing.T) {
 		})
 	}
 }
+
+// TestPJ8_EmitLdrbWtFromXnDisp 验「ldrb Wt, [Xn, #pimm12]」字节级
+// (32-bit zero-extended byte load,byte-scaled offset)。
+func TestPJ8_EmitLdrbWtFromXnDisp(t *testing.T) {
+	cases := []struct {
+		name    string
+		rt, rn  uint8
+		byteOff uint16
+	}{
+		{"ldrb w0, [x27, #16]", 0, 27, 16},
+		{"ldrb w0, [x27, #0]", 0, 27, 0},
+		{"ldrb w1, [x14, #4095]", 1, 14, 4095},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf []byte
+			buf = EmitLdrbWtFromXnDisp(buf, tc.rt, tc.rn, tc.byteOff)
+			if len(buf) != EncodedLdrbWtFromXnDispLen {
+				t.Fatalf("len = %d, want %d", len(buf), EncodedLdrbWtFromXnDispLen)
+			}
+			insn := binary.LittleEndian.Uint32(buf[0:4])
+			want := uint32(0x39400000) | uint32(tc.byteOff)<<10 |
+				uint32(tc.rn)<<5 | uint32(tc.rt)
+			if insn != want {
+				t.Errorf("%s = 0x%08x, want 0x%08x", tc.name, insn, want)
+			}
+		})
+	}
+}
+
+// TestPJ8_EmitCbnzW 验「cbnz Wt, label」字节级(32-bit compare-branch
+// nonzero)。imm19 是字偏移 sign-extended,目标 = PC + imm19 * 4。
+func TestPJ8_EmitCbnzW(t *testing.T) {
+	cases := []struct {
+		name  string
+		rt    uint8
+		imm19 int32
+	}{
+		{"cbnz w0, +20 (5 words forward)", 0, 5},
+		{"cbnz w1, 0 (placeholder)", 1, 0},
+		{"cbnz w2, -16 (-4 words backward)", 2, -4},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf []byte
+			buf = EmitCbnzW(buf, tc.rt, tc.imm19)
+			if len(buf) != EncodedCbnzWLen {
+				t.Fatalf("len = %d, want %d", len(buf), EncodedCbnzWLen)
+			}
+			insn := binary.LittleEndian.Uint32(buf[0:4])
+			wantBase := uint32(0x35000000)
+			if (insn & 0xFF000000) != wantBase {
+				t.Errorf("%s base = 0x%08x, want prefix 0x35", tc.name, insn&0xFF000000)
+			}
+			gotRt := insn & 0x1F
+			if gotRt != uint32(tc.rt) {
+				t.Errorf("%s Rt = %d, want %d", tc.name, gotRt, tc.rt)
+			}
+			gotImm19 := (insn >> 5) & 0x7FFFF
+			wantImm19 := uint32(tc.imm19) & 0x7FFFF
+			if gotImm19 != wantImm19 {
+				t.Errorf("%s imm19 = 0x%05x, want 0x%05x", tc.name, gotImm19, wantImm19)
+			}
+		})
+	}
+}
