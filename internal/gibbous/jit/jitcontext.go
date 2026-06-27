@@ -57,6 +57,27 @@ const (
 	JITContextCIDepthAddrOffset   = unsafe.Offsetof(JITContext{}.ciDepthAddr)
 	JITContextCISegBaseAddrOffset = unsafe.Offsetof(JITContext{}.ciSegBaseAddr)
 	JITContextTopAddrOffset       = unsafe.Offsetof(JITContext{}.topAddr)
+
+	// **§9.20.9 trampoline exit-resume 协议字段** (Spike 1 真接入 commit-1):
+	JITContextExitArg0Offset  = unsafe.Offsetof(JITContext{}.exitArg0)
+	JITContextResumeOffOffset = unsafe.Offsetof(JITContext{}.resumeOff)
+)
+
+// **§9.20.9 协议状态码常量** (Spike 1 真接入 + future helper request 路由):
+
+// JIT exit reason codes(承 §9.20.9 (3) 协议状态码 + exitReasonCode 字段):
+const (
+	ExitNormal       uint32 = 0 // 正常 RET 出段
+	ExitError        uint32 = 1 // ERR 冒泡(state.pendingErr 已置)
+	ExitOSR          uint32 = 2 // 投机失败 OSR exit
+	ExitInlineHelper uint32 = 3 // Spike 1 helper request(jitCtx.exitArg0 = helper code)
+)
+
+// JIT inline helper request codes(承 §9.20.9 (3) 协议状态码):
+const (
+	HelperRunCallee uint64 = 1 // Spike 1 Step C-1:跑 callee Lua 体
+	HelperGrowStack uint64 = 2 // 未来:arena grow 触发
+	HelperGCBarrier uint64 = 3 // 未来:GC 写屏障(只在写 Go 堆时)
 )
 
 // JITContext 是 P4 跨边界的执行上下文(05 §3.3)。
@@ -165,6 +186,30 @@ type JITContext struct {
 	// 时写本字(top = base + MaxStack)。mmap 段 emit `mov rax, [r15+topAddr];
 	// mov qword ptr [rax], topVal` 字节级 top 设置。
 	topAddr uintptr
+
+	// exitArg0 是 mmap 段经 exit-helper-request 协议返 trampoline 时携带的
+	// helper request code(承 §9.20.9 trampoline exit-resume 协议详细设计草案
+	// + §9.20.6 helper call ABI 协议)。
+	//
+	// **协议流程**:mmap 段 emit `mov rax, HELPER_RUN_CALLEE; mov [r15+
+	// exitArg0Off], rax`,然后 `ret` 出段。trampoline dispatcher 读 jitCtx.
+	// exitArg0 决定 helper 路由:HELPER_RUN_CALLEE → executeFrom callee /
+	// HELPER_GROW_STACK → arena grow / HELPER_GC_BARRIER → 写屏障(未来)。
+	//
+	// **当前 Spike 1 阶段 archSupportsFrameInline=false 屏蔽真触发**,本字段
+	// 为 future Spike 1 真接入 commit-1 准备(承 §9.20.9 实装顺序 5 commits)。
+	exitArg0 uint64
+
+	// resumeOff 是 mmap 段内 resume entry 的字节偏移(承 §9.20.9 (2)):
+	// BuildVoid0Arg 后 exit-helper-request 段返 trampoline → Go dispatcher
+	// 跑 callee 完成 → trampoline 用 `codePageAddr + resumeOff` 求 resume
+	// entry 地址 → 再次 CALL 跳进 mmap 段续跑 PopVoid0Arg(popCallInfo)+ ret。
+	//
+	// **codePage 不重定位**(mmap PROT_RX 段一次性 alloc),resumeOff 编译期
+	// 确定即可。compileSpecSelfCall useFrameInline 分支 emit 时记录本字段。
+	resumeOff uint32
+
+	_ [4]byte // 8 字节对齐 padding
 }
 
 // NewJITContext 构造 P4 JIT 执行上下文。
@@ -247,3 +292,21 @@ func (c *JITContext) SetTopAddr(addr uintptr) {
 
 // TopAddr 返回 thread.top 镜像字的 host 字节地址(测试钩子)。
 func (c *JITContext) TopAddr() uintptr { return c.topAddr }
+
+// SetExitArg0 设置 helper request code(承 §9.20.9 协议:Spike 1 真接入 +
+// future helper request 路由)。当前 archSupportsFrameInline=false 屏蔽真触发。
+func (c *JITContext) SetExitArg0(arg uint64) {
+	c.exitArg0 = arg
+}
+
+// ExitArg0 返回 helper request code(测试钩子,承 §9.20.9 真接入预备)。
+func (c *JITContext) ExitArg0() uint64 { return c.exitArg0 }
+
+// SetResumeOff 设置 mmap 段内 resume entry 字节偏移(承 §9.20.9 (2))。
+// compileSpecSelfCall useFrameInline 分支 emit 时记录。
+func (c *JITContext) SetResumeOff(off uint32) {
+	c.resumeOff = off
+}
+
+// ResumeOff 返回 resume entry 字节偏移(测试钩子)。
+func (c *JITContext) ResumeOff() uint32 { return c.resumeOff }
