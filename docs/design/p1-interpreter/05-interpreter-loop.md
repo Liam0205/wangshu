@@ -897,6 +897,19 @@ pcall host 实现:
 
 错误路径**不在热路径**(正常脚本极少出错),所以「显式返回啰嗦」不损 §3 的性能——快路径里 `if e != nil` 的 `e` 几乎总是 nil,分支预测器轻松命中,接近零成本。相反若用 panic,即便不出错也要为可能的 panic 准备 defer/recover 框架,反而拖累热路径。**显式返回是「错误路径让步、热路径优先」的正确选择**,与 roadmap §1「减少每指令开销」一致。
 
+### 9.6 P4 OSR exit 路径与错误冒泡互斥(2026-06-28 新增)
+
+承 [../p4-method-jit/implementation-progress §2 RJ-4](../p4-method-jit/implementation-progress.md) 跨文档回填请求 + [../p4-method-jit/04-osr-deopt §7.4](../p4-method-jit/04-osr-deopt.md):**OSR exit 路径不应设置 `state.pendingErr`**——exit 是「投机失误」非「语义错误」,与本节 9.2-9.4 描述的错误冒泡纪律**不互斥**:
+
+- **错误冒泡**(本节 9.2-9.4):语义错误(attempt to index nil 等),`pendingErr` 置位 + execute return *LuaError → 一路 return 到 pcall / Go 上层
+- **OSR exit**(P4 新增):投机失败(IC NodeHit guard 不成立 / IsNumber 失败),GibbousCode.Run 返回 status=2 → doCall 走 `callDeoptResume`(§7.1 + RJ-3),**不动 pendingErr**
+- **同发情况**:若投机段中真发生语义错误(如 SELF method 调用 method=nil),**错误优先**:pendingErr 置位 + GibbousCode.Run 返回 status=1(ERR),不返 status=2
+
+**P4 验证形态**(承本会话实证):
+- `TestPJ5_SelfCall_E2E_SpecTemplate_ErrorBubbleUp_NilRecv`(语义错误冒泡正确)
+- `TestPJ5_SelfCall_E2E_SpecTemplate_ErrorBubbleUp_BadMethod`(method=number 时 attempt to call 冒泡)
+- `TestPJ5_SelfCall_E2E_SpecTemplate_OSRExitToDeopt`(投机失误纯 deopt,不动 pendingErr,byte-equal P1)
+
 ---
 
 ## 10. FORPREP / FORLOOP / TFORLOOP 执行(数值 for 与泛型 for)
