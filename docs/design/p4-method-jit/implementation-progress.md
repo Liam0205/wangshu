@@ -1308,12 +1308,13 @@ probe luac 实证 N=K 返形态 cC=K+1 一致(N=4 返 cC=5 / N=5 返 cC=6 / ...)
 
 spec template 无需特殊处理 N>=2 返,SELF 段 EmitSelfNodeHit + args inline + recv inline 字节级模板全复用。
 
-**e2e 实证累计**(**18 用例** SpecSelfCallSpecHits 0→1 + OSR exit + 错误冒泡):
-- form4..N N=2..3 返:MultiRet0Param/1KArg/1RegArg + MultiRet2KArg/3KArg/4KArg/5KArg/6KArg(8 用例)
-- N=4 返多形态:MultiRetN4_0Param/1KArg/1RegArg/3KArg + MultiRetN5_0Param(5 用例)
-- N=8/N=15 上界边界:MultiRetN8_0Param + MultiRetN15_0Param(2 用例)
-- **spec template 错误冒泡**(2026-06-28 新增):ErrorBubbleUp_NilRecv + ErrorBubbleUp_BadMethod(2 用例,deopt → host.Self 路径)
-- **OSR exit 真业务路径强断言**(2026-06-28 新增):OSRExitToDeopt(1 用例,SpecP4DeoptHits 增长实证)
+**e2e 实证累计**(**26 用例** SpecSelfCallSpecHits 0→1 + OSR exit + 错误冒泡):
+- **基础形态 8 用例**(承 PJ5 SELF spec template 初批 §9.19):WarmupThenForce + 1KArg + 1RegArg + 3Args + TailCall_M0 + Getter_M0 + UpvalRecv + TailCall_1RegArg
+- **form4..N N=2..3 返 8 用例**:MultiRet0Param/1KArg/1RegArg + MultiRet2KArg/3KArg/4KArg/5KArg/6KArg
+- **N=4 返多形态 5 用例**:MultiRetN4_0Param/1KArg/1RegArg/3KArg + MultiRetN5_0Param
+- **N=8/N=15 上界边界 2 用例**:MultiRetN8_0Param + MultiRetN15_0Param
+- **spec template 错误冒泡 2 用例**(2026-06-28 新增):ErrorBubbleUp_NilRecv + ErrorBubbleUp_BadMethod(deopt → host.Self 路径)
+- **OSR exit 真业务路径强断言 1 用例**(2026-06-28 新增):OSRExitToDeopt(SpecP4DeoptHits 增长实证 +6)
 
 **difftest 三方 byte-equal**(承 cc66452 + 84c7ed4 + 84a031d + 7f5f641):**11 用例**(p4_self_spec_multiret_0arg/1karg/3kargs/5kargs + multiret_n4_0arg/n5_0arg + multiret_n4_1karg/1regarg/3kargs + multiret_n8_0arg/n15_0arg)oracle lua5.1 / crescent / p4-jit 全过。
 
