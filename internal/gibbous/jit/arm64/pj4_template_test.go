@@ -974,3 +974,23 @@ func TestPJ8_EmitSetTableArrayHitArm64_StableIndexBurnedIn(t *testing.T) {
 		t.Errorf("[116] STR imm12 = %d, want %d (stableIndex)", gotImm12, stableIndex)
 	}
 }
+
+// TestPJ8_EmitSpecArgLoadKArm64_Length 验 PJ5 SELF spec args 装载 K arm64
+// 模板长度(movz/movk × 4 + str = 5 × 4 = 20 字节)。
+func TestPJ8_EmitSpecArgLoadKArm64_Length(t *testing.T) {
+	var buf []byte
+	buf = EmitSpecArgLoadKArm64(buf, 5, 0xDEADBEEF12345678)
+	if len(buf) != 20 {
+		t.Errorf("EmitSpecArgLoadKArm64 长度 = %d, want 20", len(buf))
+	}
+}
+
+// TestPJ8_EmitSpecArgLoadRegArm64_Length 验 PJ5 SELF spec args 装载 reg arm64
+// 模板长度(LDR + STR = 2 × 4 = 8 字节)。
+func TestPJ8_EmitSpecArgLoadRegArm64_Length(t *testing.T) {
+	var buf []byte
+	buf = EmitSpecArgLoadRegArm64(buf, 5, 3)
+	if len(buf) != 8 {
+		t.Errorf("EmitSpecArgLoadRegArm64 长度 = %d, want 8", len(buf))
+	}
+}

@@ -260,18 +260,14 @@ func archEmitSelfNodeHit(buf []byte, aReg, bReg uint8,
 		stableShape, stableIndex, stableKey, arenaBaseOffArm64(arenaBaseOff), deoptCode)
 }
 
-// archEmitSpecArgLoadK / archEmitSpecArgLoadReg arm64 stub(留 PJ8+ 物理 runner
-// 启用 archSupportsSpec=true 后真实装)。当前 archSupportsSpec()=false 故 spec
-// template 在 arm64 不安装,本 stub 永不被调,仅为 build tag 互斥保留签名。
+// archEmitSpecArgLoadK / archEmitSpecArgLoadReg arm64 实装(承 PJ5 spec
+// template 字节级 inline,跳过 host.GetReg/SetReg round-trip)。物理 runner
+// 启用 archSupportsSpec=true 后即激活,与 amd64 字节级形态对等。
 func archEmitSpecArgLoadK(buf []byte, dstReg uint8, k uint64) []byte {
-	_ = dstReg
-	_ = k
-	return buf
+	return jitarm64.EmitSpecArgLoadKArm64(buf, dstReg, k)
 }
 func archEmitSpecArgLoadReg(buf []byte, dstReg uint8, srcReg uint8) []byte {
-	_ = dstReg
-	_ = srcReg
-	return buf
+	return jitarm64.EmitSpecArgLoadRegArm64(buf, dstReg, srcReg)
 }
 
 // archSupportsSpec arm64 端 PJ8 工程组件完整就绪但**端到端验证尚未通过**:

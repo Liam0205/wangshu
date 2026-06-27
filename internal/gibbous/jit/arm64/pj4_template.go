@@ -725,3 +725,32 @@ func EmitSelfNodeHitArm64(buf []byte, aReg, bReg uint8,
 
 // EncodedSelfNodeHitArm64Len arm64 PJ4 SELF NodeHit 模板字节数(200)。
 const EncodedSelfNodeHitArm64Len = 200
+
+// EmitSpecArgLoadKArm64 写 R(dstReg) = K(NaN-box u64)— PJ5 SELF spec
+// template args/recv 装载字节级 inline(arm64 端 amd64 EmitSpecArgLoadK 对位)。
+//
+// **vsBase 寄存器**:arm64 spec template 用 x26(承 trampoline_arm64.s::callJITSpec)。
+//
+// 字节序列(movz/movk×4 + str = 5 条 = 20 字节,K 装到 x0 再 str):
+//
+//	movz/movk x0, K_imm64  ; 4 条(每段 16 bit)
+//	str x0, [x26 + dstReg*8] ; 1 条
+func EmitSpecArgLoadKArm64(buf []byte, dstReg uint8, k uint64) []byte {
+	// 用 x0 作 scratch 临时寄存器(spec template 内不持长效 x0)
+	buf = EmitMovXdImm64(buf, 0, k)
+	// vsBase 在 x26 → STR x0, [x26 + dstReg*8]
+	buf = EmitStrXtToXnDisp(buf, 0, 26, uint16(dstReg)*8)
+	return buf
+}
+
+// EmitSpecArgLoadRegArm64 写 R(dstReg) = R(srcReg)。
+//
+// 字节序列(LDR + STR = 2 条 = 8 字节):
+//
+//	ldr x0, [x26 + srcReg*8]
+//	str x0, [x26 + dstReg*8]
+func EmitSpecArgLoadRegArm64(buf []byte, dstReg uint8, srcReg uint8) []byte {
+	buf = EmitLdrXtFromXnDisp(buf, 0, 26, uint16(srcReg)*8)
+	buf = EmitStrXtToXnDisp(buf, 0, 26, uint16(dstReg)*8)
+	return buf
+}
