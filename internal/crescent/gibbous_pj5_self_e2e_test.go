@@ -802,3 +802,38 @@ return sum`
 	}
 	t.Logf("SpecSelfCallSpecHits: %d → %d", specBefore, specAfter)
 }
+
+// TestPJ5_SelfCall_E2E_SpecTemplate_UpvalRecv PJ5 SELF spec template 用 GETUPVAL
+// receiver(承 analyzeSelfCallForm 已支持 form U*,叠加 spec 守门应自动 work)。
+func TestPJ5_SelfCall_E2E_SpecTemplate_UpvalRecv(t *testing.T) {
+	jit.ResetSpecHits()
+	// caller 是闭包,o 通过 upvalue 访问 → SELF receiver = GETUPVAL form
+	src := `
+local count = 0
+local o = { m = function(self) count = count + 1 end }
+local function tick() o:m() end
+for i = 1, 100 do tick() end  -- warmup
+tick()
+return count`
+	st, mainCl := loadFnP4(t, src)
+
+	_, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 1 run: %v", err)
+	}
+
+	st.bridge.SetForceAllPromote(true)
+	specBefore := jit.SpecSelfCallSpecHits()
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 2 run: %v", err)
+	}
+	if got := value.AsNumber(value.Value(rets[0])); got != 101 {
+		t.Errorf("Phase 2 result = %v, want 101", got)
+	}
+	specAfter := jit.SpecSelfCallSpecHits()
+	if specAfter <= specBefore {
+		t.Errorf("SpecSelfCallSpecHits 未增长 → UPVAL recv spec template 未命中")
+	}
+	t.Logf("SpecSelfCallSpecHits: %d → %d", specBefore, specAfter)
+}
