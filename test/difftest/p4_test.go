@@ -935,6 +935,62 @@ return s1, s2`
 	}
 }
 
+// TestP4_ConcurrentForceAll_SpecDeopt V18(-race):多 State 并发 force-all P4
+// 跑 PJ5 SELF spec template 路径下 NodeHit guard 失败 + deopt 路径。
+//
+// 验:spec template SELF NodeHit guard 失败 → onOSRExit + p4SpecState 累积
+// deopt + 降级 host.Self 路径在多 State 8 goroutine 并发下无 race。承
+// p4SpecState package-level 全局 map + p4SpecMu 守护(承 p4state.go godoc
+// 修正 730f253)。
+func TestP4_ConcurrentForceAll_SpecDeopt(t *testing.T) {
+	// 不同 receiver shape 触发 deopt(spec template NodeHit guard 失败)
+	src := `
+local m1 = { m = function(self) return 1 end }
+local m2 = { m = function(self) return 2 end, other = 99 }
+local function caller(t) return t:m() end
+local sum = 0
+for i = 1, 50 do
+  sum = sum + caller(m1)  -- warmup NodeHit on m1
+  sum = sum + caller(m2)  -- 触发 deopt(shape 不同)
+end
+return sum`
+	const goroutines = 8
+	prog, err := wangshu.Compile([]byte(src), "p4race-spec-deopt")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	want := runWangshuP4Tiered(t, src, true)
+
+	results := make([]string, goroutines)
+	done := make(chan int, goroutines)
+	for g := 0; g < goroutines; g++ {
+		go func(idx int) {
+			defer func() { done <- idx }()
+			st := wangshu.NewState(wangshu.Options{})
+			st.SetForceAllPromote(true)
+			out, e := prog.Run(st)
+			if e != nil {
+				results[idx] = "ERR: " + e.Error()
+				return
+			}
+			parts := make([]string, len(out))
+			for i, r := range out {
+				parts[i] = r.Display()
+			}
+			results[idx] = strings.Join(parts, "\t") + "\n"
+		}(g)
+	}
+	for i := 0; i < goroutines; i++ {
+		<-done
+	}
+	for g := 0; g < goroutines; g++ {
+		if results[g] != want {
+			t.Errorf("goroutine %d spec deopt 结果分歧:\n  got:  %q\n  want: %q",
+				g, results[g], want)
+		}
+	}
+}
+
 // TestP4_PromotionTriggered 强断言:跑 p4Corpus 后 PromotionCount > 0。
 //
 // 承外部 review 「`make test-p4` 21 binary 全过的'绿色'在 conformance / difftest
