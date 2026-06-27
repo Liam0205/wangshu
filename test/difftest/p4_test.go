@@ -578,6 +578,183 @@ local function caller(t) local r = t:m(); return r end
 local s = 0
 for i = 1, 30 do s = s + caller(o) end
 return s`},
+
+	// —— PJ5 SELF 3..5 参形态扩(长度 7/8/9)——
+	{"p4_self_void_m3k", `
+local sum = 0
+local o = { m = function(self, a, b, c) sum = sum + a + b + c end }
+local function caller(t) t:m(1, 2, 3) end
+for i = 1, 30 do caller(o) end
+return sum`},
+	{"p4_self_void_m3r", `
+local sum = 0
+local o = { m = function(self, a, b, c) sum = sum + a + b + c end }
+local function caller(t, x, y, z) t:m(x, y, z) end
+for i = 1, 30 do caller(o, i, i+1, i+2) end
+return sum`},
+	{"p4_self_void_m4r", `
+local sum = 0
+local o = { m = function(self, a, b, c, d) sum = sum + a + b + c + d end }
+local function caller(t, p, q, r, s) t:m(p, q, r, s) end
+for i = 1, 30 do caller(o, i, i+1, i+2, i+3) end
+return sum`},
+	{"p4_self_void_m5r", `
+local sum = 0
+local o = { m = function(self, a, b, c, d, e) sum = sum + a + b + c + d + e end }
+local function caller(t, p, q, r, s, u) t:m(p, q, r, s, u) end
+for i = 1, 30 do caller(o, i, i+1, i+2, i+3, i+4) end
+return sum`},
+	{"p4_self_tail_3k", `
+local o = { m = function(self, a, b, c) return a + b + c end }
+local function caller(t) return t:m(1, 2, 3) end
+local s = 0
+for i = 1, 30 do s = s + caller(o) end
+return s`},
+	{"p4_self_void_m6r", `
+local sum = 0
+local o = { m = function(self, a, b, c, d, e, f) sum = sum + a + b + c + d + e + f end }
+local function caller(t, p, q, r, s, u, v) t:m(p, q, r, s, u, v) end
+for i = 1, 30 do caller(o, i, i+1, i+2, i+3, i+4, i+5) end
+return sum`},
+	{"p4_self_void_m7r", `
+local sum = 0
+local o = { m = function(self, a, b, c, d, e, f, g) sum = sum + a + b + c + d + e + f + g end }
+local function caller(t, p, q, r, s, u, v, w) t:m(p, q, r, s, u, v, w) end
+for i = 1, 30 do caller(o, i, i+1, i+2, i+3, i+4, i+5, i+6) end
+return sum`},
+	{"p4_self_tail_5r", `
+local o = { m = function(self, a, b, c, d, e) return a + b + c + d + e end }
+local function caller(t, p, q, r, s, u) return t:m(p, q, r, s, u) end
+local total = 0
+for i = 1, 30 do total = total + caller(o, i, i+1, i+2, i+3, i+4) end
+return total`},
+
+	// —— PJ5 SELF inline 嵌套形态(OOP wrapper / observer 业务真接入)——
+	{"p4_self_nested_chain", `
+local total = 0
+local inner = { n = function(self, x) total = total + x end }
+local outer = { m = function(self, v) inner:n(v) end }
+local function caller(t, v) t:m(v) end
+for i = 1, 30 do caller(outer, i) end
+return total`},
+	{"p4_self_then_call", `
+local mCount = 0
+local oCount = 0
+local o = { m = function(self) mCount = mCount + 1 end }
+local function other() oCount = oCount + 1 end
+local function caller(t) t:m(); other() end
+for i = 1, 30 do caller(o) end
+return mCount, oCount`},
+
+	// —— PJ5 SELF + CALL spec template 形态(IC NodeHit 命中走字节级 EmitSelfNodeHit
+	// 模板,跳过 host.Self;CALL 段仍 host.CallBaseline)。warmup-then-force 通过
+	// p4Corpus 的 force-all 路径触发(IC slot 已在解释器 warmup 中填好)——
+	// difftest 通过让 caller 反复调单态 receiver,IC 稳定后 spec template 命中
+	// 编译,验三方 byte-equal(oracle / crescent / p4-jit)。
+	{"p4_self_spec_void_0arg", `
+local count = 0
+local o = { m = function(self) count = count + 1 end }
+local function caller(t) t:m() end
+for i = 1, 100 do caller(o) end
+caller(o)
+return count`},
+	{"p4_self_spec_void_1karg", `
+local sum = 0
+local o = { m = function(self, x) sum = sum + x end }
+local function caller(t) t:m(42) end
+for i = 1, 100 do caller(o) end
+caller(o)
+return sum`},
+	{"p4_self_spec_void_1regarg", `
+local sum = 0
+local o = { m = function(self, x) sum = sum + x end }
+local function caller(t, v) t:m(v) end
+for i = 1, 100 do caller(o, i) end
+caller(o, 1000)
+return sum`},
+	{"p4_self_spec_void_3regargs", `
+local sum = 0
+local o = { m = function(self, a, b, c) sum = sum + a + b + c end }
+local function caller(t, x, y, z) t:m(x, y, z) end
+for i = 1, 100 do caller(o, i, i+1, i+2) end
+caller(o, 1, 2, 3)
+return sum`},
+	{"p4_self_spec_tailcall_0arg", `
+local o = { m = function(self) return 42 end }
+local function caller(t) return t:m() end
+local sum = 0
+for i = 1, 100 do sum = sum + caller(o) end
+sum = sum + caller(o)
+return sum`},
+	{"p4_self_spec_getter_0arg", `
+local o = { m = function(self) return 42 end }
+local function caller(t) local r = t:m(); return r end
+local sum = 0
+for i = 1, 100 do sum = sum + caller(o) end
+sum = sum + caller(o)
+return sum`},
+	{"p4_self_spec_upvalrecv_0arg", `
+local count = 0
+local o = { m = function(self) count = count + 1 end }
+local function tick() o:m() end
+for i = 1, 100 do tick() end
+tick()
+return count`},
+	{"p4_self_spec_tailcall_1regarg", `
+local o = { m = function(self, x) return x * 2 end }
+local function caller(t, v) return t:m(v) end
+local sum = 0
+for i = 1, 100 do sum = sum + caller(o, i) end
+sum = sum + caller(o, 1000)
+return sum`},
+	// —— PJ5 SELF + CALL spec template N=2 返 drop multi-ret 形态(承上批
+	// form4..N cC=3/4 retB=1 守门扩):caller `local a,b = t:m(K×N)` 形态,
+	// host.CallBaseline 按 callC 落 N 返值 R(callA..) 作 local 直接绑;
+	// 主调 RETURN B=1 经 host.DoReturn 弹 0 返值收尾(两层协议解耦)——
+	// 验三方 byte-equal。
+	{"p4_self_spec_multiret_0arg", `
+local count = 0
+local mt = { m = function(self) count = count + 1; return 1, 2 end }
+local function caller(_, t) local a, b = t:m() end
+for i = 1, 100 do caller(nil, mt) end
+caller(nil, mt)
+return count`},
+	{"p4_self_spec_multiret_1karg", `
+local count = 0
+local mt = { m = function(self, k) count = count + k; return 1, 2 end }
+local function caller(_, t) local a, b = t:m(7) end
+for i = 1, 100 do caller(nil, mt) end
+caller(nil, mt)
+return count`},
+	{"p4_self_spec_multiret_3kargs", `
+local count = 0
+local mt = { m = function(self, x, y, z) count = count + x + y + z; return 1, 2 end }
+local function caller(_, t) local a, b = t:m(7, 8, 9) end
+for i = 1, 100 do caller(nil, mt) end
+caller(nil, mt)
+return count`},
+	{"p4_self_spec_multiret_5kargs", `
+local count = 0
+local mt = { m = function(self, x, y, z, w, v) count = count + x + y + z + w + v; return 1, 2 end }
+local function caller(_, t) local a, b = t:m(7, 8, 9, 10, 11) end
+for i = 1, 100 do caller(nil, mt) end
+caller(nil, mt)
+return count`},
+	// N>=4 返 drop multi-ret(承本批 isValidSpecCallRetCount cC∈{1,3..16} 扩):
+	{"p4_self_spec_multiret_n4_0arg", `
+local count = 0
+local mt = { m = function(self) count = count + 1; return 1, 2, 3, 4 end }
+local function caller(_, t) local a, b, c, d = t:m() end
+for i = 1, 100 do caller(nil, mt) end
+caller(nil, mt)
+return count`},
+	{"p4_self_spec_multiret_n5_0arg", `
+local count = 0
+local mt = { m = function(self) count = count + 1; return 1, 2, 3, 4, 5 end }
+local function caller(_, t) local a, b, c, d, e = t:m() end
+for i = 1, 100 do caller(nil, mt) end
+caller(nil, mt)
+return count`},
 }
 
 // TestP4_Tiered 三方对拍:oracle / crescent / p4-jit 全 byte-equal。

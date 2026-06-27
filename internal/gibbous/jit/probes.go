@@ -33,18 +33,6 @@ var specTableHits uint64
 // 命中后跳过 P3 R3 indirect 哨兵,等价 P1 解释器 doCall。
 var specCallVoidHits uint64
 
-// specTailCallHits 是 PJ5 TAILCALL 形态(MOVE/GETUPVAL+...+TAILCALL+dead
-// RETURN B=0+隐式 RETURN B=1)Compile 命中次数。Run prelude 路径调
-// host.TailCall 三态分支(0=Lua 尾完成 / 1=ERR / 2=host 尾完成)。
-var specTailCallHits uint64
-
-// specSelfCallHits 是 PJ5 SELF method call inline 形态(MOVE/GETUPVAL +
-// SELF + ... + CALL/TAILCALL + RETURN)Compile 命中次数。Run prelude 路径
-// 先调 host.Self 取 method + 装 self,然后调 host.CallBaseline / TailCall
-// 完成 byte-equal P1 doCall 分派(SELF + CALL = baseline + DoReturn;
-// SELF + TAILCALL = 三态分支)。
-var specSelfCallHits uint64
-
 // SpecRegKHits 返回当前累计 reg-K 模板编译命中次数。仅测试用。
 func SpecRegKHits() uint64 { return atomic.LoadUint64(&specRegKHits) }
 
@@ -64,14 +52,6 @@ func SpecTableHits() uint64 { return atomic.LoadUint64(&specTableHits) }
 // 仅测试用。
 func SpecCallVoidHits() uint64 { return atomic.LoadUint64(&specCallVoidHits) }
 
-// SpecTailCallHits 返回当前累计 PJ5 TAILCALL 形态 Compile 命中次数。
-// 仅测试用。
-func SpecTailCallHits() uint64 { return atomic.LoadUint64(&specTailCallHits) }
-
-// SpecSelfCallHits 返回当前累计 PJ5 SELF method call inline 形态 Compile
-// 命中次数。仅测试用。
-func SpecSelfCallHits() uint64 { return atomic.LoadUint64(&specSelfCallHits) }
-
 // ResetSpecHits 把所有 spec 命中计数清零(测试开始前调,防之前其它测试
 // 残留累积影响断言)。仅测试用。
 func ResetSpecHits() {
@@ -81,8 +61,6 @@ func ResetSpecHits() {
 	atomic.StoreUint64(&specForLoopHits, 0)
 	atomic.StoreUint64(&specTableHits, 0)
 	atomic.StoreUint64(&specCallVoidHits, 0)
-	atomic.StoreUint64(&specTailCallHits, 0)
-	atomic.StoreUint64(&specSelfCallHits, 0)
 }
 
 // incSpecRegKHits 包内 ++(Compile 触发 useSpecRegK 时调)。
@@ -102,9 +80,3 @@ func incSpecTableHits() { atomic.AddUint64(&specTableHits, 1) }
 
 // incSpecCallVoidHits 包内 ++(Compile 触发 PJ5 CALL void 形态 inline 时调)。
 func incSpecCallVoidHits() { atomic.AddUint64(&specCallVoidHits, 1) }
-
-// incSpecTailCallHits 包内 ++(Compile 触发 PJ5 TAILCALL 形态 inline 时调)。
-func incSpecTailCallHits() { atomic.AddUint64(&specTailCallHits, 1) }
-
-// incSpecSelfCallHits 包内 ++(Compile 触发 PJ5 SELF method call inline 时调)。
-func incSpecSelfCallHits() { atomic.AddUint64(&specSelfCallHits, 1) }
