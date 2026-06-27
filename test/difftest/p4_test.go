@@ -578,6 +578,38 @@ local function caller(t) local r = t:m(); return r end
 local s = 0
 for i = 1, 30 do s = s + caller(o) end
 return s`},
+
+	// —— PJ5 SELF 3..5 参形态扩(长度 7/8/9)——
+	{"p4_self_void_m3k", `
+local sum = 0
+local o = { m = function(self, a, b, c) sum = sum + a + b + c end }
+local function caller(t) t:m(1, 2, 3) end
+for i = 1, 30 do caller(o) end
+return sum`},
+	{"p4_self_void_m3r", `
+local sum = 0
+local o = { m = function(self, a, b, c) sum = sum + a + b + c end }
+local function caller(t, x, y, z) t:m(x, y, z) end
+for i = 1, 30 do caller(o, i, i+1, i+2) end
+return sum`},
+	{"p4_self_void_m4r", `
+local sum = 0
+local o = { m = function(self, a, b, c, d) sum = sum + a + b + c + d end }
+local function caller(t, p, q, r, s) t:m(p, q, r, s) end
+for i = 1, 30 do caller(o, i, i+1, i+2, i+3) end
+return sum`},
+	{"p4_self_void_m5r", `
+local sum = 0
+local o = { m = function(self, a, b, c, d, e) sum = sum + a + b + c + d + e end }
+local function caller(t, p, q, r, s, u) t:m(p, q, r, s, u) end
+for i = 1, 30 do caller(o, i, i+1, i+2, i+3, i+4) end
+return sum`},
+	{"p4_self_tail_3k", `
+local o = { m = function(self, a, b, c) return a + b + c end }
+local function caller(t) return t:m(1, 2, 3) end
+local s = 0
+for i = 1, 30 do s = s + caller(o) end
+return s`},
 }
 
 // TestP4_Tiered 三方对拍:oracle / crescent / p4-jit 全 byte-equal。
