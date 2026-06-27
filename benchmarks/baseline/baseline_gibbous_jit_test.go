@@ -374,3 +374,45 @@ return t`
 
 func BenchmarkGibbousJIT_PJ5SelfCall(b *testing.B)      { benchGibbousJITSelfCall(b, true) }
 func BenchmarkGibbousJIT_PJ5SelfCallCresc(b *testing.B) { benchGibbousJITSelfCall(b, false) }
+
+// PJ5 SELF + CALL spec template benchmark(承 §9.10 EmitSelfNodeHit 复用)。
+//
+// `caller(t) { t:m() }` 0 参 void 形态:warmup 让 P1 填 SELF IC[1]=NodeHit +
+// FBSelfMono,然后 force-all 升 caller → analyzeSelfCallSpecForm 命中 → SELF
+// 段走字节级 EmitSelfNodeHit 模板(跳过 host.Self round-trip),CALL 段仍走
+// host.CallBaseline。
+//
+// **vs 非 spec 版**:非 spec 版(benchGibbousJITSelfCall force=true)整段走
+// host.Self + host.CallBaseline;spec 版 SELF 段字节级 inline,省一次 host.Self
+// 跨 Go round-trip。spec=true vs spec=false(纯 crescent)对比可量字节级 SELF
+// 段加速贡献。
+func benchGibbousJITSelfCallSpec(b *testing.B, force bool) {
+	src := `
+local count = 0
+local o = { m = function(self) count = count + 1 end }
+local function caller(t) t:m() end
+for i = 1, 50 do caller(o) end
+return count`
+	prog, err := wangshu.Compile([]byte(src), "bench-jit-self-spec")
+	if err != nil {
+		b.Fatalf("compile: %v", err)
+	}
+	st := wangshu.NewState(wangshu.Options{})
+	// Phase 1:warmup(不 force)让 P1 填 SELF IC[1]=NodeHit + FBSelfMono
+	if _, err := prog.Run(st); err != nil {
+		b.Fatalf("warmup-phase1: %v", err)
+	}
+	st.SetForceAllPromote(force)
+	if _, err := prog.Run(st); err != nil { // force-all 升 caller(spec 命中)
+		b.Fatalf("warmup-phase2: %v", err)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := prog.Run(st); err != nil {
+			b.Fatalf("run: %v", err)
+		}
+	}
+}
+
+func BenchmarkGibbousJIT_PJ5SelfCallSpec(b *testing.B)      { benchGibbousJITSelfCallSpec(b, true) }
+func BenchmarkGibbousJIT_PJ5SelfCallSpecCresc(b *testing.B) { benchGibbousJITSelfCallSpec(b, false) }
