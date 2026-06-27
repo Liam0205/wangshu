@@ -42,6 +42,7 @@
 | #2 | 阈值实测校准 | [01 §5 + 03 §3.5/§3.6](./01-profiling.md) | 阈值常量保留设计建议值,P3 真落地后实测校准 | ✅(占位) | a5ebef1(threshold 占位测试 + 漂移防御断言) |
 | #3 | sync.Pool (C) 双表混合方案 | [01 §6.4](./01-profiling.md) | Proto 旁全局聚合表 + Flush + (C) 模式 considerPromotion | ✅ | 2fc7f5a(AggregateProfile + 4 档单测含多 State race-free 累积) |
 | #4 | megamorphic 主动识别 | [02 §6.2](./02-ic-feedback.md) | ICSlot.Refill 计数 + 阈值翻 FBTableMega | ✅ | d70dfcd(Refill + 阈值 3 + 2 档单测) |
+| #5 | F2-c ReasonSelfCall 占位位拆分(P4 PJ5 SELF inline 真接入前置)| [03 §4.2 visitMethodCallExpr](./03-compilability-analysis.md) | visitMethodCallExpr 不再硬叠 callsUnknownFn,改标 sawSelfCall + ReasonSelfCall 占位位;recheckCompilabilityRuntime 占位位扩到 (ReasonBackendUnsupp \| ReasonSelfCall);std_logger formatReasons F2 多位合并加 selfCall;analyzer_test 加 TestAnalyze_F2c_SelfCall 验占位位置位 + ReasonUnknownCall 不叠加 | ✅ | ee17319(2026-06-28,P4 PJ5 SELF method call inline 真接入前置)|
 
 ---
 

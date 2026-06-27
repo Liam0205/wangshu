@@ -613,19 +613,22 @@ func TestP4_Tiered(t *testing.T) {
 // 每个 goroutine 独立 State + 独立 force-all,跑同一脚本,验证并发升层无数据竞争。
 // `go test -race` 下任一竞争即报告。结果一致性顺带校验。
 func TestP4_ConcurrentForceAll(t *testing.T) {
-	// 选 P4 SupportsAllOpcodes 真接受的形态(算术 + FORLOOP + 表 IC)
+	// 选 P4 SupportsAllOpcodes 真接受的形态(算术 + FORLOOP + 表 IC + SELF inline)
 	src := `
 local function arith(x) return x * 2 + 1 end
 local function loop() local s = 0; for i = 1, 50 do s = s + i end return s end
 local function getter(t) return t[1] end
+local o = { m = function(self, x) return x * 3 end }
+local function self_caller(t, v) return t:m(v) end
 local t = {100, 200}
-local s1, s2, s3 = 0, 0, 0
+local s1, s2, s3, s4 = 0, 0, 0, 0
 for i = 1, 30 do
   s1 = s1 + arith(i)
   s2 = s2 + loop()
   s3 = s3 + getter(t)
+  s4 = s4 + self_caller(o, i)
 end
-return s1, s2, s3`
+return s1, s2, s3, s4`
 	const goroutines = 8
 	prog, err := wangshu.Compile([]byte(src), "p4race")
 	if err != nil {
