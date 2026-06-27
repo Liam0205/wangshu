@@ -2523,9 +2523,11 @@ func analyzeSelfCallSpecForm(proto *bytecode.Proto, feedback *bridge.TypeFeedbac
 	if !ok {
 		return shapeInfo{}, false
 	}
-	// 当前 spec template 仅启用 CALL void(retB=1 setter)+ TAILCALL 三态分支;
-	// getter 1 返(retB=2)留扩(spec 段后 R(retA) 写入语义不同,与 CallBaseline+
-	// DoReturn 已落到位的 R(callA) 协议要重新对齐)。
+	// spec template 启用范围(承 isCallVoid 实际语义 = preludeOp=CALL,涵盖
+	// 多形态):CALL void retB=1 setter / CALL getter retB=2 1 返 / CALL retB=1
+	// + cC=3/4 N>=2 返(local a,b=t:m()类 drop multi-ret)+ TAILCALL 三态分支。
+	// host.CallBaseline 按 callC 把返值落 R(callA..callA+nret-1),host.DoReturn
+	// 按 retA/retB 走主调 RETURN 语义,两层协议解耦,spec 段统一只负责 SELF/args/recv。
 	if !info.isCallVoid && !info.isTailCall {
 		return shapeInfo{}, false
 	}
