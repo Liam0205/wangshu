@@ -490,6 +490,26 @@ local function get(p, q, r, s, t, u) local z = take(p, q, r, s, t, u); return z 
 local total = 0
 for i = 1, 10 do total = total + get(i, i+1, i+2, i+3, i+4, i+5) end
 return total`},
+
+	// —— PJ5 N=3 返值含 1 K/reg 参形态(长度 8,Code[2]=CALL B=2 C=4)——
+	{"p4_call_multiret_n3_upval_1argk", `
+local function take(k) return k, k*2, k*3 end
+local function get() local a, b, c = take(7); return a, b, c end
+local s = 0
+for i = 1, 30 do
+  local a, b, c = get()
+  s = s + a + b + c
+end
+return s`},
+	{"p4_call_multiret_n3_upval_1argreg", `
+local function take(v) return v, v*2, v*3 end
+local function get(v) local a, b, c = take(v); return a, b, c end
+local s = 0
+for i = 1, 30 do
+  local a, b, c = get(i)
+  s = s + a + b + c
+end
+return s`},
 }
 
 // TestP4_Tiered 三方对拍:oracle / crescent / p4-jit 全 byte-equal。

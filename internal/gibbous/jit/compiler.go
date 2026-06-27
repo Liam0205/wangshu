@@ -1720,11 +1720,25 @@ func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
 			}
 		}
 	case 8:
-		// 长度 8 三种子形态(区分键:
-		//   Code[1] 是 CALL → 0 参 N=4 返值 getter(不在本批支持范围,留下一批)
+		// 长度 8 四种子形态(区分键:
+		//   Code[2] 是 CALL → 1 K/reg 参 N=3 返值 getter
 		//   Code[5] 是 CALL → getter 4 参 1 返
 		//   Code[6] 是 CALL → setter 5 参 0 返)
-		if bytecode.Op(proto.Code[5]) == bytecode.CALL {
+		if bytecode.Op(proto.Code[2]) == bytecode.CALL {
+			// 1 K/reg 参 N=3 返值 getter:[0] MOVE/GETUPVAL,[1] (LOADK|MOVE),
+			// [2] CALL B=2 C=4,[3..5] MOVE,[6] RETURN A=callA+3 B=4,[7] 隐式 RETURN B=1
+			if !decodeArgFromOp(proto, 1, op0A+1, &argIsK, &argK, &argReg) {
+				return shapeInfo{}, false
+			}
+			callIdx = 2
+			retIdx = 6
+			argCount = 1
+			// 校验 [7] 隐式 RETURN B=1
+			implRet := proto.Code[7]
+			if bytecode.Op(implRet) != bytecode.RETURN || bytecode.B(implRet) != 1 {
+				return shapeInfo{}, false
+			}
+		} else if bytecode.Op(proto.Code[5]) == bytecode.CALL {
 			// getter 4 参 1 返:[0] MOVE/GETUPVAL,[1..4] (LOADK|MOVE),
 			// [5] CALL B=5 C=2,[6] RETURN A=callA B=2,[7] 隐式 RETURN B=1
 			if !decodeArgFromOp(proto, 1, op0A+1, &argIsK, &argK, &argReg) ||

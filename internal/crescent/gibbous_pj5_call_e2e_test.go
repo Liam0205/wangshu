@@ -762,3 +762,59 @@ return total`
 		t.Errorf("SpecCallVoidHits = 0,PJ5 CALL getter 6 reg 参形态 B6RR1 未真编译")
 	}
 }
+
+// TestPJ5_CallMultiRet_E2E_FormB1KRetN3:1 K 参 N=3 返值形态(长度 8)
+func TestPJ5_CallMultiRet_E2E_FormB1KRetN3(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local function take(k) return k, k*2, k*3 end
+local function get() local a, b, c = take(7); return a, b, c end
+local s = 0
+for i = 1, 30 do
+  local a, b, c = get()
+  s = s + a + b + c
+end
+return s`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// get() × 30 each take(7)→(7,14,21),sum=30*42=1260
+	if got := value.AsNumber(value.Value(rets[0])); got != 1260 {
+		t.Errorf("rets = %v, want 1260 (get()×30 each take(7)→(7,14,21))", got)
+	}
+	if jit.SpecCallVoidHits() == 0 {
+		t.Errorf("SpecCallVoidHits = 0,PJ5 CALL 1 K 参 N=3 返值形态 B1KRetN3 未真编译")
+	}
+}
+
+// TestPJ5_CallMultiRet_E2E_FormB1RRetN3:1 reg 参 N=3 返值形态(长度 8)
+func TestPJ5_CallMultiRet_E2E_FormB1RRetN3(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local function take(v) return v, v*2, v*3 end
+local function get(v) local a, b, c = take(v); return a, b, c end
+local s = 0
+for i = 1, 30 do
+  local a, b, c = get(i)
+  s = s + a + b + c
+end
+return s`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// sum(i+2i+3i) i=1..30 = 6*sum(1..30) = 6*465 = 2790
+	if got := value.AsNumber(value.Value(rets[0])); got != 2790 {
+		t.Errorf("rets = %v, want 2790 (get(i)×30 each take(i)→(i,2i,3i))", got)
+	}
+	if jit.SpecCallVoidHits() == 0 {
+		t.Errorf("SpecCallVoidHits = 0,PJ5 CALL 1 reg 参 N=3 返值形态 B1RRetN3 未真编译")
+	}
+}
