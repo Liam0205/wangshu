@@ -288,6 +288,60 @@ return sum`
 	t.Logf("SpecSelfCallHits=%d", jit.SpecSelfCallHits())
 }
 
+// TestPJ5_SelfCall_E2E_M6R_VoidCall 形态 M6R 6 reg 参 void(长度 10)。
+func TestPJ5_SelfCall_E2E_M6R_VoidCall(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local sum = 0
+local o = { m = function(self, a, b, c, d, e, f) sum = sum + a + b + c + d + e + f end }
+local function caller(t, p, q, r, s, u, v) t:m(p, q, r, s, u, v) end
+for i = 1, 30 do caller(o, i, i+1, i+2, i+3, i+4, i+5) end
+return sum`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// sum = sum_{i=1..30} (i+(i+1)+(i+2)+(i+3)+(i+4)+(i+5))
+	//     = 6*465 + 30*(0+1+2+3+4+5) = 2790 + 450 = 3240
+	if got := value.AsNumber(value.Value(rets[0])); got != 3240 {
+		t.Errorf("rets = %v, want 3240", got)
+	}
+	if jit.SpecSelfCallHits() == 0 {
+		t.Errorf("SpecSelfCallHits = 0,PJ5 SELF inline 6 reg 参形态未真编译")
+	}
+	t.Logf("SpecSelfCallHits=%d", jit.SpecSelfCallHits())
+}
+
+// TestPJ5_SelfCall_E2E_M7R_VoidCall 形态 M7R 7 reg 参 void(长度 11)。
+func TestPJ5_SelfCall_E2E_M7R_VoidCall(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local sum = 0
+local o = { m = function(self, a, b, c, d, e, f, g) sum = sum + a + b + c + d + e + f + g end }
+local function caller(t, p, q, r, s, u, v, w) t:m(p, q, r, s, u, v, w) end
+for i = 1, 30 do caller(o, i, i+1, i+2, i+3, i+4, i+5, i+6) end
+return sum`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// sum = sum_{i=1..30} (i+(i+1)+..+(i+6))
+	//     = 7*465 + 30*(0+1+..+6) = 3255 + 30*21 = 3255 + 630 = 3885
+	if got := value.AsNumber(value.Value(rets[0])); got != 3885 {
+		t.Errorf("rets = %v, want 3885", got)
+	}
+	if jit.SpecSelfCallHits() == 0 {
+		t.Errorf("SpecSelfCallHits = 0,PJ5 SELF inline 7 reg 参形态未真编译")
+	}
+	t.Logf("SpecSelfCallHits=%d", jit.SpecSelfCallHits())
+}
+
 // TestPJ5_SelfCall_E2E_TailCall_3K 形态 TM 3 K 参 TAILCALL(长度 8):
 // `function(t) return t:m(1,2,3) end`。
 func TestPJ5_SelfCall_E2E_TailCall_3K(t *testing.T) {
@@ -310,6 +364,33 @@ return s`
 	}
 	if jit.SpecSelfCallHits() == 0 {
 		t.Errorf("SpecSelfCallHits = 0,PJ5 SELF inline 3 K 参 TAILCALL 形态未真编译")
+	}
+	t.Logf("SpecSelfCallHits=%d", jit.SpecSelfCallHits())
+}
+
+// TestPJ5_SelfCall_E2E_TailCall_5R 形态 SELF + TAILCALL 5 reg 参(长度 9 在 form9
+// 已覆盖,本测验测调用链 byte-equal P1)。
+func TestPJ5_SelfCall_E2E_TailCall_5R(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local o = { m = function(self, a, b, c, d, e) return a + b + c + d + e end }
+local function caller(t, p, q, r, s, u) return t:m(p, q, r, s, u) end
+local total = 0
+for i = 1, 30 do total = total + caller(o, i, i+1, i+2, i+3, i+4) end
+return total`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// total = sum_{i=1..30} (i+(i+1)+(i+2)+(i+3)+(i+4)) = 5*465 + 30*10 = 2325 + 300 = 2625
+	if got := value.AsNumber(value.Value(rets[0])); got != 2625 {
+		t.Errorf("rets = %v, want 2625", got)
+	}
+	if jit.SpecSelfCallHits() == 0 {
+		t.Errorf("SpecSelfCallHits = 0,PJ5 SELF inline 5 reg 参 TAILCALL 形态未真编译")
 	}
 	t.Logf("SpecSelfCallHits=%d", jit.SpecSelfCallHits())
 }

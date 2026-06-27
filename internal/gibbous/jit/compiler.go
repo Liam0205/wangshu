@@ -2329,7 +2329,7 @@ func analyzeTailCallForm(proto *bytecode.Proto) (shapeInfo, bool) {
 // 失败任一条件返 (shapeInfo{}, false)— 走原 analyzeShape 主分流。
 func analyzeSelfCallForm(proto *bytecode.Proto) (shapeInfo, bool) {
 	codeLen := len(proto.Code)
-	if codeLen < 4 || codeLen > 9 {
+	if codeLen < 4 || codeLen > 11 {
 		return shapeInfo{}, false
 	}
 	op0 := bytecode.Op(proto.Code[0])
@@ -2373,8 +2373,158 @@ func analyzeSelfCallForm(proto *bytecode.Proto) (shapeInfo, bool) {
 		return analyzeSelfCallForm8(proto, callA, selfRK, op0, op0B)
 	case 9:
 		return analyzeSelfCallForm9(proto, callA, selfRK, op0, op0B)
+	case 10:
+		return analyzeSelfCallFormN(proto, callA, selfRK, op0, op0B, 6)
+	case 11:
+		return analyzeSelfCallFormN(proto, callA, selfRK, op0, op0B, 7)
 	}
 	return shapeInfo{}, false
+}
+
+// analyzeSelfCallFormN 处理长度 (4 + N args) 形态:CALL void N 参 / TAILCALL (N-1) 参。
+// callOpIdx = 2 + N(CALL 在 N 条 LOADK/MOVE 之后)。
+//
+// 长度 10:N=6,CALL void 6 参 / TAILCALL 5 参(共已在 form9 处理 5 参 TAILCALL,本 form 仅做 CALL void 6 参 / TAILCALL 5 参 共存识别)
+// 长度 11:N=7,CALL void 7 参 / TAILCALL 6 参
+//
+// 简化策略:本函数只识别 CALL void N 参 + TAILCALL (N-1) 参 两类。
+func analyzeSelfCallFormN(proto *bytecode.Proto, callA uint8, selfRK uint16,
+	op0 bytecode.OpCode, op0B int, nArgs int) (shapeInfo, bool) {
+	// CALL void N 参:[2..1+N] LOADK/MOVE,[2+N] CALL B=N+2 C=1,[3+N] RETURN B=1
+	callOpIdx := 2 + nArgs
+	if bytecode.Op(proto.Code[callOpIdx]) == bytecode.CALL {
+		argsIsK := make([]bool, nArgs)
+		argsK := make([]uint64, nArgs)
+		argsReg := make([]uint8, nArgs)
+		for i := 0; i < nArgs; i++ {
+			if !decodeArgFromOp(proto, 2+i, int(callA)+2+i, &argsIsK[i], &argsK[i], &argsReg[i]) {
+				return shapeInfo{}, false
+			}
+		}
+		cA := bytecode.A(proto.Code[callOpIdx])
+		cB := bytecode.B(proto.Code[callOpIdx])
+		cC := bytecode.C(proto.Code[callOpIdx])
+		if cA != int(callA) || cB != nArgs+2 || cC != 1 {
+			return shapeInfo{}, false
+		}
+		if bytecode.Op(proto.Code[callOpIdx+1]) != bytecode.RETURN ||
+			bytecode.B(proto.Code[callOpIdx+1]) != 1 {
+			return shapeInfo{}, false
+		}
+		info := shapeInfo{
+			ok:              true,
+			retA:            0,
+			retB:            1,
+			retPC:           uint8(callOpIdx + 1),
+			preludeOp:       uint8(bytecode.CALL),
+			preludeArg:      uint32(op0B),
+			isCallVoid:      true,
+			isCallUpval:     op0 == bytecode.GETUPVAL,
+			callA:           callA,
+			callB:           uint8(cB),
+			callC:           uint8(cC),
+			callArgCount:    uint8(nArgs),
+			isSelfCall:      true,
+			selfCallA:       callA,
+			selfMethodRK:    selfRK,
+			selfRecvSrcReg:  uint8(op0B),
+			selfRecvIsUpval: op0 == bytecode.GETUPVAL,
+		}
+		assignArgsToShape(&info, argsIsK, argsK, argsReg)
+		return info, true
+	}
+	// TAILCALL (N-1) 参:实际 [callOpIdx-1] TAILCALL,[callOpIdx] RETURN A=callA B=0,
+	// [callOpIdx+1] RETURN B=1。即长度 10 N=6 实际 TAILCALL 5 参(callOpIdx-1 = 7)。
+	// 简化:外层 codeLen 推 nArgs (= codeLen - 4)只识别 N 参 CALL 形态;
+	// 多余 TAILCALL 形态留 form7/8/9 处理(它们已支持长度 7/8/9 = 2/3/4 参 TAILCALL)。
+	// 长度 10:TAILCALL 5 参 — 走 form10 的 callOpIdx-1 探测:
+	tailOpIdx := callOpIdx - 1 // 6 args - 1 = 5 args TAILCALL,callOpIdx-1 处
+	if bytecode.Op(proto.Code[tailOpIdx]) == bytecode.TAILCALL {
+		nTailArgs := nArgs - 1
+		argsIsK := make([]bool, nTailArgs)
+		argsK := make([]uint64, nTailArgs)
+		argsReg := make([]uint8, nTailArgs)
+		for i := 0; i < nTailArgs; i++ {
+			if !decodeArgFromOp(proto, 2+i, int(callA)+2+i, &argsIsK[i], &argsK[i], &argsReg[i]) {
+				return shapeInfo{}, false
+			}
+		}
+		cA := bytecode.A(proto.Code[tailOpIdx])
+		cB := bytecode.B(proto.Code[tailOpIdx])
+		cC := bytecode.C(proto.Code[tailOpIdx])
+		if cA != int(callA) || cB != nTailArgs+2 || cC != 0 {
+			return shapeInfo{}, false
+		}
+		if bytecode.Op(proto.Code[tailOpIdx+1]) != bytecode.RETURN ||
+			bytecode.A(proto.Code[tailOpIdx+1]) != int(callA) ||
+			bytecode.B(proto.Code[tailOpIdx+1]) != 0 ||
+			bytecode.Op(proto.Code[tailOpIdx+2]) != bytecode.RETURN ||
+			bytecode.B(proto.Code[tailOpIdx+2]) != 1 {
+			return shapeInfo{}, false
+		}
+		info := shapeInfo{
+			ok:              true,
+			retA:            uint8(bytecode.A(proto.Code[tailOpIdx+1])),
+			retB:            0,
+			retPC:           uint8(tailOpIdx + 1),
+			preludeOp:       uint8(bytecode.TAILCALL),
+			preludeArg:      uint32(op0B),
+			isTailCall:      true,
+			isCallUpval:     op0 == bytecode.GETUPVAL,
+			callA:           callA,
+			callB:           uint8(cB),
+			callC:           uint8(cC),
+			callArgCount:    uint8(nTailArgs),
+			isSelfCall:      true,
+			selfCallA:       callA,
+			selfMethodRK:    selfRK,
+			selfRecvSrcReg:  uint8(op0B),
+			selfRecvIsUpval: op0 == bytecode.GETUPVAL,
+		}
+		assignArgsToShape(&info, argsIsK, argsK, argsReg)
+		return info, true
+	}
+	return shapeInfo{}, false
+}
+
+// assignArgsToShape 把 args 数组(N=2..7)对应字段填到 shapeInfo。
+func assignArgsToShape(info *shapeInfo, argsIsK []bool, argsK []uint64, argsReg []uint8) {
+	n := len(argsIsK)
+	if n >= 1 {
+		info.callArg1IsK = argsIsK[0]
+		info.callArg1K = argsK[0]
+		info.callArg1RegSrc = argsReg[0]
+	}
+	if n >= 2 {
+		info.callArg2IsK = argsIsK[1]
+		info.callArg2K = argsK[1]
+		info.callArg2RegSrc = argsReg[1]
+	}
+	if n >= 3 {
+		info.callArg3IsK = argsIsK[2]
+		info.callArg3K = argsK[2]
+		info.callArg3RegSrc = argsReg[2]
+	}
+	if n >= 4 {
+		info.callArg4IsK = argsIsK[3]
+		info.callArg4K = argsK[3]
+		info.callArg4RegSrc = argsReg[3]
+	}
+	if n >= 5 {
+		info.callArg5IsK = argsIsK[4]
+		info.callArg5K = argsK[4]
+		info.callArg5RegSrc = argsReg[4]
+	}
+	if n >= 6 {
+		info.callArg6IsK = argsIsK[5]
+		info.callArg6K = argsK[5]
+		info.callArg6RegSrc = argsReg[5]
+	}
+	if n >= 7 {
+		info.callArg7IsK = argsIsK[6]
+		info.callArg7K = argsK[6]
+		info.callArg7RegSrc = argsReg[6]
+	}
 }
 
 // analyzeSelfCallForm4 处理长度 4 形态:0 参 0 返 CALL void / 0 参 TAILCALL。
