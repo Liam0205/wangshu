@@ -251,3 +251,66 @@ func (c *countingP3) Compile(p *bytecode.Proto, _ *TypeFeedback) (GibbousCode, e
 	c.compileCalls++
 	return dummyCode{proto: p}, nil
 }
+
+// TestStateMachine_Coroutine_NoPromote (V11 协程不升层):承
+// bridge.go::considerPromotion line 263-265 onMain=false 守门 + [07 §2.4]
+// 协程内即便热度越阈值也不升层(原样继承 P3 规则)。
+//
+// **场景**:协程线程上 OnEnter(p, false=onMain) 反复触发达 HotEntryThreshold,
+// 但因 onMain=false,considerPromotion 直接 return,Proto 永远 TierInterp。
+//
+// **prove-the-path**:HotEntryThreshold 次 OnEnter(p, false) 后,
+// pd.TierState 仍 TierInterp(主线程下早就 TierGibbous 或 TierStuck)。
+func TestStateMachine_Coroutine_NoPromote(t *testing.T) {
+	b := NewBridge()
+	b.SetP3Compiler(dummyCompileP3{})
+	p := makeProtoWithCode(bytecode.ADD)
+	pd := b.ProfileOf(p)
+	pd.Compilable = CompCompilable // 主线程下应升 TierGibbous
+
+	// 协程触发(onMain=false):承 V11 不升层
+	for i := uint32(0); i < HotEntryThreshold*2; i++ {
+		b.OnEnter(p, false) // 协程线程
+	}
+
+	if pd.TierState != TierInterp {
+		t.Errorf("协程内 TierState = %v, want TierInterp(V11 协程不升层)", pd.TierState)
+	}
+	if _, ok := b.gibbousCodes[p]; ok {
+		t.Errorf("gibbousCodes 不应有 entry(协程不触发 Compile)")
+	}
+}
+
+// TestStateMachine_Coroutine_NoPromote_AfterMainPromote 主线程先升后协程
+// 反复调用:主线程升 TierGibbous 后,协程内 OnEnter(p, false) 应 no-op
+// (P1 已吸收态守门,与 onMain 无关)。验 V11 + 主线程升层不互扰。
+func TestStateMachine_Coroutine_NoPromote_AfterMainPromote(t *testing.T) {
+	b := NewBridge()
+	b.SetP3Compiler(&countingP3{})
+	p := makeProtoWithCode(bytecode.ADD)
+	pd := b.ProfileOf(p)
+	pd.Compilable = CompCompilable
+
+	// 主线程升层
+	for i := uint32(0); i < HotEntryThreshold; i++ {
+		b.OnEnter(p, true)
+	}
+	if pd.TierState != TierGibbous {
+		t.Fatalf("主线程升层前提失败:TierState = %v, want TierGibbous", pd.TierState)
+	}
+
+	// 协程反复调用:不应触发 Compile 二次(P1 守门 + onMain=false 双重保险)
+	compileCallsBefore := b.p3.(*countingP3).compileCalls
+	for i := uint32(0); i < HotEntryThreshold*2; i++ {
+		b.OnEnter(p, false)
+	}
+	compileCallsAfter := b.p3.(*countingP3).compileCalls
+
+	if compileCallsAfter != compileCallsBefore {
+		t.Errorf("协程内 Compile 调用次数 %d → %d(应不变,V11 + P1 守门)",
+			compileCallsBefore, compileCallsAfter)
+	}
+	if pd.TierState != TierGibbous {
+		t.Errorf("协程后 TierState = %v, want TierGibbous(不动)", pd.TierState)
+	}
+}

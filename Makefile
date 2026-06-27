@@ -61,7 +61,7 @@ test-p1: build-p1                                   ## 只跑 P1 variant 的单�
 test-p3: build-p3                                   ## 只跑 P3 variant 的单测
 	./scripts/run-test-bins.sh test p3
 
-test-p4: build-p4                                   ## 只跑 P4 variant 的单测(PJ0 阶段:验证 P4 build 行为与 P1-only 等价)
+test-p4: build-p4                                   ## 只跑 P4 variant 的单测(PJ0-PJ4 + PJ7 + PJ10 已落地:LOADK/MOVE/算术/比较/UNM/LEN/NOT/NEWTABLE/GETTABLE/SETTABLE/SELF/FORLOOP 真接入 + IC 六路径字节级 inline;test/difftest/p4_test.go 强制 force-all + 重复调用 + PromotionCount>0 守卫)
 	./scripts/run-test-bins.sh test p4
 
 test-trace:                                         ## 主模块单测(wangshu_trace build:verifyCISeg 等 trace-gated 安全网激活)走原生 go test 路径
@@ -99,7 +99,7 @@ conformance-p1:                                     ## P1 build conformance(默�
 conformance-p3:                                     ## P3 build conformance(wangshu_p3+wangshu_profile,harness 显式 SetForceAllPromote(true) → 真走凸月 wasm 执行路径)
 	go test -tags "wangshu_p3 wangshu_profile" ./test/conformance/...
 
-conformance-p4:                                     ## P4 build conformance(wangshu_p4,PJ0 阶段:SupportsAllOpcodes 全 false ⇒ 行为等价于 P1)
+conformance-p4:                                     ## P4 build conformance(wangshu_p4;SupportsAllOpcodes 白名单已扩 ~25 类形态 + IC 六路径,但 conformance 用例多为单次小脚本,~91% 不达 P4 升层闸门——force-all 形式上启用但实际 P4 路径覆盖受限,真 P4 路径验收以 difftest-p4 为准)
 	go test -tags "wangshu_p4 wangshu_profile" ./test/conformance/...
 
 # ─── difftest(走 go test 原生路径——依赖外部 lua5.1 oracle)─────────────────
@@ -115,7 +115,7 @@ difftest-p3:                                        ## P3 build 差分 fuzz(forc
 	./scripts/check-oracle.sh
 	go test -tags "wangshu_p3 wangshu_profile" ./test/difftest/... -count=1
 
-difftest-p4:                                        ## P4 build 差分 fuzz(wangshu_p4,PJ0 阶段:行为等价 P1,差分仍 byte-equal)
+difftest-p4:                                        ## P4 build 差分 fuzz(wangshu_p4;test/difftest/p4_test.go P4 专属 harness:force-all + p4Corpus 17 用例每核重复调用 + PromotionCount>0 兜底,确保 P4 native 路径在 difftest 整套层面真触达;crescent / p4-jit 三方对拍 byte-equal)
 	./scripts/check-oracle.sh
 	go test -tags "wangshu_p4 wangshu_profile" ./test/difftest/... -count=1
 
