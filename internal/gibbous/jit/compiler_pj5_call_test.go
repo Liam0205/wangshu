@@ -404,3 +404,75 @@ func TestPJ5_RunCallVoid1ArgKPath(t *testing.T) {
 		t.Errorf("CallBaseline pc = %d, want 2 (CALL pc=2 in length-4 form)", host.lastCallPC)
 	}
 }
+
+// TestPJ5_AnalyzeCallVoidForm_Recognize1ArgReg 验形态 A1R(1 reg 参)识别:
+// MOVE + MOVE + CALL B=2 C=1 + RETURN void。
+func TestPJ5_AnalyzeCallVoidForm_Recognize1ArgReg(t *testing.T) {
+	// 形态 A1R:MOVE 2 0; MOVE 3 1; CALL 2 2 1; RETURN 0 1
+	//   - MOVE.A=2 (被调位) MOVE.B=0 (参数源,即函数参数 g 槽)
+	//   - 第二条 MOVE.A=3 (被调位+1) MOVE.B=1 (参数源,即函数参数 x 槽)
+	//   - CALL.A=2 CALL.B=2 (1 参) CALL.C=1
+	//   - RETURN.B=1 (0 返值)
+	proto := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABC(bytecode.MOVE, 2, 0, 0),
+			bytecode.EncodeABC(bytecode.MOVE, 3, 1, 0),
+			bytecode.EncodeABC(bytecode.CALL, 2, 2, 1),
+			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
+		},
+	}
+	info, ok := analyzeCallVoidForm(proto)
+	if !ok {
+		t.Fatal("analyzeCallVoidForm should accept MOVE+MOVE+CALL+RETURN void form A1R")
+	}
+	if !info.isCallVoid {
+		t.Error("info.isCallVoid should be true")
+	}
+	if info.callArgCount != 1 {
+		t.Errorf("callArgCount = %d, want 1", info.callArgCount)
+	}
+	if info.callArg1IsK {
+		t.Error("callArg1IsK should be false for reg arg form A1R")
+	}
+	if info.callArg1RegSrc != 1 {
+		t.Errorf("callArg1RegSrc = %d, want 1 (MOVE.B)", info.callArg1RegSrc)
+	}
+	if info.retPC != 3 {
+		t.Errorf("retPC = %d, want 3", info.retPC)
+	}
+}
+
+// TestPJ5_RunCallVoid1ArgRegPath 验形态 A1R 端到端:Run 经
+// host.GetReg(callArg1RegSrc) + SetReg(callA+1) 装到参数槽。
+func TestPJ5_RunCallVoid1ArgRegPath(t *testing.T) {
+	proto := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABC(bytecode.MOVE, 2, 0, 0),
+			bytecode.EncodeABC(bytecode.MOVE, 3, 1, 0),
+			bytecode.EncodeABC(bytecode.CALL, 2, 2, 1),
+			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
+		},
+	}
+	gc, host := compileWithHost(t, proto)
+	defer tryDispose(t, gc)
+
+	const fakeFuncVal uint64 = 0xFFF9_BEEF_0000_0000
+	const fakeArgVal uint64 = 0x4034000000000000 // NumberValue(20.0)
+	host.regs[0] = fakeFuncVal
+	host.regs[1] = fakeArgVal
+
+	stack := make([]uint64, 4)
+	status := gc.Run(stack, 0)
+	if status != 0 {
+		t.Errorf("Run status = %d, want 0", status)
+	}
+	if host.regs[2] != fakeFuncVal {
+		t.Errorf("R(2) = 0x%016x, want 0x%016x (fakeFunc)", host.regs[2], fakeFuncVal)
+	}
+	if host.regs[3] != fakeArgVal {
+		t.Errorf("R(3) = 0x%016x, want 0x%016x (fakeArg from R(1))", host.regs[3], fakeArgVal)
+	}
+	if host.callCalls != 1 {
+		t.Errorf("CallBaseline called %d times, want 1", host.callCalls)
+	}
+}

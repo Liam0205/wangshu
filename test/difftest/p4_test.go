@@ -201,6 +201,15 @@ local function take(x) sum = sum + x end
 local function tick() take(42) end
 for i = 1, 30 do tick() end
 return sum`},
+
+	// —— PJ5 CALL void 形态 B1R:GETUPVAL+MOVE+CALL+RETURN void(1 reg 参)
+	// (`local function take(x)...end; local function tick(v) take(v) end` 闭包调外层 + 1 reg 参)——
+	{"p4_call_void_upval_1argreg", `
+local sum = 0
+local function take(x) sum = sum + x end
+local function tick(v) take(v) end
+for i = 1, 30 do tick(i) end
+return sum`},
 }
 
 // TestP4_Tiered 三方对拍:oracle / crescent / p4-jit 全 byte-equal。

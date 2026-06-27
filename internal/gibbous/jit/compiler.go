@@ -180,17 +180,21 @@ type shapeInfo struct {
 	// (upvalue 索引)
 	//
 	// 形态识别在 analyzeCallVoidForm,典型 luac 编译形态(长度 3 或 4):
-	//   形态 A0: MOVE A B + CALL A 1 1 + RETURN 0 1
-	//   形态 B0: GETUPVAL A B + CALL A 1 1 + RETURN 0 1
+	//   形态 A0:  MOVE A B + CALL A 1 1 + RETURN 0 1
+	//   形态 B0:  GETUPVAL A B + CALL A 1 1 + RETURN 0 1
 	//   形态 A1K: MOVE A B + LOADK A+1 Bx + CALL A 2 1 + RETURN 0 1
 	//   形态 B1K: GETUPVAL A B + LOADK A+1 Bx + CALL A 2 1 + RETURN 0 1
-	isCallVoid   bool
-	isCallUpval  bool
-	callA        uint8
-	callB        uint8
-	callC        uint8
-	callArgCount uint8  // 0=0 参形态 / 1=1 参 K 形态
-	callArg1K    uint64 // 1 参形态时 LOADK 烧入的 K 常量 raw NaN-box
+	//   形态 A1R: MOVE A B + MOVE A+1 B' + CALL A 2 1 + RETURN 0 1
+	//   形态 B1R: GETUPVAL A B + MOVE A+1 B' + CALL A 2 1 + RETURN 0 1
+	isCallVoid     bool
+	isCallUpval    bool
+	callA          uint8
+	callB          uint8
+	callC          uint8
+	callArgCount   uint8  // 0=0 参 / 1=1 参(K 常量或 reg)
+	callArg1IsK    bool   // 1 参形态时 true=LOADK / false=MOVE reg
+	callArg1K      uint64 // 1 K 参形态时编译期烧入的 NaN-box raw
+	callArg1RegSrc uint8  // 1 reg 参形态时 MOVE.B 源 reg 号
 }
 
 // analyzeGetTableArrayHit 识别 PJ4 IC ArrayHit 形态:
@@ -1376,27 +1380,47 @@ func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
 	}
 
 	// 长度 3:0 参形态(MOVE/GETUPVAL + CALL B=1 + RETURN B=1)
-	// 长度 4:1 参 K 形态(MOVE/GETUPVAL + LOADK + CALL B=2 + RETURN B=1)
+	// 长度 4:1 参形态——第二条可以是:
+	//   - LOADK A+1 Bx:K 常量参(callArg1IsK=true,argK 装编译期烧入)
+	//   - MOVE A+1 B:reg 参(callArg1IsK=false,argReg=MOVE.B,Run 端
+	//     host.GetReg(argReg) 装到 R(callA+1))
 	var callIdx, retIdx int
 	var argK uint64
+	var argReg uint8
 	var argCount uint8
+	var argIsK bool
 	if codeLen == 3 {
 		callIdx = 1
 		retIdx = 2
 		argCount = 0
 	} else { // codeLen == 4
-		if bytecode.Op(proto.Code[1]) != bytecode.LOADK {
+		secondOp := bytecode.Op(proto.Code[1])
+		switch secondOp {
+		case bytecode.LOADK:
+			lkA := bytecode.A(proto.Code[1])
+			lkBx := bytecode.Bx(proto.Code[1])
+			if lkA != op0A+1 {
+				return shapeInfo{}, false
+			}
+			if lkBx < 0 || lkBx >= len(proto.Consts) {
+				return shapeInfo{}, false
+			}
+			argK = uint64(proto.Consts[lkBx])
+			argIsK = true
+		case bytecode.MOVE:
+			mvA := bytecode.A(proto.Code[1])
+			mvB := bytecode.B(proto.Code[1])
+			if mvA != op0A+1 {
+				return shapeInfo{}, false
+			}
+			if mvB > 254 {
+				return shapeInfo{}, false
+			}
+			argReg = uint8(mvB)
+			argIsK = false
+		default:
 			return shapeInfo{}, false
 		}
-		lkA := bytecode.A(proto.Code[1])
-		lkBx := bytecode.Bx(proto.Code[1])
-		if lkA != op0A+1 {
-			return shapeInfo{}, false
-		}
-		if lkBx < 0 || lkBx >= len(proto.Consts) {
-			return shapeInfo{}, false
-		}
-		argK = uint64(proto.Consts[lkBx])
 		callIdx = 2
 		retIdx = 3
 		argCount = 1
@@ -1425,19 +1449,21 @@ func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
 		return shapeInfo{}, false
 	}
 	return shapeInfo{
-		ok:           true,
-		retA:         0,
-		retB:         1,
-		retPC:        uint8(retIdx),
-		preludeOp:    uint8(bytecode.CALL),
-		preludeArg:   uint32(op0B),
-		isCallVoid:   true,
-		isCallUpval:  op0 == bytecode.GETUPVAL,
-		callA:        uint8(clA),
-		callB:        uint8(clB),
-		callC:        uint8(clC),
-		callArgCount: argCount,
-		callArg1K:    argK,
+		ok:             true,
+		retA:           0,
+		retB:           1,
+		retPC:          uint8(retIdx),
+		preludeOp:      uint8(bytecode.CALL),
+		preludeArg:     uint32(op0B),
+		isCallVoid:     true,
+		isCallUpval:    op0 == bytecode.GETUPVAL,
+		callA:          uint8(clA),
+		callB:          uint8(clB),
+		callC:          uint8(clC),
+		callArgCount:   argCount,
+		callArg1IsK:    argIsK,
+		callArg1K:      argK,
+		callArg1RegSrc: argReg,
 	}, true
 }
 
@@ -2384,28 +2410,30 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 	}
 
 	return &p4Code{
-		proto:        proto,
-		codePage:     page,
-		jitCtx:       NewJITContext(),
-		retA:         info.retA,
-		retB:         info.retB,
-		retPC:        info.retPC,
-		writeRetA:    info.writeRetA,
-		preludeOp:    info.preludeOp,
-		preludeArg:   info.preludeArg,
-		preludeC:     info.preludeC,
-		cmpA:         info.cmpA,
-		chainOp:      info.chainOp,
-		chainB:       info.chainB,
-		chainC:       info.chainC,
-		host:         c.hostState,
-		isCallVoid:   info.isCallVoid,
-		isCallUpval:  info.isCallUpval,
-		callA:        info.callA,
-		callB:        info.callB,
-		callC:        info.callC,
-		callArgCount: info.callArgCount,
-		callArg1K:    info.callArg1K,
+		proto:          proto,
+		codePage:       page,
+		jitCtx:         NewJITContext(),
+		retA:           info.retA,
+		retB:           info.retB,
+		retPC:          info.retPC,
+		writeRetA:      info.writeRetA,
+		preludeOp:      info.preludeOp,
+		preludeArg:     info.preludeArg,
+		preludeC:       info.preludeC,
+		cmpA:           info.cmpA,
+		chainOp:        info.chainOp,
+		chainB:         info.chainB,
+		chainC:         info.chainC,
+		host:           c.hostState,
+		isCallVoid:     info.isCallVoid,
+		isCallUpval:    info.isCallUpval,
+		callA:          info.callA,
+		callB:          info.callB,
+		callC:          info.callC,
+		callArgCount:   info.callArgCount,
+		callArg1IsK:    info.callArg1IsK,
+		callArg1K:      info.callArg1K,
+		callArg1RegSrc: info.callArg1RegSrc,
 	}, nil
 }
 

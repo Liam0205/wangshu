@@ -132,19 +132,24 @@ type p4Code struct {
 	//     prelude 调 host.GetUpval 拿被调函数;false 即形态 A(MOVE+CALL+
 	//     RETURN void),Run 端调 host.GetReg 拿被调函数
 	//   - callA / callB / callC:CALL A B C 三字段(传给 host.CallBaseline)
-	//   - callArgCount:0=0 参形态 / 1=1 参 K 形态
-	//   - callArg1K:1 参形态时 LOADK 烧入的 K 常量(NaN-box raw,Run 端经
-	//     host.SetReg(callA+1, callArg1K) 装到参数槽)
+	//   - callArgCount:0=0 参形态 / 1=1 参形态(K 常量或 reg)
+	//   - callArg1IsK:1 参形态时 true=LOADK 形态(callArg1K 烧入)/
+	//     false=MOVE reg 形态(callArg1RegSrc 是源 reg 号,Run 端
+	//     host.GetReg(callArg1RegSrc) 装到 R(callA+1))
+	//   - callArg1K:1 K 参形态时 LOADK 烧入的 K 常量(NaN-box raw)
+	//   - callArg1RegSrc:1 reg 参形态时 MOVE.B 源 reg 号
 	//
 	// 复用 preludeArg 字段:形态 A 时 = MOVE.B(源 reg);形态 B 时 =
 	// GETUPVAL.B(upvalue 索引)
-	isCallVoid   bool
-	isCallUpval  bool
-	callA        uint8
-	callB        uint8
-	callC        uint8
-	callArgCount uint8
-	callArg1K    uint64
+	isCallVoid     bool
+	isCallUpval    bool
+	callA          uint8
+	callB          uint8
+	callC          uint8
+	callArgCount   uint8
+	callArg1IsK    bool
+	callArg1K      uint64
+	callArg1RegSrc uint8
 }
 
 // Proto 反向指针(trampoline 校验)。
@@ -477,7 +482,13 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 			}
 			c.host.SetReg(int32(c.callA), srcVal)
 			if c.callArgCount >= 1 {
-				c.host.SetReg(int32(c.callA)+1, c.callArg1K)
+				var argVal uint64
+				if c.callArg1IsK {
+					argVal = c.callArg1K
+				} else {
+					argVal = c.host.GetReg(int32(c.callArg1RegSrc))
+				}
+				c.host.SetReg(int32(c.callA)+1, argVal)
 			}
 			// baseline doCall:绕过 R3 indirect 哨兵(本简化形态不支持段内
 			// call_indirect),host/crescent/__call/gibbous 全形态同步跑完。
