@@ -994,3 +994,39 @@ func TestPJ8_EmitSpecArgLoadRegArm64_Length(t *testing.T) {
 		t.Errorf("EmitSpecArgLoadRegArm64 长度 = %d, want 8", len(buf))
 	}
 }
+
+// TestPJ8_EmitFrameInlineCIDepthIncArm64_Length 验 arm64 ciDepth++ 字节级
+// inline 模板长度(LDR×2 + ADD + STR = 16 字节,对位 amd64 = 10)。
+// 承 §9.20 Option B Spike 1。
+func TestPJ8_EmitFrameInlineCIDepthIncArm64_Length(t *testing.T) {
+	var buf []byte
+	buf = EmitFrameInlineCIDepthIncArm64(buf, 56)
+	if len(buf) != EncodedFrameInlineCIDepthIncDecArm64Len {
+		t.Errorf("EmitFrameInlineCIDepthIncArm64 长度 = %d, want %d",
+			len(buf), EncodedFrameInlineCIDepthIncDecArm64Len)
+	}
+}
+
+// TestPJ8_EmitFrameInlineCIDepthDecArm64_Length 验 arm64 ciDepth-- 字节级
+// inline 模板长度(LDR×2 + SUB + STR = 16 字节)。
+func TestPJ8_EmitFrameInlineCIDepthDecArm64_Length(t *testing.T) {
+	var buf []byte
+	buf = EmitFrameInlineCIDepthDecArm64(buf, 56)
+	if len(buf) != EncodedFrameInlineCIDepthIncDecArm64Len {
+		t.Errorf("EmitFrameInlineCIDepthDecArm64 长度 = %d, want %d",
+			len(buf), EncodedFrameInlineCIDepthIncDecArm64Len)
+	}
+}
+
+// TestPJ8_EmitFrameInlineCIDepthDecArm64_Encoding 验 arm64 SUB Xd Xn imm12 字节级
+// 编码(little-endian arm64 指令)— SUB x17, x17, #1 = 0xD1000631。
+func TestPJ8_EmitFrameInlineCIDepthDecArm64_Encoding(t *testing.T) {
+	var buf []byte
+	buf = EmitFrameInlineCIDepthDecArm64(buf, 56)
+	// SUB 指令在 offset 8(LDR×2 各 4 字节)
+	subInsn := binary.LittleEndian.Uint32(buf[8:12])
+	const wantSub = uint32(0xD1000631) // SUB x17, x17, #1
+	if subInsn != wantSub {
+		t.Errorf("SUB x17, x17, #1 = 0x%08X, want 0x%08X", subInsn, wantSub)
+	}
+}

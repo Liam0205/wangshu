@@ -754,3 +754,56 @@ func EmitSpecArgLoadRegArm64(buf []byte, dstReg uint8, srcReg uint8) []byte {
 	buf = EmitStrXtToXnDisp(buf, 0, 26, uint16(dstReg)*8)
 	return buf
 }
+
+// EmitFrameInlineCIDepthIncArm64 发射 arm64 ciDepth++ 字节级 inline 模板
+// (承 §9.20 Option B Spike 1 amd64 对位)。
+//
+// arm64 不像 amd64 有 `inc [mem]` 单指令,需 LDR + ADD + STR 三步。
+//
+// 字节序列(4 条 = 16 字节):
+//
+//	ldr  x16, [x27 + ciDepthAddrOffset]  ; x16 = ciDepthAddr(host 字节地址)
+//	ldr  x17, [x16]                       ; x17 = *ciDepthAddr(当前 ciDepth)
+//	add  x17, x17, #1                     ; x17++
+//	str  x17, [x16]                       ; *ciDepthAddr = x17
+//
+// x16/x17 是 ARMv8 IP0/IP1 scratch 寄存器(intra-procedure-call scratch,
+// callee 可任意改写),caller 不需保存。x27 = jitContext(承 06 §4.2)。
+//
+// 比 amd64 (10 字节)多 6 字节:RISC fixed-length 必须 3 条独立指令 +
+// LDR pimm12 vs amd64 `inc [rax]` 复合寻址。
+func EmitFrameInlineCIDepthIncArm64(buf []byte, ciDepthAddrOffset uint16) []byte {
+	// LDR x16, [x27 + ciDepthAddrOffset]
+	buf = EmitLdrXtFromXnDisp(buf, 16, 27, ciDepthAddrOffset)
+	// LDR x17, [x16]
+	buf = EmitLdrXtFromXnDisp(buf, 17, 16, 0)
+	// ADD x17, x17, #1
+	buf = EmitAddXdImm12(buf, 17, 17, 1)
+	// STR x17, [x16]
+	buf = EmitStrXtToXnDisp(buf, 17, 16, 0)
+	return buf
+}
+
+// EmitFrameInlineCIDepthDecArm64 发射 arm64 ciDepth-- 字节级 inline 模板
+// (承 §9.20 popCallInfo 反向,amd64 对位)。
+//
+// arm64 没有 SUB Xd, Xn, #imm12 的 byte-equal 简形态——用 EmitSubXdImm12
+// 通用宏。同 Inc 4 条指令 16 字节(LDR + LDR + SUB + STR)。
+func EmitFrameInlineCIDepthDecArm64(buf []byte, ciDepthAddrOffset uint16) []byte {
+	buf = EmitLdrXtFromXnDisp(buf, 16, 27, ciDepthAddrOffset)
+	buf = EmitLdrXtFromXnDisp(buf, 17, 16, 0)
+	// SUB x17, x17, #1 — 复用 ADD 编码(SUB = 1010001 vs ADD = 1001000),
+	// 但 ADD imm12 已封装,用 ADD +(-1)语义不可直接;实际 SUB imm12 编码
+	// 略不同(opcode bit 30)。下方直接拼字节。
+	// SUB Xd, Xn, #imm12,shift=0:0xD1000000 + (imm12<<10) + (Rn<<5) + Rd
+	// = 0xD1000000 + (1<<10) + (17<<5) + 17 = 0xD1000631
+	buf = append(buf,
+		0x31, 0x06, 0x00, 0xD1) // SUB x17, x17, #1(little-endian arm64 encoding)
+	buf = EmitStrXtToXnDisp(buf, 17, 16, 0)
+	return buf
+}
+
+// EncodedFrameInlineCIDepthIncDecArm64Len 是 arm64 ciDepth++/-- 字节级
+// inline 模板字节数(16,对位 amd64 = 10)。arm64 多 6 字节因 RISC fixed-
+// length 必须 3 条独立指令 + LDR pimm12 vs amd64 复合寻址。
+const EncodedFrameInlineCIDepthIncDecArm64Len = 16
