@@ -1030,3 +1030,40 @@ func TestPJ8_EmitFrameInlineCIDepthDecArm64_Encoding(t *testing.T) {
 		t.Errorf("SUB x17, x17, #1 = 0x%08X, want 0x%08X", subInsn, wantSub)
 	}
 }
+
+// TestPJ8_EmitFrameInlineLoadCISlotAddrArm64_Length 验 arm64 CI 段第 depth
+// 帧地址加载模板长度(LDR×4 + MovImm64 16 + MUL + ADD = 40 字节,对位
+// amd64 = 30)。承 §9.20 Option B Spike 1。
+func TestPJ8_EmitFrameInlineLoadCISlotAddrArm64_Length(t *testing.T) {
+	var buf []byte
+	buf = EmitFrameInlineLoadCISlotAddrArm64(buf, 56, 64)
+	if len(buf) != EncodedFrameInlineLoadCISlotAddrArm64Len {
+		t.Errorf("EmitFrameInlineLoadCISlotAddrArm64 长度 = %d, want %d",
+			len(buf), EncodedFrameInlineLoadCISlotAddrArm64Len)
+	}
+}
+
+// TestPJ8_EmitFrameInlineLoadCISlotAddrArm64_Encoding 验关键指令 MUL/ADD
+// 字节级编码。
+func TestPJ8_EmitFrameInlineLoadCISlotAddrArm64_Encoding(t *testing.T) {
+	var buf []byte
+	buf = EmitFrameInlineLoadCISlotAddrArm64(buf, 56, 64)
+
+	// MUL x17, x17, x18 在 offset 32(LDR×4 16 字节 + MovImm64 16 字节)
+	mulInsn := binary.LittleEndian.Uint32(buf[32:36])
+	// MUL x17, x17, x18 = 0x9B007C00 + (18<<16) + (17<<5) + 17
+	// = 0x9B007C00 + 0x120000 + 0x220 + 0x11 = 0x9B127E31
+	const wantMul = uint32(0x9B127E31)
+	if mulInsn != wantMul {
+		t.Errorf("MUL x17, x17, x18 = 0x%08X, want 0x%08X", mulInsn, wantMul)
+	}
+
+	// ADD x0, x16, x17 在 offset 36
+	addInsn := binary.LittleEndian.Uint32(buf[36:40])
+	// ADD x0, x16, x17 = 0x8B000000 + (17<<16) + (16<<5) + 0
+	// = 0x8B000000 + 0x110000 + 0x200 + 0 = 0x8B110200
+	const wantAdd = uint32(0x8B110200)
+	if addInsn != wantAdd {
+		t.Errorf("ADD x0, x16, x17 = 0x%08X, want 0x%08X", addInsn, wantAdd)
+	}
+}

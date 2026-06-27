@@ -481,6 +481,32 @@ func EmitAddXdXnXm(buf []byte, rd, rn, rm uint8) []byte {
 // EncodedAddXdXnXmLen = 4.
 const EncodedAddXdXnXmLen = 4
 
+// EmitMulXdXnXm 发射 arm64「mul Xd, Xn, Xm」(实际是 MADD Xd, Xn, Xm, XZR
+// 别名)。承 §9.20 Option B Spike 1 enterLuaFrame inline 算 depth * 40。
+//
+// 编码:MADD Xd, Xn, Xm, XZR:1001_1011_000_mmmmm_011111_nnnnn_ddddd
+//   - 0x9B007C00 base(Xa=31=XZR,bit 14-10=11111)
+//   - + (Xm<<16) + (Xn<<5) + Xd
+//
+// 用例:CI 段第 depth 帧地址算 `depth * ciSlotBytes(40)`,先 mov X18, #40
+// 再 mul X17, X17, X18。
+func EmitMulXdXnXm(buf []byte, rd, rn, rm uint8) []byte {
+	if rd > 30 {
+		rd = 0
+	}
+	if rn > 30 {
+		rn = 0
+	}
+	if rm > 30 {
+		rm = 0
+	}
+	insn := uint32(0x9B007C00) | (uint32(rm)&0x1F)<<16 | (uint32(rn)&0x1F)<<5 | uint32(rd)&0x1F
+	return appendArm64Insn(buf, insn)
+}
+
+// EncodedMulXdXnXmLen = 4.
+const EncodedMulXdXnXmLen = 4
+
 // EmitAndXdXnXm 发射 arm64「and Xd, Xn, Xm」(shifted register,shift=00)。
 //
 // 编码:1000_1010_00_mmmmm_000000_nnnnn_ddddd = 0x8A000000 base

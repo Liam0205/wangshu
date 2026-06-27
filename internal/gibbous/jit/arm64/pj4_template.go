@@ -807,3 +807,48 @@ func EmitFrameInlineCIDepthDecArm64(buf []byte, ciDepthAddrOffset uint16) []byte
 // inline 模板字节数(16,对位 amd64 = 10)。arm64 多 6 字节因 RISC fixed-
 // length 必须 3 条独立指令 + LDR pimm12 vs amd64 复合寻址。
 const EncodedFrameInlineCIDepthIncDecArm64Len = 16
+
+// EmitFrameInlineLoadCISlotAddrArm64 发射 arm64 CI 段第 depth 帧地址加载
+// 到 X0 模板(承 §9.20 Option B Spike 1 amd64 对位)。
+//
+// 字节序列(7 条 = 28 字节):
+//
+//	ldr  x16, [x27 + ciDepthAddrOffset]    ; x16 = ciDepthAddr
+//	ldr  x17, [x16]                         ; x17 = depth(当前)
+//	ldr  x16, [x27 + ciSegBaseAddrOffset]   ; x16 = ciSegBaseAddr
+//	ldr  x16, [x16]                         ; x16 = ciSegBase
+//	mov  x18, #40                           ; x18 = 40 (ciSlotBytes)
+//	mul  x17, x17, x18                      ; x17 = depth * 40
+//	add  x0, x16, x17                       ; x0 = ciSegBase + depth*40
+//
+// 模板结束后 x0 = CallInfo[depth] 字节地址(等价 amd64 rax)。
+//
+// arm64 28 字节 vs amd64 30 字节——arm64 微优因 LDR/STR pimm12 + MUL R-type
+// 比 amd64 disp32 mov + imul 编码紧凑 2 字节。x16/x17/x18 是 IP0/IP1/IP2
+// scratch 寄存器(intra-procedure-call scratch)。
+func EmitFrameInlineLoadCISlotAddrArm64(buf []byte, ciDepthAddrOffset, ciSegBaseAddrOffset uint16) []byte {
+	// 1. x16 = ciDepthAddr → x17 = depth
+	buf = EmitLdrXtFromXnDisp(buf, 16, 27, ciDepthAddrOffset)
+	buf = EmitLdrXtFromXnDisp(buf, 17, 16, 0)
+	// 2. x16 = ciSegBaseAddr → x16 = ciSegBase(覆写 x16)
+	buf = EmitLdrXtFromXnDisp(buf, 16, 27, ciSegBaseAddrOffset)
+	buf = EmitLdrXtFromXnDisp(buf, 16, 16, 0)
+	// 3. mov x18, #40
+	buf = EmitMovXdImm64(buf, 18, 40)
+	// 等等,EmitMovXdImm64 是 16 字节 movz+movk*3。我们只要 movz 单条
+	// 但 EmitMovXdImm64 不区分 imm 大小,小 imm 用 4 movz/movk 浪费 12 字节。
+	// Spike 1 简化:接受 16 字节 imm 装载,后续优化 PJ8+ 再用 EmitMovzXd 单条。
+	// 4. mul x17, x17, x18
+	buf = EmitMulXdXnXm(buf, 17, 17, 18)
+	// 5. add x0, x16, x17
+	buf = EmitAddXdXnXm(buf, 0, 16, 17)
+	return buf
+}
+
+// EncodedFrameInlineLoadCISlotAddrArm64Len 是 arm64 CI 段第 depth 帧地址
+// 加载模板字节数(4*4 + 16 + 4 + 4 = 40 字节,对位 amd64 = 30)。
+//
+// arm64 40 字节比 amd64 30 字节多 10 字节,因 EmitMovXdImm64(16 字节
+// movz+movk*3)即使装 #40 小常量也走 4 条 16-bit 段——未来优化用
+// EmitMovzXd 单条 4 字节(留 PJ8+ 通用优化批次)。
+const EncodedFrameInlineLoadCISlotAddrArm64Len = 40
