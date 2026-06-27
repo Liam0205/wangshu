@@ -1477,3 +1477,47 @@ return caller(nil)`
 	}
 	t.Logf("spec template 错误冒泡正确:%v", err)
 }
+
+// TestPJ5_SelfCall_E2E_SpecTemplate_ErrorBubbleUp_BadMethod 验 PJ5 SELF spec
+// template 路径下 method 字段为 non-function 时错误冒泡正确性。
+//
+// **场景**:warmup 阶段 method 是 function 填 IC NodeHit + FBSelfMono;
+// Phase 2 spec template 命中;Phase 3 用不同 receiver,其 method 字段是 number
+// → spec NodeHit guard 失败(shape 变 / NodeVal kind 不同)→ deopt → host.Self
+// → method 是 number → CALL 段 raise "attempt to call a number value"。
+func TestPJ5_SelfCall_E2E_SpecTemplate_ErrorBubbleUp_BadMethod(t *testing.T) {
+	jit.ResetSpecHits()
+	// Phase 1+2:warmup 用 method=function 填 IC NodeHit
+	warmupSrc := `
+local mt = { m = function(self) return 42 end }
+local function caller(t) return t:m() end
+local sum = 0
+for i = 1, 100 do sum = sum + caller(mt) end
+return sum`
+	st, mainCl := loadFnP4(t, warmupSrc)
+	if _, err := st.Call(value.GCRefOf(mainCl), nil, 1); err != nil {
+		t.Fatalf("warmup: %v", err)
+	}
+	st.bridge.SetForceAllPromote(true)
+	if _, err := st.Call(value.GCRefOf(mainCl), nil, 1); err != nil {
+		t.Fatalf("Phase 2 spec template: %v", err)
+	}
+	if jit.SpecSelfCallSpecHits() == 0 {
+		t.Fatal("Phase 2 SpecSelfCallSpecHits=0 — spec template 未触达")
+	}
+
+	// Phase 3:method 是 number → spec deopt → host.Self 取到 number → CALL raise
+	badSrc := `
+local bad = { m = 42 }
+return bad:m()`
+	st2, mainCl2 := loadFnP4(t, badSrc)
+	st2.bridge.SetForceAllPromote(true)
+	_, err := st2.Call(value.GCRefOf(mainCl2), nil, 1)
+	if err == nil {
+		t.Fatal("应 raise 'attempt to call a number value' 错误")
+	}
+	if !strings.Contains(err.Error(), "call") {
+		t.Errorf("err 消息 = %q,应含 'call' 关键字", err.Error())
+	}
+	t.Logf("spec template BadMethod 错误冒泡正确:%v", err)
+}
