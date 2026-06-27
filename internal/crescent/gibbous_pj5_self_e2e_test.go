@@ -1280,3 +1280,75 @@ return count`
 	}
 	t.Logf("SpecSelfCallSpecHits: %d → %d", specBefore, specAfter)
 }
+
+// TestPJ5_SelfCall_E2E_SpecTemplate_MultiRetN4_1RegArg PJ5 SELF + CALL form5
+// N=4 返 1 reg 参形态(`local a..d = t:m(v)` 1 reg 参 + multi-ret drop)。
+// 承 84c7ed4 cC∈{1,3..16} 扩,验 1 reg 参在 N>=4 返路径同款命中。
+func TestPJ5_SelfCall_E2E_SpecTemplate_MultiRetN4_1RegArg(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local count = 0
+local mt = { m = function(self, k) count = count + k; return 1, 2, 3, 4 end }
+local function caller(_, t, v) local a, b, c, d = t:m(v) end
+for i = 1, 100 do caller(nil, mt, i) end
+caller(nil, mt, 1000)
+return count`
+	st, mainCl := loadFnP4(t, src)
+
+	_, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 1 run: %v", err)
+	}
+
+	st.bridge.SetForceAllPromote(true)
+	specBefore := jit.SpecSelfCallSpecHits()
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 2 run: %v", err)
+	}
+	// Phase 2:sum_{i=1..100} i + 1000 = 5050 + 1000 = 6050
+	if got := value.AsNumber(value.Value(rets[0])); got != 6050 {
+		t.Errorf("Phase 2 result = %v, want 6050", got)
+	}
+	specAfter := jit.SpecSelfCallSpecHits()
+	if specAfter <= specBefore {
+		t.Errorf("SpecSelfCallSpecHits 未增长 → form5 N=4 返 1 reg 参 spec 未命中")
+	}
+	t.Logf("SpecSelfCallSpecHits: %d → %d", specBefore, specAfter)
+}
+
+// TestPJ5_SelfCall_E2E_SpecTemplate_MultiRetN4_3KArg PJ5 SELF + CALL form7
+// N=4 返 3 K 参形态(`local a..d = t:m(7,8,9)` 3 K 参 + multi-ret drop)。
+// caller 编出 7 op:MOVE+SELF+LOADK×3+CALL B=5 C=5+RETURN B=1。
+func TestPJ5_SelfCall_E2E_SpecTemplate_MultiRetN4_3KArg(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local count = 0
+local mt = { m = function(self, x, y, z) count = count + x + y + z; return 1, 2, 3, 4 end }
+local function caller(_, t) local a, b, c, d = t:m(7, 8, 9) end
+for i = 1, 100 do caller(nil, mt) end
+caller(nil, mt)
+return count`
+	st, mainCl := loadFnP4(t, src)
+
+	_, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 1 run: %v", err)
+	}
+
+	st.bridge.SetForceAllPromote(true)
+	specBefore := jit.SpecSelfCallSpecHits()
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 2 run: %v", err)
+	}
+	// Phase 2:101 次 * (7+8+9) = 2424
+	if got := value.AsNumber(value.Value(rets[0])); got != 2424 {
+		t.Errorf("Phase 2 result = %v, want 2424", got)
+	}
+	specAfter := jit.SpecSelfCallSpecHits()
+	if specAfter <= specBefore {
+		t.Errorf("SpecSelfCallSpecHits 未增长 → form7 N=4 返 3 K 参 spec 未命中")
+	}
+	t.Logf("SpecSelfCallSpecHits: %d → %d", specBefore, specAfter)
+}

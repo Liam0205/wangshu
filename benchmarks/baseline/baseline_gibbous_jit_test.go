@@ -565,3 +565,40 @@ func BenchmarkGibbousJIT_PJ5SelfCallSpecMultiRetN4(b *testing.B) {
 func BenchmarkGibbousJIT_PJ5SelfCallSpecMultiRetN4Cresc(b *testing.B) {
 	benchGibbousJITSelfCallSpecMultiRetN4(b, false)
 }
+
+// PJ5 SELF + CALL N=4 返 + 计算密集 method 体(摊薄验证 + multi-ret 完整画面)。
+// 承上批 N=4 返简单 method 体 1.094x 慢,本批验 method 体含 FORLOOP 时
+// trampoline 被摊薄,P4 是否反超 cres。
+func benchGibbousJITSelfCallHeavyBodyMultiRetN4(b *testing.B, force bool) {
+	src := `
+local mt = { m = function(self) local s = 0; for i = 1, 100 do s = s + i end; return s, s*2, s*3, s*4 end }
+local function caller(_, t) local a, b, c, d = t:m() end
+local total = 0
+for i = 1, 50 do caller(nil, mt); total = total + 1 end
+return total`
+	prog, err := wangshu.Compile([]byte(src), "bench-jit-self-heavy-multiret-n4")
+	if err != nil {
+		b.Fatalf("compile: %v", err)
+	}
+	st := wangshu.NewState(wangshu.Options{})
+	if _, err := prog.Run(st); err != nil {
+		b.Fatalf("warmup-phase1: %v", err)
+	}
+	st.SetForceAllPromote(force)
+	if _, err := prog.Run(st); err != nil {
+		b.Fatalf("warmup-phase2: %v", err)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := prog.Run(st); err != nil {
+			b.Fatalf("run: %v", err)
+		}
+	}
+}
+
+func BenchmarkGibbousJIT_PJ5SelfCallHeavyBodyMultiRetN4(b *testing.B) {
+	benchGibbousJITSelfCallHeavyBodyMultiRetN4(b, true)
+}
+func BenchmarkGibbousJIT_PJ5SelfCallHeavyBodyMultiRetN4Cresc(b *testing.B) {
+	benchGibbousJITSelfCallHeavyBodyMultiRetN4(b, false)
+}
