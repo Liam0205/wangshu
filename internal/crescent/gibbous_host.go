@@ -161,6 +161,54 @@ func (st *State) ValueStackBaseAddr(base int32) uintptr {
 	return uintptr(unsafe.Pointer(&words[0])) + uintptr(base)
 }
 
+// CIDepthHostAddr 返回 thread.ciDepth 镜像字的 host 字节地址(承
+// docs/design/p4-method-jit/implementation-progress.md §9.20 Option B
+// Spike 1 + P4HostState 接口)。
+//
+// **复用 P3 PW10 Stage 1a 镜像字**(st.ciDepthRef):同一 arena 镜像字,
+// crescent 端经 thread.setCIDepth 写入(`a.SetWordAt(st.ciDepthRef, ...)`),
+// P4 mmap 段经本字段返回的 host addr 字节级 inc/dec(enterLuaFrame +
+// popCallInfo 字节级 inline)。
+//
+// 返回 = arena.Words().bytePtr + (ciDepthRef bytes)。**arena 重定位**:
+// 同 ArenaBaseAddr,grow 出 JIT 世界后回来从 jitContext 重载;Spike 1
+// 阶段每次 Run 入口现算注入(承 05 §5 arena base 重载协议)。
+func (st *State) CIDepthHostAddr() uintptr {
+	words := st.arena.Words()
+	if len(words) == 0 {
+		return 0
+	}
+	return uintptr(unsafe.Pointer(&words[0])) + uintptr(st.ciDepthRef)
+}
+
+// CISegBaseHostAddr 返回 CI 段当前字节基址镜像字的 host 字节地址(承 §9.20
+// Option B Spike 1)。
+//
+// **复用 P3 PW10 Stage 2 镜像字**(st.ciSegBaseRef):CI 段可重定位
+// (growCISeg / newThread 更新 ciBaseW),syncCISegBase 把 ciBaseW*8 镜像
+// 到此 arena 字。P4 mmap 段经本字段返回 host addr 解引出当前 CI 段基址,
+// 然后算 CallInfo[depth] 帧地址(基址 + depth*40)。
+func (st *State) CISegBaseHostAddr() uintptr {
+	words := st.arena.Words()
+	if len(words) == 0 {
+		return 0
+	}
+	return uintptr(unsafe.Pointer(&words[0])) + uintptr(st.ciSegBaseRef)
+}
+
+// TopHostAddr 返回 thread.top 镜像字的 host 字节地址(承 §9.20 Option B
+// Spike 1)。
+//
+// **复用 P3 PW10 Stage 1a 镜像字**(st.topRef):top 是栈槽索引,
+// enterLuaFrame 设 callee 帧顶时 P4 mmap 段写入(top = base + MaxStack)。
+func (st *State) TopHostAddr() uintptr {
+	words := st.arena.Words()
+	if len(words) == 0 {
+		return 0
+	}
+	return uintptr(unsafe.Pointer(&words[0])) + uintptr(st.topRef)
+}
+
 // GetUpval 取当前 closure 的 upvalue b(execute.go GETUPVAL 段同款)。
 func (st *State) GetUpval(base int32, b int32) uint64 {
 	th := st.runningThread
@@ -856,5 +904,91 @@ func (st *State) TailCall(base, pc, a, b, c int32) int32 {
 		st.raiseGibbous(e2)
 		return 1
 	}
+	return 0
+}
+
+// ExecuteCalleeFromInlineFrame Spike 1 Step C-1 helper(承
+// `docs/design/p4-method-jit/implementation-progress.md` §9.20.9 trampoline
+// exit-resume 协议 commit-2 接口 + commit-5d 真实装 + commit-5f 真接入策略
+// 重定:从 mmap 段 BuildVoid0Arg 写入数据反查 closure GCRef → callee Proto →
+// 调 enterLuaFrame + executeFrom 完整重做帧建)。
+//
+// **设计澄清**(承 commit-5e 整合验证 + §9.20.5 P3 PW10 同源参考的实装差异):
+// 原 P3 PW10 §14.8 ④-i 设计期待 mmap 段完整 emit 帧建(arena proto cache 段
+// + 5 word 真实计算),helper 只跑 executeFrom;P4 Spike 1 真接入采用更保守
+// 的「帧建数据反查 + helper 内 enterLuaFrame 重做」策略,放弃零跨界但保证
+// 正确性 + 工程可达。
+//
+// **流程**(承 §9.20.9 (1) 协议 + commit-5f 重定 + commit-5j 自检修正):
+//  1. mmap 段 BuildVoid0Arg 已 ciDepth++ + 写 CallInfo[ciDepth-1] 5 word
+//     (其中 word3 = closure GCRef payload,Spike 1 唯一可信字段)
+//  2. 反查 callee Proto:read word3 → closure GCRef → object.ClosureProtoID
+//     → st.protos[pid]
+//  3. ciDepth-- 抵消 BuildVoid0Arg 副作用(enterLuaFrame 内会再 ciDepth++)
+//  4. funcIdx = calleeCI.funcIdx(mmap 段 BuildVoid0Arg word0 写入,当前
+//     commit-4b emit 时是 0 占位 — Spike 1 commit-5k 工程需 P2 Bridge analyzer
+//     传 callee FuncExpr → bytecode.Proto 反查 + 编译期固化 word0=base|funcIdx<<32)
+//  5. nargs = 0(Spike 1 简化 0 参形态;callee.NumParams=0 守门)
+//  6. nresults = 0(Spike 1 0 返值 setter 形态;承下方 L976 `const nresults=0`)
+//  7. enterLuaFrame + executeFrom + popCallInfo(由 callee RETURN 自动)
+//  8. **出口 ciDepth++ 平衡**:让 mmap 段后续 PopVoid0Arg dec 到正确 caller depth
+//
+// **当前 Spike 1 真接入未完成**(commit-5j 自检):analyzeSelfCallSpecForm 撤销
+// useFrameInline 守门 → info.useFrameInline 不真设 → Compile 端 useFrameInline
+// 分支 dead-code → 本 helper Run 期不被调到。剩 commit-5k 工程:callee Proto
+// 元数据接入 + word0/1/2/4 真实计算 + 守门重启用。
+//
+//   - 0=OK(callee 完成 + 返值已落 R(callA..callA+nresults-1))
+//   - 1=ERR(state.pendingErr 已置,Run 端 dispatcher 返 1 错误冒泡)
+func (st *State) ExecuteCalleeFromInlineFrame(base, callA, callArgCount, nresults int32) int32 {
+	_ = base // 实参 base 是 jitContext.valueStackBase 算出的 R0 字节偏移,Spike 1 helper 不读
+	th := st.runningThread
+	// **commit-5m 修 ciDepth Go vs mirror 不同步 bug**
+	if th.ciDepthWordRef != 0 {
+		th.ciDepth = int(uint32(th.arena.WordAt(th.ciDepthWordRef)))
+	}
+	// 1. 反查 callee Proto:read CI[ciDepth-1].word3 → closure GCRef
+	depth := th.ciDepth - 1
+	var calleeCI callInfo
+	th.readCISegInto(depth, &calleeCI)
+	cl := calleeCI.cl
+	if cl == 0 {
+		return st.raiseGibbous(errf("ExecuteCalleeFromInlineFrame: nil closure GCRef in CI[%d]", depth))
+	}
+	calleePID := object.ClosureProtoID(st.arena, cl)
+	if int(calleePID) >= len(st.protos) || st.protos[calleePID] == nil {
+		return st.raiseGibbous(errf("ExecuteCalleeFromInlineFrame: invalid callee protoID %d", calleePID))
+	}
+	// 2. ciDepth-- 抵消 BuildVoid0Arg 副作用
+	th.setCIDepth(th.ciDepth - 1)
+	// 3. funcIdx = th.cur.base + callA(SELF + CALL 形态下 method 在 R(callA))
+	funcIdx := th.cur.base + int(callA)
+	// 4. nargs = 1 + callArgCount(self + N user args,Spike 2);nresults 从
+	//    caller's CALL.C 算(Spike 4 多返值多形态):callC=1=0返/2=1返/3..16=
+	//    N=2..15 返 drop multi-ret。
+	nargs := 1 + int(callArgCount)
+	// 5. C stack 限深检查 + nCcalls++
+	if st.nCcalls >= maxCCallDepth {
+		return st.raiseGibbous(errf("C stack overflow"))
+	}
+	st.nCcalls++
+	if e := st.enterLuaFrame(th, funcIdx, nargs, int(nresults), false); e != nil {
+		st.nCcalls--
+		return st.raiseGibbous(e)
+	}
+	// 7. 同步驱动 callee Lua 体到 RETURN(内嵌 popCallInfo 弹 callee 帧)
+	entryDepth := th.ciDepth - 1
+	err := st.executeFrom(th, entryDepth)
+	st.nCcalls--
+	if err != nil {
+		return st.raiseGibbous(err)
+	}
+	// 8. 出口 ciDepth++ 平衡 mmap 段 PopVoid0Arg:executeFrom 弹 callee 帧后
+	//    ciDepth = caller_depth;mmap 段 PopVoid0Arg(EmitFrameInlineCIDepthDec)
+	//    会再 dec → 出口手动 ciDepth++ 抵消,让 PopVoid0Arg dec 到正确
+	//    caller_depth。无需 writeCISeg(&th.cur):PopVoid0Arg 仅 dec 镜像字 +
+	//    ret,不 readCISegInto 重载,故 ciDepth ↔ th.cur 一过渡性不一致由
+	//    p4Code.Run 出口 + syncCurFromSeg 在下次 Go 控制流处恢复。
+	th.setCIDepth(th.ciDepth + 1)
 	return 0
 }

@@ -197,6 +197,44 @@ type p4Code struct {
 	selfMethodRK    uint16
 	selfRecvSrcReg  uint8
 	selfRecvIsUpval bool
+
+	// PJ5 SELF + CALL spec template 接入(承 §9.10 PJ4 EmitSelfNodeHit 复用):
+	//   - useSpecSelfCall = true:SELF 段经 callJITSpec 跑 EmitSelfNodeHit 字节级
+	//     模板(IC NodeHit guard + NodeVal store R(A)=method),跳过 host.Self;
+	//     失败 raxSpec==specDeoptCode 时降级 host.Self。
+	//   - Run 端预处理:先 host.GetReg/GetUpval + SetReg 装 R(callA)=recv(模拟
+	//     MOVE/GETUPVAL,因 spec 段从 R(callA) 字节级读取 receiver),然后 callJITSpec;
+	//     成功 → method 已 store R(callA),self 已 store R(callA+1);
+	//     失败 → R(callA+1) 已被 store recv(P1 SELF case 同款步骤),降级 host.Self
+	//     重新覆盖。然后装 args + host.CallBaseline + host.DoReturn。
+	//   - 复用 useSpec + specDeoptCode 字段(spec 段 deopt code)。
+	useSpecSelfCall bool
+
+	// PJ5 Option B Spike 1 帧建立内联(承 §9.20):
+	//   - useFrameInline = true:Run 端走 runSpecSelfCallInline 替代
+	//     host.CallBaseline,mmap 段字节级 inline enterLuaFrame + helper call
+	//     executeFrom + popCallInfo(承 §9.20 Spike 1 路线)。
+	//   - 守门(承 §9.20.4):callee.NumParams=0 + !IsVararg + !NeedsArg +
+	//     MaxStack≤32 + caller-callee Proto 编译期已知 + IC NodeHit + FBSelfMono。
+	//   - 失败(callee Proto 不满足守门 / archSupportsFrameInline=false / 段
+	//     执行 deopt)→ 降级 useSpecSelfCall(SELF 段字节级 + host.CallBaseline)。
+	//   - **Spike 1 阶段尚未真接入**:本字段 + Run 端 runSpecSelfCallInline +
+	//     Compile 端 compileSpecSelfCallInline 仍是骨架(emit 模板已字节级实装
+	//     amd64 120B / arm64 164B);剩 helper call ABI + e2e prove-the-path
+	//     留下批工程。
+	useFrameInline bool
+
+	// frameInlineResumeOff PJ5 Option B Spike 1 帧建立内联 resume entry 在
+	// mmap 段内的字节偏移(承 §9.20.9 (5) Go 端 dispatcher 协议):
+	//   - useFrameInline=true 时 compileSpecSelfCall emit 完 BuildVoid0Arg +
+	//     ExitHelperRequest 后记录 = len(buf),用于 PopVoid0Arg 段头位置
+	//   - dispatcher 处理完 callee 后用 codePageAddr + frameInlineResumeOff
+	//     求 resume entry 绝对地址,trampoline 重 CALL 进 mmap 段续跑
+	//   - useFrameInline=false 时本字段恒 0(不进入 useFrameInline 分支)
+	//
+	// Run 入口经 jitCtx.SetCodePageAddr + SetResumeOff 注入(承 §9.20.9 commit-5
+	// 真接入同批),编译期固化为 p4Code 字段,Run 期注入 jitCtx。
+	frameInlineResumeOff uint32
 }
 
 // Proto 反向指针(trampoline 校验)。
@@ -254,6 +292,12 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 		c.jitCtx.SetArenaBase(c.host.ArenaBaseAddr())
 		vsBaseAddr = c.host.ValueStackBaseAddr(int32(base))
 		c.jitCtx.SetValueStackBase(vsBaseAddr)
+		// PJ5 Option B Spike 1+ 帧建立内联(承 §9.20):Run 入口现算注入
+		// ciDepth / ciSegBase / top 镜像字 host 字节地址(arena grow 后地址变,
+		// 不缓存——同 ArenaBase 重载协议)。
+		c.jitCtx.SetCIDepthAddr(c.host.CIDepthHostAddr())
+		c.jitCtx.SetCISegBaseAddr(c.host.CISegBaseHostAddr())
+		c.jitCtx.SetTopAddr(c.host.TopHostAddr())
 	}
 
 	jitCtxAddr := jitContextAddr(c.jitCtx)
@@ -264,6 +308,12 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 	// **mock host 兜底**:host.ArenaBaseAddr 返 0(单测 mock 无真 arena)时
 	// 跳过 spec 路径直接走 host helper——避免段段读 [rbx+0] = 读 0 地址 SIGSEGV。
 	if c.useSpec && c.host != nil && vsBaseAddr != 0 {
+		// **PJ5 SELF + CALL spec template 独立路径**(承 §9.10 EmitSelfNodeHit 复用 +
+		// §9.17 升级):SELF 段走字节级模板(跳过 host.Self)+ CALL 段走 host.CallBaseline。
+		// 自包含子路径——不与下方 PJ2/PJ3/PJ4 spec 分流混淆。
+		if c.useSpecSelfCall {
+			return c.runSpecSelfCall(int32(base), jitCtxAddr, vsBaseAddr)
+		}
 		// **upvalue-limit 预处理**:reg-limit 模板期望 R(forLoopLimitReg)
 		// 是 number。upval 形态 Run 端先调 host.GetUpval(idx-1) + SetReg
 		// 写 limit 槽,然后模板字节级 inline 走 reg-limit 路径(IsNumber
@@ -673,6 +723,98 @@ func (c *p4Code) PendingErr() error {
 	return nil
 }
 
+// runSpecSelfCall 处理 PJ5 SELF + CALL spec template 路径(承
+// compileSpecSelfCall + §9.10 EmitSelfNodeHit 复用)。
+//
+// **流程**:
+//  1. 先装 R(callA) = recv(模拟 luac MOVE/GETUPVAL,因 spec 段从 R(callA)
+//     字节级读 receiver)。
+//  2. callJITSpec 跑 EmitSelfNodeHit 模板:
+//     - 成功 → R(callA) = method(已 store)+ R(callA+1) = self(已 store)
+//     - 失败(raxSpec == specDeoptCode)→ 降级 host.Self(R(callA+1) 已被
+//     模板 store recv,P1 SELF case 同款步骤;host.Self 重新覆盖 byte-equal)
+//  3. callArgCount=0(本批仅 0 参形态),无 args 装载。
+//  4. host.CallBaseline 完成 CALL 段。
+//  5. host.DoReturn 弹帧。
+//
+// byte-equal P1:成功路径 = 字节级 NodeHit 直达槽(跳过哈希),与 P1 icGetTable
+// NodeHit 命中结果一致;失败路径 = host.Self 完整 P1 SELF 段。
+func (c *p4Code) runSpecSelfCall(base int32, jitCtxAddr uintptr, vsBaseAddr uintptr) int32 {
+	// 1. 装 R(callA) = recv(模拟 MOVE/GETUPVAL)
+	// MOVE form(form M*):recv 装载已字节级 emit 在 spec 段头(承 §9.19 args
+	// inline 同款摊薄),跳过 host.GetReg+SetReg 2 跨界。
+	// GETUPVAL form(form U*):upvalue 不在 vsBase 栈,仍 Run 端 host 装载。
+	if c.selfRecvIsUpval {
+		upvalVal := c.host.GetUpval(base, int32(c.selfRecvSrcReg))
+		c.host.SetReg(int32(c.callA), upvalVal)
+	}
+
+	// 2. callJITSpec 跑 SELF 段
+	raxSpec := archCallJITSpec(c.codePage.Addr(), jitCtxAddr, vsBaseAddr)
+	if raxSpec == c.specDeoptCode {
+		// 失败 deopt:SELF NodeHit guard 不成立(table shape 变 / key 退化 /
+		// NodeVal=nil)= 真正的投机失败 → OSR exit。接 p4SpecState 计数(承
+		// §9.18 + 04 §5.1 单次失败三件事:计数 +1,达阈值切 P4Deoptimized)。
+		onOSRExit(c.proto)
+		// 降级 host.Self(byte-equal P1 SELF 段)
+		// SELF 自身 pc = callPC - 1(CALL 在 retPC-1,SELF 在 CALL 前一条,0 参形态)
+		callPC := int32(c.retPC) - 1
+		selfPC := callPC - 1 - int32(c.callArgCount)
+		st := c.host.Self(base, selfPC, int32(c.selfCallA),
+			int32(c.selfCallA), int32(c.selfMethodRK))
+		if st != 0 {
+			return st
+		}
+	} else if c.useFrameInline && raxSpec == uint64(ExitInlineHelper) {
+		// **§9.20.9 Run-end dispatcher 实装**(commit-5b/5l):
+		st := c.runFrameInlineDispatcher(base)
+		if st != 0 {
+			return st
+		}
+		// **caller 帧自己的 RETURN**(commit-5l):caller proto useFrameInline 路径
+		// mmap 段未 emit caller 的 RETURN 指令(只 emit SELF+CALL inline 段),
+		// 故 Run 端需手动 DoReturn(对位非 useFrameInline 路径 host.CallBaseline +
+		// DoReturn 同款 caller RETURN 弹帧)。
+		c.host.DoReturn(base, int32(c.retPC), int32(c.retA), int32(c.retB))
+		return 0
+	}
+
+	// 3. args 装载已在 spec 段字节级 emit(承 §9.19 摊薄优化,跳过 host
+	// round-trip)。spec 段执行后 args 已落 R(callA+2..callA+1+N)。
+	// **deopt 路径下** spec 段中途返回 deoptCode,args 装载段(在 SELF 之前)
+	// 已执行完,R(callA+2..) 已装好——降级 host.Self 后 args 仍可用,无需重装。
+
+	// 4. CALL 段 / TAILCALL 段(byte-equal P1)
+	callPC := int32(c.retPC) - 1
+	if c.isTailCall {
+		// TAILCALL 三态分支(承 host.TailCall 同款语义):
+		//   0 = Lua 尾完成(本帧已弹,跳过 DoReturn 直接 return)
+		//   1 = ERR
+		//   2 = host 尾完成(结果在 R(callA..),G 帧未弹,落 DoReturn dead RETURN B=0)
+		st := c.host.TailCall(base, callPC, int32(c.callA), int32(c.callB), int32(c.callC))
+		switch st {
+		case 0:
+			return 0
+		case 1:
+			return 1
+		case 2:
+			// fall through to DoReturn
+		default:
+			return 1
+		}
+	} else {
+		// CALL void:byte-equal P1 doCall
+		st := c.host.CallBaseline(base, callPC, int32(c.callA), int32(c.callB), int32(c.callC))
+		if st != 0 {
+			return st
+		}
+	}
+
+	// 5. DoReturn 弹帧(setter 形态 retB=1,0 返值)
+	c.host.DoReturn(base, int32(c.retPC), int32(c.retA), int32(c.retB))
+	return 0
+}
+
 // loadCallArgs 把 callArg1..7 装到 R(callA+offset), R(callA+offset+1), ...
 // offset = 1(普通 CALL/TAILCALL,args 从 R(callA+1));2(SELF inline,
 // args 从 R(callA+2),因 R(callA+1)=self)。
@@ -771,6 +913,80 @@ func (c *p4Code) Dispose() error {
 // ErrRunNotImplemented:占位错误(已被 PJ2 真接入版淘汰,但保留作 wireP4
 // 防御性兜底返错的错误类型——若 codePage 构造失败 Run 直接返 ERR)。
 var ErrRunNotImplemented = errors.New("internal/gibbous/jit: p4Code Run failed: codePage / jitCtx not initialized")
+
+// runFrameInlineDispatcher 处理 PJ5 Option B Spike 1 帧建立内联 Run-end
+// dispatcher 路径(承 §9.20.9 (1)+(5) Go 端 dispatcher 实装,commit-5b
+// Run-end 化版本):
+//
+// **协议**:spec 段已 emit 完 SELF NodeHit + BuildVoid0Arg + ExitHelperRequest
+// + (resume entry) PopVoid0Arg + ret;段返 RAX=ExitInlineHelper 时本函数
+// 接管完成 callee Lua 体执行 + popCallInfo 重入。
+//
+// 流程:
+//  1. 读 jitCtx.exitArg0 路由 helper request(承 §9.20.9 (3) 协议状态码):
+//     - HelperRunCallee:调 host.ExecuteCalleeFromInlineFrame(base, retA)
+//     完成 readCISegInto + nCcalls++ + executeFrom + popCallInfo
+//     - HelperGrowStack:未来扩(arena grow 触发)
+//     - HelperGCBarrier:未来扩(GC 写屏障)
+//  2. 若 helper 返 1=ERR,设 ERR 返 1(错误冒泡)
+//  3. 二次 archCallJITSpec 跳 codePage + frameInlineResumeOff 续跑 PopVoid0Arg
+//     + ret 段,RAX 必 = 0(ExitNormal)
+//  4. 跳过 Run 端 host.CallBaseline + DoReturn(callee 已在 helper 内完整跑完)
+//
+// **设计澄清**(承 commit-3b 跨包 CALL 设计澄清的延续):
+//   - dispatcher 路由本应是 dispatchInlineHelper(jit 包级函数),但跨包 + Plan 9
+//     asm 复杂度高;改用 p4Code 方法直接访问 c.host(承 Run-end 化方案)
+//   - dispatchInlineHelper 留作工程基础锚点,future 真 trampoline asm CALL 路径
+//     的接口(承 §9.20.9 (5))
+//
+// **当前 archSupportsFrameInline=false 屏蔽真触发**,本函数不被调到;
+// commit-5e 翻闸门 + analyzeSelfCallSpecForm 设 useFrameInline=true 后启用。
+func (c *p4Code) runFrameInlineDispatcher(base int32) int32 {
+	incSpecFrameInlineRunHits() // 承 §9.20.9 commit-5i:Run 期触达探针
+	// 1. 路由 helper request:读 jitCtx.exitArg0 决定 helper 类型
+	helperCode := c.jitCtx.ExitArg0()
+	switch helperCode {
+	case HelperRunCallee:
+		// 跑 callee Lua 体(host 完成 readCISegInto + executeFrom + popCallInfo)
+		// **commit-5l/5p/5q 签名扩**:helper 接受 (callA, callArgCount, nresults)
+		//   - callA: CALL.A 字段(SELF + CALL 形态下 method 在 R(callA))
+		//   - callArgCount: 0..7 user args
+		//   - nresults: callC - 1(callC=1=0返 setter/2=1返 getter/3..16=N=2..15
+		//     返 drop multi-ret)
+		nresults := int32(c.callC) - 1
+		st := c.host.ExecuteCalleeFromInlineFrame(base, int32(c.callA), int32(c.callArgCount), nresults)
+		if st != 0 {
+			// 错误冒泡(host 内 raise 已置 pendingErr)
+			return 1
+		}
+	case HelperGrowStack, HelperGCBarrier:
+		// 未来扩,当前不触达(spec 段不 emit 这些 request)
+		return 1
+	default:
+		// 未知 helper code(协议 bug)
+		return 1
+	}
+	// 2. **arena grow 重载**:helper 内 enterLuaFrame / executeFrom 可能触发
+	//    ensureStack → arena.grow,arena base + ciDepthAddr + ciSegBaseAddr +
+	//    topAddr 全失效。重新经 host 现算注入(承 §9.20 + §5 arena base 重载
+	//    协议)。
+	c.jitCtx.SetArenaBase(c.host.ArenaBaseAddr())
+	c.jitCtx.SetValueStackBase(c.host.ValueStackBaseAddr(base))
+	c.jitCtx.SetCIDepthAddr(c.host.CIDepthHostAddr())
+	c.jitCtx.SetCISegBaseAddr(c.host.CISegBaseHostAddr())
+	c.jitCtx.SetTopAddr(c.host.TopHostAddr())
+	// 3. 二次 callJITSpec 跳 resume entry 续跑 PopVoid0Arg + ret
+	resumeAddr := c.codePage.Addr() + uintptr(c.frameInlineResumeOff)
+	jitCtxAddr := jitContextAddr(c.jitCtx)
+	vsBaseAddr := c.host.ValueStackBaseAddr(base)
+	raxResume := archCallJITSpec(resumeAddr, jitCtxAddr, vsBaseAddr)
+	if raxResume != 0 {
+		// resume entry 段执行异常(理论上 PopVoid0Arg + ret 只 ciDepth-- + ret,
+		// RAX 应是 ExitNormal=0;非 0 说明协议 bug)
+		return 1
+	}
+	return 0
+}
 
 // 编译期断言:Compiler 实现 bridge.P3Compiler 接口;p4Code 实现 bridge.GibbousCode
 // (任何接口签名漂移立即在编译期暴露,不等运行期)。

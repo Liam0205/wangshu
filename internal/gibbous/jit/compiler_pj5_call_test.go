@@ -1,0 +1,515 @@
+//go:build wangshu_p4
+
+package jit
+
+import (
+	"testing"
+
+	"github.com/Liam0205/wangshu/internal/bytecode"
+	"github.com/Liam0205/wangshu/internal/value"
+)
+
+// TestPJ5_AnalyzeCallVoidForm_Recognize 验 analyzeCallVoidForm 正向识别
+// MOVE+CALL+RETURN void 三 op 单 BB(`function(g) g() end` 类,形态 A)。
+func TestPJ5_AnalyzeCallVoidForm_Recognize(t *testing.T) {
+	// 形态 A:MOVE 1 0; CALL 1 1 1; RETURN 0 1
+	//  - MOVE.A=1 (被调位) MOVE.B=0 (参数源,即函数参数 g 槽)
+	//  - CALL.A=1 (被调位与 MOVE.A 一致) CALL.B=1 (0 参) CALL.C=1 (0 返)
+	//  - RETURN.A=0 RETURN.B=1 (0 返值)
+	proto := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABC(bytecode.MOVE, 1, 0, 0),
+			bytecode.EncodeABC(bytecode.CALL, 1, 1, 1),
+			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
+		},
+	}
+	info, ok := analyzeCallVoidForm(proto)
+	if !ok {
+		t.Fatal("analyzeCallVoidForm should accept MOVE+CALL+RETURN void form")
+	}
+	if !info.isCallVoid {
+		t.Error("info.isCallVoid should be true")
+	}
+	if info.isCallUpval {
+		t.Error("info.isCallUpval should be false for MOVE form A")
+	}
+	if info.callA != 1 || info.callB != 1 || info.callC != 1 {
+		t.Errorf("callA/B/C = %d/%d/%d, want 1/1/1", info.callA, info.callB, info.callC)
+	}
+	if info.retA != 0 || info.retB != 1 || info.retPC != 2 {
+		t.Errorf("retA/B/PC = %d/%d/%d, want 0/1/2", info.retA, info.retB, info.retPC)
+	}
+	if info.preludeOp != uint8(bytecode.CALL) {
+		t.Errorf("preludeOp = %d, want %d (CALL)", info.preludeOp, bytecode.CALL)
+	}
+	if info.preludeArg != 0 {
+		t.Errorf("preludeArg = %d, want 0 (MOVE.B)", info.preludeArg)
+	}
+}
+
+// TestPJ5_AnalyzeCallVoidForm_RecognizeUpval 验 analyzeCallVoidForm 正向识别
+// GETUPVAL+CALL+RETURN void(形态 B,`local function f()...end; function() f() end`)。
+func TestPJ5_AnalyzeCallVoidForm_RecognizeUpval(t *testing.T) {
+	// 形态 B:GETUPVAL 0 3; CALL 0 1 1; RETURN 0 1
+	//  - GETUPVAL.A=0 (被调位) GETUPVAL.B=3 (upvalue 索引)
+	//  - CALL.A=0 (被调位与 GETUPVAL.A 一致) CALL.B=1 C=1
+	//  - RETURN.A=0 B=1
+	proto := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABC(bytecode.GETUPVAL, 0, 3, 0),
+			bytecode.EncodeABC(bytecode.CALL, 0, 1, 1),
+			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
+		},
+	}
+	info, ok := analyzeCallVoidForm(proto)
+	if !ok {
+		t.Fatal("analyzeCallVoidForm should accept GETUPVAL+CALL+RETURN void form B")
+	}
+	if !info.isCallVoid {
+		t.Error("info.isCallVoid should be true")
+	}
+	if !info.isCallUpval {
+		t.Error("info.isCallUpval should be true for GETUPVAL form B")
+	}
+	if info.callA != 0 {
+		t.Errorf("callA = %d, want 0", info.callA)
+	}
+	if info.preludeArg != 3 {
+		t.Errorf("preludeArg = %d, want 3 (GETUPVAL.B)", info.preludeArg)
+	}
+}
+
+// TestPJ5_AnalyzeCallVoidForm_Reject 验形态守卫拒非简化形态。
+func TestPJ5_AnalyzeCallVoidForm_Reject(t *testing.T) {
+	cases := []struct {
+		name string
+		code []bytecode.Instruction
+	}{
+		{
+			"wrong length 2",
+			[]bytecode.Instruction{
+				bytecode.EncodeABC(bytecode.CALL, 1, 1, 1),
+				bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
+			},
+		},
+		{
+			"wrong length 4",
+			[]bytecode.Instruction{
+				bytecode.EncodeABC(bytecode.MOVE, 1, 0, 0),
+				bytecode.EncodeABC(bytecode.MOVE, 2, 1, 0),
+				bytecode.EncodeABC(bytecode.CALL, 1, 1, 1),
+				bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
+			},
+		},
+		{
+			"not MOVE first",
+			[]bytecode.Instruction{
+				bytecode.EncodeABx(bytecode.LOADK, 1, 0),
+				bytecode.EncodeABC(bytecode.CALL, 1, 1, 1),
+				bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
+			},
+		},
+		{
+			"not CALL middle",
+			[]bytecode.Instruction{
+				bytecode.EncodeABC(bytecode.MOVE, 1, 0, 0),
+				bytecode.EncodeABC(bytecode.MOVE, 2, 1, 0),
+				bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
+			},
+		},
+		{
+			"not RETURN last",
+			[]bytecode.Instruction{
+				bytecode.EncodeABC(bytecode.MOVE, 1, 0, 0),
+				bytecode.EncodeABC(bytecode.CALL, 1, 1, 1),
+				bytecode.EncodeABC(bytecode.CALL, 1, 1, 1),
+			},
+		},
+		{
+			"MOVE.A != CALL.A",
+			[]bytecode.Instruction{
+				bytecode.EncodeABC(bytecode.MOVE, 2, 0, 0),
+				bytecode.EncodeABC(bytecode.CALL, 1, 1, 1),
+				bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
+			},
+		},
+		{
+			"CALL.B != 1 (has args)",
+			[]bytecode.Instruction{
+				bytecode.EncodeABC(bytecode.MOVE, 1, 0, 0),
+				bytecode.EncodeABC(bytecode.CALL, 1, 2, 1),
+				bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
+			},
+		},
+		{
+			"CALL.C != 1 (has return)",
+			[]bytecode.Instruction{
+				bytecode.EncodeABC(bytecode.MOVE, 1, 0, 0),
+				bytecode.EncodeABC(bytecode.CALL, 1, 1, 2),
+				bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
+			},
+		},
+		{
+			"RETURN.B != 1 (has return)",
+			[]bytecode.Instruction{
+				bytecode.EncodeABC(bytecode.MOVE, 1, 0, 0),
+				bytecode.EncodeABC(bytecode.CALL, 1, 1, 1),
+				bytecode.EncodeABC(bytecode.RETURN, 0, 2, 0),
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			proto := &bytecode.Proto{Code: tc.code}
+			if _, ok := analyzeCallVoidForm(proto); ok {
+				t.Errorf("analyzeCallVoidForm should reject %s", tc.name)
+			}
+		})
+	}
+}
+
+// TestPJ5_RunCallVoidPath 验 Run prelude CALL case 端到端:
+//   - mmap 段执行(dummy mov rax,0;ret),Run 走 prelude switch CALL case
+//   - 预处理 MOVE:host.GetReg(0) + SetReg(1) 把被调函数从 R(0) 拷到 R(1)
+//   - host.CallBaseline 被调用,callA=1/callB=1/callC=1/pc=1(CALL 自身 pc)
+//   - host.DoReturn 调一次(retPC=2/retA=0/retB=1)
+func TestPJ5_RunCallVoidPath(t *testing.T) {
+	proto := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABC(bytecode.MOVE, 1, 0, 0),
+			bytecode.EncodeABC(bytecode.CALL, 1, 1, 1),
+			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
+		},
+	}
+	gc, host := compileWithHost(t, proto)
+	defer tryDispose(t, gc)
+
+	// 预设 R(0) = fake function NaN-box,Run 应当把它 SetReg 到 R(1)。
+	const fakeFuncVal uint64 = 0xFFF9_DEAD_BEEF_0000
+	host.regs[0] = fakeFuncVal
+
+	stack := make([]uint64, 4)
+	status := gc.Run(stack, 0)
+	if status != 0 {
+		t.Errorf("Run status = %d, want 0 (OK)", status)
+	}
+	// MOVE 预处理:R(1) 应是 R(0) 的 fakeFuncVal
+	got, ok := host.regs[1]
+	if !ok {
+		t.Fatal("SetReg(1, ...) not called by MOVE preprocess")
+	}
+	if got != fakeFuncVal {
+		t.Errorf("R(1) = 0x%016x, want 0x%016x (fakeFunc)", got, fakeFuncVal)
+	}
+	// host.CallBaseline 路径
+	if host.callCalls != 1 {
+		t.Errorf("CallBaseline called %d times, want 1", host.callCalls)
+	}
+	if host.lastCallA != 1 || host.lastCallB != 1 || host.lastCallC != 1 {
+		t.Errorf("CallBaseline(A,B,C) = (%d,%d,%d), want (1,1,1)",
+			host.lastCallA, host.lastCallB, host.lastCallC)
+	}
+	if host.lastCallPC != 1 {
+		t.Errorf("CallBaseline pc = %d, want 1 (CALL pc)", host.lastCallPC)
+	}
+	// host.DoReturn 路径
+	if host.doReturnCalls != 1 {
+		t.Errorf("DoReturn called %d times, want 1", host.doReturnCalls)
+	}
+	if host.lastReturnPC != 2 || host.lastReturnA != 0 || host.lastReturnB != 1 {
+		t.Errorf("DoReturn(pc,A,B) = (%d,%d,%d), want (2,0,1)",
+			host.lastReturnPC, host.lastReturnA, host.lastReturnB)
+	}
+}
+
+// TestPJ5_RunCallVoidErrPropagate 验 host.CallBaseline 返 ERR=1 时 Run 直接
+// 返 1 + 不调 DoReturn(ERR 路径不弹帧,由上层 raiseGibbous + enterGibbous 取走)。
+func TestPJ5_RunCallVoidErrPropagate(t *testing.T) {
+	proto := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABC(bytecode.MOVE, 1, 0, 0),
+			bytecode.EncodeABC(bytecode.CALL, 1, 1, 1),
+			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
+		},
+	}
+	gc, host := compileWithHost(t, proto)
+	defer tryDispose(t, gc)
+
+	host.callRetCode = 1 // 模拟 ERR
+	stack := make([]uint64, 4)
+	status := gc.Run(stack, 0)
+	if status != 1 {
+		t.Errorf("Run status = %d, want 1 (ERR)", status)
+	}
+	if host.callCalls != 1 {
+		t.Errorf("CallBaseline called %d times, want 1", host.callCalls)
+	}
+	if host.doReturnCalls != 0 {
+		t.Errorf("DoReturn should NOT be called on ERR path (called %d times)", host.doReturnCalls)
+	}
+}
+
+// TestPJ5_RunCallVoidUpvalPath 验形态 B(GETUPVAL+CALL+RETURN void)Run
+// prelude 走 host.GetUpval(base, preludeArg) + SetReg(callA) + CallBaseline
+// 路径(对位形态 A 的 GetReg + SetReg)。
+func TestPJ5_RunCallVoidUpvalPath(t *testing.T) {
+	proto := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABC(bytecode.GETUPVAL, 0, 3, 0),
+			bytecode.EncodeABC(bytecode.CALL, 0, 1, 1),
+			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
+		},
+	}
+	gc, host := compileWithHost(t, proto)
+	defer tryDispose(t, gc)
+
+	// 预设 upvalue[3] = fake function NaN-box,Run 应当 GetUpval 把它读到 R(0)。
+	const fakeFuncVal uint64 = 0xFFF9_CAFE_BABE_0001
+	host.upvals[3] = fakeFuncVal
+
+	stack := make([]uint64, 4)
+	status := gc.Run(stack, 0)
+	if status != 0 {
+		t.Errorf("Run status = %d, want 0", status)
+	}
+	// GETUPVAL 预处理:R(0) 应是 upvals[3] 的 fakeFuncVal
+	got, ok := host.regs[0]
+	if !ok {
+		t.Fatal("SetReg(0, ...) not called by GETUPVAL preprocess")
+	}
+	if got != fakeFuncVal {
+		t.Errorf("R(0) = 0x%016x, want 0x%016x (upvals[3])", got, fakeFuncVal)
+	}
+	if host.callCalls != 1 {
+		t.Errorf("CallBaseline called %d times, want 1", host.callCalls)
+	}
+	if host.lastCallA != 0 || host.lastCallB != 1 || host.lastCallC != 1 {
+		t.Errorf("CallBaseline(A,B,C) = (%d,%d,%d), want (0,1,1)",
+			host.lastCallA, host.lastCallB, host.lastCallC)
+	}
+}
+
+// TestPJ5_SupportsAllOpcodesGate_AcceptsCallVoid 验 SupportsAllOpcodes 接受
+// MOVE+CALL+RETURN void 形态(F7 闸门承认本形态)。
+func TestPJ5_SupportsAllOpcodesGate_AcceptsCallVoid(t *testing.T) {
+	proto := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABC(bytecode.MOVE, 1, 0, 0),
+			bytecode.EncodeABC(bytecode.CALL, 1, 1, 1),
+			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
+		},
+	}
+	c := New()
+	if !c.SupportsAllOpcodes(proto) {
+		t.Error("SupportsAllOpcodes should accept MOVE+CALL+RETURN void form")
+	}
+}
+
+// TestPJ5_SpecCallVoidHits 验 Compile 命中 PJ5 CALL void 形态时
+// specCallVoidHits 探针 ++(白盒 prove-the-path 证据,承
+// llmdoc/guides/prove-the-path-under-test §4)。
+func TestPJ5_SpecCallVoidHits(t *testing.T) {
+	ResetSpecHits()
+	proto := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABC(bytecode.MOVE, 1, 0, 0),
+			bytecode.EncodeABC(bytecode.CALL, 1, 1, 1),
+			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
+		},
+	}
+	gc, _ := compileWithHost(t, proto)
+	defer tryDispose(t, gc)
+	if got := SpecCallVoidHits(); got != 1 {
+		t.Errorf("SpecCallVoidHits = %d, want 1 (Compile 应命中 PJ5 CALL void inline)", got)
+	}
+}
+
+// TestPJ5_AnalyzeCallVoidForm_Recognize1ArgK 验形态 A1K(1 K 参)识别:
+// MOVE + LOADK + CALL B=2 C=1 + RETURN void。
+func TestPJ5_AnalyzeCallVoidForm_Recognize1ArgK(t *testing.T) {
+	// 形态 A1K:MOVE 1 0; LOADK 2 K0; CALL 1 2 1; RETURN 0 1
+	//   - MOVE.A=1 (被调位) MOVE.B=0 (参数源)
+	//   - LOADK.A=2 (被调位+1) LOADK.Bx=0 (K0 索引)
+	//   - CALL.A=1 CALL.B=2 (1 参) CALL.C=1 (0 返)
+	//   - RETURN.B=1 (0 返值)
+	const kVal uint64 = 0x4040000000000000 // NumberValue(32.0) NaN-box raw
+	proto := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABC(bytecode.MOVE, 1, 0, 0),
+			bytecode.EncodeABx(bytecode.LOADK, 2, 0),
+			bytecode.EncodeABC(bytecode.CALL, 1, 2, 1),
+			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
+		},
+		Consts: []value.Value{value.Value(kVal)},
+	}
+	info, ok := analyzeCallVoidForm(proto)
+	if !ok {
+		t.Fatal("analyzeCallVoidForm should accept MOVE+LOADK+CALL+RETURN void form A1K")
+	}
+	if !info.isCallVoid {
+		t.Error("info.isCallVoid should be true")
+	}
+	if info.callArgCount != 1 {
+		t.Errorf("callArgCount = %d, want 1", info.callArgCount)
+	}
+	if info.callArg1K != kVal {
+		t.Errorf("callArg1K = 0x%016x, want 0x%016x", info.callArg1K, kVal)
+	}
+	if info.retPC != 3 {
+		t.Errorf("retPC = %d, want 3 (RETURN in pc 3)", info.retPC)
+	}
+	if info.callB != 2 {
+		t.Errorf("callB = %d, want 2 (1 arg)", info.callB)
+	}
+}
+
+// TestPJ5_RunCallVoid1ArgKPath 验形态 A1K 端到端:Run 装载 R(callA+1)=K
+// 后调 CallBaseline,callB=2 + callC=1。
+func TestPJ5_RunCallVoid1ArgKPath(t *testing.T) {
+	const kVal uint64 = 0x4040000000000000 // NumberValue(32.0)
+	proto := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABC(bytecode.MOVE, 1, 0, 0),
+			bytecode.EncodeABx(bytecode.LOADK, 2, 0),
+			bytecode.EncodeABC(bytecode.CALL, 1, 2, 1),
+			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
+		},
+		Consts: []value.Value{value.Value(kVal)},
+	}
+	gc, host := compileWithHost(t, proto)
+	defer tryDispose(t, gc)
+
+	const fakeFuncVal uint64 = 0xFFF9_BEEF_0000_0000
+	host.regs[0] = fakeFuncVal
+
+	stack := make([]uint64, 4)
+	status := gc.Run(stack, 0)
+	if status != 0 {
+		t.Errorf("Run status = %d, want 0", status)
+	}
+	if host.regs[1] != fakeFuncVal {
+		t.Errorf("R(1) = 0x%016x, want 0x%016x (fakeFunc)", host.regs[1], fakeFuncVal)
+	}
+	if host.regs[2] != kVal {
+		t.Errorf("R(2) = 0x%016x, want 0x%016x (kVal arg)", host.regs[2], kVal)
+	}
+	if host.callCalls != 1 {
+		t.Errorf("CallBaseline called %d times, want 1", host.callCalls)
+	}
+	if host.lastCallA != 1 || host.lastCallB != 2 || host.lastCallC != 1 {
+		t.Errorf("CallBaseline(A,B,C) = (%d,%d,%d), want (1,2,1)",
+			host.lastCallA, host.lastCallB, host.lastCallC)
+	}
+	if host.lastCallPC != 2 {
+		t.Errorf("CallBaseline pc = %d, want 2 (CALL pc=2 in length-4 form)", host.lastCallPC)
+	}
+}
+
+// TestPJ5_AnalyzeCallVoidForm_Recognize1ArgReg 验形态 A1R(1 reg 参)识别:
+// MOVE + MOVE + CALL B=2 C=1 + RETURN void。
+func TestPJ5_AnalyzeCallVoidForm_Recognize1ArgReg(t *testing.T) {
+	// 形态 A1R:MOVE 2 0; MOVE 3 1; CALL 2 2 1; RETURN 0 1
+	//   - MOVE.A=2 (被调位) MOVE.B=0 (参数源,即函数参数 g 槽)
+	//   - 第二条 MOVE.A=3 (被调位+1) MOVE.B=1 (参数源,即函数参数 x 槽)
+	//   - CALL.A=2 CALL.B=2 (1 参) CALL.C=1
+	//   - RETURN.B=1 (0 返值)
+	proto := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABC(bytecode.MOVE, 2, 0, 0),
+			bytecode.EncodeABC(bytecode.MOVE, 3, 1, 0),
+			bytecode.EncodeABC(bytecode.CALL, 2, 2, 1),
+			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
+		},
+	}
+	info, ok := analyzeCallVoidForm(proto)
+	if !ok {
+		t.Fatal("analyzeCallVoidForm should accept MOVE+MOVE+CALL+RETURN void form A1R")
+	}
+	if !info.isCallVoid {
+		t.Error("info.isCallVoid should be true")
+	}
+	if info.callArgCount != 1 {
+		t.Errorf("callArgCount = %d, want 1", info.callArgCount)
+	}
+	if info.callArg1IsK {
+		t.Error("callArg1IsK should be false for reg arg form A1R")
+	}
+	if info.callArg1RegSrc != 1 {
+		t.Errorf("callArg1RegSrc = %d, want 1 (MOVE.B)", info.callArg1RegSrc)
+	}
+	if info.retPC != 3 {
+		t.Errorf("retPC = %d, want 3", info.retPC)
+	}
+}
+
+// TestPJ5_RunCallVoid1ArgRegPath 验形态 A1R 端到端:Run 经
+// host.GetReg(callArg1RegSrc) + SetReg(callA+1) 装到参数槽。
+func TestPJ5_RunCallVoid1ArgRegPath(t *testing.T) {
+	proto := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABC(bytecode.MOVE, 2, 0, 0),
+			bytecode.EncodeABC(bytecode.MOVE, 3, 1, 0),
+			bytecode.EncodeABC(bytecode.CALL, 2, 2, 1),
+			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
+		},
+	}
+	gc, host := compileWithHost(t, proto)
+	defer tryDispose(t, gc)
+
+	const fakeFuncVal uint64 = 0xFFF9_BEEF_0000_0000
+	const fakeArgVal uint64 = 0x4034000000000000 // NumberValue(20.0)
+	host.regs[0] = fakeFuncVal
+	host.regs[1] = fakeArgVal
+
+	stack := make([]uint64, 4)
+	status := gc.Run(stack, 0)
+	if status != 0 {
+		t.Errorf("Run status = %d, want 0", status)
+	}
+	if host.regs[2] != fakeFuncVal {
+		t.Errorf("R(2) = 0x%016x, want 0x%016x (fakeFunc)", host.regs[2], fakeFuncVal)
+	}
+	if host.regs[3] != fakeArgVal {
+		t.Errorf("R(3) = 0x%016x, want 0x%016x (fakeArg from R(1))", host.regs[3], fakeArgVal)
+	}
+	if host.callCalls != 1 {
+		t.Errorf("CallBaseline called %d times, want 1", host.callCalls)
+	}
+}
+
+// TestPJ5_AnalyzeCallVoidForm_RecognizeRetGetter 验形态 BR1(0 参 1 返,getter)
+// 识别:GETUPVAL + CALL B=1 C=2 + RETURN A=0 B=2 + dead RETURN。
+func TestPJ5_AnalyzeCallVoidForm_RecognizeRetGetter(t *testing.T) {
+	// 形态 BR1:GETUPVAL 0 0; CALL 0 1 2; RETURN 0 2; RETURN 0 1
+	//   - GETUPVAL.A=0 (被调位) GETUPVAL.B=0 (upvalue 索引)
+	//   - CALL.A=0 CALL.B=1 (0 参) CALL.C=2 (1 返值)
+	//   - RETURN.A=0 RETURN.B=2 (1 返值,返 R(0)=被调返回值)
+	//   - dead RETURN(luac 通常补,但 length=3 时无)
+	proto := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABC(bytecode.GETUPVAL, 0, 0, 0),
+			bytecode.EncodeABC(bytecode.CALL, 0, 1, 2),
+			bytecode.EncodeABC(bytecode.RETURN, 0, 2, 0),
+			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
+		},
+	}
+	info, ok := analyzeCallVoidForm(proto)
+	if !ok {
+		t.Fatal("analyzeCallVoidForm should accept GETUPVAL+CALL+RETURN+dead RETURN getter form")
+	}
+	if !info.isCallVoid {
+		t.Error("info.isCallVoid should be true")
+	}
+	if info.retA != 0 || info.retB != 2 {
+		t.Errorf("retA/retB = %d/%d, want 0/2 (getter: 返 R(callA)=R(0))", info.retA, info.retB)
+	}
+	if info.callA != 0 || info.callB != 1 || info.callC != 2 {
+		t.Errorf("callA/B/C = %d/%d/%d, want 0/1/2", info.callA, info.callB, info.callC)
+	}
+	if info.callArgCount != 0 {
+		t.Errorf("callArgCount = %d, want 0", info.callArgCount)
+	}
+	if info.retPC != 2 {
+		t.Errorf("retPC = %d, want 2 (RETURN in pc 2)", info.retPC)
+	}
+}

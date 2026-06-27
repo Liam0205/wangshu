@@ -221,6 +221,69 @@ type P4HostState interface {
 	// 世界)发生,JIT 内联 bump 越界即出去——回来后从 jitContext 重载
 	// base。PJ2 完整版接入此协议;PJ7 简化形态尚不调用本接口。
 	ValueStackBaseAddr(base int32) uintptr
+
+	// CIDepthHostAddr 返回 thread.ciDepth 镜像字的 host 字节地址(承 §9.20
+	// Option B Spike 1)。
+	//
+	// **复用 P3 PW10 Stage 1a 镜像字**(crescent.State.ciDepthRef):同一镜像字
+	// crescent 端经 setCIDepth 写入,P4 mmap 段经 host addr (uintptr) 读 / inc / dec。
+	// 返回 = arena.Words().bytePtr + (st.ciDepthRef bytes)。
+	//
+	// **arena 重定位风险**:同 ArenaBaseAddr,arena grow 出 JIT 世界后回来从
+	// jitContext 重载;Spike 1 阶段每次 Run 入口注入。
+	CIDepthHostAddr() uintptr
+
+	// CISegBaseHostAddr 返回 CI 段当前字节基址镜像字的 host 字节地址(承 §9.20)。
+	//
+	// **复用 P3 PW10 Stage 2 镜像字**(crescent.State.ciSegBaseRef):CI 段可
+	// 重定位,mmap 段经此镜像字解引出当前 CI 段基址,然后算 CallInfo[depth]
+	// 帧地址(基址 + depth*40)。
+	CISegBaseHostAddr() uintptr
+
+	// TopHostAddr 返回 thread.top 镜像字的 host 字节地址(承 §9.20)。
+	//
+	// **复用 P3 PW10 Stage 1a 镜像字**(crescent.State.topRef):top 是栈槽索引,
+	// enterLuaFrame 设 callee 帧顶时 mmap 段写入(top = base + MaxStack)。
+	TopHostAddr() uintptr
+
+	// ExecuteCalleeFromInlineFrame Spike 1 Step C-1 helper API(承 §9.20.7
+	// 真实装拆解 + §9.20.9 trampoline exit-resume 协议 commit-2 接口 +
+	// commit-5l 签名修正:callA 替代 retA,SELF + CALL 形态下 method 在
+	// R(callA),callA 是 callee 槽位识别的正确字段)。
+	//
+	// **前置条件**(caller mmap 段必须保证):
+	//   - mmap 段 BuildVoid0ArgSkeleton 已写完 CallInfo[depth] 5 word 字段
+	//     (word0 编译期占位 0,helper 内忽略改取 calleeCI.cl word3 反查 callee
+	//     Proto;funcIdx 用 caller.base + callA 算)
+	//   - mmap 段 EmitFrameInlineCIDepthInc 已做 ciDepth++
+	//   - thread.cur 字段未被 mmap 段更新(Go 端冷字段)
+	//
+	// **流程**(对应 crescent.State 实装):
+	//   1. read CI[ciDepth-1].cl(BuildVoid0Arg LoadClosureGCRef 装载的 callee
+	//      closure GCRef)
+	//   2. 反查 callee Proto:object.ClosureProtoID(cl) → st.protos[pid]
+	//   3. ciDepth-- 抵消 BuildVoid0Arg 副作用
+	//   4. funcIdx = th.cur.base + callA(caller frame R(callA) = method 槽位)
+	//   5. nargs=0 + nresults=0(Spike 1 0 参 setter 形态守门)
+	//   6. nCcalls++/enterLuaFrame/executeFrom/popCallInfo
+	//   7. 出口 ciDepth++ 平衡 PopVoid0Arg
+	//
+	// **返**:0=OK(callee 完成 + 返值已落 R(callA..callA+nresults-1))/ 1=ERR
+	// (state.pendingErr 已置,Run 端 dispatcher 走错误路径)。
+	//
+	// **commit-5l 签名修正**(承 PR 评审 + 自检):原 retA 是 RETURN.A(setter
+	// 形态恒 0),无法正确算 funcIdx;改 callA 是 CALL.A(SELF + CALL 形态下
+	// method 槽位置),与 host.CallBaseline 同款语义对齐。
+	//
+	// **commit-5p Spike 2 签名扩**:加 callArgCount 参数,允许 N 参 SELF + CALL
+	// 形态(callArgCount=0..7;helper 内 enterLuaFrame nargs = 1+callArgCount =
+	// self + N user args)。
+	//
+	// **commit-5q Spike 4 签名扩**:加 nresults 参数,允许多返值形态(
+	// callC=1 → 0返 setter / callC=2 → 1返 getter / callC=3..16 → N=2..15 返
+	// drop multi-ret;helper 内 enterLuaFrame nresults 设值 + callee RETURN
+	// doReturn 自动落 R(callA..callA+nresults-1))。
+	ExecuteCalleeFromInlineFrame(base int32, callA int32, callArgCount int32, nresults int32) int32
 }
 
 // SetHostState 把 host(crescent)抽象注入本 Compiler。
