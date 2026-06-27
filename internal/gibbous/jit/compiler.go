@@ -2954,6 +2954,53 @@ func analyzeSelfCallForm6(proto *bytecode.Proto, callA uint8, selfRK uint16,
 			selfRecvIsUpval: op0 == bytecode.GETUPVAL,
 		}, true
 	}
+	// (a') Code[3]=TAILCALL 1 参:[2] arg → R(callA+2),[3] TAILCALL B=3 C=0,
+	// [4] RETURN A=callA B=0(dead),[5] RETURN B=1(隐式)
+	if op3 == bytecode.TAILCALL {
+		var argIsK bool
+		var argK uint64
+		var argReg uint8
+		if !decodeArgFromOp(proto, 2, int(callA)+2, &argIsK, &argK, &argReg) {
+			return shapeInfo{}, false
+		}
+		cA := bytecode.A(proto.Code[3])
+		cB := bytecode.B(proto.Code[3])
+		cC := bytecode.C(proto.Code[3])
+		if cA != int(callA) || cB != 3 || cC != 0 {
+			return shapeInfo{}, false
+		}
+		if bytecode.Op(proto.Code[4]) != bytecode.RETURN ||
+			bytecode.Op(proto.Code[5]) != bytecode.RETURN {
+			return shapeInfo{}, false
+		}
+		if bytecode.A(proto.Code[4]) != int(callA) ||
+			bytecode.B(proto.Code[4]) != 0 ||
+			bytecode.B(proto.Code[5]) != 1 {
+			return shapeInfo{}, false
+		}
+		return shapeInfo{
+			ok:              true,
+			retA:            uint8(bytecode.A(proto.Code[4])),
+			retB:            0,
+			retPC:           4,
+			preludeOp:       uint8(bytecode.TAILCALL),
+			preludeArg:      uint32(op0B),
+			isTailCall:      true,
+			isCallUpval:     op0 == bytecode.GETUPVAL,
+			callA:           callA,
+			callB:           uint8(cB),
+			callC:           uint8(cC),
+			callArgCount:    1,
+			callArg1IsK:     argIsK,
+			callArg1K:       argK,
+			callArg1RegSrc:  argReg,
+			isSelfCall:      true,
+			selfCallA:       callA,
+			selfMethodRK:    selfRK,
+			selfRecvSrcReg:  uint8(op0B),
+			selfRecvIsUpval: op0 == bytecode.GETUPVAL,
+		}, true
+	}
 	// (b)(c):2 K/reg 参 — [2][3] LOADK/MOVE
 	if op3 != bytecode.LOADK && op3 != bytecode.MOVE {
 		return shapeInfo{}, false
