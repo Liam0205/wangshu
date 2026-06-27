@@ -196,6 +196,17 @@ func archEmitSelfNodeHit(buf []byte, aReg, bReg uint8,
 		stableShape, stableIndex, stableKey, arenaBaseOff, deoptCode)
 }
 
+// archEmitSpecArgLoadK / archEmitSpecArgLoadReg arm-routed amd64 实装(承
+// PJ5 SELF + CALL spec template args 装载字节级 inline,跳过 host.GetReg/
+// SetReg round-trip)。arm64 端 stub(留 PJ8+ 物理 runner 启用前),其它
+// arch 同 amd64 fallback 走非 spec 路径。
+func archEmitSpecArgLoadK(buf []byte, dstReg uint8, k uint64) []byte {
+	return jitamd64.EmitSpecArgLoadK(buf, dstReg, k)
+}
+func archEmitSpecArgLoadReg(buf []byte, dstReg uint8, srcReg uint8) []byte {
+	return jitamd64.EmitSpecArgLoadReg(buf, dstReg, srcReg)
+}
+
 // archSupportsSpec 返 true 当本 arch 支持 PJ2 投机模板真接入。
 // amd64 ✅;arm64/其它 ❌(留 PJ8+)。
 func archSupportsSpec() bool { return true }

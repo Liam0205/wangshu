@@ -214,5 +214,17 @@ func archEmitSelfNodeHit(buf []byte, aReg, bReg uint8,
 	return buf
 }
 
+// archEmitSpecArgLoadK / archEmitSpecArgLoadReg 其它 arch stub。
+func archEmitSpecArgLoadK(buf []byte, dstReg uint8, k uint64) []byte {
+	_ = dstReg
+	_ = k
+	return buf
+}
+func archEmitSpecArgLoadReg(buf []byte, dstReg uint8, srcReg uint8) []byte {
+	_ = dstReg
+	_ = srcReg
+	return buf
+}
+
 // archSupportsSpec 其它 arch 不支持。
 func archSupportsSpec() bool { return false }

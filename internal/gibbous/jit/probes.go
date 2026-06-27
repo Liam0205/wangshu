@@ -45,6 +45,11 @@ var specTailCallHits uint64
 // SELF + TAILCALL = 三态分支)。
 var specSelfCallHits uint64
 
+// specSelfCallSpecHits 是 PJ5 SELF + CALL spec template 形态(IC NodeHit
+// 命中时 SELF 段走字节级 EmitSelfNodeHit 模板跳过 host.Self)Compile 命中次数。
+// 是 specSelfCallHits 的子集(spec 路径同时 ++ 两个计数)。
+var specSelfCallSpecHits uint64
+
 // SpecRegKHits 返回当前累计 reg-K 模板编译命中次数。仅测试用。
 func SpecRegKHits() uint64 { return atomic.LoadUint64(&specRegKHits) }
 
@@ -72,6 +77,10 @@ func SpecTailCallHits() uint64 { return atomic.LoadUint64(&specTailCallHits) }
 // 命中次数。仅测试用。
 func SpecSelfCallHits() uint64 { return atomic.LoadUint64(&specSelfCallHits) }
 
+// SpecSelfCallSpecHits 返回当前累计 PJ5 SELF + CALL spec template 形态
+// Compile 命中次数(IC NodeHit 命中走字节级模板)。仅测试用。
+func SpecSelfCallSpecHits() uint64 { return atomic.LoadUint64(&specSelfCallSpecHits) }
+
 // ResetSpecHits 把所有 spec 命中计数清零(测试开始前调,防之前其它测试
 // 残留累积影响断言)。仅测试用。
 func ResetSpecHits() {
@@ -83,6 +92,7 @@ func ResetSpecHits() {
 	atomic.StoreUint64(&specCallVoidHits, 0)
 	atomic.StoreUint64(&specTailCallHits, 0)
 	atomic.StoreUint64(&specSelfCallHits, 0)
+	atomic.StoreUint64(&specSelfCallSpecHits, 0)
 	atomic.StoreUint64(&specP4DeoptHits, 0)
 	atomic.StoreUint64(&specP4StuckHits, 0)
 }
@@ -110,3 +120,6 @@ func incSpecTailCallHits() { atomic.AddUint64(&specTailCallHits, 1) }
 
 // incSpecSelfCallHits 包内 ++(Compile 触发 PJ5 SELF method call inline 时调)。
 func incSpecSelfCallHits() { atomic.AddUint64(&specSelfCallHits, 1) }
+
+// incSpecSelfCallSpecHits 包内 ++(Compile 触发 PJ5 SELF + CALL spec template 时调)。
+func incSpecSelfCallSpecHits() { atomic.AddUint64(&specSelfCallSpecHits, 1) }
