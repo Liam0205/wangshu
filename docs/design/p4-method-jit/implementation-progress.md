@@ -1629,6 +1629,181 @@ PJ4 IC 六模板 + Spike 1 字节级模板全套)。
 10. ⏳ Step D archSupportsFrameInline 翻 true
 11. ⏳ Step E e2e SpecFrameInlineHits 0→1 命中实证
 
+#### 9.20.9 trampoline exit-resume 协议详细设计草案(2026-06-28 future session 实装基线)
+
+承 §9.20.7 (6) 阻塞点 + (7) 修正后路线:Spike 1 真接入的核心瓶颈是 trampoline 改造支持 "exit-to-host-then-resume" 协议。本节固化协议详细设计草案,供 future Spike 1 真接入 session 直接实装。
+
+**(1) 协议总览**:
+
+```
+[Go 端] crescent.State.RunGibbous(proto)
+        │
+        ▼
+[Go 端] callJITSpec(codeAddr, jitCtx, vsBase)  ← trampoline 现有协议
+        │
+        ▼
+[mmap 段] BuildVoid0ArgSkeleton(120字节)     ← Spike 1 enterLuaFrame inline
+        │  字节级写 CallInfo[depth] 5 word + ciDepth++
+        ▼
+[mmap 段] mov rax, helperExitReason          ← 新增:exit reason code
+[mmap 段] mov [r15+exitReasonOff], rax       ← jitContext.exitReason = EXIT_INLINE_HELPER
+[mmap 段] mov rax, helperRequestCode         ← 新增:helper request code
+[mmap 段] mov [r15+exitArg0Off], rax          ← jitContext.exitArg0 = HELPER_RUN_CALLEE
+[mmap 段] ret                                  ← 出 mmap 段返 trampoline
+        │
+        ▼
+[Go 端 trampoline] 检查 exitReason
+        │
+        ▼
+[Go 端 dispatcher] switch jitCtx.exitArg0:
+        case HELPER_RUN_CALLEE:
+            executeFrom(th, ciDepth - 1)   ← Go 栈跑 callee Lua 体
+        case HELPER_OSR_EXIT:
+            onOSRExit(proto); return        ← 投机失败,降级
+        default: return error                ← 未知 exit reason
+        │
+        ▼
+[Go 端] callee 完成,弹 CallInfo + 重载 caller 帧
+        │
+        ▼
+[Go 端] callJITSpec(callerCodeAddr+resumeOff, ...)  ← 新增:resume 协议
+                                                   ↓
+                                          ↓
+[mmap 段 resume entry] (caller 帧续跑,跳过已 emit 的 callee 部分)
+        │
+        ▼
+[mmap 段] PopVoid0ArgSkeleton(10字节)       ← Spike 1 popCallInfo inline
+        │
+        ▼
+[mmap 段] ret                                  ← 返 trampoline 完成 Run
+```
+
+**(2) jitContext 新增字段**(承 §9.20.6 (2) 字段扩):
+
+```go
+type JITContext struct {
+    // 既有字段...
+    arenaBase       uintptr
+    valueStackBase  uintptr
+    preemptFlag     atomic.Uint32
+    exitReason      uint32     // 既有(§9.20.6 (2) 协议):exit 类别码
+    spillBase       uintptr
+    spillTop        uintptr
+    ciDepthAddr     uintptr    // 既有 (§9.20.6 Spike 1)
+    ciSegBaseAddr   uintptr    // 既有
+    topAddr         uintptr    // 既有
+
+    // **本节新增** (Spike 1 真接入 + exit-resume 协议):
+    exitArg0        uint64     // exit 时 mmap 段写,dispatcher 读(helper request code)
+    resumeOff       uint32     // resume 入口在 mmap 段内的字节偏移(BuildVoid0Arg 后 helper exit 前的位置)
+}
+```
+
+**(3) 协议状态码**(常量,承 jit/p4state.go):
+
+```go
+const (
+    EXIT_NORMAL           uint32 = 0  // 正常 RET 出段(既有 status=0)
+    EXIT_ERROR            uint32 = 1  // ERR 冒泡(既有 status=1)
+    EXIT_OSR              uint32 = 2  // 投机失败 OSR exit(既有 status=2)
+    EXIT_INLINE_HELPER    uint32 = 3  // 新增:Spike 1 helper request,jitCtx.exitArg0 = helper code
+)
+
+const (
+    HELPER_RUN_CALLEE     uint64 = 1  // Spike 1 Step C-1:跑 callee Lua 体
+    HELPER_GROW_STACK     uint64 = 2  // 未来:arena grow 触发
+    HELPER_GC_BARRIER     uint64 = 3  // 未来:GC 写屏障(只在写 Go 堆时)
+)
+```
+
+**(4) trampoline 改造**(amd64 trampoline_spec_amd64.s 末尾加 dispatcher):
+
+```asm
+TEXT ·callJITSpec(SB),NOSPLIT,$0-32
+    PUSHQ BX; PUSHQ BP; PUSHQ R12; PUSHQ R13; PUSHQ R14; PUSHQ R15
+    MOVQ jitCtx+8(FP), R15
+    MOVQ vsBase+16(FP), BX
+    MOVQ codeAddr+0(FP), AX
+    CALL AX                           // 跳进 mmap 段
+    // 段返回:RAX 已是 status(0/1/2/3)
+
+    // 新增:exit-resume dispatcher
+    CMPQ AX, $3                       // EXIT_INLINE_HELPER?
+    JNE skipDispatch
+    // 调 Go dispatcher 处理 helper request,返回 resumeAddr
+    MOVQ R15, DI                      // 第 1 参 = jitCtx(SysV ABI)
+    CALL ·dispatchInlineHelper(SB)
+    MOVQ AX, codeAddr+0(FP)           // 用 dispatcher 返的 resumeAddr 重新 CALL
+    MOVQ codeAddr+0(FP), AX
+    CALL AX                           // 跳进 resume entry 续跑
+skipDispatch:
+    POPQ R15; POPQ R14; POPQ R13; POPQ R12; POPQ BP; POPQ BX
+    MOVQ AX, ret+24(FP)
+    RET
+```
+
+**(5) Go 端 dispatcher**(internal/gibbous/jit/dispatcher.go,新文件):
+
+```go
+//go:nosplit
+//go:noinline
+func dispatchInlineHelper(jitCtx *JITContext) uintptr {
+    switch jitCtx.exitArg0 {
+    case HELPER_RUN_CALLEE:
+        // Step C-1 helper 真实装:经 jitCtx 取 hostStatePtr → State
+        st := (*State)(unsafe.Pointer(jitCtx.hostStatePtr))
+        ret := HelperRunCalleeAfterFrameInline(jitCtx, base, retA)
+        if ret != 0 {
+            // 错误冒泡 / OSR exit,返 0 让 trampoline 走错误路径
+            return 0
+        }
+        // 计算 resume entry 地址(mmap 段内)
+        return jitCtx.codePageAddr + uintptr(jitCtx.resumeOff)
+    default:
+        // 未知 helper code,记录错误
+        return 0
+    }
+}
+```
+
+**(6) compileSpecSelfCall emit 改造**(承 §9.20.3 Step C-2):
+
+```go
+// useFrameInline 分支 emit 序列:
+// 1. BuildVoid0ArgSkeleton (120 字节)
+// 2. **新增**:exit-helper-request 段(13 字节)
+//    - mov rax, EXIT_INLINE_HELPER     (5 字节)
+//    - mov [r15+exitReasonOff], rax    (4 字节)
+//    - mov rax, HELPER_RUN_CALLEE      (5 字节)
+//    - mov [r15+exitArg0Off], rax      (4 字节)
+//    - ret                               (1 字节)
+// 3. **resume entry 偏移记录**:resumeOff = 当前 emit 字节数
+// 4. PopVoid0ArgSkeleton (10 字节)
+// 5. ret                                (1 字节)
+//
+// 总:120 + 13 + 10 + 1 = 144 字节(amd64)
+// arm64 对位:164 + ~20 + 16 + 4 = ~204 字节
+```
+
+**(7) 实装顺序**(承 Step C-1 → Step E,具体 5 commits):
+
+1. **commit-1**:jitContext 加 exitArg0 + resumeOff + 协议状态码常量
+2. **commit-2**:dispatcher.go 新文件(dispatchInlineHelper + HelperRunCalleeAfterFrameInline 真实装)
+3. **commit-3**:trampoline_spec_amd64.s 加 dispatcher CALL 段(+ arm64 对位)
+4. **commit-4**:compileSpecSelfCall useFrameInline 分支 emit BuildVoid0Arg + exit-helper-request + PopVoid0Arg
+5. **commit-5**:archSupportsFrameInline 翻 true + e2e SpecFrameInlineHits 0→1 实证 + benchmark 摊薄
+
+每 commit 独立可验证 + 隔离 commit + 严格回归(make test-p4 全过)。
+
+**(8) 风险点 + 缓解**(承 §9.20.6 (6.5) R14 修复同款手法):
+
+- **Trampoline 内 CALL Go 函数**:dispatchInlineHelper 是 Go 函数,trampoline `CALL ·dispatchInlineHelper(SB)` 时需 R14=G 正确(本会话 R14 ABI 修复已解决 trampoline PUSH/POP R14)
+- **dispatcher 内 executeFrom 非 nosplit**:`executeFrom` 链路深,morestack 可触发;`//go:nosplit` 不能加全链 → **dispatcher 内必须切回 Go 栈再调 executeFrom**(承 §9.20.6 (4) SP 切换协议)
+- **resumeOff 一致性**:emit 时记录 resumeOff,dispatcher 用 jitCtx.codePageAddr + resumeOff 求 resume entry — codePage 不重定位(mmap PROT_RX 段一次性 alloc),resumeOff 编译期确定
+- **错误冒泡**:HelperRunCalleeAfterFrameInline 内 doCall raise 时,设 jitCtx.exitReason=EXIT_ERROR + jitCtx.pendingErr,dispatcher 返 0 → trampoline 走错误路径
+
+**(9) 总工程量重估**:本节设计基线让 future Spike 1 真接入 session 直接 5 commits 完成实装(jitContext 字段扩 + dispatcher 文件 + trampoline 改造 + compileSpecSelfCall emit 接入 + 翻闸门 + e2e)。预估**1-2 周** session 内可完成(此前 §9.20.6 估算 4-5 周高估,因未考虑设计文档已固化协议物理学)。
+
 ---
 
 ## 10. 后续维护协议
