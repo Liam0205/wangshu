@@ -993,44 +993,53 @@ type FrameInlineCISlotWords struct {
 }
 
 // EmitFrameInlineBuildVoid0ArgSkeleton 发射 amd64 Spike 1 enterLuaFrame 字节级
-// inline 骨架(承 §9.20 Option B Spike 1):
+// inline 骨架 v2(承 §9.20 Option B Spike 1,word3 改用 runtime closure GCRef):
 //
 //  1. LoadCISlotAddr:rax = CallInfo[depth] 帧起点字节地址(30 字节)
-//  2. WriteCIWord × 5:写 5 word(14*5 = 70 字节)
-//  3. CIDepthInc:ciDepth++(10 字节)
+//  2. WriteCIWord(0/1/2):写 word0/1/2 imm(14*3 = 42 字节)
+//  3. LoadClosureGCRef(callA):rcx = R(callA) 解 NaN-box 得 GCRef payload(20 字节)
+//  4. WriteCIWordFromRcx(3):CI[depth].word3 = rcx(4 字节)
+//  5. WriteCIWord(4):写 word4 imm(14 字节)
+//  6. CIDepthInc:ciDepth++(10 字节)
 //
-// **总长度**:30 + 70 + 10 = 110 字节
+// **总长度**:30 + 42 + 20 + 4 + 14 + 10 = 120 字节(v1 = 110,word3 改运行期装载多 10 字节)
+//
+// **入参 words.Word3 被忽略**(保留字段位置避免破坏调用方;v2 用 runtime cl
+// 装载,word3 由 callA 解 NaN-box 得 GCRef payload 现算)。
 //
 // **守门**(Spike 1 阶段 caller 必须保证):
 //   - callee.NumParams=0 + !IsVararg + !NeedsArg + MaxStack≤32
-//   - 各 word imm64 由 caller 编译期烧入(base / funcIdx / top / pc / protoID
-//     / nresults=0 / cl GCRef / nVarargs=0)
-//   - rax 在模板出口处为 CallInfo[depth] 帧地址(供后续 helper call / popCallInfo
-//     共用)
+//   - words.Word0/1/2/4 由 caller 编译期烧入(base / funcIdx / top / pc /
+//     protoID / nresults=0 / nVarargs=0;word3 cl 字段被忽略)
+//   - rax 在模板出口处为 CallInfo[depth] 帧地址(供后续 helper call / popCallInfo)
 //
 // **仍剩 Spike 1 后续工程**(本批不实装):
-//   - callee closure GCRef 解析(R(callA) → 解 NaN-box → cl GCRef 现算装 word3)
 //   - 跳 helper 入 callee 执行(executeFrom 或 callee P4 段)
 //   - popCallInfo 反向(LoadCISlotAddr + CIDepthDec)+ 多返值处理
 //   - Compile/Run 端接通 + e2e prove-the-path
 func EmitFrameInlineBuildVoid0ArgSkeleton(buf []byte,
 	ciDepthAddrOffset, ciSegBaseAddrOffset int32,
+	callARecv uint8, // SELF 段 callee 装在 R(callARecv) 槽
 	words FrameInlineCISlotWords) []byte {
 	// 1. rax = CallInfo[depth] 帧起点
 	buf = EmitFrameInlineLoadCISlotAddr(buf, ciDepthAddrOffset, ciSegBaseAddrOffset)
-	// 2. 写 5 word
+	// 2. 写 word0/1/2
 	buf = EmitFrameInlineWriteCIWord(buf, 0, words.Word0)
 	buf = EmitFrameInlineWriteCIWord(buf, 1, words.Word1)
 	buf = EmitFrameInlineWriteCIWord(buf, 2, words.Word2)
-	buf = EmitFrameInlineWriteCIWord(buf, 3, words.Word3)
+	// 3. rcx = R(callARecv) NaN-box payload(GCRef)
+	buf = EmitFrameInlineLoadClosureGCRef(buf, callARecv)
+	// 4. CI[depth].word3 = rcx
+	buf = EmitFrameInlineWriteCIWordFromRcx(buf, 3)
+	// 5. 写 word4
 	buf = EmitFrameInlineWriteCIWord(buf, 4, words.Word4)
-	// 3. ciDepth++
+	// 6. ciDepth++
 	buf = EmitFrameInlineCIDepthInc(buf, ciDepthAddrOffset)
 	return buf
 }
 
-// EncodedFrameInlineBuildVoid0ArgSkeletonLen = 30 + 14*5 + 10 = 110.
-const EncodedFrameInlineBuildVoid0ArgSkeletonLen = 110
+// EncodedFrameInlineBuildVoid0ArgSkeletonLen = 30 + 14*3 + 20 + 4 + 14 + 10 = 120.
+const EncodedFrameInlineBuildVoid0ArgSkeletonLen = 120
 
 // EmitFrameInlineLoadClosureGCRef 发射 amd64 字节级 R(srcReg) NaN-box →
 // rcx 48-bit GCRef 解析模板(承 §9.20 Option B Spike 1 enterLuaFrame inline

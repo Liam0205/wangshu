@@ -733,7 +733,8 @@ func TestPJ5_EmitFrameInlineWriteCIWord_Length(t *testing.T) {
 }
 
 // TestPJ5_EmitFrameInlineBuildVoid0ArgSkeleton_Length 验 amd64 Spike 1
-// enterLuaFrame 字节级 inline 骨架总长度(30 + 70 + 10 = 110 字节)。
+// enterLuaFrame 字节级 inline 骨架 v2 总长度(30 + 42 + 20 + 4 + 14 + 10 =
+// 120 字节,word3 改用 runtime GCRef 装载多 10 字节)。
 // 承 §9.20 Option B Spike 1。
 func TestPJ5_EmitFrameInlineBuildVoid0ArgSkeleton_Length(t *testing.T) {
 	var buf []byte
@@ -741,10 +742,10 @@ func TestPJ5_EmitFrameInlineBuildVoid0ArgSkeleton_Length(t *testing.T) {
 		Word0: 0x0000000100000010, // funcIdx=1, base=0x10
 		Word1: 0x0000000000000020, // top=0x20
 		Word2: 0x0000000000000005, // protoID=5
-		Word3: 0xDEADBEEFCAFEBABE, // cl
+		Word3: 0,                  // v2 忽略,改 callARecv 装载
 		Word4: 0,
 	}
-	buf = EmitFrameInlineBuildVoid0ArgSkeleton(buf, 0x40, 0x48, words)
+	buf = EmitFrameInlineBuildVoid0ArgSkeleton(buf, 0x40, 0x48, 5 /*callARecv*/, words)
 	if len(buf) != EncodedFrameInlineBuildVoid0ArgSkeletonLen {
 		t.Errorf("EmitFrameInlineBuildVoid0ArgSkeleton 长度 = %d, want %d",
 			len(buf), EncodedFrameInlineBuildVoid0ArgSkeletonLen)
@@ -824,33 +825,58 @@ func TestPJ5_EmitFrameInlineWriteCIWordFromRcx_Encoding(t *testing.T) {
 	}
 }
 
-// TestPJ5_EmitFrameInlineBuildVoid0ArgSkeleton_StructuralBoundaries 验骨架
-// 段间边界(LoadCISlotAddr 0-29 | WriteCIWord×5 30-99 | CIDepthInc 100-109)。
+// TestPJ5_EmitFrameInlineBuildVoid0ArgSkeleton_StructuralBoundaries 验骨架 v2
+// 段间边界(承 v2 word3 改用 runtime GCRef 装载):
+//
+//	[0..29]   LoadCISlotAddr            (30 字节)
+//	[30..43]  WriteCIWord(0) imm64       (14 字节)
+//	[44..57]  WriteCIWord(1) imm64       (14 字节)
+//	[58..71]  WriteCIWord(2) imm64       (14 字节)
+//	[72..91]  LoadClosureGCRef(callARecv)(20 字节)— rcx = R(callARecv) GCRef
+//	[92..95]  WriteCIWordFromRcx(3)      (4 字节) — word3 = rcx
+//	[96..109] WriteCIWord(4) imm64       (14 字节)
+//	[110..119] CIDepthInc                 (10 字节)
+//
 // 通过查特征字节位置验证段堆叠正确。
 func TestPJ5_EmitFrameInlineBuildVoid0ArgSkeleton_StructuralBoundaries(t *testing.T) {
 	var buf []byte
-	words := FrameInlineCISlotWords{Word0: 1, Word1: 2, Word2: 3, Word3: 4, Word4: 5}
-	buf = EmitFrameInlineBuildVoid0ArgSkeleton(buf, 0x40, 0x48, words)
+	words := FrameInlineCISlotWords{Word0: 1, Word1: 2, Word2: 3, Word4: 5}
+	buf = EmitFrameInlineBuildVoid0ArgSkeleton(buf, 0x40, 0x48, 5 /*callARecv*/, words)
 
 	// LoadCISlotAddr 段末:add rax, rcx 在 offset 27-29(0x48 0x01 0xC8)
 	if buf[27] != 0x48 || buf[28] != 0x01 || buf[29] != 0xC8 {
 		t.Errorf("LoadCISlotAddr 段末 add rax,rcx 字节[27-29]=0x%02X%02X%02X, want 0x4801C8",
 			buf[27], buf[28], buf[29])
 	}
-	// WriteCIWord 段 word0 起:offset 30 mov rcx, imm64(0x48 0xB9)
+	// WriteCIWord(0) 段头:offset 30 mov rcx, imm64(0x48 0xB9)
 	if buf[30] != 0x48 || buf[31] != 0xB9 {
-		t.Errorf("WriteCIWord 段头 mov rcx imm64 字节[30-31]=0x%02X%02X, want 0x48B9",
+		t.Errorf("WriteCIWord(0) 段头 mov rcx imm64 字节[30-31]=0x%02X%02X, want 0x48B9",
 			buf[30], buf[31])
 	}
-	// CIDepthInc 段头:offset 100 mov rax, [r15+0x40](0x49 0x8B 0x87)
-	if buf[100] != 0x49 || buf[101] != 0x8B || buf[102] != 0x87 {
-		t.Errorf("CIDepthInc 段头 mov rax,[r15+disp32] 字节[100-102]=0x%02X%02X%02X, want 0x498B87",
-			buf[100], buf[101], buf[102])
+	// LoadClosureGCRef 段头:offset 72 mov rcx, [rbx + 5*8=40](0x48 0x8B 0x8B)
+	if buf[72] != 0x48 || buf[73] != 0x8B || buf[74] != 0x8B {
+		t.Errorf("LoadClosureGCRef 段头 mov rcx [rbx+disp32] 字节[72-74]=0x%02X%02X%02X, want 0x488B8B",
+			buf[72], buf[73], buf[74])
 	}
-	// CIDepthInc 段末:offset 107-109 inc qword ptr [rax](0x48 0xFF 0x00)
-	if buf[107] != 0x48 || buf[108] != 0xFF || buf[109] != 0x00 {
-		t.Errorf("CIDepthInc 段末 inc qword ptr [rax] 字节[107-109]=0x%02X%02X%02X, want 0x48FF00",
-			buf[107], buf[108], buf[109])
+	// WriteCIWordFromRcx 段:offset 92 mov [rax+24] rcx(0x48 0x89 0x48 0x18)
+	if buf[92] != 0x48 || buf[93] != 0x89 || buf[94] != 0x48 || buf[95] != 0x18 {
+		t.Errorf("WriteCIWordFromRcx(3) 字节[92-95]=0x%02X%02X%02X%02X, want 0x48894818",
+			buf[92], buf[93], buf[94], buf[95])
+	}
+	// WriteCIWord(4) 段头:offset 96 mov rcx imm64(0x48 0xB9)
+	if buf[96] != 0x48 || buf[97] != 0xB9 {
+		t.Errorf("WriteCIWord(4) 段头字节[96-97]=0x%02X%02X, want 0x48B9",
+			buf[96], buf[97])
+	}
+	// CIDepthInc 段头:offset 110 mov rax, [r15+0x40](0x49 0x8B 0x87)
+	if buf[110] != 0x49 || buf[111] != 0x8B || buf[112] != 0x87 {
+		t.Errorf("CIDepthInc 段头 mov rax,[r15+disp32] 字节[110-112]=0x%02X%02X%02X, want 0x498B87",
+			buf[110], buf[111], buf[112])
+	}
+	// CIDepthInc 段末:offset 117-119 inc qword ptr [rax](0x48 0xFF 0x00)
+	if buf[117] != 0x48 || buf[118] != 0xFF || buf[119] != 0x00 {
+		t.Errorf("CIDepthInc 段末 inc qword ptr [rax] 字节[117-119]=0x%02X%02X%02X, want 0x48FF00",
+			buf[117], buf[118], buf[119])
 	}
 }
 

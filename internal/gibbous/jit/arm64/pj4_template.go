@@ -889,36 +889,44 @@ type FrameInlineCISlotWordsArm64 struct {
 }
 
 // EmitFrameInlineBuildVoid0ArgSkeletonArm64 发射 arm64 Spike 1 enterLuaFrame
-// 字节级 inline 骨架(承 §9.20 Option B Spike 1,对位 amd64 110 字节)。
+// 字节级 inline 骨架 v2(承 §9.20 Option B Spike 1,对位 amd64,word3 改用
+// runtime closure GCRef 装载)。
 //
 // 段堆叠:
 //  1. LoadCISlotAddrArm64:x0 = CallInfo[depth] 帧起点(40 字节)
-//  2. WriteCIWordArm64 × 5:写 5 word(20*5 = 100 字节)
-//  3. CIDepthIncArm64:ciDepth++(16 字节)
+//  2. WriteCIWordArm64(0/1/2):写 word0/1/2 imm(20*3 = 60 字节)
+//  3. LoadClosureGCRefArm64(callARecv):x16 = R(callARecv) GCRef(24 字节)
+//  4. WriteCIWordFromXArm64(3, 16):word3 = x16(4 字节)
+//  5. WriteCIWordArm64(4):写 word4 imm(20 字节)
+//  6. CIDepthIncArm64:ciDepth++(16 字节)
 //
-// **总长度**:40 + 100 + 16 = 156 字节(对位 amd64 = 110,arm64 多 46 字节
-// 因 RISC fixed-length + MovXdImm64 16 字节 vs amd64 mov rcx imm64 10 字节)。
+// **总长度**:40 + 60 + 24 + 4 + 20 + 16 = 164 字节(对位 amd64 v2 = 120,
+// arm64 多 44 字节因 RISC fixed-length + MovXdImm64 16 字节 vs amd64 10 字节)。
 //
-// arm64 寄存器约定:x0 装段地址(对位 amd64 rax)/ x16/17/18 scratch
-// (IP0/IP1/IP2,callee 可任意改写)。
+// arm64 寄存器约定:x0 装段地址(对位 amd64 rax)/ x16/17/18 scratch。
 func EmitFrameInlineBuildVoid0ArgSkeletonArm64(buf []byte,
 	ciDepthAddrOffset, ciSegBaseAddrOffset uint16,
+	callARecv uint8,
 	words FrameInlineCISlotWordsArm64) []byte {
 	// 1. x0 = CallInfo[depth] 帧起点
 	buf = EmitFrameInlineLoadCISlotAddrArm64(buf, ciDepthAddrOffset, ciSegBaseAddrOffset)
-	// 2. 写 5 word
+	// 2. 写 word0/1/2 imm
 	buf = EmitFrameInlineWriteCIWordArm64(buf, 0, words.Word0)
 	buf = EmitFrameInlineWriteCIWordArm64(buf, 1, words.Word1)
 	buf = EmitFrameInlineWriteCIWordArm64(buf, 2, words.Word2)
-	buf = EmitFrameInlineWriteCIWordArm64(buf, 3, words.Word3)
+	// 3. x16 = R(callARecv) GCRef
+	buf = EmitFrameInlineLoadClosureGCRefArm64(buf, callARecv)
+	// 4. word3 = x16
+	buf = EmitFrameInlineWriteCIWordFromXArm64(buf, 3, 16)
+	// 5. 写 word4 imm
 	buf = EmitFrameInlineWriteCIWordArm64(buf, 4, words.Word4)
-	// 3. ciDepth++
+	// 6. ciDepth++
 	buf = EmitFrameInlineCIDepthIncArm64(buf, ciDepthAddrOffset)
 	return buf
 }
 
-// EncodedFrameInlineBuildVoid0ArgSkeletonArm64Len = 40 + 20*5 + 16 = 156.
-const EncodedFrameInlineBuildVoid0ArgSkeletonArm64Len = 156
+// EncodedFrameInlineBuildVoid0ArgSkeletonArm64Len = 40 + 20*3 + 24 + 4 + 20 + 16 = 164.
+const EncodedFrameInlineBuildVoid0ArgSkeletonArm64Len = 164
 
 // EmitFrameInlineLoadClosureGCRefArm64 发射 arm64 字节级 R(srcReg) NaN-box
 // → x16 48-bit GCRef 解析模板(承 §9.20 Option B Spike 1 amd64 对位)。
