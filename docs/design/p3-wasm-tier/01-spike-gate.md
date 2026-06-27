@@ -36,6 +36,8 @@
 | **决策不可逆** | 走开工(走 P3)还是走跳跃(走 P4),进入 PW1 后**无回头**——回头意味着推翻 PW1 投入,违反 [../roadmap.md §5](../roadmap.md) 原则 3 |
 | **数据进档** | spike 三档数据 + 决策报告进 [implementation-progress](./implementation-progress.md);P4 验收时若反向决议「P3 退役」,本闸门数据是「P3 是否本就该跳过」的回顾依据 |
 
+**对偶面:P4 P3 去留闸门形态平行**(2026-06-28,承 [P4 implementation-progress §2 RJ-18](../p4-method-jit/implementation-progress.md) 跨文档回填请求):本节 spike 闸门(P3 开工前)与 [P4 07 §0.3 P3 去留闸门](../p4-method-jit/07-p3-retirement.md)(P4 验收后)是 P3 生命周期上的两个闸门,**形态平行**:都是 P3 阶段的「闸门级单点决策不可绕过」纪律的同款体现。两闸门时点不同(P3 开工 vs P4 验收)但形态共享(单点决策 + 数据进档 + 决策不可逆)。两闸门的数据进档共享同一文档(implementation-progress.md)。
+
 ### 0.3 战略价值与闸门的双向性
 
 [00-overview §1](./00-overview.md) 引用 [../roadmap.md §4](../roadmap.md) 反复强调 P3「战略价值不在倍率,在跑通分层机器」——但这条战略价值的兑现**前提**仍是分层机器各部件能在合理代价下相互调用。spike 闸门是这条前提的**物理校核**:
