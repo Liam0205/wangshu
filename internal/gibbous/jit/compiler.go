@@ -162,6 +162,20 @@ type shapeInfo struct {
 	//   - 复用 icAReg(SELF.A 即 method 结果)/ icBReg(SELF.B 即 obj)/
 	//     icStableShape / icStableIndex / icStableKey 字段
 	icSelfNodeHit bool
+
+	// PJ5 CALL void 形态(`function(g) g() end` 类):
+	//   - isCallVoid = true:Run 端 prelude 路径调 host.DoCall 完成 baseline
+	//     CALL(byte-equal P1 doCall 分派,host/crescent/__call/gibbous 全覆盖)
+	//   - callA / callB / callC:CALL A B C 三字段直传给 host.DoCall;
+	//     retA=callA 用于 deopt 路径定位,retPC=CALL 自身 pc(MOVE+CALL+RETURN
+	//     形态 = pc 1;无 MOVE 形态 = pc 0)
+	//
+	// 形态识别在 analyzeCallVoidForm,典型 luac 编译形态(长度 3):
+	//   MOVE A B (A=被调位,B=参数源位) + CALL A 1 1 + RETURN 0 1
+	isCallVoid bool
+	callA      uint8
+	callB      uint8
+	callC      uint8
 }
 
 // analyzeGetTableArrayHit 识别 PJ4 IC ArrayHit 形态:
@@ -1296,6 +1310,75 @@ func analyzeArithChainForm(proto *bytecode.Proto) (shapeInfo, bool) {
 	}, true
 }
 
+// analyzeCallVoidForm 识别 PJ5 CALL void 简化形态(承
+// docs/design/p4-method-jit/05-system-pipeline.md §4.3 + 06-backends.md §3.5):
+// `function(g) g() end` 类——MOVE + CALL + RETURN void 三 op 单 BB。
+//
+// luac 编译形态(以 `local function f(g) g() end` 为例,无参 0 返调用):
+//
+//	[0] MOVE   A=被调位 B=参数源位
+//	[1] CALL   A=被调位 B=1(0 参) C=1(0 返)
+//	[2] RETURN A=0 B=1(0 返)
+//
+// **触发条件**(全部满足才返 true):
+//   - Code 长度 = 3
+//   - proto.Code[0] = MOVE,MOVE.A 与 MOVE.B 在 reg 范围 [0,254]
+//   - proto.Code[1] = CALL,CALL.A == MOVE.A(被调函数在 MOVE 拷过去的槽位)
+//   - CALL.B == 1(0 参 — 当前简化形态只识别无参 CALL,留下次 commit 扩定参
+//     CALL.B>=2 含参形态)
+//   - CALL.C == 1(0 返 — setter 形态,与 RETURN.B=1 配套)
+//   - proto.Code[2] = RETURN,RETURN.B == 1(0 返值)
+//
+// **PJ5 简化形态范围**:Run 端 prelude 路径调 host.DoCall(byte-equal P1
+// doCall 分派 — host fn / crescent / __call / gibbous 全覆盖)+ DoReturn 弹
+// 帧。**不走 R3 indirect 哨兵**(段内 call_indirect 留 PJ5+ 完整版,本简化
+// 形态 host.DoCall 直接同步跑完);Run 端遇 indirect 哨兵(奇数返回)把
+// 帧弹掉等价 baseline(已完成,被调 RETURN 经 DoReturn 写中转字)。
+//
+// 失败任一条件返 (shapeInfo{}, false) — 走 analyzeShape 主分流(可能匹配
+// 其它形态如 MOVE+RETURN,但 MOVE 后接 CALL 那条 case 不会匹配 MOVE 形态
+// 守卫 retB=2)。
+func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
+	if len(proto.Code) != 3 {
+		return shapeInfo{}, false
+	}
+	if bytecode.Op(proto.Code[0]) != bytecode.MOVE ||
+		bytecode.Op(proto.Code[1]) != bytecode.CALL ||
+		bytecode.Op(proto.Code[2]) != bytecode.RETURN {
+		return shapeInfo{}, false
+	}
+	mvA := bytecode.A(proto.Code[0])
+	mvB := bytecode.B(proto.Code[0])
+	clA := bytecode.A(proto.Code[1])
+	clB := bytecode.B(proto.Code[1])
+	clC := bytecode.C(proto.Code[1])
+	rtB := bytecode.B(proto.Code[2])
+	if mvA > 254 || mvB > 254 {
+		return shapeInfo{}, false
+	}
+	if clA != mvA {
+		return shapeInfo{}, false
+	}
+	// 当前简化形态:0 参 0 返
+	if clB != 1 || clC != 1 {
+		return shapeInfo{}, false
+	}
+	if rtB != 1 { // setter 形态 0 返值
+		return shapeInfo{}, false
+	}
+	return shapeInfo{
+		ok:         true,
+		retA:       0,
+		retB:       1,
+		retPC:      2,
+		preludeOp:  uint8(bytecode.CALL), // Run 端 prelude switch 走 host.DoCall
+		isCallVoid: true,
+		callA:      uint8(clA),
+		callB:      uint8(clB),
+		callC:      uint8(clC),
+	}, true
+}
+
 // analyzeShape 识别支持的「单值产生 + RETURN A 1」形态。
 //
 // 支持形态:
@@ -1368,6 +1451,12 @@ func analyzeShape(proto *bytecode.Proto) shapeInfo {
 		if bytecode.Op(proto.Code[2]) != bytecode.RETURN {
 			return shapeInfo{}
 		}
+	}
+
+	// PJ5 CALL void 形态(MOVE+CALL+RETURN void)在主 switch 前先 try——
+	// 因为 MOVE case 的简化形态守卫(retB=2)会拒,本形态需独立识别。
+	if cv, ok := analyzeCallVoidForm(proto); ok {
+		return cv
 	}
 
 	switch bytecode.Op(first) {
@@ -2242,6 +2331,10 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 		chainB:     info.chainB,
 		chainC:     info.chainC,
 		host:       c.hostState,
+		isCallVoid: info.isCallVoid,
+		callA:      info.callA,
+		callB:      info.callB,
+		callC:      info.callC,
 	}, nil
 }
 
@@ -2270,7 +2363,10 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 //     调 host.SetTable,经 IC + __newindex 元方法链,可 ERR 冒泡)
 //   - 长度 2/3:SETGLOBAL A Bx + RETURN A 1(setter,prelude 路径调
 //     host.DoSetGlobal,可 ERR 冒泡)
-var ErrCompileUnsupportedShape = errors.New("internal/gibbous/jit: P4 PJ7 unsupported shape (expected: single RETURN A B / single-BB MOVE|GETUPVAL|LOADK|LOADBOOL|LOADNIL|ADD..POW|UNM|LEN|NEWTABLE|GETTABLE|GETGLOBAL|SETTABLE|SETGLOBAL + RETURN A 2 (getter) / 1 (setter))")
+//   - **长度 3 PJ5 CALL void**:MOVE A B + CALL A 1 1 + RETURN 0 1
+//     (`function(g) g() end` 类——Run 端 prelude 路径调 host.CallBaseline
+//     完成 baseline doCall 分派 byte-equal P1,可 ERR 冒泡)
+var ErrCompileUnsupportedShape = errors.New("internal/gibbous/jit: P4 PJ7 unsupported shape (expected: single RETURN A B / single-BB MOVE|GETUPVAL|LOADK|LOADBOOL|LOADNIL|ADD..POW|UNM|LEN|NEWTABLE|GETTABLE|GETGLOBAL|SETTABLE|SETGLOBAL + RETURN A 2 (getter) / 1 (setter) / PJ5 MOVE+CALL+RETURN void)")
 
 // compileIcArrayHit 编译 PJ4 IC ArrayHit 形态(承 analyzeGetTableArrayHit):
 // emit 129 字节 IC inline 模板,失败 deopt → Run 端调 host.GetTable byte-equal P1。

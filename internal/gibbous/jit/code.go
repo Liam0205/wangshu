@@ -123,6 +123,17 @@ type p4Code struct {
 	//     (byte-equal 解释器 icSetTable + __newindex)。setter 形态 retB=1
 	//     无 R(A) 写。
 	icSetArrayHit bool
+
+	// PJ5 CALL void 路径标志(承 docs/design/p4-method-jit/05-system-pipeline.md
+	// §4.3 + 06-backends.md §3.5):
+	//   - isCallVoid = true:Run prelude 路径调 host.DoCall 完成 baseline
+	//     CALL(byte-equal P1 doCall 分派);followed by DoReturn 弹帧。
+	//   - callA / callB / callC:CALL A B C 三字段(传给 host.DoCall),callA
+	//     是被调函数寄存器号(MOVE 已把它从 callee 槽拷过来)
+	isCallVoid bool
+	callA      uint8
+	callB      uint8
+	callC      uint8
 }
 
 // Proto 反向指针(trampoline 校验)。
@@ -429,6 +440,28 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 			// host.GetReg 读 R(B) + SetReg(A, BoolValue(!Truthy(...)))。
 			v := value.Value(c.host.GetReg(int32(c.preludeArg)))
 			c.host.SetReg(int32(c.retA), uint64(value.BoolValue(!value.Truthy(v))))
+		case uint8(bytecode.CALL):
+			// PJ5 CALL void 形态:`function(g) g() end` 类 — MOVE+CALL+RETURN void。
+			// MOVE 已把被调函数从源 reg 拷到 R(callA)槽;callA/callB/callC 是
+			// CALL 三字段(本简化形态 callB=1 即 0 参,callC=1 即 0 返)。
+			//
+			// **pc 实参**:CALL 自身 pc 由 retPC-1 算(retPC 是 RETURN 在 pc 2,
+			// CALL 在 pc 1)。
+			//
+			// **预处理 MOVE 槽**:luac 编 MOVE callA(被调位)= R(MOVE.B)(参数源
+			// 位),但 P4 mmap 段是 dummy 不执行 MOVE — Run 端需手动经
+			// host.GetReg+SetReg 完成 MOVE,保被调位 R(callA) 在调用时已是真函数。
+			callPC := int32(c.retPC) - 1
+			mvB := uint8(bytecode.B(c.proto.Code[0])) // MOVE.B(源寄存器)
+			srcVal := c.host.GetReg(int32(mvB))
+			c.host.SetReg(int32(c.callA), srcVal)
+			// baseline doCall:绕过 R3 indirect 哨兵(本简化形态不支持段内
+			// call_indirect),host/crescent/__call/gibbous 全形态同步跑完。
+			st := c.host.CallBaseline(int32(base), callPC,
+				int32(c.callA), int32(c.callB), int32(c.callC))
+			if st != 0 {
+				return st
+			}
 		case uint8(bytecode.EQ), uint8(bytecode.LT), uint8(bytecode.LE):
 			if c.retB < 2 {
 				break
