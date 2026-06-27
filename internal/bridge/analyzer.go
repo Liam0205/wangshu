@@ -427,6 +427,23 @@ func (v *compilabilityVisitor) visitMethodCallExpr(e *ast.MethodCallExpr) {
 // **例外**:isKnownLocalCall 路径(visitCallExpr 第 5 步)仍走当前 visitor
 // 递归子——那是为了把已知 local call 的 yield 含量传染回父函数。两条路径
 // 不冲突:子函数定义本身不传染,但父调用子时按调用语义传染。
+//
+// **PJ5 扩展(2026-06-27)**:sub-visitor.localFuncs 继承父 visitor 的快照
+// (减去 closure 自身参数同名遮蔽项),让 closure 内调外层 local known fn
+// 形态识别为 known(承 03 §9 GAP-5 scope-aware 名字解析)。例:
+//
+//	local function noop() end
+//	local function invoker() noop() end  -- noop 在 invoker 内是 upvalue
+//
+// 不扩展时:invoker.body 看 noop() 时 sub.localFuncs 空 → noop 标
+// callsUnknownFn → ReasonUnknownCall → invoker NotCompilable;
+// 扩展后:sub.localFuncs 含 noop → isKnownLocalCall=true → 递归判 noop.Body
+// (与 parent 同款语义传染:noop 含 yield 则 invoker 也含),
+// invoker 形态 Compilable + P4 PJ5 升层可触达。
+//
+// **遮蔽安全**:closure 自身 Params(`function(name) ... end`)从继承表里
+// 删掉,避免 parent 的 `noop` 与 closure 的 parameter `noop` 误识别。
+// closure 体内重定义 local 由 walkStmt::LocalStmt 覆盖父继承条目。
 func (v *compilabilityVisitor) walkFuncExpr(e *ast.FuncExpr) {
 	v.currentDepth++
 	if v.currentDepth > v.maxClosureDepth {
@@ -436,6 +453,19 @@ func (v *compilabilityVisitor) walkFuncExpr(e *ast.FuncExpr) {
 	// 子函数体单独跑(隔离信号)
 	sub := newCompilabilityVisitor()
 	sub.currentDepth = v.currentDepth
+	// 继承父 localFuncs 快照,减去 closure 自身参数同名遮蔽项
+	for k, fn := range v.localFuncs {
+		shadowed := false
+		for _, p := range e.Params {
+			if p == k {
+				shadowed = true
+				break
+			}
+		}
+		if !shadowed {
+			sub.localFuncs[k] = fn
+		}
+	}
 	sub.walkBlock(e.Body)
 
 	// 只回写嵌套深度
