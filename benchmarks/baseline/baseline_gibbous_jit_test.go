@@ -493,3 +493,38 @@ func BenchmarkGibbousJIT_PJ5SelfCallHeavyBody1Arg(b *testing.B) {
 func BenchmarkGibbousJIT_PJ5SelfCallHeavyBody1ArgCresc(b *testing.B) {
 	benchGibbousJITSelfCallHeavyBody1Arg(b, false)
 }
+
+// PJ5 SELF + CALL spec template — 3 reg 参 + 计算密集 method 体(摊薄全档对照)。
+func benchGibbousJITSelfCallHeavyBody3Arg(b *testing.B, force bool) {
+	src := `
+local o = { m = function(self, n, mul, off) local s = 0; for i = 1, n do s = s + i * mul + off end; return s end }
+local function caller(t, a, b, c) return t:m(a, b, c) end
+local total = 0
+for i = 1, 50 do total = total + caller(o, 100, 2, 3) end
+return total`
+	prog, err := wangshu.Compile([]byte(src), "bench-jit-self-heavy-3arg")
+	if err != nil {
+		b.Fatalf("compile: %v", err)
+	}
+	st := wangshu.NewState(wangshu.Options{})
+	if _, err := prog.Run(st); err != nil {
+		b.Fatalf("warmup-phase1: %v", err)
+	}
+	st.SetForceAllPromote(force)
+	if _, err := prog.Run(st); err != nil {
+		b.Fatalf("warmup-phase2: %v", err)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := prog.Run(st); err != nil {
+			b.Fatalf("run: %v", err)
+		}
+	}
+}
+
+func BenchmarkGibbousJIT_PJ5SelfCallHeavyBody3Arg(b *testing.B) {
+	benchGibbousJITSelfCallHeavyBody3Arg(b, true)
+}
+func BenchmarkGibbousJIT_PJ5SelfCallHeavyBody3ArgCresc(b *testing.B) {
+	benchGibbousJITSelfCallHeavyBody3Arg(b, false)
+}
