@@ -179,22 +179,22 @@ type shapeInfo struct {
 	// preludeArg:形态 A 时 = MOVE.B(源 reg)/ 形态 B 时 = GETUPVAL.B
 	// (upvalue 索引)
 	//
-	// 形态识别在 analyzeCallVoidForm,典型 luac 编译形态(长度 3 或 4):
-	//   形态 A0:  MOVE A B + CALL A 1 1 + RETURN 0 1
-	//   形态 B0:  GETUPVAL A B + CALL A 1 1 + RETURN 0 1
-	//   形态 A1K: MOVE A B + LOADK A+1 Bx + CALL A 2 1 + RETURN 0 1
-	//   形态 B1K: GETUPVAL A B + LOADK A+1 Bx + CALL A 2 1 + RETURN 0 1
-	//   形态 A1R: MOVE A B + MOVE A+1 B' + CALL A 2 1 + RETURN 0 1
-	//   形态 B1R: GETUPVAL A B + MOVE A+1 B' + CALL A 2 1 + RETURN 0 1
+	// 形态识别在 analyzeCallVoidForm,典型 luac 编译形态(长度 3、4、5):
+	//   形态 A0/B0:0 参 0 返(长度 3)
+	//   形态 A1K/B1K:1 K 参 0 返(长度 4)
+	//   形态 A1R/B1R:1 reg 参 0 返(长度 4)
+	//   形态 AR1/BR1:0 参 1 返 getter(长度 4 含 dead RETURN)
+	//   形态 A2K/B2K:2 K 参 0 返(长度 5,本批扩展)
 	isCallVoid     bool
 	isCallUpval    bool
 	callA          uint8
 	callB          uint8
 	callC          uint8
-	callArgCount   uint8  // 0=0 参 / 1=1 参(K 常量或 reg)
-	callArg1IsK    bool   // 1 参形态时 true=LOADK / false=MOVE reg
-	callArg1K      uint64 // 1 K 参形态时编译期烧入的 NaN-box raw
+	callArgCount   uint8  // 0 / 1 / 2
+	callArg1IsK    bool   // 1 参形态时 true=LOADK / false=MOVE reg;2 K 参形态恒 true
+	callArg1K      uint64 // 1 或 2 K 参形态时第一个 K
 	callArg1RegSrc uint8  // 1 reg 参形态时 MOVE.B 源 reg 号
+	callArg2K      uint64 // 2 K 参形态时第二个 K
 }
 
 // analyzeGetTableArrayHit 识别 PJ4 IC ArrayHit 形态:
@@ -1366,7 +1366,7 @@ func analyzeArithChainForm(proto *bytecode.Proto) (shapeInfo, bool) {
 // 其它形态如 GETUPVAL+RETURN A 2 单 op 形态守卫 retB=2 会拒 setter 形态)。
 func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
 	codeLen := len(proto.Code)
-	if codeLen != 3 && codeLen != 4 {
+	if codeLen != 3 && codeLen != 4 && codeLen != 5 {
 		return shapeInfo{}, false
 	}
 	op0 := bytecode.Op(proto.Code[0])
@@ -1379,28 +1379,30 @@ func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
 		return shapeInfo{}, false
 	}
 
-	// 长度 3:0 参 0 返形态(MOVE/GETUPVAL + CALL B=1 C=1 + RETURN B=1)
-	// 长度 4:两种子形态
-	//   - [1]=CALL B=1 C=2,[2]=RETURN B=2,[3]=dead RETURN:0 参 1 返形态
-	//   - [1]=LOADK/MOVE,[2]=CALL,[3]=RETURN:1 参 0 返形态
+	// 长度 3:0 参 0 返(MOVE/GETUPVAL + CALL B=1 C=1 + RETURN B=1)
+	// 长度 4:三种子形态
+	//   - [1]=CALL B=1 C=2 + [2]=RETURN B=2 + [3]=dead RETURN:0 参 1 返(getter)
+	//   - [1]=LOADK,[2]=CALL B=2 C=1,[3]=RETURN B=1:1 K 参 0 返(setter)
+	//   - [1]=MOVE,[2]=CALL B=2 C=1,[3]=RETURN B=1:1 reg 参 0 返(setter)
+	// 长度 5:2 K 参 0 返 — GETUPVAL/MOVE + LOADK + LOADK + CALL B=3 C=1 + RETURN B=1
 	var callIdx, retIdx int
 	var argK uint64
 	var argReg uint8
+	var arg2K uint64
 	var argCount uint8
 	var argIsK bool
-	if codeLen == 3 {
+	switch codeLen {
+	case 3:
 		callIdx = 1
 		retIdx = 2
 		argCount = 0
-	} else { // codeLen == 4
+	case 4:
 		secondOp := bytecode.Op(proto.Code[1])
 		switch secondOp {
 		case bytecode.CALL:
-			// 0 参 1 返形态(MOVE/GETUPVAL + CALL + RETURN + dead RETURN)
 			callIdx = 1
 			retIdx = 2
 			argCount = 0
-			// dead RETURN 在 [3] — 验证是 RETURN(下方主守卫已查 retIdx=2 是 RETURN)
 			if bytecode.Op(proto.Code[3]) != bytecode.RETURN {
 				return shapeInfo{}, false
 			}
@@ -1435,6 +1437,29 @@ func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
 		default:
 			return shapeInfo{}, false
 		}
+	case 5:
+		// 2 K 参 0 返:GETUPVAL/MOVE + LOADK + LOADK + CALL + RETURN
+		if bytecode.Op(proto.Code[1]) != bytecode.LOADK ||
+			bytecode.Op(proto.Code[2]) != bytecode.LOADK {
+			return shapeInfo{}, false
+		}
+		lk1A := bytecode.A(proto.Code[1])
+		lk1Bx := bytecode.Bx(proto.Code[1])
+		lk2A := bytecode.A(proto.Code[2])
+		lk2Bx := bytecode.Bx(proto.Code[2])
+		if lk1A != op0A+1 || lk2A != op0A+2 {
+			return shapeInfo{}, false
+		}
+		if lk1Bx < 0 || lk1Bx >= len(proto.Consts) ||
+			lk2Bx < 0 || lk2Bx >= len(proto.Consts) {
+			return shapeInfo{}, false
+		}
+		argK = uint64(proto.Consts[lk1Bx])
+		arg2K = uint64(proto.Consts[lk2Bx])
+		argIsK = true // 2 K 参形态都是 K
+		callIdx = 3
+		retIdx = 4
+		argCount = 2
 	}
 
 	if bytecode.Op(proto.Code[callIdx]) != bytecode.CALL ||
@@ -1487,6 +1512,7 @@ func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
 		callArg1IsK:    argIsK,
 		callArg1K:      argK,
 		callArg1RegSrc: argReg,
+		callArg2K:      arg2K,
 	}, true
 }
 
@@ -2457,6 +2483,7 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 		callArg1IsK:    info.callArg1IsK,
 		callArg1K:      info.callArg1K,
 		callArg1RegSrc: info.callArg1RegSrc,
+		callArg2K:      info.callArg2K,
 	}, nil
 }
 

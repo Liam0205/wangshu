@@ -149,3 +149,32 @@ return s`
 // 覆盖在 jit 包内通过 mock host 直接验 Compile + Run 路径(`compiler_pj5_call_test.go::
 // TestPJ5_RunCallVoidPath` 等),但 crescent e2e 路径不可达。real-world
 // 业务高频形态是 closure 调外层 known fn(形态 B*),那条路径已通。
+
+// TestPJ5_CallVoid_E2E_FormB2K_UpvalArgs:形态 B2K(GETUPVAL+LOADK+LOADK+
+// CALL+RETURN void)真升层 — `local function take(a, b)...end;
+// local function tick() take(10, 20) end`,2 K 常量参 0 返。Run 端
+// host.SetReg(callA+1, K1) + SetReg(callA+2, K2) 装到参数槽。
+func TestPJ5_CallVoid_E2E_FormB2K_UpvalArgs(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local sum = 0
+local function take(a, b) sum = sum + a * b end
+local function tick() take(10, 20) end
+for i = 1, 30 do tick() end
+return sum`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// sum = 30 * (10 * 20) = 6000
+	if got := value.AsNumber(value.Value(rets[0])); got != 6000 {
+		t.Errorf("rets = %v, want 6000 (tick() × 30 each take(10,20) → sum += 200)", got)
+	}
+	if jit.SpecCallVoidHits() == 0 {
+		t.Errorf("SpecCallVoidHits = 0,PJ5 CALL 2 K 参形态 B2K 未真编译")
+	}
+	t.Logf("SpecCallVoidHits=%d", jit.SpecCallVoidHits())
+}

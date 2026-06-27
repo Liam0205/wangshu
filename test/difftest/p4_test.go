@@ -220,6 +220,16 @@ local function get() local x = f(); return x end
 local s = 0
 for i = 1, 30 do s = s + get() end
 return s`},
+
+	// —— PJ5 CALL void 形态 B2K:GETUPVAL+LOADK+LOADK+CALL+RETURN void(2 K 参)
+	// (`local function take(a, b)...end; local function tick() take(10, 20) end`
+	// 闭包调外层 + 2 K 常量参)——
+	{"p4_call_void_upval_2argk", `
+local sum = 0
+local function take(a, b) sum = sum + a * b end
+local function tick() take(10, 20) end
+for i = 1, 30 do tick() end
+return sum`},
 }
 
 // TestP4_Tiered 三方对拍:oracle / crescent / p4-jit 全 byte-equal。
