@@ -602,3 +602,40 @@ func BenchmarkGibbousJIT_PJ5SelfCallHeavyBodyMultiRetN4(b *testing.B) {
 func BenchmarkGibbousJIT_PJ5SelfCallHeavyBodyMultiRetN4Cresc(b *testing.B) {
 	benchGibbousJITSelfCallHeavyBodyMultiRetN4(b, false)
 }
+
+// PJ5 SELF + CALL N=8 返(承 7f5f641 N=8 边界 e2e 同款形态):验
+// isValidSpecCallRetCount cC=9 边界下 host.CallBaseline 多 SetReg
+// 性能开销(8 个 R(callA..) word store 比 N=4 多 4 次)。
+func benchGibbousJITSelfCallSpecMultiRetN8(b *testing.B, force bool) {
+	src := `
+local count = 0
+local mt = { m = function(self) count = count + 1; return 1, 2, 3, 4, 5, 6, 7, 8 end }
+local function caller(_, t) local a, b, c, d, e, f, g, h = t:m() end
+for i = 1, 100 do caller(nil, mt) end
+return count`
+	prog, err := wangshu.Compile([]byte(src), "bench-jit-self-spec-multiret-n8")
+	if err != nil {
+		b.Fatalf("compile: %v", err)
+	}
+	st := wangshu.NewState(wangshu.Options{})
+	if _, err := prog.Run(st); err != nil {
+		b.Fatalf("warmup-phase1: %v", err)
+	}
+	st.SetForceAllPromote(force)
+	if _, err := prog.Run(st); err != nil {
+		b.Fatalf("warmup-phase2: %v", err)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := prog.Run(st); err != nil {
+			b.Fatalf("run: %v", err)
+		}
+	}
+}
+
+func BenchmarkGibbousJIT_PJ5SelfCallSpecMultiRetN8(b *testing.B) {
+	benchGibbousJITSelfCallSpecMultiRetN8(b, true)
+}
+func BenchmarkGibbousJIT_PJ5SelfCallSpecMultiRetN8Cresc(b *testing.B) {
+	benchGibbousJITSelfCallSpecMultiRetN8(b, false)
+}
