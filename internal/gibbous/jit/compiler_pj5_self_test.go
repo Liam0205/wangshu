@@ -278,7 +278,7 @@ func TestPJ5_AnalyzeSelfCallSpecForm_M0(t *testing.T) {
 	feedback := &bridge.TypeFeedback{
 		Points: []bridge.PointFeedback{
 			{}, // Points[0] dummy(MOVE pc=0)
-			{Kind: bridge.FBTableMono, Confidence: 1.0, StableShape: 7, StableIndex: 2},
+			{Kind: bridge.FBSelfMono, Confidence: 1.0, StableShape: 7, StableIndex: 2},
 		},
 	}
 
@@ -341,7 +341,7 @@ func TestPJ5_AnalyzeSelfCallSpecForm_RejectNoNodeHit(t *testing.T) {
 	feedback := &bridge.TypeFeedback{
 		Points: []bridge.PointFeedback{
 			{},
-			{Kind: bridge.FBTableMono, Confidence: 1.0, StableShape: 7, StableIndex: 2},
+			{Kind: bridge.FBSelfMono, Confidence: 1.0, StableShape: 7, StableIndex: 2},
 		},
 	}
 	if _, ok := analyzeSelfCallSpecForm(proto, feedback); ok {

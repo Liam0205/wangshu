@@ -571,3 +571,57 @@ return mCount, oCount`
 		t.Errorf("oCount = %v, want 30", got)
 	}
 }
+
+// TestPJ5_SelfCall_E2E_SpecTemplate_WarmupThenForce 验 PJ5 SELF + CALL spec
+// template 真接入(承 §9.10 EmitSelfNodeHit 复用 + §9.17 升级):
+//
+// **prove-the-path**:SpecSelfCallSpecHits 探针实证字节级 SELF 段模板真编译。
+// Phase 1 warmup 让 P1 解释器在 SELF pc=1 填 IC NodeHit + feedback 聚合;
+// Phase 2 force-all 升 caller 时 analyzeSelfCallSpecForm 命中 → 字节级 inline。
+//
+// caller(t) { t:m() } 形态:MOVE + SELF + CALL + RETURN void,method `m` 是
+// 字符串键(hash 段 NodeHit)。spec 段 SELF 跳过 host.Self,CALL 走 host.CallBaseline。
+func TestPJ5_SelfCall_E2E_SpecTemplate_WarmupThenForce(t *testing.T) {
+	jit.ResetSpecHits()
+
+	src := `
+local count = 0
+local o = { m = function(self) count = count + 1 end }
+local function caller(t) t:m() end
+for i = 1, 100 do caller(o) end  -- warmup:P1 填 SELF IC[1]=NodeHit
+caller(o)
+return count`
+
+	st, mainCl := loadFnP4(t, src)
+
+	// Phase 1:不开 force-all → caller 不升层,P1 跑 warmup 填 IC[1]
+	rets1, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 1 run: %v", err)
+	}
+	if got := value.AsNumber(value.Value(rets1[0])); got != 101 {
+		t.Errorf("Phase 1 result = %v, want 101", got)
+	}
+	if jit.SpecSelfCallSpecHits() != 0 {
+		t.Errorf("Phase 1 末:SpecSelfCallSpecHits=%d, want 0(P1 路径不应触发 spec 模板编译)",
+			jit.SpecSelfCallSpecHits())
+	}
+
+	// Phase 2:force-all 升 caller。IC[1] 已被 Phase 1 填 NodeHit →
+	// analyzeSelfCallSpecForm 命中 → 字节级 SELF 段 inline 编译。
+	st.bridge.SetForceAllPromote(true)
+	specBefore := jit.SpecSelfCallSpecHits()
+	rets2, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 2 run: %v", err)
+	}
+	if got := value.AsNumber(value.Value(rets2[0])); got != 101 {
+		t.Errorf("Phase 2 result = %v, want 101", got)
+	}
+	specAfter := jit.SpecSelfCallSpecHits()
+	t.Logf("SpecSelfCallSpecHits: %d → %d(Phase 2 增量 = %d)", specBefore, specAfter, specAfter-specBefore)
+	if specAfter <= specBefore {
+		t.Errorf("Phase 2:SpecSelfCallSpecHits 未增长(%d → %d)"+
+			" → SELF + CALL spec 模板未真编译,prove-the-path 失败", specBefore, specAfter)
+	}
+}

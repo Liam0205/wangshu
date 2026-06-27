@@ -276,6 +276,12 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 	// **mock host 兜底**:host.ArenaBaseAddr 返 0(单测 mock 无真 arena)时
 	// 跳过 spec 路径直接走 host helper——避免段段读 [rbx+0] = 读 0 地址 SIGSEGV。
 	if c.useSpec && c.host != nil && vsBaseAddr != 0 {
+		// **PJ5 SELF + CALL spec template 独立路径**(承 §9.10 EmitSelfNodeHit 复用 +
+		// §9.17 升级):SELF 段走字节级模板(跳过 host.Self)+ CALL 段走 host.CallBaseline。
+		// 自包含子路径——不与下方 PJ2/PJ3/PJ4 spec 分流混淆。
+		if c.useSpecSelfCall {
+			return c.runSpecSelfCall(int32(base), jitCtxAddr, vsBaseAddr)
+		}
 		// **upvalue-limit 预处理**:reg-limit 模板期望 R(forLoopLimitReg)
 		// 是 number。upval 形态 Run 端先调 host.GetUpval(idx-1) + SetReg
 		// 写 limit 槽,然后模板字节级 inline 走 reg-limit 路径(IsNumber
@@ -683,6 +689,58 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 // PendingErr 默认返 nil(P4 PJ2 简化形态不持错误状态——Run 直接返 status)。
 func (c *p4Code) PendingErr() error {
 	return nil
+}
+
+// runSpecSelfCall 处理 PJ5 SELF + CALL spec template 路径(承
+// compileSpecSelfCall + §9.10 EmitSelfNodeHit 复用)。
+//
+// **流程**:
+//  1. 先装 R(callA) = recv(模拟 luac MOVE/GETUPVAL,因 spec 段从 R(callA)
+//     字节级读 receiver)。
+//  2. callJITSpec 跑 EmitSelfNodeHit 模板:
+//     - 成功 → R(callA) = method(已 store)+ R(callA+1) = self(已 store)
+//     - 失败(raxSpec == specDeoptCode)→ 降级 host.Self(R(callA+1) 已被
+//     模板 store recv,P1 SELF case 同款步骤;host.Self 重新覆盖 byte-equal)
+//  3. callArgCount=0(本批仅 0 参形态),无 args 装载。
+//  4. host.CallBaseline 完成 CALL 段。
+//  5. host.DoReturn 弹帧。
+//
+// byte-equal P1:成功路径 = 字节级 NodeHit 直达槽(跳过哈希),与 P1 icGetTable
+// NodeHit 命中结果一致;失败路径 = host.Self 完整 P1 SELF 段。
+func (c *p4Code) runSpecSelfCall(base int32, jitCtxAddr uintptr, vsBaseAddr uintptr) int32 {
+	// 1. 装 R(callA) = recv(模拟 MOVE/GETUPVAL)
+	var recvVal uint64
+	if c.selfRecvIsUpval {
+		recvVal = c.host.GetUpval(base, int32(c.selfRecvSrcReg))
+	} else {
+		recvVal = c.host.GetReg(int32(c.selfRecvSrcReg))
+	}
+	c.host.SetReg(int32(c.callA), recvVal)
+
+	// 2. callJITSpec 跑 SELF 段
+	raxSpec := archCallJITSpec(c.codePage.Addr(), jitCtxAddr, vsBaseAddr)
+	if raxSpec == c.specDeoptCode {
+		// 失败 deopt:降级 host.Self(byte-equal P1 SELF 段)
+		// SELF 自身 pc = callPC - 1(CALL 在 retPC-1,SELF 在 CALL 前一条,0 参形态)
+		callPC := int32(c.retPC) - 1
+		selfPC := callPC - 1
+		st := c.host.Self(base, selfPC, int32(c.selfCallA),
+			int32(c.selfCallA), int32(c.selfMethodRK))
+		if st != 0 {
+			return st
+		}
+	}
+
+	// 3. CALL 段:host.CallBaseline byte-equal P1 doCall
+	callPC := int32(c.retPC) - 1
+	st := c.host.CallBaseline(base, callPC, int32(c.callA), int32(c.callB), int32(c.callC))
+	if st != 0 {
+		return st
+	}
+
+	// 4. DoReturn 弹帧(setter 形态 retB=1,0 返值）
+	c.host.DoReturn(base, int32(c.retPC), int32(c.retA), int32(c.retB))
+	return 0
 }
 
 // loadCallArgs 把 callArg1..7 装到 R(callA+offset), R(callA+offset+1), ...

@@ -2556,12 +2556,16 @@ func analyzeSelfCallSpecForm(proto *bytecode.Proto, feedback *bridge.TypeFeedbac
 	if icSlot.Kind != bytecode.ICKindNodeHit {
 		return shapeInfo{}, false
 	}
-	// feedback 检查(Points[1] 对位 SELF pc=1)
+	// feedback 检查(Points[1] 对位 SELF pc=1)。**SELF 聚合成 FBSelfMono**
+	// (aggregator.go::extractTableFeedback opSelf 分支),非 FBTableMono——
+	// PJ5 SELF + CALL 是首个真实触达 SELF feedback 的路径(PJ4 SELF NodeHit
+	// 因 luac 不真编 SELF + RETURN 2-op 形态仅合成驱动单测,从未触达真 SELF
+	// feedback,故那里误用 FBTableMono;本路径用正确的 FBSelfMono)。
 	if feedback == nil || len(feedback.Points) < 2 {
 		return shapeInfo{}, false
 	}
 	pf := feedback.Points[1]
-	if pf.Kind != bridge.FBTableMono || pf.Confidence < 0.99 {
+	if pf.Kind != bridge.FBSelfMono || pf.Confidence < 0.99 {
 		return shapeInfo{}, false
 	}
 	if pf.StableShape != icSlot.Shape || pf.StableIndex != icSlot.Index {
@@ -4201,6 +4205,14 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 		if icInfo, ok := analyzeSelfNodeHit(proto, feedback); ok {
 			return c.compileIcSelfNodeHit(proto, icInfo)
 		}
+		// **PJ5 SELF + CALL spec template 形态**(承 §9.10 复用 + §9.17 升级):
+		// `function(o) o:m() end` 真实 OOP 调用(SELF + CALL + RETURN void),IC
+		// NodeHit 命中时 SELF 段走字节级 EmitSelfNodeHit(跳过 host.Self),CALL
+		// 段仍走 host.CallBaseline;失败 deopt 降级 host.Self。比 PJ4 SELF NodeHit
+		// 多一步 CALL,故单独 Compile 路径。
+		if icInfo, ok := analyzeSelfCallSpecForm(proto, feedback); ok {
+			return c.compileSpecSelfCall(proto, icInfo)
+		}
 	}
 
 	info := analyzeShape(proto)
@@ -4871,5 +4883,57 @@ func (c *Compiler) compileIcSelfNodeHit(proto *bytecode.Proto, info shapeInfo) (
 		useSpec:       true,
 		specDeoptCode: deoptCode,
 		icArrayHit:    true, // SELF deopt 复用 host.GetTable 路径(P1 SELF case 已 setReg(A+1, B))
+	}, nil
+}
+
+// compileSpecSelfCall 编译 PJ5 SELF + CALL spec template 形态(承
+// analyzeSelfCallSpecForm + §9.10 PJ4 EmitSelfNodeHit 复用):
+//
+// emit 166 字节 SELF NodeHit IC inline 模板(SELF 段:IC NodeHit guard +
+// stableKey 比对 + NodeVal store R(callA)=method + store R(callA+1)=self),
+// 失败 deopt → Run 端降级 host.Self;**成功后 Run 端继续走 host.CallBaseline +
+// host.DoReturn 完成 CALL 段**(与 PJ4 SELF NodeHit 的差异:多一步 CALL)。
+//
+// **Run 端预处理**(承 code.go::runSpecSelfCall):callJITSpec 之前先
+// host.GetReg/GetUpval + SetReg 装 R(callA)=recv(模拟 MOVE/GETUPVAL,
+// 因 spec 段从 R(callA) 字节级读 receiver)。
+func (c *Compiler) compileSpecSelfCall(proto *bytecode.Proto, info shapeInfo) (bridge.GibbousCode, error) {
+	const deoptCode uint64 = 0xFFFCDEAD_DEADBE06
+	arenaBaseOff := int32(JITContextArenaBaseOffset)
+	var buf []byte
+	buf = archEmitSelfNodeHit(buf, info.icAReg, info.icBReg,
+		info.icStableShape, info.icStableIndex, info.icStableKey,
+		arenaBaseOff, deoptCode)
+	page, err := archMmapCode(buf)
+	if err != nil {
+		return nil, err
+	}
+	incSpecSelfCallHits()     // PJ5 SELF inline 命中(prove-the-path 复用 SELF 探针)
+	incSpecSelfCallSpecHits() // PJ5 SELF + CALL spec template 专属命中
+	return &p4Code{
+		proto:           proto,
+		codePage:        page,
+		jitCtx:          NewJITContext(),
+		retA:            info.retA,
+		retB:            info.retB,
+		retPC:           info.retPC,
+		writeRetA:       false, // 模板已写 R(callA)
+		preludeOp:       info.preludeOp,
+		preludeArg:      info.preludeArg,
+		host:            c.hostState,
+		useSpec:         true,
+		specDeoptCode:   deoptCode,
+		isCallVoid:      info.isCallVoid,
+		isCallUpval:     info.isCallUpval,
+		callA:           info.callA,
+		callB:           info.callB,
+		callC:           info.callC,
+		callArgCount:    info.callArgCount,
+		isSelfCall:      info.isSelfCall,
+		selfCallA:       info.selfCallA,
+		selfMethodRK:    info.selfMethodRK,
+		selfRecvSrcReg:  info.selfRecvSrcReg,
+		selfRecvIsUpval: info.selfRecvIsUpval,
+		useSpecSelfCall: true,
 	}, nil
 }
