@@ -348,3 +348,152 @@ func TestPJ5_AnalyzeSelfCallSpecForm_RejectNoNodeHit(t *testing.T) {
 		t.Error("analyzeSelfCallSpecForm IC 非 NodeHit 应返 false")
 	}
 }
+
+// TestPJ5_IsValidSpecCallRetCount 验 isValidSpecCallRetCount cC∈{1,3..16}
+// 严格上界(承 84c7ed4 N=2..15 返扩 + 7f5f641 N=15 上界边界 e2e)。
+func TestPJ5_IsValidSpecCallRetCount(t *testing.T) {
+	tests := []struct {
+		cC   int
+		want bool
+		desc string
+	}{
+		// 接受
+		{1, true, "cC=1 (0 返/void/setter)"},
+		{3, true, "cC=3 (N=2 返)"},
+		{4, true, "cC=4 (N=3 返)"},
+		{5, true, "cC=5 (N=4 返)"},
+		{9, true, "cC=9 (N=8 返)"},
+		{16, true, "cC=16 (N=15 返上界)"},
+		// 拒
+		{0, false, "cC=0 (multi-ret 不识别)"},
+		{2, false, "cC=2 (1 返 getter 走独立分支)"},
+		{17, false, "cC=17 (N=16 返超严格上界)"},
+		{255, false, "cC=255 (Lua 5.1 CALL C 最大,超严格上界)"},
+		{-1, false, "cC=-1 (无效输入兜底)"},
+	}
+	for _, tt := range tests {
+		got := isValidSpecCallRetCount(tt.cC)
+		if got != tt.want {
+			t.Errorf("isValidSpecCallRetCount(%d) = %v, want %v (%s)",
+				tt.cC, got, tt.want, tt.desc)
+		}
+	}
+}
+
+// TestPJ5_AnalyzeSelfCallSpecForm_RejectLowConfidence Confidence < 0.99 拒。
+//
+// 承 compiler.go::analyzeSelfCallSpecForm line 2564:`pf.Confidence < 0.99
+// 应返 false`。承 03-speculation-ic.md FBSelfMono 多态化降低 Confidence
+// 时降级 host.Self 安全。
+func TestPJ5_AnalyzeSelfCallSpecForm_RejectLowConfidence(t *testing.T) {
+	proto := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABC(bytecode.MOVE, 1, 0, 0),
+			bytecode.EncodeABC(bytecode.SELF, 1, 1, 256),
+			bytecode.EncodeABC(bytecode.CALL, 1, 2, 1),
+			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
+		},
+		IC:     make([]bytecode.ICSlot, 4),
+		Consts: []value.Value{value.Value(0x42)},
+	}
+	proto.IC[1] = bytecode.ICSlot{Kind: bytecode.ICKindNodeHit, Shape: 7, Index: 2}
+	// Confidence 0.5(<0.99 阈值)
+	feedback := &bridge.TypeFeedback{
+		Points: []bridge.PointFeedback{
+			{},
+			{Kind: bridge.FBSelfMono, Confidence: 0.5, StableShape: 7, StableIndex: 2},
+		},
+	}
+	if _, ok := analyzeSelfCallSpecForm(proto, feedback); ok {
+		t.Error("Confidence < 0.99 应返 false(避免多态化场景误启用 spec template)")
+	}
+}
+
+// TestPJ5_AnalyzeSelfCallSpecForm_RejectShapeMismatch IC.Shape != feedback.StableShape 拒。
+//
+// 承 compiler.go::analyzeSelfCallSpecForm line 2567:Shape/Index 不一致时返 false
+// (IC 与 feedback 失同步,可能 IC slot 后更新或 feedback 期旧 shape)。
+func TestPJ5_AnalyzeSelfCallSpecForm_RejectShapeMismatch(t *testing.T) {
+	proto := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABC(bytecode.MOVE, 1, 0, 0),
+			bytecode.EncodeABC(bytecode.SELF, 1, 1, 256),
+			bytecode.EncodeABC(bytecode.CALL, 1, 2, 1),
+			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
+		},
+		IC:     make([]bytecode.ICSlot, 4),
+		Consts: []value.Value{value.Value(0x42)},
+	}
+	// IC.Shape = 7
+	proto.IC[1] = bytecode.ICSlot{Kind: bytecode.ICKindNodeHit, Shape: 7, Index: 2}
+	// feedback.StableShape = 99(mismatch)
+	feedback := &bridge.TypeFeedback{
+		Points: []bridge.PointFeedback{
+			{},
+			{Kind: bridge.FBSelfMono, Confidence: 1.0, StableShape: 99, StableIndex: 2},
+		},
+	}
+	if _, ok := analyzeSelfCallSpecForm(proto, feedback); ok {
+		t.Error("Shape mismatch 应返 false")
+	}
+}
+
+// TestPJ5_AnalyzeSelfCallSpecForm_RejectStableKeyNil stableKey=Nil 拒
+// (SELF.C 常量为 Nil 时无法烧入,防 SELF NodeHit guard 误命中)。
+func TestPJ5_AnalyzeSelfCallSpecForm_RejectStableKeyNil(t *testing.T) {
+	proto := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABC(bytecode.MOVE, 1, 0, 0),
+			bytecode.EncodeABC(bytecode.SELF, 1, 1, 256),
+			bytecode.EncodeABC(bytecode.CALL, 1, 2, 1),
+			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
+		},
+		IC:     make([]bytecode.ICSlot, 4),
+		Consts: []value.Value{value.Nil}, // K[0] = Nil
+	}
+	proto.IC[1] = bytecode.ICSlot{Kind: bytecode.ICKindNodeHit, Shape: 7, Index: 2}
+	feedback := &bridge.TypeFeedback{
+		Points: []bridge.PointFeedback{
+			{},
+			{Kind: bridge.FBSelfMono, Confidence: 1.0, StableShape: 7, StableIndex: 2},
+		},
+	}
+	if _, ok := analyzeSelfCallSpecForm(proto, feedback); ok {
+		t.Error("stableKey = Nil 应返 false(防 NodeHit guard 误命中 Nil)")
+	}
+}
+
+// TestPJ5_AnalyzeSelfCallForm_RejectCodeLenTooSmall codeLen<4 应拒
+// (SELF 至少需要 MOVE/GETUPVAL + SELF + CALL + RETURN = 4 op)。
+func TestPJ5_AnalyzeSelfCallForm_RejectCodeLenTooSmall(t *testing.T) {
+	for _, codeLen := range []int{1, 2, 3} {
+		proto := &bytecode.Proto{
+			Code:   make([]bytecode.Instruction, codeLen),
+			Consts: []value.Value{},
+		}
+		if _, ok := analyzeSelfCallForm(proto); ok {
+			t.Errorf("codeLen=%d 应返 false(SELF 最小形态 4 op)", codeLen)
+		}
+	}
+}
+
+// TestPJ5_AnalyzeSelfCallForm_RejectCodeLenTooLarge codeLen>11 应拒
+// (8+ 参形态 codeLen >= 12,spec template + inline 都未接入,降级 host
+// helper round-trip 路径,承 §9.19 N=0..7 参覆盖上界)。
+//
+// 本测试显性化 8+ 参 spec template 边界,防 future regression(若 form12+
+// 接入,本测试需同步修正上界)。
+func TestPJ5_AnalyzeSelfCallForm_RejectCodeLenTooLarge(t *testing.T) {
+	for _, codeLen := range []int{12, 13, 14, 20} {
+		proto := &bytecode.Proto{
+			Code:   make([]bytecode.Instruction, codeLen),
+			Consts: []value.Value{},
+		}
+		// 填入合法 SELF 形态前 4 op,后续 op 填 NOP(实际不会被读到)
+		proto.Code[0] = bytecode.EncodeABC(bytecode.MOVE, 1, 0, 0)
+		proto.Code[1] = bytecode.EncodeABC(bytecode.SELF, 1, 1, 256)
+		if _, ok := analyzeSelfCallForm(proto); ok {
+			t.Errorf("codeLen=%d 应返 false(8+ 参形态超 spec template 上界)", codeLen)
+		}
+	}
+}
