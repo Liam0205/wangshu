@@ -43,6 +43,8 @@
 - **若闸门通过**:P3 的「不用调试机器码就能跑通分层骨架」战略价值兑现路径打通,PW1-PW9 可启动;P4 接力时只换发射后端([../p4-method-jit/01-launch-judgment §2](../p4-method-jit/01-launch-judgment.md) 常规路径),节省「分层骨架 + 机器码后端」同步啃两块硬骨头的复杂度。
 - **若闸门不通过**:跳跃路径下,P3 的战略价值移交 P4 自建([../p4-method-jit/01-launch-judgment §2](../p4-method-jit/01-launch-judgment.md));但本文 §2-§7 设计的分层协议(trampoline 入口签名、status 链错误冒泡、CallInfo bit50、线程级 tier 规则等)**不丢失**——P4 仍消费这套设计,只把发射后端从 wazero 替成原生 codegen。这是 [../roadmap.md §5](../roadmap.md) 原则 3 的另一面体现:**设计资产的复用性独立于执行后端选择**。
 
+**对偶面:P4 立项判定双向性**(2026-06-28,承 [P4 implementation-progress §2 RJ-15](../p4-method-jit/implementation-progress.md) 跨文档回填请求):P3 spike 闸门双向性([../p4-method-jit/01-launch-judgment §0.3](../p4-method-jit/01-launch-judgment.md))与 P4 立项判定双向性同源逻辑——两者都是 P4 阶段的**闸门级单点决策**,但承担不同时点的不同决策(spike 在 P3 开工前 / 立项在 P4 实施前 / 去留在 P4 验收后,详见 [P4 07 §0.3](../p4-method-jit/07-p3-retirement.md) 对偶面表)。
+
 ### 0.4 与 P1/P2 落地状态的关系
 
 [00-overview §7](./00-overview.md) 已对账过:P1 全卷已交付(M0-M14)+ P2 PB0-PB7 全过线 + P2 后续优化轮 #1-#4 全过线(2026-06-13)。这意味着:
