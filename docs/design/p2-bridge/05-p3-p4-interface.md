@@ -699,6 +699,10 @@ P4 实装时**应**:
 
 > **P2 与 P4 解耦**:P2 的状态机只关心「升过没/卡死没」,P4 的投机状态完全自包含。这让 P2 PB6 mock 与真 P3 / P4 三阶段切换零修改 P2 实装(§0.3)。
 
+**P4 视角具体形态**(2026-06-28,承 [../p4-method-jit/implementation-progress §2 RJ-7](../p4-method-jit/implementation-progress.md) 跨文档回填请求):本节硬纪律的 P4 视角具体形态详见 [../p4-method-jit/03-speculation-ic §8 P4 自管 deopt 计数与 P4StuckSpeculation 状态机](../p4-method-jit/03-speculation-ic.md) — 该节直接复刻本节硬纪律(P4 自管 + P2 不参与),并具体化 P4 端的 p4SpecState[*Proto] 子状态机(P4Speculative/P4Deoptimized/P4StuckSpeculation)+ DeoptThreshold 阈值 + MaxRecompileTries 上限。本会话已实证(15+ commits)= p4SpecState 骨架 + 7 状态机单测 + SpecP4DeoptHits +6 真业务路径 + V20 DeoptStorm 5 caller +15 累积。
+
+**P2 端 CAS 装 feedback,P3 旧指针仍可读**(2026-06-28,承 RJ-5 同源化):P2 接受 RequestRefresh 后 CAS 装新 feedback(本文 §5.5 字面承诺),P3 旧指针仍可读直到下次执行重新加载——race-tolerant 设计。P4 视角对偶兑现:[../p4-method-jit/03-speculation-ic §7.3 + §7.4 deopt 兜底与重训练](../p4-method-jit/03-speculation-ic.md)。本会话 PJ5 SELF spec template 已实证 OSR exit 协议真业务路径(SpecP4DeoptHits +6)+ V20 DeoptStorm 多 Proto 独立累积。
+
 ---
 
 ## 6. `GibbousCode` 抽象类型
