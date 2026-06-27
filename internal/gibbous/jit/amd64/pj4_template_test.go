@@ -619,3 +619,61 @@ func TestPJ5_EmitSpecArgLoadReg_Length(t *testing.T) {
 		t.Errorf("EmitSpecArgLoadReg 长度 = %d, want 14", len(buf))
 	}
 }
+
+// TestPJ5_EmitFrameInlineCIDepthInc_Length 验 ciDepth++ 字节级 inline 模板
+// 长度(7 字节 mov rax [r15+disp32] + 3 字节 inc qword ptr [rax] = 10 字节)。
+// 承 §9.20 Option B Spike 1 起手积木。
+func TestPJ5_EmitFrameInlineCIDepthInc_Length(t *testing.T) {
+	var buf []byte
+	buf = EmitFrameInlineCIDepthInc(buf, 0x40)
+	if len(buf) != EncodedFrameInlineCIDepthIncDecLen {
+		t.Errorf("EmitFrameInlineCIDepthInc 长度 = %d, want %d", len(buf), EncodedFrameInlineCIDepthIncDecLen)
+	}
+}
+
+// TestPJ5_EmitFrameInlineCIDepthInc_Encoding 验 inc 字节级编码。
+//
+// 期望:[4C 8B 87 40 00 00 00 | 48 FF 00] = mov rax,[r15+0x40] + inc [rax]
+func TestPJ5_EmitFrameInlineCIDepthInc_Encoding(t *testing.T) {
+	var buf []byte
+	buf = EmitFrameInlineCIDepthInc(buf, 0x40)
+
+	want := []byte{
+		0x49, 0x8B, 0x87, 0x40, 0x00, 0x00, 0x00, // mov rax, [r15+0x40]
+		0x48, 0xFF, 0x00, // inc qword ptr [rax]
+	}
+	if len(buf) != len(want) {
+		t.Fatalf("长度不一致:got %d want %d", len(buf), len(want))
+	}
+	for i, b := range want {
+		if buf[i] != b {
+			t.Errorf("buf[%d] = 0x%02X, want 0x%02X", i, buf[i], b)
+		}
+	}
+}
+
+// TestPJ5_EmitFrameInlineCIDepthDec_Length 验 ciDepth-- 字节级 inline 模板
+// 长度同 Inc(10 字节)。承 §9.20 popCallInfo 反向。
+func TestPJ5_EmitFrameInlineCIDepthDec_Length(t *testing.T) {
+	var buf []byte
+	buf = EmitFrameInlineCIDepthDec(buf, 0x40)
+	if len(buf) != EncodedFrameInlineCIDepthIncDecLen {
+		t.Errorf("EmitFrameInlineCIDepthDec 长度 = %d, want %d", len(buf), EncodedFrameInlineCIDepthIncDecLen)
+	}
+}
+
+// TestPJ5_EmitFrameInlineCIDepthDec_Encoding 验 dec 字节级编码(末尾 inc 改 dec)。
+func TestPJ5_EmitFrameInlineCIDepthDec_Encoding(t *testing.T) {
+	var buf []byte
+	buf = EmitFrameInlineCIDepthDec(buf, 0x40)
+
+	want := []byte{
+		0x49, 0x8B, 0x87, 0x40, 0x00, 0x00, 0x00, // mov rax, [r15+0x40]
+		0x48, 0xFF, 0x08, // dec qword ptr [rax]
+	}
+	for i, b := range want {
+		if buf[i] != b {
+			t.Errorf("buf[%d] = 0x%02X, want 0x%02X", i, buf[i], b)
+		}
+	}
+}

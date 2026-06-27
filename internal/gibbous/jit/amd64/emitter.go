@@ -691,6 +691,26 @@ func EmitDecReg64(buf []byte, reg uint8) []byte {
 // EncodedIncDecReg64Len 是「inc/dec r64」字节数(3)。
 const EncodedIncDecReg64Len = 3
 
+// EmitIncQwordPtrAtRax 发射「inc qword ptr [rax]」(指令:REX.W FF /0 modrm,
+// 3 字节)。承 §9.20 Option B Spike 1:mmap 段经 r15 解引 ciDepthAddr 到
+// rax 后字节级 inc ciDepth(enterLuaFrame inline)。
+//
+// 编码:48 FF 00(ModRM=00_000_000,mod=00 内存间接 + reg=/0 INC + rm=000 rax)
+func EmitIncQwordPtrAtRax(buf []byte) []byte {
+	return append(buf, 0x48, 0xFF, 0x00)
+}
+
+// EmitDecQwordPtrAtRax 发射「dec qword ptr [rax]」(指令:REX.W FF /1 modrm,
+// 3 字节)。承 §9.20:popCallInfo inline。
+//
+// 编码:48 FF 08(ModRM=00_001_000,mod=00 内存间接 + reg=/1 DEC + rm=000 rax)
+func EmitDecQwordPtrAtRax(buf []byte) []byte {
+	return append(buf, 0x48, 0xFF, 0x08)
+}
+
+// EncodedIncDecQwordPtrAtRaxLen 是「inc/dec qword ptr [rax]」字节数(3)。
+const EncodedIncDecQwordPtrAtRaxLen = 3
+
 // EmitMovReg64Imm32SignExt 发射「mov r64, imm32-sign-extended」短形态
 // (REX.W C7 /0 modrm imm32,7 字节)——用于装较小 imm 到 r64,比
 // REX.W B8+rd imm64(10 字节)省 3 字节。

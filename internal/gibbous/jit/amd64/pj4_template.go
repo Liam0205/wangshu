@@ -850,3 +850,49 @@ func EmitSpecArgLoadReg(buf []byte, dstReg uint8, srcReg uint8) []byte {
 	buf = EmitMovqMemRegFromRax(buf, 3 /*rbx*/, int32(dstReg)*8)
 	return buf
 }
+
+// EmitFrameInlineCIDepthInc 发射字节级 ciDepth++ inline 模板(承
+// `docs/design/p4-method-jit/implementation-progress.md` §9.20 Option B
+// Spike 1 起手积木):mmap 段经 r15 → 解引 jitContext.ciDepthAddr 到 rax,
+// 然后字节级 inc qword ptr [rax],等价 enterLuaFrame 中 `th.setCIDepth(
+// th.ciDepth+1)` 的 ciDepth 字镜像写入(P3 PW10 Stage 1a 镜像字复用)。
+//
+// 字节序列(10 字节):
+//
+//	mov rax, [r15 + ciDepthAddrOffset]  ; 7 字节(承 EmitMovqRaxFromR15Disp,
+//	                                    ;        实际编码 49 8B 87 disp32:
+//	                                    ;        REX.W+B 让 rm 字段用 r15)
+//	inc qword ptr [rax]                  ; 3 字节(承 EmitIncQwordPtrAtRax:
+//	                                    ;        48 FF 00)
+//
+// **参数 ciDepthAddrOffset**:`JITContextCIDepthAddrOffset`(承 jitcontext.go
+// const)— 调用方必须传 jit.JITContextCIDepthAddrOffset 编译期常量,本函数
+// 不直接依赖 jit 包(避免循环依赖)。
+//
+// **承 §9.20 Spike 1 守门**:本模板仅在 callee.NumParams=0 + !IsVararg +
+// !NeedsArg 形态下 emit;callee 帧建拆其余 4 个 word 写入 + popCallInfo
+// 同款手法(EmitFrameInlineCIDepthDec 即将加)。
+//
+// **arena grow 风险**:ciDepthAddr 由 jitContext.SetCIDepthAddr 在每次
+// Run 入口现算注入(承 code.go::Run line 268-271 起接入);arena grow 触发
+// 段重定位时下次 Run 重载,本字段不缓存指向 host 地址。
+func EmitFrameInlineCIDepthInc(buf []byte, ciDepthAddrOffset int32) []byte {
+	buf = EmitMovqRaxFromR15Disp(buf, ciDepthAddrOffset)
+	buf = EmitIncQwordPtrAtRax(buf)
+	return buf
+}
+
+// EmitFrameInlineCIDepthDec 发射字节级 ciDepth-- inline 模板(承 §9.20
+// Option B Spike 1 popCallInfo 反向)。
+//
+// 字节序列(10 字节):同 Inc 但末 inc 改 dec(等价 popCallInfo 中
+// `th.setCIDepth(th.ciDepth-1)`)。
+func EmitFrameInlineCIDepthDec(buf []byte, ciDepthAddrOffset int32) []byte {
+	buf = EmitMovqRaxFromR15Disp(buf, ciDepthAddrOffset)
+	buf = EmitDecQwordPtrAtRax(buf)
+	return buf
+}
+
+// EncodedFrameInlineCIDepthIncDecLen 是「ciDepth++/--」字节级 inline 模板
+// 字节数(7+3=10)。承 §9.20 Spike 1 caller 单测 + Compile 段长度预算。
+const EncodedFrameInlineCIDepthIncDecLen = 10
