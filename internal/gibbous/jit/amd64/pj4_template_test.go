@@ -677,3 +677,82 @@ func TestPJ5_EmitFrameInlineCIDepthDec_Encoding(t *testing.T) {
 		}
 	}
 }
+
+// TestPJ5_EmitFrameInlineLoadCISlotAddr_Length 验 amd64 CI 段第 depth 帧
+// 地址加载模板长度(30 字节,承 §9.20 Option B Spike 1)。
+func TestPJ5_EmitFrameInlineLoadCISlotAddr_Length(t *testing.T) {
+	var buf []byte
+	buf = EmitFrameInlineLoadCISlotAddr(buf, 0x40, 0x48)
+	if len(buf) != EncodedFrameInlineLoadCISlotAddrLen {
+		t.Errorf("EmitFrameInlineLoadCISlotAddr 长度 = %d, want %d",
+			len(buf), EncodedFrameInlineLoadCISlotAddrLen)
+	}
+}
+
+// TestPJ5_EmitFrameInlineLoadCISlotAddr_Encoding 验关键字节(imul rcx, rcx, 40)。
+//
+// 验:序列含 [48 6B C9 28]= imul rcx, rcx, 40(40 = ciSlotBytes = ciWords*8)
+func TestPJ5_EmitFrameInlineLoadCISlotAddr_Encoding(t *testing.T) {
+	var buf []byte
+	buf = EmitFrameInlineLoadCISlotAddr(buf, 0x40, 0x48)
+	// 序列布局:
+	// [0..6]   mov rax, [r15+ciDepthOff]   (7字节)
+	// [7..9]   mov rcx, rax                (3字节)
+	// [10..12] mov rcx, [rcx]              (3字节)
+	// [13..19] mov rax, [r15+ciSegBaseOff] (7字节)
+	// [20..22] mov rax, [rax]              (3字节)
+	// [23..26] imul rcx, rcx, 40           (4字节)
+	// [27..29] add rax, rcx                (3字节)
+	wantImul := []byte{0x48, 0x6B, 0xC9, 0x28}
+	for i, b := range wantImul {
+		if buf[23+i] != b {
+			t.Errorf("imul rcx, rcx, 40 字节[%d]=0x%02X, want 0x%02X(off %d)",
+				i, buf[23+i], b, 23+i)
+		}
+	}
+	// add rax, rcx 应在 offset 27-29
+	wantAdd := []byte{0x48, 0x01, 0xC8}
+	for i, b := range wantAdd {
+		if buf[27+i] != b {
+			t.Errorf("add rax, rcx 字节[%d]=0x%02X, want 0x%02X(off %d)",
+				i, buf[27+i], b, 27+i)
+		}
+	}
+}
+
+// TestPJ5_EmitFrameInlineWriteCIWord_Length 验 amd64 CI 帧 word 写入模板
+// 长度(10 字节 mov rcx imm64 + 4 字节 mov [rax+disp8] rcx = 14 字节)。
+// 承 §9.20 Option B Spike 1。
+func TestPJ5_EmitFrameInlineWriteCIWord_Length(t *testing.T) {
+	var buf []byte
+	buf = EmitFrameInlineWriteCIWord(buf, 0, 0xDEADBEEF)
+	if len(buf) != EncodedFrameInlineWriteCIWordLen {
+		t.Errorf("EmitFrameInlineWriteCIWord 长度 = %d, want %d",
+			len(buf), EncodedFrameInlineWriteCIWordLen)
+	}
+}
+
+// TestPJ5_EmitFrameInlineWriteCIWord_Encoding 验各 word_idx 关键字节
+// (mov rcx imm64 + mov [rax+wordIdx*8] rcx)。
+func TestPJ5_EmitFrameInlineWriteCIWord_Encoding(t *testing.T) {
+	for _, wordIdx := range []uint8{0, 1, 2, 3, 4} {
+		var buf []byte
+		buf = EmitFrameInlineWriteCIWord(buf, wordIdx, 0xCAFEBABE12345678)
+
+		// mov rcx, imm64 在 offset 0(REX.W=0x48 + 0xB9=mov rcx, imm64 + 8 字节 imm)
+		if buf[0] != 0x48 || buf[1] != 0xB9 {
+			t.Errorf("word_idx=%d: mov rcx, imm64 前缀 = 0x%02X%02X, want 0x48B9",
+				wordIdx, buf[0], buf[1])
+		}
+		// mov [rax + wordIdx*8], rcx 在 offset 10(48 89 48 disp8)
+		if buf[10] != 0x48 || buf[11] != 0x89 || buf[12] != 0x48 {
+			t.Errorf("word_idx=%d: mov [rax+disp8] rcx 前缀 = 0x%02X%02X%02X, want 0x488948",
+				wordIdx, buf[10], buf[11], buf[12])
+		}
+		// disp8 = wordIdx * 8
+		wantDisp := int8(wordIdx) * 8
+		if int8(buf[13]) != wantDisp {
+			t.Errorf("word_idx=%d: disp8 = %d, want %d", wordIdx, int8(buf[13]), wantDisp)
+		}
+	}
+}

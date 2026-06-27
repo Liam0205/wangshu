@@ -896,3 +896,88 @@ func EmitFrameInlineCIDepthDec(buf []byte, ciDepthAddrOffset int32) []byte {
 // EncodedFrameInlineCIDepthIncDecLen 是「ciDepth++/--」字节级 inline 模板
 // 字节数(7+3=10)。承 §9.20 Spike 1 caller 单测 + Compile 段长度预算。
 const EncodedFrameInlineCIDepthIncDecLen = 10
+
+// EmitFrameInlineLoadCISlotAddr 发射字节级 CI 段第 depth 帧起点字节地址
+// 加载到 rax 模板(承 §9.20 Option B Spike 1 enterLuaFrame inline 第一段)。
+//
+// 该模板把 ciSegBaseAddr + ciDepth * 40(每帧 ciWords=5 字 = 40 字节)算出
+// CallInfo[depth] 帧地址,准备后续 writeCIWordN 写各 word。
+//
+// 字节序列(7+3+7+3+5+3 = 28 字节):
+//
+//	mov rcx, [r15 + ciDepthAddrOffset]    ; 7 字节 = mov rcx, [r15+disp32]
+//	                                        ;     实际 EmitMovqRcxFromR15Disp 不存在,
+//	                                        ;     用 EmitMovqRaxFromR15Disp + mov rcx, rax
+//	                                        ;     OR 改用 EmitMovqRaxFromR15Disp + EmitMovqRcxFromRax
+//	mov rcx, [rcx]                          ; 3 字节(48 8B 09 = mov rcx, [rcx])
+//	mov rax, [r15 + ciSegBaseAddrOffset]    ; 7 字节
+//	mov rax, [rax]                          ; 3 字节(48 8B 00 = mov rax, [rax])
+//	imul rcx, rcx, 40                       ; 4 字节(48 6B C9 28 = imul rcx, rcx, 40)
+//	add rax, rcx                            ; 3 字节(48 01 C8 = add rax, rcx)
+//
+// 模板结束后 rax = CallInfo[depth] 字节地址。后续 writeCIWordN(rax, word_idx, val)
+// 经 mov [rax + word_idx*8], rcx 写每 word。
+//
+// **总长度 28 字节**(amd64 端 enterLuaFrame inline 第一段)。
+//
+// **arena grow 注意**:ciDepthAddr / ciSegBaseAddr 每次 Run 入口现算,不缓存
+// (承 §9.20 + arena base 重载协议)。
+func EmitFrameInlineLoadCISlotAddr(buf []byte, ciDepthAddrOffset, ciSegBaseAddrOffset int32) []byte {
+	// 1. rcx = ciDepth(深度值)
+	buf = EmitMovqRaxFromR15Disp(buf, ciDepthAddrOffset)
+	buf = EmitMovqRcxFromRax(buf)
+	// rcx 现是 ciDepthAddr。再解引一次:mov rcx, [rcx]
+	buf = append(buf, 0x48, 0x8B, 0x09) // mov rcx, [rcx]
+	// 2. rax = ciSegBase(段基址)
+	buf = EmitMovqRaxFromR15Disp(buf, ciSegBaseAddrOffset)
+	// rax 现是 ciSegBaseAddr。解引:mov rax, [rax]
+	buf = append(buf, 0x48, 0x8B, 0x00) // mov rax, [rax]
+	// 3. imul rcx, rcx, 40 — depth * ciSlotBytes
+	buf = append(buf, 0x48, 0x6B, 0xC9, 40) // imul rcx, rcx, 40
+	// 4. add rax, rcx — rax = ciSegBase + depth * 40 = CallInfo[depth] 地址
+	buf = append(buf, 0x48, 0x01, 0xC8) // add rax, rcx
+	return buf
+}
+
+// EncodedFrameInlineLoadCISlotAddrLen 是「CI 段第 depth 帧地址加载到 rax」
+// 模板字节数(7+3+3+7+3+4+3 = 30 — 实际,EmitMovqRaxFromR15Disp 是 7,
+// EmitMovqRcxFromRax 是 3,后续 mov rcx [rcx] 是 3,mov rax [r15+...] 是 7,
+// mov rax [rax] 是 3,imul 4,add 3,合计 30 字节,非 28)。
+const EncodedFrameInlineLoadCISlotAddrLen = 30
+
+// EmitFrameInlineWriteCIWord 发射字节级 CI 帧 word_idx 写入 imm64 模板
+// (承 §9.20 Option B Spike 1 enterLuaFrame inline 第二段)。
+//
+// 调用契约:rax 必须已装 CallInfo[depth] 帧起点字节地址(承
+// EmitFrameInlineLoadCISlotAddr 已 setup);word_idx 范围 [0,4](承 ciWords=5)。
+//
+// 字节序列(10+4 = 14 字节):
+//
+//	mov rcx, imm64                      ; 10 字节(EmitMovRcxImm64)
+//	mov [rax + word_idx*8], rcx         ; 4 字节(48 89 48 disp8)
+//
+// **word layout**(承 state.go::writeCISeg / packCIWord2):
+//   - word0 = uint32(base) | uint32(funcIdx) << 32
+//   - word1 = uint32(top)  | uint32(pc)      << 32
+//   - word2 = uint32(protoID) | uint16(nresults) << 32 | flags<<48
+//     (tailcall<<48 / fresh<<49 / gibbous<<50)
+//   - word3 = uint64(cl)(arena.GCRef closure 镜像)
+//   - word4 = uint64(nVarargs)(其他位预留)
+//
+// Spike 1 调用方按 word_idx=0..4 顺序调 5 次,完成 enterLuaFrame 的 CI 段写入。
+func EmitFrameInlineWriteCIWord(buf []byte, wordIdx uint8, imm64 uint64) []byte {
+	if wordIdx > 4 {
+		wordIdx = 0 // 兜底防越界
+	}
+	buf = EmitMovRcxImm64(buf, imm64)
+	// mov [rax + wordIdx*8], rcx — 48 89 48 disp8
+	// REX.W = 0x48 / opcode 0x89(MOV r/m64, r64)
+	// ModRM = mod 01(disp8)+ reg 001(rcx)+ rm 000(rax)= 0x48
+	// disp8 = wordIdx * 8
+	buf = append(buf, 0x48, 0x89, 0x48, byte(int8(wordIdx)*8))
+	return buf
+}
+
+// EncodedFrameInlineWriteCIWordLen 是「写 CI 帧 word_idx」字节级模板字节数
+// (10+4=14)。承 §9.20 Spike 1 caller 长度预算。
+const EncodedFrameInlineWriteCIWordLen = 14
