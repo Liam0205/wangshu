@@ -462,3 +462,38 @@ func TestPJ5_AnalyzeSelfCallSpecForm_RejectStableKeyNil(t *testing.T) {
 		t.Error("stableKey = Nil 应返 false(防 NodeHit guard 误命中 Nil)")
 	}
 }
+
+// TestPJ5_AnalyzeSelfCallForm_RejectCodeLenTooSmall codeLen<4 应拒
+// (SELF 至少需要 MOVE/GETUPVAL + SELF + CALL + RETURN = 4 op)。
+func TestPJ5_AnalyzeSelfCallForm_RejectCodeLenTooSmall(t *testing.T) {
+	for _, codeLen := range []int{1, 2, 3} {
+		proto := &bytecode.Proto{
+			Code:   make([]bytecode.Instruction, codeLen),
+			Consts: []value.Value{},
+		}
+		if _, ok := analyzeSelfCallForm(proto); ok {
+			t.Errorf("codeLen=%d 应返 false(SELF 最小形态 4 op)", codeLen)
+		}
+	}
+}
+
+// TestPJ5_AnalyzeSelfCallForm_RejectCodeLenTooLarge codeLen>11 应拒
+// (8+ 参形态 codeLen >= 12,spec template + inline 都未接入,降级 host
+// helper round-trip 路径,承 §9.19 N=0..7 参覆盖上界)。
+//
+// 本测试显性化 8+ 参 spec template 边界,防 future regression(若 form12+
+// 接入,本测试需同步修正上界)。
+func TestPJ5_AnalyzeSelfCallForm_RejectCodeLenTooLarge(t *testing.T) {
+	for _, codeLen := range []int{12, 13, 14, 20} {
+		proto := &bytecode.Proto{
+			Code:   make([]bytecode.Instruction, codeLen),
+			Consts: []value.Value{},
+		}
+		// 填入合法 SELF 形态前 4 op,后续 op 填 NOP(实际不会被读到)
+		proto.Code[0] = bytecode.EncodeABC(bytecode.MOVE, 1, 0, 0)
+		proto.Code[1] = bytecode.EncodeABC(bytecode.SELF, 1, 1, 256)
+		if _, ok := analyzeSelfCallForm(proto); ok {
+			t.Errorf("codeLen=%d 应返 false(8+ 参形态超 spec template 上界)", codeLen)
+		}
+	}
+}
