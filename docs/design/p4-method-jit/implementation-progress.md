@@ -1308,13 +1308,23 @@ probe luac 实证 N=K 返形态 cC=K+1 一致(N=4 返 cC=5 / N=5 返 cC=6 / ...)
 
 spec template 无需特殊处理 N>=2 返,SELF 段 EmitSelfNodeHit + args inline + recv inline 字节级模板全复用。
 
-**e2e 实证累计**(13 用例 SpecSelfCallSpecHits 0→1):
-- MultiRet0Param(form4 N=2 返)/ MultiRet1KArg(form5)/ MultiRet1RegArg(form5)
-- MultiRet2KArg(form6)/ MultiRet3KArg(form7)/ MultiRet4KArg(form8)/ MultiRet5KArg(form9)/ MultiRet6KArg(formN)
-- MultiRetN4_0Param(form4 N=4 返)/ MultiRetN5_0Param(form4 N=5 返)/ MultiRetN4_1KArg(form5 N=4 返)
-- **MultiRetN4_1RegArg(form5 N=4 返 1 reg 参)/ MultiRetN4_3KArg(form7 N=4 返 3 K 参)** — 本批新增
+**e2e 实证累计**(**18 用例** SpecSelfCallSpecHits 0→1 + OSR exit + 错误冒泡):
+- form4..N N=2..3 返:MultiRet0Param/1KArg/1RegArg + MultiRet2KArg/3KArg/4KArg/5KArg/6KArg(8 用例)
+- N=4 返多形态:MultiRetN4_0Param/1KArg/1RegArg/3KArg + MultiRetN5_0Param(5 用例)
+- N=8/N=15 上界边界:MultiRetN8_0Param + MultiRetN15_0Param(2 用例)
+- **spec template 错误冒泡**(2026-06-28 新增):ErrorBubbleUp_NilRecv + ErrorBubbleUp_BadMethod(2 用例,deopt → host.Self 路径)
+- **OSR exit 真业务路径强断言**(2026-06-28 新增):OSRExitToDeopt(1 用例,SpecP4DeoptHits 增长实证)
 
-**difftest 三方 byte-equal**(承 cc66452 + 84c7ed4 + 84a031d):9 用例(p4_self_spec_multiret_0arg/1karg/3kargs/5kargs + multiret_n4_0arg/n5_0arg + multiret_n4_1karg/1regarg/3kargs)oracle lua5.1 / crescent / p4-jit 全过。
+**difftest 三方 byte-equal**(承 cc66452 + 84c7ed4 + 84a031d + 7f5f641):**11 用例**(p4_self_spec_multiret_0arg/1karg/3kargs/5kargs + multiret_n4_0arg/n5_0arg + multiret_n4_1karg/1regarg/3kargs + multiret_n8_0arg/n15_0arg)oracle lua5.1 / crescent / p4-jit 全过。
+
+**单测累计**(spec template 守门反向 + 上界):
+- analyzeSelfCallSpecForm 5 反向单测:RejectNoFeedback / RejectNoNodeHit / RejectLowConfidence / RejectShapeMismatch / RejectStableKeyNil
+- isValidSpecCallRetCount 11 case 表驱动单测(承 84c7ed4)
+
+**V18 -race 增量**(2026-06-28):
+- TestP4_ConcurrentForceAll_MultiRet(N=4 返 8 goroutine 并发,承 8081695)
+- TestP4_ConcurrentForceAll_SpecDeopt(spec template deopt 路径 8 goroutine 并发,承 3468d8e)
+- TestPJ4PJ5_R14ABI_GCStress/ConcurrentGC/DeepStack(R14 ABI 修复后验,承 83f0b2e + 21391f4)
 
 **剩余 spec template 工程**(渐进推进):
 - CALL 段字节级 inline(段内 EmitCallInline,等价 P3 PW10 帧建立内联;架构成本攻坚最大瓶颈,profile 实证小 method 体瓶颈在帧建拆 + executeLoop 95%/enterLuaFrame 25-30%/doCall 82%)— 设计见 §9.20
