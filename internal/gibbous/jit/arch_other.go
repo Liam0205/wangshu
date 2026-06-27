@@ -228,3 +228,18 @@ func archEmitSpecArgLoadReg(buf []byte, dstReg uint8, srcReg uint8) []byte {
 
 // archSupportsSpec 其它 arch 不支持。
 func archSupportsSpec() bool { return false }
+
+// archSupportsForLoop 其它 arch 不支持(无 emitter)。
+func archSupportsForLoop() bool { return false }
+
+// archEmitHelperCall 其它 arch 不支持(无 emitter)。
+func archEmitHelperCall(buf []byte, helperAddr uint64) []byte {
+	_ = helperAddr
+	return buf
+}
+
+// archEncodedHelperCallLen 其它 arch 占位 0(本 build 下不调到)。
+const archEncodedHelperCallLen = 0
+
+// archSupportsFrameInline 其它 arch 不支持(承 §9.20 Option B Spike 1)。
+func archSupportsFrameInline() bool { return false }

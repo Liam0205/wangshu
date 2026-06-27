@@ -274,16 +274,7 @@ type P4HostState interface {
 	// **commit-5l 签名修正**(承 PR 评审 + 自检):原 retA 是 RETURN.A(setter
 	// 形态恒 0),无法正确算 funcIdx;改 callA 是 CALL.A(SELF + CALL 形态下
 	// method 槽位置),与 host.CallBaseline 同款语义对齐。
-	//
-	// **commit-5p Spike 2 签名扩**:加 callArgCount 参数,允许 N 参 SELF + CALL
-	// 形态(callArgCount=0..7;helper 内 enterLuaFrame nargs = 1+callArgCount =
-	// self + N user args)。
-	//
-	// **commit-5q Spike 4 签名扩**:加 nresults 参数,允许多返值形态(
-	// callC=1 → 0返 setter / callC=2 → 1返 getter / callC=3..16 → N=2..15 返
-	// drop multi-ret;helper 内 enterLuaFrame nresults 设值 + callee RETURN
-	// doReturn 自动落 R(callA..callA+nresults-1))。
-	ExecuteCalleeFromInlineFrame(base int32, callA int32, callArgCount int32, nresults int32) int32
+	ExecuteCalleeFromInlineFrame(base int32, callA int32) int32
 }
 
 // SetHostState 把 host(crescent)抽象注入本 Compiler。

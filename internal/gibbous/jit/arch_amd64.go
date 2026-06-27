@@ -196,6 +196,16 @@ func archEmitSelfNodeHit(buf []byte, aReg, bReg uint8,
 		stableShape, stableIndex, stableKey, arenaBaseOff, deoptCode)
 }
 
+// archEmitSelfNodeHitNoRet 同 archEmitSelfNodeHit 但成功路径不 ret(承
+// §9.20.9 commit-5j useFrameInline 路径修通 — fall-through 到 BuildVoid0Arg
+// 段)。
+func archEmitSelfNodeHitNoRet(buf []byte, aReg, bReg uint8,
+	stableShape, stableIndex uint32, stableKey uint64,
+	arenaBaseOff int32, deoptCode uint64) []byte {
+	return jitamd64.EmitSelfNodeHitNoRet(buf, aReg, bReg,
+		stableShape, stableIndex, stableKey, arenaBaseOff, deoptCode)
+}
+
 // archEmitSpecArgLoadK / archEmitSpecArgLoadReg arm-routed amd64 实装(承
 // PJ5 SELF + CALL spec template args 装载字节级 inline,跳过 host.GetReg/
 // SetReg round-trip)。arm64 端 stub(留 PJ8+ 物理 runner 启用前),其它
@@ -210,3 +220,86 @@ func archEmitSpecArgLoadReg(buf []byte, dstReg uint8, srcReg uint8) []byte {
 // archSupportsSpec 返 true 当本 arch 支持 PJ2 投机模板真接入。
 // amd64 ✅;arm64/其它 ❌(留 PJ8+)。
 func archSupportsSpec() bool { return true }
+
+// archSupportsForLoop 返 true 当本 arch 支持 PJ3 FORLOOP 模板真接入
+// (经 archCallJITFull 主路径,不经 spec trampoline)。amd64 ✅(本就经
+// archSupportsSpec 启用,本函数为新 arch 提供解耦闸门);arm64 ✅
+// (本会话 PJ8 arm64 PJ3 全四形态字节级模板真接入完整)。
+func archSupportsForLoop() bool { return true }
+
+// archEmitHelperCall 发射 helper call 通用宏(amd64 端:`mov rax, helperAddr
+// imm64 + call rax`,12 字节)。对位 arm64 EmitHelperCallArm64(20 字节)。
+//
+// 用于 PJ5 CALL/TAILCALL 真接入 + PJ4 deopt 路径调 host helper(host.DoCall
+// / host.GetTable / host.Arith 等)。helperAddr 是 helper function 物理
+// 地址(经 jit Compile 时编译期求出,reflect.ValueOf(fn).Pointer())。
+//
+// **接入路径**:本函数当前无 caller,留作 PJ5 真接入工程基础——下一步
+// archEmitHelperCall 嵌入 inline CALL 模板时调用本宏。
+func archEmitHelperCall(buf []byte, helperAddr uint64) []byte {
+	return jitamd64.EmitHelperCall(buf, helperAddr)
+}
+
+// archEncodedHelperCallLen 是 helper call 通用宏字节数(amd64 = 12,
+// arm64 = 20)。caller 用于 inline CALL 模板长度预算。
+const archEncodedHelperCallLen = jitamd64.EncodedHelperCallLen
+
+// archEmitFrameInlineBuildVoid0ArgSkeleton 拼接 amd64 Spike 1 enterLuaFrame
+// 字节级 inline 骨架(130 字节 Absolute 版,承 §9.20.9 commit-5l bug 修 +
+// jitamd64.EmitFrameInlineBuildVoid0ArgSkeletonAbsolute)。Compile 端
+// useFrameInline 分支用。Absolute 版 LoadCISlotAddr 内追加 r14=arenaBase +
+// add rax, r14 让 rax 是绝对地址,避免 word offset 不能 deref 的 bug。
+func archEmitFrameInlineBuildVoid0ArgSkeleton(buf []byte,
+	ciDepthAddrOff, ciSegBaseAddrOff int32, callARecv uint8,
+	w0, w1, w2, w4 uint64) []byte {
+	arenaBaseOff := int32(JITContextArenaBaseOffset)
+	return jitamd64.EmitFrameInlineBuildVoid0ArgSkeletonAbsolute(buf,
+		ciDepthAddrOff, ciSegBaseAddrOff, arenaBaseOff, callARecv,
+		jitamd64.FrameInlineCISlotWords{Word0: w0, Word1: w1, Word2: w2, Word3: 0, Word4: w4})
+}
+
+// archEmitFrameInlinePopVoid0ArgSkeleton 拼接 amd64 Spike 1 popCallInfo
+// 字节级 inline 骨架(10 字节,承 §9.20 Option B Spike 1)。
+func archEmitFrameInlinePopVoid0ArgSkeleton(buf []byte, ciDepthAddrOff int32) []byte {
+	return jitamd64.EmitFrameInlinePopVoid0ArgSkeleton(buf, ciDepthAddrOff)
+}
+
+// archEmitFrameInlineExitHelperRequest 拼接 amd64 Spike 1 trampoline
+// exit-resume 协议 exit-helper-request 段(24 字节,承 §9.20.9 (4))。
+func archEmitFrameInlineExitHelperRequest(buf []byte,
+	exitReasonOff, exitArg0Off int32, helperCode uint64) []byte {
+	return jitamd64.EmitFrameInlineExitHelperRequest(buf,
+		exitReasonOff, exitArg0Off, helperCode)
+}
+
+// archEncodedFrameInlineBuildVoid0ArgSkeletonLen amd64 Spike 1 enterLuaFrame
+// 骨架字节数(120)。
+const archEncodedFrameInlineBuildVoid0ArgSkeletonLen = jitamd64.EncodedFrameInlineBuildVoid0ArgSkeletonLen
+
+// archEncodedFrameInlinePopVoid0ArgSkeletonLen amd64 Spike 1 popCallInfo
+// 骨架字节数(10)。
+const archEncodedFrameInlinePopVoid0ArgSkeletonLen = jitamd64.EncodedFrameInlinePopVoid0ArgSkeletonLen
+
+// archEncodedFrameInlineExitHelperRequestLen amd64 Spike 1 exit-helper-request
+// 段字节数(24,承 §9.20.9 (4) optimized form)。
+const archEncodedFrameInlineExitHelperRequestLen = jitamd64.EncodedFrameInlineExitHelperRequestLen
+
+// archSupportsFrameInline 返 true 当本 arch 支持 PJ5 Option B 帧建立内联
+// 真接入(承 §9.20 Spike 1)。
+//
+// **2026-06-28 amd64 真接入翻 true**(承 §9.20.9 commit-5h):字节级 emit 模板
+// (BuildVoid0ArgSkeleton 120B + ExitHelperRequest 24B + PopVoid0ArgSkeleton
+// 10B + LoadClosureGCRef 20B + WriteCIWord 14B + CIDepth++/-- 10B)已完整字节级
+// 实装并字节级单测全过 + Compile 端 useFrameInline 分支 emit 接通 + Run 端
+// runFrameInlineDispatcher 路径接通 + crescent.ExecuteCalleeFromInlineFrame
+// 真实装(反查 closure GCRef → callee Proto → enterLuaFrame + executeFrom
+// 完整重做帧建,Spike 1 简化策略放弃零跨界但保证正确性)。
+//
+// **启用条件**(承 §9.20.4 + analyzeSelfCallSpecForm 守门):
+//  1. 普通 spec form 通过(IC NodeHit + FBSelfMono + stableKey)
+//  2. callArgCount=0(0 参形态)
+//  3. isCallVoid=true(setter 形态)
+//  4. !isTailCall(非 TAILCALL)
+//
+// **arm64 仍 false**(物理 runner 端到端验证留 PJ8+,承下方 arch_arm64.go)。
+func archSupportsFrameInline() bool { return true }

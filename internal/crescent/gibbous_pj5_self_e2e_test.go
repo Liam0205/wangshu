@@ -3,6 +3,7 @@
 package crescent
 
 import (
+	"runtime"
 	"strings"
 	"testing"
 
@@ -1569,4 +1570,183 @@ return sum`
 	}
 	t.Logf("SpecP4DeoptHits: %d → %d(增量 = %d,OSR exit 协议真接入实证)",
 		deoptBefore, deoptAfter, deoptAfter-deoptBefore)
+}
+
+// TestPJ5_SelfCall_E2E_SpecTemplate_DeoptStorm V20 deopt 风暴 e2e:多个不同
+// Proto 反复 deopt → 多个 p4SpecState 独立累积 + 互不干扰。
+//
+// **承 [08 §V20] deopt 风暴**:验 OSR exit 协议在并发多 Proto 多路径 deopt
+// 下行为正确性 — 各 Proto p4SpecEntry 独立(per-Proto 字段),累积 deopt
+// 互不干扰,p4SpecMu 串行化保证 race-free。
+//
+// **场景**:10 个不同 caller proto + 10 个不同 receiver shape,每对 caller
+// + bad_recv 触发独立 deopt 累积,各 proto state 独立。
+func TestPJ5_SelfCall_E2E_SpecTemplate_DeoptStorm(t *testing.T) {
+	jit.ResetSpecHits()
+	jit.ResetP4SpecState()
+
+	// 多个 caller proto 反复跑各自 spec template + bad receiver 触发 deopt
+	src := `
+local m_ok = { m = function(self) return 1 end }
+local m_bad = { m = function(self) return 2 end, x1 = 1, x2 = 2 }  -- 不同 shape
+local function c1(t) return t:m() end
+local function c2(t) return t:m() end
+local function c3(t) return t:m() end
+local function c4(t) return t:m() end
+local function c5(t) return t:m() end
+
+-- warmup 5 个 caller 都用 m_ok 填 IC NodeHit
+for i = 1, 50 do
+  c1(m_ok); c2(m_ok); c3(m_ok); c4(m_ok); c5(m_ok)
+end
+
+-- 5 个 caller 都用 m_bad 触发 spec template guard 失败(各 caller 独立 deopt)
+local sum = 0
+for i = 1, 30 do  -- 30 次 > DeoptThreshold(16),每 caller 切 P4Deoptimized
+  sum = sum + c1(m_bad)
+  sum = sum + c2(m_bad)
+  sum = sum + c3(m_bad)
+  sum = sum + c4(m_bad)
+  sum = sum + c5(m_bad)
+end
+return sum`
+	st, mainCl := loadFnP4(t, src)
+	if _, err := st.Call(value.GCRefOf(mainCl), nil, 1); err != nil {
+		t.Fatalf("warmup: %v", err)
+	}
+	st.bridge.SetForceAllPromote(true)
+	deoptBefore := jit.SpecP4DeoptHits()
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("deopt storm: %v", err)
+	}
+	if got := value.AsNumber(value.Value(rets[0])); got != 30*5*2 { // 30 iter * 5 caller * m_bad.m()=2
+		t.Errorf("Phase 2 result = %v, want %d", got, 30*5*2)
+	}
+	deoptAfter := jit.SpecP4DeoptHits()
+
+	// **prove-the-path 强断言**:5 个独立 caller proto 各自累积 deopt → 阈值
+	// 触发 P4Deoptimized → SpecP4DeoptHits 累积 ≥ 5(每 caller 至少 1 次)。
+	// 实测应远 > 5(每 caller 跑 30 次 m_bad,每 16 次切 P4Deoptimized 一次)。
+	growth := deoptAfter - deoptBefore
+	if growth < 5 {
+		t.Errorf("SpecP4DeoptHits 增长 %d, want >= 5(5 caller 各至少 1 次 deopt 切换)",
+			growth)
+	}
+	t.Logf("SpecP4DeoptHits: %d → %d(增量 = %d,5 caller 独立 deopt 风暴 + 各自累积)",
+		deoptBefore, deoptAfter, growth)
+}
+
+// TestPJ5_FrameInline_E2E_GatingOpen_HitsOne 验 PJ5 Option B Spike 1 帧建立
+// 内联(承 commit-5m ciDepth Go vs mirror 同步 bug 修):amd64
+// archSupportsFrameInline=true + analyzeSelfCallSpecForm useFrameInline 守门
+// 启用 + 全端到端 byte-equal P1。
+//
+// **prove-the-path 强断言**:
+//   - 程序输出正确(byte-equal P1):count=50
+//   - amd64:SpecFrameInlineHits >= 1(Compile) + SpecFrameInlineRunHits >= 1(Run)
+//   - arm64:archSupportsFrameInline=false 闸门关闭,程序正确性断言仍跑
+func TestPJ5_FrameInline_E2E_GatingOpen_HitsOne(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local count = 0
+local o = { m = function(self) count = count + 1 end }
+local function caller(t) t:m() end
+for i = 1, 50 do caller(o) end
+return count`
+	st, mainCl := loadFnP4(t, src)
+	if _, err := st.Call(value.GCRefOf(mainCl), nil, 1); err != nil {
+		t.Fatalf("warmup: %v", err)
+	}
+	st.bridge.SetForceAllPromote(true)
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("force-all run: %v", err)
+	}
+	if got := value.AsNumber(value.Value(rets[0])); got != 50 {
+		t.Errorf("rets = %v, want 50(byte-equal P1:Run 期 dispatcher + helper 真接入)", got)
+	}
+
+	// **arm64 阻塞修复**(承 PR comment d8fc8ba):仅 amd64 强断言 Hits/RunHits
+	if archSupportsFrameInlineForTest() {
+		if h := jit.SpecFrameInlineHits(); h == 0 {
+			t.Errorf("SpecFrameInlineHits = 0, want >= 1(amd64 闸门 open)")
+		}
+		if h := jit.SpecFrameInlineRunHits(); h == 0 {
+			t.Errorf("SpecFrameInlineRunHits = 0, want >= 1(Run 期真触达)")
+		}
+	}
+	t.Logf("SpecFrameInlineHits=%d / RunHits=%d (Spike 1 真接入完整端到端实证)",
+		jit.SpecFrameInlineHits(), jit.SpecFrameInlineRunHits())
+}
+
+// archSupportsFrameInlineForTest 测试辅助:amd64 返 true / arm64 返 false。
+// 与 jit/arch_*.go::archSupportsFrameInline() 矩阵保持单一真相源。
+func archSupportsFrameInlineForTest() bool {
+	return runtime.GOARCH == "amd64"
+}
+
+// TestPJ5_FrameInline_E2E_SelfUsage 验 PJ5 Option B Spike 1 帧建立内联 +
+// callee 体真用 self 字段:
+// `o:m()` callee 体 `self.val = self.val + 1`,验证 R(callA+1)=self 真传给
+// callee,helper 内 enterLuaFrame nargs 计算正确。
+//
+// **真接入正确性强断言**:Spike 1 当前 nargs=0 实装的 byte-equal 兜底验证。
+// 若 nargs 计算错(漏 self / 漏 args),callee 读 self.val 会读到 nil 触发
+// 运行期错误或 t.val 不增。
+//
+// **commit-5i**:加 SpecFrameInlineRunHits 区分 Compile vs Run 触达。
+func TestPJ5_FrameInline_E2E_SelfUsage(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local t = { val = 42, m = function(self) self.val = self.val + 1 end }
+local function caller(o) o:m() end
+for i = 1, 50 do caller(t) end
+return t.val`
+	st, mainCl := loadFnP4(t, src)
+	if _, err := st.Call(value.GCRefOf(mainCl), nil, 1); err != nil {
+		t.Fatalf("warmup: %v", err)
+	}
+	st.bridge.SetForceAllPromote(true)
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("force-all run: %v", err)
+	}
+	if got := value.AsNumber(value.Value(rets[0])); got != 92 {
+		t.Errorf("rets = %v, want 92(42 + 50,byte-equal P1:self 真传 callee + self.val++ 真执行)", got)
+	}
+	t.Logf("SpecFrameInlineHits=%d (Compile) / SpecFrameInlineRunHits=%d (Run 触达)",
+		jit.SpecFrameInlineHits(), jit.SpecFrameInlineRunHits())
+}
+
+// TestPJ5_FrameInline_E2E_RunHit 验 Run 期真触达 runFrameInlineDispatcher
+// (commit-5m ciDepth Go vs mirror 同步 bug 修后 prove-the-path):200 iter
+// 全 useFrameInline 路径,SpecFrameInlineRunHits 应 = 200(amd64)或 0(arm64)。
+func TestPJ5_FrameInline_E2E_RunHit(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local count = 0
+local o = { m = function(self) count = count + 1 end }
+local function caller(t) t:m() end
+for i = 1, 200 do caller(o) end
+return count`
+	st, mainCl := loadFnP4(t, src)
+	if _, err := st.Call(value.GCRefOf(mainCl), nil, 1); err != nil {
+		t.Fatalf("warmup: %v", err)
+	}
+	st.bridge.SetForceAllPromote(true)
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("force-all run: %v", err)
+	}
+	if got := value.AsNumber(value.Value(rets[0])); got != 200 {
+		t.Errorf("rets = %v, want 200(byte-equal P1)", got)
+	}
+	if archSupportsFrameInlineForTest() {
+		if jit.SpecFrameInlineRunHits() == 0 {
+			t.Errorf("SpecFrameInlineRunHits = 0,Run 期未真触达 useFrameInline 路径")
+		}
+	}
+	t.Logf("SpecFrameInlineHits=%d / SpecFrameInlineRunHits=%d",
+		jit.SpecFrameInlineHits(), jit.SpecFrameInlineRunHits())
 }

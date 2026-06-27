@@ -994,3 +994,181 @@ func TestPJ8_EmitSpecArgLoadRegArm64_Length(t *testing.T) {
 		t.Errorf("EmitSpecArgLoadRegArm64 长度 = %d, want 8", len(buf))
 	}
 }
+
+// TestPJ8_EmitFrameInlineCIDepthIncArm64_Length 验 arm64 ciDepth++ 字节级
+// inline 模板长度(LDR×2 + ADD + STR = 16 字节,对位 amd64 = 10)。
+// 承 §9.20 Option B Spike 1。
+func TestPJ8_EmitFrameInlineCIDepthIncArm64_Length(t *testing.T) {
+	var buf []byte
+	buf = EmitFrameInlineCIDepthIncArm64(buf, 56)
+	if len(buf) != EncodedFrameInlineCIDepthIncDecArm64Len {
+		t.Errorf("EmitFrameInlineCIDepthIncArm64 长度 = %d, want %d",
+			len(buf), EncodedFrameInlineCIDepthIncDecArm64Len)
+	}
+}
+
+// TestPJ8_EmitFrameInlineCIDepthDecArm64_Length 验 arm64 ciDepth-- 字节级
+// inline 模板长度(LDR×2 + SUB + STR = 16 字节)。
+func TestPJ8_EmitFrameInlineCIDepthDecArm64_Length(t *testing.T) {
+	var buf []byte
+	buf = EmitFrameInlineCIDepthDecArm64(buf, 56)
+	if len(buf) != EncodedFrameInlineCIDepthIncDecArm64Len {
+		t.Errorf("EmitFrameInlineCIDepthDecArm64 长度 = %d, want %d",
+			len(buf), EncodedFrameInlineCIDepthIncDecArm64Len)
+	}
+}
+
+// TestPJ8_EmitFrameInlineCIDepthDecArm64_Encoding 验 arm64 SUB Xd Xn imm12 字节级
+// 编码(little-endian arm64 指令)— SUB x17, x17, #1 = 0xD1000631。
+func TestPJ8_EmitFrameInlineCIDepthDecArm64_Encoding(t *testing.T) {
+	var buf []byte
+	buf = EmitFrameInlineCIDepthDecArm64(buf, 56)
+	// SUB 指令在 offset 8(LDR×2 各 4 字节)
+	subInsn := binary.LittleEndian.Uint32(buf[8:12])
+	const wantSub = uint32(0xD1000631) // SUB x17, x17, #1
+	if subInsn != wantSub {
+		t.Errorf("SUB x17, x17, #1 = 0x%08X, want 0x%08X", subInsn, wantSub)
+	}
+}
+
+// TestPJ8_EmitFrameInlineLoadCISlotAddrArm64_Length 验 arm64 CI 段第 depth
+// 帧地址加载模板长度(LDR×4 + MovImm64 16 + MUL + ADD = 40 字节,对位
+// amd64 = 30)。承 §9.20 Option B Spike 1。
+func TestPJ8_EmitFrameInlineLoadCISlotAddrArm64_Length(t *testing.T) {
+	var buf []byte
+	buf = EmitFrameInlineLoadCISlotAddrArm64(buf, 56, 64)
+	if len(buf) != EncodedFrameInlineLoadCISlotAddrArm64Len {
+		t.Errorf("EmitFrameInlineLoadCISlotAddrArm64 长度 = %d, want %d",
+			len(buf), EncodedFrameInlineLoadCISlotAddrArm64Len)
+	}
+}
+
+// TestPJ8_EmitFrameInlineWriteCIWordArm64_Length 验 arm64 CI 帧 word 写入
+// 模板长度(16 字节 mov + 4 字节 str = 20 字节,对位 amd64 = 14)。
+func TestPJ8_EmitFrameInlineWriteCIWordArm64_Length(t *testing.T) {
+	var buf []byte
+	buf = EmitFrameInlineWriteCIWordArm64(buf, 0, 0xDEADBEEF)
+	if len(buf) != EncodedFrameInlineWriteCIWordArm64Len {
+		t.Errorf("EmitFrameInlineWriteCIWordArm64 长度 = %d, want %d",
+			len(buf), EncodedFrameInlineWriteCIWordArm64Len)
+	}
+}
+
+// TestPJ8_EmitFrameInlinePopVoid0ArgSkeletonArm64_AliasCIDepthDec 验 arm64
+// popCallInfo 骨架字节级与 CIDepthDec 完全等价(纯 alias)。
+func TestPJ8_EmitFrameInlinePopVoid0ArgSkeletonArm64_AliasCIDepthDec(t *testing.T) {
+	var bufA, bufB []byte
+	bufA = EmitFrameInlinePopVoid0ArgSkeletonArm64(bufA, 56)
+	bufB = EmitFrameInlineCIDepthDecArm64(bufB, 56)
+	if len(bufA) != EncodedFrameInlinePopVoid0ArgSkeletonArm64Len {
+		t.Errorf("PopVoid0ArgSkeletonArm64 长度 = %d, want %d",
+			len(bufA), EncodedFrameInlinePopVoid0ArgSkeletonArm64Len)
+	}
+	if len(bufA) != len(bufB) {
+		t.Errorf("长度差异:Pop=%d, CIDepthDec=%d", len(bufA), len(bufB))
+	}
+	for i := range bufA {
+		if bufA[i] != bufB[i] {
+			t.Errorf("字节[%d] 差异:Pop=0x%02X, CIDepthDec=0x%02X",
+				i, bufA[i], bufB[i])
+		}
+	}
+}
+
+// TestPJ8_EmitFrameInlineLoadClosureGCRefArm64_Length 验 arm64 closure GCRef
+// NaN-box 解析模板长度(LDR 4 + MovImm64 16 + AND 4 = 24 字节,对位 amd64 = 20)。
+func TestPJ8_EmitFrameInlineLoadClosureGCRefArm64_Length(t *testing.T) {
+	var buf []byte
+	buf = EmitFrameInlineLoadClosureGCRefArm64(buf, 5)
+	if len(buf) != EncodedFrameInlineLoadClosureGCRefArm64Len {
+		t.Errorf("EmitFrameInlineLoadClosureGCRefArm64 长度 = %d, want %d",
+			len(buf), EncodedFrameInlineLoadClosureGCRefArm64Len)
+	}
+}
+
+// TestPJ8_EmitFrameInlineLoadClosureGCRefArm64_AndEncoding 验 AND x16, x16, x17
+// 关键编码(0x8A110210)。
+func TestPJ8_EmitFrameInlineLoadClosureGCRefArm64_AndEncoding(t *testing.T) {
+	var buf []byte
+	buf = EmitFrameInlineLoadClosureGCRefArm64(buf, 0)
+	// AND x16, x16, x17 在 offset 20(LDR 4 + MovXdImm64 16 = 20)
+	andInsn := binary.LittleEndian.Uint32(buf[20:24])
+	// AND x16, x16, x17 = 0x8A000000 + (17<<16) + (16<<5) + 16
+	// = 0x8A000000 + 0x110000 + 0x200 + 0x10 = 0x8A110210
+	const wantAnd = uint32(0x8A110210)
+	if andInsn != wantAnd {
+		t.Errorf("AND x16, x16, x17 = 0x%08X, want 0x%08X", andInsn, wantAnd)
+	}
+}
+
+// TestPJ8_EmitFrameInlineWriteCIWordFromXArm64_Length 验 arm64 word 写入 Xt
+// 模板长度(4 字节)。
+func TestPJ8_EmitFrameInlineWriteCIWordFromXArm64_Length(t *testing.T) {
+	var buf []byte
+	buf = EmitFrameInlineWriteCIWordFromXArm64(buf, 3, 16)
+	if len(buf) != EncodedFrameInlineWriteCIWordFromXArm64Len {
+		t.Errorf("EmitFrameInlineWriteCIWordFromXArm64 长度 = %d, want %d",
+			len(buf), EncodedFrameInlineWriteCIWordFromXArm64Len)
+	}
+}
+
+// TestPJ8_EmitFrameInlineBuildVoid0ArgSkeletonArm64_Length 验 arm64 Spike 1
+// enterLuaFrame 字节级 inline 骨架 v2 总长度(40 + 60 + 24 + 4 + 20 + 16 =
+// 164 字节,对位 amd64 v2 = 120)。
+func TestPJ8_EmitFrameInlineBuildVoid0ArgSkeletonArm64_Length(t *testing.T) {
+	var buf []byte
+	words := FrameInlineCISlotWordsArm64{
+		Word0: 0x0000000100000010,
+		Word1: 0x0000000000000020,
+		Word2: 0x0000000000000005,
+		Word3: 0, // v2 忽略
+		Word4: 0,
+	}
+	buf = EmitFrameInlineBuildVoid0ArgSkeletonArm64(buf, 56, 64, 5 /*callARecv*/, words)
+	if len(buf) != EncodedFrameInlineBuildVoid0ArgSkeletonArm64Len {
+		t.Errorf("EmitFrameInlineBuildVoid0ArgSkeletonArm64 长度 = %d, want %d",
+			len(buf), EncodedFrameInlineBuildVoid0ArgSkeletonArm64Len)
+	}
+}
+
+// TestPJ8_EmitFrameInlineWriteCIWordArm64_Encoding 验各 word_idx STR pimm12 编码。
+func TestPJ8_EmitFrameInlineWriteCIWordArm64_Encoding(t *testing.T) {
+	for _, wordIdx := range []uint8{0, 1, 2, 3, 4} {
+		var buf []byte
+		buf = EmitFrameInlineWriteCIWordArm64(buf, wordIdx, 0xCAFEBABE12345678)
+
+		// STR x16, [x0 + wordIdx*8] 在 offset 16(MovXdImm64 占 16 字节)
+		strInsn := binary.LittleEndian.Uint32(buf[16:20])
+		// STR Xt, [Xn, #pimm12]:0xF9000000 base + (pimm12<<10) + (Xn<<5) + Xt
+		// pimm12 = byteOff / 8 = wordIdx
+		wantStr := uint32(0xF9000000) | uint32(wordIdx)<<10 | uint32(0)<<5 | uint32(16)
+		if strInsn != wantStr {
+			t.Errorf("word_idx=%d: STR = 0x%08X, want 0x%08X", wordIdx, strInsn, wantStr)
+		}
+	}
+}
+
+// TestPJ8_EmitFrameInlineLoadCISlotAddrArm64_Encoding 验关键指令 MUL/ADD
+// 字节级编码。
+func TestPJ8_EmitFrameInlineLoadCISlotAddrArm64_Encoding(t *testing.T) {
+	var buf []byte
+	buf = EmitFrameInlineLoadCISlotAddrArm64(buf, 56, 64)
+
+	// MUL x17, x17, x9 在 offset 32(LDR×4 16 字节 + MovImm64 16 字节)
+	mulInsn := binary.LittleEndian.Uint32(buf[32:36])
+	// MUL x17, x17, x9 = 0x9B007C00 + (9<<16) + (17<<5) + 17
+	// = 0x9B007C00 + 0x90000 + 0x220 + 0x11 = 0x9B097E31
+	const wantMul = uint32(0x9B097E31)
+	if mulInsn != wantMul {
+		t.Errorf("MUL x17, x17, x9 = 0x%08X, want 0x%08X", mulInsn, wantMul)
+	}
+
+	// ADD x0, x16, x17 在 offset 36
+	addInsn := binary.LittleEndian.Uint32(buf[36:40])
+	// ADD x0, x16, x17 = 0x8B000000 + (17<<16) + (16<<5) + 0
+	// = 0x8B000000 + 0x110000 + 0x200 + 0 = 0x8B110200
+	const wantAdd = uint32(0x8B110200)
+	if addInsn != wantAdd {
+		t.Errorf("ADD x0, x16, x17 = 0x%08X, want 0x%08X", addInsn, wantAdd)
+	}
+}

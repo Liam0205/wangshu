@@ -280,3 +280,38 @@ func EmitMovqRdxFromMemRbx(buf []byte, disp32 int32) []byte {
 
 // EncodedMovqRdxFromMemRbxLen 是「mov rdx, [rbx+disp32]」字节数(7)。
 const EncodedMovqRdxFromMemRbxLen = 7
+
+// EmitMovqRcxFromMemRbx 发射「mov rcx, [rbx+disp32]」从 rbx + disp32 加载
+// 到 rcx(对位 EmitMovqRdxFromMemRbx,rdx → rcx)。
+//
+// 编码:48 8B 8B disp32(REX.W=1 / opcode 0x8B / ModRM=10_001_011 即 0x8B,
+// disp32 mode + reg=001 rcx + rm=011 rbx)。
+//
+// 用例:PJ5 Option B Spike 1 — 解 R(callA) NaN-box 取 closure value 到 rcx,
+// 后续 mask 取 GCRef。
+func EmitMovqRcxFromMemRbx(buf []byte, disp32 int32) []byte {
+	buf = append(buf, 0x48, 0x8B, 0x8B)
+	buf = append(buf,
+		byte(uint32(disp32)),
+		byte(uint32(disp32)>>8),
+		byte(uint32(disp32)>>16),
+		byte(uint32(disp32)>>24))
+	return buf
+}
+
+// EncodedMovqRcxFromMemRbxLen = 7.
+const EncodedMovqRcxFromMemRbxLen = 7
+
+// EmitAndRcxRdx 发射「and rcx, rdx」(REX.W 21 /r modrm,3 字节).
+//
+// 编码:48 21 D1(REX.W=1 / opcode 0x21 AND r/m64 r64 / ModRM=11_010_001
+// 即 0xD1,mod=11 reg-direct + reg=010 rdx + rm=001 rcx)。
+//
+// 用例:Spike 1 — 解 NaN-box payload mask(rcx = rcx & 0x0000FFFFFFFFFFFF
+// in rdx,得 48-bit GCRef)。
+func EmitAndRcxRdx(buf []byte) []byte {
+	return append(buf, 0x48, 0x21, 0xD1)
+}
+
+// EncodedAndRcxRdxLen = 3.
+const EncodedAndRcxRdxLen = 3

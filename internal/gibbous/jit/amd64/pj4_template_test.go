@@ -599,3 +599,334 @@ func TestPJ4_EmitSelfNodeHit_SelfStoreAndKeyCompare(t *testing.T) {
 		t.Errorf("SELF NodeHit 模板未含 stableKey=0x%x 烧入字节", stableKey)
 	}
 }
+
+// TestPJ5_EmitSpecArgLoadK_Length 验 PJ5 SELF spec args 装载 K 字节级模板长度
+// (10 字节 mov rax imm64 + 7 字节 mov [rbx+dst*8] rax = 17 字节)。
+func TestPJ5_EmitSpecArgLoadK_Length(t *testing.T) {
+	var buf []byte
+	buf = EmitSpecArgLoadK(buf, 5, 0xDEADBEEF12345678)
+	if len(buf) != 17 {
+		t.Errorf("EmitSpecArgLoadK 长度 = %d, want 17", len(buf))
+	}
+}
+
+// TestPJ5_EmitSpecArgLoadReg_Length 验 PJ5 SELF spec args 装载 reg 字节级模板长度
+// (7 字节 mov rax [rbx+src*8] + 7 字节 mov [rbx+dst*8] rax = 14 字节)。
+func TestPJ5_EmitSpecArgLoadReg_Length(t *testing.T) {
+	var buf []byte
+	buf = EmitSpecArgLoadReg(buf, 5, 3)
+	if len(buf) != 14 {
+		t.Errorf("EmitSpecArgLoadReg 长度 = %d, want 14", len(buf))
+	}
+}
+
+// TestPJ5_EmitFrameInlineCIDepthInc_Length 验 ciDepth++ 字节级 inline 模板
+// 长度(7 字节 mov rax [r15+disp32] + 3 字节 inc qword ptr [rax] = 10 字节)。
+// 承 §9.20 Option B Spike 1 起手积木。
+func TestPJ5_EmitFrameInlineCIDepthInc_Length(t *testing.T) {
+	var buf []byte
+	buf = EmitFrameInlineCIDepthInc(buf, 0x40)
+	if len(buf) != EncodedFrameInlineCIDepthIncDecLen {
+		t.Errorf("EmitFrameInlineCIDepthInc 长度 = %d, want %d", len(buf), EncodedFrameInlineCIDepthIncDecLen)
+	}
+}
+
+// TestPJ5_EmitFrameInlineCIDepthInc_Encoding 验 inc 字节级编码。
+//
+// 期望:[4C 8B 87 40 00 00 00 | 48 FF 00] = mov rax,[r15+0x40] + inc [rax]
+func TestPJ5_EmitFrameInlineCIDepthInc_Encoding(t *testing.T) {
+	var buf []byte
+	buf = EmitFrameInlineCIDepthInc(buf, 0x40)
+
+	want := []byte{
+		0x49, 0x8B, 0x87, 0x40, 0x00, 0x00, 0x00, // mov rax, [r15+0x40]
+		0x48, 0xFF, 0x00, // inc qword ptr [rax]
+	}
+	if len(buf) != len(want) {
+		t.Fatalf("长度不一致:got %d want %d", len(buf), len(want))
+	}
+	for i, b := range want {
+		if buf[i] != b {
+			t.Errorf("buf[%d] = 0x%02X, want 0x%02X", i, buf[i], b)
+		}
+	}
+}
+
+// TestPJ5_EmitFrameInlineCIDepthDec_Length 验 ciDepth-- 字节级 inline 模板
+// 长度同 Inc(10 字节)。承 §9.20 popCallInfo 反向。
+func TestPJ5_EmitFrameInlineCIDepthDec_Length(t *testing.T) {
+	var buf []byte
+	buf = EmitFrameInlineCIDepthDec(buf, 0x40)
+	if len(buf) != EncodedFrameInlineCIDepthIncDecLen {
+		t.Errorf("EmitFrameInlineCIDepthDec 长度 = %d, want %d", len(buf), EncodedFrameInlineCIDepthIncDecLen)
+	}
+}
+
+// TestPJ5_EmitFrameInlineCIDepthDec_Encoding 验 dec 字节级编码(末尾 inc 改 dec)。
+func TestPJ5_EmitFrameInlineCIDepthDec_Encoding(t *testing.T) {
+	var buf []byte
+	buf = EmitFrameInlineCIDepthDec(buf, 0x40)
+
+	want := []byte{
+		0x49, 0x8B, 0x87, 0x40, 0x00, 0x00, 0x00, // mov rax, [r15+0x40]
+		0x48, 0xFF, 0x08, // dec qword ptr [rax]
+	}
+	for i, b := range want {
+		if buf[i] != b {
+			t.Errorf("buf[%d] = 0x%02X, want 0x%02X", i, buf[i], b)
+		}
+	}
+}
+
+// TestPJ5_EmitFrameInlineLoadCISlotAddr_Length 验 amd64 CI 段第 depth 帧
+// 地址加载模板长度(30 字节,承 §9.20 Option B Spike 1)。
+func TestPJ5_EmitFrameInlineLoadCISlotAddr_Length(t *testing.T) {
+	var buf []byte
+	buf = EmitFrameInlineLoadCISlotAddr(buf, 0x40, 0x48)
+	if len(buf) != EncodedFrameInlineLoadCISlotAddrLen {
+		t.Errorf("EmitFrameInlineLoadCISlotAddr 长度 = %d, want %d",
+			len(buf), EncodedFrameInlineLoadCISlotAddrLen)
+	}
+}
+
+// TestPJ5_EmitFrameInlineLoadCISlotAddr_Encoding 验关键字节(imul rcx, rcx, 40)。
+//
+// 验:序列含 [48 6B C9 28]= imul rcx, rcx, 40(40 = ciSlotBytes = ciWords*8)
+func TestPJ5_EmitFrameInlineLoadCISlotAddr_Encoding(t *testing.T) {
+	var buf []byte
+	buf = EmitFrameInlineLoadCISlotAddr(buf, 0x40, 0x48)
+	// 序列布局:
+	// [0..6]   mov rax, [r15+ciDepthOff]   (7字节)
+	// [7..9]   mov rcx, rax                (3字节)
+	// [10..12] mov rcx, [rcx]              (3字节)
+	// [13..19] mov rax, [r15+ciSegBaseOff] (7字节)
+	// [20..22] mov rax, [rax]              (3字节)
+	// [23..26] imul rcx, rcx, 40           (4字节)
+	// [27..29] add rax, rcx                (3字节)
+	wantImul := []byte{0x48, 0x6B, 0xC9, 0x28}
+	for i, b := range wantImul {
+		if buf[23+i] != b {
+			t.Errorf("imul rcx, rcx, 40 字节[%d]=0x%02X, want 0x%02X(off %d)",
+				i, buf[23+i], b, 23+i)
+		}
+	}
+	// add rax, rcx 应在 offset 27-29
+	wantAdd := []byte{0x48, 0x01, 0xC8}
+	for i, b := range wantAdd {
+		if buf[27+i] != b {
+			t.Errorf("add rax, rcx 字节[%d]=0x%02X, want 0x%02X(off %d)",
+				i, buf[27+i], b, 27+i)
+		}
+	}
+}
+
+// TestPJ5_EmitFrameInlineWriteCIWord_Length 验 amd64 CI 帧 word 写入模板
+// 长度(10 字节 mov rcx imm64 + 4 字节 mov [rax+disp8] rcx = 14 字节)。
+// 承 §9.20 Option B Spike 1。
+func TestPJ5_EmitFrameInlineWriteCIWord_Length(t *testing.T) {
+	var buf []byte
+	buf = EmitFrameInlineWriteCIWord(buf, 0, 0xDEADBEEF)
+	if len(buf) != EncodedFrameInlineWriteCIWordLen {
+		t.Errorf("EmitFrameInlineWriteCIWord 长度 = %d, want %d",
+			len(buf), EncodedFrameInlineWriteCIWordLen)
+	}
+}
+
+// TestPJ5_EmitFrameInlineBuildVoid0ArgSkeleton_Length 验 amd64 Spike 1
+// enterLuaFrame 字节级 inline 骨架 v2 总长度(30 + 42 + 20 + 4 + 14 + 10 =
+// 120 字节,word3 改用 runtime GCRef 装载多 10 字节)。
+// 承 §9.20 Option B Spike 1。
+func TestPJ5_EmitFrameInlineBuildVoid0ArgSkeleton_Length(t *testing.T) {
+	var buf []byte
+	words := FrameInlineCISlotWords{
+		Word0: 0x0000000100000010, // funcIdx=1, base=0x10
+		Word1: 0x0000000000000020, // top=0x20
+		Word2: 0x0000000000000005, // protoID=5
+		Word3: 0,                  // v2 忽略,改 callARecv 装载
+		Word4: 0,
+	}
+	buf = EmitFrameInlineBuildVoid0ArgSkeleton(buf, 0x40, 0x48, 5 /*callARecv*/, words)
+	if len(buf) != EncodedFrameInlineBuildVoid0ArgSkeletonLen {
+		t.Errorf("EmitFrameInlineBuildVoid0ArgSkeleton 长度 = %d, want %d",
+			len(buf), EncodedFrameInlineBuildVoid0ArgSkeletonLen)
+	}
+}
+
+// TestPJ5_EmitFrameInlinePopVoid0ArgSkeleton_CIDepthDecPlusRet 验 amd64
+// Spike 1 popCallInfo 骨架字节级 = CIDepthDec 10 byte + xor eax,eax 2 byte +
+// ret 1 byte = 13 byte(承 commit-5l 修 missing ret bug)。
+func TestPJ5_EmitFrameInlinePopVoid0ArgSkeleton_CIDepthDecPlusRet(t *testing.T) {
+	var bufA []byte
+	bufA = EmitFrameInlinePopVoid0ArgSkeleton(bufA, 0x40)
+	if len(bufA) != EncodedFrameInlinePopVoid0ArgSkeletonLen {
+		t.Errorf("PopVoid0ArgSkeleton 长度 = %d, want %d",
+			len(bufA), EncodedFrameInlinePopVoid0ArgSkeletonLen)
+	}
+	// 前 10 byte = CIDepthDec(EmitMovqRaxFromR15Disp + EmitDecQwordPtrAtRax)
+	var bufB []byte
+	bufB = EmitFrameInlineCIDepthDec(bufB, 0x40)
+	for i := range bufB {
+		if bufA[i] != bufB[i] {
+			t.Errorf("字节[%d] 差异:Pop=0x%02X, CIDepthDec=0x%02X",
+				i, bufA[i], bufB[i])
+		}
+	}
+	// 末 3 byte = 0x31 0xc0 0xc3(xor eax,eax + ret)
+	if bufA[10] != 0x31 || bufA[11] != 0xC0 || bufA[12] != 0xC3 {
+		t.Errorf("PopVoid0Arg 末 3 byte = 0x%02X%02X%02X, want 0x31C0C3(xor eax,eax + ret)",
+			bufA[10], bufA[11], bufA[12])
+	}
+}
+
+// TestPJ5_EmitFrameInlineLoadClosureGCRef_Length 验 amd64 Spike 1 closure
+// GCRef NaN-box 解析模板长度(7+10+3 = 20 字节)。
+func TestPJ5_EmitFrameInlineLoadClosureGCRef_Length(t *testing.T) {
+	var buf []byte
+	buf = EmitFrameInlineLoadClosureGCRef(buf, 5)
+	if len(buf) != EncodedFrameInlineLoadClosureGCRefLen {
+		t.Errorf("EmitFrameInlineLoadClosureGCRef 长度 = %d, want %d",
+			len(buf), EncodedFrameInlineLoadClosureGCRefLen)
+	}
+}
+
+// TestPJ5_EmitFrameInlineLoadClosureGCRef_Encoding 验关键字节(mov rcx [rbx]
+// + mov rdx payloadMask + and rcx rdx)。
+func TestPJ5_EmitFrameInlineLoadClosureGCRef_Encoding(t *testing.T) {
+	var buf []byte
+	buf = EmitFrameInlineLoadClosureGCRef(buf, 5)
+
+	// mov rcx, [rbx + 40] 在 offset 0-6(48 8B 8B disp32 + 5*8=40)
+	if buf[0] != 0x48 || buf[1] != 0x8B || buf[2] != 0x8B {
+		t.Errorf("mov rcx,[rbx+disp32] 前缀 = 0x%02X%02X%02X, want 0x488B8B",
+			buf[0], buf[1], buf[2])
+	}
+	if buf[3] != 40 {
+		t.Errorf("disp32 = %d, want 40(=5*8)", buf[3])
+	}
+	// mov rdx, payloadMask 在 offset 7-16(48 BA + 8 字节 imm)
+	if buf[7] != 0x48 || buf[8] != 0xBA {
+		t.Errorf("mov rdx imm64 前缀 = 0x%02X%02X, want 0x48BA",
+			buf[7], buf[8])
+	}
+	// imm64 = 0x0000_FFFF_FFFF_FFFF(LE 字节序:FF FF FF FF FF FF 00 00)
+	wantMask := []byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00}
+	for i, b := range wantMask {
+		if buf[9+i] != b {
+			t.Errorf("payloadMask imm64 字节[%d]=0x%02X, want 0x%02X", i, buf[9+i], b)
+		}
+	}
+	// and rcx, rdx 在 offset 17-19(48 21 D1)
+	if buf[17] != 0x48 || buf[18] != 0x21 || buf[19] != 0xD1 {
+		t.Errorf("and rcx,rdx 字节[17-19]=0x%02X%02X%02X, want 0x4821D1",
+			buf[17], buf[18], buf[19])
+	}
+}
+
+// TestPJ5_EmitFrameInlineWriteCIWordFromRcx_Length 验 amd64 word 写入 rcx
+// 模板长度(4 字节)。
+func TestPJ5_EmitFrameInlineWriteCIWordFromRcx_Length(t *testing.T) {
+	var buf []byte
+	buf = EmitFrameInlineWriteCIWordFromRcx(buf, 3)
+	if len(buf) != EncodedFrameInlineWriteCIWordFromRcxLen {
+		t.Errorf("EmitFrameInlineWriteCIWordFromRcx 长度 = %d, want %d",
+			len(buf), EncodedFrameInlineWriteCIWordFromRcxLen)
+	}
+}
+
+// TestPJ5_EmitFrameInlineWriteCIWordFromRcx_Encoding 验各 wordIdx disp8。
+func TestPJ5_EmitFrameInlineWriteCIWordFromRcx_Encoding(t *testing.T) {
+	for _, wordIdx := range []uint8{0, 1, 2, 3, 4} {
+		var buf []byte
+		buf = EmitFrameInlineWriteCIWordFromRcx(buf, wordIdx)
+
+		// mov [rax + wordIdx*8], rcx — 48 89 48 disp8
+		if buf[0] != 0x48 || buf[1] != 0x89 || buf[2] != 0x48 {
+			t.Errorf("word_idx=%d: mov [rax+disp8] rcx 前缀 = 0x%02X%02X%02X, want 0x488948",
+				wordIdx, buf[0], buf[1], buf[2])
+		}
+		wantDisp := int8(wordIdx) * 8
+		if int8(buf[3]) != wantDisp {
+			t.Errorf("word_idx=%d: disp8 = %d, want %d", wordIdx, int8(buf[3]), wantDisp)
+		}
+	}
+}
+
+// TestPJ5_EmitFrameInlineBuildVoid0ArgSkeleton_StructuralBoundaries 验骨架 v2
+// 段间边界(承 v2 word3 改用 runtime GCRef 装载):
+//
+//	[0..29]   LoadCISlotAddr            (30 字节)
+//	[30..43]  WriteCIWord(0) imm64       (14 字节)
+//	[44..57]  WriteCIWord(1) imm64       (14 字节)
+//	[58..71]  WriteCIWord(2) imm64       (14 字节)
+//	[72..91]  LoadClosureGCRef(callARecv)(20 字节)— rcx = R(callARecv) GCRef
+//	[92..95]  WriteCIWordFromRcx(3)      (4 字节) — word3 = rcx
+//	[96..109] WriteCIWord(4) imm64       (14 字节)
+//	[110..119] CIDepthInc                 (10 字节)
+//
+// 通过查特征字节位置验证段堆叠正确。
+func TestPJ5_EmitFrameInlineBuildVoid0ArgSkeleton_StructuralBoundaries(t *testing.T) {
+	var buf []byte
+	words := FrameInlineCISlotWords{Word0: 1, Word1: 2, Word2: 3, Word4: 5}
+	buf = EmitFrameInlineBuildVoid0ArgSkeleton(buf, 0x40, 0x48, 5 /*callARecv*/, words)
+
+	// LoadCISlotAddr 段末:add rax, rcx 在 offset 27-29(0x48 0x01 0xC8)
+	if buf[27] != 0x48 || buf[28] != 0x01 || buf[29] != 0xC8 {
+		t.Errorf("LoadCISlotAddr 段末 add rax,rcx 字节[27-29]=0x%02X%02X%02X, want 0x4801C8",
+			buf[27], buf[28], buf[29])
+	}
+	// WriteCIWord(0) 段头:offset 30 mov rcx, imm64(0x48 0xB9)
+	if buf[30] != 0x48 || buf[31] != 0xB9 {
+		t.Errorf("WriteCIWord(0) 段头 mov rcx imm64 字节[30-31]=0x%02X%02X, want 0x48B9",
+			buf[30], buf[31])
+	}
+	// LoadClosureGCRef 段头:offset 72 mov rcx, [rbx + 5*8=40](0x48 0x8B 0x8B)
+	if buf[72] != 0x48 || buf[73] != 0x8B || buf[74] != 0x8B {
+		t.Errorf("LoadClosureGCRef 段头 mov rcx [rbx+disp32] 字节[72-74]=0x%02X%02X%02X, want 0x488B8B",
+			buf[72], buf[73], buf[74])
+	}
+	// WriteCIWordFromRcx 段:offset 92 mov [rax+24] rcx(0x48 0x89 0x48 0x18)
+	if buf[92] != 0x48 || buf[93] != 0x89 || buf[94] != 0x48 || buf[95] != 0x18 {
+		t.Errorf("WriteCIWordFromRcx(3) 字节[92-95]=0x%02X%02X%02X%02X, want 0x48894818",
+			buf[92], buf[93], buf[94], buf[95])
+	}
+	// WriteCIWord(4) 段头:offset 96 mov rcx imm64(0x48 0xB9)
+	if buf[96] != 0x48 || buf[97] != 0xB9 {
+		t.Errorf("WriteCIWord(4) 段头字节[96-97]=0x%02X%02X, want 0x48B9",
+			buf[96], buf[97])
+	}
+	// CIDepthInc 段头:offset 110 mov rax, [r15+0x40](0x49 0x8B 0x87)
+	if buf[110] != 0x49 || buf[111] != 0x8B || buf[112] != 0x87 {
+		t.Errorf("CIDepthInc 段头 mov rax,[r15+disp32] 字节[110-112]=0x%02X%02X%02X, want 0x498B87",
+			buf[110], buf[111], buf[112])
+	}
+	// CIDepthInc 段末:offset 117-119 inc qword ptr [rax](0x48 0xFF 0x00)
+	if buf[117] != 0x48 || buf[118] != 0xFF || buf[119] != 0x00 {
+		t.Errorf("CIDepthInc 段末 inc qword ptr [rax] 字节[117-119]=0x%02X%02X%02X, want 0x48FF00",
+			buf[117], buf[118], buf[119])
+	}
+}
+
+// TestPJ5_EmitFrameInlineWriteCIWord_Encoding 验各 word_idx 关键字节
+// (mov rcx imm64 + mov [rax+wordIdx*8] rcx)。
+func TestPJ5_EmitFrameInlineWriteCIWord_Encoding(t *testing.T) {
+	for _, wordIdx := range []uint8{0, 1, 2, 3, 4} {
+		var buf []byte
+		buf = EmitFrameInlineWriteCIWord(buf, wordIdx, 0xCAFEBABE12345678)
+
+		// mov rcx, imm64 在 offset 0(REX.W=0x48 + 0xB9=mov rcx, imm64 + 8 字节 imm)
+		if buf[0] != 0x48 || buf[1] != 0xB9 {
+			t.Errorf("word_idx=%d: mov rcx, imm64 前缀 = 0x%02X%02X, want 0x48B9",
+				wordIdx, buf[0], buf[1])
+		}
+		// mov [rax + wordIdx*8], rcx 在 offset 10(48 89 48 disp8)
+		if buf[10] != 0x48 || buf[11] != 0x89 || buf[12] != 0x48 {
+			t.Errorf("word_idx=%d: mov [rax+disp8] rcx 前缀 = 0x%02X%02X%02X, want 0x488948",
+				wordIdx, buf[10], buf[11], buf[12])
+		}
+		// disp8 = wordIdx * 8
+		wantDisp := int8(wordIdx) * 8
+		if int8(buf[13]) != wantDisp {
+			t.Errorf("word_idx=%d: disp8 = %d, want %d", wordIdx, int8(buf[13]), wantDisp)
+		}
+	}
+}
