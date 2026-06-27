@@ -4911,6 +4911,72 @@ func (c *Compiler) compileSpecSelfCall(proto *bytecode.Proto, info shapeInfo) (b
 	const deoptCode uint64 = 0xFFFCDEAD_DEADBE06
 	arenaBaseOff := int32(JITContextArenaBaseOffset)
 	var buf []byte
+	// PJ5 SELF + CALL spec template:**args 装载段 emit 在 SELF 段之前**(承
+	// §9.19 摊薄实测 3 参形态 ratio 1.017x → 1.x 慢的瓶颈是 args 装载的 host
+	// round-trip)。args 装载到 R(callA+2..callA+1+N)字节级直发 mov,跳过
+	// host.GetReg/SetReg N 次跨 Go round-trip。SELF 段执行后 method/self 已落
+	// R(callA)/R(callA+1),args 段已装到 R(callA+2..),host.CallBaseline 调用
+	// 时 args 已就位。
+	//
+	// 槽位不冲突:args 写 R(callA+2..callA+1+N);SELF 段读 R(callA)=recv +
+	// 写 R(callA+1)=self + 写 R(callA)=method。args 段先执行写不污染 recv。
+	callA := info.callA
+	if info.callArgCount >= 1 {
+		dst := callA + 2 + 0
+		if info.callArg1IsK {
+			buf = archEmitSpecArgLoadK(buf, dst, info.callArg1K)
+		} else {
+			buf = archEmitSpecArgLoadReg(buf, dst, info.callArg1RegSrc)
+		}
+	}
+	if info.callArgCount >= 2 {
+		dst := callA + 2 + 1
+		if info.callArg2IsK {
+			buf = archEmitSpecArgLoadK(buf, dst, info.callArg2K)
+		} else {
+			buf = archEmitSpecArgLoadReg(buf, dst, info.callArg2RegSrc)
+		}
+	}
+	if info.callArgCount >= 3 {
+		dst := callA + 2 + 2
+		if info.callArg3IsK {
+			buf = archEmitSpecArgLoadK(buf, dst, info.callArg3K)
+		} else {
+			buf = archEmitSpecArgLoadReg(buf, dst, info.callArg3RegSrc)
+		}
+	}
+	if info.callArgCount >= 4 {
+		dst := callA + 2 + 3
+		if info.callArg4IsK {
+			buf = archEmitSpecArgLoadK(buf, dst, info.callArg4K)
+		} else {
+			buf = archEmitSpecArgLoadReg(buf, dst, info.callArg4RegSrc)
+		}
+	}
+	if info.callArgCount >= 5 {
+		dst := callA + 2 + 4
+		if info.callArg5IsK {
+			buf = archEmitSpecArgLoadK(buf, dst, info.callArg5K)
+		} else {
+			buf = archEmitSpecArgLoadReg(buf, dst, info.callArg5RegSrc)
+		}
+	}
+	if info.callArgCount >= 6 {
+		dst := callA + 2 + 5
+		if info.callArg6IsK {
+			buf = archEmitSpecArgLoadK(buf, dst, info.callArg6K)
+		} else {
+			buf = archEmitSpecArgLoadReg(buf, dst, info.callArg6RegSrc)
+		}
+	}
+	if info.callArgCount >= 7 {
+		dst := callA + 2 + 6
+		if info.callArg7IsK {
+			buf = archEmitSpecArgLoadK(buf, dst, info.callArg7K)
+		} else {
+			buf = archEmitSpecArgLoadReg(buf, dst, info.callArg7RegSrc)
+		}
+	}
 	buf = archEmitSelfNodeHit(buf, info.icAReg, info.icBReg,
 		info.icStableShape, info.icStableIndex, info.icStableKey,
 		arenaBaseOff, deoptCode)

@@ -735,8 +735,10 @@ func (c *p4Code) runSpecSelfCall(base int32, jitCtxAddr uintptr, vsBaseAddr uint
 		}
 	}
 
-	// 3. 装 args 到 R(callA+2..)(offset=2 跳过 self 槽 R(callA+1))
-	c.loadCallArgs(2)
+	// 3. args 装载已在 spec 段字节级 emit(承 §9.19 摊薄优化,跳过 host
+	// round-trip)。spec 段执行后 args 已落 R(callA+2..callA+1+N)。
+	// **deopt 路径下** spec 段中途返回 deoptCode,args 装载段(在 SELF 之前)
+	// 已执行完,R(callA+2..) 已装好——降级 host.Self 后 args 仍可用,无需重装。
 
 	// 4. CALL 段 / TAILCALL 段(byte-equal P1)
 	callPC := int32(c.retPC) - 1

@@ -823,3 +823,30 @@ func EmitSelfNodeHit(buf []byte, aReg, bReg uint8,
 
 	return buf
 }
+
+// EmitSpecArgLoadK 写 R(dstReg) = K(NaN-box u64)— PJ5 SELF spec template
+// args 装载字节级 inline 用,代替 host.SetReg(dstReg, K)round-trip。
+//
+// 字节序列(10+7 = 17 字节):
+//
+//	mov rax, K_imm64        ; 10 字节
+//	mov [rbx + dstReg*8], rax  ; 7 字节(disp32 模式)
+func EmitSpecArgLoadK(buf []byte, dstReg uint8, k uint64) []byte {
+	buf = EmitMovRaxImm64(buf, k)
+	buf = EmitMovqMemRegFromRax(buf, 3 /*rbx*/, int32(dstReg)*8)
+	return buf
+}
+
+// EmitSpecArgLoadReg 写 R(dstReg) = R(srcReg)— PJ5 SELF spec template
+// args 装载字节级 inline 用,代替 host.SetReg(dstReg, host.GetReg(srcReg))
+// 双 round-trip。
+//
+// 字节序列(7+7 = 14 字节):
+//
+//	mov rax, [rbx + srcReg*8]
+//	mov [rbx + dstReg*8], rax
+func EmitSpecArgLoadReg(buf []byte, dstReg uint8, srcReg uint8) []byte {
+	buf = EmitMovqRaxFromMemReg(buf, 3 /*rbx*/, int32(srcReg)*8)
+	buf = EmitMovqMemRegFromRax(buf, 3 /*rbx*/, int32(dstReg)*8)
+	return buf
+}
