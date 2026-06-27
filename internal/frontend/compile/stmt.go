@@ -61,6 +61,9 @@ func (fs *funcState) stmtLocal(s *ast.LocalStmt) {
 // stmtLocalFunc:local function f(): 先注册局部 f,再 codegen Fn 到该寄存器(04 §5.8)
 func (fs *funcState) stmtLocalFunc(s *ast.LocalFuncStmt) {
 	fs.registerLocal(s.Line, s.Name)
+	// 挂 localFnAsts:让嵌套 closure / sibling closure 的 AnalyzeProto 知道
+	// 本 fn 是 known local(承 P4 PJ5 scope-aware analyzer 扩展)。
+	fs.localFnAsts[s.Name] = s.Fn
 	reg := fs.freereg
 	fs.reserveRegs(s.Line, 1)
 	fnExp := fs.exprFunc(s.Fn)

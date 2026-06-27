@@ -11,6 +11,7 @@ import (
 	"math"
 
 	"github.com/Liam0205/wangshu/internal/bytecode"
+	"github.com/Liam0205/wangshu/internal/frontend/ast"
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
@@ -70,6 +71,16 @@ type funcState struct {
 
 	consts map[constKey]int // 常量去重(04 §11)
 
+	// localFnAsts 跟踪本 funcState 内 `local function X` 形态定义的 local
+	// 函数名 → AST(承 P4 PJ5 scope-aware analyzer 扩展,let inner Proto
+	// AnalyzeProto 知道 outer 已知 local 函数,识别 GETUPVAL+CALL+RETURN void
+	// 形态调用 outer local fn 为 known 而非 unknown call)。
+	//
+	// **范围**:仅本 funcState 内 stmtLocalFunc 注册的 fn(LocalFuncStmt);
+	// `local f = function() end` AssignStmt+FuncExpr 复合形态当前不跟踪
+	// (留下一 commit 扩展);全局 / 表字段 fn 永远不跟踪(运行期可被覆盖)。
+	localFnAsts map[string]*ast.FuncExpr
+
 	isVararg bool
 }
 
@@ -80,11 +91,12 @@ func newFuncState(cg *codegen, prev *funcState, source string, line int32) *func
 			Source:      source,
 			LineDefined: line,
 		},
-		prev:       prev,
-		cg:         cg,
-		jpc:        NoJump,
-		lastTarget: -1,
-		consts:     map[constKey]int{},
+		prev:        prev,
+		cg:          cg,
+		jpc:         NoJump,
+		lastTarget:  -1,
+		consts:      map[constKey]int{},
+		localFnAsts: map[string]*ast.FuncExpr{},
 	}
 	return fs
 }
