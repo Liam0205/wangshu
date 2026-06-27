@@ -509,3 +509,65 @@ return 0`
 		t.Errorf("err 消息 = %q,应含 'call' 关键字", err.Error())
 	}
 }
+
+// TestPJ5_SelfCall_E2E_NestedSelfChain 嵌套两层 SELF inline 链:
+// caller(o1) → o1:m() → 内层 inner(o2) → o2:n() → byte-equal P1 解释器
+//
+// 业务高频形态:OOP 多对象组合(observer 通知 listener,wrapper 委托 inner 等)。
+// 验链式 SELF inline 不互相干扰(两条 PJ5 SELF inline 路径独立命中,SpecSelfCallHits >= 2)。
+func TestPJ5_SelfCall_E2E_NestedSelfChain(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local total = 0
+local inner = { n = function(self, x) total = total + x end }
+local outer = { m = function(self, v) inner:n(v) end }
+local function caller(t, v) t:m(v) end
+for i = 1, 30 do caller(outer, i) end
+return total`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// total = sum_{i=1..30} i = 465
+	if got := value.AsNumber(value.Value(rets[0])); got != 465 {
+		t.Errorf("rets = %v, want 465", got)
+	}
+	// 嵌套两层 SELF 真升层:外层 caller 内 t:m(v) + 内层 outer.m 内 inner:n(v) 各
+	// 命中一次 PJ5 SELF inline 形态,SpecSelfCallHits 应 >= 2(两个独立 Proto)
+	if jit.SpecSelfCallHits() < 2 {
+		t.Errorf("SpecSelfCallHits = %d,want >= 2(嵌套两层 SELF inline 各命中一次)",
+			jit.SpecSelfCallHits())
+	}
+	t.Logf("SpecSelfCallHits=%d", jit.SpecSelfCallHits())
+}
+
+// TestPJ5_SelfCall_E2E_SelfThenCall 同 closure 内 SELF + regular CALL 链。
+// `function(t) t:m(); other() end` 编 SELF + CALL + ... + RETURN,但 SELF
+// 不在 SubProto 单独 inline 形态(>5 op 超 form6),验整路 byte-equal 不破坏。
+func TestPJ5_SelfCall_E2E_SelfThenCall(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local mCount = 0
+local oCount = 0
+local o = { m = function(self) mCount = mCount + 1 end }
+local function other() oCount = oCount + 1 end
+local function caller(t) t:m(); other() end
+for i = 1, 30 do caller(o) end
+return mCount, oCount`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 2)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := value.AsNumber(value.Value(rets[0])); got != 30 {
+		t.Errorf("mCount = %v, want 30", got)
+	}
+	if got := value.AsNumber(value.Value(rets[1])); got != 30 {
+		t.Errorf("oCount = %v, want 30", got)
+	}
+}

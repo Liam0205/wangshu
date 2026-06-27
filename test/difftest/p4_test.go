@@ -628,6 +628,23 @@ local function caller(t, p, q, r, s, u) return t:m(p, q, r, s, u) end
 local total = 0
 for i = 1, 30 do total = total + caller(o, i, i+1, i+2, i+3, i+4) end
 return total`},
+
+	// —— PJ5 SELF inline 嵌套形态(OOP wrapper / observer 业务真接入)——
+	{"p4_self_nested_chain", `
+local total = 0
+local inner = { n = function(self, x) total = total + x end }
+local outer = { m = function(self, v) inner:n(v) end }
+local function caller(t, v) t:m(v) end
+for i = 1, 30 do caller(outer, i) end
+return total`},
+	{"p4_self_then_call", `
+local mCount = 0
+local oCount = 0
+local o = { m = function(self) mCount = mCount + 1 end }
+local function other() oCount = oCount + 1 end
+local function caller(t) t:m(); other() end
+for i = 1, 30 do caller(o) end
+return mCount, oCount`},
 }
 
 // TestP4_Tiered 三方对拍:oracle / crescent / p4-jit 全 byte-equal。
