@@ -1382,7 +1382,7 @@ func analyzeArithChainForm(proto *bytecode.Proto) (shapeInfo, bool) {
 // 其它形态如 GETUPVAL+RETURN A 2 单 op 形态守卫 retB=2 会拒 setter 形态)。
 func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
 	codeLen := len(proto.Code)
-	if codeLen != 3 && codeLen != 4 && codeLen != 5 {
+	if codeLen != 3 && codeLen != 4 && codeLen != 5 && codeLen != 6 {
 		return shapeInfo{}, false
 	}
 	op0 := bytecode.Op(proto.Code[0])
@@ -1550,6 +1550,61 @@ func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
 			callIdx = 3
 			retIdx = 4
 			argCount = 2
+		}
+	case 6:
+		// getter 2 参 1 返:[0] MOVE/GETUPVAL,[1] (LOADK|MOVE),[2] (LOADK|MOVE),
+		// [3] CALL B=3 C=2,[4] RETURN A=callA B=2,[5] 隐式 RETURN B=1
+		// 四组合:K+K / K+R / R+K / R+R
+		secondOp := bytecode.Op(proto.Code[1])
+		thirdOp := bytecode.Op(proto.Code[2])
+		if (secondOp != bytecode.LOADK && secondOp != bytecode.MOVE) ||
+			(thirdOp != bytecode.LOADK && thirdOp != bytecode.MOVE) {
+			return shapeInfo{}, false
+		}
+		op2A := bytecode.A(proto.Code[1])
+		op3A := bytecode.A(proto.Code[2])
+		if op2A != op0A+1 || op3A != op0A+2 {
+			return shapeInfo{}, false
+		}
+		// 第一参装载
+		if secondOp == bytecode.LOADK {
+			lk1Bx := bytecode.Bx(proto.Code[1])
+			if lk1Bx < 0 || lk1Bx >= len(proto.Consts) {
+				return shapeInfo{}, false
+			}
+			argK = uint64(proto.Consts[lk1Bx])
+			argIsK = true
+		} else {
+			mv1B := bytecode.B(proto.Code[1])
+			if mv1B > 254 {
+				return shapeInfo{}, false
+			}
+			argReg = uint8(mv1B)
+			argIsK = false
+		}
+		// 第二参装载
+		if thirdOp == bytecode.LOADK {
+			lk2Bx := bytecode.Bx(proto.Code[2])
+			if lk2Bx < 0 || lk2Bx >= len(proto.Consts) {
+				return shapeInfo{}, false
+			}
+			arg2K = uint64(proto.Consts[lk2Bx])
+			arg2IsK = true
+		} else {
+			mv2B := bytecode.B(proto.Code[2])
+			if mv2B > 254 {
+				return shapeInfo{}, false
+			}
+			arg2Reg = uint8(mv2B)
+			arg2IsK = false
+		}
+		callIdx = 3
+		retIdx = 4
+		argCount = 2
+		// 校验 [5] 隐式 RETURN B=1
+		implRet := proto.Code[5]
+		if bytecode.Op(implRet) != bytecode.RETURN || bytecode.B(implRet) != 1 {
+			return shapeInfo{}, false
 		}
 	}
 
