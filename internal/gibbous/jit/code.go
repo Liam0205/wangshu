@@ -766,16 +766,24 @@ func (c *p4Code) runSpecSelfCall(base int32, jitCtxAddr uintptr, vsBaseAddr uint
 			return st
 		}
 	} else if c.useFrameInline && raxSpec == uint64(ExitInlineHelper) {
-		// **§9.20.9 Run-end dispatcher 实装**(commit-5b/5l):
+		// **§9.20.9 Run-end dispatcher 实装**(commit-5b):spec 段 emit 完
+		// SELF NodeHit + BuildVoid0Arg + ExitHelperRequest 后段返 RAX=
+		// ExitInlineHelper,Run 端走 dispatcher 路径完成 callee Lua 体执行,
+		// 然后二次 callJITSpec 跳 resume entry(codePage + frameInlineResumeOff)
+		// 续跑 PopVoid0Arg + ret 完成 popCallInfo。
+		//
+		// 流程(对位 §9.20.9 (1) 协议总览,Run 端化实装):
+		//   2a. dispatchInlineHelper(jitCtx) → 路由 helper request(经
+		//       jitCtx.exitArg0 = HelperRunCallee)→ host.ExecuteCalleeFromInlineFrame
+		//       (readCISegInto + nCcalls++ + executeFrom + popCallInfo)
+		//   2b. 若 dispatcher 返 1=ERR:错误冒泡,直接 return 1
+		//   2c. 二次 archCallJITSpec 跳 resume entry,RAX 必 = 0(PopVoid0Arg
+		//       + ret 段执行完返 ExitNormal=0)
+		//   2d. 跳过 Run 端 host.CallBaseline + DoReturn(callee 已 inline 跑完)
 		st := c.runFrameInlineDispatcher(base)
 		if st != 0 {
 			return st
 		}
-		// **caller 帧自己的 RETURN**(commit-5l):caller proto useFrameInline 路径
-		// mmap 段未 emit caller 的 RETURN 指令(只 emit SELF+CALL inline 段),
-		// 故 Run 端需手动 DoReturn(对位非 useFrameInline 路径 host.CallBaseline +
-		// DoReturn 同款 caller RETURN 弹帧)。
-		c.host.DoReturn(base, int32(c.retPC), int32(c.retA), int32(c.retB))
 		return 0
 	}
 
@@ -924,8 +932,7 @@ var ErrRunNotImplemented = errors.New("internal/gibbous/jit: p4Code Run failed: 
 //
 // 流程:
 //  1. 读 jitCtx.exitArg0 路由 helper request(承 §9.20.9 (3) 协议状态码):
-//     - HelperRunCallee:调 host.ExecuteCalleeFromInlineFrame(base, callA,
-//     callArgCount, nresults)(commit-5l/5p/5q 签名扩)
+//     - HelperRunCallee:调 host.ExecuteCalleeFromInlineFrame(base, retA)
 //     完成 readCISegInto + nCcalls++ + executeFrom + popCallInfo
 //     - HelperGrowStack:未来扩(arena grow 触发)
 //     - HelperGCBarrier:未来扩(GC 写屏障)
@@ -943,15 +950,13 @@ var ErrRunNotImplemented = errors.New("internal/gibbous/jit: p4Code Run failed: 
 // **当前 archSupportsFrameInline=false 屏蔽真触发**,本函数不被调到;
 // commit-5e 翻闸门 + analyzeSelfCallSpecForm 设 useFrameInline=true 后启用。
 func (c *p4Code) runFrameInlineDispatcher(base int32) int32 {
-	incSpecFrameInlineRunHits() // 承 §9.20.9 commit-5i:Run 期触达探针
 	// 1. 路由 helper request:读 jitCtx.exitArg0 决定 helper 类型
 	helperCode := c.jitCtx.ExitArg0()
 	switch helperCode {
 	case HelperRunCallee:
 		// 跑 callee Lua 体(host 完成 readCISegInto + executeFrom + popCallInfo)
-		// **commit-5l 签名修正**:helper 接受 callA(CALL.A 字段,SELF + CALL
-		// 形态下 method 在 R(callA))而非 retA(RETURN.A 字段,setter 形态恒 0)
-		st := c.host.ExecuteCalleeFromInlineFrame(base, int32(c.callA))
+		retA := int32(c.retA) // callee 返值落 R(retA..) 区间
+		st := c.host.ExecuteCalleeFromInlineFrame(base, retA)
 		if st != 0 {
 			// 错误冒泡(host 内 raise 已置 pendingErr)
 			return 1
@@ -963,16 +968,7 @@ func (c *p4Code) runFrameInlineDispatcher(base int32) int32 {
 		// 未知 helper code(协议 bug)
 		return 1
 	}
-	// 2. **arena grow 重载**:helper 内 enterLuaFrame / executeFrom 可能触发
-	//    ensureStack → arena.grow,arena base + ciDepthAddr + ciSegBaseAddr +
-	//    topAddr 全失效。重新经 host 现算注入(承 §9.20 + §5 arena base 重载
-	//    协议)。
-	c.jitCtx.SetArenaBase(c.host.ArenaBaseAddr())
-	c.jitCtx.SetValueStackBase(c.host.ValueStackBaseAddr(base))
-	c.jitCtx.SetCIDepthAddr(c.host.CIDepthHostAddr())
-	c.jitCtx.SetCISegBaseAddr(c.host.CISegBaseHostAddr())
-	c.jitCtx.SetTopAddr(c.host.TopHostAddr())
-	// 3. 二次 callJITSpec 跳 resume entry 续跑 PopVoid0Arg + ret
+	// 2. 二次 callJITSpec 跳 resume entry 续跑 PopVoid0Arg + ret
 	resumeAddr := c.codePage.Addr() + uintptr(c.frameInlineResumeOff)
 	jitCtxAddr := jitContextAddr(c.jitCtx)
 	vsBaseAddr := c.host.ValueStackBaseAddr(base)

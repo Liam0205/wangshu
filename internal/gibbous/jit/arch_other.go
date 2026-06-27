@@ -243,3 +243,42 @@ const archEncodedHelperCallLen = 0
 
 // archSupportsFrameInline 其它 arch 不支持(承 §9.20 Option B Spike 1)。
 func archSupportsFrameInline() bool { return false }
+
+// archEmitFrameInlineBuildVoid0ArgSkeleton 其它 arch 占位(本 build 下
+// archSupportsFrameInline=false 屏蔽 Compile 路径不触达)。
+func archEmitFrameInlineBuildVoid0ArgSkeleton(buf []byte,
+	ciDepthAddrOff, ciSegBaseAddrOff int32, callARecv uint8,
+	w0, w1, w2, w4 uint64) []byte {
+	_ = ciDepthAddrOff
+	_ = ciSegBaseAddrOff
+	_ = callARecv
+	_ = w0
+	_ = w1
+	_ = w2
+	_ = w4
+	return buf
+}
+
+// archEmitFrameInlinePopVoid0ArgSkeleton 其它 arch 占位。
+func archEmitFrameInlinePopVoid0ArgSkeleton(buf []byte, ciDepthAddrOff int32) []byte {
+	_ = ciDepthAddrOff
+	return buf
+}
+
+// archEmitFrameInlineExitHelperRequest 其它 arch 占位。
+func archEmitFrameInlineExitHelperRequest(buf []byte,
+	exitReasonOff, exitArg0Off int32, helperCode uint64) []byte {
+	_ = exitReasonOff
+	_ = exitArg0Off
+	_ = helperCode
+	return buf
+}
+
+// archEncodedFrameInlineBuildVoid0ArgSkeletonLen 其它 arch 占位 0。
+const archEncodedFrameInlineBuildVoid0ArgSkeletonLen = 0
+
+// archEncodedFrameInlinePopVoid0ArgSkeletonLen 其它 arch 占位 0。
+const archEncodedFrameInlinePopVoid0ArgSkeletonLen = 0
+
+// archEncodedFrameInlineExitHelperRequestLen 其它 arch 占位 0。
+const archEncodedFrameInlineExitHelperRequestLen = 0

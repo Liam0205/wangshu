@@ -737,90 +737,6 @@ func EmitSetTableNodeHit(buf []byte, aReg, cReg uint8,
 //
 // **deopt 路径**:Run 端 raxSpec==deoptCode 时调 host.GetTable byte-equal P1
 // (R(A+1)=R(B) 已 store,P1 SELF case 同款步骤;P1 icGetTable 兼容 NodeHit)。
-// EmitSelfNodeHitNoRet 同 EmitSelfNodeHit,但**成功路径不 emit ret**——
-// fall-through 到调用方 emit 的后续段(承 §9.20.9 commit-5j 修通
-// useFrameInline 路径 Run 期触达)。
-//
-// **设计差异**:
-//   - EmitSelfNodeHit 成功路径段尾 ret(独立 spec template,Run 端 RAX=0 标
-//     正常出段)
-//   - 本函数:成功路径 fall-through(useFrameInline 形态后接 BuildVoid0Arg +
-//     ExitHelperRequest + PopVoid0Arg + ret;SELF 段 store R(A)=method 后
-//     BuildVoid0Arg LoadClosureGCRef(callA) 自动读到 method GCRef payload)
-//   - deopt 路径与 EmitSelfNodeHit 同款(写 RAX=deoptCode + ret)
-func EmitSelfNodeHitNoRet(buf []byte, aReg, bReg uint8,
-	stableShape, stableIndex uint32, stableKey uint64,
-	arenaBaseOff int32, deoptCode uint64) []byte {
-	// 1. load R(B) → rax(obj NaN-box)
-	buf = EmitMovqRaxFromMemReg(buf, 3 /*rbx*/, int32(bReg)*8)
-	// 2. store R(A+1) = rax(self/this 实参)
-	buf = EmitMovqMemRegFromRax(buf, 3 /*rbx*/, int32(aReg+1)*8)
-	// 3. 严密 IsTable guard
-	buf = EmitShrRaxImm8(buf, 48)
-	buf = EmitCmpEaxImm32(buf, qNanBoxTableTagHigh16)
-	buf = EmitJneRel32(buf, 0)
-	jneTagOff := len(buf) - 4
-	// 4. shr 已破坏 rax,重新 load R(B)
-	buf = EmitMovqRaxFromMemReg(buf, 3 /*rbx*/, int32(bReg)*8)
-	// 5. GCRef extract
-	const payloadMask uint64 = 0x0000_FFFF_FFFF_FFFF
-	buf = EmitMovRcxImm64(buf, payloadMask)
-	buf = append(buf, 0x48, 0x21, 0xC8)
-	// 6. mov rcx, rax
-	buf = EmitMovqRcxFromRax(buf)
-	// 7. load arena base → r14
-	buf = EmitMovqR14FromR15Disp(buf, arenaBaseOff)
-	// 8. gen check
-	buf = EmitMovqRaxFromR14PlusRcxDisp(buf, 40)
-	buf = append(buf, 0x48, 0xC1, 0xE8, 32)
-	buf = append(buf, 0x3D)
-	buf = append(buf,
-		byte(stableShape),
-		byte(stableShape>>8),
-		byte(stableShape>>16),
-		byte(stableShape>>24))
-	buf = EmitJneRel32(buf, 0)
-	jneShapeOff := len(buf) - 4
-	// 9. NodeHit 分流:load nodeRef = [r14+rcx+24]
-	buf = EmitMovqRaxFromR14PlusRcxDisp(buf, 24)
-	// 10. mov rcx, rax(rcx = nodeRef offset)
-	buf = EmitMovqRcxFromRax(buf)
-	// 11. load NodeKey = [r14+rcx+stableIndex*24] → rax
-	buf = EmitMovqRaxFromR14PlusRcxDisp(buf, int32(stableIndex)*24)
-	// 12. mov rdx, stableKey
-	buf = EmitMovRdxImm64(buf, stableKey)
-	// 13. cmp rax, rdx + jne deopt
-	buf = EmitCmpRaxRdx(buf)
-	buf = EmitJneRel32(buf, 0)
-	jneKeyOff := len(buf) - 4
-	// 14. load NodeVal = [r14+rcx+stableIndex*24+8] → rax
-	buf = EmitMovqRaxFromR14PlusRcxDisp(buf, int32(stableIndex)*24+8)
-	// 15. nil check
-	buf = EmitMovRcxImm64(buf, qNanBoxNilImm)
-	buf = EmitCmpRaxRcx(buf)
-	buf = EmitJeRel32(buf, 0)
-	jeNilOff := len(buf) - 4
-	// 16. store R(A) = rax(method 函数)
-	buf = EmitMovqMemRegFromRax(buf, 3 /*rbx*/, int32(aReg)*8)
-	// 17. **NO RET** — fall-through 到调用方 emit 的 BuildVoid0Arg 段(承
-	//     §9.20.9 commit-5j 修 useFrameInline 路径 Run 期触达)
-	jmpSuccessOff := len(buf)
-	buf = EmitJmpRel32(buf, 0) // 跳过 deopt block 到段尾(后续 BuildVoid0Arg)
-	// 18. deopt block
-	deoptStart := len(buf)
-	buf = EmitMovRaxImm64(buf, deoptCode)
-	buf = EmitRet(buf)
-	// 19. patch forward jcc 到 deopt start
-	PatchRel32(buf, jneTagOff, int32(deoptStart)-int32(jneTagOff+4))
-	PatchRel32(buf, jneShapeOff, int32(deoptStart)-int32(jneShapeOff+4))
-	PatchRel32(buf, jneKeyOff, int32(deoptStart)-int32(jneKeyOff+4))
-	PatchRel32(buf, jeNilOff, int32(deoptStart)-int32(jeNilOff+4))
-	// 20. patch success jmp 跳到 deopt block 之后(后续 BuildVoid0Arg 起点)
-	PatchRel32(buf, jmpSuccessOff+1, int32(len(buf))-int32(jmpSuccessOff+5))
-	return buf
-}
-
-// EmitSelfNodeHit ...(原函数,保持不变)
 func EmitSelfNodeHit(buf []byte, aReg, bReg uint8,
 	stableShape, stableIndex uint32, stableKey uint64,
 	arenaBaseOff int32, deoptCode uint64) []byte {
@@ -1012,13 +928,13 @@ func EmitFrameInlineLoadCISlotAddr(buf []byte, ciDepthAddrOffset, ciSegBaseAddrO
 	buf = EmitMovqRcxFromRax(buf)
 	// rcx 现是 ciDepthAddr。再解引一次:mov rcx, [rcx]
 	buf = append(buf, 0x48, 0x8B, 0x09) // mov rcx, [rcx]
-	// 2. rax = ciSegBase 字节偏移(ciBaseW*8 word offset 进 arena)
+	// 2. rax = ciSegBase(段基址)
 	buf = EmitMovqRaxFromR15Disp(buf, ciSegBaseAddrOffset)
-	// rax 现是 ciSegBaseAddr(host 字节地址,指向镜像字)。解引:mov rax, [rax]
+	// rax 现是 ciSegBaseAddr。解引:mov rax, [rax]
 	buf = append(buf, 0x48, 0x8B, 0x00) // mov rax, [rax]
 	// 3. imul rcx, rcx, 40 — depth * ciSlotBytes
 	buf = append(buf, 0x48, 0x6B, 0xC9, 40) // imul rcx, rcx, 40
-	// 4. add rax, rcx — rax = ciBaseW*8 + depth*40(byte offset 进 arena)
+	// 4. add rax, rcx — rax = ciSegBase + depth * 40 = CallInfo[depth] 地址
 	buf = append(buf, 0x48, 0x01, 0xC8) // add rax, rcx
 	return buf
 }
@@ -1028,36 +944,6 @@ func EmitFrameInlineLoadCISlotAddr(buf []byte, ciDepthAddrOffset, ciSegBaseAddrO
 // EmitMovqRcxFromRax 是 3,后续 mov rcx [rcx] 是 3,mov rax [r15+...] 是 7,
 // mov rax [rax] 是 3,imul 4,add 3,合计 30 字节,非 28)。
 const EncodedFrameInlineLoadCISlotAddrLen = 30
-
-// EmitFrameInlineLoadCISlotAddrAbsolute 同 EmitFrameInlineLoadCISlotAddr 但
-// 结果 rax 是 **arena 绝对地址**(承 §9.20.9 commit-5l 修 ciSegBase 镜像字
-// 语义bug):
-//
-// **bug 起源**(P3 PW10 Stage 2 ciSegBase 镜像字协议):ciSegBaseRef 存的是
-// `ciBaseW * 8`(byte offset 进 arena),不是绝对地址。LoadCISlotAddr 算的
-// rax = ciBaseW*8 + depth*40 是 byte offset,不能直接 deref(SIGSEGV)。
-//
-// **本函数**:在 LoadCISlotAddr 后追加 `add rax, r14`(arena base 加到 rax),
-// 让 rax 变绝对地址。**前置条件**:caller 已 setup r14 = arena base(承
-// SELF NodeHit / BuildVoid0Arg::LoadClosureGCRef 同款 r14 借用)。
-//
-// **字节序列**:LoadCISlotAddr(30B)+ `mov r14, [r15+arenaBaseOff]`(7B)+
-// `add rax, r14`(3B)= 40B。
-//
-// **使用位置**(useFrameInline 路径):
-//  1. 调本函数:rax = CI[depth] 绝对地址(40B)
-//  2. 后续 WriteCIWord/CIDepthInc/LoadClosureGCRef + WriteCIWordFromRcx 同款使用
-func EmitFrameInlineLoadCISlotAddrAbsolute(buf []byte, ciDepthAddrOffset, ciSegBaseAddrOffset, arenaBaseOffset int32) []byte {
-	buf = EmitFrameInlineLoadCISlotAddr(buf, ciDepthAddrOffset, ciSegBaseAddrOffset)
-	// load r14 = arena base
-	buf = EmitMovqR14FromR15Disp(buf, arenaBaseOffset)
-	// add rax, r14 (0x4C 0x01 0xF0 = REX.WR + 0x01 + ModRM 11_110_000 = add rax, r14)
-	buf = append(buf, 0x4C, 0x01, 0xF0)
-	return buf
-}
-
-// EncodedFrameInlineLoadCISlotAddrAbsoluteLen = LoadCISlotAddr 30 + load r14 7 + add 3 = 40.
-const EncodedFrameInlineLoadCISlotAddrAbsoluteLen = EncodedFrameInlineLoadCISlotAddrLen + 7 + 3
 
 // EmitFrameInlineWriteCIWord 发射字节级 CI 帧 word_idx 写入 imm64 模板
 // (承 §9.20 Option B Spike 1 enterLuaFrame inline 第二段)。
@@ -1155,49 +1041,6 @@ func EmitFrameInlineBuildVoid0ArgSkeleton(buf []byte,
 // EncodedFrameInlineBuildVoid0ArgSkeletonLen = 30 + 14*3 + 20 + 4 + 14 + 10 = 120.
 const EncodedFrameInlineBuildVoid0ArgSkeletonLen = 120
 
-// EmitFrameInlineBuildVoid0ArgSkeletonAbsolute 同 EmitFrameInlineBuildVoid0ArgSkeleton
-// 但使用 LoadCISlotAddrAbsolute(rax = 绝对地址,承 §9.20.9 commit-5l bug 修)。
-//
-// **设计差异**:原 BuildVoid0ArgSkeleton 的 LoadCISlotAddr 算 rax = ciBaseW*8
-// + depth*40 是 word offset 进 arena,不能直接 deref;本函数用 Absolute 版,
-// rax = absolute address,后续 WriteCIWord 直接写有效。
-//
-// **字节序列**(总长度 130 字节):
-//  1. LoadCISlotAddrAbsolute(40B,30 + 7 mov r14 + 3 add rax,r14)
-//  2. WriteCIWord(0/1/2) imm 3 * 14 = 42B
-//  3. LoadClosureGCRef(20B):rcx = R(callA) GCRef payload
-//  4. WriteCIWordFromRcx(3)(4B):CI[depth].word3 = rcx
-//  5. WriteCIWord(4) imm(14B)
-//  6. CIDepthInc(10B)
-//
-// **总**:40 + 42 + 20 + 4 + 14 + 10 = 130 字节(原 120 + 10 因 absolute load 多 10)。
-func EmitFrameInlineBuildVoid0ArgSkeletonAbsolute(buf []byte,
-	ciDepthAddrOffset, ciSegBaseAddrOffset, arenaBaseOffset int32,
-	callARecv uint8,
-	words FrameInlineCISlotWords) []byte {
-	// 1. rax = CI[depth] 绝对地址(Absolute 版)
-	buf = EmitFrameInlineLoadCISlotAddrAbsolute(buf, ciDepthAddrOffset, ciSegBaseAddrOffset, arenaBaseOffset)
-	// 2. 写 word0/1/2
-	buf = EmitFrameInlineWriteCIWord(buf, 0, words.Word0)
-	buf = EmitFrameInlineWriteCIWord(buf, 1, words.Word1)
-	buf = EmitFrameInlineWriteCIWord(buf, 2, words.Word2)
-	// 3. rcx = R(callARecv) NaN-box payload(GCRef)— LoadClosureGCRef 内会重设 r14
-	//    用 payloadMask;但 step 1 已用 r14 = arena base,LoadClosureGCRef 内
-	//    用 rdx 作 payloadMask,不动 r14。**等等**:原 LoadClosureGCRef 实装
-	//    `EmitMovRdxImm64 + EmitAndRcxRdx`,r14 不被改。
-	buf = EmitFrameInlineLoadClosureGCRef(buf, callARecv)
-	// 4. CI[depth].word3 = rcx
-	buf = EmitFrameInlineWriteCIWordFromRcx(buf, 3)
-	// 5. 写 word4
-	buf = EmitFrameInlineWriteCIWord(buf, 4, words.Word4)
-	// 6. ciDepth++
-	buf = EmitFrameInlineCIDepthInc(buf, ciDepthAddrOffset)
-	return buf
-}
-
-// EncodedFrameInlineBuildVoid0ArgSkeletonAbsoluteLen = 40 + 42 + 20 + 4 + 14 + 10 = 130.
-const EncodedFrameInlineBuildVoid0ArgSkeletonAbsoluteLen = EncodedFrameInlineBuildVoid0ArgSkeletonLen + 10
-
 // EmitFrameInlineLoadClosureGCRef 发射 amd64 字节级 R(srcReg) NaN-box →
 // rcx 48-bit GCRef 解析模板(承 §9.20 Option B Spike 1 enterLuaFrame inline
 // word3=cl 设置前置)。
@@ -1246,33 +1089,23 @@ const EncodedFrameInlineWriteCIWordFromRcxLen = 4
 // inline 骨架(承 §9.20 Option B Spike 1 BuildVoid0ArgSkeleton 反向)。
 //
 // **Spike 1 简化形态**:Run 端 helper 完成 callee Lua 体执行后,本模板字节级
-// dec ciDepth,**段尾 emit ret 出 mmap 段**(承 §9.20.9 commit-5l 修 missing
-// ret bug)。**剩余 popCallInfo Go 端工作**(readCISegInto 重载 caller th.cur)
+// dec ciDepth,等价 frame.go::popCallInfo 中 `th.setCIDepth(th.ciDepth-1)`
+// 镜像字更新。**剩余 popCallInfo Go 端工作**(readCISegInto 重载 caller th.cur)
 // 留 helper 兼容路径(不必字节级 inline,因 th.cur 字段是 Go 端冷字段,
 // mmap 段不读)。
 //
-// 字节序列(11 字节):CIDepthDec 10 字节(`mov rax, [r15+ciDepthOff]; dec
-// qword ptr [rax]`)+ ret 1 字节(c3)。
+// 字节序列(10 字节):同 EmitFrameInlineCIDepthDec(直接复用)。
 //
-// **rax 段返值**:CIDepthDec 不显式设 rax,继承上次 mov 的值(ciDepthAddr
-// 字段值,即 ciDepth 字镜像字的 host addr,是个非 0 大整数)。但 trampoline
-// 检 raxResume==ExitInlineHelper(3)— rax 不会撞 3(因 ciDepthAddr 是大地址),
-// 故 trampoline 走常规弹栈出口,行为零变化。runFrameInlineDispatcher 检
-// raxResume!=0 时 fail,故 commit-5l 起 PopVoid0Arg 段尾 emit `xor eax, eax`
-// 显式清 rax = 0(ExitNormal)。
+// **设计说明**:本函数纯 alias EmitFrameInlineCIDepthDec,提供语义清晰的
+// 调用入口供 Compile 端 emit 段尾使用(BuildVoid0Arg + helper call +
+// PopVoid0Arg = enterLuaFrame + executeFrom + popCallInfo)。
 func EmitFrameInlinePopVoid0ArgSkeleton(buf []byte, ciDepthAddrOffset int32) []byte {
-	buf = EmitFrameInlineCIDepthDec(buf, ciDepthAddrOffset)
-	// 段尾 emit xor eax, eax(2 byte:31 c0)= rax = 0 = ExitNormal,
-	// runFrameInlineDispatcher 检 raxResume!=0 时 fail,清 rax 兜底。
-	buf = append(buf, 0x31, 0xC0)
-	// emit ret(1 byte:c3)— 段尾出 mmap 段(commit-5l 修 missing ret bug)
-	buf = append(buf, 0xC3)
-	return buf
+	return EmitFrameInlineCIDepthDec(buf, ciDepthAddrOffset)
 }
 
 // EncodedFrameInlinePopVoid0ArgSkeletonLen 是 Spike 1 popCallInfo 骨架字节数
-// (13 byte:10 CIDepthDec + 2 xor eax,eax + 1 ret,承 §9.20.9 commit-5l 修)。
-const EncodedFrameInlinePopVoid0ArgSkeletonLen = EncodedFrameInlineCIDepthIncDecLen + 3
+// (10,同 EmitFrameInlineCIDepthDec)。
+const EncodedFrameInlinePopVoid0ArgSkeletonLen = EncodedFrameInlineCIDepthIncDecLen
 
 // EmitFrameInlineExitHelperRequest 发射 amd64 Spike 1 trampoline exit-resume
 // 协议 exit-helper-request 段字节级 inline 模板(承
