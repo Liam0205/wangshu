@@ -457,3 +457,39 @@ func BenchmarkGibbousJIT_PJ5SelfCallHeavyBody(b *testing.B) {
 func BenchmarkGibbousJIT_PJ5SelfCallHeavyBodyCresc(b *testing.B) {
 	benchGibbousJITSelfCallHeavyBody(b, false)
 }
+
+// PJ5 SELF + CALL spec template 1 reg 参 + 计算密集 method 体(0..7 参覆盖
+// 后的真实业务对照 — 验多参 spec template 摊薄效应同款生效)。
+func benchGibbousJITSelfCallHeavyBody1Arg(b *testing.B, force bool) {
+	src := `
+local o = { m = function(self, n) local s = 0; for i = 1, n do s = s + i end; return s end }
+local function caller(t, v) return t:m(v) end
+local total = 0
+for i = 1, 50 do total = total + caller(o, 100) end
+return total`
+	prog, err := wangshu.Compile([]byte(src), "bench-jit-self-heavy-1arg")
+	if err != nil {
+		b.Fatalf("compile: %v", err)
+	}
+	st := wangshu.NewState(wangshu.Options{})
+	if _, err := prog.Run(st); err != nil {
+		b.Fatalf("warmup-phase1: %v", err)
+	}
+	st.SetForceAllPromote(force)
+	if _, err := prog.Run(st); err != nil {
+		b.Fatalf("warmup-phase2: %v", err)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := prog.Run(st); err != nil {
+			b.Fatalf("run: %v", err)
+		}
+	}
+}
+
+func BenchmarkGibbousJIT_PJ5SelfCallHeavyBody1Arg(b *testing.B) {
+	benchGibbousJITSelfCallHeavyBody1Arg(b, true)
+}
+func BenchmarkGibbousJIT_PJ5SelfCallHeavyBody1ArgCresc(b *testing.B) {
+	benchGibbousJITSelfCallHeavyBody1Arg(b, false)
+}
