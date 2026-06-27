@@ -173,6 +173,14 @@ local upv = 0
 local function setter(v) upv = v end
 for i = 1, 30 do setter(i) end
 return upv`},
+
+	// —— PJ5 CALL void 形态:MOVE+CALL+RETURN void(`function(g) g() end`)——
+	{"p4_call_void", `
+local count = 0
+local function noop() count = count + 1 end
+local function invoker(g) g() end
+for i = 1, 30 do invoker(noop) end
+return count`},
 }
 
 // TestP4_Tiered 三方对拍:oracle / crescent / p4-jit 全 byte-equal。
