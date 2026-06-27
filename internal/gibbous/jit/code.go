@@ -146,6 +146,7 @@ type p4Code struct {
 	callB          uint8
 	callC          uint8
 	callArgCount   uint8
+	callMultiRet   uint8 // N=0/1 既有(setter/getter 1 返);N>=2 表 N 返值 getter — Run 端 N 个 MOVE 拷贝
 	callArg1IsK    bool
 	callArg1K      uint64
 	callArg1RegSrc uint8
@@ -529,6 +530,17 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 				int32(c.callA), int32(c.callB), int32(c.callC))
 			if st != 0 {
 				return st
+			}
+			// N>=2 返值 getter 形态:Run 端做 N 个 MOVE 拷贝以保留 byte-equal
+			// (luac 编 R(callA+nret+k) ← R(callA+k),然后 RETURN A=callA+nret B=nret+1)。
+			// 末尾 DoReturn 用 retA/retB 已设好(retA=callA+nret,retB=nret+1)读 R(callA+nret..)
+			// 拷到 caller 槽。
+			if c.callMultiRet >= 2 {
+				nret := int32(c.callMultiRet)
+				for k := int32(0); k < nret; k++ {
+					c.host.SetReg(int32(c.callA)+nret+k,
+						c.host.GetReg(int32(c.callA)+k))
+				}
 			}
 		case uint8(bytecode.TAILCALL):
 			// PJ5 TAILCALL 形态(承 docs/design/p4-method-jit/05-system-pipeline.md

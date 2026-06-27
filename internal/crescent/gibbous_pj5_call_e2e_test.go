@@ -469,3 +469,63 @@ return s`
 		t.Errorf("SpecCallVoidHits = 0,PJ5 CALL getter 3 reg 参形态 B3RR1 未真编译")
 	}
 }
+
+// TestPJ5_CallMultiRet_E2E_FormB2RetN2:形态 0 参 N=2 返值 getter
+// `local a, b = take(); return a, b` 形态 — luac 编 GETUPVAL+CALL B=1 C=3 + MOVE×2 + RETURN A=callA+2 B=3
+// Run 端 CallBaseline 后做 2 个 MOVE 拷贝保留 byte-equal。
+func TestPJ5_CallMultiRet_E2E_FormB2RetN2(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local function take() return 10, 20 end
+local function get() local a, b = take(); return a, b end
+local s = 0
+for i = 1, 30 do
+  local a, b = get()
+  s = s + a + b
+end
+return s`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// get() × 30 each (10+20)=30,sum=900
+	if got := value.AsNumber(value.Value(rets[0])); got != 900 {
+		t.Errorf("rets = %v, want 900 (get()×30 each take()→(10,20))", got)
+	}
+	if jit.SpecCallVoidHits() == 0 {
+		t.Errorf("SpecCallVoidHits = 0,PJ5 CALL N=2 返值 getter 形态 B2RetN2 未真编译")
+	}
+	t.Logf("SpecCallVoidHits=%d", jit.SpecCallVoidHits())
+}
+
+// TestPJ5_CallMultiRet_E2E_FormB3RetN3:形态 0 参 N=3 返值 getter
+// `local a, b, c = take(); return a, b, c` 形态 — luac 编 GETUPVAL+CALL B=1 C=4 + MOVE×3 + RETURN A=callA+3 B=4
+func TestPJ5_CallMultiRet_E2E_FormB3RetN3(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local function take() return 1, 2, 3 end
+local function get() local a, b, c = take(); return a, b, c end
+local s = 0
+for i = 1, 30 do
+  local a, b, c = get()
+  s = s + a + b + c
+end
+return s`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// get() × 30 each (1+2+3)=6,sum=180
+	if got := value.AsNumber(value.Value(rets[0])); got != 180 {
+		t.Errorf("rets = %v, want 180 (get()×30 each take()→(1,2,3))", got)
+	}
+	if jit.SpecCallVoidHits() == 0 {
+		t.Errorf("SpecCallVoidHits = 0,PJ5 CALL N=3 返值 getter 形态 B3RetN3 未真编译")
+	}
+}

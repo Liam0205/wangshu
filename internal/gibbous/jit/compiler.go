@@ -190,16 +190,17 @@ type shapeInfo struct {
 	callA          uint8
 	callB          uint8
 	callC          uint8
-	callArgCount   uint8  // 0 / 1 / 2 / 3
-	callArg1IsK    bool   // 1 参形态时 true=LOADK / false=MOVE reg;2/3 参形态对应第一参
-	callArg1K      uint64 // 1 K / 2/3 参第一参 K 形态时的 K 值
-	callArg1RegSrc uint8  // 1 reg / 2/3 参第一参 R 形态时的 MOVE.B 源 reg 号
-	callArg2IsK    bool   // 2/3 参形态时 true=LOADK / false=MOVE reg(原 2 K 形态恒 true)
-	callArg2K      uint64 // 2/3 参第二参 K 形态时的 K 值
-	callArg2RegSrc uint8  // 2/3 参第二参 R 形态时的 MOVE.B 源 reg 号
-	callArg3IsK    bool   // 3 参形态时 true=LOADK / false=MOVE reg
-	callArg3K      uint64 // 3 参第三参 K 形态时的 K 值
-	callArg3RegSrc uint8  // 3 参第三参 R 形态时的 MOVE.B 源 reg 号
+	callArgCount   uint8 // 0 / 1 / 2 / 3
+	callMultiRet   uint8 // N=0/1 既有形态(setter/getter 1 返);N>=2 表 N 返值 getter
+	callArg1IsK    bool
+	callArg1K      uint64
+	callArg1RegSrc uint8
+	callArg2IsK    bool
+	callArg2K      uint64
+	callArg2RegSrc uint8
+	callArg3IsK    bool
+	callArg3K      uint64
+	callArg3RegSrc uint8
 
 	// PJ5 TAILCALL 形态(`function() return f() end` 类):
 	//   - isTailCall = true:Run 端 prelude 路径调 host.TailCall 三态分支
@@ -1593,12 +1594,29 @@ func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
 			argCount = 2
 		}
 	case 6:
-		// 长度 6 有两种子形态(区分键:Code[3] 是 CALL→getter 2 参 / 装载 op→setter 3 参):
-		//   - getter 2 参 1 返:[0] MOVE/GETUPVAL,[1] (LOADK|MOVE),[2] (LOADK|MOVE),
-		//     [3] CALL B=3 C=2,[4] RETURN A=callA B=2,[5] 隐式 RETURN B=1
-		//   - setter 3 参 0 返:[0] MOVE/GETUPVAL,[1] (LOADK|MOVE),[2] (LOADK|MOVE),
-		//     [3] (LOADK|MOVE),[4] CALL B=4 C=1,[5] RETURN B=1
-		if bytecode.Op(proto.Code[3]) == bytecode.CALL {
+		// 长度 6 三种子形态(区分键:
+		//   Code[1] 是 CALL → 0 参 N=2 返值 getter(callee 调用 + 2 个 MOVE 拷贝 + RETURN B=3)
+		//   Code[3] 是 CALL → getter 2 参 1 返
+		//   否则 Code[3] 是装载 → setter 3 参 0 返)
+		if bytecode.Op(proto.Code[1]) == bytecode.CALL {
+			// 0 参 N=2 返值 getter:[0] MOVE/GETUPVAL,[1] CALL B=1 C=3,
+			// [2] MOVE A=callA+0+2 B=callA+0,[3] MOVE A=callA+1+2 B=callA+1,
+			// [4] RETURN A=callA+2 B=3,[5] 隐式 RETURN B=1
+			//
+			// Run 端 prelude 不执行 MOVE 拷贝(直接从 CallBaseline 落 R(callA..)),
+			// 仍调 host.DoReturn(retA=callA, retB=3)由 host 多值路径处理 — 但因
+			// luac 编 RETURN.A=callA+2 而非 callA,Run 必须先做 N 个 MOVE 拷贝
+			// (R(callA+nret+k) ← R(callA+k))再调 DoReturn(retA=callA+nret, retB=nret+1)
+			// 以保留 byte-equal。
+			callIdx = 1
+			retIdx = 4
+			argCount = 0
+			// 校验 [5] 隐式 RETURN B=1
+			implRet := proto.Code[5]
+			if bytecode.Op(implRet) != bytecode.RETURN || bytecode.B(implRet) != 1 {
+				return shapeInfo{}, false
+			}
+		} else if bytecode.Op(proto.Code[3]) == bytecode.CALL {
 			// getter 2 参 1 返
 			if !decodeArgFromOp(proto, 1, op0A+1, &argIsK, &argK, &argReg) ||
 				!decodeArgFromOp(proto, 2, op0A+2, &arg2IsK, &arg2K, &arg2Reg) {
@@ -1624,20 +1642,36 @@ func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
 			argCount = 3
 		}
 	case 7:
-		// getter 3 参 1 返:[0] MOVE/GETUPVAL,[1] (LOADK|MOVE),[2] (LOADK|MOVE),
-		// [3] (LOADK|MOVE),[4] CALL B=4 C=2,[5] RETURN A=callA B=2,[6] 隐式 RETURN B=1
-		if !decodeArgFromOp(proto, 1, op0A+1, &argIsK, &argK, &argReg) ||
-			!decodeArgFromOp(proto, 2, op0A+2, &arg2IsK, &arg2K, &arg2Reg) ||
-			!decodeArgFromOp(proto, 3, op0A+3, &arg3IsK, &arg3K, &arg3Reg) {
-			return shapeInfo{}, false
-		}
-		callIdx = 4
-		retIdx = 5
-		argCount = 3
-		// 校验 [6] 隐式 RETURN B=1
-		implRet := proto.Code[6]
-		if bytecode.Op(implRet) != bytecode.RETURN || bytecode.B(implRet) != 1 {
-			return shapeInfo{}, false
+		// 长度 7 两种子形态(区分键:
+		//   Code[1] 是 CALL → 0 参 N=3 返值 getter
+		//   否则 → getter 3 参 1 返)
+		if bytecode.Op(proto.Code[1]) == bytecode.CALL {
+			// 0 参 N=3 返值 getter:[0] MOVE/GETUPVAL,[1] CALL B=1 C=4,
+			// [2..4] MOVE,[5] RETURN A=callA+3 B=4,[6] 隐式 RETURN B=1
+			callIdx = 1
+			retIdx = 5
+			argCount = 0
+			// 校验 [6] 隐式 RETURN B=1
+			implRet := proto.Code[6]
+			if bytecode.Op(implRet) != bytecode.RETURN || bytecode.B(implRet) != 1 {
+				return shapeInfo{}, false
+			}
+		} else {
+			// getter 3 参 1 返:[0] MOVE/GETUPVAL,[1..3] (LOADK|MOVE),
+			// [4] CALL B=4 C=2,[5] RETURN A=callA B=2,[6] 隐式 RETURN B=1
+			if !decodeArgFromOp(proto, 1, op0A+1, &argIsK, &argK, &argReg) ||
+				!decodeArgFromOp(proto, 2, op0A+2, &arg2IsK, &arg2K, &arg2Reg) ||
+				!decodeArgFromOp(proto, 3, op0A+3, &arg3IsK, &arg3K, &arg3Reg) {
+				return shapeInfo{}, false
+			}
+			callIdx = 4
+			retIdx = 5
+			argCount = 3
+			// 校验 [6] 隐式 RETURN B=1
+			implRet := proto.Code[6]
+			if bytecode.Op(implRet) != bytecode.RETURN || bytecode.B(implRet) != 1 {
+				return shapeInfo{}, false
+			}
 		}
 	}
 
@@ -1657,21 +1691,43 @@ func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
 	if int(clB) != int(argCount)+1 {
 		return shapeInfo{}, false
 	}
-	// 返值检查:CALL.C/RETURN.B 共 2 形态(setter 0 返 / getter 1 返)
+	// 返值检查:CALL.C/RETURN.B 共 3 形态:
 	//   - setter:CALL.C=1(0 返值)+ RETURN.B=1(0 返值)+ retA=0
-	//   - getter:CALL.C=2(1 返值)+ RETURN.B=2(1 返值)+ RETURN.A=callA
+	//   - getter 1 返:CALL.C=2(1 返值)+ RETURN.B=2(1 返值)+ RETURN.A=callA
+	//   - N 返值 getter(N>=2):CALL.C=N+1 + RETURN.B=N+1 + RETURN.A=callA+N
+	//     (luac 编 N 个 MOVE 把 R(callA..callA+N-1)拷到 R(callA+N..callA+2N-1)再 RETURN)
 	var retACalc, retBCalc uint8
+	var multiRet uint8
 	if clC == 1 && rtB == 1 {
 		// setter 形态
 		retACalc = 0
 		retBCalc = 1
 	} else if clC == 2 && rtB == 2 {
-		// getter 形态:RETURN.A 必须 = callA(被调返回值落 R(callA))
+		// getter 1 返形态:RETURN.A 必须 = callA(被调返回值落 R(callA))
 		if rtA != clA {
 			return shapeInfo{}, false
 		}
 		retACalc = uint8(rtA)
 		retBCalc = 2
+	} else if clC >= 3 && int(rtB) == int(clC) && argCount == 0 {
+		// N>=2 返值 getter:RETURN.A 必须 = callA + (clC-1)= callA + nret
+		nret := clC - 1
+		if rtA != clA+nret {
+			return shapeInfo{}, false
+		}
+		// 校验中间 N 个 MOVE 拷贝(luac 编 R(callA+nret+k) ← R(callA+k))
+		for k := 0; k < nret; k++ {
+			mv := proto.Code[callIdx+1+k]
+			if bytecode.Op(mv) != bytecode.MOVE {
+				return shapeInfo{}, false
+			}
+			if bytecode.A(mv) != clA+nret+k || bytecode.B(mv) != clA+k {
+				return shapeInfo{}, false
+			}
+		}
+		retACalc = uint8(rtA)
+		retBCalc = uint8(rtB)
+		multiRet = uint8(nret)
 	} else {
 		return shapeInfo{}, false
 	}
@@ -1688,6 +1744,7 @@ func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
 		callB:          uint8(clB),
 		callC:          uint8(clC),
 		callArgCount:   argCount,
+		callMultiRet:   multiRet,
 		callArg1IsK:    argIsK,
 		callArg1K:      argK,
 		callArg1RegSrc: argReg,
@@ -2910,6 +2967,7 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 		callB:          info.callB,
 		callC:          info.callC,
 		callArgCount:   info.callArgCount,
+		callMultiRet:   info.callMultiRet,
 		callArg1IsK:    info.callArg1IsK,
 		callArg1K:      info.callArg1K,
 		callArg1RegSrc: info.callArg1RegSrc,

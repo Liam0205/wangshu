@@ -388,6 +388,26 @@ local function bounce(u, v, w) return f(u, v, w) end
 local s = 0
 for i = 1, 10 do s = s + bounce(i, i+1, i+2) end
 return s`},
+
+	// —— PJ5 N>=2 返值 getter 形态(0 参,长度 6/7)——
+	{"p4_call_multiret_n2_upval", `
+local function take() return 10, 20 end
+local function get() local a, b = take(); return a, b end
+local s = 0
+for i = 1, 30 do
+  local a, b = get()
+  s = s + a + b
+end
+return s`},
+	{"p4_call_multiret_n3_upval", `
+local function take() return 1, 2, 3 end
+local function get() local a, b, c = take(); return a, b, c end
+local s = 0
+for i = 1, 30 do
+  local a, b, c = get()
+  s = s + a + b + c
+end
+return s`},
 }
 
 // TestP4_Tiered 三方对拍:oracle / crescent / p4-jit 全 byte-equal。
