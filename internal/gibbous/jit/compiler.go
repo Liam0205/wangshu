@@ -253,6 +253,18 @@ type shapeInfo struct {
 	//   - 复用 icAReg/icBReg/icStableShape/icStableIndex/icStableKey(PJ4 SELF
 	//     NodeHit 同字段集)。
 	useSpecSelfCall bool
+
+	// PJ5 Option B Spike 1 帧建立内联(承 §9.20):
+	//   - useFrameInline = true:CALL 段经 mmap 字节级 enterLuaFrame inline
+	//     (BuildVoid0ArgSkeleton + helper call + PopVoid0ArgSkeleton),替代
+	//     host.CallBaseline round-trip。
+	//   - **守门**(承 §9.20.4):isCallVoid + callArgCount=0 + IC NodeHit +
+	//     FBSelfMono(承 useSpecSelfCall 守门叠加)+ 等 callee Proto 元数据
+	//     可知(callee.NumParams=0 + !IsVararg + !NeedsArg + MaxStack≤32);
+	//     未通过 → 降级 useSpecSelfCall(SELF 段 inline + host.CallBaseline)。
+	//   - **Spike 1 阶段尚未真接入**:emit 模板已字节级实装(amd64 120B /
+	//     arm64 164B),剩 helper call ABI + Compile/Run 端真接通 + e2e。
+	useFrameInline bool
 }
 
 // analyzeGetTableArrayHit 识别 PJ4 IC ArrayHit 形态:

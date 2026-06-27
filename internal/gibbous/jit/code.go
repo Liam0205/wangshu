@@ -209,6 +209,20 @@ type p4Code struct {
 	//     重新覆盖。然后装 args + host.CallBaseline + host.DoReturn。
 	//   - 复用 useSpec + specDeoptCode 字段(spec 段 deopt code)。
 	useSpecSelfCall bool
+
+	// PJ5 Option B Spike 1 帧建立内联(承 §9.20):
+	//   - useFrameInline = true:Run 端走 runSpecSelfCallInline 替代
+	//     host.CallBaseline,mmap 段字节级 inline enterLuaFrame + helper call
+	//     executeFrom + popCallInfo(承 §9.20 Spike 1 路线)。
+	//   - 守门(承 §9.20.4):callee.NumParams=0 + !IsVararg + !NeedsArg +
+	//     MaxStack≤32 + caller-callee Proto 编译期已知 + IC NodeHit + FBSelfMono。
+	//   - 失败(callee Proto 不满足守门 / archSupportsFrameInline=false / 段
+	//     执行 deopt)→ 降级 useSpecSelfCall(SELF 段字节级 + host.CallBaseline)。
+	//   - **Spike 1 阶段尚未真接入**:本字段 + Run 端 runSpecSelfCallInline +
+	//     Compile 端 compileSpecSelfCallInline 仍是骨架(emit 模板已字节级实装
+	//     amd64 120B / arm64 164B);剩 helper call ABI + e2e prove-the-path
+	//     留下批工程。
+	useFrameInline bool
 }
 
 // Proto 反向指针(trampoline 校验)。
