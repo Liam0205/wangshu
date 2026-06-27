@@ -132,14 +132,19 @@ type p4Code struct {
 	//     prelude 调 host.GetUpval 拿被调函数;false 即形态 A(MOVE+CALL+
 	//     RETURN void),Run 端调 host.GetReg 拿被调函数
 	//   - callA / callB / callC:CALL A B C 三字段(传给 host.CallBaseline)
+	//   - callArgCount:0=0 参形态 / 1=1 参 K 形态
+	//   - callArg1K:1 参形态时 LOADK 烧入的 K 常量(NaN-box raw,Run 端经
+	//     host.SetReg(callA+1, callArg1K) 装到参数槽)
 	//
 	// 复用 preludeArg 字段:形态 A 时 = MOVE.B(源 reg);形态 B 时 =
 	// GETUPVAL.B(upvalue 索引)
-	isCallVoid  bool
-	isCallUpval bool
-	callA       uint8
-	callB       uint8
-	callC       uint8
+	isCallVoid   bool
+	isCallUpval  bool
+	callA        uint8
+	callB        uint8
+	callC        uint8
+	callArgCount uint8
+	callArg1K    uint64
 }
 
 // Proto 反向指针(trampoline 校验)。
@@ -449,15 +454,20 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 		case uint8(bytecode.CALL):
 			// PJ5 CALL void 形态:`function(g) g() end` (形态 A,isCallUpval=false)
 			// 或 `local function noop()...end; function() noop() end`(形态 B,
-			// isCallUpval=true)— MOVE+CALL+RETURN void / GETUPVAL+CALL+RETURN void。
+			// isCallUpval=true)— MOVE+CALL+RETURN void / GETUPVAL+CALL+RETURN void
+			// (0 参形态,callArgCount=0)或 MOVE/GETUPVAL+LOADK+CALL+RETURN void
+			// (1 参 K 形态,callArgCount=1)。
 			//
-			// **pc 实参**:CALL 自身 pc 由 retPC-1 算(retPC 是 RETURN 在 pc 2,
-			// CALL 在 pc 1)。
+			// **pc 实参**:CALL 自身 pc 由 retPC-1 算(0 参形态 retPC=2,1 参形态
+			// retPC=3,CALL 都在 RETURN 前一条)。
 			//
 			// **预处理 — 把被调函数装到 R(callA) 槽**:luac 编 MOVE/GETUPVAL
 			// 在 mmap 段是 dummy 不执行,Run 端手动调 host helper 完成。
 			//   - 形态 A:host.GetReg(preludeArg=MOVE.B) + SetReg(callA)
 			//   - 形态 B:host.GetUpval(base, preludeArg=GETUPVAL.B) + SetReg(callA)
+			//
+			// **1 参形态 LOADK 装载**:callArgCount=1 时,Run 端 host.SetReg(callA+1,
+			// callArg1K)把编译期烧入的 K 常量装到参数槽。
 			callPC := int32(c.retPC) - 1
 			var srcVal uint64
 			if c.isCallUpval {
@@ -466,6 +476,9 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 				srcVal = c.host.GetReg(int32(c.preludeArg))
 			}
 			c.host.SetReg(int32(c.callA), srcVal)
+			if c.callArgCount >= 1 {
+				c.host.SetReg(int32(c.callA)+1, c.callArg1K)
+			}
 			// baseline doCall:绕过 R3 indirect 哨兵(本简化形态不支持段内
 			// call_indirect),host/crescent/__call/gibbous 全形态同步跑完。
 			st := c.host.CallBaseline(int32(base), callPC,

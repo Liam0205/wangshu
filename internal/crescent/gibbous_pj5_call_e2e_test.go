@@ -54,3 +54,31 @@ return count`
 	}
 	t.Logf("SpecCallVoidHits=%d", jit.SpecCallVoidHits())
 }
+
+// TestPJ5_CallVoid_E2E_FormB1K_UpvalArg:形态 B1K(GETUPVAL+LOADK+CALL+RETURN
+// void)真升层 — `local function take(x)...end; local function tick() take(42) end`,
+// 1 K 常量参 0 返。LOADK 在 mmap 段是 dummy,Run 端 host.SetReg(callA+1, K)
+// 装到参数槽。
+func TestPJ5_CallVoid_E2E_FormB1K_UpvalArg(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local sum = 0
+local function take(x) sum = sum + x end
+local function tick() take(42) end
+for i = 1, 50 do tick() end
+return sum`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := value.AsNumber(value.Value(rets[0])); got != 50*42 {
+		t.Errorf("rets = %v, want %d (tick() × 50 each take(42) → sum += 42)", got, 50*42)
+	}
+	if jit.SpecCallVoidHits() == 0 {
+		t.Errorf("SpecCallVoidHits = 0,PJ5 CALL void 1 K 参模板未真编译")
+	}
+	t.Logf("SpecCallVoidHits=%d", jit.SpecCallVoidHits())
+}

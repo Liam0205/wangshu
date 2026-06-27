@@ -179,14 +179,18 @@ type shapeInfo struct {
 	// preludeArg:形态 A 时 = MOVE.B(源 reg)/ 形态 B 时 = GETUPVAL.B
 	// (upvalue 索引)
 	//
-	// 形态识别在 analyzeCallVoidForm,典型 luac 编译形态(长度 3):
-	//   形态 A: MOVE A B + CALL A 1 1 + RETURN 0 1
-	//   形态 B: GETUPVAL A B + CALL A 1 1 + RETURN 0 1
-	isCallVoid  bool
-	isCallUpval bool
-	callA       uint8
-	callB       uint8
-	callC       uint8
+	// 形态识别在 analyzeCallVoidForm,典型 luac 编译形态(长度 3 或 4):
+	//   形态 A0: MOVE A B + CALL A 1 1 + RETURN 0 1
+	//   形态 B0: GETUPVAL A B + CALL A 1 1 + RETURN 0 1
+	//   形态 A1K: MOVE A B + LOADK A+1 Bx + CALL A 2 1 + RETURN 0 1
+	//   形态 B1K: GETUPVAL A B + LOADK A+1 Bx + CALL A 2 1 + RETURN 0 1
+	isCallVoid   bool
+	isCallUpval  bool
+	callA        uint8
+	callB        uint8
+	callC        uint8
+	callArgCount uint8  // 0=0 参形态 / 1=1 参 K 形态
+	callArg1K    uint64 // 1 参形态时 LOADK 烧入的 K 常量 raw NaN-box
 }
 
 // analyzeGetTableArrayHit 识别 PJ4 IC ArrayHit 形态:
@@ -1357,48 +1361,83 @@ func analyzeArithChainForm(proto *bytecode.Proto) (shapeInfo, bool) {
 // 失败任一条件返 (shapeInfo{}, false) — 走 analyzeShape 主分流(可能匹配
 // 其它形态如 GETUPVAL+RETURN A 2 单 op 形态守卫 retB=2 会拒 setter 形态)。
 func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
-	if len(proto.Code) != 3 {
+	codeLen := len(proto.Code)
+	if codeLen != 3 && codeLen != 4 {
 		return shapeInfo{}, false
 	}
 	op0 := bytecode.Op(proto.Code[0])
 	if op0 != bytecode.MOVE && op0 != bytecode.GETUPVAL {
 		return shapeInfo{}, false
 	}
-	if bytecode.Op(proto.Code[1]) != bytecode.CALL ||
-		bytecode.Op(proto.Code[2]) != bytecode.RETURN {
-		return shapeInfo{}, false
-	}
 	op0A := bytecode.A(proto.Code[0])
 	op0B := bytecode.B(proto.Code[0])
-	clA := bytecode.A(proto.Code[1])
-	clB := bytecode.B(proto.Code[1])
-	clC := bytecode.C(proto.Code[1])
-	rtB := bytecode.B(proto.Code[2])
 	if op0A > 254 || op0B > 254 {
 		return shapeInfo{}, false
 	}
+
+	// 长度 3:0 参形态(MOVE/GETUPVAL + CALL B=1 + RETURN B=1)
+	// 长度 4:1 参 K 形态(MOVE/GETUPVAL + LOADK + CALL B=2 + RETURN B=1)
+	var callIdx, retIdx int
+	var argK uint64
+	var argCount uint8
+	if codeLen == 3 {
+		callIdx = 1
+		retIdx = 2
+		argCount = 0
+	} else { // codeLen == 4
+		if bytecode.Op(proto.Code[1]) != bytecode.LOADK {
+			return shapeInfo{}, false
+		}
+		lkA := bytecode.A(proto.Code[1])
+		lkBx := bytecode.Bx(proto.Code[1])
+		if lkA != op0A+1 {
+			return shapeInfo{}, false
+		}
+		if lkBx < 0 || lkBx >= len(proto.Consts) {
+			return shapeInfo{}, false
+		}
+		argK = uint64(proto.Consts[lkBx])
+		callIdx = 2
+		retIdx = 3
+		argCount = 1
+	}
+
+	if bytecode.Op(proto.Code[callIdx]) != bytecode.CALL ||
+		bytecode.Op(proto.Code[retIdx]) != bytecode.RETURN {
+		return shapeInfo{}, false
+	}
+	clA := bytecode.A(proto.Code[callIdx])
+	clB := bytecode.B(proto.Code[callIdx])
+	clC := bytecode.C(proto.Code[callIdx])
+	rtB := bytecode.B(proto.Code[retIdx])
 	if clA != op0A {
 		return shapeInfo{}, false
 	}
-	// 当前简化形态:0 参 0 返
-	if clB != 1 || clC != 1 {
+	// CALL.B = argCount + 1
+	if int(clB) != int(argCount)+1 {
+		return shapeInfo{}, false
+	}
+	// CALL.C = 1(0 返值)
+	if clC != 1 {
 		return shapeInfo{}, false
 	}
 	if rtB != 1 { // setter 形态 0 返值
 		return shapeInfo{}, false
 	}
 	return shapeInfo{
-		ok:          true,
-		retA:        0,
-		retB:        1,
-		retPC:       2,
-		preludeOp:   uint8(bytecode.CALL), // Run 端 prelude switch 走 host.CallBaseline
-		preludeArg:  uint32(op0B),         // MOVE.B(源 reg)/ GETUPVAL.B(upvalue 索引)
-		isCallVoid:  true,
-		isCallUpval: op0 == bytecode.GETUPVAL,
-		callA:       uint8(clA),
-		callB:       uint8(clB),
-		callC:       uint8(clC),
+		ok:           true,
+		retA:         0,
+		retB:         1,
+		retPC:        uint8(retIdx),
+		preludeOp:    uint8(bytecode.CALL),
+		preludeArg:   uint32(op0B),
+		isCallVoid:   true,
+		isCallUpval:  op0 == bytecode.GETUPVAL,
+		callA:        uint8(clA),
+		callB:        uint8(clB),
+		callC:        uint8(clC),
+		callArgCount: argCount,
+		callArg1K:    argK,
 	}, true
 }
 
@@ -1442,6 +1481,13 @@ func analyzeShape(proto *bytecode.Proto) shapeInfo {
 		return shapeInfo{ok: true, retA: uint8(bytecode.A(ret)), retB: uint8(retB), retPC: 0}
 	}
 
+	// PJ5 CALL void 形态(MOVE/GETUPVAL+CALL+RETURN void 长度 3 或 4)
+	// 在长度分流前先 try——既支持 0 参形态 (codeLen=3) 也支持 1 K 参形态
+	// (codeLen=4)。
+	if cv, ok := analyzeCallVoidForm(proto); ok {
+		return cv
+	}
+
 	// 形态 1/2:长度 2 或 3
 	if len(proto.Code) != 2 && len(proto.Code) != 3 {
 		// 长度 5/6:可能是比较折叠形态 EQ/LT/LE+JMP+LOADBOOL+LOADBOOL+RETURN(+RETURN)
@@ -1474,12 +1520,6 @@ func analyzeShape(proto *bytecode.Proto) shapeInfo {
 		if bytecode.Op(proto.Code[2]) != bytecode.RETURN {
 			return shapeInfo{}
 		}
-	}
-
-	// PJ5 CALL void 形态(MOVE+CALL+RETURN void)在主 switch 前先 try——
-	// 因为 MOVE case 的简化形态守卫(retB=2)会拒,本形态需独立识别。
-	if cv, ok := analyzeCallVoidForm(proto); ok {
-		return cv
 	}
 
 	switch bytecode.Op(first) {
@@ -2344,26 +2384,28 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 	}
 
 	return &p4Code{
-		proto:       proto,
-		codePage:    page,
-		jitCtx:      NewJITContext(),
-		retA:        info.retA,
-		retB:        info.retB,
-		retPC:       info.retPC,
-		writeRetA:   info.writeRetA,
-		preludeOp:   info.preludeOp,
-		preludeArg:  info.preludeArg,
-		preludeC:    info.preludeC,
-		cmpA:        info.cmpA,
-		chainOp:     info.chainOp,
-		chainB:      info.chainB,
-		chainC:      info.chainC,
-		host:        c.hostState,
-		isCallVoid:  info.isCallVoid,
-		isCallUpval: info.isCallUpval,
-		callA:       info.callA,
-		callB:       info.callB,
-		callC:       info.callC,
+		proto:        proto,
+		codePage:     page,
+		jitCtx:       NewJITContext(),
+		retA:         info.retA,
+		retB:         info.retB,
+		retPC:        info.retPC,
+		writeRetA:    info.writeRetA,
+		preludeOp:    info.preludeOp,
+		preludeArg:   info.preludeArg,
+		preludeC:     info.preludeC,
+		cmpA:         info.cmpA,
+		chainOp:      info.chainOp,
+		chainB:       info.chainB,
+		chainC:       info.chainC,
+		host:         c.hostState,
+		isCallVoid:   info.isCallVoid,
+		isCallUpval:  info.isCallUpval,
+		callA:        info.callA,
+		callB:        info.callB,
+		callC:        info.callC,
+		callArgCount: info.callArgCount,
+		callArg1K:    info.callArg1K,
 	}, nil
 }
 

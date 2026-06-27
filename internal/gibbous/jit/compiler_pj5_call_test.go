@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/Liam0205/wangshu/internal/bytecode"
+	"github.com/Liam0205/wangshu/internal/value"
 )
 
 // TestPJ5_AnalyzeCallVoidForm_Recognize 验 analyzeCallVoidForm 正向识别
@@ -320,5 +321,86 @@ func TestPJ5_SpecCallVoidHits(t *testing.T) {
 	defer tryDispose(t, gc)
 	if got := SpecCallVoidHits(); got != 1 {
 		t.Errorf("SpecCallVoidHits = %d, want 1 (Compile 应命中 PJ5 CALL void inline)", got)
+	}
+}
+
+// TestPJ5_AnalyzeCallVoidForm_Recognize1ArgK 验形态 A1K(1 K 参)识别:
+// MOVE + LOADK + CALL B=2 C=1 + RETURN void。
+func TestPJ5_AnalyzeCallVoidForm_Recognize1ArgK(t *testing.T) {
+	// 形态 A1K:MOVE 1 0; LOADK 2 K0; CALL 1 2 1; RETURN 0 1
+	//   - MOVE.A=1 (被调位) MOVE.B=0 (参数源)
+	//   - LOADK.A=2 (被调位+1) LOADK.Bx=0 (K0 索引)
+	//   - CALL.A=1 CALL.B=2 (1 参) CALL.C=1 (0 返)
+	//   - RETURN.B=1 (0 返值)
+	const kVal uint64 = 0x4040000000000000 // NumberValue(32.0) NaN-box raw
+	proto := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABC(bytecode.MOVE, 1, 0, 0),
+			bytecode.EncodeABx(bytecode.LOADK, 2, 0),
+			bytecode.EncodeABC(bytecode.CALL, 1, 2, 1),
+			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
+		},
+		Consts: []value.Value{value.Value(kVal)},
+	}
+	info, ok := analyzeCallVoidForm(proto)
+	if !ok {
+		t.Fatal("analyzeCallVoidForm should accept MOVE+LOADK+CALL+RETURN void form A1K")
+	}
+	if !info.isCallVoid {
+		t.Error("info.isCallVoid should be true")
+	}
+	if info.callArgCount != 1 {
+		t.Errorf("callArgCount = %d, want 1", info.callArgCount)
+	}
+	if info.callArg1K != kVal {
+		t.Errorf("callArg1K = 0x%016x, want 0x%016x", info.callArg1K, kVal)
+	}
+	if info.retPC != 3 {
+		t.Errorf("retPC = %d, want 3 (RETURN in pc 3)", info.retPC)
+	}
+	if info.callB != 2 {
+		t.Errorf("callB = %d, want 2 (1 arg)", info.callB)
+	}
+}
+
+// TestPJ5_RunCallVoid1ArgKPath 验形态 A1K 端到端:Run 装载 R(callA+1)=K
+// 后调 CallBaseline,callB=2 + callC=1。
+func TestPJ5_RunCallVoid1ArgKPath(t *testing.T) {
+	const kVal uint64 = 0x4040000000000000 // NumberValue(32.0)
+	proto := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABC(bytecode.MOVE, 1, 0, 0),
+			bytecode.EncodeABx(bytecode.LOADK, 2, 0),
+			bytecode.EncodeABC(bytecode.CALL, 1, 2, 1),
+			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
+		},
+		Consts: []value.Value{value.Value(kVal)},
+	}
+	gc, host := compileWithHost(t, proto)
+	defer tryDispose(t, gc)
+
+	const fakeFuncVal uint64 = 0xFFF9_BEEF_0000_0000
+	host.regs[0] = fakeFuncVal
+
+	stack := make([]uint64, 4)
+	status := gc.Run(stack, 0)
+	if status != 0 {
+		t.Errorf("Run status = %d, want 0", status)
+	}
+	if host.regs[1] != fakeFuncVal {
+		t.Errorf("R(1) = 0x%016x, want 0x%016x (fakeFunc)", host.regs[1], fakeFuncVal)
+	}
+	if host.regs[2] != kVal {
+		t.Errorf("R(2) = 0x%016x, want 0x%016x (kVal arg)", host.regs[2], kVal)
+	}
+	if host.callCalls != 1 {
+		t.Errorf("CallBaseline called %d times, want 1", host.callCalls)
+	}
+	if host.lastCallA != 1 || host.lastCallB != 2 || host.lastCallC != 1 {
+		t.Errorf("CallBaseline(A,B,C) = (%d,%d,%d), want (1,2,1)",
+			host.lastCallA, host.lastCallB, host.lastCallC)
+	}
+	if host.lastCallPC != 2 {
+		t.Errorf("CallBaseline pc = %d, want 2 (CALL pc=2 in length-4 form)", host.lastCallPC)
 	}
 }
