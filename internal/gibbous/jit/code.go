@@ -709,13 +709,13 @@ func (c *p4Code) PendingErr() error {
 // NodeHit 命中结果一致;失败路径 = host.Self 完整 P1 SELF 段。
 func (c *p4Code) runSpecSelfCall(base int32, jitCtxAddr uintptr, vsBaseAddr uintptr) int32 {
 	// 1. 装 R(callA) = recv(模拟 MOVE/GETUPVAL)
-	var recvVal uint64
+	// MOVE form(form M*):recv 装载已字节级 emit 在 spec 段头(承 §9.19 args
+	// inline 同款摊薄),跳过 host.GetReg+SetReg 2 跨界。
+	// GETUPVAL form(form U*):upvalue 不在 vsBase 栈,仍 Run 端 host 装载。
 	if c.selfRecvIsUpval {
-		recvVal = c.host.GetUpval(base, int32(c.selfRecvSrcReg))
-	} else {
-		recvVal = c.host.GetReg(int32(c.selfRecvSrcReg))
+		upvalVal := c.host.GetUpval(base, int32(c.selfRecvSrcReg))
+		c.host.SetReg(int32(c.callA), upvalVal)
 	}
-	c.host.SetReg(int32(c.callA), recvVal)
 
 	// 2. callJITSpec 跑 SELF 段
 	raxSpec := archCallJITSpec(c.codePage.Addr(), jitCtxAddr, vsBaseAddr)

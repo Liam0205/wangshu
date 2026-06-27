@@ -4918,9 +4918,19 @@ func (c *Compiler) compileSpecSelfCall(proto *bytecode.Proto, info shapeInfo) (b
 	// R(callA)/R(callA+1),args 段已装到 R(callA+2..),host.CallBaseline 调用
 	// 时 args 已就位。
 	//
-	// 槽位不冲突:args 写 R(callA+2..callA+1+N);SELF 段读 R(callA)=recv +
-	// 写 R(callA+1)=self + 写 R(callA)=method。args 段先执行写不污染 recv。
+	// **recv 装载**(MOVE form,form M*):字节级 inline R(callA)=R(srcReg)
+	// 跳过 host.GetReg + SetReg 2 次跨界;GETUPVAL form(form U*)留 Run 端
+	// host helper round-trip(upvalue 不在 vsBase 栈,需要复杂 closure 寻址)。
+	//
+	// 槽位不冲突:args 写 R(callA+2..callA+1+N);recv 段写 R(callA)=R(srcReg);
+	// SELF 段读 R(callA)=recv + 写 R(callA+1)=self + 写 R(callA)=method。
+	// 顺序:recv inline → args inline → SELF inline → ret(args+recv 段 ret 失败
+	// 路径 deopt 时已执行完,host.Self 降级时仍可用)。
 	callA := info.callA
+	if !info.selfRecvIsUpval {
+		// MOVE recv:字节级 R(callA) = R(srcReg),省 host.GetReg+SetReg 2 跨界
+		buf = archEmitSpecArgLoadReg(buf, callA, info.selfRecvSrcReg)
+	}
 	if info.callArgCount >= 1 {
 		dst := callA + 2 + 0
 		if info.callArg1IsK {
