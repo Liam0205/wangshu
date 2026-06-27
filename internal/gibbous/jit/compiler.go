@@ -245,6 +245,14 @@ type shapeInfo struct {
 	selfMethodRK    uint16 // SELF.C 字段(RK 方法名常量索引 0-511)
 	selfRecvSrcReg  uint8  // recv 来源 reg(form M*)/ upvalue 索引(form U*)
 	selfRecvIsUpval bool   // true = recv 来自 upvalue;false = 来自 reg
+
+	// PJ5 SELF + CALL spec template 接入(承 §9.10 PJ4 EmitSelfNodeHit 复用):
+	//   - useSpecSelfCall = true:SELF 段走字节级 EmitSelfNodeHit 模板(IC NodeHit
+	//     guard + stableKey 比对 + NodeVal store R(A)=method),跳过 host.Self
+	//     round-trip;失败 deopt 降级 host.Self。CALL 段仍走 host.CallBaseline。
+	//   - 复用 icAReg/icBReg/icStableShape/icStableIndex/icStableKey(PJ4 SELF
+	//     NodeHit 同字段集)。
+	useSpecSelfCall bool
 }
 
 // analyzeGetTableArrayHit 识别 PJ4 IC ArrayHit 形态:
@@ -2485,6 +2493,117 @@ func analyzeSelfCallFormN(proto *bytecode.Proto, callA uint8, selfRK uint16,
 		return info, true
 	}
 	return shapeInfo{}, false
+}
+
+// analyzeSelfCallSpecForm 识别 PJ5 SELF + CALL spec template 接入形态(承
+// §9.10 PJ4 EmitSelfNodeHit 复用 + §9.17 PJ5 SELF inline 升级):
+//
+// **形态边界**(初批仅 0 参 0 返 CALL void,form M0 — 最简验证 spec 路径):
+//
+//	[0] MOVE/GETUPVAL A=callA B=recvSrc  (装 recv 到 R(callA))
+//	[1] SELF     A=callA B=callA C=K_method  (IC[1] = NodeHit feedback)
+//	[2] CALL     A=callA B=2 C=1     (0 参 0 返)
+//	[3] RETURN   A=0     B=1
+//
+// **触发条件**(在 analyzeSelfCallForm 普通路径之上叠加 IC NodeHit feedback 命中):
+//   - codeLen == 4 + op0 MOVE/GETUPVAL + [1] SELF + [2] CALL B=2 C=1 + [3] RETURN B=1
+//   - proto.IC[1].Kind == ICKindNodeHit(P1 解释器观测过 hash 段命中)
+//   - feedback.Points[1].Kind == FBTableMono + Confidence >= 0.99
+//   - stableShape/Index 一致 + stableKey 编译期固化 != Nil
+//
+// 失败任一条件返 (shapeInfo{}, false) — 走 analyzeSelfCallForm 普通(host.Self)路径。
+func analyzeSelfCallSpecForm(proto *bytecode.Proto, feedback *bridge.TypeFeedback) (shapeInfo, bool) {
+	if len(proto.Code) != 4 {
+		return shapeInfo{}, false
+	}
+	op0 := bytecode.Op(proto.Code[0])
+	if op0 != bytecode.MOVE && op0 != bytecode.GETUPVAL {
+		return shapeInfo{}, false
+	}
+	op0A := bytecode.A(proto.Code[0])
+	op0B := bytecode.B(proto.Code[0])
+	if op0A > 253 || op0B > 254 {
+		return shapeInfo{}, false
+	}
+	if bytecode.Op(proto.Code[1]) != bytecode.SELF {
+		return shapeInfo{}, false
+	}
+	selfA := bytecode.A(proto.Code[1])
+	selfB := bytecode.B(proto.Code[1])
+	selfC := bytecode.C(proto.Code[1])
+	if selfA != op0A || selfB != op0A || selfC < 256 {
+		return shapeInfo{}, false
+	}
+	// [2] CALL B=2 C=1(0 参 0 返)
+	if bytecode.Op(proto.Code[2]) != bytecode.CALL {
+		return shapeInfo{}, false
+	}
+	cA := bytecode.A(proto.Code[2])
+	cB := bytecode.B(proto.Code[2])
+	cC := bytecode.C(proto.Code[2])
+	if cA != selfA || cB != 2 || cC != 1 {
+		return shapeInfo{}, false
+	}
+	// [3] RETURN B=1
+	if bytecode.Op(proto.Code[3]) != bytecode.RETURN || bytecode.B(proto.Code[3]) != 1 {
+		return shapeInfo{}, false
+	}
+	// IC slot 检查(SELF 在 pc=1,故 proto.IC[1])
+	if len(proto.IC) <= 1 {
+		return shapeInfo{}, false
+	}
+	icSlot := proto.IC[1]
+	if icSlot.Kind != bytecode.ICKindNodeHit {
+		return shapeInfo{}, false
+	}
+	// feedback 检查(Points[1] 对位 SELF pc=1)
+	if feedback == nil || len(feedback.Points) < 2 {
+		return shapeInfo{}, false
+	}
+	pf := feedback.Points[1]
+	if pf.Kind != bridge.FBTableMono || pf.Confidence < 0.99 {
+		return shapeInfo{}, false
+	}
+	if pf.StableShape != icSlot.Shape || pf.StableIndex != icSlot.Index {
+		return shapeInfo{}, false
+	}
+	// stableKey 编译期固化(SELF.C 是 K 常量索引)
+	kIdx := bytecode.KIdx(int(selfC))
+	if kIdx < 0 || kIdx >= len(proto.Consts) {
+		return shapeInfo{}, false
+	}
+	stableKey := uint64(proto.Consts[kIdx])
+	if stableKey == uint64(value.Nil) {
+		return shapeInfo{}, false
+	}
+
+	callA := uint8(selfA)
+	return shapeInfo{
+		ok:              true,
+		retA:            0,
+		retB:            1,
+		retPC:           3,
+		preludeOp:       uint8(bytecode.CALL),
+		preludeArg:      uint32(op0B),
+		isCallVoid:      true,
+		isCallUpval:     op0 == bytecode.GETUPVAL,
+		callA:           callA,
+		callB:           uint8(cB),
+		callC:           uint8(cC),
+		callArgCount:    0,
+		isSelfCall:      true,
+		selfCallA:       callA,
+		selfMethodRK:    uint16(selfC),
+		selfRecvSrcReg:  uint8(op0B),
+		selfRecvIsUpval: op0 == bytecode.GETUPVAL,
+		// spec template 字段
+		useSpecSelfCall: true,
+		icAReg:          callA,
+		icBReg:          callA, // SELF.B = callA(recv 槽,MOVE/GETUPVAL 装)
+		icStableShape:   pf.StableShape,
+		icStableIndex:   pf.StableIndex,
+		icStableKey:     stableKey,
+	}, true
 }
 
 // assignArgsToShape 把 args 数组(N=2..7)对应字段填到 shapeInfo。

@@ -5,6 +5,7 @@ package jit
 import (
 	"testing"
 
+	"github.com/Liam0205/wangshu/internal/bridge"
 	"github.com/Liam0205/wangshu/internal/bytecode"
 	"github.com/Liam0205/wangshu/internal/value"
 )
@@ -251,5 +252,99 @@ func TestPJ5_AnalyzeSelfCallForm_RejectMethodReg(t *testing.T) {
 	}
 	if _, ok := analyzeSelfCallForm(proto); ok {
 		t.Error("analyzeSelfCallForm should reject SELF.C < 256 (reg method name)")
+	}
+}
+
+// TestPJ5_AnalyzeSelfCallSpecForm_M0 验 analyzeSelfCallSpecForm 识别长度 4
+// SELF + CALL void 0 参形态 + IC NodeHit feedback 命中 → useSpecSelfCall=true。
+//
+// 形态:MOVE 1 0; SELF 1 1 256; CALL 1 2 1; RETURN 0 1
+// IC[1](SELF pc)= NodeHit + feedback.Points[1] = FBTableMono。
+func TestPJ5_AnalyzeSelfCallSpecForm_M0(t *testing.T) {
+	proto := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABC(bytecode.MOVE, 1, 0, 0),
+			bytecode.EncodeABC(bytecode.SELF, 1, 1, 256), // C=256 → K[0]
+			bytecode.EncodeABC(bytecode.CALL, 1, 2, 1),
+			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
+		},
+		IC:     make([]bytecode.ICSlot, 4),
+		Consts: []value.Value{value.Value(0x42)}, // K[0] method key(非 Nil)
+	}
+	// IC[1] = SELF 的 IC slot:NodeHit + Shape=7 + Index=2
+	proto.IC[1] = bytecode.ICSlot{Kind: bytecode.ICKindNodeHit, Shape: 7, Index: 2}
+
+	// feedback.Points[1] 对位 SELF pc=1
+	feedback := &bridge.TypeFeedback{
+		Points: []bridge.PointFeedback{
+			{}, // Points[0] dummy(MOVE pc=0)
+			{Kind: bridge.FBTableMono, Confidence: 1.0, StableShape: 7, StableIndex: 2},
+		},
+	}
+
+	info, ok := analyzeSelfCallSpecForm(proto, feedback)
+	if !ok {
+		t.Fatal("analyzeSelfCallSpecForm 应返 true(SELF + CALL void + IC NodeHit + feedback mono)")
+	}
+	if !info.useSpecSelfCall {
+		t.Error("info.useSpecSelfCall 应为 true")
+	}
+	if !info.isSelfCall || !info.isCallVoid {
+		t.Errorf("isSelfCall=%v isCallVoid=%v, want both true", info.isSelfCall, info.isCallVoid)
+	}
+	if info.icAReg != 1 || info.icBReg != 1 {
+		t.Errorf("icAReg/icBReg = %d/%d, want 1/1", info.icAReg, info.icBReg)
+	}
+	if info.icStableShape != 7 || info.icStableIndex != 2 {
+		t.Errorf("stableShape/Index = %d/%d, want 7/2", info.icStableShape, info.icStableIndex)
+	}
+	if info.icStableKey != 0x42 {
+		t.Errorf("icStableKey = %#x, want 0x42", info.icStableKey)
+	}
+	if info.callA != 1 || info.callB != 2 || info.callC != 1 {
+		t.Errorf("callA/B/C = %d/%d/%d, want 1/2/1", info.callA, info.callB, info.callC)
+	}
+}
+
+// TestPJ5_AnalyzeSelfCallSpecForm_RejectNoFeedback 无 feedback 时拒(走普通 host.Self 路径)。
+func TestPJ5_AnalyzeSelfCallSpecForm_RejectNoFeedback(t *testing.T) {
+	proto := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABC(bytecode.MOVE, 1, 0, 0),
+			bytecode.EncodeABC(bytecode.SELF, 1, 1, 256),
+			bytecode.EncodeABC(bytecode.CALL, 1, 2, 1),
+			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
+		},
+		IC:     make([]bytecode.ICSlot, 4),
+		Consts: []value.Value{value.Value(0x42)},
+	}
+	proto.IC[1] = bytecode.ICSlot{Kind: bytecode.ICKindNodeHit, Shape: 7, Index: 2}
+	if _, ok := analyzeSelfCallSpecForm(proto, nil); ok {
+		t.Error("analyzeSelfCallSpecForm 无 feedback 应返 false")
+	}
+}
+
+// TestPJ5_AnalyzeSelfCallSpecForm_RejectNoNodeHit IC 非 NodeHit 时拒。
+func TestPJ5_AnalyzeSelfCallSpecForm_RejectNoNodeHit(t *testing.T) {
+	proto := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABC(bytecode.MOVE, 1, 0, 0),
+			bytecode.EncodeABC(bytecode.SELF, 1, 1, 256),
+			bytecode.EncodeABC(bytecode.CALL, 1, 2, 1),
+			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
+		},
+		IC:     make([]bytecode.ICSlot, 4),
+		Consts: []value.Value{value.Value(0x42)},
+	}
+	// IC[1] = ArrayHit(非 NodeHit）
+	proto.IC[1] = bytecode.ICSlot{Kind: bytecode.ICKindArrayHit, Shape: 7, Index: 2}
+	feedback := &bridge.TypeFeedback{
+		Points: []bridge.PointFeedback{
+			{},
+			{Kind: bridge.FBTableMono, Confidence: 1.0, StableShape: 7, StableIndex: 2},
+		},
+	}
+	if _, ok := analyzeSelfCallSpecForm(proto, feedback); ok {
+		t.Error("analyzeSelfCallSpecForm IC 非 NodeHit 应返 false")
 	}
 }

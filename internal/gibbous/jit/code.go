@@ -197,6 +197,18 @@ type p4Code struct {
 	selfMethodRK    uint16
 	selfRecvSrcReg  uint8
 	selfRecvIsUpval bool
+
+	// PJ5 SELF + CALL spec template 接入(承 §9.10 PJ4 EmitSelfNodeHit 复用):
+	//   - useSpecSelfCall = true:SELF 段经 callJITSpec 跑 EmitSelfNodeHit 字节级
+	//     模板(IC NodeHit guard + NodeVal store R(A)=method),跳过 host.Self;
+	//     失败 raxSpec==specDeoptCode 时降级 host.Self。
+	//   - Run 端预处理:先 host.GetReg/GetUpval + SetReg 装 R(callA)=recv(模拟
+	//     MOVE/GETUPVAL,因 spec 段从 R(callA) 字节级读取 receiver),然后 callJITSpec;
+	//     成功 → method 已 store R(callA),self 已 store R(callA+1);
+	//     失败 → R(callA+1) 已被 store recv(P1 SELF case 同款步骤),降级 host.Self
+	//     重新覆盖。然后装 args + host.CallBaseline + host.DoReturn。
+	//   - 复用 useSpec + specDeoptCode 字段(spec 段 deopt code)。
+	useSpecSelfCall bool
 }
 
 // Proto 反向指针(trampoline 校验)。
