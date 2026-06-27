@@ -1429,3 +1429,144 @@ return count`
 	t.Logf("SpecSelfCallSpecHits: %d → %d(N=15 返 cC=16,上界严格)",
 		specBefore, specAfter)
 }
+
+// TestPJ5_SelfCall_E2E_SpecTemplate_ErrorBubbleUp_NilRecv 验 PJ5 SELF spec
+// template 路径下 receiver 为 nil 时错误冒泡正确性(承 PR #26 评论建议 3
+// 深度覆盖路径 + R14 修复后 Go G 正确性)。
+//
+// **场景**:warmup 阶段填 IC NodeHit + FBSelfMono feedback,Phase 2 升 P4
+// spec template 路径;Phase 3 用 nil receiver 触发 spec NodeHit guard 失败
+// → onOSRExit 累积 deopt → 降级 host.Self 完整 P1 SELF 段 → raise
+// "attempt to index nil value" 错误透明冒泡。
+func TestPJ5_SelfCall_E2E_SpecTemplate_ErrorBubbleUp_NilRecv(t *testing.T) {
+	jit.ResetSpecHits()
+	// Phase 1: warmup IC NodeHit + FBSelfMono feedback
+	warmupSrc := `
+local mt = { m = function(self) return 42 end }
+local function caller(t) return t:m() end
+local sum = 0
+for i = 1, 100 do sum = sum + caller(mt) end
+return sum`
+	st, mainCl := loadFnP4(t, warmupSrc)
+	if _, err := st.Call(value.GCRefOf(mainCl), nil, 1); err != nil {
+		t.Fatalf("warmup: %v", err)
+	}
+	st.bridge.SetForceAllPromote(true)
+	if _, err := st.Call(value.GCRefOf(mainCl), nil, 1); err != nil {
+		t.Fatalf("Phase 2 spec template: %v", err)
+	}
+	hitsBefore := jit.SpecSelfCallSpecHits()
+	if hitsBefore == 0 {
+		t.Fatal("Phase 2 SpecSelfCallSpecHits=0 — spec template 未触达,测试前提失败")
+	}
+
+	// Phase 3:同 caller 但 receiver=nil → spec template NodeHit guard 必失败
+	// → deopt → host.Self → raise "index nil"
+	nilSrc := `
+local mt = { m = function(self) return 42 end }
+local function caller(t) return t:m() end
+return caller(nil)`
+	st2, mainCl2 := loadFnP4(t, nilSrc)
+	st2.bridge.SetForceAllPromote(true)
+	_, err := st2.Call(value.GCRefOf(mainCl2), nil, 1)
+	if err == nil {
+		t.Fatal("应 raise 'attempt to index nil value' 错误,但 Call 成功返回")
+	}
+	if !strings.Contains(err.Error(), "index") {
+		t.Errorf("err 消息 = %q,应含 'index' 关键字", err.Error())
+	}
+	t.Logf("spec template 错误冒泡正确:%v", err)
+}
+
+// TestPJ5_SelfCall_E2E_SpecTemplate_ErrorBubbleUp_BadMethod 验 PJ5 SELF spec
+// template 路径下 method 字段为 non-function 时错误冒泡正确性。
+//
+// **场景**:warmup 阶段 method 是 function 填 IC NodeHit + FBSelfMono;
+// Phase 2 spec template 命中;Phase 3 用不同 receiver,其 method 字段是 number
+// → spec NodeHit guard 失败(shape 变 / NodeVal kind 不同)→ deopt → host.Self
+// → method 是 number → CALL 段 raise "attempt to call a number value"。
+func TestPJ5_SelfCall_E2E_SpecTemplate_ErrorBubbleUp_BadMethod(t *testing.T) {
+	jit.ResetSpecHits()
+	// Phase 1+2:warmup 用 method=function 填 IC NodeHit
+	warmupSrc := `
+local mt = { m = function(self) return 42 end }
+local function caller(t) return t:m() end
+local sum = 0
+for i = 1, 100 do sum = sum + caller(mt) end
+return sum`
+	st, mainCl := loadFnP4(t, warmupSrc)
+	if _, err := st.Call(value.GCRefOf(mainCl), nil, 1); err != nil {
+		t.Fatalf("warmup: %v", err)
+	}
+	st.bridge.SetForceAllPromote(true)
+	if _, err := st.Call(value.GCRefOf(mainCl), nil, 1); err != nil {
+		t.Fatalf("Phase 2 spec template: %v", err)
+	}
+	if jit.SpecSelfCallSpecHits() == 0 {
+		t.Fatal("Phase 2 SpecSelfCallSpecHits=0 — spec template 未触达")
+	}
+
+	// Phase 3:method 是 number → spec deopt → host.Self 取到 number → CALL raise
+	badSrc := `
+local bad = { m = 42 }
+return bad:m()`
+	st2, mainCl2 := loadFnP4(t, badSrc)
+	st2.bridge.SetForceAllPromote(true)
+	_, err := st2.Call(value.GCRefOf(mainCl2), nil, 1)
+	if err == nil {
+		t.Fatal("应 raise 'attempt to call a number value' 错误")
+	}
+	if !strings.Contains(err.Error(), "call") {
+		t.Errorf("err 消息 = %q,应含 'call' 关键字", err.Error())
+	}
+	t.Logf("spec template BadMethod 错误冒泡正确:%v", err)
+}
+
+// TestPJ5_SelfCall_E2E_SpecTemplate_OSRExitToDeopt 验 OSR exit 协议完整闭环
+// 第一阶段:连续触发 ≥ DeoptThreshold 次 spec NodeHit guard 失败 → onOSRExit
+// 累积 deopt → 状态切 P4Deoptimized + SpecP4DeoptHits 增长。
+//
+// 承 §9.18 OSR exit 协议骨架 + §9.19 PJ5 SELF spec template 真接入,本批
+// 端到端验真业务路径下完整状态机转移(非 p4state_test.go 合成驱动)。
+//
+// **场景**:caller 反复跑,每次 force-all 升 P4 spec template 后跑不同
+// receiver shape → spec NodeHit guard 失败 → 16 次 onOSRExit 后切
+// P4Deoptimized + SpecP4DeoptHits=1。
+func TestPJ5_SelfCall_E2E_SpecTemplate_OSRExitToDeopt(t *testing.T) {
+	jit.ResetSpecHits()
+	jit.ResetP4SpecState()
+
+	// 主形态:caller(t) 走 spec template path,以 m1 reciever warmup
+	src := `
+local m1 = { m = function(self) return 1 end }
+local m2 = { m = function(self, x) return 2 end, other = 99, more = 88 }
+local function caller(t) return t:m() end
+-- warmup phase 1:filling IC NodeHit + FBSelfMono
+for i = 1, 100 do caller(m1) end
+-- Phase 2:m2 shape 不同(extra fields),spec NodeHit guard 失败 → deopt
+local sum = 0
+for i = 1, 30 do sum = sum + caller(m2) end  -- 30 次 > DeoptThreshold(16)
+return sum`
+	st, mainCl := loadFnP4(t, src)
+	if _, err := st.Call(value.GCRefOf(mainCl), nil, 1); err != nil {
+		t.Fatalf("warmup: %v", err)
+	}
+	st.bridge.SetForceAllPromote(true)
+
+	deoptBefore := jit.SpecP4DeoptHits()
+	_, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 2 force-all: %v", err)
+	}
+	deoptAfter := jit.SpecP4DeoptHits()
+
+	// **prove-the-path 强断言**(承 §9.18 OSR exit 协议闭环):真业务路径下
+	// 30 次 m2 调用触发 ≥ DeoptThreshold(16)次 onOSRExit,SpecP4DeoptHits
+	// 应至少 += 1(累积达阈值触发 P4Deoptimized 转移 + incSpecP4DeoptHits)。
+	if deoptAfter <= deoptBefore {
+		t.Errorf("SpecP4DeoptHits 未增长(%d → %d)— OSR exit 协议未真接入 spec template 路径",
+			deoptBefore, deoptAfter)
+	}
+	t.Logf("SpecP4DeoptHits: %d → %d(增量 = %d,OSR exit 协议真接入实证)",
+		deoptBefore, deoptAfter, deoptAfter-deoptBefore)
+}
