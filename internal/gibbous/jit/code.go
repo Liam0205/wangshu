@@ -720,7 +720,11 @@ func (c *p4Code) runSpecSelfCall(base int32, jitCtxAddr uintptr, vsBaseAddr uint
 	// 2. callJITSpec 跑 SELF 段
 	raxSpec := archCallJITSpec(c.codePage.Addr(), jitCtxAddr, vsBaseAddr)
 	if raxSpec == c.specDeoptCode {
-		// 失败 deopt:降级 host.Self(byte-equal P1 SELF 段)
+		// 失败 deopt:SELF NodeHit guard 不成立(table shape 变 / key 退化 /
+		// NodeVal=nil)= 真正的投机失败 → OSR exit。接 p4SpecState 计数(承
+		// §9.18 + 04 §5.1 单次失败三件事:计数 +1,达阈值切 P4Deoptimized)。
+		onOSRExit(c.proto)
+		// 降级 host.Self(byte-equal P1 SELF 段)
 		// SELF 自身 pc = callPC - 1(CALL 在 retPC-1,SELF 在 CALL 前一条,0 参形态)
 		callPC := int32(c.retPC) - 1
 		selfPC := callPC - 1

@@ -4910,6 +4910,7 @@ func (c *Compiler) compileSpecSelfCall(proto *bytecode.Proto, info shapeInfo) (b
 	}
 	incSpecSelfCallHits()     // PJ5 SELF inline 命中(prove-the-path 复用 SELF 探针)
 	incSpecSelfCallSpecHits() // PJ5 SELF + CALL spec template 专属命中
+	onP4Install(proto)        // 注册 p4SpecState[proto] = P4Speculative(承 §9.18 + 04 §5.2)
 	return &p4Code{
 		proto:           proto,
 		codePage:        page,
