@@ -230,6 +230,45 @@ local function take(a, b) sum = sum + a * b end
 local function tick() take(10, 20) end
 for i = 1, 30 do tick() end
 return sum`},
+
+	// —— PJ5 TAILCALL 形态 TB0:GETUPVAL+TAILCALL+RETURN B=0+RETURN B=1(0 参 1 返)
+	// (`local function f()...end; local function bounce() return f() end`
+	// 闭包调外层 known local fn + 尾调用)。luac stmtReturn 单 CallExpr 快路径
+	// 产物。SpecTailCallHits=1 命中实证(承
+	// internal/crescent/gibbous_pj5_tailcall_e2e_test.go::TestPJ5_TailCall_E2E_FormTB0_Upval)。
+	{"p4_tailcall_upval", `
+local function f() return 42 end
+local function bounce() return f() end
+local s = 0
+for i = 1, 30 do s = s + bounce() end
+return s`},
+
+	// —— PJ5 TAILCALL 形态 TB1K:GETUPVAL+LOADK+TAILCALL+...(1 K 参 1 返)
+	// (`local function take(x) return x*2 end; local function bounce() return take(7) end`)
+	{"p4_tailcall_upval_1argk", `
+local function take(x) return x * 2 end
+local function bounce() return take(7) end
+local s = 0
+for i = 1, 30 do s = s + bounce() end
+return s`},
+
+	// —— PJ5 TAILCALL 形态 TB1R:GETUPVAL+MOVE+TAILCALL+...(1 reg 参 1 返)
+	// (`local function take(x) return x+1 end; local function bounce(v) return take(v) end`)
+	{"p4_tailcall_upval_1argreg", `
+local function take(x) return x + 1 end
+local function bounce(v) return take(v) end
+local s = 0
+for i = 1, 30 do s = s + bounce(i) end
+return s`},
+
+	// —— PJ5 TAILCALL 形态 TB2K:GETUPVAL+LOADK+LOADK+TAILCALL+...(2 K 参 1 返)
+	// (`local function f(a,b) return a+b end; local function bounce() return f(10,20) end`)
+	{"p4_tailcall_upval_2argk", `
+local function f(a, b) return a + b end
+local function bounce() return f(10, 20) end
+local s = 0
+for i = 1, 30 do s = s + bounce() end
+return s`},
 }
 
 // TestP4_Tiered 三方对拍:oracle / crescent / p4-jit 全 byte-equal。
