@@ -1457,54 +1457,100 @@ func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
 			return shapeInfo{}, false
 		}
 	case 5:
-		// 2 参 0 返:GETUPVAL/MOVE + (LOADK|MOVE) + (LOADK|MOVE) + CALL + RETURN
-		// 四组合:K+K / K+R / R+K / R+R(承同 PJ5 真接入主路径形态学扩展)
-		secondOp := bytecode.Op(proto.Code[1])
-		thirdOp := bytecode.Op(proto.Code[2])
-		if (secondOp != bytecode.LOADK && secondOp != bytecode.MOVE) ||
-			(thirdOp != bytecode.LOADK && thirdOp != bytecode.MOVE) {
-			return shapeInfo{}, false
-		}
-		op2A := bytecode.A(proto.Code[1])
-		op3A := bytecode.A(proto.Code[2])
-		if op2A != op0A+1 || op3A != op0A+2 {
-			return shapeInfo{}, false
-		}
-		// 第一参装载
-		if secondOp == bytecode.LOADK {
-			lk1Bx := bytecode.Bx(proto.Code[1])
-			if lk1Bx < 0 || lk1Bx >= len(proto.Consts) {
+		// 长度 5 子分支区分:
+		//   - getter 1 K/reg 参 1 返:[0] MOVE/GETUPVAL,[1] LOADK/MOVE,
+		//     [2] CALL B=2 C=2,[3] RETURN A=callA B=2,[4] 隐式 RETURN B=1
+		//   - setter 2 参 0 返:[0] MOVE/GETUPVAL,[1] LOADK/MOVE,[2] LOADK/MOVE,
+		//     [3] CALL B=3 C=1,[4] RETURN B=1
+		// 关键区分位:Code[2] 是 CALL 即 getter 1 参 / 否则 setter 2 参。
+		if bytecode.Op(proto.Code[2]) == bytecode.CALL {
+			// getter 1 参 1 返:[1] LOADK/MOVE,[2] CALL B=2 C=2,[3] RETURN A=callA B=2,
+			// [4] 隐式 RETURN B=1
+			secondOp := bytecode.Op(proto.Code[1])
+			switch secondOp {
+			case bytecode.LOADK:
+				lkA := bytecode.A(proto.Code[1])
+				lkBx := bytecode.Bx(proto.Code[1])
+				if lkA != op0A+1 {
+					return shapeInfo{}, false
+				}
+				if lkBx < 0 || lkBx >= len(proto.Consts) {
+					return shapeInfo{}, false
+				}
+				argK = uint64(proto.Consts[lkBx])
+				argIsK = true
+			case bytecode.MOVE:
+				mvA := bytecode.A(proto.Code[1])
+				mvB := bytecode.B(proto.Code[1])
+				if mvA != op0A+1 {
+					return shapeInfo{}, false
+				}
+				if mvB > 254 {
+					return shapeInfo{}, false
+				}
+				argReg = uint8(mvB)
+				argIsK = false
+			default:
 				return shapeInfo{}, false
 			}
-			argK = uint64(proto.Consts[lk1Bx])
-			argIsK = true
+			callIdx = 2
+			retIdx = 3
+			argCount = 1
+			// 校验 [4] 隐式 RETURN B=1
+			implRet := proto.Code[4]
+			if bytecode.Op(implRet) != bytecode.RETURN || bytecode.B(implRet) != 1 {
+				return shapeInfo{}, false
+			}
 		} else {
-			mv1B := bytecode.B(proto.Code[1])
-			if mv1B > 254 {
+			// setter 2 参 0 返:GETUPVAL/MOVE + (LOADK|MOVE) + (LOADK|MOVE) + CALL + RETURN
+			// 四组合:K+K / K+R / R+K / R+R(承同 PJ5 真接入主路径形态学扩展)
+			secondOp := bytecode.Op(proto.Code[1])
+			thirdOp := bytecode.Op(proto.Code[2])
+			if (secondOp != bytecode.LOADK && secondOp != bytecode.MOVE) ||
+				(thirdOp != bytecode.LOADK && thirdOp != bytecode.MOVE) {
 				return shapeInfo{}, false
 			}
-			argReg = uint8(mv1B)
-			argIsK = false
+			op2A := bytecode.A(proto.Code[1])
+			op3A := bytecode.A(proto.Code[2])
+			if op2A != op0A+1 || op3A != op0A+2 {
+				return shapeInfo{}, false
+			}
+			// 第一参装载
+			if secondOp == bytecode.LOADK {
+				lk1Bx := bytecode.Bx(proto.Code[1])
+				if lk1Bx < 0 || lk1Bx >= len(proto.Consts) {
+					return shapeInfo{}, false
+				}
+				argK = uint64(proto.Consts[lk1Bx])
+				argIsK = true
+			} else {
+				mv1B := bytecode.B(proto.Code[1])
+				if mv1B > 254 {
+					return shapeInfo{}, false
+				}
+				argReg = uint8(mv1B)
+				argIsK = false
+			}
+			// 第二参装载
+			if thirdOp == bytecode.LOADK {
+				lk2Bx := bytecode.Bx(proto.Code[2])
+				if lk2Bx < 0 || lk2Bx >= len(proto.Consts) {
+					return shapeInfo{}, false
+				}
+				arg2K = uint64(proto.Consts[lk2Bx])
+				arg2IsK = true
+			} else {
+				mv2B := bytecode.B(proto.Code[2])
+				if mv2B > 254 {
+					return shapeInfo{}, false
+				}
+				arg2Reg = uint8(mv2B)
+				arg2IsK = false
+			}
+			callIdx = 3
+			retIdx = 4
+			argCount = 2
 		}
-		// 第二参装载
-		if thirdOp == bytecode.LOADK {
-			lk2Bx := bytecode.Bx(proto.Code[2])
-			if lk2Bx < 0 || lk2Bx >= len(proto.Consts) {
-				return shapeInfo{}, false
-			}
-			arg2K = uint64(proto.Consts[lk2Bx])
-			arg2IsK = true
-		} else {
-			mv2B := bytecode.B(proto.Code[2])
-			if mv2B > 254 {
-				return shapeInfo{}, false
-			}
-			arg2Reg = uint8(mv2B)
-			arg2IsK = false
-		}
-		callIdx = 3
-		retIdx = 4
-		argCount = 2
 	}
 
 	if bytecode.Op(proto.Code[callIdx]) != bytecode.CALL ||
