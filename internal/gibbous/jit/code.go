@@ -727,7 +727,7 @@ func (c *p4Code) runSpecSelfCall(base int32, jitCtxAddr uintptr, vsBaseAddr uint
 		// 降级 host.Self(byte-equal P1 SELF 段)
 		// SELF 自身 pc = callPC - 1(CALL 在 retPC-1,SELF 在 CALL 前一条,0 参形态)
 		callPC := int32(c.retPC) - 1
-		selfPC := callPC - 1
+		selfPC := callPC - 1 - int32(c.callArgCount)
 		st := c.host.Self(base, selfPC, int32(c.selfCallA),
 			int32(c.selfCallA), int32(c.selfMethodRK))
 		if st != 0 {
@@ -735,14 +735,17 @@ func (c *p4Code) runSpecSelfCall(base int32, jitCtxAddr uintptr, vsBaseAddr uint
 		}
 	}
 
-	// 3. CALL 段:host.CallBaseline byte-equal P1 doCall
+	// 3. 装 args 到 R(callA+2..)(offset=2 跳过 self 槽 R(callA+1))
+	c.loadCallArgs(2)
+
+	// 4. CALL 段:host.CallBaseline byte-equal P1 doCall
 	callPC := int32(c.retPC) - 1
 	st := c.host.CallBaseline(base, callPC, int32(c.callA), int32(c.callB), int32(c.callC))
 	if st != 0 {
 		return st
 	}
 
-	// 4. DoReturn 弹帧(setter 形态 retB=1,0 返值）
+	// 5. DoReturn 弹帧(setter 形态 retB=1,0 返值)
 	c.host.DoReturn(base, int32(c.retPC), int32(c.retA), int32(c.retB))
 	return 0
 }
