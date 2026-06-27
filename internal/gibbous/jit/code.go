@@ -670,6 +670,24 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 				}
 				c.host.SetReg(int32(c.callA)+5, arg5Val)
 			}
+			if c.callArgCount >= 6 {
+				var arg6Val uint64
+				if c.callArg6IsK {
+					arg6Val = c.callArg6K
+				} else {
+					arg6Val = c.host.GetReg(int32(c.callArg6RegSrc))
+				}
+				c.host.SetReg(int32(c.callA)+6, arg6Val)
+			}
+			if c.callArgCount >= 7 {
+				var arg7Val uint64
+				if c.callArg7IsK {
+					arg7Val = c.callArg7K
+				} else {
+					arg7Val = c.host.GetReg(int32(c.callArg7RegSrc))
+				}
+				c.host.SetReg(int32(c.callA)+7, arg7Val)
+			}
 			st := c.host.TailCall(int32(base), tailPC,
 				int32(c.callA), int32(c.callB), int32(c.callC))
 			switch st {

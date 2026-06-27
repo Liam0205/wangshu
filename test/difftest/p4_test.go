@@ -524,6 +524,20 @@ local function get(a, b, c, d, e, f, g) local z = take(a, b, c, d, e, f, g); ret
 local total = 0
 for i = 1, 10 do total = total + get(i, i+1, i+2, i+3, i+4, i+5, i+6) end
 return total`},
+
+	// —— PJ5 TAILCALL 6/7 参形态(长度 10/11)——
+	{"p4_tailcall_upval_6argreg", `
+local function f(a, b, c, d, e, g) return a + b + c + d + e + g end
+local function bounce(u, v, w, x, y, z) return f(u, v, w, x, y, z) end
+local s = 0
+for i = 1, 10 do s = s + bounce(i, i+1, i+2, i+3, i+4, i+5) end
+return s`},
+	{"p4_tailcall_upval_7argreg", `
+local function f(a, b, c, d, e, g, h) return a + b + c + d + e + g + h end
+local function bounce(u, v, w, x, y, z, q) return f(u, v, w, x, y, z, q) end
+local s = 0
+for i = 1, 10 do s = s + bounce(i, i+1, i+2, i+3, i+4, i+5, i+6) end
+return s`},
 }
 
 // TestP4_Tiered 三方对拍:oracle / crescent / p4-jit 全 byte-equal。
