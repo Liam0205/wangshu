@@ -2412,7 +2412,8 @@ func analyzeSelfCallFormN(proto *bytecode.Proto, callA uint8, selfRK uint16,
 		cA := bytecode.A(proto.Code[callOpIdx])
 		cB := bytecode.B(proto.Code[callOpIdx])
 		cC := bytecode.C(proto.Code[callOpIdx])
-		if cA != int(callA) || cB != nArgs+2 || cC != 1 {
+		// cC=1 void(0 返)/ cC=3,4 N=2,3 返 drop multi-ret(`local a,b=t:m(K×N)`类)
+		if cA != int(callA) || cB != nArgs+2 || (cC != 1 && cC != 3 && cC != 4) {
 			return shapeInfo{}, false
 		}
 		if bytecode.Op(proto.Code[callOpIdx+1]) != bytecode.RETURN ||
@@ -3034,7 +3035,8 @@ func analyzeSelfCallForm6(proto *bytecode.Proto, callA uint8, selfRK uint16,
 	}
 	retB := bytecode.B(proto.Code[5])
 	if op4 == bytecode.CALL {
-		if cC != 1 || retB != 1 {
+		// cC=1 void(0 返)/ cC=3,4 N=2,3 返 drop multi-ret 形态(`local a,b=t:m(K,R)` 类)
+		if (cC != 1 && cC != 3 && cC != 4) || retB != 1 {
 			return shapeInfo{}, false
 		}
 		return shapeInfo{
@@ -3097,7 +3099,7 @@ func analyzeSelfCallForm6(proto *bytecode.Proto, callA uint8, selfRK uint16,
 // analyzeSelfCallForm7 处理长度 7 形态(共同 callee SELF + 3 op):
 //   - CALL void 3 参:[2..4] LOADK/MOVE,[5] CALL B=5 C=1,[6] RETURN B=1
 //   - CALL getter 1 返 2 参:[2..3] LOADK/MOVE,[4] CALL B=4 C=2,[5] RETURN A=callA B=2,[6] RETURN B=1
-//   - CALL N>=2 返值 2 参:[2..3] LOADK/MOVE,[4] CALL B=4 C=3/4,[5] RETURN B=1,[6](外层 RETURN)— 实际只在 codeLen=6 出现,本 case 跳过
+//   - CALL N=2/3 返 3 参 drop multi-ret:[2..4] LOADK/MOVE,[5] CALL B=5 C=3/4,[6] RETURN B=1
 //   - TAILCALL 2 参:[2..3] LOADK/MOVE,[4] TAILCALL B=4 C=0,[5] RETURN A=callA B=0,[6] RETURN B=1
 func analyzeSelfCallForm7(proto *bytecode.Proto, callA uint8, selfRK uint16,
 	op0 bytecode.OpCode, op0B int) (shapeInfo, bool) {
@@ -3225,7 +3227,8 @@ func analyzeSelfCallForm7(proto *bytecode.Proto, callA uint8, selfRK uint16,
 		cA := bytecode.A(proto.Code[5])
 		cB := bytecode.B(proto.Code[5])
 		cC := bytecode.C(proto.Code[5])
-		if cA != int(callA) || cB != 5 || cC != 1 {
+		// cC=1 void(0 返)/ cC=3,4 N=2,3 返 drop multi-ret(`local a,b=t:m(K,K,K)`类)
+		if cA != int(callA) || cB != 5 || (cC != 1 && cC != 3 && cC != 4) {
 			return shapeInfo{}, false
 		}
 		if bytecode.Op(proto.Code[6]) != bytecode.RETURN ||
@@ -3267,6 +3270,7 @@ func analyzeSelfCallForm7(proto *bytecode.Proto, callA uint8, selfRK uint16,
 // analyzeSelfCallForm8 处理长度 8 形态:
 //   - CALL void 4 参:[2..5] LOADK/MOVE,[6] CALL B=6 C=1,[7] RETURN B=1
 //   - CALL getter 3 参 1 返:[2..4] LOADK/MOVE,[5] CALL B=5 C=2,[6] RETURN A=callA B=2,[7] RETURN B=1
+//   - CALL N=2/3 返 4 参 drop multi-ret:[2..5] LOADK/MOVE,[6] CALL B=6 C=3/4,[7] RETURN B=1
 //   - TAILCALL 3 参:[2..4] LOADK/MOVE,[5] TAILCALL B=5 C=0,[6] RETURN A=callA B=0,[7] RETURN B=1
 func analyzeSelfCallForm8(proto *bytecode.Proto, callA uint8, selfRK uint16,
 	op0 bytecode.OpCode, op0B int) (shapeInfo, bool) {
@@ -3393,7 +3397,8 @@ func analyzeSelfCallForm8(proto *bytecode.Proto, callA uint8, selfRK uint16,
 		cA := bytecode.A(proto.Code[6])
 		cB := bytecode.B(proto.Code[6])
 		cC := bytecode.C(proto.Code[6])
-		if cA != int(callA) || cB != 6 || cC != 1 {
+		// cC=1 void(0 返)/ cC=3,4 N=2,3 返 drop multi-ret(`local a,b=t:m(K,K,K,K)`类)
+		if cA != int(callA) || cB != 6 || (cC != 1 && cC != 3 && cC != 4) {
 			return shapeInfo{}, false
 		}
 		if bytecode.Op(proto.Code[7]) != bytecode.RETURN ||
@@ -3435,7 +3440,8 @@ func analyzeSelfCallForm8(proto *bytecode.Proto, callA uint8, selfRK uint16,
 	return shapeInfo{}, false
 }
 
-// analyzeSelfCallForm9 处理长度 9 形态:CALL void 5 参 / CALL getter 4 参 1 返 / TAILCALL 4 参。
+// analyzeSelfCallForm9 处理长度 9 形态:CALL void 5 参 / CALL getter 4 参 1 返 /
+// CALL N=2/3 返 5 参 drop multi-ret / TAILCALL 4 参。
 func analyzeSelfCallForm9(proto *bytecode.Proto, callA uint8, selfRK uint16,
 	op0 bytecode.OpCode, op0B int) (shapeInfo, bool) {
 	op6 := bytecode.Op(proto.Code[6])
@@ -3572,7 +3578,8 @@ func analyzeSelfCallForm9(proto *bytecode.Proto, callA uint8, selfRK uint16,
 		cA := bytecode.A(proto.Code[7])
 		cB := bytecode.B(proto.Code[7])
 		cC := bytecode.C(proto.Code[7])
-		if cA != int(callA) || cB != 7 || cC != 1 {
+		// cC=1 void(0 返)/ cC=3,4 N=2,3 返 drop multi-ret(`local a,b=t:m(K×5)`类)
+		if cA != int(callA) || cB != 7 || (cC != 1 && cC != 3 && cC != 4) {
 			return shapeInfo{}, false
 		}
 		if bytecode.Op(proto.Code[8]) != bytecode.RETURN ||
