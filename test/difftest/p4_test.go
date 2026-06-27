@@ -740,6 +740,21 @@ local function caller(_, t) local a, b = t:m(7, 8, 9, 10, 11) end
 for i = 1, 100 do caller(nil, mt) end
 caller(nil, mt)
 return count`},
+	// N>=4 返 drop multi-ret(承本批 isValidSpecCallRetCount cC∈{1,3..16} 扩):
+	{"p4_self_spec_multiret_n4_0arg", `
+local count = 0
+local mt = { m = function(self) count = count + 1; return 1, 2, 3, 4 end }
+local function caller(_, t) local a, b, c, d = t:m() end
+for i = 1, 100 do caller(nil, mt) end
+caller(nil, mt)
+return count`},
+	{"p4_self_spec_multiret_n5_0arg", `
+local count = 0
+local mt = { m = function(self) count = count + 1; return 1, 2, 3, 4, 5 end }
+local function caller(_, t) local a, b, c, d, e = t:m() end
+for i = 1, 100 do caller(nil, mt) end
+caller(nil, mt)
+return count`},
 }
 
 // TestP4_Tiered 三方对拍:oracle / crescent / p4-jit 全 byte-equal。

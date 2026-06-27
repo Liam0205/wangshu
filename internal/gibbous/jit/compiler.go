@@ -2425,7 +2425,7 @@ func analyzeSelfCallFormN(proto *bytecode.Proto, callA uint8, selfRK uint16,
 		cB := bytecode.B(proto.Code[callOpIdx])
 		cC := bytecode.C(proto.Code[callOpIdx])
 		// cC=1 void(0 返)/ cC=3,4 N=2,3 返 drop multi-ret(`local a,b=t:m(K×N)`类)
-		if cA != int(callA) || cB != nArgs+2 || (cC != 1 && cC != 3 && cC != 4) {
+		if cA != int(callA) || cB != nArgs+2 || !isValidSpecCallRetCount(cC) {
 			return shapeInfo{}, false
 		}
 		if bytecode.Op(proto.Code[callOpIdx+1]) != bytecode.RETURN ||
@@ -2588,6 +2588,25 @@ func analyzeSelfCallSpecForm(proto *bytecode.Proto, feedback *bridge.TypeFeedbac
 	return info, true
 }
 
+// isValidSpecCallRetCount 检 CALL.C 字段是否在 spec template 允许的范围内
+// (承 §9.19 PJ5 SELF spec template 形态完整覆盖 + Lua CALL C 字段语义):
+//
+//   - cC=0:可变返值(C=0 = multi-ret),spec template 不识别(留 PJ5+)
+//   - cC=1:0 返(void / setter,callee 返值丢弃)
+//   - cC=2:1 返(getter / 1 返值赋 R(callA))
+//   - cC=3..16:N=2..15 返 drop multi-ret(`local a,b,..=t:m()` 类,callee
+//     返值落 R(callA..callA+N-1)作 local 直接绑)
+//
+// **本函数限定**:适用 `retB=1` 主调形态(0 返值,callee 返值 drop multi-ret
+// 形态)。getter 1 返(cC=2 + retB=2)走独立分支(form5 a / form6 a /
+// form7 Code[4]=CALL etc.)。
+//
+// 上界 16(N=15 返)选定理由:实用 method 体多返值典型在 N<=8,但 Lua 5.1
+// CALL C 字段最大 255(0..254 返),保守 N<=15 覆盖几乎所有真实业务形态。
+func isValidSpecCallRetCount(cC int) bool {
+	return cC == 1 || (cC >= 3 && cC <= 16)
+}
+
 // assignArgsToShape 把 args 数组(N=2..7)对应字段填到 shapeInfo。
 func assignArgsToShape(info *shapeInfo, argsIsK []bool, argsK []uint64, argsReg []uint8) {
 	n := len(argsIsK)
@@ -2674,7 +2693,7 @@ func analyzeSelfCallForm4(proto *bytecode.Proto, callA uint8, selfRK uint16,
 		// luac 编 [3]=RETURN B=1(主 chunk 隐式 RETURN 收尾,N>=2 返值已落
 		// R(callA..callA+nret-1)作 local 直接绑;P4 帧不返这些 local 出去,
 		// 所以 retB=1 是正确的 0 返值收尾)
-		if cC == 3 || cC == 4 {
+		if isValidSpecCallRetCount(cC) && cC != 1 {
 			if bytecode.B(proto.Code[3]) != 1 {
 				return shapeInfo{}, false
 			}
@@ -2860,7 +2879,7 @@ func analyzeSelfCallForm5(proto *bytecode.Proto, callA uint8, selfRK uint16,
 			}, true
 		}
 		// N>=2 返值 getter 1 K/reg 参:cC=3(N=2)/ cC=4(N=3),`local a,b = o:m(K/R)` 类
-		if (cC == 3 || cC == 4) && retB == 1 {
+		if (isValidSpecCallRetCount(cC) && cC != 1) && retB == 1 {
 			return shapeInfo{
 				ok:              true,
 				retA:            0,
@@ -3048,7 +3067,7 @@ func analyzeSelfCallForm6(proto *bytecode.Proto, callA uint8, selfRK uint16,
 	retB := bytecode.B(proto.Code[5])
 	if op4 == bytecode.CALL {
 		// cC=1 void(0 返)/ cC=3,4 N=2,3 返 drop multi-ret 形态(`local a,b=t:m(K,R)` 类)
-		if (cC != 1 && cC != 3 && cC != 4) || retB != 1 {
+		if !isValidSpecCallRetCount(cC) || retB != 1 {
 			return shapeInfo{}, false
 		}
 		return shapeInfo{
@@ -3240,7 +3259,7 @@ func analyzeSelfCallForm7(proto *bytecode.Proto, callA uint8, selfRK uint16,
 		cB := bytecode.B(proto.Code[5])
 		cC := bytecode.C(proto.Code[5])
 		// cC=1 void(0 返)/ cC=3,4 N=2,3 返 drop multi-ret(`local a,b=t:m(K,K,K)`类)
-		if cA != int(callA) || cB != 5 || (cC != 1 && cC != 3 && cC != 4) {
+		if cA != int(callA) || cB != 5 || !isValidSpecCallRetCount(cC) {
 			return shapeInfo{}, false
 		}
 		if bytecode.Op(proto.Code[6]) != bytecode.RETURN ||
@@ -3410,7 +3429,7 @@ func analyzeSelfCallForm8(proto *bytecode.Proto, callA uint8, selfRK uint16,
 		cB := bytecode.B(proto.Code[6])
 		cC := bytecode.C(proto.Code[6])
 		// cC=1 void(0 返)/ cC=3,4 N=2,3 返 drop multi-ret(`local a,b=t:m(K,K,K,K)`类)
-		if cA != int(callA) || cB != 6 || (cC != 1 && cC != 3 && cC != 4) {
+		if cA != int(callA) || cB != 6 || !isValidSpecCallRetCount(cC) {
 			return shapeInfo{}, false
 		}
 		if bytecode.Op(proto.Code[7]) != bytecode.RETURN ||
@@ -3591,7 +3610,7 @@ func analyzeSelfCallForm9(proto *bytecode.Proto, callA uint8, selfRK uint16,
 		cB := bytecode.B(proto.Code[7])
 		cC := bytecode.C(proto.Code[7])
 		// cC=1 void(0 返)/ cC=3,4 N=2,3 返 drop multi-ret(`local a,b=t:m(K×5)`类)
-		if cA != int(callA) || cB != 7 || (cC != 1 && cC != 3 && cC != 4) {
+		if cA != int(callA) || cB != 7 || !isValidSpecCallRetCount(cC) {
 			return shapeInfo{}, false
 		}
 		if bytecode.Op(proto.Code[8]) != bytecode.RETURN ||
