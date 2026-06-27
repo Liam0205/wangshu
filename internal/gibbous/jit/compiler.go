@@ -207,6 +207,9 @@ type shapeInfo struct {
 	callArg5IsK    bool
 	callArg5K      uint64
 	callArg5RegSrc uint8
+	callArg6IsK    bool
+	callArg6K      uint64
+	callArg6RegSrc uint8
 
 	// PJ5 TAILCALL 形态(`function() return f() end` 类):
 	//   - isTailCall = true:Run 端 prelude 路径调 host.TailCall 三态分支
@@ -1427,7 +1430,7 @@ func decodeArgFromOp(proto *bytecode.Proto, codeIdx int, expectA int,
 
 func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
 	codeLen := len(proto.Code)
-	if codeLen < 3 || codeLen > 9 {
+	if codeLen < 3 || codeLen > 10 {
 		return shapeInfo{}, false
 	}
 	op0 := bytecode.Op(proto.Code[0])
@@ -1462,6 +1465,9 @@ func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
 	var arg5K uint64
 	var arg5Reg uint8
 	var arg5IsK bool
+	var arg6K uint64
+	var arg6Reg uint8
+	var arg6IsK bool
 	var argCount uint8
 	var argIsK bool
 	switch codeLen {
@@ -1752,23 +1758,62 @@ func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
 			return shapeInfo{}, false
 		}
 	case 9:
-		// 长度 9:getter 5 参 1 返 — [0] MOVE/GETUPVAL,[1..5] (LOADK|MOVE),
-		// [6] CALL B=6 C=2,[7] RETURN A=callA B=2,[8] 隐式 RETURN B=1
-		if bytecode.Op(proto.Code[6]) != bytecode.CALL {
+		// 长度 9 两种子形态(区分键:Code[6] 是 CALL):
+		//   - getter 5 参 1 返:Code[6]=CALL B=6 C=2 + Code[7]=RETURN A=callA B=2 + Code[8]=隐式
+		//   - setter 6 参 0 返:Code[7]=CALL B=7 C=1 + Code[8]=RETURN B=1
+		if bytecode.Op(proto.Code[6]) == bytecode.CALL {
+			// getter 5 参 1 返
+			if !decodeArgFromOp(proto, 1, op0A+1, &argIsK, &argK, &argReg) ||
+				!decodeArgFromOp(proto, 2, op0A+2, &arg2IsK, &arg2K, &arg2Reg) ||
+				!decodeArgFromOp(proto, 3, op0A+3, &arg3IsK, &arg3K, &arg3Reg) ||
+				!decodeArgFromOp(proto, 4, op0A+4, &arg4IsK, &arg4K, &arg4Reg) ||
+				!decodeArgFromOp(proto, 5, op0A+5, &arg5IsK, &arg5K, &arg5Reg) {
+				return shapeInfo{}, false
+			}
+			callIdx = 6
+			retIdx = 7
+			argCount = 5
+			// 校验 [8] 隐式 RETURN B=1
+			implRet := proto.Code[8]
+			if bytecode.Op(implRet) != bytecode.RETURN || bytecode.B(implRet) != 1 {
+				return shapeInfo{}, false
+			}
+		} else if bytecode.Op(proto.Code[7]) == bytecode.CALL {
+			// setter 6 参 0 返
+			if !decodeArgFromOp(proto, 1, op0A+1, &argIsK, &argK, &argReg) ||
+				!decodeArgFromOp(proto, 2, op0A+2, &arg2IsK, &arg2K, &arg2Reg) ||
+				!decodeArgFromOp(proto, 3, op0A+3, &arg3IsK, &arg3K, &arg3Reg) ||
+				!decodeArgFromOp(proto, 4, op0A+4, &arg4IsK, &arg4K, &arg4Reg) ||
+				!decodeArgFromOp(proto, 5, op0A+5, &arg5IsK, &arg5K, &arg5Reg) ||
+				!decodeArgFromOp(proto, 6, op0A+6, &arg6IsK, &arg6K, &arg6Reg) {
+				return shapeInfo{}, false
+			}
+			callIdx = 7
+			retIdx = 8
+			argCount = 6
+		} else {
+			return shapeInfo{}, false
+		}
+	case 10:
+		// 长度 10:getter 6 参 1 返(Code[7]=CALL B=7 C=2)
+		// (setter 6 参 0 返长度是 9,在 case 9 内识别;长度 10 luac 编为 getter 6 参 1 返,
+		//  含 dead RETURN B=1)
+		if bytecode.Op(proto.Code[7]) != bytecode.CALL {
 			return shapeInfo{}, false
 		}
 		if !decodeArgFromOp(proto, 1, op0A+1, &argIsK, &argK, &argReg) ||
 			!decodeArgFromOp(proto, 2, op0A+2, &arg2IsK, &arg2K, &arg2Reg) ||
 			!decodeArgFromOp(proto, 3, op0A+3, &arg3IsK, &arg3K, &arg3Reg) ||
 			!decodeArgFromOp(proto, 4, op0A+4, &arg4IsK, &arg4K, &arg4Reg) ||
-			!decodeArgFromOp(proto, 5, op0A+5, &arg5IsK, &arg5K, &arg5Reg) {
+			!decodeArgFromOp(proto, 5, op0A+5, &arg5IsK, &arg5K, &arg5Reg) ||
+			!decodeArgFromOp(proto, 6, op0A+6, &arg6IsK, &arg6K, &arg6Reg) {
 			return shapeInfo{}, false
 		}
-		callIdx = 6
-		retIdx = 7
-		argCount = 5
-		// 校验 [8] 隐式 RETURN B=1
-		implRet := proto.Code[8]
+		callIdx = 7
+		retIdx = 8
+		argCount = 6
+		// 校验 [9] 隐式 RETURN B=1
+		implRet := proto.Code[9]
 		if bytecode.Op(implRet) != bytecode.RETURN || bytecode.B(implRet) != 1 {
 			return shapeInfo{}, false
 		}
@@ -1860,6 +1905,9 @@ func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
 		callArg5IsK:    arg5IsK,
 		callArg5K:      arg5K,
 		callArg5RegSrc: arg5Reg,
+		callArg6IsK:    arg6IsK,
+		callArg6K:      arg6K,
+		callArg6RegSrc: arg6Reg,
 	}, true
 }
 
@@ -3125,6 +3173,9 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 		callArg5IsK:    info.callArg5IsK,
 		callArg5K:      info.callArg5K,
 		callArg5RegSrc: info.callArg5RegSrc,
+		callArg6IsK:    info.callArg6IsK,
+		callArg6K:      info.callArg6K,
+		callArg6RegSrc: info.callArg6RegSrc,
 		isTailCall:     info.isTailCall,
 	}, nil
 }

@@ -476,6 +476,20 @@ local function bounce(u, v, w, x, y) return f(u, v, w, x, y) end
 local s = 0
 for i = 1, 10 do s = s + bounce(i, i+1, i+2, i+3, i+4) end
 return s`},
+
+	// —— PJ5 6 参形态(setter 长度 9,getter 长度 10)——
+	{"p4_call_void_upval_6argk", `
+local sum = 0
+local function take(a, b, c, d, e, f) sum = sum + a + b + c + d + e + f end
+local function tick() take(1, 2, 3, 4, 5, 6) end
+for i = 1, 30 do tick() end
+return sum`},
+	{"p4_call_getter_upval_6argreg", `
+local function take(a, b, c, d, e, f) return a + b + c + d + e + f end
+local function get(p, q, r, s, t, u) local z = take(p, q, r, s, t, u); return z end
+local total = 0
+for i = 1, 10 do total = total + get(i, i+1, i+2, i+3, i+4, i+5) end
+return total`},
 }
 
 // TestP4_Tiered 三方对拍:oracle / crescent / p4-jit 全 byte-equal。
