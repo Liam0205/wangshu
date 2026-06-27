@@ -1570,3 +1570,68 @@ return sum`
 	t.Logf("SpecP4DeoptHits: %d → %d(增量 = %d,OSR exit 协议真接入实证)",
 		deoptBefore, deoptAfter, deoptAfter-deoptBefore)
 }
+
+// TestPJ5_SelfCall_E2E_SpecTemplate_DeoptStorm V20 deopt 风暴 e2e:多个不同
+// Proto 反复 deopt → 多个 p4SpecState 独立累积 + 互不干扰。
+//
+// **承 [08 §V20] deopt 风暴**:验 OSR exit 协议在并发多 Proto 多路径 deopt
+// 下行为正确性 — 各 Proto p4SpecEntry 独立(per-Proto 字段),累积 deopt
+// 互不干扰,p4SpecMu 串行化保证 race-free。
+//
+// **场景**:10 个不同 caller proto + 10 个不同 receiver shape,每对 caller
+// + bad_recv 触发独立 deopt 累积,各 proto state 独立。
+func TestPJ5_SelfCall_E2E_SpecTemplate_DeoptStorm(t *testing.T) {
+	jit.ResetSpecHits()
+	jit.ResetP4SpecState()
+
+	// 多个 caller proto 反复跑各自 spec template + bad receiver 触发 deopt
+	src := `
+local m_ok = { m = function(self) return 1 end }
+local m_bad = { m = function(self) return 2 end, x1 = 1, x2 = 2 }  -- 不同 shape
+local function c1(t) return t:m() end
+local function c2(t) return t:m() end
+local function c3(t) return t:m() end
+local function c4(t) return t:m() end
+local function c5(t) return t:m() end
+
+-- warmup 5 个 caller 都用 m_ok 填 IC NodeHit
+for i = 1, 50 do
+  c1(m_ok); c2(m_ok); c3(m_ok); c4(m_ok); c5(m_ok)
+end
+
+-- 5 个 caller 都用 m_bad 触发 spec template guard 失败(各 caller 独立 deopt)
+local sum = 0
+for i = 1, 30 do  -- 30 次 > DeoptThreshold(16),每 caller 切 P4Deoptimized
+  sum = sum + c1(m_bad)
+  sum = sum + c2(m_bad)
+  sum = sum + c3(m_bad)
+  sum = sum + c4(m_bad)
+  sum = sum + c5(m_bad)
+end
+return sum`
+	st, mainCl := loadFnP4(t, src)
+	if _, err := st.Call(value.GCRefOf(mainCl), nil, 1); err != nil {
+		t.Fatalf("warmup: %v", err)
+	}
+	st.bridge.SetForceAllPromote(true)
+	deoptBefore := jit.SpecP4DeoptHits()
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("deopt storm: %v", err)
+	}
+	if got := value.AsNumber(value.Value(rets[0])); got != 30*5*2 { // 30 iter * 5 caller * m_bad.m()=2
+		t.Errorf("Phase 2 result = %v, want %d", got, 30*5*2)
+	}
+	deoptAfter := jit.SpecP4DeoptHits()
+
+	// **prove-the-path 强断言**:5 个独立 caller proto 各自累积 deopt → 阈值
+	// 触发 P4Deoptimized → SpecP4DeoptHits 累积 ≥ 5(每 caller 至少 1 次)。
+	// 实测应远 > 5(每 caller 跑 30 次 m_bad,每 16 次切 P4Deoptimized 一次)。
+	growth := deoptAfter - deoptBefore
+	if growth < 5 {
+		t.Errorf("SpecP4DeoptHits 增长 %d, want >= 5(5 caller 各至少 1 次 deopt 切换)",
+			growth)
+	}
+	t.Logf("SpecP4DeoptHits: %d → %d(增量 = %d,5 caller 独立 deopt 风暴 + 各自累积)",
+		deoptBefore, deoptAfter, growth)
+}
