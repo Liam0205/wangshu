@@ -178,3 +178,84 @@ return sum`
 	}
 	t.Logf("SpecCallVoidHits=%d", jit.SpecCallVoidHits())
 }
+
+// TestPJ5_CallVoid_E2E_FormB1K1R:形态 B1K1R(GETUPVAL+LOADK+MOVE+CALL+RETURN
+// void)真升层 — `local function take(a, b)...end; local function tick(v) take(7, v) end`,
+// 1 K + 1 reg 参 0 返。
+func TestPJ5_CallVoid_E2E_FormB1K1R(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local sum = 0
+local function take(a, b) sum = sum + a * b end
+local function tick(v) take(7, v) end
+for i = 1, 30 do tick(i) end
+return sum`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// sum = sum(7*i) i=1..30 = 7*sum(1..30) = 7*465 = 3255
+	if got := value.AsNumber(value.Value(rets[0])); got != 3255 {
+		t.Errorf("rets = %v, want 3255 (tick(i)×30 each take(7,i)→7*i)", got)
+	}
+	if jit.SpecCallVoidHits() == 0 {
+		t.Errorf("SpecCallVoidHits = 0,PJ5 CALL 1 K + 1 reg 参形态 B1K1R 未真编译")
+	}
+}
+
+// TestPJ5_CallVoid_E2E_FormB1R1K:形态 B1R1K(GETUPVAL+MOVE+LOADK+CALL+RETURN
+// void)真升层 — `local function take(a, b)...end; local function tick(v) take(v, 7) end`,
+// 1 reg + 1 K 参 0 返。
+func TestPJ5_CallVoid_E2E_FormB1R1K(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local sum = 0
+local function take(a, b) sum = sum + a * b end
+local function tick(v) take(v, 7) end
+for i = 1, 30 do tick(i) end
+return sum`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// sum = sum(i*7) i=1..30 = 7*465 = 3255
+	if got := value.AsNumber(value.Value(rets[0])); got != 3255 {
+		t.Errorf("rets = %v, want 3255 (tick(i)×30 each take(i,7)→i*7)", got)
+	}
+	if jit.SpecCallVoidHits() == 0 {
+		t.Errorf("SpecCallVoidHits = 0,PJ5 CALL 1 reg + 1 K 参形态 B1R1K 未真编译")
+	}
+}
+
+// TestPJ5_CallVoid_E2E_FormB2R:形态 B2R(GETUPVAL+MOVE+MOVE+CALL+RETURN
+// void)真升层 — `local function take(a, b)...end; local function tick(u, v) take(u, v) end`,
+// 2 reg 参 0 返。
+func TestPJ5_CallVoid_E2E_FormB2R(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local sum = 0
+local function take(a, b) sum = sum + a * b end
+local function tick(u, v) take(u, v) end
+for i = 1, 10 do tick(i, i+1) end
+return sum`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// sum = sum(i*(i+1)) i=1..10 = 2+6+12+20+30+42+56+72+90+110 = 440
+	if got := value.AsNumber(value.Value(rets[0])); got != 440 {
+		t.Errorf("rets = %v, want 440 (tick(i,i+1)×10 each take(i,i+1)→i*(i+1))", got)
+	}
+	if jit.SpecCallVoidHits() == 0 {
+		t.Errorf("SpecCallVoidHits = 0,PJ5 CALL 2 reg 参形态 B2R 未真编译")
+	}
+}

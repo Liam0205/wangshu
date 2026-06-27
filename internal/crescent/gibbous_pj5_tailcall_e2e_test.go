@@ -144,6 +144,81 @@ return s`
 	t.Logf("SpecTailCallHits=%d", jit.SpecTailCallHits())
 }
 
+// TestPJ5_TailCall_E2E_FormTB1K1R:形态 TB1K1R(K+R 2 参 tail)— `bounce(v) return f(7, v)`
+func TestPJ5_TailCall_E2E_FormTB1K1R(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local function f(a, b) return a + b end
+local function bounce(v) return f(7, v) end
+local s = 0
+for i = 1, 30 do s = s + bounce(i) end
+return s`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// s = sum(7+i) i=1..30 = 30*7 + sum(1..30) = 210 + 465 = 675
+	if got := value.AsNumber(value.Value(rets[0])); got != 675 {
+		t.Errorf("rets = %v, want 675 (bounce(i)×30 each f(7,i)→7+i)", got)
+	}
+	if jit.SpecTailCallHits() == 0 {
+		t.Errorf("SpecTailCallHits = 0,PJ5 TAILCALL 1 K + 1 reg 参形态 TB1K1R 未真编译")
+	}
+}
+
+// TestPJ5_TailCall_E2E_FormTB1R1K:形态 TB1R1K(R+K 2 参 tail)— `bounce(v) return f(v, 7)`
+func TestPJ5_TailCall_E2E_FormTB1R1K(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local function f(a, b) return a + b end
+local function bounce(v) return f(v, 7) end
+local s = 0
+for i = 1, 30 do s = s + bounce(i) end
+return s`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// s = sum(i+7) = 675(同 TB1K1R)
+	if got := value.AsNumber(value.Value(rets[0])); got != 675 {
+		t.Errorf("rets = %v, want 675 (bounce(i)×30 each f(i,7)→i+7)", got)
+	}
+	if jit.SpecTailCallHits() == 0 {
+		t.Errorf("SpecTailCallHits = 0,PJ5 TAILCALL 1 reg + 1 K 参形态 TB1R1K 未真编译")
+	}
+}
+
+// TestPJ5_TailCall_E2E_FormTB2R:形态 TB2R(R+R 2 参 tail)— `bounce(u, v) return f(u, v)`
+func TestPJ5_TailCall_E2E_FormTB2R(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local function f(a, b) return a + b end
+local function bounce(u, v) return f(u, v) end
+local s = 0
+for i = 1, 10 do s = s + bounce(i, i+1) end
+return s`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// s = sum(i+(i+1)) i=1..10 = sum(2i+1) = 2*55 + 10 = 120
+	if got := value.AsNumber(value.Value(rets[0])); got != 120 {
+		t.Errorf("rets = %v, want 120 (bounce(i,i+1)×10 each f(i,i+1)→2i+1)", got)
+	}
+	if jit.SpecTailCallHits() == 0 {
+		t.Errorf("SpecTailCallHits = 0,PJ5 TAILCALL 2 reg 参形态 TB2R 未真编译")
+	}
+}
+
 // **注**:形态 TA* parameter-callee 形态(如 `function(g) return g() end`)真升层
 // 不可达 — P2 analyzer 把 parameter call 标 ReasonUnknownCall(parameter
 // 可能是 coroutine.yield),visitor 设计保守拒。形态 TA* 单测覆盖在 jit 包

@@ -269,6 +269,46 @@ local function bounce() return f(10, 20) end
 local s = 0
 for i = 1, 30 do s = s + bounce() end
 return s`},
+
+	// —— PJ5 CALL void 2 参四组合 K+R/R+K/R+R(K+K 已由 _2argk 覆盖)——
+	{"p4_call_void_upval_1k1r", `
+local sum = 0
+local function take(a, b) sum = sum + a * b end
+local function tick(v) take(7, v) end
+for i = 1, 30 do tick(i) end
+return sum`},
+	{"p4_call_void_upval_1r1k", `
+local sum = 0
+local function take(a, b) sum = sum + a * b end
+local function tick(v) take(v, 7) end
+for i = 1, 30 do tick(i) end
+return sum`},
+	{"p4_call_void_upval_2reg", `
+local sum = 0
+local function take(a, b) sum = sum + a * b end
+local function tick(u, v) take(u, v) end
+for i = 1, 10 do tick(i, i+1) end
+return sum`},
+
+	// —— PJ5 TAILCALL 2 参四组合 K+R/R+K/R+R(K+K 已由 _2argk 覆盖)——
+	{"p4_tailcall_upval_1k1r", `
+local function f(a, b) return a + b end
+local function bounce(v) return f(7, v) end
+local s = 0
+for i = 1, 30 do s = s + bounce(i) end
+return s`},
+	{"p4_tailcall_upval_1r1k", `
+local function f(a, b) return a + b end
+local function bounce(v) return f(v, 7) end
+local s = 0
+for i = 1, 30 do s = s + bounce(i) end
+return s`},
+	{"p4_tailcall_upval_2reg", `
+local function f(a, b) return a + b end
+local function bounce(u, v) return f(u, v) end
+local s = 0
+for i = 1, 10 do s = s + bounce(i, i+1) end
+return s`},
 }
 
 // TestP4_Tiered 三方对拍:oracle / crescent / p4-jit 全 byte-equal。
