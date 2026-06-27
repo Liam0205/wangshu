@@ -195,6 +195,20 @@ type shapeInfo struct {
 	callArg1K      uint64 // 1 或 2 K 参形态时第一个 K
 	callArg1RegSrc uint8  // 1 reg 参形态时 MOVE.B 源 reg 号
 	callArg2K      uint64 // 2 K 参形态时第二个 K
+
+	// PJ5 TAILCALL 形态(`function() return f() end` 类):
+	//   - isTailCall = true:Run 端 prelude 路径调 host.TailCall 三态分支
+	//     (0=Lua 尾完成跳过 DoReturn / 1=ERR / 2=host 落尾随 dead RETURN B=0 to-top)
+	//
+	// luac stmtReturn(frontend/compile/stmt.go::stmtReturn)对单 CallExpr 返回
+	// 翻 TAILCALL + RETURN A B=0(dead 尾随)+ 隐式 RETURN A=0 B=1。形态在
+	// CALL void 同字段集复用(callA/callB/callC/callArgCount/callArg1*/callArg2K +
+	// isCallUpval + preludeArg)但 retPC 指向 dead RETURN B=0 to-top 而非 setter
+	// RETURN B=1,本帧由 host.TailCall 完成或 dead RETURN to-top 转发。
+	//
+	// 与 isCallVoid 互斥(preludeOp=CALL → isCallVoid;preludeOp=TAILCALL →
+	// isTailCall)。形态识别在 analyzeTailCallForm。
+	isTailCall bool
 }
 
 // analyzeGetTableArrayHit 识别 PJ4 IC ArrayHit 形态:
@@ -1516,6 +1530,197 @@ func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
 	}, true
 }
 
+// analyzeTailCallForm 识别 PJ5 TAILCALL 形态(承
+// docs/design/p4-method-jit/05-system-pipeline.md §4.3 + 06-backends.md §3.5):
+// `function() return f() end` / `function() return f(K) end` 等 — 单值
+// CallExpr 作 return 唯一表达式被 luac 翻成 TAILCALL + 尾随 RETURN B=0 +
+// 隐式 RETURN(stmtReturn 单 CallExpr 快路径,frontend/compile/stmt.go::stmtReturn)。
+//
+// luac 编译形态(0/1 K/1 reg/2 K 参 × MOVE/GETUPVAL 共 8 子形态;TAILCALL.C
+// 恒 0 即「返回值到 top」):
+//
+//	形态 TA0:`function(g) return g() end`(parameter callee,0 参)
+//	  [0] MOVE     A=callA B=被调源 reg
+//	  [1] TAILCALL A=callA B=1 C=0
+//	  [2] RETURN   A=callA B=0 (dead,to-top)
+//	  [3] RETURN   A=0 B=1     (隐式)
+//
+//	形态 TB0:`local function f()...; local function bounce() return f() end`
+//	  [0] GETUPVAL A=callA B=upvalue 索引
+//	  [1] TAILCALL A=callA B=1 C=0
+//	  [2] RETURN   A=callA B=0
+//	  [3] RETURN   A=0 B=1
+//
+//	形态 TA1K/TB1K:1 K 参(长度 5)
+//	  [0] MOVE/GETUPVAL A=callA B=...
+//	  [1] LOADK    A=callA+1 Bx=K idx
+//	  [2] TAILCALL A=callA B=2 C=0
+//	  [3] RETURN   A=callA B=0
+//	  [4] RETURN   A=0 B=1
+//
+//	形态 TA1R/TB1R:1 reg 参(长度 5)
+//	  [0] MOVE/GETUPVAL A=callA B=...
+//	  [1] MOVE     A=callA+1 B=源 reg
+//	  [2] TAILCALL A=callA B=2 C=0
+//	  [3] RETURN   A=callA B=0
+//	  [4] RETURN   A=0 B=1
+//
+//	形态 TA2K/TB2K:2 K 参(长度 6)
+//	  [0] MOVE/GETUPVAL A=callA
+//	  [1] LOADK    A=callA+1
+//	  [2] LOADK    A=callA+2
+//	  [3] TAILCALL A=callA B=3 C=0
+//	  [4] RETURN   A=callA B=0
+//	  [5] RETURN   A=0 B=1
+//
+// **Run 端 prelude 路径**(参 code.go::Run TAILCALL case):
+//   - MOVE/GETUPVAL 装 callee 到 R(callA)(host.GetReg/GetUpval + SetReg)
+//   - LOADK/MOVE 参装 R(callA+1)/R(callA+2)
+//   - 调 host.TailCall(base, tailPC, callA, callB, callC) 三态分支:
+//     0=Lua 尾完成 → Run 直接 return 0(跳过 DoReturn,本帧已弹)
+//     1=ERR → return 1
+//     2=host 尾完成 → Run 落 dead RETURN to-top 走 DoReturn(retB=0 to-top)
+//
+// 失败任一条件返 (shapeInfo{}, false) — 走 analyzeCallVoidForm 路径(CALL
+// 形态)或更后续 analyzeShape 主分流。
+func analyzeTailCallForm(proto *bytecode.Proto) (shapeInfo, bool) {
+	codeLen := len(proto.Code)
+	// TAILCALL 形态最短长度 4(0 参 + dead RETURN + 隐式 RETURN),最长 6(2 K 参)
+	if codeLen != 4 && codeLen != 5 && codeLen != 6 {
+		return shapeInfo{}, false
+	}
+	op0 := bytecode.Op(proto.Code[0])
+	if op0 != bytecode.MOVE && op0 != bytecode.GETUPVAL {
+		return shapeInfo{}, false
+	}
+	op0A := bytecode.A(proto.Code[0])
+	op0B := bytecode.B(proto.Code[0])
+	if op0A > 254 || op0B > 254 {
+		return shapeInfo{}, false
+	}
+
+	var tailIdx int
+	var argK uint64
+	var argReg uint8
+	var arg2K uint64
+	var argCount uint8
+	var argIsK bool
+	switch codeLen {
+	case 4:
+		// 0 参:[0] MOVE/GETUPVAL,[1] TAILCALL,[2] RETURN B=0,[3] RETURN B=1
+		tailIdx = 1
+		argCount = 0
+	case 5:
+		// 1 参:[0] MOVE/GETUPVAL,[1] LOADK/MOVE,[2] TAILCALL,[3] RETURN B=0,
+		// [4] RETURN B=1
+		secondOp := bytecode.Op(proto.Code[1])
+		switch secondOp {
+		case bytecode.LOADK:
+			lkA := bytecode.A(proto.Code[1])
+			lkBx := bytecode.Bx(proto.Code[1])
+			if lkA != op0A+1 {
+				return shapeInfo{}, false
+			}
+			if lkBx < 0 || lkBx >= len(proto.Consts) {
+				return shapeInfo{}, false
+			}
+			argK = uint64(proto.Consts[lkBx])
+			argIsK = true
+			argCount = 1
+		case bytecode.MOVE:
+			mvA := bytecode.A(proto.Code[1])
+			mvB := bytecode.B(proto.Code[1])
+			if mvA != op0A+1 {
+				return shapeInfo{}, false
+			}
+			if mvB > 254 {
+				return shapeInfo{}, false
+			}
+			argReg = uint8(mvB)
+			argIsK = false
+			argCount = 1
+		default:
+			return shapeInfo{}, false
+		}
+		tailIdx = 2
+	case 6:
+		// 2 K 参:[0] MOVE/GETUPVAL,[1] LOADK,[2] LOADK,[3] TAILCALL,
+		// [4] RETURN B=0,[5] RETURN B=1
+		if bytecode.Op(proto.Code[1]) != bytecode.LOADK ||
+			bytecode.Op(proto.Code[2]) != bytecode.LOADK {
+			return shapeInfo{}, false
+		}
+		lk1A := bytecode.A(proto.Code[1])
+		lk1Bx := bytecode.Bx(proto.Code[1])
+		lk2A := bytecode.A(proto.Code[2])
+		lk2Bx := bytecode.Bx(proto.Code[2])
+		if lk1A != op0A+1 || lk2A != op0A+2 {
+			return shapeInfo{}, false
+		}
+		if lk1Bx < 0 || lk1Bx >= len(proto.Consts) ||
+			lk2Bx < 0 || lk2Bx >= len(proto.Consts) {
+			return shapeInfo{}, false
+		}
+		argK = uint64(proto.Consts[lk1Bx])
+		arg2K = uint64(proto.Consts[lk2Bx])
+		argIsK = true
+		argCount = 2
+		tailIdx = 3
+	}
+
+	// 校验 TAILCALL + dead RETURN B=0 + 隐式 RETURN B=1 的尾部三元
+	if bytecode.Op(proto.Code[tailIdx]) != bytecode.TAILCALL {
+		return shapeInfo{}, false
+	}
+	deadRet := proto.Code[tailIdx+1]
+	implRet := proto.Code[tailIdx+2]
+	if bytecode.Op(deadRet) != bytecode.RETURN || bytecode.B(deadRet) != 0 {
+		return shapeInfo{}, false
+	}
+	if bytecode.Op(implRet) != bytecode.RETURN || bytecode.B(implRet) != 1 {
+		return shapeInfo{}, false
+	}
+	tlA := bytecode.A(proto.Code[tailIdx])
+	tlB := bytecode.B(proto.Code[tailIdx])
+	tlC := bytecode.C(proto.Code[tailIdx])
+	if tlA != op0A {
+		return shapeInfo{}, false
+	}
+	// TAILCALL.B = argCount + 1;TAILCALL.C 恒 0
+	if int(tlB) != int(argCount)+1 {
+		return shapeInfo{}, false
+	}
+	if tlC != 0 {
+		return shapeInfo{}, false
+	}
+	// dead RETURN.A 必须 = callA(returnRange 起 callA 到 top)
+	if bytecode.A(deadRet) != tlA {
+		return shapeInfo{}, false
+	}
+
+	// **Run 端契约**:host.TailCall 返 2(host 尾)时 Run 落 dead RETURN B=0
+	// (to-top)走 DoReturn,故 retPC 指 dead RETURN、retA=callA、retB=0
+	// (DoReturn 内 B=0 → nret = top - (base + a),复用解释器多值返回路径)。
+	return shapeInfo{
+		ok:             true,
+		retA:           uint8(tlA),
+		retB:           0, // dead RETURN B=0,DoReturn 多值 to-top 路径
+		retPC:          uint8(tailIdx + 1),
+		preludeOp:      uint8(bytecode.TAILCALL),
+		preludeArg:     uint32(op0B),
+		isTailCall:     true,
+		isCallUpval:    op0 == bytecode.GETUPVAL,
+		callA:          uint8(tlA),
+		callB:          uint8(tlB),
+		callC:          uint8(tlC),
+		callArgCount:   argCount,
+		callArg1IsK:    argIsK,
+		callArg1K:      argK,
+		callArg1RegSrc: argReg,
+		callArg2K:      arg2K,
+	}, true
+}
+
 // analyzeShape 识别支持的「单值产生 + RETURN A 1」形态。
 //
 // 支持形态:
@@ -1561,6 +1766,12 @@ func analyzeShape(proto *bytecode.Proto) shapeInfo {
 	// (codeLen=4)。
 	if cv, ok := analyzeCallVoidForm(proto); ok {
 		return cv
+	}
+
+	// PJ5 TAILCALL 形态(MOVE/GETUPVAL+...+TAILCALL+dead RETURN B=0+RETURN B=1
+	// 长度 4/5/6)在长度分流前先 try。luac stmtReturn 单 CallExpr 快路径产物。
+	if tc, ok := analyzeTailCallForm(proto); ok {
+		return tc
 	}
 
 	// 形态 1/2:长度 2 或 3
@@ -2457,6 +2668,10 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 	if info.isCallVoid {
 		incSpecCallVoidHits()
 	}
+	// PJ5 TAILCALL 形态 Compile 命中(prove-the-path 白盒命中证据)。
+	if info.isTailCall {
+		incSpecTailCallHits()
+	}
 
 	return &p4Code{
 		proto:          proto,
@@ -2484,6 +2699,7 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 		callArg1K:      info.callArg1K,
 		callArg1RegSrc: info.callArg1RegSrc,
 		callArg2K:      info.callArg2K,
+		isTailCall:     info.isTailCall,
 	}, nil
 }
 

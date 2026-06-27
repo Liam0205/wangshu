@@ -150,6 +150,16 @@ type p4Code struct {
 	callArg1K      uint64
 	callArg1RegSrc uint8
 	callArg2K      uint64
+
+	// PJ5 TAILCALL 路径标志(承 docs/design/p4-method-jit/05-system-pipeline.md §4.3):
+	//   - isTailCall = true:Run prelude 路径调 host.TailCall 三态分支:
+	//     0=Lua 尾完成(本帧已弹,跳过 DoReturn 直接 return 0)
+	//     1=ERR
+	//     2=host 尾完成(结果在 R(callA)..,Run 落 dead RETURN B=0 to-top 走 DoReturn)
+	//   - 复用 isCallUpval / callA / callB / callC / callArgCount / callArg1* / callArg2K
+	//     字段(8 子形态 TA0/TB0/TA1K/TB1K/TA1R/TB1R/TA2K/TB2K)
+	//   - 复用 preludeArg = MOVE.B(形态 TA*) / GETUPVAL.B(形态 TB*)
+	isTailCall bool
 }
 
 // Proto 反向指针(trampoline 校验)。
