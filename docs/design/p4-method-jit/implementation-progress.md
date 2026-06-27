@@ -1195,6 +1195,15 @@ case CALL/TAILCALL:
 
 **ROI 评估**:SELF inline 完整 0..7 参覆盖后,real-world OOP 业务调用形态(`obj:method()` / `obj:method(arg)` / `obj:method(a, b, c, ...)` / `return obj:method(...)` / `local r = obj:method()` 等)全部进入 P4 升层范围。SELF 形态总占 OOP-style 业务调用约 30-50%,与 §9.16 调用族 inline 矩阵协同覆盖 method-JIT 主路径。后续 NodeHit / 段内 inline / N>=2 返值多参留多会话渐进推进。
 
+**baseline 实测**(本机 Xeon 6982P / Linux amd64):
+
+```
+BenchmarkGibbousJIT_PJ5SelfCall-24       14001 ns/op  72 B/op  2 allocs
+BenchmarkGibbousJIT_PJ5SelfCallCresc-24  11755 ns/op  72 B/op  2 allocs
+```
+
+**P4 ratio = 14001/11755 = 1.19x(比 crescent 慢 19%)**——印证「正确性接入而非性能加速」结论:Run prelude 路径走 `host.Self → host.CallBaseline` 经 Go→段→Go round-trip,反比解释器单循环慢。**段内 EmitSelfCallInline 模板真接入后**(留多会话),通过 IC NodeHit / ArrayHit guard + 跳过 host round-trip 可获 ≥2x 加速(参考 PJ3 FORLOOP 字节级 inline 实测 7.15-25.41x over gopher-lua 的 'spec template + 跳过 host helper round-trip' 通用模型)。
+
 ---
 
 ## 10. 后续维护协议
