@@ -728,6 +728,17 @@ type GibbousCode interface {
     //   - status:0=OK(返回值已回填 R(A..)),1=ERR(state.pendingErr 已置);
     //     2=DEOPT(P4 OSR exit;P3 永远不返回 2)。
     //
+    // **P4 测试如何验 status=2 路径**(2026-06-28,承
+    // [../p4-method-jit/implementation-progress §2 RJ-14] 跨文档回填请求):
+    // P4 V19 OSR exit 状态等价验收口径 + V20 deopt 风暴口径详见
+    // [../p4-method-jit/08-testing-strategy §4 V1-V13 正确性轴 +
+    // §5 V17-V22 prove-the-path + OSR exit + guard 漏判 fuzz]
+    // ;实现细节见 [../p4-method-jit/04-osr-deopt §5 OSR exit 流程 +
+    // §7 错误冒泡纪律]。当前 P4 amd64 实证:
+    // TestPJ5_SelfCall_E2E_SpecTemplate_OSRExitToDeopt(SpecP4DeoptHits
+    // 增长 +6 实证 OSR exit 协议真业务路径闭环)+
+    // TestPJ5_SelfCall_E2E_SpecTemplate_DeoptStorm(5 caller 独立累积 +15)。
+    //
     // 实现方契约:
     //   - 同步调用语义(返回时该帧已执行完);
     //   - 调用前 P2 已压 CallInfo 标 bit50 gibbous(05 §1.2);
