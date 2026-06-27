@@ -1469,6 +1469,76 @@ mmap 段**禁直接写 Go 堆指针**(违反三色不变式):
 
 预估工程量:Step C-1 + C-2(3 周级,主要 helper SP 协议 + 单测)/ Step D + E(2 周级,接通 + 实测)。Spike 1 总工期 5-7 周(承 §9.20.3 估算调整)。
 
+#### 9.20.7 Spike 1 Step C-1 真实装拆解(2026-06-28 推进计划)
+
+承本会话 §9.20.6 设计就位 + 字节级 emit 模板全套 + R14 ABI 违约修复闭环后,Step C-1 真实装的具体步骤拆解。
+
+**(1) crescent.State 扩 helper API**(reverse-call dependency 解):
+
+```go
+// internal/crescent/gibbous_host.go (新方法,补 P4HostState 接口)
+
+// ExecuteCalleeFromInlineFrame 经 mmap 段已 BuildVoid0ArgSkeleton 建好的
+// CallInfo[depth] 跑 callee Lua 体 + popCallInfo 反向。
+//
+// **前置条件**(caller 必须保证):
+//   - CallInfo[depth] 已写入(base/funcIdx/top/pc/protoID/cl/nVarargs)
+//   - th.ciDepth 已 ++(mmap 段 EmitFrameInlineCIDepthInc 已做)
+//   - th.cur 未被 mmap 段更新(Go 端冷字段)→ 本方法内 readCISegInto 重载
+//
+// **流程**:
+//   1. readCISegInto(th.ciDepth-1, &th.cur) 重载 caller-perspective callee 字段
+//   2. nCcalls++ 计费(防 C stack overflow)
+//   3. executeFrom(th, th.ciDepth-1) 同步驱动 callee Lua 体完成
+//   4. popCallInfo(th) 弹帧,readCISegInto 重载 caller th.cur
+//
+// 返:0=OK / 1=ERR(pendingErr 已置)。
+func (st *State) ExecuteCalleeFromInlineFrame(base int32, retA int32) int32
+```
+
+**(2) jit.P4HostState 接口扩**:加 ExecuteCalleeFromInlineFrame 方法签名,mockP4Host stub。
+
+**(3) helpers.go HelperRunCalleeAfterFrameInline 真实装**:替换 panic,经 jitCtx 取 host(承 P4HostState 注入)调 ExecuteCalleeFromInlineFrame。
+
+**(4) 关键技术挑战**:
+- jitContext 内当前不直接持 *crescent.State 指针(避免 import cycle);需补 helperTable[] 函数指针表或直接经 `//go:linkname` 拿 crescent.State 方法地址
+- 推荐:jitContext 加 hostStatePtr unsafe.Pointer(承 9.20.6 (2) 寄存器协议) + helper 内 unsafe-cast 回 *State 调方法
+- `//go:nosplit` 链路全程禁触 morestack(executeFrom 自身非 nosplit,**必须在 trampoline 出口切回 Go 栈再调 executeFrom**)
+
+**(5) 修正版 helper 实装路径**:
+
+```go
+//go:nosplit
+//go:noinline
+func HelperRunCalleeAfterFrameInline(jitCtx *JITContext, base int32, retA int32) int32 {
+    // jitCtx 内已注入 hostStatePtr unsafe.Pointer(承 wireP4)
+    // 但 executeFrom 非 nosplit,会触发 morestack
+    // → 此 helper 无法直接调 executeFrom 在 mmap 段内
+    // → 必须经 trampoline 出口先切回 Go 栈
+    //
+    // **结论**:Spike 1 真接入需 trampoline 改造支持 "exit-to-host-then-resume"
+    // 协议(类似 wazero exit reason code 路由),工程量大于单 helper 实装。
+    panic("not implemented: Spike 1 Step C-1 待 trampoline exit-resume 协议落地")
+}
+```
+
+**(6) 阻塞点**(本批文档暴露):
+
+trampoline 当前是 "一次性同步跑完 mmap 段 + RET" 协议,不支持 mid-段 exit-to-host。要真接入 Spike 1 helper call 需:
+- trampoline 改造:加 exit reason code 路由 + Go 端 dispatcher
+- 或:helper 改 `//go:nosplit` 严格化(但 executeFrom 链路深,nosplit 整个 callee 不现实)
+- 或:Spike 1 仅作 "fast path skip-helper"(callee Proto 是 P4 升层 mmap 段 → mmap 段直跳 callee mmap 段,无 Go 侧 executeFrom)— 这是更彻底的 zero-cross,工程量更大
+
+**(7) 修正后路线**:
+
+Spike 1 真接入 = trampoline exit-resume 协议改造(2-3 周)+ helper 实装(1 周)+ Compile/Run 接通(1 周)= **总工期 4-5 周**(下调 §9.20.6 (7) 估算)。**单 session 不可达**(物理上需 trampoline asm + Go runtime 深集成),留专门 session 推进。
+
+替代收益更高的工程方向(本会话后续优先):
+1. SELF + CALL 8+ 参 spec template(shapeInfo 重构 callArg array slice)— 工程量小,可达
+2. PJ4 SELF NodeHit 字节级模板真实证(承评论指出"PJ4 SELF NodeHit 是从未触发占位,PJ5 SELF + CALL 是首个真实触达 SELF feedback 路径"— 验真实业务路径)
+3. PJ6 GETUPVAL/SETUPVAL 字节级 inline(承 PJ6 当前 🔶 emitter 部分,真接入留 PJ6+)
+4. P3 退役决策(承 07-p3-retirement.md,需用户决策性输入)
+
 ---
 
 ## 10. 后续维护协议
