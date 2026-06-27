@@ -1294,9 +1294,17 @@ probe luac 实证 N=K 返形态 cC=K+1 一致(N=4 返 cC=5 / N=5 返 cC=6 / ...)
 **N=4 返多形态 difftest**(承 84a031d,5 用例 oracle/crescent/p4-jit 全 byte-equal):
 - p4_self_spec_multiret_n4_0arg / n4_1karg / n4_1regarg / n4_3kargs / n5_0arg
 
-**N=4 返 bench 完整画面**(承 1eb520d + 91dcf07):
+**N=4 返 bench 完整画面**(承 1eb520d + 91dcf07 + fd87c96):
 - BenchmarkGibbousJIT_PJ5SelfCallSpecMultiRetN4-24 = 18786 ns/op,Cresc = 17175,**P4 ratio 1.094x 慢**(简单 method 体)
 - BenchmarkGibbousJIT_PJ5SelfCallHeavyBodyMultiRetN4-24 = 88721 ns/op,Cresc = 87726,**P4 ratio 1.011x 持平**(heavy body)
+- BenchmarkGibbousJIT_PJ5SelfCallSpecMultiRetN8-24 = 20630 ns/op,Cresc = 18699,**P4 ratio 1.103x 慢**(N=8 边界,简单 method 体)
+
+**N=0..N=8 趋势分析**(承 fd87c96):
+- N=0 返 PJ5SelfCallSpec:1.12x 慢(基线 trampoline 占比主导)
+- N=4 返:1.094x 慢(N=4 SetReg 摊薄略减少 trampoline 占比)
+- N=8 返:1.103x 慢(N=8 SetReg 多 4 次 ≈ 多 0.5% 开销)
+- 每多 4 个 R(callA..) word store ≈ 多 0.5%(host.CallBaseline 内 N 次
+  SetReg + DoReturn 弹 0 返值固定开销):真实业务 N>=8 罕见,1.1x 慢可接受
 
 对比 N=0 返 PJ5SelfCallHeavyBody 0.95x 快 5%:N=4 多写 4 word 摊薄略减弱但仍持平 — 真实 OOP 业务场景 P4 性能 acceptable。
 
