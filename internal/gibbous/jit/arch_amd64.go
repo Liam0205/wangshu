@@ -233,3 +233,23 @@ func archEmitHelperCall(buf []byte, helperAddr uint64) []byte {
 // archEncodedHelperCallLen 是 helper call 通用宏字节数(amd64 = 12,
 // arm64 = 20)。caller 用于 inline CALL 模板长度预算。
 const archEncodedHelperCallLen = jitamd64.EncodedHelperCallLen
+
+// archSupportsFrameInline 返 true 当本 arch 支持 PJ5 Option B 帧建立内联
+// 真接入(承 §9.20 Spike 1)。
+//
+// **当前 amd64 = false**:字节级 emit 模板(BuildVoid0ArgSkeleton 120B +
+// PopVoid0ArgSkeleton 10B + LoadClosureGCRef 20B + WriteCIWord 14B +
+// CIDepth++/-- 10B)已完整字节级实装并 8 字节级单测全过,但 Compile/Run
+// 端守门 + helper call ABI 协议 + e2e prove-the-path 实证留 Spike 1 后续
+// 工程。**翻 true 前置条件**:
+//  1. analyzeSelfCallSpecForm 加 useFrameInline 守门(callee.NumParams=0 +
+//     !IsVararg + !NeedsArg + MaxStack≤32)
+//  2. compileSpecSelfCall 加 useFrameInline 分支 emit BuildVoid0ArgSkeleton +
+//     archEmitHelperCall(跳 executeFrom)+ PopVoid0ArgSkeleton
+//  3. runSpecSelfCallInline 实装(Run 端走 mmap 段 zero-cross 路径)
+//  4. SpecFrameInlineHits 探针 + e2e WarmupThenForce 命中实证
+//  5. benchmark 摊薄实证(简单 method 体 1.12x→≥1.0x;计算密集 0.94x→
+//     0.7-0.8x)
+//
+// **arm64 / 其它 arch 同 false**(等物理 runner 翻 archSupportsSpec=true 同批)。
+func archSupportsFrameInline() bool { return false }

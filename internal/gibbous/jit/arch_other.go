@@ -240,3 +240,6 @@ func archEmitHelperCall(buf []byte, helperAddr uint64) []byte {
 
 // archEncodedHelperCallLen 其它 arch 占位 0(本 build 下不调到)。
 const archEncodedHelperCallLen = 0
+
+// archSupportsFrameInline 其它 arch 不支持(承 §9.20 Option B Spike 1)。
+func archSupportsFrameInline() bool { return false }
