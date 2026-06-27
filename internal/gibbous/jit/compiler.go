@@ -164,18 +164,24 @@ type shapeInfo struct {
 	icSelfNodeHit bool
 
 	// PJ5 CALL void 形态(`function(g) g() end` 类):
-	//   - isCallVoid = true:Run 端 prelude 路径调 host.DoCall 完成 baseline
+	//   - isCallVoid = true:Run 端 prelude 路径调 host.CallBaseline 完成 baseline
 	//     CALL(byte-equal P1 doCall 分派,host/crescent/__call/gibbous 全覆盖)
-	//   - callA / callB / callC:CALL A B C 三字段直传给 host.DoCall;
-	//     retA=callA 用于 deopt 路径定位,retPC=CALL 自身 pc(MOVE+CALL+RETURN
-	//     形态 = pc 1;无 MOVE 形态 = pc 0)
+	//   - isCallUpval = true:形态 B 即 GETUPVAL+CALL+RETURN void(被调来源是
+	//     upvalue,如外层 local fn);false 即形态 A MOVE+CALL+RETURN void
+	//     (被调来源是 parameter / local reg)
+	//   - callA / callB / callC:CALL A B C 三字段直传给 host.CallBaseline;
+	//     retA=callA 用于 deopt 路径定位,retPC=CALL 自身 pc(形态 A/B 都是 pc 1)
+	//   - preludeArg:形态 A 时 = MOVE.B(源 reg)/ 形态 B 时 = GETUPVAL.B
+	//     (upvalue 索引)
 	//
 	// 形态识别在 analyzeCallVoidForm,典型 luac 编译形态(长度 3):
-	//   MOVE A B (A=被调位,B=参数源位) + CALL A 1 1 + RETURN 0 1
-	isCallVoid bool
-	callA      uint8
-	callB      uint8
-	callC      uint8
+	//   形态 A: MOVE A B + CALL A 1 1 + RETURN 0 1
+	//   形态 B: GETUPVAL A B + CALL A 1 1 + RETURN 0 1
+	isCallVoid  bool
+	isCallUpval bool
+	callA       uint8
+	callB       uint8
+	callC       uint8
 }
 
 // analyzeGetTableArrayHit 识别 PJ4 IC ArrayHit 形态:
@@ -1312,51 +1318,61 @@ func analyzeArithChainForm(proto *bytecode.Proto) (shapeInfo, bool) {
 
 // analyzeCallVoidForm 识别 PJ5 CALL void 简化形态(承
 // docs/design/p4-method-jit/05-system-pipeline.md §4.3 + 06-backends.md §3.5):
-// `function(g) g() end` 类——MOVE + CALL + RETURN void 三 op 单 BB。
+// `function(g) g() end` / `function() noop() end` 类 — 单 BB 三 op,call
+// 前置 op 是 MOVE(被调位在参数槽,函数内 parameter 形态)或 GETUPVAL
+// (闭包内调用外层 local known fn,upvalue 形态)。
 //
-// luac 编译形态(以 `local function f(g) g() end` 为例,无参 0 返调用):
+// luac 编译形态(两形态):
 //
-//	[0] MOVE   A=被调位 B=参数源位
-//	[1] CALL   A=被调位 B=1(0 参) C=1(0 返)
-//	[2] RETURN A=0 B=1(0 返)
+//	形态 A:`function(g) g() end`(parameter callee)
+//	  [0] MOVE     A=被调位 B=参数源位
+//	  [1] CALL     A=被调位 B=1(0 参) C=1(0 返)
+//	  [2] RETURN   A=0 B=1(0 返)
 //
-// **触发条件**(全部满足才返 true):
+//	形态 B:`local function noop()...end; local function invoker() noop() end`
+//	  [0] GETUPVAL A=被调位 B=upvalue 索引
+//	  [1] CALL     A=被调位 B=1 C=1
+//	  [2] RETURN   A=0 B=1
+//
+// **触发条件**(两形态共同 + 各自):
 //   - Code 长度 = 3
-//   - proto.Code[0] = MOVE,MOVE.A 与 MOVE.B 在 reg 范围 [0,254]
-//   - proto.Code[1] = CALL,CALL.A == MOVE.A(被调函数在 MOVE 拷过去的槽位)
-//   - CALL.B == 1(0 参 — 当前简化形态只识别无参 CALL,留下次 commit 扩定参
-//     CALL.B>=2 含参形态)
-//   - CALL.C == 1(0 返 — setter 形态,与 RETURN.B=1 配套)
-//   - proto.Code[2] = RETURN,RETURN.B == 1(0 返值)
+//   - [0] = MOVE 或 GETUPVAL,[0].A 与 [1].A(CALL.A)一致
+//   - [1] = CALL,CALL.B == 1(0 参)+ CALL.C == 1(0 返)
+//   - [2] = RETURN,RETURN.B == 1(0 返值)
+//   - reg / upvalue 索引在 [0,254] 范围
 //
-// **PJ5 简化形态范围**:Run 端 prelude 路径调 host.DoCall(byte-equal P1
-// doCall 分派 — host fn / crescent / __call / gibbous 全覆盖)+ DoReturn 弹
-// 帧。**不走 R3 indirect 哨兵**(段内 call_indirect 留 PJ5+ 完整版,本简化
-// 形态 host.DoCall 直接同步跑完);Run 端遇 indirect 哨兵(奇数返回)把
-// 帧弹掉等价 baseline(已完成,被调 RETURN 经 DoReturn 写中转字)。
+// **PJ5 简化形态范围**:Run 端 prelude 路径根据 isCallUpval 分流:
+//   - 形态 A(isCallUpval=false):host.GetReg(MOVE.B) + SetReg(MOVE.A)
+//     完成 MOVE 预处理
+//   - 形态 B(isCallUpval=true):host.GetUpval(base, GETUPVAL.B) +
+//     SetReg(GETUPVAL.A) 完成 upvalue 取值预处理
+//     然后调 host.CallBaseline(base, callPC, callA, callB, callC) +
+//     host.DoReturn 弹帧。
 //
 // 失败任一条件返 (shapeInfo{}, false) — 走 analyzeShape 主分流(可能匹配
-// 其它形态如 MOVE+RETURN,但 MOVE 后接 CALL 那条 case 不会匹配 MOVE 形态
-// 守卫 retB=2)。
+// 其它形态如 GETUPVAL+RETURN A 2 单 op 形态守卫 retB=2 会拒 setter 形态)。
 func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
 	if len(proto.Code) != 3 {
 		return shapeInfo{}, false
 	}
-	if bytecode.Op(proto.Code[0]) != bytecode.MOVE ||
-		bytecode.Op(proto.Code[1]) != bytecode.CALL ||
+	op0 := bytecode.Op(proto.Code[0])
+	if op0 != bytecode.MOVE && op0 != bytecode.GETUPVAL {
+		return shapeInfo{}, false
+	}
+	if bytecode.Op(proto.Code[1]) != bytecode.CALL ||
 		bytecode.Op(proto.Code[2]) != bytecode.RETURN {
 		return shapeInfo{}, false
 	}
-	mvA := bytecode.A(proto.Code[0])
-	mvB := bytecode.B(proto.Code[0])
+	op0A := bytecode.A(proto.Code[0])
+	op0B := bytecode.B(proto.Code[0])
 	clA := bytecode.A(proto.Code[1])
 	clB := bytecode.B(proto.Code[1])
 	clC := bytecode.C(proto.Code[1])
 	rtB := bytecode.B(proto.Code[2])
-	if mvA > 254 || mvB > 254 {
+	if op0A > 254 || op0B > 254 {
 		return shapeInfo{}, false
 	}
-	if clA != mvA {
+	if clA != op0A {
 		return shapeInfo{}, false
 	}
 	// 当前简化形态:0 参 0 返
@@ -1367,15 +1383,17 @@ func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
 		return shapeInfo{}, false
 	}
 	return shapeInfo{
-		ok:         true,
-		retA:       0,
-		retB:       1,
-		retPC:      2,
-		preludeOp:  uint8(bytecode.CALL), // Run 端 prelude switch 走 host.DoCall
-		isCallVoid: true,
-		callA:      uint8(clA),
-		callB:      uint8(clB),
-		callC:      uint8(clC),
+		ok:          true,
+		retA:        0,
+		retB:        1,
+		retPC:       2,
+		preludeOp:   uint8(bytecode.CALL), // Run 端 prelude switch 走 host.CallBaseline
+		preludeArg:  uint32(op0B),         // MOVE.B(源 reg)/ GETUPVAL.B(upvalue 索引)
+		isCallVoid:  true,
+		isCallUpval: op0 == bytecode.GETUPVAL,
+		callA:       uint8(clA),
+		callB:       uint8(clB),
+		callC:       uint8(clC),
 	}, true
 }
 
@@ -2321,25 +2339,26 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 	}
 
 	return &p4Code{
-		proto:      proto,
-		codePage:   page,
-		jitCtx:     NewJITContext(),
-		retA:       info.retA,
-		retB:       info.retB,
-		retPC:      info.retPC,
-		writeRetA:  info.writeRetA,
-		preludeOp:  info.preludeOp,
-		preludeArg: info.preludeArg,
-		preludeC:   info.preludeC,
-		cmpA:       info.cmpA,
-		chainOp:    info.chainOp,
-		chainB:     info.chainB,
-		chainC:     info.chainC,
-		host:       c.hostState,
-		isCallVoid: info.isCallVoid,
-		callA:      info.callA,
-		callB:      info.callB,
-		callC:      info.callC,
+		proto:       proto,
+		codePage:    page,
+		jitCtx:      NewJITContext(),
+		retA:        info.retA,
+		retB:        info.retB,
+		retPC:       info.retPC,
+		writeRetA:   info.writeRetA,
+		preludeOp:   info.preludeOp,
+		preludeArg:  info.preludeArg,
+		preludeC:    info.preludeC,
+		cmpA:        info.cmpA,
+		chainOp:     info.chainOp,
+		chainB:      info.chainB,
+		chainC:      info.chainC,
+		host:        c.hostState,
+		isCallVoid:  info.isCallVoid,
+		isCallUpval: info.isCallUpval,
+		callA:       info.callA,
+		callB:       info.callB,
+		callC:       info.callC,
 	}, nil
 }
 
