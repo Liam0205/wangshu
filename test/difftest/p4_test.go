@@ -866,6 +866,26 @@ return ok, tostring(err)`},
 local function ln(t) return #t end
 local ok, err = pcall(ln, nil)
 return ok, tostring(err)`},
+	// —— R14 ABI 后验 difftest(承本会话 R14 ABI 修复 + 7 R14 后验测试矩阵):
+	// 这些用例**包含真实 PJ3/PJ4/PJ5 mmap 段路径** + 重复迭代,验 P4 vs
+	// crescent byte-equal 在 GC stress 类工作负载下不引入分歧。
+	{"p4_r14_pj5_self_repeated", `
+local o = { m = function(self) return 42 end }
+local function caller(t) return t:m() end
+local sum = 0
+for i = 1, 200 do sum = sum + caller(o) end  -- 200 次 spec template
+return sum`},
+	{"p4_r14_pj4_get_repeated", `
+local function f(t) return t[1] end
+local t = {7, 8, 9}
+local sum = 0
+for i = 1, 200 do sum = sum + f(t) end  -- 200 次 IC ArrayHit
+return sum`},
+	{"p4_r14_pj3_forloop_repeated", `
+local function loop(n) local s = 0; for i = 1, n do s = s + i end; return s end
+local sum = 0
+for i = 1, 50 do sum = sum + loop(100) end  -- 50 outer * 100 inner forloop
+return sum`},
 }
 
 // TestP4_Tiered 三方对拍:oracle / crescent / p4-jit 全 byte-equal。
