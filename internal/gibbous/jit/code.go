@@ -123,6 +123,80 @@ type p4Code struct {
 	//     (byte-equal 解释器 icSetTable + __newindex)。setter 形态 retB=1
 	//     无 R(A) 写。
 	icSetArrayHit bool
+
+	// PJ5 CALL void 路径标志(承 docs/design/p4-method-jit/05-system-pipeline.md
+	// §4.3 + 06-backends.md §3.5):
+	//   - isCallVoid = true:Run prelude 路径调 host.CallBaseline 完成 baseline
+	//     CALL(byte-equal P1 doCall 分派);followed by DoReturn 弹帧。
+	//   - isCallUpval = true:形态 B(GETUPVAL+CALL+RETURN void),Run 端
+	//     prelude 调 host.GetUpval 拿被调函数;false 即形态 A(MOVE+CALL+
+	//     RETURN void),Run 端调 host.GetReg 拿被调函数
+	//   - callA / callB / callC:CALL A B C 三字段(传给 host.CallBaseline)
+	//   - callArgCount:0/1/2 参
+	//   - callArg1IsK:1 参形态时 true=LOADK / false=MOVE reg;2 K 参形态恒 true
+	//   - callArg1K:1 或 2 K 参形态时第一个 K
+	//   - callArg1RegSrc:1 reg 参形态时 MOVE.B 源 reg 号
+	//   - callArg2K:2 K 参形态时第二个 K
+	//
+	// 复用 preludeArg 字段:形态 A 时 = MOVE.B(源 reg);形态 B 时 =
+	// GETUPVAL.B(upvalue 索引)
+	isCallVoid     bool
+	isCallUpval    bool
+	callA          uint8
+	callB          uint8
+	callC          uint8
+	callArgCount   uint8
+	callMultiRet   uint8 // N=0/1 既有(setter/getter 1 返);N>=2 表 N 返值 getter — Run 端 N 个 MOVE 拷贝
+	callArg1IsK    bool
+	callArg1K      uint64
+	callArg1RegSrc uint8
+	callArg2IsK    bool
+	callArg2K      uint64
+	callArg2RegSrc uint8
+	callArg3IsK    bool
+	callArg3K      uint64
+	callArg3RegSrc uint8
+	callArg4IsK    bool
+	callArg4K      uint64
+	callArg4RegSrc uint8
+	callArg5IsK    bool
+	callArg5K      uint64
+	callArg5RegSrc uint8
+	callArg6IsK    bool
+	callArg6K      uint64
+	callArg6RegSrc uint8
+	callArg7IsK    bool
+	callArg7K      uint64
+	callArg7RegSrc uint8
+
+	// PJ5 TAILCALL 路径标志(承 docs/design/p4-method-jit/05-system-pipeline.md §4.3):
+	//   - isTailCall = true:Run prelude 路径调 host.TailCall 三态分支:
+	//     0=Lua 尾完成(本帧已弹,跳过 DoReturn 直接 return 0)
+	//     1=ERR
+	//     2=host 尾完成(结果在 R(callA)..,Run 落 dead RETURN B=0 to-top 走 DoReturn)
+	//   - 复用 isCallUpval / callA / callB / callC / callArgCount / callArg1* / callArg2K
+	//     字段(8 子形态 TA0/TB0/TA1K/TB1K/TA1R/TB1R/TA2K/TB2K)
+	//   - 复用 preludeArg = MOVE.B(形态 TA*) / GETUPVAL.B(形态 TB*)
+	isTailCall bool
+
+	// PJ5 SELF method call inline 路径标志(承
+	// docs/design/p4-method-jit/05-system-pipeline.md §4.3 + 09 §9.17):
+	//   - isSelfCall = true:Run prelude 路径先调 host.Self 取 method 入 R(callA) +
+	//     装 self R(callA+1),然后调 host.CallBaseline / TailCall 完成 byte-equal
+	//     P1 doCall 分派。SELF + CALL 与 SELF + TAILCALL 共享本字段,真正的 CALL/
+	//     TAILCALL 分支由 preludeOp + isCallVoid / isTailCall 守门。
+	//   - selfCallA:SELF.A = method 结果寄存器(同 callA)
+	//   - selfMethodRK:SELF.C 字段(RK 方法名常量索引 0-511)
+	//   - selfRecvSrcReg + selfRecvIsUpval:recv 来源 — true=upvalue idx / false=reg
+	//
+	// **与 isCallVoid / isTailCall 的关系**:isSelfCall 是叠加属性 — Run 端
+	// switch CALL/TAILCALL case 内额外加一次 host.Self 调用预处理,其它路径
+	// 不变。
+	isSelfCall      bool
+	selfCallA       uint8
+	selfMethodRK    uint16
+	selfRecvSrcReg  uint8
+	selfRecvIsUpval bool
 }
 
 // Proto 反向指针(trampoline 校验)。
@@ -429,6 +503,135 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 			// host.GetReg 读 R(B) + SetReg(A, BoolValue(!Truthy(...)))。
 			v := value.Value(c.host.GetReg(int32(c.preludeArg)))
 			c.host.SetReg(int32(c.retA), uint64(value.BoolValue(!value.Truthy(v))))
+		case uint8(bytecode.CALL):
+			// PJ5 CALL void 形态:`function(g) g() end` (形态 A,isCallUpval=false)
+			// 或 `local function noop()...end; function() noop() end`(形态 B,
+			// isCallUpval=true)— MOVE+CALL+RETURN void / GETUPVAL+CALL+RETURN void
+			// (0 参形态,callArgCount=0)或 MOVE/GETUPVAL+LOADK+CALL+RETURN void
+			// (1 参 K 形态,callArgCount=1)。
+			//
+			// **pc 实参**:CALL 自身 pc 由 retPC-1 算(0 参形态 retPC=2,1 参形态
+			// retPC=3,CALL 都在 RETURN 前一条)。
+			//
+			// **预处理 — 把被调函数装到 R(callA) 槽**:luac 编 MOVE/GETUPVAL
+			// 在 mmap 段是 dummy 不执行,Run 端手动调 host helper 完成。
+			//   - 形态 A:host.GetReg(preludeArg=MOVE.B) + SetReg(callA)
+			//   - 形态 B:host.GetUpval(base, preludeArg=GETUPVAL.B) + SetReg(callA)
+			//
+			// **1 参形态 LOADK 装载**:callArgCount=1 时,Run 端 host.SetReg(callA+1,
+			// callArg1K)把编译期烧入的 K 常量装到参数槽。
+			//
+			// **SELF inline 形态**(isSelfCall=true):recv 装 R(callA) 后,先调
+			// host.Self 完成 R(callA)=R(callA)[K_method] + R(callA+1)=self;
+			// 然后参数装到 R(callA+2) 起(跳过 self 槽)— byte-equal 解释器
+			// SELF + CALL inline 子集。
+			callPC := int32(c.retPC) - 1
+			var srcVal uint64
+			if c.isCallUpval {
+				srcVal = c.host.GetUpval(int32(base), int32(c.preludeArg))
+			} else {
+				srcVal = c.host.GetReg(int32(c.preludeArg))
+			}
+			c.host.SetReg(int32(c.callA), srcVal)
+			// SELF inline 预处理:host.Self 完成 method 取值 + self 装载
+			if c.isSelfCall {
+				// pc 实参:SELF 自身 pc。CALL 在 retPC-1,SELF 在 CALL 之前一条 + args
+				// (callArgCount 条 LOADK/MOVE)。即 SELF.pc = callPC - 1 - callArgCount。
+				selfPC := callPC - 1 - int32(c.callArgCount)
+				st := c.host.Self(int32(base), selfPC, int32(c.selfCallA),
+					int32(c.selfCallA), int32(c.selfMethodRK))
+				if st != 0 {
+					return st
+				}
+			}
+			argOffset := int32(1)
+			if c.isSelfCall {
+				argOffset = 2 // self 占 R(callA+1),args 从 R(callA+2)
+			}
+			c.loadCallArgs(argOffset)
+			// baseline doCall:绕过 R3 indirect 哨兵(本简化形态不支持段内
+			// call_indirect),host/crescent/__call/gibbous 全形态同步跑完。
+			st := c.host.CallBaseline(int32(base), callPC,
+				int32(c.callA), int32(c.callB), int32(c.callC))
+			if st != 0 {
+				return st
+			}
+			// N>=2 返值 getter 形态:Run 端做 N 个 MOVE 拷贝以保留 byte-equal
+			// (luac 编 R(callA+nret+k) ← R(callA+k),然后 RETURN A=callA+nret B=nret+1)。
+			// 末尾 DoReturn 用 retA/retB 已设好(retA=callA+nret,retB=nret+1)读 R(callA+nret..)
+			// 拷到 caller 槽。
+			if c.callMultiRet >= 2 {
+				nret := int32(c.callMultiRet)
+				for k := int32(0); k < nret; k++ {
+					c.host.SetReg(int32(c.callA)+nret+k,
+						c.host.GetReg(int32(c.callA)+k))
+				}
+			}
+		case uint8(bytecode.TAILCALL):
+			// PJ5 TAILCALL 形态(承 docs/design/p4-method-jit/05-system-pipeline.md
+			// §4.3 + analyzeTailCallForm):`function() return f() end` 类
+			// 单 CallExpr 作 return 唯一表达式被 luac 翻成 TAILCALL + 尾随
+			// dead RETURN B=0(to-top)+ 隐式 RETURN B=1。
+			//
+			// **pc 实参**:TAILCALL 自身 pc = retPC-1(retPC 指 dead RETURN)。
+			//
+			// **预处理 — 把被调函数装到 R(callA) 槽**(与 CALL void 同款,装
+			// 完后调 host.TailCall 完成尾调用):
+			//   - 形态 TA*:host.GetReg(MOVE.B) + SetReg(callA)
+			//   - 形态 TB*:host.GetUpval(base, GETUPVAL.B) + SetReg(callA)
+			//
+			// **SELF inline 形态**(isSelfCall=true):同 CALL 路径,recv 装
+			// R(callA) 后调 host.Self,args 从 R(callA+2) 起;然后调 host.TailCall
+			// 完成尾调用三态分支。
+			//
+			// **三态分支**(crescent.State.TailCall + jit/host.go::TailCall 同款):
+			//   - 0 = Lua 尾完成:caller 帧已被 callee 帧替换 + executeFrom
+			//     同步驱动 callee 链到完成 + nresults 写回 funcIdx。Run 端
+			//     **跳过 DoReturn**(本帧已弹),直接 return 0(本函数末尾
+			//     的 DoReturn 调用须被 isTailCall 守卫跳过)。
+			//   - 1 = ERR:raise pending → 上层 ERR 冒泡。
+			//   - 2 = host 尾完成:结果已落 R(callA..),G 帧未弹。Run 端**正常
+			//     调 DoReturn**(对位 dead RETURN A=callA B=0 to-top,nret =
+			//     top - (base + callA),DoReturn 内 B=0 多值路径)。
+			tailPC := int32(c.retPC) - 1
+			var srcVal uint64
+			if c.isCallUpval {
+				srcVal = c.host.GetUpval(int32(base), int32(c.preludeArg))
+			} else {
+				srcVal = c.host.GetReg(int32(c.preludeArg))
+			}
+			c.host.SetReg(int32(c.callA), srcVal)
+			// SELF inline 预处理:host.Self 完成 method 取值 + self 装载
+			if c.isSelfCall {
+				selfPC := tailPC - 1 - int32(c.callArgCount)
+				st := c.host.Self(int32(base), selfPC, int32(c.selfCallA),
+					int32(c.selfCallA), int32(c.selfMethodRK))
+				if st != 0 {
+					return st
+				}
+			}
+			argOffset := int32(1)
+			if c.isSelfCall {
+				argOffset = 2
+			}
+			c.loadCallArgs(argOffset)
+			st := c.host.TailCall(int32(base), tailPC,
+				int32(c.callA), int32(c.callB), int32(c.callC))
+			switch st {
+			case 0:
+				// Lua 尾完成:本帧已被 callee 帧替换 + executeFrom 同步驱动
+				// callee 链到完成。直接 return 0,跳过末尾 DoReturn(本帧已弹)。
+				_ = stack
+				return 0
+			case 1:
+				return 1
+			case 2:
+				// host 尾完成:结果在 R(callA..),G 帧未弹。fall through 到末尾
+				// DoReturn(retB=0 多值 to-top 路径)。
+			default:
+				// 未来扩展:本接口当前只定义 0/1/2 三态。其它值视为 ERR 兜底。
+				return 1
+			}
 		case uint8(bytecode.EQ), uint8(bytecode.LT), uint8(bytecode.LE):
 			if c.retB < 2 {
 				break
@@ -468,6 +671,75 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 // PendingErr 默认返 nil(P4 PJ2 简化形态不持错误状态——Run 直接返 status)。
 func (c *p4Code) PendingErr() error {
 	return nil
+}
+
+// loadCallArgs 把 callArg1..7 装到 R(callA+offset), R(callA+offset+1), ...
+// offset = 1(普通 CALL/TAILCALL,args 从 R(callA+1));2(SELF inline,
+// args 从 R(callA+2),因 R(callA+1)=self)。
+func (c *p4Code) loadCallArgs(offset int32) {
+	if c.callArgCount >= 1 {
+		var argVal uint64
+		if c.callArg1IsK {
+			argVal = c.callArg1K
+		} else {
+			argVal = c.host.GetReg(int32(c.callArg1RegSrc))
+		}
+		c.host.SetReg(int32(c.callA)+offset+0, argVal)
+	}
+	if c.callArgCount >= 2 {
+		var argVal uint64
+		if c.callArg2IsK {
+			argVal = c.callArg2K
+		} else {
+			argVal = c.host.GetReg(int32(c.callArg2RegSrc))
+		}
+		c.host.SetReg(int32(c.callA)+offset+1, argVal)
+	}
+	if c.callArgCount >= 3 {
+		var argVal uint64
+		if c.callArg3IsK {
+			argVal = c.callArg3K
+		} else {
+			argVal = c.host.GetReg(int32(c.callArg3RegSrc))
+		}
+		c.host.SetReg(int32(c.callA)+offset+2, argVal)
+	}
+	if c.callArgCount >= 4 {
+		var argVal uint64
+		if c.callArg4IsK {
+			argVal = c.callArg4K
+		} else {
+			argVal = c.host.GetReg(int32(c.callArg4RegSrc))
+		}
+		c.host.SetReg(int32(c.callA)+offset+3, argVal)
+	}
+	if c.callArgCount >= 5 {
+		var argVal uint64
+		if c.callArg5IsK {
+			argVal = c.callArg5K
+		} else {
+			argVal = c.host.GetReg(int32(c.callArg5RegSrc))
+		}
+		c.host.SetReg(int32(c.callA)+offset+4, argVal)
+	}
+	if c.callArgCount >= 6 {
+		var argVal uint64
+		if c.callArg6IsK {
+			argVal = c.callArg6K
+		} else {
+			argVal = c.host.GetReg(int32(c.callArg6RegSrc))
+		}
+		c.host.SetReg(int32(c.callA)+offset+5, argVal)
+	}
+	if c.callArgCount >= 7 {
+		var argVal uint64
+		if c.callArg7IsK {
+			argVal = c.callArg7K
+		} else {
+			argVal = c.host.GetReg(int32(c.callArg7RegSrc))
+		}
+		c.host.SetReg(int32(c.callA)+offset+6, argVal)
+	}
 }
 
 // Slot 返回共享 funcref 表槽号 + 是否登记。
