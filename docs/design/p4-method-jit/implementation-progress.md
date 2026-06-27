@@ -1039,6 +1039,56 @@ N>=2 返值 getter 子态(0 参 N=2/N=3 返,4 子):
 
 ---
 
+### 9.16 PJ5 调用族 inline 完整形态学矩阵汇总(2026-06-27 落地)
+
+承 §9.14/§9.15 PJ5 CALL void / TAILCALL 真接入主路径。本节汇总单 session 累计推进的完整形态学矩阵(204 + 70 = 274 子形态),作为 PJ5 当前覆盖面的单一参考。
+
+**形态学维度**(三轴):
+- **callee 装载**:MOVE(parameter callee)/ GETUPVAL(upvalue callee 闭包调外层 known local fn)— 双 callee
+- **参数装载**:0 / 1 K / 1 reg / 2..6 参四组合 K+K / K+R / R+K / R+R(每参独立 K/reg 选择)
+- **返值形态**:setter(0 返)/ getter(1 返)/ N>=2 返值 getter(0 参 N=2/N=3 + 1 K/reg 参 N=2)/ tail(透传)
+
+**CALL void 子形态计数**(204 = setter 102 + getter 1 返 94 + getter N>=2 返值 8):
+
+| 维度 | setter | getter 1 返 | getter N>=2 返值 |
+|---|---|---|---|
+| 0 参 | 2(A0/B0) | 2(AR1/BR1) | 4(N=2/N=3 × 双 callee) |
+| 1 K 参 | 2(A1K/B1K) | 2(A1KR1/B1KR1) | 2(N=2 × 双 callee) |
+| 1 reg 参 | 2(A1R/B1R) | 2(A1RR1/B1RR1) | 2(N=2 × 双 callee) |
+| 2 参四组合 | 8(A2K..A2R + B2K..B2R) | 8(A2KR1..A2RR1 + B2KR1..B2RR1) | — |
+| 3 参四组合 | 8(A3K..A3R + B3K..B3R) | 8(A3*R1 × 双 callee) | — |
+| 4 参四组合 | 8(A4K..A4R + B4K..B4R)| 8(A4*R1 × 双 callee) | — |
+| 5 参四组合 | 8(A5K..A5R + B5K..B5R)| 8(A5*R1 × 双 callee)| — |
+| 6 参四组合 | 64(A6 × 双 callee × 32 排列)| 56(A6*R1 × 双 callee × 28 排列)| — |
+| **小计** | 102 | 94 | 8 |
+
+**TAILCALL 子形态计数**(70 = 双 callee × {0/1K/1R/2/3/4/5 参四组合 + 6 参 32 排列}):
+- TA0/TB0 + TA1K/TB1K + TA1R/TB1R(共 6 子)
+- TA2*/TB2* + TA3*/TB3* + TA4*/TB4* + TA5*/TB5*(2 参四组合 × 双 callee × 4 长度 = 32 子)
+- 6 参 TAILCALL 留下一批
+
+**关键改动汇总**:
+- `internal/gibbous/jit/host.go::P4HostState`:加 CallBaseline + TailCall 三态分支接口
+- `internal/crescent/gibbous_host.go::State.{CallBaseline,TailCall}`:实装(复用 DoCall/doTailCall baseline 分支,绕过 R3 indirect 哨兵 / 同步驱动 callee 链)
+- `internal/gibbous/jit/compiler.go::{analyzeCallVoidForm,analyzeTailCallForm}`:形态识别(长度 3..10 / 4..9,严密 luac 子形态校验)
+- `internal/gibbous/jit/compiler.go::decodeArgFromOp`:LOADK/MOVE 通用参装载 helper(8+ 子分支复用)
+- `internal/gibbous/jit/code.go::Run prelude` CALL/TAILCALL case:6 参装载分流 + N 个 MOVE 拷贝(N>=2 返值)+ TailCall 三态分支
+- `internal/gibbous/jit/probes.go::{SpecCallVoidHits,SpecTailCallHits}`:prove-the-path 白盒命中探针
+- `internal/bridge/analyzer.go::AnalyzeProtoWithOuter`:P2 scope-aware 扩展(跨 Proto 传递 outer localFnAsts,打通嵌套 closure 调外层 known local fn 形态的真升层)
+
+**测试覆盖**:33 e2e CALL + 12 e2e TAILCALL + 32 difftest CALL + 11 difftest TAILCALL 全部 SpecCallVoidHits/SpecTailCallHits=1 命中实证 + 三方 byte-equal(oracle lua5.1 / crescent / p4-jit)。
+
+**剩余 PJ5 完整接入工程**(留多会话/物理 runner 接入):
+- 7+ 参形态(预计 case 11+ 扩,工程膨胀线性)
+- SELF method call(`obj:method()`)— 需 P2 visitMethodCallExpr 放宽或新设 known method whitelist
+- N>=2 返值多参(2/3 参 N=2/N=3 返,工程类同 1 参 N=2)
+- OSR exit 实装(承 04 §3.3,需投机模板真接入时同批)
+- 段内 inline EmitCallInline 模板(amd64/arm64 真发射 + 跳过 Go 端 prelude round-trip)
+
+**ROI 评估**:204 + 70 = 274 子形态完整覆盖 0..6 参 × {0/1 返/N=2 返/tail} × 双 callee 维度,对位 luajc 档「method-JIT 真升层主路径」基础设施达成,real-world 业务高频形态(透明 wrapper / proxy / multi-return getter / setter / OOP-style getter 等)全部进入 P4 升层范围。后续推进按 ROI 衰减留多会话,本会话 single-session 上限交付实质 PJ 进展。
+
+---
+
 ## 10. 后续维护协议
 
 PJ0 启动后,本文按以下协议更新(承 [P3 implementation-progress §5](../p3-wasm-tier/implementation-progress.md) 范本):
