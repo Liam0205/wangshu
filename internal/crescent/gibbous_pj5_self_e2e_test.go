@@ -1429,3 +1429,51 @@ return count`
 	t.Logf("SpecSelfCallSpecHits: %d → %d(N=15 返 cC=16,上界严格)",
 		specBefore, specAfter)
 }
+
+// TestPJ5_SelfCall_E2E_SpecTemplate_ErrorBubbleUp_NilRecv 验 PJ5 SELF spec
+// template 路径下 receiver 为 nil 时错误冒泡正确性(承 PR #26 评论建议 3
+// 深度覆盖路径 + R14 修复后 Go G 正确性)。
+//
+// **场景**:warmup 阶段填 IC NodeHit + FBSelfMono feedback,Phase 2 升 P4
+// spec template 路径;Phase 3 用 nil receiver 触发 spec NodeHit guard 失败
+// → onOSRExit 累积 deopt → 降级 host.Self 完整 P1 SELF 段 → raise
+// "attempt to index nil value" 错误透明冒泡。
+func TestPJ5_SelfCall_E2E_SpecTemplate_ErrorBubbleUp_NilRecv(t *testing.T) {
+	jit.ResetSpecHits()
+	// Phase 1: warmup IC NodeHit + FBSelfMono feedback
+	warmupSrc := `
+local mt = { m = function(self) return 42 end }
+local function caller(t) return t:m() end
+local sum = 0
+for i = 1, 100 do sum = sum + caller(mt) end
+return sum`
+	st, mainCl := loadFnP4(t, warmupSrc)
+	if _, err := st.Call(value.GCRefOf(mainCl), nil, 1); err != nil {
+		t.Fatalf("warmup: %v", err)
+	}
+	st.bridge.SetForceAllPromote(true)
+	if _, err := st.Call(value.GCRefOf(mainCl), nil, 1); err != nil {
+		t.Fatalf("Phase 2 spec template: %v", err)
+	}
+	hitsBefore := jit.SpecSelfCallSpecHits()
+	if hitsBefore == 0 {
+		t.Fatal("Phase 2 SpecSelfCallSpecHits=0 — spec template 未触达,测试前提失败")
+	}
+
+	// Phase 3:同 caller 但 receiver=nil → spec template NodeHit guard 必失败
+	// → deopt → host.Self → raise "index nil"
+	nilSrc := `
+local mt = { m = function(self) return 42 end }
+local function caller(t) return t:m() end
+return caller(nil)`
+	st2, mainCl2 := loadFnP4(t, nilSrc)
+	st2.bridge.SetForceAllPromote(true)
+	_, err := st2.Call(value.GCRefOf(mainCl2), nil, 1)
+	if err == nil {
+		t.Fatal("应 raise 'attempt to index nil value' 错误,但 Call 成功返回")
+	}
+	if !strings.Contains(err.Error(), "index") {
+		t.Errorf("err 消息 = %q,应含 'index' 关键字", err.Error())
+	}
+	t.Logf("spec template 错误冒泡正确:%v", err)
+}
