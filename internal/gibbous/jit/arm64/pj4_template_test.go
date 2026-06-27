@@ -1054,6 +1054,43 @@ func TestPJ8_EmitFrameInlineWriteCIWordArm64_Length(t *testing.T) {
 	}
 }
 
+// TestPJ8_EmitFrameInlineLoadClosureGCRefArm64_Length 验 arm64 closure GCRef
+// NaN-box 解析模板长度(LDR 4 + MovImm64 16 + AND 4 = 24 字节,对位 amd64 = 20)。
+func TestPJ8_EmitFrameInlineLoadClosureGCRefArm64_Length(t *testing.T) {
+	var buf []byte
+	buf = EmitFrameInlineLoadClosureGCRefArm64(buf, 5)
+	if len(buf) != EncodedFrameInlineLoadClosureGCRefArm64Len {
+		t.Errorf("EmitFrameInlineLoadClosureGCRefArm64 长度 = %d, want %d",
+			len(buf), EncodedFrameInlineLoadClosureGCRefArm64Len)
+	}
+}
+
+// TestPJ8_EmitFrameInlineLoadClosureGCRefArm64_AndEncoding 验 AND x16, x16, x17
+// 关键编码(0x8A110210)。
+func TestPJ8_EmitFrameInlineLoadClosureGCRefArm64_AndEncoding(t *testing.T) {
+	var buf []byte
+	buf = EmitFrameInlineLoadClosureGCRefArm64(buf, 0)
+	// AND x16, x16, x17 在 offset 20(LDR 4 + MovXdImm64 16 = 20)
+	andInsn := binary.LittleEndian.Uint32(buf[20:24])
+	// AND x16, x16, x17 = 0x8A000000 + (17<<16) + (16<<5) + 16
+	// = 0x8A000000 + 0x110000 + 0x200 + 0x10 = 0x8A110210
+	const wantAnd = uint32(0x8A110210)
+	if andInsn != wantAnd {
+		t.Errorf("AND x16, x16, x17 = 0x%08X, want 0x%08X", andInsn, wantAnd)
+	}
+}
+
+// TestPJ8_EmitFrameInlineWriteCIWordFromXArm64_Length 验 arm64 word 写入 Xt
+// 模板长度(4 字节)。
+func TestPJ8_EmitFrameInlineWriteCIWordFromXArm64_Length(t *testing.T) {
+	var buf []byte
+	buf = EmitFrameInlineWriteCIWordFromXArm64(buf, 3, 16)
+	if len(buf) != EncodedFrameInlineWriteCIWordFromXArm64Len {
+		t.Errorf("EmitFrameInlineWriteCIWordFromXArm64 长度 = %d, want %d",
+			len(buf), EncodedFrameInlineWriteCIWordFromXArm64Len)
+	}
+}
+
 // TestPJ8_EmitFrameInlineBuildVoid0ArgSkeletonArm64_Length 验 arm64 Spike 1
 // enterLuaFrame 字节级 inline 骨架总长度(40 + 100 + 16 = 156 字节,
 // 对位 amd64 = 110)。

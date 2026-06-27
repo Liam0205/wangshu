@@ -919,3 +919,47 @@ func EmitFrameInlineBuildVoid0ArgSkeletonArm64(buf []byte,
 
 // EncodedFrameInlineBuildVoid0ArgSkeletonArm64Len = 40 + 20*5 + 16 = 156.
 const EncodedFrameInlineBuildVoid0ArgSkeletonArm64Len = 156
+
+// EmitFrameInlineLoadClosureGCRefArm64 发射 arm64 字节级 R(srcReg) NaN-box
+// → x16 48-bit GCRef 解析模板(承 §9.20 Option B Spike 1 amd64 对位)。
+//
+// 字节序列(4 + 16 + 4 = 24 字节):
+//
+//	ldr  x16, [x26 + srcReg*8]      ; 4 字节(x26 = vsBase)
+//	mov  x17, payloadMask           ; 16 字节(movz+movk*3)
+//	and  x16, x16, x17              ; 4 字节
+//
+// arm64 24 字节 vs amd64 20 字节,多 4 字节因 EmitMovXdImm64 16 字节
+// vs amd64 mov rdx imm64 10 字节(6 字节差 - 部分 LDR 形态省 2 字节)。
+//
+// x16/x17 是 IP0/IP1 scratch 寄存器(intra-procedure-call scratch)。
+func EmitFrameInlineLoadClosureGCRefArm64(buf []byte, srcReg uint8) []byte {
+	// LDR x16, [x26 + srcReg*8]
+	buf = EmitLdrXtFromXnDisp(buf, 16, 26, uint16(srcReg)*8)
+	// MOV x17, payloadMask
+	buf = EmitMovXdImm64(buf, 17, 0x0000_FFFF_FFFF_FFFF)
+	// AND x16, x16, x17
+	buf = EmitAndXdXnXm(buf, 16, 16, 17)
+	return buf
+}
+
+// EncodedFrameInlineLoadClosureGCRefArm64Len = 4+16+4 = 24.
+const EncodedFrameInlineLoadClosureGCRefArm64Len = 24
+
+// EmitFrameInlineWriteCIWordFromXArm64 发射 arm64「STR Xt, [x0 + wordIdx*8]」
+// 4 字节(对位 amd64 EmitFrameInlineWriteCIWordFromRcx)。
+//
+// Xt 由 caller 指定(典型 x16 = 装载好的 GCRef payload)。
+//
+// 编码:STR Xt, [Xn, #pimm12]:0xF9000000 base + (pimm12<<10) + (Xn=0<<5) + Xt
+//   - pimm12 = wordIdx(byteOff / 8)
+//   - Xn = 0(x0 装 CallInfo[depth] 帧起点)
+func EmitFrameInlineWriteCIWordFromXArm64(buf []byte, wordIdx uint8, srcReg uint8) []byte {
+	if wordIdx > 4 {
+		wordIdx = 0
+	}
+	return EmitStrXtToXnDisp(buf, srcReg, 0, uint16(wordIdx)*8)
+}
+
+// EncodedFrameInlineWriteCIWordFromXArm64Len = 4.
+const EncodedFrameInlineWriteCIWordFromXArm64Len = 4

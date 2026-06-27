@@ -507,12 +507,15 @@ func EmitMulXdXnXm(buf []byte, rd, rn, rm uint8) []byte {
 // EncodedMulXdXnXmLen = 4.
 const EncodedMulXdXnXmLen = 4
 
-// EmitAndXdXnXm 发射 arm64「and Xd, Xn, Xm」(shifted register,shift=00)。
+// EmitAndXdXnXm 发射 arm64「and Xd, Xn, Xm」(shifted register,shift=00 LSL 0)。
 //
 // 编码:1000_1010_00_mmmmm_000000_nnnnn_ddddd = 0x8A000000 base
+//   - sf=1, opc=00(AND), shift=00, imm6=000000(LSL 0)
+//   - + (Xm<<16) + (Xn<<5) + Xd
 //
 // 用例:PJ4 IC arm64 端——`and x0, x0, x1`(从 NaN-box 提取 GCRef
-// payload,对位 amd64 `and rax, rcx` 3 字节)。
+// payload,对位 amd64 `and rax, rcx` 3 字节);
+// PJ5 Option B Spike 1 — `and x16, x16, x17` NaN-box payload mask 解析。
 func EmitAndXdXnXm(buf []byte, rd, rn, rm uint8) []byte {
 	if rd > 30 {
 		rd = 0
