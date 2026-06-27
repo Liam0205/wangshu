@@ -1447,6 +1447,19 @@ mmap 段**禁直接写 Go 堆指针**(违反三色不变式):
 | arena grow 失效 | helper 调 grow 后 mmap 续跑用旧 arenaBase | BB 入口重 load arenaBase(发射器自动插) |
 | GC 精确栈扫描失败 | JIT 帧在 goroutine 栈上无 stack map | JIT 只跑自管栈([]byte 无指针),goroutine 栈停 trampoline 进入前 |
 
+**(6.5) R14 ABI 违约修复**(2026-06-28 已落地,承 PR #26 外部审查):
+
+外部审查发现 PJ4 IC 六路径 + PJ5 SELF spec template 字节级模板把 arena base 装进 R14(`EmitMovqR14FromR15Disp`),但 R14 是 Go amd64 ABIInternal 的 g 寄存器,trampoline_spec_amd64.s / trampoline_full_amd64.s 原 PUSH/POP **不包 R14**,段尾 RET 直接污染 Go G,生产负载下 morestack/抢占/同步取 g 时 SEGV。
+
+**修复方案**(承外部审查方案 2 + 5b28c8a):
+- trampoline_spec_amd64.s::callJITSpec 入口 `PUSHQ R14`、出口 `POPQ R14`
+- trampoline_full_amd64.s::callJITFull 同款 PUSH/POP R14
+- 共加 2*2 = 4 条 PUSH/POP 指令(+ 4 字节寄存器栈占用)
+
+**安全性论证**:trampoline NOSPLIT 段不触发 morestack(无 Go 栈分配);mmap 段内 CALL AX 间接调用 PROT_RX 段全字节级原生指令,无 Go 函数调用,无回边检查点,无 Go runtime 取 g 操作;段返回路径走 CALL AX → RET → trampoline POPQ R14 恢复 Go G;Go runtime 后续抢占/morestack/同步取 g 均见正确 G;段瞬时 ~ns 不被异步抢占(Go 1.14+ 异步抢占基于 SIGURG,只在 safepoint/Go function entry 触发,mmap 段无 safepoint)。
+
+**修复后验证**:make test-p4 21 binary 全过 + V18 -race 含 ConcurrentForceAll/ConcurrentForceAll_MultiRet 多 State 8 goroutine 并发跑 spec template 路径,无 race 无 SEGV。
+
 **(7) Spike 1 真接入 Step C-E 渐进路线**(承 §9.20.3 + 本节):
 
 - Step C-1:helper 函数 `HelperRunCalleeAfterFrameInline(jitCtx *JITContext, base int32, retA int32) int32` 实装 + `//go:nosplit` + 字节级 SP 协议单测
