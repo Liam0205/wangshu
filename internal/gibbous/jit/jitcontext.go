@@ -49,6 +49,14 @@ const (
 	JITContextValueStackBaseOffset = unsafe.Offsetof(JITContext{}.valueStackBase)
 	JITContextPreemptFlagOffset    = unsafe.Offsetof(JITContext{}.preemptFlag)
 	JITContextExitReasonOffset     = unsafe.Offsetof(JITContext{}.exitReasonCode)
+	// PJ5 Option B Spike 1+ 帧建立内联:暴露 ciDepth / ciSegBase / top 的 host
+	// 字节地址(承 §9.20),mmap 段经 r15+offset 解引 uintptr 后字节级 inc/dec
+	// CI 段。复用 P3 PW10 Stage 1a/2 镜像字(crescent.State.ciDepthRef /
+	// ciSegBaseRef / topRef),但用 host addr(uintptr)而非 wasm linear memory
+	// offset(P3 wasm 段 vs P4 mmap 段两端不同寻址协议)。
+	JITContextCIDepthAddrOffset   = unsafe.Offsetof(JITContext{}.ciDepthAddr)
+	JITContextCISegBaseAddrOffset = unsafe.Offsetof(JITContext{}.ciSegBaseAddr)
+	JITContextTopAddrOffset       = unsafe.Offsetof(JITContext{}.topAddr)
 )
 
 // JITContext 是 P4 跨边界的执行上下文(05 §3.3)。
@@ -128,6 +136,35 @@ type JITContext struct {
 	// 承 implementation-progress §3.1 「自管机器栈大小」开放问题,PJ0/PJ1
 	// 实测定)。
 	spillTop uintptr
+
+	// ciDepthAddr 是 thread.ciDepth 镜像字的 host 字节地址(承 §9.20
+	// Option B Spike 1)。
+	//
+	// **复用 P3 PW10 Stage 1a 镜像字**(crescent.State.ciDepthRef):
+	// crescent 端 wireP4 时把 `&arena.Words()[ciDepthRef].byte` 注入。
+	// mmap 段 emit `mov rax, [r15+ciDepthAddr]; inc qword ptr [rax]`
+	// 字节级 ciDepth++(enterLuaFrame inline)/ `dec ...`(popCallInfo inline)。
+	//
+	// **0 = 未接入**(Spike 0 阶段);Spike 1 真接入时 crescent setter 写入。
+	ciDepthAddr uintptr
+
+	// ciSegBaseAddr 是 CI 段当前字节基址镜像字的 host 字节地址(承 §9.20
+	// Option B Spike 1)。
+	//
+	// **复用 P3 PW10 Stage 2 镜像字**(crescent.State.ciSegBaseRef):
+	// CI 段是可重定位的(grow 后字节基址变),crescent 端 wireP4 时把
+	// `&arena.Words()[ciSegBaseRef].byte` 注入。mmap 段 emit `mov rax,
+	// [r15+ciSegBaseAddr]; mov rbx, [rax]` 先解引出当前 CI 段基址,然后
+	// 算 `rbx + depth*ciSlotSize + word*8` 寻址 CallInfo[depth] 字段。
+	ciSegBaseAddr uintptr
+
+	// topAddr 是 thread.top 镜像字的 host 字节地址(承 §9.20 Option B Spike 1)。
+	//
+	// **复用 P3 PW10 Stage 1a 镜像字**(crescent.State.topRef):
+	// thread.top 是栈槽索引(grow 安全坐标),enterLuaFrame 设 callee 帧顶
+	// 时写本字(top = base + MaxStack)。mmap 段 emit `mov rax, [r15+topAddr];
+	// mov qword ptr [rax], topVal` 字节级 top 设置。
+	topAddr uintptr
 }
 
 // NewJITContext 构造 P4 JIT 执行上下文。
@@ -185,3 +222,28 @@ func (c *JITContext) ArenaBase() uintptr { return c.arenaBase }
 
 // ValueStackBase 返回当前帧 R0 字节地址(测试钩子)。
 func (c *JITContext) ValueStackBase() uintptr { return c.valueStackBase }
+
+// SetCIDepthAddr 设置 thread.ciDepth 镜像字的 host 字节地址(承 §9.20
+// Option B Spike 1)。承 crescent.State.wireP4 注入。
+func (c *JITContext) SetCIDepthAddr(addr uintptr) {
+	c.ciDepthAddr = addr
+}
+
+// CIDepthAddr 返回 thread.ciDepth 镜像字的 host 字节地址(测试钩子)。
+func (c *JITContext) CIDepthAddr() uintptr { return c.ciDepthAddr }
+
+// SetCISegBaseAddr 设置 CI 段当前字节基址镜像字的 host 字节地址(承 §9.20)。
+func (c *JITContext) SetCISegBaseAddr(addr uintptr) {
+	c.ciSegBaseAddr = addr
+}
+
+// CISegBaseAddr 返回 CI 段镜像字的 host 字节地址(测试钩子)。
+func (c *JITContext) CISegBaseAddr() uintptr { return c.ciSegBaseAddr }
+
+// SetTopAddr 设置 thread.top 镜像字的 host 字节地址(承 §9.20)。
+func (c *JITContext) SetTopAddr(addr uintptr) {
+	c.topAddr = addr
+}
+
+// TopAddr 返回 thread.top 镜像字的 host 字节地址(测试钩子)。
+func (c *JITContext) TopAddr() uintptr { return c.topAddr }
