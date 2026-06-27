@@ -227,6 +227,24 @@ type shapeInfo struct {
 	// 与 isCallVoid 互斥(preludeOp=CALL → isCallVoid;preludeOp=TAILCALL →
 	// isTailCall)。形态识别在 analyzeTailCallForm。
 	isTailCall bool
+
+	// PJ5 SELF method call inline 形态(`obj:method(args)` 类):
+	//   - isSelfCall = true:Run 端 prelude 路径调 host.Self + (CallBaseline|TailCall)
+	//     完成 SELF + CALL/TAILCALL byte-equal P1 doCall 分派。
+	//   - selfCallA / selfMethodRK:SELF.A(method 结果)/ SELF.C(RK 方法名常量索引)
+	//   - selfRecvSrcReg / selfRecvIsUpval:receiver 来自 R(selfRecvSrcReg) 还是 upvalue
+	//     索引(luac 编 SELF 前 MOVE/GETUPVAL 入 R(SELF.A)=R(SELF.B) recv)
+	//
+	// 复用 isTailCall / callA / callB / callC / callArgCount / callArg1*..callArg7*
+	// 字段 — SELF + CALL = isCallVoid=false isTailCall=false isSelfCall=true CALL 分支;
+	// SELF + TAILCALL = isTailCall=true isSelfCall=true TAILCALL 分支。
+	//
+	// 形态识别在 analyzeSelfCallForm。
+	isSelfCall      bool
+	selfCallA       uint8  // SELF.A = method 结果寄存器(同 callA)
+	selfMethodRK    uint16 // SELF.C 字段(RK 方法名常量索引 0-511)
+	selfRecvSrcReg  uint8  // recv 来源 reg(form M*)/ upvalue 索引(form U*)
+	selfRecvIsUpval bool   // true = recv 来自 upvalue;false = 来自 reg
 }
 
 // analyzeGetTableArrayHit 识别 PJ4 IC ArrayHit 形态:
@@ -2281,8 +2299,420 @@ func analyzeTailCallForm(proto *bytecode.Proto) (shapeInfo, bool) {
 	}, true
 }
 
-// analyzeShape 识别支持的「单值产生 + RETURN A 1」形态。
+// analyzeSelfCallForm 识别 PJ5 SELF method call inline 形态(承
+// docs/design/p4-method-jit/05-system-pipeline.md §4.3 + 09 §9.17):
 //
+// `function(o) o:m() end` / `function() o:m() end`(upval recv)/
+// `function(o) return o:m() end`(SELF + TAILCALL)等。luac 编 SELF + CALL/
+// TAILCALL inline 形态长度 4..6(渐进白名单纪律,初批先做 0/1 K/1 reg/2 K
+// 参 × 双 receiver(M/U)× CALL void / CALL getter 1 返 / TAILCALL)。
+//
+// **典型 luac 编译形态**(0 参 void,长度 4):
+//
+//	形态 M0:`function(o) o:m() end`(recv from parameter reg)
+//	  [0] MOVE     A=callA B=recvSrc   (拷 recv 到 R(callA),供 SELF.B 读)
+//	  [1] SELF     A=callA B=callA C=K_method (R(callA)=R(callA)[K_m]; R(callA+1)=R(callA))
+//	  [2] CALL     A=callA B=2 C=1     (0 参 0 返)
+//	  [3] RETURN   A=0     B=1
+//
+//	形态 U0:`function() o:m() end`(recv from upvalue,o 是 upval)
+//	  [0] GETUPVAL A=callA B=upvalIdx
+//	  [1] SELF     A=callA B=callA C=K_m
+//	  [2] CALL     A=callA B=2 C=1
+//	  [3] RETURN   A=0     B=1
+//
+// **触发条件**(共同):
+//   - Code 长度 4..6
+//   - [0] = MOVE 或 GETUPVAL,[0].A == [1].A == [1].B(SELF/CALL 链 callA 一致)
+//   - [1] = SELF,A=callA B=callA C>=256(K 常量索引)
+//
+// 失败任一条件返 (shapeInfo{}, false)— 走原 analyzeShape 主分流。
+func analyzeSelfCallForm(proto *bytecode.Proto) (shapeInfo, bool) {
+	codeLen := len(proto.Code)
+	if codeLen < 4 || codeLen > 6 {
+		return shapeInfo{}, false
+	}
+	op0 := bytecode.Op(proto.Code[0])
+	if op0 != bytecode.MOVE && op0 != bytecode.GETUPVAL {
+		return shapeInfo{}, false
+	}
+	op0A := bytecode.A(proto.Code[0])
+	op0B := bytecode.B(proto.Code[0])
+	if op0A > 254 || op0B > 254 {
+		return shapeInfo{}, false
+	}
+	// [1] = SELF callA callA RK_method
+	op1 := bytecode.Op(proto.Code[1])
+	if op1 != bytecode.SELF {
+		return shapeInfo{}, false
+	}
+	selfA := bytecode.A(proto.Code[1])
+	selfB := bytecode.B(proto.Code[1])
+	selfC := bytecode.C(proto.Code[1])
+	if selfA != op0A || selfB != op0A {
+		// SELF 的 A/B 必须 = MOVE/GETUPVAL.A(因为前置 op 装 recv 到 R(callA))
+		return shapeInfo{}, false
+	}
+	if selfC < 256 {
+		// SELF.C 必须是 K 常量索引(method 名)— reg 形态留 PJ5+ 扩
+		return shapeInfo{}, false
+	}
+	callA := uint8(selfA)
+	selfRK := uint16(selfC)
+
+	switch codeLen {
+	case 4:
+		return analyzeSelfCallForm4(proto, callA, selfRK, op0, op0B)
+	case 5:
+		return analyzeSelfCallForm5(proto, callA, selfRK, op0, op0B)
+	case 6:
+		return analyzeSelfCallForm6(proto, callA, selfRK, op0, op0B)
+	}
+	return shapeInfo{}, false
+}
+
+// analyzeSelfCallForm4 处理长度 4 形态:0 参 0 返 CALL void / 0 参 TAILCALL。
+func analyzeSelfCallForm4(proto *bytecode.Proto, callA uint8, selfRK uint16,
+	op0 bytecode.OpCode, op0B int) (shapeInfo, bool) {
+	op2 := bytecode.Op(proto.Code[2])
+	op3 := bytecode.Op(proto.Code[3])
+	if op2 != bytecode.CALL && op2 != bytecode.TAILCALL {
+		return shapeInfo{}, false
+	}
+	if op3 != bytecode.RETURN {
+		return shapeInfo{}, false
+	}
+	cA := bytecode.A(proto.Code[2])
+	cB := bytecode.B(proto.Code[2])
+	cC := bytecode.C(proto.Code[2])
+	if cA != int(callA) || cB != 2 {
+		return shapeInfo{}, false
+	}
+	if op2 == bytecode.CALL {
+		if cC != 1 {
+			return shapeInfo{}, false
+		}
+		if bytecode.B(proto.Code[3]) != 1 {
+			return shapeInfo{}, false
+		}
+		return shapeInfo{
+			ok:              true,
+			retA:            0,
+			retB:            1,
+			retPC:           3,
+			preludeOp:       uint8(bytecode.CALL),
+			preludeArg:      uint32(op0B),
+			isCallVoid:      true,
+			isCallUpval:     op0 == bytecode.GETUPVAL,
+			callA:           callA,
+			callB:           uint8(cB),
+			callC:           uint8(cC),
+			callArgCount:    0,
+			isSelfCall:      true,
+			selfCallA:       callA,
+			selfMethodRK:    selfRK,
+			selfRecvSrcReg:  uint8(op0B),
+			selfRecvIsUpval: op0 == bytecode.GETUPVAL,
+		}, true
+	}
+	// TAILCALL
+	if cC != 0 {
+		return shapeInfo{}, false
+	}
+	retB := bytecode.B(proto.Code[3])
+	if retB != 0 {
+		return shapeInfo{}, false
+	}
+	return shapeInfo{
+		ok:              true,
+		retA:            uint8(bytecode.A(proto.Code[3])),
+		retB:            uint8(retB),
+		retPC:           3,
+		preludeOp:       uint8(bytecode.TAILCALL),
+		preludeArg:      uint32(op0B),
+		isTailCall:      true,
+		isCallUpval:     op0 == bytecode.GETUPVAL,
+		callA:           callA,
+		callB:           uint8(cB),
+		callC:           uint8(cC),
+		callArgCount:    0,
+		isSelfCall:      true,
+		selfCallA:       callA,
+		selfMethodRK:    selfRK,
+		selfRecvSrcReg:  uint8(op0B),
+		selfRecvIsUpval: op0 == bytecode.GETUPVAL,
+	}, true
+}
+
+// analyzeSelfCallForm5 处理长度 5 形态:CALL getter 0 参 1 返 / CALL void 1 K/reg 参 / TAILCALL 1 K/reg 参。
+func analyzeSelfCallForm5(proto *bytecode.Proto, callA uint8, selfRK uint16,
+	op0 bytecode.OpCode, op0B int) (shapeInfo, bool) {
+	op2 := bytecode.Op(proto.Code[2])
+	op3 := bytecode.Op(proto.Code[3])
+	op4 := bytecode.Op(proto.Code[4])
+	// (a) Code[2]=CALL → getter 0 参 1 返
+	if op2 == bytecode.CALL {
+		cA := bytecode.A(proto.Code[2])
+		cB := bytecode.B(proto.Code[2])
+		cC := bytecode.C(proto.Code[2])
+		if cA != int(callA) || cB != 2 || cC != 2 {
+			return shapeInfo{}, false
+		}
+		if op3 != bytecode.RETURN || op4 != bytecode.RETURN {
+			return shapeInfo{}, false
+		}
+		rA := bytecode.A(proto.Code[3])
+		rB := bytecode.B(proto.Code[3])
+		if rA != int(callA) || rB != 2 {
+			return shapeInfo{}, false
+		}
+		if bytecode.B(proto.Code[4]) != 1 {
+			return shapeInfo{}, false
+		}
+		return shapeInfo{
+			ok:              true,
+			retA:            uint8(rA),
+			retB:            2,
+			retPC:           3,
+			preludeOp:       uint8(bytecode.CALL),
+			preludeArg:      uint32(op0B),
+			isCallVoid:      true,
+			isCallUpval:     op0 == bytecode.GETUPVAL,
+			callA:           callA,
+			callB:           uint8(cB),
+			callC:           uint8(cC),
+			callArgCount:    0,
+			isSelfCall:      true,
+			selfCallA:       callA,
+			selfMethodRK:    selfRK,
+			selfRecvSrcReg:  uint8(op0B),
+			selfRecvIsUpval: op0 == bytecode.GETUPVAL,
+		}, true
+	}
+	// (b)(c):[2] = LOADK/MOVE  arg → R(callA+2)
+	if op2 != bytecode.LOADK && op2 != bytecode.MOVE {
+		return shapeInfo{}, false
+	}
+	var argIsK bool
+	var argK uint64
+	var argReg uint8
+	if !decodeArgFromOp(proto, 2, int(callA)+2, &argIsK, &argK, &argReg) {
+		return shapeInfo{}, false
+	}
+	if op3 != bytecode.CALL && op3 != bytecode.TAILCALL {
+		return shapeInfo{}, false
+	}
+	cA := bytecode.A(proto.Code[3])
+	cB := bytecode.B(proto.Code[3])
+	cC := bytecode.C(proto.Code[3])
+	if cA != int(callA) || cB != 3 {
+		return shapeInfo{}, false
+	}
+	if op4 != bytecode.RETURN {
+		return shapeInfo{}, false
+	}
+	retB := bytecode.B(proto.Code[4])
+	if op3 == bytecode.CALL {
+		if cC != 1 || retB != 1 {
+			return shapeInfo{}, false
+		}
+		return shapeInfo{
+			ok:              true,
+			retA:            0,
+			retB:            1,
+			retPC:           4,
+			preludeOp:       uint8(bytecode.CALL),
+			preludeArg:      uint32(op0B),
+			isCallVoid:      true,
+			isCallUpval:     op0 == bytecode.GETUPVAL,
+			callA:           callA,
+			callB:           uint8(cB),
+			callC:           uint8(cC),
+			callArgCount:    1,
+			callArg1IsK:     argIsK,
+			callArg1K:       argK,
+			callArg1RegSrc:  argReg,
+			isSelfCall:      true,
+			selfCallA:       callA,
+			selfMethodRK:    selfRK,
+			selfRecvSrcReg:  uint8(op0B),
+			selfRecvIsUpval: op0 == bytecode.GETUPVAL,
+		}, true
+	}
+	// TAILCALL 1 参
+	if cC != 0 || retB != 0 {
+		return shapeInfo{}, false
+	}
+	return shapeInfo{
+		ok:              true,
+		retA:            uint8(bytecode.A(proto.Code[4])),
+		retB:            uint8(retB),
+		retPC:           4,
+		preludeOp:       uint8(bytecode.TAILCALL),
+		preludeArg:      uint32(op0B),
+		isTailCall:      true,
+		isCallUpval:     op0 == bytecode.GETUPVAL,
+		callA:           callA,
+		callB:           uint8(cB),
+		callC:           uint8(cC),
+		callArgCount:    1,
+		callArg1IsK:     argIsK,
+		callArg1K:       argK,
+		callArg1RegSrc:  argReg,
+		isSelfCall:      true,
+		selfCallA:       callA,
+		selfMethodRK:    selfRK,
+		selfRecvSrcReg:  uint8(op0B),
+		selfRecvIsUpval: op0 == bytecode.GETUPVAL,
+	}, true
+}
+
+// analyzeSelfCallForm6 处理长度 6 形态:CALL getter 1 K/reg 参 1 返 /
+// CALL void 2 K/reg 参 / TAILCALL 2 K/reg 参。
+func analyzeSelfCallForm6(proto *bytecode.Proto, callA uint8, selfRK uint16,
+	op0 bytecode.OpCode, op0B int) (shapeInfo, bool) {
+	op2 := bytecode.Op(proto.Code[2])
+	if op2 != bytecode.LOADK && op2 != bytecode.MOVE {
+		return shapeInfo{}, false
+	}
+	op3 := bytecode.Op(proto.Code[3])
+	// (a) Code[3]=CALL → getter 1 参 1 返:[2] arg → R(callA+2),[3] CALL B=3 C=2,[4] RETURN A=callA B=2,[5] RETURN B=1
+	if op3 == bytecode.CALL {
+		var argIsK bool
+		var argK uint64
+		var argReg uint8
+		if !decodeArgFromOp(proto, 2, int(callA)+2, &argIsK, &argK, &argReg) {
+			return shapeInfo{}, false
+		}
+		cA := bytecode.A(proto.Code[3])
+		cB := bytecode.B(proto.Code[3])
+		cC := bytecode.C(proto.Code[3])
+		if cA != int(callA) || cB != 3 || cC != 2 {
+			return shapeInfo{}, false
+		}
+		if bytecode.Op(proto.Code[4]) != bytecode.RETURN ||
+			bytecode.Op(proto.Code[5]) != bytecode.RETURN {
+			return shapeInfo{}, false
+		}
+		rA := bytecode.A(proto.Code[4])
+		rB := bytecode.B(proto.Code[4])
+		if rA != int(callA) || rB != 2 || bytecode.B(proto.Code[5]) != 1 {
+			return shapeInfo{}, false
+		}
+		return shapeInfo{
+			ok:              true,
+			retA:            uint8(rA),
+			retB:            2,
+			retPC:           4,
+			preludeOp:       uint8(bytecode.CALL),
+			preludeArg:      uint32(op0B),
+			isCallVoid:      true,
+			isCallUpval:     op0 == bytecode.GETUPVAL,
+			callA:           callA,
+			callB:           uint8(cB),
+			callC:           uint8(cC),
+			callArgCount:    1,
+			callArg1IsK:     argIsK,
+			callArg1K:       argK,
+			callArg1RegSrc:  argReg,
+			isSelfCall:      true,
+			selfCallA:       callA,
+			selfMethodRK:    selfRK,
+			selfRecvSrcReg:  uint8(op0B),
+			selfRecvIsUpval: op0 == bytecode.GETUPVAL,
+		}, true
+	}
+	// (b)(c):2 K/reg 参 — [2][3] LOADK/MOVE
+	if op3 != bytecode.LOADK && op3 != bytecode.MOVE {
+		return shapeInfo{}, false
+	}
+	var arg1IsK bool
+	var arg1K uint64
+	var arg1Reg uint8
+	var arg2IsK bool
+	var arg2K uint64
+	var arg2Reg uint8
+	if !decodeArgFromOp(proto, 2, int(callA)+2, &arg1IsK, &arg1K, &arg1Reg) {
+		return shapeInfo{}, false
+	}
+	if !decodeArgFromOp(proto, 3, int(callA)+3, &arg2IsK, &arg2K, &arg2Reg) {
+		return shapeInfo{}, false
+	}
+	op4 := bytecode.Op(proto.Code[4])
+	if op4 != bytecode.CALL && op4 != bytecode.TAILCALL {
+		return shapeInfo{}, false
+	}
+	cA := bytecode.A(proto.Code[4])
+	cB := bytecode.B(proto.Code[4])
+	cC := bytecode.C(proto.Code[4])
+	if cA != int(callA) || cB != 4 {
+		return shapeInfo{}, false
+	}
+	if bytecode.Op(proto.Code[5]) != bytecode.RETURN {
+		return shapeInfo{}, false
+	}
+	retB := bytecode.B(proto.Code[5])
+	if op4 == bytecode.CALL {
+		if cC != 1 || retB != 1 {
+			return shapeInfo{}, false
+		}
+		return shapeInfo{
+			ok:              true,
+			retA:            0,
+			retB:            1,
+			retPC:           5,
+			preludeOp:       uint8(bytecode.CALL),
+			preludeArg:      uint32(op0B),
+			isCallVoid:      true,
+			isCallUpval:     op0 == bytecode.GETUPVAL,
+			callA:           callA,
+			callB:           uint8(cB),
+			callC:           uint8(cC),
+			callArgCount:    2,
+			callArg1IsK:     arg1IsK,
+			callArg1K:       arg1K,
+			callArg1RegSrc:  arg1Reg,
+			callArg2IsK:     arg2IsK,
+			callArg2K:       arg2K,
+			callArg2RegSrc:  arg2Reg,
+			isSelfCall:      true,
+			selfCallA:       callA,
+			selfMethodRK:    selfRK,
+			selfRecvSrcReg:  uint8(op0B),
+			selfRecvIsUpval: op0 == bytecode.GETUPVAL,
+		}, true
+	}
+	// TAILCALL 2 参
+	if cC != 0 || retB != 0 {
+		return shapeInfo{}, false
+	}
+	return shapeInfo{
+		ok:              true,
+		retA:            uint8(bytecode.A(proto.Code[5])),
+		retB:            uint8(retB),
+		retPC:           5,
+		preludeOp:       uint8(bytecode.TAILCALL),
+		preludeArg:      uint32(op0B),
+		isTailCall:      true,
+		isCallUpval:     op0 == bytecode.GETUPVAL,
+		callA:           callA,
+		callB:           uint8(cB),
+		callC:           uint8(cC),
+		callArgCount:    2,
+		callArg1IsK:     arg1IsK,
+		callArg1K:       arg1K,
+		callArg1RegSrc:  arg1Reg,
+		callArg2IsK:     arg2IsK,
+		callArg2K:       arg2K,
+		callArg2RegSrc:  arg2Reg,
+		isSelfCall:      true,
+		selfCallA:       callA,
+		selfMethodRK:    selfRK,
+		selfRecvSrcReg:  uint8(op0B),
+		selfRecvIsUpval: op0 == bytecode.GETUPVAL,
+	}, true
+}
+
 // 支持形态:
 //
 //   - 长度 1:RETURN A 1/2(0 或 1 返回值)——R(A) 已是参数/Nil 槽
@@ -2332,6 +2762,12 @@ func analyzeShape(proto *bytecode.Proto) shapeInfo {
 	// 长度 4/5/6)在长度分流前先 try。luac stmtReturn 单 CallExpr 快路径产物。
 	if tc, ok := analyzeTailCallForm(proto); ok {
 		return tc
+	}
+
+	// PJ5 SELF method call 形态(MOVE/GETUPVAL + SELF + ... + CALL/TAILCALL + RETURN
+	// 长度 4..6)在长度分流前先 try。`obj:method(args)` 的 luac 编译形态。
+	if sc, ok := analyzeSelfCallForm(proto); ok {
+		return sc
 	}
 
 	// 形态 1/2:长度 2 或 3
@@ -3232,6 +3668,10 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 	if info.isTailCall {
 		incSpecTailCallHits()
 	}
+	// PJ5 SELF method call 形态 Compile 命中(prove-the-path 白盒命中证据)。
+	if info.isSelfCall {
+		incSpecSelfCallHits()
+	}
 
 	return &p4Code{
 		proto:          proto,
@@ -3278,6 +3718,12 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 		callArg7K:      info.callArg7K,
 		callArg7RegSrc: info.callArg7RegSrc,
 		isTailCall:     info.isTailCall,
+		// PJ5 SELF inline 形态字段
+		isSelfCall:      info.isSelfCall,
+		selfCallA:       info.selfCallA,
+		selfMethodRK:    info.selfMethodRK,
+		selfRecvSrcReg:  info.selfRecvSrcReg,
+		selfRecvIsUpval: info.selfRecvIsUpval,
 	}, nil
 }
 
