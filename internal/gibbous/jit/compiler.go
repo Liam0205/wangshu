@@ -5083,5 +5083,11 @@ func (c *Compiler) compileSpecSelfCall(proto *bytecode.Proto, info shapeInfo) (b
 		selfRecvSrcReg:  info.selfRecvSrcReg,
 		selfRecvIsUpval: info.selfRecvIsUpval,
 		useSpecSelfCall: true,
+		// PJ5 Option B Spike 1 帧建立内联(承 §9.20):透传 info.useFrameInline,
+		// 当前 analyzeSelfCallSpecForm 不设此字段(archSupportsFrameInline=false 屏蔽),
+		// 故 useFrameInline=false。Step C-2 真接入时 analyzeSelfCallSpecForm
+		// 加额外守门(callee Proto 元数据可知 + NumParams=0 + !IsVararg +
+		// !NeedsArg + MaxStack≤32)并设 info.useFrameInline=true。
+		useFrameInline: info.useFrameInline,
 	}, nil
 }
