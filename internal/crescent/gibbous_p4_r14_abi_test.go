@@ -174,3 +174,61 @@ return result`
 		t.Errorf("recurse(20) = %v, want 20", got)
 	}
 }
+
+// TestPJ4_R14ABI_GCStress_GetTable PJ4 GETTABLE IC ArrayHit/NodeHit 段
+// R14 ABI 后验:同 PJ5 SELF spec template 路径,IC 段也用 R14 装 arena base,
+// 验 GC + 反复跑下 Go G 正确性。
+func TestPJ4_R14ABI_GCStress_GetTable(t *testing.T) {
+	src := `
+local function f(t) return t[1] end
+local t = {42, 43, 44}
+local sum = 0
+for i = 1, 100 do sum = sum + f(t) end  -- warmup
+sum = sum + f(t)
+return sum`
+	st, mainCl := loadFnP4(t, src)
+	if _, err := st.Call(value.GCRefOf(mainCl), nil, 1); err != nil {
+		t.Fatalf("warmup: %v", err)
+	}
+	st.bridge.SetForceAllPromote(true)
+
+	for i := 0; i < 50; i++ {
+		rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+		if err != nil {
+			t.Fatalf("iter %d: %v", i, err)
+		}
+		if got := value.AsNumber(value.Value(rets[0])); got != 101*42 {
+			t.Errorf("iter %d result = %v, want %d", i, got, 101*42)
+		}
+		runtime.GC()
+		debug.FreeOSMemory()
+	}
+}
+
+// TestPJ4_R14ABI_GCStress_SetTable PJ4 SETTABLE IC ArrayHit/NodeHit 段
+// R14 ABI 后验:同款验 setter 路径下 R14 不残留 + Go G 正确。
+func TestPJ4_R14ABI_GCStress_SetTable(t *testing.T) {
+	src := `
+local function setter(t, v) t["x"] = v end
+local t = {x = 0}
+for i = 1, 100 do setter(t, i) end  -- warmup
+setter(t, 999)
+return t.x`
+	st, mainCl := loadFnP4(t, src)
+	if _, err := st.Call(value.GCRefOf(mainCl), nil, 1); err != nil {
+		t.Fatalf("warmup: %v", err)
+	}
+	st.bridge.SetForceAllPromote(true)
+
+	for i := 0; i < 50; i++ {
+		rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+		if err != nil {
+			t.Fatalf("iter %d: %v", i, err)
+		}
+		if got := value.AsNumber(value.Value(rets[0])); got != 999 {
+			t.Errorf("iter %d result = %v, want 999", i, got)
+		}
+		runtime.GC()
+		debug.FreeOSMemory()
+	}
+}
