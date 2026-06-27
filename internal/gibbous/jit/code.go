@@ -152,6 +152,9 @@ type p4Code struct {
 	callArg2IsK    bool
 	callArg2K      uint64
 	callArg2RegSrc uint8
+	callArg3IsK    bool
+	callArg3K      uint64
+	callArg3RegSrc uint8
 
 	// PJ5 TAILCALL 路径标志(承 docs/design/p4-method-jit/05-system-pipeline.md §4.3):
 	//   - isTailCall = true:Run prelude 路径调 host.TailCall 三态分支:
@@ -511,6 +514,15 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 				}
 				c.host.SetReg(int32(c.callA)+2, arg2Val)
 			}
+			if c.callArgCount >= 3 {
+				var arg3Val uint64
+				if c.callArg3IsK {
+					arg3Val = c.callArg3K
+				} else {
+					arg3Val = c.host.GetReg(int32(c.callArg3RegSrc))
+				}
+				c.host.SetReg(int32(c.callA)+3, arg3Val)
+			}
 			// baseline doCall:绕过 R3 indirect 哨兵(本简化形态不支持段内
 			// call_indirect),host/crescent/__call/gibbous 全形态同步跑完。
 			st := c.host.CallBaseline(int32(base), callPC,
@@ -570,6 +582,15 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 					arg2Val = c.host.GetReg(int32(c.callArg2RegSrc))
 				}
 				c.host.SetReg(int32(c.callA)+2, arg2Val)
+			}
+			if c.callArgCount >= 3 {
+				var arg3Val uint64
+				if c.callArg3IsK {
+					arg3Val = c.callArg3K
+				} else {
+					arg3Val = c.host.GetReg(int32(c.callArg3RegSrc))
+				}
+				c.host.SetReg(int32(c.callA)+3, arg3Val)
 			}
 			st := c.host.TailCall(int32(base), tailPC,
 				int32(c.callA), int32(c.callB), int32(c.callC))
