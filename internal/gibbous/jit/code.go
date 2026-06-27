@@ -511,6 +511,70 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 			if st != 0 {
 				return st
 			}
+		case uint8(bytecode.TAILCALL):
+			// PJ5 TAILCALL 形态(承 docs/design/p4-method-jit/05-system-pipeline.md
+			// §4.3 + analyzeTailCallForm):`function() return f() end` 类
+			// 单 CallExpr 作 return 唯一表达式被 luac 翻成 TAILCALL + 尾随
+			// dead RETURN B=0(to-top)+ 隐式 RETURN B=1。
+			//
+			// **pc 实参**:TAILCALL 自身 pc = retPC-1(retPC 指 dead RETURN)。
+			//
+			// **预处理 — 把被调函数装到 R(callA) 槽**(与 CALL void 同款,装
+			// 完后调 host.TailCall 完成尾调用):
+			//   - 形态 TA*:host.GetReg(MOVE.B) + SetReg(callA)
+			//   - 形态 TB*:host.GetUpval(base, GETUPVAL.B) + SetReg(callA)
+			//
+			// **参数装载**(0/1 K/1 reg/2 K):
+			//   - 1 K 参:host.SetReg(callA+1, callArg1K)
+			//   - 1 reg 参:host.SetReg(callA+1, host.GetReg(callArg1RegSrc))
+			//   - 2 K 参:host.SetReg(callA+1, K1) + SetReg(callA+2, K2)
+			//
+			// **三态分支**(crescent.State.TailCall + jit/host.go::TailCall 同款):
+			//   - 0 = Lua 尾完成:caller 帧已被 callee 帧替换 + executeFrom
+			//     同步驱动 callee 链到完成 + nresults 写回 funcIdx。Run 端
+			//     **跳过 DoReturn**(本帧已弹),直接 return 0(本函数末尾
+			//     的 DoReturn 调用须被 isTailCall 守卫跳过)。
+			//   - 1 = ERR:raise pending → 上层 ERR 冒泡。
+			//   - 2 = host 尾完成:结果已落 R(callA..),G 帧未弹。Run 端**正常
+			//     调 DoReturn**(对位 dead RETURN A=callA B=0 to-top,nret =
+			//     top - (base + callA),DoReturn 内 B=0 多值路径)。
+			tailPC := int32(c.retPC) - 1
+			var srcVal uint64
+			if c.isCallUpval {
+				srcVal = c.host.GetUpval(int32(base), int32(c.preludeArg))
+			} else {
+				srcVal = c.host.GetReg(int32(c.preludeArg))
+			}
+			c.host.SetReg(int32(c.callA), srcVal)
+			if c.callArgCount >= 1 {
+				var argVal uint64
+				if c.callArg1IsK {
+					argVal = c.callArg1K
+				} else {
+					argVal = c.host.GetReg(int32(c.callArg1RegSrc))
+				}
+				c.host.SetReg(int32(c.callA)+1, argVal)
+			}
+			if c.callArgCount >= 2 {
+				c.host.SetReg(int32(c.callA)+2, c.callArg2K)
+			}
+			st := c.host.TailCall(int32(base), tailPC,
+				int32(c.callA), int32(c.callB), int32(c.callC))
+			switch st {
+			case 0:
+				// Lua 尾完成:本帧已被 callee 帧替换 + executeFrom 同步驱动
+				// callee 链到完成。直接 return 0,跳过末尾 DoReturn(本帧已弹)。
+				_ = stack
+				return 0
+			case 1:
+				return 1
+			case 2:
+				// host 尾完成:结果在 R(callA..),G 帧未弹。fall through 到末尾
+				// DoReturn(retB=0 多值 to-top 路径)。
+			default:
+				// 未来扩展:本接口当前只定义 0/1/2 三态。其它值视为 ERR 兜底。
+				return 1
+			}
 		case uint8(bytecode.EQ), uint8(bytecode.LT), uint8(bytecode.LE):
 			if c.retB < 2 {
 				break
