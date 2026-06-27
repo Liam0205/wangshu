@@ -155,6 +155,28 @@ type P4HostState interface {
 	// 返回:0=OK / 1=ERR(raise pending,'for' init/limit/step must be a number)。
 	ForPrep(base int32, pc int32, a int32) int32
 
+	// CallBaseline 处理 CALL A B C 的 baseline 同步路径(承
+	// docs/design/p4-method-jit/05-system-pipeline.md §4.3,**绕过 P3 R3 indirect
+	// 直调哨兵协议**——简化版只走 baseline doCall 分派 + 同步驱动被调帧到完
+	// 成,免引入段内 call_indirect 通道。
+	//
+	// 参数 base/pc 同 Arith;a/b/c 是 CALL A B C 三字段:
+	//   - a = 被调函数寄存器号(R(A));参数从 R(A+1..A+B-1)
+	//   - b = 参数计数 + 1(B=0 表示「到 top」,B=1 表 0 参数,B=N 表 N-1 参数)
+	//   - c = 返回值计数 + 1(C=0 表「到 top」,C=1 表 0 返回值,C=N 表 N-1 返回值)
+	//
+	// 返回:0=OK(被调帧已完成 + 结果已落 R(A..A+C-2),caller 帧仍活)/
+	//      1=ERR(pendingErr 已置 → 上层 ERR 冒泡)。
+	//
+	// **与 P3 wasm 端 DoCall 的差异**:DoCall 返 i64 三态(<0/odd/even)用于
+	// wasm 端 call_indirect 直调分派;P4 PJ5 简化形态没有 wasm-level 段内
+	// indirect 通道,所以 host 端**必须**走 baseline doCall(host/crescent/__call/
+	// 全形态 gibbous 一律同步跑完),不进 tryIndirectCallee 快路径。
+	//
+	// **简化形态用例**(`function(g) g() end` 类):Run 端 prelude 路径调
+	// 本接口完成调用 + 后续 DoReturn 弹帧。byte-equal P1 解释器 doCall 路径。
+	CallBaseline(base int32, pc int32, a int32, b int32, c int32) int32
+
 	// ArenaBaseAddr 返回 arena `[]byte` 起点的 uintptr(承 05 §3.3)。	//
 	// 用例:PJ2 完整投机模板——mmap 段经 r15+offset 读 arenaBase 字段后
 	// 经字节级 movsd 直接读/写值栈槽位,跳过 host 接口 round-trip。

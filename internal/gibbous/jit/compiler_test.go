@@ -73,6 +73,13 @@ type mockP4Host struct {
 	lastCmpC  int32
 	cmpResult bool
 	cmpErr    bool
+	// CallBaseline 调用记录(PJ5 CALL void 形态):
+	callCalls   int
+	lastCallA   int32
+	lastCallB   int32
+	lastCallC   int32
+	lastCallPC  int32
+	callRetCode int32 // 0=OK / 1=ERR(单测预设)
 	// PJ2 完整接入预备:arena base 模拟值
 	arenaBase uintptr
 }
@@ -259,6 +266,17 @@ func (m *mockP4Host) ValueStackBaseAddr(base int32) uintptr {
 
 // ForPrep mock stub(PJ3 reg-limit deopt 路径用,单测路径不触达)。
 func (m *mockP4Host) ForPrep(base, pc, a int32) int32 { _ = base; _ = pc; _ = a; return 0 }
+
+// CallBaseline 模拟 host.CallBaseline:记录入参 + 返回预设 callRetCode。
+func (m *mockP4Host) CallBaseline(base, pc, a, b, c int32) int32 {
+	_ = base
+	m.callCalls++
+	m.lastCallPC = pc
+	m.lastCallA = a
+	m.lastCallB = b
+	m.lastCallC = c
+	return m.callRetCode
+}
 
 // compileWithHost 构造 *Compiler 注入 mock host 后调 Compile。
 func compileWithHost(t *testing.T, p *bytecode.Proto) (bridge.GibbousCode, *mockP4Host) {
