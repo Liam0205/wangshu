@@ -14,13 +14,14 @@
 // 译期检查,而不是 PJ3+ 启动时才发现 asm 写不出来。
 //
 // **关键技术约束**(承 P4 设计 + Go runtime 实测):
-//   - r14 = Go G 寄存器(Go 1.17+ ABI0)——切 SP 期间必须保持不动,否则
-//     Go runtime stop-the-world 找不到 g 立即 SEGV。本 asm 用 r15 装
-//     jitContext(06 §4.1 单一事实源),不动 r14;
-//   - callee-saved(amd64 SysV ABI):rbx, rbp, r12, r13, r14, r15 — 但
-//     Go ABI0 内 r14 是 G,不能动;r15 是 Go ABI0 freely available — P4 用
-//     它装 jitContext(承 06 §4.1);其它 callee-saved (rbx/rbp/r12/r13)
-//     trampoline 入口 push、出口 pop;
+//   - r14 = Go G 寄存器(Go 1.17+ ABI0)——本 trampoline NOSPLIT 段内不触发
+//     morestack/抢占(CALL AX 进 mmap 段不调 Go 函数),故段内可借用 R14
+//     作 scratch(典型 PJ4 IC arena base 装载);**trampoline 必须 PUSH/POP
+//     R14**(承 PR #26 外部审查 R14 ABI 违约修复 2026-06-28),段尾 POP
+//     恢复 Go G,Go runtime 后续 morestack/抢占/同步取 g 均见正确 G。
+//   - callee-saved(amd64 SysV ABI):rbx, rbp, r12, r13, r14, r15 — trampoline
+//     全部 push/pop。r15 = jitContext / r14 spec 段可借用 / 其它 callee-saved
+//     入口 push、出口 pop;
 //   - NOSPLIT|NOFRAME:trampoline 自身不分配 Go 栈帧,不被 morestack 检查
 //     插桩——这是「JIT 段 + trampoline 路径不经 Go runtime 调度」前提。
 
@@ -45,12 +46,15 @@
 // 同款风险面)。完整切 SP 留 PJ3+(算术 + helper 调用引入子 CALL 时启用)。
 
 TEXT ·callJITFull(SB),NOSPLIT|NOFRAME,$0-24
-	// 保存 callee-saved 寄存器(rbx/rbp/r12/r13/r15)
-	// 注:r14 = Go G 寄存器,不动!
+	// 保存 callee-saved 寄存器(rbx/rbp/r12/r13/r14/r15)
+	// **r14 = Go G**:本 trampoline NOSPLIT 段内不触发 morestack/抢占,
+	// 故 spec 段可借用 R14 作 scratch(arena base 装载),段尾 POP R14
+	// 恢复 Go G(承 trampoline_spec_amd64.s 同款 R14 ABI 违约修复)。
 	PUSHQ BX
 	PUSHQ BP
 	PUSHQ R12
 	PUSHQ R13
+	PUSHQ R14
 	PUSHQ R15
 
 	// 装 r15 = jitContext(06 §4.1 amd64 寄存器约定)
@@ -64,6 +68,7 @@ TEXT ·callJITFull(SB),NOSPLIT|NOFRAME,$0-24
 
 	// 段返回:RAX 已是返回值。恢复 callee-saved(逆序 pop)
 	POPQ R15
+	POPQ R14
 	POPQ R13
 	POPQ R12
 	POPQ BP

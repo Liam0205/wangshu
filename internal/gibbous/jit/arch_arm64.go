@@ -317,3 +317,9 @@ func archEmitHelperCall(buf []byte, helperAddr uint64) []byte {
 // 对位 amd64 = 12)。caller 用于 inline CALL 模板长度预算(arm64 端
 // 因 RISC fixed-length 比 amd64 多 8 字节)。
 const archEncodedHelperCallLen = jitarm64.EncodedHelperCallArm64Len
+
+// archSupportsFrameInline arm64 端同 amd64 当前返 false——字节级 emit 模板
+// (BuildVoid0ArgSkeletonArm64 164B + LoadClosureGCRefArm64 24B +
+// WriteCIWordArm64 20B + CIDepth±Arm64 16B)已完整字节级实装并单测全过,
+// 但 Compile/Run 端真接通 + 物理 runner 端到端验证留 PJ8+/PJ9。
+func archSupportsFrameInline() bool { return false }

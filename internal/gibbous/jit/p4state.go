@@ -75,9 +75,25 @@ type p4SpecEntry struct {
 
 // p4SpecStateMap 是 proto → p4SpecEntry 映射。
 //
-// **per-Compiler 单例**(per-State 因 jit.Compiler 是 per-State):多 State
-// 并发安全 — 经 sync.Mutex 守护(load / store / increment 都过 lock)。
-// V18 -race 友好(承 R3 已立 race-free 纪律)。
+// **package-level 全局 map**(承 PR #26 外部审查纠正注释 2026-06-28):
+// 实装是 `var p4SpecState = make(map[*bytecode.Proto]*p4SpecEntry)` 包级
+// 全局变量,**多 State 共享同一 map**——经 `sync.Mutex` 守护(load /
+// store / increment 都过 lock),V18 -race 友好(承 R3 已立 race-free
+// 纪律)。
+//
+// **多 State 并发安全性论证**:
+//   - *bytecode.Proto 全局唯一(per-Proto 单例,frontend.compile 输出固定指针)
+//   - 多 State 跑同一 Proto 时共享 p4SpecEntry 状态(deoptCount/state/
+//     recompileCount 三字段),状态语义 per-Proto 而非 per-State,正确;
+//   - 跨不同 Proto 经 map key 隔离,无冲突;
+//   - 单 entry 内并发增 deoptCount 走 p4SpecMu 串行化,无 race;
+//   - 重编译触发(deoptCount ≥ DeoptThreshold)虽可能多 State 并发触发,
+//     但 onP4Install 路径同样过 lock,只首个状态转移生效,后续 state==
+//     P4Speculative ⇒ 等价 idempotent。
+//
+// **历史注释**(被 2026-06-28 纠正):此前曾称「per-Compiler 单例(per-State
+// 因 jit.Compiler 是 per-State)」,与实装不符。p4SpecState 是包级全局,
+// 跨多 State 共享。
 //
 // **OSR exit 路径热度**:OSR exit 是冷路径(单帧投机失败才触发),lock 开销
 // 可忽略。后续若 OSR exit 触发率高,可改 sync.Map(本批 v0 简化)。

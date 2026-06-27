@@ -50,6 +50,16 @@ var specSelfCallHits uint64
 // 是 specSelfCallHits 的子集(spec 路径同时 ++ 两个计数)。
 var specSelfCallSpecHits uint64
 
+// specFrameInlineHits 是 PJ5 Option B Spike 1 帧建立内联 Compile 命中次数
+// (承 §9.20)。useFrameInline=true 路径 emit BuildVoid0ArgSkeleton +
+// archEmitHelperCall(HelperRunCalleeAfterFrameInline)+ PopVoid0ArgSkeleton
+// 时 ++。
+//
+// **Spike 1 阶段**:archSupportsFrameInline=false 屏蔽真触发,本计数器
+// 当前恒 0;Step C-2 真接入 + Step D 翻 archSupportsFrameInline=true 后
+// 才会 ++,作为 prove-the-path 命中实证。
+var specFrameInlineHits uint64
+
 // SpecRegKHits 返回当前累计 reg-K 模板编译命中次数。仅测试用。
 func SpecRegKHits() uint64 { return atomic.LoadUint64(&specRegKHits) }
 
@@ -81,6 +91,11 @@ func SpecSelfCallHits() uint64 { return atomic.LoadUint64(&specSelfCallHits) }
 // Compile 命中次数(IC NodeHit 命中走字节级模板)。仅测试用。
 func SpecSelfCallSpecHits() uint64 { return atomic.LoadUint64(&specSelfCallSpecHits) }
 
+// SpecFrameInlineHits 返回当前累计 PJ5 Option B Spike 1 帧建立内联 Compile
+// 命中次数(BuildVoid0ArgSkeleton + helper call + PopVoid0ArgSkeleton)。
+// 仅测试用。Spike 1 当前阶段恒 0(archSupportsFrameInline=false 屏蔽)。
+func SpecFrameInlineHits() uint64 { return atomic.LoadUint64(&specFrameInlineHits) }
+
 // ResetSpecHits 把所有 spec 命中计数清零(测试开始前调,防之前其它测试
 // 残留累积影响断言)。仅测试用。
 func ResetSpecHits() {
@@ -93,6 +108,7 @@ func ResetSpecHits() {
 	atomic.StoreUint64(&specTailCallHits, 0)
 	atomic.StoreUint64(&specSelfCallHits, 0)
 	atomic.StoreUint64(&specSelfCallSpecHits, 0)
+	atomic.StoreUint64(&specFrameInlineHits, 0)
 	atomic.StoreUint64(&specP4DeoptHits, 0)
 	atomic.StoreUint64(&specP4StuckHits, 0)
 }
@@ -123,3 +139,8 @@ func incSpecSelfCallHits() { atomic.AddUint64(&specSelfCallHits, 1) }
 
 // incSpecSelfCallSpecHits 包内 ++(Compile 触发 PJ5 SELF + CALL spec template 时调)。
 func incSpecSelfCallSpecHits() { atomic.AddUint64(&specSelfCallSpecHits, 1) }
+
+// incSpecFrameInlineHits 包内 ++(Compile 触发 PJ5 Option B Spike 1 帧建立
+// 内联时调)。承 §9.20 Spike 1。当前 archSupportsFrameInline=false 屏蔽,
+// 调用站点留 Step C-2 真接入(compileSpecSelfCall useFrameInline 分支)。
+func incSpecFrameInlineHits() { atomic.AddUint64(&specFrameInlineHits, 1) }
