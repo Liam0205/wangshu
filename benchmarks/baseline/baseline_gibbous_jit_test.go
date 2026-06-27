@@ -331,3 +331,46 @@ func BenchmarkGibbousJIT_PJ4IcArrayHit2(b *testing.B) {
 func BenchmarkGibbousJIT_PJ4IcArrayHit2Cresc(b *testing.B) {
 	benchGibbousJITPJ4Table(b, 2, false)
 }
+
+// PJ5 SELF method call inline benchmark P4 vs crescent。
+// force=true: PJ5 SELF inline 主路径(host.Self + host.CallBaseline byte-equal P1);
+// force=false: crescent 解释器 SELF + CALL bytecode 路径。
+//
+// **当前性能预期**(承 §9.17):PJ5 SELF inline 路径走 host.Self / host.CallBaseline
+// 完整 P1 byte-equal — 与 crescent 解释器同款 helper 链,**性能差异主要来自 P4
+// 升层 + DoReturn 弹帧 vs 解释器主循环 + setReg/reg 同款操作**,无显著加速
+// (PJ5 SELF inline 当前是「正确性接入」而非「性能加速」)。段内 EmitSelfCallInline
+// 模板真接入后(留多会话),通过 IC NodeHit / ArrayHit guard + 跳过 host
+// round-trip 可获 ≥2x 加速。
+//
+// 本 benchmark 用于 baseline 数据采集 — 后续 spec template 真接入时作对比基线。
+func benchGibbousJITSelfCall(b *testing.B, force bool) {
+	src := `
+local sum = 0
+local o = { m = function(self, x) sum = sum + x end }
+local function caller(t, v) t:m(v) end
+local function kernel()
+  caller(o, 42)
+end
+local t = 0
+for _ = 1, 50 do kernel() end
+return t`
+	prog, err := wangshu.Compile([]byte(src), "bench-jit-self")
+	if err != nil {
+		b.Fatalf("compile: %v", err)
+	}
+	st := wangshu.NewState(wangshu.Options{})
+	st.SetForceAllPromote(force)
+	if _, err := prog.Run(st); err != nil { // 预热升层
+		b.Fatalf("warmup: %v", err)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := prog.Run(st); err != nil {
+			b.Fatalf("run: %v", err)
+		}
+	}
+}
+
+func BenchmarkGibbousJIT_PJ5SelfCall(b *testing.B)      { benchGibbousJITSelfCall(b, true) }
+func BenchmarkGibbousJIT_PJ5SelfCallCresc(b *testing.B) { benchGibbousJITSelfCall(b, false) }
