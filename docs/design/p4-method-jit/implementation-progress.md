@@ -1522,6 +1522,7 @@ PJ0 启动后,本文按以下协议更新(承 [P3 implementation-progress §5](.
 | V 编号 | 验收口径 | 当前状态 | 实证来源 |
 |---|---|---|---|
 | **V1-V13** 正确性轴 | 三方差分 byte-equal(oracle / crescent / p4-jit) | ✅ | test/difftest/p4_test.go(58 用例) |
+| **V11** 协程不升层独立守门 | 协程线程上 considerPromotion 直接 return,Proto 恒 TierInterp | ✅ amd64 bridge 层 / ⏳ luasuite 真业务 e2e | bridge/state_machine_test.go::TestStateMachine_Coroutine_NoPromote{,_AfterMainPromote}(承 9791e9f);真业务 e2e 留 PJ9 luasuite + stdlib coroutine 接入 |
 | **V14** luajc 档绝对水位 | 列内核负载 ≥luajc 档(≥164μs 水位 over gopher-lua) | ✅ amd64 | §8 FORLOOP 实测 7-25x |
 | **V14 arm64** | 双架构 luajc 档 | ⏳ 物理 runner | PJ9 待接入 |
 | **V15** realworld geomean | realworld bench 双架构 geomean ≥P3 | ⏳ amd64 部分 + arm64 物理 | §9.19 SELF spec template heavy body 0.95-1.011x |
