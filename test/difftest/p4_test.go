@@ -830,6 +830,21 @@ local mt = { m = "string_not_callable" }
 local function caller(t) return t:m() end
 local ok, err = pcall(caller, mt)
 return ok, tostring(err)`},
+	// —— PJ4 表 IC 错误冒泡 difftest(承 §9.7-§9.10 PJ4 IC 六路径全覆盖):
+	// GETTABLE / SETTABLE 在 nil 表 / non-table 上 raise,验 IC inline 路径
+	// + host.GetTable/SetTable 降级路径错误冒泡 byte-equal P1。
+	{"p4_get_err_niltable", `
+local function getter(t) return t[1] end
+local ok, err = pcall(getter, nil)
+return ok, tostring(err)`},
+	{"p4_set_err_niltable", `
+local function setter(t) t[1] = 99 end
+local ok, err = pcall(setter, nil)
+return ok, tostring(err)`},
+	{"p4_get_err_nontable", `
+local function getter(t) return t[1] end
+local ok, err = pcall(getter, 42)
+return ok, tostring(err)`},
 }
 
 // TestP4_Tiered 三方对拍:oracle / crescent / p4-jit 全 byte-equal。
