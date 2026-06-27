@@ -3,6 +3,7 @@
 package crescent
 
 import (
+	"strings"
 	"testing"
 
 	jit "github.com/Liam0205/wangshu/internal/gibbous/jit"
@@ -464,5 +465,47 @@ return sum`
 	}
 	if got := value.AsNumber(value.Value(rets[0])); got != 30*15 {
 		t.Errorf("rets = %v, want %d", got, 30*15)
+	}
+}
+
+// TestPJ5_SelfCall_E2E_ErrorBubbleUp_NilRecv 验 SELF 形态 receiver 为 nil 时
+// host.Self raise "attempt to index nil value" 错误透明冒泡到 Call 返错误
+// (byte-equal P1 解释器路径,P4 不拦截错误)。
+func TestPJ5_SelfCall_E2E_ErrorBubbleUp_NilRecv(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local o = nil
+o:m()
+return 0`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	_, err := st.Call(value.GCRefOf(mainCl), nil, 0)
+	if err == nil {
+		t.Fatal("应 raise 'attempt to index nil value' 错误,但 Call 成功返回")
+	}
+	// err 消息应含 "attempt to index" 或 "index nil"
+	if !strings.Contains(err.Error(), "index") {
+		t.Errorf("err 消息 = %q,应含 'index' 关键字", err.Error())
+	}
+}
+
+// TestPJ5_SelfCall_E2E_ErrorBubbleUp_BadMethod 验 SELF 形态 method 字段为
+// non-function 时 CALL raise "attempt to call a {type} value" 错误透明冒泡。
+func TestPJ5_SelfCall_E2E_ErrorBubbleUp_BadMethod(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local o = { m = 42 }
+o:m()
+return 0`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	_, err := st.Call(value.GCRefOf(mainCl), nil, 0)
+	if err == nil {
+		t.Fatal("应 raise 'attempt to call a number value' 错误")
+	}
+	if !strings.Contains(err.Error(), "call") {
+		t.Errorf("err 消息 = %q,应含 'call' 关键字", err.Error())
 	}
 }
