@@ -1031,3 +1031,47 @@ func EmitFrameInlineBuildVoid0ArgSkeleton(buf []byte,
 
 // EncodedFrameInlineBuildVoid0ArgSkeletonLen = 30 + 14*5 + 10 = 110.
 const EncodedFrameInlineBuildVoid0ArgSkeletonLen = 110
+
+// EmitFrameInlineLoadClosureGCRef 发射 amd64 字节级 R(srcReg) NaN-box →
+// rcx 48-bit GCRef 解析模板(承 §9.20 Option B Spike 1 enterLuaFrame inline
+// word3=cl 设置前置)。
+//
+// 字节序列(7 + 10 + 3 = 20 字节):
+//
+//	mov rcx, [rbx + srcReg*8]    ; 7 字节 EmitMovqRcxFromMemRbx
+//	mov rdx, payloadMask         ; 10 字节(payloadMask=0x0000FFFFFFFFFFFF)
+//	and rcx, rdx                 ; 3 字节
+//
+// 模板结束后 rcx = R(srcReg) 的 GCRef payload(承 value.GCRefOf 字节级
+// 等价)。caller 后续 mov [rax+word_idx*8], rcx 写入 CI 段 word3(无需
+// 经 EmitMovRcxImm64 装 imm)。
+//
+// **注意**:rdx 在 LoadCISlotAddr 段未被使用,可安全用作 mask 临时寄存器。
+// rax 在 LoadCISlotAddr 后装 CI 段地址,本模板不动 rax。
+func EmitFrameInlineLoadClosureGCRef(buf []byte, srcReg uint8) []byte {
+	buf = EmitMovqRcxFromMemRbx(buf, int32(srcReg)*8)
+	buf = EmitMovRdxImm64(buf, 0x0000_FFFF_FFFF_FFFF) // payloadMask
+	buf = EmitAndRcxRdx(buf)
+	return buf
+}
+
+// EncodedFrameInlineLoadClosureGCRefLen = 7+10+3 = 20.
+const EncodedFrameInlineLoadClosureGCRefLen = 20
+
+// EmitFrameInlineWriteCIWordFromRcx 发射「mov [rax + wordIdx*8], rcx」
+// 单条 4 字节(对位 EmitFrameInlineWriteCIWord 但 imm64 改 rcx,省 10 字节
+// imm 装载)。
+//
+// 编码:48 89 48 disp8(48 = REX.W / 89 = MOV r/m64 r64 / ModRM=01_001_000
+// 即 0x48 + disp8 = wordIdx * 8)。
+//
+// 用例:Spike 1 word3 = cl GCRef(承 EmitFrameInlineLoadClosureGCRef 装 rcx)。
+func EmitFrameInlineWriteCIWordFromRcx(buf []byte, wordIdx uint8) []byte {
+	if wordIdx > 4 {
+		wordIdx = 0
+	}
+	return append(buf, 0x48, 0x89, 0x48, byte(int8(wordIdx)*8))
+}
+
+// EncodedFrameInlineWriteCIWordFromRcxLen = 4.
+const EncodedFrameInlineWriteCIWordFromRcxLen = 4
