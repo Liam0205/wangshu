@@ -1576,6 +1576,38 @@ PJ0 启动后,本文按以下协议更新(承 [P3 implementation-progress §5](.
 
 ---
 
+## 11. P3 去留决议数据进档(2026-06-28 收集,等 PJ10 验收时拍板)
+
+**当前 P4 完成度**:PJ0-PJ4 + PJ5(CALL void 220 子 + TAILCALL 102 子 + SELF inline 完整 0..7 参 + SELF spec template N=2..15 返全形态)+ PJ7 + PJ10 luajc 档突破已落地。剩 PJ5 Option B 帧建立内联(Spike 1 字节级 emit 全套就位,真接入留 trampoline exit-resume 协议改造)/ PJ8 物理 runner / PJ9 双架构差分套 渐进推进中。
+
+**承 [07 §5.1 缺省倾向](./07-p3-retirement.md):P4 验收通过后,P3 退役**(`internal/gibbous/wasm` 代码留版本史移除主分支)。
+
+**等 PJ10 验收时由用户拍板的决议输入**:
+
+| 决议输入 | 收集状态 | 来源 |
+|---|---|---|
+| **P4 性能数据** | ✅ PJ3 FORLOOP 7.15-25.41x over gopher-lua,**完整超越 luajc 档 4.4x 基线**(§8)| §8 |
+| **P4 PJ5 SELF spec template 性能** | ✅ heavy body 0.95x / 1.011x **快或持平 crescent**(承 §9.19) | §9.19 |
+| **真实宿主需求** | ⏳ 需用户决策性输入 — wangshu 当前未签订首个宿主,无「禁 exec-mmap」实证需求 | [07 §3.3](./07-p3-retirement.md) |
+| **平台覆盖承诺** | ⏳ 需用户决策性输入 — wangshu 当前承诺 amd64 + arm64(P4 覆盖),无 riscv64/ppc64 承诺 | [07 §3.4](./07-p3-retirement.md) |
+| **P4 vs P3 vs crescent 三方对照 bench** | ⏳ 需 P4 验收时跑(P4 不可用平台上)— 当前 P4 amd64 已实测,arm64 物理 runner 待 PJ8 接入 | [07 §3.2](./07-p3-retirement.md) |
+
+**主助理建议**(等用户审阅):
+
+承 [07 §5.1](./07-p3-retirement.md) 缺省倾向 + P4 当前阶段性数据(超越 luajc 档 + 真实业务 SELF spec template 0.95x 持平/快 crescent):
+
+- **建议 P4 PJ10 验收通过后即按缺省倾向 P3 退役**,触发 §10.7 RJ-12 自动消解。
+- **理由**:
+  1. P4 性能已超 luajc 档 4.4x 基线 + SELF spec template 真实 OOP 业务 0.95x 持平/快(§9.19)
+  2. 真实宿主需求未实证(无明确「禁 exec-mmap」需求)
+  3. 平台覆盖承诺仅 amd64 + arm64(P4 全覆盖)
+  4. 维护成本(双后端 + wazero 依赖)消去 → 主库 zero 外部依赖纪律
+- **翻案条件**(承 [07 §4](./07-p3-retirement.md)):若 PJ10 验收时项目战略层临时承诺 riscv64/ppc64/「禁 exec-mmap」宿主,翻 P3 留中层路径(平台 build tag 矩阵分:P4 平台走 jit,其它走 wasm)。
+
+**拍板时机**:PJ10 验收通过时(等 Spike 1 Option B 帧建立内联 + arm64 物理 runner CI 接入 + V1-V22 双架构差分套完成),用户审阅本节决议数据 + 拍板退役 / 留中层。在此之前结构上保留 `internal/gibbous/wasm` 与 `internal/gibbous/jit` 共存零成本(承 [07 §5.3](./07-p3-retirement.md))。
+
+---
+
 相关:
 - [00-overview](./00-overview.md)(P4 总览,本文是其 §4 PJ 表的运行期对账 + §6 跨文档定稿决策收口)
 - [01-launch-judgment](./01-launch-judgment.md)~[08-testing-strategy](./08-testing-strategy.md)(各子系统设计文档,本文 §2 聚合其 §回填请求节)
