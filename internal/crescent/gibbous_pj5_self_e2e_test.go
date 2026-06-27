@@ -1521,3 +1521,52 @@ return bad:m()`
 	}
 	t.Logf("spec template BadMethod 错误冒泡正确:%v", err)
 }
+
+// TestPJ5_SelfCall_E2E_SpecTemplate_OSRExitToDeopt 验 OSR exit 协议完整闭环
+// 第一阶段:连续触发 ≥ DeoptThreshold 次 spec NodeHit guard 失败 → onOSRExit
+// 累积 deopt → 状态切 P4Deoptimized + SpecP4DeoptHits 增长。
+//
+// 承 §9.18 OSR exit 协议骨架 + §9.19 PJ5 SELF spec template 真接入,本批
+// 端到端验真业务路径下完整状态机转移(非 p4state_test.go 合成驱动)。
+//
+// **场景**:caller 反复跑,每次 force-all 升 P4 spec template 后跑不同
+// receiver shape → spec NodeHit guard 失败 → 16 次 onOSRExit 后切
+// P4Deoptimized + SpecP4DeoptHits=1。
+func TestPJ5_SelfCall_E2E_SpecTemplate_OSRExitToDeopt(t *testing.T) {
+	jit.ResetSpecHits()
+	jit.ResetP4SpecState()
+
+	// 主形态:caller(t) 走 spec template path,以 m1 reciever warmup
+	src := `
+local m1 = { m = function(self) return 1 end }
+local m2 = { m = function(self, x) return 2 end, other = 99, more = 88 }
+local function caller(t) return t:m() end
+-- warmup phase 1:filling IC NodeHit + FBSelfMono
+for i = 1, 100 do caller(m1) end
+-- Phase 2:m2 shape 不同(extra fields),spec NodeHit guard 失败 → deopt
+local sum = 0
+for i = 1, 30 do sum = sum + caller(m2) end  -- 30 次 > DeoptThreshold(16)
+return sum`
+	st, mainCl := loadFnP4(t, src)
+	if _, err := st.Call(value.GCRefOf(mainCl), nil, 1); err != nil {
+		t.Fatalf("warmup: %v", err)
+	}
+	st.bridge.SetForceAllPromote(true)
+
+	deoptBefore := jit.SpecP4DeoptHits()
+	_, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 2 force-all: %v", err)
+	}
+	deoptAfter := jit.SpecP4DeoptHits()
+
+	// **prove-the-path 强断言**(承 §9.18 OSR exit 协议闭环):真业务路径下
+	// 30 次 m2 调用触发 ≥ DeoptThreshold(16)次 onOSRExit,SpecP4DeoptHits
+	// 应至少 += 1(累积达阈值触发 P4Deoptimized 转移 + incSpecP4DeoptHits)。
+	if deoptAfter <= deoptBefore {
+		t.Errorf("SpecP4DeoptHits 未增长(%d → %d)— OSR exit 协议未真接入 spec template 路径",
+			deoptBefore, deoptAfter)
+	}
+	t.Logf("SpecP4DeoptHits: %d → %d(增量 = %d,OSR exit 协议真接入实证)",
+		deoptBefore, deoptAfter, deoptAfter-deoptBefore)
+}
