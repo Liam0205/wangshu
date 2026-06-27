@@ -140,3 +140,12 @@ return s`
 	}
 	t.Logf("SpecCallVoidHits=%d", jit.SpecCallVoidHits())
 }
+
+// **注**:形态 A* parameter-callee 形态(如 `function(g) g() end`)真升层
+// 不可达——P2 analyzer 把 parameter call 标 ReasonUnknownCall(parameter
+// 是任意 value,可能是 coroutine.yield),visitor 设计上保守拒。形态 A* 真
+// 升层需要 P2 放宽 unknown call 纪律,这违反 P2 设计原则(承
+// docs/design/p2-bridge/03-compilability-analysis.md §1)。形态 A* 单测
+// 覆盖在 jit 包内通过 mock host 直接验 Compile + Run 路径(`compiler_pj5_call_test.go::
+// TestPJ5_RunCallVoidPath` 等),但 crescent e2e 路径不可达。real-world
+// 业务高频形态是 closure 调外层 known fn(形态 B*),那条路径已通。
