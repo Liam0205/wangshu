@@ -254,23 +254,16 @@ type shapeInfo struct {
 	//     NodeHit 同字段集)。
 	useSpecSelfCall bool
 
-	// PJ5 Option B Spike 1/2/3/4 帧建立内联(承 §9.20 + commit-5p/5q/5r):
+	// PJ5 Option B Spike 1 帧建立内联(承 §9.20):
 	//   - useFrameInline = true:CALL 段经 mmap 字节级 enterLuaFrame inline
-	//     (BuildVoid0ArgSkeleton + ExitHelperRequest + PopVoid0ArgSkeleton),
-	//     替代 host.CallBaseline round-trip。
-	//   - **守门**(承 §9.20.4 + commit-5p Spike 2 扩):
-	//     - archSupportsFrameInline()=true(amd64)
-	//     - callArgCount <= 7(Spike 2 N 参 fixed args 扩,原 Spike 1 限 0)
-	//     - isCallVoid(preludeOp=CALL 涵盖 setter/getter/multi-ret 多形态)
-	//     - !isTailCall(避免帧栈语义复杂化)
-	//     - IC NodeHit + FBSelfMono(承 useSpecSelfCall 守门叠加)
-	//   - vararg callee 自动兼容(Spike 3):enterLuaFrame 内部按 NumParams<nargs
-	//     处理 vararg 下区重排,helper API 无需扩
-	//   - 多返值多形态(Spike 4):nresults = callC - 1(callC=1=0返/2=1返/3..16=
-	//     N=2..15 返 drop multi-ret),helper 接 nresults 参数
-	//   - 未通过 → 降级 useSpecSelfCall(SELF 段 inline + host.CallBaseline)
-	//   - **Spike 1/2/3/4 amd64 真接入完整端到端打通**(commit-5m..5r):RunHits
-	//     prove-the-path 命中实证(49/199/99/99 各 Spike)
+	//     (BuildVoid0ArgSkeleton + helper call + PopVoid0ArgSkeleton),替代
+	//     host.CallBaseline round-trip。
+	//   - **守门**(承 §9.20.4):isCallVoid + callArgCount=0 + IC NodeHit +
+	//     FBSelfMono(承 useSpecSelfCall 守门叠加)+ 等 callee Proto 元数据
+	//     可知(callee.NumParams=0 + !IsVararg + !NeedsArg + MaxStack≤32);
+	//     未通过 → 降级 useSpecSelfCall(SELF 段 inline + host.CallBaseline)。
+	//   - **Spike 1 阶段尚未真接入**:emit 模板已字节级实装(amd64 120B /
+	//     arm64 164B),剩 helper call ABI + Compile/Run 端真接通 + e2e。
 	useFrameInline bool
 }
 
@@ -2589,7 +2582,19 @@ func analyzeSelfCallSpecForm(proto *bytecode.Proto, feedback *bridge.TypeFeedbac
 	info.icStableShape = pf.StableShape
 	info.icStableIndex = pf.StableIndex
 	info.icStableKey = stableKey
-	// PJ5 Option B Spike 1 帧建立内联(commit-5m 重启用):
+	// PJ5 Option B Spike 1 帧建立内联(承 §9.20.4 + §9.20.9 commit-5g):
+	// 守门条件(Spike 1 简化形态):
+	//   - archSupportsFrameInline()=true(amd64 commit-5h 翻 true 后启用)
+	//   - 0 参 setter 形态(callArgCount=0 + isCallVoid + retB=1)— 与
+	//     ExecuteCalleeFromInlineFrame Spike 1 0 参实装对齐
+	//   - 非 TAILCALL(避免帧栈语义复杂化,Spike 2+ 扩)
+	//
+	// **callee Proto 元数据**:Spike 1 实装策略不在 Compile 期解 callee Proto,
+	// helper 内运行期反查 closure GCRef → callee Proto(承 commit-5f
+	// ExecuteCalleeFromInlineFrame 策略重定);故 analyzeSelfCallSpecForm 无需
+	// callee.NumParams=0 + !IsVararg 守门,helper 内运行期验(callee.NumParams=
+	// 0 在 enterLuaFrame 内由 nargs=0 守门自然兼容,IsVararg=true 时 callee
+	// 体读 vararg 区会读到 0 元素退化但不崩,行为零变化基线)。
 	if archSupportsFrameInline() && info.callArgCount == 0 &&
 		info.isCallVoid && !info.isTailCall {
 		info.useFrameInline = true
@@ -4964,27 +4969,26 @@ func (c *Compiler) compileSpecSelfCall(proto *bytecode.Proto, info shapeInfo) (b
 			buf = archEmitSpecArgLoadReg(buf, dst, info.callArg7RegSrc)
 		}
 	}
+	buf = archEmitSelfNodeHit(buf, info.icAReg, info.icBReg,
+		info.icStableShape, info.icStableIndex, info.icStableKey,
+		arenaBaseOff, deoptCode)
 	// PJ5 Option B Spike 1 帧建立内联(承 §9.20.9 (6) compileSpecSelfCall emit
-	// 改造):useFrameInline=true 时:
-	//   1. SELF NodeHit 段用 NoRet 变体(成功 fall-through;deopt 路径 ret)
-	//   2. BuildVoid0ArgSkeleton(amd64 120B / arm64 164B):enterLuaFrame 字节级
+	// 改造):useFrameInline=true 时在 SELF NodeHit 段后追加:
+	//   1. BuildVoid0ArgSkeleton(amd64 120B / arm64 164B):enterLuaFrame 字节级
 	//      inline,写 CallInfo[depth] 5 word + ciDepth++
-	//   3. ExitHelperRequest 段(amd64 24B / arm64 ~28B,占位 0):写 jitCtx.
+	//   2. ExitHelperRequest 段(amd64 24B / arm64 ~28B,占位 0):写 jitCtx.
 	//      exitReasonCode=ExitInlineHelper + jitCtx.exitArg0=HelperRunCallee +
 	//      mov rax,ExitInlineHelper + ret —— 出 mmap 段返 trampoline,trampoline
 	//      检 RAX==3 路由 Go dispatcher 跑 callee Lua 体
-	//   4. frameInlineResumeOff = len(buf) 记录 resume entry 字节偏移
-	//   5. PopVoid0ArgSkeleton(amd64 10B / arm64 16B):popCallInfo 字节级
+	//   3. resume entry 偏移记录:p4Code.frameInlineResumeOff = 当前 emit 字节数
+	//   4. PopVoid0ArgSkeleton(amd64 10B / arm64 16B):popCallInfo 字节级
 	//      inline,ciDepth-- + 返 trampoline 完成 Run
 	//
-	// **承 commit-5i 自检**:useFrameInline=false 时仍走标准 archEmitSelfNodeHit
-	// (成功 ret 段尾),保持既有 PJ5 SELF + CALL spec template 路径行为零变化。
+	// **当前 Spike 1 阶段 archSupportsFrameInline=false 屏蔽 + analyzeSelfCallSpecForm
+	// 保守不设 info.useFrameInline=true**(callee Proto 元数据不可知),本分支
+	// dead-code 路径 — 但 emit 形态就位为 commit-5 翻闸门同批激活。
 	var frameInlineResumeOff uint32
 	if info.useFrameInline && archSupportsFrameInline() {
-		// SELF NodeHit NoRet 变体 — 成功路径 fall-through 到 BuildVoid0Arg
-		buf = archEmitSelfNodeHitNoRet(buf, info.icAReg, info.icBReg,
-			info.icStableShape, info.icStableIndex, info.icStableKey,
-			arenaBaseOff, deoptCode)
 		ciDepthAddrOff := int32(JITContextCIDepthAddrOffset)
 		ciSegBaseAddrOff := int32(JITContextCISegBaseAddrOffset)
 		exitReasonOff := int32(JITContextExitReasonOffset)
@@ -5015,10 +5019,6 @@ func (c *Compiler) compileSpecSelfCall(proto *bytecode.Proto, info shapeInfo) (b
 		// 段尾 ret 由 archMmapCode 末尾自动 emit(等价 callee 完成后段返常规
 		// 退出 RAX=ExitNormal,trampoline 跳 skipDispatch 走常规弹栈)
 		incSpecFrameInlineHits() // PJ5 Option B Spike 1 帧建立内联 Compile 命中
-	} else {
-		buf = archEmitSelfNodeHit(buf, info.icAReg, info.icBReg,
-			info.icStableShape, info.icStableIndex, info.icStableKey,
-			arenaBaseOff, deoptCode)
 	}
 	page, err := archMmapCode(buf)
 	if err != nil {

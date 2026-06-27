@@ -56,6 +56,18 @@ TEXT ·callJITSpec(SB),NOSPLIT,$0-32
 	MOVQ codeAddr+0(FP), AX
 	CALL AX
 
+	// 段返回:RAX 已是返回值。
+	//
+	// **§9.20.9 trampoline exit-resume 协议 Run-end dispatcher 实装**(commit-5a
+	// 修正 commit-3c):设计草案 (4) 假设 trampoline asm 内 CALL Go dispatcher,
+	// 但实际跨包 + Plan 9 ABI 复杂度高;改用 **Run 端 Go 函数做 dispatcher**:
+	// Run 检 raxSpec==ExitInlineHelper → 调 dispatchInlineHelper → 二次 callJITSpec
+	// 跳 resume entry(全在 Go 端做,trampoline asm 透传 RAX 不解读)。
+	//
+	// 故 trampoline asm 段返后直接走常规弹栈,不再 CMP RAX——Run 端读 RAX 后
+	// 路由。原 commit-3c 的 CMP + INT 3 段撤(若保留 INT 3 会在 commit-5
+	// archSupportsFrameInline=true + emit ExitInlineHelper 段后真触发 SIGTRAP)。
+	//
 	// 段返回:RAX 已是返回值。恢复 callee-saved(逆序 pop)。
 	// **R14 恢复 Go G 救济**:POP R14 把 entry 时 Go runtime 装的 G 值
 	// 写回 R14,段内 mov r14, arenaBase 的覆写到此撤消。

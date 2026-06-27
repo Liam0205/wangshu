@@ -247,34 +247,25 @@ type P4HostState interface {
 	TopHostAddr() uintptr
 
 	// ExecuteCalleeFromInlineFrame Spike 1 Step C-1 helper API(承 §9.20.7
-	// 真实装拆解 + §9.20.9 trampoline exit-resume 协议 commit-2 接口 +
-	// commit-5l 签名修正:callA 替代 retA,SELF + CALL 形态下 method 在
-	// R(callA),callA 是 callee 槽位识别的正确字段)。
+	// 真实装拆解 + §9.20.9 trampoline exit-resume 协议 commit-2)。
 	//
 	// **前置条件**(caller mmap 段必须保证):
 	//   - mmap 段 BuildVoid0ArgSkeleton 已写完 CallInfo[depth] 5 word 字段
-	//     (word0 编译期占位 0,helper 内忽略改取 calleeCI.cl word3 反查 callee
-	//     Proto;funcIdx 用 caller.base + callA 算)
 	//   - mmap 段 EmitFrameInlineCIDepthInc 已做 ciDepth++
 	//   - thread.cur 字段未被 mmap 段更新(Go 端冷字段)
 	//
 	// **流程**(对应 crescent.State 实装):
-	//   1. read CI[ciDepth-1].cl(BuildVoid0Arg LoadClosureGCRef 装载的 callee
-	//      closure GCRef)
-	//   2. 反查 callee Proto:object.ClosureProtoID(cl) → st.protos[pid]
-	//   3. ciDepth-- 抵消 BuildVoid0Arg 副作用
-	//   4. funcIdx = th.cur.base + callA(caller frame R(callA) = method 槽位)
-	//   5. nargs=0 + nresults=0(Spike 1 0 参 setter 形态守门)
-	//   6. nCcalls++/enterLuaFrame/executeFrom/popCallInfo
-	//   7. 出口 ciDepth++ 平衡 PopVoid0Arg
+	//   1. readCISegInto(th.ciDepth-1, &th.cur) — 重载 caller-perspective callee 字段
+	//   2. nCcalls++ 计费(防 C stack overflow)
+	//   3. executeFrom(th, th.ciDepth-1) — 同步驱动 callee Lua 体完成
+	//   4. popCallInfo(th) — 弹帧,readCISegInto 重载 caller th.cur
 	//
-	// **返**:0=OK(callee 完成 + 返值已落 R(callA..callA+nresults-1))/ 1=ERR
-	// (state.pendingErr 已置,Run 端 dispatcher 走错误路径)。
+	// **返**:0=OK(callee 完成 + 返值已落 R(retA..retA+N-1))/ 1=ERR
+	// (state.pendingErr 已置,trampoline dispatcher 走错误路径)。
 	//
-	// **commit-5l 签名修正**(承 PR 评审 + 自检):原 retA 是 RETURN.A(setter
-	// 形态恒 0),无法正确算 funcIdx;改 callA 是 CALL.A(SELF + CALL 形态下
-	// method 槽位置),与 host.CallBaseline 同款语义对齐。
-	ExecuteCalleeFromInlineFrame(base int32, callA int32) int32
+	// **当前 Spike 1 阶段**:archSupportsFrameInline=false 屏蔽真触发,本接口
+	// crescent 实装可 panic 占位(承 helpers.go 同款),mockP4Host stub 返 0。
+	ExecuteCalleeFromInlineFrame(base int32, retA int32) int32
 }
 
 // SetHostState 把 host(crescent)抽象注入本 Compiler。

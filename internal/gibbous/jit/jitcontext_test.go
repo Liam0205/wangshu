@@ -118,3 +118,114 @@ func TestJITContext_ConcurrentPreempt(t *testing.T) {
 		t.Error("N 次并发 SetPreemptFlag 后 preemptFlag 应为 1")
 	}
 }
+
+// TestJITContext_ExitResumeFields PJ5 §9.20.9 trampoline exit-resume 协议
+// commit-1:验 exitArg0 / resumeOff 三 setter/getter 工作 + 初始 0。
+func TestJITContext_ExitResumeFields(t *testing.T) {
+	ctx := NewJITContext()
+
+	// 初始 0(未启用)
+	if ctx.ExitArg0() != 0 {
+		t.Errorf("初始 exitArg0 应 0,得 %d", ctx.ExitArg0())
+	}
+	if ctx.ResumeOff() != 0 {
+		t.Errorf("初始 resumeOff 应 0,得 %d", ctx.ResumeOff())
+	}
+
+	// 写入后回读一致
+	ctx.SetExitArg0(HelperRunCallee)
+	ctx.SetResumeOff(120)
+
+	if ctx.ExitArg0() != HelperRunCallee {
+		t.Errorf("SetExitArg0(HelperRunCallee=%d) 后回读 = %d", HelperRunCallee, ctx.ExitArg0())
+	}
+	if ctx.ResumeOff() != 120 {
+		t.Errorf("SetResumeOff(120) 后回读 = %d", ctx.ResumeOff())
+	}
+}
+
+// TestJITContext_ExitResumeOffsetsStable 验 JITContextExitArg0Offset /
+// ResumeOffOffset 编译期常量稳定(供 trampoline asm 字节级 emit 使用)。
+func TestJITContext_ExitResumeOffsetsStable(t *testing.T) {
+	if JITContextExitArg0Offset == 0 {
+		t.Error("JITContextExitArg0Offset 不应为 0(承字段位置在末尾)")
+	}
+	if JITContextResumeOffOffset == 0 {
+		t.Error("JITContextResumeOffOffset 不应为 0")
+	}
+	if JITContextExitArg0Offset == JITContextResumeOffOffset {
+		t.Error("exitArg0/resumeOff offset 不应相等")
+	}
+	// 8 字节对齐(uint64 + uint32 with padding;exitArg0 是 uint64 必 8 对齐)
+	if JITContextExitArg0Offset%8 != 0 {
+		t.Errorf("JITContextExitArg0Offset %% 8 = %d, want 0 (uint64 字段)",
+			JITContextExitArg0Offset%8)
+	}
+}
+
+// TestJITContext_ExitReasonCodesUnique 验 exit reason 常量唯一(防协议冲突)。
+func TestJITContext_ExitReasonCodesUnique(t *testing.T) {
+	codes := []uint32{ExitNormal, ExitError, ExitOSR, ExitInlineHelper}
+	seen := make(map[uint32]bool)
+	for _, c := range codes {
+		if seen[c] {
+			t.Errorf("exit reason code %d 重复", c)
+		}
+		seen[c] = true
+	}
+	// 显性化协议状态码(承 §9.20.9 (3))
+	if ExitNormal != 0 || ExitError != 1 || ExitOSR != 2 || ExitInlineHelper != 3 {
+		t.Errorf("协议状态码值变化(承 §9.20.9 (3) 设计)— ExitNormal=%d Error=%d OSR=%d InlineHelper=%d",
+			ExitNormal, ExitError, ExitOSR, ExitInlineHelper)
+	}
+}
+
+// TestJITContext_HelperRequestCodesUnique 验 helper request code 唯一。
+func TestJITContext_HelperRequestCodesUnique(t *testing.T) {
+	codes := []uint64{HelperRunCallee, HelperGrowStack, HelperGCBarrier}
+	seen := make(map[uint64]bool)
+	for _, c := range codes {
+		if c == 0 {
+			t.Errorf("helper code 不应为 0(0 留作 sentinel)")
+		}
+		if seen[c] {
+			t.Errorf("helper code %d 重复", c)
+		}
+		seen[c] = true
+	}
+}
+
+// TestJITContext_CodePageAddrField PJ5 §9.20.9 trampoline exit-resume 协议
+// commit-3b:验 codePageAddr setter/getter 工作 + 初始 0(承 dispatcher
+// 算 resume entry = codePageAddr + resumeOff)。
+func TestJITContext_CodePageAddrField(t *testing.T) {
+	ctx := NewJITContext()
+
+	if ctx.CodePageAddr() != 0 {
+		t.Errorf("初始 codePageAddr 应 0,得 %d", ctx.CodePageAddr())
+	}
+
+	ctx.SetCodePageAddr(0xCAFE0000)
+
+	if ctx.CodePageAddr() != 0xCAFE0000 {
+		t.Errorf("SetCodePageAddr(0xCAFE0000) 后回读 = 0x%X", ctx.CodePageAddr())
+	}
+}
+
+// TestJITContext_CodePageAddrOffsetStable 验 JITContextCodePageAddrOffset
+// 编译期常量稳定(供 trampoline asm + Go wrapper 字节级 emit 使用)。
+func TestJITContext_CodePageAddrOffsetStable(t *testing.T) {
+	if JITContextCodePageAddrOffset == 0 {
+		t.Error("JITContextCodePageAddrOffset 不应为 0(承字段在末尾)")
+	}
+	// 8 字节对齐(uintptr 字段)
+	if JITContextCodePageAddrOffset%8 != 0 {
+		t.Errorf("JITContextCodePageAddrOffset %% 8 = %d, want 0",
+			JITContextCodePageAddrOffset%8)
+	}
+	// 应在 resumeOff(72)+ padding(4)= 76 之后,即 ≥ 80
+	if JITContextCodePageAddrOffset < JITContextResumeOffOffset+4 {
+		t.Errorf("CodePageAddrOffset = %d, 应 ≥ ResumeOffOffset+4 = %d",
+			JITContextCodePageAddrOffset, JITContextResumeOffOffset+4)
+	}
+}
