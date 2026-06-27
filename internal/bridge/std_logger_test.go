@@ -194,10 +194,10 @@ func TestLogger_FormatReasonsAllFlags(t *testing.T) {
 	all := ReasonVararg | ReasonYield | ReasonResume | ReasonCoroutine |
 		ReasonUnknownCall | ReasonDebug | ReasonSetfenv |
 		ReasonOverSize | ReasonOverRegs | ReasonNestedDeep |
-		ReasonOverUpval | ReasonBackendUnsupp
+		ReasonOverUpval | ReasonBackendUnsupp | ReasonSelfCall
 	got := formatReasons(all)
 	for _, want := range []string{
-		"F1 vararg", "F2", "yield", "resume", "unknownCall",
+		"F1 vararg", "F2", "yield", "resume", "unknownCall", "selfCall",
 		"F3 debug", "F4 setfenv",
 		"F5", "oversize", "overregs",
 		"F6", "nestedDeep", "overupval",

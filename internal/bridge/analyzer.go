@@ -94,6 +94,11 @@ func (b *Bridge) AnalyzeProtoWithOuter(fn *ast.FuncExpr, proto *bytecode.Proto, 
 	if v.callsUnknownFn {
 		reasons |= ReasonUnknownCall
 	}
+	// F2-c: SELF method call(占位位,与 ReasonBackendUnsupp 同款手法 —
+	// 承 P4 PJ5 SELF inline 形态真接入)
+	if v.sawSelfCall {
+		reasons |= ReasonSelfCall
+	}
 
 	// F3 / F4: debug / setfenv
 	if v.usesDebug {
@@ -175,6 +180,11 @@ type compilabilityVisitor struct {
 	callsResume    bool
 	callsCoroutine bool
 	callsUnknownFn bool
+
+	// F2-c: SELF method call 占位信号(承 P4 PJ5 SELF inline 形态真接入)。
+	// 默认走 ReasonSelfCall 占位拒,运行期 P4 注入后 `recheckCompilabilityRuntime`
+	// 撤位 + 由 SupportsAllOpcodes 形态守门做真判定。
+	sawSelfCall bool
 
 	// F3 / F4
 	usesDebug   bool
@@ -445,13 +455,21 @@ func (v *compilabilityVisitor) visitCallExpr(e *ast.CallExpr) {
 	v.callsUnknownFn = true
 }
 
-// visitMethodCallExpr `obj:m()` 形态——保守标 unknown(对象的方法表无法静态解析)。
+// visitMethodCallExpr `obj:method(args)` 形态 —— 拆为「receiver/args walk +
+// 标 sawSelfCall 信号」。**不再硬叠 callsUnknownFn**(承 P4 PJ5 SELF inline
+// 形态真接入决策):method call 的 callee 跟 PJ5 既有 known-fn 形态(MOVE/
+// GETUPVAL)同款 —— callee 内部 yield/__call/meta 由 host.Self + host.
+// CallBaseline / host.TailCall 整段交接 byte-equal P1 doCall 路径处理。
+//
+// **占位位语义**:default 仍判 NotCompilable + ReasonSelfCall(占位),运行
+// 期 P4 注入后 `recheckCompilabilityRuntime` 撤位(承 ReasonBackendUnsupp
+// 同款 "P3/P4 注入后重判" 手法)。F1-F6 真实结构性排除原样保留。
 func (v *compilabilityVisitor) visitMethodCallExpr(e *ast.MethodCallExpr) {
 	v.walkExpr(e.Recv)
 	for _, a := range e.Args {
 		v.walkExpr(a)
 	}
-	v.callsUnknownFn = true
+	v.sawSelfCall = true
 }
 
 // walkFuncExpr 嵌套 FuncExpr 处理(03 §7.3 信号传染隔离)。
