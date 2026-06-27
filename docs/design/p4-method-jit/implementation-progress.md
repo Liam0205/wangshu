@@ -1637,7 +1637,7 @@ PJ0 启动后,本文按以下协议更新(承 [P3 implementation-progress §5](.
 | **V15** realworld geomean | realworld bench 双架构 geomean ≥P3 | ⏳ amd64 部分 + arm64 物理 | §9.19 SELF spec template heavy body 0.95-1.011x |
 | **V16** boundary 无退化 | edge case 不慢于 crescent | ✅ amd64 | bench 简单 method 1.094x-1.12x(可接受 trampoline 开销) |
 | **V17** prove-the-path | spec/IC/SELF/CALL 字节级路径命中实证 | ✅ amd64 | 26 e2e + 11 difftest + 16 单测 + 5 V18 -race |
-| **V18** -race 多 State 并发 | 多 goroutine 独立 State force-all P4 无 race | ✅ amd64 | TestP4_ConcurrentForceAll + MultiRet + SpecDeopt + R14ABI 5 测试 |
+| **V18** -race 多 State 并发 | 多 goroutine 独立 State force-all P4 无 race | ✅ amd64 | TestP4_ConcurrentForceAll + MultiRet + SpecDeopt + R14ABI 7 测试(GCStress + ConcurrentGC + DeepStack + GetTable/SetTable + PJ3 FORLOOP + PJ7 算术 全 R14 修复覆盖矩阵) |
 | **V19** OSR exit 状态等价 | spec template guard 失败 → onOSRExit → P4Deoptimized | ✅ amd64 | TestPJ5_SelfCall_E2E_SpecTemplate_OSRExitToDeopt(SpecP4DeoptHits +6) |
 | **V20** deopt 风暴 | 多 deopt 路径串行触发不互扰 | ✅ amd64 | TestPJ5_SelfCall_E2E_SpecTemplate_DeoptStorm(5 caller 独立累积 SpecP4DeoptHits +15) |
 | **V21** longevity | nightly fuzz 长跑无差异 | ⏳ nightly CI 待配 | `make fuzz-p4` smoke ✅ 1.5M execs 全过(承 bbd6f6b) |
