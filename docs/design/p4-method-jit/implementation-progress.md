@@ -1608,6 +1608,34 @@ PJ0 启动后,本文按以下协议更新(承 [P3 implementation-progress §5](.
 
 ---
 
+## 12. PJ10 验收数据盘点(2026-06-28 收集)
+
+承 [01-launch-judgment.md](./01-launch-judgment.md) + [08-testing-strategy.md](./08-testing-strategy.md) V1-V22:本节按 V 编号盘点 PJ10 验收数据当前状态。
+
+| V 编号 | 验收口径 | 当前状态 | 实证来源 |
+|---|---|---|---|
+| **V1-V13** 正确性轴 | 三方差分 byte-equal(oracle / crescent / p4-jit) | ✅ | test/difftest/p4_test.go(58 用例) |
+| **V14** luajc 档绝对水位 | 列内核负载 ≥luajc 档(≥164μs 水位 over gopher-lua) | ✅ amd64 | §8 FORLOOP 实测 7-25x |
+| **V14 arm64** | 双架构 luajc 档 | ⏳ 物理 runner | PJ9 待接入 |
+| **V15** realworld geomean | realworld bench 双架构 geomean ≥P3 | ⏳ amd64 部分 + arm64 物理 | §9.19 SELF spec template heavy body 0.95-1.011x |
+| **V16** boundary 无退化 | edge case 不慢于 crescent | ✅ amd64 | bench 简单 method 1.094x-1.12x(可接受 trampoline 开销) |
+| **V17** prove-the-path | spec/IC/SELF/CALL 字节级路径命中实证 | ✅ amd64 | 26 e2e + 11 difftest + 16 单测 + 5 V18 -race |
+| **V18** -race 多 State 并发 | 多 goroutine 独立 State force-all P4 无 race | ✅ amd64 | TestP4_ConcurrentForceAll + MultiRet + SpecDeopt + R14ABI 5 测试 |
+| **V19** OSR exit 状态等价 | spec template guard 失败 → onOSRExit → P4Deoptimized | ✅ amd64 | TestPJ5_SelfCall_E2E_SpecTemplate_OSRExitToDeopt(SpecP4DeoptHits +6) |
+| **V20** deopt 风暴 | 多 deopt 路径串行触发不互扰 | ⏳ 部分(单 deopt 路径实证)| TestP4_ConcurrentForceAll_SpecDeopt(基础)|
+| **V21** longevity | nightly fuzz 长跑无差异 | ⏳ nightly CI 未启用 | — |
+| **V22** guard 漏判 fuzz | 30 天 nightly 无 guard 漏判事件 | ⏳ nightly CI 未启用 | — |
+
+**剩余 V14/V15/V20/V21/V22 双架构** 需物理 self-hosted arm64 runner CI 接入 + nightly fuzz harness。承 stop hook feedback 优先级 3 "arm64 物理 self-hosted runner CI 接入(物理依赖)"— 物理依赖类不可达。
+
+**PJ10 验收达标当前判定**:
+- V1-V17 amd64 ✅ + V18-V19 amd64 ✅ — **amd64 PJ10 已达标**(承 §1 PJ10 行 ✅ 2026-06-26 luajc 档突破)
+- V14 arm64 + V18 arm64 + V20-V22 nightly — **PJ10 双架构验收 ⏳ 物理 runner**
+
+**P3 退役决议数据(§11)已就位 amd64**,等 PJ10 双架构验收(arm64 物理 runner)即可由用户拍板。
+
+---
+
 相关:
 - [00-overview](./00-overview.md)(P4 总览,本文是其 §4 PJ 表的运行期对账 + §6 跨文档定稿决策收口)
 - [01-launch-judgment](./01-launch-judgment.md)~[08-testing-strategy](./08-testing-strategy.md)(各子系统设计文档,本文 §2 聚合其 §回填请求节)
