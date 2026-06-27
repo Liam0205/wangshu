@@ -1054,6 +1054,27 @@ func TestPJ8_EmitFrameInlineWriteCIWordArm64_Length(t *testing.T) {
 	}
 }
 
+// TestPJ8_EmitFrameInlinePopVoid0ArgSkeletonArm64_AliasCIDepthDec 验 arm64
+// popCallInfo 骨架字节级与 CIDepthDec 完全等价(纯 alias)。
+func TestPJ8_EmitFrameInlinePopVoid0ArgSkeletonArm64_AliasCIDepthDec(t *testing.T) {
+	var bufA, bufB []byte
+	bufA = EmitFrameInlinePopVoid0ArgSkeletonArm64(bufA, 56)
+	bufB = EmitFrameInlineCIDepthDecArm64(bufB, 56)
+	if len(bufA) != EncodedFrameInlinePopVoid0ArgSkeletonArm64Len {
+		t.Errorf("PopVoid0ArgSkeletonArm64 长度 = %d, want %d",
+			len(bufA), EncodedFrameInlinePopVoid0ArgSkeletonArm64Len)
+	}
+	if len(bufA) != len(bufB) {
+		t.Errorf("长度差异:Pop=%d, CIDepthDec=%d", len(bufA), len(bufB))
+	}
+	for i := range bufA {
+		if bufA[i] != bufB[i] {
+			t.Errorf("字节[%d] 差异:Pop=0x%02X, CIDepthDec=0x%02X",
+				i, bufA[i], bufB[i])
+		}
+	}
+}
+
 // TestPJ8_EmitFrameInlineLoadClosureGCRefArm64_Length 验 arm64 closure GCRef
 // NaN-box 解析模板长度(LDR 4 + MovImm64 16 + AND 4 = 24 字节,对位 amd64 = 20)。
 func TestPJ8_EmitFrameInlineLoadClosureGCRefArm64_Length(t *testing.T) {

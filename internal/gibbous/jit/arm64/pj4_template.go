@@ -971,3 +971,14 @@ func EmitFrameInlineWriteCIWordFromXArm64(buf []byte, wordIdx uint8, srcReg uint
 
 // EncodedFrameInlineWriteCIWordFromXArm64Len = 4.
 const EncodedFrameInlineWriteCIWordFromXArm64Len = 4
+
+// EmitFrameInlinePopVoid0ArgSkeletonArm64 发射 arm64 Spike 1 popCallInfo
+// 字节级 inline 骨架(对位 amd64,等价 EmitFrameInlineCIDepthDecArm64)。
+//
+// 字节序列(16 字节):同 EmitFrameInlineCIDepthDecArm64。
+func EmitFrameInlinePopVoid0ArgSkeletonArm64(buf []byte, ciDepthAddrOffset uint16) []byte {
+	return EmitFrameInlineCIDepthDecArm64(buf, ciDepthAddrOffset)
+}
+
+// EncodedFrameInlinePopVoid0ArgSkeletonArm64Len = 16(同 CIDepthDecArm64)。
+const EncodedFrameInlinePopVoid0ArgSkeletonArm64Len = EncodedFrameInlineCIDepthIncDecArm64Len

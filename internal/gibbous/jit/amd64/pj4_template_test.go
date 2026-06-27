@@ -752,6 +752,27 @@ func TestPJ5_EmitFrameInlineBuildVoid0ArgSkeleton_Length(t *testing.T) {
 	}
 }
 
+// TestPJ5_EmitFrameInlinePopVoid0ArgSkeleton_AliasCIDepthDec 验 amd64 Spike 1
+// popCallInfo 骨架字节级与 EmitFrameInlineCIDepthDec 完全等价(纯 alias)。
+func TestPJ5_EmitFrameInlinePopVoid0ArgSkeleton_AliasCIDepthDec(t *testing.T) {
+	var bufA, bufB []byte
+	bufA = EmitFrameInlinePopVoid0ArgSkeleton(bufA, 0x40)
+	bufB = EmitFrameInlineCIDepthDec(bufB, 0x40)
+	if len(bufA) != EncodedFrameInlinePopVoid0ArgSkeletonLen {
+		t.Errorf("PopVoid0ArgSkeleton 长度 = %d, want %d",
+			len(bufA), EncodedFrameInlinePopVoid0ArgSkeletonLen)
+	}
+	if len(bufA) != len(bufB) {
+		t.Errorf("长度差异:Pop=%d, CIDepthDec=%d", len(bufA), len(bufB))
+	}
+	for i := range bufA {
+		if bufA[i] != bufB[i] {
+			t.Errorf("字节[%d] 差异:Pop=0x%02X, CIDepthDec=0x%02X",
+				i, bufA[i], bufB[i])
+		}
+	}
+}
+
 // TestPJ5_EmitFrameInlineLoadClosureGCRef_Length 验 amd64 Spike 1 closure
 // GCRef NaN-box 解析模板长度(7+10+3 = 20 字节)。
 func TestPJ5_EmitFrameInlineLoadClosureGCRef_Length(t *testing.T) {

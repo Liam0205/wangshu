@@ -1084,3 +1084,25 @@ func EmitFrameInlineWriteCIWordFromRcx(buf []byte, wordIdx uint8) []byte {
 
 // EncodedFrameInlineWriteCIWordFromRcxLen = 4.
 const EncodedFrameInlineWriteCIWordFromRcxLen = 4
+
+// EmitFrameInlinePopVoid0ArgSkeleton 发射 amd64 Spike 1 popCallInfo 字节级
+// inline 骨架(承 §9.20 Option B Spike 1 BuildVoid0ArgSkeleton 反向)。
+//
+// **Spike 1 简化形态**:Run 端 helper 完成 callee Lua 体执行后,本模板字节级
+// dec ciDepth,等价 frame.go::popCallInfo 中 `th.setCIDepth(th.ciDepth-1)`
+// 镜像字更新。**剩余 popCallInfo Go 端工作**(readCISegInto 重载 caller th.cur)
+// 留 helper 兼容路径(不必字节级 inline,因 th.cur 字段是 Go 端冷字段,
+// mmap 段不读)。
+//
+// 字节序列(10 字节):同 EmitFrameInlineCIDepthDec(直接复用)。
+//
+// **设计说明**:本函数纯 alias EmitFrameInlineCIDepthDec,提供语义清晰的
+// 调用入口供 Compile 端 emit 段尾使用(BuildVoid0Arg + helper call +
+// PopVoid0Arg = enterLuaFrame + executeFrom + popCallInfo)。
+func EmitFrameInlinePopVoid0ArgSkeleton(buf []byte, ciDepthAddrOffset int32) []byte {
+	return EmitFrameInlineCIDepthDec(buf, ciDepthAddrOffset)
+}
+
+// EncodedFrameInlinePopVoid0ArgSkeletonLen 是 Spike 1 popCallInfo 骨架字节数
+// (10,同 EmitFrameInlineCIDepthDec)。
+const EncodedFrameInlinePopVoid0ArgSkeletonLen = EncodedFrameInlineCIDepthIncDecLen
