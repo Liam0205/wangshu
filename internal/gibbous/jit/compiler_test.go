@@ -278,6 +278,16 @@ func (m *mockP4Host) ValueStackBaseAddr(base int32) uintptr {
 	return m.arenaBase + uintptr(base)
 }
 
+// CIDepthHostAddr 模拟 host.CIDepthHostAddr(承 §9.20 Option B Spike 1):
+// 返 mock 固定占位地址,单测路径不真触达字节级 inc/dec。
+func (m *mockP4Host) CIDepthHostAddr() uintptr { return 0 }
+
+// CISegBaseHostAddr 模拟 host.CISegBaseHostAddr(承 §9.20)。
+func (m *mockP4Host) CISegBaseHostAddr() uintptr { return 0 }
+
+// TopHostAddr 模拟 host.TopHostAddr(承 §9.20)。
+func (m *mockP4Host) TopHostAddr() uintptr { return 0 }
+
 // ForPrep mock stub(PJ3 reg-limit deopt 路径用,单测路径不触达)。
 func (m *mockP4Host) ForPrep(base, pc, a int32) int32 { _ = base; _ = pc; _ = a; return 0 }
 

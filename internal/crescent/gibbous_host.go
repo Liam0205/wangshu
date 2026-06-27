@@ -161,6 +161,54 @@ func (st *State) ValueStackBaseAddr(base int32) uintptr {
 	return uintptr(unsafe.Pointer(&words[0])) + uintptr(base)
 }
 
+// CIDepthHostAddr 返回 thread.ciDepth 镜像字的 host 字节地址(承
+// docs/design/p4-method-jit/implementation-progress.md §9.20 Option B
+// Spike 1 + P4HostState 接口)。
+//
+// **复用 P3 PW10 Stage 1a 镜像字**(st.ciDepthRef):同一 arena 镜像字,
+// crescent 端经 thread.setCIDepth 写入(`a.SetWordAt(st.ciDepthRef, ...)`),
+// P4 mmap 段经本字段返回的 host addr 字节级 inc/dec(enterLuaFrame +
+// popCallInfo 字节级 inline)。
+//
+// 返回 = arena.Words().bytePtr + (ciDepthRef bytes)。**arena 重定位**:
+// 同 ArenaBaseAddr,grow 出 JIT 世界后回来从 jitContext 重载;Spike 1
+// 阶段每次 Run 入口现算注入(承 05 §5 arena base 重载协议)。
+func (st *State) CIDepthHostAddr() uintptr {
+	words := st.arena.Words()
+	if len(words) == 0 {
+		return 0
+	}
+	return uintptr(unsafe.Pointer(&words[0])) + uintptr(st.ciDepthRef)
+}
+
+// CISegBaseHostAddr 返回 CI 段当前字节基址镜像字的 host 字节地址(承 §9.20
+// Option B Spike 1)。
+//
+// **复用 P3 PW10 Stage 2 镜像字**(st.ciSegBaseRef):CI 段可重定位
+// (growCISeg / newThread 更新 ciBaseW),syncCISegBase 把 ciBaseW*8 镜像
+// 到此 arena 字。P4 mmap 段经本字段返回 host addr 解引出当前 CI 段基址,
+// 然后算 CallInfo[depth] 帧地址(基址 + depth*40)。
+func (st *State) CISegBaseHostAddr() uintptr {
+	words := st.arena.Words()
+	if len(words) == 0 {
+		return 0
+	}
+	return uintptr(unsafe.Pointer(&words[0])) + uintptr(st.ciSegBaseRef)
+}
+
+// TopHostAddr 返回 thread.top 镜像字的 host 字节地址(承 §9.20 Option B
+// Spike 1)。
+//
+// **复用 P3 PW10 Stage 1a 镜像字**(st.topRef):top 是栈槽索引,
+// enterLuaFrame 设 callee 帧顶时 P4 mmap 段写入(top = base + MaxStack)。
+func (st *State) TopHostAddr() uintptr {
+	words := st.arena.Words()
+	if len(words) == 0 {
+		return 0
+	}
+	return uintptr(unsafe.Pointer(&words[0])) + uintptr(st.topRef)
+}
+
 // GetUpval 取当前 closure 的 upvalue b(execute.go GETUPVAL 段同款)。
 func (st *State) GetUpval(base int32, b int32) uint64 {
 	th := st.runningThread

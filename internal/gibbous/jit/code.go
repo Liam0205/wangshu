@@ -266,6 +266,12 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 		c.jitCtx.SetArenaBase(c.host.ArenaBaseAddr())
 		vsBaseAddr = c.host.ValueStackBaseAddr(int32(base))
 		c.jitCtx.SetValueStackBase(vsBaseAddr)
+		// PJ5 Option B Spike 1+ 帧建立内联(承 §9.20):Run 入口现算注入
+		// ciDepth / ciSegBase / top 镜像字 host 字节地址(arena grow 后地址变,
+		// 不缓存——同 ArenaBase 重载协议)。
+		c.jitCtx.SetCIDepthAddr(c.host.CIDepthHostAddr())
+		c.jitCtx.SetCISegBaseAddr(c.host.CISegBaseHostAddr())
+		c.jitCtx.SetTopAddr(c.host.TopHostAddr())
 	}
 
 	jitCtxAddr := jitContextAddr(c.jitCtx)

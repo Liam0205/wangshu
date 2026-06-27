@@ -238,6 +238,30 @@ type P4HostState interface {
 	// 世界)发生,JIT 内联 bump 越界即出去——回来后从 jitContext 重载
 	// base。PJ2 完整版接入此协议;PJ7 简化形态尚不调用本接口。
 	ValueStackBaseAddr(base int32) uintptr
+
+	// CIDepthHostAddr 返回 thread.ciDepth 镜像字的 host 字节地址(承 §9.20
+	// Option B Spike 1)。
+	//
+	// **复用 P3 PW10 Stage 1a 镜像字**(crescent.State.ciDepthRef):同一镜像字
+	// crescent 端经 setCIDepth 写入,P4 mmap 段经 host addr (uintptr) 读 / inc / dec。
+	// 返回 = arena.Words().bytePtr + (st.ciDepthRef bytes)。
+	//
+	// **arena 重定位风险**:同 ArenaBaseAddr,arena grow 出 JIT 世界后回来从
+	// jitContext 重载;Spike 1 阶段每次 Run 入口注入。
+	CIDepthHostAddr() uintptr
+
+	// CISegBaseHostAddr 返回 CI 段当前字节基址镜像字的 host 字节地址(承 §9.20)。
+	//
+	// **复用 P3 PW10 Stage 2 镜像字**(crescent.State.ciSegBaseRef):CI 段可
+	// 重定位,mmap 段经此镜像字解引出当前 CI 段基址,然后算 CallInfo[depth]
+	// 帧地址(基址 + depth*40)。
+	CISegBaseHostAddr() uintptr
+
+	// TopHostAddr 返回 thread.top 镜像字的 host 字节地址(承 §9.20)。
+	//
+	// **复用 P3 PW10 Stage 1a 镜像字**(crescent.State.topRef):top 是栈槽索引,
+	// enterLuaFrame 设 callee 帧顶时 mmap 段写入(top = base + MaxStack)。
+	TopHostAddr() uintptr
 }
 
 // SetHostState 把 host(crescent)抽象注入本 Compiler。
