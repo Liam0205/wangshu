@@ -793,6 +793,29 @@ end
 for i = 1, 100 do caller(nil, mt) end
 caller(nil, mt)
 return count`},
+	// —— PJ5 SELF spec template 错误冒泡 difftest(承 d201a2f/d0893c9 e2e
+	// 实证 NilRecv + BadMethod;本批加 difftest 三方 byte-equal,验
+	// crescent vs P4 错误消息逐字节一致 + P4 OSR exit 路径不破坏错误冒泡)。
+	// pcall 把错误转 (false, errmsg) 返回,避免 runWangshuP4Tiered 在
+	// err != nil 时 fail-fast,保留错误消息进 byte-equal 对比。
+	{"p4_self_spec_err_nilrecv", `
+local function caller(t) return t:m() end
+local ok, err = pcall(caller, nil)
+return ok, tostring(err)`},
+	{"p4_self_spec_err_badmethod", `
+local mt = { m = 42 }
+local function caller(t) return t:m() end
+local ok, err = pcall(caller, mt)
+return ok, tostring(err)`},
+	{"p4_self_spec_err_warmup_then_nilrecv", `
+local m_good = { m = function(self) return 1 end }
+local function caller(t) return t:m() end
+-- warmup 填 IC NodeHit + FBSelfMono
+local sum = 0
+for i = 1, 100 do sum = sum + caller(m_good) end
+-- 然后用 nil receiver → spec NodeHit guard 失败 → deopt → host.Self → err
+local ok, err = pcall(caller, nil)
+return ok, tostring(err), sum`},
 }
 
 // TestP4_Tiered 三方对拍:oracle / crescent / p4-jit 全 byte-equal。
@@ -810,6 +833,12 @@ func TestP4_Tiered(t *testing.T) {
 			if crescent != p4 {
 				t.Errorf("层间分歧 (crescent vs P4-jit):\n  crescent: %q\n  p4:       %q",
 					crescent, p4)
+			}
+			// 跳过 oracle 对比:含 "_err_" 的用例(错误消息含 chunk name
+			// 差异,wangshu 用 "p4diff" / oracle 用 "stdin",非 P4 路径问题,
+			// 承 errmsg_test.go 同款归一化跳过策略)
+			if strings.Contains(c.name, "_err_") {
+				return
 			}
 			// 锚定官方 lua5.1(可用时)
 			if oracle != "" {
