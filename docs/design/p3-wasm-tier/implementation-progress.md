@@ -341,6 +341,11 @@ upvalue/闭包 byte-equal 由差分门(difftest 70 种子)+ e2e(捕获栈局部/
 | 层间差分套 | §V1-V13 各形状 byte-equal | `test/difftest/p3_test.go` 三方对拍(oracle/crescent/gibbous 全 byte-equal):V1-V13 各形状 23 核 + 71 种子层间套 + GC stress 层间(V5/V13)+ 并发 force-all(V18 -race)。核函数包成非 vararg 内层函数反复调(顶层 vararg chunk F1 不升,首调跑 crescent、二调起 gibbous) | `e94a80e` |
 | 工程轴 | V17 四 build / V18 -race | 四 build(default/profile/p3/p3+profile)零回归 + 8 goroutine 并发 force-all `-race` 干净(gibbousCodes map 经 compileMu 守护,RW-8 收口) | `e94a80e` |
 
+**P4 force-all-jit 同款纪律**(2026-06-28,承 [../p4-method-jit/implementation-progress §2 RJ-24](../p4-method-jit/implementation-progress.md) 跨文档回填请求):本节 force-all 非空保证援引 RW-10 教训,P4 force-all-jit 接续同款纪律——详见 [../p4-method-jit/08-testing-strategy §3.7 force-all 非空保证](../p4-method-jit/08-testing-strategy.md) + [../p4-method-jit/implementation-progress §12 V12 状态行](../p4-method-jit/implementation-progress.md)。P4 amd64 端已实证:
+- TestP4_PromotionTriggered 强断言(承本会话累计 58 difftest p4Corpus 用例)
+- TestP4_ConcurrentForceAll(8 goroutine 并发 force-all P4,无 race)
+- 26 e2e + 11 difftest 全 SetForceAllPromote(true) 入口 + V18 -race 含 SELF 测试
+
 ### 11.3 性能轴实测对账(V14 达标 / V15 未达,拆 PW10)
 
 > **方法论修正**:PW9 早期一次测量给出 gibbous≈crescent(≈1.0x),据此曾判「memory-resident

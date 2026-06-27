@@ -570,6 +570,8 @@ func (vm *VM) doCall(f *frame, i Instruction) callResult {
 - **Lua 调用深度不消耗 Go 栈**:1000 层 Lua 递归 = 1000 条 CallInfo(arena),Go 栈深度恒为 1(就在 `execute` 那一帧)。这正面兑现 roadmap §2「不持有指向 Go 栈的指针」——调用链状态全在 arena,Go 栈不增长,morestack 拷栈与解释器调用链解耦。
 - **协程切换可行**([08](./08-coroutines.md)):挂起 = 保存当前 frame 回 CallInfo + 切到另一 Thread 的 CallInfo 链;因为状态全在 arena,切协程不需要拷 Go 栈。
 
+**P4 阶段新增 `callDeoptResume` doCall 出口**(2026-06-28,承 [../p4-method-jit/implementation-progress §2 RJ-3](../p4-method-jit/implementation-progress.md) 跨文档回填请求):本节 callResult 枚举(P1 阶段)未列 `callDeoptResume`,因 P1/P2/P3 不需要——P3 永不返回 status=2(承 [../p2-bridge/05-p3-p4-interface §6.1](../p2-bridge/05-p3-p4-interface.md))。**P4 阶段引入**:GibbousCode.Run 返回 status=2 (DEOPT) 时 doCall 出口走 `callDeoptResume`(reloadFrame + 续跑同帧),具体协议详见 [../p4-method-jit/04-osr-deopt §5 OSR exit 流程](../p4-method-jit/04-osr-deopt.md) + [../p4-method-jit/05-system-pipeline](../p4-method-jit/05-system-pipeline.md)。**P1 视角影响**:enterLuaFrame / 主循环重载 frame 逻辑不变,callResult 枚举在 P4 build 下增 callDeoptResume 一个变体。
+
 ### 7.2 RETURN:退帧或终止
 
 `RETURN A B`:返回 `R(A..A+B-2)`,`B=0` 返回到 `top`([02](./02-bytecode-isa.md) §4-30)。
@@ -894,6 +896,19 @@ pcall host 实现:
 ### 9.5 错误传播与 ≥2x 验收的关系
 
 错误路径**不在热路径**(正常脚本极少出错),所以「显式返回啰嗦」不损 §3 的性能——快路径里 `if e != nil` 的 `e` 几乎总是 nil,分支预测器轻松命中,接近零成本。相反若用 panic,即便不出错也要为可能的 panic 准备 defer/recover 框架,反而拖累热路径。**显式返回是「错误路径让步、热路径优先」的正确选择**,与 roadmap §1「减少每指令开销」一致。
+
+### 9.6 P4 OSR exit 路径与错误冒泡互斥(2026-06-28 新增)
+
+承 [../p4-method-jit/implementation-progress §2 RJ-4](../p4-method-jit/implementation-progress.md) 跨文档回填请求 + [../p4-method-jit/04-osr-deopt §7.4](../p4-method-jit/04-osr-deopt.md):**OSR exit 路径不应设置 `state.pendingErr`**——exit 是「投机失误」非「语义错误」,与本节 9.2-9.4 描述的错误冒泡纪律**不互斥**:
+
+- **错误冒泡**(本节 9.2-9.4):语义错误(attempt to index nil 等),`pendingErr` 置位 + execute return *LuaError → 一路 return 到 pcall / Go 上层
+- **OSR exit**(P4 新增):投机失败(IC NodeHit guard 不成立 / IsNumber 失败),GibbousCode.Run 返回 status=2 → doCall 走 `callDeoptResume`(§7.1 + RJ-3),**不动 pendingErr**
+- **同发情况**:若投机段中真发生语义错误(如 SELF method 调用 method=nil),**错误优先**:pendingErr 置位 + GibbousCode.Run 返回 status=1(ERR),不返 status=2
+
+**P4 验证形态**(承本会话实证):
+- `TestPJ5_SelfCall_E2E_SpecTemplate_ErrorBubbleUp_NilRecv`(语义错误冒泡正确)
+- `TestPJ5_SelfCall_E2E_SpecTemplate_ErrorBubbleUp_BadMethod`(method=number 时 attempt to call 冒泡)
+- `TestPJ5_SelfCall_E2E_SpecTemplate_OSRExitToDeopt`(投机失误纯 deopt,不动 pendingErr,byte-equal P1)
 
 ---
 

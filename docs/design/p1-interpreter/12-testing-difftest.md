@@ -387,14 +387,20 @@ type WangshuInterp struct{}   // 被测:internal/crescent
 type GopherLua struct{}        // 基准:github.com/yuin/gopher-lua
 type OfficialLua struct{}      // oracle:exec lua5.1 子进程(或 golden 文件)
 
-// P3+ 新增(本文预留,不实现):
-// type WangshuGibbous struct{} // 同一 Proto 走 Wasm 层(p3-wasm-tier/08-testing-strategy.md)
+// P3 已实装(承 ../p3-wasm-tier/08-testing-strategy.md):
+// type WangshuGibbous struct{} // 同一 Proto 走 Wasm 层(P3 build wangshu_p3+wangshu_profile,
+//                              // force-all 升 gibbous → wasm 翻译产物执行)
+// P4 已实装(承 ../p4-method-jit/08-testing-strategy.md §4 / §5,RJ-1/RJ-2):
+// type WangshuGibbousJIT struct{} // 同一 Proto 走 mmap+RX 原生码(P4 build wangshu_p4+wangshu_profile,
+//                                 // force-all 升 gibbous → 字节级 inline 模板 +
+//                                 // host helper round-trip 混合执行)
+// P5 预留:
 // type WangshuFullmoon struct{} // 同一 Proto 走 trace JIT(p5-trace-jit)
 
 func DiffN(src string, runners ...Runner) DiffResult { /* N 方比对,§3.3 矩阵推广 */ }
 ```
 
-**P3+ 接入的关键差异**:P1 的三方是「**不同实现各跑各的字节码**,只比最终输出」;P3+ 的「望舒解释器 vs 望舒 gibbous」是「**同一份 Proto** 走不同执行层」——后者是更强的差分(同输入字节码,任何输出差异必是执行层 bug,不存在「实现本来就不同」的噪声)。这正是 roadmap §5 把它当**JIT 投机错误主防线**的原因:trace JIT 的去优化(deopt)若漏了某个 guard,投机路径会**静默产出错误结果**,只有「同 Proto 走解释器 vs 走 JIT 输出对比」能逐字节抓住(§7 前瞻详述)。P1 把这套框架建好,是给 P3+ 的「主防线」提前铺好轨道(roadmap §3 原则:每阶段独立交付,P1 的差分框架本身就是交付物)。
+**P3+ 接入的关键差异**:P1 的三方是「**不同实现各跑各的字节码**,只比最终输出」;P3+ 的「望舒解释器 vs 望舒 gibbous」是「**同一份 Proto** 走不同执行层」——后者是更强的差分(同输入字节码,任何输出差异必是执行层 bug,不存在「实现本来就不同」的噪声)。这正是 roadmap §5 把它当**JIT 投机错误主防线**的原因:trace JIT 的去优化(deopt)若漏了某个 guard,投机路径会**静默产出错误结果**,只有「同 Proto 走解释器 vs 走 JIT 输出对比」能逐字节抓住(§7 前瞻详述)。**P4 已兑现该主防线**(承 [P4 08 §4 V1-V13 + §5 V17-V22](../p4-method-jit/08-testing-strategy.md)):58 difftest 三方 byte-equal(oracle / crescent / p4-jit force-all)+ 26 e2e prove-the-path + V22 fuzz harness。P1 把这套框架建好,是给 P3+ 的「主防线」提前铺好轨道(roadmap §3 原则:每阶段独立交付,P1 的差分框架本身就是交付物)。
 
 ---
 

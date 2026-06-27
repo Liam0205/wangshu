@@ -35,7 +35,7 @@ P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 met
 | P1 | 现代解释器 | 6-9 人月 | 2-4x | 简单/算术/循环三档脚本全 ≥2x over gopher-lua;与官方 5.1.5 差分 fuzz 逐字节一致(gopher 偏差豁免) | 无(起点) |
 | P2 | 分层桥 | 1-2 人月 | 基建(无量化) | 文档未给独立量化门槛 | 无 |
 | P3 | Wasm 编译层 | 6-12 人月 | 4-8x | 循环密集脚本相对 P1 再 ≥2x;两层差分 fuzz 逐字节一致 | **wazero call boundary 实测 `<150ns`;不达标则跳过本阶段直接做 P4** |
-| P4 | method JIT(JSC Baseline 风格) | +1-2 人年 | trace 收益 ~70% | 列内核负载 ≥ LuaJ-luajc 档;Wasm 层退役或留作可移植中层 | 无(继承 P3 管线) |
+| P4 | method JIT(JSC Baseline 风格) | +1-2 人年 | trace 收益 ~70% | 列内核负载 ≥ LuaJ-luajc 档;Wasm 层退役或留作可移植中层 | **P4 立项判定**(详 [../docs/design/p4-method-jit/01-launch-judgment](../../docs/design/p4-method-jit/01-launch-judgment.md))— 与 P3 「wazero call boundary <150ns」对位,P4 启动前先做立项判定三档决议 |
 | P5 | trace JIT | +2-4 人年到可信 v1(开放式) | 10-30x | 列内核负载 10-30x over gopher-lua | 仅在 P4 收益不够时启动 |
 
 ## 各阶段正文
@@ -69,10 +69,11 @@ P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 met
 
 ### P4:带 IC 反馈的投机 method JIT(+1-2 人年,流水线图「trace 收益 ~70%」)
 
+- **立项判定先于实施**(本阶段承担,详 [../docs/design/p4-method-jit/01-launch-judgment](../../docs/design/p4-method-jit/01-launch-judgment.md)):P4 启动前先做立项判定(P3 实际表现 + 真实宿主负载证据 + 资源到位),三档决议产出「常规推进 / 暂缓 / 跳过」三选一——与 P3 段「开工前置 spike」对位的 P4 阶段对应纪律
 - **JSC Baseline 风格**,per-function 模板编译;IC 反馈做类型投机(**f64 快速路径 + guard**);**deopt 简单**(函数级 **OSR exit** 回解释器);
 - 继承 P3 的全部分层结构,**只换发射后端**(Wasm 发射 → 原生发射);
 - **amd64 + arm64 双后端**;系统管线参考 wazero。
-- **验收**:列内核负载 ≥ LuaJ-luajc 档;Wasm 层退役,**或**留作可移植中层(未移植架构、禁 exec-mmap 环境)。
+- **验收**:列内核负载 ≥ LuaJ-luajc 档;Wasm 层退役,**或**留作可移植中层(未移植架构、禁 exec-mmap 环境)。**P3 去留决策框架详见 [../docs/design/p4-method-jit/07-p3-retirement](../../docs/design/p4-method-jit/07-p3-retirement.md)**。
 
 ### P5:trace-based JIT(+2-4 人年到可信 v1,开放式,目标 10-30x)
 

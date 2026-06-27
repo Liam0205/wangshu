@@ -51,6 +51,12 @@
 
 > **tier 坐标系警告**([evolution-roadmap](../../../llmdoc/architecture/evolution-roadmap.md)):月相 tier 比阶段粗一层。P1=tier-0(crescent),P3/P4=tier-1(gibbous),P5=tier-2(fullmoon)。**P3 与 P4 同属 tier-1 但发射后端不同**:P3 发 Wasm(wazero 执行)、P4 发原生码(自管 codegen)。代码包名据此:`internal/gibbous/wasm`(P3)、`internal/gibbous/jit`(P4)。日志统一是 `function promoted to gibbous`(不区分子档)。
 
+> **P3 与 P4 的两个跨阶段决策视角**(2026-06-28,承 [P4 implementation-progress §2 RJ-17](../p4-method-jit/implementation-progress.md) 跨文档回填请求):上表只列 P3 实施层(同 tier 不同后端的边界划分),但 P4 视角下 P3 与 P4 还有两个跨阶段决策视角:
+> - **P4 立项闸门**([P4 01-launch-judgment](../p4-method-jit/01-launch-judgment.md)):决定 P4 是否启动 + 何时启动,输入含 P3 实际表现 + 真实宿主负载证据
+> - **P4 验收时 P3 去留**([P4 07-p3-retirement](../p4-method-jit/07-p3-retirement.md)):P4 验收通过后 P3 退役 / 留中层二选一,输入含 P3 在 P4 不可用平台上的实际表现
+>
+> 两个决策视角是 P3/P4 共生关系的两端:立项决定 P4 是否要做(P3 后);去留决定 P4 上线时 P3 怎么办(P4 后)。本文 §1 上表只列同 tier 不同后端的实施层边界;立项 + 去留两个决策视角的详细框架见上述两个 P4 子文档。
+
 ---
 
 ## 2. 总数据流(承 P2 决策 + 产 GibbousCode 给 crescent 调)
