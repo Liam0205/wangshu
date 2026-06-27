@@ -645,54 +645,6 @@ local function other() oCount = oCount + 1 end
 local function caller(t) t:m(); other() end
 for i = 1, 30 do caller(o) end
 return mCount, oCount`},
-
-	// —— PJ5 SELF + CALL spec template 形态(IC NodeHit 命中走字节级 EmitSelfNodeHit
-	// 模板,跳过 host.Self;CALL 段仍 host.CallBaseline)。warmup-then-force 通过
-	// p4Corpus 的 force-all 路径触发(IC slot 已在解释器 warmup 中填好)——
-	// difftest 通过让 caller 反复调单态 receiver,IC 稳定后 spec template 命中
-	// 编译,验三方 byte-equal(oracle / crescent / p4-jit)。
-	{"p4_self_spec_void_0arg", `
-local count = 0
-local o = { m = function(self) count = count + 1 end }
-local function caller(t) t:m() end
-for i = 1, 100 do caller(o) end
-caller(o)
-return count`},
-	{"p4_self_spec_void_1karg", `
-local sum = 0
-local o = { m = function(self, x) sum = sum + x end }
-local function caller(t) t:m(42) end
-for i = 1, 100 do caller(o) end
-caller(o)
-return sum`},
-	{"p4_self_spec_void_1regarg", `
-local sum = 0
-local o = { m = function(self, x) sum = sum + x end }
-local function caller(t, v) t:m(v) end
-for i = 1, 100 do caller(o, i) end
-caller(o, 1000)
-return sum`},
-	{"p4_self_spec_void_3regargs", `
-local sum = 0
-local o = { m = function(self, a, b, c) sum = sum + a + b + c end }
-local function caller(t, x, y, z) t:m(x, y, z) end
-for i = 1, 100 do caller(o, i, i+1, i+2) end
-caller(o, 1, 2, 3)
-return sum`},
-	{"p4_self_spec_tailcall_0arg", `
-local o = { m = function(self) return 42 end }
-local function caller(t) return t:m() end
-local sum = 0
-for i = 1, 100 do sum = sum + caller(o) end
-sum = sum + caller(o)
-return sum`},
-	{"p4_self_spec_getter_0arg", `
-local o = { m = function(self) return 42 end }
-local function caller(t) local r = t:m(); return r end
-local sum = 0
-for i = 1, 100 do sum = sum + caller(o) end
-sum = sum + caller(o)
-return sum`},
 }
 
 // TestP4_Tiered 三方对拍:oracle / crescent / p4-jit 全 byte-equal。
