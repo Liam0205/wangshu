@@ -181,6 +181,17 @@ local function noop() count = count + 1 end
 local function invoker(g) g() end
 for i = 1, 30 do invoker(noop) end
 return count`},
+
+	// —— PJ5 CALL void 形态 B:GETUPVAL+CALL+RETURN void
+	// (`local function noop()...end; local function invoker() noop() end` 闭包调外层 known local fn)——
+	// 本形态触发 PJ5 真升层 + Compile 端 SpecCallVoidHits 真命中(承
+	// internal/crescent/gibbous_pj5_call_e2e_test.go::TestPJ5_CallVoid_E2E_FormB_Upval)。
+	{"p4_call_void_upval", `
+local count = 0
+local function noop() count = count + 1 end
+local function invoker() noop() end
+for i = 1, 30 do invoker() end
+return count`},
 }
 
 // TestP4_Tiered 三方对拍:oracle / crescent / p4-jit 全 byte-equal。
