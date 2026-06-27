@@ -145,6 +145,11 @@ bit50 的「写入者 / 读取者」分工:
 
 要点:**bit50 的「物化」发生在「下次该 Proto 被作为 Lua 帧进入」时**(由 §2 的 doCall gibbous 分支决定),不是 installGibbous 那一刻立即改所有现存 CallInfo。旧 CallInfo(bit50=0)直到自己 RETURN 自然消亡,期间一直跑 crescent——同一帧的执行体不中途换引擎,这是「同一帧执行体」的语义保证。
 
+**P4 OSR exit 后 bit50 倾向清 0**(2026-06-28,承 [../p4-method-jit/implementation-progress §2 RJ-21](../p4-method-jit/implementation-progress.md) 跨文档回填请求 + [../p4-method-jit/04-osr-deopt §7.2](../p4-method-jit/04-osr-deopt.md)):P4 投机段在 OSR exit 后,该帧剩余执行交还 crescent 解释器,**bit50 应清 0**(差分友好):
+- **清 0 优点**:差分 friendlier — 该帧再次被进入时若仍 gibbous(deopt 计数未达 stuck)bit50 重新置 1 是正确语义;若已切 P4Deoptimized 撤投机版,bit50 保持 0 = crescent 路径,自然正确
+- **保留 1 风险**:若 OSR exit 后 P4Deoptimized 撤投机版但 bit50 仍 1,下次该帧进入时 doCall 仍走 gibbous 分支(查 trampoline 表已无)→ fallback path 不清晰
+- **倾向清 0**(承 P4 04 §7.2):**P4 落地时实测确认**,本会话 PJ5 SELF spec template OSR exit 路径(SpecP4DeoptHits 实证)未直接涉 bit50 字段写入(因 P4 PJ5 简化形态 mmap 段不读 bit50);完整 OSR exit 接入(Spike 1 Compile/Run 真接通)时落实清 0 纪律。
+
 ### 1.5 P1 实代码现状:callInfo 是普通 Go struct
 
 P1 当前实装(`internal/crescent/state.go` 的 `callInfo` struct)是普通 Go struct,**未预留 bit50 字段**:
