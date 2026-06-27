@@ -755,6 +755,27 @@ local function caller(_, t) local a, b, c, d, e = t:m() end
 for i = 1, 100 do caller(nil, mt) end
 caller(nil, mt)
 return count`},
+	{"p4_self_spec_multiret_n4_1karg", `
+local count = 0
+local mt = { m = function(self, k) count = count + k; return 1, 2, 3, 4 end }
+local function caller(_, t) local a, b, c, d = t:m(7) end
+for i = 1, 100 do caller(nil, mt) end
+caller(nil, mt)
+return count`},
+	{"p4_self_spec_multiret_n4_1regarg", `
+local count = 0
+local mt = { m = function(self, k) count = count + k; return 1, 2, 3, 4 end }
+local function caller(_, t, v) local a, b, c, d = t:m(v) end
+for i = 1, 100 do caller(nil, mt, i) end
+caller(nil, mt, 1000)
+return count`},
+	{"p4_self_spec_multiret_n4_3kargs", `
+local count = 0
+local mt = { m = function(self, x, y, z) count = count + x + y + z; return 1, 2, 3, 4 end }
+local function caller(_, t) local a, b, c, d = t:m(7, 8, 9) end
+for i = 1, 100 do caller(nil, mt) end
+caller(nil, mt)
+return count`},
 }
 
 // TestP4_Tiered 三方对拍:oracle / crescent / p4-jit 全 byte-equal。
