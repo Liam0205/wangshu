@@ -693,6 +693,20 @@ local sum = 0
 for i = 1, 100 do sum = sum + caller(o) end
 sum = sum + caller(o)
 return sum`},
+	{"p4_self_spec_upvalrecv_0arg", `
+local count = 0
+local o = { m = function(self) count = count + 1 end }
+local function tick() o:m() end
+for i = 1, 100 do tick() end
+tick()
+return count`},
+	{"p4_self_spec_tailcall_1regarg", `
+local o = { m = function(self, x) return x * 2 end }
+local function caller(t, v) return t:m(v) end
+local sum = 0
+for i = 1, 100 do sum = sum + caller(o, i) end
+sum = sum + caller(o, 1000)
+return sum`},
 }
 
 // TestP4_Tiered 三方对拍:oracle / crescent / p4-jit 全 byte-equal。
