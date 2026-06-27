@@ -599,3 +599,23 @@ func TestPJ4_EmitSelfNodeHit_SelfStoreAndKeyCompare(t *testing.T) {
 		t.Errorf("SELF NodeHit 模板未含 stableKey=0x%x 烧入字节", stableKey)
 	}
 }
+
+// TestPJ5_EmitSpecArgLoadK_Length 验 PJ5 SELF spec args 装载 K 字节级模板长度
+// (10 字节 mov rax imm64 + 7 字节 mov [rbx+dst*8] rax = 17 字节)。
+func TestPJ5_EmitSpecArgLoadK_Length(t *testing.T) {
+	var buf []byte
+	buf = EmitSpecArgLoadK(buf, 5, 0xDEADBEEF12345678)
+	if len(buf) != 17 {
+		t.Errorf("EmitSpecArgLoadK 长度 = %d, want 17", len(buf))
+	}
+}
+
+// TestPJ5_EmitSpecArgLoadReg_Length 验 PJ5 SELF spec args 装载 reg 字节级模板长度
+// (7 字节 mov rax [rbx+src*8] + 7 字节 mov [rbx+dst*8] rax = 14 字节)。
+func TestPJ5_EmitSpecArgLoadReg_Length(t *testing.T) {
+	var buf []byte
+	buf = EmitSpecArgLoadReg(buf, 5, 3)
+	if len(buf) != 14 {
+		t.Errorf("EmitSpecArgLoadReg 长度 = %d, want 14", len(buf))
+	}
+}
