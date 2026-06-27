@@ -106,6 +106,8 @@ P3 与 P4 后续路径的根本分野:
 
 > **物理同形 ≠ 语义同义**:不要因为两者都发了 `i64.lt_u` + `if` 就以为 P3 也在投机。投机的字面定义是「省略某些合法语义分支,赌它不发生」——P3 不省略,慢路径助手就在 if 的 else 分支里,完整覆盖 metamethod / coercion。P4 才省略(慢路径不在 JIT 代码里,在 crescent 解释器里)。
 
+**P4 视角对偶兑现**(2026-06-28,承 [../p4-method-jit/implementation-progress §2 RJ-19](../p4-method-jit/implementation-progress.md) 跨文档回填请求):本节「物理同形 ≠ 语义同义」从 P3 视角展开,P4 视角的对偶兑现(投机 guard 的字面定义 + IsNumber×2 在 P4 是裁剪版 + OSR exit 把剩余执行交还 crescent)详见 [../p4-method-jit/03-speculation-ic §0.2 + §5.3](../p4-method-jit/03-speculation-ic.md)。两个视角互补:本节定 "P3 不投机" 边界(防误判);P4 03 §0.2 / §5.3 定 "P4 投机" 边界(物理实证 OSR exit 协议)。本会话 PJ5 SELF spec template `TestPJ5_SelfCall_E2E_SpecTemplate_OSRExitToDeopt`(SpecP4DeoptHits +6 实证)是 P4 投机的实证标的。
+
 ### 1.2 P3 ADD 翻译里 `IsNumber×2` 是语义分发
 
 承 [02-translation](./02-translation.md) §3.2 ADD 翻译形态(亦见原稿 §2.3 同源伪码),本节在 IC feedback 视角下重述:
@@ -825,6 +827,7 @@ P3 IC feedback 消费的实现期硬性约束,违反即设计失败:
 - **解决路径**:链 P4 §3.4「再训练机制」一并评估。P4 落地时统一处理「gibbous 代码片段过期」的两个来源(P3 IC 失效永久 miss + P4 投机 guard 反复失败)——同一套重编译触发器与状态机。
 - **影响范围**:P3 阶段的性能上限由「失效后退化到无 IC 解释器水平」框定;若负载形态对 IC 命中率敏感(如频繁 rehash 的工作集),性能可能不达 ≥2x 验收门([08-testing-strategy](./08-testing-strategy.md));若实测达不到,可能提前到 P4 评估时把 IC 失效重编译纳入。
 - **登记位置**:本文 §2.5 + [00-overview](./00-overview.md) §10 + [doc-gaps](../../../llmdoc/memory/doc-gaps.md)。
+- **P4 端重训练协议**(2026-06-28,承 [../p4-method-jit/implementation-progress §2 RJ-20](../p4-method-jit/implementation-progress.md) 跨文档回填请求):P3 IC 失效永久 miss 与 P4 投机 deopt 反复失败统一在 P4 RequestRefresh + 重编译协议处理,详见 [../p4-method-jit/03-speculation-ic §7.3 重训练协议](../p4-method-jit/03-speculation-ic.md) + [../p4-method-jit/04-osr-deopt §5 OSR exit 流程 + §6 重编译触发器](../p4-method-jit/04-osr-deopt.md)。本会话 PJ5 SELF spec template 已实证 p4SpecState 子状态机骨架(P4Speculative/P4Deoptimized/P4StuckSpeculation)+ DeoptThreshold=16 + MaxRecompileTries=2 + onOSRExit/onP4Install 转移函数 + SpecP4DeoptHits +6 真业务路径实证。
 
 ### 6.2 IC 快照固化的两份快照(feedback + ICSlot)选取策略
 

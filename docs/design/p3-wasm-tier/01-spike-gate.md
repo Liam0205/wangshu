@@ -36,12 +36,16 @@
 | **决策不可逆** | 走开工(走 P3)还是走跳跃(走 P4),进入 PW1 后**无回头**——回头意味着推翻 PW1 投入,违反 [../roadmap.md §5](../roadmap.md) 原则 3 |
 | **数据进档** | spike 三档数据 + 决策报告进 [implementation-progress](./implementation-progress.md);P4 验收时若反向决议「P3 退役」,本闸门数据是「P3 是否本就该跳过」的回顾依据 |
 
+**对偶面:P4 P3 去留闸门形态平行**(2026-06-28,承 [P4 implementation-progress §2 RJ-18](../p4-method-jit/implementation-progress.md) 跨文档回填请求):本节 spike 闸门(P3 开工前)与 [P4 07 §0.3 P3 去留闸门](../p4-method-jit/07-p3-retirement.md)(P4 验收后)是 P3 生命周期上的两个闸门,**形态平行**:都是 P3 阶段的「闸门级单点决策不可绕过」纪律的同款体现。两闸门时点不同(P3 开工 vs P4 验收)但形态共享(单点决策 + 数据进档 + 决策不可逆)。两闸门的数据进档共享同一文档(implementation-progress.md)。
+
 ### 0.3 战略价值与闸门的双向性
 
 [00-overview §1](./00-overview.md) 引用 [../roadmap.md §4](../roadmap.md) 反复强调 P3「战略价值不在倍率,在跑通分层机器」——但这条战略价值的兑现**前提**仍是分层机器各部件能在合理代价下相互调用。spike 闸门是这条前提的**物理校核**:
 
 - **若闸门通过**:P3 的「不用调试机器码就能跑通分层骨架」战略价值兑现路径打通,PW1-PW9 可启动;P4 接力时只换发射后端([../p4-method-jit/01-launch-judgment §2](../p4-method-jit/01-launch-judgment.md) 常规路径),节省「分层骨架 + 机器码后端」同步啃两块硬骨头的复杂度。
 - **若闸门不通过**:跳跃路径下,P3 的战略价值移交 P4 自建([../p4-method-jit/01-launch-judgment §2](../p4-method-jit/01-launch-judgment.md));但本文 §2-§7 设计的分层协议(trampoline 入口签名、status 链错误冒泡、CallInfo bit50、线程级 tier 规则等)**不丢失**——P4 仍消费这套设计,只把发射后端从 wazero 替成原生 codegen。这是 [../roadmap.md §5](../roadmap.md) 原则 3 的另一面体现:**设计资产的复用性独立于执行后端选择**。
+
+**对偶面:P4 立项判定双向性**(2026-06-28,承 [P4 implementation-progress §2 RJ-15](../p4-method-jit/implementation-progress.md) 跨文档回填请求):P3 spike 闸门双向性([../p4-method-jit/01-launch-judgment §0.3](../p4-method-jit/01-launch-judgment.md))与 P4 立项判定双向性同源逻辑——两者都是 P4 阶段的**闸门级单点决策**,但承担不同时点的不同决策(spike 在 P3 开工前 / 立项在 P4 实施前 / 去留在 P4 验收后,详见 [P4 07 §0.3](../p4-method-jit/07-p3-retirement.md) 对偶面表)。
 
 ### 0.4 与 P1/P2 落地状态的关系
 
@@ -624,6 +628,8 @@ ProtoLevel 静态分析期间(03 §2-§3)新增一项:
 | 错误冒泡 / yield 不穿越([07](./07-coroutine-thread-rule.md)) | 线程级 tier 规则 | 同一规则,P4 自建时直接采纳 |
 
 **结论**:即使闸门否决 P3,本子文档对 P4 仍是有效设计输入——这是 [../roadmap.md §5](../roadmap.md) 原则 3 的另一面。
+
+**对偶面:P4 设计资产继承清单**(2026-06-28,承 [P4 implementation-progress §2 RJ-16](../p4-method-jit/implementation-progress.md) 跨文档回填请求):本节是 P3→P4 设计资产复用从 P3 视角看的清单;另一视角(从 P4 立项时看 P3 已落地资产可继承哪些)详见 [P4 01 §2.4](../p4-method-jit/01-launch-judgment.md) 立项判定时的设计资产继承讨论。两个视角互补:本节是「**spike 不通过时 P3 设计仍有价值**」(资产保护视角),P4 01 §2.4 是「**立项时盘点已有可复用资产**」(资产盘点视角)。
 
 ---
 
