@@ -30,7 +30,43 @@ import (
 //  2. 保守优先——任一 F1-F7 信号触发即判 NotCompilable;
 //  3. AST 用完即弃(03 §2.4 决策方案 ①)——本函数返回后不持有 fn 引用。
 func (b *Bridge) AnalyzeProto(fn *ast.FuncExpr, proto *bytecode.Proto) Compilability {
+	return b.AnalyzeProtoWithOuter(fn, proto, nil)
+}
+
+// AnalyzeProtoWithOuter 是 AnalyzeProto 的 scope-aware 版本(承 P4 PJ5
+// PJ5 + 03 §9 GAP-5):outerLocalFuncs 是 outer scope 链上的 local fn 名字
+// 映射,让本 proto 内调 outer local fn 形态识别为 known 而非 unknown call。
+//
+// outerLocalFuncs = nil 时行为等价 AnalyzeProto(向后兼容)。
+//
+// 典型场景:嵌套 closure
+//
+//	local function noop() end                -- outer 注册 noop
+//	local function invoker() noop() end     -- 本 proto 内调 outer noop
+//
+// 不扩展(nil)时:visitor.localFuncs 空 → noop 标 callsUnknownFn → invoker
+// NotCompilable;
+// 扩展时:visitor.localFuncs 含 noop → isKnownLocalCall=true → 递归判
+// noop.Body(同款语义传染:noop 含 yield 则 invoker 也含),invoker 可
+// Compilable。
+//
+// **遮蔽安全**:outerLocalFuncs 中与本 proto Params 同名的条目被剔除,
+// 避免误把 parameter 当 known local fn。
+func (b *Bridge) AnalyzeProtoWithOuter(fn *ast.FuncExpr, proto *bytecode.Proto, outerLocalFuncs map[string]*ast.FuncExpr) Compilability {
 	v := newCompilabilityVisitor()
+	// 继承 outer local funcs 快照,减去本函数参数同名遮蔽项
+	for name, ast := range outerLocalFuncs {
+		shadowed := false
+		for _, p := range fn.Params {
+			if p == name {
+				shadowed = true
+				break
+			}
+		}
+		if !shadowed {
+			v.localFuncs[name] = ast
+		}
+	}
 	v.walkBlock(fn.Body)
 
 	var reasons ReasonsBitmap

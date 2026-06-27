@@ -36,7 +36,24 @@ import (
 // wangshu_profile)整链路 no-op;p3 build 下结构性 NotCompilable(F1-F6)
 // 仍永久解释,只是「编译期 F7 占位 + 运行期 P3 可处理」的子集才走升层
 // 路径,与原 byte-equal 期望一致(F1-F6 子集行为不变)。
-func analyzeCompilability(fn *ast.FuncExpr, proto *bytecode.Proto) {
+func analyzeCompilabilityWithOuter(fn *ast.FuncExpr, proto *bytecode.Proto, outerFS *funcState) {
 	tmp := bridge.NewBridge()
-	tmp.AnalyzeProto(fn, proto)
+	if outerFS == nil {
+		tmp.AnalyzeProto(fn, proto)
+		return
+	}
+	// 收集 outer 链上所有 funcState 的 localFnAsts 合并视图(近层覆盖远层)。
+	outerLocals := map[string]*ast.FuncExpr{}
+	// 从最远层到最近层逆序合并,内层覆盖外层(local scope 遮蔽语义)。
+	var chain []*funcState
+	for cur := outerFS; cur != nil; cur = cur.prev {
+		chain = append(chain, cur)
+	}
+	// chain 现在是从内到外;反向遍历从外到内
+	for i := len(chain) - 1; i >= 0; i-- {
+		for name, ast := range chain[i].localFnAsts {
+			outerLocals[name] = ast
+		}
+	}
+	tmp.AnalyzeProtoWithOuter(fn, proto, outerLocals)
 }
