@@ -2523,8 +2523,10 @@ func analyzeSelfCallSpecForm(proto *bytecode.Proto, feedback *bridge.TypeFeedbac
 	if !ok {
 		return shapeInfo{}, false
 	}
-	// 当前 spec template 仅覆盖 SELF + CALL void(非 TAILCALL),其它形态留后续扩
-	if !info.isCallVoid {
+	// 当前 spec template 仅启用 CALL void(retB=1 setter)+ TAILCALL 三态分支;
+	// getter 1 返(retB=2)留扩(spec 段后 R(retA) 写入语义不同,与 CallBaseline+
+	// DoReturn 已落到位的 R(callA) 协议要重新对齐)。
+	if !info.isCallVoid && !info.isTailCall {
 		return shapeInfo{}, false
 	}
 	// IC slot 检查(SELF 在 pc=1,故 proto.IC[1])

@@ -738,11 +738,30 @@ func (c *p4Code) runSpecSelfCall(base int32, jitCtxAddr uintptr, vsBaseAddr uint
 	// 3. 装 args 到 R(callA+2..)(offset=2 跳过 self 槽 R(callA+1))
 	c.loadCallArgs(2)
 
-	// 4. CALL 段:host.CallBaseline byte-equal P1 doCall
+	// 4. CALL 段 / TAILCALL 段(byte-equal P1)
 	callPC := int32(c.retPC) - 1
-	st := c.host.CallBaseline(base, callPC, int32(c.callA), int32(c.callB), int32(c.callC))
-	if st != 0 {
-		return st
+	if c.isTailCall {
+		// TAILCALL 三态分支(承 host.TailCall 同款语义):
+		//   0 = Lua 尾完成(本帧已弹,跳过 DoReturn 直接 return)
+		//   1 = ERR
+		//   2 = host 尾完成(结果在 R(callA..),G 帧未弹,落 DoReturn dead RETURN B=0)
+		st := c.host.TailCall(base, callPC, int32(c.callA), int32(c.callB), int32(c.callC))
+		switch st {
+		case 0:
+			return 0
+		case 1:
+			return 1
+		case 2:
+			// fall through to DoReturn
+		default:
+			return 1
+		}
+	} else {
+		// CALL void:byte-equal P1 doCall
+		st := c.host.CallBaseline(base, callPC, int32(c.callA), int32(c.callB), int32(c.callC))
+		if st != 0 {
+			return st
+		}
 	}
 
 	// 5. DoReturn 弹帧(setter 形态 retB=1,0 返值)

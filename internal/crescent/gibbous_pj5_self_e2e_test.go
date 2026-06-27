@@ -734,3 +734,37 @@ return sum`
 	}
 	t.Logf("SpecSelfCallSpecHits: %d → %d", specBefore, specAfter)
 }
+
+// TestPJ5_SelfCall_E2E_SpecTemplate_TailCall_M0 PJ5 SELF + TAILCALL spec template
+// 0 参形态(`function(t) return t:m() end`)。
+func TestPJ5_SelfCall_E2E_SpecTemplate_TailCall_M0(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local o = { m = function(self) return 42 end }
+local function caller(t) return t:m() end
+local sum = 0
+for i = 1, 100 do sum = sum + caller(o) end  -- warmup
+sum = sum + caller(o)
+return sum`
+	st, mainCl := loadFnP4(t, src)
+
+	_, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 1 run: %v", err)
+	}
+
+	st.bridge.SetForceAllPromote(true)
+	specBefore := jit.SpecSelfCallSpecHits()
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 2 run: %v", err)
+	}
+	if got := value.AsNumber(value.Value(rets[0])); got != 101*42 {
+		t.Errorf("Phase 2 result = %v, want %d", got, 101*42)
+	}
+	specAfter := jit.SpecSelfCallSpecHits()
+	if specAfter <= specBefore {
+		t.Errorf("SpecSelfCallSpecHits 未增长 → TAILCALL spec template 未命中")
+	}
+	t.Logf("SpecSelfCallSpecHits: %d → %d", specBefore, specAfter)
+}
