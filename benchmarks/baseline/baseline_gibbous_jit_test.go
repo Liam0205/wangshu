@@ -528,3 +528,40 @@ func BenchmarkGibbousJIT_PJ5SelfCallHeavyBody3Arg(b *testing.B) {
 func BenchmarkGibbousJIT_PJ5SelfCallHeavyBody3ArgCresc(b *testing.B) {
 	benchGibbousJITSelfCallHeavyBody3Arg(b, false)
 }
+
+// PJ5 SELF + CALL spec template N=4 返 drop multi-ret 形态(承本批
+// isValidSpecCallRetCount cC∈{1,3..16} 扩):caller `local a,b,c,d = t:m()`
+// 形态简 method 体(count++)— 验 N=4 返 spec template 摊薄。
+func benchGibbousJITSelfCallSpecMultiRetN4(b *testing.B, force bool) {
+	src := `
+local count = 0
+local mt = { m = function(self) count = count + 1; return 1, 2, 3, 4 end }
+local function caller(_, t) local a, b, c, d = t:m() end
+for i = 1, 100 do caller(nil, mt) end
+return count`
+	prog, err := wangshu.Compile([]byte(src), "bench-jit-self-spec-multiret-n4")
+	if err != nil {
+		b.Fatalf("compile: %v", err)
+	}
+	st := wangshu.NewState(wangshu.Options{})
+	if _, err := prog.Run(st); err != nil {
+		b.Fatalf("warmup-phase1: %v", err)
+	}
+	st.SetForceAllPromote(force)
+	if _, err := prog.Run(st); err != nil {
+		b.Fatalf("warmup-phase2: %v", err)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := prog.Run(st); err != nil {
+			b.Fatalf("run: %v", err)
+		}
+	}
+}
+
+func BenchmarkGibbousJIT_PJ5SelfCallSpecMultiRetN4(b *testing.B) {
+	benchGibbousJITSelfCallSpecMultiRetN4(b, true)
+}
+func BenchmarkGibbousJIT_PJ5SelfCallSpecMultiRetN4Cresc(b *testing.B) {
+	benchGibbousJITSelfCallSpecMultiRetN4(b, false)
+}
