@@ -924,7 +924,8 @@ var ErrRunNotImplemented = errors.New("internal/gibbous/jit: p4Code Run failed: 
 //
 // 流程:
 //  1. 读 jitCtx.exitArg0 路由 helper request(承 §9.20.9 (3) 协议状态码):
-//     - HelperRunCallee:调 host.ExecuteCalleeFromInlineFrame(base, retA)
+//     - HelperRunCallee:调 host.ExecuteCalleeFromInlineFrame(base, callA,
+//     callArgCount, nresults)(commit-5l/5p/5q 签名扩)
 //     完成 readCISegInto + nCcalls++ + executeFrom + popCallInfo
 //     - HelperGrowStack:未来扩(arena grow 触发)
 //     - HelperGCBarrier:未来扩(GC 写屏障)
