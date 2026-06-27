@@ -1574,6 +1574,61 @@ Spike 1 真接入 = trampoline exit-resume 协议改造(2-3 周)+ helper 实装(
 3. PJ6 GETUPVAL/SETUPVAL 字节级 inline(承 PJ6 当前 🔶 emitter 部分,真接入留 PJ6+)
 4. P3 退役决策(承 07-p3-retirement.md,需用户决策性输入)
 
+#### 9.20.8 Spike 1 字节级模板字节级编码完整文档化(2026-06-28 实装指南)
+
+承本会话 Spike 1 全套字节级 emit 模板已落地 + §9.20.6 helper call ABI 协议设计 + §9.20.7 Step C-1 拆解,本节固化所有 Spike 1 字节级模板的精确字节编码,供 future Spike 1 真接入者实装指南。
+
+**amd64 端字节级编码**(承 internal/gibbous/jit/amd64/pj4_template.go + emitter.go):
+
+| 模板 | 字节数 | 字节序列 | 说明 |
+|---|---|---|---|
+| EmitFrameInlineCIDepthInc | 10 | `49 8B 87 disp32 / 48 FF 00` | mov rax, [r15+ciDepthOff] (7B) + inc qword ptr [rax] (3B) |
+| EmitFrameInlineCIDepthDec | 10 | `49 8B 87 disp32 / 48 FF 08` | mov rax, [r15+ciDepthOff] (7B) + dec qword ptr [rax] (3B) |
+| EmitFrameInlineLoadCISlotAddr | 30 | mov rax,[r15+ciDepthOff] (7B) + mov rcx,rax (3B) + mov rcx,[rcx] (3B) + mov rax,[r15+ciSegBaseOff] (7B) + mov rax,[rax] (3B) + imul rcx,rcx,40 (4B) + add rax,rcx (3B) | depth*40 + ciSegBase = CallInfo[depth] 帧起点 |
+| EmitFrameInlineWriteCIWord(imm64) | 14 | `48 B9 imm64×8 / 48 89 48 disp8` | mov rcx,imm64 (10B) + mov [rax+wordIdx*8],rcx (4B) |
+| EmitFrameInlineLoadClosureGCRef | 20 | `48 8B 8B disp32 / 48 BA imm64×8 / 48 21 D1` | mov rcx,[rbx+srcReg*8] (7B) + mov rdx,payloadMask=FFFFFFFFFFFF (10B) + and rcx,rdx (3B) |
+| EmitFrameInlineWriteCIWordFromRcx | 4 | `48 89 48 disp8` | mov [rax+wordIdx*8],rcx |
+| EmitFrameInlineBuildVoid0ArgSkeleton | 120 | LoadCISlotAddr(30) + WriteCIWord(0/1/2) imm(14*3=42) + LoadClosureGCRef(20) + WriteCIWordFromRcx(3)(4) + WriteCIWord(4) imm(14) + CIDepthInc(10) | 完整 enterLuaFrame inline 骨架 |
+| EmitFrameInlinePopVoid0ArgSkeleton | 10 | alias CIDepthDec | popCallInfo 反向 |
+
+**arm64 端字节级编码**(承 internal/gibbous/jit/arm64/pj4_template.go + emitter.go):
+
+| 模板 | 字节数 | arm64 等价 | 说明 |
+|---|---|---|---|
+| EmitFrameInlineCIDepthIncArm64 | 16 | LDR x16,[x27+ciDepthOff] (4B) + LDR x17,[x16] (4B) + ADD x17,x17,#1 (4B) + STR x17,[x16] (4B) | x27=jitCtx + LDR/ADD/STR 4 条 RISC fixed-length |
+| EmitFrameInlineCIDepthDecArm64 | 16 | LDR x16,[x27+ciDepthOff] (4B) + LDR x17,[x16] (4B) + SUB x17,x17,#1 (4B,0xD1000631) + STR x17,[x16] (4B) | SUB Xd,Xn,#imm12 通用宏 |
+| EmitFrameInlineLoadCISlotAddrArm64 | 40 | LDR×4(16B) + MovXdImm64(#40)(16B) + MUL x17,x17,x9 (4B,0x9B097E31) + ADD x0,x16,x17 (4B,0x8B110200) | x0 = CallInfo[depth] 地址 |
+| EmitFrameInlineWriteCIWordArm64 | 20 | MovXdImm64(imm64)(16B) + STR Xt,[x0+wordIdx*8] (4B) | x16 装 imm64 + STR pimm12 |
+| EmitFrameInlineLoadClosureGCRefArm64 | 24 | LDR x16,[x26+srcReg*8] (4B) + MovXdImm64(#payloadMask)(16B) + AND x16,x16,x17 (4B,0x8A110210) | x26=vsBase + NaN-box mask |
+| EmitFrameInlineWriteCIWordFromXArm64 | 4 | STR Xt,[x0+wordIdx*8] | pimm12 |
+| EmitFrameInlineBuildVoid0ArgSkeletonArm64 | 164 | LoadCISlotAddr(40) + WriteCIWord×3(20*3=60) + LoadClosureGCRef(24) + WriteCIWordFromX(3)(4) + WriteCIWord(20) + CIDepthInc(16) | 完整 enterLuaFrame inline 骨架 |
+| EmitFrameInlinePopVoid0ArgSkeletonArm64 | 16 | alias CIDepthDecArm64 | popCallInfo 反向 |
+
+**arm64 vs amd64 字节数差异分析**:
+- ciDepth++/-- :arm64 16 vs amd64 10(arm64 多 6 字节因 RISC fixed-length 必须 3 条独立指令 vs amd64 复合寻址)
+- LoadCISlotAddr:arm64 40 vs amd64 30(arm64 多 10 字节因 MovXdImm64 16 字节即使装 #40 小常量也走 4 条 16-bit 段,未来 PJ8+ 用 EmitMovzXd 单条优化)
+- WriteCIWord(imm):arm64 20 vs amd64 14(arm64 多 6 字节同款 imm 装载差异)
+- LoadClosureGCRef:arm64 24 vs amd64 20(arm64 多 4 字节)
+- WriteCIWordFromRcx/X:同 4 字节(STR 单条 = mov 4 字节)
+- BuildVoid0ArgSkeleton:arm64 164 vs amd64 120(累积 44 字节差异)
+
+**实装单测验证**:每个模板都有字节级长度 + 关键字节编码单测,承
+internal/gibbous/jit/{amd64,arm64}/pj4_template_test.go(64+ 单测覆盖
+PJ4 IC 六模板 + Spike 1 字节级模板全套)。
+
+**真接入 prerequisite**(承 §9.20.6 (7) + §9.20.7):
+1. 字节级模板已实装 ✅(本节字节编码表)
+2. jitContext 三字段已暴露 ✅(ciDepthAddr/ciSegBaseAddr/topAddr)
+3. P4HostState 接口已扩 ✅(CIDepth/CISegBase/TopHostAddr)
+4. crescent.State 实装 ✅
+5. helpers.go panic 占位 ✅(HelperRunCalleeAfterFrameInline 函数地址可被 emit)
+6. SpecFrameInlineHits 探针就位 ✅
+7. archSupportsFrameInline 闸门 ✅(全 arch false 屏蔽真触发)
+8. ⏳ Step C-1 helper 真实装(替换 panic + doCall + executeFrom 逻辑)
+9. ⏳ Step C-2 compileSpecSelfCall useFrameInline 分支 emit 接入
+10. ⏳ Step D archSupportsFrameInline 翻 true
+11. ⏳ Step E e2e SpecFrameInlineHits 0→1 命中实证
+
 ---
 
 ## 10. 后续维护协议
