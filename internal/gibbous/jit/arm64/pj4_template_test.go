@@ -1043,6 +1043,34 @@ func TestPJ8_EmitFrameInlineLoadCISlotAddrArm64_Length(t *testing.T) {
 	}
 }
 
+// TestPJ8_EmitFrameInlineWriteCIWordArm64_Length 验 arm64 CI 帧 word 写入
+// 模板长度(16 字节 mov + 4 字节 str = 20 字节,对位 amd64 = 14)。
+func TestPJ8_EmitFrameInlineWriteCIWordArm64_Length(t *testing.T) {
+	var buf []byte
+	buf = EmitFrameInlineWriteCIWordArm64(buf, 0, 0xDEADBEEF)
+	if len(buf) != EncodedFrameInlineWriteCIWordArm64Len {
+		t.Errorf("EmitFrameInlineWriteCIWordArm64 长度 = %d, want %d",
+			len(buf), EncodedFrameInlineWriteCIWordArm64Len)
+	}
+}
+
+// TestPJ8_EmitFrameInlineWriteCIWordArm64_Encoding 验各 word_idx STR pimm12 编码。
+func TestPJ8_EmitFrameInlineWriteCIWordArm64_Encoding(t *testing.T) {
+	for _, wordIdx := range []uint8{0, 1, 2, 3, 4} {
+		var buf []byte
+		buf = EmitFrameInlineWriteCIWordArm64(buf, wordIdx, 0xCAFEBABE12345678)
+
+		// STR x16, [x0 + wordIdx*8] 在 offset 16(MovXdImm64 占 16 字节)
+		strInsn := binary.LittleEndian.Uint32(buf[16:20])
+		// STR Xt, [Xn, #pimm12]:0xF9000000 base + (pimm12<<10) + (Xn<<5) + Xt
+		// pimm12 = byteOff / 8 = wordIdx
+		wantStr := uint32(0xF9000000) | uint32(wordIdx)<<10 | uint32(0)<<5 | uint32(16)
+		if strInsn != wantStr {
+			t.Errorf("word_idx=%d: STR = 0x%08X, want 0x%08X", wordIdx, strInsn, wantStr)
+		}
+	}
+}
+
 // TestPJ8_EmitFrameInlineLoadCISlotAddrArm64_Encoding 验关键指令 MUL/ADD
 // 字节级编码。
 func TestPJ8_EmitFrameInlineLoadCISlotAddrArm64_Encoding(t *testing.T) {

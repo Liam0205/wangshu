@@ -852,3 +852,28 @@ func EmitFrameInlineLoadCISlotAddrArm64(buf []byte, ciDepthAddrOffset, ciSegBase
 // movz+movk*3)即使装 #40 小常量也走 4 条 16-bit 段——未来优化用
 // EmitMovzXd 单条 4 字节(留 PJ8+ 通用优化批次)。
 const EncodedFrameInlineLoadCISlotAddrArm64Len = 40
+
+// EmitFrameInlineWriteCIWordArm64 发射 arm64 CI 帧 word_idx 写入 imm64
+// 模板(承 §9.20 Option B Spike 1 amd64 对位)。
+//
+// 调用契约:x0 必须已装 CallInfo[depth] 帧起点字节地址(承
+// EmitFrameInlineLoadCISlotAddrArm64);word_idx 范围 [0,4](承 ciWords=5)。
+//
+// 字节序列(16 + 4 = 20 字节):
+//
+//	mov  x16, imm64                      ; 16 字节(EmitMovXdImm64 movz+movk*3)
+//	str  x16, [x0 + word_idx*8]          ; 4 字节(EmitStrXtToXnDisp pimm12)
+//
+// arm64 20 字节 vs amd64 14 字节,多 6 字节因 EmitMovXdImm64 总走 4 条
+// 16-bit 段(无视 imm 大小);amd64 mov rcx imm64 10 字节单条。
+func EmitFrameInlineWriteCIWordArm64(buf []byte, wordIdx uint8, imm64 uint64) []byte {
+	if wordIdx > 4 {
+		wordIdx = 0
+	}
+	buf = EmitMovXdImm64(buf, 16, imm64)
+	buf = EmitStrXtToXnDisp(buf, 16, 0, uint16(wordIdx)*8)
+	return buf
+}
+
+// EncodedFrameInlineWriteCIWordArm64Len = 20.
+const EncodedFrameInlineWriteCIWordArm64Len = 20
