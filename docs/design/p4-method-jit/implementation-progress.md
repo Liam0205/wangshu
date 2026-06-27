@@ -1622,15 +1622,15 @@ PJ0 启动后,本文按以下协议更新(承 [P3 implementation-progress §5](.
 | **V17** prove-the-path | spec/IC/SELF/CALL 字节级路径命中实证 | ✅ amd64 | 26 e2e + 11 difftest + 16 单测 + 5 V18 -race |
 | **V18** -race 多 State 并发 | 多 goroutine 独立 State force-all P4 无 race | ✅ amd64 | TestP4_ConcurrentForceAll + MultiRet + SpecDeopt + R14ABI 5 测试 |
 | **V19** OSR exit 状态等价 | spec template guard 失败 → onOSRExit → P4Deoptimized | ✅ amd64 | TestPJ5_SelfCall_E2E_SpecTemplate_OSRExitToDeopt(SpecP4DeoptHits +6) |
-| **V20** deopt 风暴 | 多 deopt 路径串行触发不互扰 | ⏳ 部分(单 deopt 路径实证)| TestP4_ConcurrentForceAll_SpecDeopt(基础)|
-| **V21** longevity | nightly fuzz 长跑无差异 | ⏳ nightly CI 未启用 | — |
-| **V22** guard 漏判 fuzz | 30 天 nightly 无 guard 漏判事件 | ⏳ nightly CI 未启用 | — |
+| **V20** deopt 风暴 | 多 deopt 路径串行触发不互扰 | ✅ amd64 | TestPJ5_SelfCall_E2E_SpecTemplate_DeoptStorm(5 caller 独立累积 SpecP4DeoptHits +15) |
+| **V21** longevity | nightly fuzz 长跑无差异 | ⏳ nightly CI 待配 | `make fuzz-p4` smoke ✅ 1.5M execs 全过(承 bbd6f6b) |
+| **V22** guard 漏判 fuzz | 30 天 nightly 无 guard 漏判事件 | ✅ amd64 fuzz harness / ⏳ 30 天累积 | `fuzz_p4_test.go::FuzzP4ForceAllPromote` 自动接入 CI fuzz-smoke (p4) + nightly-diff-fuzz job |
 
-**剩余 V14/V15/V20/V21/V22 双架构** 需物理 self-hosted arm64 runner CI 接入 + nightly fuzz harness。承 stop hook feedback 优先级 3 "arm64 物理 self-hosted runner CI 接入(物理依赖)"— 物理依赖类不可达。
+**剩余 V14/V15/V21/V22 双架构 + 30 天累积** 需物理 self-hosted arm64 runner CI 接入 + nightly fuzz 30 天累积时间窗。承 stop hook feedback 优先级 3 "arm64 物理 self-hosted runner CI 接入(物理依赖)"— 物理依赖类不可达。
 
 **PJ10 验收达标当前判定**:
-- V1-V17 amd64 ✅ + V18-V19 amd64 ✅ — **amd64 PJ10 已达标**(承 §1 PJ10 行 ✅ 2026-06-26 luajc 档突破)
-- V14 arm64 + V18 arm64 + V20-V22 nightly — **PJ10 双架构验收 ⏳ 物理 runner**
+- V1-V20 amd64 ✅ + V22 amd64 fuzz harness ✅ — **amd64 PJ10 已完整达标**(承 §1 PJ10 行 ✅ 2026-06-26 luajc 档突破 + 本批 V20 deopt 风暴 917a07c + V22 fuzz bbd6f6b)
+- V14 arm64 + V18 arm64 + V21/V22 nightly 30 天累积 — **PJ10 双架构 + nightly 长跑 ⏳ 物理 runner + 时间窗**
 
 **P3 退役决议数据(§11)已就位 amd64**,等 PJ10 双架构验收(arm64 物理 runner)即可由用户拍板。
 
