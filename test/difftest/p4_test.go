@@ -816,6 +816,20 @@ for i = 1, 100 do sum = sum + caller(m_good) end
 -- 然后用 nil receiver → spec NodeHit guard 失败 → deopt → host.Self → err
 local ok, err = pcall(caller, nil)
 return ok, tostring(err), sum`},
+	// —— PJ5 SELF inline 路径(非 spec template,走 host.Self → host.CallBaseline)
+	// 错误冒泡 difftest(承 cf8c24a SELF inline 错误冒泡 e2e 同款,但本批补 difftest
+	// 三方 byte-equal 覆盖)。inline 路径 NodeHit feedback 未触发(无 warmup),
+	// 走纯 host helper round-trip,但错误冒泡逻辑同款。
+	{"p4_self_inline_err_nilrecv", `
+-- 不 warmup,直接调 nil receiver:inline 路径 host.Self raise
+local function caller(t) return t:m() end
+local ok, err = pcall(caller, nil)
+return ok, tostring(err)`},
+	{"p4_self_inline_err_badmethod", `
+local mt = { m = "string_not_callable" }
+local function caller(t) return t:m() end
+local ok, err = pcall(caller, mt)
+return ok, tostring(err)`},
 }
 
 // TestP4_Tiered 三方对拍:oracle / crescent / p4-jit 全 byte-equal。
