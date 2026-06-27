@@ -5,3 +5,4 @@ test-bin/
 # 也兜底防御 root 不被误纳入
 .pineapple/
 luac.out
+.llmdoc-tmp/
