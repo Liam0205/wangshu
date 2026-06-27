@@ -1,0 +1,56 @@
+//go:build wangshu_p4 && wangshu_profile
+
+package crescent
+
+import (
+	"testing"
+
+	jit "github.com/Liam0205/wangshu/internal/gibbous/jit"
+	"github.com/Liam0205/wangshu/internal/value"
+)
+
+// gibbous_pj5_call_e2e_test.go —— PJ5 CALL void 真升层 e2e:
+// `local function noop()...end; local function invoker() noop() end`(形态
+// B,GETUPVAL+CALL+RETURN void)经 P4 升层后 Run prelude 路径调
+// host.GetUpval + SetReg + CallBaseline 完成 baseline doCall(byte-equal P1
+// doCall 分派)+ DoReturn 弹帧。
+//
+// **PJ5 真接入主路径** 的物理证据(从 PJ7 简化形态扩到调用族 inline):
+// P4 首次接入 CALL opcode + host.CallBaseline 跨 Go 端边界。**简化形态仅
+// 0 参 0 返**(MOVE/GETUPVAL+CALL+RETURN void)+ baseline doCall
+// (host/crescent/__call/gibbous 全形态同步跑完),不走 P3 R3 indirect 哨兵。
+//
+// **关联 P2 analyzer 扩展**:本测试也验证 P2 scope-aware AnalyzeProto
+// 跨 Proto 边界传递 outer localFnAsts(承同批 commit 扩展)— 否则 invoker
+// 内调 noop 会被标 ReasonUnknownCall,Compilable=NotCompilable,P4 路径
+// 不触达。
+
+// TestPJ5_CallVoid_E2E_FormB_Upval:形态 B(GETUPVAL+CALL+RETURN void)
+// 真升层 — `local function noop()...end; local function invoker() noop() end`,
+// 重复调 invoker 让 P4 升层后真走 PJ5 CALL void 模板。
+//
+// 关键探针:**SpecCallVoidHits**——只有 Compile 命中 isCallVoid=true 时
+// 才 ++。若 P4 升层未触达或形态识别失败,SpecCallVoidHits 永 0(测试失败)。
+func TestPJ5_CallVoid_E2E_FormB_Upval(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local count = 0
+local function noop() count = count + 1 end
+local function invoker() noop() end
+for i = 1, 50 do invoker() end
+return count`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := value.AsNumber(value.Value(rets[0])); got != 50 {
+		t.Errorf("rets = %v, want 50(invoker() 50 次每次 noop 让 count++)", got)
+	}
+	if jit.SpecCallVoidHits() == 0 {
+		t.Errorf("SpecCallVoidHits = 0,PJ5 CALL void 模板未真编译——降级 host 或 P4 路径未触达(prove-the-path 失败)")
+	}
+	t.Logf("SpecCallVoidHits=%d", jit.SpecCallVoidHits())
+}
