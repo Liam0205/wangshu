@@ -55,7 +55,7 @@ func (b *Bridge) AnalyzeProto(fn *ast.FuncExpr, proto *bytecode.Proto) Compilabi
 func (b *Bridge) AnalyzeProtoWithOuter(fn *ast.FuncExpr, proto *bytecode.Proto, outerLocalFuncs map[string]*ast.FuncExpr) Compilability {
 	v := newCompilabilityVisitor()
 	// 继承 outer local funcs 快照,减去本函数参数同名遮蔽项
-	for name, ast := range outerLocalFuncs {
+	for name, fnAST := range outerLocalFuncs {
 		shadowed := false
 		for _, p := range fn.Params {
 			if p == name {
@@ -64,7 +64,7 @@ func (b *Bridge) AnalyzeProtoWithOuter(fn *ast.FuncExpr, proto *bytecode.Proto, 
 			}
 		}
 		if !shadowed {
-			v.localFuncs[name] = ast
+			v.localFuncs[name] = fnAST
 		}
 	}
 	v.walkBlock(fn.Body)

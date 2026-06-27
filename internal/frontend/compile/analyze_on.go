@@ -12,18 +12,19 @@ import (
 	"github.com/Liam0205/wangshu/internal/frontend/ast"
 )
 
-// analyzeCompilability 由 compileFunc 在产 Proto 后调用——AST 用完即弃
+// analyzeCompilabilityWithOuter 由 compileFunc 在产 Proto 后调用——AST 用完即弃
 // (03 §2.4 决策方案 ①):本函数返回后 fn 引用即可被 GC。
 //
-// 不持有 Bridge 实例:用一个临时 Bridge 跑 AnalyzeProto,目的只是借用它的
-// visitor + reasonsBitmap → Proto 字段写入逻辑。AnalyzeProto 内部既写
-// Bridge 的 profileTable(本函数退出即被 GC)也写 Proto.Compilability /
-// Proto.CompReasons(跨 State 共享只读)。
+// 不持有 Bridge 实例:用一个临时 Bridge 跑 AnalyzeProto/AnalyzeProtoWithOuter,
+// 目的只是借用它的 visitor + reasonsBitmap → Proto 字段写入逻辑。AnalyzeProto
+// 内部既写 Bridge 的 profileTable(本函数退出即被 GC)也写
+// Proto.Compilability / Proto.CompReasons(跨 State 共享只读)。
 //
-// 简化方案的动机:Compile 期不知道哪个 State 会 LoadProgram 用本 Proto,
-// 用一个临时 Bridge 让 AnalyzeProto 复用主写入路径,代价只是丢弃一份
-// 短命 profileTable 项。生产形态可能引入「全局 Compilability 写入函数」
-// 直接绕开 Bridge,但当前简化够用。
+// **PJ5 scope-aware 扩展(2026-06-27)**:接受 outerFS,从 outerFS 链上收集
+// 所有 localFnAsts 合并视图(近层覆盖远层),传给 AnalyzeProtoWithOuter
+// 作为 outerLocalFuncs 上下文 — 让嵌套 closure 看到外层 local fn 仍能识别
+// 为 known call,打通 P4 PJ5 真升层路径。outerFS=nil(主 chunk)时退化为
+// AnalyzeProto 旧行为。
 //
 // **F7 行为**:本临时 Bridge 没注入 P3 编译器(b.p3 == nil)→ F7 永远
 // 触发 → 所有 Compile-期分析的 Proto 都被标 CompNotCompilable +
@@ -51,8 +52,8 @@ func analyzeCompilabilityWithOuter(fn *ast.FuncExpr, proto *bytecode.Proto, oute
 	}
 	// chain 现在是从内到外;反向遍历从外到内
 	for i := len(chain) - 1; i >= 0; i-- {
-		for name, ast := range chain[i].localFnAsts {
-			outerLocals[name] = ast
+		for name, fnAST := range chain[i].localFnAsts {
+			outerLocals[name] = fnAST
 		}
 	}
 	tmp.AnalyzeProtoWithOuter(fn, proto, outerLocals)
