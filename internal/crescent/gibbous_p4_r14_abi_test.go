@@ -232,3 +232,61 @@ return t.x`
 		debug.FreeOSMemory()
 	}
 }
+
+// TestPJ3_R14ABI_GCStress_FORLOOP PJ3 FORLOOP 字节级 inline 段 R14 ABI
+// 后验:FORLOOP 经 callJITFull 主路径(不经 spec trampoline)但同样
+// 用 R14 装 arena base,验 GC + 反复跑下 Go G 正确性。
+//
+// 承 §8 PJ3 FORLOOP 7-25x over gopher-lua + 本批 R14 修复后 trampoline
+// PUSH/POP R14 救济。
+func TestPJ3_R14ABI_GCStress_FORLOOP(t *testing.T) {
+	src := `
+local function loop(n)
+  local s = 0
+  for i = 1, n do s = s + i end
+  return s
+end
+local sum = 0
+for i = 1, 100 do sum = sum + loop(50) end  -- warmup 100 + 50 = 100 次 inner
+sum = sum + loop(50)
+return sum`
+	st, mainCl := loadFnP4(t, src)
+	if _, err := st.Call(value.GCRefOf(mainCl), nil, 1); err != nil {
+		t.Fatalf("warmup: %v", err)
+	}
+	st.bridge.SetForceAllPromote(true)
+
+	for i := 0; i < 50; i++ {
+		_, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+		if err != nil {
+			t.Fatalf("iter %d: %v", i, err)
+		}
+		runtime.GC()
+		debug.FreeOSMemory()
+	}
+}
+
+// TestPJ7_R14ABI_GCStress_Arith PJ7 算术 inline 段 R14 ABI 后验:
+// ADD..POW 6 op + UNM/LEN/NOT 经 callJITFull 主路径,验 R14 救济正确性。
+func TestPJ7_R14ABI_GCStress_Arith(t *testing.T) {
+	src := `
+local function arith(x) return x * 2 + 1 end
+local sum = 0
+for i = 1, 100 do sum = sum + arith(i) end  -- warmup
+sum = sum + arith(7)
+return sum`
+	st, mainCl := loadFnP4(t, src)
+	if _, err := st.Call(value.GCRefOf(mainCl), nil, 1); err != nil {
+		t.Fatalf("warmup: %v", err)
+	}
+	st.bridge.SetForceAllPromote(true)
+
+	for i := 0; i < 50; i++ {
+		_, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+		if err != nil {
+			t.Fatalf("iter %d: %v", i, err)
+		}
+		runtime.GC()
+		debug.FreeOSMemory()
+	}
+}
