@@ -1693,7 +1693,7 @@ PJ0 启动后,本文按以下协议更新(承 [P3 implementation-progress §5](.
 | **V16** boundary 无退化 | edge case 不慢于 crescent | ✅ amd64 | bench 简单 method 1.094x-1.12x(可接受 trampoline 开销) |
 | **V17** prove-the-path | spec/IC/SELF/CALL 字节级路径命中实证 | ✅ amd64 | 26 e2e + 11 difftest + 16 单测 + 5 V18 -race |
 | **V18** -race 多 State 并发 | 多 goroutine 独立 State force-all P4 无 race | ✅ amd64 | TestP4_ConcurrentForceAll + MultiRet + SpecDeopt + R14ABI 7 测试(GCStress + ConcurrentGC + DeepStack + GetTable/SetTable + PJ3 FORLOOP + PJ7 算术 全 R14 修复覆盖矩阵) |
-| **V19** OSR exit 状态等价 | spec template guard 失败 → onOSRExit → P4Deoptimized | ✅ amd64 | TestPJ5_SelfCall_E2E_SpecTemplate_OSRExitToDeopt(SpecP4DeoptHits +6) |
+| **V19** OSR exit 状态等价 | spec template guard 失败 → onOSRExit → P4Deoptimized → P4StuckSpeculation | ✅ amd64 | TestPJ5_SelfCall_E2E_SpecTemplate_OSRExitToDeopt(真业务路径 SpecP4DeoptHits +6)+ p4state_test.go 7 状态机单测含 TestP4SpecState_MaxRecompileTriesReachedStuck(完整 P4Speculative → P4Deoptimized → P4StuckSpeculation 转移) |
 | **V20** deopt 风暴 | 多 deopt 路径串行触发不互扰 | ✅ amd64 | TestPJ5_SelfCall_E2E_SpecTemplate_DeoptStorm(5 caller 独立累积 SpecP4DeoptHits +15) |
 | **V21** longevity | nightly fuzz 长跑无差异 | ⏳ nightly CI 待配 | `make fuzz-p4` smoke ✅ 1.5M execs 全过(承 bbd6f6b) |
 | **V22** guard 漏判 fuzz | 30 天 nightly 无 guard 漏判事件 | ✅ amd64 fuzz harness / ⏳ 30 天累积 | `fuzz_p4_test.go::FuzzP4ForceAllPromote` 自动接入 CI fuzz-smoke (p4) + nightly-diff-fuzz job |
