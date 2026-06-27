@@ -98,7 +98,7 @@ func formatReasons(r ReasonsBitmap) string {
 	if r&ReasonVararg != 0 {
 		parts = append(parts, "F1 vararg")
 	}
-	if r&(ReasonYield|ReasonResume|ReasonCoroutine|ReasonUnknownCall) != 0 {
+	if r&(ReasonYield|ReasonResume|ReasonCoroutine|ReasonUnknownCall|ReasonSelfCall) != 0 {
 		// F2 多个位合并显示——不分别报每位,避免日志冗长
 		parts = append(parts, "F2 "+formatF2(r))
 	}
@@ -133,6 +133,9 @@ func formatF2(r ReasonsBitmap) string {
 	}
 	if r&ReasonUnknownCall != 0 {
 		parts = append(parts, "unknownCall")
+	}
+	if r&ReasonSelfCall != 0 {
+		parts = append(parts, "selfCall")
 	}
 	return strings.Join(parts, "+")
 }

@@ -82,6 +82,21 @@ const (
 
 	// ReasonBackendUnsupp(F7):P3 后端不支持某 opcode(03 §3.7)。
 	ReasonBackendUnsupp
+
+	// ReasonSelfCall(F2-c):`obj:method(...)` 形态(SELF + CALL/TAILCALL)。
+	//
+	// **占位位语义**(承 ReasonBackendUnsupp 同款手法):method receiver 的
+	// 方法表无法静态析出,callee 内部可能 yield/setfenv/debug —— 编译期保守
+	// 标拒占位。运行期 P4 jit 注入后,如果 `SupportsAllOpcodes(proto)` 命中
+	// PJ5 SELF inline 形态(MOVE/GETUPVAL + SELF + (args) + CALL/TAILCALL +
+	// RETURN),`recheckCompilabilityRuntime` 撤本位 —— byte-equal P1 由
+	// host.Self + host.CallBaseline / host.TailCall 整段交接保证(callee 内
+	// yield/__call/meta 全 P1 doCall 路径处理)。
+	//
+	// **与 ReasonUnknownCall 的边界**:method call 不再叠加 ReasonUnknownCall
+	// —— 占位 vs 真拒分开记录,运行期重判才能精准撤位而不动 F2-b 已知 yield
+	// 风险。
+	ReasonSelfCall
 )
 
 // HasAny reports whether any reason bit is set.

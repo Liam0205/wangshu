@@ -119,6 +119,35 @@ func TestAnalyze_F2_UnknownCall(t *testing.T) {
 	}
 }
 
+// TestAnalyze_F2c_SelfCall `obj:m(...)` → ReasonSelfCall(占位位)+ 不叠
+// ReasonUnknownCall(承 P4 PJ5 SELF inline 形态真接入决策)。运行期 P4
+// 注入后 `recheckCompilabilityRuntime` 撤位 + SupportsAllOpcodes 守门。
+func TestAnalyze_F2c_SelfCall(t *testing.T) {
+	b := NewBridge()
+	// `function(o) o:m() end`
+	methodCall := &ast.CallStmt{
+		Call: &ast.MethodCallExpr{
+			Recv:   &ast.NameExpr{Name: "o"},
+			Method: "m",
+			Args:   nil,
+		},
+	}
+	fn := makeFuncBody(methodCall)
+	p := makeProto()
+
+	got := b.AnalyzeProto(fn, p)
+	if got != CompNotCompilable {
+		t.Errorf("method call should default NotCompilable (occupy reason), got %v", got)
+	}
+	pd := b.ProfileOf(p)
+	if pd.Reasons&ReasonSelfCall == 0 {
+		t.Errorf("ReasonSelfCall bit should be set, got %016b", pd.Reasons)
+	}
+	if pd.Reasons&ReasonUnknownCall != 0 {
+		t.Errorf("ReasonUnknownCall must NOT be set for SELF method call (occupy reason is independent), got %016b", pd.Reasons)
+	}
+}
+
 // TestAnalyze_F2_KnownLocalCall_Pure 已知 local 函数调用 + 该 local 自身纯
 // 计算 → 不应触发 unknown(用户拍板:isKnownLocalCall 真实现)。
 func TestAnalyze_F2_KnownLocalCall_Pure(t *testing.T) {

@@ -153,24 +153,29 @@ func (b *Bridge) SetForceAllPromote(on bool) { b.forceAll = on }
 // 注入哪个 P3」的占位。**运行期重跑 F7 是 analyze_on.go 留的「P3 注入后扩展」**,本函数
 // 实装这一步。
 //
-// **不绕真实可编译性闸门**:只清「编译期无 P3 的 F7 占位位」(ReasonBackendUnsupp),
-// F1-F6 结构性排除(vararg/coroutine/debug/setfenv/oversize/nested,已烧进 proto.CompReasons,
-// 不依赖 AST)原样保留——任一仍置位即留 CompNotCompilable。清掉 F7 后再对**真实注入的
-// 后端**查 SupportsAllOpcodes(F7 的正解)。二者全过才判 CompCompilable。
+// **不绕真实可编译性闸门**:只清「编译期占位位」(`ReasonBackendUnsupp` + `ReasonSelfCall`
+// —— 承 P4 PJ5 SELF inline 形态真接入决策,SELF 占位位同款 "后端注入后重判" 撤位),
+// F1-F6 + F2-a/F2-b 真实排除(vararg/coroutine/yield/unknownCall/debug/setfenv/oversize/
+// nested,已烧进 proto.CompReasons,不依赖 AST)原样保留 —— 任一仍置位即留 CompNotCompilable。
+// 清掉占位后再对**真实注入的后端**查 SupportsAllOpcodes(F7 的正解 + SELF inline 形态
+// 守门由 P4 analyzeShape 收尾)。
 //
 // **调用路径**:considerPromotion 在两种场景调本函数:
 //
 //	(a) forceAll 测试入口(08 §2.2 PW9 差分),热度阈值前即 force 升;
 //	(b) 自然热度路径(issue #18):热度过 HotEntryThreshold 后,看到
-//	    pd.Compilable == CompNotCompilable + ReasonBackendUnsupp + b.p3 != nil
-//	    时调本函数重判——这是 p3 build 自然热度升层路径的真正生效点。
+//	    pd.Compilable == CompNotCompilable + 占位位 + b.p3 != nil
+//	    时调本函数重判——这是 p3/p4 build 自然热度升层路径的真正生效点。
 func (b *Bridge) recheckCompilabilityRuntime(proto *bytecode.Proto) Compilability {
-	// 取编译期烧的 F1-F6 结构性排除位(去掉 F7 占位)。
-	structural := ReasonsBitmap(proto.CompReasons) &^ ReasonBackendUnsupp
+	// 取编译期烧的 F1-F6 + F2-a/F2-b 结构性排除位(去掉 F7 + SELF 占位)。
+	const placeholderReasons = ReasonBackendUnsupp | ReasonSelfCall
+	structural := ReasonsBitmap(proto.CompReasons) &^ placeholderReasons
 	if structural.HasAny() {
-		return CompNotCompilable // F1-F6 真实排除,留解释
+		return CompNotCompilable // F1-F6 / F2-a/F2-b 真实排除,留解释
 	}
-	// F7 对真实后端重判(b.p3 已注入)。
+	// F7 对真实后端重判(b.p3 已注入);SELF inline 形态收尾在 P4 jit
+	// analyzeShape (P4 SupportsAllOpcodes 内调) 内做真判 —— 若不命中
+	// PJ5 SELF inline 形态守卫,SupportsAllOpcodes 返 false 等价拒升。
 	if b.checkF7BackendSupport(proto) {
 		return CompNotCompilable // 真实后端不支持此 Proto 的 opcode 形状
 	}
@@ -268,7 +273,7 @@ func (b *Bridge) considerPromotion(proto *bytecode.Proto, pd *ProfileData, onMai
 	//   (a) forceAll:测试入口 PW9 差分,绕过热度阈值即 force 升;
 	//   (b) 自然热度 + 占位位:issue #18 修复,生产形态升层路径。
 	needsAutoRecheck := b.p3 != nil &&
-		ReasonsBitmap(proto.CompReasons)&ReasonBackendUnsupp != 0
+		ReasonsBitmap(proto.CompReasons)&(ReasonBackendUnsupp|ReasonSelfCall) != 0
 	if comp != CompCompilable && (b.forceAll || needsAutoRecheck) {
 		comp = b.recheckCompilabilityRuntime(proto)
 		if comp == CompCompilable {
