@@ -416,3 +416,44 @@ return count`
 
 func BenchmarkGibbousJIT_PJ5SelfCallSpec(b *testing.B)      { benchGibbousJITSelfCallSpec(b, true) }
 func BenchmarkGibbousJIT_PJ5SelfCallSpecCresc(b *testing.B) { benchGibbousJITSelfCallSpec(b, false) }
+
+// PJ5 SELF + CALL spec template — 计算密集 method 体(验摊薄效应)。
+//
+// 承 profile 发现(.llmdoc-tmp/investigations/2026-06-28-pj5-self-call-segment-profile.md):
+// PJ5SelfCallSpec 的 method 体过简(单 ADD count++)放大 trampoline 占比 → P4 慢 12%。
+// 本 bench method 体含 FORLOOP 算术循环(P4 PJ3 字节级 inline 大幅加速)→ method 体
+// 加速主导,caller 的 SELF+CALL trampoline 开销被摊薄,验「计算密集 method 体时
+// P4 SELF+CALL 摊薄 trampoline」。
+func benchGibbousJITSelfCallHeavyBody(b *testing.B, force bool) {
+	src := `
+local o = { m = function(self) local s = 0; for i = 1, 100 do s = s + i end; return s end }
+local function caller(t) return t:m() end
+local total = 0
+for i = 1, 50 do total = total + caller(o) end
+return total`
+	prog, err := wangshu.Compile([]byte(src), "bench-jit-self-heavy")
+	if err != nil {
+		b.Fatalf("compile: %v", err)
+	}
+	st := wangshu.NewState(wangshu.Options{})
+	if _, err := prog.Run(st); err != nil { // warmup
+		b.Fatalf("warmup-phase1: %v", err)
+	}
+	st.SetForceAllPromote(force)
+	if _, err := prog.Run(st); err != nil {
+		b.Fatalf("warmup-phase2: %v", err)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := prog.Run(st); err != nil {
+			b.Fatalf("run: %v", err)
+		}
+	}
+}
+
+func BenchmarkGibbousJIT_PJ5SelfCallHeavyBody(b *testing.B) {
+	benchGibbousJITSelfCallHeavyBody(b, true)
+}
+func BenchmarkGibbousJIT_PJ5SelfCallHeavyBodyCresc(b *testing.B) {
+	benchGibbousJITSelfCallHeavyBody(b, false)
+}
