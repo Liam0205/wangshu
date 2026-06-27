@@ -1206,6 +1206,15 @@ BenchmarkGibbousJIT_PJ5SelfCallCresc-24  11755 ns/op  72 B/op  2 allocs
 
 `aggregator.go::extractTableFeedback` 的 `opSelf` 分支把 SELF IC 聚合成 **`FBSelfMono`**(非 `FBTableMono`)。**PJ5 SELF + CALL 是首个真实触达 SELF feedback 的路径**——PJ4 SELF NodeHit(§9.10)因 luac 不真编 `SELF + RETURN` 2-op 形态仅合成驱动单测(单测自塞 `FBTableMono`),从未触达真实 SELF feedback,故那里用 `FBTableMono` 是未触发的占位。本路径用正确的 `FBSelfMono`。
 
+**PJ4 SELF NodeHit/ArrayHit 独立路径不可达性论证**(2026-06-28 probe 实证):
+
+probe wangshu frontend 验 `obj:method` 无 args 形态 → **parser 报语法错** `function arguments expected`,Lua 5.1 严格语法 `:` 方法引用必须接 `(args)`。即:
+- `obj:method` 单独 expression — **语法错误**
+- `local m = obj:method` — **语法错误**
+- `function f(obj) return obj:method end` — **语法错误**
+
+PJ4 SELF NodeHit/ArrayHit 独立路径(compileIcSelfArrayHit / compileIcSelfNodeHit)在生产路径**永不可达**(luac/wangshu 编不出 SELF + RETURN 2-op 形态)。**但**其字节级模板(EmitSelfArrayHit / EmitSelfNodeHit)经 PJ5 SELF spec template(§9.19)完整复用 + **真实证 13 e2e SpecSelfCallSpecHits 命中 + 11 difftest 三方 byte-equal**——PJ4 SELF NodeHit/ArrayHit 模板已通过 PJ5 路径间接达成生产真实证。
+
 **形态边界**(初批仅 0 参 0 返 CALL void,form M0):
 
 ```
