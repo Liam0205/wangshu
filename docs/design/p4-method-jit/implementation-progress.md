@@ -1240,13 +1240,25 @@ BenchmarkGibbousJIT_PJ5SelfCallSpecCresc-24  7961 ns/op  72 B/op  2 allocs
 
 **P4 ratio = 8953/7961 = 1.12x(比 crescent 慢 12%)**——对比非 spec 版(整段 host.Self+CallBaseline)1.19x,**SELF 段字节级 inline 把 host.Self round-trip 省了,相对改善 ~6%**。仍比 crescent 慢是因 CALL 段仍走 host.CallBaseline + P4 升层 + DoReturn 弹帧固定开销主导。
 
-**诚实结论**(承 [perf-optimization-workflow](../../../llmdoc/guides/perf-optimization-workflow.md) §1 profile 先行):SELF 段字节级 inline 确实加速(省一次 host.Self round-trip),但要真超 crescent 需 **CALL 段也字节级 inline**(段内 EmitCallInline,工程更大,是下一阶段瓶颈攻坚点)。本批 spec template 是 SELF 段字节级 inline 验证 + 加速基础设施。
+**CALL 段瓶颈 profile + 摊薄验证**(承 [perf-optimization-workflow](../../../llmdoc/guides/perf-optimization-workflow.md) §1 profile 先行 + §5 跨形态基线对照):
+
+CPU profile(`PJ5SelfCallSpec`)显示 executeLoop 95% / doCall 74% / enterGibbous 71% / enterLuaFrame 30% / popCallInfo 6% —— **CALL 段的"瓶颈"是被调 method 体的真实执行 + 帧建拆,不是 SELF 段或 CALL dispatch**;本 bench method 体过简(单 ADD `count++`)放大 trampoline 占比。这与 P3 PW10 call 核退化同源(根因是帧建立 + 重入,非 dispatch)。
+
+**摊薄验证**(`PJ5SelfCallHeavyBody`,method 体含 FORLOOP):
+
+```
+BenchmarkGibbousJIT_PJ5SelfCallHeavyBody-24       88540 ns/op
+BenchmarkGibbousJIT_PJ5SelfCallHeavyBodyCresc-24  93221 ns/op
+```
+
+**P4 ratio = 0.95x —— P4 比 crescent 快 5%!** method 体含 FORLOOP 时,P4 升层 method 体(PJ3 FORLOOP 字节级 inline 大幅加速)主导,caller SELF+CALL trampoline 开销被摊薄,P4 反超。**完整画面**:简单 method 体(count++)→ trampoline 占比大 → 1.12x 慢(bench 形态放大);计算密集 method 体(FORLOOP)→ method 加速主导 → 0.95x 快(真实 OOP 业务场景)。
+
+**OSR exit 协议已接通**(承 §9.18):spec template SELF NodeHit guard 失败 → `runSpecSelfCall` 调 `onOSRExit(proto)` 累积 deopt;`compileSpecSelfCall` 安装时 `onP4Install(proto)`。p4SpecState 子状态机从纯骨架变真实工作路径。
 
 **剩余 spec template 工程**(渐进推进):
 - SELF + CALL 1..7 参 spec template(args 装载 + spec 段后续)
-- **CALL 段字节级 inline**(段内 EmitCallInline,跳过 host.CallBaseline round-trip — 最大瓶颈攻坚)
+- CALL 段字节级 inline(段内 EmitCallInline,等价 P3 PW10 帧建立内联;ROI 受「帧建立 + method 体执行」架构成本限制,profile 实证小 method 体瓶颈在帧建拆非 dispatch)
 - TAILCALL spec template
-- OSR exit 真接入(p4SpecState 骨架已就绪,spec template guard 失败时切 P4Deoptimized)
 
 ---
 
