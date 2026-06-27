@@ -28,6 +28,11 @@ var specForLoopHits uint64
 // specTableHits 是 PJ4 表 IC ArrayHit 字节级 inline 编译命中次数。
 var specTableHits uint64
 
+// specCallVoidHits 是 PJ5 CALL void 形态(MOVE+CALL+RETURN void)Compile
+// 命中次数。Run prelude 路径调 host.CallBaseline 完成 baseline doCall —
+// 命中后跳过 P3 R3 indirect 哨兵,等价 P1 解释器 doCall。
+var specCallVoidHits uint64
+
 // SpecRegKHits 返回当前累计 reg-K 模板编译命中次数。仅测试用。
 func SpecRegKHits() uint64 { return atomic.LoadUint64(&specRegKHits) }
 
@@ -43,6 +48,10 @@ func SpecForLoopHits() uint64 { return atomic.LoadUint64(&specForLoopHits) }
 // SpecTableHits 返回当前累计 IC ArrayHit 模板编译命中次数。仅测试用。
 func SpecTableHits() uint64 { return atomic.LoadUint64(&specTableHits) }
 
+// SpecCallVoidHits 返回当前累计 PJ5 CALL void 形态 Compile 命中次数。
+// 仅测试用。
+func SpecCallVoidHits() uint64 { return atomic.LoadUint64(&specCallVoidHits) }
+
 // ResetSpecHits 把所有 spec 命中计数清零(测试开始前调,防之前其它测试
 // 残留累积影响断言)。仅测试用。
 func ResetSpecHits() {
@@ -51,6 +60,7 @@ func ResetSpecHits() {
 	atomic.StoreUint64(&specChainHits, 0)
 	atomic.StoreUint64(&specForLoopHits, 0)
 	atomic.StoreUint64(&specTableHits, 0)
+	atomic.StoreUint64(&specCallVoidHits, 0)
 }
 
 // incSpecRegKHits 包内 ++(Compile 触发 useSpecRegK 时调)。
@@ -67,3 +77,6 @@ func incSpecForLoopHits() { atomic.AddUint64(&specForLoopHits, 1) }
 
 // incSpecTableHits 包内 ++(Compile 触发 IC ArrayHit inline 时调)。
 func incSpecTableHits() { atomic.AddUint64(&specTableHits, 1) }
+
+// incSpecCallVoidHits 包内 ++(Compile 触发 PJ5 CALL void 形态 inline 时调)。
+func incSpecCallVoidHits() { atomic.AddUint64(&specCallVoidHits, 1) }

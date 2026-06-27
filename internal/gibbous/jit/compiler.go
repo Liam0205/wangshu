@@ -2315,6 +2315,11 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 		return nil, err
 	}
 
+	// PJ5 CALL void 形态 Compile 命中(prove-the-path 白盒命中证据)。
+	if info.isCallVoid {
+		incSpecCallVoidHits()
+	}
+
 	return &p4Code{
 		proto:      proto,
 		codePage:   page,

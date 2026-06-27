@@ -225,3 +225,22 @@ func TestPJ5_SupportsAllOpcodesGate_AcceptsCallVoid(t *testing.T) {
 		t.Error("SupportsAllOpcodes should accept MOVE+CALL+RETURN void form")
 	}
 }
+
+// TestPJ5_SpecCallVoidHits 验 Compile 命中 PJ5 CALL void 形态时
+// specCallVoidHits 探针 ++(白盒 prove-the-path 证据,承
+// llmdoc/guides/prove-the-path-under-test §4)。
+func TestPJ5_SpecCallVoidHits(t *testing.T) {
+	ResetSpecHits()
+	proto := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABC(bytecode.MOVE, 1, 0, 0),
+			bytecode.EncodeABC(bytecode.CALL, 1, 1, 1),
+			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
+		},
+	}
+	gc, _ := compileWithHost(t, proto)
+	defer tryDispose(t, gc)
+	if got := SpecCallVoidHits(); got != 1 {
+		t.Errorf("SpecCallVoidHits = %d, want 1 (Compile 应命中 PJ5 CALL void inline)", got)
+	}
+}
