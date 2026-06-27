@@ -1154,13 +1154,13 @@ func TestPJ8_EmitFrameInlineLoadCISlotAddrArm64_Encoding(t *testing.T) {
 	var buf []byte
 	buf = EmitFrameInlineLoadCISlotAddrArm64(buf, 56, 64)
 
-	// MUL x17, x17, x18 在 offset 32(LDR×4 16 字节 + MovImm64 16 字节)
+	// MUL x17, x17, x9 在 offset 32(LDR×4 16 字节 + MovImm64 16 字节)
 	mulInsn := binary.LittleEndian.Uint32(buf[32:36])
-	// MUL x17, x17, x18 = 0x9B007C00 + (18<<16) + (17<<5) + 17
-	// = 0x9B007C00 + 0x120000 + 0x220 + 0x11 = 0x9B127E31
-	const wantMul = uint32(0x9B127E31)
+	// MUL x17, x17, x9 = 0x9B007C00 + (9<<16) + (17<<5) + 17
+	// = 0x9B007C00 + 0x90000 + 0x220 + 0x11 = 0x9B097E31
+	const wantMul = uint32(0x9B097E31)
 	if mulInsn != wantMul {
-		t.Errorf("MUL x17, x17, x18 = 0x%08X, want 0x%08X", mulInsn, wantMul)
+		t.Errorf("MUL x17, x17, x9 = 0x%08X, want 0x%08X", mulInsn, wantMul)
 	}
 
 	// ADD x0, x16, x17 在 offset 36

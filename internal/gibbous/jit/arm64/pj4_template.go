@@ -787,18 +787,14 @@ func EmitFrameInlineCIDepthIncArm64(buf []byte, ciDepthAddrOffset uint16) []byte
 // EmitFrameInlineCIDepthDecArm64 发射 arm64 ciDepth-- 字节级 inline 模板
 // (承 §9.20 popCallInfo 反向,amd64 对位)。
 //
-// arm64 没有 SUB Xd, Xn, #imm12 的 byte-equal 简形态——用 EmitSubXdImm12
-// 通用宏。同 Inc 4 条指令 16 字节(LDR + LDR + SUB + STR)。
+// 同 Inc 4 条指令 16 字节(LDR + LDR + SUB + STR)。
 func EmitFrameInlineCIDepthDecArm64(buf []byte, ciDepthAddrOffset uint16) []byte {
 	buf = EmitLdrXtFromXnDisp(buf, 16, 27, ciDepthAddrOffset)
 	buf = EmitLdrXtFromXnDisp(buf, 17, 16, 0)
-	// SUB x17, x17, #1 — 复用 ADD 编码(SUB = 1010001 vs ADD = 1001000),
-	// 但 ADD imm12 已封装,用 ADD +(-1)语义不可直接;实际 SUB imm12 编码
-	// 略不同(opcode bit 30)。下方直接拼字节。
-	// SUB Xd, Xn, #imm12,shift=0:0xD1000000 + (imm12<<10) + (Rn<<5) + Rd
-	// = 0xD1000000 + (1<<10) + (17<<5) + 17 = 0xD1000631
-	buf = append(buf,
-		0x31, 0x06, 0x00, 0xD1) // SUB x17, x17, #1(little-endian arm64 encoding)
+	// SUB x17, x17, #1 — 改用 EmitSubXdImm12 通用宏(承 PR #26 外部审查
+	// 卫生项纠正 2026-06-28:此前用生字节直写 0xD1000631,可读性差且与
+	// emitter 通用宏体系不一致)。
+	buf = EmitSubXdImm12(buf, 17, 17, 1)
 	buf = EmitStrXtToXnDisp(buf, 17, 16, 0)
 	return buf
 }
@@ -817,15 +813,23 @@ const EncodedFrameInlineCIDepthIncDecArm64Len = 16
 //	ldr  x17, [x16]                         ; x17 = depth(当前)
 //	ldr  x16, [x27 + ciSegBaseAddrOffset]   ; x16 = ciSegBaseAddr
 //	ldr  x16, [x16]                         ; x16 = ciSegBase
-//	mov  x18, #40                           ; x18 = 40 (ciSlotBytes)
-//	mul  x17, x17, x18                      ; x17 = depth * 40
+//	mov  x9, #40                            ; x9 = 40 (ciSlotBytes)
+//	mul  x17, x17, x9                       ; x17 = depth * 40
 //	add  x0, x16, x17                       ; x0 = ciSegBase + depth*40
 //
 // 模板结束后 x0 = CallInfo[depth] 字节地址(等价 amd64 rax)。
 //
+// **scratch 寄存器**(承 PR #26 外部审查纠正 2026-06-28):
+//   - x16/x17 = IP0/IP1(intra-procedure-call scratch,AAPCS 标准,可任意改写)
+//   - x9 = caller-saved scratch(AAPCS 标准 x0-x18 caller-saved,x19-x28
+//     callee-saved + x18 是 platform reserved,**此前误用 x18 violation
+//     AAPCS** — 本批改 x9)。
+//
 // arm64 28 字节 vs amd64 30 字节——arm64 微优因 LDR/STR pimm12 + MUL R-type
-// 比 amd64 disp32 mov + imul 编码紧凑 2 字节。x16/x17/x18 是 IP0/IP1/IP2
-// scratch 寄存器(intra-procedure-call scratch)。
+// 比 amd64 disp32 mov + imul 编码紧凑 2 字节。
+//
+// **arm64 仍 40 字节**(同上批 length):MovXdImm64 即使 #40 也走 4 条 16-bit
+// 段(movz+movk*3),浪费 12 字节;EmitMovXdImm12 单条 4 字节优化留 PJ8+。
 func EmitFrameInlineLoadCISlotAddrArm64(buf []byte, ciDepthAddrOffset, ciSegBaseAddrOffset uint16) []byte {
 	// 1. x16 = ciDepthAddr → x17 = depth
 	buf = EmitLdrXtFromXnDisp(buf, 16, 27, ciDepthAddrOffset)
@@ -833,13 +837,13 @@ func EmitFrameInlineLoadCISlotAddrArm64(buf []byte, ciDepthAddrOffset, ciSegBase
 	// 2. x16 = ciSegBaseAddr → x16 = ciSegBase(覆写 x16)
 	buf = EmitLdrXtFromXnDisp(buf, 16, 27, ciSegBaseAddrOffset)
 	buf = EmitLdrXtFromXnDisp(buf, 16, 16, 0)
-	// 3. mov x18, #40
-	buf = EmitMovXdImm64(buf, 18, 40)
+	// 3. mov x9, #40(scratch,承 AAPCS x9 caller-saved 可用)
+	buf = EmitMovXdImm64(buf, 9, 40)
 	// 等等,EmitMovXdImm64 是 16 字节 movz+movk*3。我们只要 movz 单条
 	// 但 EmitMovXdImm64 不区分 imm 大小,小 imm 用 4 movz/movk 浪费 12 字节。
 	// Spike 1 简化:接受 16 字节 imm 装载,后续优化 PJ8+ 再用 EmitMovzXd 单条。
-	// 4. mul x17, x17, x18
-	buf = EmitMulXdXnXm(buf, 17, 17, 18)
+	// 4. mul x17, x17, x9
+	buf = EmitMulXdXnXm(buf, 17, 17, 9)
 	// 5. add x0, x16, x17
 	buf = EmitAddXdXnXm(buf, 0, 16, 17)
 	return buf
