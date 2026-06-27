@@ -841,6 +841,11 @@ const (
     reasonNestedDeep
     reasonOverUpval
     reasonBackendUnsupp
+    reasonSelfCall   // F2-c(2026-06-28):obj:m(args) SELF method call 占位位
+                     //                   与 ReasonBackendUnsupp 同款手法:编译期
+                     //                   保守占位,运行期 recheckCompilabilityRuntime
+                     //                   撤位 + P4 端 SupportsAllOpcodes
+                     //                   (analyzeSelfCallForm) 守门
 )
 ```
 
@@ -910,10 +915,24 @@ func (v *compilabilityVisitor) visitCallExpr(e *ast.CallExpr) {
     }
 }
 
-// visitMethodCallExpr 处理 obj:m(args) 形态——同样保守
+// visitMethodCallExpr 处理 obj:m(args) 形态——拆 sawSelfCall 占位信号
+// (承 P4 PJ5 SELF inline 形态真接入决策,2026-06-28)。
+//
+// **占位位语义**(与 ReasonBackendUnsupp F7 同款手法):method receiver 的
+// 方法表无法静态析出,callee 内部可能 yield/setfenv/debug;但 P4 端 PJ5
+// SELF inline 形态完整覆盖 0..7 参 `obj:method(args)` byte-equal P1 doCall。
+// 编译期保守占位 ReasonSelfCall,运行期 recheckCompilabilityRuntime 撤位 +
+// SupportsAllOpcodes(P4 analyzeSelfCallForm) 守门(承 04-osr-deopt §5)。
+//
+// **与 ReasonUnknownCall 的边界**(2026-06-28 改动):method call 不再叠加
+// ReasonUnknownCall — 占位 vs 真拒分开记录,运行期重判才能精准撤位而不动
+// F2-b 已知 yield 风险。
 func (v *compilabilityVisitor) visitMethodCallExpr(e *ast.MethodCallExpr) {
-    // obj:m() 几乎总是 unknown(对象的方法表无法静态解析)
-    v.callsUnknownFn = true
+    v.walkExpr(e.Recv)
+    for _, a := range e.Args {
+        v.walkExpr(a)
+    }
+    v.sawSelfCall = true   // F2-c 占位信号(与 callsUnknownFn 分离)
 }
 
 // visitFuncExpr 处理嵌套函数定义,管理 currentDepth / maxClosureDepth
