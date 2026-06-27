@@ -91,6 +91,11 @@ func (cg *codegen) compileFunc(outerFS *funcState, fe *ast.FuncExpr) *bytecode.P
 	// P2 PB7 接线:profile build 下跑可编译性分析,把结果写进
 	// Proto.Compilability + Proto.CompReasons(03 §6.3 接线 + 02 §2.4 AST 用
 	// 完即弃方案 ①)。!wangshu_profile build 下 no-op,Proto 字段留零值。
-	analyzeCompilability(fe, fs.proto)
+	//
+	// **PJ5 扩展(2026-06-27)**:走 WithOuter 路径传入 outerFS,让 AnalyzeProto
+	// 看到外层 funcState 链上 localFnAsts(承 03 §9 GAP-5 scope-aware
+	// 名字解析)— 让闭包内调外层 local known fn 形态识别为 known 而非
+	// unknown call,P4 PJ5 GETUPVAL+CALL+RETURN void 形态升层路径打通。
+	analyzeCompilabilityWithOuter(fe, fs.proto, outerFS)
 	return fs.proto
 }
