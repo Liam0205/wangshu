@@ -1,6 +1,6 @@
 # P4 实现进度对账(implementation-progress)
 
-> 状态:**PJ0-PJ4 + PJ7 + PJ10 luajc 档突破已落地**(2026-06-26)。PJ3 FORLOOP 字节级 inline 实测 7.15-25.41x over gopher-lua,**完整超越 luajc 档 4.4x 基线**(承 §8)。**PJ4 表 IC 完整六路径**(GETTABLE/SETTABLE/SELF × ArrayHit/NodeHit)字节级 inline 主路径接入 + 严密 IsTable guard(承 §9.7-§9.10) + 整套层级 prove-the-path 守卫(test/difftest/p4_test.go + conformance P4 守卫 + Makefile 注释更新,承 §9.11)。**PJ8 arm64 字节级模板矩阵完整 + Compile 端真接入(IC 六路径 + FORLOOP 全套 + PJ2 投机三形态)+ spec trampoline asm 实装**(23 件 emit 原语 + PJ2/PJ3/PJ4 三 op 模板,PJ4 六路径 1052B + FORLOOP 四形态 84-176B 含 safepoint + PJ2 三形态 92-116B,archEmit 十三 stub → 真代理对位 amd64;archSupportsForLoop 闸门解耦防 archSupportsSpec=false 静默错果;`callJITSpec` arm64 trampoline asm 实装装 x26=vsBase+x27=jitCtx,archSupportsSpec=true 翻面留物理 runner 同批,承 §9.13)。**剩 PJ5(CALL/TAILCALL + OSR exit)/ PJ8 剩余真接入(archSupportsSpec 翻面 + 物理 runner)/ PJ9(双架构差分套)** 留多会话累积(P4 设计文档 §0 自估 +1-2 人年)。
+> 状态:**PJ0-PJ4 + PJ5 简化形态 + PJ7 + PJ10 luajc 档突破已落地**(2026-06-27)。PJ3 FORLOOP 字节级 inline 实测 7.15-25.41x over gopher-lua,**完整超越 luajc 档 4.4x 基线**(承 §8)。**PJ4 表 IC 完整六路径**(GETTABLE/SETTABLE/SELF × ArrayHit/NodeHit)字节级 inline 主路径接入 + 严密 IsTable guard(承 §9.7-§9.10) + 整套层级 prove-the-path 守卫(test/difftest/p4_test.go + conformance P4 守卫 + Makefile 注释更新,承 §9.11)。**PJ8 arm64 字节级模板矩阵完整 + Compile 端真接入(IC 六路径 + FORLOOP 全套 + PJ2 投机三形态)+ spec trampoline asm 实装**(23 件 emit 原语 + PJ2/PJ3/PJ4 三 op 模板,PJ4 六路径 1052B + FORLOOP 四形态 84-176B 含 safepoint + PJ2 三形态 92-116B,archEmit 十三 stub → 真代理对位 amd64;archSupportsForLoop 闸门解耦防 archSupportsSpec=false 静默错果;`callJITSpec` arm64 trampoline asm 实装装 x26=vsBase+x27=jitCtx,archSupportsSpec=true 翻面留物理 runner 同批,承 §9.13)。**PJ5 CALL void 简化形态打通**(2026-06-27):analyzeCallVoidForm 识别 MOVE+CALL+RETURN void(形态 A)+ GETUPVAL+CALL+RETURN void(形态 B)双形态;P4HostState 加 CallBaseline 接口(绕过 R3 indirect 哨兵走 baseline doCall);P2 scope-aware AnalyzeProto 跨 Proto 传递 outer localFnAsts,打通嵌套 closure 调外层 known local fn 形态的升层路径;e2e SpecCallVoidHits=1 prove-the-path 命中实证(承 §9.14)。**剩 PJ5 完整接入(TAILCALL + 含参 CALL + 含返 CALL + OSR exit)/ PJ8 剩余真接入(archSupportsSpec 翻面 + 物理 runner)/ PJ9(双架构差分套)** 留多会话累积(P4 设计文档 §0 自估 +1-2 人年)。
 > P1 全卷(M0-M14)+ P2 PB0-PB7 + 后续优化轮 #1-#4 + P3 PW0-PW10 + VS0-e 全卷已交付(2026-06-16),P4 启动前置就绪;**唯一阻塞**是 P4 立项判定本身(承 [01-launch-judgment §3](./01-launch-judgment.md))。
 > 单一事实源:本文是 P4 实现现状与设计文档差异的对账表(对应 [P3 implementation-progress](../p3-wasm-tier/implementation-progress.md) 的角色,但 P4 是设计阶段未实施,本文重在「设计期决策盘点 + 跨文档回填请求收口表 + 实施前置确认 + 后续维护协议」)。
 > 设计文档集:见 [00-overview §0](./00-overview.md) 文档地图。
@@ -51,7 +51,7 @@
 | PJ2 | amd64 算术 + 比较 + IsNumber×2 guard | [03](./03-speculation-ic.md) + [06 §3.2](./06-backends.md) | 双 number 快路径直发 `mulsd` 等;guard 失败 OSR exit 回解释 | ✅ **2026-06-26 完整接入扩展到 12+ 形态**(承 §7;ADD/SUB/MUL/DIV 三种操作数布局:reg-reg(92 字节,实测 1.01-1.03x)+ reg-K(73 字节,实测 1.01-1.02x)+ chain-KK 任意 op1+op2 组合(92 字节,~1.0x 单次调内 boundary 占主导)。e2e 双轨真升层 byte-equal 解释器 + 白盒命中探针 SpecRegKHits / SpecRegRegHits / SpecChainHits 实证非降级 host;deopt fallback 含 chain pc 修复对齐错误消息行号。**真大幅加速**(luajc 档 ≥4.4x)留 PJ3 FORLOOP 字节级内联把多次 boundary 摊出循环) |
 | PJ3 | amd64 控制流 + FORLOOP + 回边 safepoint | [05 §6.3](./05-system-pipeline.md) + [06 §3.3](./06-backends.md) | 数值 for 编译后 ≥luajc 档单档(**P4 价值首次实证**)| ✅ **2026-06-26 真接入 5 类形态——突破 luajc 档**(承 §8;空 body 三类:LOADK常量 + MOVE reg-limit hot path(IsNumber guard + host.ForPrep deopt)+ GETUPVAL upval-limit(Run prelude + reg-limit 模板复用);含 body 二类:单 reg-K body op(135 字节,body 用 xmm3/4)+ 二段 reg-K body op(154 字节,body 共享 xmm3 跨两段省 load/store)。安全点 check 字节级真接入(V18 -race 抢占语义生效)。**Xeon 6982P 实测**:空 body 100/1000/10000 iter 8.11/17.53/20.09x over cres + 7.15/21.20/25.41x over gopher;body+=1 1000/10000 iter 7.23/7.36x over cres + 10.18/10.83x over gopher;**全部远超 luajc 档 4.4x 基线**。**嵌套 / break / 表 IC 留 PJ4+ 扩**) |
 | PJ4 | amd64 表 IC 模板 + stableShape/Index 直达槽投机 | [03 §6](./03-speculation-ic.md) + [06 §3.4](./06-backends.md) | 单态表 guard + 直达槽跳哈希;形状变化 deopt + 再训练 | ✅ **2026-06-26 IC 完整六路径 + 严密 IsTable guard + 整套层级 prove-the-path 守卫**(承 §9;六模板 ArrayHit 132B / NodeHit 159B / SetTable ArrayHit 113B / SetTable NodeHit 140B / Self ArrayHit 139B / Self NodeHit 166B,**严密 IsTable guard** `shr rax,48 + cmp eax,0xFFFC + jne deopt`(15 字节)精确排除非 table 假阳;六 analyzer + Compile 主路径六路径优先级分流;Run deopt 分流 host.GetTable / host.SetTable byte-equal P1;**SpecTableHits 探针** + crescent e2e WarmupThenForce 实证(t[1]/t["x"]/t[1]=v/t["x"]=v 各 SpecTableHits++=1)+ jit 包合成驱动单测兜底 SELF;**整套层级 prove-the-path 修复**(test/difftest/p4_test.go P4 专属 harness 17 用例 + PromotionCount>0 fail-stop + conformance P4 守卫 + Makefile 注释更新)) |
-| PJ5 | amd64 CALL/TAILCALL + 跨层互调 + OSR exit 实装 | [04](./04-osr-deopt.md) + [05 §4.3](./05-system-pipeline.md) + [06 §3.5](./06-backends.md) | gibbous-jit 三向分派 + OSR exit 状态等价(V19)| 🔶 **2026-06-25 emitter 部分**(EmitCallRel32/CallReg/PushReg/PopReg;push/pop round-trip 验证;helper call 真接入留 PJ5+) |
+| PJ5 | amd64 CALL/TAILCALL + 跨层互调 + OSR exit 实装 | [04](./04-osr-deopt.md) + [05 §4.3](./05-system-pipeline.md) + [06 §3.5](./06-backends.md) | gibbous-jit 三向分派 + OSR exit 状态等价(V19)| 🔶 **2026-06-27 CALL void 简化形态打通**(承 §9.14 — analyzeCallVoidForm 识别 MOVE/GETUPVAL+CALL+RETURN void 双形态 + P4HostState.CallBaseline 接口 + Run prelude CALL case 真接入 + P2 scope-aware AnalyzeProto 跨 Proto 传递 outer localFnAsts 打通真升层 + e2e SpecCallVoidHits=1 prove-the-path 命中实证;剩 TAILCALL / 含参 CALL / 含返 CALL / OSR exit / 段内 EmitCallInline 留下一批) |
 | PJ6 | amd64 CLOSURE/CLOSE + upvalue | [06 §3.6](./06-backends.md) | 闭包 byte-equal(复用 makeClosure/closeUpvals)| 🔶 **2026-06-25 emitter 部分**(EmitLoadKReturnTemplate + EmitProlog/Epilog 模板封装;10000 次 prolog/epilog 栈保护验证;upvalue 真接入留 PJ6+) |
 | PJ7 | amd64 端到端验收 + 性能基准 | [08](./08-testing-strategy.md) | 单架构 V1-V22 全过 + V14 luajc 档 | ✅ **PJ7 真接入 ~25 类形态 byte-equal**(2026-06-25/26,详 §7;`SupportsAllOpcodes` 已扩展到 25 类形态——getter 族(RETURN A 2 / GETUPVAL / GETGLOBAL / GETTABLE / LOADK 含 string / LOADBOOL / LOADNIL / MOVE / ADD..POW 6 op / UNM / LEN / NEWTABLE / NOT)+ setter 族(RETURN A 1 / SETTABLE / SETGLOBAL / SETUPVAL)+ 比较折叠族(EQ/LT/LE 6-op luac 模板折成 BoolValue)。`p4Code.Run` 经 14 个 host helper 调 gibbous_host.go 与解释器 byte-equal;pc off-by-one bug 修复(行号 / IC 槽锚定 prelude op 自身 pc=0);多行错误消息 byte-equal 实证测试通过。**make test-p4 全套 21 binary 全过含 conformance/difftest/luasuite + V18 -race**;V14 luajc 档调优留 PJ10) |
 | PJ8 | arm64 后端启动 + 渐进交付 | [06](./06-backends.md) | arm64 各 opcode 模板按族落地;`MAP_JIT` + icache flush | 🔶 **2026-06-26 字节级模板矩阵完整 + Compile 端真接入(IC 六 + FORLOOP 全套 + PJ2 三形态)+ spec trampoline asm 实装**(承 §9.13;linux/arm64 codepage + 23 件 emit 原语(整数 13 含 LDRB/CBNZ + 浮点 7 + ADD/AND/LSR 3)+ **PJ2 投机三形态**(reg-reg 108B + reg-K 92B + chain-KK 116B,字节级单测 13 个 + sseOp 翻译 0x58/0x5C/0x59/0x5E → ArithOpAdd/Sub/Mul/Div)+ **PJ3 FORLOOP 全套**(EmptyConst 84/92B + RegLimit 120/128B + WithRegKBody 144/152B + WithRegKBody2 168/176B,共四形态字节级模板)+ **PJ4 IC 完整六路径 arm64 端字节级**(GETTABLE ArrayHit 168B / NodeHit 196B / SETTABLE ArrayHit 144B / SETTABLE NodeHit 172B / SELF ArrayHit 172B / SELF NodeHit 200B,总计 1052B + 25+ 字节级单测;严密 IsTable guard + SIB 替代 + stableKey movz+movk×3 实证 + R(A+1) 先于 IsTable guard 写 SELF byte-equal P1 case 同款步骤);`arch_arm64.go` 十三 stub → 真代理(IC 六路径 + FORLOOP 全套四形态 + PJ2 三形态,签名完全对位 amd64)+ `archSupportsForLoop` 闸门解耦 + body/body2/RegLimit 路径 spec trampoline 守卫 + `arenaBaseOffArm64` panic 硬化;**`callJITSpec` arm64 trampoline asm 实装**($80-32 framesize,装 x26=vsBase + x27=jitCtx + BL (R8) + LDP 恢复,对位 amd64 callJITSpec)+ `trampoline_other.go` cross-build stub;**剩余 PJ8+ 多会话**:`archSupportsSpec()=false → true` 翻面(PJ2 投机 + FORLOOP body/body2/RegLimit 自动启用)+ mmap+RX 物理 self-hosted runner 端到端 V1-V22 验证;darwin/arm64 W^X MAP_JIT spike 留 PJ8+) |
@@ -925,6 +925,45 @@ arm64 safepoint 8 字节(`ldrb 4 + cbnz 4`) vs amd64 14 字节(`cmp byte 8 + jne
 - darwin/arm64 W^X MAP_JIT spike(本批 trampoline_other.go 已留 stub,完整化留 PJ8+)
 
 **ROI**:本里程碑后 arm64 完整 trampoline 协议(callJITFull / callJITSpec 双轨)就绪,启用 archSupportsSpec=true 即可在物理 runner 上端到端跑通 PJ2 投机 + PJ3 全四形态。spec trampoline 是本批 PJ8 工程组件的最后一块物理基础,后续工程只剩翻闸门 + 端到端实测。
+
+---
+
+### 9.14 PJ5 CALL void 简化形态打通(2026-06-27 落地)
+
+承 §9.12 PJ5 工程基础(EmitHelperCall amd64 + EmitHelperCallArm64 + archEmitHelperCall 三 arch),本批落地 PJ5 第一个**真升层 + 真接入**形态:CALL void(0 参 0 返 CALL + RETURN void)。
+
+**形态范围**(双形态,luac 编译产物):
+- 形态 A:`MOVE A B + CALL A 1 1 + RETURN 0 1` — parameter callee 形态(`function(g) g() end`)
+- 形态 B:`GETUPVAL A B + CALL A 1 1 + RETURN 0 1` — upvalue callee 形态(`local function noop()...end; local function invoker() noop() end`)
+
+**关键交付**:
+- `internal/gibbous/jit/host.go::P4HostState.CallBaseline`:新接口,语义是 baseline doCall 分派(host/crescent/__call/全形态 gibbous 一律同步跑完),**绕过 tryIndirectCallee R3 indirect 哨兵** — 因为 PJ5 简化形态没有 wasm-level 段内 call_indirect 通道,若返 indirect 哨兵会让被调帧悬挂但永不执行(UAF 风险)
+- `internal/crescent/gibbous_host.go::State.CallBaseline`:实装(复用 DoCall 的 baseline 分支,只跳过 tryIndirectCallee 快路径)
+- `internal/gibbous/jit/compiler.go::analyzeCallVoidForm`:形态识别(MOVE/GETUPVAL + CALL B=1 C=1 + RETURN B=1 守卫严密)
+- `internal/gibbous/jit/code.go::Run prelude CALL case`:据 isCallUpval 分流 host.GetReg / host.GetUpval 预处理,然后 host.CallBaseline + DoReturn
+- `internal/gibbous/jit/probes.go::SpecCallVoidHits`:prove-the-path 白盒命中探针
+
+**P2 analyzer scope-aware 扩展**(承同批 commit,打通 PJ5 真升层关键关):
+- `internal/bridge/analyzer.go::AnalyzeProtoWithOuter`:新接口,接受 outerLocalFuncs 上下文(本 proto 参数同名遮蔽剔除安全)
+- `internal/frontend/compile/funcstate.go::funcState.localFnAsts`:跟踪本 funcState 内 `local function X` 定义的 fn AST
+- `internal/frontend/compile/analyze_on.go::analyzeCompilabilityWithOuter`:收集 outerFS 链上 localFnAsts 合并视图(近层覆盖远层),传给 bridge
+- 改 walkFuncExpr sub-visitor.localFuncs 继承父 visitor 同款(同一 AnalyzeProto 内嵌套 FuncExpr)
+- 修复前:invoker proto 独立 AnalyzeProto 调用,visitor.localFuncs 空 → noop 标 callsUnknownFn → ReasonUnknownCall → invoker NotCompilable
+- 修复后:outerLocalFuncs 含 noop → isKnownLocalCall=true → 递归判 noop.Body(yield 等含量按 isKnownLocalCall 路径传染回 invoker),invoker 形态 Compilable + P4 升层可触达
+
+**测试覆盖**:
+- 单测 7 个(`compiler_pj5_call_test.go`):RecognizeMOVE / RecognizeGETUPVAL / Reject(9 子测覆盖每条守卫)/ RunCallVoidPath(形态 A 端到端)/ RunCallVoidUpvalPath(形态 B 端到端)/ ErrPropagate / SupportsAllOpcodesGate / SpecCallVoidHits 探针
+- e2e 1 个(`internal/crescent/gibbous_pj5_call_e2e_test.go::TestPJ5_CallVoid_E2E_FormB_Upval`):**SpecCallVoidHits=1 实证**,P4 PJ5 升层 + Compile 命中 + Run 真跑过完整链路
+- difftest-p4 2 个(`test/difftest/p4_test.go`):p4_call_void(形态 A)+ p4_call_void_upval(形态 B)— oracle / crescent / p4-jit 三方 byte-equal
+
+**剩余 PJ5 完整接入工程**(承 §9.12 估算):
+- TAILCALL inline(承 `function() return g() end` 编 TAILCALL 而非 CALL,需独立形态识别 + 帧复用协议)
+- 含参 CALL(CALL.B >= 2):MOVE+LOADK*N+CALL+RETURN void 形态扩展
+- 含返 CALL(CALL.C >= 2 / RETURN.B >= 2):返回值经 R(A) 写回 + RETURN 路径
+- OSR exit + bit50 协议拍板(承 04 §7.2 + 05 §4.3,等用户决策性输入)
+- 段内 inline EmitCallInline 模板(amd64/arm64 真发射 `mov rax, &host.CallBaseline; call rax`,跳过 Go 端 prelude round-trip,留 PJ5+ 完整版)
+
+**ROI**:**PJ5 简化形态打通是 P4 调用族 inline 第一块真接入物理证据**(对位 PJ4 表 IC 形态完整六路径的形态学进展)。SpecCallVoidHits=1 的 prove-the-path 命中是 P4 PJ5 首条真升层路径,与 P2 scope-aware analyzer 扩展捆绑——意味着真实业务 nested closure 调外层 known local fn 形态都进入了 P4 可升层范围。后续扩展(含参 / 含返 / TAILCALL)按此形态学路径逐步扩,工程量已被本里程碑系统打通。
 
 ---
 
