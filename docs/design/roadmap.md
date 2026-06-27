@@ -130,12 +130,17 @@ P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 met
 
 ### P4:带 IC 反馈的投机 method JIT(+1-2 人年)
 
+- **立项前置 = 立项判定**(承 [design/p4-method-jit/01-launch-judgment](./p4-method-jit/01-launch-judgment.md)):
+  P4 启动前先做立项判定(P3 实际表现 + 真实宿主负载证据 + 资源到位),三档决议产出
+  「常规推进 / 暂缓 / 跳过」三选一——与 P3 的「开工前置 spike」节奏对位
 - JSC Baseline 风格:per-function 模板编译,IC 反馈做类型投机
   (f64 快速路径 + guard),deopt 简单(函数级 OSR exit 回解释器)
 - 继承 P3 的全部分层结构,只换发射后端(Wasm 发射→原生发射)
 - amd64 + arm64 双后端;系统管线参考 wazero
 - **验收**:列内核负载 ≥ LuaJ-luajc 档;Wasm 层退役,或留作可移植中层
-  (未移植架构、禁 exec-mmap 环境)
+  (未移植架构、禁 exec-mmap 环境)——**P3 去留决策框架详见
+  [design/p4-method-jit/07-p3-retirement](./p4-method-jit/07-p3-retirement.md)**
+  (本节给方向,具体决策框架在子文档)
 
 ### P5:trace-based JIT(+2-4 人年到可信 v1,开放式)
 
