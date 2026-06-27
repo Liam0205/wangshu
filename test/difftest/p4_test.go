@@ -538,6 +538,46 @@ local function bounce(u, v, w, x, y, z, q) return f(u, v, w, x, y, z, q) end
 local s = 0
 for i = 1, 10 do s = s + bounce(i, i+1, i+2, i+3, i+4, i+5, i+6) end
 return s`},
+
+	// —— PJ5 SELF method call inline 形态(`obj:method(args)` 真接入,
+	// 承 P2 ReasonSelfCall 占位位拆分 + P4 端 analyzeSelfCallForm 守门)——
+	{"p4_self_void_m0", `
+local count = 0
+local o = { m = function(self) count = count + 1 end }
+local function caller(t) t:m() end
+for i = 1, 30 do caller(o) end
+return count`},
+	{"p4_self_void_u0", `
+local count = 0
+local o = { m = function(self) count = count + 1 end }
+local function tick() o:m() end
+for i = 1, 30 do tick() end
+return count`},
+	{"p4_self_void_m1k", `
+local sum = 0
+local o = { m = function(self, x) sum = sum + x end }
+local function caller(t) t:m(42) end
+for i = 1, 30 do caller(o) end
+return sum`},
+	{"p4_self_void_m1r", `
+local sum = 0
+local o = { m = function(self, x) sum = sum + x end }
+local function caller(t, v) t:m(v) end
+for i = 1, 30 do caller(o, i) end
+return sum`},
+	{"p4_self_tail_m0", `
+local count = 0
+local o = { m = function(self) count = count + 1; return count end }
+local function caller(t) return t:m() end
+local last = 0
+for i = 1, 30 do last = caller(o) end
+return last`},
+	{"p4_self_getter_m0", `
+local o = { m = function(self) return 7 end }
+local function caller(t) local r = t:m(); return r end
+local s = 0
+for i = 1, 30 do s = s + caller(o) end
+return s`},
 }
 
 // TestP4_Tiered 三方对拍:oracle / crescent / p4-jit 全 byte-equal。

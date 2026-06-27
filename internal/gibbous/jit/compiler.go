@@ -2489,6 +2489,43 @@ func analyzeSelfCallForm5(proto *bytecode.Proto, callA uint8, selfRK uint16,
 			selfRecvIsUpval: op0 == bytecode.GETUPVAL,
 		}, true
 	}
+	// (a') Code[2]=TAILCALL 0 参:[2] TAILCALL B=2 C=0,[3] RETURN A=callA B=0(dead),[4] RETURN B=1(隐式)
+	if op2 == bytecode.TAILCALL {
+		cA := bytecode.A(proto.Code[2])
+		cB := bytecode.B(proto.Code[2])
+		cC := bytecode.C(proto.Code[2])
+		if cA != int(callA) || cB != 2 || cC != 0 {
+			return shapeInfo{}, false
+		}
+		if op3 != bytecode.RETURN || op4 != bytecode.RETURN {
+			return shapeInfo{}, false
+		}
+		if bytecode.B(proto.Code[3]) != 0 || bytecode.A(proto.Code[3]) != int(callA) {
+			return shapeInfo{}, false
+		}
+		if bytecode.B(proto.Code[4]) != 1 {
+			return shapeInfo{}, false
+		}
+		return shapeInfo{
+			ok:              true,
+			retA:            uint8(bytecode.A(proto.Code[3])),
+			retB:            0,
+			retPC:           3,
+			preludeOp:       uint8(bytecode.TAILCALL),
+			preludeArg:      uint32(op0B),
+			isTailCall:      true,
+			isCallUpval:     op0 == bytecode.GETUPVAL,
+			callA:           callA,
+			callB:           uint8(cB),
+			callC:           uint8(cC),
+			callArgCount:    0,
+			isSelfCall:      true,
+			selfCallA:       callA,
+			selfMethodRK:    selfRK,
+			selfRecvSrcReg:  uint8(op0B),
+			selfRecvIsUpval: op0 == bytecode.GETUPVAL,
+		}, true
+	}
 	// (b)(c):[2] = LOADK/MOVE  arg → R(callA+2)
 	if op2 != bytecode.LOADK && op2 != bytecode.MOVE {
 		return shapeInfo{}, false
