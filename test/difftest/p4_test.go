@@ -645,6 +645,154 @@ local function other() oCount = oCount + 1 end
 local function caller(t) t:m(); other() end
 for i = 1, 30 do caller(o) end
 return mCount, oCount`},
+
+	// —— PJ5 SELF + CALL spec template 形态(IC NodeHit 命中走字节级 EmitSelfNodeHit
+	// 模板,跳过 host.Self;CALL 段仍 host.CallBaseline)。warmup-then-force 通过
+	// p4Corpus 的 force-all 路径触发(IC slot 已在解释器 warmup 中填好)——
+	// difftest 通过让 caller 反复调单态 receiver,IC 稳定后 spec template 命中
+	// 编译,验三方 byte-equal(oracle / crescent / p4-jit)。
+	{"p4_self_spec_void_0arg", `
+local count = 0
+local o = { m = function(self) count = count + 1 end }
+local function caller(t) t:m() end
+for i = 1, 100 do caller(o) end
+caller(o)
+return count`},
+	{"p4_self_spec_void_1karg", `
+local sum = 0
+local o = { m = function(self, x) sum = sum + x end }
+local function caller(t) t:m(42) end
+for i = 1, 100 do caller(o) end
+caller(o)
+return sum`},
+	{"p4_self_spec_void_1regarg", `
+local sum = 0
+local o = { m = function(self, x) sum = sum + x end }
+local function caller(t, v) t:m(v) end
+for i = 1, 100 do caller(o, i) end
+caller(o, 1000)
+return sum`},
+	{"p4_self_spec_void_3regargs", `
+local sum = 0
+local o = { m = function(self, a, b, c) sum = sum + a + b + c end }
+local function caller(t, x, y, z) t:m(x, y, z) end
+for i = 1, 100 do caller(o, i, i+1, i+2) end
+caller(o, 1, 2, 3)
+return sum`},
+	{"p4_self_spec_tailcall_0arg", `
+local o = { m = function(self) return 42 end }
+local function caller(t) return t:m() end
+local sum = 0
+for i = 1, 100 do sum = sum + caller(o) end
+sum = sum + caller(o)
+return sum`},
+	{"p4_self_spec_getter_0arg", `
+local o = { m = function(self) return 42 end }
+local function caller(t) local r = t:m(); return r end
+local sum = 0
+for i = 1, 100 do sum = sum + caller(o) end
+sum = sum + caller(o)
+return sum`},
+	{"p4_self_spec_upvalrecv_0arg", `
+local count = 0
+local o = { m = function(self) count = count + 1 end }
+local function tick() o:m() end
+for i = 1, 100 do tick() end
+tick()
+return count`},
+	{"p4_self_spec_tailcall_1regarg", `
+local o = { m = function(self, x) return x * 2 end }
+local function caller(t, v) return t:m(v) end
+local sum = 0
+for i = 1, 100 do sum = sum + caller(o, i) end
+sum = sum + caller(o, 1000)
+return sum`},
+	// —— PJ5 SELF + CALL spec template N=2 返 drop multi-ret 形态(承上批
+	// form4..N cC=3/4 retB=1 守门扩):caller `local a,b = t:m(K×N)` 形态,
+	// host.CallBaseline 按 callC 落 N 返值 R(callA..) 作 local 直接绑;
+	// 主调 RETURN B=1 经 host.DoReturn 弹 0 返值收尾(两层协议解耦)——
+	// 验三方 byte-equal。
+	{"p4_self_spec_multiret_0arg", `
+local count = 0
+local mt = { m = function(self) count = count + 1; return 1, 2 end }
+local function caller(_, t) local a, b = t:m() end
+for i = 1, 100 do caller(nil, mt) end
+caller(nil, mt)
+return count`},
+	{"p4_self_spec_multiret_1karg", `
+local count = 0
+local mt = { m = function(self, k) count = count + k; return 1, 2 end }
+local function caller(_, t) local a, b = t:m(7) end
+for i = 1, 100 do caller(nil, mt) end
+caller(nil, mt)
+return count`},
+	{"p4_self_spec_multiret_3kargs", `
+local count = 0
+local mt = { m = function(self, x, y, z) count = count + x + y + z; return 1, 2 end }
+local function caller(_, t) local a, b = t:m(7, 8, 9) end
+for i = 1, 100 do caller(nil, mt) end
+caller(nil, mt)
+return count`},
+	{"p4_self_spec_multiret_5kargs", `
+local count = 0
+local mt = { m = function(self, x, y, z, w, v) count = count + x + y + z + w + v; return 1, 2 end }
+local function caller(_, t) local a, b = t:m(7, 8, 9, 10, 11) end
+for i = 1, 100 do caller(nil, mt) end
+caller(nil, mt)
+return count`},
+	// N>=4 返 drop multi-ret(承本批 isValidSpecCallRetCount cC∈{1,3..16} 扩):
+	{"p4_self_spec_multiret_n4_0arg", `
+local count = 0
+local mt = { m = function(self) count = count + 1; return 1, 2, 3, 4 end }
+local function caller(_, t) local a, b, c, d = t:m() end
+for i = 1, 100 do caller(nil, mt) end
+caller(nil, mt)
+return count`},
+	{"p4_self_spec_multiret_n5_0arg", `
+local count = 0
+local mt = { m = function(self) count = count + 1; return 1, 2, 3, 4, 5 end }
+local function caller(_, t) local a, b, c, d, e = t:m() end
+for i = 1, 100 do caller(nil, mt) end
+caller(nil, mt)
+return count`},
+	{"p4_self_spec_multiret_n4_1karg", `
+local count = 0
+local mt = { m = function(self, k) count = count + k; return 1, 2, 3, 4 end }
+local function caller(_, t) local a, b, c, d = t:m(7) end
+for i = 1, 100 do caller(nil, mt) end
+caller(nil, mt)
+return count`},
+	{"p4_self_spec_multiret_n4_1regarg", `
+local count = 0
+local mt = { m = function(self, k) count = count + k; return 1, 2, 3, 4 end }
+local function caller(_, t, v) local a, b, c, d = t:m(v) end
+for i = 1, 100 do caller(nil, mt, i) end
+caller(nil, mt, 1000)
+return count`},
+	{"p4_self_spec_multiret_n4_3kargs", `
+local count = 0
+local mt = { m = function(self, x, y, z) count = count + x + y + z; return 1, 2, 3, 4 end }
+local function caller(_, t) local a, b, c, d = t:m(7, 8, 9) end
+for i = 1, 100 do caller(nil, mt) end
+caller(nil, mt)
+return count`},
+	// N=8 / N=15 上界附近(cC=9 / cC=16,验 isValidSpecCallRetCount 严格上界):
+	{"p4_self_spec_multiret_n8_0arg", `
+local count = 0
+local mt = { m = function(self) count = count + 1; return 1, 2, 3, 4, 5, 6, 7, 8 end }
+local function caller(_, t) local a, b, c, d, e, f, g, h = t:m() end
+for i = 1, 100 do caller(nil, mt) end
+caller(nil, mt)
+return count`},
+	{"p4_self_spec_multiret_n15_0arg", `
+local count = 0
+local mt = { m = function(self) count = count + 1; return 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15 end }
+local function caller(_, t)
+  local a,b,c,d,e,f,g,h,i,j,k,l,m,n,o = t:m()
+end
+for i = 1, 100 do caller(nil, mt) end
+caller(nil, mt)
+return count`},
 }
 
 // TestP4_Tiered 三方对拍:oracle / crescent / p4-jit 全 byte-equal。
@@ -729,6 +877,115 @@ return s1, s2, s3, s4`
 	for g := 0; g < goroutines; g++ {
 		if results[g] != want {
 			t.Errorf("goroutine %d 结果分歧:\n  got:  %q\n  want: %q",
+				g, results[g], want)
+		}
+	}
+}
+
+// TestP4_ConcurrentForceAll_MultiRet V18(-race):多 State 并发 force-all P4
+// 跑 PJ5 SELF spec template N=4 返 drop multi-ret 形态(承 84c7ed4 cC∈{1,3..16}
+// 扩 + 91dcf07 N=4 返多形态)。验:N>=2 返路径 host.CallBaseline 多个 SetReg
+// + DoReturn 0 返值收尾,在多 State 并发下无 race(arena GCRef 镜像字 atomic
+// 单 word + 各 State 独立 jitContext)。
+func TestP4_ConcurrentForceAll_MultiRet(t *testing.T) {
+	src := `
+local mt = { m = function(self, k) return k+1, k+2, k+3, k+4 end }
+local function caller(_, t, v) local a, b, c, d = t:m(v) end
+local s1, s2 = 0, 0
+for i = 1, 30 do
+  caller(nil, mt, i)
+  s1 = s1 + i  -- 仅 side-effect 计数,验 N=4 返 drop 不影响后续
+  s2 = s2 + i * 2
+end
+return s1, s2`
+	const goroutines = 8
+	prog, err := wangshu.Compile([]byte(src), "p4race-multiret-n4")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	want := runWangshuP4Tiered(t, src, true)
+
+	results := make([]string, goroutines)
+	done := make(chan int, goroutines)
+	for g := 0; g < goroutines; g++ {
+		go func(idx int) {
+			defer func() { done <- idx }()
+			st := wangshu.NewState(wangshu.Options{})
+			st.SetForceAllPromote(true)
+			out, e := prog.Run(st)
+			if e != nil {
+				results[idx] = "ERR: " + e.Error()
+				return
+			}
+			parts := make([]string, len(out))
+			for i, r := range out {
+				parts[i] = r.Display()
+			}
+			results[idx] = strings.Join(parts, "\t") + "\n"
+		}(g)
+	}
+	for i := 0; i < goroutines; i++ {
+		<-done
+	}
+	for g := 0; g < goroutines; g++ {
+		if results[g] != want {
+			t.Errorf("goroutine %d N=4 返结果分歧:\n  got:  %q\n  want: %q",
+				g, results[g], want)
+		}
+	}
+}
+
+// TestP4_ConcurrentForceAll_SpecDeopt V18(-race):多 State 并发 force-all P4
+// 跑 PJ5 SELF spec template 路径下 NodeHit guard 失败 + deopt 路径。
+//
+// 验:spec template SELF NodeHit guard 失败 → onOSRExit + p4SpecState 累积
+// deopt + 降级 host.Self 路径在多 State 8 goroutine 并发下无 race。承
+// p4SpecState package-level 全局 map + p4SpecMu 守护(承 p4state.go godoc
+// 修正 730f253)。
+func TestP4_ConcurrentForceAll_SpecDeopt(t *testing.T) {
+	// 不同 receiver shape 触发 deopt(spec template NodeHit guard 失败)
+	src := `
+local m1 = { m = function(self) return 1 end }
+local m2 = { m = function(self) return 2 end, other = 99 }
+local function caller(t) return t:m() end
+local sum = 0
+for i = 1, 50 do
+  sum = sum + caller(m1)  -- warmup NodeHit on m1
+  sum = sum + caller(m2)  -- 触发 deopt(shape 不同)
+end
+return sum`
+	const goroutines = 8
+	prog, err := wangshu.Compile([]byte(src), "p4race-spec-deopt")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	want := runWangshuP4Tiered(t, src, true)
+
+	results := make([]string, goroutines)
+	done := make(chan int, goroutines)
+	for g := 0; g < goroutines; g++ {
+		go func(idx int) {
+			defer func() { done <- idx }()
+			st := wangshu.NewState(wangshu.Options{})
+			st.SetForceAllPromote(true)
+			out, e := prog.Run(st)
+			if e != nil {
+				results[idx] = "ERR: " + e.Error()
+				return
+			}
+			parts := make([]string, len(out))
+			for i, r := range out {
+				parts[i] = r.Display()
+			}
+			results[idx] = strings.Join(parts, "\t") + "\n"
+		}(g)
+	}
+	for i := 0; i < goroutines; i++ {
+		<-done
+	}
+	for g := 0; g < goroutines; g++ {
+		if results[g] != want {
+			t.Errorf("goroutine %d spec deopt 结果分歧:\n  got:  %q\n  want: %q",
 				g, results[g], want)
 		}
 	}

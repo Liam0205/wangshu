@@ -768,3 +768,664 @@ return sum`
 	}
 	t.Logf("SpecSelfCallSpecHits: %d → %d", specBefore, specAfter)
 }
+
+// TestPJ5_SelfCall_E2E_SpecTemplate_Getter_M0 PJ5 SELF + CALL getter 1 返
+// 形态(`function(t) local r = t:m(); return r end`)spec template。
+func TestPJ5_SelfCall_E2E_SpecTemplate_Getter_M0(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local o = { m = function(self) return 42 end }
+local function caller(t) local r = t:m(); return r end
+local sum = 0
+for i = 1, 100 do sum = sum + caller(o) end  -- warmup
+sum = sum + caller(o)
+return sum`
+	st, mainCl := loadFnP4(t, src)
+
+	_, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 1 run: %v", err)
+	}
+
+	st.bridge.SetForceAllPromote(true)
+	specBefore := jit.SpecSelfCallSpecHits()
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 2 run: %v", err)
+	}
+	if got := value.AsNumber(value.Value(rets[0])); got != 101*42 {
+		t.Errorf("Phase 2 result = %v, want %d", got, 101*42)
+	}
+	specAfter := jit.SpecSelfCallSpecHits()
+	if specAfter <= specBefore {
+		t.Errorf("SpecSelfCallSpecHits 未增长 → getter spec template 未命中")
+	}
+	t.Logf("SpecSelfCallSpecHits: %d → %d", specBefore, specAfter)
+}
+
+// TestPJ5_SelfCall_E2E_SpecTemplate_UpvalRecv PJ5 SELF spec template 用 GETUPVAL
+// receiver(承 analyzeSelfCallForm 已支持 form U*,叠加 spec 守门应自动 work)。
+func TestPJ5_SelfCall_E2E_SpecTemplate_UpvalRecv(t *testing.T) {
+	jit.ResetSpecHits()
+	// caller 是闭包,o 通过 upvalue 访问 → SELF receiver = GETUPVAL form
+	src := `
+local count = 0
+local o = { m = function(self) count = count + 1 end }
+local function tick() o:m() end
+for i = 1, 100 do tick() end  -- warmup
+tick()
+return count`
+	st, mainCl := loadFnP4(t, src)
+
+	_, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 1 run: %v", err)
+	}
+
+	st.bridge.SetForceAllPromote(true)
+	specBefore := jit.SpecSelfCallSpecHits()
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 2 run: %v", err)
+	}
+	if got := value.AsNumber(value.Value(rets[0])); got != 101 {
+		t.Errorf("Phase 2 result = %v, want 101", got)
+	}
+	specAfter := jit.SpecSelfCallSpecHits()
+	if specAfter <= specBefore {
+		t.Errorf("SpecSelfCallSpecHits 未增长 → UPVAL recv spec template 未命中")
+	}
+	t.Logf("SpecSelfCallSpecHits: %d → %d", specBefore, specAfter)
+}
+
+// TestPJ5_SelfCall_E2E_SpecTemplate_TailCall_1RegArg PJ5 SELF + TAILCALL spec
+// template 1 reg 参形态。
+func TestPJ5_SelfCall_E2E_SpecTemplate_TailCall_1RegArg(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local o = { m = function(self, x) return x * 2 end }
+local function caller(t, v) return t:m(v) end
+local sum = 0
+for i = 1, 100 do sum = sum + caller(o, i) end  -- warmup
+sum = sum + caller(o, 1000)
+return sum`
+	st, mainCl := loadFnP4(t, src)
+
+	_, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 1 run: %v", err)
+	}
+
+	st.bridge.SetForceAllPromote(true)
+	specBefore := jit.SpecSelfCallSpecHits()
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 2 run: %v", err)
+	}
+	// Phase 1: sum_{i=1..100} 2*i = 2*5050 = 10100
+	// Phase 2: 10100 + 2*1000 = 12100
+	if got := value.AsNumber(value.Value(rets[0])); got != 12100 {
+		t.Errorf("Phase 2 result = %v, want 12100", got)
+	}
+	specAfter := jit.SpecSelfCallSpecHits()
+	if specAfter <= specBefore {
+		t.Errorf("SpecSelfCallSpecHits 未增长 → TAILCALL 1 reg 参 spec 未命中")
+	}
+	t.Logf("SpecSelfCallSpecHits: %d → %d", specBefore, specAfter)
+}
+
+// TestPJ5_SelfCall_E2E_SpecTemplate_MultiRet0Param PJ5 SELF + CALL form4
+// N=2 返 0 参形态(`function(_, t) local a, b = t:m() end` drop multi-ret)
+// spec template。
+//
+// caller 编出 4 op:[0]MOVE A=2 B=1,[1]SELF A=2 B=2 C=K,[2]CALL B=2 C=3,
+// [3]RETURN B=1。analyzeSelfCallForm4 line 2662 已识别 cC=3/4 + retB=1 形态。
+func TestPJ5_SelfCall_E2E_SpecTemplate_MultiRet0Param(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local count = 0
+local mt = { m = function(self) count = count + 1; return 1, 2 end }
+local function caller(_, t) local a, b = t:m() end
+for i = 1, 100 do caller(nil, mt) end  -- warmup
+caller(nil, mt)
+return count`
+	st, mainCl := loadFnP4(t, src)
+
+	_, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 1 run: %v", err)
+	}
+
+	st.bridge.SetForceAllPromote(true)
+	specBefore := jit.SpecSelfCallSpecHits()
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 2 run: %v", err)
+	}
+	// Phase 2:main chunk 重跑(count 重新 init=0),101 次调用 → count=101
+	if got := value.AsNumber(value.Value(rets[0])); got != 101 {
+		t.Errorf("Phase 2 result = %v, want 101", got)
+	}
+	specAfter := jit.SpecSelfCallSpecHits()
+	if specAfter <= specBefore {
+		t.Errorf("SpecSelfCallSpecHits 未增长 → form4 N=2 返 0 参 spec 未命中")
+	}
+	t.Logf("SpecSelfCallSpecHits: %d → %d", specBefore, specAfter)
+}
+
+// TestPJ5_SelfCall_E2E_SpecTemplate_MultiRet1KArg PJ5 SELF + CALL form5
+// N=2 返 1 K 参形态(`function(_, t) local a, b = t:m(7) end`)spec template。
+//
+// caller 编出 5 op:[0]MOVE A=2 B=1,[1]SELF A=2 B=2 C=K,[2]LOADK A=4 Bx=K,
+// [3]CALL B=3 C=3,[4]RETURN B=1。analyzeSelfCallForm5 line 2848 已识别。
+func TestPJ5_SelfCall_E2E_SpecTemplate_MultiRet1KArg(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local count = 0
+local mt = { m = function(self, k) count = count + k; return 1, 2 end }
+local function caller(_, t) local a, b = t:m(7) end
+for i = 1, 100 do caller(nil, mt) end
+caller(nil, mt)
+return count`
+	st, mainCl := loadFnP4(t, src)
+
+	_, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 1 run: %v", err)
+	}
+
+	st.bridge.SetForceAllPromote(true)
+	specBefore := jit.SpecSelfCallSpecHits()
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 2 run: %v", err)
+	}
+	// Phase 2:101 次 * 7 = 707
+	if got := value.AsNumber(value.Value(rets[0])); got != 707 {
+		t.Errorf("Phase 2 result = %v, want 707", got)
+	}
+	specAfter := jit.SpecSelfCallSpecHits()
+	if specAfter <= specBefore {
+		t.Errorf("SpecSelfCallSpecHits 未增长 → form5 N=2 返 1 K 参 spec 未命中")
+	}
+	t.Logf("SpecSelfCallSpecHits: %d → %d", specBefore, specAfter)
+}
+
+// TestPJ5_SelfCall_E2E_SpecTemplate_MultiRet1RegArg PJ5 SELF + CALL form5
+// N=2 返 1 reg 参形态(`function(_, t, v) local a, b = t:m(v) end`).
+func TestPJ5_SelfCall_E2E_SpecTemplate_MultiRet1RegArg(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local count = 0
+local mt = { m = function(self, k) count = count + k; return 1, 2 end }
+local function caller(_, t, v) local a, b = t:m(v) end
+for i = 1, 100 do caller(nil, mt, i) end
+caller(nil, mt, 1000)
+return count`
+	st, mainCl := loadFnP4(t, src)
+
+	_, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 1 run: %v", err)
+	}
+
+	st.bridge.SetForceAllPromote(true)
+	specBefore := jit.SpecSelfCallSpecHits()
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 2 run: %v", err)
+	}
+	// Phase 2:sum_{i=1..100} i + 1000 = 5050 + 1000 = 6050
+	if got := value.AsNumber(value.Value(rets[0])); got != 6050 {
+		t.Errorf("Phase 2 result = %v, want 6050", got)
+	}
+	specAfter := jit.SpecSelfCallSpecHits()
+	if specAfter <= specBefore {
+		t.Errorf("SpecSelfCallSpecHits 未增长 → form5 N=2 返 1 reg 参 spec 未命中")
+	}
+	t.Logf("SpecSelfCallSpecHits: %d → %d", specBefore, specAfter)
+}
+
+// TestPJ5_SelfCall_E2E_SpecTemplate_MultiRet2KArg PJ5 SELF + CALL form6 N=2
+// 返 2 K 参形态(`function(_, t) local a, b = t:m(7, 8) end`)spec template。
+//
+// caller 编出 6 op:MOVE+SELF+LOADK+LOADK+CALL B=4 C=3+RETURN B=1。
+// analyzeSelfCallForm6 (b)(c) 扩 cC=1/3/4 已支持 N=2/3 返。
+func TestPJ5_SelfCall_E2E_SpecTemplate_MultiRet2KArg(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local count = 0
+local mt = { m = function(self, x, y) count = count + x + y; return 1, 2 end }
+local function caller(_, t) local a, b = t:m(7, 8) end
+for i = 1, 100 do caller(nil, mt) end
+caller(nil, mt)
+return count`
+	st, mainCl := loadFnP4(t, src)
+
+	_, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 1 run: %v", err)
+	}
+
+	st.bridge.SetForceAllPromote(true)
+	specBefore := jit.SpecSelfCallSpecHits()
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 2 run: %v", err)
+	}
+	// Phase 2: 101 次 * (7+8) = 1515
+	if got := value.AsNumber(value.Value(rets[0])); got != 1515 {
+		t.Errorf("Phase 2 result = %v, want 1515", got)
+	}
+	specAfter := jit.SpecSelfCallSpecHits()
+	if specAfter <= specBefore {
+		t.Errorf("SpecSelfCallSpecHits 未增长 → form6 N=2 返 2 K 参 spec 未命中")
+	}
+	t.Logf("SpecSelfCallSpecHits: %d → %d", specBefore, specAfter)
+}
+
+// TestPJ5_SelfCall_E2E_SpecTemplate_MultiRet3KArg PJ5 SELF + CALL form7 N=2
+// 返 3 K 参形态(`function(_, t) local a, b = t:m(7, 8, 9) end`)spec template。
+//
+// caller 编出 7 op:MOVE+SELF+LOADK×3+CALL B=5 C=3+RETURN B=1。
+// analyzeSelfCallForm7 Code[5]=CALL 分支 cC=1/3/4 已支持 N=2/3 返。
+func TestPJ5_SelfCall_E2E_SpecTemplate_MultiRet3KArg(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local count = 0
+local mt = { m = function(self, x, y, z) count = count + x + y + z; return 1, 2 end }
+local function caller(_, t) local a, b = t:m(7, 8, 9) end
+for i = 1, 100 do caller(nil, mt) end
+caller(nil, mt)
+return count`
+	st, mainCl := loadFnP4(t, src)
+
+	_, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 1 run: %v", err)
+	}
+
+	st.bridge.SetForceAllPromote(true)
+	specBefore := jit.SpecSelfCallSpecHits()
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 2 run: %v", err)
+	}
+	// Phase 2: 101 次 * (7+8+9) = 2424
+	if got := value.AsNumber(value.Value(rets[0])); got != 2424 {
+		t.Errorf("Phase 2 result = %v, want 2424", got)
+	}
+	specAfter := jit.SpecSelfCallSpecHits()
+	if specAfter <= specBefore {
+		t.Errorf("SpecSelfCallSpecHits 未增长 → form7 N=2 返 3 K 参 spec 未命中")
+	}
+	t.Logf("SpecSelfCallSpecHits: %d → %d", specBefore, specAfter)
+}
+
+// TestPJ5_SelfCall_E2E_SpecTemplate_MultiRet4KArg PJ5 SELF + CALL form8 N=2
+// 返 4 K 参形态(`function(_, t) local a, b = t:m(7, 8, 9, 10) end`)spec template。
+//
+// caller 编出 8 op:MOVE+SELF+LOADK×4+CALL B=6 C=3+RETURN B=1。
+// analyzeSelfCallForm8 Code[6]=CALL 分支 cC=1/3/4 已支持 N=2/3 返。
+func TestPJ5_SelfCall_E2E_SpecTemplate_MultiRet4KArg(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local count = 0
+local mt = { m = function(self, x, y, z, w) count = count + x + y + z + w; return 1, 2 end }
+local function caller(_, t) local a, b = t:m(7, 8, 9, 10) end
+for i = 1, 100 do caller(nil, mt) end
+caller(nil, mt)
+return count`
+	st, mainCl := loadFnP4(t, src)
+
+	_, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 1 run: %v", err)
+	}
+
+	st.bridge.SetForceAllPromote(true)
+	specBefore := jit.SpecSelfCallSpecHits()
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 2 run: %v", err)
+	}
+	// Phase 2: 101 次 * (7+8+9+10) = 3434
+	if got := value.AsNumber(value.Value(rets[0])); got != 3434 {
+		t.Errorf("Phase 2 result = %v, want 3434", got)
+	}
+	specAfter := jit.SpecSelfCallSpecHits()
+	if specAfter <= specBefore {
+		t.Errorf("SpecSelfCallSpecHits 未增长 → form8 N=2 返 4 K 参 spec 未命中")
+	}
+	t.Logf("SpecSelfCallSpecHits: %d → %d", specBefore, specAfter)
+}
+
+// TestPJ5_SelfCall_E2E_SpecTemplate_MultiRet5KArg PJ5 SELF + CALL form9 N=2
+// 返 5 K 参形态(`function(_, t) local a, b = t:m(7,8,9,10,11) end`)spec template。
+//
+// caller 编出 9 op:MOVE+SELF+LOADK×5+CALL B=7 C=3+RETURN B=1。
+// analyzeSelfCallForm9 Code[7]=CALL 分支 cC=1/3/4 已支持 N=2/3 返。
+func TestPJ5_SelfCall_E2E_SpecTemplate_MultiRet5KArg(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local count = 0
+local mt = { m = function(self, x, y, z, w, v) count = count + x + y + z + w + v; return 1, 2 end }
+local function caller(_, t) local a, b = t:m(7, 8, 9, 10, 11) end
+for i = 1, 100 do caller(nil, mt) end
+caller(nil, mt)
+return count`
+	st, mainCl := loadFnP4(t, src)
+
+	_, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 1 run: %v", err)
+	}
+
+	st.bridge.SetForceAllPromote(true)
+	specBefore := jit.SpecSelfCallSpecHits()
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 2 run: %v", err)
+	}
+	// Phase 2: 101 次 * (7+8+9+10+11) = 4545
+	if got := value.AsNumber(value.Value(rets[0])); got != 4545 {
+		t.Errorf("Phase 2 result = %v, want 4545", got)
+	}
+	specAfter := jit.SpecSelfCallSpecHits()
+	if specAfter <= specBefore {
+		t.Errorf("SpecSelfCallSpecHits 未增长 → form9 N=2 返 5 K 参 spec 未命中")
+	}
+	t.Logf("SpecSelfCallSpecHits: %d → %d", specBefore, specAfter)
+}
+
+// TestPJ5_SelfCall_E2E_SpecTemplate_MultiRet6KArg PJ5 SELF + CALL formN N=2
+// 返 6 K 参形态(`function(_, t) local a, b = t:m(7,...,12) end`)spec template。
+//
+// caller 编出 10 op:MOVE+SELF+LOADK×6+CALL B=8 C=3+RETURN B=1。
+// analyzeSelfCallFormN cC=1/3/4 已支持 N=2/3 返。
+func TestPJ5_SelfCall_E2E_SpecTemplate_MultiRet6KArg(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local count = 0
+local mt = { m = function(self, x, y, z, w, v, u) count = count + x + y + z + w + v + u; return 1, 2 end }
+local function caller(_, t) local a, b = t:m(7, 8, 9, 10, 11, 12) end
+for i = 1, 100 do caller(nil, mt) end
+caller(nil, mt)
+return count`
+	st, mainCl := loadFnP4(t, src)
+
+	_, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 1 run: %v", err)
+	}
+
+	st.bridge.SetForceAllPromote(true)
+	specBefore := jit.SpecSelfCallSpecHits()
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 2 run: %v", err)
+	}
+	// Phase 2: 101 次 * (7+8+9+10+11+12) = 5757
+	if got := value.AsNumber(value.Value(rets[0])); got != 5757 {
+		t.Errorf("Phase 2 result = %v, want 5757", got)
+	}
+	specAfter := jit.SpecSelfCallSpecHits()
+	if specAfter <= specBefore {
+		t.Errorf("SpecSelfCallSpecHits 未增长 → formN N=2 返 6 K 参 spec 未命中")
+	}
+	t.Logf("SpecSelfCallSpecHits: %d → %d", specBefore, specAfter)
+}
+
+// TestPJ5_SelfCall_E2E_SpecTemplate_MultiRetN4_0Param PJ5 SELF + CALL form4
+// N=4 返 0 参形态(`local a,b,c,d = t:m()` drop multi-ret)spec template。
+//
+// caller 编出 4 op:MOVE+SELF+CALL B=2 C=5(N=4 返)+RETURN B=1。
+// 承本批 isValidSpecCallRetCount 扩到 cC∈{1,3..16} 后真接入。
+func TestPJ5_SelfCall_E2E_SpecTemplate_MultiRetN4_0Param(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local count = 0
+local mt = { m = function(self) count = count + 1; return 1, 2, 3, 4 end }
+local function caller(_, t) local a, b, c, d = t:m() end
+for i = 1, 100 do caller(nil, mt) end
+caller(nil, mt)
+return count`
+	st, mainCl := loadFnP4(t, src)
+
+	_, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 1 run: %v", err)
+	}
+
+	st.bridge.SetForceAllPromote(true)
+	specBefore := jit.SpecSelfCallSpecHits()
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 2 run: %v", err)
+	}
+	if got := value.AsNumber(value.Value(rets[0])); got != 101 {
+		t.Errorf("Phase 2 result = %v, want 101", got)
+	}
+	specAfter := jit.SpecSelfCallSpecHits()
+	if specAfter <= specBefore {
+		t.Errorf("SpecSelfCallSpecHits 未增长 → form4 N=4 返 0 参 spec 未命中")
+	}
+	t.Logf("SpecSelfCallSpecHits: %d → %d", specBefore, specAfter)
+}
+
+// TestPJ5_SelfCall_E2E_SpecTemplate_MultiRetN5_0Param PJ5 SELF + CALL form4
+// N=5 返 0 参形态(`local a..e = t:m()`)cC=6 spec template。
+func TestPJ5_SelfCall_E2E_SpecTemplate_MultiRetN5_0Param(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local count = 0
+local mt = { m = function(self) count = count + 1; return 1, 2, 3, 4, 5 end }
+local function caller(_, t) local a, b, c, d, e = t:m() end
+for i = 1, 100 do caller(nil, mt) end
+caller(nil, mt)
+return count`
+	st, mainCl := loadFnP4(t, src)
+
+	_, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 1 run: %v", err)
+	}
+
+	st.bridge.SetForceAllPromote(true)
+	specBefore := jit.SpecSelfCallSpecHits()
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 2 run: %v", err)
+	}
+	if got := value.AsNumber(value.Value(rets[0])); got != 101 {
+		t.Errorf("Phase 2 result = %v, want 101", got)
+	}
+	specAfter := jit.SpecSelfCallSpecHits()
+	if specAfter <= specBefore {
+		t.Errorf("SpecSelfCallSpecHits 未增长 → form4 N=5 返 0 参 spec 未命中")
+	}
+	t.Logf("SpecSelfCallSpecHits: %d → %d", specBefore, specAfter)
+}
+
+// TestPJ5_SelfCall_E2E_SpecTemplate_MultiRetN4_1KArg PJ5 SELF + CALL form5
+// N=4 返 1 K 参形态(`local a..d = t:m(7)`)cC=5 spec template。
+func TestPJ5_SelfCall_E2E_SpecTemplate_MultiRetN4_1KArg(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local count = 0
+local mt = { m = function(self, k) count = count + k; return 1, 2, 3, 4 end }
+local function caller(_, t) local a, b, c, d = t:m(7) end
+for i = 1, 100 do caller(nil, mt) end
+caller(nil, mt)
+return count`
+	st, mainCl := loadFnP4(t, src)
+
+	_, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 1 run: %v", err)
+	}
+
+	st.bridge.SetForceAllPromote(true)
+	specBefore := jit.SpecSelfCallSpecHits()
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 2 run: %v", err)
+	}
+	if got := value.AsNumber(value.Value(rets[0])); got != 707 {
+		t.Errorf("Phase 2 result = %v, want 707", got)
+	}
+	specAfter := jit.SpecSelfCallSpecHits()
+	if specAfter <= specBefore {
+		t.Errorf("SpecSelfCallSpecHits 未增长 → form5 N=4 返 1 K 参 spec 未命中")
+	}
+	t.Logf("SpecSelfCallSpecHits: %d → %d", specBefore, specAfter)
+}
+
+// TestPJ5_SelfCall_E2E_SpecTemplate_MultiRetN4_1RegArg PJ5 SELF + CALL form5
+// N=4 返 1 reg 参形态(`local a..d = t:m(v)` 1 reg 参 + multi-ret drop)。
+// 承 84c7ed4 cC∈{1,3..16} 扩,验 1 reg 参在 N>=4 返路径同款命中。
+func TestPJ5_SelfCall_E2E_SpecTemplate_MultiRetN4_1RegArg(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local count = 0
+local mt = { m = function(self, k) count = count + k; return 1, 2, 3, 4 end }
+local function caller(_, t, v) local a, b, c, d = t:m(v) end
+for i = 1, 100 do caller(nil, mt, i) end
+caller(nil, mt, 1000)
+return count`
+	st, mainCl := loadFnP4(t, src)
+
+	_, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 1 run: %v", err)
+	}
+
+	st.bridge.SetForceAllPromote(true)
+	specBefore := jit.SpecSelfCallSpecHits()
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 2 run: %v", err)
+	}
+	// Phase 2:sum_{i=1..100} i + 1000 = 5050 + 1000 = 6050
+	if got := value.AsNumber(value.Value(rets[0])); got != 6050 {
+		t.Errorf("Phase 2 result = %v, want 6050", got)
+	}
+	specAfter := jit.SpecSelfCallSpecHits()
+	if specAfter <= specBefore {
+		t.Errorf("SpecSelfCallSpecHits 未增长 → form5 N=4 返 1 reg 参 spec 未命中")
+	}
+	t.Logf("SpecSelfCallSpecHits: %d → %d", specBefore, specAfter)
+}
+
+// TestPJ5_SelfCall_E2E_SpecTemplate_MultiRetN4_3KArg PJ5 SELF + CALL form7
+// N=4 返 3 K 参形态(`local a..d = t:m(7,8,9)` 3 K 参 + multi-ret drop)。
+// caller 编出 7 op:MOVE+SELF+LOADK×3+CALL B=5 C=5+RETURN B=1。
+func TestPJ5_SelfCall_E2E_SpecTemplate_MultiRetN4_3KArg(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local count = 0
+local mt = { m = function(self, x, y, z) count = count + x + y + z; return 1, 2, 3, 4 end }
+local function caller(_, t) local a, b, c, d = t:m(7, 8, 9) end
+for i = 1, 100 do caller(nil, mt) end
+caller(nil, mt)
+return count`
+	st, mainCl := loadFnP4(t, src)
+
+	_, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 1 run: %v", err)
+	}
+
+	st.bridge.SetForceAllPromote(true)
+	specBefore := jit.SpecSelfCallSpecHits()
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 2 run: %v", err)
+	}
+	// Phase 2:101 次 * (7+8+9) = 2424
+	if got := value.AsNumber(value.Value(rets[0])); got != 2424 {
+		t.Errorf("Phase 2 result = %v, want 2424", got)
+	}
+	specAfter := jit.SpecSelfCallSpecHits()
+	if specAfter <= specBefore {
+		t.Errorf("SpecSelfCallSpecHits 未增长 → form7 N=4 返 3 K 参 spec 未命中")
+	}
+	t.Logf("SpecSelfCallSpecHits: %d → %d", specBefore, specAfter)
+}
+
+// TestPJ5_SelfCall_E2E_SpecTemplate_MultiRetN8_0Param PJ5 SELF + CALL form4
+// **N=8 返**(cC=9)0 参形态(`local a..h = t:m()`)spec template — 验
+// isValidSpecCallRetCount cC∈{1,3..16} 上界附近边界(N=15 是上界,N=8 是
+// 实用业务多返值常见上界,本测试代表实用场景)。
+//
+// caller 编出 4 op:MOVE+SELF+CALL B=2 C=9+RETURN B=1
+// (8 返 callee 落 R(callA..callA+7))。
+func TestPJ5_SelfCall_E2E_SpecTemplate_MultiRetN8_0Param(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local count = 0
+local mt = { m = function(self) count = count + 1; return 1, 2, 3, 4, 5, 6, 7, 8 end }
+local function caller(_, t) local a, b, c, d, e, f, g, h = t:m() end
+for i = 1, 100 do caller(nil, mt) end
+caller(nil, mt)
+return count`
+	st, mainCl := loadFnP4(t, src)
+
+	_, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 1 run: %v", err)
+	}
+
+	st.bridge.SetForceAllPromote(true)
+	specBefore := jit.SpecSelfCallSpecHits()
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 2 run: %v", err)
+	}
+	if got := value.AsNumber(value.Value(rets[0])); got != 101 {
+		t.Errorf("Phase 2 result = %v, want 101", got)
+	}
+	specAfter := jit.SpecSelfCallSpecHits()
+	if specAfter <= specBefore {
+		t.Errorf("SpecSelfCallSpecHits 未增长 → form4 N=8 返 0 参 spec 未命中")
+	}
+	t.Logf("SpecSelfCallSpecHits: %d → %d(N=8 返 cC=9)", specBefore, specAfter)
+}
+
+// TestPJ5_SelfCall_E2E_SpecTemplate_MultiRetN15_0Param PJ5 SELF + CALL form4
+// **N=15 返**(cC=16)0 参——验 isValidSpecCallRetCount cC<=16 严格上界。
+// 注:cC=16 是 spec template 允许的最大 N=15 返;cC=17 应被守门拒。
+func TestPJ5_SelfCall_E2E_SpecTemplate_MultiRetN15_0Param(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local count = 0
+local mt = { m = function(self) count = count + 1; return 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15 end }
+local function caller(_, t)
+  local a,b,c,d,e,f,g,h,i,j,k,l,m,n,o = t:m()
+end
+for i = 1, 100 do caller(nil, mt) end
+caller(nil, mt)
+return count`
+	st, mainCl := loadFnP4(t, src)
+
+	_, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 1 run: %v", err)
+	}
+
+	st.bridge.SetForceAllPromote(true)
+	specBefore := jit.SpecSelfCallSpecHits()
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 2 run: %v", err)
+	}
+	if got := value.AsNumber(value.Value(rets[0])); got != 101 {
+		t.Errorf("Phase 2 result = %v, want 101", got)
+	}
+	specAfter := jit.SpecSelfCallSpecHits()
+	if specAfter <= specBefore {
+		t.Errorf("SpecSelfCallSpecHits 未增长 → form4 N=15 返 0 参 spec 未命中")
+	}
+	t.Logf("SpecSelfCallSpecHits: %d → %d(N=15 返 cC=16,上界严格)",
+		specBefore, specAfter)
+}
