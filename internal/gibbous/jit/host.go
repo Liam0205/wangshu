@@ -177,6 +177,29 @@ type P4HostState interface {
 	// 本接口完成调用 + 后续 DoReturn 弹帧。byte-equal P1 解释器 doCall 路径。
 	CallBaseline(base int32, pc int32, a int32, b int32, c int32) int32
 
+	// TailCall 处理 TAILCALL A B C 的 baseline 同步路径(承
+	// docs/design/p4-method-jit/05-system-pipeline.md §4.3 + p1-interpreter/
+	// 05-interpreter-loop.md §8.4 — 尾调用复用帧 + executeFrom 同步驱动 callee 链)。
+	//
+	// 参数 base/pc 同 CallBaseline;a/b/c 是 TAILCALL A B C 三字段(luac 编 C=0):
+	//   - a = 被调函数寄存器号(R(A));参数从 R(A+1..A+B-1)
+	//   - b = 参数计数 + 1(B=0 表「到 top」,B=1 表 0 参数,B=N 表 N-1 参数)
+	//   - c = 返回值计数 + 1(TAILCALL 永远 C=0,luac 编 stmtReturn 强制写 0
+	//     表「到 top」,与尾随 RETURN B=0 衔接)
+	//
+	// 返回(三态分支,与 crescent.State.TailCall 同款):
+	//   - 0 = Lua 尾调用完成。caller 帧已被 callee 帧替换 + executeFrom 同步驱动
+	//     callee 链到完成 + nresults 写回上层 funcIdx。Run 端**跳过 DoReturn**
+	//     (本帧已弹),直接 return 0。
+	//   - 1 = ERR(raise pending → 上层 ERR 冒泡)。
+	//   - 2 = host 尾调用。结果已落 R(A..A+nrets-1),G 帧未弹。Run 端**正常调
+	//     DoReturn**(对位 luac 编的尾随 dead RETURN A B=0,nret 到 top)。
+	//
+	// **简化形态用例**(`function(g) return g() end` / `function() return f() end`
+	// 等):Run 端 prelude 路径调本接口完成 + 三态分支(byte-equal P1 解释器
+	// doTailCall 路径)。
+	TailCall(base int32, pc int32, a int32, b int32, c int32) int32
+
 	// ArenaBaseAddr 返回 arena `[]byte` 起点的 uintptr(承 05 §3.3)。	//
 	// 用例:PJ2 完整投机模板——mmap 段经 r15+offset 读 arenaBase 字段后
 	// 经字节级 movsd 直接读/写值栈槽位,跳过 host 接口 round-trip。

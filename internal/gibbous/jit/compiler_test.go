@@ -80,6 +80,13 @@ type mockP4Host struct {
 	lastCallC   int32
 	lastCallPC  int32
 	callRetCode int32 // 0=OK / 1=ERR(单测预设)
+	// TailCall 调用记录(PJ5 TAILCALL 形态):
+	tailCallCalls   int
+	lastTailCallA   int32
+	lastTailCallB   int32
+	lastTailCallC   int32
+	lastTailCallPC  int32
+	tailCallRetCode int32 // 0=Lua 尾完成 / 1=ERR / 2=host 落尾随 RETURN(单测预设)
 	// PJ2 完整接入预备:arena base 模拟值
 	arenaBase uintptr
 }
@@ -276,6 +283,17 @@ func (m *mockP4Host) CallBaseline(base, pc, a, b, c int32) int32 {
 	m.lastCallB = b
 	m.lastCallC = c
 	return m.callRetCode
+}
+
+// TailCall 模拟 host.TailCall:记录入参 + 返回预设 tailCallRetCode(三态)。
+func (m *mockP4Host) TailCall(base, pc, a, b, c int32) int32 {
+	_ = base
+	m.tailCallCalls++
+	m.lastTailCallPC = pc
+	m.lastTailCallA = a
+	m.lastTailCallB = b
+	m.lastTailCallC = c
+	return m.tailCallRetCode
 }
 
 // compileWithHost 构造 *Compiler 注入 mock host 后调 Compile。
