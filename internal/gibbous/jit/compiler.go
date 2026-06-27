@@ -169,10 +169,15 @@ type shapeInfo struct {
 	//   - isCallUpval = true:形态 B 即 GETUPVAL+CALL+RETURN void(被调来源是
 	//     upvalue,如外层 local fn);false 即形态 A MOVE+CALL+RETURN void
 	//     (被调来源是 parameter / local reg)
-	//   - callA / callB / callC:CALL A B C 三字段直传给 host.CallBaseline;
-	//     retA=callA 用于 deopt 路径定位,retPC=CALL 自身 pc(形态 A/B 都是 pc 1)
-	//   - preludeArg:形态 A 时 = MOVE.B(源 reg)/ 形态 B 时 = GETUPVAL.B
-	//     (upvalue 索引)
+	//   - callA / callB / callC:CALL A B C 三字段直传给 host.CallBaseline
+	//
+	// **retA / retPC 字段设定**(setter 形态 0 返值,与既有 setter 路径
+	// SETTABLE/SETGLOBAL 同款):retA=0(Run 路径不读 retA,因 setter 形态
+	// host.DoReturn 不写 R(A));retPC=2(RETURN 在 pc 2,CALL 自身 pc=1
+	// 由 Run 端 retPC-1 现算 callPC,prelude switch CALL case 内推导)。
+	//
+	// preludeArg:形态 A 时 = MOVE.B(源 reg)/ 形态 B 时 = GETUPVAL.B
+	// (upvalue 索引)
 	//
 	// 形态识别在 analyzeCallVoidForm,典型 luac 编译形态(长度 3):
 	//   形态 A: MOVE A B + CALL A 1 1 + RETURN 0 1
