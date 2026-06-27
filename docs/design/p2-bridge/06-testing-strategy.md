@@ -132,6 +132,8 @@ test/p2/                           ← P2 测试套根目录(本文 §8 主管)
 - **V17-V19(3 条)**:升层日志(对应 [04 §6](./04-try-compile-fallback.md) 升层日志格式)
 - **V20-V22(3 条)**:跨阶段差分(P2 设计承诺的核心:**P2 不影响 P1 输出**)
 
+**P4 build 下 P2 V1-V22 仍跑**(承 [P4 08 §0.2](../p4-method-jit/08-testing-strategy.md) 字面承诺 + [P4 implementation-progress §2 RJ-13](../p4-method-jit/implementation-progress.md) 跨文档回填请求):P4 build(`wangshu_p4` + `wangshu_profile`)下本表 V1-V22 全套不豁免。P2 是 P3/P4 共享前端,P2 主防线纪律(可编译性零误判 / 状态机单向 / 计数累积合理 / 跨 State 并发 / 升层日志格式)在 P4 build 下仍是验收硬门。具体接入路径:`make test-p4` 套件含 P2 V1-V22 单测全过 + V14 -race 通过 + V17-V19 升层日志格式不变。
+
 ### 1.3 与 P1 [12 §10] 验收口径总表的关系
 
 P1 [12 §10](../p1-interpreter/12-testing-difftest.md) 收口 26 条**口径问题 → 最终决策**(pairs 序 / 数字格式 / 措辞 / GC 透明性...)。它是**「不一致的各种现象如何处理」**的收口表。
