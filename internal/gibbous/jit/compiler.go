@@ -204,6 +204,9 @@ type shapeInfo struct {
 	callArg4IsK    bool
 	callArg4K      uint64
 	callArg4RegSrc uint8
+	callArg5IsK    bool
+	callArg5K      uint64
+	callArg5RegSrc uint8
 
 	// PJ5 TAILCALL 形态(`function() return f() end` 类):
 	//   - isTailCall = true:Run 端 prelude 路径调 host.TailCall 三态分支
@@ -1456,6 +1459,9 @@ func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
 	var arg4K uint64
 	var arg4Reg uint8
 	var arg4IsK bool
+	var arg5K uint64
+	var arg5Reg uint8
+	var arg5IsK bool
 	var argCount uint8
 	var argIsK bool
 	switch codeLen {
@@ -1708,9 +1714,10 @@ func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
 			}
 		}
 	case 8:
-		// 长度 8 两种子形态(区分键:
+		// 长度 8 三种子形态(区分键:
 		//   Code[1] 是 CALL → 0 参 N=4 返值 getter(不在本批支持范围,留下一批)
-		//   Code[5] 是 CALL → getter 4 参 1 返)
+		//   Code[5] 是 CALL → getter 4 参 1 返
+		//   Code[6] 是 CALL → setter 5 参 0 返)
 		if bytecode.Op(proto.Code[5]) == bytecode.CALL {
 			// getter 4 参 1 返:[0] MOVE/GETUPVAL,[1..4] (LOADK|MOVE),
 			// [5] CALL B=5 C=2,[6] RETURN A=callA B=2,[7] 隐式 RETURN B=1
@@ -1728,6 +1735,19 @@ func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
 			if bytecode.Op(implRet) != bytecode.RETURN || bytecode.B(implRet) != 1 {
 				return shapeInfo{}, false
 			}
+		} else if bytecode.Op(proto.Code[6]) == bytecode.CALL {
+			// setter 5 参 0 返:[0] MOVE/GETUPVAL,[1..5] (LOADK|MOVE),
+			// [6] CALL B=6 C=1,[7] RETURN B=1
+			if !decodeArgFromOp(proto, 1, op0A+1, &argIsK, &argK, &argReg) ||
+				!decodeArgFromOp(proto, 2, op0A+2, &arg2IsK, &arg2K, &arg2Reg) ||
+				!decodeArgFromOp(proto, 3, op0A+3, &arg3IsK, &arg3K, &arg3Reg) ||
+				!decodeArgFromOp(proto, 4, op0A+4, &arg4IsK, &arg4K, &arg4Reg) ||
+				!decodeArgFromOp(proto, 5, op0A+5, &arg5IsK, &arg5K, &arg5Reg) {
+				return shapeInfo{}, false
+			}
+			callIdx = 6
+			retIdx = 7
+			argCount = 5
 		} else {
 			return shapeInfo{}, false
 		}
@@ -1816,6 +1836,9 @@ func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
 		callArg4IsK:    arg4IsK,
 		callArg4K:      arg4K,
 		callArg4RegSrc: arg4Reg,
+		callArg5IsK:    arg5IsK,
+		callArg5K:      arg5K,
+		callArg5RegSrc: arg5Reg,
 	}, true
 }
 
@@ -3060,6 +3083,9 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 		callArg4IsK:    info.callArg4IsK,
 		callArg4K:      info.callArg4K,
 		callArg4RegSrc: info.callArg4RegSrc,
+		callArg5IsK:    info.callArg5IsK,
+		callArg5K:      info.callArg5K,
+		callArg5RegSrc: info.callArg5RegSrc,
 		isTailCall:     info.isTailCall,
 	}, nil
 }

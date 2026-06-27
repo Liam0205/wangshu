@@ -448,6 +448,20 @@ for i = 1, 30 do
   s = s + a + b
 end
 return s`},
+
+	// —— PJ5 5 参 setter 形态(长度 8,Code[6]=CALL B=6 C=1)——
+	{"p4_call_void_upval_5argk", `
+local sum = 0
+local function take(a, b, c, d, e) sum = sum + a + b + c + d + e end
+local function tick() take(1, 2, 3, 4, 5) end
+for i = 1, 30 do tick() end
+return sum`},
+	{"p4_call_void_upval_5argreg", `
+local sum = 0
+local function take(a, b, c, d, e) sum = sum + a + b + c + d + e end
+local function tick(u, v, w, x, y) take(u, v, w, x, y) end
+for i = 1, 10 do tick(i, i+1, i+2, i+3, i+4) end
+return sum`},
 }
 
 // TestP4_Tiered 三方对拍:oracle / crescent / p4-jit 全 byte-equal。
