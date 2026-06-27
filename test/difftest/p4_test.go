@@ -350,6 +350,44 @@ local function get(v) local y = take(v, 7); return y end
 local s = 0
 for i = 1, 30 do s = s + get(i) end
 return s`},
+
+	// —— PJ5 3 参形态 —— CALL setter / getter / TAILCALL 各组合 ——
+	{"p4_call_void_upval_3argk", `
+local sum = 0
+local function take(a, b, c) sum = sum + a + b + c end
+local function tick() take(1, 2, 3) end
+for i = 1, 30 do tick() end
+return sum`},
+	{"p4_call_void_upval_3argreg", `
+local sum = 0
+local function take(a, b, c) sum = sum + a + b + c end
+local function tick(u, v, w) take(u, v, w) end
+for i = 1, 10 do tick(i, i+1, i+2) end
+return sum`},
+	{"p4_call_getter_upval_3argk", `
+local function take(a, b, c) return a + b + c end
+local function get() local y = take(1, 2, 3); return y end
+local s = 0
+for i = 1, 30 do s = s + get() end
+return s`},
+	{"p4_call_getter_upval_3argreg", `
+local function take(a, b, c) return a + b + c end
+local function get(u, v, w) local y = take(u, v, w); return y end
+local s = 0
+for i = 1, 10 do s = s + get(i, i+1, i+2) end
+return s`},
+	{"p4_tailcall_upval_3argk", `
+local function f(a, b, c) return a + b + c end
+local function bounce() return f(1, 2, 3) end
+local s = 0
+for i = 1, 30 do s = s + bounce() end
+return s`},
+	{"p4_tailcall_upval_3argreg", `
+local function f(a, b, c) return a + b + c end
+local function bounce(u, v, w) return f(u, v, w) end
+local s = 0
+for i = 1, 10 do s = s + bounce(i, i+1, i+2) end
+return s`},
 }
 
 // TestP4_Tiered 三方对拍:oracle / crescent / p4-jit 全 byte-equal。

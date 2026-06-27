@@ -393,3 +393,79 @@ return s`
 		t.Errorf("SpecCallVoidHits = 0,PJ5 CALL getter K+R 形态 B1K1RR1 未真编译")
 	}
 }
+
+// TestPJ5_CallVoid_E2E_FormB3K:形态 B3K(GETUPVAL+LOADK×3+CALL B=4 C=1+RETURN void)
+// 真升层 — 3 K 参 0 返 setter,长度 6。
+func TestPJ5_CallVoid_E2E_FormB3K(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local sum = 0
+local function take(a, b, c) sum = sum + a + b + c end
+local function tick() take(1, 2, 3) end
+for i = 1, 30 do tick() end
+return sum`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// sum = 30 * (1+2+3) = 180
+	if got := value.AsNumber(value.Value(rets[0])); got != 180 {
+		t.Errorf("rets = %v, want 180 (tick()×30 each take(1,2,3))", got)
+	}
+	if jit.SpecCallVoidHits() == 0 {
+		t.Errorf("SpecCallVoidHits = 0,PJ5 CALL 3 K 参形态 B3K 未真编译")
+	}
+}
+
+// TestPJ5_CallVoid_E2E_FormB3R:形态 B3R(3 reg 参 0 返 setter,长度 6)
+func TestPJ5_CallVoid_E2E_FormB3R(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local sum = 0
+local function take(a, b, c) sum = sum + a + b + c end
+local function tick(u, v, w) take(u, v, w) end
+for i = 1, 10 do tick(i, i+1, i+2) end
+return sum`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// sum(i + (i+1) + (i+2)) i=1..10 = sum(3i+3) = 3*55 + 30 = 195
+	if got := value.AsNumber(value.Value(rets[0])); got != 195 {
+		t.Errorf("rets = %v, want 195 (tick(i,i+1,i+2)×10 each take(i,i+1,i+2)→3i+3)", got)
+	}
+	if jit.SpecCallVoidHits() == 0 {
+		t.Errorf("SpecCallVoidHits = 0,PJ5 CALL 3 reg 参形态 B3R 未真编译")
+	}
+}
+
+// TestPJ5_CallGetter_E2E_FormB3RR1:形态 B3RR1(3 reg 参 1 返 getter,长度 7)
+func TestPJ5_CallGetter_E2E_FormB3RR1(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local function take(a, b, c) return a + b + c end
+local function get(u, v, w) local y = take(u, v, w); return y end
+local s = 0
+for i = 1, 10 do s = s + get(i, i+1, i+2) end
+return s`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// sum(i+(i+1)+(i+2)) i=1..10 = 195
+	if got := value.AsNumber(value.Value(rets[0])); got != 195 {
+		t.Errorf("rets = %v, want 195 (get(i,i+1,i+2)×10 each take→3i+3)", got)
+	}
+	if jit.SpecCallVoidHits() == 0 {
+		t.Errorf("SpecCallVoidHits = 0,PJ5 CALL getter 3 reg 参形态 B3RR1 未真编译")
+	}
+}
