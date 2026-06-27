@@ -476,3 +476,40 @@ func TestPJ5_RunCallVoid1ArgRegPath(t *testing.T) {
 		t.Errorf("CallBaseline called %d times, want 1", host.callCalls)
 	}
 }
+
+// TestPJ5_AnalyzeCallVoidForm_RecognizeRetGetter 验形态 BR1(0 参 1 返,getter)
+// 识别:GETUPVAL + CALL B=1 C=2 + RETURN A=0 B=2 + dead RETURN。
+func TestPJ5_AnalyzeCallVoidForm_RecognizeRetGetter(t *testing.T) {
+	// 形态 BR1:GETUPVAL 0 0; CALL 0 1 2; RETURN 0 2; RETURN 0 1
+	//   - GETUPVAL.A=0 (被调位) GETUPVAL.B=0 (upvalue 索引)
+	//   - CALL.A=0 CALL.B=1 (0 参) CALL.C=2 (1 返值)
+	//   - RETURN.A=0 RETURN.B=2 (1 返值,返 R(0)=被调返回值)
+	//   - dead RETURN(luac 通常补,但 length=3 时无)
+	proto := &bytecode.Proto{
+		Code: []bytecode.Instruction{
+			bytecode.EncodeABC(bytecode.GETUPVAL, 0, 0, 0),
+			bytecode.EncodeABC(bytecode.CALL, 0, 1, 2),
+			bytecode.EncodeABC(bytecode.RETURN, 0, 2, 0),
+			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
+		},
+	}
+	info, ok := analyzeCallVoidForm(proto)
+	if !ok {
+		t.Fatal("analyzeCallVoidForm should accept GETUPVAL+CALL+RETURN+dead RETURN getter form")
+	}
+	if !info.isCallVoid {
+		t.Error("info.isCallVoid should be true")
+	}
+	if info.retA != 0 || info.retB != 2 {
+		t.Errorf("retA/retB = %d/%d, want 0/2 (getter: 返 R(callA)=R(0))", info.retA, info.retB)
+	}
+	if info.callA != 0 || info.callB != 1 || info.callC != 2 {
+		t.Errorf("callA/B/C = %d/%d/%d, want 0/1/2", info.callA, info.callB, info.callC)
+	}
+	if info.callArgCount != 0 {
+		t.Errorf("callArgCount = %d, want 0", info.callArgCount)
+	}
+	if info.retPC != 2 {
+		t.Errorf("retPC = %d, want 2 (RETURN in pc 2)", info.retPC)
+	}
+}

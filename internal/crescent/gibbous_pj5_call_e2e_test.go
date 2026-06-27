@@ -112,3 +112,31 @@ return sum`
 	}
 	t.Logf("SpecCallVoidHits=%d", jit.SpecCallVoidHits())
 }
+
+// TestPJ5_CallVoid_E2E_FormBR1_GetterUpval:形态 BR1(GETUPVAL+CALL+RETURN+
+// dead RETURN getter)真升层 — `local function f() return 42 end;
+// local function get() local x = f(); return x end`,0 参 1 返。被调返回
+// 值落 R(callA),Run 端 host.DoReturn(retA=callA, retB=2)返该值。
+func TestPJ5_CallVoid_E2E_FormBR1_GetterUpval(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local function f() return 42 end
+local function get() local x = f(); return x end
+local s = 0
+for i = 1, 50 do s = s + get() end
+return s`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := value.AsNumber(value.Value(rets[0])); got != 50*42 {
+		t.Errorf("rets = %v, want %d (get() × 50 each returns 42 → s += 42)", got, 50*42)
+	}
+	if jit.SpecCallVoidHits() == 0 {
+		t.Errorf("SpecCallVoidHits = 0,PJ5 CALL void getter 形态未真编译")
+	}
+	t.Logf("SpecCallVoidHits=%d", jit.SpecCallVoidHits())
+}

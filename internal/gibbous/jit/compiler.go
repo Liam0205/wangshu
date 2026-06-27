@@ -1379,11 +1379,10 @@ func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
 		return shapeInfo{}, false
 	}
 
-	// 长度 3:0 参形态(MOVE/GETUPVAL + CALL B=1 + RETURN B=1)
-	// 长度 4:1 参形态——第二条可以是:
-	//   - LOADK A+1 Bx:K 常量参(callArg1IsK=true,argK 装编译期烧入)
-	//   - MOVE A+1 B:reg 参(callArg1IsK=false,argReg=MOVE.B,Run 端
-	//     host.GetReg(argReg) 装到 R(callA+1))
+	// 长度 3:0 参 0 返形态(MOVE/GETUPVAL + CALL B=1 C=1 + RETURN B=1)
+	// 长度 4:两种子形态
+	//   - [1]=CALL B=1 C=2,[2]=RETURN B=2,[3]=dead RETURN:0 参 1 返形态
+	//   - [1]=LOADK/MOVE,[2]=CALL,[3]=RETURN:1 参 0 返形态
 	var callIdx, retIdx int
 	var argK uint64
 	var argReg uint8
@@ -1396,6 +1395,15 @@ func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
 	} else { // codeLen == 4
 		secondOp := bytecode.Op(proto.Code[1])
 		switch secondOp {
+		case bytecode.CALL:
+			// 0 参 1 返形态(MOVE/GETUPVAL + CALL + RETURN + dead RETURN)
+			callIdx = 1
+			retIdx = 2
+			argCount = 0
+			// dead RETURN 在 [3] — 验证是 RETURN(下方主守卫已查 retIdx=2 是 RETURN)
+			if bytecode.Op(proto.Code[3]) != bytecode.RETURN {
+				return shapeInfo{}, false
+			}
 		case bytecode.LOADK:
 			lkA := bytecode.A(proto.Code[1])
 			lkBx := bytecode.Bx(proto.Code[1])
@@ -1407,6 +1415,9 @@ func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
 			}
 			argK = uint64(proto.Consts[lkBx])
 			argIsK = true
+			callIdx = 2
+			retIdx = 3
+			argCount = 1
 		case bytecode.MOVE:
 			mvA := bytecode.A(proto.Code[1])
 			mvB := bytecode.B(proto.Code[1])
@@ -1418,12 +1429,12 @@ func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
 			}
 			argReg = uint8(mvB)
 			argIsK = false
+			callIdx = 2
+			retIdx = 3
+			argCount = 1
 		default:
 			return shapeInfo{}, false
 		}
-		callIdx = 2
-		retIdx = 3
-		argCount = 1
 	}
 
 	if bytecode.Op(proto.Code[callIdx]) != bytecode.CALL ||
@@ -1433,6 +1444,7 @@ func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
 	clA := bytecode.A(proto.Code[callIdx])
 	clB := bytecode.B(proto.Code[callIdx])
 	clC := bytecode.C(proto.Code[callIdx])
+	rtA := bytecode.A(proto.Code[retIdx])
 	rtB := bytecode.B(proto.Code[retIdx])
 	if clA != op0A {
 		return shapeInfo{}, false
@@ -1441,17 +1453,28 @@ func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
 	if int(clB) != int(argCount)+1 {
 		return shapeInfo{}, false
 	}
-	// CALL.C = 1(0 返值)
-	if clC != 1 {
-		return shapeInfo{}, false
-	}
-	if rtB != 1 { // setter 形态 0 返值
+	// 返值检查:CALL.C/RETURN.B 共 2 形态(setter 0 返 / getter 1 返)
+	//   - setter:CALL.C=1(0 返值)+ RETURN.B=1(0 返值)+ retA=0
+	//   - getter:CALL.C=2(1 返值)+ RETURN.B=2(1 返值)+ RETURN.A=callA
+	var retACalc, retBCalc uint8
+	if clC == 1 && rtB == 1 {
+		// setter 形态
+		retACalc = 0
+		retBCalc = 1
+	} else if clC == 2 && rtB == 2 {
+		// getter 形态:RETURN.A 必须 = callA(被调返回值落 R(callA))
+		if rtA != clA {
+			return shapeInfo{}, false
+		}
+		retACalc = uint8(rtA)
+		retBCalc = 2
+	} else {
 		return shapeInfo{}, false
 	}
 	return shapeInfo{
 		ok:             true,
-		retA:           0,
-		retB:           1,
+		retA:           retACalc,
+		retB:           retBCalc,
 		retPC:          uint8(retIdx),
 		preludeOp:      uint8(bytecode.CALL),
 		preludeArg:     uint32(op0B),

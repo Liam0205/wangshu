@@ -210,6 +210,16 @@ local function take(x) sum = sum + x end
 local function tick(v) take(v) end
 for i = 1, 30 do tick(i) end
 return sum`},
+
+	// —— PJ5 CALL getter 形态 BR1:GETUPVAL+CALL+RETURN+dead RETURN(0 参 1 返)
+	// (`local function f()...end; local function get() local x = f(); return x end`
+	// 闭包调外层 + 0 参 1 返,getter)——
+	{"p4_call_getter_upval", `
+local function f() return 42 end
+local function get() local x = f(); return x end
+local s = 0
+for i = 1, 30 do s = s + get() end
+return s`},
 }
 
 // TestP4_Tiered 三方对拍:oracle / crescent / p4-jit 全 byte-equal。
