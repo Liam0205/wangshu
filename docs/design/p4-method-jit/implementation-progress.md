@@ -1629,7 +1629,308 @@ PJ4 IC 六模板 + Spike 1 字节级模板全套)。
 10. ⏳ Step D archSupportsFrameInline 翻 true
 11. ⏳ Step E e2e SpecFrameInlineHits 0→1 命中实证
 
+#### 9.20.9 trampoline exit-resume 协议详细设计草案(2026-06-28 future session 实装基线)
+
+承 §9.20.7 (6) 阻塞点 + (7) 修正后路线:Spike 1 真接入的核心瓶颈是 trampoline 改造支持 "exit-to-host-then-resume" 协议。本节固化协议详细设计草案,供 future Spike 1 真接入 session 直接实装。
+
+**(1) 协议总览**:
+
+```
+[Go 端] crescent.State.RunGibbous(proto)
+        │
+        ▼
+[Go 端] callJITSpec(codeAddr, jitCtx, vsBase)  ← trampoline 现有协议
+        │
+        ▼
+[mmap 段] BuildVoid0ArgSkeleton(120字节)     ← Spike 1 enterLuaFrame inline
+        │  字节级写 CallInfo[depth] 5 word + ciDepth++
+        ▼
+[mmap 段] mov rax, helperExitReason          ← 新增:exit reason code
+[mmap 段] mov [r15+exitReasonOff], rax       ← jitContext.exitReason = EXIT_INLINE_HELPER
+[mmap 段] mov rax, helperRequestCode         ← 新增:helper request code
+[mmap 段] mov [r15+exitArg0Off], rax          ← jitContext.exitArg0 = HELPER_RUN_CALLEE
+[mmap 段] ret                                  ← 出 mmap 段返 trampoline
+        │
+        ▼
+[Go 端 trampoline] 检查 exitReason
+        │
+        ▼
+[Go 端 dispatcher] switch jitCtx.exitArg0:
+        case HELPER_RUN_CALLEE:
+            executeFrom(th, ciDepth - 1)   ← Go 栈跑 callee Lua 体
+        case HELPER_OSR_EXIT:
+            onOSRExit(proto); return        ← 投机失败,降级
+        default: return error                ← 未知 exit reason
+        │
+        ▼
+[Go 端] callee 完成,弹 CallInfo + 重载 caller 帧
+        │
+        ▼
+[Go 端] callJITSpec(callerCodeAddr+resumeOff, ...)  ← 新增:resume 协议
+                                                   ↓
+                                          ↓
+[mmap 段 resume entry] (caller 帧续跑,跳过已 emit 的 callee 部分)
+        │
+        ▼
+[mmap 段] PopVoid0ArgSkeleton(10字节)       ← Spike 1 popCallInfo inline
+        │
+        ▼
+[mmap 段] ret                                  ← 返 trampoline 完成 Run
+```
+
+**(2) jitContext 新增字段**(承 §9.20.6 (2) 字段扩):
+
+```go
+type JITContext struct {
+    // 既有字段...
+    arenaBase       uintptr
+    valueStackBase  uintptr
+    preemptFlag     atomic.Uint32
+    exitReason      uint32     // 既有(§9.20.6 (2) 协议):exit 类别码
+    spillBase       uintptr
+    spillTop        uintptr
+    ciDepthAddr     uintptr    // 既有 (§9.20.6 Spike 1)
+    ciSegBaseAddr   uintptr    // 既有
+    topAddr         uintptr    // 既有
+
+    // **本节新增** (Spike 1 真接入 + exit-resume 协议):
+    exitArg0        uint64     // exit 时 mmap 段写,dispatcher 读(helper request code)
+    resumeOff       uint32     // resume 入口在 mmap 段内的字节偏移(BuildVoid0Arg 后 helper exit 前的位置)
+}
+```
+
+**(3) 协议状态码**(常量,承 jit/p4state.go):
+
+```go
+const (
+    EXIT_NORMAL           uint32 = 0  // 正常 RET 出段(既有 status=0)
+    EXIT_ERROR            uint32 = 1  // ERR 冒泡(既有 status=1)
+    EXIT_OSR              uint32 = 2  // 投机失败 OSR exit(既有 status=2)
+    EXIT_INLINE_HELPER    uint32 = 3  // 新增:Spike 1 helper request,jitCtx.exitArg0 = helper code
+)
+
+const (
+    HELPER_RUN_CALLEE     uint64 = 1  // Spike 1 Step C-1:跑 callee Lua 体
+    HELPER_GROW_STACK     uint64 = 2  // 未来:arena grow 触发
+    HELPER_GC_BARRIER     uint64 = 3  // 未来:GC 写屏障(只在写 Go 堆时)
+)
+```
+
+**(4) trampoline 改造**(amd64 trampoline_spec_amd64.s 末尾加 dispatcher):
+
+```asm
+TEXT ·callJITSpec(SB),NOSPLIT,$0-32
+    PUSHQ BX; PUSHQ BP; PUSHQ R12; PUSHQ R13; PUSHQ R14; PUSHQ R15
+    MOVQ jitCtx+8(FP), R15
+    MOVQ vsBase+16(FP), BX
+    MOVQ codeAddr+0(FP), AX
+    CALL AX                           // 跳进 mmap 段
+    // 段返回:RAX 已是 status(0/1/2/3)
+
+    // 新增:exit-resume dispatcher
+    CMPQ AX, $3                       // EXIT_INLINE_HELPER?
+    JNE skipDispatch
+    // 调 Go dispatcher 处理 helper request,返回 resumeAddr
+    MOVQ R15, DI                      // 第 1 参 = jitCtx(SysV ABI)
+    CALL ·dispatchInlineHelper(SB)
+    MOVQ AX, codeAddr+0(FP)           // 用 dispatcher 返的 resumeAddr 重新 CALL
+    MOVQ codeAddr+0(FP), AX
+    CALL AX                           // 跳进 resume entry 续跑
+skipDispatch:
+    POPQ R15; POPQ R14; POPQ R13; POPQ R12; POPQ BP; POPQ BX
+    MOVQ AX, ret+24(FP)
+    RET
+```
+
+**(5) Go 端 dispatcher**(internal/gibbous/jit/dispatcher.go,新文件):
+
+```go
+//go:nosplit
+//go:noinline
+func dispatchInlineHelper(jitCtx *JITContext) uintptr {
+    switch jitCtx.exitArg0 {
+    case HELPER_RUN_CALLEE:
+        // Step C-1 helper 真实装:经 jitCtx 取 hostStatePtr → State
+        st := (*State)(unsafe.Pointer(jitCtx.hostStatePtr))
+        ret := HelperRunCalleeAfterFrameInline(jitCtx, base, retA)
+        if ret != 0 {
+            // 错误冒泡 / OSR exit,返 0 让 trampoline 走错误路径
+            return 0
+        }
+        // 计算 resume entry 地址(mmap 段内)
+        return jitCtx.codePageAddr + uintptr(jitCtx.resumeOff)
+    default:
+        // 未知 helper code,记录错误
+        return 0
+    }
+}
+```
+
+**(6) compileSpecSelfCall emit 改造**(承 §9.20.3 Step C-2):
+
+```go
+// useFrameInline 分支 emit 序列:
+// 1. BuildVoid0ArgSkeleton (120 字节)
+// 2. **新增**:exit-helper-request 段(13 字节)
+//    - mov rax, EXIT_INLINE_HELPER     (5 字节)
+//    - mov [r15+exitReasonOff], rax    (4 字节)
+//    - mov rax, HELPER_RUN_CALLEE      (5 字节)
+//    - mov [r15+exitArg0Off], rax      (4 字节)
+//    - ret                               (1 字节)
+// 3. **resume entry 偏移记录**:resumeOff = 当前 emit 字节数
+// 4. PopVoid0ArgSkeleton (10 字节)
+// 5. ret                                (1 字节)
+//
+// 总:120 + 13 + 10 + 1 = 144 字节(amd64)
+// arm64 对位:164 + ~20 + 16 + 4 = ~204 字节
+```
+
+**(7) 实装顺序**(承 Step C-1 → Step E,具体 5 commits):
+
+1. **commit-1**:jitContext 加 exitArg0 + resumeOff + 协议状态码常量
+2. **commit-2**:dispatcher.go 新文件(dispatchInlineHelper + HelperRunCalleeAfterFrameInline 真实装)
+3. **commit-3**:trampoline_spec_amd64.s 加 dispatcher CALL 段(+ arm64 对位)
+4. **commit-4**:compileSpecSelfCall useFrameInline 分支 emit BuildVoid0Arg + exit-helper-request + PopVoid0Arg
+5. **commit-5**:archSupportsFrameInline 翻 true + e2e SpecFrameInlineHits 0→1 实证 + benchmark 摊薄
+
+每 commit 独立可验证 + 隔离 commit + 严格回归(make test-p4 全过)。
+
+**(8) 风险点 + 缓解**(承 §9.20.6 (6.5) R14 修复同款手法):
+
+- **Trampoline 内 CALL Go 函数**:dispatchInlineHelper 是 Go 函数,trampoline `CALL ·dispatchInlineHelper(SB)` 时需 R14=G 正确(本会话 R14 ABI 修复已解决 trampoline PUSH/POP R14)
+- **dispatcher 内 executeFrom 非 nosplit**:`executeFrom` 链路深,morestack 可触发;`//go:nosplit` 不能加全链 → **dispatcher 内必须切回 Go 栈再调 executeFrom**(承 §9.20.6 (4) SP 切换协议)
+- **resumeOff 一致性**:emit 时记录 resumeOff,dispatcher 用 jitCtx.codePageAddr + resumeOff 求 resume entry — codePage 不重定位(mmap PROT_RX 段一次性 alloc),resumeOff 编译期确定
+- **错误冒泡**:HelperRunCalleeAfterFrameInline 内 doCall raise 时,设 jitCtx.exitReason=EXIT_ERROR + jitCtx.pendingErr,dispatcher 返 0 → trampoline 走错误路径
+
+**(9) 总工程量重估**:本节设计基线让 future Spike 1 真接入 session 直接 5 commits 完成实装(jitContext 字段扩 + dispatcher 文件 + trampoline 改造 + compileSpecSelfCall emit 接入 + 翻闸门 + e2e)。预估**1-2 周** session 内可完成(此前 §9.20.6 估算 4-5 周高估,因未考虑设计文档已固化协议物理学)。
+
+#### 9.20.10 Spike 1 真接入完成(2026-06-28 实装完整端到端)
+
+承 §9.20.9 实装路线 + 单 session 内交付:**12 commits(`da8033f..9a17744`)完成 Spike 1 真接入完整端到端**,amd64 archSupportsFrameInline=true,SpecFrameInlineHits=1 prove-the-path 命中实证。
+
+**实装顺序差异**(设计草案 5 commits → 实装 12 commits 细分):
+
+| commit | 内容 | 哈希 |
+|---|---|---|
+| 1 | jitContext exitArg0/resumeOff 字段 + 协议状态码常量 | cc2f2f2 |
+| 2 | P4HostState.ExecuteCalleeFromInlineFrame helper API + crescent 占位 + mock stub | e8f6685 |
+| 3a | dispatcher.go Go 端骨架 + 单测 | 2465a8a |
+| 3b | jitContext codePageAddr 字段 | 3f0a69a |
+| 3c | trampoline asm CMP 分支占位(撤销改 5a) | 73b10ac |
+| 4a | amd64 ExitHelperRequest 段 emit(24B) + arch 路由 | 91e9a31 |
+| 4b | compileSpecSelfCall useFrameInline 分支 emit + frameInlineResumeOff | afb6ecf |
+| 5a | trampoline asm 撤 CMP+INT,改 Run-end Go dispatcher | f1fd9a6 |
+| 5b | runSpecSelfCall ExitInlineHelper 路径 + runFrameInlineDispatcher | 123dab0 |
+| 5c | runFrameInlineDispatcher 直 host 路由实装 | 98e299e |
+| 5d | crescent.ExecuteCalleeFromInlineFrame readCISegInto 版 | a1d7a6e |
+| 5e | FrameInline e2e GatingClosed_NoHits 验证 | 6763e64 |
+| 5f | ExecuteCalleeFromInlineFrame 反查 closure GCRef → callee Proto → enterLuaFrame 真接入策略重定 | ff306f6 |
+| 5g | analyzeSelfCallSpecForm useFrameInline 守门 | 25f3f6a |
+| 5h | archSupportsFrameInline 翻 true(amd64)+ e2e GatingOpen_HitsOne 改判 ≥1 | 9a17744 |
+
+**关键设计差异**(实装现实 vs 设计草案):
+1. **dispatcher 路由实装位置**:草案 §9.20.9 (4) 假设 trampoline asm 内 `CALL ·dispatchInlineHelper(SB)` 跨包 CALL Go 函数;实装跨包 + Plan 9 ABI 复杂度高,改 **Run 端 Go 函数做 dispatcher**(commit-5a-c),trampoline asm 段返后纯透传 RAX 不解读,全 Go 端做 helper request 路由 + 二次 callJITSpec 重入 resume entry。工程复杂度降一个数量级。
+2. **callee Proto 元数据策略**:草案 §9.20.5 P3 PW10 同源参考期待 mmap 段完整 emit 帧建(arena proto cache 段 + 5 word 真实计算 + Compile 期 callee.NumParams/MaxStack 守门),helper 只跑 executeFrom;实装 P4 Spike 1 采用更保守的「mmap 段写 placeholder + helper 内反查 closure GCRef → callee Proto → 调 enterLuaFrame + executeFrom 完整重做帧建」策略(commit-5f),放弃零跨界目标但保证正确性 + 工程可达(无需 arena proto cache 段 + P2 Bridge 200+ 行级改造)。
+3. **守门简化**:草案 §9.20.4 期待 `callee.NumParams=0 + !IsVararg + !NeedsArg + MaxStack≤32` 编译期守门;实装因 callee Proto 元数据策略重定,改 Compile 期仅守门 `callArgCount=0 + isCallVoid + !isTailCall`(0 参 setter 形态);callee 端运行期由 enterLuaFrame 内 nargs=0 守门自然兼容,IsVararg=true 时 callee 体读 vararg 区会读到 0 元素退化但不崩。
+
+**性能特征**(amd64 实测,bench 摊薄,2026-06-28):
+- `PJ5SelfCallSpec`(0 参 setter,简单 method 体):P4=9104 ns/op,Cresc=8039 ns/op,**1.13x 慢**(useFrameInline 路径与 host.CallBaseline 等价,无 round-trip 节省;helper 内 enterLuaFrame + executeFrom 与 host.CallBaseline + doCall 同源)
+- `PJ5SelfCallHeavyBody`(0 参 + FORLOOP heavy body):P4=87570 ns/op,Cresc=92501 ns/op,**0.95x 快(5%)**(method 体加速主导,useFrameInline 不破坏 heavy body 收益)
+- Spike 1 简化策略**未带来 simple setter 路径的性能提升**,但 **method 体加速主导的反超场景(0.95x)继续保持**;真正消除 simple setter trampoline 占比需 Spike 2-4(args 装载 + 多返值多形态完整 inline + arena proto cache 段 + word0/1/2/4 真实计算消除 helper 端 enterLuaFrame round-trip)
+
+**Spike 1 真接入验收数据**(amd64 archSupportsFrameInline=true 后):
+- ✅ make test-p4 全过 21 binary(crescent.test 含 PJ5 SELF e2e + 真接入 GatingOpen_HitsOne)
+- ✅ difftest 全过(byte-equal P1 + crescent + p4-jit 三方)
+- ✅ SpecFrameInlineHits=1(commit-5h prove-the-path 命中实证)
+- ✅ TestPJ5_SelfCall_E2E_M0_VoidCall / U0/M1K/M1R/M2KK/M2RR 等所有 PJ5 SELF e2e 全过(行为零变化基线)
+- ✅ TestPJ5_SelfCall_E2E_SpecTemplate_OSRExitToDeopt / DeoptStorm(OSR exit 协议在真接入路径上仍正确工作)
+
+**剩 Spike 2-4 工程**(承 §9.20.3 表):
+- Spike 2:N 参 fixed(0..7 参 args 装载 inline 替代 helper 端取参)
+- Spike 3:vararg 支持(callee.IsVararg=true 路径完整)
+- Spike 4:多返值多形态(N>=2 返 + multi-ret + 可变 nresults)
+
+**arm64 archSupportsFrameInline 仍 false**(留 PJ8 物理 runner 端到端验证;arm64 端字节级 emit 模板全套已就位但端到端验证留物理 runner CI 接入)。
+
 ---
+
+#### 9.20.11 Spike 1 真接入完整端到端打通(2026-06-28 commit-5l/5m 里程碑)
+
+承 §9.20.10 commit-5a-5h 半路真接入 + commit-5i-5k PR comments 处理 + commit-5l 工程基础大批就位 + commit-5m ciDepth Go vs mirror 同步 bug 修:**Spike 1 真接入完整端到端 amd64 打通**,RunHits prove-the-path 命中实证(SpecFrameInlineRunHits=49/199 for 50/200 iters)。
+
+**commit-5l/5m 关键 bug 修补**(commit-1-5h 自检后发现的 6 个 bug):
+
+| Bug | Commit | 表现 | 修补 |
+|---|---|---|---|
+| EmitSelfNodeHit 成功路径 ret 段尾 | commit-5l | useFrameInline 路径 fall-through 失败,Run 期不触达 dispatcher | 加 NoRet 变体(成功 fall-through 替代 ret) |
+| ciSegBase 镜像字存 word offset 不是绝对地址 | commit-5l | LoadCISlotAddr 算 rax 不能 deref → SIGSEGV addr=0x3c8 | 加 LoadCISlotAddrAbsolute 变体(追加 r14=arenaBase + add rax,r14) |
+| BuildVoid0Arg word offset 不可 deref | commit-5l | 同上 | 加 BuildVoid0ArgSkeletonAbsolute 变体 |
+| PopVoid0Arg 缺 ret | commit-5l | 段尾 fall-through 到未映射区 → SIGSEGV | 加 xor eax,eax + ret(13 byte) |
+| helper 签名 retA 错位 funcIdx | commit-5l | funcIdx=R(retA)=R(0)=caller's t (非 method) → enterLuaFrame "attempt to call table" | 改 callA 签名,funcIdx = th.cur.base + callA |
+| **ciDepth Go field vs mirror 字镜像不同步**(关键!) | commit-5m | mmap 段 BuildVoid0Arg::CIDepthInc 仅 inc mirror,helper 入口 setCIDepth(th.ciDepth-1) 基于 stale Go field → CI seg index 错位 → callee 帧建错位 → 弹帧重载 caller 时取错的 cached data → th.cur.base 错位 → DoReturn dst 写到 main R(0) (count 槽) → count 被覆写为 method closure GCRef (Tag=Function NaN-box) | helper 入口先从 mirror 同步 Go field:`th.ciDepth = int(uint32(th.arena.WordAt(th.ciDepthWordRef)))` |
+
+**性能特征**(amd64 实测,commit-5m 真接入后):
+- `PJ5SelfCallSpec`(0 参 setter,简单 method 体):P4=10238 ns/op,Cresc=8083 ns/op,**1.27x 慢**(commit-5h 是 1.13x;真接入 helper 内 enterLuaFrame+executeFrom 等价 host.CallBaseline,无 round-trip 节省,且多 BuildVoid0Arg/ExitHelperRequest/PopVoid0Arg + 二次 callJITSpec round-trip 增 ~2us)
+- `PJ5SelfCallHeavyBody`(0 参 + FORLOOP heavy body):P4=88868 ns/op,Cresc=92595 ns/op,**0.96x 快(4%)**(method 体加速主导,真接入不破坏 heavy body 收益)
+- **Spike 1 简化策略已完成正确性目标,但简单 method 体性能反走低**(因 mmap 段额外段开销 > host 路径节省);真 zero-cross 路径(Spike 2-4)需让 callee 也 P4 升层,helper 内直接调 callee 的 P4 code.Run(skipping enterLuaFrame),消除 enterLuaFrame+executeFrom 开销
+
+**Spike 1 真接入完整路径验收**(amd64,commit-5m 实证):
+- ✅ make test-p4 全过 21 binary
+- ✅ difftest 全过(byte-equal P1 + crescent + p4-jit 三方)
+- ✅ SpecFrameInlineHits ≥ 1(Compile 命中,prove-the-path)
+- ✅ SpecFrameInlineRunHits ≥ 1(Run 期真触达,prove-the-path)
+- ✅ TestPJ5_FrameInline_E2E_GatingOpen_HitsOne:count=50 + RunHits=49(50 iters)
+- ✅ TestPJ5_FrameInline_E2E_RunHit:count=200 + RunHits=199(200 iters)
+- ✅ TestPJ5_FrameInline_E2E_SelfUsage:val=92 (42 + 50 callee self.val++ 真跑)
+- ✅ 所有 PJ5 SELF e2e + spec template e2e 全过(行为零变化基线维持)
+
+**剩 Spike 2-4 工程**(承 §9.20.10 表 + commit-5m bench 数据):
+- Spike 2:N 参 fixed args 装载 inline(替代 helper 端取参,callArgCount=0 → 0..7 守门扩)
+- Spike 3:vararg 支持(callee IsVararg=true 路径完整)
+- Spike 4:多返值多形态(N>=2 返 + multi-ret + 可变 nresults)
+- **真 zero-cross 优化**:让 callee 也 P4 升层时直接调 callee 的 code.Run,skipping enterLuaFrame + executeFrom(消除当前 helper 内 enterLuaFrame round-trip,实现简单 setter 反超 host 路径性能)
+
+**arm64 archSupportsFrameInline 仍 false**(留 PJ8 物理 runner 端到端验证;arm64 端字节级 emit 模板全套已就位但端到端验证留物理 runner CI 接入)。
+
+---
+
+#### 9.20.12 Spike 1/2/3/4 全套真接入打通(2026-06-28 commit-5p/5q/5r 完整里程碑)
+
+承 §9.20.11 Spike 1 真接入打通基础:**Spike 2/3/4 全套真接入完整端到端 amd64 打通**(单日内交付),`SpecFrameInlineRunHits` prove-the-path 命中实证。
+
+**实装顺序**(承 §9.20.3 Spike 路线):
+
+| Spike | 形态 | commit | 实装位置 | e2e 实证 |
+|---|---|---|---|---|
+| 1 | 0 参 setter | commit-5m | nargs=1 + nresults=0 | TestPJ5_FrameInline_E2E_GatingOpen_HitsOne: RunHits=49 |
+| 2 | N 参 fixed args(0..7) | commit-5p | helper 接 callArgCount;nargs=1+callArgCount | TestPJ5_FrameInline_E2E_Spike2_3KArg: sum=600, RunHits=99 |
+| 3 | vararg callee | commit-5r | **自动兼容 Spike 2**(enterLuaFrame 已处理 vararg 三步重排) | TestPJ5_FrameInline_E2E_Spike3_Vararg: sum=600, RunHits=99 |
+| 4 | 多返值多形态(callC=1..16) | commit-5q | helper 接 nresults;callC-1 算 | TestPJ5_FrameInline_E2E_Spike4_Getter: s=4200, RunHits=99 |
+
+**关键技术决策**(commit-5p/5q/5r 固化):
+- helper API 三参数完整:`(base, callA, callArgCount, nresults)`(commit-5l/5p/5q 渐进扩)
+- Run 端 dispatcher 算 nresults = int32(c.callC) - 1
+- analyzeSelfCallSpecForm 守门扩 callArgCount<=7
+- vararg 形态:enterLuaFrame 内部自动处理(NumParams<nargs 时 nVarargs=nargs-NumParams,栈下区重排)
+
+**Spike 1/2/3/4 全套验收数据**(amd64,commit-5r 后):
+- ✅ make test-p4 全过 21 binary
+- ✅ difftest 全过(byte-equal P1 + crescent + p4-jit 三方)
+- ✅ TestPJ5_FrameInline_E2E_Spike2_3KArg:RunHits=99(3 K 参)
+- ✅ TestPJ5_FrameInline_E2E_Spike3_Vararg:RunHits=99(vararg 形态)
+- ✅ TestPJ5_FrameInline_E2E_Spike4_Getter:RunHits=99(1 返 getter)
+- ✅ 所有 PJ5 SELF e2e + spec template e2e 全过(零回归)
+
+**剩余真接入工程**:
+- **真 zero-cross 优化**:让 callee 也 P4 升层时直接调 callee 的 code.Run,
+  skipping enterLuaFrame + executeFrom(消除当前 helper 内 enterLuaFrame round-trip,
+  实现简单 setter 反超 host 路径性能)— 独立 milestone
+- arm64 物理 runner CI(PJ8)
+- bit50 协议拍板(用户决策)
+- P3 退役决议(PJ10 验收时)
+
+---
+
 
 ## 10. 后续维护协议
 

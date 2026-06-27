@@ -793,6 +793,99 @@ end
 for i = 1, 100 do caller(nil, mt) end
 caller(nil, mt)
 return count`},
+	// —— PJ5 SELF spec template 错误冒泡 difftest(承 d201a2f/d0893c9 e2e
+	// 实证 NilRecv + BadMethod;本批加 difftest 三方 byte-equal,验
+	// crescent vs P4 错误消息逐字节一致 + P4 OSR exit 路径不破坏错误冒泡)。
+	// pcall 把错误转 (false, errmsg) 返回,避免 runWangshuP4Tiered 在
+	// err != nil 时 fail-fast,保留错误消息进 byte-equal 对比。
+	{"p4_self_spec_err_nilrecv", `
+local function caller(t) return t:m() end
+local ok, err = pcall(caller, nil)
+return ok, tostring(err)`},
+	{"p4_self_spec_err_badmethod", `
+local mt = { m = 42 }
+local function caller(t) return t:m() end
+local ok, err = pcall(caller, mt)
+return ok, tostring(err)`},
+	{"p4_self_spec_err_warmup_then_nilrecv", `
+local m_good = { m = function(self) return 1 end }
+local function caller(t) return t:m() end
+-- warmup 填 IC NodeHit + FBSelfMono
+local sum = 0
+for i = 1, 100 do sum = sum + caller(m_good) end
+-- 然后用 nil receiver → spec NodeHit guard 失败 → deopt → host.Self → err
+local ok, err = pcall(caller, nil)
+return ok, tostring(err), sum`},
+	// —— PJ5 SELF inline 路径(非 spec template,走 host.Self → host.CallBaseline)
+	// 错误冒泡 difftest(承 cf8c24a SELF inline 错误冒泡 e2e 同款,但本批补 difftest
+	// 三方 byte-equal 覆盖)。inline 路径 NodeHit feedback 未触发(无 warmup),
+	// 走纯 host helper round-trip,但错误冒泡逻辑同款。
+	{"p4_self_inline_err_nilrecv", `
+-- 不 warmup,直接调 nil receiver:inline 路径 host.Self raise
+local function caller(t) return t:m() end
+local ok, err = pcall(caller, nil)
+return ok, tostring(err)`},
+	{"p4_self_inline_err_badmethod", `
+local mt = { m = "string_not_callable" }
+local function caller(t) return t:m() end
+local ok, err = pcall(caller, mt)
+return ok, tostring(err)`},
+	// —— PJ4 表 IC 错误冒泡 difftest(承 §9.7-§9.10 PJ4 IC 六路径全覆盖):
+	// GETTABLE / SETTABLE 在 nil 表 / non-table 上 raise,验 IC inline 路径
+	// + host.GetTable/SetTable 降级路径错误冒泡 byte-equal P1。
+	{"p4_get_err_niltable", `
+local function getter(t) return t[1] end
+local ok, err = pcall(getter, nil)
+return ok, tostring(err)`},
+	{"p4_set_err_niltable", `
+local function setter(t) t[1] = 99 end
+local ok, err = pcall(setter, nil)
+return ok, tostring(err)`},
+	{"p4_get_err_nontable", `
+local function getter(t) return t[1] end
+local ok, err = pcall(getter, 42)
+return ok, tostring(err)`},
+	// —— PJ3 FORLOOP 错误冒泡 difftest(承 §8 PJ3 FORLOOP 字节级 inline):
+	// for 限制 / 步长非 number → ForPrep raise,验 PJ3 模板 deopt 路径错误
+	// 冒泡 byte-equal P1。
+	{"p4_forloop_err_nonumlimit", `
+local function loop(n) for i = 1, n do end end
+local ok, err = pcall(loop, "not_a_number")
+return ok, tostring(err)`},
+	{"p4_forloop_err_nonumstep", `
+local function loop(s) for i = 1, 10, s do end end
+local ok, err = pcall(loop, "not_a_number")
+return ok, tostring(err)`},
+	// —— PJ7 算术错误冒泡 difftest(承 PJ7 ADD..POW 6 op):arith on
+	// non-number → host.Arith raise,验 P4 算术 inline 路径错误冒泡。
+	{"p4_arith_err_addstring", `
+local function add(a, b) return a + b end
+local ok, err = pcall(add, "x", 1)
+return ok, tostring(err)`},
+	{"p4_arith_err_concatlennil", `
+local function ln(t) return #t end
+local ok, err = pcall(ln, nil)
+return ok, tostring(err)`},
+	// —— R14 ABI 后验 difftest(承本会话 R14 ABI 修复 + 7 R14 后验测试矩阵):
+	// 这些用例**包含真实 PJ3/PJ4/PJ5 mmap 段路径** + 重复迭代,验 P4 vs
+	// crescent byte-equal 在 GC stress 类工作负载下不引入分歧。
+	{"p4_r14_pj5_self_repeated", `
+local o = { m = function(self) return 42 end }
+local function caller(t) return t:m() end
+local sum = 0
+for i = 1, 200 do sum = sum + caller(o) end  -- 200 次 spec template
+return sum`},
+	{"p4_r14_pj4_get_repeated", `
+local function f(t) return t[1] end
+local t = {7, 8, 9}
+local sum = 0
+for i = 1, 200 do sum = sum + f(t) end  -- 200 次 IC ArrayHit
+return sum`},
+	{"p4_r14_pj3_forloop_repeated", `
+local function loop(n) local s = 0; for i = 1, n do s = s + i end; return s end
+local sum = 0
+for i = 1, 50 do sum = sum + loop(100) end  -- 50 outer * 100 inner forloop
+return sum`},
 }
 
 // TestP4_Tiered 三方对拍:oracle / crescent / p4-jit 全 byte-equal。
@@ -810,6 +903,12 @@ func TestP4_Tiered(t *testing.T) {
 			if crescent != p4 {
 				t.Errorf("层间分歧 (crescent vs P4-jit):\n  crescent: %q\n  p4:       %q",
 					crescent, p4)
+			}
+			// 跳过 oracle 对比:含 "_err_" 的用例(错误消息含 chunk name
+			// 差异,wangshu 用 "p4diff" / oracle 用 "stdin",非 P4 路径问题,
+			// 承 errmsg_test.go 同款归一化跳过策略)
+			if strings.Contains(c.name, "_err_") {
+				return
 			}
 			// 锚定官方 lua5.1(可用时)
 			if oracle != "" {
