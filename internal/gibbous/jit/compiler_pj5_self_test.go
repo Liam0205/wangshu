@@ -348,3 +348,34 @@ func TestPJ5_AnalyzeSelfCallSpecForm_RejectNoNodeHit(t *testing.T) {
 		t.Error("analyzeSelfCallSpecForm IC 非 NodeHit 应返 false")
 	}
 }
+
+// TestPJ5_IsValidSpecCallRetCount 验 isValidSpecCallRetCount cC∈{1,3..16}
+// 严格上界(承 84c7ed4 N=2..15 返扩 + 7f5f641 N=15 上界边界 e2e)。
+func TestPJ5_IsValidSpecCallRetCount(t *testing.T) {
+	tests := []struct {
+		cC   int
+		want bool
+		desc string
+	}{
+		// 接受
+		{1, true, "cC=1 (0 返/void/setter)"},
+		{3, true, "cC=3 (N=2 返)"},
+		{4, true, "cC=4 (N=3 返)"},
+		{5, true, "cC=5 (N=4 返)"},
+		{9, true, "cC=9 (N=8 返)"},
+		{16, true, "cC=16 (N=15 返上界)"},
+		// 拒
+		{0, false, "cC=0 (multi-ret 不识别)"},
+		{2, false, "cC=2 (1 返 getter 走独立分支)"},
+		{17, false, "cC=17 (N=16 返超严格上界)"},
+		{255, false, "cC=255 (Lua 5.1 CALL C 最大,超严格上界)"},
+		{-1, false, "cC=-1 (无效输入兜底)"},
+	}
+	for _, tt := range tests {
+		got := isValidSpecCallRetCount(tt.cC)
+		if got != tt.want {
+			t.Errorf("isValidSpecCallRetCount(%d) = %v, want %v (%s)",
+				tt.cC, got, tt.want, tt.desc)
+		}
+	}
+}
