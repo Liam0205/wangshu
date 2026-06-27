@@ -17,6 +17,7 @@
 package wangshu_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/Liam0205/wangshu"
@@ -105,16 +106,26 @@ return f(o1, o2)`,
 		st4.SetForceAllPromote(true)
 		resP4, errP4 := prog.Run(st4)
 
-		// 错误等价(byte-equal 的弱版:都成功或都失败)
-		// **CI 稳健性 (2026-06-28)**:此前错误存在性差异是 hard fail,但
-		// fuzzer 在 CI ubuntu-latest 上偶发 minimization OOM/EOF(承
-		// stop hook 反馈 ae45a6e CI fail),且 P4 vs P1 error 差异在某些
-		// fuzz 生成的边界 input 下可能是 step budget 不同时机触发(非 byte-
-		// equal 真违反)。降级为 t.Skip(仅记录,不 fail),保留 panic 才
-		// 是真 bug 的纪律(承 fuzz_test.go::FuzzCompileRun 同款基线)。
+		// 错误存在性差异处理(2026-06-28 精准豁免,承 PR #26 评论建议):
+		// 按错误类型分类,只对**预算/时机类**分叉降级 Skip(P1/P4 计步时机
+		// 不同,临界 input 可能一方先触 `instruction budget exceeded`),
+		// **语义性误编译**(误抛 / 吞错)仍硬 fail——保留 fuzz 对 P4 vs P1
+		// 语义分叉的发现力。
+		//
+		// 锚定的语义类错误冒泡 byte-equal 基线(确定性覆盖):
+		// - 12 错误冒泡 difftest 三方 byte-equal(p4_*_err_* 用例集)
+		// - 3 e2e ErrorBubbleUp_NilRecv/BadMethod/OSRExitToDeopt
+		// - 5 V18 -race(含 R14 ABI 后验)
+		//
+		// fuzz harness 验补充发现:**非 budget 类**的存在性分叉仍硬 fail。
 		if (errP1 == nil) != (errP4 == nil) {
-			t.Skipf("error 存在性差异(可能 step budget 时机或 deopt 阶梯,非 byte-equal 违反):P1 err = %v, P4 err = %v",
-				errP1, errP4)
+			budgetTiming := (errP1 != nil && strings.Contains(errP1.Error(), "instruction budget exceeded")) ||
+				(errP4 != nil && strings.Contains(errP4.Error(), "instruction budget exceeded"))
+			if budgetTiming {
+				t.Skipf("预算/时机类分叉(非 byte-equal 违反):P1=%v P4=%v", errP1, errP4)
+				return
+			}
+			t.Errorf("error 存在性真分叉(疑似 P4 误编译,需查):P1=%v P4=%v", errP1, errP4)
 			return
 		}
 		if errP1 != nil {
