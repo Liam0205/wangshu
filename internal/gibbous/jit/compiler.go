@@ -1648,8 +1648,9 @@ func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
 			argCount = 3
 		}
 	case 7:
-		// 长度 7 三种子形态(区分键:
+		// 长度 7 四种子形态(区分键:
 		//   Code[1] 是 CALL → 0 参 N=3 返值 getter
+		//   Code[2] 是 CALL → 1 K/reg 参 N=2 返值 getter
 		//   Code[5] 是 CALL → setter 4 参 0 返
 		//   否则 Code[4] 是 CALL → getter 3 参 1 返)
 		if bytecode.Op(proto.Code[1]) == bytecode.CALL {
@@ -1658,6 +1659,20 @@ func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
 			callIdx = 1
 			retIdx = 5
 			argCount = 0
+			// 校验 [6] 隐式 RETURN B=1
+			implRet := proto.Code[6]
+			if bytecode.Op(implRet) != bytecode.RETURN || bytecode.B(implRet) != 1 {
+				return shapeInfo{}, false
+			}
+		} else if bytecode.Op(proto.Code[2]) == bytecode.CALL {
+			// 1 K/reg 参 N=2 返值 getter:[0] MOVE/GETUPVAL,[1] (LOADK|MOVE),
+			// [2] CALL B=2 C=3,[3] MOVE,[4] MOVE,[5] RETURN A=callA+2 B=3,[6] 隐式 RETURN B=1
+			if !decodeArgFromOp(proto, 1, op0A+1, &argIsK, &argK, &argReg) {
+				return shapeInfo{}, false
+			}
+			callIdx = 2
+			retIdx = 5
+			argCount = 1
 			// 校验 [6] 隐式 RETURN B=1
 			implRet := proto.Code[6]
 			if bytecode.Op(implRet) != bytecode.RETURN || bytecode.B(implRet) != 1 {
@@ -1752,8 +1767,9 @@ func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
 		}
 		retACalc = uint8(rtA)
 		retBCalc = 2
-	} else if clC >= 3 && int(rtB) == int(clC) && argCount == 0 {
+	} else if clC >= 3 && int(rtB) == int(clC) {
 		// N>=2 返值 getter:RETURN.A 必须 = callA + (clC-1)= callA + nret
+		// argCount 可以是 0(无参)或 >=1(含参,如 `local a,b=f(arg); return a,b`)
 		nret := clC - 1
 		if rtA != clA+nret {
 			return shapeInfo{}, false
