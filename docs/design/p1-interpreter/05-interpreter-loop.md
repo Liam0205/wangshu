@@ -570,6 +570,8 @@ func (vm *VM) doCall(f *frame, i Instruction) callResult {
 - **Lua 调用深度不消耗 Go 栈**:1000 层 Lua 递归 = 1000 条 CallInfo(arena),Go 栈深度恒为 1(就在 `execute` 那一帧)。这正面兑现 roadmap §2「不持有指向 Go 栈的指针」——调用链状态全在 arena,Go 栈不增长,morestack 拷栈与解释器调用链解耦。
 - **协程切换可行**([08](./08-coroutines.md)):挂起 = 保存当前 frame 回 CallInfo + 切到另一 Thread 的 CallInfo 链;因为状态全在 arena,切协程不需要拷 Go 栈。
 
+**P4 阶段新增 `callDeoptResume` doCall 出口**(2026-06-28,承 [../p4-method-jit/implementation-progress §2 RJ-3](../p4-method-jit/implementation-progress.md) 跨文档回填请求):本节 callResult 枚举(P1 阶段)未列 `callDeoptResume`,因 P1/P2/P3 不需要——P3 永不返回 status=2(承 [../p2-bridge/05-p3-p4-interface §6.1](../p2-bridge/05-p3-p4-interface.md))。**P4 阶段引入**:GibbousCode.Run 返回 status=2 (DEOPT) 时 doCall 出口走 `callDeoptResume`(reloadFrame + 续跑同帧),具体协议详见 [../p4-method-jit/04-osr-deopt §5 OSR exit 流程](../p4-method-jit/04-osr-deopt.md) + [../p4-method-jit/05-system-pipeline](../p4-method-jit/05-system-pipeline.md)。**P1 视角影响**:enterLuaFrame / 主循环重载 frame 逻辑不变,callResult 枚举在 P4 build 下增 callDeoptResume 一个变体。
+
 ### 7.2 RETURN:退帧或终止
 
 `RETURN A B`:返回 `R(A..A+B-2)`,`B=0` 返回到 `top`([02](./02-bytecode-isa.md) §4-30)。
