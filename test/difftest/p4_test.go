@@ -324,6 +324,32 @@ local function get(v) local y = take(v); return y end
 local s = 0
 for i = 1, 30 do s = s + get(i) end
 return s`},
+
+	// —— PJ5 CALL getter 2 参 1 返 — 长度 6,CALL.B=3 C=2 — 四组合 K+K/K+R/R+K/R+R
+	{"p4_call_getter_upval_2argk", `
+local function take(a, b) return a + b end
+local function get() local y = take(7, 9); return y end
+local s = 0
+for i = 1, 30 do s = s + get() end
+return s`},
+	{"p4_call_getter_upval_2argreg", `
+local function take(a, b) return a + b end
+local function get(u, v) local y = take(u, v); return y end
+local s = 0
+for i = 1, 30 do s = s + get(i, i+1) end
+return s`},
+	{"p4_call_getter_upval_1k1r", `
+local function take(a, b) return a + b end
+local function get(v) local y = take(7, v); return y end
+local s = 0
+for i = 1, 30 do s = s + get(i) end
+return s`},
+	{"p4_call_getter_upval_1r1k", `
+local function take(a, b) return a + b end
+local function get(v) local y = take(v, 7); return y end
+local s = 0
+for i = 1, 30 do s = s + get(i) end
+return s`},
 }
 
 // TestP4_Tiered 三方对拍:oracle / crescent / p4-jit 全 byte-equal。

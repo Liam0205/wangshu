@@ -314,3 +314,82 @@ return s`
 		t.Errorf("SpecCallVoidHits = 0,PJ5 CALL getter 1 reg 参 1 返形态 B1RR1 未真编译")
 	}
 }
+
+// TestPJ5_CallGetter_E2E_FormB2KR1:形态 B2KR1(GETUPVAL+LOADK+LOADK+CALL B=3 C=2+RETURN A=callA B=2+dead)
+// 真升层 — `local function take(a, b) return a+b end; local function get() local y = take(7, 9); return y end`,
+// 2 K 参 1 返 getter。
+func TestPJ5_CallGetter_E2E_FormB2KR1(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local function take(a, b) return a + b end
+local function get() local y = take(7, 9); return y end
+local s = 0
+for i = 1, 30 do s = s + get() end
+return s`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// get() × 30 each take(7,9)→16,sum = 30*16 = 480
+	if got := value.AsNumber(value.Value(rets[0])); got != 480 {
+		t.Errorf("rets = %v, want 480 (get()×30 each take(7,9)→16)", got)
+	}
+	if jit.SpecCallVoidHits() == 0 {
+		t.Errorf("SpecCallVoidHits = 0,PJ5 CALL getter 2 K 参 1 返形态 B2KR1 未真编译")
+	}
+	t.Logf("SpecCallVoidHits=%d", jit.SpecCallVoidHits())
+}
+
+// TestPJ5_CallGetter_E2E_FormB2RR1:形态 B2RR1(GETUPVAL+MOVE+MOVE+CALL B=3 C=2+RETURN A=callA B=2+dead)
+// 真升层 — 2 reg 参 1 返 getter。
+func TestPJ5_CallGetter_E2E_FormB2RR1(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local function take(a, b) return a + b end
+local function get(u, v) local y = take(u, v); return y end
+local s = 0
+for i = 1, 30 do s = s + get(i, i+1) end
+return s`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// sum(take(i,i+1)) i=1..30 = sum(2i+1) = 2*465 + 30 = 960
+	if got := value.AsNumber(value.Value(rets[0])); got != 960 {
+		t.Errorf("rets = %v, want 960 (get(i,i+1)×30 each take(i,i+1)→2i+1)", got)
+	}
+	if jit.SpecCallVoidHits() == 0 {
+		t.Errorf("SpecCallVoidHits = 0,PJ5 CALL getter 2 reg 参 1 返形态 B2RR1 未真编译")
+	}
+}
+
+// TestPJ5_CallGetter_E2E_FormB1K1RR1:形态 B1K1RR1(K+R 2 参 1 返 getter)
+func TestPJ5_CallGetter_E2E_FormB1K1RR1(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local function take(a, b) return a + b end
+local function get(v) local y = take(7, v); return y end
+local s = 0
+for i = 1, 30 do s = s + get(i) end
+return s`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// sum(7+i) i=1..30 = 30*7 + 465 = 675
+	if got := value.AsNumber(value.Value(rets[0])); got != 675 {
+		t.Errorf("rets = %v, want 675 (get(i)×30 each take(7,i)→7+i)", got)
+	}
+	if jit.SpecCallVoidHits() == 0 {
+		t.Errorf("SpecCallVoidHits = 0,PJ5 CALL getter K+R 形态 B1K1RR1 未真编译")
+	}
+}
