@@ -408,6 +408,26 @@ for i = 1, 30 do
   s = s + a + b + c
 end
 return s`},
+
+	// —— PJ5 4 参形态(setter / getter / tail)——
+	{"p4_call_void_upval_4argreg", `
+local sum = 0
+local function take(a, b, c, d) sum = sum + a + b + c + d end
+local function tick(u, v, w, x) take(u, v, w, x) end
+for i = 1, 10 do tick(i, i+1, i+2, i+3) end
+return sum`},
+	{"p4_call_getter_upval_4argreg", `
+local function take(a, b, c, d) return a + b + c + d end
+local function get(u, v, w, x) local y = take(u, v, w, x); return y end
+local s = 0
+for i = 1, 10 do s = s + get(i, i+1, i+2, i+3) end
+return s`},
+	{"p4_tailcall_upval_4argreg", `
+local function f(a, b, c, d) return a + b + c + d end
+local function bounce(u, v, w, x) return f(u, v, w, x) end
+local s = 0
+for i = 1, 10 do s = s + bounce(i, i+1, i+2, i+3) end
+return s`},
 }
 
 // TestP4_Tiered 三方对拍:oracle / crescent / p4-jit 全 byte-equal。

@@ -201,6 +201,9 @@ type shapeInfo struct {
 	callArg3IsK    bool
 	callArg3K      uint64
 	callArg3RegSrc uint8
+	callArg4IsK    bool
+	callArg4K      uint64
+	callArg4RegSrc uint8
 
 	// PJ5 TAILCALL 形态(`function() return f() end` 类):
 	//   - isTailCall = true:Run 端 prelude 路径调 host.TailCall 三态分支
@@ -1421,7 +1424,7 @@ func decodeArgFromOp(proto *bytecode.Proto, codeIdx int, expectA int,
 
 func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
 	codeLen := len(proto.Code)
-	if codeLen != 3 && codeLen != 4 && codeLen != 5 && codeLen != 6 && codeLen != 7 {
+	if codeLen != 3 && codeLen != 4 && codeLen != 5 && codeLen != 6 && codeLen != 7 && codeLen != 8 {
 		return shapeInfo{}, false
 	}
 	op0 := bytecode.Op(proto.Code[0])
@@ -1450,6 +1453,9 @@ func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
 	var arg3K uint64
 	var arg3Reg uint8
 	var arg3IsK bool
+	var arg4K uint64
+	var arg4Reg uint8
+	var arg4IsK bool
 	var argCount uint8
 	var argIsK bool
 	switch codeLen {
@@ -1642,9 +1648,10 @@ func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
 			argCount = 3
 		}
 	case 7:
-		// 长度 7 两种子形态(区分键:
+		// 长度 7 三种子形态(区分键:
 		//   Code[1] 是 CALL → 0 参 N=3 返值 getter
-		//   否则 → getter 3 参 1 返)
+		//   Code[5] 是 CALL → setter 4 参 0 返
+		//   否则 Code[4] 是 CALL → getter 3 参 1 返)
 		if bytecode.Op(proto.Code[1]) == bytecode.CALL {
 			// 0 参 N=3 返值 getter:[0] MOVE/GETUPVAL,[1] CALL B=1 C=4,
 			// [2..4] MOVE,[5] RETURN A=callA+3 B=4,[6] 隐式 RETURN B=1
@@ -1656,6 +1663,18 @@ func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
 			if bytecode.Op(implRet) != bytecode.RETURN || bytecode.B(implRet) != 1 {
 				return shapeInfo{}, false
 			}
+		} else if bytecode.Op(proto.Code[5]) == bytecode.CALL {
+			// setter 4 参 0 返:[0] MOVE/GETUPVAL,[1..4] (LOADK|MOVE),
+			// [5] CALL B=5 C=1,[6] RETURN B=1
+			if !decodeArgFromOp(proto, 1, op0A+1, &argIsK, &argK, &argReg) ||
+				!decodeArgFromOp(proto, 2, op0A+2, &arg2IsK, &arg2K, &arg2Reg) ||
+				!decodeArgFromOp(proto, 3, op0A+3, &arg3IsK, &arg3K, &arg3Reg) ||
+				!decodeArgFromOp(proto, 4, op0A+4, &arg4IsK, &arg4K, &arg4Reg) {
+				return shapeInfo{}, false
+			}
+			callIdx = 5
+			retIdx = 6
+			argCount = 4
 		} else {
 			// getter 3 参 1 返:[0] MOVE/GETUPVAL,[1..3] (LOADK|MOVE),
 			// [4] CALL B=4 C=2,[5] RETURN A=callA B=2,[6] 隐式 RETURN B=1
@@ -1672,6 +1691,30 @@ func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
 			if bytecode.Op(implRet) != bytecode.RETURN || bytecode.B(implRet) != 1 {
 				return shapeInfo{}, false
 			}
+		}
+	case 8:
+		// 长度 8 两种子形态(区分键:
+		//   Code[1] 是 CALL → 0 参 N=4 返值 getter(不在本批支持范围,留下一批)
+		//   Code[5] 是 CALL → getter 4 参 1 返)
+		if bytecode.Op(proto.Code[5]) == bytecode.CALL {
+			// getter 4 参 1 返:[0] MOVE/GETUPVAL,[1..4] (LOADK|MOVE),
+			// [5] CALL B=5 C=2,[6] RETURN A=callA B=2,[7] 隐式 RETURN B=1
+			if !decodeArgFromOp(proto, 1, op0A+1, &argIsK, &argK, &argReg) ||
+				!decodeArgFromOp(proto, 2, op0A+2, &arg2IsK, &arg2K, &arg2Reg) ||
+				!decodeArgFromOp(proto, 3, op0A+3, &arg3IsK, &arg3K, &arg3Reg) ||
+				!decodeArgFromOp(proto, 4, op0A+4, &arg4IsK, &arg4K, &arg4Reg) {
+				return shapeInfo{}, false
+			}
+			callIdx = 5
+			retIdx = 6
+			argCount = 4
+			// 校验 [7] 隐式 RETURN B=1
+			implRet := proto.Code[7]
+			if bytecode.Op(implRet) != bytecode.RETURN || bytecode.B(implRet) != 1 {
+				return shapeInfo{}, false
+			}
+		} else {
+			return shapeInfo{}, false
 		}
 	}
 
@@ -1754,6 +1797,9 @@ func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
 		callArg3IsK:    arg3IsK,
 		callArg3K:      arg3K,
 		callArg3RegSrc: arg3Reg,
+		callArg4IsK:    arg4IsK,
+		callArg4K:      arg4K,
+		callArg4RegSrc: arg4Reg,
 	}, true
 }
 
@@ -1812,8 +1858,8 @@ func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
 // 形态)或更后续 analyzeShape 主分流。
 func analyzeTailCallForm(proto *bytecode.Proto) (shapeInfo, bool) {
 	codeLen := len(proto.Code)
-	// TAILCALL 形态最短长度 4(0 参 + dead RETURN + 隐式 RETURN),最长 7(3 参)
-	if codeLen != 4 && codeLen != 5 && codeLen != 6 && codeLen != 7 {
+	// TAILCALL 形态最短长度 4(0 参 + dead RETURN + 隐式 RETURN),最长 8(4 参)
+	if codeLen != 4 && codeLen != 5 && codeLen != 6 && codeLen != 7 && codeLen != 8 {
 		return shapeInfo{}, false
 	}
 	op0 := bytecode.Op(proto.Code[0])
@@ -1835,6 +1881,9 @@ func analyzeTailCallForm(proto *bytecode.Proto) (shapeInfo, bool) {
 	var arg3K uint64
 	var arg3Reg uint8
 	var arg3IsK bool
+	var arg4K uint64
+	var arg4Reg uint8
+	var arg4IsK bool
 	var argCount uint8
 	var argIsK bool
 	switch codeLen {
@@ -1933,6 +1982,18 @@ func analyzeTailCallForm(proto *bytecode.Proto) (shapeInfo, bool) {
 		}
 		argCount = 3
 		tailIdx = 4
+	case 8:
+		// 4 参:[0] MOVE/GETUPVAL,[1..4] (LOADK|MOVE),[5] TAILCALL,
+		// [6] RETURN B=0,[7] RETURN B=1 — 四组合扩到 16 个但本批仅支持
+		// 全 K / 全 reg 混合(decodeArgFromOp 接受任何 LOADK/MOVE 组合)
+		if !decodeArgFromOp(proto, 1, op0A+1, &argIsK, &argK, &argReg) ||
+			!decodeArgFromOp(proto, 2, op0A+2, &arg2IsK, &arg2K, &arg2Reg) ||
+			!decodeArgFromOp(proto, 3, op0A+3, &arg3IsK, &arg3K, &arg3Reg) ||
+			!decodeArgFromOp(proto, 4, op0A+4, &arg4IsK, &arg4K, &arg4Reg) {
+			return shapeInfo{}, false
+		}
+		argCount = 4
+		tailIdx = 5
 	}
 
 	// 校验 TAILCALL + dead RETURN B=0 + 隐式 RETURN B=1 的尾部三元
@@ -1990,6 +2051,9 @@ func analyzeTailCallForm(proto *bytecode.Proto) (shapeInfo, bool) {
 		callArg3IsK:    arg3IsK,
 		callArg3K:      arg3K,
 		callArg3RegSrc: arg3Reg,
+		callArg4IsK:    arg4IsK,
+		callArg4K:      arg4K,
+		callArg4RegSrc: arg4Reg,
 	}, true
 }
 
@@ -2977,6 +3041,9 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 		callArg3IsK:    info.callArg3IsK,
 		callArg3K:      info.callArg3K,
 		callArg3RegSrc: info.callArg3RegSrc,
+		callArg4IsK:    info.callArg4IsK,
+		callArg4K:      info.callArg4K,
+		callArg4RegSrc: info.callArg4RegSrc,
 		isTailCall:     info.isTailCall,
 	}, nil
 }

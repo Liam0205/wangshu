@@ -269,6 +269,31 @@ return s`
 	}
 }
 
+// TestPJ5_TailCall_E2E_FormTB4R:形态 TB4R(4 reg 参 tail,长度 8)
+func TestPJ5_TailCall_E2E_FormTB4R(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local function f(a, b, c, d) return a + b + c + d end
+local function bounce(u, v, w, x) return f(u, v, w, x) end
+local s = 0
+for i = 1, 10 do s = s + bounce(i, i+1, i+2, i+3) end
+return s`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// sum(4i+6) i=1..10 = 280
+	if got := value.AsNumber(value.Value(rets[0])); got != 280 {
+		t.Errorf("rets = %v, want 280 (bounce(i,i+1,i+2,i+3)×10 each f→4i+6)", got)
+	}
+	if jit.SpecTailCallHits() == 0 {
+		t.Errorf("SpecTailCallHits = 0,PJ5 TAILCALL 4 reg 参形态 TB4R 未真编译")
+	}
+}
+
 // **注**:形态 TA* parameter-callee 形态(如 `function(g) return g() end`)真升层
 // 不可达 — P2 analyzer 把 parameter call 标 ReasonUnknownCall(parameter
 // 可能是 coroutine.yield),visitor 设计保守拒。形态 TA* 单测覆盖在 jit 包
