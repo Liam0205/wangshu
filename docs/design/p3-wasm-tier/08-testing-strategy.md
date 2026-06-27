@@ -55,6 +55,8 @@
 
 本文输出是 PW9 验收测试套清单(详见 §6)。`make all` 在 P3 实装后纳入的内容(承 [Makefile](../../../Makefile) `all: fmt lint test fuzz conformance difftest bench-test`):
 
+**P3 退役协议预设位**(2026-06-28,承 [P4 implementation-progress §2 RJ-22](../p4-method-jit/implementation-progress.md) 跨文档回填请求 + [P4 07 P3 去留决议](../p4-method-jit/07-p3-retirement.md) §5.1 缺省倾向):若 P4 验收通过后决议 P3 退役,**V1-V18 编号保留,由 P4 接续承担**(P4 08 §2 V1-V18 接续 + V19-V22 增项)。本文 V1-V18 测试单测在 P3 退役后转为 P4 build 下不豁免的纪律承诺(承 [P4 08 §0.2](../p4-method-jit/08-testing-strategy.md) + [P4 08 §10 迁移协议](../p4-method-jit/08-testing-strategy.md))。**具体迁移协议见 P4 §8 §10**。
+
 ```
 test/difftest/                     ← P1 差分套(P3 接入)
 ├── p3_test.go                     ← V1-V13 crescent vs gibbous 逐字节差分主体(本文 §2.6)
