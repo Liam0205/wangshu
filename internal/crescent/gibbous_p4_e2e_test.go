@@ -751,3 +751,15 @@ return f(7)`
 		t.Errorf("f(7) = 7*2+1 = %v, want 15", got)
 	}
 }
+
+// V11 协程不升层 e2e 留 PJ7 wangshu 公共面入口测试(test/luasuite/ 路径,
+// stdlib install 后 coroutine.create/resume 可用)。本包 internal/crescent
+// 用 loadFnP4 不注入 stdlib,无法构造 coroutine.create 入口。
+//
+// **V11 在 bridge 层已实装**:internal/bridge/bridge.go::considerPromotion
+// line 263-265 onMain=false 守门 → 协程内 considerPromotion 直接 return,
+// Proto 不升层。承 [07 §2.4] 协程线程上即便热度越阈值也不升层。
+//
+// 等 PJ7 端到端 luasuite 路径接入 coroutine + force-all P4 后,加 V11
+// 真业务路径 e2e。当前承 considerPromotion 内 onMain 守门 + bridge 单测
+// (TODO:加 internal/bridge 单测覆盖 onMain=false 路径)。
