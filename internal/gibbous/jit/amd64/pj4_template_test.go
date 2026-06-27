@@ -732,6 +732,55 @@ func TestPJ5_EmitFrameInlineWriteCIWord_Length(t *testing.T) {
 	}
 }
 
+// TestPJ5_EmitFrameInlineBuildVoid0ArgSkeleton_Length 验 amd64 Spike 1
+// enterLuaFrame 字节级 inline 骨架总长度(30 + 70 + 10 = 110 字节)。
+// 承 §9.20 Option B Spike 1。
+func TestPJ5_EmitFrameInlineBuildVoid0ArgSkeleton_Length(t *testing.T) {
+	var buf []byte
+	words := FrameInlineCISlotWords{
+		Word0: 0x0000000100000010, // funcIdx=1, base=0x10
+		Word1: 0x0000000000000020, // top=0x20
+		Word2: 0x0000000000000005, // protoID=5
+		Word3: 0xDEADBEEFCAFEBABE, // cl
+		Word4: 0,
+	}
+	buf = EmitFrameInlineBuildVoid0ArgSkeleton(buf, 0x40, 0x48, words)
+	if len(buf) != EncodedFrameInlineBuildVoid0ArgSkeletonLen {
+		t.Errorf("EmitFrameInlineBuildVoid0ArgSkeleton 长度 = %d, want %d",
+			len(buf), EncodedFrameInlineBuildVoid0ArgSkeletonLen)
+	}
+}
+
+// TestPJ5_EmitFrameInlineBuildVoid0ArgSkeleton_StructuralBoundaries 验骨架
+// 段间边界(LoadCISlotAddr 0-29 | WriteCIWord×5 30-99 | CIDepthInc 100-109)。
+// 通过查特征字节位置验证段堆叠正确。
+func TestPJ5_EmitFrameInlineBuildVoid0ArgSkeleton_StructuralBoundaries(t *testing.T) {
+	var buf []byte
+	words := FrameInlineCISlotWords{Word0: 1, Word1: 2, Word2: 3, Word3: 4, Word4: 5}
+	buf = EmitFrameInlineBuildVoid0ArgSkeleton(buf, 0x40, 0x48, words)
+
+	// LoadCISlotAddr 段末:add rax, rcx 在 offset 27-29(0x48 0x01 0xC8)
+	if buf[27] != 0x48 || buf[28] != 0x01 || buf[29] != 0xC8 {
+		t.Errorf("LoadCISlotAddr 段末 add rax,rcx 字节[27-29]=0x%02X%02X%02X, want 0x4801C8",
+			buf[27], buf[28], buf[29])
+	}
+	// WriteCIWord 段 word0 起:offset 30 mov rcx, imm64(0x48 0xB9)
+	if buf[30] != 0x48 || buf[31] != 0xB9 {
+		t.Errorf("WriteCIWord 段头 mov rcx imm64 字节[30-31]=0x%02X%02X, want 0x48B9",
+			buf[30], buf[31])
+	}
+	// CIDepthInc 段头:offset 100 mov rax, [r15+0x40](0x49 0x8B 0x87)
+	if buf[100] != 0x49 || buf[101] != 0x8B || buf[102] != 0x87 {
+		t.Errorf("CIDepthInc 段头 mov rax,[r15+disp32] 字节[100-102]=0x%02X%02X%02X, want 0x498B87",
+			buf[100], buf[101], buf[102])
+	}
+	// CIDepthInc 段末:offset 107-109 inc qword ptr [rax](0x48 0xFF 0x00)
+	if buf[107] != 0x48 || buf[108] != 0xFF || buf[109] != 0x00 {
+		t.Errorf("CIDepthInc 段末 inc qword ptr [rax] 字节[107-109]=0x%02X%02X%02X, want 0x48FF00",
+			buf[107], buf[108], buf[109])
+	}
+}
+
 // TestPJ5_EmitFrameInlineWriteCIWord_Encoding 验各 word_idx 关键字节
 // (mov rcx imm64 + mov [rax+wordIdx*8] rcx)。
 func TestPJ5_EmitFrameInlineWriteCIWord_Encoding(t *testing.T) {

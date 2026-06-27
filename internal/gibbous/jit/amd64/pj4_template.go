@@ -981,3 +981,53 @@ func EmitFrameInlineWriteCIWord(buf []byte, wordIdx uint8, imm64 uint64) []byte 
 // EncodedFrameInlineWriteCIWordLen 是「写 CI 帧 word_idx」字节级模板字节数
 // (10+4=14)。承 §9.20 Spike 1 caller 长度预算。
 const EncodedFrameInlineWriteCIWordLen = 14
+
+// FrameInlineCISlotWords amd64 端 Spike 1 用的 CI 帧 5 word 入参组(承
+// state.go::writeCISeg + packCIWord2;各 word 由 caller 编译期烧 imm64)。
+type FrameInlineCISlotWords struct {
+	Word0 uint64 // base | funcIdx << 32
+	Word1 uint64 // top | pc << 32
+	Word2 uint64 // protoID | nresults<<32 | flags<<48(tailcall<<48 / fresh<<49 / gibbous<<50)
+	Word3 uint64 // cl(arena.GCRef closure 镜像)
+	Word4 uint64 // nVarargs
+}
+
+// EmitFrameInlineBuildVoid0ArgSkeleton 发射 amd64 Spike 1 enterLuaFrame 字节级
+// inline 骨架(承 §9.20 Option B Spike 1):
+//
+//  1. LoadCISlotAddr:rax = CallInfo[depth] 帧起点字节地址(30 字节)
+//  2. WriteCIWord × 5:写 5 word(14*5 = 70 字节)
+//  3. CIDepthInc:ciDepth++(10 字节)
+//
+// **总长度**:30 + 70 + 10 = 110 字节
+//
+// **守门**(Spike 1 阶段 caller 必须保证):
+//   - callee.NumParams=0 + !IsVararg + !NeedsArg + MaxStack≤32
+//   - 各 word imm64 由 caller 编译期烧入(base / funcIdx / top / pc / protoID
+//     / nresults=0 / cl GCRef / nVarargs=0)
+//   - rax 在模板出口处为 CallInfo[depth] 帧地址(供后续 helper call / popCallInfo
+//     共用)
+//
+// **仍剩 Spike 1 后续工程**(本批不实装):
+//   - callee closure GCRef 解析(R(callA) → 解 NaN-box → cl GCRef 现算装 word3)
+//   - 跳 helper 入 callee 执行(executeFrom 或 callee P4 段)
+//   - popCallInfo 反向(LoadCISlotAddr + CIDepthDec)+ 多返值处理
+//   - Compile/Run 端接通 + e2e prove-the-path
+func EmitFrameInlineBuildVoid0ArgSkeleton(buf []byte,
+	ciDepthAddrOffset, ciSegBaseAddrOffset int32,
+	words FrameInlineCISlotWords) []byte {
+	// 1. rax = CallInfo[depth] 帧起点
+	buf = EmitFrameInlineLoadCISlotAddr(buf, ciDepthAddrOffset, ciSegBaseAddrOffset)
+	// 2. 写 5 word
+	buf = EmitFrameInlineWriteCIWord(buf, 0, words.Word0)
+	buf = EmitFrameInlineWriteCIWord(buf, 1, words.Word1)
+	buf = EmitFrameInlineWriteCIWord(buf, 2, words.Word2)
+	buf = EmitFrameInlineWriteCIWord(buf, 3, words.Word3)
+	buf = EmitFrameInlineWriteCIWord(buf, 4, words.Word4)
+	// 3. ciDepth++
+	buf = EmitFrameInlineCIDepthInc(buf, ciDepthAddrOffset)
+	return buf
+}
+
+// EncodedFrameInlineBuildVoid0ArgSkeletonLen = 30 + 14*5 + 10 = 110.
+const EncodedFrameInlineBuildVoid0ArgSkeletonLen = 110
