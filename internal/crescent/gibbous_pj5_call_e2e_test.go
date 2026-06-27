@@ -259,3 +259,58 @@ return sum`
 		t.Errorf("SpecCallVoidHits = 0,PJ5 CALL 2 reg 参形态 B2R 未真编译")
 	}
 }
+
+// TestPJ5_CallGetter_E2E_FormB1KR1:形态 B1KR1(GETUPVAL+LOADK+CALL B=2 C=2+RETURN A=callA B=2+dead)
+// 真升层 — `local function take(x) return x*2 end; local function get() local y = take(7); return y end`,
+// 1 K 参 1 返 getter。
+func TestPJ5_CallGetter_E2E_FormB1KR1(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local function take(x) return x * 2 end
+local function get() local y = take(7); return y end
+local s = 0
+for i = 1, 30 do s = s + get() end
+return s`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// get() × 30 each take(7)→14,sum=420
+	if got := value.AsNumber(value.Value(rets[0])); got != 420 {
+		t.Errorf("rets = %v, want 420 (get()×30 each take(7)→14)", got)
+	}
+	if jit.SpecCallVoidHits() == 0 {
+		t.Errorf("SpecCallVoidHits = 0,PJ5 CALL getter 1 K 参 1 返形态 B1KR1 未真编译")
+	}
+	t.Logf("SpecCallVoidHits=%d", jit.SpecCallVoidHits())
+}
+
+// TestPJ5_CallGetter_E2E_FormB1RR1:形态 B1RR1(GETUPVAL+MOVE+CALL B=2 C=2+RETURN A=callA B=2+dead)
+// 真升层 — `local function take(x) return x*2 end; local function get(v) local y = take(v); return y end`,
+// 1 reg 参 1 返 getter。
+func TestPJ5_CallGetter_E2E_FormB1RR1(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local function take(x) return x * 2 end
+local function get(v) local y = take(v); return y end
+local s = 0
+for i = 1, 30 do s = s + get(i) end
+return s`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// sum(take(i)) i=1..30 = sum(2i) = 2*465 = 930
+	if got := value.AsNumber(value.Value(rets[0])); got != 930 {
+		t.Errorf("rets = %v, want 930 (get(i)×30 each take(i)→2i)", got)
+	}
+	if jit.SpecCallVoidHits() == 0 {
+		t.Errorf("SpecCallVoidHits = 0,PJ5 CALL getter 1 reg 参 1 返形态 B1RR1 未真编译")
+	}
+}

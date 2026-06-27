@@ -309,6 +309,21 @@ local function bounce(u, v) return f(u, v) end
 local s = 0
 for i = 1, 10 do s = s + bounce(i, i+1) end
 return s`},
+
+	// —— PJ5 CALL getter 1 K/reg 参 1 返 — `function() local y = take(K); return y end` 类
+	// (`function(v) local y = take(v); return y end` 类),长度 5 但 CALL.B=2 C=2 区分 setter 2 参
+	{"p4_call_getter_upval_1argk", `
+local function take(x) return x * 2 end
+local function get() local y = take(7); return y end
+local s = 0
+for i = 1, 30 do s = s + get() end
+return s`},
+	{"p4_call_getter_upval_1argreg", `
+local function take(x) return x * 2 end
+local function get(v) local y = take(v); return y end
+local s = 0
+for i = 1, 30 do s = s + get(i) end
+return s`},
 }
 
 // TestP4_Tiered 三方对拍:oracle / crescent / p4-jit 全 byte-equal。
