@@ -877,3 +877,45 @@ func EmitFrameInlineWriteCIWordArm64(buf []byte, wordIdx uint8, imm64 uint64) []
 
 // EncodedFrameInlineWriteCIWordArm64Len = 20.
 const EncodedFrameInlineWriteCIWordArm64Len = 20
+
+// FrameInlineCISlotWordsArm64 arm64 端 Spike 1 用的 CI 帧 5 word 入参组
+// (对位 amd64 FrameInlineCISlotWords;同 layout 仅本地类型避免跨包引用)。
+type FrameInlineCISlotWordsArm64 struct {
+	Word0 uint64
+	Word1 uint64
+	Word2 uint64
+	Word3 uint64
+	Word4 uint64
+}
+
+// EmitFrameInlineBuildVoid0ArgSkeletonArm64 发射 arm64 Spike 1 enterLuaFrame
+// 字节级 inline 骨架(承 §9.20 Option B Spike 1,对位 amd64 110 字节)。
+//
+// 段堆叠:
+//  1. LoadCISlotAddrArm64:x0 = CallInfo[depth] 帧起点(40 字节)
+//  2. WriteCIWordArm64 × 5:写 5 word(20*5 = 100 字节)
+//  3. CIDepthIncArm64:ciDepth++(16 字节)
+//
+// **总长度**:40 + 100 + 16 = 156 字节(对位 amd64 = 110,arm64 多 46 字节
+// 因 RISC fixed-length + MovXdImm64 16 字节 vs amd64 mov rcx imm64 10 字节)。
+//
+// arm64 寄存器约定:x0 装段地址(对位 amd64 rax)/ x16/17/18 scratch
+// (IP0/IP1/IP2,callee 可任意改写)。
+func EmitFrameInlineBuildVoid0ArgSkeletonArm64(buf []byte,
+	ciDepthAddrOffset, ciSegBaseAddrOffset uint16,
+	words FrameInlineCISlotWordsArm64) []byte {
+	// 1. x0 = CallInfo[depth] 帧起点
+	buf = EmitFrameInlineLoadCISlotAddrArm64(buf, ciDepthAddrOffset, ciSegBaseAddrOffset)
+	// 2. 写 5 word
+	buf = EmitFrameInlineWriteCIWordArm64(buf, 0, words.Word0)
+	buf = EmitFrameInlineWriteCIWordArm64(buf, 1, words.Word1)
+	buf = EmitFrameInlineWriteCIWordArm64(buf, 2, words.Word2)
+	buf = EmitFrameInlineWriteCIWordArm64(buf, 3, words.Word3)
+	buf = EmitFrameInlineWriteCIWordArm64(buf, 4, words.Word4)
+	// 3. ciDepth++
+	buf = EmitFrameInlineCIDepthIncArm64(buf, ciDepthAddrOffset)
+	return buf
+}
+
+// EncodedFrameInlineBuildVoid0ArgSkeletonArm64Len = 40 + 20*5 + 16 = 156.
+const EncodedFrameInlineBuildVoid0ArgSkeletonArm64Len = 156

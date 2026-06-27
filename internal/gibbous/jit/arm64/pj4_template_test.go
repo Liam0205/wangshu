@@ -1054,6 +1054,25 @@ func TestPJ8_EmitFrameInlineWriteCIWordArm64_Length(t *testing.T) {
 	}
 }
 
+// TestPJ8_EmitFrameInlineBuildVoid0ArgSkeletonArm64_Length 验 arm64 Spike 1
+// enterLuaFrame 字节级 inline 骨架总长度(40 + 100 + 16 = 156 字节,
+// 对位 amd64 = 110)。
+func TestPJ8_EmitFrameInlineBuildVoid0ArgSkeletonArm64_Length(t *testing.T) {
+	var buf []byte
+	words := FrameInlineCISlotWordsArm64{
+		Word0: 0x0000000100000010,
+		Word1: 0x0000000000000020,
+		Word2: 0x0000000000000005,
+		Word3: 0xDEADBEEFCAFEBABE,
+		Word4: 0,
+	}
+	buf = EmitFrameInlineBuildVoid0ArgSkeletonArm64(buf, 56, 64, words)
+	if len(buf) != EncodedFrameInlineBuildVoid0ArgSkeletonArm64Len {
+		t.Errorf("EmitFrameInlineBuildVoid0ArgSkeletonArm64 长度 = %d, want %d",
+			len(buf), EncodedFrameInlineBuildVoid0ArgSkeletonArm64Len)
+	}
+}
+
 // TestPJ8_EmitFrameInlineWriteCIWordArm64_Encoding 验各 word_idx STR pimm12 编码。
 func TestPJ8_EmitFrameInlineWriteCIWordArm64_Encoding(t *testing.T) {
 	for _, wordIdx := range []uint8{0, 1, 2, 3, 4} {
