@@ -707,6 +707,39 @@ local sum = 0
 for i = 1, 100 do sum = sum + caller(o, i) end
 sum = sum + caller(o, 1000)
 return sum`},
+	// —— PJ5 SELF + CALL spec template N=2 返 drop multi-ret 形态(承上批
+	// form4..N cC=3/4 retB=1 守门扩):caller `local a,b = t:m(K×N)` 形态,
+	// host.CallBaseline 按 callC 落 N 返值 R(callA..) 作 local 直接绑;
+	// 主调 RETURN B=1 经 host.DoReturn 弹 0 返值收尾(两层协议解耦)——
+	// 验三方 byte-equal。
+	{"p4_self_spec_multiret_0arg", `
+local count = 0
+local mt = { m = function(self) count = count + 1; return 1, 2 end }
+local function caller(_, t) local a, b = t:m() end
+for i = 1, 100 do caller(nil, mt) end
+caller(nil, mt)
+return count`},
+	{"p4_self_spec_multiret_1karg", `
+local count = 0
+local mt = { m = function(self, k) count = count + k; return 1, 2 end }
+local function caller(_, t) local a, b = t:m(7) end
+for i = 1, 100 do caller(nil, mt) end
+caller(nil, mt)
+return count`},
+	{"p4_self_spec_multiret_3kargs", `
+local count = 0
+local mt = { m = function(self, x, y, z) count = count + x + y + z; return 1, 2 end }
+local function caller(_, t) local a, b = t:m(7, 8, 9) end
+for i = 1, 100 do caller(nil, mt) end
+caller(nil, mt)
+return count`},
+	{"p4_self_spec_multiret_5kargs", `
+local count = 0
+local mt = { m = function(self, x, y, z, w, v) count = count + x + y + z + w + v; return 1, 2 end }
+local function caller(_, t) local a, b = t:m(7, 8, 9, 10, 11) end
+for i = 1, 100 do caller(nil, mt) end
+caller(nil, mt)
+return count`},
 }
 
 // TestP4_Tiered 三方对拍:oracle / crescent / p4-jit 全 byte-equal。
