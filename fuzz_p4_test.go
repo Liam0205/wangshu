@@ -67,6 +67,19 @@ return f(o1, o2)`,
 		`return ("a" == "a")`,
 		// 闭包 + upvalue
 		`local function make() local x = 0; return function() x = x + 1; return x end end; local f = make(); return f() + f() + f()`,
+		// PJ4 表 IC + grow(承 V20 deopt 风暴同款 shape 多态)
+		`local t = {a=1, b=2}; local function f(t) return t.a end; for i = 1, 100 do f(t) end; return f(t)`,
+		`local t = {1, 2, 3}; local function g(t) t[1] = 99; return t[1] end; for i = 1, 100 do g(t) end; return g(t)`,
+		// SELF + deopt(不同 shape receiver)
+		`local m1 = {m = function(self) return 1 end}; local m2 = {m = function(self) return 2 end, x = 1}; local f = function(t) return t:m() end; for i = 1, 50 do f(m1) end; return f(m2)`,
+		// N=4 返多形态(承 84c7ed4 cC=5)
+		`local mt = {m = function(self) return 1, 2, 3, 4 end}; local function caller(t) local a, b, c, d = t:m(); return a+b+c+d end; for i = 1, 50 do caller(mt) end; return caller(mt)`,
+		// 嵌套 SELF 链
+		`local o1 = {m = function(self) return 10 end}; local o2 = {n = function(self) return 20 end}; local function f(a, b) return a:m() + b:n() end; for i = 1, 50 do f(o1, o2) end; return f(o1, o2)`,
+		// 算术错误冒泡
+		`local function add(a, b) return a + b end; local ok, e = pcall(add, "x", 1); return ok`,
+		// 错误冒泡 + SELF
+		`local mt = {m = 42}; local ok, e = pcall(function() return mt:m() end); return ok`,
 	}
 	for _, s := range seeds {
 		f.Add(s)
