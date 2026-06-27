@@ -1676,7 +1676,7 @@ PJ0 启动后,本文按以下协议更新(承 [P3 implementation-progress §5](.
 
 | 类目 | 数字 | 来源 |
 |---|---|---|
-| difftest 三方 byte-equal | **61 用例**(p4Corpus 含 14 SELF spec template 含 3 错误冒泡 + 11 SELF inline + 36 其他) | test/difftest/p4_test.go |
+| difftest 三方 byte-equal | **63 用例**(p4Corpus 含 14 SELF spec template 含 3 错误冒泡 + 11 SELF inline + 2 SELF inline 错误冒泡 + 36 其他) | test/difftest/p4_test.go |
 | e2e prove-the-path | **26 用例** SpecSelfCallSpecHits 命中实证 + 26 PJ7 算术/IC/SELF inline | internal/crescent/gibbous_*_e2e_test.go |
 | 单测(字节级模板 + 守门) | **20 单测**(analyzeSelfCallSpecForm 5 反向 + isValidSpecCallRetCount 11 表驱动 + analyzeSelfCallForm 2 codeLen + 2 V11 bridge) | internal/gibbous/jit + bridge |
 | V18 -race 多 State 并发 | **5 测试**(ConcurrentForceAll + MultiRet + SpecDeopt + R14ABI GCStress/ConcurrentGC/DeepStack) | test/difftest/p4_test.go + internal/crescent |
