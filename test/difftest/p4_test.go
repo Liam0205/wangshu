@@ -192,6 +192,15 @@ local function noop() count = count + 1 end
 local function invoker() noop() end
 for i = 1, 30 do invoker() end
 return count`},
+
+	// —— PJ5 CALL void 形态 B1K:GETUPVAL+LOADK+CALL+RETURN void(1 K 常量参)
+	// (`local function take(x)...end; local function tick() take(K) end` 闭包调外层 + 1 K 常量参)——
+	{"p4_call_void_upval_1argk", `
+local sum = 0
+local function take(x) sum = sum + x end
+local function tick() take(42) end
+for i = 1, 30 do tick() end
+return sum`},
 }
 
 // TestP4_Tiered 三方对拍:oracle / crescent / p4-jit 全 byte-equal。
