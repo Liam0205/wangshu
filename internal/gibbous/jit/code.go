@@ -165,6 +165,9 @@ type p4Code struct {
 	callArg6IsK    bool
 	callArg6K      uint64
 	callArg6RegSrc uint8
+	callArg7IsK    bool
+	callArg7K      uint64
+	callArg7RegSrc uint8
 
 	// PJ5 TAILCALL 路径标志(承 docs/design/p4-method-jit/05-system-pipeline.md §4.3):
 	//   - isTailCall = true:Run prelude 路径调 host.TailCall 三态分支:
@@ -559,6 +562,15 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 					arg6Val = c.host.GetReg(int32(c.callArg6RegSrc))
 				}
 				c.host.SetReg(int32(c.callA)+6, arg6Val)
+			}
+			if c.callArgCount >= 7 {
+				var arg7Val uint64
+				if c.callArg7IsK {
+					arg7Val = c.callArg7K
+				} else {
+					arg7Val = c.host.GetReg(int32(c.callArg7RegSrc))
+				}
+				c.host.SetReg(int32(c.callA)+7, arg7Val)
 			}
 			// baseline doCall:绕过 R3 indirect 哨兵(本简化形态不支持段内
 			// call_indirect),host/crescent/__call/gibbous 全形态同步跑完。

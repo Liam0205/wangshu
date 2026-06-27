@@ -510,6 +510,20 @@ for i = 1, 30 do
   s = s + a + b + c
 end
 return s`},
+
+	// —— PJ5 7 参形态(setter 长度 10,getter 长度 11)——
+	{"p4_call_void_upval_7argk", `
+local sum = 0
+local function take(a, b, c, d, e, f, g) sum = sum + a + b + c + d + e + f + g end
+local function tick() take(1, 2, 3, 4, 5, 6, 7) end
+for i = 1, 30 do tick() end
+return sum`},
+	{"p4_call_getter_upval_7argreg", `
+local function take(a, b, c, d, e, f, g) return a + b + c + d + e + f + g end
+local function get(a, b, c, d, e, f, g) local z = take(a, b, c, d, e, f, g); return z end
+local total = 0
+for i = 1, 10 do total = total + get(i, i+1, i+2, i+3, i+4, i+5, i+6) end
+return total`},
 }
 
 // TestP4_Tiered 三方对拍:oracle / crescent / p4-jit 全 byte-equal。

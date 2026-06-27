@@ -818,3 +818,53 @@ return s`
 		t.Errorf("SpecCallVoidHits = 0,PJ5 CALL 1 reg 参 N=3 返值形态 B1RRetN3 未真编译")
 	}
 }
+
+// TestPJ5_CallVoid_E2E_FormB7K:7 K 参 setter,长度 10
+func TestPJ5_CallVoid_E2E_FormB7K(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local sum = 0
+local function take(a, b, c, d, e, f, g) sum = sum + a + b + c + d + e + f + g end
+local function tick() take(1, 2, 3, 4, 5, 6, 7) end
+for i = 1, 30 do tick() end
+return sum`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// sum = 30 * (1+2+3+4+5+6+7) = 30*28 = 840
+	if got := value.AsNumber(value.Value(rets[0])); got != 840 {
+		t.Errorf("rets = %v, want 840 (tick()×30 each take(1..7)=28)", got)
+	}
+	if jit.SpecCallVoidHits() == 0 {
+		t.Errorf("SpecCallVoidHits = 0,PJ5 CALL 7 K 参形态 B7K 未真编译")
+	}
+}
+
+// TestPJ5_CallGetter_E2E_FormB7RR1:7 reg 参 1 返 getter,长度 11
+func TestPJ5_CallGetter_E2E_FormB7RR1(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local function take(a, b, c, d, e, f, g) return a + b + c + d + e + f + g end
+local function get(a, b, c, d, e, f, g) local z = take(a, b, c, d, e, f, g); return z end
+local total = 0
+for i = 1, 10 do total = total + get(i, i+1, i+2, i+3, i+4, i+5, i+6) end
+return total`
+	st, mainCl := loadFnP4(t, src)
+	st.bridge.SetForceAllPromote(true)
+
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// sum(7i+21) i=1..10 = 7*55 + 210 = 595
+	if got := value.AsNumber(value.Value(rets[0])); got != 595 {
+		t.Errorf("rets = %v, want 595 (get(...)×10 each take→7i+21)", got)
+	}
+	if jit.SpecCallVoidHits() == 0 {
+		t.Errorf("SpecCallVoidHits = 0,PJ5 CALL getter 7 reg 参形态 B7RR1 未真编译")
+	}
+}
