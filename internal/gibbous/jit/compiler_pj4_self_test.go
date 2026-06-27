@@ -68,7 +68,7 @@ func TestPJ4_SelfArrayHit_MainPath_Synthesized(t *testing.T) {
 	feedback := &bridge.TypeFeedback{
 		Points: []bridge.PointFeedback{
 			{
-				Kind:        bridge.FBTableMono,
+				Kind:        bridge.FBSelfMono,
 				Confidence:  1.0,
 				StableShape: 7,
 				StableIndex: 1,
@@ -249,7 +249,7 @@ func TestPJ4_SelfNodeHit_MainPath_Synthesized(t *testing.T) {
 	feedback := &bridge.TypeFeedback{
 		Points: []bridge.PointFeedback{
 			{
-				Kind:        bridge.FBTableMono,
+				Kind:        bridge.FBSelfMono,
 				Confidence:  1.0,
 				StableShape: 7,
 				StableIndex: 1,

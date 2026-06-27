@@ -575,7 +575,7 @@ func analyzeSelfArrayHit(proto *bytecode.Proto, feedback *bridge.TypeFeedback) (
 		return shapeInfo{}, false
 	}
 	pf := feedback.Points[0]
-	if pf.Kind != bridge.FBTableMono || pf.Confidence < 0.99 {
+	if pf.Kind != bridge.FBSelfMono || pf.Confidence < 0.99 {
 		return shapeInfo{}, false
 	}
 	if pf.StableShape != icSlot.Shape || pf.StableIndex != icSlot.Index {
@@ -734,7 +734,7 @@ func analyzeSelfNodeHit(proto *bytecode.Proto, feedback *bridge.TypeFeedback) (s
 		return shapeInfo{}, false
 	}
 	pf := feedback.Points[0]
-	if pf.Kind != bridge.FBTableMono || pf.Confidence < 0.99 {
+	if pf.Kind != bridge.FBSelfMono || pf.Confidence < 0.99 {
 		return shapeInfo{}, false
 	}
 	if pf.StableShape != icSlot.Shape || pf.StableIndex != icSlot.Index {
