@@ -83,6 +83,8 @@ func ResetSpecHits() {
 	atomic.StoreUint64(&specCallVoidHits, 0)
 	atomic.StoreUint64(&specTailCallHits, 0)
 	atomic.StoreUint64(&specSelfCallHits, 0)
+	atomic.StoreUint64(&specP4DeoptHits, 0)
+	atomic.StoreUint64(&specP4StuckHits, 0)
 }
 
 // incSpecRegKHits 包内 ++(Compile 触发 useSpecRegK 时调)。
