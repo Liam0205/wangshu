@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/Liam0205/wangshu/internal/arena"
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
@@ -64,6 +65,12 @@ return sum`
 
 // TestPJ4PJ5_R14ABI_ConcurrentGC 多 goroutine 并发跑 spec template + GC
 // stress,验 Go runtime stop-the-world 取所有 g 时 g 正确。
+//
+// **修正(PR #26 评论 d8a5899..83f0b2e 重要建议)**:
+//   - callersWG 单独追 caller goroutine 完成,GC stresser 在 caller 全程
+//     运行,显著扩大「并发 GC + stop-the-world 取 g」重叠窗口
+//   - loadFnP4 内调 t.Fatalf 仅安全在主 goroutine,所有 State 预先在主
+//     线程构造,goroutine 内只跑 st.Call(返 error 路径)
 func TestPJ4PJ5_R14ABI_ConcurrentGC(t *testing.T) {
 	const goroutines = 8
 	const itersPerGoroutine = 30
@@ -76,13 +83,31 @@ for i = 1, 50 do sum = sum + caller(nil, mt, i) end  -- warmup
 sum = sum + caller(nil, mt, 100)
 return sum`
 
-	var wg sync.WaitGroup
-	wg.Add(goroutines + 1)
+	// 主线程预编译 N 个 State(loadFnP4 内含 t.Fatalf,只在主 goroutine 安全)
+	type stateBundle struct {
+		st     *State
+		mainCl arena.GCRef
+	}
+	bundles := make([]stateBundle, goroutines)
+	for g := 0; g < goroutines; g++ {
+		st, mainCl := loadFnP4(t, src)
+		// warmup phase 1 + force-all(主线程顺序跑,避免 goroutine 内 t.Fatalf)
+		if _, err := st.Call(value.GCRefOf(mainCl), nil, 1); err != nil {
+			t.Fatalf("bundle %d warmup: %v", g, err)
+		}
+		st.bridge.SetForceAllPromote(true)
+		bundles[g] = stateBundle{st: st, mainCl: value.GCRefOf(mainCl)}
+	}
 
-	// goroutine 0: GC stresser
+	// callers wg + GC stresser 独立 goroutine
+	var callersWG sync.WaitGroup
+	callersWG.Add(goroutines)
+
 	stopGC := make(chan struct{})
+	var gcWG sync.WaitGroup
+	gcWG.Add(1)
 	go func() {
-		defer wg.Done()
+		defer gcWG.Done()
 		for {
 			select {
 			case <-stopGC:
@@ -94,18 +119,13 @@ return sum`
 		}
 	}()
 
-	// goroutine 1..N: 跑 spec template
+	// callers:并发跑 spec template
 	for g := 0; g < goroutines; g++ {
 		go func(idx int) {
-			defer wg.Done()
-			st, mainCl := loadFnP4(t, src)
-			if _, err := st.Call(value.GCRefOf(mainCl), nil, 1); err != nil {
-				t.Errorf("goroutine %d warmup: %v", idx, err)
-				return
-			}
-			st.bridge.SetForceAllPromote(true)
+			defer callersWG.Done()
+			b := bundles[idx]
 			for i := 0; i < itersPerGoroutine; i++ {
-				if _, err := st.Call(value.GCRefOf(mainCl), nil, 1); err != nil {
+				if _, err := b.st.Call(b.mainCl, nil, 1); err != nil {
 					t.Errorf("goroutine %d iter %d: %v", idx, i, err)
 					return
 				}
@@ -113,18 +133,11 @@ return sum`
 		}(g)
 	}
 
-	// 等所有 caller goroutine 完成
-	waitCallers := make(chan struct{})
-	go func() {
-		defer close(waitCallers)
-		for g := 0; g < goroutines; g++ {
-			// 等 caller goroutine 完成依靠 wg.Done(),无需额外信号
-		}
-	}()
-
-	// 等所有 goroutine + 停 GC stresser
+	// 等所有 caller 完成,然后停 GC stresser(承评论修正:
+	// caller 全程 GC stress 显性化「并发 GC + stop-the-world 取 g」)
+	callersWG.Wait()
 	close(stopGC)
-	wg.Wait()
+	gcWG.Wait()
 }
 
 // TestPJ4PJ5_R14ABI_DeepStack 深递归(20 层)触发 morestack 拷栈,验
