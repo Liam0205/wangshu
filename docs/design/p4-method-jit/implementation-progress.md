@@ -1653,6 +1653,59 @@ PJ0 启动后,本文按以下协议更新(承 [P3 implementation-progress §5](.
 
 ---
 
+## 13. PJ10 amd64 端验收数字汇总(2026-06-28)
+
+承 §10 维护协议第 5 条:**PJ10 总验收过线后,头部状态改「P4 已交付」+ 验收数字汇总**。当前 PJ10 **amd64 端已完整达标**(承 §12 V1-V13/V14/V15-部分/V16-V20/V22 fuzz harness 全过),但 **arm64 端 ⏳ 物理 runner**,不改头部「P4 已交付」状态;先在本节给 **amd64 端中期验收数字汇总**,等 arm64 物理 runner 接入后并入完整双架构汇总。
+
+### 13.1 性能数字汇总(amd64 Xeon 6982P / Linux amd64)
+
+**PJ3 FORLOOP 字节级 inline**(承 §8):
+- 100 iter 空 body:**8.11x over cres** + **7.15x over gopher-lua**
+- 1000 iter 空 body:**17.53x over cres** + **21.20x over gopher**
+- 10000 iter 空 body:**20.09x over cres** + **25.41x over gopher**(P4 270μs / gopher 6.9ms)
+- 含 body 1000/10000 iter:**7.23/7.36x over cres** + **10.18/10.83x over gopher**
+
+**luajc 档基线 4.4x**,**全部远超**(7-25x over gopher-lua)。
+
+**PJ5 SELF spec template**(承 §9.19):
+- 简单 method 体(count++):0 参 **1.12x 慢** / 1 reg 参 1.094x / 3 reg 参 1.018x / 4 K 参 1.103x(N=8 边界)
+- 计算密集 method 体(FORLOOP):0 参 **0.94x 快 6%**(反超 cres)/ 1 reg 参 0.94x / 3 reg 参 1.018x / N=4 返 **1.011x 持平**
+- 真实业务 OOP 场景:**method 加速主导,trampoline 摊薄,真实业务路径达 0.94-1.011x 反超或持平 cres**
+
+### 13.2 测试矩阵(amd64)
+
+| 类目 | 数字 | 来源 |
+|---|---|---|
+| difftest 三方 byte-equal | **58 用例**(p4Corpus 含 24 SELF spec template + 11 SELF inline + 23 其他) | test/difftest/p4_test.go |
+| e2e prove-the-path | **26 用例** SpecSelfCallSpecHits 命中实证 + 26 PJ7 算术/IC/SELF inline | internal/crescent/gibbous_*_e2e_test.go |
+| 单测(字节级模板 + 守门) | **20 单测**(analyzeSelfCallSpecForm 5 反向 + isValidSpecCallRetCount 11 表驱动 + analyzeSelfCallForm 2 codeLen + 2 V11 bridge) | internal/gibbous/jit + bridge |
+| V18 -race 多 State 并发 | **5 测试**(ConcurrentForceAll + MultiRet + SpecDeopt + R14ABI GCStress/ConcurrentGC/DeepStack) | test/difftest/p4_test.go + internal/crescent |
+| 字节级 emit 模板单测 | **64+ 单测**(PJ4 IC 六模板 + PJ5 SELF spec template + Spike 1 字节级积木) | internal/gibbous/jit/{amd64,arm64} |
+| V22 fuzz harness | **24 seeds + 1.5M execs**(CI fuzz-smoke (p4) + nightly-diff-fuzz 自动接入) | fuzz_p4_test.go |
+| OSR exit 协议真业务路径 | **SpecP4DeoptHits +6**(单 deopt)+ **+15**(5 caller deopt 风暴) | OSRExitToDeopt + DeoptStorm e2e |
+
+### 13.3 工程修复成就(本阶段)
+
+- **R14 ABI 违约修复**(承 PR #26 外部审查闭环 5b28c8a + §9.20.6 (6.5)):trampoline_spec/full_amd64.s 加 PUSH/POP R14 保 Go G,补 3 R14 ABI 后验测试 + V18 -race 全过
+- **Option B Spike 1 字节级 emit 模板全套**(承 §9.20 + §9.20.6 + §9.20.7):amd64 110/120 字节 BuildVoid0ArgSkeleton + arm64 156/164 字节对位 + helpers.go panic 占位 + archSupportsFrameInline 闸门 + 探针;真接入 4-5 周工程(等 trampoline exit-resume 协议改造)
+- **23 RJ-* 跨文档回填**:本会话 §2.1-2.4 RJ-1/3/4/5/7/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29 + 既有 RJ-11/31/36 闭合,余 3 项条件性 / 用户决策性
+
+### 13.4 amd64 PJ10 达标判定 + 双架构闭环 prerequisite
+
+**amd64 PJ10 中期判定**(2026-06-28):**已达标**(V1-V13/V14/V15-部分/V16-V20/V22 fuzz harness 全过)。
+
+**双架构完整闭环 prerequisite**(等真正不可达项):
+1. ⏳ arm64 物理 self-hosted runner CI 接入(物理依赖)
+2. ⏳ V14 arm64 luajc 档实测(承 1 接入)
+3. ⏳ V18 arm64 -race(承 1 接入)
+4. ⏳ V21 longevity nightly 30 天累积(时间窗依赖)
+5. ⏳ V22 30 天累积无 guard 漏判事件(时间窗依赖)
+6. ⏳ Spike 1 真接入完成(trampoline exit-resume 协议改造,4-5 周工程)
+
+**等以上 6 项闭合,§0 头部状态改 "P4 已交付"**(承 §10.5)+ §11/§12 数据更新触发 P3 退役决议拍板(承 §10.7 RJ-12 条件性)。
+
+---
+
 相关:
 - [00-overview](./00-overview.md)(P4 总览,本文是其 §4 PJ 表的运行期对账 + §6 跨文档定稿决策收口)
 - [01-launch-judgment](./01-launch-judgment.md)~[08-testing-strategy](./08-testing-strategy.md)(各子系统设计文档,本文 §2 聚合其 §回填请求节)
