@@ -1352,3 +1352,80 @@ return count`
 	}
 	t.Logf("SpecSelfCallSpecHits: %d → %d", specBefore, specAfter)
 }
+
+// TestPJ5_SelfCall_E2E_SpecTemplate_MultiRetN8_0Param PJ5 SELF + CALL form4
+// **N=8 返**(cC=9)0 参形态(`local a..h = t:m()`)spec template — 验
+// isValidSpecCallRetCount cC∈{1,3..16} 上界附近边界(N=15 是上界,N=8 是
+// 实用业务多返值常见上界,本测试代表实用场景)。
+//
+// caller 编出 4 op:MOVE+SELF+CALL B=2 C=9+RETURN B=1
+// (8 返 callee 落 R(callA..callA+7))。
+func TestPJ5_SelfCall_E2E_SpecTemplate_MultiRetN8_0Param(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local count = 0
+local mt = { m = function(self) count = count + 1; return 1, 2, 3, 4, 5, 6, 7, 8 end }
+local function caller(_, t) local a, b, c, d, e, f, g, h = t:m() end
+for i = 1, 100 do caller(nil, mt) end
+caller(nil, mt)
+return count`
+	st, mainCl := loadFnP4(t, src)
+
+	_, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 1 run: %v", err)
+	}
+
+	st.bridge.SetForceAllPromote(true)
+	specBefore := jit.SpecSelfCallSpecHits()
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 2 run: %v", err)
+	}
+	if got := value.AsNumber(value.Value(rets[0])); got != 101 {
+		t.Errorf("Phase 2 result = %v, want 101", got)
+	}
+	specAfter := jit.SpecSelfCallSpecHits()
+	if specAfter <= specBefore {
+		t.Errorf("SpecSelfCallSpecHits 未增长 → form4 N=8 返 0 参 spec 未命中")
+	}
+	t.Logf("SpecSelfCallSpecHits: %d → %d(N=8 返 cC=9)", specBefore, specAfter)
+}
+
+// TestPJ5_SelfCall_E2E_SpecTemplate_MultiRetN15_0Param PJ5 SELF + CALL form4
+// **N=15 返**(cC=16)0 参——验 isValidSpecCallRetCount cC<=16 严格上界。
+// 注:cC=16 是 spec template 允许的最大 N=15 返;cC=17 应被守门拒。
+func TestPJ5_SelfCall_E2E_SpecTemplate_MultiRetN15_0Param(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local count = 0
+local mt = { m = function(self) count = count + 1; return 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15 end }
+local function caller(_, t)
+  local a,b,c,d,e,f,g,h,i,j,k,l,m,n,o = t:m()
+end
+for i = 1, 100 do caller(nil, mt) end
+caller(nil, mt)
+return count`
+	st, mainCl := loadFnP4(t, src)
+
+	_, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 1 run: %v", err)
+	}
+
+	st.bridge.SetForceAllPromote(true)
+	specBefore := jit.SpecSelfCallSpecHits()
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("Phase 2 run: %v", err)
+	}
+	if got := value.AsNumber(value.Value(rets[0])); got != 101 {
+		t.Errorf("Phase 2 result = %v, want 101", got)
+	}
+	specAfter := jit.SpecSelfCallSpecHits()
+	if specAfter <= specBefore {
+		t.Errorf("SpecSelfCallSpecHits 未增长 → form4 N=15 返 0 参 spec 未命中")
+	}
+	t.Logf("SpecSelfCallSpecHits: %d → %d(N=15 返 cC=16,上界严格)",
+		specBefore, specAfter)
+}

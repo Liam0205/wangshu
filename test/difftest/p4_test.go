@@ -776,6 +776,23 @@ local function caller(_, t) local a, b, c, d = t:m(7, 8, 9) end
 for i = 1, 100 do caller(nil, mt) end
 caller(nil, mt)
 return count`},
+	// N=8 / N=15 上界附近(cC=9 / cC=16,验 isValidSpecCallRetCount 严格上界):
+	{"p4_self_spec_multiret_n8_0arg", `
+local count = 0
+local mt = { m = function(self) count = count + 1; return 1, 2, 3, 4, 5, 6, 7, 8 end }
+local function caller(_, t) local a, b, c, d, e, f, g, h = t:m() end
+for i = 1, 100 do caller(nil, mt) end
+caller(nil, mt)
+return count`},
+	{"p4_self_spec_multiret_n15_0arg", `
+local count = 0
+local mt = { m = function(self) count = count + 1; return 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15 end }
+local function caller(_, t)
+  local a,b,c,d,e,f,g,h,i,j,k,l,m,n,o = t:m()
+end
+for i = 1, 100 do caller(nil, mt) end
+caller(nil, mt)
+return count`},
 }
 
 // TestP4_Tiered 三方对拍:oracle / crescent / p4-jit 全 byte-equal。
