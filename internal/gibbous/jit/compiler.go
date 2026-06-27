@@ -191,10 +191,12 @@ type shapeInfo struct {
 	callB          uint8
 	callC          uint8
 	callArgCount   uint8  // 0 / 1 / 2
-	callArg1IsK    bool   // 1 参形态时 true=LOADK / false=MOVE reg;2 K 参形态恒 true
-	callArg1K      uint64 // 1 或 2 K 参形态时第一个 K
-	callArg1RegSrc uint8  // 1 reg 参形态时 MOVE.B 源 reg 号
-	callArg2K      uint64 // 2 K 参形态时第二个 K
+	callArg1IsK    bool   // 1 参形态时 true=LOADK / false=MOVE reg;2 参形态对应第一参
+	callArg1K      uint64 // 1 K / 2 参第一参 K 形态时的 K 值
+	callArg1RegSrc uint8  // 1 reg / 2 参第一参 R 形态时的 MOVE.B 源 reg 号
+	callArg2IsK    bool   // 2 参形态时 true=LOADK / false=MOVE reg(原 2 K 形态恒 true)
+	callArg2K      uint64 // 2 参第二参 K 形态时的 K 值
+	callArg2RegSrc uint8  // 2 参第二参 R 形态时的 MOVE.B 源 reg 号
 
 	// PJ5 TAILCALL 形态(`function() return f() end` 类):
 	//   - isTailCall = true:Run 端 prelude 路径调 host.TailCall 三态分支
@@ -1398,11 +1400,14 @@ func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
 	//   - [1]=CALL B=1 C=2 + [2]=RETURN B=2 + [3]=dead RETURN:0 参 1 返(getter)
 	//   - [1]=LOADK,[2]=CALL B=2 C=1,[3]=RETURN B=1:1 K 参 0 返(setter)
 	//   - [1]=MOVE,[2]=CALL B=2 C=1,[3]=RETURN B=1:1 reg 参 0 返(setter)
-	// 长度 5:2 K 参 0 返 — GETUPVAL/MOVE + LOADK + LOADK + CALL B=3 C=1 + RETURN B=1
+	// 长度 5:2 参 0 返 — GETUPVAL/MOVE + (LOADK|MOVE) + (LOADK|MOVE) + CALL B=3 C=1 + RETURN B=1
+	//   四组合 K+K / K+R / R+K / R+R(均 setter,callArgCount=2)
 	var callIdx, retIdx int
 	var argK uint64
 	var argReg uint8
 	var arg2K uint64
+	var arg2Reg uint8
+	var arg2IsK bool
 	var argCount uint8
 	var argIsK bool
 	switch codeLen {
@@ -1452,25 +1457,51 @@ func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
 			return shapeInfo{}, false
 		}
 	case 5:
-		// 2 K 参 0 返:GETUPVAL/MOVE + LOADK + LOADK + CALL + RETURN
-		if bytecode.Op(proto.Code[1]) != bytecode.LOADK ||
-			bytecode.Op(proto.Code[2]) != bytecode.LOADK {
+		// 2 参 0 返:GETUPVAL/MOVE + (LOADK|MOVE) + (LOADK|MOVE) + CALL + RETURN
+		// 四组合:K+K / K+R / R+K / R+R(承同 PJ5 真接入主路径形态学扩展)
+		secondOp := bytecode.Op(proto.Code[1])
+		thirdOp := bytecode.Op(proto.Code[2])
+		if (secondOp != bytecode.LOADK && secondOp != bytecode.MOVE) ||
+			(thirdOp != bytecode.LOADK && thirdOp != bytecode.MOVE) {
 			return shapeInfo{}, false
 		}
-		lk1A := bytecode.A(proto.Code[1])
-		lk1Bx := bytecode.Bx(proto.Code[1])
-		lk2A := bytecode.A(proto.Code[2])
-		lk2Bx := bytecode.Bx(proto.Code[2])
-		if lk1A != op0A+1 || lk2A != op0A+2 {
+		op2A := bytecode.A(proto.Code[1])
+		op3A := bytecode.A(proto.Code[2])
+		if op2A != op0A+1 || op3A != op0A+2 {
 			return shapeInfo{}, false
 		}
-		if lk1Bx < 0 || lk1Bx >= len(proto.Consts) ||
-			lk2Bx < 0 || lk2Bx >= len(proto.Consts) {
-			return shapeInfo{}, false
+		// 第一参装载
+		if secondOp == bytecode.LOADK {
+			lk1Bx := bytecode.Bx(proto.Code[1])
+			if lk1Bx < 0 || lk1Bx >= len(proto.Consts) {
+				return shapeInfo{}, false
+			}
+			argK = uint64(proto.Consts[lk1Bx])
+			argIsK = true
+		} else {
+			mv1B := bytecode.B(proto.Code[1])
+			if mv1B > 254 {
+				return shapeInfo{}, false
+			}
+			argReg = uint8(mv1B)
+			argIsK = false
 		}
-		argK = uint64(proto.Consts[lk1Bx])
-		arg2K = uint64(proto.Consts[lk2Bx])
-		argIsK = true // 2 K 参形态都是 K
+		// 第二参装载
+		if thirdOp == bytecode.LOADK {
+			lk2Bx := bytecode.Bx(proto.Code[2])
+			if lk2Bx < 0 || lk2Bx >= len(proto.Consts) {
+				return shapeInfo{}, false
+			}
+			arg2K = uint64(proto.Consts[lk2Bx])
+			arg2IsK = true
+		} else {
+			mv2B := bytecode.B(proto.Code[2])
+			if mv2B > 254 {
+				return shapeInfo{}, false
+			}
+			arg2Reg = uint8(mv2B)
+			arg2IsK = false
+		}
 		callIdx = 3
 		retIdx = 4
 		argCount = 2
@@ -1526,7 +1557,9 @@ func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
 		callArg1IsK:    argIsK,
 		callArg1K:      argK,
 		callArg1RegSrc: argReg,
+		callArg2IsK:    arg2IsK,
 		callArg2K:      arg2K,
+		callArg2RegSrc: arg2Reg,
 	}, true
 }
 
@@ -1603,6 +1636,8 @@ func analyzeTailCallForm(proto *bytecode.Proto) (shapeInfo, bool) {
 	var argK uint64
 	var argReg uint8
 	var arg2K uint64
+	var arg2Reg uint8
+	var arg2IsK bool
 	var argCount uint8
 	var argIsK bool
 	switch codeLen {
@@ -1644,26 +1679,51 @@ func analyzeTailCallForm(proto *bytecode.Proto) (shapeInfo, bool) {
 		}
 		tailIdx = 2
 	case 6:
-		// 2 K 参:[0] MOVE/GETUPVAL,[1] LOADK,[2] LOADK,[3] TAILCALL,
-		// [4] RETURN B=0,[5] RETURN B=1
-		if bytecode.Op(proto.Code[1]) != bytecode.LOADK ||
-			bytecode.Op(proto.Code[2]) != bytecode.LOADK {
+		// 2 参:[0] MOVE/GETUPVAL,[1] (LOADK|MOVE),[2] (LOADK|MOVE),[3] TAILCALL,
+		// [4] RETURN B=0,[5] RETURN B=1 — 四组合 K+K / K+R / R+K / R+R
+		secondOp := bytecode.Op(proto.Code[1])
+		thirdOp := bytecode.Op(proto.Code[2])
+		if (secondOp != bytecode.LOADK && secondOp != bytecode.MOVE) ||
+			(thirdOp != bytecode.LOADK && thirdOp != bytecode.MOVE) {
 			return shapeInfo{}, false
 		}
-		lk1A := bytecode.A(proto.Code[1])
-		lk1Bx := bytecode.Bx(proto.Code[1])
-		lk2A := bytecode.A(proto.Code[2])
-		lk2Bx := bytecode.Bx(proto.Code[2])
-		if lk1A != op0A+1 || lk2A != op0A+2 {
+		op2A := bytecode.A(proto.Code[1])
+		op3A := bytecode.A(proto.Code[2])
+		if op2A != op0A+1 || op3A != op0A+2 {
 			return shapeInfo{}, false
 		}
-		if lk1Bx < 0 || lk1Bx >= len(proto.Consts) ||
-			lk2Bx < 0 || lk2Bx >= len(proto.Consts) {
-			return shapeInfo{}, false
+		// 第一参装载
+		if secondOp == bytecode.LOADK {
+			lk1Bx := bytecode.Bx(proto.Code[1])
+			if lk1Bx < 0 || lk1Bx >= len(proto.Consts) {
+				return shapeInfo{}, false
+			}
+			argK = uint64(proto.Consts[lk1Bx])
+			argIsK = true
+		} else {
+			mv1B := bytecode.B(proto.Code[1])
+			if mv1B > 254 {
+				return shapeInfo{}, false
+			}
+			argReg = uint8(mv1B)
+			argIsK = false
 		}
-		argK = uint64(proto.Consts[lk1Bx])
-		arg2K = uint64(proto.Consts[lk2Bx])
-		argIsK = true
+		// 第二参装载
+		if thirdOp == bytecode.LOADK {
+			lk2Bx := bytecode.Bx(proto.Code[2])
+			if lk2Bx < 0 || lk2Bx >= len(proto.Consts) {
+				return shapeInfo{}, false
+			}
+			arg2K = uint64(proto.Consts[lk2Bx])
+			arg2IsK = true
+		} else {
+			mv2B := bytecode.B(proto.Code[2])
+			if mv2B > 254 {
+				return shapeInfo{}, false
+			}
+			arg2Reg = uint8(mv2B)
+			arg2IsK = false
+		}
 		argCount = 2
 		tailIdx = 3
 	}
@@ -1717,7 +1777,9 @@ func analyzeTailCallForm(proto *bytecode.Proto) (shapeInfo, bool) {
 		callArg1IsK:    argIsK,
 		callArg1K:      argK,
 		callArg1RegSrc: argReg,
+		callArg2IsK:    arg2IsK,
 		callArg2K:      arg2K,
+		callArg2RegSrc: arg2Reg,
 	}, true
 }
 
@@ -2698,7 +2760,9 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 		callArg1IsK:    info.callArg1IsK,
 		callArg1K:      info.callArg1K,
 		callArg1RegSrc: info.callArg1RegSrc,
+		callArg2IsK:    info.callArg2IsK,
 		callArg2K:      info.callArg2K,
+		callArg2RegSrc: info.callArg2RegSrc,
 		isTailCall:     info.isTailCall,
 	}, nil
 }

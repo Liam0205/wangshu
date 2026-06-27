@@ -149,7 +149,9 @@ type p4Code struct {
 	callArg1IsK    bool
 	callArg1K      uint64
 	callArg1RegSrc uint8
+	callArg2IsK    bool
 	callArg2K      uint64
+	callArg2RegSrc uint8
 
 	// PJ5 TAILCALL 路径标志(承 docs/design/p4-method-jit/05-system-pipeline.md §4.3):
 	//   - isTailCall = true:Run prelude 路径调 host.TailCall 三态分支:
@@ -501,8 +503,13 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 				c.host.SetReg(int32(c.callA)+1, argVal)
 			}
 			if c.callArgCount >= 2 {
-				// 2 K 参形态:第二参编译期烧入 callArg2K
-				c.host.SetReg(int32(c.callA)+2, c.callArg2K)
+				var arg2Val uint64
+				if c.callArg2IsK {
+					arg2Val = c.callArg2K
+				} else {
+					arg2Val = c.host.GetReg(int32(c.callArg2RegSrc))
+				}
+				c.host.SetReg(int32(c.callA)+2, arg2Val)
 			}
 			// baseline doCall:绕过 R3 indirect 哨兵(本简化形态不支持段内
 			// call_indirect),host/crescent/__call/gibbous 全形态同步跑完。
@@ -556,7 +563,13 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 				c.host.SetReg(int32(c.callA)+1, argVal)
 			}
 			if c.callArgCount >= 2 {
-				c.host.SetReg(int32(c.callA)+2, c.callArg2K)
+				var arg2Val uint64
+				if c.callArg2IsK {
+					arg2Val = c.callArg2K
+				} else {
+					arg2Val = c.host.GetReg(int32(c.callArg2RegSrc))
+				}
+				c.host.SetReg(int32(c.callA)+2, arg2Val)
 			}
 			st := c.host.TailCall(int32(base), tailPC,
 				int32(c.callA), int32(c.callB), int32(c.callC))
