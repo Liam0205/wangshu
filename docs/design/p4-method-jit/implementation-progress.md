@@ -1,6 +1,6 @@
 # P4 实现进度对账(implementation-progress)
 
-> 状态:**PJ0-PJ4 + PJ5 CALL void 二百二十子形态 + PJ5 TAILCALL 一百零二子形态 + PJ5 SELF method call inline 完整 0..7 参 + PJ5 OSR exit 协议骨架(p4SpecState 子状态机)+ PJ7 + PJ10 luajc 档突破已落地**(2026-06-28)。PJ3 FORLOOP 字节级 inline 实测 7.15-25.41x over gopher-lua,**完整超越 luajc 档 4.4x 基线**(承 §8)。**PJ4 表 IC 完整六路径**(GETTABLE/SETTABLE/SELF × ArrayHit/NodeHit)字节级 inline 主路径接入 + 严密 IsTable guard(承 §9.7-§9.10) + 整套层级 prove-the-path 守卫(承 §9.11)。**PJ8 arm64 字节级模板矩阵完整 + Compile 端真接入**(承 §9.13)。**PJ5 CALL void 二百二十子形态打通**(2026-06-27):analyzeCallVoidForm 识别 setter 110 子态(0/1 K/1 reg/2/3/4/5/6/7 参组合)× 双 callee + getter 1 返 110 子态 + getter N>=2 返值 12 子态(0/1 K/1 reg 参 × {N=2/N=3 返,N=3 仅 0/1 参} × 双 callee)= 232 子(实测约 220 子);P4HostState 加 CallBaseline 接口;P2 scope-aware AnalyzeProto 跨 Proto 传递 outer localFnAsts(承 §9.14)。**PJ5 TAILCALL 一百零二子形态打通**(2026-06-27):analyzeTailCallForm 识别长度 4..11 共 102 子态(0/1 K/1 reg/2..7 参组合)× 双 callee;P4HostState 加 TailCall 三态分支接口(承 §9.15)。**PJ5 SELF method call inline 完整覆盖 0..7 参 + 嵌套 + 错误冒泡 + V18 -race**(2026-06-28,承 §9.17):analyzeSelfCallForm 识别长度 4..11 `obj:method(args)` 形态,覆盖 0..7 参 × {void / 1 返 getter / tail} × 双 receiver(M/U)+ N=2/N=3 返值 0/1 参;ReasonSelfCall F2-c 占位位拆分(与 ReasonBackendUnsupp 同款手法,运行期 recheckCompilabilityRuntime 撤位 + SupportsAllOpcodes 守门);P4HostState 加 Self 接口;Run prelude SELF 预处理 + args offset 参数化;**额外测试覆盖**:嵌套两层 SELF inline(NestedSelfChain SpecSelfCallHits=2 实证)+ SELF then CALL 链 + 错误冒泡(receiver=nil / method=non-function)+ V18 -race 多 State 并发 SELF inline 安全;9 形态单测 + 20 e2e SpecSelfCallHits=1 命中实证 + 16 difftest-p4 三方 byte-equal。**PJ5 OSR exit 协议骨架**(2026-06-28):p4SpecState[*Proto] 子状态机(P4Speculative/P4Deoptimized/P4StuckSpeculation,方案 A 严格遵守 P2 三态不变)+ DeoptThreshold 16 占位 + MaxRecompileTries 2 占位 + onOSRExit/onP4Install 转移函数 + SpecP4DeoptHits/SpecP4StuckHits 探针 + 7 状态机单测;**当前 PJ5 简化形态全走 host helper baseline doCall 无投机失败 deopt 路径**,本批是 OSR exit 工程基础(留段内 EmitCallInline 投机模板真接入时激活)。共 **38+14+20 e2e SpecCallVoidHits/SpecTailCallHits/SpecSelfCallHits=1 prove-the-path 命中实证 + 36+13+16 difftest-p4 三方 byte-equal + 9 单测 + 7 p4SpecState 单测 + V18 -race 增量含 SELF**。**剩 PJ5 完整接入(SELF NodeHit 字节级模板 + 8+ 参 CALL + N>=2 返值多参 + OSR exit 完整接入 + 段内 EmitCallInline)/ PJ8 剩余真接入(archSupportsSpec 翻面 + 物理 runner)/ PJ9(双架构差分套)** )。
+> 状态:**PJ0-PJ4 + PJ5 CALL void 二百二十子形态 + PJ5 TAILCALL 一百零二子形态 + PJ5 SELF method call inline 完整 0..7 参 + PJ5 OSR exit 协议骨架(p4SpecState 子状态机)+ PJ7 + PJ10 luajc 档突破已落地**(2026-06-28)。PJ3 FORLOOP 字节级 inline 实测 7.15-25.41x over gopher-lua,**完整超越 luajc 档 4.4x 基线**(承 §8)。**PJ4 表 IC 完整六路径**(GETTABLE/SETTABLE/SELF × ArrayHit/NodeHit)字节级 inline 主路径接入 + 严密 IsTable guard(承 §9.7-§9.10) + 整套层级 prove-the-path 守卫(承 §9.11)。**PJ8 arm64 字节级模板矩阵完整 + Compile 端真接入**(承 §9.13)。**PJ5 CALL void 二百二十子形态打通**(2026-06-27):analyzeCallVoidForm 识别 setter 110 子态(0/1 K/1 reg/2/3/4/5/6/7 参组合)× 双 callee + getter 1 返 110 子态 + getter N>=2 返值 12 子态(0/1 K/1 reg 参 × {N=2/N=3 返,N=3 仅 0/1 参} × 双 callee)= 232 子(实测约 220 子);P4HostState 加 CallBaseline 接口;P2 scope-aware AnalyzeProto 跨 Proto 传递 outer localFnAsts(承 §9.14)。**PJ5 TAILCALL 一百零二子形态打通**(2026-06-27):analyzeTailCallForm 识别长度 4..11 共 102 子态(0/1 K/1 reg/2..7 参组合)× 双 callee;P4HostState 加 TailCall 三态分支接口(承 §9.15)。**PJ5 SELF method call inline 完整覆盖 0..7 参 + 嵌套 + 错误冒泡 + V18 -race**(2026-06-28,承 §9.17):analyzeSelfCallForm 识别长度 4..11 `obj:method(args)` 形态,覆盖 0..7 参 × {void / 1 返 getter / tail} × 双 receiver(M/U)+ N=2/N=3 返值 0/1 参;ReasonSelfCall F2-c 占位位拆分(与 ReasonBackendUnsupp 同款手法,运行期 recheckCompilabilityRuntime 撤位 + SupportsAllOpcodes 守门);P4HostState 加 Self 接口;Run prelude SELF 预处理 + args offset 参数化;**额外测试覆盖**:嵌套两层 SELF inline(NestedSelfChain SpecSelfCallHits=2 实证)+ SELF then CALL 链 + 错误冒泡(receiver=nil / method=non-function)+ V18 -race 多 State 并发 SELF inline 安全;9 形态单测 + 20 e2e SpecSelfCallHits=1 命中实证 + 16 difftest-p4 三方 byte-equal。**PJ5 SELF + CALL spec template 真接入**(2026-06-28,承 §9.19):SELF 段字节级 inline(IC NodeHit 命中跳过 host.Self round-trip),发现 SELF 聚合成 FBSelfMono(非 FBTableMono,PJ5 是首个真实触达 SELF feedback 的路径);analyzeSelfCallSpecForm + compileSpecSelfCall + runSpecSelfCall + SpecSelfCallSpecHits 探针 + WarmupThenForce e2e 命中实证 + benchmark 1.19x→1.12x(SELF 段省 host.Self round-trip,CALL 段仍 host 是下阶段瓶颈)。**PJ5 OSR exit 协议骨架**(2026-06-28):p4SpecState[*Proto] 子状态机(P4Speculative/P4Deoptimized/P4StuckSpeculation,方案 A 严格遵守 P2 三态不变)+ DeoptThreshold 16 占位 + MaxRecompileTries 2 占位 + onOSRExit/onP4Install 转移函数 + SpecP4DeoptHits/SpecP4StuckHits 探针 + 7 状态机单测;**当前 PJ5 简化形态全走 host helper baseline doCall 无投机失败 deopt 路径**,本批是 OSR exit 工程基础(留段内 EmitCallInline 投机模板真接入时激活)。共 **38+14+20 e2e SpecCallVoidHits/SpecTailCallHits/SpecSelfCallHits=1 prove-the-path 命中实证 + 36+13+16 difftest-p4 三方 byte-equal + 9 单测 + 7 p4SpecState 单测 + V18 -race 增量含 SELF**。**剩 PJ5 完整接入(SELF NodeHit 字节级模板 + 8+ 参 CALL + N>=2 返值多参 + OSR exit 完整接入 + 段内 EmitCallInline)/ PJ8 剩余真接入(archSupportsSpec 翻面 + 物理 runner)/ PJ9(双架构差分套)** )。
 > P1 全卷(M0-M14)+ P2 PB0-PB7 + 后续优化轮 #1-#4 + P3 PW0-PW10 + VS0-e 全卷已交付(2026-06-16),P4 启动前置就绪;**唯一阻塞**是 P4 立项判定本身(承 [01-launch-judgment §3](./01-launch-judgment.md))。
 > 单一事实源:本文是 P4 实现现状与设计文档差异的对账表(对应 [P3 implementation-progress](../p3-wasm-tier/implementation-progress.md) 的角色,但 P4 是设计阶段未实施,本文重在「设计期决策盘点 + 跨文档回填请求收口表 + 实施前置确认 + 后续维护协议」)。
 > 设计文档集:见 [00-overview §0](./00-overview.md) 文档地图。
@@ -1196,7 +1196,57 @@ BenchmarkGibbousJIT_PJ5SelfCall-24       14001 ns/op  72 B/op  2 allocs
 BenchmarkGibbousJIT_PJ5SelfCallCresc-24  11755 ns/op  72 B/op  2 allocs
 ```
 
-**P4 ratio = 14001/11755 = 1.19x(比 crescent 慢 19%)**——印证「正确性接入而非性能加速」结论:Run prelude 路径走 `host.Self → host.CallBaseline` 经 Go→段→Go round-trip,反比解释器单循环慢。**段内 EmitSelfCallInline 模板真接入后**(),通过 IC NodeHit / ArrayHit guard + 跳过 host round-trip 可获 ≥2x 加速(参考 PJ3 FORLOOP 字节级 inline 实测 7.15-25.41x over gopher-lua 的 'spec template + 跳过 host helper round-trip' 通用模型)。
+**P4 ratio = 14001/11755 = 1.19x(比 crescent 慢 19%)**——印证「正确性接入而非性能加速」结论:Run prelude 路径走 `host.Self → host.CallBaseline` 经 Go→段→Go round-trip,反比解释器单循环慢。**段内 SELF 段字节级 inline 真接入后**(§9.19),通过 IC NodeHit guard + 跳过 host.Self round-trip 改善到 1.12x;CALL 段字节级 inline 是下一阶段瓶颈攻坚。
+
+### 9.19 PJ5 SELF + CALL spec template 真接入(2026-06-28 落地)
+
+承 §9.10 PJ4 EmitSelfNodeHit 字节级模板(166 字节)复用 + §9.17 PJ5 SELF inline 升级,落地 PJ5 SELF + CALL 形态的 **SELF 段字节级 inline**(IC NodeHit 命中时跳过 host.Self round-trip)。
+
+**关键发现 — SELF 聚合成 FBSelfMono 而非 FBTableMono**:
+
+`aggregator.go::extractTableFeedback` 的 `opSelf` 分支把 SELF IC 聚合成 **`FBSelfMono`**(非 `FBTableMono`)。**PJ5 SELF + CALL 是首个真实触达 SELF feedback 的路径**——PJ4 SELF NodeHit(§9.10)因 luac 不真编 `SELF + RETURN` 2-op 形态仅合成驱动单测(单测自塞 `FBTableMono`),从未触达真实 SELF feedback,故那里用 `FBTableMono` 是未触发的占位。本路径用正确的 `FBSelfMono`。
+
+**形态边界**(初批仅 0 参 0 返 CALL void,form M0):
+
+```
+[0] MOVE/GETUPVAL A=callA B=recvSrc  (装 recv 到 R(callA))
+[1] SELF     A=callA B=callA C=K_method  (IC[1] = NodeHit feedback)
+[2] CALL     A=callA B=2 C=1     (0 参 0 返)
+[3] RETURN   A=0     B=1
+```
+
+**执行路径**(`runSpecSelfCall`):
+1. 装 R(callA) = recv(模拟 luac MOVE/GETUPVAL,因 spec 段从 R(callA) 字节级读 receiver)
+2. `callJITSpec` 跑 `EmitSelfNodeHit` 模板:成功 → R(callA)=method + R(callA+1)=self;失败 deopt → 降级 `host.Self`(R(callA+1) 已被模板 store recv,P1 SELF case 同款步骤,byte-equal)
+3. `host.CallBaseline` 完成 CALL 段
+4. `host.DoReturn` 弹帧
+
+**关键改动**:
+- `analyzeSelfCallSpecForm`:识别长度 4 SELF + CALL void 0 参 + IC[1] NodeHit + `FBSelfMono` feedback 命中 + stableKey 编译期固化
+- `compileSpecSelfCall`:emit `archEmitSelfNodeHit` 166 字节模板 + 设 `useSpecSelfCall` + 复用 `useSpec` / `specDeoptCode`
+- `code.go::Run` useSpec 块最前加 `useSpecSelfCall` 独立子路径 `runSpecSelfCall`(自包含,不与 PJ2/PJ3/PJ4 spec 分流混淆)
+- `probes.go`:`SpecSelfCallSpecHits` 专属探针
+
+**测试覆盖**:
+- `compiler_pj5_self_test.go`:3 单测(M0 命中 + RejectNoFeedback + RejectNoNodeHit)
+- `gibbous_pj5_self_e2e_test.go::TestPJ5_SelfCall_E2E_SpecTemplate_WarmupThenForce`:Phase 1 warmup 填 SELF IC[1]=NodeHit + FBSelfMono;Phase 2 force-all 升 caller → spec 模板命中 `SpecSelfCallSpecHits` 0 → 1 实证(prove-the-path)+ byte-equal P1(result=101)
+
+**benchmark 实测**(Xeon 6982P / Linux amd64):
+
+```
+BenchmarkGibbousJIT_PJ5SelfCallSpec-24       8953 ns/op  72 B/op  2 allocs
+BenchmarkGibbousJIT_PJ5SelfCallSpecCresc-24  7961 ns/op  72 B/op  2 allocs
+```
+
+**P4 ratio = 8953/7961 = 1.12x(比 crescent 慢 12%)**——对比非 spec 版(整段 host.Self+CallBaseline)1.19x,**SELF 段字节级 inline 把 host.Self round-trip 省了,相对改善 ~6%**。仍比 crescent 慢是因 CALL 段仍走 host.CallBaseline + P4 升层 + DoReturn 弹帧固定开销主导。
+
+**诚实结论**(承 [perf-optimization-workflow](../../../llmdoc/guides/perf-optimization-workflow.md) §1 profile 先行):SELF 段字节级 inline 确实加速(省一次 host.Self round-trip),但要真超 crescent 需 **CALL 段也字节级 inline**(段内 EmitCallInline,工程更大,是下一阶段瓶颈攻坚点)。本批 spec template 是 SELF 段字节级 inline 验证 + 加速基础设施。
+
+**剩余 spec template 工程**(渐进推进):
+- SELF + CALL 1..7 参 spec template(args 装载 + spec 段后续)
+- **CALL 段字节级 inline**(段内 EmitCallInline,跳过 host.CallBaseline round-trip — 最大瓶颈攻坚)
+- TAILCALL spec template
+- OSR exit 真接入(p4SpecState 骨架已就绪,spec template guard 失败时切 P4Deoptimized)
 
 ---
 
