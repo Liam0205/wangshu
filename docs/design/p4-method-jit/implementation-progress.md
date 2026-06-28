@@ -1804,7 +1804,56 @@ func dispatchInlineHelper(jitCtx *JITContext) uintptr {
 
 **(9) 总工程量重估**:本节设计基线让 future Spike 1 真接入 session 直接 5 commits 完成实装(jitContext 字段扩 + dispatcher 文件 + trampoline 改造 + compileSpecSelfCall emit 接入 + 翻闸门 + e2e)。预估**1-2 周** session 内可完成(此前 §9.20.6 估算 4-5 周高估,因未考虑设计文档已固化协议物理学)。
 
+#### 9.20.10 Spike 1 真接入完成(2026-06-28 实装完整端到端)
+
+承 §9.20.9 实装路线 + 单 session 内交付:**12 commits(`da8033f..9a17744`)完成 Spike 1 真接入完整端到端**,amd64 archSupportsFrameInline=true,SpecFrameInlineHits=1 prove-the-path 命中实证。
+
+**实装顺序差异**(设计草案 5 commits → 实装 12 commits 细分):
+
+| commit | 内容 | 哈希 |
+|---|---|---|
+| 1 | jitContext exitArg0/resumeOff 字段 + 协议状态码常量 | cc2f2f2 |
+| 2 | P4HostState.ExecuteCalleeFromInlineFrame helper API + crescent 占位 + mock stub | e8f6685 |
+| 3a | dispatcher.go Go 端骨架 + 单测 | 2465a8a |
+| 3b | jitContext codePageAddr 字段 | 3f0a69a |
+| 3c | trampoline asm CMP 分支占位(撤销改 5a) | 73b10ac |
+| 4a | amd64 ExitHelperRequest 段 emit(24B) + arch 路由 | 91e9a31 |
+| 4b | compileSpecSelfCall useFrameInline 分支 emit + frameInlineResumeOff | afb6ecf |
+| 5a | trampoline asm 撤 CMP+INT,改 Run-end Go dispatcher | f1fd9a6 |
+| 5b | runSpecSelfCall ExitInlineHelper 路径 + runFrameInlineDispatcher | 123dab0 |
+| 5c | runFrameInlineDispatcher 直 host 路由实装 | 98e299e |
+| 5d | crescent.ExecuteCalleeFromInlineFrame readCISegInto 版 | a1d7a6e |
+| 5e | FrameInline e2e GatingClosed_NoHits 验证 | 6763e64 |
+| 5f | ExecuteCalleeFromInlineFrame 反查 closure GCRef → callee Proto → enterLuaFrame 真接入策略重定 | ff306f6 |
+| 5g | analyzeSelfCallSpecForm useFrameInline 守门 | 25f3f6a |
+| 5h | archSupportsFrameInline 翻 true(amd64)+ e2e GatingOpen_HitsOne 改判 ≥1 | 9a17744 |
+
+**关键设计差异**(实装现实 vs 设计草案):
+1. **dispatcher 路由实装位置**:草案 §9.20.9 (4) 假设 trampoline asm 内 `CALL ·dispatchInlineHelper(SB)` 跨包 CALL Go 函数;实装跨包 + Plan 9 ABI 复杂度高,改 **Run 端 Go 函数做 dispatcher**(commit-5a-c),trampoline asm 段返后纯透传 RAX 不解读,全 Go 端做 helper request 路由 + 二次 callJITSpec 重入 resume entry。工程复杂度降一个数量级。
+2. **callee Proto 元数据策略**:草案 §9.20.5 P3 PW10 同源参考期待 mmap 段完整 emit 帧建(arena proto cache 段 + 5 word 真实计算 + Compile 期 callee.NumParams/MaxStack 守门),helper 只跑 executeFrom;实装 P4 Spike 1 采用更保守的「mmap 段写 placeholder + helper 内反查 closure GCRef → callee Proto → 调 enterLuaFrame + executeFrom 完整重做帧建」策略(commit-5f),放弃零跨界目标但保证正确性 + 工程可达(无需 arena proto cache 段 + P2 Bridge 200+ 行级改造)。
+3. **守门简化**:草案 §9.20.4 期待 `callee.NumParams=0 + !IsVararg + !NeedsArg + MaxStack≤32` 编译期守门;实装因 callee Proto 元数据策略重定,改 Compile 期仅守门 `callArgCount=0 + isCallVoid + !isTailCall`(0 参 setter 形态);callee 端运行期由 enterLuaFrame 内 nargs=0 守门自然兼容,IsVararg=true 时 callee 体读 vararg 区会读到 0 元素退化但不崩。
+
+**性能特征**(amd64 实测,bench 摊薄,2026-06-28):
+- `PJ5SelfCallSpec`(0 参 setter,简单 method 体):P4=9104 ns/op,Cresc=8039 ns/op,**1.13x 慢**(useFrameInline 路径与 host.CallBaseline 等价,无 round-trip 节省;helper 内 enterLuaFrame + executeFrom 与 host.CallBaseline + doCall 同源)
+- `PJ5SelfCallHeavyBody`(0 参 + FORLOOP heavy body):P4=87570 ns/op,Cresc=92501 ns/op,**0.95x 快(5%)**(method 体加速主导,useFrameInline 不破坏 heavy body 收益)
+- Spike 1 简化策略**未带来 simple setter 路径的性能提升**,但 **method 体加速主导的反超场景(0.95x)继续保持**;真正消除 simple setter trampoline 占比需 Spike 2-4(args 装载 + 多返值多形态完整 inline + arena proto cache 段 + word0/1/2/4 真实计算消除 helper 端 enterLuaFrame round-trip)
+
+**Spike 1 真接入验收数据**(amd64 archSupportsFrameInline=true 后):
+- ✅ make test-p4 全过 21 binary(crescent.test 含 PJ5 SELF e2e + 真接入 GatingOpen_HitsOne)
+- ✅ difftest 全过(byte-equal P1 + crescent + p4-jit 三方)
+- ✅ SpecFrameInlineHits=1(commit-5h prove-the-path 命中实证)
+- ✅ TestPJ5_SelfCall_E2E_M0_VoidCall / U0/M1K/M1R/M2KK/M2RR 等所有 PJ5 SELF e2e 全过(行为零变化基线)
+- ✅ TestPJ5_SelfCall_E2E_SpecTemplate_OSRExitToDeopt / DeoptStorm(OSR exit 协议在真接入路径上仍正确工作)
+
+**剩 Spike 2-4 工程**(承 §9.20.3 表):
+- Spike 2:N 参 fixed(0..7 参 args 装载 inline 替代 helper 端取参)
+- Spike 3:vararg 支持(callee.IsVararg=true 路径完整)
+- Spike 4:多返值多形态(N>=2 返 + multi-ret + 可变 nresults)
+
+**arm64 archSupportsFrameInline 仍 false**(留 PJ8 物理 runner 端到端验证;arm64 端字节级 emit 模板全套已就位但端到端验证留物理 runner CI 接入)。
+
 ---
+
 
 ## 10. 后续维护协议
 
