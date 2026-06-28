@@ -260,6 +260,24 @@ func archEmitSelfNodeHit(buf []byte, aReg, bReg uint8,
 		stableShape, stableIndex, stableKey, arenaBaseOffArm64(arenaBaseOff), deoptCode)
 }
 
+// archEmitSelfNodeHitNoRet arm64 端 NoRet 变体占位(承 PR comment 8b4ff8e
+// 建议):arm64 archSupportsFrameInline=false 屏蔽,本路径 production 不触达;
+// 真实装留 PJ8 物理 runner CI 接入同批。**panic 防误开闸门**:若日后误开
+// archSupportsFrameInline arm64=true,arm64 端 emit 会 panic 显式失败(替代
+// 委派常规 ret 版本导致 BuildVoid0Arg fall-through 永不执行的隐式 bug)。
+func archEmitSelfNodeHitNoRet(buf []byte, aReg, bReg uint8,
+	stableShape, stableIndex uint32, stableKey uint64,
+	arenaBaseOff int32, deoptCode uint64) []byte {
+	_ = aReg
+	_ = bReg
+	_ = stableShape
+	_ = stableIndex
+	_ = stableKey
+	_ = arenaBaseOff
+	_ = deoptCode
+	panic("internal/gibbous/jit.archEmitSelfNodeHitNoRet: arm64 NoRet not implemented; archSupportsFrameInline arm64=false 屏蔽,本 panic 防误开闸门")
+}
+
 // archEmitSpecArgLoadK / archEmitSpecArgLoadReg arm64 实装(承 PJ5 spec
 // template 字节级 inline,跳过 host.GetReg/SetReg round-trip)。物理 runner
 // 启用 archSupportsSpec=true 后即激活,与 amd64 字节级形态对等。

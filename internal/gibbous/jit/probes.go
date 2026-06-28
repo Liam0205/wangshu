@@ -60,6 +60,11 @@ var specSelfCallSpecHits uint64
 // 才会 ++,作为 prove-the-path 命中实证。
 var specFrameInlineHits uint64
 
+// specFrameInlineRunHits 是 PJ5 Option B Spike 1 帧建立内联 Run 期触达次数
+// (runFrameInlineDispatcher 被调到的次数,raxSpec==ExitInlineHelper 路径真
+// 触发)。承 §9.20.9 commit-5i 区分 Compile 命中 vs Run 期触达。
+var specFrameInlineRunHits uint64
+
 // SpecRegKHits 返回当前累计 reg-K 模板编译命中次数。仅测试用。
 func SpecRegKHits() uint64 { return atomic.LoadUint64(&specRegKHits) }
 
@@ -96,6 +101,14 @@ func SpecSelfCallSpecHits() uint64 { return atomic.LoadUint64(&specSelfCallSpecH
 // 仅测试用。Spike 1 当前阶段恒 0(archSupportsFrameInline=false 屏蔽)。
 func SpecFrameInlineHits() uint64 { return atomic.LoadUint64(&specFrameInlineHits) }
 
+// SpecFrameInlineRunHits 返回当前累计 PJ5 Option B Spike 1 帧建立内联 Run 期
+// 触达次数(runFrameInlineDispatcher 被调到的次数,raxSpec==ExitInlineHelper
+// 路径真触发)。**与 SpecFrameInlineHits 的区别**:Compile 命中只证 emit 段
+// 产生;Run 期触达证实际 mmap 段 SELF NodeHit guard 通过 + ExitHelperRequest
+// 段返 RAX=3 + Run 端 dispatcher 真接管。Spike 1 真接入 prove-the-path 强断言
+// 用本探针。
+func SpecFrameInlineRunHits() uint64 { return atomic.LoadUint64(&specFrameInlineRunHits) }
+
 // ResetSpecHits 把所有 spec 命中计数清零(测试开始前调,防之前其它测试
 // 残留累积影响断言)。仅测试用。
 func ResetSpecHits() {
@@ -109,6 +122,7 @@ func ResetSpecHits() {
 	atomic.StoreUint64(&specSelfCallHits, 0)
 	atomic.StoreUint64(&specSelfCallSpecHits, 0)
 	atomic.StoreUint64(&specFrameInlineHits, 0)
+	atomic.StoreUint64(&specFrameInlineRunHits, 0)
 	atomic.StoreUint64(&specP4DeoptHits, 0)
 	atomic.StoreUint64(&specP4StuckHits, 0)
 }
@@ -144,3 +158,7 @@ func incSpecSelfCallSpecHits() { atomic.AddUint64(&specSelfCallSpecHits, 1) }
 // 内联时调)。承 §9.20 Spike 1。当前 archSupportsFrameInline=false 屏蔽,
 // 调用站点留 Step C-2 真接入(compileSpecSelfCall useFrameInline 分支)。
 func incSpecFrameInlineHits() { atomic.AddUint64(&specFrameInlineHits, 1) }
+
+// incSpecFrameInlineRunHits Run 期 ++(runFrameInlineDispatcher 进入时)。
+// 承 §9.20.9 commit-5i 区分 Compile vs Run 期。
+func incSpecFrameInlineRunHits() { atomic.AddUint64(&specFrameInlineRunHits, 1) }

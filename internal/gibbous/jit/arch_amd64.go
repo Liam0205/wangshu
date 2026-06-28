@@ -196,6 +196,16 @@ func archEmitSelfNodeHit(buf []byte, aReg, bReg uint8,
 		stableShape, stableIndex, stableKey, arenaBaseOff, deoptCode)
 }
 
+// archEmitSelfNodeHitNoRet 同 archEmitSelfNodeHit 但成功路径不 ret(承
+// §9.20.9 commit-5j useFrameInline 路径修通 — fall-through 到 BuildVoid0Arg
+// 段)。
+func archEmitSelfNodeHitNoRet(buf []byte, aReg, bReg uint8,
+	stableShape, stableIndex uint32, stableKey uint64,
+	arenaBaseOff int32, deoptCode uint64) []byte {
+	return jitamd64.EmitSelfNodeHitNoRet(buf, aReg, bReg,
+		stableShape, stableIndex, stableKey, arenaBaseOff, deoptCode)
+}
+
 // archEmitSpecArgLoadK / archEmitSpecArgLoadReg arm-routed amd64 实装(承
 // PJ5 SELF + CALL spec template args 装载字节级 inline,跳过 host.GetReg/
 // SetReg round-trip)。arm64 端 stub(留 PJ8+ 物理 runner 启用前),其它
