@@ -2585,6 +2585,23 @@ func analyzeSelfCallSpecForm(proto *bytecode.Proto, feedback *bridge.TypeFeedbac
 	info.icStableShape = pf.StableShape
 	info.icStableIndex = pf.StableIndex
 	info.icStableKey = stableKey
+	// PJ5 Option B Spike 1 帧建立内联(承 §9.20.4 + §9.20.9 commit-5g):
+	// 守门条件(Spike 1 简化形态):
+	//   - archSupportsFrameInline()=true(amd64 commit-5h 翻 true 后启用)
+	//   - 0 参 setter 形态(callArgCount=0 + isCallVoid + retB=1)— 与
+	//     ExecuteCalleeFromInlineFrame Spike 1 0 参实装对齐
+	//   - 非 TAILCALL(避免帧栈语义复杂化,Spike 2+ 扩)
+	//
+	// **callee Proto 元数据**:Spike 1 实装策略不在 Compile 期解 callee Proto,
+	// helper 内运行期反查 closure GCRef → callee Proto(承 commit-5f
+	// ExecuteCalleeFromInlineFrame 策略重定);故 analyzeSelfCallSpecForm 无需
+	// callee.NumParams=0 + !IsVararg 守门,helper 内运行期验(callee.NumParams=
+	// 0 在 enterLuaFrame 内由 nargs=0 守门自然兼容,IsVararg=true 时 callee
+	// 体读 vararg 区会读到 0 元素退化但不崩,行为零变化基线)。
+	if archSupportsFrameInline() && info.callArgCount == 0 &&
+		info.isCallVoid && !info.isTailCall {
+		info.useFrameInline = true
+	}
 	return info, true
 }
 
