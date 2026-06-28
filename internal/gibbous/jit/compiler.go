@@ -254,16 +254,23 @@ type shapeInfo struct {
 	//     NodeHit 同字段集)。
 	useSpecSelfCall bool
 
-	// PJ5 Option B Spike 1 帧建立内联(承 §9.20):
+	// PJ5 Option B Spike 1/2/3/4 帧建立内联(承 §9.20 + commit-5p/5q/5r):
 	//   - useFrameInline = true:CALL 段经 mmap 字节级 enterLuaFrame inline
-	//     (BuildVoid0ArgSkeleton + helper call + PopVoid0ArgSkeleton),替代
-	//     host.CallBaseline round-trip。
-	//   - **守门**(承 §9.20.4):isCallVoid + callArgCount=0 + IC NodeHit +
-	//     FBSelfMono(承 useSpecSelfCall 守门叠加)+ 等 callee Proto 元数据
-	//     可知(callee.NumParams=0 + !IsVararg + !NeedsArg + MaxStack≤32);
-	//     未通过 → 降级 useSpecSelfCall(SELF 段 inline + host.CallBaseline)。
-	//   - **Spike 1 阶段尚未真接入**:emit 模板已字节级实装(amd64 120B /
-	//     arm64 164B),剩 helper call ABI + Compile/Run 端真接通 + e2e。
+	//     (BuildVoid0ArgSkeleton + ExitHelperRequest + PopVoid0ArgSkeleton),
+	//     替代 host.CallBaseline round-trip。
+	//   - **守门**(承 §9.20.4 + commit-5p Spike 2 扩):
+	//     - archSupportsFrameInline()=true(amd64)
+	//     - callArgCount <= 7(Spike 2 N 参 fixed args 扩,原 Spike 1 限 0)
+	//     - isCallVoid(preludeOp=CALL 涵盖 setter/getter/multi-ret 多形态)
+	//     - !isTailCall(避免帧栈语义复杂化)
+	//     - IC NodeHit + FBSelfMono(承 useSpecSelfCall 守门叠加)
+	//   - vararg callee 自动兼容(Spike 3):enterLuaFrame 内部按 NumParams<nargs
+	//     处理 vararg 下区重排,helper API 无需扩
+	//   - 多返值多形态(Spike 4):nresults = callC - 1(callC=1=0返/2=1返/3..16=
+	//     N=2..15 返 drop multi-ret),helper 接 nresults 参数
+	//   - 未通过 → 降级 useSpecSelfCall(SELF 段 inline + host.CallBaseline)
+	//   - **Spike 1/2/3/4 amd64 真接入完整端到端打通**(commit-5m..5r):RunHits
+	//     prove-the-path 命中实证(49/199/99/99 各 Spike)
 	useFrameInline bool
 }
 
