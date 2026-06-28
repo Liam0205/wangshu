@@ -807,15 +807,17 @@ const EncodedFrameInlineCIDepthIncDecArm64Len = 16
 // EmitFrameInlineLoadCISlotAddrArm64 发射 arm64 CI 段第 depth 帧地址加载
 // 到 X0 模板(承 §9.20 Option B Spike 1 amd64 对位)。
 //
-// 字节序列(7 条 = 28 字节):
+// 字节序列(7 条指令 = 40 字节,承 PR #26 评审 bd73625 修正):
 //
-//	ldr  x16, [x27 + ciDepthAddrOffset]    ; x16 = ciDepthAddr
-//	ldr  x17, [x16]                         ; x17 = depth(当前)
-//	ldr  x16, [x27 + ciSegBaseAddrOffset]   ; x16 = ciSegBaseAddr
-//	ldr  x16, [x16]                         ; x16 = ciSegBase
-//	mov  x9, #40                            ; x9 = 40 (ciSlotBytes)
-//	mul  x17, x17, x9                       ; x17 = depth * 40
-//	add  x0, x16, x17                       ; x0 = ciSegBase + depth*40
+//	ldr  x16, [x27 + ciDepthAddrOffset]    ; 4 字节:x16 = ciDepthAddr
+//	ldr  x17, [x16]                         ; 4 字节:x17 = depth(当前)
+//	ldr  x16, [x27 + ciSegBaseAddrOffset]   ; 4 字节:x16 = ciSegBaseAddr
+//	ldr  x16, [x16]                         ; 4 字节:x16 = ciSegBase
+//	mov  x9, #40                            ; 16 字节(EmitMovXdImm64 movz+movk*3
+//	                                        ;          即使 imm=40 也走 4 段)
+//	mul  x17, x17, x9                       ; 4 字节:x17 = depth * 40
+//	add  x0, x16, x17                       ; 4 字节:x0 = ciSegBase + depth*40
+//	                                        ; 总:4+4+4+4+16+4+4 = 40 字节
 //
 // 模板结束后 x0 = CallInfo[depth] 字节地址(等价 amd64 rax)。
 //
@@ -825,11 +827,9 @@ const EncodedFrameInlineCIDepthIncDecArm64Len = 16
 //     callee-saved + x18 是 platform reserved,**此前误用 x18 violation
 //     AAPCS** — 本批改 x9)。
 //
-// arm64 28 字节 vs amd64 30 字节——arm64 微优因 LDR/STR pimm12 + MUL R-type
-// 比 amd64 disp32 mov + imul 编码紧凑 2 字节。
-//
-// **arm64 仍 40 字节**(同上批 length):MovXdImm64 即使 #40 也走 4 条 16-bit
-// 段(movz+movk*3),浪费 12 字节;EmitMovXdImm12 单条 4 字节优化留 PJ8+。
+// **arm64 40 字节 vs amd64 30 字节**(承 bd73625 评审修正):arm64 多 10 字节
+// 因 EmitMovXdImm64 即使 #40 也走 4 条 16-bit 段(movz+movk*3),浪费 12 字节;
+// EmitMovXdImm12 单条 4 字节优化留 PJ8+(arm64 物理 runner 端到端验收后扩)。
 func EmitFrameInlineLoadCISlotAddrArm64(buf []byte, ciDepthAddrOffset, ciSegBaseAddrOffset uint16) []byte {
 	// 1. x16 = ciDepthAddr → x17 = depth
 	buf = EmitLdrXtFromXnDisp(buf, 16, 27, ciDepthAddrOffset)
