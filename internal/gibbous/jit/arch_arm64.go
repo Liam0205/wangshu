@@ -323,3 +323,51 @@ const archEncodedHelperCallLen = jitarm64.EncodedHelperCallArm64Len
 // WriteCIWordArm64 20B + CIDepth±Arm64 16B)已完整字节级实装并单测全过,
 // 但 Compile/Run 端真接通 + 物理 runner 端到端验证留 PJ8+/PJ9。
 func archSupportsFrameInline() bool { return false }
+
+// archEmitFrameInlineBuildVoid0ArgSkeleton arm64 端代理 jitarm64 同款 helper
+// (164 字节,承 §9.20 Option B Spike 1)。注意 arm64 offset 用 uint16 形态
+// (LDR Xt, [Xn, pimm] 编码限制,pimm 必须 0..32760 且 8 对齐)。
+func archEmitFrameInlineBuildVoid0ArgSkeleton(buf []byte,
+	ciDepthAddrOff, ciSegBaseAddrOff int32, callARecv uint8,
+	w0, w1, w2, w4 uint64) []byte {
+	return jitarm64.EmitFrameInlineBuildVoid0ArgSkeletonArm64(buf,
+		uint16(ciDepthAddrOff), uint16(ciSegBaseAddrOff), callARecv,
+		jitarm64.FrameInlineCISlotWordsArm64{Word0: w0, Word1: w1, Word2: w2, Word3: 0, Word4: w4})
+}
+
+// archEmitFrameInlinePopVoid0ArgSkeleton arm64 端代理 jitarm64 同款 helper
+// (16 字节,等价 EmitFrameInlineCIDepthDecArm64)。
+func archEmitFrameInlinePopVoid0ArgSkeleton(buf []byte, ciDepthAddrOff int32) []byte {
+	return jitarm64.EmitFrameInlinePopVoid0ArgSkeletonArm64(buf, uint16(ciDepthAddrOff))
+}
+
+// archEmitFrameInlineExitHelperRequest arm64 端 Spike 1 exit-helper-request
+// 段(承 §9.20.9 (4) arm64 对位:~28 字节,见
+// jitarm64.EmitFrameInlineExitHelperRequestArm64)。
+//
+// **当前 archSupportsFrameInline=false 屏蔽真触发**,arm64 端未实装 jitarm64
+// 同款 helper;Compile 路径不进入 useFrameInline 分支,本路由不被调。
+// commit-5 真接入时同批落 jitarm64.EmitFrameInlineExitHelperRequestArm64 +
+// 翻 archSupportsFrameInline。
+//
+// **占位**:返 buf 不变(0 字节追加),caller 长度断言会失败 — production
+// 路径不触达(archSupportsFrameInline=false),仅 cross-build 期可达。
+func archEmitFrameInlineExitHelperRequest(buf []byte,
+	exitReasonOff, exitArg0Off int32, helperCode uint64) []byte {
+	_ = exitReasonOff
+	_ = exitArg0Off
+	_ = helperCode
+	return buf
+}
+
+// archEncodedFrameInlineBuildVoid0ArgSkeletonLen arm64 Spike 1 enterLuaFrame
+// 骨架字节数(164,承 §9.20 + jitarm64)。
+const archEncodedFrameInlineBuildVoid0ArgSkeletonLen = jitarm64.EncodedFrameInlineBuildVoid0ArgSkeletonArm64Len
+
+// archEncodedFrameInlinePopVoid0ArgSkeletonLen arm64 Spike 1 popCallInfo
+// 骨架字节数(16,等价 CIDepthDecArm64)。
+const archEncodedFrameInlinePopVoid0ArgSkeletonLen = jitarm64.EncodedFrameInlinePopVoid0ArgSkeletonArm64Len
+
+// archEncodedFrameInlineExitHelperRequestLen arm64 Spike 1 exit-helper-request
+// 段字节数(占位 0,真接入 commit-5 实装 jitarm64 helper 后改 ~28)。
+const archEncodedFrameInlineExitHelperRequestLen = 0

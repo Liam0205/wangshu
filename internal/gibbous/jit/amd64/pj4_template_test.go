@@ -925,3 +925,67 @@ func TestPJ5_EmitFrameInlineWriteCIWord_Encoding(t *testing.T) {
 		}
 	}
 }
+
+// TestPJ5_EmitFrameInlineExitHelperRequest_Length 验 amd64 Spike 1 trampoline
+// exit-resume 协议 exit-helper-request 段总长度(24 字节,承 §9.20.9 (4)
+// 优化版:10 + 4 + 5 + 4 + 1 = 24,reorder rax 复用 ExitInlineHelper 作返值)。
+func TestPJ5_EmitFrameInlineExitHelperRequest_Length(t *testing.T) {
+	var buf []byte
+	// 用 small disp8 offset(exitReason=20, exitArg0=64,与 jitContext 实际 offset
+	// 等价,disp8 形态)。
+	buf = EmitFrameInlineExitHelperRequest(buf, 20 /*exitReasonOff*/, 64 /*exitArg0Off*/, 1 /*HelperRunCallee*/)
+	if len(buf) != EncodedFrameInlineExitHelperRequestLen {
+		t.Errorf("EmitFrameInlineExitHelperRequest 长度 = %d, want %d (disp8 form)",
+			len(buf), EncodedFrameInlineExitHelperRequestLen)
+	}
+}
+
+// TestPJ5_EmitFrameInlineExitHelperRequest_Encoding 验关键字节结构(承
+// §9.20.9 (4) 协议规范):
+//
+//	[0..1]   48 B8        ; mov rax, imm64
+//	[2..9]   helperCode imm64 (HelperRunCallee=1 → 01 00 00 00 00 00 00 00)
+//	[10..12] 49 89 47     ; mov [r15+disp8], rax (REX.WB + opcode + ModRM)
+//	[13]     disp8        ; exitArg0Off
+//	[14]     B8           ; mov eax, imm32
+//	[15..18] 03 00 00 00  ; ExitInlineHelper=3
+//	[19..21] 41 89 47     ; mov [r15+disp8], eax (REX.B + opcode + ModRM 32-bit)
+//	[22]     disp8        ; exitReasonOff
+//	[23]     C3           ; ret
+func TestPJ5_EmitFrameInlineExitHelperRequest_Encoding(t *testing.T) {
+	var buf []byte
+	buf = EmitFrameInlineExitHelperRequest(buf, 20, 64, 1)
+
+	// mov rax, helperCode(48 B8 imm64)
+	if buf[0] != 0x48 || buf[1] != 0xB8 {
+		t.Errorf("[0-1] mov rax, imm64 = 0x%02X%02X, want 0x48B8", buf[0], buf[1])
+	}
+	if buf[2] != 0x01 || buf[3] != 0x00 || buf[4] != 0x00 || buf[5] != 0x00 {
+		t.Errorf("[2-5] helperCode imm64 lo = 0x%02X%02X%02X%02X, want 0x01000000 (HelperRunCallee=1)",
+			buf[2], buf[3], buf[4], buf[5])
+	}
+	// mov [r15+exitArg0Off], rax(49 89 47 disp8)
+	if buf[10] != 0x49 || buf[11] != 0x89 || buf[12] != 0x47 {
+		t.Errorf("[10-12] mov [r15+disp8], rax 前缀 = 0x%02X%02X%02X, want 0x498947",
+			buf[10], buf[11], buf[12])
+	}
+	if buf[13] != 64 {
+		t.Errorf("[13] exitArg0Off disp8 = %d, want 64", buf[13])
+	}
+	// mov eax, ExitInlineHelper(B8 03 00 00 00)
+	if buf[14] != 0xB8 || buf[15] != 0x03 {
+		t.Errorf("[14-15] mov eax, imm32 = 0x%02X%02X, want 0xB803", buf[14], buf[15])
+	}
+	// mov [r15+exitReasonOff], eax(41 89 47 disp8,32-bit)
+	if buf[19] != 0x41 || buf[20] != 0x89 || buf[21] != 0x47 {
+		t.Errorf("[19-21] mov [r15+disp8], eax 前缀 = 0x%02X%02X%02X, want 0x418947",
+			buf[19], buf[20], buf[21])
+	}
+	if buf[22] != 20 {
+		t.Errorf("[22] exitReasonOff disp8 = %d, want 20", buf[22])
+	}
+	// ret(C3)
+	if buf[23] != 0xC3 {
+		t.Errorf("[23] ret = 0x%02X, want 0xC3", buf[23])
+	}
+}

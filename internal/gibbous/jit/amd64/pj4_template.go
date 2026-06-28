@@ -1106,3 +1106,79 @@ func EmitFrameInlinePopVoid0ArgSkeleton(buf []byte, ciDepthAddrOffset int32) []b
 // EncodedFrameInlinePopVoid0ArgSkeletonLen 是 Spike 1 popCallInfo 骨架字节数
 // (10,同 EmitFrameInlineCIDepthDec)。
 const EncodedFrameInlinePopVoid0ArgSkeletonLen = EncodedFrameInlineCIDepthIncDecLen
+
+// EmitFrameInlineExitHelperRequest 发射 amd64 Spike 1 trampoline exit-resume
+// 协议 exit-helper-request 段字节级 inline 模板(承
+// `docs/design/p4-method-jit/implementation-progress.md` §9.20.9 (4) trampoline
+// 改造 + (6) compileSpecSelfCall emit 改造)。
+//
+// **协议位置**:BuildVoid0Arg 后,PopVoid0Arg 前,出 mmap 段返 trampoline。
+// trampoline asm 检 RAX = ExitInlineHelper 路由 Go dispatcher,dispatcher
+// 经 jitCtx.exitArg0 = HelperRunCallee 路由 callee 跑帧逻辑,完成后返
+// resumeAddr = codePageAddr + resumeOff,trampoline 重 CALL 回 PopVoid0Arg。
+//
+// **字节序列**(amd64,总 27 字节):
+//
+//	; 写 jitCtx.exitReasonCode = ExitInlineHelper (3)
+//	mov rax, imm32        ; 5 字节(B8 imm32):rax = ExitInlineHelper
+//	mov [r15+exitReason], eax ; 4 字节(41 89 47 disp8):写 32-bit 字段
+//	; 写 jitCtx.exitArg0 = HelperRunCallee (1)
+//	mov rax, imm64        ; 10 字节(48 B8 imm64):rax = helperCode
+//	mov [r15+exitArg0], rax ; 4 字节(49 89 47 disp8):写 64-bit 字段
+//	; 最后 mov rax, ExitInlineHelper 设返值(trampoline 检 RAX)
+//	mov rax, imm32        ; 5 字节(B8 imm32):rax = ExitInlineHelper
+//	ret                    ; 1 字节(c3)
+//	; 总:5 + 4 + 10 + 4 + 5 + 1 = 29(但 mov rax 重复可优化为 27,见下)
+//
+// **优化**(本实装):exitReasonCode 与最终 rax 返值同 imm32 = ExitInlineHelper,
+// 改 reorder 为:
+//
+//	mov rax, helperCode  ; 10 字节(48 B8 imm64)
+//	mov [r15+exitArg0], rax ; 4 字节
+//	mov eax, ExitInlineHelper ; 5 字节(B8 imm32)
+//	mov [r15+exitReason], eax ; 4 字节
+//	; rax 现在是 ExitInlineHelper(3),作返值
+//	ret                  ; 1 字节
+//	; 总:10 + 4 + 5 + 4 + 1 = 24 字节
+//
+// **入参**:
+//   - exitReasonOff:jitContext.exitReasonCode 字段偏移(uint32,4 字节)
+//   - exitArg0Off:jitContext.exitArg0 字段偏移(uint64,8 字节)
+//   - helperCode:helper request code(HelperRunCallee=1 等)
+//
+// **当前 Spike 1 阶段 archSupportsFrameInline=false 屏蔽真发出**,mmap 段
+// 实际不 emit 本模板;trampoline asm 检 RAX != 3 必跳 skipDispatch。本模板
+// 是工程基础锚点,commit-5 翻闸门时启用。
+func EmitFrameInlineExitHelperRequest(buf []byte, exitReasonOff, exitArg0Off int32, helperCode uint64) []byte {
+	// 1. mov rax, helperCode(10 字节:48 B8 imm64)
+	buf = append(buf, 0x48, 0xB8,
+		byte(helperCode), byte(helperCode>>8), byte(helperCode>>16), byte(helperCode>>24),
+		byte(helperCode>>32), byte(helperCode>>40), byte(helperCode>>48), byte(helperCode>>56))
+	// 2. mov [r15+exitArg0Off], rax(4 字节:49 89 47 disp8)
+	//    49 = REX.WB / 89 = MOV r/m64 r64 / ModRM 01_000_111 = 0x47 + disp8
+	if exitArg0Off < -128 || exitArg0Off > 127 {
+		// 兜底:disp32(7 字节版),Spike 1 阶段 offset 8 位足够,这里写 disp8。
+		// future Spike 4 多帧多偏移时扩 disp32 形态。
+		buf = append(buf, 0x49, 0x89, 0x87, byte(exitArg0Off), byte(exitArg0Off>>8),
+			byte(exitArg0Off>>16), byte(exitArg0Off>>24))
+	} else {
+		buf = append(buf, 0x49, 0x89, 0x47, byte(int8(exitArg0Off)))
+	}
+	// 3. mov eax, ExitInlineHelper(5 字节:B8 imm32,32-bit 隐式清高位)
+	buf = append(buf, 0xB8, 0x03, 0x00, 0x00, 0x00) // ExitInlineHelper=3
+	// 4. mov [r15+exitReasonOff], eax(5 字节:41 89 47 disp8,32-bit 字段)
+	//    41 = REX.B / 89 = MOV r/m32 r32 / ModRM 01_000_111 = 0x47 + disp8
+	if exitReasonOff < -128 || exitReasonOff > 127 {
+		buf = append(buf, 0x41, 0x89, 0x87, byte(exitReasonOff), byte(exitReasonOff>>8),
+			byte(exitReasonOff>>16), byte(exitReasonOff>>24))
+	} else {
+		buf = append(buf, 0x41, 0x89, 0x47, byte(int8(exitReasonOff)))
+	}
+	// 5. ret(1 字节:c3)
+	buf = append(buf, 0xC3)
+	return buf
+}
+
+// EncodedFrameInlineExitHelperRequestLen = 10 + 4 + 5 + 4 + 1 = 24
+// (disp8 形态,jitContext offset ≤ 127)。disp32 兜底形态 +6 字节。
+const EncodedFrameInlineExitHelperRequestLen = 24

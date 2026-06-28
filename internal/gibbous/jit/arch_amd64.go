@@ -234,6 +234,43 @@ func archEmitHelperCall(buf []byte, helperAddr uint64) []byte {
 // arm64 = 20)。caller 用于 inline CALL 模板长度预算。
 const archEncodedHelperCallLen = jitamd64.EncodedHelperCallLen
 
+// archEmitFrameInlineBuildVoid0ArgSkeleton 拼接 amd64 Spike 1 enterLuaFrame
+// 字节级 inline 骨架(120 字节,承 §9.20 Option B Spike 1 + jitamd64.
+// EmitFrameInlineBuildVoid0ArgSkeleton)。Compile 端 useFrameInline 分支用。
+func archEmitFrameInlineBuildVoid0ArgSkeleton(buf []byte,
+	ciDepthAddrOff, ciSegBaseAddrOff int32, callARecv uint8,
+	w0, w1, w2, w4 uint64) []byte {
+	return jitamd64.EmitFrameInlineBuildVoid0ArgSkeleton(buf,
+		ciDepthAddrOff, ciSegBaseAddrOff, callARecv,
+		jitamd64.FrameInlineCISlotWords{Word0: w0, Word1: w1, Word2: w2, Word3: 0, Word4: w4})
+}
+
+// archEmitFrameInlinePopVoid0ArgSkeleton 拼接 amd64 Spike 1 popCallInfo
+// 字节级 inline 骨架(10 字节,承 §9.20 Option B Spike 1)。
+func archEmitFrameInlinePopVoid0ArgSkeleton(buf []byte, ciDepthAddrOff int32) []byte {
+	return jitamd64.EmitFrameInlinePopVoid0ArgSkeleton(buf, ciDepthAddrOff)
+}
+
+// archEmitFrameInlineExitHelperRequest 拼接 amd64 Spike 1 trampoline
+// exit-resume 协议 exit-helper-request 段(24 字节,承 §9.20.9 (4))。
+func archEmitFrameInlineExitHelperRequest(buf []byte,
+	exitReasonOff, exitArg0Off int32, helperCode uint64) []byte {
+	return jitamd64.EmitFrameInlineExitHelperRequest(buf,
+		exitReasonOff, exitArg0Off, helperCode)
+}
+
+// archEncodedFrameInlineBuildVoid0ArgSkeletonLen amd64 Spike 1 enterLuaFrame
+// 骨架字节数(120)。
+const archEncodedFrameInlineBuildVoid0ArgSkeletonLen = jitamd64.EncodedFrameInlineBuildVoid0ArgSkeletonLen
+
+// archEncodedFrameInlinePopVoid0ArgSkeletonLen amd64 Spike 1 popCallInfo
+// 骨架字节数(10)。
+const archEncodedFrameInlinePopVoid0ArgSkeletonLen = jitamd64.EncodedFrameInlinePopVoid0ArgSkeletonLen
+
+// archEncodedFrameInlineExitHelperRequestLen amd64 Spike 1 exit-helper-request
+// 段字节数(24,承 §9.20.9 (4) optimized form)。
+const archEncodedFrameInlineExitHelperRequestLen = jitamd64.EncodedFrameInlineExitHelperRequestLen
+
 // archSupportsFrameInline 返 true 当本 arch 支持 PJ5 Option B 帧建立内联
 // 真接入(承 §9.20 Spike 1)。
 //
