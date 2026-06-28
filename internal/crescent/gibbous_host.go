@@ -938,17 +938,20 @@ func (st *State) TailCall(base, pc, a, b, c int32) int32 {
 // 分支 dead-code → 本 helper Run 期不被调到。剩 commit-5k 工程:callee Proto
 // 元数据接入 + word0/1/2/4 真实计算 + 守门重启用。
 //
-//   - 0=OK(callee 完成 + 返值已落 R(retA..retA+nresults-1))
+//   - 0=OK(callee 完成 + 返值已落 R(callA..callA+nresults-1))
 //   - 1=ERR(state.pendingErr 已置,Run 端 dispatcher 返 1 错误冒泡)
-func (st *State) ExecuteCalleeFromInlineFrame(base, retA int32) int32 {
+func (st *State) ExecuteCalleeFromInlineFrame(base, callA, callArgCount, nresults int32) int32 {
 	_ = base // 实参 base 是 jitContext.valueStackBase 算出的 R0 字节偏移,Spike 1 helper 不读
-	_ = retA // 实参 retA 是 RETURN.A(setter 形态恒 0),funcIdx 改从 calleeCI 取
 	th := st.runningThread
+	// **commit-5m 修 ciDepth Go vs mirror 不同步 bug**
+	if th.ciDepthWordRef != 0 {
+		th.ciDepth = int(uint32(th.arena.WordAt(th.ciDepthWordRef)))
+	}
 	// 1. 反查 callee Proto:read CI[ciDepth-1].word3 → closure GCRef
 	depth := th.ciDepth - 1
 	var calleeCI callInfo
 	th.readCISegInto(depth, &calleeCI)
-	cl := calleeCI.cl // mmap 段 BuildVoid0Arg::LoadClosureGCRef(callA) 装载的 GCRef
+	cl := calleeCI.cl
 	if cl == 0 {
 		return st.raiseGibbous(errf("ExecuteCalleeFromInlineFrame: nil closure GCRef in CI[%d]", depth))
 	}
@@ -956,26 +959,40 @@ func (st *State) ExecuteCalleeFromInlineFrame(base, retA int32) int32 {
 	if int(calleePID) >= len(st.protos) || st.protos[calleePID] == nil {
 		return st.raiseGibbous(errf("ExecuteCalleeFromInlineFrame: invalid callee protoID %d", calleePID))
 	}
-	// 2. ciDepth-- 抵消 BuildVoid0Arg 副作用(enterLuaFrame 内会再 ciDepth++)
+	// 2. ciDepth-- 抵消 BuildVoid0Arg 副作用
 	th.setCIDepth(th.ciDepth - 1)
-	// 3. funcIdx 算法:取 calleeCI.funcIdx(mmap 段 BuildVoid0Arg word0 写入)
-	//    **commit-5j 自检限制**:word0 当前 commit-4b emit 时是 0 占位,真接入
-	//    路径(useFrameInline=true 时)需 commit-5k 让 analyzeSelfCallSpecForm
-	//    把 funcIdx 经 callee Proto 元数据接入 + 编译期固化 word0=base|funcIdx<<32。
-	//    当前 useFrameInline 路径 dead-code,本字段不被读。
-	funcIdx := calleeCI.funcIdx
-	// 4. Spike 1 简化:nargs=0 + nresults=0(setter 形态,callee.NumParams=0 +
-	//    callee 返值 0 个落 R(retA..))。守门由 analyzeSelfCallSpecForm 保证。
-	const nargs = 0
-	const nresults = 0
+	// 3. funcIdx = th.cur.base + callA(SELF + CALL 形态下 method 在 R(callA))
+	funcIdx := th.cur.base + int(callA)
+	// 4. nargs = 1 + callArgCount(self + N user args,Spike 2);nresults 从
+	//    caller's CALL.C 算(Spike 4 多返值多形态):callC=1=0返/2=1返/3..16=
+	//    N=2..15 返 drop multi-ret。
+	nargs := 1 + int(callArgCount)
 	// 5. C stack 限深检查 + nCcalls++
 	if st.nCcalls >= maxCCallDepth {
 		return st.raiseGibbous(errf("C stack overflow"))
 	}
 	st.nCcalls++
-	// 6. enterLuaFrame:真正建 callee 帧(对位 P1 doCall),frame.go::enterLuaFrame
-	//    内部会 writeCISeg(覆盖 mmap 段写的 placeholder)+ ciDepth++ 设 th.cur=callee 视角
-	if e := st.enterLuaFrame(th, funcIdx, nargs, nresults, false); e != nil {
+	// 6. **commit-5u 真 zero-cross 优化**(承 §9.20.12 剩余 zero-cross 工程):
+	//    若 callee Proto 也是 P4 升层(GibbousCodeOf 非 nil 且主线程),直接调
+	//    enterGibbous(内部 enterLuaFrame + code.Run + DoReturn 弹帧),跳过
+	//    executeFrom 解释器主循环 + 直接进 P4 mmap 段,实现 zero-cross 路径。
+	//    callee 非 P4 升层时回落 enterLuaFrame + executeFrom(Spike 1-4 既有路径)。
+	if profileEnabled && th == st.mainTh {
+		calleeCode := st.bridge.GibbousCodeOf(st.protos[calleePID])
+		if calleeCode != nil {
+			err := st.enterGibbous(th, calleeCode, funcIdx, nargs, int(nresults))
+			st.nCcalls--
+			if err != nil {
+				return st.raiseGibbous(err)
+			}
+			st.frameInlineZeroCrossHits++ // zero-cross 路径命中(State 级,测试读)
+			// 出口 ciDepth++ 平衡 PopVoid0Arg(承 Spike 1 commit-5d/5m)
+			th.setCIDepth(th.ciDepth + 1)
+			return 0
+		}
+	}
+	// 6.b enterLuaFrame + executeFrom(Spike 1-4 既有非 zero-cross 回落路径)
+	if e := st.enterLuaFrame(th, funcIdx, nargs, int(nresults), false); e != nil {
 		st.nCcalls--
 		return st.raiseGibbous(e)
 	}

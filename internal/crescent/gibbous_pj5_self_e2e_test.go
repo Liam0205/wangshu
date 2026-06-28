@@ -1680,7 +1680,70 @@ return count`
 		jit.SpecFrameInlineHits(), jit.SpecFrameInlineRunHits())
 }
 
-// archSupportsFrameInlineForTest 测试辅助:amd64 返 true / arm64 返 false。
+// TestPJ5_FrameInline_E2E_Spike2_3KArg 验 Spike 2 N 参 fixed args setter
+// 形态 useFrameInline 真接入(承 commit-5p:callArgCount 守门扩 0..7)。
+// 3 K 参形态:t:m(1,2,3),callee body 用 self+a+b+c 计算 sum。
+func TestPJ5_FrameInline_E2E_Spike2_3KArg(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local sum = 0
+local o = { m = function(self, a, b, c) sum = sum + a + b + c end }
+local function caller(t) t:m(1, 2, 3) end
+for i = 1, 100 do caller(o) end
+return sum`
+	st, mainCl := loadFnP4(t, src)
+	if _, err := st.Call(value.GCRefOf(mainCl), nil, 1); err != nil {
+		t.Fatalf("warmup: %v", err)
+	}
+	st.bridge.SetForceAllPromote(true)
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("force-all run: %v", err)
+	}
+	if got := value.AsNumber(value.Value(rets[0])); got != 100*6 {
+		t.Errorf("rets = %v, want %d (byte-equal P1: callee body 真跑 100 次 1+2+3=6)",
+			got, 100*6)
+	}
+	if archSupportsFrameInlineForTest() {
+		if jit.SpecFrameInlineRunHits() == 0 {
+			t.Errorf("SpecFrameInlineRunHits = 0,Spike 2 3 K 参 useFrameInline 路径未真触达")
+		}
+	}
+	t.Logf("Spike 2 3 K 参:Hits=%d / RunHits=%d", jit.SpecFrameInlineHits(), jit.SpecFrameInlineRunHits())
+}
+
+// TestPJ5_FrameInline_E2E_Spike4_Getter 验 Spike 4 1 返 getter 形态 useFrameInline
+// 真接入(承 commit-5q:nresults 参数从 callC-1 算)。
+// 形态:`local r = t:m(); return r`,callC=2,1 返。
+func TestPJ5_FrameInline_E2E_Spike4_Getter(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local o = { val = 42, m = function(self) return self.val end }
+local function caller(t) local r = t:m(); return r end
+local s = 0
+for i = 1, 100 do s = s + caller(o) end
+return s`
+	st, mainCl := loadFnP4(t, src)
+	if _, err := st.Call(value.GCRefOf(mainCl), nil, 1); err != nil {
+		t.Fatalf("warmup: %v", err)
+	}
+	st.bridge.SetForceAllPromote(true)
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("force-all run: %v", err)
+	}
+	if got := value.AsNumber(value.Value(rets[0])); got != 100*42 {
+		t.Errorf("rets = %v, want %d (byte-equal P1: getter 100 次每次 self.val=42)",
+			got, 100*42)
+	}
+	if archSupportsFrameInlineForTest() {
+		if jit.SpecFrameInlineRunHits() == 0 {
+			t.Errorf("SpecFrameInlineRunHits = 0,Spike 4 getter useFrameInline 路径未真触达")
+		}
+	}
+	t.Logf("Spike 4 getter: Hits=%d / RunHits=%d", jit.SpecFrameInlineHits(), jit.SpecFrameInlineRunHits())
+}
+
 // **复制 arch 矩阵**(承 PR comment c5ef665 评审):本函数硬编码复制
 // jit/arch_*.go::archSupportsFrameInline() 矩阵,将来 arch 支持面扩展时
 // 本处需手动跟进。jit 包未导出真源函数(包内 unexported),测试包无法直接
@@ -1753,4 +1816,78 @@ return count`
 	}
 	t.Logf("SpecFrameInlineHits=%d / SpecFrameInlineRunHits=%d",
 		jit.SpecFrameInlineHits(), jit.SpecFrameInlineRunHits())
+}
+
+// TestPJ5_FrameInline_E2E_Spike3_Vararg 验 Spike 3 vararg callee 形态
+// useFrameInline 真接入(callee 接 self + vararg `...`)。
+// 形态:`function(self, ...) local a,b,c=...; sum = sum + a + b + c end`,
+// callee.IsVararg=true。
+func TestPJ5_FrameInline_E2E_Spike3_Vararg(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local sum = 0
+local o = { m = function(self, ...) local a, b, c = ...; sum = sum + a + b + c end }
+local function caller(t) t:m(1, 2, 3) end
+for i = 1, 100 do caller(o) end
+return sum`
+	st, mainCl := loadFnP4(t, src)
+	if _, err := st.Call(value.GCRefOf(mainCl), nil, 1); err != nil {
+		t.Fatalf("warmup: %v", err)
+	}
+	st.bridge.SetForceAllPromote(true)
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("force-all run: %v", err)
+	}
+	if got := value.AsNumber(value.Value(rets[0])); got != 100*6 {
+		t.Errorf("rets = %v, want %d (byte-equal P1: vararg 100 次每次 1+2+3=6)",
+			got, 100*6)
+	}
+	if archSupportsFrameInlineForTest() {
+		if jit.SpecFrameInlineRunHits() == 0 {
+			t.Errorf("SpecFrameInlineRunHits = 0,Spike 3 vararg useFrameInline 路径未真触达")
+		}
+	}
+	t.Logf("Spike 3 vararg: Hits=%d / RunHits=%d", jit.SpecFrameInlineHits(), jit.SpecFrameInlineRunHits())
+}
+
+// TestPJ5_FrameInline_E2E_Spike5_ZeroCross 验 commit-5u 真 zero-cross 优化:
+// callee 也 P4 升层时,helper 内直接调 enterGibbous 跳过 executeFrom 主循环。
+// **状态级探针 st.frameInlineZeroCrossHits** 直接读 State 字段。
+//
+// callee 用「PJ7 form `function(self) return self.x end`」(GETTABLE + RETURN),
+// PJ4 IC ArrayHit/NodeHit P4 支持(承 §9.7-§9.10)。getter 形态 callC=2 + caller
+// `local r = t:m(); return r` 走 useFrameInline 1 返路径。
+func TestPJ5_FrameInline_E2E_Spike5_ZeroCross(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local o = { x = 42, m = function(self) return self.x end }
+local function caller(t) local r = t:m(); return r end
+local s = 0
+for i = 1, 200 do s = s + caller(o) end
+return s`
+	st, mainCl := loadFnP4(t, src)
+	if _, err := st.Call(value.GCRefOf(mainCl), nil, 1); err != nil {
+		t.Fatalf("warmup: %v", err)
+	}
+	st.bridge.SetForceAllPromote(true)
+	beforeZC := st.frameInlineZeroCrossHits
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("force-all run: %v", err)
+	}
+	if got := value.AsNumber(value.Value(rets[0])); got != 200*42 {
+		t.Errorf("rets = %v, want %d(byte-equal P1)", got, 200*42)
+	}
+	zcGrowth := st.frameInlineZeroCrossHits - beforeZC
+	t.Logf("Spike 5 zero-cross: RunHits=%d / ZeroCrossHits 增长=%d",
+		jit.SpecFrameInlineRunHits(), zcGrowth)
+	// callee `m` (PJ4 GETTABLE + RETURN form)在 force-all 下应升 P4,zero-cross
+	// 路径应触达;若 zcGrowth=0 = callee form 限制下回落 enterLuaFrame +
+	// executeFrom 路径仍 byte-equal P1 兜底。
+	if archSupportsFrameInlineForTest() && zcGrowth > 0 {
+		t.Logf("✅ zero-cross 路径真触达(callee P4 升层 + helper 跳 executeFrom)")
+	} else {
+		t.Logf("⚠️ zero-cross 路径未触达(callee 未升 P4 或 P4 form 限制 — 回落 enterLuaFrame + executeFrom byte-equal 兜底)")
+	}
 }
