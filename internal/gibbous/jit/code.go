@@ -948,10 +948,13 @@ func (c *p4Code) runFrameInlineDispatcher(base int32) int32 {
 	switch helperCode {
 	case HelperRunCallee:
 		// 跑 callee Lua 体(host 完成 readCISegInto + executeFrom + popCallInfo)
-		// **commit-5l 签名修正**:helper 接受 callA(CALL.A 字段,SELF + CALL
-		// 形态下 method 在 R(callA))而非 retA(RETURN.A 字段,setter 形态恒 0)
-		// **commit-5p Spike 2**:加 callArgCount 参数(0..7 user args)
-		st := c.host.ExecuteCalleeFromInlineFrame(base, int32(c.callA), int32(c.callArgCount))
+		// **commit-5l/5p/5q 签名扩**:helper 接受 (callA, callArgCount, nresults)
+		//   - callA: CALL.A 字段(SELF + CALL 形态下 method 在 R(callA))
+		//   - callArgCount: 0..7 user args
+		//   - nresults: callC - 1(callC=1=0返 setter/2=1返 getter/3..16=N=2..15
+		//     返 drop multi-ret)
+		nresults := int32(c.callC) - 1
+		st := c.host.ExecuteCalleeFromInlineFrame(base, int32(c.callA), int32(c.callArgCount), nresults)
 		if st != 0 {
 			// 错误冒泡(host 内 raise 已置 pendingErr)
 			return 1

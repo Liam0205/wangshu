@@ -1712,6 +1712,38 @@ return sum`
 	t.Logf("Spike 2 3 K 参:Hits=%d / RunHits=%d", jit.SpecFrameInlineHits(), jit.SpecFrameInlineRunHits())
 }
 
+// TestPJ5_FrameInline_E2E_Spike4_Getter 验 Spike 4 1 返 getter 形态 useFrameInline
+// 真接入(承 commit-5q:nresults 参数从 callC-1 算)。
+// 形态:`local r = t:m(); return r`,callC=2,1 返。
+func TestPJ5_FrameInline_E2E_Spike4_Getter(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local o = { val = 42, m = function(self) return self.val end }
+local function caller(t) local r = t:m(); return r end
+local s = 0
+for i = 1, 100 do s = s + caller(o) end
+return s`
+	st, mainCl := loadFnP4(t, src)
+	if _, err := st.Call(value.GCRefOf(mainCl), nil, 1); err != nil {
+		t.Fatalf("warmup: %v", err)
+	}
+	st.bridge.SetForceAllPromote(true)
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("force-all run: %v", err)
+	}
+	if got := value.AsNumber(value.Value(rets[0])); got != 100*42 {
+		t.Errorf("rets = %v, want %d (byte-equal P1: getter 100 次每次 self.val=42)",
+			got, 100*42)
+	}
+	if archSupportsFrameInlineForTest() {
+		if jit.SpecFrameInlineRunHits() == 0 {
+			t.Errorf("SpecFrameInlineRunHits = 0,Spike 4 getter useFrameInline 路径未真触达")
+		}
+	}
+	t.Logf("Spike 4 getter: Hits=%d / RunHits=%d", jit.SpecFrameInlineHits(), jit.SpecFrameInlineRunHits())
+}
+
 // **复制 arch 矩阵**(承 PR comment c5ef665 评审):本函数硬编码复制
 // jit/arch_*.go::archSupportsFrameInline() 矩阵,将来 arch 支持面扩展时
 // 本处需手动跟进。jit 包未导出真源函数(包内 unexported),测试包无法直接

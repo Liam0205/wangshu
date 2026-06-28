@@ -940,13 +940,10 @@ func (st *State) TailCall(base, pc, a, b, c int32) int32 {
 //
 //   - 0=OK(callee 完成 + 返值已落 R(callA..callA+nresults-1))
 //   - 1=ERR(state.pendingErr 已置,Run 端 dispatcher 返 1 错误冒泡)
-func (st *State) ExecuteCalleeFromInlineFrame(base, callA, callArgCount int32) int32 {
+func (st *State) ExecuteCalleeFromInlineFrame(base, callA, callArgCount, nresults int32) int32 {
 	_ = base // 实参 base 是 jitContext.valueStackBase 算出的 R0 字节偏移,Spike 1 helper 不读
 	th := st.runningThread
-	// **commit-5m 修 ciDepth Go vs mirror 不同步 bug**:mmap 段 BuildVoid0Arg
-	// CIDepthInc 仅 inc mirror 字(`inc qword ptr [rax]`),未更新 Go field
-	// `th.ciDepth`。本 helper 入口先从 mirror 同步 Go field,后续 setCIDepth /
-	// enterLuaFrame / popCallInfo 才能基于正确深度推算 CI seg index。
+	// **commit-5m 修 ciDepth Go vs mirror 不同步 bug**
 	if th.ciDepthWordRef != 0 {
 		th.ciDepth = int(uint32(th.arena.WordAt(th.ciDepthWordRef)))
 	}
@@ -954,7 +951,7 @@ func (st *State) ExecuteCalleeFromInlineFrame(base, callA, callArgCount int32) i
 	depth := th.ciDepth - 1
 	var calleeCI callInfo
 	th.readCISegInto(depth, &calleeCI)
-	cl := calleeCI.cl // mmap 段 BuildVoid0Arg::LoadClosureGCRef(callA) 装载的 GCRef
+	cl := calleeCI.cl
 	if cl == 0 {
 		return st.raiseGibbous(errf("ExecuteCalleeFromInlineFrame: nil closure GCRef in CI[%d]", depth))
 	}
@@ -962,25 +959,20 @@ func (st *State) ExecuteCalleeFromInlineFrame(base, callA, callArgCount int32) i
 	if int(calleePID) >= len(st.protos) || st.protos[calleePID] == nil {
 		return st.raiseGibbous(errf("ExecuteCalleeFromInlineFrame: invalid callee protoID %d", calleePID))
 	}
-	// 2. ciDepth-- 抵消 BuildVoid0Arg 副作用(enterLuaFrame 内会再 ciDepth++)
+	// 2. ciDepth-- 抵消 BuildVoid0Arg 副作用
 	th.setCIDepth(th.ciDepth - 1)
 	// 3. funcIdx = th.cur.base + callA(SELF + CALL 形态下 method 在 R(callA))
 	funcIdx := th.cur.base + int(callA)
-	// 4. **commit-5p Spike 2 N 参形态**:nargs = 1 + callArgCount(self + N user
-	//    args,SELF + CALL N=callArgCount 参形态:SELF 已写 R(callA+1)=self,
-	//    spec template args 段已写 R(callA+2..callA+1+N) = args)。
-	//    caller CALL.B = 2+N(N+1 nargs:self + N args),enterLuaFrame 期望
-	//    nargs=1+N。
+	// 4. nargs = 1 + callArgCount(self + N user args,Spike 2);nresults 从
+	//    caller's CALL.C 算(Spike 4 多返值多形态):callC=1=0返/2=1返/3..16=
+	//    N=2..15 返 drop multi-ret。
 	nargs := 1 + int(callArgCount)
-	const nresults = 0
 	// 5. C stack 限深检查 + nCcalls++
 	if st.nCcalls >= maxCCallDepth {
 		return st.raiseGibbous(errf("C stack overflow"))
 	}
 	st.nCcalls++
-	// 6. enterLuaFrame:真正建 callee 帧(对位 P1 doCall),frame.go::enterLuaFrame
-	//    内部会 writeCISeg(覆盖 mmap 段写的 placeholder)+ ciDepth++ 设 th.cur=callee 视角
-	if e := st.enterLuaFrame(th, funcIdx, nargs, nresults, false); e != nil {
+	if e := st.enterLuaFrame(th, funcIdx, nargs, int(nresults), false); e != nil {
 		st.nCcalls--
 		return st.raiseGibbous(e)
 	}
