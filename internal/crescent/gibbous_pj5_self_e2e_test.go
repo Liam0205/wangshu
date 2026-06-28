@@ -1681,7 +1681,11 @@ return count`
 }
 
 // archSupportsFrameInlineForTest 测试辅助:amd64 返 true / arm64 返 false。
-// 与 jit/arch_*.go::archSupportsFrameInline() 矩阵保持单一真相源。
+// **复制 arch 矩阵**(承 PR comment c5ef665 评审):本函数硬编码复制
+// jit/arch_*.go::archSupportsFrameInline() 矩阵,将来 arch 支持面扩展时
+// 本处需手动跟进。jit 包未导出真源函数(包内 unexported),测试包无法直接
+// 调用,故折中复制。**新 arch 启用 archSupportsFrameInline 时,记得同步
+// 更新本函数返值矩阵**(grep `archSupportsFrameInlineForTest` 找所有用例)。
 func archSupportsFrameInlineForTest() bool {
 	return runtime.GOARCH == "amd64"
 }
