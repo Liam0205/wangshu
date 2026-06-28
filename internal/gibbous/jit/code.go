@@ -931,25 +931,45 @@ var ErrRunNotImplemented = errors.New("internal/gibbous/jit: p4Code Run failed: 
 // 接管完成 callee Lua 体执行 + popCallInfo 重入。
 //
 // 流程:
-//  1. dispatchInlineHelper(c.jitCtx) — 路由 helper request(经 jitCtx.exitArg0
-//     = HelperRunCallee):内部调 host.ExecuteCalleeFromInlineFrame(base, retA)
+//  1. 读 jitCtx.exitArg0 路由 helper request(承 §9.20.9 (3) 协议状态码):
+//     - HelperRunCallee:调 host.ExecuteCalleeFromInlineFrame(base, retA)
 //     完成 readCISegInto + nCcalls++ + executeFrom + popCallInfo
+//     - HelperGrowStack:未来扩(arena grow 触发)
+//     - HelperGCBarrier:未来扩(GC 写屏障)
 //  2. 若 helper 返 1=ERR,设 ERR 返 1(错误冒泡)
 //  3. 二次 archCallJITSpec 跳 codePage + frameInlineResumeOff 续跑 PopVoid0Arg
 //     + ret 段,RAX 必 = 0(ExitNormal)
 //  4. 跳过 Run 端 host.CallBaseline + DoReturn(callee 已在 helper 内完整跑完)
 //
+// **设计澄清**(承 commit-3b 跨包 CALL 设计澄清的延续):
+//   - dispatcher 路由本应是 dispatchInlineHelper(jit 包级函数),但跨包 + Plan 9
+//     asm 复杂度高;改用 p4Code 方法直接访问 c.host(承 Run-end 化方案)
+//   - dispatchInlineHelper 留作工程基础锚点,future 真 trampoline asm CALL 路径
+//     的接口(承 §9.20.9 (5))
+//
 // **当前 archSupportsFrameInline=false 屏蔽真触发**,本函数不被调到;
 // commit-5e 翻闸门 + analyzeSelfCallSpecForm 设 useFrameInline=true 后启用。
 func (c *p4Code) runFrameInlineDispatcher(base int32) int32 {
-	// 1. 调 Go 端 dispatcher(承 §9.20.9 (5) 协议):路由 helper request +
-	//    跑 callee Lua 体
-	resumeAddr := dispatchInlineHelper(c.jitCtx)
-	if resumeAddr == 0 {
-		// 错误冒泡(host.ExecuteCalleeFromInlineFrame 内 raise 已置 pendingErr)
+	// 1. 路由 helper request:读 jitCtx.exitArg0 决定 helper 类型
+	helperCode := c.jitCtx.ExitArg0()
+	switch helperCode {
+	case HelperRunCallee:
+		// 跑 callee Lua 体(host 完成 readCISegInto + executeFrom + popCallInfo)
+		retA := int32(c.retA) // callee 返值落 R(retA..) 区间
+		st := c.host.ExecuteCalleeFromInlineFrame(base, retA)
+		if st != 0 {
+			// 错误冒泡(host 内 raise 已置 pendingErr)
+			return 1
+		}
+	case HelperGrowStack, HelperGCBarrier:
+		// 未来扩,当前不触达(spec 段不 emit 这些 request)
+		return 1
+	default:
+		// 未知 helper code(协议 bug)
 		return 1
 	}
 	// 2. 二次 callJITSpec 跳 resume entry 续跑 PopVoid0Arg + ret
+	resumeAddr := c.codePage.Addr() + uintptr(c.frameInlineResumeOff)
 	jitCtxAddr := jitContextAddr(c.jitCtx)
 	vsBaseAddr := c.host.ValueStackBaseAddr(base)
 	raxResume := archCallJITSpec(resumeAddr, jitCtxAddr, vsBaseAddr)
