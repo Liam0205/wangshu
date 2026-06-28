@@ -972,6 +972,26 @@ func (st *State) ExecuteCalleeFromInlineFrame(base, callA, callArgCount, nresult
 		return st.raiseGibbous(errf("C stack overflow"))
 	}
 	st.nCcalls++
+	// 6. **commit-5u 真 zero-cross 优化**(承 §9.20.12 剩余 zero-cross 工程):
+	//    若 callee Proto 也是 P4 升层(GibbousCodeOf 非 nil 且主线程),直接调
+	//    enterGibbous(内部 enterLuaFrame + code.Run + DoReturn 弹帧),跳过
+	//    executeFrom 解释器主循环 + 直接进 P4 mmap 段,实现 zero-cross 路径。
+	//    callee 非 P4 升层时回落 enterLuaFrame + executeFrom(Spike 1-4 既有路径)。
+	if profileEnabled && th == st.mainTh {
+		calleeCode := st.bridge.GibbousCodeOf(st.protos[calleePID])
+		if calleeCode != nil {
+			err := st.enterGibbous(th, calleeCode, funcIdx, nargs, int(nresults))
+			st.nCcalls--
+			if err != nil {
+				return st.raiseGibbous(err)
+			}
+			st.frameInlineZeroCrossHits++ // zero-cross 路径命中(State 级,测试读)
+			// 出口 ciDepth++ 平衡 PopVoid0Arg(承 Spike 1 commit-5d/5m)
+			th.setCIDepth(th.ciDepth + 1)
+			return 0
+		}
+	}
+	// 6.b enterLuaFrame + executeFrom(Spike 1-4 既有非 zero-cross 回落路径)
 	if e := st.enterLuaFrame(th, funcIdx, nargs, int(nresults), false); e != nil {
 		st.nCcalls--
 		return st.raiseGibbous(e)

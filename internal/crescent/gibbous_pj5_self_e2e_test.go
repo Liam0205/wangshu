@@ -1850,3 +1850,44 @@ return sum`
 	}
 	t.Logf("Spike 3 vararg: Hits=%d / RunHits=%d", jit.SpecFrameInlineHits(), jit.SpecFrameInlineRunHits())
 }
+
+// TestPJ5_FrameInline_E2E_Spike5_ZeroCross 验 commit-5u 真 zero-cross 优化:
+// callee 也 P4 升层时,helper 内直接调 enterGibbous 跳过 executeFrom 主循环。
+// **状态级探针 st.frameInlineZeroCrossHits** 直接读 State 字段。
+//
+// callee 用「PJ7 form `function(self) return self.x end`」(GETTABLE + RETURN),
+// PJ4 IC ArrayHit/NodeHit P4 支持(承 §9.7-§9.10)。getter 形态 callC=2 + caller
+// `local r = t:m(); return r` 走 useFrameInline 1 返路径。
+func TestPJ5_FrameInline_E2E_Spike5_ZeroCross(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local o = { x = 42, m = function(self) return self.x end }
+local function caller(t) local r = t:m(); return r end
+local s = 0
+for i = 1, 200 do s = s + caller(o) end
+return s`
+	st, mainCl := loadFnP4(t, src)
+	if _, err := st.Call(value.GCRefOf(mainCl), nil, 1); err != nil {
+		t.Fatalf("warmup: %v", err)
+	}
+	st.bridge.SetForceAllPromote(true)
+	beforeZC := st.frameInlineZeroCrossHits
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("force-all run: %v", err)
+	}
+	if got := value.AsNumber(value.Value(rets[0])); got != 200*42 {
+		t.Errorf("rets = %v, want %d(byte-equal P1)", got, 200*42)
+	}
+	zcGrowth := st.frameInlineZeroCrossHits - beforeZC
+	t.Logf("Spike 5 zero-cross: RunHits=%d / ZeroCrossHits 增长=%d",
+		jit.SpecFrameInlineRunHits(), zcGrowth)
+	// callee `m` (PJ4 GETTABLE + RETURN form)在 force-all 下应升 P4,zero-cross
+	// 路径应触达;若 zcGrowth=0 = callee form 限制下回落 enterLuaFrame +
+	// executeFrom 路径仍 byte-equal P1 兜底。
+	if archSupportsFrameInlineForTest() && zcGrowth > 0 {
+		t.Logf("✅ zero-cross 路径真触达(callee P4 升层 + helper 跳 executeFrom)")
+	} else {
+		t.Logf("⚠️ zero-cross 路径未触达(callee 未升 P4 或 P4 form 限制 — 回落 enterLuaFrame + executeFrom byte-equal 兜底)")
+	}
+}

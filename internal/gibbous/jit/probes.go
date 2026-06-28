@@ -109,6 +109,10 @@ func SpecFrameInlineHits() uint64 { return atomic.LoadUint64(&specFrameInlineHit
 // 用本探针。
 func SpecFrameInlineRunHits() uint64 { return atomic.LoadUint64(&specFrameInlineRunHits) }
 
+// Note: zero-cross 路径命中探针位于 crescent.State.frameInlineZeroCrossHits
+// (承 §9.20.12 commit-5u),因 crescent 不可 import jit(循环依赖)+ 需访问
+// st.bridge.GibbousCodeOf,故计数器存 State 级 + 由 e2e 测试直接读 st 字段。
+
 // ResetSpecHits 把所有 spec 命中计数清零(测试开始前调,防之前其它测试
 // 残留累积影响断言)。仅测试用。
 func ResetSpecHits() {
