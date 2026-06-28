@@ -281,9 +281,12 @@ type P4HostState interface {
 	//   2. 反查 callee Proto:object.ClosureProtoID(cl) → st.protos[pid]
 	//   3. ciDepth-- 抵消 BuildVoid0Arg 副作用
 	//   4. funcIdx = th.cur.base + callA(caller frame R(callA) = method 槽位)
-	//   5. nargs=0 + nresults=0(Spike 1 0 参 setter 形态守门)
+	//   5. nargs=1 + nresults=0(Spike 1 SELF + CALL 0 user-arg setter 形态:
+	//      SELF 已写 R(callA+1)=self,caller CALL.B=2 = 1 nargs(self only),
+	//      enterLuaFrame 期望 nargs=1)
 	//   6. nCcalls++/enterLuaFrame/executeFrom/popCallInfo
-	//   7. 出口 ciDepth++ 平衡 PopVoid0Arg
+	//   7. 出口 ciDepth++ 平衡 PopVoid0Arg(commit-5m 入口先从 mirror sync Go
+	//      field ciDepth,避免 mmap CIDepthInc 与 Go field 不同步)
 	//
 	// **返**:0=OK(callee 完成 + 返值已落 R(callA..callA+nresults-1))/ 1=ERR
 	// (state.pendingErr 已置,Run 端 dispatcher 走错误路径)。
