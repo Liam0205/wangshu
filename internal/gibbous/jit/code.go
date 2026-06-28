@@ -765,6 +765,26 @@ func (c *p4Code) runSpecSelfCall(base int32, jitCtxAddr uintptr, vsBaseAddr uint
 		if st != 0 {
 			return st
 		}
+	} else if c.useFrameInline && raxSpec == uint64(ExitInlineHelper) {
+		// **§9.20.9 Run-end dispatcher 实装**(commit-5b):spec 段 emit 完
+		// SELF NodeHit + BuildVoid0Arg + ExitHelperRequest 后段返 RAX=
+		// ExitInlineHelper,Run 端走 dispatcher 路径完成 callee Lua 体执行,
+		// 然后二次 callJITSpec 跳 resume entry(codePage + frameInlineResumeOff)
+		// 续跑 PopVoid0Arg + ret 完成 popCallInfo。
+		//
+		// 流程(对位 §9.20.9 (1) 协议总览,Run 端化实装):
+		//   2a. dispatchInlineHelper(jitCtx) → 路由 helper request(经
+		//       jitCtx.exitArg0 = HelperRunCallee)→ host.ExecuteCalleeFromInlineFrame
+		//       (readCISegInto + nCcalls++ + executeFrom + popCallInfo)
+		//   2b. 若 dispatcher 返 1=ERR:错误冒泡,直接 return 1
+		//   2c. 二次 archCallJITSpec 跳 resume entry,RAX 必 = 0(PopVoid0Arg
+		//       + ret 段执行完返 ExitNormal=0)
+		//   2d. 跳过 Run 端 host.CallBaseline + DoReturn(callee 已 inline 跑完)
+		st := c.runFrameInlineDispatcher(base)
+		if st != 0 {
+			return st
+		}
+		return 0
 	}
 
 	// 3. args 装载已在 spec 段字节级 emit(承 §9.19 摊薄优化,跳过 host
@@ -901,6 +921,45 @@ func (c *p4Code) Dispose() error {
 // ErrRunNotImplemented:占位错误(已被 PJ2 真接入版淘汰,但保留作 wireP4
 // 防御性兜底返错的错误类型——若 codePage 构造失败 Run 直接返 ERR)。
 var ErrRunNotImplemented = errors.New("internal/gibbous/jit: p4Code Run failed: codePage / jitCtx not initialized")
+
+// runFrameInlineDispatcher 处理 PJ5 Option B Spike 1 帧建立内联 Run-end
+// dispatcher 路径(承 §9.20.9 (1)+(5) Go 端 dispatcher 实装,commit-5b
+// Run-end 化版本):
+//
+// **协议**:spec 段已 emit 完 SELF NodeHit + BuildVoid0Arg + ExitHelperRequest
+// + (resume entry) PopVoid0Arg + ret;段返 RAX=ExitInlineHelper 时本函数
+// 接管完成 callee Lua 体执行 + popCallInfo 重入。
+//
+// 流程:
+//  1. dispatchInlineHelper(c.jitCtx) — 路由 helper request(经 jitCtx.exitArg0
+//     = HelperRunCallee):内部调 host.ExecuteCalleeFromInlineFrame(base, retA)
+//     完成 readCISegInto + nCcalls++ + executeFrom + popCallInfo
+//  2. 若 helper 返 1=ERR,设 ERR 返 1(错误冒泡)
+//  3. 二次 archCallJITSpec 跳 codePage + frameInlineResumeOff 续跑 PopVoid0Arg
+//     + ret 段,RAX 必 = 0(ExitNormal)
+//  4. 跳过 Run 端 host.CallBaseline + DoReturn(callee 已在 helper 内完整跑完)
+//
+// **当前 archSupportsFrameInline=false 屏蔽真触发**,本函数不被调到;
+// commit-5e 翻闸门 + analyzeSelfCallSpecForm 设 useFrameInline=true 后启用。
+func (c *p4Code) runFrameInlineDispatcher(base int32) int32 {
+	// 1. 调 Go 端 dispatcher(承 §9.20.9 (5) 协议):路由 helper request +
+	//    跑 callee Lua 体
+	resumeAddr := dispatchInlineHelper(c.jitCtx)
+	if resumeAddr == 0 {
+		// 错误冒泡(host.ExecuteCalleeFromInlineFrame 内 raise 已置 pendingErr)
+		return 1
+	}
+	// 2. 二次 callJITSpec 跳 resume entry 续跑 PopVoid0Arg + ret
+	jitCtxAddr := jitContextAddr(c.jitCtx)
+	vsBaseAddr := c.host.ValueStackBaseAddr(base)
+	raxResume := archCallJITSpec(resumeAddr, jitCtxAddr, vsBaseAddr)
+	if raxResume != 0 {
+		// resume entry 段执行异常(理论上 PopVoid0Arg + ret 只 ciDepth-- + ret,
+		// RAX 应是 ExitNormal=0;非 0 说明协议 bug)
+		return 1
+	}
+	return 0
+}
 
 // 编译期断言:Compiler 实现 bridge.P3Compiler 接口;p4Code 实现 bridge.GibbousCode
 // (任何接口签名漂移立即在编译期暴露,不等运行期)。
