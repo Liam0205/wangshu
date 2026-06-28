@@ -245,13 +245,16 @@ func archEmitHelperCall(buf []byte, helperAddr uint64) []byte {
 const archEncodedHelperCallLen = jitamd64.EncodedHelperCallLen
 
 // archEmitFrameInlineBuildVoid0ArgSkeleton 拼接 amd64 Spike 1 enterLuaFrame
-// 字节级 inline 骨架(120 字节,承 §9.20 Option B Spike 1 + jitamd64.
-// EmitFrameInlineBuildVoid0ArgSkeleton)。Compile 端 useFrameInline 分支用。
+// 字节级 inline 骨架(130 字节 Absolute 版,承 §9.20.9 commit-5l bug 修 +
+// jitamd64.EmitFrameInlineBuildVoid0ArgSkeletonAbsolute)。Compile 端
+// useFrameInline 分支用。Absolute 版 LoadCISlotAddr 内追加 r14=arenaBase +
+// add rax, r14 让 rax 是绝对地址,避免 word offset 不能 deref 的 bug。
 func archEmitFrameInlineBuildVoid0ArgSkeleton(buf []byte,
 	ciDepthAddrOff, ciSegBaseAddrOff int32, callARecv uint8,
 	w0, w1, w2, w4 uint64) []byte {
-	return jitamd64.EmitFrameInlineBuildVoid0ArgSkeleton(buf,
-		ciDepthAddrOff, ciSegBaseAddrOff, callARecv,
+	arenaBaseOff := int32(JITContextArenaBaseOffset)
+	return jitamd64.EmitFrameInlineBuildVoid0ArgSkeletonAbsolute(buf,
+		ciDepthAddrOff, ciSegBaseAddrOff, arenaBaseOff, callARecv,
 		jitamd64.FrameInlineCISlotWords{Word0: w0, Word1: w1, Word2: w2, Word3: 0, Word4: w4})
 }
 

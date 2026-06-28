@@ -752,24 +752,29 @@ func TestPJ5_EmitFrameInlineBuildVoid0ArgSkeleton_Length(t *testing.T) {
 	}
 }
 
-// TestPJ5_EmitFrameInlinePopVoid0ArgSkeleton_AliasCIDepthDec 验 amd64 Spike 1
-// popCallInfo 骨架字节级与 EmitFrameInlineCIDepthDec 完全等价(纯 alias)。
-func TestPJ5_EmitFrameInlinePopVoid0ArgSkeleton_AliasCIDepthDec(t *testing.T) {
-	var bufA, bufB []byte
+// TestPJ5_EmitFrameInlinePopVoid0ArgSkeleton_CIDepthDecPlusRet 验 amd64
+// Spike 1 popCallInfo 骨架字节级 = CIDepthDec 10 byte + xor eax,eax 2 byte +
+// ret 1 byte = 13 byte(承 commit-5l 修 missing ret bug)。
+func TestPJ5_EmitFrameInlinePopVoid0ArgSkeleton_CIDepthDecPlusRet(t *testing.T) {
+	var bufA []byte
 	bufA = EmitFrameInlinePopVoid0ArgSkeleton(bufA, 0x40)
-	bufB = EmitFrameInlineCIDepthDec(bufB, 0x40)
 	if len(bufA) != EncodedFrameInlinePopVoid0ArgSkeletonLen {
 		t.Errorf("PopVoid0ArgSkeleton 长度 = %d, want %d",
 			len(bufA), EncodedFrameInlinePopVoid0ArgSkeletonLen)
 	}
-	if len(bufA) != len(bufB) {
-		t.Errorf("长度差异:Pop=%d, CIDepthDec=%d", len(bufA), len(bufB))
-	}
-	for i := range bufA {
+	// 前 10 byte = CIDepthDec(EmitMovqRaxFromR15Disp + EmitDecQwordPtrAtRax)
+	var bufB []byte
+	bufB = EmitFrameInlineCIDepthDec(bufB, 0x40)
+	for i := range bufB {
 		if bufA[i] != bufB[i] {
 			t.Errorf("字节[%d] 差异:Pop=0x%02X, CIDepthDec=0x%02X",
 				i, bufA[i], bufB[i])
 		}
+	}
+	// 末 3 byte = 0x31 0xc0 0xc3(xor eax,eax + ret)
+	if bufA[10] != 0x31 || bufA[11] != 0xC0 || bufA[12] != 0xC3 {
+		t.Errorf("PopVoid0Arg 末 3 byte = 0x%02X%02X%02X, want 0x31C0C3(xor eax,eax + ret)",
+			bufA[10], bufA[11], bufA[12])
 	}
 }
 

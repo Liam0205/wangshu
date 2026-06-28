@@ -2585,24 +2585,24 @@ func analyzeSelfCallSpecForm(proto *bytecode.Proto, feedback *bridge.TypeFeedbac
 	info.icStableShape = pf.StableShape
 	info.icStableIndex = pf.StableIndex
 	info.icStableKey = stableKey
-	// PJ5 Option B Spike 1 帧建立内联(承 §9.20.4 + §9.20.9 commit-5g/5j):
+	// PJ5 Option B Spike 1 帧建立内联(承 §9.20.4 + §9.20.9 commit-5l 工程基础):
 	// 守门条件(Spike 1 简化形态):
-	//   - archSupportsFrameInline()=true(amd64 commit-5h 翻 true 后启用)
-	//   - 0 参 setter 形态(callArgCount=0 + isCallVoid + retB=1)— 与
-	//     ExecuteCalleeFromInlineFrame Spike 1 0 参实装对齐
-	//   - 非 TAILCALL(避免帧栈语义复杂化,Spike 2+ 扩)
+	//   - archSupportsFrameInline()=true(amd64 commit-5h 翻 true)
+	//   - 0 参 setter 形态(callArgCount=0 + isCallVoid + retB=1)
+	//   - 非 TAILCALL
 	//
-	// **commit-5j 撤销 useFrameInline 启用**(承自检发现 Run 期 Spike 1 真接入
-	// 因 word0/1/2/4 占位 0 + SELF NodeHit emit 段 fall-through 后 BuildVoid0Arg
-	// 段 LoadCISlotAddr/WriteCIWord 触发 SIGSEGV):callee Proto 元数据接入是
-	// Spike 1 真接入的核心瓶颈,需 P2 Bridge analyzer 跟踪 SELF method 引用
-	// → callee FuncExpr → bytecode.Proto 反查 + arena proto cache 段(P3 PW10
-	// §14.8 ④-i 同款),200+ 行级独立工程。
+	// **commit-5l 工程基础就位 + 真接入未完成**(承自检):
+	//   - ✅ SELF NodeHit NoRet 变体(fall-through 替代 ret)
+	//   - ✅ BuildVoid0Arg Absolute 变体(rax = 绝对地址,修 word offset bug)
+	//   - ✅ PopVoid0Arg 段尾 ret + xor eax,eax(修 missing ret + RAX=0)
+	//   - ✅ ExecuteCalleeFromInlineFrame callA 签名 + funcIdx = th.cur.base+callA
+	//   - ✅ runFrameInlineDispatcher 加 host.DoReturn 弹 caller 帧
+	//   - ❌ count upvalue NaN 根因待诊断(callee runs but caller frame state
+	//     after RETURN doReturn is corrupted somewhere)
 	//
-	// 留 commit-5k 工程:archSupportsFrameInline 仍 amd64 true(emit 路径
-	// 字节级实装就位 + 单测覆盖)但 analyzeSelfCallSpecForm 不设 useFrameInline
-	// = true,Compile 端 useFrameInline 分支 dead-code,Run 端 runFrameInlineDispatcher
-	// 不被调到。
+	// **commit-5l 暂撤 useFrameInline 守门启用**(承 byte-equal P1 纪律):
+	// 工程基础就位但端到端 NaN bug 待诊断,先撤 useFrameInline=true 守门,等
+	// commit-5m 真接入完成后启用。
 	_ = archSupportsFrameInline()
 	_ = info.callArgCount
 	_ = info.isCallVoid

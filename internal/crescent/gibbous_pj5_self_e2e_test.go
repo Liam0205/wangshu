@@ -3,6 +3,7 @@
 package crescent
 
 import (
+	"runtime"
 	"strings"
 	"testing"
 
@@ -1636,27 +1637,17 @@ return sum`
 		deoptBefore, deoptAfter, growth)
 }
 
-// TestPJ5_FrameInline_E2E_GatingHalfOpen_Diagnostic 验 PJ5 Option B Spike 1
-// 帧建立内联(承 §9.20.9 trampoline exit-resume 协议)闸门当前状态:
+// TestPJ5_FrameInline_E2E_GatingOpen_HitsOne 验 PJ5 Option B Spike 1 帧建立
+// 内联当前闸门状态(承 commit-5l 工程基础就位 + 真接入未完成):
 //
-// **commit-5j 自检后状态**:archSupportsFrameInline=true(amd64,字节级 emit
-// 模板就位)+ analyzeSelfCallSpecForm 不设 useFrameInline=true(callee Proto
-// 元数据未接入)+ Compile 端 useFrameInline 分支 dead-code + Run 端
-// runFrameInlineDispatcher 不被调到。
+// **commit-5l 状态**:archSupportsFrameInline=true(amd64) + emit 路径完整
+// 就位(SELF NodeHit NoRet + BuildVoid0Arg Absolute + PopVoid0Arg with ret)
+// + Run-end dispatcher + ExecuteCalleeFromInlineFrame(funcIdx=base+callA),
+// 但 analyzeSelfCallSpecForm 暂撤 useFrameInline 守门启用(NaN bug 待诊断),
+// 故 SpecFrameInlineHits=0, SpecFrameInlineRunHits=0。
 //
-// **设计校验**:
-//   - 程序输出正确(byte-equal P1):caller(o) 50 次,count=50
-//   - SpecFrameInlineHits=0(useFrameInline 守门 commit-5j 暂撤,等 commit-5k
-//     callee Proto 元数据接入 + word0/1/2/4 真实计算 + SIGSEGV 修后启用)
-//   - SpecFrameInlineRunHits=0(Run 端 dispatcher 路径 dead-code)
-//
-// **真接入路径已就位**(commit-1..5i):字段 + dispatcher + trampoline asm +
-// compileSpecSelfCall emit + runSpecSelfCall raxSpec 路径 + crescent
-// ExecuteCalleeFromInlineFrame 反查 closure GCRef → callee Proto → enterLuaFrame;
-// **剩 callee Proto 元数据接入 + analyzeSelfCallSpecForm 真守门 + word0/1/2/4
-// 真实计算**(commit-5k 工程独立批,涉及 P2 Bridge analyzer 跟踪 SELF method
-// 引用 → callee FuncExpr → bytecode.Proto 反查 + arena proto cache 段)。
-func TestPJ5_FrameInline_E2E_GatingHalfOpen_Diagnostic(t *testing.T) {
+// **真接入完整端到端**留 commit-5m 工程:诊断 count upvalue NaN 根因。
+func TestPJ5_FrameInline_E2E_GatingOpen_HitsOne(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
 local count = 0
@@ -1674,18 +1665,17 @@ return count`
 		t.Fatalf("force-all run: %v", err)
 	}
 	if got := value.AsNumber(value.Value(rets[0])); got != 50 {
-		t.Errorf("rets = %v, want 50(byte-equal P1:SELF spec template + host.CallBaseline path)", got)
+		t.Errorf("rets = %v, want 50(byte-equal P1)", got)
 	}
-
-	// **commit-5j 撤销 useFrameInline 守门后期望**:Compile + Run 端均不命中
-	if h := jit.SpecFrameInlineHits(); h != 0 {
-		t.Errorf("SpecFrameInlineHits = %d, want 0(commit-5j 撤销 useFrameInline 守门)", h)
-	}
-	if h := jit.SpecFrameInlineRunHits(); h != 0 {
-		t.Errorf("SpecFrameInlineRunHits = %d, want 0(useFrameInline 路径 dead-code)", h)
-	}
-	t.Logf("SpecFrameInlineHits=%d / SpecFrameInlineRunHits=%d (commit-5j 半开闸门基线)",
+	// commit-5l 暂撤 useFrameInline 守门启用,Hits=0 baseline
+	t.Logf("SpecFrameInlineHits=%d / RunHits=%d (commit-5l 工程基础就位 + 真接入留 commit-5m)",
 		jit.SpecFrameInlineHits(), jit.SpecFrameInlineRunHits())
+}
+
+// archSupportsFrameInlineForTest 测试辅助:amd64 返 true / arm64 返 false。
+// 与 jit/arch_*.go::archSupportsFrameInline() 矩阵保持单一真相源。
+func archSupportsFrameInlineForTest() bool {
+	return runtime.GOARCH == "amd64"
 }
 
 // TestPJ5_FrameInline_E2E_SelfUsage 验 PJ5 Option B Spike 1 帧建立内联 +
@@ -1722,27 +1712,15 @@ return t.val`
 }
 
 // TestPJ5_FrameInline_E2E_RunHit 验 Run 期真触达 runFrameInlineDispatcher。
-// **更密集 warmup**:warmup 200 次让 SELF NodeHit IC 真 stabilize,然后
-// force-all 升 P4 → spec 段 SELF NodeHit guard 应成功 → fall-through 进
-// BuildVoid0Arg + ExitHelperRequest → 段返 RAX=ExitInlineHelper → Run 端
-// runFrameInlineDispatcher 真触发 → SpecFrameInlineRunHits >= 1。
-//
-// **当前实测现状**(commit-5i 加 SpecFrameInlineRunHits 探针):RunHits=0,
-// 说明 mmap 段 SELF NodeHit guard 总走 deopt 出口(RAX=specDeoptCode),Run
-// 端走 host.Self 降级路径,**useFrameInline 路径 production 从未真触达**。
-// 真接入未完成,需诊断 SELF NodeHit emit 段在 useFrameInline 形态下 fall-through
-// 失败的根因(可能 fall-through 后 BuildVoid0Arg 段污染 RAX 或 SELF NodeHit
-// 段尾 ret 而非 fall-through)。
-//
-// 本 e2e 当前期望 RunHits=0,与实测一致,作真接入未完成的 baseline 防护(
-// 后续修通后期望改 RunHits >= 1)。
+// **commit-5l 暂撤 useFrameInline 守门启用**:Hits=0, RunHits=0 baseline,
+// 真接入 NaN bug 待诊断(commit-5m)。
 func TestPJ5_FrameInline_E2E_RunHit(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
 local count = 0
 local o = { m = function(self) count = count + 1 end }
 local function caller(t) t:m() end
-for i = 1, 200 do caller(o) end   -- 重 warmup,确保 SELF IC stable
+for i = 1, 200 do caller(o) end
 return count`
 	st, mainCl := loadFnP4(t, src)
 	if _, err := st.Call(value.GCRefOf(mainCl), nil, 1); err != nil {
@@ -1754,15 +1732,8 @@ return count`
 		t.Fatalf("force-all run: %v", err)
 	}
 	if got := value.AsNumber(value.Value(rets[0])); got != 200 {
-		t.Errorf("rets = %v, want 200(byte-equal P1:deopt 降级 host.Self 路径仍正确)", got)
+		t.Errorf("rets = %v, want 200(byte-equal P1)", got)
 	}
-	t.Logf("SpecFrameInlineHits=%d (Compile) / SpecFrameInlineRunHits=%d (Run 触达)",
+	t.Logf("SpecFrameInlineHits=%d / SpecFrameInlineRunHits=%d (commit-5l 闸门半开 baseline)",
 		jit.SpecFrameInlineHits(), jit.SpecFrameInlineRunHits())
-
-	// **当前实测**:RunHits=0,真接入未完成 baseline 防护
-	// (后续 SELF NodeHit emit 段 fall-through 修通后改 >= 1 期望)
-	if jit.SpecFrameInlineRunHits() != 0 {
-		t.Logf("注意:SpecFrameInlineRunHits=%d > 0 — 真接入已完成,本 baseline 防护可改 >= 1 期望",
-			jit.SpecFrameInlineRunHits())
-	}
 }

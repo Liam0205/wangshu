@@ -938,11 +938,10 @@ func (st *State) TailCall(base, pc, a, b, c int32) int32 {
 // 分支 dead-code → 本 helper Run 期不被调到。剩 commit-5k 工程:callee Proto
 // 元数据接入 + word0/1/2/4 真实计算 + 守门重启用。
 //
-//   - 0=OK(callee 完成 + 返值已落 R(retA..retA+nresults-1))
+//   - 0=OK(callee 完成 + 返值已落 R(callA..callA+nresults-1))
 //   - 1=ERR(state.pendingErr 已置,Run 端 dispatcher 返 1 错误冒泡)
-func (st *State) ExecuteCalleeFromInlineFrame(base, retA int32) int32 {
+func (st *State) ExecuteCalleeFromInlineFrame(base, callA int32) int32 {
 	_ = base // 实参 base 是 jitContext.valueStackBase 算出的 R0 字节偏移,Spike 1 helper 不读
-	_ = retA // 实参 retA 是 RETURN.A(setter 形态恒 0),funcIdx 改从 calleeCI 取
 	th := st.runningThread
 	// 1. 反查 callee Proto:read CI[ciDepth-1].word3 → closure GCRef
 	depth := th.ciDepth - 1
@@ -958,15 +957,18 @@ func (st *State) ExecuteCalleeFromInlineFrame(base, retA int32) int32 {
 	}
 	// 2. ciDepth-- 抵消 BuildVoid0Arg 副作用(enterLuaFrame 内会再 ciDepth++)
 	th.setCIDepth(th.ciDepth - 1)
-	// 3. funcIdx 算法:取 calleeCI.funcIdx(mmap 段 BuildVoid0Arg word0 写入)
-	//    **commit-5j 自检限制**:word0 当前 commit-4b emit 时是 0 占位,真接入
-	//    路径(useFrameInline=true 时)需 commit-5k 让 analyzeSelfCallSpecForm
-	//    把 funcIdx 经 callee Proto 元数据接入 + 编译期固化 word0=base|funcIdx<<32。
-	//    当前 useFrameInline 路径 dead-code,本字段不被读。
-	funcIdx := calleeCI.funcIdx
-	// 4. Spike 1 简化:nargs=0 + nresults=0(setter 形态,callee.NumParams=0 +
-	//    callee 返值 0 个落 R(retA..))。守门由 analyzeSelfCallSpecForm 保证。
-	const nargs = 0
+	// 3. funcIdx = th.cur.base + callA(commit-5l 签名修正:SELF + CALL 形态下
+	//    method 在 R(callA) 槽位,与 host.CallBaseline 同款语义对齐 — 替代
+	//    commit-5d/5j 的 calleeCI.funcIdx 占位 0 错位)。
+	//    此时 th.cur 已退回 caller 视角(setCIDepth(-1) 后,但 th.cur 字段
+	//    未被 mmap 段更新仍是 caller 数据),caller.base + callA = caller R(callA)
+	//    在 stack 中的绝对索引,即 method 槽位。
+	funcIdx := th.cur.base + int(callA)
+	// 4. Spike 1 简化:nargs=1 + nresults=0(SELF + CALL 0 user-arg setter 形态:
+	//    SELF 已写 R(callA+1)=self,caller CALL.B=2 = 1 nargs(self only),
+	//    enterLuaFrame 期望 nargs=1)。守门由 analyzeSelfCallSpecForm 保证
+	//    callArgCount=0 + isCallVoid + !isTailCall。
+	const nargs = 1
 	const nresults = 0
 	// 5. C stack 限深检查 + nCcalls++
 	if st.nCcalls >= maxCCallDepth {
