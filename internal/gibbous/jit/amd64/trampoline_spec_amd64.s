@@ -58,26 +58,16 @@ TEXT ·callJITSpec(SB),NOSPLIT,$0-32
 
 	// 段返回:RAX 已是返回值。
 	//
-	// **§9.20.9 trampoline exit-resume 协议 dispatcher CMP 分支**(commit-3c):
-	// mmap 段 emit ExitInlineHelper 协议时 RAX=3,trampoline 检 RAX != 3 跳
-	// skipDispatch 走常规弹栈出口;RAX==3 时进 dispatcher 路径处理 helper
-	// request + resume entry 重入。
+	// **§9.20.9 trampoline exit-resume 协议 Run-end dispatcher 实装**(commit-5a
+	// 修正 commit-3c):设计草案 (4) 假设 trampoline asm 内 CALL Go dispatcher,
+	// 但实际跨包 + Plan 9 ABI 复杂度高;改用 **Run 端 Go 函数做 dispatcher**:
+	// Run 检 raxSpec==ExitInlineHelper → 调 dispatchInlineHelper → 二次 callJITSpec
+	// 跳 resume entry(全在 Go 端做,trampoline asm 透传 RAX 不解读)。
 	//
-	// **当前 Spike 1 阶段 archSupportsFrameInline=false 屏蔽 ExitInlineHelper
-	// 真发出**(compileSpecSelfCall 不 emit 协议段;§9.20.7 工程闸门),mmap
-	// 段 RAX 只可能 0/1/2(ExitNormal/Error/OSR),CMPQ AX, \$3 必 != → JNE
-	// 跳 skipDispatch → 常规弹栈。本批 CMP 分支是 dead-code 路径,但提前为
-	// commit-5 真接入留好 asm 形态(本批仅插入分支占位 INT3,commit-5 翻
-	// archSupportsFrameInline=true 时把 INT3 改 CALL Go wrapper 重入)。
+	// 故 trampoline asm 段返后直接走常规弹栈,不再 CMP RAX——Run 端读 RAX 后
+	// 路由。原 commit-3c 的 CMP + INT 3 段撤(若保留 INT 3 会在 commit-5
+	// archSupportsFrameInline=true + emit ExitInlineHelper 段后真触发 SIGTRAP)。
 	//
-	// 协议状态码 3 = ExitInlineHelper(jit.go 协议常量,asm 内硬编码)。
-	CMPQ AX, $3
-	JNE  skipDispatch
-	// **commit-3c 占位**:dispatcher CALL 真接入留 commit-5 翻闸门。本批
-	// 出 INT3 触发 SIGTRAP——当前 archSupportsFrameInline=false 不会触达
-	// 本路径(RAX != 3),production 安全。若 RAX==3 出现说明 emit bug。
-	INT $3
-skipDispatch:
 	// 段返回:RAX 已是返回值。恢复 callee-saved(逆序 pop)。
 	// **R14 恢复 Go G 救济**:POP R14 把 entry 时 Go runtime 装的 G 值
 	// 写回 R14,段内 mov r14, arenaBase 的覆写到此撤消。
