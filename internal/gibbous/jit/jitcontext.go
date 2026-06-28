@@ -61,6 +61,11 @@ const (
 	// **§9.20.9 trampoline exit-resume 协议字段** (Spike 1 真接入 commit-1):
 	JITContextExitArg0Offset  = unsafe.Offsetof(JITContext{}.exitArg0)
 	JITContextResumeOffOffset = unsafe.Offsetof(JITContext{}.resumeOff)
+
+	// **§9.20.9 trampoline exit-resume 协议 codePageAddr 字段** (Spike 1
+	// 真接入 commit-3b):dispatcher 算 resume entry 用 codePageAddr +
+	// resumeOff;Run 端 emit 时记录 codePage 起点。承设计草案 (5)。
+	JITContextCodePageAddrOffset = unsafe.Offsetof(JITContext{}.codePageAddr)
 )
 
 // **§9.20.9 协议状态码常量** (Spike 1 真接入 + future helper request 路由):
@@ -209,7 +214,15 @@ type JITContext struct {
 	// 确定即可。compileSpecSelfCall useFrameInline 分支 emit 时记录本字段。
 	resumeOff uint32
 
-	_ [4]byte // 8 字节对齐 padding
+	_ [4]byte // 8 字节对齐 padding(uint32 resumeOff 后)
+
+	// codePageAddr 是 PROT_RX mmap 段起点的 host 字节地址(承 §9.20.9 (5)
+	// resume entry 计算):dispatchInlineHelper 用 `codePageAddr + resumeOff`
+	// 求 resume 入口绝对地址,经 Go wrapper 二次 CALL 重入 mmap 段。
+	//
+	// **当前 Spike 1 阶段 archSupportsFrameInline=false 屏蔽真触发**,本字段
+	// wireP4 / installGibbous 时注入。
+	codePageAddr uintptr
 }
 
 // NewJITContext 构造 P4 JIT 执行上下文。
@@ -310,3 +323,12 @@ func (c *JITContext) SetResumeOff(off uint32) {
 
 // ResumeOff 返回 resume entry 字节偏移(测试钩子)。
 func (c *JITContext) ResumeOff() uint32 { return c.resumeOff }
+
+// SetCodePageAddr 设置 mmap 段起点(承 §9.20.9 (5) resume entry 计算)。
+// installGibbous 时注入 PROT_RX 段起点字节地址。
+func (c *JITContext) SetCodePageAddr(addr uintptr) {
+	c.codePageAddr = addr
+}
+
+// CodePageAddr 返回 mmap 段起点(测试钩子)。
+func (c *JITContext) CodePageAddr() uintptr { return c.codePageAddr }

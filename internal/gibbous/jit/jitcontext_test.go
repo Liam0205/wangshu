@@ -194,3 +194,38 @@ func TestJITContext_HelperRequestCodesUnique(t *testing.T) {
 		seen[c] = true
 	}
 }
+
+// TestJITContext_CodePageAddrField PJ5 §9.20.9 trampoline exit-resume 协议
+// commit-3b:验 codePageAddr setter/getter 工作 + 初始 0(承 dispatcher
+// 算 resume entry = codePageAddr + resumeOff)。
+func TestJITContext_CodePageAddrField(t *testing.T) {
+	ctx := NewJITContext()
+
+	if ctx.CodePageAddr() != 0 {
+		t.Errorf("初始 codePageAddr 应 0,得 %d", ctx.CodePageAddr())
+	}
+
+	ctx.SetCodePageAddr(0xCAFE0000)
+
+	if ctx.CodePageAddr() != 0xCAFE0000 {
+		t.Errorf("SetCodePageAddr(0xCAFE0000) 后回读 = 0x%X", ctx.CodePageAddr())
+	}
+}
+
+// TestJITContext_CodePageAddrOffsetStable 验 JITContextCodePageAddrOffset
+// 编译期常量稳定(供 trampoline asm + Go wrapper 字节级 emit 使用)。
+func TestJITContext_CodePageAddrOffsetStable(t *testing.T) {
+	if JITContextCodePageAddrOffset == 0 {
+		t.Error("JITContextCodePageAddrOffset 不应为 0(承字段在末尾)")
+	}
+	// 8 字节对齐(uintptr 字段)
+	if JITContextCodePageAddrOffset%8 != 0 {
+		t.Errorf("JITContextCodePageAddrOffset %% 8 = %d, want 0",
+			JITContextCodePageAddrOffset%8)
+	}
+	// 应在 resumeOff(72)+ padding(4)= 76 之后,即 ≥ 80
+	if JITContextCodePageAddrOffset < JITContextResumeOffOffset+4 {
+		t.Errorf("CodePageAddrOffset = %d, 应 ≥ ResumeOffOffset+4 = %d",
+			JITContextCodePageAddrOffset, JITContextResumeOffOffset+4)
+	}
+}
