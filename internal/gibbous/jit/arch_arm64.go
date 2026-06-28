@@ -260,6 +260,16 @@ func archEmitSelfNodeHit(buf []byte, aReg, bReg uint8,
 		stableShape, stableIndex, stableKey, arenaBaseOffArm64(arenaBaseOff), deoptCode)
 }
 
+// archEmitSelfNodeHitNoRet arm64 端 NoRet 变体占位(commit-5j amd64 优先实装)。
+// archSupportsFrameInline arm64 false 屏蔽,本路径不触达;真实装留 PJ8 物理
+// runner CI 接入同批。
+func archEmitSelfNodeHitNoRet(buf []byte, aReg, bReg uint8,
+	stableShape, stableIndex uint32, stableKey uint64,
+	arenaBaseOff int32, deoptCode uint64) []byte {
+	return jitarm64.EmitSelfNodeHitArm64(buf, aReg, bReg,
+		stableShape, stableIndex, stableKey, arenaBaseOffArm64(arenaBaseOff), deoptCode)
+}
+
 // archEmitSpecArgLoadK / archEmitSpecArgLoadReg arm64 实装(承 PJ5 spec
 // template 字节级 inline,跳过 host.GetReg/SetReg round-trip)。物理 runner
 // 启用 archSupportsSpec=true 后即激活,与 amd64 字节级形态对等。

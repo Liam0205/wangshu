@@ -1636,25 +1636,27 @@ return sum`
 		deoptBefore, deoptAfter, growth)
 }
 
-// TestPJ5_FrameInline_E2E_GatingOpen_HitsOne 验 PJ5 Option B Spike 1 帧建立
-// 内联(承 §9.20.9 trampoline exit-resume 协议)闸门 archSupportsFrameInline=
-// true(amd64,commit-5h 翻面)时 SpecFrameInlineHits >= 1:
+// TestPJ5_FrameInline_E2E_GatingHalfOpen_Diagnostic 验 PJ5 Option B Spike 1
+// 帧建立内联(承 §9.20.9 trampoline exit-resume 协议)闸门当前状态:
 //
-// **设计校验**(承 §9.20.4 Spike 1 守门 + commit-5h 翻闸门 + Run-end dispatcher
-// 实装):amd64 archSupportsFrameInline=true 后 compileSpecSelfCall useFrameInline
-// 分支 emit BuildVoid0Arg + ExitHelperRequest + PopVoid0Arg + analyzeSelfCallSpecForm
-// 守门(0 参 setter + isCallVoid + !isTailCall)激活,Compile 命中
-// SpecFrameInlineHits++。
+// **commit-5j 自检后状态**:archSupportsFrameInline=true(amd64,字节级 emit
+// 模板就位)+ analyzeSelfCallSpecForm 不设 useFrameInline=true(callee Proto
+// 元数据未接入)+ Compile 端 useFrameInline 分支 dead-code + Run 端
+// runFrameInlineDispatcher 不被调到。
 //
-// **prove-the-path 强断言**:
-//   - SpecFrameInlineHits >= 1(useFrameInline 分支真激活)
-//   - 程序输出正确(byte-equal P1):callee 经 ExecuteCalleeFromInlineFrame
-//     真实跑完 + executeFrom 同步驱动 + 出口 ciDepth 平衡,count 增 50
+// **设计校验**:
+//   - 程序输出正确(byte-equal P1):caller(o) 50 次,count=50
+//   - SpecFrameInlineHits=0(useFrameInline 守门 commit-5j 暂撤,等 commit-5k
+//     callee Proto 元数据接入 + word0/1/2/4 真实计算 + SIGSEGV 修后启用)
+//   - SpecFrameInlineRunHits=0(Run 端 dispatcher 路径 dead-code)
 //
-// **arm64 仍 archSupportsFrameInline=false**(留 PJ8 物理 runner),本 e2e
-// 在 arm64 上经守门第一条 archSupportsFrameInline()=false 跳过 SpecFrameInlineHits
-// 断言部分,但程序正确性断言仍跑。
-func TestPJ5_FrameInline_E2E_GatingOpen_HitsOne(t *testing.T) {
+// **真接入路径已就位**(commit-1..5i):字段 + dispatcher + trampoline asm +
+// compileSpecSelfCall emit + runSpecSelfCall raxSpec 路径 + crescent
+// ExecuteCalleeFromInlineFrame 反查 closure GCRef → callee Proto → enterLuaFrame;
+// **剩 callee Proto 元数据接入 + analyzeSelfCallSpecForm 真守门 + word0/1/2/4
+// 真实计算**(commit-5k 工程独立批,涉及 P2 Bridge analyzer 跟踪 SELF method
+// 引用 → callee FuncExpr → bytecode.Proto 反查 + arena proto cache 段)。
+func TestPJ5_FrameInline_E2E_GatingHalfOpen_Diagnostic(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
 local count = 0
@@ -1672,17 +1674,18 @@ return count`
 		t.Fatalf("force-all run: %v", err)
 	}
 	if got := value.AsNumber(value.Value(rets[0])); got != 50 {
-		t.Errorf("rets = %v, want 50(byte-equal P1:callee 真跑完 50 次,count 增 50)", got)
+		t.Errorf("rets = %v, want 50(byte-equal P1:SELF spec template + host.CallBaseline path)", got)
 	}
 
-	// **核心 prove-the-path**:archSupportsFrameInline=true(amd64)+
-	// analyzeSelfCallSpecForm 守门 + compileSpecSelfCall emit useFrameInline
-	// 分支 + 真接入路径全链路打通 → SpecFrameInlineHits ≥ 1
-	if h := jit.SpecFrameInlineHits(); h == 0 {
-		t.Errorf("SpecFrameInlineHits = 0, want >= 1(amd64 闸门 open + 真接入路径打通)")
+	// **commit-5j 撤销 useFrameInline 守门后期望**:Compile + Run 端均不命中
+	if h := jit.SpecFrameInlineHits(); h != 0 {
+		t.Errorf("SpecFrameInlineHits = %d, want 0(commit-5j 撤销 useFrameInline 守门)", h)
 	}
-	t.Logf("SpecFrameInlineHits=%d (Spike 1 真接入命中实证)",
-		jit.SpecFrameInlineHits())
+	if h := jit.SpecFrameInlineRunHits(); h != 0 {
+		t.Errorf("SpecFrameInlineRunHits = %d, want 0(useFrameInline 路径 dead-code)", h)
+	}
+	t.Logf("SpecFrameInlineHits=%d / SpecFrameInlineRunHits=%d (commit-5j 半开闸门基线)",
+		jit.SpecFrameInlineHits(), jit.SpecFrameInlineRunHits())
 }
 
 // TestPJ5_FrameInline_E2E_SelfUsage 验 PJ5 Option B Spike 1 帧建立内联 +

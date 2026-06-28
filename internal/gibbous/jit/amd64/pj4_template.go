@@ -737,6 +737,90 @@ func EmitSetTableNodeHit(buf []byte, aReg, cReg uint8,
 //
 // **deopt 路径**:Run 端 raxSpec==deoptCode 时调 host.GetTable byte-equal P1
 // (R(A+1)=R(B) 已 store,P1 SELF case 同款步骤;P1 icGetTable 兼容 NodeHit)。
+// EmitSelfNodeHitNoRet 同 EmitSelfNodeHit,但**成功路径不 emit ret**——
+// fall-through 到调用方 emit 的后续段(承 §9.20.9 commit-5j 修通
+// useFrameInline 路径 Run 期触达)。
+//
+// **设计差异**:
+//   - EmitSelfNodeHit 成功路径段尾 ret(独立 spec template,Run 端 RAX=0 标
+//     正常出段)
+//   - 本函数:成功路径 fall-through(useFrameInline 形态后接 BuildVoid0Arg +
+//     ExitHelperRequest + PopVoid0Arg + ret;SELF 段 store R(A)=method 后
+//     BuildVoid0Arg LoadClosureGCRef(callA) 自动读到 method GCRef payload)
+//   - deopt 路径与 EmitSelfNodeHit 同款(写 RAX=deoptCode + ret)
+func EmitSelfNodeHitNoRet(buf []byte, aReg, bReg uint8,
+	stableShape, stableIndex uint32, stableKey uint64,
+	arenaBaseOff int32, deoptCode uint64) []byte {
+	// 1. load R(B) → rax(obj NaN-box)
+	buf = EmitMovqRaxFromMemReg(buf, 3 /*rbx*/, int32(bReg)*8)
+	// 2. store R(A+1) = rax(self/this 实参)
+	buf = EmitMovqMemRegFromRax(buf, 3 /*rbx*/, int32(aReg+1)*8)
+	// 3. 严密 IsTable guard
+	buf = EmitShrRaxImm8(buf, 48)
+	buf = EmitCmpEaxImm32(buf, qNanBoxTableTagHigh16)
+	buf = EmitJneRel32(buf, 0)
+	jneTagOff := len(buf) - 4
+	// 4. shr 已破坏 rax,重新 load R(B)
+	buf = EmitMovqRaxFromMemReg(buf, 3 /*rbx*/, int32(bReg)*8)
+	// 5. GCRef extract
+	const payloadMask uint64 = 0x0000_FFFF_FFFF_FFFF
+	buf = EmitMovRcxImm64(buf, payloadMask)
+	buf = append(buf, 0x48, 0x21, 0xC8)
+	// 6. mov rcx, rax
+	buf = EmitMovqRcxFromRax(buf)
+	// 7. load arena base → r14
+	buf = EmitMovqR14FromR15Disp(buf, arenaBaseOff)
+	// 8. gen check
+	buf = EmitMovqRaxFromR14PlusRcxDisp(buf, 40)
+	buf = append(buf, 0x48, 0xC1, 0xE8, 32)
+	buf = append(buf, 0x3D)
+	buf = append(buf,
+		byte(stableShape),
+		byte(stableShape>>8),
+		byte(stableShape>>16),
+		byte(stableShape>>24))
+	buf = EmitJneRel32(buf, 0)
+	jneShapeOff := len(buf) - 4
+	// 9. NodeHit 分流:load nodeRef = [r14+rcx+24]
+	buf = EmitMovqRaxFromR14PlusRcxDisp(buf, 24)
+	// 10. mov rcx, rax(rcx = nodeRef offset)
+	buf = EmitMovqRcxFromRax(buf)
+	// 11. load NodeKey = [r14+rcx+stableIndex*24] → rax
+	buf = EmitMovqRaxFromR14PlusRcxDisp(buf, int32(stableIndex)*24)
+	// 12. mov rdx, stableKey
+	buf = EmitMovRdxImm64(buf, stableKey)
+	// 13. cmp rax, rdx + jne deopt
+	buf = EmitCmpRaxRdx(buf)
+	buf = EmitJneRel32(buf, 0)
+	jneKeyOff := len(buf) - 4
+	// 14. load NodeVal = [r14+rcx+stableIndex*24+8] → rax
+	buf = EmitMovqRaxFromR14PlusRcxDisp(buf, int32(stableIndex)*24+8)
+	// 15. nil check
+	buf = EmitMovRcxImm64(buf, qNanBoxNilImm)
+	buf = EmitCmpRaxRcx(buf)
+	buf = EmitJeRel32(buf, 0)
+	jeNilOff := len(buf) - 4
+	// 16. store R(A) = rax(method 函数)
+	buf = EmitMovqMemRegFromRax(buf, 3 /*rbx*/, int32(aReg)*8)
+	// 17. **NO RET** — fall-through 到调用方 emit 的 BuildVoid0Arg 段(承
+	//     §9.20.9 commit-5j 修 useFrameInline 路径 Run 期触达)
+	jmpSuccessOff := len(buf)
+	buf = EmitJmpRel32(buf, 0) // 跳过 deopt block 到段尾(后续 BuildVoid0Arg)
+	// 18. deopt block
+	deoptStart := len(buf)
+	buf = EmitMovRaxImm64(buf, deoptCode)
+	buf = EmitRet(buf)
+	// 19. patch forward jcc 到 deopt start
+	PatchRel32(buf, jneTagOff, int32(deoptStart)-int32(jneTagOff+4))
+	PatchRel32(buf, jneShapeOff, int32(deoptStart)-int32(jneShapeOff+4))
+	PatchRel32(buf, jneKeyOff, int32(deoptStart)-int32(jneKeyOff+4))
+	PatchRel32(buf, jeNilOff, int32(deoptStart)-int32(jeNilOff+4))
+	// 20. patch success jmp 跳到 deopt block 之后(后续 BuildVoid0Arg 起点)
+	PatchRel32(buf, jmpSuccessOff+1, int32(len(buf))-int32(jmpSuccessOff+5))
+	return buf
+}
+
+// EmitSelfNodeHit ...(原函数,保持不变)
 func EmitSelfNodeHit(buf []byte, aReg, bReg uint8,
 	stableShape, stableIndex uint32, stableKey uint64,
 	arenaBaseOff int32, deoptCode uint64) []byte {
