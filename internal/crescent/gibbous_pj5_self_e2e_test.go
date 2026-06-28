@@ -3,6 +3,7 @@
 package crescent
 
 import (
+	"runtime"
 	"strings"
 	"testing"
 
@@ -1637,23 +1638,14 @@ return sum`
 }
 
 // TestPJ5_FrameInline_E2E_GatingOpen_HitsOne 验 PJ5 Option B Spike 1 帧建立
-// 内联(承 §9.20.9 trampoline exit-resume 协议)闸门 archSupportsFrameInline=
-// true(amd64,commit-5h 翻面)时 SpecFrameInlineHits >= 1:
-//
-// **设计校验**(承 §9.20.4 Spike 1 守门 + commit-5h 翻闸门 + Run-end dispatcher
-// 实装):amd64 archSupportsFrameInline=true 后 compileSpecSelfCall useFrameInline
-// 分支 emit BuildVoid0Arg + ExitHelperRequest + PopVoid0Arg + analyzeSelfCallSpecForm
-// 守门(0 参 setter + isCallVoid + !isTailCall)激活,Compile 命中
-// SpecFrameInlineHits++。
+// 内联(承 commit-5m ciDepth Go vs mirror 同步 bug 修):amd64
+// archSupportsFrameInline=true + analyzeSelfCallSpecForm useFrameInline 守门
+// 启用 + 全端到端 byte-equal P1。
 //
 // **prove-the-path 强断言**:
-//   - SpecFrameInlineHits >= 1(useFrameInline 分支真激活)
-//   - 程序输出正确(byte-equal P1):callee 经 ExecuteCalleeFromInlineFrame
-//     真实跑完 + executeFrom 同步驱动 + 出口 ciDepth 平衡,count 增 50
-//
-// **arm64 仍 archSupportsFrameInline=false**(留 PJ8 物理 runner),本 e2e
-// 在 arm64 上经守门第一条 archSupportsFrameInline()=false 跳过 SpecFrameInlineHits
-// 断言部分,但程序正确性断言仍跑。
+//   - 程序输出正确(byte-equal P1):count=50
+//   - amd64:SpecFrameInlineHits >= 1(Compile) + SpecFrameInlineRunHits >= 1(Run)
+//   - arm64:archSupportsFrameInline=false 闸门关闭,程序正确性断言仍跑
 func TestPJ5_FrameInline_E2E_GatingOpen_HitsOne(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -1672,15 +1664,93 @@ return count`
 		t.Fatalf("force-all run: %v", err)
 	}
 	if got := value.AsNumber(value.Value(rets[0])); got != 50 {
-		t.Errorf("rets = %v, want 50(byte-equal P1:callee 真跑完 50 次,count 增 50)", got)
+		t.Errorf("rets = %v, want 50(byte-equal P1:Run 期 dispatcher + helper 真接入)", got)
 	}
 
-	// **核心 prove-the-path**:archSupportsFrameInline=true(amd64)+
-	// analyzeSelfCallSpecForm 守门 + compileSpecSelfCall emit useFrameInline
-	// 分支 + 真接入路径全链路打通 → SpecFrameInlineHits ≥ 1
-	if h := jit.SpecFrameInlineHits(); h == 0 {
-		t.Errorf("SpecFrameInlineHits = 0, want >= 1(amd64 闸门 open + 真接入路径打通)")
+	// **arm64 阻塞修复**(承 PR comment d8fc8ba):仅 amd64 强断言 Hits/RunHits
+	if archSupportsFrameInlineForTest() {
+		if h := jit.SpecFrameInlineHits(); h == 0 {
+			t.Errorf("SpecFrameInlineHits = 0, want >= 1(amd64 闸门 open)")
+		}
+		if h := jit.SpecFrameInlineRunHits(); h == 0 {
+			t.Errorf("SpecFrameInlineRunHits = 0, want >= 1(Run 期真触达)")
+		}
 	}
-	t.Logf("SpecFrameInlineHits=%d (Spike 1 真接入命中实证)",
-		jit.SpecFrameInlineHits())
+	t.Logf("SpecFrameInlineHits=%d / RunHits=%d (Spike 1 真接入完整端到端实证)",
+		jit.SpecFrameInlineHits(), jit.SpecFrameInlineRunHits())
+}
+
+// archSupportsFrameInlineForTest 测试辅助:amd64 返 true / arm64 返 false。
+// **复制 arch 矩阵**(承 PR comment c5ef665 评审):本函数硬编码复制
+// jit/arch_*.go::archSupportsFrameInline() 矩阵,将来 arch 支持面扩展时
+// 本处需手动跟进。jit 包未导出真源函数(包内 unexported),测试包无法直接
+// 调用,故折中复制。**新 arch 启用 archSupportsFrameInline 时,记得同步
+// 更新本函数返值矩阵**(grep `archSupportsFrameInlineForTest` 找所有用例)。
+func archSupportsFrameInlineForTest() bool {
+	return runtime.GOARCH == "amd64"
+}
+
+// TestPJ5_FrameInline_E2E_SelfUsage 验 PJ5 Option B Spike 1 帧建立内联 +
+// callee 体真用 self 字段:
+// `o:m()` callee 体 `self.val = self.val + 1`,验证 R(callA+1)=self 真传给
+// callee,helper 内 enterLuaFrame nargs 计算正确。
+//
+// **真接入正确性强断言**:Spike 1 当前 nargs=0 实装的 byte-equal 兜底验证。
+// 若 nargs 计算错(漏 self / 漏 args),callee 读 self.val 会读到 nil 触发
+// 运行期错误或 t.val 不增。
+//
+// **commit-5i**:加 SpecFrameInlineRunHits 区分 Compile vs Run 触达。
+func TestPJ5_FrameInline_E2E_SelfUsage(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local t = { val = 42, m = function(self) self.val = self.val + 1 end }
+local function caller(o) o:m() end
+for i = 1, 50 do caller(t) end
+return t.val`
+	st, mainCl := loadFnP4(t, src)
+	if _, err := st.Call(value.GCRefOf(mainCl), nil, 1); err != nil {
+		t.Fatalf("warmup: %v", err)
+	}
+	st.bridge.SetForceAllPromote(true)
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("force-all run: %v", err)
+	}
+	if got := value.AsNumber(value.Value(rets[0])); got != 92 {
+		t.Errorf("rets = %v, want 92(42 + 50,byte-equal P1:self 真传 callee + self.val++ 真执行)", got)
+	}
+	t.Logf("SpecFrameInlineHits=%d (Compile) / SpecFrameInlineRunHits=%d (Run 触达)",
+		jit.SpecFrameInlineHits(), jit.SpecFrameInlineRunHits())
+}
+
+// TestPJ5_FrameInline_E2E_RunHit 验 Run 期真触达 runFrameInlineDispatcher
+// (commit-5m ciDepth Go vs mirror 同步 bug 修后 prove-the-path):200 iter
+// 全 useFrameInline 路径,SpecFrameInlineRunHits 应 = 200(amd64)或 0(arm64)。
+func TestPJ5_FrameInline_E2E_RunHit(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local count = 0
+local o = { m = function(self) count = count + 1 end }
+local function caller(t) t:m() end
+for i = 1, 200 do caller(o) end
+return count`
+	st, mainCl := loadFnP4(t, src)
+	if _, err := st.Call(value.GCRefOf(mainCl), nil, 1); err != nil {
+		t.Fatalf("warmup: %v", err)
+	}
+	st.bridge.SetForceAllPromote(true)
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("force-all run: %v", err)
+	}
+	if got := value.AsNumber(value.Value(rets[0])); got != 200 {
+		t.Errorf("rets = %v, want 200(byte-equal P1)", got)
+	}
+	if archSupportsFrameInlineForTest() {
+		if jit.SpecFrameInlineRunHits() == 0 {
+			t.Errorf("SpecFrameInlineRunHits = 0,Run 期未真触达 useFrameInline 路径")
+		}
+	}
+	t.Logf("SpecFrameInlineHits=%d / SpecFrameInlineRunHits=%d",
+		jit.SpecFrameInlineHits(), jit.SpecFrameInlineRunHits())
 }

@@ -214,6 +214,20 @@ func archEmitSelfNodeHit(buf []byte, aReg, bReg uint8,
 	return buf
 }
 
+// archEmitSelfNodeHitNoRet 其它 arch 占位(archSupportsFrameInline=false 屏蔽)。
+func archEmitSelfNodeHitNoRet(buf []byte, aReg, bReg uint8,
+	stableShape, stableIndex uint32, stableKey uint64,
+	arenaBaseOff int32, deoptCode uint64) []byte {
+	_ = aReg
+	_ = bReg
+	_ = stableShape
+	_ = stableIndex
+	_ = stableKey
+	_ = arenaBaseOff
+	_ = deoptCode
+	return buf
+}
+
 // archEmitSpecArgLoadK / archEmitSpecArgLoadReg 其它 arch stub。
 func archEmitSpecArgLoadK(buf []byte, dstReg uint8, k uint64) []byte {
 	_ = dstReg

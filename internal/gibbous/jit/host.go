@@ -200,6 +200,23 @@ type P4HostState interface {
 	// doTailCall 路径)。
 	TailCall(base int32, pc int32, a int32, b int32, c int32) int32
 
+	// Self 处理 SELF A B C 助手(gibbous_host.go::Self 同款签名,逐字节同构
+	// 解释器 SELF 段:R(A+1)=R(B) self + R(A)=R(B)[RK(C)] method,经
+	// icGetTable IC + 哈希 + __index 元方法链,可 raise:attempt to index nil 等)。
+	//
+	// 参数:
+	//   - base/pc:当前帧 base 字节偏移 + 当前 pc(物化 ci.savedPC,与解释器同款)
+	//   - a:SELF.A(目标寄存器:method 结果到 R(A),self 到 R(A+1))
+	//   - b:SELF.B(receiver 寄存器号 0-255)
+	//   - c:SELF.C(RK 编码 0-511,常量 256 偏移)
+	//
+	// 返回:0=OK / 1=ERR(raise pending,enterGibbous 取走冒泡)。
+	//
+	// 用例:P4 PJ5 SELF + CALL/TAILCALL inline 形态(`obj:method(args)` 类)。
+	// Run 端 prelude 路径调 host.Self 装 method/self,然后调 CallBaseline /
+	// TailCall 完成 byte-equal P1 doCall 分派。
+	Self(base int32, pc int32, a int32, b int32, c int32) int32
+
 	// ArenaBaseAddr 返回 arena `[]byte` 起点的 uintptr(承 05 §3.3)。	//
 	// 用例:PJ2 完整投机模板——mmap 段经 r15+offset 读 arenaBase 字段后
 	// 经字节级 movsd 直接读/写值栈槽位,跳过 host 接口 round-trip。
@@ -247,25 +264,46 @@ type P4HostState interface {
 	TopHostAddr() uintptr
 
 	// ExecuteCalleeFromInlineFrame Spike 1 Step C-1 helper API(承 §9.20.7
-	// 真实装拆解 + §9.20.9 trampoline exit-resume 协议 commit-2)。
+	// 真实装拆解 + §9.20.9 trampoline exit-resume 协议 commit-2 接口 +
+	// commit-5l 签名修正:callA 替代 retA,SELF + CALL 形态下 method 在
+	// R(callA),callA 是 callee 槽位识别的正确字段)。
 	//
 	// **前置条件**(caller mmap 段必须保证):
 	//   - mmap 段 BuildVoid0ArgSkeleton 已写完 CallInfo[depth] 5 word 字段
+	//     (word0 编译期占位 0,helper 内忽略改取 calleeCI.cl word3 反查 callee
+	//     Proto;funcIdx 用 caller.base + callA 算)
 	//   - mmap 段 EmitFrameInlineCIDepthInc 已做 ciDepth++
 	//   - thread.cur 字段未被 mmap 段更新(Go 端冷字段)
 	//
 	// **流程**(对应 crescent.State 实装):
-	//   1. readCISegInto(th.ciDepth-1, &th.cur) — 重载 caller-perspective callee 字段
-	//   2. nCcalls++ 计费(防 C stack overflow)
-	//   3. executeFrom(th, th.ciDepth-1) — 同步驱动 callee Lua 体完成
-	//   4. popCallInfo(th) — 弹帧,readCISegInto 重载 caller th.cur
+	//   1. read CI[ciDepth-1].cl(BuildVoid0Arg LoadClosureGCRef 装载的 callee
+	//      closure GCRef)
+	//   2. 反查 callee Proto:object.ClosureProtoID(cl) → st.protos[pid]
+	//   3. ciDepth-- 抵消 BuildVoid0Arg 副作用
+	//   4. funcIdx = th.cur.base + callA(caller frame R(callA) = method 槽位)
+	//   5. nargs=1 + nresults=0(Spike 1 SELF + CALL 0 user-arg setter 形态:
+	//      SELF 已写 R(callA+1)=self,caller CALL.B=2 = 1 nargs(self only),
+	//      enterLuaFrame 期望 nargs=1)
+	//   6. nCcalls++/enterLuaFrame/executeFrom/popCallInfo
+	//   7. 出口 ciDepth++ 平衡 PopVoid0Arg(commit-5m 入口先从 mirror sync Go
+	//      field ciDepth,避免 mmap CIDepthInc 与 Go field 不同步)
 	//
-	// **返**:0=OK(callee 完成 + 返值已落 R(retA..retA+N-1))/ 1=ERR
-	// (state.pendingErr 已置,trampoline dispatcher 走错误路径)。
+	// **返**:0=OK(callee 完成 + 返值已落 R(callA..callA+nresults-1))/ 1=ERR
+	// (state.pendingErr 已置,Run 端 dispatcher 走错误路径)。
 	//
-	// **当前 Spike 1 阶段**:archSupportsFrameInline=false 屏蔽真触发,本接口
-	// crescent 实装可 panic 占位(承 helpers.go 同款),mockP4Host stub 返 0。
-	ExecuteCalleeFromInlineFrame(base int32, retA int32) int32
+	// **commit-5l 签名修正**(承 PR 评审 + 自检):原 retA 是 RETURN.A(setter
+	// 形态恒 0),无法正确算 funcIdx;改 callA 是 CALL.A(SELF + CALL 形态下
+	// method 槽位置),与 host.CallBaseline 同款语义对齐。
+	//
+	// **commit-5p Spike 2 签名扩**:加 callArgCount 参数,允许 N 参 SELF + CALL
+	// 形态(callArgCount=0..7;helper 内 enterLuaFrame nargs = 1+callArgCount =
+	// self + N user args)。
+	//
+	// **commit-5q Spike 4 签名扩**:加 nresults 参数,允许多返值形态(
+	// callC=1 → 0返 setter / callC=2 → 1返 getter / callC=3..16 → N=2..15 返
+	// drop multi-ret;helper 内 enterLuaFrame nresults 设值 + callee RETURN
+	// doReturn 自动落 R(callA..callA+nresults-1))。
+	ExecuteCalleeFromInlineFrame(base int32, callA int32, callArgCount int32, nresults int32) int32
 }
 
 // SetHostState 把 host(crescent)抽象注入本 Compiler。

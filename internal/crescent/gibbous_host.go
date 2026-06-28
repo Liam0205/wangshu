@@ -919,27 +919,30 @@ func (st *State) TailCall(base, pc, a, b, c int32) int32 {
 // 的「帧建数据反查 + helper 内 enterLuaFrame 重做」策略,放弃零跨界但保证
 // 正确性 + 工程可达。
 //
-// **流程**(承 §9.20.9 (1) 协议 + commit-5f 重定):
+// **流程**(承 §9.20.9 (1) 协议 + commit-5f 重定 + commit-5j 自检修正):
 //  1. mmap 段 BuildVoid0Arg 已 ciDepth++ + 写 CallInfo[ciDepth-1] 5 word
 //     (其中 word3 = closure GCRef payload,Spike 1 唯一可信字段)
 //  2. 反查 callee Proto:read word3 → closure GCRef → object.ClosureProtoID
 //     → st.protos[pid]
 //  3. ciDepth-- 抵消 BuildVoid0Arg 副作用(enterLuaFrame 内会再 ciDepth++)
-//  4. funcIdx = caller.base + retA(callee 槽位,P1 doCall 同款语义)
+//  4. funcIdx = calleeCI.funcIdx(mmap 段 BuildVoid0Arg word0 写入,当前
+//     commit-4b emit 时是 0 占位 — Spike 1 commit-5k 工程需 P2 Bridge analyzer
+//     传 callee FuncExpr → bytecode.Proto 反查 + 编译期固化 word0=base|funcIdx<<32)
 //  5. nargs = 0(Spike 1 简化 0 参形态;callee.NumParams=0 守门)
-//  6. nresults = retA + 1 截止 R(retA)(Spike 1 0 返值 setter 形态)
+//  6. nresults = 0(Spike 1 0 返值 setter 形态;承下方 L976 `const nresults=0`)
 //  7. enterLuaFrame + executeFrom + popCallInfo(由 callee RETURN 自动)
 //  8. **出口 ciDepth++ 平衡**:让 mmap 段后续 PopVoid0Arg dec 到正确 caller depth
 //
-// **当前 archSupportsFrameInline=true 后真触发**(commit-5g):analyzeSelfCallSpecForm
-// 设 useFrameInline=true → compileSpecSelfCall emit useFrameInline 分支 →
-// runSpecSelfCall 检 raxSpec==ExitInlineHelper → runFrameInlineDispatcher 调
-// 本函数 → 完成 callee 执行。
+// **当前 Spike 1 真接入未完成**(commit-5j 自检):analyzeSelfCallSpecForm 撤销
+// useFrameInline 守门 → info.useFrameInline 不真设 → Compile 端 useFrameInline
+// 分支 dead-code → 本 helper Run 期不被调到。剩 commit-5k 工程:callee Proto
+// 元数据接入 + word0/1/2/4 真实计算 + 守门重启用。
 //
 //   - 0=OK(callee 完成 + 返值已落 R(retA..retA+nresults-1))
 //   - 1=ERR(state.pendingErr 已置,Run 端 dispatcher 返 1 错误冒泡)
 func (st *State) ExecuteCalleeFromInlineFrame(base, retA int32) int32 {
 	_ = base // 实参 base 是 jitContext.valueStackBase 算出的 R0 字节偏移,Spike 1 helper 不读
+	_ = retA // 实参 retA 是 RETURN.A(setter 形态恒 0),funcIdx 改从 calleeCI 取
 	th := st.runningThread
 	// 1. 反查 callee Proto:read CI[ciDepth-1].word3 → closure GCRef
 	depth := th.ciDepth - 1
@@ -955,9 +958,12 @@ func (st *State) ExecuteCalleeFromInlineFrame(base, retA int32) int32 {
 	}
 	// 2. ciDepth-- 抵消 BuildVoid0Arg 副作用(enterLuaFrame 内会再 ciDepth++)
 	th.setCIDepth(th.ciDepth - 1)
-	// 3. funcIdx = caller.base + retA(callee 槽位,与 P1 doCall A 字段同款语义)
-	//    caller 在 th.cur(此刻 ciDepth 已退回 caller 视角,th.cur 不变是 caller 视角)
-	funcIdx := th.cur.base + int(retA)
+	// 3. funcIdx 算法:取 calleeCI.funcIdx(mmap 段 BuildVoid0Arg word0 写入)
+	//    **commit-5j 自检限制**:word0 当前 commit-4b emit 时是 0 占位,真接入
+	//    路径(useFrameInline=true 时)需 commit-5k 让 analyzeSelfCallSpecForm
+	//    把 funcIdx 经 callee Proto 元数据接入 + 编译期固化 word0=base|funcIdx<<32。
+	//    当前 useFrameInline 路径 dead-code,本字段不被读。
+	funcIdx := calleeCI.funcIdx
 	// 4. Spike 1 简化:nargs=0 + nresults=0(setter 形态,callee.NumParams=0 +
 	//    callee 返值 0 个落 R(retA..))。守门由 analyzeSelfCallSpecForm 保证。
 	const nargs = 0
@@ -980,9 +986,12 @@ func (st *State) ExecuteCalleeFromInlineFrame(base, retA int32) int32 {
 	if err != nil {
 		return st.raiseGibbous(err)
 	}
-	// 8. 出口 ciDepth++ 平衡 PopVoid0Arg(承 commit-5d 同款解释):
-	//    executeFrom 弹 callee 帧后 ciDepth = caller_depth;mmap 段 PopVoid0Arg
-	//    会再 dec → 手动 ciDepth++ 抵消,让 PopVoid0Arg dec 到正确 caller_depth。
+	// 8. 出口 ciDepth++ 平衡 mmap 段 PopVoid0Arg:executeFrom 弹 callee 帧后
+	//    ciDepth = caller_depth;mmap 段 PopVoid0Arg(EmitFrameInlineCIDepthDec)
+	//    会再 dec → 出口手动 ciDepth++ 抵消,让 PopVoid0Arg dec 到正确
+	//    caller_depth。无需 writeCISeg(&th.cur):PopVoid0Arg 仅 dec 镜像字 +
+	//    ret,不 readCISegInto 重载,故 ciDepth ↔ th.cur 一过渡性不一致由
+	//    p4Code.Run 出口 + syncCurFromSeg 在下次 Go 控制流处恢复。
 	th.setCIDepth(th.ciDepth + 1)
 	return 0
 }

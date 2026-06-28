@@ -950,6 +950,7 @@ var ErrRunNotImplemented = errors.New("internal/gibbous/jit: p4Code Run failed: 
 // **当前 archSupportsFrameInline=false 屏蔽真触发**,本函数不被调到;
 // commit-5e 翻闸门 + analyzeSelfCallSpecForm 设 useFrameInline=true 后启用。
 func (c *p4Code) runFrameInlineDispatcher(base int32) int32 {
+	incSpecFrameInlineRunHits() // 承 §9.20.9 commit-5i:Run 期触达探针
 	// 1. 路由 helper request:读 jitCtx.exitArg0 决定 helper 类型
 	helperCode := c.jitCtx.ExitArg0()
 	switch helperCode {
