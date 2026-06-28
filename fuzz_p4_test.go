@@ -81,6 +81,12 @@ return f(o1, o2)`,
 		`local function add(a, b) return a + b end; local ok, e = pcall(add, "x", 1); return ok`,
 		// 错误冒泡 + SELF
 		`local mt = {m = 42}; local ok, e = pcall(function() return mt:m() end); return ok`,
+		// **commit-5u zero-cross 优化形态**:callee 也 P4 升层(GETTABLE form)
+		`local o = { x = 42, m = function(self) return self.x end }; local function caller(t) local r = t:m(); return r end; local s = 0; for i = 1, 50 do s = s + caller(o) end; return s`,
+		// useFrameInline N 参 fixed(callArgCount=0..7)+ zero-cross 兼容
+		`local sum = 0; local o = { m = function(self, a, b, c) sum = sum + a + b + c end }; local function caller(t) t:m(1, 2, 3) end; for i = 1, 30 do caller(o) end; return sum`,
+		// useFrameInline + vararg callee
+		`local sum = 0; local o = { m = function(self, ...) local a, b, c = ...; sum = sum + a + b + c end }; local function caller(t) t:m(1, 2, 3) end; for i = 1, 30 do caller(o) end; return sum`,
 	}
 	for _, s := range seeds {
 		f.Add(s)
