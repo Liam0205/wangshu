@@ -940,7 +940,7 @@ func (st *State) TailCall(base, pc, a, b, c int32) int32 {
 //
 //   - 0=OK(callee 完成 + 返值已落 R(callA..callA+nresults-1))
 //   - 1=ERR(state.pendingErr 已置,Run 端 dispatcher 返 1 错误冒泡)
-func (st *State) ExecuteCalleeFromInlineFrame(base, callA int32) int32 {
+func (st *State) ExecuteCalleeFromInlineFrame(base, callA, callArgCount int32) int32 {
 	_ = base // 实参 base 是 jitContext.valueStackBase 算出的 R0 字节偏移,Spike 1 helper 不读
 	th := st.runningThread
 	// **commit-5m 修 ciDepth Go vs mirror 不同步 bug**:mmap 段 BuildVoid0Arg
@@ -964,18 +964,14 @@ func (st *State) ExecuteCalleeFromInlineFrame(base, callA int32) int32 {
 	}
 	// 2. ciDepth-- 抵消 BuildVoid0Arg 副作用(enterLuaFrame 内会再 ciDepth++)
 	th.setCIDepth(th.ciDepth - 1)
-	// 3. funcIdx = th.cur.base + callA(commit-5l 签名修正:SELF + CALL 形态下
-	//    method 在 R(callA) 槽位,与 host.CallBaseline 同款语义对齐 — 替代
-	//    commit-5d/5j 的 calleeCI.funcIdx 占位 0 错位)。
-	//    此时 th.cur 已退回 caller 视角(setCIDepth(-1) 后,但 th.cur 字段
-	//    未被 mmap 段更新仍是 caller 数据),caller.base + callA = caller R(callA)
-	//    在 stack 中的绝对索引,即 method 槽位。
+	// 3. funcIdx = th.cur.base + callA(SELF + CALL 形态下 method 在 R(callA))
 	funcIdx := th.cur.base + int(callA)
-	// 4. Spike 1 简化:nargs=1 + nresults=0(SELF + CALL 0 user-arg setter 形态:
-	//    SELF 已写 R(callA+1)=self,caller CALL.B=2 = 1 nargs(self only),
-	//    enterLuaFrame 期望 nargs=1)。守门由 analyzeSelfCallSpecForm 保证
-	//    callArgCount=0 + isCallVoid + !isTailCall。
-	const nargs = 1
+	// 4. **commit-5p Spike 2 N 参形态**:nargs = 1 + callArgCount(self + N user
+	//    args,SELF + CALL N=callArgCount 参形态:SELF 已写 R(callA+1)=self,
+	//    spec template args 段已写 R(callA+2..callA+1+N) = args)。
+	//    caller CALL.B = 2+N(N+1 nargs:self + N args),enterLuaFrame 期望
+	//    nargs=1+N。
+	nargs := 1 + int(callArgCount)
 	const nresults = 0
 	// 5. C stack 限深检查 + nCcalls++
 	if st.nCcalls >= maxCCallDepth {

@@ -1680,7 +1680,38 @@ return count`
 		jit.SpecFrameInlineHits(), jit.SpecFrameInlineRunHits())
 }
 
-// archSupportsFrameInlineForTest 测试辅助:amd64 返 true / arm64 返 false。
+// TestPJ5_FrameInline_E2E_Spike2_3KArg 验 Spike 2 N 参 fixed args setter
+// 形态 useFrameInline 真接入(承 commit-5p:callArgCount 守门扩 0..7)。
+// 3 K 参形态:t:m(1,2,3),callee body 用 self+a+b+c 计算 sum。
+func TestPJ5_FrameInline_E2E_Spike2_3KArg(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local sum = 0
+local o = { m = function(self, a, b, c) sum = sum + a + b + c end }
+local function caller(t) t:m(1, 2, 3) end
+for i = 1, 100 do caller(o) end
+return sum`
+	st, mainCl := loadFnP4(t, src)
+	if _, err := st.Call(value.GCRefOf(mainCl), nil, 1); err != nil {
+		t.Fatalf("warmup: %v", err)
+	}
+	st.bridge.SetForceAllPromote(true)
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("force-all run: %v", err)
+	}
+	if got := value.AsNumber(value.Value(rets[0])); got != 100*6 {
+		t.Errorf("rets = %v, want %d (byte-equal P1: callee body 真跑 100 次 1+2+3=6)",
+			got, 100*6)
+	}
+	if archSupportsFrameInlineForTest() {
+		if jit.SpecFrameInlineRunHits() == 0 {
+			t.Errorf("SpecFrameInlineRunHits = 0,Spike 2 3 K 参 useFrameInline 路径未真触达")
+		}
+	}
+	t.Logf("Spike 2 3 K 参:Hits=%d / RunHits=%d", jit.SpecFrameInlineHits(), jit.SpecFrameInlineRunHits())
+}
+
 // **复制 arch 矩阵**(承 PR comment c5ef665 评审):本函数硬编码复制
 // jit/arch_*.go::archSupportsFrameInline() 矩阵,将来 arch 支持面扩展时
 // 本处需手动跟进。jit 包未导出真源函数(包内 unexported),测试包无法直接

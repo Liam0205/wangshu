@@ -2585,8 +2585,13 @@ func analyzeSelfCallSpecForm(proto *bytecode.Proto, feedback *bridge.TypeFeedbac
 	info.icStableShape = pf.StableShape
 	info.icStableIndex = pf.StableIndex
 	info.icStableKey = stableKey
-	// PJ5 Option B Spike 1 帧建立内联(commit-5m 重启用):
-	if archSupportsFrameInline() && info.callArgCount == 0 &&
+	// PJ5 Option B Spike 1/2 帧建立内联(commit-5m/5p):
+	// Spike 1:0 参 setter 形态(callArgCount=0)
+	// Spike 2:N 参 fixed setter 形态(callArgCount=0..7,承 §9.20.3 表 Spike 2)
+	// spec template 已字节级 emit args 到 R(callA+2..callA+1+N),helper 内
+	// enterLuaFrame(funcIdx, 1+callArgCount, 0) 等价 host.CallBaseline 的
+	// CALL.B=2+N nargs 解码。
+	if archSupportsFrameInline() && info.callArgCount <= 7 &&
 		info.isCallVoid && !info.isTailCall {
 		info.useFrameInline = true
 	}
