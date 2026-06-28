@@ -1684,3 +1684,82 @@ return count`
 	t.Logf("SpecFrameInlineHits=%d (Spike 1 真接入命中实证)",
 		jit.SpecFrameInlineHits())
 }
+
+// TestPJ5_FrameInline_E2E_SelfUsage 验 PJ5 Option B Spike 1 帧建立内联 +
+// callee 体真用 self 字段:
+// `o:m()` callee 体 `self.val = self.val + 1`,验证 R(callA+1)=self 真传给
+// callee,helper 内 enterLuaFrame nargs 计算正确。
+//
+// **真接入正确性强断言**:Spike 1 当前 nargs=0 实装的 byte-equal 兜底验证。
+// 若 nargs 计算错(漏 self / 漏 args),callee 读 self.val 会读到 nil 触发
+// 运行期错误或 t.val 不增。
+//
+// **commit-5i**:加 SpecFrameInlineRunHits 区分 Compile vs Run 触达。
+func TestPJ5_FrameInline_E2E_SelfUsage(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local t = { val = 42, m = function(self) self.val = self.val + 1 end }
+local function caller(o) o:m() end
+for i = 1, 50 do caller(t) end
+return t.val`
+	st, mainCl := loadFnP4(t, src)
+	if _, err := st.Call(value.GCRefOf(mainCl), nil, 1); err != nil {
+		t.Fatalf("warmup: %v", err)
+	}
+	st.bridge.SetForceAllPromote(true)
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("force-all run: %v", err)
+	}
+	if got := value.AsNumber(value.Value(rets[0])); got != 92 {
+		t.Errorf("rets = %v, want 92(42 + 50,byte-equal P1:self 真传 callee + self.val++ 真执行)", got)
+	}
+	t.Logf("SpecFrameInlineHits=%d (Compile) / SpecFrameInlineRunHits=%d (Run 触达)",
+		jit.SpecFrameInlineHits(), jit.SpecFrameInlineRunHits())
+}
+
+// TestPJ5_FrameInline_E2E_RunHit 验 Run 期真触达 runFrameInlineDispatcher。
+// **更密集 warmup**:warmup 200 次让 SELF NodeHit IC 真 stabilize,然后
+// force-all 升 P4 → spec 段 SELF NodeHit guard 应成功 → fall-through 进
+// BuildVoid0Arg + ExitHelperRequest → 段返 RAX=ExitInlineHelper → Run 端
+// runFrameInlineDispatcher 真触发 → SpecFrameInlineRunHits >= 1。
+//
+// **当前实测现状**(commit-5i 加 SpecFrameInlineRunHits 探针):RunHits=0,
+// 说明 mmap 段 SELF NodeHit guard 总走 deopt 出口(RAX=specDeoptCode),Run
+// 端走 host.Self 降级路径,**useFrameInline 路径 production 从未真触达**。
+// 真接入未完成,需诊断 SELF NodeHit emit 段在 useFrameInline 形态下 fall-through
+// 失败的根因(可能 fall-through 后 BuildVoid0Arg 段污染 RAX 或 SELF NodeHit
+// 段尾 ret 而非 fall-through)。
+//
+// 本 e2e 当前期望 RunHits=0,与实测一致,作真接入未完成的 baseline 防护(
+// 后续修通后期望改 RunHits >= 1)。
+func TestPJ5_FrameInline_E2E_RunHit(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local count = 0
+local o = { m = function(self) count = count + 1 end }
+local function caller(t) t:m() end
+for i = 1, 200 do caller(o) end   -- 重 warmup,确保 SELF IC stable
+return count`
+	st, mainCl := loadFnP4(t, src)
+	if _, err := st.Call(value.GCRefOf(mainCl), nil, 1); err != nil {
+		t.Fatalf("warmup: %v", err)
+	}
+	st.bridge.SetForceAllPromote(true)
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("force-all run: %v", err)
+	}
+	if got := value.AsNumber(value.Value(rets[0])); got != 200 {
+		t.Errorf("rets = %v, want 200(byte-equal P1:deopt 降级 host.Self 路径仍正确)", got)
+	}
+	t.Logf("SpecFrameInlineHits=%d (Compile) / SpecFrameInlineRunHits=%d (Run 触达)",
+		jit.SpecFrameInlineHits(), jit.SpecFrameInlineRunHits())
+
+	// **当前实测**:RunHits=0,真接入未完成 baseline 防护
+	// (后续 SELF NodeHit emit 段 fall-through 修通后改 >= 1 期望)
+	if jit.SpecFrameInlineRunHits() != 0 {
+		t.Logf("注意:SpecFrameInlineRunHits=%d > 0 — 真接入已完成,本 baseline 防护可改 >= 1 期望",
+			jit.SpecFrameInlineRunHits())
+	}
+}

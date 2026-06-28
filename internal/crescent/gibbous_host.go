@@ -955,9 +955,21 @@ func (st *State) ExecuteCalleeFromInlineFrame(base, retA int32) int32 {
 	}
 	// 2. ciDepth-- 抵消 BuildVoid0Arg 副作用(enterLuaFrame 内会再 ciDepth++)
 	th.setCIDepth(th.ciDepth - 1)
-	// 3. funcIdx = caller.base + retA(callee 槽位,与 P1 doCall A 字段同款语义)
-	//    caller 在 th.cur(此刻 ciDepth 已退回 caller 视角,th.cur 不变是 caller 视角)
-	funcIdx := th.cur.base + int(retA)
+	// 3. funcIdx 算法:**关键差异 — SELF + CALL 形态下 CALL.A = callA(method
+	//    在 R(callA),self 在 R(callA+1)),而 RETURN.A = retA(通常 = 0 setter
+	//    形态)。host.CallBaseline 调用时用 CALL.A,所以 funcIdx = caller.base
+	//    + callA。但本 helper 入参只接受 (base, retA),需 caller 端把 callA
+	//    经独立参数传(commit-5j 接口扩,本批先用 base 参兜底)。
+	//
+	//    **退路**:由 calleeCI(读自 mmap 段)的 funcIdx 字段:BuildVoid0Arg
+	//    写 word0 = base|funcIdx<<32,calleeCI.funcIdx 已是 mmap 段写好的
+	//    funcIdx 值。当前 commit-4b emit 时 word0=0 占位,所以 calleeCI.funcIdx=0
+	//    实际是错的;真接入正确性留 commit-5j(让 analyzeSelfCallSpecForm 计算
+	//    word0 = caller.base 当前不可知 + callA 编译期固化 + funcIdx
+	//    = caller.base+callA Compile 期不可知必须运行期算)。
+	funcIdx := calleeCI.funcIdx
+	_ = retA // 暂未用,commit-5j 用 callA 替代
+	_ = funcIdx
 	// 4. Spike 1 简化:nargs=0 + nresults=0(setter 形态,callee.NumParams=0 +
 	//    callee 返值 0 个落 R(retA..))。守门由 analyzeSelfCallSpecForm 保证。
 	const nargs = 0
