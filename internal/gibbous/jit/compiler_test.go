@@ -288,6 +288,14 @@ func (m *mockP4Host) CISegBaseHostAddr() uintptr { return 0 }
 // TopHostAddr 模拟 host.TopHostAddr(承 §9.20)。
 func (m *mockP4Host) TopHostAddr() uintptr { return 0 }
 
+// ExecuteCalleeFromInlineFrame mock stub(承 §9.20.9 commit-2)。
+// 单测路径不触达(archSupportsFrameInline=false 屏蔽真调用),返 0=OK 兜底。
+func (m *mockP4Host) ExecuteCalleeFromInlineFrame(base, retA int32) int32 {
+	_ = base
+	_ = retA
+	return 0
+}
+
 // ForPrep mock stub(PJ3 reg-limit deopt 路径用,单测路径不触达)。
 func (m *mockP4Host) ForPrep(base, pc, a int32) int32 { _ = base; _ = pc; _ = a; return 0 }
 

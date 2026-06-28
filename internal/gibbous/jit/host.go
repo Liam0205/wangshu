@@ -262,6 +262,27 @@ type P4HostState interface {
 	// **复用 P3 PW10 Stage 1a 镜像字**(crescent.State.topRef):top 是栈槽索引,
 	// enterLuaFrame 设 callee 帧顶时 mmap 段写入(top = base + MaxStack)。
 	TopHostAddr() uintptr
+
+	// ExecuteCalleeFromInlineFrame Spike 1 Step C-1 helper API(承 §9.20.7
+	// 真实装拆解 + §9.20.9 trampoline exit-resume 协议 commit-2)。
+	//
+	// **前置条件**(caller mmap 段必须保证):
+	//   - mmap 段 BuildVoid0ArgSkeleton 已写完 CallInfo[depth] 5 word 字段
+	//   - mmap 段 EmitFrameInlineCIDepthInc 已做 ciDepth++
+	//   - thread.cur 字段未被 mmap 段更新(Go 端冷字段)
+	//
+	// **流程**(对应 crescent.State 实装):
+	//   1. readCISegInto(th.ciDepth-1, &th.cur) — 重载 caller-perspective callee 字段
+	//   2. nCcalls++ 计费(防 C stack overflow)
+	//   3. executeFrom(th, th.ciDepth-1) — 同步驱动 callee Lua 体完成
+	//   4. popCallInfo(th) — 弹帧,readCISegInto 重载 caller th.cur
+	//
+	// **返**:0=OK(callee 完成 + 返值已落 R(retA..retA+N-1))/ 1=ERR
+	// (state.pendingErr 已置,trampoline dispatcher 走错误路径)。
+	//
+	// **当前 Spike 1 阶段**:archSupportsFrameInline=false 屏蔽真触发,本接口
+	// crescent 实装可 panic 占位(承 helpers.go 同款),mockP4Host stub 返 0。
+	ExecuteCalleeFromInlineFrame(base int32, retA int32) int32
 }
 
 // SetHostState 把 host(crescent)抽象注入本 Compiler。

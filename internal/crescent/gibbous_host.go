@@ -906,3 +906,26 @@ func (st *State) TailCall(base, pc, a, b, c int32) int32 {
 	}
 	return 0
 }
+
+// ExecuteCalleeFromInlineFrame Spike 1 Step C-1 helper(承
+// `docs/design/p4-method-jit/implementation-progress.md` §9.20.9 trampoline
+// exit-resume 协议 commit-2)。
+//
+// **前置条件**(caller mmap 段必须保证):mmap 段 BuildVoid0ArgSkeleton 已写完
+// CallInfo[depth] 5 word 字段 + EmitFrameInlineCIDepthInc 已做 ciDepth++,但
+// thread.cur 字段未被 mmap 段更新(Go 端冷字段)。
+//
+// **当前 Spike 1 阶段**:archSupportsFrameInline=false 屏蔽真触发,本接口
+// panic 占位(承 jit.HelperRunCalleeAfterFrameInline 同款工程基础锚点)。真
+// 实装留 Step C-2 真接入批次。
+//
+//   - 0=OK(callee 完成 + 返值已落 R(retA..retA+N-1))
+//   - 1=ERR(state.pendingErr 已置,trampoline dispatcher 走错误路径)
+func (st *State) ExecuteCalleeFromInlineFrame(base, retA int32) int32 {
+	_ = base
+	_ = retA
+	// **未实装占位**:Step C-2 真实装时去掉 panic,加 readCISegInto + executeFrom
+	// + popCallInfo 逻辑。当前 archSupportsFrameInline=false 屏蔽真调用,本 panic
+	// 是工程基础锚点(调用站点暴露 = 真接入未启用 / Compile bug)。
+	panic("crescent.State.ExecuteCalleeFromInlineFrame: not implemented (Spike 1 Step C-2 占位)")
+}
