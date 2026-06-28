@@ -223,6 +223,18 @@ type p4Code struct {
 	//     amd64 120B / arm64 164B);剩 helper call ABI + e2e prove-the-path
 	//     留下批工程。
 	useFrameInline bool
+
+	// frameInlineResumeOff PJ5 Option B Spike 1 帧建立内联 resume entry 在
+	// mmap 段内的字节偏移(承 §9.20.9 (5) Go 端 dispatcher 协议):
+	//   - useFrameInline=true 时 compileSpecSelfCall emit 完 BuildVoid0Arg +
+	//     ExitHelperRequest 后记录 = len(buf),用于 PopVoid0Arg 段头位置
+	//   - dispatcher 处理完 callee 后用 codePageAddr + frameInlineResumeOff
+	//     求 resume entry 绝对地址,trampoline 重 CALL 进 mmap 段续跑
+	//   - useFrameInline=false 时本字段恒 0(不进入 useFrameInline 分支)
+	//
+	// Run 入口经 jitCtx.SetCodePageAddr + SetResumeOff 注入(承 §9.20.9 commit-5
+	// 真接入同批),编译期固化为 p4Code 字段,Run 期注入 jitCtx。
+	frameInlineResumeOff uint32
 }
 
 // Proto 反向指针(trampoline 校验)。

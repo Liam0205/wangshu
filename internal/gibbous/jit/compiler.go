@@ -5030,6 +5030,54 @@ func (c *Compiler) compileSpecSelfCall(proto *bytecode.Proto, info shapeInfo) (b
 	buf = archEmitSelfNodeHit(buf, info.icAReg, info.icBReg,
 		info.icStableShape, info.icStableIndex, info.icStableKey,
 		arenaBaseOff, deoptCode)
+	// PJ5 Option B Spike 1 帧建立内联(承 §9.20.9 (6) compileSpecSelfCall emit
+	// 改造):useFrameInline=true 时在 SELF NodeHit 段后追加:
+	//   1. BuildVoid0ArgSkeleton(amd64 120B / arm64 164B):enterLuaFrame 字节级
+	//      inline,写 CallInfo[depth] 5 word + ciDepth++
+	//   2. ExitHelperRequest 段(amd64 24B / arm64 ~28B,占位 0):写 jitCtx.
+	//      exitReasonCode=ExitInlineHelper + jitCtx.exitArg0=HelperRunCallee +
+	//      mov rax,ExitInlineHelper + ret —— 出 mmap 段返 trampoline,trampoline
+	//      检 RAX==3 路由 Go dispatcher 跑 callee Lua 体
+	//   3. resume entry 偏移记录:p4Code.frameInlineResumeOff = 当前 emit 字节数
+	//   4. PopVoid0ArgSkeleton(amd64 10B / arm64 16B):popCallInfo 字节级
+	//      inline,ciDepth-- + 返 trampoline 完成 Run
+	//
+	// **当前 Spike 1 阶段 archSupportsFrameInline=false 屏蔽 + analyzeSelfCallSpecForm
+	// 保守不设 info.useFrameInline=true**(callee Proto 元数据不可知),本分支
+	// dead-code 路径 — 但 emit 形态就位为 commit-5 翻闸门同批激活。
+	var frameInlineResumeOff uint32
+	if info.useFrameInline && archSupportsFrameInline() {
+		ciDepthAddrOff := int32(JITContextCIDepthAddrOffset)
+		ciSegBaseAddrOff := int32(JITContextCISegBaseAddrOffset)
+		exitReasonOff := int32(JITContextExitReasonOffset)
+		exitArg0Off := int32(JITContextExitArg0Offset)
+		// **CI 帧 5 word 编译期烧入**(承 §9.20.5 P3 PW10 同源 + 9.20.4 守门
+		// callee.NumParams=0 + !IsVararg + MaxStack≤32):
+		//   word0 = base(callA + caller.base)
+		//   word1 = top(base + callee.MaxStack)
+		//   word2 = protoID(callee.protoID) | nresults<<32 | flags<<48
+		//   word3 = closure GCRef(runtime LoadClosureGCRef 装载,Build 段内现算)
+		//   word4 = nVarargs(0,callee 非 vararg)
+		//
+		// **Spike 1 简化形态**:word0/1/2/4 imm 编译期由 caller proto 已知量
+		// 算出;真实数值需 callee.Proto 元数据(MaxStack + protoID),当前
+		// archSupportsFrameInline=false 屏蔽,info.useFrameInline 不真设,本批
+		// 落 0 占位等 commit-5 真接入时由 analyzeSelfCallSpecForm 计算填充。
+		var word0, word1, word2, word4 uint64
+		buf = archEmitFrameInlineBuildVoid0ArgSkeleton(buf,
+			ciDepthAddrOff, ciSegBaseAddrOff, info.callA,
+			word0, word1, word2, word4)
+		// ExitHelperRequest 段(出段返 trampoline)
+		buf = archEmitFrameInlineExitHelperRequest(buf,
+			exitReasonOff, exitArg0Off, HelperRunCallee)
+		// resume entry 偏移:dispatcher 返 codePage + frameInlineResumeOff,
+		// trampoline 重 CALL 进 mmap 段续跑 PopVoid0Arg + ret
+		frameInlineResumeOff = uint32(len(buf))
+		buf = archEmitFrameInlinePopVoid0ArgSkeleton(buf, ciDepthAddrOff)
+		// 段尾 ret 由 archMmapCode 末尾自动 emit(等价 callee 完成后段返常规
+		// 退出 RAX=ExitNormal,trampoline 跳 skipDispatch 走常规弹栈)
+		incSpecFrameInlineHits() // PJ5 Option B Spike 1 帧建立内联 Compile 命中
+	}
 	page, err := archMmapCode(buf)
 	if err != nil {
 		return nil, err
@@ -5088,6 +5136,7 @@ func (c *Compiler) compileSpecSelfCall(proto *bytecode.Proto, info shapeInfo) (b
 		// 故 useFrameInline=false。Step C-2 真接入时 analyzeSelfCallSpecForm
 		// 加额外守门(callee Proto 元数据可知 + NumParams=0 + !IsVararg +
 		// !NeedsArg + MaxStack≤32)并设 info.useFrameInline=true。
-		useFrameInline: info.useFrameInline,
+		useFrameInline:       info.useFrameInline,
+		frameInlineResumeOff: frameInlineResumeOff,
 	}, nil
 }
