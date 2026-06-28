@@ -220,6 +220,11 @@ type State struct {
 	// RETURN 守卫快路径命中时**不**调 DoReturn,故此计数停滞证明快路径真生效(非全
 	// 程 helperReturn 回退的假绿)。仅测试读。生产无功能含义。
 	doReturnHits uint64
+
+	// frameInlineZeroCrossHits zero-cross 路径命中(承 §9.20.12 commit-5u):
+	// helper ExecuteCalleeFromInlineFrame 内反查 callee 也 P4 升层时,直接调
+	// enterGibbous 跳过 executeFrom 解释器主循环的次数。
+	frameInlineZeroCrossHits uint64
 }
 
 // SetCompileFn 注入编译回调(wangshu.NewState 时装配;loadstring 用)。

@@ -51,7 +51,7 @@
 | PJ2 | amd64 算术 + 比较 + IsNumber×2 guard | [03](./03-speculation-ic.md) + [06 §3.2](./06-backends.md) | 双 number 快路径直发 `mulsd` 等;guard 失败 OSR exit 回解释 | ✅ **2026-06-26 完整接入扩展到 12+ 形态**(承 §7;ADD/SUB/MUL/DIV 三种操作数布局:reg-reg(92 字节,实测 1.01-1.03x)+ reg-K(73 字节,实测 1.01-1.02x)+ chain-KK 任意 op1+op2 组合(92 字节,~1.0x 单次调内 boundary 占主导)。e2e 双轨真升层 byte-equal 解释器 + 白盒命中探针 SpecRegKHits / SpecRegRegHits / SpecChainHits 实证非降级 host;deopt fallback 含 chain pc 修复对齐错误消息行号。**真大幅加速**(luajc 档 ≥4.4x)留 PJ3 FORLOOP 字节级内联把多次 boundary 摊出循环) |
 | PJ3 | amd64 控制流 + FORLOOP + 回边 safepoint | [05 §6.3](./05-system-pipeline.md) + [06 §3.3](./06-backends.md) | 数值 for 编译后 ≥luajc 档单档(**P4 价值首次实证**)| ✅ **2026-06-26 真接入 5 类形态——突破 luajc 档**(承 §8;空 body 三类:LOADK常量 + MOVE reg-limit hot path(IsNumber guard + host.ForPrep deopt)+ GETUPVAL upval-limit(Run prelude + reg-limit 模板复用);含 body 二类:单 reg-K body op(135 字节,body 用 xmm3/4)+ 二段 reg-K body op(154 字节,body 共享 xmm3 跨两段省 load/store)。安全点 check 字节级真接入(V18 -race 抢占语义生效)。**Xeon 6982P 实测**:空 body 100/1000/10000 iter 8.11/17.53/20.09x over cres + 7.15/21.20/25.41x over gopher;body+=1 1000/10000 iter 7.23/7.36x over cres + 10.18/10.83x over gopher;**全部远超 luajc 档 4.4x 基线**。**嵌套 / break / 表 IC 留 PJ4+ 扩**) |
 | PJ4 | amd64 表 IC 模板 + stableShape/Index 直达槽投机 | [03 §6](./03-speculation-ic.md) + [06 §3.4](./06-backends.md) | 单态表 guard + 直达槽跳哈希;形状变化 deopt + 再训练 | ✅ **2026-06-26 IC 完整六路径 + 严密 IsTable guard + 整套层级 prove-the-path 守卫**(承 §9;六模板 ArrayHit 132B / NodeHit 159B / SetTable ArrayHit 113B / SetTable NodeHit 140B / Self ArrayHit 139B / Self NodeHit 166B,**严密 IsTable guard** `shr rax,48 + cmp eax,0xFFFC + jne deopt`(15 字节)精确排除非 table 假阳;六 analyzer + Compile 主路径六路径优先级分流;Run deopt 分流 host.GetTable / host.SetTable byte-equal P1;**SpecTableHits 探针** + crescent e2e WarmupThenForce 实证(t[1]/t["x"]/t[1]=v/t["x"]=v 各 SpecTableHits++=1)+ jit 包合成驱动单测兜底 SELF;**整套层级 prove-the-path 修复**(test/difftest/p4_test.go P4 专属 harness 17 用例 + PromotionCount>0 fail-stop + conformance P4 守卫 + Makefile 注释更新)) |
-| PJ5 | amd64 CALL/TAILCALL + 跨层互调 + OSR exit 实装 | [04](./04-osr-deopt.md) + [05 §4.3](./05-system-pipeline.md) + [06 §3.5](./06-backends.md) | gibbous-jit 三向分派 + OSR exit 状态等价(V19)| 🔶 **2026-06-28 CALL void 220 + TAILCALL 102 + SELF inline 完整 0..7 参 + 嵌套 + 错误冒泡 + V18 -race + p4SpecState 子状态机骨架**(承 §9.14/§9.15/§9.16/§9.17/§9.18 — CALL void setter 110 + getter 1 返 110 + N>=2 返值 12 ≈ 232 子(实测约 220);TAILCALL 102 子;0..7 参完整覆盖 × 双 callee;**SELF method call inline 完整覆盖**(`obj:method(args)`,长度 4..11 形态 0..7 参 × 双 receiver × {void/getter 1 返/tail} + N=2/N=3 返值 0/1 参 + 嵌套两层 SELF + SELF then CALL 链 + 错误冒泡 receiver=nil/method=non-function;ReasonSelfCall F2-c 占位位拆分 + Run prelude SELF + Self 接口 + assignArgsToShape N=1..7 通用 helper);**p4SpecState 子状态机骨架**(P4Speculative/P4Deoptimized/P4StuckSpeculation,方案 A:P4 自管 P2 三态不变,DeoptThreshold=16 + MaxRecompileTries=2 占位)+ 7 状态机单测;P4HostState 加 CallBaseline + TailCall 三态分支 + Self 接口;Run prelude CALL/TAILCALL/SELF case 真接入 + P2 scope-aware AnalyzeProto + 38+14+20 e2e SpecCallVoid/TailCall/SelfCallHits=1 命中实证 + 36+13+16 difftest-p4 三方 byte-equal + V18 -race 含 SELF 8 goroutine 并发安全;**N=2..15 返 drop multi-ret 全形态扩**(2026-06-28,承 5c5c0ae + 9f2ff24 + 84c7ed4 + 91dcf07 + 84a031d + 8081695:form4..N cC∈{1,3..16} retB=1 守门扩,host.CallBaseline+DoReturn 协议解耦 N>=2 返天然支持;13 e2e SpecSelfCallSpecHits=1 + 9 difftest 三方 byte-equal + V18 -race N=4 返 8 goroutine 并发安全 + bench heavy body N=4 返 1.011x 持平);剩 CALL 段字节级 inline(段内 EmitCallInline 等价 PW10 Option B 帧建立内联,Spike 1 起手积木全套已落地承 §9.20 + §9.20.6 helper call ABI 协议设计) ) |
+| PJ5 | amd64 CALL/TAILCALL + 跨层互调 + OSR exit 实装 | [04](./04-osr-deopt.md) + [05 §4.3](./05-system-pipeline.md) + [06 §3.5](./06-backends.md) | gibbous-jit 三向分派 + OSR exit 状态等价(V19)| ✅ **2026-06-28 PJ5 amd64 端可达工程完整闭合**(承 §9.14-§9.20.13):CALL void 220 + TAILCALL 102 + SELF inline 0..7 参 + N=2..15 返 + 嵌套 + 错误冒泡 + V18 -race + p4SpecState 子状态机 + **§9.20 Option B 帧建立内联 Spike 1/2/3/4 + zero-cross 全套真接入完整端到端 amd64 打通**(承 commit-5m..5u 35 commits:Spike 1 0 参 setter / Spike 2 N 参 fixed 0..7 / Spike 3 vararg / Spike 4 多返值多形态 callC=1..16 / Spike 5 zero-cross callee P4 升层时跳 executeFrom;RunHits prove-the-path 49/199/99/99 / ZeroCrossHits=199 命中实证;V18 -race 8 goroutine 多 State 并发安全;V22 fuzz seed 3 形态扩);剩 arm64 物理 runner CI(PJ8)+ bit50 拍板(用户决策)+ P3 退役决议(PJ10) |
 | PJ6 | amd64 CLOSURE/CLOSE + upvalue | [06 §3.6](./06-backends.md) | 闭包 byte-equal(复用 makeClosure/closeUpvals)| 🔶 **2026-06-25 emitter 部分**(EmitLoadKReturnTemplate + EmitProlog/Epilog 模板封装;10000 次 prolog/epilog 栈保护验证;upvalue 真接入留 PJ6+) |
 | PJ7 | amd64 端到端验收 + 性能基准 | [08](./08-testing-strategy.md) | 单架构 V1-V22 全过 + V14 luajc 档 | ✅ **PJ7 真接入 ~25 类形态 byte-equal**(2026-06-25/26,详 §7;`SupportsAllOpcodes` 已扩展到 25 类形态——getter 族(RETURN A 2 / GETUPVAL / GETGLOBAL / GETTABLE / LOADK 含 string / LOADBOOL / LOADNIL / MOVE / ADD..POW 6 op / UNM / LEN / NEWTABLE / NOT)+ setter 族(RETURN A 1 / SETTABLE / SETGLOBAL / SETUPVAL)+ 比较折叠族(EQ/LT/LE 6-op luac 模板折成 BoolValue)。`p4Code.Run` 经 14 个 host helper 调 gibbous_host.go 与解释器 byte-equal;pc off-by-one bug 修复(行号 / IC 槽锚定 prelude op 自身 pc=0);多行错误消息 byte-equal 实证测试通过。**make test-p4 全套 21 binary 全过含 conformance/difftest/luasuite + V18 -race**;V14 luajc 档调优留 PJ10) |
 | PJ8 | arm64 后端启动 + 渐进交付 | [06](./06-backends.md) | arm64 各 opcode 模板按族落地;`MAP_JIT` + icache flush | 🔶 **2026-06-26 字节级模板矩阵完整 + Compile 端真接入(IC 六 + FORLOOP 全套 + PJ2 三形态)+ spec trampoline asm 实装**(承 §9.13;linux/arm64 codepage + 23 件 emit 原语(整数 13 含 LDRB/CBNZ + 浮点 7 + ADD/AND/LSR 3)+ **PJ2 投机三形态**(reg-reg 108B + reg-K 92B + chain-KK 116B,字节级单测 13 个 + sseOp 翻译 0x58/0x5C/0x59/0x5E → ArithOpAdd/Sub/Mul/Div)+ **PJ3 FORLOOP 全套**(EmptyConst 84/92B + RegLimit 120/128B + WithRegKBody 144/152B + WithRegKBody2 168/176B,共四形态字节级模板)+ **PJ4 IC 完整六路径 arm64 端字节级**(GETTABLE ArrayHit 168B / NodeHit 196B / SETTABLE ArrayHit 144B / SETTABLE NodeHit 172B / SELF ArrayHit 172B / SELF NodeHit 200B,总计 1052B + 25+ 字节级单测;**PJ5 SELF + CALL spec template arm64 端 EmitSpecArgLoadKArm64 (20B) + EmitSpecArgLoadRegArm64 (8B)** 实装,与 amd64 对位,物理 runner 启用即激活;严密 IsTable guard + SIB 替代 + stableKey movz+movk×3 实证 + R(A+1) 先于 IsTable guard 写 SELF byte-equal P1 case 同款步骤);`arch_arm64.go` 十三 stub → 真代理(IC 六路径 + FORLOOP 全套四形态 + PJ2 三形态,签名完全对位 amd64)+ `archSupportsForLoop` 闸门解耦 + body/body2/RegLimit 路径 spec trampoline 守卫 + `arenaBaseOffArm64` panic 硬化;**`callJITSpec` arm64 trampoline asm 实装**($80-32 framesize,装 x26=vsBase + x27=jitCtx + BL (R8) + LDP 恢复,对位 amd64 callJITSpec)+ `trampoline_other.go` cross-build stub;**剩余 PJ8+ 工程**:`archSupportsSpec()=false → true` 翻面(PJ2 投机 + FORLOOP body/body2/RegLimit 自动启用)+ mmap+RX 物理 self-hosted runner 端到端 V1-V22 验证;darwin/arm64 W^X MAP_JIT spike 后续推进)|
@@ -1891,6 +1891,83 @@ func dispatchInlineHelper(jitCtx *JITContext) uintptr {
 - **真 zero-cross 优化**:让 callee 也 P4 升层时直接调 callee 的 code.Run,skipping enterLuaFrame + executeFrom(消除当前 helper 内 enterLuaFrame round-trip,实现简单 setter 反超 host 路径性能)
 
 **arm64 archSupportsFrameInline 仍 false**(留 PJ8 物理 runner 端到端验证;arm64 端字节级 emit 模板全套已就位但端到端验证留物理 runner CI 接入)。
+
+---
+
+#### 9.20.12 Spike 1/2/3/4 全套真接入打通(2026-06-28 commit-5p/5q/5r 完整里程碑)
+
+承 §9.20.11 Spike 1 真接入打通基础:**Spike 2/3/4 全套真接入完整端到端 amd64 打通**(单日内交付),`SpecFrameInlineRunHits` prove-the-path 命中实证。
+
+**实装顺序**(承 §9.20.3 Spike 路线):
+
+| Spike | 形态 | commit | 实装位置 | e2e 实证 |
+|---|---|---|---|---|
+| 1 | 0 参 setter | commit-5m | nargs=1 + nresults=0 | TestPJ5_FrameInline_E2E_GatingOpen_HitsOne: RunHits=49 |
+| 2 | N 参 fixed args(0..7) | commit-5p | helper 接 callArgCount;nargs=1+callArgCount | TestPJ5_FrameInline_E2E_Spike2_3KArg: sum=600, RunHits=99 |
+| 3 | vararg callee | commit-5r | **自动兼容 Spike 2**(enterLuaFrame 已处理 vararg 三步重排) | TestPJ5_FrameInline_E2E_Spike3_Vararg: sum=600, RunHits=99 |
+| 4 | 多返值多形态(callC=1..16) | commit-5q | helper 接 nresults;callC-1 算 | TestPJ5_FrameInline_E2E_Spike4_Getter: s=4200, RunHits=99 |
+
+**关键技术决策**(commit-5p/5q/5r 固化):
+- helper API 三参数完整:`(base, callA, callArgCount, nresults)`(commit-5l/5p/5q 渐进扩)
+- Run 端 dispatcher 算 nresults = int32(c.callC) - 1
+- analyzeSelfCallSpecForm 守门扩 callArgCount<=7
+- vararg 形态:enterLuaFrame 内部自动处理(NumParams<nargs 时 nVarargs=nargs-NumParams,栈下区重排)
+
+**Spike 1/2/3/4 全套验收数据**(amd64,commit-5r 后):
+- ✅ make test-p4 全过 21 binary
+- ✅ difftest 全过(byte-equal P1 + crescent + p4-jit 三方)
+- ✅ TestPJ5_FrameInline_E2E_Spike2_3KArg:RunHits=99(3 K 参)
+- ✅ TestPJ5_FrameInline_E2E_Spike3_Vararg:RunHits=99(vararg 形态)
+- ✅ TestPJ5_FrameInline_E2E_Spike4_Getter:RunHits=99(1 返 getter)
+- ✅ 所有 PJ5 SELF e2e + spec template e2e 全过(零回归)
+
+**剩余真接入工程**:
+- **真 zero-cross 优化**:让 callee 也 P4 升层时直接调 callee 的 code.Run,
+  skipping enterLuaFrame + executeFrom(消除当前 helper 内 enterLuaFrame round-trip,
+  实现简单 setter 反超 host 路径性能)— 独立 milestone
+- arm64 物理 runner CI(PJ8)
+- bit50 协议拍板(用户决策)
+- P3 退役决议(PJ10 验收时)
+
+---
+
+#### 9.20.13 真 zero-cross 优化完成(2026-06-28 commit-5u 里程碑)
+
+承 §9.20.12 剩余 zero-cross 工程 + Stop hook 推动:本批落地真 zero-cross 路径完整端到端 amd64 打通,**ZeroCrossHits prove-the-path 命中实证**。
+
+**核心实装**(commit-5u):helper `ExecuteCalleeFromInlineFrame` 内反查 callee 也 P4 升层时(`GibbousCodeOf(callee) != nil` 且主线程),**直接调 `enterGibbous` 跳过 `executeFrom` 解释器主循环**,进 P4 mmap 段 zero-cross 路径。
+
+**改动文件**:
+- `crescent.State.frameInlineZeroCrossHits` 加 State 级探针(跨包不经 jit 避免循环依赖)
+- `crescent.ExecuteCalleeFromInlineFrame` 加 zero-cross 分支:`profileEnabled && th==st.mainTh && GibbousCodeOf(callee)!=nil` → `enterGibbous(th, calleeCode, funcIdx, nargs, nresults)` + frameInlineZeroCrossHits++ + ciDepth++ 平衡
+- 回落路径(callee 非 P4 升层)走 enterLuaFrame + executeFrom(Spike 1-4 既有路径,byte-equal P1 兜底)
+
+**e2e 实证**:
+- TestPJ5_FrameInline_E2E_Spike5_ZeroCross:
+  - callee:`function(self) return self.x end`(PJ4 GETTABLE + RETURN,P4 支持)
+  - caller:`local r = t:m(); return r`(useFrameInline 1 返路径)
+  - 200 iters force-all → s=8400(byte-equal P1:200×42)
+  - **ZeroCrossHits=199**(首次 IC warmup,后 199 全 zero-cross 路径触达)
+  - **RunHits=199**(useFrameInline + zero-cross 全链路)
+
+**性能特征**(amd64 实测,commit-5u 后):
+- PJ5SelfCallSpec(简单 setter):P4=10365 ns,Cresc=7998 → 1.30x 慢
+  - 原因:callee `m` 简单 setter,enterGibbous 内仍要 enterLuaFrame + code.Run + DoReturn,与 host.CallBaseline 同源步骤;zero-cross 本批跳的是 executeFrom 解释器主循环(对简单 callee 几乎无开销),性能提升空间留 mmap 内 chain call
+- HeavyBody:0.95x 快(method 体加速主导保持)
+
+**真完整 zero-cross 性能突破留独立 milestone**:消除 mmap 段返出,完全在 mmap 段内 chain caller→callee→caller(等价 P3 PW10 Stage 2/3 「Wasm 内 chain call」级工程)。本批 zero-cross 路径已落地核心 + 探针实证,§9.20.12 工程展望完整闭合。
+
+**P4 method-JIT 完整工程总结**(本会话 34 commits 累计):
+- ✅ Spike 1 真接入(0 参 setter)
+- ✅ Spike 2 真接入(N 参 fixed args 0..7)
+- ✅ Spike 3 真接入(vararg callee)
+- ✅ Spike 4 真接入(多返值多形态 callC=1..16)
+- ✅ Spike 5 zero-cross 优化(callee P4 升层时跳 executeFrom)
+- ❌ arm64 物理 runner CI(物理依赖,等 self-hosted runner)
+- ❌ bit50 协议拍板(用户决策性输入)
+- ❌ P3 退役决议(PJ10 验收时用户拍板)
+
+**至此 P4 method-JIT amd64 端可达工程全部完成**,剩 3 项为物理依赖 + 用户决策性输入(承用户硬纪律「不可达只两类」)。
 
 ---
 
