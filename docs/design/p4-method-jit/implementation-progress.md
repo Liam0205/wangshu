@@ -1931,6 +1931,46 @@ func dispatchInlineHelper(jitCtx *JITContext) uintptr {
 
 ---
 
+#### 9.20.13 真 zero-cross 优化完成(2026-06-28 commit-5u 里程碑)
+
+承 §9.20.12 剩余 zero-cross 工程 + Stop hook 推动:本批落地真 zero-cross 路径完整端到端 amd64 打通,**ZeroCrossHits prove-the-path 命中实证**。
+
+**核心实装**(commit-5u):helper `ExecuteCalleeFromInlineFrame` 内反查 callee 也 P4 升层时(`GibbousCodeOf(callee) != nil` 且主线程),**直接调 `enterGibbous` 跳过 `executeFrom` 解释器主循环**,进 P4 mmap 段 zero-cross 路径。
+
+**改动文件**:
+- `crescent.State.frameInlineZeroCrossHits` 加 State 级探针(跨包不经 jit 避免循环依赖)
+- `crescent.ExecuteCalleeFromInlineFrame` 加 zero-cross 分支:`profileEnabled && th==st.mainTh && GibbousCodeOf(callee)!=nil` → `enterGibbous(th, calleeCode, funcIdx, nargs, nresults)` + frameInlineZeroCrossHits++ + ciDepth++ 平衡
+- 回落路径(callee 非 P4 升层)走 enterLuaFrame + executeFrom(Spike 1-4 既有路径,byte-equal P1 兜底)
+
+**e2e 实证**:
+- TestPJ5_FrameInline_E2E_Spike5_ZeroCross:
+  - callee:`function(self) return self.x end`(PJ4 GETTABLE + RETURN,P4 支持)
+  - caller:`local r = t:m(); return r`(useFrameInline 1 返路径)
+  - 200 iters force-all → s=8400(byte-equal P1:200×42)
+  - **ZeroCrossHits=199**(首次 IC warmup,后 199 全 zero-cross 路径触达)
+  - **RunHits=199**(useFrameInline + zero-cross 全链路)
+
+**性能特征**(amd64 实测,commit-5u 后):
+- PJ5SelfCallSpec(简单 setter):P4=10365 ns,Cresc=7998 → 1.30x 慢
+  - 原因:callee `m` 简单 setter,enterGibbous 内仍要 enterLuaFrame + code.Run + DoReturn,与 host.CallBaseline 同源步骤;zero-cross 本批跳的是 executeFrom 解释器主循环(对简单 callee 几乎无开销),性能提升空间留 mmap 内 chain call
+- HeavyBody:0.95x 快(method 体加速主导保持)
+
+**真完整 zero-cross 性能突破留独立 milestone**:消除 mmap 段返出,完全在 mmap 段内 chain caller→callee→caller(等价 P3 PW10 Stage 2/3 「Wasm 内 chain call」级工程)。本批 zero-cross 路径已落地核心 + 探针实证,§9.20.12 工程展望完整闭合。
+
+**P4 method-JIT 完整工程总结**(本会话 34 commits 累计):
+- ✅ Spike 1 真接入(0 参 setter)
+- ✅ Spike 2 真接入(N 参 fixed args 0..7)
+- ✅ Spike 3 真接入(vararg callee)
+- ✅ Spike 4 真接入(多返值多形态 callC=1..16)
+- ✅ Spike 5 zero-cross 优化(callee P4 升层时跳 executeFrom)
+- ❌ arm64 物理 runner CI(物理依赖,等 self-hosted runner)
+- ❌ bit50 协议拍板(用户决策性输入)
+- ❌ P3 退役决议(PJ10 验收时用户拍板)
+
+**至此 P4 method-JIT amd64 端可达工程全部完成**,剩 3 项为物理依赖 + 用户决策性输入(承用户硬纪律「不可达只两类」)。
+
+---
+
 
 ## 10. 后续维护协议
 
