@@ -909,23 +909,95 @@ func (st *State) TailCall(base, pc, a, b, c int32) int32 {
 
 // ExecuteCalleeFromInlineFrame Spike 1 Step C-1 helper(承
 // `docs/design/p4-method-jit/implementation-progress.md` §9.20.9 trampoline
-// exit-resume 协议 commit-2)。
+// exit-resume 协议 commit-2 接口 + commit-5d 真实装)。
 //
-// **前置条件**(caller mmap 段必须保证):mmap 段 BuildVoid0ArgSkeleton 已写完
-// CallInfo[depth] 5 word 字段 + EmitFrameInlineCIDepthInc 已做 ciDepth++,但
+// **前置条件**(caller mmap 段 BuildVoid0ArgSkeleton 已保证):mmap 段已写完
+// CallInfo[depth] 5 word 字段 + EmitFrameInlineCIDepthInc 做 ciDepth++,但
 // thread.cur 字段未被 mmap 段更新(Go 端冷字段)。
 //
-// **当前 Spike 1 阶段**:archSupportsFrameInline=false 屏蔽真触发,本接口
-// panic 占位(承 jit.HelperRunCalleeAfterFrameInline 同款工程基础锚点)。真
-// 实装留 Step C-2 真接入批次。
+// **流程**(承 §9.20.9 (1) 协议总览 + helper 真实装):
+//  1. readCISegInto(th.ciDepth-1, &th.cur) — 重载 callee 帧到 th.cur 热镜像
+//     (mmap 段已写好 ciDepth+1 帧;现在 th.ciDepth 已经是 callee 视角)
+//  2. nCcalls 限深 + nCcalls++(防 C stack overflow,callee 是 Go 端同步驱动
+//     的真 Go stack frame)
+//  3. executeFrom(th, th.ciDepth-1) — 同步驱动 callee Lua 体到 RETURN(执行
+//     期内嵌 popCallInfo 让 th.cur 回到 caller 视角,但 ciDepth 保留 caller+1
+//     此时是 caller 视角)
 //
-//   - 0=OK(callee 完成 + 返值已落 R(retA..retA+N-1))
-//   - 1=ERR(state.pendingErr 已置,trampoline dispatcher 走错误路径)
+// **wait**:executeFrom 内 callee RETURN 会经 doReturn → 移结果到 caller's
+// R(retA..) + 弹 callee 帧(ciDepth--)。返回 nil 时 caller 帧已被 callee
+// 完成 + ciDepth = caller 自身深度(不包括 callee)。
+//
+// **重要**:executeFrom 已经替我们完成了 popCallInfo,我们**不需要**额外调
+// popCallInfo。但 mmap 段会再执行 PopVoid0ArgSkeleton(emit 字节级 ciDepth--),
+// 那时已经被 callee RETURN doReturn 减过一次了,会 double-decrement!
+//
+// **解决**:helper 在 executeFrom 返回前**让 ciDepth 仅在 callee 帧弹后等于
+// caller depth + 0**(callee 已 RETURN 自动 popCallInfo)。而 PopVoid0Arg 段
+// emit 假设的是「helper 完成后 ciDepth 仍是 caller depth + 1」。两者矛盾。
+//
+// **简化**:helper 完成后,**手动 ciDepth++ 抵消 mmap 段后续 PopVoid0Arg 的
+// dec**。即 helper 结束时 ciDepth = caller_depth + 1(虚拟 callee 帧仍占位),
+// PopVoid0Arg 段 ciDepth-- 后变 caller_depth,正确。
+//
+// 4. nCcalls--
+// 5. 返 0=OK / 1=ERR(err 已 raiseGibbous 置 pendingErr)
+//
+// **当前 Spike 1 阶段 archSupportsFrameInline=false 屏蔽真触发**,但本函数
+// 真实装就位:commit-5f 翻闸门 + analyzeSelfCallSpecForm 设 useFrameInline
+// 后启用,无需重写。
 func (st *State) ExecuteCalleeFromInlineFrame(base, retA int32) int32 {
-	_ = base
-	_ = retA
-	// **未实装占位**:Step C-2 真实装时去掉 panic,加 readCISegInto + executeFrom
-	// + popCallInfo 逻辑。当前 archSupportsFrameInline=false 屏蔽真调用,本 panic
-	// 是工程基础锚点(调用站点暴露 = 真接入未启用 / Compile bug)。
-	panic("crescent.State.ExecuteCalleeFromInlineFrame: not implemented (Spike 1 Step C-2 占位)")
+	_ = base // base 参数为 P3 PW10 对位 + future 多 callee 路径预留(不读 base 槽寻址)
+	_ = retA // retA 同款预留(callee 返值落 R(retA..)由 callee RETURN doReturn 处理)
+	th := st.runningThread
+	// 1. mmap 段已 ciDepth++ 并写 CallInfo[ciDepth-1] 5 word,th.cur 仍是
+	//    caller 视角(冷字段未刷)。先把 caller 视角的 th.cur 刷回段(否则
+	//    callee RETURN 弹帧后 readCISegInto 重载 caller 时取的是过时数据)。
+	if th.ciDepth >= 2 {
+		// caller 在 ciDepth-2 帧(callee 在 ciDepth-1)
+		th.writeCISeg(th.ciDepth-2, &th.cur)
+	}
+	// 2. 重载 callee 帧热镜像:th.cur = 段第 ciDepth-1 帧(mmap 段刚写好)
+	th.readCISegInto(th.ciDepth-1, &th.cur)
+	// 3. C stack 限深(callee 是 Go 端同步驱动,占用真 Go stack)
+	if st.nCcalls >= maxCCallDepth {
+		return st.raiseGibbous(errf("C stack overflow"))
+	}
+	st.nCcalls++
+	// 4. 同步驱动 callee Lua 体到 RETURN(内嵌 popCallInfo 弹 callee 帧)
+	entryDepth := th.ciDepth - 1
+	err := st.executeFrom(th, entryDepth)
+	st.nCcalls--
+	if err != nil {
+		return st.raiseGibbous(err)
+	}
+	// 5. executeFrom 已 popCallInfo(callee RETURN doReturn 内做),ciDepth 已
+	//    --。但 mmap 段后续 PopVoid0Arg 会再 dec —— 我们 helper 出口需保持
+	//    callee 视角 ciDepth = caller_depth + 1,让 PopVoid0Arg dec 到正确
+	//    caller_depth。
+	//
+	//    手动 ciDepth++ 抵消(并把 caller 帧重新 writeCISeg 以保持镜像同步)。
+	//    *等等*:executeFrom 弹 callee 帧后,ciDepth = caller_depth,th.cur =
+	//    caller 视角(自动 readCISegInto)。我们要把 ciDepth 设回 caller_depth+1
+	//    + th.cur 改回 callee 视角(因 PopVoid0Arg 准备 dec)。
+	//
+	//    但 PopVoid0Arg 段仅 dec ciDepth 镜像字 + ret,不改 th.cur。所以最
+	//    简单做法:**让 mmap 段后续不再 dec ciDepth**——也即 helper 结束后
+	//    ciDepth 是 caller_depth,PopVoid0Arg dec 后变 caller_depth - 1,错。
+	//
+	//    **正确做法**:helper 出口 manually set ciDepth = caller_depth + 1
+	//    (虚拟 callee 占位),让 mmap PopVoid0Arg dec 到 caller_depth。但
+	//    th.cur 已是 caller 视角,与 ciDepth 不一致——这正是 syncCurFromSeg
+	//    Stage 1b/2 处理的不一致场景。
+	//
+	//    简化策略(Spike 1):helper 出口 ciDepth++ + writeCISeg(ciDepth-1,
+	//    &th.cur) 让段镜像保持一致(th.cur 是 caller 视角写到 callee 槽位 —
+	//    会被覆盖,但 PopVoid0Arg 不 readCISegInto,只 dec ciDepth 字)。
+	//    PopVoid0Arg dec ciDepth 后 = caller_depth,正确。
+	//
+	//    再下次回 Go 控制流时(p4Code.Run 返回 + 进入 enterGibbous post-return
+	//    + 后续 caller opcode 执行),syncCurFromSeg 经 ciDepth 字一致性检查,
+	//    th.ciDepth 与字一致(都是 caller_depth),不重载 th.cur,行为正确。
+	th.setCIDepth(th.ciDepth + 1)
+	return 0
 }
