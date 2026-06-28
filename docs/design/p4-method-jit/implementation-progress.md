@@ -1894,6 +1894,43 @@ func dispatchInlineHelper(jitCtx *JITContext) uintptr {
 
 ---
 
+#### 9.20.12 Spike 1/2/3/4 全套真接入打通(2026-06-28 commit-5p/5q/5r 完整里程碑)
+
+承 §9.20.11 Spike 1 真接入打通基础:**Spike 2/3/4 全套真接入完整端到端 amd64 打通**(单日内交付),`SpecFrameInlineRunHits` prove-the-path 命中实证。
+
+**实装顺序**(承 §9.20.3 Spike 路线):
+
+| Spike | 形态 | commit | 实装位置 | e2e 实证 |
+|---|---|---|---|---|
+| 1 | 0 参 setter | commit-5m | nargs=1 + nresults=0 | TestPJ5_FrameInline_E2E_GatingOpen_HitsOne: RunHits=49 |
+| 2 | N 参 fixed args(0..7) | commit-5p | helper 接 callArgCount;nargs=1+callArgCount | TestPJ5_FrameInline_E2E_Spike2_3KArg: sum=600, RunHits=99 |
+| 3 | vararg callee | commit-5r | **自动兼容 Spike 2**(enterLuaFrame 已处理 vararg 三步重排) | TestPJ5_FrameInline_E2E_Spike3_Vararg: sum=600, RunHits=99 |
+| 4 | 多返值多形态(callC=1..16) | commit-5q | helper 接 nresults;callC-1 算 | TestPJ5_FrameInline_E2E_Spike4_Getter: s=4200, RunHits=99 |
+
+**关键技术决策**(commit-5p/5q/5r 固化):
+- helper API 三参数完整:`(base, callA, callArgCount, nresults)`(commit-5l/5p/5q 渐进扩)
+- Run 端 dispatcher 算 nresults = int32(c.callC) - 1
+- analyzeSelfCallSpecForm 守门扩 callArgCount<=7
+- vararg 形态:enterLuaFrame 内部自动处理(NumParams<nargs 时 nVarargs=nargs-NumParams,栈下区重排)
+
+**Spike 1/2/3/4 全套验收数据**(amd64,commit-5r 后):
+- ✅ make test-p4 全过 21 binary
+- ✅ difftest 全过(byte-equal P1 + crescent + p4-jit 三方)
+- ✅ TestPJ5_FrameInline_E2E_Spike2_3KArg:RunHits=99(3 K 参)
+- ✅ TestPJ5_FrameInline_E2E_Spike3_Vararg:RunHits=99(vararg 形态)
+- ✅ TestPJ5_FrameInline_E2E_Spike4_Getter:RunHits=99(1 返 getter)
+- ✅ 所有 PJ5 SELF e2e + spec template e2e 全过(零回归)
+
+**剩余真接入工程**:
+- **真 zero-cross 优化**:让 callee 也 P4 升层时直接调 callee 的 code.Run,
+  skipping enterLuaFrame + executeFrom(消除当前 helper 内 enterLuaFrame round-trip,
+  实现简单 setter 反超 host 路径性能)— 独立 milestone
+- arm64 物理 runner CI(PJ8)
+- bit50 协议拍板(用户决策)
+- P3 退役决议(PJ10 验收时)
+
+---
+
 
 ## 10. 后续维护协议
 
