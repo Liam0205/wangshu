@@ -1817,3 +1817,36 @@ return count`
 	t.Logf("SpecFrameInlineHits=%d / SpecFrameInlineRunHits=%d",
 		jit.SpecFrameInlineHits(), jit.SpecFrameInlineRunHits())
 }
+
+// TestPJ5_FrameInline_E2E_Spike3_Vararg 验 Spike 3 vararg callee 形态
+// useFrameInline 真接入(callee 接 self + vararg `...`)。
+// 形态:`function(self, ...) local a,b,c=...; sum = sum + a + b + c end`,
+// callee.IsVararg=true。
+func TestPJ5_FrameInline_E2E_Spike3_Vararg(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local sum = 0
+local o = { m = function(self, ...) local a, b, c = ...; sum = sum + a + b + c end }
+local function caller(t) t:m(1, 2, 3) end
+for i = 1, 100 do caller(o) end
+return sum`
+	st, mainCl := loadFnP4(t, src)
+	if _, err := st.Call(value.GCRefOf(mainCl), nil, 1); err != nil {
+		t.Fatalf("warmup: %v", err)
+	}
+	st.bridge.SetForceAllPromote(true)
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("force-all run: %v", err)
+	}
+	if got := value.AsNumber(value.Value(rets[0])); got != 100*6 {
+		t.Errorf("rets = %v, want %d (byte-equal P1: vararg 100 次每次 1+2+3=6)",
+			got, 100*6)
+	}
+	if archSupportsFrameInlineForTest() {
+		if jit.SpecFrameInlineRunHits() == 0 {
+			t.Errorf("SpecFrameInlineRunHits = 0,Spike 3 vararg useFrameInline 路径未真触达")
+		}
+	}
+	t.Logf("Spike 3 vararg: Hits=%d / RunHits=%d", jit.SpecFrameInlineHits(), jit.SpecFrameInlineRunHits())
+}
