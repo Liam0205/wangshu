@@ -5,6 +5,7 @@ package crescent
 import (
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 
 	jit "github.com/Liam0205/wangshu/internal/gibbous/jit"
@@ -1890,4 +1891,40 @@ return s`
 	} else {
 		t.Logf("⚠️ zero-cross 路径未触达(callee 未升 P4 或 P4 form 限制 — 回落 enterLuaFrame + executeFrom byte-equal 兜底)")
 	}
+}
+
+// TestPJ5_FrameInline_E2E_V18Race_ZeroCross 验 V18 -race 多 State 并发安全
+// (SELF spec template + useFrameInline + zero-cross 路径全链路)。
+// 8 个独立 State 并发跑 zero-cross 路径,go test -race 检测数据竞争。
+func TestPJ5_FrameInline_E2E_V18Race_ZeroCross(t *testing.T) {
+	const N = 8
+	var wg sync.WaitGroup
+	wg.Add(N)
+	for k := 0; k < N; k++ {
+		go func() {
+			defer wg.Done()
+			jit.ResetSpecHits()
+			src := `
+local o = { x = 42, m = function(self) return self.x end }
+local function caller(t) local r = t:m(); return r end
+local s = 0
+for i = 1, 50 do s = s + caller(o) end
+return s`
+			st, mainCl := loadFnP4(t, src)
+			if _, err := st.Call(value.GCRefOf(mainCl), nil, 1); err != nil {
+				t.Errorf("warmup: %v", err)
+				return
+			}
+			st.bridge.SetForceAllPromote(true)
+			rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+			if err != nil {
+				t.Errorf("force-all run: %v", err)
+				return
+			}
+			if got := value.AsNumber(value.Value(rets[0])); got != 50*42 {
+				t.Errorf("goroutine %d: rets = %v, want %d", k, got, 50*42)
+			}
+		}()
+	}
+	wg.Wait()
 }
