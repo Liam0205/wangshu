@@ -101,7 +101,24 @@ TEXT ·callJITSpec(SB),NOSPLIT,$80-32
 	// 间接调用 mmap 段
 	BL	(R8)
 
-	// 段返回:R0 是返回值。手动恢复 X19-X27(LR/FP 由 epilogue 恢复)
+	// 段返回:R0 是返回值。
+	//
+	// **§9.20.9 trampoline exit-resume 协议 dispatcher CMP 分支**(commit-3c
+	// arm64 对位 amd64):mmap 段 emit ExitInlineHelper 协议时 R0=3,
+	// trampoline 检 R0 != 3 跳 skipDispatch 走常规弹栈出口;R0==3 时进
+	// dispatcher 路径(commit-5 真接入)。
+	//
+	// **当前 Spike 1 阶段 archSupportsFrameInline=false 屏蔽 ExitInlineHelper
+	// 真发出**,mmap 段 R0 只可能 0/1/2,CMP #3 必 != → B.NE 跳 skipDispatch
+	// → 常规弹栈。本批 CMP 分支是 dead-code 路径,占位 BRK #0 触发 SIGTRAP
+	// (当前 archSupportsFrameInline=false 不触达;若 R0==3 出现说明 emit bug)。
+	//
+	// 协议状态码 3 = ExitInlineHelper(jit.go 协议常量,asm 内硬编码)。
+	CMP	$3, R0
+	BNE	skipDispatchSpec
+	BRK	$0
+skipDispatchSpec:
+	// 手动恢复 X19-X27(LR/FP 由 epilogue 恢复)
 	LDP	0(RSP), (R19, R20)
 	LDP	16(RSP), (R21, R22)
 	LDP	32(RSP), (R23, R24)
