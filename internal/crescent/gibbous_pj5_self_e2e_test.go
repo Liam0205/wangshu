@@ -1635,3 +1635,48 @@ return sum`
 	t.Logf("SpecP4DeoptHits: %d → %d(增量 = %d,5 caller 独立 deopt 风暴 + 各自累积)",
 		deoptBefore, deoptAfter, growth)
 }
+
+// TestPJ5_FrameInline_E2E_GatingClosed_NoHits 验 PJ5 Option B Spike 1 帧建立
+// 内联(承 §9.20.9 trampoline exit-resume 协议)闸门 archSupportsFrameInline=
+// false 时 SpecFrameInlineHits 恒 0:
+//
+// **设计校验**(承 §9.20.4 Spike 1 守门 + commit-5e 整合验证):
+// 当前 archSupportsFrameInline=false 屏蔽 compileSpecSelfCall useFrameInline
+// 分支 emit BuildVoid0Arg + ExitHelperRequest + PopVoid0Arg。即使 SELF spec
+// template 命中(SpecSelfCallSpecHits > 0),useFrameInline 分支不被进入,
+// SpecFrameInlineHits 恒 0。
+//
+// **prove-the-path 强断言**:验证当前 Spike 1 整合实装(commit-1..5d)的闸门
+// 屏蔽生效——useFrameInline emit 路径 dead-code 不真触发,Run 端
+// runFrameInlineDispatcher 不被调到。
+//
+// 翻 archSupportsFrameInline=true 时(commit-5f 真接入),本 e2e 应改判 >0
+// 期望(届时 SpecFrameInlineHits 应等于 SpecSelfCallSpecHits)。
+func TestPJ5_FrameInline_E2E_GatingClosed_NoHits(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `
+local count = 0
+local o = { m = function(self) count = count + 1 end }
+local function caller(t) t:m() end
+for i = 1, 50 do caller(o) end
+return count`
+	st, mainCl := loadFnP4(t, src)
+	if _, err := st.Call(value.GCRefOf(mainCl), nil, 1); err != nil {
+		t.Fatalf("warmup: %v", err)
+	}
+	st.bridge.SetForceAllPromote(true)
+	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
+	if err != nil {
+		t.Fatalf("force-all run: %v", err)
+	}
+	if got := value.AsNumber(value.Value(rets[0])); got != 50 {
+		t.Errorf("rets = %v, want 50", got)
+	}
+
+	// 闸门屏蔽下 SpecFrameInlineHits 恒 0(useFrameInline 分支 dead-code)
+	if h := jit.SpecFrameInlineHits(); h != 0 {
+		t.Errorf("SpecFrameInlineHits = %d, want 0(archSupportsFrameInline=false 屏蔽)", h)
+	}
+	t.Logf("SpecFrameInlineHits=%d (闸门屏蔽,期望 0;commit-5f 翻闸门后改 >0)",
+		jit.SpecFrameInlineHits())
+}
