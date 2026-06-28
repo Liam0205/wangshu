@@ -980,9 +980,12 @@ func (st *State) ExecuteCalleeFromInlineFrame(base, retA int32) int32 {
 	if err != nil {
 		return st.raiseGibbous(err)
 	}
-	// 8. 出口 ciDepth++ 平衡 PopVoid0Arg(承 commit-5d 同款解释):
-	//    executeFrom 弹 callee 帧后 ciDepth = caller_depth;mmap 段 PopVoid0Arg
-	//    会再 dec → 手动 ciDepth++ 抵消,让 PopVoid0Arg dec 到正确 caller_depth。
+	// 8. 出口 ciDepth++ 平衡 mmap 段 PopVoid0Arg:executeFrom 弹 callee 帧后
+	//    ciDepth = caller_depth;mmap 段 PopVoid0Arg(EmitFrameInlineCIDepthDec)
+	//    会再 dec → 出口手动 ciDepth++ 抵消,让 PopVoid0Arg dec 到正确
+	//    caller_depth。无需 writeCISeg(&th.cur):PopVoid0Arg 仅 dec 镜像字 +
+	//    ret,不 readCISegInto 重载,故 ciDepth ↔ th.cur 一过渡性不一致由
+	//    p4Code.Run 出口 + syncCurFromSeg 在下次 Go 控制流处恢复。
 	th.setCIDepth(th.ciDepth + 1)
 	return 0
 }
