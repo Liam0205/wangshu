@@ -1854,6 +1854,46 @@ func dispatchInlineHelper(jitCtx *JITContext) uintptr {
 
 ---
 
+#### 9.20.11 Spike 1 真接入完整端到端打通(2026-06-28 commit-5l/5m 里程碑)
+
+承 §9.20.10 commit-5a-5h 半路真接入 + commit-5i-5k PR comments 处理 + commit-5l 工程基础大批就位 + commit-5m ciDepth Go vs mirror 同步 bug 修:**Spike 1 真接入完整端到端 amd64 打通**,RunHits prove-the-path 命中实证(SpecFrameInlineRunHits=49/199 for 50/200 iters)。
+
+**commit-5l/5m 关键 bug 修补**(commit-1-5h 自检后发现的 6 个 bug):
+
+| Bug | Commit | 表现 | 修补 |
+|---|---|---|---|
+| EmitSelfNodeHit 成功路径 ret 段尾 | commit-5l | useFrameInline 路径 fall-through 失败,Run 期不触达 dispatcher | 加 NoRet 变体(成功 fall-through 替代 ret) |
+| ciSegBase 镜像字存 word offset 不是绝对地址 | commit-5l | LoadCISlotAddr 算 rax 不能 deref → SIGSEGV addr=0x3c8 | 加 LoadCISlotAddrAbsolute 变体(追加 r14=arenaBase + add rax,r14) |
+| BuildVoid0Arg word offset 不可 deref | commit-5l | 同上 | 加 BuildVoid0ArgSkeletonAbsolute 变体 |
+| PopVoid0Arg 缺 ret | commit-5l | 段尾 fall-through 到未映射区 → SIGSEGV | 加 xor eax,eax + ret(13 byte) |
+| helper 签名 retA 错位 funcIdx | commit-5l | funcIdx=R(retA)=R(0)=caller's t (非 method) → enterLuaFrame "attempt to call table" | 改 callA 签名,funcIdx = th.cur.base + callA |
+| **ciDepth Go field vs mirror 字镜像不同步**(关键!) | commit-5m | mmap 段 BuildVoid0Arg::CIDepthInc 仅 inc mirror,helper 入口 setCIDepth(th.ciDepth-1) 基于 stale Go field → CI seg index 错位 → callee 帧建错位 → 弹帧重载 caller 时取错的 cached data → th.cur.base 错位 → DoReturn dst 写到 main R(0) (count 槽) → count 被覆写为 method closure GCRef (Tag=Function NaN-box) | helper 入口先从 mirror 同步 Go field:`th.ciDepth = int(uint32(th.arena.WordAt(th.ciDepthWordRef)))` |
+
+**性能特征**(amd64 实测,commit-5m 真接入后):
+- `PJ5SelfCallSpec`(0 参 setter,简单 method 体):P4=10238 ns/op,Cresc=8083 ns/op,**1.27x 慢**(commit-5h 是 1.13x;真接入 helper 内 enterLuaFrame+executeFrom 等价 host.CallBaseline,无 round-trip 节省,且多 BuildVoid0Arg/ExitHelperRequest/PopVoid0Arg + 二次 callJITSpec round-trip 增 ~2us)
+- `PJ5SelfCallHeavyBody`(0 参 + FORLOOP heavy body):P4=88868 ns/op,Cresc=92595 ns/op,**0.96x 快(4%)**(method 体加速主导,真接入不破坏 heavy body 收益)
+- **Spike 1 简化策略已完成正确性目标,但简单 method 体性能反走低**(因 mmap 段额外段开销 > host 路径节省);真 zero-cross 路径(Spike 2-4)需让 callee 也 P4 升层,helper 内直接调 callee 的 P4 code.Run(skipping enterLuaFrame),消除 enterLuaFrame+executeFrom 开销
+
+**Spike 1 真接入完整路径验收**(amd64,commit-5m 实证):
+- ✅ make test-p4 全过 21 binary
+- ✅ difftest 全过(byte-equal P1 + crescent + p4-jit 三方)
+- ✅ SpecFrameInlineHits ≥ 1(Compile 命中,prove-the-path)
+- ✅ SpecFrameInlineRunHits ≥ 1(Run 期真触达,prove-the-path)
+- ✅ TestPJ5_FrameInline_E2E_GatingOpen_HitsOne:count=50 + RunHits=49(50 iters)
+- ✅ TestPJ5_FrameInline_E2E_RunHit:count=200 + RunHits=199(200 iters)
+- ✅ TestPJ5_FrameInline_E2E_SelfUsage:val=92 (42 + 50 callee self.val++ 真跑)
+- ✅ 所有 PJ5 SELF e2e + spec template e2e 全过(行为零变化基线维持)
+
+**剩 Spike 2-4 工程**(承 §9.20.10 表 + commit-5m bench 数据):
+- Spike 2:N 参 fixed args 装载 inline(替代 helper 端取参,callArgCount=0 → 0..7 守门扩)
+- Spike 3:vararg 支持(callee IsVararg=true 路径完整)
+- Spike 4:多返值多形态(N>=2 返 + multi-ret + 可变 nresults)
+- **真 zero-cross 优化**:让 callee 也 P4 升层时直接调 callee 的 code.Run,skipping enterLuaFrame + executeFrom(消除当前 helper 内 enterLuaFrame round-trip,实现简单 setter 反超 host 路径性能)
+
+**arm64 archSupportsFrameInline 仍 false**(留 PJ8 物理 runner 端到端验证;arm64 端字节级 emit 模板全套已就位但端到端验证留物理 runner CI 接入)。
+
+---
+
 
 ## 10. 后续维护协议
 
