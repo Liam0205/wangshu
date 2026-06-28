@@ -700,6 +700,23 @@ local function tick() o:m() end
 for i = 1, 100 do tick() end
 tick()
 return count`},
+	// —— commit-5u zero-cross 优化形态(callee 也 P4 升层时跳 executeFrom)——
+	// callee 用 PJ4 GETTABLE NodeHit form,P4 支持 + force-all 升 P4 后 helper
+	// 走 enterGibbous 直接 zero-cross。byte-equal P1 vs crescent vs p4 三方。
+	{"p4_self_spec_zerocross_getter", `
+local o = { x = 42, m = function(self) return self.x end }
+local function caller(t) local r = t:m(); return r end
+local sum = 0
+for i = 1, 100 do sum = sum + caller(o) end
+sum = sum + caller(o)
+return sum`},
+	{"p4_self_spec_zerocross_setter", `
+local count = 0
+local o = { m = function(self) count = count + 1 end }
+local function caller(t) t:m() end
+for i = 1, 100 do caller(o) end
+caller(o)
+return count`},
 	{"p4_self_spec_tailcall_1regarg", `
 local o = { m = function(self, x) return x * 2 end }
 local function caller(t, v) return t:m(v) end
