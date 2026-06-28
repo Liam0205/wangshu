@@ -1638,15 +1638,14 @@ return sum`
 }
 
 // TestPJ5_FrameInline_E2E_GatingOpen_HitsOne 验 PJ5 Option B Spike 1 帧建立
-// 内联当前闸门状态(承 commit-5l 工程基础就位 + 真接入未完成):
+// 内联(承 commit-5m ciDepth Go vs mirror 同步 bug 修):amd64
+// archSupportsFrameInline=true + analyzeSelfCallSpecForm useFrameInline 守门
+// 启用 + 全端到端 byte-equal P1。
 //
-// **commit-5l 状态**:archSupportsFrameInline=true(amd64) + emit 路径完整
-// 就位(SELF NodeHit NoRet + BuildVoid0Arg Absolute + PopVoid0Arg with ret)
-// + Run-end dispatcher + ExecuteCalleeFromInlineFrame(funcIdx=base+callA),
-// 但 analyzeSelfCallSpecForm 暂撤 useFrameInline 守门启用(NaN bug 待诊断),
-// 故 SpecFrameInlineHits=0, SpecFrameInlineRunHits=0。
-//
-// **真接入完整端到端**留 commit-5m 工程:诊断 count upvalue NaN 根因。
+// **prove-the-path 强断言**:
+//   - 程序输出正确(byte-equal P1):count=50
+//   - amd64:SpecFrameInlineHits >= 1(Compile) + SpecFrameInlineRunHits >= 1(Run)
+//   - arm64:archSupportsFrameInline=false 闸门关闭,程序正确性断言仍跑
 func TestPJ5_FrameInline_E2E_GatingOpen_HitsOne(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -1665,10 +1664,19 @@ return count`
 		t.Fatalf("force-all run: %v", err)
 	}
 	if got := value.AsNumber(value.Value(rets[0])); got != 50 {
-		t.Errorf("rets = %v, want 50(byte-equal P1)", got)
+		t.Errorf("rets = %v, want 50(byte-equal P1:Run 期 dispatcher + helper 真接入)", got)
 	}
-	// commit-5l 暂撤 useFrameInline 守门启用,Hits=0 baseline
-	t.Logf("SpecFrameInlineHits=%d / RunHits=%d (commit-5l 工程基础就位 + 真接入留 commit-5m)",
+
+	// **arm64 阻塞修复**(承 PR comment d8fc8ba):仅 amd64 强断言 Hits/RunHits
+	if archSupportsFrameInlineForTest() {
+		if h := jit.SpecFrameInlineHits(); h == 0 {
+			t.Errorf("SpecFrameInlineHits = 0, want >= 1(amd64 闸门 open)")
+		}
+		if h := jit.SpecFrameInlineRunHits(); h == 0 {
+			t.Errorf("SpecFrameInlineRunHits = 0, want >= 1(Run 期真触达)")
+		}
+	}
+	t.Logf("SpecFrameInlineHits=%d / RunHits=%d (Spike 1 真接入完整端到端实证)",
 		jit.SpecFrameInlineHits(), jit.SpecFrameInlineRunHits())
 }
 
@@ -1711,9 +1719,9 @@ return t.val`
 		jit.SpecFrameInlineHits(), jit.SpecFrameInlineRunHits())
 }
 
-// TestPJ5_FrameInline_E2E_RunHit 验 Run 期真触达 runFrameInlineDispatcher。
-// **commit-5l 暂撤 useFrameInline 守门启用**:Hits=0, RunHits=0 baseline,
-// 真接入 NaN bug 待诊断(commit-5m)。
+// TestPJ5_FrameInline_E2E_RunHit 验 Run 期真触达 runFrameInlineDispatcher
+// (commit-5m ciDepth Go vs mirror 同步 bug 修后 prove-the-path):200 iter
+// 全 useFrameInline 路径,SpecFrameInlineRunHits 应 = 200(amd64)或 0(arm64)。
 func TestPJ5_FrameInline_E2E_RunHit(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -1734,6 +1742,11 @@ return count`
 	if got := value.AsNumber(value.Value(rets[0])); got != 200 {
 		t.Errorf("rets = %v, want 200(byte-equal P1)", got)
 	}
-	t.Logf("SpecFrameInlineHits=%d / SpecFrameInlineRunHits=%d (commit-5l 闸门半开 baseline)",
+	if archSupportsFrameInlineForTest() {
+		if jit.SpecFrameInlineRunHits() == 0 {
+			t.Errorf("SpecFrameInlineRunHits = 0,Run 期未真触达 useFrameInline 路径")
+		}
+	}
+	t.Logf("SpecFrameInlineHits=%d / SpecFrameInlineRunHits=%d",
 		jit.SpecFrameInlineHits(), jit.SpecFrameInlineRunHits())
 }

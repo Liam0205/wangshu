@@ -943,6 +943,13 @@ func (st *State) TailCall(base, pc, a, b, c int32) int32 {
 func (st *State) ExecuteCalleeFromInlineFrame(base, callA int32) int32 {
 	_ = base // 实参 base 是 jitContext.valueStackBase 算出的 R0 字节偏移,Spike 1 helper 不读
 	th := st.runningThread
+	// **commit-5m 修 ciDepth Go vs mirror 不同步 bug**:mmap 段 BuildVoid0Arg
+	// CIDepthInc 仅 inc mirror 字(`inc qword ptr [rax]`),未更新 Go field
+	// `th.ciDepth`。本 helper 入口先从 mirror 同步 Go field,后续 setCIDepth /
+	// enterLuaFrame / popCallInfo 才能基于正确深度推算 CI seg index。
+	if th.ciDepthWordRef != 0 {
+		th.ciDepth = int(uint32(th.arena.WordAt(th.ciDepthWordRef)))
+	}
 	// 1. 反查 callee Proto:read CI[ciDepth-1].word3 → closure GCRef
 	depth := th.ciDepth - 1
 	var calleeCI callInfo

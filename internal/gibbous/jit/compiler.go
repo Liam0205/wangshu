@@ -2585,28 +2585,11 @@ func analyzeSelfCallSpecForm(proto *bytecode.Proto, feedback *bridge.TypeFeedbac
 	info.icStableShape = pf.StableShape
 	info.icStableIndex = pf.StableIndex
 	info.icStableKey = stableKey
-	// PJ5 Option B Spike 1 帧建立内联(承 §9.20.4 + §9.20.9 commit-5l 工程基础):
-	// 守门条件(Spike 1 简化形态):
-	//   - archSupportsFrameInline()=true(amd64 commit-5h 翻 true)
-	//   - 0 参 setter 形态(callArgCount=0 + isCallVoid + retB=1)
-	//   - 非 TAILCALL
-	//
-	// **commit-5l 工程基础就位 + 真接入未完成**(承自检):
-	//   - ✅ SELF NodeHit NoRet 变体(fall-through 替代 ret)
-	//   - ✅ BuildVoid0Arg Absolute 变体(rax = 绝对地址,修 word offset bug)
-	//   - ✅ PopVoid0Arg 段尾 ret + xor eax,eax(修 missing ret + RAX=0)
-	//   - ✅ ExecuteCalleeFromInlineFrame callA 签名 + funcIdx = th.cur.base+callA
-	//   - ✅ runFrameInlineDispatcher 加 host.DoReturn 弹 caller 帧
-	//   - ❌ count upvalue NaN 根因待诊断(callee runs but caller frame state
-	//     after RETURN doReturn is corrupted somewhere)
-	//
-	// **commit-5l 暂撤 useFrameInline 守门启用**(承 byte-equal P1 纪律):
-	// 工程基础就位但端到端 NaN bug 待诊断,先撤 useFrameInline=true 守门,等
-	// commit-5m 真接入完成后启用。
-	_ = archSupportsFrameInline()
-	_ = info.callArgCount
-	_ = info.isCallVoid
-	_ = info.isTailCall
+	// PJ5 Option B Spike 1 帧建立内联(commit-5m 重启用):
+	if archSupportsFrameInline() && info.callArgCount == 0 &&
+		info.isCallVoid && !info.isTailCall {
+		info.useFrameInline = true
+	}
 	return info, true
 }
 
