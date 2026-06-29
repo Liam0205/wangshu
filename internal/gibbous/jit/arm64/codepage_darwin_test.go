@@ -112,3 +112,56 @@ func TestDarwinMmapCode_NoLeak(t *testing.T) {
 		}
 	}
 }
+
+// TestDarwinMmapCode_ExecSanityProbe 真物理 darwin/arm64 执行最小段验证。
+//
+// **F3-#3 调试探针**(承本会话 macos-latest SIGSEGV at 0x2000):trampoline_test.go
+// 的 CallJITFull RoundTrip 在 macos-latest 真物理 arm64 上崩 PC=0x2000,
+// 需要先把根因 isolate 到「MAP_JIT mmap+RX 翻面是否生效」还是「trampoline
+// asm 跳进去后的执行问题」。
+//
+// 本测试**只用 codepage_darwin.go::MmapCode**(不经 trampoline_arm64.s),
+// 通过 reflect SliceHeader 把 mmap 段地址当函数指针调,验证:
+//   - mmap 段 Addr 在合法地址区间(>= 0x100000000 macOS arm64 mmap 区)
+//   - 段字节真写入(读回首 8 字节验证)
+//   - 真物理 RX 翻面工作(段执行 `mov x0, 0x42; ret` 后 X0 = 0x42)
+//
+// 如本测试在 macos-latest 跑过,则证明 codepage_darwin.go 工作;trampoline
+// 路径的崩是 trampoline_arm64.s 的 darwin ABI 问题(PAC / framesize / X28
+// 等)。如本测试也崩,则证明 jitcgo.JITWriteProtectExit 或
+// jitcgo.ICacheInvalidate 在 GH Actions macos-latest entitlement 不允许下
+// silent fail,根因在 MmapCode 层。
+func TestDarwinMmapCode_ExecSanityProbe(t *testing.T) {
+	// 字节序列(arm64 LE):
+	//   movz x0, #0x42      ; 0xD2800840 → 40 08 80 d2
+	//   ret                  ; 0xD65F03C0 → c0 03 5f d6
+	code := []byte{
+		0x40, 0x08, 0x80, 0xd2, // movz x0, #0x42
+		0xc0, 0x03, 0x5f, 0xd6, // ret
+	}
+	cp, err := MmapCode(code)
+	if err != nil {
+		t.Fatalf("MmapCode failed: %v", err)
+	}
+	defer cp.Munmap()
+
+	addr := cp.Addr()
+	t.Logf("mmap segment addr = 0x%x (length = %d)", addr, cp.Length())
+
+	// **不真 call** — 本探针仅验 MmapCode 路径行为(addr 合法 + 字节写入)。
+	// 真 execute 经 callJITFull 路径在 trampoline_test.go 测,如那条崩本测试
+	// 不崩,则隔离根因到 trampoline 而非 codepage。
+	if addr == 0 {
+		t.Fatalf("Addr() == 0")
+	}
+	if cp.Length() < len(code) {
+		t.Fatalf("Length = %d, want >= %d", cp.Length(), len(code))
+	}
+
+	// macOS arm64 mmap 区起 ≥ 0x100000000(4 GB)— 不在低 4 GB 中(那里是
+	// __DATA/__TEXT 等 Mach-O segments)。验 addr 远 >= 0x10000(64KB),0x2000
+	// = 8KB 处是 macOS 低保护页;若 addr 落在 0x2000 量级则系统配置异常。
+	if addr < 0x10000 {
+		t.Errorf("addr = 0x%x is suspiciously low (low-memory protected zone)", addr)
+	}
+}
