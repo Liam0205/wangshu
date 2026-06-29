@@ -131,6 +131,16 @@ jobs:
         with:
           go-version-file: go.mod
       - run: make fuzz-${{ matrix.variant }}
+      # **F3-#3c PR #28**:fuzz fail 时上传 testdata/fuzz/ 失败 input
+      # (go test 默认写到这里,minimizer 完成后或 hang 时都会落盘),让后续
+      # 复现+修可以拿到具体输入。retention-days 30 与 difftest 同款。
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-failure-${{ matrix.variant }}-${{ matrix.os }}
+          path: testdata/fuzz/
+          if-no-files-found: ignore
+          retention-days: 30
 
   conformance:
     # M5/M9 后启用实际用例;占位 job 保持绿(test/conformance 空包时 go test 直接过)
