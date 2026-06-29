@@ -10,11 +10,28 @@
 //     手动 SUB SP 会让 runtime stack walker 错算 caller LR 位置 → sigpanic
 //     时 unwind 失败「unexpected return pc」(承上批 1c74df9 失败教训)。
 //
-// 故本文件用 framesize=$80(80 = 9 callee-saved 寄存器 padded 到 16-byte)
-// 让 Go runtime 自动管 prologue/epilogue + LR 保存,我们仅手存 X19-X27
-// 进 frame 内。
+// 故本文件用 framesize=$80(让 Go runtime 自动管 prologue/epilogue + LR/FP
+// 保存),我们仅手存 X19-X27 进 frame 内。
+//
+// **Go arm64 auto-prologue 实际 frame 布局**(F3-#3b 真物理 M1 实证,LR
+// slot 位置承 PR#27 SIGSEGV 调试):Go 编译器对 `TEXT name,NOSPLIT,$N-arglen`
+// 在 arm64 上生成的 prologue 等价于:
+//
+//   STR.W X30, [SP, #-(N+16)]!   // SP -= N+16,LR 存 [SP+0]
+//   STUR  X29, [SP, #-8]         // FP 存 [SP-8](user space 外、SP 下方)
+//   SUB   $8, SP, X29            // X29 = SP - 8
+//   <user code 见此处 SP 即 user space 起点,大小 N 字节>
+//
+// 所以 user space `[SP+0 .. SP+N)` 的**首 8 字节 [SP+0..8) 被 Go 写为 LR**,
+// epilogue `LDR.P X30, [SP], #(N+16)` 从同一 slot 读 LR + 弹栈。**user 不可
+// 写入 [SP+0..8),否则 LR 被覆盖、段 RET 后取错值 → SIGSEGV/SIGBUS**。
+//
+// **frame 布局**(framesize=$80):
+//   [SP+ 0 .. SP+ 8) — Go auto-prologue 写入 LR(user 必须避让)
+//   [SP+ 8 .. SP+72) — user 手存 X19-X26(8 寄存器,STP×4)
+//   [SP+72 .. SP+80) — user 手存 X27(MOVD,正好 80 字节充满,无 padding)
 
-//go:build wangshu_p4 && linux && arm64
+//go:build wangshu_p4 && arm64 && (linux || (darwin && cgo))
 
 #include "textflag.h"
 
@@ -27,23 +44,23 @@
 //   ret        +16(FP)  uint64
 //
 // 实现:
-//   - Go arm64 auto-prologue 自动 STP X29 X30 + SUB SP 96(80 framesize +
-//     16 LR/FP 区);函数体起 SP 指向 user space 起点;
-//   - 我们手存 X19-X27(callee-saved 9 个;X28=G 不动)进 frame 内;
+//   - Go arm64 auto-prologue 自动 STR LR 进 [SP+0] + 弹 FP 协议管 SP 96;
+//   - 函数体起 SP 指向 user space 起点(80 字节);
+//   - 我们从 user offset 8 开始手存 X19-X27,**避让 [SP+0..8) LR slot**;
 //   - BL (R8) 跳进 mmap 段,X30 被 BL 改写;
 //   - 段 RET 弹回 BL 下一条;
-//   - 手动 LDP 恢复 X19-X27;
-//   - Go auto-epilogue 自动恢复 X29 X30 + ADD SP + RET。
+//   - 手动 LDP 恢复 X19-X27(从 user offset 8);
+//   - Go auto-epilogue 自动恢复 LR(从 [SP+0])+ FP + ADD SP + RET。
 
 TEXT ·callJITFull(SB),NOSPLIT,$80-24
-	// Go auto-prologue 已 STP X29 X30 + SUB SP 96。SP 现指向 user space
-	// 起点,我们用 frame[0..72] 存 X19-X27(9 寄存器,80 字节 16-byte 对齐
-	// 后实际 frame 含 8 字节 padding 在末尾)。
-	STP	(R19, R20), 0(RSP)
-	STP	(R21, R22), 16(RSP)
-	STP	(R23, R24), 32(RSP)
-	STP	(R25, R26), 48(RSP)
-	MOVD	R27, 64(RSP)
+	// Go auto-prologue 已 STR.W X30 [SP,#-96]! → LR 在 [SP+0],占 [SP+0..8)。
+	// user space 起 [SP+0],但 [SP+0..8) 是 LR slot,我们从 [SP+8) 起手存
+	// X19-X27(对位 80 字节 frame:8 LR + 9 寄存器 × 8B = 80,无 padding)。
+	STP	(R19, R20), 8(RSP)
+	STP	(R21, R22), 24(RSP)
+	STP	(R23, R24), 40(RSP)
+	STP	(R25, R26), 56(RSP)
+	MOVD	R27, 72(RSP)
 
 	// 装 R27 = jitContext(06 §4.2)
 	MOVD	jitCtxAddr+8(FP), R27
@@ -55,11 +72,11 @@ TEXT ·callJITFull(SB),NOSPLIT,$80-24
 	BL	(R8)
 
 	// 段返回:R0 已是返回值。手动恢复 X19-X27(LR/FP 由 epilogue 恢复)
-	LDP	0(RSP), (R19, R20)
-	LDP	16(RSP), (R21, R22)
-	LDP	32(RSP), (R23, R24)
-	LDP	48(RSP), (R25, R26)
-	MOVD	64(RSP), R27
+	LDP	8(RSP), (R19, R20)
+	LDP	24(RSP), (R21, R22)
+	LDP	40(RSP), (R23, R24)
+	LDP	56(RSP), (R25, R26)
+	MOVD	72(RSP), R27
 
 	// 写回返回值(此时 R0 仍是 mmap 段产生的 X0)
 	MOVD	R0, ret+16(FP)
@@ -80,15 +97,16 @@ TEXT ·callJITFull(SB),NOSPLIT,$80-24
 // 装好后段内可直接用。
 //
 // 与 callJITFull 同款 framesize=$80 + auto-prologue 管 LR/FP,callee-saved
-// X19-X27 手存 frame 内;X28=G 不动;X26/X27 由本函数在 STP 后装入。
+// X19-X27 手存 frame 内([SP+8..SP+80),避让 [SP+0..8) LR slot);X28=G
+// 不动;X26/X27 由本函数在 STP 后装入。
 TEXT ·callJITSpec(SB),NOSPLIT,$80-32
-	// Go auto-prologue 已 STP X29 X30 + SUB SP 96。
-	// frame[0..72] 存 X19-X27(对位 callJITFull)。
-	STP	(R19, R20), 0(RSP)
-	STP	(R21, R22), 16(RSP)
-	STP	(R23, R24), 32(RSP)
-	STP	(R25, R26), 48(RSP)
-	MOVD	R27, 64(RSP)
+	// frame 布局对位 callJITFull:[SP+0..8) Go LR slot / [SP+8..72) X19-X26 /
+	// [SP+72..80) X27。
+	STP	(R19, R20), 8(RSP)
+	STP	(R21, R22), 24(RSP)
+	STP	(R23, R24), 40(RSP)
+	STP	(R25, R26), 56(RSP)
+	MOVD	R27, 72(RSP)
 
 	// 装 R26 = vsBaseAddr + R27 = jitCtxAddr(承 06 §4.2)
 	// **顺序**:STP 已保存 R26/R27 原值,现可安全覆盖。
@@ -111,11 +129,11 @@ TEXT ·callJITSpec(SB),NOSPLIT,$80-32
 	// 后真触发 SIGTRAP)。
 	//
 	// 手动恢复 X19-X27(LR/FP 由 epilogue 恢复)
-	LDP	0(RSP), (R19, R20)
-	LDP	16(RSP), (R21, R22)
-	LDP	32(RSP), (R23, R24)
-	LDP	48(RSP), (R25, R26)
-	MOVD	64(RSP), R27
+	LDP	8(RSP), (R19, R20)
+	LDP	24(RSP), (R21, R22)
+	LDP	40(RSP), (R23, R24)
+	LDP	56(RSP), (R25, R26)
+	MOVD	72(RSP), R27
 
 	// 写回返回值
 	MOVD	R0, ret+24(FP)
