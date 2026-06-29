@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 # pre-commit:staged-only gofmt + golangci-lint 检查。engineering.md §2.1。
+#
+# **bash 3.2 兼容**(承 F3-#3c 修):macOS 默认 bash 是 3.2(Apple GPLv3
+# 政策不升级);避免 mapfile / declare -A 等 bash 4+ 语法,只用 bash 3.2
+# 通用语法,Linux bash 4+/5+ 兼容运行。
 set -euo pipefail
 
 # CI 环境短路
@@ -7,7 +11,11 @@ if [ -n "${CI:-}" ] || [ -n "${GITHUB_ACTIONS:-}" ]; then exit 0; fi
 # 工具缺失静默跳过(不绑架无 Go 环境的文档提交)
 command -v gofmt >/dev/null 2>&1 || exit 0
 
-mapfile -t staged < <(git diff --cached --name-only --diff-filter=ACM -- '*.go')
+# bash 3.2 兼容:while-read 循环填数组,替代 mapfile -t
+staged=()
+while IFS= read -r line; do
+    [ -n "$line" ] && staged+=("$line")
+done < <(git diff --cached --name-only --diff-filter=ACM -- '*.go')
 [ ${#staged[@]} -eq 0 ] && exit 0
 
 # 1) gofmt 格式检查
@@ -39,8 +47,9 @@ module_root() {
     echo "."  # 兜底:仓库根
 }
 
-# 收集 (module_root, 相对该根的包路径) 对,按 module_root 分组
-declare -A pkgs_by_root
+# bash 3.2 兼容:不用 declare -A 关联数组,改用「<root>\t<rel> 行流 + sort -u
+# 后按 root 分组」。先把 (root, rel) 对收集到 tab-separated 行数组里。
+pairs=()
 for f in "${staged[@]}"; do
     dir=$(dirname "$f")
     root=$(module_root "$dir")
@@ -52,24 +61,56 @@ for f in "${staged[@]}"; do
     else
         rel="./${dir#"$root"/}"
     fi
-    pkgs_by_root["$root"]+="$rel"$'\n'
+    pairs+=("$root"$'\t'"$rel")
 done
 
-for root in "${!pkgs_by_root[@]}"; do
-    mapfile -t rels < <(printf '%s' "${pkgs_by_root[$root]}" | sort -u | grep -v '^$')
-    [ ${#rels[@]} -eq 0 ] && continue
+# 按 root 排序去重,然后按 root 分组循环
+sorted=()
+while IFS= read -r line; do
+    [ -n "$line" ] && sorted+=("$line")
+done < <(printf '%s\n' "${pairs[@]}" | sort -u)
+
+# 按 root 分组:遇到新 root 时把上一组跑完
+current_root=""
+current_rels=()
+
+run_group() {
+    local root="$1"
+    shift
+    local rels=("$@")
+    [ ${#rels[@]} -eq 0 ] && return 0
     # 捕获输出:整包在非默认 build tag 下时(如 //go:build wangshu_p3),默认
     # lint 报「build constraints exclude all Go files」——这不是真 lint 错误
     # (该包只是不在默认 build),应放行。真 lint issue 仍失败。
-    out=$(cd "$root" && golangci-lint run "${rels[@]}" 2>&1) && continue
+    local out
+    out=$(cd "$root" && golangci-lint run "${rels[@]}" 2>&1) && return 0
     # 失败了:过滤掉「build constraints exclude all」误报行,看是否还有真错误
+    local real
     real=$(printf '%s\n' "$out" | grep -v "build constraints exclude all Go files" | grep -iE "level=error|\.go:[0-9]+:" || true)
     if [ -z "$real" ]; then
         # 仅 build-constraint 误报(包在别的 build tag 下)→ 放行
-        continue
+        return 0
     fi
     echo "$out"
     echo ""
     echo "✗ golangci-lint 未通过(module: $root)"
-    exit 1
+    return 1
+}
+
+for line in "${sorted[@]}"; do
+    root="${line%%$'\t'*}"
+    rel="${line#*$'\t'}"
+    if [ "$root" != "$current_root" ]; then
+        # 切换组:跑上一组(如有)
+        if [ -n "$current_root" ]; then
+            run_group "$current_root" "${current_rels[@]}" || exit 1
+        fi
+        current_root="$root"
+        current_rels=()
+    fi
+    current_rels+=("$rel")
 done
+# 跑最后一组
+if [ -n "$current_root" ]; then
+    run_group "$current_root" "${current_rels[@]}" || exit 1
+fi

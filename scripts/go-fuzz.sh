@@ -21,7 +21,10 @@ while IFS=: read -r file line decl; do
     pkg=$(dirname "$file")
     found=1
     echo "fuzz: $pkg :: $func ($fuzztime) tags=${tags:-default}"
-    go test "${tags_arg[@]}" "./$pkg" -run='^$' -fuzz="^${func}\$" -fuzztime="$fuzztime" -timeout=120s -parallel=4
+    # `"${arr[@]+"${arr[@]}"}"` 是 set -u 下「空数组安全展开」惯用法——macOS
+    # bash 3.2(Apple 不升级 GPLv3 包)在 set -u 下展开空数组 `${arr[@]}` 触发
+    # unbound variable 致命错;`${arr[@]+...}` 仅在数组已设时展开,空时跳过。
+    go test "${tags_arg[@]+"${tags_arg[@]}"}" "./$pkg" -run='^$' -fuzz="^${func}\$" -fuzztime="$fuzztime" -timeout=120s -parallel=4
     # --exclude-dir 排除:
     #   - benchmarks:独立子模块,自家 fuzz 目标已通过 benchmarks/ 单独路径覆盖
     #   - benchmarks/pineapple/.pineapple:pineapple 仓临时 clone 落点,属另一 module,
