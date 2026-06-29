@@ -14,7 +14,7 @@
 // 让 Go runtime 自动管 prologue/epilogue + LR 保存,我们仅手存 X19-X27
 // 进 frame 内。
 
-//go:build wangshu_p4 && linux && arm64
+//go:build wangshu_p4 && arm64 && (linux || (darwin && cgo))
 
 #include "textflag.h"
 
