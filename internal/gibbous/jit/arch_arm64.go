@@ -380,13 +380,6 @@ func archSupportsFrameInline() bool {
 // amd64 Absolute 版,真物理 darwin/arm64 macos-latest CI 实证修复 PJ5 SelfCall
 // SpecTemplate 段内 SIGSEGV)。
 //
-// archEmitFrameInlineBuildVoid0ArgSkeleton arm64 端代理 jitarm64 同款 helper
-// (172 字节 Absolute 版,承 §9.20 Option B Spike 1 + §9.20.9 commit-5l ciSegBase
-// 镜像字语义 bug 修)。Absolute 版 LoadCISlotAddr 内追加 `ldr x14, [x27+arenaBaseOff]
-// + add x0, x0, x14` 让 x0 是绝对地址,避免 word offset 不能 deref 的 bug(对位
-// amd64 Absolute 版,真物理 darwin/arm64 macos-latest CI 实证修复 PJ5 SelfCall
-// SpecTemplate 段内 SIGSEGV)。
-//
 // arm64 offset 用 uint16 形态(LDR Xt, [Xn, pimm] 编码限制,pimm 必须 0..32760
 // 且 8 对齐)。**arenaBase offset 经 arenaBaseOffArm64() 校验**(承 PR #28
 // review:绕过校验 helper 会让未来字段重排把 arenaBase 推到 ≥32760 时静默

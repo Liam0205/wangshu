@@ -22,150 +22,85 @@ jobs:
           go-version-file: go.mod
       - uses: golangci/golangci-lint-action@v9
 
+  # **F3-#3c 三平台矩阵化**(2026-06-30):承用户「arm64 与 amd64 地位等同」
+  # 决策,test/difftest/conformance/fuzz-smoke 四大 job 全部加 os 维度矩阵
+  # (linux/amd64 + linux/arm64 ubuntu-24.04-arm + darwin/arm64 macos-latest)。
+  # 三平台并行跑,wall-clock 由最慢平台决定(典型 ~5 min);public repo GHA
+  # 免费。原独立 test-linux-arm64 / test-darwin-arm64 job 已删(被矩阵吸收)。
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
-      fail-fast: false # P1 / P3 / P4 独立跑,一个失败不阻塞另一个收集
+      fail-fast: false # P1/P3/P4 × os 独立跑,一个失败不阻塞其它收集
       matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+        variant: [p1, p3, p4]
         include:
           - variant: p1
             tags: ''
-            cov_name: coverage-p1.out
+            cov_prefix: coverage-p1
           - variant: p3
             tags: 'wangshu_p3 wangshu_profile'
-            cov_name: coverage-p3.out
+            cov_prefix: coverage-p3
           - variant: p4
             tags: 'wangshu_p4 wangshu_profile'
-            cov_name: coverage-p4.out
-    name: test (${{ matrix.variant }})
+            cov_prefix: coverage-p4
+    name: test (${{ matrix.variant }} / ${{ matrix.os }})
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
       # -race 是硬门禁(经评审定稿,engineering.md §3.1)
-      # 矩阵覆盖:p1 = 新月解释器路径;p3 = 凸月升层 wasm 路径
-      # coverage 走原生 go test(coverage profile 合并 binary 模式复杂,不上 binary 流)
-      - name: go test (${{ matrix.variant }})
+      # 三平台同款跑 -race,arm64 也跑(F3-#3c:本 PR 修的 trampoline LR slot
+      # bug 是并发型问题原型,arm64 端 -race 可能抓同款未来 bug)
+      - name: go test (${{ matrix.variant }} / ${{ matrix.os }})
         run: |
           if [ -n "${{ matrix.tags }}" ]; then
-            go test -race -tags "${{ matrix.tags }}" -coverprofile=${{ matrix.cov_name }} -covermode=atomic ./...
+            go test -race -tags "${{ matrix.tags }}" \
+              -coverprofile=${{ matrix.cov_prefix }}-${{ matrix.os }}.out \
+              -covermode=atomic ./...
           else
-            go test -race -coverprofile=${{ matrix.cov_name }} -covermode=atomic ./...
+            go test -race \
+              -coverprofile=${{ matrix.cov_prefix }}-${{ matrix.os }}.out \
+              -covermode=atomic ./...
           fi
       # benchmarks 子模块只在 p1 build 跑功能测试(realworld oracle parity);
       # 凸月 benchmark 由本仓 `make bench-p3`(本地)/ nightly-benchmark(未来 CI)覆盖
-      - if: matrix.variant == 'p1'
+      - if: matrix.variant == 'p1' && startsWith(matrix.os, 'ubuntu')
         run: sudo apt-get update && sudo apt-get install -y lua5.1
+      - if: matrix.variant == 'p1' && startsWith(matrix.os, 'macos')
+        run: brew install lua@5.1
       - if: matrix.variant == 'p1'
         run: cd benchmarks && go test -race ./...
-      # 交叉编译冒烟:项目承诺「不依赖 cgo,保持交叉编译能力」,32 位
-      # GOARCH 的 int 宽度差异曾导致编译失败而 amd64 门禁抓不到。
-      # P4 build 加 darwin/arm64 + linux/arm64 cross 冒烟(arm64 后端代码
-      # 路径 wangshu_p4 build 在 amd64 主机经 build tag 隔离不编译,但其它
-      # GOARCH=arm64 必须能编;PJ8 arm64 emitter 字节编码也在 arm64 build
-      # tag 下编译——CI cross 验)
-      - if: matrix.variant == 'p1'
+      # 交叉编译冒烟(只在 linux/amd64 跑,与 OS 无关,跨平台编译信号一次即可)。
+      # 项目承诺「不依赖 cgo,保持交叉编译能力」,32 位 GOARCH 的 int 宽度差异
+      # 曾导致编译失败而 amd64 门禁抓不到。P4 build cross 含 darwin/arm64 +
+      # linux/arm64,验 wangshu_p4 build tag 跨架构编译。
+      - if: matrix.variant == 'p1' && matrix.os == 'ubuntu-latest'
         run: GOOS=linux GOARCH=386 go build ./...
-      - if: matrix.variant == 'p1'
+      - if: matrix.variant == 'p1' && matrix.os == 'ubuntu-latest'
         run: GOOS=windows GOARCH=amd64 go build ./...
-      - if: matrix.variant == 'p1'
+      - if: matrix.variant == 'p1' && matrix.os == 'ubuntu-latest'
         run: GOOS=darwin GOARCH=arm64 go build ./...
-      - if: matrix.variant == 'p4'
+      - if: matrix.variant == 'p4' && matrix.os == 'ubuntu-latest'
         run: GOOS=linux GOARCH=arm64 go build -tags 'wangshu_p4 wangshu_profile' ./...
-      - if: matrix.variant == 'p4'
+      - if: matrix.variant == 'p4' && matrix.os == 'ubuntu-latest'
         run: GOOS=darwin GOARCH=arm64 go build -tags 'wangshu_p4 wangshu_profile' ./...
       - uses: actions/upload-artifact@v7
         with:
-          name: coverage-${{ matrix.variant }}
-          path: ${{ matrix.cov_name }}
+          name: ${{ matrix.cov_prefix }}-${{ matrix.os }}
+          path: ${{ matrix.cov_prefix }}-${{ matrix.os }}.out
           retention-days: 30
-
-  # PJ9 双架构 CI(F3-#3b 升级):用 GitHub Actions 真物理 ubuntu-24.04-arm
-  # runner(2024 GA,public repo 免费)跑 linux/arm64 全套 P4 路径。承
-  # 06-backends.md §5「双架构 CI 双跑」+ 08-testing-strategy.md §6。
-  #
-  # **F3-#3b 切换**(2026-06-30):此前用 ubuntu-latest + QEMU user-mode
-  # emulation 跑 jit/arm64 子包字节级单测,QEMU user-mode 不真模拟
-  # i-cache(DC CVAU/IC IVAU 在 EL0 user mode 下 NOP)+ PROT_EXEC 取指,
-  # mmap+RX+execute 路径不可信(trampoline_test.go 用 !wangshu_qemu skip)。
-  # 改用 ubuntu-24.04-arm 真物理 runner 后:
-  #   - 真物理 mmap+RX+execute 工作(无需 QEMU tag skip)
-  #   - 跑 linux/arm64 整个 P4 ./...(对位 macos-latest 全套覆盖)
-  #   - 验本 PR trampoline_arm64.s LR slot 修复在 linux/arm64 端也正确
-  #     (本会话在 darwin/arm64 验过,linux/arm64 共享同份 Plan 9 ABI0 asm)
-  #
-  # trampoline_test.go 的 !wangshu_qemu build tag 保留(未来若加 nightly
-  # QEMU 比对 job 仍可继续 skip 真 execute 测试,build tag 是机制不是占位)。
-  test-linux-arm64:
-    runs-on: ubuntu-24.04-arm
-    needs: test
-    name: test-linux-arm64 (p4 ubuntu-24.04-arm 真物理)
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-      # 真物理 linux/arm64 host,跑全套 P4 ./...(含 trampoline 真 BL +
-      # mmap+RX+execute,对位 macos-latest test-darwin-arm64 同款覆盖面)
-      - name: go test linux/arm64 P4 全套(./...)
-        run: |
-          go test -tags 'wangshu_p4 wangshu_profile' ./...
-      # P1 默认 build 全套(无 wangshu_p4 tag)— 验 P1 解释器在 linux/arm64
-      # 跑通,对位 macos-latest 同款 P1 验证
-      - name: go test linux/arm64 p1 build (no wangshu_p4 tag)
-        run: |
-          go test ./...
-
-  # darwin/arm64 真物理 runner CI:用 GitHub Actions macos-latest(Apple
-  # Silicon M1+)跑 P4 + jit/arm64 子包真物理 e2e。
-  #
-  # 承 tmp/wangshu-p4-todo.md §三 darwin/arm64 W^X 真实装(方案 A)+
-  # 06-backends.md §5.7「双架构 CI 双跑」+ 08-testing-strategy.md §6。
-  #
-  # **关键技术约束**:
-  #   - macos-latest = arm64 (Apple Silicon),public repo 免费(private 10x 计费)
-  #   - JIT entitlement:`go test` 子进程默认允许 MAP_JIT + pthread_jit_write_protect_np
-  #     (Hardened Runtime + codesign 在 `go test` 通常不强制)
-  #   - cgo 必须启用:codepage_darwin.go build tag 严格 `wangshu_p4 && darwin
-  #     && arm64 && cgo`,CGO_ENABLED=0 cross-build 走 codepage_other.go stub
-  #
-  # **F3-#3b trampoline LR slot 修复后** macos-latest 跑全套 P4 测试,
-  # 含真物理 mmap+RX+execute(callJITFull/Spec round-trip + spec helper +
-  # FORLOOP / IC / SELF 模板的真 BLR 段跳执行)。F3-#3a 调试期的子集范围
-  # 裁决已撤(根因定位到 STP/LDP 覆盖 Go auto-prologue LR slot,详
-  # trampoline_arm64.s 头注 + commit message)。
-  test-darwin-arm64:
-    runs-on: macos-latest
-    needs: test
-    name: test-darwin-arm64 (p4 macos-latest M1)
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-      # darwin/arm64 真 cgo 路径(codepage_darwin.go MAP_JIT + W^X 翻面 +
-      # sys_icache_invalidate)。CGO_ENABLED=1 是 darwin runner 默认值。
-      - name: go test darwin/arm64 P4 全套(./...)
-        run: |
-          CGO_ENABLED=1 go test -tags 'wangshu_p4 wangshu_profile' ./...
-      # P1 build (默认 build tag,无 wangshu_p4) 在 darwin/arm64 跑全套测试 —
-      # 不经 P4 路径,验证 P1 解释器在 Apple Silicon 上跑通。
-      - name: go test darwin/arm64 p1 build (no wangshu_p4 tag)
-        run: |
-          CGO_ENABLED=0 go test ./...
 
   fuzz-smoke:
     needs: test
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
-      fail-fast: false # P1 / P3 / P4 独立 fuzz,一个失败不阻塞另一个收集
+      fail-fast: false # P1/P3/P4 × os 独立 fuzz
       matrix:
-        include:
-          - variant: p1
-          - variant: p3
-          - variant: p4
-    name: fuzz-smoke (${{ matrix.variant }})
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+        variant: [p1, p3, p4]
+    name: fuzz-smoke (${{ matrix.variant }} / ${{ matrix.os }})
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
@@ -176,15 +111,15 @@ jobs:
   conformance:
     # M5/M9 后启用实际用例;占位 job 保持绿(test/conformance 空包时 go test 直接过)
     # 矩阵覆盖:p1 = 新月解释器路径;p3 = 凸月升层后路径;p4 = JIT 升层后路径
-    runs-on: ubuntu-latest
+    # × 三平台(linux/amd64 + linux/arm64 + darwin/arm64),验跨平台一致
+    needs: test
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - variant: p1
-          - variant: p3
-          - variant: p4
-    name: conformance (${{ matrix.variant }})
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+        variant: [p1, p3, p4]
+    name: conformance (${{ matrix.variant }} / ${{ matrix.os }})
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
@@ -194,27 +129,34 @@ jobs:
 
   difftest:
     # M14 启用差分 fuzz;此前只校验 oracle 供给路径
-    # 矩阵覆盖:p1/p3/p4 三档(V1-V13 三方逐字节验收口径)
-    runs-on: ubuntu-latest
+    # 矩阵覆盖:p1/p3/p4 三档(V1-V13 三方逐字节验收口径)× 三平台
+    # 需 lua5.1 二进制 oracle(check-oracle.sh 强校验版本 5.1.5)
+    needs: test
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - variant: p1
-          - variant: p3
-          - variant: p4
-    name: difftest (${{ matrix.variant }})
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+        variant: [p1, p3, p4]
+    name: difftest (${{ matrix.variant }} / ${{ matrix.os }})
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - run: sudo apt-get update && sudo apt-get install -y lua5.1
+      - if: startsWith(matrix.os, 'ubuntu')
+        run: sudo apt-get update && sudo apt-get install -y lua5.1
+      - if: startsWith(matrix.os, 'macos')
+        run: |
+          brew install lua@5.1
+          # brew 装的 lua@5.1 不在默认 PATH,经 keg 链接到标准 lua5.1 名
+          ln -sf "$(brew --prefix lua@5.1)/bin/lua5.1" /usr/local/bin/lua5.1 || \
+            sudo ln -sf "$(brew --prefix lua@5.1)/bin/lua5.1" /usr/local/bin/lua5.1
       - run: make difftest-${{ matrix.variant }}
       - if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: difftest-failure-${{ matrix.variant }}
+          name: difftest-failure-${{ matrix.variant }}-${{ matrix.os }}
           path: test/difftest/testdata/
           if-no-files-found: ignore
 
