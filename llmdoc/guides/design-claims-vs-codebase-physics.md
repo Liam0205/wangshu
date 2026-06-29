@@ -1,7 +1,7 @@
 # Guide:设计稿主张须对本码库 physics 重新验证
 
-> 适用:把设计稿热路径上的抽象记号(`(call $x)`)、固定 token(base/指针/句柄/视图)、或成本主张照搬到实现之前——尤其每指令必经的快路径、跨层/跨调用存活的值。**或处理「设计稿/task 描述/stub 注释承诺/外部依赖现状」类前序快照在事实变更后失效**(§5「时间维度」)。P3 翻译全程复发,P2 编译层同理,P4 method-JIT 闸门翻面期同理。
-> 来源:`memory/reflections/2026-06-13-issue8-boundary-cost-round.md`(成本归类)+ `memory/reflections/2026-06-14-p3-pw5-table-ic-round.md`(边界成本预算)+ `memory/reflections/2026-06-14-p3-pw6-crosslayer-call-round.md`(段重定位 UAF)+ `2026-06-14-p3-pw7-pw4b-closure-tforloop-round.md`(难点过期)+ `2026-06-16-vs0e-varargs-stack-underflow-round.md`(调研先于实现)+ `2026-06-24-p4-doc-review-round.md`(外部依赖现状过期)+ `2026-06-30-pr27-f3-3b-darwin-arm64-execute-roundup.md`(sentinel 注释承诺与闸门状态解耦)——独立实例聚合为一个判断框架。
+> 适用:把设计稿热路径上的抽象记号(`(call $x)`)、固定 token(base/指针/句柄/视图)、或成本主张照搬到实现之前——尤其每指令必经的快路径、跨层/跨调用存活的值。**或处理「设计稿/task 描述/stub 注释承诺/外部依赖现状」类前序快照在事实变更后失效**(§5「时间维度」)。**或脚本/工具链/包依赖在跨 OS / shell / runtime 版本物理环境间静默挂**(§6「空间维度」)。P3 翻译全程复发,P2 编译层同理,P4 method-JIT 闸门翻面期同理,CI 矩阵扩平台时同理。
+> 来源:`memory/reflections/2026-06-13-issue8-boundary-cost-round.md`(成本归类)+ `memory/reflections/2026-06-14-p3-pw5-table-ic-round.md`(边界成本预算)+ `memory/reflections/2026-06-14-p3-pw6-crosslayer-call-round.md`(段重定位 UAF)+ `2026-06-14-p3-pw7-pw4b-closure-tforloop-round.md`(难点过期)+ `2026-06-16-vs0e-varargs-stack-underflow-round.md`(调研先于实现)+ `2026-06-24-p4-doc-review-round.md`(外部依赖现状过期)+ `2026-06-30-pr27-f3-3b-darwin-arm64-execute-roundup.md`(sentinel 注释承诺与闸门状态解耦)+ `2026-06-30-pr28-f3-3c-tri-platform-matrix-ci.md`(bash 3.2 vs 4+ / actions/cache symlink / homebrew 包政策 跨 OS 物理环境差异)——独立实例聚合为一个判断框架。
 
 设计稿表达的是**语义意图**,用抽象记号写在纸上;它**不携带本码库的物理不变式**。三次了:把设计稿热路径上的一条主张/记号忠实誊写到加速层,本会产出一个 bug 或一处死优化——因为设计稿对某条 wangshu 专属的物理事实是盲的(边界成本、arena 段重定位、GC 根可达性……)。**热路径上的抽象记号在实现前,必须逐条对照本码库 physics 重新推导,而不是照抄伪码。** 这条横跨**性能**(誊写出死优化)与**正确性**(誊写出 UAF)两面,故单独成 guide,不并入 [[perf-optimization-workflow]]。
 
@@ -63,13 +63,56 @@
 
 这四个形态共享同一物理基础:**前序事实变更后,快照不会自更新,须显式审计**。与 §1-§4 一同构成「设计稿主张对码库 physics 的四空间维度 + 一时间维度」五维判据。
 
+## 6. 空间维度——跨 OS / shell / runtime 版本物理环境差异
+
+前 §1-§4 是**码库内部 physics**(边界成本/段重定位/成本归类/根可达性),§5 是**时间维度的事实漂移**(前序快照失效)。**空间维度**是同一时刻、不同部署/开发环境之间的**物理差异**——同一份脚本/工具链/依赖,在 OS A / shell 版本 X / runtime W 下跑得通,换到 OS B / shell 版本 Y / runtime Z 下静默挂或行为不同。设计稿写「Linux/bash 4+」假设,跑到 macOS/bash 3.2 上**没有 panic、没有 error**,只是 `mapfile` not found / `${arr[@]}` 在 `set -u` 下 unbound exit / `declare -A` 报错——dev 环境与 CI runner 的「单平台 / 单维度」掩护一旦撤掉(矩阵 CI 扩平台、新 OS 接入),笛卡尔积上的 latent 问题一次性翻面。
+
+**触发场景**:写 shell 脚本要跨 OS 跑(`.githooks/pre-commit`、`scripts/*.sh`)、CI 矩阵加 `ubuntu-24.04-arm` / `macos-latest` 维度、加 `actions/cache` 缓特殊文件类型(symlink / 嵌套 dir)、brew/apt 包政策更迭(homebrew 2024 后撤 `lua@5.1`)、cross-arch / cross-OS 真物理 runner 首次接入。
+
+### 6.1 典型空间维度差异(三类物理环境分类例)
+
+| 类别 | 维度 | 差异示例 |
+|---|---|---|
+| **OS** | linux / darwin / windows | 默认 `/bin/bash` 版本(linux 4+/darwin 3.2/windows 不带)、`tar` 行为(symlink 解引用)、coreutils GNU vs BSD(`sed -i ''` darwin 需空串、`stat` 字段不同) |
+| **Shell 版本** | bash 3.2 / 4+ / 5+ / zsh | 数组语法、关联数组、`mapfile`、`${var,,}` 大小写转换 |
+| **Runtime / 工具链** | Go 1.22 / 1.23+(`min`/`max` 内建)、wazero compiler→wazevo、libc glibc/musl、Lua 5.1.5 / luajit / lua@5.4 | 内建函数集、JIT 后端、动态链接行为、homebrew 包政策(`brew install lua@5.1` macOS 2024 后已撤) |
+| **CI runner** | ubuntu-latest / ubuntu-24.04-arm / macos-latest(=M1+) | runner image 默认 PATH、可用 brew 包、`actions/cache` 对 symlink 的 tar 语义 |
+
+### 6.2 bash 3.2 vs 4+ 兼容性 cheatsheet(macOS 默认 `/bin/bash` 至今 3.2.57,GPLv3 政策长期约束)
+
+| 形态 | bash 3.2 行为 | bash 4+ 行为 | 跨版本兼容写法 |
+|---|---|---|---|
+| **空数组展开 + `set -u`** | `${arr[@]}` 在 `arr` 为空时视作 unbound → 触发 `set -u` exit | `${arr[@]}` 空数组安全展开为零参数 | `${arr[@]+"${arr[@]}"}`(参数扩展默认值语法,空数组时整个被替换为空) |
+| **`mapfile`(数组从命令读)** | 不支持(bash 4.0+ 内建) | `mapfile -t arr < <(cmd)` 一行从 stdin 装数组 | `while IFS= read -r line; do arr+=("$line"); done < <(cmd)` 显式循环 push |
+| **`declare -A`(关联数组)** | 不支持(bash 4.0+ 引入) | `declare -A m; m[key]=val` | `pairs+=("$key"$'\t'"$val")` 把 key/val 用 `\t` 拼成元组数组,然后 `printf '%s\n' "${pairs[@]}" \| sort -u \| while IFS=$'\t' read -r key val; do ...` 分组循环 |
+
+**实例(PR #28 三连)**:本仓库 `.githooks/pre-commit` + `scripts/go-fuzz.sh` 写 Linux 默认 bash 4+ 风格,接 macOS dev 环境 + macos-latest CI runner 时三处独立踩雷,同 commit `61dadde` 改三处跨版本兼容惯用法。**`mapfile` not found / `declare -A` 报错** 是显式失败易抓;**`${arr[@]}` + `set -u`** 是隐式失败——空数组场景未到时静默,触发时直接 exit,**默契承诺式 bug**(与 §5 sentinel 注释承诺同源:都是「当前 X 为 Y 所以本路径 Z」家族,X=bash 版本 / shell 平台)。
+
+### 6.3 actions/cache 对 symlink 的物理语义
+
+`actions/cache` 底层用 `tar` 打包路径,**默认 `tar` 把 symlink 当 symlink 存(只存指向字符串),不递归 symlink 目标**——cache hit restore 后 symlink 还在,目标不在(目标在另一个未缓的路径) ⟹ symlink broken。
+
+**实例(PR #28 paper cut #2)**:macOS lua5.1 源码编译装到 `/usr/local/lib/lua-5.1.5/lua` + 在 `/usr/local/bin/lua5.1` 创 symlink,缓 `/usr/local/bin/lua5.1` 单点 → restore 后 symlink 指向已不存在的真二进制。**正确做法**:缓**编译产物源目录**(`lua-5.1.5/`,已 `make` 出 `src/lua`/`src/luac`),restore 后必跑 `make install` 重新装+创 symlink(~1s restore + ~0.1s install,比从头编译 ~10s 快 10 倍且 symlink 一定正确)。
+
+**判据**:任何 cache 路径在 cache save 前 `ls -la` 看是否 symlink,是则切「缓源目录 + restore 后重 install」模式。这是 POSIX `tar` 默认语义不是 `actions/cache` bug,但效果上等价于 cache 半残。
+
+### 6.4 判据与 grep checklist
+
+- **写 bash 脚本要在 macOS dev 环境 / macos-latest CI 跑前**:`grep -nE 'mapfile|declare -A|\$\{[a-zA-Z_]+\[@\]\}' scripts/ .githooks/` 是提交前默认动作;`${arr[@]}` 命中且脚本含 `set -u` 时,改 `${arr[@]+"${arr[@]}"}`;`mapfile` / `declare -A` 命中时按 §6.2 改兼容写法;
+- **CI 矩阵加 `ubuntu-24.04-arm` / `macos-latest` 维度前**:列「新维度上有哪些与原维度不同的物理环境差异」清单——OS / shell 默认版本 / 包管理器 / runner image 默认 PATH,**逐项预审**;
+- **加 `actions/cache` 路径前**:cache save 前 `ls -la` 看路径是否 symlink,是则切「缓源目录」模式;
+- **接 cross-arch / cross-OS 真物理 runner 首次接入时**:[[prove-the-path-under-test]] §5「CI runner 形态盲配套」与本节合用——既要证「这台 runner 真在跑真物理 execute」(prove-the-path),也要审「这台 runner 物理环境与本机有什么差异」(本节)。
+
+§6 与 §5 的对偶:**§5 时间维度**(前序事实变更使快照失效,纵向)+ **§6 空间维度**(并行部署环境物理差异,横向)= 「设计稿假设的物理前提在实际世界变化」家族双面;两者共享「快照/默认假设不会自验证,须显式审计」的元纪律。
+
 ## 如何用
 
 - **设计稿记号是语义契约,不是物理承诺**:`(call $x)`、`$base`、「成本=架构给定」都只声明「这里要什么语义」,从不声明本码库 physics(边界成本/段重定位/根可达性)。实现前逐条过 §1-§4。
 - **快照不会自更新,事实变更须显式审计**(§5):设计稿/task 描述/stub 注释承诺/外部依赖现状在写下当时为真,前序事实变更后必须显式重核——尤其闸门翻 true 的同一 commit、延后 ≥6 个月的 task 接续前、大文档发布前。
+- **跨部署环境差异不会自暴露,矩阵扩面前须预审**(§6):同一份脚本/工具链/依赖在不同 OS / shell 版本 / runtime / runner 之间静默挂。CI 矩阵扩平台、加 `actions/cache` 缓特殊文件、cross-arch 真物理 runner 首次接入前,逐维度过 §6.1-§6.3。
 - **解释器「能跑」≠ 加速层「能跑」**:二者刷新地址/管理生命周期的能力不同——解释器每访问经 `th.slot()` 现算,gibbous 的 `$base` 入口锁定中途无法自刷新。设计稿往往因解释器碰巧免疫而对危险盲视,加速层照搬就触雷。先问「谁有能力刷新、在什么时机」。
-- **逐条对照,而非整体信任**:边界成本预算(§1)、段重定位(§2)、成本归类(§3)、根可达性(§4)、时间维度(§5)是五个独立维度;一条热路径主张可能同时踩多个。
+- **逐条对照,而非整体信任**:边界成本预算(§1)、段重定位(§2)、成本归类(§3)、根可达性(§4)、时间维度(§5)、空间维度(§6)是六个独立维度;一条主张可能同时踩多个。
 
 ## 关联
 
-[[issue8-boundary-cost-round]](家族奠基:实现浪费 vs 架构成本 + 零拷贝根可达性)· [[p3-pw5-table-ic-round]](边界成本维度:`$helper` 须按 ~143ns 预算重判)· [[p3-pw6-crosslayer-call-round]](内存物理维度:`$base` 须按 arena 段重定位重核)· [[p3-pw7-pw4b-closure-tforloop-round]](§5 时间维度:难点过期)· [[vs0e-varargs-stack-underflow-round]](§5 时间维度:调研先于实现)· [[p4-doc-review-round]](§5 时间维度:外部依赖现状过期)· [[pr27-f3-3b-darwin-arm64-execute-roundup]](§5 时间维度:sentinel 注释承诺与闸门状态解耦)· `feedback_arena_view_aliasing`(arena=linear memory 段可重定位 / 偏移现算寻址,§2/§4 物理基础)· [[design-premises]](前提一边界成本论证 / 前提二四项税,§1/§3 成本根据)· `docs/design/p3-wasm-tier/02-translation.md` §3.4 · `04-trampoline.md` §2-§4
+[[issue8-boundary-cost-round]](家族奠基:实现浪费 vs 架构成本 + 零拷贝根可达性)· [[p3-pw5-table-ic-round]](边界成本维度:`$helper` 须按 ~143ns 预算重判)· [[p3-pw6-crosslayer-call-round]](内存物理维度:`$base` 须按 arena 段重定位重核)· [[p3-pw7-pw4b-closure-tforloop-round]](§5 时间维度:难点过期)· [[vs0e-varargs-stack-underflow-round]](§5 时间维度:调研先于实现)· [[p4-doc-review-round]](§5 时间维度:外部依赖现状过期)· [[pr27-f3-3b-darwin-arm64-execute-roundup]](§5 时间维度:sentinel 注释承诺与闸门状态解耦)· [[pr28-f3-3c-tri-platform-matrix-ci]](§6 空间维度:bash 3.2 vs 4+ / actions/cache symlink / homebrew 包政策)· `feedback_arena_view_aliasing`(arena=linear memory 段可重定位 / 偏移现算寻址,§2/§4 物理基础)· [[design-premises]](前提一边界成本论证 / 前提二四项税,§1/§3 成本根据)· `docs/design/p3-wasm-tier/02-translation.md` §3.4 · `04-trampoline.md` §2-§4
