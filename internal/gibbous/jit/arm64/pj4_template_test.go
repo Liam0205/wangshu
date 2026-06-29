@@ -1172,3 +1172,91 @@ func TestPJ8_EmitFrameInlineLoadCISlotAddrArm64_Encoding(t *testing.T) {
 		t.Errorf("ADD x0, x16, x17 = 0x%08X, want 0x%08X", addInsn, wantAdd)
 	}
 }
+
+// TestPJ8_EmitSelfNodeHitNoRetArm64_Length 验 NoRet 变体字节长度同 NodeHit
+// (200 字节,RET 4B 换为 B 4B)。
+func TestPJ8_EmitSelfNodeHitNoRetArm64_Length(t *testing.T) {
+	var buf []byte
+	buf = EmitSelfNodeHitNoRetArm64(buf,
+		1, 3, 7, 2, 0xFFF80000FEEDBEEF, 16, 0xCAFEBABE)
+	if len(buf) != 200 {
+		t.Errorf("总长度 = %d, want 200", len(buf))
+	}
+	if len(buf) != EncodedSelfNodeHitNoRetArm64Len {
+		t.Errorf("len = %d, want %d", len(buf), EncodedSelfNodeHitNoRetArm64Len)
+	}
+}
+
+// TestPJ8_EmitSelfNodeHitNoRetArm64_SuccessFallThrough 验「成功路径不 RET」
+// 的关键字节差异:
+//   - offset 176 应是 B(无条件跳),不是 RET
+//   - B 的 imm26 应跳过 deopt block 到段尾(target = len(buf))
+//
+// vs EmitSelfNodeHitArm64:
+//   - 同位置 offset 176 是 RET (0xd65f03c0)
+//   - NoRet 版本是 B 指令(base 0x14000000,bit 26-31 = 0b000101)
+//
+// 段 layout(承 pj4_template.go::EmitSelfNodeHitNoRetArm64 注释):
+//
+//	[  0..172) SELF + guard + nodeRef + key + nil check + STR R(A) 全段
+//	[172..176) STR R(A) = x0 (method 函数)
+//	[176..180) 成功收尾:NodeHit RET / NoRet B(forward 到段尾)
+//	[180..200) deopt block(MOV x0=deoptCode 16 + RET 4)
+func TestPJ8_EmitSelfNodeHitNoRetArm64_SuccessFallThrough(t *testing.T) {
+	var buf []byte
+	buf = EmitSelfNodeHitNoRetArm64(buf,
+		1, 3, 7, 2, 0xCAFEFEED, 16, 0xCAFEBABE)
+	if len(buf) != 200 {
+		t.Fatalf("len = %d, want 200", len(buf))
+	}
+
+	const bOff = 176
+	insn := binary.LittleEndian.Uint32(buf[bOff : bOff+4])
+
+	// 验 base = 0x14000000(B opcode,bit 26-31 = 0b000101)
+	if (insn & 0xFC000000) != 0x14000000 {
+		t.Errorf("[176] insn base = 0x%08X, want 0x14000000 (B unconditional)", insn&0xFC000000)
+	}
+
+	// 验 imm26 = (target - bOff) / 4,target = 200 = len(buf)
+	imm26 := int32(insn & 0x03FFFFFF)
+	wantImm26 := int32(len(buf)-bOff) / 4 // (200-176)/4 = 6
+	if imm26 != wantImm26 {
+		t.Errorf("[176] B imm26 = %d, want %d (跳到段尾)", imm26, wantImm26)
+	}
+
+	// 验 deopt block 仍在 [180..200):offset 196 应是 RET
+	insn = binary.LittleEndian.Uint32(buf[196:200])
+	if insn != 0xd65f03c0 {
+		t.Errorf("[196] deopt RET = 0x%08X, want 0xd65f03c0", insn)
+	}
+}
+
+// TestPJ8_EmitSelfNodeHitNoRetArm64_ByteEqualNodeHit 验 NoRet 与 NodeHit
+// 在 offset [0..176) 完全一致(SELF 段 + IsTable + word5 + nodeRef + key
+// 比对 + nil check + store R(A) 全部同款),差异只在 [176..180) 的成功路径
+// 收尾指令(RET vs B);deopt block [180..200) 字节字面无关 patch 故也相等。
+//
+// 这是 prove-the-path-under-test 纪律的对偶面:既证两实现在 fall-through
+// 之前共享同一字节布局,又证差异严格只在「ret vs B + 跳过 deopt」位置。
+func TestPJ8_EmitSelfNodeHitNoRetArm64_ByteEqualNodeHit(t *testing.T) {
+	var bufHit, bufNoRet []byte
+	bufHit = EmitSelfNodeHitArm64(bufHit, 1, 3, 7, 2, 0xCAFEFEED, 16, 0xCAFEBABE)
+	bufNoRet = EmitSelfNodeHitNoRetArm64(bufNoRet, 1, 3, 7, 2, 0xCAFEFEED, 16, 0xCAFEBABE)
+	if len(bufHit) != len(bufNoRet) {
+		t.Fatalf("len(NodeHit) = %d, len(NoRet) = %d (应等长 200)", len(bufHit), len(bufNoRet))
+	}
+	// 段头 [0..176) 完全一致(成功路径展开 + STR R(A) 完成于 offset 176)
+	const prefixEnd = 176
+	for i := 0; i < prefixEnd; i++ {
+		if bufHit[i] != bufNoRet[i] {
+			t.Errorf("差异 [%d]: NodeHit=0x%02X, NoRet=0x%02X (应在 [0..176) 字节相等)", i, bufHit[i], bufNoRet[i])
+		}
+	}
+	// deopt block [180..200) 字节字面相等(无 patch 依赖)
+	for i := 180; i < 200; i++ {
+		if bufHit[i] != bufNoRet[i] {
+			t.Errorf("差异 [%d]: NodeHit=0x%02X, NoRet=0x%02X (deopt block 应字面相等)", i, bufHit[i], bufNoRet[i])
+		}
+	}
+}

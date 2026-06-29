@@ -726,6 +726,105 @@ func EmitSelfNodeHitArm64(buf []byte, aReg, bReg uint8,
 // EncodedSelfNodeHitArm64Len arm64 PJ4 SELF NodeHit 模板字节数(200)。
 const EncodedSelfNodeHitArm64Len = 200
 
+// EmitSelfNodeHitNoRetArm64 同 EmitSelfNodeHitArm64,但**成功路径不 emit ret**——
+// fall-through 到调用方 emit 的后续段(承 §9.20.9 Spike 1 useFrameInline 路径
+// arm64 对位,amd64 EmitSelfNodeHitNoRet 同款形态)。
+//
+// vs EmitSelfNodeHitArm64 关键差异(成功路径):
+//   - step 30 不 RET,改 B(跳过 deopt block 到段尾,fall-through 到调用方)
+//   - deopt block 不变(写 x0=deoptCode + RET)
+//
+// 总字节数:200(同 NodeHit)— 把 RET (4B) 替为 B (4B),长度对等。
+//
+// **deopt 路径**:Run 端 x0==deoptCode 时调 host.GetTable byte-equal P1。
+//
+// **接入路径**:archEmitFrameInlineExitHelperRequest + archCallJITSpec
+// 形态下,SELF 段成功后 fall-through 到 BuildVoid0Arg + ExitHelperRequest +
+// PopVoid0Arg + ret;翻 archSupportsFrameInline=true 后启用(承 C5 commit
+// 占位回填教训:archEmitSelfNodeHitNoRet 旧 panic 占位 → 真实装,防 NoRet
+// 路径误触发时 panic 把 useFrameInline 整路打死)。
+func EmitSelfNodeHitNoRetArm64(buf []byte, aReg, bReg uint8,
+	stableShape, stableIndex uint32, stableKey uint64,
+	arenaBaseOff uint16, deoptCode uint64) []byte {
+	// 1. LDR x0, [x26+B*8](load R(B) obj)
+	buf = EmitLdrXtFromXnDisp(buf, 0, 26, uint16(bReg)*8)
+
+	// 2. **SELF 第一步**:STR x0, [x26+(A+1)*8](self/this 实参)
+	buf = EmitStrXtToXnDisp(buf, 0, 26, uint16(aReg+1)*8)
+
+	// 3-6. IsTable guard(LSR + MOV + CMP + B.NE 共 28 字节;
+	//      入口 LDR 已合并到 SELF 第 1 步,不重复)
+	buf = EmitLsrXdImm6(buf, 0, 0, 48)
+	buf = EmitMovXdImm64(buf, 1, qNanBoxTableTagShiftedArm64)
+	buf = EmitCmpXnXm(buf, 0, 1)
+	bNeTagOff := len(buf)
+	buf = EmitBCond(buf, CondNE, 0)
+
+	// 7-12. re-load + GCRef extract + arena base + ADD x2 SIB(36 字节)
+	buf = EmitLdrXtFromXnDisp(buf, 0, 26, uint16(bReg)*8)
+	buf = EmitMovXdImm64(buf, 1, payloadMaskArm64)
+	buf = EmitAndXdXnXm(buf, 0, 0, 1)
+	buf = EmitMovXdFromXn(buf, 1, 0)
+	buf = EmitLdrXtFromXnDisp(buf, 14, 27, arenaBaseOff)
+	buf = EmitAddXdXnXm(buf, 2, 14, 1)
+
+	// 13-17. word5 + LSR + stableShape + CMP + B.NE(32 字节)
+	buf = EmitLdrXtFromXnDisp(buf, 0, 2, 40)
+	buf = EmitLsrXdImm6(buf, 0, 0, 32)
+	buf = EmitMovXdImm64(buf, 3, uint64(stableShape))
+	buf = EmitCmpXnXm(buf, 0, 3)
+	bNeShapeOff := len(buf)
+	buf = EmitBCond(buf, CondNE, 0)
+
+	// 18-20. **NodeHit 分流**:load nodeRef(word3, offset 24)+ 新 SIB base
+	buf = EmitLdrXtFromXnDisp(buf, 0, 2, 24)
+	buf = EmitMovXdFromXn(buf, 1, 0)
+	buf = EmitAddXdXnXm(buf, 2, 14, 1)
+
+	// 21-24. NodeKey load + stableKey 比对 + B.NE deopt
+	buf = EmitLdrXtFromXnDisp(buf, 0, 2, uint16(stableIndex*24))
+	buf = EmitMovXdImm64(buf, 3, stableKey)
+	buf = EmitCmpXnXm(buf, 0, 3)
+	bNeKeyOff := len(buf)
+	buf = EmitBCond(buf, CondNE, 0)
+
+	// 25-28. NodeVal load + nil check + B.EQ deopt
+	buf = EmitLdrXtFromXnDisp(buf, 0, 2, uint16(stableIndex*24+8))
+	buf = EmitMovXdImm64(buf, 3, qNanBoxNilImmArm64)
+	buf = EmitCmpXnXm(buf, 0, 3)
+	bEqNilOff := len(buf)
+	buf = EmitBCond(buf, CondEQ, 0)
+
+	// 29. store R(A) = method
+	buf = EmitStrXtToXnDisp(buf, 0, 26, uint16(aReg)*8)
+
+	// 30. **NO RET** — 改发 B(forward,跳过 deopt block 到段尾,fall-through
+	//     到调用方 emit 的 BuildVoid0Arg 段;承 amd64 EmitJmpRel32 同款手法)
+	bSuccessOff := len(buf)
+	buf = EmitB(buf, 0) // placeholder,后置 patch
+
+	// 31. deopt block(写 x0=deoptCode + RET,12 字节 = MovXdImm64 8 + Ret 4)
+	deoptStart := len(buf)
+	buf = EmitMovXdImm64(buf, 0, deoptCode)
+	buf = EmitRet(buf)
+
+	// 32. patch B.cond imm19 = (deoptStart - 本 B.cond 自身) / 4
+	patchBCondImm19(buf, bNeTagOff, int32(deoptStart-bNeTagOff)/4)
+	patchBCondImm19(buf, bNeShapeOff, int32(deoptStart-bNeShapeOff)/4)
+	patchBCondImm19(buf, bNeKeyOff, int32(deoptStart-bNeKeyOff)/4)
+	patchBCondImm19(buf, bEqNilOff, int32(deoptStart-bEqNilOff)/4)
+
+	// 33. patch success B imm26 = (len(buf) - bSuccessOff) / 4
+	//     跳到 deopt block 之后(即段尾,后续 BuildVoid0Arg 段起点)
+	patchBImm26(buf, bSuccessOff, int32(len(buf)-bSuccessOff)/4)
+
+	return buf
+}
+
+// EncodedSelfNodeHitNoRetArm64Len arm64 PJ4 SELF NodeHit NoRet 变体字节数(200,
+// 同 NodeHit;RET 4B 换为 B 4B)。
+const EncodedSelfNodeHitNoRetArm64Len = 200
+
 // EmitSpecArgLoadKArm64 写 R(dstReg) = K(NaN-box u64)— PJ5 SELF spec
 // template args/recv 装载字节级 inline(arm64 端 amd64 EmitSpecArgLoadK 对位)。
 //

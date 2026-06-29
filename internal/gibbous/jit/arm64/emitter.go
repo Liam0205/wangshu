@@ -651,6 +651,30 @@ func patchBCondImm19(buf []byte, off int, imm19 int32) {
 	buf[off+3] = byte(insn >> 24)
 }
 
+// patchBImm26 在 buf[off..off+4] 处的 B(无条件跳转)指令字内 patch imm26
+// 字段(bit 0-25)。原指令字 base(0x14000000,bit 26-31)保留,只修改
+// imm26 的 26 位。
+//
+// 用例:对位 amd64 `EmitJmpRel32 + PatchRel32` —— forward B 占位 deopt
+// 之后回填,跳过 deopt block 到段尾(承 EmitSelfNodeHitNoRetArm64 同款
+// fall-through 形态)。
+//
+// imm26 = (target - bOff) / 4(arm64 B 指令是字数偏移,目标 = PC+imm26*4)。
+func patchBImm26(buf []byte, off int, imm26 int32) {
+	if off+4 > len(buf) {
+		return
+	}
+	insn := uint32(buf[off]) | uint32(buf[off+1])<<8 |
+		uint32(buf[off+2])<<16 | uint32(buf[off+3])<<24
+	// 清 imm26 字段(bit 0-25,共 26 位 = 0x03FFFFFF)
+	insn &= 0xFC000000
+	insn |= uint32(imm26) & 0x03FFFFFF
+	buf[off] = byte(insn)
+	buf[off+1] = byte(insn >> 8)
+	buf[off+2] = byte(insn >> 16)
+	buf[off+3] = byte(insn >> 24)
+}
+
 // EmitBlrXn 发射 arm64「blr Xn」(branch with link to register,间接 call,
 // LR=X30 设为返回地址)。对位 amd64 `call regN` 2 字节(`FF D0+reg`)。
 //

@@ -260,22 +260,25 @@ func archEmitSelfNodeHit(buf []byte, aReg, bReg uint8,
 		stableShape, stableIndex, stableKey, arenaBaseOffArm64(arenaBaseOff), deoptCode)
 }
 
-// archEmitSelfNodeHitNoRet arm64 端 NoRet 变体占位(承 PR comment 8b4ff8e
-// 建议):arm64 archSupportsFrameInline=false 屏蔽,本路径 production 不触达;
-// 真实装留 PJ8 物理 runner CI 接入同批。**panic 防误开闸门**:若日后误开
-// archSupportsFrameInline arm64=true,arm64 端 emit 会 panic 显式失败(替代
-// 委派常规 ret 版本导致 BuildVoid0Arg fall-through 永不执行的隐式 bug)。
+// archEmitSelfNodeHitNoRet arm64 端 NoRet 变体真实装(承 C5 commit 收口
+// PR comment 8b4ff8e 占位回填教训):同 archEmitSelfNodeHit 但**成功路径
+// 不 emit ret**,改发 B(无条件跳)跳过 deopt block 到段尾 fall-through 到
+// 调用方 emit 的 BuildVoid0Arg 段。
+//
+// **接入路径**:archEmitFrameInlineExitHelperRequest + archCallJITSpec
+// 形态下,SELF 段成功后 fall-through 到 BuildVoid0Arg + ExitHelperRequest +
+// PopVoid0Arg + ret;翻 archSupportsFrameInline=true 后启用。
+//
+// **vs 原 panic 占位**(已退役):旧 panic 把 archSupportsFrameInline=true
+// 的 NoRet 路径整路打死,真实装替之可让 SELF NodeHit 在 useFrameInline
+// 形态下与 amd64 EmitSelfNodeHitNoRet byte-equal(同 200 字节,RET 4B 换为
+// B 4B)。
 func archEmitSelfNodeHitNoRet(buf []byte, aReg, bReg uint8,
 	stableShape, stableIndex uint32, stableKey uint64,
 	arenaBaseOff int32, deoptCode uint64) []byte {
-	_ = aReg
-	_ = bReg
-	_ = stableShape
-	_ = stableIndex
-	_ = stableKey
-	_ = arenaBaseOff
-	_ = deoptCode
-	panic("internal/gibbous/jit.archEmitSelfNodeHitNoRet: arm64 NoRet not implemented; archSupportsFrameInline arm64=false 屏蔽,本 panic 防误开闸门")
+	return jitarm64.EmitSelfNodeHitNoRetArm64(buf, aReg, bReg,
+		stableShape, stableIndex, stableKey,
+		arenaBaseOffArm64(arenaBaseOff), deoptCode)
 }
 
 // archEmitSpecArgLoadK / archEmitSpecArgLoadReg arm64 实装(承 PJ5 spec
