@@ -68,26 +68,32 @@ jobs:
       # 凸月 benchmark 由本仓 `make bench-p3`(本地)/ nightly-benchmark(未来 CI)覆盖
       # **lua 5.1.5 oracle 装**:ubuntu apt 直接装(arm64 + amd64 都有 5.1.5);
       # macOS homebrew 自 2024 年起已废弃 lua@5.1 formula(只剩 lua@5.4),
-      # 故从源码编译 5.1.5(7 MB tarball,~10s 编译);加 actions/cache 让
-      # 同 runner image + arch 下二进制复用,~10s 编译 → ~1s cache restore。
+      # 故从源码编译 5.1.5(7 MB tarball,~10s 编译)。
+      # **cache 策略**:缓 lua-5.1.5 编译产物目录(build artifact + bin/lua),
+      # restore 后 sudo make install 把 binary + 头文件 + lib 装到 /usr/local/
+      # (install 是 cp 操作 ~0.1s),并 ln -sf 标准入口名 lua5.1。
+      # cache key 含 runner.os + runner.arch + lua 版本,跨 runner image 复用。
       - if: matrix.variant == 'p1' && startsWith(matrix.os, 'macos')
         id: cache-lua51-test
         uses: actions/cache@v4
         with:
-          path: /usr/local/bin/lua5.1
-          key: lua-5.1.5-${{ runner.os }}-${{ runner.arch }}
+          path: lua-5.1.5
+          key: lua-5.1.5-build-${{ runner.os }}-${{ runner.arch }}
       - if: matrix.variant == 'p1' && startsWith(matrix.os, 'ubuntu')
         run: sudo apt-get update && sudo apt-get install -y lua5.1
       - if: matrix.variant == 'p1' && startsWith(matrix.os, 'macos') && steps.cache-lua51-test.outputs.cache-hit != 'true'
+        # cache miss:下载 + 编译
         run: |
           curl -fsSL https://www.lua.org/ftp/lua-5.1.5.tar.gz | tar xz
           cd lua-5.1.5
           make macosx CC=cc
-          sudo make install INSTALL_TOP=/usr/local INSTALL_BIN=/usr/local/bin INSTALL_INC=/usr/local/include INSTALL_LIB=/usr/local/lib INSTALL_MAN=/usr/local/share/man/man1
-          # 标准入口名 lua5.1(承 scripts/check-oracle.sh `command -v lua5.1`)
-          sudo ln -sf /usr/local/bin/lua /usr/local/bin/lua5.1
       - if: matrix.variant == 'p1' && startsWith(matrix.os, 'macos')
-        run: lua5.1 -v
+        # cache hit 或 miss 都跑 install + symlink(install 是 cp,可重复执行)
+        run: |
+          cd lua-5.1.5
+          sudo make install INSTALL_TOP=/usr/local INSTALL_BIN=/usr/local/bin INSTALL_INC=/usr/local/include INSTALL_LIB=/usr/local/lib INSTALL_MAN=/usr/local/share/man/man1
+          sudo ln -sf /usr/local/bin/lua /usr/local/bin/lua5.1
+          lua5.1 -v
       - if: matrix.variant == 'p1'
         run: cd benchmarks && go test -race ./...
       # 交叉编译冒烟(只在 linux/amd64 跑,与 OS 无关,跨平台编译信号一次即可)。
@@ -166,18 +172,20 @@ jobs:
         id: cache-lua51-difftest
         uses: actions/cache@v4
         with:
-          path: /usr/local/bin/lua5.1
-          key: lua-5.1.5-${{ runner.os }}-${{ runner.arch }}
+          path: lua-5.1.5
+          key: lua-5.1.5-build-${{ runner.os }}-${{ runner.arch }}
       - if: startsWith(matrix.os, 'ubuntu')
         run: sudo apt-get update && sudo apt-get install -y lua5.1
       - if: startsWith(matrix.os, 'macos') && steps.cache-lua51-difftest.outputs.cache-hit != 'true'
-        # macOS homebrew 自 2024 年起已废弃 lua@5.1 formula(只剩 lua@5.4),
-        # 从源码编译官方 5.1.5(7 MB tarball,~10s,版本严格 check-oracle.sh
-        # 要求的 5.1.5)
+        # cache miss:下载 + 编译(macOS homebrew 自 2024 年起已废弃 lua@5.1)
         run: |
           curl -fsSL https://www.lua.org/ftp/lua-5.1.5.tar.gz | tar xz
           cd lua-5.1.5
           make macosx CC=cc
+      - if: startsWith(matrix.os, 'macos')
+        # install + symlink(install 是 cp,可重复执行;cache hit 或 miss 都跑)
+        run: |
+          cd lua-5.1.5
           sudo make install INSTALL_TOP=/usr/local INSTALL_BIN=/usr/local/bin INSTALL_INC=/usr/local/include INSTALL_LIB=/usr/local/lib INSTALL_MAN=/usr/local/share/man/man1
           sudo ln -sf /usr/local/bin/lua /usr/local/bin/lua5.1
       - run: make difftest-${{ matrix.variant }}
