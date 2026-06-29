@@ -221,6 +221,57 @@ func EmitStrXtToXnDisp(buf []byte, rt, rn uint8, byteOff uint16) []byte {
 // EncodedStrXtToXnDispLen = 4.
 const EncodedStrXtToXnDispLen = 4
 
+// EmitStrWtToXnDisp 发射 arm64「str Wt, [Xn, #pimm12]」32-bit store with
+// unsigned 12-bit offset(对位 EmitStrXtToXnDisp 32-bit 版,用于写 uint32
+// 字段)。
+//
+// arm64 编码:1011_1001_00_iiiiiiiiiiii_nnnnn_ttttt = 0xB9000000 base
+//   - size=10(32-bit),V=0,opc=00(STR unsigned offset)
+//   - imm12 是 **4-byte scaled offset**(byte offset = imm12 * 4),范围
+//     [0, 16380],步长 4
+//
+// 用例:C6 EmitFrameInlineExitHelperRequestArm64 写 jitContext.exitReasonCode
+// (uint32 字段);对位 amd64 `mov [r15+exitReason], eax` 4 字节。
+func EmitStrWtToXnDisp(buf []byte, rt, rn uint8, byteOff uint16) []byte {
+	if rt > 30 {
+		rt = 0
+	}
+	if rn > 30 {
+		rn = 0
+	}
+	if byteOff%4 != 0 || byteOff > 16380 {
+		byteOff = 0
+	}
+	imm12 := uint32(byteOff / 4)
+	insn := uint32(0xB9000000) | (imm12&0xFFF)<<10 | (uint32(rn)&0x1F)<<5 | uint32(rt)&0x1F
+	return appendArm64Insn(buf, insn)
+}
+
+// EncodedStrWtToXnDispLen = 4.
+const EncodedStrWtToXnDispLen = 4
+
+// EmitMovzWdImm16 发射 arm64「movz Wd, #imm16」(32-bit version,清高 32
+// 位)单条 4 字节指令。
+//
+// arm64 编码:0101_0010_1_00_iiiiiiiiiiiiiiii_ddddd = 0x52800000 base
+//   - sf=0(32-bit),opc=10(MOVZ),hw=00(LSL #0)
+//
+// vs 64-bit EmitMovXdImm64(16 字节,movz+movk×3):仅当目标值 ≤ 0xFFFF
+// 时省成单条;C6 写 jitContext.exitReasonCode = ExitInlineHelper (3) 用得到。
+//
+// 用例:C6 EmitFrameInlineExitHelperRequestArm64 装 ExitInlineHelper=3 入
+// w16(scratch)和 w0(返值);对位 amd64 `mov eax, ExitInlineHelper` 5 字节。
+func EmitMovzWdImm16(buf []byte, rd uint8, imm16 uint16) []byte {
+	if rd > 30 {
+		rd = 0
+	}
+	insn := uint32(0x52800000) | (uint32(imm16)&0xFFFF)<<5 | uint32(rd)&0x1F
+	return appendArm64Insn(buf, insn)
+}
+
+// EncodedMovzWdImm16Len = 4.
+const EncodedMovzWdImm16Len = 4
+
 // EmitCmpXnXm 发射 arm64「cmp Xn, Xm」(寄存器比较,设 NZCV flags 不写
 // 结果)。实际编码 = SUBS XZR, Xn, Xm:
 //
@@ -645,6 +696,30 @@ func patchBCondImm19(buf []byte, off int, imm19 int32) {
 	// 写入新 imm19
 	insn |= (uint32(imm19) & 0x7FFFF) << 5
 	// 写回 buf(LE)
+	buf[off] = byte(insn)
+	buf[off+1] = byte(insn >> 8)
+	buf[off+2] = byte(insn >> 16)
+	buf[off+3] = byte(insn >> 24)
+}
+
+// patchBImm26 在 buf[off..off+4] 处的 B(无条件跳转)指令字内 patch imm26
+// 字段(bit 0-25)。原指令字 base(0x14000000,bit 26-31)保留,只修改
+// imm26 的 26 位。
+//
+// 用例:对位 amd64 `EmitJmpRel32 + PatchRel32` —— forward B 占位 deopt
+// 之后回填,跳过 deopt block 到段尾(承 EmitSelfNodeHitNoRetArm64 同款
+// fall-through 形态)。
+//
+// imm26 = (target - bOff) / 4(arm64 B 指令是字数偏移,目标 = PC+imm26*4)。
+func patchBImm26(buf []byte, off int, imm26 int32) {
+	if off+4 > len(buf) {
+		return
+	}
+	insn := uint32(buf[off]) | uint32(buf[off+1])<<8 |
+		uint32(buf[off+2])<<16 | uint32(buf[off+3])<<24
+	// 清 imm26 字段(bit 0-25,共 26 位 = 0x03FFFFFF)
+	insn &= 0xFC000000
+	insn |= uint32(imm26) & 0x03FFFFFF
 	buf[off] = byte(insn)
 	buf[off+1] = byte(insn >> 8)
 	buf[off+2] = byte(insn >> 16)
