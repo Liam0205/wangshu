@@ -291,29 +291,26 @@ func archEmitSpecArgLoadReg(buf []byte, dstReg uint8, srcReg uint8) []byte {
 	return jitarm64.EmitSpecArgLoadRegArm64(buf, dstReg, srcReg)
 }
 
-// archSupportsSpec arm64 端 PJ8 工程组件完整就绪但**端到端验证尚未通过**:
+// archSupportsSpec arm64 端 PJ8 工程组件完整就绪 + C7 翻闸门:
 //   - ✅ PJ2 投机三形态字节级模板 byte-tested 完整(reg-reg 108B + reg-K 92B
 //   - chain-KK 116B,13 字节级单测覆盖)
 //   - ✅ archEmitArithSpec 三 stub 真代理(sseOp 翻译 amd64→arm64)
 //   - ✅ archCallJITSpec arm64 spec trampoline asm 实装(framesize $80-32,
 //     装 x26=vsBase + x27=jitCtx + BL + LDP,trampoline_arm64.s::callJITSpec)
 //   - ✅ trampoline_other.go cross-build stub(darwin/arm64 等 panic on call)
-//   - ⏳ 物理 self-hosted runner 端到端 V1-V22 验证(QEMU 不真模拟 i-cache
-//   - PROT_EXEC,本地翻 true 后端到端崩高风险)
+//   - ✅ C7 (本 commit) 翻 archSupportsSpec arm64=true,允许 Compile 端 PJ2
+//     投机 + PJ3 body/body2/RegLimit 路径在 arm64 host 上启用
 //
-// **翻 true 前置条件**(留 PJ8+ 同批落地):
-//  1. 物理 arm64 self-hosted runner CI 接入(真 mmap + PROT_EXEC + 真
-//     i-cache + 真 d-cache flush)
-//  2. CI test-arm64-physical 跑 main 包测试(经 Compile 派发 + archCall*
-//     路径)+ crescent e2e WarmupThenForce + V1-V22 byte-equal P1
-//  3. 翻 true 后启用范围:Compile 端 arm64 上 PJ2 投机模板 + PJ3 FORLOOP
-//     body/body2/RegLimit 三路径(经 archCallJITSpec)+ PJ4 IC 六模板
-//     (经 archCallJITFull,本就启用)
+// **真执行端到端验证**(承 tmp/wangshu-p4-todo.md §二):
+//   - linux/arm64 self-hosted runner:暂未接入(用户选 A 路径 darwin/arm64)
+//   - **darwin/arm64 macos-latest CI**:C8 加 ci.yml job 后真跑端到端
+//   - QEMU 不真模拟 i-cache + PROT_EXEC,test-arm64 CI job 仍只跑 jit/arm64
+//     子包(字节级单测),不跑主包真 callJITSpec(承 ci.yml 注释 L94-99)
 //
-// **当前状态**:仍返 false,Compile 端 PJ2 投机 + PJ3 body/body2/RegLimit
-// 路径**编译期返 ErrCompileUnsupportedShape**(承本会话 review 22 ℹ️ 遗留
-// fix),Tier 框架退回 P1 解释器,行为等价 byte-equal P1。
-func archSupportsSpec() bool { return false }
+// **本 commit (C7) 翻 true 后激活范围**:Compile 端 arm64 上 PJ2 投机模板 +
+// PJ3 FORLOOP body/body2/RegLimit 三路径(经 archCallJITSpec)+ PJ4 IC 六模板
+// (经 archCallJITFull,本就启用)。amd64 host 走 arch_amd64.go 不受影响。
+func archSupportsSpec() bool { return true }
 
 // archSupportsForLoop arm64 端 PJ3 FORLOOP 模板已真接入(本会话 PJ8
 // arm64 PJ3 全四形态:EmptyConst 84/92B / RegLimit 120/128B /
@@ -339,11 +336,21 @@ func archEmitHelperCall(buf []byte, helperAddr uint64) []byte {
 // 因 RISC fixed-length 比 amd64 多 8 字节)。
 const archEncodedHelperCallLen = jitarm64.EncodedHelperCallArm64Len
 
-// archSupportsFrameInline arm64 端同 amd64 当前返 false——字节级 emit 模板
+// archSupportsFrameInline arm64 端 C7 翻闸门:字节级 emit 模板
 // (BuildVoid0ArgSkeletonArm64 164B + LoadClosureGCRefArm64 24B +
-// WriteCIWordArm64 20B + CIDepth±Arm64 16B)已完整字节级实装并单测全过,
-// 但 Compile/Run 端真接通 + 物理 runner 端到端验证留 PJ8+/PJ9。
-func archSupportsFrameInline() bool { return false }
+// WriteCIWordArm64 20B + CIDepth±Arm64 16B + **C5 SelfNodeHitNoRetArm64
+// 200B** + **C6 ExitHelperRequestArm64 36B**)已完整字节级实装并单测全过,
+// Compile/Run 端真接通已就位;本 commit 翻 true 让 arm64 host 上的 Compile
+// 路径走 useFrameInline 真路径(amd64 host 走 arch_amd64.go 不受影响)。
+//
+// **真执行端到端验证**:同 archSupportsSpec,留 darwin/arm64 macos-latest CI
+// (C8)+ 未来 linux/arm64 self-hosted runner(承 tmp/wangshu-p4-todo.md §二)。
+//
+// **依赖闭环**(C5/C6 已交付):
+//   - archEmitSelfNodeHitNoRet:C5 真实装替 panic 占位
+//   - archEmitFrameInlineExitHelperRequest:C6 真实装替 0 字节占位
+//   - archEncodedFrameInlineExitHelperRequestLen:C6 从 0 → 36
+func archSupportsFrameInline() bool { return true }
 
 // archEmitFrameInlineBuildVoid0ArgSkeleton arm64 端代理 jitarm64 同款 helper
 // (164 字节,承 §9.20 Option B Spike 1)。注意 arm64 offset 用 uint16 形态
