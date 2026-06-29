@@ -1054,24 +1054,40 @@ func TestPJ8_EmitFrameInlineWriteCIWordArm64_Length(t *testing.T) {
 	}
 }
 
-// TestPJ8_EmitFrameInlinePopVoid0ArgSkeletonArm64_AliasCIDepthDec 验 arm64
-// popCallInfo 骨架字节级与 CIDepthDec 完全等价(纯 alias)。
-func TestPJ8_EmitFrameInlinePopVoid0ArgSkeletonArm64_AliasCIDepthDec(t *testing.T) {
-	var bufA, bufB []byte
+// TestPJ8_EmitFrameInlinePopVoid0ArgSkeletonArm64_CIDepthDecPlusRet 验 arm64
+// Spike 1 popCallInfo 骨架字节级 = CIDepthDec 16 byte + movz w0 #0 4 byte +
+// ret 4 byte = 24 byte(对位 amd64 _CIDepthDecPlusRet 同款,F3-#3b 修 missing
+// ret bug 后从「纯 alias」改「前缀 alias + 显式 ret 尾巴」)。
+func TestPJ8_EmitFrameInlinePopVoid0ArgSkeletonArm64_CIDepthDecPlusRet(t *testing.T) {
+	var bufA []byte
 	bufA = EmitFrameInlinePopVoid0ArgSkeletonArm64(bufA, 56)
-	bufB = EmitFrameInlineCIDepthDecArm64(bufB, 56)
 	if len(bufA) != EncodedFrameInlinePopVoid0ArgSkeletonArm64Len {
 		t.Errorf("PopVoid0ArgSkeletonArm64 长度 = %d, want %d",
 			len(bufA), EncodedFrameInlinePopVoid0ArgSkeletonArm64Len)
 	}
-	if len(bufA) != len(bufB) {
-		t.Errorf("长度差异:Pop=%d, CIDepthDec=%d", len(bufA), len(bufB))
+	// 前 16 byte = CIDepthDec
+	var bufB []byte
+	bufB = EmitFrameInlineCIDepthDecArm64(bufB, 56)
+	if len(bufB) != EncodedFrameInlineCIDepthIncDecArm64Len {
+		t.Fatalf("CIDepthDec 长度 = %d, want %d(测试 fixture 失效)",
+			len(bufB), EncodedFrameInlineCIDepthIncDecArm64Len)
 	}
-	for i := range bufA {
+	for i := range bufB {
 		if bufA[i] != bufB[i] {
-			t.Errorf("字节[%d] 差异:Pop=0x%02X, CIDepthDec=0x%02X",
+			t.Errorf("前缀字节[%d] 差异:Pop=0x%02X, CIDepthDec=0x%02X",
 				i, bufA[i], bufB[i])
 		}
+	}
+	// 末 4 byte(offset [20..24)) = ret(0xD65F03C0 LE = c0 03 5f d6)
+	if bufA[20] != 0xC0 || bufA[21] != 0x03 || bufA[22] != 0x5F || bufA[23] != 0xD6 {
+		t.Errorf("PopVoid0Arg 末 4 byte = 0x%02X%02X%02X%02X, want 0xC0035FD6(ret)",
+			bufA[20], bufA[21], bufA[22], bufA[23])
+	}
+	// 中 4 byte(offset [16..20)) = movz w0, #0(承 §9.20.9 commit-5l xor eax,eax 对位)
+	// arm64 movz w0, #0 编码 = 0x52800000 LE = 00 00 80 52
+	if bufA[16] != 0x00 || bufA[17] != 0x00 || bufA[18] != 0x80 || bufA[19] != 0x52 {
+		t.Errorf("PopVoid0Arg 中 4 byte = 0x%02X%02X%02X%02X, want 0x0000_8052(movz w0,#0)",
+			bufA[16], bufA[17], bufA[18], bufA[19])
 	}
 }
 

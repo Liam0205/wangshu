@@ -10,7 +10,7 @@
 package jit
 
 import (
-	"runtime"
+	"github.com/Liam0205/wangshu/internal/bytecode"
 
 	jitarm64 "github.com/Liam0205/wangshu/internal/gibbous/jit/arm64"
 )
@@ -74,12 +74,34 @@ func archCallJITSpec(codeAddr uintptr, jitCtxAddr uintptr, vsBase uintptr) uint6
 	return jitarm64.CallJITSpec(codeAddr, jitCtxAddr, vsBase)
 }
 
-// archSseOpForArith arm64 端 stub——arm64 不用 SSE op 字节(用 fadd/fsub/
-// fmul/fdiv aarch64 指令,留 PJ8+ 完整版独立路径)。当前 archSupportsSpec
-// 返 false,本函数不会被调用——sentinel 返 (0, false) 保底。
+// archSseOpForArith 把 Lua 算术 opcode 映射到「投机白名单标记字节」(对位
+// amd64 SSE binop opcode)。arm64 端不直接用这 4 个字节发射机器码,而是经
+// arm64ArithOpSelForSseOp 翻译到 arm64 fadd/fsub/fmul/fdiv 同源 opSel。
+//
+// 不支持的 op(MOD/POW——MOD 用 floor-mod 不是单条 SSE,POW 用 pow() helper)
+// 返回 (0, false)。
+//
+// **承 03-speculation-ic.md §2 投机白名单**:f64 快路径投机仅对 ADD/SUB/
+// MUL/DIV(IEEE 754 单条指令)成立,其它算术族走 host helper 慢路径
+// (与解释器 byte-equal,无加速但正确性兜底)。
+//
+// **F3-#3b 真物理 darwin/arm64 接通**(2026-06-30):此前 stub 永远返
+// (0, false) 让 compileSpecArith 永远进不了 useSpec/useSpecRegK/useSpecChain
+// 分支,真物理 M1 上所有 PJ2 spec 测试 0 命中。本批镜像 amd64 同款 4 路
+// 派发(常量字节复用 amd64 SSE op 值,后续经 arm64ArithOpSelForSseOp 翻译)。
 func archSseOpForArith(op uint8) (byte, bool) {
-	_ = op
-	return 0, false
+	switch bytecode.OpCode(op) {
+	case bytecode.ADD:
+		return 0x58, true // SseOpAddsd / arm64ArithOpSelForSseOp → ArithOpAddArm64
+	case bytecode.SUB:
+		return 0x5C, true // SseOpSubsd / → ArithOpSubArm64
+	case bytecode.MUL:
+		return 0x59, true // SseOpMulsd / → ArithOpMulArm64
+	case bytecode.DIV:
+		return 0x5E, true // SseOpDivsd / → ArithOpDivArm64
+	default:
+		return 0, false
+	}
 }
 
 // arm64ArithOpSelForSseOp 把 amd64 SSE opcode 字节(F2 0F xx ModRM 的 xx)
@@ -302,18 +324,14 @@ func archEmitSpecArgLoadReg(buf []byte, dstReg uint8, srcReg uint8) []byte {
 // 状态分布:
 //   - amd64:走 arch_amd64.go(不在本文件)
 //   - linux/arm64:✅ 翻 true(承 C7 + tmp/wangshu-p4-todo.md §二)
-//   - darwin/arm64:⏳ 暂 false(F3-#3 调试中,留下一批本 PR followup commit)
+//   - darwin/arm64:✅ 翻 true(F3-#3b trampoline_arm64.s STP/LDP 偏移
+//     +8 修复 LR slot 覆盖 bug 后真物理 M1 验证全过,详 trampoline_arm64.s
+//     头注 + commit message)
 //
-// **激活范围**(linux/arm64):Compile 端 PJ2 投机三形态 + PJ3 FORLOOP
-// body/body2/RegLimit 三路径走 archCallJITSpec;PJ4 IC 六模板继续走
-// archCallJITFull(本就启用);PJ5 SELF spec template + useFrameInline。
-//
-// 注:runtime.GOOS 在编译期是 string 常量,Go 编译器对 darwin/arm64 build
-// 会 dead-code-eliminate 这条 if 分支,不引入运行期开销。
+// **激活范围**:Compile 端 PJ2 投机三形态 + PJ3 FORLOOP body/body2/RegLimit
+// 三路径走 archCallJITSpec;PJ4 IC 六模板继续走 archCallJITFull(本就启用);
+// PJ5 SELF spec template + useFrameInline。
 func archSupportsSpec() bool {
-	if runtime.GOOS == "darwin" {
-		return false
-	}
 	return true
 }
 
@@ -322,13 +340,8 @@ func archSupportsSpec() bool {
 // WithRegKBody 144/152B / WithRegKBody2 168/176B,字节级单测全过);
 // FORLOOP 经 archCallJITFull 主路径不经 spec trampoline。
 //
-// **darwin/arm64 暂返 false**(承 F3-#3 + archSupportsSpec 同款,
-// archCallJITFull 路径在真物理 macos-latest M1 上也崩 SIGSEGV at 0x2000,
-// 根因 isolate 留 F3-#3b);linux/arm64 返 true 不变。
+// **darwin/arm64 同 archSupportsSpec 翻 true**(F3-#3b trampoline 修复后)。
 func archSupportsForLoop() bool {
-	if runtime.GOOS == "darwin" {
-		return false
-	}
 	return true
 }
 
@@ -349,34 +362,40 @@ func archEmitHelperCall(buf []byte, helperAddr uint64) []byte {
 // 因 RISC fixed-length 比 amd64 多 8 字节)。
 const archEncodedHelperCallLen = jitarm64.EncodedHelperCallArm64Len
 
-// archSupportsFrameInline arm64 端 C7 翻闸门 + darwin skip:linux/arm64 返
-// true 允许 useFrameInline 真路径;darwin/arm64 暂 false(F3-#3 调试中,
-// 同 archSupportsSpec)。
+// archSupportsFrameInline arm64 端 C7 翻闸门:linux/arm64 + darwin/arm64
+// 均返 true 允许 useFrameInline 真路径(F3-#3b trampoline 修复后两端等价)。
 //
 // **依赖闭环**(C5/C6 已交付):
 //   - archEmitSelfNodeHitNoRet:C5 真实装替 panic 占位
 //   - archEmitFrameInlineExitHelperRequest:C6 真实装替 0 字节占位
 //   - archEncodedFrameInlineExitHelperRequestLen:C6 从 0 → 36
 func archSupportsFrameInline() bool {
-	if runtime.GOOS == "darwin" {
-		return false
-	}
 	return true
 }
 
 // archEmitFrameInlineBuildVoid0ArgSkeleton arm64 端代理 jitarm64 同款 helper
-// (164 字节,承 §9.20 Option B Spike 1)。注意 arm64 offset 用 uint16 形态
-// (LDR Xt, [Xn, pimm] 编码限制,pimm 必须 0..32760 且 8 对齐)。
+// (172 字节 Absolute 版,承 §9.20 Option B Spike 1 + §9.20.9 commit-5l ciSegBase
+// 镜像字语义 bug 修)。Absolute 版 LoadCISlotAddr 内追加 `ldr x14, [x27+arenaBaseOff]
+// + add x0, x0, x14` 让 x0 是绝对地址,避免 word offset 不能 deref 的 bug(对位
+// amd64 Absolute 版,真物理 darwin/arm64 macos-latest CI 实证修复 PJ5 SelfCall
+// SpecTemplate 段内 SIGSEGV)。
+//
+// arm64 offset 用 uint16 形态(LDR Xt, [Xn, pimm] 编码限制,pimm 必须 0..32760
+// 且 8 对齐)。**arenaBase offset 经 arenaBaseOffArm64() 校验**(承 PR #28
+// review:绕过校验 helper 会让未来字段重排把 arenaBase 推到 ≥32760 时静默
+// 失效,详 arenaBaseOffArm64 注释)。
 func archEmitFrameInlineBuildVoid0ArgSkeleton(buf []byte,
 	ciDepthAddrOff, ciSegBaseAddrOff int32, callARecv uint8,
 	w0, w1, w2, w4 uint64) []byte {
-	return jitarm64.EmitFrameInlineBuildVoid0ArgSkeletonArm64(buf,
-		uint16(ciDepthAddrOff), uint16(ciSegBaseAddrOff), callARecv,
+	arenaBaseOff := arenaBaseOffArm64(int32(JITContextArenaBaseOffset))
+	return jitarm64.EmitFrameInlineBuildVoid0ArgSkeletonAbsoluteArm64(buf,
+		uint16(ciDepthAddrOff), uint16(ciSegBaseAddrOff), arenaBaseOff, callARecv,
 		jitarm64.FrameInlineCISlotWordsArm64{Word0: w0, Word1: w1, Word2: w2, Word3: 0, Word4: w4})
 }
 
 // archEmitFrameInlinePopVoid0ArgSkeleton arm64 端代理 jitarm64 同款 helper
-// (16 字节,等价 EmitFrameInlineCIDepthDecArm64)。
+// (24 字节,= CIDepthDec 16 + movz w0 #0 4 + ret 4,承 F3-#3b §9.20.9
+// commit-5l missing ret bug 修)。
 func archEmitFrameInlinePopVoid0ArgSkeleton(buf []byte, ciDepthAddrOff int32) []byte {
 	return jitarm64.EmitFrameInlinePopVoid0ArgSkeletonArm64(buf, uint16(ciDepthAddrOff))
 }
@@ -403,11 +422,12 @@ func archEmitFrameInlineExitHelperRequest(buf []byte,
 }
 
 // archEncodedFrameInlineBuildVoid0ArgSkeletonLen arm64 Spike 1 enterLuaFrame
-// 骨架字节数(164,承 §9.20 + jitarm64)。
-const archEncodedFrameInlineBuildVoid0ArgSkeletonLen = jitarm64.EncodedFrameInlineBuildVoid0ArgSkeletonArm64Len
+// 骨架字节数(172 字节 Absolute 版,= 原 164 + Absolute load 多 8 字节)。
+const archEncodedFrameInlineBuildVoid0ArgSkeletonLen = jitarm64.EncodedFrameInlineBuildVoid0ArgSkeletonAbsoluteArm64Len
 
 // archEncodedFrameInlinePopVoid0ArgSkeletonLen arm64 Spike 1 popCallInfo
-// 骨架字节数(16,等价 CIDepthDecArm64)。
+// 骨架字节数(24 = CIDepthDec 16 + movz w0 #0 4 + ret 4,承 F3-#3b §9.20.9
+// commit-5l missing ret bug 修)。
 const archEncodedFrameInlinePopVoid0ArgSkeletonLen = jitarm64.EncodedFrameInlinePopVoid0ArgSkeletonArm64Len
 
 // archEncodedFrameInlineExitHelperRequestLen arm64 Spike 1 exit-helper-request
