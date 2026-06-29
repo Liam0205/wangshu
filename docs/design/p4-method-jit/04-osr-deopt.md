@@ -792,22 +792,22 @@ func reloadFrameAfterDeopt(f *frame, th *Thread) {
 
 ### 7.2 CallInfo 状态:bit50 callStatus_gibbous 在 exit 后是否还需置 1
 
-**开放问题**:CallInfo bit50(callStatus_gibbous,承 [../p3-wasm-tier/04-trampoline](../p3-wasm-tier/04-trampoline.md) §1.2)在该帧 OSR exit 后,后续由 crescent 续跑——bit50 应保持 1 还是清零?
+**已确认拍板**(2026-06-29 PR #27 / PR #28 P4 三平台 CI 矩阵全过后用户确认):**采用 (b) 清 0**。CallInfo bit50(callStatus_gibbous,承 [../p3-wasm-tier/04-trampoline](../p3-wasm-tier/04-trampoline.md) §1.2)在该帧 OSR exit 后由 exit stub 清 0,后续由 crescent 续跑,该帧字面状态回归「crescent 帧」。
 
-两个候选:
+两个候选(留作历史):
 
 | 候选 | 含义 | 后果 |
 |---|---|---|
 | (a) bit50 保持 1 | 该帧仍标识为「曾经是 gibbous」 | traceback 显示有差异(若开 gibbous 帧豁免);部分 yield 路径检查会基于 bit50 判定 |
-| (b) bit50 清 0 | exit 后该帧回归「crescent 帧」 | 与「一路解释」帧状态完全一致——差分友好 |
+| **(b) bit50 清 0(已采纳)** | exit 后该帧回归「crescent 帧」 | 与「一路解释」帧状态完全一致——差分友好 |
 
-**倾向 (b)**(承 [./08-testing-strategy.md](./08-testing-strategy.md) §7.2 差分主防线 + [../p3-wasm-tier/04-trampoline](../p3-wasm-tier/04-trampoline.md) §4.5 traceback 不为 gibbous 帧开豁免):
+**采纳 (b) 的理由**(承 [./08-testing-strategy.md](./08-testing-strategy.md) §7.2 差分主防线 + [../p3-wasm-tier/04-trampoline](../p3-wasm-tier/04-trampoline.md) §4.5 traceback 不为 gibbous 帧开豁免):
 
 - 差分口径要求 traceback 逐字节一致——若 bit50 触发任何特殊显示,exit 后续跑的 traceback 与「一路解释」就有可观察差异。
 - exit 后帧的执行引擎已是 crescent,逻辑上应清 bit50(它的语义是「正在 wasm/jit 执行」)。
 - 实装代价小:exit stub 在 step 1 时顺手清 bit50(一条 mov 即可)。
 
-**留 P3/P4 落地时实测确认**:目前 [../p3-wasm-tier/04-trampoline](../p3-wasm-tier/04-trampoline.md) §4.5 已承「traceback 不为 gibbous 帧开豁免」,所以 (a) 与 (b) 在 traceback 输出上等价;但 yield/coroutine 路径与未来 P5 录制宿主可能依赖 bit50 的某个语义——本文只点名开放问题,留 P4 落地时定。
+**已落实**:P4 OSR exit 路径默认清 0;三平台 CI 矩阵(linux/amd64 + linux/arm64 + macos-latest M1)V1-V13 差分套全过,traceback 与「一路解释」逐字节一致。未来 P5 trace JIT 若需要依赖 bit50 的某个语义,需要时另行重审本节。
 
 ### 7.3 解释器从 exitPC 续跑:与「一路解释」逐字节一致
 
