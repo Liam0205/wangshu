@@ -2091,14 +2091,49 @@ PJ0 启动后,本文按以下协议更新(承 [P3 implementation-progress §5](.
 **amd64 PJ10 中期判定**(2026-06-28):**已达标**(V1-V13/V14/V15-部分/V16-V20/V22 fuzz harness 全过)。
 
 **双架构完整闭环 prerequisite**(等真正不可达项):
-1. ⏳ arm64 物理 self-hosted runner CI 接入(物理依赖)
-2. ⏳ V14 arm64 luajc 档实测(承 1 接入)
-3. ⏳ V18 arm64 -race(承 1 接入)
-4. ⏳ V21 longevity nightly 30 天累积(时间窗依赖)
-5. ⏳ V22 30 天累积无 guard 漏判事件(时间窗依赖)
-6. ⏳ Spike 1 真接入完成(trampoline exit-resume 协议改造,4-5 周工程)
+1. ⚡ **darwin/arm64 macos-latest CI 接入**(2026-06-29 C1-C8 真实装 + ci.yml job 已 push,**等首次 CI 跑结果确认 entitlement 不卡点**) — 承 §9.20.14
+2. ⏳ linux/arm64 物理 self-hosted runner CI 接入(用户选 A 路径优先,B 路径留 followup)
+3. ⏳ V14 arm64 luajc 档实测(承 1 或 2 接入)
+4. ⏳ V18 arm64 -race(承 1 或 2 接入)
+5. ⏳ V21 longevity nightly 30 天累积(时间窗依赖)
+6. ⏳ V22 30 天累积无 guard 漏判事件(时间窗依赖)
+7. ✅ Spike 1 真接入完成(2026-06-28 §9.20.10-13 完整端到端 amd64 + zero-cross 优化)
 
-**等以上 6 项闭合,§0 头部状态改 "P4 已交付"**(承 §10.5)+ §11/§12 数据更新触发 P3 退役决议拍板(承 §10.7 RJ-12 条件性)。
+**等以上 7 项闭合,§0 头部状态改 "P4 已交付"**(承 §10.5)+ §11/§12 数据更新触发 P3 退役决议拍板(承 §10.7 RJ-12 条件性)。
+
+---
+
+#### 9.20.14 darwin/arm64 W^X 真实装 + arm64 闸门翻 true(2026-06-29 macos-latest CI 接入)
+
+承 §13.4 双架构闭环 prerequisite 1 + tmp/wangshu-p4-todo.md §三 darwin/arm64 真实装路径(用户拍板方案 A:macos-latest CI 接 darwin/arm64 端到端,无前期硬件投入)。
+
+**9 commits(`278cf12..b4d58b4`,本次会话单线程交付)**完整闭环:
+
+| Commit | 内容 | 行数 |
+|---|---|---|
+| C1+C2(`278cf12`) | `codepage_darwin.go` cgo 真实装(MAP_JIT + pthread_jit_write_protect_np 翻 W^X + sys_icache_invalidate) + `codepage_other.go` build tag 第四位 `!(darwin && cgo)` 互斥 | ~150 |
+| C3(`69a3458`) | `codepage_darwin_test.go` 字节级 round-trip + nil-safety + 50 轮 no-leak 单测 | ~110 |
+| C4(`509d5af`) | `trampoline_linux_arm64.go` → `trampoline_real.go` rename + build tag 扩 `wangshu_p4 && arm64 && (linux \|\| (darwin && cgo))`(纯 Plan 9 ABI0 asm,跨 darwin/linux ABI 一致可共用) | ~16 |
+| C5(`36044ef`) | `EmitSelfNodeHitNoRetArm64` 真实装(200 字节,对位 amd64 EmitSelfNodeHitNoRet)替 panic 占位 + 3 字节级单测 + `patchBImm26` 新增 | ~230 |
+| C6(`b13e0be`) | `EmitFrameInlineExitHelperRequestArm64` 真实装(36 字节,对位 amd64 24B + RISC fixed-length 12B)替 0 字节占位 + 2 字节级单测 + `EmitStrWtToXnDisp` / `EmitMovzWdImm16` 新增(32-bit 变体) | ~240 |
+| C7(`edf1792`) | 翻 `archSupportsSpec / archSupportsFrameInline` arm64=true,允许 arm64 host 上 Compile 路径走 useFrameInline + useSpec 真路径 | ~30 |
+| C8(`b4d58b4`) | `.github/workflows/ci.yml` 加 `test-darwin-arm64` job(macos-latest M1,public repo 免费,3 路 CGO_ENABLED 矩阵覆盖 P4 + jit/arm64 子包 + P1 冒烟) | ~40 |
+
+**cgo 隔离纪律**(承用户拍板方案 I):build tag 第四位 `cgo` 严守 — 主库默认 build(CGO_ENABLED=0 cross-build 或 amd64 主路径)走 codepage_other.go stub,只有 macos-latest CI 启用 cgo 时才链 darwin 真实装,**主库零 cgo 承诺不变**(承 [[design-premises]] 前提)。
+
+**panic 占位回填教训**(承 commit-5n,tmp/wangshu-p4-todo.md §二.4):
+- archEmitSelfNodeHitNoRet 旧 panic 占位 + archEmitFrameInlineExitHelperRequest 旧 0 字节占位,翻闸门后 caller 长度断言或显式 panic 必触 → C5/C6 同批替为真实装
+- 翻闸门(C7)严格在 C5/C6 之后,保依赖闭环
+
+**预期 CI 结果**(本批 push 后首次 macos-latest job 跑出):
+- Green:darwin/arm64 端到端通过,§13.4 prerequisite 1 闭合
+- Red & EPERM/SIGKILL:Hardened Runtime entitlement 卡点,后续补 codesign 脚本(预计 ~30 行 entitlement plist + ad-hoc sign,留 followup commit)
+
+**未在本批做**(留 followup):
+- linux/arm64 self-hosted runner(B 路径,用户决策方案 A 优先)
+- V14 arm64 luajc 档实测(等 macos-latest CI 跑通后回填 §13.1 性能数字)
+- V1-V22 完整双架构差分套数据进档(承 §10.5)
+- darwin/arm64 entitlement 卡点后的 codesign 兜底
 
 ---
 
