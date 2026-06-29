@@ -320,9 +320,17 @@ func archSupportsSpec() bool {
 // archSupportsForLoop arm64 端 PJ3 FORLOOP 模板已真接入(本会话 PJ8
 // arm64 PJ3 全四形态:EmptyConst 84/92B / RegLimit 120/128B /
 // WithRegKBody 144/152B / WithRegKBody2 168/176B,字节级单测全过);
-// FORLOOP 经 archCallJITFull 主路径不经 spec trampoline,所以
-// archSupportsForLoop 与 archSupportsSpec 解耦,arm64 返 true。
-func archSupportsForLoop() bool { return true }
+// FORLOOP 经 archCallJITFull 主路径不经 spec trampoline。
+//
+// **darwin/arm64 暂返 false**(承 F3-#3 + archSupportsSpec 同款,
+// archCallJITFull 路径在真物理 macos-latest M1 上也崩 SIGSEGV at 0x2000,
+// 根因 isolate 留 F3-#3b);linux/arm64 返 true 不变。
+func archSupportsForLoop() bool {
+	if runtime.GOOS == "darwin" {
+		return false
+	}
+	return true
+}
 
 // archEmitHelperCall 发射 helper call 通用宏(arm64 端:`mov X16,
 // helperAddr imm64 + blr X16`,20 字节)。对位 amd64 archEmitHelperCall
