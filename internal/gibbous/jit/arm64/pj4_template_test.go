@@ -1260,3 +1260,94 @@ func TestPJ8_EmitSelfNodeHitNoRetArm64_ByteEqualNodeHit(t *testing.T) {
 		}
 	}
 }
+
+// TestPJ8_EmitFrameInlineExitHelperRequestArm64_Length 验 arm64 ExitHelperRequest
+// 段字节长度(36 字节,对位 amd64 24 字节;arm64 多 12 字节因 fixed-length
+// 编码 + 无寄存器复用)。
+func TestPJ8_EmitFrameInlineExitHelperRequestArm64_Length(t *testing.T) {
+	var buf []byte
+	buf = EmitFrameInlineExitHelperRequestArm64(buf,
+		20, // exitReasonOff(jitContext.exitReasonCode 字段偏移,uint32)
+		64, // exitArg0Off  (jitContext.exitArg0 字段偏移,uint64)
+		1,  // helperCode = HelperRunCallee
+	)
+	const wantLen = 36
+	if len(buf) != wantLen {
+		t.Errorf("总长度 = %d, want %d", len(buf), wantLen)
+	}
+	if len(buf) != EncodedFrameInlineExitHelperRequestArm64Len {
+		t.Errorf("len = %d, want %d", len(buf), EncodedFrameInlineExitHelperRequestArm64Len)
+	}
+}
+
+// TestPJ8_EmitFrameInlineExitHelperRequestArm64_Encoding 验关键字节结构:
+//   - [ 0-15] movz/movk x16, helperCode imm64(4 条 32-bit)
+//   - [16-19] str x16, [x27 + exitArg0Off](64-bit STR)
+//   - [20-23] movz w16, #3(32-bit MOVZ,ExitInlineHelper)
+//   - [24-27] str w16, [x27 + exitReasonOff](32-bit STR)
+//   - [28-31] movz w0, #3(32-bit MOVZ,设返值)
+//   - [32-35] ret(0xd65f03c0)
+func TestPJ8_EmitFrameInlineExitHelperRequestArm64_Encoding(t *testing.T) {
+	const helperCode uint64 = 0xCAFEBABEDEADBEEF
+	const exitReasonOff = int32(20)
+	const exitArg0Off = int32(64)
+
+	var buf []byte
+	buf = EmitFrameInlineExitHelperRequestArm64(buf,
+		exitReasonOff, exitArg0Off, helperCode)
+	if len(buf) != 36 {
+		t.Fatalf("len = %d, want 36", len(buf))
+	}
+
+	// [ 0-15] movz/movk x16, helperCode imm64
+	// 验 4 段 imm16 烧进:[0..16) 每 4 字节一条 MOVZ/MOVK
+	for i := 0; i < 4; i++ {
+		insn := binary.LittleEndian.Uint32(buf[i*4 : i*4+4])
+		// imm16 段在 bit 5-20
+		got := uint16((insn >> 5) & 0xFFFF)
+		exp := uint16(helperCode >> (i * 16))
+		if got != exp {
+			t.Errorf("movz/movk[%d] imm16 = 0x%04X, want 0x%04X", i, got, exp)
+		}
+		// Rd 在 bit 0-4 应是 x16(16)
+		if (insn & 0x1F) != 16 {
+			t.Errorf("movz/movk[%d] Rd = %d, want 16 (x16)", i, insn&0x1F)
+		}
+	}
+
+	// [16-19] str x16, [x27 + exitArg0Off] = 0xF9000000 + (imm12<<10) + (27<<5) + 16
+	//   imm12 = exitArg0Off/8 = 8
+	insn := binary.LittleEndian.Uint32(buf[16:20])
+	wantStrX := uint32(0xF9000000) | uint32(8)<<10 | uint32(27)<<5 | uint32(16)
+	if insn != wantStrX {
+		t.Errorf("[16] STR x16, [x27 + %d] = 0x%08X, want 0x%08X", exitArg0Off, insn, wantStrX)
+	}
+
+	// [20-23] movz w16, #3 = 0x52800000 + (3<<5) + 16
+	insn = binary.LittleEndian.Uint32(buf[20:24])
+	wantMovzW16 := uint32(0x52800000) | uint32(3)<<5 | uint32(16)
+	if insn != wantMovzW16 {
+		t.Errorf("[20] MOVZ w16, #3 = 0x%08X, want 0x%08X", insn, wantMovzW16)
+	}
+
+	// [24-27] str w16, [x27 + exitReasonOff] = 0xB9000000 + (imm12<<10) + (27<<5) + 16
+	//   imm12 = exitReasonOff/4 = 5
+	insn = binary.LittleEndian.Uint32(buf[24:28])
+	wantStrW := uint32(0xB9000000) | uint32(5)<<10 | uint32(27)<<5 | uint32(16)
+	if insn != wantStrW {
+		t.Errorf("[24] STR w16, [x27 + %d] = 0x%08X, want 0x%08X", exitReasonOff, insn, wantStrW)
+	}
+
+	// [28-31] movz w0, #3 = 0x52800000 + (3<<5) + 0
+	insn = binary.LittleEndian.Uint32(buf[28:32])
+	wantMovzW0 := uint32(0x52800000) | uint32(3)<<5 | uint32(0)
+	if insn != wantMovzW0 {
+		t.Errorf("[28] MOVZ w0, #3 = 0x%08X, want 0x%08X", insn, wantMovzW0)
+	}
+
+	// [32-35] ret
+	insn = binary.LittleEndian.Uint32(buf[32:36])
+	if insn != 0xd65f03c0 {
+		t.Errorf("[32] RET = 0x%08X, want 0xd65f03c0", insn)
+	}
+}

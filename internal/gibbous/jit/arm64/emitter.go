@@ -221,6 +221,57 @@ func EmitStrXtToXnDisp(buf []byte, rt, rn uint8, byteOff uint16) []byte {
 // EncodedStrXtToXnDispLen = 4.
 const EncodedStrXtToXnDispLen = 4
 
+// EmitStrWtToXnDisp 发射 arm64「str Wt, [Xn, #pimm12]」32-bit store with
+// unsigned 12-bit offset(对位 EmitStrXtToXnDisp 32-bit 版,用于写 uint32
+// 字段)。
+//
+// arm64 编码:1011_1001_00_iiiiiiiiiiii_nnnnn_ttttt = 0xB9000000 base
+//   - size=10(32-bit),V=0,opc=00(STR unsigned offset)
+//   - imm12 是 **4-byte scaled offset**(byte offset = imm12 * 4),范围
+//     [0, 16380],步长 4
+//
+// 用例:C6 EmitFrameInlineExitHelperRequestArm64 写 jitContext.exitReasonCode
+// (uint32 字段);对位 amd64 `mov [r15+exitReason], eax` 4 字节。
+func EmitStrWtToXnDisp(buf []byte, rt, rn uint8, byteOff uint16) []byte {
+	if rt > 30 {
+		rt = 0
+	}
+	if rn > 30 {
+		rn = 0
+	}
+	if byteOff%4 != 0 || byteOff > 16380 {
+		byteOff = 0
+	}
+	imm12 := uint32(byteOff / 4)
+	insn := uint32(0xB9000000) | (imm12&0xFFF)<<10 | (uint32(rn)&0x1F)<<5 | uint32(rt)&0x1F
+	return appendArm64Insn(buf, insn)
+}
+
+// EncodedStrWtToXnDispLen = 4.
+const EncodedStrWtToXnDispLen = 4
+
+// EmitMovzWdImm16 发射 arm64「movz Wd, #imm16」(32-bit version,清高 32
+// 位)单条 4 字节指令。
+//
+// arm64 编码:0101_0010_1_00_iiiiiiiiiiiiiiii_ddddd = 0x52800000 base
+//   - sf=0(32-bit),opc=10(MOVZ),hw=00(LSL #0)
+//
+// vs 64-bit EmitMovXdImm64(16 字节,movz+movk×3):仅当目标值 ≤ 0xFFFF
+// 时省成单条;C6 写 jitContext.exitReasonCode = ExitInlineHelper (3) 用得到。
+//
+// 用例:C6 EmitFrameInlineExitHelperRequestArm64 装 ExitInlineHelper=3 入
+// w16(scratch)和 w0(返值);对位 amd64 `mov eax, ExitInlineHelper` 5 字节。
+func EmitMovzWdImm16(buf []byte, rd uint8, imm16 uint16) []byte {
+	if rd > 30 {
+		rd = 0
+	}
+	insn := uint32(0x52800000) | (uint32(imm16)&0xFFFF)<<5 | uint32(rd)&0x1F
+	return appendArm64Insn(buf, insn)
+}
+
+// EncodedMovzWdImm16Len = 4.
+const EncodedMovzWdImm16Len = 4
+
 // EmitCmpXnXm 发射 arm64「cmp Xn, Xm」(寄存器比较,设 NZCV flags 不写
 // 结果)。实际编码 = SUBS XZR, Xn, Xm:
 //

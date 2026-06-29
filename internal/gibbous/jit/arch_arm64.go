@@ -363,22 +363,24 @@ func archEmitFrameInlinePopVoid0ArgSkeleton(buf []byte, ciDepthAddrOff int32) []
 }
 
 // archEmitFrameInlineExitHelperRequest arm64 端 Spike 1 exit-helper-request
-// 段(承 §9.20.9 (4) arm64 对位:~28 字节,见
-// jitarm64.EmitFrameInlineExitHelperRequestArm64)。
+// 段真实装(承 C6 commit 占位回填,承 §9.20.9 (4) trampoline exit-resume 协议
+// arm64 对位)。
 //
-// **当前 archSupportsFrameInline=false 屏蔽真触发**,arm64 端未实装 jitarm64
-// 同款 helper;Compile 路径不进入 useFrameInline 分支,本路由不被调。
-// commit-5 真接入时同批落 jitarm64.EmitFrameInlineExitHelperRequestArm64 +
-// 翻 archSupportsFrameInline。
+// 字节序列(36 字节,对位 amd64 24 字节):
+//   - movz/movk x16, helperCode imm64(16B)
+//   - str x16, [x27 + exitArg0Off](4B,64-bit STR)
+//   - movz w16, #3(4B,ExitInlineHelper)
+//   - str w16, [x27 + exitReasonOff](4B,32-bit STR)
+//   - movz w0, #3(4B,设返值;trampoline 检 X0)
+//   - ret(4B)
 //
-// **占位**:返 buf 不变(0 字节追加),caller 长度断言会失败 — production
-// 路径不触达(archSupportsFrameInline=false),仅 cross-build 期可达。
+// **archSupportsFrameInline 翻 true 后启用**(C7);本 commit 替原 0 字节占位为
+// 真实装,Compile/Run 端真接通 + 物理 runner 端到端验证留 C7 + 后续 PJ8
+// macos-latest CI 跑。
 func archEmitFrameInlineExitHelperRequest(buf []byte,
 	exitReasonOff, exitArg0Off int32, helperCode uint64) []byte {
-	_ = exitReasonOff
-	_ = exitArg0Off
-	_ = helperCode
-	return buf
+	return jitarm64.EmitFrameInlineExitHelperRequestArm64(buf,
+		exitReasonOff, exitArg0Off, helperCode)
 }
 
 // archEncodedFrameInlineBuildVoid0ArgSkeletonLen arm64 Spike 1 enterLuaFrame
@@ -390,5 +392,6 @@ const archEncodedFrameInlineBuildVoid0ArgSkeletonLen = jitarm64.EncodedFrameInli
 const archEncodedFrameInlinePopVoid0ArgSkeletonLen = jitarm64.EncodedFrameInlinePopVoid0ArgSkeletonArm64Len
 
 // archEncodedFrameInlineExitHelperRequestLen arm64 Spike 1 exit-helper-request
-// 段字节数(占位 0,真接入 commit-5 实装 jitarm64 helper 后改 ~28)。
-const archEncodedFrameInlineExitHelperRequestLen = 0
+// 段字节数(36,对位 amd64 24 字节;arm64 fixed-length 编码 + 无寄存器复用
+// 多 12 字节)。承 C6 jitarm64.EmitFrameInlineExitHelperRequestArm64 真实装。
+const archEncodedFrameInlineExitHelperRequestLen = jitarm64.EncodedFrameInlineExitHelperRequestArm64Len

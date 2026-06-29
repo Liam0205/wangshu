@@ -1085,3 +1085,81 @@ func EmitFrameInlinePopVoid0ArgSkeletonArm64(buf []byte, ciDepthAddrOffset uint1
 
 // EncodedFrameInlinePopVoid0ArgSkeletonArm64Len = 16(同 CIDepthDecArm64)。
 const EncodedFrameInlinePopVoid0ArgSkeletonArm64Len = EncodedFrameInlineCIDepthIncDecArm64Len
+
+// EmitFrameInlineExitHelperRequestArm64 发射 arm64 Spike 1 trampoline exit-resume
+// 协议 exit-helper-request 段(对位 amd64 EmitFrameInlineExitHelperRequest
+// 24 字节版的 arm64 端镜像)。
+//
+// **协议位置**(承 amd64 同款 + tmp/wangshu-p4-todo.md §二.4):
+// BuildVoid0Arg 后,PopVoid0Arg 前,出 mmap 段返 trampoline。trampoline asm
+// 检 X0 = ExitInlineHelper (3) 路由 Go dispatcher。
+//
+// **字节序列**(arm64,总 36 字节):
+//
+//	; 装 helperCode 到 x16(IP0 scratch)
+//	movz/movk x16, helperCode imm64   ; 16 字节(movz+movk×3)
+//	; 写 jitCtx.exitArg0 = helperCode
+//	str x16, [x27 + exitArg0Off]      ; 4 字节(64-bit STR)
+//	; 装 ExitInlineHelper=3 到 w16(单条 movz 即可,imm16 = 3)
+//	movz w16, #3                       ; 4 字节(32-bit MOVZ)
+//	; 写 jitCtx.exitReasonCode = 3(32-bit 字段)
+//	str w16, [x27 + exitReasonOff]    ; 4 字节(32-bit STR)
+//	; 设返值 x0 = 3(trampoline 检 X0 路由 dispatcher)
+//	movz w0, #3                        ; 4 字节(32-bit MOVZ,清高位)
+//	; ret
+//	ret                                ; 4 字节
+//	; 总:16 + 4 + 4 + 4 + 4 + 4 = 36 字节
+//
+// **vs amd64 24 字节差 12 字节**:
+//   - arm64 MOV imm64 序列 16 字节(movz+movk×3)vs amd64 mov rax imm64 10 字节
+//   - arm64 movz Wd imm16 4 字节 vs amd64 mov eax imm32 5 字节(省 1)
+//   - arm64 RET 4 字节 vs amd64 ret 1 字节(多 3)
+//   - arm64 必须显式 movz w0, #3(无 fall-through 寄存器复用)vs amd64 复用 eax
+//   - 总差 +12 字节(arm64 fixed-length 4-byte 编码 + 无寄存器复用)
+//
+// **入参**(对位 amd64 同款):
+//   - exitReasonOff:jitContext.exitReasonCode 字段偏移(uint32,4 字节对齐)
+//   - exitArg0Off:jitContext.exitArg0 字段偏移(uint64,8 字节对齐)
+//   - helperCode:helper request code(HelperRunCallee=1 等)
+//
+// **预设条件**(承 06 §4.2 arm64 trampoline 协议):
+//   - x27 = jitContext(callJITSpec 装入,callee-saved)
+//   - x16/x17 = IP0/IP1 scratch(intra-procedure-call scratch)
+//
+// **archSupportsFrameInline 翻 true 后启用**(承 C7,承 tmp/wangshu-p4-todo.md
+// §二.4 翻闸门会暴露 commit-5n 留 panic 占位):本 commit 替 panic 占位为真
+// 实装,Compile/Run 端真接通 + 物理 runner 端到端验证留 C7。
+func EmitFrameInlineExitHelperRequestArm64(buf []byte, exitReasonOff, exitArg0Off int32, helperCode uint64) []byte {
+	// 1. movz/movk x16, helperCode imm64(16 字节)
+	buf = EmitMovXdImm64(buf, 16, helperCode)
+
+	// 2. str x16, [x27 + exitArg0Off](4 字节,64-bit STR;offset 必须 8 对齐 ≤ 32760)
+	if exitArg0Off < 0 || exitArg0Off > 32760 || exitArg0Off%8 != 0 {
+		// 兜底:offset 越界静默 → byteOff=0,production 路径 jitContext 字段
+		// 偏移在数十字节,不会触达(承 arenaBaseOffArm64 同款防御纪律)。
+		exitArg0Off = 0
+	}
+	buf = EmitStrXtToXnDisp(buf, 16, 27, uint16(exitArg0Off))
+
+	// 3. movz w16, #ExitInlineHelper=3(4 字节,32-bit MOVZ,imm16=3 单条够)
+	buf = EmitMovzWdImm16(buf, 16, 3)
+
+	// 4. str w16, [x27 + exitReasonOff](4 字节,32-bit STR;offset 必须 4 对齐 ≤ 16380)
+	if exitReasonOff < 0 || exitReasonOff > 16380 || exitReasonOff%4 != 0 {
+		exitReasonOff = 0
+	}
+	buf = EmitStrWtToXnDisp(buf, 16, 27, uint16(exitReasonOff))
+
+	// 5. movz w0, #ExitInlineHelper=3(4 字节,设返值;trampoline 检 X0)
+	buf = EmitMovzWdImm16(buf, 0, 3)
+
+	// 6. ret(4 字节)
+	buf = EmitRet(buf)
+
+	return buf
+}
+
+// EncodedFrameInlineExitHelperRequestArm64Len = 16 + 4 + 4 + 4 + 4 + 4 = 36
+// (对位 amd64 EncodedFrameInlineExitHelperRequestLen = 24,arm64 多 12 字节
+// 因 fixed-length 编码 + 无寄存器复用)。
+const EncodedFrameInlineExitHelperRequestArm64Len = 36
