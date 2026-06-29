@@ -110,12 +110,14 @@ fi
 - **只查本次暂存的 Go 文件**(快);工具缺失静默跳过(不绑架无 Go 环境的文档提交)。
 - 失败打印**可直接复制执行**的修复命令(原则 4,pineapple 同款)。
 
-### 2.2 commit-msg:`type(scope):` 强制校验(经评审纳入;pineapple 缺口补强)
+### 2.2 commit-msg:`type(scope):` 强制校验 + 标题 ASCII-only(经评审纳入;pineapple 缺口补强)
 
 ```bash
 #!/usr/bin/env bash
 # 校验 conventional commits:type(scope): subject 或 type: subject
 # type 枚举与本仓库既有提交史一致(git log 全部为此格式)。
+# 同时校验标题为纯 ASCII(英语策略,2026-06-29 起本项目 commit subject
+# 英语化;见用户记忆 feedback_code_language_english)。
 msg=$(head -1 "$1")
 pattern='^(feat|fix|doc|docs|test|chore|perf|refactor|ci|bench|build|revert)(\([a-z0-9/_.-]+\))?: .+'
 # merge/revert/fixup 的自动消息放行
@@ -127,10 +129,19 @@ if ! [[ "$msg" =~ $pattern ]]; then
     echo "示例:doc(p1): clarify IC invalidation rules"
     exit 1
 fi
+# ASCII-only 校验(tr -d 删 ASCII 字节,剩余即非 ASCII,POSIX 可移植 BSD+GNU)
+non_ascii=$(LC_ALL=C printf '%s' "$msg" | LC_ALL=C tr -d '\000-\177')
+if [ -n "$non_ascii" ]; then
+    echo "✗ commit subject 含非 ASCII 字符(英语策略):"
+    echo "    $msg"
+    echo "Non-ASCII bytes (raw): $non_ascii"
+    exit 1
+fi
 ```
 
 - pineapple 纯靠习惯(其提交史 `type(scope):` 高度一致但无强制);望舒**强制校验**——对 agent 提交工作流尤其友好(机器生成的 message 偶发跑偏,hook 当场拦)。
 - scope 建议(非强制枚举):`p1`..`p5`、包名(`arena`/`crescent`/...)、`llmdoc`、`ci`。
+- **ASCII-only 标题**:2026-06-29 起本项目 commit subject 英语化(用户记忆 `feedback_code_language_english`);hook 当场拦截 CJK / em-dash / `§` 等非 ASCII 字符。body 不限制(可含 URL / 日志片段 / 等)。
 
 ### 2.3 pre-push:全仓 lint(十秒级)
 

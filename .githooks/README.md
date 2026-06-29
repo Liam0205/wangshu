@@ -13,7 +13,7 @@ make hooks    # 即 git config core.hooksPath .githooks
 | hook | 时机 | 做什么 | 量级 |
 |---|---|---|---|
 | `pre-commit` | 提交前 | staged Go 文件 gofmt 检查 | 秒级 |
-| `commit-msg` | 提交时 | 强制 `type(scope): subject` 格式 | 毫秒级 |
+| `commit-msg` | 提交时 | 强制 `type(scope): subject` 格式 + subject 行 ASCII-only(英语策略,见项目记忆 `feedback_code_language_english`) | 毫秒级 |
 | `pre-push` | 推送前 + 推送后 | ① 全仓 golangci-lint + go vet;② self-wrapping inner push;③ 阻塞等 CI + 抓 PR 新评论活动 | 推送前十秒级 + CI 等待 |
 
 - 所有 hook 在 CI 环境(`$CI`/`$GITHUB_ACTIONS`)自动短路。
