@@ -380,19 +380,29 @@ func archSupportsFrameInline() bool {
 // amd64 Absolute 版,真物理 darwin/arm64 macos-latest CI 实证修复 PJ5 SelfCall
 // SpecTemplate 段内 SIGSEGV)。
 //
+// archEmitFrameInlineBuildVoid0ArgSkeleton arm64 端代理 jitarm64 同款 helper
+// (172 字节 Absolute 版,承 §9.20 Option B Spike 1 + §9.20.9 commit-5l ciSegBase
+// 镜像字语义 bug 修)。Absolute 版 LoadCISlotAddr 内追加 `ldr x14, [x27+arenaBaseOff]
+// + add x0, x0, x14` 让 x0 是绝对地址,避免 word offset 不能 deref 的 bug(对位
+// amd64 Absolute 版,真物理 darwin/arm64 macos-latest CI 实证修复 PJ5 SelfCall
+// SpecTemplate 段内 SIGSEGV)。
+//
 // arm64 offset 用 uint16 形态(LDR Xt, [Xn, pimm] 编码限制,pimm 必须 0..32760
-// 且 8 对齐)。
+// 且 8 对齐)。**arenaBase offset 经 arenaBaseOffArm64() 校验**(承 PR #28
+// review:绕过校验 helper 会让未来字段重排把 arenaBase 推到 ≥32760 时静默
+// 失效,详 arenaBaseOffArm64 注释)。
 func archEmitFrameInlineBuildVoid0ArgSkeleton(buf []byte,
 	ciDepthAddrOff, ciSegBaseAddrOff int32, callARecv uint8,
 	w0, w1, w2, w4 uint64) []byte {
-	arenaBaseOff := uint16(JITContextArenaBaseOffset)
+	arenaBaseOff := arenaBaseOffArm64(int32(JITContextArenaBaseOffset))
 	return jitarm64.EmitFrameInlineBuildVoid0ArgSkeletonAbsoluteArm64(buf,
 		uint16(ciDepthAddrOff), uint16(ciSegBaseAddrOff), arenaBaseOff, callARecv,
 		jitarm64.FrameInlineCISlotWordsArm64{Word0: w0, Word1: w1, Word2: w2, Word3: 0, Word4: w4})
 }
 
 // archEmitFrameInlinePopVoid0ArgSkeleton arm64 端代理 jitarm64 同款 helper
-// (16 字节,等价 EmitFrameInlineCIDepthDecArm64)。
+// (24 字节,= CIDepthDec 16 + movz w0 #0 4 + ret 4,承 F3-#3b §9.20.9
+// commit-5l missing ret bug 修)。
 func archEmitFrameInlinePopVoid0ArgSkeleton(buf []byte, ciDepthAddrOff int32) []byte {
 	return jitarm64.EmitFrameInlinePopVoid0ArgSkeletonArm64(buf, uint16(ciDepthAddrOff))
 }
@@ -423,7 +433,8 @@ func archEmitFrameInlineExitHelperRequest(buf []byte,
 const archEncodedFrameInlineBuildVoid0ArgSkeletonLen = jitarm64.EncodedFrameInlineBuildVoid0ArgSkeletonAbsoluteArm64Len
 
 // archEncodedFrameInlinePopVoid0ArgSkeletonLen arm64 Spike 1 popCallInfo
-// 骨架字节数(16,等价 CIDepthDecArm64)。
+// 骨架字节数(24 = CIDepthDec 16 + movz w0 #0 4 + ret 4,承 F3-#3b §9.20.9
+// commit-5l missing ret bug 修)。
 const archEncodedFrameInlinePopVoid0ArgSkeletonLen = jitarm64.EncodedFrameInlinePopVoid0ArgSkeletonArm64Len
 
 // archEncodedFrameInlineExitHelperRequestLen arm64 Spike 1 exit-helper-request
