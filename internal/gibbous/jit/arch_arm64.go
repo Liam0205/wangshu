@@ -10,8 +10,6 @@
 package jit
 
 import (
-	"runtime"
-
 	jitarm64 "github.com/Liam0205/wangshu/internal/gibbous/jit/arm64"
 )
 
@@ -302,18 +300,14 @@ func archEmitSpecArgLoadReg(buf []byte, dstReg uint8, srcReg uint8) []byte {
 // 状态分布:
 //   - amd64:走 arch_amd64.go(不在本文件)
 //   - linux/arm64:✅ 翻 true(承 C7 + tmp/wangshu-p4-todo.md §二)
-//   - darwin/arm64:⏳ 暂 false(F3-#3 调试中,留下一批本 PR followup commit)
+//   - darwin/arm64:✅ 翻 true(F3-#3b trampoline_arm64.s STP/LDP 偏移
+//     +8 修复 LR slot 覆盖 bug 后真物理 M1 验证全过,详 trampoline_arm64.s
+//     头注 + commit message)
 //
-// **激活范围**(linux/arm64):Compile 端 PJ2 投机三形态 + PJ3 FORLOOP
-// body/body2/RegLimit 三路径走 archCallJITSpec;PJ4 IC 六模板继续走
-// archCallJITFull(本就启用);PJ5 SELF spec template + useFrameInline。
-//
-// 注:runtime.GOOS 在编译期是 string 常量,Go 编译器对 darwin/arm64 build
-// 会 dead-code-eliminate 这条 if 分支,不引入运行期开销。
+// **激活范围**:Compile 端 PJ2 投机三形态 + PJ3 FORLOOP body/body2/RegLimit
+// 三路径走 archCallJITSpec;PJ4 IC 六模板继续走 archCallJITFull(本就启用);
+// PJ5 SELF spec template + useFrameInline。
 func archSupportsSpec() bool {
-	if runtime.GOOS == "darwin" {
-		return false
-	}
 	return true
 }
 
@@ -322,13 +316,8 @@ func archSupportsSpec() bool {
 // WithRegKBody 144/152B / WithRegKBody2 168/176B,字节级单测全过);
 // FORLOOP 经 archCallJITFull 主路径不经 spec trampoline。
 //
-// **darwin/arm64 暂返 false**(承 F3-#3 + archSupportsSpec 同款,
-// archCallJITFull 路径在真物理 macos-latest M1 上也崩 SIGSEGV at 0x2000,
-// 根因 isolate 留 F3-#3b);linux/arm64 返 true 不变。
+// **darwin/arm64 同 archSupportsSpec 翻 true**(F3-#3b trampoline 修复后)。
 func archSupportsForLoop() bool {
-	if runtime.GOOS == "darwin" {
-		return false
-	}
 	return true
 }
 
@@ -349,18 +338,14 @@ func archEmitHelperCall(buf []byte, helperAddr uint64) []byte {
 // 因 RISC fixed-length 比 amd64 多 8 字节)。
 const archEncodedHelperCallLen = jitarm64.EncodedHelperCallArm64Len
 
-// archSupportsFrameInline arm64 端 C7 翻闸门 + darwin skip:linux/arm64 返
-// true 允许 useFrameInline 真路径;darwin/arm64 暂 false(F3-#3 调试中,
-// 同 archSupportsSpec)。
+// archSupportsFrameInline arm64 端 C7 翻闸门:linux/arm64 + darwin/arm64
+// 均返 true 允许 useFrameInline 真路径(F3-#3b trampoline 修复后两端等价)。
 //
 // **依赖闭环**(C5/C6 已交付):
 //   - archEmitSelfNodeHitNoRet:C5 真实装替 panic 占位
 //   - archEmitFrameInlineExitHelperRequest:C6 真实装替 0 字节占位
 //   - archEncodedFrameInlineExitHelperRequestLen:C6 从 0 → 36
 func archSupportsFrameInline() bool {
-	if runtime.GOOS == "darwin" {
-		return false
-	}
 	return true
 }
 
