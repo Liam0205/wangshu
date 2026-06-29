@@ -112,6 +112,46 @@ jobs:
           GOOS=linux GOARCH=arm64 go test -tags 'wangshu_p4 wangshu_profile' \
             ./internal/gibbous/jit/arm64/...
 
+  # darwin/arm64 真物理 runner CI:用 GitHub Actions macos-latest(Apple
+  # Silicon M1+)跑 P4 + jit/arm64 子包真物理 e2e。
+  #
+  # 承 tmp/wangshu-p4-todo.md §三 darwin/arm64 W^X 真实装(方案 A)+
+  # 06-backends.md §5.7「双架构 CI 双跑」+ 08-testing-strategy.md §6。
+  #
+  # **关键技术约束**:
+  #   - macos-latest = arm64 (Apple Silicon),public repo 免费(private 10x 计费)
+  #   - JIT entitlement:`go test` 子进程默认允许 MAP_JIT + pthread_jit_write_protect_np
+  #     (Hardened Runtime + codesign 在 `go test` 通常不强制)
+  #   - cgo 必须启用:codepage_darwin.go build tag 严格 `wangshu_p4 && darwin
+  #     && arm64 && cgo`,CGO_ENABLED=0 cross-build 走 codepage_other.go stub
+  #
+  # **范围**:跑完整 ./... P4 build + jit/arm64 子包 + arm64 host 上经
+  # archCallJITFull / archCallJITSpec 的真 mmap+RX+execute 路径。
+  test-darwin-arm64:
+    runs-on: macos-latest
+    needs: test
+    name: test-darwin-arm64 (p4 macos-latest M1)
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      # darwin/arm64 真 cgo 路径(codepage_darwin.go MAP_JIT + W^X 翻面 +
+      # sys_icache_invalidate)。CGO_ENABLED=1 是 darwin runner 默认值。
+      - name: go test darwin/arm64 p4 build (cgo enabled)
+        run: |
+          CGO_ENABLED=1 go test -tags 'wangshu_p4 wangshu_profile' ./...
+      # jit/arm64 子包字节级单测 + 真 trampoline + 真 mmap+RX 路径
+      - name: go test jit/arm64 子包(真 callJITFull / callJITSpec)
+        run: |
+          CGO_ENABLED=1 go test -tags 'wangshu_p4 wangshu_profile' \
+            ./internal/gibbous/jit/arm64/...
+      # P1 build(crescent 解释器)在 darwin/arm64 跑一次冒烟,确保 arm64 host
+      # 上无 cgo 路径仍跑通
+      - name: go test darwin/arm64 p1 build (cgo disabled)
+        run: |
+          CGO_ENABLED=0 go test ./...
+
   fuzz-smoke:
     needs: test
     runs-on: ubuntu-latest
