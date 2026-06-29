@@ -1,4 +1,17 @@
-//go:build wangshu_p4 && arm64 && (linux || (darwin && cgo))
+//go:build wangshu_p4 && arm64 && (linux || (darwin && cgo)) && !wangshu_qemu
+
+// 本测试真去 MmapCode + CallJITFull / CallJITSpec 跳进 mmap 段执行 arm64
+// 指令(承 §9.20.9 trampoline 协议)。
+//
+// **build tag !wangshu_qemu 排除 QEMU job**(承 F2 修复 + ci.yml L94-99
+// 注释):QEMU user-mode emulation 不真模拟 i-cache flush / PROT_EXEC,
+// 实测在 mmap 段 RET 字节处 SIGSEGV(addr=0xc308,即 0xd65f03c0 RET 的低
+// 16 bit)。真物理 arm64 host(linux/arm64 self-hosted runner 或
+// darwin/arm64 macos-latest)必跑本测试,QEMU 路径显式 skip 编译。
+//
+// CI 配合:.github/workflows/ci.yml test-arm64 QEMU job 跑 `go test
+// -tags 'wangshu_p4 wangshu_profile wangshu_qemu' ./internal/gibbous/jit/arm64/...`
+// 时,本文件不编译,只跑字节编码字节级单测(纯计算路径,QEMU 可信)。
 
 package arm64
 

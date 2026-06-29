@@ -92,6 +92,12 @@ jobs:
   # 不可信。emitter 字节编码 + codepage struct 一致性等纯计算路径在 QEMU
   # 可靠运行。真 arm64 端到端等物理 runner(承 06 §5.7「PJ8/9 可滞后真物理
   # runner」渐进交付)。
+  #
+  # **F2 修复**:trampoline_test.go(真 MmapCode + CallJITFull/Spec 跳执行)
+  # build tag 含 `!wangshu_qemu`,本 job 跑测时显式加 `wangshu_qemu` tag 让
+  # 真执行类单测不编译,避免 0xc308 SIGSEGV(RET 0xd65f03c0 低 16-bit
+  # mmap 段取指错)。darwin/arm64 macos-latest 真物理 runner 不加该 tag,
+  # 仍跑全套真执行单测。
   test-arm64:
     runs-on: ubuntu-latest
     needs: test
@@ -109,7 +115,7 @@ jobs:
       # 跑 jit/arm64 子包(纯字节编码 + codepage 一致性,无 mmap+RX 执行)
       - name: go test arm64 jit/arm64 子包(emitter 字节编码)
         run: |
-          GOOS=linux GOARCH=arm64 go test -tags 'wangshu_p4 wangshu_profile' \
+          GOOS=linux GOARCH=arm64 go test -tags 'wangshu_p4 wangshu_profile wangshu_qemu' \
             ./internal/gibbous/jit/arm64/...
 
   # darwin/arm64 真物理 runner CI:用 GitHub Actions macos-latest(Apple
