@@ -1,4 +1,4 @@
-//go:build wangshu_p4 && linux && arm64
+//go:build wangshu_p4 && arm64 && (linux || (darwin && cgo))
 
 package arm64
 
