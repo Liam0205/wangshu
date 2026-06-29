@@ -113,24 +113,22 @@ func TestDarwinMmapCode_NoLeak(t *testing.T) {
 	}
 }
 
-// TestDarwinMmapCode_ExecSanityProbe 真物理 darwin/arm64 执行最小段验证。
+// TestDarwinMmapCode_ExecSanityProbe 真物理 darwin/arm64 mmap 段 RX 翻面
+// + 字节级写入合法地址验证。
 //
-// **F3-#3 调试探针**(承本会话 macos-latest SIGSEGV at 0x2000):trampoline_test.go
-// 的 CallJITFull RoundTrip 在 macos-latest 真物理 arm64 上崩 PC=0x2000,
-// 需要先把根因 isolate 到「MAP_JIT mmap+RX 翻面是否生效」还是「trampoline
-// asm 跳进去后的执行问题」。
+// **历史**(F3-#3 调试):此探针承 macos-latest CI 第一次实证 PC=0x2000
+// SIGSEGV 时的「MmapCode 是否生效」隔离。F3-#3b 真物理 M1 调试已定位根因
+// 是 trampoline_arm64.s STP/LDP 覆盖 Go auto-prologue LR slot(STP 偏移 +8
+// 修复),MmapCode 路径与 W^X 翻面、icache flush 全部健康。本探针保留作
+// 长期回归 baseline。
 //
-// 本测试**只用 codepage_darwin.go::MmapCode**(不经 trampoline_arm64.s),
-// 通过 reflect SliceHeader 把 mmap 段地址当函数指针调,验证:
+// 本测试只用 codepage_darwin.go::MmapCode(不经 trampoline_arm64.s),验证:
 //   - mmap 段 Addr 在合法地址区间(>= 0x100000000 macOS arm64 mmap 区)
-//   - 段字节真写入(读回首 8 字节验证)
-//   - 真物理 RX 翻面工作(段执行 `mov x0, 0x42; ret` 后 X0 = 0x42)
+//   - 段长度 >= 输入字节
+//   - addr 不在 macOS 低保护页(0x2000 量级)
 //
-// 如本测试在 macos-latest 跑过,则证明 codepage_darwin.go 工作;trampoline
-// 路径的崩是 trampoline_arm64.s 的 darwin ABI 问题(PAC / framesize / X28
-// 等)。如本测试也崩,则证明 jitcgo.JITWriteProtectExit 或
-// jitcgo.ICacheInvalidate 在 GH Actions macos-latest entitlement 不允许下
-// silent fail,根因在 MmapCode 层。
+// 真 execute 路径覆盖在 trampoline_test.go::TestPJ8_CallJITFull_RoundTrip
+// (经 trampoline)+ MapCode 字节读回在 NoLeak / RoundTrip 测试。
 func TestDarwinMmapCode_ExecSanityProbe(t *testing.T) {
 	// 字节序列(arm64 LE):
 	//   movz x0, #0x42      ; 0xD2800840 → 40 08 80 d2

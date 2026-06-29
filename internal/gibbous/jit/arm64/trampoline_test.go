@@ -1,21 +1,19 @@
-//go:build wangshu_p4 && arm64 && linux && !wangshu_qemu
+//go:build wangshu_p4 && arm64 && (linux || (darwin && cgo)) && !wangshu_qemu
 
 // 本测试真去 MmapCode + CallJITFull / CallJITSpec 跳进 mmap 段执行 arm64
 // 指令(承 §9.20.9 trampoline 协议)。
 //
-// **build tag 设计**(承 F2 + F3-#3 调试):
-//   - linux only:darwin/arm64 macos-latest GH Actions runner 实证 PC=0x2000
-//     SIGSEGV(承 F3-#3 调试本 PR),不允许在 darwin 跑真 execute;真
-//     物理 darwin/arm64 跑需 Hardened Runtime entitlement + 字节布局
-//     darwin ABI 兼容(PAC / framesize / X30 LR 等)的深度调试,留 F3-#3b
-//     bisect 缩小后再考虑。当前 darwin/arm64 端 codepage_darwin_test.go
-//     的 ExecSanityProbe 单独验 MmapCode 工作。
+// **build tag 设计**(承 F2 QEMU + F3-#3b 真物理 M1 SIGSEGV 修复):
+//   - linux || (darwin && cgo):**两端共用同份 Plan 9 ABI0 asm**(承 509d5af
+//     build tag 扩展 + F3-#3b STP/LDP 偏移 +8 修复 LR slot 覆盖 bug,真物理
+//     M1 上 round-trip 5/5 + spec round-trip 4/4 + 1000 轮 callee-saved 验证
+//     全过)。原本只 linux only 的限制是 F3-#3a 调试期占位,根因 isolate 到
+//     trampoline 后改回。
 //   - !wangshu_qemu:QEMU user-mode emulation 不真模拟 i-cache flush /
 //     PROT_EXEC,实测 mmap 段 RET 字节处 SIGSEGV(承 F2 + ci.yml L94-99)。
 //
-// 真物理 linux/arm64 host(self-hosted runner)必跑本测试。CI 当前 macos-latest
-// 跑 darwin/arm64 build path 时本文件不编译,只跑 codepage_darwin_test.go
-// 的 ExecSanityProbe(验 mmap 路径) + 非真 execute 单测。
+// CI 当前 linux/amd64 主路径 + linux/arm64 QEMU(skip 本测试)+ macos-latest
+// M1 物理 e2e(跑本测试)三路覆盖。
 
 package arm64
 
