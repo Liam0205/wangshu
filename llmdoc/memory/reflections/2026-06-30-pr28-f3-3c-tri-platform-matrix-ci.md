@@ -1,7 +1,7 @@
 # PR #28(承 F3-#3b)F3-#3c 三平台矩阵 CI 等同轮反思:arm64 与 amd64 地位等同的真实成本是 N 个 macOS 兼容性 paper cut
 
 > 范围:承本会话上半段 [[2026-06-30-pr27-f3-3b-darwin-arm64-execute-roundup]] F3-#3b darwin/arm64 真物理 execute 闭环。本会话后半段把 PR #28 推进到「arm64 与 amd64 地位等同」的 CI 形态(F3-#3c)——test/fuzz-smoke/conformance/difftest × {amd64, ubuntu-24.04-arm, macos-latest} × {p1, p3, p4} = **36 jobs 矩阵化**——并解决一系列 bash 3.2 / macOS 兼容性问题 + 加 fuzz fail 长期可观测性。最终 **39/39 CI checks pass + machine reviewer APPROVE**,**PR #28 ready to merge to `feat/p4-reworded`**。
-> commit 链(`efcfe5e..5afea11`,4 commits):`efcfe5e`(F3-#3c arm64 三平台矩阵化 + review#4 重复注释)→ `a8d7245`(macOS lua5.1 oracle 改源码编译 + actions/cache)→ `61dadde`(macOS bash 3.2 兼容三连)→ `5afea11`(fuzz-smoke fail artifact upload)。
+> commit 链(`ddcaebe..5afea11`,4 commits;two-dot 记号 exclusive of start,故起点写 `efcfe5e` 父 `ddcaebe`):`efcfe5e`(F3-#3c arm64 三平台矩阵化 + review#4 重复注释)→ `a8d7245`(macOS lua5.1 oracle 改源码编译 + actions/cache)→ `61dadde`(macOS bash 3.2 兼容三连)→ `5afea11`(fuzz-smoke fail artifact upload)。
 > 关联:本会话上半段 [[2026-06-30-pr27-f3-3b-darwin-arm64-execute-roundup]](F3-#3b 真物理 execute 闭环 + bypass 探针根因 isolate);[[2026-06-15-p3-pw10-r3-call-indirect-round]] 头条「spike 量错维度」相邻——那条是「测对了机制错了维度」,本条是「决策对了实施踩跨平台 paper cut 矩阵」;[[design-claims-vs-codebase-physics]] §5「时间维度」(本会话上半段刚扩充)候选续 §6「空间维度——跨 OS/shell 版本物理环境差异」;[[prove-the-path-under-test]] 候选 2 对偶面「证明 input 在 testdata 而非 runner 销毁」。
 
 ## 任务
