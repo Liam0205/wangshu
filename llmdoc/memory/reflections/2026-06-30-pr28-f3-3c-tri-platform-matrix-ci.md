@@ -1,7 +1,7 @@
 # PR #28(承 F3-#3b)F3-#3c 三平台矩阵 CI 等同轮反思:arm64 与 amd64 地位等同的真实成本是 N 个 macOS 兼容性 paper cut
 
 > 范围:承本会话上半段 [[2026-06-30-pr27-f3-3b-darwin-arm64-execute-roundup]] F3-#3b darwin/arm64 真物理 execute 闭环。本会话后半段把 PR #28 推进到「arm64 与 amd64 地位等同」的 CI 形态(F3-#3c)——test/fuzz-smoke/conformance/difftest × {amd64, ubuntu-24.04-arm, macos-latest} × {p1, p3, p4} = **36 jobs 矩阵化**——并解决一系列 bash 3.2 / macOS 兼容性问题 + 加 fuzz fail 长期可观测性。最终 **39/39 CI checks pass + machine reviewer APPROVE**,**PR #28 ready to merge to `feat/p4-reworded`**。
-> commit 链(`efcfe5e..5afea11`,5 commits):`efcfe5e`(F3-#3c arm64 三平台矩阵化 + review#4 重复注释)→ `a8d7245`(macOS lua5.1 oracle 改源码编译 + actions/cache)→ `61dadde`(macOS bash 3.2 兼容三连)→ `5afea11`(fuzz-smoke fail artifact upload)。
+> commit 链(`efcfe5e..5afea11`,4 commits):`efcfe5e`(F3-#3c arm64 三平台矩阵化 + review#4 重复注释)→ `a8d7245`(macOS lua5.1 oracle 改源码编译 + actions/cache)→ `61dadde`(macOS bash 3.2 兼容三连)→ `5afea11`(fuzz-smoke fail artifact upload)。
 > 关联:本会话上半段 [[2026-06-30-pr27-f3-3b-darwin-arm64-execute-roundup]](F3-#3b 真物理 execute 闭环 + bypass 探针根因 isolate);[[2026-06-15-p3-pw10-r3-call-indirect-round]] 头条「spike 量错维度」相邻——那条是「测对了机制错了维度」,本条是「决策对了实施踩跨平台 paper cut 矩阵」;[[design-claims-vs-codebase-physics]] §5「时间维度」(本会话上半段刚扩充)候选续 §6「空间维度——跨 OS/shell 版本物理环境差异」;[[prove-the-path-under-test]] 候选 2 对偶面「证明 input 在 testdata 而非 runner 销毁」。
 
 ## 任务
@@ -11,7 +11,7 @@
 ## 预期 vs 实际
 
 - **预期**:把 `.github/workflows/ci.yml` 的 matrix 加 `ubuntu-24.04-arm` 一行就完事,矩阵化是机械改动 ~30 分钟。macOS job 已在 F3-#3b 跑全套,延伸 arm64 应该零阻力。
-- **实际**:**矩阵化本身 30 分钟,但延伸面踩了 5 个独立的 macOS 兼容性 paper cut**——每一个都让矩阵 CI 跑挂、需要单独调研根因 + 修复 + 重跑 CI 等结果。**总周期 ~2 小时,实施成本是决策成本的 4-6 倍**。最终 39/39 CI checks pass + machine reviewer APPROVE,但过程是 5 commits 连环排雷。
+- **实际**:**矩阵化本身 30 分钟,但延伸面踩了 5 个独立的 macOS 兼容性 paper cut**——每一个都让矩阵 CI 跑挂、需要单独调研根因 + 修复 + 重跑 CI 等结果。**总周期 ~2 小时,实施成本是决策成本的 4-6 倍**。最终 39/39 CI checks pass + machine reviewer APPROVE,但过程是 4 commits(`efcfe5e`→`a8d7245`→`61dadde`→`5afea11`)连环排雷,其中 `61dadde` 一次合修 3 个 bash 3.2 兼容性问题。
 
 ## 5 个 macOS 兼容性 paper cut 一览
 
