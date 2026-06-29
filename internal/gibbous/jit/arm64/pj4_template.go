@@ -726,6 +726,105 @@ func EmitSelfNodeHitArm64(buf []byte, aReg, bReg uint8,
 // EncodedSelfNodeHitArm64Len arm64 PJ4 SELF NodeHit 模板字节数(200)。
 const EncodedSelfNodeHitArm64Len = 200
 
+// EmitSelfNodeHitNoRetArm64 同 EmitSelfNodeHitArm64,但**成功路径不 emit ret**——
+// fall-through 到调用方 emit 的后续段(承 §9.20.9 Spike 1 useFrameInline 路径
+// arm64 对位,amd64 EmitSelfNodeHitNoRet 同款形态)。
+//
+// vs EmitSelfNodeHitArm64 关键差异(成功路径):
+//   - step 30 不 RET,改 B(跳过 deopt block 到段尾,fall-through 到调用方)
+//   - deopt block 不变(写 x0=deoptCode + RET)
+//
+// 总字节数:200(同 NodeHit)— 把 RET (4B) 替为 B (4B),长度对等。
+//
+// **deopt 路径**:Run 端 x0==deoptCode 时调 host.GetTable byte-equal P1。
+//
+// **接入路径**:archEmitFrameInlineExitHelperRequest + archCallJITSpec
+// 形态下,SELF 段成功后 fall-through 到 BuildVoid0Arg + ExitHelperRequest +
+// PopVoid0Arg + ret;翻 archSupportsFrameInline=true 后启用(承 C5 commit
+// 占位回填教训:archEmitSelfNodeHitNoRet 旧 panic 占位 → 真实装,防 NoRet
+// 路径误触发时 panic 把 useFrameInline 整路打死)。
+func EmitSelfNodeHitNoRetArm64(buf []byte, aReg, bReg uint8,
+	stableShape, stableIndex uint32, stableKey uint64,
+	arenaBaseOff uint16, deoptCode uint64) []byte {
+	// 1. LDR x0, [x26+B*8](load R(B) obj)
+	buf = EmitLdrXtFromXnDisp(buf, 0, 26, uint16(bReg)*8)
+
+	// 2. **SELF 第一步**:STR x0, [x26+(A+1)*8](self/this 实参)
+	buf = EmitStrXtToXnDisp(buf, 0, 26, uint16(aReg+1)*8)
+
+	// 3-6. IsTable guard(LSR + MOV + CMP + B.NE 共 28 字节;
+	//      入口 LDR 已合并到 SELF 第 1 步,不重复)
+	buf = EmitLsrXdImm6(buf, 0, 0, 48)
+	buf = EmitMovXdImm64(buf, 1, qNanBoxTableTagShiftedArm64)
+	buf = EmitCmpXnXm(buf, 0, 1)
+	bNeTagOff := len(buf)
+	buf = EmitBCond(buf, CondNE, 0)
+
+	// 7-12. re-load + GCRef extract + arena base + ADD x2 SIB(36 字节)
+	buf = EmitLdrXtFromXnDisp(buf, 0, 26, uint16(bReg)*8)
+	buf = EmitMovXdImm64(buf, 1, payloadMaskArm64)
+	buf = EmitAndXdXnXm(buf, 0, 0, 1)
+	buf = EmitMovXdFromXn(buf, 1, 0)
+	buf = EmitLdrXtFromXnDisp(buf, 14, 27, arenaBaseOff)
+	buf = EmitAddXdXnXm(buf, 2, 14, 1)
+
+	// 13-17. word5 + LSR + stableShape + CMP + B.NE(32 字节)
+	buf = EmitLdrXtFromXnDisp(buf, 0, 2, 40)
+	buf = EmitLsrXdImm6(buf, 0, 0, 32)
+	buf = EmitMovXdImm64(buf, 3, uint64(stableShape))
+	buf = EmitCmpXnXm(buf, 0, 3)
+	bNeShapeOff := len(buf)
+	buf = EmitBCond(buf, CondNE, 0)
+
+	// 18-20. **NodeHit 分流**:load nodeRef(word3, offset 24)+ 新 SIB base
+	buf = EmitLdrXtFromXnDisp(buf, 0, 2, 24)
+	buf = EmitMovXdFromXn(buf, 1, 0)
+	buf = EmitAddXdXnXm(buf, 2, 14, 1)
+
+	// 21-24. NodeKey load + stableKey 比对 + B.NE deopt
+	buf = EmitLdrXtFromXnDisp(buf, 0, 2, uint16(stableIndex*24))
+	buf = EmitMovXdImm64(buf, 3, stableKey)
+	buf = EmitCmpXnXm(buf, 0, 3)
+	bNeKeyOff := len(buf)
+	buf = EmitBCond(buf, CondNE, 0)
+
+	// 25-28. NodeVal load + nil check + B.EQ deopt
+	buf = EmitLdrXtFromXnDisp(buf, 0, 2, uint16(stableIndex*24+8))
+	buf = EmitMovXdImm64(buf, 3, qNanBoxNilImmArm64)
+	buf = EmitCmpXnXm(buf, 0, 3)
+	bEqNilOff := len(buf)
+	buf = EmitBCond(buf, CondEQ, 0)
+
+	// 29. store R(A) = method
+	buf = EmitStrXtToXnDisp(buf, 0, 26, uint16(aReg)*8)
+
+	// 30. **NO RET** — 改发 B(forward,跳过 deopt block 到段尾,fall-through
+	//     到调用方 emit 的 BuildVoid0Arg 段;承 amd64 EmitJmpRel32 同款手法)
+	bSuccessOff := len(buf)
+	buf = EmitB(buf, 0) // placeholder,后置 patch
+
+	// 31. deopt block(写 x0=deoptCode + RET,12 字节 = MovXdImm64 8 + Ret 4)
+	deoptStart := len(buf)
+	buf = EmitMovXdImm64(buf, 0, deoptCode)
+	buf = EmitRet(buf)
+
+	// 32. patch B.cond imm19 = (deoptStart - 本 B.cond 自身) / 4
+	patchBCondImm19(buf, bNeTagOff, int32(deoptStart-bNeTagOff)/4)
+	patchBCondImm19(buf, bNeShapeOff, int32(deoptStart-bNeShapeOff)/4)
+	patchBCondImm19(buf, bNeKeyOff, int32(deoptStart-bNeKeyOff)/4)
+	patchBCondImm19(buf, bEqNilOff, int32(deoptStart-bEqNilOff)/4)
+
+	// 33. patch success B imm26 = (len(buf) - bSuccessOff) / 4
+	//     跳到 deopt block 之后(即段尾,后续 BuildVoid0Arg 段起点)
+	patchBImm26(buf, bSuccessOff, int32(len(buf)-bSuccessOff)/4)
+
+	return buf
+}
+
+// EncodedSelfNodeHitNoRetArm64Len arm64 PJ4 SELF NodeHit NoRet 变体字节数(200,
+// 同 NodeHit;RET 4B 换为 B 4B)。
+const EncodedSelfNodeHitNoRetArm64Len = 200
+
 // EmitSpecArgLoadKArm64 写 R(dstReg) = K(NaN-box u64)— PJ5 SELF spec
 // template args/recv 装载字节级 inline(arm64 端 amd64 EmitSpecArgLoadK 对位)。
 //
@@ -857,6 +956,41 @@ func EmitFrameInlineLoadCISlotAddrArm64(buf []byte, ciDepthAddrOffset, ciSegBase
 // EmitMovzXd 单条 4 字节(留 PJ8+ 通用优化批次)。
 const EncodedFrameInlineLoadCISlotAddrArm64Len = 40
 
+// EmitFrameInlineLoadCISlotAddrAbsoluteArm64 同 EmitFrameInlineLoadCISlotAddrArm64
+// 但结果 x0 是 **arena 绝对地址**(承 §9.20.9 commit-5l 修 ciSegBase 镜像字
+// 语义 bug 的 arm64 端镜像;对位 amd64 EmitFrameInlineLoadCISlotAddrAbsolute)。
+//
+// **bug 起源**(P3 PW10 Stage 2 ciSegBase 镜像字协议):`*ciSegBaseAddrPtr` 存的是
+// `ciBaseW * 8`(byte offset 进 arena),不是绝对地址。LoadCISlotAddrArm64 算的
+// x0 = ciBaseW*8 + depth*40 是 byte offset,不能直接 deref(真物理 darwin/arm64
+// macos-latest CI 实证 SIGSEGV at spec 段 0x108,addr=ciBaseW*8+depth*40 小值,
+// 承 F3-#3b 真物理 M1 调试 lldb 验证)。
+//
+// **本函数**:在 LoadCISlotAddr 后追加 `ldr x14, [x27+arenaBaseOff]; add x0, x0, x14`
+// (arena base 加到 x0),让 x0 变绝对地址。**前置条件**:caller 已 setup
+// jitContext.arenaBase(承 SetArenaBase 注入);x14 用作 scratch 寄存器(arm64
+// AAPCS x14 是 caller-saved temporary,可安全覆写,与 amd64 r14 同位)。
+//
+// **字节序列**:LoadCISlotAddrArm64(40B)+ `ldr x14, [x27+arenaBaseOff]`(4B)+
+// `add x0, x0, x14`(4B)= 48B。
+//
+// **使用位置**(useFrameInline 路径):
+//  1. 调本函数:x0 = CI[depth] 绝对地址(48B)
+//  2. 后续 WriteCIWordArm64 / CIDepthIncArm64 / LoadClosureGCRefArm64 +
+//     WriteCIWordFromXArm64 同款使用
+func EmitFrameInlineLoadCISlotAddrAbsoluteArm64(buf []byte,
+	ciDepthAddrOffset, ciSegBaseAddrOffset, arenaBaseOffset uint16) []byte {
+	buf = EmitFrameInlineLoadCISlotAddrArm64(buf, ciDepthAddrOffset, ciSegBaseAddrOffset)
+	// load x14 = arena base
+	buf = EmitLdrXtFromXnDisp(buf, 14, 27, arenaBaseOffset)
+	// add x0, x0, x14
+	buf = EmitAddXdXnXm(buf, 0, 0, 14)
+	return buf
+}
+
+// EncodedFrameInlineLoadCISlotAddrAbsoluteArm64Len = 40 + 4 + 4 = 48.
+const EncodedFrameInlineLoadCISlotAddrAbsoluteArm64Len = EncodedFrameInlineLoadCISlotAddrArm64Len + 8
+
 // EmitFrameInlineWriteCIWordArm64 发射 arm64 CI 帧 word_idx 写入 imm64
 // 模板(承 §9.20 Option B Spike 1 amd64 对位)。
 //
@@ -932,6 +1066,49 @@ func EmitFrameInlineBuildVoid0ArgSkeletonArm64(buf []byte,
 // EncodedFrameInlineBuildVoid0ArgSkeletonArm64Len = 40 + 20*3 + 24 + 4 + 20 + 16 = 164.
 const EncodedFrameInlineBuildVoid0ArgSkeletonArm64Len = 164
 
+// EmitFrameInlineBuildVoid0ArgSkeletonAbsoluteArm64 同
+// EmitFrameInlineBuildVoid0ArgSkeletonArm64 但用 LoadCISlotAddrAbsoluteArm64
+// (x0 = arena 绝对地址,承 §9.20.9 commit-5l ciSegBase 镜像字语义 bug 修;
+// 对位 amd64 EmitFrameInlineBuildVoid0ArgSkeletonAbsolute)。
+//
+// **设计差异**:原 BuildVoid0ArgSkeletonArm64 的 LoadCISlotAddrArm64 算 x0 =
+// ciBaseW*8 + depth*40 是 byte offset 进 arena,不是绝对地址,后续 WriteCIWord
+// 的 `STR x16, [x0]` 真物理执行时 SIGSEGV(addr=该 byte offset 小值,落在 macOS
+// 低保护页);本函数用 Absolute 版,x0 = absolute address,后续 STR 直接写有效。
+//
+// **字节序列**(总长度 172 字节,= 原 164 + Absolute 多 8 字节 arena base 加载):
+//  1. LoadCISlotAddrAbsoluteArm64(48B,40 + 4 ldr x14 + 4 add x0,x0,x14)
+//  2. WriteCIWordArm64(0/1/2) imm 3 * 20 = 60B
+//  3. LoadClosureGCRefArm64(callARecv,24B):x16 = R(callARecv) GCRef payload
+//  4. WriteCIWordFromXArm64(3,16)(4B):CI[depth].word3 = x16
+//  5. WriteCIWordArm64(4) imm(20B)
+//  6. CIDepthIncArm64(16B)
+//
+// **总**:48 + 60 + 24 + 4 + 20 + 16 = 172 字节(原 164 + 8 因 absolute load 多 8)。
+func EmitFrameInlineBuildVoid0ArgSkeletonAbsoluteArm64(buf []byte,
+	ciDepthAddrOffset, ciSegBaseAddrOffset, arenaBaseOffset uint16,
+	callARecv uint8,
+	words FrameInlineCISlotWordsArm64) []byte {
+	// 1. x0 = CI[depth] 绝对地址(Absolute 版,48B)
+	buf = EmitFrameInlineLoadCISlotAddrAbsoluteArm64(buf, ciDepthAddrOffset, ciSegBaseAddrOffset, arenaBaseOffset)
+	// 2. 写 word0/1/2 imm
+	buf = EmitFrameInlineWriteCIWordArm64(buf, 0, words.Word0)
+	buf = EmitFrameInlineWriteCIWordArm64(buf, 1, words.Word1)
+	buf = EmitFrameInlineWriteCIWordArm64(buf, 2, words.Word2)
+	// 3. x16 = R(callARecv) GCRef
+	buf = EmitFrameInlineLoadClosureGCRefArm64(buf, callARecv)
+	// 4. word3 = x16
+	buf = EmitFrameInlineWriteCIWordFromXArm64(buf, 3, 16)
+	// 5. 写 word4 imm
+	buf = EmitFrameInlineWriteCIWordArm64(buf, 4, words.Word4)
+	// 6. ciDepth++
+	buf = EmitFrameInlineCIDepthIncArm64(buf, ciDepthAddrOffset)
+	return buf
+}
+
+// EncodedFrameInlineBuildVoid0ArgSkeletonAbsoluteArm64Len = 48 + 60 + 24 + 4 + 20 + 16 = 172.
+const EncodedFrameInlineBuildVoid0ArgSkeletonAbsoluteArm64Len = EncodedFrameInlineBuildVoid0ArgSkeletonArm64Len + 8
+
 // EmitFrameInlineLoadClosureGCRefArm64 发射 arm64 字节级 R(srcReg) NaN-box
 // → x16 48-bit GCRef 解析模板(承 §9.20 Option B Spike 1 amd64 对位)。
 //
@@ -977,12 +1154,107 @@ func EmitFrameInlineWriteCIWordFromXArm64(buf []byte, wordIdx uint8, srcReg uint
 const EncodedFrameInlineWriteCIWordFromXArm64Len = 4
 
 // EmitFrameInlinePopVoid0ArgSkeletonArm64 发射 arm64 Spike 1 popCallInfo
-// 字节级 inline 骨架(对位 amd64,等价 EmitFrameInlineCIDepthDecArm64)。
+// 字节级 inline 骨架(对位 amd64 EmitFrameInlinePopVoid0ArgSkeleton 含尾巴
+// `xor eax,eax + ret`)。
 //
-// 字节序列(16 字节):同 EmitFrameInlineCIDepthDecArm64。
+// **字节序列**(24 字节,= CIDepthDecArm64 16 + movz w0 #0 4 + ret 4):
+//  1. CIDepthDecArm64:ciDepth--(16B)
+//  2. movz w0, #0:x0 = 0 = ExitNormal(4B,清高 32 位 = 8B uint64 = 0)
+//  3. ret:出 mmap 段返 trampoline(4B)
+//
+// **§9.20.9 commit-5l 同款 missing ret bug 修**(F3-#3b arm64 端镜像 amd64
+// 同 commit:原版 arm64 Pop 段尾不 emit movz/ret,段后跟 mmap 0 字节区 →
+// 真物理 darwin/arm64 SIGILL at PC=0x0...0,resume entry 跳进后段没正常返
+// 而是继续执行 0 字节区)。amd64 端 commit-5l 已修(2 字节 xor + 1 字节
+// ret),arm64 端 F3-#3b 一并修。
 func EmitFrameInlinePopVoid0ArgSkeletonArm64(buf []byte, ciDepthAddrOffset uint16) []byte {
-	return EmitFrameInlineCIDepthDecArm64(buf, ciDepthAddrOffset)
+	buf = EmitFrameInlineCIDepthDecArm64(buf, ciDepthAddrOffset)
+	// movz w0, #0:x0 = 0 = ExitNormal(承 §9.20.9 commit-5l xor eax,eax 对位)
+	buf = EmitMovzWdImm16(buf, 0, 0)
+	// ret:出 mmap 段(承 commit-5l c3 ret 对位)
+	buf = EmitRet(buf)
+	return buf
 }
 
-// EncodedFrameInlinePopVoid0ArgSkeletonArm64Len = 16(同 CIDepthDecArm64)。
-const EncodedFrameInlinePopVoid0ArgSkeletonArm64Len = EncodedFrameInlineCIDepthIncDecArm64Len
+// EncodedFrameInlinePopVoid0ArgSkeletonArm64Len = 16 + 4 + 4 = 24(对位 amd64
+// = CIDepthDec 10 + xor+ret 3 = 13;arm64 多因 movz w0 4B vs amd64 xor 2B +
+// ret 4B vs amd64 ret 1B)。
+const EncodedFrameInlinePopVoid0ArgSkeletonArm64Len = EncodedFrameInlineCIDepthIncDecArm64Len + 8
+
+// EmitFrameInlineExitHelperRequestArm64 发射 arm64 Spike 1 trampoline exit-resume
+// 协议 exit-helper-request 段(对位 amd64 EmitFrameInlineExitHelperRequest
+// 24 字节版的 arm64 端镜像)。
+//
+// **协议位置**(承 amd64 同款 + tmp/wangshu-p4-todo.md §二.4):
+// BuildVoid0Arg 后,PopVoid0Arg 前,出 mmap 段返 trampoline。trampoline asm
+// 检 X0 = ExitInlineHelper (3) 路由 Go dispatcher。
+//
+// **字节序列**(arm64,总 36 字节):
+//
+//	; 装 helperCode 到 x16(IP0 scratch)
+//	movz/movk x16, helperCode imm64   ; 16 字节(movz+movk×3)
+//	; 写 jitCtx.exitArg0 = helperCode
+//	str x16, [x27 + exitArg0Off]      ; 4 字节(64-bit STR)
+//	; 装 ExitInlineHelper=3 到 w16(单条 movz 即可,imm16 = 3)
+//	movz w16, #3                       ; 4 字节(32-bit MOVZ)
+//	; 写 jitCtx.exitReasonCode = 3(32-bit 字段)
+//	str w16, [x27 + exitReasonOff]    ; 4 字节(32-bit STR)
+//	; 设返值 x0 = 3(trampoline 检 X0 路由 dispatcher)
+//	movz w0, #3                        ; 4 字节(32-bit MOVZ,清高位)
+//	; ret
+//	ret                                ; 4 字节
+//	; 总:16 + 4 + 4 + 4 + 4 + 4 = 36 字节
+//
+// **vs amd64 24 字节差 12 字节**:
+//   - arm64 MOV imm64 序列 16 字节(movz+movk×3)vs amd64 mov rax imm64 10 字节
+//   - arm64 movz Wd imm16 4 字节 vs amd64 mov eax imm32 5 字节(省 1)
+//   - arm64 RET 4 字节 vs amd64 ret 1 字节(多 3)
+//   - arm64 必须显式 movz w0, #3(无 fall-through 寄存器复用)vs amd64 复用 eax
+//   - 总差 +12 字节(arm64 fixed-length 4-byte 编码 + 无寄存器复用)
+//
+// **入参**(对位 amd64 同款):
+//   - exitReasonOff:jitContext.exitReasonCode 字段偏移(uint32,4 字节对齐)
+//   - exitArg0Off:jitContext.exitArg0 字段偏移(uint64,8 字节对齐)
+//   - helperCode:helper request code(HelperRunCallee=1 等)
+//
+// **预设条件**(承 06 §4.2 arm64 trampoline 协议):
+//   - x27 = jitContext(callJITSpec 装入,callee-saved)
+//   - x16/x17 = IP0/IP1 scratch(intra-procedure-call scratch)
+//
+// **archSupportsFrameInline 翻 true 后启用**(承 C7,承 tmp/wangshu-p4-todo.md
+// §二.4 翻闸门会暴露 commit-5n 留 panic 占位):本 commit 替 panic 占位为真
+// 实装,Compile/Run 端真接通 + 物理 runner 端到端验证留 C7。
+func EmitFrameInlineExitHelperRequestArm64(buf []byte, exitReasonOff, exitArg0Off int32, helperCode uint64) []byte {
+	// 1. movz/movk x16, helperCode imm64(16 字节)
+	buf = EmitMovXdImm64(buf, 16, helperCode)
+
+	// 2. str x16, [x27 + exitArg0Off](4 字节,64-bit STR;offset 必须 8 对齐 ≤ 32760)
+	if exitArg0Off < 0 || exitArg0Off > 32760 || exitArg0Off%8 != 0 {
+		// 兜底:offset 越界静默 → byteOff=0,production 路径 jitContext 字段
+		// 偏移在数十字节,不会触达(承 arenaBaseOffArm64 同款防御纪律)。
+		exitArg0Off = 0
+	}
+	buf = EmitStrXtToXnDisp(buf, 16, 27, uint16(exitArg0Off))
+
+	// 3. movz w16, #ExitInlineHelper=3(4 字节,32-bit MOVZ,imm16=3 单条够)
+	buf = EmitMovzWdImm16(buf, 16, 3)
+
+	// 4. str w16, [x27 + exitReasonOff](4 字节,32-bit STR;offset 必须 4 对齐 ≤ 16380)
+	if exitReasonOff < 0 || exitReasonOff > 16380 || exitReasonOff%4 != 0 {
+		exitReasonOff = 0
+	}
+	buf = EmitStrWtToXnDisp(buf, 16, 27, uint16(exitReasonOff))
+
+	// 5. movz w0, #ExitInlineHelper=3(4 字节,设返值;trampoline 检 X0)
+	buf = EmitMovzWdImm16(buf, 0, 3)
+
+	// 6. ret(4 字节)
+	buf = EmitRet(buf)
+
+	return buf
+}
+
+// EncodedFrameInlineExitHelperRequestArm64Len = 16 + 4 + 4 + 4 + 4 + 4 = 36
+// (对位 amd64 EncodedFrameInlineExitHelperRequestLen = 24,arm64 多 12 字节
+// 因 fixed-length 编码 + 无寄存器复用)。
+const EncodedFrameInlineExitHelperRequestArm64Len = 36
