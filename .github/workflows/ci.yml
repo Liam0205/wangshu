@@ -81,42 +81,41 @@ jobs:
           path: ${{ matrix.cov_name }}
           retention-days: 30
 
-  # PJ9 双架构 CI:用 QEMU user-mode emulation 在 amd64 runner 跑 arm64 jit
-  # 子包测试。承 06-backends.md §5「双架构 CI 双跑」+ 08-testing-strategy.md
-  # §6 —— 物理 arm64 self-hosted runner 留 PJ9+ 基础设施落地。
+  # PJ9 双架构 CI(F3-#3b 升级):用 GitHub Actions 真物理 ubuntu-24.04-arm
+  # runner(2024 GA,public repo 免费)跑 linux/arm64 全套 P4 路径。承
+  # 06-backends.md §5「双架构 CI 双跑」+ 08-testing-strategy.md §6。
   #
-  # **范围裁决**:本 job 只跑 jit/arm64 子包(emitter/codepage 字节级单测)
-  # —— QEMU user-mode 不真模拟 i-cache(DC CVAU/IC IVAU 在 EL0 user mode 下
-  # 是 NOP),也不真模拟 W^X 翻面后的 PROT_EXEC 取指,故 mmap+RX+execute
-  # 路径(jit 主包 callJITFull + crescent e2e)在 QEMU 下 100% SIGSEGV
-  # 不可信。emitter 字节编码 + codepage struct 一致性等纯计算路径在 QEMU
-  # 可靠运行。真 arm64 端到端等物理 runner(承 06 §5.7「PJ8/9 可滞后真物理
-  # runner」渐进交付)。
+  # **F3-#3b 切换**(2026-06-30):此前用 ubuntu-latest + QEMU user-mode
+  # emulation 跑 jit/arm64 子包字节级单测,QEMU user-mode 不真模拟
+  # i-cache(DC CVAU/IC IVAU 在 EL0 user mode 下 NOP)+ PROT_EXEC 取指,
+  # mmap+RX+execute 路径不可信(trampoline_test.go 用 !wangshu_qemu skip)。
+  # 改用 ubuntu-24.04-arm 真物理 runner 后:
+  #   - 真物理 mmap+RX+execute 工作(无需 QEMU tag skip)
+  #   - 跑 linux/arm64 整个 P4 ./...(对位 macos-latest 全套覆盖)
+  #   - 验本 PR trampoline_arm64.s LR slot 修复在 linux/arm64 端也正确
+  #     (本会话在 darwin/arm64 验过,linux/arm64 共享同份 Plan 9 ABI0 asm)
   #
-  # **F2 修复**:trampoline_test.go(真 MmapCode + CallJITFull/Spec 跳执行)
-  # build tag 含 `!wangshu_qemu`,本 job 跑测时显式加 `wangshu_qemu` tag 让
-  # 真执行类单测不编译,避免 0xc308 SIGSEGV(RET 0xd65f03c0 低 16-bit
-  # mmap 段取指错)。darwin/arm64 macos-latest 真物理 runner 不加该 tag,
-  # 仍跑全套真执行单测。
-  test-arm64:
-    runs-on: ubuntu-latest
+  # trampoline_test.go 的 !wangshu_qemu build tag 保留(未来若加 nightly
+  # QEMU 比对 job 仍可继续 skip 真 execute 测试,build tag 是机制不是占位)。
+  test-linux-arm64:
+    runs-on: ubuntu-24.04-arm
     needs: test
-    name: test-arm64 (p4 via QEMU)
+    name: test-linux-arm64 (p4 ubuntu-24.04-arm 真物理)
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      # docker QEMU 装 binfmt_misc handlers 让 amd64 host 可执行 arm64 binary
-      - name: Install QEMU
+      # 真物理 linux/arm64 host,跑全套 P4 ./...(含 trampoline 真 BL +
+      # mmap+RX+execute,对位 macos-latest test-darwin-arm64 同款覆盖面)
+      - name: go test linux/arm64 P4 全套(./...)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y qemu-user-static
-      # 跑 jit/arm64 子包(纯字节编码 + codepage 一致性,无 mmap+RX 执行)
-      - name: go test arm64 jit/arm64 子包(emitter 字节编码)
+          go test -tags 'wangshu_p4 wangshu_profile' ./...
+      # P1 默认 build 全套(无 wangshu_p4 tag)— 验 P1 解释器在 linux/arm64
+      # 跑通,对位 macos-latest 同款 P1 验证
+      - name: go test linux/arm64 p1 build (no wangshu_p4 tag)
         run: |
-          GOOS=linux GOARCH=arm64 go test -tags 'wangshu_p4 wangshu_profile wangshu_qemu' \
-            ./internal/gibbous/jit/arm64/...
+          go test ./...
 
   # darwin/arm64 真物理 runner CI:用 GitHub Actions macos-latest(Apple
   # Silicon M1+)跑 P4 + jit/arm64 子包真物理 e2e。
