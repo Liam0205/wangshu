@@ -1,21 +1,44 @@
 #!/usr/bin/env bash
-# commit-msg:强制 conventional commits 'type(scope): subject'。engineering.md §2.2。
+# commit-msg: enforce conventional commits 'type(scope): subject' (engineering.md §2.2)
+# + subject line ASCII-only (English-only commit subjects per project memory
+#   feedback_code_language_english, 2026-06-29).
 set -euo pipefail
 
 if [ -n "${CI:-}" ] || [ -n "${GITHUB_ACTIONS:-}" ]; then exit 0; fi
 
 msg=$(head -1 "$1")
 
-# merge/revert/fixup 的自动消息放行
+# Auto-generated messages from merge/revert/fixup are exempt.
 case "$msg" in
     Merge\ *|Revert\ *|fixup!\ *|squash!\ *) exit 0 ;;
 esac
 
+# Check 1: conventional commits 'type(scope): subject' format.
 pattern='^(feat|fix|doc|docs|test|chore|perf|refactor|ci|bench|build|revert)(\([a-z0-9/_.-]+\))?: .+'
 if ! [[ "$msg" =~ $pattern ]]; then
-    echo "✗ commit message 不符合 'type(scope): subject' 格式:"
+    echo "✗ commit subject does not match 'type(scope): subject':"
     echo "    $msg"
-    echo "允许的 type:feat fix doc docs test chore perf refactor ci bench build revert"
-    echo "示例:feat(arena): bump allocator with size-class freelist"
+    echo "Allowed types: feat fix doc docs test chore perf refactor ci bench build revert"
+    echo "Example: feat(arena): bump allocator with size-class freelist"
+    exit 1
+fi
+
+# Check 2: subject line must be pure ASCII (no CJK / em-dash / smart quote / etc.).
+# Rationale: this project's commit subjects are English-only (per project memory
+# feedback_code_language_english). Body lines are not checked here — they may
+# still contain non-ASCII (URLs, debug log fragments, etc.) but the subject is
+# the primary index for git log / GitHub PR listing.
+#
+# Detection: `tr -d` removes all ASCII bytes (0x00-0x7f); any remaining bytes
+# mean non-ASCII content. POSIX-portable (works on macOS BSD tr + Linux GNU tr).
+non_ascii=$(LC_ALL=C printf '%s' "$msg" | LC_ALL=C tr -d '\000-\177')
+if [ -n "$non_ascii" ]; then
+    echo "✗ commit subject contains non-ASCII characters (English-only policy):"
+    echo "    $msg"
+    echo "Non-ASCII bytes (raw): $non_ascii"
+    echo
+    echo "Project policy: commit subjects are English-only ASCII. Body lines are"
+    echo "not restricted (URLs, log fragments may contain non-ASCII)."
+    echo "Emergency override: git commit --no-verify"
     exit 1
 fi
