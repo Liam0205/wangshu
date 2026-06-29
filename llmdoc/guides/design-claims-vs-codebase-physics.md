@@ -1,7 +1,7 @@
 # Guide:设计稿主张须对本码库 physics 重新验证
 
-> 适用:把设计稿热路径上的抽象记号(`(call $x)`)、固定 token(base/指针/句柄/视图)、或成本主张照搬到实现之前——尤其每指令必经的快路径、跨层/跨调用存活的值。P3 翻译全程复发,P2 编译层同理。
-> 来源:`memory/reflections/2026-06-13-issue8-boundary-cost-round.md`(成本归类)+ `memory/reflections/2026-06-14-p3-pw5-table-ic-round.md`(边界成本预算)+ `memory/reflections/2026-06-14-p3-pw6-crosslayer-call-round.md`(段重定位 UAF)——三轮独立实例聚合为一个判断框架。
+> 适用:把设计稿热路径上的抽象记号(`(call $x)`)、固定 token(base/指针/句柄/视图)、或成本主张照搬到实现之前——尤其每指令必经的快路径、跨层/跨调用存活的值。**或处理「设计稿/task 描述/stub 注释承诺/外部依赖现状」类前序快照在事实变更后失效**(§5「时间维度」)。P3 翻译全程复发,P2 编译层同理,P4 method-JIT 闸门翻面期同理。
+> 来源:`memory/reflections/2026-06-13-issue8-boundary-cost-round.md`(成本归类)+ `memory/reflections/2026-06-14-p3-pw5-table-ic-round.md`(边界成本预算)+ `memory/reflections/2026-06-14-p3-pw6-crosslayer-call-round.md`(段重定位 UAF)+ `2026-06-14-p3-pw7-pw4b-closure-tforloop-round.md`(难点过期)+ `2026-06-16-vs0e-varargs-stack-underflow-round.md`(调研先于实现)+ `2026-06-24-p4-doc-review-round.md`(外部依赖现状过期)+ `2026-06-30-pr27-f3-3b-darwin-arm64-execute-roundup.md`(sentinel 注释承诺与闸门状态解耦)——独立实例聚合为一个判断框架。
 
 设计稿表达的是**语义意图**,用抽象记号写在纸上;它**不携带本码库的物理不变式**。三次了:把设计稿热路径上的一条主张/记号忠实誊写到加速层,本会产出一个 bug 或一处死优化——因为设计稿对某条 wangshu 专属的物理事实是盲的(边界成本、arena 段重定位、GC 根可达性……)。**热路径上的抽象记号在实现前,必须逐条对照本码库 physics 重新推导,而不是照抄伪码。** 这条横跨**性能**(誊写出死优化)与**正确性**(誊写出 UAF)两面,故单独成 guide,不并入 [[perf-optimization-workflow]]。
 
@@ -40,12 +40,36 @@
 
 **判据**:任何「返回内部缓冲区切片以省分配」或「加速层持有共享 arena 值」的优化,GC stress 实测 + 覆写契约测试是上线前置,不是可选。与 `feedback_arena_view_aliasing` 同物理基础。
 
+## 5. 时间维度——设计稿/task/stub 注释承诺/外部依赖现状的前序快照在事实变更后失效
+
+前 §1-§4 是**空间不变式**(边界成本/段重定位/成本归类/根可达性)——同一时间点对码库 physics 的判断。**时间维度**是不同时间点的快照失效:设计稿/task 描述/stub 注释承诺/外部依赖现状,在写下当时为真,但**后续事实变更(前序里程碑落地 / 闸门翻面 / 外部依赖升级)使快照过期**,照搬过期快照导致死优化或潜伏 bug。
+
+**四个独立形态**:
+
+| 形态 | 实例 | 快照内容 | 失效触发 |
+|---|---|---|---|
+| **难点过期** | PW7 CLOSURE/CLOSE 设计稿 §3.7 标核心难点是「open upvalue 存储协议」,实际 VS0-c 已解 | 设计稿对里程碑难点的判断 | 前序里程碑(VS0-c)追溯性溶解后续难点 |
+| **task 描述失实** | VS0-e task #6 三项里两项已被 VS0-c + PW10 R2 隐性收口 | task 描述对工作量/范围的快照 | 延后 ≥6 个月的 task,中间隐性交付 |
+| **外部依赖现状过期** | P4 doc-review:wazero internal/engine/compiler 已切 wazevo / darwin/arm64 MAP_JIT 实装不存在 / Go 1.22 已过保 | 设计文档对外部依赖现状的引用 | wazero / Go / 平台 API 升级 |
+| **sentinel 注释承诺与闸门状态解耦** | `arch_arm64.go::archSseOpForArith` stub 注释「当前 archSupportsSpec 返 false,本函数不会被调用——sentinel 返 (0, false) 保底」,但闸门翻 true 时本函数被真调,stub 静默返 (0, false) 让所有 PJ2 spec 测试 0 命中 | stub 默契承诺(「信本函数不会被调用」) | 闸门/配置/上下文状态翻面 |
+
+**sentinel 注释承诺形态特征**:「**当前 X 为 Y,所以本函数 Z**」——X 是闸门/配置/上下文状态,Y 是当前值,Z 是基于 Y 的安全行为(stub / sentinel / no-op)。注释当时为真,X 翻面时若未同步审计本函数,Z 行为变成**静默 bug**——没有 panic、没有 error、没有日志,只是性能数据上「投机路径 0 命中」或正确性上「fallback 永远走到」。
+
+**判据**:
+- **写 stub / sentinel 时,若注释含「当前 X 为 Y,所以本函数 Z」,在 X 翻面的同一 commit 必须同步审计本函数**——`grep -rn "当前.*返 false\|当前.*不会被调用\|sentinel.*保底" <pkg>` 是闸门翻 true 同 commit 的标准动作;
+- **stub 默认应 panic 而非保底**——「保底」是默契承诺(信本函数不会被调用所以静默),panic 是显式契约(若被调用立刻爆);panic 让闸门翻 true 时此类 bug 立刻可见,sentinel 让其潜伏;
+- **「sentinel 静默」+「测试断言命中率」是配对纪律**——若性能敏感不能 panic 必须用 sentinel,配套测试必须断言「该路径被走到」(本会话 PJ2 spec 测试断言命中率 > 0 抓到了 bug),否则就是结构盲区;
+- **接延后 ≥6 个月的 task 前必先重核每一项现状**(task 描述可能失实);**大文档发布/审查前对外部依赖现状做事实层 checklist**(外部依赖现状过期);**开始任何标注「难点」的里程碑前先核实难点是否仍在**(前序里程碑可能已解)。
+
+这四个形态共享同一物理基础:**前序事实变更后,快照不会自更新,须显式审计**。与 §1-§4 一同构成「设计稿主张对码库 physics 的四空间维度 + 一时间维度」五维判据。
+
 ## 如何用
 
 - **设计稿记号是语义契约,不是物理承诺**:`(call $x)`、`$base`、「成本=架构给定」都只声明「这里要什么语义」,从不声明本码库 physics(边界成本/段重定位/根可达性)。实现前逐条过 §1-§4。
+- **快照不会自更新,事实变更须显式审计**(§5):设计稿/task 描述/stub 注释承诺/外部依赖现状在写下当时为真,前序事实变更后必须显式重核——尤其闸门翻 true 的同一 commit、延后 ≥6 个月的 task 接续前、大文档发布前。
 - **解释器「能跑」≠ 加速层「能跑」**:二者刷新地址/管理生命周期的能力不同——解释器每访问经 `th.slot()` 现算,gibbous 的 `$base` 入口锁定中途无法自刷新。设计稿往往因解释器碰巧免疫而对危险盲视,加速层照搬就触雷。先问「谁有能力刷新、在什么时机」。
-- **逐条对照,而非整体信任**:边界成本预算(§1)、段重定位(§2)、成本归类(§3)、根可达性(§4)是四个独立维度;一条热路径主张可能同时踩多个。
+- **逐条对照,而非整体信任**:边界成本预算(§1)、段重定位(§2)、成本归类(§3)、根可达性(§4)、时间维度(§5)是五个独立维度;一条热路径主张可能同时踩多个。
 
 ## 关联
 
-[[issue8-boundary-cost-round]](家族奠基:实现浪费 vs 架构成本 + 零拷贝根可达性)· [[p3-pw5-table-ic-round]](边界成本维度:`$helper` 须按 ~143ns 预算重判)· [[p3-pw6-crosslayer-call-round]](内存物理维度:`$base` 须按 arena 段重定位重核)· `feedback_arena_view_aliasing`(arena=linear memory 段可重定位 / 偏移现算寻址,§2/§4 物理基础)· [[design-premises]](前提一边界成本论证 / 前提二四项税,§1/§3 成本根据)· `docs/design/p3-wasm-tier/02-translation.md` §3.4 · `04-trampoline.md` §2-§4
+[[issue8-boundary-cost-round]](家族奠基:实现浪费 vs 架构成本 + 零拷贝根可达性)· [[p3-pw5-table-ic-round]](边界成本维度:`$helper` 须按 ~143ns 预算重判)· [[p3-pw6-crosslayer-call-round]](内存物理维度:`$base` 须按 arena 段重定位重核)· [[p3-pw7-pw4b-closure-tforloop-round]](§5 时间维度:难点过期)· [[vs0e-varargs-stack-underflow-round]](§5 时间维度:调研先于实现)· [[p4-doc-review-round]](§5 时间维度:外部依赖现状过期)· [[pr27-f3-3b-darwin-arm64-execute-roundup]](§5 时间维度:sentinel 注释承诺与闸门状态解耦)· `feedback_arena_view_aliasing`(arena=linear memory 段可重定位 / 偏移现算寻址,§2/§4 物理基础)· [[design-premises]](前提一边界成本论证 / 前提二四项税,§1/§3 成本根据)· `docs/design/p3-wasm-tier/02-translation.md` §3.4 · `04-trampoline.md` §2-§4

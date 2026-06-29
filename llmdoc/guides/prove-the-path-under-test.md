@@ -1,7 +1,7 @@
 # Guide:证明在测的路径(绿色 ≠ 在测你以为在测的)
 
-> 适用:写差分 / 对拍 / 性能 / IC 快路径 / wasm 快路径 / 错误冒泡类**任何对路径执行做断言的测试**时,以及加 e2e 语料 / 设计验收 oracle 前。
-> 来源:六个独立实例聚合的家族纪律——`memory/reflections/2026-06-14-p3-pw5-table-ic-round.md`(inline-proof) + `2026-06-14-p3-pw6-crosslayer-call-round.md`(TierStuck no-op) + `2026-06-15-p3-pw9-acceptance-perf-round.md`(空测 vararg 顶层)+ `2026-06-15-p3-pw10-r3-call-indirect-round.md`(错误路径盲区)+ `2026-06-15-p3-pw10-r1-r2-callinfo-migration-round.md`(基准工作负载错配)+ `2026-06-15-p3-pw10-zerocross-stage3-round.md`(快路径命中盲区)+ `2026-06-16-vs0e-varargs-stack-underflow-round.md`(覆盖度先验证,正向侧)。
+> 适用:写差分 / 对拍 / 性能 / IC 快路径 / wasm 快路径 / 错误冒泡类**任何对路径执行做断言的测试**时,以及加 e2e 语料 / 设计验收 oracle 前;**或调试机制叠加多档的崩点时**(§5)。
+> 来源:八个独立实例聚合的家族纪律——`memory/reflections/2026-06-14-p3-pw5-table-ic-round.md`(inline-proof) + `2026-06-14-p3-pw6-crosslayer-call-round.md`(TierStuck no-op) + `2026-06-15-p3-pw9-acceptance-perf-round.md`(空测 vararg 顶层)+ `2026-06-15-p3-pw10-r3-call-indirect-round.md`(错误路径盲区)+ `2026-06-15-p3-pw10-r1-r2-callinfo-migration-round.md`(基准工作负载错配)+ `2026-06-15-p3-pw10-zerocross-stage3-round.md`(快路径命中盲区)+ `2026-06-16-vs0e-varargs-stack-underflow-round.md`(覆盖度先验证,正向侧)+ `2026-06-30-pr27-f3-3b-darwin-arm64-execute-roundup.md`(bypass 探针根因 isolate + CI runner 形态盲)。
 
 **核心断言**:**测试通过 ≠ 在测的路径被走到**。同一段绿色结果可能来自三类「静默替身路径」:① 静态分析挑剔(F1/F2 结构性排除)使被测路径根本没被编译/触发;② 测试 harness 自身跳过(对错误 `Fatalf` / vararg 顶层不升层 / 缓存命中前路径死);③ 被测对象语义等价两条路径(inline 快路径 vs helper 慢路径),输出 byte-equal 但**走的哪条不能从输出反推**。
 
@@ -45,7 +45,21 @@
 
 **例**:VS0-e 子步 ⑥ task 描述列 11 条 vararg 语料,实际 luasuite/closure.lua 已含 `{coroutine.yield(unpack(arg[i]))}`(NeedsArg + vararg + 协程多值 yield/resume + 解包到 _G,5.1 作者本人写的最复杂组合)——不写冗余,直接以「luasuite 14 文件全 PASS」作 vararg 覆盖度证据。
 
-## 5. 触发场景速查
+## 5. 正向侧解药 — 多档机制叠加崩点的 bypass 探针根因 isolate
+
+**适用场景**:机制叠加 N 档(本例 darwin/arm64 真物理 JIT 执行 6 档:MAP_JIT mmap / W^X 翻面 `pthread_jit_write_protect_np` / `sys_icache_invalidate` / trampoline ABI / PAC 指针签名 / Hardened Runtime entitlement),崩点症状只有一种形态(同款 SIGSEGV / SIGILL / wrong-result),症状无法区分是哪一档错位。PR comment / 调研报告把 N 个 hypothesis 并列时,**默认做法是穷举每条**(预估 1-2 天)——但若各档之间有干净的输入/输出 ABI 边界,**bypass 一档跳一层做 minimal payload 探针**可把 N 档收敛到一档,**20 行代码 + 5 分钟**。
+
+**手法**:写 minimal payload 直接调下一层(末档)bypass 当前调试层(次末档),让 payload 经过相同的前 N-1 档但 bypass 次末档——若 payload 过,锅锁定次末档(本例 trampoline ABI / H1);若 payload 仍崩,继续 bypass 倒数第二档跳一层,直到 minimal payload 过,即可锁定崩点档位。每跳一层成本 ~5 分钟 / ~20 行代码,远快于穷举诊断每档。
+
+**本会话证据(F3-#3b darwin/arm64 真物理 execute 闭环)**:PR #27 留三 hypothesis(H1 trampoline ABI / H2 Apple Silicon PAC / H3 Hardened Runtime entitlement)。本机 M1 上写 `movz x0, #0x42 ; ret` 经 Go funcval 构造 BL 直接进 mmap 段(不经 `trampoline_arm64.s`),X0=0x42 成功返回 ⟹ MAP_JIT + W^X + icache + PAC + entitlement 全健康,**H2/H3 一次性排除,根因收敛到 H1**。后续 `lldb attach` 抓寄存器三相等指纹 `pc=lr=x19` 直接锁定 `STP (R19,R20), 0(RSP)` 覆盖 LR slot。
+
+**与 §2/§3 反向侧解药的对偶关系**:反向侧解药(毒化助手 / 命中计数器 / 错误路径用例)是「证一条已知路径真被走到」,本节正向侧解药是「机制叠加 N 档时,证前 N-1 档健康以锁定崩点在第 N 档」——前者解决「绿色 ≠ 在测你以为在测的」,本节解决「N 档崩点症状无法直接归因」。
+
+**判据**:**「档与档之间是否有干净的输入/输出 ABI 边界」**——若有(本例 trampoline 输入是 Go funcval / 输出是 ABI 标准 BL),探针成本低、收益高;若各档 ABI 互相纠缠,退回穷举。
+
+**CI 形态盲区配套**(同会话第 8 实例新维度):多后端 / 多平台 CI 必须配真物理 runner —— linux/arm64 QEMU + 字节级单测对比固定模板字节**不能替代真物理 execute**(本会话:trampoline LR slot bug 实际 linux+darwin 同款,但 linux/arm64 因 QEMU + 无 self-hosted runner 长期 latent,直到 darwin/arm64 macos-latest CI 真物理 BL 跳段首次实测才触发)。「真物理 execute 首次跑」是高风险事件,该 commit 应单独审查 —— 不是一次爆一个,而是一次爆一批(本会话:gate bug #1 修完翻闸门 true 后,下游 #2/#3/#4 三个 emit bug 连环爆)。
+
+## 6. 触发场景速查
 
 写新测试 / 改基准 / 看一个数字反常时,问自己:
 
@@ -55,8 +69,9 @@
 - **对拍 / 差分套全成功语料绿** → 加错误路径用例,否则 R3 类漂移 bug 结构性失明
 - **加 e2e 语料前** → `grep test/luasuite/testdata/` 看是否已覆盖,优先官方套件而非手写
 - **写 force-all / 缓存裁决 / IC 命中类** → 同时 (a) 白盒断言「真到达加速 tier 不是 stuck no-op」+ (b) 输入侧也加结构盲区用例(vararg 顶层 / 字符串常量值 / 协程不升层)
+- **机制叠加多档崩点诊断**(§5) → 第一步不是穷举 N 档分别诊断,是写 minimal payload bypass 末档跳一档,把 N 档收敛到一档;多后端/多平台首次「真物理 execute」上线时配真物理 runner
 
-## 6. 与本仓其他 guide 的关系
+## 7. 与本仓其他 guide 的关系
 
 - 与 [[design-claims-vs-codebase-physics]] 构成对偶双防线:那是**实现前**重验设计稿主张,本 guide 是**实现后**证明在测路径。
 - 与 [[perf-optimization-workflow]] §1「profile 先行」§3「benchmark 否决门」配:profile 先行决定**做什么**,本 guide 决定「机制就位后基准/测试**真的在测**什么」,数字落地前必过两关。
