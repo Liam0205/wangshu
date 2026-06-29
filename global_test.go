@@ -3,11 +3,38 @@
 package wangshu_test
 
 import (
+	"math"
 	"strings"
 	"testing"
 
 	"github.com/Liam0205/wangshu"
 )
+
+// floatNearlyEqual 允许 ≤ 1 ULP 容差比较浮点数。
+//
+// **为什么需要 ULP 容差**:Go 编译器在 arm64 (Apple Silicon / Linux arm64)
+// 可能把 `a*b + c` 表达式 lower 为单条 FMADD 指令(IEEE 754 fused
+// multiply-add,**一次舍入**);amd64 通常 lower 为 MUL + ADD 两条
+// (**两次舍入**)。两种 lowering 都符合 Go spec(§3.5 浮点运算允许 fused
+// 实现),但结果可能差 1 ULP。
+//
+// 测试侧 want = `Go 表达式直接算`,VM 侧 = Lua 字节码 MUL+ADD 两次舍入 +
+// crescent f64 路径不 fuse;两者在 arm64 上不字节相等,但都符合规范。
+//
+// 用例:TestCall_PerItemLoop / TestCallInto_PerItemReuseDst 比较公共 API
+// Call/CallInto 浮点返回值与 Go 期望值。承本会话 macos-latest CI 实证 arm64
+// FMADD vs amd64 MUL+ADD 行为差(非 P4 引入,既有 measurement 测试在
+// darwin/arm64 物理机上的脆弱点暴露)。
+func floatNearlyEqual(a, b float64) bool {
+	if a == b {
+		return true
+	}
+	// 1 ULP 容差:相邻可表示浮点数差为 1。math.Nextafter 给出下一个可表示值。
+	if math.Nextafter(a, b) == b || math.Nextafter(b, a) == a {
+		return true
+	}
+	return false
+}
 
 func TestSetGetGlobal_Scalars(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{})
@@ -109,8 +136,8 @@ func TestCall_PerItemLoop(t *testing.T) {
 			t.Fatalf("Call[%d]: %v", i, err)
 		}
 		want := float64(i)*0.85 + 10.0
-		if r[0].Number() != want {
-			t.Errorf("f[%d] = %v, want %v", i, r[0].Number(), want)
+		if !floatNearlyEqual(r[0].Number(), want) {
+			t.Errorf("f[%d] = %v, want %v (≤1 ULP)", i, r[0].Number(), want)
 		}
 	}
 }
@@ -173,8 +200,8 @@ func TestCallInto_PerItemReuseDst(t *testing.T) {
 			t.Fatalf("CallInto[%d]: %v", i, err)
 		}
 		want := float64(i)*0.85 + 10.0
-		if n != 1 || dst[0].Number() != want {
-			t.Errorf("f[%d] = %v, want %v", i, dst[0].Number(), want)
+		if n != 1 || !floatNearlyEqual(dst[0].Number(), want) {
+			t.Errorf("f[%d] = %v, want %v (≤1 ULP)", i, dst[0].Number(), want)
 		}
 	}
 }
