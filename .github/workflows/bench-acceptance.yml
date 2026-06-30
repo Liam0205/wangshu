@@ -42,6 +42,11 @@ jobs:
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
     name: bench-p4 (${{ matrix.os }})
+    # Defaults that apply on push (which has no `inputs` context) and as
+    # the fallback when workflow_dispatch is invoked without overrides.
+    env:
+      BENCH_COUNT: ${{ inputs.bench_count || '2' }}
+      BENCH_TIME: ${{ inputs.bench_time || '2s' }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
@@ -103,8 +108,8 @@ jobs:
           go test -tags 'wangshu_p4 wangshu_profile' \
             -bench='BenchmarkGibbousJIT_PJ3For' \
             -benchmem \
-            -benchtime=${{ inputs.bench_time }} \
-            -count=${{ inputs.bench_count }} \
+            -benchtime=${BENCH_TIME} \
+            -count=${BENCH_COUNT} \
             -run='^$' \
             ./baseline/ 2>&1 | tee ../bench-v14-p4-cresc.txt
 
@@ -117,8 +122,8 @@ jobs:
           go test \
             -bench='BenchmarkPJ3.*_Gopher' \
             -benchmem \
-            -benchtime=${{ inputs.bench_time }} \
-            -count=${{ inputs.bench_count }} \
+            -benchtime=${BENCH_TIME} \
+            -count=${BENCH_COUNT} \
             -run='^$' \
             ./baseline/ 2>&1 | tee ../bench-v14-gopher.txt
 
@@ -129,8 +134,8 @@ jobs:
           go test -tags 'wangshu_p4 wangshu_profile' \
             -bench='.' \
             -benchmem \
-            -benchtime=${{ inputs.bench_time }} \
-            -count=${{ inputs.bench_count }} \
+            -benchtime=${BENCH_TIME} \
+            -count=${BENCH_COUNT} \
             -run='^$' \
             ./realworld/ 2>&1 | tee ../bench-v15-p4.txt
 
@@ -140,8 +145,8 @@ jobs:
           go test -tags 'wangshu_p3 wangshu_profile' \
             -bench='.' \
             -benchmem \
-            -benchtime=${{ inputs.bench_time }} \
-            -count=${{ inputs.bench_count }} \
+            -benchtime=${BENCH_TIME} \
+            -count=${BENCH_COUNT} \
             -run='^$' \
             ./realworld/ 2>&1 | tee ../bench-v15-p3.txt
 
@@ -155,8 +160,8 @@ jobs:
           go test -tags 'wangshu_p4 wangshu_profile' \
             -bench='BenchmarkGibbousJIT_(Const|Nil|Bool)' \
             -benchmem \
-            -benchtime=${{ inputs.bench_time }} \
-            -count=${{ inputs.bench_count }} \
+            -benchtime=${BENCH_TIME} \
+            -count=${BENCH_COUNT} \
             -run='^$' \
             ./baseline/ 2>&1 | tee ../bench-v16-p4.txt
 
@@ -166,8 +171,8 @@ jobs:
           go test -tags 'wangshu_p3 wangshu_profile' \
             -bench='BenchmarkSimple_(Gibbous|WangshuKernel)' \
             -benchmem \
-            -benchtime=${{ inputs.bench_time }} \
-            -count=${{ inputs.bench_count }} \
+            -benchtime=${BENCH_TIME} \
+            -count=${BENCH_COUNT} \
             -run='^$' \
             ./baseline/ 2>&1 | tee ../bench-v16-p3.txt
 
