@@ -312,6 +312,21 @@ func (c *PerOpCode) Run(stack []uint64, base uint32) int32 {
 				return st
 			}
 			continue
+		case slotKindAndOr:
+			// TESTSET diamond: result = (Truthy(R(B)) == bool(C)) ? R(B) : <else>
+			// where <else> is either a register copy (arithOp==0,
+			// arithB=src reg) or a constant (arithOp==1, imm=baked).
+			testVal := c.host.GetReg(int32(src.reg))
+			match := value.Truthy(value.Value(testVal)) == (src.upval != 0)
+			if match {
+				val = testVal
+			} else {
+				if src.arithOp == 0 {
+					val = c.host.GetReg(int32(src.arithB))
+				} else {
+					val = src.imm
+				}
+			}
 		case slotKindNot:
 			// Pure Go: never raises, no host helper round-trip.
 			operand := value.Value(c.host.GetReg(int32(src.reg)))

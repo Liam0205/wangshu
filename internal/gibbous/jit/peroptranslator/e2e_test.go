@@ -377,6 +377,75 @@ return r, outer
 	}
 }
 
+// TestPJ10_AndOr covers the short-circuit `and`/`or` 3-op TESTSET
+// diamond:
+//
+//	[pc+0] TESTSET A B C
+//	[pc+1] JMP sBx=1
+//	[pc+2] MOVE A B' OR LOADK A Bx'
+//
+// Net effect: A := (Truthy(R(B)) == bool(C)) ? R(B) : <else-arm>.
+// C=0 corresponds to `x and y` (truthy of test wins), C=1 to `x or y`.
+func TestPJ10_AndOr(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want []string
+	}{
+		{
+			name: "and-truthy",
+			src:  "local function k(x, y) return x and y end\nlocal r = k(true, 42)\nreturn r",
+			want: []string{"42"},
+		},
+		{
+			name: "and-falsy",
+			src:  "local function k(x, y) return x and y end\nlocal r = k(false, 42)\nreturn r",
+			want: []string{"false"},
+		},
+		{
+			name: "or-truthy",
+			src:  "local function k(x, y) return x or y end\nlocal r = k(99, nil)\nreturn r",
+			want: []string{"99"},
+		},
+		{
+			name: "or-falsy-fallback",
+			src:  "local function k(x, y) return x or y end\nlocal r = k(false, 42)\nreturn r",
+			want: []string{"42"},
+		},
+		{
+			name: "or-with-const",
+			src:  "local function k(x) return x or 0 end\nlocal r = k(nil)\nreturn r",
+			want: []string{"0"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prog, err := wangshu.Compile([]byte(tc.src), "pj10andor")
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+			st := wangshu.NewState(wangshu.Options{})
+			st.SetForceAllPromote(true)
+			res, err := prog.Run(st)
+			if err != nil {
+				t.Fatalf("run: %v", err)
+			}
+			if st.PromotionCount() == 0 {
+				t.Fatal("PromotionCount = 0; PJ10 did not promote the and/or kernel")
+			}
+			for i, w := range tc.want {
+				if i >= len(res) {
+					t.Errorf("result[%d]: out-of-range, want %q (full: %v)", i, w, res)
+					continue
+				}
+				if got := res[i].Display(); got != w {
+					t.Errorf("result[%d] = %q, want %q (full: %v)", i, got, w, res)
+				}
+			}
+		})
+	}
+}
+
 // TestPJ10_ForLoop covers the numeric FORPREP/FORLOOP pair. The frontend
 // emits `for i = lo, hi do <body> end` as:
 //

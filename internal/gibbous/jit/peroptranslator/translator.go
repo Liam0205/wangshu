@@ -133,17 +133,17 @@ const (
 // run through host.Arith.
 type slotSource struct {
 	kind slotKind
-	imm  uint64 // valid when kind == slotKindConst
+	imm  uint64 // valid when kind == slotKindConst, also else-arm imm for slotKindAndOr
 
 	// reg/upval/upval are repurposed across kinds for compactness; see
 	// each slotKind branch in PerOpCode.Run for the actual semantics.
-	reg   uint8 // slotKindReg: source register
-	upval uint8 // slotKindUpval: upvalue index B
+	reg   uint8 // slotKindReg: source register; slotKindAndOr: TESTSET.B (test reg)
+	upval uint8 // slotKindUpval: upvalue index B; slotKindAndOr: TESTSET.C bit (0/1)
 
 	// Arithmetic ops (slotKindArith): op + B + C carry RK-encoded
 	// operand identifiers, exactly as in the source bytecode.
-	arithOp uint8  // bytecode opcode value (ADD/SUB/MUL/DIV/MOD/POW)
-	arithB  uint16 // RK-encoded operand 1 (0-511; >=256 means K(B-256))
+	arithOp uint8  // bytecode opcode value (ADD/SUB/MUL/DIV/MOD/POW); for slotKindAndOr: else-arm kind tag (0=reg, 1=const)
+	arithB  uint16 // RK-encoded operand 1 (0-511; >=256 means K(B-256)); for slotKindAndOr: else-arm reg (if otherKind==reg)
 	arithC  uint16 // RK-encoded operand 2
 	arithPC uint8  // pc index of the arithmetic instruction (for error reporting)
 }
@@ -164,6 +164,7 @@ const (
 	slotKindGetTable                  // R(A) := R(B)[RK(C)] via host.GetTable
 	slotKindGetGlobal                 // R(A) := Globals[K(Bx)] via host.DoGetGlobal
 	slotKindNewTable                  // R(A) := new table via host.NewTable
+	slotKindAndOr                     // TESTSET diamond (and/or short-circuit)
 )
 
 // AnalyzeShape reports whether the given Proto matches the constant-tuple
@@ -337,6 +338,37 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 		}
 	}
 
+	// And/or diamonds (3-op): TESTSET A B C + JMP +1 + MOVE/LOADK A B'.
+	// The diamond occupies pc..pc+2 and is replaced by one slotKindAndOr
+	// head op. We track it separately from cmp diamonds so the analyzer
+	// can distinguish slot kinds during emission.
+	type andOrEntry struct {
+		dst   uint8
+		testB uint8
+		testC uint8
+		other slotSource
+	}
+	andOrStart := make(map[int]andOrEntry, 0)
+	for pc := 0; pc+2 < retPC; pc++ {
+		if diamondMember[pc] {
+			continue
+		}
+		dst, other, ok := matchAndOrDiamond(proto, pc)
+		if !ok {
+			continue
+		}
+		tset := proto.Code[pc]
+		andOrStart[pc] = andOrEntry{
+			dst:   dst,
+			testB: uint8(bytecode.B(tset)),
+			testC: uint8(bytecode.C(tset)),
+			other: other,
+		}
+		diamondMember[pc+1] = true
+		diamondMember[pc+2] = true
+		pc += 2
+	}
+
 	// First pass: find the last writer pc for each return slot. We need
 	// the *last* writer so MOVEs into a slot that later gets CONCAT'd
 	// over are recognised as side-effects, not head ops.
@@ -353,6 +385,14 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 		// Diamond start: the dst is written.
 		if dst, ok := diamondStart[pc]; ok {
 			idx := int(dst) - retA
+			if idx >= 0 && idx < n {
+				headPC[idx] = pc
+			}
+			continue
+		}
+		// And/or diamond start.
+		if ao, ok := andOrStart[pc]; ok {
+			idx := int(ao.dst) - retA
 			if idx >= 0 && idx < n {
 				headPC[idx] = pc
 			}
@@ -498,9 +538,32 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 				_ = dst
 				continue
 			}
-			// Diamond writes a register that's never read by RETURN —
-			// shouldn't happen given diamondStart is only set when the
-			// dst lies in the return window. Treat as unsupported.
+			return shapeInfo{}
+		}
+
+		// And/or diamond start: build slotKindAndOr head op.
+		if ao, ok := andOrStart[pc]; ok {
+			if slotIdx, hit := pcToSlot[pc]; hit {
+				src := slotSource{
+					kind:    slotKindAndOr,
+					reg:     ao.testB,
+					upval:   ao.testC,
+					arithPC: uint8(pc),
+				}
+				// Pack the else-arm source.
+				switch ao.other.kind {
+				case slotKindReg:
+					src.arithOp = 0 // tag: reg
+					src.arithB = uint16(ao.other.reg)
+				case slotKindConst:
+					src.arithOp = 1 // tag: const
+					src.imm = ao.other.imm
+				default:
+					return shapeInfo{}
+				}
+				sources[slotIdx] = src
+				continue
+			}
 			return shapeInfo{}
 		}
 
@@ -690,6 +753,70 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 		info.bodyEffects = bodyEffects
 	}
 	return info
+}
+
+// matchAndOrDiamond returns (Adst, true) if the 4-op short-circuit
+// diamond pattern is rooted at proto.Code[pc]. The pattern is:
+//
+//	[pc+0] TESTSET Adst B C       ; if (Truthy(R(B)) == bool(C)) then R(Adst) := R(B) else pc++
+//	[pc+1] JMP sBx=1              ; skip the else-arm MOVE/LOADK
+//	[pc+2] MOVE Adst B' OR LOADK Adst Bx'  ; else-arm assigns R(Adst) := <other>
+//
+// The fall-through after TESTSET runs the JMP, which skips the MOVE/LOADK;
+// the pc++ branch lands on MOVE/LOADK directly. Net effect: pick the
+// short-circuit result.
+//
+// Returns (Adst, otherSrc, true) where otherSrc is the slotSource for
+// the "else" branch (the MOVE/LOADK at pc+2). C is recovered from
+// proto.Code[pc].
+func matchAndOrDiamond(proto *bytecode.Proto, pc int) (uint8, slotSource, bool) {
+	code := proto.Code
+	if pc+2 >= len(code) {
+		return 0, slotSource{}, false
+	}
+	tset := code[pc]
+	if bytecode.Op(tset) != bytecode.TESTSET {
+		return 0, slotSource{}, false
+	}
+	if bytecode.Op(code[pc+1]) != bytecode.JMP {
+		return 0, slotSource{}, false
+	}
+	if bytecode.SBx(code[pc+1]) != 1 {
+		return 0, slotSource{}, false
+	}
+	dst := bytecode.A(tset)
+	if dst < 0 || dst > 255 {
+		return 0, slotSource{}, false
+	}
+	other := code[pc+2]
+	otherOp := bytecode.Op(other)
+	if bytecode.A(other) != dst {
+		return 0, slotSource{}, false
+	}
+	switch otherOp {
+	case bytecode.MOVE:
+		b := bytecode.B(other)
+		if b < 0 || b > 255 {
+			return 0, slotSource{}, false
+		}
+		return uint8(dst), slotSource{
+			kind: slotKindReg,
+			reg:  uint8(b),
+		}, true
+	case bytecode.LOADK:
+		bx := bytecode.Bx(other)
+		if bx < 0 || bx >= len(proto.Consts) {
+			return 0, slotSource{}, false
+		}
+		if proto.IsStringConst(bx) {
+			return 0, slotSource{}, false
+		}
+		return uint8(dst), slotSource{
+			kind: slotKindConst,
+			imm:  uint64(proto.Consts[bx]),
+		}, true
+	}
+	return 0, slotSource{}, false
 }
 
 // matchCmpDiamond returns (Adst, true) if the 4-op comparison diamond
