@@ -80,6 +80,13 @@ type PerOpCode struct {
 	retA  uint8
 	retB  uint8
 	retPC uint8
+
+	// Tail-call shape (`function() return f() end` etc.): when true, the
+	// final side effect is a sideEffectTailCall whose return code
+	// determines whether DoReturn runs. The retB used for the (possibly
+	// skipped) DoReturn is set to 0 (multret to-top) per the dead-RETURN
+	// the frontend emits after TAILCALL.
+	isTailCall bool
 }
 
 // Proto returns the source Proto.
@@ -125,6 +132,15 @@ func (c *PerOpCode) Run(stack []uint64, base uint32) int32 {
 	// host.DoSetGlobal). The MOVE/LOADK forms appear when ops like
 	// CONCAT need their source registers prepped. The setter forms can
 	// raise, so we plumb a status code through if they fail.
+	//
+	// sideEffectTailCall is treated specially: tri-state status drives
+	// control flow at the function level.
+	//   - 0 = Lua tail call done (caller frame replaced by callee, and
+	//     executeFrom drained callee chain). Run returns 0 immediately,
+	//     skipping DoReturn (the frame is already popped).
+	//   - 1 = error.
+	//   - 2 = host tail call: results in registers, fall through to
+	//     DoReturn with retB=0 (multret-to-top).
 	for _, se := range c.sideEffects {
 		switch se.kind {
 		case sideEffectSetUpval:
@@ -162,6 +178,27 @@ func (c *PerOpCode) Run(stack []uint64, base uint32) int32 {
 				int32(se.c),
 			); st != 0 {
 				return st
+			}
+		case sideEffectTailCall:
+			st := c.host.TailCall(
+				int32(base),
+				int32(se.imm),
+				int32(se.a),
+				int32(se.b),
+				int32(se.c),
+			)
+			switch st {
+			case 0:
+				// Lua tail call: frame already popped, executeFrom drained
+				// callee chain. Skip DoReturn — this frame is gone.
+				_ = stack
+				return 0
+			case 2:
+				// Host tail call: results in R(callA..). Fall through to
+				// DoReturn with retB=0 multret-to-top, which our retB=0
+				// already encodes when isTailCall is true.
+			default:
+				return 1
 			}
 		}
 	}
@@ -384,6 +421,7 @@ func TranslateProto(proto *bytecode.Proto, host jit.P4HostState) (bridge.Gibbous
 		retA:        info.retA,
 		retB:        info.retB,
 		retPC:       info.retPC,
+		isTailCall:  info.isTailCall,
 	}, nil
 }
 

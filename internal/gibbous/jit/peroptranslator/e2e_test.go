@@ -377,6 +377,80 @@ return r, outer
 	}
 }
 
+// TestPJ10_TailCall covers TAILCALL via host.TailCall side effect. The
+// frontend emits `function() return f() end` as
+//
+//	[0] <preludes>
+//	[1] TAILCALL A B C=0
+//	[2] RETURN A B=0          ; dead (frame already gone if status=0)
+//	[3] RETURN A=0 B=1        ; trailing dead
+//
+// Our analyzer recognizes the RETURN B=0 + preceding TAILCALL pair and
+// dispatches via the tri-state host.TailCall helper: status 0 (Lua tail
+// call) skips DoReturn, status 2 (host tail call) falls through to
+// DoReturn with multret-to-top.
+func TestPJ10_TailCall(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want []string
+	}{
+		{
+			name: "no-args",
+			src: `
+local function inner() return 42 end
+local function k() return inner() end
+return k()
+`,
+			want: []string{"42"},
+		},
+		{
+			name: "one-arg",
+			src: `
+local function inner(x) return x * 2 end
+local function k(x) return inner(x) end
+return k(21)
+`,
+			want: []string{"42"},
+		},
+		{
+			name: "two-args",
+			src: `
+local function inner(a, b) return a + b end
+local function k(a, b) return inner(a, b) end
+return k(3, 4)
+`,
+			want: []string{"7"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prog, err := wangshu.Compile([]byte(tc.src), "pj10tailcall")
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+			st := wangshu.NewState(wangshu.Options{})
+			st.SetForceAllPromote(true)
+			res, err := prog.Run(st)
+			if err != nil {
+				t.Fatalf("run: %v", err)
+			}
+			if st.PromotionCount() == 0 {
+				t.Fatal("PromotionCount = 0; PJ10 did not promote the TAILCALL kernel")
+			}
+			for i, w := range tc.want {
+				if i >= len(res) {
+					t.Errorf("result[%d]: out-of-range, want %q (full: %v)", i, w, res)
+					continue
+				}
+				if got := res[i].Display(); got != w {
+					t.Errorf("result[%d] = %q, want %q (full: %v)", i, got, w, res)
+				}
+			}
+		})
+	}
+}
+
 // TestPJ10_Call covers single-BB CALL forms via host.CallBaseline.
 // The CALL op writes R(A..A+C-2); for any return slot landing in that
 // range, a slotKindReg head op reads it back after the call returns.

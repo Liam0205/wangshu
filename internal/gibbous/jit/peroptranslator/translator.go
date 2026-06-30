@@ -68,8 +68,19 @@ type shapeInfo struct {
 	sideEffects []sideEffect // ops with no return-slot output (SETUPVAL); run before head ops
 	startA      uint8        // R(startA) is the first slot written
 	retA        uint8        // RETURN A — matches startA in the typical shape
-	retB        uint8        // RETURN B — len(sources)+1 (or 1 for the setter form)
+	retB        uint8        // RETURN B — len(sources)+1 (or 1 for the setter form, 0 for multret tail call)
 	retPC       uint8        // RETURN's pc index in proto.Code
+
+	// tail-call form: TAILCALL + RETURN A B=0 (to-top). At Run time the
+	// final side effect must be a sideEffectTailCall whose status code
+	// drives a tri-state branch (0 = frame already popped, 2 = multret
+	// DoReturn). When isTailCall is true, the head-op replay produces no
+	// values; DoReturn is called only when the tail-call helper returns
+	// status 2 (host tail call).
+	isTailCall bool
+	tailCallA  uint8
+	tailCallB  uint8
+	tailCallPC uint8
 }
 
 // sideEffect describes a pre-return op that has no associated return slot.
@@ -97,6 +108,7 @@ const (
 	sideEffectSetTable                        // SETTABLE A B C: R(A)[RK(B)] := RK(C)
 	sideEffectSetGlobal                       // SETGLOBAL A Bx: Globals[K(Bx)] := R(A)
 	sideEffectCall                            // CALL A B C: R(A..A+C-2) := R(A)(R(A+1..A+B-1))
+	sideEffectTailCall                        // TAILCALL A B C: tri-state — see PerOpCode.Run
 )
 
 // slotSource describes how PerOpCode.Run materialises one return slot:
@@ -168,10 +180,41 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 	retIns := proto.Code[retPC]
 	retA := bytecode.A(retIns)
 	retB := bytecode.B(retIns)
-	if retB < 1 {
-		return shapeInfo{} // B=0 (multret) out of scope for PJ10a.
+
+	// Tail-call shape detection: RETURN with B=0 (multret) is normally
+	// rejected, but it's exactly the shape used after a TAILCALL — the
+	// frontend pairs them. Recognize this case so PJ10 can promote tail
+	// calls.
+	isTailCall := false
+	var tailCallA, tailCallB uint8
+	if retB == 0 {
+		if retPC < 1 {
+			return shapeInfo{}
+		}
+		prev := proto.Code[retPC-1]
+		if bytecode.Op(prev) != bytecode.TAILCALL {
+			return shapeInfo{} // not a recognizable multret form
+		}
+		ta := bytecode.A(prev)
+		tb := bytecode.B(prev)
+		if ta < 0 || ta > 255 || tb < 0 || tb > 255 {
+			return shapeInfo{}
+		}
+		isTailCall = true
+		tailCallA = uint8(ta)
+		tailCallB = uint8(tb)
+		// Treat tail-call shape as producing zero head-op slots; head-op
+		// replay is skipped. retB stays 0 in shapeInfo (multret-to-top
+		// for the DoReturn that runs on status=2).
 	}
-	n := retB - 1 // number of return values (0 for setter form)
+
+	if retB == 0 && !isTailCall {
+		return shapeInfo{}
+	}
+	n := 0
+	if retB >= 1 {
+		n = retB - 1 // number of return values (0 for setter form)
+	}
 
 	// Optional trailing RETURN A=0 B=1 must be the last instruction if
 	// present; nothing else after retPC.
@@ -372,6 +415,22 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 			continue
 		}
 
+		// TAILCALL: pre-RETURN, dispatched at Run time via host.TailCall
+		// with the captured (a, b, c, pc). The shapeInfo records the A/B
+		// fields separately so the Run path can decide whether to skip
+		// DoReturn (status 0 = frame already popped) or fall through to
+		// DoReturn with multret (status 2 = host tail call).
+		if op == bytecode.TAILCALL && isTailCall && pc == retPC-1 {
+			sideEffects = append(sideEffects, sideEffect{
+				kind: sideEffectTailCall,
+				a:    uint8(bytecode.A(ins)),
+				b:    uint8(bytecode.B(ins)),
+				c:    uint8(bytecode.C(ins)),
+				imm:  uint64(pc),
+			})
+			continue
+		}
+
 		// LOADNIL multi-slot: special-case because it may serve as head
 		// op for multiple return slots simultaneously.
 		if op == bytecode.LOADNIL {
@@ -436,6 +495,10 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 		retA:        uint8(retA),
 		retB:        uint8(retB),
 		retPC:       uint8(retPC),
+		isTailCall:  isTailCall,
+		tailCallA:   tailCallA,
+		tailCallB:   tailCallB,
+		tailCallPC:  uint8(retPC - 1),
 	}
 }
 
