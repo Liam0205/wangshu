@@ -60,20 +60,6 @@ func TestRealWorld_OracleParity(t *testing.T) {
 	}
 	for _, name := range scripts {
 		t.Run(name, func(t *testing.T) {
-			// TODO(P3-binarytrees-parity): P3 build 下 binarytrees parity
-			// fail (wangshu "209\t1\t1360" vs oracle "4095\t2047\t129712").
-			// Repro: bottomup + check 双向自递归 + 表构造 + 表 GETTABLE 作
-			// 递归实参,P3 promote 后 check(root) 永远返回 3——根因怀疑在
-			// promoted check 的 wasm 递归 + return-fast-path 与 enterGibbous
-			// 交互(call_indirect 关掉报「attempt to call upvalue (a table)」
-			// = 寄存器污染另一形态),具体定位需进一步排障。bench-acceptance
-			// 不跑此对拍故长期未发现;本会话 ci.yml 修复 benchmarks/ 矩阵漏跑
-			// 后暴露,先 skip 不阻塞 PR,跟踪到独立 issue 修。
-			if name == "binarytrees" {
-				if _, p3 := isP3Build(); p3 {
-					t.Skip("P3 binarytrees parity bug — see TODO(P3-binarytrees-parity)")
-				}
-			}
 			src := loadScript(t, name)
 			// oracle 侧:把 return 值 print 出来(\t join 与 wangshu 侧一致)
 			wrapped := "local function __chunk() " + string(src) + "\nend\n" +
