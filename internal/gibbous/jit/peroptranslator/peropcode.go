@@ -120,10 +120,11 @@ func (c *PerOpCode) Run(stack []uint64, base uint32) int32 {
 	// Run pre-return side-effect ops before any head-op materialisation.
 	// Supported kinds today: SETUPVAL (U(b) := R(a)), LOADNIL (fill a
 	// scratch register range with nil), MOVE (scratch register copy),
-	// LOADK / LOADBOOL (scratch immediate). The MOVE/LOADK forms appear
-	// when ops like CONCAT need their source registers prepped (e.g.
-	// `return a..b` emits MOVE A=2 B=0, MOVE A=3 B=1 to prep CONCAT's
-	// R(B..C) input range). All helpers never raise.
+	// LOADK / LOADBOOL (scratch immediate), SETTABLE (R(A)[RK(B)] := RK(C)
+	// via host.SetTable), SETGLOBAL (Globals[K(Bx)] := R(A) via
+	// host.DoSetGlobal). The MOVE/LOADK forms appear when ops like
+	// CONCAT need their source registers prepped. The setter forms can
+	// raise, so we plumb a status code through if they fail.
 	for _, se := range c.sideEffects {
 		switch se.kind {
 		case sideEffectSetUpval:
@@ -136,6 +137,17 @@ func (c *PerOpCode) Run(stack []uint64, base uint32) int32 {
 			c.host.SetReg(int32(se.a), c.host.GetReg(int32(se.b)))
 		case sideEffectLoadK:
 			c.host.SetReg(int32(se.a), se.imm)
+		case sideEffectSetTable:
+			// SETTABLE encodes its full 9-bit RK B/C in imm; recover them.
+			b := int32(se.imm >> 16)
+			cc := int32(se.imm & 0xffff)
+			if st := c.host.SetTable(int32(base), 0, int32(se.a), b, cc); st != 0 {
+				return st
+			}
+		case sideEffectSetGlobal:
+			if st := c.host.DoSetGlobal(int32(base), 0, int32(se.a), int32(se.imm)); st != 0 {
+				return st
+			}
 		}
 	}
 
@@ -251,6 +263,43 @@ func (c *PerOpCode) Run(stack []uint64, base uint32) int32 {
 				result = !result // EQ/LT/LE A=0 negates the runtime result
 			}
 			val = uint64(value.BoolValue(result))
+		case slotKindGetTable:
+			// host.GetTable writes R(c.retA+i) directly + may raise on
+			// attempt-to-index-nil / __index raise.
+			if st := c.host.GetTable(
+				int32(base),
+				int32(src.arithPC),
+				int32(c.retA)+int32(i),
+				int32(src.arithB),
+				int32(src.arithC),
+			); st != 0 {
+				return st
+			}
+			continue
+		case slotKindGetGlobal:
+			// host.DoGetGlobal writes R(c.retA+i) directly + may raise.
+			if st := c.host.DoGetGlobal(
+				int32(base),
+				int32(src.arithPC),
+				int32(c.retA)+int32(i),
+				int32(src.imm),
+			); st != 0 {
+				return st
+			}
+			continue
+		case slotKindNewTable:
+			// host.NewTable writes R(c.retA+i) directly; never raises
+			// (only Go OOM, which the signature does not surface).
+			if st := c.host.NewTable(
+				int32(base),
+				int32(src.arithPC),
+				int32(c.retA)+int32(i),
+				int32(src.arithB),
+				int32(src.arithC),
+			); st != 0 {
+				return st
+			}
+			continue
 		case slotKindNot:
 			// Pure Go: never raises, no host helper round-trip.
 			operand := value.Value(c.host.GetReg(int32(src.reg)))

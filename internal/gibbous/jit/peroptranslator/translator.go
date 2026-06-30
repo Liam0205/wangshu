@@ -75,23 +75,26 @@ type shapeInfo struct {
 // sideEffect describes a pre-return op that has no associated return slot.
 // Today the supported kinds are SETUPVAL (U(b) := R(a)), LOADNIL (fill
 // scratch regs), and scratch-register fills (MOVE/LOADK writing a reg
-// that's either outside the return window or overwritten before RETURN).
-// Future PJ10a extensions may add others (e.g. SETGLOBAL once PJ10d arrives).
+// that's either outside the return window or overwritten before RETURN),
+// plus the table/global setters (SETTABLE, SETGLOBAL).
 type sideEffect struct {
 	kind sideEffectKind
-	a    uint8  // op's A field (source register for SETUPVAL; first slot for LOADNIL; dest reg for MOVE/LOADK)
-	b    uint8  // op's B field (upvalue index for SETUPVAL; last slot for LOADNIL; source reg for MOVE)
-	imm  uint64 // baked NaN-boxed value (LOADK)
+	a    uint8  // op's A field (source register for SETUPVAL; first slot for LOADNIL; dest reg for MOVE/LOADK/SETTABLE; source reg for SETGLOBAL)
+	b    uint8  // op's B field (upvalue index for SETUPVAL; last slot for LOADNIL; source reg for MOVE; RK key for SETTABLE)
+	c    uint8  // op's C field (RK value for SETTABLE)
+	imm  uint64 // baked NaN-boxed value (LOADK) or Bx constant index (SETGLOBAL)
 }
 
 // sideEffectKind discriminates the pre-return op kinds.
 type sideEffectKind uint8
 
 const (
-	sideEffectSetUpval sideEffectKind = iota // SETUPVAL A B: U(B) := R(A)
-	sideEffectLoadNil                        // LOADNIL A B: R(A..B) := nil
-	sideEffectMove                           // MOVE A B: R(A) := R(B) (scratch fill)
-	sideEffectLoadK                          // LOADK A Bx: R(A) := <imm> (scratch fill)
+	sideEffectSetUpval  sideEffectKind = iota // SETUPVAL A B: U(B) := R(A)
+	sideEffectLoadNil                         // LOADNIL A B: R(A..B) := nil
+	sideEffectMove                            // MOVE A B: R(A) := R(B) (scratch fill)
+	sideEffectLoadK                           // LOADK A Bx: R(A) := <imm> (scratch fill)
+	sideEffectSetTable                        // SETTABLE A B C: R(A)[RK(B)] := RK(C)
+	sideEffectSetGlobal                       // SETGLOBAL A Bx: Globals[K(Bx)] := R(A)
 )
 
 // slotSource describes how PerOpCode.Run materialises one return slot:
@@ -119,15 +122,18 @@ type slotSource struct {
 type slotKind uint8
 
 const (
-	slotKindConst  slotKind = iota // immediate (LOADK/LOADBOOL/LOADNIL)
-	slotKindReg                    // copy from R(reg) (MOVE)
-	slotKindUpval                  // read upvalue B (GETUPVAL)
-	slotKindArith                  // arithmetic via host.Arith (ADD/SUB/MUL/DIV/MOD/POW)
-	slotKindUnm                    // unary minus via host.Unm (UNM)
-	slotKindLen                    // length op via host.Len (LEN)
-	slotKindNot                    // logical not via Go-side Truthy/BoolValue (NOT)
-	slotKindConcat                 // string concat via host.Concat (CONCAT A B C)
-	slotKindCmp                    // EQ/LT/LE diamond → bool via host.Eq/Compare
+	slotKindConst     slotKind = iota // immediate (LOADK/LOADBOOL/LOADNIL)
+	slotKindReg                       // copy from R(reg) (MOVE)
+	slotKindUpval                     // read upvalue B (GETUPVAL)
+	slotKindArith                     // arithmetic via host.Arith (ADD/SUB/MUL/DIV/MOD/POW)
+	slotKindUnm                       // unary minus via host.Unm (UNM)
+	slotKindLen                       // length op via host.Len (LEN)
+	slotKindNot                       // logical not via Go-side Truthy/BoolValue (NOT)
+	slotKindConcat                    // string concat via host.Concat (CONCAT A B C)
+	slotKindCmp                       // EQ/LT/LE diamond → bool via host.Eq/Compare
+	slotKindGetTable                  // R(A) := R(B)[RK(C)] via host.GetTable
+	slotKindGetGlobal                 // R(A) := Globals[K(Bx)] via host.DoGetGlobal
+	slotKindNewTable                  // R(A) := new table via host.NewTable
 )
 
 // AnalyzeShape reports whether the given Proto matches the constant-tuple
@@ -229,7 +235,7 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 		ins := proto.Code[pc]
 		op := bytecode.Op(ins)
 		// Side-effect-only ops have no return-slot dest.
-		if op == bytecode.SETUPVAL {
+		if op == bytecode.SETUPVAL || op == bytecode.SETTABLE || op == bytecode.SETGLOBAL {
 			continue
 		}
 		// LOADNIL writes a closed range R(A..B); each slot in that
@@ -494,6 +500,37 @@ func sideEffectFromIns(op bytecode.OpCode, ins bytecode.Instruction) (sideEffect
 			return sideEffect{}, false
 		}
 		return sideEffect{kind: sideEffectSetUpval, a: uint8(a), b: uint8(b)}, true
+
+	case bytecode.SETTABLE:
+		// SETTABLE A B C: R(A)[RK(B)] := RK(C). A is the table register
+		// (0..255); B/C are RK-encoded (0..511, top bit means K-pool).
+		a := bytecode.A(ins)
+		b := bytecode.B(ins)
+		c := bytecode.C(ins)
+		if a < 0 || a > 255 || b < 0 || b > 511 || c < 0 || c > 511 {
+			return sideEffect{}, false
+		}
+		return sideEffect{
+			kind: sideEffectSetTable,
+			a:    uint8(a),
+			b:    uint8(b & 0xff),
+			c:    uint8(c & 0xff),
+			imm:  uint64(b)<<16 | uint64(c), // pack full 9-bit B/C
+		}, true
+
+	case bytecode.SETGLOBAL:
+		// SETGLOBAL A Bx: Globals[K(Bx)] := R(A).
+		a := bytecode.A(ins)
+		bx := bytecode.Bx(ins)
+		if a < 0 || a > 255 || bx < 0 {
+			return sideEffect{}, false
+		}
+		return sideEffect{
+			kind: sideEffectSetGlobal,
+			a:    uint8(a),
+			imm:  uint64(bx),
+		}, true
+
 	default:
 		return sideEffect{}, false
 	}
@@ -603,6 +640,47 @@ func headOpSource(proto *bytecode.Proto, ins bytecode.Instruction) (slotSource, 
 		}
 		return slotSource{
 			kind:   slotKindConcat,
+			arithB: uint16(b),
+			arithC: uint16(c),
+		}, true
+
+	case bytecode.GETTABLE:
+		// R(A) := R(B)[RK(C)]. Routed through host.GetTable — IC lookup
+		// / hash / __index metamethod / raise on attempt-to-index-nil.
+		b := bytecode.B(ins)
+		c := bytecode.C(ins)
+		if b < 0 || b > 255 || c < 0 || c > 511 {
+			return slotSource{}, false
+		}
+		return slotSource{
+			kind:   slotKindGetTable,
+			arithB: uint16(b),
+			arithC: uint16(c),
+		}, true
+
+	case bytecode.GETGLOBAL:
+		// R(A) := Globals[K(Bx)] via host.DoGetGlobal. Bx is a constant
+		// index (the global variable name). Up to 18-bit, stored in imm.
+		bx := bytecode.Bx(ins)
+		if bx < 0 {
+			return slotSource{}, false
+		}
+		return slotSource{
+			kind: slotKindGetGlobal,
+			imm:  uint64(bx),
+		}, true
+
+	case bytecode.NEWTABLE:
+		// R(A) := new table with hint sizes (Fb-encoded B array hint,
+		// C hash hint). Routed through host.NewTable — pure allocation,
+		// never raises (only Go OOM).
+		b := bytecode.B(ins)
+		c := bytecode.C(ins)
+		if b < 0 || b > 255 || c < 0 || c > 255 {
+			return slotSource{}, false
+		}
+		return slotSource{
+			kind:   slotKindNewTable,
 			arithB: uint16(b),
 			arithC: uint16(c),
 		}, true

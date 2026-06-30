@@ -377,6 +377,92 @@ return r, outer
 	}
 }
 
+// TestPJ10_TableOps covers the single-BB table head ops:
+//   - GETTABLE: R(A) := R(B)[RK(C)]   via host.GetTable
+//   - GETGLOBAL: R(A) := Globals[K(Bx)] via host.DoGetGlobal
+//   - NEWTABLE: R(A) := new table     via host.NewTable
+//
+// And the matching side-effect forms:
+//   - SETTABLE: R(A)[RK(B)] := RK(C) via host.SetTable
+//   - SETGLOBAL: Globals[K(Bx)] := R(A) via host.DoSetGlobal
+//
+// `_G.print` and `_G.foo = 1` style globals go through GETGLOBAL/
+// SETGLOBAL paths; `t.x` / `t[k]` go through GETTABLE/SETTABLE.
+func TestPJ10_TableOps(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want []string
+	}{
+		{
+			name: "gettable-string-key",
+			src:  "local function k(t) return t.x end\nlocal r = k({x = 42})\nreturn r",
+			want: []string{"42"},
+		},
+		{
+			name: "gettable-numeric-key",
+			src:  "local function k(t) return t[1] end\nlocal r = k({10, 20, 30})\nreturn r",
+			want: []string{"10"},
+		},
+		{
+			name: "gettable-multi",
+			src:  "local function k(t) return t[1], t[2] end\nlocal a, b = k({99, 88})\nreturn a, b",
+			want: []string{"99", "88"},
+		},
+		{
+			name: "newtable-empty",
+			src:  "local function k() return {} end\nlocal t = k()\nreturn type(t)",
+			want: []string{"table"},
+		},
+		{
+			name: "settable-then-gettable",
+			src: `
+local function set(t, v) t.x = v end
+local t = {x = 0}
+set(t, 99)
+return t.x
+`,
+			want: []string{"99"},
+		},
+		{
+			name: "setglobal-getglobal",
+			src: `
+local function setg() pjtest_global = 123 end
+local function getg() return pjtest_global end
+setg()
+return getg()
+`,
+			want: []string{"123"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prog, err := wangshu.Compile([]byte(tc.src), "pj10table")
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+			st := wangshu.NewState(wangshu.Options{})
+			st.SetForceAllPromote(true)
+			res, err := prog.Run(st)
+			if err != nil {
+				t.Fatalf("run: %v", err)
+			}
+			if st.PromotionCount() == 0 {
+				t.Fatal("PromotionCount = 0; PJ10 did not promote the table kernel")
+			}
+			for i, w := range tc.want {
+				if i >= len(res) {
+					t.Errorf("result[%d]: out-of-range, want %q (full: %v)", i, w, res)
+					continue
+				}
+				if got := res[i].Display(); got != w {
+					t.Errorf("result[%d] = %q, want %q (full: %v)", i, got, w, res)
+				}
+			}
+		})
+	}
+}
+
 // TestPJ10_CmpDiamond covers the EQ/LT/LE comparison-as-bool shape.
 // The frontend emits a fixed 4-op diamond:
 //
