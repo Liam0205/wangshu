@@ -210,6 +210,11 @@ func (c *PerOpCode) Run(stack []uint64, base uint32) int32 {
 			if st := c.host.Self(int32(base), selfPC, int32(se.a), int32(se.b), rkC); st != 0 {
 				return st
 			}
+		case sideEffectSetList:
+			// SETLIST A B C: populate R(A)'s array section.
+			if st := c.host.SetList(int32(base), 0, int32(se.a), int32(se.b), int32(se.c)); st != 0 {
+				return st
+			}
 		}
 	}
 

@@ -377,6 +377,63 @@ return r, outer
 	}
 }
 
+// TestPJ10_SetList covers SETLIST for array-literal construction:
+// `return {1, 2, 3}` emits NEWTABLE + LOADK×N + SETLIST + RETURN. The
+// SETLIST side effect populates the table's array section with the N
+// scratch values prepared by the LOADKs.
+func TestPJ10_SetList(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want []string
+	}{
+		{
+			name: "three-elements",
+			src: `
+local function k() return {1, 2, 3} end
+local t = k()
+return t[1], t[2], t[3]
+`,
+			want: []string{"1", "2", "3"},
+		},
+		{
+			name: "five-elements",
+			src: `
+local function k() return {10, 20, 30, 40, 50} end
+local t = k()
+return t[1], t[5]
+`,
+			want: []string{"10", "50"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prog, err := wangshu.Compile([]byte(tc.src), "pj10setlist")
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+			st := wangshu.NewState(wangshu.Options{})
+			st.SetForceAllPromote(true)
+			res, err := prog.Run(st)
+			if err != nil {
+				t.Fatalf("run: %v", err)
+			}
+			if st.PromotionCount() == 0 {
+				t.Fatal("PromotionCount = 0; PJ10 did not promote the SETLIST kernel")
+			}
+			for i, w := range tc.want {
+				if i >= len(res) {
+					t.Errorf("result[%d]: out-of-range, want %q (full: %v)", i, w, res)
+					continue
+				}
+				if got := res[i].Display(); got != w {
+					t.Errorf("result[%d] = %q, want %q (full: %v)", i, got, w, res)
+				}
+			}
+		})
+	}
+}
+
 // TestPJ10_Self covers SELF for `obj:method(...)` method calls. SELF
 // prepares the call window: R(A+1) := R(B) (self) and R(A) := R(B)[RK(C)]
 // (the method). The subsequent CALL/TAILCALL then invokes the method.

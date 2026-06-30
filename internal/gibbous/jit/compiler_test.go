@@ -207,6 +207,16 @@ func (m *mockP4Host) Eq(base, pc, b, c int32) int32 {
 	return int32(m.unaryRetCode)
 }
 
+// SetList 模拟 host.SetList:复用 unary* 计数。
+func (m *mockP4Host) SetList(base, pc, a, b, c int32) int32 {
+	_ = base
+	_ = pc
+	_ = a
+	_ = b
+	_ = c
+	return int32(m.unaryRetCode)
+}
+
 // (mockP4Host.Compare 模拟在文件下方定义)
 
 // NewTable 模拟 host.NewTable:记录 + 写 R(A) = tableResult。永不 raise。

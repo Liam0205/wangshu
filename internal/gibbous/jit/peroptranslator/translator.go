@@ -110,6 +110,7 @@ const (
 	sideEffectCall                            // CALL A B C: R(A..A+C-2) := R(A)(R(A+1..A+B-1))
 	sideEffectTailCall                        // TAILCALL A B C: tri-state — see PerOpCode.Run
 	sideEffectSelf                            // SELF A B C: R(A+1) := R(B); R(A) := R(B)[RK(C)]
+	sideEffectSetList                         // SETLIST A B C: R(A)[(C-1)*FPF+i] := R(A+i) for i=1..B
 )
 
 // slotSource describes how PerOpCode.Run materialises one return slot:
@@ -281,7 +282,7 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 		ins := proto.Code[pc]
 		op := bytecode.Op(ins)
 		// Side-effect-only ops have no return-slot dest.
-		if op == bytecode.SETUPVAL || op == bytecode.SETTABLE || op == bytecode.SETGLOBAL {
+		if op == bytecode.SETUPVAL || op == bytecode.SETTABLE || op == bytecode.SETGLOBAL || op == bytecode.SETLIST {
 			continue
 		}
 		// SELF writes R(A) and R(A+1). They're almost always
@@ -691,6 +692,23 @@ func sideEffectFromIns(op bytecode.OpCode, ins bytecode.Instruction) (sideEffect
 			kind: sideEffectSetGlobal,
 			a:    uint8(a),
 			imm:  uint64(bx),
+		}, true
+
+	case bytecode.SETLIST:
+		// SETLIST A B C: R(A)[(C-1)*FPF + i] := R(A+i) for i=1..B.
+		// C=0 form (batch num in next instruction) is unsupported in
+		// this single-BB shape.
+		a := bytecode.A(ins)
+		b := bytecode.B(ins)
+		c := bytecode.C(ins)
+		if a < 0 || a > 255 || b < 0 || b > 255 || c <= 0 || c > 255 {
+			return sideEffect{}, false
+		}
+		return sideEffect{
+			kind: sideEffectSetList,
+			a:    uint8(a),
+			b:    uint8(b),
+			c:    uint8(c),
 		}, true
 
 	default:

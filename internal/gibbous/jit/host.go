@@ -99,6 +99,16 @@ type P4HostState interface {
 	// 返回:packed,bit0 = 比较结果(0/1),bit1 = 错误标志(2)。
 	Eq(base int32, pc int32, b int32, c int32) int32
 
+	// SetList 处理 SETLIST A B C(gibbous_host.go::SetList 同款签名,逐字节
+	// 同构于解释器 SETLIST 段:把 R(A+1..A+B) 装到表 R(A) 的 array 段从
+	// (C-1)*FPF+1 起的位置;C=0 时 next instruction 是 batch 大号)。
+	//
+	// 参数:base/pc 同 Arith;a = 表寄存器;b = 元素数;c = batch 号(0 means
+	// next pc is batch number)。
+	//
+	// 返回:0=OK / 1=ERR。用例:P4 `return {1, 2, 3, 4, ...}` 等数组字面量。
+	SetList(base int32, pc int32, a int32, b int32, c int32) int32
+
 	// NewTable 处理 NEWTABLE A B C 助手(gibbous_host.go::NewTable 同款签名,
 	// 分配 + safepoint 全 helper 内,永不 raise——只可能 Go 端 OOM)。
 	//
