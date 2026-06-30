@@ -4453,7 +4453,7 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 	//     number):73 字节模板,单 guard reg 端 + 烧 K 值 imm64 + 快路径
 	//     + deopt block;K 端编译期已校验为 number,运行期不再 guard。
 	// Run 检测段返 RAX == specDeoptCode 即降级调 host.Arith 慢路径(byte-equal
-	// 解释器)。本 PJ2 真接入是 PJ10 luajc 档的字节级核心物理基础。
+	// 解释器)。本 PJ2 真接入是 PJ11 luajc 档的字节级核心物理基础。
 	//
 	// **投机范围**(承 03 §2 IEEE 754 单条 SSE 指令):
 	//   - ✅ ADD / SUB / MUL / DIV:单条 SSE binop(F2 0F 58/5C/59/5E C1)

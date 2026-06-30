@@ -28,6 +28,6 @@ func (st *State) wireP3() {}
 //
 // **P3+P4 互斥 build tag**(用户裁决,06-backends.md §1 + 主助理决策):
 // `wangshu_p3` 与 `wangshu_p4` 不允许同时启用。两个 wireP3/wireP4 方法独立,
-// 但实际只有一个 build tag 路径被启用,bridge.p3 单字段不冲突。PJ10 P3 退役
+// 但实际只有一个 build tag 路径被启用,bridge.p3 单字段不冲突。PJ11 P3 退役
 // 后 wireP3 整组文件可删,wireP4 接管全部。
 func (st *State) wireP4() {}
