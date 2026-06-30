@@ -111,17 +111,22 @@ func (c *PerOpCode) Run(stack []uint64, base uint32) int32 {
 	_ = jitamd64.CallJITFull(c.codePage.Addr(), jitCtxAddr) // returns 0
 
 	// Materialise the N return values into R(retA + i). Each slot is one
-	// of three kinds: a baked immediate (LOADK / LOADBOOL / LOADNIL), a
-	// copy from another register (MOVE), or an upvalue read (GETUPVAL).
+	// of four kinds: a baked immediate (LOADK / LOADBOOL / LOADNIL), a
+	// copy from another register (MOVE), an upvalue read (GETUPVAL), or
+	// an arithmetic operation routed through host.Arith (ADD/SUB/MUL/
+	// DIV/MOD/POW).
 	//
-	// Note for MOVE: GetReg reads via the host's current-frame index map
-	// (the host knows where R(reg) lives given the per-Proto frame). All
-	// reads happen before any writes, so MOVE chains R(A)=R(B), R(C)=R(A)
-	// would correctly see the old R(A) if we ever extended the supported
-	// subset to allow overlapping sources. Today the frontend never emits
-	// such a chain in the constant-tuple shape (head ops target distinct
-	// R(retA+i) and source from registers below retA), so a simple
-	// in-order replay is enough.
+	// host.Arith writes its result directly into R(A) via the host's
+	// SetReg-equivalent inside the helper — see gibbous_host.go::Arith.
+	// On a slow path failure (non-coercible operand / __add metamethod
+	// raise), Arith returns 1 and sets the host's pendingErr; we
+	// propagate that through Run's status code so the bridge tier-stuck
+	// machinery / DoReturn doesn't run on a half-formed frame.
+	//
+	// Read ordering: GETUPVAL / GetReg reads happen before any SetReg
+	// for the corresponding slot, so chains like `return x, x+1` (if we
+	// ever extend AnalyzeShape to accept them) would see consistent
+	// inputs.
 	for i, src := range c.sources {
 		var val uint64
 		switch src.kind {
@@ -131,6 +136,20 @@ func (c *PerOpCode) Run(stack []uint64, base uint32) int32 {
 			val = c.host.GetReg(int32(src.reg))
 		case slotKindUpval:
 			val = c.host.GetUpval(int32(base), int32(src.upval))
+		case slotKindArith:
+			// host.Arith writes R(c.retA+i) directly + may raise.
+			// pc is the index of the arithmetic op in proto.Code.
+			if st := c.host.Arith(
+				int32(base),
+				int32(src.arithPC),
+				int32(src.arithOp),
+				int32(src.arithB),
+				int32(src.arithC),
+				int32(c.retA)+int32(i),
+			); st != 0 {
+				return st
+			}
+			continue // skip the SetReg below; Arith already wrote R(A)
 		}
 		c.host.SetReg(int32(c.retA)+int32(i), val)
 	}

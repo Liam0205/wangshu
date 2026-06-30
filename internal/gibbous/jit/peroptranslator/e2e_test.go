@@ -193,3 +193,46 @@ return a, b
 		}
 	}
 }
+
+// TestPJ10_MultiArith covers the PJ10b head-op slotKindArith: kernels
+// like `return a + b, a - b` emit two arithmetic ops + one RETURN B=3.
+// PJ7's analyzeShape only handles a single arithmetic op + RETURN A 2;
+// PJ10 routes each through host.Arith and returns N results.
+func TestPJ10_MultiArith(t *testing.T) {
+	cases := []struct {
+		body string
+		want []string
+	}{
+		{"return a + b, a - b", []string{"7", "-1"}},
+		{"return a * b, a + 1, b - 2", []string{"12", "4", "2"}},
+		{"return a + b, a + b", []string{"7", "7"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.body, func(t *testing.T) {
+			src := "local function k(a, b)\n  " + tc.body + "\nend\nlocal r1, r2, r3 = k(3, 4)\nreturn r1, r2, r3"
+			prog, err := wangshu.Compile([]byte(src), "pj10arith")
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+			st := wangshu.NewState(wangshu.Options{})
+			st.SetForceAllPromote(true)
+			res, err := prog.Run(st)
+			if err != nil {
+				t.Fatalf("run: %v", err)
+			}
+			if st.PromotionCount() == 0 {
+				t.Fatal("PromotionCount = 0; PJ10 hook did not promote the multi-arith kernel")
+			}
+			// Compare to tc.want; ignore extras the outer `local` slop adds.
+			for i, w := range tc.want {
+				if i >= len(res) {
+					t.Errorf("result[%d]: got out-of-range, want %q", i, w)
+					continue
+				}
+				if got := res[i].Display(); got != w {
+					t.Errorf("result[%d] = %q, want %q (full: %v)", i, got, w, res)
+				}
+			}
+		})
+	}
+}

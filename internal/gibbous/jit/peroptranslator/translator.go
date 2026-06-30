@@ -71,13 +71,24 @@ type shapeInfo struct {
 }
 
 // slotSource describes how PerOpCode.Run materialises one return slot:
-// either a compile-time constant baked at Compile time, or a runtime
-// copy from another register / upvalue read at Run time via the host.
+// either a compile-time constant baked at Compile time, a runtime
+// copy from another register, an upvalue read, or an arithmetic op
+// run through host.Arith.
 type slotSource struct {
-	kind  slotKind
-	imm   uint64 // valid when kind == slotKindConst
-	reg   uint8  // valid when kind == slotKindReg (source register R(reg))
-	upval uint8  // valid when kind == slotKindUpval (upvalue index B)
+	kind slotKind
+	imm  uint64 // valid when kind == slotKindConst
+
+	// reg/upval/upval are repurposed across kinds for compactness; see
+	// each slotKind branch in PerOpCode.Run for the actual semantics.
+	reg   uint8 // slotKindReg: source register
+	upval uint8 // slotKindUpval: upvalue index B
+
+	// Arithmetic ops (slotKindArith): op + B + C carry RK-encoded
+	// operand identifiers, exactly as in the source bytecode.
+	arithOp uint8  // bytecode opcode value (ADD/SUB/MUL/DIV/MOD/POW)
+	arithB  uint16 // RK-encoded operand 1 (0-511; >=256 means K(B-256))
+	arithC  uint16 // RK-encoded operand 2
+	arithPC uint8  // pc index of the arithmetic instruction (for error reporting)
 }
 
 // slotKind discriminates how the source value is obtained.
@@ -87,6 +98,7 @@ const (
 	slotKindConst slotKind = iota // immediate (LOADK/LOADBOOL/LOADNIL)
 	slotKindReg                   // copy from R(reg) (MOVE)
 	slotKindUpval                 // read upvalue B (GETUPVAL)
+	slotKindArith                 // arithmetic via host.Arith (ADD/SUB/MUL/DIV/MOD/POW)
 )
 
 // AnalyzeShape reports whether the given Proto matches the constant-tuple
@@ -146,6 +158,7 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 		if !ok {
 			return shapeInfo{}
 		}
+		src.arithPC = uint8(i) // record pc for arith error reporting
 		sources[i] = src
 	}
 	return shapeInfo{
@@ -204,6 +217,25 @@ func headOpSource(proto *bytecode.Proto, ins bytecode.Instruction) (slotSource, 
 			return slotSource{}, false
 		}
 		return slotSource{kind: slotKindUpval, upval: uint8(b)}, true
+
+	case bytecode.ADD, bytecode.SUB, bytecode.MUL, bytecode.DIV, bytecode.MOD, bytecode.POW:
+		// R(A) := RK(B) <op> RK(C). Run uses host.Arith to compute the
+		// result and write it into R(A); the slow path subsumes the
+		// per-Run check for "both number? do SSE add" / "string coerce"
+		// / "__add metamethod" / "not addable -> raise" lattice. This
+		// matches PJ7's slow-path lane bit-for-bit (gibbous_host.go::
+		// Arith is the same helper PJ7 uses on a deopt).
+		b := bytecode.B(ins)
+		c := bytecode.C(ins)
+		if b < 0 || b > 511 || c < 0 || c > 511 {
+			return slotSource{}, false
+		}
+		return slotSource{
+			kind:    slotKindArith,
+			arithOp: uint8(bytecode.Op(ins)),
+			arithB:  uint16(b),
+			arithC:  uint16(c),
+		}, true
 
 	default:
 		return slotSource{}, false
