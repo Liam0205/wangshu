@@ -81,20 +81,33 @@ type shapeInfo struct {
 	tailCallA  uint8
 	tailCallB  uint8
 	tailCallPC uint8
+
+	// FORLOOP block: at most one numeric for-loop is recognized per
+	// Proto today. When forLoopValid is true, sideEffects contains only
+	// the preamble + post-loop ops; bodyEffects has the body ops that
+	// run once per iteration.
+	forLoopValid bool
+	forLoopA     uint8        // R(forLoopA..+2) holds init/limit/step
+	forLoopPC    uint8        // pc of the FORPREP instruction (for error pc anchoring)
+	forLoopAfter int          // index into sideEffects after which the FORLOOP block runs (0-based)
+	bodyEffects  []sideEffect // side effects executed once per iteration
 }
 
 // sideEffect describes a pre-return op that has no associated return slot.
 // Today the supported kinds are SETUPVAL (U(b) := R(a)), LOADNIL (fill
 // scratch regs), scratch-register fills (MOVE/LOADK writing a reg that's
 // either outside the return window or overwritten before RETURN), the
-// table/global setters (SETTABLE, SETGLOBAL), and CALL (writes results
-// to R(A..A+C-2) via host.CallBaseline).
+// table/global setters (SETTABLE, SETGLOBAL), CALL (writes results to
+// R(A..A+C-2) via host.CallBaseline), TAILCALL/SELF/SETLIST, and
+// sideEffectArith (arithmetic ops re-emitted into loop bodies — same
+// semantics as the slotKindArith head op but written through SetReg
+// rather than into the return-slot replay).
 type sideEffect struct {
 	kind sideEffectKind
-	a    uint8  // op's A field (source register for SETUPVAL; first slot for LOADNIL; dest reg for MOVE/LOADK/SETTABLE/CALL; source reg for SETGLOBAL)
-	b    uint8  // op's B field (upvalue index for SETUPVAL; last slot for LOADNIL; source reg for MOVE; RK key for SETTABLE; nargs+1 for CALL)
-	c    uint8  // op's C field (RK value for SETTABLE; nresults+1 for CALL)
-	imm  uint64 // baked NaN-boxed value (LOADK) or Bx constant index (SETGLOBAL) or pc (CALL)
+	a    uint8  // op's A field (source register for SETUPVAL; first slot for LOADNIL; dest reg for MOVE/LOADK/SETTABLE/CALL/Arith; source reg for SETGLOBAL)
+	b    uint8  // op's B field (upvalue index for SETUPVAL; last slot for LOADNIL; source reg for MOVE; low 8 bits of RK key for SETTABLE; nargs+1 for CALL)
+	c    uint8  // op's C field (low 8 bits of RK value for SETTABLE; nresults+1 for CALL; Arith op tag)
+	imm  uint64 // baked NaN-boxed value (LOADK) or Bx (SETGLOBAL) or pc (CALL/TAILCALL) or packed RK fields (SETTABLE) or packed (op<<32|B<<16|C|pc) (Arith)
 }
 
 // sideEffectKind discriminates the pre-return op kinds.
@@ -111,6 +124,7 @@ const (
 	sideEffectTailCall                        // TAILCALL A B C: tri-state — see PerOpCode.Run
 	sideEffectSelf                            // SELF A B C: R(A+1) := R(B); R(A) := R(B)[RK(C)]
 	sideEffectSetList                         // SETLIST A B C: R(A)[(C-1)*FPF+i] := R(A+i) for i=1..B
+	sideEffectArith                           // arithmetic R(A) := RK(B) <op> RK(C) (used inside loop bodies)
 )
 
 // slotSource describes how PerOpCode.Run materialises one return slot:
@@ -230,6 +244,72 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 		}
 	}
 
+	// Pre-pass: detect numeric for-loop blocks. The wangshu frontend emits
+	//
+	//   [k]   FORPREP A sBx=fwd   ; jump to FORLOOP at k+1+fwd
+	//   <body>
+	//   [k+1+fwd] FORLOOP A sBx=-fwd  ; back-edges to k+1
+	//
+	// Find FORPREP at any pc < retPC, check the matching FORLOOP exists,
+	// and record (forPrepPC, forLoopPC, forLoopA, bodyStart, bodyEnd).
+	// At most one loop block is supported today; if more than one
+	// FORPREP is found the entire shape is rejected.
+	type loopInfo struct {
+		forPrepPC int
+		forLoopPC int
+		forLoopA  uint8
+		bodyStart int // first body pc (inclusive)
+		bodyEnd   int // last body pc (exclusive — = forLoopPC)
+	}
+	var loop *loopInfo
+	for pc := 0; pc < retPC; pc++ {
+		ins := proto.Code[pc]
+		if bytecode.Op(ins) != bytecode.FORPREP {
+			continue
+		}
+		if loop != nil {
+			return shapeInfo{} // multiple loops out of scope
+		}
+		fwd := int(bytecode.SBx(ins))
+		a := bytecode.A(ins)
+		if a < 0 || a > 252 { // need A..A+3 in range
+			return shapeInfo{}
+		}
+		flPC := pc + 1 + fwd
+		if flPC <= pc || flPC >= retPC {
+			return shapeInfo{}
+		}
+		flIns := proto.Code[flPC]
+		if bytecode.Op(flIns) != bytecode.FORLOOP {
+			return shapeInfo{}
+		}
+		if bytecode.A(flIns) != a {
+			return shapeInfo{}
+		}
+		// FORLOOP sBx must back-edge to the body start (pc+1).
+		flBack := flPC + 1 + int(bytecode.SBx(flIns))
+		if flBack != pc+1 {
+			return shapeInfo{}
+		}
+		loop = &loopInfo{
+			forPrepPC: pc,
+			forLoopPC: flPC,
+			forLoopA:  uint8(a),
+			bodyStart: pc + 1,
+			bodyEnd:   flPC,
+		}
+	}
+
+	// Helper: is pc inside the (one) for-loop body? Used by both passes
+	// to route ops to bodyEffects vs outer sideEffects.
+	inBody := func(pc int) bool {
+		if loop == nil {
+			return false
+		}
+		return pc >= loop.bodyStart && pc < loop.bodyEnd
+	}
+	_ = inBody
+
 	// Pre-pass: detect comparison diamonds. The wangshu frontend emits a
 	// fixed 4-op diamond for `R(Adst) := (R(B) op R(C)) == bool(A)`:
 	//
@@ -347,16 +427,53 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 	var (
 		sources     []slotSource
 		sideEffects []sideEffect
+		bodyEffects []sideEffect
 	)
 	if n > 0 {
 		sources = make([]slotSource, n)
 	}
+	// effectsRef points at the current append target — either the outer
+	// sideEffects slice or the body's bodyEffects slice. Body ops between
+	// FORPREP and FORLOOP route through bodyEffects.
+	effectsRef := &sideEffects
 	// Build pc → slotIdx map for O(1) lookup.
 	pcToSlot := make(map[int]int, n)
 	for i, pc := range headPC {
 		pcToSlot[pc] = i
 	}
+	// forLoopAfter records the outer-effects index at which the loop is
+	// inserted (so PerOpCode.Run knows where to switch from preamble to
+	// loop iteration to post-loop effects).
+	forLoopAfter := -1
 	for pc := 0; pc < retPC; pc++ {
+		// FORPREP marker: finish appending preamble side effects, then
+		// switch to body mode. The FORPREP itself is handled by the
+		// Run-time loop dispatch (host.ForPrep + step loop), not as a
+		// side effect.
+		if loop != nil && pc == loop.forPrepPC {
+			forLoopAfter = len(sideEffects)
+			effectsRef = &bodyEffects
+			continue
+		}
+		// FORLOOP marker: end body mode, switch back to outer side
+		// effects (post-loop ops).
+		if loop != nil && pc == loop.forLoopPC {
+			effectsRef = &sideEffects
+			continue
+		}
+
+		// Inside the body, restrict to the body-op subset.
+		if loop != nil && pc > loop.forPrepPC && pc < loop.forLoopPC {
+			ins := proto.Code[pc]
+			op := bytecode.Op(ins)
+			se, ok := bodyEffectFromIns(proto, op, ins, pc)
+			if !ok {
+				return shapeInfo{}
+			}
+			*effectsRef = append(*effectsRef, se)
+			continue
+		}
+
 		// Skip diamond member ops — they're folded into the diamond start.
 		if diamondMember[pc] {
 			continue
@@ -392,7 +509,7 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 
 		// Pure side-effect ops (no reg dest).
 		if se, ok := sideEffectFromIns(op, ins); ok {
-			sideEffects = append(sideEffects, se)
+			*effectsRef = append(*effectsRef, se)
 			continue
 		}
 
@@ -407,7 +524,7 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 			if a < 0 || a > 255 || b < 0 || b > 255 || cc < 0 || cc > 255 {
 				return shapeInfo{}
 			}
-			sideEffects = append(sideEffects, sideEffect{
+			*effectsRef = append(*effectsRef, sideEffect{
 				kind: sideEffectCall,
 				a:    uint8(a),
 				b:    uint8(b),
@@ -441,7 +558,7 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 			if a < 0 || a > 255 || b < 0 || b > 255 || cc < 0 || cc > 511 {
 				return shapeInfo{}
 			}
-			sideEffects = append(sideEffects, sideEffect{
+			*effectsRef = append(*effectsRef, sideEffect{
 				kind: sideEffectSelf,
 				a:    uint8(a),
 				b:    uint8(b),
@@ -468,7 +585,7 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 		// DoReturn (status 0 = frame already popped) or fall through to
 		// DoReturn with multret (status 2 = host tail call).
 		if op == bytecode.TAILCALL && isTailCall && pc == retPC-1 {
-			sideEffects = append(sideEffects, sideEffect{
+			*effectsRef = append(*effectsRef, sideEffect{
 				kind: sideEffectTailCall,
 				a:    uint8(bytecode.A(ins)),
 				b:    uint8(bytecode.B(ins)),
@@ -504,7 +621,7 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 				scratchB = int(r)
 			}
 			if scratchA >= 0 {
-				sideEffects = append(sideEffects, sideEffect{
+				*effectsRef = append(*effectsRef, sideEffect{
 					kind: sideEffectLoadNil,
 					a:    uint8(scratchA),
 					b:    uint8(scratchB),
@@ -529,12 +646,30 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 		// outside the return window). Only MOVE / LOADK / LOADBOOL /
 		// LOADNIL are supported as scratch fills today.
 		if se, ok := scratchFromIns(proto, op, ins); ok {
-			sideEffects = append(sideEffects, se)
+			*effectsRef = append(*effectsRef, se)
 			continue
 		}
 		return shapeInfo{}
 	}
-	return shapeInfo{
+	// Post-pass: for any return slot whose headPC fell inside the loop
+	// body, install slotKindReg{reg=retA+i} so PerOpCode.Run reads the
+	// final register value after all iterations complete. The body's
+	// arithmetic side effects have already updated the register on each
+	// iteration.
+	if loop != nil {
+		for slot := 0; slot < n; slot++ {
+			pc := headPC[slot]
+			if pc >= loop.bodyStart && pc < loop.bodyEnd {
+				sources[slot] = slotSource{
+					kind:    slotKindReg,
+					reg:     uint8(retA + slot),
+					arithPC: uint8(pc),
+				}
+			}
+		}
+	}
+
+	info := shapeInfo{
 		ok:          true,
 		sources:     sources,
 		sideEffects: sideEffects,
@@ -547,6 +682,14 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 		tailCallB:   tailCallB,
 		tailCallPC:  uint8(retPC - 1),
 	}
+	if loop != nil {
+		info.forLoopValid = true
+		info.forLoopA = loop.forLoopA
+		info.forLoopPC = uint8(loop.forPrepPC)
+		info.forLoopAfter = forLoopAfter
+		info.bodyEffects = bodyEffects
+	}
+	return info
 }
 
 // matchCmpDiamond returns (Adst, true) if the 4-op comparison diamond
@@ -598,6 +741,46 @@ func matchCmpDiamond(proto *bytecode.Proto, pc int) (uint8, bool) {
 		return 0, false
 	}
 	return uint8(dst), true
+}
+
+// bodyEffectFromIns recognises ops that may appear inside a FORLOOP body
+// and lowers them into sideEffect records. The accepted subset is the
+// side-effect-style ops we already handle (MOVE/LOADK/LOADBOOL/SETTABLE/
+// SETGLOBAL) plus the arithmetic ops (ADD/SUB/MUL/DIV/MOD/POW) — which
+// don't normally appear as side effects in the outer shape, but inside a
+// loop body their results land in scratch accumulators that are then read
+// after the loop ends.
+//
+// Returns ok=false for any op not in the supported body subset.
+func bodyEffectFromIns(proto *bytecode.Proto, op bytecode.OpCode, ins bytecode.Instruction, pc int) (sideEffect, bool) {
+	// Reuse the existing recognisers for the side-effect-style ops.
+	if se, ok := sideEffectFromIns(op, ins); ok {
+		return se, true
+	}
+	if se, ok := scratchFromIns(proto, op, ins); ok {
+		return se, true
+	}
+	// Arithmetic ops: re-emit as sideEffectArith. RK B/C fit in 9 bits;
+	// pack them with the opcode and pc into imm so Run can dispatch
+	// host.Arith correctly.
+	switch op {
+	case bytecode.ADD, bytecode.SUB, bytecode.MUL, bytecode.DIV, bytecode.MOD, bytecode.POW:
+		a := bytecode.A(ins)
+		b := bytecode.B(ins)
+		c := bytecode.C(ins)
+		if a < 0 || a > 255 || b < 0 || b > 511 || c < 0 || c > 511 {
+			return sideEffect{}, false
+		}
+		return sideEffect{
+			kind: sideEffectArith,
+			a:    uint8(a),
+			imm: uint64(uint8(op))<<48 |
+				uint64(uint16(b))<<32 |
+				uint64(uint16(c))<<16 |
+				uint64(uint16(pc)),
+		}, true
+	}
+	return sideEffect{}, false
 }
 
 // scratchFromIns recognises an op writing a scratch register (a register

@@ -377,6 +377,124 @@ return r, outer
 	}
 }
 
+// TestPJ10_ForLoop covers the numeric FORPREP/FORLOOP pair. The frontend
+// emits `for i = lo, hi do <body> end` as:
+//
+//	<preamble: LOADK init/limit/step into R(A..A+2)>
+//	FORPREP A sBx=fwd
+//	<body>
+//	FORLOOP A sBx=-fwd
+//	<post-loop ops>
+//
+// AnalyzeShape detects this pair, splits the side-effects list at the
+// FORPREP, and routes body ops into bodyEffects. At Run time the loop
+// dispatcher iterates: host.ForPrep + step-and-check loop + bodyEffects
+// replay each iteration.
+func TestPJ10_ForLoop(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want []string
+	}{
+		{
+			name: "sum-1-to-n",
+			src: `
+local function k(n)
+  local s = 0
+  for i = 1, n do
+    s = s + i
+  end
+  return s
+end
+return k(10)
+`,
+			want: []string{"55"},
+		},
+		{
+			name: "sum-fixed-range",
+			src: `
+local function k()
+  local s = 0
+  for i = 1, 100 do
+    s = s + 1
+  end
+  return s
+end
+return k()
+`,
+			want: []string{"100"},
+		},
+		{
+			name: "product-fixed",
+			src: `
+local function k()
+  local p = 1
+  for i = 1, 5 do
+    p = p * 2
+  end
+  return p
+end
+return k()
+`,
+			want: []string{"32"},
+		},
+		{
+			name: "step-2",
+			src: `
+local function k(n)
+  local s = 0
+  for i = 1, n, 2 do
+    s = s + 1
+  end
+  return s
+end
+return k(10)
+`,
+			want: []string{"5"},
+		},
+		{
+			name: "empty-loop",
+			src: `
+local function k()
+  local s = 100
+  for i = 1, 0 do
+    s = s + 1
+  end
+  return s
+end
+return k()
+`,
+			want: []string{"100"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prog, err := wangshu.Compile([]byte(tc.src), "pj10forloop")
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+			st := wangshu.NewState(wangshu.Options{})
+			st.SetForceAllPromote(true)
+			res, err := prog.Run(st)
+			if err != nil {
+				t.Fatalf("run: %v", err)
+			}
+			if st.PromotionCount() == 0 {
+				t.Fatal("PromotionCount = 0; PJ10 did not promote the FORLOOP kernel")
+			}
+			for i, w := range tc.want {
+				if i >= len(res) {
+					t.Errorf("result[%d]: out-of-range, want %q (full: %v)", i, w, res)
+					continue
+				}
+				if got := res[i].Display(); got != w {
+					t.Errorf("result[%d] = %q, want %q (full: %v)", i, got, w, res)
+				}
+			}
+		})
+	}
+}
+
 // TestPJ10_SetList covers SETLIST for array-literal construction:
 // `return {1, 2, 3}` emits NEWTABLE + LOADK×N + SETLIST + RETURN. The
 // SETLIST side effect populates the table's array section with the N

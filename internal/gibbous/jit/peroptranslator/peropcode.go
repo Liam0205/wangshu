@@ -87,6 +87,19 @@ type PerOpCode struct {
 	// skipped) DoReturn is set to 0 (multret to-top) per the dead-RETURN
 	// the frontend emits after TAILCALL.
 	isTailCall bool
+
+	// FORLOOP block: when forLoopValid is true, the side-effects list
+	// is split into [preamble : forLoopAfter] + the loop body + [forLoopAfter :]
+	// post-loop ops. The Run path inserts an iteration loop at the split:
+	//   1. Run preamble side effects.
+	//   2. Call host.ForPrep(forLoopA).
+	//   3. Loop: step R(A), check condition, run body, repeat.
+	//   4. Run post-loop side effects.
+	forLoopValid bool
+	forLoopA     uint8
+	forLoopPC    uint8
+	forLoopAfter int
+	bodyEffects  []sideEffect
 }
 
 // Proto returns the source Proto.
@@ -124,97 +137,29 @@ func (c *PerOpCode) Run(stack []uint64, base uint32) int32 {
 	jitCtxAddr := uintptr(unsafe.Pointer(c.jitCtx))
 	_ = jitamd64.CallJITFull(c.codePage.Addr(), jitCtxAddr) // returns 0
 
-	// Run pre-return side-effect ops before any head-op materialisation.
-	// Supported kinds today: SETUPVAL (U(b) := R(a)), LOADNIL (fill a
-	// scratch register range with nil), MOVE (scratch register copy),
-	// LOADK / LOADBOOL (scratch immediate), SETTABLE (R(A)[RK(B)] := RK(C)
-	// via host.SetTable), SETGLOBAL (Globals[K(Bx)] := R(A) via
-	// host.DoSetGlobal). The MOVE/LOADK forms appear when ops like
-	// CONCAT need their source registers prepped. The setter forms can
-	// raise, so we plumb a status code through if they fail.
-	//
-	// sideEffectTailCall is treated specially: tri-state status drives
-	// control flow at the function level.
-	//   - 0 = Lua tail call done (caller frame replaced by callee, and
-	//     executeFrom drained callee chain). Run returns 0 immediately,
-	//     skipping DoReturn (the frame is already popped).
-	//   - 1 = error.
-	//   - 2 = host tail call: results in registers, fall through to
-	//     DoReturn with retB=0 (multret-to-top).
-	for _, se := range c.sideEffects {
-		switch se.kind {
-		case sideEffectSetUpval:
-			c.host.SetUpvalFromReg(int32(base), int32(se.a), int32(se.b))
-		case sideEffectLoadNil:
-			for r := int32(se.a); r <= int32(se.b); r++ {
-				c.host.SetReg(r, uint64(value.Nil))
-			}
-		case sideEffectMove:
-			c.host.SetReg(int32(se.a), c.host.GetReg(int32(se.b)))
-		case sideEffectLoadK:
-			c.host.SetReg(int32(se.a), se.imm)
-		case sideEffectSetTable:
-			// SETTABLE encodes its full 9-bit RK B/C in imm; recover them.
-			b := int32(se.imm >> 16)
-			cc := int32(se.imm & 0xffff)
-			if st := c.host.SetTable(int32(base), 0, int32(se.a), b, cc); st != 0 {
+	// Run pre-return side effects + (optional) FORLOOP body. The loop,
+	// when present, splits the outer side-effects slice at forLoopAfter:
+	// effects before that index are the preamble (init/limit/step setup
+	// + any pre-loop scratch fills), then host.ForPrep is called, then
+	// the body runs once per iteration via runEffect, then post-loop
+	// outer effects run.
+	for i, se := range c.sideEffects {
+		if c.forLoopValid && i == c.forLoopAfter {
+			if st := c.runForLoop(base); st != 0 {
 				return st
 			}
-		case sideEffectSetGlobal:
-			if st := c.host.DoSetGlobal(int32(base), 0, int32(se.a), int32(se.imm)); st != 0 {
-				return st
-			}
-		case sideEffectCall:
-			// CALL A B C: R(A..A+C-2) := R(A)(R(A+1..A+B-1)). Routed
-			// through host.CallBaseline which dispatches Go-host/__call/
-			// gibbous/crescent paths. The pc parameter is the CALL's own
-			// pc (packed into imm so we can report it correctly on slow-
-			// path errors).
-			if st := c.host.CallBaseline(
-				int32(base),
-				int32(se.imm),
-				int32(se.a),
-				int32(se.b),
-				int32(se.c),
-			); st != 0 {
-				return st
-			}
-		case sideEffectTailCall:
-			st := c.host.TailCall(
-				int32(base),
-				int32(se.imm),
-				int32(se.a),
-				int32(se.b),
-				int32(se.c),
-			)
-			switch st {
-			case 0:
-				// Lua tail call: frame already popped, executeFrom drained
-				// callee chain. Skip DoReturn — this frame is gone.
-				_ = stack
+		}
+		if st := c.runEffect(base, se, stack); st != 0 {
+			if st == -1 { // sentinel: tail-call done, frame popped
 				return 0
-			case 2:
-				// Host tail call: results in R(callA..). Fall through to
-				// DoReturn with retB=0 multret-to-top, which our retB=0
-				// already encodes when isTailCall is true.
-			default:
-				return 1
 			}
-		case sideEffectSelf:
-			// SELF A B C: R(A+1) := R(B); R(A) := R(B)[RK(C)]. May raise
-			// (attempt to index nil / __index recursion / etc.). The
-			// captured imm is pc<<32 | full-9-bit-RK-C; recover the pc and
-			// dispatch to host.Self with the original RK.
-			selfPC := int32(se.imm >> 32)
-			rkC := int32(se.imm & 0xffffffff)
-			if st := c.host.Self(int32(base), selfPC, int32(se.a), int32(se.b), rkC); st != 0 {
-				return st
-			}
-		case sideEffectSetList:
-			// SETLIST A B C: populate R(A)'s array section.
-			if st := c.host.SetList(int32(base), 0, int32(se.a), int32(se.b), int32(se.c)); st != 0 {
-				return st
-			}
+			return st
+		}
+	}
+	// Loop inserted at the very end (no post-loop side effects).
+	if c.forLoopValid && c.forLoopAfter == len(c.sideEffects) {
+		if st := c.runForLoop(base); st != 0 {
+			return st
 		}
 	}
 
@@ -386,6 +331,139 @@ func (c *PerOpCode) Run(stack []uint64, base uint32) int32 {
 // (head ops are pure value materialisation), so the answer is always nil.
 func (c *PerOpCode) PendingErr() error { return nil }
 
+// runEffect dispatches a single sideEffect record. Returns:
+//   - 0 on success
+//   - 1 on host-side error
+//   - -1 as a sentinel for "Lua tail call done; frame already popped".
+//     The caller (Run) translates -1 → return 0 without DoReturn.
+func (c *PerOpCode) runEffect(base uint32, se sideEffect, stack []uint64) int32 {
+	switch se.kind {
+	case sideEffectSetUpval:
+		c.host.SetUpvalFromReg(int32(base), int32(se.a), int32(se.b))
+	case sideEffectLoadNil:
+		for r := int32(se.a); r <= int32(se.b); r++ {
+			c.host.SetReg(r, uint64(value.Nil))
+		}
+	case sideEffectMove:
+		c.host.SetReg(int32(se.a), c.host.GetReg(int32(se.b)))
+	case sideEffectLoadK:
+		c.host.SetReg(int32(se.a), se.imm)
+	case sideEffectSetTable:
+		b := int32(se.imm >> 16)
+		cc := int32(se.imm & 0xffff)
+		if st := c.host.SetTable(int32(base), 0, int32(se.a), b, cc); st != 0 {
+			return st
+		}
+	case sideEffectSetGlobal:
+		if st := c.host.DoSetGlobal(int32(base), 0, int32(se.a), int32(se.imm)); st != 0 {
+			return st
+		}
+	case sideEffectCall:
+		if st := c.host.CallBaseline(
+			int32(base),
+			int32(se.imm),
+			int32(se.a),
+			int32(se.b),
+			int32(se.c),
+		); st != 0 {
+			return st
+		}
+	case sideEffectTailCall:
+		st := c.host.TailCall(
+			int32(base),
+			int32(se.imm),
+			int32(se.a),
+			int32(se.b),
+			int32(se.c),
+		)
+		switch st {
+		case 0:
+			_ = stack
+			return -1 // sentinel: Lua tail call complete, frame popped
+		case 2:
+			// Host tail call: results in R(callA..). Fall through.
+		default:
+			return 1
+		}
+	case sideEffectSelf:
+		selfPC := int32(se.imm >> 32)
+		rkC := int32(se.imm & 0xffffffff)
+		if st := c.host.Self(int32(base), selfPC, int32(se.a), int32(se.b), rkC); st != 0 {
+			return st
+		}
+	case sideEffectSetList:
+		if st := c.host.SetList(int32(base), 0, int32(se.a), int32(se.b), int32(se.c)); st != 0 {
+			return st
+		}
+	case sideEffectArith:
+		// Imm layout: op<<48 | B<<32 | C<<16 | pc.
+		op := uint8(se.imm >> 48)
+		b := uint16(se.imm >> 32)
+		cc := uint16(se.imm >> 16)
+		pc := uint16(se.imm)
+		if st := c.host.Arith(
+			int32(base),
+			int32(pc),
+			int32(op),
+			int32(b),
+			int32(cc),
+			int32(se.a),
+		); st != 0 {
+			return st
+		}
+	}
+	return 0
+}
+
+// runForLoop dispatches the FORPREP + FORLOOP iteration block. The loop
+// regs R(forLoopA..+2) hold init/limit/step; host.ForPrep validates and
+// pre-decrements init. Each iteration:
+//   - Step:   R(forLoopA) += R(forLoopA+2)
+//   - Check:  if step > 0 then R(A) <= limit else R(A) >= limit
+//   - Visible: R(forLoopA+3) := R(forLoopA) (the user's `i`)
+//   - Body:   replay c.bodyEffects (arith ops accumulate into scratch regs)
+//
+// On exit, scratch accumulators carry their final value into the head-op
+// replay (which has been redirected to slotKindReg for any slot whose
+// last writer was inside the body).
+func (c *PerOpCode) runForLoop(base uint32) int32 {
+	if st := c.host.ForPrep(int32(base), int32(c.forLoopPC), int32(c.forLoopA)); st != 0 {
+		return st
+	}
+	// Cap iterations as a safety net against runaway loops in unexpected
+	// shapes (limit/step combinations that don't terminate). The official
+	// Lua interpreter handles this via plain float comparison; we mirror
+	// that with the same arithmetic — but a 256M iteration cap keeps
+	// pathological cases bounded.
+	const maxIter = 1 << 28
+	for iter := 0; iter < maxIter; iter++ {
+		idx := value.AsNumber(value.Value(c.host.GetReg(int32(c.forLoopA))))
+		step := value.AsNumber(value.Value(c.host.GetReg(int32(c.forLoopA) + 2)))
+		idx += step
+		c.host.SetReg(int32(c.forLoopA), uint64(value.NumberValue(idx)))
+		limit := value.AsNumber(value.Value(c.host.GetReg(int32(c.forLoopA) + 1)))
+		var cont bool
+		if step > 0 {
+			cont = idx <= limit
+		} else {
+			cont = idx >= limit
+		}
+		if !cont {
+			return 0
+		}
+		c.host.SetReg(int32(c.forLoopA)+3, uint64(value.NumberValue(idx)))
+		for _, be := range c.bodyEffects {
+			if st := c.runEffect(base, be, nil); st != 0 {
+				if st == -1 {
+					return 1 // tail call inside loop body — unexpected
+				}
+				return st
+			}
+		}
+	}
+	return 1 // runaway loop — treat as error
+}
+
 // Slot satisfies bridge.GibbousCode. PerOpCode is amd64-native, not a
 // wasm module, so there's no shared env.table slot — always (0, false).
 func (c *PerOpCode) Slot() (uint32, bool) { return 0, false }
@@ -427,16 +505,21 @@ func TranslateProto(proto *bytecode.Proto, host jit.P4HostState) (bridge.Gibbous
 		return nil, err
 	}
 	return &PerOpCode{
-		proto:       proto,
-		codePage:    page,
-		jitCtx:      jit.NewJITContext(),
-		host:        host,
-		sources:     info.sources,
-		sideEffects: info.sideEffects,
-		retA:        info.retA,
-		retB:        info.retB,
-		retPC:       info.retPC,
-		isTailCall:  info.isTailCall,
+		proto:        proto,
+		codePage:     page,
+		jitCtx:       jit.NewJITContext(),
+		host:         host,
+		sources:      info.sources,
+		sideEffects:  info.sideEffects,
+		retA:         info.retA,
+		retB:         info.retB,
+		retPC:        info.retPC,
+		isTailCall:   info.isTailCall,
+		forLoopValid: info.forLoopValid,
+		forLoopA:     info.forLoopA,
+		forLoopPC:    info.forLoopPC,
+		forLoopAfter: info.forLoopAfter,
+		bodyEffects:  info.bodyEffects,
 	}, nil
 }
 
