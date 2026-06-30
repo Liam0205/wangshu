@@ -1,4 +1,6 @@
-// Parser fuzz:任意源码不得 panic(语法错误经 error 返回;首错即停)。
+// Parser fuzz: under any source, the parser must not panic (syntax errors
+// are returned through the error channel; the parser stops at the first
+// error).
 package parse
 
 import (
@@ -31,9 +33,9 @@ func FuzzParse(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, src []byte) {
 		if len(src) > 1<<16 {
-			t.Skip() // 尺寸上限:防慢输入在 fuzztime 截止边缘超时(CI flake)
+			t.Skip() // input size cap to keep iterations bounded
 		}
 		lx := lex.New(src, "fuzz")
-		_, _ = Parse(lx, "fuzz") // 错误是合法结果;panic 才是 bug
+		_, _ = Parse(lx, "fuzz") // an error is a valid outcome; only panic is a bug
 	})
 }
