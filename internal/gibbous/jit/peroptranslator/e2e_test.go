@@ -377,6 +377,61 @@ return r, outer
 	}
 }
 
+// TestPJ10_Concat covers the CONCAT head op. The frontend emits MOVE
+// preambles that copy the operands into a contiguous scratch range,
+// then CONCAT A B C reads R(B..C) inclusive and stores the joined
+// result in R(A). Both string-string and number-string concat go
+// through host.Concat (with __concat / number coercion living there).
+func TestPJ10_Concat(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want []string
+	}{
+		{
+			name: "two-strings",
+			src:  "local function k(x, y) return x .. y end\nlocal r = k('foo', 'bar')\nreturn r",
+			want: []string{"foobar"},
+		},
+		{
+			name: "three-strings",
+			src:  "local function k(x, y, z) return x .. y .. z end\nlocal r = k('a', 'b', 'c')\nreturn r",
+			want: []string{"abc"},
+		},
+		{
+			name: "number-string-coerce",
+			src:  "local function k(x, y) return x .. y end\nlocal r = k(42, 'x')\nreturn r",
+			want: []string{"42x"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prog, err := wangshu.Compile([]byte(tc.src), "pj10concat")
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+			st := wangshu.NewState(wangshu.Options{})
+			st.SetForceAllPromote(true)
+			res, err := prog.Run(st)
+			if err != nil {
+				t.Fatalf("run: %v", err)
+			}
+			if st.PromotionCount() == 0 {
+				t.Fatal("PromotionCount = 0; PJ10 hook did not promote the CONCAT kernel")
+			}
+			for i, w := range tc.want {
+				if i >= len(res) {
+					t.Errorf("result[%d]: out-of-range, want %q (full: %v)", i, w, res)
+					continue
+				}
+				if got := res[i].Display(); got != w {
+					t.Errorf("result[%d] = %q, want %q (full: %v)", i, got, w, res)
+				}
+			}
+		})
+	}
+}
+
 // TestPJ10_UnaryHeadOps covers the PJ10a unary head ops: UNM/NOT/LEN.
 // Each goes through a different path:
 //   - UNM via host.Unm (string coercion + __unm metamethod live in

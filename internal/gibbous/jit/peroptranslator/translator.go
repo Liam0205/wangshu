@@ -73,13 +73,15 @@ type shapeInfo struct {
 }
 
 // sideEffect describes a pre-return op that has no associated return slot.
-// Today the supported kinds are SETUPVAL (U(b) := R(a)) and LOADNIL (fill
-// scratch regs); future PJ10a extensions may add others (e.g. SETGLOBAL
-// once PJ10d arrives).
+// Today the supported kinds are SETUPVAL (U(b) := R(a)), LOADNIL (fill
+// scratch regs), and scratch-register fills (MOVE/LOADK writing a reg
+// that's either outside the return window or overwritten before RETURN).
+// Future PJ10a extensions may add others (e.g. SETGLOBAL once PJ10d arrives).
 type sideEffect struct {
 	kind sideEffectKind
-	a    uint8 // op's A field (source register for SETUPVAL; first slot for LOADNIL)
-	b    uint8 // op's B field (upvalue index for SETUPVAL; last slot for LOADNIL)
+	a    uint8  // op's A field (source register for SETUPVAL; first slot for LOADNIL; dest reg for MOVE/LOADK)
+	b    uint8  // op's B field (upvalue index for SETUPVAL; last slot for LOADNIL; source reg for MOVE)
+	imm  uint64 // baked NaN-boxed value (LOADK)
 }
 
 // sideEffectKind discriminates the pre-return op kinds.
@@ -87,7 +89,9 @@ type sideEffectKind uint8
 
 const (
 	sideEffectSetUpval sideEffectKind = iota // SETUPVAL A B: U(B) := R(A)
-	sideEffectLoadNil                        // LOADNIL A B: R(A..B) := nil (scratch slots only)
+	sideEffectLoadNil                        // LOADNIL A B: R(A..B) := nil
+	sideEffectMove                           // MOVE A B: R(A) := R(B) (scratch fill)
+	sideEffectLoadK                          // LOADK A Bx: R(A) := <imm> (scratch fill)
 )
 
 // slotSource describes how PerOpCode.Run materialises one return slot:
@@ -115,13 +119,14 @@ type slotSource struct {
 type slotKind uint8
 
 const (
-	slotKindConst slotKind = iota // immediate (LOADK/LOADBOOL/LOADNIL)
-	slotKindReg                   // copy from R(reg) (MOVE)
-	slotKindUpval                 // read upvalue B (GETUPVAL)
-	slotKindArith                 // arithmetic via host.Arith (ADD/SUB/MUL/DIV/MOD/POW)
-	slotKindUnm                   // unary minus via host.Unm (UNM)
-	slotKindLen                   // length op via host.Len (LEN)
-	slotKindNot                   // logical not via Go-side Truthy/BoolValue (NOT)
+	slotKindConst  slotKind = iota // immediate (LOADK/LOADBOOL/LOADNIL)
+	slotKindReg                    // copy from R(reg) (MOVE)
+	slotKindUpval                  // read upvalue B (GETUPVAL)
+	slotKindArith                  // arithmetic via host.Arith (ADD/SUB/MUL/DIV/MOD/POW)
+	slotKindUnm                    // unary minus via host.Unm (UNM)
+	slotKindLen                    // length op via host.Len (LEN)
+	slotKindNot                    // logical not via Go-side Truthy/BoolValue (NOT)
+	slotKindConcat                 // string concat via host.Concat (CONCAT A B C)
 )
 
 // AnalyzeShape reports whether the given Proto matches the constant-tuple
@@ -137,8 +142,10 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 	//   [head1, head2, ..., headN, RETURN A B]            (N >= 1, B-1 == N)
 	//   [head1, head2, ..., headN, RETURN A B, RETURN A=0 B=1]  (dead trailing)
 	//   [side_effect..., RETURN A=0 B=1]                  (setter form, no returns)
-	// We accept all. Pre-RETURN ops are split into return-slot writers
-	// (head ops) and pre-return side-effect ops (SETUPVAL etc.).
+	// We accept all. Pre-RETURN ops are classified into:
+	//   - head ops:    the *last* op before RETURN that writes R(retA+i), one per return slot
+	//   - side effects: everything else (scratch fills, SETUPVAL, dead writes
+	//                   that another op overwrites)
 	retPC := -1
 	for pc, ins := range proto.Code {
 		if bytecode.Op(ins) == bytecode.RETURN {
@@ -169,79 +176,133 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 		}
 	}
 
-	// Walk the ops before RETURN. Each one is either a head op writing
-	// R(retA + headIdx) for the next expected slot, or a side-effect op
-	// that doesn't touch any return slot.
+	// First pass: find the last writer pc for each return slot. We need
+	// the *last* writer so MOVEs into a slot that later gets CONCAT'd
+	// over are recognised as side-effects, not head ops.
+	headPC := make([]int, n)
+	for i := range headPC {
+		headPC[i] = -1
+	}
+	for pc := 0; pc < retPC; pc++ {
+		ins := proto.Code[pc]
+		op := bytecode.Op(ins)
+		// Side-effect-only ops have no return-slot dest.
+		if op == bytecode.SETUPVAL {
+			continue
+		}
+		// LOADNIL writes a closed range R(A..B); each slot in that
+		// range gets this pc as its last writer (so far).
+		if op == bytecode.LOADNIL {
+			a, b := bytecode.A(ins), bytecode.B(ins)
+			for r := a; r <= b; r++ {
+				idx := r - retA
+				if idx >= 0 && idx < n {
+					headPC[idx] = pc
+				}
+			}
+			continue
+		}
+		// All other ops have R(A) as dest.
+		a := bytecode.A(ins)
+		idx := a - retA
+		if idx >= 0 && idx < n {
+			headPC[idx] = pc
+		}
+	}
+	// Every return slot must have a writer.
+	for _, pc := range headPC {
+		if pc < 0 {
+			return shapeInfo{}
+		}
+	}
+
+	// Second pass: walk ops in order. An op is a head op for slot i iff
+	// pc == headPC[i] (and the op writes only one slot — LOADNIL handled
+	// separately). Anything else is a side effect.
 	var (
 		sources     []slotSource
 		sideEffects []sideEffect
-		headIdx     = 0
 	)
 	if n > 0 {
 		sources = make([]slotSource, n)
+	}
+	// Build pc → slotIdx map for O(1) lookup.
+	pcToSlot := make(map[int]int, n)
+	for i, pc := range headPC {
+		pcToSlot[pc] = i
 	}
 	for pc := 0; pc < retPC; pc++ {
 		ins := proto.Code[pc]
 		op := bytecode.Op(ins)
 
-		// Side-effect ops first — these never touch a return slot.
+		// Pure side-effect ops (no reg dest).
 		if se, ok := sideEffectFromIns(op, ins); ok {
 			sideEffects = append(sideEffects, se)
 			continue
 		}
 
-		// LOADNIL A B fills R(A..B) inclusive. If A matches the next
-		// expected return slot (retA + headIdx), expand it into per-slot
-		// head sources; otherwise treat it as a scratch-register side
-		// effect (the MOVEs that follow will copy the nil into the
-		// return window).
+		// LOADNIL multi-slot: special-case because it may serve as head
+		// op for multiple return slots simultaneously.
 		if op == bytecode.LOADNIL {
 			a, b := bytecode.A(ins), bytecode.B(ins)
 			if b < a || a < 0 || b > 255 {
 				return shapeInfo{}
 			}
-			if headIdx < n && a == retA+headIdx {
-				fillCount := b - a + 1
-				if headIdx+fillCount > n {
-					return shapeInfo{}
-				}
-				for j := 0; j < fillCount; j++ {
-					sources[headIdx] = slotSource{
-						kind:    slotKindConst,
-						imm:     uint64(value.Nil),
-						arithPC: uint8(pc),
+			// Decompose into per-register writes; for each, decide head vs scratch.
+			anyHead := false
+			scratchA, scratchB := -1, -1
+			for r := a; r <= b; r++ {
+				if slotIdx, ok := pcToSlot[pc]; ok {
+					// Find which slot index this register corresponds to.
+					idx := r - retA
+					if idx >= 0 && idx < n && headPC[idx] == pc {
+						sources[idx] = slotSource{
+							kind:    slotKindConst,
+							imm:     uint64(value.Nil),
+							arithPC: uint8(pc),
+						}
+						anyHead = true
+						_ = slotIdx
+						continue
 					}
-					headIdx++
 				}
-			} else {
-				// Scratch fill — write R(a..b) := nil before head-op replay.
+				// Scratch register (not a return slot, or overwritten later).
+				if scratchA < 0 {
+					scratchA = int(r)
+				}
+				scratchB = int(r)
+			}
+			if scratchA >= 0 {
 				sideEffects = append(sideEffects, sideEffect{
 					kind: sideEffectLoadNil,
-					a:    uint8(a),
-					b:    uint8(b),
+					a:    uint8(scratchA),
+					b:    uint8(scratchB),
 				})
 			}
+			_ = anyHead
 			continue
 		}
 
-		// Otherwise it must be a single-slot head op writing R(retA + headIdx).
-		if headIdx >= n {
-			return shapeInfo{}
+		// All other ops have R(A) as dest. Check if this is the slot's
+		// head op or a scratch fill.
+		if slotIdx, ok := pcToSlot[pc]; ok {
+			src, ok := headOpSource(proto, ins)
+			if !ok {
+				return shapeInfo{}
+			}
+			src.arithPC = uint8(pc)
+			sources[slotIdx] = src
+			continue
 		}
-		expectedA := retA + headIdx
-		if a := bytecode.A(ins); a != expectedA {
-			return shapeInfo{}
+
+		// Scratch fill (writes a reg that's later overwritten, or
+		// outside the return window). Only MOVE / LOADK / LOADBOOL /
+		// LOADNIL are supported as scratch fills today.
+		if se, ok := scratchFromIns(proto, op, ins); ok {
+			sideEffects = append(sideEffects, se)
+			continue
 		}
-		src, ok := headOpSource(proto, ins)
-		if !ok {
-			return shapeInfo{}
-		}
-		src.arithPC = uint8(pc) // record pc for arith error reporting
-		sources[headIdx] = src
-		headIdx++
-	}
-	if headIdx != n {
-		return shapeInfo{} // not enough head ops for the declared return count
+		return shapeInfo{}
 	}
 	return shapeInfo{
 		ok:          true,
@@ -251,6 +312,56 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 		retA:        uint8(retA),
 		retB:        uint8(retB),
 		retPC:       uint8(retPC),
+	}
+}
+
+// scratchFromIns recognises an op writing a scratch register (a register
+// outside the return window, or one that's overwritten before RETURN).
+// Returns a sideEffect that PerOpCode.Run will replay before head-op
+// materialisation. Only side-effect-free, never-raise ops are supported:
+// MOVE / LOADK / LOADBOOL (C=0) / LOADNIL.
+func scratchFromIns(proto *bytecode.Proto, op bytecode.OpCode, ins bytecode.Instruction) (sideEffect, bool) {
+	a := bytecode.A(ins)
+	if a < 0 || a > 255 {
+		return sideEffect{}, false
+	}
+	switch op {
+	case bytecode.MOVE:
+		b := bytecode.B(ins)
+		if b < 0 || b > 255 {
+			return sideEffect{}, false
+		}
+		return sideEffect{kind: sideEffectMove, a: uint8(a), b: uint8(b)}, true
+
+	case bytecode.LOADK:
+		bx := bytecode.Bx(ins)
+		if bx < 0 || bx >= len(proto.Consts) {
+			return sideEffect{}, false
+		}
+		if proto.IsStringConst(bx) {
+			return sideEffect{}, false
+		}
+		return sideEffect{kind: sideEffectLoadK, a: uint8(a), imm: uint64(proto.Consts[bx])}, true
+
+	case bytecode.LOADBOOL:
+		if bytecode.C(ins) != 0 {
+			return sideEffect{}, false
+		}
+		return sideEffect{
+			kind: sideEffectLoadK,
+			a:    uint8(a),
+			imm:  uint64(value.BoolValue(bytecode.B(ins) != 0)),
+		}, true
+
+	case bytecode.LOADNIL:
+		b := bytecode.B(ins)
+		if b < a || b > 255 {
+			return sideEffect{}, false
+		}
+		return sideEffect{kind: sideEffectLoadNil, a: uint8(a), b: uint8(b)}, true
+
+	default:
+		return sideEffect{}, false
 	}
 }
 
@@ -363,6 +474,21 @@ func headOpSource(proto *bytecode.Proto, ins bytecode.Instruction) (slotSource, 
 			arithOp: uint8(bytecode.Op(ins)),
 			arithB:  uint16(b),
 			arithC:  uint16(c),
+		}, true
+
+	case bytecode.CONCAT:
+		// R(A) := R(B) .. .. R(C). B/C are register indices (not RK),
+		// always in 0..255 range. Routed through host.Concat which
+		// handles __concat metamethod + raise on non-concatable types.
+		b := bytecode.B(ins)
+		c := bytecode.C(ins)
+		if b < 0 || b > 255 || c < 0 || c > 255 || c < b {
+			return slotSource{}, false
+		}
+		return slotSource{
+			kind:   slotKindConcat,
+			arithB: uint16(b),
+			arithC: uint16(c),
 		}, true
 
 	default:

@@ -80,6 +80,17 @@ type P4HostState interface {
 	// 返回:0=OK / 1=ERR。用例:P4 LEN A B 形态。
 	Len(base int32, pc int32, b int32, a int32) int32
 
+	// Concat 字符串拼接 CONCAT A B C 慢路径助手(gibbous_host.go::Concat
+	// 同款签名,逐字节同构于解释器 CONCAT 段:R(A) := R(B) .. R(B+1) .. ..
+	// R(C),含 __concat 元方法 + 数字 / 字符串混拼;可 raise)。
+	//
+	// 参数:base/pc 同 Arith;a = 目标寄存器号;b/c = CONCAT 范围首尾
+	// (R(B..C) 闭区间),helper 内经 doConcat 完成连接 + setReg。
+	//
+	// 返回:0=OK / 1=ERR。用例:P4 CONCAT A B C 形态(`function(x, y)
+	// return x .. y end` 类)。
+	Concat(base int32, pc int32, a int32, b int32, c int32) int32
+
 	// NewTable 处理 NEWTABLE A B C 助手(gibbous_host.go::NewTable 同款签名,
 	// 分配 + safepoint 全 helper 内,永不 raise——只可能 Go 端 OOM)。
 	//

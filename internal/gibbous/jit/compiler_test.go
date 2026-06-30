@@ -183,6 +183,21 @@ func (m *mockP4Host) Len(base, pc, b, a int32) int32 {
 	return m.unaryRetCode
 }
 
+// Concat 模拟 host.Concat:复用 unary* 计数(单测无 CONCAT 专用断言时)。
+func (m *mockP4Host) Concat(base, pc, a, b, c int32) int32 {
+	_ = base
+	_ = pc
+	_ = b
+	_ = c
+	m.unaryCalls++
+	m.lastUnaryOp = 3 // Concat tag
+	m.lastUnaryA = a
+	if m.unaryRetCode == 0 {
+		m.regs[a] = m.unaryResult
+	}
+	return m.unaryRetCode
+}
+
 // NewTable 模拟 host.NewTable:记录 + 写 R(A) = tableResult。永不 raise。
 func (m *mockP4Host) NewTable(base, pc, a, b, c int32) int32 {
 	_ = base

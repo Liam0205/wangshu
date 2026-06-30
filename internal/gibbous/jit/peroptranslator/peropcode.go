@@ -119,8 +119,11 @@ func (c *PerOpCode) Run(stack []uint64, base uint32) int32 {
 
 	// Run pre-return side-effect ops before any head-op materialisation.
 	// Supported kinds today: SETUPVAL (U(b) := R(a)), LOADNIL (fill a
-	// scratch register range with nil — the MOVEs that follow copy the
-	// nil into the return window). Both helpers never raise.
+	// scratch register range with nil), MOVE (scratch register copy),
+	// LOADK / LOADBOOL (scratch immediate). The MOVE/LOADK forms appear
+	// when ops like CONCAT need their source registers prepped (e.g.
+	// `return a..b` emits MOVE A=2 B=0, MOVE A=3 B=1 to prep CONCAT's
+	// R(B..C) input range). All helpers never raise.
 	for _, se := range c.sideEffects {
 		switch se.kind {
 		case sideEffectSetUpval:
@@ -129,6 +132,10 @@ func (c *PerOpCode) Run(stack []uint64, base uint32) int32 {
 			for r := int32(se.a); r <= int32(se.b); r++ {
 				c.host.SetReg(r, uint64(value.Nil))
 			}
+		case sideEffectMove:
+			c.host.SetReg(int32(se.a), c.host.GetReg(int32(se.b)))
+		case sideEffectLoadK:
+			c.host.SetReg(int32(se.a), se.imm)
 		}
 	}
 
@@ -192,6 +199,20 @@ func (c *PerOpCode) Run(stack []uint64, base uint32) int32 {
 				int32(src.arithPC),
 				int32(src.reg),
 				int32(c.retA)+int32(i),
+			); st != 0 {
+				return st
+			}
+			continue
+		case slotKindConcat:
+			// host.Concat writes R(c.retA+i) directly + may raise on
+			// non-concatable operands (no __concat, not string/number).
+			// arithB/arithC carry the CONCAT range R(B..C) inclusive.
+			if st := c.host.Concat(
+				int32(base),
+				int32(src.arithPC),
+				int32(c.retA)+int32(i),
+				int32(src.arithB),
+				int32(src.arithC),
 			); st != 0 {
 				return st
 			}
