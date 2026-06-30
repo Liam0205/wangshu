@@ -377,6 +377,93 @@ return r, outer
 	}
 }
 
+// TestPJ10_Call covers single-BB CALL forms via host.CallBaseline.
+// The CALL op writes R(A..A+C-2); for any return slot landing in that
+// range, a slotKindReg head op reads it back after the call returns.
+// Call-as-statement (C=1, no results) just produces a side effect.
+func TestPJ10_Call(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want []string
+	}{
+		{
+			name: "single-arg-single-result",
+			src: `
+local function double(x) return x * 2 end
+local function k(x) local r = double(x) return r end
+return k(21)
+`,
+			want: []string{"42"},
+		},
+		{
+			name: "two-args-single-result",
+			src: `
+local function add(a, b) return a + b end
+local function k(a, b) local r = add(a, b) return r end
+return k(3, 4)
+`,
+			want: []string{"7"},
+		},
+		{
+			name: "no-args-single-result",
+			src: `
+local function answer() return 42 end
+local function k() local r = answer() return r end
+return k()
+`,
+			want: []string{"42"},
+		},
+		{
+			name: "stmt-call-side-effect",
+			src: `
+local sum = 0
+local function add(x) sum = sum + x end
+local function k(x) add(x) end
+k(7)
+k(8)
+return sum
+`,
+			want: []string{"15"},
+		},
+		{
+			name: "k-args-const",
+			src: `
+local function f(a, b) return a * 10 + b end
+local function k() local r = f(2, 3) return r end
+return k()
+`,
+			want: []string{"23"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prog, err := wangshu.Compile([]byte(tc.src), "pj10call")
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+			st := wangshu.NewState(wangshu.Options{})
+			st.SetForceAllPromote(true)
+			res, err := prog.Run(st)
+			if err != nil {
+				t.Fatalf("run: %v", err)
+			}
+			if st.PromotionCount() == 0 {
+				t.Fatal("PromotionCount = 0; PJ10 did not promote the CALL kernel")
+			}
+			for i, w := range tc.want {
+				if i >= len(res) {
+					t.Errorf("result[%d]: out-of-range, want %q (full: %v)", i, w, res)
+					continue
+				}
+				if got := res[i].Display(); got != w {
+					t.Errorf("result[%d] = %q, want %q (full: %v)", i, got, w, res)
+				}
+			}
+		})
+	}
+}
+
 // TestPJ10_TableOps covers the single-BB table head ops:
 //   - GETTABLE: R(A) := R(B)[RK(C)]   via host.GetTable
 //   - GETGLOBAL: R(A) := Globals[K(Bx)] via host.DoGetGlobal

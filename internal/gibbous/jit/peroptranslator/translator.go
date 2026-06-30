@@ -74,15 +74,16 @@ type shapeInfo struct {
 
 // sideEffect describes a pre-return op that has no associated return slot.
 // Today the supported kinds are SETUPVAL (U(b) := R(a)), LOADNIL (fill
-// scratch regs), and scratch-register fills (MOVE/LOADK writing a reg
-// that's either outside the return window or overwritten before RETURN),
-// plus the table/global setters (SETTABLE, SETGLOBAL).
+// scratch regs), scratch-register fills (MOVE/LOADK writing a reg that's
+// either outside the return window or overwritten before RETURN), the
+// table/global setters (SETTABLE, SETGLOBAL), and CALL (writes results
+// to R(A..A+C-2) via host.CallBaseline).
 type sideEffect struct {
 	kind sideEffectKind
-	a    uint8  // op's A field (source register for SETUPVAL; first slot for LOADNIL; dest reg for MOVE/LOADK/SETTABLE; source reg for SETGLOBAL)
-	b    uint8  // op's B field (upvalue index for SETUPVAL; last slot for LOADNIL; source reg for MOVE; RK key for SETTABLE)
-	c    uint8  // op's C field (RK value for SETTABLE)
-	imm  uint64 // baked NaN-boxed value (LOADK) or Bx constant index (SETGLOBAL)
+	a    uint8  // op's A field (source register for SETUPVAL; first slot for LOADNIL; dest reg for MOVE/LOADK/SETTABLE/CALL; source reg for SETGLOBAL)
+	b    uint8  // op's B field (upvalue index for SETUPVAL; last slot for LOADNIL; source reg for MOVE; RK key for SETTABLE; nargs+1 for CALL)
+	c    uint8  // op's C field (RK value for SETTABLE; nresults+1 for CALL)
+	imm  uint64 // baked NaN-boxed value (LOADK) or Bx constant index (SETGLOBAL) or pc (CALL)
 }
 
 // sideEffectKind discriminates the pre-return op kinds.
@@ -95,6 +96,7 @@ const (
 	sideEffectLoadK                           // LOADK A Bx: R(A) := <imm> (scratch fill)
 	sideEffectSetTable                        // SETTABLE A B C: R(A)[RK(B)] := RK(C)
 	sideEffectSetGlobal                       // SETGLOBAL A Bx: Globals[K(Bx)] := R(A)
+	sideEffectCall                            // CALL A B C: R(A..A+C-2) := R(A)(R(A+1..A+B-1))
 )
 
 // slotSource describes how PerOpCode.Run materialises one return slot:
@@ -238,6 +240,23 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 		if op == bytecode.SETUPVAL || op == bytecode.SETTABLE || op == bytecode.SETGLOBAL {
 			continue
 		}
+		// CALL writes R(A..A+C-2) when C>=2. We mark CALL as the writer
+		// for each affected return slot, but at the second pass it
+		// becomes a sideEffectCall and the head op for the slot is a
+		// post-CALL register read (slotKindReg).
+		if op == bytecode.CALL {
+			a := bytecode.A(ins)
+			c := bytecode.C(ins)
+			if c >= 2 {
+				for k := 0; k < c-1; k++ {
+					idx := a + k - retA
+					if idx >= 0 && idx < n {
+						headPC[idx] = pc
+					}
+				}
+			}
+			continue
+		}
 		// LOADNIL writes a closed range R(A..B); each slot in that
 		// range gets this pc as its last writer (so far).
 		if op == bytecode.LOADNIL {
@@ -316,6 +335,40 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 		// Pure side-effect ops (no reg dest).
 		if se, ok := sideEffectFromIns(op, ins); ok {
 			sideEffects = append(sideEffects, se)
+			continue
+		}
+
+		// CALL: emit a sideEffectCall + for each return slot it writes,
+		// install a slotKindReg head op that reads the slot back after
+		// the call returns. (A side-effect-only call — C=1, no results —
+		// affects no slots and just emits the side effect.)
+		if op == bytecode.CALL {
+			a := bytecode.A(ins)
+			b := bytecode.B(ins)
+			cc := bytecode.C(ins)
+			if a < 0 || a > 255 || b < 0 || b > 255 || cc < 0 || cc > 255 {
+				return shapeInfo{}
+			}
+			sideEffects = append(sideEffects, sideEffect{
+				kind: sideEffectCall,
+				a:    uint8(a),
+				b:    uint8(b),
+				c:    uint8(cc),
+				imm:  uint64(pc),
+			})
+			if cc >= 2 {
+				for k := 0; k < cc-1; k++ {
+					reg := a + k
+					idx := reg - retA
+					if idx >= 0 && idx < n && headPC[idx] == pc {
+						sources[idx] = slotSource{
+							kind:    slotKindReg,
+							reg:     uint8(reg),
+							arithPC: uint8(pc),
+						}
+					}
+				}
+			}
 			continue
 		}
 

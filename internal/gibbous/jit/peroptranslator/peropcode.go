@@ -148,6 +148,21 @@ func (c *PerOpCode) Run(stack []uint64, base uint32) int32 {
 			if st := c.host.DoSetGlobal(int32(base), 0, int32(se.a), int32(se.imm)); st != 0 {
 				return st
 			}
+		case sideEffectCall:
+			// CALL A B C: R(A..A+C-2) := R(A)(R(A+1..A+B-1)). Routed
+			// through host.CallBaseline which dispatches Go-host/__call/
+			// gibbous/crescent paths. The pc parameter is the CALL's own
+			// pc (packed into imm so we can report it correctly on slow-
+			// path errors).
+			if st := c.host.CallBaseline(
+				int32(base),
+				int32(se.imm),
+				int32(se.a),
+				int32(se.b),
+				int32(se.c),
+			); st != 0 {
+				return st
+			}
 		}
 	}
 
