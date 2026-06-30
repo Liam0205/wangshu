@@ -55,16 +55,18 @@ import (
 var errSpikeNilHost = errors.New("peroptranslator: nil P4HostState (caller must inject host)")
 
 // PerOpCode is peroptranslator's bridge.GibbousCode implementation. It
-// owns the mmap'd code page, holds the imm64 values baked at Compile
-// time, and replays them via host.SetReg on every Run.
+// owns the mmap'd code page, holds the per-slot source descriptors baked
+// at Compile time, and replays them via host.SetReg on every Run.
 type PerOpCode struct {
 	proto    *bytecode.Proto
 	codePage *jitamd64.CodePage
 	jitCtx   *jit.JITContext
 	host     jit.P4HostState
 
-	// imms[i] is the NaN-boxed value to be written into R(retA + i).
-	imms []uint64
+	// sources[i] describes the value PerOpCode.Run writes into
+	// R(retA + i): either a baked imm64 (constant) or a runtime copy
+	// from another register / upvalue.
+	sources []slotSource
 
 	// retA / retB / retPC are baked at Compile time so Run can hand them
 	// to host.DoReturn without re-parsing the Proto.
@@ -108,9 +110,29 @@ func (c *PerOpCode) Run(stack []uint64, base uint32) int32 {
 	jitCtxAddr := uintptr(unsafe.Pointer(c.jitCtx))
 	_ = jitamd64.CallJITFull(c.codePage.Addr(), jitCtxAddr) // returns 0
 
-	// Replay the constants into R(retA + i).
-	for i, imm := range c.imms {
-		c.host.SetReg(int32(c.retA)+int32(i), imm)
+	// Materialise the N return values into R(retA + i). Each slot is one
+	// of three kinds: a baked immediate (LOADK / LOADBOOL / LOADNIL), a
+	// copy from another register (MOVE), or an upvalue read (GETUPVAL).
+	//
+	// Note for MOVE: GetReg reads via the host's current-frame index map
+	// (the host knows where R(reg) lives given the per-Proto frame). All
+	// reads happen before any writes, so MOVE chains R(A)=R(B), R(C)=R(A)
+	// would correctly see the old R(A) if we ever extended the supported
+	// subset to allow overlapping sources. Today the frontend never emits
+	// such a chain in the constant-tuple shape (head ops target distinct
+	// R(retA+i) and source from registers below retA), so a simple
+	// in-order replay is enough.
+	for i, src := range c.sources {
+		var val uint64
+		switch src.kind {
+		case slotKindConst:
+			val = src.imm
+		case slotKindReg:
+			val = c.host.GetReg(int32(src.reg))
+		case slotKindUpval:
+			val = c.host.GetUpval(int32(base), int32(src.upval))
+		}
+		c.host.SetReg(int32(c.retA)+int32(i), val)
 	}
 
 	if st := c.host.DoReturn(int32(base), int32(c.retPC), int32(c.retA), int32(c.retB)); st != 0 {
@@ -169,7 +191,7 @@ func TranslateProto(proto *bytecode.Proto, host jit.P4HostState) (bridge.Gibbous
 		codePage: page,
 		jitCtx:   jit.NewJITContext(),
 		host:     host,
-		imms:     info.imms,
+		sources:  info.sources,
 		retA:     info.retA,
 		retB:     info.retB,
 		retPC:    info.retPC,

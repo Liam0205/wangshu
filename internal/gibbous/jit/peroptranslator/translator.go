@@ -60,15 +60,34 @@ import (
 
 // shapeInfo is what AnalyzeShape returns when it recognises a supported
 // Proto. The PerOpCode builder uses these fields to bake in the per-slot
-// imm64 list and the RETURN's A/B fields.
+// source descriptor list and the RETURN's A/B fields.
 type shapeInfo struct {
-	ok     bool
-	imms   []uint64 // one entry per slot, in slot order
-	startA uint8    // R(startA) is the first slot written
-	retA   uint8    // RETURN A — matches startA in the typical shape
-	retB   uint8    // RETURN B — len(imms)+1
-	retPC  uint8    // RETURN's pc index in proto.Code
+	ok      bool
+	sources []slotSource // one entry per slot, in slot order
+	startA  uint8        // R(startA) is the first slot written
+	retA    uint8        // RETURN A — matches startA in the typical shape
+	retB    uint8        // RETURN B — len(sources)+1
+	retPC   uint8        // RETURN's pc index in proto.Code
 }
+
+// slotSource describes how PerOpCode.Run materialises one return slot:
+// either a compile-time constant baked at Compile time, or a runtime
+// copy from another register / upvalue read at Run time via the host.
+type slotSource struct {
+	kind  slotKind
+	imm   uint64 // valid when kind == slotKindConst
+	reg   uint8  // valid when kind == slotKindReg (source register R(reg))
+	upval uint8  // valid when kind == slotKindUpval (upvalue index B)
+}
+
+// slotKind discriminates how the source value is obtained.
+type slotKind uint8
+
+const (
+	slotKindConst slotKind = iota // immediate (LOADK/LOADBOOL/LOADNIL)
+	slotKindReg                   // copy from R(reg) (MOVE)
+	slotKindUpval                 // read upvalue B (GETUPVAL)
+)
 
 // AnalyzeShape reports whether the given Proto matches the constant-tuple
 // shape this spike supports. Returns shapeInfo{ok: true, ...} on a match.
@@ -116,26 +135,78 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 		}
 	}
 
-	imms := make([]uint64, n)
+	sources := make([]slotSource, n)
 	for i := 0; i < n; i++ {
 		ins := proto.Code[i]
 		expectedA := retA + i
 		if a := bytecode.A(ins); a != expectedA {
 			return shapeInfo{} // head ops must target R(retA + i) in order
 		}
-		imm, err := headOpImm64(proto, ins)
-		if err != nil {
+		src, ok := headOpSource(proto, ins)
+		if !ok {
 			return shapeInfo{}
 		}
-		imms[i] = imm
+		sources[i] = src
 	}
 	return shapeInfo{
-		ok:     true,
-		imms:   imms,
-		startA: uint8(retA),
-		retA:   uint8(retA),
-		retB:   uint8(retB),
-		retPC:  uint8(retPC),
+		ok:      true,
+		sources: sources,
+		startA:  uint8(retA),
+		retA:    uint8(retA),
+		retB:    uint8(retB),
+		retPC:   uint8(retPC),
+	}
+}
+
+// headOpSource recognises the supported head ops and returns a
+// slotSource describing how PerOpCode.Run will materialise the value at
+// the corresponding return slot. Returns ok=false for any unsupported op
+// or operand configuration.
+func headOpSource(proto *bytecode.Proto, ins bytecode.Instruction) (slotSource, bool) {
+	op := bytecode.Op(ins)
+	switch op {
+	case bytecode.LOADK:
+		bx := bytecode.Bx(ins)
+		if bx < 0 || bx >= len(proto.Consts) {
+			return slotSource{}, false
+		}
+		if proto.IsStringConst(bx) {
+			return slotSource{}, false
+		}
+		return slotSource{kind: slotKindConst, imm: uint64(proto.Consts[bx])}, true
+
+	case bytecode.LOADBOOL:
+		if bytecode.C(ins) != 0 {
+			return slotSource{}, false
+		}
+		return slotSource{kind: slotKindConst, imm: uint64(value.BoolValue(bytecode.B(ins) != 0))}, true
+
+	case bytecode.LOADNIL:
+		// Single-slot fill (B == A) only.
+		if bytecode.B(ins) != bytecode.A(ins) {
+			return slotSource{}, false
+		}
+		return slotSource{kind: slotKindConst, imm: uint64(value.Nil)}, true
+
+	case bytecode.MOVE:
+		// R(A) := R(B). Copy at Run time via host.GetReg(B) + SetReg(A).
+		// B is uint8 in the encoding; check the cast.
+		b := bytecode.B(ins)
+		if b < 0 || b > 255 {
+			return slotSource{}, false
+		}
+		return slotSource{kind: slotKindReg, reg: uint8(b)}, true
+
+	case bytecode.GETUPVAL:
+		// R(A) := U(B). Read at Run time via host.GetUpval(base, B).
+		b := bytecode.B(ins)
+		if b < 0 || b > 255 {
+			return slotSource{}, false
+		}
+		return slotSource{kind: slotKindUpval, upval: uint8(b)}, true
+
+	default:
+		return slotSource{}, false
 	}
 }
 

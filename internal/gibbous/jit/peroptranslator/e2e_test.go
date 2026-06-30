@@ -97,3 +97,99 @@ func TestPJ10_SingleReturnStillWorks(t *testing.T) {
 		t.Errorf("expected trailing nils, got %v", got)
 	}
 }
+
+// TestPJ10_MoveReturn validates the MOVE head op: `return x, y` for
+// kernel(x, y). PJ7 single-return identity `return x` is already
+// covered by analyzeShape (RETURN A=0 B=2, retA = the param reg), but
+// `return x, y` is a different shape (N>1 with N MOVE head ops) PJ7
+// rejects — PJ10 should accept it via the slotKindReg path.
+func TestPJ10_MoveReturn(t *testing.T) {
+	src := "local function k(x, y)\n  return x, y\nend\nlocal a, b, c = k(10, 20)\nreturn a, b, c"
+	prog, err := wangshu.Compile([]byte(src), "pj10move")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	st := wangshu.NewState(wangshu.Options{})
+	st.SetForceAllPromote(true)
+	res, err := prog.Run(st)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if st.PromotionCount() == 0 {
+		t.Fatal("PromotionCount = 0; PJ10 hook did not promote the MOVE kernel")
+	}
+	want := []string{"10", "20", "nil"}
+	if len(res) != len(want) {
+		t.Fatalf("got %d results, want %d", len(res), len(want))
+	}
+	for i, r := range res {
+		if got := r.Display(); got != want[i] {
+			t.Errorf("result[%d] = %q, want %q", i, got, want[i])
+		}
+	}
+}
+
+// TestPJ10_MixedMoveAndConst checks the heterogeneous case: head ops
+// are a mix of MOVE (slotKindReg) and LOADK (slotKindConst). The
+// frontend emits them in slot order; PJ10's AnalyzeShape must accept
+// any in-order combination as long as each one targets R(retA + i).
+func TestPJ10_MixedMoveAndConst(t *testing.T) {
+	src := "local function k(x, y)\n  return x, 1, y, 2\nend\nlocal a, b, c, d = k(10, 20)\nreturn a, b, c, d"
+	prog, err := wangshu.Compile([]byte(src), "pj10mixed")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	st := wangshu.NewState(wangshu.Options{})
+	st.SetForceAllPromote(true)
+	res, err := prog.Run(st)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if st.PromotionCount() == 0 {
+		t.Fatal("PromotionCount = 0; PJ10 hook did not promote the mixed kernel")
+	}
+	want := []string{"10", "1", "20", "2"}
+	if len(res) != len(want) {
+		t.Fatalf("got %d results, want %d: %v", len(res), len(want), res)
+	}
+	for i, r := range res {
+		if got := r.Display(); got != want[i] {
+			t.Errorf("result[%d] = %q, want %q", i, got, want[i])
+		}
+	}
+}
+
+// TestPJ10_GetUpval covers GETUPVAL: kernel reads from an outer-scope
+// upvalue. Frontend emits GETUPVAL head ops with .B = upvalue index.
+func TestPJ10_GetUpval(t *testing.T) {
+	src := `
+local outer1, outer2 = 100, 200
+local function k()
+  return outer1, outer2
+end
+local a, b = k()
+return a, b
+`
+	prog, err := wangshu.Compile([]byte(src), "pj10upval")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	st := wangshu.NewState(wangshu.Options{})
+	st.SetForceAllPromote(true)
+	res, err := prog.Run(st)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if st.PromotionCount() == 0 {
+		t.Fatal("PromotionCount = 0; PJ10 hook did not promote the GETUPVAL kernel")
+	}
+	want := []string{"100", "200"}
+	if len(res) != len(want) {
+		t.Fatalf("got %d results, want %d", len(res), len(want))
+	}
+	for i, r := range res {
+		if got := r.Display(); got != want[i] {
+			t.Errorf("result[%d] = %q, want %q", i, got, want[i])
+		}
+	}
+}
