@@ -118,13 +118,17 @@ func (c *PerOpCode) Run(stack []uint64, base uint32) int32 {
 	_ = jitamd64.CallJITFull(c.codePage.Addr(), jitCtxAddr) // returns 0
 
 	// Run pre-return side-effect ops before any head-op materialisation.
-	// Today the only kind is SETUPVAL (U(b) := R(a)); the helper reads
-	// R(a) and stores into the current closure's upvalue slot — never
-	// raises, no slow path.
+	// Supported kinds today: SETUPVAL (U(b) := R(a)), LOADNIL (fill a
+	// scratch register range with nil — the MOVEs that follow copy the
+	// nil into the return window). Both helpers never raise.
 	for _, se := range c.sideEffects {
 		switch se.kind {
 		case sideEffectSetUpval:
 			c.host.SetUpvalFromReg(int32(base), int32(se.a), int32(se.b))
+		case sideEffectLoadNil:
+			for r := int32(se.a); r <= int32(se.b); r++ {
+				c.host.SetReg(r, uint64(value.Nil))
+			}
 		}
 	}
 

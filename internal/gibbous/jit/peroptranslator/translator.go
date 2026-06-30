@@ -73,12 +73,13 @@ type shapeInfo struct {
 }
 
 // sideEffect describes a pre-return op that has no associated return slot.
-// Today the only supported kind is SETUPVAL (U(b) := R(a)); future PJ10a
-// extensions may add others (e.g. SETGLOBAL once PJ10d arrives).
+// Today the supported kinds are SETUPVAL (U(b) := R(a)) and LOADNIL (fill
+// scratch regs); future PJ10a extensions may add others (e.g. SETGLOBAL
+// once PJ10d arrives).
 type sideEffect struct {
 	kind sideEffectKind
-	a    uint8 // op's A field (source register for SETUPVAL)
-	b    uint8 // op's B field (upvalue index for SETUPVAL)
+	a    uint8 // op's A field (source register for SETUPVAL; first slot for LOADNIL)
+	b    uint8 // op's B field (upvalue index for SETUPVAL; last slot for LOADNIL)
 }
 
 // sideEffectKind discriminates the pre-return op kinds.
@@ -86,6 +87,7 @@ type sideEffectKind uint8
 
 const (
 	sideEffectSetUpval sideEffectKind = iota // SETUPVAL A B: U(B) := R(A)
+	sideEffectLoadNil                        // LOADNIL A B: R(A..B) := nil (scratch slots only)
 )
 
 // slotSource describes how PerOpCode.Run materialises one return slot:
@@ -188,7 +190,41 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 			continue
 		}
 
-		// Otherwise it must be a head op writing R(retA + headIdx).
+		// LOADNIL A B fills R(A..B) inclusive. If A matches the next
+		// expected return slot (retA + headIdx), expand it into per-slot
+		// head sources; otherwise treat it as a scratch-register side
+		// effect (the MOVEs that follow will copy the nil into the
+		// return window).
+		if op == bytecode.LOADNIL {
+			a, b := bytecode.A(ins), bytecode.B(ins)
+			if b < a || a < 0 || b > 255 {
+				return shapeInfo{}
+			}
+			if headIdx < n && a == retA+headIdx {
+				fillCount := b - a + 1
+				if headIdx+fillCount > n {
+					return shapeInfo{}
+				}
+				for j := 0; j < fillCount; j++ {
+					sources[headIdx] = slotSource{
+						kind:    slotKindConst,
+						imm:     uint64(value.Nil),
+						arithPC: uint8(pc),
+					}
+					headIdx++
+				}
+			} else {
+				// Scratch fill — write R(a..b) := nil before head-op replay.
+				sideEffects = append(sideEffects, sideEffect{
+					kind: sideEffectLoadNil,
+					a:    uint8(a),
+					b:    uint8(b),
+				})
+			}
+			continue
+		}
+
+		// Otherwise it must be a single-slot head op writing R(retA + headIdx).
 		if headIdx >= n {
 			return shapeInfo{}
 		}

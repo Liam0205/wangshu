@@ -237,6 +237,66 @@ func TestPJ10_MultiArith(t *testing.T) {
 	}
 }
 
+// TestPJ10_LoadNilMultiSlot covers LOADNIL A B where B > A — one op
+// fills multiple return slots with nil. The frontend emits this for
+// `return nil, nil, nil` when the locals span contiguous slots; PJ10a
+// expands one LOADNIL into N per-slot sources at AnalyzeShape time.
+func TestPJ10_LoadNilMultiSlot(t *testing.T) {
+	got, promoted := runForceAll(t, "return nil, nil, nil")
+	if promoted == 0 {
+		t.Fatal("PromotionCount = 0; PJ10 hook did not promote the LOADNIL-multi kernel")
+	}
+	want := []string{"nil", "nil", "nil"}
+	for i, w := range want {
+		if i >= len(got) {
+			t.Errorf("result[%d]: out-of-range, want %q", i, w)
+			continue
+		}
+		if got[i] != w {
+			t.Errorf("result[%d] = %q, want %q (full: %v)", i, got[i], w, got)
+		}
+	}
+}
+
+// TestPJ10_LoadNilScratch covers the realistic wangshu-frontend shape:
+// `local a, b, c; return a, b, c` — emits a single LOADNIL A=0 B=2 that
+// pre-fills scratch slots, then MOVEs them into the RETURN window. The
+// LOADNIL becomes a sideEffect (writes scratch regs) and the MOVEs are
+// the head ops.
+func TestPJ10_LoadNilScratch(t *testing.T) {
+	src := `
+local function k()
+  local a, b, c
+  return a, b, c
+end
+local x, y, z = k()
+return x, y, z
+`
+	prog, err := wangshu.Compile([]byte(src), "pj10nilscratch")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	st := wangshu.NewState(wangshu.Options{})
+	st.SetForceAllPromote(true)
+	res, err := prog.Run(st)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if st.PromotionCount() == 0 {
+		t.Fatal("PromotionCount = 0; PJ10 hook did not promote the LOADNIL-scratch kernel")
+	}
+	want := []string{"nil", "nil", "nil"}
+	for i, w := range want {
+		if i >= len(res) {
+			t.Errorf("result[%d]: out-of-range, want %q", i, w)
+			continue
+		}
+		if got := res[i].Display(); got != w {
+			t.Errorf("result[%d] = %q, want %q (full: %v)", i, got, w, res)
+		}
+	}
+}
+
 // TestPJ10_SetUpvalSetter covers the "setter" shape PJ7's analyzeShape
 // does not handle: a function whose only job is to write an upvalue and
 // return nothing. Bytecode looks like
