@@ -168,8 +168,11 @@ jobs:
       - name: V16 boundary roundtrip bench (P3)
         working-directory: benchmarks
         run: |
+          # P3-side counterparts of the P4 Const/Nil/Bool bench, added in
+          # baseline_gibbous_test.go for V16 fair comparison (same minimal
+          # body in both runs).
           go test -tags 'wangshu_p3 wangshu_profile' \
-            -bench='BenchmarkSimple_(Gibbous|WangshuKernel)' \
+            -bench='Benchmark(Const|Nil|Bool)_(Gibbous|WangshuKernel)' \
             -benchmem \
             -benchtime=${BENCH_TIME} \
             -count=${BENCH_COUNT} \
