@@ -387,3 +387,33 @@ PJ10 接续 PJ0-PJ9 的所有不变式,新增本档独有:
 3. **OSR exit 仍生效**:通用路径里的 guard 失败(若有,主要在 fast path 内嵌投机时)走 OSR exit 协议,与 PJ0-PJ9 同款
 4. **safepoint 不漏**:回边、call 前后、长直线段后(每 N 条指令)都插 safepoint check,纪律承 [05-system-pipeline §6](./05-system-pipeline.md)
 5. **不引入 IR**:emit 函数直接发字节,不经 SSA / 中间值 / 任何抽象层
+
+---
+
+## 14. 实现进度(2026-06-30 single-BB 子集)
+
+PJ10 当前实现采取了**比设计文档更保守的物理路径**:不真正发射多 BB amd64 原生码,而是把单 BB Proto 的指令拆成 Go 端「head op + side effect」的回放清单,mmap 段只是占位 stub(`xor eax, eax; ret`),Run 在执行 stub 后用 Go 代码按清单调 host helper / 写寄存器。
+
+这条「Go 端回放」路径覆盖到的 opcode:
+
+| 子档 | 覆盖 opcode | 形态举例 |
+|---|---|---|
+| **PJ10a 直线** | MOVE / LOADK / LOADBOOL(C=0) / LOADNIL(含 multi-slot + scratch fill)/ GETUPVAL / SETUPVAL / RETURN(B=1 setter + B>=2 多返回)| `return x, y, 1, 2` / `local outer; function set(v) outer = v end` |
+| **PJ10b 算术 + 一元 + 拼接 + NOT** | ADD / SUB / MUL / DIV / MOD / POW / UNM / LEN / NOT / CONCAT | `return a + b, a - b` / `return -x, not y, #z` / `return a .. b` |
+| **PJ10c-pre 比较 diamond** | EQ / LT / LE(4-op 折叠形态) | `return a == b` / `return a < b` / `return a ~= b` / `return a > b`(底层都是 EQ/LT/LE + JMP + LOADBOOL × 2) |
+| **PJ10d 单 BB 子集** | GETTABLE / SETTABLE / GETGLOBAL / SETGLOBAL / NEWTABLE | `return t.x` / `return t[k]` / `t.x = 1` / `_G.foo = 1` / `return {}` |
+
+未实现(仍需真 CFG 翻译,纳入 PJ10c full):
+
+- **LOADBOOL C != 0**:跳过下一指令的 BB 分裂语义
+- **JMP / TEST / TESTSET**:`and` / `or` 短路 / `if-then-end` / `while`
+- **FORPREP / FORLOOP / TFORLOOP**:计数循环 / 通用循环
+- **SETLIST / SELF / CALL / TAILCALL / CLOSURE / CLOSE**:涉及帧布局 / call depth 变更 / 多寄存器写
+
+「真 CFG 翻译」的下一步:
+- 构造 CFG(承 P3 wasm `cfg.go` 同款 leader pc 切 BB + 后继边连接)
+- 多 BB 翻译:每个 BB 单独发一段字节,JMP 经 label resolver 在终末绑定;FORLOOP 回边发 `jne <body_start>` 之类的物理跳转
+- 跳出 Go 端回放,真正发射 amd64 native code
+
+物理路径切换的拐点:**FORLOOP 一旦真接入**,单 BB 回放就必须升级到多 BB native emit,否则循环每次迭代都要跨 Go ↔ mmap 边界一次,违反 PJ10b heavy bench 的 P3 ≥ 5× 加速 baseline。
+
