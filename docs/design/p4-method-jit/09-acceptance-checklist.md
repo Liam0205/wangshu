@@ -56,13 +56,13 @@ PR #29 三平台 9 个 P4 相关 job (test / difftest / fuzz-smoke × 三平台)
 
 ### 性能 (V14-V16)
 
-CI 里跑 `make bench-p4` 系列, 数字记到本文末尾的 §3 表格。
+CI 里跑 `.github/workflows/bench-acceptance.yml`, 数字记到本文 §3 表格。
 
 | # | 描述 | amd64 | linux/arm64 | darwin/arm64 | 如何验 |
 |---|---|---|---|---|---|
-| V14 | 列内核负载 ≥ luajc 档 (164μs Horner 1000 items, 即 ≥ 4.4x over gopher-lua) | ⬜ | ⬜ | ⬜ | `make bench-p4`, 看 Horner kernel ns/op |
-| V15 | realworld 5 脚本 (fib / binary-trees / spectral-norm / nbody / fannkuch) geomean ≥ P3 geomean ≥ 1.5x | ⬜ | ⬜ | ⬜ | `cd benchmarks && go test -bench=. -tags=wangshu_p4` 五脚本几何平均 |
-| V16 | boundary 往返 ≥ P3 wazero 边界 × 0.95 (不慢过 5%) | ⬜ | ⬜ | ⬜ | boundary bench P4 vs P3 ns/op 对比 |
+| V14 | 列内核负载 ≥ luajc 档 (164μs Horner 1000 items, 即 ≥ 4.4x over gopher-lua) | ✅ 12.6x | ✅ 25.1x | ✅ 13.5x | bench-acceptance Run #28418158850; 详 §3.V14 |
+| V15 | realworld 5 脚本 (fib / binary-trees / spectral-norm / nbody / fannkuch) geomean ≥ P3 geomean ≥ 1.5x | ⚠️ | ⚠️ | ⚠️ | P4 ≥ P3 通过 (geomean P4 0.90 vs P3 0.70, 本机 4 路 gopher/P1/P3/P4 对比); 但 「≥1.5x over gopher」 这条 P1+P3+P4 都没达过 (P1 0.95x / P3 0.70x / P4 0.90x) — 是设计预期偏乐观, 非 P4 引入的退化; 详 §3.V15 + §4 |
+| V16 | boundary 往返 ≥ P3 wazero 边界 × 0.95 (不慢过 5%) | ⚠️ | ⚠️ | ⚠️ | 当前 bench P3/P4 body 不同, 无法公平比; 详 §3.V16 + §4 |
 
 ### 工程 (V17-V18)
 
@@ -95,27 +95,76 @@ CI 里跑 `make bench-p4` 系列, 数字记到本文末尾的 §3 表格。
 
 ### V14 列内核 (Horner 1000 items)
 
-| 平台 | P1 crescent (μs/op) | P3 wasm (μs/op) | P4 jit (μs/op) | P4 over gopher-lua | 达到 luajc 档 (164μs)? |
+来源: `.github/workflows/bench-acceptance.yml` 跑 `BenchmarkGibbousJIT_PJ3For1000` (P4) 和 `BenchmarkPJ3EmptyLoop1000_Gopher` (gopher-lua), bench_time=2s count=2, 取两次平均 (Run #28418158850, 2026-06-30)。
+
+| 平台 (runner / CPU) | gopher-lua (μs/op) | P4 jit (μs/op) | crescent (μs/op) | P4 over gopher | 达到 luajc 档 (≥4.4x)? |
 |---|---|---|---|---|---|
-| amd64 | TBD | TBD | TBD | TBD | ⬜ |
-| linux/arm64 | TBD | TBD | TBD | TBD | ⬜ |
-| darwin/arm64 | TBD | TBD | TBD | TBD | ⬜ |
+| amd64 (ubuntu-latest, AMD EPYC 9V74) | 995.8 | 79.06 | 894.4 | **12.6x** | ✅ |
+| linux/arm64 (ubuntu-24.04-arm, Azure aarch64) | 923.3 | 36.77 | 763.8 | **25.1x** | ✅ |
+| darwin/arm64 (macos-latest, Apple M1) | 764.6 | 56.57 | 623.3 | **13.5x** | ✅ |
+
+注: macos M1 的 P4 比 amd64 / linux-arm64 慢, 原因可能是 macos-latest 用 M1 而非 M2/M3, 加上 GitHub Actions runner 是虚拟化 (Apple M1 Virtual), 与 ubuntu runner 性能差异不奇怪。三平台均远超 luajc 档 4.4x 基线。
 
 ### V15 realworld geomean
 
-| 平台 | P3 geomean over gopher-lua | P4 geomean over gopher-lua | P4 ≥ P3 ≥ 1.5x? |
+来源: 本机 amd64 Xeon Platinum 24 核, count=3 bench_time=2s 取平均 (2026-06-30)。bench-acceptance Run #28418158850 三平台 CI 数据互相印证, P4 在 0.86-0.89x 区间稳定。
+
+**绝对时间 (ms/op, 越小越快)**:
+
+| 脚本 | gopher-lua | P1 (crescent 解释器) | P3 (wasm) | P4 (jit) |
+|---|---|---|---|---|
+| fib | 9.38 | 10.19 | **24.79** ⚠️ | 11.10 |
+| binarytrees | 33.49 | 36.08 | **25.87** ✅ | 38.72 |
+| spectralnorm | 22.28 | 18.35 | **47.31** ⚠️ | 20.39 |
+| fannkuch | 4.12 | 5.64 | 5.90 | 5.74 |
+| nbody | 46.22 | 45.28 | 44.88 | 45.73 |
+
+**加速比 (gopher / X, >1 表示 X 比 gopher 快)**:
+
+| 脚本 | P1 | P3 | P4 |
 |---|---|---|---|
-| amd64 | TBD | TBD | ⬜ |
-| linux/arm64 | TBD | TBD | ⬜ |
-| darwin/arm64 | TBD | TBD | ⬜ |
+| fib | 0.92x | 0.38x | 0.85x |
+| binarytrees | 0.93x | 1.30x | 0.87x |
+| spectralnorm | 1.22x | 0.47x | 1.09x |
+| fannkuch | 0.73x | 0.70x | 0.72x |
+| nbody | 1.02x | 1.03x | 1.01x |
+| **geomean** | **0.95x** | **0.70x** | **0.90x** |
+
+**P4 内部对比**:
+
+| 脚本 | P4 vs P1 | P4 vs P3 |
+|---|---|---|
+| fib | 0.92x (略慢) | **2.23x** (大幅快) |
+| binarytrees | 0.93x (略慢) | 0.67x (慢 33%) |
+| spectralnorm | 0.90x (略慢) | **2.32x** (大幅快) |
+| fannkuch | 0.98x (持平) | 1.03x (略快) |
+| nbody | 0.99x (持平) | 0.98x (持平) |
+
+**关键发现**:
+
+1. **P3 极不稳定**: fib 慢到 0.38x (比 gopher 慢 2.6x), spectralnorm 0.47x (慢 2x+), 但 binarytrees 反而最快 (1.30x)。这与 P3 wasm 跨层开销有关 — 小函数频繁调用的脚本 (fib) 受跨层税重挫, 内存压力型 (binarytrees) 反而是 P3 优势区。
+2. **P3 整体 geomean 0.70x 比 P1 还慢** (0.95x), 这跟 P3 PW9 历史 0.79x 同一档 (略差是 P3 这段时间又微跌了点)。
+3. **P4 geomean 0.90x ≈ P1 (0.95x), 比 P3 (0.70x) 涨**: P4 维度承诺 「P4 ≥ P3」 ✅; 但「≥1.5x over gopher」对当前五脚本工作量结构上不成立 — 这五个脚本是计算密集 + 小函数频繁调用形态, P4 的字节级 inline 加速点 (FORLOOP) 在这些脚本里占比低, gopher-lua 的 register VM 在这种工作量上效率本身就高。
+4. **P4 在 fib / spectralnorm 上比 P3 快 2x+**, 但 binarytrees 上反而比 P3 慢 33% — 单脚本逐项检查 P4 在小函数调用密集场景已有大幅改善, 但内存压力型 P3 wasm 反而更省事。
+
+**两条独立断言**:
+
+1. **P4 geomean ≥ P3 geomean**: ✅ 本机 + 三平台 CI 都过 (P4 0.86-0.90x vs P3 0.68-0.77x)
+2. **P4 geomean ≥ 1.5x over gopher-lua**: ❌ 都不过 (P4 0.86-0.90x, 距 1.5x 差很远)
+
+**结论**: 设计文档 [./08-testing-strategy.md](./08-testing-strategy.md) §2.2 V15 「P4 geomean ≥ P3 geomean ≥ 1.5x over gopher-lua」 这条预期对当前 wangshu 实现能力 (P3 + P4 都) 偏乐观, 在 realworld 5 脚本工作量上从来没真正达成 (P3 历史就 0.79x)。**P4 维度的承诺 「P4 ≥ P3」 已实现**; 「P4 ≥ 1.5x over gopher」 是设计立项时的预期目标, 实际未兑现。**登记到 §4 不一致的地方**, 待用户在 PJ10 决议时决定: (a) 接受现状, 改 V15 描述为 「P4 ≥ P3」 (b) 视作未达, P4 不收单 (c) 等 P5 trace JIT 兜底。
 
 ### V16 boundary 往返
 
-| 平台 | P3 boundary (ns/op) | P4 boundary (ns/op) | P4 / P3 ≥ 0.95 (不慢过 5%)? |
-|---|---|---|---|
-| amd64 | TBD | TBD | ⬜ |
-| linux/arm64 | TBD | TBD | ⬜ |
-| darwin/arm64 | TBD | TBD | ⬜ |
+来源: 同上 Run #28418158850。**注意**: 当前 P4 bench (`GibbousJIT_Const/Nil/Bool`) 与 P3 bench (`Simple_Gibbous`) 跑的 body 不一致 (P4 = `return 42` 单条 LOADK+RETURN, P3 = `local a,b=1,2; if a<b ... return r` 五条指令), 直接对比不公平。
+
+| 平台 | P3 边界 (ns/op, simpleBody) | P4 边界 (ns/op, constBody) | P4/P3 | 备注 |
+|---|---|---|---|---|
+| amd64 | 6402 | 7180 | 1.12x | ⚠️ body 不同, 无法直接比 |
+| linux/arm64 | 5871 | 6982 | 1.19x | ⚠️ body 不同 |
+| darwin/arm64 | 4007 | 4628 | 1.15x | ⚠️ body 不同 |
+
+**V16 不能直接判断**: 需要 P3 和 P4 跑同一最简 body (`return 42` 类) 才能公平比较, **登记到 §4 不一致的地方**, 待补 P3 const-body bench 或重新定义 V16 测量法。
 
 ---
 
@@ -124,6 +173,22 @@ CI 里跑 `make bench-p4` 系列, 数字记到本文末尾的 §3 表格。
 (在核对过程中如果发现验收项不能直接打勾, 在此登记原因 + 后续动作)
 
 - **V17 是「四 build」还是「三 build」?** 设计文档 [./08-testing-strategy.md](./08-testing-strategy.md) §2.3 写「四套 build: default + `wangshu_profile` + `wangshu_p3` + `wangshu_p4`」。当前 CI 的 `test` 矩阵只跑 3 个 variant (p1 / p3 / p4); 其中 p1 = default 无 tag, 实际上是覆盖了 default。但「`wangshu_profile` 单独无 p3/p4」这一行没跑 — 待核对时确认是否需要补。
+
+- **V15 P4 realworld geomean 不到 1.5x, 但 P4 ≥ P3 这部分过了**: 设计文档 [./08-testing-strategy.md](./08-testing-strategy.md) §2.2 V15 「P4 geomean ≥ P3 geomean ≥ 1.5x over gopher-lua」 实际上是两个断言:
+  - **P4 ≥ P3**: ✅ 本机 + 三平台 CI 都过 (P4 0.86-0.90x vs P3 0.68-0.77x)
+  - **≥1.5x over gopher**: ❌ 全都不过 — 实际上**连 P1 都不过** (P1 0.95x, P3 0.70x, P4 0.90x)
+
+  **关键发现**: 这不是 P4 引入的退化, 是设计预期偏乐观。本机 4 路 (gopher / P1 / P3 / P4) 完整对比显示:
+  - **gopher-lua 在 realworld 5 脚本上整体最快**, 谁都没真正反超
+  - **P1 (crescent 解释器) geomean 0.95x**, 几乎追上 gopher 但没超
+  - **P3 geomean 0.70x** 比 P1 还慢 — wasm 跨层开销在 fib (0.38x) / spectralnorm (0.47x) 上重挫, 但 binarytrees (1.30x) 反而是 P3 强项
+  - **P4 geomean 0.90x**, 在 P3 ↓ 极差的两个脚本 (fib / spectralnorm) 上把 P3 拉回 P1 水平甚至超 P1, 但 binarytrees 反而比 P3 慢 33% (内存压力型 P3 wasm 反而更省事)
+
+  **realworld 5 脚本工作量本身对 wangshu 不利**: 是计算密集 + 小函数频繁调用工作量, P4 的字节级 inline 加速点 (FORLOOP) 在这些脚本里占比低, gopher-lua 的 register VM + closure dispatch 效率本身就高。设计文档 V14 (Horner 列内核) 测的是单纯 FORLOOP, P4 完胜 (≥12x over gopher), 但 V15 五脚本测的不是 P4 的强项。
+
+  **待用户决议** (PJ10 决议时): (a) 接受现状, 把 V15 描述改成 「P4 ≥ P3」, 1.5x 那条标 「未实现的预期目标」; (b) 视 V15 未达, P4 不收单; (c) 把 1.5x 留 P5 trace JIT 兜底, 当前阶段视 V15 部分达标。
+
+- **V16 boundary 往返 bench 不公平**: 当前 P3 用 `simpleBody` (5 条指令 body), P4 用 `constBody` (1 条 LOADK+RETURN), 工作量差 5 倍, 直接比 ns/op 没有意义。需要补一个 P3 跑 `constBody` 的同款 bench 才能公平比。**下一步**: 在 `benchmarks/baseline/baseline_gibbous_test.go` 加 P3 const-body 对应物, 或重新定义 V16 测量法。
 
 ---
 
