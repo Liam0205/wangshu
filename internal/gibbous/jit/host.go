@@ -91,6 +91,14 @@ type P4HostState interface {
 	// return x .. y end` 类)。
 	Concat(base int32, pc int32, a int32, b int32, c int32) int32
 
+	// Eq EQ 相等比较慢路径(gibbous_host.go::Eq 同款签名,经 doCompare EQ
+	// 分支:raw 等检查 + __eq 元方法;可 raise)。
+	//
+	// 参数:base/pc 同 Arith;b/c = 操作数(EQ B C,RK 编码取寄存器或常量)。
+	//
+	// 返回:packed,bit0 = 比较结果(0/1),bit1 = 错误标志(2)。
+	Eq(base int32, pc int32, b int32, c int32) int32
+
 	// NewTable 处理 NEWTABLE A B C 助手(gibbous_host.go::NewTable 同款签名,
 	// 分配 + safepoint 全 helper 内,永不 raise——只可能 Go 端 OOM)。
 	//

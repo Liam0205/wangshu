@@ -198,6 +198,17 @@ func (m *mockP4Host) Concat(base, pc, a, b, c int32) int32 {
 	return m.unaryRetCode
 }
 
+// Eq 模拟 host.Eq:返回 packed bit0=结果,bit1=错误。
+func (m *mockP4Host) Eq(base, pc, b, c int32) int32 {
+	_ = base
+	_ = pc
+	_ = b
+	_ = c
+	return int32(m.unaryRetCode)
+}
+
+// (mockP4Host.Compare 模拟在文件下方定义)
+
 // NewTable 模拟 host.NewTable:记录 + 写 R(A) = tableResult。永不 raise。
 func (m *mockP4Host) NewTable(base, pc, a, b, c int32) int32 {
 	_ = base

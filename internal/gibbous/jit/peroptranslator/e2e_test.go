@@ -377,6 +377,92 @@ return r, outer
 	}
 }
 
+// TestPJ10_CmpDiamond covers the EQ/LT/LE comparison-as-bool shape.
+// The frontend emits a fixed 4-op diamond:
+//
+//	[pc+0] EQ/LT/LE A B C
+//	[pc+1] JMP sBx=1
+//	[pc+2] LOADBOOL Adst 0 1
+//	[pc+3] LOADBOOL Adst 1 0
+//
+// for boolean expressions like `return a == b`, `return a < b`. The
+// per-op analyzer collapses this diamond into one slotKindCmp head op
+// that calls host.Eq / host.Compare and folds the result via the A bit.
+func TestPJ10_CmpDiamond(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want []string
+	}{
+		{
+			name: "eq-true",
+			src:  "local function k(a, b) return a == b end\nlocal r = k(7, 7)\nreturn r",
+			want: []string{"true"},
+		},
+		{
+			name: "eq-false",
+			src:  "local function k(a, b) return a == b end\nlocal r = k(7, 8)\nreturn r",
+			want: []string{"false"},
+		},
+		{
+			name: "ne-true",
+			src:  "local function k(a, b) return a ~= b end\nlocal r = k(7, 8)\nreturn r",
+			want: []string{"true"},
+		},
+		{
+			name: "ne-false",
+			src:  "local function k(a, b) return a ~= b end\nlocal r = k(7, 7)\nreturn r",
+			want: []string{"false"},
+		},
+		{
+			name: "lt-true",
+			src:  "local function k(a, b) return a < b end\nlocal r = k(3, 7)\nreturn r",
+			want: []string{"true"},
+		},
+		{
+			name: "lt-false",
+			src:  "local function k(a, b) return a < b end\nlocal r = k(7, 3)\nreturn r",
+			want: []string{"false"},
+		},
+		{
+			name: "le-true",
+			src:  "local function k(a, b) return a <= b end\nlocal r = k(7, 7)\nreturn r",
+			want: []string{"true"},
+		},
+		{
+			name: "gt-true",
+			src:  "local function k(a, b) return a > b end\nlocal r = k(7, 3)\nreturn r",
+			want: []string{"true"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prog, err := wangshu.Compile([]byte(tc.src), "pj10cmp")
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+			st := wangshu.NewState(wangshu.Options{})
+			st.SetForceAllPromote(true)
+			res, err := prog.Run(st)
+			if err != nil {
+				t.Fatalf("run: %v", err)
+			}
+			if st.PromotionCount() == 0 {
+				t.Fatal("PromotionCount = 0; PJ10 did not promote the diamond kernel")
+			}
+			for i, w := range tc.want {
+				if i >= len(res) {
+					t.Errorf("result[%d]: out-of-range, want %q (full: %v)", i, w, res)
+					continue
+				}
+				if got := res[i].Display(); got != w {
+					t.Errorf("result[%d] = %q, want %q (full: %v)", i, got, w, res)
+				}
+			}
+		})
+	}
+}
+
 // TestPJ10_Concat covers the CONCAT head op. The frontend emits MOVE
 // preambles that copy the operands into a contiguous scratch range,
 // then CONCAT A B C reads R(B..C) inclusive and stores the joined

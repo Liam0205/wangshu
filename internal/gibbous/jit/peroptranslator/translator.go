@@ -127,6 +127,7 @@ const (
 	slotKindLen                    // length op via host.Len (LEN)
 	slotKindNot                    // logical not via Go-side Truthy/BoolValue (NOT)
 	slotKindConcat                 // string concat via host.Concat (CONCAT A B C)
+	slotKindCmp                    // EQ/LT/LE diamond → bool via host.Eq/Compare
 )
 
 // AnalyzeShape reports whether the given Proto matches the constant-tuple
@@ -176,6 +177,33 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 		}
 	}
 
+	// Pre-pass: detect comparison diamonds. The wangshu frontend emits a
+	// fixed 4-op diamond for `R(Adst) := (R(B) op R(C)) == bool(A)`:
+	//
+	//   [pc+0] EQ/LT/LE A B C
+	//   [pc+1] JMP sBx=1                    ; skip the false-arm LOADBOOL
+	//   [pc+2] LOADBOOL Adst 0 1            ; R(Adst) := false, pc++
+	//   [pc+3] LOADBOOL Adst 1 0            ; R(Adst) := true
+	//
+	// We collapse this into one synthetic head op writing R(Adst), placed
+	// at the diamond's *last* pc (pc+3) so the last-writer pass treats it
+	// as the slot's head.
+	//
+	// diamondAt[pc] = (Adst, true) when pc is the start of a diamond.
+	// diamondMember[pc] = true for any pc in pc+1..pc+3 (so the normal
+	// per-op classifier skips them).
+	diamondStart := make(map[int]uint8, 0) // pc → Adst
+	diamondMember := make(map[int]bool, 0)
+	for pc := 0; pc+3 < retPC; pc++ {
+		if dst, ok := matchCmpDiamond(proto, pc); ok {
+			diamondStart[pc] = dst
+			diamondMember[pc+1] = true
+			diamondMember[pc+2] = true
+			diamondMember[pc+3] = true
+			pc += 3 // skip the rest of the diamond
+		}
+	}
+
 	// First pass: find the last writer pc for each return slot. We need
 	// the *last* writer so MOVEs into a slot that later gets CONCAT'd
 	// over are recognised as side-effects, not head ops.
@@ -184,6 +212,20 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 		headPC[i] = -1
 	}
 	for pc := 0; pc < retPC; pc++ {
+		// Skip the JMP / LOADBOOL members of a diamond — only the
+		// diamond's start pc is the writer.
+		if diamondMember[pc] {
+			continue
+		}
+		// Diamond start: the dst is written.
+		if dst, ok := diamondStart[pc]; ok {
+			idx := int(dst) - retA
+			if idx >= 0 && idx < n {
+				headPC[idx] = pc
+			}
+			continue
+		}
+
 		ins := proto.Code[pc]
 		op := bytecode.Op(ins)
 		// Side-effect-only ops have no return-slot dest.
@@ -232,6 +274,36 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 		pcToSlot[pc] = i
 	}
 	for pc := 0; pc < retPC; pc++ {
+		// Skip diamond member ops — they're folded into the diamond start.
+		if diamondMember[pc] {
+			continue
+		}
+
+		// Diamond start: build slotKindCmp head op.
+		if dst, ok := diamondStart[pc]; ok {
+			if slotIdx, hit := pcToSlot[pc]; hit {
+				cmpIns := proto.Code[pc]
+				cmpOp := bytecode.Op(cmpIns)
+				cmpA := bytecode.A(cmpIns)
+				cmpB := bytecode.B(cmpIns)
+				cmpC := bytecode.C(cmpIns)
+				sources[slotIdx] = slotSource{
+					kind:    slotKindCmp,
+					arithOp: uint8(cmpOp),
+					arithB:  uint16(cmpB),
+					arithC:  uint16(cmpC),
+					reg:     uint8(cmpA), // negate bit
+					arithPC: uint8(pc),
+				}
+				_ = dst
+				continue
+			}
+			// Diamond writes a register that's never read by RETURN —
+			// shouldn't happen given diamondStart is only set when the
+			// dst lies in the return window. Treat as unsupported.
+			return shapeInfo{}
+		}
+
 		ins := proto.Code[pc]
 		op := bytecode.Op(ins)
 
@@ -249,22 +321,16 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 				return shapeInfo{}
 			}
 			// Decompose into per-register writes; for each, decide head vs scratch.
-			anyHead := false
 			scratchA, scratchB := -1, -1
 			for r := a; r <= b; r++ {
-				if slotIdx, ok := pcToSlot[pc]; ok {
-					// Find which slot index this register corresponds to.
-					idx := r - retA
-					if idx >= 0 && idx < n && headPC[idx] == pc {
-						sources[idx] = slotSource{
-							kind:    slotKindConst,
-							imm:     uint64(value.Nil),
-							arithPC: uint8(pc),
-						}
-						anyHead = true
-						_ = slotIdx
-						continue
+				idx := r - retA
+				if idx >= 0 && idx < n && headPC[idx] == pc {
+					sources[idx] = slotSource{
+						kind:    slotKindConst,
+						imm:     uint64(value.Nil),
+						arithPC: uint8(pc),
 					}
+					continue
 				}
 				// Scratch register (not a return slot, or overwritten later).
 				if scratchA < 0 {
@@ -279,7 +345,6 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 					b:    uint8(scratchB),
 				})
 			}
-			_ = anyHead
 			continue
 		}
 
@@ -313,6 +378,57 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 		retB:        uint8(retB),
 		retPC:       uint8(retPC),
 	}
+}
+
+// matchCmpDiamond returns (Adst, true) if the 4-op comparison diamond
+// pattern is rooted at proto.Code[pc]. The pattern is:
+//
+//	[pc+0] EQ/LT/LE A B C
+//	[pc+1] JMP sBx=1                    ; skip false-arm LOADBOOL
+//	[pc+2] LOADBOOL Adst 0 1            ; R(Adst) := false; pc++ skips next
+//	[pc+3] LOADBOOL Adst 1 0            ; R(Adst) := true
+//
+// Net effect: R(Adst) := (R(B) cmp R(C)) iff (A != 0). This is what the
+// wangshu frontend emits for boolean expressions like `return a == b`,
+// `return a < b`, `return a <= b` and their negations.
+func matchCmpDiamond(proto *bytecode.Proto, pc int) (uint8, bool) {
+	code := proto.Code
+	if pc+3 >= len(code) {
+		return 0, false
+	}
+	cmp := code[pc]
+	cmpOp := bytecode.Op(cmp)
+	if cmpOp != bytecode.EQ && cmpOp != bytecode.LT && cmpOp != bytecode.LE {
+		return 0, false
+	}
+	if bytecode.Op(code[pc+1]) != bytecode.JMP {
+		return 0, false
+	}
+	if bytecode.SBx(code[pc+1]) != 1 {
+		return 0, false
+	}
+	lb1 := code[pc+2]
+	if bytecode.Op(lb1) != bytecode.LOADBOOL {
+		return 0, false
+	}
+	if bytecode.B(lb1) != 0 || bytecode.C(lb1) != 1 {
+		return 0, false
+	}
+	lb2 := code[pc+3]
+	if bytecode.Op(lb2) != bytecode.LOADBOOL {
+		return 0, false
+	}
+	if bytecode.B(lb2) != 1 || bytecode.C(lb2) != 0 {
+		return 0, false
+	}
+	if bytecode.A(lb1) != bytecode.A(lb2) {
+		return 0, false
+	}
+	dst := bytecode.A(lb1)
+	if dst < 0 || dst > 255 {
+		return 0, false
+	}
+	return uint8(dst), true
 }
 
 // scratchFromIns recognises an op writing a scratch register (a register

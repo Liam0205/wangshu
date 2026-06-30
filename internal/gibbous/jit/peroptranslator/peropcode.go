@@ -217,6 +217,40 @@ func (c *PerOpCode) Run(stack []uint64, base uint32) int32 {
 				return st
 			}
 			continue
+		case slotKindCmp:
+			// Comparison diamond: net effect is
+			//   R(dst) := (R(B) op R(C)) iff (negate != 0)
+			// where negate is the EQ/LT/LE op's A field (the "if not
+			// matching A then pc++" bit). host.Eq / host.Compare return
+			// packed bits (bit0 = result, bit1 = error). On error we
+			// propagate the status code so DoReturn doesn't run on a
+			// half-formed frame.
+			var packed int32
+			cmpOp := bytecode.OpCode(src.arithOp)
+			if cmpOp == bytecode.EQ {
+				packed = c.host.Eq(
+					int32(base),
+					int32(src.arithPC),
+					int32(src.arithB),
+					int32(src.arithC),
+				)
+			} else {
+				packed = c.host.Compare(
+					int32(base),
+					int32(src.arithPC),
+					int32(cmpOp),
+					int32(src.arithB),
+					int32(src.arithC),
+				)
+			}
+			if packed&2 != 0 {
+				return 1 // error
+			}
+			result := packed&1 != 0
+			if src.reg == 0 {
+				result = !result // EQ/LT/LE A=0 negates the runtime result
+			}
+			val = uint64(value.BoolValue(result))
 		case slotKindNot:
 			// Pure Go: never raises, no host helper round-trip.
 			operand := value.Value(c.host.GetReg(int32(src.reg)))
