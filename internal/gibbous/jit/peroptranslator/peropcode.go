@@ -69,6 +69,12 @@ type PerOpCode struct {
 	// from another register / upvalue.
 	sources []slotSource
 
+	// sideEffects are pre-return ops (today: SETUPVAL) that produce no
+	// return-slot output but mutate host-visible state. Run executes them
+	// before the head-op replay so the setter form
+	// `function(v) upval = v end` works.
+	sideEffects []sideEffect
+
 	// retA / retB / retPC are baked at Compile time so Run can hand them
 	// to host.DoReturn without re-parsing the Proto.
 	retA  uint8
@@ -110,6 +116,17 @@ func (c *PerOpCode) Run(stack []uint64, base uint32) int32 {
 
 	jitCtxAddr := uintptr(unsafe.Pointer(c.jitCtx))
 	_ = jitamd64.CallJITFull(c.codePage.Addr(), jitCtxAddr) // returns 0
+
+	// Run pre-return side-effect ops before any head-op materialisation.
+	// Today the only kind is SETUPVAL (U(b) := R(a)); the helper reads
+	// R(a) and stores into the current closure's upvalue slot — never
+	// raises, no slow path.
+	for _, se := range c.sideEffects {
+		switch se.kind {
+		case sideEffectSetUpval:
+			c.host.SetUpvalFromReg(int32(base), int32(se.a), int32(se.b))
+		}
+	}
 
 	// Materialise the N return values into R(retA + i). Each slot is one
 	// of four kinds: a baked immediate (LOADK / LOADBOOL / LOADNIL), a
@@ -235,14 +252,15 @@ func TranslateProto(proto *bytecode.Proto, host jit.P4HostState) (bridge.Gibbous
 		return nil, err
 	}
 	return &PerOpCode{
-		proto:    proto,
-		codePage: page,
-		jitCtx:   jit.NewJITContext(),
-		host:     host,
-		sources:  info.sources,
-		retA:     info.retA,
-		retB:     info.retB,
-		retPC:    info.retPC,
+		proto:       proto,
+		codePage:    page,
+		jitCtx:      jit.NewJITContext(),
+		host:        host,
+		sources:     info.sources,
+		sideEffects: info.sideEffects,
+		retA:        info.retA,
+		retB:        info.retB,
+		retPC:       info.retPC,
 	}, nil
 }
 

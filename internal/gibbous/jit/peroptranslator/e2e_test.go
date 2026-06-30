@@ -237,6 +237,86 @@ func TestPJ10_MultiArith(t *testing.T) {
 	}
 }
 
+// TestPJ10_SetUpvalSetter covers the "setter" shape PJ7's analyzeShape
+// does not handle: a function whose only job is to write an upvalue and
+// return nothing. Bytecode looks like
+//
+//	[0] SETUPVAL A=0 B=0   ; U(0) := R(0) (the lone param)
+//	[1] RETURN A=0 B=1     ; no return values
+//
+// PJ10a accepts this via the sideEffects path: the side-effect op runs
+// before the (empty) head-op replay, then DoReturn with B=1 pops the
+// frame producing zero return values.
+func TestPJ10_SetUpvalSetter(t *testing.T) {
+	src := `
+local outer = 0
+local function set(v) outer = v end
+set(99)
+return outer
+`
+	prog, err := wangshu.Compile([]byte(src), "pj10setupval")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	st := wangshu.NewState(wangshu.Options{})
+	st.SetForceAllPromote(true)
+	res, err := prog.Run(st)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if st.PromotionCount() == 0 {
+		t.Fatal("PromotionCount = 0; PJ10 hook did not promote the setter kernel")
+	}
+	if len(res) < 1 || res[0].Display() != "99" {
+		t.Errorf("outer = %v, want 99", res)
+	}
+}
+
+// TestPJ10_SetUpvalThenReturn covers the mixed shape: side-effect SETUPVAL
+// followed by a head-op return. Bytecode looks like
+//
+//	[0] SETUPVAL A=0 B=0   ; U(0) := R(0) (param v)
+//	[1] MOVE A=1 B=0       ; R(1) := R(0)  (or RETURN reads R(0) directly)
+//	[2] RETURN ...
+//
+// The frontend may or may not emit the MOVE depending on register allocation;
+// what matters is that the SETUPVAL precedes the RETURN-slot writes. Both
+// the upvalue and the return value must come back correct.
+func TestPJ10_SetUpvalThenReturn(t *testing.T) {
+	src := `
+local outer = 0
+local function setAndReturn(v)
+  outer = v
+  return v + 1
+end
+local r = setAndReturn(10)
+return r, outer
+`
+	prog, err := wangshu.Compile([]byte(src), "pj10setupvalret")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	st := wangshu.NewState(wangshu.Options{})
+	st.SetForceAllPromote(true)
+	res, err := prog.Run(st)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if st.PromotionCount() == 0 {
+		t.Fatal("PromotionCount = 0; PJ10 hook did not promote the side-effect-plus-return kernel")
+	}
+	want := []string{"11", "10"}
+	for i, w := range want {
+		if i >= len(res) {
+			t.Errorf("result[%d]: out-of-range, want %q (full: %v)", i, w, res)
+			continue
+		}
+		if got := res[i].Display(); got != w {
+			t.Errorf("result[%d] = %q, want %q (full: %v)", i, got, w, res)
+		}
+	}
+}
+
 // TestPJ10_UnaryHeadOps covers the PJ10a unary head ops: UNM/NOT/LEN.
 // Each goes through a different path:
 //   - UNM via host.Unm (string coercion + __unm metamethod live in

@@ -60,15 +60,33 @@ import (
 
 // shapeInfo is what AnalyzeShape returns when it recognises a supported
 // Proto. The PerOpCode builder uses these fields to bake in the per-slot
-// source descriptor list and the RETURN's A/B fields.
+// source descriptor list, optional pre-return side-effect ops, and the
+// RETURN's A/B fields.
 type shapeInfo struct {
-	ok      bool
-	sources []slotSource // one entry per slot, in slot order
-	startA  uint8        // R(startA) is the first slot written
-	retA    uint8        // RETURN A — matches startA in the typical shape
-	retB    uint8        // RETURN B — len(sources)+1
-	retPC   uint8        // RETURN's pc index in proto.Code
+	ok          bool
+	sources     []slotSource // one entry per return slot, in slot order
+	sideEffects []sideEffect // ops with no return-slot output (SETUPVAL); run before head ops
+	startA      uint8        // R(startA) is the first slot written
+	retA        uint8        // RETURN A — matches startA in the typical shape
+	retB        uint8        // RETURN B — len(sources)+1 (or 1 for the setter form)
+	retPC       uint8        // RETURN's pc index in proto.Code
 }
+
+// sideEffect describes a pre-return op that has no associated return slot.
+// Today the only supported kind is SETUPVAL (U(b) := R(a)); future PJ10a
+// extensions may add others (e.g. SETGLOBAL once PJ10d arrives).
+type sideEffect struct {
+	kind sideEffectKind
+	a    uint8 // op's A field (source register for SETUPVAL)
+	b    uint8 // op's B field (upvalue index for SETUPVAL)
+}
+
+// sideEffectKind discriminates the pre-return op kinds.
+type sideEffectKind uint8
+
+const (
+	sideEffectSetUpval sideEffectKind = iota // SETUPVAL A B: U(B) := R(A)
+)
 
 // slotSource describes how PerOpCode.Run materialises one return slot:
 // either a compile-time constant baked at Compile time, a runtime
@@ -116,8 +134,9 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 	// Find the RETURN instruction. The frontend emits either:
 	//   [head1, head2, ..., headN, RETURN A B]            (N >= 1, B-1 == N)
 	//   [head1, head2, ..., headN, RETURN A B, RETURN A=0 B=1]  (dead trailing)
-	// We accept both. Anything before the RETURN must be a head op writing
-	// R(startA + i) for i = 0..N-1.
+	//   [side_effect..., RETURN A=0 B=1]                  (setter form, no returns)
+	// We accept all. Pre-RETURN ops are split into return-slot writers
+	// (head ops) and pre-return side-effect ops (SETUPVAL etc.).
 	retPC := -1
 	for pc, ins := range proto.Code {
 		if bytecode.Op(ins) == bytecode.RETURN {
@@ -131,13 +150,11 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 	retIns := proto.Code[retPC]
 	retA := bytecode.A(retIns)
 	retB := bytecode.B(retIns)
-	if retB < 2 {
-		return shapeInfo{} // B=0 (multret) or B=1 (no returns) — both out of scope.
+	if retB < 1 {
+		return shapeInfo{} // B=0 (multret) out of scope for PJ10a.
 	}
-	n := retB - 1 // number of return values
-	if retPC != n {
-		return shapeInfo{} // there must be exactly n head ops before the RETURN
-	}
+	n := retB - 1 // number of return values (0 for setter form)
+
 	// Optional trailing RETURN A=0 B=1 must be the last instruction if
 	// present; nothing else after retPC.
 	if retPC+1 < len(proto.Code) {
@@ -150,27 +167,72 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 		}
 	}
 
-	sources := make([]slotSource, n)
-	for i := 0; i < n; i++ {
-		ins := proto.Code[i]
-		expectedA := retA + i
+	// Walk the ops before RETURN. Each one is either a head op writing
+	// R(retA + headIdx) for the next expected slot, or a side-effect op
+	// that doesn't touch any return slot.
+	var (
+		sources     []slotSource
+		sideEffects []sideEffect
+		headIdx     = 0
+	)
+	if n > 0 {
+		sources = make([]slotSource, n)
+	}
+	for pc := 0; pc < retPC; pc++ {
+		ins := proto.Code[pc]
+		op := bytecode.Op(ins)
+
+		// Side-effect ops first — these never touch a return slot.
+		if se, ok := sideEffectFromIns(op, ins); ok {
+			sideEffects = append(sideEffects, se)
+			continue
+		}
+
+		// Otherwise it must be a head op writing R(retA + headIdx).
+		if headIdx >= n {
+			return shapeInfo{}
+		}
+		expectedA := retA + headIdx
 		if a := bytecode.A(ins); a != expectedA {
-			return shapeInfo{} // head ops must target R(retA + i) in order
+			return shapeInfo{}
 		}
 		src, ok := headOpSource(proto, ins)
 		if !ok {
 			return shapeInfo{}
 		}
-		src.arithPC = uint8(i) // record pc for arith error reporting
-		sources[i] = src
+		src.arithPC = uint8(pc) // record pc for arith error reporting
+		sources[headIdx] = src
+		headIdx++
+	}
+	if headIdx != n {
+		return shapeInfo{} // not enough head ops for the declared return count
 	}
 	return shapeInfo{
-		ok:      true,
-		sources: sources,
-		startA:  uint8(retA),
-		retA:    uint8(retA),
-		retB:    uint8(retB),
-		retPC:   uint8(retPC),
+		ok:          true,
+		sources:     sources,
+		sideEffects: sideEffects,
+		startA:      uint8(retA),
+		retA:        uint8(retA),
+		retB:        uint8(retB),
+		retPC:       uint8(retPC),
+	}
+}
+
+// sideEffectFromIns recognises a pre-return op that has no return-slot
+// output. Returns (se, true) on a match; otherwise (zero, false) so the
+// caller can try the head-op interpretation.
+func sideEffectFromIns(op bytecode.OpCode, ins bytecode.Instruction) (sideEffect, bool) {
+	switch op {
+	case bytecode.SETUPVAL:
+		// SETUPVAL A B: U(B) := R(A).
+		a := bytecode.A(ins)
+		b := bytecode.B(ins)
+		if a < 0 || a > 255 || b < 0 || b > 255 {
+			return sideEffect{}, false
+		}
+		return sideEffect{kind: sideEffectSetUpval, a: uint8(a), b: uint8(b)}, true
+	default:
+		return sideEffect{}, false
 	}
 }
 
