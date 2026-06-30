@@ -236,3 +236,86 @@ func TestPJ10_MultiArith(t *testing.T) {
 		})
 	}
 }
+
+// TestPJ10_UnaryHeadOps covers the PJ10a unary head ops: UNM/NOT/LEN.
+// Each goes through a different path:
+//   - UNM via host.Unm (string coercion + __unm metamethod live in
+//     gibbous_host.go::Unm; may raise — but every test here gives a
+//     numeric operand, so the fast path runs and no raise occurs).
+//   - LEN via host.Len (string byte length / table border / raise on
+//     other types).
+//   - NOT via pure Go BoolValue(!Truthy(...)) — no host round-trip.
+//
+// `return -x, not y, #z` is the canonical shape (the V15b promotion
+// probe earlier showed PJ7's analyzeShape rejects it at PromotionCount
+// = 0); PJ10 should now accept it.
+func TestPJ10_UnaryHeadOps(t *testing.T) {
+	cases := []struct {
+		name string
+		// args are concatenated in order; src wraps them in `local
+		// function k(x, y, z) ... end` and calls `k(args...)`.
+		src  string
+		want []string
+	}{
+		{
+			name: "unm-single",
+			src:  "local function k(x) return -x end\nlocal a = k(5)\nreturn a",
+			want: []string{"-5"},
+		},
+		{
+			name: "not-single",
+			src:  "local function k(x) return not x end\nlocal a = k(true)\nreturn a",
+			want: []string{"false"},
+		},
+		{
+			name: "len-string",
+			src:  "local function k(z) return #z end\nlocal a = k('hello')\nreturn a",
+			want: []string{"5"},
+		},
+		{
+			name: "mixed-unary",
+			src: `
+local function k(x, y, z) return -x, not y, #z end
+local a, b, c = k(5, false, 'abc')
+return a, b, c
+`,
+			want: []string{"-5", "true", "3"},
+		},
+		{
+			name: "not-on-nil-param",
+			src:  "local function k(x) return not x end\nlocal a = k(nil)\nreturn a",
+			want: []string{"true"},
+		},
+		{
+			name: "not-on-truthy-string",
+			src:  "local function k(s) return not s end\nlocal a = k('x')\nreturn a",
+			want: []string{"false"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prog, err := wangshu.Compile([]byte(tc.src), "pj10unary")
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+			st := wangshu.NewState(wangshu.Options{})
+			st.SetForceAllPromote(true)
+			res, err := prog.Run(st)
+			if err != nil {
+				t.Fatalf("run: %v", err)
+			}
+			if st.PromotionCount() == 0 {
+				t.Fatal("PromotionCount = 0; PJ10 hook did not promote the unary kernel")
+			}
+			for i, w := range tc.want {
+				if i >= len(res) {
+					t.Errorf("result[%d]: out-of-range, want %q (full: %v)", i, w, res)
+					continue
+				}
+				if got := res[i].Display(); got != w {
+					t.Errorf("result[%d] = %q, want %q (full: %v)", i, got, w, res)
+				}
+			}
+		})
+	}
+}

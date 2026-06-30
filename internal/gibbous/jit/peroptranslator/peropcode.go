@@ -47,6 +47,7 @@ import (
 	"github.com/Liam0205/wangshu/internal/bytecode"
 	"github.com/Liam0205/wangshu/internal/gibbous/jit"
 	jitamd64 "github.com/Liam0205/wangshu/internal/gibbous/jit/amd64"
+	"github.com/Liam0205/wangshu/internal/value"
 )
 
 // errSpikeNilHost is returned by TranslateProto when the caller fails to
@@ -150,6 +151,34 @@ func (c *PerOpCode) Run(stack []uint64, base uint32) int32 {
 				return st
 			}
 			continue // skip the SetReg below; Arith already wrote R(A)
+		case slotKindUnm:
+			// host.Unm writes R(c.retA+i) directly + may raise on
+			// non-coercible operand / __unm metamethod failure.
+			if st := c.host.Unm(
+				int32(base),
+				int32(src.arithPC),
+				int32(src.reg),
+				int32(c.retA)+int32(i),
+			); st != 0 {
+				return st
+			}
+			continue
+		case slotKindLen:
+			// host.Len writes R(c.retA+i) directly + may raise on
+			// non-string / non-table operands lacking __len.
+			if st := c.host.Len(
+				int32(base),
+				int32(src.arithPC),
+				int32(src.reg),
+				int32(c.retA)+int32(i),
+			); st != 0 {
+				return st
+			}
+			continue
+		case slotKindNot:
+			// Pure Go: never raises, no host helper round-trip.
+			operand := value.Value(c.host.GetReg(int32(src.reg)))
+			val = uint64(value.BoolValue(!value.Truthy(operand)))
 		}
 		c.host.SetReg(int32(c.retA)+int32(i), val)
 	}

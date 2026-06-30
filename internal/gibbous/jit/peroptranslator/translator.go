@@ -99,6 +99,9 @@ const (
 	slotKindReg                   // copy from R(reg) (MOVE)
 	slotKindUpval                 // read upvalue B (GETUPVAL)
 	slotKindArith                 // arithmetic via host.Arith (ADD/SUB/MUL/DIV/MOD/POW)
+	slotKindUnm                   // unary minus via host.Unm (UNM)
+	slotKindLen                   // length op via host.Len (LEN)
+	slotKindNot                   // logical not via Go-side Truthy/BoolValue (NOT)
 )
 
 // AnalyzeShape reports whether the given Proto matches the constant-tuple
@@ -217,6 +220,33 @@ func headOpSource(proto *bytecode.Proto, ins bytecode.Instruction) (slotSource, 
 			return slotSource{}, false
 		}
 		return slotSource{kind: slotKindUpval, upval: uint8(b)}, true
+
+	case bytecode.UNM:
+		// R(A) := -R(B). Routed through host.Unm — string coercion +
+		// __unm metamethod live there; can raise on non-numeric input.
+		b := bytecode.B(ins)
+		if b < 0 || b > 255 {
+			return slotSource{}, false
+		}
+		return slotSource{kind: slotKindUnm, reg: uint8(b)}, true
+
+	case bytecode.LEN:
+		// R(A) := #R(B). Routed through host.Len — string byte-length /
+		// table border / raise-on-other-types live there.
+		b := bytecode.B(ins)
+		if b < 0 || b > 255 {
+			return slotSource{}, false
+		}
+		return slotSource{kind: slotKindLen, reg: uint8(b)}, true
+
+	case bytecode.NOT:
+		// R(A) := not R(B). Pure Go computation: BoolValue(!Truthy(...)).
+		// No host helper needed — never raises, never allocates.
+		b := bytecode.B(ins)
+		if b < 0 || b > 255 {
+			return slotSource{}, false
+		}
+		return slotSource{kind: slotKindNot, reg: uint8(b)}, true
 
 	case bytecode.ADD, bytecode.SUB, bytecode.MUL, bytecode.DIV, bytecode.MOD, bytecode.POW:
 		// R(A) := RK(B) <op> RK(C). Run uses host.Arith to compute the
