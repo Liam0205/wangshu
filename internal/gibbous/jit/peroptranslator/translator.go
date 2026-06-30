@@ -1,44 +1,50 @@
 //go:build wangshu_p4 && amd64
 
-// translator.go — spike v0/v1 of the per-opcode translator (PJ10).
+// translator.go — per-opcode translator (PJ10).
 //
-// Takes a *bytecode.Proto whose Code is the single-BB single-result shape
+// Takes a *bytecode.Proto whose Code is the single-BB "N constants + one
+// RETURN" shape and emits the equivalent amd64 byte sequence. The emitted
+// stub does no real work itself — it just hands a "no exit" status back
+// in RAX; the actual R(A)..R(A+N-1) writes are done by PerOpCode.Run via
+// host.SetReg, which loads the imm64 values cached at Compile time.
 //
-//	<head op produces a single Value in R(A=0)>
-//	RETURN A=0 B=2
+// Supported shape (call this the "constant tuple" shape):
 //
-// and emits the equivalent amd64 byte sequence into a code buffer. The
-// buffer is then mmap'd via amd64.MmapCode and called via amd64.CallJIT.
+//	<N head ops, each LOADK/LOADBOOL/LOADNIL writing R(A+i)>  ; N >= 1
+//	RETURN A B                                                 ; B-1 == N
+//	[optional trailing RETURN A=0 B=1]                         ; dead code
 //
-// Spike v1 supported head ops (R(A) := compile-time constant Value):
-//   - LOADK    A=0 Bx=<num const idx>   (number constants only)
-//   - LOADBOOL A=0 B=<0|1> C=0          (no skip — C=0 stays single-BB)
-//   - LOADNIL  A=0 B=0                  (single-slot fill, R(A) := nil)
+// Per head op (R(A+i) := compile-time constant Value):
+//   - LOADK    A=startA+i Bx=<num const idx>   (number constants only)
+//   - LOADBOOL A=startA+i B=<0|1> C=0          (no skip — C=0 stays single-BB)
+//   - LOADNIL  A=startA+i B=startA+i           (single-slot fill, R(A+i) := nil)
 //
-// All three are isomorphic in the spike's slice of the world: the head op
-// names a NaN-boxed u64 Value, and the RETURN forwards it as the single
-// result via RAX. The whole translation degenerates to "mov rax, imm64;
-// ret", and Spike v1 only changes how `imm` is computed per head op.
+// This is what PJ10 buys over PJ0-PJ9: PJ7's analyzeShape only matches
+// "head op + RETURN A 1" (single return value). The peroptranslator
+// happily accepts N constants returned together (N >= 1), so e.g.
 //
-// Out of scope (spike v0+v1):
-//   - MOVE / GETUPVAL — those need R14=vsBase ABI and host helpers; v2.
-//   - LOADBOOL C != 0 — splits the BB (skip semantics); v2 once we have
-//     a label resolver.
+//	local function k() return 42, 43, 44 end
+//
+// promotes through PJ10 even though PJ7's analyzeShape says "unsupported
+// shape" (verified by the V15b heavy-bench / promotion-probe scaffolding).
+//
+// Out of scope (yet):
+//   - MOVE / GETUPVAL — those need R14=vsBase ABI and host helpers.
+//   - LOADBOOL C != 0 — splits the BB (skip semantics); needs a label
+//     resolver.
 //   - String LOADK   — proto.Consts[Bx] for strings is a nil-tagged
-//     placeholder until the State lazily interns it; v2 will route those
-//     through a host helper, same as P3 wasm does (see internal/gibbous/
-//     wasm/compiler.go SupportsAllOpcodes string-const reject).
-//   - value-stack write-back — real RETURN writes R(A)..R(A+B-2) back to
-//     the host's value stack via R14=vsBase + DoReturn; the spike still
-//     returns the single Value bit pattern in RAX.
-//   - SupportsAllOpcodes wiring — the spike is invoked from its own tests.
+//     placeholder until the State lazily interns it; would need a host
+//     helper to fetch the real GCRef.
+//   - Arithmetic / control flow / table ops / CALL — these are the
+//     PJ10b/c/d sub-stages.
 //
 // What this validates:
 //   - The translator accepts an actual *bytecode.Proto produced by the
-//     wangshu frontend (not hand-written bytes).
-//   - Multiple head op encodings (number / bool / nil) all round-trip
-//     bit-for-bit through mmap + CALL.
-//   - The existing W^X plumbing (PJ1's amd64.MmapCode + CallJIT) is
+//     wangshu frontend and produces a bridge.GibbousCode the bridge can
+//     install.
+//   - Multiple return values round-trip bit-for-bit through SetReg +
+//     DoReturn — a path PJ7 cannot exercise.
+//   - The existing W^X plumbing (PJ1's amd64.MmapCode + CallJITFull) is
 //     reusable from PJ10 without modification.
 package peroptranslator
 
@@ -52,8 +58,89 @@ import (
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
+// shapeInfo is what AnalyzeShape returns when it recognises a supported
+// Proto. The PerOpCode builder uses these fields to bake in the per-slot
+// imm64 list and the RETURN's A/B fields.
+type shapeInfo struct {
+	ok     bool
+	imms   []uint64 // one entry per slot, in slot order
+	startA uint8    // R(startA) is the first slot written
+	retA   uint8    // RETURN A — matches startA in the typical shape
+	retB   uint8    // RETURN B — len(imms)+1
+	retPC  uint8    // RETURN's pc index in proto.Code
+}
+
+// AnalyzeShape reports whether the given Proto matches the constant-tuple
+// shape this spike supports. Returns shapeInfo{ok: true, ...} on a match.
+//
+// Naming: capitalised so the bridge wiring in jit/compiler.go can call it
+// from outside the package while keeping the rest of the spike internal.
+func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
+	if proto == nil || len(proto.Code) < 2 {
+		return shapeInfo{}
+	}
+	// Find the RETURN instruction. The frontend emits either:
+	//   [head1, head2, ..., headN, RETURN A B]            (N >= 1, B-1 == N)
+	//   [head1, head2, ..., headN, RETURN A B, RETURN A=0 B=1]  (dead trailing)
+	// We accept both. Anything before the RETURN must be a head op writing
+	// R(startA + i) for i = 0..N-1.
+	retPC := -1
+	for pc, ins := range proto.Code {
+		if bytecode.Op(ins) == bytecode.RETURN {
+			retPC = pc
+			break
+		}
+	}
+	if retPC < 1 {
+		return shapeInfo{}
+	}
+	retIns := proto.Code[retPC]
+	retA := bytecode.A(retIns)
+	retB := bytecode.B(retIns)
+	if retB < 2 {
+		return shapeInfo{} // B=0 (multret) or B=1 (no returns) — both out of scope.
+	}
+	n := retB - 1 // number of return values
+	if retPC != n {
+		return shapeInfo{} // there must be exactly n head ops before the RETURN
+	}
+	// Optional trailing RETURN A=0 B=1 must be the last instruction if
+	// present; nothing else after retPC.
+	if retPC+1 < len(proto.Code) {
+		if retPC+1 != len(proto.Code)-1 {
+			return shapeInfo{}
+		}
+		trailing := proto.Code[retPC+1]
+		if bytecode.Op(trailing) != bytecode.RETURN || bytecode.A(trailing) != 0 || bytecode.B(trailing) != 1 {
+			return shapeInfo{}
+		}
+	}
+
+	imms := make([]uint64, n)
+	for i := 0; i < n; i++ {
+		ins := proto.Code[i]
+		expectedA := retA + i
+		if a := bytecode.A(ins); a != expectedA {
+			return shapeInfo{} // head ops must target R(retA + i) in order
+		}
+		imm, err := headOpImm64(proto, ins)
+		if err != nil {
+			return shapeInfo{}
+		}
+		imms[i] = imm
+	}
+	return shapeInfo{
+		ok:     true,
+		imms:   imms,
+		startA: uint8(retA),
+		retA:   uint8(retA),
+		retB:   uint8(retB),
+		retPC:  uint8(retPC),
+	}
+}
+
 // CompiledSpike is what TranslateSpike returns: an mmap'd code page that
-// Call() can invoke.
+// Call() can invoke. Kept around for the spike-v0/v1 unit tests.
 type CompiledSpike struct {
 	page *jitamd64.CodePage
 }
@@ -83,19 +170,12 @@ func (c *CompiledSpike) Call() uint64 {
 	return jitamd64.CallJIT(c.page.Addr())
 }
 
-// CompiledSpikeV2 is the spike-v2 stub: instead of returning the Value
-// through RAX, it writes it into the host's value stack slot at R(A) via
-// rbx = vsBase (set up by callJITSpec). The host then reads R(A) from
-// its own slice and conducts the rest of the RETURN protocol itself.
-//
-// This is the bridge from "RAX-only spike" to a real per-op translator:
-// the emitted code now interacts with the host's value-stack layout
-// (rbx=vsBase) the same way PJ2-PJ5 templates do, but without the
-// speculation / IC / OSR scaffolding. It validates that the trampoline,
-// the vsBase ABI, and the [rbx+disp32] store encoding all line up.
+// CompiledSpikeV2 emits the value-stack-aware variant (writes via rbx).
+// Kept for spike v0/v1/v2 unit tests; production wiring lives in
+// PerOpCode (peropcode.go).
 type CompiledSpikeV2 struct {
 	page   *jitamd64.CodePage
-	slotA  uint8 // R(A) the stub writes to (for the call side to read back)
+	slotA  uint8
 	jitCtx *jit.JITContext
 }
 
@@ -110,9 +190,7 @@ func (c *CompiledSpikeV2) Dispose() error {
 }
 
 // Run invokes the stub. The caller supplies a value-stack slice and the
-// stub writes R(slotA) := <translated head op value> into it. Returns
-// the raw uint64 the stub left in RAX (which spike v2 sets to 0 for
-// "no exit", but callers don't usually need it).
+// stub writes R(slotA) := <translated head op value> into it.
 func (c *CompiledSpikeV2) Run(valueStack []uint64) uint64 {
 	if c == nil || c.page == nil || len(valueStack) == 0 {
 		panic("peroptranslator: CompiledSpikeV2.Run with empty stack")
@@ -122,23 +200,11 @@ func (c *CompiledSpikeV2) Run(valueStack []uint64) uint64 {
 	return jitamd64.CallJITSpec(c.page.Addr(), jitCtx, vsBase)
 }
 
-// SlotA exposes the slot the stub writes to (for test assertions and
-// host integration).
+// SlotA exposes the slot the stub writes to.
 func (c *CompiledSpikeV2) SlotA() uint8 { return c.slotA }
 
-// TranslateSpikeV2 is the value-stack-aware variant of TranslateSpike.
-// Accepts the same head-op + RETURN shape, but emits a stub of the form
-//
-//	mov rax, imm64                  ; head op produces the Value in RAX
-//	mov [rbx + A*8], rax            ; write it into R(A)
-//	xor eax, eax                    ; status = 0 ("no exit")
-//	ret
-//
-// The host then reads R(A) from its own value-stack slice. The stub uses
-// the spec trampoline (callJITSpec), so rbx = vsBase + r15 = jitCtx are
-// in place. RAX as a status word is the convention PJ5 already uses for
-// exit-resume routing (see trampoline_spec_amd64.s); spike v2 always
-// returns 0 since it never triggers an exit.
+// TranslateSpikeV2 — kept as the value-stack-aware spike artefact for the
+// v2 unit test. The bridge-integration path uses TranslateProto, not this.
 func TranslateSpikeV2(proto *bytecode.Proto) (*CompiledSpikeV2, error) {
 	if proto == nil {
 		return nil, fmt.Errorf("peroptranslator: nil proto")
@@ -146,7 +212,6 @@ func TranslateSpikeV2(proto *bytecode.Proto) (*CompiledSpikeV2, error) {
 	if len(proto.Code) != 2 {
 		return nil, fmt.Errorf("peroptranslator: spike requires Code length 2, got %d", len(proto.Code))
 	}
-
 	imm, err := headOpImm64(proto, proto.Code[0])
 	if err != nil {
 		return nil, err
@@ -154,37 +219,24 @@ func TranslateSpikeV2(proto *bytecode.Proto) (*CompiledSpikeV2, error) {
 	if err := checkSingleReturn(proto.Code[1]); err != nil {
 		return nil, err
 	}
-	slotA := uint8(bytecode.A(proto.Code[0])) // head op A (== 0 today, but parameterise)
+	slotA := uint8(bytecode.A(proto.Code[0]))
 
-	// `mov rax, imm64; mov [rbx+A*8], rax; xor eax,eax; ret`
 	var buf []byte
 	buf = jitamd64.EmitMovRaxImm64(buf, imm)
 	buf = jitamd64.EmitMovqMemRegFromRax(buf, 3 /*rbx*/, int32(slotA)*8)
-	// xor eax, eax — set status=0 ("no exit"). 31 C0 (2 bytes).
-	buf = append(buf, 0x31, 0xC0)
+	buf = append(buf, 0x31, 0xC0) // xor eax, eax
 	buf = jitamd64.EmitRet(buf)
 
 	page, err := jitamd64.MmapCode(buf)
 	if err != nil {
 		return nil, fmt.Errorf("peroptranslator: mmap %d bytes: %w", len(buf), err)
 	}
-	// Allocate a minimal JITContext. Spike v2 head ops do not read any
-	// field of it (no arena/preempt/helper-table dereferences) but
-	// callJITSpec loads r15 = jitCtx and the trampoline epilogue restores
-	// it from the stack — so the pointer just has to be a valid Go pointer
-	// to a JITContext-sized struct that outlives the call.
 	ctx := jit.NewJITContext()
 	return &CompiledSpikeV2{page: page, slotA: slotA, jitCtx: ctx}, nil
 }
 
-// TranslateSpike walks proto.Code, recognises the supported head + RETURN
-// shape, computes the compile-time imm64, and emits the two-instruction
-// stub `mov rax, imm64; ret`. Returns a CompiledSpike whose Call returns
-// the Value bit pattern verbatim.
-//
-// Returns an error if the Proto shape is outside the spike v1 supported
-// set (see package doc for the list). SupportsAllOpcodes wiring lands in
-// spike v2; here the caller has to know it's supplying the supported shape.
+// TranslateSpike — kept as the RAX-return spike artefact for v0/v1 unit
+// tests. The bridge-integration path uses TranslateProto, not this.
 func TranslateSpike(proto *bytecode.Proto) (*CompiledSpike, error) {
 	if proto == nil {
 		return nil, fmt.Errorf("peroptranslator: nil proto")
@@ -192,7 +244,6 @@ func TranslateSpike(proto *bytecode.Proto) (*CompiledSpike, error) {
 	if len(proto.Code) != 2 {
 		return nil, fmt.Errorf("peroptranslator: spike requires Code length 2, got %d", len(proto.Code))
 	}
-
 	imm, err := headOpImm64(proto, proto.Code[0])
 	if err != nil {
 		return nil, err
@@ -200,9 +251,6 @@ func TranslateSpike(proto *bytecode.Proto) (*CompiledSpike, error) {
 	if err := checkSingleReturn(proto.Code[1]); err != nil {
 		return nil, err
 	}
-
-	// Two-instruction stub: `mov rax, imm64; ret`. No frame, no callee-
-	// saved touches — matches PJ1 callJIT's NOSPLIT|NOFRAME shape.
 	var buf []byte
 	buf = jitamd64.EmitMovRaxImm64(buf, imm)
 	buf = jitamd64.EmitRet(buf)
@@ -215,15 +263,12 @@ func TranslateSpike(proto *bytecode.Proto) (*CompiledSpike, error) {
 }
 
 // headOpImm64 recognises the supported single-Value-producer head ops and
-// computes the NaN-boxed u64 that R(A=0) would hold after the op runs.
+// computes the NaN-boxed u64 that R(A) would hold after the op runs.
 //
 // Returns an error if the op is unsupported or its operands fall outside
-// the spike's supported subset.
+// the supported subset.
 func headOpImm64(proto *bytecode.Proto, ins bytecode.Instruction) (uint64, error) {
 	op := bytecode.Op(ins)
-	if a := bytecode.A(ins); a != 0 {
-		return 0, fmt.Errorf("peroptranslator: spike expects head op A=0, got %s A=%d", op, a)
-	}
 	switch op {
 	case bytecode.LOADK:
 		bx := bytecode.Bx(ins)
@@ -243,12 +288,11 @@ func headOpImm64(proto *bytecode.Proto, ins bytecode.Instruction) (uint64, error
 		return uint64(value.BoolValue(b != 0)), nil
 
 	case bytecode.LOADNIL:
-		// LOADNIL A B fills R(A..B) with nil. In single-BB / single-slot
-		// shape we want B == A, i.e. exactly one slot. Frontend emits
-		// LOADNIL A=0 B=0 for `local x; x = nil` / `return nil` in the
-		// kernel — we enforce B == 0 (== A) here.
-		if b := bytecode.B(ins); b != 0 {
-			return 0, fmt.Errorf("peroptranslator: spike supports LOADNIL B=0 only (single-slot), got B=%d", b)
+		// LOADNIL A B fills R(A..B) with nil. Single-slot shape requires
+		// B == A; the wangshu frontend emits LOADNIL A B with B == A for
+		// "local x = nil" / "return nil" in the inner kernel.
+		if a, b := bytecode.A(ins), bytecode.B(ins); b != a {
+			return 0, fmt.Errorf("peroptranslator: spike supports LOADNIL A==B only (single-slot), got A=%d B=%d", a, b)
 		}
 		return uint64(value.Nil), nil
 
@@ -257,8 +301,9 @@ func headOpImm64(proto *bytecode.Proto, ins bytecode.Instruction) (uint64, error
 	}
 }
 
-// checkSingleReturn enforces the spike's RETURN shape: A=0, B=2 (one
-// return value, R(0)).
+// checkSingleReturn enforces the legacy spike's RETURN shape: A=0, B=2
+// (one return value, R(0)). Used by TranslateSpike / TranslateSpikeV2;
+// production path (TranslateProto via AnalyzeShape) handles N returns.
 func checkSingleReturn(ins bytecode.Instruction) error {
 	if op := bytecode.Op(ins); op != bytecode.RETURN {
 		return fmt.Errorf("peroptranslator: spike expects RETURN at pc=1, got %s", op)

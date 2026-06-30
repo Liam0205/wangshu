@@ -1,0 +1,99 @@
+//go:build wangshu_p4 && wangshu_profile && amd64 && linux
+
+// e2e_test.go — PJ10 step 3 end-to-end through the wangshu public API.
+//
+// Validates the full PJ10 wiring: front-end compiles the source, P2
+// bridge sees the kernel Proto as compilable (SupportsAllOpcodes hook
+// answers true), considerPromotion calls Compile, which falls through
+// to peroptranslator.TranslateProto, the resulting PerOpCode lands in
+// gibbousCodes, crescent.doCall finds it, p4Code-equivalent Run executes
+// the mmap stub + replays imm64s into R(retA+i) + invokes DoReturn. The
+// host returns the N values to the outer return, and we read them back
+// at the wangshu boundary.
+//
+// What this proves:
+//   - PJ10 hook registration via init() works (peroptranslator import in
+//     crescent.arena_p4.go wires it).
+//   - The "shape PJ7 cannot do" (N > 1 constant returns) now promotes.
+//   - The PJ7 byte-equal contract is unchanged: all existing test/
+//     {conformance,difftest,luasuite} pass under the same build tags.
+//     (Verified separately in the make test-p4 run; this file only adds
+//     the PJ10 acceptance.)
+
+package peroptranslator_test
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/Liam0205/wangshu"
+)
+
+func runForceAll(t *testing.T, body string) (results []string, promoted int) {
+	t.Helper()
+	src := "local function k()\n  " + body + "\nend\nlocal a, b, c = k()\nreturn a, b, c"
+	prog, err := wangshu.Compile([]byte(src), "pj10e2e")
+	if err != nil {
+		t.Fatalf("compile %q: %v", body, err)
+	}
+	st := wangshu.NewState(wangshu.Options{})
+	st.SetForceAllPromote(true)
+	res, err := prog.Run(st)
+	if err != nil {
+		t.Fatalf("run %q: %v", body, err)
+	}
+	out := make([]string, len(res))
+	for i, r := range res {
+		out[i] = r.Display()
+	}
+	return out, st.PromotionCount()
+}
+
+// TestPJ10_MultiReturnPromotes exercises the shape PJ7's analyzeShape
+// rejects: `return K1, K2, ...` for N >= 2. Without the PJ10 hook,
+// considerPromotion would tier-stuck the kernel Proto. With the hook,
+// PromotionCount > 0 and the values come back correctly.
+func TestPJ10_MultiReturnPromotes(t *testing.T) {
+	cases := []struct {
+		body string
+		want []string
+	}{
+		{"return 42, 43", []string{"42", "43", "nil"}},
+		{"return 1, 2, 3", []string{"1", "2", "3"}},
+		{"return true, nil, false", []string{"true", "nil", "false"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.body, func(t *testing.T) {
+			got, promoted := runForceAll(t, tc.body)
+			if promoted == 0 {
+				t.Fatalf("PromotionCount = 0; PJ10 hook did not promote the kernel")
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %d results, want %d: %v", len(got), len(tc.want), got)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("result[%d] = %q, want %q (full: %v)", i, got[i], tc.want[i], got)
+				}
+			}
+		})
+	}
+}
+
+// TestPJ10_SingleReturnStillWorks confirms that with PJ10 hooked up, the
+// single-return shape PJ7 already handled still produces the right value
+// (the bridge picks one path or the other — both must give the same
+// answer, which is the PJ7 byte-equal contract we never want to break).
+func TestPJ10_SingleReturnStillWorks(t *testing.T) {
+	got, promoted := runForceAll(t, "return 42")
+	if promoted == 0 {
+		t.Fatal("PromotionCount = 0; kernel did not promote at all")
+	}
+	if got[0] != "42" {
+		t.Errorf("result[0] = %q, want %q", got[0], "42")
+	}
+	// extras from `local a, b, c =` are nil.
+	if !strings.Contains(strings.Join(got, ","), "nil") {
+		t.Errorf("expected trailing nils, got %v", got)
+	}
+}

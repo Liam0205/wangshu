@@ -66,7 +66,18 @@ func New() *Compiler {
 // PJ8+ 启动时扩 supported(寄存器 IsNumber guard 投机 + 表 IC 直达槽等)
 // 需要 jitContext load/store 值栈 + 投机 deopt 协议,留下一阶段。
 func (c *Compiler) SupportsAllOpcodes(proto *bytecode.Proto) bool {
-	return analyzeShape(proto).ok
+	if analyzeShape(proto).ok {
+		return true
+	}
+	// PJ10 per-op translator fall-through: shapes PJ7's analyzeShape
+	// rejects may still be in PJ10's supported subset (constant tuples
+	// of more than one return value, etc.). The hook is nil when the
+	// peroptranslator sub-package is not imported, preserving exact PJ7
+	// behaviour. See internal/gibbous/jit/perop_hook.go.
+	if perOpAnalyzer != nil && perOpAnalyzer(proto) {
+		return true
+	}
+	return false
 }
 
 // shapeInfo 是 analyzeShape 的返回值——P4 PJ7 形态识别结果。
@@ -4284,6 +4295,16 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 
 	info := analyzeShape(proto)
 	if !info.ok {
+		// PJ10 per-op translator fall-through: hand the Proto to the
+		// peroptranslator sub-package if its hook is registered. Same
+		// nil-safe gating as SupportsAllOpcodes — when the sub-package
+		// isn't imported, the hook stays nil and we fall straight to the
+		// historical PJ7 "unsupported" return.
+		if perOpTranslator != nil {
+			if code, err := perOpTranslator(proto, c.hostState); err == nil && code != nil {
+				return code, nil
+			}
+		}
 		return nil, ErrCompileUnsupportedShape
 	}
 
