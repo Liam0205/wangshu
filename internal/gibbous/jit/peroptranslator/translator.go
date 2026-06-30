@@ -44,8 +44,10 @@ package peroptranslator
 
 import (
 	"fmt"
+	"unsafe"
 
 	"github.com/Liam0205/wangshu/internal/bytecode"
+	"github.com/Liam0205/wangshu/internal/gibbous/jit"
 	jitamd64 "github.com/Liam0205/wangshu/internal/gibbous/jit/amd64"
 	"github.com/Liam0205/wangshu/internal/value"
 )
@@ -79,6 +81,100 @@ func (c *CompiledSpike) Dispose() error {
 // the raw uint64 from RAX (the NaN-boxed Value of the single return).
 func (c *CompiledSpike) Call() uint64 {
 	return jitamd64.CallJIT(c.page.Addr())
+}
+
+// CompiledSpikeV2 is the spike-v2 stub: instead of returning the Value
+// through RAX, it writes it into the host's value stack slot at R(A) via
+// rbx = vsBase (set up by callJITSpec). The host then reads R(A) from
+// its own slice and conducts the rest of the RETURN protocol itself.
+//
+// This is the bridge from "RAX-only spike" to a real per-op translator:
+// the emitted code now interacts with the host's value-stack layout
+// (rbx=vsBase) the same way PJ2-PJ5 templates do, but without the
+// speculation / IC / OSR scaffolding. It validates that the trampoline,
+// the vsBase ABI, and the [rbx+disp32] store encoding all line up.
+type CompiledSpikeV2 struct {
+	page   *jitamd64.CodePage
+	slotA  uint8 // R(A) the stub writes to (for the call side to read back)
+	jitCtx *jit.JITContext
+}
+
+// Dispose releases the mmap segment.
+func (c *CompiledSpikeV2) Dispose() error {
+	if c == nil || c.page == nil {
+		return nil
+	}
+	err := c.page.Munmap()
+	c.page = nil
+	return err
+}
+
+// Run invokes the stub. The caller supplies a value-stack slice and the
+// stub writes R(slotA) := <translated head op value> into it. Returns
+// the raw uint64 the stub left in RAX (which spike v2 sets to 0 for
+// "no exit", but callers don't usually need it).
+func (c *CompiledSpikeV2) Run(valueStack []uint64) uint64 {
+	if c == nil || c.page == nil || len(valueStack) == 0 {
+		panic("peroptranslator: CompiledSpikeV2.Run with empty stack")
+	}
+	vsBase := uintptr(unsafe.Pointer(&valueStack[0]))
+	jitCtx := uintptr(unsafe.Pointer(c.jitCtx))
+	return jitamd64.CallJITSpec(c.page.Addr(), jitCtx, vsBase)
+}
+
+// SlotA exposes the slot the stub writes to (for test assertions and
+// host integration).
+func (c *CompiledSpikeV2) SlotA() uint8 { return c.slotA }
+
+// TranslateSpikeV2 is the value-stack-aware variant of TranslateSpike.
+// Accepts the same head-op + RETURN shape, but emits a stub of the form
+//
+//	mov rax, imm64                  ; head op produces the Value in RAX
+//	mov [rbx + A*8], rax            ; write it into R(A)
+//	xor eax, eax                    ; status = 0 ("no exit")
+//	ret
+//
+// The host then reads R(A) from its own value-stack slice. The stub uses
+// the spec trampoline (callJITSpec), so rbx = vsBase + r15 = jitCtx are
+// in place. RAX as a status word is the convention PJ5 already uses for
+// exit-resume routing (see trampoline_spec_amd64.s); spike v2 always
+// returns 0 since it never triggers an exit.
+func TranslateSpikeV2(proto *bytecode.Proto) (*CompiledSpikeV2, error) {
+	if proto == nil {
+		return nil, fmt.Errorf("peroptranslator: nil proto")
+	}
+	if len(proto.Code) != 2 {
+		return nil, fmt.Errorf("peroptranslator: spike requires Code length 2, got %d", len(proto.Code))
+	}
+
+	imm, err := headOpImm64(proto, proto.Code[0])
+	if err != nil {
+		return nil, err
+	}
+	if err := checkSingleReturn(proto.Code[1]); err != nil {
+		return nil, err
+	}
+	slotA := uint8(bytecode.A(proto.Code[0])) // head op A (== 0 today, but parameterise)
+
+	// `mov rax, imm64; mov [rbx+A*8], rax; xor eax,eax; ret`
+	var buf []byte
+	buf = jitamd64.EmitMovRaxImm64(buf, imm)
+	buf = jitamd64.EmitMovqMemRegFromRax(buf, 3 /*rbx*/, int32(slotA)*8)
+	// xor eax, eax — set status=0 ("no exit"). 31 C0 (2 bytes).
+	buf = append(buf, 0x31, 0xC0)
+	buf = jitamd64.EmitRet(buf)
+
+	page, err := jitamd64.MmapCode(buf)
+	if err != nil {
+		return nil, fmt.Errorf("peroptranslator: mmap %d bytes: %w", len(buf), err)
+	}
+	// Allocate a minimal JITContext. Spike v2 head ops do not read any
+	// field of it (no arena/preempt/helper-table dereferences) but
+	// callJITSpec loads r15 = jitCtx and the trampoline epilogue restores
+	// it from the stack — so the pointer just has to be a valid Go pointer
+	// to a JITContext-sized struct that outlives the call.
+	ctx := jit.NewJITContext()
+	return &CompiledSpikeV2{page: page, slotA: slotA, jitCtx: ctx}, nil
 }
 
 // TranslateSpike walks proto.Code, recognises the supported head + RETURN
