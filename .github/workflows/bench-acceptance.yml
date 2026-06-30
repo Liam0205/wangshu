@@ -1,0 +1,191 @@
+name: bench-acceptance
+
+# PJ10 V14/V15/V16 acceptance benchmarks across three platforms.
+#
+# Manual trigger (workflow_dispatch). Not part of the per-PR ci.yml so PR
+# CI stays fast. Run this before declaring PJ10 complete to harvest the
+# performance numbers, then archive them into
+# `docs/design/p4-method-jit/09-acceptance-checklist.md` section 3.
+#
+# Each platform uploads the raw `go test -bench` output as an artifact;
+# the numbers are then transcribed manually into the checklist (per
+# engineering.md section 1.1 wall-clock discipline: bench output is
+# not auto-parsed into doc, kept simple).
+
+on:
+  workflow_dispatch:
+    inputs:
+      bench_count:
+        description: 'Repetitions per benchmark (default 2)'
+        required: false
+        default: '2'
+      bench_time:
+        description: 'Time per benchmark (default 2s)'
+        required: false
+        default: '2s'
+  # Temporary push trigger so PJ10 acceptance benchmarks can run from
+  # feat/p4-reworded3 before the workflow has been merged to master
+  # (GitHub requires workflow_dispatch workflows to first appear on the
+  # default branch). REMOVE THIS push BLOCK once PJ10 is signed off and
+  # the workflow is on master.
+  push:
+    branches:
+      - feat/p4-reworded3
+    paths:
+      - '.github/workflows/bench-acceptance.yml'
+
+jobs:
+  bench-p4:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+    name: bench-p4 (${{ matrix.os }})
+    # Defaults that apply on push (which has no `inputs` context) and as
+    # the fallback when workflow_dispatch is invoked without overrides.
+    env:
+      BENCH_COUNT: ${{ inputs.bench_count || '2' }}
+      BENCH_TIME: ${{ inputs.bench_time || '2s' }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      # lua5.1 oracle is needed for the benchmarks/realworld/ comparisons
+      # (V15 geomean against the oracle baseline).
+      - if: startsWith(matrix.os, 'macos')
+        id: cache-lua51-bench
+        uses: actions/cache@v4
+        with:
+          path: lua-5.1.5
+          key: lua-5.1.5-build-${{ runner.os }}-${{ runner.arch }}
+      - if: startsWith(matrix.os, 'ubuntu')
+        run: sudo apt-get update && sudo apt-get install -y lua5.1
+      - if: startsWith(matrix.os, 'macos') && steps.cache-lua51-bench.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL https://www.lua.org/ftp/lua-5.1.5.tar.gz | tar xz
+          cd lua-5.1.5
+          make macosx CC=cc
+      - if: startsWith(matrix.os, 'macos')
+        run: |
+          cd lua-5.1.5
+          sudo make install INSTALL_TOP=/usr/local INSTALL_BIN=/usr/local/bin INSTALL_INC=/usr/local/include INSTALL_LIB=/usr/local/lib INSTALL_MAN=/usr/local/share/man/man1
+          sudo ln -sf /usr/local/bin/lua /usr/local/bin/lua5.1
+          lua5.1 -v
+
+      # Record runner metadata so the numbers can be interpreted later
+      # (CPU model, kernel, etc.).
+      - name: record runner info
+        run: |
+          {
+            echo "=== runner info ==="
+            echo "os: $(uname -srm)"
+            echo "go: $(go version)"
+            if [ "$(uname)" = "Linux" ]; then
+              echo "cpu: $(grep -m1 'model name' /proc/cpuinfo | sed 's/^[^:]*: //')"
+              echo "cores: $(nproc)"
+            elif [ "$(uname)" = "Darwin" ]; then
+              echo "cpu: $(sysctl -n machdep.cpu.brand_string)"
+              echo "cores: $(sysctl -n hw.ncpu)"
+            fi
+          } | tee runner-info.txt
+
+      # V14: loop kernel performance.
+      # baseline_gibbous_jit_test.go has the PJ3 FORLOOP benchmarks
+      # (PJ3For100/1000/10000) for the P4 path; ...Cresc variants are the
+      # in-tree crescent (P1 interpreter) baselines on the same kernel.
+      # The gopher-lua reference for the same kernels lives in
+      # baseline_test.go (sibling package, no build tag); we record it
+      # via a separate run so the ratios are computable manually.
+      #
+      # Note: ./benchmarks is a separate Go module (its own go.mod), so
+      # commands cd into the directory.
+      - name: V14 loop kernel bench (P4 + crescent)
+        working-directory: benchmarks
+        run: |
+          go test -tags 'wangshu_p4 wangshu_profile' \
+            -bench='BenchmarkGibbousJIT_PJ3For' \
+            -benchmem \
+            -benchtime=${BENCH_TIME} \
+            -count=${BENCH_COUNT} \
+            -run='^$' \
+            ./baseline/ 2>&1 | tee ../bench-v14-p4-cresc.txt
+
+      - name: V14 loop kernel bench (gopher-lua reference)
+        working-directory: benchmarks
+        run: |
+          # The gopher-lua loop-kernel baselines live in baseline_test.go
+          # (default tag, no wangshu_* build tag): BenchmarkPJ3EmptyLoop*_Gopher
+          # and BenchmarkPJ3BodyAdd*_Gopher.
+          go test \
+            -bench='BenchmarkPJ3.*_Gopher' \
+            -benchmem \
+            -benchtime=${BENCH_TIME} \
+            -count=${BENCH_COUNT} \
+            -run='^$' \
+            ./baseline/ 2>&1 | tee ../bench-v14-gopher.txt
+
+      # V15: realworld 5 scripts geomean.
+      - name: V15 realworld bench (P4)
+        working-directory: benchmarks
+        run: |
+          go test -tags 'wangshu_p4 wangshu_profile' \
+            -bench='.' \
+            -benchmem \
+            -benchtime=${BENCH_TIME} \
+            -count=${BENCH_COUNT} \
+            -run='^$' \
+            ./realworld/ 2>&1 | tee ../bench-v15-p4.txt
+
+      - name: V15 realworld bench (P3)
+        working-directory: benchmarks
+        run: |
+          go test -tags 'wangshu_p3 wangshu_profile' \
+            -bench='.' \
+            -benchmem \
+            -benchtime=${BENCH_TIME} \
+            -count=${BENCH_COUNT} \
+            -run='^$' \
+            ./realworld/ 2>&1 | tee ../bench-v15-p3.txt
+
+      # V16: boundary roundtrip. The Const/Nil/Bool bench bodies in
+      # baseline_gibbous_jit_test.go are degenerate-body kernels that
+      # measure the trampoline + entry/exit cost (per spec V16: P4 must
+      # not be more than 5% slower than P3 wazero on this).
+      - name: V16 boundary roundtrip bench (P4)
+        working-directory: benchmarks
+        run: |
+          go test -tags 'wangshu_p4 wangshu_profile' \
+            -bench='BenchmarkGibbousJIT_(Const|Nil|Bool)' \
+            -benchmem \
+            -benchtime=${BENCH_TIME} \
+            -count=${BENCH_COUNT} \
+            -run='^$' \
+            ./baseline/ 2>&1 | tee ../bench-v16-p4.txt
+
+      - name: V16 boundary roundtrip bench (P3)
+        working-directory: benchmarks
+        run: |
+          go test -tags 'wangshu_p3 wangshu_profile' \
+            -bench='BenchmarkSimple_(Gibbous|WangshuKernel)' \
+            -benchmem \
+            -benchtime=${BENCH_TIME} \
+            -count=${BENCH_COUNT} \
+            -run='^$' \
+            ./baseline/ 2>&1 | tee ../bench-v16-p3.txt
+
+      - name: upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: bench-${{ matrix.os }}
+          path: |
+            runner-info.txt
+            bench-v14-p4-cresc.txt
+            bench-v14-gopher.txt
+            bench-v15-p4.txt
+            bench-v15-p3.txt
+            bench-v16-p4.txt
+            bench-v16-p3.txt
+          retention-days: 90
