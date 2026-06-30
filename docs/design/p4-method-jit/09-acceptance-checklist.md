@@ -30,21 +30,29 @@
 
 CI 里对应 `difftest (p4 / <platform>)` 这组 9 个 job。三方 = `crescent` (P1 解释器) vs `gibbous-jit` (P4) vs 官方 Lua 5.1.5 oracle, 逐字节相等。
 
+PR #29 三平台 9 个 P4 相关 job (test / difftest / fuzz-smoke × 三平台) 全 SUCCESS。覆盖证据 (2026-06-30 核对):
+- `test/difftest/p4_test.go::p4Corpus` 共 116 个 P4 专属语料,按形态分类 (PJ5 调用族 89 个 / 表 IC 4 个 / 算术 6 个 / 比较 2 个 / FORLOOP 2 个 / 直线 opcode 3 个 / 等)
+- `test/difftest/difftest_test.go::seedCorpus` 共享 V1-V13 通用语料 (在 P4 build 下也跑)
+- `test/difftest/gcstress_test.go` GC 压力下 byte-equal (V5/V13)
+- `test/difftest/corners_test.go` 角落语义 (V11 协程不升层等)
+- `test/difftest/errmsg_test.go` 错误消息 byte-equal (V9 traceback 部分)
+- ubuntu (amd64+arm64) `apt install lua5.1` 装 oracle, macos-latest 编译 5.1.5 源码 + cache, 三平台都真比对
+
 | # | 描述 | amd64 | linux/arm64 | darwin/arm64 | 如何验 |
 |---|---|---|---|---|---|
-| V1 | 直线 opcode byte-equal | ⬜ | ⬜ | ⬜ | `difftest (p4 / <platform>)` 全过 |
-| V2 | 算术快路径 (f64 + IsNumber guard) | ⬜ | ⬜ | ⬜ | 同上 |
-| V3 | 算术慢路径 (走 helper) | ⬜ | ⬜ | ⬜ | 同上 |
-| V4 | 数值 for (FORPREP/FORLOOP) | ⬜ | ⬜ | ⬜ | 同上 |
-| V5 | 回边 GC (gcPending inline) | ⬜ | ⬜ | ⬜ | 同上 |
-| V6 | 表 IC 命中 (单态跳哈希) | ⬜ | ⬜ | ⬜ | 同上 |
-| V7 | 表 IC 失效 (gen bump 走 helper) | ⬜ | ⬜ | ⬜ | 同上 |
-| V8 | 跨层 CALL 链 (jit→jit / jit→crescent / jit→host) | ⬜ | ⬜ | ⬜ | 同上 |
-| V9 | gibbous traceback (帧 pc 物化) | ⬜ | ⬜ | ⬜ | 同上 |
-| V10 | 闭包 upvalue (CLOSURE/CLOSE) | ⬜ | ⬜ | ⬜ | 同上 |
-| V11 | 协程不升层 (tier 恒 Interp/Stuck) | ⬜ | ⬜ | ⬜ | 同上 + `test (p4 / <platform>)` 里 bridge 单测 |
-| V12 | 强制全升 byte-equal (force-all-jit) | ⬜ | ⬜ | ⬜ | `test (p4 / <platform>)` 含 force-all 路径 |
-| V13 | GC 压力 fuzz 下 byte-equal | ⬜ | ⬜ | ⬜ | `fuzz-smoke (p4 / <platform>)` 30s 不出 mismatch |
+| V1 | 直线 opcode byte-equal | ✅ | ✅ | ✅ | `difftest (p4 / <platform>)` 全过; p4Corpus 3 个 case (`p4_const_number/p4_move_arg/p4_loadbool`) |
+| V2 | 算术快路径 (f64 + IsNumber guard) | ✅ | ✅ | ✅ | 同上; p4Corpus 8 个 case (算术 6 + 比较 2) |
+| V3 | 算术慢路径 (走 helper) | ✅ | ✅ | ✅ | 同上; helper 路径混在 force-all 语料里 |
+| V4 | 数值 for (FORPREP/FORLOOP) | ✅ | ✅ | ✅ | 同上; p4Corpus 2 个 case (`p4_for_empty/p4_for_accumulate`) |
+| V5 | 回边 GC (gcPending inline) | ✅ | ✅ | ✅ | `gcstress_test.go` 在 P4 build 下也跑 |
+| V6 | 表 IC 命中 (单态跳哈希) | ✅ | ✅ | ✅ | 同上; p4Corpus 4 个表 IC case |
+| V7 | 表 IC 失效 (gen bump 走 helper) | ✅ | ✅ | ✅ | 同上; force-all 触发 gen bump |
+| V8 | 跨层 CALL 链 (jit→jit / jit→crescent / jit→host) | ✅ | ✅ | ✅ | 同上; p4Corpus 89 个 PJ5 调用族 case 全覆盖 |
+| V9 | gibbous traceback (帧 pc 物化) | ✅ | ✅ | ✅ | `errmsg_test.go` + `TestP4_ConcurrentForceAll_SpecDeopt` |
+| V10 | 闭包 upvalue (CLOSURE/CLOSE) | ✅ | ✅ | ✅ | seedCorpus 共享语料覆盖闭包 |
+| V11 | 协程不升层 (tier 恒 Interp/Stuck) | ✅ | ✅ | ✅ | `corners_test.go` coroutine 必做列覆盖 + bridge 单测 |
+| V12 | 强制全升 byte-equal (force-all-jit) | ✅ | ✅ | ✅ | `TestP4_Tiered/ConcurrentForceAll/PromotionTriggered` 全过 |
+| V13 | GC 压力 fuzz 下 byte-equal | ✅ | ✅ | ✅ | `gcstress_test.go::TestGCStress_*` 在 P4 build 下跑 + `fuzz-smoke (p4 / <platform>)` 30s 不出 mismatch |
 
 ### 性能 (V14-V16)
 
