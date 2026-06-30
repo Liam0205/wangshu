@@ -377,6 +377,203 @@ return r, outer
 	}
 }
 
+// TestPJ10_TForLoop covers the generic-for TFORLOOP block:
+//
+//	for k, v in iter, state, init do <body> end
+//
+// emits a CALL preamble (often pairs(t)), then JMP +N skipping the
+// body, then TFORLOOP A C + JMP -M back-edge. AnalyzeShape recognizes
+// this shape and routes body ops into bodyEffects. PerOpCode.runTForLoop
+// calls host.TForLoop each iteration until it returns -2 (nil-terminator).
+//
+// Note: pairs/ipairs are NOT in the bridge's F2-b safe-call whitelist
+// (they return coroutine-protocol-coupled iterators), so kernels that
+// directly call them stay uncompilable. To exercise TFORLOOP via PJ10
+// we provide a hand-written iterator that the bridge can statically
+// confirm is yield-safe.
+func TestPJ10_TForLoop(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want []string
+	}{
+		{
+			name: "custom-iter-counter",
+			src: `
+local function makeIter(limit)
+  local i = 0
+  return function()
+    i = i + 1
+    if i > limit then return nil end
+    return i, i * 10
+  end
+end
+local function k(limit)
+  local s = 0
+  local it = makeIter(limit)
+  for i, v in it do
+    s = s + v
+  end
+  return s
+end
+return k(3)
+`,
+			want: []string{"60"}, // 10 + 20 + 30
+		},
+		{
+			name: "custom-iter-empty",
+			src: `
+local function emptyIter() return nil end
+local function k()
+  local s = 0
+  for i, v in emptyIter do
+    s = s + v
+  end
+  return s
+end
+return k()
+`,
+			want: []string{"0"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prog, err := wangshu.Compile([]byte(tc.src), "pj10tforloop")
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+			st := wangshu.NewState(wangshu.Options{})
+			st.SetForceAllPromote(true)
+			res, err := prog.Run(st)
+			if err != nil {
+				t.Fatalf("run: %v", err)
+			}
+			if st.PromotionCount() == 0 {
+				t.Fatal("PromotionCount = 0; PJ10 did not promote the TFORLOOP kernel")
+			}
+			for i, w := range tc.want {
+				if i >= len(res) {
+					t.Errorf("result[%d]: out-of-range, want %q (full: %v)", i, w, res)
+					continue
+				}
+				if got := res[i].Display(); got != w {
+					t.Errorf("result[%d] = %q, want %q (full: %v)", i, got, w, res)
+				}
+			}
+		})
+	}
+}
+
+// TestPJ10_Close covers CLOSE: at the end of a block whose locals are
+// captured by an inner closure, the frontend emits CLOSE A to close
+// all open upvalues with stack index >= base+A. Single-BB shape works
+// when CLOSE appears in the middle of a linear function body.
+func TestPJ10_Close(t *testing.T) {
+	src := `
+local function k()
+  local result
+  do
+    local x = 7
+    local f = function() return x end
+    result = f()
+  end
+  return result
+end
+return k()
+`
+	prog, err := wangshu.Compile([]byte(src), "pj10close")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	st := wangshu.NewState(wangshu.Options{})
+	st.SetForceAllPromote(true)
+	res, err := prog.Run(st)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if st.PromotionCount() == 0 {
+		t.Fatal("PromotionCount = 0; PJ10 did not promote the CLOSE kernel")
+	}
+	if len(res) < 1 || res[0].Display() != "7" {
+		t.Errorf("got %v, want [7]", res)
+	}
+}
+
+// TestPJ10_Closure covers CLOSURE for inner function values:
+//
+//	local function k() local f = function() return 42 end return f() end
+//
+// emits CLOSURE A=0 Bx=0 in the outer kernel, followed by MOVE/TAILCALL.
+// host.Closure creates the closure value and stores R(A); subsequent
+// MOVE prepares the call.
+func TestPJ10_Closure(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want []string
+	}{
+		{
+			name: "no-upvalues-tailcall",
+			src: `
+local function k()
+  local f = function() return 42 end
+  return f()
+end
+return k()
+`,
+			want: []string{"42"},
+		},
+		{
+			name: "closure-captures-upvalue",
+			src: `
+local function k(x)
+  local f = function() return x end
+  return f()
+end
+return k(99)
+`,
+			want: []string{"99"},
+		},
+		{
+			name: "closure-returns",
+			src: `
+local function maker(x)
+  return function() return x end
+end
+local f = maker(7)
+return f()
+`,
+			want: []string{"7"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prog, err := wangshu.Compile([]byte(tc.src), "pj10closure")
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+			st := wangshu.NewState(wangshu.Options{})
+			st.SetForceAllPromote(true)
+			res, err := prog.Run(st)
+			if err != nil {
+				t.Fatalf("run: %v", err)
+			}
+			if st.PromotionCount() == 0 {
+				t.Fatal("PromotionCount = 0; PJ10 did not promote the CLOSURE kernel")
+			}
+			for i, w := range tc.want {
+				if i >= len(res) {
+					t.Errorf("result[%d]: out-of-range, want %q (full: %v)", i, w, res)
+					continue
+				}
+				if got := res[i].Display(); got != w {
+					t.Errorf("result[%d] = %q, want %q (full: %v)", i, got, w, res)
+				}
+			}
+		})
+	}
+}
+
 // TestPJ10_AndOr covers the short-circuit `and`/`or` 3-op TESTSET
 // diamond:
 //

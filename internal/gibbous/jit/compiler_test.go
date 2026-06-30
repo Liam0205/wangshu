@@ -217,6 +217,32 @@ func (m *mockP4Host) SetList(base, pc, a, b, c int32) int32 {
 	return int32(m.unaryRetCode)
 }
 
+// Closure 模拟 host.Closure:简化为永远 OK。
+func (m *mockP4Host) Closure(base, pc, a, bx int32) int32 {
+	_ = base
+	_ = pc
+	_ = a
+	_ = bx
+	return 0
+}
+
+// Close 模拟 host.Close:永远 OK。
+func (m *mockP4Host) Close(base, pc, a int32) int32 {
+	_ = base
+	_ = pc
+	_ = a
+	return 0
+}
+
+// TForLoop 模拟 host.TForLoop:默认返回 -2(退出)。
+func (m *mockP4Host) TForLoop(base, pc, a, c int32) int64 {
+	_ = base
+	_ = pc
+	_ = a
+	_ = c
+	return -2
+}
+
 // (mockP4Host.Compare 模拟在文件下方定义)
 
 // NewTable 模拟 host.NewTable:记录 + 写 R(A) = tableResult。永不 raise。

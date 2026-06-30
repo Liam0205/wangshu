@@ -91,6 +91,13 @@ type shapeInfo struct {
 	forLoopPC    uint8        // pc of the FORPREP instruction (for error pc anchoring)
 	forLoopAfter int          // index into sideEffects after which the FORLOOP block runs (0-based)
 	bodyEffects  []sideEffect // side effects executed once per iteration
+
+	// TFORLOOP block (generic for): at most one per Proto. Mutually
+	// exclusive with the numeric FORLOOP block.
+	tforLoopValid bool
+	tforLoopA     uint8 // R(A..A+2) holds iterator/state/control
+	tforLoopC     uint8 // result count (R(A+3..A+2+C))
+	tforLoopPC    uint8 // pc of the TFORLOOP instruction
 }
 
 // sideEffect describes a pre-return op that has no associated return slot.
@@ -114,17 +121,23 @@ type sideEffect struct {
 type sideEffectKind uint8
 
 const (
-	sideEffectSetUpval  sideEffectKind = iota // SETUPVAL A B: U(B) := R(A)
-	sideEffectLoadNil                         // LOADNIL A B: R(A..B) := nil
-	sideEffectMove                            // MOVE A B: R(A) := R(B) (scratch fill)
-	sideEffectLoadK                           // LOADK A Bx: R(A) := <imm> (scratch fill)
-	sideEffectSetTable                        // SETTABLE A B C: R(A)[RK(B)] := RK(C)
-	sideEffectSetGlobal                       // SETGLOBAL A Bx: Globals[K(Bx)] := R(A)
-	sideEffectCall                            // CALL A B C: R(A..A+C-2) := R(A)(R(A+1..A+B-1))
-	sideEffectTailCall                        // TAILCALL A B C: tri-state — see PerOpCode.Run
-	sideEffectSelf                            // SELF A B C: R(A+1) := R(B); R(A) := R(B)[RK(C)]
-	sideEffectSetList                         // SETLIST A B C: R(A)[(C-1)*FPF+i] := R(A+i) for i=1..B
-	sideEffectArith                           // arithmetic R(A) := RK(B) <op> RK(C) (used inside loop bodies)
+	sideEffectSetUpval         sideEffectKind = iota // SETUPVAL A B: U(B) := R(A)
+	sideEffectLoadNil                                // LOADNIL A B: R(A..B) := nil
+	sideEffectMove                                   // MOVE A B: R(A) := R(B) (scratch fill)
+	sideEffectLoadK                                  // LOADK A Bx: R(A) := <imm> (scratch fill)
+	sideEffectSetTable                               // SETTABLE A B C: R(A)[RK(B)] := RK(C)
+	sideEffectSetGlobal                              // SETGLOBAL A Bx: Globals[K(Bx)] := R(A)
+	sideEffectCall                                   // CALL A B C: R(A..A+C-2) := R(A)(R(A+1..A+B-1))
+	sideEffectTailCall                               // TAILCALL A B C: tri-state — see PerOpCode.Run
+	sideEffectSelf                                   // SELF A B C: R(A+1) := R(B); R(A) := R(B)[RK(C)]
+	sideEffectSetList                                // SETLIST A B C: R(A)[(C-1)*FPF+i] := R(A+i) for i=1..B
+	sideEffectArith                                  // arithmetic R(A) := RK(B) <op> RK(C) (used inside loop bodies)
+	sideEffectClosure                                // CLOSURE A Bx: R(A) := makeClosure(inner_proto[Bx])
+	sideEffectClose                                  // CLOSE A: close upvalues >= base+A
+	sideEffectGetUpvalScratch                        // GETUPVAL A B (scratch): R(A) := Upval(B)
+	sideEffectGetGlobalScratch                       // GETGLOBAL A Bx (scratch): R(A) := Globals[K(Bx)]
+	sideEffectGetTableScratch                        // GETTABLE A B C (scratch): R(A) := R(B)[RK(C)]
+	sideEffectNewTableScratch                        // NEWTABLE A B C (scratch): R(A) := new table
 )
 
 // slotSource describes how PerOpCode.Run materialises one return slot:
@@ -166,6 +179,16 @@ const (
 	slotKindNewTable                  // R(A) := new table via host.NewTable
 	slotKindAndOr                     // TESTSET diamond (and/or short-circuit)
 )
+
+// AnalyzeShapeDebug is like AnalyzeShape but returns an error reason.
+// Used only by tests.
+func AnalyzeShapeDebug(proto *bytecode.Proto) (shapeInfo, string) {
+	info := AnalyzeShape(proto)
+	if info.ok {
+		return info, "ok"
+	}
+	return info, "not ok"
+}
 
 // AnalyzeShape reports whether the given Proto matches the constant-tuple
 // shape this spike supports. Returns shapeInfo{ok: true, ...} on a match.
@@ -301,8 +324,93 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 		}
 	}
 
-	// Helper: is pc inside the (one) for-loop body? Used by both passes
-	// to route ops to bodyEffects vs outer sideEffects.
+	// Pre-pass: detect TFORLOOP block. Pattern:
+	//
+	//   [bodyHeadJmpPC]  JMP +N -- skip body, jump to TFORLOOP
+	//   [bodyStart..bodyEnd-1]  body ops
+	//   [tloopPC]  TFORLOOP A C
+	//   [tloopPC+1]  JMP -M -- if not nil, back-edge to bodyStart
+	//   [post-loop]
+	//
+	// The JMP at bodyHeadJmpPC = tloopPC - bodyLen - 1 points to tloopPC
+	// (i.e., sBx = body length). The JMP at tloopPC+1 points back to
+	// bodyStart (i.e., sBx = -(bodyLen+1)).
+	type tloopInfo struct {
+		tloopPC   int
+		bodyStart int
+		bodyEnd   int // = tloopPC
+		jmpHeadPC int // forward JMP at bodyStart-1
+		a, c      uint8
+	}
+	var tloop *tloopInfo
+	for pc := 0; pc < retPC; pc++ {
+		ins := proto.Code[pc]
+		if bytecode.Op(ins) != bytecode.TFORLOOP {
+			continue
+		}
+		if tloop != nil || loop != nil {
+			return shapeInfo{} // multiple loops or mixed for/tfor out of scope
+		}
+		a := bytecode.A(ins)
+		cc := bytecode.C(ins)
+		if a < 0 || a > 252 || cc < 1 || cc > 255 {
+			return shapeInfo{}
+		}
+		if pc+1 >= retPC {
+			return shapeInfo{}
+		}
+		backJmp := proto.Code[pc+1]
+		if bytecode.Op(backJmp) != bytecode.JMP {
+			return shapeInfo{}
+		}
+		bodyStart := (pc + 1) + 1 + int(bytecode.SBx(backJmp))
+		if bodyStart < 0 || bodyStart >= pc {
+			return shapeInfo{}
+		}
+		// Find the forward JMP just before bodyStart.
+		jmpHead := bodyStart - 1
+		if jmpHead < 0 {
+			return shapeInfo{}
+		}
+		fwdJmp := proto.Code[jmpHead]
+		if bytecode.Op(fwdJmp) != bytecode.JMP {
+			return shapeInfo{}
+		}
+		fwdTarget := jmpHead + 1 + int(bytecode.SBx(fwdJmp))
+		if fwdTarget != pc {
+			return shapeInfo{}
+		}
+		tloop = &tloopInfo{
+			tloopPC:   pc,
+			bodyStart: bodyStart,
+			bodyEnd:   pc,
+			jmpHeadPC: jmpHead,
+			a:         uint8(a),
+			c:         uint8(cc),
+		}
+	}
+	// CLOSURE pseudo-instructions: each CLOSURE A Bx is followed by
+	// proto.SubNUps[Bx] MOVE/GETUPVAL pseudo-instructions that bind
+	// upvalues. host.Closure consumes them via ci.pc, so our analyzer
+	// must skip them in both passes.
+	pseudoSkip := make(map[int]bool)
+	for pc := 0; pc < retPC; pc++ {
+		if bytecode.Op(proto.Code[pc]) != bytecode.CLOSURE {
+			continue
+		}
+		bx := bytecode.Bx(proto.Code[pc])
+		if bx < 0 || bx >= len(proto.SubNUps) {
+			return shapeInfo{}
+		}
+		nups := int(proto.SubNUps[bx])
+		for j := 1; j <= nups; j++ {
+			if pc+j >= retPC {
+				return shapeInfo{}
+			}
+			pseudoSkip[pc+j] = true
+		}
+	}
+
 	inBody := func(pc int) bool {
 		if loop == nil {
 			return false
@@ -377,6 +485,10 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 		headPC[i] = -1
 	}
 	for pc := 0; pc < retPC; pc++ {
+		// Skip CLOSURE pseudo-instructions (consumed by host.Closure).
+		if pseudoSkip[pc] {
+			continue
+		}
 		// Skip the JMP / LOADBOOL members of a diamond — only the
 		// diamond's start pc is the writer.
 		if diamondMember[pc] {
@@ -402,7 +514,7 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 		ins := proto.Code[pc]
 		op := bytecode.Op(ins)
 		// Side-effect-only ops have no return-slot dest.
-		if op == bytecode.SETUPVAL || op == bytecode.SETTABLE || op == bytecode.SETGLOBAL || op == bytecode.SETLIST {
+		if op == bytecode.SETUPVAL || op == bytecode.SETTABLE || op == bytecode.SETGLOBAL || op == bytecode.SETLIST || op == bytecode.CLOSE {
 			continue
 		}
 		// SELF writes R(A) and R(A+1). They're almost always
@@ -485,7 +597,32 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 	// inserted (so PerOpCode.Run knows where to switch from preamble to
 	// loop iteration to post-loop effects).
 	forLoopAfter := -1
+	// tforLoopAfter mirrors forLoopAfter for the TFORLOOP variant.
+	tforLoopAfter := -1
 	for pc := 0; pc < retPC; pc++ {
+		// Skip CLOSURE pseudo-instructions (consumed by host.Closure
+		// internally via ci.pc).
+		if pseudoSkip[pc] {
+			continue
+		}
+		// TFORLOOP block boundaries.
+		if tloop != nil && pc == tloop.jmpHeadPC {
+			// Forward JMP into TFORLOOP — handled implicitly by the
+			// dispatcher; mark the start of the body region.
+			tforLoopAfter = len(sideEffects)
+			effectsRef = &bodyEffects
+			continue
+		}
+		if tloop != nil && pc == tloop.tloopPC {
+			// TFORLOOP itself — handled by runTForLoop; switch back to
+			// outer effects for post-loop ops (skipping the back-JMP).
+			effectsRef = &sideEffects
+			continue
+		}
+		if tloop != nil && pc == tloop.tloopPC+1 {
+			// Back-edge JMP — handled implicitly by the dispatcher.
+			continue
+		}
 		// FORPREP marker: finish appending preamble side effects, then
 		// switch to body mode. The FORPREP itself is handled by the
 		// Run-time loop dispatch (host.ForPrep + step loop), not as a
@@ -502,8 +639,20 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 			continue
 		}
 
-		// Inside the body, restrict to the body-op subset.
+		// Inside the body, restrict to the body-op subset. For FORLOOP
+		// the body is (forPrepPC, forLoopPC); for TFORLOOP it is
+		// [bodyStart, tloopPC).
 		if loop != nil && pc > loop.forPrepPC && pc < loop.forLoopPC {
+			ins := proto.Code[pc]
+			op := bytecode.Op(ins)
+			se, ok := bodyEffectFromIns(proto, op, ins, pc)
+			if !ok {
+				return shapeInfo{}
+			}
+			*effectsRef = append(*effectsRef, se)
+			continue
+		}
+		if tloop != nil && pc >= tloop.bodyStart && pc < tloop.bodyEnd {
 			ins := proto.Code[pc]
 			op := bytecode.Op(ins)
 			se, ok := bodyEffectFromIns(proto, op, ins, pc)
@@ -573,6 +722,31 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 		// Pure side-effect ops (no reg dest).
 		if se, ok := sideEffectFromIns(op, ins); ok {
 			*effectsRef = append(*effectsRef, se)
+			continue
+		}
+
+		// CLOSURE A Bx: R(A) := makeClosure(inner_proto[Bx]). Emit as
+		// side effect; for any return slot whose last-writer maps to
+		// this CLOSURE, install a slotKindReg head op (read R(A) back).
+		if op == bytecode.CLOSURE {
+			a := bytecode.A(ins)
+			bx := bytecode.Bx(ins)
+			if a < 0 || a > 255 || bx < 0 {
+				return shapeInfo{}
+			}
+			*effectsRef = append(*effectsRef, sideEffect{
+				kind: sideEffectClosure,
+				a:    uint8(a),
+				imm:  uint64(pc)<<32 | uint64(bx),
+			})
+			idx := a - retA
+			if idx >= 0 && idx < n && headPC[idx] == pc {
+				sources[idx] = slotSource{
+					kind:    slotKindReg,
+					reg:     uint8(a),
+					arithPC: uint8(pc),
+				}
+			}
 			continue
 		}
 
@@ -731,6 +905,18 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 			}
 		}
 	}
+	if tloop != nil {
+		for slot := 0; slot < n; slot++ {
+			pc := headPC[slot]
+			if pc >= tloop.bodyStart && pc < tloop.bodyEnd {
+				sources[slot] = slotSource{
+					kind:    slotKindReg,
+					reg:     uint8(retA + slot),
+					arithPC: uint8(pc),
+				}
+			}
+		}
+	}
 
 	info := shapeInfo{
 		ok:          true,
@@ -750,6 +936,14 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 		info.forLoopA = loop.forLoopA
 		info.forLoopPC = uint8(loop.forPrepPC)
 		info.forLoopAfter = forLoopAfter
+		info.bodyEffects = bodyEffects
+	}
+	if tloop != nil {
+		info.tforLoopValid = true
+		info.tforLoopA = tloop.a
+		info.tforLoopC = tloop.c
+		info.tforLoopPC = uint8(tloop.tloopPC)
+		info.forLoopAfter = tforLoopAfter
 		info.bodyEffects = bodyEffects
 	}
 	return info
@@ -955,6 +1149,54 @@ func scratchFromIns(proto *bytecode.Proto, op bytecode.OpCode, ins bytecode.Inst
 		}
 		return sideEffect{kind: sideEffectLoadNil, a: uint8(a), b: uint8(b)}, true
 
+	case bytecode.GETUPVAL:
+		// R(A) := U(B). No raise. host.GetUpval gives the value.
+		b := bytecode.B(ins)
+		if b < 0 || b > 255 {
+			return sideEffect{}, false
+		}
+		return sideEffect{kind: sideEffectGetUpvalScratch, a: uint8(a), b: uint8(b)}, true
+
+	case bytecode.GETGLOBAL:
+		// R(A) := Globals[K(Bx)] via host.DoGetGlobal. May raise.
+		bx := bytecode.Bx(ins)
+		if bx < 0 {
+			return sideEffect{}, false
+		}
+		return sideEffect{
+			kind: sideEffectGetGlobalScratch,
+			a:    uint8(a),
+			imm:  uint64(bx),
+		}, true
+
+	case bytecode.GETTABLE:
+		// R(A) := R(B)[RK(C)] via host.GetTable. May raise.
+		b := bytecode.B(ins)
+		c := bytecode.C(ins)
+		if b < 0 || b > 255 || c < 0 || c > 511 {
+			return sideEffect{}, false
+		}
+		return sideEffect{
+			kind: sideEffectGetTableScratch,
+			a:    uint8(a),
+			b:    uint8(b),
+			imm:  uint64(c),
+		}, true
+
+	case bytecode.NEWTABLE:
+		// R(A) := new table. host.NewTable; never raises (only OOM).
+		b := bytecode.B(ins)
+		c := bytecode.C(ins)
+		if b < 0 || b > 255 || c < 0 || c > 255 {
+			return sideEffect{}, false
+		}
+		return sideEffect{
+			kind: sideEffectNewTableScratch,
+			a:    uint8(a),
+			b:    uint8(b),
+			c:    uint8(c),
+		}, true
+
 	default:
 		return sideEffect{}, false
 	}
@@ -1019,6 +1261,18 @@ func sideEffectFromIns(op bytecode.OpCode, ins bytecode.Instruction) (sideEffect
 			a:    uint8(a),
 			b:    uint8(b),
 			c:    uint8(c),
+		}, true
+
+	case bytecode.CLOSE:
+		// CLOSE A: close all upvalues with stack index >= base+A. No
+		// return-slot output. Never raises.
+		a := bytecode.A(ins)
+		if a < 0 || a > 255 {
+			return sideEffect{}, false
+		}
+		return sideEffect{
+			kind: sideEffectClose,
+			a:    uint8(a),
 		}, true
 
 	default:

@@ -246,6 +246,35 @@ type P4HostState interface {
 	// TailCall 完成 byte-equal P1 doCall 分派。
 	Self(base int32, pc int32, a int32, b int32, c int32) int32
 
+	// Closure 处理 CLOSURE A Bx(gibbous_host.go::Closure 同款)。makeClosure
+	// 读后随伪指令(ci.pc 处的 MOVE/GETUPVAL)消化 upvalue 捕获,故 helper 内
+	// 先把 ci.pc 设到 CLOSURE 之后(pc+1)。
+	//
+	// 参数:base/pc 同 Arith;a = 目标寄存器号;bx = inner Proto 索引。
+	//
+	// 返回:0=OK / 1=ERR。用例:P4 `local f = function() ... end` 类。
+	Closure(base int32, pc int32, a int32, bx int32) int32
+
+	// Close 处理 CLOSE A(gibbous_host.go::Close 同款):关闭所有 ≥ base+A 的
+	// 开放 upvalue。永不 raise。
+	//
+	// 参数:base/pc 同 Arith;a = 起始寄存器号。
+	//
+	// 返回:0=OK(规约保持,与 Arith 等签名对齐)。用例:`do local x = ... end`
+	// 出 block 时关闭 upvalue。
+	Close(base int32, pc int32, a int32) int32
+
+	// TForLoop 处理 TFORLOOP A C(gibbous_host.go::TForLoop 同款)。调迭代器
+	// R(A)(R(A+1),R(A+2)) → 结果 R(A+3..A+2+C);首值非 nil 则继续,nil 则退出。
+	//
+	// 参数:base/pc 同 Arith;a = 迭代器寄存器号;c = 返回值计数。
+	//
+	// 返回(i64,三态):
+	//   - ≥0 = 刷新后的本帧 base 字节偏移(继续循环)
+	//   - -1 = ERR(raise pending)
+	//   - -2 = 退出(首值 nil)
+	TForLoop(base int32, pc int32, a int32, c int32) int64
+
 	// ArenaBaseAddr 返回 arena `[]byte` 起点的 uintptr(承 05 §3.3)。	//
 	// 用例:PJ2 完整投机模板——mmap 段经 r15+offset 读 arenaBase 字段后
 	// 经字节级 movsd 直接读/写值栈槽位,跳过 host 接口 round-trip。

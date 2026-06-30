@@ -100,6 +100,13 @@ type PerOpCode struct {
 	forLoopPC    uint8
 	forLoopAfter int
 	bodyEffects  []sideEffect
+
+	// TFORLOOP block (generic for): when tforLoopValid is true, the
+	// dispatcher calls host.TForLoop each iteration until it returns -2.
+	tforLoopValid bool
+	tforLoopA     uint8
+	tforLoopC     uint8
+	tforLoopPC    uint8
 }
 
 // Proto returns the source Proto.
@@ -149,6 +156,11 @@ func (c *PerOpCode) Run(stack []uint64, base uint32) int32 {
 				return st
 			}
 		}
+		if c.tforLoopValid && i == c.forLoopAfter {
+			if st := c.runTForLoop(base); st != 0 {
+				return st
+			}
+		}
 		if st := c.runEffect(base, se, stack); st != 0 {
 			if st == -1 { // sentinel: tail-call done, frame popped
 				return 0
@@ -159,6 +171,11 @@ func (c *PerOpCode) Run(stack []uint64, base uint32) int32 {
 	// Loop inserted at the very end (no post-loop side effects).
 	if c.forLoopValid && c.forLoopAfter == len(c.sideEffects) {
 		if st := c.runForLoop(base); st != 0 {
+			return st
+		}
+	}
+	if c.tforLoopValid && c.forLoopAfter == len(c.sideEffects) {
+		if st := c.runTForLoop(base); st != 0 {
 			return st
 		}
 	}
@@ -426,8 +443,78 @@ func (c *PerOpCode) runEffect(base uint32, se sideEffect, stack []uint64) int32 
 		); st != 0 {
 			return st
 		}
+	case sideEffectClosure:
+		// CLOSURE A Bx: imm = pc<<32 | bx. host.Closure reads the
+		// inner Proto's pseudo upvalue-bind instructions via ci.pc,
+		// makes the closure value, and stores into R(A).
+		closPC := int32(se.imm >> 32)
+		bx := int32(se.imm & 0xffffffff)
+		if st := c.host.Closure(int32(base), closPC, int32(se.a), bx); st != 0 {
+			return st
+		}
+	case sideEffectClose:
+		// CLOSE A: close all upvalues with stack index >= base+A.
+		if st := c.host.Close(int32(base), 0, int32(se.a)); st != 0 {
+			return st
+		}
+	case sideEffectGetUpvalScratch:
+		// R(A) := U(B); never raises.
+		c.host.SetReg(int32(se.a), c.host.GetUpval(int32(base), int32(se.b)))
+	case sideEffectGetGlobalScratch:
+		// R(A) := Globals[K(Bx)] via host.DoGetGlobal; may raise.
+		if st := c.host.DoGetGlobal(int32(base), 0, int32(se.a), int32(se.imm)); st != 0 {
+			return st
+		}
+	case sideEffectGetTableScratch:
+		// R(A) := R(B)[RK(C)] via host.GetTable; may raise.
+		if st := c.host.GetTable(int32(base), 0, int32(se.a), int32(se.b), int32(se.imm)); st != 0 {
+			return st
+		}
+	case sideEffectNewTableScratch:
+		// R(A) := new table via host.NewTable; never raises.
+		if st := c.host.NewTable(int32(base), 0, int32(se.a), int32(se.b), int32(se.c)); st != 0 {
+			return st
+		}
 	}
 	return 0
+}
+
+// runTForLoop dispatches the generic-for (TFORLOOP) iteration. Each
+// iteration calls host.TForLoop(A, C) which:
+//   - Invokes R(A)(R(A+1), R(A+2)).
+//   - On result[0] != nil: writes R(A+3..A+2+C) := results; R(A+2) :=
+//     result[0]; returns the (possibly refreshed) base offset.
+//   - On result[0] == nil: returns -2 (exit).
+//   - On error: returns -1.
+//
+// After a successful iteration we replay c.bodyEffects, which read
+// R(A+3..A+2+C) as the visible loop vars.
+func (c *PerOpCode) runTForLoop(base uint32) int32 {
+	const maxIter = 1 << 28
+	for iter := 0; iter < maxIter; iter++ {
+		ret := c.host.TForLoop(int32(base), int32(c.tforLoopPC), int32(c.tforLoopA), int32(c.tforLoopC))
+		switch {
+		case ret == -1:
+			return 1
+		case ret == -2:
+			return 0
+		case ret < -2:
+			return 1 // defensive
+		}
+		// ret >= 0: base may have been refreshed (growStack). For the
+		// Go-side replay we don't actually move arenaBase pointers — we
+		// always call host.GetReg/SetReg which re-derive addresses each
+		// time, so the only thing we need is to keep going.
+		for _, be := range c.bodyEffects {
+			if st := c.runEffect(base, be, nil); st != 0 {
+				if st == -1 {
+					return 1
+				}
+				return st
+			}
+		}
+	}
+	return 1
 }
 
 // runForLoop dispatches the FORPREP + FORLOOP iteration block. The loop
@@ -520,21 +607,25 @@ func TranslateProto(proto *bytecode.Proto, host jit.P4HostState) (bridge.Gibbous
 		return nil, err
 	}
 	return &PerOpCode{
-		proto:        proto,
-		codePage:     page,
-		jitCtx:       jit.NewJITContext(),
-		host:         host,
-		sources:      info.sources,
-		sideEffects:  info.sideEffects,
-		retA:         info.retA,
-		retB:         info.retB,
-		retPC:        info.retPC,
-		isTailCall:   info.isTailCall,
-		forLoopValid: info.forLoopValid,
-		forLoopA:     info.forLoopA,
-		forLoopPC:    info.forLoopPC,
-		forLoopAfter: info.forLoopAfter,
-		bodyEffects:  info.bodyEffects,
+		proto:         proto,
+		codePage:      page,
+		jitCtx:        jit.NewJITContext(),
+		host:          host,
+		sources:       info.sources,
+		sideEffects:   info.sideEffects,
+		retA:          info.retA,
+		retB:          info.retB,
+		retPC:         info.retPC,
+		isTailCall:    info.isTailCall,
+		forLoopValid:  info.forLoopValid,
+		forLoopA:      info.forLoopA,
+		forLoopPC:     info.forLoopPC,
+		forLoopAfter:  info.forLoopAfter,
+		bodyEffects:   info.bodyEffects,
+		tforLoopValid: info.tforLoopValid,
+		tforLoopA:     info.tforLoopA,
+		tforLoopC:     info.tforLoopC,
+		tforLoopPC:    info.tforLoopPC,
 	}, nil
 }
 
