@@ -377,6 +377,77 @@ return r, outer
 	}
 }
 
+// TestPJ10_Self covers SELF for `obj:method(...)` method calls. SELF
+// prepares the call window: R(A+1) := R(B) (self) and R(A) := R(B)[RK(C)]
+// (the method). The subsequent CALL/TAILCALL then invokes the method.
+func TestPJ10_Self(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want []string
+	}{
+		{
+			name: "method-call-tailcall",
+			src: `
+local t = {}
+function t:greet() return "hi" end
+local function k(obj) return obj:greet() end
+return k(t)
+`,
+			want: []string{"hi"},
+		},
+		{
+			name: "method-call-with-arg",
+			src: `
+local t = {x = 10}
+function t:add(n) return self.x + n end
+local function k(obj, n) return obj:add(n) end
+return k(t, 5)
+`,
+			want: []string{"15"},
+		},
+		{
+			name: "method-call-statement",
+			src: `
+local counter = 0
+local t = {}
+function t:bump() counter = counter + 1 end
+local function k(obj) obj:bump() end
+k(t)
+k(t)
+return counter
+`,
+			want: []string{"2"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prog, err := wangshu.Compile([]byte(tc.src), "pj10self")
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+			st := wangshu.NewState(wangshu.Options{})
+			st.SetForceAllPromote(true)
+			res, err := prog.Run(st)
+			if err != nil {
+				t.Fatalf("run: %v", err)
+			}
+			if st.PromotionCount() == 0 {
+				t.Fatal("PromotionCount = 0; PJ10 did not promote the SELF kernel")
+			}
+			for i, w := range tc.want {
+				if i >= len(res) {
+					t.Errorf("result[%d]: out-of-range, want %q (full: %v)", i, w, res)
+					continue
+				}
+				if got := res[i].Display(); got != w {
+					t.Errorf("result[%d] = %q, want %q (full: %v)", i, got, w, res)
+				}
+			}
+		})
+	}
+}
+
 // TestPJ10_TailCall covers TAILCALL via host.TailCall side effect. The
 // frontend emits `function() return f() end` as
 //

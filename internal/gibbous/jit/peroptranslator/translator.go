@@ -109,6 +109,7 @@ const (
 	sideEffectSetGlobal                       // SETGLOBAL A Bx: Globals[K(Bx)] := R(A)
 	sideEffectCall                            // CALL A B C: R(A..A+C-2) := R(A)(R(A+1..A+B-1))
 	sideEffectTailCall                        // TAILCALL A B C: tri-state — see PerOpCode.Run
+	sideEffectSelf                            // SELF A B C: R(A+1) := R(B); R(A) := R(B)[RK(C)]
 )
 
 // slotSource describes how PerOpCode.Run materialises one return slot:
@@ -283,6 +284,19 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 		if op == bytecode.SETUPVAL || op == bytecode.SETTABLE || op == bytecode.SETGLOBAL {
 			continue
 		}
+		// SELF writes R(A) and R(A+1). They're almost always
+		// overwritten by a subsequent CALL — record as last-writer for
+		// completeness, but in practice the CALL will overwrite them.
+		if op == bytecode.SELF {
+			a := bytecode.A(ins)
+			for _, r := range [2]int{a, a + 1} {
+				idx := r - retA
+				if idx >= 0 && idx < n {
+					headPC[idx] = pc
+				}
+			}
+			continue
+		}
 		// CALL writes R(A..A+C-2) when C>=2. We mark CALL as the writer
 		// for each affected return slot, but at the second pass it
 		// becomes a sideEffectCall and the head op for the slot is a
@@ -415,6 +429,38 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 			continue
 		}
 
+		// SELF: emit as side effect. SELF.A is the dest (method goes to
+		// R(A), self to R(A+1)). After SELF, the typical pattern is
+		// CALL A B C with method at R(A) and self at R(A+1). Note
+		// SELF can raise (attempt to index nil).
+		if op == bytecode.SELF {
+			a := bytecode.A(ins)
+			b := bytecode.B(ins)
+			cc := bytecode.C(ins)
+			if a < 0 || a > 255 || b < 0 || b > 255 || cc < 0 || cc > 511 {
+				return shapeInfo{}
+			}
+			sideEffects = append(sideEffects, sideEffect{
+				kind: sideEffectSelf,
+				a:    uint8(a),
+				b:    uint8(b),
+				c:    uint8(cc & 0xff),
+				imm:  uint64(pc)<<32 | uint64(cc),
+			})
+			// For any slot that maps to this SELF as last writer, set
+			// up a slotKindReg to read back R(retA+slot).
+			for _, r := range [2]int{a, a + 1} {
+				idx := r - retA
+				if idx >= 0 && idx < n && headPC[idx] == pc {
+					sources[idx] = slotSource{
+						kind:    slotKindReg,
+						reg:     uint8(r),
+						arithPC: uint8(pc),
+					}
+				}
+			}
+			continue
+		}
 		// TAILCALL: pre-RETURN, dispatched at Run time via host.TailCall
 		// with the captured (a, b, c, pc). The shapeInfo records the A/B
 		// fields separately so the Run path can decide whether to skip

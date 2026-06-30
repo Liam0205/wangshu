@@ -200,6 +200,16 @@ func (c *PerOpCode) Run(stack []uint64, base uint32) int32 {
 			default:
 				return 1
 			}
+		case sideEffectSelf:
+			// SELF A B C: R(A+1) := R(B); R(A) := R(B)[RK(C)]. May raise
+			// (attempt to index nil / __index recursion / etc.). The
+			// captured imm is pc<<32 | full-9-bit-RK-C; recover the pc and
+			// dispatch to host.Self with the original RK.
+			selfPC := int32(se.imm >> 32)
+			rkC := int32(se.imm & 0xffffffff)
+			if st := c.host.Self(int32(base), selfPC, int32(se.a), int32(se.b), rkC); st != 0 {
+				return st
+			}
 		}
 	}
 
