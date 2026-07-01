@@ -25,22 +25,6 @@ func pj10TestHelper(x uint64) uint64 {
 // TestPJ10Native_E2E_HelperCall verifies that the emitRestoreGoG +
 // emitHelperCall sequence:
 //   - Restores R14 = G before the call
-//   - Passes rdi to the helper (SysV ABI first arg)
-//   - Receives rax from the helper (SysV ABI return)
-//   - Preserves R14 = G on return so subsequent Go-heap operations are safe
-//
-// Sequence emitted:
-//
-//	mov rdi, imm64        ; load argument
-//	mov r14, [r15+savedG] ; restore G
-//	mov rax, helperAddr   ; helper Go func pointer
-//	call rax              ; helper runs
-//	mov [rbx+0], rax      ; store result at R(0)
-//	ret
-//
-// TestPJ10Native_E2E_HelperCall verifies that the emitRestoreGoG +
-// emitHelperCall sequence:
-//   - Restores R14 = G before the call
 //   - Passes RAX to the helper (Go ABIInternal first int arg)
 //   - Receives RAX from the helper (Go ABIInternal return)
 //   - Preserves R14 = G on return so subsequent Go-heap operations are safe
