@@ -1,54 +1,85 @@
-# Wangshu(望舒)
+# Wangshu（望舒）
 
-纯 Go 实现的高性能嵌入式 Lua 5.1 虚拟机(不依赖 cgo,保持交叉编译能力)。
+望舒是纯 Go 实现的高性能可嵌入的 Lua 5.1 虚拟机。它不依赖 cgo，因此保持了交叉编译能力。
 
-**望舒**:中国神话中为月亮驾车的神(《楚辞·离骚》"前望舒使先驱")。Lua 在葡萄牙语中意为"月亮"——为月亮驾车,即驱动 Lua 的引擎。
+关于命名：Lua 是葡萄牙语中「月亮」的意思；望舒是中国神话中为月亮驱车的神灵（「前望舒使先驱」——《楚辞·离骚》）。为月亮驱车，即驱动 Lua 引擎。是一信达雅的名字。
+
+[![CI](https://github.com/Liam0205/wangshu/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/Liam0205/wangshu/actions/workflows/ci.yml)
+[![Nightly](https://github.com/Liam0205/wangshu/actions/workflows/nightly-diff-fuzz.yml/badge.svg?branch=master)](https://github.com/Liam0205/wangshu/actions/workflows/nightly-diff-fuzz.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/Liam0205/wangshu.svg)](https://pkg.go.dev/github.com/Liam0205/wangshu)
+[![Go Report Card](https://goreportcard.com/badge/github.com/Liam0205/wangshu)](https://goreportcard.com/report/github.com/Liam0205/wangshu)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 ## 目标
 
-- 近期:把 Go 生态的 Lua 执行性能从 gopher-lua 档提升到 LuaJ-luajc 档以上
-- 终局:在"列内核"负载形状下逼近 LuaJIT 档(纯 Go 约束下 10-30x over gopher-lua)
-- 语言面:Lua 5.1 核心(与 LuaJIT 一致,不追语言完备性)
+- 语言标准：实现 Lua 5.1 的核心语言特性。——与 LuaJIT 一致，不追求语言的绝对完整性。
+- 正确性：在圈定的语言特性范围，与 Lua 5.1 官方实现的输出逐字节一致。
+- 高性能：将 Go 生态的 Lua 执行性能从 gopher-lua 提升至 LuaJ-luajc（Java）甚至 LuaJIT（C++）级别。
+- 挂平台：在 Linux/amd64, Linux/arm64, macOS/arm64 测试通过；保留其他平台扩张支持的能力。
 
 ## 架构
 
-分层 VM,执行层以月相命名:
+望舒使用分层虚拟机架构；其执行层以月相命名：
 
 ```
-P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 method JIT ──► P5 trace JIT
-(crescent)    (基建)        (gibbous)          (gibbous)         (fullmoon)
+P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 method JIT （RC 状态） ──► P5 trace JIT （尚未实现）
+(crescent)    (基建)        (gibbous)          (gibbous)                   (fullmoon)
 ```
 
-核心承诺:NaN-boxed u64 值表示 + 自管 arena 线性内存,各执行层共见同一块内存,上编译层是纯增量;解释器永不退役(所有编译层的 deopt 着陆点与语义 oracle);层间逐字节差分测试是 CI 必过门禁。
+架构核心承诺：
 
-## 当前状态
+* NaN-boxed u64 值表示
+* 自管理的 arana 线性内存——各层共用同一块内存
+* P1 解释器始终可用——所有编译层的 deopt 着陆点及语义 oracle
+* CI 保证层与层之间逐字节一致
 
-**P1(crescent 解释器)+ P2(bridge 分层桥)+ P3(gibbous/Wasm 编译层)PW0-PW10 全卷 + VS0-e 全量收口**:P1 全里程碑 M0-M14 + 收尾轮 / 长稳轮 / 审查核销轮(22+ 项逐函数对照官方源码的发现全量修复)落地;**P2 全卷 PB0-PB7 + 后续优化轮 #1-#4**(2026-06-13 单会话冲刺:bridge 包骨架 + 回边/入口采样 + IC 反馈聚合 + F1-F7 可编译性闸门 + TierState 状态机 + sync.Pool (C) 双表混合 + megamorphic 主动识别)落地;**P3 PW0-PW10**(wazero call boundary spike 闸门 36.7ns<150ns → 全 38 opcode 除 VARARG 外翻译成 Wasm(算术/比较/控制流 relooper/表 IC inline 跳哈希/CALL·TAILCALL 跨层互调/CLOSURE·CLOSE/数值·泛型 for)→ 线程级 tier 规则(协程不升层)→ gcPending inline 回边零跨层 → V1-V18 端到端总验收 + **PW10 消除 gibbous→gibbous 跨层调用税**(共享 funcref 表 + `call_indirect` 直调 + CallInfo arena 化 + 零跨界 RETURN 拆帧 + 顶层升层)→ **VS0-e 全量收口**(2026-06-16:varargs 进栈下区,对齐官方 Lua 5.1 真栈布局 `[func | vararg | R(0)..]`,统一栈模型 + 简化 GC 路径))落地。
+## 性能指标
 
-性能基线(Xeon 6982P-C,2026-06-16):新月对位 gopher-lua 嵌入式真实形态 1.03–7.06× + realworld 五项中两项反超(spectral 1.20×、nbody 1.05×);P3 凸月可选层在循环密集 hot function 形态 ~2.96× over 新月(详「性能基准」节末「P3 凸月编译层」)。详细对账见 [p3 implementation-progress](docs/design/p3-wasm-tier/implementation-progress.md)。
+下表汇总各典型脚本在四档执行模式下的实测数据。每列格式为「wall time · 倍率 (over gopher-lua)」。**auto** 表示走生产热度阈值 + F1-F7 可编译性闸门；**force** 表示 `SetForceAllPromote(true)`，绕过热度阈值强制升层（不绕闸门），差分测试专用，非生产模式。
 
-**embedding admin API**(2026-06-16,issue #9 / #10 / #11 三件套全交付):
-- `Table.Preallocate(n)` + `State.NewArrayTable(vals)`(issue #10):一次性 array 段预分配,绕过反复 SetIndex 的 O(N²) rehash 风暴(N=1000 实测 25-60× 加速,详「性能基准」)。
-- `Options.InitialArenaBytes` / `MaxArenaBytes`(issue #11):接通 arena 容量定制 + fail-fast 上限。
-- `State.ArenaCapKB()` / `State.GCCountKB()`(issue #11):pool 层据 cap 判 fat state 阈值。
-- `State.Collect()` / `State.MaybeCollectNow()`(issue #9):显式驱动 GC cadence,避免 boundary-dominated 短脚本下 VM safepoint starvation。
-- `State.SetHostTriggeredCollect(on)`(issue #9 experimental,opt-in):host alloc 跨阈直接触发 collect,需调用方保证 transient GCRef 全 pin。
-- arena LARGE freelist 改 multi-bucket size-class(底层 root fix):naive `NewTable + SetIndex(1..N)` 形态从 O(N²) 回到 O(N) 摊销(N=1000 ns/elem 824 → 59,**25× 加速**)。
-- arena Compact 在 Collect 末尾缩 backing slab 到 max(bump, 64 KiB):缓解 grow doubling 高水位 latched 现象,Go runtime 回收旧大 slab(默认 build 生效;P3 收养 wazero linear memory 模式 no-op)。
+| 脚本类别 | 脚本 | gopher-lua | P1 (crescent) | P3 auto | P3 force | P4 auto | P4 force |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| **纯 VM 微基准** | simple（分支/比较） | 879 ns | 127 ns · **6.95×** | ≈ P1 | ≈ P1 | ≈ P1 | ≈ P1 |
+| （benchmarks/baseline） | arith（Horner 多项式） | 968 ns | 175 ns · **5.52×** | ≈ P1 | ≈ P1 | ≈ P1 | ≈ P1 |
+|  | loop（求和循环） | 34.8 µs | 17.3 µs · **2.01×** | ≈ P1 | 12 µs · 2.90× | ≈ P1 | 见下 luajc 档 |
+| **列内核 luajc 档** | Horner 1000 items（linux/amd64） | 972 µs | 894 µs · 1.09× | — | — | — | 69.0 µs · **14.08×** |
+| （bench-acceptance） | Horner 1000 items（linux/arm64） | 928 µs | 764 µs · 1.21× | — | — | — | 36.7 µs · **25.28×** |
+|  | Horner 1000 items（darwin/arm64） | 946 µs | 623 µs · 1.52× | — | — | — | 70.9 µs · **13.34×** |
+| **heavy 计算内核** | heavy_arith（linux/amd64） | 1.00× (基线) | ≈ 1.6× | — | 1.65× | — | **9.38×** |
+| （benchmarks/heavy） | heavy_recursion（linux/amd64） | 1.00× | ≈ 1.4× | — | 1.11× | — | **1.28×** |
+|  | heavy_floatloop（linux/amd64） | 1.00× | ≈ 1.9× | — | 4.97× | — | **14.11×** |
+|  | heavy geomean（linux/amd64） | 1.00× | — | — | 2.32× | — | **5.53×** |
+|  | heavy geomean（linux/arm64） | 1.00× | — | — | — | — | **5.45×** |
+|  | heavy geomean（darwin/arm64） | 1.00× | — | — | — | — | **4.00×** |
+| **realworld small** | fib | 9.13 ms | 9.91 ms · 0.92× | 24.8 ms · 0.38× | 24.8 ms · 0.38× | 11.1 ms · 0.85× | 18.1 ms · 0.50× |
+| （benchmarks/realworld） | binary-trees | 31.3 ms | 34.8 ms · 0.90× | 25.9 ms · 1.30× | 25.9 ms · 1.30× | 38.7 ms · 0.87× | 58.2 ms · 0.54× |
+|  | spectral-norm | 21.1 ms | 17.5 ms · **1.20×** | 47.3 ms · 0.47× | 47.3 ms · 0.47× | 20.4 ms · 1.09× | 20.4 ms · 1.09× |
+|  | n-body | 44.1 ms | 41.8 ms · **1.05×** | 44.9 ms · 1.03× | 44.9 ms · 1.03× | 45.7 ms · 1.01× | 65.6 ms · 0.67× |
+|  | fannkuch | 3.97 ms | 5.28 ms · 0.75× | 5.90 ms · 0.70× | 5.90 ms · 0.70× | 5.74 ms · 0.72× | 8.60 ms · 0.46× |
+| **边界往返** | Boundary（+1× SetGlobal） | 180 ns | `CallInto` 176 ns · **1.03×** | 224 ns · 0.80× | 224 ns · 0.80× | 149 ns · **1.21×** | 149 ns · **1.21×** |
+| （benchmarks/embedded） | Predicate（per-item × 1000） | 442 µs | `CallInto` 396 µs · **1.12×** | ≈ P1 | ≈ P1 | ≈ P1 | ≈ P1 |
+|  | Transform（per-item × 1000） | 312 µs | `CallInto` 273 µs · **1.15×** | ≈ P1 | ≈ P1 | ≈ P1 | ≈ P1 |
 
-**boundary-dominated 嵌入快路径**(issue #13,parity-friendly:不破跨引擎 `lua_script` 字节对等):
-- `State.NewFloatArrayTable / NewInt64ArrayTable / NewBoolArrayTable / NewStringArrayTable`:从 typed slice 一次性 NaN-box 进 arena 数组段,跳过 `[]Value` 中转。脚本侧看到的是普通 array table(`xs[i]` / `#xs`),**不是** arena 列轨的 `__index` 代理——pineapple 一类 common-mode 灌列形态可以原脚本不动消掉 `[]any → []Value` 中转。
-- `State.GlobalsSlot(name)` + `SetBySlot / GetBySlot` + `Slot.Release()`:固定字段名场景下把 `gc.Intern([]byte(name))` 摊销到 Init 期一次性,热循环 SetGlobal 跳过 `[]byte` 分配 + intern 哈希查找(pineapple `LuaOp.Init` 期取 slot,`Execute` 热循环里 `SetBySlot(slot, v)`)。仅消除宿主端 intern 成本;globals rawtable 本身查找仍 per-key irreducible。
+数字来源：
 
-P1 总验收通过:
+- **P1 / P3 auto/force / realworld / 边界往返**：Xeon 6982P-C, go1.26.2, `-count=3 -benchtime=2s`, 2026-06-16 (详 [p3 implementation-progress](docs/design/p3-wasm-tier/implementation-progress.md))。
+- **列内核 luajc 档 / heavy 计算内核（三平台 P4）**：GitHub Actions bench-acceptance workflow Run #28505893556 (2026-07-01)，ubuntu-latest (linux/amd64, AMD EPYC 7763) + ubuntu-24.04-arm (linux/arm64, Azure Ampere) + macos-latest (darwin/arm64, Apple M1 Virtual)。
 
-- 性能四档实测见下「性能基准」节——纯 VM 微基准 5-6x over gopher-lua,真实负载纯 VM 五项中四项反超,边界密集嵌入经零分配 `CallInto` 反超;
-- 与官方 Lua 5.1.5 差分对拍逐字节一致:**官方测试套 13 文件**(vararg/sort/pm 整文件,其余截至豁免线)+ 100 项手册逐节特性探测 + 12 项边角探测 + 29 条错误消息(含行号断言)+ 70 种子用例 + 500 随机脚本(nightly 每晚 200 万滚动)+ benchmark-game 五脚本返回值;
-- 特性面三列全落地:必做列 probe 全绿、简化列存在性验证、缺口列 15 项显式豁免(`TestExemptions_Documented` 可审计);
-- 长稳承诺:freelist 循环复用(22000 轮分配密集脚本 arena 稳定 17.4KB)、深递归报 `stack overflow` 可恢复(LUAI_MAXCALLS=20000 等价)、`-race` 下 Program 跨 goroutine 共享验证;
-- conformance 套全绿;GC 双模式透明性对照全绿;三平台交叉编译冒烟(386/windows/darwin-arm64);`make all`(gofmt + lint + race)全绿。
+关键读数：
 
-### 快速开始
+- **luajc 档兑现**：P4 在 Horner-1000 列内核形状上三平台稳定超过 luajc 档 4.4× 基线（14×/25×/13×），达成 [roadmap](docs/design/roadmap.md) §1 「≥ 164 µs 水位」量化承诺。
+- **heavy 内核数量级提升**：P4 在裸算术 / 递归 / 浮点循环三档 geomean 4-5.5× over gopher-lua，且每档均 P4 ≥ P3；这是 PJ10 native emit 的直接收益。
+- **realworld helper-bound 是结构性等价**：五脚本 P4 geomean ≈ P3 ≈ 0.83× over gopher-lua，非退化，而是表 / 字符串 / library CALL 的宿主侧开销占主导，升层无法摊薄。三档间大致齐平即视为符合预期。
+- **边界往返 P4 反超 P3 wazero**：P4 自管 trampoline 边界比 P3 wazero 边界快 1.4-2.0×，符合物理预期。
+- **微基准 auto/force 一致**：micro-bench 脚本一次跑完，热度阈值未触达，auto 数字 ≡ P1；force 用来跨过阈值观察升层后行为。
+
+**⚠️ P3 在部分 realworld 脚本上出现负向**（fib 0.38×、spectralnorm 0.47×）：wasm 跨界税对小函数密集调用形态不可摊销，属于结构性负担；`wangshu_p3` build 加了 `wangshu_profile` 后即使自然不升层也会带 ~28% 采样税。生产环境若确认负载是短脚本 / 高频调用形态，用默认 build（P1）更优。
+
+`make bench` 复现主模块 baseline；`make -C benchmarks/heavy bench` 复现 heavy 内核；bench-acceptance workflow 可手动触发跨三平台跑（`gh workflow run bench-acceptance.yml`）。
+
+## 快速开始
+
+### 最小示例
 
 ```go
 import "github.com/Liam0205/wangshu"
@@ -63,104 +94,179 @@ results, err := prog.Run(st)
 // results[0].Number() == 338350
 ```
 
-列内核形状(批量数据一次跨界,循环全在 VM 内):
+`Program` 不可变，可跨 State 复用；`State` 每个 goroutine 独立一个。
+
+### 列内核形状：一次跨界，循环全在 VM 内
+
+批量数据处理场景推荐用 arena 列容器：宿主 Go 侧把 `[]float64` / `[]int64` / `[]bool` / `[]string` 挂进 arena，脚本侧看到 `arena.price` 这样的普通表，`price[i]` 直接读到 NaN-boxed 值，无需 per-item 跨界。
 
 ```go
 ar := wangshu.NewArena(nrows)
-ar.AddFloatColumn("price", prices, nil)
-ar.AddInt64Column("qty", qtys, nil)
+ar.AddFloatColumn("price", prices, nil) // present=nil 表示全部 present
+ar.AddInt64Column("qty",   qtys,   nil)
+
 prog, _ := wangshu.Compile([]byte(`
     local price, qty = arena.price, arena.qty
     local total = 0
     for i = 1, arena.rows do total = total + price[i] * qty[i] end
     return total
 `), "kernel")
-results, err := prog.Call(st, ar) // 一次调用一次跨界
+
+results, err := prog.Call(st, ar) // 单次跨界，循环全部在 VM 内
 ```
 
-`Program` 不可变、可跨 State 复用;`State` 每 goroutine 一个。
+### 在四档执行模式之间切换
 
-### P1 能力面
+四档均通过 build tag 选择，源码零改动。默认 build 就是 P1；启用 P3/P4 需要显式带 tag，同 build 里默认走 auto（生产热度阈值 + F1-F7 可编译性闸门），用 `SetForceAllPromote(true)` 切到 force（绕开热度阈值，非生产模式，用来跑差分测试与 benchmark）。
 
-NaN-boxed 值表示、arena + mark-sweep GC(弱表/finalizer/size-class freelist 内存复用)、完整前端(寄存器分配与 luac 同构)、大 switch 解释器(reentry,Lua 调用不增 Go 栈;调用深度上限可恢复)、inline cache(表/全局访问直达槽)、元表全套、协程(create/resume/yield/wrap)、pcall/xpcall/error(位置前缀+traceback+luaO_chunkid 同构)、Lua 5.1 pattern matcher(含 %f frontier/%z)、stdlib(base/string/table/math/os/io/coroutine + 5.0 兼容别名)、回边指令预算(不可信脚本配额)、arena ABI 列数据零拷贝读、公共嵌入 API、四套测试机制(conformance/官方测试套/difftest 随机生成 + 官方对拍/benchmark)。
+```bash
+# P1 crescent 解释器（默认 build，永远可用）
+go build ./...
 
-P3 迁移留口**已全部收口**(对账记录见 [implementation-progress](docs/design/p1-interpreter/implementation-progress.md)):主线程值栈 arena 化(VS0-a/b/c)+ 协程栈独立段(VS0-c 顺手交付)+ CallInfo 进每线程 arena 段(PW10 R2,4 word/帧 + word2 位打包)+ **varargs 进栈下区**(VS0-e 子步 ①~④,2026-06-16:`enterLuaFrame` 重排 `base = funcIdx + 1 + nVarargs`,vararg 落 `stack[base-nVarargs..base)`,对齐官方 Lua 5.1 真栈布局,统一栈模型 + GC 扫栈 `[0, top)` 自然覆盖)。
+# P3 gibbous-wasm 编译层（依赖 wazero）
+go build -tags "wangshu_p3 wangshu_profile" ./...
 
-### 性能基准
+# P4 gibbous-jit method JIT（自管原生码 codegen，amd64 + arm64）
+go build -tags "wangshu_p4 wangshu_profile" ./...
+```
 
-> 同机同日实测(Xeon 6982P-C,go1.26.2,`-count=3 -benchtime=2s` 取均值,2026-06-16)。绝对 ns 依机器而异,关注的是同机比值与分配数。`make bench` 复现。对比对象 gopher-lua v1.1.2。
->
-> wangshu 的定位是**与真实世界交互的嵌入式 VM**,不是只跑自含脚本的微基准产品——因此基准分四档,从「纯 VM 自含」一路覆盖到「边界密集的真实嵌入负载」,诚实呈现每一档的表现。**默认 build 跑新月解释器(P1);P3 凸月可选编译层数据见末段**。
+`wangshu_profile` 是升层前置：不带此 tag 时热度采样禁用，无法进入升层路径。`wangshu_p3` 与 `wangshu_p4` 互斥，一次只能启用一档。
 
-**① 纯 VM micro-bench**(`benchmarks/baseline`)——自含脚本,无数据跨界,衡量 VM 内核:
+```go
+st := wangshu.NewState(wangshu.Options{})
 
-| 脚本 | wangshu | gopher-lua | 倍率 |
-|------|---------|-----------|------|
-| simple(分支/比较) | 127 ns · 72 B | 879 ns · 2760 B | **6.95×** |
-| arith(Horner 多项式) | 175 ns · 72 B | 968 ns · 2832 B | **5.52×** |
-| loop(求和循环) | 17.3 µs · 72 B | 34.8 µs · 32.6 KB | **2.01×** |
+// auto 模式：默认。等待 hot function 自然升层（依 HotEntryThreshold）。
+_, _ = prog.Run(st)
 
-**② 真实负载纯 VM small-bench**(`benchmarks/realworld`)——benchmark-game 经典脚本,调用/分配/浮点/表操作混合,官方 lua5.1 对拍正确性:
+// force 模式：**testing-only**，绕过阈值全升。生产不要开。
+st.SetForceAllPromote(true)
+_, _ = prog.Run(st)
 
-| 脚本 | wangshu | gopher-lua | 倍率 |
-|------|---------|-----------|------|
-| fib | 9.91 ms · 87 B | 9.13 ms · 7.7 KB | 0.92× |
-| binary-trees | 34.82 ms · 62 KB · 34 allocs | 31.33 ms · 17.4 MB · 272k allocs | 0.90× |
-| spectral-norm | 17.52 ms · 5.2 KB | 21.05 ms · 6.8 MB · 26.6k allocs | **1.20×** |
-| n-body | 41.80 ms · 402 KB · 50k allocs | 44.05 ms · 11.3 MB · 92.7k allocs | **1.05×** |
-| fannkuch | 5.28 ms · 348 B | 3.97 ms · 34.6 KB · 132 allocs | 0.75×(表索引密集,剩余短板) |
+// 观测升层是否真的发生了
+n := st.PromotionCount() // >0 表示已经升层
+```
 
-> wangshu 在「纯 ns/op 倍率」上对 gopher 微输 fib/binary-trees,但 binary-trees / spectral-norm / n-body 的**分配数差 3-5 个数量级**(34 vs 272k / 39 vs 26.6k / 50k vs 92.7k allocs)——arena + freelist 内存模型对长寿命 State 嵌入(规则引擎 hot reload / 数据流转换)的 GC pressure 几乎为零。
+`SetForceAllPromote` 只绕过热度阈值，**不**绕过 F1-F7 可编译性闸门（协程、顶层 vararg、含 `ReasonUnknownCall`、含 VARARG opcode 的 proto 依然不升层）。升不动的 proto 无声降级回 P1 解释器，输出层间 byte-equal 不变。
 
-**③ 边界 mini-bench**(`benchmarks/embedded`,issue #8)——嵌入者真实路径:每次跨界 set 输入、call、读返回值。这是 VM 内核优势被边界成本主导的一档:
+### 管理与复用 arena
 
-| 档位 | wangshu `Call` | wangshu `CallInto` | gopher-lua |
-|------|----------------|--------------------|-----------|
-| PureVM(无跨界) | 121 ns · 72 B · 2 allocs | — | 853 ns · 2760 B · 8 allocs |
-| CallOnly(纯 call+读) | 183 ns · 72 B · 2 allocs | **75.7 ns · 0 B · 0 allocs** | 82.0 ns · 0 B · 0 allocs |
-| Boundary(+1×SetGlobal) | 306 ns · 72 B · 2 allocs | **176 ns · 0 B · 0 allocs** | 180 ns · 0 B · 0 allocs |
+`Options` 提供 arena 容量的初始值 / 上限：
 
-旧 `Call` 每次 round-trip 固定 72 B / 2 allocs(返回值双拷贝),边界密集时被这个地板成本主导——CallOnly/Boundary 两档反而**慢于** gopher-lua。零分配的 `CallInto`(调用方复用 `dst`)消除双拷贝,两档均**反超** gopher-lua(CallOnly 1.08× / Boundary 1.03×)。
+```go
+st := wangshu.NewState(wangshu.Options{
+    InitialArenaBytes: 64 * 1024,        // 初始 64 KiB
+    MaxArenaBytes:     16 * 1024 * 1024, // 上限 16 MiB，超阈 fail-fast
+})
+```
 
-**④ 真实负载 embedded bench**(`benchmarks/embedded`)——贴近 pineapple `transform_by_lua` 形态:每批 1000 item,逐 item set 字段 → call 谓词/特征变换脚本 → 读标量结果:
+统计指标：
 
-| 形态 | wangshu `Call` | wangshu `CallInto` | gopher-lua |
-|------|----------------|--------------------|-----------|
-| Predicate(布尔谓词,读 4 字段) | 527 µs · 72 KB · 2000 allocs | **396 µs · 0 B · 0 allocs** | 442 µs · 31.9 KB · 2990 allocs |
-| Transform(数值特征变换) | 408 µs · 72 KB · 2000 allocs | **273 µs · 0 B · 0 allocs** | 312 µs · 47.1 KB · 3080 allocs |
+```go
+st.GCCountKB()  // 当前已用 KB（live bytes；随 Collect 回落）
+st.ArenaCapKB() // arena backing 容量 KB（grow-only；pool 层据此判 fat state 阈值）
+st.PromotionCount() // 已升层 proto 数（testing-only 白盒断言）
+```
 
-旧 `Call` 路径下 Predicate 慢于 gopher-lua;改用 `CallInto` 后两形态均反超(**1.12× / 1.15×**)且全程零分配。boundary-dominated 嵌入(短脚本、高调用频率)用 `CallInto` 是兑现 VM 内核优势的关键。
+显式驱动 GC：
 
-> 形态选择:列内核(批量数据一次跨界、循环全在 VM 内,见上「快速开始」arena 示例)能完全摊薄边界成本,是高吞吐首选;无法列内核化的 per-item 形态请用 `CallInto` 复用 `dst` 走零分配路径。
+```go
+st.Collect()           // 强制一次 full GC sweep
+st.MaybeCollectNow()   // 依 host trigger 阈值判是否 collect（非强制）
+st.SetHostTriggeredCollect(true) // opt-in：host 侧跨阈自动 collect（要求 transient GCRef 全 pin）
+```
 
-#### P3 凸月编译层(可选)
+短脚本高频调用形态推荐用 `CallInto` 复用返回值切片，走零分配路径：
 
-> 启用方式:`go build -tags "wangshu_p3 wangshu_profile"`(两个 tag 都要)。同 build 下解释器自动为 hot function 升层到 Wasm,**输出 byte-equal 不变**;升不动的 proto 无声降级回新月(F1-F7 闸门)。**默认 build 不打包 wazero**。
+```go
+dst := make([]wangshu.Value, 0, 4)
+for i := 0; i < 1000; i++ {
+    n, err := st.CallInto(dst[:], fn, wangshu.String("item"))
+    _ = n; _ = err
+    // dst 复用，无 per-call 分配
+}
+```
 
-凸月在循环密集 hot function 形态收益显著(`test/difftest/p3_bench_test.go` 的 P3_Kernels,kernel 包内层 function;2026-06-16 force-all 实测):
+长寿命 State 场景（规则引擎 hot reload / 数据流转换）搭配 arena 的 `SetHostTriggeredCollect` + `Collect` cadence，可以把 GC 压力压到近乎为零。
 
-| 核 | 新月解释器 | 凸月 wasm | 倍率 |
-|---|---|---|---|
-| loop(循环密集内层函数) | 5.51 ms | 1.86 ms | **2.96×** ✅ |
-| table(表查找密集) | 86.9 ms | 95.4 ms | 0.91× |
-| call(内层函数互调) | 21.8 ms | 44.4 ms | 0.49×* |
-| mixed(混合) | 191.8 ms | 195.6 ms | 0.98× |
+## 语言支持
 
-> *call 0.49× 是 bench kernel 结构性架构边界:`body` 含 `ReasonUnknownCall`(F2-b 静态分析不能确认被调不 yield),force-all 强制升 body 后跨界税(~150 ns/调)无法摊销。**生产环境 F1-F7 闸门自动挡这类 proto,实际跑新月,无回归**。详 [p3 implementation-progress §14.10](docs/design/p3-wasm-tier/implementation-progress.md)。
+望舒实现的是 Lua 5.1 核心语言（与 LuaJIT 一致的语法层），覆盖 Lua 5.1 参考手册中定义的 38 个字节码 opcode 除 `VARARG` 外的全部（`VARARG` 在 P3/P4 编译层永不接入，走 P1 解释器路径），以及 stdlib 的 base / string / table / math / os / io / coroutine 全部必做面。
 
-**凸月适用形态**:长寿命 State + 循环密集 hot function(规则引擎 predicate、数据流转换 kernel)→ 升层后净赚。
-**凸月不适用形态**:短脚本一次性跑 / 配置文件解析 / 协程密集 → `wangshu_profile` 给解释器加 ~28% 采样税无法摊销,关凸月(默认 build)更优。
+正确性验证四层：
 
-约束(无声降级回新月,行为透明):
-- 协程不升层(F1 / PW8 线程级 tier 规则:gibbous 帧不可穿越 yield/resume)
-- 顶层 vararg main chunk 不升层(F1)
-- 含 ReasonUnknownCall 的 body 不升层(F2-b)
-- 含 VARARG opcode 的 proto 不升层(F3)
+1. **官方测试套 byte-equal**：13 个 5.1.5 官方文件（vararg / sort / pm 整文件 + 其余截至豁免线）逐字节一致。
+2. **手册逐节 probe**：100 项手册特性 + 12 项边角 + 29 条错误消息（含行号断言）+ 70 条种子用例逐字节一致。
+3. **差分随机 fuzz**：nightly-diff-fuzz workflow 每晚 2M 条随机脚本 vs Lua 5.1.5 oracle 对拍（P1 + P3 + P4 三档并行）。
+4. **三方差分**：crescent（P1）vs gibbous（P3/P4）在 P4 build 下每 CI 跑一次 byte-equal，PR #29/#31 tri-platform matrix 全绿。
 
+**豁免清单**（`test/difftest/corners_test.go::exemptions`，共 15 项，`go test -v -run TestExemptions_Documented` 可审计）：
 
-- 战略层:[docs/design/roadmap.md](docs/design/roadmap.md)(动机/校准测量/演进路线/非目标)
-- 总览:[docs/design/architecture.md](docs/design/architecture.md)(包布局/组件依赖/tier 映射)
-- P1 解释器详细设计(13 篇):[docs/design/p1-interpreter/](docs/design/p1-interpreter/),从 [00-overview](docs/design/p1-interpreter/00-overview.md) 进入;实现进度:[implementation-progress](docs/design/p1-interpreter/implementation-progress.md)
-- P2 分层桥详细设计(7 篇):[docs/design/p2-bridge/](docs/design/p2-bridge/),从 [00-overview](docs/design/p2-bridge/00-overview.md) 进入;实现进度:[implementation-progress](docs/design/p2-bridge/implementation-progress.md)(PB0-PB7 全 ✅,P2 后续优化轮规划中)
-- P3-P5 阶段设计:[p3-wasm-tier](docs/design/p3-wasm-tier/00-overview.md) · [p4-method-jit](docs/design/p4-method-jit/00-overview.md) · [p5-trace-jit](docs/design/p5-trace-jit.md)
-- 工程化机制(hooks/CI/Makefile/发布):[engineering](docs/design/engineering.md)
+| 类别 | 具体项 | 豁免原因 |
+| --- | --- | --- |
+| Lua 5.2+ 特性 | `rawlen`、`table.pack` / `table.move` | 与 5.1 手册不符 |
+| Lua 5.3+ 特性 | `math.tointeger` / `type` / `maxinteger` / `mininteger` | 整数类型属 5.3 特性 |
+| 嵌入式安全 | `os.execute`、`io.popen` / `io.tmpfile`、`os.exit` 真退出、`loadfile` / `dofile` 默认禁用 | 嵌入式 VM 不让脚本跑 shell / 越权文件系统 |
+| Debug 接口 | `debug.sethook` / `getlocal` / `setlocal` / `getupvalue` / `setupvalue` / `getregistry` | 需要解释器内部 hook，成本收益不划算 |
+| 模块系统 | `require` / `module` / `package` | 嵌入式宿主经 `Compile` 提供脚本，不从文件系统 require |
+| 字节码序列化 | `string.dump` | 自定义 ISA 不兼容官方 `.luc` |
+| 环境操作 | `getfenv` / `setfenv` | 与 P2 分层桥 F4 形状分析冲突 |
+| C 未定义行为 | `tonumber` 负数 `strtoul` 回绕 | 官方经 C `strtoul` 溢出返 `1.844e19`，本实现返 `-255`，取直觉语义 |
+| 灾难性回溯 | pattern 灾难回溯 `.*.+%A*x` | 回溯预算 `1<<20` 步硬限，报 `pattern too complex`（嵌入式防挂起） |
+| 增量 GC | `collectgarbage("step"/"setstepmul")` | STW GC 无增量调参，占位返回 |
+
+其余「存在但不逐字节比」的项（`collectgarbage("count")` / `gcinfo` / `os.time` / `os.clock` / `os.date("%Y")` / `io.write` / `loadfile` 返错形态）由 `TestApprox_ExistenceOnly` 只断言形态不比值。
+
+## 文档导航
+
+按角色路径：
+
+- **想用起来**：本 README 「快速开始」→ [pkg.go.dev](https://pkg.go.dev/github.com/Liam0205/wangshu) 的 `Compile` / `Program.Run` / `Program.Call` / `State.CallInto` API 参考。
+- **想理解架构**：[docs/design/architecture.md](docs/design/architecture.md)（包布局 / 组件依赖 / tier 映射）→ [docs/design/roadmap.md](docs/design/roadmap.md)（动机 / 校准测量 / 演进路线 / 非目标）。
+- **深入某一层**：
+  - P1 解释器（13 篇）：[docs/design/p1-interpreter/00-overview.md](docs/design/p1-interpreter/00-overview.md) 起 · 进度对账 [implementation-progress](docs/design/p1-interpreter/implementation-progress.md)
+  - P2 分层桥（7 篇）：[docs/design/p2-bridge/00-overview.md](docs/design/p2-bridge/00-overview.md) 起 · 进度对账 [implementation-progress](docs/design/p2-bridge/implementation-progress.md)
+  - P3 gibbous-wasm（10 篇）：[docs/design/p3-wasm-tier/00-overview.md](docs/design/p3-wasm-tier/00-overview.md) 起 · 进度对账 [implementation-progress](docs/design/p3-wasm-tier/implementation-progress.md)
+  - P4 gibbous-jit（11 篇 + progress）：[docs/design/p4-method-jit/00-overview.md](docs/design/p4-method-jit/00-overview.md) 起 · 进度对账 [implementation-progress](docs/design/p4-method-jit/implementation-progress.md) · PJ11 验收 [09-acceptance-checklist](docs/design/p4-method-jit/09-acceptance-checklist.md)
+  - P5 trace JIT（尚未实现）：[docs/design/p5-trace-jit.md](docs/design/p5-trace-jit.md)（轮廓设计）
+- **工程规范 / 提交纪律**：[docs/design/engineering.md](docs/design/engineering.md)（Git hooks / CI / Makefile / 发布纪律 / lint 工具链）。
+- **AI 协作规范**：[llmdoc/](llmdoc/) 目录记录项目层面对 LLM 协作者的引导——[startup.md](llmdoc/startup.md) 起，含 must（不可违背）/ guides（协作最佳实践）/ memory（历史决议与反思，`reflections/` 有各里程碑教训）。
+
+## 欢迎贡献
+
+Issue 与 PR 都欢迎。基本步骤：
+
+**开发环境**：Go 1.25+，Linux/amd64、Linux/arm64 或 macOS/arm64（其他 GOOS/GOARCH 组合按纯 Go stub 编译过但未真跑测试）。可选依赖：`lua5.1`（官方 oracle，差分测试用；`apt install lua5.1` 或源码编译 5.1.5）、`golangci-lint`（lint）。
+
+**常用 make 目标**：
+
+```bash
+make all              # 提交前本地全检：fmt + lint + build-all + test-all + fuzz-all + conformance + difftest-all
+make test-p4          # 单独跑 P4 build 全套测试
+make test-p3          # 单独跑 P3 build
+make difftest         # 三档 × 三平台差分测试
+make fuzz-p4          # P4 build 下 fuzz 冒烟
+make bench            # baseline 微基准
+make release TAG=vX.Y.Z MESSAGE_FILE=notes.txt  # 打 annotated tag（本地不 push）
+```
+
+**提交流程**：
+
+1. Fork + 建 feature 分支（不要直接 push master）。
+2. 本地 `make all` 通过。
+3. Commit message 用英文，subject 单行 ≤ 72 字符 ASCII，body 中文可以，说清 why 与 how。
+4. PR 描述必须包含变更范围、测试情况、是否引入外部依赖（zero-cgo / 主库 zero 外部依赖是硬承诺）。
+5. PR 触发 CI（三平台 × 三 build × test/fuzz-smoke/conformance/difftest 全绿）+ agentic-pr-review bot 自动审阅；bot 提 REQUEST_CHANGES 须响应，APPROVE 后 maintainer 审 merge。
+6. 大改动之前建议先开 issue 讨论方向。
+
+**Bug report** 请附最小复现脚本、Go 版本、GOOS/GOARCH、`make all` 输出。若涉及输出与官方 5.1.5 不一致，一起附上 `lua5.1 -e ...` 的 stdout 对比。
+
+## 许可证
+
+Apache License 2.0，见 [LICENSE](LICENSE)（若文件缺失以 `go.mod` 声明为准）。
+
+用人话总结：
+
+- 可自由地用、改、分发、商用，包括嵌入闭源产品；
+- 保留 LICENSE 与版权声明；
+- 若你的分发物包含本项目的改动，简要标注改动点即可；
+- 项目方无担保义务，`AS IS`。
