@@ -27,7 +27,7 @@ import (
 // After the shim call, if RAX != 0 the caller should emit
 // emitStatusCheckAndBubble to propagate the error. Callers embedded
 // inside a larger emit sequence typically do that at end-of-op.
-func emitARITH(cb *codeBuf, op bytecode.OpCode, pc int32, a, b, c uint8) {
+func emitARITH(cb *codeBuf, op bytecode.OpCode, pc int32, a uint8, b, c int) {
 	addr := shimArithAddr()
 	// shimArith(ctx, base, pc, op, b, c, a)
 	emitCallShim(cb, addr, []int32{0, pc, int32(op), int32(b), int32(c), int32(a)})
@@ -36,22 +36,22 @@ func emitARITH(cb *codeBuf, op bytecode.OpCode, pc int32, a, b, c uint8) {
 
 // emitADD/SUB/MUL/DIV/MOD/POW are thin wrappers on emitARITH with a
 // baked op code.
-func emitADD(cb *codeBuf, pc int32, a, b, c uint8) {
+func emitADD(cb *codeBuf, pc int32, a uint8, b, c int) {
 	emitARITH(cb, bytecode.ADD, pc, a, b, c)
 }
-func emitSUB(cb *codeBuf, pc int32, a, b, c uint8) {
+func emitSUB(cb *codeBuf, pc int32, a uint8, b, c int) {
 	emitARITH(cb, bytecode.SUB, pc, a, b, c)
 }
-func emitMUL(cb *codeBuf, pc int32, a, b, c uint8) {
+func emitMUL(cb *codeBuf, pc int32, a uint8, b, c int) {
 	emitARITH(cb, bytecode.MUL, pc, a, b, c)
 }
-func emitDIV(cb *codeBuf, pc int32, a, b, c uint8) {
+func emitDIV(cb *codeBuf, pc int32, a uint8, b, c int) {
 	emitARITH(cb, bytecode.DIV, pc, a, b, c)
 }
-func emitMOD(cb *codeBuf, pc int32, a, b, c uint8) {
+func emitMOD(cb *codeBuf, pc int32, a uint8, b, c int) {
 	emitARITH(cb, bytecode.MOD, pc, a, b, c)
 }
-func emitPOW(cb *codeBuf, pc int32, a, b, c uint8) {
+func emitPOW(cb *codeBuf, pc int32, a uint8, b, c int) {
 	emitARITH(cb, bytecode.POW, pc, a, b, c)
 }
 
@@ -67,7 +67,8 @@ func emitLEN(cb *codeBuf, pc int32, a, b uint8) {
 	emitStatusCheckAndBubble(cb)
 }
 
-// emitCONCAT emits R(A) := R(B) .. .. R(C) via shimConcat.
+// emitCONCAT emits R(A) := R(B) .. .. R(C) via shimConcat. B/C here
+// are register range endpoints (0-MaxStack, always in uint8 range).
 func emitCONCAT(cb *codeBuf, pc int32, a, b, c uint8) {
 	emitCallShim(cb, shimConcatAddr(), []int32{0, pc, int32(a), int32(b), int32(c)})
 	emitStatusCheckAndBubble(cb)
@@ -165,7 +166,7 @@ var _ = unsafe.Pointer(nil)
 //
 // Since this needs branch to specific BB targets, the emit function
 // takes those as parameters and records fixups.
-func emitCompare(cb *codeBuf, op bytecode.OpCode, pc int32, a, b, c uint8, succExec, succSkip int) {
+func emitCompare(cb *codeBuf, op bytecode.OpCode, pc int32, a uint8, b, c int, succExec, succSkip int) {
 	// shim: for EQ use shimEq, for LT/LE use shimCompare(op, b, c)
 	if op == bytecode.EQ {
 		emitCallShim(cb, shimEqAddr(), []int32{0, pc, int32(b), int32(c)})
@@ -200,13 +201,13 @@ func emitCompare(cb *codeBuf, op bytecode.OpCode, pc int32, a, b, c uint8, succE
 }
 
 // emitEQ / LT / LE are thin wrappers.
-func emitEQ(cb *codeBuf, pc int32, a, b, c uint8, succExec, succSkip int) {
+func emitEQ(cb *codeBuf, pc int32, a uint8, b, c int, succExec, succSkip int) {
 	emitCompare(cb, bytecode.EQ, pc, a, b, c, succExec, succSkip)
 }
-func emitLT(cb *codeBuf, pc int32, a, b, c uint8, succExec, succSkip int) {
+func emitLT(cb *codeBuf, pc int32, a uint8, b, c int, succExec, succSkip int) {
 	emitCompare(cb, bytecode.LT, pc, a, b, c, succExec, succSkip)
 }
-func emitLE(cb *codeBuf, pc int32, a, b, c uint8, succExec, succSkip int) {
+func emitLE(cb *codeBuf, pc int32, a uint8, b, c int, succExec, succSkip int) {
 	emitCompare(cb, bytecode.LE, pc, a, b, c, succExec, succSkip)
 }
 
@@ -595,12 +596,12 @@ func emitTFORLOOP(cb *codeBuf, pc int32, a, c uint8, succBack, succOut int) {
 // Table + call ops (PJ10d)
 // ---------------------------------------------------------------------
 
-func emitGETTABLE(cb *codeBuf, pc int32, a, b, c uint8) {
+func emitGETTABLE(cb *codeBuf, pc int32, a, b uint8, c int) {
 	emitCallShim(cb, shimGetTableAddr(), []int32{0, pc, int32(a), int32(b), int32(c)})
 	emitStatusCheckAndBubble(cb)
 }
 
-func emitSETTABLE(cb *codeBuf, pc int32, a, b, c uint8) {
+func emitSETTABLE(cb *codeBuf, pc int32, a uint8, b, c int) {
 	emitCallShim(cb, shimSetTableAddr(), []int32{0, pc, int32(a), int32(b), int32(c)})
 	emitStatusCheckAndBubble(cb)
 }
@@ -638,7 +639,7 @@ func emitTAILCALL(cb *codeBuf, pc int32, a, b, c uint8) {
 	// the CFG (or by tail-call collapsing in the emit path).
 }
 
-func emitSELF(cb *codeBuf, pc int32, a, b, c uint8) {
+func emitSELF(cb *codeBuf, pc int32, a, b uint8, c int) {
 	emitCallShim(cb, shimSelfAddr(), []int32{0, pc, int32(a), int32(b), int32(c)})
 	emitStatusCheckAndBubble(cb)
 }

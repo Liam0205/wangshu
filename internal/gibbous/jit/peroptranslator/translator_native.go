@@ -42,7 +42,20 @@ type nativeCode struct {
 
 func (c *nativeCode) Proto() *bytecode.Proto { return c.proto }
 
-func (c *nativeCode) Run(stack []uint64, base uint32) int32 {
+func (c *nativeCode) Run(stack []uint64, base uint32) (status int32) {
+	// Defense in depth: if the mmap segment corrupts the Go runtime state
+	// enough to trigger a fault on RET, catch it and report an error
+	// instead of taking down the host process. This is a stopgap while
+	// the root cause of the nested + concurrent crash is being tracked
+	// (see [[project-pj10-native-longtask]]).
+	defer func() {
+		if r := recover(); r != nil {
+			if len(stack) > 0 {
+				stack[0] = 1
+			}
+			status = 1
+		}
+	}()
 	if c.codePage == nil || c.jitCtx == nil || c.host == nil {
 		if len(stack) > 0 {
 			stack[0] = 1
@@ -62,8 +75,9 @@ func (c *nativeCode) Run(stack []uint64, base uint32) int32 {
 
 	jitCtxAddr := uintptr(unsafe.Pointer(c.jitCtx))
 	vsBaseAddr := c.host.ValueStackBaseAddr(int32(base))
-	status := jitamd64.CallJITSpec(c.codePage.Addr(), jitCtxAddr, vsBaseAddr)
-	return int32(status)
+	rawStatus := jitamd64.CallJITSpec(c.codePage.Addr(), jitCtxAddr, vsBaseAddr)
+	status = int32(rawStatus)
+	return status
 }
 
 func (c *nativeCode) PendingErr() error    { return nil }
@@ -187,6 +201,18 @@ func TranslateProtoNative(proto *bytecode.Proto, host jit.P4HostState) (*nativeC
 		}, nil
 	}
 
+	// Emit a prologue that initializes RBX = vsBase from jitCtx. This
+	// makes the mmap segment self-contained: it can be called by any
+	// trampoline (CallJITSpec or CallJITFull) as long as R15 = jitCtx.
+	// The prologue is the first instructions before BB 0.
+	//
+	// mov rbx, [r15 + valueStackBaseOff]  (7 bytes)
+	buf.emit([]byte{0x49, 0x8B, 0x9F,
+		byte(jit.JITContextValueStackBaseOffset),
+		byte(jit.JITContextValueStackBaseOffset >> 8),
+		byte(jit.JITContextValueStackBaseOffset >> 16),
+		byte(jit.JITContextValueStackBaseOffset >> 24)})
+
 	// Emit each BB in id order (which happens to be startPC order thanks
 	// to buildCFG's leader sort). This is not the same as rPostOrder but
 	// works for reducible CFGs where the entry is BB 0.
@@ -242,57 +268,61 @@ func emitBB(buf *codeBuf, c *cfg, bb *basicBlock, bbID int) error {
 func emitLinearOp(buf *codeBuf, ins bytecode.Instruction, pc int32) error {
 	op := bytecode.Op(ins)
 	a := uint8(bytecode.A(ins))
-	b := uint8(bytecode.B(ins))
-	c := uint8(bytecode.C(ins))
+	// b and c may be RK-encoded (0..511 range) for arithmetic /
+	// comparison / table ops - keep them as int, not uint8.
+	bReg := uint8(bytecode.B(ins))
+	cReg := uint8(bytecode.C(ins))
+	bRK := bytecode.B(ins)
+	cRK := bytecode.C(ins)
 	bx := bytecode.Bx(ins)
 
 	switch op {
 	case bytecode.MOVE:
-		emitMOVE(buf, a, b)
+		emitMOVE(buf, a, bReg)
 	case bytecode.LOADK:
 		if buf.proto == nil || int(bx) >= len(buf.proto.Consts) {
 			return fmt.Errorf("LOADK: const idx %d out of range", bx)
 		}
 		emitLOADK(buf, a, buf.proto.Consts[bx])
 	case bytecode.LOADBOOL:
-		emitLOADBOOL_valueOnly(buf, a, b)
+		emitLOADBOOL_valueOnly(buf, a, bReg)
 	case bytecode.LOADNIL:
-		emitLOADNIL(buf, a, b)
+		emitLOADNIL(buf, a, bReg)
 	case bytecode.GETUPVAL:
-		emitGETUPVAL(buf, a, b)
+		emitGETUPVAL(buf, a, bReg)
 	case bytecode.SETUPVAL:
-		emitSETUPVAL(buf, a, b)
+		emitSETUPVAL(buf, a, bReg)
 	case bytecode.GETGLOBAL:
 		emitGETGLOBAL(buf, pc, a, uint16(bx))
 	case bytecode.SETGLOBAL:
 		emitSETGLOBAL(buf, pc, a, uint16(bx))
 	case bytecode.GETTABLE:
-		emitGETTABLE(buf, pc, a, b, c)
+		emitGETTABLE(buf, pc, a, bReg, cRK)
 	case bytecode.SETTABLE:
-		emitSETTABLE(buf, pc, a, b, c)
+		emitSETTABLE(buf, pc, a, bRK, cRK)
 	case bytecode.NEWTABLE:
-		emitNEWTABLE(buf, pc, a, b, c)
+		emitNEWTABLE(buf, pc, a, bReg, cReg)
 	case bytecode.SELF:
-		emitSELF(buf, pc, a, b, c)
+		emitSELF(buf, pc, a, bReg, cRK)
 	case bytecode.ADD, bytecode.SUB, bytecode.MUL, bytecode.DIV,
 		bytecode.MOD, bytecode.POW:
-		emitARITH(buf, op, pc, a, b, c)
+		emitARITH(buf, op, pc, a, bRK, cRK)
 	case bytecode.UNM:
-		emitUNM(buf, pc, a, b)
+		emitUNM(buf, pc, a, bReg)
 	case bytecode.NOT:
-		emitNOT(buf, a, b)
+		emitNOT(buf, a, bReg)
 	case bytecode.LEN:
-		emitLEN(buf, pc, a, b)
+		emitLEN(buf, pc, a, bReg)
 	case bytecode.CONCAT:
-		emitCONCAT(buf, pc, a, b, c)
+		emitCONCAT(buf, pc, a, bReg, cReg)
 	case bytecode.CALL:
-		emitCALL(buf, pc, a, b, c)
+		emitCALL(buf, pc, a, bReg, cReg)
 	case bytecode.CLOSURE:
 		emitCLOSURE(buf, pc, a, uint16(bx))
 	case bytecode.CLOSE:
 		emitCLOSE(buf, pc, a)
 	case bytecode.SETLIST:
-		emitSETLIST(buf, pc, a, b, c)
+		emitSETLIST(buf, pc, a, bReg, cReg)
 	default:
 		return fmt.Errorf("emitLinearOp: unsupported op %v at pc %d", op, pc)
 	}
@@ -306,6 +336,8 @@ func emitTerminator(buf *codeBuf, c *cfg, bb *basicBlock, bbID int, ins bytecode
 	a := uint8(bytecode.A(ins))
 	b := uint8(bytecode.B(ins))
 	cc := uint8(bytecode.C(ins))
+	bRK := bytecode.B(ins)
+	cRK := bytecode.C(ins)
 
 	switch op {
 	case bytecode.RETURN:
@@ -342,7 +374,7 @@ func emitTerminator(buf *codeBuf, c *cfg, bb *basicBlock, bbID int, ins bytecode
 			return fmt.Errorf("%v with %d succs at pc %d", op, len(bb.succs), pc)
 		}
 		// linkSuccs: succs[0] = pc+1 (execute JMP), succs[1] = pc+2 (skip).
-		emitCompare(buf, op, pc, a, b, cc, bb.succs[0], bb.succs[1])
+		emitCompare(buf, op, pc, a, bRK, cRK, bb.succs[0], bb.succs[1])
 	case bytecode.TEST:
 		if len(bb.succs) != 2 {
 			return fmt.Errorf("TEST with %d succs at pc %d", len(bb.succs), pc)
