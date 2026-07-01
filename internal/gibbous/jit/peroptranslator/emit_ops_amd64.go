@@ -609,47 +609,37 @@ func emitFORLOOP(cb *codeBuf, a uint8, succBack, succOut int) {
 	// step <= 0 block (offset 0 relative to end of ja):
 	// ucomisd xmm0, xmm1
 	cb.emit(jitamd64.EmitUcomisdXmmXmm(nil, 0, 1))
-	// jae +4 (to condTrue, skipping the 2-byte jmp)
-	// The condTrue label is at relative offset 4 from end of this jae:
-	//   next 2 bytes are jmp condFalse
-	//   then stepPositive block (8 bytes)... wait no, stepPositive is
-	//   the other branch, comes before condTrue in layout.
-	//
-	// Re-plan: put both step-check blocks contiguous, then condTrue,
-	// then condFalse.
-	//
-	// After the ja +8, we're at position P.
-	// step<=0 (8 bytes): [P..P+7]
+	// Layout after `ja +8`, position P = pos just after `ja +8` (before this ucomisd).
+	// step<=0 (8 bytes):     [P..P+7]
+	//   ucomisd (4b):          [P..P+3]
+	//   jae +N to condTrue:    [P+4..P+5]
+	//   jmp +M to condFalse:   [P+6..P+7]
 	// stepPositive (8 bytes): [P+8..P+15]
-	// condTrue (14 bytes): [P+16..P+29]
-	// condFalse (5 bytes): [P+30..P+34]
+	//   ucomisd (4b):          [P+8..P+11]
+	//   jae +N to condTrue:    [P+12..P+13]
+	//   jmp +M to condFalse:   [P+14..P+15]
+	// condTrue (13 bytes):    [P+16..P+28]
+	//   movsd disp32 (8b):     [P+16..P+23]
+	//   jmp rel32 (5b):        [P+24..P+28]
+	// condFalse (5 bytes):    [P+29..P+33]
+	//   jmp rel32 (5b):        [P+29..P+33]
 	//
-	// In step<=0:
-	//   ucomisd (4b): [P..P+3]
-	//   jae +N to condTrue: [P+4..P+5]
-	//     from end of jae (P+6) to condTrue (P+16): delta = 10.
-	//   jmp +M to condFalse: [P+6..P+7]
-	//     from end of jmp (P+8) to condFalse (P+30): delta = 22.
-	//
-	// In stepPositive:
-	//   ucomisd (4b): [P+8..P+11]
-	//   jae +N to condTrue: [P+12..P+13]
-	//     from end (P+14) to condTrue (P+16): delta = 2.
-	//   jmp +M to condFalse: [P+14..P+15]
-	//     from end (P+16) to condFalse (P+30): delta = 14.
-	//
+	// step<=0 jae: end at P+6, target condTrue P+16 => rel8 = +10
+	// step<=0 jmp: end at P+8, target condFalse P+29 => rel8 = +21
+	// stepPositive jae: end at P+14, target condTrue P+16 => rel8 = +2
+	// stepPositive jmp: end at P+16, target condFalse P+29 => rel8 = +13
 	// jae +10 to condTrue
 	cb.emit([]byte{0x73, 10})
-	// jmp +22 to condFalse
-	cb.emit([]byte{0xEB, 22})
+	// jmp +21 to condFalse
+	cb.emit([]byte{0xEB, 21})
 
 	// stepPositive block:
 	// ucomisd xmm1, xmm0
 	cb.emit(jitamd64.EmitUcomisdXmmXmm(nil, 1, 0))
 	// jae +2 to condTrue
 	cb.emit([]byte{0x73, 2})
-	// jmp +14 to condFalse
-	cb.emit([]byte{0xEB, 14})
+	// jmp +13 to condFalse
+	cb.emit([]byte{0xEB, 13})
 
 	// condTrue block:
 	// movsd [rbx+(A+3)*8], xmm0    (disp32 form always used)

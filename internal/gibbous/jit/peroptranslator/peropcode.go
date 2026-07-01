@@ -634,6 +634,36 @@ func TranslateProto(proto *bytecode.Proto, host jit.P4HostState) (bridge.Gibbous
 // (e.g. with `import _ ".../peroptranslator"`) and the hooks become
 // non-nil, the jit Compiler's SupportsAllOpcodes / Compile fall-through
 // gain the PJ10 supported subset.
+//
+// **Native path status (2026-07-01)**: TranslateProtoNative +
+// AnalyzeNative exist and pass isolated e2e tests, but a crash on
+// trampoline RET when a native compile is invoked from a nested
+// gibbous chain (crescent -> outer p4Code -> host.CallBaseline ->
+// crescent -> native code) blocks production wiring. The native path
+// is exported (callable explicitly) and covered by e2e tests, but the
+// analyser hook here does NOT route production compile requests to it
+// yet. See [[project-pj10-native-longtask]] for the follow-up.
+// init registers TranslateProto + a Shape analyser into the jit main
+// package. This is the "PJ10 enabled" switch: import this sub-package
+// (e.g. with `import _ ".../peroptranslator"`) and the hooks become
+// non-nil, the jit Compiler's SupportsAllOpcodes / Compile fall-through
+// gain the PJ10 supported subset.
+//
+// **Native path status (2026-07-01)**: TranslateProtoNative +
+// AnalyzeNative are exported and covered by isolated e2e tests. When
+// wired into production (analyser accepts native shapes and translator
+// falls through to TranslateProtoNative), the concurrent multi-goroutine
+// force-all difftest crashes on the mmap trampoline RET. Root cause is
+// likely a race between the Go runtime stack manager and the mmap
+// segment's helper-call sequence. Isolated e2e tests do not exhibit
+// this because they don't run multiple goroutines pounding on shared
+// Protos.
+//
+// The production wiring below therefore uses only the head-op replay
+// path (TranslateProto). TranslateProtoNative remains callable
+// explicitly for benchmarks or offline tests; see the "native compile"
+// path in tests/. Follow-up (memory: [[project-pj10-native-longtask]])
+// is to resolve the concurrent-crash and re-enable production wiring.
 func init() {
 	jit.RegisterPerOpTranslator(TranslateProto, func(proto *bytecode.Proto) bool {
 		return AnalyzeShape(proto).ok

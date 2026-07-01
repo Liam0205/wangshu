@@ -33,6 +33,22 @@ type codeBuf struct {
 	//                 used as the origin for rel32 arithmetic
 	//   targetBB:     BB whose entry offset is the displacement's target
 	fixups []fixup
+
+	// proto is the Proto being translated. Emit functions consult it for
+	// K(Bx) values (LOADK), string constants, and other compile-time
+	// data. May be nil for byte-level unit tests. Stored as a raw
+	// pointer to avoid a bytecode import cycle in this file (cfg.go
+	// already imports bytecode, so the concrete field can migrate here
+	// later if the split becomes friction).
+	proto *codeBufProto
+}
+
+// codeBufProto is a minimal shim holding the compile-time data an emit
+// function may need. Populated by TranslateProtoNative before emit.
+type codeBufProto struct {
+	// Consts are the raw NaN-boxed constant values (Proto.Consts as
+	// uint64). Emit_amd64.go's emitLOADK reads Consts[Bx].
+	Consts []uint64
 }
 
 type fixup struct {
