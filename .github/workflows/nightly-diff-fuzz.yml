@@ -26,17 +26,25 @@ permissions:
 
 jobs:
   diff-fuzz:
-    # 矩阵覆盖:p1 = 新月解释器路径;p3 = 凸月升层 wasm 路径
-    # 凸月升层后代码与新月共用同一套 fuzz 输入,但跑不同的 VM 路径——补 nightly fuzz
-    # 的凸月覆盖缺口(此前完全不在矩阵中)。
+    # Matrix covers: p1 = crescent (new-moon) interpreter path;
+    #                p3 = gibbous wasm (P3) promoted path;
+    #                p4 = gibbous jit (P4) native promoted path (added 2026-07-01
+    #                     to close V21 30-day longevity + V22 30-day guard-omission
+    #                     accumulation for P4; see docs/design/p4-method-jit/
+    #                     08-testing-strategy.md V21/V22).
+    # All three build tiers share the same fuzz input corpus but exercise
+    # different VM paths -- rolling-seed diff + GC-stress + go-fuzz native long
+    # run guard byte-equal / no-crash for each tier every night.
     strategy:
-      fail-fast: false # 一个 build 撞 divergence 不阻塞另一个继续撞
+      fail-fast: false # a build hitting divergence does not stop others from continuing
       matrix:
         include:
           - variant: p1
             tags: ''
           - variant: p3
             tags: 'wangshu_p3 wangshu_profile'
+          - variant: p4
+            tags: 'wangshu_p4 wangshu_profile'
     name: diff-fuzz (${{ matrix.variant }})
     runs-on: ubuntu-latest
     timeout-minutes: 350
@@ -58,9 +66,12 @@ jobs:
       - name: rolling-seed differential fuzz (${{ matrix.variant }})
         id: difffuzz
         run: |
-          # 日期纪元作滚动种子基:每天一段新种子空间,失败可精确重放。
-          # 种子段间距 1e7,按每晚 200 万脚本(本地实测 ~1ms/脚本,约 35-60 分钟)留 5 倍余量。
-          # 凸月 build 速度可能略慢(wazero 初始化 + 升层 + wasm dispatch),timeout 相同
+          # Date epoch as rolling seed base: fresh seed space each day, seed
+          # for a failing run replays deterministically. Seed segment stride
+          # 1e7, sized for 2M scripts/night (~1ms/script locally, 35-60 min)
+          # with 5x safety headroom. p3 (wazero init + promotion + wasm
+          # dispatch) and p4 (jit mmap + native emit + trampoline) may be
+          # slightly slower than p1; the 150m timeout absorbs both.
           SEED_BASE=$(( $(date -u +%s) / 86400 * 10000000 ))
           ROUNDS="${{ github.event.inputs.rounds || '2000000' }}"
           echo "seed_base=$SEED_BASE" >> "$GITHUB_OUTPUT"
