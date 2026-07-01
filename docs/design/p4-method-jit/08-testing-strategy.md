@@ -360,22 +360,38 @@ type WangshuGibbousJIT struct{                         // ★ P4(本文落地)
 
 ### 3.4 持续 fuzz(survives nightly)
 
-承 [../p1-interpreter/12-testing-difftest.md](../p1-interpreter/12-testing-difftest.md) §11(PR 门禁固定时长 + nightly 长跑)+ [../p3-wasm-tier/08-testing-strategy.md](../p3-wasm-tier/08-testing-strategy.md) §2.5 / §4.2(已扩 gibbous 轴)在 P4 维度的具体接入:
+承 [../p1-interpreter/12-testing-difftest.md](../p1-interpreter/12-testing-difftest.md) §11(PR 门禁固定时长 + nightly 长跑)+ [../p3-wasm-tier/08-testing-strategy.md](../p3-wasm-tier/08-testing-strategy.md) §2.5 / §4.2(已扩 gibbous 轴)在 P4 维度的具体接入(真实现见 [`.github/workflows/nightly-diff-fuzz.yml`](../../../.github/workflows/nightly-diff-fuzz.yml),2026-07-01 起 matrix 覆盖 p1/p3/p4 三 variant):
 
 ```yaml
-# .github/workflows/nightly-diff-fuzz.yml —— P4 接入(示意)
+# .github/workflows/nightly-diff-fuzz.yml —— P4 变体挂钩后当前形态
 jobs:
-  nightly-diff-fuzz:
-    strategy: { matrix: { arch: [amd64, arm64] } }   # ★ 双架构必跑(承 §6)
+  diff-fuzz:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: p1
+            tags: ''
+          - variant: p3
+            tags: 'wangshu_p3 wangshu_profile'
+          - variant: p4                                   # ★ 2026-07-01 挂钩
+            tags: 'wangshu_p4 wangshu_profile'
+    runs-on: ubuntu-latest
     steps:
-      - run: go test -tags wangshu_p3 -fuzz=FuzzCrescentVsGibbous -fuzztime=2h ./test/difftest/
-      - run: go test -tags 'wangshu_p3 wangshu_p4' -fuzz=FuzzCrescentVsGibbousJIT -fuzztime=2h ./test/difftest/
-      - run: go test -tags 'wangshu_p3 wangshu_p4 wangshu_p4_guardfuzz' -fuzz=FuzzGuardOmission -fuzztime=2h ./test/difftest/
-      - run: go test -tags 'wangshu_p3 wangshu_p4' -fuzz=FuzzDeoptInjection -fuzztime=2h ./test/difftest/
-      - run: go test -tags 'wangshu_p3 wangshu_p4' -run=TestGCStressGibbousJIT -count=20 ./test/difftest/
+      # 1. rolling-seed differential fuzz(每晚 200 万脚本 vs lua5.1.5 oracle)
+      - run: WANGSHU_FUZZ_SEED_BASE=$(($(date -u +%s)/86400*10000000)) \
+             WANGSHU_FUZZ_N=2000000 \
+             go test -tags "${{ matrix.tags }}" ./test/difftest/ \
+               -run TestDiff_RandomScripts -timeout 150m
+      # 2. GC-stress transparency fuzz(20 万脚本双模式对照)
+      - run: WANGSHU_GCSTRESS_N=200000 \
+             go test -tags "${{ matrix.tags }}" ./test/difftest/ \
+               -run TestGCStress -timeout 60m
+      # 3. go-fuzz native long run(各 fuzz target 45m)
+      - run: ./scripts/go-fuzz.sh 45m "${{ matrix.tags }}"
 ```
 
-**关键纪律**:nightly fuzz **必须双架构都跑** —— amd64 与 arm64 各自独立 fuzz 进程,撒种子集 / fuzz 库各自维护;crash 与 mismatch 报告分别 triage(arm64 撞出的 bug 可能是 emitter bug,amd64 撞出的可能是模板逻辑 bug,必须分开归档)。
+**空间 × 时间协同覆盖**:PR 门禁 [`.github/workflows/ci.yml`](../../../.github/workflows/ci.yml) 用 tri-platform matrix(ubuntu-latest amd64 + ubuntu-24.04-arm 原生 GHA runner + macos-latest M1)× P1/P3/P4 三 variant × test/fuzz-smoke/conformance/difftest 四 job 覆盖**空间维度**(3 平台 × 3 build);nightly-diff-fuzz.yml 用 ubuntu-latest amd64 单平台 × P1/P3/P4 三 variant × rolling-seed diff + GC-stress + go-fuzz 三项覆盖**时间维度**(每晚积累)。V21 双架构 byte-equal 已由 tri-platform ci.yml 覆盖(承 §6),nightly 单平台累积用来抓 30 天时间维度的 rare divergence,不重复跑三平台以省 CI 资源。crash 与 mismatch 报告分别 triage(nightly-diff-fuzz.yml 已内置 `DIVERGENCE seed=X kind=Y` 结构化标记 + go-fuzz crash 分流 + infra failure 分流,自动开 issue)。
 
 ### 3.5 CI 硬门禁(architecture §4 不变式 2)
 
