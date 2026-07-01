@@ -21,7 +21,8 @@ import (
 	"github.com/Liam0205/wangshu"
 )
 
-func benchVMGibbousJIT(b *testing.B, name string) {
+// benchVMGibbousJITForce: force-all + warmup, P4 steady-state.
+func benchVMGibbousJITForce(b *testing.B, name string) {
 	src := loadScript(b, name)
 	prog, err := wangshu.Compile(src, name)
 	if err != nil {
@@ -40,6 +41,32 @@ func benchVMGibbousJIT(b *testing.B, name string) {
 	}
 }
 
-func BenchmarkHeavyArith_GibbousJIT(b *testing.B)     { benchVMGibbousJIT(b, "heavy_arith") }
-func BenchmarkHeavyRecursion_GibbousJIT(b *testing.B) { benchVMGibbousJIT(b, "heavy_recursion") }
-func BenchmarkHeavyFloatloop_GibbousJIT(b *testing.B) { benchVMGibbousJIT(b, "heavy_floatloop") }
+// benchVMGibbousJITAuto: production heat threshold, single long-lived
+// State reused across iterations (embedder-with-pool semantics). No
+// force-all, no warmup; the first few iterations stay on crescent until
+// the threshold trips.
+func benchVMGibbousJITAuto(b *testing.B, name string) {
+	src := loadScript(b, name)
+	prog, err := wangshu.Compile(src, name)
+	if err != nil {
+		b.Fatalf("compile: %v", err)
+	}
+	st := wangshu.NewState(wangshu.Options{})
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := prog.Run(st); err != nil {
+			b.Fatalf("run: %v", err)
+		}
+	}
+}
+
+func BenchmarkHeavyArith_GibbousJIT(b *testing.B)     { benchVMGibbousJITForce(b, "heavy_arith") }
+func BenchmarkHeavyRecursion_GibbousJIT(b *testing.B) { benchVMGibbousJITForce(b, "heavy_recursion") }
+func BenchmarkHeavyFloatloop_GibbousJIT(b *testing.B) { benchVMGibbousJITForce(b, "heavy_floatloop") }
+func BenchmarkHeavyArith_GibbousJITAuto(b *testing.B) { benchVMGibbousJITAuto(b, "heavy_arith") }
+func BenchmarkHeavyRecursion_GibbousJITAuto(b *testing.B) {
+	benchVMGibbousJITAuto(b, "heavy_recursion")
+}
+func BenchmarkHeavyFloatloop_GibbousJITAuto(b *testing.B) {
+	benchVMGibbousJITAuto(b, "heavy_floatloop")
+}

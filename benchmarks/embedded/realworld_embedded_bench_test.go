@@ -1,4 +1,4 @@
-//go:build !wangshu_p3
+//go:build !wangshu_p3 && !wangshu_p4
 
 // Realworld-embedded tier (issue #8 §"Why it matters"): a boundary-dominated
 // workload shaped like pineapple's transform_by_lua hot path — for each of N

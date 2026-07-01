@@ -22,7 +22,9 @@ import (
 	"github.com/Liam0205/wangshu"
 )
 
-func benchVMGibbous(b *testing.B, name string) {
+// benchVMGibbousForce: force-all + warmup, P3 steady-state (all reachable
+// Protos already lifted). Upper bound of what P3 can do here.
+func benchVMGibbousForce(b *testing.B, name string) {
 	src := loadScript(b, name)
 	prog, err := wangshu.Compile(src, name)
 	if err != nil {
@@ -30,7 +32,7 @@ func benchVMGibbous(b *testing.B, name string) {
 	}
 	st := wangshu.NewState(wangshu.Options{})
 	st.SetForceAllPromote(true)
-	// 预热:首次 Run 驱动内层热函数升 gibbous(首调 crescent,升层发生在帧入口)。
+	// warmup: first Run drives inner hot functions to promote.
 	if _, err := prog.Run(st); err != nil {
 		b.Fatalf("warmup: %v", err)
 	}
@@ -42,8 +44,31 @@ func benchVMGibbous(b *testing.B, name string) {
 	}
 }
 
-func BenchmarkFib_Gibbous(b *testing.B)          { benchVMGibbous(b, "fib") }
-func BenchmarkBinaryTrees_Gibbous(b *testing.B)  { benchVMGibbous(b, "binarytrees") }
-func BenchmarkSpectralNorm_Gibbous(b *testing.B) { benchVMGibbous(b, "spectralnorm") }
-func BenchmarkFannkuch_Gibbous(b *testing.B)     { benchVMGibbous(b, "fannkuch") }
-func BenchmarkNBody_Gibbous(b *testing.B)        { benchVMGibbous(b, "nbody") }
+// benchVMGibbousAuto: production heat-threshold promotion, single
+// long-lived State reused across iterations (embedder-with-pool
+// semantics). No force-all, no warmup.
+func benchVMGibbousAuto(b *testing.B, name string) {
+	src := loadScript(b, name)
+	prog, err := wangshu.Compile(src, name)
+	if err != nil {
+		b.Fatalf("compile: %v", err)
+	}
+	st := wangshu.NewState(wangshu.Options{})
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := prog.Run(st); err != nil {
+			b.Fatalf("run: %v", err)
+		}
+	}
+}
+
+func BenchmarkFib_Gibbous(b *testing.B)              { benchVMGibbousForce(b, "fib") }
+func BenchmarkBinaryTrees_Gibbous(b *testing.B)      { benchVMGibbousForce(b, "binarytrees") }
+func BenchmarkSpectralNorm_Gibbous(b *testing.B)     { benchVMGibbousForce(b, "spectralnorm") }
+func BenchmarkFannkuch_Gibbous(b *testing.B)         { benchVMGibbousForce(b, "fannkuch") }
+func BenchmarkNBody_Gibbous(b *testing.B)            { benchVMGibbousForce(b, "nbody") }
+func BenchmarkFib_GibbousAuto(b *testing.B)          { benchVMGibbousAuto(b, "fib") }
+func BenchmarkBinaryTrees_GibbousAuto(b *testing.B)  { benchVMGibbousAuto(b, "binarytrees") }
+func BenchmarkSpectralNorm_GibbousAuto(b *testing.B) { benchVMGibbousAuto(b, "spectralnorm") }
+func BenchmarkFannkuch_GibbousAuto(b *testing.B)     { benchVMGibbousAuto(b, "fannkuch") }
+func BenchmarkNBody_GibbousAuto(b *testing.B)        { benchVMGibbousAuto(b, "nbody") }
