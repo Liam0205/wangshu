@@ -1449,12 +1449,13 @@ func (c *CompiledSpike) Addr() uintptr {
 	return c.page.Addr()
 }
 
-// Dispose releases the mmap segment.
+// Dispose releases the mmap segment. Spike-only path (v0/v1/v2 unit
+// tests); production wiring lives in PerOpCode / nativeCode.
 func (c *CompiledSpike) Dispose() error {
 	if c == nil || c.page == nil {
 		return nil
 	}
-	err := c.page.Munmap()
+	err := c.page.Dispose()
 	c.page = nil
 	return err
 }
@@ -1474,12 +1475,13 @@ type CompiledSpikeV2 struct {
 	jitCtx *jit.JITContext
 }
 
-// Dispose releases the mmap segment.
+// Dispose releases the mmap segment. Spike-only path (v0/v1/v2 unit
+// tests); production wiring lives in PerOpCode / nativeCode.
 func (c *CompiledSpikeV2) Dispose() error {
 	if c == nil || c.page == nil {
 		return nil
 	}
-	err := c.page.Munmap()
+	err := c.page.Dispose()
 	c.page = nil
 	return err
 }
