@@ -162,8 +162,7 @@ func (c *cfg) linkSuccs(bb *basicBlock) {
 }
 
 // isReducible checks whether the CFG is reducible (no jumps to BB middles).
-// Lua 5.1 codegen never produces goto, so this must always be true — we
-// still verify defensively since PJ10 native emit assumes it.
+// Lua 5.1 codegen never produces goto, so this must always be true.
 //
 // A reducible CFG is one where every back-edge (u->v where v dominates u)
 // is the only edge into v from outside v's dominator subtree. For Lua 5.1
@@ -171,17 +170,10 @@ func (c *cfg) linkSuccs(bb *basicBlock) {
 // jump target lands mid-BB, the CFG is not reducible for our purposes.
 //
 // buildCFG's leader collection already covers all jump targets, so any
-// well-formed Proto passes. The check here is redundant with buildCFG's
-// invariants; kept as a defensive assertion.
+// well-formed Proto passes. This is currently a no-op that returns true
+// unconditionally; it's kept in the API surface so callers document
+// their reducibility assumption at the call site rather than baking it
+// as an implicit precondition.
 func (c *cfg) isReducible() bool {
-	for _, bb := range c.blocks {
-		for _, s := range bb.succs {
-			if c.blocks[s].startPC != c.blocks[s].startPC { // tautology; real check below
-				return false
-			}
-		}
-	}
-	// Every successor is by construction a leader (buildCFG only adds edges
-	// to pcToBB entries, which are leaders). Reducibility holds for Lua 5.1.
 	return true
 }

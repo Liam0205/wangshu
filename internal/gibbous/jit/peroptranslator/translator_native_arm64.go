@@ -79,6 +79,15 @@ func (c *nativeCode) Run(stack []uint64, base uint32) (status int32) {
 func (c *nativeCode) PendingErr() error    { return nil }
 func (c *nativeCode) Slot() (uint32, bool) { return 0, false }
 
+// Dispose releases the mmap'd code page. See amd64 counterpart.
+func (c *nativeCode) Dispose() {
+	if c == nil || c.codePage == nil {
+		return
+	}
+	c.codePage.Munmap()
+	c.codePage = nil
+}
+
 // hostIfaceHeader extracts (itab, data) header from a P4HostState.
 func hostIfaceHeader(h jit.P4HostState) [2]uintptr {
 	return *(*[2]uintptr)(unsafe.Pointer(&h))
@@ -94,17 +103,17 @@ func PreferNative(proto *bytecode.Proto) bool {
 	c := buildCFG(proto)
 	reach := c.reachableBlocks()
 	live := 0
-	hasBigBB := false
+	hasBigBodyBB := false
 	for id, bb := range c.blocks {
 		if !reach[id] {
 			continue
 		}
 		live++
-		if bb.endPC-bb.startPC >= 4 {
-			hasBigBB = true
+		if id > 0 && bb.endPC-bb.startPC >= 4 {
+			hasBigBodyBB = true
 		}
 	}
-	return live >= 2 && hasBigBB
+	return live >= 2 && hasBigBodyBB
 }
 
 // AnalyzeNative reports whether the arm64 native path can handle the Proto.

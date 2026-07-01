@@ -137,41 +137,6 @@ func (st *State) doTailCall(th *thread, ci *callInfo, i bytecode.Instruction) (*
 	cci := currentCI(th)
 	cci.SetTailcall(true)
 	th.reMirrorTop() // PW10 R2b-1:cold 字段(tailcall)变更后重镜像 ci 段
-	// PJ10 gibbous tail-call dispatch: if the tail-callee has an
-	// installed GibbousCode (P3 wasm or P4 native), run it directly
-	// on the tail-call frame we just pushed. This mirrors doCall's
-	// gibbous branch but reuses the existing tail-call cci instead of
-	// pushing a new one via enterGibbous (which would double-frame).
-	//
-	// After code.Run returns, DoReturn has already popped the tail-call
-	// cci, so we return (nil, nil) with no further ci to hand back —
-	// the execute loop will reload currentCI from the segment.
-	if profileEnabled && th == st.mainTh {
-		pid := object.ClosureProtoID(st.arena, cl)
-		if code := st.bridge.GibbousCodeOf(st.protos[pid]); code != nil {
-			cci.SetGibbous(true)
-			th.reMirrorTop()
-			baseByte := (th.stackBaseW + uint32(cci.base)) * 8
-			status := code.Run(st.gibbousStack(), baseByte)
-			th.syncCurFromSeg()
-			if status != 0 {
-				if st.gibbousPendingErr == nil {
-					if e := code.PendingErr(); e != nil {
-						st.gibbousPendingErr = &LuaError{Msg: "gibbous: " + e.Error()}
-					} else {
-						st.gibbousPendingErr = errf("gibbous: run failed (status=%d)", status)
-					}
-				}
-				e := st.gibbousPendingErr
-				st.gibbousPendingErr = nil
-				if th.ciDepth > 0 && currentCI(th).Gibbous() {
-					st.popCallInfo(th)
-				}
-				return nil, e
-			}
-			return nil, nil
-		}
-	}
 	return cci, nil
 }
 

@@ -104,6 +104,18 @@ func (c *nativeCode) Run(stack []uint64, base uint32) (status int32) {
 func (c *nativeCode) PendingErr() error    { return nil }
 func (c *nativeCode) Slot() (uint32, bool) { return 0, false }
 
+// Dispose releases the mmap'd code page. Safe to call multiple times.
+// Callers (bridge Proto teardown / recompile paths) should invoke this
+// when they no longer need the compiled code — otherwise mmap pages
+// accumulate for every recompile until process exit.
+func (c *nativeCode) Dispose() {
+	if c == nil || c.codePage == nil {
+		return
+	}
+	c.codePage.Munmap()
+	c.codePage = nil
+}
+
 // hostIfaceHeader extracts the (itab, data) header from a P4HostState
 // interface value. Same pattern as e2e_shim_ops_amd64_test.go's
 // hostToIfaceHeader but callable from production code.
@@ -119,10 +131,13 @@ func hostIfaceHeader(h jit.P4HostState) [2]uintptr {
 // optimize the body: the FORLOOP-with-body spec template only inlines
 // 1- or 2-op reg-K bodies (see shapeInfo.hasBody / hasBody2), so a
 // FORLOOP kernel with a 3+ op body falls back to per-op replay in
-// shape-spec while native emits full inline SSE. We heuristically
-// detect this by requiring at least one reachable BB to have >= 4
-// opcodes — that's larger than any shape-spec optimized body but well
-// below trivial single-BB Protos (LOADK+RETURN etc.).
+// shape-spec while native emits full inline SSE.
+//
+// Heuristic: there must be a non-entry reachable BB with >= 4 opcodes.
+// "Non-entry" (BB.id != 0) excludes the FORPREP setup block whose ops
+// are LOADK init + FORPREP; that block hits 4 ops even for empty for
+// loops. Only counting non-entry BBs isolates the loop body, which is
+// the shape shape-spec's body-inline template can't beat.
 //
 // Also require multi-BB CFG: single-BB Protos are the historical
 // shape-spec spec-template use case (getter/setter/return-constant
@@ -135,17 +150,21 @@ func PreferNative(proto *bytecode.Proto) bool {
 	c := buildCFG(proto)
 	reach := c.reachableBlocks()
 	live := 0
-	hasBigBB := false
+	hasBigBodyBB := false
 	for id, bb := range c.blocks {
 		if !reach[id] {
 			continue
 		}
 		live++
-		if bb.endPC-bb.startPC >= 4 {
-			hasBigBB = true
+		// Skip entry BB (id 0): it's typically the FORPREP setup with
+		// LOADK init + FORPREP terminator, ~4 ops even for empty loops.
+		// The loop body BB (id >= 1) is what shape-spec's body-inline
+		// template struggles with.
+		if id > 0 && bb.endPC-bb.startPC >= 4 {
+			hasBigBodyBB = true
 		}
 	}
-	return live >= 2 && hasBigBB
+	return live >= 2 && hasBigBodyBB
 }
 
 // AnalyzeNative reports whether the native emit path can handle a Proto:
@@ -251,26 +270,33 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 //     from Go side after CallJITSpec returns.
 //   - Arithmetic: inline SSE fast path (inlineArithSSE) supports
 //     reg-reg / reg-K / K-reg / K-K when the K operand is numeric.
-//   - Compare: inline UCOMISd fast path for LT/LE with numeric operands.
+//   - Compare: inline UCOMISd fast path for LT/LE with numeric operands;
+//     inline raw 64-bit bit-equal for EQ (reg-reg only — AnalyzeNative
+//     rejects K operands to dodge the arena-relative string const path).
+//   - TEST / TESTSET: inline compare against Nil / False imm64 constants
+//     with rel8 forward branches to a notTruthy label.
+//   - FORPREP: inline `R(A) -= R(A+2); jmp FORLOOP` (assumes three slots
+//     are numbers, matching the FORLOOP inline SSE fast path).
 //
 // Currently enabled with NO shim call in the emit output:
 //
 //	MOVE, LOADK (numeric consts only), LOADBOOL, LOADNIL,
 //	ADD/SUB/MUL/DIV (reg-reg or numeric K operands),
 //	NOT (inline compare),
-//	LT/LE (inline compare),
-//	JMP, FORLOOP,
+//	EQ (reg-reg, inline 64-bit cmp),
+//	LT/LE (inline UCOMISd compare),
+//	TEST, TESTSET (inline Nil/False bit-compare),
+//	JMP, FORPREP, FORLOOP,
 //	RETURN
 //
 // **Excluded** because the emit would need a shim call:
 //
-//	GETUPVAL, SETUPVAL, LEN, CONCAT, EQ, TEST, TESTSET,
+//	GETUPVAL, SETUPVAL, LEN, CONCAT,
 //	GETTABLE, SETTABLE, GETGLOBAL, SETGLOBAL, SELF, NEWTABLE, SETLIST,
-//	CALL, TAILCALL, CLOSURE, CLOSE, TFORLOOP, MOD, POW, UNM,
-//	FORPREP (needs shim for coercion).
+//	CALL, TAILCALL, CLOSURE, CLOSE, TFORLOOP, MOD, POW, UNM
 //
 // AnalyzeNative additionally rejects Protos with non-numeric K operands
-// on inline arithmetic / compare ops.
+// on inline arithmetic / compare ops, and rejects EQ with any K operand.
 func opSupported(op bytecode.OpCode) bool {
 	switch op {
 	case bytecode.MOVE, bytecode.LOADK, bytecode.LOADBOOL, bytecode.LOADNIL,

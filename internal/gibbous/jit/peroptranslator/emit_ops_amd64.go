@@ -468,29 +468,13 @@ func emitTEST(cb *codeBuf, a, c uint8, succExec, succSkip int) {
 	}
 	// cmp rax, rcx
 	cb.emit([]byte{0x48, 0x39, 0xC8})
-	// je notTruthy: forward jmp to `notTruthy` label. We use rel8 for
-	// space efficiency but hard to know distance yet. Use rel32 via jne+jmp
-	// pattern is simpler:
-	//   je toNotTruthy (rel8 forward, jz over the "check false" block +
-	//     the "onTruthy" arm)
-	// Use rel32 for safety:
-	// je +30 (skip false-check and truthy-jmp, land on notTruthy label)
-	// We'll patch later. Simpler: use fixups within codeBuf's BB labels.
-	// For inline mini-flow within one emit, use a small internal label:
-	//
-	// The instructions after this:
-	//   [17 bytes] mov rcx, falseBits
-	//   [3 bytes]  cmp rax, rcx
-	//   [2 bytes]  je notTruthyRel8
-	//   [either succExec branch or succSkip branch] -- rel32 6-byte jmp
-	// notTruthyRel8:
-	//   [either succSkip branch or succExec branch] -- rel32 6-byte jmp
-	//
-	// So the je-after-nil-cmp jumps rel8 to notTruthyRel8 which is
-	// 17+3+2+6 = 28 bytes forward.
-	//
-	// Use rel8 jz:
-	cb.emit([]byte{0x74, 0x1C}) // jz +28 (to notTruthyRel8)
+	// jz notTruthy: rel8 placeholder; patch after the truthy arm is
+	// emitted so we don't have to hand-count intermediate bytes. Byte-
+	// counting bit us in past rounds (see reflection
+	// [[2026-07-01-p4-pj10-native-round]] lesson 6). rel8 range fits
+	// easily for our worst-case layout (mov+cmp+jz+jmp rel32 = 20 bytes).
+	jz1Off := cb.pos() + 1 // location of the rel8 byte
+	cb.emit([]byte{0x74, 0x00})
 	// mov rcx, falseBits (0xFFF9_0000_0000_0000)
 	falseBits := uint64(0xFFF9000000000000)
 	cb.emit([]byte{0x48, 0xB9})
@@ -499,8 +483,9 @@ func emitTEST(cb *codeBuf, a, c uint8, succExec, succSkip int) {
 	}
 	// cmp rax, rcx
 	cb.emit([]byte{0x48, 0x39, 0xC8})
-	// jz +6 (to notTruthyRel8)
-	cb.emit([]byte{0x74, 0x06})
+	// jz notTruthy (same rel8 patch)
+	jz2Off := cb.pos() + 1
+	cb.emit([]byte{0x74, 0x00})
 	// truthy branch: pick succ based on C
 	if c != 0 {
 		// C != 0 && truthy => execute JMP => succExec
@@ -513,7 +498,17 @@ func emitTEST(cb *codeBuf, a, c uint8, succExec, succSkip int) {
 		cb.emit([]byte{0xE9, 0x00, 0x00, 0x00, 0x00})
 		cb.addFixup(patchOff, cb.pos(), succSkip)
 	}
-	// notTruthyRel8: (label position)
+	// notTruthy label position (this is where both jz's land).
+	notTruthyOff := cb.pos()
+	// Patch the two jz rel8 placeholders. rel8 is signed byte from the
+	// end of the jz instruction (jz1Off+1 / jz2Off+1) to notTruthyOff.
+	rel1 := int32(notTruthyOff) - (int32(jz1Off) + 1)
+	rel2 := int32(notTruthyOff) - (int32(jz2Off) + 1)
+	if rel1 < -128 || rel1 > 127 || rel2 < -128 || rel2 > 127 {
+		panic("emitTEST: rel8 out of range - use rel32")
+	}
+	cb.bytes[jz1Off] = byte(int8(rel1))
+	cb.bytes[jz2Off] = byte(int8(rel2))
 	// falsy branch:
 	if c != 0 {
 		// C != 0 && falsy => pc++ => succSkip
@@ -817,8 +812,10 @@ func emitTFORLOOP(cb *codeBuf, pc int32, a, c uint8, succBack, succOut int) {
 	emitCallShim(cb, shimTForLoopAddr(), []int32{0, pc, int32(a), int32(c)})
 	// cmp rax, -1
 	cb.emit([]byte{0x48, 0x83, 0xF8, 0xFF})
-	// jne +7 (skip error return block)
-	cb.emit([]byte{0x75, 0x07})
+	// jne skipErr; the skip target is right after the `mov eax, 1; ret`
+	// error-return sequence below. `mov eax, imm32` (0xB8 + 4-byte imm)
+	// is 5 bytes, `ret` (0xC3) is 1 byte -> 6 bytes to skip.
+	cb.emit([]byte{0x75, 0x06})
 	// mov eax, 1; ret
 	cb.emit([]byte{0xB8, 0x01, 0x00, 0x00, 0x00, 0xC3})
 	// cmp rax, -2

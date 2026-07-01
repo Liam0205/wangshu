@@ -95,6 +95,14 @@ type PerOpCode struct {
 	//   2. Call host.ForPrep(forLoopA).
 	//   3. Loop: step R(A), check condition, run body, repeat.
 	//   4. Run post-loop side effects.
+	//
+	// **Note**: `forLoopAfter` is also reused by the TFORLOOP path below
+	// (see AnalyzeShape at translator.go:946). AnalyzeShape guarantees
+	// forLoopValid and tforLoopValid are mutually exclusive, so the
+	// shared field is safe today. If that invariant ever relaxes, split
+	// into `forLoopAfter` and `tforLoopAfter` before adding the new
+	// case — the current sharing was flagged in the review of
+	// ed2235b..1359a21 as future-hostile.
 	forLoopValid bool
 	forLoopA     uint8
 	forLoopPC    uint8
@@ -635,35 +643,13 @@ func TranslateProto(proto *bytecode.Proto, host jit.P4HostState) (bridge.Gibbous
 // non-nil, the jit Compiler's SupportsAllOpcodes / Compile fall-through
 // gain the PJ10 supported subset.
 //
-// **Native path status (2026-07-01)**: TranslateProtoNative +
-// AnalyzeNative exist and pass isolated e2e tests, but a crash on
-// trampoline RET when a native compile is invoked from a nested
-// gibbous chain (crescent -> outer p4Code -> host.CallBaseline ->
-// crescent -> native code) blocks production wiring. The native path
-// is exported (callable explicitly) and covered by e2e tests, but the
-// analyser hook here does NOT route production compile requests to it
-// yet. See [[project-pj10-native-longtask]] for the follow-up.
-// init registers TranslateProto + a Shape analyser into the jit main
-// package. This is the "PJ10 enabled" switch: import this sub-package
-// (e.g. with `import _ ".../peroptranslator"`) and the hooks become
-// non-nil, the jit Compiler's SupportsAllOpcodes / Compile fall-through
-// gain the PJ10 supported subset.
-//
-// **Native path status (2026-07-01)**: TranslateProtoNative +
-// AnalyzeNative are exported and covered by isolated e2e tests. When
-// wired into production (analyser accepts native shapes and translator
-// falls through to TranslateProtoNative), the concurrent multi-goroutine
-// force-all difftest crashes on the mmap trampoline RET. Root cause is
-// likely a race between the Go runtime stack manager and the mmap
-// segment's helper-call sequence. Isolated e2e tests do not exhibit
-// this because they don't run multiple goroutines pounding on shared
-// Protos.
-//
-// The production wiring below therefore uses only the head-op replay
-// path (TranslateProto). TranslateProtoNative remains callable
-// explicitly for benchmarks or offline tests; see the "native compile"
-// path in tests/. Follow-up (memory: [[project-pj10-native-longtask]])
-// is to resolve the concurrent-crash and re-enable production wiring.
+// Native path (as of the 2026-07-01 round in
+// [[2026-07-01-p4-pj10-native-round]]): TranslateProtoNative is wired
+// as the first preference here — when AnalyzeNative accepts a Proto
+// its emit output is used directly; on any failure we fall back to
+// TranslateProto (head-op replay) so behaviour stays identical for
+// unsupported shapes. See `opSupported` godoc in translator_native.go
+// for the exact mmap-safe inline op subset.
 func init() {
 	jit.RegisterPerOpTranslator(
 		func(proto *bytecode.Proto, host jit.P4HostState) (bridge.GibbousCode, error) {
