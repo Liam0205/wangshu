@@ -189,15 +189,19 @@ func emitARITHArm64(cb *codeBuf, op bytecode.OpCode, pc int32, a, b, c uint8) {
 // instead of the mmap segment silently continuing.
 //
 // EmitMovXdImm64 always emits 4 insns (16 bytes) — movz + 3 movks —
-// even for tiny imms, so the skip target sits 5 words past the CBZ.
+// even for tiny imms, so the sequence after cbz is 20 bytes wide.
+// arm64 CBZ's target is PC + imm19*4 relative to the CBZ instruction
+// itself, so we need imm19 = 6 (24 bytes past cbz PC = 20 bytes past
+// the cbz instruction) to land right after the ret.
 //
-// Sequence (24 bytes):
+// Sequence (24 bytes total):
 //
-//	cbz  X0, +24    ; skip mov+ret when X0 == 0 (imm19 = 5 words)
+//	cbz  X0, done   ; imm19 = 6 (skip 5 subsequent insns)
 //	<mov X0, #1>    ; 16 bytes (4 movz/movk insns)
 //	ret             ; 4 bytes
+//	done:
 func emitStatusCheckAndBubbleArm64(cb *codeBuf) {
-	cb.emit(jitarm64.EmitCbzX(nil, 0, 5))
+	cb.emit(jitarm64.EmitCbzX(nil, 0, 6))
 	cb.emit(jitarm64.EmitMovXdImm64(nil, 0, 1))
 	cb.emit(jitarm64.EmitRet(nil))
 }
