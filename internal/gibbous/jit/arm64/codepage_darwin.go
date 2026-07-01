@@ -32,6 +32,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"sync/atomic"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -39,13 +40,14 @@ import (
 	jitcgo "github.com/Liam0205/wangshu/internal/gibbous/jit/arm64/jitcgo"
 )
 
-// CodePage 是一段 MAP_JIT mmap 出来的可执行段(W^X 翻面后)。
-//
-// 字段布局与 codepage_linux.go 一致,故 jit 主包跨 OS 路径用同一接口
-// (Addr/Munmap/Length 三方法签名)。
+// CodePage is a MAP_JIT mmap-allocated executable segment (post W^X flip),
+// with the same refcount lifecycle as codepage_linux.go. See
+// amd64/codepage_linux.go for the Enter/Exit/Dispose protocol rationale.
 type CodePage struct {
-	mem    []byte
-	length int
+	mem      []byte
+	length   int
+	refcount atomic.Int32
+	disposed atomic.Bool
 }
 
 // MmapCode 分配 MAP_JIT 段,写入 code,W^X 翻面 + arm64 icache flush。
@@ -97,10 +99,12 @@ func MmapCode(code []byte) (*CodePage, error) {
 	// Step 6:刷 i-cache(jitcgo forward;macOS arm64 必需)。
 	jitcgo.ICacheInvalidate(unsafe.Pointer(&mem[0]), uintptr(length))
 
-	return &CodePage{mem: mem, length: length}, nil
+	cp := &CodePage{mem: mem, length: length}
+	cp.refcount.Store(1)
+	return cp, nil
 }
 
-// Addr 返回段起点 uintptr。
+// Addr returns the segment start uintptr.
 func (c *CodePage) Addr() uintptr {
 	if c == nil || len(c.mem) == 0 {
 		return 0
@@ -108,18 +112,81 @@ func (c *CodePage) Addr() uintptr {
 	return uintptr(unsafe.Pointer(&c.mem[0]))
 }
 
-// Munmap 释放段(幂等)。
-func (c *CodePage) Munmap() error {
-	if c == nil || c.mem == nil {
+// Enter acquires one reference. Returns false if the segment has been
+// disposed or its refcount already reached zero. Same CAS-guarded bump
+// pattern as amd64/codepage_linux.go.
+func (c *CodePage) Enter() bool {
+	if c == nil {
+		return false
+	}
+	for {
+		r := c.refcount.Load()
+		if r == 0 {
+			return false
+		}
+		if c.disposed.Load() {
+			return false
+		}
+		if c.refcount.CompareAndSwap(r, r+1) {
+			if c.disposed.Load() {
+				c.Exit()
+				return false
+			}
+			return true
+		}
+	}
+}
+
+// Exit releases one reference; if refcount hits zero, real munmap fires here.
+func (c *CodePage) Exit() {
+	if c == nil {
+		return
+	}
+	if c.refcount.Add(-1) == 0 {
+		c.doMunmap()
+	}
+}
+
+// Dispose flips the disposed flag and drops the constructor's initial ref.
+// Real munmap fires synchronously if no Run holds the segment. Idempotent.
+func (c *CodePage) Dispose() error {
+	if c == nil {
 		return nil
 	}
+	if !c.disposed.CompareAndSwap(false, true) {
+		return nil
+	}
+	if c.refcount.Add(-1) == 0 {
+		return c.doMunmapCapturing()
+	}
+	return nil
+}
+
+// Munmap is a compatibility alias for Dispose. Deprecated: prefer Dispose.
+func (c *CodePage) Munmap() error {
+	return c.Dispose()
+}
+
+func (c *CodePage) doMunmap() {
 	mem := c.mem
 	c.mem = nil
 	c.length = 0
+	if mem != nil {
+		_ = unix.Munmap(mem)
+	}
+}
+
+func (c *CodePage) doMunmapCapturing() error {
+	mem := c.mem
+	c.mem = nil
+	c.length = 0
+	if mem == nil {
+		return nil
+	}
 	return unix.Munmap(mem)
 }
 
-// Length 返回段实际分配字节数(页对齐)。
+// Length returns the actual allocated byte count (page-aligned).
 func (c *CodePage) Length() int {
 	if c == nil {
 		return 0

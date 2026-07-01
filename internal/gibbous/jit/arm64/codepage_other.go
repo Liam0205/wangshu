@@ -28,6 +28,9 @@ func MmapCode(code []byte) (*CodePage, error) {
 	return nil, errors.New("internal/gibbous/jit/arm64: MmapCode unsupported on " + runtime.GOOS + "/" + runtime.GOARCH + " (CGO_ENABLED=0 stub;darwin/arm64 真实装需 cgo——见 codepage_darwin.go)")
 }
 
-func (c *CodePage) Addr() uintptr { return 0 }
-func (c *CodePage) Munmap() error { return nil }
-func (c *CodePage) Length() int   { return 0 }
+func (c *CodePage) Addr() uintptr  { return 0 }
+func (c *CodePage) Enter() bool    { return false }
+func (c *CodePage) Exit()          {}
+func (c *CodePage) Dispose() error { return nil }
+func (c *CodePage) Munmap() error  { return nil }
+func (c *CodePage) Length() int    { return 0 }

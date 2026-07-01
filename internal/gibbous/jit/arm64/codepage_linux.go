@@ -12,25 +12,35 @@ package arm64
 import (
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
 
-// CodePage 是一段 mmap 出来的可执行段(W^X 翻面后)。
+// CodePage is a mmap-allocated executable segment (post W^X flip). Refcounted
+// lifecycle: see amd64/codepage_linux.go doc for the Enter/Exit/Dispose
+// protocol. arm64 shares the same protocol; the only arch-specific piece is
+// the explicit icache flush on mmap, since arm64 does not guarantee I/D
+// cache coherence.
 type CodePage struct {
-	mem    []byte
-	length int
+	mem      []byte
+	length   int
+	refcount atomic.Int32
+	disposed atomic.Bool
 }
 
-// MmapCode 分配 W+X 段,写入 code,W^X 翻面 + arm64 icache flush。
+// MmapCode allocates a W+X segment, writes code, flips to W^X, and flushes
+// the arm64 icache. Initial refcount = 1 (constructor holds one ref, released
+// by Dispose).
 //
-// 流程(对位 amd64 版同款 + 加 icache flush 步骤):
-//  1. unix.Mmap MAP_ANON|MAP_PRIVATE PROT_RW;
-//  2. copy code 进段;
-//  3. unix.Mprotect PROT_RX(W^X 翻面);
-//  4. **arm64 必须**:flushICache(IC IVAU/DC CVAU + DSB ISH + ISB)——
-//     否则 i-cache 与 d-cache 不一致,执行段会取到旧 i-cache 内容(05 §2.3.1)。
+// Flow (mirrors amd64 with the mandatory arm64 icache-flush step):
+//  1. unix.Mmap MAP_ANON|MAP_PRIVATE PROT_RW
+//  2. copy code into the segment
+//  3. unix.Mprotect PROT_RX (W^X flip)
+//  4. **arm64 required**: flushICacheArm64 (IC IVAU / DC CVAU + DSB ISH + ISB)
+//     to establish I/D cache coherence -- without it the execution stream may
+//     fetch stale bytes (section 2.3.1).
 func MmapCode(code []byte) (*CodePage, error) {
 	if len(code) == 0 {
 		return nil, errors.New("internal/gibbous/jit/arm64: empty code")
@@ -51,17 +61,13 @@ func MmapCode(code []byte) (*CodePage, error) {
 		_ = unix.Munmap(mem)
 		return nil, fmt.Errorf("internal/gibbous/jit/arm64: mprotect RX failed: %w", err)
 	}
-	// arm64 icache flush:必须显式 flush 否则取指错误(05 §2.3.1)。
-	// **PJ8 简化形态**:linux 提供 __builtin___clear_cache 等价 syscall——
-	// 经 syscall membarrier 或写一个 NOSPLIT asm stub 调 IC IVAU/DC CVAU。
-	// 当前实装:留 PJ8+ 完整 asm stub(本 commit 范围内 mmap 段不真执行——
-	// MmapCode 只是 emit 接口对齐,arm64 真执行路径未接入 SupportsAllOpcodes
-	// 白名单)。
 	flushICacheArm64(mem)
-	return &CodePage{mem: mem, length: length}, nil
+	cp := &CodePage{mem: mem, length: length}
+	cp.refcount.Store(1)
+	return cp, nil
 }
 
-// Addr 返回段起点 uintptr。
+// Addr returns the segment start uintptr.
 func (c *CodePage) Addr() uintptr {
 	if c == nil || len(c.mem) == 0 {
 		return 0
@@ -69,18 +75,82 @@ func (c *CodePage) Addr() uintptr {
 	return uintptr(unsafe.Pointer(&c.mem[0]))
 }
 
-// Munmap 释放段(幂等)。
-func (c *CodePage) Munmap() error {
-	if c == nil || c.mem == nil {
+// Enter acquires one reference. Returns false if the segment has been
+// disposed or its refcount already reached zero. See
+// amd64/codepage_linux.go for the CAS-guarded bump rationale.
+func (c *CodePage) Enter() bool {
+	if c == nil {
+		return false
+	}
+	for {
+		r := c.refcount.Load()
+		if r == 0 {
+			return false
+		}
+		if c.disposed.Load() {
+			return false
+		}
+		if c.refcount.CompareAndSwap(r, r+1) {
+			if c.disposed.Load() {
+				c.Exit()
+				return false
+			}
+			return true
+		}
+	}
+}
+
+// Exit releases one reference; if refcount hits zero, real munmap fires here.
+func (c *CodePage) Exit() {
+	if c == nil {
+		return
+	}
+	if c.refcount.Add(-1) == 0 {
+		c.doMunmap()
+	}
+}
+
+// Dispose flips the disposed flag and drops the constructor's initial ref.
+// Real munmap fires synchronously if no Run holds the segment; otherwise
+// deferred to the last Exit. Idempotent.
+func (c *CodePage) Dispose() error {
+	if c == nil {
 		return nil
 	}
+	if !c.disposed.CompareAndSwap(false, true) {
+		return nil
+	}
+	if c.refcount.Add(-1) == 0 {
+		return c.doMunmapCapturing()
+	}
+	return nil
+}
+
+// Munmap is a compatibility alias for Dispose. Deprecated: prefer Dispose.
+func (c *CodePage) Munmap() error {
+	return c.Dispose()
+}
+
+func (c *CodePage) doMunmap() {
 	mem := c.mem
 	c.mem = nil
 	c.length = 0
+	if mem != nil {
+		_ = unix.Munmap(mem)
+	}
+}
+
+func (c *CodePage) doMunmapCapturing() error {
+	mem := c.mem
+	c.mem = nil
+	c.length = 0
+	if mem == nil {
+		return nil
+	}
 	return unix.Munmap(mem)
 }
 
-// Length 返回段实际分配字节数(页对齐)。
+// Length returns the actual allocated byte count (page-aligned).
 func (c *CodePage) Length() int {
 	if c == nil {
 		return 0
