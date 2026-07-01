@@ -262,15 +262,20 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 					}
 				}
 			case bytecode.EQ:
-				// inlineRawEq accepts any 64-bit-comparable K (numeric,
-				// nil, bool). String constants are the only Lua 5.1
-				// value where raw ptr-equal ≠ semantic equal *unless
-				// interned* — the frontend interns strings so ptr-equal
-				// == string-equal in practice, but for safety and to
-				// dodge the string-loading path (arena-relative), reject
-				// K operands here for now.
-				if bytecode.B(ins) >= 256 || bytecode.C(ins) >= 256 {
-					return false
+				// inlineRawEq handles any 64-bit-comparable K (numeric,
+				// nil, bool, or interned string). Lua 5.1 EQ on strings
+				// is pointer-equal because the frontend interns all
+				// string literals; __eq metamethods for tables/userdata
+				// are only invoked when types match, so raw ptr-equal
+				// masks a metatable dispatch only for those two — which
+				// don't appear as K operands. Accept all K here.
+				for _, rk := range [2]int{int(bytecode.B(ins)), int(bytecode.C(ins))} {
+					if rk >= 256 {
+						kidx := rk - 256
+						if kidx < 0 || kidx >= len(proto.Consts) {
+							return false
+						}
+					}
 				}
 			}
 		}

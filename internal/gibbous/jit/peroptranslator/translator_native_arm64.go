@@ -189,6 +189,9 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 					}
 				}
 			case bytecode.EQ:
+				// arm64 inlineRawEqArm64 doesn't yet emit K operand
+				// paths; keep the strict reg-reg gate here so we don't
+				// silently fall out of the native emit halfway through.
 				if bytecode.B(ins) >= 256 || bytecode.C(ins) >= 256 {
 					return false
 				}
