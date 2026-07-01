@@ -74,6 +74,18 @@ func (c *nativeCode) Run(stack []uint64, base uint32) (status int32) {
 		}
 		return 1
 	}
+	// Refcount acquire, same protocol as p4Code.Run / PerOpCode.Run. See
+	// internal/gibbous/jit/amd64/codepage_linux.go for the refcount +
+	// deferred munmap rationale. This is the PJ10 native emit main
+	// execution path, so the refcount protection is load-bearing for the
+	// multi-State Dispose vs Run UAF closure.
+	if !c.codePage.Enter() {
+		if len(stack) > 0 {
+			stack[0] = 1
+		}
+		return 1
+	}
+	defer c.codePage.Exit()
 	// Refresh jitCtx addresses (arena may have grown between calls).
 	c.jitCtx.SetArenaBase(c.host.ArenaBaseAddr())
 	c.jitCtx.SetValueStackBase(c.host.ValueStackBaseAddr(int32(base)))
@@ -114,7 +126,13 @@ func (c *nativeCode) Slot() (uint32, bool) { return 0, false }
 // assumes a fresh frame and doesn't compose with that lifecycle.
 func (c *nativeCode) IsPJ10Native() bool { return true }
 
-// Dispose releases the mmap'd code page. Safe to call multiple times.
+// Dispose releases the mmap'd code page. Safe to call multiple times
+// and safe under concurrent Run in multi-State setups: CodePage.Dispose
+// flips a disposed flag (blocking further Enter) and the refcount
+// protocol defers the actual unix.Munmap until the last active Run's
+// Exit. See internal/gibbous/jit/amd64/codepage_linux.go for the full
+// protocol.
+//
 // Callers (bridge Proto teardown / recompile paths) should invoke this
 // when they no longer need the compiled code — otherwise mmap pages
 // accumulate for every recompile until process exit.
@@ -122,7 +140,7 @@ func (c *nativeCode) Dispose() {
 	if c == nil || c.codePage == nil {
 		return
 	}
-	c.codePage.Munmap()
+	_ = c.codePage.Dispose()
 	c.codePage = nil
 }
 

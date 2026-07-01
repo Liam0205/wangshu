@@ -57,6 +57,17 @@ func (c *nativeCode) Run(stack []uint64, base uint32) (status int32) {
 		}
 		return 1
 	}
+	// Refcount acquire, same protocol as p4Code.Run / PerOpCode.Run /
+	// amd64 nativeCode.Run. See internal/gibbous/jit/amd64/codepage_linux.go
+	// for the refcount + deferred munmap rationale. This is the PJ10
+	// native emit main execution path on arm64.
+	if !c.codePage.Enter() {
+		if len(stack) > 0 {
+			stack[0] = 1
+		}
+		return 1
+	}
+	defer c.codePage.Exit()
 	c.jitCtx.SetArenaBase(c.host.ArenaBaseAddr())
 	c.jitCtx.SetValueStackBase(c.host.ValueStackBaseAddr(int32(base)))
 	c.jitCtx.SetCIDepthAddr(c.host.CIDepthHostAddr())
@@ -83,12 +94,14 @@ func (c *nativeCode) Slot() (uint32, bool) { return 0, false }
 // amd64 counterpart for rationale.
 func (c *nativeCode) IsPJ10Native() bool { return true }
 
-// Dispose releases the mmap'd code page. See amd64 counterpart.
+// Dispose releases the mmap'd code page. Safe under concurrent Run: the
+// refcount protocol defers the actual munmap until the last active Run's
+// Exit. See amd64 counterpart / internal/gibbous/jit/amd64/codepage_linux.go.
 func (c *nativeCode) Dispose() {
 	if c == nil || c.codePage == nil {
 		return
 	}
-	c.codePage.Munmap()
+	_ = c.codePage.Dispose()
 	c.codePage = nil
 }
 
