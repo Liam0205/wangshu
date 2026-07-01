@@ -135,10 +135,15 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 	if proto == nil || len(proto.Code) == 0 {
 		return false
 	}
-	for _, k := range proto.StringLitIdx {
-		if k >= 0 {
+	// F7-a: LOADK for string constants isn't inlined (arena-relative
+	// bake required). GETGLOBAL / SETGLOBAL / GETTABLE / SETTABLE / SELF
+	// route through host shims that index proto.Consts directly, so those
+	// stay fine; only reject when a live LOADK actually loads a string.
+	stringConst := func(bx int) bool {
+		if bx < 0 || bx >= len(proto.StringLitIdx) {
 			return false
 		}
+		return proto.StringLitIdx[bx] >= 0
 	}
 	if proto.IsVararg {
 		return false
@@ -159,6 +164,10 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 				return false
 			}
 			switch op {
+			case bytecode.LOADK:
+				if stringConst(bytecode.Bx(ins)) {
+					return false
+				}
 			case bytecode.ADD, bytecode.SUB, bytecode.MUL, bytecode.DIV,
 				bytecode.LT, bytecode.LE:
 				if bytecode.B(ins) >= 256 {
