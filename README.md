@@ -37,33 +37,7 @@ P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 met
 
 ## 性能指标
 
-### 列的含义
-
-- **`gopher`** — gopher-lua v1.1.2，基线。表格里的倍率都是 `gopher / X`，越大越好。
-- **`P1`** — `go build` 默认档，纯解释器（crescent），没有升层机制，一列就够。
-- **`P3 auto` / `P3 force`** — `wangshu_p3 wangshu_profile` build 下 gibbous-wasm 编译层的两种测法（详见下节）。
-- **`P4 auto` / `P4 force`** — `wangshu_p4 wangshu_profile` build 下 gibbous-jit method JIT 的两种测法。
-- **`Call` / `CallInto`** — 嵌入 API 两种边界调用方式：`st.Call` 每次分配 `[]Value` 返回切片；`st.CallInto` 复用调用方 `dst`，零分配。只在跨界 benchmark 拆两列。
-
-### auto 与 force 只对 P3/P4 有意义
-
-P3/P4 编译档不是「装了就一定用」。它们是**基于热度阈值的自动升层机制**：
-
-1. 每个函数（Proto）默认在 P1 crescent 解释器上跑。
-2. 每次调用累计一次调用计数；`wangshu_profile` build tag 开启这个采样器（不带此 tag 采样禁用，编译档退化到 P1）。
-3. 计数越过 `HotEntryThreshold`（默认 200）后，如果该 Proto 通过 F1-F7 可编译性检查，就升到 P3 或 P4，后续调用走编译层。
-4. 升不动的 Proto（协程 / 顶层 vararg / 含 `ReasonUnknownCall` / VARARG 等）保持在 P1，无声降级。
-
-因此 P3/P4 每档在表格里各有两列：
-
-- **`auto`** — 生产模式。State 长期复用，前 ~200 次调用走 P1 解释器，越过阈值后升到编译层。`b.N` 上摊薄下来，warmup tail 通常在噪声之内。
-- **`force`** — `SetForceAllPromote(true)` 强制所有可升 Proto 直接升层，预热一轮后测稳态。**非生产模式**，只用于差分测试和 benchmark 上限。
-
-两者稳态数字理论上应当接近；出现明显差异说明升层策略或阈值需要调整。
-
-P1 不涉及升层，一列即可。
-
-数字取自同一台机 (Intel Xeon Platinum, 24 core, go1.26.2, `-benchtime=2s -count=3`, 取 median, 2026-07-01)。格式为「wall time (倍率 over gopher-lua)」，倍率越大越好；粗体表示倍率 ≥ 1.5×。
+数字取自同一台机（Intel Xeon Platinum, 24 core, go1.26.2, `-benchtime=2s -count=3`, 取 median, 2026-07-01）。格式为「wall time (倍率 over gopher-lua)」，倍率越大越好；粗体表示倍率 ≥ 1.5×。
 
 | 类别 | 脚本 | gopher | P1 | P3 auto | P3 force | P4 auto | P4 force |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -95,7 +69,31 @@ P1 不涉及升层，一列即可。
 [^cat-mini]: `benchmarks/embedded`，mini_bench_test.go。嵌入路径的最小形式：每 iter 一次 SetGlobal + 一次 Call + 一次读结果。反映边界往返成本本身，以及 `Call` 分配路径与 `CallInto` 零分配路径的成本差。
 [^cat-embed]: `benchmarks/embedded`，realworld_embedded_bench_test.go。1000 item batch，逐 item set 字段 → Call 谓词 / 特征变换脚本 → 读标量结果，写法贴近 pineapple `transform_by_lua`。反映真实批处理嵌入下的稳态吞吐。
 
-`—` 表示该场景下不涉及 Call/CallInto 之分（PureVM 无跨界；升不到编译层的 baseline 短脚本没有独立数字）。
+### 列的含义
+
+- **`gopher`** — gopher-lua v1.1.2，基线。表格里的倍率都是 `gopher / X`，越大越好。
+- **`P1`** — `go build` 默认档，纯解释器（crescent），没有升层机制，一列就够。
+- **`P3 auto` / `P3 force`** — `wangshu_p3 wangshu_profile` build 下 gibbous-wasm 编译层的两种测法（详见下节）。
+- **`P4 auto` / `P4 force`** — `wangshu_p4 wangshu_profile` build 下 gibbous-jit method JIT 的两种测法。
+- **`Call` / `CallInto`** — 嵌入 API 两种边界调用方式：`st.Call` 每次分配 `[]Value` 返回切片；`st.CallInto` 复用调用方 `dst`，零分配。只在跨界 benchmark 拆两列。
+
+> `—` 表示该场景下不涉及 Call/CallInto 之分（PureVM 无跨界；升不到编译层的 baseline 短脚本没有独立数字）。
+
+### auto 与 force 只对 P3/P4 有意义
+
+P3/P4 编译档不是「装了就一定用」。它们是**基于热度阈值的自动升层机制**：
+
+1. 每个函数（Proto）默认在 P1 crescent 解释器上跑。
+2. 每次调用累计一次调用计数；`wangshu_profile` build tag 开启这个采样器（不带此 tag 采样禁用，编译档退化到 P1）。
+3. 计数越过 `HotEntryThreshold`（默认 200）后，如果该 Proto 通过 F1-F7 可编译性检查，就升到 P3 或 P4，后续调用走编译层。
+4. 升不动的 Proto（协程 / 顶层 vararg / 含 `ReasonUnknownCall` / VARARG 等）保持在 P1，无声降级。
+
+因此 P3/P4 每档在表格里各有两列：
+
+- **`auto`** — 生产模式。State 长期复用，前 ~200 次调用走 P1 解释器，越过阈值后升到编译层。`b.N` 上摊薄下来，warmup tail 通常在噪声之内。
+- **`force`** — `SetForceAllPromote(true)` 强制所有可升 Proto 直接升层，预热一轮后测稳态。**非生产模式**，只用于差分测试和 benchmark 上限。
+
+两者稳态数字理论上应当接近；出现明显差异说明升层策略或阈值需要调整。
 
 ### 复现命令
 
