@@ -66,6 +66,14 @@ const (
 	// 真接入 commit-3b):dispatcher 算 resume entry 用 codePageAddr +
 	// resumeOff;Run 端 emit 时记录 codePage 起点。承设计草案 (5)。
 	JITContextCodePageAddrOffset = unsafe.Offsetof(JITContext{}.codePageAddr)
+
+	// **PJ10-native addition**: savedGoG is used by mmap-segment helper
+	// calls to preserve the Go ABIInternal invariant that R14 = G. The
+	// Go-side Run wrapper writes G into it via saveGoG; the mmap segment
+	// emits `mov r14, [r15+savedGoGOff]` before each Go helper call to
+	// restore R14 = G, otherwise Go's function prologue crashes.
+	// See [[project-pj10-native-longtask]] R14-save-wrapper.
+	JITContextSavedGoGOffset = unsafe.Offsetof(JITContext{}.savedGoG)
 )
 
 // **§9.20.9 协议状态码常量** (Spike 1 真接入 + future helper request 路由):
@@ -223,6 +231,28 @@ type JITContext struct {
 	// **当前 Spike 1 阶段 archSupportsFrameInline=false 屏蔽真触发**,本字段
 	// wireP4 / installGibbous 时注入。
 	codePageAddr uintptr
+
+	// savedGoG is a snapshot of the Go G register (amd64 R14 / arm64 X28)
+	// at Run entry. PJ10 native emit that calls Go helpers must first do
+	// `mov r14, [r15+savedGoGOff]` inside the mmap segment to restore
+	// R14=G, otherwise Go's ABIInternal prelude (morestack / stack-guard /
+	// getg) reads garbage from R14 and crashes.
+	//
+	// Written by saveGoG at Run entry (see peroptranslator/save_g_amd64.s).
+	// PJ0-PJ9 do not use this field - their mmap segments never call Go
+	// functions (PR #26 R14 ABI fix relies on that invariant).
+	savedGoG uintptr
+
+	// hostRef holds the peroptranslator P4HostState value's interface
+	// header as [2]uintptr (itab + data). The PJ10 native helper shims
+	// reconstruct the P4HostState from this pair and then dispatch to
+	// the appropriate method.
+	//
+	// **Not using interface{} field**: the JITContext package does not
+	// import peroptranslator, so it can't declare a P4HostState-typed
+	// field. Using an opaque [2]uintptr keeps the type dependency
+	// one-way; peroptranslator restores the interface via unsafe.
+	hostRef [2]uintptr
 }
 
 // NewJITContext 构造 P4 JIT 执行上下文。
@@ -332,3 +362,20 @@ func (c *JITContext) SetCodePageAddr(addr uintptr) {
 
 // CodePageAddr 返回 mmap 段起点(测试钩子)。
 func (c *JITContext) CodePageAddr() uintptr { return c.codePageAddr }
+
+// SavedGoGSlot returns &c.savedGoG for the saveGoG asm helper to write.
+// PJ10 native usage: at Run entry `saveGoG(ctx.SavedGoGSlot())` snapshots
+// the current R14=G into jitCtx; the mmap segment emits
+// `mov r14, [r15+savedGoGOff]` before each Go helper call to restore G.
+func (c *JITContext) SavedGoGSlot() *uintptr { return &c.savedGoG }
+
+// SavedGoG returns the mirrored Go G value (test hook).
+func (c *JITContext) SavedGoG() uintptr { return c.savedGoG }
+
+// SetHostRef stores the opaque host interface header ([2]uintptr:
+// itab + data). PJ10 native shims read this to reconstruct the
+// P4HostState interface and dispatch to methods.
+func (c *JITContext) SetHostRef(h [2]uintptr) { c.hostRef = h }
+
+// HostRef returns the opaque host interface header.
+func (c *JITContext) HostRef() [2]uintptr { return c.hostRef }
