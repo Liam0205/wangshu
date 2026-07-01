@@ -101,8 +101,7 @@ type PerOpCode struct {
 	// forLoopValid and tforLoopValid are mutually exclusive, so the
 	// shared field is safe today. If that invariant ever relaxes, split
 	// into `forLoopAfter` and `tforLoopAfter` before adding the new
-	// case — the current sharing was flagged in the review of
-	// ed2235b..1359a21 as future-hostile.
+	// case — the field name misleadingly implies FORLOOP-only.
 	forLoopValid bool
 	forLoopA     uint8
 	forLoopPC    uint8

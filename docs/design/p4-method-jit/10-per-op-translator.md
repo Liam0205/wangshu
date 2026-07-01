@@ -492,19 +492,23 @@ RETURN
 
 ### 14.6 tail-call 走 gibbous dispatch(非 enterGibbous 重入)
 
-TAILCALL 在 native 段完成 `SetTailcall` 复用父帧后,**直接跑 `code.Run` inline**,**不再走 `enterGibbous(callee)`**——`enterGibbous` 里自己会调一次 `enterLuaFrame`,与 `SetTailcall` 已经完成的「复用父帧」组合成双压帧(帧 base 错位到实参数字上)。这是「helper 组合语义重叠」类 bug,详见 [[2026-07-01-p4-pj10-native-round]] 教训 4。
+TAILCALL 在 native 段完成 `SetTailcall` 复用父帧后,曾尝试**直接跑 `code.Run` inline**、绕开 `enterGibbous(callee)`——`enterGibbous` 里自己会调一次 `enterLuaFrame`,与 `SetTailcall` 已经完成的「复用父帧」组合成双压帧(帧 base 错位到实参数字上)。这是「helper 组合语义重叠」类 bug,详见 [[2026-07-01-p4-pj10-native-round]] 教训 4。
+
+**但**:该修法后来在增量 code review 复跑 PJ5 TailCall e2e 时**证伪**——首次 green 是 test 执行顺序偶然,实际 `bounce()` 循环仍报「attempt to call local 'bounce' (a number value)」。已于 `a5bdb63` revert。proper 处理需要重新分析 DoReturn 弹帧序、funcIdx 归属、fresh flag 三方与 tail-call 复用帧的 lifecycle 交互,留 followup(见 [[project-pj10-native-longtask]] followups #7 + §14.9)。
 
 ---
 
-### 14.7 V15b heavy 三本 P4 native > P3 wasm(2026-07-01 达标)
+### 14.7 V15b heavy 三本 P4 native vs P3 wasm(2026-07-01 实测)
 
 本轮性能验收:V15b heavy 三本 P4 native vs P3 wasm(10 iter × 3 samples,amd64):
 
-| 脚本 | P4 native | P3 wasm | 加速比 |
-|---|---|---|---|
-| HeavyArith | 13.15 ms | 30.34 ms | **2.3x** |
-| HeavyRecursion | 5.48 ms | 12.66 ms | **2.3x** |
-| HeavyFloatloop | 17.24 ms | 50.94 ms | **3.0x** |
+| 脚本 | P4 native | P3 wasm | 加速比 | 说明 |
+|---|---|---|---|---|
+| HeavyArith | ~89 ms | ~86 ms | ≈ 1.0x | tail-call gibbous dispatch revert 后回到 P3 parity;需要 followup(见 §14.9) |
+| HeavyRecursion | 5.48 ms | 12.66 ms | **2.3x** | ✓ |
+| HeavyFloatloop | 17.24 ms | 50.94 ms | **3.0x** | ✓ |
+
+**当前状态**:**两本达标 + 一本 followup**(HeavyArith)。设计目标是三本 P4 > P3;HeavyArith 达标依赖 proper tail-call gibbous dispatch(§14.9 followup)。首版尝试(commit `4b5abf8`)让 HeavyArith 从 89ms 降到 13.15ms,但因 DoReturn 弹帧语义未真正修好,在 PJ5 TailCall e2e 上被增量 review 抓到 revert(commit `a5bdb63`)。
 
 **V14 luajc 档无回归**(承 §14.1 回放骨架建立的 byte-equal),conformance / difftest / luasuite 逐字节一致。
 
@@ -519,7 +523,9 @@ TAILCALL 在 native 段完成 `SetTailcall` 复用父帧后,**直接跑 `code.Ru
 ### 14.9 剩余项(留 followup)
 
 - arm64 runtime e2e 真物理 CI(linux/arm64 self-hosted 或 darwin/arm64 M1 真机);
+- **proper tail-call gibbous dispatch**:让 tail-called kernel(heavy_arith / heavy_recursion)在 repeated invocations 上真的走 gibbous 而不是 crescent。首版「code.Run inline on tail-call frame」证伪(见 §14.6 + 反思 [[2026-07-01-p4-pj10-native-round]] 教训 4);需要重新分析 DoReturn 弹帧序、funcIdx 归属、fresh flag 与 tail-call 复用帧的 lifecycle 交互;HeavyArith 达标依赖此项;
 - 生产接线时 concurrent multi-goroutine force-all difftest 在 mmap trampoline RET 上仍有偶发崩(见 `peropcode.go::init` docstring),已把生产 wiring 保守回退到「回放骨架 + 显式调用 native 覆盖 e2e 测试」,native 完全消耗需解决 concurrent stack unwind race;
 - 字符串常量 LOADK arena 相对烘焙(当前 AnalyzeNative 拒);
-- V15b heavy 之外的真实宿主负载 profile。
+- V15b heavy 之外的真实宿主负载 profile;
+- `gibbous_test_cfield_test.go` fixture 换非对称输入 + 显式路由断言,增强鉴别力(reviewer 指出对称树 `{{f,f},{f,f}}` 可能 A/C bug 都给同款结果;实测 A-bug 会崩,仍有鉴别力,但值得显式化)。
 

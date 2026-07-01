@@ -36,13 +36,17 @@ metadata:
 
 **How to apply**:引入 tier / 快路径 / 优化器新档时,入口判据用「**这个档独占能做的形式集**」而非「这个档能做的最大集」。判据落地形式:先跑一遍全测试看新档拦截了多少既有快路径 → 那些是「本不该拦」的信号,把判据窄到只吃它们剩下的部分。这条与 [[p3-pw10-architectural-ceiling-round]] 教训 1「profile 才是合同」是**入口侧对偶**——那条管「实测证明目标不可达就止损」,本条管「实测证明新入口抢了别人的地盘就窄化」,共享判据基础「实测再决定形式」。
 
-### 4. Tail-call gibbous dispatch 首版误重入 enterGibbous 双压帧
+### 4. Tail-call gibbous dispatch 首版误重入 enterGibbous 双压帧(修法后续证伪)
 
-`4b5abf8` 的 `doTailCall` 想用 `enterGibbous(callee)` 复用父帧,结果 `enterGibbous` 里自己会调一次 `enterLuaFrame` —— 加上 `SetTailcall` 前已经压好的帧,一共两层,PJ5 TailCall 测试报 `attempt to call ... (a number value)`(base 错位到实参数字上)。修法:tail-call 帧上直接跑 `code.Run` inline,不再走 `enterGibbous`(它有自己独立的 `enterLuaFrame` 语义,是给「首次进入 gibbous 帧」用的)。
+`4b5abf8` 的 `doTailCall` 想用 `enterGibbous(callee)` 复用父帧,结果 `enterGibbous` 里自己会调一次 `enterLuaFrame` —— 加上 `SetTailcall` 前已经压好的帧,一共两层,PJ5 TailCall 测试报 `attempt to call ... (a number value)`(base 错位到实参数字上)。
 
-**Why**:`enterGibbous` / `enterLuaFrame` / `SetTailcall` 三者的帧栈生命周期契约各自独立,组合时 SetTailcall 已经完成的「复用父帧」被 enterGibbous 的「新建帧」覆盖了一次——这是**helper 组合语义的重叠**,不是逻辑错。要修得靠拆:tail-call 复用父帧就绕开 enterGibbous,直接 Run。
+第一版修法:tail-call 帧上直接跑 `code.Run` inline,不再走 `enterGibbous`(它有自己独立的 `enterLuaFrame` 语义,是给「首次进入 gibbous 帧」用的)。当时 PJ5 tests 表面通过、HeavyArith 从 89ms 降到 13ms。
 
-**How to apply**:helper 组合(A + B)出现帧栈 / 状态双写时,先看两者各自的 lifecycle 契约有没有重叠字段;若有,组合处不能都调,得选一条 canonical 路径把重叠字段的所有权定下来。
+**但**:后来发现 PJ5 TailCall e2e 的 "通过"只是**测试执行顺序偶然**,增量 review 复跑时相同 test 报同款 `attempt to call local 'bounce' (a number value)`。第一版修法未真正修好 DoReturn 与 tail-call 复用帧的 lifecycle 交互,已于 `a5bdb63` revert。HeavyArith P4 回到 P3 parity,V15b heavy 从"三本达标"退化为"两本达标(HeavyRecursion / HeavyFloatloop)+ 一本 followup"。
+
+**Why**:`enterGibbous` / `enterLuaFrame` / `SetTailcall` / `DoReturn` 四者的帧栈生命周期契约各自独立,tail-call 的「复用父帧 + funcIdx 写返值到 parent_ci.FuncIdx」和 gibbous 的「code.Run + DoReturn 自弹帧」在 fresh flag、funcIdx 归属、cci 弹栈顺序上有隐含冲突。手工 inline `code.Run` 只解决了 "双压帧"表面,没解决更深的 fresh/funcIdx/DoReturn 归属。
+
+**How to apply**:helper 组合(A + B)出现帧栈 / 状态双写时,先看两者各自的 lifecycle 契约有没有重叠字段;若有,组合处不能都调,得选一条 canonical 路径把重叠字段的所有权定下来。**并且**,「表面 test green + 目标 bench 收益」不是修法正确性的充分证据——test 顺序 / 覆盖率的偶然性会让错的组合先绿再红。tail-call gibbous dispatch 的 proper 修法需重新分析 DoReturn 弹帧序 + funcIdx 归属,当前是 [[project-pj10-native-longtask]] followup #7。
 
 ### 5. arm64 vs amd64 分支编码差异要求 arch-aware label fixup
 

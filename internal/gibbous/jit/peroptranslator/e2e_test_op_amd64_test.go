@@ -1,10 +1,12 @@
 //go:build wangshu_p4 && amd64 && linux
 
 // e2e_test_op_amd64_test.go - regression tests for the inline TEST
-// emit's forward rel8 branch arithmetic. Prevents recurrence of the
-// bug reviewed in .code-review/from-ed2235b/from-ed2235b-to-1359a21.md
-// (rel8 hand-count off by 8 bytes due to stale intermediate byte
-// counts in the emit comment).
+// emit's forward rel8 branch arithmetic. An earlier revision
+// hand-computed the jz rel8 against stale intermediate byte counts
+// (mov rcx imm64 counted as 17 not 10; jmp rel32 as 6 not 5), landing
+// PC in the middle of the next instruction. The four cases below cover
+// (truthy/nil/false) × (C=0/1) combinations that each would have
+// crashed under the old offsets.
 package peroptranslator
 
 import (
