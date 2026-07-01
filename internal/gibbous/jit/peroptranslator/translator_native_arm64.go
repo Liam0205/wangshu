@@ -168,26 +168,26 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 				if stringConst(bytecode.Bx(ins)) {
 					return false
 				}
-			case bytecode.ADD, bytecode.SUB, bytecode.MUL, bytecode.DIV,
-				bytecode.LT, bytecode.LE:
-				if bytecode.B(ins) >= 256 {
-					kidx := bytecode.B(ins) - 256
-					if kidx < 0 || kidx >= len(proto.Consts) {
-						return false
-					}
-					if !value.IsNumber(value.Value(proto.Consts[kidx])) {
-						return false
-					}
-				}
-				if bytecode.C(ins) >= 256 {
-					kidx := bytecode.C(ins) - 256
-					if kidx < 0 || kidx >= len(proto.Consts) {
-						return false
-					}
-					if !value.IsNumber(value.Value(proto.Consts[kidx])) {
-						return false
-					}
-				}
+			case bytecode.ADD, bytecode.SUB, bytecode.MUL, bytecode.DIV:
+				// arm64 native arith has no shim fallback for
+				// non-number reg operands (see file header: arm64
+				// mmap segment can't safely call Go helpers under
+				// stack unwind), so the IsNumber guard can only exit
+				// the segment with a generic error — which diverges
+				// from P1 on legitimate coercion (`"5" + 1`) and
+				// __add metamethod inputs. Until the arm64 shim
+				// unwinder conflict is resolved, reject the whole
+				// proto so shape-spec / interpreter handles arith.
+				// (amd64 keeps native arith because it can fall
+				// through to a real shim call safely.)
+				return false
+			case bytecode.LT, bytecode.LE:
+				// Same rationale as arith: FCMPE on non-number bit
+				// patterns produces meaningless flags (P1 LT/LE has
+				// string ordering and __lt / __le metamethods that
+				// we can't replicate inline on arm64 without a shim
+				// fallback). Reject until the fallback path exists.
+				return false
 			case bytecode.EQ:
 				// arm64 inlineRawEqArm64 doesn't yet emit K operand
 				// paths; keep the strict reg-reg gate here so we don't
