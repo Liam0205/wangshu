@@ -127,8 +127,10 @@ jobs:
             -run='^$' \
             ./baseline/ 2>&1 | tee ../bench-v14-gopher.txt
 
-      # V15: realworld 5 scripts geomean.
-      - name: V15 realworld bench (P4)
+      # V15a: realworld 5 scripts geomean (benchmark-game classics —
+      # table/string/CALL heavy; measures Lua semantic ecosystem coverage,
+      # not tier-promotion payoff).
+      - name: V15a realworld bench (P4)
         working-directory: benchmarks
         run: |
           go test -tags 'wangshu_p4 wangshu_profile' \
@@ -137,9 +139,9 @@ jobs:
             -benchtime=${BENCH_TIME} \
             -count=${BENCH_COUNT} \
             -run='^$' \
-            ./realworld/ 2>&1 | tee ../bench-v15-p4.txt
+            ./realworld/ 2>&1 | tee ../bench-v15a-p4.txt
 
-      - name: V15 realworld bench (P3)
+      - name: V15a realworld bench (P3)
         working-directory: benchmarks
         run: |
           go test -tags 'wangshu_p3 wangshu_profile' \
@@ -148,7 +150,44 @@ jobs:
             -benchtime=${BENCH_TIME} \
             -count=${BENCH_COUNT} \
             -run='^$' \
-            ./realworld/ 2>&1 | tee ../bench-v15-p3.txt
+            ./realworld/ 2>&1 | tee ../bench-v15a-p3.txt
+
+      # V15b: heavy 3 scripts — flat numeric kernels crafted to actually
+      # exercise the tier-promotion path (P3 wasm / P4 jit). This is where
+      # the wasm/jit translation is on the critical path, complementary to
+      # V15a which is helper-bound.
+      - name: V15b heavy bench (P4)
+        working-directory: benchmarks
+        run: |
+          go test -tags 'wangshu_p4 wangshu_profile' \
+            -bench='_GibbousJIT$' \
+            -benchmem \
+            -benchtime=${BENCH_TIME} \
+            -count=${BENCH_COUNT} \
+            -run='^$' \
+            ./heavy/ 2>&1 | tee ../bench-v15b-p4.txt
+
+      - name: V15b heavy bench (P3)
+        working-directory: benchmarks
+        run: |
+          go test -tags 'wangshu_p3 wangshu_profile' \
+            -bench='_Gibbous$' \
+            -benchmem \
+            -benchtime=${BENCH_TIME} \
+            -count=${BENCH_COUNT} \
+            -run='^$' \
+            ./heavy/ 2>&1 | tee ../bench-v15b-p3.txt
+
+      - name: V15b heavy bench (P1 + gopher reference)
+        working-directory: benchmarks
+        run: |
+          go test \
+            -bench='BenchmarkHeavy.*_(Wangshu|Gopher)$' \
+            -benchmem \
+            -benchtime=${BENCH_TIME} \
+            -count=${BENCH_COUNT} \
+            -run='^$' \
+            ./heavy/ 2>&1 | tee ../bench-v15b-baseline.txt
 
       # V16: boundary roundtrip. The Const/Nil/Bool bench bodies in
       # baseline_gibbous_jit_test.go are degenerate-body kernels that
@@ -168,8 +207,11 @@ jobs:
       - name: V16 boundary roundtrip bench (P3)
         working-directory: benchmarks
         run: |
+          # P3-side counterparts of the P4 Const/Nil/Bool bench, added in
+          # baseline_gibbous_test.go for V16 fair comparison (same minimal
+          # body in both runs).
           go test -tags 'wangshu_p3 wangshu_profile' \
-            -bench='BenchmarkSimple_(Gibbous|WangshuKernel)' \
+            -bench='Benchmark(Const|Nil|Bool)_(Gibbous|WangshuKernel)' \
             -benchmem \
             -benchtime=${BENCH_TIME} \
             -count=${BENCH_COUNT} \
@@ -184,8 +226,11 @@ jobs:
             runner-info.txt
             bench-v14-p4-cresc.txt
             bench-v14-gopher.txt
-            bench-v15-p4.txt
-            bench-v15-p3.txt
+            bench-v15a-p4.txt
+            bench-v15a-p3.txt
+            bench-v15b-p4.txt
+            bench-v15b-p3.txt
+            bench-v15b-baseline.txt
             bench-v16-p4.txt
             bench-v16-p3.txt
           retention-days: 90

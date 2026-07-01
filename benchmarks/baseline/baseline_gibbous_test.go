@@ -58,6 +58,15 @@ const loopBody = `
   for i = 1, 1000 do s = s + i * i end
   return s`
 
+// Minimal-body kernels (1-instruction body): isolate the boundary
+// (call_indirect + return) cost. Same body strings as P4 side in
+// baseline_gibbous_jit_test.go - duplicated here because that file is
+// gated on wangshu_p4 and not visible to this build tag. Used by V16
+// boundary roundtrip acceptance.
+const constBodyP3 = `return 42`
+const nilBodyP3 = `return nil`
+const boolBodyP3 = `return true`
+
 // 凸月档(force-all 升 gibbous)+ 同核新月档(force=false,同 wrapKernel 包装,
 // 公平对比——避免拿凸月「包装核 ×50」对新月「裸顶层」的苹果对橘子)。
 func BenchmarkSimple_Gibbous(b *testing.B)       { benchGibbous(b, simpleBody, true) }
@@ -66,3 +75,15 @@ func BenchmarkArith_Gibbous(b *testing.B)        { benchGibbous(b, arithBody, tr
 func BenchmarkArith_WangshuKernel(b *testing.B)  { benchGibbous(b, arithBody, false) }
 func BenchmarkLoop_Gibbous(b *testing.B)         { benchGibbous(b, loopBody, true) }
 func BenchmarkLoop_WangshuKernel(b *testing.B)   { benchGibbous(b, loopBody, false) }
+
+// V16 boundary roundtrip: minimal-body kernels measure the trampoline
+// + entry/exit cost on the P3 side, parallel to BenchmarkGibbousJIT_Const/
+// Nil/Bool on the P4 side. Comparing the two pairs (P3 vs P4) gives the
+// V16 acceptance number: P4 boundary should be no more than 5% slower
+// than P3 boundary on the same body.
+func BenchmarkConst_Gibbous(b *testing.B)       { benchGibbous(b, constBodyP3, true) }
+func BenchmarkConst_WangshuKernel(b *testing.B) { benchGibbous(b, constBodyP3, false) }
+func BenchmarkNil_Gibbous(b *testing.B)         { benchGibbous(b, nilBodyP3, true) }
+func BenchmarkNil_WangshuKernel(b *testing.B)   { benchGibbous(b, nilBodyP3, false) }
+func BenchmarkBool_Gibbous(b *testing.B)        { benchGibbous(b, boolBodyP3, true) }
+func BenchmarkBool_WangshuKernel(b *testing.B)  { benchGibbous(b, boolBodyP3, false) }

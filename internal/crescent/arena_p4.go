@@ -5,6 +5,14 @@ package crescent
 import (
 	"github.com/Liam0205/wangshu/internal/arena"
 	"github.com/Liam0205/wangshu/internal/gibbous/jit"
+
+	// Blank-import the PJ10 per-opcode translator sub-package so its
+	// init() registers the PJ10 hook with jit.Compiler. With this in
+	// place, the compiler's SupportsAllOpcodes / Compile fall through to
+	// the per-op translator for shapes PJ7 rejects (constant tuples with
+	// N > 1 returns today; arithmetic / control flow / table ops in
+	// PJ10b+). Removing this import reverts to pure PJ7 behaviour.
+	_ "github.com/Liam0205/wangshu/internal/gibbous/jit/peroptranslator"
 )
 
 // newStateArena 建 State 主 arena —— wangshu_p4 build 下走纯 Go 堆 backing
@@ -31,7 +39,7 @@ func newStateArena(arenaOpts arena.Options) (*arena.Arena, func(), any) {
 //
 // 承用户裁决「互斥 build tag 协议」(主助理决议) + `06-backends.md` §1
 // + `07-p3-retirement.md` §5 缺省退役 P3。`wangshu_p3` 与 `wangshu_p4` 不允许
-// 同时启用——互斥 tag 是 PJ0 阶段最简方案,与 P3 单字段 `b.p3` 注入对齐;PJ10
+// 同时启用——互斥 tag 是 PJ0 阶段最简方案,与 P3 单字段 `b.p3` 注入对齐;PJ11
 // P3 退役后 wireP3 整组文件可删,wireP4 完全接手。
 func (st *State) wireP3() {}
 

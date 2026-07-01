@@ -13,7 +13,7 @@
 //
 // 以上每步需要本机 amd64 真 mmap+RX+execute 调试 + gdb 跟踪;本会话仅
 // 落字节拼接 + 单测对照 ISA 文档。**真完整接入估 +1-2 人月**(承
-// implementation-progress.md PJ10 行差距分析)。
+// implementation-progress.md PJ11 行差距分析)。
 
 package amd64
 
