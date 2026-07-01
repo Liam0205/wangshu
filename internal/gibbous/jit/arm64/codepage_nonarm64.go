@@ -19,7 +19,10 @@ func MmapCode(code []byte) (*CodePage, error) {
 	return nil, errors.New("internal/gibbous/jit/arm64: only available on GOARCH=arm64")
 }
 
-// Addr / Munmap / Length 占位。
-func (c *CodePage) Addr() uintptr { return 0 }
-func (c *CodePage) Munmap() error { return nil }
-func (c *CodePage) Length() int   { return 0 }
+// Stubs for the refcounted API on non-arm64 platforms.
+func (c *CodePage) Addr() uintptr  { return 0 }
+func (c *CodePage) Enter() bool    { return false }
+func (c *CodePage) Exit()          {}
+func (c *CodePage) Dispose() error { return nil }
+func (c *CodePage) Munmap() error  { return nil }
+func (c *CodePage) Length() int    { return 0 }

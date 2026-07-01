@@ -1,39 +1,65 @@
 //go:build wangshu_p4 && linux && amd64
 
-// Package amd64 amd64 后端代码页管理(W^X 翻面 + munmap)。
+// Package amd64 amd64 backend code-page management (W^X flip + munmap).
 //
-// 承 docs/design/p4-method-jit/05-system-pipeline.md §2.1 exec mmap 协议:
-//  1. unix.Mmap MAP_ANON|MAP_PRIVATE PROT_READ|PROT_WRITE alloc;
-//  2. copy code 进段;
-//  3. unix.Mprotect PROT_READ|PROT_EXEC 翻面(W^X 任何时刻不持 RWX);
-//  4. linux/amd64 硬件保证 icache 一致性,无显式 flush;
+// Per docs/design/p4-method-jit/05-system-pipeline.md section 2.1 exec-mmap
+// protocol:
+//  1. unix.Mmap MAP_ANON|MAP_PRIVATE PROT_READ|PROT_WRITE allocation
+//  2. copy code into the segment
+//  3. unix.Mprotect PROT_READ|PROT_EXEC flip (W^X: never holds RWX)
+//  4. linux/amd64 hardware guarantees icache coherence; no explicit flush
 //
-// **PJ1 spike 闸门 🟢 已绿**(spike/p4tramp/DECISION.md):闸门 ① mmap+W^X
-// 翻面工作 + ④ 单 CALL ~1.95ns,P4 自管 codegen 物理基础已实证。本文件
-// 主库版本以 spike 同款形态 + per-Proto 段释放策略落地。
+// **PJ1 spike gate green** (spike/p4tramp/DECISION.md): mmap+W^X flip
+// works, single-CALL ~1.95ns. P4 self-managed codegen physical basis
+// proven. Main-library form matches the spike + per-Proto segment
+// release policy.
+//
+// # Refcounted lifecycle (concurrent Run vs Dispose safety)
+//
+// A CodePage's lifecycle uses refcount + deferred munmap to eliminate the
+// use-after-free window in the multi-State concurrent case, which was
+// previously flagged as an open gap:
+//
+//   - MmapCode initializes refcount = 1 (the "constructor holds one ref").
+//   - Run enters via Enter (refcount +1) and releases via Exit (refcount -1).
+//   - Dispose flips the disposed flag (preventing new Enter) and drops
+//     the constructor's initial ref via Exit. The actual unix.Munmap runs
+//     only when refcount reaches 0 -- either immediately (no active Run)
+//     or when the last Run's Exit sees refcount transition to 0.
+//   - Enter uses a double-check on the disposed flag to close the TOCTOU
+//     window: check disposed -> refcount++ -> re-check disposed. If the
+//     re-check finds disposed, Enter rolls back with Exit and returns
+//     false. This guarantees that a Run started after Dispose either sees
+//     the flip and refuses (returns false), or is atomically counted in
+//     before Dispose's Exit and keeps the segment alive until its own Exit.
 package amd64
 
 import (
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
 
-// CodePage 是一段 mmap 出来的可执行段(W^X 翻面后)。
+// CodePage is a mmap-allocated executable segment (post W^X flip).
 //
-// 与 P3 wazero CompiledModule 对位:每个 CodePage = 一个升层 Proto 的原生
-// 码段。Dispose 时 Munmap。
+// Corresponds one-to-one with P3 wazero CompiledModule: one CodePage per
+// promoted Proto's native code. Dispose triggers Munmap once no Run holds
+// the segment.
 type CodePage struct {
-	mem []byte // 底层 mmap 段(PROT_RX 后 read-only,Go GC 不感知)
-	// length 实际分配字节数(>= len(code),按 4KiB 页向上取整)
-	length int
+	mem      []byte       // underlying mmap segment (PROT_RX after flip, read-only; Go GC unaware)
+	length   int          // actual allocated bytes (>= len(code), rounded up to page size)
+	refcount atomic.Int32 // >0 while alive; 0 triggers real munmap on final Exit
+	disposed atomic.Bool  // true after Dispose; blocks further Enter
 }
 
-// MmapCode 分配 W+X 段,写入 code,W^X 翻面后返回(承 spike/p4tramp 同款流程)。
+// MmapCode allocates a W+X segment, writes code, and flips W^X before
+// returning. Failed allocations clean up partial mmap.
 //
-// 失败时清理已分配段。
+// Initial refcount = 1 (the constructor's own reference, released later
+// by Dispose via Exit).
 func MmapCode(code []byte) (*CodePage, error) {
 	if len(code) == 0 {
 		return nil, errors.New("internal/gibbous/jit/amd64: empty code")
@@ -54,18 +80,21 @@ func MmapCode(code []byte) (*CodePage, error) {
 		_ = unix.Munmap(mem)
 		return nil, fmt.Errorf("internal/gibbous/jit/amd64: mprotect RX failed: %w", err)
 	}
-	// linux/amd64 硬件 icache 一致(无操作);arm64 在 06 §2.3 协议落地处插
-	// IC IVAU/DC CVAU 序列(留 PJ8 启动)。
-	return &CodePage{mem: mem, length: length}, nil
+	// linux/amd64: hardware icache coherent, no explicit flush.
+	// arm64 handles IC IVAU / DC CVAU in its own codepage variant.
+	cp := &CodePage{mem: mem, length: length}
+	cp.refcount.Store(1)
+	return cp, nil
 }
 
-// Addr 返回段起点 uintptr——CALL 目标地址。
+// Addr returns the segment start uintptr, used as a CALL target address.
 //
-// **unsafe 范围**:仅用于把 mmap 段地址转 uintptr 给 trampoline asm。Go GC
-// 不会移动 mmap 段(它不是 Go 堆对象,unix.Mmap 返回的 []byte 经 syscall 暴露
-// 给 Go,但底层是 anonymous mmap,Go GC 不感知);因此 uintptr 稳定。
+// **unsafe scope**: only for converting the mmap segment address to a
+// uintptr for the trampoline asm. Go GC does not move mmap segments (they
+// are not Go heap objects; unix.Mmap returns a []byte view over anonymous
+// mmap, opaque to Go GC), so the uintptr is stable.
 //
-// 同源依赖见 spike/p4tramp/unsafe_linux_amd64.go::memAddr。
+// Same-source dependency: spike/p4tramp/unsafe_linux_amd64.go::memAddr.
 func (c *CodePage) Addr() uintptr {
 	if c == nil || len(c.mem) == 0 {
 		return 0
@@ -73,27 +102,136 @@ func (c *CodePage) Addr() uintptr {
 	return uintptr(unsafe.Pointer(&c.mem[0]))
 }
 
-// Munmap 释放段。
+// Enter acquires one reference for a caller about to execute native code
+// in this segment. Returns false if the segment has been disposed (either
+// disposed flag set, or refcount already at 0). The caller must not enter
+// the segment when Enter returns false.
 //
-// **关键纪律**(承 05 §2.1.3):Munmap 实际触发 munmap 必须保证「该段的所有
-// 调用者都已退出」——若有 goroutine 正在该段执行,munmap 等于 UAF。在 P2
-// 状态机里 Dispose 触发点都是「升层失败/降层」时刻,该段此刻没有活跃调用
-// (状态转换前已经 quiesce);**多 State 并发**下若某 State A 触发某 Proto
-// Dispose,而 State B 仍在该段执行则不安全——这是开放缺口,留 PJ7 验收期
-// 落地(可能解法:引用计数 + 延迟 munmap)。
-func (c *CodePage) Munmap() error {
-	if c == nil || c.mem == nil {
+// The Run path pairs Enter with a deferred Exit, so refcount always
+// returns to the pre-Enter value regardless of Run outcome (return,
+// panic, exit-helper).
+//
+// **CAS-guarded bump (not a plain Add)**: Enter uses a compare-and-swap
+// loop that refuses to bump when refcount is already 0. This is what
+// guarantees at-most-once munmap: once Dispose (or the last Exit) drops
+// refcount to 0 and triggers doMunmap, no subsequent Enter can revive the
+// segment by bumping refcount to 1 and then dropping it again to 0, which
+// would call doMunmap a second time. A prior plain refcount.Add(1) +
+// double-check pattern had this exact race and was caught by -race in
+// TestCodePage_ConcurrentRunVsDispose.
+func (c *CodePage) Enter() bool {
+	if c == nil {
+		return false
+	}
+	for {
+		r := c.refcount.Load()
+		if r == 0 {
+			// Segment already released; no revival.
+			return false
+		}
+		if c.disposed.Load() {
+			return false
+		}
+		if c.refcount.CompareAndSwap(r, r+1) {
+			// Even after a successful CAS, disposed may have flipped in
+			// between the pre-check above and here. If so, roll back via
+			// Exit. Exit's decrement may or may not bring refcount to 0
+			// depending on how many other Enters are in flight, but in
+			// either case at-most-once munmap holds: the CAS above
+			// refused to bump if refcount was already 0, and Exit's
+			// Add(-1) can only match with either (a) our own +1 or (b)
+			// Dispose's -1 of the constructor ref -- these together are
+			// what brought refcount to 0 for the first (and only) time.
+			if c.disposed.Load() {
+				c.Exit()
+				return false
+			}
+			return true
+		}
+	}
+}
+
+// Exit releases one reference. If refcount transitions to zero, the
+// actual unix.Munmap fires here. Safe to call from any goroutine.
+//
+// Callers pair with Enter (Run entry/exit) or with Dispose (constructor
+// ref drop). Do not call Exit without a matching prior Enter or MmapCode.
+func (c *CodePage) Exit() {
+	if c == nil {
+		return
+	}
+	if c.refcount.Add(-1) == 0 {
+		c.doMunmap()
+	}
+}
+
+// Dispose flips the disposed flag (blocking further Enter) and drops the
+// constructor's initial reference. If no Run holds the segment at this
+// moment, Dispose triggers the real munmap synchronously; otherwise the
+// last Run's Exit will trigger it.
+//
+// Idempotent: repeated Dispose is a no-op (disposed flag CAS gates the
+// initial-ref drop).
+//
+// Returns the munmap error if it fired synchronously (this call was the
+// last holder), or nil if the segment is either (a) still held by an
+// active Run (munmap deferred to that Run's Exit, error unobservable
+// here), or (b) already disposed (repeat call).
+func (c *CodePage) Dispose() error {
+	if c == nil {
 		return nil
 	}
+	if !c.disposed.CompareAndSwap(false, true) {
+		return nil
+	}
+	// Drop the constructor's initial reference. If refcount hits 0 here,
+	// no Run held the segment; doMunmap fires synchronously and we
+	// capture its error. Otherwise munmap is deferred to the last Exit
+	// and its error path is logged via doMunmap; not observable here.
+	if c.refcount.Add(-1) == 0 {
+		return c.doMunmapCapturing()
+	}
+	return nil
+}
+
+// Munmap is a compatibility shim that behaves like Dispose. Existing
+// call sites (tests, Compile teardown) invoked Munmap directly before
+// refcount was introduced; keeping the name preserves those call sites
+// while getting the refcounted semantics.
+//
+// Deprecated: new call sites should call Dispose directly for clarity.
+func (c *CodePage) Munmap() error {
+	return c.Dispose()
+}
+
+// doMunmap performs the actual unix.Munmap. Called only when refcount
+// transitions to 0. Error return is dropped; use doMunmapCapturing when
+// the caller needs to observe the error.
+func (c *CodePage) doMunmap() {
 	mem := c.mem
 	c.mem = nil
 	c.length = 0
+	if mem != nil {
+		_ = unix.Munmap(mem)
+	}
+}
+
+// doMunmapCapturing is like doMunmap but returns the unix.Munmap error
+// for the synchronous Dispose path.
+func (c *CodePage) doMunmapCapturing() error {
+	mem := c.mem
+	c.mem = nil
+	c.length = 0
+	if mem == nil {
+		return nil
+	}
 	return unix.Munmap(mem)
 }
 
-// Length 返回段实际分配的字节数(页对齐后,可能 > len(code))。
+// Length returns the actual allocated byte count (page-aligned, may
+// exceed len(code)).
 //
-// 调用方:codePagePool 释放策略;诊断日志。
+// Callers: codePagePool release strategy; diagnostic logs.
 func (c *CodePage) Length() int {
 	if c == nil {
 		return 0

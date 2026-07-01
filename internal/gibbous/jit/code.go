@@ -281,6 +281,17 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 		return 1
 	}
 
+	// Refcount acquire: keep the mmap segment alive for the duration of this
+	// Run, closing the multi-State concurrent Dispose vs Run UAF window.
+	// Enter fails only if the segment has already been disposed; in that case
+	// the Proto is no longer eligible for JIT execution and the caller must
+	// fall back (return error, upstream re-checks tier).
+	if !c.codePage.Enter() {
+		stack[0] = 1
+		return 1
+	}
+	defer c.codePage.Exit()
+
 	// **PJ2 完整接入预备**:Run 入口算 arena base + valueStackBase 装入
 	// jitContext,让 PJ2+ 字节级算术 codegen 可经 r15+offset 读这两字段
 	// (mmap 段直接寻址值栈槽,跳过 host helper round-trip)。当前 PJ7
@@ -894,16 +905,18 @@ func (c *p4Code) Slot() (uint32, bool) {
 	return 0, false
 }
 
-// Dispose 释放 mmap 段(幂等)。
+// Dispose releases the mmap segment. Idempotent.
 //
-// **关键纪律**(承 05 §2.1.3):Dispose 触发 munmap 必须保证「该段所有调用
-// 者已退出」——若有 goroutine 正在该段执行,munmap 等于 UAF。在 P2 状态机
-// 里 Dispose 触发点是「升层失败/降层」时刻,该段此刻没有活跃调用(状态转换
-// 前已经 quiesce)。多 State 并发场景留 PJ7 验收期落地(可能解法:引用计数
-// + 延迟 munmap)。
+// **Concurrency**: Dispose is safe against concurrent Run calls in
+// multi-State setups. CodePage.Dispose flips a disposed flag (blocking
+// further Enter) and releases the constructor's reference; the real
+// unix.Munmap fires only when the refcount reaches zero, either
+// synchronously here (no Run held the segment) or on the last Run's
+// deferred Exit. See internal/gibbous/jit/amd64/codepage_linux.go for the
+// full refcount protocol.
 func (c *p4Code) Dispose() error {
 	if c.codePage != nil {
-		err := c.codePage.Munmap()
+		err := c.codePage.Dispose()
 		c.codePage = nil
 		return err
 	}

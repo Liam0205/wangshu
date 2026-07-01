@@ -142,6 +142,17 @@ func (c *PerOpCode) Run(stack []uint64, base uint32) int32 {
 		return 1
 	}
 
+	// Refcount acquire for the duration of this Run, same protocol as
+	// p4Code.Run in ../code.go. See internal/gibbous/jit/amd64/codepage_linux.go
+	// for the refcount + deferred munmap rationale.
+	if !c.codePage.Enter() {
+		if len(stack) > 0 {
+			stack[0] = 1
+		}
+		return 1
+	}
+	defer c.codePage.Exit()
+
 	c.jitCtx.SetArenaBase(c.host.ArenaBaseAddr())
 	c.jitCtx.SetValueStackBase(c.host.ValueStackBaseAddr(int32(base)))
 	c.jitCtx.SetCIDepthAddr(c.host.CIDepthHostAddr())
@@ -577,12 +588,15 @@ func (c *PerOpCode) runForLoop(base uint32) int32 {
 // wasm module, so there's no shared env.table slot — always (0, false).
 func (c *PerOpCode) Slot() (uint32, bool) { return 0, false }
 
-// Dispose releases the mmap segment.
+// Dispose releases the mmap segment. Safe under concurrent Run in
+// multi-State setups: CodePage.Dispose flips a disposed flag (blocking
+// further Enter) and the refcount protocol defers the actual unix.Munmap
+// until the last active Run's Exit. See amd64/codepage_linux.go.
 func (c *PerOpCode) Dispose() error {
 	if c == nil || c.codePage == nil {
 		return nil
 	}
-	err := c.codePage.Munmap()
+	err := c.codePage.Dispose()
 	c.codePage = nil
 	return err
 }
