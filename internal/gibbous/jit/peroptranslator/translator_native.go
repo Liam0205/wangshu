@@ -170,10 +170,8 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 			switch op {
 			case bytecode.ADD, bytecode.SUB, bytecode.MUL, bytecode.DIV,
 				bytecode.LT, bytecode.LE:
-				// Inline path supports reg-reg and reg-K / K-reg /
-				// K-K as long as any K operand is numeric. Verify
-				// K operands here so AnalyzeNative rejects Protos
-				// whose K would fall through to shim.
+				// Inline arith/compare fast paths require numeric K
+				// operands. Reject Protos whose K would fall through.
 				if bytecode.B(ins) >= 256 {
 					kidx := bytecode.B(ins) - 256
 					if kidx < 0 || kidx >= len(proto.Consts) {
@@ -191,6 +189,17 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 					if !value.IsNumber(value.Value(proto.Consts[kidx])) {
 						return false
 					}
+				}
+			case bytecode.EQ:
+				// inlineRawEq accepts any 64-bit-comparable K (numeric,
+				// nil, bool). String constants are the only Lua 5.1
+				// value where raw ptr-equal ≠ semantic equal *unless
+				// interned* — the frontend interns strings so ptr-equal
+				// == string-equal in practice, but for safety and to
+				// dodge the string-loading path (arena-relative), reject
+				// K operands here for now.
+				if bytecode.B(ins) >= 256 || bytecode.C(ins) >= 256 {
+					return false
 				}
 			}
 		}
@@ -252,7 +261,8 @@ func opSupported(op bytecode.OpCode) bool {
 	case bytecode.MOVE, bytecode.LOADK, bytecode.LOADBOOL, bytecode.LOADNIL,
 		bytecode.ADD, bytecode.SUB, bytecode.MUL, bytecode.DIV,
 		bytecode.NOT,
-		bytecode.LT, bytecode.LE,
+		bytecode.EQ, bytecode.LT, bytecode.LE,
+		bytecode.TEST, bytecode.TESTSET,
 		bytecode.JMP, bytecode.FORPREP, bytecode.FORLOOP,
 		bytecode.RETURN:
 		return true

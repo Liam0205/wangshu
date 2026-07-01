@@ -241,10 +241,15 @@ var _ = unsafe.Pointer(nil)
 func emitCompare(cb *codeBuf, op bytecode.OpCode, pc int32, a uint8, b, c int, succExec, succSkip int) {
 	// Fast path: inline numeric compare via UCOMISd. Supports LT/LE
 	// with reg-reg, reg-K, K-reg, K-K where the K operand is numeric.
-	// EQ still routes to the shim path (needs proper NaN-boxing +
-	// value-tag equality; deferred).
+	// EQ inline uses raw 64-bit bit comparison (Lua rawequal for
+	// primitives; skips __eq metamethod, safe for numeric-only Protos).
 	if op == bytecode.LT || op == bytecode.LE {
 		if inlineNumericCompare(cb, op, a, b, c, succExec, succSkip) {
+			return
+		}
+	}
+	if op == bytecode.EQ {
+		if inlineRawEq(cb, a, b, c, succExec, succSkip) {
 			return
 		}
 	}
@@ -281,9 +286,76 @@ func emitCompare(cb *codeBuf, op bytecode.OpCode, pc int32, a uint8, b, c int, s
 	}
 }
 
-// inlineNumericCompare emits inline UCOMISd + jcc for LT/LE with numeric
-// operands (reg or K). Returns false if unable to emit inline (K not
-// numeric or out of range), signaling the caller to fall through to the
+// inlineRawEq emits inline 64-bit raw-bit equality for EQ. Lua 5.1 EQ
+// semantics: if types differ, false. If same type and primitive
+// (number/nil/bool), bit-equal is correct. For GCRef types (table,
+// userdata, string, function, thread) bit-equal reflects pointer
+// identity; Lua 5.1 == on strings uses interning so ptr-equal ↔
+// string-equal; other GCRefs are always ptr-equal by design. __eq
+// metamethod is skipped — safe for numeric-only Protos (the current
+// gate's use case).
+//
+// Semantics: cond = (RK(B) == RK(C)); if cond != A then pc++ (succSkip);
+// else fall through to JMP (succExec).
+//
+// Sequence:
+//
+//	mov rax, {B}      ; load 64 bits of RK(B) into RAX
+//	<cmp rax, {C}>    ; compare with RK(C)
+//	<je | jne> succExec  ; based on A
+//	jmp succSkip
+//
+// For K operands the 64-bit imm is baked; for reg it's from [rbx+X*8].
+// Returns false if any K operand is out of range (caller falls back).
+func inlineRawEq(cb *codeBuf, a uint8, b, c int, succExec, succSkip int) bool {
+	// Load RK(B) into RAX.
+	if b < 256 {
+		// mov rax, [rbx + B*8]
+		cb.emit(jitamd64.EmitMovqRaxFromMemReg(nil, regRBX, int32(b)*8))
+	} else {
+		kidx := b - 256
+		if cb.proto == nil || kidx < 0 || kidx >= len(cb.proto.Consts) {
+			return false
+		}
+		cb.emit(jitamd64.EmitMovRaxImm64(nil, cb.proto.Consts[kidx]))
+	}
+	// Compare RAX with RK(C).
+	if c < 256 {
+		// cmp rax, [rbx + C*8]  (48 3B 83 disp32; 7 bytes)
+		disp := int32(c) * 8
+		cb.emit([]byte{0x48, 0x3B, 0x83,
+			byte(disp), byte(disp >> 8), byte(disp >> 16), byte(disp >> 24)})
+	} else {
+		kidx := c - 256
+		if cb.proto == nil || kidx < 0 || kidx >= len(cb.proto.Consts) {
+			return false
+		}
+		// mov rcx, imm64
+		cb.emit(jitamd64.EmitMovRcxImm64(nil, cb.proto.Consts[kidx]))
+		// cmp rax, rcx
+		cb.emit(jitamd64.EmitCmpRaxRcx(nil))
+	}
+	// Lua: if (B == C) != A then pc++. Branch to succExec when the
+	// condition matches A.
+	//   A=0: match when (B==C)==0, i.e., B!=C. Use jne (0x85).
+	//   A=1: match when (B==C)==1, i.e., B==C. Use je  (0x84).
+	var jccOpcode byte
+	if a == 0 {
+		jccOpcode = 0x85 // jne
+	} else {
+		jccOpcode = 0x84 // je
+	}
+	// 0F <jcc> rel32: 6 bytes
+	cb.emit([]byte{0x0F, jccOpcode, 0x00, 0x00, 0x00, 0x00})
+	patchOff := cb.pos() - 4
+	cb.addFixup(patchOff, cb.pos(), succExec)
+	// jmp rel32 -> succSkip
+	patchOff2 := cb.pos() + 1
+	cb.emit([]byte{0xE9, 0x00, 0x00, 0x00, 0x00})
+	cb.addFixup(patchOff2, cb.pos(), succSkip)
+	return true
+}
+
 // shim path.
 //
 // Semantics: cond = (RK(B) op RK(C)); if cond != A then pc++ (succSkip);

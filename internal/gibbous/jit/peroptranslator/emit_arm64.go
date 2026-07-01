@@ -278,6 +278,36 @@ func emitFORPREPArm64(cb *codeBuf, pc int32, a uint8, targetBB int) {
 	emitJMPArm64(cb, targetBB)
 }
 
+// emitEQArm64 emits arm64 EQ via shimEq (shim-based fallback for
+// non-inline path). The inline path uses inlineRawEqArm64 in
+// translator_native_arm64.go.
+func emitEQArm64(cb *codeBuf, pc int32, a uint8, b, c int) {
+	emitCallShimArm64(cb, shimEqAddr(), []int32{0, pc, int32(b), int32(c)})
+	_ = a
+}
+
+// emitLTArm64 / emitLEArm64: shim fallback for LT/LE. The inline path
+// uses inlineNumericCompareArm64.
+func emitLTArm64(cb *codeBuf, pc int32, a uint8, b, c int) {
+	emitCallShimArm64(cb, shimCompareAddr(), []int32{0, pc, int32(bytecode.LT), int32(b), int32(c)})
+	_ = a
+}
+func emitLEArm64(cb *codeBuf, pc int32, a uint8, b, c int) {
+	emitCallShimArm64(cb, shimCompareAddr(), []int32{0, pc, int32(bytecode.LE), int32(b), int32(c)})
+	_ = a
+}
+
+// emitTFORLOOPArm64 emits arm64 TFORLOOP via shimTForLoop. shim
+// returns int64: -2=exit, -1=error, >=0=continue.
+func emitTFORLOOPArm64(cb *codeBuf, pc int32, a, c uint8, succBack, succOut int) {
+	emitCallShimArm64(cb, shimTForLoopAddr(), []int32{0, pc, int32(a), int32(c)})
+	// After shim returns, X0 holds -2 / -1 / continue.
+	// TODO: proper 3-way branch on X0 with rel19/rel26 fixups. For now
+	// unconditional fall-through to succBack (loop body).
+	emitJMPArm64(cb, succBack)
+	_ = succOut
+}
+
 // emitNOTArm64 emits arm64 NOT R(A) := not R(B). Never raises.
 //
 // TODO: full inline implementation is complex on arm64 (imm64 loads

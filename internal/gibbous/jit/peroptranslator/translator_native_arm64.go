@@ -152,6 +152,10 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 						return false
 					}
 				}
+			case bytecode.EQ:
+				if bytecode.B(ins) >= 256 || bytecode.C(ins) >= 256 {
+					return false
+				}
 			}
 		}
 	}
@@ -175,7 +179,8 @@ func opSupported(op bytecode.OpCode) bool {
 	case bytecode.MOVE, bytecode.LOADK, bytecode.LOADBOOL, bytecode.LOADNIL,
 		bytecode.ADD, bytecode.SUB, bytecode.MUL, bytecode.DIV,
 		bytecode.NOT,
-		bytecode.LT, bytecode.LE,
+		bytecode.EQ, bytecode.LT, bytecode.LE,
+		bytecode.TEST, bytecode.TESTSET,
 		bytecode.JMP, bytecode.FORPREP, bytecode.FORLOOP,
 		bytecode.RETURN:
 		return true
@@ -324,6 +329,23 @@ func emitTerminatorArm64(buf *codeBuf, c *cfg, bb *basicBlock, bbID int, ins byt
 		if !inlineNumericCompareArm64(buf, op, a, bRK, cRK, bb.succs[0], bb.succs[1]) {
 			return fmt.Errorf("emitTerminatorArm64: inline compare failed pc=%d", pc)
 		}
+	case bytecode.EQ:
+		if len(bb.succs) != 2 {
+			return fmt.Errorf("EQ with %d succs at pc %d", len(bb.succs), pc)
+		}
+		if !inlineRawEqArm64(buf, a, bRK, cRK, bb.succs[0], bb.succs[1]) {
+			return fmt.Errorf("emitTerminatorArm64: inline EQ failed pc=%d", pc)
+		}
+	case bytecode.TEST:
+		if len(bb.succs) != 2 {
+			return fmt.Errorf("TEST with %d succs at pc %d", len(bb.succs), pc)
+		}
+		emitTESTArm64Inline(buf, a, uint8(bytecode.C(ins)), bb.succs[0], bb.succs[1])
+	case bytecode.TESTSET:
+		if len(bb.succs) != 2 {
+			return fmt.Errorf("TESTSET with %d succs at pc %d", len(bb.succs), pc)
+		}
+		emitTESTSETArm64Inline(buf, a, b, uint8(bytecode.C(ins)), bb.succs[0], bb.succs[1])
 	case bytecode.LOADBOOL:
 		emitLOADBOOLArm64_valueOnly(buf, a, b)
 		if len(bb.succs) != 1 {
@@ -702,4 +724,155 @@ func emitFORLOOPArm64Inline(cb *codeBuf, a uint8, succBack, succOut int) {
 	cb.emit([]byte{0x00, 0x00, 0x00, 0x14})
 	cb.addFixupKind(outOff, outOff+4, succOut, fixupKindArm64B26)
 	_ = posA
+}
+
+// inlineRawEqArm64 emits inline 64-bit bit-equality for EQ. Semantics
+// same as amd64 inlineRawEq: reg-reg only (AnalyzeNative rejects K
+// operands for EQ). Returns false only if the (unreachable) K case is
+// hit.
+func inlineRawEqArm64(cb *codeBuf, a uint8, b, c int, succExec, succSkip int) bool {
+	if b >= 256 || c >= 256 {
+		return false
+	}
+	// ldr X0, [X26 + B*8]
+	cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 0, regX26, uint16(b)*8))
+	// ldr X1, [X26 + C*8]
+	cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 1, regX26, uint16(c)*8))
+	// cmp X0, X1
+	cb.emit(jitarm64.EmitCmpXnXm(nil, 0, 1))
+	// Branch to succExec when condition matches A.
+	//   A=0: match when NOT(B==C) -> CondNE (0x1)
+	//   A=1: match when B==C      -> CondEQ (0x0)
+	var cond uint8
+	if a == 0 {
+		cond = jitarm64.CondNE
+	} else {
+		cond = jitarm64.CondEQ
+	}
+	patchOff := cb.pos()
+	cb.emit(jitarm64.EmitBCond(nil, cond, 0))
+	cb.addFixupKind(patchOff, cb.pos(), succExec, fixupKindArm64Cond)
+	emitJMPArm64Fixup(cb, succSkip)
+	return true
+}
+
+// emitTESTArm64Inline emits `if Truthy(R(A)) != C then pc++` inline.
+//
+// Sequence:
+//
+//	ldr X0, [X26 + A*8]        ; R(A)
+//	mov X4, #Nil               ; imm64
+//	cmp X0, X4
+//	b.eq notTruthy
+//	mov X4, #False             ; imm64
+//	cmp X0, X4
+//	b.eq notTruthy
+//	; truthy: pick succ based on C
+//	b <succExec if C != 0 else succSkip>
+//	; notTruthy:
+//	b <succSkip if C != 0 else succExec>
+func emitTESTArm64Inline(cb *codeBuf, a, c uint8, succExec, succSkip int) {
+	nilBits := uint64(value.Nil)
+	falseBits := uint64(value.False)
+
+	// ldr X0, [X26+A*8]
+	cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 0, regX26, uint16(a)*8))
+	// mov X4, Nil
+	cb.emit(jitarm64.EmitMovXdImm64(nil, 4, nilBits))
+	// cmp X0, X4
+	cb.emit(jitarm64.EmitCmpXnXm(nil, 0, 4))
+	// b.eq notTruthy (patch later)
+	beq1Off := int32(len(cb.bytes))
+	cb.emit(jitarm64.EmitBCond(nil, jitarm64.CondEQ, 0))
+	// mov X4, False
+	cb.emit(jitarm64.EmitMovXdImm64(nil, 4, falseBits))
+	// cmp X0, X4
+	cb.emit(jitarm64.EmitCmpXnXm(nil, 0, 4))
+	// b.eq notTruthy
+	beq2Off := int32(len(cb.bytes))
+	cb.emit(jitarm64.EmitBCond(nil, jitarm64.CondEQ, 0))
+
+	// truthy: pick succ based on C
+	var truthySucc, notTruthySucc int
+	if c != 0 {
+		truthySucc = succExec
+		notTruthySucc = succSkip
+	} else {
+		truthySucc = succSkip
+		notTruthySucc = succExec
+	}
+	// b truthySucc (via fixup)
+	emitJMPArm64Fixup(cb, truthySucc)
+
+	// notTruthy label:
+	notTruthyOff := int32(len(cb.bytes))
+	emitJMPArm64Fixup(cb, notTruthySucc)
+
+	// Patch beq1/beq2 to notTruthyOff.
+	patchBCondArm64(cb, beq1Off, notTruthyOff)
+	patchBCondArm64(cb, beq2Off, notTruthyOff)
+}
+
+// patchBCondArm64 patches an already-emitted B.cond (or CBNZ) at
+// bufOff to branch to targetOff, computing rel19 = (target - patchPC) / 4.
+func patchBCondArm64(cb *codeBuf, bufOff, targetOff int32) {
+	wordDisp := (targetOff - bufOff) / 4
+	insn := uint32(cb.bytes[bufOff]) | uint32(cb.bytes[bufOff+1])<<8 |
+		uint32(cb.bytes[bufOff+2])<<16 | uint32(cb.bytes[bufOff+3])<<24
+	insn &= 0xFF00001F
+	insn |= (uint32(wordDisp) & 0x7FFFF) << 5
+	cb.bytes[bufOff] = byte(insn)
+	cb.bytes[bufOff+1] = byte(insn >> 8)
+	cb.bytes[bufOff+2] = byte(insn >> 16)
+	cb.bytes[bufOff+3] = byte(insn >> 24)
+}
+
+// emitTESTSETArm64Inline emits `if Truthy(R(B)) != C then pc++ else R(A) := R(B)`.
+//
+// Sequence:
+//
+//	ldr X0, [X26 + B*8]        ; R(B)
+//	mov X4, #Nil
+//	cmp X0, X4
+//	b.eq notTruthy
+//	mov X4, #False
+//	cmp X0, X4
+//	b.eq notTruthy
+//	; truthy: R(A) := R(B); pick succ based on C
+//	str X0, [X26 + A*8]
+//	b <succExec if C != 0 else succSkip>
+//	; notTruthy: skip R(A) write
+//	b <succSkip if C != 0 else succExec>
+func emitTESTSETArm64Inline(cb *codeBuf, a, b, c uint8, succExec, succSkip int) {
+	nilBits := uint64(value.Nil)
+	falseBits := uint64(value.False)
+
+	cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 0, regX26, uint16(b)*8))
+	cb.emit(jitarm64.EmitMovXdImm64(nil, 4, nilBits))
+	cb.emit(jitarm64.EmitCmpXnXm(nil, 0, 4))
+	beq1Off := int32(len(cb.bytes))
+	cb.emit(jitarm64.EmitBCond(nil, jitarm64.CondEQ, 0))
+	cb.emit(jitarm64.EmitMovXdImm64(nil, 4, falseBits))
+	cb.emit(jitarm64.EmitCmpXnXm(nil, 0, 4))
+	beq2Off := int32(len(cb.bytes))
+	cb.emit(jitarm64.EmitBCond(nil, jitarm64.CondEQ, 0))
+
+	// truthy branch: store R(A) := R(B) then dispatch
+	cb.emit(jitarm64.EmitStrXtToXnDisp(nil, 0, regX26, uint16(a)*8))
+	var truthySucc, notTruthySucc int
+	if c != 0 {
+		truthySucc = succExec
+		notTruthySucc = succSkip
+	} else {
+		truthySucc = succSkip
+		notTruthySucc = succExec
+	}
+	emitJMPArm64Fixup(cb, truthySucc)
+
+	// notTruthy branch: no store
+	notTruthyOff := int32(len(cb.bytes))
+	emitJMPArm64Fixup(cb, notTruthySucc)
+
+	patchBCondArm64(cb, beq1Off, notTruthyOff)
+	patchBCondArm64(cb, beq2Off, notTruthyOff)
 }
