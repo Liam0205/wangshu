@@ -80,6 +80,35 @@ type P4HostState interface {
 	// 返回:0=OK / 1=ERR。用例:P4 LEN A B 形态。
 	Len(base int32, pc int32, b int32, a int32) int32
 
+	// Concat 字符串拼接 CONCAT A B C 慢路径助手(gibbous_host.go::Concat
+	// 同款签名,逐字节同构于解释器 CONCAT 段:R(A) := R(B) .. R(B+1) .. ..
+	// R(C),含 __concat 元方法 + 数字 / 字符串混拼;可 raise)。
+	//
+	// 参数:base/pc 同 Arith;a = 目标寄存器号;b/c = CONCAT 范围首尾
+	// (R(B..C) 闭区间),helper 内经 doConcat 完成连接 + setReg。
+	//
+	// 返回:0=OK / 1=ERR。用例:P4 CONCAT A B C 形态(`function(x, y)
+	// return x .. y end` 类)。
+	Concat(base int32, pc int32, a int32, b int32, c int32) int32
+
+	// Eq EQ 相等比较慢路径(gibbous_host.go::Eq 同款签名,经 doCompare EQ
+	// 分支:raw 等检查 + __eq 元方法;可 raise)。
+	//
+	// 参数:base/pc 同 Arith;b/c = 操作数(EQ B C,RK 编码取寄存器或常量)。
+	//
+	// 返回:packed,bit0 = 比较结果(0/1),bit1 = 错误标志(2)。
+	Eq(base int32, pc int32, b int32, c int32) int32
+
+	// SetList 处理 SETLIST A B C(gibbous_host.go::SetList 同款签名,逐字节
+	// 同构于解释器 SETLIST 段:把 R(A+1..A+B) 装到表 R(A) 的 array 段从
+	// (C-1)*FPF+1 起的位置;C=0 时 next instruction 是 batch 大号)。
+	//
+	// 参数:base/pc 同 Arith;a = 表寄存器;b = 元素数;c = batch 号(0 means
+	// next pc is batch number)。
+	//
+	// 返回:0=OK / 1=ERR。用例:P4 `return {1, 2, 3, 4, ...}` 等数组字面量。
+	SetList(base int32, pc int32, a int32, b int32, c int32) int32
+
 	// NewTable 处理 NEWTABLE A B C 助手(gibbous_host.go::NewTable 同款签名,
 	// 分配 + safepoint 全 helper 内,永不 raise——只可能 Go 端 OOM)。
 	//
@@ -216,6 +245,35 @@ type P4HostState interface {
 	// Run 端 prelude 路径调 host.Self 装 method/self,然后调 CallBaseline /
 	// TailCall 完成 byte-equal P1 doCall 分派。
 	Self(base int32, pc int32, a int32, b int32, c int32) int32
+
+	// Closure 处理 CLOSURE A Bx(gibbous_host.go::Closure 同款)。makeClosure
+	// 读后随伪指令(ci.pc 处的 MOVE/GETUPVAL)消化 upvalue 捕获,故 helper 内
+	// 先把 ci.pc 设到 CLOSURE 之后(pc+1)。
+	//
+	// 参数:base/pc 同 Arith;a = 目标寄存器号;bx = inner Proto 索引。
+	//
+	// 返回:0=OK / 1=ERR。用例:P4 `local f = function() ... end` 类。
+	Closure(base int32, pc int32, a int32, bx int32) int32
+
+	// Close 处理 CLOSE A(gibbous_host.go::Close 同款):关闭所有 ≥ base+A 的
+	// 开放 upvalue。永不 raise。
+	//
+	// 参数:base/pc 同 Arith;a = 起始寄存器号。
+	//
+	// 返回:0=OK(规约保持,与 Arith 等签名对齐)。用例:`do local x = ... end`
+	// 出 block 时关闭 upvalue。
+	Close(base int32, pc int32, a int32) int32
+
+	// TForLoop 处理 TFORLOOP A C(gibbous_host.go::TForLoop 同款)。调迭代器
+	// R(A)(R(A+1),R(A+2)) → 结果 R(A+3..A+2+C);首值非 nil 则继续,nil 则退出。
+	//
+	// 参数:base/pc 同 Arith;a = 迭代器寄存器号;c = 返回值计数。
+	//
+	// 返回(i64,三态):
+	//   - ≥0 = 刷新后的本帧 base 字节偏移(继续循环)
+	//   - -1 = ERR(raise pending)
+	//   - -2 = 退出(首值 nil)
+	TForLoop(base int32, pc int32, a int32, c int32) int64
 
 	// ArenaBaseAddr 返回 arena `[]byte` 起点的 uintptr(承 05 §3.3)。	//
 	// 用例:PJ2 完整投机模板——mmap 段经 r15+offset 读 arenaBase 字段后

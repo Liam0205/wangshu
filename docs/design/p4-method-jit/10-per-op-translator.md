@@ -387,3 +387,42 @@ PJ10 接续 PJ0-PJ9 的所有不变式,新增本档独有:
 3. **OSR exit 仍生效**:通用路径里的 guard 失败(若有,主要在 fast path 内嵌投机时)走 OSR exit 协议,与 PJ0-PJ9 同款
 4. **safepoint 不漏**:回边、call 前后、长直线段后(每 N 条指令)都插 safepoint check,纪律承 [05-system-pipeline §6](./05-system-pipeline.md)
 5. **不引入 IR**:emit 函数直接发字节,不经 SSA / 中间值 / 任何抽象层
+
+---
+
+## 14. 实现进度(2026-06-30 全 opcode 覆盖 Go 端回放)
+
+PJ10 当前实现采取了**比设计文档更保守的物理路径**:不真正发射多 BB amd64 原生码,而是把单 BB Proto 的指令拆成 Go 端「head op + side effect」的回放清单,mmap 段只是占位 stub(`xor eax, eax; ret`),Run 在执行 stub 后用 Go 代码按清单调 host helper / 写寄存器。
+
+这条「Go 端回放」路径覆盖到的 opcode(2026-06-30 session 完):
+
+| 子档 | 覆盖 opcode | 形态举例 |
+|---|---|---|
+| **PJ10a 直线** | MOVE / LOADK / LOADBOOL(C=0) / LOADNIL(含 multi-slot + scratch fill)/ GETUPVAL / SETUPVAL / RETURN(B=0 multret tail-call + B=1 setter + B>=2 多返回)| `return x, y, 1, 2` / `local outer; function set(v) outer = v end` |
+| **PJ10b 算术 + 一元 + 拼接 + NOT** | ADD / SUB / MUL / DIV / MOD / POW / UNM / LEN / NOT / CONCAT | `return a + b, a - b` / `return -x, not y, #z` / `return a .. b` |
+| **PJ10c 比较 diamond** | EQ / LT / LE(4-op 折叠形态) | `return a == b` / `return a < b` / `return a ~= b` / `return a > b` |
+| **PJ10c 短路 diamond** | TESTSET + JMP + MOVE/LOADK(3-op 折叠) | `return x and y` / `return x or 0` |
+| **PJ10c 数值循环** | FORPREP + FORLOOP(Go 端 host.ForPrep + 迭代 dispatch + bodyEffects 回放)| `for i=1,n do s = s + i end` |
+| **PJ10c 泛型循环** | TFORLOOP(JMP-skip-body + body + TFORLOOP + JMP-back 形态,host.TForLoop 驱动)| `for k, v in customIter do ... end`(自写迭代器) |
+| **PJ10d 表 + 全局** | GETTABLE / SETTABLE / GETGLOBAL / SETGLOBAL / NEWTABLE / SETLIST | `return t.x` / `return {1,2,3}` / `_G.foo = 1` |
+| **PJ10d 函数调用** | CALL / TAILCALL / SELF | `local r = f(x)` / `return f(x)` / `obj:method()` |
+| **PJ10d 闭包** | CLOSURE(读 SubNUps 跳 pseudo 伪指令)/ CLOSE | `local f = function() return x end` |
+
+**38 个核心 opcode 中 PJ10 接住:** MOVE / LOADK / LOADBOOL / LOADNIL / GETUPVAL / GETGLOBAL / GETTABLE / SETGLOBAL / SETUPVAL / SETTABLE / NEWTABLE / SELF / ADD / SUB / MUL / DIV / MOD / POW / UNM / NOT / LEN / CONCAT / EQ / LT / LE / TESTSET / FORPREP / FORLOOP / TFORLOOP / CALL / TAILCALL / RETURN / CLOSURE / CLOSE / SETLIST 共 **35 个**(VARARG 设计上永不接,JMP / TEST / LOADBOOL C!=0 需 CFG 多 BB)。
+
+未实现(仍需真 CFG 翻译):
+
+- **LOADBOOL C != 0**:跳过下一指令的 BB 分裂语义(非折叠 diamond 形态)
+- **任意 JMP / TEST**:`if-then-end` / `while-do-end` 需要 CFG 多 BB 翻译
+- **多 FORLOOP/TFORLOOP 嵌套**:当前只接受单循环对
+- **VARARG**:设计文档明示永不接(同 P3)
+
+「真 CFG 翻译」的下一步:
+- 构造 CFG(承 P3 wasm `cfg.go` 同款 leader pc 切 BB + 后继边连接)
+- 多 BB 翻译:每个 BB 单独发一段字节,JMP 经 label resolver 在终末绑定;FORLOOP 回边发 `jne <body_start>` 之类的物理跳转
+- 跳出 Go 端回放,真正发射 amd64 native code
+
+物理路径切换的拐点:**FORLOOP 一旦真接入 native code**,单 BB 回放就必须升级到多 BB native emit,否则循环每次迭代都要跨 Go ↔ mmap 边界一次,违反 PJ10b heavy bench 的 P3 ≥ 5× 加速 baseline。
+
+当前 Go 端 FORLOOP/TFORLOOP 已可正确执行,语义与 P1 解释器逐字节一致,但性能优势限于「函数边界 dispatch 省一次」(因为 body 本身经 host.Arith 调用,与解释器形态相同)。后续 native code 才能在循环内消除 host helper 调用。
+
