@@ -244,11 +244,15 @@ func archEmitHelperCall(buf []byte, helperAddr uint64) []byte {
 // arm64 = 20)。caller 用于 inline CALL 模板长度预算。
 const archEncodedHelperCallLen = jitamd64.EncodedHelperCallLen
 
-// archEmitFrameInlineBuildVoid0ArgSkeleton 拼接 amd64 Spike 1 enterLuaFrame
-// 字节级 inline 骨架(130 字节 Absolute 版,承 §9.20.9 commit-5l bug 修 +
-// jitamd64.EmitFrameInlineBuildVoid0ArgSkeletonAbsolute)。Compile 端
-// useFrameInline 分支用。Absolute 版 LoadCISlotAddr 内追加 r14=arenaBase +
-// add rax, r14 让 rax 是绝对地址,避免 word offset 不能 deref 的 bug。
+// archEmitFrameInlineBuildVoid0ArgSkeleton splices the amd64 Spike 1
+// enterLuaFrame byte-level inline skeleton (120 bytes, Absolute variant,
+// per section 9.20.9 commit-5l bug fix + jitamd64.EmitFrameInlineBuild
+// Void0ArgSkeletonAbsolute; authoritative length constant is
+// jitamd64.EncodedFrameInlineBuildVoid0ArgSkeletonLen exposed below as
+// archEncodedFrameInlineBuildVoid0ArgSkeletonLen). Used by the Compile-side
+// useFrameInline branch. The Absolute variant appends r14=arenaBase +
+// add rax, r14 inside LoadCISlotAddr so rax becomes an absolute address,
+// avoiding the "word offset cannot be dereferenced" bug.
 func archEmitFrameInlineBuildVoid0ArgSkeleton(buf []byte,
 	ciDepthAddrOff, ciSegBaseAddrOff int32, callARecv uint8,
 	w0, w1, w2, w4 uint64) []byte {
