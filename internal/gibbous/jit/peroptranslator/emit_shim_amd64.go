@@ -111,28 +111,8 @@ func funcEntryPC(fn interface{}) uint64 {
 // deref. It exists to keep the funcEntryPC body tidy.
 func uintptrToPtr(u uintptr) unsafe.Pointer { return unsafe.Pointer(u) }
 
-// shim*Addr helpers return the entry PC of each shim by directly
-// dereferencing the func value's funcval pointer -- matches the pattern
-// proven by TestPJ10Native_E2E_HelperCall. Using per-shim helpers avoids
-// the interface{} boxing that reflect.ValueOf(fn).Pointer() incurred.
-
-func shimDoReturnAddr() uint64 {
-	f := shimDoReturn
-	p := *(*unsafe.Pointer)(unsafe.Pointer(&f))
-	return uint64(*(*uintptr)(p))
-}
-
-func shimGetUpvalAddr() uint64 {
-	f := shimGetUpval
-	p := *(*unsafe.Pointer)(unsafe.Pointer(&f))
-	return uint64(*(*uintptr)(p))
-}
-
-func shimSetUpvalFromRegAddr() uint64 {
-	f := shimSetUpvalFromReg
-	p := *(*unsafe.Pointer)(unsafe.Pointer(&f))
-	return uint64(*(*uintptr)(p))
-}
+// shim*Addr helpers moved to shims.go (arch-neutral) so both amd64 and
+// arm64 emit paths can reference the same names.
 
 // emitCallShim emits the full sequence for calling a Go helper shim:
 //  1. Copy R15 into RAX (arg0 = jitCtx)

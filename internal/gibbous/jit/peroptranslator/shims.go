@@ -196,3 +196,143 @@ func shimClose(ctx *jit.JITContext, base, pc, a int32) int32 {
 func shimTForLoop(ctx *jit.JITContext, base, pc, a, c int32) int64 {
 	return hostFromCtx(ctx).TForLoop(base, pc, a, c)
 }
+
+// -----------------------------------------------------------------------
+// Arch-neutral shim address helpers. Each returns the entry PC of the
+// corresponding shim by dereferencing the funcval pointer.
+//
+// These are defined here (in the shared file) rather than in emit_*.go
+// so both amd64 and arm64 emit paths can reference the same names.
+// -----------------------------------------------------------------------
+
+func shimDoReturnAddr() uint64 {
+	f := shimDoReturn
+	p := *(*unsafe.Pointer)(unsafe.Pointer(&f))
+	return uint64(*(*uintptr)(p))
+}
+
+func shimGetUpvalAddr() uint64 {
+	f := shimGetUpval
+	p := *(*unsafe.Pointer)(unsafe.Pointer(&f))
+	return uint64(*(*uintptr)(p))
+}
+
+func shimSetUpvalFromRegAddr() uint64 {
+	f := shimSetUpvalFromReg
+	p := *(*unsafe.Pointer)(unsafe.Pointer(&f))
+	return uint64(*(*uintptr)(p))
+}
+
+func shimArithAddr() uint64 {
+	f := shimArith
+	p := *(*unsafe.Pointer)(unsafe.Pointer(&f))
+	return uint64(*(*uintptr)(p))
+}
+
+func shimUnmAddr() uint64 {
+	f := shimUnm
+	p := *(*unsafe.Pointer)(unsafe.Pointer(&f))
+	return uint64(*(*uintptr)(p))
+}
+
+func shimLenAddr() uint64 {
+	f := shimLen
+	p := *(*unsafe.Pointer)(unsafe.Pointer(&f))
+	return uint64(*(*uintptr)(p))
+}
+
+func shimConcatAddr() uint64 {
+	f := shimConcat
+	p := *(*unsafe.Pointer)(unsafe.Pointer(&f))
+	return uint64(*(*uintptr)(p))
+}
+
+func shimEqAddr() uint64 {
+	f := shimEq
+	p := *(*unsafe.Pointer)(unsafe.Pointer(&f))
+	return uint64(*(*uintptr)(p))
+}
+
+func shimCompareAddr() uint64 {
+	f := shimCompare
+	p := *(*unsafe.Pointer)(unsafe.Pointer(&f))
+	return uint64(*(*uintptr)(p))
+}
+
+func shimGetTableAddr() uint64 {
+	f := shimGetTable
+	p := *(*unsafe.Pointer)(unsafe.Pointer(&f))
+	return uint64(*(*uintptr)(p))
+}
+
+func shimSetTableAddr() uint64 {
+	f := shimSetTable
+	p := *(*unsafe.Pointer)(unsafe.Pointer(&f))
+	return uint64(*(*uintptr)(p))
+}
+
+func shimGetGlobalAddr() uint64 {
+	f := shimGetGlobal
+	p := *(*unsafe.Pointer)(unsafe.Pointer(&f))
+	return uint64(*(*uintptr)(p))
+}
+
+func shimSetGlobalAddr() uint64 {
+	f := shimSetGlobal
+	p := *(*unsafe.Pointer)(unsafe.Pointer(&f))
+	return uint64(*(*uintptr)(p))
+}
+
+func shimNewTableAddr() uint64 {
+	f := shimNewTable
+	p := *(*unsafe.Pointer)(unsafe.Pointer(&f))
+	return uint64(*(*uintptr)(p))
+}
+
+func shimSetListAddr() uint64 {
+	f := shimSetList
+	p := *(*unsafe.Pointer)(unsafe.Pointer(&f))
+	return uint64(*(*uintptr)(p))
+}
+
+func shimForPrepAddr() uint64 {
+	f := shimForPrep
+	p := *(*unsafe.Pointer)(unsafe.Pointer(&f))
+	return uint64(*(*uintptr)(p))
+}
+
+func shimCallAddr() uint64 {
+	f := shimCall
+	p := *(*unsafe.Pointer)(unsafe.Pointer(&f))
+	return uint64(*(*uintptr)(p))
+}
+
+func shimTailCallAddr() uint64 {
+	f := shimTailCall
+	p := *(*unsafe.Pointer)(unsafe.Pointer(&f))
+	return uint64(*(*uintptr)(p))
+}
+
+func shimSelfAddr() uint64 {
+	f := shimSelf
+	p := *(*unsafe.Pointer)(unsafe.Pointer(&f))
+	return uint64(*(*uintptr)(p))
+}
+
+func shimClosureAddr() uint64 {
+	f := shimClosure
+	p := *(*unsafe.Pointer)(unsafe.Pointer(&f))
+	return uint64(*(*uintptr)(p))
+}
+
+func shimCloseAddr() uint64 {
+	f := shimClose
+	p := *(*unsafe.Pointer)(unsafe.Pointer(&f))
+	return uint64(*(*uintptr)(p))
+}
+
+func shimTForLoopAddr() uint64 {
+	f := shimTForLoop
+	p := *(*unsafe.Pointer)(unsafe.Pointer(&f))
+	return uint64(*(*uintptr)(p))
+}
