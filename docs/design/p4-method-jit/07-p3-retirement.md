@@ -440,6 +440,48 @@ internal/gibbous/jit   ← P4 包
 | **P4 验收完成 + 决策做出** | 决策档位决议 + 数据进 [./implementation-progress.md](./implementation-progress.md);doc-gaps 该项移除 |
 | **P4 立项被否决**(走 [./01-launch-judgment.md](./01-launch-judgment.md) §3.4 跳过档) | P3 去留决议本身保留;P3 PW0-PW10 现状作为 wangshu 当前面 |
 
+### 5.6 D2 决议(2026-07-01 用户拍板):主动保留 P3
+
+承 [./09-acceptance-checklist.md](./09-acceptance-checklist.md) §2 D2 行,用户于 P4 验收后拍板 P3 去留:**主动保留形态**(本文 §10.2),既不走 §6 退役也不走 §7 留中层。
+
+**拍板依据**:
+
+| 输入类 | 现状 |
+|---|---|
+| **§4.1 实测翻案** | 未成立——档 (B)(C) 未跑 §3.2 三方对照实测,用户未承诺覆盖 riscv64/ppc64le/s390x |
+| **§4.2 真实宿主需求** | 未成立——首个宿主定位 gopher-lua alternative,未见 iOS/seccomp 明确需求 |
+| **档 (A) 事实** | P4 在 amd64/arm64 三平台 CI 全绿(V15b heavy 5.53x/5.45x/4.00x over gopher,V16 边界快 P3 1.4-2.0x),P3 与 P4 完全重叠 |
+| **决策选型** | 缺省倾向本应退役(§5.1);用户主动选择主动保留形态,是低成本对冲 §10.2 「需求时点滞后」风险的应急保留方案 |
+
+**主动保留形态与 §6 退役 / §7 留中层的三方对比**:
+
+| 维度 | §6 退役 | §7 留中层 | **§10.2 主动保留** (本决议) |
+|---|---|---|---|
+| **代码** | `git rm -r internal/gibbous/wasm` | 主分支活维护 | 保留主分支 |
+| **go.mod wazero** | 删除 | 持续升版本配对验证 | 版本锁死不升 |
+| **build tag** | 整体删 | 平台矩阵化 (P4 平台走 jit,其它走 wasm) | `//go:build wangshu_p3` deprecated 标记 |
+| **CI 差分矩阵** | crescent vs P4 双方 | crescent vs P3 vs P4 三方 | 保留 P4 build 独立跑 (三平台 CI 已在),P3 build 不承诺持续绿 |
+| **wazero 升级** | 一次性移除 | 长期配对验证 | 锁死当前版本,break 风险接受 |
+| **承诺面** | 只 amd64/arm64 exec-mmap | 承诺 riscv64/ppc64le/s390x/iOS/seccomp | 只 amd64/arm64 exec-mmap (与退役同,不承诺 P3 场景) |
+| **维护成本** | 收窄 | 长期双份 | 接近 zero (代码留但不主动维护) |
+| **未来「捡回」代价** | 高 (从 git log 恢复 + 对齐当前主分支) | 无 (已在主分支) | 中 (代码在,但 wazero break API 时需 spike 修) |
+| **性质** | 决策不可逆 | 承诺面扩大 | 应急保留,可逆 |
+
+**工程实施(2026-07-01 起,点到名)**:
+
+| 动作 | 内容 |
+|---|---|
+| **代码留** | `internal/gibbous/wasm` 保留;不做主动改动,不引入新功能 |
+| **build tag** | `wangshu_p3` tag 继续在 CI test-p3 job 里跑 (确保当前 wazero 版本下 byte-equal 不退化) |
+| **wazero 版本** | `go.mod` 锁死当前 wazero 版本,不主动升级;wazero 若有 security patch 才升 |
+| **文档** | P3 子目录文档头注加「P4 已上线 + D2 主动保留;P3 是设计资产不是产品能力,若未来 §4.1/§4.2 翻案条件浮现再评估升级到 §7 留中层」;不转「遗产」标记 (§6.4 是退役形态动作,本决议不适用) |
+| **CI 双后端** | 当前 tri-platform CI 已跑 p1/p3/p4 三 build,保持现状;不因决议改动 CI 结构 |
+| **触发升级到 §7 留中层的条件** | 未来若 §4.1 实测证据出现,或 §4.2 真实宿主需求明确,评估是否升级到 §7 留中层;条件不满足前维持主动保留 |
+
+**触发退到 §6 退役的条件**:若未来 wazero break API 且没有低成本 patch 路径,重新评估退到 §6 退役 (代价:重跑 §3.2 实测确认无 §4 翻案条件成立)。
+
+**决议归档**:本节 + [./09-acceptance-checklist.md](./09-acceptance-checklist.md) §2 D2 行 + [./implementation-progress.md](./implementation-progress.md) 三处同步。
+
 
 ---
 
