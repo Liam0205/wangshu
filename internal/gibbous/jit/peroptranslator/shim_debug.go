@@ -11,6 +11,14 @@ import (
 
 var debugShimTrace = os.Getenv("PJ10_SHIM_TRACE") != ""
 
+// NativeRunCount counts how many times nativeCode.Run has been invoked
+// this process. Useful in benchmarks to confirm the native path is
+// actually being exercised.
+var NativeRunCount atomic.Int64
+
+// NativeCompileCount counts successful TranslateProtoNative calls.
+var NativeCompileCount atomic.Int64
+
 // A cheap ring buffer we can inspect from tests.
 var shimTraceCount atomic.Int64
 var shimTrace [256][8]int64

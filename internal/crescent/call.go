@@ -131,6 +131,17 @@ func (st *State) doTailCall(th *thread, ci *callInfo, i bytecode.Instruction) (*
 	parentNRes := ci.NResults()
 	parentFresh := ci.Fresh()
 	st.popCallInfo(th)
+	// Gibbous dispatch: if the tail-callee's Proto has a registered
+	// GibbousCode (P3 wasm or P4 native), enter it via enterGibbous so
+	// the callee runs on the tier stack. Mirrors doCall's gibbous
+	// branch; without this, tail-called kernels stay on the crescent
+	// interpreter no matter how hot they get.
+	if profileEnabled && th == st.mainTh {
+		pid := object.ClosureProtoID(st.arena, cl)
+		if code := st.bridge.GibbousCodeOf(st.protos[pid]); code != nil {
+			return nil, st.enterGibbous(th, code, dst, nargs, parentNRes)
+		}
+	}
 	if e := st.enterLuaFrame(th, dst, nargs, parentNRes, parentFresh); e != nil {
 		return nil, e
 	}

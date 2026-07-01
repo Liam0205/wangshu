@@ -546,11 +546,34 @@ func emitTESTSET(cb *codeBuf, a, b, c uint8, succExec, succSkip int) {
 // Loop ops (PJ10c)
 // ---------------------------------------------------------------------
 
-// emitFORPREP: preps a numeric for loop via shimForPrep, then JMPs to
-// the FORLOOP block. The JMP target BB is passed in.
+// emitFORPREP: preps a numeric for loop.
+//
+// Semantics (per Lua 5.1): R(A) -= R(A+2); jmp to FORLOOP. Three slots
+// (init, limit, step) are pre-coerced to number before entering the
+// loop; if any is non-numeric, coercion / error is needed.
+//
+// Fast path: assume all three slots are numbers (the same profile-hot
+// assumption we make for inline arith and compare). Emit:
+//
+//	movsd xmm0, [rbx+A*8]      ; R(A)
+//	movsd xmm1, [rbx+(A+2)*8]  ; R(A+2)
+//	subsd xmm0, xmm1
+//	movsd [rbx+A*8], xmm0
+//	jmp   succBB               ; FORLOOP block
+//
+// This dodges the shim-from-mmap crash and keeps FORPREP + FORLOOP body
+// entirely inline — enabling heavy_arith and heavy_recursion kernels to
+// go native.
 func emitFORPREP(cb *codeBuf, pc int32, a uint8, targetBB int) {
-	emitCallShim(cb, shimForPrepAddr(), []int32{0, pc, int32(a)})
-	emitStatusCheckAndBubble(cb)
+	// movsd xmm0, [rbx+A*8]
+	cb.emit(jitamd64.EmitMovsdXmmFromMem(nil, 0, regRBX, int32(a)*8))
+	// movsd xmm1, [rbx+(A+2)*8]
+	cb.emit(jitamd64.EmitMovsdXmmFromMem(nil, 1, regRBX, int32(a+2)*8))
+	// subsd xmm0, xmm1
+	cb.emit(jitamd64.EmitSubsdXmmXmm(nil, 0, 1))
+	// movsd [rbx+A*8], xmm0
+	cb.emit(jitamd64.EmitMovsdMemFromXmm(nil, 0, regRBX, int32(a)*8))
+	// jmp targetBB
 	emitJMP(cb, targetBB)
 }
 

@@ -667,13 +667,6 @@ func TranslateProto(proto *bytecode.Proto, host jit.P4HostState) (bridge.Gibbous
 func init() {
 	jit.RegisterPerOpTranslator(
 		func(proto *bytecode.Proto, host jit.P4HostState) (bridge.GibbousCode, error) {
-			// Prefer the native path when AnalyzeNative accepts. The
-			// current gate is ultra-conservative: only Protos whose
-			// emitted mmap segment makes NO shim calls (RETURN is
-			// dispatched Go-side; arithmetic is inline SSE reg-reg
-			// only). This avoids the mmap-morestack incompatibility
-			// that crashes the Go stack unwinder in general shim-based
-			// emit under nested + concurrent load.
 			if AnalyzeNative(proto) {
 				code, err := TranslateProtoNative(proto, host)
 				if err == nil {
@@ -686,4 +679,5 @@ func init() {
 			return AnalyzeShape(proto).ok || AnalyzeNative(proto)
 		},
 	)
+	jit.RegisterPerOpNativeAnalyzer(AnalyzeNative)
 }

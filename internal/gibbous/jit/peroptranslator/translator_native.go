@@ -54,6 +54,7 @@ type nativeCode struct {
 func (c *nativeCode) Proto() *bytecode.Proto { return c.proto }
 
 func (c *nativeCode) Run(stack []uint64, base uint32) (status int32) {
+	NativeRunCount.Add(1)
 	// Defense in depth: if the mmap segment corrupts the Go runtime state
 	// enough to trigger a fault on RET, catch it and report an error
 	// instead of taking down the host process. This is a stopgap while
@@ -233,7 +234,7 @@ func opSupported(op bytecode.OpCode) bool {
 		bytecode.ADD, bytecode.SUB, bytecode.MUL, bytecode.DIV,
 		bytecode.NOT,
 		bytecode.LT, bytecode.LE,
-		bytecode.JMP, bytecode.FORLOOP,
+		bytecode.JMP, bytecode.FORPREP, bytecode.FORLOOP,
 		bytecode.RETURN:
 		return true
 	default:
@@ -313,6 +314,7 @@ func TranslateProtoNative(proto *bytecode.Proto, host jit.P4HostState) (*nativeC
 	if err != nil {
 		return nil, err
 	}
+	NativeCompileCount.Add(1)
 	return &nativeCode{
 		proto:    proto,
 		codePage: page,
