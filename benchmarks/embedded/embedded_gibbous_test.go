@@ -34,18 +34,6 @@ func warmEvaluate(b *testing.B, st *wangshu.State, preset func()) wangshu.Value 
 	return fn
 }
 
-// autoEvaluate: production heat-threshold path, no force-all, no warmup.
-// Returns the evaluate fn ready for the first call (which will start on
-// crescent and promote naturally after HotEntryThreshold hits).
-func autoEvaluate(b *testing.B, st *wangshu.State, preset func()) wangshu.Value {
-	b.Helper()
-	fn := st.GetGlobal("evaluate")
-	if preset != nil {
-		preset()
-	}
-	return fn
-}
-
 // Historical name preserved: this is the CallInto (zero-alloc) variant. See
 // _GibbousCall below for the allocating variant added later.
 func BenchmarkMiniCallOnly_Gibbous(b *testing.B) {
