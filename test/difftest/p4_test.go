@@ -134,6 +134,31 @@ local total = 0
 for i = 1, 20 do total = total + f() end
 return total`},
 
+	// —— arith with number-string coercion (P1 accepts "5"+1 = 6; P4
+	// native emit must either handle this correctly or defer to
+	// shape-spec / interpreter). Guards against bot review's flagged
+	// arm64 divergence.
+	{"p4_arith_coerce_string", `
+local function f(x) return x + 1 end
+local s = 0
+for i = 1, 30 do s = s + f("5") end
+return s`},
+
+	// —— arith with __add metamethod: table + number goes through
+	// doArithSlow → arithMeta, must produce the metamethod result,
+	// not a generic error.
+	{"p4_arith_meta_add", `
+local mt = { __add = function(a, b)
+    local av = type(a) == "table" and a.v or a
+    local bv = type(b) == "table" and b.v or b
+    return av + bv
+end }
+local function f(t) return t + 1 end
+local t = setmetatable({v = 10}, mt)
+local s = 0
+for i = 1, 30 do s = s + f(t) end
+return s`},
+
 	// —— 表 IC ArrayHit(GETTABLE 数字键 in array)——
 	{"p4_table_array_get", `
 local function f(t) return t[1] end
