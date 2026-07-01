@@ -112,9 +112,28 @@ func hostIfaceHeader(h jit.P4HostState) [2]uintptr {
 }
 
 // AnalyzeNative reports whether the native emit path can handle a Proto:
-// reducible CFG + all live opcodes in the supported set + no string
-// constants (F7 gate) + no VARARG. Called from perOpAnalyzer as the
-// fallback when AnalyzeShape.ok is false.
+// PreferNative reports whether Compiler should skip shape-spec fast
+// paths and route this Proto directly to the native emitter. Narrower
+// than AnalyzeNative: we only prefer native for Protos with real
+// control flow (multi-BB reducible CFG) — single-BB Protos are what
+// the shape-spec fast paths target, and those tests should stay on
+// their historical fast path.
+func PreferNative(proto *bytecode.Proto) bool {
+	if !AnalyzeNative(proto) {
+		return false
+	}
+	c := buildCFG(proto)
+	reach := c.reachableBlocks()
+	live := 0
+	for id := range c.blocks {
+		if reach[id] {
+			live++
+		}
+	}
+	return live >= 2
+}
+
+// AnalyzeNative reports whether the native emit path can handle a Proto:
 func AnalyzeNative(proto *bytecode.Proto) bool {
 	if proto == nil || len(proto.Code) == 0 {
 		return false

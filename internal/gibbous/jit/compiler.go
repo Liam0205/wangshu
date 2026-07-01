@@ -4219,19 +4219,6 @@ func analyzeShape(proto *bytecode.Proto) shapeInfo {
 // `p2-bridge/05-p3-p4-interface.md` §2.2.2 错误返回语义)——bridge 收到错误
 // 后把该 Proto 标 TierStuck(永久解释,不重试)。
 func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback) (bridge.GibbousCode, error) {
-	// PJ10 native path preferred when the CFG-based translator accepts.
-	// The native emit covers multi-BB shapes (numeric FORPREP/FORLOOP
-	// loops with inline SSE bodies) that the historical shape-spec fast
-	// paths only partially handle. For any Proto AnalyzeNative accepts,
-	// try native first; on any failure fall through to the existing
-	// IC / spec / shape pipeline so behaviour stays identical for
-	// unsupported shapes.
-	if perOpNativeAnalyzer != nil && perOpNativeAnalyzer(proto) && perOpTranslator != nil {
-		if code, err := perOpTranslator(proto, c.hostState); err == nil && code != nil {
-			CompilePreferNativeCount.Add(1)
-			return code, nil
-		}
-	}
 	// **PJ4 IC ArrayHit 优先识别**(承 03 §6 stableShape/Index 直达槽)。
 	//
 	// **必须先尝试 IC inline(在 analyzeShape 之前判)**:IC 形态长度 2/3 与

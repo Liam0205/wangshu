@@ -679,5 +679,5 @@ func init() {
 			return AnalyzeShape(proto).ok || AnalyzeNative(proto)
 		},
 	)
-	jit.RegisterPerOpNativeAnalyzer(AnalyzeNative)
+	jit.RegisterPerOpNativeAnalyzer(PreferNative)
 }
