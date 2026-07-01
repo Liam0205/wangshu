@@ -79,6 +79,10 @@ func (c *nativeCode) Run(stack []uint64, base uint32) (status int32) {
 func (c *nativeCode) PendingErr() error    { return nil }
 func (c *nativeCode) Slot() (uint32, bool) { return 0, false }
 
+// IsPJ10Native marks this code as the CFG-based PJ10 native path. See
+// amd64 counterpart for rationale.
+func (c *nativeCode) IsPJ10Native() bool { return true }
+
 // Dispose releases the mmap'd code page. See amd64 counterpart.
 func (c *nativeCode) Dispose() {
 	if c == nil || c.codePage == nil {

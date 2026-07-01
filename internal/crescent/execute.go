@@ -309,7 +309,7 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 			// currentCI and continue execute() at the caller's next
 			// instruction after CALL.
 			if profileEnabled && th == st.mainTh && !ci.Gibbous() {
-				if gcode := st.bridge.GibbousCodeOf(proto); gcode != nil {
+				if gcode := st.bridge.GibbousCodeOf(proto); gcode != nil && isPJ10NativeCode(gcode) {
 					ci.SetGibbous(true)
 					th.reMirrorTop()
 					baseByte := (th.stackBaseW + uint32(ci.base)) * 8

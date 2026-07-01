@@ -104,6 +104,16 @@ func (c *nativeCode) Run(stack []uint64, base uint32) (status int32) {
 func (c *nativeCode) PendingErr() error    { return nil }
 func (c *nativeCode) Slot() (uint32, bool) { return 0, false }
 
+// IsPJ10Native is a public marker method identifying this GibbousCode
+// as the CFG-based PJ10 native emit path (as opposed to PerOpCode
+// head-op replay or PJ0-PJ9 shape-spec templates). Callers use it to
+// gate behavior that is only safe on the native path — most notably
+// the tail-call gibbous dispatch in crescent/execute.go, which
+// requires the callee to honor DoReturn's standard frame-teardown
+// contract on a reused tail-call frame. PerOpCode's head-op replay
+// assumes a fresh frame and doesn't compose with that lifecycle.
+func (c *nativeCode) IsPJ10Native() bool { return true }
+
 // Dispose releases the mmap'd code page. Safe to call multiple times.
 // Callers (bridge Proto teardown / recompile paths) should invoke this
 // when they no longer need the compiled code — otherwise mmap pages
