@@ -420,12 +420,90 @@ func emitTEST(cb *codeBuf, a, c uint8, succExec, succSkip int) {
 	}
 }
 
-// emitTESTSET: if Truthy(R(B)) == C then R(A) := R(B) else pc++.
-// Similar inline logic to emitTEST but with an R(B) source and A dest.
-// TODO: inline emit; for now defer via panic to catch un-covered paths.
+// emitTESTSET emits `if Truthy(R(B)) == C then R(A) := R(B) else pc++`.
+// Inline (no shim), similar to emitTEST but with a source register B
+// and destination A when the truthiness matches C.
+//
+// Semantics:
+//   - truthy(R(B)) == (C != 0): R(A) := R(B), branch to succExec
+//   - truthy(R(B)) != (C != 0): pc++, branch to succSkip
+//
+// Layout (byte offsets):
+//
+//	[00..06] mov rax, [rbx+B*8]        (7 bytes)
+//	[07..16] mov rcx, nilBits          (10 bytes)
+//	[17..19] cmp rax, rcx              (3 bytes)
+//	[20..21] jz +N notTruthy           (2 bytes, rel8)
+//	[22..31] mov rcx, falseBits        (10 bytes)
+//	[32..34] cmp rax, rcx              (3 bytes)
+//	[35..36] jz +M notTruthy           (2 bytes, rel8)
+//	; truthy path
+//	[37..NN] if C != 0: mov [rbx+A*8], rax; jmp succExec
+//	         else:      jmp succSkip
+//	notTruthy:
+//	[NN..MM] if C != 0: jmp succSkip
+//	         else:      mov [rbx+A*8], rax; jmp succExec
 func emitTESTSET(cb *codeBuf, a, b, c uint8, succExec, succSkip int) {
-	_, _, _, _, _ = a, b, c, succExec, succSkip
-	panic("emitTESTSET: not yet implemented")
+	nilBits := uint64(value.Nil)
+	falseBits := uint64(value.False)
+
+	// mov rax, [rbx+B*8]
+	cb.emit(jitamd64.EmitMovqRaxFromMemReg(nil, regRBX, int32(b)*8))
+	// mov rcx, nilBits
+	cb.emit(jitamd64.EmitMovRcxImm64(nil, nilBits))
+	// cmp rax, rcx
+	cb.emit(jitamd64.EmitCmpRaxRcx(nil))
+
+	// We need the distance from the jz's next instruction to the
+	// notTruthy label. The truthy path emits either:
+	//   - c != 0: mov [rbx+A*8], rax (7 bytes) + jmp succExec (5 rel32) = 12
+	//   - c == 0: jmp succSkip (5 rel32) = 5
+	//
+	// Then we have: mov rcx, falseBits (10) + cmp (3) + jz (2) = 15
+	// which is between the first jz and the truthy path.
+	//
+	// First jz forward distance = 15 (rest of pre-truthy) + truthy-path-len.
+	truthyLen := 5
+	if c != 0 {
+		truthyLen = 12
+	}
+	firstJzDelta := int8(15 + truthyLen)
+	// jz +firstJzDelta
+	cb.emit([]byte{0x74, byte(firstJzDelta)})
+	// mov rcx, falseBits
+	cb.emit(jitamd64.EmitMovRcxImm64(nil, falseBits))
+	// cmp rax, rcx
+	cb.emit(jitamd64.EmitCmpRaxRcx(nil))
+	// jz +truthyLen (skip truthy path)
+	cb.emit([]byte{0x74, byte(truthyLen)})
+	// Truthy path
+	if c != 0 {
+		// mov [rbx+A*8], rax
+		cb.emit(jitamd64.EmitMovqMemRegFromRax(nil, regRBX, int32(a)*8))
+		// jmp succExec
+		patchOff := cb.pos() + 1
+		cb.emit([]byte{0xE9, 0x00, 0x00, 0x00, 0x00})
+		cb.addFixup(patchOff, cb.pos(), succExec)
+	} else {
+		// jmp succSkip
+		patchOff := cb.pos() + 1
+		cb.emit([]byte{0xE9, 0x00, 0x00, 0x00, 0x00})
+		cb.addFixup(patchOff, cb.pos(), succSkip)
+	}
+	// notTruthy path
+	if c != 0 {
+		// jmp succSkip
+		patchOff := cb.pos() + 1
+		cb.emit([]byte{0xE9, 0x00, 0x00, 0x00, 0x00})
+		cb.addFixup(patchOff, cb.pos(), succSkip)
+	} else {
+		// mov [rbx+A*8], rax
+		cb.emit(jitamd64.EmitMovqMemRegFromRax(nil, regRBX, int32(a)*8))
+		// jmp succExec
+		patchOff := cb.pos() + 1
+		cb.emit([]byte{0xE9, 0x00, 0x00, 0x00, 0x00})
+		cb.addFixup(patchOff, cb.pos(), succExec)
+	}
 }
 
 // ---------------------------------------------------------------------
@@ -440,23 +518,202 @@ func emitFORPREP(cb *codeBuf, pc int32, a uint8, targetBB int) {
 	emitJMP(cb, targetBB)
 }
 
-// emitFORLOOP: shim call would need to advance and check. Not in the
-// P4HostState interface directly (no ForLoop method separate). For now,
-// emit an inline loop step + call test, matching the interpreter's
-// FORLOOP semantics. Deferred: use host.Arith or host.ForPrep pattern.
+// emitFORLOOP emits the numeric for-loop back-edge:
 //
-// TODO: implement using SSE add/compare on R(A), R(A+1), R(A+2) slots.
-func emitFORLOOP(cb *codeBuf, pc int32, a uint8, succBack, succOut int) {
-	_, _, _, _ = pc, a, succBack, succOut
-	panic("emitFORLOOP: not yet implemented (needs inline SSE step)")
+//	R(A) += R(A+2)                   ; step index
+//	if step > 0 then R(A) <= R(A+1)  ; check
+//	   else            R(A) >= R(A+1)
+//	if cond then R(A+3) := R(A); jmp back-edge (succBack)
+//	else jmp fall-out (succOut)
+//
+// All slots are Lua number values (NaN-boxed doubles). Inline SSE:
+//
+//	movsd xmm0, [rbx+A*8]           ; index
+//	movsd xmm2, [rbx+(A+2)*8]       ; step
+//	addsd xmm0, xmm2                ; index += step
+//	movsd [rbx+A*8], xmm0           ; store back
+//	movsd xmm1, [rbx+(A+1)*8]       ; limit
+//	xorpd xmm3, xmm3                ; zero
+//	ucomisd xmm2, xmm3              ; step vs 0
+//	ja stepPositive                 ; unordered/greater
+//
+//	; step <= 0:  cond = (index >= limit)
+//	ucomisd xmm0, xmm1
+//	jae condTrue
+//	jmp condFalse
+//
+// stepPositive:
+//
+//	; step > 0:  cond = (index <= limit)
+//	ucomisd xmm1, xmm0              ; compare limit vs index
+//	jae condTrue
+//	jmp condFalse
+//
+// condTrue:
+//
+//	movsd [rbx+(A+3)*8], xmm0       ; visible index
+//	jmp succBack
+//
+// condFalse:
+//
+//	jmp succOut
+//
+// Total ~85 bytes. Non-trivial but avoids a shim call for the hot
+// loop body.
+func emitFORLOOP(cb *codeBuf, a uint8, succBack, succOut int) {
+	// movsd xmm0, [rbx+A*8]
+	cb.emit(jitamd64.EmitMovsdXmmFromMem(nil, 0, regRBX, int32(a)*8))
+	// movsd xmm2, [rbx+(A+2)*8]
+	cb.emit(jitamd64.EmitMovsdXmmFromMem(nil, 2, regRBX, int32(a+2)*8))
+	// addsd xmm0, xmm2
+	cb.emit(jitamd64.EmitAddsdXmmXmm(nil, 0, 2))
+	// movsd [rbx+A*8], xmm0
+	cb.emit(jitamd64.EmitMovsdMemFromXmm(nil, 0, regRBX, int32(a)*8))
+	// movsd xmm1, [rbx+(A+1)*8]
+	cb.emit(jitamd64.EmitMovsdXmmFromMem(nil, 1, regRBX, int32(a+1)*8))
+	// xorpd xmm3, xmm3  (0.66 f 57 db)
+	cb.emit([]byte{0x66, 0x0F, 0x57, 0xDB})
+	// ucomisd xmm2, xmm3
+	cb.emit(jitamd64.EmitUcomisdXmmXmm(nil, 2, 3))
+	// ja stepPositive (forward). Distance = size of (step<=0 branch).
+	//   step<=0 block:
+	//     ucomisd xmm0, xmm1     (4 bytes)
+	//     jae condTrue           (rel8 2 bytes) forward to condTrue
+	//     jmp condFalse          (rel8 2 bytes) forward to condFalse
+	//   = 8 bytes
+	//
+	// stepPositive block:
+	//     ucomisd xmm1, xmm0     (4 bytes)
+	//     jae condTrue           (rel8 2 bytes) forward to condTrue
+	//     jmp condFalse          (rel8 2 bytes) forward to condFalse
+	//   = 8 bytes
+	//
+	// After both blocks: condTrue block:
+	//     movsd [rbx+(A+3)*8], xmm0   (5 bytes disp8 or 9 disp32)
+	//     jmp succBack (rel32, 5 bytes)
+	//   = 14 bytes (with disp32 movsd)
+	//
+	// condFalse block:
+	//     jmp succOut (rel32, 5 bytes)
+	//   = 5 bytes
+	//
+	// Layout:
+	//   [00..]  step<=0 (8 bytes)
+	//   [08..]  stepPositive (8 bytes)
+	//   [16..]  condTrue (14 bytes)
+	//   [30..]  condFalse (5 bytes)
+	//
+	// ja to stepPositive: delta = 8 (skip step<=0 block).
+	cb.emit([]byte{0x77, 8}) // ja +8
+
+	// step <= 0 block (offset 0 relative to end of ja):
+	// ucomisd xmm0, xmm1
+	cb.emit(jitamd64.EmitUcomisdXmmXmm(nil, 0, 1))
+	// jae +4 (to condTrue, skipping the 2-byte jmp)
+	// The condTrue label is at relative offset 4 from end of this jae:
+	//   next 2 bytes are jmp condFalse
+	//   then stepPositive block (8 bytes)... wait no, stepPositive is
+	//   the other branch, comes before condTrue in layout.
+	//
+	// Re-plan: put both step-check blocks contiguous, then condTrue,
+	// then condFalse.
+	//
+	// After the ja +8, we're at position P.
+	// step<=0 (8 bytes): [P..P+7]
+	// stepPositive (8 bytes): [P+8..P+15]
+	// condTrue (14 bytes): [P+16..P+29]
+	// condFalse (5 bytes): [P+30..P+34]
+	//
+	// In step<=0:
+	//   ucomisd (4b): [P..P+3]
+	//   jae +N to condTrue: [P+4..P+5]
+	//     from end of jae (P+6) to condTrue (P+16): delta = 10.
+	//   jmp +M to condFalse: [P+6..P+7]
+	//     from end of jmp (P+8) to condFalse (P+30): delta = 22.
+	//
+	// In stepPositive:
+	//   ucomisd (4b): [P+8..P+11]
+	//   jae +N to condTrue: [P+12..P+13]
+	//     from end (P+14) to condTrue (P+16): delta = 2.
+	//   jmp +M to condFalse: [P+14..P+15]
+	//     from end (P+16) to condFalse (P+30): delta = 14.
+	//
+	// jae +10 to condTrue
+	cb.emit([]byte{0x73, 10})
+	// jmp +22 to condFalse
+	cb.emit([]byte{0xEB, 22})
+
+	// stepPositive block:
+	// ucomisd xmm1, xmm0
+	cb.emit(jitamd64.EmitUcomisdXmmXmm(nil, 1, 0))
+	// jae +2 to condTrue
+	cb.emit([]byte{0x73, 2})
+	// jmp +14 to condFalse
+	cb.emit([]byte{0xEB, 14})
+
+	// condTrue block:
+	// movsd [rbx+(A+3)*8], xmm0    (disp32 form always used)
+	cb.emit(jitamd64.EmitMovsdMemFromXmm(nil, 0, regRBX, int32(a+3)*8))
+	// jmp rel32 -> succBack
+	{
+		patchOff := cb.pos() + 1
+		cb.emit([]byte{0xE9, 0x00, 0x00, 0x00, 0x00})
+		cb.addFixup(patchOff, cb.pos(), succBack)
+	}
+
+	// condFalse block:
+	// jmp rel32 -> succOut
+	{
+		patchOff := cb.pos() + 1
+		cb.emit([]byte{0xE9, 0x00, 0x00, 0x00, 0x00})
+		cb.addFixup(patchOff, cb.pos(), succOut)
+	}
 }
 
-// emitTFORLOOP: generic for iteration, via shimTForLoop. The shim
+// emitTFORLOOP emits generic-for iteration via shimTForLoop. The shim
 // returns int64: -2 = exit, -1 = error, >= 0 = continue.
-// TODO: implement with proper int64 handling and BB branch.
+//
+// Semantics after the shim:
+//
+//	if ret == -1: bubble error
+//	if ret == -2: pc++ (fall out, succOut)
+//	else: fall through to succBack (loop body)
+//
+// Emit sequence:
+//
+//	<call shimTForLoop(base, pc, a, c)>
+//	cmp rax, -1
+//	je error_bubble
+//	cmp rax, -2
+//	je succOut
+//	jmp succBack
+//
+// error_bubble:
+//
+//	mov rax, 1
+//	ret
 func emitTFORLOOP(cb *codeBuf, pc int32, a, c uint8, succBack, succOut int) {
-	_, _, _, _, _ = pc, a, c, succBack, succOut
-	panic("emitTFORLOOP: not yet implemented (needs int64 shim return handling)")
+	emitCallShim(cb, shimTForLoopAddr(), []int32{0, pc, int32(a), int32(c)})
+	// cmp rax, -1
+	cb.emit([]byte{0x48, 0x83, 0xF8, 0xFF})
+	// jne +7 (skip error return block)
+	cb.emit([]byte{0x75, 0x07})
+	// mov eax, 1; ret
+	cb.emit([]byte{0xB8, 0x01, 0x00, 0x00, 0x00, 0xC3})
+	// cmp rax, -2
+	cb.emit([]byte{0x48, 0x83, 0xF8, 0xFE})
+	// je -> succOut (rel32)
+	{
+		cb.emit([]byte{0x0F, 0x84, 0x00, 0x00, 0x00, 0x00})
+		patchOff := cb.pos() - 4
+		cb.addFixup(patchOff, cb.pos(), succOut)
+	}
+	// jmp -> succBack (rel32)
+	{
+		patchOff := cb.pos() + 1
+		cb.emit([]byte{0xE9, 0x00, 0x00, 0x00, 0x00})
+		cb.addFixup(patchOff, cb.pos(), succBack)
+	}
 }
 
 // ---------------------------------------------------------------------
