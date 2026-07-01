@@ -2,12 +2,12 @@
 
 > 状态:**PJ0-PJ4 + PJ5 CALL void 二百二十子形态 + PJ5 TAILCALL 一百零二子形态 + PJ5 SELF method call inline 完整 0..7 参 + PJ5 SELF spec template 字节级 inline 含 N=2..15 返 drop multi-ret 全形态 + OSR exit 协议接通(p4SpecState 子状态机)+ PJ7 + PJ11 luajc 档突破已落地 + Option B 帧建立内联 Spike 1 字节级 emit 模板全套就位(§9.20 + §9.20.6)+ R14 ABI 违约修复(§9.20.6 (6.5),PR #26 外部审查阻塞已闭环)**(2026-06-28)。PJ3 FORLOOP 字节级 inline 实测 7.15-25.41x over gopher-lua,**完整超越 luajc 档 4.4x 基线**(承 §8)。**PJ4 表 IC 完整六路径**(GETTABLE/SETTABLE/SELF × ArrayHit/NodeHit)字节级 inline 主路径接入 + 严密 IsTable guard(承 §9.7-§9.10) + 整套层级 prove-the-path 守卫(承 §9.11)。**PJ8 arm64 字节级模板矩阵完整 + Compile 端真接入**(承 §9.13)。**PJ5 CALL void 二百二十子形态打通**(2026-06-27):analyzeCallVoidForm 识别 setter 110 子态(0/1 K/1 reg/2/3/4/5/6/7 参组合)× 双 callee + getter 1 返 110 子态 + getter N>=2 返值 12 子态(0/1 K/1 reg 参 × {N=2/N=3 返,N=3 仅 0/1 参} × 双 callee)= 232 子(实测约 220 子);P4HostState 加 CallBaseline 接口;P2 scope-aware AnalyzeProto 跨 Proto 传递 outer localFnAsts(承 §9.14)。**PJ5 TAILCALL 一百零二子形态打通**(2026-06-27):analyzeTailCallForm 识别长度 4..11 共 102 子态(0/1 K/1 reg/2..7 参组合)× 双 callee;P4HostState 加 TailCall 三态分支接口(承 §9.15)。**PJ5 SELF method call inline 完整覆盖 0..7 参 + 嵌套 + 错误冒泡 + V18 -race**(2026-06-28,承 §9.17):analyzeSelfCallForm 识别长度 4..11 `obj:method(args)` 形态,覆盖 0..7 参 × {void / 1 返 getter / tail} × 双 receiver(M/U)+ N=2/N=3 返值 0/1 参;ReasonSelfCall F2-c 占位位拆分(与 ReasonBackendUnsupp 同款手法,运行期 recheckCompilabilityRuntime 撤位 + SupportsAllOpcodes 守门);P4HostState 加 Self 接口;Run prelude SELF 预处理 + args offset 参数化;**额外测试覆盖**:嵌套两层 SELF inline(NestedSelfChain SpecSelfCallHits=2 实证)+ SELF then CALL 链 + 错误冒泡(receiver=nil / method=non-function)+ V18 -race 多 State 并发 SELF inline 安全;9 形态单测 + 20 e2e SpecSelfCallHits=1 命中实证 + 16 difftest-p4 三方 byte-equal。**PJ5 SELF + CALL spec template 真接入**(2026-06-28,承 §9.19):SELF 段字节级 inline(IC NodeHit 命中跳过 host.Self round-trip),发现 SELF 聚合成 FBSelfMono(非 FBTableMono,PJ5 是首个真实触达 SELF feedback 的路径);analyzeSelfCallSpecForm + compileSpecSelfCall + runSpecSelfCall + SpecSelfCallSpecHits 探针 + WarmupThenForce e2e 命中实证 + benchmark 1.19x→1.12x(SELF 段省 host.Self round-trip,CALL 段仍 host 是下阶段瓶颈)。**PJ5 OSR exit 协议骨架**(2026-06-28):p4SpecState[*Proto] 子状态机(P4Speculative/P4Deoptimized/P4StuckSpeculation,方案 A 严格遵守 P2 三态不变)+ DeoptThreshold 16 占位 + MaxRecompileTries 2 占位 + onOSRExit/onP4Install 转移函数 + SpecP4DeoptHits/SpecP4StuckHits 探针 + 7 状态机单测;**OSR exit 协议已在 PJ5 SELF spec template 路径首次真实闭环**(承 §9.19):spec template SELF NodeHit guard 失败 → runSpecSelfCall 调 onOSRExit 累积 deopt → 达阈值 P4Deoptimized → 重编译 → 反复失败 P4StuckSpeculation;CALL void/TAILCALL 非 spec 形态仍走 baseline doCall 无 deopt。共 **38+14+20 e2e SpecCallVoidHits/SpecTailCallHits/SpecSelfCallHits=1 prove-the-path 命中实证 + 36+13+16 difftest-p4 三方 byte-equal + 9 单测 + 7 p4SpecState 单测 + V18 -race 增量含 SELF**。**剩 PJ5 完整接入(SELF NodeHit 字节级模板 + 8+ 参 CALL + N>=2 返值多参 + OSR exit 完整接入 + 段内 EmitCallInline)/ PJ8 剩余真接入(archSupportsSpec 翻面 + 物理 runner)/ PJ9(双架构差分套)** 渐进推进中。
 >
-> **PJ10 启动(2026-06-30)— 逐 opcode 翻译器(per-op translator)覆盖率工程**:承 [10-per-op-translator.md](./10-per-op-translator.md)。V15b heavy 三脚本(arith / recursion / floatloop)实测 P4 全升 0(详 [09 §3.V15b](./09-acceptance-checklist.md)),暴露 PJ0-PJ9 字节级模板路径对真实 Lua 热点覆盖率不够。PJ10 新增「逐 opcode 翻译」通用路径,PJ0-PJ9 字节级模板保留作 fast path;拆 PJ10a(直线 op)/ PJ10b(算术 + 比较)/ PJ10c(控制流 + 循环)/ PJ10d(表 + 函数调用)四档,累积扩 SupportsAllOpcodes 集。完成后任意 reducible CFG 的 Proto 都能升 P4。预估 +2.5-4 人月。原 PJ10「luajc 档总验收」已机械重编号为 PJ11(详 [10 §9](./10-per-op-translator.md))。
+> **PJ10 启动 + 两轮交付(2026-06-30 / 2026-07-01)— 逐 opcode 翻译器(per-op translator)覆盖率工程**:承 [10-per-op-translator.md](./10-per-op-translator.md)。V15b heavy 三脚本(arith / recursion / floatloop)实测 P4 全升 0(详 [09 §3.V15b](./09-acceptance-checklist.md)),暴露 PJ0-PJ9 字节级模板路径对真实 Lua 热点覆盖率不够。PJ10 新增「逐 opcode 翻译」通用路径,PJ0-PJ9 字节级模板保留作 fast path;拆 PJ10a(直线 op)/ PJ10b(算术 + 比较)/ PJ10c(控制流 + 循环)/ PJ10d(表 + 函数调用)四档,累积扩 SupportsAllOpcodes 集。原 PJ10「luajc 档总验收」已机械重编号为 PJ11(详 [10 §9](./10-per-op-translator.md))。**第一轮(2026-06-30,21 commits)**:Go 端「head op + side effect」回放骨架 + `xor eax,eax; ret` 3 字节 mmap stub,35/38 opcode 语义 byte-equal 解释器,80 e2e 全过 — **正确性 floor 交付**(详 [10 §14.1](./10-per-op-translator.md) + 反思 [[2026-06-30-p4-pj10-perop-translator-round]] + §14 本文)。**第二轮(2026-07-01,分支 `feat/pj10-native`,ed2235b..0c9db3a ~17 commits)**:真 amd64 / arm64 原生码 emit(CFG builder + 两遍 label resolver + 35 opcode 每 arch 一份 emit)+ inline 18 op mmap-safe 子集 + arch-aware `fixupKind` label resolver + `PreferNative` 多 BB + big-BB 收窄门 + tail-call gibbous dispatch — **性能 ceiling 交付**;**V15b heavy 三本 P4 native > P3 wasm 达标**:HeavyArith 2.3x / HeavyRecursion 2.3x / HeavyFloatloop 3.0x(10 iter × 3 samples,amd64);V14 luajc 档无回归;arm64 runtime e2e 留 CI followup(需 linux/arm64 host,QEMU 不支持 mmap RWX→RX)。详 [10 §14.2-14.9](./10-per-op-translator.md) + 反思 [[2026-07-01-p4-pj10-native-round]] + §14 本文。
 > P1 全卷(M0-M14)+ P2 PB0-PB7 + 后续优化轮 #1-#4 + P3 PW0-PW10 + VS0-e 全卷已交付(2026-06-16),P4 启动前置就绪;**唯一阻塞**是 P4 立项判定本身(承 [01-launch-judgment §3](./01-launch-judgment.md))。
 > 单一事实源:本文是 P4 实现现状与设计文档差异的对账表(对应 [P3 implementation-progress](../p3-wasm-tier/implementation-progress.md) 的角色,但 P4 是设计阶段未实施,本文重在「设计期决策盘点 + 跨文档回填请求收口表 + 实施前置确认 + 后续维护协议」)。
 > 设计文档集:见 [00-overview §0](./00-overview.md) 文档地图。
 >
-> **术语:`P-JIT`(PJ)= P4 实现里程碑编号**(对应 P1 的 M、P2 的 PB、P3 的 PW);PJ0 = 立项判定 + 包骨架,PJ1-PJ7 = amd64 全栈字节级模板,PJ8-PJ9 = arm64 全栈字节级模板,PJ10 = 逐 opcode 翻译器(per-op translator,覆盖率工程,2026-06-30 启动,详 [10](./10-per-op-translator.md)),PJ11 = luajc 档总验收。
+> **术语:`P-JIT`(PJ)= P4 实现里程碑编号**(对应 P1 的 M、P2 的 PB、P3 的 PW);PJ0 = 立项判定 + 包骨架,PJ1-PJ7 = amd64 全栈字节级模板,PJ8-PJ9 = arm64 全栈字节级模板,PJ10 = 逐 opcode 翻译器(per-op translator,两轮交付:2026-06-30 Go 端回放骨架 + 2026-07-01 amd64/arm64 真原生 emit,详 [10](./10-per-op-translator.md)),PJ11 = luajc 档总验收。
 
 ---
 
@@ -58,7 +58,7 @@
 | PJ7 | amd64 端到端验收 + 性能基准 | [08](./08-testing-strategy.md) | 单架构 V1-V22 全过 + V14 luajc 档 | ✅ **PJ7 真接入 ~25 类形态 byte-equal**(2026-06-25/26,详 §7;`SupportsAllOpcodes` 已扩展到 25 类形态——getter 族(RETURN A 2 / GETUPVAL / GETGLOBAL / GETTABLE / LOADK 含 string / LOADBOOL / LOADNIL / MOVE / ADD..POW 6 op / UNM / LEN / NEWTABLE / NOT)+ setter 族(RETURN A 1 / SETTABLE / SETGLOBAL / SETUPVAL)+ 比较折叠族(EQ/LT/LE 6-op luac 模板折成 BoolValue)。`p4Code.Run` 经 14 个 host helper 调 gibbous_host.go 与解释器 byte-equal;pc off-by-one bug 修复(行号 / IC 槽锚定 prelude op 自身 pc=0);多行错误消息 byte-equal 实证测试通过。**make test-p4 全套 21 binary 全过含 conformance/difftest/luasuite + V18 -race**;V14 luajc 档调优留 PJ11) |
 | PJ8 | arm64 后端启动 + 渐进交付 | [06](./06-backends.md) | arm64 各 opcode 模板按族落地;`MAP_JIT` + icache flush | 🔶 **2026-06-26 字节级模板矩阵完整 + Compile 端真接入(IC 六 + FORLOOP 全套 + PJ2 三形态)+ spec trampoline asm 实装**(承 §9.13;linux/arm64 codepage + 23 件 emit 原语(整数 13 含 LDRB/CBNZ + 浮点 7 + ADD/AND/LSR 3)+ **PJ2 投机三形态**(reg-reg 108B + reg-K 92B + chain-KK 116B,字节级单测 13 个 + sseOp 翻译 0x58/0x5C/0x59/0x5E → ArithOpAdd/Sub/Mul/Div)+ **PJ3 FORLOOP 全套**(EmptyConst 84/92B + RegLimit 120/128B + WithRegKBody 144/152B + WithRegKBody2 168/176B,共四形态字节级模板)+ **PJ4 IC 完整六路径 arm64 端字节级**(GETTABLE ArrayHit 168B / NodeHit 196B / SETTABLE ArrayHit 144B / SETTABLE NodeHit 172B / SELF ArrayHit 172B / SELF NodeHit 200B,总计 1052B + 25+ 字节级单测;**PJ5 SELF + CALL spec template arm64 端 EmitSpecArgLoadKArm64 (20B) + EmitSpecArgLoadRegArm64 (8B)** 实装,与 amd64 对位,物理 runner 启用即激活;严密 IsTable guard + SIB 替代 + stableKey movz+movk×3 实证 + R(A+1) 先于 IsTable guard 写 SELF byte-equal P1 case 同款步骤);`arch_arm64.go` 十三 stub → 真代理(IC 六路径 + FORLOOP 全套四形态 + PJ2 三形态,签名完全对位 amd64)+ `archSupportsForLoop` 闸门解耦 + body/body2/RegLimit 路径 spec trampoline 守卫 + `arenaBaseOffArm64` panic 硬化;**`callJITSpec` arm64 trampoline asm 实装**($80-32 framesize,装 x26=vsBase + x27=jitCtx + BL (R8) + LDP 恢复,对位 amd64 callJITSpec)+ `trampoline_other.go` cross-build stub;**剩余 PJ8+ 工程**:`archSupportsSpec()=false → true` 翻面(PJ2 投机 + FORLOOP body/body2/RegLimit 自动启用)+ mmap+RX 物理 self-hosted runner 端到端 V1-V22 验证;darwin/arm64 W^X MAP_JIT spike 后续推进)|
 | PJ9 | arm64 端到端验收 + 双架构差分套 | [06 §5](./06-backends.md) + [08 §6](./08-testing-strategy.md) | 双架构 V1-V22 全过;Go 1.25/1.26/tip 矩阵 CI 绿 | 🔶 **2026-06-25 CI 矩阵部分**(.github/workflows/ci.yml 加 P4 variant 到 test/fuzz/conformance/difftest 4 job;cross-compile linux/arm64 + darwin/arm64 wangshu_p4 build 验证;真 arm64 self-hosted runner 留 PJ9+ 基础设施) |
-| PJ10 | 逐 opcode 翻译器(per-op translator) | [10](./10-per-op-translator.md) | **P4 覆盖率工程**:PJ0-PJ9 字节级模板路径保留作 fast path;新增「逐 opcode 翻译」通用路径让任意 Proto 都能升 P4(承 [10 §1](./10-per-op-translator.md));拆 PJ10a(直线 op)/ PJ10b(算术 + 比较)/ PJ10c(控制流 + 循环)/ PJ10d(表 + 函数调用) | 🆕 **2026-06-30 启动**(动机:V15b heavy 三脚本 P4 全升 0 实测暴露字节级模板路径覆盖率不够;路径 B「逐 opcode 翻译器」由用户决议确认;详 [10](./10-per-op-translator.md))|
+| PJ10 | 逐 opcode 翻译器(per-op translator) | [10](./10-per-op-translator.md) | **P4 覆盖率工程**:PJ0-PJ9 字节级模板路径保留作 fast path;新增「逐 opcode 翻译」通用路径让任意 Proto 都能升 P4(承 [10 §1](./10-per-op-translator.md));拆 PJ10a(直线 op)/ PJ10b(算术 + 比较)/ PJ10c(控制流 + 循环)/ PJ10d(表 + 函数调用) | ✅ **两轮交付**——**第一轮 2026-06-30 回放骨架**(21 commits,35/38 opcode Go 端回放 + `xor eax,eax; ret` 占位 stub,byte-equal 解释器,80 e2e 全过,详 [10 §14.1](./10-per-op-translator.md));**第二轮 2026-07-01 真原生 emit**(分支 `feat/pj10-native`,~17 commits,amd64/arm64 CFG + label resolver + 35 opcode 每 arch 一份 emit + inline 18 op mmap-safe 子集 + arch-aware `fixupKind` + `PreferNative` 多 BB + big-BB 收窄门 + tail-call gibbous dispatch;**V15b heavy 三本 P4 native > P3 wasm 达标**:Arith 2.3x / Recursion 2.3x / Floatloop 3.0x,10×3 samples;V14 luajc 档无回归;arm64 runtime e2e 留 CI followup;详 [10 §14.2-14.9](./10-per-op-translator.md))|
 | PJ11 | luajc 档验收 + 性能调优 | [01](./01-launch-judgment.md) + [08 §8](./08-testing-strategy.md) | **P4 总验收**:列内核负载 ≥luajc 档(≥164μs 水位 over gopher-lua)| ✅ **2026-06-26 luajc 档突破**(承 §8;PJ3 FORLOOP 字节级 inline 实测大幅加速:100 iter 7.15x over gopher;1000 iter 21.20x;10000 iter 25.41x over gopher-lua,均远超 luajc 档 4.4x 基线。10000 iter 形态 P4 仅 270μs / gopher 6.9ms — 完整超过 ≥164μs 水位口径。**PJ3 当前形态范围**:全常量空 body for 循环;含 body / reg limit / 嵌套 / break 留 PJ3+ 扩。**P4 立项动机已兑现**:列内核 loop 形态 P4 性能超 luajc 档,验证 method-jit 方向的物理可行性) |
 
 ---
@@ -2137,6 +2137,52 @@ PJ0 启动后,本文按以下协议更新(承 [P3 implementation-progress §5](.
 - V14 arm64 luajc 档实测(等 macos-latest CI 跑通后回填 §13.1 性能数字)
 - V1-V22 完整双架构差分套数据进档(承 §10.5)
 - darwin/arm64 entitlement 卡点后的 codesign 兜底
+
+---
+
+## 14. PJ10 通用 per-op 翻译器交付对账(2026-06-30 / 2026-07-01 两轮落地,承 §1 PJ 表头注)
+
+PJ10 覆盖率工程两轮交付,承 [10 §14](./10-per-op-translator.md) 详细设计。
+
+### 14.1 第一轮:Go 端回放骨架(2026-06-30,21 commits `a94bcec..HEAD`)
+
+**物理路径**:mmap 段占位 `xor eax,eax; ret` 3 字节 stub + Go 端「head op + side effect」回放清单,Run 在执行 stub 后按清单调 host helper / 写寄存器。**正确性 floor 交付**——语义与 P1 解释器 byte-equal,80 e2e 全过含官方 Lua 套。
+
+**opcode 覆盖(35/38)**:MOVE / LOADK / LOADBOOL(C=0) / LOADNIL / GETUPVAL / GETGLOBAL / GETTABLE / SETGLOBAL / SETUPVAL / SETTABLE / NEWTABLE / SELF / ADD / SUB / MUL / DIV / MOD / POW / UNM / NOT / LEN / CONCAT / EQ / LT / LE / TESTSET / FORPREP / FORLOOP / TFORLOOP / CALL / TAILCALL / RETURN / CLOSURE / CLOSE / SETLIST 共 35 个。**留 followup**:VARARG(设计永不接,同 P3);JMP / TEST / LOADBOOL C!=0(需真 CFG 多 BB)。
+
+**关键判据 + 反思**:承 [[2026-06-30-p4-pj10-perop-translator-round]] 教训 1 「正确性 floor(语义覆盖)与性能 ceiling(native CFG emit)拆分」——设计稿 §3 native amd64 multi-BB CFG 是**性能前提**非语义前提,先把语义一次接住。
+
+### 14.2 第二轮:真 amd64 / arm64 原生码 emit(2026-07-01,分支 `feat/pj10-native`,`ed2235b..0c9db3a` ~17 commits)
+
+**物理路径**:mmap 段发真原生 codegen(CFG builder + 两遍 label resolver + 35 opcode 每 arch 一份 emit),回放骨架保留作 fast path。**性能 ceiling 交付**。
+
+**关键机制**(详 [10 §14.2-14.6](./10-per-op-translator.md)):
+
+1. **35 opcode 双 arch emit 覆盖**:amd64 独立 emit(热路径 inline SSE / UCOMISd,冷路径 saveGoG + Go shim);arm64 部分 inline + 部分 shim,`GOARCH=arm64 CGO_ENABLED=0 go build` 两 tag 组合过。
+2. **opSupported inline gate 收窄到 18 op mmap-safe 子集**(`translator_native.go`):MOVE / LOADK / LOADBOOL / LOADNIL / ADD / SUB / MUL / DIV / NOT / EQ / LT / LE / TEST / TESTSET / JMP / FORPREP / FORLOOP / RETURN——emit 序列内**不含 shim call** 的 op 才允许 inline 到 mmap 段。这是**物理硬约束**:Go runtime `morestack` 在 mmap 未登记 code page 上 unwinder 撞死(并发 + 嵌套负载),不是性能收益判断。
+3. **PreferNative 多 BB + big-BB 收窄门**:入口判据 = `AnalyzeNative(proto) && liveBlocks >= 2 && ∃ live BB 长度 >= 4`,精确匹配「shape-spec 天生打不着的形式」(shape-spec FORLOOP-with-body 模板只 inline 1-2 op reg-K body,3+ op body 是 native 独占地盘);初版 `4b5abf8` 用 AnalyzeNative 直接入 native 当场压掉 25 个 PJ3/PJ5/PJ7 已调优测试。
+4. **arch-aware `fixupKind` label resolver**(`codebuf.go`):`fixupKindRel32Bytes`(amd64 rel32)/ `fixupKindArm64B26`(arm64 B rel26 word-scaled)/ `fixupKindArm64Cond`(arm64 B.cond rel19 word-scaled)三分派——ISA 分支编码是 platform physics,codegen 抽象层无法抹平。
+5. **tail-call gibbous dispatch**:TAILCALL native 段完成 `SetTailcall` 复用父帧后**直接跑 `code.Run` inline**,不再走 `enterGibbous(callee)`——后者会调 `enterLuaFrame`,与 SetTailcall 已复用的父帧组合成双压帧(帧 base 错位到实参数字上)。
+6. **RK 字段口径**:B/C 参数从 uint8 拓宽到 int——Lua 5.1 spec 里 B/C 实际 9-bit(≥256 编码常量表引用),shape-spec 层负责 RK 拆分故 uint8 够用,native 层要自拆则 uint8 会截断 K 常量。
+
+### 14.3 V15b heavy 三本 P4 native > P3 wasm(2026-07-01 amd64 达标)
+
+| 脚本 | P4 native | P3 wasm | 加速比 |
+|---|---|---|---|
+| HeavyArith | 13.15 ms | 30.34 ms | **2.3x** |
+| HeavyRecursion | 5.48 ms | 12.66 ms | **2.3x** |
+| HeavyFloatloop | 17.24 ms | 50.94 ms | **3.0x** |
+
+10 iter × 3 samples,amd64。V14 luajc 档无回归,conformance / difftest / luasuite 逐字节一致。
+
+### 14.4 剩余项 + 反思
+
+- **arm64 runtime e2e 留 CI followup**:需 linux/arm64 self-hosted 或 darwin/arm64 M1 真物理(QEMU 用户模式不真支持 mmap RWX→RX);
+- **concurrent multi-goroutine force-all difftest 在 mmap trampoline RET 上仍有偶发崩**(见 `peropcode.go::init` docstring),已把生产 wiring 保守回退到「回放骨架 + 显式调用 native 覆盖 e2e 测试」,native 完全消耗需解决 concurrent stack unwind race;
+- 字符串常量 LOADK arena 相对烘焙(当前 AnalyzeNative 拒);
+- V15b heavy 之外的真实宿主负载 profile。
+
+**过程教训完整版**见 [[2026-07-01-p4-pj10-native-round]]:mmap + Go morestack 物理不兼容 → 热路径 inline / 冷路径 saveGoG(教训 1)/ RK 9-bit 表示层交接口径切换独立撞(教训 2,与 [[2026-06-30-p4-pj10-perop-translator-round]] CLOSURE SubNUps 同结构)/ 入口判据窄到新档独占形式(教训 3,与 [[2026-06-16-p3-pw10-architectural-ceiling-round]] profile 才是合同**入口侧对偶**)/ helper 组合帧栈重叠(教训 4)/ 多 arch label fixup 从起点带 kind enum(教训 5)/ FORLOOP rel8 手算精算(教训 6)。
 
 ---
 
