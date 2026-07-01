@@ -196,12 +196,17 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 	if proto == nil || len(proto.Code) == 0 {
 		return false
 	}
-	// F7-a: string constants aren't inlined by LOADK (would need
-	// arena-relative bake; deferred to a follow-up).
-	for _, k := range proto.StringLitIdx {
-		if k >= 0 {
+	// F7-a: LOADK for string constants isn't inlined (that would need
+	// an arena-relative bake). String constants used by GETGLOBAL /
+	// SETGLOBAL / GETTABLE / SETTABLE / SELF go through host shims that
+	// read proto.Consts by index — those never touch the mmap segment's
+	// LOADK path, so they're fine. Only reject a proto if any live
+	// LOADK actually references a string-tagged const.
+	stringConst := func(bx int) bool {
+		if bx < 0 || bx >= len(proto.StringLitIdx) {
 			return false
 		}
+		return proto.StringLitIdx[bx] >= 0
 	}
 	// Vararg functions aren't supported (permanent VARARG gate).
 	if proto.IsVararg {
@@ -226,6 +231,14 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 			// shim call in the current inline fast path; reject Protos
 			// that have any such shape until inline RK is supported.
 			switch op {
+			case bytecode.LOADK:
+				// LOADK writes proto.Consts[Bx] into R(A). String consts
+				// can't be baked as a raw uint64 immediate (they're
+				// arena-relative GCRefs); reject the whole proto if any
+				// live LOADK references one.
+				if stringConst(bytecode.Bx(ins)) {
+					return false
+				}
 			case bytecode.ADD, bytecode.SUB, bytecode.MUL, bytecode.DIV,
 				bytecode.LT, bytecode.LE:
 				// Inline arith/compare fast paths require numeric K
