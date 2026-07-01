@@ -68,15 +68,11 @@ func (c *nativeCode) Run(stack []uint64, base uint32) (status int32) {
 		return 1
 	}
 	defer c.codePage.Exit()
-	c.jitCtx.SetArenaBase(c.host.ArenaBaseAddr())
-	c.jitCtx.SetValueStackBase(c.host.ValueStackBaseAddr(int32(base)))
-	c.jitCtx.SetCIDepthAddr(c.host.CIDepthHostAddr())
-	c.jitCtx.SetCISegBaseAddr(c.host.CISegBaseHostAddr())
-	c.jitCtx.SetTopAddr(c.host.TopHostAddr())
+	c.host.RefreshJitCtxAddrs(c.jitCtx, int32(base))
 	c.jitCtx.SetHostRef(hostIfaceHeader(c.host))
 
 	jitCtxAddr := uintptr(unsafe.Pointer(c.jitCtx))
-	vsBaseAddr := c.host.ValueStackBaseAddr(int32(base))
+	vsBaseAddr := c.jitCtx.ValueStackBase()
 	rawStatus := jitarm64.CallJITSpec(c.codePage.Addr(), jitCtxAddr, vsBaseAddr)
 	status = int32(rawStatus)
 	if status == 0 {

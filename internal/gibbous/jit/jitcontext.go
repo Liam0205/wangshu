@@ -336,6 +336,23 @@ func (c *JITContext) SetTopAddr(addr uintptr) {
 // TopAddr 返回 thread.top 镜像字的 host 字节地址(测试钩子)。
 func (c *JITContext) TopAddr() uintptr { return c.topAddr }
 
+// SetAllAddrs writes all five arena-relative address fields at once.
+// Called by P4HostState.RefreshJitCtxAddrs so the host implementation
+// can compute unsafe.Pointer(&arena.Words()[0]) exactly once and derive
+// the four dependent fields from a single base + offset, instead of
+// paying the slice-header walk five separate times.
+//
+// Individual setters (SetArenaBase / SetValueStackBase / SetCIDepthAddr
+// / SetCISegBaseAddr / SetTopAddr) remain for callers that legitimately
+// need one field.
+func (c *JITContext) SetAllAddrs(arenaBase, valueStackBase, ciDepth, ciSegBase, top uintptr) {
+	c.arenaBase = arenaBase
+	c.valueStackBase = valueStackBase
+	c.ciDepthAddr = ciDepth
+	c.ciSegBaseAddr = ciSegBase
+	c.topAddr = top
+}
+
 // SetExitArg0 设置 helper request code(承 §9.20.9 协议:Spike 1 真接入 +
 // future helper request 路由)。当前 archSupportsFrameInline=false 屏蔽真触发。
 func (c *JITContext) SetExitArg0(arg uint64) {

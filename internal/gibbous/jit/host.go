@@ -281,6 +281,21 @@ type P4HostState interface {
 	// PJ7 简化形态不调用本接口(mmap 段是 dummy)。
 	ArenaBaseAddr() uintptr
 
+	// RefreshJitCtxAddrs is a batched setter that populates all five
+	// arena-relative address fields on the JIT context in one call:
+	// arenaBase, valueStackBase (using the caller's frame R0 byte
+	// offset `base`), ciDepthAddr, ciSegBaseAddr, topAddr. This exists
+	// because the individual per-field getters each recompute
+	// arena.Words() and take unsafe.Pointer of the same []byte, which
+	// costs a noticeable ~5-15 ns per boundary-heavy call. Batching
+	// them into one host call eliminates the redundant work.
+	//
+	// Callers (p4Code.Run / PerOpCode.Run / nativeCode.Run) should
+	// prefer this over the individual setters. The individual getters
+	// stay in the interface for legacy callers and for cases where a
+	// caller genuinely needs only one field (rare).
+	RefreshJitCtxAddrs(ctx *JITContext, base int32)
+
 	// ValueStackBaseAddr 返回当前帧 R0 的字节地址(承 05 §3.3 + 06 §4.1
 	// rbx = valueStackBase)。
 	//

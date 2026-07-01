@@ -103,6 +103,9 @@ func (h *fakeHost) CIDepthHostAddr() uintptr               { return 0 }
 func (h *fakeHost) CISegBaseHostAddr() uintptr             { return 0 }
 func (h *fakeHost) TopHostAddr() uintptr                   { return 0 }
 func (h *fakeHost) OpenGuardHostAddr() uintptr             { return 0 }
+func (h *fakeHost) RefreshJitCtxAddrs(ctx *jit.JITContext, base int32) {
+	ctx.SetAllAddrs(0, 0, 0, 0, 0)
+}
 
 // ExecuteCalleeFromInlineFrame is a Spike 1 Step C-1 helper (unused by
 // PJ10 native shim tests, we always return 0=OK).

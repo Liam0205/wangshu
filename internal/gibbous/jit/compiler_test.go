@@ -340,6 +340,12 @@ func (m *mockP4Host) ValueStackBaseAddr(base int32) uintptr {
 	return m.arenaBase + uintptr(base)
 }
 
+// RefreshJitCtxAddrs mirrors the batched setter: mock fills arenaBase +
+// derived valueStackBase (rest 0, matching the individual mock getters).
+func (m *mockP4Host) RefreshJitCtxAddrs(ctx *JITContext, base int32) {
+	ctx.SetAllAddrs(m.arenaBase, m.arenaBase+uintptr(base), 0, 0, 0)
+}
+
 // CIDepthHostAddr 模拟 host.CIDepthHostAddr(承 §9.20 Option B Spike 1):
 // 返 mock 固定占位地址,单测路径不真触达字节级 inc/dec。
 func (m *mockP4Host) CIDepthHostAddr() uintptr { return 0 }

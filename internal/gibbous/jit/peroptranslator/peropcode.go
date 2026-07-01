@@ -153,11 +153,11 @@ func (c *PerOpCode) Run(stack []uint64, base uint32) int32 {
 	}
 	defer c.codePage.Exit()
 
-	c.jitCtx.SetArenaBase(c.host.ArenaBaseAddr())
-	c.jitCtx.SetValueStackBase(c.host.ValueStackBaseAddr(int32(base)))
-	c.jitCtx.SetCIDepthAddr(c.host.CIDepthHostAddr())
-	c.jitCtx.SetCISegBaseAddr(c.host.CISegBaseHostAddr())
-	c.jitCtx.SetTopAddr(c.host.TopHostAddr())
+	// A1: single batched host call replaces five per-field getters —
+	// one arena.Words() lookup + one unsafe.Pointer take, all five
+	// arena-relative addresses derived by offset arithmetic on the host
+	// side. Same arena-grow reload protocol (per section 05 §5).
+	c.host.RefreshJitCtxAddrs(c.jitCtx, int32(base))
 
 	jitCtxAddr := uintptr(unsafe.Pointer(c.jitCtx))
 	_ = jitamd64.CallJITFull(c.codePage.Addr(), jitCtxAddr) // returns 0

@@ -86,19 +86,15 @@ func (c *nativeCode) Run(stack []uint64, base uint32) (status int32) {
 		return 1
 	}
 	defer c.codePage.Exit()
-	// Refresh jitCtx addresses (arena may have grown between calls).
-	c.jitCtx.SetArenaBase(c.host.ArenaBaseAddr())
-	c.jitCtx.SetValueStackBase(c.host.ValueStackBaseAddr(int32(base)))
-	c.jitCtx.SetCIDepthAddr(c.host.CIDepthHostAddr())
-	c.jitCtx.SetCISegBaseAddr(c.host.CISegBaseHostAddr())
-	c.jitCtx.SetTopAddr(c.host.TopHostAddr())
+	// A1: single batched host call replaces five per-field getters.
+	c.host.RefreshJitCtxAddrs(c.jitCtx, int32(base))
 	// Snapshot Go G for helper-call safety.
 	saveGoG(c.jitCtx.SavedGoGSlot())
 	// Install host interface header so shims can reconstruct P4HostState.
 	c.jitCtx.SetHostRef(hostIfaceHeader(c.host))
 
 	jitCtxAddr := uintptr(unsafe.Pointer(c.jitCtx))
-	vsBaseAddr := c.host.ValueStackBaseAddr(int32(base))
+	vsBaseAddr := c.jitCtx.ValueStackBase()
 	rawStatus := jitamd64.CallJITSpec(c.codePage.Addr(), jitCtxAddr, vsBaseAddr)
 	status = int32(rawStatus)
 	// Perform Go-side frame teardown via host.DoReturn on success.
