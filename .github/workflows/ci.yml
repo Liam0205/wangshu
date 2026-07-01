@@ -73,29 +73,41 @@ jobs:
       # restore 后 sudo make install 把 binary + 头文件 + lib 装到 /usr/local/
       # (install 是 cp 操作 ~0.1s),并 ln -sf 标准入口名 lua5.1。
       # cache key 含 runner.os + runner.arch + lua 版本,跨 runner image 复用。
-      - if: matrix.variant == 'p1' && startsWith(matrix.os, 'macos')
+      #
+      # **三 variant 都需 lua5.1 oracle**:benchmarks/realworld 在 p1/p3/p4 下
+      # 都跑 oracle parity(TestRealWorld_OracleParity 无 build tag,出现在每
+      # 个 variant 的 benchmarks 子模块测试集中)。原 `matrix.variant == 'p1'`
+      # 守卫使 p3/p4 跳过 lua5.1 install + benchmarks test ⟹ binarytrees
+      # P3 升层 bug 等真 bug 长期不在 CI 抓到(2026-06-30 发现)。
+      - if: startsWith(matrix.os, 'macos')
         id: cache-lua51-test
         uses: actions/cache@v4
         with:
           path: lua-5.1.5
           key: lua-5.1.5-build-${{ runner.os }}-${{ runner.arch }}
-      - if: matrix.variant == 'p1' && startsWith(matrix.os, 'ubuntu')
+      - if: startsWith(matrix.os, 'ubuntu')
         run: sudo apt-get update && sudo apt-get install -y lua5.1
-      - if: matrix.variant == 'p1' && startsWith(matrix.os, 'macos') && steps.cache-lua51-test.outputs.cache-hit != 'true'
+      - if: startsWith(matrix.os, 'macos') && steps.cache-lua51-test.outputs.cache-hit != 'true'
         # cache miss:下载 + 编译
         run: |
           curl -fsSL https://www.lua.org/ftp/lua-5.1.5.tar.gz | tar xz
           cd lua-5.1.5
           make macosx CC=cc
-      - if: matrix.variant == 'p1' && startsWith(matrix.os, 'macos')
+      - if: startsWith(matrix.os, 'macos')
         # cache hit 或 miss 都跑 install + symlink(install 是 cp,可重复执行)
         run: |
           cd lua-5.1.5
           sudo make install INSTALL_TOP=/usr/local INSTALL_BIN=/usr/local/bin INSTALL_INC=/usr/local/include INSTALL_LIB=/usr/local/lib INSTALL_MAN=/usr/local/share/man/man1
           sudo ln -sf /usr/local/bin/lua /usr/local/bin/lua5.1
           lua5.1 -v
-      - if: matrix.variant == 'p1'
+      # benchmarks/ 子模块在三 variant 下都跑(用对应 build tag),让
+      # bench-realworld / bench-heavy / bench-baseline 类对拍/性能测试在
+      # p3/p4 build 下也被 CI 守门(本步漏掉是 binarytrees P3 升层 bug 长期
+      # 漏报的根因)。
+      - if: matrix.tags == ''
         run: cd benchmarks && go test -race ./...
+      - if: matrix.tags != ''
+        run: cd benchmarks && go test -race -tags "${{ matrix.tags }}" ./...
       # 交叉编译冒烟(只在 linux/amd64 跑,与 OS 无关,跨平台编译信号一次即可)。
       # 项目承诺「不依赖 cgo,保持交叉编译能力」,32 位 GOARCH 的 int 宽度差异
       # 曾导致编译失败而 amd64 门禁抓不到。P4 build cross 含 darwin/arm64 +

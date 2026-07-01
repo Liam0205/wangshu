@@ -177,9 +177,21 @@ func (c *cfg) linkSuccs(bb *basicBlock) {
 		addSucc(lastPC + 1 + int32(bytecode.SBx(last))) // 回跳
 		addSucc(lastPC + 1)                             // 落出
 	case bytecode.EQ, bytecode.LT, bytecode.LE,
-		bytecode.TEST, bytecode.TESTSET, bytecode.TFORLOOP, bytecode.LOADBOOL:
+		bytecode.TEST, bytecode.TESTSET, bytecode.TFORLOOP:
 		addSucc(lastPC + 1) // 不 pc++:落下一条
 		addSucc(lastPC + 2) // pc++:跳过下一条
+	case bytecode.LOADBOOL:
+		// LOADBOOL skip semantics are compile-time fixed by the C field
+		// (Lua reference manual: "if C, then pc++"). Comparison opcodes
+		// above branch at runtime; LOADBOOL does not. Emitting both succs
+		// here makes the BB look multi-exit to the translator, which then
+		// rejects it via translate.go default branch ("unexpected 2 succs
+		// after LOADBOOL"). Pick the single live edge by C.
+		if bytecode.C(last) != 0 {
+			addSucc(lastPC + 2) // C != 0:运行期一定 pc++
+		} else {
+			addSucc(lastPC + 1) // C == 0:落下一条
+		}
 	case bytecode.RETURN, bytecode.TAILCALL:
 		// 函数出口:无后继
 	default:

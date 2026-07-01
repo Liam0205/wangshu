@@ -8,7 +8,7 @@
 // `bridge.P3Compiler` 接口面(`p2-bridge/05-p3-p4-interface.md` §0.3 接口
 // 稳定性)——P3 发 wasm 交 wazero 跑、P4 发原生码自管 codegen。Build tag
 // 互斥:`wangshu_p3` 与 `wangshu_p4` 不同时启用(主助理裁决,与 P3 单字段
-// `b.p3` 注入对齐;PJ10 P3 退役时 P4 完全接手,见 07-p3-retirement.md §5)。
+// `b.p3` 注入对齐;PJ11 P3 退役时 P4 完全接手,见 07-p3-retirement.md §5)。
 //
 // **方案 A 投机生命周期 P4 自管**(`03-speculation-ic.md` §4 / §8 + 用户
 // 裁决 d0e57f4):P2 三态枚举 `TierInterp/TierGibbous/TierStuck` 不变;
