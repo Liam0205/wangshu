@@ -320,16 +320,15 @@ func emitLinearOpArm64(buf *codeBuf, ins bytecode.Instruction, pc int32) error {
 	case bytecode.NOT:
 		emitNOTArm64Inline(buf, a, bReg)
 	case bytecode.ADD, bytecode.SUB, bytecode.MUL, bytecode.DIV:
-		// inline NEON only when both operands are numeric K constants;
-		// otherwise fall back to the shim call so host.Arith produces
-		// the correct raise-on-non-number behaviour (fuzz seed
-		// 4df9d8c82ce0d9f7). Adding a proper NEON-side IsNumber guard
-		// + inline fallback shim is a follow-up.
-		if bRK >= 256 && cRK >= 256 && inlineArithNEONArm64(buf, op, a, bRK, cRK) {
-			return nil
+		// arm64 keeps arith fully inline (no shim call — see file
+		// header: "arithmetic and compare go through inline NEON").
+		// Reg operands run through an IsNumber guard first; on failure
+		// the mmap segment returns status=1 to the trampoline, which
+		// Go-side surfaces as a generic gibbous error (fuzz asserts
+		// error-existence only, not the specific message).
+		if !inlineArithNEONArm64WithGuard(buf, op, a, bRK, cRK) {
+			return fmt.Errorf("emitLinearOpArm64: inline arith failed pc=%d", pc)
 		}
-		emitARITHArm64(buf, op, pc, a, uint8(bRK), uint8(cRK))
-		emitStatusCheckAndBubbleArm64(buf)
 	default:
 		return fmt.Errorf("emitLinearOpArm64: unsupported op %v at pc %d", op, pc)
 	}
@@ -415,6 +414,110 @@ func emitJMPArm64Fixup(buf *codeBuf, targetBB int) {
 	// Placeholder: b #0 (encoding 0x14000000)
 	buf.emit([]byte{0x00, 0x00, 0x00, 0x14})
 	buf.addFixupKind(patchOff, buf.pos(), targetBB, fixupKindArm64B26)
+}
+
+// inlineArithNEONArm64WithGuard emits inline NEON arith with an
+// IsNumber guard on each reg operand. Guard fail exits the mmap
+// segment early with X0=1 (Go-side converts this to a generic
+// "gibbous: run failed" error, which is enough for fuzz
+// error-existence parity with P1).
+//
+// Layout (K-K falls through to inlineArithNEONArm64 with no guard):
+//
+//	[guard-B (28 bytes)] ldr X0, [X26+B*8]
+//	                     mov X4, qNanBoxBase       ; 4 insns (16B)
+//	                     cmp X0, X4                ; 4B
+//	                     b.hs err                  ; 4B (patched later)
+//	[guard-C (28 bytes)] same pattern, only if c is reg
+//	<inline NEON body>   ldr / fmov / fadd/fmul/... / fmov X0,D0 / str
+//	b done               ; 4B skip past err block
+//	err:                 ; guard failure target
+//	  mov X0, #1         ; 16B (movz+3 movks; err path only, size fixed)
+//	  ret                ; 4B
+//	done:
+//
+// Reg operands go through the guard; K operands are always numeric
+// (AnalyzeNative rejected non-numeric K).
+func inlineArithNEONArm64WithGuard(cb *codeBuf, op bytecode.OpCode, a uint8, b, c int) bool {
+	// K-K shape: no guard, no exit path, direct inline.
+	if b >= 256 && c >= 256 {
+		return inlineArithNEONArm64(cb, op, a, b, c)
+	}
+
+	// Record guard b.hs offsets so we can patch them once err_off known.
+	var guardFixups []int
+	emitRegNumberGuardArm64 := func(reg int) {
+		if reg >= 256 {
+			return
+		}
+		// ldr X0, [X26 + reg*8]
+		cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 0, regX26, uint16(reg)*8))
+		// mov X4, qNanBoxBase (16B: 4 insns). Value 0xFFF8_0000_0000_0000
+		// is the lower bound of the non-number NaN-box space; any raw
+		// uint64 >= this constant is a tagged non-number.
+		cb.emit(jitarm64.EmitMovXdImm64(nil, 4, 0xFFF8_0000_0000_0000))
+		// cmp X0, X4
+		cb.emit(jitarm64.EmitCmpXnXm(nil, 0, 4))
+		// b.hs err (placeholder imm19=0, patched later)
+		patchOff := int(cb.pos())
+		cb.emit(jitarm64.EmitBCond(nil, jitarm64.CondHS, 0))
+		guardFixups = append(guardFixups, patchOff)
+	}
+	emitRegNumberGuardArm64(b)
+	emitRegNumberGuardArm64(c)
+
+	// Fast-path body (mirrors inlineArithNEONArm64 without the return
+	// value, since we've already committed to the fast path).
+	if !inlineLoadOperandToDArm64(cb, 0, b) {
+		return false
+	}
+	if !inlineLoadOperandToDArm64(cb, 1, c) {
+		return false
+	}
+	switch op {
+	case bytecode.ADD:
+		cb.emit(jitarm64.EmitFaddDdDnDm(nil, 0, 0, 1))
+	case bytecode.SUB:
+		cb.emit(jitarm64.EmitFsubDdDnDm(nil, 0, 0, 1))
+	case bytecode.MUL:
+		cb.emit(jitarm64.EmitFmulDdDnDm(nil, 0, 0, 1))
+	case bytecode.DIV:
+		cb.emit(jitarm64.EmitFdivDdDnDm(nil, 0, 0, 1))
+	default:
+		return false
+	}
+	cb.emit(jitarm64.EmitFmovXdFromDn(nil, 0, 0))
+	cb.emit(jitarm64.EmitStrXtToXnDisp(nil, 0, regX26, uint16(a)*8))
+
+	// b done (skip err block on success). arm64 B rel26: target = PC
+	// + imm26*4. err block after b is 16B (movz+3 movks) + 4B (ret) =
+	// 20B, so done sits at PC + 24 (b itself + 20B). imm26 = 6.
+	cb.emit(jitarm64.EmitB(nil, 6))
+
+	// err block: mov X0, #1; ret. Guard fixups target here.
+	errOff := int(cb.pos())
+	cb.emit(jitarm64.EmitMovXdImm64(nil, 0, 1))
+	cb.emit(jitarm64.EmitRet(nil))
+
+	// Patch guard fixups: b.hs imm19 = (errOff - patchOff) / 4.
+	for _, po := range guardFixups {
+		imm19 := int32(errOff-po) / 4
+		patchBCondImm19Local(cb.bytes, po, imm19)
+	}
+	return true
+}
+
+// patchBCondImm19Local wraps the jitarm64 helper (unexported so we
+// re-implement inline to avoid an export churn).
+func patchBCondImm19Local(buf []byte, off int, imm19 int32) {
+	insn := uint32(buf[off]) | uint32(buf[off+1])<<8 |
+		uint32(buf[off+2])<<16 | uint32(buf[off+3])<<24
+	insn &= 0xFF00001F
+	insn |= (uint32(imm19) & 0x7FFFF) << 5
+	buf[off] = byte(insn)
+	buf[off+1] = byte(insn >> 8)
+	buf[off+2] = byte(insn >> 16)
+	buf[off+3] = byte(insn >> 24)
 }
 
 // inlineArithNEONArm64 emits inline NEON double-precision arith for
