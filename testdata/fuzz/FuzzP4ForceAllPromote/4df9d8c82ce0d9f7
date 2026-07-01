@@ -1,0 +1,2 @@
+go test fuzz v1
+string("s=0 function add(x)local A A=0*x end add(0)add()")

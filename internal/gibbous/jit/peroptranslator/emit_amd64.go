@@ -24,6 +24,12 @@ import (
 const (
 	// regRBX is the SysV / P4-JIT valueStackBase register (baseReg=3).
 	regRBX uint8 = 3
+
+	// qNanBoxBaseU64 is the lower bound of the non-number NaN-box space
+	// (0xFFF8_0000_0000_0000). Any raw uint64 value with bits >= this
+	// constant is a tagged non-number (nil / bool / GCRef); anything
+	// smaller is a valid f64. Used by IsNumber guards on reg operands.
+	qNanBoxBaseU64 uint64 = 0xFFF8_0000_0000_0000
 )
 
 // emitMOVE emits `mov rax, [rbx+B*8]; mov [rbx+A*8], rax` — 14 bytes.

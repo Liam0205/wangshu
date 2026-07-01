@@ -28,12 +28,14 @@ import (
 // emitStatusCheckAndBubble to propagate the error. Callers embedded
 // inside a larger emit sequence typically do that at end-of-op.
 func emitARITH(cb *codeBuf, op bytecode.OpCode, pc int32, a uint8, b, c int) {
-	// Fast path: inline SSE for ADD/SUB/MUL/DIV. Supports reg-reg,
-	// reg-K, K-reg, and K-K operand shapes when the K operand is a
-	// numeric constant. No IsNumber guard on reg operands (assumes
-	// numeric-hot loop).
+	// Fast path: inline SSE for ADD/SUB/MUL/DIV, guarded by IsNumber on
+	// each reg operand. If a reg holds nil / a GC ref, jump to the
+	// shim block below so host.Arith can produce the correct __add /
+	// coercion / raise semantics. Fuzz seed 4df9d8c82ce0d9f7 caught the
+	// unguarded variant (P4 silently produced NaN while P1 raised
+	// `attempt to perform arithmetic on nil`).
 	if op == bytecode.ADD || op == bytecode.SUB || op == bytecode.MUL || op == bytecode.DIV {
-		if inline := inlineArithSSE(cb, op, a, b, c); inline {
+		if emitInlineArithWithShimFallback(cb, op, pc, a, b, c) {
 			return
 		}
 	}
@@ -41,6 +43,116 @@ func emitARITH(cb *codeBuf, op bytecode.OpCode, pc int32, a uint8, b, c int) {
 	// shimArith(ctx, base, pc, op, b, c, a)
 	emitCallShim(cb, addr, []int32{0, pc, int32(op), int32(b), int32(c), int32(a)})
 	emitStatusCheckAndBubble(cb)
+}
+
+// emitInlineArithWithShimFallback emits the guarded inline SSE fast
+// path plus an inline shim fallback for miss cases. Returns true when
+// it consumed the emit (inline succeeded); false when the shape can't
+// be inlined (e.g. K operand is non-numeric) and the caller should
+// fall through to the plain shim call.
+//
+// Layout:
+//
+//	[guard-B]        ; only if b is reg
+//	  mov rax, [rbx+B*8]; mov rcx, qNanBoxBase; cmp rax, rcx
+//	  jae shim         ; not a number → fallback
+//	[guard-C]        ; only if c is reg (same shape)
+//	[inline SSE]
+//	  movsd xmm0, B; movsd xmm1, C; arith xmm0, xmm1
+//	  movsd [rbx+A*8], xmm0
+//	  jmp done
+//	shim:
+//	  emitCallShim(shimArith); emitStatusCheckAndBubble
+//	done:
+//
+// Reg operands go through the guard; K operands don't need one because
+// AnalyzeNative already rejected non-numeric K constants for arith ops.
+func emitInlineArithWithShimFallback(cb *codeBuf, op bytecode.OpCode, pc int32, a uint8, b, c int) bool {
+	switch op {
+	case bytecode.ADD, bytecode.SUB, bytecode.MUL, bytecode.DIV:
+	default:
+		return false
+	}
+	// Verify K operands (if any) are numeric — otherwise the K-side of
+	// inlineLoadOperandToXmm would return false, and we'd need to bail
+	// out. Check upfront so we can commit to the fast-path layout.
+	for _, rk := range [2]int{b, c} {
+		if rk >= 256 {
+			kidx := rk - 256
+			if cb.proto == nil || kidx < 0 || kidx >= len(cb.proto.Consts) {
+				return false
+			}
+			if !value.IsNumber(value.Value(cb.proto.Consts[kidx])) {
+				return false
+			}
+		}
+	}
+
+	// Emit IsNumber guards for each reg operand. Guard fail jumps
+	// forward to the shim block; we record patch offsets and resolve
+	// them once the shim block's byte offset is known.
+	var guardFixups []int
+	emitRegNumberGuard := func(reg int) {
+		if reg >= 256 {
+			return
+		}
+		// mov rax, [rbx+reg*8]
+		cb.emit(jitamd64.EmitMovqRaxFromMemReg(nil, regRBX, int32(reg)*8))
+		// mov rcx, qNanBoxBase
+		cb.emit(jitamd64.EmitMovRcxImm64(nil, qNanBoxBaseU64))
+		// cmp rax, rcx
+		cb.emit(jitamd64.EmitCmpRaxRcx(nil))
+		// jae shim (6-byte 0F 83 rel32); rel32 patched after shim offset known
+		cb.emit(jitamd64.EmitJaeRel32(nil, 0))
+		guardFixups = append(guardFixups, int(cb.pos())-4)
+	}
+	emitRegNumberGuard(b)
+	emitRegNumberGuard(c)
+
+	// Fast-path body: inline SSE + store R(A) + jmp done.
+	if !inlineLoadOperandToXmm(cb, 0, b) {
+		return false
+	}
+	if !inlineLoadOperandToXmm(cb, 1, c) {
+		return false
+	}
+	switch op {
+	case bytecode.ADD:
+		cb.emit(jitamd64.EmitAddsdXmmXmm(nil, 0, 1))
+	case bytecode.SUB:
+		cb.emit(jitamd64.EmitSubsdXmmXmm(nil, 0, 1))
+	case bytecode.MUL:
+		cb.emit(jitamd64.EmitMulsdXmmXmm(nil, 0, 1))
+	case bytecode.DIV:
+		cb.emit(jitamd64.EmitDivsdXmmXmm(nil, 0, 1))
+	}
+	cb.emit(jitamd64.EmitMovsdMemFromXmm(nil, 0, regRBX, int32(a)*8))
+	// jmp done (5-byte E9 rel32); rel32 patched once done offset known.
+	cb.emit([]byte{0xE9, 0, 0, 0, 0})
+	fastPathJmpOff := int(cb.pos()) - 4
+
+	// Shim block starts here — patch guard fixups.
+	shimOff := int(cb.pos())
+	for _, po := range guardFixups {
+		rel := int32(shimOff) - int32(po+4)
+		writeRel32(cb, po, rel)
+	}
+	emitCallShim(cb, shimArithAddr(), []int32{0, pc, int32(op), int32(b), int32(c), int32(a)})
+	emitStatusCheckAndBubble(cb)
+
+	// Done block starts here — patch fastPathJmpOff.
+	doneOff := int(cb.pos())
+	rel := int32(doneOff) - int32(fastPathJmpOff+4)
+	writeRel32(cb, fastPathJmpOff, rel)
+	return true
+}
+
+// writeRel32 patches a 4-byte little-endian rel32 at offset po in cb.bytes.
+func writeRel32(cb *codeBuf, po int, rel int32) {
+	cb.bytes[po] = byte(rel)
+	cb.bytes[po+1] = byte(rel >> 8)
+	cb.bytes[po+2] = byte(rel >> 16)
+	cb.bytes[po+3] = byte(rel >> 24)
 }
 
 // inlineArithSSE emits inline SSE for ADD/SUB/MUL/DIV. B and C may be
