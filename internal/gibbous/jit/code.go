@@ -300,15 +300,13 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 	// 05 §5 arena base 重载协议:每次 Run 入口现算不缓存,grow 安全)。
 	var vsBaseAddr uintptr
 	if c.host != nil && c.jitCtx != nil {
-		c.jitCtx.SetArenaBase(c.host.ArenaBaseAddr())
-		vsBaseAddr = c.host.ValueStackBaseAddr(int32(base))
-		c.jitCtx.SetValueStackBase(vsBaseAddr)
-		// PJ5 Option B Spike 1+ 帧建立内联(承 §9.20):Run 入口现算注入
-		// ciDepth / ciSegBase / top 镜像字 host 字节地址(arena grow 后地址变,
-		// 不缓存——同 ArenaBase 重载协议)。
-		c.jitCtx.SetCIDepthAddr(c.host.CIDepthHostAddr())
-		c.jitCtx.SetCISegBaseAddr(c.host.CISegBaseHostAddr())
-		c.jitCtx.SetTopAddr(c.host.TopHostAddr())
+		// A1 optimisation: single host call fills all five addr fields
+		// with one arena.Words() lookup + one unsafe.Pointer take,
+		// instead of five per-getter round-trips. Same arena-grow
+		// reload protocol (per section 05 §5): populated on every
+		// Run entry, values become stale once we leave the JIT world.
+		c.host.RefreshJitCtxAddrs(c.jitCtx, int32(base))
+		vsBaseAddr = c.jitCtx.ValueStackBase()
 	}
 
 	jitCtxAddr := jitContextAddr(c.jitCtx)
@@ -984,15 +982,11 @@ func (c *p4Code) runFrameInlineDispatcher(base int32) int32 {
 	//    ensureStack → arena.grow,arena base + ciDepthAddr + ciSegBaseAddr +
 	//    topAddr 全失效。重新经 host 现算注入(承 §9.20 + §5 arena base 重载
 	//    协议)。
-	c.jitCtx.SetArenaBase(c.host.ArenaBaseAddr())
-	c.jitCtx.SetValueStackBase(c.host.ValueStackBaseAddr(base))
-	c.jitCtx.SetCIDepthAddr(c.host.CIDepthHostAddr())
-	c.jitCtx.SetCISegBaseAddr(c.host.CISegBaseHostAddr())
-	c.jitCtx.SetTopAddr(c.host.TopHostAddr())
+	c.host.RefreshJitCtxAddrs(c.jitCtx, base)
 	// 3. 二次 callJITSpec 跳 resume entry 续跑 PopVoid0Arg + ret
 	resumeAddr := c.codePage.Addr() + uintptr(c.frameInlineResumeOff)
 	jitCtxAddr := jitContextAddr(c.jitCtx)
-	vsBaseAddr := c.host.ValueStackBaseAddr(base)
+	vsBaseAddr := c.jitCtx.ValueStackBase()
 	raxResume := archCallJITSpec(resumeAddr, jitCtxAddr, vsBaseAddr)
 	if raxResume != 0 {
 		// resume entry 段执行异常(理论上 PopVoid0Arg + ret 只 ciDepth-- + ret,

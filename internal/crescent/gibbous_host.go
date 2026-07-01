@@ -209,6 +209,10 @@ func (st *State) TopHostAddr() uintptr {
 	return uintptr(unsafe.Pointer(&words[0])) + uintptr(st.topRef)
 }
 
+// RefreshJitCtxAddrs lives in gibbous_host_p4.go (needs the jit package
+// which is wangshu_p4-tagged; keeping it out of this untagged file avoids
+// pulling jit into non-P4 builds).
+
 // GetUpval 取当前 closure 的 upvalue b(execute.go GETUPVAL 段同款)。
 func (st *State) GetUpval(base int32, b int32) uint64 {
 	th := st.runningThread
