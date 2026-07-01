@@ -130,7 +130,27 @@ func emitRestoreGoG(cb *codeBuf) {
 // wrap helpers in ABI0 asm shims for stable calling convention.
 //
 // R14 is preserved by Go across the call, so after this returns R14
-// still holds G.
+// still holds G. **RBX is NOT preserved** (Go ABIInternal uses RBX as
+// arg2), so callers must emit emitReloadVsBase after this to restore
+// RBX = vsBase for subsequent R(N) loads/stores.
 func emitHelperCall(cb *codeBuf, helperAddr uint64) {
 	cb.emit(jitamd64.EmitHelperCall(nil, helperAddr))
+}
+
+// emitReloadVsBase emits `mov rbx, [r15 + valueStackBaseOff]` — 7 bytes.
+// Must be emitted after every Go helper call to restore RBX = vsBase,
+// since ABIInternal uses RBX as arg2 and does not preserve it. The
+// vsBase is populated in jitCtx by the Go-side Run wrapper before entry.
+//
+// Encoding: 49 8B 9F <disp32>
+//
+//	49 = REX.W (bit 3) + REX.B (bit 0, r15 as r/m needs extension)
+//	8B = MOV r64, r/m64
+//	9F = ModRM: mod=10 (disp32) reg=011 (RBX) rm=111 (r15)
+func emitReloadVsBase(cb *codeBuf) {
+	off := int32(jit.JITContextValueStackBaseOffset)
+	cb.emit([]byte{
+		0x49, 0x8B, 0x9F,
+		byte(off), byte(off >> 8), byte(off >> 16), byte(off >> 24),
+	})
 }
