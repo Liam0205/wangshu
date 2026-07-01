@@ -1,13 +1,23 @@
-//go:build wangshu_p3 && wangshu_profile
+//go:build wangshu_p4 && wangshu_profile
 
-// 凸月(gibbous)档:embedded 边界基准的 evaluate() 经 force-all 升 wazero 执行,
-// 与新月(crescent,WangshuCallInto)+ gopher 三方对比。
+// P4 gibbous-jit tier: embedded boundary benchmarks with evaluate() promoted
+// to P4 self-managed native code through force-all, contrasted against
+// crescent (WangshuCall / WangshuCallInto) + gopher-lua.
 //
-// 测的是「宿主每 item 跨边界 + 调一次脚本函数」路径:边界拷贝成本(CallInto 零
-// 分配)与升层正交,凸月差异只体现在 evaluate() 函数体内部的 VM 执行。evaluate
-// 是非 vararg 内层函数(host→Lua 调),force-all + 预热后升 gibbous,凸月路径真走到。
+// The path measured is "host sets fields as globals + calls a script fn +
+// reads the scalar result per item". Two branches per benchmark:
+//   - _Call:     allocating st.Call() path, [] Value returned each call.
+//   - _CallInto: zero-alloc st.CallInto() path, caller reuses dst slice.
+// These are orthogonal to promotion: the boundary allocation cost and the
+// VM tier are independent axes, so having Call/CallInto splits on both P3
+// and P4 lets the reader see whether tier or boundary dominates.
 //
-// 运行:go test -tags "wangshu_p3 wangshu_profile" -bench 'Gibbous' ./benchmarks/embedded/
+// evaluate() is a non-vararg host->Lua function; force-all + warmup lifts
+// it to P4 (first call stays on crescent, promotion happens at entry, next
+// call goes through the P4 trampoline).
+//
+// Run:
+//   go test -tags "wangshu_p4 wangshu_profile" -bench 'GibbousJIT' ./benchmarks/embedded/
 
 package embedded
 
@@ -17,16 +27,16 @@ import (
 	"github.com/Liam0205/wangshu"
 )
 
-// warmEvaluate:force-all + 预热升层后,经 CallInto 反复调 evaluate(零分配边界)。
-// preset 在预热调用前设好脚本依赖的 globals(避免读 nil)。
-func warmEvaluate(b *testing.B, st *wangshu.State, preset func()) wangshu.Value {
+// warmEvaluateJIT is the P4 counterpart of warmEvaluate in
+// embedded_gibbous_test.go: force-all + warm the entry so evaluate is
+// promoted, then hand the caller the fn.
+func warmEvaluateJIT(b *testing.B, st *wangshu.State, preset func()) wangshu.Value {
 	b.Helper()
 	st.SetForceAllPromote(true)
 	fn := st.GetGlobal("evaluate")
 	if preset != nil {
 		preset()
 	}
-	// 预热:首调驱动 evaluate 升 gibbous(首调 crescent)。
 	var dst [1]wangshu.Value
 	if _, err := st.CallInto(dst[:], fn); err != nil {
 		b.Fatalf("warmup: %v", err)
@@ -34,50 +44,15 @@ func warmEvaluate(b *testing.B, st *wangshu.State, preset func()) wangshu.Value 
 	return fn
 }
 
-// autoEvaluate: production heat-threshold path, no force-all, no warmup.
-// Returns the evaluate fn ready for the first call (which will start on
-// crescent and promote naturally after HotEntryThreshold hits).
-func autoEvaluate(b *testing.B, st *wangshu.State, preset func()) wangshu.Value {
-	b.Helper()
-	fn := st.GetGlobal("evaluate")
-	if preset != nil {
-		preset()
-	}
-	return fn
-}
+// ── Mini CallOnly (no host globals, evaluate returns a const) ──────────────
 
-// Historical name preserved: this is the CallInto (zero-alloc) variant. See
-// _GibbousCall below for the allocating variant added later.
-func BenchmarkMiniCallOnly_Gibbous(b *testing.B) {
+func BenchmarkMiniCallOnly_GibbousJITCall(b *testing.B) {
 	prog, _ := wangshu.Compile([]byte(constPredicateScript), "bench")
 	st := wangshu.NewState(wangshu.Options{})
 	if _, err := prog.Run(st); err != nil {
 		b.Fatal(err)
 	}
-	fn := warmEvaluate(b, st, nil) // const predicate 不读 globals
-	defer fn.Release()
-	var dst [1]wangshu.Value
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if _, err := st.CallInto(dst[:], fn); err != nil {
-			b.Fatal(err)
-		}
-		_ = dst[0].Bool()
-	}
-}
-
-// _GibbousCall variants exercise the allocating st.Call() path so the P3
-// column can be split into Call/CallInto pairs matching the P4 side
-// (embedded_gibbous_jit_test.go).
-
-func BenchmarkMiniCallOnly_GibbousCall(b *testing.B) {
-	prog, _ := wangshu.Compile([]byte(constPredicateScript), "bench")
-	st := wangshu.NewState(wangshu.Options{})
-	if _, err := prog.Run(st); err != nil {
-		b.Fatal(err)
-	}
-	_ = warmEvaluate(b, st, nil)
+	_ = warmEvaluateJIT(b, st, nil)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -91,14 +66,35 @@ func BenchmarkMiniCallOnly_GibbousCall(b *testing.B) {
 	}
 }
 
-func BenchmarkMiniBoundary_GibbousCall(b *testing.B) {
+func BenchmarkMiniCallOnly_GibbousJITCallInto(b *testing.B) {
+	prog, _ := wangshu.Compile([]byte(constPredicateScript), "bench")
+	st := wangshu.NewState(wangshu.Options{})
+	if _, err := prog.Run(st); err != nil {
+		b.Fatal(err)
+	}
+	fn := warmEvaluateJIT(b, st, nil)
+	defer fn.Release()
+	var dst [1]wangshu.Value
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := st.CallInto(dst[:], fn); err != nil {
+			b.Fatal(err)
+		}
+		_ = dst[0].Bool()
+	}
+}
+
+// ── Mini Boundary (CallOnly + one SetGlobal per iter) ───────────────────────
+
+func BenchmarkMiniBoundary_GibbousJITCall(b *testing.B) {
 	prog, _ := wangshu.Compile([]byte(ifPredicateScript), "bench")
 	st := wangshu.NewState(wangshu.Options{})
 	if _, err := prog.Run(st); err != nil {
 		b.Fatal(err)
 	}
 	st.SetGlobal("user_id", wangshu.String("12345"))
-	_ = warmEvaluate(b, st, nil)
+	_ = warmEvaluateJIT(b, st, nil)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -113,14 +109,14 @@ func BenchmarkMiniBoundary_GibbousCall(b *testing.B) {
 	}
 }
 
-func BenchmarkMiniBoundary_GibbousCallInto(b *testing.B) {
+func BenchmarkMiniBoundary_GibbousJITCallInto(b *testing.B) {
 	prog, _ := wangshu.Compile([]byte(ifPredicateScript), "bench")
 	st := wangshu.NewState(wangshu.Options{})
 	if _, err := prog.Run(st); err != nil {
 		b.Fatal(err)
 	}
 	st.SetGlobal("user_id", wangshu.String("12345"))
-	fn := warmEvaluate(b, st, nil)
+	fn := warmEvaluateJIT(b, st, nil)
 	defer fn.Release()
 	var dst [1]wangshu.Value
 	b.ReportAllocs()
@@ -134,48 +130,16 @@ func BenchmarkMiniBoundary_GibbousCallInto(b *testing.B) {
 	}
 }
 
-// Historical: CallInto path only. Call variant added below as
-// _GibbousCall to align with the P4 gibbous-jit split.
-func BenchmarkRealworldPredicate_Gibbous(b *testing.B) {
-	items := makeItems()
-	prog, _ := wangshu.Compile([]byte(predicateScript), "pred")
-	st := wangshu.NewState(wangshu.Options{})
-	if _, err := prog.Run(st); err != nil {
-		b.Fatal(err)
-	}
-	fn := warmEvaluate(b, st, func() {
-		it := items[0]
-		st.SetGlobal("user_id", wangshu.String(it.userID))
-		st.SetGlobal("age", wangshu.Number(it.age))
-		st.SetGlobal("is_active", wangshu.Bool(it.isActive))
-		st.SetGlobal("score", wangshu.Number(it.score))
-	})
-	defer fn.Release()
-	var dst [1]wangshu.Value
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		for _, it := range items {
-			st.SetGlobal("user_id", wangshu.String(it.userID))
-			st.SetGlobal("age", wangshu.Number(it.age))
-			st.SetGlobal("is_active", wangshu.Bool(it.isActive))
-			st.SetGlobal("score", wangshu.Number(it.score))
-			if _, err := st.CallInto(dst[:], fn); err != nil {
-				b.Fatal(err)
-			}
-			_ = dst[0].Bool()
-		}
-	}
-}
+// ── Realworld Predicate: per-item field-set + evaluate() ────────────────────
 
-func BenchmarkRealworldPredicate_GibbousCall(b *testing.B) {
+func BenchmarkRealworldPredicate_GibbousJITCall(b *testing.B) {
 	items := makeItems()
 	prog, _ := wangshu.Compile([]byte(predicateScript), "pred")
 	st := wangshu.NewState(wangshu.Options{})
 	if _, err := prog.Run(st); err != nil {
 		b.Fatal(err)
 	}
-	_ = warmEvaluate(b, st, func() {
+	_ = warmEvaluateJIT(b, st, func() {
 		it := items[0]
 		st.SetGlobal("user_id", wangshu.String(it.userID))
 		st.SetGlobal("age", wangshu.Number(it.age))
@@ -201,18 +165,19 @@ func BenchmarkRealworldPredicate_GibbousCall(b *testing.B) {
 	}
 }
 
-func BenchmarkRealworldTransform_Gibbous(b *testing.B) {
+func BenchmarkRealworldPredicate_GibbousJITCallInto(b *testing.B) {
 	items := makeItems()
-	prog, _ := wangshu.Compile([]byte(transformScript), "xform")
+	prog, _ := wangshu.Compile([]byte(predicateScript), "pred")
 	st := wangshu.NewState(wangshu.Options{})
 	if _, err := prog.Run(st); err != nil {
 		b.Fatal(err)
 	}
-	fn := warmEvaluate(b, st, func() {
+	fn := warmEvaluateJIT(b, st, func() {
 		it := items[0]
-		st.SetGlobal("raw_score", wangshu.Number(it.rawScore))
-		st.SetGlobal("base_bias", wangshu.Number(it.baseBias))
-		st.SetGlobal("recency_factor", wangshu.Number(it.recencyFactor))
+		st.SetGlobal("user_id", wangshu.String(it.userID))
+		st.SetGlobal("age", wangshu.Number(it.age))
+		st.SetGlobal("is_active", wangshu.Bool(it.isActive))
+		st.SetGlobal("score", wangshu.Number(it.score))
 	})
 	defer fn.Release()
 	var dst [1]wangshu.Value
@@ -220,25 +185,28 @@ func BenchmarkRealworldTransform_Gibbous(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		for _, it := range items {
-			st.SetGlobal("raw_score", wangshu.Number(it.rawScore))
-			st.SetGlobal("base_bias", wangshu.Number(it.baseBias))
-			st.SetGlobal("recency_factor", wangshu.Number(it.recencyFactor))
+			st.SetGlobal("user_id", wangshu.String(it.userID))
+			st.SetGlobal("age", wangshu.Number(it.age))
+			st.SetGlobal("is_active", wangshu.Bool(it.isActive))
+			st.SetGlobal("score", wangshu.Number(it.score))
 			if _, err := st.CallInto(dst[:], fn); err != nil {
 				b.Fatal(err)
 			}
-			_ = dst[0].Number()
+			_ = dst[0].Bool()
 		}
 	}
 }
 
-func BenchmarkRealworldTransform_GibbousCall(b *testing.B) {
+// ── Realworld Transform: per-item numeric feature derivation ────────────────
+
+func BenchmarkRealworldTransform_GibbousJITCall(b *testing.B) {
 	items := makeItems()
 	prog, _ := wangshu.Compile([]byte(transformScript), "xform")
 	st := wangshu.NewState(wangshu.Options{})
 	if _, err := prog.Run(st); err != nil {
 		b.Fatal(err)
 	}
-	_ = warmEvaluate(b, st, func() {
+	_ = warmEvaluateJIT(b, st, func() {
 		it := items[0]
 		st.SetGlobal("raw_score", wangshu.Number(it.rawScore))
 		st.SetGlobal("base_bias", wangshu.Number(it.baseBias))
@@ -262,14 +230,43 @@ func BenchmarkRealworldTransform_GibbousCall(b *testing.B) {
 	}
 }
 
+func BenchmarkRealworldTransform_GibbousJITCallInto(b *testing.B) {
+	items := makeItems()
+	prog, _ := wangshu.Compile([]byte(transformScript), "xform")
+	st := wangshu.NewState(wangshu.Options{})
+	if _, err := prog.Run(st); err != nil {
+		b.Fatal(err)
+	}
+	fn := warmEvaluateJIT(b, st, func() {
+		it := items[0]
+		st.SetGlobal("raw_score", wangshu.Number(it.rawScore))
+		st.SetGlobal("base_bias", wangshu.Number(it.baseBias))
+		st.SetGlobal("recency_factor", wangshu.Number(it.recencyFactor))
+	})
+	defer fn.Release()
+	var dst [1]wangshu.Value
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		for _, it := range items {
+			st.SetGlobal("raw_score", wangshu.Number(it.rawScore))
+			st.SetGlobal("base_bias", wangshu.Number(it.baseBias))
+			st.SetGlobal("recency_factor", wangshu.Number(it.recencyFactor))
+			if _, err := st.CallInto(dst[:], fn); err != nil {
+				b.Fatal(err)
+			}
+			_ = dst[0].Number()
+		}
+	}
+}
+
 // ── Auto-mode variants: production heat threshold, long-lived State ───────
 // State + Program stay alive across iterations (embedder-with-pool
 // semantics). No force-all, no explicit warmup — the first ~200 calls
 // stay on crescent until the natural threshold trips, then subsequent
-// calls run on gibbous. The b.N average includes that warmup tail so the
-// number reflects what a real embedder measures.
+// calls run on P4 native code.
 
-func BenchmarkMiniCallOnly_GibbousAutoCallInto(b *testing.B) {
+func BenchmarkMiniCallOnly_GibbousJITAutoCallInto(b *testing.B) {
 	prog, _ := wangshu.Compile([]byte(constPredicateScript), "bench")
 	st := wangshu.NewState(wangshu.Options{})
 	if _, err := prog.Run(st); err != nil {
@@ -288,7 +285,7 @@ func BenchmarkMiniCallOnly_GibbousAutoCallInto(b *testing.B) {
 	}
 }
 
-func BenchmarkMiniCallOnly_GibbousAutoCall(b *testing.B) {
+func BenchmarkMiniCallOnly_GibbousJITAutoCall(b *testing.B) {
 	prog, _ := wangshu.Compile([]byte(constPredicateScript), "bench")
 	st := wangshu.NewState(wangshu.Options{})
 	if _, err := prog.Run(st); err != nil {
@@ -307,7 +304,7 @@ func BenchmarkMiniCallOnly_GibbousAutoCall(b *testing.B) {
 	}
 }
 
-func BenchmarkMiniBoundary_GibbousAutoCallInto(b *testing.B) {
+func BenchmarkMiniBoundary_GibbousJITAutoCallInto(b *testing.B) {
 	prog, _ := wangshu.Compile([]byte(ifPredicateScript), "bench")
 	st := wangshu.NewState(wangshu.Options{})
 	if _, err := prog.Run(st); err != nil {
@@ -327,7 +324,7 @@ func BenchmarkMiniBoundary_GibbousAutoCallInto(b *testing.B) {
 	}
 }
 
-func BenchmarkMiniBoundary_GibbousAutoCall(b *testing.B) {
+func BenchmarkMiniBoundary_GibbousJITAutoCall(b *testing.B) {
 	prog, _ := wangshu.Compile([]byte(ifPredicateScript), "bench")
 	st := wangshu.NewState(wangshu.Options{})
 	if _, err := prog.Run(st); err != nil {
@@ -347,7 +344,7 @@ func BenchmarkMiniBoundary_GibbousAutoCall(b *testing.B) {
 	}
 }
 
-func BenchmarkRealworldPredicate_GibbousAutoCallInto(b *testing.B) {
+func BenchmarkRealworldPredicate_GibbousJITAutoCallInto(b *testing.B) {
 	items := makeItems()
 	prog, _ := wangshu.Compile([]byte(predicateScript), "pred")
 	st := wangshu.NewState(wangshu.Options{})
@@ -373,7 +370,7 @@ func BenchmarkRealworldPredicate_GibbousAutoCallInto(b *testing.B) {
 	}
 }
 
-func BenchmarkRealworldPredicate_GibbousAutoCall(b *testing.B) {
+func BenchmarkRealworldPredicate_GibbousJITAutoCall(b *testing.B) {
 	items := makeItems()
 	prog, _ := wangshu.Compile([]byte(predicateScript), "pred")
 	st := wangshu.NewState(wangshu.Options{})
@@ -399,7 +396,7 @@ func BenchmarkRealworldPredicate_GibbousAutoCall(b *testing.B) {
 	}
 }
 
-func BenchmarkRealworldTransform_GibbousAutoCallInto(b *testing.B) {
+func BenchmarkRealworldTransform_GibbousJITAutoCallInto(b *testing.B) {
 	items := makeItems()
 	prog, _ := wangshu.Compile([]byte(transformScript), "xform")
 	st := wangshu.NewState(wangshu.Options{})
@@ -424,7 +421,7 @@ func BenchmarkRealworldTransform_GibbousAutoCallInto(b *testing.B) {
 	}
 }
 
-func BenchmarkRealworldTransform_GibbousAutoCall(b *testing.B) {
+func BenchmarkRealworldTransform_GibbousJITAutoCall(b *testing.B) {
 	items := makeItems()
 	prog, _ := wangshu.Compile([]byte(transformScript), "xform")
 	st := wangshu.NewState(wangshu.Options{})

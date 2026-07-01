@@ -18,7 +18,10 @@ import (
 	"github.com/Liam0205/wangshu"
 )
 
-func benchVMGibbous(b *testing.B, name string) {
+// benchVMGibbousForce: force-all promotion + warmup, measures the P3
+// steady-state (all reachable Protos already lifted). This is the "upper
+// bound" of what P3 can do on this script.
+func benchVMGibbousForce(b *testing.B, name string) {
 	src := loadScript(b, name)
 	prog, err := wangshu.Compile(src, name)
 	if err != nil {
@@ -37,6 +40,29 @@ func benchVMGibbous(b *testing.B, name string) {
 	}
 }
 
-func BenchmarkHeavyArith_Gibbous(b *testing.B)     { benchVMGibbous(b, "heavy_arith") }
-func BenchmarkHeavyRecursion_Gibbous(b *testing.B) { benchVMGibbous(b, "heavy_recursion") }
-func BenchmarkHeavyFloatloop_Gibbous(b *testing.B) { benchVMGibbous(b, "heavy_floatloop") }
+// benchVMGibbousAuto: production heat-threshold promotion, single long-lived
+// State reused across iterations (mirrors an embedder that keeps its State
+// warm in a pool). NO force-all, NO warmup: the first few iterations
+// stay on crescent until the natural threshold trips, then subsequent
+// iterations run on gibbous. The bench average includes that warmup tail.
+func benchVMGibbousAuto(b *testing.B, name string) {
+	src := loadScript(b, name)
+	prog, err := wangshu.Compile(src, name)
+	if err != nil {
+		b.Fatalf("compile: %v", err)
+	}
+	st := wangshu.NewState(wangshu.Options{})
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := prog.Run(st); err != nil {
+			b.Fatalf("run: %v", err)
+		}
+	}
+}
+
+func BenchmarkHeavyArith_Gibbous(b *testing.B)         { benchVMGibbousForce(b, "heavy_arith") }
+func BenchmarkHeavyRecursion_Gibbous(b *testing.B)     { benchVMGibbousForce(b, "heavy_recursion") }
+func BenchmarkHeavyFloatloop_Gibbous(b *testing.B)     { benchVMGibbousForce(b, "heavy_floatloop") }
+func BenchmarkHeavyArith_GibbousAuto(b *testing.B)     { benchVMGibbousAuto(b, "heavy_arith") }
+func BenchmarkHeavyRecursion_GibbousAuto(b *testing.B) { benchVMGibbousAuto(b, "heavy_recursion") }
+func BenchmarkHeavyFloatloop_GibbousAuto(b *testing.B) { benchVMGibbousAuto(b, "heavy_floatloop") }
