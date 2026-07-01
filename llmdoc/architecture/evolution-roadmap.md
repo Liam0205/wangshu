@@ -1,6 +1,6 @@
 # 架构:分层 VM 演进路线(P1→P5)
 
-> 状态:**P1 已交付(M0-M14,验收过线),P2-P5 仍为规划**。源:`docs/design/roadmap.md` (§4)。**全阶段详细设计文档已就位**:P1 见 `docs/design/p1-interpreter/`(全卷 00-12,实现现状见同目录 implementation-progress.md),P2-P5 见 `docs/design/p2-bridge/`(子目录) / `p3-wasm-tier/`(子目录 9 文件)/ `p4-method-jit/`(子目录) / `p5-trace-jit.md`。
+> 状态:**P1 已交付(M0-M14,验收过线)+ P2(分层桥 PB0-PB7)+ P3(Wasm 编译层 PW0-PW10)全卷已收口;P4(method JIT)多 PJ 已落地(PJ0-PJ11 + PJ10 native emit,2026-07-01),P5 仍为规划**。源:`docs/design/roadmap.md` (§4)。**全阶段详细设计文档已就位**:P1 见 `docs/design/p1-interpreter/`(全卷 00-12,实现现状见同目录 implementation-progress.md),P2-P5 见 `docs/design/p2-bridge/`(子目录) / `p3-wasm-tier/`(子目录 10 文件)/ `p4-method-jit/`(子目录 10 文件) / `p5-trace-jit.md`。各阶段实施现状对账见对应目录 `implementation-progress.md`。
 > 前置约束(为什么是分层、为什么倍率以列内核为口径):见 [[design-premises]]。值表示如何在各层共见同一块内存:见 [[value-representation]]。
 
 ## 流水线全景
@@ -74,6 +74,7 @@ P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 met
 - 继承 P3 的全部分层结构,**只换发射后端**(Wasm 发射 → 原生发射);
 - **amd64 + arm64 双后端**;系统管线参考 wazero。
 - **验收**:列内核负载 ≥ LuaJ-luajc 档;Wasm 层退役,**或**留作可移植中层(未移植架构、禁 exec-mmap 环境)。**P3 去留决策框架详见 [../docs/design/p4-method-jit/07-p3-retirement](../../docs/design/p4-method-jit/07-p3-retirement.md)**。
+- **现状(2026-07-01)**:**多 PJ 已落地**。PJ0 包骨架 + bridge 注入 / PJ1 spike 闸门 + amd64 工程组件 / PJ2 投机三形态(reg-reg/reg-K/chain-KK)/ PJ3 FORLOOP 字节级 inline(实测 7.15-25.41x over gopher-lua,超 luajc 档 4.4x)/ PJ4 表 IC 六路径 + IsTable guard / PJ5 CALL void + TAILCALL + SELF inline(0..7 参 + 嵌套 + 错误冒泡)+ p4SpecState 子状态机骨架 / PJ7 真接入 ~25 类形态 byte-equal / PJ8 arm64 字节级模板矩阵 + Compile 端真接入 / PJ11 luajc 档突破。**PJ10 通用 per-opcode 翻译器 + native emit 真接入**(2026-06-30~07-01):CFG builder + 两遍 label resolver + 35/38 opcode 每 arch 一份 emit(amd64 / arm64),inline 18 op mmap-safe 子集(其余退 Go 端 dispatch,mmap + Go morestack 物理不兼容硬约束),arch-aware `fixupKind` label resolver(amd64 rel32 / arm64 B26 / Cond19),`PreferNative` 多 BB + big-BB 收窄门;不接 VARARG(设计永不接)+ JMP/TEST/LOADBOOL C!=0(需真 CFG 留 followup)。**V15b heavy 三本 P4 native > P3 wasm 达标**(HeavyArith / HeavyRecursion / HeavyFloatloop,amd64),V14 luajc 档无回归。**跨 arch CI**:linux/arm64 闸门翻 true + darwin/arm64 codepage 真实装(`internal/jit/jitcgo/` 子包保主库零 cgo)+ macos-latest M1 三平台矩阵 CI;darwin/arm64 真 execute 闸门暂 false(留 followup)。**剩余项**:`archSupportsSpec=true` 物理 runner 真启用 / 段内 EmitCallInline 模板 / OSR exit 真接入(p4SpecState 骨架已就绪)。详 `docs/design/p4-method-jit/implementation-progress.md`。
 
 ### P5:trace-based JIT(+2-4 人年到可信 v1,开放式,目标 10-30x)
 
