@@ -49,6 +49,15 @@ type codeBufProto struct {
 	// Consts are the raw NaN-boxed constant values (Proto.Consts as
 	// uint64). Emit_amd64.go's emitLOADK reads Consts[Bx].
 	Consts []uint64
+
+	// RetA, RetB, RetPC are captured from the sole RETURN instruction
+	// during emit and lifted into nativeCode by TranslateProtoNative.
+	// The mmap segment RETs with status 0 for the normal exit, and
+	// nativeCode.Run's Go side calls host.DoReturn(RetPC, RetA, RetB)
+	// to perform the frame teardown.
+	RetA  int32
+	RetB  int32
+	RetPC int32
 }
 
 type fixup struct {

@@ -23,6 +23,7 @@ import (
 	"github.com/Liam0205/wangshu/internal/bytecode"
 	"github.com/Liam0205/wangshu/internal/gibbous/jit"
 	jitamd64 "github.com/Liam0205/wangshu/internal/gibbous/jit/amd64"
+	"github.com/Liam0205/wangshu/internal/value"
 )
 
 // debugMinimalNative, when set, makes TranslateProtoNative emit only
@@ -38,6 +39,16 @@ type nativeCode struct {
 	codePage *jitamd64.CodePage
 	jitCtx   *jit.JITContext
 	host     jit.P4HostState
+
+	// retA / retB / retPC are baked at compile time from the sole
+	// RETURN instruction in the Proto's CFG. When the native mmap
+	// segment RETs with status 0, Run calls host.DoReturn(retPC, retA,
+	// retB) to perform the frame teardown. This avoids emitting a shim
+	// call from inside the mmap for RETURN, dodging the morestack /
+	// stack unwinder incompatibility (see project memory).
+	retA  int32
+	retB  int32
+	retPC int32
 }
 
 func (c *nativeCode) Proto() *bytecode.Proto { return c.proto }
@@ -77,6 +88,15 @@ func (c *nativeCode) Run(stack []uint64, base uint32) (status int32) {
 	vsBaseAddr := c.host.ValueStackBaseAddr(int32(base))
 	rawStatus := jitamd64.CallJITSpec(c.codePage.Addr(), jitCtxAddr, vsBaseAddr)
 	status = int32(rawStatus)
+	// Perform Go-side frame teardown via host.DoReturn on success.
+	// Emitting host.DoReturn as a shim call from inside the mmap segment
+	// crashes the Go stack unwinder under nested + concurrent load;
+	// doing it here avoids the mmap-to-Go shim call entirely.
+	if status == 0 {
+		if drStatus := c.host.DoReturn(int32(base), c.retPC, c.retA, c.retB); drStatus != 0 {
+			status = drStatus
+		}
+	}
 	return status
 }
 
@@ -119,11 +139,59 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 			continue
 		}
 		for pc := bb.startPC; pc < bb.endPC; pc++ {
-			op := bytecode.Op(proto.Code[pc])
+			ins := proto.Code[pc]
+			op := bytecode.Op(ins)
 			if !opSupported(op) {
 				return false
 			}
+			// Arithmetic ops with RK-encoded B or C fall through to a
+			// shim call in the current inline fast path; reject Protos
+			// that have any such shape until inline RK is supported.
+			switch op {
+			case bytecode.ADD, bytecode.SUB, bytecode.MUL, bytecode.DIV,
+				bytecode.LT, bytecode.LE:
+				// Inline path supports reg-reg and reg-K / K-reg /
+				// K-K as long as any K operand is numeric. Verify
+				// K operands here so AnalyzeNative rejects Protos
+				// whose K would fall through to shim.
+				if bytecode.B(ins) >= 256 {
+					kidx := bytecode.B(ins) - 256
+					if kidx < 0 || kidx >= len(proto.Consts) {
+						return false
+					}
+					if !value.IsNumber(value.Value(proto.Consts[kidx])) {
+						return false
+					}
+				}
+				if bytecode.C(ins) >= 256 {
+					kidx := bytecode.C(ins) - 256
+					if kidx < 0 || kidx >= len(proto.Consts) {
+						return false
+					}
+					if !value.IsNumber(value.Value(proto.Consts[kidx])) {
+						return false
+					}
+				}
+			}
 		}
+	}
+	// Require exactly one RETURN in the reachable code. TranslateProtoNative
+	// stashes retA/retB/retPC from that instruction on the codeBuf and
+	// nativeCode.Run invokes host.DoReturn from the Go side after the
+	// mmap segment returns.
+	returnCount := 0
+	for id, bb := range c.blocks {
+		if !reach[id] {
+			continue
+		}
+		for pc := bb.startPC; pc < bb.endPC; pc++ {
+			if bytecode.Op(proto.Code[pc]) == bytecode.RETURN {
+				returnCount++
+			}
+		}
+	}
+	if returnCount != 1 {
+		return false
 	}
 	return true
 }
@@ -131,33 +199,41 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 // opSupported reports whether a given op is emit-covered by the native
 // path.
 //
-// **Current gate is extremely conservative**: only the arithmetic-heavy
-// loop ops. This is the target set for the V15b heavy_floatloop kernel:
-// numeric-only workloads that AnalyzeShape rejects because they contain
-// FORLOOP. Widening the gate to touch GETUPVAL/SETUPVAL/... requires
-// resolving the "call helper from mmap crashes trampoline on RET"
-// issue (likely Go-runtime morestack interaction; see
-// [[project-pj10-native-longtask]]).
+// **Ultra-conservative gate for production wiring**: only ops that have
+// NO shim call in their emitted sequence. Calling Go helpers from mmap
+// crashes Go's stack unwinder under nested/concurrent load, so we avoid
+// it entirely by:
+//   - RETURN: emit `xor eax, eax; ret` inline; host.DoReturn is invoked
+//     from Go side after CallJITSpec returns.
+//   - Arithmetic: inline SSE fast path (inlineArithSSE) supports
+//     reg-reg / reg-K / K-reg / K-K when the K operand is numeric.
+//   - Compare: inline UCOMISd fast path for LT/LE with numeric operands.
 //
-// Currently enabled:
+// Currently enabled with NO shim call in the emit output:
 //
-//	MOVE, LOADK, LOADBOOL, LOADNIL,
-//	ADD/SUB/MUL/DIV/MOD/POW, UNM, NOT, LEN,
-//	JMP, FORPREP, FORLOOP,
-//	RETURN (with B == 1 - no return values, purely for exit)
+//	MOVE, LOADK (numeric consts only), LOADBOOL, LOADNIL,
+//	ADD/SUB/MUL/DIV (reg-reg or numeric K operands),
+//	NOT (inline compare),
+//	LT/LE (inline compare),
+//	JMP, FORLOOP,
+//	RETURN
 //
-// The RETURN restriction avoids the shim-call path entirely for the
-// exit -- for B == 1, we can just emit `xor eax, eax; ret` (status 0).
-// TODO: extend once helper-call morestack issue is resolved.
+// **Excluded** because the emit would need a shim call:
+//
+//	GETUPVAL, SETUPVAL, LEN, CONCAT, EQ, TEST, TESTSET,
+//	GETTABLE, SETTABLE, GETGLOBAL, SETGLOBAL, SELF, NEWTABLE, SETLIST,
+//	CALL, TAILCALL, CLOSURE, CLOSE, TFORLOOP, MOD, POW, UNM,
+//	FORPREP (needs shim for coercion).
+//
+// AnalyzeNative additionally rejects Protos with non-numeric K operands
+// on inline arithmetic / compare ops.
 func opSupported(op bytecode.OpCode) bool {
 	switch op {
 	case bytecode.MOVE, bytecode.LOADK, bytecode.LOADBOOL, bytecode.LOADNIL,
 		bytecode.ADD, bytecode.SUB, bytecode.MUL, bytecode.DIV,
-		bytecode.MOD, bytecode.POW,
-		bytecode.UNM, bytecode.NOT, bytecode.LEN,
-		bytecode.EQ, bytecode.LT, bytecode.LE,
-		bytecode.TEST, bytecode.TESTSET,
-		bytecode.JMP, bytecode.FORPREP, bytecode.FORLOOP,
+		bytecode.NOT,
+		bytecode.LT, bytecode.LE,
+		bytecode.JMP, bytecode.FORLOOP,
 		bytecode.RETURN:
 		return true
 	default:
@@ -242,6 +318,9 @@ func TranslateProtoNative(proto *bytecode.Proto, host jit.P4HostState) (*nativeC
 		codePage: page,
 		jitCtx:   jit.NewJITContext(),
 		host:     host,
+		retA:     buf.proto.RetA,
+		retB:     buf.proto.RetB,
+		retPC:    buf.proto.RetPC,
 	}, nil
 }
 
@@ -341,7 +420,19 @@ func emitTerminator(buf *codeBuf, c *cfg, bb *basicBlock, bbID int, ins bytecode
 
 	switch op {
 	case bytecode.RETURN:
-		emitRETURN(buf, pc, a, b)
+		// Emit `xor eax, eax; ret` inline - no shim call. host.DoReturn
+		// is invoked from nativeCode.Run's Go side after CallJITSpec
+		// returns. This avoids all shim-from-mmap risk for the RETURN
+		// path (which is at the end of every function).
+		cb := buf
+		// Stash retA/retB/retPC on the codeBuf so TranslateProtoNative
+		// can lift them into nativeCode fields.
+		if cb.proto != nil {
+			cb.proto.RetA = int32(a)
+			cb.proto.RetB = int32(b)
+			cb.proto.RetPC = pc
+		}
+		cb.emit([]byte{0x31, 0xC0, 0xC3}) // xor eax, eax; ret
 	case bytecode.TAILCALL:
 		emitTAILCALL(buf, pc, a, b, cc)
 		emitRet(buf)

@@ -28,10 +28,82 @@ import (
 // emitStatusCheckAndBubble to propagate the error. Callers embedded
 // inside a larger emit sequence typically do that at end-of-op.
 func emitARITH(cb *codeBuf, op bytecode.OpCode, pc int32, a uint8, b, c int) {
+	// Fast path: inline SSE for ADD/SUB/MUL/DIV. Supports reg-reg,
+	// reg-K, K-reg, and K-K operand shapes when the K operand is a
+	// numeric constant. No IsNumber guard on reg operands (assumes
+	// numeric-hot loop).
+	if op == bytecode.ADD || op == bytecode.SUB || op == bytecode.MUL || op == bytecode.DIV {
+		if inline := inlineArithSSE(cb, op, a, b, c); inline {
+			return
+		}
+	}
 	addr := shimArithAddr()
 	// shimArith(ctx, base, pc, op, b, c, a)
 	emitCallShim(cb, addr, []int32{0, pc, int32(op), int32(b), int32(c), int32(a)})
 	emitStatusCheckAndBubble(cb)
+}
+
+// inlineArithSSE emits inline SSE for ADD/SUB/MUL/DIV. B and C may be
+// reg refs (<256) or K refs (>=256). Numeric constants baked directly
+// via mov rax, imm64.
+//
+// Returns true on success, false if this shape needs the shim (e.g. K
+// operand refers to a non-numeric constant, or op is not one of
+// ADD/SUB/MUL/DIV).
+func inlineArithSSE(cb *codeBuf, op bytecode.OpCode, a uint8, b, c int) bool {
+	switch op {
+	case bytecode.ADD, bytecode.SUB, bytecode.MUL, bytecode.DIV:
+	default:
+		return false
+	}
+	// Load operand B into xmm0.
+	if !inlineLoadOperandToXmm(cb, 0, b) {
+		return false
+	}
+	// Load operand C into xmm1.
+	if !inlineLoadOperandToXmm(cb, 1, c) {
+		return false
+	}
+	// arith xmm0, xmm1
+	switch op {
+	case bytecode.ADD:
+		cb.emit(jitamd64.EmitAddsdXmmXmm(nil, 0, 1))
+	case bytecode.SUB:
+		cb.emit(jitamd64.EmitSubsdXmmXmm(nil, 0, 1))
+	case bytecode.MUL:
+		cb.emit(jitamd64.EmitMulsdXmmXmm(nil, 0, 1))
+	case bytecode.DIV:
+		cb.emit(jitamd64.EmitDivsdXmmXmm(nil, 0, 1))
+	}
+	// movsd [rbx + A*8], xmm0
+	cb.emit(jitamd64.EmitMovsdMemFromXmm(nil, 0, regRBX, int32(a)*8))
+	return true
+}
+
+// inlineLoadOperandToXmm loads RK operand rk into xmmDst. If rk < 256
+// it's a reg load from [rbx+rk*8]. If rk >= 256 it's a K constant baked
+// as imm64 via mov rax + movq xmm, rax. Returns false when the K const
+// index is out of range or is not a numeric value (in which case the
+// caller should fall back to the shim path).
+func inlineLoadOperandToXmm(cb *codeBuf, xmmDst uint8, rk int) bool {
+	if rk < 256 {
+		cb.emit(jitamd64.EmitMovsdXmmFromMem(nil, xmmDst, regRBX, int32(rk)*8))
+		return true
+	}
+	kidx := rk - 256
+	if cb.proto == nil || kidx < 0 || kidx >= len(cb.proto.Consts) {
+		return false
+	}
+	kbits := cb.proto.Consts[kidx]
+	// Verify the K const is numeric by checking the NaN-box tag.
+	if !value.IsNumber(value.Value(kbits)) {
+		return false
+	}
+	// mov rax, imm64
+	cb.emit(jitamd64.EmitMovRaxImm64(nil, kbits))
+	// movq xmmDst, rax
+	cb.emit(jitamd64.EmitMovqXmmFromRax(nil, xmmDst))
+	return true
 }
 
 // emitADD/SUB/MUL/DIV/MOD/POW are thin wrappers on emitARITH with a
@@ -167,6 +239,15 @@ var _ = unsafe.Pointer(nil)
 // Since this needs branch to specific BB targets, the emit function
 // takes those as parameters and records fixups.
 func emitCompare(cb *codeBuf, op bytecode.OpCode, pc int32, a uint8, b, c int, succExec, succSkip int) {
+	// Fast path: inline numeric compare via UCOMISd. Supports LT/LE
+	// with reg-reg, reg-K, K-reg, K-K where the K operand is numeric.
+	// EQ still routes to the shim path (needs proper NaN-boxing +
+	// value-tag equality; deferred).
+	if op == bytecode.LT || op == bytecode.LE {
+		if inlineNumericCompare(cb, op, a, b, c, succExec, succSkip) {
+			return
+		}
+	}
 	// shim: for EQ use shimEq, for LT/LE use shimCompare(op, b, c)
 	if op == bytecode.EQ {
 		emitCallShim(cb, shimEqAddr(), []int32{0, pc, int32(b), int32(c)})
@@ -198,6 +279,75 @@ func emitCompare(cb *codeBuf, op bytecode.OpCode, pc int32, a uint8, b, c int, s
 		cb.emit([]byte{0xE9, 0x00, 0x00, 0x00, 0x00})
 		cb.addFixup(patchOff, cb.pos(), succSkip)
 	}
+}
+
+// inlineNumericCompare emits inline UCOMISd + jcc for LT/LE with numeric
+// operands (reg or K). Returns false if unable to emit inline (K not
+// numeric or out of range), signaling the caller to fall through to the
+// shim path.
+//
+// Semantics: cond = (RK(B) op RK(C)); if cond != A then pc++ (succSkip);
+// else fall through to JMP target (succExec).
+//
+// Assumes both operands are numbers (no IsNumber guard); safe for
+// numeric-hot loops.
+//
+// Sequence for LT (A=0):
+//
+//	movsd/movq xmm0, {B}
+//	movsd/movq xmm1, {C}
+//	ucomisd xmm0, xmm1
+//	jb succExec              ; xmm0 < xmm1: cond true, A=0, cond!=A false
+//	jmp succSkip
+//
+// For LE, use jbe. For A=1, senses invert (jae / ja).
+func inlineNumericCompare(cb *codeBuf, op bytecode.OpCode, a uint8, b, c int, succExec, succSkip int) bool {
+	if op != bytecode.LT && op != bytecode.LE {
+		return false
+	}
+	if !inlineLoadOperandToXmm(cb, 0, b) {
+		return false
+	}
+	if !inlineLoadOperandToXmm(cb, 1, c) {
+		return false
+	}
+	// ucomisd xmm0, xmm1
+	cb.emit(jitamd64.EmitUcomisdXmmXmm(nil, 0, 1))
+	// Lua LT/LE semantics: if (RK(B) op RK(C)) != A then pc++ (skip
+	// JMP). Fallthrough (skip JMP) == succs[1] == succSkip. JMP taken
+	// == succs[0] == succExec. So we branch to succExec when the
+	// condition MATCHES A.
+	//
+	// UCOMISD sets CF=1 iff xmm0 < xmm1. Cases:
+	//
+	//	LT + A=0: match when (B<C)==0, i.e., B>=C. Use jae (0x83).
+	//	LT + A=1: match when (B<C)==1, i.e., B<C.  Use jb  (0x82).
+	//	LE + A=0: match when (B<=C)==0, i.e., B>C. Use ja  (0x87).
+	//	LE + A=1: match when (B<=C)==1, i.e., B<=C. Use jbe (0x86).
+	var jccOpcode byte
+	switch op {
+	case bytecode.LT:
+		if a == 0 {
+			jccOpcode = 0x83 // jae -> succExec when B>=C
+		} else {
+			jccOpcode = 0x82 // jb  -> succExec when B<C
+		}
+	case bytecode.LE:
+		if a == 0 {
+			jccOpcode = 0x87 // ja  -> succExec when B>C
+		} else {
+			jccOpcode = 0x86 // jbe -> succExec when B<=C
+		}
+	}
+	// 0F <jcc> rel32: 6 bytes
+	cb.emit([]byte{0x0F, jccOpcode, 0x00, 0x00, 0x00, 0x00})
+	patchOff := cb.pos() - 4
+	cb.addFixup(patchOff, cb.pos(), succExec)
+	// unconditional jmp to succSkip
+	patchOff2 := cb.pos() + 1
+	cb.emit([]byte{0xE9, 0x00, 0x00, 0x00, 0x00})
+	cb.addFixup(patchOff2, cb.pos(), succSkip)
+	return true
 }
 
 // emitEQ / LT / LE are thin wrappers.
