@@ -21,9 +21,16 @@
 package jit
 
 import (
+	"sync/atomic"
+
 	"github.com/Liam0205/wangshu/internal/bridge"
 	"github.com/Liam0205/wangshu/internal/bytecode"
 )
+
+// CompilePreferNativeCount counts how many times Compile took the
+// "prefer native path" fast-track. Used by benchmarks/tests to confirm
+// the native compile path is actually being selected.
+var CompilePreferNativeCount atomic.Int64
 
 // perOpTranslator is the hook for compiling a Proto through the
 // per-opcode translator. nil = PJ10 disabled (PJ7 paths only).
@@ -33,6 +40,23 @@ var perOpTranslator func(proto *bytecode.Proto, host P4HostState) (bridge.Gibbou
 // Proto?". Returns true iff TranslateProto would succeed. Called from
 // SupportsAllOpcodes as a fall-through after analyzeShape.
 var perOpAnalyzer func(proto *bytecode.Proto) bool
+
+// perOpNativeAnalyzer is the narrower hook for "does PJ10's *native*
+// CFG-based emit path accept this Proto?". When true, Compile prefers
+// the native path over the historical shape-spec fast paths, because
+// native emits full inline SSE for multi-BB numeric loops that the
+// shape spec would fall back to a mostly-interpreted head-op replay
+// on. nil when peroptranslator is not imported (or does not expose
+// AnalyzeNative), leaving the historical Compile order intact.
+var perOpNativeAnalyzer func(proto *bytecode.Proto) bool
+
+// RegisterPerOpNativeAnalyzer installs the "native accepts?" analyzer.
+// Optional companion to RegisterPerOpTranslator: without it, Compile
+// stays on the historical order and only reaches the perOpTranslator
+// as a fallback when analyzeShape rejects.
+func RegisterPerOpNativeAnalyzer(analyzer func(*bytecode.Proto) bool) {
+	perOpNativeAnalyzer = analyzer
+}
 
 // RegisterPerOpTranslator installs the PJ10 translator entry. Called from
 // peroptranslator.init. Panics if called twice (only one registration

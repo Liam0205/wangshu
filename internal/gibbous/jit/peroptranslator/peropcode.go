@@ -95,6 +95,13 @@ type PerOpCode struct {
 	//   2. Call host.ForPrep(forLoopA).
 	//   3. Loop: step R(A), check condition, run body, repeat.
 	//   4. Run post-loop side effects.
+	//
+	// **Note**: `forLoopAfter` is also reused by the TFORLOOP path below
+	// (see AnalyzeShape at translator.go:946). AnalyzeShape guarantees
+	// forLoopValid and tforLoopValid are mutually exclusive, so the
+	// shared field is safe today. If that invariant ever relaxes, split
+	// into `forLoopAfter` and `tforLoopAfter` before adding the new
+	// case — the field name misleadingly implies FORLOOP-only.
 	forLoopValid bool
 	forLoopA     uint8
 	forLoopPC    uint8
@@ -634,8 +641,28 @@ func TranslateProto(proto *bytecode.Proto, host jit.P4HostState) (bridge.Gibbous
 // (e.g. with `import _ ".../peroptranslator"`) and the hooks become
 // non-nil, the jit Compiler's SupportsAllOpcodes / Compile fall-through
 // gain the PJ10 supported subset.
+//
+// Native path (as of the 2026-07-01 round in
+// [[2026-07-01-p4-pj10-native-round]]): TranslateProtoNative is wired
+// as the first preference here — when AnalyzeNative accepts a Proto
+// its emit output is used directly; on any failure we fall back to
+// TranslateProto (head-op replay) so behaviour stays identical for
+// unsupported shapes. See `opSupported` godoc in translator_native.go
+// for the exact mmap-safe inline op subset.
 func init() {
-	jit.RegisterPerOpTranslator(TranslateProto, func(proto *bytecode.Proto) bool {
-		return AnalyzeShape(proto).ok
-	})
+	jit.RegisterPerOpTranslator(
+		func(proto *bytecode.Proto, host jit.P4HostState) (bridge.GibbousCode, error) {
+			if AnalyzeNative(proto) {
+				code, err := TranslateProtoNative(proto, host)
+				if err == nil {
+					return code, nil
+				}
+			}
+			return TranslateProto(proto, host)
+		},
+		func(proto *bytecode.Proto) bool {
+			return AnalyzeShape(proto).ok || AnalyzeNative(proto)
+		},
+	)
+	jit.RegisterPerOpNativeAnalyzer(PreferNative)
 }

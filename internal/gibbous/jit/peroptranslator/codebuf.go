@@ -33,13 +33,64 @@ type codeBuf struct {
 	//                 used as the origin for rel32 arithmetic
 	//   targetBB:     BB whose entry offset is the displacement's target
 	fixups []fixup
+
+	// proto is the Proto being translated. Emit functions consult it for
+	// K(Bx) values (LOADK), string constants, and other compile-time
+	// data. May be nil for byte-level unit tests. Stored as a raw
+	// pointer to avoid a bytecode import cycle in this file (cfg.go
+	// already imports bytecode, so the concrete field can migrate here
+	// later if the split becomes friction).
+	proto *codeBufProto
+}
+
+// codeBufProto is a minimal shim holding the compile-time data an emit
+// function may need. Populated by TranslateProtoNative before emit.
+type codeBufProto struct {
+	// Consts are the raw NaN-boxed constant values (Proto.Consts as
+	// uint64). Emit_amd64.go's emitLOADK reads Consts[Bx].
+	Consts []uint64
+
+	// RetA, RetB, RetPC are captured from the sole RETURN instruction
+	// during emit and lifted into nativeCode by TranslateProtoNative.
+	// The mmap segment RETs with status 0 for the normal exit, and
+	// nativeCode.Run's Go side calls host.DoReturn(RetPC, RetA, RetB)
+	// to perform the frame teardown.
+	RetA  int32
+	RetB  int32
+	RetPC int32
 }
 
 type fixup struct {
 	patchOff    int32
 	srcInstrEnd int32
 	targetBB    int
+	// kind selects how resolveLabels writes the displacement. Default
+	// (fixupKindRel32Bytes) matches the amd64 rel32 form: a signed
+	// 32-bit byte displacement from srcInstrEnd. arm64 uses the two
+	// arm64-specific kinds below (word-scale + limited bit width).
+	kind fixupKind
 }
+
+// fixupKind selects the displacement encoding for a fixup. Different
+// architectures encode rel jumps differently:
+//
+//   - amd64 rel32: bytes, sign-extended, no shift (5-byte E9 or 6-byte
+//     0F 8x sequence).
+//   - arm64 B rel26: (target - srcInstrEnd) / 4 into bits 0-25 of the
+//     4-byte instruction word at patchOff.
+//   - arm64 B.cond / CBNZ rel19: (target - srcInstrEnd) / 4 into bits
+//     5-23 of the 4-byte instruction word at patchOff.
+//
+// srcInstrEnd is always the byte just past the branch instruction (for
+// arm64 it's patchOff+4). We keep that field for consistency across
+// arches; arm64 always has 4-byte instructions.
+type fixupKind uint8
+
+const (
+	fixupKindRel32Bytes fixupKind = 0 // amd64 rel32
+	fixupKindArm64B26   fixupKind = 1 // arm64 B rel26 (unconditional branch)
+	fixupKindArm64Cond  fixupKind = 2 // arm64 B.cond rel19
+)
 
 // newCodeBuf constructs an empty buffer for a Proto with numBBs BBs.
 func newCodeBuf(numBBs int) *codeBuf {
@@ -81,6 +132,19 @@ func (b *codeBuf) addFixup(patchOff, srcInstrEnd int32, targetBB int) {
 		patchOff:    patchOff,
 		srcInstrEnd: srcInstrEnd,
 		targetBB:    targetBB,
+		kind:        fixupKindRel32Bytes,
+	})
+}
+
+// addFixupKind records a fixup with an explicit encoding kind. Used by
+// arm64 emitters which need word-scaled rel26 / rel19 displacements
+// rather than the amd64 rel32 byte form.
+func (b *codeBuf) addFixupKind(patchOff, srcInstrEnd int32, targetBB int, kind fixupKind) {
+	b.fixups = append(b.fixups, fixup{
+		patchOff:    patchOff,
+		srcInstrEnd: srcInstrEnd,
+		targetBB:    targetBB,
+		kind:        kind,
 	})
 }
 
@@ -98,11 +162,37 @@ func (b *codeBuf) resolveLabels() error {
 			return fmt.Errorf("resolveLabels: fixup %d targets unbound BB %d", i, fx.targetBB)
 		}
 		disp64 := int64(tgt) - int64(fx.srcInstrEnd)
-		if disp64 < -0x80000000 || disp64 > 0x7fffffff {
-			return fmt.Errorf("resolveLabels: fixup %d displacement %d overflows int32", i, disp64)
+		switch fx.kind {
+		case fixupKindRel32Bytes:
+			if disp64 < -0x80000000 || disp64 > 0x7fffffff {
+				return fmt.Errorf("resolveLabels: fixup %d rel32 disp %d overflows int32", i, disp64)
+			}
+			binary.LittleEndian.PutUint32(b.bytes[fx.patchOff:fx.patchOff+4], uint32(int32(disp64)))
+		case fixupKindArm64B26:
+			// arm64 B: target = PC + imm26*4; PC = patchOff (start of
+			// the B instruction). srcInstrEnd is patchOff+4. Use
+			// patchOff as the arm64 branch PC: word_disp = (tgt - patchOff)/4.
+			wordDisp := (int64(tgt) - int64(fx.patchOff)) / 4
+			if wordDisp < -(1<<25) || wordDisp >= (1<<25) {
+				return fmt.Errorf("resolveLabels: fixup %d arm64 rel26 disp %d out of range", i, wordDisp)
+			}
+			insn := binary.LittleEndian.Uint32(b.bytes[fx.patchOff : fx.patchOff+4])
+			insn &= 0xFC000000
+			insn |= uint32(wordDisp) & 0x03FFFFFF
+			binary.LittleEndian.PutUint32(b.bytes[fx.patchOff:fx.patchOff+4], insn)
+		case fixupKindArm64Cond:
+			// arm64 B.cond / CBNZ: target = PC + imm19*4; PC = patchOff.
+			wordDisp := (int64(tgt) - int64(fx.patchOff)) / 4
+			if wordDisp < -(1<<18) || wordDisp >= (1<<18) {
+				return fmt.Errorf("resolveLabels: fixup %d arm64 rel19 disp %d out of range", i, wordDisp)
+			}
+			insn := binary.LittleEndian.Uint32(b.bytes[fx.patchOff : fx.patchOff+4])
+			insn &= 0xFF00001F
+			insn |= (uint32(wordDisp) & 0x7FFFF) << 5
+			binary.LittleEndian.PutUint32(b.bytes[fx.patchOff:fx.patchOff+4], insn)
+		default:
+			return fmt.Errorf("resolveLabels: fixup %d unknown kind %d", i, fx.kind)
 		}
-		disp32 := int32(disp64)
-		binary.LittleEndian.PutUint32(b.bytes[fx.patchOff:fx.patchOff+4], uint32(disp32))
 	}
 	return nil
 }
