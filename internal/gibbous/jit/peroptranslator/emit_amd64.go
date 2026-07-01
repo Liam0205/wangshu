@@ -16,6 +16,7 @@
 package peroptranslator
 
 import (
+	jit "github.com/Liam0205/wangshu/internal/gibbous/jit"
 	jitamd64 "github.com/Liam0205/wangshu/internal/gibbous/jit/amd64"
 	"github.com/Liam0205/wangshu/internal/value"
 )
@@ -85,4 +86,51 @@ func emitJMP(cb *codeBuf, targetBB int) {
 	patchOff := cb.pos() + 1 // skip the 0xE9 opcode byte
 	cb.emit([]byte{0xE9, 0, 0, 0, 0})
 	cb.addFixup(patchOff, cb.pos(), targetBB)
+}
+
+// emitRet emits `ret` — 1 byte. Used to return from the mmap segment
+// back to the trampoline (which then returns to Go).
+func emitRet(cb *codeBuf) {
+	cb.emit([]byte{0xC3})
+}
+
+// emitRestoreGoG emits `mov r14, [r15 + savedGoGOff]` — 7 bytes.
+// Restores R14 = Go G before calling a Go helper, so Go's ABIInternal
+// prelude (morestack / getg / stack-guard) sees the correct G.
+//
+// See save_g_amd64.s for the wider protocol. Run's Go-side wrapper
+// writes the current G into jitCtx.savedGoG before entering the mmap;
+// the mmap segment then loads that value into R14 before each helper
+// call.
+//
+// Encoding: 4D 8B B7 <disp32-LE>
+//
+//	4D = REX.W (bit 3) + REX.R (bit 2, extends reg for r14 = r+8)
+//	     + REX.B (bit 0, extends r/m for r15 = r+8)
+//	8B = MOV r64, r/m64
+//	B7 = ModRM: mod=10 (disp32) reg=110 (R14 low 3) rm=111 (R15 low 3)
+func emitRestoreGoG(cb *codeBuf) {
+	off := int32(jit.JITContextSavedGoGOffset)
+	cb.emit([]byte{
+		0x4D, 0x8B, 0xB7,
+		byte(off), byte(off >> 8), byte(off >> 16), byte(off >> 24),
+	})
+}
+
+// emitHelperCall emits `mov rax, helperAddr; call rax` (12 bytes), the
+// standard indirect call sequence for Go-heap helpers. Caller MUST emit
+// emitRestoreGoG immediately before this sequence when the helper is
+// implemented in Go, so Go's ABIInternal prelude sees the correct R14=G.
+//
+// **ABI note**: Go 1.17+ uses ABIInternal by default, where args are
+// passed in registers (RAX, RBX, RCX, RDI, RSI, R8, R9, R10, R11 in
+// that order) and return values come back in the same registers.
+// Callers must place args in the ABIInternal-expected registers before
+// calling. This is fragile across Go versions — the long-term fix is to
+// wrap helpers in ABI0 asm shims for stable calling convention.
+//
+// R14 is preserved by Go across the call, so after this returns R14
+// still holds G.
+func emitHelperCall(cb *codeBuf, helperAddr uint64) {
+	cb.emit(jitamd64.EmitHelperCall(nil, helperAddr))
 }

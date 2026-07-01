@@ -66,6 +66,13 @@ const (
 	// 真接入 commit-3b):dispatcher 算 resume entry 用 codePageAddr +
 	// resumeOff;Run 端 emit 时记录 codePage 起点。承设计草案 (5)。
 	JITContextCodePageAddrOffset = unsafe.Offsetof(JITContext{}.codePageAddr)
+
+	// **PJ10-native 加**:savedGoG 用于 mmap 段内 helper call ABI 保护
+	// (Go ABIInternal 要求 R14 = G;mmap 若在 helper call 前 clobber R14
+	// 会崩)。Run 入口经 saveGoG 写入,mmap 段发 helper call 前 `mov r14,
+	// [r15+savedGoGOff]` 恢复 R14=G。承 [[project-pj10-native-longtask]]
+	// R14-save-wrapper。
+	JITContextSavedGoGOffset = unsafe.Offsetof(JITContext{}.savedGoG)
 )
 
 // **§9.20.9 协议状态码常量** (Spike 1 真接入 + future helper request 路由):
@@ -223,6 +230,15 @@ type JITContext struct {
 	// **当前 Spike 1 阶段 archSupportsFrameInline=false 屏蔽真触发**,本字段
 	// wireP4 / installGibbous 时注入。
 	codePageAddr uintptr
+
+	// savedGoG 是 Go G 寄存器(amd64 R14 / arm64 X28)在 Run 入口的镜像。
+	// PJ10 native emit 若发 helper call(mov rax, helperAddr; call rax),
+	// mmap 段需先 `mov r14, [r15+savedGoGOff]` 恢复 R14=G,防 Go ABIInternal
+	// 前缀 morestack/stack-guard/getg 读到污染的 R14 崩溃。
+	//
+	// 值由 saveGoG 在 Run 入口写入(见 peroptranslator/save_g_amd64.s)。
+	// PJ0-PJ9 不用本字段(它们的 mmap 不调 Go 函数,承 PR #26 R14 ABI 修复)。
+	savedGoG uintptr
 }
 
 // NewJITContext 构造 P4 JIT 执行上下文。
@@ -332,3 +348,12 @@ func (c *JITContext) SetCodePageAddr(addr uintptr) {
 
 // CodePageAddr 返回 mmap 段起点(测试钩子)。
 func (c *JITContext) CodePageAddr() uintptr { return c.codePageAddr }
+
+// SavedGoGSlot 返回 &c.savedGoG 供 saveGoG asm helper 写入。
+// PJ10 native 用:Run 入口 `saveGoG(ctx.SavedGoGSlot())` 把当前 R14=G
+// 快照进 jitCtx,mmap 段 emit helper call 前 `mov r14, [r15+savedGoGOff]`
+// 恢复 G。
+func (c *JITContext) SavedGoGSlot() *uintptr { return &c.savedGoG }
+
+// SavedGoG 返回镜像的 Go G 值(测试钩子)。
+func (c *JITContext) SavedGoG() uintptr { return c.savedGoG }
