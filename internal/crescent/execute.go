@@ -298,6 +298,49 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 			}
 			proto = st.protoOf(ci)
 			code = proto.Code
+			// PJ10 gibbous tail-call dispatch: if the tail-callee proto has
+			// installed GibbousCode (P3 wasm or P4 native), run it on the
+			// tail-call frame we just entered. Mirrors doCall's gibbous
+			// branch but done here (post-doTailCall) rather than inside
+			// doTailCall, so the tail-call frame lifecycle (SetTailcall,
+			// funcIdx = parent's FuncIdx) is untouched. code.Run's DoReturn
+			// pops the tail-call frame and writes returns to funcIdx per
+			// standard interp semantics; on OK we reload ci from
+			// currentCI and continue execute() at the caller's next
+			// instruction after CALL.
+			if profileEnabled && th == st.mainTh && !ci.Gibbous() {
+				if gcode := st.bridge.GibbousCodeOf(proto); gcode != nil && isPJ10NativeCode(gcode) {
+					ci.SetGibbous(true)
+					th.reMirrorTop()
+					baseByte := (th.stackBaseW + uint32(ci.base)) * 8
+					status := gcode.Run(st.gibbousStack(), baseByte)
+					th.syncCurFromSeg()
+					if status != 0 {
+						if st.gibbousPendingErr == nil {
+							if gerr := gcode.PendingErr(); gerr != nil {
+								st.gibbousPendingErr = &LuaError{Msg: "gibbous: " + gerr.Error()}
+							} else {
+								st.gibbousPendingErr = errf("gibbous: run failed (status=%d)", status)
+							}
+						}
+						err := st.gibbousPendingErr
+						st.gibbousPendingErr = nil
+						if th.ciDepth > 0 && currentCI(th).Gibbous() {
+							st.popCallInfo(th)
+						}
+						return err
+					}
+					// OK: DoReturn popped the tail-call frame + wrote
+					// returns. Reload ci from segment; if we ran back
+					// out of the entry frame, terminate.
+					if th.ciDepth <= entryDepth {
+						return nil
+					}
+					ci = currentCI(th)
+					proto = st.protoOf(ci)
+					code = proto.Code
+				}
+			}
 
 		case bytecode.RETURN:
 			next, terminate := st.doReturn(th, ci, i, entryDepth)

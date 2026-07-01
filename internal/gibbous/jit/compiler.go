@@ -66,7 +66,18 @@ func New() *Compiler {
 // PJ8+ 启动时扩 supported(寄存器 IsNumber guard 投机 + 表 IC 直达槽等)
 // 需要 jitContext load/store 值栈 + 投机 deopt 协议,留下一阶段。
 func (c *Compiler) SupportsAllOpcodes(proto *bytecode.Proto) bool {
-	return analyzeShape(proto).ok
+	if analyzeShape(proto).ok {
+		return true
+	}
+	// PJ10 per-op translator fall-through: shapes PJ7's analyzeShape
+	// rejects may still be in PJ10's supported subset (constant tuples
+	// of more than one return value, etc.). The hook is nil when the
+	// peroptranslator sub-package is not imported, preserving exact PJ7
+	// behaviour. See internal/gibbous/jit/perop_hook.go.
+	if perOpAnalyzer != nil && perOpAnalyzer(proto) {
+		return true
+	}
+	return false
 }
 
 // shapeInfo 是 analyzeShape 的返回值——P4 PJ7 形态识别结果。
@@ -4208,6 +4219,19 @@ func analyzeShape(proto *bytecode.Proto) shapeInfo {
 // `p2-bridge/05-p3-p4-interface.md` §2.2.2 错误返回语义)——bridge 收到错误
 // 后把该 Proto 标 TierStuck(永久解释,不重试)。
 func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback) (bridge.GibbousCode, error) {
+	// PJ10 native path preferred for Protos where shape-spec fast paths
+	// don't help: multi-BB reducible CFG AND at least one live BB with
+	// >=4 opcodes (heavy_arith / heavy_floatloop kernel shapes). Single-
+	// BB Protos and small-body loops stay on the historical shape-spec
+	// fast paths — those are tuned specifically for them and diverting
+	// them to native would break pre-existing tests that assert which
+	// spec fast path fires. See PreferNative's godoc for the heuristic.
+	if perOpNativeAnalyzer != nil && perOpNativeAnalyzer(proto) && perOpTranslator != nil {
+		if code, err := perOpTranslator(proto, c.hostState); err == nil && code != nil {
+			CompilePreferNativeCount.Add(1)
+			return code, nil
+		}
+	}
 	// **PJ4 IC ArrayHit 优先识别**(承 03 §6 stableShape/Index 直达槽)。
 	//
 	// **必须先尝试 IC inline(在 analyzeShape 之前判)**:IC 形态长度 2/3 与
@@ -4284,6 +4308,16 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 
 	info := analyzeShape(proto)
 	if !info.ok {
+		// PJ10 per-op translator fall-through: hand the Proto to the
+		// peroptranslator sub-package if its hook is registered. Same
+		// nil-safe gating as SupportsAllOpcodes — when the sub-package
+		// isn't imported, the hook stays nil and we fall straight to the
+		// historical PJ7 "unsupported" return.
+		if perOpTranslator != nil {
+			if code, err := perOpTranslator(proto, c.hostState); err == nil && code != nil {
+				return code, nil
+			}
+		}
 		return nil, ErrCompileUnsupportedShape
 	}
 
@@ -4453,7 +4487,7 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 	//     number):73 字节模板,单 guard reg 端 + 烧 K 值 imm64 + 快路径
 	//     + deopt block;K 端编译期已校验为 number,运行期不再 guard。
 	// Run 检测段返 RAX == specDeoptCode 即降级调 host.Arith 慢路径(byte-equal
-	// 解释器)。本 PJ2 真接入是 PJ10 luajc 档的字节级核心物理基础。
+	// 解释器)。本 PJ2 真接入是 PJ11 luajc 档的字节级核心物理基础。
 	//
 	// **投机范围**(承 03 §2 IEEE 754 单条 SSE 指令):
 	//   - ✅ ADD / SUB / MUL / DIV:单条 SSE binop(F2 0F 58/5C/59/5E C1)

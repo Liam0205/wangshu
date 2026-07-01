@@ -183,6 +183,68 @@ func (m *mockP4Host) Len(base, pc, b, a int32) int32 {
 	return m.unaryRetCode
 }
 
+// Concat 模拟 host.Concat:复用 unary* 计数(单测无 CONCAT 专用断言时)。
+func (m *mockP4Host) Concat(base, pc, a, b, c int32) int32 {
+	_ = base
+	_ = pc
+	_ = b
+	_ = c
+	m.unaryCalls++
+	m.lastUnaryOp = 3 // Concat tag
+	m.lastUnaryA = a
+	if m.unaryRetCode == 0 {
+		m.regs[a] = m.unaryResult
+	}
+	return m.unaryRetCode
+}
+
+// Eq 模拟 host.Eq:返回 packed bit0=结果,bit1=错误。
+func (m *mockP4Host) Eq(base, pc, b, c int32) int32 {
+	_ = base
+	_ = pc
+	_ = b
+	_ = c
+	return int32(m.unaryRetCode)
+}
+
+// SetList 模拟 host.SetList:复用 unary* 计数。
+func (m *mockP4Host) SetList(base, pc, a, b, c int32) int32 {
+	_ = base
+	_ = pc
+	_ = a
+	_ = b
+	_ = c
+	return int32(m.unaryRetCode)
+}
+
+// Closure 模拟 host.Closure:简化为永远 OK。
+func (m *mockP4Host) Closure(base, pc, a, bx int32) int32 {
+	_ = base
+	_ = pc
+	_ = a
+	_ = bx
+	return 0
+}
+
+// Close 模拟 host.Close:永远 OK。
+func (m *mockP4Host) Close(base, pc, a int32) int32 {
+	_ = base
+	_ = pc
+	_ = a
+	return 0
+}
+
+// TForLoop 模拟 host.TForLoop:默认返回 -2(退出)。
+func (m *mockP4Host) TForLoop(base, pc, a, c int32) int64 {
+	_ = base
+	_ = pc
+	_ = a
+	_ = c
+	return -2
+}
+
+// (mockP4Host.Compare 模拟在文件下方定义)
+
 // NewTable 模拟 host.NewTable:记录 + 写 R(A) = tableResult。永不 raise。
 func (m *mockP4Host) NewTable(base, pc, a, b, c int32) int32 {
 	_ = base

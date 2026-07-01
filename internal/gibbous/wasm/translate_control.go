@@ -42,9 +42,14 @@ func (c *Compiler) emitCompareTerm(em *emitter, proto *bytecode.Proto, cfg *cfg,
 	}
 
 	// 算比较结果 → localI32(0/1)。
+	// boolField is the byte that the result is compared against:
+	//   - EQ/LT/LE: A (Lua reference: `if (RK(B) <op> RK(C)) ~= A then pc++`)
+	//   - TEST:     C (Lua reference: `if not (R(A) <=> C) then pc++`)
+	boolField := a
 	switch op {
 	case bytecode.TEST:
 		c.emitTruthy(em, bytecode.A(ins)) // Truthy(R(A)) → localI32
+		boolField = bytecode.C(ins)
 	case bytecode.LT, bytecode.LE, bytecode.EQ:
 		if e := c.emitNumCompareOrHelper(em, proto, ins, lastPC); e != nil {
 			return e
@@ -53,9 +58,9 @@ func (c *Compiler) emitCompareTerm(em *emitter, proto *bytecode.Proto, cfg *cfg,
 		return fmt.Errorf("p4: unexpected compare op %s", op)
 	}
 
-	// if (vt != bool(A)) then 跳过 JMP(succSkip) else 执行 JMP(succExec)
+	// if (vt != bool(boolField)) then 跳过 JMP(succSkip) else 执行 JMP(succExec)
 	em.localGet(localI32)
-	em.i32Const(boolToI32(a))
+	em.i32Const(boolToI32(boolField))
 	em.i32Ne()
 	em.ifVoid()
 	*stack = append(*stack, scope{kind: scIf, target: -1})

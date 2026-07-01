@@ -1,6 +1,6 @@
 # P4 总览:gibbous/jit method JIT——文档地图 / 实现里程碑 / 验收 / 人月分解
 
-> 状态:**实装阶段,PJ0-PJ7 amd64 端可达工程完整闭合**(2026-06-28):设计齐备 → 子目录 10 文件约 8200 行扩展轮 → 审查收口轮 → **PJ5 SELF + CALL Spike 1/2/3/4/5 全套真接入完整端到端 amd64 打通**(承 implementation-progress §9.20.13:Option B 帧建立内联 + zero-cross 优化 + 35 commits)+ PJ7 25+ 形态真接入 byte-equal + PJ10 luajc 档突破。剩 PJ8 arm64 物理 runner CI(物理依赖)+ PJ9 双架构差分套(待 PJ8)+ bit50 协议拍板(用户决策)+ P3 退役决议(PJ10 验收用户拍板)。本文是 P4 文档集(00-08 + implementation-progress)的导航与施工计划:每篇文档的定位、组件依赖、构建顺序、里程碑验收门槛、人月分解、跨文档定稿决策速查、与 P1/P2/P3 的桥接(已落地的前瞻义务对账)。
+> 状态:**实装阶段,PJ0-PJ7 amd64 端可达工程完整闭合**(2026-06-28):设计齐备 → 子目录 10 文件约 8200 行扩展轮 → 审查收口轮 → **PJ5 SELF + CALL Spike 1/2/3/4/5 全套真接入完整端到端 amd64 打通**(承 implementation-progress §9.20.13:Option B 帧建立内联 + zero-cross 优化 + 35 commits)+ PJ7 25+ 形态真接入 byte-equal + PJ11 luajc 档突破。剩 PJ8 arm64 物理 runner CI(物理依赖)+ PJ9 双架构差分套(待 PJ8)+ bit50 协议拍板(用户决策)+ P3 退役决议(PJ11 验收用户拍板)。本文是 P4 文档集(00-08 + implementation-progress)的导航与施工计划:每篇文档的定位、组件依赖、构建顺序、里程碑验收门槛、人月分解、跨文档定稿决策速查、与 P1/P2/P3 的桥接(已落地的前瞻义务对账)。
 > 上游契约:[../roadmap](../roadmap.md)(§4 P4 定义、§2 四项税、§1 校准测量、§7 prior art)、[../architecture](../architecture.md)(§1 包布局 `internal/gibbous/jit`)、[../../../llmdoc/architecture/evolution-roadmap](../../../llmdoc/architecture/evolution-roadmap.md)(tier 映射:P4 = gibbous tier-1,与 P3 同层)、[../../../llmdoc/must/design-premises](../../../llmdoc/must/design-premises.md)(前提一负载形状 / 前提二四项税 / 前提三五原则 / 前提四第一天 NaN-box 承诺)。
 > P1 依赖面:[01](../p1-interpreter/01-value-object-model.md)(NaN-box u64 + GCRef offset)、[02](../p1-interpreter/02-bytecode-isa.md)(源 ISA + §7 IC slot)、[05](../p1-interpreter/05-interpreter-loop.md)(§1 CallInfo / §7 调用协议——OSR 着陆面)、[12](../p1-interpreter/12-testing-difftest.md)(§3.8 Runner 抽象 / §7 P4 行 / §8 CI 门禁)。
 > P2 依赖面:[../p2-bridge/00-overview](../p2-bridge/00-overview.md)(P4 是 P2 决策的消费者)、[../p2-bridge/02-ic-feedback](../p2-bridge/02-ic-feedback.md) §4(TypeFeedback shape + confidence)、[../p2-bridge/03-compilability-analysis](../p2-bridge/03-compilability-analysis.md) §3.7(F7 后端能力 SupportsAllOpcodes)、[../p2-bridge/04-try-compile-fallback](../p2-bridge/04-try-compile-fallback.md)(零 deopt 单向状态机基线——P4 在此基础上加 deopt 边)、[../p2-bridge/05-p3-p4-interface](../p2-bridge/05-p3-p4-interface.md)(P3Compiler 接口 + GibbousCode 抽象 + P4Feedback 反向读)。
@@ -25,9 +25,11 @@
 | [06-backends](./06-backends.md) | 双后端 | 共享骨架 + per-arch 发射器(否决宏汇编)、寄存器约定、模板分级表达、双架构 CI 双跑、PJ 里程碑、CI 含 Go 1.25/1.26/tip 矩阵 |
 | [07-p3-retirement](./07-p3-retirement.md) | P3 去留决策框架 | 「留作可移植中层」表面论据 + 关键拆穿(wazero 编译引擎与 P4 共享平台约束)、决策矩阵、缺省倾向退役、P4 验收时定 |
 | [08-testing-strategy](./08-testing-strategy.md) | 验收 + 测试 | luajc 档验收口径、V1-V22 总表(P1 V1-V18 + P4 增项 V19-V22)、同 Proto 差分主防线(P4 接续 P3 force-all 套)、OSR 状态等价 V19、deopt 注入 V20、双架构双跑 V21、prove-the-path 纪律继承 |
+| [09-acceptance-checklist](./09-acceptance-checklist.md) | PJ11 验收勾选清单 | 三平台 × V1-V22 可勾表、决议项(D1 bit50 ✅ / D2 P3 退役 ⬜)、性能数字归档(V14/V15a/V15b/V16)、与设计文档差异点 |
+| [10-per-op-translator](./10-per-op-translator.md) | PJ10 工程方向 | 逐 opcode 翻译器架构、与 P3 wasm 翻译器对照、双轨(fast path 保留 + 通用 per-op 路径新增)、寄存器 ABI、opcode 翻译表、sub-PJ 拆分(PJ10a-d)、与 P5 trace JIT 的接口 |
 | [implementation-progress](./implementation-progress.md) | 进度 | 立项前置闸门检查、PJ 里程碑(预设占位)、设计期决策盘点(影响 × 不确定度三档)、**跨文档回填请求收口表**(本文档集 §回填请求节聚合) |
 
-阅读顺序建议:**实现者**先读 00→01(立项闸门通过才动手)→02(方向裁决,锁定模板编译不上 IR)→03(投机,P4 最危险面)→04(OSR exit,deopt 协议)→05(系统管线,四项税自付的物理)→06(双后端,寄存器约定与 CI 纪律)→07(P3 去留,P4 验收时决议)→08(测试,每 PJ 验收口径),implementation-progress 收口查。**评审者**先读 00→01→02 三篇拿到「P4 是不是该做、做什么、不做什么」三句,再按需深入 03/04(投机正确性)或 06/08(工程纪律)。
+阅读顺序建议:**实现者**先读 00→01(立项闸门通过才动手)→02(方向裁决,锁定模板编译不上 IR)→03(投机,P4 最危险面)→04(OSR exit,deopt 协议)→05(系统管线,四项税自付的物理)→06(双后端,寄存器约定与 CI 纪律)→07(P3 去留,P4 验收时决议)→08(测试,每 PJ 验收口径)→10(PJ10 逐 opcode 翻译器,2026-06-30 启动的覆盖率工程)→09(PJ11 验收勾选清单),implementation-progress 收口查。**评审者**先读 00→01→02 三篇拿到「P4 是不是该做、做什么、不做什么」三句,再按需深入 03/04(投机正确性)或 06/08(工程纪律)或 10(覆盖率工程方向)。
 
 ---
 
@@ -158,13 +160,14 @@
 | PJ7 | amd64 端到端验收 + 性能基准 | [08 §1 / §3](./08-testing-strategy.md) | **单架构 V1-V22 全过**——正确性 V1-V13 byte-equal + V19 OSR 等价 + V20 deopt 注入 + V14 列内核 luajc 档 + V17 四 build + V18 -race |
 | PJ8 | arm64 后端启动 + 同框架渐进交付 | [06 §6 / §3-§6](./06-backends.md) | arm64 各 opcode 模板按族落地(amd64 模板族的 per-arch 镜像);macOS arm64 `MAP_JIT` + `pthread_jit_write_protect_np` 工作;icache flush 序列写入 |
 | PJ9 | arm64 端到端验收 + 双架构差分套 | [06 §5](./06-backends.md) + [08 §6](./08-testing-strategy.md) | **双架构 V1-V22 全过**——amd64/arm64 各自全套差分门禁 byte-equal;Go 1.25/1.26/tip 矩阵 CI 绿 |
-| **PJ10** | luajc 档验收 + 性能调优 | [01](./01-launch-judgment.md) + [08 §8](./08-testing-strategy.md) | **P4 总验收**:列内核负载 ≥luajc 档(≥164μs 水位 over gopher-lua 同基准);承 [01 §4](./01-launch-judgment.md) 四个分档约束(列内核形状 + 真实负载 + 双架构 + 不豁免差分) |
+| **PJ10** | 逐 opcode 翻译器(per-op translator) | [10](./10-per-op-translator.md) | **P4 覆盖率工程**:PJ0-PJ9 字节级模板路径保留作 fast path;新增「逐 opcode 翻译」通用路径让任意 Proto 都能升 P4(承 [10 §1](./10-per-op-translator.md));拆 PJ10a(直线 op)/ PJ10b(算术 + 比较)/ PJ10c(控制流 + 循环)/ PJ10d(表 + 函数调用),每档累积扩 supported 集 |
+| **PJ11** | luajc 档验收 + 性能调优 | [01](./01-launch-judgment.md) + [08 §8](./08-testing-strategy.md) | **P4 总验收**:列内核负载 ≥luajc 档(≥164μs 水位 over gopher-lua 同基准);承 [01 §4](./01-launch-judgment.md) 四个分档约束(列内核形状 + 真实负载 + 双架构 + 不豁免差分) |
 
 > **PJ0 启动条件**:P3 已交付(本机 Xeon 6982P 实测基线 **loop 2.95x over P1(= 7.2x over gopher-lua,已超 luajc 档 4.4x over gopher-lua) / table 0.88x / call 0.52x / mixed 0.99x;后三档仍 ≪ luajc 档列内核形态——P4 立项动机不在 loop 而在非 loop 形态**,详 [01 §3.3](./01-launch-judgment.md));**立项判定通过**(详 [01 §3.1 三条必备条件](./01-launch-judgment.md):真实宿主负载需求 + 资源到位 + 设计文档齐备)。立项判定本身可能否决 P4(详 [01 §3.4 跳过档](./01-launch-judgment.md))。
 >
 > **PJ7 验收口径**:V1-V22 总表见 [08 §2](./08-testing-strategy.md);P4 增项 V19(OSR 等价)/ V20(deopt 注入)/ V21(双架构)/ V22(guard 漏判 fuzz,详 [08 §2.4](./08-testing-strategy.md))。
 >
-> **PJ10 是 P4 总验收**:不达标视情况(详 [01 §4.3 第二闸门](./01-launch-judgment.md)):中途仍可止损改 P5 路径或退守 P3 永久基线。
+> **PJ11 是 P4 总验收**:不达标视情况(详 [01 §4.3 第二闸门](./01-launch-judgment.md)):中途仍可止损改 P5 路径或退守 P3 永久基线。
 
 ---
 
@@ -184,10 +187,11 @@
 | PJ7 | amd64 端到端验收 + V1-V22 + 性能基准 | 1 - 2 人月(差分 fuzz + deopt 注入 + GC 压力,**P4 单架构总验收**)|
 | PJ8 | arm64 后端启动 + 渐进交付 | 2 - 3 人月(per-arch 发射器全栈镜像 + `MAP_JIT` / icache flush 工程坎)|
 | PJ9 | arm64 端到端验收 + 双架构差分套 | 1 - 2 人月(amd64/arm64 行为差消解,Go 版本矩阵 CI)|
-| PJ10 | luajc 档验收 + 性能调优 | 2 - 4 人月(逼近 luajc 档的实测反复 + 真实宿主负载校准 + locals 寄存器缓存可能展开 + guard 合并窥孔)|
-| **合计** | | **+12 - 24 人月 ≈ +1-2 人年** |
+| **PJ10** | 逐 opcode 翻译器(per-op translator) | 2.5 - 4 人月(PJ10a 直线 op 0.5-1 / PJ10b 算术比较 1-1.5 / PJ10c 控制流循环 0.5-1 / PJ10d 表与函数调用 1-1.5;承 [10](./10-per-op-translator.md))|
+| PJ11 | luajc 档验收 + 性能调优 | 2 - 4 人月(逼近 luajc 档的实测反复 + 真实宿主负载校准 + locals 寄存器缓存可能展开 + guard 合并窥孔)|
+| **合计** | | **+14.5 - 28 人月 ≈ +1.2-2.3 人年** |
 
-与 [../../../llmdoc/architecture/evolution-roadmap](../../../llmdoc/architecture/evolution-roadmap.md) 的「+1-2 人年」吻合。**PJ8 arm64 + PJ10 性能调优是大头**——双架构维护与 luajc 档逼近的实测反复都不可计划:arm64 是 per-arch 全栈第二轮(`MAP_JIT` / icache 是 amd64 不会碰的工程面);PJ10 调优可能要展开 locals 寄存器缓存(详 [04 §3.6 / §3.7](./04-osr-deopt.md) / [06 §4](./06-backends.md))或 guard 合并窥孔(详 [03 §3.6](./03-speculation-ic.md))。**PJ0 立项判定**:即便否决也不亏(产出 = 立项报告永久存档,见 [01 §0.3](./01-launch-judgment.md)「闸门双向性」)。
+与 [../../../llmdoc/architecture/evolution-roadmap](../../../llmdoc/architecture/evolution-roadmap.md) 的「+1-2 人年」基本吻合(PJ10 加入后上沿略超,但 PJ0-PJ9 字节级模板路径继续以 fast path 形态保留,实际 PJ11 验收复用 PJ0-PJ9 资产,不是叠加新工作)。**PJ8 arm64 + PJ10 覆盖率工程 + PJ11 性能调优是大头**——双架构维护、覆盖率扩 SAO 白名单、luajc 档逼近的实测反复都不可计划:arm64 是 per-arch 全栈第二轮(`MAP_JIT` / icache 是 amd64 不会碰的工程面);PJ10 是 V15b heavy 实测暴露后的方向修正,从「按形态写字节级模板」改成「逐 opcode 通用翻译」(详 [10](./10-per-op-translator.md));PJ11 调优可能要展开 locals 寄存器缓存(详 [04 §3.6 / §3.7](./04-osr-deopt.md) / [06 §4](./06-backends.md))或 guard 合并窥孔(详 [03 §3.6](./03-speculation-ic.md))。**PJ0 立项判定**:即便否决也不亏(产出 = 立项报告永久存档,见 [01 §0.3](./01-launch-judgment.md)「闸门双向性」)。
 
 ---
 
@@ -282,7 +286,7 @@ P1 全卷已交付(M0-M14) + P2 PB0-PB7 + 后续优化轮 #1-#4 + P3 PW0-PW10 + 
 - **全显式 guard 密度天花板**:guard 成本若实测吃掉投机收益,需展开 guard 合并窥孔(同操作数直线段内只查一次,不引入 IR 的前提下可做)([03 §3.6](./03-speculation-ic.md) + [08 §11.2](./08-testing-strategy.md))。
 - **arm64 维护矩阵**:双后端 + 双架构 CI 是长期固定成本;PJ8/PJ9 可滞后交付不阻塞 PJ7 单架构验收(发布口径如实标注)([06 §5.7](./06-backends.md) + [08 §11.5](./08-testing-strategy.md))。
 - **人年级投入中途校验**:+1-2 人年是 P1-P3 总和级别投入;**PJ3 内部第二闸门**:amd64 + 仅算术投机的最小 P4 先打通全管线测 Horner 档位,若距 luajc 档仍远立即停下重评([01 §4.3](./01-launch-judgment.md) + [08 §1.6](./08-testing-strategy.md))。
-- **locals 寄存器跨指令缓存**:纯「guard 即栈槽真相」vs 允许循环变量寄存器驻留 + 静态物化序列,**PJ7 定终稿,PJ10 调优可能展开**([04 §3.6 / §3.7](./04-osr-deopt.md) + [06 §4](./06-backends.md))。
+- **locals 寄存器跨指令缓存**:纯「guard 即栈槽真相」vs 允许循环变量寄存器驻留 + 静态物化序列,**PJ7 定终稿,PJ11 调优可能展开**([04 §3.6 / §3.7](./04-osr-deopt.md) + [06 §4](./06-backends.md))。
 - **arena base 重载协议实测**:跨 safepoint 稳定假设需 PJ3/PJ5 实测验证([05 §5](./05-system-pipeline.md))。
 - **P3 去留 P4 验收时定**:[07](./07-p3-retirement.md) 给框架不给结论;缺省倾向退役但留翻案条件(真实宿主 iOS / 解释模式实测翻盘)。
 - **真实宿主需求待外部确认**:首个目标宿主(规则引擎)的列内核形状是否真在协程外、真在主线程、真触及 luajc 档需求——P4 立项前置硬条件([01 §3.4](./01-launch-judgment.md) + [07 §10.2](./07-p3-retirement.md))。
@@ -315,5 +319,5 @@ P1 全卷已交付(M0-M14) + P2 PB0-PB7 + 后续优化轮 #1-#4 + P3 PW0-PW10 + 
 [../../../llmdoc/must/design-premises](../../../llmdoc/must/design-premises.md)(四项税 / 值表示承诺 / 五原则) ·
 [../../../llmdoc/guides/prove-the-path-under-test](../../../llmdoc/guides/prove-the-path-under-test.md)(投机/OSR/deopt 路径白盒命中) ·
 [../../../llmdoc/guides/design-claims-vs-codebase-physics](../../../llmdoc/guides/design-claims-vs-codebase-physics.md)(主张须证据,P4 立项前重核 P3 现状) ·
-[../../../llmdoc/guides/perf-optimization-workflow](../../../llmdoc/guides/perf-optimization-workflow.md)(§7 profile 才是合同——P4 PJ10 调优纪律) ·
+[../../../llmdoc/guides/perf-optimization-workflow](../../../llmdoc/guides/perf-optimization-workflow.md)(§7 profile 才是合同——P4 PJ11 调优纪律) ·
 [../../../llmdoc/memory/doc-gaps](../../../llmdoc/memory/doc-gaps.md)(P4 启动前置确认 / P4 落地时回填项)
