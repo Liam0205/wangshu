@@ -32,6 +32,13 @@ type fakeHost struct {
 	setUpvalCalls int
 	setUpvalA     int32
 	setUpvalB     int32
+
+	// Arith tracking
+	arithCalls int
+	arithOp    int32
+	arithA     int32
+	arithB     int32
+	arithC     int32
 }
 
 func newFakeHost() *fakeHost {
@@ -62,7 +69,14 @@ func (h *fakeHost) SetUpvalFromReg(base, a, b int32) {
 	h.setUpvalB = b
 	h.upvals[b] = h.regs[a]
 }
-func (h *fakeHost) Arith(base, pc, op, b, c, a int32) int32 { return 0 }
+func (h *fakeHost) Arith(base, pc, op, b, c, a int32) int32 {
+	h.arithCalls++
+	h.arithOp = op
+	h.arithB = b
+	h.arithC = c
+	h.arithA = a
+	return 0
+}
 func (h *fakeHost) Unm(base, pc, b, a int32) int32          { return 0 }
 func (h *fakeHost) Len(base, pc, b, a int32) int32          { return 0 }
 func (h *fakeHost) Concat(base, pc, a, b, c int32) int32    { return 0 }
@@ -125,6 +139,43 @@ func runShimSegment(t *testing.T, cb *codeBuf, host jit.P4HostState) uint64 {
 
 	return jitamd64.CallJITSpec(page.Addr(), uintptr(unsafe.Pointer(ctx)), vsBase)
 }
+
+// runNoShimSegment mmap's the emitted code and executes it against a
+// caller-seeded stack, returning the resulting stack + status. Used by
+// tests for inline ops (NOT / arithmetic fast path) that don't need a
+// host but DO need real R(N) memory operands.
+//
+// The seed callback fills the stack before execution. The returned
+// stack is the same array (Go stack-allocated), so callers must inspect
+// it before it escapes.
+//
+// **hostRef is left zero**: ops that would call a shim will crash on
+// nil interface deref. Tests should only call this for shim-free ops.
+func runNoShimSegment(t *testing.T, cb *codeBuf, seed func(s []uint64)) ([16]uint64, uint64) {
+	t.Helper()
+	page, err := jitamd64.MmapCode(cb.bytes)
+	if err != nil {
+		t.Fatalf("MmapCode: %v", err)
+	}
+	t.Cleanup(func() { page.Munmap() })
+
+	ctx := jit.NewJITContext()
+	saveGoG(ctx.SavedGoGSlot())
+
+	var stack [16]uint64
+	if seed != nil {
+		seed(stack[:])
+	}
+	vsBase := uintptr(unsafe.Pointer(&stack[0]))
+	ctx.SetValueStackBase(vsBase)
+
+	status := jitamd64.CallJITSpec(page.Addr(), uintptr(unsafe.Pointer(ctx)), vsBase)
+	return stack, status
+}
+
+// newArithHost returns a fakeHost keyed for arithmetic tests. Currently
+// identical to newFakeHost; the alias makes test intent clear.
+func newArithHost() *fakeHost { return newFakeHost() }
 
 // TestPJ10Native_E2E_RETURN: emit `RETURN A=2 B=3` alone. Verify the
 // host recorded a DoReturn(pc, a=2, b=3) call.
