@@ -182,6 +182,26 @@ func emitARITHArm64(cb *codeBuf, op bytecode.OpCode, pc int32, a, b, c uint8) {
 	emitCallShimArm64(cb, shimArithAddr(), []int32{0, pc, int32(op), int32(b), int32(c), int32(a)})
 }
 
+// emitStatusCheckAndBubbleArm64 emits the arm64 equivalent of amd64's
+// emitStatusCheckAndBubble: "if X0 != 0 then ret". Used after shim
+// calls whose helpers can raise (Arith/GetTable/…), so a non-zero
+// status returned by host.<Helper> bubbles up to the trampoline
+// instead of the mmap segment silently continuing.
+//
+// EmitMovXdImm64 always emits 4 insns (16 bytes) — movz + 3 movks —
+// even for tiny imms, so the skip target sits 5 words past the CBZ.
+//
+// Sequence (24 bytes):
+//
+//	cbz  X0, +24    ; skip mov+ret when X0 == 0 (imm19 = 5 words)
+//	<mov X0, #1>    ; 16 bytes (4 movz/movk insns)
+//	ret             ; 4 bytes
+func emitStatusCheckAndBubbleArm64(cb *codeBuf) {
+	cb.emit(jitarm64.EmitCbzX(nil, 0, 5))
+	cb.emit(jitarm64.EmitMovXdImm64(nil, 0, 1))
+	cb.emit(jitarm64.EmitRet(nil))
+}
+
 func emitADDArm64(cb *codeBuf, pc int32, a, b, c uint8) {
 	emitARITHArm64(cb, bytecode.ADD, pc, a, b, c)
 }

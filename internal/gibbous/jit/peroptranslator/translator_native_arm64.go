@@ -320,9 +320,16 @@ func emitLinearOpArm64(buf *codeBuf, ins bytecode.Instruction, pc int32) error {
 	case bytecode.NOT:
 		emitNOTArm64Inline(buf, a, bReg)
 	case bytecode.ADD, bytecode.SUB, bytecode.MUL, bytecode.DIV:
-		if !inlineArithNEONArm64(buf, op, a, bRK, cRK) {
-			return fmt.Errorf("emitLinearOpArm64: inline arith failed pc=%d", pc)
+		// inline NEON only when both operands are numeric K constants;
+		// otherwise fall back to the shim call so host.Arith produces
+		// the correct raise-on-non-number behaviour (fuzz seed
+		// 4df9d8c82ce0d9f7). Adding a proper NEON-side IsNumber guard
+		// + inline fallback shim is a follow-up.
+		if bRK >= 256 && cRK >= 256 && inlineArithNEONArm64(buf, op, a, bRK, cRK) {
+			return nil
 		}
+		emitARITHArm64(buf, op, pc, a, uint8(bRK), uint8(cRK))
+		emitStatusCheckAndBubbleArm64(buf)
 	default:
 		return fmt.Errorf("emitLinearOpArm64: unsupported op %v at pc %d", op, pc)
 	}
