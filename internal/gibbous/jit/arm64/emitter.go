@@ -661,6 +661,24 @@ func EmitCbnzW(buf []byte, rt uint8, imm19 int32) []byte {
 // EncodedCbnzWLen = 4.
 const EncodedCbnzWLen = 4
 
+// EmitCbzX emits arm64 `cbz Xt, label` (compare-and-branch-if-zero,
+// 64-bit register). imm19 is word offset (target = PC + imm19 * 4).
+// Encoding: 1011_0100_iiiiiiiiiiiiiiiiiiii_ttttt = 0xB4000000 base
+// (sf=1 for 64-bit, op=0 for CBZ).
+//
+// Used by peroptranslator's arm64 status-check-and-bubble to skip a
+// short "mov X0,1; ret" error tail when the shim returned 0.
+func EmitCbzX(buf []byte, rt uint8, imm19 int32) []byte {
+	if rt > 30 {
+		rt = 0
+	}
+	insn := uint32(0xB4000000) | (uint32(imm19)&0x7FFFF)<<5 | uint32(rt)&0x1F
+	return appendArm64Insn(buf, insn)
+}
+
+// EncodedCbzXLen = 4.
+const EncodedCbzXLen = 4
+
 // patchCbnzImm19 在 buf[off..off+4] 处的 CBNZ/CBZ 指令字内 patch imm19
 // 字段(bit 5-23)。Rt 字段(bit 0-4)和 op/sf base(bit 24-31)保留,
 // 只修改 imm19。
