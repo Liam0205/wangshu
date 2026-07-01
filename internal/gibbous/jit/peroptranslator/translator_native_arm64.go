@@ -94,12 +94,17 @@ func PreferNative(proto *bytecode.Proto) bool {
 	c := buildCFG(proto)
 	reach := c.reachableBlocks()
 	live := 0
-	for id := range c.blocks {
-		if reach[id] {
-			live++
+	hasBigBB := false
+	for id, bb := range c.blocks {
+		if !reach[id] {
+			continue
+		}
+		live++
+		if bb.endPC-bb.startPC >= 4 {
+			hasBigBB = true
 		}
 	}
-	return live >= 2
+	return live >= 2 && hasBigBB
 }
 
 // AnalyzeNative reports whether the arm64 native path can handle the Proto.

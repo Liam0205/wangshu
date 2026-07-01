@@ -113,11 +113,21 @@ func hostIfaceHeader(h jit.P4HostState) [2]uintptr {
 
 // AnalyzeNative reports whether the native emit path can handle a Proto:
 // PreferNative reports whether Compiler should skip shape-spec fast
-// paths and route this Proto directly to the native emitter. Narrower
-// than AnalyzeNative: we only prefer native for Protos with real
-// control flow (multi-BB reducible CFG) — single-BB Protos are what
-// the shape-spec fast paths target, and those tests should stay on
-// their historical fast path.
+// paths and route this Proto directly to the native emitter.
+//
+// Native wins over shape-spec when the shape-spec fast paths can't
+// optimize the body: the FORLOOP-with-body spec template only inlines
+// 1- or 2-op reg-K bodies (see shapeInfo.hasBody / hasBody2), so a
+// FORLOOP kernel with a 3+ op body falls back to per-op replay in
+// shape-spec while native emits full inline SSE. We heuristically
+// detect this by requiring at least one reachable BB to have >= 4
+// opcodes — that's larger than any shape-spec optimized body but well
+// below trivial single-BB Protos (LOADK+RETURN etc.).
+//
+// Also require multi-BB CFG: single-BB Protos are the historical
+// shape-spec spec-template use case (getter/setter/return-constant
+// forms). Routing them to native breaks pre-existing tests that
+// assert which spec fast path fires.
 func PreferNative(proto *bytecode.Proto) bool {
 	if !AnalyzeNative(proto) {
 		return false
@@ -125,12 +135,17 @@ func PreferNative(proto *bytecode.Proto) bool {
 	c := buildCFG(proto)
 	reach := c.reachableBlocks()
 	live := 0
-	for id := range c.blocks {
-		if reach[id] {
-			live++
+	hasBigBB := false
+	for id, bb := range c.blocks {
+		if !reach[id] {
+			continue
+		}
+		live++
+		if bb.endPC-bb.startPC >= 4 {
+			hasBigBB = true
 		}
 	}
-	return live >= 2
+	return live >= 2 && hasBigBB
 }
 
 // AnalyzeNative reports whether the native emit path can handle a Proto:
