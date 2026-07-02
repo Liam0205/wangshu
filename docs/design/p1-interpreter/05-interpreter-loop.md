@@ -515,9 +515,27 @@ func (vm *VM) doGetTable(f *frame, i Instruction) *LuaError {
 | `setmetatable` / 清 metatable | 该表 | [07](./07-metatables-metamethods.md) |
 | SETTABLE 插入触发 rehash | 该表 | 本文 §7 之外的写路径 |
 | SETGLOBAL 插入新键触发 rehash | globals 表 | 本文 |
+| **`insertNewKey` Brent-style 重定位**(新键落主位、把占用者迁到 free 槽)| **该表**(承 `internal/crescent/rawtable.go`)| 本文 §6.5.1 gen 契约强度 |
 | 已存在键改值(无 rehash) | **不递增** | 本文 |
 
 **纪律**:rehash 是唯一会让「array/node 槽位下标失效」的操作,所以代次必须且只须在「槽位下标可能变」时递增。「改值不动槽」不递增是性能关键(循环里反复 `t[k]=v` 改同一键不该废 IC)。
+
+#### 6.5.1 gen 契约强度:由最严 consumer 定义
+
+**契约强度定义**:表的 gen invariant 的**强度**由所有 consumer 中**最严格**的那个定义——任何改变 key → slot 映射的写路径都必须 BumpGen,即便解释器自己的读路径「碰巧不敏感」。
+
+**consumer 谱系**(按对 gen 的依赖强度排列):
+
+| Consumer | 命中路径 | 对 key→slot 稳定性的依赖 | 强度 |
+|---|---|---|---|
+| P1 解释器 `icGetTable` / `icGetNodeVal` | ICSlot cache 命中路径 | **每次访问都复验 NodeKey**(比对 IC 记录的 key 与该 slot 当前的 key)——若 key 已被 Brent 挪走,复验失败降级慢查找 | **弱**(自愈) |
+| P3 wasm `emitGetGlobal` NodeHit inline | 全局表 IC 直达 | **只查 gen 是否 match**,不复验 key——**node 索引编译期烧入 wasm 字节码**;若 gen 未 bump 而 key 已挪走,读到相邻新占用者 = **静默错果** | **严** |
+| P4 native `GETGLOBAL` NodeHit inline | 全局表 IC 直达(P4 exit-reason 协议) | **同上**——node 索引编译期烧入机器码立即数,只查 gen;缺 bump = 静默错果 | **严** |
+
+**发现现场**(承 memory `project_pj10_native_longtask.md`「PJ10 must-beat-P3 op 集扩面」条目 fuzz seed `4b3d10ff17c418d4`):
+`insertNewKey` 的 Brent 重定位分支 (`internal/crescent/rawtable.go:180-206`) 会**改 slot** 但历史上**没有 BumpGen**——P1 解释器的每次访问复验 NodeKey 掩盖了这条漏洞多年,直到 P3 wasm 与 P4 native 的 gen-only inline 快路径接入,才让静默错果浮现。修复:在 Brent 重定位后无条件 `object.BumpGen(st.arena, t)`(见 rawtable.go:204 附近注释)。
+
+**推论**:任何未来引入的表变换,若可能改变 key → slot 映射(rehash、Brent 挪位、shrink、compact 等),**必须 BumpGen**——即便当时的 consumer 都是「自愈」型,也不能省略,因为**下一代 consumer 可能是「严」型**;省略等于给未来埋 UAF。这是**「invariant 的强度由最严 consumer 定义」**原则在 gen 上的兑现,与 llmdoc `memory/doc-gaps.md` 登记的相关缺口对应(具体登记项由 recorder 维护)。
 
 ### 6.6 对上游文档的回填请求(本文定稿带来的字段增补)——**已兑现**
 

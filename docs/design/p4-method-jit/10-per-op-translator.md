@@ -434,29 +434,75 @@ PJ10 首版落地采取「正确性 floor 优先」路径:不真正发射多 BB 
 | PJ10d 函数调用 | CALL / TAILCALL(gibbous dispatch tail-call)| ✅ shim + saveGoG | ✅ shim |
 | PJ10d 闭包 | CLOSURE(读 SubNUps 跳 pseudo)/ CLOSE | ✅ shim | ✅ shim |
 
-**35/38 opcode 双 arch 全覆盖**(VARARG 按 F1 设计永不接;JMP / TEST / LOADBOOL C!=0 已通过 CFG 多 BB + label resolver 接住)。
+**35/38 opcode emit 函数双 arch 全覆盖**(shim 脚手架层面:VARARG 按 F1 设计永不接;JMP / TEST / LOADBOOL C!=0 已通过 CFG 多 BB + label resolver 接住)。
+
+**注意 arch 分歧**(2026-07-02 勘误):上表统计的是「PJ10d shim 脚手架层的 emit 函数存在与否」,不是「native 接受门允许 inline 到 mmap 段的形态」。真正的 native 接受门(`AnalyzeNative` + `opSupported`)在两 arch 上不一样,详 §14.3:
+
+- **amd64 native 接受门 = 26 op**(经 exit-reason 协议 + inline 混合覆盖,含 GETTABLE/SETTABLE/NEWTABLE/GETGLOBAL/SETGLOBAL/CALL/RETURN/GETUPVAL/SETUPVAL 等热 op);
+- **arm64 native 接受门 = 18 op 线性子集**(算术 / 比较进一步在 `AnalyzeNative` 里被拒,不含 table / call / global);exit-reason 协议的 arm64 端口未做,详见 issues #37 和 #40(bench run 28575495631 中 arm64 P4 HeavyArith 慢约 20x 等回归)。
 
 ---
 
-### 14.3 opSupported inline gate(mmap-safe 18 op 子集)
+### 14.3 native 接受门:两级 gate + amd64 26 op / arm64 18 op 分岔(2026-07-02 重写)
 
-Native path 在生产接线里对能进入 mmap 段的 opcode 保守收窄——只允许**「emit 序列内不含 shim call」**的 op(`internal/gibbous/jit/peroptranslator/translator_native.go` 的 `opSupported`):
+Native path 的 `SupportsAllOpcodes` 走两层门:
+
+**第一层:`opSupported`(编译期允许 emit)** — 承 arch 的物理约束(`peroptranslator/translator_native.go` amd64,`translator_native_arm64.go` arm64)。
+
+**amd64 opSupported = 26 op**(2026-07-02 状态):
 
 ```
 MOVE  LOADK  LOADBOOL  LOADNIL
-ADD  SUB  MUL  DIV         (reg-reg + numeric K operand,inline SSE)
-NOT
-EQ  LT  LE                 (inline UCOMISd / cmp;EQ 在双 numeric 上 inline)
+ADD  SUB  MUL  DIV                 (inline SSE + shim slow path)
+NOT  UNM
+EQ  LT  LE
 TEST  TESTSET
 JMP  FORPREP  FORLOOP
-RETURN
+GETTABLE  SETTABLE  NEWTABLE
+GETUPVAL  SETUPVAL
+GETGLOBAL  SETGLOBAL
+CALL  RETURN
 ```
 
-共 **18 op**。其余 op(GETUPVAL/SETUPVAL/LEN/CONCAT/GETTABLE/SETTABLE/GETGLOBAL/SETGLOBAL/SELF/NEWTABLE/SETLIST/CALL/TAILCALL/CLOSURE/CLOSE/TFORLOOP/MOD/POW/UNM)通过 `saveGoG` 协议把 G/vsBase 交还 Go 端调 helper,不允许 inline 到 mmap 段。
+其中 MOVE/LOADK/LOADBOOL/LOADNIL/算术/NOT/UNM/EQ/LT/LE/TEST/TESTSET/JMP/FORPREP/FORLOOP/RETURN 走 **inline emit**(段内自跑,无跨界);GETTABLE/SETTABLE/NEWTABLE/GETUPVAL/SETUPVAL/GETGLOBAL/SETGLOBAL/CALL 及部分算术 slow path 走 **exit-reason 协议**(下文详)。
 
-**为什么这条 gate 是硬约束(不是性能收益判断)**:mmap 段是 Go runtime 未登记的 code page,`morestack` prologue 走进这段无法从 `_func` 表回溯栈帧——**并发 + 嵌套负载下 Go stack unwinder 撞死**。这是 Go runtime 层面对 unregistered code page 的物理限制,不是 emit 顺序问题,只能在 emit 侧 fork 出「安全可 inline」子集,冷路径退 Go 端 dispatch。详见 [[2026-07-01-p4-pj10-native-round]] 教训 1。
+**被 opSupported 排除的 op**(仍走 head-op 回放 fallback,不进 native mmap 段):LEN / CONCAT / SELF / SETLIST / TAILCALL / CLOSURE / CLOSE / TFORLOOP / MOD / POW / VARARG。这些的 emit 函数在 PJ10d 脚手架里都存在(§14.2),只是不被 native path 接受。
 
-`AnalyzeNative` 在 gate 之外额外拒:含非数值 K 常量的算术 / 比较 op(inline SSE 只处理 numeric),含字符串常量的 LOADK(需要 arena 相对烘焙,留 followup)。
+**arm64 opSupported** 仍是原 18 op 线性子集,并且 `AnalyzeNative` 里对算术 / 比较 op 额外再拒(留待 issues #37 / #40);GETTABLE/SETTABLE/CALL/GETGLOBAL/SETGLOBAL/NEWTABLE 一律不接。
+
+**第二层:`AnalyzeNative` 语义门**(amd64 + arm64 共享,arm64 再加 arith/compare 额外拒):
+
+- 字符串常量 LOADK 拒(需要 arena 相对烘焙,留 followup);
+- `IsVararg` 拒;
+- 不可约简 CFG 拒;
+- `GETTABLE` / `SETTABLE` 要求 IC slot Kind 为 `ArrayHit` 或 `NodeHit`(否则退 head-op);
+- `GETGLOBAL` / `SETGLOBAL` 要求 IC slot Kind 为 `NodeHit`(注释里记录了从「无门直接接受」造成的 ~14% Transform CallInto 回归教训);
+- `NEWTABLE` B/C ≥ 256 拒(超出编译期烧立即数范围);
+- `CALL` B == 0 或 C == 0 拒(vararg 窗口 / to-top);
+- **CALL 密度门**:`totalOps / callCount ≥ 16`,否则拒(注释里记录 fib 解释器 11 ms vs native 18 ms 的实测起因——CALL 占比过高时,exit-reason 往返成本压过 inline 收益);
+- `returnCount == 0` 拒(全无 RETURN 出口的 Proto)。
+
+**Multi-return 分流**:`codeBufProto.MultiReturn` 为 true 时,每条 RETURN 都被 lower 成 `HelperReturn` exit-reason(由 Go dispatcher 完整跑弹帧 + 多值回填);single-return 走 xor-eax 快出口 + Go 端 `DoReturn`。
+
+**为什么两级门 = 硬约束**:mmap 段是 Go runtime 未登记的 code page,`morestack` prologue 走进这段无法从 `_func` 表回溯栈帧——并发 + 嵌套负载下 Go stack unwinder 撞死。这是 Go runtime 层面对 unregistered code page 的物理限制,不是 emit 顺序问题,只能在 emit 侧 fork 出「安全可 inline」子集,冷路径退 Go 端 dispatch。详见 [[2026-07-01-p4-pj10-native-round]] 教训 1。
+
+**saveGoG shim tail 仍存在**:LEN/CONCAT/SELF/TAILCALL/CLOSURE/CLOSE/TFORLOOP/MOD/POW 以及 compare shim tails 走原有 `saveGoG` 协议把 G/vsBase 交还 Go 端调 helper——这条路径与 exit-reason 协议并存,分别覆盖「编译期就拒 inline」和「运行期从段内暂停回 Go」两种场景。
+
+#### 14.3.1 exit-reason 协议(amd64,2026-07-02 新增)
+
+针对 amd64 那 9 个「编译期允许接受,但 emit 里不能直接跑纯 inline」的 op(GETTABLE / SETTABLE / NEWTABLE / GETUPVAL / SETUPVAL / GETGLOBAL / SETGLOBAL / CALL / 部分算术 slow),native 段发出如下序列(`emit_ops_amd64.go::emitExitReason`):
+
+1. 把 `(helperCode | a<<16 | b<<24 | c<<33 | pc<<42)` 打包一个 u64 写进 `jitCtx.exitArg0`;
+2. 写入 `resumeOff` 占位(下一条 op 的 emit 起点会由 `emitResumePreludeIfPending` 回填;prelude 里同时重装 `rbx = vsBase`,因为 dispatcher 返回后 rbx 可能已经被 Go 端改动);
+3. 把 `RAX = ExitInlineHelper` 后 `RET` 出段;
+4. Go 端 `nativeCode.Run` dispatcher 读 `exitArg0` 分派到具体 helper(GetTable / SetTable / NewTable / GetUpval / SetUpval / CallBaseline / DoReturn 等),完成后经 `resumeOff` 二次 `callJITSpec` 重入段内继续。
+
+**GETGLOBAL / SETGLOBAL 的 18-bit Bx 编码**:通过把 `Bx` 低 9 位放进 b 字段、高 9 位放进 c 字段拼回来,dispatcher 侧还原。
+
+**Inline fast path 的 guard 简化**(2026-07-02 关键决策,详 [03-speculation-ic §2.3 addendum](./03-speculation-ic.md)):
+
+- GETTABLE / SETTABLE ArrayHit inline 路径**完全去掉了 TableRef + gen identity guards**——ArrayHit inline 直接读当下的 asize / arrayRef,对任何 table 都正确(非 nil 的 array 槽读永不查 __index,非 nil-over-non-nil 的 store 永不 rehash;IC snapshot 只是 gate 「哪个 pc 位点允许 emit inline」,不参与运行期身份匹配);
+- GETGLOBAL / SETGLOBAL NodeHit inline 用 gen-only guard + 编译期烧入的 node index(`GlobalsTaddr` 从 `host.GlobalsRaw` 取);「任何 key→slot 重定位都必须 BumpGen」是这条 inline 的承载不变量,已在 crescent `rawtable.go::insertNewKey` 上补齐(fuzz seed 4b3d10ff 回归)。
 
 ---
 

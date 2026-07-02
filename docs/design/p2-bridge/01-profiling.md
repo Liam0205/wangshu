@@ -484,8 +484,25 @@ P2 的「不在热路径」(§0.1 不变式 1)需要可量化的性能预算 —
 const (
     HotBackEdgeThreshold uint32 = 1000  // 单回边累计达此值 ⇒ 候选升层(§5.2)
     HotEntryThreshold    uint32 = 200   // 入口累计达此值 ⇒ 候选升层(§5.2)
+
+    // MinPromotableCodeLen(issue #21):Proto 升层候选的最小 opcode 数下限。
+    // Proto.Code 长度 < 本值时,considerPromotion 被跳过——但**热度计数仍照常
+    // 累积**(OnBackEdge/OnEnter 入口无条件累加,只在越阈值后调 considerPromotion
+    // 之前才用本地板过滤),profile 诊断完整。
+    //
+    // 物理理由:短 proto 的 fixed Run 成本(trampoline + 保存/恢复 callee-saved
+    // + 边界税)超过其解释器循环的每次迭代成本,升层反而变慢(P4 实测 fixed
+    // Run cost ~111ns > 解释器 78ns,承 backend override 与本节末 MinPromotableLener)。
+    MinPromotableCodeLen = 10
 )
 ```
+
+**Backend 覆写钩子 `MinPromotableLener`**(承 `internal/bridge/bridge.go`):后端可通过实装可选接口 `MinPromotableLener { MinPromotableCodeLen() int }` 提出比包级常量更严格的下限,在 `SetP3Compiler` 调用时**快照进 Bridge 私有字段** `minPromotableLen`(不做每次查询),运行期由 `effectiveMinPromotableLen()` 读:
+
+- **fallback**:若后端未实装该接口,回落到包级 `MinPromotableCodeLen = 10`;
+- **P4 覆写**:P4 Compiler 实装该接口,当前也返回 10(与包级一致),但通道保留供未来根据 native emit 的 fixed Run cost 调整;
+- **不覆盖 `!b.forceAll` 分支**:两阈值分支中,`forceAll=true`(测试入口)绕过下限——force-all 语义就是「不管热度、不管长度,能编都编」,承 [../p4-method-jit/08-testing-strategy.md](../p4-method-jit/08-testing-strategy.md) §3.7 与 P3 08 §2.2;
+- **下限调整的正确性论证**:同 §5.3 阈值不影响正确性论证——只影响「哪些 Proto 有资格升」,短 proto 走解释器仍产出正确结果,只是不赚编译收益;调高下限只是保守,调低只是激进(甚至反噬,故实测锚定)。
 
 ### 5.2 阈值数值的论证
 
