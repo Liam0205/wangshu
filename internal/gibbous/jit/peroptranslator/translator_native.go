@@ -486,7 +486,6 @@ func opSupported(op bytecode.OpCode) bool {
 		bytecode.JMP, bytecode.FORPREP, bytecode.FORLOOP,
 		bytecode.GETTABLE, bytecode.SETTABLE, bytecode.NEWTABLE,
 		bytecode.GETUPVAL, bytecode.SETUPVAL,
-		bytecode.GETGLOBAL, bytecode.SETGLOBAL,
 		bytecode.CALL,
 		bytecode.RETURN:
 		return true
