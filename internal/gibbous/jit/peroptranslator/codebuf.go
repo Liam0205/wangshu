@@ -104,6 +104,15 @@ type codeBufProto struct {
 	// exit; multi-return emits a HelperReturn exit-reason per RETURN
 	// so each site carries its own (a, b, pc).
 	MultiReturn bool
+
+	// GlobalsTaddr is the globals table's arena byte offset (GCRef
+	// payload of host.GlobalsRaw()), baked at translate time for the
+	// GETGLOBAL / SETGLOBAL NodeHit inline fast path. The globals
+	// table identity is fixed for the State lifetime and arena objects
+	// never move, so the offset is a valid compile-time constant.
+	// Zero means "not available" (unit tests without a host) — emits
+	// fall back to the exit-reason path.
+	GlobalsTaddr uint32
 }
 
 type fixup struct {

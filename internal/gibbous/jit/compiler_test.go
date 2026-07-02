@@ -391,6 +391,10 @@ func (m *mockP4Host) TailCall(base, pc, a, b, c int32) int32 {
 	return m.tailCallRetCode
 }
 
+// GlobalsRaw mocks host.GlobalsRaw. Zero disables the GETGLOBAL /
+// SETGLOBAL NodeHit inline fast path (emits fall back to exit-reason).
+func (m *mockP4Host) GlobalsRaw() uint64 { return 0 }
+
 // Self 模拟 host.Self:记录入参 + 返回预设 selfRetCode。
 // byte-equal 解释器 SELF 段(R(A+1)=R(B) self + R(A)=R(B)[RK(C)] method)的
 // mock 替身,单测不实跑表 IC + __index 元方法链。

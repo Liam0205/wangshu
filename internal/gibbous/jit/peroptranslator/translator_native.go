@@ -417,6 +417,21 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 				if bytecode.B(ins) >= 256 || bytecode.C(ins) >= 256 {
 					return false
 				}
+			case bytecode.GETGLOBAL, bytecode.SETGLOBAL:
+				// GETGLOBAL/SETGLOBAL only enter native emit when the
+				// IC snapshot says NodeHit — the inline fast path is a
+				// gen check + fixed node slot access (globals table
+				// identity and key are compile-time constants). An
+				// un-warmed site would pay a mmap<->Go exit-reason
+				// round trip per access, which loses to shape-spec /
+				// interpreter (the earlier acceptance without this
+				// gate regressed Transform CallInto by ~14%).
+				if int(pc) >= len(proto.IC) {
+					return false
+				}
+				if proto.IC[pc].Kind != bytecode.ICKindNodeHit {
+					return false
+				}
 			case bytecode.CALL:
 				// CALL goes through the exit-reason path; the dispatcher
 				// runs host.CallBaseline which drives the callee to
@@ -503,6 +518,7 @@ func opSupported(op bytecode.OpCode) bool {
 		bytecode.JMP, bytecode.FORPREP, bytecode.FORLOOP,
 		bytecode.GETTABLE, bytecode.SETTABLE, bytecode.NEWTABLE,
 		bytecode.GETUPVAL, bytecode.SETUPVAL,
+		bytecode.GETGLOBAL, bytecode.SETGLOBAL,
 		bytecode.CALL,
 		bytecode.RETURN:
 		return true
@@ -536,6 +552,10 @@ func TranslateProtoNative(proto *bytecode.Proto, host jit.P4HostState) (*nativeC
 	// through the runtime guards to the shim, byte-equal to P1.
 	icSnap := snapshotProtoIC(proto)
 	buf.proto = &codeBufProto{Consts: consts, IC: icSnap}
+	// Bake the globals table byte offset for the GETGLOBAL / SETGLOBAL
+	// NodeHit inline fast path (same identity-is-stable contract as P3
+	// wasm's emitGetGlobal).
+	buf.proto.GlobalsTaddr = uint32(host.GlobalsRaw() & 0x0000_FFFF_FFFF_FFFF)
 	// Multi-return detection: count reachable RETURNs; more than one
 	// switches emitTerminator to the HelperReturn exit-reason lowering
 	// (each site carries its own a/b/pc instead of the single stashed
