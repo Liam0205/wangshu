@@ -372,7 +372,14 @@ func TranslateProtoNative(proto *bytecode.Proto, host jit.P4HostState) (*nativeC
 	for i, v := range proto.Consts {
 		consts[i] = uint64(v)
 	}
-	buf.proto = &codeBufProto{Consts: consts}
+	// Snapshot Proto.IC into codeBufProto so emitGETTABLE can consult it
+	// for inline ArrayHit fast paths (B4). Race-tolerant: P1 may still
+	// be writing IC while we snapshot, but stale values fall through
+	// the runtime guards to the shim (byte-equal), so no correctness
+	// risk — just a fast-path miss that costs a few extra bytes.
+	icSnap := make([]bytecode.ICSlot, len(proto.IC))
+	copy(icSnap, proto.IC)
+	buf.proto = &codeBufProto{Consts: consts, IC: icSnap}
 
 	// DEBUG: emit just `xor eax, eax; ret` to isolate whether the crash
 	// is in the mmap segment content or the trampoline entry/exit.

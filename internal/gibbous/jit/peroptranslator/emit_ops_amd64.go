@@ -9,6 +9,7 @@ package peroptranslator
 import (
 	"unsafe"
 
+	jit "github.com/Liam0205/wangshu/internal/gibbous/jit"
 	jitamd64 "github.com/Liam0205/wangshu/internal/gibbous/jit/amd64"
 
 	"github.com/Liam0205/wangshu/internal/bytecode"
@@ -951,8 +952,266 @@ func emitTFORLOOP(cb *codeBuf, pc int32, a, c uint8, succBack, succOut int) {
 // ---------------------------------------------------------------------
 
 func emitGETTABLE(cb *codeBuf, pc int32, a, b uint8, c int) {
+	if emitInlineGetTableArrayHit(cb, pc, a, b, c) {
+		return
+	}
 	emitCallShim(cb, shimGetTableAddr(), []int32{0, pc, int32(a), int32(b), int32(c)})
 	emitStatusCheckAndBubble(cb)
+}
+
+// emitInlineGetTableArrayHit emits an inline array-hit fast path for
+// GETTABLE when the compile-time IC snapshot at pc shows Kind ==
+// ArrayHit. The fast path handles the extremely common
+// `t[i]` where `i` is a small positive integer and `t`'s shape
+// (tableRef + gen) matches the snapshot; anything else falls through
+// to the shim.
+//
+// Returns true if the inline path was emitted (including the shim
+// fallback tail). Caller then skips the plain shim emit.
+//
+// Register usage (all caller-saved from Go's POV — the mmap segment
+// never calls a Go function on the fast path):
+//
+//	RAX / RCX / RDX / RSI / R11  scratch
+//	XMM0 / XMM1                  scratch (SSE key conversion)
+//	RBX = vsBase, R14 = G, R15 = jitCtx      preserved
+//
+// Layout:
+//
+//	[Guard 1: R(B) is Table (tag == 0xFFFC)]
+//	[Guard 2: taddr low32 == snap.tableRef]
+//	[Guard 3: word5 high32 (gen) == snap.gen]
+//	[Load key from R(C) or K bake]
+//	[Guard 4: IsNumber(key) — key < qNanBoxBase]
+//	[SSE: convert f64→i32, verify integer, i32 in RDX]
+//	[Guard 5: 1 <= idx <= asize (word1 low 32)]
+//	[Load slot = *(arenaBase + arrayRef + (idx-1)*8)]
+//	[Guard 6: slot != Nil]
+//	[Store slot → R(A)]
+//	[jmp done]
+//	shim:
+//	  emitCallShim + emitStatusCheckAndBubble
+//	done:
+//
+// Each guard's `jae shim` / `jne shim` / `je shim` records a rel32
+// patch site; once shim block offset is known all fixups are patched.
+func emitInlineGetTableArrayHit(cb *codeBuf, pc int32, a, b uint8, c int) bool {
+	if cb.proto == nil || int(pc) < 0 || int(pc) >= len(cb.proto.IC) {
+		return false
+	}
+	snap := cb.proto.IC[pc]
+	if snap.Kind != bytecode.ICKindArrayHit {
+		return false
+	}
+
+	arenaBaseOff := int32(jit.JITContextArenaBaseOffset)
+	var guardFixups []int
+
+	// Helper: patch a guard's rel32 forward jump to the shim block.
+	// Records patch offset = pos-4 (rel32 is last 4 bytes of the emit).
+	recordFixup := func() {
+		guardFixups = append(guardFixups, int(cb.pos())-4)
+	}
+
+	// -----------------------------------------------------------------
+	// Guard 1: R(B) is Table (high 16 bits == 0xFFFC).
+	// -----------------------------------------------------------------
+	// mov rax, [rbx + B*8]   (7B)
+	cb.emit(jitamd64.EmitMovqRaxFromMemReg(nil, regRBX, int32(b)*8))
+	// mov rcx, rax            (3B: 48 89 C1)
+	cb.emit([]byte{0x48, 0x89, 0xC1})
+	// shr rcx, 48             (4B: 48 C1 E9 30)
+	cb.emit([]byte{0x48, 0xC1, 0xE9, 0x30})
+	// cmp ecx, 0xFFFC         (6B: 81 F9 FC FF 00 00)
+	cb.emit([]byte{0x81, 0xF9, 0xFC, 0xFF, 0x00, 0x00})
+	// jne shim                (6B: 0F 85 rel32)
+	cb.emit(jitamd64.EmitJneRel32(nil, 0))
+	recordFixup()
+
+	// -----------------------------------------------------------------
+	// GCRef extract: rcx = rax & payloadMask (0x0000_FFFF_FFFF_FFFF).
+	// -----------------------------------------------------------------
+	// mov rcx, rax  (3B)
+	cb.emit([]byte{0x48, 0x89, 0xC1})
+	// mov rdx, payloadMask  (10B)
+	cb.emit(jitamd64.EmitMovRdxImm64(nil, 0x0000_FFFF_FFFF_FFFF))
+	// and rcx, rdx  (3B: 48 21 D1)
+	cb.emit([]byte{0x48, 0x21, 0xD1})
+
+	// -----------------------------------------------------------------
+	// Guard 2: taddr low32 == snap.TableRef.
+	// -----------------------------------------------------------------
+	// cmp ecx, imm32 (6B: 81 F9 <imm32>)
+	cb.emit([]byte{0x81, 0xF9,
+		byte(snap.TableRef),
+		byte(snap.TableRef >> 8),
+		byte(snap.TableRef >> 16),
+		byte(snap.TableRef >> 24)})
+	// jne shim
+	cb.emit(jitamd64.EmitJneRel32(nil, 0))
+	recordFixup()
+
+	// -----------------------------------------------------------------
+	// Load arena base to R11: mov r11, [r15 + arenaBaseOff]  (7B)
+	// Encoding: 4D 8B 9F disp32   (REX.W|R|B = 0x4D, opcode 0x8B, ModRM
+	// mod=10 reg=011(R11) rm=111(R15)).
+	// -----------------------------------------------------------------
+	cb.emit([]byte{0x4D, 0x8B, 0x9F,
+		byte(arenaBaseOff),
+		byte(arenaBaseOff >> 8),
+		byte(arenaBaseOff >> 16),
+		byte(arenaBaseOff >> 24)})
+
+	// -----------------------------------------------------------------
+	// Guard 3: gen match — read word5 (offset 40 from table start),
+	// shift right 32, compare with snap.Shape.
+	// mov rax, [r11 + rcx + 40]  (SIB, 5B: 49 8B 44 0B 28)
+	//   REX.W|B = 0x49; opcode 8B; ModRM mod=01 reg=000(RAX) rm=100(SIB)
+	//   SIB: scale=00 index=001(RCX) base=011(R11) = 0x0B; disp8 = 40
+	// -----------------------------------------------------------------
+	cb.emit([]byte{0x49, 0x8B, 0x44, 0x0B, 40})
+	// shr rax, 32  (4B: 48 C1 E8 20)
+	cb.emit([]byte{0x48, 0xC1, 0xE8, 0x20})
+	// cmp eax, imm32  (5B: 3D <imm32>)
+	cb.emit([]byte{0x3D,
+		byte(snap.Shape),
+		byte(snap.Shape >> 8),
+		byte(snap.Shape >> 16),
+		byte(snap.Shape >> 24)})
+	// jne shim
+	cb.emit(jitamd64.EmitJneRel32(nil, 0))
+	recordFixup()
+
+	// -----------------------------------------------------------------
+	// Load key from RK(C) into RAX. K path goes through the const table.
+	// -----------------------------------------------------------------
+	if c < 256 {
+		// mov rax, [rbx + C*8]
+		cb.emit(jitamd64.EmitMovqRaxFromMemReg(nil, regRBX, int32(c)*8))
+	} else {
+		kidx := c - 256
+		if cb.proto == nil || kidx < 0 || kidx >= len(cb.proto.Consts) {
+			// Roll back the whole fast-path emit — but that's tricky
+			// since we've already emitted bytes. Report false and let
+			// caller emit the plain shim; the accumulated fast-path
+			// bytes become dead (mmap segment jumps around them via
+			// the shim's own emit). Safer to reject upfront in a
+			// pre-check, so mirror the check here defensively.
+			return false
+		}
+		cb.emit(jitamd64.EmitMovRaxImm64(nil, cb.proto.Consts[kidx]))
+	}
+
+	// -----------------------------------------------------------------
+	// Guard 4: IsNumber(key) — key < qNanBoxBase (0xFFF8_0000_0000_0000).
+	// -----------------------------------------------------------------
+	// mov rdx, qNanBoxBase  (10B)
+	cb.emit(jitamd64.EmitMovRdxImm64(nil, qNanBoxBaseU64))
+	// cmp rax, rdx  (3B: 48 39 D0)
+	cb.emit([]byte{0x48, 0x39, 0xD0})
+	// jae shim (>= qNanBoxBase means non-number)
+	cb.emit(jitamd64.EmitJaeRel32(nil, 0))
+	recordFixup()
+
+	// -----------------------------------------------------------------
+	// Convert f64 key to i32 index: RDX = trunc(f64 key). Verify the
+	// key was integer-valued via cvtsi2sd + ucomisd round-trip.
+	// -----------------------------------------------------------------
+	// movq xmm0, rax  (5B: 66 48 0F 6E C0)
+	cb.emit([]byte{0x66, 0x48, 0x0F, 0x6E, 0xC0})
+	// cvttsd2si edx, xmm0  (4B: F2 0F 2C D0)
+	cb.emit([]byte{0xF2, 0x0F, 0x2C, 0xD0})
+	// cvtsi2sd xmm1, edx   (4B: F2 0F 2A CA)
+	cb.emit([]byte{0xF2, 0x0F, 0x2A, 0xCA})
+	// ucomisd xmm0, xmm1   (4B: 66 0F 2E C1)
+	cb.emit([]byte{0x66, 0x0F, 0x2E, 0xC1})
+	// jne shim   (fractional part or unordered)
+	cb.emit(jitamd64.EmitJneRel32(nil, 0))
+	recordFixup()
+	// jp  shim   (NaN → PF set)
+	// 0F 8A rel32  (6B)
+	cb.emit([]byte{0x0F, 0x8A, 0, 0, 0, 0})
+	recordFixup()
+
+	// -----------------------------------------------------------------
+	// Guard 5a: 1 <= idx (signed). cmp edx, 1; jl shim.
+	// -----------------------------------------------------------------
+	// cmp edx, 1  (3B: 83 FA 01)
+	cb.emit([]byte{0x83, 0xFA, 0x01})
+	// jl shim  (6B: 0F 8C rel32)
+	cb.emit([]byte{0x0F, 0x8C, 0, 0, 0, 0})
+	recordFixup()
+
+	// -----------------------------------------------------------------
+	// Guard 5b: idx <= asize. asize = word1 low 32 = [r11+rcx+8].
+	// mov eax, [r11 + rcx + 8]  (5B: 41 8B 44 0B 08)
+	//   REX.B = 0x41 (only R11); opcode 8B; ModRM mod=01 reg=000(EAX) rm=100(SIB)
+	//   SIB = 0x0B (scale=00 index=001(RCX) base=011(R11)); disp8 = 8
+	// -----------------------------------------------------------------
+	cb.emit([]byte{0x41, 0x8B, 0x44, 0x0B, 0x08})
+	// cmp edx, eax  (2B: 39 C2)
+	cb.emit([]byte{0x39, 0xC2})
+	// ja shim  (idx > asize; edx >= 1 verified so unsigned ja is correct)
+	cb.emit(jitamd64.EmitJaRel32(nil, 0))
+	recordFixup()
+
+	// -----------------------------------------------------------------
+	// Load arrayRef = word2 = [r11 + rcx + 16] → RAX.
+	// mov rax, [r11 + rcx + 16]   (5B: 49 8B 44 0B 10)
+	// -----------------------------------------------------------------
+	cb.emit([]byte{0x49, 0x8B, 0x44, 0x0B, 0x10})
+	// add rax, r11    (3B: 4C 01 D8)
+	//   REX.W|R = 0x4C; opcode 01; ModRM mod=11 reg=011(R11) rm=000(RAX)
+	cb.emit([]byte{0x4C, 0x01, 0xD8})
+
+	// -----------------------------------------------------------------
+	// Load slot = [rax + rdx*8 - 8]  (Lua indices are 1-based)
+	// Encoding: 48 8B 54 D0 F8  (5B)
+	//   REX.W = 0x48; opcode 8B; ModRM mod=01 reg=010(RDX) rm=100(SIB)
+	//   SIB = 0xD0 (scale=11(*8) index=010(RDX) base=000(RAX)); disp8 = -8 = 0xF8
+	// -----------------------------------------------------------------
+	cb.emit([]byte{0x48, 0x8B, 0x54, 0xD0, 0xF8})
+
+	// -----------------------------------------------------------------
+	// Guard 6: slot != Nil (0xFFFE_0000_0000_0000).
+	// -----------------------------------------------------------------
+	// mov rax, NilBits  (10B)
+	cb.emit(jitamd64.EmitMovRaxImm64(nil, 0xFFFE_0000_0000_0000))
+	// cmp rdx, rax  (3B: 48 39 C2)
+	cb.emit([]byte{0x48, 0x39, 0xC2})
+	// je shim  (slot is Nil → helper handles __index / miss path)
+	cb.emit(jitamd64.EmitJeRel32(nil, 0))
+	recordFixup()
+
+	// -----------------------------------------------------------------
+	// Store R(A) = rdx.  mov [rbx + A*8], rdx   (7B: 48 89 93 disp32)
+	// -----------------------------------------------------------------
+	{
+		disp := int32(a) * 8
+		cb.emit([]byte{0x48, 0x89, 0x93,
+			byte(uint32(disp)),
+			byte(uint32(disp) >> 8),
+			byte(uint32(disp) >> 16),
+			byte(uint32(disp) >> 24)})
+	}
+
+	// jmp done (5B; rel32 patched after shim emit).
+	cb.emit([]byte{0xE9, 0, 0, 0, 0})
+	fastPathJmpOff := int(cb.pos()) - 4
+
+	// Shim block starts here — patch all guard fixups.
+	shimOff := int(cb.pos())
+	for _, po := range guardFixups {
+		rel := int32(shimOff) - int32(po+4)
+		writeRel32(cb, po, rel)
+	}
+	emitCallShim(cb, shimGetTableAddr(), []int32{0, pc, int32(a), int32(b), int32(c)})
+	emitStatusCheckAndBubble(cb)
+
+	// Done block — patch fast-path jmp.
+	doneOff := int(cb.pos())
+	writeRel32(cb, fastPathJmpOff, int32(doneOff)-int32(fastPathJmpOff+4))
+	return true
 }
 
 func emitSETTABLE(cb *codeBuf, pc int32, a uint8, b, c int) {

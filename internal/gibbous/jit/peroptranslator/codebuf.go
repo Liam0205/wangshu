@@ -17,6 +17,8 @@ package peroptranslator
 import (
 	"encoding/binary"
 	"fmt"
+
+	"github.com/Liam0205/wangshu/internal/bytecode"
 )
 
 // codeBuf is the growing byte buffer + BB label + fixup state.
@@ -49,6 +51,14 @@ type codeBufProto struct {
 	// Consts are the raw NaN-boxed constant values (Proto.Consts as
 	// uint64). Emit_amd64.go's emitLOADK reads Consts[Bx].
 	Consts []uint64
+
+	// IC is a snapshot of Proto.IC (per-pc inline cache slot). The
+	// GETTABLE emit consults IC[pc].Kind / Shape / TableRef to decide
+	// whether to emit an inline ArrayHit fast path (with shape+gen
+	// guards + runtime-index array lookup + shim fallback). Empty
+	// slice = "no IC data" (unit tests / non table-heavy Protos) →
+	// emit falls back to the plain shim.
+	IC []bytecode.ICSlot
 
 	// RetA, RetB, RetPC are captured from the sole RETURN instruction
 	// during emit and lifted into nativeCode by TranslateProtoNative.
