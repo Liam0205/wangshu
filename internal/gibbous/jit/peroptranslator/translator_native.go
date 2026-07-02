@@ -460,22 +460,26 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 // Currently enabled with NO shim call in the emit output:
 //
 //	MOVE, LOADK (numeric consts only), LOADBOOL, LOADNIL,
-//	ADD/SUB/MUL/DIV (reg-reg or numeric K operands),
-//	NOT (inline compare),
-//	EQ (reg-reg, inline 64-bit cmp),
-//	LT/LE (inline UCOMISd compare),
+//	ADD/SUB/MUL/DIV (inline SSE + IsNumber guards + NaN result guard),
+//	NOT, UNM (inline sign-flip with IsNumber guard),
+//	EQ (raw 64-bit cmp), LT/LE (inline UCOMISd + IsNumber guards),
 //	TEST, TESTSET (inline Nil/False bit-compare),
 //	JMP, FORPREP, FORLOOP,
-//	RETURN
+//	GETTABLE/SETTABLE (IC ArrayHit inline / NodeHit exit-reason),
+//	NEWTABLE, GETUPVAL, SETUPVAL, CALL (exit-reason dispatch),
+//	RETURN (Go-side DoReturn after segment RET)
 //
-// **Excluded** because the emit would need a shim call:
+// **Excluded**:
 //
-//	GETUPVAL, SETUPVAL, LEN, CONCAT,
-//	GETTABLE, SETTABLE, GETGLOBAL, SETGLOBAL, SELF, NEWTABLE, SETLIST,
-//	CALL, TAILCALL, CLOSURE, CLOSE, TFORLOOP, MOD, POW, UNM
+//	LEN, CONCAT, SELF, SETLIST, TAILCALL, CLOSURE, CLOSE, TFORLOOP,
+//	MOD, POW (no inline emit yet), and
+//	GETGLOBAL/SETGLOBAL (exit-reason emit exists but acceptance routed
+//	shape-spec-friendly protos into slower per-access round trips; a
+//	per-site heuristic is needed before re-enabling)
 //
 // AnalyzeNative additionally rejects Protos with non-numeric K operands
-// on inline arithmetic / compare ops, and rejects EQ with any K operand.
+// on inline arithmetic / compare ops, CALL with B=0/C=0, NEWTABLE with
+// B/C >= 256, and GETTABLE/SETTABLE sites without ArrayHit/NodeHit IC.
 func opSupported(op bytecode.OpCode) bool {
 	switch op {
 	case bytecode.MOVE, bytecode.LOADK, bytecode.LOADBOOL, bytecode.LOADNIL,
