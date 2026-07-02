@@ -952,11 +952,93 @@ func emitTFORLOOP(cb *codeBuf, pc int32, a, c uint8, succBack, succOut int) {
 // ---------------------------------------------------------------------
 
 func emitGETTABLE(cb *codeBuf, pc int32, a, b uint8, c int) {
+	// GETTABLE is a shim-based op — under issue #38 the mmap segment
+	// can't safely call the Go shim, so we lower to the exit-reason
+	// protocol: emit an inline fast path (ArrayHit) that runs entirely
+	// inside the segment, plus a miss/slow tail that packs (op, args,
+	// pc, resume-off) into jitCtx and RETs. nativeCode.Run's
+	// dispatcher unpacks, calls host.GetTable, and reenters at
+	// resume-off. The reload of RBX = vsBase from jitCtx at the resume
+	// entry is handled by an emitPreloadVsBase call inserted before
+	// the *next* linear op.
+	emitGetTableExitReason(cb, pc, a, b, c)
+}
+
+// emitGetTableExitReason emits the GETTABLE lowering: optional inline
+// ArrayHit fast path -> slow tail -> exit-reason payload -> RET.
+//
+// Slow-tail layout when the inline fast path is present:
+//
+//	<fast path>            ; guards + slot load + store R(A) + jmp done
+//	slow:                  ; guards patched to jump here
+//	  <exit-reason emit>   ; pack args + write resumeOff + ret
+//	done:                  ; next op emits here (per-op preloadVsBase)
+//
+// When the inline path can't be built (no IC data / non-ArrayHit),
+// we skip straight to the slow tail.
+func emitGetTableExitReason(cb *codeBuf, pc int32, a, b uint8, c int) {
+	// Fast path when the IC snapshot indicates ArrayHit: inline
+	// guards + slot load in the mmap segment, miss falls through
+	// to the exit-reason emit which routes the slow work
+	// Go-side. Non-ArrayHit protos skip straight to the exit path.
 	if emitInlineGetTableArrayHit(cb, pc, a, b, c) {
 		return
 	}
-	emitCallShim(cb, shimGetTableAddr(), []int32{0, pc, int32(a), int32(b), int32(c)})
-	emitStatusCheckAndBubble(cb)
+	emitGetTableExitOnly(cb, pc, a, b, c)
+}
+
+// emitGetTableExitOnly emits just the exit-reason payload + RET,
+// packing (a, b, c, pc, HelperGetTable) into jitCtx.exitArg0 and
+// writing the next-op offset into jitCtx.resumeOff as a fixup that
+// the codeBuf resolves after the next op begins emitting.
+func emitGetTableExitOnly(cb *codeBuf, pc int32, a, b uint8, c int) {
+	emitExitReason(cb, jit.HelperGetTable, pc, int32(a), int32(b), int32(c))
+}
+
+// emitExitReason is the shared exit-reason emit used by every shim-
+// based op lowered through the exit-reason protocol (issue #38).
+// Packs (helperCode, a, b, c, pc) into jitCtx.exitArg0, writes a
+// pending resumeOff fixup into jitCtx.resumeOff, sets RAX to
+// ExitInlineHelper, and RETs.
+//
+// Callers use per-op wrappers that pass their opcode's helper code
+// and the (a, b, c) args in the same slots the corresponding host
+// method expects. b and c fit up to 511 (RK width); a fits up to 255
+// (register). pc up to 22 bits (4M instructions, plenty for any real
+// Lua source).
+func emitExitReason(cb *codeBuf, helperCode uint64, pc int32, a, b, c int32) {
+	packed := helperCode |
+		(uint64(uint32(a)&0xFF) << 16) |
+		(uint64(uint32(b)&0x1FF) << 24) |
+		(uint64(uint32(c)&0x1FF) << 33) |
+		(uint64(uint32(pc)&0x3FFFFF) << 42)
+	// mov rax, packed (10B)
+	cb.emit(jitamd64.EmitMovRaxImm64(nil, packed))
+	// mov [r15 + exitArg0Off], rax  (7B: 49 89 87 disp32)
+	{
+		off := int32(jit.JITContextExitArg0Offset)
+		cb.emit([]byte{0x49, 0x89, 0x87,
+			byte(uint32(off)),
+			byte(uint32(off) >> 8),
+			byte(uint32(off) >> 16),
+			byte(uint32(off) >> 24)})
+	}
+	// mov dword [r15 + resumeOffOff], imm32  (8B: 41 C7 87 disp32 imm32)
+	{
+		off := int32(jit.JITContextResumeOffOffset)
+		cb.emit([]byte{0x41, 0xC7, 0x87,
+			byte(uint32(off)),
+			byte(uint32(off) >> 8),
+			byte(uint32(off) >> 16),
+			byte(uint32(off) >> 24),
+			0, 0, 0, 0, // placeholder imm32 patched by resume prelude
+		})
+		cb.markResumeOffFixup(int(cb.pos()) - 4)
+	}
+	// mov rax, ExitInlineHelper (10B) — segment exit status.
+	cb.emit(jitamd64.EmitMovRaxImm64(nil, uint64(jit.ExitInlineHelper)))
+	// ret
+	cb.emit(jitamd64.EmitRet(nil))
 }
 
 // emitInlineGetTableArrayHit emits an inline array-hit fast path for
@@ -1202,27 +1284,36 @@ func emitInlineGetTableArrayHit(cb *codeBuf, pc int32, a, b uint8, c int) bool {
 	cb.emit([]byte{0xE9, 0, 0, 0, 0})
 	fastPathJmpOff := int(cb.pos()) - 4
 
-	// Shim block starts here — patch all guard fixups.
+	// Miss block starts here — patch all guard fixups. The miss
+	// path used to `emitCallShim(shimGetTable)` inside the mmap
+	// segment, but that's unsafe under concurrent load (issue #38);
+	// use the exit-reason protocol instead so the dispatcher does
+	// the shim work Go-side. Since exit-reason emits a RET, the
+	// fastPathJmpOff jmp lands past the whole miss block onto the
+	// next op's entry.
 	shimOff := int(cb.pos())
 	for _, po := range guardFixups {
 		rel := int32(shimOff) - int32(po+4)
 		writeRel32(cb, po, rel)
 	}
-	emitCallShim(cb, shimGetTableAddr(), []int32{0, pc, int32(a), int32(b), int32(c)})
-	emitStatusCheckAndBubble(cb)
+	emitExitReason(cb, jit.HelperGetTable, pc, int32(a), int32(b), int32(c))
 
-	// Done block — patch fast-path jmp.
+	// Done block — patch fast-path jmp so it skips past the exit
+	// block on hit. Also mark the fastPathJmp offset as landing at
+	// the next op's entry (not the exit block).
 	doneOff := int(cb.pos())
 	writeRel32(cb, fastPathJmpOff, int32(doneOff)-int32(fastPathJmpOff+4))
 	return true
 }
 
 func emitSETTABLE(cb *codeBuf, pc int32, a uint8, b, c int) {
-	emitCallShim(cb, shimSetTableAddr(), []int32{0, pc, int32(a), int32(b), int32(c)})
-	emitStatusCheckAndBubble(cb)
+	emitExitReason(cb, jit.HelperSetTable, pc, int32(a), int32(b), int32(c))
 }
 
 func emitGETGLOBAL(cb *codeBuf, pc int32, a uint8, bx uint16) {
+	// Kept on shim path — bx is 18-bit and doesn't fit the current
+	// exitArg0 layout. Callers must gate against opSupported so this
+	// path isn't reached until a wider exit-reason payload lands.
 	emitCallShim(cb, shimGetGlobalAddr(), []int32{0, pc, int32(a), int32(bx)})
 	emitStatusCheckAndBubble(cb)
 }
@@ -1233,13 +1324,11 @@ func emitSETGLOBAL(cb *codeBuf, pc int32, a uint8, bx uint16) {
 }
 
 func emitNEWTABLE(cb *codeBuf, pc int32, a, b, c uint8) {
-	emitCallShim(cb, shimNewTableAddr(), []int32{0, pc, int32(a), int32(b), int32(c)})
-	// NewTable never raises in practice
+	emitExitReason(cb, jit.HelperNewTable, pc, int32(a), int32(b), int32(c))
 }
 
 func emitSETLIST(cb *codeBuf, pc int32, a, b, c uint8) {
-	emitCallShim(cb, shimSetListAddr(), []int32{0, pc, int32(a), int32(b), int32(c)})
-	emitStatusCheckAndBubble(cb)
+	emitExitReason(cb, jit.HelperSetList, pc, int32(a), int32(b), int32(c))
 }
 
 func emitCALL(cb *codeBuf, pc int32, a, b, c uint8) {

@@ -36,6 +36,13 @@ type codeBuf struct {
 	//   targetBB:     BB whose entry offset is the displacement's target
 	fixups []fixup
 
+	// pendingResumeOffFixups tracks patch offsets that need to be
+	// resolved to "the offset of the next emitted op" — used by
+	// exit-reason ops (GETTABLE and friends) that need the mmap
+	// segment to advertise where to resume. resolveResumeOffPending
+	// patches them all at the start of the next emit call.
+	pendingResumeOffFixups []int
+
 	// proto is the Proto being translated. Emit functions consult it for
 	// K(Bx) values (LOADK), string constants, and other compile-time
 	// data. May be nil for byte-level unit tests. Stored as a raw
@@ -43,6 +50,36 @@ type codeBuf struct {
 	// already imports bytecode, so the concrete field can migrate here
 	// later if the split becomes friction).
 	proto *codeBufProto
+}
+
+// markResumeOffFixup records that the 4 bytes at patchOff in cb.bytes
+// hold an imm32 that will be patched to the offset of the NEXT
+// emitted op (or NEXT bindLabel target, whichever comes first). Used
+// by exit-reason emits (e.g. emitGetTableExitOnly) so the mmap
+// segment's `mov dword [r15+resumeOffOff], imm32` writes the actual
+// resume entry offset once we know it.
+//
+// The fixup is resolved lazily by resolveResumeOffPending — call it
+// at the start of each linear op emit and at bindLabel.
+func (b *codeBuf) markResumeOffFixup(patchOff int) {
+	b.pendingResumeOffFixups = append(b.pendingResumeOffFixups, patchOff)
+}
+
+// resolveResumeOffPending patches all pending resume-off fixups to
+// the current byte offset. Safe to call when no fixups are pending
+// (no-op). Called by emit-linear-op preludes and by bindLabel.
+func (b *codeBuf) resolveResumeOffPending() {
+	if len(b.pendingResumeOffFixups) == 0 {
+		return
+	}
+	resumeOff := uint32(b.pos())
+	for _, po := range b.pendingResumeOffFixups {
+		b.bytes[po] = byte(resumeOff)
+		b.bytes[po+1] = byte(resumeOff >> 8)
+		b.bytes[po+2] = byte(resumeOff >> 16)
+		b.bytes[po+3] = byte(resumeOff >> 24)
+	}
+	b.pendingResumeOffFixups = b.pendingResumeOffFixups[:0]
 }
 
 // codeBufProto is a minimal shim holding the compile-time data an emit
