@@ -1131,18 +1131,15 @@ func emitInlineGetTableArrayHit(cb *codeBuf, pc int32, a, b uint8, c int) bool {
 	// and rcx, rdx  (3B: 48 21 D1)
 	cb.emit([]byte{0x48, 0x21, 0xD1})
 
-	// -----------------------------------------------------------------
-	// Guard 2: taddr low32 == snap.TableRef.
-	// -----------------------------------------------------------------
-	// cmp ecx, imm32 (6B: 81 F9 <imm32>)
-	cb.emit([]byte{0x81, 0xF9,
-		byte(snap.TableRef),
-		byte(snap.TableRef >> 8),
-		byte(snap.TableRef >> 16),
-		byte(snap.TableRef >> 24)})
-	// jne shim
-	cb.emit(jitamd64.EmitJneRel32(nil, 0))
-	recordFixup()
+	// NOTE: no TableRef / gen identity guards here. The fast path reads
+	// asize and arrayRef from the live table at runtime, so it is
+	// correct for ANY table value in R(B): a non-Nil array slot read
+	// never consults __index per Lua 5.1 semantics, and the bounds
+	// check uses the live asize. The IC snapshot only gates WHICH pc
+	// sites get the inline emit (AnalyzeNative requires ArrayHit); it
+	// does not pin the table identity. This matters for workloads that
+	// rebuild tables per call (e.g. fannkuch's fresh p/q/s per run) —
+	// identity guards would miss on every access after the first run.
 
 	// -----------------------------------------------------------------
 	// Load arena base to R11: mov r11, [r15 + arenaBaseOff]  (7B)
@@ -1154,26 +1151,6 @@ func emitInlineGetTableArrayHit(cb *codeBuf, pc int32, a, b uint8, c int) bool {
 		byte(arenaBaseOff >> 8),
 		byte(arenaBaseOff >> 16),
 		byte(arenaBaseOff >> 24)})
-
-	// -----------------------------------------------------------------
-	// Guard 3: gen match — read word5 (offset 40 from table start),
-	// shift right 32, compare with snap.Shape.
-	// mov rax, [r11 + rcx + 40]  (SIB, 5B: 49 8B 44 0B 28)
-	//   REX.W|B = 0x49; opcode 8B; ModRM mod=01 reg=000(RAX) rm=100(SIB)
-	//   SIB: scale=00 index=001(RCX) base=011(R11) = 0x0B; disp8 = 40
-	// -----------------------------------------------------------------
-	cb.emit([]byte{0x49, 0x8B, 0x44, 0x0B, 40})
-	// shr rax, 32  (4B: 48 C1 E8 20)
-	cb.emit([]byte{0x48, 0xC1, 0xE8, 0x20})
-	// cmp eax, imm32  (5B: 3D <imm32>)
-	cb.emit([]byte{0x3D,
-		byte(snap.Shape),
-		byte(snap.Shape >> 8),
-		byte(snap.Shape >> 16),
-		byte(snap.Shape >> 24)})
-	// jne shim
-	cb.emit(jitamd64.EmitJneRel32(nil, 0))
-	recordFixup()
 
 	// -----------------------------------------------------------------
 	// Load key from RK(C) into RAX. K path goes through the const table.
@@ -1381,14 +1358,11 @@ func emitInlineSetTableArrayHit(cb *codeBuf, pc int32, a uint8, b, c int) bool {
 	cb.emit(jitamd64.EmitMovRdxImm64(nil, 0x0000_FFFF_FFFF_FFFF))
 	cb.emit([]byte{0x48, 0x21, 0xD1}) // and rcx, rdx
 
-	// --- Guard 2: taddr low32 == snap.TableRef ---
-	cb.emit([]byte{0x81, 0xF9,
-		byte(snap.TableRef),
-		byte(snap.TableRef >> 8),
-		byte(snap.TableRef >> 16),
-		byte(snap.TableRef >> 24)})
-	cb.emit(jitamd64.EmitJneRel32(nil, 0))
-	recordFixup()
+	// NOTE: no TableRef / gen identity guards — same reasoning as
+	// emitInlineGetTableArrayHit. Overwriting an existing non-Nil array
+	// slot with a non-Nil value is a raw store for ANY table (no
+	// __newindex, no rehash), and the bounds check reads the live asize.
+	// The IC snapshot only gates which pc sites get the inline emit.
 
 	// --- Load arena base to r11 ---
 	cb.emit([]byte{0x4D, 0x8B, 0x9F,
@@ -1396,17 +1370,6 @@ func emitInlineSetTableArrayHit(cb *codeBuf, pc int32, a uint8, b, c int) bool {
 		byte(arenaBaseOff >> 8),
 		byte(arenaBaseOff >> 16),
 		byte(arenaBaseOff >> 24)})
-
-	// --- Guard 3: gen (word5 high32) == snap.Shape ---
-	cb.emit([]byte{0x49, 0x8B, 0x44, 0x0B, 40}) // mov rax, [r11 + rcx + 40]
-	cb.emit([]byte{0x48, 0xC1, 0xE8, 0x20})     // shr rax, 32
-	cb.emit([]byte{0x3D,
-		byte(snap.Shape),
-		byte(snap.Shape >> 8),
-		byte(snap.Shape >> 16),
-		byte(snap.Shape >> 24)}) // cmp eax, imm32
-	cb.emit(jitamd64.EmitJneRel32(nil, 0))
-	recordFixup()
 
 	// --- Load key from RK(B) into RAX ---
 	if b < 256 {
