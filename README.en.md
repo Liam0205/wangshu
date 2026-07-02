@@ -37,7 +37,7 @@ Architectural invariants:
 
 ## Performance
 
-Numbers taken on one machine (Intel Xeon Platinum, 24 core, go1.26.2, `-benchtime=2s -count=3`, median, 2026-07-02). Format is "wall time (ratio over gopher-lua)"; larger is better; **bold** marks ratios ≥ 1.5×.
+Numbers taken on one machine (linux/amd64, Intel Xeon Platinum, 24 core, go1.26.2, `-benchtime=2s -count=3`, median, 2026-07-02). Format is "wall time (ratio over gopher-lua)"; larger is better; **bold** marks ratios ≥ 1.5×. darwin/arm64 measurements are in the subsection below.
 
 | Category | Script | gopher | P1 | P3 auto | P3 force | P4 auto | P4 force |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -62,6 +62,36 @@ Numbers taken on one machine (Intel Xeon Platinum, 24 core, go1.26.2, `-benchtim
 | | Transform (×1000) | 337 µs | 436 µs (0.77×) | 436 µs (0.77×) | 438 µs (0.77×) | 431 µs (0.78×) | 435 µs (0.77×) |
 | Realworld embedded · CallInto [^cat-embed] | Predicate (×1000) | 476 µs | 407 µs (**1.17×**) | 421 µs (**1.13×**) | 425 µs (**1.12×**) | 404 µs (**1.18×**) | 409 µs (**1.16×**) |
 | | Transform (×1000) | 337 µs | 287 µs (**1.18×**) | 290 µs (**1.16×**) | 290 µs (**1.16×**) | 288 µs (**1.17×**) | 291 µs (**1.16×**) |
+
+### darwin/arm64 measurements (Apple M5 Pro)
+
+The same reproduction commands measured on an Apple M5 Pro (darwin/arm64, go1.26.2, `-benchtime=2s -count=3`, median, 2026-07-02), taken as the baseline snapshot before the arm64 optimization round (issues #37 / #40). The P4 native op-set (exit-reason protocol) is currently amd64-only: on arm64, P4 has only the shape-spec fast paths plus a very narrow native subset without arithmetic/comparison, so arithmetic-heavy shapes are rejected and stay on the interpreter. The P4 columns below are therefore roughly "P1 + sampling overhead" — the native wins on the amd64 table (HeavyArith 11.9×, fannkuch 7.0×) are not yet available on arm64; the best compiled-tier result on arm64 today is P3's HeavyFloatloop (2.55×).
+
+| Category | Script | gopher | P1 | P3 auto | P3 force | P4 auto | P4 force |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Pure-VM micro | Simple (branch/compare) | 378 ns | 72.9 ns (**5.19×**) | 2467 ns (0.15×) | 2464 ns (0.15×) | 76.7 ns (**4.93×**) | 76.7 ns (**4.93×**) |
+| | Arith (Horner) | 441 ns | 93.1 ns (**4.74×**) | 6222 ns (0.07×) | 6233 ns (0.07×) | 99.8 ns (**4.42×**) | 99.8 ns (**4.42×**) |
+| | Loop (sum) | 17.8 µs | 9.43 µs (**1.89×**) | 468 µs (0.04×) | 464 µs (0.04×) | 12.1 µs (1.47×) | 12.1 µs (1.47×) |
+| Heavy kernels | HeavyArith | 80.0 ms | 44.2 ms (**1.81×**) | 49.8 ms (**1.61×**) | 49.3 ms (**1.62×**) | 51.2 ms (**1.56×**) | 1125 ms (0.07×)[^arm64-p4force-en] |
+| | HeavyRecursion | 5.54 ms | 3.07 ms (**1.80×**) | 3.50 ms (**1.58×**) | 3.49 ms (**1.59×**) | 3.41 ms (**1.62×**) | 3.35 ms (**1.65×**) |
+| | HeavyFloatloop | 149 ms | 84.3 ms (**1.77×**) | 58.5 ms (**2.55×**) | 58.7 ms (**2.54×**) | 95.1 ms (**1.57×**) | 95.2 ms (**1.57×**) |
+| Realworld small | fib | 5.61 ms | 6.25 ms (0.90×) | 13.9 ms (0.40×) | 14.0 ms (0.40×) | 6.90 ms (0.81×) | 6.90 ms (0.81×) |
+| | binary-trees | 18.7 ms | 23.7 ms (0.79×) | 57.5 ms (0.33×) | 57.7 ms (0.32×) | 24.7 ms (0.76×) | 24.7 ms (0.76×) |
+| | spectral-norm | 12.5 ms | 11.9 ms (1.05×) | 22.7 ms (0.55×) | 27.6 ms (0.45×) | 13.0 ms (0.96×) | 12.9 ms (0.97×) |
+| | fannkuch | 2.39 ms | 3.57 ms (0.67×) | 3.64 ms (0.66×) | 3.62 ms (0.66×) | 3.68 ms (0.65×) | 5.18 ms (0.46×)[^arm64-p4force-en] |
+| | n-body | 29.0 ms | 27.0 ms (1.08×) | 49.0 ms (0.59×) | 48.3 ms (0.60×) | 27.5 ms (1.06×) | 27.5 ms (1.06×) |
+| Boundary mini · Call | PureVM | 367 ns | 75.2 ns (**4.88×**) | — | — | — | — |
+| | CallOnly | 54.9 ns | 100 ns (0.55×) | 102 ns (0.54×) | 158 ns (0.35×) | 101 ns (0.54×) | 101 ns (0.54×) |
+| | Boundary (+SetGlobal) | 120 ns | 169 ns (0.71×) | 171 ns (0.70×) | 173 ns (0.69×) | 172 ns (0.69×) | 172 ns (0.70×) |
+| Boundary mini · CallInto | PureVM | 367 ns | 75.2 ns (**4.88×**) | — | — | — | — |
+| | CallOnly | 54.9 ns | 45.4 ns (1.21×) | 48.0 ns (1.14×) | 100 ns (0.55×) | 48.1 ns (1.14×) | 48.1 ns (1.14×) |
+| | Boundary (+SetGlobal) | 120 ns | 116 ns (1.04×) | 118 ns (1.01×) | 121 ns (0.99×) | 118 ns (1.01×) | 118 ns (1.01×) |
+| Realworld embedded · Call | Predicate (×1000) | 276 µs | 311 µs (0.89×) | 317 µs (0.87×) | 315 µs (0.88×) | 314 µs (0.88×) | 314 µs (0.88×) |
+| | Transform (×1000) | 204 µs | 230 µs (0.89×) | 231 µs (0.88×) | 232 µs (0.88×) | 234 µs (0.87×) | 233 µs (0.87×) |
+| Realworld embedded · CallInto | Predicate (×1000) | 276 µs | 254 µs (1.09×) | 259 µs (1.07×) | 258 µs (1.07×) | 257 µs (1.08×) | 257 µs (1.07×) |
+| | Transform (×1000) | 204 µs | 179 µs (1.14×) | 178 µs (1.15×) | 178 µs (1.14×) | 178 µs (1.14×) | 178 µs (1.15×) |
+
+[^arm64-p4force-en]: A located bridge-layer bug (tracked under issue #40 stop-the-bleed), not slow arm64 emit: in forceAll mode, a proto rejected by the backend re-runs the full compilability analysis on every back edge — profiling shows `recheckCompilabilityRuntime` at 22% CPU and up to 1.5 GB/op allocated on HeavyArith. Production mode (the auto columns) is unaffected.
 
 [^cat-baseline]: `benchmarks/baseline`. Three self-contained scripts (Simple branch-compare, Arith six-order Horner polynomial, Loop sum 1..N), no Go↔Lua boundary crossing. Shows VM-core dispatch / arithmetic / loop cost under minimum workload.
 [^cat-heavy]: `benchmarks/heavy`. Three flat numeric kernels (HeavyArith pure arithmetic, HeavyRecursion self-recursion, HeavyFloatloop nested float loop); intentionally excludes tables, strings, library CALL and other helper-bound structures. Shows the compilation tier's performance ceiling on shapes that actually let it work.

@@ -37,7 +37,7 @@ P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 met
 
 ## 性能指标
 
-数字取自同一台机（Intel Xeon Platinum, 24 core, go1.26.2, `-benchtime=2s -count=3`, 取 median, 2026-07-02）。格式为「wall time (倍率 over gopher-lua)」，倍率越大越好；粗体表示倍率 ≥ 1.5×。
+数字取自同一台机（linux/amd64, Intel Xeon Platinum, 24 core, go1.26.2, `-benchtime=2s -count=3`, 取 median, 2026-07-02）。格式为「wall time (倍率 over gopher-lua)」，倍率越大越好；粗体表示倍率 ≥ 1.5×。darwin/arm64 实测见下方小节。
 
 | 类别 | 脚本 | gopher | P1 | P3 auto | P3 force | P4 auto | P4 force |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -64,6 +64,36 @@ P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 met
 | | Transform (×1000) | 337 µs | 287 µs (1.18×) | 292 µs (1.15×) | 289 µs (1.17×) | 261 µs (1.29×) | 259 µs (1.30×) |
 
 P4 vs P3 同口径对比：27 组对照中 25 组 P4 领先 ≥ 2%（多数 +10% ~ +85%）。仅「CallOnly auto」两行例外——该脚本低于升层阈值，P3/P4 build 都在跑同一份 P1 解释器代码，差值为测量噪声（< 2%）。
+
+### darwin/arm64 实测（Apple M5 Pro）
+
+同一套复现命令在 Apple M5 Pro（darwin/arm64, go1.26.2, `-benchtime=2s -count=3`, 取 median, 2026-07-02）的实测，作为 arm64 优化轮（issue #37 / #40）开工前的基线快照。P4 的 native op-set（exit-reason 协议）目前只在 amd64 上实现：arm64 的 P4 只有 shape-spec 快路径加一个不含算术/比较的极窄 native 子集，算术密集形状被拒收后留在解释器，因此下表 P4 列大体等于「P1 + 采样成本」——amd64 表中 HeavyArith 11.9×、fannkuch 7.0× 的 native 收益在 arm64 还拿不到；目前 arm64 编译档的最好成绩是 P3 的 HeavyFloatloop（2.55×）。
+
+| 类别 | 脚本 | gopher | P1 | P3 auto | P3 force | P4 auto | P4 force |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 纯 VM 微基准 | Simple (分支/比较) | 378 ns | 72.9 ns (**5.19×**) | 2467 ns (0.15×) | 2464 ns (0.15×) | 76.7 ns (**4.93×**) | 76.7 ns (**4.93×**) |
+| | Arith (Horner) | 441 ns | 93.1 ns (**4.74×**) | 6222 ns (0.07×) | 6233 ns (0.07×) | 99.8 ns (**4.42×**) | 99.8 ns (**4.42×**) |
+| | Loop (求和循环) | 17.8 µs | 9.43 µs (**1.89×**) | 468 µs (0.04×) | 464 µs (0.04×) | 12.1 µs (1.47×) | 12.1 µs (1.47×) |
+| heavy 内核 | HeavyArith | 80.0 ms | 44.2 ms (**1.81×**) | 49.8 ms (**1.61×**) | 49.3 ms (**1.62×**) | 51.2 ms (**1.56×**) | 1125 ms (0.07×)[^arm64-p4force] |
+| | HeavyRecursion | 5.54 ms | 3.07 ms (**1.80×**) | 3.50 ms (**1.58×**) | 3.49 ms (**1.59×**) | 3.41 ms (**1.62×**) | 3.35 ms (**1.65×**) |
+| | HeavyFloatloop | 149 ms | 84.3 ms (**1.77×**) | 58.5 ms (**2.55×**) | 58.7 ms (**2.54×**) | 95.1 ms (**1.57×**) | 95.2 ms (**1.57×**) |
+| realworld small | fib | 5.61 ms | 6.25 ms (0.90×) | 13.9 ms (0.40×) | 14.0 ms (0.40×) | 6.90 ms (0.81×) | 6.90 ms (0.81×) |
+| | binary-trees | 18.7 ms | 23.7 ms (0.79×) | 57.5 ms (0.33×) | 57.7 ms (0.32×) | 24.7 ms (0.76×) | 24.7 ms (0.76×) |
+| | spectral-norm | 12.5 ms | 11.9 ms (1.05×) | 22.7 ms (0.55×) | 27.6 ms (0.45×) | 13.0 ms (0.96×) | 12.9 ms (0.97×) |
+| | fannkuch | 2.39 ms | 3.57 ms (0.67×) | 3.64 ms (0.66×) | 3.62 ms (0.66×) | 3.68 ms (0.65×) | 5.18 ms (0.46×)[^arm64-p4force] |
+| | n-body | 29.0 ms | 27.0 ms (1.08×) | 49.0 ms (0.59×) | 48.3 ms (0.60×) | 27.5 ms (1.06×) | 27.5 ms (1.06×) |
+| 边界 mini · Call | PureVM | 367 ns | 75.2 ns (**4.88×**) | — | — | — | — |
+| | CallOnly | 54.9 ns | 100 ns (0.55×) | 102 ns (0.54×) | 158 ns (0.35×) | 101 ns (0.54×) | 101 ns (0.54×) |
+| | Boundary (+SetGlobal) | 120 ns | 169 ns (0.71×) | 171 ns (0.70×) | 173 ns (0.69×) | 172 ns (0.69×) | 172 ns (0.70×) |
+| 边界 mini · CallInto | PureVM | 367 ns | 75.2 ns (**4.88×**) | — | — | — | — |
+| | CallOnly | 54.9 ns | 45.4 ns (1.21×) | 48.0 ns (1.14×) | 100 ns (0.55×) | 48.1 ns (1.14×) | 48.1 ns (1.14×) |
+| | Boundary (+SetGlobal) | 120 ns | 116 ns (1.04×) | 118 ns (1.01×) | 121 ns (0.99×) | 118 ns (1.01×) | 118 ns (1.01×) |
+| 真实负载 · Call | Predicate (×1000) | 276 µs | 311 µs (0.89×) | 317 µs (0.87×) | 315 µs (0.88×) | 314 µs (0.88×) | 314 µs (0.88×) |
+| | Transform (×1000) | 204 µs | 230 µs (0.89×) | 231 µs (0.88×) | 232 µs (0.88×) | 234 µs (0.87×) | 233 µs (0.87×) |
+| 真实负载 · CallInto | Predicate (×1000) | 276 µs | 254 µs (1.09×) | 259 µs (1.07×) | 258 µs (1.07×) | 257 µs (1.08×) | 257 µs (1.07×) |
+| | Transform (×1000) | 204 µs | 179 µs (1.14×) | 178 µs (1.15×) | 178 µs (1.14×) | 178 µs (1.14×) | 178 µs (1.15×) |
+
+[^arm64-p4force]: 已定位的 bridge 层 bug（归 issue #40 止血项），不是 arm64 emit 慢：forceAll 模式下被后端拒收的 proto 每条回边都会重跑一次全量可编译性分析——profile 实证 `recheckCompilabilityRuntime` 占 22% CPU，HeavyArith 高达 1.5 GB/op 分配。生产模式（auto 列）不受影响。
 
 [^cat-baseline]: `benchmarks/baseline`。三个自含脚本（Simple 分支比较、Arith 六阶 Horner 多项式、Loop 求和 1..N），单次执行无 Go↔Lua 跨界。反映 VM 内核在最小工作量下的 dispatch / 算术 / 循环开销。
 [^cat-heavy]: `benchmarks/heavy`。三个扁平数值内核（HeavyArith 纯算术、HeavyRecursion 自递归、HeavyFloatloop 嵌套浮点循环），故意剔除表 / 字符串 / library CALL 与其他 helper-bound 结构。反映编译档在能真正发挥的形状上的性能上限。
