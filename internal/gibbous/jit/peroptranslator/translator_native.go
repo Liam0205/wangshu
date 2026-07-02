@@ -372,13 +372,12 @@ func TranslateProtoNative(proto *bytecode.Proto, host jit.P4HostState) (*nativeC
 	for i, v := range proto.Consts {
 		consts[i] = uint64(v)
 	}
-	// Snapshot Proto.IC into codeBufProto so emitGETTABLE can consult it
-	// for inline ArrayHit fast paths (B4). Race-tolerant: P1 may still
-	// be writing IC while we snapshot, but stale values fall through
-	// the runtime guards to the shim (byte-equal), so no correctness
-	// risk — just a fast-path miss that costs a few extra bytes.
-	icSnap := make([]bytecode.ICSlot, len(proto.IC))
-	copy(icSnap, proto.IC)
+	// Snapshot Proto.IC into codeBufProto for the GETTABLE inline
+	// fast path (B4). P1 may still be writing IC concurrently, so we
+	// read each field with atomic loads (same protocol as P3 wasm's
+	// snapshotICSlot) to keep `go test -race` quiet. Stale reads fall
+	// through the runtime guards to the shim, byte-equal to P1.
+	icSnap := snapshotProtoIC(proto)
 	buf.proto = &codeBufProto{Consts: consts, IC: icSnap}
 
 	// DEBUG: emit just `xor eax, eax; ret` to isolate whether the crash

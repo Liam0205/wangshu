@@ -1003,6 +1003,17 @@ func emitInlineGetTableArrayHit(cb *codeBuf, pc int32, a, b uint8, c int) bool {
 	if snap.Kind != bytecode.ICKindArrayHit {
 		return false
 	}
+	// Pre-emit K sanity check (bot review 2026-07-02): if the K operand
+	// index is out of range, we must bail BEFORE emitting any bytes —
+	// bailing mid-emit would leave forward jne/jae/je rel32 fixups
+	// unpatched and corrupt the mmap segment. Fail-early keeps the
+	// caller's fallthrough-to-shim byte-exact.
+	if c >= 256 {
+		kidx := c - 256
+		if kidx < 0 || kidx >= len(cb.proto.Consts) {
+			return false
+		}
+	}
 
 	arenaBaseOff := int32(jit.JITContextArenaBaseOffset)
 	var guardFixups []int
@@ -1089,17 +1100,9 @@ func emitInlineGetTableArrayHit(cb *codeBuf, pc int32, a, b uint8, c int) bool {
 		// mov rax, [rbx + C*8]
 		cb.emit(jitamd64.EmitMovqRaxFromMemReg(nil, regRBX, int32(c)*8))
 	} else {
-		kidx := c - 256
-		if cb.proto == nil || kidx < 0 || kidx >= len(cb.proto.Consts) {
-			// Roll back the whole fast-path emit — but that's tricky
-			// since we've already emitted bytes. Report false and let
-			// caller emit the plain shim; the accumulated fast-path
-			// bytes become dead (mmap segment jumps around them via
-			// the shim's own emit). Safer to reject upfront in a
-			// pre-check, so mirror the check here defensively.
-			return false
-		}
-		cb.emit(jitamd64.EmitMovRaxImm64(nil, cb.proto.Consts[kidx]))
+		// Pre-check at function entry guaranteed kidx is in range;
+		// index directly without a mid-emit bailout.
+		cb.emit(jitamd64.EmitMovRaxImm64(nil, cb.proto.Consts[c-256]))
 	}
 
 	// -----------------------------------------------------------------
