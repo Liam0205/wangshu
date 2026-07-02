@@ -122,6 +122,21 @@ local count = 0
 for i = 1, 10 do if f(i == 5) then count = count + 1 end end
 return count`},
 
+	// —— EQ with string K operand (interned pointer-equality). Covers
+	// the amd64 native EQ K-operand relaxation from this PR: Lua 5.1
+	// interns string literals so raw ptr-equal == string-equal.
+	{"p4_eq_string_const_hit", `
+local function f(x) return x == "hello" end
+local hit = f("hello")
+local miss = f("world")
+return hit, miss`},
+	{"p4_eq_string_const_loop", `
+local function f(x) return x == "match" end
+local n = 0
+for i = 1, 30 do if f("match") then n = n + 1 end end
+for i = 1, 30 do if f("nope")  then n = n + 100 end end
+return n`},
+
 	// —— FORLOOP 字节级 inline(PJ3 形态) ——
 	{"p4_for_empty", `
 local function f() for i = 1, 100 do end return 42 end
