@@ -1307,7 +1307,197 @@ func emitInlineGetTableArrayHit(cb *codeBuf, pc int32, a, b uint8, c int) bool {
 }
 
 func emitSETTABLE(cb *codeBuf, pc int32, a uint8, b, c int) {
+	if emitInlineSetTableArrayHit(cb, pc, a, b, c) {
+		return
+	}
 	emitExitReason(cb, jit.HelperSetTable, pc, int32(a), int32(b), int32(c))
+}
+
+// emitInlineSetTableArrayHit emits an inline array-hit fast path for
+// SETTABLE (semantic: `R(A)[RK(B)] := RK(C)`). Mirrors
+// emitInlineGetTableArrayHit but writes instead of reads, and adds an
+// extra guard: the target slot must be non-Nil (writing Nil, or
+// writing to a Nil slot, can trigger a rehash / gen bump and would
+// invalidate the IC snapshot -- deopt to the exit-reason path).
+//
+// Register usage (fast path, all caller-saved):
+//
+//	RAX / RCX / RDX / RSI / R11         scratch
+//	XMM0 / XMM1                          scratch (SSE key conversion)
+//	RBX = vsBase, R14 = G, R15 = jitCtx  preserved
+//
+// Layout:
+//
+//	[Guard 1: R(A) is Table (tag == 0xFFFC)]
+//	[Guard 2: taddr low32 == snap.tableRef]
+//	[Guard 3: word5 high32 (gen) == snap.gen]
+//	[Load key from RK(B)]
+//	[Guard 4: IsNumber(key)]
+//	[SSE: f64 -> i32 integer check, i32 in RDX]
+//	[Guard 5: 1 <= idx <= asize (word1 low 32)]
+//	[Load arrayRef (word2), compute absolute slot addr in RCX]
+//	[Guard 6: slot != Nil (existing key)]
+//	[Load value RK(C) -> RAX]
+//	[Guard 7: value != Nil (writing Nil rehashes)]
+//	[Store slot = value]
+//	[jmp done]
+//	miss:
+//	  <exit-reason emit for HelperSetTable>
+//	done:
+func emitInlineSetTableArrayHit(cb *codeBuf, pc int32, a uint8, b, c int) bool {
+	if cb.proto == nil || int(pc) < 0 || int(pc) >= len(cb.proto.IC) {
+		return false
+	}
+	snap := cb.proto.IC[pc]
+	if snap.Kind != bytecode.ICKindArrayHit {
+		return false
+	}
+	// Pre-emit K-idx sanity for the RK(B) key + RK(C) value slots.
+	for _, rk := range [2]int{b, c} {
+		if rk >= 256 {
+			kidx := rk - 256
+			if kidx < 0 || kidx >= len(cb.proto.Consts) {
+				return false
+			}
+		}
+	}
+
+	arenaBaseOff := int32(jit.JITContextArenaBaseOffset)
+	var guardFixups []int
+	recordFixup := func() {
+		guardFixups = append(guardFixups, int(cb.pos())-4)
+	}
+
+	// --- Guard 1: R(A) is Table (high 16 == 0xFFFC) ---
+	cb.emit(jitamd64.EmitMovqRaxFromMemReg(nil, regRBX, int32(a)*8))
+	cb.emit([]byte{0x48, 0x89, 0xC1})                   // mov rcx, rax
+	cb.emit([]byte{0x48, 0xC1, 0xE9, 0x30})             // shr rcx, 48
+	cb.emit([]byte{0x81, 0xF9, 0xFC, 0xFF, 0x00, 0x00}) // cmp ecx, 0xFFFC
+	cb.emit(jitamd64.EmitJneRel32(nil, 0))
+	recordFixup()
+
+	// --- GCRef extract: rcx = rax & payloadMask ---
+	cb.emit([]byte{0x48, 0x89, 0xC1}) // mov rcx, rax
+	cb.emit(jitamd64.EmitMovRdxImm64(nil, 0x0000_FFFF_FFFF_FFFF))
+	cb.emit([]byte{0x48, 0x21, 0xD1}) // and rcx, rdx
+
+	// --- Guard 2: taddr low32 == snap.TableRef ---
+	cb.emit([]byte{0x81, 0xF9,
+		byte(snap.TableRef),
+		byte(snap.TableRef >> 8),
+		byte(snap.TableRef >> 16),
+		byte(snap.TableRef >> 24)})
+	cb.emit(jitamd64.EmitJneRel32(nil, 0))
+	recordFixup()
+
+	// --- Load arena base to r11 ---
+	cb.emit([]byte{0x4D, 0x8B, 0x9F,
+		byte(arenaBaseOff),
+		byte(arenaBaseOff >> 8),
+		byte(arenaBaseOff >> 16),
+		byte(arenaBaseOff >> 24)})
+
+	// --- Guard 3: gen (word5 high32) == snap.Shape ---
+	cb.emit([]byte{0x49, 0x8B, 0x44, 0x0B, 40}) // mov rax, [r11 + rcx + 40]
+	cb.emit([]byte{0x48, 0xC1, 0xE8, 0x20})     // shr rax, 32
+	cb.emit([]byte{0x3D,
+		byte(snap.Shape),
+		byte(snap.Shape >> 8),
+		byte(snap.Shape >> 16),
+		byte(snap.Shape >> 24)}) // cmp eax, imm32
+	cb.emit(jitamd64.EmitJneRel32(nil, 0))
+	recordFixup()
+
+	// --- Load key from RK(B) into RAX ---
+	if b < 256 {
+		cb.emit(jitamd64.EmitMovqRaxFromMemReg(nil, regRBX, int32(b)*8))
+	} else {
+		cb.emit(jitamd64.EmitMovRaxImm64(nil, cb.proto.Consts[b-256]))
+	}
+
+	// --- Guard 4: IsNumber(key) ---
+	cb.emit(jitamd64.EmitMovRdxImm64(nil, qNanBoxBaseU64))
+	cb.emit([]byte{0x48, 0x39, 0xD0}) // cmp rax, rdx
+	cb.emit(jitamd64.EmitJaeRel32(nil, 0))
+	recordFixup()
+
+	// --- Convert f64 to i32 (RDX) + verify integer via round-trip ---
+	cb.emit([]byte{0x66, 0x48, 0x0F, 0x6E, 0xC0}) // movq xmm0, rax
+	cb.emit([]byte{0xF2, 0x0F, 0x2C, 0xD0})       // cvttsd2si edx, xmm0
+	cb.emit([]byte{0xF2, 0x0F, 0x2A, 0xCA})       // cvtsi2sd xmm1, edx
+	cb.emit([]byte{0x66, 0x0F, 0x2E, 0xC1})       // ucomisd xmm0, xmm1
+	cb.emit(jitamd64.EmitJneRel32(nil, 0))
+	recordFixup()
+	cb.emit([]byte{0x0F, 0x8A, 0, 0, 0, 0}) // jp miss
+	recordFixup()
+
+	// --- Guard 5a: 1 <= idx ---
+	cb.emit([]byte{0x83, 0xFA, 0x01})       // cmp edx, 1
+	cb.emit([]byte{0x0F, 0x8C, 0, 0, 0, 0}) // jl miss
+	recordFixup()
+
+	// --- Guard 5b: idx <= asize (word1 low32) ---
+	cb.emit([]byte{0x41, 0x8B, 0x44, 0x0B, 0x08}) // mov eax, [r11 + rcx + 8]
+	cb.emit([]byte{0x39, 0xC2})                   // cmp edx, eax
+	cb.emit(jitamd64.EmitJaRel32(nil, 0))
+	recordFixup()
+
+	// --- Load arrayRef (word2) into RAX, compute absolute base in RCX ---
+	cb.emit([]byte{0x49, 0x8B, 0x44, 0x0B, 0x10}) // mov rax, [r11 + rcx + 16]
+	cb.emit([]byte{0x4C, 0x01, 0xD8})             // add rax, r11
+	cb.emit([]byte{0x48, 0x89, 0xC1})             // mov rcx, rax  (rcx = absolute array base)
+
+	// --- Load current slot value = [rcx + rdx*8 - 8] into RAX for Nil check ---
+	// mov rax, [rcx + rdx*8 - 8]  (48 8B 44 D1 F8)
+	cb.emit([]byte{0x48, 0x8B, 0x44, 0xD1, 0xF8})
+
+	// --- Guard 6: existing slot != Nil (avoid gen-bump insert path) ---
+	cb.emit(jitamd64.EmitMovRdxImm64(nil, 0xFFFE_0000_0000_0000)) // rdx = NilBits (clobbers our idx)
+	cb.emit([]byte{0x48, 0x39, 0xD0})                             // cmp rax, rdx
+	cb.emit(jitamd64.EmitJeRel32(nil, 0))
+	recordFixup()
+
+	// --- Load value from RK(C) into RAX ---
+	if c < 256 {
+		cb.emit(jitamd64.EmitMovqRaxFromMemReg(nil, regRBX, int32(c)*8))
+	} else {
+		cb.emit(jitamd64.EmitMovRaxImm64(nil, cb.proto.Consts[c-256]))
+	}
+
+	// --- Guard 7: value != Nil (writing Nil triggers a rehash) ---
+	// rdx already has NilBits from Guard 6; reuse.
+	cb.emit([]byte{0x48, 0x39, 0xD0}) // cmp rax, rdx
+	cb.emit(jitamd64.EmitJeRel32(nil, 0))
+	recordFixup()
+
+	// --- Store slot: [rcx + <same offset>] = rax ---
+	// But we clobbered rdx above and lost the index. Rather than
+	// re-derive, keep the index alive. Simplification: recompute the
+	// slot address via a scratch that survives Nil-loading, or
+	// (cheaper) recompute idx from key here. We already have the
+	// slot address baked in RCX + a fixed (idx-1)*8; but RDX
+	// (holding idx) was clobbered. Re-derive from the key we still
+	// have in xmm0 -> RDX.
+	cb.emit([]byte{0xF2, 0x0F, 0x2C, 0xD0}) // cvttsd2si edx, xmm0 (recover idx)
+	// mov [rcx + rdx*8 - 8], rax  (48 89 44 D1 F8)
+	cb.emit([]byte{0x48, 0x89, 0x44, 0xD1, 0xF8})
+
+	// --- Success: jmp done ---
+	cb.emit([]byte{0xE9, 0, 0, 0, 0})
+	fastPathJmpOff := int(cb.pos()) - 4
+
+	// --- Miss block: exit-reason emit ---
+	missOff := int(cb.pos())
+	for _, po := range guardFixups {
+		rel := int32(missOff) - int32(po+4)
+		writeRel32(cb, po, rel)
+	}
+	emitExitReason(cb, jit.HelperSetTable, pc, int32(a), int32(b), int32(c))
+
+	// --- Done: patch fast-path jump ---
+	doneOff := int(cb.pos())
+	writeRel32(cb, fastPathJmpOff, int32(doneOff)-int32(fastPathJmpOff+4))
+	return true
 }
 
 func emitGETGLOBAL(cb *codeBuf, pc int32, a uint8, bx uint16) {
