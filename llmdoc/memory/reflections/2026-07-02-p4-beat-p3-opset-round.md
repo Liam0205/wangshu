@@ -76,7 +76,7 @@ producer 侧代码历经多次 review 都过,是因为审的人是按松 consume
 
 ### 5. 共享分析器改进可能是**per-backend 回归**——nbody 在 P4 加速 20x 但在 P3 反而慢 2x
 
-`45b8b53` 的 dataflow-track stdlib alias(`local sqrt = math.sqrt` 类)是**bridge 层共享分析器**的改进,让原本 `ReasonUnknownCall` 的形态过了 F2-b 白名单,nbody 的 advance / energy / offsetMomentum 三 hot proto 在 P3 和 P4 都能升层。P4 效果:874ms → 43.2ms(**~20x**)。P3 效果:81.1ms → 89.7ms(**慢 8%**,issue #39)。
+`45b8b53` 的 dataflow-track stdlib alias(`local sqrt = math.sqrt` 类)是**bridge 层共享分析器**的改进,让原本 `ReasonUnknownCall` 的形态过了 F2-b 白名单,nbody 的 advance / energy / offsetMomentum 三 hot proto 在 P3 和 P4 都能升层。P4 效果:874ms → 43.2ms(**~20x**)。P3 效果:43.5ms → 89.7ms(**≈2x**,issue #39)。
 
 **Why**:一个 proto「能升」不代表「升了就赚」。P4 native 的 per-op 成本足够低使得 43ms 是 20x 收益;P3 wasm 的 per-op 成本(尤其涉及 `h_call` 双跨界的形态)会把 nbody 特定 shape 从 81ms 拖到 89ms。共享分析器的改进只解决「能升」这一端,「升了赚」得靠 per-backend 净胜验证——但 P2 bridge 现在**没有 per-backend 净胜判断**(F2-b 白名单是全局的)。
 

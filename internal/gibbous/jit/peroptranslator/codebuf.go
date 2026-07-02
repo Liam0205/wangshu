@@ -39,7 +39,7 @@ type codeBuf struct {
 	// pendingResumeOffFixups tracks patch offsets that need to be
 	// resolved to "the offset of the next emitted op" — used by
 	// exit-reason ops (GETTABLE and friends) that need the mmap
-	// segment to advertise where to resume. resolveResumeOffPending
+	// segment to advertise where to resume. emitResumePreludeIfPending
 	// patches them all at the start of the next emit call.
 	pendingResumeOffFixups []int
 
