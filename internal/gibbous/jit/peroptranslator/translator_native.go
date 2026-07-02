@@ -104,6 +104,16 @@ func (c *nativeCode) Run(stack []uint64, base uint32) (status int32) {
 	// codePage + resumeOff. Repeat until the segment returns a
 	// non-helper status.
 	for uint32(rawStatus) == jit.ExitInlineHelper {
+		// HelperReturn terminates the run: multi-return Protos lower
+		// each RETURN to this exit-reason so every site carries its
+		// own (a, b, pc). DoReturn here replaces both the loop
+		// reentry and the single-return Go-side teardown below.
+		if arg0 := c.jitCtx.ExitArg0(); arg0&jit.HelperCodeMask == jit.HelperReturn {
+			a := int32((arg0 >> 16) & 0xFF)
+			b := int32((arg0 >> 24) & 0x1FF)
+			pc := int32((arg0 >> 42) & 0x3FFFFF)
+			return c.host.DoReturn(int32(base), pc, a, b)
+		}
 		// Snapshot resumeOff BEFORE dispatching: HelperCall drives the
 		// callee synchronously, and a recursive call into this same
 		// Proto reenters this same nativeCode and clobbers the shared
@@ -126,7 +136,9 @@ func (c *nativeCode) Run(stack []uint64, base uint32) (status int32) {
 	// Perform Go-side frame teardown via host.DoReturn on success.
 	// Emitting host.DoReturn as a shim call from inside the mmap segment
 	// crashes the Go stack unwinder under nested + concurrent load;
-	// doing it here avoids the mmap-to-Go shim call entirely.
+	// doing it here avoids the mmap-to-Go shim call entirely. Only the
+	// single-return path reaches here with status 0 — multi-return
+	// Protos exit through the HelperReturn branch above.
 	if status == 0 {
 		if drStatus := c.host.DoReturn(int32(base), c.retPC, c.retA, c.retB); drStatus != 0 {
 			status = drStatus
@@ -417,10 +429,11 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 			}
 		}
 	}
-	// Require exactly one RETURN in the reachable code. TranslateProtoNative
-	// stashes retA/retB/retPC from that instruction on the codeBuf and
-	// nativeCode.Run invokes host.DoReturn from the Go side after the
-	// mmap segment returns.
+	// Count reachable RETURNs: single-return Protos use the fast
+	// `xor eax, eax; ret` exit + Go-side DoReturn(retA/retB/retPC);
+	// multi-return Protos lower each RETURN to a HelperReturn
+	// exit-reason (TranslateProtoNative sets codeBufProto.MultiReturn).
+	// Zero reachable RETURNs would leave Run without a teardown path.
 	returnCount := 0
 	for id, bb := range c.blocks {
 		if !reach[id] {
@@ -432,7 +445,7 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 			}
 		}
 	}
-	if returnCount != 1 {
+	if returnCount == 0 {
 		return false
 	}
 	return true
@@ -523,6 +536,25 @@ func TranslateProtoNative(proto *bytecode.Proto, host jit.P4HostState) (*nativeC
 	// through the runtime guards to the shim, byte-equal to P1.
 	icSnap := snapshotProtoIC(proto)
 	buf.proto = &codeBufProto{Consts: consts, IC: icSnap}
+	// Multi-return detection: count reachable RETURNs; more than one
+	// switches emitTerminator to the HelperReturn exit-reason lowering
+	// (each site carries its own a/b/pc instead of the single stashed
+	// retA/retB/retPC).
+	{
+		reach := c.reachableBlocks()
+		returns := 0
+		for id, bb := range c.blocks {
+			if !reach[id] {
+				continue
+			}
+			for pc := bb.startPC; pc < bb.endPC; pc++ {
+				if bytecode.Op(proto.Code[pc]) == bytecode.RETURN {
+					returns++
+				}
+			}
+		}
+		buf.proto.MultiReturn = returns > 1
+	}
 
 	// DEBUG: emit just `xor eax, eax; ret` to isolate whether the crash
 	// is in the mmap segment content or the trampoline entry/exit.
@@ -713,11 +745,22 @@ func emitTerminator(buf *codeBuf, c *cfg, bb *basicBlock, bbID int, ins bytecode
 
 	switch op {
 	case bytecode.RETURN:
+		cb := buf
+		if cb.proto != nil && cb.proto.MultiReturn {
+			// Multi-return Proto: each RETURN site packs its own
+			// (a, b, pc) into a HelperReturn exit-reason. Run's
+			// dispatcher calls host.DoReturn and terminates (no
+			// reentry), so no resumeOff patching is needed — but
+			// emitExitReason marks one anyway; drop it right after
+			// since no next op will bind it.
+			emitExitReason(cb, jit.HelperReturn, pc, int32(a), int32(b), 0)
+			cb.pendingResumeOffFixups = cb.pendingResumeOffFixups[:0]
+			break
+		}
 		// Emit `xor eax, eax; ret` inline - no shim call. host.DoReturn
 		// is invoked from nativeCode.Run's Go side after CallJITSpec
 		// returns. This avoids all shim-from-mmap risk for the RETURN
 		// path (which is at the end of every function).
-		cb := buf
 		// Stash retA/retB/retPC on the codeBuf so TranslateProtoNative
 		// can lift them into nativeCode fields.
 		if cb.proto != nil {

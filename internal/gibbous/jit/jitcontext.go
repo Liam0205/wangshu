@@ -114,6 +114,14 @@ const (
 	HelperArithSlow   uint64 = 22
 	HelperCompareSlow uint64 = 23
 	HelperCall        uint64 = 24
+
+	// HelperReturn is the exit-reason code for RETURN in multi-return
+	// Protos. Unlike other helpers it terminates the segment run: the
+	// dispatcher calls host.DoReturn with the packed (a, b, pc) and
+	// does NOT reenter the mmap segment. Single-return Protos keep the
+	// legacy `xor eax, eax; ret` + Go-side DoReturn(retA/retB/retPC)
+	// path, which saves the exitArg0 packing on the hot exit.
+	HelperReturn uint64 = 25
 )
 
 // HelperCodeMask masks off the low 16 bits of exitArg0 that hold the

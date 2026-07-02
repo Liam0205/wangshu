@@ -91,9 +91,19 @@ type codeBufProto struct {
 	// The mmap segment RETs with status 0 for the normal exit, and
 	// nativeCode.Run's Go side calls host.DoReturn(RetPC, RetA, RetB)
 	// to perform the frame teardown.
+	//
+	// Only meaningful when MultiReturn is false. Multi-return Protos
+	// lower every RETURN to a HelperReturn exit-reason instead.
 	RetA  int32
 	RetB  int32
 	RetPC int32
+
+	// MultiReturn marks a Proto with more than one reachable RETURN.
+	// emitTerminator consults it: single-return keeps the legacy
+	// `xor eax, eax; ret` + Go-side DoReturn(RetA/RetB/RetPC) fast
+	// exit; multi-return emits a HelperReturn exit-reason per RETURN
+	// so each site carries its own (a, b, pc).
+	MultiReturn bool
 }
 
 type fixup struct {
