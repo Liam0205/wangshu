@@ -93,6 +93,7 @@ func (h *fakeHost) CallBaseline(base, pc, a, b, c int32) int32 {
 	return 0
 }
 func (h *fakeHost) TailCall(base, pc, a, b, c int32) int32 { return 0 }
+func (h *fakeHost) GlobalsRaw() uint64                     { return 0 }
 func (h *fakeHost) Self(base, pc, a, b, c int32) int32     { return 0 }
 func (h *fakeHost) Closure(base, pc, a, bx int32) int32    { return 0 }
 func (h *fakeHost) Close(base, pc, a int32) int32          { return 0 }

@@ -275,6 +275,14 @@ type P4HostState interface {
 	//   - -2 = 退出(首值 nil)
 	TForLoop(base int32, pc int32, a int32, c int32) int64
 
+	// GlobalsRaw returns the globals table as a NaN-boxed u64 (same
+	// contract as the P3 wasm compiler's use in translate_table.go:
+	// the globals table identity is fixed for the State lifetime and
+	// arena objects never move, so the GCRef byte offset can be baked
+	// into emitted code at compile time). The PJ10 native GETGLOBAL /
+	// SETGLOBAL NodeHit inline fast path bakes it as an imm64.
+	GlobalsRaw() uint64
+
 	// ArenaBaseAddr 返回 arena `[]byte` 起点的 uintptr(承 05 §3.3)。	//
 	// 用例:PJ2 完整投机模板——mmap 段经 r15+offset 读 arenaBase 字段后
 	// 经字节级 movsd 直接读/写值栈槽位,跳过 host 接口 round-trip。

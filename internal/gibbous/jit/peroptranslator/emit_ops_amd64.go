@@ -1545,15 +1545,210 @@ func emitInlineSetTableArrayHit(cb *codeBuf, pc int32, a uint8, b, c int) bool {
 }
 
 func emitGETGLOBAL(cb *codeBuf, pc int32, a uint8, bx uint16) {
+	// Inline NodeHit fast path first (mirrors P3 wasm emitGetGlobal):
+	// globals table identity + key are compile-time constants, so a
+	// gen check + node slot load suffices. Miss falls to exit-reason.
+	if emitInlineGetGlobalNodeHit(cb, pc, a, bx) {
+		return
+	}
 	// Exit-reason path: bx is up to 18 bits which doesn't fit a single
 	// 9-bit arg slot, so split it across the b (low 9) and c (high 9)
 	// slots; the dispatcher reassembles bx = b | c<<9.
 	emitExitReason(cb, jit.HelperGetGlobal, pc, int32(a), int32(bx)&0x1FF, (int32(bx)>>9)&0x1FF)
 }
 
+// emitInlineGetGlobalNodeHit emits the GETGLOBAL NodeHit inline fast
+// path. GETGLOBAL A Bx reads Gtable[K(Bx)]: the globals table byte
+// offset (taddr) and the IC snapshot (node index + gen) are both
+// compile-time constants, so the fast path is just:
+//
+//	[Guard: gen (word5 high32 at taddr+40) == snap.Shape]
+//	[Load nodeRef = word3 at taddr+24, val = nodeRef + Index*24 + 8]
+//	[Guard: val != Nil]
+//	[Store val -> R(A)]
+//	[jmp done]
+//	miss: <exit-reason HelperGetGlobal>
+//	done:
+//
+// Gen bumps on rehash / key insert-delete / setmetatable, so a stale
+// snapshot fails the gen guard and routes to host.DoGetGlobal —
+// byte-equal to the interpreter's icGetTable path.
+func emitInlineGetGlobalNodeHit(cb *codeBuf, pc int32, a uint8, bx uint16) bool {
+	if cb.proto == nil || cb.proto.GlobalsTaddr == 0 || int(pc) >= len(cb.proto.IC) {
+		return false
+	}
+	snap := cb.proto.IC[pc]
+	if snap.Kind != bytecode.ICKindNodeHit {
+		return false
+	}
+	taddr := int32(cb.proto.GlobalsTaddr)
+	arenaBaseOff := int32(jit.JITContextArenaBaseOffset)
+	var guardFixups []int
+	recordFixup := func() {
+		guardFixups = append(guardFixups, int(cb.pos())-4)
+	}
+
+	// r11 = arena base
+	cb.emit([]byte{0x4D, 0x8B, 0x9F,
+		byte(arenaBaseOff), byte(arenaBaseOff >> 8),
+		byte(arenaBaseOff >> 16), byte(arenaBaseOff >> 24)})
+
+	// Guard: gen == snap.Shape. mov rax, [r11 + taddr + 40]; shr 32; cmp
+	{
+		disp := taddr + 40
+		// mov rax, [r11 + disp32]  (49 8B 83 disp32)
+		cb.emit([]byte{0x49, 0x8B, 0x83,
+			byte(uint32(disp)), byte(uint32(disp) >> 8),
+			byte(uint32(disp) >> 16), byte(uint32(disp) >> 24)})
+	}
+	cb.emit([]byte{0x48, 0xC1, 0xE8, 0x20}) // shr rax, 32
+	cb.emit([]byte{0x3D,
+		byte(snap.Shape), byte(snap.Shape >> 8),
+		byte(snap.Shape >> 16), byte(snap.Shape >> 24)}) // cmp eax, imm32
+	cb.emit(jitamd64.EmitJneRel32(nil, 0))
+	recordFixup()
+
+	// rcx = nodeRef (word3) = [r11 + taddr + 24]; make absolute
+	{
+		disp := taddr + 24
+		// mov rcx, [r11 + disp32]  (49 8B 8B disp32)
+		cb.emit([]byte{0x49, 0x8B, 0x8B,
+			byte(uint32(disp)), byte(uint32(disp) >> 8),
+			byte(uint32(disp) >> 16), byte(uint32(disp) >> 24)})
+	}
+	cb.emit([]byte{0x4C, 0x01, 0xD9}) // add rcx, r11
+
+	// rax = node val = [rcx + Index*24 + 8]
+	{
+		valOff := int32(snap.Index)*24 + 8
+		// mov rax, [rcx + disp32]  (48 8B 81 disp32)
+		cb.emit([]byte{0x48, 0x8B, 0x81,
+			byte(uint32(valOff)), byte(uint32(valOff) >> 8),
+			byte(uint32(valOff) >> 16), byte(uint32(valOff) >> 24)})
+	}
+
+	// Guard: val != Nil
+	cb.emit(jitamd64.EmitMovRdxImm64(nil, 0xFFFE_0000_0000_0000))
+	cb.emit([]byte{0x48, 0x39, 0xD0}) // cmp rax, rdx
+	cb.emit(jitamd64.EmitJeRel32(nil, 0))
+	recordFixup()
+
+	// Store R(A) = rax
+	cb.emit(jitamd64.EmitMovqMemRegFromRax(nil, regRBX, int32(a)*8))
+
+	// jmp done
+	cb.emit([]byte{0xE9, 0, 0, 0, 0})
+	fastPathJmpOff := int(cb.pos()) - 4
+
+	// miss: exit-reason
+	missOff := int(cb.pos())
+	for _, po := range guardFixups {
+		writeRel32(cb, po, int32(missOff)-int32(po+4))
+	}
+	emitExitReason(cb, jit.HelperGetGlobal, pc, int32(a), int32(bx)&0x1FF, (int32(bx)>>9)&0x1FF)
+
+	// done:
+	doneOff := int(cb.pos())
+	writeRel32(cb, fastPathJmpOff, int32(doneOff)-int32(fastPathJmpOff+4))
+	return true
+}
+
 func emitSETGLOBAL(cb *codeBuf, pc int32, a uint8, bx uint16) {
+	// Inline NodeHit fast path (existing-key value overwrite; mirrors
+	// P3 wasm emitSetGlobal). Miss falls to exit-reason.
+	if emitInlineSetGlobalNodeHit(cb, pc, a, bx) {
+		return
+	}
 	// Same bx split as emitGETGLOBAL.
 	emitExitReason(cb, jit.HelperSetGlobal, pc, int32(a), int32(bx)&0x1FF, (int32(bx)>>9)&0x1FF)
+}
+
+// emitInlineSetGlobalNodeHit emits the SETGLOBAL NodeHit inline fast
+// path: Gtable[K(Bx)] := R(A) when the key already exists (slot val
+// non-Nil) and gen matches. Overwriting an existing non-Nil value
+// never rehashes and never consults __newindex, so a raw store is
+// byte-equal to the interpreter. Writing Nil (key deletion semantics)
+// or a gen miss routes to host.DoSetGlobal.
+func emitInlineSetGlobalNodeHit(cb *codeBuf, pc int32, a uint8, bx uint16) bool {
+	if cb.proto == nil || cb.proto.GlobalsTaddr == 0 || int(pc) >= len(cb.proto.IC) {
+		return false
+	}
+	snap := cb.proto.IC[pc]
+	if snap.Kind != bytecode.ICKindNodeHit {
+		return false
+	}
+	taddr := int32(cb.proto.GlobalsTaddr)
+	arenaBaseOff := int32(jit.JITContextArenaBaseOffset)
+	var guardFixups []int
+	recordFixup := func() {
+		guardFixups = append(guardFixups, int(cb.pos())-4)
+	}
+
+	// r11 = arena base
+	cb.emit([]byte{0x4D, 0x8B, 0x9F,
+		byte(arenaBaseOff), byte(arenaBaseOff >> 8),
+		byte(arenaBaseOff >> 16), byte(arenaBaseOff >> 24)})
+
+	// Guard: gen == snap.Shape
+	{
+		disp := taddr + 40
+		cb.emit([]byte{0x49, 0x8B, 0x83,
+			byte(uint32(disp)), byte(uint32(disp) >> 8),
+			byte(uint32(disp) >> 16), byte(uint32(disp) >> 24)})
+	}
+	cb.emit([]byte{0x48, 0xC1, 0xE8, 0x20})
+	cb.emit([]byte{0x3D,
+		byte(snap.Shape), byte(snap.Shape >> 8),
+		byte(snap.Shape >> 16), byte(snap.Shape >> 24)})
+	cb.emit(jitamd64.EmitJneRel32(nil, 0))
+	recordFixup()
+
+	// rcx = absolute node slot addr base
+	{
+		disp := taddr + 24
+		cb.emit([]byte{0x49, 0x8B, 0x8B,
+			byte(uint32(disp)), byte(uint32(disp) >> 8),
+			byte(uint32(disp) >> 16), byte(uint32(disp) >> 24)})
+	}
+	cb.emit([]byte{0x4C, 0x01, 0xD9}) // add rcx, r11
+
+	valOff := int32(snap.Index)*24 + 8
+
+	// Guard: existing slot val != Nil (key exists; delete goes slow)
+	cb.emit([]byte{0x48, 0x8B, 0x81,
+		byte(uint32(valOff)), byte(uint32(valOff) >> 8),
+		byte(uint32(valOff) >> 16), byte(uint32(valOff) >> 24)}) // mov rax, [rcx+valOff]
+	cb.emit(jitamd64.EmitMovRdxImm64(nil, 0xFFFE_0000_0000_0000))
+	cb.emit([]byte{0x48, 0x39, 0xD0}) // cmp rax, rdx
+	cb.emit(jitamd64.EmitJeRel32(nil, 0))
+	recordFixup()
+
+	// rax = R(A); Guard: new value != Nil (writing Nil deletes -> slow)
+	cb.emit(jitamd64.EmitMovqRaxFromMemReg(nil, regRBX, int32(a)*8))
+	cb.emit([]byte{0x48, 0x39, 0xD0}) // cmp rax, rdx (rdx still NilBits)
+	cb.emit(jitamd64.EmitJeRel32(nil, 0))
+	recordFixup()
+
+	// Store [rcx + valOff] = rax
+	cb.emit([]byte{0x48, 0x89, 0x81,
+		byte(uint32(valOff)), byte(uint32(valOff) >> 8),
+		byte(uint32(valOff) >> 16), byte(uint32(valOff) >> 24)})
+
+	// jmp done
+	cb.emit([]byte{0xE9, 0, 0, 0, 0})
+	fastPathJmpOff := int(cb.pos()) - 4
+
+	// miss:
+	missOff := int(cb.pos())
+	for _, po := range guardFixups {
+		writeRel32(cb, po, int32(missOff)-int32(po+4))
+	}
+	emitExitReason(cb, jit.HelperSetGlobal, pc, int32(a), int32(bx)&0x1FF, (int32(bx)>>9)&0x1FF)
+
+	// done:
+	doneOff := int(cb.pos())
+	writeRel32(cb, fastPathJmpOff, int32(doneOff)-int32(fastPathJmpOff+4))
+	return true
 }
 
 func emitNEWTABLE(cb *codeBuf, pc int32, a, b, c uint8) {
