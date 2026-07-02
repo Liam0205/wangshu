@@ -1,6 +1,6 @@
 # 不可妥协的设计前提(MUST)
 
-> 状态:**P1 已落地(M0-M14,总验收通过),P2+ 未开始**。四组前提不变,且已获首批实测确认(三档 ≥2x over gopher-lua,NaN-box 去装箱即为主力收益)。本文档凝练的是 Wangshu(望舒)项目的设计意图与硬约束。
+> 状态:**P1 + P2 + P3(PW0-PW10)全卷已收口,P4(method JIT)多 PJ 已落地(含 PJ10 native emit,2026-07-01)**。四组前提不变,且已获多轮实测确认(P1 三档 ≥2x over gopher-lua、NaN-box 去装箱即主力收益;P3 loop 核 7.2x over gopher-lua 超 luajc 档;P4 native 三本 heavy bench 超 P3 wasm)。本文档凝练的是 Wangshu(望舒)项目的设计意图与硬约束。
 > 唯一源头:`docs/design/roadmap.md`。
 > 这是每次任务都应先读的 MUST 文档:下面四组前提决定了几乎所有后续技术决策的合理性边界,违背它们的提案基本可以直接判否。
 
