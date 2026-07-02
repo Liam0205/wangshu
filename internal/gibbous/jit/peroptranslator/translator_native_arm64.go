@@ -243,8 +243,7 @@ func TranslateProtoNative(proto *bytecode.Proto, host jit.P4HostState) (*nativeC
 	for i, v := range proto.Consts {
 		consts[i] = uint64(v)
 	}
-	icSnap := make([]bytecode.ICSlot, len(proto.IC))
-	copy(icSnap, proto.IC)
+	icSnap := snapshotProtoIC(proto)
 	buf.proto = &codeBufProto{Consts: consts, IC: icSnap}
 
 	// Prologue: reload X26 = vsBase from jitCtx (X27+off). arm64 doesn't
