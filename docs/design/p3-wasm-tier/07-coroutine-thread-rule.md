@@ -49,7 +49,7 @@ gibbous——主线程上同 Proto 的 gibbous 代码,**协程线程上不进入
 
 - **协程的 yield/resume 机制本身**:由 [P1 08](../p1-interpreter/08-coroutines.md) 单一事实源定义。本文只
   使用其结论(路线 B 的 yield 信号冒泡 + 不跨 C 边界限制),不再重述机制。
-- **协程在 P5 trace JIT 下的形态**:trace JIT(P5)对 coroutine 的处理留 [../p5-trace-jit](../p5-trace-jit.md)
+- **协程在 P5 trace JIT 下的形态**:trace JIT(P5)对 coroutine 的处理留 [../p5-trace-jit/00-overview.md](../p5-trace-jit/00-overview.md)
   专管。本文只覆盖 P3 阶段(method-style Wasm 编译)。
 - **路线 A 的具体实装代码**:P1 08 §3.2 已论证 P1 选定路线 B,A 仅作风险兜底。本文只在 §4 给「若启用 A,
   P3 协程升层如何重新可行」的代价分析,不出实装代码。

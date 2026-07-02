@@ -13,7 +13,7 @@
 > [../p3-wasm-tier/05-safepoint-gc](../p3-wasm-tier/05-safepoint-gc.md)(回边 + 边界 safepoint 协议——本文 §6 exit stub 与 safepoint 同位)。
 >
 > P5 对位(复杂度对照的对偶面):
-> [../p5-trace-jit](../p5-trace-jit.md)(§4 snapshot deopt——本文 §3.4 / §9 用它做 P4 简单性的反衬;§4.3 复杂度对照表的 P5 列即此处 P4 列的镜面)。
+> [../p5-trace-jit/06-snapshot-deopt.md](../p5-trace-jit/06-snapshot-deopt.md)(snapshot deopt——本文 §3.4 / §9 用它做 P4 简单性的反衬;其 §3 复杂度对照表的 P5 列即此处 P4 列的镜面)。
 >
 > P1 已落地的料(deopt 协议复用的现成基础设施):
 > [../p1-interpreter/01-value-object-model](../p1-interpreter/01-value-object-model.md)(§7 不变式 1「值即 8 字节,跨 tier 拷贝是 memmove」——物化语义的物理基础)、
@@ -40,7 +40,7 @@ P4 是望舒第一个**有运行期假设可能被打破**的层(承 [./03-specu
 
 为什么不允许其它形态:
 
-- **side exit 跑另一段编译码**(LuaJIT / TurboFan side trace 式):需要发射多份编译产物 + 编译期/运行期管理 side exit 跳转表,且 side trace 自身仍可能 deopt——递归复杂度迅速膨胀。这是 trace JIT 的必然形态(承 [../p5-trace-jit](../p5-trace-jit.md) §2 流水线图 ④/⑤),不是模板编译该背的复杂度。
+- **side exit 跑另一段编译码**(LuaJIT / TurboFan side trace 式):需要发射多份编译产物 + 编译期/运行期管理 side exit 跳转表,且 side trace 自身仍可能 deopt——递归复杂度迅速膨胀。这是 trace JIT 的必然形态(承 [../p5-trace-jit/00-overview.md](../p5-trace-jit/00-overview.md) §2 流水线图 ④/⑤),不是模板编译该背的复杂度。
 - **就地补救为通用模板**:理论上「投机失败 → 同函数内回退到无投机的通用模板继续跑」可保留 dispatch 收益,但需要每条投机指令旁带一份通用模板入口 + 编译期生成「跨指令切换路径」的 stitching 代码,把 P4 的「不优化跨指令」简单性破坏(承 [./02-template-direction.md](./02-template-direction.md) §1.3 简单性向下传导)。**P4 的策略是退到解释器跑完本帧、再训练后整 Proto 重编译**(§5),把「补救」从单帧内的微观操作上移成 Proto 级的宏观状态转移。
 
 ### 0.2 与 P3 04-trampoline 的对位:P3 status 链 vs P4 OSR exit
@@ -62,7 +62,7 @@ P4 是望舒第一个**有运行期假设可能被打破**的层(承 [./03-specu
 
 ### 0.3 与 P5 snapshot deopt 的复杂度差(预告)
 
-[../p5-trace-jit](../p5-trace-jit.md) §4 把 snapshot+deopt 机器称为「LuaJIT 真正的护城河,无处抄」,展开为「+2-4 人年开放式」的主成分。P4 的 deopt 之所以能薄到几乎没有,本质上是**「不优化跨指令」换来的简化**——值留在栈槽、单帧 exit、静态 exit 序列——使 snapshot 这台机器在 P4 整个不必存在。详细对照见 §3.4 与 §9.1 表;此处先点名:**P4 简单性的物理来源就是「不引入会拆毁栈槽真相不变式的优化」**。
+[../p5-trace-jit/06-snapshot-deopt.md](../p5-trace-jit/06-snapshot-deopt.md) 把 snapshot+deopt 机器称为「LuaJIT 真正的护城河,无处抄」,展开为「+2-4 人年开放式」的主成分。P4 的 deopt 之所以能薄到几乎没有,本质上是**「不优化跨指令」换来的简化**——值留在栈槽、单帧 exit、静态 exit 序列——使 snapshot 这台机器在 P4 整个不必存在。详细对照见 §3.4 与 §9.1 表;此处先点名:**P4 简单性的物理来源就是「不引入会拆毁栈槽真相不变式的优化」**。
 
 ### 0.4 章节路标
 
@@ -159,7 +159,7 @@ exit 后调用栈:
 否决理由:
 
 - **P4 没有跨帧编译**:P4 的编译单元是「单 Proto」(承 [./02-template-direction.md](./02-template-direction.md) §4 边界表「不做跨函数内联」),所以一帧的 exit 永远只涉及一帧的状态——无需重建多帧。
-- **跨帧 deopt 是 trace 内联的产物**:P5 因为「一条 trace 跨多帧内联」,deopt 时必须凭空重建从未物理存在的内联帧 CallInfo(承 [../p5-trace-jit](../p5-trace-jit.md) §4.1 / §4.2 frames[] 重建)。P4 没有内联,每帧都有真实 CallInfo,exit 不需要补建任何 CallInfo。
+- **跨帧 deopt 是 trace 内联的产物**:P5 因为「一条 trace 跨多帧内联」,deopt 时必须凭空重建从未物理存在的内联帧 CallInfo(承 [../p5-trace-jit/06-snapshot-deopt.md](../p5-trace-jit/06-snapshot-deopt.md) §1 / §2 frames[] 重建)。P4 没有内联,每帧都有真实 CallInfo,exit 不需要补建任何 CallInfo。
 - **「单向、当前帧、整体放弃」三个性质合在一起**让 P4 的 deopt 态空间退化到「最简形态」——其它复杂度都从这三个 NO 上消解。
 
 ### 1.6 与 P3 错误冒泡 status 链的对位:语义不同
@@ -263,7 +263,7 @@ P4 生成码读写值的形态:
 - P1:解释器值表示选 NaN-box([../p1-interpreter/01](../p1-interpreter/01-value-object-model.md) §3)。
 - P3:wasm 编译层共享 arena 与 NaN-box 编码,跨层只传 base i32([../p3-wasm-tier/03-memory-model](../p3-wasm-tier/03-memory-model.md))。
 - **P4:OSR 物化 = memmove**(本文)。
-- P5:trace JIT 继承,但 snapshot 重建仍是 NaN-box u64 → 栈槽,基础位编码同款([../p5-trace-jit](../p5-trace-jit.md) §4.2 物化部分)。
+- P5:trace JIT 继承,但 snapshot 重建仍是 NaN-box u64 → 栈槽,基础位编码同款([../p5-trace-jit/06-snapshot-deopt.md](../p5-trace-jit/06-snapshot-deopt.md) §2 物化部分)。
 
 > **承的对偶论点**:P4 物化简单是「P1 值表示选对了 + P4 不优化跨指令」**两条**共同贡献的——前者保证「同编码无转换」,后者保证「值在栈槽真相点」。少了任一条,物化都不会这么薄。本文 §3 的栈槽真相不变式与本节合并构成这个完整论证。
 
@@ -357,7 +357,7 @@ osrExit(exitPC):
 
 ### 3.4 与 P5 trace JIT 对照
 
-承 [../p5-trace-jit](../p5-trace-jit.md) §4.1——P5 因三项核心优化拆毁栈槽真相不变式,deopt 必须靠 snapshot 重建多帧真相:
+承 [../p5-trace-jit/06-snapshot-deopt.md](../p5-trace-jit/06-snapshot-deopt.md) §1——P5 因三项核心优化拆毁栈槽真相不变式,deopt 必须靠 snapshot 重建多帧真相:
 
 | 拆毁来源 | P4 是否引入 | 后果 |
 |---|---|---|
@@ -942,7 +942,7 @@ crescent doCall 的 enterGibbous 收到 GibbousCode.Run 返回:
 
 ### 9.1 P4 函数级 OSR vs P5 snapshot deopt 的复杂度对照表
 
-承本文 §3 与 [../p5-trace-jit](../p5-trace-jit.md) §4.3 的核心对照,本节给完整版:
+承本文 §3 与 [../p5-trace-jit/06-snapshot-deopt.md](../p5-trace-jit/06-snapshot-deopt.md) §3 的核心对照,本节给完整版:
 
 | 维度 | P4 函数级 OSR | P5 snapshot deopt |
 |---|---|---|
@@ -953,15 +953,15 @@ crescent doCall 的 enterGibbous 收到 GibbousCode.Run 返回:
 | **出错形态** | 几乎无投机面(物化 = memmove,§2) | 任一槽映射错 / unsink 漏字段 ⇒ 静默错果 |
 | **exit stub 大小** | ~5-7 条机器指令(§6.2) | ~50-200 条(snapshot 解析 + 多帧重建 + unsink) |
 | **运行期分配** | 无(§3.7 不变式) | 可能(unsink 重建对象需新分配) |
-| **GC 交互** | 无(exit 不分配,根天然可见) | unsink 中途可能触发 GC(承 [../p5-trace-jit](../p5-trace-jit.md) §4.2 末) |
+| **GC 交互** | 无(exit 不分配,根天然可见) | unsink 中途可能触发 GC(承 [../p5-trace-jit/06-snapshot-deopt.md](../p5-trace-jit/06-snapshot-deopt.md) §2 末) |
 | **CallInfo 操作** | 写 savedPC 一字段 + 不弹 | 弹/补建 N 帧 CallInfo |
-| **人年成本** | 已纳入 P4 +1-2 人年 | 是 P5 +2-4 人年的主成分(承 [../p5-trace-jit](../p5-trace-jit.md) §4.4) |
+| **人年成本** | 已纳入 P4 +1-2 人年 | 是 P5 +2-4 人年的主成分(承 [../p5-trace-jit/06-snapshot-deopt.md](../p5-trace-jit/06-snapshot-deopt.md) §4) |
 
 **复杂度差大约一个量级**——这就是「P4 用『不优化跨指令』换掉整台 snapshot 机器」的具体含义(§3.5)。
 
 ### 9.2 P5 必须靠 snapshot 的物理原因
 
-承 [../p5-trace-jit](../p5-trace-jit.md) §4.1,P5 三项核心优化都拆毁栈槽真相:
+承 [../p5-trace-jit/06-snapshot-deopt.md](../p5-trace-jit/06-snapshot-deopt.md) §1,P5 三项核心优化都拆毁栈槽真相:
 
 | P5 优化 | 拆毁栈槽真相的方式 | snapshot 必须做什么 |
 |---|---|---|
@@ -969,7 +969,7 @@ crescent doCall 的 enterGibbous 收到 GibbousCode.Run 返回:
 | trace 内联 | 一条 trace 跨多帧,被内联帧从未压 CallInfo | 记 frames[] = (protoID, base 偏移, 返回 pc) 列表;exit 时按列表 push CallInfo |
 | 分配下沉(sinking) | 「对象」物理上不存在,字段散在 IR 值 | 记 sunk 重建配方 = (类型, 字段值/IR 引用) 列表;exit 时分配真对象再填字段(unsink) |
 
-**三者「互为前提、高度耦合」**(承 [../p5-trace-jit](../p5-trace-jit.md) §4.4):snapshot 引用的 IR 值必须在 exit 时可恢复,约束 regalloc 自由度;sink 优化要不损失正确性必须配合 snapshot;snapshot 压缩与 regalloc 的耦合是 LuaJIT 多年精炼的产物。
+**三者「互为前提、高度耦合」**(承 [../p5-trace-jit/06-snapshot-deopt.md](../p5-trace-jit/06-snapshot-deopt.md) §4):snapshot 引用的 IR 值必须在 exit 时可恢复,约束 regalloc 自由度;sink 优化要不损失正确性必须配合 snapshot;snapshot 压缩与 regalloc 的耦合是 LuaJIT 多年精炼的产物。
 
 ### 9.3 P4 的 deopt 是「真相点处处」的退化
 
@@ -1110,7 +1110,7 @@ crescent doCall 的 enterGibbous 收到 GibbousCode.Run 返回:
 [./08-testing-strategy](./08-testing-strategy.md)(§7.2 deopt 注入测试 + 差分主防线——本文 §4.4 / §7.3 链过去) ·
 [../p3-wasm-tier/04-trampoline](../p3-wasm-tier/04-trampoline.md)(P3 跨层协议,§0.4 P4 继承 / §1 bit50 / §4 status 链——本文 §0.2 / §8 对位) ·
 [../p3-wasm-tier/05-safepoint-gc](../p3-wasm-tier/05-safepoint-gc.md)(回边 + 边界 safepoint——本文 §6 exit stub 与 safepoint 同位) ·
-[../p5-trace-jit](../p5-trace-jit.md)(§4 snapshot deopt——本文 §3.4 / §9 复杂度对照的对偶面) ·
+[../p5-trace-jit/00-overview.md](../p5-trace-jit/00-overview.md)(§4 snapshot deopt——本文 §3.4 / §9 复杂度对照的对偶面) ·
 [../p1-interpreter/01-value-object-model](../p1-interpreter/01-value-object-model.md)(§7 值表示不变式 1——物化 = memmove 的物理基础) ·
 [../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md)(§1 CallInfo + Frame / §1.3 reloadFrame / §7 调用约定 / §7.3 reentry 边界) ·
 [../p2-bridge/04-try-compile-fallback](../p2-bridge/04-try-compile-fallback.md)(§7 不重试纪律——本文 §5.4 对位) ·

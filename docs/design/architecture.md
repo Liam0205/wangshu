@@ -33,7 +33,7 @@ docs/design/
   p2-bridge/                       P2 分层桥(子目录 7 文件):热度计数/IC反馈/可编译性分析/fallback
   p3-wasm-tier/                    P3 Wasm 编译层(子目录 10 文件):字节码→Wasm/linear memory/trampoline
   p4-method-jit/                   P4 method JIT(子目录 10 文件):JSC Baseline 风格模板编译+IC投机+OSR exit+双后端
-  p5-trace-jit.md                  P5 trace JIT 架构决策(开放式)
+  p5-trace-jit/                    P5 trace JIT(子目录 11 文件,未立项图纸):trace 录制/IR/regalloc/snapshot deopt
 ```
 
 术语统一查 `../../llmdoc/reference/glossary.md`(列内核/NaN-boxing/arena/月相 tier/deopt 等)。

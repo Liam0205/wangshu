@@ -46,7 +46,7 @@ Wangshu(望舒)是一个**纯 Go 实现的高性能嵌入式 Lua 虚拟机**,关
 - **收尾轮已把原「已知简化」清单全部落地**(arena 原生表存储、IC 命中路径、协程、pattern matcher、stdlib 补全、错误前缀+traceback、弱表/finalizer、arena ABI 列接口、difftest 随机生成器)。实现形态与设计文档的差异(均接口等价)及 **P3 迁移留口**(值栈/CallInfo arena 化等)见 `docs/design/p1-interpreter/implementation-progress.md` 对账表。
 - **P2(分层桥)+ P3(Wasm 编译层)全卷已收口**:P2 PB0-PB7 + 后续优化轮 #1-#4(热度计数 / IC 反馈聚合 / 可编译性闸门 / TierState 状态机);P3 PW0-PW10(spike 闸门 → 全 38 opcode 除 VARARG 翻译成 Wasm → 跨层互调 → 线程级 tier 规则 → V1-V18 端到端验收 → PW10 消除 gibbous→gibbous 跨层调用税)。**P3 列内核 loop 形态已超 luajc 档**(loop 2.95x over P1 = 7.2x over gopher-lua > luajc 4.4x);table/call/mixed 仍 ≪ luajc 档,P4 立项动机在非 loop 形态。详见各目录 `implementation-progress.md`。
 - **P4(method JIT)多 PJ 已落地**(2026-07-01):PJ0-PJ11 投机模板 + 表 IC + FORLOOP inline + **PJ10 通用 per-opcode 翻译器 + amd64/arm64 native emit 真接入**(V15b heavy 三本 P4 native > P3 wasm 达标);跨 arch 三平台矩阵 CI(linux/arm64 闸门翻 true,darwin/arm64 codepage 真实装)。剩 `archSupportsSpec` 物理 runner 真启用 / 段内 EmitCallInline / OSR exit 真接入。详见 `docs/design/p4-method-jit/implementation-progress.md`。
-- **设计文档集仍是规范源**:`roadmap.md`(战略)+ `architecture.md`(跨阶段总览,§0 是文档集地图)+ `p1-interpreter/`(全卷 00-12)+ `p2-bridge/` / `p3-wasm-tier/` / `p4-method-jit/`(各子目录含 implementation-progress)+ `p5-trace-jit.md`。
+- **设计文档集仍是规范源**:`roadmap.md`(战略)+ `architecture.md`(跨阶段总览,§0 是文档集地图)+ `p1-interpreter/`(全卷 00-12)+ `p2-bridge/` / `p3-wasm-tier/` / `p4-method-jit/`(各子目录含 implementation-progress)+ `p5-trace-jit/`(子目录 11 文件,未立项图纸)。
 - **P5 仍为规划**(仅在 P4 收益不够时启动)。
 
 ---

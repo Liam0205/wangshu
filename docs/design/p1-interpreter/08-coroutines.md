@@ -470,7 +470,7 @@ func hostCoroutineResume(vm *VM, th *Thread) int {
 ### 3.6 与 trace JIT / 未来对齐(路线 B 的演进价值)
 
 路线 (B) 的"显式信号冒泡 + 调用链在 arena"模型,与未来 P5 trace JIT(`docs/design/roadmap.md`,
-[../p5-trace-jit](../p5-trace-jit.md))的需求**同向**:
+[../p5-trace-jit/00-overview.md](../p5-trace-jit/00-overview.md))的需求**同向**:
 
 - **trace 录制需要精确掌控执行流的挂起/恢复点**。(B) 下 yield/resume 是**显式的、可观测的信号边界**
   (`sigYield`/`sigReturn`),trace 录制器能精确知道"执行流在哪挂起了"。(A) 下协程挂起是 goroutine 阻塞在
@@ -1130,6 +1130,6 @@ callInfoRef/openUpvalRef/errorJmp/resumeFrom) · [05-interpreter-loop](./05-inte
 [10-stdlib](./10-stdlib.md)(coroutine 库 host functions 清单/注册,消费本文机制) ·
 [11-embedding-arena-abi](./11-embedding-arena-abi.md)(主线程 Program.Call 入口,§8) ·
 [12-testing-difftest](./12-testing-difftest.md)(协程错误措辞/状态转移逐字节核对) ·
-[../p5-trace-jit](../p5-trace-jit.md)(路线 B 与 trace JIT 对齐,§3.6) ·
+[../p5-trace-jit/00-overview.md](../p5-trace-jit/00-overview.md)(路线 B 与 trace JIT 对齐,§3.6) ·
 [design-premises](../../../llmdoc/must/design-premises.md) ·
 roadmap:`docs/design/roadmap.md` (§6 锁 Lua 5.1 / §5 原则 1 解释器永不退役/原则 4 协程走 fallback)

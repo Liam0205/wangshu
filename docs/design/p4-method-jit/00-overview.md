@@ -5,7 +5,7 @@
 > P1 依赖面:[01](../p1-interpreter/01-value-object-model.md)(NaN-box u64 + GCRef offset)、[02](../p1-interpreter/02-bytecode-isa.md)(源 ISA + §7 IC slot)、[05](../p1-interpreter/05-interpreter-loop.md)(§1 CallInfo / §7 调用协议——OSR 着陆面)、[12](../p1-interpreter/12-testing-difftest.md)(§3.8 Runner 抽象 / §7 P4 行 / §8 CI 门禁)。
 > P2 依赖面:[../p2-bridge/00-overview](../p2-bridge/00-overview.md)(P4 是 P2 决策的消费者)、[../p2-bridge/02-ic-feedback](../p2-bridge/02-ic-feedback.md) §4(TypeFeedback shape + confidence)、[../p2-bridge/03-compilability-analysis](../p2-bridge/03-compilability-analysis.md) §3.7(F7 后端能力 SupportsAllOpcodes)、[../p2-bridge/04-try-compile-fallback](../p2-bridge/04-try-compile-fallback.md)(零 deopt 单向状态机基线——P4 在此基础上加 deopt 边)、[../p2-bridge/05-p3-p4-interface](../p2-bridge/05-p3-p4-interface.md)(P3Compiler 接口 + GibbousCode 抽象 + P4Feedback 反向读)。
 > P3 依赖面:[../p3-wasm-tier/00-overview](../p3-wasm-tier/00-overview.md)(P4 继承 P3 全部分层结构;P3 PW0-PW10 已交付,本机 Xeon 6982P 实测基线 loop 2.95x / table 0.88x / call 0.52x / mixed 0.99x;P3 现状是 P4 立项的重要输入)、[../p3-wasm-tier/04-trampoline](../p3-wasm-tier/04-trampoline.md)(跨层协议;P4 继承 bit50 / status 链 / base 刷新)、[../p3-wasm-tier/05-safepoint-gc](../p3-wasm-tier/05-safepoint-gc.md)(三类 safepoint——P4 自付物理)。
-> 下游 P5 衔接:[../p5-trace-jit](../p5-trace-jit.md)(下一站:只在 P4 收益不够时启动,P4 验收数据是 P5 立项输入)。
+> 下游 P5 衔接:[../p5-trace-jit/00-overview.md](../p5-trace-jit/00-overview.md)(下一站:只在 P4 收益不够时启动,P4 验收数据是 P5 立项输入)。
 >
 > P4 目标一句话:**gibbous(tier-1)的第二个发射后端,继承 P3 全部分层结构,只换发射后端——把 P2 决策机产出的 gibbous 代码请求兑现成原生机器码,首次让望舒走出 wazero 外包,达到 LuaJ-luajc 档(列内核负载 ≥164μs)**。
 
@@ -308,7 +308,7 @@ P1 全卷已交付(M0-M14) + P2 PB0-PB7 + 后续优化轮 #1-#4 + P3 PW0-PW10 + 
 [implementation-progress](./implementation-progress.md)(进度对账 + 跨文档回填请求收口表) ·
 [../p2-bridge/00-overview](../p2-bridge/00-overview.md)(P2 总览,P4 是其消费者) ·
 [../p3-wasm-tier/00-overview](../p3-wasm-tier/00-overview.md)(P3 总览,P4 继承全部分层结构) ·
-[../p5-trace-jit](../p5-trace-jit.md)(下一站:P4 收益不够时的开放式选项) ·
+[../p5-trace-jit/00-overview.md](../p5-trace-jit/00-overview.md)(下一站:P4 收益不够时的开放式选项) ·
 [../p1-interpreter/00-overview](../p1-interpreter/00-overview.md)(P1 总览,P4 共享值表示与内存模型) ·
 [../p1-interpreter/02-bytecode-isa](../p1-interpreter/02-bytecode-isa.md)(源 ISA + §7 IC slot) ·
 [../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md)(§1 CallInfo / §7 调用协议——OSR 着陆面) ·
