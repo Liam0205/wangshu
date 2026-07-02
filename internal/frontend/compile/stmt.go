@@ -53,8 +53,21 @@ func (fs *funcState) stmt(node ast.Stmt) {
 func (fs *funcState) stmtLocal(s *ast.LocalStmt) {
 	nWant := len(s.Names)
 	fs.adjustExprList(s.Line, s.Exprs, nWant)
-	for _, n := range s.Names {
+	for i, n := range s.Names {
 		fs.registerLocal(s.Line, n)
+		// Track `local sqrt = math.sqrt`-style bindings (RHS is a bare
+		// NameExpr or IndexExpr shape) so inner Protos' compilability
+		// analysis can resolve safe stdlib alias calls. The analyzer
+		// applies its own whitelist; here we only record the dataflow
+		// fact. Any other RHS shape clears a stale entry.
+		if i < len(s.Exprs) {
+			switch s.Exprs[i].(type) {
+			case *ast.NameExpr, *ast.IndexExpr:
+				fs.localAliasAsts[n] = s.Exprs[i]
+				continue
+			}
+		}
+		delete(fs.localAliasAsts, n)
 	}
 }
 
