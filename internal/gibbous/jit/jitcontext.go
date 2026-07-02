@@ -91,7 +91,20 @@ const (
 	HelperRunCallee uint64 = 1 // Spike 1 Step C-1:跑 callee Lua 体
 	HelperGrowStack uint64 = 2 // 未来:arena grow 触发
 	HelperGCBarrier uint64 = 3 // 未来:GC 写屏障(只在写 Go 堆时)
+
+	// PJ10 native emit exit-reason codes for shim-based ops that can't
+	// be shim-called from inside the mmap segment (issue #38). The
+	// segment writes the helper code into low bits of exitArg0 along
+	// with packed op args, sets resumeOff to the next-op offset, and
+	// RETs; nativeCode.Run's dispatcher reads exitArg0, invokes the
+	// corresponding host method, then reenters the mmap segment via
+	// codePage + resumeOff.
+	HelperGetTable uint64 = 10
 )
+
+// HelperCodeMask masks off the low 16 bits of exitArg0 that hold the
+// helper discriminator; the high 48 bits carry op-specific packed args.
+const HelperCodeMask uint64 = 0xFFFF
 
 // JITContext 是 P4 跨边界的执行上下文(05 §3.3)。
 //
