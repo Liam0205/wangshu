@@ -45,6 +45,7 @@ func analyzeCompilabilityWithOuter(fn *ast.FuncExpr, proto *bytecode.Proto, oute
 	}
 	// 收集 outer 链上所有 funcState 的 localFnAsts 合并视图(近层覆盖远层)。
 	outerLocals := map[string]*ast.FuncExpr{}
+	outerAliases := map[string]ast.Expr{}
 	// 从最远层到最近层逆序合并,内层覆盖外层(local scope 遮蔽语义)。
 	var chain []*funcState
 	for cur := outerFS; cur != nil; cur = cur.prev {
@@ -54,7 +55,12 @@ func analyzeCompilabilityWithOuter(fn *ast.FuncExpr, proto *bytecode.Proto, oute
 	for i := len(chain) - 1; i >= 0; i-- {
 		for name, fnAST := range chain[i].localFnAsts {
 			outerLocals[name] = fnAST
+			delete(outerAliases, name)
+		}
+		for name, rhs := range chain[i].localAliasAsts {
+			outerAliases[name] = rhs
+			delete(outerLocals, name)
 		}
 	}
-	tmp.AnalyzeProtoWithOuter(fn, proto, outerLocals)
+	tmp.AnalyzeProtoWithOuter(fn, proto, outerLocals, outerAliases)
 }

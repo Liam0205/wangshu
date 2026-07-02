@@ -30,7 +30,7 @@ import (
 //  2. 保守优先——任一 F1-F7 信号触发即判 NotCompilable;
 //  3. AST 用完即弃(03 §2.4 决策方案 ①)——本函数返回后不持有 fn 引用。
 func (b *Bridge) AnalyzeProto(fn *ast.FuncExpr, proto *bytecode.Proto) Compilability {
-	return b.AnalyzeProtoWithOuter(fn, proto, nil)
+	return b.AnalyzeProtoWithOuter(fn, proto, nil, nil)
 }
 
 // AnalyzeProtoWithOuter 是 AnalyzeProto 的 scope-aware 版本(承 P4 PJ5
@@ -52,7 +52,14 @@ func (b *Bridge) AnalyzeProto(fn *ast.FuncExpr, proto *bytecode.Proto) Compilabi
 //
 // **遮蔽安全**:outerLocalFuncs 中与本 proto Params 同名的条目被剔除,
 // 避免误把 parameter 当 known local fn。
-func (b *Bridge) AnalyzeProtoWithOuter(fn *ast.FuncExpr, proto *bytecode.Proto, outerLocalFuncs map[string]*ast.FuncExpr) Compilability {
+//
+// outerAliases carries `local sqrt = math.sqrt`-style bindings from the
+// outer funcState chain (name -> RHS expression). Entries whose RHS
+// passes the isSafeStdlibCall whitelist seed the visitor's safeAliases,
+// so `sqrt(x)` calls inside this proto resolve as safe stdlib calls
+// instead of ReasonUnknownCall. Same shadowing discipline as
+// outerLocalFuncs.
+func (b *Bridge) AnalyzeProtoWithOuter(fn *ast.FuncExpr, proto *bytecode.Proto, outerLocalFuncs map[string]*ast.FuncExpr, outerAliases map[string]ast.Expr) Compilability {
 	v := newCompilabilityVisitor()
 	// 继承 outer local funcs 快照,减去本函数参数同名遮蔽项
 	for name, fnAST := range outerLocalFuncs {
@@ -65,6 +72,20 @@ func (b *Bridge) AnalyzeProtoWithOuter(fn *ast.FuncExpr, proto *bytecode.Proto, 
 		}
 		if !shadowed {
 			v.localFuncs[name] = fnAST
+		}
+	}
+	// Seed safe stdlib aliases from the outer chain (whitelist-filtered
+	// here, dataflow-tracked by the frontend).
+	for name, rhs := range outerAliases {
+		shadowed := false
+		for _, p := range fn.Params {
+			if p == name {
+				shadowed = true
+				break
+			}
+		}
+		if !shadowed && isSafeStdlibCall(rhs) {
+			v.safeAliases[name] = true
 		}
 	}
 	v.walkBlock(fn.Body)
@@ -198,6 +219,16 @@ type compilabilityVisitor struct {
 	// 单 visitor 实例内的局部表,跨子函数边界不共享(嵌套 Proto 独立判定)。
 	localFuncs map[string]*ast.FuncExpr
 
+	// safeAliases tracks `local sqrt = math.sqrt`-style aliases of
+	// whitelisted stdlib functions. This is dataflow tracking, not name
+	// enumeration: a LocalStmt whose RHS passes the isSafeStdlibCall
+	// shape check (whitelisted NameExpr / lib.method IndexExpr)
+	// registers the LHS local name here; reassignment or shadowing
+	// deletes it (same scope discipline as localFuncs, snapshot-restored
+	// by pushScope/popScope). visitCallExpr consults this table for
+	// `sqrt(x)`-style calls and skips the callsUnknownFn mark on hit.
+	safeAliases map[string]bool
+
 	// localShadows 用于跟踪「同名 local 重定义」遮蔽外层 known function。
 	// 简单 push/pop 栈即可——本 P2 初版用 nil-check + map 写覆盖,Pop 时
 	// 显式清理(scope-aware 实装)。
@@ -210,24 +241,30 @@ type compilabilityVisitor struct {
 }
 
 type scopeFrame struct {
-	saved map[string]*ast.FuncExpr // 进入 block 时的快照
+	saved        map[string]*ast.FuncExpr // snapshot taken on block entry
+	savedAliases map[string]bool          // safeAliases snapshot, same discipline
 }
 
 func newCompilabilityVisitor() *compilabilityVisitor {
 	return &compilabilityVisitor{
 		localFuncs:        make(map[string]*ast.FuncExpr),
+		safeAliases:       make(map[string]bool),
 		inlinedKnownCalls: make(map[*ast.FuncExpr]bool),
 	}
 }
 
 // pushScope / popScope 进入 / 退出一个 block(do/while/for/if/repeat)时
-// 保存 / 恢复 localFuncs(简单栈实装)。
+// 保存 / 恢复 localFuncs + safeAliases(简单栈实装)。
 func (v *compilabilityVisitor) pushScope() {
 	saved := make(map[string]*ast.FuncExpr, len(v.localFuncs))
 	for k, e := range v.localFuncs {
 		saved[k] = e
 	}
-	v.scopeStack = append(v.scopeStack, scopeFrame{saved: saved})
+	savedAliases := make(map[string]bool, len(v.safeAliases))
+	for k := range v.safeAliases {
+		savedAliases[k] = true
+	}
+	v.scopeStack = append(v.scopeStack, scopeFrame{saved: saved, savedAliases: savedAliases})
 }
 
 func (v *compilabilityVisitor) popScope() {
@@ -237,6 +274,7 @@ func (v *compilabilityVisitor) popScope() {
 	frame := v.scopeStack[len(v.scopeStack)-1]
 	v.scopeStack = v.scopeStack[:len(v.scopeStack)-1]
 	v.localFuncs = frame.saved
+	v.safeAliases = frame.savedAliases
 }
 
 // walkBlock 遍历一个 block(语句列表)。
@@ -263,17 +301,31 @@ func (v *compilabilityVisitor) walkStmt(s ast.Stmt) {
 			if i < len(n.Exprs) {
 				if fn, ok := n.Exprs[i].(*ast.FuncExpr); ok {
 					v.localFuncs[name] = fn
+					delete(v.safeAliases, name)
+					continue
+				}
+				// `local sqrt = math.sqrt` shape: the RHS is a safe stdlib
+				// reference (a value read, not a call), so register the
+				// LHS as a safe alias; later `sqrt(x)` calls skip the
+				// unknown mark. Dataflow tracking: reassignment and
+				// shadowing are cleaned up by the delete branches below
+				// and in AssignStmt.
+				if isSafeStdlibCall(n.Exprs[i]) {
+					v.safeAliases[name] = true
+					delete(v.localFuncs, name)
 					continue
 				}
 			}
 			// 不是 FuncExpr 字面量 ⇒ 不挂(若 name 之前指向 local fn,
 			// 现在被遮蔽,从 map 移除避免误判)
 			delete(v.localFuncs, name)
+			delete(v.safeAliases, name)
 		}
 	case *ast.LocalFuncStmt:
 		// `local function f() ... end` —— 直接挂 localFuncs。
 		// 注意作用域:函数体内可见自身(允许递归),先挂再 walk 体。
 		v.localFuncs[n.Name] = n.Fn
+		delete(v.safeAliases, n.Name)
 		v.walkFuncExpr(n.Fn)
 	case *ast.AssignStmt:
 		for _, e := range n.Targets {
@@ -285,6 +337,14 @@ func (v *compilabilityVisitor) walkStmt(s ast.Stmt) {
 		// `f = function() end` 形态——若 target 是 NameExpr 且 RHS 是 FuncExpr,
 		// 但赋全局/upvalue 的 f 不是 local,**保守不挂 localFuncs**
 		// (赋值后 f 可能被外部覆盖)。
+		// Any reassignment to a tracked name invalidates its known-fn /
+		// safe-alias record (dataflow invalidation).
+		for _, tgt := range n.Targets {
+			if name, ok := tgt.(*ast.NameExpr); ok {
+				delete(v.localFuncs, name.Name)
+				delete(v.safeAliases, name.Name)
+			}
+		}
 	case *ast.CallStmt:
 		v.walkExpr(n.Call)
 	case *ast.DoStmt:
@@ -433,6 +493,14 @@ func (v *compilabilityVisitor) visitCallExpr(e *ast.CallExpr) {
 	if isSafeStdlibCall(e.Fn) {
 		return
 	}
+	// 5b. Safe stdlib alias call (`local sqrt = math.sqrt; ... sqrt(x)`
+	// shape). LocalStmt dataflow tracking registered the name in
+	// safeAliases; reassignment/shadowing was already invalidated in
+	// walkStmt branches, so a hit here is equivalent to a direct
+	// math.sqrt(x) call.
+	if name, ok := e.Fn.(*ast.NameExpr); ok && v.safeAliases[name.Name] {
+		return
+	}
 	// 6. 一般调用——isKnownLocalCall 真实现(用户拍板不要全 false)
 	if v.isKnownLocalCall(e.Fn) {
 		// 已知 local 指向当前 Proto 的某子 FuncExpr → 把子函数体并入父的
@@ -507,7 +575,7 @@ func (v *compilabilityVisitor) walkFuncExpr(e *ast.FuncExpr) {
 	// 子函数体单独跑(隔离信号)
 	sub := newCompilabilityVisitor()
 	sub.currentDepth = v.currentDepth
-	// 继承父 localFuncs 快照,减去 closure 自身参数同名遮蔽项
+	// 继承父 localFuncs + safeAliases 快照,减去 closure 自身参数同名遮蔽项
 	for k, fn := range v.localFuncs {
 		shadowed := false
 		for _, p := range e.Params {
@@ -518,6 +586,18 @@ func (v *compilabilityVisitor) walkFuncExpr(e *ast.FuncExpr) {
 		}
 		if !shadowed {
 			sub.localFuncs[k] = fn
+		}
+	}
+	for k := range v.safeAliases {
+		shadowed := false
+		for _, p := range e.Params {
+			if p == k {
+				shadowed = true
+				break
+			}
+		}
+		if !shadowed {
+			sub.safeAliases[k] = true
 		}
 	}
 	sub.walkBlock(e.Body)

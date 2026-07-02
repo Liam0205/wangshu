@@ -81,6 +81,16 @@ type funcState struct {
 	// (留下一 commit 扩展);全局 / 表字段 fn 永远不跟踪(运行期可被覆盖)。
 	localFnAsts map[string]*ast.FuncExpr
 
+	// localAliasAsts tracks `local sqrt = math.sqrt`-style bindings: local
+	// name -> the RHS expression, registered by stmtLocal when the RHS is
+	// a NameExpr or lib.method IndexExpr shape. The analyzer (bridge.
+	// AnalyzeProtoWithOuter) filters these through its stdlib whitelist —
+	// this map only carries the dataflow fact "name X was bound to
+	// expression E and never reassigned in this funcState". Same channel
+	// discipline as localFnAsts: inner Protos inherit the merged outer
+	// view so alias calls resolve across closure boundaries.
+	localAliasAsts map[string]ast.Expr
+
 	isVararg bool
 }
 
@@ -91,12 +101,13 @@ func newFuncState(cg *codegen, prev *funcState, source string, line int32) *func
 			Source:      source,
 			LineDefined: line,
 		},
-		prev:        prev,
-		cg:          cg,
-		jpc:         NoJump,
-		lastTarget:  -1,
-		consts:      map[constKey]int{},
-		localFnAsts: map[string]*ast.FuncExpr{},
+		prev:           prev,
+		cg:             cg,
+		jpc:            NoJump,
+		lastTarget:     -1,
+		consts:         map[constKey]int{},
+		localFnAsts:    map[string]*ast.FuncExpr{},
+		localAliasAsts: map[string]ast.Expr{},
 	}
 	return fs
 }
