@@ -449,18 +449,35 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 	// multi-return Protos lower each RETURN to a HelperReturn
 	// exit-reason (TranslateProtoNative sets codeBufProto.MultiReturn).
 	// Zero reachable RETURNs would leave Run without a teardown path.
+	//
+	// CALL density gate: every CALL lowers to an exit-reason round trip
+	// (mmap RET -> Go dispatch -> host.CallBaseline -> mmap reentry),
+	// which costs roughly 15-25 interpreted ops. Protos whose bodies
+	// are dominated by CALLs (recursive fib, tree builders) run slower
+	// on the native path than on the interpreter — measured: fib 11ms
+	// interp vs 18ms native. Require enough non-CALL work per CALL to
+	// amortize the round trip.
 	returnCount := 0
+	callCount := 0
+	totalOps := 0
 	for id, bb := range c.blocks {
 		if !reach[id] {
 			continue
 		}
 		for pc := bb.startPC; pc < bb.endPC; pc++ {
-			if bytecode.Op(proto.Code[pc]) == bytecode.RETURN {
+			totalOps++
+			switch bytecode.Op(proto.Code[pc]) {
+			case bytecode.RETURN:
 				returnCount++
+			case bytecode.CALL:
+				callCount++
 			}
 		}
 	}
 	if returnCount == 0 {
+		return false
+	}
+	if callCount > 0 && totalOps/callCount < 16 {
 		return false
 	}
 	return true
