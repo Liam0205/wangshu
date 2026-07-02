@@ -50,6 +50,22 @@ type Bridge struct {
 	// 时序不确定性,使层间差分可复现 + 覆盖最大化。**不绕可编译性闸门**
 	// (F1-F7 排除形状仍走 crescent,08 §2.3.1)。testing-only。
 	forceAll bool
+
+	// minPromotableLen is the effective short-proto floor, snapshotted
+	// from the backend in SetP3Compiler (MinPromotableCodeLen default,
+	// or the backend's MinPromotableLen override). Zero means "no
+	// backend injected yet" — OnEnter/OnBackEdge fall back to the
+	// package default in that window.
+	minPromotableLen int
+}
+
+// MinPromotableLener is an optional interface a P3Compiler may
+// implement to override the package-level MinPromotableCodeLen floor.
+// P4's native backend dispatches through a direct mmap call (no wasm
+// module boundary), so tiny protos that lose money on P3 wasm can
+// still win on P4.
+type MinPromotableLener interface {
+	MinPromotableLen() int
 }
 
 // NewBridge 构造一个空 Bridge,挂在 State 上(crescent 端 setter 注入)。
@@ -66,10 +82,31 @@ func NewBridge() *Bridge {
 
 // SetP3Compiler 注入 P3/P4 编译器。可在 Bridge 创建后任意时刻调用,
 // 但**实际编译触发**(considerPromotion 走 try-compile 路径)前必须装好。
-func (b *Bridge) SetP3Compiler(p3 P3Compiler) { b.p3 = p3 }
+func (b *Bridge) SetP3Compiler(p3 P3Compiler) {
+	b.p3 = p3
+	// Backends with cheaper dispatch than P3 wasm may opt into a lower
+	// short-proto floor (see MinPromotableLener). Snapshot it once here
+	// so the hot OnEnter/OnBackEdge guard stays a plain int compare.
+	b.minPromotableLen = MinPromotableCodeLen
+	if ml, ok := p3.(MinPromotableLener); ok {
+		if v := ml.MinPromotableLen(); v > 0 {
+			b.minPromotableLen = v
+		}
+	}
+}
 
 // SetLogger 注入升层日志接口(测试可捕获;门面层装 stdLogger 默认实现)。
 func (b *Bridge) SetLogger(l Logger) { b.logger = l }
+
+// effectiveMinPromotableLen returns the short-proto floor in effect:
+// the backend-snapshotted value when a backend has been injected, or
+// the package default before injection.
+func (b *Bridge) effectiveMinPromotableLen() int {
+	if b.minPromotableLen > 0 {
+		return b.minPromotableLen
+	}
+	return MinPromotableCodeLen
+}
 
 // Aggregator 暴露 IC 反馈聚合器供 considerPromotion 升层路径调
 // (Aggregate(proto) → *TypeFeedback)。**P2 写不消费**(02 §7):
@@ -206,8 +243,8 @@ func (b *Bridge) OnBackEdge(proto *bytecode.Proto, pc int32, onMain bool) {
 	}
 	pd.BackEdge[pc]++
 	if pd.BackEdge[pc] >= HotBackEdgeThreshold || b.forceAll {
-		if !b.forceAll && len(proto.Code) < MinPromotableCodeLen {
-			return // short proto:wasm 反噬 > 解释器收益,跳过升层(issue #21)
+		if !b.forceAll && len(proto.Code) < b.effectiveMinPromotableLen() {
+			return // short proto:dispatch 反噬 > 解释器收益,跳过升层(issue #21)
 		}
 		b.considerPromotion(proto, pd, onMain)
 	}
@@ -230,8 +267,8 @@ func (b *Bridge) OnEnter(proto *bytecode.Proto, onMain bool) {
 	}
 	pd.EntryCount++
 	if pd.EntryCount >= HotEntryThreshold || b.forceAll {
-		if !b.forceAll && len(proto.Code) < MinPromotableCodeLen {
-			return // short proto:wasm 反噬 > 解释器收益,跳过升层(issue #21)
+		if !b.forceAll && len(proto.Code) < b.effectiveMinPromotableLen() {
+			return // short proto:dispatch 反噬 > 解释器收益,跳过升层(issue #21)
 		}
 		b.considerPromotion(proto, pd, onMain)
 	}
