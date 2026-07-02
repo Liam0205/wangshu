@@ -340,6 +340,22 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 						}
 					}
 				}
+			case bytecode.GETTABLE:
+				// GETTABLE only enters native emit when the IC snapshot
+				// says ArrayHit — that means P1 has warmed the site to
+				// stable array access, so the runtime-index inline path
+				// hits often enough to beat the exit-reason miss cost.
+				// Un-warmed sites (Kind == None) or hash/mono/mega sites
+				// would take the exit-reason path on every access,
+				// which is slower than staying on the P1 interpreter
+				// (each exit is a mmap<->Go round trip vs a single Go
+				// method call).
+				if int(pc) >= len(proto.IC) {
+					return false
+				}
+				if proto.IC[pc].Kind != bytecode.ICKindArrayHit {
+					return false
+				}
 			}
 		}
 	}
