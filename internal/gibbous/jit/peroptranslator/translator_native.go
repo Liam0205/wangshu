@@ -188,6 +188,15 @@ func (c *nativeCode) dispatchHelper(base int32) bool {
 		if st := c.host.CallBaseline(base, pc, a, b, cc); st != 0 {
 			return false
 		}
+	case jit.HelperGetGlobal:
+		// bx split across b (low 9) and c (high 9) slots.
+		if st := c.host.DoGetGlobal(base, pc, a, b|(cc<<9)); st != 0 {
+			return false
+		}
+	case jit.HelperSetGlobal:
+		if st := c.host.DoSetGlobal(base, pc, a, b|(cc<<9)); st != 0 {
+			return false
+		}
 	default:
 		return false
 	}
@@ -363,34 +372,29 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 					}
 				}
 			case bytecode.GETTABLE:
-				// GETTABLE only enters native emit when the IC snapshot
-				// says ArrayHit — that means P1 has warmed the site to
-				// stable array access, so the runtime-index inline path
-				// hits often enough to beat the exit-reason miss cost.
-				// Un-warmed sites (Kind == None) or hash/mono/mega sites
-				// would take the exit-reason path on every access,
-				// which is slower than staying on the P1 interpreter
-				// (each exit is a mmap<->Go round trip vs a single Go
-				// method call).
+				// GETTABLE enters native emit when the IC snapshot says
+				// ArrayHit (inline runtime-index fast path) or NodeHit
+				// (exit-reason slow path; host.GetTable is byte-equal to
+				// the interpreter's IC path). Un-warmed sites (Kind ==
+				// None) or meta/megamorphic sites stay on the P1
+				// interpreter — those would exit on every access with no
+				// inline-arith payoff to amortize the round trip.
 				if int(pc) >= len(proto.IC) {
 					return false
 				}
-				if proto.IC[pc].Kind != bytecode.ICKindArrayHit {
+				if k := proto.IC[pc].Kind; k != bytecode.ICKindArrayHit &&
+					k != bytecode.ICKindNodeHit {
 					return false
 				}
 			case bytecode.SETTABLE:
-				// SETTABLE mirrors GETTABLE: only enter native emit when
-				// the IC snapshot says ArrayHit. The inline fast path
-				// only handles small-int keys against the same tableRef +
-				// generation the site was warmed on; anything else falls
-				// through to the shared exit-reason path and pays a
-				// mmap<->Go round trip per miss. Restricting to warmed
-				// ArrayHit sites keeps the miss rate low enough that
-				// native beats the P1 interpreter fallback.
+				// SETTABLE mirrors GETTABLE: ArrayHit gets the inline
+				// fast path, NodeHit rides the exit-reason slow path
+				// (host.SetTable). Other kinds reject.
 				if int(pc) >= len(proto.IC) {
 					return false
 				}
-				if proto.IC[pc].Kind != bytecode.ICKindArrayHit {
+				if k := proto.IC[pc].Kind; k != bytecode.ICKindArrayHit &&
+					k != bytecode.ICKindNodeHit {
 					return false
 				}
 			case bytecode.NEWTABLE:
@@ -482,6 +486,7 @@ func opSupported(op bytecode.OpCode) bool {
 		bytecode.JMP, bytecode.FORPREP, bytecode.FORLOOP,
 		bytecode.GETTABLE, bytecode.SETTABLE, bytecode.NEWTABLE,
 		bytecode.GETUPVAL, bytecode.SETUPVAL,
+		bytecode.GETGLOBAL, bytecode.SETGLOBAL,
 		bytecode.CALL,
 		bytecode.RETURN:
 		return true

@@ -127,6 +127,17 @@ func emitInlineArithWithShimFallback(cb *codeBuf, op bytecode.OpCode, pc int32, 
 	case bytecode.DIV:
 		cb.emit(jitamd64.EmitDivsdXmmXmm(nil, 0, 1))
 	}
+	// Result guard: x86 SSE ops that produce NaN emit the "real
+	// indefinite" QNaN 0xFFF8_0000_0000_0000 (sign bit set), which
+	// aliases the NaN-box tagged space (>= qNanBoxBase) and would be
+	// misread as a non-number value. The interpreter canonicalizes NaN
+	// results; route those to the shim so host.Arith does the same.
+	// movq rax, xmm0  (5B: 66 48 0F 7E C0)
+	cb.emit([]byte{0x66, 0x48, 0x0F, 0x7E, 0xC0})
+	cb.emit(jitamd64.EmitMovRcxImm64(nil, qNanBoxBaseU64))
+	cb.emit(jitamd64.EmitCmpRaxRcx(nil))
+	cb.emit(jitamd64.EmitJaeRel32(nil, 0))
+	guardFixups = append(guardFixups, int(cb.pos())-4)
 	cb.emit(jitamd64.EmitMovsdMemFromXmm(nil, 0, regRBX, int32(a)*8))
 	// jmp done (5-byte E9 rel32); rel32 patched once done offset known.
 	cb.emit([]byte{0xE9, 0, 0, 0, 0})
@@ -1534,16 +1545,15 @@ func emitInlineSetTableArrayHit(cb *codeBuf, pc int32, a uint8, b, c int) bool {
 }
 
 func emitGETGLOBAL(cb *codeBuf, pc int32, a uint8, bx uint16) {
-	// Kept on shim path — bx is 18-bit and doesn't fit the current
-	// exitArg0 layout. Callers must gate against opSupported so this
-	// path isn't reached until a wider exit-reason payload lands.
-	emitCallShim(cb, shimGetGlobalAddr(), []int32{0, pc, int32(a), int32(bx)})
-	emitStatusCheckAndBubble(cb)
+	// Exit-reason path: bx is up to 18 bits which doesn't fit a single
+	// 9-bit arg slot, so split it across the b (low 9) and c (high 9)
+	// slots; the dispatcher reassembles bx = b | c<<9.
+	emitExitReason(cb, jit.HelperGetGlobal, pc, int32(a), int32(bx)&0x1FF, (int32(bx)>>9)&0x1FF)
 }
 
 func emitSETGLOBAL(cb *codeBuf, pc int32, a uint8, bx uint16) {
-	emitCallShim(cb, shimSetGlobalAddr(), []int32{0, pc, int32(a), int32(bx)})
-	emitStatusCheckAndBubble(cb)
+	// Same bx split as emitGETGLOBAL.
+	emitExitReason(cb, jit.HelperSetGlobal, pc, int32(a), int32(bx)&0x1FF, (int32(bx)>>9)&0x1FF)
 }
 
 func emitNEWTABLE(cb *codeBuf, pc int32, a, b, c uint8) {
