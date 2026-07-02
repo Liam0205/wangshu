@@ -194,6 +194,14 @@ func (st *State) insertNewKey(t arena.GCRef, key, val value.Value) *LuaError {
 		object.SetNode(st.arena, t, uint32(prev), pk, pv, int32(free))
 		// 4) 新键落主位置
 		object.SetNode(st.arena, t, mainPos, key, val, -1)
+		// Relocating an existing key changes the key->slot mapping, which
+		// is exactly what gen guards: gen-only inline fast paths (P3 wasm
+		// emitGetGlobal / P4 native GETGLOBAL NodeHit) bake the node index
+		// at compile time and do NOT re-verify NodeKey per access (the
+		// interpreter's icGetTable does, so it never noticed). Without
+		// this bump the baked index silently reads the relocated slot's
+		// new occupant (P4 fuzz seed 4b3d10ff17c418d4).
+		object.BumpGen(st.arena, t)
 		return nil
 	}
 	// 占用者就在自己的主位置:新键放 free,链入主位置链
