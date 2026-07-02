@@ -243,7 +243,9 @@ func TranslateProtoNative(proto *bytecode.Proto, host jit.P4HostState) (*nativeC
 	for i, v := range proto.Consts {
 		consts[i] = uint64(v)
 	}
-	buf.proto = &codeBufProto{Consts: consts}
+	icSnap := make([]bytecode.ICSlot, len(proto.IC))
+	copy(icSnap, proto.IC)
+	buf.proto = &codeBufProto{Consts: consts, IC: icSnap}
 
 	// Prologue: reload X26 = vsBase from jitCtx (X27+off). arm64 doesn't
 	// need the amd64 saveGoG dance because X28 = G is permanent on Go
