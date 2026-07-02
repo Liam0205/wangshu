@@ -875,5 +875,5 @@ P3 重启不在本文范围,留 future doc-gaps。
 - [./08-testing-strategy.md](./08-testing-strategy.md)(差分接入,本文 §10.1 / §11.4 提对位)
 - [./implementation-progress.md](./implementation-progress.md)(P4 验收数据 + P3 去留决策档位决议归档点)
 - [../p1-interpreter/12-testing-difftest.md](../p1-interpreter/12-testing-difftest.md)(§3.8 Runner 抽象——本文 §6.1 退役工程动作目标)
-- [../p5-trace-jit.md](../p5-trace-jit.md)(下一站:与 P3 去留决议同 tier 不同形态,但本文不展开)
+- [../p5-trace-jit/00-overview.md](../p5-trace-jit/00-overview.md)(下一站:与 P3 去留决议同 tier 不同形态,但本文不展开)
 

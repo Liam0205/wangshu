@@ -1,6 +1,6 @@
 # 架构:分层 VM 演进路线(P1→P5)
 
-> 状态:**P1 已交付(M0-M14,验收过线)+ P2(分层桥 PB0-PB7)+ P3(Wasm 编译层 PW0-PW10)全卷已收口;P4(method JIT)多 PJ 已落地(PJ0-PJ11 + PJ10 native emit,2026-07-01),P5 仍为规划**。源:`docs/design/roadmap.md` (§4)。**全阶段详细设计文档已就位**:P1 见 `docs/design/p1-interpreter/`(全卷 00-12,实现现状见同目录 implementation-progress.md),P2-P5 见 `docs/design/p2-bridge/`(子目录) / `p3-wasm-tier/`(子目录 10 文件)/ `p4-method-jit/`(子目录 10 文件) / `p5-trace-jit.md`。各阶段实施现状对账见对应目录 `implementation-progress.md`。
+> 状态:**P1 已交付(M0-M14,验收过线)+ P2(分层桥 PB0-PB7)+ P3(Wasm 编译层 PW0-PW10)全卷已收口;P4(method JIT)多 PJ 已落地(PJ0-PJ11 + PJ10 native emit,2026-07-01),P5 仍为规划**。源:`docs/design/roadmap.md` (§4)。**全阶段详细设计文档已就位**:P1 见 `docs/design/p1-interpreter/`(全卷 00-12,实现现状见同目录 implementation-progress.md),P2-P5 见 `docs/design/p2-bridge/`(子目录) / `p3-wasm-tier/`(子目录 10 文件)/ `p4-method-jit/`(子目录 10 文件) / `p5-trace-jit/`(子目录 11 文件,未立项图纸)。各阶段实施现状对账见对应目录 `implementation-progress.md`。
 > 前置约束(为什么是分层、为什么倍率以列内核为口径):见 [[design-premises]]。值表示如何在各层共见同一块内存:见 [[value-representation]]。
 
 ## 流水线全景
