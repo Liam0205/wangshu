@@ -287,6 +287,16 @@ func (b *Bridge) considerPromotion(proto *bytecode.Proto, pd *ProfileData, onMai
 		}
 	}
 	if comp != CompCompilable {
+		// forceAll retry window: force mode promotes on the very first
+		// entry, when the proto's IC slots are still cold (Kind==None).
+		// IC-gated backends (P4 native NodeHit/ArrayHit acceptance)
+		// decline cold protos that they would accept after one or two
+		// interpreter runs warm the IC. Sticking on the first decline
+		// would leave such protos on the interpreter forever, so give
+		// the backend a few warm-up entries before absorbing to Stuck.
+		if b.forceAll && pd.EntryCount < 4 {
+			return // stay TierInterp; retry on a later entry
+		}
 		// (P2) 不可编译 / 未分析 → 永久解释(04 §1.4 静态 fallback)
 		pd.TierState = TierStuck
 		pd.CompileTried = true
