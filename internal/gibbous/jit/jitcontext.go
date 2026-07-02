@@ -113,6 +113,7 @@ const (
 	HelperSetList     uint64 = 21
 	HelperArithSlow   uint64 = 22
 	HelperCompareSlow uint64 = 23
+	HelperCall        uint64 = 24
 )
 
 // HelperCodeMask masks off the low 16 bits of exitArg0 that hold the

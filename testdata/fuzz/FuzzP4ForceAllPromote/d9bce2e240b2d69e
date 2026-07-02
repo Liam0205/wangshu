@@ -1,0 +1,2 @@
+go test fuzz v1
+string("local s=0 function add()s=0<s end add()add()")

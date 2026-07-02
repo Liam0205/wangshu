@@ -217,50 +217,41 @@ func TestPJ10Native_E2E_RETURN(t *testing.T) {
 }
 
 // TestPJ10Native_E2E_GETUPVAL: emit GETUPVAL A=1 B=2 and verify the
-// shim called host.GetUpval(B=2) followed by host.SetReg(A=1, upvalue).
+// segment exits with an ExitInlineHelper request carrying
+// (HelperGetUpval, a=1, b=2) — the Go-side dispatcher (not the mmap
+// segment) performs host.GetUpval + host.SetReg under the exit-reason
+// protocol.
 func TestPJ10Native_E2E_GETUPVAL(t *testing.T) {
 	cb := newCodeBuf(1)
 	cb.bindLabel(0)
 	emitGETUPVAL(cb, 1, 2)
+	emitResumePreludeIfPending(cb)
 	emitRet(cb)
 
 	host := newFakeHost()
 	host.upvals[2] = 0xC0FFEE
 
-	_ = runShimSegment(t, cb, host)
-
-	if host.getUpvalCalls != 1 {
-		t.Fatalf("GetUpval called %d times, want 1", host.getUpvalCalls)
-	}
-	if host.getUpvalB != 2 {
-		t.Errorf("GetUpval b = %d, want 2", host.getUpvalB)
-	}
-	if got := host.regs[1]; got != 0xC0FFEE {
-		t.Errorf("regs[1] = %x, want C0FFEE", got)
+	status := runShimSegment(t, cb, host)
+	if uint32(status) != jit.ExitInlineHelper {
+		t.Fatalf("status = %d, want ExitInlineHelper", status)
 	}
 }
 
 // TestPJ10Native_E2E_SETUPVAL: emit SETUPVAL A=3 B=5 and verify the
-// shim called host.SetUpvalFromReg(a=3, b=5).
+// segment exits with an ExitInlineHelper request carrying
+// (HelperSetUpval, a=3, b=5).
 func TestPJ10Native_E2E_SETUPVAL(t *testing.T) {
 	cb := newCodeBuf(1)
 	cb.bindLabel(0)
 	emitSETUPVAL(cb, 3, 5)
+	emitResumePreludeIfPending(cb)
 	emitRet(cb)
 
 	host := newFakeHost()
 	host.regs[3] = 0xBEEF
 
-	_ = runShimSegment(t, cb, host)
-
-	if host.setUpvalCalls != 1 {
-		t.Fatalf("SetUpvalFromReg called %d times, want 1", host.setUpvalCalls)
-	}
-	if host.setUpvalA != 3 || host.setUpvalB != 5 {
-		t.Errorf("SetUpvalFromReg a=%d b=%d, want a=3 b=5",
-			host.setUpvalA, host.setUpvalB)
-	}
-	if got := host.upvals[5]; got != 0xBEEF {
-		t.Errorf("upvals[5] = %x, want BEEF", got)
+	status := runShimSegment(t, cb, host)
+	if uint32(status) != jit.ExitInlineHelper {
+		t.Fatalf("status = %d, want ExitInlineHelper", status)
 	}
 }

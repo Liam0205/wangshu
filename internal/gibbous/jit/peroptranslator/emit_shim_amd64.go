@@ -24,6 +24,8 @@ package peroptranslator
 import (
 	"reflect"
 	"unsafe"
+
+	jit "github.com/Liam0205/wangshu/internal/gibbous/jit"
 )
 
 // abiIntArgRegs lists Go ABIInternal register numbers for int args in
@@ -205,21 +207,15 @@ func emitRETURN(cb *codeBuf, pc int32, a, b uint8) {
 	emitRet(cb)
 }
 
-// emitGETUPVAL emits GETUPVAL A B via shimGetUpval:
-//
-//	<call shimGetUpval(base=0, b=B, retA=A)>
-//	<if rax != 0 then ret>       ; shouldn't happen for pure upval read
-//
-// The shim internally does host.GetUpval + host.SetReg(A, val).
+// emitGETUPVAL emits GETUPVAL A B via the exit-reason protocol
+// (issue #38): pack (HelperGetUpval, a, b) into exitArg0, RET; Run's
+// dispatcher does host.SetReg(a, host.GetUpval(base, b)) and reenters.
 func emitGETUPVAL(cb *codeBuf, a, b uint8) {
-	addr := shimGetUpvalAddr()
-	emitCallShim(cb, addr, []int32{0, int32(b), int32(a)})
+	emitExitReason(cb, jit.HelperGetUpval, 0, int32(a), int32(b), 0)
 }
 
-// emitSETUPVAL emits SETUPVAL A B via shimSetUpvalFromReg:
-//
-//	<call shimSetUpvalFromReg(base=0, a=A, b=B)>
+// emitSETUPVAL emits SETUPVAL A B via the exit-reason protocol:
+// Run's dispatcher does host.SetUpvalFromReg(base, a, b) and reenters.
 func emitSETUPVAL(cb *codeBuf, a, b uint8) {
-	addr := shimSetUpvalFromRegAddr()
-	emitCallShim(cb, addr, []int32{0, int32(a), int32(b)})
+	emitExitReason(cb, jit.HelperSetUpval, 0, int32(a), int32(b), 0)
 }
