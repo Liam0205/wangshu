@@ -356,6 +356,29 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 				if proto.IC[pc].Kind != bytecode.ICKindArrayHit {
 					return false
 				}
+			case bytecode.SETTABLE:
+				// SETTABLE mirrors GETTABLE: only enter native emit when
+				// the IC snapshot says ArrayHit. The inline fast path
+				// only handles small-int keys against the same tableRef +
+				// generation the site was warmed on; anything else falls
+				// through to the shared exit-reason path and pays a
+				// mmap<->Go round trip per miss. Restricting to warmed
+				// ArrayHit sites keeps the miss rate low enough that
+				// native beats the P1 interpreter fallback.
+				if int(pc) >= len(proto.IC) {
+					return false
+				}
+				if proto.IC[pc].Kind != bytecode.ICKindArrayHit {
+					return false
+				}
+			case bytecode.NEWTABLE:
+				// NEWTABLE goes through the exit-reason path (host
+				// allocates). The emit signature carries B/C as uint8;
+				// larger presize hints would truncate, so reject them
+				// (semantically harmless but keeps args faithful).
+				if bytecode.B(ins) >= 256 || bytecode.C(ins) >= 256 {
+					return false
+				}
 			}
 		}
 	}
@@ -426,7 +449,7 @@ func opSupported(op bytecode.OpCode) bool {
 		bytecode.EQ, bytecode.LT, bytecode.LE,
 		bytecode.TEST, bytecode.TESTSET,
 		bytecode.JMP, bytecode.FORPREP, bytecode.FORLOOP,
-		bytecode.GETTABLE,
+		bytecode.GETTABLE, bytecode.SETTABLE, bytecode.NEWTABLE,
 		bytecode.RETURN:
 		return true
 	default:
