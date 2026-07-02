@@ -265,7 +265,9 @@ P4 引入投机带来的新验收口径,在 P3 V1-V18 之外新增:
 | **V19** | OSR 状态等价(P4 独有)| 每 guard 强制失败模式下,exit 后续跑结果与「同输入一路解释」**byte-equal**——验证物化序列(承 [./04-osr-deopt.md](./04-osr-deopt.md) §3.3 / §3.7)与着陆面(§1.1)无损 | `conformance/p4_test.go::TestOSRStateEquivalence`(table-driven 每 guard 强制失败一次)| `bytes.Equal(crescentOut, deoptInjectedOut)` 必为 true |
 | **V20** | deopt 风暴下不死锁 | 同 Proto 反复 deopt 触阈 → 进入 `P4StuckSpeculation`(P4 内吸收态;P2 tierState 仍 TierGibbous,承方案 A)防抖,后续不再投机但仍**正确**(走通用模板,与 crescent byte-equal)| `conformance/p4_test.go::TestDeoptStormToStuck`(构造高频 deopt 输入,断言 N 次 deopt 后 P4 内子状态机进入吸收态)| 进入 `P4StuckSpeculation` 后:① 后续输出仍 byte-equal crescent ② deopt 计数停止增长 ③ 不重试投机(承 [./04-osr-deopt.md](./04-osr-deopt.md) §5.3-§5.5)|
 | **V21** | 双架构双跑(amd64 + arm64)| amd64 与 arm64 物理 runner 各跑全套 V1-V18 + V19 + V20,且 amd64 输出 == arm64 输出 == crescent 输出(三方 byte-equal)| `difftest/p4_test.go::TestDualArchByteEqual`(同 Proto 三 runner)+ CI 矩阵两架构 | crescent vs gibbous-jit/amd64 vs gibbous-jit/arm64 三方 byte-equal(承 §6.2)|
-| **V22** | guard 漏判 fuzz | 模板生成器把每条 guard 强制不查一次,验证差分仍 byte-equal——若漏判会在差分先抓到 | `difftest/p4_test.go::FuzzGuardOmission`(测试 build tag `wangshu_p4_guardfuzz` 下,每条 guard 一次性禁用)| 任一禁用导致 byte-equal 破 ⇒ 该 guard 是「真在防东西」的证据;全部禁用都 byte-equal ⇒ guard 冗余警示(罕见,但提示 review)|
+| **V22** | guard 漏判 fuzz(**当前实装形态**:错误存在性差分,承 §2.4 addendum)| **当前**:force-all P4 vs P1 差分 fuzz,验证「错误存在性」(errP1==nil ⇔ errP4==nil,预算/时机类分叉 Skip)+ 结果 byte-equal——若 guard 漏判导致 P4 静默错果,fuzz 会在差分先抓到。**归 followup**:「模板生成器每条 guard 强制不查一次」的原始 spec 变体(FuzzGuardOmission)未实装 | `fuzz_p4_test.go::FuzzP4ForceAllPromote`(build tag `wangshu_p4 && wangshu_profile`,5 corpus seed + 27 内嵌 f.Add seed,`-race` 下自动 Skip,见本 §)| 任一 seed 触发 error 存在性真分叉(非 budget 类)或 result 字面不 byte-equal ⇒ 硬 fail;spec 变体「per-guard 禁用」归 §2.4 addendum 与 09 §4 已登记 followup |
+
+> **V22 spec 变体状态**(2026-07-02 与实装对账):原设计 `FuzzGuardOmission` + build tag `wangshu_p4_guardfuzz` + 「每条 guard 一次性禁用」的形态在 codebase 中**未实装**——落地的是 `FuzzP4ForceAllPromote`(承本表 V22 行 + fuzz_p4_test.go)。等价性论证:P4 与 P1 force-all 差分能抓「静默错果」这一 V22 的**核心断言**(guard 漏判 → P4 输出偏离 P1 → byte-equal 破 → 硬 fail);「per-guard 禁用」的额外深度作为 followup 保留(承 09 §4),不阻塞 PJ11。
 
 **V19-V22 的核心价值**:
 
@@ -393,13 +395,19 @@ jobs:
 
 **空间 × 时间协同覆盖**:PR 门禁 [`.github/workflows/ci.yml`](../../../.github/workflows/ci.yml) 用 tri-platform matrix(ubuntu-latest amd64 + ubuntu-24.04-arm 原生 GHA runner + macos-latest M1)× P1/P3/P4 三 variant × test/fuzz-smoke/conformance/difftest 四 job 覆盖**空间维度**(3 平台 × 3 build);nightly-diff-fuzz.yml 用 ubuntu-latest amd64 单平台 × P1/P3/P4 三 variant × rolling-seed diff + GC-stress + go-fuzz 三项覆盖**时间维度**(每晚积累)。V21 双架构 byte-equal 已由 tri-platform ci.yml 覆盖(承 §6),nightly 单平台累积用来抓 30 天时间维度的 rare divergence,不重复跑三平台以省 CI 资源。crash 与 mismatch 报告分别 triage(nightly-diff-fuzz.yml 已内置 `DIVERGENCE seed=X kind=Y` 结构化标记 + go-fuzz crash 分流 + infra failure 分流,自动开 issue)。
 
+**P4 fuzz 与 `-race` 的物理约束**(承 fuzz_p4_test.go 与 `race_on_test.go` / `race_off_test.go` 中的 `raceEnabled` 常量,以及反思 [[2026-07-01-p4-pj10-native-round]] lesson 1):P4 mmap 段 shim 调 Go helper 的路径与 Go race detector 的 stack unwinder(mmap+morestack)物理不兼容,**`FuzzP4ForceAllPromote` 在 `-race` 构建下自动 `t.Skip`**。这意味着:
+
+- **`-race` CI job**(V18,承 §9.2)只覆盖 P4 的**非 mmap 子集**——mmap 段真机 execute 的正确性依赖 non-race 差分 / difftest / conformance 三条独立防线;
+- **fuzz 的 30 天累积覆盖仅在 non-race 走**——V22 spec 的核心断言(guard 漏判 → byte-equal 破)由 non-race fuzz 累积承担,`-race` 不重复;
+- **原描述「`-race` + fuzz 30s」**(旧稿 §3.5 表 PR check 行)应理解为:`-race` job 与 fuzz-smoke job **并列覆盖**,而非「一个 job 内既开 `-race` 也跑 P4 fuzz」——后者会被 `raceEnabled` 常量 skip,达不到覆盖。
+
 ### 3.5 CI 硬门禁(architecture §4 不变式 2)
 
 承 [../architecture.md](../architecture.md) §4 不变式 2(层间逐字节差分 CI 必过)+ [../p3-wasm-tier/08-testing-strategy.md](../p3-wasm-tier/08-testing-strategy.md) §4.1。P4 上线后 CI 硬门禁:
 
 | 阶段 | 跑什么 | 时间预算 | build tag |
 |---|---|---|---|
-| **PR check** | V1-V11 形状级单测 + V12 强制全升 + V19-V20 OSR/deopt 风暴 + V18 -race + 翻译器/emitter 内测 + 层间差分**短** fuzz(`-fuzztime=30s`)| < 8 min | `wangshu_profile wangshu_p3 wangshu_p4` |
+| **PR check** | V1-V11 形状级单测 + V12 强制全升 + V19-V20 OSR/deopt 风暴 + V18 -race(非 mmap 子集,`FuzzP4ForceAllPromote` 在 `-race` 下自动 skip,承 §3.4)+ 翻译器/emitter 内测 + 层间差分**短** fuzz(`-fuzztime=30s`,non-race build)| < 8 min | `wangshu_profile wangshu_p3 wangshu_p4` |
 | **PR check(P1/P2/P3 不豁免)**| P1 三方差分一轮 + P2 V1-V22 + P3 V1-V18(承 §0.2)| < 5 min | 同上 |
 | **nightly** | 层间差分**长** fuzz(2h)+ guard 漏判 fuzz + deopt 注入 fuzz + GC 压力上 gibbous-jit(`-count=20`)+ longevity + 性能基准全档(V14-V16)| 数小时 | 同上,**双架构** |
 | **release 前** | 全套 + benchmark 矩阵双架构实测产出 + V20 长跑(deopt 风暴防抖收敛验证 30+ 天等价物)| 不限 | 四套 build × 双架构 全跑 |
@@ -579,14 +587,20 @@ V19 是这条不变式的端到端校验:
 | **每个 guard 强制失败一次** | `SetGuardForceFailFirst(state, kind)` | 验证每条 exit 路径的物化无损 | V19 |
 | **每 N 次失败一次** | `SetDeoptInjectEvery(state, n)`(n=1 即每次,n=10 即 10% 触发率)| 验证 deopt 风暴防抖收敛 + P4StuckSpeculation 吸收态 | V20 |
 
-**测试入口**(P4 落地时实装,testing-only,承 §13 RB-2):
+**测试入口**(**当前状态**:2026-07-02 复核,`SetGuardForceFailFirst` 与 `SetDeoptInjectEvery` 两条 helper 均**未实装**——设计稿中登记的这两个 API 在 `internal/gibbous/jit/` 与全仓 grep 无匹配。V19 / V20 的端到端断言由业务路径的 e2e 与合成状态机单测承担):
 
 ```go
-// internal/gibbous/jit —— deopt 注入测试入口(testing-only)
+// internal/gibbous/jit —— deopt 注入测试入口(**设计稿承诺,当前未实装**;归 followup)
 // kind ∈ { "IsNumberB", "IsNumberC", "tableRef", "gen", "globalsGen", "MetaGen", ... }
-func SetGuardForceFailFirst(state *State, guardKind string)   // 第 1 次执行强制失败
-func SetDeoptInjectEvery(state *State, n int)                  // 每 n 次失败一次(n=0 禁用)
+func SetGuardForceFailFirst(state *State, guardKind string)   // 第 1 次执行强制失败(未实装)
+func SetDeoptInjectEvery(state *State, n int)                  // 每 n 次失败一次(未实装)
 ```
+
+**未实装的等效覆盖**(承 09 §4「V19-V22 引用已统一到 codebase 里已有的等效测试」):
+
+- **V19 端到端**:`internal/crescent/gibbous_pj5_self_e2e_test.go::TestPJ5_SelfCall_E2E_SpecTemplate_OSRExitToDeopt`——真业务路径构造 spec-template caller 打 mismatched-shape,触发 onOSRExit → SpecP4DeoptHits 累积 + P4Deoptimized 转移实证;
+- **V20 端到端**:同文件 `TestPJ5_SelfCall_E2E_SpecTemplate_DeoptStorm`——5 caller 独立累积 SpecP4DeoptHits 互不串扰,配合 `internal/gibbous/jit/p4state_test.go` 7 个 P4 状态机单测(含 `TestP4SpecState_MaxRecompileTriesReachedStuck` 验 P4StuckSpeculation 吸收态);
+- **per-guard 强制失败拆分口径**(V19 的更细粒度形态):归 followup,不阻塞 PJ11。
 
 ### 5.3 V8 `--deopt-every-n` 同款思路
 

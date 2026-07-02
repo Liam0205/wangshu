@@ -515,47 +515,83 @@ P4 运行时存在两个泾渭分明的世界,以 trampoline 为唯一边界:
 
 ### 3.3 jitContext 字段(完整字段表)
 
-`jitContext` 是 P4 系统管线的核心数据结构——Go 堆对象,生命周期与 Thread 同(每 Thread 一份,与 P3 wazero 的 ExecutionContext 同位)。完整字段(per-arch 扩展留 [./06-backends](./06-backends.md)):
+`jitContext` 是 P4 系统管线的核心数据结构——Go 堆对象,生命周期与 Thread 同(每 Thread 一份,与 P3 wazero 的 ExecutionContext 同位)。
+
+**2026-07-02 实装勘误——字段以 `internal/gibbous/jit/jitcontext.go` 为准**:早前草稿列的 `callInfoBase` / `gcPending` / `helperTab` / `exitPC` / `exitHelperID` / `exitArg1` / `machineStack` / `savedGoSP` 等字段并未落地,当前实装用不同的机制承担同一职责(见 §4.3 exit-reason 协议 + `RefreshJitCtxAddrs` 批量刷新)。真实字段如下:
 
 ```go
-// internal/gibbous/jit/context.go(P4 build 专属)
-type jitContext struct {
-    // ----- 第 1 组:arena 寻址基址(承 §1.3.4 不持 Go 栈指针) -----
-    arenaBase       unsafe.Pointer  // arena.bytes 起始指针(Go 堆地址,grow 后由 helper 重写)
-    valueStackBase  uint32          // 当前 thread 值栈在 arena 的字节偏移
-    callInfoBase    uint32          // 当前 thread CallInfo 段在 arena 的字节偏移(承 P3 PW10 R2 VS0-e)
+// internal/gibbous/jit/jitcontext.go(P4 build,//go:build wangshu_p4)
+type JITContext struct {
+    // ----- 第 1 组:arena 寻址基址(承 §1.3.4 + §5,由 RefreshJitCtxAddrs 批量写) -----
+    arenaBase      uintptr        // arena []byte 起点的绝对字节地址
+    valueStackBase uintptr        // 当前帧 R0 的绝对字节地址(不是相对偏移)
 
-    // ----- 第 2 组:safepoint 标志(承 §1.2 + §6) -----
-    preemptFlag     int32           // 抢占请求(ctx done / Gosched 请求)
-    gcPending       int32           // GC 待 collect 标志(承 P1 06 §8.2)
+    // ----- 第 2 组:safepoint / 抢占协作 -----
+    preemptFlag    atomic.Uint32  // 抢占 / ctx-cancel 协作位;JIT 段回边 inline cmpb + jne 检查
 
-    // ----- 第 3 组:helper 表(承 §4.3) -----
-    helperTab       *[NumHelpers]unsafe.Pointer  // helper 函数指针表(Go 堆)
-                                                 // 索引由 §4.3.2 列举(h_arith / h_alloc / h_throw / ...)
+    // ----- 第 3 组:exit-reason 通信字段(承 §4.3;JIT 写,dispatcher 读) -----
+    exitReasonCode uint32         // ExitNormal=0 / ExitError=1 / ExitOSR=2 / ExitInlineHelper=3
+    exitArg0       uint64         // 打包字段(§4.3):bits 0..15 helper code,bits 16..23 A,
+                                  //                  bits 24..32 B,bits 33..41 C,bits 42..63 pc
+    resumeOff      uint32         // ExitInlineHelper 续跑入口:codePageAddr + resumeOff
+    _              [4]byte        // 8 字节对齐 padding
+    codePageAddr   uintptr        // mmap 段起点(dispatcher 用它 + resumeOff 算续跑绝对地址)
 
-    // ----- 第 4 组:exit 通信字段(JIT 写,Go 侧读) -----
-    exitReason      int32           // exit 原因码(STATUS_OK / STATUS_ERR / STATUS_DEOPT / STATUS_HELPER_CALL + 子类型)
-    exitPC          int32           // bytecode pc(OSR exit 着陆点 / 错误位置)
-    exitHelperID    int32           // helper 调用时的 helper id(出口 C)
-    exitArg0        uint64          // exit 携带的参数(per-出口语义,留 §4)
-    exitArg1        uint64          // 同上
+    // ----- 第 4 组:自管栈占位(实装保留字段,PJ10 阶段未真启用切 SP) -----
+    spillBase      uintptr        // 自管机器栈 backing 起点
+    spillTop       uintptr        // 自管机器栈上界
 
-    // ----- 第 5 组:自管机器栈 + Go SP 暂存(承 §1.1.2 + §2.4) -----
-    machineStack    []byte          // 自管栈 backing(Go 堆,size 由 §3.4 确定)
-    savedGoSP       uintptr         // trampoline 进时暂存的 Go SP(出口反向恢复用)
+    // ----- 第 5 组:crescent 镜像字 host 地址(承 P3 PW10 R2 复用) -----
+    ciDepthAddr    uintptr        // thread.ciDepth 镜像字的 host 绝对地址
+    ciSegBaseAddr  uintptr        // CI 段可重定位基址的 host 绝对地址
+    topAddr        uintptr        // thread.top 镜像字的 host 绝对地址
 
-    // ----- 第 6 组:per-arch 扩展(留 06-backends) -----
-    // ...
+    // ----- 第 6 组:PJ10 native emit ABI 支持字段 -----
+    savedGoG       uintptr        // Run 入口经 saveGoG snapshot 的 Go G(amd64 R14);
+                                  // shim 调用路径前 emit `mov r14, [r15+savedGoGOff]` 恢复
+    hostRef        [2]uintptr     // P4HostState 接口头(itab + data);shim 反构接口做方法分派
 }
+
+// exit-reason 状态码(承 §4.3 dispatcher 分派):
+const (
+    ExitNormal       uint32 = 0
+    ExitError        uint32 = 1
+    ExitOSR          uint32 = 2
+    ExitInlineHelper uint32 = 3
+)
+
+// helper 码(exitArg0 的低 16 bit,承 §4.3):
+const (
+    HelperRunCallee   uint64 = 1   // Spike 1 遗留
+    HelperGrowStack   uint64 = 2
+    HelperGCBarrier   uint64 = 3
+    HelperGetTable    uint64 = 10  // PJ10 exit-reason 用的 op helper 码起点
+    HelperSetTable    uint64 = 11
+    HelperGetGlobal   uint64 = 12
+    HelperSetGlobal   uint64 = 13
+    HelperGetUpval    uint64 = 14
+    HelperSetUpval    uint64 = 15
+    HelperNewTable    uint64 = 16
+    HelperSelf        uint64 = 17
+    HelperUnm         uint64 = 18
+    HelperLen         uint64 = 19
+    HelperConcat      uint64 = 20
+    HelperSetList     uint64 = 21
+    HelperArithSlow   uint64 = 22
+    HelperCompareSlow uint64 = 23
+    HelperCall        uint64 = 24
+    HelperReturn      uint64 = 25  // 终止性:dispatcher 走 DoReturn 后不再回段
+)
+const HelperCodeMask uint64 = 0xFFFF
 ```
 
 字段分组说明:
-- **第 1 组**:JIT 生成码经 jitContext 间接寻址访问 arena;arena grow 后 helper 重写 arenaBase(§5)。
-- **第 2 组**:回边检查点 inline 一次 load + test 这两个 i32 字段(§1.2.2 + §6.3)。
-- **第 3 组**:helper 表是函数指针数组,JIT 生成码经 indirect call 调用——在 P4 build 下指针是 Go 函数地址(经 reflect.Value.Pointer / runtime 拿到),与 wazero 的 imported function 同位。表布局留 [./06-backends](./06-backends.md)。
-- **第 4 组**:exit 通道——JIT 出口 stub 在跳出前把 exit 原因 + 着陆 pc + 必要参数写入这些字段,Go 侧 trampoline 出口处读。三出口共用同一组字段(§4.4)。
-- **第 5 组**:自管栈 backing 与 Go SP 暂存——trampoline 进出 stub 用。
-- **第 6 组**:per-arch 可能需要的额外字段(如 arm64 X29 frame pointer 暂存),留 [./06-backends](./06-backends.md)。
+- **第 1 组**:JIT 段经 `[r15+arenaBaseOff]` / `[r15+valueStackBaseOff]` 间接寻址;这两字段的刷新走 `P4HostState.RefreshJitCtxAddrs`(§3.5),Run 入口与每次 exit-reason 回段前各刷一次。
+- **第 2 组**:回边 inline 一次 byte-load + jne(§1.2.2 + §6.3);`preemptFlag` 是 `atomic.Uint32` 但只取 0/1,故字节比较正确。
+- **第 3 组**:exit-reason 协议(§4.3)——JIT 段把 helper code + 打包参数写 `exitArg0`,把续跑偏移写 `resumeOff`,`ret` 出段;`nativeCode.Run` 的 dispatcher 读这些字段决定下一步,并经 `codePageAddr + resumeOff` 重入段。旧稿的独立字段 `helperTab` / `exitPC` / `exitHelperID` / `exitArg1` 都由这个统一通道承担。
+- **第 4 组**:自管机器栈的 backing 字段。实装保留字段,但 PJ10 native emit 当前不切 SP——mmap 段直接跑在 Go goroutine 栈上,靠 §4.3 exit-reason 协议出去而不是靠 SP 切换。
+- **第 5 组**:承 P3 PW10 R2 的镜像字机制(`crescent.State.ciDepthRef` / `ciSegBaseRef` / `topRef`),这里存的是 host 绝对字节地址,mmap 段解引后直接 inc/dec/写。
+- **第 6 组**:PJ10 native emit 引入。`savedGoG` 承 Go ABIInternal 对 R14 = G 的不变约束——mmap 段调 Go shim 前必须先把 R14 恢复成 G,否则 Go 函数序言 `morestack` / `getg` / stack-guard 会读到垃圾。`hostRef` 是把 `P4HostState` 接口头以 `[2]uintptr` 存放,shim 反构后做方法分派,以免 `jit` 包硬 import `peroptranslator`。
 
 ### 3.4 自管机器栈布局:spill 区 / 返址区 / 调用约定保留位
 
@@ -599,6 +635,8 @@ P4 阶段的 arena 物理形态:
 - **P3 留作可移植中层场景**(同上,翻案条件留下):P3 build 与 P4 build 共存,arena backing 仍走 wazero memory(P3 build 路径),P4 与 P3 共见同一块 wazero memory——这是**结构允许共存**的物理体现([./07-p3-retirement.md](./07-p3-retirement.md) §3)。
 
 无论哪种形态,**P4 生成码读写 arena 的语义同一**:经 jitContext.arenaBase 间接寻址,GCRef 偏移寻址语义同一。这是 P3 P4 同 tier「只换发射后端」的物理含义。
+
+**2026-07-02 实装勘误——jitCtx 地址刷新时机**:实装里 arena 相关的五个字段(`arenaBase` / `valueStackBase` / `ciDepthAddr` / `ciSegBaseAddr` / `topAddr`)由 `P4HostState.RefreshJitCtxAddrs(ctx, base)` 批量写入,统一调用点两处:(a) `nativeCode.Run`(以及 `p4Code.Run` / `PerOpCode.Run`)入口——保证首次进入 mmap 段前地址反映当前 arena backing;(b) 每次 exit-reason 出口回来后、再次进入 mmap 段前(§4.3 循环里)——因为任一 host 方法都可能触发 arena grow / 值栈搬家。「批量刷新」是把之前每字段单独一次 host 调用(五次 arena.Words() slice header 派生)合成一次,减轻边界重的 op 的 host 调用成本。这条纪律正是本文 §3.6 不变式 2 与 §5 arena base 重载协议的落地路径。
 
 ### 3.6 边界纪律(三条不变式)
 
@@ -691,38 +729,74 @@ Go 侧 trampoline 出口处理:
 
 **触发**:JIT 生成码内嵌的快路径需要回 Go 侧执行慢路径——元方法分派 / arena 扩容 / 抛错 / host call / collect / 全局表 rehash 等。
 
-#### 4.3.1 helper 调用形态:trampoline 出 → 跑 Go 函数 → trampoline 进
+**2026-07-02 实装勘误——helper 协议早已从「helperTab 三段式跳板」演进为两条通道并存**:早前草稿把 helper 调用画成「JIT 写 exitReason=3 + helperID → jitExit stub → Go 侧 dispatcher 读 helperTab[helperID] indirect call → helper 跑完 → jitEnter 续跑」的三段式,同时 jitContext 里挂一个函数指针表 `helperTab`。这套「helperTab + jitExit_stub」在实装里从未落地。真正在跑的是两条通道:
 
-helper 调用是「**短期出去 → Go 跑 → 回来续跑**」的三段式,与出口 A/B 不同(出口 A/B 是「永久出去」)。物理流程:
+- **(a) exit-reason 协议(主通道,PJ10 native emit 起做为默认路径)**:承 §4.3.1a 详解。适用 op:`GETTABLE` / `SETTABLE` / `NEWTABLE` / `SETLIST` / `CALL` / `UNM` / `GETUPVAL` / `SETUPVAL` / `GETGLOBAL` / `SETGLOBAL`,以及多返值 Proto 的 `RETURN`。此路径不走 SP 切换、不走 shim 调用,mmap 段直接 `ret` 到 Go 世界,由 `nativeCode.Run` 里的 dispatcher 循环处理并重入段。这就是 §4.3 的实际主协议。
+- **(b) shim 调用路径(次通道,历史遗留)**:承 §4.3.1b 详解。适用 op:`LEN` / `CONCAT` / `SELF` / `TAILCALL` / `CLOSURE` / `CLOSE` / `TFORLOOP` / `MOD` / `POW` 的算术慢路径,以及 `EQ` / `LT` / `LE` 比较的 shim 尾巴。此路径直接从 mmap 段 emit 一段 ABIInternal `call` 序列跳进 Go shim,shim 完成后返回 mmap 段续跑。在嵌套 + 并发压力下已知易碎(issue #38),故新 op 一律走通道 (a);现存 shim op 待后续渐进迁移。
+
+两条通道共享同一份 `P4HostState` 接口(`internal/gibbous/jit/host.go`,~30 个方法)——接口方法就是 P3 时段的 imported helper 集,只是 P4 build 下用 Go 方法调用而非 wazero import。旧稿的「helperTab 索引 + indirect call」概念被「`P4HostState` 接口 + 编译期直接方法引用」替代;通道 (a) 里,mmap 段甚至不需要引用 Go 函数指针,只写打包好的 helper code + args 就够,dispatcher 端才做 `switch` 分派到具体方法。
+
+#### 4.3.1a exit-reason 协议(主通道)
+
+物理流程:
 
 ```
-JIT 生成码:
-   ;; 准备 helper 调用参数(写入 jitContext.exitArg0/exitArg1)
-   mov [r15 + offset_exitArg0], <arg0>
-   mov [r15 + offset_exitArg1], <arg1>
-   mov dword [r15 + offset_exitHelperID], <helper_id>
-   mov dword [r15 + offset_exitReason], 3   ;; STATUS_HELPER_CALL
-   jmp jitExit_stub                          ;; 出 trampoline
-   │
-   ▼  Go 侧 trampoline 出口
-Go: jitExit 返回到 dispatcher
-   ▼
-   dispatcher 据 exitReason==3 + exitHelperID 调对应 Go helper 函数
-   ▼
-   helper 跑(可能分配、可能 collect、可能抛错)
-   ▼
-   helper 返回值写入 jitContext(per-helper 协议,通常 exitArg0 = 返回值或 status)
-   ▼
-   dispatcher 调 jitEnter_stub 继续(传 same jitContext + 续跑地址)
-   │
-   ▼  trampoline 进回 JIT,从「helper 调用后」续跑
-JIT 生成码:
-   ;; 读 helper 返回值
-   mov rax, [r15 + offset_exitArg0]
-   ;; ...继续直线
+JIT 生成码(mmap 段,一次某个 op 的 exit-reason 尾部):
+    ;; 打包 exit-reason 参数进 exitArg0:
+    ;;   bits  0..15 = helper code (jit.HelperGetTable / SetTable / NewTable / ...)
+    ;;   bits 16..23 = op arg A (0..255)
+    ;;   bits 24..32 = op arg B (0..511,含 RK 常量位)
+    ;;   bits 33..41 = op arg C (0..511)
+    ;;   bits 42..63 = bytecode pc(0..~4M)
+    mov qword ptr [r15 + exitArg0Off], <packed>
+    ;; resumeOff = 下一条 op 在 mmap 段内的字节偏移(编译期已知)
+    mov dword ptr [r15 + resumeOffOff], <next_op_off>
+    ;; exitReasonCode = ExitInlineHelper(3)
+    mov dword ptr [r15 + exitReasonCodeOff], 3
+    ret                                    ;; 直接 ret 出段,不切 SP、不调 Go 函数
+    │
+    ▼
+Go 侧 nativeCode.Run 的 dispatcher 循环(translator_native.go):
+    for status == ExitInlineHelper {
+        //(HelperReturn 分支:读 exitArg0 里的 (a, b, pc),
+        //  调 host.DoReturn 后直接 return,不重入段)
+        if arg0 & HelperCodeMask == HelperReturn { ... return }
+        resumeOff := jitCtx.ResumeOff()      // ★ 先快照:递归 Run 会覆盖同 jitCtx
+        ok := dispatchHelper(base)           // switch helperCode → host.<Method>(…)
+        if !ok { return 1 }                  // host 方法 raise → 段整体 ERR
+        host.RefreshJitCtxAddrs(jitCtx, base) // ★ arena 可能 grow,必刷五个 addr 字段
+        saveGoG(jitCtx.SavedGoGSlot())        // shim 通道用到,一并刷
+        jitCtx.SetHostRef(hostIfaceHeader(host))
+        vsBase := jitCtx.ValueStackBase()
+        resumeAddr := codePage.Addr() + uintptr(resumeOff)
+        status = CallJITSpec(resumeAddr, jitCtxAddr, vsBase)  // ★ 重入段
+    }
 ```
 
-**关键**:helper 出 / 进是同一对 trampoline stub(§2.4),只是 exit 与 enter 的语义略有不同(enter 这次进的是「续跑地址」而非函数入口)。续跑地址在出口处 push 到自管栈(返址区,§3.4),由 enter stub 跳回。
+关键点:
+
+- **不走 SP 切换**:mmap 段跑在当前 goroutine 栈上,`ret` 出段就是普通函数返回,免去 §2.4 描绘的「切自管栈 / 存 Go SP / 反向恢复」序列——PJ10 阶段实测这套是可行的,只是牺牲了「自管机器栈」不变式的一部分强度(见 §7.5 勘误)。
+- **`resumeOff` 快照必须先做**:如果 helper 是 `HelperCall`,dispatcher 会同步跑 callee;若 callee 递归回到同一个 `nativeCode`,会共用同一份 per-Proto `jitCtx`,把 `resumeOff` / `exitArg0` / 各 addr 字段全覆盖掉——外层 dispatcher 事先快照 `resumeOff` 才能正确重入外层的续跑点。
+- **`RefreshJitCtxAddrs` 必调**:任一 host 方法都可能触发 arena grow(承 §5)。重入段前必须把 `arenaBase` / `valueStackBase` / `ciDepthAddr` / `ciSegBaseAddr` / `topAddr` 五个字段刷一次——这就是 §3.5 勘误里点名的两处调用点之一。
+- **`HelperReturn` 是终止性 helper**:多返值 Proto 把每处 `RETURN` 都 lower 成一次 `ExitInlineHelper + HelperReturn`,dispatcher 直接调 `host.DoReturn(base, pc, a, b)` 然后 return,不重入段。单返值 Proto 保留了老的快速路径——mmap 段 `xor eax, eax; ret` 直接返 `ExitNormal`,Go 侧再做一次 `host.DoReturn(retPC, retA, retB)`(编译期就已烧进 `nativeCode.retA/retB/retPC`),省去打包 `exitArg0`。
+
+#### 4.3.1b shim 调用路径(次通道)
+
+这条路径 PJ0-PJ9 阶段的所有 op 都走过,PJ10 native emit 只对下述 op 保留:`LEN` / `CONCAT` / `SELF` / `TAILCALL` / `CLOSURE` / `CLOSE` / `TFORLOOP`,以及 `MOD` / `POW` 算术慢路径尾巴和 `EQ` / `LT` / `LE` 比较 shim 尾巴。物理流程:
+
+```
+;; mmap 段内(shim 调用序列,一处约 12-30 字节,视 arg 数而定):
+mov r14, [r15 + savedGoGOff]           ;; ★ 恢复 R14 = Go G(承 §7.6 勘误)
+mov rax, r15                            ;; ABIInternal arg0 = jitCtx
+mov rbx, <baseImm32>                   ;; arg1
+mov rcx, <pcImm32>                     ;; arg2
+;; ...其余按 abiIntArgRegs 顺序装填
+mov rax, <shimAddr>                    ;; shim 函数绝对地址(编译期烧入)
+call rax                                ;; 直接 call 进 Go 函数(不出段、不切 SP)
+mov rbx, [r15 + valueStackBaseOff]     ;; ★ 恢复 RBX = vsBase(ABIInternal 用 RBX 传 arg1,不保 caller)
+```
+
+风险与守则(承本文 §8.1.4 与 issue #38):shim 序列直接从 mmap 段 `call` 进 Go 函数,依赖 Go 1.17+ ABIInternal 的寄存器传参约定。这套在**嵌套调用 + 多 State 并发**下压力测试时会摧毁 Go 栈展开(表现为在 `defer recover` 之外的 SIGSEGV),这是 PJ10 决定把新 op 全部走 exit-reason 通道的直接动机。现存 shim op 待迁移完成后本节可删。
 
 #### 4.3.2 helper 表:metamethod 分派 / arena 扩容 / 抛错 / host call
 
@@ -749,22 +823,29 @@ helper 集与 P3 同款,正反映 [./02-template-direction.md](./02-template-dir
 
 **逻辑层完全共享,物理层各换一对桩**——这是 P3/P4 同 tier 的工程红利,helper 表的逻辑成熟度直接复用 P3 的实战验证。
 
-#### 4.3.3 helper 表地址在 jitContext
+#### 4.3.3 helper 表 → `P4HostState` 接口(2026-07-02 实装勘误)
 
-helper 表本身是 Go 堆分配的 `[NumHelpers]unsafe.Pointer` 数组(指针指向 Go 函数),其首地址放在 jitContext.helperTab 字段。JIT 生成码经 jitContext.helperTab[helper_id] indirect call(实际是经 trampoline 出后由 dispatcher 完成 indirect call,JIT 自身只写 helper_id)——**JIT 生成码不直接持 Go 函数指针**(承不变式 1)。
+旧稿说 helper 表本身是 Go 堆分配的 `[NumHelpers]unsafe.Pointer` 数组、放 `jitContext.helperTab` 字段、JIT 段经该字段 indirect call。这份「函数指针表」在实装里从未落地——它被 `P4HostState` 接口(`internal/gibbous/jit/host.go`)替代:
 
-helper 表布局与具体 indirect call 机制(per-arch 寄存器约定 / dispatcher 位置)留 [./06-backends](./06-backends.md)。
+- **exit-reason 通道**(§4.3.1a):mmap 段完全不引用任何 Go 函数指针,只写打包好的 `helper code + args`;dispatcher 端 `switch helperCode` 后直接 `c.host.<Method>(...)` 走 Go 接口方法调用。因为 helper 集是编译期就完全枚举的常量集合(见第 3 组常量 `HelperGetTable=10..HelperCall=24`),`switch` 走静态分派开销可忽略。
+- **shim 通道**(§4.3.1b):mmap 段的确直接 `call <shimAddr>` 跳进 Go 函数;但 shim 函数是编译期就烧进的立即数(`internal/gibbous/jit/peroptranslator/shims.go` 里几个 ABI0 包装),不是从 jitContext 表里查——jitContext 里连这个表都没有。
 
-#### 4.3.4 与 [../p3-wasm-tier/04-trampoline](../p3-wasm-tier/04-trampoline.md) §3.3 helper 列举的对位:P4 同款 helper 集,只是物理通道是原生 call 不是 wazero imported
+`P4HostState` 里的方法名与 P3 `HostState`(`internal/gibbous/wasm/helpers.go`)几乎逐个对齐(`GetTable` / `SetTable` / `NewTable` / `Arith` / `DoReturn` / `Safepoint` / `CallBaseline` / `TailCall` / `Self` / …),这是 P3/P4 helper 集同款的实装体现——interface 方法替代了 helperTab 索引,概念上仍是「helper 集是通用语义层,通道是物理层」,只是「通道」现在是「接口方法调用 + exit-reason 通信」而非「imported function / 函数指针表」。
 
-承 §4.3.2 表的对位列。**P3 wazero imported helper 的所有 Go 侧实装在 P4 build 下原样复用**——helper 函数体不变(同一份 `func h_arith(args...)` Go 代码),只是 P4 build 下注册位置从「wazero module 的 imported function」改为「P4 helper 表」。
+另外,`P4HostState.GlobalsRaw() uint64` 在 PJ10 native emit 的 `GETGLOBAL` / `SETGLOBAL` `NodeHit` 快路径里被用来在编译期把 globals 表的 NaN-boxed u64 直接烧进指令流——同一个 State 生命周期内 globals 表身份不变、arena 对象不移动,承 P3 wasm 编译器同款保守铺垫。
 
-这意味着 P3/P4 共享的实施面包括:
-- 助手内部逻辑(分配 / 分派 / 错误 / 抢占协作);
-- 参数 marshalling 协议(读 jitContext / arena 偏移寻址);
-- 错误冒泡 status 码体系(承 [../p3-wasm-tier/04-trampoline](../p3-wasm-tier/04-trampoline.md) §4)。
+#### 4.3.4 P3 / P4 helper 集对位(2026-07-02 实装勘误)
 
-**helper 集是「通用语义层」,trampoline 是「物理通道层」**——这条划界让 P3 → P4 切换的工程量集中在 trampoline + 编译器骨架,helper 部分零增量。
+承 §4.3.2 表的对位列。**P3 wazero imported helper 的所有 Go 侧实装在 P4 build 下几乎原样复用**——helper 的核心语义(分配 / 分派 / 错误 / 抢占协作)不变。差异在**物理通道**:
+
+| | P3 通道 | P4 通道(exit-reason) | P4 通道(shim) |
+|---|---|---|---|
+| 跨层调用机制 | wazero imported function call | mmap `ret` + Go dispatcher 循环 + `CallJITSpec` 重入 | mmap 段 ABIInternal `call` 进 Go 函数 + `ret` 回段 |
+| 参数传递 | wazero linear memory + i32/i64 args | `jitContext.exitArg0` 打包 (code, A, B, C, pc) + `resumeOff` | ABIInternal 寄存器(RAX=jitCtx, RBX/RCX/RDI/... = args) |
+| 返回 | wazero call return | `jitContext.exitArg0` 语义按 helper 而定 + dispatcher 重入 | Go 函数正常 return + `mov rbx, [r15+valueStackBaseOff]` 恢复 |
+| G / vsBase 恢复 | wazero 内部处理 | `RefreshJitCtxAddrs` + `SetHostRef` 在重入前 | `mov r14, [r15+savedGoGOff]`(shim 前) + `mov rbx, [r15+vsBaseOff]`(shim 后) |
+
+**语义等价 / 物理各异**——这是 P3/P4 同 tier 的工程红利。exit-reason 通道是当前主推(所有 PJ10 新 op 都走这一条),shim 通道是历史遗留 + 待迁移。
 
 ### 4.4 三出口共用同一段恢复代码(节省码段 + 一致性)
 

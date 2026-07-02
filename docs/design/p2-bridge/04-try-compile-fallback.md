@@ -380,6 +380,14 @@ func (b *Bridge) considerPromotion(proto *bytecode.Proto, pd *ProfileData) {
 }
 ```
 
+> **addendum 2026-07-02(承 `internal/bridge/bridge.go` 与 P2 07 §2.4 / issue #18 / P4 08 §3.7 现状)**:骨架落地后 `considerPromotion` 已加入三处 non-trivial 演进,与本 §2 状态机语义 **完全兼容**——**没有引入新状态**,新增机制均是**在 TierInterp 上的延迟转移**或**入口守卫**:
+>
+> 1. **`onMain bool` 参数**:签名变为 `considerPromotion(proto, pd, onMain bool)`。协程线程(`onMain == false`)在函数首行直接 `return`——协程从不升层(承 [../p3-wasm-tier/07-coroutine-thread-rule.md](../p3-wasm-tier/07-coroutine-thread-rule.md)),profile 数据仍照常累积,只是决策入口 no-op;状态机看:TierInterp self-loop,不写 tierState。
+> 2. **`recheckCompilabilityRuntime` 占位撤位**(issue #18,承 memory `project_p4_placeholder_reason_pattern.md`):`comp != CompCompilable` 分支不再直接 → Stuck;若 `Reason` 属于「backend 注入后需要运行期重判」的占位类别(`ReasonBackendUnsupp | ReasonSelfCall`,后端注入前保守拒),先调 `recheckCompilabilityRuntime(proto)` 对当前 P3/P4 后端的 `SupportsAllOpcodes` 再问一遍——重判为 `CompCompilable` 就走 P4 路径,否则才转 Stuck;状态机看:相当于把 T2 从「入口即判」变为「入口重判后再判」,不新增转移边。
+> 3. **`forceAll` retry window**(承 P4 08 §3.7 与 fuzz_p4_test.go):force-all 模式下,IC-gated 后端(P4 native `NodeHit` 等)需要**先跑几遍解释器让 IC 预热**再升,否则冷 IC 直接升层的 proto 立刻吸收为 P4Stuck;实装为 `if b.forceAll && pd.EntryCount < 4 { return }`——EntryCount<4 时 TierInterp 自循环(**不写 tierState**),第 4+ 次入口才继续原路径;状态机看:仍是 TierInterp self-loop 的**延迟转移**,不引入新状态。
+>
+> **共同性质**:这三处演进都在**入口守卫层**或**T2 分支内**扩展,**从不引入 Gibbous→Interp 或 Stuck→\* 的反向边**——状态机的单向 + 吸收态承诺(§2.4/§2.5)与零 deopt 论证(§8)不受影响。任何后续在 `considerPromotion` 加入的机制,须继承本原则:「新机制 = 入口守卫 / T1|T2|T3 分支内条件细化」,不动状态图。
+
 骨架要点(逐条对应 §2.3 转移条件表):
 
 - **P1 守卫覆盖三种重入**:

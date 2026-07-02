@@ -294,6 +294,16 @@ type PointFeedback struct {
 
 **关键观察**:**三层校验的物理形态、字段来源、判定顺序完全相同,只有「失败着陆面」不同**——P3 落同函数 helper,P4 落 OSR exit。这是 P3 06 §1.3 「同表同代次校验是语义分发,不是投机 guard」的对偶兑现:同样三层比较,P3 是「快路径前置检查」(失败也合法),P4 是「投机 guard」(失败 ⇒ 出函数)。
 
+**2026-07-02 实装勘误(承 [implementation-progress §14.5](./implementation-progress.md) PR #34 amd64 native 扩接)**:上文「IsTable → tableRef → gen 三层校验顺序与 P3 完全相同」的设计描述在 P4 amd64 native path 的 GETTABLE / SETTABLE ArrayHit inline 上**不再字面成立**——本轮工程 amd64 native ArrayHit inline 路径**完全去掉了 TableRef + gen identity guards**,只留一层 IsTable 位 tag 检查。理由:
+
+1. **物理无需**:ArrayHit inline 直接从当下 table 的 `asize` / `arrayRef` 字段读取——对**任意** table 都正确。非 nil 的 array 槽读永远不会触发 `__index` 元方法链;非 nil-over-non-nil 的 array 槽 store 永远不会触发 rehash / 键退化。这两个属性是 array 段本身的物理不变量,与 「同表 + 同代次」这个身份约束无关。
+2. **IC snapshot 只作 emit-time gate**:P4 用 IC feedback 只是决定「哪个 pc 位点允许 emit ArrayHit inline 序列」,不是运行期身份匹配。运行期读的是活表的字段。
+3. **副作用**:因为 identity guards 撤掉了,「多次 dispatch 同一 pc 会看到不同 table」这条曾经的失败面在 P4 amd64 上就自然不 deopt 了——这不是漏判,是这条 op 序列对不同 table 都是正确的。
+
+对应地,GETGLOBAL / SETGLOBAL NodeHit inline(§2.4)也做了类似简化:只留 gen-only guard + 编译期烧入的 node index。这**强化了对生产端的要求**:任何 key → slot 的重定位都必须 `BumpGen`,否则 inline 就会读到错的 slot。这个 producer-side 不变量已在 crescent `rawtable.go::insertNewKey` 上补齐(2026-07-02,fuzz seed 4b3d10ff 回归)。
+
+本 addendum 记录 addendum 时点的物理事实,不删除上文原设计文本——上文对 P2/P3 端的对偶描述,以及 P4 spec template(§9.19 SELF NodeHit 六模板)仍字面成立;只有 amd64 native path 的 ArrayHit / NodeHit inline 走了简化路线。arm64 端因 native 接受门尚未接 GETTABLE/SETTABLE(承 §14.5 分岔),此 addendum 对 arm64 无影响。
+
 ### 2.4 FBGlobalStable:常量化 / 直达 globals 槽 + globals 代次 guard
 
 **触发条件**(承 [../p2-bridge/02-ic-feedback](../p2-bridge/02-ic-feedback.md) §2.2):GETGLOBAL/SETGLOBAL 上 ICSlot.kind = 2 node hit。
