@@ -96,6 +96,24 @@ func (c *nativeCode) Run(stack []uint64, base uint32) (status int32) {
 	jitCtxAddr := uintptr(unsafe.Pointer(c.jitCtx))
 	vsBaseAddr := c.jitCtx.ValueStackBase()
 	rawStatus := jitamd64.CallJITSpec(c.codePage.Addr(), jitCtxAddr, vsBaseAddr)
+	// Exit-reason dispatcher loop (issue #38): the mmap segment cannot
+	// safely call Go shims for ops like GETTABLE / NEWTABLE etc. under
+	// concurrent load, so the emit path lowers those ops to `mov rax,
+	// ExitInlineHelper; mov [r15+exitArg0], packed; mov [r15+resumeOff],
+	// nextOpOff; ret`. We handle the request Go-side and reenter via
+	// codePage + resumeOff. Repeat until the segment returns a
+	// non-helper status.
+	for uint32(rawStatus) == jit.ExitInlineHelper {
+		if !c.dispatchHelper(int32(base)) {
+			return 1
+		}
+		// Arena may have grown during the host call; refresh addr
+		// fields before reentering the mmap segment.
+		c.host.RefreshJitCtxAddrs(c.jitCtx, int32(base))
+		vsBaseAddr = c.jitCtx.ValueStackBase()
+		resumeAddr := c.codePage.Addr() + uintptr(c.jitCtx.ResumeOff())
+		rawStatus = jitamd64.CallJITSpec(resumeAddr, jitCtxAddr, vsBaseAddr)
+	}
 	status = int32(rawStatus)
 	// Perform Go-side frame teardown via host.DoReturn on success.
 	// Emitting host.DoReturn as a shim call from inside the mmap segment
@@ -107,6 +125,51 @@ func (c *nativeCode) Run(stack []uint64, base uint32) (status int32) {
 		}
 	}
 	return status
+}
+
+// dispatchHelper handles a single ExitInlineHelper request from the
+// mmap segment. Returns true on success (segment can be re-entered
+// at resumeOff), false on error (host method raised → caller returns
+// status=1).
+//
+// The exit-reason protocol packs into exitArg0:
+//
+//	bits  0..15 : helper code (jit.HelperXxx)
+//	bits 16..23 : op arg A (0-255)
+//	bits 24..32 : op arg B (0-511)
+//	bits 33..41 : op arg C (0-511)
+//	bits 42..63 : op pc (0..4M)
+//
+// Each helper unpacks the fields it needs; the pc field is present
+// for all helpers because host methods use it to materialise ci.pc.
+func (c *nativeCode) dispatchHelper(base int32) bool {
+	arg0 := c.jitCtx.ExitArg0()
+	helperCode := arg0 & jit.HelperCodeMask
+	a := int32((arg0 >> 16) & 0xFF)
+	b := int32((arg0 >> 24) & 0x1FF)
+	cc := int32((arg0 >> 33) & 0x1FF)
+	pc := int32((arg0 >> 42) & 0x3FFFFF)
+	switch helperCode {
+	case jit.HelperGetTable:
+		if st := c.host.GetTable(base, pc, a, b, cc); st != 0 {
+			return false
+		}
+	case jit.HelperSetTable:
+		if st := c.host.SetTable(base, pc, a, b, cc); st != 0 {
+			return false
+		}
+	case jit.HelperNewTable:
+		if st := c.host.NewTable(base, pc, a, b, cc); st != 0 {
+			return false
+		}
+	case jit.HelperSetList:
+		if st := c.host.SetList(base, pc, a, b, cc); st != 0 {
+			return false
+		}
+	default:
+		return false
+	}
+	return true
 }
 
 func (c *nativeCode) PendingErr() error    { return nil }
@@ -347,6 +410,7 @@ func opSupported(op bytecode.OpCode) bool {
 		bytecode.EQ, bytecode.LT, bytecode.LE,
 		bytecode.TEST, bytecode.TESTSET,
 		bytecode.JMP, bytecode.FORPREP, bytecode.FORLOOP,
+		bytecode.GETTABLE,
 		bytecode.RETURN:
 		return true
 	default:
@@ -463,8 +527,36 @@ func emitBB(buf *codeBuf, c *cfg, bb *basicBlock, bbID int) error {
 	return emitTerminator(buf, c, bb, bbID, termIns, lastPC)
 }
 
+// emitResumePreludeIfPending emits a `mov rbx, [r15+vsBaseOff]` reload
+// and resolves all pending resume-off fixups to point at the reload
+// instruction, if any exit-reason emit is waiting. Safe no-op when
+// nothing pends. Called at the start of every emitLinearOp /
+// emitTerminator so the resume entry always begins with rbx = vsBase
+// (dispatcher may have refreshed it via arena grow).
+func emitResumePreludeIfPending(buf *codeBuf) {
+	if len(buf.pendingResumeOffFixups) == 0 {
+		return
+	}
+	resumeOff := uint32(buf.pos())
+	// mov rbx, [r15 + vsBaseOff] (7B: 49 8B 9F disp32)
+	off := int32(jit.JITContextValueStackBaseOffset)
+	buf.emit([]byte{0x49, 0x8B, 0x9F,
+		byte(uint32(off)),
+		byte(uint32(off) >> 8),
+		byte(uint32(off) >> 16),
+		byte(uint32(off) >> 24)})
+	for _, po := range buf.pendingResumeOffFixups {
+		buf.bytes[po] = byte(resumeOff)
+		buf.bytes[po+1] = byte(resumeOff >> 8)
+		buf.bytes[po+2] = byte(resumeOff >> 16)
+		buf.bytes[po+3] = byte(resumeOff >> 24)
+	}
+	buf.pendingResumeOffFixups = buf.pendingResumeOffFixups[:0]
+}
+
 // emitLinearOp emits one non-terminator opcode.
 func emitLinearOp(buf *codeBuf, ins bytecode.Instruction, pc int32) error {
+	emitResumePreludeIfPending(buf)
 	op := bytecode.Op(ins)
 	a := uint8(bytecode.A(ins))
 	// b and c may be RK-encoded (0..511 range) for arithmetic /
@@ -531,6 +623,7 @@ func emitLinearOp(buf *codeBuf, ins bytecode.Instruction, pc int32) error {
 // emitTerminator emits the last instruction of a BB with the appropriate
 // branching / return / call semantics.
 func emitTerminator(buf *codeBuf, c *cfg, bb *basicBlock, bbID int, ins bytecode.Instruction, pc int32) error {
+	emitResumePreludeIfPending(buf)
 	op := bytecode.Op(ins)
 	a := uint8(bytecode.A(ins))
 	b := uint8(bytecode.B(ins))

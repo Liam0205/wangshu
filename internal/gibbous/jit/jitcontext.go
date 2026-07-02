@@ -99,7 +99,20 @@ const (
 	// RETs; nativeCode.Run's dispatcher reads exitArg0, invokes the
 	// corresponding host method, then reenters the mmap segment via
 	// codePage + resumeOff.
-	HelperGetTable uint64 = 10
+	HelperGetTable    uint64 = 10
+	HelperSetTable    uint64 = 11
+	HelperGetGlobal   uint64 = 12
+	HelperSetGlobal   uint64 = 13
+	HelperGetUpval    uint64 = 14
+	HelperSetUpval    uint64 = 15
+	HelperNewTable    uint64 = 16
+	HelperSelf        uint64 = 17
+	HelperUnm         uint64 = 18
+	HelperLen         uint64 = 19
+	HelperConcat      uint64 = 20
+	HelperSetList     uint64 = 21
+	HelperArithSlow   uint64 = 22
+	HelperCompareSlow uint64 = 23
 )
 
 // HelperCodeMask masks off the low 16 bits of exitArg0 that hold the
