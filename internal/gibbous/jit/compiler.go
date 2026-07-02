@@ -44,6 +44,16 @@ func New() *Compiler {
 	return &Compiler{}
 }
 
+// MinPromotableLen implements bridge.MinPromotableLener. P4 dispatches
+// through a direct mmap CALL — cheaper than P3's wasm module boundary —
+// but nativeCode.Run still pays fixed per-call costs (codePage refcount
+// atomics, jitCtx addr refresh, Go-side DoReturn). Measured on the
+// 3-op const-predicate shape: promoted 111 ns vs interpreter 78 ns, so
+// tiny protos still lose. Keep the same floor as the package default;
+// this override is a hook for future tuning once the fixed Run costs
+// shrink.
+func (c *Compiler) MinPromotableLen() int { return 10 }
+
 // SupportsAllOpcodes 检查 Proto 中所有 opcode 是否都在后端支持集内。
 //
 // **PJ7 真接入实装**:开放白名单到「单值产生 + RETURN A 1」单 BB 形态——
