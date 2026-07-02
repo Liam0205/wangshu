@@ -1,0 +1,2 @@
+go test fuzz v1
+string("function multi()return 0<0>0 end return multi()")
