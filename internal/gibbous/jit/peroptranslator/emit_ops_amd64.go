@@ -240,10 +240,45 @@ func emitPOW(cb *codeBuf, pc int32, a uint8, b, c int) {
 	emitARITH(cb, bytecode.POW, pc, a, b, c)
 }
 
-// emitUNM emits R(A) := -R(B) via shimUnm.
+// emitUNM emits R(A) := -R(B) with an inline number fast path:
+//
+//	mov rax, [rbx+B*8]
+//	mov rdx, qNanBoxBase
+//	cmp rax, rdx
+//	jae slow                   ; non-number -> exit-reason
+//	mov rdx, 0x8000000000000000
+//	xor rax, rdx               ; flip IEEE-754 sign bit
+//	mov [rbx+A*8], rax
+//	jmp done
+//	slow: <exit-reason HelperUnm>
+//	done:
+//
+// Negating a float by flipping the sign bit matches the interpreter's
+// `-x` on numbers exactly (including NaN / inf / -0 payload bits). The
+// slow path (string coercion + __unm) routes through host.Unm.
 func emitUNM(cb *codeBuf, pc int32, a, b uint8) {
-	emitCallShim(cb, shimUnmAddr(), []int32{0, pc, int32(b), int32(a)})
-	emitStatusCheckAndBubble(cb)
+	// mov rax, [rbx+B*8]
+	cb.emit(jitamd64.EmitMovqRaxFromMemReg(nil, regRBX, int32(b)*8))
+	// mov rdx, qNanBoxBase; cmp rax, rdx; jae slow
+	cb.emit(jitamd64.EmitMovRdxImm64(nil, qNanBoxBaseU64))
+	cb.emit([]byte{0x48, 0x39, 0xD0}) // cmp rax, rdx
+	cb.emit(jitamd64.EmitJaeRel32(nil, 0))
+	slowFixup := int(cb.pos()) - 4
+	// mov rdx, signBit; xor rax, rdx
+	cb.emit(jitamd64.EmitMovRdxImm64(nil, 0x8000_0000_0000_0000))
+	cb.emit([]byte{0x48, 0x31, 0xD0}) // xor rax, rdx
+	// mov [rbx+A*8], rax
+	cb.emit(jitamd64.EmitMovqMemRegFromRax(nil, regRBX, int32(a)*8))
+	// jmp done
+	cb.emit([]byte{0xE9, 0, 0, 0, 0})
+	doneFixup := int(cb.pos()) - 4
+	// slow:
+	slowOff := int(cb.pos())
+	writeRel32(cb, slowFixup, int32(slowOff)-int32(slowFixup+4))
+	emitExitReason(cb, jit.HelperUnm, pc, int32(a), int32(b), 0)
+	// done:
+	doneOff := int(cb.pos())
+	writeRel32(cb, doneFixup, int32(doneOff)-int32(doneFixup+4))
 }
 
 // emitLEN emits R(A) := #R(B) via shimLen.
@@ -354,10 +389,11 @@ var _ = unsafe.Pointer(nil)
 func emitCompare(cb *codeBuf, op bytecode.OpCode, pc int32, a uint8, b, c int, succExec, succSkip int) {
 	// Fast path: inline numeric compare via UCOMISd. Supports LT/LE
 	// with reg-reg, reg-K, K-reg, K-K where the K operand is numeric.
+	// Reg operands get IsNumber guards that fall back to the shim tail.
 	// EQ inline uses raw 64-bit bit comparison (Lua rawequal for
 	// primitives; skips __eq metamethod, safe for numeric-only Protos).
 	if op == bytecode.LT || op == bytecode.LE {
-		if inlineNumericCompare(cb, op, a, b, c, succExec, succSkip) {
+		if inlineNumericCompare(cb, op, pc, a, b, c, succExec, succSkip) {
 			return
 		}
 	}
@@ -366,37 +402,7 @@ func emitCompare(cb *codeBuf, op bytecode.OpCode, pc int32, a uint8, b, c int, s
 			return
 		}
 	}
-	// shim: for EQ use shimEq, for LT/LE use shimCompare(op, b, c)
-	if op == bytecode.EQ {
-		emitCallShim(cb, shimEqAddr(), []int32{0, pc, int32(b), int32(c)})
-	} else {
-		emitCallShim(cb, shimCompareAddr(), []int32{0, pc, int32(op), int32(b), int32(c)})
-	}
-	// After shim: RAX holds packed (bit0=result, bit1=err).
-	// test rax, 2  ; check error bit
-	cb.emit([]byte{0x48, 0xA9, 0x02, 0x00, 0x00, 0x00}) // test rax, 2
-	// jz +5 (skip the ret block)
-	cb.emit([]byte{0x74, 0x06})
-	// mov rax, 1; ret
-	cb.emit([]byte{0xB8, 0x01, 0x00, 0x00, 0x00, 0xC3}) // mov eax,1; ret
-	// Now compare RAX bit0 vs A:
-	// and rax, 1
-	cb.emit([]byte{0x48, 0x83, 0xE0, 0x01})
-	// cmp rax, A
-	cb.emit([]byte{0x48, 0x83, 0xF8, byte(a)})
-	// je -> succExec, else -> succSkip
-	// Encode: je rel32 (0F 84 rel32, 6 bytes) with fixup to succExec.
-	{
-		cb.emit([]byte{0x0F, 0x84, 0x00, 0x00, 0x00, 0x00})
-		patchOff := cb.pos() - 4
-		cb.addFixup(patchOff, cb.pos(), succExec)
-	}
-	// Unconditional jmp -> succSkip
-	{
-		patchOff := cb.pos() + 1
-		cb.emit([]byte{0xE9, 0x00, 0x00, 0x00, 0x00})
-		cb.addFixup(patchOff, cb.pos(), succSkip)
-	}
+	emitCompareShimTail(cb, op, pc, a, b, c, succExec, succSkip)
 }
 
 // inlineRawEq emits inline 64-bit raw-bit equality for EQ. Lua 5.1 EQ
@@ -486,10 +492,42 @@ func inlineRawEq(cb *codeBuf, a uint8, b, c int, succExec, succSkip int) bool {
 //	jmp succSkip
 //
 // For LE, use jbe. For A=1, senses invert (jae / ja).
-func inlineNumericCompare(cb *codeBuf, op bytecode.OpCode, a uint8, b, c int, succExec, succSkip int) bool {
+func inlineNumericCompare(cb *codeBuf, op bytecode.OpCode, pc int32, a uint8, b, c int, succExec, succSkip int) bool {
 	if op != bytecode.LT && op != bytecode.LE {
 		return false
 	}
+	// K operands must be numeric (AnalyzeNative enforces; double-check
+	// so a stale gate can't emit a bogus imm compare).
+	for _, rk := range [2]int{b, c} {
+		if rk >= 256 {
+			kidx := rk - 256
+			if cb.proto == nil || kidx < 0 || kidx >= len(cb.proto.Consts) {
+				return false
+			}
+			if !value.IsNumber(value.Value(cb.proto.Consts[kidx])) {
+				return false
+			}
+		}
+	}
+	// IsNumber guards for reg operands. A non-number reg (upvalue-fed
+	// booleans, strings needing coercion, metamethod operands) must
+	// route to host.Compare for byte-equal raise/coercion semantics —
+	// fuzz seed d9bce2e240b2d69e caught the unguarded variant (P1
+	// raised `attempt to compare number with boolean`, P4 silently
+	// compared garbage bits).
+	var guardFixups []int
+	emitRegNumberGuard := func(reg int) {
+		if reg >= 256 {
+			return
+		}
+		cb.emit(jitamd64.EmitMovqRaxFromMemReg(nil, regRBX, int32(reg)*8))
+		cb.emit(jitamd64.EmitMovRcxImm64(nil, qNanBoxBaseU64))
+		cb.emit(jitamd64.EmitCmpRaxRcx(nil))
+		cb.emit(jitamd64.EmitJaeRel32(nil, 0))
+		guardFixups = append(guardFixups, int(cb.pos())-4)
+	}
+	emitRegNumberGuard(b)
+	emitRegNumberGuard(c)
 	if !inlineLoadOperandToXmm(cb, 0, b) {
 		return false
 	}
@@ -532,7 +570,39 @@ func inlineNumericCompare(cb *codeBuf, op bytecode.OpCode, a uint8, b, c int, su
 	patchOff2 := cb.pos() + 1
 	cb.emit([]byte{0xE9, 0x00, 0x00, 0x00, 0x00})
 	cb.addFixup(patchOff2, cb.pos(), succSkip)
+	// Slow block: guard misses land here. Same shim + branch logic as
+	// emitCompare's non-inline tail (host.Compare packed result).
+	if len(guardFixups) > 0 {
+		slowOff := int(cb.pos())
+		for _, po := range guardFixups {
+			writeRel32(cb, po, int32(slowOff)-int32(po+4))
+		}
+		emitCompareShimTail(cb, op, pc, a, b, c, succExec, succSkip)
+	}
 	return true
+}
+
+// emitCompareShimTail emits the host.Compare shim call + packed-result
+// branch to succExec/succSkip. Shared by emitCompare's non-inline path
+// and inlineNumericCompare's guard-miss slow block.
+func emitCompareShimTail(cb *codeBuf, op bytecode.OpCode, pc int32, a uint8, b, c int, succExec, succSkip int) {
+	if op == bytecode.EQ {
+		emitCallShim(cb, shimEqAddr(), []int32{0, pc, int32(b), int32(c)})
+	} else {
+		emitCallShim(cb, shimCompareAddr(), []int32{0, pc, int32(op), int32(b), int32(c)})
+	}
+	// After shim: RAX holds packed (bit0=result, bit1=err).
+	cb.emit([]byte{0x48, 0xA9, 0x02, 0x00, 0x00, 0x00}) // test rax, 2
+	cb.emit([]byte{0x74, 0x06})                         // jz +6 (skip ret block)
+	cb.emit([]byte{0xB8, 0x01, 0x00, 0x00, 0x00, 0xC3}) // mov eax,1; ret
+	// Compare RAX bit0 vs A:
+	cb.emit([]byte{0x48, 0x83, 0xE0, 0x01})     // and rax, 1
+	cb.emit([]byte{0x48, 0x83, 0xF8, byte(a)})  // cmp rax, A
+	cb.emit([]byte{0x0F, 0x84, 0, 0, 0, 0})     // je succExec
+	cb.addFixup(cb.pos()-4, cb.pos(), succExec) //
+	patchOff := cb.pos() + 1
+	cb.emit([]byte{0xE9, 0, 0, 0, 0}) // jmp succSkip
+	cb.addFixup(patchOff, cb.pos(), succSkip)
 }
 
 // emitEQ / LT / LE are thin wrappers.
@@ -1485,8 +1555,10 @@ func emitSETLIST(cb *codeBuf, pc int32, a, b, c uint8) {
 }
 
 func emitCALL(cb *codeBuf, pc int32, a, b, c uint8) {
-	emitCallShim(cb, shimCallAddr(), []int32{0, pc, int32(a), int32(b), int32(c)})
-	emitStatusCheckAndBubble(cb)
+	// Exit-reason path (issue #38): the mmap segment can't safely call
+	// Go shims under nested/concurrent load. Run's dispatcher invokes
+	// host.CallBaseline (synchronous callee completion) and reenters.
+	emitExitReason(cb, jit.HelperCall, pc, int32(a), int32(b), int32(c))
 }
 
 func emitTAILCALL(cb *codeBuf, pc int32, a, b, c uint8) {

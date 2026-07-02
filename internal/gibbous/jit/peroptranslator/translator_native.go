@@ -104,14 +104,22 @@ func (c *nativeCode) Run(stack []uint64, base uint32) (status int32) {
 	// codePage + resumeOff. Repeat until the segment returns a
 	// non-helper status.
 	for uint32(rawStatus) == jit.ExitInlineHelper {
+		// Snapshot resumeOff BEFORE dispatching: HelperCall drives the
+		// callee synchronously, and a recursive call into this same
+		// Proto reenters this same nativeCode and clobbers the shared
+		// per-Proto jitCtx (resumeOff / exitArg0 / addr fields).
+		resumeOff := c.jitCtx.ResumeOff()
 		if !c.dispatchHelper(int32(base)) {
 			return 1
 		}
 		// Arena may have grown during the host call; refresh addr
-		// fields before reentering the mmap segment.
+		// fields before reentering the mmap segment. This also repairs
+		// any jitCtx fields a recursive inner Run overwrote.
 		c.host.RefreshJitCtxAddrs(c.jitCtx, int32(base))
+		saveGoG(c.jitCtx.SavedGoGSlot())
+		c.jitCtx.SetHostRef(hostIfaceHeader(c.host))
 		vsBaseAddr = c.jitCtx.ValueStackBase()
-		resumeAddr := c.codePage.Addr() + uintptr(c.jitCtx.ResumeOff())
+		resumeAddr := c.codePage.Addr() + uintptr(resumeOff)
 		rawStatus = jitamd64.CallJITSpec(resumeAddr, jitCtxAddr, vsBaseAddr)
 	}
 	status = int32(rawStatus)
@@ -164,6 +172,20 @@ func (c *nativeCode) dispatchHelper(base int32) bool {
 		}
 	case jit.HelperSetList:
 		if st := c.host.SetList(base, pc, a, b, cc); st != 0 {
+			return false
+		}
+	case jit.HelperGetUpval:
+		// GETUPVAL A B: R(A) := U(B). Never raises.
+		c.host.SetReg(a, c.host.GetUpval(base, b))
+	case jit.HelperSetUpval:
+		// SETUPVAL A B: U(B) := R(A). Never raises.
+		c.host.SetUpvalFromReg(base, a, b)
+	case jit.HelperUnm:
+		if st := c.host.Unm(base, pc, b, a); st != 0 {
+			return false
+		}
+	case jit.HelperCall:
+		if st := c.host.CallBaseline(base, pc, a, b, cc); st != 0 {
 			return false
 		}
 	default:
@@ -379,6 +401,15 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 				if bytecode.B(ins) >= 256 || bytecode.C(ins) >= 256 {
 					return false
 				}
+			case bytecode.CALL:
+				// CALL goes through the exit-reason path; the dispatcher
+				// runs host.CallBaseline which drives the callee to
+				// completion synchronously. B=0 (args to top) and C=0
+				// (multret) depend on a live `top` the native segment
+				// doesn't maintain per-op — reject those forms.
+				if bytecode.B(ins) == 0 || bytecode.C(ins) == 0 {
+					return false
+				}
 			}
 		}
 	}
@@ -445,11 +476,13 @@ func opSupported(op bytecode.OpCode) bool {
 	switch op {
 	case bytecode.MOVE, bytecode.LOADK, bytecode.LOADBOOL, bytecode.LOADNIL,
 		bytecode.ADD, bytecode.SUB, bytecode.MUL, bytecode.DIV,
-		bytecode.NOT,
+		bytecode.NOT, bytecode.UNM,
 		bytecode.EQ, bytecode.LT, bytecode.LE,
 		bytecode.TEST, bytecode.TESTSET,
 		bytecode.JMP, bytecode.FORPREP, bytecode.FORLOOP,
 		bytecode.GETTABLE, bytecode.SETTABLE, bytecode.NEWTABLE,
+		bytecode.GETUPVAL, bytecode.SETUPVAL,
+		bytecode.CALL,
 		bytecode.RETURN:
 		return true
 	default:
