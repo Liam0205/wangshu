@@ -351,9 +351,14 @@ func emitSETLISTArm64(cb *codeBuf, pc int32, a, b, c uint8) {
 	emitCallShimArm64(cb, shimSetListAddr(), []int32{0, pc, int32(a), int32(b), int32(c)})
 }
 
-// emitCALLArm64 emits arm64 CALL via shimCall.
+// emitCALLArm64 emits CALL A B C via the exit-reason protocol (issue
+// #37 step 2, mirror of amd64 emitCALL): Run's dispatcher invokes
+// host.CallBaseline (synchronous callee completion) and reenters.
+// AnalyzeNative rejects B=0 / C=0 forms (they depend on a live `top`
+// the native segment doesn't maintain per-op) and gates acceptance on
+// CALL density.
 func emitCALLArm64(cb *codeBuf, pc int32, a, b, c uint8) {
-	emitCallShimArm64(cb, shimCallAddr(), []int32{0, pc, int32(a), int32(b), int32(c)})
+	emitExitReasonArm64(cb, jit.HelperCall, pc, int32(a), int32(b), int32(c))
 }
 
 // emitTAILCALLArm64 emits arm64 TAILCALL via shimTailCall.

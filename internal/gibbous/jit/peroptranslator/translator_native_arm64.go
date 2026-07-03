@@ -228,21 +228,53 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 				if bytecode.B(ins) >= 256 || bytecode.C(ins) >= 256 {
 					return false
 				}
+			case bytecode.CALL:
+				// CALL rides the exit-reason path; the dispatcher runs
+				// host.CallBaseline which drives the callee to
+				// completion synchronously. B=0 (args to top) and C=0
+				// (multret) depend on a live `top` the native segment
+				// doesn't maintain per-op — reject those forms. Same
+				// gate as amd64.
+				if bytecode.B(ins) == 0 || bytecode.C(ins) == 0 {
+					return false
+				}
 			}
 		}
 	}
+	// Single reachable RETURN only (multi-return lowering is step 6 of
+	// the arm64 exit-reason port).
+	//
+	// CALL density gate (mirror of amd64): every CALL is an exit-reason
+	// round trip (mmap RET -> Go dispatch -> host.CallBaseline -> mmap
+	// reentry) costing roughly 15-25 interpreted ops. On amd64 the
+	// measured break-even was totalOps/callCount >= 16; arm64 round-trip
+	// cost is the same order (trampoline + dispatch, no reflection), so
+	// start from the same threshold and re-measure on hardware when the
+	// full op set has landed (issue #40 stage 2 bench pass).
 	returnCount := 0
+	callCount := 0
+	totalOps := 0
 	for id, bb := range c.blocks {
 		if !reach[id] {
 			continue
 		}
 		for pc := bb.startPC; pc < bb.endPC; pc++ {
-			if bytecode.Op(proto.Code[pc]) == bytecode.RETURN {
+			totalOps++
+			switch bytecode.Op(proto.Code[pc]) {
+			case bytecode.RETURN:
 				returnCount++
+			case bytecode.CALL:
+				callCount++
 			}
 		}
 	}
-	return returnCount == 1
+	if returnCount != 1 {
+		return false
+	}
+	if callCount > 0 && totalOps/callCount < 16 {
+		return false
+	}
+	return true
 }
 
 // opSupported: arm64 subset. Ops beyond the original 18-op mmap-safe
@@ -258,6 +290,7 @@ func opSupported(op bytecode.OpCode) bool {
 		bytecode.TEST, bytecode.TESTSET,
 		bytecode.JMP, bytecode.FORPREP, bytecode.FORLOOP,
 		bytecode.GETUPVAL, bytecode.SETUPVAL,
+		bytecode.CALL,
 		bytecode.RETURN:
 		return true
 	default:
@@ -360,6 +393,8 @@ func emitLinearOpArm64(buf *codeBuf, ins bytecode.Instruction, pc int32) error {
 		emitGETUPVALArm64(buf, a, bReg)
 	case bytecode.SETUPVAL:
 		emitSETUPVALArm64(buf, a, bReg)
+	case bytecode.CALL:
+		emitCALLArm64(buf, pc, a, bReg, uint8(cRK))
 	case bytecode.NOT:
 		emitNOTArm64Inline(buf, a, bReg)
 	case bytecode.ADD, bytecode.SUB, bytecode.MUL, bytecode.DIV:

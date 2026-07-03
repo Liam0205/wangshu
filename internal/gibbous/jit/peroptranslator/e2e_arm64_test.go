@@ -11,6 +11,7 @@
 package peroptranslator_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/Liam0205/wangshu"
@@ -76,8 +77,88 @@ return r`
 	}
 }
 
-// TestArm64E2E_SETUPVAL: a hot closure whose kernel swaps two upvalues
-// (SETUPVAL-heavy, no arith).
+// TestArm64E2E_CALL: a kernel whose body calls a known local function
+// must promote and ride the exit-reason CALL (host.CallBaseline). The
+// kernel pads with MOVE/LOADK chains to pass the CALL density gate
+// (totalOps/callCount >= 16) and avoids arithmetic (still rejected on
+// arm64 until step 7).
+func TestArm64E2E_CALL(t *testing.T) {
+	src := `
+local function leaf() return 7 end
+local function k()
+  local a = 1
+  local b = 2
+  local c = 3
+  local d = 4
+  local e = 5
+  local f = 6
+  local g = a
+  local h = b
+  local p = c
+  local q = d
+  local r0 = e
+  local s0 = f
+  local v = leaf()
+  local w = v
+  local x = w
+  local y = x
+  return y
+end
+local r = 0
+for i = 1, 200 do r = k() end
+return r`
+	results, promoted, dispatched := runForceAllArm64(t, src)
+	if promoted == 0 {
+		t.Fatal("PromotionCount = 0: CALL proto did not promote on arm64")
+	}
+	if dispatched == 0 {
+		t.Fatal("DispatchHelperCount did not increase: CALL never rode the exit-reason protocol")
+	}
+	if len(results) != 1 || results[0] != "7" {
+		t.Fatalf("results = %v, want [7]", results)
+	}
+}
+
+// TestArm64E2E_CALL_ErrorBubbles: a callee that raises must bubble the
+// error out of the dispatcher (dispatchHelper returns false → Run
+// status 1 → public API error), byte-equal in existence to P1. Error
+// paths are a structural blind spot of all-success corpora (see
+// prove-the-path-under-test guide §error-path).
+func TestArm64E2E_CALL_ErrorBubbles(t *testing.T) {
+	src := `
+local function boom() error("boom-arm64") end
+local function k()
+  local a = 1
+  local b = 2
+  local c = 3
+  local d = 4
+  local e = 5
+  local f = 6
+  local g = a
+  local h = b
+  local p = c
+  local q = d
+  local r0 = e
+  local s0 = f
+  local v = boom()
+  return v
+end
+local r = k()
+return r`
+	prog, err := wangshu.Compile([]byte(src), "arm64e2e-err")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	st := wangshu.NewState(wangshu.Options{})
+	st.SetForceAllPromote(true)
+	_, err = prog.Run(st)
+	if err == nil {
+		t.Fatal("expected error from callee raise, got nil")
+	}
+	if !strings.Contains(err.Error(), "boom-arm64") {
+		t.Fatalf("error %q does not carry the raise message", err)
+	}
+}
 func TestArm64E2E_SETUPVAL(t *testing.T) {
 	src := `
 local x = 1
