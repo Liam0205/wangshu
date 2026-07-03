@@ -446,3 +446,169 @@ return tostring(r)`
 		t.Fatalf("results = %v, want [nan] (NaN sign-flip must not alias into the NaN-box tag space)", results)
 	}
 }
+
+// TestArm64E2E_Arith: numeric arithmetic rides the inline NEON fast
+// path (issue #37 step 7 — the original issue's deliverable). The
+// kernel mixes reg-reg / reg-K shapes across ADD/SUB/MUL/DIV.
+func TestArm64E2E_Arith(t *testing.T) {
+	src := `
+local function k(x, y)
+  local a = x + y
+  local b = a - 3
+  local c = b * 2
+  local d = c / 4
+  return d
+end
+local r = 0
+for i = 1, 300 do r = k(10, 5) end
+return r`
+	results, promoted, dispatched := runForceAllArm64(t, src)
+	if promoted == 0 {
+		t.Fatal("PromotionCount = 0: arith kernel did not promote on arm64")
+	}
+	// (10+5-3)*2/4 = 6
+	if len(results) != 1 || results[0] != "6" {
+		t.Fatalf("results = %v, want [6]", results)
+	}
+	// All 300 numeric passes must ride inline NEON, not exit-reason.
+	if dispatched >= 100 {
+		t.Fatalf("dispatched = %d: inline NEON arith never hits", dispatched)
+	}
+}
+
+// TestArm64E2E_Arith_CoercionFallsBack: "5" + 1 coerces to 6 in Lua
+// 5.1; the IsNumber guard must miss and the exit-reason slow path
+// (host.Arith) must produce interpreter-equal coercion.
+func TestArm64E2E_Arith_CoercionFallsBack(t *testing.T) {
+	src := `
+local function k(x)
+  local a = x + 1
+  local b = a + 0
+  local c = b + 0
+  return c
+end
+local r = 0
+for i = 1, 300 do r = k(5) end
+local rs = k("5")
+return r, rs`
+	results, promoted, dispatched := runForceAllArm64(t, src)
+	if promoted == 0 {
+		t.Fatal("PromotionCount = 0: kernel did not promote")
+	}
+	if len(results) != 2 || results[0] != "6" || results[1] != "6" {
+		t.Fatalf("results = %v, want [6 6]", results)
+	}
+	if dispatched == 0 {
+		t.Fatal("dispatched = 0: string-coercion arith never rode the exit-reason slow path")
+	}
+}
+
+// TestArm64E2E_Arith_ErrorBubbles: nil + 1 must raise "attempt to
+// perform arithmetic on ..." through the slow path, byte-equal in
+// existence to P1 (fuzz seed 4df9d8c82ce0d9f7 family — the very bug
+// that triggered the original arm64 rejection in PR #34).
+func TestArm64E2E_Arith_ErrorBubbles(t *testing.T) {
+	src := `
+local function k(x)
+  local a = x + 1
+  local b = a + 0
+  local c = b + 0
+  return c
+end
+k(5)
+return k(nil)`
+	prog, err := wangshu.Compile([]byte(src), "arm64e2e-arith-err")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	st := wangshu.NewState(wangshu.Options{})
+	st.SetForceAllPromote(true)
+	_, err = prog.Run(st)
+	if err == nil {
+		t.Fatal("expected arithmetic-on-nil error, got nil")
+	}
+	if !strings.Contains(err.Error(), "arithmetic") {
+		t.Fatalf("error %q does not carry the arithmetic raise message", err)
+	}
+}
+
+// TestArm64E2E_Compare: numeric LT/LE ride the inline FCMPE fast path;
+// both branch senses (A=0/A=1) are exercised via max/clamp shapes.
+func TestArm64E2E_Compare(t *testing.T) {
+	src := `
+local function k(x, y)
+  local m = 0
+  if x < y then m = y else m = x end
+  if m <= 10 then m = 10 end
+  return m
+end
+local r = 0
+for i = 1, 300 do r = k(3, 7) end
+local r2 = k(20, 4)
+return r, r2`
+	results, promoted, dispatched := runForceAllArm64(t, src)
+	if promoted == 0 {
+		t.Fatal("PromotionCount = 0: compare kernel did not promote on arm64")
+	}
+	if len(results) != 2 || results[0] != "10" || results[1] != "20" {
+		t.Fatalf("results = %v, want [10 20]", results)
+	}
+	if dispatched >= 100 {
+		t.Fatalf("dispatched = %d: inline FCMPE compare never hits", dispatched)
+	}
+}
+
+// TestArm64E2E_Compare_NaN: NaN comparisons are always false in Lua;
+// the FP condition codes must resolve FCMPE's unordered flags to the
+// correct successor (the signed-integer codes get this wrong: LT via
+// N!=V is TRUE for unordered).
+func TestArm64E2E_Compare_NaN(t *testing.T) {
+	src := `
+local nan = 0/0
+local function k(x, y)
+  local lt = 0
+  local le = 0
+  if x < y then lt = 1 end
+  if x <= y then le = 1 end
+  return lt, le
+end
+local a, b = 0, 0
+for i = 1, 300 do a, b = k(nan, 1) end
+local c, d = k(1, nan)
+return a, b, c, d`
+	results, promoted, _ := runForceAllArm64(t, src)
+	if promoted == 0 {
+		t.Fatal("PromotionCount = 0: NaN compare kernel did not promote")
+	}
+	if len(results) != 4 || results[0] != "0" || results[1] != "0" ||
+		results[2] != "0" || results[3] != "0" {
+		t.Fatalf("results = %v, want [0 0 0 0] (NaN comparisons are always false)", results)
+	}
+}
+
+// TestArm64E2E_Compare_StringFallsBack: string ordering must ride the
+// exit-reason slow path to host.Compare and produce interpreter-equal
+// results through the in-segment resume branch.
+func TestArm64E2E_Compare_StringFallsBack(t *testing.T) {
+	src := `
+local function k(x, y)
+  local m = 0
+  if x < y then m = 1 else m = 2 end
+  return m
+end
+local r = 0
+for i = 1, 300 do r = k(1, 2) end
+local rs1 = k("apple", "banana")
+local rs2 = k("pear", "apple")
+return r, rs1, rs2`
+	results, promoted, dispatched := runForceAllArm64(t, src)
+	if promoted == 0 {
+		t.Fatal("PromotionCount = 0: kernel did not promote")
+	}
+	if len(results) != 3 || results[0] != "1" || results[1] != "1" || results[2] != "2" {
+		t.Fatalf("results = %v, want [1 1 2]", results)
+	}
+	if dispatched == 0 {
+		t.Fatal("dispatched = 0: string compare never rode the exit-reason slow path")
+	}
+}

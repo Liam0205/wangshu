@@ -201,26 +201,32 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 				if stringConst(bytecode.Bx(ins)) {
 					return false
 				}
-			case bytecode.ADD, bytecode.SUB, bytecode.MUL, bytecode.DIV:
-				// arm64 native arith has no shim fallback for
-				// non-number reg operands (see file header: arm64
-				// mmap segment can't safely call Go helpers under
-				// stack unwind), so the IsNumber guard can only exit
-				// the segment with a generic error — which diverges
-				// from P1 on legitimate coercion (`"5" + 1`) and
-				// __add metamethod inputs. Until the arm64 shim
-				// unwinder conflict is resolved, reject the whole
-				// proto so shape-spec / interpreter handles arith.
-				// (amd64 keeps native arith because it can fall
-				// through to a real shim call safely.)
-				return false
-			case bytecode.LT, bytecode.LE:
-				// Same rationale as arith: FCMPE on non-number bit
-				// patterns produces meaningless flags (P1 LT/LE has
-				// string ordering and __lt / __le metamethods that
-				// we can't replicate inline on arm64 without a shim
-				// fallback). Reject until the fallback path exists.
-				return false
+			case bytecode.ADD, bytecode.SUB, bytecode.MUL, bytecode.DIV,
+				bytecode.LT, bytecode.LE:
+				// Inline arith/compare fast paths require numeric K
+				// operands (reg operands get runtime IsNumber guards
+				// whose misses ride the exit-reason slow path to
+				// host.Arith / host.Compare — issue #37 step 7 restored
+				// these after the blanket rejection). Reject Protos
+				// whose K would fall through, same gate as amd64.
+				if bytecode.B(ins) >= 256 {
+					kidx := bytecode.B(ins) - 256
+					if kidx < 0 || kidx >= len(proto.Consts) {
+						return false
+					}
+					if !value.IsNumber(value.Value(proto.Consts[kidx])) {
+						return false
+					}
+				}
+				if bytecode.C(ins) >= 256 {
+					kidx := bytecode.C(ins) - 256
+					if kidx < 0 || kidx >= len(proto.Consts) {
+						return false
+					}
+					if !value.IsNumber(value.Value(proto.Consts[kidx])) {
+						return false
+					}
+				}
 			case bytecode.EQ:
 				// arm64 inlineRawEqArm64 doesn't yet emit K operand
 				// paths; keep the strict reg-reg gate here so we don't
@@ -473,13 +479,11 @@ func emitLinearOpArm64(buf *codeBuf, ins bytecode.Instruction, pc int32) error {
 	case bytecode.NOT:
 		emitNOTArm64Inline(buf, a, bReg)
 	case bytecode.ADD, bytecode.SUB, bytecode.MUL, bytecode.DIV:
-		// arm64 keeps arith fully inline (no shim call — see file
-		// header: "arithmetic and compare go through inline NEON").
-		// Reg operands run through an IsNumber guard first; on failure
-		// the mmap segment returns status=1 to the trampoline, which
-		// Go-side surfaces as a generic gibbous error (fuzz asserts
-		// error-existence only, not the specific message).
-		if !inlineArithNEONArm64WithGuard(buf, op, a, bRK, cRK) {
+		// Inline NEON fast path; IsNumber guard misses (string
+		// coercion / metamethod operands) ride the exit-reason slow
+		// path to host.Arith — byte-equal to the interpreter (issue
+		// #37 step 7 restores this after the blanket rejection).
+		if !inlineArithNEONArm64WithGuard(buf, op, pc, a, bRK, cRK) {
 			return fmt.Errorf("emitLinearOpArm64: inline arith failed pc=%d", pc)
 		}
 	default:
@@ -535,7 +539,7 @@ func emitTerminatorArm64(buf *codeBuf, c *cfg, bb *basicBlock, bbID int, ins byt
 		if len(bb.succs) != 2 {
 			return fmt.Errorf("%v with %d succs at pc %d", op, len(bb.succs), pc)
 		}
-		if !inlineNumericCompareArm64(buf, op, a, bRK, cRK, bb.succs[0], bb.succs[1]) {
+		if !inlineNumericCompareArm64(buf, op, pc, a, bRK, cRK, bb.succs[0], bb.succs[1]) {
 			return fmt.Errorf("emitTerminatorArm64: inline compare failed pc=%d", pc)
 		}
 	case bytecode.EQ:
@@ -581,51 +585,55 @@ func emitJMPArm64Fixup(buf *codeBuf, targetBB int) {
 }
 
 // inlineArithNEONArm64WithGuard emits inline NEON arith with an
-// IsNumber guard on each reg operand. Guard fail exits the mmap
-// segment early with X0=1 (Go-side converts this to a generic
-// "gibbous: run failed" error, which is enough for fuzz
-// error-existence parity with P1).
+// IsNumber guard on each reg operand. Guard fail rides the exit-reason
+// slow path (HelperArithSlow → host.Arith — byte-equal coercion /
+// __add semantics; issue #37 step 7 replaced the old `mov X0,#1; ret`
+// generic-error exit that forced AnalyzeNative to reject arith
+// entirely).
 //
 // Layout (K-K falls through to inlineArithNEONArm64 with no guard):
 //
-//	[guard-B (28 bytes)] ldr X0, [X26+B*8]
-//	                     mov X4, qNanBoxBase       ; 4 insns (16B)
-//	                     cmp X0, X4                ; 4B
-//	                     b.hs err                  ; 4B (patched later)
-//	[guard-C (28 bytes)] same pattern, only if c is reg
-//	<inline NEON body>   ldr / fmov / fadd/fmul/... / fmov X0,D0 / str
-//	b done               ; 4B skip past err block
-//	err:                 ; guard failure target
-//	  mov X0, #1         ; 16B (movz+3 movks; err path only, size fixed)
-//	  ret                ; 4B
-//	done:
+//	[guard-B]            ldr X0, [X26+B*8]
+//	                     mov X4, qNanBoxBase (16B)
+//	                     cmp X0, X4
+//	                     b.hs slow
+//	[guard-C]            same pattern, only if c is reg
+//	<inline NEON body>   ldr / fmov / fadd/... / fmov X0,D0 / str
+//	b done
+//	slow:                <exit-reason HelperArithSlow>
+//	done:                (next op binds the resume prelude)
+//
+// No NaN result guard is needed on arm64 (unlike amd64's SSE, which
+// generates the negative "real indefinite" 0xFFF8... that aliases the
+// tag space): AArch64 generated NaNs are the positive default NaN
+// (0x7FF8...), and NaN propagation preserves the input operand — the
+// value world only holds canonical positive NaNs, so the fast path
+// can't produce a tag-space-aliasing result.
 //
 // Reg operands go through the guard; K operands are always numeric
 // (AnalyzeNative rejected non-numeric K).
-func inlineArithNEONArm64WithGuard(cb *codeBuf, op bytecode.OpCode, a uint8, b, c int) bool {
+func inlineArithNEONArm64WithGuard(cb *codeBuf, op bytecode.OpCode, pc int32, a uint8, b, c int) bool {
 	// K-K shape: no guard, no exit path, direct inline.
 	if b >= 256 && c >= 256 {
 		return inlineArithNEONArm64(cb, op, a, b, c)
 	}
 
-	// Record guard b.hs offsets so we can patch them once err_off known.
-	var guardFixups []int
+	// Record guard b.hs offsets so we can patch them once slow_off known.
+	var guardFixups []int32
 	emitRegNumberGuardArm64 := func(reg int) {
 		if reg >= 256 {
 			return
 		}
 		// ldr X0, [X26 + reg*8]
 		cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 0, regX26, uint16(reg)*8))
-		// mov X4, qNanBoxBase (16B: 4 insns). Value 0xFFF8_0000_0000_0000
-		// is the lower bound of the non-number NaN-box space; any raw
-		// uint64 >= this constant is a tagged non-number.
+		// mov X4, qNanBoxBase (16B): any raw uint64 >= this constant is
+		// a tagged non-number.
 		cb.emit(jitarm64.EmitMovXdImm64(nil, 4, 0xFFF8_0000_0000_0000))
 		// cmp X0, X4
 		cb.emit(jitarm64.EmitCmpXnXm(nil, 0, 4))
-		// b.hs err (placeholder imm19=0, patched later)
-		patchOff := int(cb.pos())
+		// b.hs slow (placeholder imm19=0, patched later)
+		guardFixups = append(guardFixups, cb.pos())
 		cb.emit(jitarm64.EmitBCond(nil, jitarm64.CondHS, 0))
-		guardFixups = append(guardFixups, patchOff)
 	}
 	emitRegNumberGuardArm64(b)
 	emitRegNumberGuardArm64(c)
@@ -653,35 +661,21 @@ func inlineArithNEONArm64WithGuard(cb *codeBuf, op bytecode.OpCode, a uint8, b, 
 	cb.emit(jitarm64.EmitFmovXdFromDn(nil, 0, 0))
 	cb.emit(jitarm64.EmitStrXtToXnDisp(nil, 0, regX26, uint16(a)*8))
 
-	// b done (skip err block on success). arm64 B rel26: target = PC
-	// + imm26*4. err block after b is 16B (movz+3 movks) + 4B (ret) =
-	// 20B, so done sits at PC + 24 (b itself + 20B). imm26 = 6.
-	cb.emit(jitarm64.EmitB(nil, 6))
+	// b done (skip slow block on success).
+	bDoneOff := cb.pos()
+	cb.emit([]byte{0x00, 0x00, 0x00, 0x14})
 
-	// err block: mov X0, #1; ret. Guard fixups target here.
-	errOff := int(cb.pos())
-	cb.emit(jitarm64.EmitMovXdImm64(nil, 0, 1))
-	cb.emit(jitarm64.EmitRet(nil))
-
-	// Patch guard fixups: b.hs imm19 = (errOff - patchOff) / 4.
+	// slow: exit-reason to host.Arith (the dispatcher re-derives the op
+	// from proto.Code[pc]; resume binds at the next op's prelude).
+	slowOff := cb.pos()
 	for _, po := range guardFixups {
-		imm19 := int32(errOff-po) / 4
-		patchBCondImm19Local(cb.bytes, po, imm19)
+		patchBCondArm64(cb, po, slowOff)
 	}
-	return true
-}
+	emitExitReasonArm64(cb, jit.HelperArithSlow, pc, int32(a), int32(b), int32(c))
 
-// patchBCondImm19Local wraps the jitarm64 helper (unexported so we
-// re-implement inline to avoid an export churn).
-func patchBCondImm19Local(buf []byte, off int, imm19 int32) {
-	insn := uint32(buf[off]) | uint32(buf[off+1])<<8 |
-		uint32(buf[off+2])<<16 | uint32(buf[off+3])<<24
-	insn &= 0xFF00001F
-	insn |= (uint32(imm19) & 0x7FFFF) << 5
-	buf[off] = byte(insn)
-	buf[off+1] = byte(insn >> 8)
-	buf[off+2] = byte(insn >> 16)
-	buf[off+3] = byte(insn >> 24)
+	// done:
+	patchArm64B26(cb, bDoneOff, cb.pos())
+	return true
 }
 
 // inlineArithNEONArm64 emits inline NEON double-precision arith for
@@ -744,37 +738,62 @@ func inlineLoadOperandToDArm64(cb *codeBuf, dd uint8, rk int) bool {
 	return true
 }
 
-// inlineNumericCompareArm64 emits inline FCMPE + B.cond for LT/LE.
-// Semantics: cond = (RK(B) op RK(C)); if cond != A then pc++ (succSkip);
-// else fall through to JMP target (succExec).
+// inlineNumericCompareArm64 emits guarded inline FCMPE + B.cond for
+// LT/LE. Semantics: cond = (RK(B) op RK(C)); if cond != A then pc++
+// (succSkip); else fall through to JMP target (succExec).
+//
+// Reg operands get IsNumber guards; guard misses (string ordering /
+// __lt / __le metamethods) ride the exit-reason slow path to
+// host.Compare, whose packed result bit0 is handed back through
+// exitArg0 and branched on in the in-segment resume block (issue #37
+// step 7 — this replaced the blanket AnalyzeNative rejection).
 //
 // FCMPE flags after `fcmpe Dn, Dm`:
-//   - N=1 iff Dn < Dm  (LT via BMI / cond=4)
-//   - Z=1 iff Dn == Dm
-//   - Others: unordered gets flags {N=0,Z=0,C=1,V=1}
+//   - ordered:   N=1 iff Dn < Dm, Z=1 iff Dn == Dm
+//   - unordered: {N=0, Z=0, C=1, V=1} (NaN operand)
 //
-// Convenient condition codes for numeric compare (non-NaN):
-//   - CondMI (0x4): N set -> Dn < Dm
-//   - CondPL (0x5): N clear -> Dn >= Dm
-//   - CondLS (0x9): unsigned <= (C clear || Z set); for FP after FCMPE
-//     with normal numbers, LS means "Dn <= Dm" -> use for LE(Dn,Dm)? no,
-//     use signed variants below.
-//   - CondLE (0xD): signed <=; for FP compares this means Dn <= Dm.
-//   - CondGT (0xC): signed >; Dn > Dm.
-//   - CondGE (0xA): signed >=; Dn >= Dm.
-//   - CondLT (0xB): signed <; Dn < Dm.
+// Lua: a NaN operand makes LT/LE false, so the branch condition must
+// treat unordered as cond=false. The signed integer condition codes
+// (GE/LT/GT/LE) get unordered WRONG (LT: N!=V is true for {N=0,V=1});
+// the FP-safe codes below resolve unordered to the correct successor
+// with no extra branch:
 //
-// Lua: `if (RK(B) op RK(C)) != A then pc++`. Branch to succExec when
-// cond matches A. So:
-//
-//	LT + A=0: match when NOT(B<C) i.e., B>=C -> CondGE
-//	LT + A=1: match when B<C            -> CondLT
-//	LE + A=0: match when NOT(B<=C) i.e., B>C -> CondGT
-//	LE + A=1: match when B<=C           -> CondLE
-func inlineNumericCompareArm64(cb *codeBuf, op bytecode.OpCode, a uint8, b, c int, succExec, succSkip int) bool {
+//	LT + A=1: exec when B<C        -> CondMI (N=1;    unordered false)
+//	LT + A=0: exec when NOT(B<C)   -> CondPL (N=0;    unordered true)
+//	LE + A=1: exec when B<=C       -> CondLS (C=0|Z=1; unordered false)
+//	LE + A=0: exec when NOT(B<=C)  -> CondHI (C=1&Z=0; unordered true)
+func inlineNumericCompareArm64(cb *codeBuf, op bytecode.OpCode, pc int32, a uint8, b, c int, succExec, succSkip int) bool {
 	if op != bytecode.LT && op != bytecode.LE {
 		return false
 	}
+	// K operands must be numeric (AnalyzeNative enforces; double-check
+	// so a stale gate can't emit a bogus imm compare).
+	for _, rk := range [2]int{b, c} {
+		if rk >= 256 {
+			kidx := rk - 256
+			if cb.proto == nil || kidx < 0 || kidx >= len(cb.proto.Consts) {
+				return false
+			}
+			if !value.IsNumber(value.Value(cb.proto.Consts[kidx])) {
+				return false
+			}
+		}
+	}
+	// IsNumber guards for reg operands.
+	var guardFixups []int32
+	emitRegNumberGuard := func(reg int) {
+		if reg >= 256 {
+			return
+		}
+		cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 0, regX26, uint16(reg)*8))
+		cb.emit(jitarm64.EmitMovXdImm64(nil, 4, qNanBoxBaseArm64))
+		cb.emit(jitarm64.EmitCmpXnXm(nil, 0, 4))
+		guardFixups = append(guardFixups, cb.pos())
+		cb.emit(jitarm64.EmitBCond(nil, jitarm64.CondHS, 0))
+	}
+	emitRegNumberGuard(b)
+	emitRegNumberGuard(c)
+
 	if !inlineLoadOperandToDArm64(cb, 0, b) {
 		return false
 	}
@@ -787,15 +806,15 @@ func inlineNumericCompareArm64(cb *codeBuf, op bytecode.OpCode, a uint8, b, c in
 	switch op {
 	case bytecode.LT:
 		if a == 0 {
-			cond = jitarm64.CondGE
+			cond = jitarm64.CondPL
 		} else {
-			cond = jitarm64.CondLT
+			cond = jitarm64.CondMI
 		}
 	case bytecode.LE:
 		if a == 0 {
-			cond = jitarm64.CondGT
+			cond = jitarm64.CondHI
 		} else {
-			cond = jitarm64.CondLE
+			cond = jitarm64.CondLS
 		}
 	}
 	// B.<cond> <succExec>  (placeholder imm19=0)
@@ -804,6 +823,30 @@ func inlineNumericCompareArm64(cb *codeBuf, op bytecode.OpCode, a uint8, b, c in
 	cb.addFixupKind(patchOff, cb.pos(), succExec, fixupKindArm64Cond)
 	// B <succSkip>
 	emitJMPArm64Fixup(cb, succSkip)
+
+	// Slow block: guard misses land here. The dispatcher runs
+	// host.Compare and stores packed&1 into exitArg0; the resume block
+	// (bound immediately — the branch decision must happen in-segment,
+	// not at the next op like linear exit-reason ops) reads it back and
+	// branches: result == A -> succExec, else succSkip.
+	if len(guardFixups) > 0 {
+		slowOff := cb.pos()
+		for _, po := range guardFixups {
+			patchBCondArm64(cb, po, slowOff)
+		}
+		emitExitReasonArm64(cb, jit.HelperCompareSlow, pc, int32(a), int32(b), int32(c))
+		// Bind the resume entry right here (the only pending fixup is
+		// ours: any prior op's was bound by this terminator's prelude).
+		emitResumePreludeIfPendingArm64(cb)
+		// ldr X0, [X27 + exitArg0Off]; cmp X0, #A
+		cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 0, regX27,
+			uint16(jit.JITContextExitArg0Offset)))
+		cb.emit(jitarm64.EmitCmpXnImm12(nil, 0, uint16(a)))
+		eqOff := cb.pos()
+		cb.emit(jitarm64.EmitBCond(nil, jitarm64.CondEQ, 0))
+		cb.addFixupKind(eqOff, cb.pos(), succExec, fixupKindArm64Cond)
+		emitJMPArm64Fixup(cb, succSkip)
+	}
 	return true
 }
 
