@@ -82,10 +82,15 @@ func (c *nativeCode) Run(stack []uint64, base uint32) (status int32) {
 	defer c.codePage.Exit()
 	// A1: single batched host call replaces five per-field getters.
 	c.host.RefreshJitCtxAddrs(c.jitCtx, int32(base))
-	// Snapshot Go G for helper-call safety.
-	saveGoG(c.jitCtx.SavedGoGSlot())
-	// Install host interface header so shims can reconstruct P4HostState.
-	c.jitCtx.SetHostRef(hostIfaceHeader(c.host))
+	// NOTE (issue #50 phase 0): saveGoG + SetHostRef used to be installed
+	// here. Both fields' only consumers were the in-segment shim-call
+	// sequences (emitRestoreGoG reads savedGoG; shims.go's hostFromCtx
+	// reads hostRef) — and issue #45 removed every shim call from the
+	// native emit output. The dispatcher invokes host methods through
+	// the Go-side c.host field, never through jitCtx.hostRef. Writing
+	// them was pure legacy cost (SetHostRef alone measured 11.3% of the
+	// fib exit-reason profile) plus an avoidable data race surface on
+	// the State-shared jitCtx.
 
 	jitCtxAddr := uintptr(unsafe.Pointer(c.jitCtx))
 	vsBaseAddr := c.jitCtx.ValueStackBase()
@@ -118,10 +123,9 @@ func (c *nativeCode) Run(stack []uint64, base uint32) (status int32) {
 		}
 		// Arena may have grown during the host call; refresh addr
 		// fields before reentering the mmap segment. This also repairs
-		// any jitCtx fields a recursive inner Run overwrote.
+		// any jitCtx fields a recursive inner Run overwrote. (saveGoG /
+		// SetHostRef dropped here too — see the phase-0 note above.)
 		c.host.RefreshJitCtxAddrs(c.jitCtx, int32(base))
-		saveGoG(c.jitCtx.SavedGoGSlot())
-		c.jitCtx.SetHostRef(hostIfaceHeader(c.host))
 		vsBaseAddr = c.jitCtx.ValueStackBase()
 		resumeAddr := c.codePage.Addr() + uintptr(resumeOff)
 		rawStatus = jitamd64.CallJITSpec(resumeAddr, jitCtxAddr, vsBaseAddr)
