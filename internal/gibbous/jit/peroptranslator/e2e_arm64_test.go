@@ -380,3 +380,40 @@ return r, rs`
 		t.Fatal("dispatched = 0: string-coercion UNM never rode the exit-reason slow path")
 	}
 }
+
+// TestArm64E2E_MultiReturn: a kernel with two reachable RETURN sites
+// (branch-dependent early return) lowers every RETURN to a HelperReturn
+// exit-reason; Run's dispatcher terminates via host.DoReturn with the
+// per-site (a, b, pc). Both arms must produce interpreter-equal values.
+func TestArm64E2E_MultiReturn(t *testing.T) {
+	src := `
+local function k(flag)
+  local a = 11
+  local b = 22
+  local c = a
+  local d = b
+  if flag then
+    return c
+  end
+  return d
+end
+local r1 = 0
+local r2 = 0
+for i = 1, 300 do
+  r1 = k(true)
+  r2 = k(false)
+end
+return r1, r2`
+	results, promoted, _ := runForceAllArm64(t, src)
+	if promoted == 0 {
+		t.Fatal("PromotionCount = 0: multi-return kernel did not promote on arm64")
+	}
+	// Note: HelperReturn is consumed by Run's loop directly (terminate,
+	// no reentry) and never reaches dispatchHelper, so no dispatched
+	// assertion here. The two distinct per-arm values ARE the path
+	// probe: if MultiReturn lowering silently didn't engage, the single
+	// baked retA/retB would return the same (wrong) value for one arm.
+	if len(results) != 2 || results[0] != "11" || results[1] != "22" {
+		t.Fatalf("results = %v, want [11 22]", results)
+	}
+}

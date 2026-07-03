@@ -275,8 +275,11 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 			}
 		}
 	}
-	// Single reachable RETURN only (multi-return lowering is step 6 of
-	// the arm64 exit-reason port).
+	// Count reachable RETURNs: single-return Protos use the fast
+	// `mov x0, #0; ret` exit + Go-side DoReturn(retA/retB/retPC);
+	// multi-return Protos lower each RETURN to a HelperReturn
+	// exit-reason (TranslateProtoNative sets codeBufProto.MultiReturn).
+	// Zero reachable RETURNs would leave Run without a teardown path.
 	//
 	// CALL density gate (mirror of amd64): every CALL is an exit-reason
 	// round trip (mmap RET -> Go dispatch -> host.CallBaseline -> mmap
@@ -302,7 +305,7 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 			}
 		}
 	}
-	if returnCount != 1 {
+	if returnCount == 0 {
 		return false
 	}
 	if callCount > 0 && totalOps/callCount < 16 {
@@ -356,6 +359,25 @@ func TranslateProtoNative(proto *bytecode.Proto, host jit.P4HostState) (*nativeC
 	// NodeHit inline fast path (same identity-is-stable contract as the
 	// amd64 emit and P3 wasm's emitGetGlobal).
 	buf.proto.GlobalsTaddr = uint32(host.GlobalsRaw() & 0x0000_FFFF_FFFF_FFFF)
+	// Multi-return detection (mirror of amd64): more than one reachable
+	// RETURN switches emitTerminatorArm64 to the HelperReturn
+	// exit-reason lowering (each site carries its own a/b/pc instead of
+	// the single stashed retA/retB/retPC).
+	{
+		reach := c.reachableBlocks()
+		returns := 0
+		for id, bb := range c.blocks {
+			if !reach[id] {
+				continue
+			}
+			for pc := bb.startPC; pc < bb.endPC; pc++ {
+				if bytecode.Op(proto.Code[pc]) == bytecode.RETURN {
+					returns++
+				}
+			}
+		}
+		buf.proto.MultiReturn = returns > 1
+	}
 
 	// Prologue: reload X26 = vsBase from jitCtx (X27+off). arm64 doesn't
 	// need the amd64 saveGoG dance because X28 = G is permanent on Go
@@ -476,6 +498,16 @@ func emitTerminatorArm64(buf *codeBuf, c *cfg, bb *basicBlock, bbID int, ins byt
 
 	switch op {
 	case bytecode.RETURN:
+		if buf.proto != nil && buf.proto.MultiReturn {
+			// Multi-return Proto: each RETURN site packs its own
+			// (a, b, pc) into a HelperReturn exit-reason. Run's
+			// dispatcher calls host.DoReturn and terminates (no
+			// reentry), so the resumeOff fixup emitExitReasonArm64
+			// marks is dropped — no next op will bind it.
+			emitExitReasonArm64(buf, jit.HelperReturn, pc, int32(a), int32(b), 0)
+			buf.pendingResumeOffFixups = buf.pendingResumeOffFixups[:0]
+			break
+		}
 		if buf.proto != nil {
 			buf.proto.RetA = int32(a)
 			buf.proto.RetB = int32(b)
