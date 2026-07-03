@@ -387,7 +387,9 @@ func (b *Bridge) considerPromotion(proto *bytecode.Proto, pd *ProfileData) {
 > 3. **`forceAll` retry window**(承 P4 08 §3.7 与 fuzz_p4_test.go):force-all 模式下,IC-gated 后端(P4 native `NodeHit` 等)需要**先跑几遍解释器让 IC 预热**再升,否则冷 IC 直接升层的 proto 立刻吸收为 P4Stuck;实装为 `if b.forceAll && pd.EntryCount < 4 { return }`——EntryCount<4 时 TierInterp 自循环(**不写 tierState**),第 4+ 次入口才继续原路径;状态机看:仍是 TierInterp self-loop 的**延迟转移**,不引入新状态。
 >    - **per-entry recheck dedup**(issue #40,2026-07-02):retry window 让被拒收 proto 停留在 TierInterp,而 forceAll 下 OnBackEdge **每条回边**都会再进 considerPromotion → `recheckCompilabilityRuntime` 全量后端分析(CFG build + opcode 扫描)。升层只在**下一次进入**生效(无 OSR),同一次进入内重复分析不可能改变结果——单次进入 + 2M 回边的 HeavyArith 形态实测该路径占 22% CPU + 1.5 GB/op。修复:`pd.recheckedAtEntry` 记录「本 EntryCount 已 recheck 过」,同一进入内的后续回边直接 return;OnBackEdge 在每 pc 的 `count==1`(循环体首轮跑完,IC 已被观测——IC-gated 后端的最早改判点)与 `count==HotBackEdgeThreshold`(auto 模式自身的触发点,IC 到顶)两个升温里程碑清零该标记,各再授予一次 recheck。升层时机与修复前完全一致,只是去掉了中间每回边的重复分析;状态机看:仍是入口守卫层的条件细化,不动状态图。
 >
-> **共同性质**:这三处演进都在**入口守卫层**或**T2 分支内**扩展,**从不引入 Gibbous→Interp 或 Stuck→\* 的反向边**——状态机的单向 + 吸收态承诺(§2.4/§2.5)与零 deopt 论证(§8)不受影响。任何后续在 `considerPromotion` 加入的机制,须继承本原则:「新机制 = 入口守卫 / T1|T2|T3 分支内条件细化」,不动状态图。
+> 4. **`PromotionGater` 收益门**(issue #39,2026-07-03):可编译性(F1-F7 + SupportsAllOpcodes)只回答「能不能编」;后端可选实现 `WorthPromoting(proto) bool` 回答「编了赚不赚」。auto 模式下 `considerPromotion` 在 comp==CompCompilable 之后、try-compile 之前问一次,拒绝 → 直接 TierStuck 吸收(判断是静态 op 组合密度,重复问不改变答案);**forceAll 绕过**——差分覆盖不因收益判断缩水。首个实现:P3 wasm Compiler 的 helper 密度地板(plain-op / helper-bound-op ≥ 7)——nbody advance/energy 类 helper 密集内核升层后比解释器慢 ~2x(45b8b53 解锁其升层后实测 43.5→89.7ms),收益门把它们留在解释器。与 `MinPromotableLener`(短 proto 地板)同族:都是 per-backend 可选接口 + auto-only;状态机看:T2/T3 之间的入口守卫,拒绝走既有 T2 → Stuck 边,不新增状态或反向边。
+>
+> **共同性质**:这四处演进都在**入口守卫层**或**T2 分支内**扩展,**从不引入 Gibbous→Interp 或 Stuck→\* 的反向边**——状态机的单向 + 吸收态承诺(§2.4/§2.5)与零 deopt 论证(§8)不受影响。任何后续在 `considerPromotion` 加入的机制,须继承本原则:「新机制 = 入口守卫 / T1|T2|T3 分支内条件细化」,不动状态图。
 
 骨架要点(逐条对应 §2.3 转移条件表):
 
