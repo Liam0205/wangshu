@@ -600,6 +600,20 @@ func (v *compilabilityVisitor) walkFuncExpr(e *ast.FuncExpr) {
 			sub.safeAliases[k] = true
 		}
 	}
+	// Seed the sub's recursion guard with a copy of the ancestors'
+	// already-expanded set. Without this, a closure literal inside a
+	// recursive local function resets the guard at every sub-visitor
+	// boundary (`local function A() return function() A() end end`:
+	// expand A -> closure literal -> fresh sub -> A not marked -> expand
+	// A -> ...), which is a fatal, unrecoverable stack overflow at
+	// Compile time (fuzz seed 648e96a2d9661b88). A copy — not a shared
+	// reference — keeps the parent's own signal analysis intact: the
+	// sub's expansions must not consume the parent's single-expansion
+	// budget (parent signals are load-bearing, sub signals are
+	// discarded except maxClosureDepth).
+	for fn := range v.inlinedKnownCalls {
+		sub.inlinedKnownCalls[fn] = true
+	}
 	sub.walkBlock(e.Body)
 
 	// 只回写嵌套深度

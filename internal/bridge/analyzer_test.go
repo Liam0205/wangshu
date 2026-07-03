@@ -554,6 +554,38 @@ func funcExprName(fn ast.Expr) string {
 	return "unknown"
 }
 
+// TestAnalyze_F2_RecursiveClosureLiteral_NoStackOverflow 递归 local 函数体内
+// 的 closure 字面量不得让 known-local 展开无限互递归(fuzz seed
+// 648e96a2d9661b88:`local function A() return function() A() end end`)。
+//
+// 崩溃链:visitCallExpr 展开 A(inlinedKnownCalls 标记 A)→ A body 内的
+// FuncExpr 走 walkFuncExpr 建 **fresh sub-visitor**(旧版 guard 表不继承)
+// → sub 里再遇 A() 调用,guard 空 → 再展开 A → 再建 sub → ... 直到 Go
+// 栈溢出(fatal, 不可 recover)。修复:walkFuncExpr 把祖先 guard 表拷贝进
+// sub。本测试在修复前会直接 stack overflow 崩掉进程,而非 assert 失败。
+func TestAnalyze_F2_RecursiveClosureLiteral_NoStackOverflow(t *testing.T) {
+	b := NewBridge()
+	b.SetP3Compiler(allowAllOpcodes{})
+
+	// `local function A() return function() A() end end`
+	inner := &ast.FuncExpr{
+		Body: &ast.Block{Stmts: []ast.Stmt{
+			&ast.CallStmt{Call: &ast.CallExpr{Fn: &ast.NameExpr{Name: "A"}}},
+		}},
+	}
+	outer := &ast.FuncExpr{
+		Body: &ast.Block{Stmts: []ast.Stmt{
+			&ast.ReturnStmt{Exprs: []ast.Expr{inner}},
+		}},
+	}
+	fn := makeFuncBody(&ast.LocalFuncStmt{Name: "A", Fn: outer})
+	p := makeProto()
+
+	// 只要能返回(不 stack overflow)就是修复生效;结论本身两可
+	// (A 展开后信号干净 → Compilable),不锁死具体判定。
+	_ = b.AnalyzeProto(fn, p)
+}
+
 // allowAllOpcodes 是 mock P3 编译器,SupportsAllOpcodes 永远返 true。
 // 用于测试 F1-F6 的判定不被 F7 兜底影响。
 type allowAllOpcodes struct{}
