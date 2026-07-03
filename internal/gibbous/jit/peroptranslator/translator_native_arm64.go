@@ -228,11 +228,19 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 					}
 				}
 			case bytecode.EQ:
-				// arm64 inlineRawEqArm64 doesn't yet emit K operand
-				// paths; keep the strict reg-reg gate here so we don't
-				// silently fall out of the native emit halfway through.
-				if bytecode.B(ins) >= 256 || bytecode.C(ins) >= 256 {
-					return false
+				// inlineRawEqArm64 handles any 64-bit-comparable K
+				// (numeric, nil, bool, or interned string) — same
+				// acceptance as amd64 inlineRawEq: string K slots are
+				// interned at LoadProgram time (before any promotion),
+				// so the boxed bits are stable and ptr-equal ↔
+				// string-equal. Only reject out-of-range kidx.
+				for _, rk := range [2]int{bytecode.B(ins), bytecode.C(ins)} {
+					if rk >= 256 {
+						kidx := rk - 256
+						if kidx < 0 || kidx >= len(proto.Consts) {
+							return false
+						}
+					}
 				}
 			case bytecode.CALL:
 				// CALL rides the exit-reason path; the dispatcher runs
@@ -1097,17 +1105,37 @@ func emitFORLOOPArm64Inline(cb *codeBuf, a uint8, succBack, succOut int) {
 }
 
 // inlineRawEqArm64 emits inline 64-bit bit-equality for EQ. Semantics
-// same as amd64 inlineRawEq: reg-reg only (AnalyzeNative rejects K
-// operands for EQ). Returns false only if the (unreachable) K case is
-// hit.
+// same as amd64 inlineRawEq: if types differ, false; same-type
+// primitives are bit-equal; GCRef types compare by pointer identity
+// (strings are interned so ptr-equal ↔ string-equal). __eq metamethod
+// is skipped — safe because table/userdata (the only __eq carriers)
+// never appear as K operands. K operands bake the boxed constant as a
+// mov imm64 (string K slots were interned at LoadProgram time, before
+// promotion, so the bits are stable). Returns false only when a K
+// index is out of range (AnalyzeNative already rejected those).
 func inlineRawEqArm64(cb *codeBuf, a uint8, b, c int, succExec, succSkip int) bool {
-	if b >= 256 || c >= 256 {
-		return false
+	// Load RK(B) into X0.
+	if b < 256 {
+		// ldr X0, [X26 + B*8]
+		cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 0, regX26, uint16(b)*8))
+	} else {
+		kidx := b - 256
+		if cb.proto == nil || kidx < 0 || kidx >= len(cb.proto.Consts) {
+			return false
+		}
+		cb.emit(jitarm64.EmitMovXdImm64(nil, 0, cb.proto.Consts[kidx]))
 	}
-	// ldr X0, [X26 + B*8]
-	cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 0, regX26, uint16(b)*8))
-	// ldr X1, [X26 + C*8]
-	cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 1, regX26, uint16(c)*8))
+	// Load RK(C) into X1.
+	if c < 256 {
+		// ldr X1, [X26 + C*8]
+		cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 1, regX26, uint16(c)*8))
+	} else {
+		kidx := c - 256
+		if cb.proto == nil || kidx < 0 || kidx >= len(cb.proto.Consts) {
+			return false
+		}
+		cb.emit(jitarm64.EmitMovXdImm64(nil, 1, cb.proto.Consts[kidx]))
+	}
 	// cmp X0, X1
 	cb.emit(jitarm64.EmitCmpXnXm(nil, 0, 1))
 	// Branch to succExec when condition matches A.
