@@ -686,12 +686,13 @@ func emitLinearOp(buf *codeBuf, ins bytecode.Instruction, pc int32) error {
 		emitCONCAT(buf, pc, a, bReg, cReg)
 	case bytecode.CALL:
 		emitCALL(buf, pc, a, bReg, cReg)
-	case bytecode.CLOSURE:
-		emitCLOSURE(buf, pc, a, uint16(bx))
-	case bytecode.CLOSE:
-		emitCLOSE(buf, pc, a)
 	case bytecode.SETLIST:
 		emitSETLIST(buf, pc, a, bReg, cReg)
+	case bytecode.CLOSURE, bytecode.CLOSE:
+		// Not in opSupported; AnalyzeNative rejects Protos containing
+		// them. Their legacy shim-call emitters were removed with the
+		// in-segment shim channel (issue #45).
+		return fmt.Errorf("emitLinearOp: op %v has no native emit (excluded from opSupported)", op)
 	default:
 		return fmt.Errorf("emitLinearOp: unsupported op %v at pc %d", op, pc)
 	}
@@ -736,8 +737,12 @@ func emitTerminator(buf *codeBuf, c *cfg, bb *basicBlock, bbID int, ins bytecode
 		}
 		cb.emit([]byte{0x31, 0xC0, 0xC3}) // xor eax, eax; ret
 	case bytecode.TAILCALL:
-		emitTAILCALL(buf, pc, a, b, cc)
-		emitRet(buf)
+		// Not in opSupported; the legacy shim-call emitter was removed
+		// with the in-segment shim channel (issue #45). TAILCALL's
+		// tri-state return (0 = frame already replaced, skip DoReturn)
+		// needs a terminate-without-DoReturn exit-reason channel like
+		// HelperReturn before it can earn acceptance.
+		return fmt.Errorf("emitTerminator: TAILCALL has no native emit (excluded from opSupported)")
 	case bytecode.JMP:
 		if len(bb.succs) != 1 {
 			return fmt.Errorf("JMP with %d succs at pc %d", len(bb.succs), pc)
@@ -755,13 +760,12 @@ func emitTerminator(buf *codeBuf, c *cfg, bb *basicBlock, bbID int, ins bytecode
 		// succs[0] = back-edge target, succs[1] = fall-out.
 		emitFORLOOP(buf, a, bb.succs[0], bb.succs[1])
 	case bytecode.TFORLOOP:
-		if len(bb.succs) != 2 {
-			return fmt.Errorf("TFORLOOP with %d succs at pc %d", len(bb.succs), pc)
-		}
-		// succs[0] = pc+1 = fall-out; succs[1] = pc+2 = ... actually
-		// for TFORLOOP: fall-through means jump-back; pc++ means exit.
-		// Linksuccs adds pc+1 then pc+2, so succs[0]=back, succs[1]=out.
-		emitTFORLOOP(buf, pc, a, cc, bb.succs[0], bb.succs[1])
+		// Not in opSupported; the legacy shim-call emitter was removed
+		// with the in-segment shim channel (issue #45). TFORLOOP's
+		// resume must branch on the iterator result inside the segment
+		// (like emitCompareExitTail's immediate resume bind) before it
+		// can earn acceptance.
+		return fmt.Errorf("emitTerminator: TFORLOOP has no native emit (excluded from opSupported)")
 	case bytecode.EQ, bytecode.LT, bytecode.LE:
 		if len(bb.succs) != 2 {
 			return fmt.Errorf("%v with %d succs at pc %d", op, len(bb.succs), pc)

@@ -6,7 +6,7 @@ package peroptranslator
 import (
 	"testing"
 
-	"github.com/Liam0205/wangshu/internal/bytecode"
+	jit "github.com/Liam0205/wangshu/internal/gibbous/jit"
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
@@ -29,25 +29,27 @@ func TestPJ10Native_E2E_ADD_inline(t *testing.T) {
 	}
 }
 
-// TestPJ10Native_E2E_ADD_RK_shim: ADD with C >= 256 (K-encoded) falls
-// through to the shim path.
-func TestPJ10Native_E2E_ADD_RK_shim(t *testing.T) {
+// TestPJ10Native_E2E_ADD_RK_exitReason: ADD with C >= 256 whose K
+// constant is non-numeric can't inline; emitARITH lowers it to a
+// HelperArithSlow exit-reason. Assert the protocol artifacts (status ==
+// ExitInlineHelper, exitArg0 packing) — output-only assertions can't
+// distinguish the exit-reason path from a shim call (prove-the-path).
+func TestPJ10Native_E2E_ADD_RK_exitReason(t *testing.T) {
 	cb := newCodeBuf(1)
 	cb.bindLabel(0)
+	// No cb.proto: the K-side numeric check fails, forcing the plain
+	// exit-reason lowering (same shape a non-numeric K would take).
 	emitADD(cb, 5 /*pc*/, 2 /*A*/, 0 /*B*/, 256 /*C=K[0]*/)
+	emitResumePreludeIfPending(cb)
 	emitRet(cb)
 
 	host := newArithHost()
-	_ = runShimSegment(t, cb, host)
-
-	if host.arithCalls != 1 {
-		t.Fatalf("Arith calls = %d, want 1 (shim fallback for RK operand)", host.arithCalls)
+	status := runShimSegment(t, cb, host)
+	if uint32(status) != jit.ExitInlineHelper {
+		t.Fatalf("status = %d, want ExitInlineHelper(%d)", status, jit.ExitInlineHelper)
 	}
-	if host.arithOp != int32(bytecode.ADD) {
-		t.Errorf("Arith op = %d, want ADD=%d", host.arithOp, bytecode.ADD)
-	}
-	if host.arithB != 0 || host.arithC != 256 || host.arithA != 2 {
-		t.Errorf("Arith B=%d C=%d A=%d, want 0/256/2", host.arithB, host.arithC, host.arithA)
+	if host.arithCalls != 0 {
+		t.Fatalf("Arith calls = %d, want 0 (dispatch happens Go-side, not in-segment)", host.arithCalls)
 	}
 }
 

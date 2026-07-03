@@ -91,22 +91,37 @@ func (c *nativeCode) dispatchHelper(base int32) bool {
 			return false
 		}
 	case jit.HelperArithSlow:
-		// Arith guard-miss slow path (arm64 emit; amd64 keeps its
-		// in-segment shim fallback). The packed fields carry (a, b, c);
-		// the op is re-derived from proto.Code[pc] — it doesn't fit the
-		// packing and the bytecode is immutable, so the lookup is exact.
+		// Arith guard-miss / non-inline slow path (both arches; issue
+		// #45 removed amd64's legacy in-segment shim fallback). The
+		// packed fields carry (a, b, c); the op is re-derived from
+		// proto.Code[pc] — it doesn't fit the packing and the bytecode
+		// is immutable, so the lookup is exact.
 		op := int32(bytecode.Op(c.proto.Code[pc]))
 		if st := c.host.Arith(base, pc, op, b, cc, a); st != 0 {
 			return false
 		}
+	case jit.HelperLen:
+		if st := c.host.Len(base, pc, b, a); st != 0 {
+			return false
+		}
+	case jit.HelperConcat:
+		if st := c.host.Concat(base, pc, a, b, cc); st != 0 {
+			return false
+		}
+	case jit.HelperSelf:
+		if st := c.host.Self(base, pc, a, b, cc); st != 0 {
+			return false
+		}
 	case jit.HelperCompareSlow:
 		// Compare guard-miss slow path (LT/LE with non-number operands:
-		// string ordering / __lt / __le metamethods). host.Compare
-		// returns packed bit0=result, bit1=err. The result is handed
-		// back to the segment through exitArg0: the compare emit's
-		// resume block reads it and branches to the exec/skip successor
-		// (the branch decision must happen inside the segment — the
-		// dispatcher has no notion of BB targets).
+		// string ordering / __lt / __le metamethods; EQ rides the same
+		// helper — host.Compare's doCompare handles all three ops, re-
+		// derived from proto.Code[pc]). host.Compare returns packed
+		// bit0=result, bit1=err. The result is handed back to the
+		// segment through exitArg0: the compare emit's resume block
+		// reads it and branches to the exec/skip successor (the branch
+		// decision must happen inside the segment — the dispatcher has
+		// no notion of BB targets).
 		op := int32(bytecode.Op(c.proto.Code[pc]))
 		packed := c.host.Compare(base, pc, op, b, cc)
 		if packed&2 != 0 {
