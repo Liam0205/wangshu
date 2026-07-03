@@ -211,26 +211,8 @@ func shimDoReturnAddr() uint64 {
 	return uint64(*(*uintptr)(p))
 }
 
-func shimGetUpvalAddr() uint64 {
-	f := shimGetUpval
-	p := *(*unsafe.Pointer)(unsafe.Pointer(&f))
-	return uint64(*(*uintptr)(p))
-}
-
-func shimSetUpvalFromRegAddr() uint64 {
-	f := shimSetUpvalFromReg
-	p := *(*unsafe.Pointer)(unsafe.Pointer(&f))
-	return uint64(*(*uintptr)(p))
-}
-
 func shimArithAddr() uint64 {
 	f := shimArith
-	p := *(*unsafe.Pointer)(unsafe.Pointer(&f))
-	return uint64(*(*uintptr)(p))
-}
-
-func shimUnmAddr() uint64 {
-	f := shimUnm
 	p := *(*unsafe.Pointer)(unsafe.Pointer(&f))
 	return uint64(*(*uintptr)(p))
 }
@@ -259,36 +241,6 @@ func shimCompareAddr() uint64 {
 	return uint64(*(*uintptr)(p))
 }
 
-func shimGetTableAddr() uint64 {
-	f := shimGetTable
-	p := *(*unsafe.Pointer)(unsafe.Pointer(&f))
-	return uint64(*(*uintptr)(p))
-}
-
-func shimSetTableAddr() uint64 {
-	f := shimSetTable
-	p := *(*unsafe.Pointer)(unsafe.Pointer(&f))
-	return uint64(*(*uintptr)(p))
-}
-
-func shimGetGlobalAddr() uint64 {
-	f := shimGetGlobal
-	p := *(*unsafe.Pointer)(unsafe.Pointer(&f))
-	return uint64(*(*uintptr)(p))
-}
-
-func shimSetGlobalAddr() uint64 {
-	f := shimSetGlobal
-	p := *(*unsafe.Pointer)(unsafe.Pointer(&f))
-	return uint64(*(*uintptr)(p))
-}
-
-func shimNewTableAddr() uint64 {
-	f := shimNewTable
-	p := *(*unsafe.Pointer)(unsafe.Pointer(&f))
-	return uint64(*(*uintptr)(p))
-}
-
 func shimSetListAddr() uint64 {
 	f := shimSetList
 	p := *(*unsafe.Pointer)(unsafe.Pointer(&f))
@@ -297,12 +249,6 @@ func shimSetListAddr() uint64 {
 
 func shimForPrepAddr() uint64 {
 	f := shimForPrep
-	p := *(*unsafe.Pointer)(unsafe.Pointer(&f))
-	return uint64(*(*uintptr)(p))
-}
-
-func shimCallAddr() uint64 {
-	f := shimCall
 	p := *(*unsafe.Pointer)(unsafe.Pointer(&f))
 	return uint64(*(*uintptr)(p))
 }
