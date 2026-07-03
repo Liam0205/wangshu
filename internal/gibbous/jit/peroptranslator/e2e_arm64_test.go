@@ -186,3 +186,73 @@ return r, x, y`
 		t.Fatalf("results = %v, want [2 2 1]", results)
 	}
 }
+
+// TestArm64E2E_GETGLOBAL_SETGLOBAL: a kernel reading + writing warmed
+// globals must promote (NodeHit IC gate) and produce correct values.
+// The first passes of the outer loop run interpreted and warm the IC
+// to NodeHit; force-all's retry window then re-checks and promotes.
+func TestArm64E2E_GETGLOBAL_SETGLOBAL(t *testing.T) {
+	src := `
+G1 = 5
+G2 = 0
+local function k()
+  local a = G1
+  local b = G1
+  G2 = a
+  return b
+end
+local r = 0
+for i = 1, 300 do r = k() end
+return r, G2`
+	results, promoted, dispatched := runForceAllArm64(t, src)
+	if promoted == 0 {
+		t.Fatal("PromotionCount = 0: GETGLOBAL/SETGLOBAL proto did not promote on arm64")
+	}
+	if len(results) != 2 || results[0] != "5" || results[1] != "5" {
+		t.Fatalf("results = %v, want [5 5]", results)
+	}
+	// Inline-hit probe: with a warm NodeHit snapshot the ~299
+	// post-promotion iterations × 3 global accesses (~900) must ride the
+	// inline gen-check fast path, NOT the exit-reason round trip. If the
+	// inline emit were silently broken (guards always missing), every
+	// access would exit-reason and dispatched would be in the hundreds.
+	// A loose < 100 bound tolerates warm-up and retry-window noise while
+	// still distinguishing "inline path works" from "everything falls
+	// back" (see prove-the-path-under-test §fast-path-hit blind spot).
+	if dispatched >= 100 {
+		t.Fatalf("dispatched = %d: inline NodeHit fast path never hits (all accesses ride exit-reason)", dispatched)
+	}
+}
+
+// TestArm64E2E_SETGLOBAL_GenMissFallsBack: after the kernel promotes
+// with a NodeHit snapshot, inserting new keys into _G bumps the table
+// gen; the inline gen guard must miss and the exit-reason slow path
+// must keep results byte-equal (no stale-slot write).
+func TestArm64E2E_SETGLOBAL_GenMissFallsBack(t *testing.T) {
+	src := `
+GV = 1
+local function k()
+  local a = GV
+  local b = GV
+  GV = a
+  return b
+end
+local r = 0
+for i = 1, 300 do r = k() end
+for i = 1, 40 do
+  _G["fresh" .. i] = i
+end
+GV = 77
+for i = 1, 50 do r = k() end
+return r, GV`
+	results, promoted, dispatched := runForceAllArm64(t, src)
+	if promoted == 0 {
+		t.Fatal("PromotionCount = 0: kernel did not promote")
+	}
+	if dispatched == 0 {
+		t.Fatal("DispatchHelperCount did not increase: gen-miss slow path never rode exit-reason")
+	}
+	if len(results) != 2 || results[0] != "77" || results[1] != "77" {
+		t.Fatalf("results = %v, want [77 77]", results)
+	}
+}

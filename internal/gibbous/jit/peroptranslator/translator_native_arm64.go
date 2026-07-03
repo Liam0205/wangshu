@@ -238,6 +238,19 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 				if bytecode.B(ins) == 0 || bytecode.C(ins) == 0 {
 					return false
 				}
+			case bytecode.GETGLOBAL, bytecode.SETGLOBAL:
+				// Only enter native emit when the IC snapshot says
+				// NodeHit — the inline fast path is a gen check + fixed
+				// node slot access. An un-warmed site would pay an
+				// exit-reason round trip per access, which loses to
+				// shape-spec / interpreter (amd64 measured a ~14%
+				// Transform CallInto regression without this gate).
+				if int(pc) >= len(proto.IC) {
+					return false
+				}
+				if proto.IC[pc].Kind != bytecode.ICKindNodeHit {
+					return false
+				}
 			}
 		}
 	}
@@ -291,6 +304,7 @@ func opSupported(op bytecode.OpCode) bool {
 		bytecode.JMP, bytecode.FORPREP, bytecode.FORLOOP,
 		bytecode.GETUPVAL, bytecode.SETUPVAL,
 		bytecode.CALL,
+		bytecode.GETGLOBAL, bytecode.SETGLOBAL,
 		bytecode.RETURN:
 		return true
 	default:
@@ -315,6 +329,10 @@ func TranslateProtoNative(proto *bytecode.Proto, host jit.P4HostState) (*nativeC
 	}
 	icSnap := snapshotProtoIC(proto)
 	buf.proto = &codeBufProto{Consts: consts, IC: icSnap}
+	// Bake the globals table byte offset for the GETGLOBAL / SETGLOBAL
+	// NodeHit inline fast path (same identity-is-stable contract as the
+	// amd64 emit and P3 wasm's emitGetGlobal).
+	buf.proto.GlobalsTaddr = uint32(host.GlobalsRaw() & 0x0000_FFFF_FFFF_FFFF)
 
 	// Prologue: reload X26 = vsBase from jitCtx (X27+off). arm64 doesn't
 	// need the amd64 saveGoG dance because X28 = G is permanent on Go
@@ -395,6 +413,10 @@ func emitLinearOpArm64(buf *codeBuf, ins bytecode.Instruction, pc int32) error {
 		emitSETUPVALArm64(buf, a, bReg)
 	case bytecode.CALL:
 		emitCALLArm64(buf, pc, a, bReg, uint8(cRK))
+	case bytecode.GETGLOBAL:
+		emitGETGLOBALArm64(buf, pc, a, uint16(bx))
+	case bytecode.SETGLOBAL:
+		emitSETGLOBALArm64(buf, pc, a, uint16(bx))
 	case bytecode.NOT:
 		emitNOTArm64Inline(buf, a, bReg)
 	case bytecode.ADD, bytecode.SUB, bytecode.MUL, bytecode.DIV:
