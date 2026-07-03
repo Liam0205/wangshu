@@ -366,9 +366,11 @@ func emitUNMArm64(cb *codeBuf, pc int32, a, b uint8) {
 	patchArm64B26(cb, bDoneOff, cb.pos())
 }
 
-// emitLENArm64 emits arm64 LEN via shimLen.
+// emitLENArm64 emits R(A) := #R(B) via the HelperLen exit-reason (the
+// dispatcher runs host.Len; string/table length or __len-less raise).
+// Mirror of amd64 emitLEN.
 func emitLENArm64(cb *codeBuf, pc int32, a, b uint8) {
-	emitCallShimArm64(cb, shimLenAddr(), []int32{0, pc, int32(b), int32(a)})
+	emitExitReasonArm64(cb, jit.HelperLen, pc, int32(a), int32(b), 0)
 }
 
 // emitCONCATArm64 emits arm64 CONCAT via shimConcat.

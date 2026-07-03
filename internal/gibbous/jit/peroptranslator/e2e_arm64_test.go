@@ -612,3 +612,119 @@ return r, rs1, rs2`
 		t.Fatal("dispatched = 0: string compare never rode the exit-reason slow path")
 	}
 }
+
+// TestArm64E2E_LEN: #string / #table ride the HelperLen exit-reason
+// (host.Len — byte length / table border). Operands arrive as
+// parameters so no LOADK string const trips the F7-a rejection.
+func TestArm64E2E_LEN(t *testing.T) {
+	src := `
+local function k(s, u)
+  local a = #s
+  local b = #u
+  local c = a
+  local d = b
+  return c + d
+end
+local t = {1, 2, 3}
+local r = 0
+for i = 1, 200 do r = k("hello", t) end
+return r`
+	results, promoted, dispatched := runForceAllArm64(t, src)
+	if promoted == 0 {
+		t.Fatal("PromotionCount = 0: LEN kernel did not promote on arm64")
+	}
+	if dispatched == 0 {
+		t.Fatal("DispatchHelperCount did not increase: LEN never rode the exit-reason protocol")
+	}
+	// #"hello" + #{1,2,3} = 5 + 3
+	if len(results) != 1 || results[0] != "8" {
+		t.Fatalf("results = %v, want [8]", results)
+	}
+}
+
+// TestArm64E2E_LEN_ErrorBubbles: #nil must raise "attempt to get
+// length of ..." through the dispatcher, byte-equal in existence to P1
+// (error paths are a structural blind spot of all-success corpora).
+func TestArm64E2E_LEN_ErrorBubbles(t *testing.T) {
+	src := `
+local function k(s)
+  local a = #s
+  local b = a
+  local c = b
+  return c
+end
+k("hi")
+return k(nil)`
+	prog, err := wangshu.Compile([]byte(src), "arm64e2e-len-err")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	st := wangshu.NewState(wangshu.Options{})
+	st.SetForceAllPromote(true)
+	_, err = prog.Run(st)
+	if err == nil {
+		t.Fatal("expected length-of-nil error, got nil")
+	}
+	if !strings.Contains(err.Error(), "length") {
+		t.Fatalf("error %q does not carry the length raise message", err)
+	}
+}
+
+// TestArm64E2E_ModPow: MOD / POW have no inline NEON lowering — every
+// execution rides the plain HelperArithSlow exit-reason (host.Arith,
+// byte-equal to the interpreter, including fmod sign semantics and
+// math.pow edge cases handled host-side).
+func TestArm64E2E_ModPow(t *testing.T) {
+	src := `
+local function k(x, y)
+  local a = x % y
+  local b = x ^ 2
+  local c = a + b
+  local d = c
+  return d
+end
+local r = 0
+for i = 1, 200 do r = k(7, 3) end
+local rn = k(-7, 3)
+return r, rn`
+	results, promoted, dispatched := runForceAllArm64(t, src)
+	if promoted == 0 {
+		t.Fatal("PromotionCount = 0: MOD/POW kernel did not promote on arm64")
+	}
+	if dispatched == 0 {
+		t.Fatal("DispatchHelperCount did not increase: MOD/POW never rode the exit-reason protocol")
+	}
+	// 7%3 + 7^2 = 1 + 49 = 50; Lua 5.1 MOD: -7%3 = 2 (sign of divisor),
+	// (-7)^2 = 49 → 51.
+	if len(results) != 2 || results[0] != "50" || results[1] != "51" {
+		t.Fatalf("results = %v, want [50 51]", results)
+	}
+}
+
+// TestArm64E2E_Mod_ErrorBubbles: nil % 2 must raise through the
+// HelperArithSlow dispatcher (host.Arith) — same raise family as the
+// inline-arith guard-miss path but reached without any inline guard.
+func TestArm64E2E_Mod_ErrorBubbles(t *testing.T) {
+	src := `
+local function k(x)
+  local a = x % 2
+  local b = a
+  local c = b
+  return c
+end
+k(5)
+return k(nil)`
+	prog, err := wangshu.Compile([]byte(src), "arm64e2e-mod-err")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	st := wangshu.NewState(wangshu.Options{})
+	st.SetForceAllPromote(true)
+	_, err = prog.Run(st)
+	if err == nil {
+		t.Fatal("expected arithmetic-on-nil error, got nil")
+	}
+	if !strings.Contains(err.Error(), "arithmetic") {
+		t.Fatalf("error %q does not carry the arithmetic raise message", err)
+	}
+}

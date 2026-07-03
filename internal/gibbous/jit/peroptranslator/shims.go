@@ -78,13 +78,6 @@ func shimUnm(ctx *jit.JITContext, base, pc, b, a int32) int32 {
 	return hostFromCtx(ctx).Unm(base, pc, b, a)
 }
 
-// shimLen: host.Len(base, pc, b, a) int32
-//
-//go:noinline
-func shimLen(ctx *jit.JITContext, base, pc, b, a int32) int32 {
-	return hostFromCtx(ctx).Len(base, pc, b, a)
-}
-
 // shimConcat: host.Concat(base, pc, a, b, c) int32
 //
 //go:noinline
@@ -213,12 +206,6 @@ func shimDoReturnAddr() uint64 {
 
 func shimArithAddr() uint64 {
 	f := shimArith
-	p := *(*unsafe.Pointer)(unsafe.Pointer(&f))
-	return uint64(*(*uintptr)(p))
-}
-
-func shimLenAddr() uint64 {
-	f := shimLen
 	p := *(*unsafe.Pointer)(unsafe.Pointer(&f))
 	return uint64(*(*uintptr)(p))
 }
