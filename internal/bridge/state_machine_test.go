@@ -434,3 +434,66 @@ func TestStateMachine_Coroutine_NoPromote_AfterMainPromote(t *testing.T) {
 		t.Errorf("协程后 TierState = %v, want TierGibbous(不动)", pd.TierState)
 	}
 }
+
+// gatedP3:能编译一切,但 WorthPromoting 拒绝(测 PromotionGater,issue #39)。
+type gatedP3 struct {
+	dummyCompileP3
+	gateCalls int
+}
+
+func (g *gatedP3) WorthPromoting(_ *bytecode.Proto) bool {
+	g.gateCalls++
+	return false
+}
+
+// TestPromotionGater_AutoDeclinesToStuck:auto 模式下后端 WorthPromoting
+// 返 false → TierStuck 吸收(不 try-compile),且 Compile 从未被调。
+func TestPromotionGater_AutoDeclinesToStuck(t *testing.T) {
+	b := NewBridge()
+	mock := &gatedP3{}
+	b.SetP3Compiler(mock)
+	p := makeProtoWithCode(bytecode.ADD)
+	pd := b.ProfileOf(p)
+	pd.Compilable = CompCompilable
+
+	for i := uint32(0); i < HotEntryThreshold; i++ {
+		b.OnEnter(p, true)
+	}
+
+	if pd.TierState != TierStuck {
+		t.Errorf("gated proto → TierStuck, got %v", pd.TierState)
+	}
+	if mock.gateCalls == 0 {
+		t.Error("WorthPromoting was never consulted")
+	}
+	if _, ok := b.gibbousCodes[p]; ok {
+		t.Error("gated proto must not be compiled/installed")
+	}
+	// Stuck is absorbing: later entries must not re-consult the gate.
+	callsAtStuck := mock.gateCalls
+	b.OnEnter(p, true)
+	if mock.gateCalls != callsAtStuck {
+		t.Errorf("Stuck must absorb; gate re-consulted (%d → %d)", callsAtStuck, mock.gateCalls)
+	}
+}
+
+// TestPromotionGater_ForceAllBypasses:forceAll 模式绕过 profitability
+// gate——差分覆盖不因收益判断缩水(issue #39)。
+func TestPromotionGater_ForceAllBypasses(t *testing.T) {
+	b := NewBridge()
+	mock := &gatedP3{}
+	b.SetP3Compiler(mock)
+	b.SetForceAllPromote(true)
+	p := makeProtoWithCode(bytecode.ADD)
+	pd := b.ProfileOf(p)
+	pd.Compilable = CompCompilable
+
+	b.OnEnter(p, true)
+
+	if pd.TierState != TierGibbous {
+		t.Errorf("forceAll must bypass the gate and promote, got %v", pd.TierState)
+	}
+	if mock.gateCalls != 0 {
+		t.Errorf("forceAll must not consult WorthPromoting (called %d times)", mock.gateCalls)
+	}
+}
