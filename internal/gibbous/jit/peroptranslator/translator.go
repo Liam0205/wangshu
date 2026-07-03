@@ -593,6 +593,99 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 	for i, pc := range headPC {
 		pcToSlot[pc] = i
 	}
+	// Deferred-head ordering hazard (fuzz seed 21c645c46a1268c6):
+	// PerOpCode.Run replays all side effects FIRST and materialises
+	// head-op sources LAST, so a head op whose write is deferred to the
+	// materialisation phase executes out of order with respect to any
+	// replayed effect that comes after it in bytecode order. Concrete
+	// corruption modes: a later effect reads the return-slot register
+	// the deferred head was supposed to have written (SETLIST after a
+	// NEWTABLE head → "SETLIST: not a table"; SETGLOBAL/SETTABLE after
+	// a LOADK head → silent stale value), or a later effect clobbers a
+	// register/upvalue/global/table the head's source reads at
+	// materialisation.
+	//
+	// Fix: precompute lastReplayPC — the last pc whose op will run
+	// during the ordered replay phase (side effects, CALL/SELF/CLOSURE,
+	// loop bodies). Any head op at pc < lastReplayPC is DEMOTED: its op
+	// is appended as an ordered side effect at its bytecode position
+	// and the return slot reads the register back (slotKindReg) after
+	// replay. Heads with no effect form (UNM / LEN / CONCAT / compare
+	// diamonds) reject the shape instead. Heads at pc > lastReplayPC
+	// stay deferred — nothing replays after them, so the end-of-replay
+	// register state they read equals their bytecode-order state.
+	lastReplayPC := -1
+	{
+		isDeferredCapable := func(op bytecode.OpCode) bool {
+			switch op {
+			case bytecode.LOADK, bytecode.LOADBOOL, bytecode.MOVE,
+				bytecode.GETUPVAL, bytecode.UNM, bytecode.LEN, bytecode.CONCAT,
+				bytecode.GETTABLE, bytecode.GETGLOBAL, bytecode.NEWTABLE,
+				bytecode.ADD, bytecode.SUB, bytecode.MUL, bytecode.DIV,
+				bytecode.MOD, bytecode.POW:
+				return true
+			}
+			return false
+		}
+		for pc := 0; pc < retPC; pc++ {
+			if pseudoSkip[pc] || diamondMember[pc] {
+				continue
+			}
+			if _, ok := diamondStart[pc]; ok {
+				continue // deferred head (or rejected below)
+			}
+			if _, ok := andOrStart[pc]; ok {
+				continue
+			}
+			ins := proto.Code[pc]
+			op := bytecode.Op(ins)
+			if op == bytecode.RETURN {
+				continue
+			}
+			if _, isHead := pcToSlot[pc]; isHead && isDeferredCapable(op) {
+				continue
+			}
+			if op == bytecode.LOADNIL {
+				// A LOADNIL whose whole range is head slots is deferred;
+				// any scratch register makes it a replayed effect.
+				a, b := bytecode.A(ins), bytecode.B(ins)
+				pure := true
+				for r := a; r <= b; r++ {
+					idx := r - retA
+					if idx < 0 || idx >= n || headPC[idx] != pc {
+						pure = false
+						break
+					}
+				}
+				if pure {
+					continue
+				}
+			}
+			lastReplayPC = pc
+		}
+		if loop != nil && loop.forLoopPC > lastReplayPC {
+			lastReplayPC = loop.forLoopPC
+		}
+		if tloop != nil && tloop.tloopPC+1 > lastReplayPC {
+			lastReplayPC = tloop.tloopPC + 1
+		}
+	}
+	// demoteHead appends the head op as an ordered side effect and
+	// installs a register read-back for its return slot. Returns false
+	// when the op has no effect form (caller rejects the shape).
+	demoteHead := func(pc int, slotIdx int, op bytecode.OpCode, ins bytecode.Instruction) bool {
+		se, ok := bodyEffectFromIns(proto, op, ins, pc)
+		if !ok {
+			return false
+		}
+		*effectsRef = append(*effectsRef, se)
+		sources[slotIdx] = slotSource{
+			kind:    slotKindReg,
+			reg:     uint8(retA + slotIdx),
+			arithPC: uint8(pc),
+		}
+		return true
+	}
 	// forLoopAfter records the outer-effects index at which the loop is
 	// inserted (so PerOpCode.Run knows where to switch from preamble to
 	// loop iteration to post-loop effects).
@@ -676,6 +769,11 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 				cmpA := bytecode.A(cmpIns)
 				cmpB := bytecode.B(cmpIns)
 				cmpC := bytecode.C(cmpIns)
+				if pc < lastReplayPC {
+					// Deferred head followed by replayed effects: no
+					// effect form to demote to — reject (rare shape).
+					return shapeInfo{}
+				}
 				sources[slotIdx] = slotSource{
 					kind:    slotKindCmp,
 					arithOp: uint8(cmpOp),
@@ -709,6 +807,9 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 					src.imm = ao.other.imm
 				default:
 					return shapeInfo{}
+				}
+				if pc < lastReplayPC {
+					return shapeInfo{} // same hazard as cmp diamond
 				}
 				sources[slotIdx] = src
 				continue
@@ -844,6 +945,20 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 			for r := a; r <= b; r++ {
 				idx := r - retA
 				if idx >= 0 && idx < n && headPC[idx] == pc {
+					if pc < lastReplayPC {
+						// Demote: write nil during ordered replay, read
+						// the register back at materialisation.
+						sources[idx] = slotSource{
+							kind:    slotKindReg,
+							reg:     uint8(r),
+							arithPC: uint8(pc),
+						}
+						if scratchA < 0 {
+							scratchA = int(r)
+						}
+						scratchB = int(r)
+						continue
+					}
 					sources[idx] = slotSource{
 						kind:    slotKindConst,
 						imm:     uint64(value.Nil),
@@ -870,6 +985,14 @@ func AnalyzeShape(proto *bytecode.Proto) shapeInfo {
 		// All other ops have R(A) as dest. Check if this is the slot's
 		// head op or a scratch fill.
 		if slotIdx, ok := pcToSlot[pc]; ok {
+			if pc < lastReplayPC {
+				// Deferred-head ordering hazard: run the op during the
+				// ordered replay instead and read the register back.
+				if !demoteHead(pc, slotIdx, op, ins) {
+					return shapeInfo{}
+				}
+				continue
+			}
 			src, ok := headOpSource(proto, ins)
 			if !ok {
 				return shapeInfo{}

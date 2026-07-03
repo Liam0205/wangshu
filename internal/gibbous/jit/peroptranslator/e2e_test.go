@@ -1359,3 +1359,72 @@ return a, b, c
 		})
 	}
 }
+
+// TestPJ10_DeferredHeadOrdering is the regression guard for fuzz seed
+// 21c645c46a1268c6: PerOpCode.Run replays side effects FIRST and
+// materialises deferred head-op sources LAST, so a side effect placed
+// after a deferred head in bytecode order used to observe pre-head
+// register state (NEWTABLE head + SETLIST effect → "SETLIST: not a
+// table"; LOADK head + SETGLOBAL/SETTABLE effect → silent stale
+// value). AnalyzeShape now demotes such heads into ordered replay
+// effects with a register read-back. Each case asserts the promoted
+// result matches the interpreter, and the SETGLOBAL/SETTABLE cases
+// assert the observed VALUE (not just error-freeness) so a silent
+// stale-read regression fails loudly.
+func TestPJ10_DeferredHeadOrdering(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{
+			// NEWTABLE is the demoted head; SETLIST reads R(0) after it.
+			name: "setlist-reads-deferred-newtable",
+			src: `local function f() return {7} end
+local r
+for i = 1, 5 do r = f() end
+return r[1]`,
+			want: "7",
+		},
+		{
+			// LOADK is the demoted head; SETGLOBAL reads R(0) after it.
+			name: "setglobal-reads-deferred-loadk",
+			src: `local function h() local x = 7; gDeferred = x; return x end
+for i = 1, 5 do h() end
+return gDeferred`,
+			want: "7",
+		},
+		{
+			// LOADK is the demoted head; SETTABLE reads R(0) after it.
+			name: "settable-reads-deferred-loadk",
+			src: `local t = {}
+local function h() local x = 9; t[1] = x; return x end
+for i = 1, 5 do h() end
+return t[1]`,
+			want: "9",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prog, err := wangshu.Compile([]byte(tc.src), "pj10deferred")
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+			st := wangshu.NewState(wangshu.Options{})
+			st.SetForceAllPromote(true)
+			res, err := prog.Run(st)
+			if err != nil {
+				t.Fatalf("run: %v", err)
+			}
+			if st.PromotionCount() == 0 {
+				t.Fatal("PromotionCount = 0; kernel did not promote")
+			}
+			if len(res) == 0 {
+				t.Fatalf("no results (want %q)", tc.want)
+			}
+			if got := res[0].Display(); got != tc.want {
+				t.Errorf("result = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
