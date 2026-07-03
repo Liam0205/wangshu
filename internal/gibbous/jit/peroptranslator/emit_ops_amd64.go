@@ -259,14 +259,24 @@ func emitPOW(cb *codeBuf, pc int32, a uint8, b, c int) {
 //	jae slow                   ; non-number -> exit-reason
 //	mov rdx, 0x8000000000000000
 //	xor rax, rdx               ; flip IEEE-754 sign bit
+//	mov rdx, qNanBoxBase
+//	cmp rax, rdx               ; result guard: NaN input aliases
+//	jae slow                   ; the tag space after the flip
 //	mov [rbx+A*8], rax
 //	jmp done
 //	slow: <exit-reason HelperUnm>
 //	done:
 //
 // Negating a float by flipping the sign bit matches the interpreter's
-// `-x` on numbers exactly (including NaN / inf / -0 payload bits). The
-// slow path (string coercion + __unm) routes through host.Unm.
+// `-x` on non-NaN numbers exactly (including inf / -0 payload bits).
+// The result guard catches NaN input: canonNaN (0x7FF8...) sign-flips
+// to 0xFFF8... — exactly value.Nil's bit pattern — so the flipped
+// result must be re-checked against the tag space and routed to
+// host.Unm, which canonicalizes via NumberValue. Same NaN-aliasing
+// family as the arith result guard (fuzz seed f7f0bb1a); found by the
+// arm64 exit-reason port's NaN e2e (issue #37 step 5) and fixed on
+// both arches in the same change. The slow path also covers string
+// coercion + __unm.
 func emitUNM(cb *codeBuf, pc int32, a, b uint8) {
 	// mov rax, [rbx+B*8]
 	cb.emit(jitamd64.EmitMovqRaxFromMemReg(nil, regRBX, int32(b)*8))
@@ -274,10 +284,15 @@ func emitUNM(cb *codeBuf, pc int32, a, b uint8) {
 	cb.emit(jitamd64.EmitMovRdxImm64(nil, qNanBoxBaseU64))
 	cb.emit([]byte{0x48, 0x39, 0xD0}) // cmp rax, rdx
 	cb.emit(jitamd64.EmitJaeRel32(nil, 0))
-	slowFixup := int(cb.pos()) - 4
+	slowFixup1 := int(cb.pos()) - 4
 	// mov rdx, signBit; xor rax, rdx
 	cb.emit(jitamd64.EmitMovRdxImm64(nil, 0x8000_0000_0000_0000))
 	cb.emit([]byte{0x48, 0x31, 0xD0}) // xor rax, rdx
+	// Result guard: reload qNanBoxBase, re-check the flipped bits.
+	cb.emit(jitamd64.EmitMovRdxImm64(nil, qNanBoxBaseU64))
+	cb.emit([]byte{0x48, 0x39, 0xD0}) // cmp rax, rdx
+	cb.emit(jitamd64.EmitJaeRel32(nil, 0))
+	slowFixup2 := int(cb.pos()) - 4
 	// mov [rbx+A*8], rax
 	cb.emit(jitamd64.EmitMovqMemRegFromRax(nil, regRBX, int32(a)*8))
 	// jmp done
@@ -285,7 +300,8 @@ func emitUNM(cb *codeBuf, pc int32, a, b uint8) {
 	doneFixup := int(cb.pos()) - 4
 	// slow:
 	slowOff := int(cb.pos())
-	writeRel32(cb, slowFixup, int32(slowOff)-int32(slowFixup+4))
+	writeRel32(cb, slowFixup1, int32(slowOff)-int32(slowFixup1+4))
+	writeRel32(cb, slowFixup2, int32(slowOff)-int32(slowFixup2+4))
 	emitExitReason(cb, jit.HelperUnm, pc, int32(a), int32(b), 0)
 	// done:
 	doneOff := int(cb.pos())
