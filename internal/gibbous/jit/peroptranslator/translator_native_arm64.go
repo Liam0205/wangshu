@@ -323,12 +323,18 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 // opSupported: arm64 subset. Ops beyond the original 18-op mmap-safe
 // set are added stepwise as the exit-reason protocol port progresses
 // (issue #37): GETUPVAL / SETUPVAL landed first (simplest end-to-end
-// round trip — never raise, no IC gate).
+// round trip — never raise, no IC gate). LEN / MOD / POW mirror the
+// amd64 acceptance (issue #45 followup): LEN lowers to a HelperLen
+// exit-reason and MOD / POW ride the plain HelperArithSlow lowering
+// (no inline NEON — the dispatcher re-derives the op from
+// proto.Code[pc] and runs host.Arith / host.Len, byte-equal to the
+// interpreter).
 func opSupported(op bytecode.OpCode) bool {
 	switch op {
 	case bytecode.MOVE, bytecode.LOADK, bytecode.LOADBOOL, bytecode.LOADNIL,
 		bytecode.ADD, bytecode.SUB, bytecode.MUL, bytecode.DIV,
-		bytecode.NOT,
+		bytecode.MOD, bytecode.POW,
+		bytecode.NOT, bytecode.LEN,
 		bytecode.EQ, bytecode.LT, bytecode.LE,
 		bytecode.TEST, bytecode.TESTSET,
 		bytecode.JMP, bytecode.FORPREP, bytecode.FORLOOP,
@@ -478,6 +484,8 @@ func emitLinearOpArm64(buf *codeBuf, ins bytecode.Instruction, pc int32) error {
 		emitUNMArm64(buf, pc, a, bReg)
 	case bytecode.NOT:
 		emitNOTArm64Inline(buf, a, bReg)
+	case bytecode.LEN:
+		emitLENArm64(buf, pc, a, bReg)
 	case bytecode.ADD, bytecode.SUB, bytecode.MUL, bytecode.DIV:
 		// Inline NEON fast path; IsNumber guard misses (string
 		// coercion / metamethod operands) ride the exit-reason slow
@@ -486,6 +494,12 @@ func emitLinearOpArm64(buf *codeBuf, ins bytecode.Instruction, pc int32) error {
 		if !inlineArithNEONArm64WithGuard(buf, op, pc, a, bRK, cRK) {
 			return fmt.Errorf("emitLinearOpArm64: inline arith failed pc=%d", pc)
 		}
+	case bytecode.MOD, bytecode.POW:
+		// No inline NEON (FMOD/POW have no single-instruction lowering);
+		// plain HelperArithSlow exit-reason, mirror of amd64 emitARITH's
+		// non-inline shape. The dispatcher re-derives the op from
+		// proto.Code[pc].
+		emitExitReasonArm64(buf, jit.HelperArithSlow, pc, int32(a), int32(bRK), int32(cRK))
 	default:
 		return fmt.Errorf("emitLinearOpArm64: unsupported op %v at pc %d", op, pc)
 	}
