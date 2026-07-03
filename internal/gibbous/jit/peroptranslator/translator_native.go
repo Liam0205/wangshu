@@ -425,25 +425,26 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 //   - FORPREP: inline `R(A) -= R(A+2); jmp FORLOOP` (assumes three slots
 //     are numbers, matching the FORLOOP inline SSE fast path).
 //
-// Currently enabled with NO shim call in the emit output:
+// Currently enabled with NO in-segment Go call in the emit output:
 //
 //	MOVE, LOADK (numeric consts only), LOADBOOL, LOADNIL,
 //	ADD/SUB/MUL/DIV (inline SSE + IsNumber guards + NaN result guard),
+//	MOD/POW (plain HelperArithSlow exit-reason; no inline emit),
 //	NOT, UNM (inline sign-flip with IsNumber guard),
+//	LEN (HelperLen exit-reason),
 //	EQ (raw 64-bit cmp), LT/LE (inline UCOMISd + IsNumber guards),
 //	TEST, TESTSET (inline Nil/False bit-compare),
 //	JMP, FORPREP, FORLOOP,
 //	GETTABLE/SETTABLE (IC ArrayHit inline / NodeHit exit-reason),
 //	NEWTABLE, GETUPVAL, SETUPVAL, CALL (exit-reason dispatch),
+//	GETGLOBAL/SETGLOBAL (NodeHit-IC gated inline + exit-reason),
 //	RETURN (Go-side DoReturn after segment RET)
 //
 // **Excluded**:
 //
-//	LEN, CONCAT, SELF, SETLIST, TAILCALL, CLOSURE, CLOSE, TFORLOOP,
-//	MOD, POW (no inline emit yet), and
-//	GETGLOBAL/SETGLOBAL (exit-reason emit exists but acceptance routed
-//	shape-spec-friendly protos into slower per-access round trips; a
-//	per-site heuristic is needed before re-enabling)
+//	CONCAT, SELF, SETLIST (emit exists but no acceptance evaluation
+//	yet), TAILCALL, CLOSURE, CLOSE, TFORLOOP (no emit — they need
+//	dedicated exit-reason shapes, see the note in emit_ops_amd64.go)
 //
 // AnalyzeNative additionally rejects Protos with non-numeric K operands
 // on inline arithmetic / compare ops, CALL with B=0/C=0, NEWTABLE with
@@ -452,7 +453,8 @@ func opSupported(op bytecode.OpCode) bool {
 	switch op {
 	case bytecode.MOVE, bytecode.LOADK, bytecode.LOADBOOL, bytecode.LOADNIL,
 		bytecode.ADD, bytecode.SUB, bytecode.MUL, bytecode.DIV,
-		bytecode.NOT, bytecode.UNM,
+		bytecode.MOD, bytecode.POW,
+		bytecode.NOT, bytecode.UNM, bytecode.LEN,
 		bytecode.EQ, bytecode.LT, bytecode.LE,
 		bytecode.TEST, bytecode.TESTSET,
 		bytecode.JMP, bytecode.FORPREP, bytecode.FORLOOP,
