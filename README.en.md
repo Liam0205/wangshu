@@ -47,11 +47,11 @@ Numbers taken on one machine (linux/amd64, Intel Xeon Platinum, 24 core, go1.26.
 | Heavy kernels [^cat-heavy] | HeavyArith | 158 ms | 80.7 ms (**1.96×**) | 86.9 ms (**1.82×**) | 86.9 ms (**1.82×**) | 13.8 ms (**11.45×**) | 13.2 ms (**11.97×**) |
 | | HeavyRecursion | 8.16 ms | 5.15 ms (**1.58×**) | 5.85 ms (1.40×) | 5.80 ms (1.41×) | 5.44 ms (**1.50×**) | 5.52 ms (1.48×) |
 | | HeavyFloatloop | 285 ms | 147 ms (**1.94×**) | 51.2 ms (**5.57×**) | 51.3 ms (**5.56×**) | 17.3 ms (**16.49×**) | 17.3 ms (**16.51×**) |
-| Realworld small [^cat-realworld] | fib | 9.44 ms | 10.0 ms (0.94×) | 24.9 ms (0.38×) | 24.6 ms (0.38×) | 11.0 ms (0.86×) | 11.1 ms (0.85×) |
-| | binary-trees | 33.7 ms | 36.8 ms (0.92×) | 106.4 ms (0.32×) | 105.2 ms (0.32×) | 38.2 ms (0.88×) | 37.8 ms (0.89×) |
-| | spectral-norm | 22.6 ms | 18.6 ms (1.22×) | 40.1 ms (0.56×) | 47.9 ms (0.47×) | 21.2 ms (1.07×) | 20.0 ms (1.13×) |
+| Realworld small [^cat-realworld] | fib | 9.44 ms | 10.0 ms (0.94×) | 10.9 ms (0.87×) [^p3-gate] | 24.6 ms (0.38×) | 11.0 ms (0.86×) | 11.1 ms (0.85×) |
+| | binary-trees | 33.7 ms | 36.8 ms (0.92×) | 38.4 ms (0.88×) [^p3-gate] | 105.2 ms (0.32×) | 38.2 ms (0.88×) | 37.8 ms (0.89×) |
+| | spectral-norm | 22.6 ms | 18.6 ms (1.22×) | 20.7 ms (1.09×) [^p3-gate] | 47.9 ms (0.47×) | 21.2 ms (1.07×) | 20.0 ms (1.13×) |
 | | fannkuch | 4.20 ms | 5.65 ms (0.74×) | 5.74 ms (0.73×) | 5.77 ms (0.73×) | 5.80 ms (0.72×) | 5.77 ms (0.73×) |
-| | n-body | 51.9 ms | 45.4 ms (1.14×) | 43.5 ms (1.19×) | 43.8 ms (1.19×) | 43.8 ms (1.19×) | 43.7 ms (1.19×) |
+| | n-body | 51.9 ms | 45.4 ms (1.14×) | 43.2 ms (1.20×) [^p3-gate] | 43.8 ms (1.19×) | 43.8 ms (1.19×) | 43.7 ms (1.19×) |
 | Boundary mini · Call [^cat-mini] | PureVM | 945 ns | 138 ns (**6.85×**) | — | — | — | — |
 | | CallOnly | 85.2 ns | 194 ns (0.44×) | 200 ns (0.43×) | 314 ns (0.27×) | 197 ns (0.43×) | 200 ns (0.43×) |
 | | Boundary (+SetGlobal) | 185 ns | 324 ns (0.57×) | 328 ns (0.56×) | 343 ns (0.54×) | 329 ns (0.56×) | 335 ns (0.55×) |
@@ -65,7 +65,7 @@ Numbers taken on one machine (linux/amd64, Intel Xeon Platinum, 24 core, go1.26.
 
 ### darwin/arm64 measurements (Apple M5 Pro)
 
-The same reproduction commands measured on an Apple M5 Pro (darwin/arm64, go1.26.4, `-benchtime=2s -count=3`, median, 2026-07-03). The arm64 P4 native op-set port via the exit-reason protocol is complete (issues #37 / #40): arithmetic / comparison / table / global / call ops share the same acceptance gates as amd64 (IC gates + CALL density gate); across the heavy and realworld suites P4 is now uniformly no worse than P3 — HeavyArith 2.0×, HeavyFloatloop 2.5× over P3, the same order of magnitude as the amd64 turnaround.
+The same reproduction commands measured on an Apple M5 Pro (darwin/arm64, go1.26.4, `-benchtime=2s -count=3`, median, 2026-07-03). Note: this table was measured BEFORE the P3 helper-density profitability gate (issue #39) landed; under the gate the realworld "P3 auto" column becomes interpreter execution (same behaviour as the [^p3-gate] rows above). To be refreshed on the next on-device run. The arm64 P4 native op-set port via the exit-reason protocol is complete (issues #37 / #40): arithmetic / comparison / table / global / call ops share the same acceptance gates as amd64 (IC gates + CALL density gate); across the heavy and realworld suites P4 is now uniformly no worse than P3 — HeavyArith 2.0×, HeavyFloatloop 2.5× over P3, the same order of magnitude as the amd64 turnaround.
 
 | Category | Script | gopher | P1 | P3 auto | P3 force | P4 auto | P4 force |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -96,6 +96,7 @@ P4 vs P3 like-for-like on arm64: heavy ×3 + realworld ×5 all no worse than P3 
 [^cat-baseline]: `benchmarks/baseline`. Three self-contained scripts (Simple branch-compare, Arith six-order Horner polynomial, Loop sum 1..N), no Go↔Lua boundary crossing. Shows VM-core dispatch / arithmetic / loop cost under minimum workload.
 [^cat-heavy]: `benchmarks/heavy`. Three flat numeric kernels (HeavyArith pure arithmetic, HeavyRecursion self-recursion, HeavyFloatloop nested float loop); intentionally excludes tables, strings, library CALL and other helper-bound structures. Shows the compilation tier's performance ceiling on shapes that actually let it work.
 [^cat-realworld]: `benchmarks/realworld`. Five benchmark-game scripts (fib / binary-trees / spectral-norm / fannkuch / n-body); a single-pass semantics run is differential-tested against the official lua5.1.5 (byte-equal). Shows conventional load under a mix of calls / allocations / floats / table ops.
+[^p3-gate]: P3 auto carries a helper-density profitability gate (issue #39, 2026-07-03): when a hot proto's op mix is dominated by helper round trips (the wasm→Go boundary cost eats the promotion win), promotion is declined and the proto stays on the interpreter. Rows with this marker declined promotion; the number IS interpreter execution (the delta vs the P1 column is sampling-hook overhead). The P3 force column is unaffected (force-all bypasses the gate to preserve differential coverage).
 [^cat-mini]: `benchmarks/embedded`, mini_bench_test.go. The minimal shape of the embed path: one SetGlobal + one Call + one result read per iter. Shows raw boundary-crossing cost, plus the delta between the allocating `Call` path and the zero-alloc `CallInto` path.
 [^cat-embed]: `benchmarks/embedded`, realworld_embedded_bench_test.go. A batch of 1000 items — per item set fields → Call predicate / feature-transform script → read scalar result, shaped after pineapple's `transform_by_lua`. Shows steady-state throughput of a real batch-processing embed.
 
