@@ -242,6 +242,17 @@ func (b *Bridge) OnBackEdge(proto *bytecode.Proto, pc int32, onMain bool) {
 		return // 防御性边界检查(理论上不该发生)
 	}
 	pd.BackEdge[pc]++
+	// Re-arm the per-entry recheck dedup at two warmth milestones per pc
+	// (issue #40; see the dedup in considerPromotion): the first back
+	// edge (the loop body has run once, so its ICs are now observed —
+	// the point where IC-gated backends start accepting) and
+	// HotBackEdgeThreshold (auto mode's own trigger; the ICs are as warm
+	// as they will get). Keeps forceAll promoting everything it used to,
+	// at the same points it used to, without paying a full backend
+	// re-analysis on every back edge in between.
+	if pd.BackEdge[pc] == 1 || pd.BackEdge[pc] == HotBackEdgeThreshold {
+		pd.recheckedAtEntry = 0
+	}
 	if pd.BackEdge[pc] >= HotBackEdgeThreshold || b.forceAll {
 		if !b.forceAll && len(proto.Code) < b.effectiveMinPromotableLen() {
 			return // short proto:dispatch 反噬 > 解释器收益,跳过升层(issue #21)
@@ -312,6 +323,18 @@ func (b *Bridge) considerPromotion(proto *bytecode.Proto, pd *ProfileData, onMai
 	needsAutoRecheck := b.p3 != nil &&
 		ReasonsBitmap(proto.CompReasons)&(ReasonBackendUnsupp|ReasonSelfCall) != 0
 	if comp != CompCompilable && (b.forceAll || needsAutoRecheck) {
+		// Per-entry dedup (issue #40): while the forceAll retry window
+		// below keeps a declined proto on TierInterp, every back edge
+		// lands here again. Promotion only takes effect on a later entry
+		// (no OSR), so mid-entry re-analysis cannot change the outcome —
+		// but it costs a full CFG build + opcode scan per call (measured
+		// 22% CPU / 1.5 GB/op on a declined 2M-back-edge kernel). Run the
+		// recheck at most once per EntryCount; OnBackEdge re-arms it once
+		// per pc at HotBackEdgeThreshold for a final warm-IC look.
+		if pd.recheckedAtEntry == pd.EntryCount+1 {
+			return // this entry already declined; retry on a later event
+		}
+		pd.recheckedAtEntry = pd.EntryCount + 1
 		comp = b.recheckCompilabilityRuntime(proto)
 		if comp == CompCompilable {
 			// 同步 pd 副本(State 私有):后续 CompilabilityOf / 二次诊断

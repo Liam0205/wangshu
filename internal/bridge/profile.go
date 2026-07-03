@@ -68,6 +68,17 @@ type ProfileData struct {
 	// —— 状态机(04-try-compile-fallback §3)——
 	TierState    TierState // TierInterp / TierGibbous / TierStuck
 	CompileTried bool      // 是否已尝试编译(防 TierStuck 反复重试,04 §3.2)
+
+	// recheckedAtEntry dedups recheckCompilabilityRuntime while the
+	// forceAll retry window holds a declined proto on TierInterp
+	// (issue #40). It stores EntryCount+1 as of the last recheck
+	// (0 = never ran). Promotion only takes effect on a later entry
+	// (there is no OSR), so re-running the full backend analysis on
+	// every back edge of the same entry buys nothing — on a declined
+	// 2M-back-edge kernel it measured 22% CPU and 1.5 GB/op.
+	// OnBackEdge clears it once when a back edge crosses
+	// HotBackEdgeThreshold, granting one extra warm-IC recheck per pc.
+	recheckedAtEntry uint32
 }
 
 // MaxBackEdge 返回该 ProfileData 中最大的单回边累计计数。
@@ -96,6 +107,7 @@ func (pd *ProfileData) resetCountersForReuse() {
 	for i := range pd.BackEdge {
 		pd.BackEdge[i] = 0
 	}
+	pd.recheckedAtEntry = 0
 }
 
 // allocBackEdge 在首次回边命中时按 Code 长度延迟分配 backEdge 数组(01 §2.3)。

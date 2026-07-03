@@ -212,6 +212,126 @@ func TestStateMachine_NoReverseEdge(t *testing.T) {
 
 // ----- mock P3 helpers -----
 
+// decliningP3:SupportsAllOpcodes 恒 false 且计数(测 issue #40 recheck
+// dedup——forceAll retry window 内每回边不应重跑全量后端分析)。
+type decliningP3 struct{ supportsCalls int }
+
+func (d *decliningP3) SupportsAllOpcodes(_ *bytecode.Proto) bool {
+	d.supportsCalls++
+	return false
+}
+func (*decliningP3) Compile(_ *bytecode.Proto, _ *TypeFeedback) (GibbousCode, error) {
+	return nil, errors.New("declining backend must not be asked to compile")
+}
+
+// flippingP3:SupportsAllOpcodes 先拒后收(accept=true 后接受),模拟
+// IC-gated 后端在解释器跑过一轮、IC 变暖之后改判接受。
+type flippingP3 struct {
+	accept        bool
+	supportsCalls int
+	compileCalls  int
+}
+
+func (f *flippingP3) SupportsAllOpcodes(_ *bytecode.Proto) bool {
+	f.supportsCalls++
+	return f.accept
+}
+func (f *flippingP3) Compile(p *bytecode.Proto, _ *TypeFeedback) (GibbousCode, error) {
+	f.compileCalls++
+	return dummyCode{proto: p}, nil
+}
+
+// TestForceRetryWindow_RecheckDedupPerEntry (issue #40):forceAll 下被后端
+// 拒收的 proto 停留在 retry window 内时,同一次进入(EntryCount 不变)的
+// 海量回边**不得**每条都重跑 recheckCompilabilityRuntime 全量分析——
+// HeavyArith 形态(单次进入 + 2M 回边)实测该路径占 22% CPU + 1.5 GB/op。
+// dedup 后每 pc 每次进入至多 3 次(入口 + 首回边 + HotBackEdgeThreshold)。
+func TestForceRetryWindow_RecheckDedupPerEntry(t *testing.T) {
+	mock := &decliningP3{}
+	b := NewBridge()
+	b.SetP3Compiler(mock)
+	b.SetForceAllPromote(true)
+	p := makeProtoWithCode(bytecode.ADD)
+
+	b.OnEnter(p, true)
+	const edges = 10000
+	for i := 0; i < edges; i++ {
+		b.OnBackEdge(p, 0, true)
+	}
+
+	pd := b.ProfileOf(p)
+	if pd.TierState != TierInterp {
+		t.Fatalf("declined proto within retry window should stay TierInterp, got %v", pd.TierState)
+	}
+	// 入口 1 次 + 回边 count==1 再武装 1 次 + count==HotBackEdgeThreshold
+	// 再武装 1 次 = 3;留一点余量防未来再武装点微调,但必须远小于回边数。
+	if mock.supportsCalls > 5 {
+		t.Errorf("SupportsAllOpcodes ran %d times for %d back edges within one entry; dedup should cap it at ~3",
+			mock.supportsCalls, edges)
+	}
+}
+
+// TestForceRetryWindow_WarmICPromotesOnFirstBackEdge (issue #40 dedup 的
+// 对偶面,保 retry window 原始目的):IC-gated 后端冷 IC 拒收、循环体跑过
+// 一轮后改判接受——dedup 在首个回边(count==1)重新武装 recheck,升层点
+// 不得比修复前更晚。
+func TestForceRetryWindow_WarmICPromotesOnFirstBackEdge(t *testing.T) {
+	mock := &flippingP3{}
+	b := NewBridge()
+	b.SetP3Compiler(mock)
+	b.SetForceAllPromote(true)
+	p := makeProtoWithCode(bytecode.ADD)
+
+	b.OnEnter(p, true) // 冷 IC:拒收,进 retry window
+	pd := b.ProfileOf(p)
+	if pd.TierState != TierInterp {
+		t.Fatalf("cold decline should stay TierInterp, got %v", pd.TierState)
+	}
+
+	mock.accept = true // 模拟循环体首轮跑完,IC 已暖
+	b.OnBackEdge(p, 0, true)
+
+	if pd.TierState != TierGibbous {
+		t.Errorf("warm IC at first back edge should promote, got %v", pd.TierState)
+	}
+	if mock.compileCalls != 1 {
+		t.Errorf("expected exactly one Compile after warm-IC accept, got %d", mock.compileCalls)
+	}
+}
+
+// TestForceRetryWindow_AbsorbsToStuckAtEntry4 窗口语义不变:恒拒后端 +
+// forceAll,第 4 次进入(EntryCount=4)吸收到 TierStuck,之后不再分析。
+func TestForceRetryWindow_AbsorbsToStuckAtEntry4(t *testing.T) {
+	mock := &decliningP3{}
+	b := NewBridge()
+	b.SetP3Compiler(mock)
+	b.SetForceAllPromote(true)
+	p := makeProtoWithCode(bytecode.ADD)
+	pd := b.ProfileOf(p)
+
+	for i := 0; i < 3; i++ {
+		b.OnEnter(p, true)
+	}
+	if pd.TierState != TierInterp {
+		t.Fatalf("entries 1-3 should stay in the retry window, got %v", pd.TierState)
+	}
+
+	b.OnEnter(p, true) // EntryCount=4:窗口关闭
+	if pd.TierState != TierStuck {
+		t.Fatalf("entry 4 should absorb to TierStuck, got %v", pd.TierState)
+	}
+
+	callsAtStuck := mock.supportsCalls
+	for i := 0; i < 1000; i++ {
+		b.OnEnter(p, true)
+		b.OnBackEdge(p, 0, true)
+	}
+	if mock.supportsCalls != callsAtStuck {
+		t.Errorf("Stuck is absorbing; SupportsAllOpcodes must not run again (%d → %d)",
+			callsAtStuck, mock.supportsCalls)
+	}
+}
+
 // dummyCompileP3:Compile 永远成功,产出空 GibbousCode。
 type dummyCompileP3 struct{}
 
