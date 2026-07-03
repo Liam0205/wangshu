@@ -43,6 +43,7 @@
 | #3 | sync.Pool (C) 双表混合方案 | [01 §6.4](./01-profiling.md) | Proto 旁全局聚合表 + Flush + (C) 模式 considerPromotion | ✅ | 2fc7f5a(AggregateProfile + 4 档单测含多 State race-free 累积) |
 | #4 | megamorphic 主动识别 | [02 §6.2](./02-ic-feedback.md) | ICSlot.Refill 计数 + 阈值翻 FBTableMega | ✅ | d70dfcd(Refill + 阈值 3 + 2 档单测) |
 | #5 | F2-c ReasonSelfCall 占位位拆分(P4 PJ5 SELF inline 真接入前置)| [03 §4.2 visitMethodCallExpr](./03-compilability-analysis.md) | visitMethodCallExpr 不再硬叠 callsUnknownFn,改标 sawSelfCall + ReasonSelfCall 占位位;recheckCompilabilityRuntime 占位位扩到 (ReasonBackendUnsupp \| ReasonSelfCall);std_logger formatReasons F2 多位合并加 selfCall;analyzer_test 加 TestAnalyze_F2c_SelfCall 验占位位置位 + ReasonUnknownCall 不叠加 | ✅ | ee17319(2026-06-28,P4 PJ5 SELF method call inline 真接入前置)|
+| #6 | forceAll retry window per-entry recheck dedup(issue #40 止血)| [04 §3.2 addendum 第 3 条](./04-try-compile-fallback.md) | retry window 内被后端拒收的 proto 每条回边重跑 recheckCompilabilityRuntime 全量分析(实测 22% CPU + 1.5 GB/op @ HeavyArith force);修复:pd.recheckedAtEntry 每次进入至多 recheck 一次,OnBackEdge 在每 pc count==1 / count==HotBackEdgeThreshold 两个升温里程碑再武装;state_machine_test 加 3 档(dedup 上限 / warm-IC 首回边升层不变 / entry-4 吸收不变)| ✅ | 本轮(2026-07-02,darwin/arm64 M5 Pro 实测 HeavyArith force 1125ms→49ms、fannkuch force 5.18ms→3.55ms、分配 1.5GB/op→124B/op)|
 
 ---
 
