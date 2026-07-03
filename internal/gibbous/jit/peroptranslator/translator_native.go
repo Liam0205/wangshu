@@ -55,19 +55,13 @@ func (c *nativeCode) Proto() *bytecode.Proto { return c.proto }
 
 func (c *nativeCode) Run(stack []uint64, base uint32) (status int32) {
 	NativeRunCount.Add(1)
-	// Defense in depth: if the mmap segment corrupts the Go runtime state
-	// enough to trigger a fault on RET, catch it and report an error
-	// instead of taking down the host process. This is a stopgap while
-	// the root cause of the nested + concurrent crash is being tracked
-	// (see [[project-pj10-native-longtask]]).
-	defer func() {
-		if r := recover(); r != nil {
-			if len(stack) > 0 {
-				stack[0] = 1
-			}
-			status = 1
-		}
-	}()
+	// No recover() here (issue #45): the accepted-proto emit paths no
+	// longer contain any in-segment mmap->Go shim call (slow shapes all
+	// ride the exit-reason protocol and run their host calls Go-side),
+	// so the historical "mmap segment corrupts Go runtime state on RET"
+	// crash mode has no remaining trigger. A blanket recover() would
+	// only swallow future real bugs into silent errors — the opposite
+	// of what the differential test suite needs.
 	if c.codePage == nil || c.jitCtx == nil || c.host == nil {
 		if len(stack) > 0 {
 			stack[0] = 1
