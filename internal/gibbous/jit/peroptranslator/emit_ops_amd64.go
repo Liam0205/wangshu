@@ -1,9 +1,12 @@
 //go:build wangshu_p4 && amd64
 
-// emit_ops_amd64.go - shim-based emit for the remaining PJ10 opcodes.
-// All ops go through their P4HostState shim (slow path only). Fast
-// paths (inline SSE for arithmetic, IC-inline for table ops) are a
-// follow-up optimization; this file establishes correctness first.
+// emit_ops_amd64.go - per-opcode native emit for the PJ10 opcodes.
+// Hot shapes get inline fast paths (SSE for arithmetic, IC-inline for
+// table ops); slow shapes ride the exit-reason protocol (issue #38 /
+// #45): the segment packs the request into exitArg0 and RETs, and
+// nativeCode.Run's Go-side dispatcher performs the host call. No op
+// emits an in-segment Go call — mmap→Go shim calls crash the Go stack
+// unwinder under nested + concurrent load.
 package peroptranslator
 
 import (
@@ -22,53 +25,49 @@ import (
 // Arithmetic ops (PJ10b): all go through host.Arith slow path
 // ---------------------------------------------------------------------
 
-// emitARITH emits R(A) := RK(B) <op> RK(C) via shimArith. The op field
-// is passed as int32(bytecode.OpCode).
-//
-// After the shim call, if RAX != 0 the caller should emit
-// emitStatusCheckAndBubble to propagate the error. Callers embedded
-// inside a larger emit sequence typically do that at end-of-op.
+// emitARITH emits R(A) := RK(B) <op> RK(C). ADD/SUB/MUL/DIV get an
+// inline SSE fast path with an exit-reason slow path; every other
+// shape (MOD/POW, non-numeric K) lowers to a plain HelperArithSlow
+// exit-reason. The dispatcher re-derives the op from proto.Code[pc],
+// so the packing carries only (a, b, c).
 func emitARITH(cb *codeBuf, op bytecode.OpCode, pc int32, a uint8, b, c int) {
 	// Fast path: inline SSE for ADD/SUB/MUL/DIV, guarded by IsNumber on
-	// each reg operand. If a reg holds nil / a GC ref, jump to the
-	// shim block below so host.Arith can produce the correct __add /
+	// each reg operand. If a reg holds nil / a GC ref, exit to the
+	// dispatcher so host.Arith can produce the correct __add /
 	// coercion / raise semantics. Fuzz seed 4df9d8c82ce0d9f7 caught the
 	// unguarded variant (P4 silently produced NaN while P1 raised
 	// `attempt to perform arithmetic on nil`).
 	if op == bytecode.ADD || op == bytecode.SUB || op == bytecode.MUL || op == bytecode.DIV {
-		if emitInlineArithWithShimFallback(cb, op, pc, a, b, c) {
+		if emitInlineArithWithSlowPath(cb, op, pc, a, b, c) {
 			return
 		}
 	}
-	addr := shimArithAddr()
-	// shimArith(ctx, base, pc, op, b, c, a)
-	emitCallShim(cb, addr, []int32{0, pc, int32(op), int32(b), int32(c), int32(a)})
-	emitStatusCheckAndBubble(cb)
+	emitExitReason(cb, jit.HelperArithSlow, pc, int32(a), int32(b), int32(c))
 }
 
-// emitInlineArithWithShimFallback emits the guarded inline SSE fast
-// path plus an inline shim fallback for miss cases. Returns true when
-// it consumed the emit (inline succeeded); false when the shape can't
-// be inlined (e.g. K operand is non-numeric) and the caller should
-// fall through to the plain shim call.
+// emitInlineArithWithSlowPath emits the guarded inline SSE fast path
+// plus an exit-reason slow block for miss cases. Returns true when it
+// consumed the emit (inline succeeded); false when the shape can't be
+// inlined (e.g. K operand is non-numeric) and the caller should fall
+// through to the plain exit-reason lowering.
 //
 // Layout:
 //
 //	[guard-B]        ; only if b is reg
 //	  mov rax, [rbx+B*8]; mov rcx, qNanBoxBase; cmp rax, rcx
-//	  jae shim         ; not a number → fallback
+//	  jae slow         ; not a number → slow path
 //	[guard-C]        ; only if c is reg (same shape)
 //	[inline SSE]
 //	  movsd xmm0, B; movsd xmm1, C; arith xmm0, xmm1
 //	  movsd [rbx+A*8], xmm0
 //	  jmp done
-//	shim:
-//	  emitCallShim(shimArith); emitStatusCheckAndBubble
-//	done:
+//	slow:
+//	  <exit-reason HelperArithSlow>   ; dispatcher runs host.Arith
+//	done:                             ; next op binds the resume prelude
 //
 // Reg operands go through the guard; K operands don't need one because
 // AnalyzeNative already rejected non-numeric K constants for arith ops.
-func emitInlineArithWithShimFallback(cb *codeBuf, op bytecode.OpCode, pc int32, a uint8, b, c int) bool {
+func emitInlineArithWithSlowPath(cb *codeBuf, op bytecode.OpCode, pc int32, a uint8, b, c int) bool {
 	switch op {
 	case bytecode.ADD, bytecode.SUB, bytecode.MUL, bytecode.DIV:
 	default:
@@ -90,8 +89,8 @@ func emitInlineArithWithShimFallback(cb *codeBuf, op bytecode.OpCode, pc int32, 
 	}
 
 	// Emit IsNumber guards for each reg operand. Guard fail jumps
-	// forward to the shim block; we record patch offsets and resolve
-	// them once the shim block's byte offset is known.
+	// forward to the slow block; we record patch offsets and resolve
+	// them once the slow block's byte offset is known.
 	var guardFixups []int
 	emitRegNumberGuard := func(reg int) {
 		if reg >= 256 {
@@ -131,7 +130,7 @@ func emitInlineArithWithShimFallback(cb *codeBuf, op bytecode.OpCode, pc int32, 
 	// indefinite" QNaN 0xFFF8_0000_0000_0000 (sign bit set), which
 	// aliases the NaN-box tagged space (>= qNanBoxBase) and would be
 	// misread as a non-number value. The interpreter canonicalizes NaN
-	// results; route those to the shim so host.Arith does the same.
+	// results; route those to the slow path so host.Arith does the same.
 	// movq rax, xmm0  (5B: 66 48 0F 7E C0)
 	cb.emit([]byte{0x66, 0x48, 0x0F, 0x7E, 0xC0})
 	cb.emit(jitamd64.EmitMovRcxImm64(nil, qNanBoxBaseU64))
@@ -143,14 +142,15 @@ func emitInlineArithWithShimFallback(cb *codeBuf, op bytecode.OpCode, pc int32, 
 	cb.emit([]byte{0xE9, 0, 0, 0, 0})
 	fastPathJmpOff := int(cb.pos()) - 4
 
-	// Shim block starts here — patch guard fixups.
-	shimOff := int(cb.pos())
+	// Slow block starts here — patch guard fixups. The dispatcher runs
+	// host.Arith (byte-equal coercion / metamethod / raise semantics)
+	// and reenters at the next op's resume prelude.
+	slowOff := int(cb.pos())
 	for _, po := range guardFixups {
-		rel := int32(shimOff) - int32(po+4)
+		rel := int32(slowOff) - int32(po+4)
 		writeRel32(cb, po, rel)
 	}
-	emitCallShim(cb, shimArithAddr(), []int32{0, pc, int32(op), int32(b), int32(c), int32(a)})
-	emitStatusCheckAndBubble(cb)
+	emitExitReason(cb, jit.HelperArithSlow, pc, int32(a), int32(b), int32(c))
 
 	// Done block starts here — patch fastPathJmpOff.
 	doneOff := int(cb.pos())
@@ -308,17 +308,17 @@ func emitUNM(cb *codeBuf, pc int32, a, b uint8) {
 	writeRel32(cb, doneFixup, int32(doneOff)-int32(doneFixup+4))
 }
 
-// emitLEN emits R(A) := #R(B) via shimLen.
+// emitLEN emits R(A) := #R(B) via the HelperLen exit-reason (the
+// dispatcher runs host.Len; string/table length or __len-less raise).
 func emitLEN(cb *codeBuf, pc int32, a, b uint8) {
-	emitCallShim(cb, shimLenAddr(), []int32{0, pc, int32(b), int32(a)})
-	emitStatusCheckAndBubble(cb)
+	emitExitReason(cb, jit.HelperLen, pc, int32(a), int32(b), 0)
 }
 
-// emitCONCAT emits R(A) := R(B) .. .. R(C) via shimConcat. B/C here
-// are register range endpoints (0-MaxStack, always in uint8 range).
+// emitCONCAT emits R(A) := R(B) .. .. R(C) via the HelperConcat
+// exit-reason. B/C here are register range endpoints (0-MaxStack,
+// always in uint8 range).
 func emitCONCAT(cb *codeBuf, pc int32, a, b, c uint8) {
-	emitCallShim(cb, shimConcatAddr(), []int32{0, pc, int32(a), int32(b), int32(c)})
-	emitStatusCheckAndBubble(cb)
+	emitExitReason(cb, jit.HelperConcat, pc, int32(a), int32(b), int32(c))
 }
 
 // emitNOT emits R(A) := not R(B) inline. NOT never raises (no metamethod
@@ -402,21 +402,17 @@ var _ = unsafe.Pointer(nil)
 // - If (result == A) => execute JMP (succExec)
 // - If (result != A) => pc++ skips JMP (succSkip)
 //
-// The shim returns packed status: bit0 = result (0/1), bit1 = error.
-//
-// Emit sequence:
-//
-//	<call shim(base, pc, op, b, c)>
-//	<if rax bit1 set: ret 1>       ; error bubble
-//	test rax, 1
-//	<if result-bit == A: jmp succExec else jmp succSkip>
+// Slow shapes ride the HelperCompareSlow exit-reason: the dispatcher
+// runs host.Compare (packed bit0=result, bit1=error) and hands the
+// result bit back through exitArg0; the in-segment resume block
+// branches on it (see emitCompareExitTail).
 //
 // Since this needs branch to specific BB targets, the emit function
 // takes those as parameters and records fixups.
 func emitCompare(cb *codeBuf, op bytecode.OpCode, pc int32, a uint8, b, c int, succExec, succSkip int) {
 	// Fast path: inline numeric compare via UCOMISd. Supports LT/LE
 	// with reg-reg, reg-K, K-reg, K-K where the K operand is numeric.
-	// Reg operands get IsNumber guards that fall back to the shim tail.
+	// Reg operands get IsNumber guards that fall back to the exit tail.
 	// EQ inline uses raw 64-bit bit comparison (Lua rawequal for
 	// primitives; skips __eq metamethod, safe for numeric-only Protos).
 	if op == bytecode.LT || op == bytecode.LE {
@@ -429,7 +425,7 @@ func emitCompare(cb *codeBuf, op bytecode.OpCode, pc int32, a uint8, b, c int, s
 			return
 		}
 	}
-	emitCompareShimTail(cb, op, pc, a, b, c, succExec, succSkip)
+	emitCompareExitTail(cb, op, pc, a, b, c, succExec, succSkip)
 }
 
 // inlineRawEq emits inline 64-bit raw-bit equality for EQ. Lua 5.1 EQ
@@ -597,36 +593,48 @@ func inlineNumericCompare(cb *codeBuf, op bytecode.OpCode, pc int32, a uint8, b,
 	patchOff2 := cb.pos() + 1
 	cb.emit([]byte{0xE9, 0x00, 0x00, 0x00, 0x00})
 	cb.addFixup(patchOff2, cb.pos(), succSkip)
-	// Slow block: guard misses land here. Same shim + branch logic as
-	// emitCompare's non-inline tail (host.Compare packed result).
+	// Slow block: guard misses land here. Same exit-reason + branch
+	// logic as emitCompare's non-inline tail (host.Compare packed result
+	// via exitArg0).
 	if len(guardFixups) > 0 {
 		slowOff := int(cb.pos())
 		for _, po := range guardFixups {
 			writeRel32(cb, po, int32(slowOff)-int32(po+4))
 		}
-		emitCompareShimTail(cb, op, pc, a, b, c, succExec, succSkip)
+		emitCompareExitTail(cb, op, pc, a, b, c, succExec, succSkip)
 	}
 	return true
 }
 
-// emitCompareShimTail emits the host.Compare shim call + packed-result
-// branch to succExec/succSkip. Shared by emitCompare's non-inline path
-// and inlineNumericCompare's guard-miss slow block.
-func emitCompareShimTail(cb *codeBuf, op bytecode.OpCode, pc int32, a uint8, b, c int, succExec, succSkip int) {
-	if op == bytecode.EQ {
-		emitCallShim(cb, shimEqAddr(), []int32{0, pc, int32(b), int32(c)})
-	} else {
-		emitCallShim(cb, shimCompareAddr(), []int32{0, pc, int32(op), int32(b), int32(c)})
+// emitCompareExitTail emits the HelperCompareSlow exit-reason + packed-
+// result branch to succExec/succSkip. Shared by emitCompare's non-inline
+// path and inlineNumericCompare's guard-miss slow block.
+//
+// The dispatcher runs host.Compare (op re-derived from proto.Code[pc] —
+// EQ rides the same helper; host.Compare's doCompare handles all three)
+// and stores packed&1 into exitArg0; the resume block (bound immediately
+// — the branch decision must happen in-segment, not at the next op like
+// linear exit-reason ops) reads it back and branches: result == A ->
+// succExec, else succSkip. Errors (packed bit1) return status=1 from
+// the dispatcher without reentry.
+func emitCompareExitTail(cb *codeBuf, op bytecode.OpCode, pc int32, a uint8, b, c int, succExec, succSkip int) {
+	emitExitReason(cb, jit.HelperCompareSlow, pc, int32(a), int32(b), int32(c))
+	// Bind the resume entry right here (the only pending fixup is
+	// ours: any prior op's was bound by this terminator's prelude).
+	emitResumePreludeIfPending(cb)
+	// mov rax, [r15 + exitArg0Off]  (7B: 49 8B 87 disp32)
+	{
+		off := int32(jit.JITContextExitArg0Offset)
+		cb.emit([]byte{0x49, 0x8B, 0x87,
+			byte(uint32(off)),
+			byte(uint32(off) >> 8),
+			byte(uint32(off) >> 16),
+			byte(uint32(off) >> 24)})
 	}
-	// After shim: RAX holds packed (bit0=result, bit1=err).
-	cb.emit([]byte{0x48, 0xA9, 0x02, 0x00, 0x00, 0x00}) // test rax, 2
-	cb.emit([]byte{0x74, 0x06})                         // jz +6 (skip ret block)
-	cb.emit([]byte{0xB8, 0x01, 0x00, 0x00, 0x00, 0xC3}) // mov eax,1; ret
-	// Compare RAX bit0 vs A:
-	cb.emit([]byte{0x48, 0x83, 0xE0, 0x01})     // and rax, 1
-	cb.emit([]byte{0x48, 0x83, 0xF8, byte(a)})  // cmp rax, A
-	cb.emit([]byte{0x0F, 0x84, 0, 0, 0, 0})     // je succExec
-	cb.addFixup(cb.pos()-4, cb.pos(), succExec) //
+	// cmp rax, A
+	cb.emit([]byte{0x48, 0x83, 0xF8, byte(a)})
+	cb.emit([]byte{0x0F, 0x84, 0, 0, 0, 0}) // je succExec
+	cb.addFixup(cb.pos()-4, cb.pos(), succExec)
 	patchOff := cb.pos() + 1
 	cb.emit([]byte{0xE9, 0, 0, 0, 0}) // jmp succSkip
 	cb.addFixup(patchOff, cb.pos(), succSkip)
@@ -996,53 +1004,11 @@ func emitFORLOOP(cb *codeBuf, a uint8, succBack, succOut int) {
 	}
 }
 
-// emitTFORLOOP emits generic-for iteration via shimTForLoop. The shim
-// returns int64: -2 = exit, -1 = error, >= 0 = continue.
-//
-// Semantics after the shim:
-//
-//	if ret == -1: bubble error
-//	if ret == -2: pc++ (fall out, succOut)
-//	else: fall through to succBack (loop body)
-//
-// Emit sequence:
-//
-//	<call shimTForLoop(base, pc, a, c)>
-//	cmp rax, -1
-//	je error_bubble
-//	cmp rax, -2
-//	je succOut
-//	jmp succBack
-//
-// error_bubble:
-//
-//	mov rax, 1
-//	ret
-func emitTFORLOOP(cb *codeBuf, pc int32, a, c uint8, succBack, succOut int) {
-	emitCallShim(cb, shimTForLoopAddr(), []int32{0, pc, int32(a), int32(c)})
-	// cmp rax, -1
-	cb.emit([]byte{0x48, 0x83, 0xF8, 0xFF})
-	// jne skipErr; the skip target is right after the `mov eax, 1; ret`
-	// error-return sequence below. `mov eax, imm32` (0xB8 + 4-byte imm)
-	// is 5 bytes, `ret` (0xC3) is 1 byte -> 6 bytes to skip.
-	cb.emit([]byte{0x75, 0x06})
-	// mov eax, 1; ret
-	cb.emit([]byte{0xB8, 0x01, 0x00, 0x00, 0x00, 0xC3})
-	// cmp rax, -2
-	cb.emit([]byte{0x48, 0x83, 0xF8, 0xFE})
-	// je -> succOut (rel32)
-	{
-		cb.emit([]byte{0x0F, 0x84, 0x00, 0x00, 0x00, 0x00})
-		patchOff := cb.pos() - 4
-		cb.addFixup(patchOff, cb.pos(), succOut)
-	}
-	// jmp -> succBack (rel32)
-	{
-		patchOff := cb.pos() + 1
-		cb.emit([]byte{0xE9, 0x00, 0x00, 0x00, 0x00})
-		cb.addFixup(patchOff, cb.pos(), succBack)
-	}
-}
+// emitTFORLOOP was removed with the shim-call channel (issue #45):
+// TFORLOOP is not in opSupported, and its resume must branch on the
+// iterator result inside the segment — it needs a dedicated exit-reason
+// shape (like emitCompareExitTail's immediate resume bind) when it
+// earns acceptance. The emit loop errors out on it defensively.
 
 // ---------------------------------------------------------------------
 // Table + call ops (PJ10d)
@@ -1168,12 +1134,12 @@ func emitExitReason(cb *codeBuf, helperCode uint64, pc int32, a, b, c int32) {
 //	[Guard 6: slot != Nil]
 //	[Store slot → R(A)]
 //	[jmp done]
-//	shim:
-//	  emitCallShim + emitStatusCheckAndBubble
+//	miss:
+//	  <exit-reason HelperGetTable>   ; dispatcher runs host.GetTable
 //	done:
 //
-// Each guard's `jae shim` / `jne shim` / `je shim` records a rel32
-// patch site; once shim block offset is known all fixups are patched.
+// Each guard's `jae miss` / `jne miss` / `je miss` records a rel32
+// patch site; once the miss block offset is known all fixups are patched.
 func emitInlineGetTableArrayHit(cb *codeBuf, pc int32, a, b uint8, c int) bool {
 	if cb.proto == nil || int(pc) < 0 || int(pc) >= len(cb.proto.IC) {
 		return false
@@ -1782,25 +1748,20 @@ func emitCALL(cb *codeBuf, pc int32, a, b, c uint8) {
 	emitExitReason(cb, jit.HelperCall, pc, int32(a), int32(b), int32(c))
 }
 
-func emitTAILCALL(cb *codeBuf, pc int32, a, b, c uint8) {
-	emitCallShim(cb, shimTailCallAddr(), []int32{0, pc, int32(a), int32(b), int32(c)})
-	// TailCall has tri-state return; we treat non-zero as bubble.
-	emitStatusCheckAndBubble(cb)
-	// The RETURN that follows TAILCALL in Lua bytecode is handled by
-	// the CFG (or by tail-call collapsing in the emit path).
-}
-
+// emitSELF emits SELF A B C via the HelperSelf exit-reason: the
+// dispatcher runs host.Self (R(A+1)=R(B) receiver + R(A)=R(B)[RK(C)]
+// method lookup through the IC / __index chain; can raise).
 func emitSELF(cb *codeBuf, pc int32, a, b uint8, c int) {
-	emitCallShim(cb, shimSelfAddr(), []int32{0, pc, int32(a), int32(b), int32(c)})
-	emitStatusCheckAndBubble(cb)
+	emitExitReason(cb, jit.HelperSelf, pc, int32(a), int32(b), int32(c))
 }
 
-func emitCLOSURE(cb *codeBuf, pc int32, a uint8, bx uint16) {
-	emitCallShim(cb, shimClosureAddr(), []int32{0, pc, int32(a), int32(bx)})
-	emitStatusCheckAndBubble(cb)
-}
-
-func emitCLOSE(cb *codeBuf, pc int32, a uint8) {
-	emitCallShim(cb, shimCloseAddr(), []int32{0, pc, int32(a)})
-	emitStatusCheckAndBubble(cb)
-}
+// TAILCALL / CLOSURE / CLOSE / TFORLOOP have no native emit: they are
+// excluded from opSupported (AnalyzeNative rejects any Proto containing
+// them) and their semantics don't fit the current exit-reason
+// dispatcher — TAILCALL's tri-state return (0 = frame already replaced,
+// skip DoReturn) needs a terminate-without-DoReturn channel like
+// HelperReturn, and TFORLOOP's resume must branch on the iterator
+// result inside the segment. The emit loop errors out on them
+// defensively (issue #45 removed their legacy shim-call emitters —
+// shim calls from mmap crash the Go stack unwinder under nested +
+// concurrent load, see issue #38).
