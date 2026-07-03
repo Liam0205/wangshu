@@ -417,3 +417,32 @@ return r1, r2`
 		t.Fatalf("results = %v, want [11 22]", results)
 	}
 }
+
+// TestArm64E2E_UNM_NaNAliasing: -NaN must stay NaN. canonNaN
+// (0x7FF8...) sign-flips to 0xFFF8... — exactly value.Nil's bit
+// pattern — so an unguarded inline sign-flip silently turns -(0/0)
+// into nil. The result guard must route NaN through host.Unm (which
+// re-canonicalizes via NumberValue). Found by this e2e during the
+// arm64 port (issue #37 step 5); the same bug existed in the amd64
+// emit and was fixed in the same change.
+func TestArm64E2E_UNM_NaNAliasing(t *testing.T) {
+	src := `
+local nan = 0/0
+local function k(x)
+  local a = x
+  local b = -a
+  local c = b
+  local d = c
+  return d
+end
+local r = 0
+for i = 1, 300 do r = k(nan) end
+return tostring(r)`
+	results, promoted, _ := runForceAllArm64(t, src)
+	if promoted == 0 {
+		t.Fatal("PromotionCount = 0: kernel did not promote")
+	}
+	if len(results) != 1 || results[0] != "nan" {
+		t.Fatalf("results = %v, want [nan] (NaN sign-flip must not alias into the NaN-box tag space)", results)
+	}
+}

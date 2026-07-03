@@ -319,33 +319,48 @@ func emitPOWArm64(cb *codeBuf, pc int32, a, b, c uint8) {
 //	mov  X5, qNanBoxBase
 //	cmp  X0, X5
 //	b.hs slow                  ; non-number -> exit-reason
-//	mov  X5, #0x8000000000000000
-//	eor  X0, X0, X5            ; flip IEEE-754 sign bit
+//	mov  X4, #0x8000000000000000
+//	eor  X0, X0, X4            ; flip IEEE-754 sign bit
+//	cmp  X0, X5                ; result guard: NaN input aliases
+//	b.hs slow                  ; the tag space after the flip
 //	str  X0, [X26 + A*8]
 //	b    done
 //	slow: <exit-reason HelperUnm>
 //	done:
 //
 // Negating a float by flipping the sign bit matches the interpreter's
-// `-x` on numbers exactly (including NaN / inf / -0 payload bits). The
-// slow path (string coercion + __unm) routes through host.Unm.
+// `-x` on non-NaN numbers exactly (including inf / -0 payload bits).
+// The result guard catches NaN input: canonNaN (0x7FF8...) sign-flips
+// to 0xFFF8... — exactly value.Nil's bit pattern — so the flipped
+// result must be re-checked against the tag space and routed to
+// host.Unm, which canonicalizes via NumberValue (same NaN-aliasing
+// family as the amd64 arith result guard, fuzz seed f7f0bb1a). The
+// slow path also covers string coercion + __unm.
 func emitUNMArm64(cb *codeBuf, pc int32, a, b uint8) {
 	// ldr X0, [X26 + B*8]
 	cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 0, regX26, uint16(b)*8))
-	// IsNumber guard
+	// IsNumber guard (input)
 	cb.emit(jitarm64.EmitMovXdImm64(nil, 5, qNanBoxBaseArm64))
 	cb.emit(jitarm64.EmitCmpXnXm(nil, 0, 5))
-	slowFixup := cb.pos()
+	slowFixup1 := cb.pos()
 	cb.emit(jitarm64.EmitBCond(nil, jitarm64.CondHS, 0))
-	// Sign flip: X5 = signBit; eor X0, X0, X5; store R(A).
-	cb.emit(jitarm64.EmitMovXdImm64(nil, 5, 0x8000_0000_0000_0000))
-	cb.emit(jitarm64.EmitEorXdXnXm(nil, 0, 0, 5))
+	// Sign flip: X4 = signBit; eor X0, X0, X4.
+	cb.emit(jitarm64.EmitMovXdImm64(nil, 4, 0x8000_0000_0000_0000))
+	cb.emit(jitarm64.EmitEorXdXnXm(nil, 0, 0, 4))
+	// Result guard (X5 still qNanBoxBase): NaN input aliased into the
+	// tag space — route to host.Unm for canonicalization.
+	cb.emit(jitarm64.EmitCmpXnXm(nil, 0, 5))
+	slowFixup2 := cb.pos()
+	cb.emit(jitarm64.EmitBCond(nil, jitarm64.CondHS, 0))
+	// Store R(A).
 	cb.emit(jitarm64.EmitStrXtToXnDisp(nil, 0, regX26, uint16(a)*8))
 	// b done
 	bDoneOff := cb.pos()
 	cb.emit([]byte{0x00, 0x00, 0x00, 0x14})
 	// slow:
-	patchBCondArm64(cb, slowFixup, cb.pos())
+	slowOff := cb.pos()
+	patchBCondArm64(cb, slowFixup1, slowOff)
+	patchBCondArm64(cb, slowFixup2, slowOff)
 	emitExitReasonArm64(cb, jit.HelperUnm, pc, int32(a), int32(b), 0)
 	// done:
 	patchArm64B26(cb, bDoneOff, cb.pos())
