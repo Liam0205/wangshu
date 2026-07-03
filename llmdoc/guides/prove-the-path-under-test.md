@@ -1,11 +1,13 @@
 # Guide:证明在测的路径(绿色 ≠ 在测你以为在测的)
 
-> 适用:写差分 / 对拍 / 性能 / IC 快路径 / wasm 快路径 / 错误冒泡类**任何对路径执行做断言的测试**时,以及加 e2e 语料 / 设计验收 oracle 前;**或调试机制叠加多档的崩点时**(§5)。
-> 来源:八个独立实例聚合的家族纪律——`memory/reflections/2026-06-14-p3-pw5-table-ic-round.md`(inline-proof) + `2026-06-14-p3-pw6-crosslayer-call-round.md`(TierStuck no-op) + `2026-06-15-p3-pw9-acceptance-perf-round.md`(空测 vararg 顶层)+ `2026-06-15-p3-pw10-r3-call-indirect-round.md`(错误路径盲区)+ `2026-06-15-p3-pw10-r1-r2-callinfo-migration-round.md`(基准工作负载错配)+ `2026-06-15-p3-pw10-zerocross-stage3-round.md`(快路径命中盲区)+ `2026-06-16-vs0e-varargs-stack-underflow-round.md`(覆盖度先验证,正向侧)+ `2026-06-30-pr27-f3-3b-darwin-arm64-execute-roundup.md`(bypass 探针根因 isolate + CI runner 形态盲)。
+> 适用:写差分 / 对拍 / 性能 / IC 快路径 / wasm 快路径 / 错误冒泡类**任何对路径执行做断言的测试**时,以及加 e2e 语料 / 设计验收 oracle 前;**或调试机制叠加多档的崩点时**(§5);**或收到「某条路径导致 N 倍退化」类归因、动手写止血/修复计划前**(§6,诊断侧对偶)。
+> 来源:九个独立实例聚合的家族纪律——`memory/reflections/2026-06-14-p3-pw5-table-ic-round.md`(inline-proof) + `2026-06-14-p3-pw6-crosslayer-call-round.md`(TierStuck no-op) + `2026-06-15-p3-pw9-acceptance-perf-round.md`(空测 vararg 顶层)+ `2026-06-15-p3-pw10-r3-call-indirect-round.md`(错误路径盲区)+ `2026-06-15-p3-pw10-r1-r2-callinfo-migration-round.md`(基准工作负载错配)+ `2026-06-15-p3-pw10-zerocross-stage3-round.md`(快路径命中盲区)+ `2026-06-16-vs0e-varargs-stack-underflow-round.md`(覆盖度先验证,正向侧)+ `2026-06-30-pr27-f3-3b-darwin-arm64-execute-roundup.md`(bypass 探针根因 isolate + CI runner 形态盲)+ `2026-07-03-issue40-arm64-stopbleed-round.md`(**诊断侧对偶**:退化归因前先证被怪罪的路径存在)。前八个实例都在**测试侧**(证明「路径真被走到」);第九个实例在**诊断/归因侧**(证明「被怪罪的路径真的存在/被执行」),把该家族的适用范围从「写测试」扩展到「写性能退化归因与修复计划」。
 
 **核心断言**:**测试通过 ≠ 在测的路径被走到**。同一段绿色结果可能来自三类「静默替身路径」:① 静态分析挑剔(F1/F2 结构性排除)使被测路径根本没被编译/触发;② 测试 harness 自身跳过(对错误 `Fatalf` / vararg 顶层不升层 / 缓存命中前路径死);③ 被测对象语义等价两条路径(inline 快路径 vs helper 慢路径),输出 byte-equal 但**走的哪条不能从输出反推**。
 
 测试绿、性能数字不动、新机制就位三件套**单独任何一个都不证明在测路径被执行**。必须有**正交于输出**的路径执行证据。
+
+同一物理基础还有一个**诊断侧对偶**(§6):**退化数字 ≠ 慢在你以为的路径**。输出(测试绿 / 性能慢)本身不携带路径信息——不管是「路径真被走到」还是「路径真的存在并背锅」,都必须用独立于输出本身的证据反推。
 
 ## 1. 反模式三档
 
@@ -59,7 +61,19 @@
 
 **CI 形态盲区配套**(同会话第 8 实例新维度):多后端 / 多平台 CI 必须配真物理 runner —— linux/arm64 QEMU + 字节级单测对比固定模板字节**不能替代真物理 execute**(本会话:trampoline LR slot bug 实际 linux+darwin 同款,但 linux/arm64 因 QEMU + 无 self-hosted runner 长期 latent,直到 darwin/arm64 macos-latest CI 真物理 BL 跳段首次实测才触发)。「真物理 execute 首次跑」是高风险事件,该 commit 应单独审查 —— 不是一次爆一个,而是一次爆一批(本会话:gate bug #1 修完翻闸门 true 后,下游 #2/#3/#4 三个 emit bug 连环爆)。
 
-## 6. 触发场景速查
+## 6. 诊断侧对偶 — 退化归因前先证「被怪罪的路径」存在
+
+**适用场景**:收到「某条路径导致 N 倍退化」类归因——不管来自 issue、用户描述,还是自己的第一直觉——准备动手写止血/修复计划前。
+
+**核心断言**:**退化数字 ≠ 慢在你以为的路径**。这是 §1-§5 全部「测试侧」实例的对偶面:那些实例证明「路径真被走到」,本节证明「路径真的存在且被执行」。两者共享同一物理基础——输出(测试绿 / 性能慢)本身不携带路径信息,必须用独立于输出的证据反推路径。
+
+**实例(issue #40 arm64 P4 止血轮)**:issue 把 arm64 P4 HeavyArith 慢 ~20x 归因于「PerOpCode head-op replay 逐 op 跨界路径」,并据此制定止血计划「收紧 arm64 升层接受面拒收算术密集形状」。但该路径在 arm64 二进制里**根本不存在**——`internal/gibbous/jit/peroptranslator/peropcode.go`/`translator.go` 都是 `wangshu_p4 && amd64`-only build tag,`internal/gibbous/jit/peroptranslator/register_arm64.go` 头注明确 arm64 是 native-only、无 replay fallback;arm64 有效接受面本来就在拒收算术形状,「收紧」会是无效操作(收紧一个已经在拒收的东西不改变任何数字)。真实根因由 force/auto 探针矩阵差分 + cpuprofile 在 1 小时内定位:forceAll retry window 让每回边都重跑全量后端分析,`recheckCompilabilityRuntime` 占 22.38% CPU、HeavyArith 1.5 GB/op。force/auto 不对称直接排除了「emit 慢」「接受面放坏形状」两类会同时影响双模式的假设,把嫌疑收窄到 force 专属机制。修复 `f921626`,反思 [[2026-07-03-issue40-arm64-stopbleed-round]]。
+
+**手法**:动手修复前先用一个廉价动作验证该路径确实存在且会被执行——grep build tag、读函数头注、跑一次白盒探针(如 force-vs-auto 差分)。若验证失败(路径不存在,或存在但静态分析显示不该被触发),不要顺着错误归因去修,先重新定位。
+
+**与 §2/§3/§5 反向侧解药的对偶关系**:反向侧解药(毒化助手 / 命中计数器 / 错误路径用例 / bypass 探针)是「证一条已知路径真被走到」,本节是「证一条被归因的路径真的存在于当前二进制且可达」——前者面向**测试**,后者面向**诊断/归因**;两者互补,不是同一条纪律的重复。
+
+## 7. 触发场景速查
 
 写新测试 / 改基准 / 看一个数字反常时,问自己:
 
@@ -70,9 +84,10 @@
 - **加 e2e 语料前** → `grep test/luasuite/testdata/` 看是否已覆盖,优先官方套件而非手写
 - **写 force-all / 缓存裁决 / IC 命中类** → 同时 (a) 白盒断言「真到达加速 tier 不是 stuck no-op」+ (b) 输入侧也加结构盲区用例(vararg 顶层 / 字符串常量值 / 协程不升层)
 - **机制叠加多档崩点诊断**(§5) → 第一步不是穷举 N 档分别诊断,是写 minimal payload bypass 末档跳一档,把 N 档收敛到一档;多后端/多平台首次「真物理 execute」上线时配真物理 runner
+- **收到「某条路径导致 N 倍退化」类归因,准备写止血/修复计划前**(§6) → 先 grep build tag / 读函数头注 / 跑白盒探针证该路径在当前二进制里真的存在且可达,再动手修
 
-## 7. 与本仓其他 guide 的关系
+## 8. 与本仓其他 guide 的关系
 
 - 与 [[design-claims-vs-codebase-physics]] 构成对偶双防线:那是**实现前**重验设计稿主张,本 guide 是**实现后**证明在测路径。
-- 与 [[perf-optimization-workflow]] §1「profile 先行」§3「benchmark 否决门」配:profile 先行决定**做什么**,本 guide 决定「机制就位后基准/测试**真的在测**什么」,数字落地前必过两关。
+- 与 [[perf-optimization-workflow]] §1「profile 先行」§3「benchmark 否决门」配:profile 先行决定**做什么**,本 guide 决定「机制就位后基准/测试**真的在测**什么」,数字落地前必过两关;§6 诊断侧对偶是 §1「profile 先行」的又一确认——不是「先假设瓶颈再优化」,是「先证明瓶颈在哪再优化」。
 - 与 [[multi-doc-drafting]] §"主动盘点不确定决策" 同源:都强调「绿色 / 通过」之外的正交证据维度。
