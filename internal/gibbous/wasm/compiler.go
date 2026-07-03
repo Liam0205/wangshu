@@ -150,7 +150,7 @@ func (c *Compiler) SlotOf(proto *bytecode.Proto) (uint32, bool) {
 // 43.5ms → 89.7ms after 45b8b53 unblocked their promotion (issue #39).
 //
 // Density judgment mirrors P4's CALL density gate (AnalyzeNative,
-// bebbd44) but over the wasm helper set: require enough plain ops per
+// bebbd44) but over the wasm helper set: require enough total ops per
 // helper-bound op to amortize the boundary crossings. Pure-arithmetic
 // loop kernels (heavy_arith / heavy_floatloop: zero helper-bound ops)
 // promote and keep their measured P3 wins; helper-dense kernels
@@ -190,7 +190,7 @@ func (c *Compiler) WorthPromoting(proto *bytecode.Proto) bool {
 	return total/helperBound >= wasmHelperDensityFloor
 }
 
-// wasmHelperDensityFloor is the minimum plain-ops-per-helper-bound-op
+// wasmHelperDensityFloor is the minimum total-ops-per-helper-bound-op
 // ratio for promotion to be predicted profitable (see WorthPromoting).
 const wasmHelperDensityFloor = 7
 
