@@ -331,14 +331,181 @@ func emitSETTABLEArm64(cb *codeBuf, pc int32, a, b, c uint8) {
 	emitCallShimArm64(cb, shimSetTableAddr(), []int32{0, pc, int32(a), int32(b), int32(c)})
 }
 
-// emitGETGLOBALArm64 emits arm64 GETGLOBAL via shimGetGlobal.
+// emitGETGLOBALArm64 emits GETGLOBAL A Bx: inline NodeHit fast path
+// when the IC snapshot allows (mirror of amd64 emitGETGLOBAL /
+// emitInlineGetGlobalNodeHit), else the exit-reason path. bx is up to
+// 18 bits, split across the b (low 9) / c (high 9) arg slots — the
+// dispatcher reassembles bx = b | c<<9.
 func emitGETGLOBALArm64(cb *codeBuf, pc int32, a uint8, bx uint16) {
-	emitCallShimArm64(cb, shimGetGlobalAddr(), []int32{0, pc, int32(a), int32(bx)})
+	if emitInlineGetGlobalNodeHitArm64(cb, pc, a, bx) {
+		return
+	}
+	emitExitReasonArm64(cb, jit.HelperGetGlobal, pc, int32(a), int32(bx)&0x1FF, (int32(bx)>>9)&0x1FF)
 }
 
-// emitSETGLOBALArm64 emits arm64 SETGLOBAL via shimSetGlobal.
+// emitInlineGetGlobalNodeHitArm64 emits the GETGLOBAL NodeHit inline
+// fast path. The globals table byte offset (taddr) and the IC snapshot
+// (node index + gen) are compile-time constants:
+//
+//	[Guard: gen (word5 high32 at taddr+40) == snap.Shape]
+//	[Load nodeRef = word3 at taddr+24, val = nodeRef + Index*24 + 8]
+//	[Guard: val != Nil]
+//	[Store val -> R(A)]
+//	[b done]
+//	miss: <exit-reason HelperGetGlobal>
+//	done:
+//
+// Register use: X1 = arenaBase, X2/X3 = addr scratch, X4 = loaded
+// value, X5 = compare imm. taddr can exceed the ldr imm12 range, so
+// addresses are formed via mov-imm64 + add instead of scaled
+// displacement.
+func emitInlineGetGlobalNodeHitArm64(cb *codeBuf, pc int32, a uint8, bx uint16) bool {
+	if cb.proto == nil || cb.proto.GlobalsTaddr == 0 || int(pc) >= len(cb.proto.IC) {
+		return false
+	}
+	snap := cb.proto.IC[pc]
+	if snap.Kind != bytecode.ICKindNodeHit {
+		return false
+	}
+	taddr := uint64(cb.proto.GlobalsTaddr)
+	var guardFixups []int32
+
+	// X1 = arena base
+	cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 1, regX27,
+		uint16(jit.JITContextArenaBaseOffset)))
+
+	// Guard: gen == snap.Shape.
+	// X2 = taddr+40; X3 = X1+X2; X4 = [X3]; X4 >>= 32; cmp X4, snap.Shape
+	cb.emit(jitarm64.EmitMovXdImm64(nil, 2, taddr+40))
+	cb.emit(jitarm64.EmitAddXdXnXm(nil, 3, 1, 2))
+	cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 4, 3, 0))
+	cb.emit(jitarm64.EmitLsrXdImm6(nil, 4, 4, 32))
+	cb.emit(jitarm64.EmitMovXdImm64(nil, 5, uint64(snap.Shape)))
+	cb.emit(jitarm64.EmitCmpXnXm(nil, 4, 5))
+	guardFixups = append(guardFixups, cb.pos())
+	cb.emit(jitarm64.EmitBCond(nil, jitarm64.CondNE, 0))
+
+	// X4 = nodeRef (word3 at taddr+24), absolute = X4 + X1.
+	cb.emit(jitarm64.EmitMovXdImm64(nil, 2, taddr+24))
+	cb.emit(jitarm64.EmitAddXdXnXm(nil, 3, 1, 2))
+	cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 4, 3, 0))
+	cb.emit(jitarm64.EmitAddXdXnXm(nil, 4, 4, 1))
+	// X4 = node val = [X4 + Index*24 + 8]
+	cb.emit(jitarm64.EmitMovXdImm64(nil, 2, uint64(snap.Index)*24+8))
+	cb.emit(jitarm64.EmitAddXdXnXm(nil, 3, 4, 2))
+	cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 4, 3, 0))
+
+	// Guard: val != Nil.
+	cb.emit(jitarm64.EmitMovXdImm64(nil, 5, uint64(value.Nil)))
+	cb.emit(jitarm64.EmitCmpXnXm(nil, 4, 5))
+	guardFixups = append(guardFixups, cb.pos())
+	cb.emit(jitarm64.EmitBCond(nil, jitarm64.CondEQ, 0))
+
+	// Store R(A) = X4; b done.
+	cb.emit(jitarm64.EmitStrXtToXnDisp(nil, 4, regX26, uint16(a)*8))
+	bDoneOff := cb.pos()
+	cb.emit([]byte{0x00, 0x00, 0x00, 0x14}) // b done (patched below)
+
+	// miss:
+	missOff := cb.pos()
+	for _, po := range guardFixups {
+		patchBCondArm64(cb, po, missOff)
+	}
+	emitExitReasonArm64(cb, jit.HelperGetGlobal, pc, int32(a), int32(bx)&0x1FF, (int32(bx)>>9)&0x1FF)
+
+	// done:
+	doneOff := cb.pos()
+	patchArm64B26(cb, bDoneOff, doneOff)
+	return true
+}
+
+// emitSETGLOBALArm64 emits SETGLOBAL A Bx: inline NodeHit existing-key
+// overwrite fast path (mirror of amd64 emitInlineSetGlobalNodeHit),
+// else exit-reason. Same bx split as GETGLOBAL.
 func emitSETGLOBALArm64(cb *codeBuf, pc int32, a uint8, bx uint16) {
-	emitCallShimArm64(cb, shimSetGlobalAddr(), []int32{0, pc, int32(a), int32(bx)})
+	if emitInlineSetGlobalNodeHitArm64(cb, pc, a, bx) {
+		return
+	}
+	emitExitReasonArm64(cb, jit.HelperSetGlobal, pc, int32(a), int32(bx)&0x1FF, (int32(bx)>>9)&0x1FF)
+}
+
+// emitInlineSetGlobalNodeHitArm64: Gtable[K(Bx)] := R(A) when gen
+// matches and the slot's existing value is non-Nil (existing-key
+// overwrite never rehashes / never consults __newindex) and the new
+// value is non-Nil (writing Nil is delete semantics → slow path).
+func emitInlineSetGlobalNodeHitArm64(cb *codeBuf, pc int32, a uint8, bx uint16) bool {
+	if cb.proto == nil || cb.proto.GlobalsTaddr == 0 || int(pc) >= len(cb.proto.IC) {
+		return false
+	}
+	snap := cb.proto.IC[pc]
+	if snap.Kind != bytecode.ICKindNodeHit {
+		return false
+	}
+	taddr := uint64(cb.proto.GlobalsTaddr)
+	var guardFixups []int32
+
+	// X1 = arena base
+	cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 1, regX27,
+		uint16(jit.JITContextArenaBaseOffset)))
+
+	// Guard: gen == snap.Shape.
+	cb.emit(jitarm64.EmitMovXdImm64(nil, 2, taddr+40))
+	cb.emit(jitarm64.EmitAddXdXnXm(nil, 3, 1, 2))
+	cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 4, 3, 0))
+	cb.emit(jitarm64.EmitLsrXdImm6(nil, 4, 4, 32))
+	cb.emit(jitarm64.EmitMovXdImm64(nil, 5, uint64(snap.Shape)))
+	cb.emit(jitarm64.EmitCmpXnXm(nil, 4, 5))
+	guardFixups = append(guardFixups, cb.pos())
+	cb.emit(jitarm64.EmitBCond(nil, jitarm64.CondNE, 0))
+
+	// X3 = absolute node val slot addr = arenaBase + nodeRef + Index*24 + 8.
+	cb.emit(jitarm64.EmitMovXdImm64(nil, 2, taddr+24))
+	cb.emit(jitarm64.EmitAddXdXnXm(nil, 3, 1, 2))
+	cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 4, 3, 0))
+	cb.emit(jitarm64.EmitAddXdXnXm(nil, 4, 4, 1))
+	cb.emit(jitarm64.EmitMovXdImm64(nil, 2, uint64(snap.Index)*24+8))
+	cb.emit(jitarm64.EmitAddXdXnXm(nil, 3, 4, 2))
+
+	// Guard: existing slot val != Nil (key exists; delete goes slow).
+	cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 4, 3, 0))
+	cb.emit(jitarm64.EmitMovXdImm64(nil, 5, uint64(value.Nil)))
+	cb.emit(jitarm64.EmitCmpXnXm(nil, 4, 5))
+	guardFixups = append(guardFixups, cb.pos())
+	cb.emit(jitarm64.EmitBCond(nil, jitarm64.CondEQ, 0))
+
+	// X4 = R(A); Guard: new value != Nil (writing Nil deletes → slow).
+	cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 4, regX26, uint16(a)*8))
+	cb.emit(jitarm64.EmitCmpXnXm(nil, 4, 5)) // X5 still NilBits
+	guardFixups = append(guardFixups, cb.pos())
+	cb.emit(jitarm64.EmitBCond(nil, jitarm64.CondEQ, 0))
+
+	// Store [X3] = X4; b done.
+	cb.emit(jitarm64.EmitStrXtToXnDisp(nil, 4, 3, 0))
+	bDoneOff := cb.pos()
+	cb.emit([]byte{0x00, 0x00, 0x00, 0x14})
+
+	// miss:
+	missOff := cb.pos()
+	for _, po := range guardFixups {
+		patchBCondArm64(cb, po, missOff)
+	}
+	emitExitReasonArm64(cb, jit.HelperSetGlobal, pc, int32(a), int32(bx)&0x1FF, (int32(bx)>>9)&0x1FF)
+
+	// done:
+	doneOff := cb.pos()
+	patchArm64B26(cb, bDoneOff, doneOff)
+	return true
+}
+
+// patchArm64B26 patches an already-emitted unconditional B at bufOff to
+// branch to targetOff (imm26 word-scaled, PC = bufOff).
+func patchArm64B26(cb *codeBuf, bufOff, targetOff int32) {
+	wordDisp := (targetOff - bufOff) / 4
+	insn := uint32(0x14000000) | (uint32(wordDisp) & 0x03FFFFFF)
+	cb.bytes[bufOff] = byte(insn)
+	cb.bytes[bufOff+1] = byte(insn >> 8)
+	cb.bytes[bufOff+2] = byte(insn >> 16)
+	cb.bytes[bufOff+3] = byte(insn >> 24)
 }
 
 // emitNEWTABLEArm64 emits arm64 NEWTABLE via shimNewTable.
