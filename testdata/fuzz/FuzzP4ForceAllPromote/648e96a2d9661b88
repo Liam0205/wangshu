@@ -1,0 +1,2 @@
+go test fuzz v1
+string("local function A()return function()A()end end")
