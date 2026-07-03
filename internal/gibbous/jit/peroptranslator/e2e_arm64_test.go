@@ -728,3 +728,37 @@ return k(nil)`
 		t.Fatalf("error %q does not carry the arithmetic raise message", err)
 	}
 }
+
+// TestArm64E2E_EQ_KOperand: EQ with K operands rides the inline
+// bit-equal fast path (issue #56 — the sole static blocker for the
+// fannkuch kernel). Covers numeric K on both branch senses (A=0 via
+// `~=`, A=1 via `==`), nil K, bool K, and interned-string K (ptr-equal
+// ↔ string-equal). All comparisons are inline: the dispatched < 100
+// probe proves no exit-reason round trips leaked in.
+func TestArm64E2E_EQ_KOperand(t *testing.T) {
+	src := `
+local function k(x, s, f)
+  local n = 0
+  if x == 3 then n = n + 1 end
+  if x ~= 4 then n = n + 2 end
+  if s == "hit" then n = n + 4 end
+  if f == false then n = n + 8 end
+  if x == nil then n = n + 16 end
+  return n
+end
+local r = 0
+for i = 1, 300 do r = k(3, "hit", false) end
+local r2 = k(4, "miss", true)
+return r, r2`
+	results, promoted, dispatched := runForceAllArm64(t, src)
+	if promoted == 0 {
+		t.Fatal("PromotionCount = 0: EQ-K kernel did not promote on arm64")
+	}
+	// k(3,"hit",false): 1+2+4+8 = 15; k(4,"miss",true): x~=4 false → 0.
+	if len(results) != 2 || results[0] != "15" || results[1] != "0" {
+		t.Fatalf("results = %v, want [15 0]", results)
+	}
+	if dispatched >= 100 {
+		t.Fatalf("dispatched = %d: inline EQ-K never hits (exit-reason round trips leaked in)", dispatched)
+	}
+}
