@@ -327,6 +327,7 @@ func opSupported(op bytecode.OpCode) bool {
 		bytecode.CALL,
 		bytecode.GETGLOBAL, bytecode.SETGLOBAL,
 		bytecode.GETTABLE, bytecode.SETTABLE, bytecode.NEWTABLE,
+		bytecode.UNM,
 		bytecode.RETURN:
 		return true
 	default:
@@ -445,6 +446,8 @@ func emitLinearOpArm64(buf *codeBuf, ins bytecode.Instruction, pc int32) error {
 		emitSETTABLEArm64(buf, pc, a, bRK, cRK)
 	case bytecode.NEWTABLE:
 		emitNEWTABLEArm64(buf, pc, a, bReg, uint8(cRK))
+	case bytecode.UNM:
+		emitUNMArm64(buf, pc, a, bReg)
 	case bytecode.NOT:
 		emitNOTArm64Inline(buf, a, bReg)
 	case bytecode.ADD, bytecode.SUB, bytecode.MUL, bytecode.DIV:

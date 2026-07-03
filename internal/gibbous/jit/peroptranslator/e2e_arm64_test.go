@@ -344,3 +344,39 @@ return r, tostring(r2)`
 		t.Fatalf("results = %v, want [2 nil]", results)
 	}
 }
+
+// TestArm64E2E_UNM: negation of a number rides the inline sign-flip;
+// negation of a string ("5" coerces to -5 in Lua 5.1) must fall
+// through the guard to the exit-reason slow path (host.Unm).
+func TestArm64E2E_UNM(t *testing.T) {
+	src := `
+local n = 5
+local s = "5"
+local function k(x)
+  local a = x
+  local b = -a
+  local c = b
+  local d = c
+  return d
+end
+local r = 0
+for i = 1, 300 do r = k(n) end
+local rs = k(s)
+return r, rs`
+	results, promoted, dispatched := runForceAllArm64(t, src)
+	if promoted == 0 {
+		t.Fatal("PromotionCount = 0: UNM kernel did not promote on arm64")
+	}
+	if len(results) != 2 || results[0] != "-5" || results[1] != "-5" {
+		t.Fatalf("results = %v, want [-5 -5]", results)
+	}
+	// The 300 numeric calls must ride the inline sign-flip; only the
+	// string-coercion call exits. A tight bound distinguishes "inline
+	// path works" from "every UNM exits".
+	if dispatched >= 100 {
+		t.Fatalf("dispatched = %d: inline UNM fast path never hits", dispatched)
+	}
+	if dispatched == 0 {
+		t.Fatal("dispatched = 0: string-coercion UNM never rode the exit-reason slow path")
+	}
+}

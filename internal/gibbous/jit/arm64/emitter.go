@@ -609,6 +609,31 @@ func EmitAndXdXnXm(buf []byte, rd, rn, rm uint8) []byte {
 // EncodedAndXdXnXmLen = 4.
 const EncodedAndXdXnXmLen = 4
 
+// EmitEorXdXnXm emits arm64 "eor Xd, Xn, Xm" (bitwise XOR, shifted
+// register form with shift=00 LSL 0).
+//
+// Encoding: 1100_1010_000_mmmmm_000000_nnnnn_ddddd = 0xCA000000 base
+//
+// Use case: PJ10 arm64 UNM inline — flip the IEEE-754 sign bit
+// (`eor x0, x0, x5` with X5 = 0x8000000000000000), mirror of amd64
+// `xor rax, rdx`.
+func EmitEorXdXnXm(buf []byte, rd, rn, rm uint8) []byte {
+	if rd > 30 {
+		rd = 0
+	}
+	if rn > 30 {
+		rn = 0
+	}
+	if rm > 30 {
+		rm = 0
+	}
+	insn := uint32(0xCA000000) | (uint32(rm)&0x1F)<<16 | (uint32(rn)&0x1F)<<5 | uint32(rd)&0x1F
+	return appendArm64Insn(buf, insn)
+}
+
+// EncodedEorXdXnXmLen = 4.
+const EncodedEorXdXnXmLen = 4
+
 // EmitLsrXdImm6 发射 arm64「lsr Xd, Xn, #imm6」(逻辑右移,unsigned 6-bit
 // 位数,等价 UBFM Xd, Xn, #imm6, #63)。
 //
