@@ -251,6 +251,27 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 				if proto.IC[pc].Kind != bytecode.ICKindNodeHit {
 					return false
 				}
+			case bytecode.GETTABLE, bytecode.SETTABLE:
+				// ArrayHit gets the inline fast path; NodeHit rides the
+				// exit-reason slow path (host.GetTable/SetTable are
+				// byte-equal to the interpreter's IC path). Un-warmed
+				// (None) or meta/megamorphic sites stay on P1 — those
+				// would exit on every access. Same gate as amd64.
+				if int(pc) >= len(proto.IC) {
+					return false
+				}
+				if k := proto.IC[pc].Kind; k != bytecode.ICKindArrayHit &&
+					k != bytecode.ICKindNodeHit {
+					return false
+				}
+			case bytecode.NEWTABLE:
+				// NEWTABLE rides the exit-reason path (host allocates).
+				// B/C carry Fb-encoded presize hints; the packed arg
+				// slots are 9-bit so larger hints would truncate —
+				// reject (same as amd64).
+				if bytecode.B(ins) >= 256 || bytecode.C(ins) >= 256 {
+					return false
+				}
 			}
 		}
 	}
@@ -305,6 +326,7 @@ func opSupported(op bytecode.OpCode) bool {
 		bytecode.GETUPVAL, bytecode.SETUPVAL,
 		bytecode.CALL,
 		bytecode.GETGLOBAL, bytecode.SETGLOBAL,
+		bytecode.GETTABLE, bytecode.SETTABLE, bytecode.NEWTABLE,
 		bytecode.RETURN:
 		return true
 	default:
@@ -417,6 +439,12 @@ func emitLinearOpArm64(buf *codeBuf, ins bytecode.Instruction, pc int32) error {
 		emitGETGLOBALArm64(buf, pc, a, uint16(bx))
 	case bytecode.SETGLOBAL:
 		emitSETGLOBALArm64(buf, pc, a, uint16(bx))
+	case bytecode.GETTABLE:
+		emitGETTABLEArm64(buf, pc, a, bReg, cRK)
+	case bytecode.SETTABLE:
+		emitSETTABLEArm64(buf, pc, a, bRK, cRK)
+	case bytecode.NEWTABLE:
+		emitNEWTABLEArm64(buf, pc, a, bReg, uint8(cRK))
 	case bytecode.NOT:
 		emitNOTArm64Inline(buf, a, bReg)
 	case bytecode.ADD, bytecode.SUB, bytecode.MUL, bytecode.DIV:

@@ -31,6 +31,12 @@ const (
 	regX26 uint8 = 26
 	// regX27 = jitCtx.
 	regX27 uint8 = 27
+
+	// qNanBoxBaseArm64 is the lower bound of the non-number NaN-box
+	// space (mirror of emit_amd64.go's qNanBoxBaseU64, which lives in
+	// an amd64-only file). Any raw uint64 >= this constant is a tagged
+	// non-number.
+	qNanBoxBaseArm64 uint64 = 0xFFF8_0000_0000_0000
 )
 
 // emitMOVEArm64 emits `ldr x0, [x26+B*8]; str x0, [x26+A*8]`.
@@ -321,14 +327,206 @@ func emitCONCATArm64(cb *codeBuf, pc int32, a, b, c uint8) {
 	emitCallShimArm64(cb, shimConcatAddr(), []int32{0, pc, int32(a), int32(b), int32(c)})
 }
 
-// emitGETTABLEArm64 emits arm64 GETTABLE via shimGetTable.
-func emitGETTABLEArm64(cb *codeBuf, pc int32, a, b, c uint8) {
-	emitCallShimArm64(cb, shimGetTableAddr(), []int32{0, pc, int32(a), int32(b), int32(c)})
+// emitGETTABLEArm64 emits GETTABLE A B C: inline ArrayHit fast path
+// when the IC snapshot allows (mirror of amd64
+// emitInlineGetTableArrayHit), else the exit-reason path (NodeHit
+// sites ride host.GetTable — byte-equal to the interpreter's IC path).
+func emitGETTABLEArm64(cb *codeBuf, pc int32, a, b uint8, c int) {
+	if emitInlineGetTableArrayHitArm64(cb, pc, a, b, c) {
+		return
+	}
+	emitExitReasonArm64(cb, jit.HelperGetTable, pc, int32(a), int32(b), int32(c))
 }
 
-// emitSETTABLEArm64 emits arm64 SETTABLE via shimSetTable.
-func emitSETTABLEArm64(cb *codeBuf, pc int32, a, b, c uint8) {
-	emitCallShimArm64(cb, shimSetTableAddr(), []int32{0, pc, int32(a), int32(b), int32(c)})
+// emitSETTABLEArm64 emits SETTABLE A B C: inline ArrayHit overwrite
+// fast path, else exit-reason (host.SetTable).
+func emitSETTABLEArm64(cb *codeBuf, pc int32, a uint8, b, c int) {
+	if emitInlineSetTableArrayHitArm64(cb, pc, a, b, c) {
+		return
+	}
+	emitExitReasonArm64(cb, jit.HelperSetTable, pc, int32(a), int32(b), int32(c))
+}
+
+// emitTablePreludeArm64 emits the shared GETTABLE/SETTABLE ArrayHit
+// prelude: IsTable guard on R(tblReg), GCRef extraction, arena base
+// load, key load + IsNumber guard + f64→int round-trip check, bounds
+// check against live asize, and slot address computation.
+//
+// Register state on fall-through (all guards passed):
+//
+//	X1 = arena base
+//	X3 = absolute slot address (arrayBase + (idx-1)*8)
+//	X4 = slot value
+//	X5 = value.Nil bits (reusable for Nil compares)
+//
+// Guard misses branch to the miss block; their patch offsets are
+// appended to *guardFixups.
+//
+// vs amd64: FCMPE leaves Z=0 for unordered operands, so a single B.NE
+// covers both "fractional" and "NaN" (amd64 needs jne + jp). The slot
+// address survives in X3, so SETTABLE needs no idx recompute.
+//
+// NOTE: no TableRef / gen identity guards — same reasoning as the
+// amd64 emit: a non-Nil array slot read/overwrite is correct for ANY
+// table value (no __index/__newindex, bounds from live asize); the IC
+// snapshot only gates WHICH pc sites get the inline emit.
+func emitTablePreludeArm64(cb *codeBuf, tblReg uint8, keyRK int, guardFixups *[]int32) {
+	// --- Guard 1: R(tblReg) is a Table (tag == 0xFFFC) ---
+	cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 0, regX26, uint16(tblReg)*8))
+	cb.emit(jitarm64.EmitLsrXdImm6(nil, 4, 0, 48))
+	cb.emit(jitarm64.EmitMovzWdImm16(nil, 5, uint16(value.TagTable)))
+	cb.emit(jitarm64.EmitCmpXnXm(nil, 4, 5))
+	*guardFixups = append(*guardFixups, cb.pos())
+	cb.emit(jitarm64.EmitBCond(nil, jitarm64.CondNE, 0))
+
+	// --- GCRef extract: X0 &= payloadMask; X3 = arenaBase + X0 ---
+	cb.emit(jitarm64.EmitMovXdImm64(nil, 5, 0x0000_FFFF_FFFF_FFFF))
+	cb.emit(jitarm64.EmitAndXdXnXm(nil, 0, 0, 5))
+	cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 1, regX27,
+		uint16(jit.JITContextArenaBaseOffset)))
+	cb.emit(jitarm64.EmitAddXdXnXm(nil, 3, 1, 0))
+
+	// --- Load key from RK into X0 ---
+	if keyRK < 256 {
+		cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 0, regX26, uint16(keyRK)*8))
+	} else {
+		cb.emit(jitarm64.EmitMovXdImm64(nil, 0, cb.proto.Consts[keyRK-256]))
+	}
+
+	// --- Guard: IsNumber(key) — key < qNanBoxBase ---
+	cb.emit(jitarm64.EmitMovXdImm64(nil, 5, qNanBoxBaseArm64))
+	cb.emit(jitarm64.EmitCmpXnXm(nil, 0, 5))
+	*guardFixups = append(*guardFixups, cb.pos())
+	cb.emit(jitarm64.EmitBCond(nil, jitarm64.CondHS, 0))
+
+	// --- f64 → int round trip: X2 = trunc(key); verify integral ---
+	cb.emit(jitarm64.EmitFmovDdFromXn(nil, 0, 0))
+	cb.emit(jitarm64.EmitFcvtzsXdDn(nil, 2, 0))
+	cb.emit(jitarm64.EmitScvtfDdXn(nil, 1, 2))
+	cb.emit(jitarm64.EmitFcmpeDnDm(nil, 0, 1))
+	*guardFixups = append(*guardFixups, cb.pos())
+	cb.emit(jitarm64.EmitBCond(nil, jitarm64.CondNE, 0))
+
+	// --- Bounds: 1 <= idx <= asize (asize = word1 low32 at +8) ---
+	cb.emit(jitarm64.EmitCmpXnImm12(nil, 2, 1))
+	*guardFixups = append(*guardFixups, cb.pos())
+	cb.emit(jitarm64.EmitBCond(nil, jitarm64.CondLT, 0))
+	cb.emit(jitarm64.EmitLdrWtFromXnDisp(nil, 4, 3, 8))
+	cb.emit(jitarm64.EmitCmpXnXm(nil, 2, 4))
+	*guardFixups = append(*guardFixups, cb.pos())
+	cb.emit(jitarm64.EmitBCond(nil, jitarm64.CondGT, 0))
+
+	// --- Slot addr: X3 = arenaBase + arrayRef + (idx-1)*8 ---
+	cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 4, 3, 16)) // arrayRef (word2)
+	cb.emit(jitarm64.EmitAddXdXnXm(nil, 4, 4, 1))
+	cb.emit(jitarm64.EmitSubXdImm12(nil, 2, 2, 1))
+	cb.emit(jitarm64.EmitLslXdImm6(nil, 2, 2, 3))
+	cb.emit(jitarm64.EmitAddXdXnXm(nil, 3, 4, 2))
+
+	// --- Load slot value + set up X5 = Nil for the caller's guards ---
+	cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 4, 3, 0))
+	cb.emit(jitarm64.EmitMovXdImm64(nil, 5, uint64(value.Nil)))
+}
+
+// emitInlineGetTableArrayHitArm64 emits the GETTABLE ArrayHit inline
+// fast path (guards + live-table array slot load; miss → exit-reason).
+// Returns true when the inline path was emitted.
+func emitInlineGetTableArrayHitArm64(cb *codeBuf, pc int32, a, b uint8, c int) bool {
+	if cb.proto == nil || int(pc) < 0 || int(pc) >= len(cb.proto.IC) {
+		return false
+	}
+	if cb.proto.IC[pc].Kind != bytecode.ICKindArrayHit {
+		return false
+	}
+	// Pre-emit K sanity: bail before any bytes are emitted (a mid-emit
+	// bail would leave guard fixups dangling).
+	if c >= 256 {
+		if kidx := c - 256; kidx < 0 || kidx >= len(cb.proto.Consts) {
+			return false
+		}
+	}
+
+	var guardFixups []int32
+	emitTablePreludeArm64(cb, b, c, &guardFixups)
+
+	// Guard: slot != Nil (Nil routes to the helper for the __index
+	// chain). X4 = slot value, X5 = Nil from the prelude.
+	cb.emit(jitarm64.EmitCmpXnXm(nil, 4, 5))
+	guardFixups = append(guardFixups, cb.pos())
+	cb.emit(jitarm64.EmitBCond(nil, jitarm64.CondEQ, 0))
+
+	// Store R(A) = slot; b done.
+	cb.emit(jitarm64.EmitStrXtToXnDisp(nil, 4, regX26, uint16(a)*8))
+	bDoneOff := cb.pos()
+	cb.emit([]byte{0x00, 0x00, 0x00, 0x14})
+
+	// miss:
+	missOff := cb.pos()
+	for _, po := range guardFixups {
+		patchBCondArm64(cb, po, missOff)
+	}
+	emitExitReasonArm64(cb, jit.HelperGetTable, pc, int32(a), int32(b), int32(c))
+
+	// done:
+	patchArm64B26(cb, bDoneOff, cb.pos())
+	return true
+}
+
+// emitInlineSetTableArrayHitArm64 emits the SETTABLE ArrayHit inline
+// overwrite fast path (`R(A)[RK(B)] := RK(C)`): existing non-Nil array
+// slot overwritten with a non-Nil value is a raw store for ANY table
+// (no __newindex, no rehash, bounds from live asize).
+func emitInlineSetTableArrayHitArm64(cb *codeBuf, pc int32, a uint8, b, c int) bool {
+	if cb.proto == nil || int(pc) < 0 || int(pc) >= len(cb.proto.IC) {
+		return false
+	}
+	if cb.proto.IC[pc].Kind != bytecode.ICKindArrayHit {
+		return false
+	}
+	for _, rk := range [2]int{b, c} {
+		if rk >= 256 {
+			if kidx := rk - 256; kidx < 0 || kidx >= len(cb.proto.Consts) {
+				return false
+			}
+		}
+	}
+
+	var guardFixups []int32
+	emitTablePreludeArm64(cb, a, b, &guardFixups)
+
+	// Guard: existing slot != Nil (a Nil slot means insert semantics —
+	// __newindex consultation — so route to the helper).
+	cb.emit(jitarm64.EmitCmpXnXm(nil, 4, 5))
+	guardFixups = append(guardFixups, cb.pos())
+	cb.emit(jitarm64.EmitBCond(nil, jitarm64.CondEQ, 0))
+
+	// Load the new value RK(C) into X4.
+	if c < 256 {
+		cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 4, regX26, uint16(c)*8))
+	} else {
+		cb.emit(jitarm64.EmitMovXdImm64(nil, 4, cb.proto.Consts[c-256]))
+	}
+
+	// Guard: new value != Nil (writing Nil is delete semantics).
+	cb.emit(jitarm64.EmitCmpXnXm(nil, 4, 5)) // X5 still Nil
+	guardFixups = append(guardFixups, cb.pos())
+	cb.emit(jitarm64.EmitBCond(nil, jitarm64.CondEQ, 0))
+
+	// Store [X3] = X4 (slot address survived the value load); b done.
+	cb.emit(jitarm64.EmitStrXtToXnDisp(nil, 4, 3, 0))
+	bDoneOff := cb.pos()
+	cb.emit([]byte{0x00, 0x00, 0x00, 0x14})
+
+	// miss:
+	missOff := cb.pos()
+	for _, po := range guardFixups {
+		patchBCondArm64(cb, po, missOff)
+	}
+	emitExitReasonArm64(cb, jit.HelperSetTable, pc, int32(a), int32(b), int32(c))
+
+	// done:
+	patchArm64B26(cb, bDoneOff, cb.pos())
+	return true
 }
 
 // emitGETGLOBALArm64 emits GETGLOBAL A Bx: inline NodeHit fast path
@@ -508,9 +706,11 @@ func patchArm64B26(cb *codeBuf, bufOff, targetOff int32) {
 	cb.bytes[bufOff+3] = byte(insn >> 24)
 }
 
-// emitNEWTABLEArm64 emits arm64 NEWTABLE via shimNewTable.
+// emitNEWTABLEArm64 emits NEWTABLE A B C via exit-reason (allocation
+// must happen host-side). AnalyzeNative rejects B/C >= 256 so the
+// packed 9-bit arg slots stay faithful.
 func emitNEWTABLEArm64(cb *codeBuf, pc int32, a, b, c uint8) {
-	emitCallShimArm64(cb, shimNewTableAddr(), []int32{0, pc, int32(a), int32(b), int32(c)})
+	emitExitReasonArm64(cb, jit.HelperNewTable, pc, int32(a), int32(b), int32(c))
 }
 
 // emitSETLISTArm64 emits arm64 SETLIST via shimSetList.

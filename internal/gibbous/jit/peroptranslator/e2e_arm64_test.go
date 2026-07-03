@@ -256,3 +256,91 @@ return r, GV`
 		t.Fatalf("results = %v, want [77 77]", results)
 	}
 }
+
+// TestArm64E2E_GETTABLE_SETTABLE_ArrayHit: a kernel iterating an array
+// table (warm ArrayHit IC on both the read and the write site) must
+// promote and produce values identical to the interpreter. The table
+// arrives as a parameter (plain register) — an upvalue would insert a
+// GETUPVAL exit-reason round trip per access and drown the fast-path
+// probe. With a warm table the ~299 post-promotion iterations × 4
+// accesses must ride the inline ArrayHit path, not exit-reason.
+func TestArm64E2E_GETTABLE_SETTABLE_ArrayHit(t *testing.T) {
+	src := `
+local t = {10, 20, 30, 40}
+local function k(tt)
+  local a = tt[1]
+  local b = tt[2]
+  tt[3] = a
+  local c = tt[3]
+  return c
+end
+local r = 0
+for i = 1, 300 do r = k(t) end
+return r, t[3]`
+	results, promoted, dispatched := runForceAllArm64(t, src)
+	if promoted == 0 {
+		t.Fatal("PromotionCount = 0: table kernel did not promote on arm64")
+	}
+	if len(results) != 2 || results[0] != "10" || results[1] != "10" {
+		t.Fatalf("results = %v, want [10 10]", results)
+	}
+	if dispatched >= 100 {
+		t.Fatalf("dispatched = %d: inline ArrayHit fast path never hits (all accesses ride exit-reason)", dispatched)
+	}
+}
+
+// TestArm64E2E_NEWTABLE: a kernel allocating a fresh table per call
+// rides the exit-reason NEWTABLE (allocation is host-side by design).
+func TestArm64E2E_NEWTABLE(t *testing.T) {
+	src := `
+local seed = {5, 6, 7}
+local function k()
+  local n = {}
+  n[1] = seed[1]
+  n[2] = seed[2]
+  local a = n[1]
+  local b = n[2]
+  return b
+end
+local r = 0
+for i = 1, 300 do r = k() end
+return r`
+	results, promoted, dispatched := runForceAllArm64(t, src)
+	if promoted == 0 {
+		t.Fatal("PromotionCount = 0: NEWTABLE kernel did not promote on arm64")
+	}
+	if dispatched == 0 {
+		t.Fatal("DispatchHelperCount did not increase: NEWTABLE never rode the exit-reason protocol")
+	}
+	if len(results) != 1 || results[0] != "6" {
+		t.Fatalf("results = %v, want [6]", results)
+	}
+}
+
+// TestArm64E2E_GETTABLE_MissFallsBack: after promotion with an
+// ArrayHit snapshot, reading a slot that has become Nil (and an
+// out-of-bounds index) must route through the exit-reason slow path
+// and stay byte-equal (nil result / __index semantics preserved).
+func TestArm64E2E_GETTABLE_MissFallsBack(t *testing.T) {
+	src := `
+local t = {1, 2, 3}
+local idx = 2
+local function k()
+  local a = t[1]
+  local b = t[idx]
+  t[1] = a
+  return b
+end
+local r = 0
+for i = 1, 300 do r = k() end
+idx = 7  -- out of bounds: live-asize check misses, helper returns nil
+local r2 = k()
+return r, tostring(r2)`
+	results, promoted, _ := runForceAllArm64(t, src)
+	if promoted == 0 {
+		t.Fatal("PromotionCount = 0: kernel did not promote")
+	}
+	if len(results) != 2 || results[0] != "2" || results[1] != "nil" {
+		t.Fatalf("results = %v, want [2 nil]", results)
+	}
+}

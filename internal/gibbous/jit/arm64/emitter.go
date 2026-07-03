@@ -638,6 +638,130 @@ func EmitLsrXdImm6(buf []byte, rd, rn uint8, imm6 uint8) []byte {
 // EncodedLsrXdImm6Len = 4.
 const EncodedLsrXdImm6Len = 4
 
+// EmitLslXdImm6 emits arm64 "lsl Xd, Xn, #imm6" (logical shift left,
+// alias of UBFM Xd, Xn, #((64-sh) mod 64), #(63-sh)).
+//
+// Encoding: 1101_0011_01_immr_imms_nnnnn_ddddd = 0xD3400000 base
+//   - immr = (64 - sh) % 64, imms = 63 - sh
+//
+// Use case: PJ10 arm64 GETTABLE/SETTABLE ArrayHit inline — scale the
+// integer array index to a byte offset (`lsl x2, x2, #3`), the SIB-less
+// substitute for amd64's [base + idx*8] addressing.
+func EmitLslXdImm6(buf []byte, rd, rn uint8, imm6 uint8) []byte {
+	if rd > 30 {
+		rd = 0
+	}
+	if rn > 30 {
+		rn = 0
+	}
+	if imm6 > 63 {
+		imm6 = 0
+	}
+	immr := uint32(64-imm6) % 64
+	imms := uint32(63 - imm6)
+	insn := uint32(0xD3400000) | (immr&0x3F)<<16 | (imms&0x3F)<<10 |
+		(uint32(rn)&0x1F)<<5 | uint32(rd)&0x1F
+	return appendArm64Insn(buf, insn)
+}
+
+// EncodedLslXdImm6Len = 4.
+const EncodedLslXdImm6Len = 4
+
+// EmitCmpXnImm12 emits arm64 "cmp Xn, #imm12" (SUBS XZR, Xn, #imm12 —
+// flags only, unsigned 12-bit immediate).
+//
+// Encoding: 1111_0001_00_iiiiiiiiiiii_nnnnn_11111 = 0xF100001F base
+//
+// Use case: PJ10 arm64 ArrayHit inline bounds check (`cmp x2, #1`,
+// mirror of amd64 `cmp edx, 1`).
+func EmitCmpXnImm12(buf []byte, rn uint8, imm12 uint16) []byte {
+	if rn > 30 {
+		rn = 0
+	}
+	if imm12 > 0xFFF {
+		imm12 = 0
+	}
+	insn := uint32(0xF100001F) | (uint32(imm12)&0xFFF)<<10 | (uint32(rn)&0x1F)<<5
+	return appendArm64Insn(buf, insn)
+}
+
+// EncodedCmpXnImm12Len = 4.
+const EncodedCmpXnImm12Len = 4
+
+// EmitLdrWtFromXnDisp emits arm64 "ldr Wt, [Xn, #pimm12]" (32-bit
+// zero-extending load with unsigned 12-bit scaled offset).
+//
+// Encoding: 1011_1001_01_iiiiiiiiiiii_nnnnn_ttttt = 0xB9400000 base
+//   - size=10 (32-bit), V=0, opc=01 (LDR unsigned offset)
+//   - imm12 is a **4-byte scaled offset** (byte offset = imm12 * 4),
+//     range [0, 16380], step 4
+//
+// Use case: PJ10 arm64 ArrayHit inline — load table asize (word1 low
+// 32 bits at +8; the upper 32 bits of Xt are zeroed so a full-width
+// compare against the index is safe).
+func EmitLdrWtFromXnDisp(buf []byte, rt, rn uint8, byteOff uint16) []byte {
+	if rt > 30 {
+		rt = 0
+	}
+	if rn > 30 {
+		rn = 0
+	}
+	if byteOff%4 != 0 || byteOff > 16380 {
+		byteOff = 0
+	}
+	imm12 := uint32(byteOff / 4)
+	insn := uint32(0xB9400000) | (imm12&0xFFF)<<10 | (uint32(rn)&0x1F)<<5 | uint32(rt)&0x1F
+	return appendArm64Insn(buf, insn)
+}
+
+// EncodedLdrWtFromXnDispLen = 4.
+const EncodedLdrWtFromXnDispLen = 4
+
+// EmitFcvtzsXdDn emits arm64 "fcvtzs Xd, Dn" (double → signed 64-bit
+// int, round toward zero; scalar variant).
+//
+// Encoding: 1001_1110_0111_1000_0000_00nn_nnnd_dddd = 0x9E780000 base
+//   - sf=1, type=01 (double), rmode=11 (toward zero), opcode=000
+//
+// Use case: PJ10 arm64 ArrayHit inline key conversion (mirror of amd64
+// cvttsd2si). Paired with EmitScvtfDdXn + FCMPE for the "key was an
+// integer" round-trip check.
+func EmitFcvtzsXdDn(buf []byte, xd, dn uint8) []byte {
+	if xd > 30 {
+		xd = 0
+	}
+	if dn > 31 {
+		dn = 0
+	}
+	insn := uint32(0x9E780000) | (uint32(dn)&0x1F)<<5 | uint32(xd)&0x1F
+	return appendArm64Insn(buf, insn)
+}
+
+// EncodedFcvtzsXdDnLen = 4.
+const EncodedFcvtzsXdDnLen = 4
+
+// EmitScvtfDdXn emits arm64 "scvtf Dd, Xn" (signed 64-bit int →
+// double; scalar variant).
+//
+// Encoding: 1001_1110_0110_0010_0000_00nn_nnnd_dddd = 0x9E620000 base
+//   - sf=1, type=01 (double), rmode=00, opcode=010
+//
+// Use case: the second half of the ArrayHit integer round-trip check
+// (mirror of amd64 cvtsi2sd).
+func EmitScvtfDdXn(buf []byte, dd, xn uint8) []byte {
+	if dd > 31 {
+		dd = 0
+	}
+	if xn > 30 {
+		xn = 0
+	}
+	insn := uint32(0x9E620000) | (uint32(xn)&0x1F)<<5 | uint32(dd)&0x1F
+	return appendArm64Insn(buf, insn)
+}
+
+// EncodedScvtfDdXnLen = 4.
+const EncodedScvtfDdXnLen = 4
+
 // EmitLdrbWtFromXnDisp 发射 arm64「ldrb Wt, [Xn, #pimm12]」(32-bit
 // zero-extended byte load with unsigned 12-bit byte offset)。
 //
