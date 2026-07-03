@@ -68,6 +68,19 @@ type MinPromotableLener interface {
 	MinPromotableLen() int
 }
 
+// PromotionGater is an optional interface a P3Compiler may implement
+// to decline promotion of protos it CAN compile but expects to run
+// slower than the interpreter (profitability, not capability — the
+// capability answer stays in SupportsAllOpcodes). The bridge consults
+// it in auto mode only; forceAll bypasses it so differential-test
+// coverage keeps promoting every compilable shape (issue #39).
+//
+// Declined protos absorb to TierStuck: the judgment is static (op-mix
+// density), so re-asking on later entries cannot change the answer.
+type PromotionGater interface {
+	WorthPromoting(proto *bytecode.Proto) bool
+}
+
 // NewBridge 构造一个空 Bridge,挂在 State 上(crescent 端 setter 注入)。
 //
 // p3 / logger 都可以后续 SetXxx 注入;构造时不强求(支持「先建 Bridge,后
@@ -364,6 +377,25 @@ func (b *Bridge) considerPromotion(proto *bytecode.Proto, pd *ProfileData, onMai
 			b.logger.LogStuck(proto, pd, comp)
 		}
 		return
+	}
+
+	// (P2') Profitability gate (issue #39): the backend can compile
+	// this proto but predicts it runs slower promoted than interpreted
+	// (e.g. P3 wasm on helper-dense table kernels — nbody hot protos
+	// promoted to 2x slower than the interpreter after 45b8b53 let
+	// them pass F2-b). Auto mode only: forceAll keeps promoting every
+	// compilable shape so differential coverage doesn't shrink. The
+	// judgment is static op-mix density, so absorb to Stuck rather
+	// than re-asking every entry.
+	if !b.forceAll {
+		if g, ok := b.p3.(PromotionGater); ok && !g.WorthPromoting(proto) {
+			pd.TierState = TierStuck
+			pd.CompileTried = true
+			if b.logger != nil {
+				b.logger.LogStuck(proto, pd, comp)
+			}
+			return
+		}
 	}
 
 	// (P3) try-compile

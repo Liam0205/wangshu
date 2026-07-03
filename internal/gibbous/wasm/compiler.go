@@ -138,6 +138,62 @@ func (c *Compiler) SlotOf(proto *bytecode.Proto) (uint32, bool) {
 	return s, ok
 }
 
+// WorthPromoting implements bridge.PromotionGater (issue #39):
+// profitability judgment, consulted in auto mode after capability
+// (SupportsAllOpcodes) passes. Returns false for protos whose op mix
+// is dominated by helper-round-trip ops — every GETTABLE / SETTABLE /
+// SELF miss, every CALL, and every LEN / CONCAT / NEWTABLE / SETLIST
+// crosses the wasm→Go host boundary (~tens of ns each, plus the IC
+// inline fast path only covers warmed mono sites). On helper-dense
+// float kernels (nbody's advance / energy: ~1 table op per 3 opcodes)
+// the promoted code runs ~2x SLOWER than the interpreter — measured
+// 43.5ms → 89.7ms after 45b8b53 unblocked their promotion (issue #39).
+//
+// Density judgment mirrors P4's CALL density gate (AnalyzeNative,
+// bebbd44) but over the wasm helper set: require enough plain ops per
+// helper-bound op to amortize the boundary crossings. Pure-arithmetic
+// loop kernels (heavy_arith / heavy_floatloop: zero helper-bound ops)
+// promote and keep their measured P3 wins; helper-dense kernels
+// (nbody advance ~1/3, fannkuch shuffles ~1/3, fib call bodies 1/6,
+// spectral-norm accessor loops ~1/7) stay on the interpreter.
+func (c *Compiler) WorthPromoting(proto *bytecode.Proto) bool {
+	if len(proto.Code) == 0 {
+		return true
+	}
+	total := 0
+	helperBound := 0
+	for _, ins := range proto.Code {
+		total++
+		switch bytecode.Op(ins) {
+		case bytecode.GETTABLE, bytecode.SETTABLE, bytecode.SELF,
+			bytecode.GETGLOBAL, bytecode.SETGLOBAL,
+			bytecode.CALL, bytecode.TAILCALL,
+			bytecode.LEN, bytecode.CONCAT,
+			bytecode.NEWTABLE, bytecode.SETLIST,
+			bytecode.CLOSURE, bytecode.CLOSE:
+			helperBound++
+		}
+	}
+	if helperBound == 0 {
+		return true
+	}
+	// Floor 7, measured on the realworld + heavy suites (Xeon
+	// Platinum, benchtime=2s count=3, 2026-07-03): every kernel that
+	// measured promoted-slower-than-interpreter falls under it (nbody
+	// advance 74/26 ≈ 2.8, fib 12/2 = 6, spectral-norm accessors
+	// 20/3 ≈ 6.7 — at floor 5 fib still promoted and lost ~2.3x), and
+	// every kernel that wins on P3 has no helper-bound ops at all
+	// (heavy_arith / heavy_floatloop return early above). Auto-mode
+	// results with this floor: nbody 89.7→43.2ms, fib 24.9→10.9ms,
+	// binary-trees 104→38.4ms, spectral-norm 40→20.7ms; heavy three
+	// unchanged (86.3 / 5.68 / 50.9ms).
+	return total/helperBound >= wasmHelperDensityFloor
+}
+
+// wasmHelperDensityFloor is the minimum plain-ops-per-helper-bound-op
+// ratio for promotion to be predicted profitable (see WorthPromoting).
+const wasmHelperDensityFloor = 7
+
 // SupportsAllOpcodes 实现 F7 后端能力查询(03 §3.7 + 02 §5.2)。
 //
 // 纯只读、不修改 Proto、不 panic(越界 opcode 编号天然落 false)。
@@ -147,6 +203,8 @@ func (c *Compiler) SlotOf(proto *bytecode.Proto) (uint32, bool) {
 //   - 多 BB 时 CFG 必须可约简(relooper 只处理 reducible CFG,PW4);
 //   - 含字符串常量的 LOADK:Consts 是 State 私有惰性 intern(编译期 Nil
 //     占位),烧不出真 GCRef → 拒(留 PW5 经助手取)。
+//
+// 注意本方法只回答「能不能编」;「编了赚不赚」是 WorthPromoting 的职责。
 func (c *Compiler) SupportsAllOpcodes(proto *bytecode.Proto) bool {
 	if len(proto.Code) == 0 {
 		return true // 空 Proto vacuously supported(实际不会被 P2 判热点)
