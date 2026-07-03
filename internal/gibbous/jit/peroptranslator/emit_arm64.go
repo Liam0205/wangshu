@@ -70,6 +70,102 @@ func emitRetArm64(cb *codeBuf) {
 	cb.emit(jitarm64.EmitRet(nil))
 }
 
+// -----------------------------------------------------------------------
+// arm64 exit-reason protocol (issue #37, PJ10 lowering)
+// -----------------------------------------------------------------------
+//
+// This is the PJ10 exit-reason emit (mirror of amd64 emitExitReason in
+// emit_ops_amd64.go), NOT the PJ4/5 frame-inline helper request
+// (jitarm64.EmitFrameInlineExitHelperRequestArm64). The two protocols
+// differ: PJ4/5 packs only a bare helperCode and additionally writes
+// jitCtx.exitReasonCode; PJ10 packs (helperCode, a, b, c, pc) into
+// exitArg0, writes resumeOff, and signals ExitInlineHelper solely via
+// the X0 return value. Do not mix them.
+//
+// X16 (IP0) is the scratch register: it's reserved for intra-procedure
+// use by the arm64 ABI, never holds a live value across our emits, and
+// doesn't collide with X26 (vsBase) / X27 (jitCtx) / X28 (Go G).
+
+// emitExitReasonArm64 packs (helperCode, a, b, c, pc) into
+// jitCtx.exitArg0, writes a placeholder resumeOff (patched by
+// emitResumePreludeIfPendingArm64 once the next op's offset is known),
+// sets X0 = ExitInlineHelper, and RETs. Field layout matches the
+// arch-shared dispatchHelper in translator_native_dispatch.go:
+//
+//	bits  0..15 : helper code (jit.HelperXxx)
+//	bits 16..23 : op arg A (0-255)
+//	bits 24..32 : op arg B (0-511)
+//	bits 33..41 : op arg C (0-511)
+//	bits 42..63 : op pc (0..4M)
+func emitExitReasonArm64(cb *codeBuf, helperCode uint64, pc int32, a, b, c int32) {
+	packed := helperCode |
+		(uint64(uint32(a)&0xFF) << 16) |
+		(uint64(uint32(b)&0x1FF) << 24) |
+		(uint64(uint32(c)&0x1FF) << 33) |
+		(uint64(uint32(pc)&0x3FFFFF) << 42)
+	// mov X16, packed (16B: movz + 3×movk)
+	cb.emit(jitarm64.EmitMovXdImm64(nil, 16, packed))
+	// str X16, [X27 + exitArg0Off]
+	cb.emit(jitarm64.EmitStrXtToXnDisp(nil, 16, regX27,
+		uint16(jit.JITContextExitArg0Offset)))
+	// movz W16, #lo16; movk W16, #hi16 LSL16 — placeholder resumeOff
+	// imm32 split across two fixed-length instructions; patched by
+	// emitResumePreludeIfPendingArm64. The fixup records the movz
+	// instruction offset (arm64 interpretation of the shared
+	// pendingResumeOffFixups slice — amd64 records a raw imm32 offset).
+	movzOff := int(cb.pos())
+	cb.emit(jitarm64.EmitMovzWdImm16(nil, 16, 0))
+	cb.emit(jitarm64.EmitMovkWdImm16Lsl16(nil, 16, 0))
+	cb.markResumeOffFixup(movzOff)
+	// str W16, [X27 + resumeOffOff] (32-bit store)
+	cb.emit(jitarm64.EmitStrWtToXnDisp(nil, 16, regX27,
+		uint16(jit.JITContextResumeOffOffset)))
+	// movz W0, #ExitInlineHelper — segment exit status (upper 32 bits
+	// of X0 are zeroed by the 32-bit movz, so Run's uint32(rawStatus)
+	// comparison sees exactly ExitInlineHelper).
+	cb.emit(jitarm64.EmitMovzWdImm16(nil, 0, uint16(jit.ExitInlineHelper)))
+	// ret
+	cb.emit(jitarm64.EmitRet(nil))
+}
+
+// emitResumePreludeIfPendingArm64 binds the resume entry for all
+// pending exit-reason emits: emits `ldr X26, [X27+vsBaseOff]` (the
+// dispatcher may have refreshed vsBase via arena grow before reentry)
+// and patches each pending movz/movk pair with the resume offset.
+// Safe no-op when nothing pends. Called at the start of every
+// emitLinearOpArm64 / emitTerminatorArm64 — mirror of the amd64
+// emitResumePreludeIfPending in translator_native.go.
+func emitResumePreludeIfPendingArm64(cb *codeBuf) {
+	if len(cb.pendingResumeOffFixups) == 0 {
+		return
+	}
+	resumeOff := uint32(cb.pos())
+	cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, regX26, regX27,
+		uint16(jit.JITContextValueStackBaseOffset)))
+	for _, po := range cb.pendingResumeOffFixups {
+		patchArm64MovzMovkImm32(cb.bytes, po, resumeOff)
+	}
+	cb.pendingResumeOffFixups = cb.pendingResumeOffFixups[:0]
+}
+
+// patchArm64MovzMovkImm32 patches a movz (at off) + movk-LSL16 (at
+// off+4) pair's imm16 fields with the low/high halves of v. The imm16
+// field occupies bits 5..20 of each instruction word.
+func patchArm64MovzMovkImm32(bytes []byte, off int, v uint32) {
+	patch := func(o int, imm16 uint32) {
+		insn := uint32(bytes[o]) | uint32(bytes[o+1])<<8 |
+			uint32(bytes[o+2])<<16 | uint32(bytes[o+3])<<24
+		insn &= 0xFFE0001F
+		insn |= (imm16 & 0xFFFF) << 5
+		bytes[o] = byte(insn)
+		bytes[o+1] = byte(insn >> 8)
+		bytes[o+2] = byte(insn >> 16)
+		bytes[o+3] = byte(insn >> 24)
+	}
+	patch(off, v&0xFFFF)
+	patch(off+4, v>>16)
+}
+
 // emitJMPArm64 emits `b rel26` with a placeholder + fixup. The rel26 is
 // in units of 4 bytes and is patched by resolveLabels.
 //
@@ -164,16 +260,19 @@ func emitRETURNArm64(cb *codeBuf, pc int32, a, b uint8) {
 	emitRetArm64(cb)
 }
 
-// emitGETUPVALArm64 emits arm64 GETUPVAL A B via shimGetUpval.
+// emitGETUPVALArm64 emits GETUPVAL A B via the exit-reason protocol
+// (issue #37): pack (HelperGetUpval, a, b) into exitArg0, RET; Run's
+// dispatcher does host.SetReg(a, host.GetUpval(base, b)) and reenters.
+// Never raises. Mirror of amd64 emitGETUPVAL.
 func emitGETUPVALArm64(cb *codeBuf, a, b uint8) {
-	addr := shimGetUpvalAddr()
-	emitCallShimArm64(cb, addr, []int32{0, int32(b), int32(a)})
+	emitExitReasonArm64(cb, jit.HelperGetUpval, 0, int32(a), int32(b), 0)
 }
 
-// emitSETUPVALArm64 emits arm64 SETUPVAL A B via shimSetUpvalFromReg.
+// emitSETUPVALArm64 emits SETUPVAL A B via the exit-reason protocol:
+// Run's dispatcher does host.SetUpvalFromReg(base, a, b) and reenters.
+// Never raises. Mirror of amd64 emitSETUPVAL.
 func emitSETUPVALArm64(cb *codeBuf, a, b uint8) {
-	addr := shimSetUpvalFromRegAddr()
-	emitCallShimArm64(cb, addr, []int32{0, int32(a), int32(b)})
+	emitExitReasonArm64(cb, jit.HelperSetUpval, 0, int32(a), int32(b), 0)
 }
 
 // emitARITHArm64 emits arm64 arithmetic op via shimArith. Same

@@ -74,6 +74,41 @@ func (c *nativeCode) Run(stack []uint64, base uint32) (status int32) {
 	jitCtxAddr := uintptr(unsafe.Pointer(c.jitCtx))
 	vsBaseAddr := c.jitCtx.ValueStackBase()
 	rawStatus := jitarm64.CallJITSpec(c.codePage.Addr(), jitCtxAddr, vsBaseAddr)
+	// Exit-reason dispatcher loop (issue #37, mirroring amd64): the mmap
+	// segment cannot call Go shims at all on arm64 (BL into a Go function
+	// from an unregistered code page breaks the stack unwinder), so ops
+	// like GETUPVAL / CALL / GETGLOBAL lower to an exit-reason packing +
+	// RET. Handle the request Go-side and reenter via codePage +
+	// resumeOff until the segment returns a non-helper status. arm64
+	// needs no saveGoG dance: X28 = G is permanent and the trampoline
+	// reloads X26/X27 on every entry.
+	for uint32(rawStatus) == jit.ExitInlineHelper {
+		// HelperReturn terminates the run: multi-return Protos lower
+		// each RETURN to this exit-reason so every site carries its
+		// own (a, b, pc).
+		if arg0 := c.jitCtx.ExitArg0(); arg0&jit.HelperCodeMask == jit.HelperReturn {
+			a := int32((arg0 >> 16) & 0xFF)
+			b := int32((arg0 >> 24) & 0x1FF)
+			pc := int32((arg0 >> 42) & 0x3FFFFF)
+			return c.host.DoReturn(int32(base), pc, a, b)
+		}
+		// Snapshot resumeOff BEFORE dispatching: HelperCall drives the
+		// callee synchronously, and a recursive call into this same
+		// Proto reenters this same nativeCode and clobbers the shared
+		// per-Proto jitCtx (resumeOff / exitArg0 / addr fields).
+		resumeOff := c.jitCtx.ResumeOff()
+		if !c.dispatchHelper(int32(base)) {
+			return 1
+		}
+		// Arena may have grown during the host call; refresh addr
+		// fields before reentering the mmap segment. This also repairs
+		// any jitCtx fields a recursive inner Run overwrote.
+		c.host.RefreshJitCtxAddrs(c.jitCtx, int32(base))
+		c.jitCtx.SetHostRef(hostIfaceHeader(c.host))
+		vsBaseAddr = c.jitCtx.ValueStackBase()
+		resumeAddr := c.codePage.Addr() + uintptr(resumeOff)
+		rawStatus = jitarm64.CallJITSpec(resumeAddr, jitCtxAddr, vsBaseAddr)
+	}
 	status = int32(rawStatus)
 	if status == 0 {
 		if drStatus := c.host.DoReturn(int32(base), c.retPC, c.retA, c.retB); drStatus != 0 {
@@ -101,10 +136,8 @@ func (c *nativeCode) Dispose() {
 	c.codePage = nil
 }
 
-// hostIfaceHeader extracts (itab, data) header from a P4HostState.
-func hostIfaceHeader(h jit.P4HostState) [2]uintptr {
-	return *(*[2]uintptr)(unsafe.Pointer(&h))
-}
+// hostIfaceHeader / dispatchHelper (arch-shared) live in
+// translator_native_dispatch.go.
 
 // PreferNative reports whether Compiler should skip shape-spec fast
 // paths and route this Proto directly to the native emitter. See amd64
@@ -212,7 +245,10 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 	return returnCount == 1
 }
 
-// opSupported: same subset as amd64.
+// opSupported: arm64 subset. Ops beyond the original 18-op mmap-safe
+// set are added stepwise as the exit-reason protocol port progresses
+// (issue #37): GETUPVAL / SETUPVAL landed first (simplest end-to-end
+// round trip — never raise, no IC gate).
 func opSupported(op bytecode.OpCode) bool {
 	switch op {
 	case bytecode.MOVE, bytecode.LOADK, bytecode.LOADBOOL, bytecode.LOADNIL,
@@ -221,6 +257,7 @@ func opSupported(op bytecode.OpCode) bool {
 		bytecode.EQ, bytecode.LT, bytecode.LE,
 		bytecode.TEST, bytecode.TESTSET,
 		bytecode.JMP, bytecode.FORPREP, bytecode.FORLOOP,
+		bytecode.GETUPVAL, bytecode.SETUPVAL,
 		bytecode.RETURN:
 		return true
 	default:
@@ -299,6 +336,7 @@ func emitBBArm64(buf *codeBuf, c *cfg, bb *basicBlock, bbID int) error {
 }
 
 func emitLinearOpArm64(buf *codeBuf, ins bytecode.Instruction, pc int32) error {
+	emitResumePreludeIfPendingArm64(buf)
 	op := bytecode.Op(ins)
 	a := uint8(bytecode.A(ins))
 	bReg := uint8(bytecode.B(ins))
@@ -318,6 +356,10 @@ func emitLinearOpArm64(buf *codeBuf, ins bytecode.Instruction, pc int32) error {
 		emitLOADBOOLArm64_valueOnly(buf, a, bReg)
 	case bytecode.LOADNIL:
 		emitLOADNILArm64(buf, a, bReg)
+	case bytecode.GETUPVAL:
+		emitGETUPVALArm64(buf, a, bReg)
+	case bytecode.SETUPVAL:
+		emitSETUPVALArm64(buf, a, bReg)
 	case bytecode.NOT:
 		emitNOTArm64Inline(buf, a, bReg)
 	case bytecode.ADD, bytecode.SUB, bytecode.MUL, bytecode.DIV:
@@ -337,6 +379,7 @@ func emitLinearOpArm64(buf *codeBuf, ins bytecode.Instruction, pc int32) error {
 }
 
 func emitTerminatorArm64(buf *codeBuf, c *cfg, bb *basicBlock, bbID int, ins bytecode.Instruction, pc int32) error {
+	emitResumePreludeIfPendingArm64(buf)
 	op := bytecode.Op(ins)
 	a := uint8(bytecode.A(ins))
 	b := uint8(bytecode.B(ins))

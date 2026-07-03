@@ -272,6 +272,31 @@ func EmitMovzWdImm16(buf []byte, rd uint8, imm16 uint16) []byte {
 // EncodedMovzWdImm16Len = 4.
 const EncodedMovzWdImm16Len = 4
 
+// EmitMovkWdImm16Lsl16 emits arm64 "movk Wd, #imm16, LSL #16" (32-bit
+// keep-move into the high half of Wd). Paired with EmitMovzWdImm16 it
+// builds an arbitrary 32-bit immediate in two fixed-length instructions:
+//
+//	movz Wd, #(v & 0xFFFF)
+//	movk Wd, #(v >> 16), LSL #16
+//
+// Encoding: 0111_0010_1_01_iiiiiiiiiiiiiiii_ddddd = 0x72A00000 base
+//   - sf=0 (32-bit), opc=11 (MOVK), hw=01 (LSL #16)
+//
+// Use case: PJ10 exit-reason emit writes jitCtx.resumeOff (uint32 byte
+// offset into the code page, can exceed 0xFFFF for large Protos). The
+// two imm16 fields are placeholder-patched by the resume prelude once
+// the next op's offset is known (see markResumeOffFixup).
+func EmitMovkWdImm16Lsl16(buf []byte, rd uint8, imm16 uint16) []byte {
+	if rd > 30 {
+		rd = 0
+	}
+	insn := uint32(0x72A00000) | (uint32(imm16)&0xFFFF)<<5 | uint32(rd)&0x1F
+	return appendArm64Insn(buf, insn)
+}
+
+// EncodedMovkWdImm16Lsl16Len = 4.
+const EncodedMovkWdImm16Lsl16Len = 4
+
 // EmitCmpXnXm 发射 arm64「cmp Xn, Xm」(寄存器比较,设 NZCV flags 不写
 // 结果)。实际编码 = SUBS XZR, Xn, Xm:
 //
