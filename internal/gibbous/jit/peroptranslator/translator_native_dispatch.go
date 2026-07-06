@@ -78,9 +78,22 @@ func (c *nativeCode) dispatchHelper(base int32) bool {
 			return false
 		}
 	case jit.HelperCall:
+		// Snapshot the callee observation BEFORE dispatching to
+		// host.CallBaseline: R(A) after CallBaseline is overwritten
+		// by the return-value moveResults, so any post-call read
+		// would see the first return value's tag, not the callee
+		// closure. Populate the IC once the call succeeds — a raise
+		// still gets to record the miss so shape-change tracking
+		// isn't blind to error paths.
+		//
+		// Issue #50 Spike 1: the observation only writes the slot;
+		// the mmap segment guard that will consume it lands in
+		// Spike 2 alongside the segment-side EmitCallInline.
+		observed := c.snapshotCallCallee(base, a)
 		if st := c.host.CallBaseline(base, pc, a, b, cc); st != 0 {
 			return false
 		}
+		c.populateCallIC(pc, observed)
 	case jit.HelperGetGlobal:
 		// bx split across b (low 9) and c (high 9) slots.
 		if st := c.host.DoGetGlobal(base, pc, a, b|(cc<<9)); st != 0 {
@@ -139,4 +152,49 @@ func (c *nativeCode) dispatchHelper(base int32) bool {
 // hostToIfaceHeader but callable from production code.
 func hostIfaceHeader(h jit.P4HostState) [2]uintptr {
 	return *(*[2]uintptr)(unsafe.Pointer(&h))
+}
+
+// snapshotCallCallee delegates to the host observe. Kept as a
+// dispatcher method so future paths can inject test overrides without
+// touching the host interface. The observation must be taken BEFORE
+// host.CallBaseline dispatches — the callee slot is overwritten by
+// return values once the call completes.
+func (c *nativeCode) snapshotCallCallee(base int32, a int32) uint64 {
+	if c.host == nil {
+		return 0
+	}
+	return c.host.ObserveCallCallee(base, int32(a))
+}
+
+// populateCallIC updates the per-CALL-site inline cache with an
+// observation snapshotted via snapshotCallCallee. observed is the
+// packed uint64 from P4HostState.ObserveCallCallee — see the interface
+// doc for the layout.
+//
+// The dispatcher never gates on IC state today (Spike 1); populate
+// still runs so the probes (CallIC.Hits / .Misses) prove the
+// warmup path fires before Spike 2 wires the segment guard.
+func (c *nativeCode) populateCallIC(pc int32, observed uint64) {
+	if len(c.callICs) == 0 {
+		return
+	}
+	// Find the slot: linear scan is fine for the small N (Lua
+	// functions typically have < 8 CALL sites; the hottest kernels
+	// have 2). Bail on any miss instead of erroring — populate is
+	// probe-only in Spike 1 and must not break correctness.
+	idx := -1
+	for i, sitePC := range c.callSitePCs {
+		if sitePC == pc {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return
+	}
+	protoID := uint32(observed)
+	numParams := uint8(observed >> 32)
+	maxStack := uint8(observed >> 40)
+	flags := uint8(observed >> 48)
+	c.callICs[idx].Populate(protoID, numParams, maxStack, flags)
 }

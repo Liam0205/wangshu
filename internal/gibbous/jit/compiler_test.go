@@ -369,6 +369,11 @@ func (m *mockP4Host) ExecuteCalleeFromInlineFrame(base, callA, callArgCount, nre
 // ForPrep mock stub(PJ3 reg-limit deopt 路径用,单测路径不触达)。
 func (m *mockP4Host) ForPrep(base, pc, a int32) int32 { _ = base; _ = pc; _ = a; return 0 }
 
+// ObserveCallCallee mock stub (issue #50 Spike 1): returns zero so the
+// per-CALL-site IC populate is a no-op in unit tests. Real observation
+// is exercised via the end-to-end crescent tests.
+func (m *mockP4Host) ObserveCallCallee(base, a int32) uint64 { _ = base; _ = a; return 0 }
+
 // CallBaseline 模拟 host.CallBaseline:记录入参 + 返回预设 callRetCode。
 func (m *mockP4Host) CallBaseline(base, pc, a, b, c int32) int32 {
 	_ = base

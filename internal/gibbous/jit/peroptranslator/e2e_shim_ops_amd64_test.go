@@ -114,6 +114,11 @@ func (h *fakeHost) ExecuteCalleeFromInlineFrame(base, callA, callArgCount, nresu
 	return 0
 }
 
+// ObserveCallCallee stub: returns zero (no observation) so the CALL IC
+// populate step is a no-op in shim-op tests. Real host is exercised by
+// end-to-end crescent tests.
+func (h *fakeHost) ObserveCallCallee(base, a int32) uint64 { return 0 }
+
 // hostToIfaceHeader converts a P4HostState value into a [2]uintptr
 // (itab + data) via unsafe.
 func hostToIfaceHeader(h jit.P4HostState) [2]uintptr {
