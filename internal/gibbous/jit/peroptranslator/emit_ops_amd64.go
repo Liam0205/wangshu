@@ -1959,16 +1959,13 @@ func emitSETLIST(cb *codeBuf, pc int32, a, b, c uint8) {
 }
 
 func emitCALL(cb *codeBuf, pc int32, a, b, c uint8) {
-	// Issue #50 Spike 2 EmitCallInline fast path — only fires when:
-	//   - callInlineEnabled = true (arch flag, currently off during
-	//     the segment-guard incubation),
+	// Issue #50 EmitCallInline fast path — fires when:
+	//   - callInlineEnabled = true (on since Spike 2; see the flag's
+	//     doc in translator_native.go),
 	//   - the CALL site has an IC slot in codeBufProto.CallSitePCs,
 	//   - CALL shape is guardable: B != 0 (fixed nargs) and C != 0
 	//     (fixed nresults; multret rejected — segment can't sync top
 	//     mid-call).
-	// The fast emit itself lands in a follow-up commit; this branch
-	// is a placeholder for the shape gate so callInlineEnabled can
-	// be flipped in one motion once the emit body is written.
 	if callInlineEnabled && b != 0 && c != 0 && cb.proto != nil {
 		if callSiteIdx := findCallSiteIndex(cb.proto.CallSitePCs, pc); callSiteIdx >= 0 {
 			if emitCallInlineFastPath(cb, pc, a, b, c, callSiteIdx) {
@@ -1982,18 +1979,18 @@ func emitCALL(cb *codeBuf, pc int32, a, b, c uint8) {
 	emitExitReason(cb, jit.HelperCall, pc, int32(a), int32(b), int32(c))
 }
 
-// emitCallInlineFastPath emits the segment-side guard for the PJ10
-// CALL EmitCallInline fast path (issue #50 Spike 2). Returns true if
+// emitCallInlineFastPath emits the segment-side guard + fast body for
+// the PJ10 CALL EmitCallInline fast path (issue #50). Returns true if
 // the fast path emit consumed the CALL; false if the caller should
 // fall through to the plain exit-reason lowering.
 //
-// **Current status**: guard-only. This step lands the R(A) tag +
-// protoID guards; a successful guard falls through to the exit-reason
-// HelperCall (the historical slow path). Once the in-segment frame
-// build lands in Step 4, the fall-through target becomes the fast
-// HelperExecutePlainCall body instead.
+// A successful guard runs the fast body: seg2seg direct dispatch when
+// the IC carries a callee segment address (Spike 5), else the
+// HelperExecutePlainCall exit-reason (Go-side in-frame execution,
+// Spike 4). A failed guard falls through to the HelperCall
+// exit-reason slow path.
 //
-// Emit sequence (amd64, guard-only phase):
+// Guard sequence (amd64):
 //
 //	; ---- guard ----
 //	mov rax, [rbx + A*8]           ; R(A) NaN-box
@@ -2010,18 +2007,10 @@ func emitCALL(cb *codeBuf, pc int32, a, b, c uint8) {
 //	mov rdx, icSlotAddr            ; bake IC slot's abs addr
 //	cmp eax, [rdx + offsetof(CalleeProtoID)]
 //	jne fallthrough
-//	; ---- guard passed (Spike 2 phase 2 will emit frame build here) ----
+//	; ---- guard passed: fast body (seg2seg / HelperExecutePlainCall) ----
 //	fallthrough:
 //	; caller emits HelperCall exit-reason
-//
-// In this step, guard-passed and guard-failed both fall through to the
-// same exit-reason. Returning false here signals emitCALL to emit the
-// existing HelperCall lowering after us — which is exactly what we
-// want for the guard-only phase.
 func emitCallInlineFastPath(cb *codeBuf, pc int32, a, b, c uint8, callSiteIdx int) bool {
-	_ = pc
-	_ = b
-	_ = c
 	// The IC slot's Go-heap address must be stable for the mmap
 	// page's lifetime. cb.proto.CallICs is allocated once by
 	// TranslateProtoNative before emit and never re-slice'd, so

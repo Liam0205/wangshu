@@ -92,9 +92,11 @@ const callICFlagsByteOffset = 6
 // goroutine stack can't overflow in the NOSPLIT window where morestack
 // can't fire (spike DECISION.md option b). Past the cap, a caller falls
 // back to the exit-reason path (host executeFrom handles deep recursion
-// on the heap-allocated CI chain). 128 levels × ~16 bytes/level of
-// return-address + saved-rbx ≈ 2KB, comfortably within the stack the
-// trampoline is entered with; fib(24) recurses only 24 deep.
+// on the heap-allocated CI chain). Per-level machine-stack cost: amd64
+// ~24 B (push rcx + push rbx + call return address), arm64 32 B
+// (sub sp, sp, #32); cap=128 levels tops out at ~4KB, comfortably
+// within the stack the trampoline is entered with; fib(24) recurses
+// only 24 deep.
 const segToSegDepthCap = 128
 
 // Call-IC flag bits (single byte in Flags).
@@ -330,8 +332,14 @@ func callSitePCsFor(proto *bytecode.Proto) []int32 {
 
 // PopulateCallIC records a Lua callee observation into the slot. Called
 // from the exit-reason dispatcher after host.CallBaseline succeeds.
-// Race-free with concurrent segment reads: all field writes go through
-// atomic.Store; the segment guard reads via matching atomic.Load.
+// Race-free by construction, not by atomics: the IC table is owned by
+// its nativeCode, which is owned by a single State — the Go-side
+// dispatcher and the segment execute serially on one goroutine, so
+// Populate never runs concurrently with a segment read. The atomic
+// accessors on CalleeProtoID/Misses keep `go test -race` quiet for
+// white-box probes; CalleeSegAddr and the Flags OR-in are plain writes
+// and would need real synchronization (atomic store + acquire loads in
+// the segment) before an IC table could ever be shared across States.
 //
 // Semantics:
 //
@@ -348,7 +356,7 @@ func callSitePCsFor(proto *bytecode.Proto) []int32 {
 func (ic *CallIC) Populate(protoID uint32, numParams, maxStack, flags uint8) {
 	// Host observation: mark Stuck and return.
 	if flags&CallICFlagIsHost != 0 {
-		atomic.StoreUint32(&ic.Misses, atomic.LoadUint32(&ic.Misses)+1)
+		atomic.AddUint32(&ic.Misses, 1)
 		atomic.StoreUint32(&ic.CalleeProtoID, 0)
 		storeByte(&ic.Flags, CallICFlagStuck|CallICFlagIsHost)
 		return
@@ -359,7 +367,7 @@ func (ic *CallIC) Populate(protoID uint32, numParams, maxStack, flags uint8) {
 	prevFlags := loadByte(&ic.Flags)
 	if prevFlags&CallICFlagStuck != 0 {
 		// Already stuck — record miss for the probe, don't rewrite.
-		atomic.StoreUint32(&ic.Misses, atomic.LoadUint32(&ic.Misses)+1)
+		atomic.AddUint32(&ic.Misses, 1)
 		return
 	}
 	if prevStored == 0 {
@@ -372,7 +380,7 @@ func (ic *CallIC) Populate(protoID uint32, numParams, maxStack, flags uint8) {
 	}
 	if prevStored != storedID {
 		// Shape change: transition to Stuck.
-		atomic.StoreUint32(&ic.Misses, atomic.LoadUint32(&ic.Misses)+1)
+		atomic.AddUint32(&ic.Misses, 1)
 		storeByte(&ic.Flags, prevFlags|CallICFlagStuck)
 		atomic.StoreUint32(&ic.CalleeProtoID, 0)
 		return

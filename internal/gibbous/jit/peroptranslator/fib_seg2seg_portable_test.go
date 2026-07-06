@@ -54,3 +54,54 @@ func TestSeg2SegFibPortable(t *testing.T) {
 		}
 	}
 }
+
+// TestCallInlineWideMultiReturnPortable crosses the 15 -> 16 nresults
+// boundary: a CALL capturing 17 fixed return values (bytecode C = 18,
+// nresults = 17) exceeds 4 bits. The arch-shared dispatcher used to
+// mask nresults with 0xF (PR #62 review finding), silently truncating
+// 17 to 1 — result registers r2..r17 kept stale values while the run
+// "succeeded". The callee reads a global so it is NOT seg2seg-eligible
+// and must ride the HelperExecutePlainCall dispatcher path (the
+// truncation point) — a pure-arith callee would go seg2seg and never
+// reach it. The sum assertion catches any dropped result; the
+// interpreter is the oracle for the expected value.
+func TestCallInlineWideMultiReturnPortable(t *testing.T) {
+	src := `
+gWideBase = 0
+local function seventeen(x)
+  local g = gWideBase
+  return x+1+g, x+2, x+3, x+4, x+5, x+6, x+7, x+8, x+9,
+         x+10, x+11, x+12, x+13, x+14, x+15, x+16, x+17
+end
+local function kernel(n)
+  local s = 0
+  for i = 1, n do
+    local t = i + 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8 + 9 + 10
+    local r1, r2, r3, r4, r5, r6, r7, r8, r9,
+          r10, r11, r12, r13, r14, r15, r16, r17 = seventeen(t)
+    s = s + r1 + r2 + r3 + r4 + r5 + r6 + r7 + r8 + r9 +
+        r10 + r11 + r12 + r13 + r14 + r15 + r16 + r17
+  end
+  return s
+end
+return kernel(20)
+`
+	prog, err := wangshu.Compile([]byte(src), "wideret")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	st := wangshu.NewState(wangshu.Options{})
+	st.SetForceAllPromote(true)
+	res, err := prog.Run(st)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// Per iteration: sum_{k=1..17} (t+k) = 17t + 153, with t = i + 55.
+	// Sum over i=1..20: 17*(210 + 20*55) + 20*153 = 17*1310 + 3060 = 25330.
+	if len(res) != 1 || res[0].Display() != "25330" {
+		t.Fatalf("kernel(20) = %v, want [25330] (nresults > 15 truncated?)", res)
+	}
+	if st.PromotionCount() == 0 {
+		t.Fatal("PromotionCount = 0; kernel did not promote")
+	}
+}
