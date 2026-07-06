@@ -144,12 +144,15 @@ func emitInlineArithWithSlowPath(cb *codeBuf, op bytecode.OpCode, pc int32, a ui
 
 	// Slow block starts here — patch guard fixups. The dispatcher runs
 	// host.Arith (byte-equal coercion / metamethod / raise semantics)
-	// and reenters at the next op's resume prelude.
+	// and reenters at the next op's resume prelude. When running as a
+	// seg2seg callee (segCallDepth > 0) this deopts instead (issue #50
+	// Spike 5) — the whole call chain unwinds and redoes via host.
 	slowOff := int(cb.pos())
 	for _, po := range guardFixups {
 		rel := int32(slowOff) - int32(po+4)
 		writeRel32(cb, po, rel)
 	}
+	emitSegCallDeoptGuard(cb)
 	emitExitReason(cb, jit.HelperArithSlow, pc, int32(a), int32(b), int32(c))
 
 	// Done block starts here — patch fastPathJmpOff.
@@ -157,6 +160,48 @@ func emitInlineArithWithSlowPath(cb *codeBuf, op bytecode.OpCode, pc int32, a ui
 	rel := int32(doneOff) - int32(fastPathJmpOff+4)
 	writeRel32(cb, fastPathJmpOff, rel)
 	return true
+}
+
+// emitSegCallDeoptGuard emits, at the start of an op's exit-reason slow
+// block, a check that deopts the segment-to-segment call chain instead
+// of exiting to Go when this segment is running as a seg2seg callee
+// (issue #50 Spike 5):
+//
+//	cmp dword [r15 + segCallDepthOff], 0
+//	je normal_exit          ; depth == 0 → Go-entered, take the exit-reason
+//	mov dword [r15 + segCallDeoptOff], 1
+//	ret                     ; deopt: unwind to the caller fast body
+//	normal_exit:
+//	<existing exit-reason follows>
+//
+// Only emitted when segToSegEnabled. Registers untouched (uses r15 +
+// immediate). Safe to prepend to any exit-reason slow block: at
+// segCallDepth == 0 it's a single compare + not-taken branch.
+func emitSegCallDeoptGuard(cb *codeBuf) {
+	if !segToSegEnabled {
+		return
+	}
+	// cmp dword [r15 + segCallDepthOff], 0   (41 83 BF disp32 00)
+	{
+		off := int32(jit.JITContextSegCallDepthOffset)
+		cb.emit([]byte{0x41, 0x83, 0xBF,
+			byte(uint32(off)), byte(uint32(off) >> 8),
+			byte(uint32(off) >> 16), byte(uint32(off) >> 24), 0x00})
+	}
+	// je normal_exit   (74 rel8) — target is past the deopt block.
+	// deopt block = mov dword [r15+deoptOff],1 (11B) + ret (1B) = 12B.
+	cb.emit([]byte{0x74, 0x0C})
+	// mov dword [r15 + segCallDeoptOff], 1   (41 C7 87 disp32 imm32) = 11B
+	{
+		off := int32(jit.JITContextSegCallDeoptOffset)
+		cb.emit([]byte{0x41, 0xC7, 0x87,
+			byte(uint32(off)), byte(uint32(off) >> 8),
+			byte(uint32(off) >> 16), byte(uint32(off) >> 24),
+			0x01, 0x00, 0x00, 0x00})
+	}
+	// ret   (C3) = 1B — total deopt block 11+1 = 12B (matches je rel8)
+	cb.emit([]byte{0xC3})
+	// normal_exit: (fall through to existing exit-reason)
 }
 
 // writeRel32 patches a 4-byte little-endian rel32 at offset po in cb.bytes.
@@ -618,6 +663,10 @@ func inlineNumericCompare(cb *codeBuf, op bytecode.OpCode, pc int32, a uint8, b,
 // succExec, else succSkip. Errors (packed bit1) return status=1 from
 // the dispatcher without reentry.
 func emitCompareExitTail(cb *codeBuf, op bytecode.OpCode, pc int32, a uint8, b, c int, succExec, succSkip int) {
+	// Seg2seg callee deopt: a compare guard miss while running as a
+	// segment-to-segment callee unwinds the call chain instead of
+	// exiting to host.Compare (issue #50 Spike 5).
+	emitSegCallDeoptGuard(cb)
 	emitExitReason(cb, jit.HelperCompareSlow, pc, int32(a), int32(b), int32(c))
 	// Bind the resume entry right here (the only pending fixup is
 	// ours: any prior op's was bound by this terminator's prelude).
@@ -2035,22 +2084,67 @@ func emitCallInlineFastPath(cb *codeBuf, pc int32, a, b, c uint8, callSiteIdx in
 				byte(uint32(off)), byte(uint32(off) >> 8),
 				byte(uint32(off) >> 16), byte(uint32(off) >> 24)})
 		}
+		// Deopt check: the callee may have deopted mid-execution (arith
+		// / compare guard miss while seg2seg).
+		// cmp dword [r15 + segCallDeoptOff], 0
+		{
+			off := int32(jit.JITContextSegCallDeoptOffset)
+			cb.emit([]byte{0x41, 0x83, 0xBF,
+				byte(uint32(off)), byte(uint32(off) >> 8),
+				byte(uint32(off) >> 16), byte(uint32(off) >> 24), 0x00})
+		}
+		// je no_deopt   (0F 84 rel32) — no deopt → continue normally
+		jeNoDeoptOff := len(cb.bytes) + 2
+		cb.emit([]byte{0x0F, 0x84, 0, 0, 0, 0})
+		// Deopt path. If still nested (segCallDepth > 0) the deopt
+		// propagates: ret to our caller's fast body. If depth == 0 we
+		// are the top of the chain: clear the flag and jmp skip_seg to
+		// redo via the exit-reason host path.
+		// cmp dword [r15 + segCallDepthOff], 0
+		{
+			off := int32(jit.JITContextSegCallDepthOffset)
+			cb.emit([]byte{0x41, 0x83, 0xBF,
+				byte(uint32(off)), byte(uint32(off) >> 8),
+				byte(uint32(off) >> 16), byte(uint32(off) >> 24), 0x00})
+		}
+		// jne propagate   (0F 85 rel32) — depth > 0 → ret to propagate
+		jnePropOff := len(cb.bytes) + 2
+		cb.emit([]byte{0x0F, 0x85, 0, 0, 0, 0})
+		// top-level (depth == 0): clear deopt flag.
+		// mov dword [r15 + segCallDeoptOff], 0   (41 C7 87 disp32 imm32)
+		{
+			off := int32(jit.JITContextSegCallDeoptOffset)
+			cb.emit([]byte{0x41, 0xC7, 0x87,
+				byte(uint32(off)), byte(uint32(off) >> 8),
+				byte(uint32(off) >> 16), byte(uint32(off) >> 24),
+				0x00, 0x00, 0x00, 0x00})
+		}
+		// jmp skip_seg   (E9 rel32) — patched once skip_seg known
+		jmpRedoOff := len(cb.bytes) + 1
+		cb.emit([]byte{0xE9, 0, 0, 0, 0})
+		// propagate: ret (depth > 0)
+		propagatePos := len(cb.bytes)
+		writeRel32(cb, jnePropOff, int32(propagatePos)-int32(jnePropOff+4))
+		cb.emit([]byte{0xC3}) // ret — propagate the deopt to our caller
+		// no_deopt: (patch je here)
+		noDeoptPos := len(cb.bytes)
+		writeRel32(cb, jeNoDeoptOff, int32(noDeoptPos)-int32(jeNoDeoptOff+4))
 		// Prove-the-path: inc qword [SegToSegHitCountAddr].
 		// mov rax, imm64 (48 B8) ; inc qword [rax] (48 FF 00)
 		cb.emit(jitamd64.EmitMovRaxImm64(nil, SegToSegHitCountAddr()))
 		cb.emit([]byte{0x48, 0xFF, 0x00})
-		// Result is already at caller R(A) (callee moveResults wrote
-		// funcIdx = caller R(A)). Jump past the exit-reason blocks to
-		// the end of the CALL emit; the next op continues normally.
+		// Result is already at caller R(A). Jump past the exit-reason
+		// blocks to the end of the CALL emit; the next op continues.
 		// jmp done   (E9 rel32) — patched at end
 		cb.emit([]byte{0xE9, 0, 0, 0, 0})
 		jmpDoneOff = len(cb.bytes) - 4
-		// skip_seg: (patch the three eligibility jumps here — the fast
-		// body begins next).
+		// skip_seg: (patch the eligibility jumps + the deopt-redo jmp
+		// here — the fast body begins next).
 		skipSegPos := len(cb.bytes)
 		writeRel32(cb, jzNeverExitsOff, int32(skipSegPos)-int32(jzNeverExitsOff+4))
 		writeRel32(cb, jzSegZeroOff, int32(skipSegPos)-int32(jzSegZeroOff+4))
 		writeRel32(cb, jaeCapOff, int32(skipSegPos)-int32(jaeCapOff+4))
+		writeRel32(cb, jmpRedoOff, int32(skipSegPos)-int32(jmpRedoOff+4))
 	}
 
 	// --- Fast body: guard passed. Emit exit-reason to

@@ -81,6 +81,13 @@ const (
 	// in-segment-teardown paths; the caller CALL fast body increments /
 	// decrements it around the segment-to-segment `call`.
 	JITContextSegCallDepthOffset = unsafe.Offsetof(JITContext{}.segCallDepth)
+
+	// JITContextSegCallDeoptOffset is the byte offset of segCallDeopt
+	// (issue #50 Spike 5). arith / compare / CALL slow blocks test
+	// `cmp dword [r15+segCallDepthOff], 0` and, when nonzero, set
+	// `mov dword [r15+segCallDeoptOff], 1` + ret to deopt the seg2seg
+	// call chain.
+	JITContextSegCallDeoptOffset = unsafe.Offsetof(JITContext{}.segCallDeopt)
 )
 
 // **§9.20.9 协议状态码常量** (Spike 1 真接入 + future helper request 路由):
@@ -313,7 +320,18 @@ type JITContext struct {
 	// morestack can't fire (see spike DECISION.md option b).
 	segCallDepth uint32
 
-	_ [4]byte // 8-byte alignment padding after segCallDepth uint32
+	// segCallDeopt is the segment-to-segment deopt flag (issue #50 Spike
+	// 5). When a segment running as a seg2seg callee (segCallDepth > 0)
+	// hits an operation that would normally exit to a Go helper (arith /
+	// compare guard miss, a CALL that can't itself go seg2seg, or any
+	// exit-reason op), it sets this to 1 and `ret`s instead of exiting.
+	// Each caller fast body checks it after the `call`: if set and still
+	// nested (segCallDepth > 0), it propagates by ret'ing; at the top
+	// (segCallDepth == 0) it clears the flag and redoes the whole call
+	// via the exit-reason host path (host.CallBaseline rebuilds a fresh
+	// frame — idempotent because a seg2seg-eligible callee has no
+	// observable side effect before the deopt point).
+	segCallDeopt uint32
 
 	// savedGoG is a snapshot of the Go G register (amd64 R14 / arm64 X28)
 	// at Run entry. PJ10 native emit that calls Go helpers must first do
@@ -477,6 +495,11 @@ func (c *JITContext) SavedGoG() uintptr { return c.savedGoG }
 // segment-to-segment call is in flight; a leaked nonzero after Run is
 // a teardown bug.
 func (c *JITContext) SegCallDepth() uint32 { return c.segCallDepth }
+
+// SegCallDeopt returns the segment-to-segment deopt flag (issue #50
+// Spike 5 test hook). A leaked nonzero after Run indicates a deopt
+// propagation bug.
+func (c *JITContext) SegCallDeopt() uint32 { return c.segCallDeopt }
 
 // SetHostRef stores the opaque host interface header ([2]uintptr:
 // itab + data). PJ10 native shims read this to reconstruct the
