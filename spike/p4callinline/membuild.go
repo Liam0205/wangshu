@@ -38,6 +38,35 @@ func (c *CodePage) Munmap() error {
 	return unix.Munmap(mem)
 }
 
+// MmapCodeRW allocates an RW page and copies code, leaving it writable
+// so callers can patch baked addresses before flipping to RX via
+// FlipRX. Used by the two-pass self-recursive segment builder.
+func MmapCodeRW(code []byte) (*CodePage, error) {
+	if len(code) == 0 {
+		return nil, errors.New("p4callinline: empty code")
+	}
+	pageSize := unix.Getpagesize()
+	length := ((len(code) + pageSize - 1) / pageSize) * pageSize
+	mem, err := unix.Mmap(
+		-1, 0, length,
+		unix.PROT_READ|unix.PROT_WRITE,
+		unix.MAP_ANON|unix.MAP_PRIVATE,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("p4callinline: mmap RW failed: %w", err)
+	}
+	copy(mem, code)
+	return &CodePage{mem: mem, length: length}, nil
+}
+
+// FlipRX flips a page allocated by MmapCodeRW from RW to RX.
+func (c *CodePage) FlipRX() error {
+	if c == nil || c.mem == nil {
+		return errors.New("p4callinline: nil page")
+	}
+	return unix.Mprotect(c.mem, unix.PROT_READ|unix.PROT_EXEC)
+}
+
 // MmapCode allocates RW, copies code, flips to RX (never RWX).
 func MmapCode(code []byte) (*CodePage, error) {
 	if len(code) == 0 {
