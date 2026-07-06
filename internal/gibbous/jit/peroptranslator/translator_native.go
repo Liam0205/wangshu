@@ -615,7 +615,18 @@ func TranslateProtoNative(proto *bytecode.Proto, host jit.P4HostState) (*nativeC
 	}, nil
 }
 
-// emitBB emits one basic block: linear ops via emit_amd64.go /
+// callInlineEnabled controls whether emitCALL emits the segment-side
+// EmitCallInline fast path (issue #50 Spike 2). Default off — the emit
+// falls back to the historical HelperCall exit-reason exactly like it
+// did before Spike 2. The flag is toggled once the segment guard +
+// prove-the-path assertions land, so we can commit the plumbing
+// incrementally without a behavior flip.
+//
+// A single package-level bool is sufficient because there's no per-
+// State variation: EmitCallInline is a build-time decision (arch
+// support + gate state), not runtime configuration.
+var callInlineEnabled = false
+
 // emit_ops_amd64.go, then the terminator with successor BB fixups.
 func emitBB(buf *codeBuf, c *cfg, bb *basicBlock, bbID int) error {
 	code := c.proto.Code
