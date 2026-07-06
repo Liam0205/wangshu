@@ -130,6 +130,16 @@ func (c *nativeCode) Slot() (uint32, bool) { return 0, false }
 // amd64 counterpart for rationale.
 func (c *nativeCode) IsPJ10Native() bool { return true }
 
+// NativeSegEntryAddr returns the mmap segment's entry address (issue #50
+// Spike 5 segment-to-segment dispatch). Mirror of amd64. Returns 0 when
+// disposed. Implements bridge.NativeSegAddrer.
+func (c *nativeCode) NativeSegEntryAddr() uint64 {
+	if c == nil || c.codePage == nil {
+		return 0
+	}
+	return uint64(c.codePage.Addr())
+}
+
 // Dispose releases the mmap'd code page. Safe under concurrent Run: the
 // refcount protocol defers the actual munmap until the last active Run's
 // Exit. See amd64 counterpart / internal/gibbous/jit/amd64/codepage_linux.go.

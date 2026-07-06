@@ -52,6 +52,13 @@ var (
 	CallICWarmedCount   atomic.Int64
 )
 
+// CallICSegAddrCount counts times populateCallIC recorded a nonzero
+// callee native segment address (issue #50 Spike 5 probe). Nonzero
+// proves the callee was native-compiled AND the bridge/host lookup
+// chain (NativeCalleeSegAddr → GibbousCodeOf → NativeSegAddrer) works —
+// the prerequisite for segment-to-segment dispatch.
+var CallICSegAddrCount atomic.Int64
+
 // dispatchHelper handles a single ExitInlineHelper request from the
 // mmap segment. Returns true on success (segment can be re-entered
 // at resumeOff), false on error (host method raised → caller returns
@@ -240,5 +247,19 @@ func (c *nativeCode) populateCallIC(pc int32, observed uint64) {
 		c.callICs[idx].CalleeProtoID != 0 &&
 		c.callICs[idx].Flags&CallICFlagStuck == 0 {
 		CallICWarmedCount.Add(1)
+	}
+	// Spike 5: record the callee's native segment entry address (0 when
+	// the callee isn't native-compiled). Only meaningful once the slot
+	// holds a valid Lua callee; a stuck / host slot keeps CalleeSegAddr
+	// at 0 so the segment-to-segment fast path never routes into it.
+	if c.host != nil && c.callICs[idx].CalleeProtoID != 0 &&
+		c.callICs[idx].Flags&CallICFlagStuck == 0 {
+		segAddr := c.host.NativeCalleeSegAddr(protoID)
+		c.callICs[idx].CalleeSegAddr = segAddr
+		if segAddr != 0 {
+			CallICSegAddrCount.Add(1)
+		}
+	} else {
+		c.callICs[idx].CalleeSegAddr = 0
 	}
 }

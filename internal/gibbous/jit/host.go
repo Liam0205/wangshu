@@ -415,6 +415,17 @@ type P4HostState interface {
 	// Return: 0=OK / 1=ERR (state.pendingErr already set).
 	ExecutePlainCallInlineFrame(base int32, callA int32, nargs int32, nresults int32) int32
 
+	// NativeCalleeSegAddr returns the PJ10 native mmap segment entry
+	// address for the callee Proto with the given protoID, or 0 if the
+	// callee is not native-compiled (issue #50 Spike 5). Used by the
+	// CALL IC populate path to record CalleeSegAddr so a future
+	// segment-to-segment dispatch can `call` into the callee directly.
+	//
+	// Only main-thread native callees are eligible (coroutines don't
+	// promote); a non-native / disposed callee returns 0 and the fast
+	// path stays on the host round trip.
+	NativeCalleeSegAddr(protoID uint32) uint64
+
 	// ObserveCallCallee inspects R(A) at a CALL site and returns a
 	// packed observation of the callee's shape. Called by the exit-
 	// reason dispatcher just before host.CallBaseline to populate the

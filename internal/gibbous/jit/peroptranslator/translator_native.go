@@ -173,6 +173,17 @@ func (c *nativeCode) Slot() (uint32, bool) { return 0, false }
 // assumes a fresh frame and doesn't compose with that lifecycle.
 func (c *nativeCode) IsPJ10Native() bool { return true }
 
+// NativeSegEntryAddr returns the mmap segment's entry address for the
+// issue #50 Spike 5 segment-to-segment dispatch. Returns 0 when the
+// code page has been disposed (Dispose nils codePage), so callers must
+// treat 0 as "fall back to exit-reason". Implements bridge.NativeSegAddrer.
+func (c *nativeCode) NativeSegEntryAddr() uint64 {
+	if c == nil || c.codePage == nil {
+		return 0
+	}
+	return uint64(c.codePage.Addr())
+}
+
 // Dispose releases the mmap'd code page. Safe to call multiple times
 // and safe under concurrent Run in multi-State setups: CodePage.Dispose
 // flips a disposed flag (blocking further Enter) and the refcount
