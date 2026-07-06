@@ -140,6 +140,12 @@ func (c *nativeCode) NativeSegEntryAddr() uint64 {
 	return uint64(c.codePage.Addr())
 }
 
+// NativeNeverExitsSegment reports whether this segment never exits to a
+// Go helper mid-execution (issue #50 Spike 5). Mirror of amd64.
+func (c *nativeCode) NativeNeverExitsSegment() bool {
+	return c != nil && ProtoNeverExitsSegment(c.proto)
+}
+
 // Dispose releases the mmap'd code page. Safe under concurrent Run: the
 // refcount protocol defers the actual munmap until the last active Run's
 // Exit. See amd64 counterpart / internal/gibbous/jit/amd64/codepage_linux.go.
