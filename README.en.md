@@ -65,7 +65,7 @@ Numbers taken on one machine (linux/amd64, Intel Xeon Platinum, 24 core, go1.26.
 
 ### darwin/arm64 measurements (Apple M5 Pro)
 
-The same reproduction commands measured on an Apple M5 Pro (darwin/arm64, go1.26.4, `-benchtime=2s -count=3`, median, 2026-07-03). Note: this table was measured BEFORE the P3 helper-density profitability gate (issue #39) landed; under the gate the realworld "P3 auto" column becomes interpreter execution (same behaviour as the [^p3-gate] rows above). To be refreshed on the next on-device run. The arm64 P4 native op-set port via the exit-reason protocol is complete (issues #37 / #40): arithmetic / comparison / table / global / call ops share the same acceptance gates as amd64 (IC gates + CALL density gate); across the heavy and realworld suites P4 is now uniformly no worse than P3 — HeavyArith 2.0×, HeavyFloatloop 2.5× over P3, the same order of magnitude as the amd64 turnaround.
+The same reproduction commands measured on an Apple M5 Pro (darwin/arm64, go1.26.4, `-benchtime=2s -count=3`, median). The realworld "P3 auto" column and the fannkuch P4 columns were re-measured on 2026-07-06 (after the P3 helper-density profitability gate, issue #39, and arm64 EQ-K support, issue #56, landed); all other figures are from 2026-07-03. The arm64 P4 native op-set port via the exit-reason protocol is complete (issues #37 / #40): arithmetic / comparison / table / global / call ops share the same acceptance gates as amd64 (IC gates + CALL density gate); across the heavy and realworld suites P4 is now uniformly no worse than P3 — HeavyArith 2.0×, HeavyFloatloop 2.5× over P3, the same order of magnitude as the amd64 turnaround.
 
 | Category | Script | gopher | P1 | P3 auto | P3 force | P4 auto | P4 force |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -75,11 +75,11 @@ The same reproduction commands measured on an Apple M5 Pro (darwin/arm64, go1.26
 | Heavy kernels | HeavyArith | 87.2 ms | 44.3 ms (**1.97×**) | 50.9 ms (**1.71×**) | 51.3 ms (**1.70×**) | 25.6 ms (**3.40×**) | 25.3 ms (**3.45×**) |
 | | HeavyRecursion | 5.50 ms | 3.13 ms (**1.76×**) | 3.60 ms (**1.53×**) | 3.70 ms (1.48×) | 3.37 ms (**1.63×**) | 3.38 ms (**1.63×**) |
 | | HeavyFloatloop | 153 ms | 83.8 ms (**1.83×**) | 61.5 ms (**2.49×**) | 62.4 ms (**2.46×**) | 25.3 ms (**6.05×**) | 25.3 ms (**6.05×**) |
-| Realworld small | fib | 5.60 ms | 6.41 ms (0.87×) | 14.3 ms (0.39×) | 14.3 ms (0.39×) | 6.97 ms (0.80×) | 6.94 ms (0.81×) |
-| | binary-trees | 19.3 ms | 23.9 ms (0.81×) | 59.9 ms (0.32×) | 59.9 ms (0.32×) | 25.5 ms (0.76×) | 25.2 ms (0.77×) |
-| | spectral-norm | 12.9 ms | 12.2 ms (1.06×) | 23.2 ms (0.56×) | 28.3 ms (0.46×) | 12.1 ms (1.07×) | 13.2 ms (0.98×) |
-| | fannkuch | 2.46 ms | 3.64 ms (0.68×) | 3.71 ms (0.66×) | 3.72 ms (0.66×) | 3.71 ms (0.66×) | 3.85 ms (0.64×) |
-| | n-body | 30.2 ms | 27.5 ms (1.10×) | 49.8 ms (0.61×) | 50.0 ms (0.60×) | 32.9 ms (0.92×) | 32.9 ms (0.92×) |
+| Realworld small | fib | 5.60 ms | 6.41 ms (0.87×) | 7.33 ms (0.76×) [^p3-gate] | 14.3 ms (0.39×) | 6.97 ms (0.80×) | 6.94 ms (0.81×) |
+| | binary-trees | 19.3 ms | 23.9 ms (0.81×) | 26.4 ms (0.73×) [^p3-gate] | 59.9 ms (0.32×) | 25.5 ms (0.76×) | 25.2 ms (0.77×) |
+| | spectral-norm | 12.9 ms | 12.2 ms (1.06×) | 13.5 ms (0.96×) [^p3-gate] | 28.3 ms (0.46×) | 12.1 ms (1.07×) | 13.2 ms (0.98×) |
+| | fannkuch | 2.46 ms | 3.64 ms (0.68×) | 3.76 ms (0.65×) | 3.72 ms (0.66×) | 0.33 ms (**7.44×**) | 0.33 ms (**7.39×**) |
+| | n-body | 30.2 ms | 27.5 ms (1.10×) | 28.9 ms (1.04×) [^p3-gate] | 50.0 ms (0.60×) | 32.9 ms (0.92×) | 32.9 ms (0.92×) |
 | Boundary mini · Call | PureVM | 490 ns | 77.5 ns (**6.32×**) | — | — | — | — |
 | | CallOnly | 54.0 ns | 104 ns (0.52×) | 105 ns (0.51×) | 165 ns (0.33×) | 105 ns (0.51×) | 106 ns (0.51×) |
 | | Boundary (+SetGlobal) | 120 ns | 179 ns (0.67×) | 177 ns (0.68×) | 180 ns (0.67×) | 176 ns (0.68×) | 176 ns (0.68×) |
@@ -91,7 +91,7 @@ The same reproduction commands measured on an Apple M5 Pro (darwin/arm64, go1.26
 | Realworld embedded · CallInto | Predicate (×1000) | 282 µs | 264 µs (1.07×) | 262 µs (1.08×) | 269 µs (1.05×) | 265 µs (1.07×) | 263 µs (1.07×) |
 | | Transform (×1000) | 212 µs | 181 µs (1.17×) | 183 µs (1.16×) | 183 µs (1.16×) | 167 µs (**1.27×**) | 167 µs (**1.27×**) |
 
-P4 vs P3 like-for-like on arm64: heavy ×3 + realworld ×5 all no worse than P3 (HeavyArith 2.03×, HeavyFloatloop 2.47×, fib 2.06×, binary-trees 2.38×, spectral-norm 2.14×, n-body 1.52× over P3; fannkuch and HeavyRecursion tie within noise).
+P4 vs P3 like-for-like on arm64: heavy ×3 + realworld ×5 all no worse than P3 (HeavyArith 2.03×, HeavyFloatloop 2.47×, fib 2.06×, binary-trees 2.38×, spectral-norm 2.14×, n-body 1.52×, fannkuch 11.2× over P3; HeavyRecursion ties within noise).
 
 [^cat-baseline]: `benchmarks/baseline`. Three self-contained scripts (Simple branch-compare, Arith six-order Horner polynomial, Loop sum 1..N), no Go↔Lua boundary crossing. Shows VM-core dispatch / arithmetic / loop cost under minimum workload.
 [^cat-heavy]: `benchmarks/heavy`. Three flat numeric kernels (HeavyArith pure arithmetic, HeavyRecursion self-recursion, HeavyFloatloop nested float loop); intentionally excludes tables, strings, library CALL and other helper-bound structures. Shows the compilation tier's performance ceiling on shapes that actually let it work.
