@@ -83,6 +83,23 @@ type GibbousCode interface {
 	Slot() (uint32, bool)
 }
 
+// NativeSegAddrer is an optional interface a GibbousCode may implement
+// (issue #50 Spike 5): it exposes the absolute entry address of the
+// PJ10 native mmap segment so a caller segment can `call qword ptr [addr]`
+// directly into it (segment-to-segment dispatch, no host round trip).
+//
+// Only the PJ10 native emit path (peroptranslator.nativeCode) implements
+// this; PerOpCode head-op replay and PJ0-PJ9 shape templates do not, so
+// callers must type-assert and fall back to the exit-reason path when
+// the assertion fails or the returned addr is 0 (segment disposed).
+type NativeSegAddrer interface {
+	// NativeSegEntryAddr returns the mmap segment's start address as a
+	// uint64, or 0 if the segment isn't available (disposed / not
+	// native). Callable only for a code value that also answers
+	// IsPJ10Native() == true.
+	NativeSegEntryAddr() uint64
+}
+
 // CompileErrKind 编译失败的类别(05 §2.2.2 错误返回语义 / 04 §4.3)。
 //
 // 让升层日志能区分「F7 漏判」(03 的 bug)/ 「资源耗尽」(运行期临时态)/

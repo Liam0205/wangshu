@@ -1208,6 +1208,47 @@ return kernel(20)
 	}
 }
 
+// TestPJ10_CallInline_SegAddrRecorded proves the Spike 5 prerequisite:
+// when both caller and callee are native-compiled, the dispatcher
+// records the callee's native segment entry address in the CallIC. A
+// zero count means the NativeCalleeSegAddr → GibbousCodeOf →
+// NativeSegAddrer lookup chain is broken and segment-to-segment
+// dispatch can never fire.
+//
+// The callee here (`leaf`) is a multi-op arithmetic body so it clears
+// the native path's own promotion heuristics and gets a real segment.
+func TestPJ10_CallInline_SegAddrRecorded(t *testing.T) {
+	prog, err := wangshu.Compile([]byte(`
+local function leaf(x) return x + 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8 end
+local function kernel(n)
+  local s = 0
+  for i = 1, n do
+    local t = i + 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8 + 9 + 10
+    s = s + leaf(t)
+  end
+  return s
+end
+return kernel(20)
+`), "pj10segaddr")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	st := wangshu.NewState(wangshu.Options{})
+	st.SetForceAllPromote(true)
+
+	before := peroptranslator.CallICSegAddrCount.Load()
+	if _, err := prog.Run(st); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	segDelta := peroptranslator.CallICSegAddrCount.Load() - before
+	t.Logf("CallICSegAddrCount delta = %d", segDelta)
+	if segDelta == 0 {
+		t.Fatal("no callee segment address recorded — the Spike 5 " +
+			"NativeCalleeSegAddr lookup chain is broken; segment-to-segment " +
+			"dispatch will never have a target")
+	}
+}
+
 // TestPJ10_CallInline_MultiReturn proves the Spike 4 form: a CALL that
 // captures more than one return value (C >= 3) rides the fast body.
 // The helper's nresults param already handles multi-return; the guard

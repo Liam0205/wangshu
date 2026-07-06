@@ -58,6 +58,22 @@ type CallIC struct {
 	// callee protoID) or host/vararg observation. Prove-the-path tests
 	// assert Hits vs Misses distribution.
 	Misses uint32
+
+	// CalleeSegAddr is the absolute entry address of the callee's PJ10
+	// native mmap segment, or 0 if the callee is not native-compiled
+	// (issue #50 Spike 5). Populated by the dispatcher alongside the
+	// shape meta. The segment-to-segment fast path loads this and, if
+	// nonzero, `call`s into the callee segment directly instead of the
+	// host round trip. Stored as uint64 for a stable field width in
+	// the segment guard's disp encoding.
+	//
+	// Written non-atomically alongside the atomic ProtoID store. Read
+	// order in the segment: the segment loads ProtoID first (atomic
+	// via the aligned uint32), and only reaches CalleeSegAddr after
+	// the ProtoID compare passes — so a torn read can't route into a
+	// stale segment (a shape change zeroes ProtoID, forcing the slow
+	// path before CalleeSegAddr is consulted).
+	CalleeSegAddr uint64
 }
 
 // Call-IC flag bits (single byte in Flags).

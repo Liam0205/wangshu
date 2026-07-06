@@ -126,6 +126,10 @@ func (h *fakeHost) ExecutePlainCallInlineFrame(base, callA, nargs, nresults int3
 	return 0
 }
 
+// NativeCalleeSegAddr stub (issue #50 Spike 5): returns 0 so no
+// segment-to-segment dispatch is attempted in shim tests.
+func (h *fakeHost) NativeCalleeSegAddr(protoID uint32) uint64 { return 0 }
+
 // hostToIfaceHeader converts a P4HostState value into a [2]uintptr
 // (itab + data) via unsafe.
 func hostToIfaceHeader(h jit.P4HostState) [2]uintptr {

@@ -798,6 +798,25 @@ func (st *State) ExecutePlainCallInlineFrame(base, callA, nargs, nresults int32)
 	return 0
 }
 
+// NativeCalleeSegAddr returns the PJ10 native segment entry address for
+// the callee Proto, or 0 if the callee isn't native-compiled (issue #50
+// Spike 5). Looks up the callee's GibbousCode and type-asserts to
+// bridge.NativeSegAddrer (only peroptranslator.nativeCode implements it).
+func (st *State) NativeCalleeSegAddr(protoID uint32) uint64 {
+	if int(protoID) >= len(st.protos) || st.protos[protoID] == nil {
+		return 0
+	}
+	code := st.bridge.GibbousCodeOf(st.protos[protoID])
+	if code == nil {
+		return 0
+	}
+	seg, ok := code.(bridge.NativeSegAddrer)
+	if !ok {
+		return 0
+	}
+	return seg.NativeSegEntryAddr()
+}
+
 // ObserveCallCallee snapshots the callee shape at R(A) for the issue
 // #50 Spike 1 per-CALL-site inline cache. Returns a packed uint64 the
 // PJ10 native dispatcher uses to populate the IC after

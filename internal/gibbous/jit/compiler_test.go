@@ -374,6 +374,10 @@ func (m *mockP4Host) ForPrep(base, pc, a int32) int32 { _ = base; _ = pc; _ = a;
 // is exercised via the end-to-end crescent tests.
 func (m *mockP4Host) ObserveCallCallee(base, a int32) uint64 { _ = base; _ = a; return 0 }
 
+// NativeCalleeSegAddr mock stub (issue #50 Spike 5): returns 0 so no
+// segment-to-segment dispatch is attempted in unit tests.
+func (m *mockP4Host) NativeCalleeSegAddr(protoID uint32) uint64 { _ = protoID; return 0 }
+
 // ExecutePlainCallInlineFrame mock stub (issue #50 Spike 2): unit
 // tests don't emit the CALL EmitCallInline path (the segment guard is
 // gated on IC + arch flags), so this stub returns 0=OK as a safety net.
