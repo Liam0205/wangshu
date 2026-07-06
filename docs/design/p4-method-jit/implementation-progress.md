@@ -2296,6 +2296,16 @@ PJ10 覆盖率工程两轮交付,承 [10 §14](./10-per-op-translator.md) 详细
 
 **vertical-slice 计划(先打通机制,后扩形态)**:第一片选**叶子 callee**(单 BB 单 RETURN,如 `zero()` / `id(x)` / `addup(a,b)`,RETURN 走 `xor eax,eax; ret`),不含递归。caller 段 fast body:guard(已有)→ 段内建 callee CI 帧 + ciDepth++ → 段内 rbx=callee vsBase(caller vsBase+(A+1)*8)→ `call [ICslot+CalleeSegAddr]` → callee 段跑到 `xor eax,eax; ret` ret 回 caller → caller 段内 DoReturn(段内 moveResults + ciDepth-- + top restore,不调 Go)→ 恢复 rbx=caller vsBase 续跑。机制打通后再扩:多返回 callee(fib 形态,需 RETURN 双语义分支 flag)+ native recursion cap。
 
+### 15.6 Spike 5 段到段直跳打通 ✅(commits `b15b458`/`0cdcc9e`/`88fb991`)
+
+**关键设计转折**:vertical-slice 原计划的「叶子 callee」死路——never-exits 集(只 MOVE/LOADK/JMP/RETURN 纯直线)是**单 BB**,走 shape-spec template 没有 native 段;而 native 段需 multi-BB(PreferNative 门)。二者不相容 ⟹ 没有 proto 同时满足。**解法**:放宽 never-exits 集含 **FORPREP/FORLOOP/TEST/TESTSET/LOADBOOL**——它们全是纯 inline(不 emit exit-reason),FORLOOP 回边 / TEST 分支给出 multi-BB never-exits 形态(NaN 是结果正确性问题,与出段无关,普通 native 路径已接受)。这使 callee 同时是 native-compiled + never-exits。
+
+**帧管理全 Go 端 → 段内**(never-exits 简化):never-exits callee 执行中永不 GC(无分配 / 无 safepoint 触达 Go)⟹ 不需要完整 CI 帧 + ciDepth 管理。caller 段只:segCallDepth++ → push caller vsBase → 设 rbx + jitCtx.vsBase = callee vsBase(= caller vsBase +(A+1)*8,故 callee R(0)=caller R(A+1),实参天然就位)→ `call [CalleeSegAddr]` → 恢复 caller vsBase + segCallDepth-- → 结果已在 caller R(A)(callee moveResults 写 funcIdx)。callee RETURN **双语义**(`emitReturnDualSemantics`):读 jitCtx.segCallDepth,==0 走历史 `xor eax,eax; ret`(Go DoReturn)/ >0 段内 moveResults(`[rbx-8+k*8]=[rbx+(A+k)*8]`)+ ret 回 caller 段。native recursion 由 `segToSegDepthCap=128` 兜底,超限回退 exit-reason(Go 栈不溢出于 NOSPLIT 窗口)。
+
+**性能实证(Xeon 6982P)**:call-heavy kernel(never-exits callee)`BenchmarkSeg2Seg_On 4.38ms` vs `_Off(exit-reason)13.0ms` = **2.96× 快**。首个 P4 零跨界正确 CALL。全测 + difftest + luasuite + conformance + -race + 60s/4.7M-exec fuzz 全绿。
+
+**剩余(扩到 arith/compare callee = fib 形态)**:fib callee 含 LT/SUB/ADD,guard-miss 会 exit-reason 中途出段。段到段上下文里 callee 中途出段 = **status-chain-traversal 问题**(等价 P3 PW10 R3):callee 出段 rax=ExitInlineHelper ret 回 caller 段,但 resume 需重入 callee 页的 resumeOff 而当前 Run loop 的 resumeAddr = caller 页 + resumeOff(错页)。需 jitCtx 存活跃段地址 + caller 透传 rax + Run loop 用活跃段页 resume。这是 fib 反超的最后一关,下一 Spike 5 步。
+
 ---
 
 相关:
