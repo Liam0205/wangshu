@@ -1889,16 +1889,39 @@ func emitCallInlineFastPath(cb *codeBuf, pc int32, a, b, c uint8, callSiteIdx in
 	jne4Off := len(cb.bytes) + 2
 	cb.emit([]byte{0x0F, 0x85, 0, 0, 0, 0})
 
-	// Patch all four jne targets to the fallthrough position (current pos).
-	fallthroughPos := len(cb.bytes)
-	writeRel32(cb, jne1Off, int32(fallthroughPos)-int32(jne1Off+4))
-	writeRel32(cb, jne2Off, int32(fallthroughPos)-int32(jne2Off+4))
-	writeRel32(cb, jne3Off, int32(fallthroughPos)-int32(jne3Off+4))
-	writeRel32(cb, jne4Off, int32(fallthroughPos)-int32(jne4Off+4))
-	// Return false so emitCALL falls through to the historical
-	// HelperCall exit-reason. Guard is a no-op cost until the fast
-	// body lands (Spike 2 step 4).
-	return false
+	// --- Fast body: guard passed. Emit exit-reason to
+	// HelperExecutePlainCall (issue #50 Spike 2 step 4b).
+	//
+	// Spike 2 keeps frame management fully Go-side: the segment only
+	// guards (R(A) tag + IC protoID + Flags/NumParams) then exits via
+	// HelperExecutePlainCall. The Go helper reads R(callA) directly
+	// (th.cur is still the caller frame — the segment did NOT push a
+	// CI slot or bump ciDepth) and runs enterLuaFrame + executeFrom,
+	// or zero-crosses to the callee's P4 code. Because the segment
+	// does no ciDepth manipulation, there's no PopFrame to emit and no
+	// rebalance — the helper leaves ciDepth exactly where the caller
+	// expects it after the CALL.
+	//
+	// Spike 5 will lift the frame build + segment-to-segment dispatch
+	// into the segment; for Spike 2 the deliverable is correctness +
+	// a proven guard path (CallInlineFastHitCount), not yet a perf win.
+	//
+	// Exit to HelperExecutePlainCall (nargs = B-1, nresults = C-1).
+	nargs := int32(b) - 1
+	nresults := int32(c) - 1
+	emitExitReason(cb, jit.HelperExecutePlainCall, pc, int32(a), nargs, nresults)
+
+	// After the fast-body exit-reason RET, emit the slow-path
+	// HelperCall exit-reason. Guard failures (jne1..jne4) branch here;
+	// the fast body ends with a RET so control never falls through
+	// into this block except via a guard-fail jne.
+	slowPathPos := len(cb.bytes)
+	writeRel32(cb, jne1Off, int32(slowPathPos)-int32(jne1Off+4))
+	writeRel32(cb, jne2Off, int32(slowPathPos)-int32(jne2Off+4))
+	writeRel32(cb, jne3Off, int32(slowPathPos)-int32(jne3Off+4))
+	writeRel32(cb, jne4Off, int32(slowPathPos)-int32(jne4Off+4))
+	emitExitReason(cb, jit.HelperCall, pc, int32(a), int32(b), int32(c))
+	return true
 }
 
 // emitSELF emits SELF A B C via the HelperSelf exit-reason: the

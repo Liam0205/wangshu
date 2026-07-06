@@ -747,30 +747,30 @@ func (st *State) TForLoop(base, pc, a, c int32) int64 {
 func (st *State) ExecutePlainCallInlineFrame(base, callA, nargs, nresults int32) int32 {
 	_ = base
 	th := st.runningThread
-	if th.ciDepthWordRef != 0 {
-		th.ciDepth = int(uint32(th.arena.WordAt(th.ciDepthWordRef)))
+	// The segment guard already validated R(callA) is a mono Lua
+	// closure matching the IC protoID; it did NOT push a CI frame or
+	// bump ciDepth (Spike 2 keeps frame management Go-side — segment
+	// only guards + exits). So th.cur is still the caller frame and
+	// ciDepth is unchanged. funcIdx addresses the callee closure in
+	// the caller's frame exactly like host.CallBaseline / doCall.
+	ci := st.gibCI(th)
+	funcIdx := ci.base + int(callA)
+	callee := th.slot(funcIdx)
+	if value.Tag(callee) != value.TagFunction {
+		// Guard should have prevented this; fall back to the raise.
+		return st.raiseGibbous(st.errWithName(ci, "call", int(callA), callee))
 	}
-	// 1. read callee CI to validate protoID / cl.
-	depth := th.ciDepth - 1
-	var calleeCI callInfo
-	th.readCISegInto(depth, &calleeCI)
-	if calleeCI.cl == 0 {
-		return st.raiseGibbous(errf("ExecutePlainCallInlineFrame: nil closure GCRef in CI[%d]", depth))
-	}
-	calleePID := object.ClosureProtoID(st.arena, calleeCI.cl)
+	cl := value.GCRefOf(callee)
+	calleePID := object.ClosureProtoID(st.arena, cl)
 	if int(calleePID) >= len(st.protos) || st.protos[calleePID] == nil {
 		return st.raiseGibbous(errf("ExecutePlainCallInlineFrame: invalid callee protoID %d", calleePID))
 	}
-	// 2. undo the segment ciDepth bump — enterLuaFrame re-bumps.
-	th.setCIDepth(th.ciDepth - 1)
-	funcIdx := th.cur.base + int(callA)
-	// 3. C stack depth check.
 	if st.nCcalls >= maxCCallDepth {
 		return st.raiseGibbous(errf("C stack overflow"))
 	}
 	st.nCcalls++
-	// 4. Zero-cross fast path: callee is also P4-promoted → skip
-	//    executeFrom's interpreter loop entirely.
+	// Zero-cross fast path: callee is also P4-promoted → skip
+	// executeFrom's interpreter loop entirely.
 	if profileEnabled && th == st.mainTh {
 		calleeCode := st.bridge.GibbousCodeOf(st.protos[calleePID])
 		if calleeCode != nil {
@@ -780,11 +780,11 @@ func (st *State) ExecutePlainCallInlineFrame(base, callA, nargs, nresults int32)
 				return st.raiseGibbous(err)
 			}
 			st.frameInlineZeroCrossHits++
-			th.setCIDepth(th.ciDepth + 1)
 			return 0
 		}
 	}
-	// 5. Interpreter fallback.
+	// Interpreter fallback: enterLuaFrame + executeFrom, exactly like
+	// host.CallBaseline's doCall path, then callee RETURN pops itself.
 	if e := st.enterLuaFrame(th, funcIdx, int(nargs), int(nresults), false); e != nil {
 		st.nCcalls--
 		return st.raiseGibbous(e)
@@ -795,7 +795,6 @@ func (st *State) ExecutePlainCallInlineFrame(base, callA, nargs, nresults int32)
 	if err != nil {
 		return st.raiseGibbous(err)
 	}
-	th.setCIDepth(th.ciDepth + 1)
 	return 0
 }
 
