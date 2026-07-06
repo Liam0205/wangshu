@@ -86,6 +86,13 @@ func callSitePCsFor(proto *bytecode.Proto) []int32 {
 	return out
 }
 
+// CallIC storage convention: CalleeProtoID stores (protoID+1). 0 in the
+// field means "unpopulated" so the empty-slot sentinel doesn't collide
+// with protoID=0 (which is a valid ID — st.protos is zero-indexed).
+// The Populate / segment-guard sides both work with the +1 encoding;
+// only the accessor CalleeProtoIDValue unbiases it for external
+// inspection.
+
 // PopulateCallIC records a Lua callee observation into the slot. Called
 // from the exit-reason dispatcher after host.CallBaseline succeeds.
 // Race-free with concurrent segment reads: all field writes go through
@@ -93,16 +100,16 @@ func callSitePCsFor(proto *bytecode.Proto) []int32 {
 //
 // Semantics:
 //
-//   - Slot empty (CalleeProtoID == 0): populate.
-//   - Slot occupied with same protoID: no-op (monotonic).
+//   - Slot empty (CalleeProtoID == 0): populate — writes protoID+1.
+//   - Slot occupied with same protoID (as protoID+1): no-op.
 //   - Slot occupied with different protoID: transition to Stuck (mono
 //     IC — one shape change ends the fast-path budget).
 //   - flagIsHost / flagIsVararg / flagNeedsArg: whichever caller
 //     observed is OR'd; those callees can never fast-path.
 //
-// The dispatcher passes the actual observed protoID / meta; when the
-// callee is a host closure it passes protoID=0 + flagIsHost. This keeps
-// the API single-shape.
+// The dispatcher passes the actual observed protoID (raw, unbiased);
+// when the callee is a host closure it passes any protoID + flagIsHost
+// and the slot enters Stuck.
 func (ic *CallIC) Populate(protoID uint32, numParams, maxStack, flags uint8) {
 	// Host observation: mark Stuck and return.
 	if flags&CallICFlagIsHost != 0 {
@@ -111,22 +118,24 @@ func (ic *CallIC) Populate(protoID uint32, numParams, maxStack, flags uint8) {
 		storeByte(&ic.Flags, CallICFlagStuck|CallICFlagIsHost)
 		return
 	}
-	prevID := atomic.LoadUint32(&ic.CalleeProtoID)
+	// Store the observation as protoID+1 so an empty slot is unambiguous.
+	storedID := protoID + 1
+	prevStored := atomic.LoadUint32(&ic.CalleeProtoID)
 	prevFlags := loadByte(&ic.Flags)
 	if prevFlags&CallICFlagStuck != 0 {
 		// Already stuck — record miss for the probe, don't rewrite.
 		atomic.StoreUint32(&ic.Misses, atomic.LoadUint32(&ic.Misses)+1)
 		return
 	}
-	if prevID == 0 {
+	if prevStored == 0 {
 		// First observation: populate.
 		ic.CalleeNumParams = numParams
 		ic.CalleeMaxStack = maxStack
 		storeByte(&ic.Flags, flags)
-		atomic.StoreUint32(&ic.CalleeProtoID, protoID) // release: field values visible before ID.
+		atomic.StoreUint32(&ic.CalleeProtoID, storedID)
 		return
 	}
-	if prevID != protoID {
+	if prevStored != storedID {
 		// Shape change: transition to Stuck.
 		atomic.StoreUint32(&ic.Misses, atomic.LoadUint32(&ic.Misses)+1)
 		storeByte(&ic.Flags, prevFlags|CallICFlagStuck)
@@ -134,6 +143,18 @@ func (ic *CallIC) Populate(protoID uint32, numParams, maxStack, flags uint8) {
 		return
 	}
 	// Same shape: no-op (Spike 2+ increments Hits from the segment side).
+}
+
+// CalleeProtoIDValue returns the raw protoID (0-based), or (0, false)
+// if the slot is unpopulated / stuck. Consumers inspecting the IC (test
+// probes, segment guard emit) should go through this accessor to avoid
+// forgetting the +1 bias.
+func (ic *CallIC) CalleeProtoIDValue() (uint32, bool) {
+	stored := atomic.LoadUint32(&ic.CalleeProtoID)
+	if stored == 0 {
+		return 0, false
+	}
+	return stored - 1, true
 }
 
 // FlagsFromProto builds the flag byte from a Lua callee's proto meta.

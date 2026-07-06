@@ -27,6 +27,24 @@ import (
 // interpreter fallback.
 var DispatchHelperCount atomic.Int64
 
+// CallICPopulateCount and CallICWarmedCount count the CALL IC
+// populate path in the exit-reason CALL dispatcher (issue #50
+// Spike 1 probe).
+//
+// CallICPopulateCount: every populateCallIC invocation with a matching
+// pc → CallSitePCs slot.
+// CallICWarmedCount: subset that transitioned an empty slot to
+// populated (first-time observation with a non-zero, non-host protoID).
+//
+// Both are read by prove-the-path tests to confirm the warmup path
+// fires under real workloads. They can't detect Spike 2's segment
+// guard (which lands later); they only defend the warmup half of the
+// EmitCallInline plumbing.
+var (
+	CallICPopulateCount atomic.Int64
+	CallICWarmedCount   atomic.Int64
+)
+
 // dispatchHelper handles a single ExitInlineHelper request from the
 // mmap segment. Returns true on success (segment can be re-entered
 // at resumeOff), false on error (host method raised → caller returns
@@ -172,8 +190,8 @@ func (c *nativeCode) snapshotCallCallee(base int32, a int32) uint64 {
 // doc for the layout.
 //
 // The dispatcher never gates on IC state today (Spike 1); populate
-// still runs so the probes (CallIC.Hits / .Misses) prove the
-// warmup path fires before Spike 2 wires the segment guard.
+// still runs so the probes (CallICPopulateCount / CallICWarmedCount)
+// prove the warmup path fires before Spike 2 wires the segment guard.
 func (c *nativeCode) populateCallIC(pc int32, observed uint64) {
 	if len(c.callICs) == 0 {
 		return
@@ -192,9 +210,20 @@ func (c *nativeCode) populateCallIC(pc int32, observed uint64) {
 	if idx < 0 {
 		return
 	}
+	CallICPopulateCount.Add(1)
 	protoID := uint32(observed)
 	numParams := uint8(observed >> 32)
 	maxStack := uint8(observed >> 40)
 	flags := uint8(observed >> 48)
+	prevStored := c.callICs[idx].CalleeProtoID
+	prevFlags := c.callICs[idx].Flags
 	c.callICs[idx].Populate(protoID, numParams, maxStack, flags)
+	// Warmed transition: empty slot → populated with a valid Lua callee
+	// observation (stored non-zero, no stuck flag). Uses the +1-biased
+	// storage: empty is exactly 0.
+	if prevStored == 0 && prevFlags&CallICFlagStuck == 0 &&
+		c.callICs[idx].CalleeProtoID != 0 &&
+		c.callICs[idx].Flags&CallICFlagStuck == 0 {
+		CallICWarmedCount.Add(1)
+	}
 }
