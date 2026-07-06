@@ -2286,6 +2286,16 @@ PJ10 覆盖率工程两轮交付,承 [10 §14](./10-per-op-translator.md) 详细
 
 **Spike 5 待办**:① callee 段入口改为「段内自建帧」形态(不依赖入口 jitCtx.valueStackBase,caller 先算好 callee vsBase 装 rbx)② callee RETURN 段内拆帧 + ret 回 caller 段 ③ IC 加 CalleeSegAddr 字段 + dispatcher populate 回填 ④ caller 段 fast body 从 exit-reason 改 `call qword [ICslot+CalleeSegAddr]` ⑤ native nesting depth cap + 超限 exit-reason fallback ⑥ 密度门放宽 + call-heavy 基准回归 + bench-acceptance 三平台。
 
+### 15.5 Spike 5 feasibility spike ✅ + vertical-slice 设计(commit `f05c2d7`)
+
+**feasibility GREEN**:`spike/p4callinline/fib_seg.go` 自递归 fib 段(n 传 rcx / 结果返 rax,递归经 baked 绝对地址段到段),**fib(24) = 0.19ms**(gopher ~9.4ms,快 48×;P4 exit-reason 18.9ms;Spike 2-4 fast body 16.5ms)。证明段到段递归 + 24 层 native stack 深度物理成本近零。此为纯计算 floor(无 Lua 值栈/CI 帧开销),生产 Lua fib 加帧管理,但只要帧建拆在段内即远超 gopher。**主代码改造值得投入**。
+
+**关键技术障碍(feasibility spike 暴露)**:callee 段的 RETURN 语义与调用者类型强耦合——
+- callee 被 Go 顶层 `enterGibbous` 调(Run 走 CallJITSpec):单返回段 `xor eax,eax; ret` 出段 → Run 检 status==0 调 `host.DoReturn`;多返回段(如 fib 两 RETURN)走 `HelperReturn` exit-reason 出段。
+- callee 被 caller 段 `call [seg]` 直调:RETURN 必须**段内拆帧**(moveResults + ciDepth-- + top restore)然后 `ret` 回 caller 段的 call 下一条,**不能**出段到 Run(那是 caller 段的 Run 不是 callee 的)。段内**不能调 Go helper 做 DoReturn**(mmap+morestack:native 段间嵌套加深 Go 栈,DoReturn 触发 morestack 拷栈失效 → 必须 DoReturn 也全段内字节码化)。
+
+**vertical-slice 计划(先打通机制,后扩形态)**:第一片选**叶子 callee**(单 BB 单 RETURN,如 `zero()` / `id(x)` / `addup(a,b)`,RETURN 走 `xor eax,eax; ret`),不含递归。caller 段 fast body:guard(已有)→ 段内建 callee CI 帧 + ciDepth++ → 段内 rbx=callee vsBase(caller vsBase+(A+1)*8)→ `call [ICslot+CalleeSegAddr]` → callee 段跑到 `xor eax,eax; ret` ret 回 caller → caller 段内 DoReturn(段内 moveResults + ciDepth-- + top restore,不调 Go)→ 恢复 rbx=caller vsBase 续跑。机制打通后再扩:多返回 callee(fib 形态,需 RETURN 双语义分支 flag)+ native recursion cap。
+
 ---
 
 相关:
