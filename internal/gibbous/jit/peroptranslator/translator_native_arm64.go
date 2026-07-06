@@ -409,6 +409,14 @@ func TranslateProtoNative(proto *bytecode.Proto, host jit.P4HostState) (*nativeC
 		buf.proto.CallSitePCs = callPCs
 	}
 
+	// Allocate CallIC backing array pre-emit so a future arm64 emit
+	// can bake per-site slot addresses as imm64 (mirror of amd64;
+	// issue #50 Spike 2). Currently unused by arm64 emit — the
+	// segment guard will land after amd64 is proven.
+	if n := len(buf.proto.CallSitePCs); n > 0 {
+		buf.proto.CallICs = make([]CallIC, n)
+	}
+
 	// Prologue: reload X26 = vsBase from jitCtx (X27+off). arm64 doesn't
 	// need the amd64 saveGoG dance because X28 = G is permanent on Go
 	// arm64 ABIInternal.
@@ -435,12 +443,7 @@ func TranslateProtoNative(proto *bytecode.Proto, host jit.P4HostState) (*nativeC
 		return nil, err
 	}
 	NativeCompileCount.Add(1)
-	// Per-CALL-site inline cache: one CallIC slot per CALL pc (issue
-	// #50 Spike 1; mirror of amd64).
-	var callICs []CallIC
-	if n := len(buf.proto.CallSitePCs); n > 0 {
-		callICs = make([]CallIC, n)
-	}
+	// buf.proto.CallICs was allocated pre-emit.
 	return &nativeCode{
 		proto:       proto,
 		codePage:    page,
@@ -449,7 +452,7 @@ func TranslateProtoNative(proto *bytecode.Proto, host jit.P4HostState) (*nativeC
 		retA:        buf.proto.RetA,
 		retB:        buf.proto.RetB,
 		retPC:       buf.proto.RetPC,
-		callICs:     callICs,
+		callICs:     buf.proto.CallICs,
 		callSitePCs: buf.proto.CallSitePCs,
 	}, nil
 }

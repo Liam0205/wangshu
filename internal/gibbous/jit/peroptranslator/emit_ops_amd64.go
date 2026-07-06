@@ -1777,23 +1777,101 @@ func findCallSiteIndex(callSitePCs []int32, pc int32) int {
 	return -1
 }
 
-// emitCallInlineFastPath emits the segment-side guard + in-segment
-// frame build for the PJ10 CALL EmitCallInline fast path (issue #50
-// Spike 2). Returns true if the fast path emit succeeded, false if
-// the caller should fall through to the plain exit-reason lowering.
+// emitCallInlineFastPath emits the segment-side guard for the PJ10
+// CALL EmitCallInline fast path (issue #50 Spike 2). Returns true if
+// the fast path emit consumed the CALL; false if the caller should
+// fall through to the plain exit-reason lowering.
 //
-// **Current status**: unimplemented placeholder that returns false so
-// callers always fall through. The full emit body — R(A) tag guard +
-// IC protoID compare + CI slot write + ciDepth bump + exit-reason to
-// HelperExecutePlainCall — lands in the next commit alongside the
-// IC-slot-address fixup infrastructure.
+// **Current status**: guard-only. This step lands the R(A) tag +
+// protoID guards; a successful guard falls through to the exit-reason
+// HelperCall (the historical slow path). Once the in-segment frame
+// build lands in Step 4, the fall-through target becomes the fast
+// HelperExecutePlainCall body instead.
+//
+// Emit sequence (amd64, guard-only phase):
+//
+//	; ---- guard ----
+//	mov rax, [rbx + A*8]           ; R(A) NaN-box
+//	mov rcx, rax                   ; save for payload extract
+//	shr rax, 48                    ; high 16 bits = tag
+//	cmp ax, 0xFFFD                 ; TagFunction
+//	jne fallthrough
+//	mov rdx, payloadMask           ; 0x0000_FFFF_FFFF_FFFF
+//	and rcx, rdx                   ; rcx = closure GCRef offset
+//	mov rdx, [r15 + arenaBaseOff]  ; rdx = arena base
+//	add rcx, rdx                   ; rcx = closure abs addr
+//	mov eax, [rcx + 8]             ; low 32 bits of word1 = protoID
+//	inc eax                        ; unbias against IC.CalleeProtoID+1
+//	mov rdx, icSlotAddr            ; bake IC slot's abs addr
+//	cmp eax, [rdx + offsetof(CalleeProtoID)]
+//	jne fallthrough
+//	; ---- guard passed (Spike 2 phase 2 will emit frame build here) ----
+//	fallthrough:
+//	; caller emits HelperCall exit-reason
+//
+// In this step, guard-passed and guard-failed both fall through to the
+// same exit-reason. Returning false here signals emitCALL to emit the
+// existing HelperCall lowering after us — which is exactly what we
+// want for the guard-only phase.
 func emitCallInlineFastPath(cb *codeBuf, pc int32, a, b, c uint8, callSiteIdx int) bool {
-	_ = cb
 	_ = pc
-	_ = a
 	_ = b
 	_ = c
-	_ = callSiteIdx
+	// The IC slot's Go-heap address must be stable for the mmap
+	// page's lifetime. cb.proto.CallICs is allocated once by
+	// TranslateProtoNative before emit and never re-slice'd, so
+	// &cb.proto.CallICs[callSiteIdx] is stable. Bake it as imm64.
+	if cb.proto == nil || callSiteIdx < 0 || callSiteIdx >= len(cb.proto.CallICs) {
+		return false
+	}
+	icSlotAddr := uintptr(unsafe.Pointer(&cb.proto.CallICs[callSiteIdx]))
+
+	// 1. mov rax, [rbx + A*8]              (7B: 48 8B 43 disp8 for A<=15, disp32 otherwise)
+	cb.emit(jitamd64.EmitMovqRaxFromMemReg(nil, regRBX, int32(a)*8))
+	// 2. mov rcx, rax                (3B: 48 89 C1)
+	cb.emit([]byte{0x48, 0x89, 0xC1})
+	// 3. shr rax, 48                       (4B: 48 C1 E8 30)
+	cb.emit([]byte{0x48, 0xC1, 0xE8, 0x30})
+	// 4. cmp ax, 0xFFFD                    (4B: 66 3D FD FF)
+	cb.emit([]byte{0x66, 0x3D, 0xFD, 0xFF})
+	// 5. jne fallthrough                   (6B: 0F 85 rel32) — patched below
+	jne1Off := len(cb.bytes) + 2 // rel32 field starts 2 bytes into the 6-byte insn
+	cb.emit([]byte{0x0F, 0x85, 0, 0, 0, 0})
+	// 6. mov rdx, payloadMask (imm64 = 0x0000_FFFF_FFFF_FFFF)  (10B: 48 BA imm64)
+	cb.emit(jitamd64.EmitMovRdxImm64(nil, 0x0000_FFFF_FFFF_FFFF))
+	// 7. and rcx, rdx                (3B: 48 21 D1)
+	cb.emit([]byte{0x48, 0x21, 0xD1})
+	// 8. mov rdx, [r15 + arenaBaseOff]     (7B: 49 8B 97 disp32)
+	{
+		off := int32(jit.JITContextArenaBaseOffset)
+		cb.emit([]byte{0x49, 0x8B, 0x97,
+			byte(uint32(off)),
+			byte(uint32(off) >> 8),
+			byte(uint32(off) >> 16),
+			byte(uint32(off) >> 24)})
+	}
+	// 9. add rcx, rdx                (3B: 48 01 D1)
+	cb.emit([]byte{0x48, 0x01, 0xD1})
+	// 10. mov eax, [rcx + 8]                (3B: 8B 41 08 — no REX for 32-bit load)
+	cb.emit([]byte{0x8B, 0x41, 0x08})
+	// 11. inc eax                           (2B: FF C0)
+	cb.emit([]byte{0xFF, 0xC0})
+	// 12. mov rdx, icSlotAddr (imm64)       (10B: 48 BA imm64)
+	cb.emit(jitamd64.EmitMovRdxImm64(nil, uint64(icSlotAddr)))
+	// 13. cmp eax, [rdx + CalleeProtoID_offset]  (3B: 3B 42 disp8)
+	//     CallIC.CalleeProtoID is the first field at offset 0.
+	cb.emit([]byte{0x3B, 0x42, 0x00})
+	// 14. jne fallthrough                   (6B: 0F 85 rel32) — patched below
+	jne2Off := len(cb.bytes) + 2
+	cb.emit([]byte{0x0F, 0x85, 0, 0, 0, 0})
+
+	// Patch both jne targets to the fallthrough position (current pos).
+	fallthroughPos := len(cb.bytes)
+	writeRel32(cb, jne1Off, int32(fallthroughPos)-int32(jne1Off+4))
+	writeRel32(cb, jne2Off, int32(fallthroughPos)-int32(jne2Off+4))
+	// Return false so emitCALL falls through to the historical
+	// HelperCall exit-reason. Guard is a no-op cost until the fast
+	// body lands (Spike 2 step 4).
 	return false
 }
 
