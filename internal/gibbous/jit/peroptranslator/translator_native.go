@@ -660,6 +660,17 @@ var callInlineEnabled = true
 // calls a segment whose RETURN still exits to Go would desync).
 var segToSegEnabled = true
 
+// SetSegToSegEnabledForTest toggles the segment-to-segment dispatch
+// gate and returns a restore func. Test / benchmark only — production
+// leaves it at its default. Because segToSegEnabled affects emit, the
+// caller must compile Protos AFTER toggling for the change to take
+// effect (a Proto compiled while off keeps its exit-reason CALL emit).
+func SetSegToSegEnabledForTest(on bool) (restore func()) {
+	prev := segToSegEnabled
+	segToSegEnabled = on
+	return func() { segToSegEnabled = prev }
+}
+
 // emit_ops_amd64.go, then the terminator with successor BB fixups.
 func emitBB(buf *codeBuf, c *cfg, bb *basicBlock, bbID int) error {
 	code := c.proto.Code
