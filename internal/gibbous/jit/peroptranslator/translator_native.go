@@ -557,6 +557,15 @@ func TranslateProtoNative(proto *bytecode.Proto, host jit.P4HostState) (*nativeC
 		}, nil
 	}
 
+	// Allocate the CallIC backing array BEFORE emit so the emit can
+	// bake the per-CALL-site slot addresses as imm64 constants into
+	// the segment (issue #50 Spike 2). The backing array pointer is
+	// stable for the mmap page's lifetime because the slice never
+	// resizes past the initial make.
+	if n := len(buf.proto.CallSitePCs); n > 0 {
+		buf.proto.CallICs = make([]CallIC, n)
+	}
+
 	// Emit a prologue that initializes RBX = vsBase from jitCtx. This
 	// makes the mmap segment self-contained: it can be called by any
 	// trampoline (CallJITSpec or CallJITFull) as long as R15 = jitCtx.
@@ -594,14 +603,10 @@ func TranslateProtoNative(proto *bytecode.Proto, host jit.P4HostState) (*nativeC
 		return nil, err
 	}
 	NativeCompileCount.Add(1)
-	// Per-CALL-site inline cache: one CallIC slot per CALL pc (issue
-	// #50 Spike 1). Allocated even for zero-CALL protos as an empty
-	// slice; the dispatcher's linear scan is O(N) over CallSitePCs
-	// which is empty in that case, no cost.
-	var callICs []CallIC
-	if n := len(buf.proto.CallSitePCs); n > 0 {
-		callICs = make([]CallIC, n)
-	}
+	// buf.proto.CallICs was allocated pre-emit (see above) so the
+	// emit could bake per-site slot addresses; hand the same slice
+	// to nativeCode so the dispatcher's populateCallIC writes reach
+	// the same backing array the segment reads.
 	return &nativeCode{
 		proto:       proto,
 		codePage:    page,
@@ -610,7 +615,7 @@ func TranslateProtoNative(proto *bytecode.Proto, host jit.P4HostState) (*nativeC
 		retA:        buf.proto.RetA,
 		retB:        buf.proto.RetB,
 		retPC:       buf.proto.RetPC,
-		callICs:     callICs,
+		callICs:     buf.proto.CallICs,
 		callSitePCs: buf.proto.CallSitePCs,
 	}, nil
 }
@@ -625,7 +630,14 @@ func TranslateProtoNative(proto *bytecode.Proto, host jit.P4HostState) (*nativeC
 // A single package-level bool is sufficient because there's no per-
 // State variation: EmitCallInline is a build-time decision (arch
 // support + gate state), not runtime configuration.
-var callInlineEnabled = false
+//
+// **Guard-only mode**: currently the fast-path body isn't emitted yet;
+// emitCallInlineFastPath returns false so callers always fall through
+// to the exit-reason HelperCall. Flipping this to true only enables
+// the segment-side R(A) tag + protoID guard bytes upstream of the
+// exit-reason — a no-op cost path that lets us verify guard emit
+// doesn't corrupt the segment before Step 4 lands the real fast body.
+var callInlineEnabled = true
 
 // emit_ops_amd64.go, then the terminator with successor BB fixups.
 func emitBB(buf *codeBuf, c *cfg, bb *basicBlock, bbID int) error {

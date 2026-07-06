@@ -119,6 +119,13 @@ type codeBufProto struct {
 	// size the run-time CallIC slice on the nativeCode; kept here to
 	// avoid re-walking the CFG at build time. Nil when no CALLs.
 	CallSitePCs []int32
+
+	// CallICs is the runtime IC backing array, allocated pre-emit so
+	// the amd64 emitCallInlineFastPath can bake per-site slot
+	// addresses as imm64 (issue #50 Spike 2). Length == len(CallSitePCs).
+	// TranslateProtoNative hands the same slice off to nativeCode so
+	// dispatcher writes and segment reads share one backing array.
+	CallICs []CallIC
 }
 
 type fixup struct {
