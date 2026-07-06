@@ -59,6 +59,24 @@ var (
 // the prerequisite for segment-to-segment dispatch.
 var CallICSegAddrCount atomic.Int64
 
+// SegToSegHitCount counts segment-to-segment dispatch hits (issue #50
+// Spike 5). Incremented directly from the mmap segment via an
+// `inc qword [imm64]` the caller fast body emits on the seg2seg path,
+// so a nonzero value proves the in-segment `call` into the callee
+// segment actually executed (not the exit-reason fallback). The
+// address of the underlying int64 is baked into the segment at emit
+// time (SegToSegHitCountAddr).
+var SegToSegHitCount atomic.Int64
+
+// SegToSegHitCountAddr returns the address of the SegToSegHitCount
+// counter's underlying int64, for the emit to bake as an imm64 into an
+// in-segment `inc qword [addr]`. atomic.Int64 wraps a single int64 as
+// its first field, so &the atomic == &the int64 on the platforms this
+// project targets.
+func SegToSegHitCountAddr() uint64 {
+	return uint64(uintptr(unsafe.Pointer(&SegToSegHitCount)))
+}
+
 // dispatchHelper handles a single ExitInlineHelper request from the
 // mmap segment. Returns true on success (segment can be re-entered
 // at resumeOff), false on error (host method raised → caller returns
