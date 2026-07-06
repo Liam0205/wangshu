@@ -88,6 +88,14 @@ const (
 	// `mov dword [r15+segCallDeoptOff], 1` + ret to deopt the seg2seg
 	// call chain.
 	JITContextSegCallDeoptOffset = unsafe.Offsetof(JITContext{}.segCallDeopt)
+
+	// Inline GETUPVAL ABI (issue #50 Spike 5): the running frame's
+	// closure GCRef, the running thread's stack-slot-0 host address, and
+	// the single-thread inline-safety flag. The inline GETUPVAL emit
+	// reads all three via r15+offset.
+	JITContextCurrentClosureRefOffset = unsafe.Offsetof(JITContext{}.currentClosureRef)
+	JITContextThreadStackBase0Offset  = unsafe.Offsetof(JITContext{}.threadStackBase0)
+	JITContextInlineUpvalSafeOffset   = unsafe.Offsetof(JITContext{}.inlineUpvalSafe)
 )
 
 // **§9.20.9 协议状态码常量** (Spike 1 真接入 + future helper request 路由):
@@ -354,6 +362,31 @@ type JITContext struct {
 	// field. Using an opaque [2]uintptr keeps the type dependency
 	// one-way; peroptranslator restores the interface via unsafe.
 	hostRef [2]uintptr
+
+	// currentClosureRef is the GCRef (arena byte offset) of the Lua
+	// closure whose Proto the running segment executes (issue #50 Spike 5
+	// inline GETUPVAL). RefreshJitCtxAddrs sets it for the top-level
+	// (Go-entered) frame; the segment-to-segment caller sets it to the
+	// callee closure before `call [seg]` and restores it after. Inline
+	// GETUPVAL reads closure word2+b through this to reach the upvalue
+	// object, avoiding a HelperGetUpval exit-reason each recursive call.
+	currentClosureRef uintptr
+
+	// threadStackBase0 is the absolute host byte address of the running
+	// thread's value-stack slot 0 (arenaBase + stackBaseW*8). Inline
+	// GETUPVAL's open-upvalue path reads owner.slot(stackIdx) as
+	// [threadStackBase0 + stackIdx*8]. Refreshed every Run entry from the
+	// live arenaBase, so it survives arena grow.
+	threadStackBase0 uintptr
+
+	// inlineUpvalSafe is 1 when the running State has no coroutines and no
+	// suspended resume chain, so every open upvalue is owned by the
+	// running thread. The inline GETUPVAL open path is only valid then
+	// (owner resolution otherwise needs the Go-side st.uvOwner map). When
+	// 0, the open path falls back to HelperGetUpval (or deopts when
+	// segCallDepth>0).
+	inlineUpvalSafe uint32
+	_               uint32
 }
 
 // NewJITContext 构造 P4 JIT 执行上下文。
@@ -500,6 +533,29 @@ func (c *JITContext) SegCallDepth() uint32 { return c.segCallDepth }
 // Spike 5 test hook). A leaked nonzero after Run indicates a deopt
 // propagation bug.
 func (c *JITContext) SegCallDeopt() uint32 { return c.segCallDeopt }
+
+// SetUpvalInlineFields wires the inline-GETUPVAL ABI (issue #50 Spike 5):
+// the running frame's closure GCRef, the running thread's stack-slot-0
+// host address, and whether it is safe to inline open-upvalue reads
+// (single-thread, no coroutine-owned upvalues). Called from
+// RefreshJitCtxAddrs on every Run entry / resume.
+func (c *JITContext) SetUpvalInlineFields(closureRef, threadStackBase0 uintptr, safe bool) {
+	c.currentClosureRef = closureRef
+	c.threadStackBase0 = threadStackBase0
+	if safe {
+		c.inlineUpvalSafe = 1
+	} else {
+		c.inlineUpvalSafe = 0
+	}
+}
+
+// CurrentClosureRef returns the running frame's closure GCRef (test hook
+// + used by the segment-to-segment caller emit to bake the restore).
+func (c *JITContext) CurrentClosureRef() uintptr { return c.currentClosureRef }
+
+// SetCurrentClosureRef overrides the running frame's closure GCRef (test
+// hook; the emit path writes it in-segment for seg2seg callees).
+func (c *JITContext) SetCurrentClosureRef(ref uintptr) { c.currentClosureRef = ref }
 
 // SetHostRef stores the opaque host interface header ([2]uintptr:
 // itab + data). PJ10 native shims read this to reconstruct the

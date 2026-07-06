@@ -169,6 +169,92 @@ func ProtoNeverExitsSegment(proto *bytecode.Proto) bool {
 	return true
 }
 
+// ProtoSeg2SegEligible reports whether a Proto can serve as a
+// segment-to-segment callee under the deopt-on-guard-miss protocol
+// (issue #50 Spike 5, arith/compare/GETUPVAL callees like fib).
+//
+// It is a superset of ProtoNeverExitsSegment: in addition to the purely
+// inline ops, it admits ops that CAN exit to a Go helper but whose exit
+// path is guarded by emitSegCallDeoptGuard — when running as a seg2seg
+// callee (segCallDepth>0) they deopt (set the flag + ret) instead of
+// exiting mid-segment, and the whole call chain redoes at the top via
+// host.ExecutePlainCallInlineFrame:
+//
+//   - ADD/SUB/MUL/DIV: IsNumber guard miss deopts (emitInlineArith slow).
+//   - LT/LE/EQ: compare guard miss deopts (emitCompareExitTail).
+//   - GETUPVAL: inlined (emitGETUPVALInline); the rare open/foreign-owner
+//     fallback deopts.
+//   - CALL (fixed B/C): a nested call that can't itself go seg2seg (IC
+//     cold / cap reached) deopts (the CALL fallback deopt guards).
+//
+// **Idempotency requirement**: deopt redoes the whole top-level call on
+// the baseline, so the callee's inputs (closure at R(A), args at
+// R(A+1..)) must survive a partial-then-aborted native run. That holds
+// iff the callee never writes a parameter register — every
+// register-writing op must have dest A >= NumParams. A callee that
+// reassigns a parameter (`x = x + 1` → writes R(0)) is rejected so the
+// redo can't read a clobbered arg.
+//
+// Excluded (exit-reason with NO deopt guard, or side effects that a redo
+// would duplicate): MOD/POW, UNM/NOT/LEN/CONCAT, GET*/SET*/NEWTABLE/
+// SELF/SETLIST. Their presence keeps a Proto off the seg2seg path.
+func ProtoSeg2SegEligible(proto *bytecode.Proto) bool {
+	if proto == nil || len(proto.Code) == 0 {
+		return false
+	}
+	if !AnalyzeNative(proto) {
+		return false
+	}
+	return seg2segOpsEligible(proto)
+}
+
+// seg2segOpsEligible is the op-set + no-param-write half of
+// ProtoSeg2SegEligible, WITHOUT the AnalyzeNative gate. AnalyzeNative's
+// own CALL density relaxation calls this (calling ProtoSeg2SegEligible
+// there would recurse into AnalyzeNative). External callers should use
+// ProtoSeg2SegEligible, which composes AnalyzeNative + this.
+func seg2segOpsEligible(proto *bytecode.Proto) bool {
+	if proto == nil || len(proto.Code) == 0 {
+		return false
+	}
+	nparams := int(proto.NumParams)
+	for _, ins := range proto.Code {
+		op := bytecode.Op(ins)
+		switch op {
+		case bytecode.MOVE, bytecode.LOADK, bytecode.LOADBOOL,
+			bytecode.LOADNIL, bytecode.JMP, bytecode.RETURN,
+			bytecode.FORPREP, bytecode.FORLOOP,
+			bytecode.TEST, bytecode.TESTSET,
+			bytecode.ADD, bytecode.SUB, bytecode.MUL, bytecode.DIV,
+			bytecode.LT, bytecode.LE, bytecode.EQ,
+			bytecode.GETUPVAL, bytecode.CALL:
+			// seg2seg-safe: pure-inline, deopt-guarded, or inlined.
+		default:
+			return false
+		}
+		// Multret RETURN (B==0, return R(A..top)) can't be torn down
+		// in-segment: the callee doesn't track a live `top`, so the
+		// in-segment moveResults has no static result count. Reject.
+		if op == bytecode.RETURN && bytecode.B(ins) == 0 {
+			return false
+		}
+		// No-param-write gate: any op with a register destination must
+		// write at or above NumParams, so a deopt redo reads intact args.
+		// All eligible register-writing ops put their lowest dest at A;
+		// the comparison/branch/return ops below have no register dest.
+		switch op {
+		case bytecode.JMP, bytecode.RETURN, bytecode.TEST,
+			bytecode.LT, bytecode.LE, bytecode.EQ:
+			// no register destination
+		default:
+			if bytecode.A(ins) < nparams {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // callSitePCsFor walks proto.Code and returns pc values whose op is
 // CALL. Used by TranslateProtoNative to size codeBufProto.CallICs with
 // one slot per CALL site.
