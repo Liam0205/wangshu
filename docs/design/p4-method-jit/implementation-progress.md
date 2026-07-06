@@ -2322,7 +2322,9 @@ PJ10 覆盖率工程两轮交付,承 [10 §14](./10-per-op-translator.md) 详细
 
 arm64 端 seg2seg 全套已按 amd64 逐指令镜像写完(`emit_seg2seg_arm64.go`):`emitCallInlineFastPathArm64`(R(A) tag + IC protoID + flags/arity guard → 段到段 blr 直调 + 机器栈保存/恢复 LR/vsBase/closure 跨嵌套 blr + cap 检查 + deopt 传播,或 exit-reason 到 HelperExecutePlainCall)+ `emitGETUPVALInlineArm64`(关闭 / 开放态 inline,协程属主回退)+ `emitReturnDualSemanticsArm64`(单 / 多返回段内拆帧)+ arm64 arith/compare 慢路径加 `emitSegCallDeoptGuardArm64`;`emitCALLArm64` 接 fast path、GETUPVAL/RETURN 分派、PreferNative 密度门放宽、`NativeNeverExitsSegment` → `ProtoSeg2SegEligible` 全部接线。feature flag 与 `findCallSiteIndex` 移入 arch-shared `call_ic.go`。新增的 SP 相对 + 分支 patch 原语由 arm64-tagged 编码单测逐字节固定(patch 原语复用已验证的 `patchBCondArm64` / `patchArm64B26`,SP 原语与已验证的 `EmitStr/LdrXtFromXnDisp` / `EmitSub/AddXdImm12` 同一编码基址,只是 Rn=31=SP)。
 
-**验收边界**:linux/arm64 + darwin/arm64 交叉编译干净,amd64 全套 + difftest 仍绿。但**本机(amd64,无 qemu-aarch64)无法执行 arm64 机器码**——arm64 的段到段直调正确性 / 性能只能在真 arm64 上验;CI 的 arm64 真机矩阵只在 master push / PR 触发,feature 分支 push 不跑。所以 arm64 机器码目前是「写完 + 编得过 + 编码单测就绪」状态,真机 `-race` + difftest + benchmark 验收挂在 **issue #61**(经 CI 三平台矩阵)。amd64 端 issue #50 目标(fib 反超 gopher)已达成并验证。
+**已做的静态验收**:① linux/arm64 + darwin/arm64 交叉编译干净;② amd64 全套 + difftest 仍绿(seg2seg 逻辑层——`ProtoSeg2SegEligible` / IC populate / deopt 协议 / 帧算术——是 arch-neutral 或 arch-shared,已由 amd64 真机跑过);③ 新手写的 SP 相对 + 帧管理编码用 `golang.org/x/arch/arm64` 反汇编器在 amd64 上逐条解码确认(`str x30,[sp]` / `str x26,[sp,#8]` / `sub sp,sp,#0x20` / `add x26,x26,#0x10` / `sub x17,x26,#8` / `blr x13` 全部解码成预期指令),arm64-tagged 编码单测的期望字节据此对齐;④ jitarm64.Emit* 原语本就 CI 验证过(已发布的 18-op arm64 路径在用)。
+
+但**本机(amd64,无 qemu-aarch64)无法执行 arm64 机器码**——arm64 的段到段直调正确性 / 性能只能在真 arm64 上验;CI 的 arm64 真机矩阵只在 master push / PR 触发,feature 分支 push 不跑。所以 arm64 机器码目前是「写完 + 编得过 + 编码单测就绪」状态,真机 `-race` + difftest + benchmark 验收挂在 **issue #61**(经 CI 三平台矩阵)。amd64 端 issue #50 目标(fib 反超 gopher)已达成并验证。
 
 ---
 
