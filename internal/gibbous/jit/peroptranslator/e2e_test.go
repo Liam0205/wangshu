@@ -1208,6 +1208,48 @@ return kernel(20)
 	}
 }
 
+// TestPJ10_CallInline_MultiReturn proves the Spike 4 form: a CALL that
+// captures more than one return value (C >= 3) rides the fast body.
+// The helper's nresults param already handles multi-return; the guard
+// just needs to not reject C > 2.
+func TestPJ10_CallInline_MultiReturn(t *testing.T) {
+	prog, err := wangshu.Compile([]byte(`
+local function pair(x) return x, x + 1 end
+local function kernel(n)
+  local s = 0
+  for i = 1, n do
+    local t = i + 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8 + 9 + 10
+    local a, b = pair(t)
+    s = s + a + b
+  end
+  return s
+end
+return kernel(20)
+`), "pj10callinlinemulti")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	st := wangshu.NewState(wangshu.Options{})
+	st.SetForceAllPromote(true)
+
+	before := peroptranslator.CallInlineFastHitCount.Load()
+	res, err := prog.Run(st)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// pair(t) = (t, t+1); a+b = 2t+1. sum over i=1..20 of (2*(i+55)+1)
+	// = sum(2i + 111) = 2*210 + 20*111 = 420 + 2220 = 2640.
+	if len(res) != 1 || res[0].Display() != "2640" {
+		t.Fatalf("kernel(20) = %v, want [2640]", res)
+	}
+	fastDelta := peroptranslator.CallInlineFastHitCount.Load() - before
+	t.Logf("callInlineFastHits (multi-return) = %d", fastDelta)
+	if fastDelta < 15 {
+		t.Errorf("callInlineFastHits = %d, want >= 15 — the guard rejected "+
+			"the multi-return CALL (C > 2)", fastDelta)
+	}
+}
+
 // TestPJ10_TableOps covers the single-BB table head ops:
 //   - GETTABLE: R(A) := R(B)[RK(C)]   via host.GetTable
 //   - GETGLOBAL: R(A) := Globals[K(Bx)] via host.DoGetGlobal
