@@ -74,6 +74,13 @@ const (
 	// restore R14 = G, otherwise Go's function prologue crashes.
 	// See [[project-pj10-native-longtask]] R14-save-wrapper.
 	JITContextSavedGoGOffset = unsafe.Offsetof(JITContext{}.savedGoG)
+
+	// JITContextSegCallDepthOffset is the byte offset of segCallDepth
+	// (issue #50 Spike 5). The callee RETURN emit reads it via
+	// `cmp dword [r15+off], 0` to branch between the segment-exit and
+	// in-segment-teardown paths; the caller CALL fast body increments /
+	// decrements it around the segment-to-segment `call`.
+	JITContextSegCallDepthOffset = unsafe.Offsetof(JITContext{}.segCallDepth)
 )
 
 // **§9.20.9 协议状态码常量** (Spike 1 真接入 + future helper request 路由):
@@ -287,6 +294,27 @@ type JITContext struct {
 	// wireP4 / installGibbous 时注入。
 	codePageAddr uintptr
 
+	// segCallDepth is the native segment-to-segment call nesting depth
+	// (issue #50 Spike 5). Zero means "entered from Go" (the top-level
+	// nativeCode.Run via CallJITSpec); a caller segment increments it
+	// before `call`ing into a callee segment and decrements after the
+	// callee returns. The callee's RETURN emit branches on it:
+	//
+	//   - segCallDepth == 0: RETURN exits the segment (`xor eax,eax;ret`
+	//     single-return, or HelperReturn exit-reason multi-return) and
+	//     the Go-side Run does host.DoReturn — the historical path.
+	//   - segCallDepth > 0: RETURN tears the frame down in-segment
+	//     (moveResults + ciDepth-- + top restore) and `ret`s back into
+	//     the caller segment, no Go round trip.
+	//
+	// It also bounds native recursion: past a conservative cap the
+	// caller segment falls back to the exit-reason path so the Go
+	// goroutine stack can't overflow inside the NOSPLIT window where
+	// morestack can't fire (see spike DECISION.md option b).
+	segCallDepth uint32
+
+	_ [4]byte // 8-byte alignment padding after segCallDepth uint32
+
 	// savedGoG is a snapshot of the Go G register (amd64 R14 / arm64 X28)
 	// at Run entry. PJ10 native emit that calls Go helpers must first do
 	// `mov r14, [r15+savedGoGOff]` inside the mmap segment to restore
@@ -443,6 +471,12 @@ func (c *JITContext) SavedGoGSlot() *uintptr { return &c.savedGoG }
 
 // SavedGoG returns the mirrored Go G value (test hook).
 func (c *JITContext) SavedGoG() uintptr { return c.savedGoG }
+
+// SegCallDepth returns the native segment-to-segment nesting depth
+// (issue #50 Spike 5 test hook). Nonzero mid-Run would indicate a
+// segment-to-segment call is in flight; a leaked nonzero after Run is
+// a teardown bug.
+func (c *JITContext) SegCallDepth() uint32 { return c.segCallDepth }
 
 // SetHostRef stores the opaque host interface header ([2]uintptr:
 // itab + data). PJ10 native shims read this to reconstruct the
