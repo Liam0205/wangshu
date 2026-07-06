@@ -1865,12 +1865,13 @@ func emitCallInlineFastPath(cb *codeBuf, pc int32, a, b, c uint8, callSiteIdx in
 	jne2Off := len(cb.bytes) + 2
 	cb.emit([]byte{0x0F, 0x85, 0, 0, 0, 0})
 
-	// 15. Flags / NumParams gate (issue #50 Spike 2 phase 4a):
-	//     Before the in-segment frame build can trust the observed
-	//     callee shape, verify the IC-recorded flags don't include
-	//     any that the fast body can't handle (Vararg / NeedsArg /
-	//     Host / Stuck), and NumParams must equal 0 (Spike 2 minimal
-	//     form: 0-arg fixed Lua callees only; Spike 3+ relaxes).
+	// 15. Flags / arity gate (issue #50 Spike 2 phase 4a, relaxed to
+	//     N-arg fixed in Spike 3):
+	//     Verify the IC-recorded flags don't include any the fast body
+	//     can't handle (Vararg / NeedsArg / Host / Stuck), and the
+	//     callee's NumParams matches the CALL's argument count
+	//     (nargs = B-1). Equal arity means enterLuaFrame's fixed-param
+	//     path applies with no vararg spill / nil-fill divergence.
 	//
 	//     CallIC layout has ProtoID at offset 0..3, then
 	//     NumParams | MaxStack | Flags | pad at offset 4..7.
@@ -1883,8 +1884,10 @@ func emitCallInlineFastPath(cb *codeBuf, pc int32, a, b, c uint8, callSiteIdx in
 	//     jne fallthrough
 	jne3Off := len(cb.bytes) + 2
 	cb.emit([]byte{0x0F, 0x85, 0, 0, 0, 0})
-	//     test dl, dl                         ; NumParams == 0?
-	cb.emit([]byte{0x84, 0xD2})
+	//     cmp dl, nargs                       ; NumParams == B-1 ?
+	//     (80 FA ib = cmp dl, imm8)
+	nargsGuard := byte(int32(b) - 1)
+	cb.emit([]byte{0x80, 0xFA, nargsGuard})
 	//     jne fallthrough
 	jne4Off := len(cb.bytes) + 2
 	cb.emit([]byte{0x0F, 0x85, 0, 0, 0, 0})

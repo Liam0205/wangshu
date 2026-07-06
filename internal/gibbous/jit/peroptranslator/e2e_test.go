@@ -1168,6 +1168,46 @@ return kernel(20)
 	}
 }
 
+// TestPJ10_CallInline_NArgFixed proves the Spike 3 relaxation: the
+// segment guard accepts N-arg fixed (non-vararg) Lua callees, not just
+// 0-arg. The arity guard (cmp dl, nargs) must match the callee's
+// NumParams against CALL.B-1. Uses a 2-param callee.
+func TestPJ10_CallInline_NArgFixed(t *testing.T) {
+	prog, err := wangshu.Compile([]byte(`
+local function addup(a, b) return a + b end
+local function kernel(n)
+  local s = 0
+  for i = 1, n do
+    local t = i + 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8 + 9 + 10
+    s = s + addup(t, i)
+  end
+  return s
+end
+return kernel(20)
+`), "pj10callinlinenarg")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	st := wangshu.NewState(wangshu.Options{})
+	st.SetForceAllPromote(true)
+
+	before := peroptranslator.CallInlineFastHitCount.Load()
+	res, err := prog.Run(st)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// sum over i=1..20 of ((i+55) + i) = sum(2i+55) = 2*210 + 20*55 = 1520.
+	if len(res) != 1 || res[0].Display() != "1520" {
+		t.Fatalf("kernel(20) = %v, want [1520]", res)
+	}
+	fastDelta := peroptranslator.CallInlineFastHitCount.Load() - before
+	t.Logf("callInlineFastHits (2-arg) = %d", fastDelta)
+	if fastDelta < 15 {
+		t.Errorf("callInlineFastHits = %d, want >= 15 — the arity guard "+
+			"rejected the 2-arg fixed callee (Spike 3 relaxation broken)", fastDelta)
+	}
+}
+
 // TestPJ10_TableOps covers the single-BB table head ops:
 //   - GETTABLE: R(A) := R(B)[RK(C)]   via host.GetTable
 //   - GETGLOBAL: R(A) := Globals[K(Bx)] via host.DoGetGlobal
