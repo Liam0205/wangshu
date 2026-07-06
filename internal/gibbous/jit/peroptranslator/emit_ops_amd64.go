@@ -1865,10 +1865,36 @@ func emitCallInlineFastPath(cb *codeBuf, pc int32, a, b, c uint8, callSiteIdx in
 	jne2Off := len(cb.bytes) + 2
 	cb.emit([]byte{0x0F, 0x85, 0, 0, 0, 0})
 
-	// Patch both jne targets to the fallthrough position (current pos).
+	// 15. Flags / NumParams gate (issue #50 Spike 2 phase 4a):
+	//     Before the in-segment frame build can trust the observed
+	//     callee shape, verify the IC-recorded flags don't include
+	//     any that the fast body can't handle (Vararg / NeedsArg /
+	//     Host / Stuck), and NumParams must equal 0 (Spike 2 minimal
+	//     form: 0-arg fixed Lua callees only; Spike 3+ relaxes).
+	//
+	//     CallIC layout has ProtoID at offset 0..3, then
+	//     NumParams | MaxStack | Flags | pad at offset 4..7.
+	//     A single 32-bit load pulls the whole meta word.
+	//
+	//     mov edx, [icSlotAddr + 4]          ; rdx already holds icSlotAddr
+	cb.emit([]byte{0x8B, 0x52, 0x04})
+	//     test edx, 0x00870000                ; Vararg|NeedsArg|IsHost|Stuck bits
+	cb.emit([]byte{0xF7, 0xC2, 0x00, 0x00, 0x87, 0x00})
+	//     jne fallthrough
+	jne3Off := len(cb.bytes) + 2
+	cb.emit([]byte{0x0F, 0x85, 0, 0, 0, 0})
+	//     test dl, dl                         ; NumParams == 0?
+	cb.emit([]byte{0x84, 0xD2})
+	//     jne fallthrough
+	jne4Off := len(cb.bytes) + 2
+	cb.emit([]byte{0x0F, 0x85, 0, 0, 0, 0})
+
+	// Patch all four jne targets to the fallthrough position (current pos).
 	fallthroughPos := len(cb.bytes)
 	writeRel32(cb, jne1Off, int32(fallthroughPos)-int32(jne1Off+4))
 	writeRel32(cb, jne2Off, int32(fallthroughPos)-int32(jne2Off+4))
+	writeRel32(cb, jne3Off, int32(fallthroughPos)-int32(jne3Off+4))
+	writeRel32(cb, jne4Off, int32(fallthroughPos)-int32(jne4Off+4))
 	// Return false so emitCALL falls through to the historical
 	// HelperCall exit-reason. Guard is a no-op cost until the fast
 	// body lands (Spike 2 step 4).
