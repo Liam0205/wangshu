@@ -374,6 +374,17 @@ func (m *mockP4Host) ForPrep(base, pc, a int32) int32 { _ = base; _ = pc; _ = a;
 // is exercised via the end-to-end crescent tests.
 func (m *mockP4Host) ObserveCallCallee(base, a int32) uint64 { _ = base; _ = a; return 0 }
 
+// ExecutePlainCallInlineFrame mock stub (issue #50 Spike 2): unit
+// tests don't emit the CALL EmitCallInline path (the segment guard is
+// gated on IC + arch flags), so this stub returns 0=OK as a safety net.
+func (m *mockP4Host) ExecutePlainCallInlineFrame(base, callA, nargs, nresults int32) int32 {
+	_ = base
+	_ = callA
+	_ = nargs
+	_ = nresults
+	return 0
+}
+
 // CallBaseline 模拟 host.CallBaseline:记录入参 + 返回预设 callRetCode。
 func (m *mockP4Host) CallBaseline(base, pc, a, b, c int32) int32 {
 	_ = base

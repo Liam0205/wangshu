@@ -122,6 +122,26 @@ const (
 	// legacy `xor eax, eax; ret` + Go-side DoReturn(retA/retB/retPC)
 	// path, which saves the exitArg0 packing on the hot exit.
 	HelperReturn uint64 = 25
+
+	// HelperExecutePlainCall is the exit-reason code the PJ10 native
+	// EmitCallInline fast path emits after the segment has written the
+	// callee CI slot and incremented ciDepth (issue #50 Spike 2). The
+	// dispatcher's HelperExecutePlainCall case calls
+	// host.ExecutePlainCallInlineFrame, which drives executeFrom (or
+	// the zero-cross P4-callee path) and rebalances ciDepth for the
+	// segment's PopFrame sequence.
+	//
+	// exitArg0 packing for HelperExecutePlainCall (bits 0..15 = helper
+	// code; the standard emit uses):
+	//
+	//	bits 16..23 : callA (CALL.A field, 0-255)
+	//	bits 24..31 : nargs (CALL.B - 1, 0-255)
+	//	bits 32..39 : nresults (0..15 in Spike 2; multret rejected by guard)
+	//
+	// The pc slot in the standard exit-reason packing isn't consumed
+	// (the helper doesn't materialise a pc), so it can stay at zero
+	// or reuse the standard packing without affecting behavior.
+	HelperExecutePlainCall uint64 = 26
 )
 
 // HelperCodeMask masks off the low 16 bits of exitArg0 that hold the
