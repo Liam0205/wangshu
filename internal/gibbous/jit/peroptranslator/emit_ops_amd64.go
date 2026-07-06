@@ -1982,18 +1982,6 @@ func emitCALL(cb *codeBuf, pc int32, a, b, c uint8) {
 	emitExitReason(cb, jit.HelperCall, pc, int32(a), int32(b), int32(c))
 }
 
-// findCallSiteIndex returns the CallIC index for a given pc, or -1 if
-// the pc has no corresponding CallIC slot (e.g. CFG changed between
-// translate-time and emit-time, or the pc slice is nil).
-func findCallSiteIndex(callSitePCs []int32, pc int32) int {
-	for i, sitePC := range callSitePCs {
-		if sitePC == pc {
-			return i
-		}
-	}
-	return -1
-}
-
 // emitCallInlineFastPath emits the segment-side guard for the PJ10
 // CALL EmitCallInline fast path (issue #50 Spike 2). Returns true if
 // the fast path emit consumed the CALL; false if the caller should

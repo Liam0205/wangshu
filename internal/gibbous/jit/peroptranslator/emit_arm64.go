@@ -776,6 +776,18 @@ func emitSETLISTArm64(cb *codeBuf, pc int32, a, b, c uint8) {
 // the native segment doesn't maintain per-op) and gates acceptance on
 // CALL density.
 func emitCALLArm64(cb *codeBuf, pc int32, a, b, c uint8) {
+	// Issue #50 Spike 5 EmitCallInline fast path (mirror of amd64
+	// emitCALL): only when callInlineEnabled + the CALL site has an IC
+	// slot + B != 0 (fixed nargs) and C != 0 (fixed nresults; multret is
+	// rejected). The fast path guards then either dispatches
+	// segment-to-segment or exit-reasons to HelperExecutePlainCall.
+	if callInlineEnabled && b != 0 && c != 0 && cb.proto != nil {
+		if callSiteIdx := findCallSiteIndex(cb.proto.CallSitePCs, pc); callSiteIdx >= 0 {
+			if emitCallInlineFastPathArm64(cb, pc, a, b, c, callSiteIdx) {
+				return
+			}
+		}
+	}
 	emitExitReasonArm64(cb, jit.HelperCall, pc, int32(a), int32(b), int32(c))
 }
 
