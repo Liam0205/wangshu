@@ -144,11 +144,13 @@ func (c *nativeCode) dispatchHelper(base int32) bool {
 		CallInlineFastHitCount.Add(1)
 		callA := a
 		nargs := b & 0xFF
-		nresults := cc & 0xF
-		// Note: emitCallInline packs (a=callA, b=nargs, c=nresults)
-		// through the standard emitExitReason path so the standard
-		// unpacking at lines 45-52 above already sliced out a/b/c
-		// from the correct bit ranges.
+		// nresults rides the full 9-bit c slot: emitCallInline packs
+		// (a=callA, b=nargs, c=nresults) through the standard
+		// emitExitReason layout, and cc was already masked with 0x1FF
+		// by the unpacking above. A narrower mask here would silently
+		// truncate CALLs expecting >= 16 fixed results (PR #62 review
+		// finding).
+		nresults := cc
 		if st := c.host.ExecutePlainCallInlineFrame(base, callA, nargs, nresults); st != 0 {
 			return false
 		}

@@ -153,12 +153,13 @@ const (
 	// the zero-cross P4-callee path) and rebalances ciDepth for the
 	// segment's PopFrame sequence.
 	//
-	// exitArg0 packing for HelperExecutePlainCall (bits 0..15 = helper
-	// code; the standard emit uses):
+	// exitArg0 packing for HelperExecutePlainCall follows the standard
+	// emitExitReason layout (bits 0..15 = helper code):
 	//
-	//	bits 16..23 : callA (CALL.A field, 0-255)
-	//	bits 24..31 : nargs (CALL.B - 1, 0-255)
-	//	bits 32..39 : nresults (0..15 in Spike 2; multret rejected by guard)
+	//	bits 16..23 : callA (CALL.A field, 0-255; the standard a slot)
+	//	bits 24..32 : nargs (CALL.B - 1; the standard 9-bit b slot)
+	//	bits 33..41 : nresults (CALL.C - 1; the standard 9-bit c slot —
+	//	              multret rejected by the shape gate)
 	//
 	// The pc slot in the standard exit-reason packing isn't consumed
 	// (the helper doesn't materialise a pc), so it can stay at zero
@@ -318,9 +319,11 @@ type JITContext struct {
 	//   - segCallDepth == 0: RETURN exits the segment (`xor eax,eax;ret`
 	//     single-return, or HelperReturn exit-reason multi-return) and
 	//     the Go-side Run does host.DoReturn — the historical path.
-	//   - segCallDepth > 0: RETURN tears the frame down in-segment
-	//     (moveResults + ciDepth-- + top restore) and `ret`s back into
-	//     the caller segment, no Go round trip.
+	//   - segCallDepth > 0: RETURN moves the results into the caller's
+	//     target registers in-segment and `ret`s back into the caller
+	//     segment, no Go round trip. (The virtual-frame model means the
+	//     caller never bumped ciDepth, so there is nothing to unwind —
+	//     see emitReturnDualSemantics.)
 	//
 	// It also bounds native recursion: past a conservative cap the
 	// caller segment falls back to the exit-reason path so the Go
