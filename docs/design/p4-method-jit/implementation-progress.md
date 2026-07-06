@@ -2304,7 +2304,21 @@ PJ10 覆盖率工程两轮交付,承 [10 §14](./10-per-op-translator.md) 详细
 
 **性能实证(Xeon 6982P)**:call-heavy kernel(never-exits callee)`BenchmarkSeg2Seg_On 4.38ms` vs `_Off(exit-reason)13.0ms` = **2.96× 快**。首个 P4 零跨界正确 CALL。全测 + difftest + luasuite + conformance + -race + 60s/4.7M-exec fuzz 全绿。
 
-**剩余(扩到 arith/compare callee = fib 形态)**:fib callee 含 LT/SUB/ADD,guard-miss 会 exit-reason 中途出段。段到段上下文里 callee 中途出段 = **status-chain-traversal 问题**(等价 P3 PW10 R3):callee 出段 rax=ExitInlineHelper ret 回 caller 段,但 resume 需重入 callee 页的 resumeOff 而当前 Run loop 的 resumeAddr = caller 页 + resumeOff(错页)。需 jitCtx 存活跃段地址 + caller 透传 rax + Run loop 用活跃段页 resume。这是 fib 反超的最后一关,下一 Spike 5 步。
+### 15.7 fib 形态段到段(arith/compare/GETUPVAL callee)打通 ✅(amd64,2026-07-04)
+
+**用户决策(2026-07-04)**:采用「段内内联 GETUPVAL」路线(而非文档原设想的 status-chain-traversal / PW10 R3 等价栈回卷重建)。fib callee 的 guard-miss 走 **deopt-redo**(段内出段前置守卫置 deopt 标志 + ret,整条段到段链回卷到 depth==0 顶层用 host 重跑),而非中途出段。
+
+**三块改造**:
+
+1. **段内内联 GETUPVAL(`emitGETUPVALInline`)**:fib 经 open upvalue(递归中主 chunk 挂栈,值落主线程栈槽)引用自身,原来每递归一次就 exit-reason 出段。内联 emit 经新 ABI 字段 `jitCtx.currentClosureRef` 解出 closure → 读 upvalRef → 分支:关闭态读 upval word2 / 开放态(单线程 `inlineUpvalSafe`)读 `threadStackBase0 + stackIdx*8`(属主即运行线程)/ 协程属主等回退 `HelperGetUpval` 或 depth>0 deopt。新 ABI 字段(currentClosureRef / threadStackBase0 / inlineUpvalSafe)由 `RefreshJitCtxAddrs` 每次 Run 入口现算(grow 安全);段到段 caller 块在 `call [seg]` 前把 currentClosureRef 设为 callee closure、返回后恢复(跨 closure 正确;自递归 fib 值不变)。
+
+2. **多返回 Proto 的双语义 RETURN**:fib/pick 有多个 RETURN 站点(MultiReturn),原来每站点降为 `HelperReturn` exit-reason——段到段 caller 会误读为普通返回。现在 RETURN 在 `segCallDepth>0` 时对单/多返回 Proto **都**段内拆帧 + ret;multret(b==0)从 eligibility 剔除(段内无法静态知返回数)。
+
+3. **`ProtoSeg2SegEligible`**:把段到段 callee eligibility 从 never-exits 集扩到 arith/compare(deopt 守卫)+ GETUPVAL(内联)+ 嵌套 CALL,门以「不写形参寄存器(每个写寄存器 op 的 dest A >= NumParams)」为界,使 deopt-redo 读到未破坏的实参。CALL 的 exit-reason 回退路径在 depth>0 也 deopt。CALL 密度门对段到段 eligible Proto 放宽。
+
+**性能实证(Xeon 6982P,短跑 `-cpu=1`)**:fib GibbousJIT **0.935ms** vs Gopher **9.31ms** = **10× 快**;fannkuch **0.60ms** vs **4.03ms** = **6.7×**;binary-trees **38.7ms** vs **50.8ms** = **1.31×**。issue #50 点名的三个 call 密集内核全部反超 gopher。fib(20) 全程段到段(21870 hits,0 exit-reason fast-hit)。difftest-p4 / crescent / conformance-p4 / peroptranslator 全套 + `-race` 全绿(逐字节等价)。
+
+**剩余**:arm64 port(inline GETUPVAL + arith/compare deopt 守卫 + 段到段 caller/RETURN 双语义 + 密度门放宽);本机 amd64 无法本地跑 arm64,靠 CI 三平台矩阵(linux/arm64 + darwin/arm64)真机验收。
 
 ---
 
