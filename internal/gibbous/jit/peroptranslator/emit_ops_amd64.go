@@ -1742,10 +1742,59 @@ func emitSETLIST(cb *codeBuf, pc int32, a, b, c uint8) {
 }
 
 func emitCALL(cb *codeBuf, pc int32, a, b, c uint8) {
+	// Issue #50 Spike 2 EmitCallInline fast path — only fires when:
+	//   - callInlineEnabled = true (arch flag, currently off during
+	//     the segment-guard incubation),
+	//   - the CALL site has an IC slot in codeBufProto.CallSitePCs,
+	//   - CALL shape is guardable: B != 0 (fixed nargs) and C != 0
+	//     (fixed nresults; multret rejected — segment can't sync top
+	//     mid-call).
+	// The fast emit itself lands in a follow-up commit; this branch
+	// is a placeholder for the shape gate so callInlineEnabled can
+	// be flipped in one motion once the emit body is written.
+	if callInlineEnabled && b != 0 && c != 0 && cb.proto != nil {
+		if callSiteIdx := findCallSiteIndex(cb.proto.CallSitePCs, pc); callSiteIdx >= 0 {
+			if emitCallInlineFastPath(cb, pc, a, b, c, callSiteIdx) {
+				return
+			}
+		}
+	}
 	// Exit-reason path (issue #38): the mmap segment can't safely call
 	// Go shims under nested/concurrent load. Run's dispatcher invokes
 	// host.CallBaseline (synchronous callee completion) and reenters.
 	emitExitReason(cb, jit.HelperCall, pc, int32(a), int32(b), int32(c))
+}
+
+// findCallSiteIndex returns the CallIC index for a given pc, or -1 if
+// the pc has no corresponding CallIC slot (e.g. CFG changed between
+// translate-time and emit-time, or the pc slice is nil).
+func findCallSiteIndex(callSitePCs []int32, pc int32) int {
+	for i, sitePC := range callSitePCs {
+		if sitePC == pc {
+			return i
+		}
+	}
+	return -1
+}
+
+// emitCallInlineFastPath emits the segment-side guard + in-segment
+// frame build for the PJ10 CALL EmitCallInline fast path (issue #50
+// Spike 2). Returns true if the fast path emit succeeded, false if
+// the caller should fall through to the plain exit-reason lowering.
+//
+// **Current status**: unimplemented placeholder that returns false so
+// callers always fall through. The full emit body — R(A) tag guard +
+// IC protoID compare + CI slot write + ciDepth bump + exit-reason to
+// HelperExecutePlainCall — lands in the next commit alongside the
+// IC-slot-address fixup infrastructure.
+func emitCallInlineFastPath(cb *codeBuf, pc int32, a, b, c uint8, callSiteIdx int) bool {
+	_ = cb
+	_ = pc
+	_ = a
+	_ = b
+	_ = c
+	_ = callSiteIdx
+	return false
 }
 
 // emitSELF emits SELF A B C via the HelperSelf exit-reason: the
