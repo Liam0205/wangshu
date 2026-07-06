@@ -98,6 +98,12 @@ type NativeSegAddrer interface {
 	// native). Callable only for a code value that also answers
 	// IsPJ10Native() == true.
 	NativeSegEntryAddr() uint64
+
+	// NativeNeverExitsSegment reports whether this segment runs
+	// start-to-finish without exiting to a Go helper (issue #50 Spike
+	// 5). Only such callees are eligible for segment-to-segment
+	// dispatch. False keeps the caller on the exit-reason path.
+	NativeNeverExitsSegment() bool
 }
 
 // CompileErrKind 编译失败的类别(05 §2.2.2 错误返回语义 / 04 §4.3)。

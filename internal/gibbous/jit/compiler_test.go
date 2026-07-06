@@ -378,6 +378,9 @@ func (m *mockP4Host) ObserveCallCallee(base, a int32) uint64 { _ = base; _ = a; 
 // segment-to-segment dispatch is attempted in unit tests.
 func (m *mockP4Host) NativeCalleeSegAddr(protoID uint32) uint64 { _ = protoID; return 0 }
 
+// CalleeNeverExitsSegment mock stub (issue #50 Spike 5): returns false.
+func (m *mockP4Host) CalleeNeverExitsSegment(protoID uint32) bool { _ = protoID; return false }
+
 // ExecutePlainCallInlineFrame mock stub (issue #50 Spike 2): unit
 // tests don't emit the CALL EmitCallInline path (the segment guard is
 // gated on IC + arch flags), so this stub returns 0=OK as a safety net.

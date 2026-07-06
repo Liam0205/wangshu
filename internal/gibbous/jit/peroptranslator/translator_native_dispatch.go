@@ -258,6 +258,12 @@ func (c *nativeCode) populateCallIC(pc int32, observed uint64) {
 		c.callICs[idx].CalleeSegAddr = segAddr
 		if segAddr != 0 {
 			CallICSegAddrCount.Add(1)
+			// Only a never-exits native callee is eligible for
+			// segment-to-segment dispatch. OR the flag in (leaving the
+			// shape flags intact).
+			if c.host.CalleeNeverExitsSegment(protoID) {
+				c.callICs[idx].Flags |= CallICFlagNeverExits
+			}
 		}
 	} else {
 		c.callICs[idx].CalleeSegAddr = 0

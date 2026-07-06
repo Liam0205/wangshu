@@ -130,6 +130,9 @@ func (h *fakeHost) ExecutePlainCallInlineFrame(base, callA, nargs, nresults int3
 // segment-to-segment dispatch is attempted in shim tests.
 func (h *fakeHost) NativeCalleeSegAddr(protoID uint32) uint64 { return 0 }
 
+// CalleeNeverExitsSegment stub (issue #50 Spike 5): returns false.
+func (h *fakeHost) CalleeNeverExitsSegment(protoID uint32) bool { return false }
+
 // hostToIfaceHeader converts a P4HostState value into a [2]uintptr
 // (itab + data) via unsafe.
 func hostToIfaceHeader(h jit.P4HostState) [2]uintptr {

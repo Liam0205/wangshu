@@ -81,10 +81,67 @@ const (
 	CallICFlagIsVararg uint8 = 1 << 0
 	CallICFlagNeedsArg uint8 = 1 << 1
 	CallICFlagIsHost   uint8 = 1 << 2
+	// CallICFlagNeverExits marks the callee as one whose native segment
+	// runs start-to-finish without exiting to a Go helper (issue #50
+	// Spike 5). Only such callees are eligible for segment-to-segment
+	// dispatch (a mid-execution exit-reason RET would be misread by the
+	// caller segment as a plain return). Set by the dispatcher when it
+	// records a native callee that also passes ProtoNeverExitsSegment.
+	CallICFlagNeverExits uint8 = 1 << 3
 	// CallICFlagStuck marks the slot as permanently at the slow path:
 	// host callee observed, or repeated shape change past the budget.
 	CallICFlagStuck uint8 = 1 << 7
 )
+
+// ProtoNeverExitsSegment reports whether a Proto's native-emitted
+// segment runs start-to-finish without ever exiting to a Go-side
+// exit-reason helper (issue #50 Spike 5 segment-to-segment dispatch
+// prerequisite).
+//
+// When true, a caller segment can `call` into this callee's segment
+// directly and rely on it returning via `ret` (in-segment teardown),
+// never via an exit-reason RET the caller would misread as a plain
+// return. It also means no GC safepoint / allocation fires mid-
+// execution, so the caller need not materialise a complete CI frame
+// before the call — the callee frame is "virtual" (lives only on the
+// native stack + value-stack registers).
+//
+// **Conservative gate**: only ops whose emit is UNCONDITIONALLY inline
+// (no exit-reason, no guard-miss fallthrough to a helper) qualify:
+//
+//	MOVE, LOADK (numeric; string LOADK is rejected by AnalyzeNative),
+//	LOADBOOL, LOADNIL, JMP, RETURN.
+//
+// Excluded — each can exit mid-execution:
+//   - ADD/SUB/MUL/DIV/UNM: IsNumber guard miss → HelperArithSlow.
+//   - LT/LE/EQ: compare guard miss → HelperCompareSlow.
+//   - MOD/POW/LEN/CONCAT/GET*/SET*/NEWTABLE/CALL/SELF: exit-reason.
+//   - FORPREP/FORLOOP: assume-number arithmetic; kept out until the
+//     guard story is proven.
+//
+// Intentionally narrow for the first segment-to-segment slice (leaf
+// callees like `function() return K end`). Spike 5 widens it later once
+// mid-execution-exit CI-frame completeness is handled. AnalyzeNative is
+// arch-specific (amd64 / arm64 build-tagged) so this arch-neutral file
+// picks up the right one at build time.
+func ProtoNeverExitsSegment(proto *bytecode.Proto) bool {
+	if proto == nil || len(proto.Code) == 0 {
+		return false
+	}
+	if !AnalyzeNative(proto) {
+		return false
+	}
+	for _, ins := range proto.Code {
+		switch bytecode.Op(ins) {
+		case bytecode.MOVE, bytecode.LOADK, bytecode.LOADBOOL,
+			bytecode.LOADNIL, bytecode.JMP, bytecode.RETURN:
+			// unconditionally inline
+		default:
+			return false
+		}
+	}
+	return true
+}
 
 // callSitePCsFor walks proto.Code and returns pc values whose op is
 // CALL. Used by TranslateProtoNative to size codeBufProto.CallICs with

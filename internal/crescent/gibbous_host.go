@@ -817,6 +817,23 @@ func (st *State) NativeCalleeSegAddr(protoID uint32) uint64 {
 	return seg.NativeSegEntryAddr()
 }
 
+// CalleeNeverExitsSegment reports whether the callee Proto's native
+// segment never exits to a Go helper mid-execution (issue #50 Spike 5).
+func (st *State) CalleeNeverExitsSegment(protoID uint32) bool {
+	if int(protoID) >= len(st.protos) || st.protos[protoID] == nil {
+		return false
+	}
+	code := st.bridge.GibbousCodeOf(st.protos[protoID])
+	if code == nil {
+		return false
+	}
+	seg, ok := code.(bridge.NativeSegAddrer)
+	if !ok {
+		return false
+	}
+	return seg.NativeNeverExitsSegment()
+}
+
 // ObserveCallCallee snapshots the callee shape at R(A) for the issue
 // #50 Spike 1 per-CALL-site inline cache. Returns a packed uint64 the
 // PJ10 native dispatcher uses to populate the IC after

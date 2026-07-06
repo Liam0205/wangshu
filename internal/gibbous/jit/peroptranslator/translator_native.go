@@ -184,6 +184,13 @@ func (c *nativeCode) NativeSegEntryAddr() uint64 {
 	return uint64(c.codePage.Addr())
 }
 
+// NativeNeverExitsSegment reports whether this segment never exits to a
+// Go helper mid-execution (issue #50 Spike 5). Implements
+// bridge.NativeSegAddrer.
+func (c *nativeCode) NativeNeverExitsSegment() bool {
+	return c != nil && ProtoNeverExitsSegment(c.proto)
+}
+
 // Dispose releases the mmap'd code page. Safe to call multiple times
 // and safe under concurrent Run in multi-State setups: CodePage.Dispose
 // flips a disposed flag (blocking further Enter) and the refcount

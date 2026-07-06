@@ -426,6 +426,13 @@ type P4HostState interface {
 	// path stays on the host round trip.
 	NativeCalleeSegAddr(protoID uint32) uint64
 
+	// CalleeNeverExitsSegment reports whether the callee Proto's native
+	// segment runs start-to-finish without exiting to a Go helper
+	// (issue #50 Spike 5). Only such callees are eligible for
+	// segment-to-segment dispatch. Returns false for non-native /
+	// disposed callees.
+	CalleeNeverExitsSegment(protoID uint32) bool
+
 	// ObserveCallCallee inspects R(A) at a CALL site and returns a
 	// packed observation of the callee's shape. Called by the exit-
 	// reason dispatcher just before host.CallBaseline to populate the
