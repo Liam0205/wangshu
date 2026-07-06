@@ -27,6 +27,7 @@ import (
 	"testing"
 
 	"github.com/Liam0205/wangshu"
+	"github.com/Liam0205/wangshu/internal/gibbous/jit/peroptranslator"
 )
 
 func runForceAll(t *testing.T, body string) (results []string, promoted int) {
@@ -1047,6 +1048,70 @@ return k()
 				}
 			}
 		})
+	}
+}
+
+// TestPJ10_CallIC_PopulatedByExitReason asserts the per-CALL-site
+// inline cache (issue #50 Spike 1) is populated by the dispatcher's
+// HelperCall path. Silent failure mode: populate skipped entirely, the
+// segment guard in Spike 2 always misses, and the test suite stays green
+// on the fallback slow path.
+//
+// Uses a two-CALL kernel — one recursive Lua CALL (mono, same protoID)
+// plus one CALL to a separate helper — so the probe catches both the
+// warmup (fresh slot → populated) and the stable-mono paths. fib(6) is
+// enough to exercise the recursive call ~13 times.
+func TestPJ10_CallIC_PopulatedByExitReason(t *testing.T) {
+	// Race-detector build skips the exit-reason CALL path (see
+	// runShimSegment's race gate); the probe assertion would only be
+	// meaningful when the real dispatcher fires.
+	// Kernel is arithmetic-dense enough to clear the PJ10 native
+	// density gate (totalOps / callCount >= 16). One CALL site is
+	// enough for the probe; adding more arith padding around the CALL
+	// keeps the callee mono (same protoID every hit).
+	prog, err := wangshu.Compile([]byte(`
+local function id(x) return x end
+local function kernel(n)
+  local s = 0
+  for i = 1, n do
+    local t = i + 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8 + 9 + 10
+    s = s + id(t)
+  end
+  return s
+end
+return kernel(2)
+`), "pj10callic")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	st := wangshu.NewState(wangshu.Options{})
+	st.SetForceAllPromote(true)
+
+	beforePop := peroptranslator.CallICPopulateCount.Load()
+	beforeWarm := peroptranslator.CallICWarmedCount.Load()
+	res, err := prog.Run(st)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// kernel(2) = (1+55) + (2+55) = 113.
+	if len(res) != 1 || res[0].Display() != "113" {
+		t.Fatalf("kernel(2) = %v, want [113]", res)
+	}
+	popDelta := peroptranslator.CallICPopulateCount.Load() - beforePop
+	warmDelta := peroptranslator.CallICWarmedCount.Load() - beforeWarm
+	t.Logf("populate=%d warmed=%d promoted=%d nativeCompile=%d nativeRun=%d dispatch=%d",
+		popDelta, warmDelta, st.PromotionCount(),
+		peroptranslator.NativeCompileCount.Load(),
+		peroptranslator.NativeRunCount.Load(),
+		peroptranslator.DispatchHelperCount.Load())
+	if popDelta == 0 {
+		t.Fatal("CallICPopulateCount didn't move — dispatcher.populateCallIC " +
+			"never fired; the emit-call-inline warmup path is broken")
+	}
+	if warmDelta == 0 {
+		t.Fatal("CallICWarmedCount didn't move — no fresh slot transitioned " +
+			"to populated; either every callee looked host, or ObserveCallCallee " +
+			"returned zero across the board")
 	}
 }
 
