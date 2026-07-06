@@ -385,6 +385,28 @@ type P4HostState interface {
 	// drop multi-ret;helper 内 enterLuaFrame nresults 设值 + callee RETURN
 	// doReturn 自动落 R(callA..callA+nresults-1))。
 	ExecuteCalleeFromInlineFrame(base int32, callA int32, callArgCount int32, nresults int32) int32
+
+	// ObserveCallCallee inspects R(A) at a CALL site and returns a
+	// packed observation of the callee's shape. Called by the exit-
+	// reason dispatcher just before host.CallBaseline to populate the
+	// per-CALL-site inline cache (issue #50 Spike 1). The observation
+	// snapshots the callee before CallBaseline overwrites R(A) with
+	// return values, so callers can populate the IC after the call
+	// succeeds without a second reg read.
+	//
+	// The returned uint64 packs:
+	//
+	//	bits  0..31 : protoID (0 if host closure)
+	//	bits 32..39 : numParams
+	//	bits 40..47 : maxStack
+	//	bits 48..55 : flags — bit0=IsVararg, bit1=NeedsArg, bit2=IsHost
+	//	bits 56..63 : reserved (zero)
+	//
+	// When R(A) is not a function value the observation returns zero
+	// packed (protoID=0 + flags=0); the dispatcher path will hit the
+	// host.CallBaseline raise anyway, and the IC populate short-circuits
+	// on the same signal. Never raises.
+	ObserveCallCallee(base int32, a int32) uint64
 }
 
 // SetHostState 把 host(crescent)抽象注入本 Compiler。

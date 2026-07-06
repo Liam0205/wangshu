@@ -113,6 +113,12 @@ type codeBufProto struct {
 	// Zero means "not available" (unit tests without a host) — emits
 	// fall back to the exit-reason path.
 	GlobalsTaddr uint32
+
+	// CallSitePCs is the sorted list of pc values whose op is CALL,
+	// captured at translate time. Consumed by TranslateProtoNative to
+	// size the run-time CallIC slice on the nativeCode; kept here to
+	// avoid re-walking the CFG at build time. Nil when no CALLs.
+	CallSitePCs []int32
 }
 
 type fixup struct {

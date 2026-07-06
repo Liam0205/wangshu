@@ -37,6 +37,11 @@ type nativeCode struct {
 	retA  int32
 	retB  int32
 	retPC int32
+
+	// callICs / callSitePCs are the per-CALL-site inline cache (issue
+	// #50 Spike 1; mirror of amd64 nativeCode).
+	callICs     []CallIC
+	callSitePCs []int32
 }
 
 func (c *nativeCode) Proto() *bytecode.Proto { return c.proto }
@@ -379,24 +384,29 @@ func TranslateProtoNative(proto *bytecode.Proto, host jit.P4HostState) (*nativeC
 	// NodeHit inline fast path (same identity-is-stable contract as the
 	// amd64 emit and P3 wasm's emitGetGlobal).
 	buf.proto.GlobalsTaddr = uint32(host.GlobalsRaw() & 0x0000_FFFF_FFFF_FFFF)
-	// Multi-return detection (mirror of amd64): more than one reachable
-	// RETURN switches emitTerminatorArm64 to the HelperReturn
-	// exit-reason lowering (each site carries its own a/b/pc instead of
-	// the single stashed retA/retB/retPC).
+	// Multi-return detection + CALL-site pc collection (mirror of
+	// amd64): more than one reachable RETURN switches emitTerminatorArm64
+	// to the HelperReturn exit-reason lowering. CALL pcs go into
+	// CallSitePCs for the per-site inline cache (issue #50 Spike 1).
 	{
 		reach := c.reachableBlocks()
 		returns := 0
+		var callPCs []int32
 		for id, bb := range c.blocks {
 			if !reach[id] {
 				continue
 			}
 			for pc := bb.startPC; pc < bb.endPC; pc++ {
-				if bytecode.Op(proto.Code[pc]) == bytecode.RETURN {
+				switch bytecode.Op(proto.Code[pc]) {
+				case bytecode.RETURN:
 					returns++
+				case bytecode.CALL:
+					callPCs = append(callPCs, pc)
 				}
 			}
 		}
 		buf.proto.MultiReturn = returns > 1
+		buf.proto.CallSitePCs = callPCs
 	}
 
 	// Prologue: reload X26 = vsBase from jitCtx (X27+off). arm64 doesn't
@@ -425,14 +435,22 @@ func TranslateProtoNative(proto *bytecode.Proto, host jit.P4HostState) (*nativeC
 		return nil, err
 	}
 	NativeCompileCount.Add(1)
+	// Per-CALL-site inline cache: one CallIC slot per CALL pc (issue
+	// #50 Spike 1; mirror of amd64).
+	var callICs []CallIC
+	if n := len(buf.proto.CallSitePCs); n > 0 {
+		callICs = make([]CallIC, n)
+	}
 	return &nativeCode{
-		proto:    proto,
-		codePage: page,
-		jitCtx:   jit.NewJITContext(),
-		host:     host,
-		retA:     buf.proto.RetA,
-		retB:     buf.proto.RetB,
-		retPC:    buf.proto.RetPC,
+		proto:       proto,
+		codePage:    page,
+		jitCtx:      jit.NewJITContext(),
+		host:        host,
+		retA:        buf.proto.RetA,
+		retB:        buf.proto.RetB,
+		retPC:       buf.proto.RetPC,
+		callICs:     callICs,
+		callSitePCs: buf.proto.CallSitePCs,
 	}, nil
 }
 

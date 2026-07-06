@@ -49,6 +49,19 @@ type nativeCode struct {
 	retA  int32
 	retB  int32
 	retPC int32
+
+	// callICs / callSitePCs are the per-CALL-site inline cache (issue
+	// #50 Spike 1). The Go-side dispatcher for HelperCall populates
+	// them after a successful host.CallBaseline; the mmap segment
+	// consults them (Spike 2+) to gate an in-segment frame build.
+	//
+	// Nil when the Proto has zero CALL sites (kernel without calls).
+	// A copy of buf.proto.CallICs / .CallSitePCs is stashed here so the
+	// dispatcher path stays out of the shared codeBufProto (which
+	// TranslateProtoNative also uses to bake constants — treating it
+	// as read-only after translate keeps concurrent Run safe).
+	callICs     []CallIC
+	callSitePCs []int32
 }
 
 func (c *nativeCode) Proto() *bytecode.Proto { return c.proto }
@@ -502,24 +515,30 @@ func TranslateProtoNative(proto *bytecode.Proto, host jit.P4HostState) (*nativeC
 	// NodeHit inline fast path (same identity-is-stable contract as P3
 	// wasm's emitGetGlobal).
 	buf.proto.GlobalsTaddr = uint32(host.GlobalsRaw() & 0x0000_FFFF_FFFF_FFFF)
-	// Multi-return detection: count reachable RETURNs; more than one
-	// switches emitTerminator to the HelperReturn exit-reason lowering
-	// (each site carries its own a/b/pc instead of the single stashed
-	// retA/retB/retPC).
+	// Multi-return detection + CALL-site pc collection: walk reachable
+	// BBs once. More than one RETURN switches emitTerminator to the
+	// HelperReturn exit-reason lowering (each site carries its own
+	// a/b/pc). CALL pcs go into CallSitePCs for the per-site inline
+	// cache (issue #50 Spike 1).
 	{
 		reach := c.reachableBlocks()
 		returns := 0
+		var callPCs []int32
 		for id, bb := range c.blocks {
 			if !reach[id] {
 				continue
 			}
 			for pc := bb.startPC; pc < bb.endPC; pc++ {
-				if bytecode.Op(proto.Code[pc]) == bytecode.RETURN {
+				switch bytecode.Op(proto.Code[pc]) {
+				case bytecode.RETURN:
 					returns++
+				case bytecode.CALL:
+					callPCs = append(callPCs, pc)
 				}
 			}
 		}
 		buf.proto.MultiReturn = returns > 1
+		buf.proto.CallSitePCs = callPCs
 	}
 
 	// DEBUG: emit just `xor eax, eax; ret` to isolate whether the crash
@@ -575,14 +594,24 @@ func TranslateProtoNative(proto *bytecode.Proto, host jit.P4HostState) (*nativeC
 		return nil, err
 	}
 	NativeCompileCount.Add(1)
+	// Per-CALL-site inline cache: one CallIC slot per CALL pc (issue
+	// #50 Spike 1). Allocated even for zero-CALL protos as an empty
+	// slice; the dispatcher's linear scan is O(N) over CallSitePCs
+	// which is empty in that case, no cost.
+	var callICs []CallIC
+	if n := len(buf.proto.CallSitePCs); n > 0 {
+		callICs = make([]CallIC, n)
+	}
 	return &nativeCode{
-		proto:    proto,
-		codePage: page,
-		jitCtx:   jit.NewJITContext(),
-		host:     host,
-		retA:     buf.proto.RetA,
-		retB:     buf.proto.RetB,
-		retPC:    buf.proto.RetPC,
+		proto:       proto,
+		codePage:    page,
+		jitCtx:      jit.NewJITContext(),
+		host:        host,
+		retA:        buf.proto.RetA,
+		retB:        buf.proto.RetB,
+		retPC:       buf.proto.RetPC,
+		callICs:     callICs,
+		callSitePCs: buf.proto.CallSitePCs,
 	}, nil
 }
 

@@ -709,6 +709,62 @@ func (st *State) TForLoop(base, pc, a, c int32) int64 {
 	return -2 // 首值 nil:退出循环
 }
 
+// ObserveCallCallee snapshots the callee shape at R(A) for the issue
+// #50 Spike 1 per-CALL-site inline cache. Returns a packed uint64 the
+// PJ10 native dispatcher uses to populate the IC after
+// host.CallBaseline succeeds.
+//
+// Packing (matches jit.P4HostState.ObserveCallCallee):
+//
+//	bits  0..31 : protoID (0 for host closure or non-function)
+//	bits 32..39 : proto.NumParams (0 for host / non-function)
+//	bits 40..47 : proto.MaxStack (0 for host / non-function)
+//	bits 48..55 : flags — bit0=IsVararg, bit1=NeedsArg, bit2=IsHost
+//	bits 56..63 : reserved zero
+//
+// The observation is racy w.r.t. concurrent GC / proto rewrites but is
+// benign: the mmap-segment guard the observation feeds re-validates
+// protoID at each hit via an atomic load; a stale meta byte only turns
+// into an over-cautious slow-path fall through, never into a memory
+// error. Never raises.
+func (st *State) ObserveCallCallee(base int32, a int32) uint64 {
+	th := st.runningThread
+	ci := st.gibCI(th)
+	callee := reg(th, ci, int(a))
+	if value.Tag(callee) != value.TagFunction {
+		return 0 // non-function: leave IC untouched; CallBaseline will raise.
+	}
+	cl := value.GCRefOf(callee)
+	if object.IsHostClosure(st.arena, cl) {
+		// Host closure: IC records "stuck host" (flag bit 2 set).
+		return uint64(observeCallFlagIsHost) << 48
+	}
+	pid := object.ClosureProtoID(st.arena, cl)
+	if int(pid) >= len(st.protos) || st.protos[pid] == nil {
+		return 0 // unknown proto id: treat as unobservable.
+	}
+	proto := st.protos[pid]
+	var flags uint8
+	if proto.IsVararg {
+		flags |= observeCallFlagIsVararg
+	}
+	if proto.NeedsArg {
+		flags |= observeCallFlagNeedsArg
+	}
+	return uint64(pid) |
+		uint64(uint8(proto.NumParams))<<32 |
+		uint64(uint8(proto.MaxStack))<<40 |
+		uint64(flags)<<48
+}
+
+// Flag bits for ObserveCallCallee packing (mirror of
+// peroptranslator.CallICFlag*).
+const (
+	observeCallFlagIsVararg uint8 = 1 << 0
+	observeCallFlagNeedsArg uint8 = 1 << 1
+	observeCallFlagIsHost   uint8 = 1 << 2
+)
+
 // tryIndirectCallee 判被调是否「gibbous-有-slot 的 Lua closure(主线程)」——是则
 // 自己压帧 + 置 gibbous 位 + 写被调帧 base 到中转字,返回 (sentinel, true) 让 caller
 // wasm 经 call_indirect 直达(免 code.Run 双跨层);否则返回 (0, false) 走回退。
