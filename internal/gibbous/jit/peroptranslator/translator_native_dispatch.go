@@ -27,6 +27,13 @@ import (
 // interpreter fallback.
 var DispatchHelperCount atomic.Int64
 
+// CallInlineFastHitCount counts times the segment-side EmitCallInline
+// fast body fired (guard passed → HelperExecutePlainCall exit-reason,
+// issue #50 Spike 2 step 4b prove-the-path probe). Incremented from
+// the dispatcher's HelperExecutePlainCall case, so a non-zero value
+// proves the segment guard succeeded AND the helper actually ran.
+var CallInlineFastHitCount atomic.Int64
+
 // CallICPopulateCount and CallICWarmedCount count the CALL IC
 // populate path in the exit-reason CALL dispatcher (issue #50
 // Spike 1 probe).
@@ -109,18 +116,10 @@ func (c *nativeCode) dispatchHelper(base int32) bool {
 		}
 		c.populateCallIC(pc, observed)
 	case jit.HelperExecutePlainCall:
-		// Issue #50 Spike 2: mmap segment already wrote the callee CI
-		// slot + incremented ciDepth; helper only drives executeFrom
-		// (or zero-cross to callee's P4 code) and rebalances ciDepth
-		// for the segment's PopFrame sequence.
-		//
-		// Packing per HelperExecutePlainCall docs:
-		//   bits 16..23: callA
-		//   bits 24..31: nargs
-		//   bits 32..39: nresults
-		callA := a           // exit-reason unpacking reused (bits 16..23)
-		nargs := b & 0xFF    // reuse b slot for nargs (bits 24..31)
-		nresults := cc & 0xF // reuse c slot for nresults (bits 33..36)
+		CallInlineFastHitCount.Add(1)
+		callA := a
+		nargs := b & 0xFF
+		nresults := cc & 0xF
 		// Note: emitCallInline packs (a=callA, b=nargs, c=nresults)
 		// through the standard emitExitReason path so the standard
 		// unpacking at lines 45-52 above already sliced out a/b/c

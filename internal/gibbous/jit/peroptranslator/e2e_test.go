@@ -1070,16 +1070,16 @@ func TestPJ10_CallIC_PopulatedByExitReason(t *testing.T) {
 	// enough for the probe; adding more arith padding around the CALL
 	// keeps the callee mono (same protoID every hit).
 	prog, err := wangshu.Compile([]byte(`
-local function id(x) return x end
+local function zero() return 0 end
 local function kernel(n)
   local s = 0
   for i = 1, n do
     local t = i + 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8 + 9 + 10
-    s = s + id(t)
+    s = s + t + zero()
   end
   return s
 end
-return kernel(2)
+return kernel(20)
 `), "pj10callic")
 	if err != nil {
 		t.Fatalf("compile: %v", err)
@@ -1093,17 +1093,15 @@ return kernel(2)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	// kernel(2) = (1+55) + (2+55) = 113.
-	if len(res) != 1 || res[0].Display() != "113" {
-		t.Fatalf("kernel(2) = %v, want [113]", res)
+	// kernel(20) = sum over i=1..20 of (i+55) = (20*21/2) + 20*55 = 1310.
+	if len(res) != 1 || res[0].Display() != "1310" {
+		t.Fatalf("kernel(20) = %v, want [1310]", res)
 	}
 	popDelta := peroptranslator.CallICPopulateCount.Load() - beforePop
 	warmDelta := peroptranslator.CallICWarmedCount.Load() - beforeWarm
-	t.Logf("populate=%d warmed=%d promoted=%d nativeCompile=%d nativeRun=%d dispatch=%d",
+	t.Logf("populate=%d warmed=%d promoted=%d fastHits=%d",
 		popDelta, warmDelta, st.PromotionCount(),
-		peroptranslator.NativeCompileCount.Load(),
-		peroptranslator.NativeRunCount.Load(),
-		peroptranslator.DispatchHelperCount.Load())
+		peroptranslator.CallInlineFastHitCount.Load())
 	if popDelta == 0 {
 		t.Fatal("CallICPopulateCount didn't move — dispatcher.populateCallIC " +
 			"never fired; the emit-call-inline warmup path is broken")
@@ -1112,6 +1110,61 @@ return kernel(2)
 		t.Fatal("CallICWarmedCount didn't move — no fresh slot transitioned " +
 			"to populated; either every callee looked host, or ObserveCallCallee " +
 			"returned zero across the board")
+	}
+}
+
+// TestPJ10_CallInline_FastPathFires proves the issue #50 Spike 2
+// segment-side EmitCallInline fast path actually fires (guard passes →
+// HelperExecutePlainCall) after the IC warms up, and produces the same
+// result the interpreter would.
+//
+// Silent failure mode: the guard could always miss (protoID compare
+// off-by-one, Flags mask wrong, IC slot address stale) and every CALL
+// would ride the historical HelperCall slow path — the result stays
+// correct, so only a white-box fast-hit counter can tell the fast body
+// ran. kernel(20) issues one 0-arg CALL per iteration against a stable
+// mono Lua callee, so after the first (warmup) call all 19 remaining
+// go through the fast body.
+func TestPJ10_CallInline_FastPathFires(t *testing.T) {
+	prog, err := wangshu.Compile([]byte(`
+local function zero() return 0 end
+local function kernel(n)
+  local s = 0
+  for i = 1, n do
+    local t = i + 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8 + 9 + 10
+    s = s + t + zero()
+  end
+  return s
+end
+return kernel(20)
+`), "pj10callinlinefast")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	st := wangshu.NewState(wangshu.Options{})
+	st.SetForceAllPromote(true)
+
+	before := peroptranslator.CallInlineFastHitCount.Load()
+	res, err := prog.Run(st)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if len(res) != 1 || res[0].Display() != "1310" {
+		t.Fatalf("kernel(20) = %v, want [1310]", res)
+	}
+	fastDelta := peroptranslator.CallInlineFastHitCount.Load() - before
+	t.Logf("callInlineFastHits = %d", fastDelta)
+	if fastDelta == 0 {
+		t.Fatal("CallInlineFastHitCount didn't move — the segment guard " +
+			"never passed; EmitCallInline fast body is unreachable (protoID " +
+			"compare / Flags mask / IC slot address bug)")
+	}
+	// Warm-up: the first call rides the slow path (IC empty), so fast
+	// hits should be strictly fewer than the 20 total but clearly
+	// nonzero (>= 15 of the 19 post-warmup iterations).
+	if fastDelta < 15 {
+		t.Errorf("callInlineFastHits = %d, want >= 15 (most post-warmup "+
+			"iterations should take the fast body)", fastDelta)
 	}
 }
 
