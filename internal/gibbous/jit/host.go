@@ -386,6 +386,35 @@ type P4HostState interface {
 	// doReturn 自动落 R(callA..callA+nresults-1))。
 	ExecuteCalleeFromInlineFrame(base int32, callA int32, callArgCount int32, nresults int32) int32
 
+	// ExecutePlainCallInlineFrame is the PJ10 native CALL variant of
+	// ExecuteCalleeFromInlineFrame — same shape (mmap segment builds
+	// the callee CI slot + increments ciDepth, then exits via
+	// HelperExecutePlainCall; helper drives executeFrom + rebalances
+	// ciDepth for the segment-side PopFrame), differing only in the
+	// caller-side arg convention:
+	//
+	//   - SELF variant assumes callArgCount = user-arg count and the
+	//     helper computes nargs = 1 + callArgCount (self is implicit).
+	//   - plain-CALL variant takes nargs directly (matches CALL.B - 1;
+	//     B=1 → 0 args, B=N → N-1 args). No implicit self.
+	//
+	// The helper interprets the segment-written CI slot as-is: word3
+	// carries the callee closure GCRef, word0 carries base|funcIdx,
+	// word2 carries protoID|nresults. Zero raises are propagated back
+	// to Run's Go-side error path via jitCtx.exitReason.
+	//
+	// Params:
+	//
+	//   - base:  jitCtx.valueStackBase (caller frame R(0) byte offset).
+	//   - callA: CALL.A field — R(callA) held the closure that the
+	//     segment reflected into CI[depth].cl.
+	//   - nargs: CALL.B - 1 (0..255).
+	//   - nresults: CALL.C - 1 (-1 for multret, but the segment guard
+	//     rejects multret in the Spike 2 minimal form).
+	//
+	// Return: 0=OK / 1=ERR (state.pendingErr already set).
+	ExecutePlainCallInlineFrame(base int32, callA int32, nargs int32, nresults int32) int32
+
 	// ObserveCallCallee inspects R(A) at a CALL site and returns a
 	// packed observation of the callee's shape. Called by the exit-
 	// reason dispatcher just before host.CallBaseline to populate the

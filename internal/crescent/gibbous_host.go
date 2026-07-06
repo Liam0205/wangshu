@@ -709,6 +709,96 @@ func (st *State) TForLoop(base, pc, a, c int32) int64 {
 	return -2 // 首值 nil:退出循环
 }
 
+// ExecutePlainCallInlineFrame is the plain-CALL variant of
+// ExecuteCalleeFromInlineFrame (issue #50 Spike 2). Mirrors the SELF
+// path but does NOT add an implicit self to nargs — the mmap segment
+// already wrote the callee CI slot with the correct base (= caller
+// base + A + 1, no self shift) and passes the raw nargs = CALL.B - 1.
+//
+// Segment protocol (Spike 2 minimal form):
+//
+//  1. segment wrote CI[ciDepth-1] with 5 words:
+//     word0 = base|funcIdx (caller base + callA is funcIdx; callee's
+//     base = funcIdx + 1 for the non-vararg fixed-arity form)
+//     word1 = top | pc     (top will be set to caller.base + callArgCount
+//     + callee.MaxStack when we know callee's MaxStack — segment
+//     leaves top at 0; helper sets it below via th.setTop)
+//     word2 = protoID | (nresults & 0xFFFF)<<32
+//     word3 = closure GCRef (payload only)
+//     word4 = nVarargs = 0 (Spike 2 rejects vararg callees)
+//  2. segment incremented the ciDepth mirror word by 1.
+//  3. segment RETs with jitCtx.exitReason = ExitInlineHelper +
+//     exitArg0 = HelperExecutePlainCall packed with (callA, nargs, nresults).
+//
+// Helper flow (mirror of ExecuteCalleeFromInlineFrame with the +1
+// difference removed):
+//
+//  1. Sync Go th.ciDepth from mirror (segment bumped it).
+//  2. Read CI[ciDepth-1].cl for callee validation.
+//  3. Decrement th.ciDepth to undo the segment bump (enterLuaFrame
+//     will re-bump).
+//  4. funcIdx = th.cur.base + callA.
+//  5. If callee is P4-promoted and on mainTh → enterGibbous
+//     (zero-cross); else enterLuaFrame + executeFrom.
+//  6. Bump th.ciDepth back by 1 to leave the segment's PopFrame
+//     symmetric.
+//
+// Return: 0=OK / 1=ERR (raiseGibbous already set state.pendingErr).
+func (st *State) ExecutePlainCallInlineFrame(base, callA, nargs, nresults int32) int32 {
+	_ = base
+	th := st.runningThread
+	if th.ciDepthWordRef != 0 {
+		th.ciDepth = int(uint32(th.arena.WordAt(th.ciDepthWordRef)))
+	}
+	// 1. read callee CI to validate protoID / cl.
+	depth := th.ciDepth - 1
+	var calleeCI callInfo
+	th.readCISegInto(depth, &calleeCI)
+	if calleeCI.cl == 0 {
+		return st.raiseGibbous(errf("ExecutePlainCallInlineFrame: nil closure GCRef in CI[%d]", depth))
+	}
+	calleePID := object.ClosureProtoID(st.arena, calleeCI.cl)
+	if int(calleePID) >= len(st.protos) || st.protos[calleePID] == nil {
+		return st.raiseGibbous(errf("ExecutePlainCallInlineFrame: invalid callee protoID %d", calleePID))
+	}
+	// 2. undo the segment ciDepth bump — enterLuaFrame re-bumps.
+	th.setCIDepth(th.ciDepth - 1)
+	funcIdx := th.cur.base + int(callA)
+	// 3. C stack depth check.
+	if st.nCcalls >= maxCCallDepth {
+		return st.raiseGibbous(errf("C stack overflow"))
+	}
+	st.nCcalls++
+	// 4. Zero-cross fast path: callee is also P4-promoted → skip
+	//    executeFrom's interpreter loop entirely.
+	if profileEnabled && th == st.mainTh {
+		calleeCode := st.bridge.GibbousCodeOf(st.protos[calleePID])
+		if calleeCode != nil {
+			err := st.enterGibbous(th, calleeCode, funcIdx, int(nargs), int(nresults))
+			st.nCcalls--
+			if err != nil {
+				return st.raiseGibbous(err)
+			}
+			st.frameInlineZeroCrossHits++
+			th.setCIDepth(th.ciDepth + 1)
+			return 0
+		}
+	}
+	// 5. Interpreter fallback.
+	if e := st.enterLuaFrame(th, funcIdx, int(nargs), int(nresults), false); e != nil {
+		st.nCcalls--
+		return st.raiseGibbous(e)
+	}
+	entryDepth := th.ciDepth - 1
+	err := st.executeFrom(th, entryDepth)
+	st.nCcalls--
+	if err != nil {
+		return st.raiseGibbous(err)
+	}
+	th.setCIDepth(th.ciDepth + 1)
+	return 0
+}
+
 // ObserveCallCallee snapshots the callee shape at R(A) for the issue
 // #50 Spike 1 per-CALL-site inline cache. Returns a packed uint64 the
 // PJ10 native dispatcher uses to populate the IC after

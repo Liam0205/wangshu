@@ -103,15 +103,31 @@ func (c *nativeCode) dispatchHelper(base int32) bool {
 		// closure. Populate the IC once the call succeeds — a raise
 		// still gets to record the miss so shape-change tracking
 		// isn't blind to error paths.
-		//
-		// Issue #50 Spike 1: the observation only writes the slot;
-		// the mmap segment guard that will consume it lands in
-		// Spike 2 alongside the segment-side EmitCallInline.
 		observed := c.snapshotCallCallee(base, a)
 		if st := c.host.CallBaseline(base, pc, a, b, cc); st != 0 {
 			return false
 		}
 		c.populateCallIC(pc, observed)
+	case jit.HelperExecutePlainCall:
+		// Issue #50 Spike 2: mmap segment already wrote the callee CI
+		// slot + incremented ciDepth; helper only drives executeFrom
+		// (or zero-cross to callee's P4 code) and rebalances ciDepth
+		// for the segment's PopFrame sequence.
+		//
+		// Packing per HelperExecutePlainCall docs:
+		//   bits 16..23: callA
+		//   bits 24..31: nargs
+		//   bits 32..39: nresults
+		callA := a           // exit-reason unpacking reused (bits 16..23)
+		nargs := b & 0xFF    // reuse b slot for nargs (bits 24..31)
+		nresults := cc & 0xF // reuse c slot for nresults (bits 33..36)
+		// Note: emitCallInline packs (a=callA, b=nargs, c=nresults)
+		// through the standard emitExitReason path so the standard
+		// unpacking at lines 45-52 above already sliced out a/b/c
+		// from the correct bit ranges.
+		if st := c.host.ExecutePlainCallInlineFrame(base, callA, nargs, nresults); st != 0 {
+			return false
+		}
 	case jit.HelperGetGlobal:
 		// bx split across b (low 9) and c (high 9) slots.
 		if st := c.host.DoGetGlobal(base, pc, a, b|(cc<<9)); st != 0 {

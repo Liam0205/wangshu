@@ -119,6 +119,13 @@ func (h *fakeHost) ExecuteCalleeFromInlineFrame(base, callA, callArgCount, nresu
 // end-to-end crescent tests.
 func (h *fakeHost) ObserveCallCallee(base, a int32) uint64 { return 0 }
 
+// ExecutePlainCallInlineFrame stub (issue #50 Spike 2 plain-CALL
+// variant of ExecuteCalleeFromInlineFrame). Shim tests don't exercise
+// the CALL EmitCallInline path — always return 0 as a safety net.
+func (h *fakeHost) ExecutePlainCallInlineFrame(base, callA, nargs, nresults int32) int32 {
+	return 0
+}
+
 // hostToIfaceHeader converts a P4HostState value into a [2]uintptr
 // (itab + data) via unsafe.
 func hostToIfaceHeader(h jit.P4HostState) [2]uintptr {
