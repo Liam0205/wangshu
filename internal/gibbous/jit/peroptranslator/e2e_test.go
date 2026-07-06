@@ -1249,6 +1249,64 @@ return kernel(20)
 	}
 }
 
+// TestPJ10_CallInline_SegToSeg proves the issue #50 Spike 5
+// segment-to-segment dispatch end-to-end: a caller segment calls
+// directly into a never-exits native callee segment (no host round
+// trip), the callee tears its frame down in-segment and rets back, and
+// the result is correct.
+//
+// The callee `leaf` is multi-BB (FORLOOP back-edge) so it's native-
+// compiled (PreferNative), and all its ops are never-exit (FORPREP /
+// FORLOOP / MOVE / LOADK / RETURN) so it qualifies for segment-to-
+// segment. It returns a constant regardless of input (empty-ish loop),
+// which keeps the expected value trivial to assert.
+func TestPJ10_CallInline_SegToSeg(t *testing.T) {
+	prog, err := wangshu.Compile([]byte(`
+local function leaf(x)
+  local a = x
+  for i = 1, x do
+    a = 1
+    a = 2
+    a = 3
+    a = 4
+  end
+  return a
+end
+local function kernel(n)
+  local s = 0
+  for i = 1, n do
+    local t = i + 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8 + 9 + 10
+    s = s + leaf(t)
+  end
+  return s
+end
+return kernel(20)
+`), "pj10seg2seg")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	st := wangshu.NewState(wangshu.Options{})
+	st.SetForceAllPromote(true)
+
+	beforeSeg := peroptranslator.SegToSegHitCount.Load()
+	res, err := prog.Run(st)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// leaf(t) = 4 for t >= 1 (loop runs, a ends at 4). sum over i=1..20
+	// of 4 = 80.
+	if len(res) != 1 || res[0].Display() != "80" {
+		t.Fatalf("kernel(20) = %v, want [80]", res)
+	}
+	segDelta := peroptranslator.SegToSegHitCount.Load() - beforeSeg
+	t.Logf("SegToSegHitCount delta = %d", segDelta)
+	if segDelta == 0 {
+		t.Fatal("SegToSegHitCount didn't move — segment-to-segment " +
+			"dispatch never fired; the callee wasn't recognized as a " +
+			"never-exits native segment, or the caller emit gate is wrong")
+	}
+}
+
 // TestPJ10_CallInline_MultiReturn proves the Spike 4 form: a CALL that
 // captures more than one return value (C >= 3) rides the fast body.
 // The helper's nresults param already handles multi-return; the guard

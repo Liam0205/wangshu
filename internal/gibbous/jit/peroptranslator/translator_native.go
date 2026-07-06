@@ -648,14 +648,17 @@ func TranslateProtoNative(proto *bytecode.Proto, host jit.P4HostState) (*nativeC
 // A single package-level bool is sufficient because there's no per-
 // State variation: EmitCallInline is a build-time decision (arch
 // support + gate state), not runtime configuration.
-//
-// **Guard-only mode**: currently the fast-path body isn't emitted yet;
-// emitCallInlineFastPath returns false so callers always fall through
-// to the exit-reason HelperCall. Flipping this to true only enables
-// the segment-side R(A) tag + protoID guard bytes upstream of the
-// exit-reason — a no-op cost path that lets us verify guard emit
-// doesn't corrupt the segment before Step 4 lands the real fast body.
 var callInlineEnabled = true
+
+// segToSegEnabled gates the issue #50 Spike 5 segment-to-segment
+// dispatch: the caller CALL fast body `call`s directly into a native
+// callee segment, and the callee RETURN tears its frame down in-segment
+// and rets back. Requires the callee to be never-exits (CallICFlagNeverExits)
+// with a recorded segment address. Default off until the emit is proven
+// end-to-end; flipping it activates BOTH the caller dispatch and the
+// callee dual-semantics RETURN (they must land together — a caller that
+// calls a segment whose RETURN still exits to Go would desync).
+var segToSegEnabled = true
 
 // emit_ops_amd64.go, then the terminator with successor BB fixups.
 func emitBB(buf *codeBuf, c *cfg, bb *basicBlock, bbID int) error {
@@ -804,6 +807,14 @@ func emitTerminator(buf *codeBuf, c *cfg, bb *basicBlock, bbID int, ins bytecode
 			cb.proto.RetA = int32(a)
 			cb.proto.RetB = int32(b)
 			cb.proto.RetPC = pc
+		}
+		// Issue #50 Spike 5: dual-semantics RETURN. When this segment is
+		// running as a segment-to-segment callee (jitCtx.segCallDepth >
+		// 0), the RETURN tears the frame down in-segment and `ret`s back
+		// into the caller segment instead of exiting to Go DoReturn.
+		if segToSegEnabled {
+			emitReturnDualSemantics(cb, a, b)
+			break
 		}
 		cb.emit([]byte{0x31, 0xC0, 0xC3}) // xor eax, eax; ret
 	case bytecode.TAILCALL:

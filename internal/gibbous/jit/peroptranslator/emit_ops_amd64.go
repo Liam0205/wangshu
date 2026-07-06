@@ -1733,6 +1733,73 @@ func emitInlineSetGlobalNodeHit(cb *codeBuf, pc int32, a uint8, bx uint16) bool 
 	return true
 }
 
+// emitReturnDualSemantics emits a RETURN that branches on
+// jitCtx.segCallDepth (issue #50 Spike 5):
+//
+//	mov rax, [r15 + segCallDepthOff]
+//	test eax, eax
+//	jz go_ret                     ; depth == 0 → Go-entered, exit segment
+//	; --- in-segment teardown (segment-to-segment callee) ---
+//	; moveResults: for k in 0..nret-1: [rbx - 8 + k*8] = [rbx + (A+k)*8]
+//	;   (funcIdx = callee.base - 1, so its byte addr is rbx - 8)
+//	ret                           ; return into the caller segment
+//	go_ret:
+//	xor eax, eax
+//	ret                           ; exit segment; Go does DoReturn
+//
+// nret = b - 1 (RETURN.B). b == 0 (multret to top) is not produced for
+// never-exits leaf callees (AnalyzeNative + ProtoNeverExitsSegment keep
+// those on the exit-reason path), but guard against it by treating
+// b == 0 as "no in-segment move" (falls through to the Go path via the
+// depth check being the only branch — safe because a multret callee
+// won't be a segment-to-segment target).
+func emitReturnDualSemantics(cb *codeBuf, a, b uint8) {
+	// Stash retA/retB/retPC as usual so the Go-entered path's DoReturn
+	// still works.
+	if cb.proto != nil {
+		cb.proto.RetA = int32(a)
+		cb.proto.RetB = int32(b)
+	}
+	// mov rax, [r15 + segCallDepthOff]   (49 8B 87 disp32)
+	{
+		off := int32(jit.JITContextSegCallDepthOffset)
+		cb.emit([]byte{0x49, 0x8B, 0x87,
+			byte(uint32(off)), byte(uint32(off) >> 8),
+			byte(uint32(off) >> 16), byte(uint32(off) >> 24)})
+	}
+	// test eax, eax   (85 C0)
+	cb.emit([]byte{0x85, 0xC0})
+	// jz go_ret   (0F 84 rel32) — patched below
+	jzOff := len(cb.bytes) + 2
+	cb.emit([]byte{0x0F, 0x84, 0, 0, 0, 0})
+
+	// In-segment teardown: moveResults via rbx-relative addressing.
+	// funcIdx = callee.base - 1 → byte addr rbx - 8.
+	nret := int32(b) - 1
+	if b != 0 {
+		for k := int32(0); k < nret; k++ {
+			// mov rax, [rbx + (A+k)*8]   (48 8B 83 disp32)
+			src := (int32(a) + k) * 8
+			cb.emit([]byte{0x48, 0x8B, 0x83,
+				byte(uint32(src)), byte(uint32(src) >> 8),
+				byte(uint32(src) >> 16), byte(uint32(src) >> 24)})
+			// mov [rbx - 8 + k*8], rax   (48 89 83 disp32)
+			dst := -8 + k*8
+			cb.emit([]byte{0x48, 0x89, 0x83,
+				byte(uint32(dst)), byte(uint32(dst) >> 8),
+				byte(uint32(dst) >> 16), byte(uint32(dst) >> 24)})
+		}
+	}
+	// ret   (C3) — return into caller segment
+	cb.emit([]byte{0xC3})
+
+	// go_ret: (patch jz target here)
+	goRetPos := len(cb.bytes)
+	writeRel32(cb, jzOff, int32(goRetPos)-int32(jzOff+4))
+	// xor eax, eax; ret
+	cb.emit([]byte{0x31, 0xC0, 0xC3})
+}
+
 func emitNEWTABLE(cb *codeBuf, pc int32, a, b, c uint8) {
 	emitExitReason(cb, jit.HelperNewTable, pc, int32(a), int32(b), int32(c))
 }
@@ -1892,6 +1959,100 @@ func emitCallInlineFastPath(cb *codeBuf, pc int32, a, b, c uint8, callSiteIdx in
 	jne4Off := len(cb.bytes) + 2
 	cb.emit([]byte{0x0F, 0x85, 0, 0, 0, 0})
 
+	// --- Segment-to-segment dispatch (issue #50 Spike 5). When the IC
+	// says the callee is a never-exits native segment, `call` into it
+	// directly instead of the HelperExecutePlainCall round trip. rdx
+	// holds icSlotAddr from the guard (step 12), but step 15 clobbered
+	// it (mov edx, [rdx+4]); reload it.
+	var jmpDoneOff int = -1
+	if segToSegEnabled {
+		// mov rdx, icSlotAddr   (48 BA imm64)
+		cb.emit(jitamd64.EmitMovRdxImm64(nil, uint64(icSlotAddr)))
+		// test byte [rdx+6], NeverExits(0x08)   (F6 42 06 08)
+		cb.emit([]byte{0xF6, 0x42, byte(callICFlagsByteOffset), CallICFlagNeverExits})
+		// jz skip_seg   (0F 84 rel32) — patched to skip_seg (fast body)
+		jzNeverExitsOff := len(cb.bytes) + 2
+		cb.emit([]byte{0x0F, 0x84, 0, 0, 0, 0})
+		// mov rax, [rdx + CalleeSegAddrOff]   (48 8B 42 disp8=CalleeSegAddr offset)
+		cb.emit([]byte{0x48, 0x8B, 0x42, byte(callICSegAddrByteOffset)})
+		// test rax, rax   (48 85 C0)
+		cb.emit([]byte{0x48, 0x85, 0xC0})
+		// jz skip_seg   (0F 84 rel32)
+		jzSegZeroOff := len(cb.bytes) + 2
+		cb.emit([]byte{0x0F, 0x84, 0, 0, 0, 0})
+		// cap check: mov ecx, [r15 + segCallDepthOff]   (41 8B 8F disp32)
+		{
+			off := int32(jit.JITContextSegCallDepthOffset)
+			cb.emit([]byte{0x41, 0x8B, 0x8F,
+				byte(uint32(off)), byte(uint32(off) >> 8),
+				byte(uint32(off) >> 16), byte(uint32(off) >> 24)})
+		}
+		// cmp ecx, segToSegDepthCap   (81 F9 imm32)
+		cb.emit([]byte{0x81, 0xF9,
+			byte(segToSegDepthCap), byte(segToSegDepthCap >> 8),
+			byte(segToSegDepthCap >> 16), byte(segToSegDepthCap >> 24)})
+		// jae skip_seg   (0F 83 rel32) — depth >= cap → fall back
+		jaeCapOff := len(cb.bytes) + 2
+		cb.emit([]byte{0x0F, 0x83, 0, 0, 0, 0})
+		// inc dword [r15 + segCallDepthOff]   (41 FF 87 disp32)
+		{
+			off := int32(jit.JITContextSegCallDepthOffset)
+			cb.emit([]byte{0x41, 0xFF, 0x87,
+				byte(uint32(off)), byte(uint32(off) >> 8),
+				byte(uint32(off) >> 16), byte(uint32(off) >> 24)})
+		}
+		// push rbx   (53) — save caller vsBase
+		cb.emit([]byte{0x53})
+		// lea rbx, [rbx + (A+1)*8]   (48 8D 9B disp32) — callee vsBase
+		{
+			disp := (int32(a) + 1) * 8
+			cb.emit([]byte{0x48, 0x8D, 0x9B,
+				byte(uint32(disp)), byte(uint32(disp) >> 8),
+				byte(uint32(disp) >> 16), byte(uint32(disp) >> 24)})
+		}
+		// mov [r15 + vsBaseOff], rbx   (49 89 9F disp32) — callee prologue reloads it
+		{
+			off := int32(jit.JITContextValueStackBaseOffset)
+			cb.emit([]byte{0x49, 0x89, 0x9F,
+				byte(uint32(off)), byte(uint32(off) >> 8),
+				byte(uint32(off) >> 16), byte(uint32(off) >> 24)})
+		}
+		// call rax   (FF D0) — rax = callee seg addr
+		cb.emit([]byte{0xFF, 0xD0})
+		// pop rbx   (5B) — restore caller vsBase
+		cb.emit([]byte{0x5B})
+		// mov [r15 + vsBaseOff], rbx   (49 89 9F disp32)
+		{
+			off := int32(jit.JITContextValueStackBaseOffset)
+			cb.emit([]byte{0x49, 0x89, 0x9F,
+				byte(uint32(off)), byte(uint32(off) >> 8),
+				byte(uint32(off) >> 16), byte(uint32(off) >> 24)})
+		}
+		// dec dword [r15 + segCallDepthOff]   (41 FF 8F disp32)
+		{
+			off := int32(jit.JITContextSegCallDepthOffset)
+			cb.emit([]byte{0x41, 0xFF, 0x8F,
+				byte(uint32(off)), byte(uint32(off) >> 8),
+				byte(uint32(off) >> 16), byte(uint32(off) >> 24)})
+		}
+		// Prove-the-path: inc qword [SegToSegHitCountAddr].
+		// mov rax, imm64 (48 B8) ; inc qword [rax] (48 FF 00)
+		cb.emit(jitamd64.EmitMovRaxImm64(nil, SegToSegHitCountAddr()))
+		cb.emit([]byte{0x48, 0xFF, 0x00})
+		// Result is already at caller R(A) (callee moveResults wrote
+		// funcIdx = caller R(A)). Jump past the exit-reason blocks to
+		// the end of the CALL emit; the next op continues normally.
+		// jmp done   (E9 rel32) — patched at end
+		cb.emit([]byte{0xE9, 0, 0, 0, 0})
+		jmpDoneOff = len(cb.bytes) - 4
+		// skip_seg: (patch the three eligibility jumps here — the fast
+		// body begins next).
+		skipSegPos := len(cb.bytes)
+		writeRel32(cb, jzNeverExitsOff, int32(skipSegPos)-int32(jzNeverExitsOff+4))
+		writeRel32(cb, jzSegZeroOff, int32(skipSegPos)-int32(jzSegZeroOff+4))
+		writeRel32(cb, jaeCapOff, int32(skipSegPos)-int32(jaeCapOff+4))
+	}
+
 	// --- Fast body: guard passed. Emit exit-reason to
 	// HelperExecutePlainCall (issue #50 Spike 2 step 4b).
 	//
@@ -1924,6 +2085,15 @@ func emitCallInlineFastPath(cb *codeBuf, pc int32, a, b, c uint8, callSiteIdx in
 	writeRel32(cb, jne3Off, int32(slowPathPos)-int32(jne3Off+4))
 	writeRel32(cb, jne4Off, int32(slowPathPos)-int32(jne4Off+4))
 	emitExitReason(cb, jit.HelperCall, pc, int32(a), int32(b), int32(c))
+
+	// Patch the segment-to-segment `jmp done` (if emitted) to land here,
+	// past both exit-reason blocks. The seg2seg path completes in-
+	// segment and continues to the next op; both exit-reason blocks end
+	// with RET so control only reaches here via the seg2seg jmp.
+	if jmpDoneOff >= 0 {
+		donePos := len(cb.bytes)
+		writeRel32(cb, jmpDoneOff, int32(donePos)-int32(jmpDoneOff+4))
+	}
 	return true
 }
 

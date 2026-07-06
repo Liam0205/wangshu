@@ -76,6 +76,27 @@ type CallIC struct {
 	CalleeSegAddr uint64
 }
 
+// callICSegAddrByteOffset is the byte offset of CalleeSegAddr within
+// CallIC, baked into the segment-to-segment dispatch emit as a disp8.
+// Layout: ProtoID(4) + NumParams(1) + MaxStack(1) + Flags(1) + pad(1)
+// + Hits(4) + Misses(4) = 16, then CalleeSegAddr. Verified by
+// TestCallICLayout so a struct reorder can't silently break the emit.
+const callICSegAddrByteOffset = 16
+
+// callICFlagsByteOffset is the byte offset of the Flags field within
+// CallIC (ProtoID(4) + NumParams(1) + MaxStack(1) = 6). The
+// segment-to-segment emit tests the NeverExits bit at [icSlot+6].
+const callICFlagsByteOffset = 6
+
+// segToSegDepthCap bounds native segment-to-segment recursion so the
+// goroutine stack can't overflow in the NOSPLIT window where morestack
+// can't fire (spike DECISION.md option b). Past the cap, a caller falls
+// back to the exit-reason path (host executeFrom handles deep recursion
+// on the heap-allocated CI chain). 128 levels × ~16 bytes/level of
+// return-address + saved-rbx ≈ 2KB, comfortably within the stack the
+// trampoline is entered with; fib(24) recurses only 24 deep.
+const segToSegDepthCap = 128
+
 // Call-IC flag bits (single byte in Flags).
 const (
 	CallICFlagIsVararg uint8 = 1 << 0
@@ -106,24 +127,27 @@ const (
 // before the call — the callee frame is "virtual" (lives only on the
 // native stack + value-stack registers).
 //
-// **Conservative gate**: only ops whose emit is UNCONDITIONALLY inline
-// (no exit-reason, no guard-miss fallthrough to a helper) qualify:
+// **Gate**: only ops whose emit is UNCONDITIONALLY inline (no
+// exit-reason, no guard-miss fallthrough to a helper) qualify:
 //
 //	MOVE, LOADK (numeric; string LOADK is rejected by AnalyzeNative),
-//	LOADBOOL, LOADNIL, JMP, RETURN.
+//	LOADBOOL, LOADNIL, JMP, RETURN, FORPREP, FORLOOP, TEST, TESTSET.
+//
+// FORPREP/FORLOOP do assume-number NEON/SSE arithmetic but never emit
+// an exit-reason (a NaN is a correctness concern for the RESULT, the
+// same one the normal native path already accepts — not an exit). TEST/
+// TESTSET are pure Nil/False bit-compares, also no exit. These give
+// multi-BB never-exits shapes (via FORLOOP back-edge / TEST branch),
+// which is what makes a callee both native-compiled (PreferNative needs
+// multi-BB) AND a valid segment-to-segment target.
 //
 // Excluded — each can exit mid-execution:
 //   - ADD/SUB/MUL/DIV/UNM: IsNumber guard miss → HelperArithSlow.
 //   - LT/LE/EQ: compare guard miss → HelperCompareSlow.
 //   - MOD/POW/LEN/CONCAT/GET*/SET*/NEWTABLE/CALL/SELF: exit-reason.
-//   - FORPREP/FORLOOP: assume-number arithmetic; kept out until the
-//     guard story is proven.
 //
-// Intentionally narrow for the first segment-to-segment slice (leaf
-// callees like `function() return K end`). Spike 5 widens it later once
-// mid-execution-exit CI-frame completeness is handled. AnalyzeNative is
-// arch-specific (amd64 / arm64 build-tagged) so this arch-neutral file
-// picks up the right one at build time.
+// AnalyzeNative is arch-specific (amd64 / arm64 build-tagged) so this
+// arch-neutral file picks up the right one at build time.
 func ProtoNeverExitsSegment(proto *bytecode.Proto) bool {
 	if proto == nil || len(proto.Code) == 0 {
 		return false
@@ -134,8 +158,10 @@ func ProtoNeverExitsSegment(proto *bytecode.Proto) bool {
 	for _, ins := range proto.Code {
 		switch bytecode.Op(ins) {
 		case bytecode.MOVE, bytecode.LOADK, bytecode.LOADBOOL,
-			bytecode.LOADNIL, bytecode.JMP, bytecode.RETURN:
-			// unconditionally inline
+			bytecode.LOADNIL, bytecode.JMP, bytecode.RETURN,
+			bytecode.FORPREP, bytecode.FORLOOP,
+			bytecode.TEST, bytecode.TESTSET:
+			// unconditionally inline (no exit-reason emit)
 		default:
 			return false
 		}
