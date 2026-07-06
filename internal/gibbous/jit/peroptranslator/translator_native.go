@@ -650,53 +650,9 @@ func TranslateProtoNative(proto *bytecode.Proto, host jit.P4HostState) (*nativeC
 	}, nil
 }
 
-// callInlineEnabled controls whether emitCALL emits the segment-side
-// EmitCallInline fast path (issue #50 Spike 2). Default off — the emit
-// falls back to the historical HelperCall exit-reason exactly like it
-// did before Spike 2. The flag is toggled once the segment guard +
-// prove-the-path assertions land, so we can commit the plumbing
-// incrementally without a behavior flip.
-//
-// A single package-level bool is sufficient because there's no per-
-// State variation: EmitCallInline is a build-time decision (arch
-// support + gate state), not runtime configuration.
-var callInlineEnabled = true
-
-// inlineGetUpvalEnabled gates the issue #50 Spike 5 inline GETUPVAL emit
-// (emitGETUPVALInline). Independent of segToSegEnabled: inline GETUPVAL
-// is correct on its own (at segCallDepth==0 the open/foreign fallback
-// exit-reasons; only inside a seg2seg subtree does it deopt). Kept as a
-// separate flag so tests can bisect inline GETUPVAL vs seg2seg dispatch.
-var inlineGetUpvalEnabled = true
-
-// SetInlineGetUpvalEnabledForTest toggles inline GETUPVAL and returns a
-// restore func (compile Protos after toggling for it to take effect).
-func SetInlineGetUpvalEnabledForTest(on bool) (restore func()) {
-	prev := inlineGetUpvalEnabled
-	inlineGetUpvalEnabled = on
-	return func() { inlineGetUpvalEnabled = prev }
-}
-
-// segToSegEnabled gates the issue #50 Spike 5 segment-to-segment
-// dispatch: the caller CALL fast body `call`s directly into a native
-// callee segment, and the callee RETURN tears its frame down in-segment
-// and rets back. Requires the callee to be never-exits (CallICFlagNeverExits)
-// with a recorded segment address. Default off until the emit is proven
-// end-to-end; flipping it activates BOTH the caller dispatch and the
-// callee dual-semantics RETURN (they must land together — a caller that
-// calls a segment whose RETURN still exits to Go would desync).
-var segToSegEnabled = true
-
-// SetSegToSegEnabledForTest toggles the segment-to-segment dispatch
-// gate and returns a restore func. Test / benchmark only — production
-// leaves it at its default. Because segToSegEnabled affects emit, the
-// caller must compile Protos AFTER toggling for the change to take
-// effect (a Proto compiled while off keeps its exit-reason CALL emit).
-func SetSegToSegEnabledForTest(on bool) (restore func()) {
-	prev := segToSegEnabled
-	segToSegEnabled = on
-	return func() { segToSegEnabled = prev }
-}
+// callInlineEnabled / inlineGetUpvalEnabled / segToSegEnabled and their
+// test setters live in call_ic.go (arch-shared) so both the amd64 and
+// arm64 emit paths reference the same gates (issue #50 Spike 5).
 
 // emit_ops_amd64.go, then the terminator with successor BB fixups.
 func emitBB(buf *codeBuf, c *cfg, bb *basicBlock, bbID int) error {

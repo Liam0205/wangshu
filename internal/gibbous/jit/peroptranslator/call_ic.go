@@ -169,6 +169,43 @@ func ProtoNeverExitsSegment(proto *bytecode.Proto) bool {
 	return true
 }
 
+// Issue #50 Spike 5 emit gates (arch-shared so amd64 + arm64 emit paths
+// reference the same flags).
+//
+//   - callInlineEnabled: emitCALL emits the segment-side EmitCallInline
+//     guard + fast path (vs the historical HelperCall exit-reason).
+//   - inlineGetUpvalEnabled: GETUPVAL is emitted inline (emitGETUPVALInline)
+//     instead of the HelperGetUpval exit-reason. Independent of
+//     segToSegEnabled: correct on its own (at segCallDepth==0 the
+//     open/foreign fallback exit-reasons; only inside a seg2seg subtree
+//     does it deopt).
+//   - segToSegEnabled: the caller CALL fast body `call`s directly into a
+//     native callee segment, and the callee RETURN tears its frame down
+//     in-segment and rets back. Activates BOTH the caller dispatch and
+//     the callee dual-semantics RETURN (they must land together).
+var (
+	callInlineEnabled     = true
+	inlineGetUpvalEnabled = true
+	segToSegEnabled       = true
+)
+
+// SetSegToSegEnabledForTest toggles the segment-to-segment dispatch gate
+// and returns a restore func. Test / benchmark only. Because it affects
+// emit, compile Protos AFTER toggling for the change to take effect.
+func SetSegToSegEnabledForTest(on bool) (restore func()) {
+	prev := segToSegEnabled
+	segToSegEnabled = on
+	return func() { segToSegEnabled = prev }
+}
+
+// SetInlineGetUpvalEnabledForTest toggles inline GETUPVAL and returns a
+// restore func (compile Protos after toggling for it to take effect).
+func SetInlineGetUpvalEnabledForTest(on bool) (restore func()) {
+	prev := inlineGetUpvalEnabled
+	inlineGetUpvalEnabled = on
+	return func() { inlineGetUpvalEnabled = prev }
+}
+
 // ProtoSeg2SegEligible reports whether a Proto can serve as a
 // segment-to-segment callee under the deopt-on-guard-miss protocol
 // (issue #50 Spike 5, arith/compare/GETUPVAL callees like fib).
@@ -253,6 +290,19 @@ func seg2segOpsEligible(proto *bytecode.Proto) bool {
 		}
 	}
 	return true
+}
+
+// findCallSiteIndex returns the CallIC index for a given pc, or -1 if
+// the pc has no corresponding CallIC slot (e.g. CFG changed between
+// translate-time and emit-time, or the pc slice is nil). Arch-shared
+// (both amd64 and arm64 emitCALL fast paths use it).
+func findCallSiteIndex(callSitePCs []int32, pc int32) int {
+	for i, sitePC := range callSitePCs {
+		if sitePC == pc {
+			return i
+		}
+	}
+	return -1
 }
 
 // callSitePCsFor walks proto.Code and returns pc values whose op is

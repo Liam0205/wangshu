@@ -143,7 +143,7 @@ func (c *nativeCode) NativeSegEntryAddr() uint64 {
 // NativeNeverExitsSegment reports whether this segment never exits to a
 // Go helper mid-execution (issue #50 Spike 5). Mirror of amd64.
 func (c *nativeCode) NativeNeverExitsSegment() bool {
-	return c != nil && ProtoNeverExitsSegment(c.proto)
+	return c != nil && ProtoSeg2SegEligible(c.proto)
 }
 
 // Dispose releases the mmap'd code page. Safe under concurrent Run: the
@@ -343,7 +343,12 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 	if returnCount == 0 {
 		return false
 	}
-	if callCount > 0 && totalOps/callCount < 16 {
+	// CALL density gate — relaxed for seg2seg (issue #50 Spike 5): a
+	// segment-to-segment-eligible Proto's recursive/self CALLs dispatch
+	// directly into the callee segment with no host round trip, so the
+	// amortization argument doesn't apply. Keep the gate otherwise.
+	if callCount > 0 && totalOps/callCount < 16 &&
+		!(segToSegEnabled && seg2segOpsEligible(proto)) {
 		return false
 	}
 	return true
@@ -510,7 +515,13 @@ func emitLinearOpArm64(buf *codeBuf, ins bytecode.Instruction, pc int32) error {
 	case bytecode.LOADNIL:
 		emitLOADNILArm64(buf, a, bReg)
 	case bytecode.GETUPVAL:
-		emitGETUPVALArm64(buf, a, bReg)
+		// Issue #50 Spike 5: inline GETUPVAL in-segment so a seg2seg
+		// callee never exits mid-segment to fetch an upvalue.
+		if inlineGetUpvalEnabled {
+			emitGETUPVALInlineArm64(buf, a, bReg)
+		} else {
+			emitGETUPVALArm64(buf, a, bReg)
+		}
 	case bytecode.SETUPVAL:
 		emitSETUPVALArm64(buf, a, bReg)
 	case bytecode.CALL:
@@ -561,12 +572,18 @@ func emitTerminatorArm64(buf *codeBuf, c *cfg, bb *basicBlock, bbID int, ins byt
 
 	switch op {
 	case bytecode.RETURN:
-		if buf.proto != nil && buf.proto.MultiReturn {
-			// Multi-return Proto: each RETURN site packs its own
-			// (a, b, pc) into a HelperReturn exit-reason. Run's
-			// dispatcher calls host.DoReturn and terminates (no
-			// reentry), so the resumeOff fixup emitExitReasonArm64
-			// marks is dropped — no next op will bind it.
+		multiRet := buf.proto != nil && buf.proto.MultiReturn
+		// Issue #50 Spike 5: dual-semantics RETURN. When running as a
+		// segment-to-segment callee (segCallDepth > 0) the RETURN tears
+		// the frame down in-segment and rets back into the caller
+		// segment, for BOTH single- and multi-return Protos.
+		if segToSegEnabled {
+			emitReturnDualSemanticsArm64(buf, a, b, pc, multiRet)
+			break
+		}
+		if multiRet {
+			// Multi-return Proto (seg2seg off): each RETURN site packs
+			// its own (a, b, pc) into a HelperReturn exit-reason.
 			emitExitReasonArm64(buf, jit.HelperReturn, pc, int32(a), int32(b), 0)
 			buf.pendingResumeOffFixups = buf.pendingResumeOffFixups[:0]
 			break
@@ -730,6 +747,10 @@ func inlineArithNEONArm64WithGuard(cb *codeBuf, op bytecode.OpCode, pc int32, a 
 	for _, po := range guardFixups {
 		patchBCondArm64(cb, po, slowOff)
 	}
+	// Seg2seg callee deopt: an arith guard miss while running as a
+	// segment-to-segment callee (segCallDepth>0) unwinds the call chain
+	// instead of exiting to host.Arith mid-segment (issue #50 Spike 5).
+	emitSegCallDeoptGuardArm64(cb)
 	emitExitReasonArm64(cb, jit.HelperArithSlow, pc, int32(a), int32(b), int32(c))
 
 	// done:
@@ -893,6 +914,10 @@ func inlineNumericCompareArm64(cb *codeBuf, op bytecode.OpCode, pc int32, a uint
 		for _, po := range guardFixups {
 			patchBCondArm64(cb, po, slowOff)
 		}
+		// Seg2seg callee deopt: a compare guard miss while running as a
+		// segment-to-segment callee unwinds the call chain instead of
+		// exiting to host.Compare mid-segment (issue #50 Spike 5).
+		emitSegCallDeoptGuardArm64(cb)
 		emitExitReasonArm64(cb, jit.HelperCompareSlow, pc, int32(a), int32(b), int32(c))
 		// Bind the resume entry right here (the only pending fixup is
 		// ours: any prior op's was bound by this terminator's prelude).
