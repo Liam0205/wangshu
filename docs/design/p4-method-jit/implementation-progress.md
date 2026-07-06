@@ -2318,7 +2318,11 @@ PJ10 覆盖率工程两轮交付,承 [10 §14](./10-per-op-translator.md) 详细
 
 **性能实证(Xeon 6982P,`-benchtime=2s -count=3 -cpu=1` median,同机同口径)**:fib GibbousJIT **0.90ms** vs Gopher **9.35ms** = **10.4× 快**;fannkuch **0.60ms** vs **4.15ms** = **6.9×**;binary-trees **38.2ms** vs **51.6ms** = **1.35×**(binary-trees 是分配 / GC 密集,递归 callee 含表 op 不进段到段,收益主要来自其余路径)。issue #50 点名的三个 call 密集内核全部反超 gopher。fib(20) 全程段到段(21870 hits,0 exit-reason fast-hit)。difftest-p4 / crescent / conformance-p4 / peroptranslator 全套 + `-race` + 2 万随机脚本 diff 全绿(逐字节等价)。
 
-**剩余(arm64 port,拆到 issue #61)**:inline GETUPVAL + arith/compare deopt 守卫 + 段到段 caller/RETURN 双语义 + 密度门放宽,arm64 端结构上镜像 amd64(arm64 的 CALL 同样走 exit-reason)。**用户决策(2026-07-04)**:arm64 单独立 issue #61 做——开发机是 amd64(无 qemu-aarch64),CI 的 arm64 真机矩阵只在 master push / PR 跑,feature 分支 push 不触发,所以 arm64 手写机器码本地无法验正确性/性能;#61 走 CI 三平台矩阵(linux/arm64 + darwin/arm64)真机 -race + difftest 验收。amd64 端 issue #50 目标(fib 反超 gopher)已达成。
+### 15.8 arm64 port(镜像 amd64)已写完 + 交叉编译 ✅,真机验收待 CI(issue #61)
+
+arm64 端 seg2seg 全套已按 amd64 逐指令镜像写完(`emit_seg2seg_arm64.go`):`emitCallInlineFastPathArm64`(R(A) tag + IC protoID + flags/arity guard → 段到段 blr 直调 + 机器栈保存/恢复 LR/vsBase/closure 跨嵌套 blr + cap 检查 + deopt 传播,或 exit-reason 到 HelperExecutePlainCall)+ `emitGETUPVALInlineArm64`(关闭 / 开放态 inline,协程属主回退)+ `emitReturnDualSemanticsArm64`(单 / 多返回段内拆帧)+ arm64 arith/compare 慢路径加 `emitSegCallDeoptGuardArm64`;`emitCALLArm64` 接 fast path、GETUPVAL/RETURN 分派、PreferNative 密度门放宽、`NativeNeverExitsSegment` → `ProtoSeg2SegEligible` 全部接线。feature flag 与 `findCallSiteIndex` 移入 arch-shared `call_ic.go`。新增的 SP 相对 + 分支 patch 原语由 arm64-tagged 编码单测逐字节固定(patch 原语复用已验证的 `patchBCondArm64` / `patchArm64B26`,SP 原语与已验证的 `EmitStr/LdrXtFromXnDisp` / `EmitSub/AddXdImm12` 同一编码基址,只是 Rn=31=SP)。
+
+**验收边界**:linux/arm64 + darwin/arm64 交叉编译干净,amd64 全套 + difftest 仍绿。但**本机(amd64,无 qemu-aarch64)无法执行 arm64 机器码**——arm64 的段到段直调正确性 / 性能只能在真 arm64 上验;CI 的 arm64 真机矩阵只在 master push / PR 触发,feature 分支 push 不跑。所以 arm64 机器码目前是「写完 + 编得过 + 编码单测就绪」状态,真机 `-race` + difftest + benchmark 验收挂在 **issue #61**(经 CI 三平台矩阵)。amd64 端 issue #50 目标(fib 反超 gopher)已达成并验证。
 
 ---
 
