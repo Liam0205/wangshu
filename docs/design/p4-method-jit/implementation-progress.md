@@ -2253,6 +2253,41 @@ PJ10 覆盖率工程两轮交付,承 [10 §14](./10-per-op-translator.md) 详细
 
 ---
 
+## 15. issue #50 EmitCallInline 进度(2026-07-04 起,分支 `feat/issue50-emit-call-inline`)
+
+承 §9.20 Option B 帧建立内联设计 + issue #50 立项(profile 实证 call 密集内核 84% 时间在跨界往返链)。**目标**:PJ10 native CALL 段内组帧 + 段到段直跳,消 caller/callee 双侧跨界税,使 fib / binary-trees / fannkuch 反超 gopher。
+
+**用户决策(2026-07-04)**:① amd64 全套 Spike 1→4 再 arm64 port;② 段到段直跳(Spike 5)是本 issue 交付项;③ native nesting depth 用 Option b(保守 cap + exit-reason fallback);④ 密度门分 Spike 阶段逐步放宽;⑤ 严格按 §9.20.3 Spike 1→5 逐阶段推。
+
+### 15.1 Spike 0:spike 闸门(commit `9c49d72`)✅
+
+`spike/p4callinline/` 两探针(镜像 `spike/p4tramp` + `spike/p3indirect` 先例):S-A mmap caller 段 CALL 独立 mmap callee 段(baked 绝对地址)1.1ns/call(exit-reason round trip ~600ns 同机);S-B callee 段模拟 enterLuaFrame 热核 raw store 2.8ns。`DECISION.md` GREEN。**关键工程风险**:native 段间嵌套加深 NOSPLIT 窗口内 Go 栈(morestack 不能触发)——生产须 bound native nesting depth(Option b:保守 cap + exit-reason fallback)。
+
+### 15.2 Spike 1:per-CALL-site IC 基础设施(commits `171de38` / `03db48a`)✅
+
+- `peroptranslator/call_ic.go`:`CallIC` 槽类型(mono IC + Stuck 逃逸位),`Populate` 契约(host / 反复 shape change → Stuck),protoID+1 存储(0=empty sentinel 不与 protoID=0 撞)。
+- `codeBufProto.CallSitePCs` translate 期收集;`P4HostState.ObserveCallCallee` 新接口在 CallBaseline 前 snapshot R(A) 得 callee shape 打包(protoID / numParams / maxStack / flags)。
+- dispatcher HelperCall 路径 snapshot-before + populate-after。
+- **prove-the-path**:`CallICPopulateCount` / `CallICWarmedCount` 探针 + `TestPJ10_CallIC_PopulatedByExitReason` e2e 实证(call-heavy kernel warmup 真填 IC)。
+
+### 15.3 Spike 2/3/4:段内 guard + fast body(commits `6c625c8` / `eb3b9b9` / `ec8333f` / `ae570fd` / `c1b3a1d` / `b81e0ae` / `1655885`)✅
+
+- `HelperExecutePlainCall` exit-reason(26)+ `P4HostState.ExecutePlainCallInlineFrame`(plain-CALL 变体,无 SELF 的隐式 +1)。
+- amd64 段内 guard:R(A) tag == TagFunction → 提取 GCRef payload + arena base → 读 closure word1 低 32 位 protoID → 比对 IC.CalleeProtoID(+1 bias);再 Flags 门(Vararg/NeedsArg/Host/Stuck 任一置位则拒)+ arity 门(`NumParams == CALL.B-1`)。guard 全过则 exit-reason 到 HelperExecutePlainCall,否则 fall-through 到 HelperCall。
+- **关键设计决策**:Spike 2 帧管理全 Go 端——段只 guard + exit,**不** push CI slot / 不 bump ciDepth,故无 PopFrame、无 ciDepth rebalance(避免了早期段内建帧 sketch 的 ciDepth 泄漏 class bug)。helper 从 R(callA) 直读 closure(th.cur 仍是 caller 帧)跑 enterLuaFrame + executeFrom 或 zero-cross。
+- Spike 3 = N-arg fixed(arity 门 `NumParams == B-1`);Spike 4 = multi-return(C≥3,helper nresults 参数早支持,零改动)。vararg callee(§9.20.3 表 Spike 3)仍走 slow path 留后续。
+- **prove-the-path**:`CallInlineFastHitCount` + 三 e2e(FastPathFires / NArgFixed / MultiReturn)断言 warm mono CALL fast body ≥15/19 iter 命中。全测 + difftest + luasuite + -race 全绿。
+
+### 15.4 性能现状 + Spike 5 必要性(profile-informed,2026-07-04 Xeon 6982P)
+
+**Spike 2-4 fast body 是 wash 甚至略负**:临时关密度门实测 fib native + Spike 2-4 fast path = 16.5ms vs 密度门拒收(纯解释器)11ms,vs 纯 exit-reason CALL 18.9ms(issue #50 comment)。即 fast path 比纯 exit-reason 好 ~13%(省 dispatcher 里 CallBaseline 部分 doCall 分派),但仍远慢于解释器——因 helper 仍做完整 enterLuaFrame + executeFrom + 段重入。
+
+**结论**:只有 **Spike 5 段到段直跳**(callee 也 P4 native 时 caller 段内 `call qword [callee_seg]` 直跳,callee 段内自建拆帧 + native recursion,全程不出 mmap)能真正反超 gopher(承 §9.20.5 P3 PW10 Stage 2/3 同源 + spike DECISION.md floor 1.1ns/call)。这是本 issue 核心且最难部分——等价 P3 PW10 Stage 2/3 多轮工程。
+
+**Spike 5 待办**:① callee 段入口改为「段内自建帧」形态(不依赖入口 jitCtx.valueStackBase,caller 先算好 callee vsBase 装 rbx)② callee RETURN 段内拆帧 + ret 回 caller 段 ③ IC 加 CalleeSegAddr 字段 + dispatcher populate 回填 ④ caller 段 fast body 从 exit-reason 改 `call qword [ICslot+CalleeSegAddr]` ⑤ native nesting depth cap + 超限 exit-reason fallback ⑥ 密度门放宽 + call-heavy 基准回归 + bench-acceptance 三平台。
+
+---
+
 相关:
 - [00-overview](./00-overview.md)(P4 总览,本文是其 §4 PJ 表的运行期对账 + §6 跨文档定稿决策收口)
 - [01-launch-judgment](./01-launch-judgment.md)~[08-testing-strategy](./08-testing-strategy.md)(各子系统设计文档,本文 §2 聚合其 §回填请求节)
