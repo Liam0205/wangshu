@@ -67,7 +67,7 @@ P4 vs P3 同口径对比：27 组对照中 25 组 P4 领先 ≥ 2%（多数 +10%
 
 ### darwin/arm64 实测（Apple M5 Pro）
 
-同一套复现命令在 Apple M5 Pro（darwin/arm64, go1.26.4, `-benchtime=2s -count=3`, 取 median, 2026-07-03）的实测。注意:本表测于 P3 helper 密度收益门（issue #39）合入之前,realworld 五本的「P3 auto」列在收益门下会改为解释器执行(参照上表 [^p3-gate] 行为),待真机复测后更新。arm64 的 P4 native op-set 已经通过 exit-reason 协议移植完成（issue #37 / #40）：算术 / 比较 / 表 / 全局 / 调用 op 与 amd64 同一套接受面（IC 门 + CALL 密度门），heavy 三本与 realworld 五本 P4 全面不差于 P3——HeavyArith 2.0×、HeavyFloatloop 2.5× over P3，与 amd64 的翻盘幅度同量级。
+同一套复现命令在 Apple M5 Pro（darwin/arm64, go1.26.4, `-benchtime=2s -count=3`, 取 median）的实测。realworld 五本的「P3 auto」列与 fannkuch 的 P4 两列于 2026-07-06 复测（P3 helper 密度收益门 issue #39 与 arm64 EQ-K 支持 issue #56 合入后），其余数字为 2026-07-03 实测。arm64 的 P4 native op-set 已经通过 exit-reason 协议移植完成（issue #37 / #40）：算术 / 比较 / 表 / 全局 / 调用 op 与 amd64 同一套接受面（IC 门 + CALL 密度门），heavy 三本与 realworld 五本 P4 全面不差于 P3——HeavyArith 2.0×、HeavyFloatloop 2.5× over P3，与 amd64 的翻盘幅度同量级。
 
 | 类别 | 脚本 | gopher | P1 | P3 auto | P3 force | P4 auto | P4 force |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -77,11 +77,11 @@ P4 vs P3 同口径对比：27 组对照中 25 组 P4 领先 ≥ 2%（多数 +10%
 | heavy 内核 | HeavyArith | 87.2 ms | 44.3 ms (**1.97×**) | 50.9 ms (**1.71×**) | 51.3 ms (**1.70×**) | 25.6 ms (**3.40×**) | 25.3 ms (**3.45×**) |
 | | HeavyRecursion | 5.50 ms | 3.13 ms (**1.76×**) | 3.60 ms (**1.53×**) | 3.70 ms (1.48×) | 3.37 ms (**1.63×**) | 3.38 ms (**1.63×**) |
 | | HeavyFloatloop | 153 ms | 83.8 ms (**1.83×**) | 61.5 ms (**2.49×**) | 62.4 ms (**2.46×**) | 25.3 ms (**6.05×**) | 25.3 ms (**6.05×**) |
-| realworld small | fib | 5.60 ms | 6.41 ms (0.87×) | 14.3 ms (0.39×) | 14.3 ms (0.39×) | 6.97 ms (0.80×) | 6.94 ms (0.81×) |
-| | binary-trees | 19.3 ms | 23.9 ms (0.81×) | 59.9 ms (0.32×) | 59.9 ms (0.32×) | 25.5 ms (0.76×) | 25.2 ms (0.77×) |
-| | spectral-norm | 12.9 ms | 12.2 ms (1.06×) | 23.2 ms (0.56×) | 28.3 ms (0.46×) | 12.1 ms (1.07×) | 13.2 ms (0.98×) |
-| | fannkuch | 2.46 ms | 3.64 ms (0.68×) | 3.71 ms (0.66×) | 3.72 ms (0.66×) | 3.71 ms (0.66×) | 3.85 ms (0.64×) |
-| | n-body | 30.2 ms | 27.5 ms (1.10×) | 49.8 ms (0.61×) | 50.0 ms (0.60×) | 32.9 ms (0.92×) | 32.9 ms (0.92×) |
+| realworld small | fib | 5.60 ms | 6.41 ms (0.87×) | 7.33 ms (0.76×) [^p3-gate] | 14.3 ms (0.39×) | 6.97 ms (0.80×) | 6.94 ms (0.81×) |
+| | binary-trees | 19.3 ms | 23.9 ms (0.81×) | 26.4 ms (0.73×) [^p3-gate] | 59.9 ms (0.32×) | 25.5 ms (0.76×) | 25.2 ms (0.77×) |
+| | spectral-norm | 12.9 ms | 12.2 ms (1.06×) | 13.5 ms (0.96×) [^p3-gate] | 28.3 ms (0.46×) | 12.1 ms (1.07×) | 13.2 ms (0.98×) |
+| | fannkuch | 2.46 ms | 3.64 ms (0.68×) | 3.76 ms (0.65×) | 3.72 ms (0.66×) | 0.33 ms (**7.44×**) | 0.33 ms (**7.39×**) |
+| | n-body | 30.2 ms | 27.5 ms (1.10×) | 28.9 ms (1.04×) [^p3-gate] | 50.0 ms (0.60×) | 32.9 ms (0.92×) | 32.9 ms (0.92×) |
 | 边界 mini · Call | PureVM | 490 ns | 77.5 ns (**6.32×**) | — | — | — | — |
 | | CallOnly | 54.0 ns | 104 ns (0.52×) | 105 ns (0.51×) | 165 ns (0.33×) | 105 ns (0.51×) | 106 ns (0.51×) |
 | | Boundary (+SetGlobal) | 120 ns | 179 ns (0.67×) | 177 ns (0.68×) | 180 ns (0.67×) | 176 ns (0.68×) | 176 ns (0.68×) |
@@ -93,7 +93,7 @@ P4 vs P3 同口径对比：27 组对照中 25 组 P4 领先 ≥ 2%（多数 +10%
 | 真实负载 · CallInto | Predicate (×1000) | 282 µs | 264 µs (1.07×) | 262 µs (1.08×) | 269 µs (1.05×) | 265 µs (1.07×) | 263 µs (1.07×) |
 | | Transform (×1000) | 212 µs | 181 µs (1.17×) | 183 µs (1.16×) | 183 µs (1.16×) | 167 µs (**1.27×**) | 167 µs (**1.27×**) |
 
-P4 vs P3 同口径对比（arm64）：heavy 三本 + realworld 五本 P4 全面不差于 P3（HeavyArith 2.03×、HeavyFloatloop 2.47×、fib 2.06×、binary-trees 2.38×、spectral-norm 2.14×、n-body 1.52× over P3；fannkuch 与 HeavyRecursion 打平在噪声内）。
+P4 vs P3 同口径对比（arm64）：heavy 三本 + realworld 五本 P4 全面不差于 P3（HeavyArith 2.03×、HeavyFloatloop 2.47×、fib 2.06×、binary-trees 2.38×、spectral-norm 2.14×、n-body 1.52×、fannkuch 11.2× over P3；HeavyRecursion 打平在噪声内）。
 
 [^cat-baseline]: `benchmarks/baseline`。三个自含脚本（Simple 分支比较、Arith 六阶 Horner 多项式、Loop 求和 1..N），单次执行无 Go↔Lua 跨界。反映 VM 内核在最小工作量下的 dispatch / 算术 / 循环开销。
 [^cat-heavy]: `benchmarks/heavy`。三个扁平数值内核（HeavyArith 纯算术、HeavyRecursion 自递归、HeavyFloatloop 嵌套浮点循环），故意剔除表 / 字符串 / library CALL 与其他 helper-bound 结构。反映编译档在能真正发挥的形状上的性能上限。
