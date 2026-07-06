@@ -184,11 +184,15 @@ func (c *nativeCode) NativeSegEntryAddr() uint64 {
 	return uint64(c.codePage.Addr())
 }
 
-// NativeNeverExitsSegment reports whether this segment never exits to a
-// Go helper mid-execution (issue #50 Spike 5). Implements
+// NativeNeverExitsSegment reports whether this segment is eligible as a
+// segment-to-segment callee (issue #50 Spike 5). Despite the historical
+// name, it now admits the wider deopt-guarded set (arith/compare/
+// GETUPVAL/CALL callees like fib) via ProtoSeg2SegEligible — those never
+// exit mid-segment at runtime for the expected value types, and deopt
+// the whole call chain when a guard misses. Implements
 // bridge.NativeSegAddrer.
 func (c *nativeCode) NativeNeverExitsSegment() bool {
-	return c != nil && ProtoNeverExitsSegment(c.proto)
+	return c != nil && ProtoSeg2SegEligible(c.proto)
 }
 
 // Dispose releases the mmap'd code page. Safe to call multiple times
@@ -435,7 +439,15 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 	if returnCount == 0 {
 		return false
 	}
-	if callCount > 0 && totalOps/callCount < 16 {
+	// CALL density gate — relaxed for seg2seg (issue #50 Spike 5). The
+	// gate rejects call-heavy Protos because each CALL costs an
+	// exit-reason round trip. But a segment-to-segment-eligible Proto's
+	// recursive/self CALLs dispatch directly into the callee segment with
+	// no host round trip (measured 2.96x over exit-reason; fib beats the
+	// interpreter), so the amortization argument doesn't apply. Keep the
+	// gate for Protos that can't go seg2seg.
+	if callCount > 0 && totalOps/callCount < 16 &&
+		!(segToSegEnabled && seg2segOpsEligible(proto)) {
 		return false
 	}
 	return true
@@ -650,6 +662,21 @@ func TranslateProtoNative(proto *bytecode.Proto, host jit.P4HostState) (*nativeC
 // support + gate state), not runtime configuration.
 var callInlineEnabled = true
 
+// inlineGetUpvalEnabled gates the issue #50 Spike 5 inline GETUPVAL emit
+// (emitGETUPVALInline). Independent of segToSegEnabled: inline GETUPVAL
+// is correct on its own (at segCallDepth==0 the open/foreign fallback
+// exit-reasons; only inside a seg2seg subtree does it deopt). Kept as a
+// separate flag so tests can bisect inline GETUPVAL vs seg2seg dispatch.
+var inlineGetUpvalEnabled = true
+
+// SetInlineGetUpvalEnabledForTest toggles inline GETUPVAL and returns a
+// restore func (compile Protos after toggling for it to take effect).
+func SetInlineGetUpvalEnabledForTest(on bool) (restore func()) {
+	prev := inlineGetUpvalEnabled
+	inlineGetUpvalEnabled = on
+	return func() { inlineGetUpvalEnabled = prev }
+}
+
 // segToSegEnabled gates the issue #50 Spike 5 segment-to-segment
 // dispatch: the caller CALL fast body `call`s directly into a native
 // callee segment, and the callee RETURN tears its frame down in-segment
@@ -742,7 +769,16 @@ func emitLinearOp(buf *codeBuf, ins bytecode.Instruction, pc int32) error {
 	case bytecode.LOADNIL:
 		emitLOADNIL(buf, a, bReg)
 	case bytecode.GETUPVAL:
-		emitGETUPVAL(buf, a, bReg)
+		// Issue #50 Spike 5: inline GETUPVAL in-segment so a seg2seg
+		// callee (e.g. fib, which references itself via an upvalue)
+		// never exits mid-segment. The inline path handles closed
+		// upvalues and (single-thread) open upvalues; anything else
+		// falls back to the HelperGetUpval exit-reason / deopt.
+		if inlineGetUpvalEnabled {
+			emitGETUPVALInline(buf, a, bReg)
+		} else {
+			emitGETUPVAL(buf, a, bReg)
+		}
 	case bytecode.SETUPVAL:
 		emitSETUPVAL(buf, a, bReg)
 	case bytecode.GETGLOBAL:
@@ -797,35 +833,34 @@ func emitTerminator(buf *codeBuf, c *cfg, bb *basicBlock, bbID int, ins bytecode
 	switch op {
 	case bytecode.RETURN:
 		cb := buf
-		if cb.proto != nil && cb.proto.MultiReturn {
-			// Multi-return Proto: each RETURN site packs its own
-			// (a, b, pc) into a HelperReturn exit-reason. Run's
-			// dispatcher calls host.DoReturn and terminates (no
-			// reentry), so no resumeOff patching is needed — but
-			// emitExitReason marks one anyway; drop it right after
-			// since no next op will bind it.
+		multiRet := cb.proto != nil && cb.proto.MultiReturn
+		// Issue #50 Spike 5: dual-semantics RETURN. When this segment is
+		// running as a segment-to-segment callee (jitCtx.segCallDepth >
+		// 0), the RETURN tears the frame down in-segment and `ret`s back
+		// into the caller segment instead of exiting to Go. This applies
+		// to BOTH single- and multi-return Protos (fib has 3 RETURN
+		// sites → MultiReturn; each must still tear down in-segment when
+		// nested, else the seg2seg caller misreads a HelperReturn exit
+		// as a plain return).
+		if segToSegEnabled {
+			emitReturnDualSemantics(cb, a, b, pc, multiRet)
+			break
+		}
+		if multiRet {
+			// Multi-return Proto (seg2seg off): each RETURN site packs
+			// its own (a, b, pc) into a HelperReturn exit-reason. Run's
+			// dispatcher calls host.DoReturn and terminates; drop the
+			// resume fixup since no next op binds it.
 			emitExitReason(cb, jit.HelperReturn, pc, int32(a), int32(b), 0)
 			cb.pendingResumeOffFixups = cb.pendingResumeOffFixups[:0]
 			break
 		}
-		// Emit `xor eax, eax; ret` inline - no shim call. host.DoReturn
-		// is invoked from nativeCode.Run's Go side after CallJITSpec
-		// returns. This avoids all shim-from-mmap risk for the RETURN
-		// path (which is at the end of every function).
-		// Stash retA/retB/retPC on the codeBuf so TranslateProtoNative
-		// can lift them into nativeCode fields.
+		// Single-return Proto (seg2seg off): `xor eax, eax; ret` inline;
+		// host.DoReturn is invoked Go-side after CallJITSpec returns.
 		if cb.proto != nil {
 			cb.proto.RetA = int32(a)
 			cb.proto.RetB = int32(b)
 			cb.proto.RetPC = pc
-		}
-		// Issue #50 Spike 5: dual-semantics RETURN. When this segment is
-		// running as a segment-to-segment callee (jitCtx.segCallDepth >
-		// 0), the RETURN tears the frame down in-segment and `ret`s back
-		// into the caller segment instead of exiting to Go DoReturn.
-		if segToSegEnabled {
-			emitReturnDualSemantics(cb, a, b)
-			break
 		}
 		cb.emit([]byte{0x31, 0xC0, 0xC3}) // xor eax, eax; ret
 	case bytecode.TAILCALL:

@@ -1802,12 +1802,14 @@ func emitInlineSetGlobalNodeHit(cb *codeBuf, pc int32, a uint8, bx uint16) bool 
 // b == 0 as "no in-segment move" (falls through to the Go path via the
 // depth check being the only branch — safe because a multret callee
 // won't be a segment-to-segment target).
-func emitReturnDualSemantics(cb *codeBuf, a, b uint8) {
-	// Stash retA/retB/retPC as usual so the Go-entered path's DoReturn
-	// still works.
-	if cb.proto != nil {
+func emitReturnDualSemantics(cb *codeBuf, a, b uint8, pc int32, multiReturn bool) {
+	// Stash retA/retB/retPC so the single-return Go-entered path's
+	// DoReturn still works (multi-return sites carry a/b/pc in the
+	// HelperReturn exit-reason instead).
+	if !multiReturn && cb.proto != nil {
 		cb.proto.RetA = int32(a)
 		cb.proto.RetB = int32(b)
+		cb.proto.RetPC = pc
 	}
 	// mov rax, [r15 + segCallDepthOff]   (49 8B 87 disp32)
 	{
@@ -1823,7 +1825,8 @@ func emitReturnDualSemantics(cb *codeBuf, a, b uint8) {
 	cb.emit([]byte{0x0F, 0x84, 0, 0, 0, 0})
 
 	// In-segment teardown: moveResults via rbx-relative addressing.
-	// funcIdx = callee.base - 1 → byte addr rbx - 8.
+	// funcIdx = callee.base - 1 → byte addr rbx - 8. Multret (b==0) is
+	// rejected from seg2seg eligibility, so nret is statically known.
 	nret := int32(b) - 1
 	if b != 0 {
 		for k := int32(0); k < nret; k++ {
@@ -1842,11 +1845,109 @@ func emitReturnDualSemantics(cb *codeBuf, a, b uint8) {
 	// ret   (C3) — return into caller segment
 	cb.emit([]byte{0xC3})
 
-	// go_ret: (patch jz target here)
+	// go_ret: (patch jz target here) — segCallDepth == 0, exit the segment.
 	goRetPos := len(cb.bytes)
 	writeRel32(cb, jzOff, int32(goRetPos)-int32(jzOff+4))
-	// xor eax, eax; ret
+	if multiReturn {
+		// Multi-return Proto: exit via HelperReturn carrying this site's
+		// (a, b, pc); Run's dispatcher runs host.DoReturn and terminates.
+		emitExitReason(cb, jit.HelperReturn, pc, int32(a), int32(b), 0)
+		cb.pendingResumeOffFixups = cb.pendingResumeOffFixups[:0]
+		return
+	}
+	// Single-return Proto: xor eax, eax; ret → Go-side DoReturn.
 	cb.emit([]byte{0x31, 0xC0, 0xC3})
+}
+
+// emitGETUPVALInline emits GETUPVAL A B inline (issue #50 Spike 5) so a
+// segment-to-segment callee never exits mid-execution to fetch an
+// upvalue. It resolves the running frame's closure via
+// jitCtx.currentClosureRef, reads upvalRef = closure word(2+B), then:
+//
+//   - closed upvalue: value = upval word2 (self-held).
+//   - open upvalue, inline-safe (single thread → owner is the running
+//     thread): value = owner.slot(stackIdx) via jitCtx.threadStackBase0.
+//   - open upvalue, not inline-safe (coroutine may own it): fall back to
+//     the HelperGetUpval exit-reason (or deopt when segCallDepth>0, so a
+//     seg2seg subtree redoes at the top instead of exiting mid-segment).
+//
+// All arena reads recompute from jitCtx.arenaBase, so they survive an
+// arena grow between Run entries. Clobbers rax/rcx/rdx (scratch between
+// ops in the store-to-stack native model).
+func emitGETUPVALInline(cb *codeBuf, a, b uint8) {
+	// mov rdx, [r15 + arenaBaseOff]        (49 8B 97 disp32) — rdx = arenaBase
+	emitMovRegFromR15Disp(cb, 0x97, int32(jit.JITContextArenaBaseOffset))
+	// mov rax, [r15 + currentClosureRefOff](49 8B 87 disp32) — rax = closureRef
+	emitMovRegFromR15Disp(cb, 0x87, int32(jit.JITContextCurrentClosureRefOffset))
+	// add rax, rdx                         (48 01 D0) — rax = closureAddr
+	cb.emit([]byte{0x48, 0x01, 0xD0})
+	// mov rax, [rax + (2+B)*8]             (48 8B 80 disp32) — rax = upvalRef (GCRef)
+	{
+		disp := (2 + int32(b)) * 8
+		cb.emit([]byte{0x48, 0x8B, 0x80,
+			byte(uint32(disp)), byte(uint32(disp) >> 8),
+			byte(uint32(disp) >> 16), byte(uint32(disp) >> 24)})
+	}
+	// add rax, rdx                         (48 01 D0) — rax = upvalAddr
+	cb.emit([]byte{0x48, 0x01, 0xD0})
+	// test dword [rax], upvalFlagClosed<<hdrFlagsShift (0x1000)  (F7 00 imm32)
+	cb.emit([]byte{0xF7, 0x00, 0x00, 0x10, 0x00, 0x00})
+	// jz open   (0F 84 rel32) — not closed → open path
+	jzOpenOff := len(cb.bytes) + 2
+	cb.emit([]byte{0x0F, 0x84, 0, 0, 0, 0})
+	// --- closed: rax = [upvalAddr + 16] (upval word2) ---
+	cb.emit([]byte{0x48, 0x8B, 0x40, 0x10}) // mov rax, [rax+16]
+	// jmp store (E9 rel32) — patched below
+	jmpStore1Off := len(cb.bytes) + 1
+	cb.emit([]byte{0xE9, 0, 0, 0, 0})
+	// open: (patch jz here)
+	openPos := len(cb.bytes)
+	writeRel32(cb, jzOpenOff, int32(openPos)-int32(jzOpenOff+4))
+	// mov ecx, [r15 + inlineUpvalSafeOff]  (41 8B 8F disp32) — rcx = safe flag
+	emitMovRegFromR15Disp32NoW(cb, 0x8F, int32(jit.JITContextInlineUpvalSafeOffset))
+	// test ecx, ecx                        (85 C9)
+	cb.emit([]byte{0x85, 0xC9})
+	// jz fallback   (0F 84 rel32) — not safe → exit-reason / deopt
+	jzFallbackOff := len(cb.bytes) + 2
+	cb.emit([]byte{0x0F, 0x84, 0, 0, 0, 0})
+	// mov ecx, [rax + 8]                   (8B 48 08) — rcx = stackIdx (low 32, zero-extended)
+	cb.emit([]byte{0x8B, 0x48, 0x08})
+	// mov rax, [r15 + threadStackBase0Off] (49 8B 87 disp32) — rax = threadStackBase0
+	emitMovRegFromR15Disp(cb, 0x87, int32(jit.JITContextThreadStackBase0Offset))
+	// mov rax, [rax + rcx*8]               (48 8B 04 C8) — rax = owner.slot(stackIdx)
+	cb.emit([]byte{0x48, 0x8B, 0x04, 0xC8})
+	// store: (patch jmp from closed here) — value in rax → R(A)
+	storePos := len(cb.bytes)
+	writeRel32(cb, jmpStore1Off, int32(storePos)-int32(jmpStore1Off+4))
+	cb.emit(jitamd64.EmitMovqMemRegFromRax(nil, regRBX, int32(a)*8))
+	// jmp done (E9 rel32) — skip the fallback block
+	jmpDoneOff := len(cb.bytes) + 1
+	cb.emit([]byte{0xE9, 0, 0, 0, 0})
+	// fallback: (patch jz here) — deopt if nested, else exit-reason
+	fallbackPos := len(cb.bytes)
+	writeRel32(cb, jzFallbackOff, int32(fallbackPos)-int32(jzFallbackOff+4))
+	emitSegCallDeoptGuard(cb)
+	emitGETUPVAL(cb, a, b)
+	// done: (patch inline-path jmp here)
+	donePos := len(cb.bytes)
+	writeRel32(cb, jmpDoneOff, int32(donePos)-int32(jmpDoneOff+4))
+}
+
+// emitMovRegFromR15Disp emits `mov <reg64>, [r15 + disp32]` given the
+// ModRM middle byte (49 8B <modrm> disp32); modrm encodes the dest reg
+// with mod=10, rm=111 (r15). E.g. 0x87 = rax, 0x97 = rdx.
+func emitMovRegFromR15Disp(cb *codeBuf, modrm byte, off int32) {
+	cb.emit([]byte{0x49, 0x8B, modrm,
+		byte(uint32(off)), byte(uint32(off) >> 8),
+		byte(uint32(off) >> 16), byte(uint32(off) >> 24)})
+}
+
+// emitMovRegFromR15Disp32NoW emits `mov <reg32>, [r15 + disp32]` (32-bit,
+// no REX.W): 41 8B <modrm> disp32. modrm e.g. 0x8F = ecx.
+func emitMovRegFromR15Disp32NoW(cb *codeBuf, modrm byte, off int32) {
+	cb.emit([]byte{0x41, 0x8B, modrm,
+		byte(uint32(off)), byte(uint32(off) >> 8),
+		byte(uint32(off) >> 16), byte(uint32(off) >> 24)})
 }
 
 func emitNEWTABLE(cb *codeBuf, pc int32, a, b, c uint8) {
@@ -2050,6 +2151,38 @@ func emitCallInlineFastPath(cb *codeBuf, pc int32, a, b, c uint8, callSiteIdx in
 				byte(uint32(off)), byte(uint32(off) >> 8),
 				byte(uint32(off) >> 16), byte(uint32(off) >> 24)})
 		}
+		// Save the caller's closure ref and set jitCtx.currentClosureRef
+		// to the callee closure, so the callee's inline GETUPVAL reads
+		// its own upvalues (needed for cross-closure seg2seg; a self-
+		// recursive fib would see the same value either way). rbx still
+		// points at the caller frame here, so R(A) is the callee closure.
+		// mov rcx, [r15 + currentClosureRefOff]   (49 8B 8F disp32)
+		{
+			off := int32(jit.JITContextCurrentClosureRefOffset)
+			cb.emit([]byte{0x49, 0x8B, 0x8F,
+				byte(uint32(off)), byte(uint32(off) >> 8),
+				byte(uint32(off) >> 16), byte(uint32(off) >> 24)})
+		}
+		// push rcx   (51) — save caller closure ref
+		cb.emit([]byte{0x51})
+		// mov rcx, [rbx + A*8]   (48 8B 8B disp32) — caller R(A) = callee closure
+		{
+			disp := int32(a) * 8
+			cb.emit([]byte{0x48, 0x8B, 0x8B,
+				byte(uint32(disp)), byte(uint32(disp) >> 8),
+				byte(uint32(disp) >> 16), byte(uint32(disp) >> 24)})
+		}
+		// mov rdx, payloadMask   (48 BA imm64)
+		cb.emit(jitamd64.EmitMovRdxImm64(nil, 0x0000_FFFF_FFFF_FFFF))
+		// and rcx, rdx   (48 21 D1) — rcx = callee closure GCRef
+		cb.emit([]byte{0x48, 0x21, 0xD1})
+		// mov [r15 + currentClosureRefOff], rcx   (49 89 8F disp32)
+		{
+			off := int32(jit.JITContextCurrentClosureRefOffset)
+			cb.emit([]byte{0x49, 0x89, 0x8F,
+				byte(uint32(off)), byte(uint32(off) >> 8),
+				byte(uint32(off) >> 16), byte(uint32(off) >> 24)})
+		}
 		// push rbx   (53) — save caller vsBase
 		cb.emit([]byte{0x53})
 		// lea rbx, [rbx + (A+1)*8]   (48 8D 9B disp32) — callee vsBase
@@ -2074,6 +2207,15 @@ func emitCallInlineFastPath(cb *codeBuf, pc int32, a, b, c uint8, callSiteIdx in
 		{
 			off := int32(jit.JITContextValueStackBaseOffset)
 			cb.emit([]byte{0x49, 0x89, 0x9F,
+				byte(uint32(off)), byte(uint32(off) >> 8),
+				byte(uint32(off) >> 16), byte(uint32(off) >> 24)})
+		}
+		// pop rcx   (59) — restore caller closure ref
+		cb.emit([]byte{0x59})
+		// mov [r15 + currentClosureRefOff], rcx   (49 89 8F disp32)
+		{
+			off := int32(jit.JITContextCurrentClosureRefOffset)
+			cb.emit([]byte{0x49, 0x89, 0x8F,
 				byte(uint32(off)), byte(uint32(off) >> 8),
 				byte(uint32(off) >> 16), byte(uint32(off) >> 24)})
 		}
@@ -2165,6 +2307,14 @@ func emitCallInlineFastPath(cb *codeBuf, pc int32, a, b, c uint8, callSiteIdx in
 	// a proven guard path (CallInlineFastHitCount), not yet a perf win.
 	//
 	// Exit to HelperExecutePlainCall (nargs = B-1, nresults = C-1).
+	// Seg2seg deopt: a nested CALL that couldn't dispatch seg2seg (cold
+	// IC / cap reached / non-eligible callee) while we run as a seg2seg
+	// callee (segCallDepth>0) must deopt instead of exiting to the host
+	// mid-segment (which the caller segment would misread). At depth 0
+	// the guard is a no-op and the exit-reason runs normally.
+	if segToSegEnabled {
+		emitSegCallDeoptGuard(cb)
+	}
 	nargs := int32(b) - 1
 	nresults := int32(c) - 1
 	emitExitReason(cb, jit.HelperExecutePlainCall, pc, int32(a), nargs, nresults)
@@ -2178,6 +2328,12 @@ func emitCallInlineFastPath(cb *codeBuf, pc int32, a, b, c uint8, callSiteIdx in
 	writeRel32(cb, jne2Off, int32(slowPathPos)-int32(jne2Off+4))
 	writeRel32(cb, jne3Off, int32(slowPathPos)-int32(jne3Off+4))
 	writeRel32(cb, jne4Off, int32(slowPathPos)-int32(jne4Off+4))
+	// Same seg2seg deopt guard on the guard-fail slow path: a shape
+	// mismatch (protoID / arity / flags) while nested must deopt, not
+	// exit-reason mid-segment.
+	if segToSegEnabled {
+		emitSegCallDeoptGuard(cb)
+	}
 	emitExitReason(cb, jit.HelperCall, pc, int32(a), int32(b), int32(c))
 
 	// Patch the segment-to-segment `jmp done` (if emitted) to land here,

@@ -465,6 +465,43 @@ return k()
 	}
 }
 
+// TestPJ10_InlineGetUpval_Fib validates the inline GETUPVAL emit (issue
+// #50 Spike 5): fib references itself via an open upvalue (backed by the
+// main chunk's stack slot during recursion). With inline GETUPVAL the
+// segment resolves the upvalue in-segment; the result must still be
+// byte-equal to the interpreter. This test does NOT yet assert
+// seg2seg (that needs the eligibility widening + caller closure wiring);
+// it only guards inline GETUPVAL correctness + no crash.
+func TestPJ10_InlineGetUpval_Fib(t *testing.T) {
+	cases := []struct {
+		n    string
+		want string
+	}{
+		{"5", "5"}, {"10", "55"}, {"15", "610"}, {"20", "6765"},
+	}
+	for _, tc := range cases {
+		t.Run("fib"+tc.n, func(t *testing.T) {
+			src := `local function fib(n) if n < 2 then return n else return fib(n-1)+fib(n-2) end end return fib(` + tc.n + `)`
+			prog, err := wangshu.Compile([]byte(src), "pj10fib")
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+			st := wangshu.NewState(wangshu.Options{})
+			st.SetForceAllPromote(true)
+			res, err := prog.Run(st)
+			if err != nil {
+				t.Fatalf("run: %v", err)
+			}
+			if st.PromotionCount() == 0 {
+				t.Fatal("PromotionCount = 0; PJ10 did not promote fib")
+			}
+			if len(res) != 1 || res[0].Display() != tc.want {
+				t.Fatalf("fib(%s) = %v, want [%s]", tc.n, res, tc.want)
+			}
+		})
+	}
+}
+
 // TestPJ10_Close covers CLOSE: at the end of a block whose locals are
 // captured by an inner closure, the frontend emits CLOSE A to close
 // all open upvalues with stack index >= base+A. Single-BB shape works
@@ -1307,10 +1344,12 @@ return kernel(20)
 	}
 }
 
-// TestPJ10_CallInline_MultiReturn proves the Spike 4 form: a CALL that
-// captures more than one return value (C >= 3) rides the fast body.
-// The helper's nresults param already handles multi-return; the guard
-// just needs to not reject C > 2.
+// TestPJ10_CallInline_MultiReturn proves a CALL that captures more than
+// one return value (C >= 3) dispatches. The `pair` callee is now
+// segment-to-segment eligible (ADD + multi-value RETURN, no side
+// effects), so with Spike 5 it rides seg2seg rather than the Spike-4
+// exit-reason fast body — either way the guard must accept C > 2, and
+// the in-segment multi-value teardown must land both results correctly.
 func TestPJ10_CallInline_MultiReturn(t *testing.T) {
 	prog, err := wangshu.Compile([]byte(`
 local function pair(x) return x, x + 1 end
@@ -1331,7 +1370,8 @@ return kernel(20)
 	st := wangshu.NewState(wangshu.Options{})
 	st.SetForceAllPromote(true)
 
-	before := peroptranslator.CallInlineFastHitCount.Load()
+	beforeSeg := peroptranslator.SegToSegHitCount.Load()
+	beforeFast := peroptranslator.CallInlineFastHitCount.Load()
 	res, err := prog.Run(st)
 	if err != nil {
 		t.Fatalf("run: %v", err)
@@ -1341,11 +1381,15 @@ return kernel(20)
 	if len(res) != 1 || res[0].Display() != "2640" {
 		t.Fatalf("kernel(20) = %v, want [2640]", res)
 	}
-	fastDelta := peroptranslator.CallInlineFastHitCount.Load() - before
-	t.Logf("callInlineFastHits (multi-return) = %d", fastDelta)
-	if fastDelta < 15 {
-		t.Errorf("callInlineFastHits = %d, want >= 15 — the guard rejected "+
-			"the multi-return CALL (C > 2)", fastDelta)
+	segDelta := peroptranslator.SegToSegHitCount.Load() - beforeSeg
+	fastDelta := peroptranslator.CallInlineFastHitCount.Load() - beforeFast
+	t.Logf("multi-return CALL: seg2seg=%d fastBody=%d", segDelta, fastDelta)
+	// The guard accepted C > 2 iff the CALL dispatched inline at all
+	// (seg2seg preferred; exit-reason fast body as fallback). A rejected
+	// guard would show zero on both and ride the plain HelperCall path.
+	if segDelta+fastDelta < 15 {
+		t.Errorf("seg2seg+fastBody = %d, want >= 15 — the guard rejected "+
+			"the multi-return CALL (C > 2)", segDelta+fastDelta)
 	}
 }
 
