@@ -465,8 +465,8 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 //   - Arithmetic: inline SSE fast path (inlineArithSSE) supports
 //     reg-reg / reg-K / K-reg / K-K when the K operand is numeric.
 //   - Compare: inline UCOMISd fast path for LT/LE with numeric operands;
-//     inline raw 64-bit bit-equal for EQ (reg-reg only — AnalyzeNative
-//     rejects K operands to dodge the arena-relative string const path).
+//     inline raw 64-bit bit-equal for EQ (reg-reg or any 64-bit-comparable
+//     K — numeric / nil / bool / interned string, #56).
 //   - TEST / TESTSET: inline compare against Nil / False imm64 constants
 //     with rel8 forward branches to a notTruthy label.
 //   - FORPREP: inline `R(A) -= R(A+2); jmp FORLOOP` (assumes three slots
@@ -474,12 +474,13 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 //
 // Currently enabled with NO in-segment Go call in the emit output:
 //
-//	MOVE, LOADK (numeric consts only), LOADBOOL, LOADNIL,
+//	MOVE, LOADK (numeric or string consts, #69),
+//	LOADBOOL, LOADNIL,
 //	ADD/SUB/MUL/DIV (inline SSE + IsNumber guards + NaN result guard),
 //	MOD/POW (plain HelperArithSlow exit-reason; no inline emit),
 //	NOT, UNM (inline sign-flip with IsNumber guard),
 //	LEN (HelperLen exit-reason),
-//	EQ (raw 64-bit cmp), LT/LE (inline UCOMISd + IsNumber guards),
+//	EQ (raw 64-bit cmp, any-K #56), LT/LE (inline UCOMISd + IsNumber guards),
 //	TEST, TESTSET (inline Nil/False bit-compare),
 //	JMP, FORPREP, FORLOOP,
 //	GETTABLE/SETTABLE (IC ArrayHit inline / NodeHit exit-reason),
@@ -497,7 +498,8 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 //	VARARG (permanent design gate)
 //
 // AnalyzeNative additionally rejects Protos with non-numeric K operands
-// on inline arithmetic / compare ops, CALL with B=0/C=0, SETLIST with
+// on inline ARITHMETIC ops (ADD/SUB/MUL/DIV, LT/LE) — EQ accepts any K
+// (#56) and LOADK accepts string K (#69); CALL with B=0/C=0, SETLIST with
 // B=0/C=0, NEWTABLE with B/C >= 256, and GETTABLE/SETTABLE sites without
 // ArrayHit/NodeHit IC.
 func opSupported(op bytecode.OpCode) bool {
