@@ -78,13 +78,6 @@ func shimUnm(ctx *jit.JITContext, base, pc, b, a int32) int32 {
 	return hostFromCtx(ctx).Unm(base, pc, b, a)
 }
 
-// shimConcat: host.Concat(base, pc, a, b, c) int32
-//
-//go:noinline
-func shimConcat(ctx *jit.JITContext, base, pc, a, b, c int32) int32 {
-	return hostFromCtx(ctx).Concat(base, pc, a, b, c)
-}
-
 // shimEq: host.Eq(base, pc, b, c) int32 (packed bit0=result bit1=err)
 //
 //go:noinline
@@ -162,13 +155,6 @@ func shimTailCall(ctx *jit.JITContext, base, pc, a, b, c int32) int32 {
 	return hostFromCtx(ctx).TailCall(base, pc, a, b, c)
 }
 
-// shimSelf: host.Self(base, pc, a, b, c) int32
-//
-//go:noinline
-func shimSelf(ctx *jit.JITContext, base, pc, a, b, c int32) int32 {
-	return hostFromCtx(ctx).Self(base, pc, a, b, c)
-}
-
 // shimClosure: host.Closure(base, pc, a, bx) int32
 //
 //go:noinline
@@ -210,12 +196,6 @@ func shimArithAddr() uint64 {
 	return uint64(*(*uintptr)(p))
 }
 
-func shimConcatAddr() uint64 {
-	f := shimConcat
-	p := *(*unsafe.Pointer)(unsafe.Pointer(&f))
-	return uint64(*(*uintptr)(p))
-}
-
 func shimEqAddr() uint64 {
 	f := shimEq
 	p := *(*unsafe.Pointer)(unsafe.Pointer(&f))
@@ -242,12 +222,6 @@ func shimForPrepAddr() uint64 {
 
 func shimTailCallAddr() uint64 {
 	f := shimTailCall
-	p := *(*unsafe.Pointer)(unsafe.Pointer(&f))
-	return uint64(*(*uintptr)(p))
-}
-
-func shimSelfAddr() uint64 {
-	f := shimSelf
 	p := *(*unsafe.Pointer)(unsafe.Pointer(&f))
 	return uint64(*(*uintptr)(p))
 }
