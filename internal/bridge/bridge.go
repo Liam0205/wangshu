@@ -366,8 +366,15 @@ func (b *Bridge) considerPromotion(proto *bytecode.Proto, pd *ProfileData, onMai
 		// decline cold protos that they would accept after one or two
 		// interpreter runs warm the IC. Sticking on the first decline
 		// would leave such protos on the interpreter forever, so give
-		// the backend a few warm-up entries before absorbing to Stuck.
-		if b.forceAll && pd.EntryCount < 4 {
+		// the backend some warm-up entries before absorbing to Stuck.
+		// The window must cover RECURSIVE protos whose later-pc IC slots
+		// only warm after a subtree completes: binary-trees' `check`
+		// executes its third GETTABLE (tree[2]) for the first time only
+		// after the whole left subtree returned — around entry 14 for a
+		// depth-12 tree. A window of 4 stuck it permanently; 64 covers
+		// realistic recursion depths and costs at most 64 rechecks per
+		// declined proto (force mode only, dedup'd to one per entry).
+		if b.forceAll && pd.EntryCount < 64 {
 			return // stay TierInterp; retry on a later entry
 		}
 		// (P2) 不可编译 / 未分析 → 永久解释(04 §1.4 静态 fallback)

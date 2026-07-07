@@ -105,3 +105,60 @@ return kernel(20)
 		t.Fatal("PromotionCount = 0; kernel did not promote")
 	}
 }
+
+// TestSeg2SegCheckTreePortable covers the binary-trees `check` shape
+// (issue #50 follow-up): a self-recursive callee whose recursion reads
+// table fields via GETTABLE at ArrayHit-IC sites. Two things previously
+// kept it off seg2seg entirely (measured PromotionCount=0):
+//   - GETTABLE was not in the seg2seg-eligible op set even at ArrayHit
+//     sites (the inline array read is side-effect free and its miss
+//     block is deopt-guarded now);
+//   - the forceAll retry window (4 entries) closed before the DEEP-pc
+//     IC slots warmed — check's third GETTABLE (tree[2]) first executes
+//     only after the whole left subtree returned, entry ~14 for the
+//     depths below.
+//
+// Correctness is the hard gate; the seg2seg probe proves the native
+// dispatch engaged.
+func TestSeg2SegCheckTreePortable(t *testing.T) {
+	src := `
+local function bottomup(depth)
+  if depth > 0 then
+    depth = depth - 1
+    local left, right = bottomup(depth), bottomup(depth)
+    return { left, right }
+  end
+  return { false, false }
+end
+local function check(tree)
+  if tree[1] then
+    return 1 + check(tree[1]) + check(tree[2])
+  end
+  return 1
+end
+local t8 = bottomup(8)
+local sum = 0
+for i = 1, 50 do sum = sum + check(t8) end
+return sum`
+	prog, err := wangshu.Compile([]byte(src), "checktree")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	st := wangshu.NewState(wangshu.Options{})
+	st.SetForceAllPromote(true)
+	before := peroptranslator.SegToSegHitCount.Load()
+	res, err := prog.Run(st)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// check(t8) = 2^9 - 1 = 511; 50 iterations -> 25550.
+	if len(res) != 1 || res[0].Display() != "25550" {
+		t.Fatalf("result = %v, want [25550]", res)
+	}
+	seg := peroptranslator.SegToSegHitCount.Load() - before
+	t.Logf("check-tree seg2seg hits = %d", seg)
+	if seg == 0 {
+		t.Errorf("seg2seg never fired for the check-tree shape " +
+			"(GETTABLE ArrayHit eligibility or the retry window regressed)")
+	}
+}

@@ -511,11 +511,15 @@ func emitInlineGetTableArrayHitArm64(cb *codeBuf, pc int32, a, b uint8, c int) b
 	bDoneOff := cb.pos()
 	cb.emit([]byte{0x00, 0x00, 0x00, 0x14})
 
-	// miss:
+	// miss: deopt when running as a seg2seg callee (issue #50:
+	// GETTABLE ArrayHit sites are seg2seg-eligible — the inline read
+	// is side-effect free, so a deopt redo is idempotent), else the
+	// exit-reason slow path.
 	missOff := cb.pos()
 	for _, po := range guardFixups {
 		patchBCondArm64(cb, po, missOff)
 	}
+	emitSegCallDeoptGuardArm64(cb)
 	emitExitReasonArm64(cb, jit.HelperGetTable, pc, int32(a), int32(b), int32(c))
 
 	// done:

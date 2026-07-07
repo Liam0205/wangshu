@@ -223,6 +223,11 @@ func SetInlineGetUpvalEnabledForTest(on bool) (restore func()) {
 //   - LT/LE/EQ: compare guard miss deopts (emitCompareExitTail).
 //   - GETUPVAL: inlined (emitGETUPVALInline); the rare open/foreign-owner
 //     fallback deopts.
+//   - GETTABLE (ArrayHit-IC sites only): the inline array-slot read is
+//     side-effect free (pure load, no __index on the fast path), so a
+//     deopt redo is idempotent; the miss block (non-table / non-integer
+//     key / out-of-bounds / Nil slot) deopts. Non-ArrayHit sites keep
+//     the Proto off seg2seg — their every access would exit.
 //   - CALL (fixed B/C): a nested call that can't itself go seg2seg (IC
 //     cold / cap reached) deopts (the CALL fallback deopt guards).
 //
@@ -235,8 +240,9 @@ func SetInlineGetUpvalEnabledForTest(on bool) (restore func()) {
 // redo can't read a clobbered arg.
 //
 // Excluded (exit-reason with NO deopt guard, or side effects that a redo
-// would duplicate): MOD/POW, UNM/NOT/LEN/CONCAT, GET*/SET*/NEWTABLE/
-// SELF/SETLIST. Their presence keeps a Proto off the seg2seg path.
+// would duplicate): MOD/POW, UNM/NOT/LEN/CONCAT, SETTABLE/GET*/SET*
+// GLOBAL/NEWTABLE/SELF/SETLIST, and GETTABLE at non-ArrayHit sites.
+// Their presence keeps a Proto off the seg2seg path.
 func ProtoSeg2SegEligible(proto *bytecode.Proto) bool {
 	if proto == nil || len(proto.Code) == 0 {
 		return false
@@ -257,7 +263,7 @@ func seg2segOpsEligible(proto *bytecode.Proto) bool {
 		return false
 	}
 	nparams := int(proto.NumParams)
-	for _, ins := range proto.Code {
+	for pc, ins := range proto.Code {
 		op := bytecode.Op(ins)
 		switch op {
 		case bytecode.MOVE, bytecode.LOADK, bytecode.LOADBOOL,
@@ -268,6 +274,14 @@ func seg2segOpsEligible(proto *bytecode.Proto) bool {
 			bytecode.LT, bytecode.LE, bytecode.EQ,
 			bytecode.GETUPVAL, bytecode.CALL:
 			// seg2seg-safe: pure-inline, deopt-guarded, or inlined.
+		case bytecode.GETTABLE:
+			// Only ArrayHit-IC sites: those get the inline array-slot
+			// fast path (side-effect-free load, deopt-guarded miss).
+			// Any other IC kind would exit on every access.
+			if pc >= len(proto.IC) ||
+				proto.IC[pc].Kind != bytecode.ICKindArrayHit {
+				return false
+			}
 		default:
 			return false
 		}
