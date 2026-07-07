@@ -1,7 +1,8 @@
 # P4 实现进度对账(implementation-progress)
 
-> 状态:**P4 已交付 (2026-07-01)** — PJ0-PJ11 全部完成 ✅(PJ1/PJ6 已由 PJ3/PJ7/PJ10 迂回闭合;详 §1 表)+ 三平台 CI 全绿(linux/amd64 + linux/arm64 + darwin/arm64,PR #29 42/42 checks)+ **PJ10 native emit amd64 端 26 op 真原生 + arm64 端 18 op 线性子集(exit-reason 端口未做,详 issues #37/#40)** + V15b heavy 三本 P4 native > P3 wasm 达标 + [09 PJ11 acceptance checklist](./09-acceptance-checklist.md) V1-V22 三平台全 ✅ + D2 P3 去留决议 2026-07-01 用户定下来主动保留(承 [07 §5.6](./07-p3-retirement.md)) + nightly-diff-fuzz P4 variant 2026-07-01 挂钩(rolling-seed diff 200 万脚本 + GC-stress 20 万脚本 + go-fuzz 45m × 4 targets 每晚跑),V21/V22 30 天累积 timer 起跑,长期健康监测不阻塞已交付状态。PJ3 FORLOOP 字节级 inline 实测 7.15-25.41x over gopher-lua,**完整超越 luajc 档 4.4x 基线**(承 §8)。**PJ4 表 IC 完整六路径**(GETTABLE/SETTABLE/SELF × ArrayHit/NodeHit)字节级 inline 主路径接入 + 严密 IsTable guard(承 §9.7-§9.10)+ 整套层级 prove-the-path 守卫(承 §9.11)。**PJ5 CALL void 二百二十子形式 + TAILCALL 一百零二子形式 + SELF method call inline 完整 0..7 参 + SELF spec template 字节级 inline 含 N=2..15 返 drop multi-ret 全形式 + OSR exit 协议接通(p4SpecState 子状态机)+ Option B 帧建立内联 Spike 1/2/3/4 + zero-cross 全套接上完整端到端 amd64 打通**(承 §9.14-§9.20.13)。**PJ8/PJ9 双架构 CI 三平台全绿**(PR #29):arch_arm64.go 的 `archSupportsSpec` / `archSupportsForLoop` / `archSupportsFrameInline` 三个检查全翻 true,darwin/arm64 W^X 由 cgo `jitcgo` 子包提供 MAP_JIT + pthread_jit_write_protect_np 真实现(隔离主库 zero-cgo 承诺),arm64 spec emit 模板 NoRet + ExitHelperRequest + helpers 全套就位;ci.yml 三平台矩阵(ubuntu-latest / ubuntu-24.04-arm 原生 GHA runner / macos-latest M1)× P1/P3/P4 × test / fuzz-smoke / conformance / difftest 全绿。**PJ11 acceptance checklist V1-V22 三平台全绿**(承 [09-acceptance-checklist.md](./09-acceptance-checklist.md);V14 luajc 档 bench-acceptance Run #28505893556 三平台 14.08x / 25.28x / 13.34x over gopher;V15b heavy geomean 5.53x / 5.45x / 4.00x over gopher;V16 边界 P4/P3 最差 0.70x 最好 0.50x;V19-V22 引用统一到 codebase 已有等效测试)。bit50 OSR 决策已记录(2026-06-29 用户确认清 0,承 §3.2)。共 **38+14+20 e2e SpecCallVoidHits/SpecTailCallHits/SpecSelfCallHits=1 prove-the-path 命中实证 + 36+13+16 difftest-p4 三方 byte-equal + 9 单测 + 7 p4SpecState 单测 + V18 -race 增量含 SELF**。
+> 状态:**P4 已交付 (2026-07-01)** — PJ0-PJ11 全部完成 ✅(PJ1/PJ6 已由 PJ3/PJ7/PJ10 迂回闭合;详 §1 表)+ 三平台 CI 全绿(linux/amd64 + linux/arm64 + darwin/arm64,PR #29 42/42 checks)+ **PJ10 native emit amd64 端 26 op 真原生 + arm64 端 18 op 线性子集(exit-reason 端口未做,详 issues #37/#40)**(amd64 `opSupported` 白名单其后经 CALL/RETURN 等增到 30 op,2026-07-07 issue #52 再加 SELF/CONCAT 到 32 op,详 §16) + V15b heavy 三本 P4 native > P3 wasm 达标 + [09 PJ11 acceptance checklist](./09-acceptance-checklist.md) V1-V22 三平台全 ✅ + D2 P3 去留决议 2026-07-01 用户定下来主动保留(承 [07 §5.6](./07-p3-retirement.md)) + nightly-diff-fuzz P4 variant 2026-07-01 挂钩(rolling-seed diff 200 万脚本 + GC-stress 20 万脚本 + go-fuzz 45m × 4 targets 每晚跑),V21/V22 30 天累积 timer 起跑,长期健康监测不阻塞已交付状态。PJ3 FORLOOP 字节级 inline 实测 7.15-25.41x over gopher-lua,**完整超越 luajc 档 4.4x 基线**(承 §8)。**PJ4 表 IC 完整六路径**(GETTABLE/SETTABLE/SELF × ArrayHit/NodeHit)字节级 inline 主路径接入 + 严密 IsTable guard(承 §9.7-§9.10)+ 整套层级 prove-the-path 守卫(承 §9.11)。**PJ5 CALL void 二百二十子形式 + TAILCALL 一百零二子形式 + SELF method call inline 完整 0..7 参 + SELF spec template 字节级 inline 含 N=2..15 返 drop multi-ret 全形式 + OSR exit 协议接通(p4SpecState 子状态机)+ Option B 帧建立内联 Spike 1/2/3/4 + zero-cross 全套接上完整端到端 amd64 打通**(承 §9.14-§9.20.13)。**PJ8/PJ9 双架构 CI 三平台全绿**(PR #29):arch_arm64.go 的 `archSupportsSpec` / `archSupportsForLoop` / `archSupportsFrameInline` 三个检查全翻 true,darwin/arm64 W^X 由 cgo `jitcgo` 子包提供 MAP_JIT + pthread_jit_write_protect_np 真实现(隔离主库 zero-cgo 承诺),arm64 spec emit 模板 NoRet + ExitHelperRequest + helpers 全套就位;ci.yml 三平台矩阵(ubuntu-latest / ubuntu-24.04-arm 原生 GHA runner / macos-latest M1)× P1/P3/P4 × test / fuzz-smoke / conformance / difftest 全绿。**PJ11 acceptance checklist V1-V22 三平台全绿**(承 [09-acceptance-checklist.md](./09-acceptance-checklist.md);V14 luajc 档 bench-acceptance Run #28505893556 三平台 14.08x / 25.28x / 13.34x over gopher;V15b heavy geomean 5.53x / 5.45x / 4.00x over gopher;V16 边界 P4/P3 最差 0.70x 最好 0.50x;V19-V22 引用统一到 codebase 已有等效测试)。bit50 OSR 决策已记录(2026-06-29 用户确认清 0,承 §3.2)。共 **38+14+20 e2e SpecCallVoidHits/SpecTailCallHits/SpecSelfCallHits=1 prove-the-path 命中实证 + 36+13+16 difftest-p4 三方 byte-equal + 9 单测 + 7 p4SpecState 单测 + V18 -race 增量含 SELF**。
 >
+> **2026-07-07 SELF + CONCAT 纳入 amd64 opSupported(issue #52,PR #65)**:承 §16 详。把 `bytecode.SELF` 和 `bytecode.CONCAT` 加进 amd64 的 `opSupported` 白名单(`translator_native.go`),白名单 op 数量从 30 增到 32;它们的 emit / dispatch / host 整条流水线本就存在(走 exit-reason dispatch),此前唯一缺口是 `AnalyzeNative` 见到 SELF 或 CONCAT 就拒绝整个 proto。改动后一个函数里出现一次 `obj:method()` 或一次数值 `..` 不再拖垮整函数升层,其余算术 / 循环 / CALL 可正常走 native + seg2seg。仅落 amd64,arm64 留后续;不 auto-close #52。
 > **2026-07-03 arm64 exit-reason 端口收口(issue #37 / #40 阶段 2)**:承 §14.6 详。exit-reason 协议按 7 步实施顺序完整移植到 arm64(dispatcher 循环 + GETUPVAL/SETUPVAL → CALL 密度门 → GETGLOBAL/SETGLOBAL NodeHit inline → GETTABLE/SETTABLE ArrayHit inline + NEWTABLE → UNM(顺带修复双 arch -NaN 静默变 nil 既有 bug)→ 多值 RETURN → arith/LT/LE 恢复(比较条件码换 FP 安全族 MI/PL/LS/HI 解 NaN unordered 错判));**两 arch native 接受面重新对齐**,§14.5 的「两 arch 分岔」口径自此失效。darwin/arm64 M5 Pro 实测 heavy + realworld P4 全面 ≥ P3(HeavyArith 2.03× / HeavyFloatloop 2.47× over P3),README 双语 arm64 表已更新。
 >
 > **2026-07-02 PJ10 native 扩接 + arm64 分岔进档(PR #34)**:承 §14.5 详。amd64 native `opSupported` 从原 18 op 线性子集扩到 **26 op**——新增 GETTABLE / SETTABLE / NEWTABLE / GETUPVAL / SETUPVAL / GETGLOBAL / SETGLOBAL / CALL / UNM 九个,通过 **exit-reason 协议**(`emit_ops_amd64.go::emitExitReason` 把 helperCode/a/b/c/pc 打包进 `jitCtx.exitArg0`,`RAX=ExitInlineHelper` 出段,Go 端 `nativeCode.Run` dispatcher 分派并经 resumeOff 二次重入)完成语义,而不是 inline 全跑。`AnalyzeNative` 语义门同步加严:GETTABLE/SETTABLE 必须 IC Kind ∈ {ArrayHit, NodeHit};GETGLOBAL/SETGLOBAL 必须 NodeHit(注释里记录了「无门直接接受」造成的 ~14% Transform CallInto 回归教训);NEWTABLE B/C≥256 拒;CALL B==0/C==0 拒;CALL 密度门 `totalOps/callCount≥16`(注释里记录 fib 11 ms 解释器 vs 18 ms native 的起因);`returnCount==0` 拒;multi-return 走 `HelperReturn` exit-reason,single-return 保 xor-eax 快出口 + Go 端 DoReturn。**性能实测**:25/27 pair 相对 P3 wasm ≥ +2%(fannkuch 0.60 ms,nbody 44.2 ms),README bench 表格已重测。**arm64 端未随之扩**(已由 2026-07-03 §14.6 收口)——当时 `translator_native_arm64.go::opSupported` 仍是 18 op 线性子集,`AnalyzeNative` 里对算术 / 比较 op 额外拒;exit-reason 协议的 arm64 端口即 issue #37,arm64 debugging 见 issue #40。
@@ -2325,6 +2326,67 @@ arm64 端 seg2seg 全套已按 amd64 逐指令镜像写完(`emit_seg2seg_arm64.g
 **已做的静态验收**:① linux/arm64 + darwin/arm64 交叉编译干净;② amd64 全套 + difftest 仍绿(seg2seg 逻辑层——`ProtoSeg2SegEligible` / IC populate / deopt 协议 / 帧算术——是 arch-neutral 或 arch-shared,已由 amd64 真机跑过);③ 新手写的 SP 相对 + 帧管理编码用 `golang.org/x/arch/arm64` 反汇编器在 amd64 上逐条解码确认(`str x30,[sp]` / `str x26,[sp,#8]` / `sub sp,sp,#0x20` / `add x26,x26,#0x10` / `sub x17,x26,#8` / `blr x13` 全部解码成预期指令),arm64-tagged 编码单测的期望字节据此对齐;④ jitarm64.Emit* 原语本就 CI 验证过(已发布的 18-op arm64 路径在用)。
 
 但**本机(amd64,无 qemu-aarch64)无法执行 arm64 机器码**——arm64 的段到段直调正确性 / 性能只能在真 arm64 上验;CI 的 arm64 真机矩阵只在 master push / PR 触发,feature 分支 push 不跑。所以 arm64 机器码目前是「写完 + 编得过 + 编码单测就绪」状态,真机 `-race` + difftest + benchmark 验收挂在 **issue #61**(经 CI 三平台矩阵)。amd64 端 issue #50 目标(fib 反超 gopher)已达成并验证。
+
+---
+
+## 16. issue #52 SELF + CONCAT 纳入 amd64 opSupported(2026-07-07,PR #65)
+
+承 issue #52(P4 native 逐步补齐 opcode 覆盖)。本 PR 只覆盖 SELF / CONCAT 这一片,把它们从「一出现就拒整个 proto」拆解开,使含单次 method call 或数值拼接的函数也能升 native。
+
+### 16.1 唯一代码改动
+
+把 `bytecode.SELF` 和 `bytecode.CONCAT` 加进 amd64 的 `opSupported` 白名单(`internal/gibbous/jit/peroptranslator/translator_native.go`,build tag `wangshu_p4 && amd64`),并更新该函数的 doc 注释(把 SELF / CONCAT 从 Excluded 移到 enabled)。同时新增 `e2e_self_concat_test.go`(build tag `wangshu_p4 && wangshu_profile && amd64 && linux`)。
+
+### 16.2 流水线本就存在,本 PR 没有新写
+
+SELF / CONCAT 的整条 native 流水线在本 PR 之前早已就绪,本次没有新写任何 emit / dispatch / host 代码:
+
+- **emit**:`emit_ops_amd64.go` 的 `emitSELF` / `emitCONCAT` 走 exit-reason。
+- **dispatch**:`translator_native_dispatch.go` 的 `HelperSelf` / `HelperConcat` case。
+- **host**:`internal/crescent/gibbous_host.go` 的 `State.Self` / `State.Concat`。
+
+唯一缺口是:`AnalyzeNative` 只要在 proto 里看到 SELF 或 CONCAT 就拒绝整个 proto(whole-proto rejection),原因是它们不在白名单里。本 PR 补上白名单条目就把这个缺口补齐了。
+
+### 16.3 语义
+
+- **SELF** 走 `HelperSelf` exit-reason:IC 支撑的方法查找 + `__index`,可 raise。
+- **CONCAT** 走 `HelperConcat` exit-reason:`doConcat` + safepoint,可 raise。
+
+字符串分配 / 方法查找 / 元方法 raise 都在 Go 侧发生,与解释器逐字节等价(byte-equal)。
+
+### 16.4 作用
+
+一个函数里出现一次 `obj:method()` 或一次数值 `..`,不再让整个函数掉回解释器;它的算术、循环、CALL 现在都能走 native + seg2seg,而 SELF / CONCAT 本身仍骑在 exit-reason dispatch 上。
+
+**注意**:这不是逐 op 加速——SELF / CONCAT 每次仍出段到 Go。本 PR 解除的是「一个 op 拖垮整函数」的问题,而不是让 SELF / CONCAT 本身变快。
+
+### 16.5 作用边界
+
+一个同时含有活跃字符串字面量 LOADK(如 `s = "x"`、`t.name .. "-"`)的 proto 仍然留在解释器上——这不是 SELF / CONCAT 的问题,而是既有的 F7-a 检查(字符串常量无法作为 imm64 烤进 mmap segment),与本 issue 无关。本 PR 解锁的是数值 `..` 和 table-key SELF 这类形式。
+
+### 16.6 白名单数量变化
+
+amd64 的 `opSupported` 白名单从 30 op 增到 **32 op**(加 SELF / CONCAT)。历史起点是 §14.5 记录的 26 op,中间经 CALL / RETURN 等已到 30 op,本 PR 再加 2 个到 32 op。
+
+### 16.7 验证
+
+新增 `e2e_self_concat_test.go` 三个 prove-the-path 测试:
+
+- `TestPJ10_Concat_Promotes`
+- `TestPJ10_Self_Promotes`
+- `TestPJ10_Self_Concat_Mixed`
+
+三个测试各断言:之前被拒的 proto 现在能升层(`PromotionCount > 0`)、真的在 native 路径上跑(`NativeRunCount` 变化)、结果与解释器一致。
+
+已通过:完整 peroptranslator 套件 + crescent + difftest-p4 + 20k 随机 difftest + conformance + `-race`;CI 三平台矩阵(conformance / difftest / fuzz-smoke × p1/p3/p4 × ubuntu-latest / ubuntu-24.04-arm / macos-latest)全 pass;pr-review bot 结论 APPROVE。
+
+### 16.8 arm64 留后续
+
+本 PR 只落 amd64。arm64 的 emit(`emit_arm64.go` 的 `emitSELFArm64` / `emitCONCATArm64`)、dispatch、host 都已就位,只差在 `translator_native_arm64.go` 的 `opSupported` 里补 SELF / CONCAT + 更新 doc 注释,留作后续(PR #65 评论里已给出完整开发 / 测试 / 验证步骤)。
+
+### 16.9 不 auto-close #52
+
+本 PR 只覆盖 SELF / CONCAT 这一片,issue #52 里其余 op 缺口仍未做,issue 留开。
 
 ---
 
