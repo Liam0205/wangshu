@@ -1,13 +1,13 @@
 # Guide：后端接受面的能力/收益分层
 
 > 适用：给某后端接入新 opcode / 新形式时；某后端 auto 模式性能回归但 forceAll 模式正常时；共享分析器（跨后端可编译性判据）改动后每后端复测出现分歧时；写「按 shape 拒收」类升层门时。
-> 来源：三个独立实例——[[2026-07-02-p4-beat-p3-opset-round]] 教训 3「验收门与 emit 质量对性能贡献相当」（P4 amd64 CALL 密度门 + `MinPromotableLener` 尺寸地板）+ [[2026-07-03-issue40-arm64-stopbleed-round]] 教训 3「stay-and-retry 状态 × 高频触发点」（arm64 forceAll retry window × `recheckCompilabilityRuntime` 22.38% CPU）+ [[2026-07-03-issue45-issue39-round]] 教训 2 与教训 5（P3 wasm `PromotionGater` + 阈值 5→7 迭代 + nbody 43.5→89.7ms 回归驱动，issue #39）。三个实例共同收敛出的接口族：`SupportsAllOpcodes` / `WorthPromoting` / `MinPromotableLener`。相关 issue：#21（`MinPromotableLener` 缘起）、#39（P3 nbody 回归收益门修复）。
+> 来源：四个独立实例——[[2026-07-02-p4-beat-p3-opset-round]] 教训 3「验收门与 emit 质量对性能贡献相当」（P4 amd64 CALL 密度门 + `MinPromotableLener` 尺寸地板）+ [[2026-07-03-issue40-arm64-stopbleed-round]] 教训 3「stay-and-retry 状态 × 高频触发点」（arm64 forceAll retry window × `recheckCompilabilityRuntime` 22.38% CPU）+ [[2026-07-03-issue45-issue39-round]] 教训 2 与教训 5（P3 wasm `PromotionGater` + 阈值 5→7 迭代 + nbody 43.5→89.7ms 回归驱动，issue #39）+ issue #67（P4 arm64 spectral-norm 热 proto `A(i,j)` 9 op 被 `MinPromotableLener` 地板永久钉死解释器，auto 16.6ms 慢 force 3.7x；地板的固定 `nativeCode.Run` 校准假设「每次跨界 Run」，但 seg2seg-eligible 被调方走段内直调从不进 `Run`，加 `FloorExempter` 反向豁免）。四个实例共同收敛出的接口族：`SupportsAllOpcodes` / `WorthPromoting` / `MinPromotableLener` / `FloorExempter`。相关 issue：#21（`MinPromotableLener` 缘起）、#39（P3 nbody 回归收益门修复）、#67（`FloorExempter` 缘起，spectral-norm 半）。
 
 **核心断言**：「后端能编」（capability）与「后端编了赚不赚」（profitability）是两个正交问题。前者是硬约束（编错就是不对），后者是软约束（编对了但净亏）。**塞进同一张 `opSupported` 表把 shape-independent 能编和 shape-dependent 净胜强绑，一旦某 op 的净胜性依赖 shape（IC 类别 / CALL 密度 / proto 长度 / op 构成密度），表就不够表达**——升层机制在这类形式下不是「编错」而是「不该编」。
 
 ## 1. 分层模型
 
-bridge 侧 `considerPromotion` 依次咨询三类 per-backend 可选接口，每类各管一件事：
+bridge 侧 `considerPromotion` 依次咨询四类 per-backend 可选接口，每类各管一件事：
 
 | 层 | 接口 | 判据 | 拒绝语义 | forceAll 是否绕过 |
 |---|---|---|---|---|
@@ -16,7 +16,7 @@ bridge 侧 `considerPromotion` 依次咨询三类 per-backend 可选接口，每
 | **尺寸地板** | `MinPromotableLener` | 「proto 太短，固定 Run 成本摊薄不回来」——proto 长度 | 摊薄不回，不该编 | **绕过**（同收益类） |
 | **地板豁免** | `FloorExempter` | 「这个 proto 虽短，但热路径派发通道不付固定 Run 成本」——per-proto 通道判据（P4：seg2seg-eligible） | 反向豁免：豁免则地板不拦 | **不适用**（forceAll 本就绕地板） |
 
-三层职责不重叠，接口签名同结构（都接 proto 或类似元数据、返 bool），可独立实现。收益/尺寸类拒绝 → 进入 `TierStuck` 吸收态（静态判断，重复问答案不会改变，进 Stuck 后不再重问）。
+四层职责不重叠，接口签名同结构（都接 proto 或类似元数据、返 bool），可独立实现。收益/尺寸类拒绝 → 进入 `TierStuck` 吸收态（静态判断，重复问答案不会改变，进 Stuck 后不再重问）；地板豁免是尺寸地板的反向门，答案同样只问一次（越过热度阈值后）并缓存。
 
 ## 2. 设计不变式
 
@@ -26,7 +26,7 @@ bridge 侧 `considerPromotion` 依次咨询三类 per-backend 可选接口，每
 
 **per-backend 独立**——每个后端有自己的性能物理特性（mmap+morestack 冲突 / 跨界成本 / 固定 Run 开销 / per-op helper 密度），bridge 不该把这些内化到自己的状态机里，应该以 per-backend 可选接口族的形式让后端各自回答「我这类形状要不要接」。
 
-## 3. 三个实例
+## 3. 四个实例
 
 **（a）P4 amd64 CALL 密度门（[[2026-07-02-p4-beat-p3-opset-round]] 教训 3）**：CALL ungated 加进 `opSupported` 造成 Transform CallInto 290us → 332us 反回归（fib 类 CALL 密集 body 单次 exit round trip 摊 15~25 解释器 op 单纯亏）。修法不是把 CALL 从 `opSupported` 拿掉（能力上完全能编），而是加 shape 判据「`totalOps/callCount >= 16`」——密度不够就不升，密度够就走 NodeHit-IC gated inline + Compile fast path。同 emit 接受策略切换 25 个百分点全景。
 
@@ -34,7 +34,9 @@ bridge 侧 `considerPromotion` 依次咨询三类 per-backend 可选接口，每
 
 **（c）P3 wasm helper 密度地板（issue #39，[[2026-07-03-issue45-issue39-round]] 教训 2）**：nbody advance 74 op 里 26 个 helper-bound（密度 74/26 ≈ 2.85），P3 wasm 每个 helper-bound op 都要跨 host 边界；单次跨界成本 > 解释器同一 op 的开销，op 数量再多也追不回来。auto 升层后反 43.5 → 89.7ms（2× 慢）。修法：给 bridge 加 `PromotionGater { WorthPromoting(proto) bool }` 可选接口，wasm Compiler 实现「`total/helperBound >= 7`」——nbody 密度 2.85 被拒（不升层，走解释器），零 helper-bound 内核（heavy_arith / heavy_floatloop，密度无穷）不受影响仍升层。
 
-三个实例共同收敛出同结构 hook 家族：**per-backend 可选接口、只在 auto 模式生效、forceAll 绕过、拒绝进 TierStuck**。
+**（d）P4 `FloorExempter` 地板豁免（issue #67，arm64 M5 Pro 上发现，机制两架构共用）**：spectral-norm 热 proto `A(i,j)`（144k 次调用/次运行）是 9 个 opcode——比 `MinPromotableLener` 地板（10）少一个——auto 模式把它永久钉死解释器，而它的已升层调用方 `Av`/`Atv` 每次调用都要付一次 `ExecutePlainCall` exit-reason 往返，auto 比 force 慢 3.7x（16.6ms vs 4.5ms）。地板的固定成本校准（`nativeCode.Run` 每次调用 ~111ns vs 解释器 78ns）量的是 HOST 派发通道；但 seg2seg-eligible 被调方（PR #62 引入）的热通道是「已升层调用方发起的段内直调」，从不进入 `Run`，固定成本假设不成立。修法：给 bridge 加 `FloorExempter { ExemptFromFloor(proto) bool }` 可选接口——仅在 auto 模式、仅对已低于地板的 proto、在热度阈值之后咨询一次（等 IC 稳定），裁决缓存 `ProfileData.floorExempt`（三态:未问/豁免/不豁免）；P4 实现 `ExemptFromFloor = ProtoSeg2SegEligible`。结果 spectral-norm P4 auto 16.65ms → 4.2-4.4ms,与 force 打平。
+
+四个实例共同收敛出同结构 hook 家族：**per-backend 可选接口、只在 auto 模式生效、forceAll 绕过（地板豁免除外——它本就只在越过地板判定之后才被咨询，forceAll 场景不经过地板）、拒绝进 TierStuck**（未豁免的短 proto 例外——它留在 TierInterp,地板检查发生在 considerPromotion 之前,裁决已缓存故不重复付扫描成本）。
 
 ## 4. 工作流
 
