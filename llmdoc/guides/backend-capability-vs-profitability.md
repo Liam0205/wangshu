@@ -62,3 +62,7 @@ bridge 侧 `considerPromotion` 依次咨询四类 per-backend 可选接口，每
 - 与 [[perf-optimization-workflow]] §7「profile 才是合同」呼应：那节管「里程碑完成中数字不可达时止损」，本 guide 管「入口就用收益门挡掉不该升的 shape」，两条纪律都是「实测优先于机理估算」。
 - 与 [[prove-the-path-under-test]] §5「fuzz 探索空间维度」配：接受面动了立刻跑一轮 fuzz（能力面覆盖）+ 接受面动了立刻跑一轮 bench（收益面复测），两个廉价动作配对；能力层扩一格是 fuzz 探索空间维度动一格，收益层动阈值不是（收益门只影响 auto 决策，不改差分测试覆盖）。
 - 与 [[design-claims-vs-codebase-physics]] 同源：设计稿把「某 op 支持」画成一格布尔位，实际是「shape-independent 能编 × shape-dependent 净胜」二维；实现前须把二维拆开。
+
+## 6. 测试覆盖现状
+
+`WorthPromoting` / `PromotionGater` / `MinPromotableLener` / `FloorExempter` 四类接口全部**只在 auto 模式生效、forceAll 绕过**（§2「设计不变式」），这意味着仓库长期只跑 `SetForceAllPromote(true)` 的差分/一致性/fuzz 套对它们完全没有测试网——issue #67 本身就是一个只在 auto 决策链上才会触发的 bug。issue #67 auto-mode 覆盖轮(PR #75)补上了这一半:`Bridge.SetHotThresholds(entry, backEdge)`(testing-only,同 `SetForceAllPromote` 纪律,只改「何时」触发决策不改「决策什么」)让短用例在调低阈值后于 run 中途真实越阈值、走完整 auto 决策链;新增的 `test/difftest/auto_test.go`、`test/conformance/conformance_auto_test.go`、`FuzzAutoPromote`(`fuzz_auto_test.go`)、nightly auto-mode leg 均配 `PromotionCount>0` 兜底断言(见 [[prove-the-path-under-test]] §1「未强制测试静默退化」)。详见反思 [[2026-07-07-issue67-auto-mode-coverage-round]]。
