@@ -1,7 +1,9 @@
-//go:build wangshu_p4 && wangshu_profile && amd64 && linux
+//go:build wangshu_p4 && wangshu_profile && ((amd64 && linux) || (arm64 && (linux || (darwin && cgo)) && !wangshu_qemu))
 
 // e2e_self_concat_test.go — issue #52: SELF + CONCAT admitted to
-// opSupported. The whole pipeline (emit -> HelperSelf/HelperConcat
+// opSupported (amd64 + arm64; the assertions are arch-neutral — promote
+// + native run + byte-equal — so one file serves both arches under
+// their respective native-runner build tags). The whole pipeline (emit -> HelperSelf/HelperConcat
 // exit-reason -> host.Self/host.Concat) already existed; the only change
 // was letting AnalyzeNative accept protos that contain these ops instead
 // of rejecting the whole proto. These tests prove such protos now

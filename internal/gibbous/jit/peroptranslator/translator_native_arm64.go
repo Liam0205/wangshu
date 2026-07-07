@@ -362,7 +362,10 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 // exit-reason and MOD / POW ride the plain HelperArithSlow lowering
 // (no inline NEON — the dispatcher re-derives the op from
 // proto.Code[pc] and runs host.Arith / host.Len, byte-equal to the
-// interpreter).
+// interpreter). SELF / CONCAT mirror the amd64 acceptance (issue #52):
+// both lower to exit-reasons (HelperSelf / HelperConcat — IC-backed
+// method lookup / doConcat happen Go-side, may raise), so one
+// `obj:method()` or `..` no longer kicks the whole proto off native.
 func opSupported(op bytecode.OpCode) bool {
 	switch op {
 	case bytecode.MOVE, bytecode.LOADK, bytecode.LOADBOOL, bytecode.LOADNIL,
@@ -377,6 +380,7 @@ func opSupported(op bytecode.OpCode) bool {
 		bytecode.GETGLOBAL, bytecode.SETGLOBAL,
 		bytecode.GETTABLE, bytecode.SETTABLE, bytecode.NEWTABLE,
 		bytecode.UNM,
+		bytecode.SELF, bytecode.CONCAT,
 		bytecode.RETURN:
 		return true
 	default:
@@ -556,6 +560,10 @@ func emitLinearOpArm64(buf *codeBuf, ins bytecode.Instruction, pc int32) error {
 		// non-inline shape. The dispatcher re-derives the op from
 		// proto.Code[pc].
 		emitExitReasonArm64(buf, jit.HelperArithSlow, pc, int32(a), int32(bRK), int32(cRK))
+	case bytecode.SELF:
+		emitSELFArm64(buf, pc, a, bReg, cRK)
+	case bytecode.CONCAT:
+		emitCONCATArm64(buf, pc, a, bReg, uint8(cRK))
 	default:
 		return fmt.Errorf("emitLinearOpArm64: unsupported op %v at pc %d", op, pc)
 	}

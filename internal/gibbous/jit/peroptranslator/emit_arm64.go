@@ -373,9 +373,12 @@ func emitLENArm64(cb *codeBuf, pc int32, a, b uint8) {
 	emitExitReasonArm64(cb, jit.HelperLen, pc, int32(a), int32(b), 0)
 }
 
-// emitCONCATArm64 emits arm64 CONCAT via shimConcat.
+// emitCONCATArm64 emits R(A) := R(B) .. .. R(C) via the HelperConcat
+// exit-reason (the dispatcher runs host.Concat: doConcat + safepoint,
+// may raise). Mirror of amd64 emitCONCAT. B/C are register range
+// endpoints (0-MaxStack, always in uint8 range).
 func emitCONCATArm64(cb *codeBuf, pc int32, a, b, c uint8) {
-	emitCallShimArm64(cb, shimConcatAddr(), []int32{0, pc, int32(a), int32(b), int32(c)})
+	emitExitReasonArm64(cb, jit.HelperConcat, pc, int32(a), int32(b), int32(c))
 }
 
 // emitGETTABLEArm64 emits GETTABLE A B C: inline ArrayHit fast path
@@ -800,9 +803,14 @@ func emitTAILCALLArm64(cb *codeBuf, pc int32, a, b, c uint8) {
 	emitCallShimArm64(cb, shimTailCallAddr(), []int32{0, pc, int32(a), int32(b), int32(c)})
 }
 
-// emitSELFArm64 emits arm64 SELF via shimSelf.
-func emitSELFArm64(cb *codeBuf, pc int32, a, b, c uint8) {
-	emitCallShimArm64(cb, shimSelfAddr(), []int32{0, pc, int32(a), int32(b), int32(c)})
+// emitSELFArm64 emits SELF A B C (R(A+1) := R(B); R(A) := R(B)[RK(C)])
+// via the HelperSelf exit-reason (the dispatcher runs host.Self:
+// IC-backed method lookup + __index, may raise). Mirror of amd64
+// emitSELF. c is an RK operand (the method name is usually a string
+// constant, K index >= 256) — it rides the 9-bit c slot of the
+// exit-reason packing, so it must NOT be narrowed to uint8.
+func emitSELFArm64(cb *codeBuf, pc int32, a, b uint8, c int) {
+	emitExitReasonArm64(cb, jit.HelperSelf, pc, int32(a), int32(b), int32(c))
 }
 
 // emitCLOSUREArm64 emits arm64 CLOSURE via shimClosure.
