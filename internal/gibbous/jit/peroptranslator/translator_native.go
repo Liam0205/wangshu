@@ -485,13 +485,16 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 //	GETTABLE/SETTABLE (IC ArrayHit inline / NodeHit exit-reason),
 //	NEWTABLE, GETUPVAL, SETUPVAL, CALL (exit-reason dispatch),
 //	GETGLOBAL/SETGLOBAL (NodeHit-IC gated inline + exit-reason),
+//	SELF (HelperSelf exit-reason: IC method lookup + __index, can raise),
+//	CONCAT (HelperConcat exit-reason: doConcat + safepoint, can raise),
 //	RETURN (Go-side DoReturn after segment RET)
 //
 // **Excluded**:
 //
-//	CONCAT, SELF, SETLIST (emit exists but no acceptance evaluation
-//	yet), TAILCALL, CLOSURE, CLOSE, TFORLOOP (no emit — they need
-//	dedicated exit-reason shapes, see the note in emit_ops_amd64.go)
+//	SETLIST (emit exists but no acceptance evaluation yet),
+//	TAILCALL, CLOSURE, CLOSE, TFORLOOP (no emit — they need
+//	dedicated exit-reason shapes, see the note in emit_ops_amd64.go),
+//	VARARG (permanent design gate)
 //
 // AnalyzeNative additionally rejects Protos with non-numeric K operands
 // on inline arithmetic / compare ops, CALL with B=0/C=0, NEWTABLE with
@@ -508,6 +511,7 @@ func opSupported(op bytecode.OpCode) bool {
 		bytecode.GETTABLE, bytecode.SETTABLE, bytecode.NEWTABLE,
 		bytecode.GETUPVAL, bytecode.SETUPVAL,
 		bytecode.GETGLOBAL, bytecode.SETGLOBAL,
+		bytecode.SELF, bytecode.CONCAT,
 		bytecode.CALL,
 		bytecode.RETURN:
 		return true
