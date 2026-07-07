@@ -2242,6 +2242,12 @@ func emitCallInlineFastPath(cb *codeBuf, pc int32, a, b, c uint8, callSiteIdx in
 				byte(uint32(off) >> 16), byte(uint32(off) >> 24),
 				0x00, 0x00, 0x00, 0x00})
 		}
+		// Prove-the-path: inc qword [SegToSegDeoptCountAddr] — this is the
+		// top-level deopt-redo branch (issue #66 subtask 3). rax is free
+		// on this branch (the no_deopt branch below uses it separately).
+		// mov rax, imm64 (48 B8) ; inc qword [rax] (48 FF 00)
+		cb.emit(jitamd64.EmitMovRaxImm64(nil, SegToSegDeoptCountAddr()))
+		cb.emit([]byte{0x48, 0xFF, 0x00})
 		// jmp skip_seg   (E9 rel32) — patched once skip_seg known
 		jmpRedoOff := len(cb.bytes) + 1
 		cb.emit([]byte{0xE9, 0, 0, 0, 0})
