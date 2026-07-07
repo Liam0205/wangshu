@@ -57,7 +57,7 @@ jobs:
       # (V15 geomean against the oracle baseline).
       - if: startsWith(matrix.os, 'macos')
         id: cache-lua51-bench
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: lua-5.1.5
           key: lua-5.1.5-build-${{ runner.os }}-${{ runner.arch }}

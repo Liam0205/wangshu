@@ -81,7 +81,7 @@ jobs:
       # P3 升层 bug 等真 bug 长期不在 CI 抓到(2026-06-30 发现)。
       - if: startsWith(matrix.os, 'macos')
         id: cache-lua51-test
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: lua-5.1.5
           key: lua-5.1.5-build-${{ runner.os }}-${{ runner.arch }}
@@ -192,7 +192,7 @@ jobs:
           go-version-file: go.mod
       - if: startsWith(matrix.os, 'macos')
         id: cache-lua51-difftest
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: lua-5.1.5
           key: lua-5.1.5-build-${{ runner.os }}-${{ runner.arch }}
