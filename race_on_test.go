@@ -1,4 +1,4 @@
-//go:build race && wangshu_p4 && wangshu_profile
+//go:build race && (wangshu_p3 || wangshu_p4) && wangshu_profile
 
 package wangshu_test
 

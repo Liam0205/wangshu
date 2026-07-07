@@ -119,10 +119,10 @@ func (b *Bridge) considerPromotionWithAggregate(proto *bytecode.Proto, pd *Profi
 	}
 	// 任一(本地或全局)越阈值即触发——这让 sync.Pool 形态下,即使本
 	// State 计数刚清空,全局累积仍能驱动升层。
-	if pd.EntryCount >= HotEntryThreshold ||
-		pd.MaxBackEdge() >= HotBackEdgeThreshold ||
-		aggEntry >= HotEntryThreshold ||
-		aggMaxBack >= HotBackEdgeThreshold {
+	if pd.EntryCount >= b.hotEntry ||
+		pd.MaxBackEdge() >= b.hotBackEdge ||
+		aggEntry >= b.hotEntry ||
+		aggMaxBack >= b.hotBackEdge {
 		b.considerPromotion(proto, pd, onMain)
 	}
 }
