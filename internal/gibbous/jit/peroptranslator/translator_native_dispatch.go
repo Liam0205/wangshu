@@ -77,6 +77,25 @@ func SegToSegHitCountAddr() uint64 {
 	return uint64(uintptr(unsafe.Pointer(&SegToSegHitCount)))
 }
 
+// SegToSegDeoptCount counts top-level seg2seg deopt-redo events (issue
+// #50 Spike 5 / issue #66 subtask 3). A seg2seg callee whose in-segment
+// guard misses at run time (arith IsNumber, compare, GETTABLE ArrayHit
+// shape, nested-CALL cold IC) sets segCallDeopt + rets; the deopt
+// propagates up the native call chain, and the TOP of the chain
+// (segCallDepth == 0 after decrement) clears the flag and redoes the
+// whole call via the exit-reason host path. The caller fast body
+// increments this counter on exactly that top-level redo branch, so a
+// nonzero value proves the deopt-redo path executed (as opposed to the
+// proto never having promoted at all). Address baked into the segment
+// at emit time (SegToSegDeoptCountAddr).
+var SegToSegDeoptCount atomic.Int64
+
+// SegToSegDeoptCountAddr returns the address of the SegToSegDeoptCount
+// counter's underlying int64, mirroring SegToSegHitCountAddr.
+func SegToSegDeoptCountAddr() uint64 {
+	return uint64(uintptr(unsafe.Pointer(&SegToSegDeoptCount)))
+}
+
 // dispatchHelper handles a single ExitInlineHelper request from the
 // mmap segment. Returns true on success (segment can be re-entered
 // at resumeOff), false on error (host method raised → caller returns

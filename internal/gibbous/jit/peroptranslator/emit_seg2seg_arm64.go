@@ -331,10 +331,16 @@ func emitCallInlineFastPathArm64(cb *codeBuf, pc int32, a, b, c uint8, callSiteI
 			uint16(jit.JITContextSegCallDepthOffset)))
 		cbnzPropOff := len(cb.bytes)
 		cb.emit(jitarm64.EmitCbnzW(nil, 14, 0)) // depth > 0 -> propagate
-		// clear deopt flag; b skip_seg (redo via exit-reason)
+		// clear deopt flag; bump SegToSegDeoptCount; b skip_seg (redo via
+		// exit-reason). Top-level deopt-redo branch (issue #66 subtask 3),
+		// mirror of the amd64 inc.
 		cb.emit(jitarm64.EmitMovzWdImm16(nil, 14, 0))
 		cb.emit(jitarm64.EmitStrWtToXnDisp(nil, 14, regX27,
 			uint16(jit.JITContextSegCallDeoptOffset)))
+		cb.emit(jitarm64.EmitMovXdImm64(nil, 9, SegToSegDeoptCountAddr()))
+		cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 10, 9, 0))
+		cb.emit(jitarm64.EmitAddXdImm12(nil, 10, 10, 1))
+		cb.emit(jitarm64.EmitStrXtToXnDisp(nil, 10, 9, 0))
 		bRedoOff := len(cb.bytes)
 		cb.emit(jitarm64.EmitB(nil, 0)) // -> skip_seg
 		// propagate: ret
