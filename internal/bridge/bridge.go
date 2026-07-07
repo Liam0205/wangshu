@@ -57,6 +57,12 @@ type Bridge struct {
 	// backend injected yet" — OnEnter/OnBackEdge fall back to the
 	// package default in that window.
 	minPromotableLen int
+
+	// floorExempter is the backend's optional per-proto floor exemption
+	// hook (issue #67), snapshotted in SetP3Compiler alongside
+	// minPromotableLen. nil when the backend does not implement
+	// FloorExempter — the floor then applies unconditionally.
+	floorExempter FloorExempter
 }
 
 // MinPromotableLener is an optional interface a P3Compiler may
@@ -79,6 +85,25 @@ type MinPromotableLener interface {
 // density), so re-asking on later entries cannot change the answer.
 type PromotionGater interface {
 	WorthPromoting(proto *bytecode.Proto) bool
+}
+
+// FloorExempter is an optional interface a P3Compiler may implement to
+// exempt specific protos from the short-proto floor (issue #67). The
+// floor exists because promoted tiny protos lose to the backend's fixed
+// per-call dispatch costs — but a backend may know that a proto's hot
+// dispatch channel skips those costs entirely. P4's case: a
+// seg2seg-eligible proto called from an already-promoted caller is
+// entered by an in-segment call, never paying nativeCode.Run's fixed
+// overhead, so the floor's calibration does not apply to it
+// (spectral-norm's 9-op `A(i,j)` at 144k calls/run was floored to the
+// interpreter, costing an ExecutePlainCall round trip per call).
+//
+// Consulted in auto mode only (forceAll already bypasses the floor),
+// and only for protos below the floor, after they cross the heat
+// threshold — so the proto's ICs are warm and the answer is stable.
+// The verdict is cached per proto in ProfileData (see floorExempt).
+type FloorExempter interface {
+	ExemptFromFloor(proto *bytecode.Proto) bool
 }
 
 // NewBridge 构造一个空 Bridge,挂在 State 上(crescent 端 setter 注入)。
@@ -106,6 +131,9 @@ func (b *Bridge) SetP3Compiler(p3 P3Compiler) {
 			b.minPromotableLen = v
 		}
 	}
+	// Optional per-proto floor exemption (issue #67); nil when the
+	// backend does not implement it.
+	b.floorExempter, _ = p3.(FloorExempter)
 }
 
 // SetLogger 注入升层日志接口(测试可捕获;门面层装 stdLogger 默认实现)。
@@ -267,7 +295,7 @@ func (b *Bridge) OnBackEdge(proto *bytecode.Proto, pc int32, onMain bool) {
 		pd.recheckedAtEntry = 0
 	}
 	if pd.BackEdge[pc] >= HotBackEdgeThreshold || b.forceAll {
-		if !b.forceAll && len(proto.Code) < b.effectiveMinPromotableLen() {
+		if !b.forceAll && b.flooredOut(proto, pd) {
 			return // short proto:dispatch 反噬 > 解释器收益,跳过升层(issue #21)
 		}
 		b.considerPromotion(proto, pd, onMain)
@@ -291,11 +319,34 @@ func (b *Bridge) OnEnter(proto *bytecode.Proto, onMain bool) {
 	}
 	pd.EntryCount++
 	if pd.EntryCount >= HotEntryThreshold || b.forceAll {
-		if !b.forceAll && len(proto.Code) < b.effectiveMinPromotableLen() {
+		if !b.forceAll && b.flooredOut(proto, pd) {
 			return // short proto:dispatch 反噬 > 解释器收益,跳过升层(issue #21)
 		}
 		b.considerPromotion(proto, pd, onMain)
 	}
+}
+
+// flooredOut reports whether the short-proto floor blocks this proto's
+// promotion (issue #21), after consulting the backend's optional
+// per-proto exemption (issue #67). Called on the auto-mode promotion
+// path only, and only past the heat threshold — the exemption verdict
+// is computed once there (warm ICs) and cached in pd.floorExempt, so
+// steady-state calls stay a length compare plus a byte load.
+func (b *Bridge) flooredOut(proto *bytecode.Proto, pd *ProfileData) bool {
+	if len(proto.Code) >= b.effectiveMinPromotableLen() {
+		return false
+	}
+	if b.floorExempter == nil {
+		return true
+	}
+	if pd.floorExempt == floorExemptUnasked {
+		if b.floorExempter.ExemptFromFloor(proto) {
+			pd.floorExempt = floorExemptYes
+		} else {
+			pd.floorExempt = floorExemptNo
+		}
+	}
+	return pd.floorExempt == floorExemptNo
 }
 
 // considerPromotion 升层决策入口(04 §3)。

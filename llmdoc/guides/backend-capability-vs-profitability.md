@@ -14,6 +14,7 @@ bridge 侧 `considerPromotion` 依次咨询三类 per-backend 可选接口，每
 | **能力（capability）** | `SupportsAllOpcodes(proto)` | 「这个 proto 里的 op 集，我这后端能不能编？」——static op set / analyzeShape 拒绝面 | 编错，永远拒 | **不绕**（差分测试对能力层拒收透明） |
 | **收益（profitability）** | `WorthPromoting(proto)` | 「编了它，运行期净赚不赚？」——CALL 密度 / helper-bound 密度 / IC shape 等 shape 判据 | 编了净亏，不该编 | **绕过**（差分测试覆盖不因收益判断缩水） |
 | **尺寸地板** | `MinPromotableLener` | 「proto 太短，固定 Run 成本摊薄不回来」——proto 长度 | 摊薄不回，不该编 | **绕过**（同收益类） |
+| **地板豁免** | `FloorExempter` | 「这个 proto 虽短，但热路径派发通道不付固定 Run 成本」——per-proto 通道判据（P4：seg2seg-eligible） | 反向豁免：豁免则地板不拦 | **不适用**（forceAll 本就绕地板） |
 
 三层职责不重叠，接口签名同结构（都接 proto 或类似元数据、返 bool），可独立实现。收益/尺寸类拒绝 → 进入 `TierStuck` 吸收态（静态判断，重复问答案不会改变，进 Stuck 后不再重问）。
 
@@ -41,7 +42,8 @@ bridge 侧 `considerPromotion` 依次咨询三类 per-backend 可选接口，每
 
 - 「编错」（正确性问题） → 进 `SupportsAllOpcodes` / `analyzeShape` 拒绝面（能力层，forceAll 也不能绕）；
 - 「编了净亏」（性能问题） → 进 `WorthPromoting` hook（收益层，仅 auto 生效）；
-- 「proto 太短单次 Run 成本摊薄不回」 → 进 `MinPromotableLener` 覆盖（尺寸地板，收益层的特化）。
+- 「proto 太短单次 Run 成本摊薄不回」 → 进 `MinPromotableLener` 覆盖（尺寸地板，收益层的特化）；
+- 「proto 虽短但热路径派发不付固定 Run 成本」（如 P4 seg2seg 被调方走段内派发） → 进 `FloorExempter` 豁免（issue #67，地板的 per-proto 反向门；裁决缓存在 `ProfileData.floorExempt`，只在越热度阈值后咨询一次）。
 
 **收益阈值校准**：白盒 op 构成统计先行 + 实测迭代边界样本。参见 [[2026-07-03-issue45-issue39-round]] 教训 5：`WorthPromoting` 密度阈值从 5 迭代到 7 的三步——
 
