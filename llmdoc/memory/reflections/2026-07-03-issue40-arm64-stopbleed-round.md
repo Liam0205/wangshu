@@ -42,7 +42,7 @@ retry window(前轮 `fd055e9` 引入)让被拒收的 proto 停留在 TierInterp 
 
 ### 4. 树遍历器的递归 guard 必须沿递归链(动态范围)传递,不能绑在 walker 实例上
 
-`make all` 的 fuzz-p4 在 30s 内(`FuzzP4ForceAllPromote`)抓到 fatal stack overflow,种子 `176669ef9b6894ec`(`local function A()return function()A()end en(` 编译错误变体);120s 复跑抓到最小形态 `648e96a2d9661b88`(`local function A()return function()A()end end`)。在 master 上直接复现确认是**既有 bug**(非本轮引入)。崩溃链:`visitCallExpr` known-local 展开 A(`inlinedKnownCalls` 标记消耗一次展开预算)→ walk A body → 遇到 FuncExpr 字面量 → `walkFuncExpr` 建一个 fresh sub-visitor,继承 localFuncs/safeAliases,**但不继承递归 guard** → sub-visitor 里再遇到 A() → guard 是空的(sub-visitor 视角里 A 一次都没被展开过)→ 再次展开 → 两个展开点交替直到 Go 1GB 栈上限 fatal(编译期不可 recover)。影响所有 `wangshu_profile` build(P3 也中招,因为纯粹是 AST 分析,与 arch 无关)。
+`make all` 的 fuzz-p4 在 30s 内(`FuzzP4ForceAllPromote`)抓到 fatal stack overflow,种子 `176669ef9b6894ec`(`local function A()return function()A()end en(` 编译错误变体);120s 复跑抓到最小形式 `648e96a2d9661b88`(`local function A()return function()A()end end`)。在 master 上直接复现确认是**既有 bug**(非本轮引入)。崩溃链:`visitCallExpr` known-local 展开 A(`inlinedKnownCalls` 标记消耗一次展开预算)→ walk A body → 遇到 FuncExpr 字面量 → `walkFuncExpr` 建一个 fresh sub-visitor,继承 localFuncs/safeAliases,**但不继承递归 guard** → sub-visitor 里再遇到 A() → guard 是空的(sub-visitor 视角里 A 一次都没被展开过)→ 再次展开 → 两个展开点交替直到 Go 1GB 栈上限 fatal(编译期不可 recover)。影响所有 `wangshu_profile` build(P3 也中招,因为纯粹是 AST 分析,与 arch 无关)。
 
 修法:`walkFuncExpr` 把祖先 guard 表**拷贝**(非共享引用)进 sub-visitor——sub-visitor 里的展开消耗的是它自己的预算,不消耗父 visitor 的单次展开预算(父信号是 load-bearing,必须保留;sub 信号除 maxClosureDepth 外可以丢弃)。位置 `internal/bridge/analyzer.go` `walkFuncExpr`。回归测试 `TestAnalyze_F2_RecursiveClosureLiteral_NoStackOverflow`(`internal/bridge/analyzer_test.go`)——用 `git show master:internal/bridge/analyzer.go` 换回旧版验证测试在修复前会直接崩进程(不是 assert 失败)。两个 crasher 种子入 corpus `testdata/fuzz/FuzzP4ForceAllPromote/`。
 
@@ -56,12 +56,12 @@ retry window(前轮 `fd055e9` 引入)让被拒收的 proto 停留在 TierInterp 
 
 **Why**:fuzz 的随机数种子、goroutine 调度时序、内存布局(ASLR)等都受底层硬件/OS 影响,同一份语料在不同机器上探索路径的顺序不同,首次命中某条深路径的时间会有很大方差。这不是「M5 Pro 比 amd64 CI 机器强」,是「多一台不同的机器就多一次独立的随机探索」。
 
-**How to apply**:任何时候接入新硬件/新架构(本例:阶段 1 止血就是为了搭 arm64 基线),环境装好后,在正式工作开始前先花几十秒到几分钟跑一轮既有 fuzz target 的 smoke test,不要等到专门的 fuzz 里程碑才想起来跑。与 [[pr28-f3-3c-tri-platform-matrix-ci]] 的「CI runner 形态盲」邻接——两者都指向"跨硬件/跨平台的物理执行差异是一种真实的覆盖度维度,不能靠单一环境的重复跑弥补"。
+**How to apply**:任何时候接入新硬件/新架构(本例:阶段 1 止血就是为了搭 arm64 基线),环境装好后,在正式工作开始前先花几十秒到几分钟跑一轮既有 fuzz target 的 smoke test,不要等到专门的 fuzz 里程碑才想起来跑。与 [[pr28-f3-3c-tri-platform-matrix-ci]] 的「CI runner 形式盲」邻接——两者都指向"跨硬件/跨平台的物理执行差异是一种真实的覆盖度维度,不能靠单一环境的重复跑弥补"。
 
 ## 其它(较小)
 
-- fuzz 失败形态分诊:`context deadline exceeded` + 无 failing input 文件 = fuzz 引擎 30s 窗口收尾时的 flake(单独复跑即过);`Failing input written to testdata/...` + `fuzzing process hung or terminated unexpectedly` = 真 crasher。本轮两种都遇到,前者 FuzzLexer/FuzzCompileRun 各一次,判断标准是看有没有 failing-input 文件被写出来。
-- macOS 本机跑 difftest 的 oracle 供给:`check-oracle.sh` 只提示 apt 安装(Linux 向)。macOS 下从源码 `make macosx` 编 lua-5.1.5 + PATH override 即可,CI 的 macos job 里已有同款做法,但本机开发流程没有文档记录这一步——是一个 doc-gap 候选(不是本轮教训主线,记在这里供后续 recorder 判断是否要补进某篇 guide 或 README)。
+- fuzz 失败形式分诊:`context deadline exceeded` + 无 failing input 文件 = fuzz 引擎 30s 窗口收尾时的 flake(单独复跑即过);`Failing input written to testdata/...` + `fuzzing process hung or terminated unexpectedly` = 真 crasher。本轮两种都遇到,前者 FuzzLexer/FuzzCompileRun 各一次,判断标准是看有没有 failing-input 文件被写出来。
+- macOS 本机跑 difftest 的 oracle 供给:`check-oracle.sh` 只提示 apt 安装(Linux 向)。macOS 下从源码 `make macosx` 编 lua-5.1.5 + PATH override 即可,CI 的 macos job 里已有一样的做法,但本机开发流程没有文档记录这一步——是一个 doc-gap 候选(不是本轮教训主线,记在这里供后续 recorder 判断是否要补进某篇 guide 或 README)。
 - 用户过程反馈(已入用户级 memory,不重复入 llmdoc):提交更频繁 + 单域;开 PR 后立即 `make check-pr-ci`。
 
 ## 验证
@@ -80,7 +80,7 @@ retry window(前轮 `fd055e9` 引入)让被拒收的 proto 停留在 TierInterp 
 - **教训 2(force/auto 不对称是免费根因二分器)**:首次样本,暂留观察。若后续再出现「模式开关不对称用来定位根因」的样本,可与教训 1 一并考虑升格。
 - **教训 3(停留重试状态 × 高频触发点)**:首次样本,暂留观察。
 - **教训 4(树遍历递归 guard 须沿递归链传递)**:首次样本,暂留观察。
-- **教训 5(fuzz 机器/架构多样性是覆盖度维度)**:首次样本,暂留观察,与 [[pr28-f3-3c-tri-platform-matrix-ci]] 邻接但视角不同(那篇讲 CI runner 形态盲,本条讲 fuzz 探索路径的机器依赖性)。
+- **教训 5(fuzz 机器/架构多样性是覆盖度维度)**:首次样本,暂留观察,与 [[pr28-f3-3c-tri-platform-matrix-ci]] 邻接但视角不同(那篇讲 CI runner 形式盲,本条讲 fuzz 探索路径的机器依赖性)。
 - 教训 3 与 [[p4-beat-p3-opset-round]] 教训 3「验收门与 emit 质量对等」同属「机制交互面审计」这一松散家族(都是"两个独立引入的机制,单独看都合理,组合后产生意外的成本/行为"),但结构不同(那条是空间性的判据窄化,本条是时间性的触发频率爆炸),不建议合并,仅在关联节提及。
 
 ## 触发场景
@@ -93,4 +93,4 @@ retry window(前轮 `fd055e9` 引入)让被拒收的 proto 停留在 TierInterp 
 
 ## 关联
 
-[[p4-beat-p3-opset-round]](直接前序:`fd055e9` 引入 retry window;`45b8b53` 引入 alias 追踪;本轮两个真 bug 都在那轮埋下)· [[prove-the-path-under-test]](教训 1 的诊断侧对偶候选)· [[perf-optimization-workflow]] §1「profile 先行」/ §5「跨机器基线对照」· [[design-claims-vs-codebase-physics]] §5「时间维度」(issue 描述失实与时间维度家族邻接,但本轮教训 1 是「归因错误路径」而非「快照过期」,判断上不属于 §5 现有四种形态,不建议塞进去)· [[pr28-f3-3c-tri-platform-matrix-ci]](跨平台/硬件多样性,教训 5 邻接)· issue #40 评论 https://github.com/Liam0205/wangshu/issues/40#issuecomment-4872673328 · issue #37 评论 https://github.com/Liam0205/wangshu/issues/37#issuecomment-4872674196 · PR #44 / PR #47 · master commits 483deaf / f921626 / 7168648 / bf65839 · `.llmdoc-tmp/2026-07-02-arm64-exit-reason-port-survey.md`(临时调查报告,移植轮开工时验证后可复用)
+[[p4-beat-p3-opset-round]](直接前序:`fd055e9` 引入 retry window;`45b8b53` 引入 alias 追踪;本轮两个真 bug 都在那轮埋下)· [[prove-the-path-under-test]](教训 1 的诊断侧对偶候选)· [[perf-optimization-workflow]] §1「profile 先行」/ §5「跨机器基线对照」· [[design-claims-vs-codebase-physics]] §5「时间维度」(issue 描述失实与时间维度家族邻接,但本轮教训 1 是「归因错误路径」而非「快照过期」,判断上不属于 §5 现有四种形式,不建议塞进去)· [[pr28-f3-3c-tri-platform-matrix-ci]](跨平台/硬件多样性,教训 5 邻接)· issue #40 评论 https://github.com/Liam0205/wangshu/issues/40#issuecomment-4872673328 · issue #37 评论 https://github.com/Liam0205/wangshu/issues/37#issuecomment-4872674196 · PR #44 / PR #47 · master commits 483deaf / f921626 / 7168648 / bf65839 · `.llmdoc-tmp/2026-07-02-arm64-exit-reason-port-survey.md`(临时调查报告,移植轮开工时验证后可复用)

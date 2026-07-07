@@ -1,11 +1,11 @@
 # 测试加固轮(fuzz/差分体系四向扩展)
 
 - **日期**:2026-06-12
-- **任务类型**:测试基建加固(go-fuzz 目标/生成器文法两期/GC 压力 fuzz/错误消息对拍/nightly workflow)
+- **任务类型**:测试基建加固(go-fuzz 目标/生成器文法两期/GC 压力 fuzz/错误消息差分测试/nightly workflow)
 
 ## 任务
 
-继 P1 收尾轮后,把测试体系按四个扩展范围全部落地。提交序列:
+继 P1 收尾轮后,把测试体系按四个扩展范围全部完成。提交序列:
 `bf6164e`(4 个 Go fuzz 目标 + parser 深度护栏)→ `2d3940f`(生成器 10 类语句、500 种子)→
 `ae448c1`(生成器二期 15 类:泛型 for/元表/协程/pattern)→ `5915f39`(GC 压力 fuzz 双模式)→
 `282edb0`(错误消息 byte-equal 26 用例 + getobjname 简化版 + ParseLuaNumber 唯一入口
@@ -61,7 +61,7 @@
    invalid capture(对齐 5.1);crash 输入 `()%1` 入库 testdata 防回归。
 4. **parser 深嵌套打爆 Go 栈(go-fuzz 捕获)**:2M 层括号直接 fatal——Go 栈溢出
    不是 panic、recover 接不住,fuzz 一撞整进程死。修复 `maxParseDepth=200`
-   (parseExpr/parseBlock 进出计数,超限报 5.1 同款 "chunk has too many syntax levels")。
+   (parseExpr/parseBlock 进出计数,超限报 5.1 一样的 "chunk has too many syntax levels")。
    教训:**递归下降 parser 在 Go 里必须有显式深度护栏**,这不是优化是生存条件。
 5. **clearWeakTables 清死条目截断冲突链(GC 压力捕获)**:清 key/val 时顺手把
    next 重置 -1,链上后续**存活**条目从此查不到(物理还在、逻辑丢失,「强引用的值

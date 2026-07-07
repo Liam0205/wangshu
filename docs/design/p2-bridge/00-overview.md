@@ -1,6 +1,6 @@
 # P2 总览:bridge 分层桥(基建)——文档地图 / 实现里程碑 / 验收 / 人月分解
 
-> 状态:**设计阶段,详细设计已齐备**。本文是 P2 文档集(00-06)的导航与施工计划:每篇文档的定位、组件依赖、构建顺序、里程碑验收门槛、人月分解、跨文档定稿决策速查、与 P1 的桥接(P1 已落地的前瞻义务对账)。
+> 状态:**设计阶段,详细设计已齐备**。本文是 P2 文档集(00-06)的导航与施工计划:每篇文档的定位、组件依赖、构建顺序、里程碑验收门槛、人月分解、跨文档定稿决策速查、与 P1 的桥接(P1 已完成的前瞻义务对账)。
 > 上游:`docs/design/roadmap.md` (§4 P2 定义、§5 五条原则)、[architecture](../architecture.md)(§3 依赖图、bridge 是基建非执行层)、[evolution-roadmap](../../llmdoc/architecture/evolution-roadmap.md)(P2 无独立量化验收、tier 映射 P2 不分配月相)。
 > P1 依赖面:[02 §4 FORLOOP/JMP 回边](../p1-interpreter/02-bytecode-isa.md)、[02 §7 IC slot](../p1-interpreter/02-bytecode-isa.md)、[02 §4 编号 38..63 预留](../p1-interpreter/02-bytecode-isa.md)、[05 §6 IC 执行 / §6.4 算术 IC「P1 写不读纯供料」](../p1-interpreter/05-interpreter-loop.md)、[05 §1 CallInfo/Frame](../p1-interpreter/05-interpreter-loop.md)、[04 AST 利于可编译性分析](../p1-interpreter/04-frontend-parser-codegen.md)、[11 §1.3 Compile 可编译性探测占位](../p1-interpreter/11-embedding-arena-abi.md)。
 >
@@ -13,14 +13,14 @@
 | 文档 | 定位 | 单一事实源(其它文档以它为准) |
 |---|---|---|
 | [01-profiling](./01-profiling.md) | 计数 | 回边/入口采样点选择论证、`ProfileData` 字段级 spec、阈值与编译预算 pacing、profile 路线 A/B 抉择(旁路计数定稿) |
-| [02-ic-feedback](./02-ic-feedback.md) | 反馈 | P1 IC 写入复用契约、算术 IC 双计数挪用规约(P1 IC 字段共享方案)、`TypeFeedback` shape 与 `confidence` 计算、megamorphic 标记的 P2 落地 |
-| [03-compilability-analysis](./03-compilability-analysis.md) | 安全闸门 | 不升层形状清单 F1-F7 完整定义、AST visitor 设计与 04 AST 保留协议、yield 保守近似算法、`Compilability` 缓存生命期、F7 (P3 后端能力)查询协议 |
+| [02-ic-feedback](./02-ic-feedback.md) | 反馈 | P1 IC 写入复用契约、算术 IC 双计数挪用规约(P1 IC 字段共享方案)、`TypeFeedback` shape 与 `confidence` 计算、megamorphic 标记的 P2 完成 |
+| [03-compilability-analysis](./03-compilability-analysis.md) | 安全检查 | 不升层形状清单 F1-F7 完整定义、AST visitor 设计与 04 AST 保留协议、yield 保守近似算法、`Compilability` 缓存生命期、F7 (P3 后端能力)查询协议 |
 | [04-try-compile-fallback](./04-try-compile-fallback.md) | 决策 | TierState 状态机(单向 + 吸收态)、升层决策入口 `considerPromotion`、TierStuck 不重试纪律、零 deopt 论证、fallback ≠ deopt 严格区分、升层日志格式(`promoted to gibbous`) |
 | [05-p3-p4-interface](./05-p3-p4-interface.md) | 接口 | `P3Compiler`/`P4Feedback` 接口定义、共享前端契约(P3 `feedback` 可选/P4 `feedback` 核心)、跨阶段消费协议 |
-| [06-testing-strategy](./06-testing-strategy.md) | 验收 | P2 验收口径总表(决策正确,非性能)、可编译性误判注入测试、升层日志断言、编译失败 fallback 对拍、跨阶段差分(crescent-only vs P2-on-crescent 同结果) |
-| [implementation-progress](./implementation-progress.md) | 进度 | M0 起步前预设占位(P1 已落地的前瞻义务对账见 §6;P2 实现现状对账模板) |
+| [06-testing-strategy](./06-testing-strategy.md) | 验收 | P2 验收口径总表(决策正确,非性能)、可编译性误判注入测试、升层日志断言、编译失败 fallback 差分测试、跨阶段差分(crescent-only vs P2-on-crescent 同结果) |
+| [implementation-progress](./implementation-progress.md) | 进度 | M0 起步前预设占位(P1 已完成的前瞻义务对账见 §6;P2 实现现状对账模板) |
 
-阅读顺序建议:实现者先读 00→04(状态机)→01(计数,易着手)→03(安全闸门,关乎正确性)→02(反馈,有 P1 字段挪用回填)→05(接口,与 P3/P4 对接)→06(验收口径,每步收口查)。
+阅读顺序建议:实现者先读 00→04(状态机)→01(计数,易着手)→03(安全检查,关乎正确性)→02(反馈,有 P1 字段挪用回填)→05(接口,与 P3/P4 对接)→06(验收口径,每步收口查)。
 
 ---
 
@@ -44,11 +44,11 @@
 ## 2. 总数据流(承 P1,产料给 P3/P4)
 
 ```
-                P1 解释器执行期(crescent,已落地)
+                P1 解释器执行期(crescent,已完成)
                  │            │              │
        FORLOOP 回边 /      IC slot 命中      Compile 时 AST
        函数入口采样         /失效写入         (04 产出)
-       (02 §4 已落地)      (05 §6.4 已落地    (04 §1 已落地)
+       (02 §4 已完成)      (05 §6.4 已完成    (04 §1 已完成)
                           含算术 IC 双计数)
                  │            │              │
                  ▼            ▼              ▼
@@ -81,12 +81,12 @@
 
 设计定稿后新增的跨组件**关键耦合点**(实现时最易出错处):
 
-1. **算术 IC 双计数挪用**([02-ic-feedback](./02-ic-feedback.md) §3 / 02 §7 / 05 §6.4):算术点的 ICSlot 闲置字段(`shape`/`index`/`tableRef`,算术不存表)挪用为 `numHits`/`metaHits` —— **P1 已落地此挪用**(M10 IC 接入时同批写入,P1 写不读),P2 直接读。**回填请求已兑现** ✅。
+1. **算术 IC 双计数挪用**([02-ic-feedback](./02-ic-feedback.md) §3 / 02 §7 / 05 §6.4):算术点的 ICSlot 闲置字段(`shape`/`index`/`tableRef`,算术不存表)挪用为 `numHits`/`metaHits` —— **P1 已完成此挪用**(M10 IC 接入时同批写入,P1 写不读),P2 直接读。**回填请求已兑现** ✅。
 2. **回边采样点的 profile 启用开关**([01-profiling](./01-profiling.md) §2 / 05 §10.1 FORLOOP):`vm.profileEnabled` 编译期常量(或 build tag),P1-only 部署时关掉零开销。这是「每阶段独立交付」(原则 3)在 P1↔P2 边界的物理兑现 —— **P1 当前实现是「关」**,P2 启动时翻成「开」并实现 `bridge.onBackEdge`/`onEnter` 回调。
 3. **`Proto.compilable` 字段的初值约定**([03-compilability-analysis](./03-compilability-analysis.md) §4 / 11 §1.3):P1 的 `Compile` 把所有 Proto 标 `CompUnknown`;P2 上线后 `Compile` 时同步跑 `analyzeProto` 写真值进 `Proto` 旁 `ProfileData` —— **P1 公共 API 不变**,wangshu.go 门面零修改(原则 3「接口稳定」)。
 4. **AST 保留协议**([03-compilability-analysis](./03-compilability-analysis.md) §2 / 04 §1):04 已标「P1 顺手产出 P2 复用」,但 P1 当前实现是 codegen 后 AST 被 GC —— P2 启动时定夺**「Compile 时同步分析、结果缓存,AST 用完即弃」**而非保留 AST。这是 P2 的最早决策点(影响 04 是否需要给 P2 加 AST 留存接口)。
-5. **CallInfo bit50 gibbous 位**(05 §1.2 已留):P1 恒 0,P2 在 [04-try-compile-fallback](./04-try-compile-fallback.md) `installGibbous` 时写 1,标识跨层帧。**P1 已落地预留位**,P2 写入语义是 P3 trampoline 的依赖(P3 §5)。
-6. **多 State 共享 Program 的 profile 归属**(11 §1.4 / §8):一个 `Program` 可被多个 `State` 并发 Call(11 §8 已落地 `-race` 通过)。Profile 计数挂哪是 P2 的核心并发缺口——倾向**挂 State 私有的 `profileTable`** 避免并发写 Proto 旁计数;但这把累积速度均分到各 State,需实测。详见 [01-profiling](./01-profiling.md) §6。
+5. **CallInfo bit50 gibbous 位**(05 §1.2 已留):P1 恒 0,P2 在 [04-try-compile-fallback](./04-try-compile-fallback.md) `installGibbous` 时写 1,标识跨层帧。**P1 已完成预留位**,P2 写入语义是 P3 trampoline 的依赖(P3 §5)。
+6. **多 State 共享 Program 的 profile 归属**(11 §1.4 / §8):一个 `Program` 可被多个 `State` 并发 Call(11 §8 已完成 `-race` 通过)。Profile 计数挂哪是 P2 的核心并发缺口——倾向**挂 State 私有的 `profileTable`** 避免并发写 Proto 旁计数;但这把累积速度均分到各 State,需实测。详见 [01-profiling](./01-profiling.md) §6。
 
 ---
 
@@ -105,7 +105,7 @@
 | PB6 | P3/P4 接口实现 + mock P3 编译器(给 PB7 用) | [05-p3-p4-interface](./05-p3-p4-interface.md) §1-§3 | mock P3 接受 Proto+feedback 返回 dummy GibbousCode;接口稳定性单测 |
 | PB7 | 端到端验收 + 测试套 | [06-testing-strategy](./06-testing-strategy.md) §2-§5 | **P2 总验收**:(a) 可编译性零误判 fuzz 通过 (b) crescent-only 与 P2-on-crescent 跑 realworld 五脚本结果 byte-equal (c) 升层日志匹配预期 (d) 多 State 并发 profileTable `-race` 通过 |
 
-> **PB0 启动条件**:P1 全卷已交付(M0-M14 完成);P2 前瞻义务对账见 §6,关键三项(IC 双计数挪用 / FORLOOP 采样点 / `vm.profileEnabled` 开关)在 P1 已落地。
+> **PB0 启动条件**:P1 全卷已交付(M0-M14 完成);P2 前瞻义务对账见 §6,关键三项(IC 双计数挪用 / FORLOOP 采样点 / `vm.profileEnabled` 开关)在 P1 已完成。
 >
 > **mock P3 在 PB6 引入**:让 PB7 端到端验收不依赖 P3 实现完成。真 P3 上线时换掉 mock,P2 接口零修改(`P3Compiler` 接口稳定)。
 
@@ -151,22 +151,22 @@
 
 ---
 
-## 7. P1 已落地的前瞻义务对账(P2 启动前置)
+## 7. P1 已完成的前瞻义务对账(P2 启动前置)
 
-P1 全卷已交付。P2 依赖的「P1 期间留口」全部已落地,P2 启动时无需 P1 端再开发:
+P1 全卷已交付。P2 依赖的「P1 期间留口」全部已完成,P2 启动时无需 P1 端再开发:
 
-| 前瞻义务 | P1 落地状态 | 出处 | P2 消费方式 |
+| 前瞻义务 | P1 完成状态 | 出处 | P2 消费方式 |
 |---|---|---|---|
-| 算术 IC 双计数(numHits/metaHits 挪用 shape/index/tableRef) | ✅ 已落地(M10 IC 接入时实装,P1 写不读) | 02 §7 / 05 §6.4 / [implementation-progress](../p1-interpreter/implementation-progress.md) | [02-ic-feedback](./02-ic-feedback.md) §3 直接读 |
+| 算术 IC 双计数(numHits/metaHits 挪用 shape/index/tableRef) | ✅ 已完成(M10 IC 接入时实现,P1 写不读) | 02 §7 / 05 §6.4 / [implementation-progress](../p1-interpreter/implementation-progress.md) | [02-ic-feedback](./02-ic-feedback.md) §3 直接读 |
 | FORLOOP / 循环体 JMP 回跳的回边采样点 | ✅ 字节码层已暴露;P1 解释器执行侧已可挂钩(`vm.profileEnabled` 当前 false) | 02 §4 / 05 §10.1 | [01-profiling](./01-profiling.md) §2 翻开关 + 实现 onBackEdge |
-| `enterLuaFrame` 函数入口采样钩 | ✅ 已落地;P1 内未实际计数(占位) | 05 §1.4 / §7.1 | [01-profiling](./01-profiling.md) §2 实现 onEnter |
+| `enterLuaFrame` 函数入口采样钩 | ✅ 已完成;P1 内未实际计数(占位) | 05 §1.4 / §7.1 | [01-profiling](./01-profiling.md) §2 实现 onEnter |
 | opcode 编号 38..63 预留 | ✅ 全空(02 §4 编号表 0..37 用满,38..63 不分配) | 02 §4 | P2 不占用(路线 B);留 P3 视需要用 |
 | AST 是否保留 | P1 现状是 codegen 后丢弃;**待 P2 启动时定夺**「Compile 时同步分析+缓存,AST 用完即弃」(倾向方案,无需 04 改造) | 04 §1 | [03-compilability-analysis](./03-compilability-analysis.md) §2 主决策点 |
-| `Compile` 可编译性探测占位 | ✅ 已落地(恒「可解释」,所有 Proto tier-0,11 §1.3) | 11 §1.3 | [03-compilability-analysis](./03-compilability-analysis.md) §5 填实 |
-| arena backing 注入点 | ✅ 已落地(arena.Options.NewBacking,P3 用,P2 不直接消费) | 06 §1.1 / [implementation-progress](../p1-interpreter/implementation-progress.md) | P2 不依赖(P3 才用) |
-| CallInfo bit50 gibbous 位 | ✅ 已落地(P1 恒 0) | 05 §1.2 | [04-try-compile-fallback](./04-try-compile-fallback.md) installGibbous 时写 1 |
+| `Compile` 可编译性探测占位 | ✅ 已完成(恒「可解释」,所有 Proto tier-0,11 §1.3) | 11 §1.3 | [03-compilability-analysis](./03-compilability-analysis.md) §5 填实 |
+| arena backing 注入点 | ✅ 已完成(arena.Options.NewBacking,P3 用,P2 不直接消费) | 06 §1.1 / [implementation-progress](../p1-interpreter/implementation-progress.md) | P2 不依赖(P3 才用) |
+| CallInfo bit50 gibbous 位 | ✅ 已完成(P1 恒 0) | 05 §1.2 | [04-try-compile-fallback](./04-try-compile-fallback.md) installGibbous 时写 1 |
 
-**结论**:P2 启动是纯增量,P1 全部前瞻义务已交付,P2 PB0 可直接开工。**AST 保留协议已定稿**([03-compilability-analysis §2.4](./03-compilability-analysis.md)):**方案 ① Compile 时同步分析、缓存结果、AST 用完即弃**(三选一中选 ①——接口稳定 / AST 短命现状 / 运行期零开销 / 错误一致性)。落地协议:`compile.Gen` 在产出 `*bytecode.Proto` 后调一次 `bridge.AnalyzeProto(funcBody, proto)` 把可编译性结果写进 `proto.ProfileData.Compilable`;`!profile` build tag 下跳过该调用,所有 Proto 留 `CompUnknown`(零值,与 P1-only 行为完全一致)。**P1 公共 API 不变**——这是「填占位不改 API」原则 3 的物理兑现。
+**结论**:P2 启动是纯增量,P1 全部前瞻义务已交付,P2 PB0 可直接开工。**AST 保留协议已定稿**([03-compilability-analysis §2.4](./03-compilability-analysis.md)):**方案 ① Compile 时同步分析、缓存结果、AST 用完即弃**(三选一中选 ①——接口稳定 / AST 短命现状 / 运行期零开销 / 错误一致性)。完成协议:`compile.Gen` 在产出 `*bytecode.Proto` 后调一次 `bridge.AnalyzeProto(funcBody, proto)` 把可编译性结果写进 `proto.ProfileData.Compilable`;`!profile` build tag 下跳过该调用,所有 Proto 留 `CompUnknown`(零值,与 P1-only 行为完全一致)。**P1 公共 API 不变**——这是「填占位不改 API」原则 3 的物理兑现。
 
 ---
 
@@ -194,7 +194,7 @@ P2 验收三条主轴:
 ## 9. 风险与未决缺口汇总(详见各文档缺口节与 [doc-gaps](../../../llmdoc/memory/doc-gaps.md))
 
 - **可编译性误判风险**:F2(协程 yield)的精确分析 P2 初版用保守近似,可能漏判一批可编译函数(损失加速,不损失正确性)。详见 [03-compilability-analysis](./03-compilability-analysis.md) §3 F2 的 §9 缺口;若实测发现漏判面太大(真实负载里大量函数被保守判不可编译),再开「精确 yield 调用图分析」工作。
-- **多 State profile 归属风险**:Profile 挂 State 私有 vs Proto 共享是核心并发决策。挂 State 私有避免 `-race`,但累积速度均分;挂 Proto 共享累积更快但需 atomic 计数。**当前定稿 (B+C) 嵌套**:(B) 默认运行(profileTable 挂 State 私有)+ (C) 接口预设占位实现(Proto 旁聚合表 nop,详见 [01-profiling §6](./01-profiling.md))。pineapple sync.Pool 形态实测后若发现累积速度均分严重影响热阈值生效,替换 (C) nop 为真聚合,接口无需改动。
+- **多 State profile 归属风险**:Profile 挂 State 私有 vs Proto 共享是核心并发决策。挂 State 私有避免 `-race`,但累积速度均分;挂 Proto 共享累积更快但需 atomic 计数。**当前定稿 (B+C) 嵌套**:(B) 默认运行(profileTable 挂 State 私有)+ (C) 接口预设占位实现(Proto 旁聚合表 nop,详见 [01-profiling §6](./01-profiling.md))。pineapple sync.Pool 形式实测后若发现累积速度均分严重影响热阈值生效,替换 (C) nop 为真聚合,接口无需改动。
 - **AST 保留协议**:已定稿(见 §7 末尾)——方案 ① Compile 时同步分析、缓存结果、AST 用完即弃。详见 [03-compilability-analysis §2.4](./03-compilability-analysis.md)。
 - **阈值数值定标**:`HotBackEdgeThreshold=1000` / `HotEntryThreshold=200` 是建议值,实现后用 pineapple 真实负载校准(详见 [01-profiling](./01-profiling.md) §5);**阈值不影响正确性**(只影响何时编译),与原则 3 一致(晚编译只是少赚不出错)。
 - **编译预算 pacing**:防编译风暴(一次性大量函数越阈值)。P2 初版不做(STW 式「越阈值即尝试」);若实测有 cold-start 长尾再加。详见 [01-profiling](./01-profiling.md) §5。
@@ -207,7 +207,7 @@ P2 验收三条主轴:
 相关:[architecture](../architecture.md)(包布局:bridge 是基建非执行层) ·
 [01-profiling](./01-profiling.md)(回边采样 + ProfileData) ·
 [02-ic-feedback](./02-ic-feedback.md)(IC 双计数 + TypeFeedback) ·
-[03-compilability-analysis](./03-compilability-analysis.md)(F1-F7 安全闸门) ·
+[03-compilability-analysis](./03-compilability-analysis.md)(F1-F7 安全检查) ·
 [04-try-compile-fallback](./04-try-compile-fallback.md)(状态机 + 零 deopt) ·
 [05-p3-p4-interface](./05-p3-p4-interface.md)(P3/P4 共享前端) ·
 [06-testing-strategy](./06-testing-strategy.md)(决策正确验收) ·
@@ -215,7 +215,7 @@ P2 验收三条主轴:
 [../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md)(IC 执行 §6 / 算术 IC 写不读 §6.4 / CallInfo §1) ·
 [../p1-interpreter/04-frontend-parser-codegen](../p1-interpreter/04-frontend-parser-codegen.md)(AST 利于可编译性) ·
 [../p1-interpreter/11-embedding-arena-abi](../p1-interpreter/11-embedding-arena-abi.md)(Compile 占位 §1.3) ·
-[../p1-interpreter/implementation-progress](../p1-interpreter/implementation-progress.md)(P1 已落地的前瞻义务对账) ·
+[../p1-interpreter/implementation-progress](../p1-interpreter/implementation-progress.md)(P1 已完成的前瞻义务对账) ·
 [../p3-wasm-tier/00-overview](../p3-wasm-tier/00-overview.md)(P2 喂 P3:编译哪些 + feedback) ·
 [../p4-method-jit](../p4-method-jit/00-overview.md)(P2 喂 P4:类型投机供料) ·
 [../roadmap.md](../roadmap.md) (§4 P2 定义 / §5 五条原则) ·

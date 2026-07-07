@@ -87,7 +87,7 @@ wangshu/
 设计要点:
 
 - **公共 API 只在 root package**(`wangshu`),其余全部 `internal/`,杜绝外部依赖实现细节、为重构与升层留自由度。
-- **执行层包名用月相**(`crescent`/`gibbous`/`fullmoon`),非执行层基础设施用功能名——这是 roadmap §4「代码与文档统一使用月相命名」的落地;诊断日志因此能输出 `function promoted to gibbous` 这类自释信息。
+- **执行层包名用月相**(`crescent`/`gibbous`/`fullmoon`),非执行层基础设施用功能名——这是 roadmap §4「代码与文档统一使用月相命名」的完成;诊断日志因此能输出 `function promoted to gibbous` 这类自释信息。
 - **跨 tier 共享的基础设施**(`value`/`arena`/`gc`/`object`/`bytecode`/`frontend`)不属于任何单个 tier,保证「编译层是纯增量」——上一个新 tier 只新增 `gibbous/`/`fullmoon/` 下的发射后端,不动共享层(见 [value-representation](../../llmdoc/architecture/value-representation.md))。
 
 ---
@@ -98,7 +98,7 @@ wangshu/
 |---|---|---|---|---|
 | tier-0 | **crescent**(新月) | P1 | `internal/crescent` | **详细设计齐备(00-12 全卷,可实现)** |
 | —(基建) | — | P2 | `internal/bridge` | 详细设计 |
-| tier-1 | **gibbous**(凸月) | P3 | `internal/gibbous/wasm` | 详细设计(开工前置 spike 闸门) |
+| tier-1 | **gibbous**(凸月) | P3 | `internal/gibbous/wasm` | 详细设计(开工前置 spike 检查) |
 | tier-1 | **gibbous**(凸月) | P4 | `internal/gibbous/jit` | 架构决策 |
 | tier-2 | **fullmoon**(满月) | P5 | `internal/fullmoon/trace` | 架构决策 |
 
@@ -156,7 +156,7 @@ P1 内部依赖(箭头 = 依赖方向,A → B 表示 A 依赖 B):
 4. bytecode         opcode 枚举 + 指令编解码 + Proto 序列化
 5. gc               mark-sweep + shadow stack(object 之上)
 6. frontend/lex     lexer + token 单测
-7. frontend/parse   parser + AST 单测(对拍官方 luac AST 形状)
+7. frontend/parse   parser + AST 单测(差分测试官方 luac AST 形状)
 8. frontend/compile codegen + 寄存器分配(产出可被 dump 的 Proto)
 9. crescent         解释器主循环(先跑通无 GC 的算术/循环)
 10. stdlib          base 库 → 逐步补齐 string/table/math/...

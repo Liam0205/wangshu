@@ -1,6 +1,6 @@
-# pineapple_bench:wangshu 作 pineapple 默认 lua backend 时的真实使用形态 benchmark
+# pineapple_bench:wangshu 作 pineapple 默认 lua backend 时的真实使用形式 benchmark
 
-四路对照 wangshu 在 pineapple `transform_by_lua` operator 下的性能,反映**下游真实用法**而不是 wangshu 自家想象的 boundary-dominated 形态。
+四路对照 wangshu 在 pineapple `transform_by_lua` operator 下的性能,反映**下游真实用法**而不是 wangshu 自家想象的 boundary-dominated 形式。
 
 ## 四路
 
@@ -17,7 +17,7 @@
 ./scripts/fetch-pineapple.sh
 ```
 
-`.pineapple/` 在 `.gitignore` 里——不进 wangshu 版本控制。开发者各自 `fetch` 最新 master(也意味着数字随 pineapple 漂——这是有意的「下游真实形态」)。
+`.pineapple/` 在 `.gitignore` 里——不进 wangshu 版本控制。开发者各自 `fetch` 最新 master(也意味着数字随 pineapple 漂——这是有意的「下游真实形式」)。
 
 ## 跑 benchmark
 
@@ -32,7 +32,7 @@ go test -tags "wangshu_p3 wangshu_profile" -bench=. -benchmem -count=3 .
 go test -tags lua_gopher -bench=. -benchmem -count=3 .
 ```
 
-或者用 `Makefile`(本目录;顶层 wangshu Makefile 也有同款入口,见末尾「与顶层 wangshu Makefile 集成」节):
+或者用 `Makefile`(本目录;顶层 wangshu Makefile 也有一样的入口,见末尾「与顶层 wangshu Makefile 集成」节):
 
 ```bash
 make fetch          # = ./scripts/fetch-pineapple.sh
@@ -45,7 +45,7 @@ make bench          # 三 build 全跑
 - **L2 arithmetic 形状**(`function f() return item_price * 0.85 + 10.0 end`):per-item 跨界 + 极轻计算,boundary-dominated。对位 pineapple bench L2 用例
 - **N=1000 items**:足够让 wangshu HotEntryThreshold 触发自然升层(若机制工作)
 - **engine 复用**:每 b.N 内重用 pine.Engine,只测 Execute 这一段
-- **不跑 force-all**:pineapple pool 内部管理 state,公共 API 不暴露;auto-lifting 是 wangshu 在 pineapple 下的真实形态
+- **不跑 force-all**:pineapple pool 内部管理 state,公共 API 不暴露;auto-lifting 是 wangshu 在 pineapple 下的真实形式
 
 ## 跑前自测(prove-the-path-under-test)
 
@@ -54,7 +54,7 @@ wangshu `v0.x.x` 加了 testing-only `State.PromotionCount()` API,见 wangshu re
 - p3 ≈ p1 → 升了但收益 ≈ 采样开销,净零
 - p3 慢于 p1 → 采样钩白吃开销(可能升了但 wasm 收益不够,可能根本没升)
 
-实测此次形态下 p3 比 p1 慢 ~3-4% —— 印证 boundary-dominated 嵌入下 p3 净开销(wangshu llmdoc `must/design-premises` 前提一/前提二的负面侧实证)。
+实测此次形式下 p3 比 p1 慢 ~3-4% —— 印证 boundary-dominated 嵌入下 p3 净开销(wangshu llmdoc `must/design-premises` 前提一/前提二的负面侧实证)。
 
 ## 关于 .pineapple/ 不进版本控制的风险
 
@@ -69,4 +69,4 @@ wangshu `v0.x.x` 加了 testing-only `State.PromotionCount()` API,见 wangshu re
 | `make bench-pineapple-fetch` | `make fetch` |
 | `make bench-pineapple` | `make bench` |
 
-两条同款行为(顶层经 `$(MAKE) -C benchmarks/pineapple ...` 转发)。
+两条一样的行为(顶层经 `$(MAKE) -C benchmarks/pineapple ...` 转发)。

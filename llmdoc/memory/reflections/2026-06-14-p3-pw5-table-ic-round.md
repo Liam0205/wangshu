@@ -14,15 +14,15 @@ metadata:
 
 ### 1. 设计稿 WAT 里写成 `(call $helper ...)` 的快路径,实现前必须按边界成本预算重判该不该真做成跨层调用
 
-`02-translation.md` §3.4 的 WAT 伪码把 `$is_table`/`$table_gen`/`$ic_slot_load`/`$ic_key_match` 写成了助手调用形态。但 PW0 spike 实测一次 gibbous→host imported 调用约 **143ns**——若快路径上调一次助手,「跳过哈希」省下的几个 ns 当场被边界成本吞光,整个 IC inline 的收益归零。
+`02-translation.md` §3.4 的 WAT 伪码把 `$is_table`/`$table_gen`/`$ic_slot_load`/`$ic_key_match` 写成了助手调用形式。但 PW0 spike 实测一次 gibbous→host imported 调用约 **143ns**——若快路径上调一次助手,「跳过哈希」省下的几个 ns 立刻被边界成本吞光,整个 IC inline 的收益归零。
 
-正确做法是**全 inline Wasm load**:让这些「助手」退化成几条 `i64.load`。物理基础与 VS0 值栈「形态 Y」同一条 arena=linear memory 对偶——table 活在 arena = wazero linear memory,`value.GCRefOf(v)`(低 48 位)**就是**字节偏移,所以 table 字段直接 `i64.load offset=...` 可寻址:gen 在 offset 40 高 32 位、nodeRef 在 24、arrayRef 在 16、node stride 24B,而 `SNAP_INDEX` 是编译期立即数 → 所有槽 offset 都是常量。这与 VS0 的「arena backing 即 linear memory,偏移现算寻址」是同一条物理洞察的复用(见 `feedback_arena_view_aliasing` / `implementation-progress` §VS0-c)。
+正确做法是**全 inline Wasm load**:让这些「助手」退化成几条 `i64.load`。物理基础与 VS0 值栈「形式 Y」同一条 arena=linear memory 对偶——table 活在 arena = wazero linear memory,`value.GCRefOf(v)`(低 48 位)**就是**字节偏移,所以 table 字段直接 `i64.load offset=...` 可寻址:gen 在 offset 40 高 32 位、nodeRef 在 24、arrayRef 在 16、node stride 24B,而 `SNAP_INDEX` 是编译期立即数 → 所有槽 offset 都是常量。这与 VS0 的「arena backing 即 linear memory,偏移现算寻址」是同一条物理洞察的复用(见 `feedback_arena_view_aliasing` / `implementation-progress` §VS0-c)。
 
 **How to apply**:设计稿热路径上的 `(call $xxx ...)` WAT 伪码是**记法**不是**承诺**——`$helper` 这种抽象记号只表达「这里要做 X 语义」,不等于「这里要发一次真实跨层调用」。任何标在热路径(尤其每指令必经的 IC 快路径)的助手记号,实现前都要拿 PW0 的边界成本预算(~143ns/次)重新过一遍:它能不能塌成几条 inline load?能,就必须 inline,否则该 opcode 的整个加速立项失去意义。与 [[issue8-boundary-cost-round]] 教训 1「实现浪费 vs 架构成本」同家族——这里是「设计记法的边界成本未被预算」,同样要在实现侧主动算账,不能照抄伪码。
 
 ### 2. inline 覆盖按「逐字节可证性」分级,而非「能不能做」
 
-我没有把设计展示的每种情形都 inline。只 inline 了**可证与解释器逐字节一致**的形态:
+我没有把设计展示的每种情形都 inline。只 inline 了**可证与解释器逐字节一致**的形式:
 
 - **常量键访问**(同表 + 同代次 ⟹ 缓存的 `Index` 仍映射同一个键,故键匹配可**整段跳过**)——这优雅地顺手解决了「字符串常量键的值烧不进 Wasm」的难题:键根本不需要被比较;
 - **寄存器键 ArrayHit**(数值匹配走 `f64(key) == Index+1`,绕开了朴素 `i32.wrap` 会引入的 uint32 截断陷阱)。
@@ -73,11 +73,11 @@ block $done {
 
 ## 促成的稳定文档更新
 
-- `docs/design/p3-wasm-tier/implementation-progress.md` PW5 行 + 「表字段 inline 寻址(全 inline Wasm load,非 imported 助手)」对账条目(已落地,记 offset 布局与 ~143ns 论证)。
+- `docs/design/p3-wasm-tier/implementation-progress.md` PW5 行 + 「表字段 inline 寻址(全 inline Wasm load,非 imported 助手)」对账条目(已完成,记 offset 布局与 ~143ns 论证)。
 
 ## promotion 候选(首次样本,暂留观察)
 
-- **教训 1**(设计稿热路径 `$helper` WAT 伪码须按边界成本预算重判)——这是 P3 翻译全程都会复发的判断(PW6 LEN/CONCAT、PW7 CALL/RETURN 的伪码里还有更多 `(call $...)`)。**已落地** → [[design-claims-vs-codebase-physics]] §1 边界成本预算维度(连同 issue8 成本归类 / PW6 段重定位聚合成 4 维判断框架)。
+- **教训 1**(设计稿热路径 `$helper` WAT 伪码须按边界成本预算重判)——这是 P3 翻译全程都会复发的判断(PW6 LEN/CONCAT、PW7 CALL/RETURN 的伪码里还有更多 `(call $...)`)。**已完成** → [[design-claims-vs-codebase-physics]] §1 边界成本预算维度(连同 issue8 成本归类 / PW6 段重定位聚合成 4 维判断框架)。
 - **教训 4**(inline-proof 须用毒化/哨兵助手证明走了哪条路径)——「验收口径是路径被走到,而非结果正确」是 P3 投机/分级 inline 全程通用的测试技术,候选进测试类 guide。本轮首次样本,暂留 memory 观察。
 
 ## 触发场景
@@ -86,4 +86,4 @@ block $done {
 
 ## 关联
 
-[[issue8-boundary-cost-round]](边界成本预算 / 实现浪费辨析,教训 1 对偶)· [[test-hardening-round]](绿色≠在测你以为在测的,教训 4 同源)· [[p1-closeout-round]](IC 命中必须验同键——本轮常量键「同表同代次跳键匹配」是其 P3 形态)· `feedback_arena_view_aliasing`(arena=linear memory 偏移寻址,inline load 的物理基础)· `docs/design/p3-wasm-tier/02-translation.md` §3.4 · `06-ic-feedback-consume.md`(失效降级运行期机制)
+[[issue8-boundary-cost-round]](边界成本预算 / 实现浪费辨析,教训 1 对偶)· [[test-hardening-round]](绿色≠在测你以为在测的,教训 4 同源)· [[p1-closeout-round]](IC 命中必须验同键——本轮常量键「同表同代次跳键匹配」是其 P3 形式)· `feedback_arena_view_aliasing`(arena=linear memory 偏移寻址,inline load 的物理基础)· `docs/design/p3-wasm-tier/02-translation.md` §3.4 · `06-ic-feedback-consume.md`(失效降级运行期机制)

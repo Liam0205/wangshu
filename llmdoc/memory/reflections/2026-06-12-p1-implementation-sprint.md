@@ -6,14 +6,14 @@
 ## 任务
 
 单一会话内完成 P1 余下 7 个里程碑 M8-M14(M0-M7 已在前序会话完成),实际提交顺序
-M8→M9→M10→M13→M12→M11→M14(非编号序;M13 公共 API 先于 stdlib/元表落地)。
+M8→M9→M10→M13→M12→M11→M14(非编号序;M13 公共 API 先于 stdlib/元表完成)。
 P1 总验收通过:三档基准 ≥2x over gopher-lua(simple 2.28x、arith 2.40x、loop 2.30x),
-与官方 Lua 5.1.5 差分对拍逐字节一致。进度表、验收数字与已知简化清单见
+与官方 Lua 5.1.5 差分差分测试逐字节一致。进度表、验收数字与已知简化清单见
 `docs/design/p1-interpreter/implementation-progress.md`,本文只记过程教训。
 
 ## 预期 vs 实际
 
-- 预期:按设计文档逐里程碑落地,单测 + 黄金字节码测试护航即可。
+- 预期:按设计文档逐里程碑完成,单测 + 黄金字节码测试护航即可。
 - 实际:全链跑通且验收过线,但 M14 conformance/difftest 一上线即捕获 **5 个此前单测全部
   漏掉的语义 bug**,集中跨层返工(parser 补 ast.ParenExpr / codegen / 解释器)。若按
   00-overview 自家建议在 M9 后即搭 difftest,这些偏差会在引入当步被拦下。
@@ -24,9 +24,9 @@ P1 总验收通过:三档基准 ≥2x over gopher-lua(simple 2.28x、arith 2.40x
    本次为在预算内跑通全链,table 用 Go map 旁路(tableSide)、值栈用 Go slice——但接口
    形状(tableGet/tableSet/enterLuaFrame)与设计文档对齐,后续替换内部实现不动调用方。
    前提:简化必须显式落盘(implementation-progress.md「已知简化」表),否则会被误当定稿。
-2. **对拍 oracle 是语义正确性的唯一可靠防线**。黄金字节码测试只防结构性偏差;5 个语义
+2. **差分测试 oracle 是语义正确性的唯一可靠防线**。黄金字节码测试只防结构性偏差;5 个语义
    bug(rawEqual 的 NaN bits 比较、%.14g 的 inf/nan 措辞、and/or 对 VCALL 的单值收敛、
-   VARARG 落点回填、括号强制单值)全部由对拍捕获、当步修复,单测一个都没拦住。
+   VARARG 落点回填、括号强制单值)全部由差分测试捕获、当步修复,单测一个都没拦住。
 3. **基准实证设计前提**。NaN-box 去装箱即使带旁路 map table 也过 2x 门槛,印证 05 §3
    「去装箱是主力、table 布局是次级优化」——后续优化排序可据此安排,不必先啃 arena 哈希。
 4. **oracle 供给实操路径**:brew 无 lua@5.1(已 EOL),源码编译 lua-5.1.5(`make posix`)

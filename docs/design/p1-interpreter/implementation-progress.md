@@ -1,6 +1,6 @@
 # P1 实现进度
 
-> 状态:**P1 全里程碑 M0-M14 + 收尾轮(原"已知简化"清单)已落地**(2026-06-12)。
+> 状态:**P1 全里程碑 M0-M14 + 收尾轮(原"已知简化"清单)已完成**(2026-06-12)。
 > 本文记录每个完成里程碑的产出、验收结果,以及与设计文档的对账。
 >
 > 设计文档参考路径见 [00-overview](./00-overview.md);每个里程碑列对应文档 §。
@@ -23,14 +23,14 @@
 | M11 | 元表 + pcall:__index/__newindex 链、算术元方法、callLuaFromHost | `internal/crescent/meta.go` | 9 端到端 | `f7812b1` |
 | M12 | stdlib + host fn:base/math/string 最小集、HostFn 注册与同步调用 | `internal/stdlib/` | 9 端到端 | `96a9b7f` |
 | M13 | 公共 API:Compile/Program/NewState/Value、vararg 完整化 | `wangshu.go` | 7 公共 API | `0d1c211` |
-| M14 | 三套测试:conformance + difftest(对拍 5.1.5)+ 三档基准 | `test/`, `benchmarks/baseline/` | 全绿 | `5cc5a6a` |
+| M14 | 三套测试:conformance + difftest(差分测试 5.1.5)+ 三档基准 | `test/`, `benchmarks/baseline/` | 全绿 | `5cc5a6a` |
 
-## 收尾轮(原"已知简化"清单,全部落地)
+## 收尾轮(原"已知简化"清单,全部完成)
 
-| 项 | 落地内容 | 设计文档 | 提交 |
+| 项 | 完成内容 | 设计文档 | 提交 |
 |---|---|---|---|
 | table 存储 | arena 原生 array+hash(主位置+冲突链、迁位插入、rehash 选最优 asize、border 二分、rawNext 迭代);旁路 Go map 移除 | 01 §5.2 | `1ab4beb` |
-| generic for | TFORLOOP 落地 + next/pairs/ipairs | 05 §10.2 | `1ab4beb` |
+| generic for | TFORLOOP 完成 + next/pairs/ipairs | 05 §10.2 | `1ab4beb` |
 | IC 命中路径 | icGetTable/icSetTable 五类指令(同表+同代次+同键校验,mono IC,array/node 直达);LoadProgram 改 State 私有浅拷贝(IC/常量不跨 State 串台) | 05 §6 | `c04010e` |
 | string pattern | 完整 lstrlib 引擎(字符类/集合/量词/锚点/捕获/%b/%1-%9)+ find/match/gmatch/gsub/format/byte/char;string 库表挂 per-type __index(`("x"):upper()`) | 10 §7 / 07 §1.2 | `c167ad6` |
 | stdlib 必做列 | table(insert/remove/concat/sort/getn/unpack)、math 补全(fmod/modf/random/三角/deg/rad + pi/huge)、os(time/clock/date/getenv)、io.write、unpack/xpcall | 10 裁剪表 | `72a09d5` |
@@ -38,10 +38,10 @@
 | 错误目录 | chunkname:line: 位置前缀(error level 语义,level=0 不加)+ traceback(顶层未捕获自动附)| 09 | `473e4dd` |
 | 弱表/finalizer | __mode 解析缓存进 GCHeader flags(setmetatable 唯一写入口),GC clear 弱分支激活;SetFinalizerRunner + __gc 创建逆序执行 | 06 §8.4/§10、07 §13 | `7078fcf` |
 | arena ABI | wangshu.Arena 四类型列(float64/int64/bool/string)+ presence bitmap + 字符串池去重;Program.Call(state, arena, args);脚本侧 arena.col[i] 零拷贝即时装箱、只读、ColInt64 2^53 护栏 | 11 §3-§5 | `5122ae8` |
-| difftest 生成器 | 受控文法随机脚本(类型化局部池),200 确定性种子对拍官方 5.1.5 全部逐字节一致 | 12 §3.2 | `e1ddf2f` |
+| difftest 生成器 | 受控文法随机脚本(类型化局部池),200 确定性种子差分测试官方 5.1.5 全部逐字节一致 | 12 §3.2 | `e1ddf2f` |
 | per-item drop-in 子集 | `State.SetGlobal/GetGlobal/Call(fn,args...)` + `Register/RegisterModule` + 公共 `HostFn` 类型;`Value` 加 `kFunction` kind(外部不可构造,只能 GetGlobal 取);State pin 表 + GC 根接入(`PinRef/UnpinRef/visitExtraRefs`),globals 覆盖与 freelist 复用下旧 fn Value 仍安全可调;`Value.Release()` 显式释放 pin 槽 | 11 §7.1 / §9.1 (issue #1) | `87031c2` + `cb6e1ae` |
 | 公共 Table API | `State.NewTable` + `Value.AsTable` + `Table.Set/SetIndex/Get/GetIndex/Len`;`Value` 加 `kTable` kind(同 kFunction 经 pin 表挂 GC 根);`fromInner` 升级为 `fromInnerWithPin`,Program.Run/Call 与 State.Call 返回路径能携带 table/function 引用;支持嵌套 table 与 mixed-type list 作 Lua 表 round-trip | 11 §4.5 (issue #2) | `2b55e11` |
-| 严格沙箱模式 | `Options.HideFileLoaders bool`:从 globals 刮除 `loadfile`/`dofile`/`loadstring`/`load` 四件套(置 Nil);脚本调用 fatal `attempt to call global 'X' (a nil value)`,对位 gopher-lua 嵌入式沙箱传统;与 `AllowFileLoad=true` 同设 NewState panic fail-fast。默认行为不变(PUC 5.1.5 oracle 对拍不退化) | 10 §12.1 LibsSafe 思路最小落地 (issue #3) | `09fdd72` |
+| 严格沙箱模式 | `Options.HideFileLoaders bool`:从 globals 刮除 `loadfile`/`dofile`/`loadstring`/`load` 四件套(置 Nil);脚本调用 fatal `attempt to call global 'X' (a nil value)`,对位 gopher-lua 嵌入式沙箱传统;与 `AllowFileLoad=true` 同设 NewState panic fail-fast。默认行为不变(PUC 5.1.5 oracle 差分测试不退化) | 10 §12.1 LibsSafe 思路最小完成 (issue #3) | `09fdd72` |
 | context cancellation 钩子 | `State.SetContext(ctx)` / `RemoveContext`:VM 在 chargeStep 同一抢占点(回边 + 函数进帧 + TFORLOOP)检查 `ctx.Err()`,事件触发(wall-clock timeout / 上游 Cancel)中止 Run/Call 返回 Go error(pcall 可捕获);跨 goroutine 由 atomic.Pointer 保护;chargeStep 三处调用点合一(stepBudget 外层 if 拿掉,内部短路),零额外抢占点 | 11 §10 / 与 SetStepBudget 并存 (issue #4) | `27b4f2e` |
 | Table.ForEach 任意 key 迭代 | `func (t *Table) ForEach(fn func(key, val Value) bool) error`:转发 internal `RawNext` 循环(raw 迭代,与 stdlib next/pairs 同源,迭代序确定性);fn 返 false 提前终止;key/val 走 `fromInnerWithPin` 自动登记 pin 槽。issue #2 SetIndex 写入的对称读出能力,完整读写闭环 | 11 §4.5 (issue #5) | `4f855d2` |
 | globals baseline 状态隔离 | `State.MarkGlobalsBaseline` 拍当前 _G 字符串 key 快照、`ResetGlobalsToBaseline` 非 baseline key 清空 + baseline key 复原;baseline 复合值经 `visitExtraValues` 入 GC 根(与 pin 表是 GCRef-bearing value 契约级不变式两面:pin 管「公共 API 暴露的长持 GCRef」、baseline 管「内部状态恢复需要的长持 GCRef」);对位 gopher-lua statePool snapshotBaselineValues + resetToBaseline 模式 | 10 §12.1 hardening (issue #6) | `3d34839` |
@@ -49,7 +49,7 @@
 
 ## P1 总验收结果(roadmap §4 / 12 §10)
 
-- **三档 ≥2x over gopher-lua**:✅ Xeon 6982P-C 实测(IC 落地后):
+- **三档 ≥2x over gopher-lua**:✅ Xeon 6982P-C 实测(IC 完成后):
   simple 275ns vs 874ns = **3.18x**;arith 311ns vs 966ns = **3.10x**;
   loop 15.1µs vs 34.4µs = **2.28x**。分配 5 allocs/op vs gopher 8-124。
 - **benchmark-game 真实负载**(benchmarks/realworld,P1 性能轮后):
@@ -97,12 +97,12 @@
   near 原文(txtToken)、luaO_chunkid 同构、错误措辞 luaL_checknumber
   格式、5.0 兼容别名(math.mod/foreach/gfind)。
 
-## 与设计文档的对账(实现形态差异,均为接口等价)
+## 与设计文档的对账(实现形式差异,均为接口等价)
 
-| 设计点 | 设计文档形态 | 实现形态 | 对账结论 |
+| 设计点 | 设计文档形式 | 实现形式 | 对账结论 |
 |---|---|---|---|
 | 值栈/CallInfo 位置 | 住 arena(05 §1.2),Thread 对象 word 字段 | Go slice(crescent.thread struct) | **接口等价、P3 迁移点已留**:backing 注入点(`arena.Options.NewBacking`,06 §1.1 唯一硬性前瞻义务)已就位;协程"状态冻结"语义已可工作(yield 保留 CallInfo 链)。物理搬迁是 P3 wazero memory 收养时的工作,届时 stack/cis 切 arena 视图不动 opcode 语义 |
-| per-item API 栈机风格 | `PushNumber/ToNumber/Top/Pop/GetGlobalFn/CallFn` 等(11 §7.1 草图,gopher-lua 栈机) | `State.SetGlobal/GetGlobal/Call(fn,args...)` + `Register/RegisterModule`(列表风格) | **形态裁剪、能力等价**:pineapple 一类「fn 一次取出 + 循环 per-item Call」用法由 GetGlobal+Call 覆盖;Push/Pop 栈机风格未做(若未来 gopher-lua 迁移负载明确需要再补)。HostFn 收 args 中 table/function/userdata 仍映射 Nil(本期 fromInner 收紧)、host closure 从 Go 端直接 Call 仍未开 |
+| per-item API 栈机风格 | `PushNumber/ToNumber/Top/Pop/GetGlobalFn/CallFn` 等(11 §7.1 草图,gopher-lua 栈机) | `State.SetGlobal/GetGlobal/Call(fn,args...)` + `Register/RegisterModule`(列表风格) | **形式裁剪、能力等价**:pineapple 一类「fn 一次取出 + 循环 per-item Call」用法由 GetGlobal+Call 覆盖;Push/Pop 栈机风格未做(若未来 gopher-lua 迁移负载明确需要再补)。HostFn 收 args 中 table/function/userdata 仍映射 Nil(本期 fromInner 收紧)、host closure 从 Go 端直接 Call 仍未开 |
 | host closure 从 Go 端 Call | 任意 closure 一视同仁可被 `state.Call` 调起(11 §1.5) | internal `State.Call` 见 host closure 直接报错(`call.go:hostCheck`) | **裁口、不影响主线**:`Register` 注册的 host fn 仍由 Lua 内调用闭环工作;Go 端「state.Call(hostFn,…)」用法未开,等真有需求时补 callHost 入口的脚手架(临时栈帧) |
 | 开放 upvalue 链 | 按 stackIdx 降序单链(05 §8.3) | Go map(stackIdx → uvRef)+ uvOwner(uv → thread) | 共享语义等价(同槽同 uv);降序链是值栈 arena 化的配套,一并留 P3 |
 | executeSignal 三态 | sigReturn/sigYield/sigError 枚举(08 §3.3) | 显式 *LuaError 返回 + errYieldSentinel 哨兵 | 同一冒泡通道,哨兵区分;08 §3.4 "yield↔error 对称"的最小实现 |

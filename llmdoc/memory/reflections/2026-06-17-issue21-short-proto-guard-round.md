@@ -8,10 +8,10 @@
 
 ## 任务
 
-[[2026-06-17-issue18-p3-autolift-fix-round]] 教训 2 写「pineapple 形态 p3 vs p1 慢 20% 是后续 perf 优化的事,留 follow-up」。用户接着追问「先前的 pineapple 实验是否需要更新?能否继续找 lua 算子优化方法?」三步走:
+[[2026-06-17-issue18-p3-autolift-fix-round]] 教训 2 写「pineapple 形式 p3 vs p1 慢 20% 是后续 perf 优化的事,留 follow-up」。用户接着追问「先前的 pineapple 实验是否需要更新?能否继续找 lua 算子优化方法?」三步走:
 
 1. **更新 12 项 2D 矩阵 + p3/p1 CPU profile 实证**:发现 spike 教训 2「采样钩税占 13%、wasm 反噬 6%」**估反了**——profile 实证 p3 build 中 `OnEnter` / `OnBackEdge` / `bridge.*` 不在 top 200,**采样钩税可忽略**;**wasm 路径**(`enterGibbous` + `callWithStack` + `p3Code.Run`)cum ~10% net 才是真主导
-2. **立项 + 落地 issue #21**:加 `MinPromotableCodeLen = 10` 阈值,OnEnter/OnBackEdge 在 considerPromotion 调用前 short-proto fast-path return
+2. **立项 + 完成 issue #21**:加 `MinPromotableCodeLen = 10` 阈值,OnEnter/OnBackEdge 在 considerPromotion 调用前 short-proto fast-path return
 3. **数字闭环**:p3 _Row 从 660 → 588 µs(-11%),vs 同时段 p1 575 µs 差 +2.3%(噪声内,**完全消除反噬**),issue #18 真升层路径仍工作(long proto white-box PromotionCount > 0)
 
 本轮 3 commits 单分支:
@@ -25,8 +25,8 @@
 - **实际**:profile 实证**钩税单独占比可忽略**——p3 build 升层后 inner f 不跑解释器,钩税仅在 entry 时 sample 一次。**真主导是 wasm 路径**(enterGibbous + callWithStack + p3Code.Run cum ~10% net,vs p1 executeLoop cum ~5%)。**单走 proto 复杂度阈值守卫(方向 H)就解决了 80% 问题**——p3 从 +19.4% 回到 +2.3%。
 
 **反思教训 2 估错的具体源头**(本轮发现):
-- spike 期 CommonRow 形态 p3 vs p1 慢 13%,我以为 CommonRow 形态 f 入口只 1 次「不升层」→ 差距全是钩税 → 推算钩税占 13%
-- **实际**:CommonRow 形态 f 内有 `for i = 1, n` 用户写的 1000 次回跳,`OnBackEdge` 累计 b.N × 999 ≈ 千万次 ≫ `HotBackEdgeThreshold=1000`,**f 真升层**;CommonRow 13% 慢同样是 wasm 反噬
+- spike 期 CommonRow 形式 p3 vs p1 慢 13%,我以为 CommonRow 形式 f 入口只 1 次「不升层」→ 差距全是钩税 → 推算钩税占 13%
+- **实际**:CommonRow 形式 f 内有 `for i = 1, n` 用户写的 1000 次回跳,`OnBackEdge` 累计 b.N × 999 ≈ 千万次 ≫ `HotBackEdgeThreshold=1000`,**f 真升层**;CommonRow 13% 慢同样是 wasm 反噬
 - 没考虑用户脚本的循环触发 OnBackEdge 升层这条路径
 
 ## 教训(每条首句为「下次什么场景会触发」)
@@ -37,27 +37,27 @@
 
 [[2026-06-17-issue18-p3-autolift-fix-round]] 教训 2 我把 p3 vs p1 慢 20% 分项为「采样钩税 13% + wasm 反噬 6%」,逻辑链是:
 
-- p3 CommonRow 形态慢 13%(我假设 f 不升层 → 全是钩税)
-- p3 Row 形态慢 19%(我假设 = CommonRow 13% + 升层 6% wasm 反噬)
+- p3 CommonRow 形式慢 13%(我假设 f 不升层 → 全是钩税)
+- p3 Row 形式慢 19%(我假设 = CommonRow 13% + 升层 6% wasm 反噬)
 - 教训 2 写「采样钩税是主导项,wasm 反噬次要」
 
 **v4 profile 直接 fail 这个分项**:
 - p3 build cpu profile 中钩税路径(`OnEnter` / `bridge.*`)**完全不在 top 200**,因为升层后 inner f 不跑解释器,钩税只在 entry sample 一次(~几 µs 量级)
 - p3 wasm 路径(`enterGibbous` / `callWithStack` / `p3Code.Run`)cum ~10% net,反映 ~ 80µs/iter,**主导项确实是 wasm**
-- **CommonRow 形态 f 也升层**——用户写的 `for i = 1, n` 回跳累计 OnBackEdge 越过 HotBackEdgeThreshold=1000,**两个形态都升层只是触发路径不同**
+- **CommonRow 形式 f 也升层**——用户写的 `for i = 1, n` 回跳累计 OnBackEdge 越过 HotBackEdgeThreshold=1000,**两个形式都升层只是触发路径不同**
 
 我估错的具体源头:**漏算了用户脚本里的 `for` 循环回跳触发 `OnBackEdge` 升层这条路径**——只盯着 `OnEnter` 这条,以为「函数入口 1 次 → 不升层」。
 
 **修正纪律**:
 - **复合估算的每个分项都要 prove-the-path-under-test**——不只看总数字,还要白盒验「这个机制是不是真在路径上」(本轮:cpu profile 中钩税路径完全不出现 = 钩税不主导;反推先前估算 13% 必错)
-- **estimation review 找漏路径**:估算前列出**所有可能的升层触发路径**(OnEnter / OnBackEdge / forceAll),逐个评估「在这个形态下是否触发」。本轮我漏了 OnBackEdge 这条,推理就崩了
+- **estimation review 找漏路径**:估算前列出**所有可能的升层触发路径**(OnEnter / OnBackEdge / forceAll),逐个评估「在这个形式下是否触发」。本轮我漏了 OnBackEdge 这条,推理就崩了
 - **机理估算只是 spike 前的 sanity check,不是结论**——上一轮 spike 教训 2 + 本轮 issue #18 的"教训 2 估错" + 本轮(分项估算错) = 三个独立样本,**机理估算不可靠这条已经够强**,可以升 [[perf-optimization-workflow]] 第 N 条「复合机理估算必经 profile/spike 验证」
 
 **首次样本 → 三次复发**:[[2026-06-17-pineapple-bench-batch-wrapper-spike]] 教训 2 是第一次估错(机理 -17/-34/-30% → 实测 +22/+27/+30%),[[2026-06-17-issue18-p3-autolift-fix-round]] 教训 2 是第二次估错(钩税/wasm 主导比例),本轮纠偏是第三次复发。**可升 [[perf-optimization-workflow]] 作 first-class 纪律**。
 
 ### 2. 升层触发路径的多源性:`OnEnter` ≠ 唯一,`OnBackEdge` 同等重要
 
-**触发场景**:评估「某形态下某 proto 是否升层」时,只考虑 host loop 调用次数(`OnEnter`),不考虑 proto 内部用户脚本写的循环(`OnBackEdge`)。
+**触发场景**:评估「某形式下某 proto 是否升层」时,只考虑 host loop 调用次数(`OnEnter`),不考虑 proto 内部用户脚本写的循环(`OnBackEdge`)。
 
 wangshu p3 升层有**两条独立触发路径**:
 
@@ -67,13 +67,13 @@ wangshu p3 升层有**两条独立触发路径**:
 **关键不变式**:**两条独立**——只要任一过阈值就升层。host 端 N 次调函数 ⟹ OnEnter 路径触发;函数内 N 次 for 循环回跳 ⟹ OnBackEdge 路径触发。
 
 **本轮发现的真实情况**:
-- pineapple Row 形态(host loop 1000×f()):OnEnter 累计 b.N × 1000 ≫ 200 ⟹ f 升层
-- pineapple CommonRow 形态(host 1 次 f,f 内 for 1000 iter):OnBackEdge 累计 b.N × 999 ≫ 1000 ⟹ f 升层
-- **两个形态都升层只是触发路径不同**
+- pineapple Row 形式(host loop 1000×f()):OnEnter 累计 b.N × 1000 ≫ 200 ⟹ f 升层
+- pineapple CommonRow 形式(host 1 次 f,f 内 for 1000 iter):OnBackEdge 累计 b.N × 999 ≫ 1000 ⟹ f 升层
+- **两个形式都升层只是触发路径不同**
 
 **修正纪律**:
-- **写"某形态升不升层"的论断前列**,列出 `OnEnter` 和 `OnBackEdge` 两条路径分别评估,**两条都不过阈值才能下「不升层」结论**
-- **教训 2 估错的根因就是漏算 OnBackEdge 这条路径**:我以为 CommonRow 形态 f 入口 1 次 → 不升层,实际 f 内部 user 写的 `for` 循环触发 OnBackEdge 升层
+- **写"某形式升不升层"的论断前列**,列出 `OnEnter` 和 `OnBackEdge` 两条路径分别评估,**两条都不过阈值才能下「不升层」结论**
+- **教训 2 估错的根因就是漏算 OnBackEdge 这条路径**:我以为 CommonRow 形式 f 入口 1 次 → 不升层,实际 f 内部 user 写的 `for` 循环触发 OnBackEdge 升层
 - **profile.go 守卫位置也受这个影响**:本轮我把 `MinPromotableCodeLen` 守卫放在 OnEnter + OnBackEdge **两处**(不止 OnEnter 一处),避免漏路径
 
 **首次样本暂留观察**——本轮发现「漏 OnBackEdge 路径」错误;下次评估某 proto 升层情况时验证。复发后促成 [[p2-bridge-promotion-paths]] 单独立 reference。
@@ -115,7 +115,7 @@ if pd.EntryCount >= HotEntryThreshold || b.forceAll {
 
 ### 4. testing fixture 的 proto.Code 长度与生产路径守卫的耦合
 
-**触发场景**:在 bridge / profile 等核心采样路径加新守卫(`MinPromotableCodeLen` 类),且守卫依赖 proto 形态某属性(opcode 长度 / kind 等);下游 testing fixture(makeProto / makeProtoWithCode / promoteProto)依赖**短**/特殊 fixture 测特定路径。
+**触发场景**:在 bridge / profile 等核心采样路径加新守卫(`MinPromotableCodeLen` 类),且守卫依赖 proto 形式某属性(opcode 长度 / kind 等);下游 testing fixture(makeProto / makeProtoWithCode / promoteProto)依赖**短**/特殊 fixture 测特定路径。
 
 本轮 issue #21 加 `MinPromotableCodeLen=10` 守卫后,4 个测试文件总共 ~20+ 个测试失败:
 
@@ -134,4 +134,4 @@ if pd.EntryCount >= HotEntryThreshold || b.forceAll {
 - **forceAll 是合法的 testing escape hatch**:任何 sampling 守卫都该让 forceAll 绕过(它本身就是"覆盖 perf 优化的测试入口"),这是干净的 contract
 - **fixture padding 是另一种解法**:对于 mock 测试 P3 compiler 不解析 proto.Code 的场景,padding 比 forceAll 更对偶语义(直接造个长度合规的 fixture,而不是绕守卫)
 
-**首次样本暂留观察**——本轮第一次加 proto 形态依赖的 sampling 守卫,处理了 fixture 耦合。下次类似改动时复用「fixture padding vs forceAll 绕过」框架。
+**首次样本暂留观察**——本轮第一次加 proto 形式依赖的 sampling 守卫,处理了 fixture 耦合。下次类似改动时复用「fixture padding vs forceAll 绕过」框架。

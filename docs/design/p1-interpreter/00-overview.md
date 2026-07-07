@@ -17,7 +17,7 @@
 | [03-frontend-lexer](./03-frontend-lexer.md) | 前端 | token 枚举与载荷、词法规则(转义/长括号/数字)、LL(2) 前瞻归属(parser 自缓存) |
 | [04-frontend-parser-codegen](./04-frontend-parser-codegen.md) | 前端 | AST 双遍决策、expdesc/freereg 寄存器分配(与官方 luac 同构)、跳转回填、编译期错误 |
 | [05-interpreter-loop](./05-interpreter-loop.md) | **脊柱** | dispatch 选型(基线大 switch)、frame/CallInfo、reentry 调用模型、IC 执行(per-table 代次)、错误传播(显式返回)、upvalue 关闭 |
-| [06-memory-gc](./06-memory-gc.md) | 内存 | arena 分配器、STW mark-sweep、根集合 R1..R9、shadow stack 二元形态、JSHash、弱表 GC 协作、finalizer |
+| [06-memory-gc](./06-memory-gc.md) | 内存 | arena 分配器、STW mark-sweep、根集合 R1..R9、shadow stack 二元形式、JSHash、弱表 GC 协作、finalizer |
 | [07-metatables-metamethods](./07-metatables-metamethods.md) | 语义 | 全部元方法语义、__index/__newindex 链、coercion 归属(parseLuaNumber 一套)、__le→__lt 回退、__mode 弱表语义 |
 | [08-coroutines](./08-coroutines.md) | 语义 | 路线 B(单 goroutine + executeSignal 冒泡)、Thread 状态机、yield 跨 C 边界检测 |
 | [09-errors-pcall](./09-errors-pcall.md) | 语义 | error/pcall/xpcall、traceback 格式、getobjname P1 简化范围、错误信息目录 |
@@ -53,7 +53,7 @@
 | M2 | `value`:NaN-box 编解码 + canonicalize | 01 §3 | round-trip 全类型单测;负 NaN 注入后恒规范;`IsNumber`/`IsCollectable` 边界值表 |
 | M3 | `object`:六类对象布局读写 helper(含 Table gen / Upvalue nextOpen / WeakMode) | 01 §4-§5 | 手动分配下逐字段读写单测;布局字数与 06 §1.3 公式一致 |
 | M4 | `bytecode`:opcode 枚举、编解码、Proto、int2fb、上限常量 | 02 | 编解码 round-trip;§8 示例字节码手工核对 |
-| M5 | `gc`:STW mark-sweep + shadow stack + string intern(JSHash)+ pacing | 06 §4-§9 | 高频 GC 模式下对象图压力单测;intern 表弱可达语义;JSHash 与官方哈希值对拍样本 |
+| M5 | `gc`:STW mark-sweep + shadow stack + string intern(JSHash)+ pacing | 06 §4-§9 | 高频 GC 模式下对象图压力单测;intern 表弱可达语义;JSHash 与官方哈希值差分测试样本 |
 | M6 | `frontend/token`+`lex` | 03 | 全 token 种类单测;错误目录措辞;行号(四种换行)边界 |
 | M7 | `frontend/ast`+`parse` | 04 §3-§4 | 文法全覆盖单测;赋值/调用消歧;repeat 作用域;首错即停 |
 | M8 | `frontend/compile`:codegen + 寄存器分配 | 04 §5-§11 | **黄金字节码测试**:固定源→固定 Proto;§10 示例与 02 §8 逐字节一致;九类编译期错误 |
@@ -83,7 +83,7 @@
 | M14 | conformance/差分/基准 + 验收修偏 | 0.75 - 1.25 人月 |
 | 合计 | | **6.5 - 9.5 人月** |
 
-与 roadmap 的 6-9 人月吻合(上沿略超出自 stdlib pattern 与差分修偏的不确定性)。**差分修偏不是尾部活动**:每个里程碑就地对拍,把语义偏差消灭在当步(12 §1)。
+与 roadmap 的 6-9 人月吻合(上沿略超出自 stdlib pattern 与差分修偏的不确定性)。**差分修偏不是尾部活动**:每个里程碑就地差分测试,把语义偏差消灭在当步(12 §1)。
 
 ---
 

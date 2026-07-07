@@ -1,6 +1,6 @@
 # 架构:分层 VM 演进路线(P1→P5)
 
-> 状态:**P1 已交付(M0-M14,验收过线)+ P2(分层桥 PB0-PB7)+ P3(Wasm 编译层 PW0-PW10)全卷已收口;P4(method JIT)多 PJ 已落地(PJ0-PJ11 + PJ10 native emit,2026-07-01),P5 仍为规划**。源:`docs/design/roadmap.md` (§4)。**全阶段详细设计文档已就位**:P1 见 `docs/design/p1-interpreter/`(全卷 00-12,实现现状见同目录 implementation-progress.md),P2-P5 见 `docs/design/p2-bridge/`(子目录) / `p3-wasm-tier/`(子目录 10 文件)/ `p4-method-jit/`(子目录 10 文件) / `p5-trace-jit/`(子目录 11 文件,未立项图纸)。各阶段实施现状对账见对应目录 `implementation-progress.md`。
+> 状态:**P1 已交付(M0-M14,验收过线)+ P2(分层桥 PB0-PB7)+ P3(Wasm 编译层 PW0-PW10)全卷已收口;P4(method JIT)多 PJ 已完成(PJ0-PJ11 + PJ10 native emit,2026-07-01),P5 仍为规划**。源:`docs/design/roadmap.md` (§4)。**全阶段详细设计文档已就位**:P1 见 `docs/design/p1-interpreter/`(全卷 00-12,实现现状见同目录 implementation-progress.md),P2-P5 见 `docs/design/p2-bridge/`(子目录) / `p3-wasm-tier/`(子目录 10 文件)/ `p4-method-jit/`(子目录 10 文件) / `p5-trace-jit/`(子目录 11 文件,未立项图纸)。各阶段实施现状对账见对应目录 `implementation-progress.md`。
 > 前置约束(为什么是分层、为什么倍率以列内核为口径):见 [[design-premises]]。值表示如何在各层共见同一块内存:见 [[value-representation]]。
 
 ## 流水线全景
@@ -12,7 +12,7 @@ P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 met
 
 - 括号内是**流水线图倍率**,口径为 **over gopher-lua,列内核负载形状下**。
 - 人力从人月级(P1/P2/P3)升到人年级(P4/P5)。
-- 每阶段**独立交付价值,任何闸门处停下都不亏**(贯穿原则 3,见 [[design-premises]])。
+- 每阶段**独立交付价值,任何检查处停下都不亏**(贯穿原则 3,见 [[design-premises]])。
 
 > **坐标系警告**:流水线图的倍率(如 P3「4-8x」、P4「trace 收益 ~70%」)与各阶段正文的**验收门槛**(如 P3「相对 P1 再 ≥2x」、P4「≥ LuaJ-luajc 档」)**不在同一坐标系**,不要混为一谈。下文速查表已分列两栏。
 
@@ -47,7 +47,7 @@ P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 met
 - **closure-compilation 或 computed-goto 风格 dispatch**(替代大 switch);
 - 全局/表访问 **inline cache**;stdlib 以 **host function** 形式提供;
 - Lua 5.1 conformance 测试套。
-- **验收**:简单/算术/循环三档脚本全部 ≥2x over gopher-lua;与官方 Lua 5.1.5 差分 fuzz 输出逐字节一致(官方为最终 oracle,gopher-lua 偏差登记豁免,见 12 号文档)。**已通过,P1 性能轮后数字(2026-06-12)**:simple 9.0x / arith 7.0x / loop 2.45x(simple 档大幅拉升主因是 State.Call 复用主 thread 消去短脚本固定开销,非解释器本身倍率);realworld 五项四项反超;70 种子 + 200 随机脚本对拍逐字节一致。实现对账与 P3 迁移留口见 implementation-progress.md。
+- **验收**:简单/算术/循环三档脚本全部 ≥2x over gopher-lua;与官方 Lua 5.1.5 差分 fuzz 输出逐字节一致(官方为最终 oracle,gopher-lua 偏差登记豁免,见 12 号文档)。**已通过,P1 性能轮后数字(2026-06-12)**:simple 9.0x / arith 7.0x / loop 2.45x(simple 档大幅拉升主因是 State.Call 复用主 thread 消去短脚本固定开销,非解释器本身倍率);realworld 五项四项反超;70 种子 + 200 随机脚本差分测试逐字节一致。实现对账与 P3 迁移留口见 implementation-progress.md。
 - **独立价值**:止步于此也成立——一个「更好的 gopher-lua」,可作 drop-in 候选(见 [[embedding-contract]])。
 
 ### P2:分层桥(1-2 人月,定位为基建)
@@ -55,7 +55,7 @@ P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 met
 - 函数级**热度计数**(loop back-edge 计数);
 - **inline cache 反馈记录**(类型 feedback,为编译层供料);
 - **静态可编译性分析器**:把 varargs / coroutine / debug 等形状标记「不升层」,永远走解释。
-- 策略:**try-compile-fallback-interpret**(LuaJ luajc 同款),换来**零 deopt 机器**。
+- 策略:**try-compile-fallback-interpret**(LuaJ luajc 一样的),换来**零 deopt 机器**。
 - **验收**:文档未对 P2 给出独立量化验收(无倍率门槛,定位为基建)。
 
 ### P3:Wasm 编译层(6-12 人月,流水线图 4-8x)
@@ -65,7 +65,7 @@ P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 met
 - **开工前置 spike**:**wazero call boundary 实测,目标 `<150ns`;不达标则跳过本阶段直接做 P4**。
 - **验收**:循环密集脚本相对 P1 再 ≥2x;两层差分 fuzz 逐字节一致。
 - **战略价值**:在不用调试机器码的后端上,先把分层机器(升层/降层/fallback)整体跑通。
-- **现状(2026-06-16)**:**PW0-PW10 全卷已收口**(PW0-PW9 + PW4b spike 闸门 → 翻译器全 38 opcode 除 VARARG → 跨层互调 → 升层门禁 → V1-V18 验收;loop 核 2.58x V14 达标)。**PW10 收口**:R1-R3.5(共享 funcref 表 + CallInfo→linear-memory + `call_indirect` 直调 + host helper 零分配)+ 零跨界 ①(top mirror 字)/ 基建-a(closure slot 缓存)/ 基建-b(proto cache 段)/ ③a(savedTop)/ ③b(emitReturn 守卫快路径,Wasm 内拆帧)/ ④-i(emitCall 守卫骨架 + fastCallHits mirror 字)/ callOnStack 顶层升层(cl 直接走 enterGibbous + TopLevelUplift 探针)全付;**本机 Xeon 6982P 2s×3 count 实测基线(2026-06-16)**:loop 2.95x(+10% over R3.5 2.67x,③ RETURN 拆帧真实收益)/ table 0.88x / call 0.52x / mixed 0.99x;**call 0.52x 是 bench kernel 结构性架构边界**——profile `/tmp/call.prof` 证四 kernel body 含 ReasonUnknownCall(F2-b 静态分析不能确定被调函数不 yield)→ body 不可升 → 顶层升层 + ④ emitCall fast body 均对 bench kernel 无显著效果;**④-ii fast body 留 followup**(预估上限 0.57x 仍 <1x,实现复杂度 ~200 行 wasm 字节级 codegen,ROI/UAF 不利,emit 原语 i64.add/i64.or 已保留)。**PW10 收口为「已落地子里程碑 + 架构边界文档化」**。详 `docs/design/p3-wasm-tier/implementation-progress.md`。
+- **现状(2026-06-16)**:**PW0-PW10 全卷已收口**(PW0-PW9 + PW4b spike 检查 → 翻译器全 38 opcode 除 VARARG → 跨层互调 → 升层门禁 → V1-V18 验收;loop 核 2.58x V14 达标)。**PW10 收口**:R1-R3.5(共享 funcref 表 + CallInfo→linear-memory + `call_indirect` 直调 + host helper 零分配)+ 零跨界 ①(top mirror 字)/ 基建-a(closure slot 缓存)/ 基建-b(proto cache 段)/ ③a(savedTop)/ ③b(emitReturn 守卫快路径,Wasm 内拆帧)/ ④-i(emitCall 守卫骨架 + fastCallHits mirror 字)/ callOnStack 顶层升层(cl 直接走 enterGibbous + TopLevelUplift 探针)全付;**本机 Xeon 6982P 2s×3 count 实测基线(2026-06-16)**:loop 2.95x(+10% over R3.5 2.67x,③ RETURN 拆帧真实收益)/ table 0.88x / call 0.52x / mixed 0.99x;**call 0.52x 是 bench kernel 结构性架构边界**——profile `/tmp/call.prof` 证四 kernel body 含 ReasonUnknownCall(F2-b 静态分析不能确定被调函数不 yield)→ body 不可升 → 顶层升层 + ④ emitCall fast body 均对 bench kernel 无显著效果;**④-ii fast body 留 followup**(预估上限 0.57x 仍 <1x,实现复杂度 ~200 行 wasm 字节级 codegen,ROI/UAF 不利,emit 原语 i64.add/i64.or 已保留)。**PW10 收口为「已完成子里程碑 + 架构边界文档化」**。详 `docs/design/p3-wasm-tier/implementation-progress.md`。
 
 ### P4:带 IC 反馈的投机 method JIT(+1-2 人年,流水线图「trace 收益 ~70%」)
 
@@ -74,7 +74,7 @@ P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 met
 - 继承 P3 的全部分层结构,**只换发射后端**(Wasm 发射 → 原生发射);
 - **amd64 + arm64 双后端**;系统管线参考 wazero。
 - **验收**:列内核负载 ≥ LuaJ-luajc 档;Wasm 层退役,**或**留作可移植中层(未移植架构、禁 exec-mmap 环境)。**P3 去留决策框架详见 [../docs/design/p4-method-jit/07-p3-retirement](../../docs/design/p4-method-jit/07-p3-retirement.md)**。
-- **现状(2026-07-01)**:**多 PJ 已落地**。PJ0 包骨架 + bridge 注入 / PJ1 spike 闸门 + amd64 工程组件 / PJ2 投机三形态(reg-reg/reg-K/chain-KK)/ PJ3 FORLOOP 字节级 inline(实测 7.15-25.41x over gopher-lua,超 luajc 档 4.4x)/ PJ4 表 IC 六路径 + IsTable guard / PJ5 CALL void + TAILCALL + SELF inline(0..7 参 + 嵌套 + 错误冒泡)+ p4SpecState 子状态机骨架 / PJ7 真接入 ~25 类形态 byte-equal / PJ8 arm64 字节级模板矩阵 + Compile 端真接入 / PJ11 luajc 档突破。**PJ10 通用 per-opcode 翻译器 + native emit 真接入**(2026-06-30~07-01):CFG builder + 两遍 label resolver + 35/38 opcode 每 arch 一份 emit(amd64 / arm64),inline 18 op mmap-safe 子集(其余退 Go 端 dispatch,mmap + Go morestack 物理不兼容硬约束),arch-aware `fixupKind` label resolver(amd64 rel32 / arm64 B26 / Cond19),`PreferNative` 多 BB + big-BB 收窄门;不接 VARARG(设计永不接)+ JMP/TEST/LOADBOOL C!=0(需真 CFG 留 followup)。**V15b heavy 三本 P4 native > P3 wasm 达标**(HeavyArith / HeavyRecursion / HeavyFloatloop,amd64),V14 luajc 档无回归。**跨 arch CI**:linux/arm64 闸门翻 true + darwin/arm64 codepage 真实装(`internal/jit/jitcgo/` 子包保主库零 cgo)+ macos-latest M1 三平台矩阵 CI;darwin/arm64 真 execute 闸门暂 false(留 followup)。**amd64 段到段(seg2seg)CALL 分派已交付(2026-07-06)**:段内 GETUPVAL inline + 双语义 RETURN 扩到 MultiReturn proto + arith/compare/GETUPVAL/嵌套 CALL 接受面,消掉每次 gibbous→gibbous 调用的 exit-reason 往返,call 密集内核反超 gopher-lua(fib 10.5x / fannkuch 6.9x / binary-trees 1.35x over gopher-lua);arm64 段到段 CALL 镜像实现已写完 + 交叉编译过,真机验收(`-race`/difftest/benchmark)经 CI 三平台矩阵挂 issue #61。**剩余项**:`archSupportsSpec=true` 物理 runner 打开 / OSR exit 接上(p4SpecState 骨架已就绪)。详 `docs/design/p4-method-jit/implementation-progress.md` §15.7。
+- **现状(2026-07-01)**:**多 PJ 已完成**。PJ0 包骨架 + bridge 注入 / PJ1 spike 检查 + amd64 工程组件 / PJ2 投机三形式(reg-reg/reg-K/chain-KK)/ PJ3 FORLOOP 字节级 inline(实测 7.15-25.41x over gopher-lua,超 luajc 档 4.4x)/ PJ4 表 IC 六路径 + IsTable guard / PJ5 CALL void + TAILCALL + SELF inline(0..7 参 + 嵌套 + 错误冒泡)+ p4SpecState 子状态机骨架 / PJ7 接上 ~25 类形式 byte-equal / PJ8 arm64 字节级模板矩阵 + Compile 端接上 / PJ11 luajc 档突破。**PJ10 通用 per-opcode 翻译器 + native emit 接上**(2026-06-30~07-01):CFG builder + 两遍 label resolver + 35/38 opcode 每 arch 一份 emit(amd64 / arm64),inline 18 op mmap-safe 子集(其余退 Go 端 dispatch,mmap + Go morestack 物理不兼容硬约束),arch-aware `fixupKind` label resolver(amd64 rel32 / arm64 B26 / Cond19),`PreferNative` 多 BB + big-BB 收窄门;不接 VARARG(设计永不接)+ JMP/TEST/LOADBOOL C!=0(需真 CFG 留 followup)。**V15b heavy 三本 P4 native > P3 wasm 达标**(HeavyArith / HeavyRecursion / HeavyFloatloop,amd64),V14 luajc 档无回归。**跨 arch CI**:linux/arm64 检查翻 true + darwin/arm64 codepage 真实现(`internal/jit/jitcgo/` 子包保主库零 cgo)+ macos-latest M1 三平台矩阵 CI;darwin/arm64 真 execute 检查暂 false(留 followup)。**amd64 段到段(seg2seg)CALL 分派已交付(2026-07-06)**:段内 GETUPVAL inline + 双语义 RETURN 扩到 MultiReturn proto + arith/compare/GETUPVAL/嵌套 CALL 接受面,消掉每次 gibbous→gibbous 调用的 exit-reason 往返,call 密集内核反超 gopher-lua(fib 10.5x / fannkuch 6.9x / binary-trees 1.35x over gopher-lua);arm64 段到段 CALL 镜像实现已写完 + 交叉编译过,真机验收(`-race`/difftest/benchmark)经 CI 三平台矩阵挂 issue #61。**剩余项**:`archSupportsSpec=true` 物理 runner 打开 / OSR exit 接上(p4SpecState 骨架已就绪)。详 `docs/design/p4-method-jit/implementation-progress.md` §15.7。
 
 ### P5:trace-based JIT(+2-4 人年到可信 v1,开放式,目标 10-30x)
 

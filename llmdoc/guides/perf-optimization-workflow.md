@@ -1,7 +1,7 @@
 # Guide:性能优化工作流
 
 > 适用:对解释器/VM 热路径做性能优化轮时(P1 已走通一遍;P2 编译层、P3 wazero 会再走同一流程)。
-> 来源:`memory/reflections/2026-06-12-official-suite-perf-round.md`(六项落地 + 一项实测否决的实战样本)。
+> 来源:`memory/reflections/2026-06-12-official-suite-perf-round.md`(六项完成 + 一项实测否决的实战样本)。
 
 ## 1. profile 先行——预判清单会被推翻
 
@@ -40,7 +40,7 @@
 
 ## 6. 池化/复用类优化的配套清单
 
-衔接 `06-memory-gc.md` 回填条款(doc-gaps 第 10 项)与长稳轮「良性→致命」升级清单纪律,池化/复用类优化每项落地时同批完成:
+衔接 `06-memory-gc.md` 回填条款(doc-gaps 第 10 项)与长稳轮「良性→致命」升级清单纪律,池化/复用类优化每项完成时同批完成:
 
 1. **API 生命期契约入公共类型文档**(不能只在实现注释)——callHost 实参池的「args 仅本次调用有效」契约写入 `HostFn` 类型文档;
 2. **debug 构建毒值防护**——wangshu_trace 构建下归还时填毒值,违约保留立即显形;
@@ -50,35 +50,35 @@
 
 ## 7. 立项数字目标 vs profile 实测瓶颈:profile 才是合同
 
-> 来源:`memory/reflections/2026-06-16-p3-pw10-architectural-ceiling-round.md` 教训 1。承 §1「profile 先行」(立项侧)+ §3「benchmark 否决门」(单优化裁量侧)+ §5「跨机器基线对照」(时效性)+ 本节(落地中止损纪律)成 **perf 判定纪律四件套**。
+> 来源:`memory/reflections/2026-06-16-p3-pw10-architectural-ceiling-round.md` 教训 1。承 §1「profile 先行」(立项侧)+ §3「benchmark 否决门」(单优化裁量侧)+ §5「跨机器基线对照」(时效性)+ 本节(完成中止损纪律)成 **perf 判定纪律四件套**。
 
-立项时给出「数字目标 0.X x → ≥Y x」类指标(如 PW10 「call 核 0.52x → ≥1x」)是**方向陈述**,**不是合同**。落地中跑 cpuprofile / -benchmem 揭示「真实瓶颈所在 + 各块占比」才是合同。
+立项时给出「数字目标 0.X x → ≥Y x」类指标(如 PW10 「call 核 0.52x → ≥1x」)是**方向陈述**,**不是合同**。完成中跑 cpuprofile / -benchmem 揭示「真实瓶颈所在 + 各块占比」才是合同。
 
 **触发场景**:
-- perf 里程碑落地中 profile 揭示「立项时假设的瓶颈块 ≠ 实测主导项」时;
+- perf 里程碑完成中 profile 揭示「立项时假设的瓶颈块 ≠ 实测主导项」时;
 - profile 揭示「立项时数字目标在事实上不可达」(已实测的不可优化项 + 仍可优化项的上限和已确认 <立项目标)时;
-- /goal stop hook 强制不结束但 profile 证明数字不可达时(收口已落地子里程碑 + 文档化不可达边界,绝不硬上 UAF 代码追数字)。
+- /goal stop hook 强制不结束但 profile 证明数字不可达时(收口已完成子里程碑 + 文档化不可达边界,绝不硬上 UAF 代码追数字)。
 
 **判据**:做下一步优化前问「**这步打 profile 里哪块?预估能消多少?**」若答「不打主导块,即使做完数字也不达标」⟹ **止损 / 落档 / 换路径**,别为追原数字硬上高 UAF 实现。
 
 **纪律**:
 - 立项数字目标在 profile 揭示其事实上不可达时,**先重评目标可达性,再决定继续/止损/换路径**;
 - 不可达边界须**文档化为已知架构边界**(根因 + profile 证据 + 预估上限 + 触达条件),非作「未交付的失败」掩埋;
-- 「已落地子里程碑 + 架构边界文档化」是合法的里程碑收口形态,绝不为追立项数字硬上高 UAF 实现。
+- 「已完成子里程碑 + 架构边界文档化」是合法的里程碑收口形式,绝不为追立项数字硬上高 UAF 实现。
 
-**实例**(PW10 ④-ii):立项目标 `call 0.52x → ≥1x`。落地中 profile `/tmp/call.prof` 揭示:
+**实例**(PW10 ④-ii):立项目标 `call 0.52x → ≥1x`。完成中 profile `/tmp/call.prof` 揭示:
 - call 核 52% 在 enterGibbous + 38% 在 wazero CallWithStack(R3.5 已消反射装箱后的残留固定开销);
 - 四 kernel 结构均为 `body → fn`,body 含 ReasonUnknownCall(F2-b 静态分析不能确定被调函数不 yield)→ body 不可升 → 顶层升层(② callOnStack)+ ④ emitCall fast body **均对 bench kernel 无显著效果**(④ fast body 在不可升的 body 里无处发射);
 - ④-ii fast body 即使完成,预估上限 0.57x(仅消 0.52x 中 ~10% 的 h_call 建帧延迟)**仍 <1x**;
 - 实现复杂度 ~200 行 wasm 字节级 codegen,UAF 高(组帧 + 绑 ciTransferRef + IC mirror 写回 + 错误路径展开 + 跨守卫状态一致性)。
 
-**决策**:**止损 / 文档化为「call 0.52x 是 bench kernel 结构性架构边界」+ 留 followup**,而非硬上 200 行 wasm 字节级 codegen 追不可达数字。emit 原语 i64.add/i64.or 已保留供未来 ④-ii(若 bench kernel 形态调整或 F2-b 口径扩张),不需重新打通。
+**决策**:**止损 / 文档化为「call 0.52x 是 bench kernel 结构性架构边界」+ 留 followup**,而非硬上 200 行 wasm 字节级 codegen 追不可达数字。emit 原语 i64.add/i64.or 已保留供未来 ④-ii(若 bench kernel 形式调整或 F2-b 口径扩张),不需重新打通。
 
 **与四件套其他节的关系**:
 - **§1「profile 先行」**(立项侧)管「立项时拿什么数据立项」;
 - **§3「benchmark 否决门」**(单优化裁量侧)管「单项优化做完后实测不符就 revert」;
 - **§5「跨机器基线对照」**(时效性)管「数字判定回归/收益前同 commit 同硬件复测」;
-- **§7「立项数字目标 vs profile 实测瓶颈」**(落地中止损纪律)管「立项数字事实上不可达时的诚实收口」。
+- **§7「立项数字目标 vs profile 实测瓶颈」**(完成中止损纪律)管「立项数字事实上不可达时的诚实收口」。
 
 四节互锁:§1 防立项盲打 → §3 防单步过度乐观 → §5 防跨时空对照失真 → §7 防为追不可达数字硬上 UAF。
 
@@ -88,4 +88,4 @@
 - `internal/crescent/host.go` (`callHost` / `HostFn`) — 实参池与契约文档。
 - `internal/crescent/state.go` (`mainTh`) — 主 thread 跨 Run 复用。
 - `internal/gc/sweep.go` (`objectBytes`) — pacing 统计含附属块。
-- `benchmarks/realworld/` — benchmark-game 五脚本(对拍 + vs gopher-lua);`benchmarks/baseline/` 三档微基准。
+- `benchmarks/realworld/` — benchmark-game 五脚本(差分测试 + vs gopher-lua);`benchmarks/baseline/` 三档微基准。

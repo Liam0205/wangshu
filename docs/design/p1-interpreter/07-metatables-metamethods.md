@@ -143,7 +143,7 @@ setmetatable(t, mt):
 
 ### 2.1 查找机制:`rawget(metatable, event)`
 
-所有元方法查找的统一形态:**对值的元表 `rawget` 事件名字符串**,得到一个 Value:
+所有元方法查找的统一形式:**对值的元表 `rawget` 事件名字符串**,得到一个 Value:
 
 ```go
 // 取值 v 的元方法(事件 event 对应的字段),不命中返回 Nil。
@@ -195,7 +195,7 @@ const (
 
 ### 2.3 事件总表:事件 → 触发场景 → arity → 5.1 是否支持
 
-下表是**唯一事实源**,逐 opcode/场景列出触发点、被调元方法的参数形态、Lua 5.1 是否支持:
+下表是**唯一事实源**,逐 opcode/场景列出触发点、被调元方法的参数形式、Lua 5.1 是否支持:
 
 | 事件 | 触发 opcode / 场景 | 被调 arity(参数) | 返回 | 5.1 支持 | 慢路径 helper(本文) |
 |---|---|---|---|---|---|
@@ -245,7 +245,7 @@ func (vm *VM) callMM(f *frame, mm value.Value, args []value.Value, dst int32, nr
     // 1. 把 mm 与 args 压到当前 top 之上的临时调用区(不覆盖活跃寄存器)
     callBase := vm.pushTemp(f, mm, args)        // 返回临时帧 base
     // 2. 走与 doCall 同构的调用:mm 是 Lua closure → enterLuaFrame + reentry 子循环;
-    //    host → 同步 Go 调用。callFixed 是 05 的定参调用入口(05 §10.2 TFORLOOP 同款)。
+    //    host → 同步 Go 调用。callFixed 是 05 的定参调用入口(05 §10.2 TFORLOOP 一样的)。
     if e := vm.callFixed(f, callBase, len(args), nresults); e != nil {
         return e                                 // 错误冒泡(05 §9)
     }
@@ -295,7 +295,7 @@ func (vm *VM) callMM(f *frame, mm value.Value, args []value.Value, dst int32, nr
       t := h; continue loop                    // table(或任意可索引值):转而索引 h[k],继续循环
 ```
 
-**两种 `__index` 形态**:
+**两种 `__index` 形式**:
 
 - **`__index` 是 function**:调 `__index(t, k)`,**用首返回值作为 `t[k]` 的结果,循环终止**。这是「计算式索引」(如代理表、惰性字段)。
 - **`__index` 是 table**(最常见,OOP 继承):转去索引 `__index[k]`——**这会再次走完整 `t[k]` 逻辑**(`__index` 表自己可能又有 `__index`,形成继承链)。
@@ -350,7 +350,7 @@ func (vm *VM) indexMeta(f *frame, dst int32, t value.Value, key value.Value, slo
 }
 ```
 
-### 3.3 无限循环问题:Lua 5.1 不防、靠形态收敛
+### 3.3 无限循环问题:Lua 5.1 不防、靠形式收敛
 
 **Lua 5.1 不主动检测 `__index` 环**。若 `setmetatable(a, {__index=b})` 且 `setmetatable(b, {__index=a})` 且查一个两表都没有的键,官方 5.1 会**无限循环**(实际靠 C 栈耗尽 → `"C stack overflow"` 或 `"'__index' chain too long"`,版本相关)。
 
@@ -510,7 +510,7 @@ arith(a, b, op):
 **coercion 归属定稿**:算术(本节)、数值 for(05 §10.1)、`tonumber`([10](./10-stdlib.md))**共用同一套** `toNumber` 规则。本文定义该规则,05 §13 缺口与 10 的 `tonumber` 以此为准:
 
 ```go
-// 把 Value 转 number(用于算术 coercion / for / tonumber 无 base 形态)。
+// 把 Value 转 number(用于算术 coercion / for / tonumber 无 base 形式)。
 // 返回 (转换后数字, 是否成功)。number 直接成功;string 走 Lua 数字字面量语法子集;其它失败。
 func toNumber(v value.Value) (float64, bool) {
     if value.IsNumber(v) {
@@ -525,7 +525,7 @@ func toNumber(v value.Value) (float64, bool) {
 
 **`parseLuaNumber` 接受的语法(Lua 5.1 `luaO_str2d` / `strtod` 子集)**:
 
-| 形态 | 例 | 说明 |
+| 形式 | 例 | 说明 |
 |---|---|---|
 | 前后空白 | `" 10 "` → 10 | 允许前导/尾随空白(`isspace`),中间空白非法 |
 | 十进制整数 | `"42"` → 42 | |
@@ -540,7 +540,7 @@ func toNumber(v value.Value) (float64, bool) {
 - **十六进制浮点 `0x1.8p3`** 是 **5.2+**,P1 **不支持**(`parseLuaNumber` 对 `0x` 后只接受十六进制整数)。**待 12 差分核对**:5.1 的 `0x` 行为(`strtod` 在不同平台对 `0x` 浮点行为不一,Lua 5.1 官方 `lua_str2number` 用 `strtod`,但 5.1 词法/转换不承诺十六进制浮点)。**定稿:只支持十六进制整数**,与 5.1 最小语义一致。
 - **转换结果走 `NumberValue`**([01](./01-value-object-model.md) §3.4):即便解析出 NaN/Inf(理论上 `parseLuaNumber` 不产 NaN,但指数溢出可产 Inf),也经 canonicalize,防负 NaN 渗入。
 - **`-0.0`**:`"-0"` → `-0.0`(保留符号,Lua 语义)。
-- **与 tonumber(s, base) 的区别**:`tonumber` 带 base 参数时走**另一条**(任意进制整数解析,不接受小数/指数),那是 `tonumber` 专属,**不属于算术 coercion**([10](./10-stdlib.md) 定义)。算术 coercion 只用上面的无 base 形态。
+- **与 tonumber(s, base) 的区别**:`tonumber` 带 base 参数时走**另一条**(任意进制整数解析,不接受小数/指数),那是 `tonumber` 专属,**不属于算术 coercion**([10](./10-stdlib.md) 定义)。算术 coercion 只用上面的无 base 形式。
 
 > **coercion 归属定稿**:`parseLuaNumber` 实现在 `internal/crescent`(或 `internal/object` 的数字工具),**算术/for/tonumber 三处共享同一函数**,保证三处对「什么字符串算数字」逐字节一致。这收口了 05 §13 与 §10.1 的「coercion 边界」缺口、以及 10 的 `tonumber` 行为。由 [12](./12-testing-difftest.md) 钉死(各种边界串)。
 
@@ -1060,7 +1060,7 @@ sweep 阶段(06 §8):
 
 ### 13.4 对 06 的回填请求(本文定义语义,06 实现 GC 协作)
 
-**本文定义弱表的语义,但 GC 协作的具体落地需 06 回填**(06 §9.2 只说了一句「Lua 弱表 `__mode` 是 mark 时跳过弱引用、原子阶段 cleartable」,未展开)。请 06 增补:
+**本文定义弱表的语义,但 GC 协作的具体完成需 06 回填**(06 §9.2 只说了一句「Lua 弱表 `__mode` 是 mark 时跳过弱引用、原子阶段 cleartable」,未展开)。请 06 增补:
 
 1. **`Collector.weakList`**:GC 增一个弱表登记列表(类比 Lua `g->weak`)。mark 阶段(06 §5.3 `scanObject` 处理 Table 时)发现弱表 ⇒ 不按常规标记弱侧 ⇒ 把该 table GCRef 登记到 `weakList`。**对 06 §5.2 的修改**:Table 的扫描从「无条件扫 key+val+metaRef」改为「先查 `__mode`,弱侧不扫并登记 weakList」。
 2. **`cleartable` 阶段**(06 §8.2 GC 主流程,mark 后 sweep 前,原子):遍历 `weakList`,对每个弱表遍历 entry,移除「弱侧对象本轮死白」的 entry。这是 06 §11 所说「弱表 cleartable 是可观察行为」的实现点。**对 06 §8.2 主流程的修改**:在 mark 与 sweep 之间插入 `cleartable()` 步骤(也是 `separateFinalizers` 之后,因为 finalizer 复活的对象不应被弱表 cleartable 误清——**顺序:mark → separateFinalizers(复活)→ cleartable(清弱表死 entry)→ sweep → runFinalizers**,待 06 确认顺序)。

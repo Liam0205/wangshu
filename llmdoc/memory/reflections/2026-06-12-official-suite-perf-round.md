@@ -12,9 +12,9 @@
 debug/io 对象/setlocale/string.dump/require,均对应既有豁免注册表条目);移植过程
 扫出 **20 项真实分歧**并全部修复。② **realworld 基准**(`d220b64`)——
 `benchmarks/realworld/` benchmark-game 五脚本(fib/binarytrees/spectralnorm/
-fannkuch/nbody),双用途:返回值对拍官方 lua5.1(TestRealWorld_OracleParity)+
+fannkuch/nbody),双用途:返回值差分测试官方 lua5.1(TestRealWorld_OracleParity)+
 vs gopher-lua 基准。③ **审查 13-15 轮遗留 5 项核销 + P1 性能轮**(`f19bcc6..0302f7d`)
-——profile 驱动六项优化落地、一项(IC DataOff)实测回退被否决 revert。落地明细见
+——profile 驱动六项优化完成、一项(IC DataOff)实测回退被否决 revert。完成明细见
 implementation-progress.md,本文只记过程教训。
 
 ## 预期 vs 实际
@@ -36,11 +36,11 @@ implementation-progress.md,本文只记过程教训。
 ## 做对了什么(可复用模式)
 
 1. **四轴防线模型(本轮核心认识,升级长稳轮的三轴)**:fuzz(已实现行为自洽)→
-   probe corpus(特性面完整性)→ 外部审查(规范同构+形态组合)→ **官方测试套
+   probe corpus(特性面完整性)→ 外部审查(规范同构+形式组合)→ **官方测试套
    (作者写的语义断言,含负断言与跨特性组合)**。每加一轴都掏出前几轴全绿下的新
    bug(本轮 20 项)。第四轴的独有能力是**负断言**:errors.lua:75 断言错误消息
    **不得**含 'aaa'(`(aaa or aaa)()` 经 TESTSET 合流,官方放弃命名)——前三轴的
-   正向对拍只能验证「该给的给了」,结构性测不出「不该给的没给」。
+   正向差分测试只能验证「该给的给了」,结构性测不出「不该给的没给」。
 2. **棘轮机制**:未登记 stopAt 的文件 fatal、豁免线只许前移、testdata 与官方逐
    字节一致(不许为通过而改测试)——官方套不是一次性验收,是单向收紧的常驻防线。
    豁免线逐项对应既有豁免注册表条目,可审计。
@@ -54,7 +54,7 @@ implementation-progress.md,本文只记过程教训。
    3 倍——README 措辞如实;realworld 首轮三项落后也诚实入库(「微基准不外推」)。
    基准数字的叙事失真比数字本身错误更难纠正。
 5. **池化配套契约(上轮「内存复用配套清单」纪律的再执行)**:callHost 实参池
-   (`6b7c870`)配套三件事同批落地——HostFn 契约(不得越过调用保留 args)写入
+   (`6b7c870`)配套三件事同批完成——HostFn 契约(不得越过调用保留 args)写入
    **公共类型文档**(`e5b72ab`)、coroutine xfer 改拷贝、select 返回子切片的归还
    时序(defer 到结果拷贝之后);State.Call 复用主 thread 配套复位路径处理错误退出
    残留 openUvs;死协程清 xfer(`0302f7d`)与池归还同一卫生标准。
@@ -64,21 +64,21 @@ implementation-progress.md,本文只记过程教训。
 1. **stmtReturn 短路挂死(`cbaae3f`)排查曲折,根因是「快路径家族」漏审计**:
    `return (not cond) and msg` 的 eNonReloc 快路径漏 hasJumps() 检查,悬空 JMP
    自旋挂死。排查难点在**非确定性触发**——同一 errors.lua 时过时挂(取决于寄存器
-   形态),前后用了 head 二分、SIGQUIT dump、指令预算定位三种手段才锁定 errors.lua:7
+   形式),前后用了 head 二分、SIGQUIT dump、指令预算定位三种手段才锁定 errors.lua:7
    的 doit。事后发现 exp2AnyReg **早有正确写法**——这是「eNonReloc 快路径漏
-   hasJumps」家族的最后一处。教训:**同一形态的快路径在代码库里有多处,修一处时
+   hasJumps」家族的最后一处。教训:**同一形式的快路径在代码库里有多处,修一处时
    应 grep 全家族**;家族审计当时做了,这类 bug 不会潜伏到官方套才暴露。
    **横向锚点**:与 [[drift-audit-and-fuzz-hardening-round]] 教训 1「累积偏移审计」
    同**「同类目下横向扫一遍」纪律家族**——本条是**性能/codegen 优化时扫同族快路径**
-   (同一形态多处分布),后者是**公共 API 演进 N 轮后扫同族累积偏移**(同一驱动源
+   (同一形式多处分布),后者是**公共 API 演进 N 轮后扫同族累积偏移**(同一驱动源
    多轮接入)。两者都属「孤立看合理、叠在一起滑」类问题的横向防线。
 2. **describeReg 启发式近似被负断言现形**:旧实现「倒序回看 8 条指令」跨过 JMP
-   误归因,正向对拍多轮全绿,直到 errors.lua 负断言抓出。重写为正向 symbexec
+   误归因,正向差分测试多轮全绿,直到 errors.lua 负断言抓出。重写为正向 symbexec
    (`70349b1`,官方 ldebug.c 同构)。教训:**调试辅助路径同样须同构**,启发式
    近似在「不该输出却输出」的断言下必然现形——与长稳轮「同构到时序层」同族,
    这次是「同构到调试器层」。
-3. **形态猜测 vs 精确事实源(symbexec CLOSURE 伪指令数,`9bda05e`)**:旧实现按
-   形态猜测 CLOSURE 后的伪指令数,会吞掉 0-upvalue CLOSURE 后的真实指令;修复是
+3. **形式猜测 vs 精确事实源(symbexec CLOSURE 伪指令数,`9bda05e`)**:旧实现按
+   形式猜测 CLOSURE 后的伪指令数,会吞掉 0-upvalue CLOSURE 后的真实指令;修复是
    给 Proto 加 SubNUps 字段——让事实有单一来源,不靠猜。与长稳轮「对象尺寸单一
    事实源」同构。
 4. **过程纪律三项(均为用户纠正,务必记住)**:
@@ -98,9 +98,9 @@ implementation-progress.md,本文只记过程教训。
   定位陈述与负断言价值。
 - `04-frontend-parser-codegen.md` 同构纪律已有「helper 层」「时序层」两维度
   (doc-gaps 第 1、9 项),缺「快路径家族审计」——修 hasJumps 类检查时 grep
-  同形态全家族,`cbaae3f` 是现成反例(exp2AnyReg 对、stmtReturn 漏)。
+  同形式全家族,`cbaae3f` 是现成反例(exp2AnyReg 对、stmtReturn 漏)。
 - 性能优化工作流无文档:profile 先行、预判清单会被 profile 推翻、可疑优化
-  benchmark 否决、归因诚实——本轮六项落地 + 一项否决,样本已够。
+  benchmark 否决、归因诚实——本轮六项完成 + 一项否决,样本已够。
 - commit 卫生(可追溯引用、单域提频、协作文件不带)无处挂靠——engineering.md
   有 hooks 机制但无提交信息内容纪律。
 
