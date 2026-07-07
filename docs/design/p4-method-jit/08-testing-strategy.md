@@ -262,8 +262,8 @@ P4 引入投机带来的新验收口径,在 P3 V1-V18 之外新增:
 
 | # | 类目 | 断言(P4 不变式)| 单测对应 | 自动化检查 |
 |---|---|---|---|---|
-| **V19** | OSR 状态等价(P4 独有)| 每 guard 强制失败模式下,exit 后续跑结果与「同输入一路解释」**byte-equal**——验证物化序列(承 [./04-osr-deopt.md](./04-osr-deopt.md) §3.3 / §3.7)与着陆面(§1.1)无损 | `conformance/p4_test.go::TestOSRStateEquivalence`(table-driven 每 guard 强制失败一次)| `bytes.Equal(crescentOut, deoptInjectedOut)` 必为 true |
-| **V20** | deopt 风暴下不死锁 | 同 Proto 反复 deopt 触阈 → 进入 `P4StuckSpeculation`(P4 内吸收态;P2 tierState 仍 TierGibbous,承方案 A)防抖,后续不再投机但仍**正确**(走通用模板,与 crescent byte-equal)| `conformance/p4_test.go::TestDeoptStormToStuck`(构造高频 deopt 输入,断言 N 次 deopt 后 P4 内子状态机进入吸收态)| 进入 `P4StuckSpeculation` 后:① 后续输出仍 byte-equal crescent ② deopt 计数停止增长 ③ 不重试投机(承 [./04-osr-deopt.md](./04-osr-deopt.md) §5.3-§5.5)|
+| **V19** | OSR 状态等价(P4 独有)| **兑现方式(issue #66,2026-07-07 校准）**：本条原本设想验证「函数级 OSR 状态等价」，但函数级 OSR 物化从未实现（承 [./04-osr-deopt.md](./04-osr-deopt.md) 头部裁决），现在等价由 **deopt-redo 等价**兑现——① seg2seg deopt-redo 注入测试 `TestSeg2SegDeoptRedo_ArithGuardMiss` / `_NestedPropagation`（+ `SegToSegDeoptCount` 探针，实跑增长 3 / 4）验证「callee 段内 guard 失败 → 逐层传播 → 顶层重跑整个 top-level call 后结果不变」；② spec-template deopt 测试 `TestPJ5_SelfCall_E2E_SpecTemplate_OSRExitToDeopt`（+ `SpecP4DeoptHits` 探针，实跑增长 6）验证 spec 段 guard 失败 → 降级 host.Self 后仍 byte-equal | seg2seg：`TestSeg2SegDeoptRedo_ArithGuardMiss` / `_NestedPropagation`;spec-template：`TestPJ5_SelfCall_E2E_SpecTemplate_OSRExitToDeopt` | `SegToSegDeoptCount` / `SpecP4DeoptHits` 探针真实增长 + 重跑/降级后输出 byte-equal crescent |
+| **V20** | deopt 风暴下不死锁 | 同 Proto 反复 deopt 触阈 → 进入 `P4StuckSpeculation`(P4 内吸收态;P2 tierState 仍 TierGibbous,承方案 A)防抖,后续不再投机但仍**正确**(走通用模板,与 crescent byte-equal)。**兑现方式(issue #66,2026-07-07 校准）**：由 spec-template deopt 风暴测试 `TestPJ5_SelfCall_E2E_SpecTemplate_DeoptStorm`（5 caller 独立累积 `SpecP4DeoptHits`，实跑增长 15）+ `internal/gibbous/jit/p4state_test.go` 7 个 P4 状态机单测（含 `TestP4SpecState_MaxRecompileTriesReachedStuck` 验 P4StuckSpeculation 吸收态）兑现 | `TestPJ5_SelfCall_E2E_SpecTemplate_DeoptStorm` + `p4state_test.go` 7 单测 | 进入 `P4StuckSpeculation` 后:① 后续输出仍 byte-equal crescent ② deopt 计数停止增长 ③ 不重试投机(承 [./04-osr-deopt.md](./04-osr-deopt.md) §5.3-§5.5)|
 | **V21** | 双架构双跑(amd64 + arm64)| amd64 与 arm64 物理 runner 各跑全套 V1-V18 + V19 + V20,且 amd64 输出 == arm64 输出 == crescent 输出(三方 byte-equal)| `difftest/p4_test.go::TestDualArchByteEqual`(同 Proto 三 runner)+ CI 矩阵两架构 | crescent vs gibbous-jit/amd64 vs gibbous-jit/arm64 三方 byte-equal(承 §6.2)|
 | **V22** | guard 漏判 fuzz(**当前实现形式**:错误存在性差分,承 §2.4 addendum)| **当前**:force-all P4 vs P1 差分 fuzz,验证「错误存在性」(errP1==nil ⇔ errP4==nil,预算/时机类分叉 Skip)+ 结果 byte-equal——若 guard 漏判导致 P4 静默错果,fuzz 会在差分先抓到。**归 followup**:「模板生成器每条 guard 强制不查一次」的原始 spec 变体(FuzzGuardOmission)未实现 | `fuzz_p4_test.go::FuzzP4ForceAllPromote`(build tag `wangshu_p4 && wangshu_profile`,5 corpus seed + 27 内嵌 f.Add seed,`-race` 下自动 Skip,见本 §)| 任一 seed 触发 error 存在性真分叉(非 budget 类)或 result 字面不 byte-equal ⇒ 硬 fail;spec 变体「per-guard 禁用」归 §2.4 addendum 与 09 §4 已登记 followup |
 
@@ -271,7 +271,7 @@ P4 引入投机带来的新验收口径,在 P3 V1-V18 之外新增:
 
 **V19-V22 的核心价值**:
 
-- V19 直接验「OSR exit 物化无损」——P4 deopt 简单性的物理验收时刻;
+- V19 直接验「deopt-redo 等价无损」——原设想的函数级 OSR 物化已由 #50 deopt-redo 取代（承 [./04-osr-deopt.md](./04-osr-deopt.md) 头部裁决），现在验的是 seg2seg deopt-redo 重跑 + spec-template 降级后结果不变;
 - V20 直接验「deopt 风暴防抖收敛」——`P4StuckSpeculation` 吸收态可达;
 - V21 把双架构提升为 CI 硬门禁,与单架构差分独立验;
 - V22 把 guard 必要性变成可验证 —— 是 [../../../llmdoc/guides/prove-the-path-under-test.md](../../../llmdoc/guides/prove-the-path-under-test.md) 「毒化哨兵」反向侧解药在 P4 投机维度的兑现。

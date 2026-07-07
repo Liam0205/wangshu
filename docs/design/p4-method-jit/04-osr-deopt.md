@@ -2,6 +2,12 @@
 
 > 状态:**详细设计**(P4 整体仍是「架构决策深度」,但 deopt 机制是 deopt vs snapshot 的分水岭,值表示承诺的现金兑现处,本文按详细设计深度展开)。本文是 P4 子文档集的「deopt 机制」单一事实源——guard 失败如何回到解释器、物化为什么是 memmove、与 P5 snapshot 的复杂度对照、再训练防 deopt 风暴。
 >
+> **裁决(issue #66,2026-07-07)**:本文正文（§1-§9）描述的「函数级 OSR exit + 物化（重建一个解释器帧、在其中续跑）」方案**从未实现**，被 issue #50 的「虚拟帧 + deopt-redo」取代（裁决记录见 [../../../spike/p4callinline/DECISION.md](../../../spike/p4callinline/DECISION.md)）。正文保留作历史设计参考，**不要据此删任何代码**。经调查 + 实跑测试确认，望舒现有**三套并列的 deopt 机制**，不能混为一谈：
+> - **① 函数级 OSR 物化**（本文正文设想的，即 issue #51 的重建解释器帧续跑）：**从未实现**，已由 #50 的虚拟帧 + deopt-redo 取代，不再需要。
+> - **② spec-template guard-miss 记账**（`internal/gibbous/jit/p4state.go` 的 `p4SpecState` / `onOSRExit` / `P4Deoptimized` 状态机）：**在 amd64/arm64 上现在就是活跃机制**，不是死代码。SELF+CALL 的 spec template（`obj:m()` 这类 OOP 写法）在 `archSupportsSpec()==true` 时真的开启；spec 段 guard 失败（receiver 变形 / key 退化 / NodeVal==nil）时 `code.go` 的 `runSpecSelfCall` 调 `onOSRExit(proto)` 记账 + 降级 host.Self，累计达 `DeoptThreshold` 切 `P4Deoptimized`。测试 `TestPJ5_SelfCall_E2E_SpecTemplate_OSRExitToDeopt` / `_DeoptStorm` 现在 PASS，断言 `SpecP4DeoptHits` 真实增长（实跑 6 / 15）。**因此不要因为本裁决误以为整个 `p4state.go` 是死代码**——它承担的是本文正文之外的第二套机制。
+> - **③ seg2seg deopt-redo**（issue #50 的 `segCallDeopt` 机制）：**活跃**。seg2seg callee 段内 guard 失败时置 `segCallDeopt` 标志 + ret，逐层向上传播；到 native 调用链顶层（segCallDepth==0）清标志并经 exit-reason host 路径重跑整个 top-level call。issue #66 子任务③已为它补白盒探针 `SegToSegDeoptCount` + 两个注入测试（`TestSeg2SegDeoptRedo_ArithGuardMiss` / `_NestedPropagation`，均 PASS，探针增长 3 / 4）。
+> - **一句话区分**：本文正文的 OSR 物化（①）已被取代不再需要；`p4state.go` 的 spec-template 记账（②）与 #50 的 seg2seg deopt-redo（③）是两套并列的活跃机制。issue #66「删死代码」的原方案**未执行**——改为修正过期注释（把 `p4state.go` / `jitcontext.go` / `doc.go` 里「无 deopt 路径 / `archSupportsFrameInline=false` 屏蔽真触发 / PJ0 骨架」这批过期措辞改成「amd64/arm64 已激活」）。
+>
 > **方案 A 决议(承 [./03-speculation-ic.md](./03-speculation-ic.md) §4.2 + §8)**:**P2 `tierState` 三态枚举不变**(`TierInterp / TierGibbous / TierStuck`,单向无环);**P4 在 `internal/gibbous/jit` 内部维护独立子状态字段 `p4SpecState[proto]`**——枚举 `P4Speculative / P4Deoptimized / P4StuckSpeculation`——叠加在 P2 `TierGibbous` 之上,**P2 不感知**。OSR exit / 重训练 / 拉黑投机全部 P4 自管。本文 §5 的所有「降层 / 重编译 / 拉黑投机」操作都对应 P4 端 `p4SpecState[proto]` 的转移而非 P2 `pd.tierState` 的写入(承 §5.2 / §5.3 + 本文 §12 回填请求已撤回 RJ-8/9/10)。
 >
 > 上游契约:
