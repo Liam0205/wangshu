@@ -1,6 +1,6 @@
 ---
 name: issue8-boundary-cost-round
-description: issue #8 边界成本轮——CallInto 零分配 + 四档真实世界 benchmark 过程教训:实现浪费 vs 架构成本辨析、零拷贝复用栈的 GC 根安全、benchmark 必须覆盖真实交互形态
+description: issue #8 边界成本轮——CallInto 零分配 + 四档真实世界 benchmark 过程教训:实现浪费 vs 架构成本辨析、零拷贝复用栈的 GC 根安全、benchmark 必须覆盖真实交互形式
 metadata:
   type: reflection
   date: 2026-06-13
@@ -21,7 +21,7 @@ issue #8 表面是「per-item 跨界慢于 gopher-lua」,而 [[design-premises]]
 - **架构成本**(NaN-boxing/arena/边界拷贝纪律带来的、前提二四项税决定的固定开销):这部分是设计选择,不该为它违背前提去优化;
 - **实现浪费**(72 B / 2 allocs 的返回值**双拷贝**:VM 栈→inner slice→public slice,与 nret/脚本复杂度无关):这是纯粹的实现冗余,消除它不触碰任何前提。
 
-**How to apply**:收到「在 X 形态下比对标对象慢」的性能 issue 时,先 profile 定位成本来源,再问「这笔成本是架构选择的必然,还是可消除的实现冗余?」。只有架构成本才适用「这是已知设计权衡」的回应;实现浪费无论形态是否被前提一判为非主推,都该消除——尤其当该形态是**首个目标宿主的真实热路径**且**对标场景是已承诺的 drop-in 卖点**时。判否一个优化提案要靠前提,但前提不能拿来掩护实现浪费。
+**How to apply**:收到「在 X 形式下比对标对象慢」的性能 issue 时,先 profile 定位成本来源,再问「这笔成本是架构选择的必然,还是可消除的实现冗余?」。只有架构成本才适用「这是已知设计权衡」的回应;实现浪费无论形式是否被前提一判为非主推,都该消除——尤其当该形式是**首个目标宿主的真实热路径**且**对标场景是已承诺的 drop-in 卖点**时。判否一个优化提案要靠前提,但前提不能拿来掩护实现浪费。
 
 ### 2. 零拷贝复用栈返回值:GC 根可达性 + 覆写契约,必须用 stress 实测验证
 
@@ -32,7 +32,7 @@ issue #8 表面是「per-item 跨界慢于 gopher-lua」,而 [[design-premises]]
 
 **How to apply**:任何「返回内部缓冲区切片以省分配」的优化(P3 值栈 arena 化后会更频繁遇到),GC stress 实测 + 覆写契约测试是上线前置,不是可选。与长稳轮「内存复用类变更配套清单」([[longevity-review-fix-round]])同家族:复用前先列哪些路径会从良性变 UAF。
 
-### 3. benchmark 必须覆盖真实交互形态——「VM 不是自 high 产品」
+### 3. benchmark 必须覆盖真实交互形式——「VM 不是自 high 产品」
 
 旧 benchmark 只有纯 VM micro(baseline)+ 真实负载纯 VM(realworld),**全部不跨 Go↔Lua 边界**。结果:README 头条 9.0× 是嵌入者**够不到的天花板**,而真实热路径(per-item 边界)的劣化完全不可见——直到 issue #8 用自带 probe 撞出来。
 
@@ -61,8 +61,8 @@ issue #8 表面是「per-item 跨界慢于 gopher-lua」,而 [[design-premises]]
 
 ## promotion 候选(暂留观察)
 
-- 「实现浪费 vs 架构成本」辨析(教训 1)是性能 issue 处置的通用判断框架。**已落地** → [[design-claims-vs-codebase-physics]](成本归类维度 §3 + 零拷贝根可达性 §4),连同 PW5 边界成本 / PW6 段重定位聚合成 4 维判断框架,不再暂留观察。
-- 「benchmark 覆盖真实交互形态」(教训 3)同理,候选进 perf guide。
+- 「实现浪费 vs 架构成本」辨析(教训 1)是性能 issue 处置的通用判断框架。**已完成** → [[design-claims-vs-codebase-physics]](成本归类维度 §3 + 零拷贝根可达性 §4),连同 PW5 边界成本 / PW6 段重定位聚合成 4 维判断框架,不再暂留观察。
+- 「benchmark 覆盖真实交互形式」(教训 3)同理,候选进 perf guide。
 
 ## 关联
 

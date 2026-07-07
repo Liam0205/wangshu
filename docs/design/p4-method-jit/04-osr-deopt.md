@@ -15,7 +15,7 @@
 > P5 对位(复杂度对照的对偶面):
 > [../p5-trace-jit/06-snapshot-deopt.md](../p5-trace-jit/06-snapshot-deopt.md)(snapshot deopt——本文 §3.4 / §9 用它做 P4 简单性的反衬;其 §3 复杂度对照表的 P5 列即此处 P4 列的镜面)。
 >
-> P1 已落地的料(deopt 协议复用的现成基础设施):
+> P1 已完成的料(deopt 协议复用的现成基础设施):
 > [../p1-interpreter/01-value-object-model](../p1-interpreter/01-value-object-model.md)(§7 不变式 1「值即 8 字节,跨 tier 拷贝是 memmove」——物化语义的物理基础)、
 > [../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md)(§1 CallInfo + Frame 布局、§1.2 word2 bit50 callStatus_gibbous、§1.3 reloadFrame 协议、§7 调用约定 + §7.3 reentry 边界)。
 >
@@ -36,11 +36,11 @@
 
 P4 是望舒第一个**有运行期假设可能被打破**的层(承 [./03-speculation-ic.md](./03-speculation-ic.md) §4 状态机:P2/P3 零 deopt,P4 「有意打破」)。**guard 失败的唯一退路是 OSR exit**——交还解释器,而不是 trampoline 内重试、不是 trace 式 side trace、不是 V8 Maglev 式编译码内补救。
 
-> **核心断言**:在 P4,**所有 guard 失败的处理路径都收敛到「函数级 OSR exit + crescent 续跑」**。其余形态(side exit 跑另一段编译码、就地补救成通用模板继续跑)都不在 P4 的设计空间。
+> **核心断言**:在 P4,**所有 guard 失败的处理路径都收敛到「函数级 OSR exit + crescent 续跑」**。其余形式(side exit 跑另一段编译码、就地补救成通用模板继续跑)都不在 P4 的设计空间。
 
-为什么不允许其它形态:
+为什么不允许其它形式:
 
-- **side exit 跑另一段编译码**(LuaJIT / TurboFan side trace 式):需要发射多份编译产物 + 编译期/运行期管理 side exit 跳转表,且 side trace 自身仍可能 deopt——递归复杂度迅速膨胀。这是 trace JIT 的必然形态(承 [../p5-trace-jit/00-overview.md](../p5-trace-jit/00-overview.md) §2 流水线图 ④/⑤),不是模板编译该背的复杂度。
+- **side exit 跑另一段编译码**(LuaJIT / TurboFan side trace 式):需要发射多份编译产物 + 编译期/运行期管理 side exit 跳转表,且 side trace 自身仍可能 deopt——递归复杂度迅速膨胀。这是 trace JIT 的必然形式(承 [../p5-trace-jit/00-overview.md](../p5-trace-jit/00-overview.md) §2 流水线图 ④/⑤),不是模板编译该背的复杂度。
 - **就地补救为通用模板**:理论上「投机失败 → 同函数内回退到无投机的通用模板继续跑」可保留 dispatch 收益,但需要每条投机指令旁带一份通用模板入口 + 编译期生成「跨指令切换路径」的 stitching 代码,把 P4 的「不优化跨指令」简单性破坏(承 [./02-template-direction.md](./02-template-direction.md) §1.3 简单性向下传导)。**P4 的策略是退到解释器跑完本帧、再训练后整 Proto 重编译**(§5),把「补救」从单帧内的微观操作上移成 Proto 级的宏观状态转移。
 
 ### 0.2 与 P3 04-trampoline 的对位:P3 status 链 vs P4 OSR exit
@@ -58,7 +58,7 @@ P4 是望舒第一个**有运行期假设可能被打破**的层(承 [./03-specu
 
 [../p2-bridge/05-p3-p4-interface](../p2-bridge/05-p3-p4-interface.md) §6.1 已为这一区分预留 status 编码:**P3 trampoline 永远不返回 2,P4 trampoline 才返回 2**。这是「P3 零 deopt vs P4 有意打破」状态机差(承 [./03-speculation-ic.md](./03-speculation-ic.md) §4)的物理兑现点。
 
-> **形态对位一句话**:**P3 是出 wazero 进 Go,P4 是出 JIT 进解释器**——跨层协议形态对位,但 P4 多了一条「DEOPT 出口 + crescent 续跑同帧」的语义,这是本文的核心增量。
+> **形式对位一句话**:**P3 是出 wazero 进 Go,P4 是出 JIT 进解释器**——跨层协议形式对位,但 P4 多了一条「DEOPT 出口 + crescent 续跑同帧」的语义,这是本文的核心增量。
 
 ### 0.3 与 P5 snapshot deopt 的复杂度差(预告)
 
@@ -73,7 +73,7 @@ P4 是望舒第一个**有运行期假设可能被打破**的层(承 [./03-specu
 | §3 | 「栈槽真相」不变式 | snapshot 不必存在的物理来源 + osrExit 三步伪码 |
 | §4 | exitPC 与字节码地址映射 | 编译期一次性产出,exit 时回填 CallInfo.savedPC |
 | §5 | 再训练与防 deopt 风暴 | P4StuckSpeculation;承 P2 不重试纪律 |
-| §6 | exit stub 的物理形态 | 寄存器写回 + 写 exitPC + 经 trampoline 出 |
+| §6 | exit stub 的物理形式 | 寄存器写回 + 写 exitPC + 经 trampoline 出 |
 | §7 | exit 之后的 crescent 接管 | reloadFrame + bit50 后续语义 |
 | §8 | P4 OSR 接 P3 跨层协议 | status=2 DEOPT 出口扩展 |
 | §9 | snapshot 复杂度对照 | P4 vs P5 五行对照表 |
@@ -106,7 +106,7 @@ P4 是望舒第一个**有运行期假设可能被打破**的层(承 [./03-specu
 ```
 exit 点的物理状态(guard 失败瞬间):
   arena 值栈槽:本帧所有活值已物化(§3.2 栈槽真相不变式)
-  CallInfo:    本帧 CallInfo 已存在(进入 P4 帧时压的,与 enterLuaFrame 同款)
+  CallInfo:    本帧 CallInfo 已存在(进入 P4 帧时压的,与 enterLuaFrame 一样的)
   savedPC:     由 exit stub 回填为 exitPC(§4.2)
 
 trampoline 出 JIT 后:
@@ -148,9 +148,9 @@ exit 后调用栈:
 
 否决理由(承 [./02-template-direction.md](./02-template-direction.md) §1.3):
 
-- **side trace 是 trace JIT 的本质**:trace 形态把「函数」抽象成「实际走过的路径」,所以 deopt 自然是「换路径继续跑」。method JIT 的 「函数」抽象不支持这种语义——一个函数的所有可能路径都已编译,投机失败的路径要么有通用模板兜底(就地补救,§0.1 否决),要么退回解释器跑(本文方案)。
+- **side trace 是 trace JIT 的本质**:trace 形式把「函数」抽象成「实际走过的路径」,所以 deopt 自然是「换路径继续跑」。method JIT 的 「函数」抽象不支持这种语义——一个函数的所有可能路径都已编译,投机失败的路径要么有通用模板兜底(就地补救,§0.1 否决),要么退回解释器跑(本文方案)。
 - **侧道编译码会再次 deopt**:LuaJIT 的 side trace 本身仍可能 guard 失败,衍生出 side-of-side trace 的 NYI 复杂度——P4 不引入这条递归。
-- **结构性简化向下传导**:不做 side trace ⇒ exit 只有一种形态(回解释器);exit 形态唯一 ⇒ trampoline 的 DEOPT 出口只需一个(`status=2`,§8.3);trampoline 出口少 ⇒ 系统管线复杂度低([./05-system-pipeline](./05-system-pipeline.md))。
+- **结构性简化向下传导**:不做 side trace ⇒ exit 只有一种形式(回解释器);exit 形式唯一 ⇒ trampoline 的 DEOPT 出口只需一个(`status=2`,§8.3);trampoline 出口少 ⇒ 系统管线复杂度低([./05-system-pipeline](./05-system-pipeline.md))。
 
 ### 1.5 不做跨帧恢复
 
@@ -160,7 +160,7 @@ exit 后调用栈:
 
 - **P4 没有跨帧编译**:P4 的编译单元是「单 Proto」(承 [./02-template-direction.md](./02-template-direction.md) §4 边界表「不做跨函数内联」),所以一帧的 exit 永远只涉及一帧的状态——无需重建多帧。
 - **跨帧 deopt 是 trace 内联的产物**:P5 因为「一条 trace 跨多帧内联」,deopt 时必须凭空重建从未物理存在的内联帧 CallInfo(承 [../p5-trace-jit/06-snapshot-deopt.md](../p5-trace-jit/06-snapshot-deopt.md) §1 / §2 frames[] 重建)。P4 没有内联,每帧都有真实 CallInfo,exit 不需要补建任何 CallInfo。
-- **「单向、当前帧、整体放弃」三个性质合在一起**让 P4 的 deopt 态空间退化到「最简形态」——其它复杂度都从这三个 NO 上消解。
+- **「单向、当前帧、整体放弃」三个性质合在一起**让 P4 的 deopt 态空间退化到「最简形式」——其它复杂度都从这三个 NO 上消解。
 
 ### 1.6 与 P3 错误冒泡 status 链的对位:语义不同
 
@@ -213,7 +213,7 @@ exit 后调用栈:
 | 状态字段 | 物理位置 | exit 时由谁设置 |
 |---|---|---|
 | arena 值栈槽 (`R(0..MaxStack)`) | `thread.valueStack` 段(arena 内) | exit stub 的「寄存器→栈槽写回」(§6.2) |
-| CallInfo | `thread.callInfoRef` 数组(arena 内) | 进入 P4 帧时压(与 enterLuaFrame 同款),exit 不动 CallInfo 数组本身 |
+| CallInfo | `thread.callInfoRef` 数组(arena 内) | 进入 P4 帧时压(与 enterLuaFrame 一样的),exit 不动 CallInfo 数组本身 |
 | `CallInfo.savedPC` | CallInfo word1 [31:0] | exit stub 写 exitPC(§4.2) |
 | `CallInfo.top` | CallInfo word1 [63:32] | 大多数 opcode 边界 top 已就位;exit 在 opcode 边界 ⇒ top 不需要额外更新 |
 | `Frame.stk / k / ic`(主循环局部缓存) | Go 侧栈(execute 局部) | 由 reloadFrame 重建(§7.1) |
@@ -226,7 +226,7 @@ exit 后调用栈:
 
 > 任何 Lua 值都是单一 `uint64`(NaN-box 编码),栈/寄存器/表槽/upvalue 同构 —— 跨 tier 拷贝是 memmove。
 
-P4 生成码读写值的形态:
+P4 生成码读写值的形式:
 
 - **寄存器持值**:机器寄存器 rax/rbx/... 持的就是 NaN-box `uint64`(整数寄存器);算术快路径里 xmm0/xmm1 持 f64,但快路径出口写回栈槽前已 NaN 规范化(承 [./03-speculation-ic](./03-speculation-ic.md) 算术快路径出口纪律)。
 - **栈槽读写**:`mov rax, [rsi + 8*reg]`(amd64;rsi=base 指针,reg=寄存器号)读出 NaN-box `uint64`;`mov [rsi + 8*reg], rax` 写回——**位 by 位、字节对字节**与解释器 `f.stk[f.base+a]` 读写的是同一个 8 字节单元。
@@ -263,7 +263,7 @@ P4 生成码读写值的形态:
 - P1:解释器值表示选 NaN-box([../p1-interpreter/01](../p1-interpreter/01-value-object-model.md) §3)。
 - P3:wasm 编译层共享 arena 与 NaN-box 编码,跨层只传 base i32([../p3-wasm-tier/03-memory-model](../p3-wasm-tier/03-memory-model.md))。
 - **P4:OSR 物化 = memmove**(本文)。
-- P5:trace JIT 继承,但 snapshot 重建仍是 NaN-box u64 → 栈槽,基础位编码同款([../p5-trace-jit/06-snapshot-deopt.md](../p5-trace-jit/06-snapshot-deopt.md) §2 物化部分)。
+- P5:trace JIT 继承,但 snapshot 重建仍是 NaN-box u64 → 栈槽,基础位编码一样的([../p5-trace-jit/06-snapshot-deopt.md](../p5-trace-jit/06-snapshot-deopt.md) §2 物化部分)。
 
 > **承的对偶论点**:P4 物化简单是「P1 值表示选对了 + P4 不优化跨指令」**两条**共同贡献的——前者保证「同编码无转换」,后者保证「值在栈槽真相点」。少了任一条,物化都不会这么薄。本文 §3 的栈槽真相不变式与本节合并构成这个完整论证。
 
@@ -285,10 +285,10 @@ P4 生成码读写值的形态:
 - **活值集 `Live(pc)`**:在 pc 对应的字节码边界处,后续执行可能读到的 Lua 寄存器集(由 codegen liveness 分析得出,[../p1-interpreter/02](../p1-interpreter/02-bytecode-isa.md) §6 寄存器使用约定)。
 - **不变式**:对所有字节码边界 pc,`∀reg ∈ Live(pc), arena.valueStack[base + reg] 持有该寄存器在 pc 时的合法 Lua 值`。
 
-谁来兑现这个不变式:**模板编译器**——每条字节码模板的最后一步必须把它修改的输出寄存器 store 回栈槽([./02-template-direction](./02-template-direction.md) §3「不优化跨指令」直接保证)。具体形态(**伪汇编中 `rsi`/`rbx` 等寄存器仅作示例占位,具体寄存器约定见 [05 §3.3 / 06 §4.1](./05-system-pipeline.md)**):
+谁来兑现这个不变式:**模板编译器**——每条字节码模板的最后一步必须把它修改的输出寄存器 store 回栈槽([./02-template-direction](./02-template-direction.md) §3「不优化跨指令」直接保证)。具体形式(**伪汇编中 `rsi`/`rbx` 等寄存器仅作示例占位,具体寄存器约定见 [05 §3.3 / 06 §4.1](./05-system-pipeline.md)**):
 
 ```
-ADD A B C 模板(amd64,概念形态):
+ADD A B C 模板(amd64,概念形式):
   ; load 操作数
   mov rax, [rsi + 8*B]      ; rax = R(B) NaN-box
   mov rbx, [rsi + 8*C]      ; rbx = R(C) NaN-box
@@ -320,7 +320,7 @@ ADD A B C 模板(amd64,概念形态):
 
 1. **本帧所有活值仍在栈槽**(不变式 1):上一条模板的 store 已完成,本条模板尚未开始 store。
 2. **本条模板的输出未写入**:guard 在 store 之前,所以 R(A) 仍是 ADD 之前的旧值——这正是「一路解释跑」在该 pc 边界看到的栈状态(R(A) 还没被 ADD 这条指令更新)。
-3. **机器寄存器持的是「即将被使用但尚未生效」的暂存值**:rax/rbx 里有 `R(B)/R(C)` 的副本——但这些副本与栈槽里的值**位 by 位相同**(刚 load 自栈槽,§3.1 模板形态),所以**这些寄存器即使丢弃也无信息丢失**。
+3. **机器寄存器持的是「即将被使用但尚未生效」的暂存值**:rax/rbx 里有 `R(B)/R(C)` 的副本——但这些副本与栈槽里的值**位 by 位相同**(刚 load 自栈槽,§3.1 模板形式),所以**这些寄存器即使丢弃也无信息丢失**。
 
 **结论**:guard 失败 → **待物化集合 = 空**。物化在最常见情形下退化为零操作(承 §3.6 实现自由度)。
 
@@ -338,7 +338,7 @@ osrExit(exitPC):
   // step 2: 记 deopt 计数到 P4 自管状态(§5 再训练用,方案 A:P4 端 p4SpecState[proto].deoptCount)
   //   ★ 多数情况下是 O(1) 单条 atomic add
   //   注意:计数挂 P4 端 p4SpecState[proto] 字段(internal/gibbous/jit),不挂 P2 ProfileData
-  //   (承本文头注 + §5 + §12 方案 A 决议:RJ-9 撤回,P2 实装零修改)
+  //   (承本文头注 + §5 + §12 方案 A 决议:RJ-9 撤回,P2 实现零修改)
   atomic_add(&p4SpecState[proto].deoptCount, 1)
 
   // step 3: 经 trampoline 退出 JIT 世界(§6.2 / §8)
@@ -403,10 +403,10 @@ osrExit(exitPC):
 边界:
 
 - **允许**:每个 exit 点编译期烧入「该 exit 要写回哪几个寄存器到哪几个栈槽」的固定 store 序列(§3.6)。
-- **禁止**:任何「运行期查 snapshot 配方 → 解码 → 物化」形态(那是 P5 的事,§9.1)。
+- **禁止**:任何「运行期查 snapshot 配方 → 解码 → 物化」形式(那是 P5 的事,§9.1)。
 - **禁止**:exit 路径上做任何分配(可能触发 GC、违反 [../p3-wasm-tier/05-safepoint-gc](../p3-wasm-tier/05-safepoint-gc.md) 的「分配只在受控点」哲学)。
 
-**这条不变式守住的是 P4 deopt 简单性的工程边界**——任何把 exit 复杂化的提案(运行期映射 / 动态查表 / exit 内分配)都直接判否。
+**这条不变式保住的是 P4 deopt 简单性的工程边界**——任何把 exit 复杂化的提案(运行期映射 / 动态查表 / exit 内分配)都直接判否。
 
 ---
 
@@ -437,7 +437,7 @@ type osrExitInfo struct {
 
 - **映射数据极少**:每个 guard 一条记录(2 字段,16 字节量级)——与 P5 snapshot 的「每 guard 一份稀疏映射 + frames[] + slots{}」形成对照(§9.1)。
 - **静态烧入,无需运行期管理**:`osrExits` 数组在编译时填好后只读,不随运行期 deopt 事件变化。
-- **可选优化:不存映射,exitPC 直接编入 stub**:更简形态——每个 stub 的「写 exitPC」步骤就是 `mov [ci_savedPC_offset], <立即数>`,立即数本身就是 exitPC,无需查表。这是 §6.2 的实装基线;`osrExits` 数组主要用于诊断与统计(知道哪些 stub 触发了 deopt)。
+- **可选优化:不存映射,exitPC 直接编入 stub**:更简形式——每个 stub 的「写 exitPC」步骤就是 `mov [ci_savedPC_offset], <立即数>`,立即数本身就是 exitPC,无需查表。这是 §6.2 的实现基线;`osrExits` 数组主要用于诊断与统计(知道哪些 stub 触发了 deopt)。
 
 ### 4.2 exit 时按映射回填 CallInfo.savedPC
 
@@ -454,11 +454,11 @@ exit stub 内(amd64 概念):
 为什么不在每条字节码模板入口都同步 pc 到 CallInfo:
 
 - **运行期同步 pc 是浪费**:正常路径下从不读 CallInfo.savedPC(只在 host call / yield / exit / traceback 时读),每条模板入口都写一次纯属浪费指令。
-- **只在「需要 pc」的点物化**:与 P3 的 pc 物化策略([../p3-wasm-tier/02-translation](../p3-wasm-tier/02-translation.md) §4)同款——helper 调用入口、guard exit 点、回边 safepoint 这些「需要让外部世界看到当前 pc」的点才把编译期已知 pc 写入 CallInfo。
+- **只在「需要 pc」的点物化**:与 P3 的 pc 物化策略([../p3-wasm-tier/02-translation](../p3-wasm-tier/02-translation.md) §4)一样的——helper 调用入口、guard exit 点、回边 safepoint 这些「需要让外部世界看到当前 pc」的点才把编译期已知 pc 写入 CallInfo。
 
 ### 4.3 与 P3 02-translation §4.2 pc 物化的对位
 
-**P3 与 P4 pc 物化的形态对位**:
+**P3 与 P4 pc 物化的形式对位**:
 
 | 维度 | P3([../p3-wasm-tier/02-translation](../p3-wasm-tier/02-translation.md) §4) | P4(本文) |
 |---|---|---|
@@ -477,7 +477,7 @@ exit stub 内(amd64 概念):
 - 解释器从 exitPC 续跑,期间任何错误产生的 traceback,都按 CallInfo 链遍历,本帧的 savedPC 与「一路解释跑同帧」是一样的(都指向当前指令)。
 - **差分逐字节一致由此自然成立**:exit 后的执行路径与「一路解释」共享同一段解释器主循环代码,traceback 输出同型。
 
-> **「差分主防线见 [./08-testing-strategy](./08-testing-strategy.md)」**:具体差分 fuzz 形态、deopt 注入测试、exit 状态等价专项测试的实装由 08 承担,本文不展开。本文只点名:exit 后续跑的逐字节一致是 P4 投机错误防线的关键依赖,因此 §3.7 的「exit 物化序列编译期静态生成」纪律不能松——任何运行期映射都引入 codegen-time 与 exit-time 的解释偏差,直接威胁差分主防线。
+> **「差分主防线见 [./08-testing-strategy](./08-testing-strategy.md)」**:具体差分 fuzz 形式、deopt 注入测试、exit 状态等价专项测试的实现由 08 承担,本文不展开。本文只点名:exit 后续跑的逐字节一致是 P4 投机错误防线的关键依赖,因此 §3.7 的「exit 物化序列编译期静态生成」纪律不能松——任何运行期映射都引入 codegen-time 与 exit-time 的解释偏差,直接威胁差分主防线。
 
 ---
 
@@ -522,7 +522,7 @@ TierInterp ──► TierGibbous     P4Speculative
                                                  P2 看仍 TierGibbous)
 ```
 
-**deopt 计数超阈值的处理(P4 端伪码,P2 实装零修改)**:
+**deopt 计数超阈值的处理(P4 端伪码,P2 实现零修改)**:
 
 ```
 onOSRExit(proto, exitInfo):
@@ -568,7 +568,7 @@ onOSRExit reaches threshold a second time:
 
 - **该 Proto 永久不再发投机模板**:无 f64 fast path、无 IC 表槽直达、无 confidence 决策——所有点都发通用模板(等价解释器语义,通过 helper 实现的慢路径);**P2 视角看仍是 TierGibbous,只是 P4 端永久供应「通用版 GibbousCode」**。
 - **仍比解释快**:通用模板仍消除 dispatch 税(承 [./02-template-direction.md](./02-template-direction.md) §1.1)——取指/译码/dispatch 跳转/pc 维护仍由编译码静态化,只是不再做类型投机。
-- **相对 P2 `TierStuck` 的差异**:P2 `TierStuck`(P2 实装管,F1-F7 拒)= 永久解释 + 不再编译;`P4StuckSpeculation`(P4 实装管,投机收敛失败)= 永久不投机 + 仍发通用版编译码。两者位于不同状态机,不互斥(承 [./03-speculation-ic.md](./03-speculation-ic.md) §4.3 表)。
+- **相对 P2 `TierStuck` 的差异**:P2 `TierStuck`(P2 实现管,F1-F7 拒)= 永久解释 + 不再编译;`P4StuckSpeculation`(P4 实现管,投机收敛失败)= 永久不投机 + 仍发通用版编译码。两者位于不同状态机,不互斥(承 [./03-speculation-ic.md](./03-speculation-ic.md) §4.3 表)。
 
 ### 5.4 与 P2 04-try-compile-fallback §7 不重试纪律的对位
 
@@ -576,7 +576,7 @@ onOSRExit reaches threshold a second time:
 
 | 维度 | P2 PB0 不重试纪律(`TierStuck`)| P4 不重试纪律(`P4StuckSpeculation`)|
 |---|---|---|
-| 状态机归属 | P2 `tierState` 枚举(P2 实装) | P4 内部 `p4SpecState[proto]` 字段(P4 实装,P2 不感知)|
+| 状态机归属 | P2 `tierState` 枚举(P2 实现) | P4 内部 `p4SpecState[proto]` 字段(P4 实现,P2 不感知)|
 | 触发场景 | try-compile 失败(F1-F7 不可编译 / Compile err) | 重编译后仍反复 deopt(类型假设始终失败) |
 | 物理依据 | 同 Proto 同 P3/P4 后端 = 同结果(§7.1) | 同 Proto 类型行为不稳定 = 重编译仍 deopt(§5.3) |
 | 工程价值 | 防止「不可编译热函数」无限重试 | 防止「投机不稳定 Proto」反复编译/deopt 抖动 |
@@ -614,26 +614,26 @@ onOSRExit reaches threshold a second time:
 | `MaxRecompileTries` | 同 Proto 在 P4 上重编译的最大次数 | 1-2 次 |
 | 重编译间冷却期 | deopt 触阈到置 P4Deoptimized,新一轮 considerPromotion 触发前最少观察的 onBackEdge 数 | 数千次回边(让 IC 充分稀释) |
 
-**校准依赖**:列内核负载 + 实战脚本的 deopt 频次分布——这是 P2 实测后才能定的工程数字,不影响本文协议正确性,只影响时机(承 [../p2-bridge/04-try-compile-fallback](../p2-bridge/04-try-compile-fallback.md) §7.4 跨版本重评估同款)。
+**校准依赖**:列内核负载 + 实战脚本的 deopt 频次分布——这是 P2 实测后才能定的工程数字,不影响本文协议正确性,只影响时机(承 [../p2-bridge/04-try-compile-fallback](../p2-bridge/04-try-compile-fallback.md) §7.4 跨版本重评估一样的)。
 
-**P4 端内部状态字段(方案 A,P2 实装零修改)**:
+**P4 端内部状态字段(方案 A,P2 实现零修改)**:
 
 - `p4SpecState[proto].deoptCount uint32`:本 Proto 在当前 P4 编译产物上的累计 deopt 次数(每次重编译时 reset);住 `internal/gibbous/jit` 内部 map,P2 不感知。
-- `p4SpecState[proto].recompileCount uint8`:本 Proto 在 P4 上的重编译次数(累计,不 reset,达 `MaxRecompileTries` 后吸收 P4StuckSpeculation);住同款 P4 端 map。
-- **P2 `tierState` 枚举不动**——不新增 `TierGibbousJIT` / `TierStuckSpeculation`(承本文头注方案 A 决议 + §12 RJ-8/9/10 撤回);P4 内部 `P4Speculative / P4Deoptimized / P4StuckSpeculation` 三态住 P4 实装。
+- `p4SpecState[proto].recompileCount uint8`:本 Proto 在 P4 上的重编译次数(累计,不 reset,达 `MaxRecompileTries` 后吸收 P4StuckSpeculation);住一样的 P4 端 map。
+- **P2 `tierState` 枚举不动**——不新增 `TierGibbousJIT` / `TierStuckSpeculation`(承本文头注方案 A 决议 + §12 RJ-8/9/10 撤回);P4 内部 `P4Speculative / P4Deoptimized / P4StuckSpeculation` 三态住 P4 实现。
 
 ---
 
-## 6. exit stub 的物理形态
+## 6. exit stub 的物理形式
 
-本节给 exit stub 的具体形态——每个 guard 处编译期生成一段「exit 着陆点」的物理代码。形态对位 [./05-system-pipeline](./05-system-pipeline.md) §4.2 的 trampoline 三种出口与 [./06-backends](./06-backends.md) §5 的 amd64/arm64 实装。
+本节给 exit stub 的具体形式——每个 guard 处编译期生成一段「exit 着陆点」的物理代码。形式对位 [./05-system-pipeline](./05-system-pipeline.md) §4.2 的 trampoline 三种出口与 [./06-backends](./06-backends.md) §5 的 amd64/arm64 实现。
 
 ### 6.1 每个 guard 处编译期生成一段 exit stub
 
-**exit stub 的位置**(amd64 概念,arm64 同形态;**伪汇编中 `r15`/`r14` 等寄存器仅作示例占位,具体寄存器约定见 [05 §3.3 / 06 §4.1](./05-system-pipeline.md);不同节中同一寄存器名指代物在 03/04/05 间不一致——以 05 §3.3 jitContext 寄存器固定纪律为单一事实源**):
+**exit stub 的位置**(amd64 概念,arm64 同形式;**伪汇编中 `r15`/`r14` 等寄存器仅作示例占位,具体寄存器约定见 [05 §3.3 / 06 §4.1](./05-system-pipeline.md);不同节中同一寄存器名指代物在 03/04/05 间不一致——以 05 §3.3 jitContext 寄存器固定纪律为单一事实源**):
 
 ```
-某条投机模板的发射形态:
+某条投机模板的发射形式:
   template_start:
     ; load 操作数
     mov rax, [rsi + 8*B]
@@ -673,7 +673,7 @@ onOSRExit reaches threshold a second time:
 
 ### 6.2 stub 内容:三步具象化
 
-承 §3.3 的三步,具象到机器指令(amd64 形态):
+承 §3.3 的三步,具象到机器指令(amd64 形式):
 
 ```
 exit_stub(guardId):
@@ -685,7 +685,7 @@ exit_stub(guardId):
 
   ; ── step 2:写 exitPC + atomic deopt 计数 ──
   mov dword ptr [r15 + ci_savedPC_offset], <exitPC_imm>  ; 写 CallInfo.savedPC
-  ; ★ deoptCount 住 P4 端 p4SpecState[proto](方案 A,P4 实装内部 map),
+  ; ★ deoptCount 住 P4 端 p4SpecState[proto](方案 A,P4 实现内部 map),
   ;   非 P2 ProfileData 字段;jitContext 经 r14 间接寻址到本 proto 槽
   lock inc dword ptr [r14 + p4_deoptCount_offset]        ; p4SpecState[proto].deoptCount++
 
@@ -712,18 +712,18 @@ stub 大小估算:
 
 ### 6.3 stub 的代码复用:相邻 guard 经常共享同一 exit stub
 
-**优化空间**:相邻多条投机模板的 exit 操作往往相同——同一字节码 pc(同条指令的多个 guard)、同一寄存器写回集合——可共享 exit stub。同条 ADD 的 B/C 两个 IsNumber guard 都跳同一 `exit_stub_for_ADD_42`,exitPC=42,语义同。进一步:不同 exitPC 的 guard 通过把 exitPC 装入寄存器后跳到共享 stub 实现(多一条 mov + 跳的成本)。ROI 实测决定([./06-backends](./06-backends.md) §5);本文不裁决形态,只承「stub 复用是合法优化方向,不破坏 §3.7 不变式」。
+**优化空间**:相邻多条投机模板的 exit 操作往往相同——同一字节码 pc(同条指令的多个 guard)、同一寄存器写回集合——可共享 exit stub。同条 ADD 的 B/C 两个 IsNumber guard 都跳同一 `exit_stub_for_ADD_42`,exitPC=42,语义同。进一步:不同 exitPC 的 guard 通过把 exitPC 装入寄存器后跳到共享 stub 实现(多一条 mov + 跳的成本)。ROI 实测决定([./06-backends](./06-backends.md) §5);本文不裁决形式,只承「stub 复用是合法优化方向,不破坏 §3.7 不变式」。
 
-### 6.4 amd64 / arm64 各自的 stub 形态对照
+### 6.4 amd64 / arm64 各自的 stub 形式对照
 
-承 [./06-backends.md](./06-backends.md) 双后端纪律——同形态、各自指令序列。amd64 见 §6.2。arm64 概念差异:
+承 [./06-backends.md](./06-backends.md) 双后端纪律——同形式、各自指令序列。amd64 见 §6.2。arm64 概念差异:
 
 - **寄存器写回用 `stp`(store pair)**:多寄存器写回时省一半指令。
 - **立即数编码**:exitPC ≤ 16-bit 直接 `movz`,大于则 `movz + movk` 组合。
 - **atomic 计数用 LL/SC**(`ldaxr / stlxr`)替代 amd64 的 `lock inc`。
 - **icache flush 在整段编译产物写完后做一次**:exit stub 不需要单独 flush。
 
-具体 stub 实装(寄存器分配、emitter)由 [./06-backends](./06-backends.md) §5 承担,本文给概念形态。
+具体 stub 实现(寄存器分配、emitter)由 [./06-backends](./06-backends.md) §5 承担,本文给概念形式。
 
 ### 6.5 stub 与 trampoline 出口共用
 
@@ -755,7 +755,7 @@ trampoline 出口(三种):
 - **status 编码统一**:`0=OK / 1=ERR / 2=DEOPT`(承 [../p2-bridge/05](../p2-bridge/05-p3-p4-interface.md) §6.1)——P3 用前两个,P4 用全三个。
 - **GibbousCode.Run 接口不动**:`func (c *p4Code) Run(state *State, base int32) int32` 返回 status int32 即可,P2 看到的是统一抽象(承 [../p2-bridge/05](../p2-bridge/05-p3-p4-interface.md) §6 GibbousCode 接口)。
 
-具体 trampoline asm stub 实装见 [./05-system-pipeline](./05-system-pipeline.md) §4.2 + [./06-backends](./06-backends.md) §5——本文不展开。
+具体 trampoline asm stub 实现见 [./05-system-pipeline](./05-system-pipeline.md) §4.2 + [./06-backends](./06-backends.md) §5——本文不展开。
 
 ---
 
@@ -786,13 +786,13 @@ func reloadFrameAfterDeopt(f *frame, th *Thread) {
 
 要点:
 
-- **reloadFrame 与 enterLuaFrame / RETURN 的 reloadFrame 是同一函数**:解释器主循环本就在 fresh reentry / RETURN 切帧时调 reloadFrame——P4 deopt 复用同款 reloadFrame,语义同型。
+- **reloadFrame 与 enterLuaFrame / RETURN 的 reloadFrame 是同一函数**:解释器主循环本就在 fresh reentry / RETURN 切帧时调 reloadFrame——P4 deopt 复用一样的 reloadFrame,语义同型。
 - **frame 缓存的 stk/k/ic 三字段必须重取**:P4 执行期间不维护 Frame(Frame 是 Go 侧 execute 局部缓存,P4 跑的是机器码,不动 Frame)——所以 exit 后必须从 CallInfo + Proto 重建。
 - **f.pc = ci.savedPC = exitPC**:这是 §4.2 的 stub 写入字段在解释器侧的取用点——exit 与续跑通过这个字段建立逻辑连接。
 
 ### 7.2 CallInfo 状态:bit50 callStatus_gibbous 在 exit 后是否还需置 1
 
-**已确认拍板**(2026-06-29 PR #27 / PR #28 P4 三平台 CI 矩阵全过后用户确认):**采用 (b) 清 0**。CallInfo bit50(callStatus_gibbous,承 [../p3-wasm-tier/04-trampoline](../p3-wasm-tier/04-trampoline.md) §1.2)在该帧 OSR exit 后由 exit stub 清 0,后续由 crescent 续跑,该帧字面状态回归「crescent 帧」。
+**已确认定下来**(2026-06-29 PR #27 / PR #28 P4 三平台 CI 矩阵全过后用户确认):**采用 (b) 清 0**。CallInfo bit50(callStatus_gibbous,承 [../p3-wasm-tier/04-trampoline](../p3-wasm-tier/04-trampoline.md) §1.2)在该帧 OSR exit 后由 exit stub 清 0,后续由 crescent 续跑,该帧字面状态回归「crescent 帧」。
 
 两个候选(留作历史):
 
@@ -805,7 +805,7 @@ func reloadFrameAfterDeopt(f *frame, th *Thread) {
 
 - 差分口径要求 traceback 逐字节一致——若 bit50 触发任何特殊显示,exit 后续跑的 traceback 与「一路解释」就有可观察差异。
 - exit 后帧的执行引擎已是 crescent,逻辑上应清 bit50(它的语义是「正在 wasm/jit 执行」)。
-- 实装代价小:exit stub 在 step 1 时顺手清 bit50(一条 mov 即可)。
+- 实现代价小:exit stub 在 step 1 时顺手清 bit50(一条 mov 即可)。
 
 **已落实**:P4 OSR exit 路径默认清 0;三平台 CI 矩阵(linux/amd64 + linux/arm64 + macos-latest M1)V1-V13 差分套全过,traceback 与「一路解释」逐字节一致。未来 P5 trace JIT 若需要依赖 bit50 的某个语义,需要时另行重审本节。
 
@@ -845,7 +845,7 @@ exit 与错误的关系:
 - 优先级:**错误优先**——若 `state.pendingErr` 非 nil(可能是 helper callback 在 exit 之前的某次调用设置的),trampoline 出口按 status=1 处理,不走 OSR 着陆。
 - 物理依据:错误是确定要传递的语义事件,不能因为 exit 路径忘记冒泡而吞掉。
 
-**实装防线**:OSR exit stub 在 step 1 时检查 `state.pendingErr == nil`,若非 nil 则修改 status 为 1 并跳错误出口——这条防线由 [./05-system-pipeline](./05-system-pipeline.md) §4 trampoline 实装承担,本文承「exit 不应同时携错」的语义。
+**实现防线**:OSR exit stub 在 step 1 时检查 `state.pendingErr == nil`,若非 nil 则修改 status 为 1 并跳错误出口——这条防线由 [./05-system-pipeline](./05-system-pipeline.md) §4 trampoline 实现承担,本文承「exit 不应同时携错」的语义。
 
 ---
 
@@ -857,13 +857,13 @@ exit 与错误的关系:
 
 **承 [../p3-wasm-tier/04-trampoline](../p3-wasm-tier/04-trampoline.md) §0.4 P4 继承承诺**:
 
-| 协议点 | P3 形态 | P4 形态 | 复用关系 |
+| 协议点 | P3 形式 | P4 形式 | 复用关系 |
 |---|---|---|---|
-| 入口签名 | `(base i32) → status i32`(单 i32 入参 + i32 返回) | 同左,原生 asm trampoline 实装 | 概念同款,物理不同 |
-| CallInfo bit50 | gibbous 帧入口写 1 | 同左 | 概念同款 |
-| 跨层只传 base | `base` 字节偏移 | 同左 | 概念同款 |
-| 错误冒泡 | status 链单向冒泡到 protected 边界 | 同左 | 概念同款 |
-| helper 三向分派 | gibbous/crescent/host 三向(`h_call`) | 同左,原生 call 替代 imported call | 语义同款 |
+| 入口签名 | `(base i32) → status i32`(单 i32 入参 + i32 返回) | 同左,原生 asm trampoline 实现 | 概念一样的,物理不同 |
+| CallInfo bit50 | gibbous 帧入口写 1 | 同左 | 概念一样的 |
+| 跨层只传 base | `base` 字节偏移 | 同左 | 概念一样的 |
+| 错误冒泡 | status 链单向冒泡到 protected 边界 | 同左 | 概念一样的 |
+| helper 三向分派 | gibbous/crescent/host 三向(`h_call`) | 同左,原生 call 替代 imported call | 语义一样的 |
 
 **这就是「P4 是 P3 同 tier 的另一发射后端」的协议侧兑现**(承 [./00-overview.md](./00-overview.md) §0.1 tier 表)——不动协议,只换执行引擎。
 
@@ -879,7 +879,7 @@ exit 与错误的关系:
 | helper 调用 | imported function via wazero | 原生 call Go 函数(经 jitContext.helperTable) |
 | icache 一致性 | wazero 自管 | arm64 显式 IC IVAU/DC CVAU([./05-system-pipeline.md](./05-system-pipeline.md) §4.2) |
 
-**P4 不写 trampoline asm stub 实装**(那是 [./05-system-pipeline](./05-system-pipeline.md) §4.2 + [./06-backends](./06-backends.md) §5 的事)——本文只承「概念协议同 P3,物理实装 P4 自付」。
+**P4 不写 trampoline asm stub 实现**(那是 [./05-system-pipeline](./05-system-pipeline.md) §4.2 + [./06-backends](./06-backends.md) §5 的事)——本文只承「概念协议同 P3,物理实现 P4 自付」。
 
 ### 8.3 status 编码扩展:P4 trampoline status=2 DEOPT 出口
 
@@ -916,21 +916,21 @@ crescent doCall 的 enterGibbous 收到 GibbousCode.Run 返回:
   }
 ```
 
-**`callDeoptResume` 是 P4 阶段的 doCall 新出口**——P3 阶段只有 `callReturnedGibbous / callReturnedHost / callEnteredLua / throwPending` 几个,P4 增一个。这是对 [../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §7 doCall 接口的扩展(P4 落地时同批补)。
+**`callDeoptResume` 是 P4 阶段的 doCall 新出口**——P3 阶段只有 `callReturnedGibbous / callReturnedHost / callEnteredLua / throwPending` 几个,P4 增一个。这是对 [../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §7 doCall 接口的扩展(P4 完成时同批补)。
 
-### 8.4 helper 调用协议:P4 慢路径助手的形态
+### 8.4 helper 调用协议:P4 慢路径助手的形式
 
-承 [./05-system-pipeline](./05-system-pipeline.md) §4.3,P4 helper 与 P3 helper 形态对位:
+承 [./05-system-pipeline](./05-system-pipeline.md) §4.3,P4 helper 与 P3 helper 形式对位:
 
-| 维度 | P3 helper(`h_call/h_arith/...`) | P4 helper(同名,原生形态) |
+| 维度 | P3 helper(`h_call/h_arith/...`) | P4 helper(同名,原生形式) |
 |---|---|---|
 | 调用机制 | imported function via wazero | 原生 call(经 jitContext.helperTable[idx]) |
-| 入参 | i32 立即数(base/pc/op) | 寄存器约定(同 P4 trampoline 入口形态) |
+| 入参 | i32 立即数(base/pc/op) | 寄存器约定(同 P4 trampoline 入口形式) |
 | pc 物化 | helper 入口写 `ci.savedPC = pc` | 同左 |
 | 三向分派(h_call) | callee 类型 switch(gibbous/crescent/host) | 同左 |
-| 慢路径复用 crescent | 调 `state.arithMeta` 等 crescent 同款实现 | 同左 |
+| 慢路径复用 crescent | 调 `state.arithMeta` 等 crescent 一样的实现 | 同左 |
 
-**P4 helper 表与 P3 imported 表是「概念同款,实装方式不同」的对偶**——这是 P4 系统管线的细节,详见 [./05-system-pipeline](./05-system-pipeline.md) §4.3,本文不展开。
+**P4 helper 表与 P3 imported 表是「概念一样的,实现方式不同」的对偶**——这是 P4 系统管线的细节,详见 [./05-system-pipeline](./05-system-pipeline.md) §4.3,本文不展开。
 
 > **本文与 helper 协议的接点**:OSR exit stub 在 step 3 经 trampoline 出口时,**不调任何 helper**——deopt 出口是纯汇编序列(写字段 + 设 status + 跳 trampoline 退出点)。这与 status=1 ERR 路径常见经 helper 调用形成的(helper 设 pendingErr 后 return 1)不同——deopt 路径无需 helper,因为 exit 不是错误,不需要构造 LuaError,不需要语义动作。
 
@@ -950,7 +950,7 @@ crescent doCall 的 enterGibbous 收到 GibbousCode.Run 返回:
 | **恢复的帧数** | 1(当前帧,且已在 CallInfo) | 1..N(含从未物理存在的内联帧) |
 | **值的位置** | 已在栈槽(栈槽真相不变式,§3.1) | 寄存器/spill/常量/被 sink 的对象字段 |
 | **映射数据** | 无需(静态生成 exit 序列,§4.1 极少) | 每 guard 一份 snapshot,需压缩与生命周期管理 |
-| **出错形态** | 几乎无投机面(物化 = memmove,§2) | 任一槽映射错 / unsink 漏字段 ⇒ 静默错果 |
+| **出错形式** | 几乎无投机面(物化 = memmove,§2) | 任一槽映射错 / unsink 漏字段 ⇒ 静默错果 |
 | **exit stub 大小** | ~5-7 条机器指令(§6.2) | ~50-200 条(snapshot 解析 + 多帧重建 + unsink) |
 | **运行期分配** | 无(§3.7 不变式) | 可能(unsink 重建对象需新分配) |
 | **GC 交互** | 无(exit 不分配,根天然可见) | unsink 中途可能触发 GC(承 [../p5-trace-jit/06-snapshot-deopt.md](../p5-trace-jit/06-snapshot-deopt.md) §2 末) |
@@ -996,7 +996,7 @@ crescent doCall 的 enterGibbous 收到 GibbousCode.Run 返回:
 - 若验收达标(列内核负载 ≥ luajc),说明这条兑换在望舒约束下值得,P4 收口。
 - 若不达标,需评估是否引入轻度 regalloc(只在直线段内),代价是 deopt 机器上升半个量级——但仍远低于 P5 全套 snapshot。
 
-**不裁决的边界**:本文 §9 只对照「P4 现选 vs P5 全套 snapshot」两个端点。中间形态(轻度 regalloc 但无 inline/sink 的 mini-snapshot)留 [./08-testing-strategy.md](./08-testing-strategy.md) 验收回填。
+**不裁决的边界**:本文 §9 只对照「P4 现选 vs P5 全套 snapshot」两个端点。中间形式(轻度 regalloc 但无 inline/sink 的 mini-snapshot)留 [./08-testing-strategy.md](./08-testing-strategy.md) 验收回填。
 
 ---
 
@@ -1022,7 +1022,7 @@ crescent doCall 的 enterGibbous 收到 GibbousCode.Run 返回:
 
 5. **不重试纪律:反复 deopt 拉黑投机,吸收态**(§5.4)
    - 重编译次数到 `MaxRecompileTries` 后,P4 端把 `p4SpecState[proto]` 标 `P4StuckSpeculation`,永久不再投机(发通用模板或纯解释);P2 `tierState` 不动(仍 `TierGibbous`);
-   - 与 P2 04-try-compile-fallback §7 不重试纪律对位——同款防抖,不同触发原因 + 不同状态机归属(P2 vs P4 实装)。
+   - 与 P2 04-try-compile-fallback §7 不重试纪律对位——一样的防抖,不同触发原因 + 不同状态机归属(P2 vs P4 实现)。
 
 **P4 不变式 6(松弛版栈槽真相)**(承 §3.1 修订):
 
@@ -1054,21 +1054,21 @@ crescent doCall 的 enterGibbous 收到 GibbousCode.Run 返回:
 - 「函数级 exit」的「函数」是否真等于「Lua Proto 一次激活」?多 closure 共享 Proto 时的 exit 行为?
 - exit stub 的具象大小、stub 复用的 ROI、stub 段相对热路径的位置(同段 vs 独立段)。
 
-留 amd64 原型实测——本文承概念形态,不裁决实装细节。
+留 amd64 原型实测——本文承概念形式,不裁决实现细节。
 
 ### 11.3 deopt 阈值数值与 P2 ProfileData 字段扩展的回填
 
 **开放问题:阈值校准**(参 [../p2-bridge/01-profiling](../p2-bridge/01-profiling.md) §5):
 
 - `DeoptThreshold` / `MaxRecompileTries` / 重编译间冷却期——三个阈值的具体数值,依赖列内核 + 实战脚本实测。
-- P4 端 `p4SpecState[proto]` 字段(`deoptCount` / `recompileCount` / 子状态枚举值)落地形态——P4 PJ4/PJ5 实装时定(承本文头注 + §5 + §12 方案 A 决议:P2 实装零修改,字段全在 `internal/gibbous/jit` 内部 map)。
+- P4 端 `p4SpecState[proto]` 字段(`deoptCount` / `recompileCount` / 子状态枚举值)完成形式——P4 PJ4/PJ5 实现时定(承本文头注 + §5 + §12 方案 A 决议:P2 实现零修改,字段全在 `internal/gibbous/jit` 内部 map)。
 
 ### 11.4 P4 编译执行的线程模型
 
 **开放问题:编译执行线程模型**:
 
 - 同步编译(升层触发 → 当前线程编译 → 安装 → 立即用):模板编译微秒级,可能够用。
-- 后台 goroutine 编译 + 安装屏障:与 P3 / wazero 路线图同款决策。
+- 后台 goroutine 编译 + 安装屏障:与 P3 / wazero 路线图一样的决策。
 
 **与 OSR 的接点**:无论同步 / 后台编译,deopt 后的「再编译」(§5.2)都遵循同样的编译模型——本文不增模型,只承「重编译 = 一次正常编译过程,从 TierInterp 重新走 considerPromotion」。
 
@@ -1077,7 +1077,7 @@ crescent doCall 的 enterGibbous 收到 GibbousCode.Run 返回:
 **新登记开放问题**:
 
 - 多 State 共享同一 Proto——deopt 计数 atomic add 已防写竞态,但「触阈 → P4Deoptimized + 重编译」的子状态转移可能多线程并发(住 P4 端 `p4SpecState[proto]` map,P2 不卷入)。
-- 候选纪律:重编译用 sync.Once 或 compileMu(承 [../p2-bridge/04](../p2-bridge/04-try-compile-fallback.md) §4.5 同款锁)守 single-flight。
+- 候选纪律:重编译用 sync.Once 或 compileMu(承 [../p2-bridge/04](../p2-bridge/04-try-compile-fallback.md) §4.5 一样的锁)守 single-flight。
 - 留 P4 多 State 实测确认。
 
 ---
@@ -1086,27 +1086,27 @@ crescent doCall 的 enterGibbous 收到 GibbousCode.Run 返回:
 
 承 [../../../llmdoc/memory/doc-gaps](../../../llmdoc/memory/doc-gaps.md) 跟踪机制,本文向上游文档登记的回填请求:
 
-> **方案 A 决议(承本文头注 + §5)**:P4 投机生命周期 P4 自管,P2 实装零修改——故撤回原 RJ-8(P2 04 加 `TierGibbousJIT/TierStuckSpeculation` 枚举)/ RJ-9(P2 01 加 `ProfileData.deoptCount`)/ RJ-10(P2 01 加 `ProfileData.recompileCount`)三项;P4 端在 `internal/gibbous/jit` 内部 map `p4SpecState[proto]` 自管(`P4Speculative / P4Deoptimized / P4StuckSpeculation` + `deoptCount` + `recompileCount` 字段)。本文保留下表中跨层契约相关的回填项(P1 05 doCall 出口 / 错误冒泡纪律 / P3 04 bit50 / P2 05 status=2 编码),这些与 tier 状态机分离。
+> **方案 A 决议(承本文头注 + §5)**:P4 投机生命周期 P4 自管,P2 实现零修改——故撤回原 RJ-8(P2 04 加 `TierGibbousJIT/TierStuckSpeculation` 枚举)/ RJ-9(P2 01 加 `ProfileData.deoptCount`)/ RJ-10(P2 01 加 `ProfileData.recompileCount`)三项;P4 端在 `internal/gibbous/jit` 内部 map `p4SpecState[proto]` 自管(`P4Speculative / P4Deoptimized / P4StuckSpeculation` + `deoptCount` + `recompileCount` 字段)。本文保留下表中跨层契约相关的回填项(P1 05 doCall 出口 / 错误冒泡纪律 / P3 04 bit50 / P2 05 status=2 编码),这些与 tier 状态机分离。
 
 | 回填项 | 上游落点 | 内容 | 状态 |
 |---|---|---|---|
 | ~~`TierGibbousJIT` / `TierStuckSpeculation` 枚举~~ | ~~P2 04 §2.1~~ | **撤回(方案 A)**——P4 内部 `p4SpecState[proto]` 子状态 `P4Speculative/P4Deoptimized/P4StuckSpeculation`,P2 `tierState` 三态不动 | ✅ 撤回 |
 | ~~`ProfileData.deoptCount uint32`~~ | ~~P2 01 §2.2~~ | **撤回(方案 A)**——P4 端 `p4SpecState[proto].deoptCount`,P2 `ProfileData` 不动 | ✅ 撤回 |
 | ~~`ProfileData.recompileCount uint8`~~ | ~~P2 01 §2.2~~ | **撤回(方案 A)**——P4 端 `p4SpecState[proto].recompileCount`,P2 `ProfileData` 不动 | ✅ 撤回 |
-| `callDeoptResume` doCall 出口 | [../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §7 doCall 接口 / callResult 枚举 | doCall 收到 GibbousCode.Run 返回 status=2 时的处理出口(reloadFrame + 续跑同帧);P4 阶段新增,P1/P2/P3 不需要(承 §8.3) | **记录,P4 落地时同批补** |
-| CallInfo bit50 在 OSR exit 后的语义 | [../p3-wasm-tier/04-trampoline](../p3-wasm-tier/04-trampoline.md) §1.2 / §1.4 bit50 写入纪律 | exit 后 bit50 是清 0 还是保留 1(§7.2)——倾向清 0(差分友好);P4 落地时实测确认 | **记录,P4 落地时定** |
+| `callDeoptResume` doCall 出口 | [../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §7 doCall 接口 / callResult 枚举 | doCall 收到 GibbousCode.Run 返回 status=2 时的处理出口(reloadFrame + 续跑同帧);P4 阶段新增,P1/P2/P3 不需要(承 §8.3) | **记录,P4 完成时同批补** |
+| CallInfo bit50 在 OSR exit 后的语义 | [../p3-wasm-tier/04-trampoline](../p3-wasm-tier/04-trampoline.md) §1.2 / §1.4 bit50 写入纪律 | exit 后 bit50 是清 0 还是保留 1(§7.2)——倾向清 0(差分友好);P4 完成时实测确认 | **记录,P4 完成时定** |
 | GibbousCode.Run status=2 编码 | [../p2-bridge/05-p3-p4-interface](../p2-bridge/05-p3-p4-interface.md) §6.1(已有,本文承认接口) | 该字段已在 §6.1 注释中预留(`2=DEOPT(P4 OSR exit;P3 永远不返回 2)`) | **已存在,本文承用** |
-| OSR exit 路径不应设置 `state.pendingErr` | [../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §9 错误冒泡纪律 | exit 是「投机失误」非「语义错误」,不与错误冒泡互斥;若同发以错误优先(§7.4) | **记录,P4 落地时同批补** |
+| OSR exit 路径不应设置 `state.pendingErr` | [../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §9 错误冒泡纪律 | exit 是「投机失误」非「语义错误」,不与错误冒泡互斥;若同发以错误优先(§7.4) | **记录,P4 完成时同批补** |
 
-> **登记纪律(承 multi-doc-drafting 协议)**:本节回填请求是本文起草过程中识别的上游字段缺口,**不主动改 P1/P2 现稿**——记入 [../../../llmdoc/memory/doc-gaps](../../../llmdoc/memory/doc-gaps.md) 后,由 P4 落地时(或更早的字段预留批次)统一补。
+> **登记纪律(承 multi-doc-drafting 协议)**:本节回填请求是本文起草过程中识别的上游字段缺口,**不主动改 P1/P2 现稿**——记入 [../../../llmdoc/memory/doc-gaps](../../../llmdoc/memory/doc-gaps.md) 后,由 P4 完成时(或更早的字段预留批次)统一补。
 
 ---
 
 相关:
 [./02-template-direction](./02-template-direction.md)(模板编译方向,§3.3「不优化跨指令」是栈槽真相不变式的根) ·
-[./03-speculation-ic](./03-speculation-ic.md)(IC 投机 + guard 形态——guard 失败的源头,本文 §1.6 / §3.1 接) ·
+[./03-speculation-ic](./03-speculation-ic.md)(IC 投机 + guard 形式——guard 失败的源头,本文 §1.6 / §3.1 接) ·
 [./05-system-pipeline](./05-system-pipeline.md)(§4.2 trampoline 三种出口 + §4.3 helper 调用协议——本文 §6.5 / §8 对接) ·
-[./06-backends](./06-backends.md)(amd64/arm64 双后端,§5 exit stub 实装 + §5 局部缓存优化——本文 §6.4 / §11.1 对接) ·
+[./06-backends](./06-backends.md)(amd64/arm64 双后端,§5 exit stub 实现 + §5 局部缓存优化——本文 §6.4 / §11.1 对接) ·
 [./08-testing-strategy](./08-testing-strategy.md)(§7.2 deopt 注入测试 + 差分主防线——本文 §4.4 / §7.3 链过去) ·
 [../p3-wasm-tier/04-trampoline](../p3-wasm-tier/04-trampoline.md)(P3 跨层协议,§0.4 P4 继承 / §1 bit50 / §4 status 链——本文 §0.2 / §8 对位) ·
 [../p3-wasm-tier/05-safepoint-gc](../p3-wasm-tier/05-safepoint-gc.md)(回边 + 边界 safepoint——本文 §6 exit stub 与 safepoint 同位) ·

@@ -1,6 +1,6 @@
-# P2 §3:静态可编译性分析子系统(F1-F7 安全闸门)
+# P2 §3:静态可编译性分析子系统(F1-F7 安全检查)
 
-> 状态:**设计阶段,详细设计已齐备**。本文是 [00-overview](./00-overview.md) §0 文档地图列出的 **P2 安全闸门单一事实源**——`Compilability` 枚举与缓存生命期、不升层形状清单 F1-F7 的完整定义、AST visitor 设计、yield 保守近似算法、F7 (P3 后端能力)查询协议。
+> 状态:**设计阶段,详细设计已齐备**。本文是 [00-overview](./00-overview.md) §0 文档地图列出的 **P2 安全检查单一事实源**——`Compilability` 枚举与缓存生命期、不升层形状清单 F1-F7 的完整定义、AST visitor 设计、yield 保守近似算法、F7 (P3 后端能力)查询协议。
 > 上游种子:[00-overview](./00-overview.md) §4(静态可编译性分析器,本文大量扩展)。
 > 上游耦合点(00 §3 关键耦合 4):**AST 保留协议**——本文给出三选一决策(§2.4)。
 > P1 依赖面:[04 §1 / §3](../p1-interpreter/04-frontend-parser-codegen.md)(AST 节点定义 / 「P1 顺手产出 P2 复用」)、[02 §6 / §4](../p1-interpreter/02-bytecode-isa.md)(`VARARG` opcode / `IsVararg` 标记 / opcode 0..37 全集)、[01 §5.7](../p1-interpreter/01-value-object-model.md)(`Proto.Code/MaxStack/IsVararg` 字段)、[08](../p1-interpreter/08-coroutines.md)(协程 yield 语义,F2 保守判定的依据)、[10](../p1-interpreter/10-stdlib.md)(`debug.*` / `setfenv` / `coroutine.yield` 调用点识别)、[11 §1.3](../p1-interpreter/11-embedding-arena-abi.md)(`Compile` 可编译性探测占位,本文负责填实)。
@@ -10,21 +10,21 @@
 
 ---
 
-## 0. 定位:try-compile-fallback 零 deopt 的安全闸门
+## 0. 定位:try-compile-fallback 零 deopt 的安全检查
 
 ### 0.1 与 P2 整体安全性的关系
 
-[00-overview](./00-overview.md) §3 关键耦合点列出 P2 的六个跨组件耦合,其中第 3 条「`Proto.compilable` 字段的初值约定」与第 4 条「AST 保留协议」**全部归本文管辖**。本文是 P2 安全闸门的单一事实源——任何让「不可编译形状被判成可编译」的设计都直接判否,**没有商量余地**。
+[00-overview](./00-overview.md) §3 关键耦合点列出 P2 的六个跨组件耦合,其中第 3 条「`Proto.compilable` 字段的初值约定」与第 4 条「AST 保留协议」**全部归本文管辖**。本文是 P2 安全检查的单一事实源——任何让「不可编译形状被判成可编译」的设计都直接判否,**没有商量余地**。
 
 这个安全性的级别可以这样类比:[p1-interpreter/12 §10](../p1-interpreter/12-testing-difftest.md) 的差分 fuzz 是 P1 防「投机错误静默错果」(JIT 最危险 bug 类别)的主防线;**本文的 F1-F7 形状判定是 P2 防「编译错误形状静默崩溃」的主防线**。两者地位等同——一旦放过一个误判,后果都不是「跑慢点」,而是「正确性崩溃」。
 
 承 [00-overview](./00-overview.md) §4.1:
 
-> 「这个分析器是整个 P2 的安全核心:**它决定哪些 Proto 能被 P3/P4 编译。** 因为望舒走 try-compile-fallback-interpret(LuaJ luajc 同款),编译层只编译『静态可保证能正确编译』的子集——分析器就是划这条线的人。**它判错的后果是灾难性的**:把一个不可编译形状判成可编译,P3 会编译出错误代码或运行期崩溃,而 fallback 机制根本不会被触发(因为没人知道这里该 fallback)。所以分析器的铁律是 **保守**:**宁可漏判(把可编译的判成不可编译,损失一点加速),绝不误判(把不可编译的判成可编译,出正确性事故)**。」
+> 「这个分析器是整个 P2 的安全核心:**它决定哪些 Proto 能被 P3/P4 编译。** 因为望舒走 try-compile-fallback-interpret(LuaJ luajc 一样的),编译层只编译『静态可保证能正确编译』的子集——分析器就是划这条线的人。**它判错的后果是灾难性的**:把一个不可编译形状判成可编译,P3 会编译出错误代码或运行期崩溃,而 fallback 机制根本不会被触发(因为没人知道这里该 fallback)。所以分析器的铁律是 **保守**:**宁可漏判(把可编译的判成不可编译,损失一点加速),绝不误判(把不可编译的判成可编译,出正确性事故)**。」
 
 ### 0.2 在 try-compile-fallback 流水线中的位置
 
-承 [00-overview](./00-overview.md) §2 的总数据流图,本文的 `analyzeProto` 是状态机的**前置闸门**——它在 Proto 进入升层决策前就把不可编译形状永久挡在外面([04-try-compile-fallback](./04-try-compile-fallback.md) `considerPromotion` 入口的第一道判断):
+承 [00-overview](./00-overview.md) §2 的总数据流图,本文的 `analyzeProto` 是状态机的**前置检查**——它在 Proto 进入升层决策前就把不可编译形状永久挡在外面([04-try-compile-fallback](./04-try-compile-fallback.md) `considerPromotion` 入口的第一道判断):
 
 ```
                      Compile 阶段(11 §1.3)
@@ -79,8 +79,8 @@
 
 | 判错方向 | 后果 | 严重性 |
 |---|---|---|
-| **漏判**(可编译 → 判成不可编译) | 该 Proto 永久解释,**少赚加速**(可能就是几个百分点的性能差) | 可接受,与原则 3「每阶段独立交付,任何闸门处停下都不亏」一致 |
-| **误判**(不可编译 → 判成可编译) | P3 编译时可能产出错误代码、运行期崩溃、**结果静默错**——而且 fallback 不会被触发(系统认为这是好的可编译形状),问题会以「数据错」「行为漂移」的形态隐藏 | **不可接受** —— 这是 [roadmap §5 原则 2 的「投机错误静默错果」](../roadmap.md)在 P2 的对应物,是整个工程的红线 |
+| **漏判**(可编译 → 判成不可编译) | 该 Proto 永久解释,**少赚加速**(可能就是几个百分点的性能差) | 可接受,与原则 3「每阶段独立交付,任何检查处停下都不亏」一致 |
+| **误判**(不可编译 → 判成可编译) | P3 编译时可能产出错误代码、运行期崩溃、**结果静默错**——而且 fallback 不会被触发(系统认为这是好的可编译形状),问题会以「数据错」「行为漂移」的形式隐藏 | **不可接受** —— 这是 [roadmap §5 原则 2 的「投机错误静默错果」](../roadmap.md)在 P2 的对应物,是整个工程的红线 |
 
 「损失一点加速」与「正确性崩溃」之间没有可比性。**保守的代价是有界的**(慢一点),**误判的代价是无界的**(系统行为不可预测)。所以工程原则只有一条:
 
@@ -205,7 +205,7 @@ func (b *Bridge) AnalyzeProto(fn *ast.FuncBody, proto *bytecode.Proto)
 
 本节是本文的「单一事实源」实质——F1 到 F7 七种形状,**任一出现即判 `CompNotCompilable`**。每一节给出:**为什么不编译 / AST 与字节码识别方法 / Go visitor 代码骨架 / 保守边界(假阳性如何容忍)**。
 
-> **总纲**:F1-F7 是「**或**」的关系——只要中任一成立,Proto 就判 `CompNotCompilable`,不需要全部出现。这与「**与**」的清单(全部要满足)语义相反,实现时务必清楚:**安全闸门是「不安全条件的并集」,不是「安全条件的并集」**。
+> **总纲**:F1-F7 是「**或**」的关系——只要中任一成立,Proto 就判 `CompNotCompilable`,不需要全部出现。这与「**与**」的清单(全部要满足)语义相反,实现时务必清楚:**安全检查是「不安全条件的并集」,不是「安全条件的并集」**。
 
 ### 3.1 F1:vararg 函数
 
@@ -229,7 +229,7 @@ end
 
 [02 §6 vararg 的寄存器约定](../p1-interpreter/02-bytecode-isa.md):**vararg 函数的多余实参存于 `base` 之下的负区**,`VARARG` opcode 按需把它们拷回正区寄存器。这条「负区」语义与:
 
-1. **Wasm linear memory 的 P3 编译形态**(11 §11):P3 把 Lua 寄存器映射成 Wasm locals 的紧凑布局,「负区」需要额外间接寻址,与 P3 寄存器分配前提冲突;
+1. **Wasm linear memory 的 P3 编译形式**(11 §11):P3 把 Lua 寄存器映射成 Wasm locals 的紧凑布局,「负区」需要额外间接寻址,与 P3 寄存器分配前提冲突;
 2. **多值传播的 `B=0` 到 top 语义**(02 §3 / §6):VARARG 的 `B=0` 表示「拷到 top」,涉及运行期长度——P3 编译期固定 locals 数,与运行期变长 vararg 数语义错位;
 3. **vararg 函数多是『胶水』**:工程经验表明 vararg 函数大多是一次性入口或日志包装(`print(...)` 之类),**不是热点**——把它们排除在编译外,损失加速面极小。
 
@@ -263,7 +263,7 @@ func (v *compilabilityVisitor) checkF1Vararg(fn *ast.FuncExpr) {
 }
 
 // VarargExpr 节点也要标记——某些边角情况(P1 codegen 是否在所有 vararg 函数
-// 都置 IsVararg=true?待 04 落地后断言)需要兜底。
+// 都置 IsVararg=true?待 04 完成后断言)需要兜底。
 func (v *compilabilityVisitor) VisitVarargExpr(e *ast.VarargExpr) {
     v.reasons |= reasonVararg                // 防御性:看到 ... 就标记
 }
@@ -299,7 +299,7 @@ F1 几乎不产生「假阳性」(把非 vararg 误判为 vararg)——`IsVararg
 P3 把 Proto 编译成 Wasm 函数后:
 
 1. **Wasm 函数的执行栈是 Wasm runtime 的**——P3 的 trampoline([../p3-wasm-tier/04-trampoline](../p3-wasm-tier/04-trampoline.md))能在「函数边界」切换 crescent / gibbous,但**不能跨 Wasm 函数挂起**(Wasm 1.0 没有 stack switching,P3 用的是 wazero 同步调用);
-2. **yield 在 Wasm 编译形态下相当于「在函数中间挂起」**——必须是同步调用边界才能切,Wasm 函数内部点不能挂起。
+2. **yield 在 Wasm 编译形式下相当于「在函数中间挂起」**——必须是同步调用边界才能切,Wasm 函数内部点不能挂起。
 
 所以:**任何可能 yield 的 Proto 都不能编到 Wasm**。这是 F2 的硬约束。
 
@@ -452,7 +452,7 @@ func isKnownLocalCall(fn ast.Expr) bool {
 }
 ```
 
-> **初版极限保守**:`isKnownLocalCall` P2 初版**直接返 false**——所有调用都标 callsUnknownFn,意味着**任何含调用的函数都判不可编译**。这看起来很严,但 §9 缺口讨论的「精确 yield 调用图分析」(P2+)上线后再放宽。**先建好闸门、再调精度**是工程纪律。
+> **初版极限保守**:`isKnownLocalCall` P2 初版**直接返 false**——所有调用都标 callsUnknownFn,意味着**任何含调用的函数都判不可编译**。这看起来很严,但 §9 缺口讨论的「精确 yield 调用图分析」(P2+)上线后再放宽。**先建好检查、再调精度**是工程纪律。
 
 #### 3.2.7 假阳性容忍与漏判预测
 
@@ -487,7 +487,7 @@ local d = debug                    -- (d) 把 debug 表传出(后续可能内省
 P3 把 Proto 编译成 Wasm 函数后:
 
 1. **帧布局变成 Wasm locals**([../p3-wasm-tier/02-translation](../p3-wasm-tier/02-translation.md) §2),不再是 P1 的「值栈寄存器」(01 §5.6)——`debug.getlocal` 的 `(level, idx)` 寻址协议无法对应到 Wasm locals;
-2. **PC 在 Wasm 编译形态下不存在**——P3 用 Wasm 控制流,无 Lua opcode PC,`debug.getinfo().currentline` 拿不到;
+2. **PC 在 Wasm 编译形式下不存在**——P3 用 Wasm 控制流,无 Lua opcode PC,`debug.getinfo().currentline` 拿不到;
 3. **sethook 需要在 opcode 边界回调**——Wasm 编译后无 opcode 边界,sethook 无落点。
 
 任一 debug 内省能力在编译层都**无法保证语义**。**统一保守:任何函数引用了 `debug` 表就不编译**。
@@ -511,7 +511,7 @@ func (v *compilabilityVisitor) VisitNameExpr(e *ast.NameExpr) {
 
 #### 3.3.4 与 traceback 的特殊关系
 
-`debug.traceback`(09 §13)是常用错误处理工具,经常出现在 `xpcall(fn, debug.traceback)` 这类形态中。**P2 初版仍判不可编译**——理由:
+`debug.traceback`(09 §13)是常用错误处理工具,经常出现在 `xpcall(fn, debug.traceback)` 这类形式中。**P2 初版仍判不可编译**——理由:
 
 - `xpcall(fn, debug.traceback)` 的 **fn 才是热点**,traceback 只是 error handler;
 - error handler 不在主路径上;
@@ -649,7 +649,7 @@ F5 的「漏判」(把可编译的大函数判不可编译)预期面小——大
 **为什么 P3 编译复杂 upvalue 难**:
 
 1. **开放 upvalue 共享栈槽**——P3 把 Lua 寄存器编进 Wasm locals 时,「这个 local 同时被外层函数的 upvalue 指向」语义不能编译成纯 Wasm locals(Wasm locals 是值,不是引用);
-2. **upvalue 关闭时机**——Lua 5.1 在 block 退出时关闭对应 upvalue,P3 编译形态下需要在 Wasm 函数边界明确「关闭」时机;
+2. **upvalue 关闭时机**——Lua 5.1 在 block 退出时关闭对应 upvalue,P3 编译形式下需要在 Wasm 函数边界明确「关闭」时机;
 3. **嵌套层数越深,上述协议越复杂**。
 
 **P2 初版保守排除**:嵌套深度 > 3 或 upvalue 数 > 8 即判不可编译。这两个阈值「严」是故意的——`MaxClosureDepth=3` 几乎排除了所有有嵌套的函数,工程经验里嵌套 1-2 层是绝大多数,3 层以上就稀有了。
@@ -842,10 +842,10 @@ const (
     reasonOverUpval
     reasonBackendUnsupp
     reasonSelfCall   // F2-c(2026-06-28):obj:m(args) SELF method call 占位位
-                     //                   与 ReasonBackendUnsupp 同款手法:编译期
+                     //                   与 ReasonBackendUnsupp 一样的手法:编译期
                      //                   保守占位,运行期 recheckCompilabilityRuntime
                      //                   撤位 + P4 端 SupportsAllOpcodes
-                     //                   (analyzeSelfCallForm) 守门
+                     //                   (analyzeSelfCallForm) 把关
 )
 ```
 
@@ -884,7 +884,7 @@ func (v *compilabilityVisitor) visitNameExpr(e *ast.NameExpr) {
     }
 }
 
-// visitCallExpr 处理 f(args) 形态
+// visitCallExpr 处理 f(args) 形式
 func (v *compilabilityVisitor) visitCallExpr(e *ast.CallExpr) {
     // 1. 识别 coroutine.* 调用
     if isCoroutineCall(e.Fn) {
@@ -915,14 +915,14 @@ func (v *compilabilityVisitor) visitCallExpr(e *ast.CallExpr) {
     }
 }
 
-// visitMethodCallExpr 处理 obj:m(args) 形态——拆 sawSelfCall 占位信号
-// (承 P4 PJ5 SELF inline 形态真接入决策,2026-06-28)。
+// visitMethodCallExpr 处理 obj:m(args) 形式——拆 sawSelfCall 占位信号
+// (承 P4 PJ5 SELF inline 形式接上决策,2026-06-28)。
 //
-// **占位位语义**(与 ReasonBackendUnsupp F7 同款手法):method receiver 的
+// **占位位语义**(与 ReasonBackendUnsupp F7 一样的手法):method receiver 的
 // 方法表无法静态析出,callee 内部可能 yield/setfenv/debug;但 P4 端 PJ5
-// SELF inline 形态完整覆盖 0..7 参 `obj:method(args)` byte-equal P1 doCall。
+// SELF inline 形式完整覆盖 0..7 参 `obj:method(args)` byte-equal P1 doCall。
 // 编译期保守占位 ReasonSelfCall,运行期 recheckCompilabilityRuntime 撤位 +
-// SupportsAllOpcodes(P4 analyzeSelfCallForm) 守门(承 04-osr-deopt §5)。
+// SupportsAllOpcodes(P4 analyzeSelfCallForm) 把关(承 04-osr-deopt §5)。
 //
 // **与 ReasonUnknownCall 的边界**(2026-06-28 改动):method call 不再叠加
 // ReasonUnknownCall — 占位 vs 真拒分开记录,运行期重判才能精准撤位而不动
@@ -995,7 +995,7 @@ func isKnownLocalCall(fn ast.Expr) bool {
 
 ### 4.4 visitor 与 ast.Walk 的协议
 
-`ast.Walk(visitor, node)` 是 [04 §3](../p1-interpreter/04-frontend-parser-codegen.md) 的 AST 遍历入口(细节待 04 落地后定),约定:
+`ast.Walk(visitor, node)` 是 [04 §3](../p1-interpreter/04-frontend-parser-codegen.md) 的 AST 遍历入口(细节待 04 完成后定),约定:
 
 - 调 `visitor.Visit(node)` ——返回值是「是否继续递归子节点」;
 - 返回 `nil` 表示「这个节点的子节点不递归」(visitor 自己处理子节点,如 visitFuncExpr 自己递归 Body);
@@ -1203,7 +1203,7 @@ func (b *Bridge) CompilabilityOf(p *bytecode.Proto) Compilability {
 
 > 「**可编译性探测 P1 占位**:roadmap §8 把『可编译性探测与层级决定』放进 `Compile`,但那是 P2 能力。P1 的 `Compile` 把这步实现为**恒真占位**:所有函数标 tier-0、恒『解释』。接口形状(返回的 Program 带每个 Proto 的『可升层标记』字段)P1 就定好,P2 只填充探测逻辑,不改 API。」
 
-P1 落地时(参考 implementation-progress)`Compile` 的实际行为是「全标可解释,所有 Proto tier-0」——这意味着 P1 的 `Proto.ProfileData.Compilable` 全是 `CompUnknown`(不调 `AnalyzeProto`)。
+P1 完成时(参考 implementation-progress)`Compile` 的实际行为是「全标可解释,所有 Proto tier-0」——这意味着 P1 的 `Proto.ProfileData.Compilable` 全是 `CompUnknown`(不调 `AnalyzeProto`)。
 
 ### 6.2 P2 把占位填实
 
@@ -1216,12 +1216,12 @@ P2 上线后,**`Compile` 的行为升级**(P1 公共 API 不变,只改实现):
 | Proto.ProfileData.Compilable 初值 | 全 `CompUnknown` | 全真值(`CompCompilable` / `CompNotCompilable`) |
 | 谁调 `analyzeProto` | 不调 | `compile.Gen` 末尾调 |
 
-**关键纪律**:**P1 公共 API(wangshu.go 门面)零修改**——这是 [00-overview](./00-overview.md) §3 关键耦合 3 与原则 3「接口稳定」的兑现。宿主代码(`wangshu.Compile(src) → Program; prog.Call(state)`)在 P1→P2 升级时**不需要任何改动**——Compile 内部多跑了一段分析,Program 内部多了一些缓存值,公共形态不变。
+**关键纪律**:**P1 公共 API(wangshu.go 门面)零修改**——这是 [00-overview](./00-overview.md) §3 关键耦合 3 与原则 3「接口稳定」的兑现。宿主代码(`wangshu.Compile(src) → Program; prog.Call(state)`)在 P1→P2 升级时**不需要任何改动**——Compile 内部多跑了一段分析,Program 内部多了一些缓存值,公共形式不变。
 
 ### 6.3 接口零变化的实现路径
 
 ```go
-// wangshu.go(P1 已落地,P2 不改)
+// wangshu.go(P1 已完成,P2 不改)
 func Compile(source []byte, chunkname string) (*Program, error) {
     return compile.CompilePublic(source, chunkname)  // 委托 internal
 }
@@ -1345,7 +1345,7 @@ func (v *compilabilityVisitor) visitFuncExpr(e *ast.FuncExpr) {
 每个 `*ast.FuncExpr` 在 codegen 时产生一个 `*bytecode.Proto`(嵌套 Protos,01 §5.7)——`compile.Gen` 在递归处理 FuncExpr 时**对每个产出的 Proto 独立调 `b.AnalyzeProto(fnExpr, proto)`**:
 
 ```go
-// compile.Gen 内部(伪码,实际细节见 04 落地版):
+// compile.Gen 内部(伪码,实际细节见 04 完成版):
 //
 // codegen 递归到 FuncExpr 时:
 //   subProto := genFuncBody(fn)            // 产子 Proto
@@ -1379,7 +1379,7 @@ end
 | 不变式 | 含义 | 一旦违反的后果 |
 |---|---|---|
 | **I1 保守优先** | 任一 F1-F7 信号触发即判 NotCompilable;visitor 错误也走保守路径 | 失守即可能误判 → 正确性崩溃 |
-| **I2 不动 P1 公共 API** | P1→P2 升级 wangshu.go / Compile / Program 公共形态零变化 | 失守即破坏「每阶段独立交付」(原则 3) |
+| **I2 不动 P1 公共 API** | P1→P2 升级 wangshu.go / Compile / Program 公共形式零变化 | 失守即破坏「每阶段独立交付」(原则 3) |
 | **I3 AST 用完即弃** | AnalyzeProto 返回后不再持有 fn 引用,Compile 完成 AST 即可 GC | 失守即 AST 内存常驻、运行期意外引用风险 |
 | **I4 缓存与运行期变化无关** | Compilable 字段编译期一次写,运行期只读,不依赖运行期任何状态 | 失守即引入并发写竞争、判定漂移 |
 | **I5 嵌套 Proto 独立判定** | 父函数判定不传染子函数;每个 Proto 独立 AnalyzeProto | 失守即主 chunk vararg 污染所有子函数,P3 加速面归零 |
@@ -1399,8 +1399,8 @@ end
 | GAP-3 | **F6 阈值定标**(`MaxClosureDepth` / `MaxUpvalCount`) | 同 GAP-2 | 同 GAP-2;另:P3 的 upvalue 编译协议成熟后([../p3-wasm-tier/02-translation](../p3-wasm-tier/02-translation.md) §3.7 待补)放宽 |
 | GAP-4 | **F7 粒度细化** | P3 后端开发期 | P3 把 SupportsAllOpcodes 实现为「opcode 集 + 形状约束」(如「支持 GETTABLE 但仅当 key 是常量」),P2 的查询协议要适配 |
 | GAP-5 | **scope-aware 名字解析**(F3 / F4 假阳性消除) | 用户重定义局部 `debug` / `setfenv` 触发误漏 | visitor 接入 codegen 的作用域信息(local 屏蔽全局),区分「真的是 debug 库」与「重名局部变量」 |
-| GAP-6 | **元方法调用的 P3 编译协议** | F2 §3.2.5 推给 F7 + P3 后端 | P3 后端定义「metamethod 边界检查」编译形态;F7 反查 P3 是否支持某类 metamethod |
-| GAP-7 | **AST visitor 接口最终形态** | 04 落地后 | 04 给 ast.Walker / ast.Visitor 的最终接口,本文 §4 的伪码对齐到真接口 |
+| GAP-6 | **元方法调用的 P3 编译协议** | F2 §3.2.5 推给 F7 + P3 后端 | P3 后端定义「metamethod 边界检查」编译形式;F7 反查 P3 是否支持某类 metamethod |
+| GAP-7 | **AST visitor 接口最终形式** | 04 完成后 | 04 给 ast.Walker / ast.Visitor 的最终接口,本文 §4 的伪码对齐到真接口 |
 | GAP-8 | **回填到 04 的「AnalyzeProto 调用点」** | 04 PR 接受 | 04 §N(待补)写入 `compile.Gen` 调 `bridge.AnalyzeProto` 的协议 |
 | GAP-9 | **多 State 共享 Program 的 Compilability 字段** | Program 跨 State 共享(11 §1.3 / 11 §8) | Compilable 字段编译期一次写、跨 State 只读——**自动并发安全**(I4),无需特殊处理。但若 §9 GAP-1 的精确分析引入「按 State 决策」(不太可能),需重设计。**当前不视为缺口**,记录此处仅供 review |
 | GAP-10 | **F7 跨版本 P3 升级的 Proto 重评估** | P3 后端能力跨版本扩展(实现新 opcode) | 见 [00-overview](./00-overview.md) §6「TierStuck 不重试」与 §9「P3 后端跨版本升级的 stuck 重评估」——本文与 04 共担,留 P2+ |
@@ -1413,7 +1413,7 @@ end
 
 ### 10.1 请求节(建议插入位置:04 §13 末尾或 §1.1 后)
 
-**04 §1.X 与 P2 的 AST 接口约定(P2 启动时落地)**
+**04 §1.X 与 P2 的 AST 接口约定(P2 启动时完成)**
 
 > 承 [03-compilability-analysis](../p2-bridge/03-compilability-analysis.md) §2.4 决策方案 ①「Compile 时同步分析、缓存结果、AST 用完即弃」:
 >
@@ -1448,10 +1448,10 @@ end
 
 | 文档 | 本文与之的关系 |
 |---|---|
-| [00-overview](./00-overview.md) | 本文是 §0 文档地图列出的「03 安全闸门单一事实源」;§3 关键耦合 4(AST 保留协议)与 §6 决策表「可编译性分析层」的精确论证在本文 §2 |
+| [00-overview](./00-overview.md) | 本文是 §0 文档地图列出的「03 安全检查单一事实源」;§3 关键耦合 4(AST 保留协议)与 §6 决策表「可编译性分析层」的精确论证在本文 §2 |
 | [01-profiling](./01-profiling.md) | 共享 `ProfileData` 字段定义(本文加 `Compilable` / `Reasons`,01 加 `BackEdgeCount` / `EntryCount`);两者无热路径耦合 |
 | [02-ic-feedback](./02-ic-feedback.md) | 无直接耦合——IC feedback 是 P3/P4 编译时读的供料,与可编译性判定独立(可编译性 = 「能编」,feedback = 「编得多好」) |
-| [04-try-compile-fallback](./04-try-compile-fallback.md) | 本文是 04 的**前置闸门**——`considerPromotion` 入口先查 `Compilable`,`CompNotCompilable` 直接跳过 |
+| [04-try-compile-fallback](./04-try-compile-fallback.md) | 本文是 04 的**前置检查**——`considerPromotion` 入口先查 `Compilable`,`CompNotCompilable` 直接跳过 |
 | [05-p3-p4-interface](./05-p3-p4-interface.md) | 本文定义 `P3Compiler.SupportsAllOpcodes` 的形状,05 是该接口的单一事实源 |
 | [06-testing-strategy](./06-testing-strategy.md) | 本文的 F1-F7 形状清单是 06 §3 可编译性误判注入 fuzz 的输入——每条规则对应一组测试脚本 |
 | [implementation-progress](./implementation-progress.md) | 本文的 PB3 验收条目(00 §4)由它跟踪 |
@@ -1477,7 +1477,7 @@ end
 相关:
 [00-overview](./00-overview.md)(P2 总览 / 关键耦合 4 = 本文 AST 保留协议) ·
 [01-profiling](./01-profiling.md)(共享 ProfileData 字段) ·
-[04-try-compile-fallback](./04-try-compile-fallback.md)(本文是其前置闸门) ·
+[04-try-compile-fallback](./04-try-compile-fallback.md)(本文是其前置检查) ·
 [05-p3-p4-interface](./05-p3-p4-interface.md)(`SupportsAllOpcodes` 接口本文定义) ·
 [06-testing-strategy](./06-testing-strategy.md)(F1-F7 误判注入 fuzz) ·
 [../p2-bridge/00-overview](./00-overview.md) §4(本文种子,大量扩展) ·

@@ -1,21 +1,21 @@
-# P1 收尾轮(「已知简化」清单全量落地)
+# P1 收尾轮(「已知简化」清单全量完成)
 
 - **日期**:2026-06-12
 - **任务类型**:简化项收尾(table 存储/IC/pattern/stdlib/协程/错误目录/弱表/arena ABI/difftest 生成器)
 
 ## 任务
 
-继 M0-M14 主线交付后,把 implementation-progress.md「已知简化」清单全部不打折扣落地。
+继 M0-M14 主线交付后,把 implementation-progress.md「已知简化」清单全部不打折扣完成。
 提交序列:`1ab4beb`(arena 原生表存储+generic for)→ `c04010e`(IC 命中路径)→
 `c167ad6`(pattern matcher)→ `72a09d5`(table/os/io stdlib)→ `c0f2ba9`(协程)→
 `473e4dd`(错误前缀+traceback)→ `7078fcf`(弱表+finalizer)→ `5122ae8`(arena ABI)→
 `e1ddf2f`(difftest 随机生成器)→ `1c676b9`(测试扩充)→ `5ad59fc`(文档对账)。
-落地内容与设计文档 § 对照见 implementation-progress.md「收尾轮」表,本文只记过程教训。
+完成内容与设计文档 § 对照见 implementation-progress.md「收尾轮」表,本文只记过程教训。
 
 ## 预期 vs 实际
 
-- 预期:按设计文档各 § 逐项落地,形态与文档一致。
-- 实际:全部落地且 `make all`/difftest 全绿,但三处与文档形态有意偏离(协程信号、IC 校验、
+- 预期:按设计文档各 § 逐项完成,形式与文档一致。
+- 实际:全部完成且 `make all`/difftest 全绿,但三处与文档形式有意偏离(协程信号、IC 校验、
   LoadProgram 拷贝策略),其中两处是文档本身的缺口/未尽推论;一处生成器初版产非法程序返工。
 
 ## 做对了什么(可复用模式)
@@ -28,7 +28,7 @@
    resume 就接不回 yield 处的 CALL 结果寄存器。
 2. **跨 thread upvalue 靠 uvOwner 表**:协程捕获主线程局部时,开放 upvalue 的 stackIdx
    指向**属主 thread** 的栈而非当前 running thread 的栈。01 §5.4 的 `(threadRef, stackIdx)`
-   二元组设计正是为此;P1 的 Go 侧形态是 uvOwner map(uv → 属主 thread)。没有它,
+   二元组设计正是为此;P1 的 Go 侧形式是 uvOwner map(uv → 属主 thread)。没有它,
    跨协程闭包读写会落到错误的栈。这是设计文档已有、但实现时容易因「单线程惯性」漏掉的点。
 3. **基准印证设计预判**:IC + Program 装载缓存让 simple/arith 档从 2.3x 升到 3.1-3.2x;
    loop 档维持 2.28x——FORLOOP 回边本就不走 IC,印证 05 §3 「去装箱是主力、IC 是辅力」
@@ -44,7 +44,7 @@
 2. **LoadProgram 共享导致跨 State 串台风险**:Program 跨 State 共享时,IC(运行期可写)与
    Consts(intern 进各自 arena 的 GCRef)不能共享。修复:State 私有浅拷贝——共享只读的
    Code/StringLits/LineInfo,私有化 Consts/IC/Protos。根因:11 §1.3 「惰性 intern」定稿
-   只覆盖了常量归属;IC 是后来落地的运行期可写状态,设计时无此问题,推论没人补写。
+   只覆盖了常量归属;IC 是后来完成的运行期可写状态,设计时无此问题,推论没人补写。
    **规则:Program 上任何「运行期可写」字段都必须随 State 私有化,新增字段时过一遍此检查。**
 3. **生成器初版产非法程序(oracle 报错)**:difftest 随机生成器让 if 语句对任意局部赋数值,
    生成「字符串变量 + 数字」的非法算术。修复:局部变量池按 num/str 分型,语句只在同型池
@@ -61,7 +61,7 @@
   按 05 重新实现 IC 会再踩一次。
 - 11 §1.3 未推论到「Program 运行期可写字段须 State 私有」的一般规则(当时只有常量一个案例)。
 - 08 §3.3 的三态枚举与 §3.4 的对称论证之间,文档没有点破「可直接复用 error 通道」这条
-  实现捷径(属低优先级:实现形态差异已在 implementation-progress.md 对账表记录)。
+  实现捷径(属低优先级:实现形式差异已在 implementation-progress.md 对账表记录)。
 - 12 §3.2 生成器设计未写「类型封闭」纪律,初版踩坑后才显式化。
 
 ## Promotion 候选

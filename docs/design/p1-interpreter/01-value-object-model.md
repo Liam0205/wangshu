@@ -298,7 +298,7 @@ type LocalVar struct { Name string; StartPC, EndPC int32 }
 ```
 `LocVars` 承 [04](./04-frontend-parser-codegen.md) §13 与 [09](./09-errors-pcall.md) §8.4 的回填请求:codegen 的 `removeVars` 闭合活跃区间后写入(04 §5.9),供错误信息变量名后缀与 traceback 的 `local 'x'` 推断(09 §8)。upvalue 名复用 `UpvalDescs` 的 `name` 字段(04 §8.3 已含),不再单列 `UpvalNames`。LocVars 是 Go 堆调试数据,不入 arena、不参与 GC(`Name` 是 Go string)。
 
-**字符串常量的惰性 intern**(承 [11](./11-embedding-arena-abi.md) §1.3 多 State 复用 Program 的并发承诺,M8 codegen 落地需要):
+**字符串常量的惰性 intern**(承 [11](./11-embedding-arena-abi.md) §1.3 多 State 复用 Program 的并发承诺,M8 codegen 完成需要):
 
 - codegen 阶段产出的 Proto 持 `StringLits []string`(原始字节,Go 堆),`Consts` 中字符串字面量槽位**留占位**(实际值由 `StringLitIdx[槽] = StringLits 下标` 间接寻址)。
 - 占位 bit pattern:`Consts[i] = value.Nil`(表示"该槽待装载"),并由 `StringLitIdx[i] >= 0` 区分"是字符串占位"vs"是真 nil 常量";真 nil 常量令 `StringLitIdx[i] = -1`。

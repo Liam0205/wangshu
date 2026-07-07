@@ -137,7 +137,7 @@ for {
 - Go 编译器对**稠密、从 0 起的整数 case** 生成**跳转表**(jump table),不是线性 if 链——实测 `go tool compile -S` 可见 `JMP (AX)(CX*8)` 形式。我们的 opcode 是 `iota` 连续 0..37([02](./02-bytecode-isa.md) §4),正好命中跳转表条件。
 - 代价:每次循环一次间接跳转,CPU 分支目标预测器(BTB)对解释器这种「跳转目标几乎随机」的模式**预测命中率低**——这是 gopher-lua 也付的税。但 Go 的跳转表已经避免了「线性 if 链」的更坏情况。
 - 优点:**最简单、最易保证正确**;调试器友好;一个函数内所有指令逻辑可见,寄存器化的 `pc/base` 等局部不跨函数边界。
-- **这是 P1 的落地基线**。
+- **这是 P1 的完成基线**。
 
 **(b) closure-threading / direct-threading:预解码成 `[]func(*frame)`**
 
@@ -157,7 +157,7 @@ for {
 
 - **真实代价(Go 特有)**:每条指令是一次**Go 函数间接调用**(`CALL (reg)`)。Go 的函数调用不是零成本——有调用帧建立、参数/返回值传递(虽然可内联部分,但闭包数组里的 `instrFn` 是**间接调用,Go 编译器无法内联**)。所以它用「一次间接 call」换掉「一次取指 + 一次 switch 间接跳转 + 操作数解码」。
 - **是否更快不确定**:在 C 里 direct-threading 赢在「每条指令末尾直接 `goto *next`」省掉 switch 的范围检查与单一回边的预测瓶颈;但 Go 里它退化成「间接 call」,而间接 call 与 switch 的间接 jmp **在现代 CPU 上预测代价相近**,却多了 call 的栈/ABI 开销。**净收益主要来自「译码外提」而非「dispatch 本身」**。
-- **额外收益(为什么仍要保留它)**:① 译码外提对**操作数复杂的指令**(IC 指令、CALL)收益明显——闭包捕获里可以预存 `A/B/C` 解码结果、IC slot 指针,省掉每次执行的位运算;② **它是 P3 字节码→Wasm 翻译的中间形态**——把指令变成「可独立调用的单元」正是翻译的前一步,P1 做了等于给 P3 探了路(roadmap §4「翻译为 Wasm locals 也直白」的工程铺垫)。
+- **额外收益(为什么仍要保留它)**:① 译码外提对**操作数复杂的指令**(IC 指令、CALL)收益明显——闭包捕获里可以预存 `A/B/C` 解码结果、IC slot 指针,省掉每次执行的位运算;② **它是 P3 字节码→Wasm 翻译的中间形式**——把指令变成「可独立调用的单元」正是翻译的前一步,P1 做了等于给 P3 探了路(roadmap §4「翻译为 Wasm locals 也直白」的工程铺垫)。
 - 代价补充:闭包数组本身要内存(每 proto 一份 `[]instrFn`),且闭包捕获变量可能逃逸到堆——要小心设计成**捕获索引而非捕获指针**,减少 GC 压力。
 
 **(c) 预解码 + 循环内 switch 混合**
@@ -178,9 +178,9 @@ for {
 
 ### 2.2 P1 选定方案
 
-**P1 基线选 (a) 大 switch**,理由:正确性优先(它是语义 oracle 与差分基准,bug 代价最高),且 Go 跳转表已避免最坏情况。**(b) closure-threading 作为 P1 内的提速 spike**,在基线 byte-equal 通过后再做 A/B,因为:① 它是 roadmap 点名的方向;② 它同时是 P3 翻译的中间形态,投入不浪费;③ 若 spike 证明 (b) 不够,(c) 是兜底。
+**P1 基线选 (a) 大 switch**,理由:正确性优先(它是语义 oracle 与差分基准,bug 代价最高),且 Go 跳转表已避免最坏情况。**(b) closure-threading 作为 P1 内的提速 spike**,在基线 byte-equal 通过后再做 A/B,因为:① 它是 roadmap 点名的方向;② 它同时是 P3 翻译的中间形式,投入不浪费;③ 若 spike 证明 (b) 不够,(c) 是兜底。
 
-落地纪律(三方案共享、不被 dispatch 选择绑死):
+完成纪律(三方案共享、不被 dispatch 选择绑死):
 
 - **执行逻辑写成可复用的 helper**(如 `doArith`、`doGetTable`),switch case 与未来的 closure 都调它——换 dispatch 不改语义实现,保住 oracle 唯一性。
 - **IC slot、常量表在装帧时缓存进 frame**(§1.3 的 `ic/k`),三方案都受益。
@@ -539,7 +539,7 @@ func (vm *VM) doGetTable(f *frame, i Instruction) *LuaError {
 
 ### 6.6 对上游文档的回填请求(本文定稿带来的字段增补)——**已兑现**
 
-本节定稿要求的两处上游布局增字段**均已回填落地**:
+本节定稿要求的两处上游布局增字段**均已回填完成**:
 
 1. **[01](./01-value-object-model.md) §5.2 Table 布局**:`gen uint32` 代次字段已落入 word5 高 32 位(与 lastfree 同字),`object.Table` 暴露 `Gen()` / `bumpGen()`。
 2. **[02](./02-bytecode-isa.md) §7 ICSlot**:`tableRef uint32` 已增补(目标表 arena 偏移低 32 位,仅作身份比对,非 GC 根);算术 IC 的字段挪用(双计数,P2 回填)也已一并登记。
@@ -923,7 +923,7 @@ pcall host 实现:
 - **OSR exit**(P4 新增):投机失败(IC NodeHit guard 不成立 / IsNumber 失败),GibbousCode.Run 返回 status=2 → doCall 走 `callDeoptResume`(§7.1 + RJ-3),**不动 pendingErr**
 - **同发情况**:若投机段中真发生语义错误(如 SELF method 调用 method=nil),**错误优先**:pendingErr 置位 + GibbousCode.Run 返回 status=1(ERR),不返 status=2
 
-**P4 验证形态**(承本会话实证):
+**P4 验证形式**(承本会话实证):
 - `TestPJ5_SelfCall_E2E_SpecTemplate_ErrorBubbleUp_NilRecv`(语义错误冒泡正确)
 - `TestPJ5_SelfCall_E2E_SpecTemplate_ErrorBubbleUp_BadMethod`(method=number 时 attempt to call 冒泡)
 - `TestPJ5_SelfCall_E2E_SpecTemplate_OSRExitToDeopt`(投机失误纯 deopt,不动 pendingErr,byte-equal P1)

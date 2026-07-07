@@ -1,6 +1,6 @@
 # 决策:设计评审决策轮(7 项裁决)
 
-> **背景**:设计文档集全卷齐备后,主助理按「影响 × 不确定度」盘点设计期自行拍板但不确定的 7 项决策,与用户逐项裁决:4 项修订、3 项经确认维持。已全部落入设计文档(提交 d601fab / df32265 / 734c3b2 / a29bab9)。本文只存结论与落点指针,细节回源文档;过程反思见 `../reflections/2026-06-11-design-review-round.md`。
+> **背景**:设计文档集全卷齐备后,主助理按「影响 × 不确定度」盘点设计期自行定下来但不确定的 7 项决策,与用户逐项裁决:4 项修订、3 项经确认维持。已全部落入设计文档(提交 d601fab / df32265 / 734c3b2 / a29bab9)。本文只存结论与落点指针,细节回源文档;过程反思见 `../reflections/2026-06-11-design-review-round.md`。
 
 1. **【修订】验收 oracle 改为官方 Lua 5.1.5;gopher-lua 降为同生态参照+性能基准,其偏离官方处登记豁免。** 理由:「与 gopher-lua 逐字节一致」不可全量成立(pairs 序:gopher 是插入序,官方是哈希布局序)。落点:`docs/design/p1-interpreter/12-testing-difftest.md` §2.6/§3.3;roadmap §4 已同步。
 2. **【维持】协程路线 B:单 goroutine + yield 信号冒泡**(经评审确认,非默认沿用)。落点:`docs/design/p1-interpreter/08-coroutines.md` §3。

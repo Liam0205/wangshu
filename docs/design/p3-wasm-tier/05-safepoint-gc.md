@@ -1,6 +1,6 @@
 # P3 §5:跨层 safepoint 与 GC——三类布点 + 收口 [06 §12](../p1-interpreter/06-memory-gc.md) 缺口 + locals 写回纪律 + GC 根零新增
 
-> 状态:**设计阶段,详细设计已齐备**(依赖 P1/P2 落地与开工前置 spike 通过后细化;凡涉 wazero 抢占检查点内部机制处标注「待 spike 验证」)。本文是 [00-overview](./00-overview.md) §0 文档地图列出的 **P3 跨层 GC 单一事实源**——三类 safepoint 在 P3 的形态(分配点 / 层边界 / 回边)、收口 [06 §12](../p1-interpreter/06-memory-gc.md) 留下的「编译层接入时 safepoint 如何布点」缺口、locals 缓存写回纪律、写屏障 P3 不动。
+> 状态:**设计阶段,详细设计已齐备**(依赖 P1/P2 完成与开工前置 spike 通过后细化;凡涉 wazero 抢占检查点内部机制处标注「待 spike 验证」)。本文是 [00-overview](./00-overview.md) §0 文档地图列出的 **P3 跨层 GC 单一事实源**——三类 safepoint 在 P3 的形式(分配点 / 层边界 / 回边)、收口 [06 §12](../p1-interpreter/06-memory-gc.md) 留下的「编译层接入时 safepoint 如何布点」缺口、locals 缓存写回纪律、写屏障 P3 不动。
 > 上游种子:../p3-wasm-tier.md §6(跨层 safepoint,原稿主体 25 行)+ §10 不变式 5(基线 memory-resident + locals 写回纪律),本文大量扩展。
 > 上游契约(P1):
 > [06-memory-gc](../p1-interpreter/06-memory-gc.md) §5.1(GC 根 R1..R9 完整枚举)、§5.2(各对象类型扫的 GCRef 字段)、§7(safepoint 哲学:分配点 + 层边界)、§8.2(GC 主流程 STW 单趟)、§9.4(写屏障 P1 空实现 + 增量 GC 预留)、§12(跨层 safepoint 缺口——本文收口对象);
@@ -23,9 +23,9 @@
 
 P1 [06 §12](../p1-interpreter/06-memory-gc.md) 倒数第三条缺口原话(节录):
 
-> **层边界 safepoint 的具体形态**:§7.1 说层边界是可选 GC 检查点,但 P1 只有解释器层,层边界退化为 VM↔host 边界。「长时间纯计算不分配的循环如何周期 GC」——P1 靠分配点,无分配的死循环不会 GC(也无需,因没产生垃圾)。**P3+ 跨层时 safepoint 形态(回边检查点 vs 调用边界,对齐 `docs/design/roadmap.md` (§2) 异步抢占税解法)在 p3-wasm-tier 定。**
+> **层边界 safepoint 的具体形式**:§7.1 说层边界是可选 GC 检查点,但 P1 只有解释器层,层边界退化为 VM↔host 边界。「长时间纯计算不分配的循环如何周期 GC」——P1 靠分配点,无分配的死循环不会 GC(也无需,因没产生垃圾)。**P3+ 跨层时 safepoint 形式(回边检查点 vs 调用边界,对齐 `docs/design/roadmap.md` (§2) 异步抢占税解法)在 p3-wasm-tier 定。**
 
-这条缺口把「编译层接入时 safepoint 如何布点」这个问题**显式委托给本文**。本文是这条缺口的收口处:**给出三类布点的精确形态 + WAT 实代码 + GC 根可见性论证,并把缺口标记关闭**(§2)。
+这条缺口把「编译层接入时 safepoint 如何布点」这个问题**显式委托给本文**。本文是这条缺口的收口处:**给出三类布点的精确形式 + WAT 实代码 + GC 根可见性论证,并把缺口标记关闭**(§2)。
 
 ### 0.2 一条不变的哲学:受控位置才允许 runtime 介入
 
@@ -33,7 +33,7 @@ P1 解释器 [05 §5.1](../p1-interpreter/05-interpreter-loop.md) 的 safepoint 
 
 > roadmap §3 / 前提四锁定:**safepoint 限定在分配点与层边界,根放 shadow stack**。……**为什么不能每条指令都设 safepoint**:① 多数指令(MOVE/算术/比较/跳转)不分配,设了是纯开销;② safepoint 要求把活跃寄存器作为 GC 根可见——若每指令都暴露根,代价极高。**限定在分配点意味着「只有可能制造垃圾的地方才需要可能回收」,这是精确且省的。**
 
-这条哲学**在 P3 一字不改**。P3 不是「换了执行引擎所以要重新发明 safepoint 模型」——恰恰相反,P3 把同一套「受控位置」模型搬到 Wasm 直线代码上,只是「受控位置」的物理形态从「Go 解释器 switch 分支末尾的 `if vm.gcPending`」变成了「Wasm 函数里编译期静态插入的 `(if (i32.load $gcPending) ...)`」。**布点哲学不变,只是布点载体从解释器循环换成编译产物。**
+这条哲学**在 P3 一字不改**。P3 不是「换了执行引擎所以要重新发明 safepoint 模型」——恰恰相反,P3 把同一套「受控位置」模型搬到 Wasm 直线代码上,只是「受控位置」的物理形式从「Go 解释器 switch 分支末尾的 `if vm.gcPending`」变成了「Wasm 函数里编译期静态插入的 `(if (i32.load $gcPending) ...)`」。**布点哲学不变,只是布点载体从解释器循环换成编译产物。**
 
 ### 0.3 P3 收益与 GC 的关系:GC 不在热路径
 
@@ -41,7 +41,7 @@ P1 解释器 [05 §5.1](../p1-interpreter/05-interpreter-loop.md) 的 safepoint 
 
 - gibbous 直线代码的热体(算术、MOVE、比较、跳转)**全部不分配**(§1.4),因此热循环体内**没有 safepoint 也没有 GC**。
 - GC 只发生在「分配助手内」(§1.1)或「回边 pending 命中后」(§1.3),这两处都是**冷路径或低频点**(分支预测器友好的恒不跳分支)。
-- 这意味着 P3 的 GC 设计**不需要为热路径性能让步**——可以选最简单、最易差分验证的形态(STW full GC,§5),把正确性推理压到最低。
+- 这意味着 P3 的 GC 设计**不需要为热路径性能让步**——可以选最简单、最易差分验证的形式(STW full GC,§5),把正确性推理压到最低。
 
 **一句话**:P3 把 GC 留在受控的冷路径上,热路径是无 GC 的直线代码——这既是性能红利,也是正确性红利。
 
@@ -49,20 +49,20 @@ P1 解释器 [05 §5.1](../p1-interpreter/05-interpreter-loop.md) 的 safepoint 
 
 | 关注点 | 本文(05)拥有 | 02-translation 拥有 | 04-trampoline 拥有 | 03-memory-model 拥有 |
 |---|---|---|---|---|
-| **三类 safepoint 形态定稿** | ✅ §1(分配点 / 层边界 / 回边) | 给 FORLOOP 回边 WAT(§3.5),以本文为准 | 给 trampoline 入口协议,层边界 safepoint 含义以本文为准 | — |
+| **三类 safepoint 形式定稿** | ✅ §1(分配点 / 层边界 / 回边) | 给 FORLOOP 回边 WAT(§3.5),以本文为准 | 给 trampoline 入口协议,层边界 safepoint 含义以本文为准 | — |
 | **收口 [06 §12](../p1-interpreter/06-memory-gc.md) 缺口** | ✅ §2(显式标关闭) | — | — | — |
 | **GC 根可见性论证** | ✅ §3(R5 原样覆盖,零新增) | 给寄存器映射(§2A),根可见性以本文为准 | — | 给 arena=wazero memory 物理基础 |
 | **locals 写回纪律** | ✅ §4(纪律定稿 + 编译器算法) | 给 locals 缓存优化条件(§2.2B),纪律以本文为准 | 跨层调用前写回点本文列举 | — |
 | **写屏障 P3 不动** | ✅ §5(STW 维持 + 空屏障) | — | — | — |
 | **GC 压力差分验证** | 链 08(§6 转交) | — | — | — |
 
-**关键边界**:**本文是「跨层 GC 安全」的单一事实源**——三类 safepoint 的形态、GC 根可见性、locals 写回纪律在本文定稿,其它文档(02 给 WAT、04 给 trampoline、03 给物理基础)的相关片段以本文为准。
+**关键边界**:**本文是「跨层 GC 安全」的单一事实源**——三类 safepoint 的形式、GC 根可见性、locals 写回纪律在本文定稿,其它文档(02 给 WAT、04 给 trampoline、03 给物理基础)的相关片段以本文为准。
 
 ---
 
-## 1. 三类 safepoint 在 P3 的形态(本节核心,扩原 §6.1)
+## 1. 三类 safepoint 在 P3 的形式(本节核心,扩原 §6.1)
 
-[06 §7.1](../p1-interpreter/06-memory-gc.md) 的两类 safepoint(分配点 + 层边界)在 P3 落地为**三类**:分配点、层边界、回边。多出来的「回边」(§1.3)正是收口 [06 §12](../p1-interpreter/06-memory-gc.md) 关心的「长时间不分配的循环如何周期 GC」——但 P3 的回边只在「确有 pending」时才介入,不是无条件 GC(§1.4 论证)。
+[06 §7.1](../p1-interpreter/06-memory-gc.md) 的两类 safepoint(分配点 + 层边界)在 P3 完成为**三类**:分配点、层边界、回边。多出来的「回边」(§1.3)正是收口 [06 §12](../p1-interpreter/06-memory-gc.md) 关心的「长时间不分配的循环如何周期 GC」——但 P3 的回边只在「确有 pending」时才介入,不是无条件 GC(§1.4 论证)。
 
 总览表(详见各小节):
 
@@ -129,13 +129,13 @@ gibbous 直线代码执行到上面的 (call $h_newtable ...):
 
 **关键:助手返回时 GC 已完成,Wasm 侧无感**。gibbous 直线代码不需要知道「刚才助手内跑了一次 full GC」——它只看到 `$h_newtable` 返回了 status 0,R(A) 槽里是新表。这与 P1 解释器里「`NEWTABLE` opcode 调 Alloc → Alloc 内 collect → 继续下一条 opcode」**完全同构**,只是中间多了一次跨层 `call`。
 
-> **为什么分配点的「Wasm 实代码」只有一行 call**:这正是 §1.1 的核心论断「gibbous 自身从不分配」的物理体现——分配点在 gibbous 代码里的全部形态就是「调助手 + 查 status」。GC 的全部逻辑(Alloc、collect、根枚举)都在 Go 侧助手里,Wasm 侧一条 GC 指令都没有。这与 §1.3 回边(Wasm 侧有 `i32.load $gcPending` 检查)形成对比:**分配点的 GC 完全在 Go 侧(Wasm 无感),回边的 GC 触发判定在 Wasm 侧(一次 load + 分支)、collect 在 Go 侧。**
+> **为什么分配点的「Wasm 实代码」只有一行 call**:这正是 §1.1 的核心论断「gibbous 自身从不分配」的物理体现——分配点在 gibbous 代码里的全部形式就是「调助手 + 查 status」。GC 的全部逻辑(Alloc、collect、根枚举)都在 Go 侧助手里,Wasm 侧一条 GC 指令都没有。这与 §1.3 回边(Wasm 侧有 `i32.load $gcPending` 检查)形成对比:**分配点的 GC 完全在 Go 侧(Wasm 无感),回边的 GC 触发判定在 Wasm 侧(一次 load + 分支)、collect 在 Go 侧。**
 
 #### 1.1.3 为什么 Wasm 侧无感是安全的:根天然可见
 
 助手内 collect 时,GC 要枚举根([06 §5.1](../p1-interpreter/06-memory-gc.md) R1..R9)。gibbous 帧的活跃寄存器在基线 memory-resident 下**就是 thread 值栈槽**——R5(running thread 栈 + CallInfo)原样覆盖(详见 §3)。所以:
 
-- 助手被调时,gibbous 帧的所有活跃值**已经在 arena 值栈里**(因为它们一直住那儿,gibbous 用 `i64.load/store offset=8*i (base)` 直接读写,从不缓存到 Wasm locals——基线形态下);
+- 助手被调时,gibbous 帧的所有活跃值**已经在 arena 值栈里**(因为它们一直住那儿,gibbous 用 `i64.load/store offset=8*i (base)` 直接读写,从不缓存到 Wasm locals——基线形式下);
 - GC 枚举 R5 时顺着 `valueStackRef` 遍历 `[0, top)`,**自动覆盖 gibbous 帧的所有活跃寄存器**;
 - 助手自己若把某个待放入新表的中间值暂存在 Go 局部(如 CONCAT 中间串),按 [06 §7.2](../p1-interpreter/06-memory-gc.md) 的纪律落寄存器槽或登记 shadow stack(R7/R8)——这是助手体(= P1 opcode 实现)本就有的纪律,P3 不新增。
 
@@ -180,9 +180,9 @@ crescent ↔ gibbous 的 trampoline([04 §2 crescent→gibbous](./04-trampoline.
 
 所以**助手路径已覆盖**绝大多数回收时机,trampoline 主动 safepoint 是冗余的。
 
-#### 1.2.3 一种极端形态的兜底(PW9 验收时评估)
+#### 1.2.3 一种极端形式的兜底(PW9 验收时评估)
 
-**例外**:若 PW9 验收时发现存在「长 gibbous 函数,既不分配也无回边」的极端形态(例如一段超长的纯算术直线代码,无循环、无表操作、无调用),则该函数从进入到返回**全程无 safepoint**——若此时另一个分配源(理论上单线程下不存在并发分配,但跨多个 gibbous 调用累积)已置 pending,collect 会被推迟到下一个分配点/回边/层边界。
+**例外**:若 PW9 验收时发现存在「长 gibbous 函数,既不分配也无回边」的极端形式(例如一段超长的纯算术直线代码,无循环、无表操作、无调用),则该函数从进入到返回**全程无 safepoint**——若此时另一个分配源(理论上单线程下不存在并发分配,但跨多个 gibbous 调用累积)已置 pending,collect 会被推迟到下一个分配点/回边/层边界。
 
 - **P1 口径下这不是问题**(单 goroutine,无并发分配):pending 只会由「本线程的分配」置,而本线程在这段无分配代码里**没有产生新垃圾**,推迟 collect 无害(没垃圾就不急着回收,§1.4)。
 - **但若该长函数返回后立即又进入另一个不分配的长函数**,理论上可累积「该收而长期不收」。**这是低概率边角**,P3 首版不处理。
@@ -204,7 +204,7 @@ crescent ↔ gibbous 的 trampoline([04 §2 crescent→gibbous](./04-trampoline.
 
 ### 1.3 循环回边:gcPending 检查
 
-#### 1.3.1 WAT 实装(承 [02 §3.5](./02-translation.md) FORLOOP)
+#### 1.3.1 WAT 实现(承 [02 §3.5](./02-translation.md) FORLOOP)
 
 回边 safepoint 是 P3 相对 P1 解释器**新增的一类布点**——因为 gibbous 把循环编译成直线代码 + 回边跳转,失去了解释器「每条 opcode 末尾都过一次主循环顶部」的天然检查点([05 §5.3](../p1-interpreter/05-interpreter-loop.md))。所以必须在回边显式插一个检查:
 
@@ -235,7 +235,7 @@ crescent ↔ gibbous 的 trampoline([04 §2 crescent→gibbous](./04-trampoline.
 ;; 循环结束:落出,直线继续
 ```
 
-**TFORLOOP(泛型 for)与向后 JMP(while/repeat 回边)同理**:任何「向后跳的回边」翻译点都插同一个 `(if (i32.load $gcPending) (call $h_safepoint))`。编译器在生成回边 `br` 之前静态插入(§4.3 同款静态插入逻辑)。
+**TFORLOOP(泛型 for)与向后 JMP(while/repeat 回边)同理**:任何「向后跳的回边」翻译点都插同一个 `(if (i32.load $gcPending) (call $h_safepoint))`。编译器在生成回边 `br` 之前静态插入(§4.3 一样的静态插入逻辑)。
 
 #### 1.3.2 成本:一次 i32.load + 几乎恒不跳的分支
 
@@ -323,24 +323,24 @@ end
 
 P1 设计 06-memory-gc 在 §12「文档缺口 / 待决」里,**预设了 P3 接入时何处布 safepoint** 这个问题,把它显式委托给 P3 文档。原话(完整):
 
-> **层边界 safepoint 的具体形态**:§7.1 说层边界是可选 GC 检查点,但 P1 只有解释器层,层边界退化为 VM↔host 边界。「长时间纯计算不分配的循环如何周期 GC」——P1 靠分配点,无分配的死循环不会 GC(也无需,因没产生垃圾)。P3+ 跨层时 safepoint 形态(回边检查点 vs 调用边界,对齐 `docs/design/roadmap.md` (§2) 异步抢占税解法)在 p3-wasm-tier 定。
+> **层边界 safepoint 的具体形式**:§7.1 说层边界是可选 GC 检查点,但 P1 只有解释器层,层边界退化为 VM↔host 边界。「长时间纯计算不分配的循环如何周期 GC」——P1 靠分配点,无分配的死循环不会 GC(也无需,因没产生垃圾)。P3+ 跨层时 safepoint 形式(回边检查点 vs 调用边界,对齐 `docs/design/roadmap.md` (§2) 异步抢占税解法)在 p3-wasm-tier 定。
 
 这条缺口包含三个子问题,本文逐一收口:
 
 | [06 §12](../p1-interpreter/06-memory-gc.md) 子问题 | 本文收口处 |
 |---|---|
-| ① 编译层接入时层边界 safepoint 的具体形态 | §1.2(trampoline 天然检查点,基线可选) |
+| ① 编译层接入时层边界 safepoint 的具体形式 | §1.2(trampoline 天然检查点,基线可选) |
 | ② 长时间纯计算不分配的循环如何周期 GC | §1.4(不分配 ⇒ 不 GC,口径不变)+ §1.3(有 pending 才 GC) |
-| ③ safepoint 形态:回边检查点 vs 调用边界,对齐异步抢占税解法 | §1.3(回边 gcPending 检查)+ §1.5(与异步抢占税正交) |
+| ③ safepoint 形式:回边检查点 vs 调用边界,对齐异步抢占税解法 | §1.3(回边 gcPending 检查)+ §1.5(与异步抢占税正交) |
 
 ### 2.2 三类布点如何精确收口缺口
 
 本文 §1 的三类布点(分配点 / 层边界 / 回边)对 [06 §12](../p1-interpreter/06-memory-gc.md) 三个子问题的精确应答:
 
-#### 子问题 ① 层边界 safepoint 形态 → §1.2
+#### 子问题 ① 层边界 safepoint 形式 → §1.2
 
 - **答**:层边界 = crescent↔gibbous↔host 的 trampoline([04 §2/§3](./04-trampoline.md)),与 [05 §5.1](../p1-interpreter/05-interpreter-loop.md) 的调用边界 safepoint 同位。
-- **形态定稿**:**基线不主动调 safepoint**(助手路径已覆盖,§1.2.2),仅在 PW9 验收发现极端长函数形态时按实测加(§1.2.3)。这与 [06 §7.1](../p1-interpreter/06-memory-gc.md) 对 P1 层边界的定性(「可选的额外触发机会」)一脉相承。
+- **形式定稿**:**基线不主动调 safepoint**(助手路径已覆盖,§1.2.2),仅在 PW9 验收发现极端长函数形式时按实测加(§1.2.3)。这与 [06 §7.1](../p1-interpreter/06-memory-gc.md) 对 P1 层边界的定性(「可选的额外触发机会」)一脉相承。
 
 #### 子问题 ② 纯计算循环周期 GC → §1.4
 
@@ -350,11 +350,11 @@ P1 设计 06-memory-gc 在 §12「文档缺口 / 待决」里,**预设了 P3 接
 #### 子问题 ③ 回边检查点 vs 调用边界 + 对齐异步抢占税 → §1.3 + §1.5
 
 - **答(回边 vs 调用边界)**:**两者都用**——回边(§1.3)处理「循环体内分配置 pending 但推迟 collect」的兑现;调用边界(§1.2,即层边界)是天然检查点但基线不主动调。**回边是主力**(覆盖热循环),调用边界是兜底。
-- **答(对齐异步抢占税解法)**:**形式上对齐,语义上正交**(§1.5)。「回边检查点」这个形态确实借鉴了异步抢占税的解法(JIT 在循环回边插检查点,roadmap §2),但我们的回边检查的是**望舒 GC 的 `gcPending`**,而非 Go 调度的抢占标志——**两套检查可以叠在同一回边,语义不混**。异步抢占税本身由 wazero 外包(p3-wasm-tier 原稿 §9),我们不管。
+- **答(对齐异步抢占税解法)**:**形式上对齐,语义上正交**(§1.5)。「回边检查点」这个形式确实借鉴了异步抢占税的解法(JIT 在循环回边插检查点,roadmap §2),但我们的回边检查的是**望舒 GC 的 `gcPending`**,而非 Go 调度的抢占标志——**两套检查可以叠在同一回边,语义不混**。异步抢占税本身由 wazero 外包(p3-wasm-tier 原稿 §9),我们不管。
 
 ### 2.3 与 P1 解释器 safepoint 哲学的同构论证
 
-本文 §1 的三类布点**不是新发明的 GC 模型**,而是 P1 解释器 safepoint 哲学([05 §5](../p1-interpreter/05-interpreter-loop.md) + [06 §7](../p1-interpreter/06-memory-gc.md))在编译层的同构落地。逐条对照:
+本文 §1 的三类布点**不是新发明的 GC 模型**,而是 P1 解释器 safepoint 哲学([05 §5](../p1-interpreter/05-interpreter-loop.md) + [06 §7](../p1-interpreter/06-memory-gc.md))在编译层的同构完成。逐条对照:
 
 | P1 解释器(05/06) | P3 编译层(本文) | 同构关系 |
 |---|---|---|
@@ -376,17 +376,17 @@ P1 设计 06-memory-gc 在 §12「文档缺口 / 待决」里,**预设了 P3 接
 
 ### 2.4 缺口本文标记关闭
 
-**收口结论**:[06 §12](../p1-interpreter/06-memory-gc.md) 的「层边界 safepoint 的具体形态」缺口,**本文 §1 已完整收口**:
+**收口结论**:[06 §12](../p1-interpreter/06-memory-gc.md) 的「层边界 safepoint 的具体形式」缺口,**本文 §1 已完整收口**:
 
-- 子问题 ①(层边界形态)→ §1.2 定稿(trampoline 天然检查点,基线可选)。
+- 子问题 ①(层边界形式)→ §1.2 定稿(trampoline 天然检查点,基线可选)。
 - 子问题 ②(纯计算循环)→ §1.4 定稿(不分配不 GC,口径不变)。
 - 子问题 ③(回边 vs 调用边界 + 异步抢占)→ §1.3 + §1.5 定稿(回边为主,调用边界兜底,与异步抢占税正交)。
 
-> **对 [06 §12](../p1-interpreter/06-memory-gc.md) 的回填请求**(记入 [memory/doc-gaps](../../../llmdoc/memory/doc-gaps.md)):把 [06 §12](../p1-interpreter/06-memory-gc.md) 的「层边界 safepoint 的具体形态」缺口条目改为一行收口标记——
+> **对 [06 §12](../p1-interpreter/06-memory-gc.md) 的回填请求**(记入 [memory/doc-gaps](../../../llmdoc/memory/doc-gaps.md)):把 [06 §12](../p1-interpreter/06-memory-gc.md) 的「层边界 safepoint 的具体形式」缺口条目改为一行收口标记——
 >
-> > ~~**层边界 safepoint 的具体形态**:……P3+ 跨层时 safepoint 形态在 p3-wasm-tier 定。~~ **【已收口】P3 三类布点(分配点 / 层边界 / 回边)在本文 §1 定稿:分配点经助手内 collect、层边界 trampoline 基线可选、回边 gcPending 检查;纯计算不分配不 GC 口径不变;与 wazero 异步抢占税正交。**
+> > ~~**层边界 safepoint 的具体形式**:……P3+ 跨层时 safepoint 形式在 p3-wasm-tier 定。~~ **【已收口】P3 三类布点(分配点 / 层边界 / 回边)在本文 §1 定稿:分配点经助手内 collect、层边界 trampoline 基线可选、回边 gcPending 检查;纯计算不分配不 GC 口径不变;与 wazero 异步抢占税正交。**
 >
-> **本期只记录回填请求,不主动改 P1 06**(承 [00-overview §7](./00-overview.md) 的「对 P1/P2 现有文档的回填请求本期只记录不主动改」纪律 + 用户裁决)。P3 落地时(PW4 回边 safepoint 实装)同批把 [06 §12](../p1-interpreter/06-memory-gc.md) 改为收口标记。
+> **本期只记录回填请求,不主动改 P1 06**(承 [00-overview §7](./00-overview.md) 的「对 P1/P2 现有文档的回填请求本期只记录不主动改」纪律 + 用户裁决)。P3 完成时(PW4 回边 safepoint 实现)同批把 [06 §12](../p1-interpreter/06-memory-gc.md) 改为收口标记。
 
 ---
 
@@ -420,7 +420,7 @@ R5 的覆盖范围是「running thread 值栈 `[0, top)` 的所有 Value」。gi
 - 它的 CallInfo(标了 bit50 `callStatus_gibbous`,[04 §1](./04-trampoline.md))在 CallInfo 数组里 → 被 CallInfo 扫描覆盖(同 crescent 帧),帧引用的 closure GCRef 照扫;
 - 它捕获的 upvalue(若有,CLOSURE 翻译)在 openUpvalRef 链里 → 被 openUpvalRef 扫描覆盖(同 crescent 帧)。
 
-**bit50 对 GC 透明**:GC 扫 CallInfo 时只关心「这一帧引用了哪些 closure / Value」,**不读 bit50**(bit50 只供 trampoline 判帧形态,[04 §1](./04-trampoline.md))。所以即便 gibbous 帧标了 bit50,GC 扫描代码也**一行不用改**——它扫的是 closure/Value 字段,不是状态位。
+**bit50 对 GC 透明**:GC 扫 CallInfo 时只关心「这一帧引用了哪些 closure / Value」,**不读 bit50**(bit50 只供 trampoline 判帧形式,[04 §1](./04-trampoline.md))。所以即便 gibbous 帧标了 bit50,GC 扫描代码也**一行不用改**——它扫的是 closure/Value 字段,不是状态位。
 
 ### 3.3 这是基线方案最大的正确性红利
 
@@ -431,11 +431,11 @@ R5 的覆盖范围是「running thread 值栈 `[0, top)` 的所有 Value」。gi
 | 必须实现「gibbous 帧根登记」机制:每个 safepoint 前把缓存的 locals 写回栈槽(§4),否则 GC 误根 | **无需任何额外机制**:寄存器一直在栈槽,GC 扫值栈自动覆盖 |
 | 写回点遗漏 = 灾难性 bug(GC 误回收活对象 / 解释器读脏值,§4.4) | **不存在「写回遗漏」这个 bug 类**(没有缓存就没有写回) |
 | GC 压力 fuzz 是主防线(§4.5),需要专门设计 fuzz 模式逼出遗漏 | GC 压力 fuzz 仍跑(§6),但只验「助手内根登记」(P1 已有的纪律),不验 gibbous 帧根(天然正确) |
-| 根枚举代码可能需要按帧形态分支(gibbous 帧扫 locals?——但 locals 在 Wasm 栈,GC 扫不到!) | 根枚举代码**一行不改**(§3.2.1) |
+| 根枚举代码可能需要按帧形式分支(gibbous 帧扫 locals?——但 locals 在 Wasm 栈,GC 扫不到!) | 根枚举代码**一行不改**(§3.2.1) |
 
 **一句话**:**基线 memory-resident 把「gibbous 帧的 GC 根正确性」从一个需要编译器纪律 + fuzz 兜底的工程问题,降级为一个不存在的问题**——因为寄存器从不离开 arena 值栈,GC 看它们和看解释器寄存器没有任何区别。这是 P3「值世界 = linear memory」([03](./03-memory-model.md))物理兑现的直接红利。
 
-### 3.4 与解释器形态完全等价的论证(同一 thread 槽数组、同一 CallInfo 链)
+### 3.4 与解释器形式完全等价的论证(同一 thread 槽数组、同一 CallInfo 链)
 
 **论断:对 GC 而言,一个 gibbous 帧与一个 crescent 帧的根贡献完全等价——它们贡献的是同一个 thread 值栈的同一段槽、同一条 CallInfo 链。** 严格论证:
 
@@ -781,7 +781,7 @@ func (c *Collector) writeBarrier(parent value.GCRef, child value.Value) {
 
 2. **三类 safepoint 不漏:分配点 / 层边界 / 回边**(§1):
    - 分配点(§1.1):助手内 collect,Wasm 侧无感。
-   - 层边界(§1.2):trampoline 天然检查点,基线可选(助手路径已覆盖),极端长函数形态 PW9 按实测加。
+   - 层边界(§1.2):trampoline 天然检查点,基线可选(助手路径已覆盖),极端长函数形式 PW9 按实测加。
    - 回边(§1.3):`(if (i32.load $gcPending) (call $h_safepoint))`,一次 i32.load + 几乎恒不跳分支;纯计算循环不触发(§1.4)。
 
 3. **基线 memory-resident 下 GC 根零新增**(§3):gibbous 帧活跃寄存器 = thread 值栈槽,[06 §5.1](../p1-interpreter/06-memory-gc.md) R5(running thread 栈 + CallInfo)原样覆盖,根枚举代码一行不改(§3.2.1)。gibbous 帧与 crescent 帧根贡献完全等价(§3.4:同一 thread 槽数组、同一 CallInfo 链)。
@@ -796,13 +796,13 @@ func (c *Collector) writeBarrier(parent value.GCRef, child value.Value) {
 
 ## 8. 文档缺口 / 待决(记入 [memory/doc-gaps](../../../llmdoc/memory/doc-gaps.md))
 
-- **对 [06 §12](../p1-interpreter/06-memory-gc.md) 的回填**(§2.4):把 [06 §12](../p1-interpreter/06-memory-gc.md) 的「层边界 safepoint 的具体形态」缺口条目改为收口标记(指向本文 §1)。**本期只记录回填请求,不主动改 P1 06**(承 [00-overview §7](./00-overview.md) 纪律);P3 落地时(PW4 回边 safepoint 实装)同批改。
+- **对 [06 §12](../p1-interpreter/06-memory-gc.md) 的回填**(§2.4):把 [06 §12](../p1-interpreter/06-memory-gc.md) 的「层边界 safepoint 的具体形式」缺口条目改为收口标记(指向本文 §1)。**本期只记录回填请求,不主动改 P1 06**(承 [00-overview §7](./00-overview.md) 纪律);P3 完成时(PW4 回边 safepoint 实现)同批改。
 
 - **locals 缓存写回算法的精确定义**(§4.3.2):活跃性分析精度、W4 的 CFG 分析深度、helper clobber 集标注、缓存槽选择(FORLOOP 三槽之外是否扩展)——**留 PW5/PW9 实测后定**(承 [02 §2.2B](./02-translation.md) + [00-overview §10](./00-overview.md))。P3 首版不启用 locals 缓存(§4.6),此为前瞻设计。
 
 - **locals 缓存的启用决策**(§4.6):**PW9 实测定为不启用**——loop 核 2.58x 达标(V14 ≥2x),全 memory-resident 已够;真实退化(call 核 0.14x)是跨层调用税非寄存器访问,locals 缓存正交、拆 PW10(单 module + call_indirect)。§4 写回纪律保持前瞻定稿。
 
-- **助手内手工根登记 vs 编译器自动覆盖**(§1.1.3 / §6.1):助手体(= P1 opcode 实现)内若把 GCRef 暂存 Go 局部(如 CONCAT 中间串),需登记 shadow stack(R7)防误回收——这是 P1 已有的纪律,但 gibbous 经助手的路径需确认覆盖完整。**手工根登记是否需要为 gibbous 路径补充、还是 P1 纪律自然覆盖,留 PW3 实装时定**(PW3 = 算术 + 慢路径助手回 Go,[00-overview §4](./00-overview.md))。
+- **助手内手工根登记 vs 编译器自动覆盖**(§1.1.3 / §6.1):助手体(= P1 opcode 实现)内若把 GCRef 暂存 Go 局部(如 CONCAT 中间串),需登记 shadow stack(R7)防误回收——这是 P1 已有的纪律,但 gibbous 经助手的路径需确认覆盖完整。**手工根登记是否需要为 gibbous 路径补充、还是 P1 纪律自然覆盖,留 PW3 实现时定**(PW3 = 算术 + 慢路径助手回 Go,[00-overview §4](./00-overview.md))。
 
 - **`$gcPending` 的 wazero global 暴露 API**(§1.3.4):`module.ExportedGlobal("gcPending").Set(...)` vs 经 imported 函数副作用;global 读成本是否 ≤ linear memory 读(否则退化为 linear memory 约定偏移)——**待 spike 验证**(同 [03 §3](./03-memory-model.md) wazero API 待验证项,[01 §1.4](./01-spike-gate.md) 顺带项)。
 
@@ -814,7 +814,7 @@ func (c *Collector) writeBarrier(parent value.GCRef, child value.Value) {
 
 相关:
 [00-overview](./00-overview.md)(P3 总览,本文是「跨层 GC」单一事实源) ·
-[01-spike-gate](./01-spike-gate.md)(开工闸门,gcPending global API 待 spike) ·
+[01-spike-gate](./01-spike-gate.md)(开工检查,gcPending global API 待 spike) ·
 [02-translation](./02-translation.md)(寄存器映射 §2A 基线 / §2.2B locals 缓存 / §3.5 FORLOOP 回边 WAT / §4 pc 物化) ·
 [03-memory-model](./03-memory-model.md)(arena=wazero memory:GC 根与寄存器同一块物理内存的物理基础) ·
 [04-trampoline](./04-trampoline.md)(层边界 = trampoline / CallInfo bit50 / status 链冒泡) ·

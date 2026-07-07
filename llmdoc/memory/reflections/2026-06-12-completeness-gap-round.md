@@ -15,12 +15,12 @@
 corpus 落点 `test/difftest/probes_test.go`(`featureProbes` / `TestDiff_FeatureProbes`),
 按官方 5.1 手册逐节组织(§2.2 值/§2.4 语句/§2.5 表达式/§2.8 元表全 17 事件/§5 各库/
 协程/闭包),实测 100 项(`590d8b3` 提交说明口径 93,为撰写时点数字;以文件实测为准),
-现全绿常驻对拍。
+现全绿常驻差分测试。
 
 ## 预期 vs 实际
 
 - 预期:probe corpus 是验证性动作,可能扫出少量边角缺口。
-- 实际:**在 570+ 随机脚本对拍全绿的状态下,probe 一次扫出 25 个完整性缺口**——
+- 实际:**在 570+ 随机脚本差分测试全绿的状态下,probe 一次扫出 25 个完整性缺口**——
   整个 __call/__eq/__lt/__le/__tostring/__metatable 元方法面、loadstring/load、
   select 负索引、tonumber(s, base)、gsub 锚点语义、table.maxn 全部缺失,外加一个
   codegen 语义 bug(`nil and 2` 错产 false)。「生成器跟实现走」的盲区是真实且大面积的。
@@ -58,7 +58,7 @@ corpus 落点 `test/difftest/probes_test.go`(`featureProbes` / `TestDiff_Feature
    (对齐 luaK_goiftrue/goiffalse;修复见 `internal/frontend/compile/expdesc.go`
    `goIfTrue`/`goIfFalse`)。又一例「lcode.c 同构必须到 helper 层」级别的语义细节。
 3. **probe 笔误两例——probe 必须先过 oracle 再当判据**:probe_assert_message 直接
-   对拍 assert 错误值,但错误串含 chunkname/行号(两端必不同),须 gsub 归一化;
+   差分测试 assert 错误值,但错误串含 chunkname/行号(两端必不同),须 gsub 归一化;
    probe_string_format_misc 写了 `format("%s", nil)`,5.1 本就报错,不是合法探测。
    教训:**corpus 的每一项先在 oracle 单跑确认是合法且确定性的 5.1 程序,才有资格
    当完整性判据**——否则 probe 红色会被误读成实现缺口。
@@ -96,4 +96,4 @@ corpus 落点 `test/difftest/probes_test.go`(`featureProbes` / `TestDiff_Feature
 - P2+ 每个新执行层接入时,probe corpus 与生成器、GC 双模式对照同批换内核重跑
   (corpus 本身执行层无关,harness 直接复用)。
 - 5.1 手册仍有未入 corpus 的小节(io/os 环境相关、依赖宿主的不确定输出),如后续
-  发现可确定性对拍的子集,增量补 probe;新增项一律先过 oracle。
+  发现可确定性差分测试的子集,增量补 probe;新增项一律先过 oracle。

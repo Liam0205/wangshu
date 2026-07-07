@@ -3,7 +3,7 @@
 > **本报告是 PW10 大修是否启动的依据,永久存档不删**(承 PW0 §0.1 spike 决策报告先例)。
 > spike 代码:本目录(`spike/p3indirect/`,独立 go module,不污染主库零依赖)。
 
-## 0. 背景与闸门
+## 0. 背景与检查
 
 P3 PW9 实测:gibbous→gibbous 调用经 `h_call` 双跨层(Wasm→Go→Wasm,~143ns/次 × 2)
 使调用密集核退化(call 核比 crescent 慢 7x)。真解是「单 module + 内部函数表 +
@@ -20,10 +20,10 @@ P3 PW9 实测:gibbous→gibbous 调用经 `h_call` 双跨层(Wasm→Go→Wasm,~1
 
 ## 1. S-A 实测:dispatch 单次成本(÷10000 摊销)
 
-三形态共享同一 leaf 体(`leaf(x)=x*3+1`)+ 同一循环骨架,**只差调用机制**,
+三形式共享同一 leaf 体(`leaf(x)=x*3+1`)+ 同一循环骨架,**只差调用机制**,
 driver 紧循环调 leaf 10000 次,ns/op ÷ 10000 = 单次 dispatch 摊销成本。
 
-| 形态 | ns/op(driver 10000 次) | **单次 dispatch** | 闸门 | 判定 |
+| 形式 | ns/op(driver 10000 次) | **单次 dispatch** | 检查 | 判定 |
 |---|---|---|---|---|
 | **indirect**(`call_indirect`,本方案) | ~24186–26140 | **~2.5 ns** | <30ns | ✅ **远超** |
 | direct(`call` 直调,地板) | ~10312–10512 | ~1.0 ns | — | 地板参考 |
@@ -95,9 +95,9 @@ S-B 的 rebuild-all 留作 Arch-2 万一受阻的退路(已证可行)。
 
 ## 3. 决策:🟢 GREEN — PW10 大修放行(Arch-2 共享表)
 
-- **S-A 闸门 ✅**:`call_indirect` ~2.5ns ≪ 30ns 目标,比 host 跨层快 14x(真实双跨层省更多)。
-- **S-B 闸门 ✅**:增量重编 + 新实例热交换可行且安全(SB1/SB2/SB3 全过)——作 Arch-2 退路保留。
-- **S-C 闸门 ✅**:**共享 imported funcref 表跨 module 直调可行 + 增量注册免重编 + 零跨 module
+- **S-A 检查 ✅**:`call_indirect` ~2.5ns ≪ 30ns 目标,比 host 跨层快 14x(真实双跨层省更多)。
+- **S-B 检查 ✅**:增量重编 + 新实例热交换可行且安全(SB1/SB2/SB3 全过)——作 Arch-2 退路保留。
+- **S-C 检查 ✅**:**共享 imported funcref 表跨 module 直调可行 + 增量注册免重编 + 零跨 module
   dispatch 惩罚**(SC1/SC2 全过,~2.5ns)——**裁定 R1 走 Arch-2**,大幅简化。
 
 **放行 PW10 Phase 1+ 重写(Arch-2)**:

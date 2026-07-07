@@ -49,10 +49,10 @@ gibbous——主线程上同 Proto 的 gibbous 代码,**协程线程上不进入
 
 - **协程的 yield/resume 机制本身**:由 [P1 08](../p1-interpreter/08-coroutines.md) 单一事实源定义。本文只
   使用其结论(路线 B 的 yield 信号冒泡 + 不跨 C 边界限制),不再重述机制。
-- **协程在 P5 trace JIT 下的形态**:trace JIT(P5)对 coroutine 的处理留 [../p5-trace-jit/00-overview.md](../p5-trace-jit/00-overview.md)
+- **协程在 P5 trace JIT 下的形式**:trace JIT(P5)对 coroutine 的处理留 [../p5-trace-jit/00-overview.md](../p5-trace-jit/00-overview.md)
   专管。本文只覆盖 P3 阶段(method-style Wasm 编译)。
-- **路线 A 的具体实装代码**:P1 08 §3.2 已论证 P1 选定路线 B,A 仅作风险兜底。本文只在 §4 给「若启用 A,
-  P3 协程升层如何重新可行」的代价分析,不出实装代码。
+- **路线 A 的具体实现代码**:P1 08 §3.2 已论证 P1 选定路线 B,A 仅作风险兜底。本文只在 §4 给「若启用 A,
+  P3 协程升层如何重新可行」的代价分析,不出实现代码。
 - **P4 native JIT 下的协程规则**:P4 继承本规则(线程级 tier 规则),具体由 [../p4-method-jit/07-p3-retirement](../p4-method-jit/07-p3-retirement.md)
   §2 决策矩阵 + 不变式清单确认。本文给 P3 定稿,P4 沿用。
 
@@ -218,7 +218,7 @@ coroutine.resume(co)
    依赖运行期热度,出现概率与场景耦合,极难复现**。
 2. **用户体验崩盘**:用户写的代码在测试期(冷,crescent)能跑,生产期(热,gibbous)突然报
    `attempt to yield across ???` ——错误种类还得现编,因为 5.1 没有"yield across Wasm boundary"措辞。
-3. **修复路径不存在**:若要让 gibbous 支持 yield,需要 wasm continuation 提案落地 + wazero 后端实现支持
+3. **修复路径不存在**:若要让 gibbous 支持 yield,需要 wasm continuation 提案完成 + wazero 后端实现支持
    + 复杂的 Wasm 帧序列化代码——**P3 阶段(6-12 人月)完全不切实际**(roadmap §4)。
 
 **结论**:**必须从机制上让"协程内的执行不进入 gibbous 帧"**——这就是 §2 的线程级 tier 规则。
@@ -252,12 +252,12 @@ coroutine.resume(co)
 **这把"是否进入 gibbous"的决策从"按 Proto 单维"扩展为"按 (Proto, Thread) 二元"**——同一 Proto 在主线程上
 跑 gibbous,在协程线程上跑 crescent。
 
-### 2.2 实装点:doCall 的 gibbous 分支多查一个 `th == mainThread`
+### 2.2 实现点:doCall 的 gibbous 分支多查一个 `th == mainThread`
 
 **实代码骨架**(承 [04-trampoline §2](./04-trampoline.md) 的 crescent → gibbous 入口协议):
 
 ```go
-// internal/crescent —— doCall 的 gibbous 分支(本规则的实装点,§6.2 详)
+// internal/crescent —— doCall 的 gibbous 分支(本规则的实现点,§6.2 详)
 //
 // 不变式:这是 P3 阶段唯一的"是否走 gibbous"决策点。
 // trampoline、translation、safepoint 等其它子系统都不重复决策。
@@ -280,7 +280,7 @@ func (vm *VM) doCall(f *frame, i bytecode.Instr) callResult {
 }
 ```
 
-**实装要点**:
+**实现要点**:
 
 1. **唯一决策点**:本规则的检查只发生在 `doCall` gibbous 分支——其它任何代码(translation、safepoint、
    trampoline 内部)都不重复检查。这把规则的影响面收紧到一行 `if`,易于审计与维护。
@@ -384,7 +384,7 @@ func (b *Bridge) onBackEdge(proto *bytecode.Proto, pd *ProfileData, pc int, th *
 }
 ```
 
-**两种实现选择(P2 落地时定)**:
+**两种实现选择(P2 完成时定)**:
 
 | 选择 | 处理 | 优劣 |
 |---|---|---|
@@ -395,8 +395,8 @@ func (b *Bridge) onBackEdge(proto *bytecode.Proto, pd *ProfileData, pc int, th *
 线程门禁在 P2 决策入口处。这条纪律在 Stuck 不重试场景已用过,本规则复用,保持 P2 内部纪律统一。
 
 > **回填请求登记**:本节的 considerPromotion 签名扩展(加 `th *Thread`)与 onBackEdge / onEnter 入口签名扩展
-> 是**对 P2 04 / P2 01 的回填请求**——P3 落地(PW8)时同批改 P2 文档与代码。承 [00-overview §3.4](./00-overview.md)
-> 与 §7 的回填义务表登记,P2 01/04 当前是占位状态,等 P3 实装。
+> 是**对 P2 04 / P2 01 的回填请求**——P3 完成(PW8)时同批改 P2 文档与代码。承 [00-overview §3.4](./00-overview.md)
+> 与 §7 的回填义务表登记,P2 01/04 当前是占位状态,等 P3 实现。
 
 ---
 
@@ -418,9 +418,9 @@ func (b *Bridge) onBackEdge(proto *bytecode.Proto, pd *ProfileData, pc int, th *
 |---|---|---|
 | **首个宿主**:规则引擎(pineapple) | 批量列计算 kernel 经 `Program.Call` 入口跑 | **主线程**(Program.Call 即 mainThread.execute) |
 | **典型负载** | 数值循环 + 表读 + IC 命中(03 §0.1) | 与 coroutine 无关 |
-| **协程出现位** | 边角(若有):宿主框架若用 coroutine 做迭代器 / 调度,但内核不在协程里 | 边角形态(roadmap §5 原则 4 已定 coroutine 走 fallback) |
+| **协程出现位** | 边角(若有):宿主框架若用 coroutine 做迭代器 / 调度,但内核不在协程里 | 边角形式(roadmap §5 原则 4 已定 coroutine 走 fallback) |
 
-**结论**:列内核目标下,**主线程承载全部热路径**——协程是边角形态,协程不升层不影响 P3 验收的性能门。
+**结论**:列内核目标下,**主线程承载全部热路径**——协程是边角形式,协程不升层不影响 P3 验收的性能门。
 
 ### 3.2 P3 开工前置确认(承 memory/decisions §7 与 doc-gaps)
 
@@ -437,13 +437,13 @@ func (b *Bridge) onBackEdge(proto *bytecode.Proto, pd *ProfileData, pc int, th *
 
 | 答复 | 含义 | 行动 |
 |---|---|---|
-| **否(列内核在主线程跑)** | 规则有效,本文 §2 定稿可落地 | P3 PW1-PW9 按本文施工;PW8 落地线程级 tier 规则的实代码(`th == mainThread` 检查) |
+| **否(列内核在主线程跑)** | 规则有效,本文 §2 定稿可完成 | P3 PW1-PW9 按本文施工;PW8 完成线程级 tier 规则的实代码(`th == mainThread` 检查) |
 | **是(列内核包在协程里)** | 规则破产,线程级 tier 规则使 P3 完全无法升层热代码 | **退到备选方案**(§4):路线 A goroutine 化或 P3 跳过直接做 P4(P4 §6 决策矩阵中"P3 去留"提前评估) |
 | 部分(混合) | 部分 kernel 在协程里,部分在主线程 | 评估主线程承载占比;若 ≥80% 在主线程,规则仍可用,协程内热路径放弃升层;否则退备选 |
 
 **确认时点**:[01-spike-gate](./01-spike-gate.md) 的 PW0 spike 通过(wazero call boundary < 150ns)之后、
-[02-translation](./02-translation.md) PW1 翻译器骨架启动**之前**。这是 P3 阶段的"第二闸门"(spike 是第一,
-本节是第二),与第一闸门一样,不通过则触发战略调整。
+[02-translation](./02-translation.md) PW1 翻译器骨架启动**之前**。这是 P3 阶段的"第二检查"(spike 是第一,
+本节是第二),与第一检查一样,不通过则触发战略调整。
 
 ### 3.3 工程实测:首个宿主调研结果
 
@@ -467,9 +467,9 @@ func (b *Bridge) onBackEdge(proto *bytecode.Proto, pd *ProfileData, pc int, th *
 ## 4. 备选方案:协程 goroutine 化(P1 08 路线 A 兜底)
 
 若 §3.2 的开工前置确认结果是"是(列内核在协程里)",线程级 tier 规则破产。本节给备选方案——回到 P1 08 §3.1
-**路线 A**(每协程一个独立 goroutine + channel 同步)的形态,论证为何路线 A 下协程升层重新可行,以及代价。
+**路线 A**(每协程一个独立 goroutine + channel 同步)的形式,论证为何路线 A 下协程升层重新可行,以及代价。
 
-### 4.1 P1 08 路线 A 形态回顾
+### 4.1 P1 08 路线 A 形式回顾
 
 [P1 08 §3.1 路线 A](../p1-interpreter/08-coroutines.md):
 
@@ -492,7 +492,7 @@ yield(实现):            yieldCh <- yield值;  args := <-resumeCh   // 阻塞,g
 | 路线 B(P1 当前选定) | 单 goroutine 内,wazero 单 Runtime,Wasm 帧栈是该 Runtime 内部状态 | yield 需要从这一个 Wasm 帧栈"中间 return",物理不可能 |
 | **路线 A**(本节) | 每协程独立 goroutine,可独立持有 wazero Runtime 实例,Wasm 帧栈是各 goroutine 内部状态 | yield = goroutine park,**Wasm 帧栈整个停在那个 goroutine 里**,不需要"中途 return" |
 
-**路线 A 下 yield 的物理形态**:
+**路线 A 下 yield 的物理形式**:
 
 ```
 协程 co 的 goroutine:
@@ -519,7 +519,7 @@ yield(实现):            yieldCh <- yield值;  args := <-resumeCh   // 阻塞,g
 > A 引入"goroutine 各自的 Go 栈",作废 05 §7 为协程铺的路);**但若 P3 协程升层是宿主刚需,A 是兜底——
 > 用 Go 调度器接管 Wasm 帧的挂起/复原,这是 P3 自己造不出的能力**。
 
-### 4.3 路线 A 实装代价
+### 4.3 路线 A 实现代价
 
 切换到路线 A,P1 / P3 / GC 各层都要改造,代价不小:
 
@@ -542,11 +542,11 @@ P1 路线 B 下,协程切换是**用户态 O(1)**:
 
 | 场景 | 路线 B 切换 | 路线 A 切换 | 影响 |
 |---|---|---|---|
-| 高频生产者-消费者(每帧 yield 一次,千次/秒) | 几 µs 总开销 | 几 ms 总开销 | 协程作为高频迭代器形态时显著退化 |
+| 高频生产者-消费者(每帧 yield 一次,千次/秒) | 几 µs 总开销 | 几 ms 总开销 | 协程作为高频迭代器形式时显著退化 |
 | 低频协调(秒级 resume / yield) | 可忽略 | 可忽略 | 不敏感 |
 | 列内核包成协程(每列 resume 一次) | 几 ns | 几 µs | 列数大时累积影响,但通常单列处理时间远大于切换开销 |
 
-> **路线 A 仍有合理使用场景**:即便切换从 ns 退化到 µs,对"每协程承担批量计算"的形态(单次 resume 跑大段
+> **路线 A 仍有合理使用场景**:即便切换从 ns 退化到 µs,对"每协程承担批量计算"的形式(单次 resume 跑大段
 > 代码,yield 不频繁)仍可接受。**P3 协程升层带来的「单列计算 ≥2x」收益,与「切换从 ns 到 µs」的成本是
 > 不同量级**——若单列计算需要 ms 级,切换开销可忽略;若每协程只跑几 µs,A 反而更慢。需实测决定。
 
@@ -583,11 +583,11 @@ P1 06 §7.3 的 STW GC「天然无需停顿协调」前提:**单 goroutine,Alloc
 
 路线 A 下,**多 goroutine 同时 Alloc / 同时跑 gibbous 代码可能**——必须引入额外同步:
 
-- 全局锁串行化 arena 访问(损失 goroutine 并发的意义,且每个 Wasm 函数内部的 arena 写都要持锁,实装爆炸)
+- 全局锁串行化 arena 访问(损失 goroutine 并发的意义,且每个 Wasm 函数内部的 arena 写都要持锁,实现爆炸)
 - 或并发 GC(P1 06 §9.4 写屏障 P1 空实现,要全面启用,且 trampoline / safepoint 协议都要重构)
 - 或单时刻只允许一个 goroutine 跑 gibbous(全局 wasm-execution-mutex,本质退化成单 goroutine,A 的并发优势失效)
 
-**结论**:路线 A 的 GC 协调改造**比路线 B 的整套实装**复杂——这正是 P1 选定路线 B 的核心理由之一(P1 08 §3.2 论证 3)。
+**结论**:路线 A 的 GC 协调改造**比路线 B 的整套实现**复杂——这正是 P1 选定路线 B 的核心理由之一(P1 08 §3.2 论证 3)。
 
 ### 4.4 路线 A 的边角:resume/yield 多值 + 错误传播经 channel 转发
 
@@ -617,15 +617,15 @@ resumeCh chan []Value
 
 ### 4.5 路线 A 留作 P3 启用前置失败的兜底
 
-**当前定稿**:路线 A **不在 P3 阶段实装**,留作:
+**当前定稿**:路线 A **不在 P3 阶段实现**,留作:
 
 1. **§3.2 P3 开工前置确认结果为"是"时的兜底**(列内核确实在协程里):
    - PW0 spike 通过 + 开工前置确认失败 ⇒ 在 PW1 启动前评估"启用路线 A vs P3 跳过(直接评估 P4)"
-   - 决策依据:① 宿主切换协程化代价;② 路线 A 的实装代价(本节)与时间窗(可能延后 P3 6+ 个月);
+   - 决策依据:① 宿主切换协程化代价;② 路线 A 的实现代价(本节)与时间窗(可能延后 P3 6+ 个月);
      ③ P4 的人月预算(roadmap §4 P4 6-12 人年,显著高于 P3)
-2. **未来宿主形态变化的演进路径**:
+2. **未来宿主形式变化的演进路径**:
    - 当前(2026)首个宿主大概率列内核在主线程,本规则有效
-   - 未来若宿主形态演进("协程式数据流"模式流行),路线 A 重新评估
+   - 未来若宿主形式演进("协程式数据流"模式流行),路线 A 重新评估
 3. **P5 trace JIT 启用时的备用考虑**:
    - P1 08 §3.6 已论证路线 B 与 trace JIT 长期对齐,但 trace 录制对协程的具体处理要 P5 详设;若 trace JIT
      需要打破"协程不升层"限制,A 是兜底候选
@@ -654,7 +654,7 @@ P2 04 §3.2 入口加守卫:
 连带 P2 01 §4 onBackEdge / onEnter 入口透传 th。
 ```
 
-**实装时机**:P3 PW8(线程级 tier 规则的实代码)。在 PW8 之前,P2 04/01 维持现有签名,P3 PW1-PW7 不依赖此回填。
+**实现时机**:P3 PW8(线程级 tier 规则的实代码)。在 PW8 之前,P2 04/01 维持现有签名,P3 PW1-PW7 不依赖此回填。
 PW8 同批改 P2 04/01 文档与 internal/bridge 实代码。
 
 **对 P2 04 §2 状态机的影响**:**无**——状态机仍是单向 + 吸收态(`TierInterp → TierGibbous` / `TierInterp → TierStuck`),
@@ -673,9 +673,9 @@ P1 08 §6 末尾(目前是 P3 前瞻引用占位)替换为正文章节,内容包
 3. P3 阶段的应对:线程级 tier 规则,见本文 §2。
 4. 路线 A 兜底:若 P3 协程升层是宿主刚需,可启用路线 A;具体见 P3 07 §4。
 
-**实装时机**:P3 PW8 同批,把 P1 08 §6 末尾的前瞻引用替换为正文。
+**实现时机**:P3 PW8 同批,把 P1 08 §6 末尾的前瞻引用替换为正文。
 
-**对 P1 08 路线 B 选定的影响**:**无**——P1 08 §3.2 的论证(架构纯粹性 / 5.1 限制天然吻合 / GC 简单性 / 实装
+**对 P1 08 路线 B 选定的影响**:**无**——P1 08 §3.2 的论证(架构纯粹性 / 5.1 限制天然吻合 / GC 简单性 / 实现
 成本可控)依然成立。本文只是把"为什么 5.1 限制是物理底线"这条理由的论据扩充——从"5.1 vs 5.2+ 兼容"的层面,
 扩充到"core Wasm 也无 continuation"的层面,**强化**而非动摇 P1 路线 B 选定。
 
@@ -709,11 +709,11 @@ return vm.enterLuaFrame(f, callee)
 |---|---|
 | [01-spike-gate](./01-spike-gate.md) | 无;spike 测的是 wazero call boundary,与协程规则无关 |
 | [02-translation](./02-translation.md) | 无;翻译器不感知 Thread,只翻 Proto |
-| [03-memory-model](./03-memory-model.md) | 无;arena = wazero memory 假设的是路线 B 单 Runtime;若启用路线 A 则作废,但路线 A 不在 P3 阶段实装 |
+| [03-memory-model](./03-memory-model.md) | 无;arena = wazero memory 假设的是路线 B 单 Runtime;若启用路线 A 则作废,但路线 A 不在 P3 阶段实现 |
 | [05-safepoint-gc](./05-safepoint-gc.md) | 无;safepoint 在 gibbous 帧内部,本规则保证 gibbous 帧不会被协程触达,safepoint 协议自然不与协程交互 |
 | [06-ic-feedback-consume](./06-ic-feedback-consume.md) | 无;IC 快照固化与线程无关,主线程升层时消费 feedback |
-| [08-testing-strategy](./08-testing-strategy.md) | **加一项验收**:协程内 hot + Compilable 函数应保持 TierInterp,主线程同 Proto 正常升层。差分基线包含协程 yield/resume 全形态 |
-| [implementation-progress](./implementation-progress.md) | **PW8** 实装本规则:doCall 检查 + considerPromotion 签名扩展 + P2 04/01 回填 |
+| [08-testing-strategy](./08-testing-strategy.md) | **加一项验收**:协程内 hot + Compilable 函数应保持 TierInterp,主线程同 Proto 正常升层。差分基线包含协程 yield/resume 全形式 |
+| [implementation-progress](./implementation-progress.md) | **PW8** 实现本规则:doCall 检查 + considerPromotion 签名扩展 + P2 04/01 回填 |
 
 ### 5.5 对 P4 native JIT 的影响
 
@@ -731,16 +731,16 @@ return vm.enterLuaFrame(f, callee)
 
 ---
 
-## 6. 实装细节
+## 6. 实现细节
 
-### 6.1 mainThread 字段:State 已有(已落地)
+### 6.1 mainThread 字段:State 已有(已完成)
 
 [../p1-interpreter/06-memory-gc §5.1 R3](../p1-interpreter/06-memory-gc.md):
 
 > R3:主线程(main thread)。主线程也是一个 Thread([01](../p1-interpreter/01-value-object-model.md) §5.6),
 > 由 `State`/`Program` 初始化时创建(`State.mainThread`),是 VM 的入口执行流。
 
-**字段已落地**:`State.mainThread *Thread`(Go 字段名待与代码对齐;P1 实装已有,本规则零新增字段)。
+**字段已完成**:`State.mainThread *Thread`(Go 字段名待与代码对齐;P1 实现已有,本规则零新增字段)。
 
 **访问路径**:`vm.mainThread`(VM 持有 State 引用,或 mainThread 直接挂在 VM 上,具体视代码组织)。
 本规则的 `vm.curThread == vm.mainThread` 检查只是一次指针比较,O(1) 且无锁(单 State 内 mainThread 不变,
@@ -751,7 +751,7 @@ curThread 在 doCall 期间稳定)。
 承 §2.2 给出的代码骨架,这里给出更详细的版本(标注与现有 P1 / P3 04 接口的对接点):
 
 ```go
-// internal/crescent —— doCall 的 gibbous 分支(本规则的实装点)
+// internal/crescent —— doCall 的 gibbous 分支(本规则的实现点)
 //
 // 调用方:[../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md)
 //        主循环 case CALL(05 §7.1)。
@@ -831,7 +831,7 @@ func (b *Bridge) considerPromotion(proto *bytecode.Proto, pd *ProfileData, th *T
 本规则在 considerPromotion 入口直接 no-op,不触发任何日志。这避免日志被协程线程上的频繁阈值越过事件刷屏。
 
 > **若需要诊断信号**(开发者想知道"这个 Proto 在协程上多热"):走独立的 profile 查询接口
-> ([../p2-bridge/01-profiling](../p2-bridge/01-profiling.md) §X 待 P2 落地),不污染主升层日志。
+> ([../p2-bridge/01-profiling](../p2-bridge/01-profiling.md) §X 待 P2 完成),不污染主升层日志。
 
 ---
 
@@ -845,14 +845,14 @@ func (b *Bridge) considerPromotion(proto *bytecode.Proto, pd *ProfileData, th *T
    信号穿越 gibbous 帧」事件的出现概率为 0。这是机制构造性消解,不是运行期检测。
 3. **错误可穿 gibbous,yield 不可穿**(§1.2-§1.4):错误冒泡是单向放弃(可穿),yield 信号需要复原(不可穿)。
    这两条是 04-trampoline §4 与本文的对偶口径。
-4. **路线 A goroutine 化作为兜底,不在本期实装**(§4.5):P3 不实装路线 A。若 §3.2 开工前置确认结果是"列内核
+4. **路线 A goroutine 化作为兜底,不在本期实现**(§4.5):P3 不实现路线 A。若 §3.2 开工前置确认结果是"列内核
    在协程里",评估退到路线 A 或跳 P3 直接 P4。
 5. **本规则对 P4 / P5 同样适用**(§5.5):分层 VM 的物理底线,P4 native code / P5 trace JIT 都受此约束。除非
    启用路线 A 兜底,否则协程线程一律走 crescent。
 6. **状态机不变**(§5.1):本规则不引入新 TierState、不动 P2 04 状态机的转移条件,只在升层判定入口加门禁。
 7. **trampoline 协议不变**(§5.3):04-trampoline 协议本身不感知本规则;本规则在 doCall 进 trampoline 之前
    拦截,trampoline 视角不变。
-8. **mainThread 字段已落地**(§6.1):本规则不新增字段,只复用 P1 已有的 `State.mainThread`。
+8. **mainThread 字段已完成**(§6.1):本规则不新增字段,只复用 P1 已有的 `State.mainThread`。
 
 ---
 
@@ -864,14 +864,14 @@ func (b *Bridge) considerPromotion(proto *bytecode.Proto, pd *ProfileData, th *T
 
 - **[P2 04 §3] considerPromotion 入口签名扩展**:加 `th *Thread` 输入,P0' 守卫 `if th != b.vm.mainThread { return }`。
 - **[P2 01 §4] onBackEdge / onEnter 入口签名扩展**:透传当前 Thread 给 considerPromotion。
-- **实装时机**:P3 PW8 同批改 P2 文档与代码。
+- **实现时机**:P3 PW8 同批改 P2 文档与代码。
 - **当前状态**:占位,P2 04 §3 当前签名 `(proto, pd)` 不含 `th`,等 P3 PW8 同批扩展。
 
 ### 8.2 对 P1 08 的回填请求
 
 - **[P1 08 §6] 增「gibbous 帧不可穿越 yield」节**:把目前的前瞻引用占位替换为正文,内容承本文 §1.3-§1.4。
 - **强化 P1 08 §5.1 「yield 不跨 C 边界」的物理本质**:从"5.1 vs 5.2+ 兼容"扩充到"core Wasm 也无 continuation"。
-- **实装时机**:P3 PW8 同批。
+- **实现时机**:P3 PW8 同批。
 - **当前状态**:P1 08 §6 末尾已留前瞻引用占位(commit 已落),等 P3 PW8 替换为正文。
 
 ### 8.3 P3 开工前置确认
@@ -889,13 +889,13 @@ func (b *Bridge) considerPromotion(proto *bytecode.Proto, pd *ProfileData, th *T
 - **测量项**:
   - 切换延迟实测(channel 同步 + scheduler park/unpark,典型 ns→μs 级,但具体数值因 Go 版本 / 平台 / GOMAXPROCS 变化)
   - 多 wazero Runtime 的内存占用(每 Runtime 至少几 MB,N 协程线性增长)
-  - GC 协调改造的代价评估(全局锁 vs 并发 GC vs wasm-execution-mutex 三选一,各自的实装 + 性能影响)
-- **触发条件**:本规则破产(§3.2 开工前置确认失败)或宿主形态演进(协程式数据流流行)
+  - GC 协调改造的代价评估(全局锁 vs 并发 GC vs wasm-execution-mutex 三选一,各自的实现 + 性能影响)
+- **触发条件**:本规则破产(§3.2 开工前置确认失败)或宿主形式演进(协程式数据流流行)
 - **计划**:P3+ / P5 阶段视情况展开;当前不预设
 
 ### 8.5 路线 A 启用条件下的协议改造记账
 
-若未来真启用路线 A,本节列出需要改造的子系统(占位,实装时撑成独立子文档):
+若未来真的打开路线 A,本节列出需要改造的子系统(占位,实现时撑成独立子文档):
 
 - arena 模型:每协程独立 arena vs 共享 arena 加并发协调(§4.3.2 选项 X / 选项 Y)
 - GC 协调:STW 全局停顿点扩展到所有 goroutine(§4.3.3)
@@ -913,7 +913,7 @@ func (b *Bridge) considerPromotion(proto *bytecode.Proto, pd *ProfileData, th *T
 | 原稿(`docs/design/p3-wasm-tier.md`)位置 | 本文位置 | 内容 |
 |---|---|---|
 | §5.4 第 1 段(yield 不能穿越 Wasm 帧) | §1.1-§1.5 | 物理论证,从 P1 08 §3.3 路线 B 冒泡引申到 Wasm 帧无 continuation |
-| §5.4 第 2 段(线程级 tier 规则定稿) | §2.1-§2.4 | 规则陈述 + 实装点 + 自洽论证 + 升层判定改造(对 P2 04 的回填) |
+| §5.4 第 2 段(线程级 tier 规则定稿) | §2.1-§2.4 | 规则陈述 + 实现点 + 自洽论证 + 升层判定改造(对 P2 04 的回填) |
 | §5.4 第 3 段(代价、自洽、备选) | §3 / §4 | 拆为代价分析 + P3 开工前置确认 + 路线 A 兜底分析 |
 | §5.4 第 4 段(对 08/P2 的回填请求) | §5 / §8 | 影响面 + 回填请求清单 |
 | §11 「对 08/P2 的回填请求」 | §8 | 整理为文档缺口节 |
@@ -924,14 +924,14 @@ func (b *Bridge) considerPromotion(proto *bytecode.Proto, pd *ProfileData, th *T
 
 相关:
 [00-overview](./00-overview.md)(P3 总览,§1 边界表「协程升层」行 + §9 不变式 9) ·
-[01-spike-gate](./01-spike-gate.md)(开工闸门,与本文的开工前置确认共同构成 P3 启动的两道闸门) ·
+[01-spike-gate](./01-spike-gate.md)(开工检查,与本文的开工前置确认共同构成 P3 启动的两道检查) ·
 [02-translation](./02-translation.md)(翻译器,与本规则解耦) ·
 [03-memory-model](./03-memory-model.md)(arena = wazero memory,路线 A 启用时此基础消失) ·
 [04-trampoline](./04-trampoline.md)(crescent↔gibbous 协议,本规则在 trampoline 入口前拦截不动协议) ·
 [05-safepoint-gc](./05-safepoint-gc.md)(safepoint 在 gibbous 帧内,本规则保证协程不触达 gibbous 帧) ·
 [06-ic-feedback-consume](./06-ic-feedback-consume.md)(IC 快照固化,与线程无关) ·
 [08-testing-strategy](./08-testing-strategy.md)(验收口径,加协程不升层验收项) ·
-[implementation-progress](./implementation-progress.md)(进度对账,PW8 实装本规则) ·
+[implementation-progress](./implementation-progress.md)(进度对账,PW8 实现本规则) ·
 [../p1-interpreter/08-coroutines](../p1-interpreter/08-coroutines.md)(coroutine 单一事实源,§3.1-§3.6 路线 A/B 对比 + §5 yield 不跨 C 边界 + §8.2 主线程不能 yield) ·
 [../p2-bridge/04-try-compile-fallback](../p2-bridge/04-try-compile-fallback.md)(升层决策状态机,本文要求扩展 considerPromotion 入口签名) ·
 [../p2-bridge/01-profiling](../p2-bridge/01-profiling.md)(profile 采样,本文要求 onBackEdge/onEnter 透传 Thread) ·

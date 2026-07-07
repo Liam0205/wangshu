@@ -35,7 +35,7 @@ Go 生态目前唯一的主流纯 Go Lua 实现是 gopher-lua:树遍历前端 + 
 | LuaJ-luajc(Java) | 164μs | 2-4.6x | Lua→JVM bytecode,C2 全套优化 |
 | LuaJIT(C++) | 154μs | 3-5x | trace JIT,NaN-boxing |
 
-关键事实一:**真 LuaJIT 只比 luajc 快 6%**(154 vs 164μs)。per-item 跨界形态下,
+关键事实一:**真 LuaJIT 只比 luajc 快 6%**(154 vs 164μs)。per-item 跨界形式下,
 边界跨越 + 值装箱主导成本,脚本本体再快也被钉死。
 
 **测量 2:编译收益在边界主导负载下的稀释**
@@ -114,7 +114,7 @@ P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 met
 - 函数级热度计数(loop back-edge 计数)
 - inline cache 反馈记录(类型 feedback,为编译层供料)
 - 静态可编译性分析器:varargs / coroutine / debug 等形状标记"不升层",
-  永远走解释——try-compile-fallback-interpret(LuaJ luajc 同款策略),
+  永远走解释——try-compile-fallback-interpret(LuaJ luajc 一样的策略),
   换来零 deopt 机器
 
 ### P3:Wasm 编译层(6-12 人月)
@@ -154,7 +154,7 @@ P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 met
 1. **解释器永不退役**——它是所有编译层的 deopt 着陆点和语义 oracle
 2. **层间逐字节差分测试**——每个执行层的输出与解释器 byte-equal,
    持续 fuzz;这是防"投机错误静默错果"(JIT 最危险 bug 类别)的主防线
-3. **每阶段独立交付价值**——任何闸门处停下都不亏
+3. **每阶段独立交付价值**——任何检查处停下都不亏
 4. **不可编译/不可升层形状走 fallback,不做完备性**——可静态分析的子集
    走快路径即可覆盖绝大多数真实负载(Pallene 是 typed-subset 路线的先例;
    我们审计过的一个 262 脚本生产库中,绝大多数是简单形状)

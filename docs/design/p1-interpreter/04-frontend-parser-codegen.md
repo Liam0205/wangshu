@@ -27,7 +27,7 @@ codegen 独立消费),理由按本项目约束排序:
    数据流分析远比在已铺平的字节码上做容易;AST 是 P2 分析器的天然输入,**P1 顺手产出、
    P2 直接复用**(P1 编译期可丢弃 AST,P2 需要时重新 parse 即可,二者用同一 parser)。
 3. **可独立测试**(`architecture.md` §5 构建顺序第 7、8 步明确分列「parser + AST 单测,
-   对拍官方 luac AST 形状」与「codegen + 寄存器分配」两个里程碑)。包布局 `architecture.md`
+   差分测试官方 luac AST 形状」与「codegen + 寄存器分配」两个里程碑)。包布局 `architecture.md`
    §1 也已把 `ast/`、`parse/`、`compile/` 拆为三个独立包——本决策与既定包边界一致。
 4. **错误定位更清晰**:语法错误在 parse 阶段集中报出(带 token 行号),codegen 阶段只剩
    编译期资源类错误(寄存器溢出、常量过多、控制结构过长),职责单一。
@@ -334,7 +334,7 @@ block 终结符(停止 `parseBlock` 循环):`end` / `else` / `elseif` / `until` 
 ### 4.3 表达式解析:优先级爬升(precedence climbing)
 
 不用为每个优先级层写一个函数(`orexpr→andexpr→...`),而用单个 `parseExpr(limit)` 带
-**绑定优先级表**(Lua 5.1 `subexpr` 同款),更短且与官方完全对齐:
+**绑定优先级表**(Lua 5.1 `subexpr` 一样的),更短且与官方完全对齐:
 
 ```go
 // 二元运算符的 (左结合优先级, 右结合优先级)。右<左 ⇒ 左结合;右>左 ⇒ 右结合。

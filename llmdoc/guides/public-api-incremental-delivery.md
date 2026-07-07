@@ -1,19 +1,19 @@
 # Guide:公共 API 增量交付工作流
 
 > 适用:接到「扩公共 API 表面」的 issue / 需求 / 反馈时——尤其是 issue 字面边界看起来很小、或目标是给 drop-in 候选(gopher-lua / PUC 5.1 / 其它实现)补对位面。
-> 来源:`memory/reflections/2026-06-12-issue1-api-gap-round.md`(per-item drop-in 子集 + Register/Module + 公共 HostFn + kFunction)与 `memory/reflections/2026-06-12-issue234-api-gap-round-2.md`(Table / HideFileLoaders / Context,同款工作流第二轮),两轮共 8 条纪律全验证可复用。
+> 来源:`memory/reflections/2026-06-12-issue1-api-gap-round.md`(per-item drop-in 子集 + Register/Module + 公共 HostFn + kFunction)与 `memory/reflections/2026-06-12-issue234-api-gap-round-2.md`(Table / HideFileLoaders / Context,一样的工作流第二轮),两轮共 8 条纪律全验证可复用。
 
 ## 1. 设计承诺源回看——三角验证
 
-接到「看起来很小」的 issue 时,**不要按字面做**。先做三角验证:① issue 字面边界 ② 设计承诺源(`docs/design/p1-interpreter/11-embedding-arena-abi.md` §7.1/§9.1 + [[embedding-contract]])③ issue 描述的真实业务场景。三者不自洽时(常见根因是 issue 提交者只想到了单点 API 没想清整个调用链),用 AskUserQuestion 给出**三档范围**(issue 字面 / drop-in 最小可用集 / 完整 spec)让用户拍板,不擅自扩大也不按字面交付。
+接到「看起来很小」的 issue 时,**不要按字面做**。先做三角验证:① issue 字面边界 ② 设计承诺源(`docs/design/p1-interpreter/11-embedding-arena-abi.md` §7.1/§9.1 + [[embedding-contract]])③ issue 描述的真实业务场景。三者不自洽时(常见根因是 issue 提交者只想到了单点 API 没想清整个调用链),用 AskUserQuestion 给出**三档范围**(issue 字面 / drop-in 最小可用集 / 完整 spec)让用户定下来,不擅自扩大也不按字面交付。
 
 反例:issue #1 字面只补 SetGlobal/GetGlobal 标量,但 pineapple 真用法是「GetGlobal(fn) + CallByParam(fn)」,标量四类型解锁不了真闭环(`87031c2`)。
 
 ## 2. 公共面 first-class GCRef-bearing value 必须接 GC 根
 
-机制级硬规则,已升为 [[embedding-contract]] 不变式条款。本节作为工作流落地的 checklist 指针:接到「让宿主长期持有某 GCRef 对象」类 issue(function / table / userdata / coroutine 等)时,**回头核对该 reference 条款**——pin 表(`pinnedRefs` + `freePins` + `visitExtraRefs`)是否覆盖该 kind,Release 是否配对,globals 覆盖 + GC 压力模式下能否复读。本 guide 不重复契约细节。
+机制级硬规则,已升为 [[embedding-contract]] 不变式条款。本节作为工作流完成的 checklist 指针:接到「让宿主长期持有某 GCRef 对象」类 issue(function / table / userdata / coroutine 等)时,**回头核对该 reference 条款**——pin 表(`pinnedRefs` + `freePins` + `visitExtraRefs`)是否覆盖该 kind,Release 是否配对,globals 覆盖 + GC 压力模式下能否复读。本 guide 不重复契约细节。
 
-锚点:`87031c2`(kFunction)/ `2b55e11`(kTable 复用同款 pin 表零额外接根)。
+锚点:`87031c2`(kFunction)/ `2b55e11`(kTable 复用一样的 pin 表零额外接根)。
 
 ## 3. 单域物理隔离手法——按文件抽取,不靠 `git add -p`
 
@@ -37,7 +37,7 @@
 
 ## 6. 范围扩张顺手收口——commit message 必须显式标注
 
-落地新 issue 时若发现「上轮裁口的某条恰好阻挡本轮 spec 隐含期望」,**先把裁口收掉再做本轮**——代价为零(本来就要改桥接面)且对齐 spec 隐含期望;留个 trick 跨 issue 处理是 O(n) 特殊路径累积,迟早形成「公共 API 行为方阵 vs 内部桥接路径不一一对应」的反向不变式洞。
+完成新 issue 时若发现「上轮裁口的某条恰好阻挡本轮 spec 隐含期望」,**先把裁口收掉再做本轮**——代价为零(本来就要改桥接面)且对齐 spec 隐含期望;留个 trick 跨 issue 处理是 O(n) 特殊路径累积,迟早形成「公共 API 行为方阵 vs 内部桥接路径不一一对应」的反向不变式洞。
 
 **但**:范围扩张必须在 commit message 显式标注「顺手把 issue #N 留的口收了」否则 review 困惑「为什么 issue #2 改了 Run 返回路径」。
 
@@ -53,7 +53,7 @@
 
 internal 包要接受「外部世界」对象(context / io / timer / net 等)时——尤其是当 internal 当前包依赖图不包含该标准库或第三方包——用**抽象签名**(`func() error` / `io.Reader` / `chan struct{}`)而非具体类型。把具体类型依赖留在门面层注入。
 
-收益:① P3+ 新执行层(wazero / JIT)同款机制可直接共用,无需引入额外包;② internal 测试零外部世界对象,直接造 sentinel 即测;③ 未来若引入非同源取消源(信号 / 自定义 done chan)只改门面映射,internal 零改动。
+收益:① P3+ 新执行层(wazero / JIT)一样的机制可直接共用,无需引入额外包;② internal 测试零外部世界对象,直接造 sentinel 即测;③ 未来若引入非同源取消源(信号 / 自定义 done chan)只改门面映射,internal 零改动。
 
 反例:`27b4f2e` 用 `SetCancelHook(fn func() error)` 而非 `SetContext(ctx context.Context)`,`context` 依赖只在 `wangshu.go` 注入(`st.core.SetCancelHook(ctx.Err)`),`internal/crescent` 保持零标准库非基础包依赖。
 
@@ -75,4 +75,4 @@ internal 包要接受「外部世界」对象(context / io / timer / net 等)时
   - issue #5:`4f855d2` ForEach
   - issue #6:`3d34839` baseline
   - doc:`755d5ce`
-- 同族 guide:[[perf-optimization-workflow]]——「快路径家族审计」(优化扫同族)与本 guide 「范围扩张顺手收口」(裁口扫同族)是同一纪律在不同维度的两个落地。
+- 同族 guide:[[perf-optimization-workflow]]——「快路径家族审计」(优化扫同族)与本 guide 「范围扩张顺手收口」(裁口扫同族)是同一纪律在不同维度的两个完成。

@@ -1,6 +1,6 @@
 # P3 总览:gibbous/wasm Wasm 编译层——文档地图 / 实现里程碑 / 验收 / 人月分解
 
-> 状态:**设计阶段,详细设计已齐备**(依赖 P1/P2 落地与开工前置 spike 通过后细化;凡涉 wazero API 细节处标注「待 spike 验证」)。本文是 P3 文档集(00-08)的导航与施工计划:每篇文档的定位、组件依赖、构建顺序、里程碑验收门槛、人月分解、跨文档定稿决策速查、与 P1/P2 的桥接(已落地的前瞻义务对账)。
+> 状态:**设计阶段,详细设计已齐备**(依赖 P1/P2 完成与开工前置 spike 通过后细化;凡涉 wazero API 细节处标注「待 spike 验证」)。本文是 P3 文档集(00-08)的导航与施工计划:每篇文档的定位、组件依赖、构建顺序、里程碑验收门槛、人月分解、跨文档定稿决策速查、与 P1/P2 的桥接(已完成的前瞻义务对账)。
 > 上游:`docs/design/roadmap.md` (§4 P3 定义、§2 四项税、§5 五条原则)、[architecture](../architecture.md)(§3 依赖图、`internal/gibbous/wasm` 包位置)、[evolution-roadmap](../../../llmdoc/architecture/evolution-roadmap.md)(tier-1 = gibbous,P3+P4 同 tier;P3 验收坐标系警告)。
 > P1 依赖面:[01](../p1-interpreter/01-value-object-model.md)(NaN-box u64 + GCRef offset,两层逐位同一)、[02](../p1-interpreter/02-bytecode-isa.md)(源 ISA + IC slot)、[05](../p1-interpreter/05-interpreter-loop.md)(解释器主循环 + CallInfo + 调用约定)、[06](../p1-interpreter/06-memory-gc.md)(arena/GC/safepoint)、[08](../p1-interpreter/08-coroutines.md)(coroutine 路线 B yield 冒泡)、[12](../p1-interpreter/12-testing-difftest.md)(差分测试矩阵)。
 > P2 依赖面:[../p2-bridge/00-overview](../p2-bridge/00-overview.md)(P3 是 P2 决策的消费者)、[../p2-bridge/03](../p2-bridge/03-compilability-analysis.md) §3.7(F7 后端能力 SupportsAllOpcodes)、[../p2-bridge/04](../p2-bridge/04-try-compile-fallback.md)(零 deopt 单向状态机)、[../p2-bridge/05](../p2-bridge/05-p3-p4-interface.md)(P3Compiler 接口 + GibbousCode 抽象)。
@@ -16,17 +16,17 @@
 
 | 文档 | 定位 | 单一事实源(其它文档以它为准) |
 |---|---|---|
-| [01-spike-gate](./01-spike-gate.md) | 开工闸门 | wazero call boundary spike 三档样本(S1/S2/S3)、150ns 闸门论证、跨层摊销模型、三种出路(开工 P3 / 跳跃 P4 / 边缘混合策略) |
+| [01-spike-gate](./01-spike-gate.md) | 开工检查 | wazero call boundary spike 三档样本(S1/S2/S3)、150ns 检查论证、跨层摊销模型、三种出路(开工 P3 / 跳跃 P4 / 边缘混合策略) |
 | [02-translation](./02-translation.md) | 翻译器 | 翻译单位(每 Proto 一 module 基线 + 批量 module 优化项)、寄存器映射(基线 memory-resident + locals 缓存优化)、opcode 翻译表(WAT 风格伪码)、pc 物化、`SupportsAllOpcodes` 渐进白名单 |
 | [03-memory-model](./03-memory-model.md) | 共见内存 | arena 收养 wazero memory(对 06 的回填)、值编码两层逐位同一、GCRef offset 与 wasm32 寻址匹配、`memory.grow` 后视图重取协议 |
 | [04-trampoline](./04-trampoline.md) | 跨层互调 | CallInfo bit50 `callStatus_gibbous`(对 05 的回填)、crescent→gibbous 入口协议、gibbous→crescent/host imported 助手分派、status 链错误冒泡、参数/返回值经共见值栈 |
-| [05-safepoint-gc](./05-safepoint-gc.md) | 跨层 GC | 三类 safepoint 在 P3 的形态(分配点 / 层边界 / 回边)、收口 [06 §12](../p1-interpreter/06-memory-gc.md) 缺口、locals 缓存写回纪律、写屏障 P3 不动 |
-| [06-ic-feedback-consume](./06-ic-feedback-consume.md) | feedback 非投机消费 | IC 快照编译期固化、失效自然降级、快路径 = 语义分发非投机 guard、与 P2 零 deopt 口径一致、GETTABLE/CALL 的 feedback-aware 翻译形态 |
+| [05-safepoint-gc](./05-safepoint-gc.md) | 跨层 GC | 三类 safepoint 在 P3 的形式(分配点 / 层边界 / 回边)、收口 [06 §12](../p1-interpreter/06-memory-gc.md) 缺口、locals 缓存写回纪律、写屏障 P3 不动 |
+| [06-ic-feedback-consume](./06-ic-feedback-consume.md) | feedback 非投机消费 | IC 快照编译期固化、失效自然降级、快路径 = 语义分发非投机 guard、与 P2 零 deopt 口径一致、GETTABLE/CALL 的 feedback-aware 翻译形式 |
 | [07-coroutine-thread-rule](./07-coroutine-thread-rule.md) | 线程级 tier | yield 不能穿越 gibbous 帧的物理论证、线程级 tier 规则(主线程才升层)、协程线程一律走 crescent、对 [08](../p1-interpreter/08-coroutines.md) 与 P2 的回填请求 |
 | [08-testing-strategy](./08-testing-strategy.md) | 验收 | P3 验收口径总表、crescent vs gibbous 逐字节差分(CI 门禁)、强制全升模式、GC 压力 fuzz 上 gibbous、P3 性能门(循环密集 ≥2x over P1)、坐标系警告 |
-| [implementation-progress](./implementation-progress.md) | 进度 | 开工前置闸门检查、P-Wasm 里程碑(预设占位)、设计期决策盘点(影响 × 不确定度三档)、跨文档回填请求收口表 |
+| [implementation-progress](./implementation-progress.md) | 进度 | 开工前置检查检查、P-Wasm 里程碑(预设占位)、设计期决策盘点(影响 × 不确定度三档)、跨文档回填请求收口表 |
 
-阅读顺序建议:实现者先读 00→01(闸门通过才动手)→03(内存模型,翻译器骨架的物理基础)→02(翻译器主体)→04(跨层协议,与 02 同期落地)→05(safepoint,跨层 GC)→06(feedback 消费,02 翻译细化)→07(coroutine 线程规则,边界场景)→08(验收口径,每步收口查)。
+阅读顺序建议:实现者先读 00→01(检查通过才动手)→03(内存模型,翻译器骨架的物理基础)→02(翻译器主体)→04(跨层协议,与 02 同期完成)→05(safepoint,跨层 GC)→06(feedback 消费,02 翻译细化)→07(coroutine 线程规则,边界场景)→08(验收口径,每步收口查)。
 
 ---
 
@@ -39,7 +39,7 @@
 | 字节码→Wasm 翻译 | — | — | ✅ [02-translation](./02-translation.md) | — |
 | 字节码→原生码翻译 | — | — | — | P4 自己 |
 | **linear memory 共见** | arena Go 堆 backing | — | ✅ 收养 wazero memory([03](./03-memory-model.md)) | 复用(原生码读同一份) |
-| **trampoline / 互调协议** | enterLuaFrame | — | ✅ [04-trampoline](./04-trampoline.md)(crescent↔gibbous↔host) | 继承同款协议,换发射后端 |
+| **trampoline / 互调协议** | enterLuaFrame | — | ✅ [04-trampoline](./04-trampoline.md)(crescent↔gibbous↔host) | 继承一样的协议,换发射后端 |
 | **跨层 safepoint** | 解释器主循环 | — | ✅ [05-safepoint-gc](./05-safepoint-gc.md)(收口 [06 §12](../p1-interpreter/06-memory-gc.md)) | 同 P3(原生码自身回边检查点 +写屏障) |
 | **CallInfo bit50 写入** | 不读不写 | 不写 | ✅ trampoline 在 gibbous 帧入口写 1([04 §1](./04-trampoline.md)) | 同 P3 |
 | **零 deopt(fallback 而非投机)** | 永久解释 | ✅ 单向状态机 | 严格遵守:快路径 = 语义分发,失败走助手非 deopt | ❌ 引入 deopt(投机失败 OSR exit 回 crescent) |
@@ -52,7 +52,7 @@
 > **tier 坐标系警告**([evolution-roadmap](../../../llmdoc/architecture/evolution-roadmap.md)):月相 tier 比阶段粗一层。P1=tier-0(crescent),P3/P4=tier-1(gibbous),P5=tier-2(fullmoon)。**P3 与 P4 同属 tier-1 但发射后端不同**:P3 发 Wasm(wazero 执行)、P4 发原生码(自管 codegen)。代码包名据此:`internal/gibbous/wasm`(P3)、`internal/gibbous/jit`(P4)。日志统一是 `function promoted to gibbous`(不区分子档)。
 
 > **P3 与 P4 的两个跨阶段决策视角**(2026-06-28,承 [P4 implementation-progress §2 RJ-17](../p4-method-jit/implementation-progress.md) 跨文档回填请求):上表只列 P3 实施层(同 tier 不同后端的边界划分),但 P4 视角下 P3 与 P4 还有两个跨阶段决策视角:
-> - **P4 立项闸门**([P4 01-launch-judgment](../p4-method-jit/01-launch-judgment.md)):决定 P4 是否启动 + 何时启动,输入含 P3 实际表现 + 真实宿主负载证据
+> - **P4 立项检查**([P4 01-launch-judgment](../p4-method-jit/01-launch-judgment.md)):决定 P4 是否启动 + 何时启动,输入含 P3 实际表现 + 真实宿主负载证据
 > - **P4 验收时 P3 去留**([P4 07-p3-retirement](../p4-method-jit/07-p3-retirement.md)):P4 验收通过后 P3 退役 / 留中层二选一,输入含 P3 在 P4 不可用平台上的实际表现
 >
 > 两个决策视角是 P3/P4 共生关系的两端:立项决定 P4 是否要做(P3 后);去留决定 P4 上线时 P3 怎么办(P4 后)。本文 §1 上表只列同 tier 不同后端的实施层边界;立项 + 去留两个决策视角的详细框架见上述两个 P4 子文档。
@@ -62,7 +62,7 @@
 ## 2. 总数据流(承 P2 决策 + 产 GibbousCode 给 crescent 调)
 
 ```
-                P2 决策机(已落地)
+                P2 决策机(已完成)
                  │
                  ▼
    considerPromotion(proto, pd) 走 try-compile 路径
@@ -125,9 +125,9 @@
 
 1. **arena backing 收养 wazero memory**([03 §1.2](./03-memory-model.md) + [对 06 的回填](../p1-interpreter/06-memory-gc.md) §1.1):P1 的 backing 是 Go 堆 `[]uint64`,P3 起改为「以 wazero memory 的底层 buffer 为来源」。NewState 时即经 wazero 分配 memory(P3 build 下),arena 的 `words/bytes` 视图从该 buffer 派生;`memory.grow` 后 Go 侧视图 slice 重取(偏移寻址使所有 GCRef/链表/bump 一字不改)。**P1 已留 `arena.Options.NewBacking` 注入点**,P3 替换为 wazero memory adapter,P1 实代码侧零改动。
 
-2. **CallInfo word2 bit50 `callStatus_gibbous`**([04 §1](./04-trampoline.md) + [对 05 的回填](../p1-interpreter/05-interpreter-loop.md) §1.2):gibbous 帧入口 trampoline 把 bit50 置 1,标识「此帧走 Wasm 路径」。P1 当前是普通 Go struct,P3 落地时引入位打包(或保留 bool 字段简化版,P3 落地时定);**对 P1 05 的回填请求 = bit50 字段语义登记**。P1 本期已加占位(commit ecffcb9 删除后等 P3 实装时再加,留语义于 installGibbous 注释)。
+2. **CallInfo word2 bit50 `callStatus_gibbous`**([04 §1](./04-trampoline.md) + [对 05 的回填](../p1-interpreter/05-interpreter-loop.md) §1.2):gibbous 帧入口 trampoline 把 bit50 置 1,标识「此帧走 Wasm 路径」。P1 当前是普通 Go struct,P3 完成时引入位打包(或保留 bool 字段简化版,P3 完成时定);**对 P1 05 的回填请求 = bit50 字段语义登记**。P1 本期已加占位(commit ecffcb9 删除后等 P3 实现时再加,留语义于 installGibbous 注释)。
 
-3. **`SupportsAllOpcodes` 渐进白名单**([02 §1.3](./02-translation.md) + [../p2-bridge/03 §3.7](../p2-bridge/03-compilability-analysis.md)):P3 后端开发期渐进扩充,初期只支持 ISA 0..37 的子集(LOADK / GETTABLE / CALL / RETURN / FORLOOP / JMP 等热路径 opcode)。任何含未支持 opcode 的 Proto 经 [F7 闸门](../p2-bridge/03-compilability-analysis.md) 拒。**保守缺省**:supported 表只把明确实现的 opcode 加入,其他全部返 false。
+3. **`SupportsAllOpcodes` 渐进白名单**([02 §1.3](./02-translation.md) + [../p2-bridge/03 §3.7](../p2-bridge/03-compilability-analysis.md)):P3 后端开发期渐进扩充,初期只支持 ISA 0..37 的子集(LOADK / GETTABLE / CALL / RETURN / FORLOOP / JMP 等热路径 opcode)。任何含未支持 opcode 的 Proto 经 [F7 检查](../p2-bridge/03-compilability-analysis.md) 拒。**保守缺省**:supported 表只把明确实现的 opcode 加入,其他全部返 false。
 
 4. **线程级 tier 规则**([07](./07-coroutine-thread-rule.md) + [对 08 / P2 的回填](../p1-interpreter/08-coroutines.md)):只有主线程的执行进入 gibbous;协程线程一律走 crescent。doCall 的 gibbous 分支多查一个 `th == mainThread`。**对 P2 [04](../p2-bridge/04-try-compile-fallback.md) 的回填请求**:升层判定加线程上下文输入(协程内即便函数 CompCompilable + 热,也判 TierStuck 或不 considerPromotion)。**对 [08](../p1-interpreter/08-coroutines.md) 的回填请求**:gibbous 帧不可穿越 yield 节(已在 P1 08 §6 注脚预留前瞻引用)。
 
@@ -156,7 +156,7 @@
 
 > **PW0 启动条件**:P1 全卷已交付(M0-M14)+ P2 PB0-PB7 全过线 + 后续优化轮 #1-#4 全过线(2026-06-13 已达成);P3 PW0 spike 阻塞所有后续,先于一切翻译工作。
 >
-> **PW1 阻塞验证**:bridge 当前 mock P3 装载形态(`internal/bridge/mock`)在 PW1 用真 P3 占位(SupportsAllOpcodes 全 false)替换,验证「无任何 Proto 升层」与 P1-only 等价。
+> **PW1 阻塞验证**:bridge 当前 mock P3 装载形式(`internal/bridge/mock`)在 PW1 用真 P3 占位(SupportsAllOpcodes 全 false)替换,验证「无任何 Proto 升层」与 P1-only 等价。
 >
 > **PW9 verify 含两轴**:正确性(byte-equal)与性能(≥2x);任一不达标都不算 P3 交付完成。
 
@@ -207,25 +207,25 @@
 
 ---
 
-## 7. P1/P2 已落地的前瞻义务对账(P3 启动前置)
+## 7. P1/P2 已完成的前瞻义务对账(P3 启动前置)
 
 P1 全卷已交付 + P2 PB0-PB7 全过线 + P2 后续优化轮 #1-#4 全过线(2026-06-13)。P3 依赖的「前瞻留口」状态:
 
-| 前瞻义务 | 落地状态 | 出处 | P3 消费方式 |
+| 前瞻义务 | 完成状态 | 出处 | P3 消费方式 |
 |---|---|---|---|
-| `arena.Options.NewBacking` 注入点 | ✅ P1 已落地 | [memory/doc-gaps](../../../llmdoc/memory/doc-gaps.md)(P3 迁移留口)、[../p1-interpreter/implementation-progress](../p1-interpreter/implementation-progress.md) | PW1 替换为 wazero memory adapter |
-| Proto 旁 IC slot 数组(按 pc 索引) | ✅ P1 已落地(02 §7) | [../p1-interpreter/02-bytecode-isa](../p1-interpreter/02-bytecode-isa.md) §7 | PW5 编译期读 IC slot 取快照固化 |
-| TypeFeedback shape(P3 可选消费) | ✅ P2 PB2 已落地 | [../p2-bridge/02-ic-feedback](../p2-bridge/02-ic-feedback.md) | PW5 读 PointFeedback 决定快路径形态(stable shape/index) |
+| `arena.Options.NewBacking` 注入点 | ✅ P1 已完成 | [memory/doc-gaps](../../../llmdoc/memory/doc-gaps.md)(P3 迁移留口)、[../p1-interpreter/implementation-progress](../p1-interpreter/implementation-progress.md) | PW1 替换为 wazero memory adapter |
+| Proto 旁 IC slot 数组(按 pc 索引) | ✅ P1 已完成(02 §7) | [../p1-interpreter/02-bytecode-isa](../p1-interpreter/02-bytecode-isa.md) §7 | PW5 编译期读 IC slot 取快照固化 |
+| TypeFeedback shape(P3 可选消费) | ✅ P2 PB2 已完成 | [../p2-bridge/02-ic-feedback](../p2-bridge/02-ic-feedback.md) | PW5 读 PointFeedback 决定快路径形式(stable shape/index) |
 | `P3Compiler` 接口形状(SupportsAllOpcodes + Compile) | ✅ P2 PB6 已定义 | [../p2-bridge/05-p3-p4-interface](../p2-bridge/05-p3-p4-interface.md) §2 | PW1 起 Compiler struct 实现 |
 | `bridge.GibbousCode` 抽象类型 | ✅ P2 PB6 已定义 | [../p2-bridge/05-p3-p4-interface](../p2-bridge/05-p3-p4-interface.md) §6 | PW1 包装 wazero `api.Function` 实现 |
-| TierState 单向 + 吸收态(零 deopt) | ✅ P2 PB4 已落地 | [../p2-bridge/04-try-compile-fallback](../p2-bridge/04-try-compile-fallback.md) §2 | P3 不引入降层路径 |
-| `installGibbous` 安装协议 | ✅ P2 PB4 已落地 | [../p2-bridge/04-try-compile-fallback](../p2-bridge/04-try-compile-fallback.md) §4.4 | PW1 起被 P2 调用 |
-| F7 渐进白名单(`SupportsAllOpcodes` 保守缺省) | ✅ P2 PB3 + PB6 已落地 | [../p2-bridge/03-compilability-analysis](../p2-bridge/03-compilability-analysis.md) §3.7 | PW1 起 supported 表初空,逐 PW 扩充 |
-| **CallInfo bit50 `callStatus_gibbous`** | ⚠️ **P3 落地时同批补**(P1 PB0 占位被 lint 删,语义留 installGibbous 注释) | [../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md) §1.2 | PW6 trampoline 落地时引入 |
-| **协程升层判定加线程上下文** | ⚠️ **P3 落地时回填 P2 04** | [../p2-bridge/04-try-compile-fallback](../p2-bridge/04-try-compile-fallback.md) §3 | PW8 落地时同批改 P2 04 §3.2 加 `if th != mainTh return` |
-| **08 「gibbous 帧不可穿越 yield」节** | ✅ P1 08 §6 已留前瞻引用 | [../p1-interpreter/08-coroutines](../p1-interpreter/08-coroutines.md) §6 末尾 | PW8 落地时把 P1 08 §6 的前瞻引用替换为正文章节 |
+| TierState 单向 + 吸收态(零 deopt) | ✅ P2 PB4 已完成 | [../p2-bridge/04-try-compile-fallback](../p2-bridge/04-try-compile-fallback.md) §2 | P3 不引入降层路径 |
+| `installGibbous` 安装协议 | ✅ P2 PB4 已完成 | [../p2-bridge/04-try-compile-fallback](../p2-bridge/04-try-compile-fallback.md) §4.4 | PW1 起被 P2 调用 |
+| F7 渐进白名单(`SupportsAllOpcodes` 保守缺省) | ✅ P2 PB3 + PB6 已完成 | [../p2-bridge/03-compilability-analysis](../p2-bridge/03-compilability-analysis.md) §3.7 | PW1 起 supported 表初空,逐 PW 扩充 |
+| **CallInfo bit50 `callStatus_gibbous`** | ⚠️ **P3 完成时同批补**(P1 PB0 占位被 lint 删,语义留 installGibbous 注释) | [../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md) §1.2 | PW6 trampoline 完成时引入 |
+| **协程升层判定加线程上下文** | ⚠️ **P3 完成时回填 P2 04** | [../p2-bridge/04-try-compile-fallback](../p2-bridge/04-try-compile-fallback.md) §3 | PW8 完成时同批改 P2 04 §3.2 加 `if th != mainTh return` |
+| **08 「gibbous 帧不可穿越 yield」节** | ✅ P1 08 §6 已留前瞻引用 | [../p1-interpreter/08-coroutines](../p1-interpreter/08-coroutines.md) §6 末尾 | PW8 完成时把 P1 08 §6 的前瞻引用替换为正文章节 |
 
-**结论**:P3 启动是**条件增量** — 大部分前瞻义务已落地;但有 3 项「P3 落地时同批补」(bit50 / 协程升层判定 / 08 yield 不可穿越节)留 PW6/PW8 兑现。**对 P1/P2 现有文档的回填请求本期只记录不主动改**(承用户裁决) — 详见 [implementation-progress §回填](./implementation-progress.md)。
+**结论**:P3 启动是**条件增量** — 大部分前瞻义务已完成;但有 3 项「P3 完成时同批补」(bit50 / 协程升层判定 / 08 yield 不可穿越节)留 PW6/PW8 兑现。**对 P1/P2 现有文档的回填请求本期只记录不主动改**(承用户裁决) — 详见 [implementation-progress §回填](./implementation-progress.md)。
 
 ---
 
@@ -248,7 +248,7 @@ P1 全卷已交付 + P2 PB0-PB7 全过线 + P2 后续优化轮 #1-#4 全过线(2
 
 [01](./01-spike-gate.md)~[08](./08-testing-strategy.md) 各篇分别承担,本节聚合呈现:
 
-1. **语义分发非投机**:gibbous 快路径判定与解释器同款(IsNumber/同表同代次),失败走助手而非 deopt — 零 deopt 在代码层的兑现([06 §1](./06-ic-feedback-consume.md))。
+1. **语义分发非投机**:gibbous 快路径判定与解释器一样的(IsNumber/同表同代次),失败走助手而非 deopt — 零 deopt 在代码层的兑现([06 §1](./06-ic-feedback-consume.md))。
 2. **值编码/GCRef 两层逐位同一**:Wasm 侧不引入任何私有值表示([03 §2](./03-memory-model.md))。
 3. **CallInfo 唯一真相**:gibbous 帧压 CallInfo(bit50),跨层只传 `base i32`;traceback/错误定位与解释器逐字节一致([04 §1](./04-trampoline.md) + [02 §4](./02-translation.md) pc 物化)。
 4. **错误可穿越、yield 不可穿越**:status 链冒泡 vs 线程级 tier 规则([04 §4](./04-trampoline.md) / [07](./07-coroutine-thread-rule.md))。
@@ -264,7 +264,7 @@ P1 全卷已交付 + P2 PB0-PB7 全过线 + P2 后续优化轮 #1-#4 全过线(2
 
 各子文档 §缺口节 + [doc-gaps](../../../llmdoc/memory/doc-gaps.md):
 
-- **wazero call boundary 实测**:S2 < 150ns 是 P3 生死闸门。spike 不达标直跳 P4(详见 [01 §1.4](./01-spike-gate.md))。
+- **wazero call boundary 实测**:S2 < 150ns 是 P3 生死检查。spike 不达标直跳 P4(详见 [01 §1.4](./01-spike-gate.md))。
 - **wazero memory 共享 API 细节**(`memory.grow` 后 Go 视图稳定性 / import memory vs 读 module memory):待 spike 验证([03 §3](./03-memory-model.md))。
 - **协程升层语义**:P3 开工前向首个宿主确认列内核是否跑在协程里([07 §3](./07-coroutine-thread-rule.md))。
 - **批量 module 优化**:每 Proto 一 module 的实例化开销实测后定批量阈值([02 §1.2](./02-translation.md) + [11 缺口](#11))。
@@ -276,7 +276,7 @@ P1 全卷已交付 + P2 PB0-PB7 全过线 + P2 后续优化轮 #1-#4 全过线(2
 ---
 
 相关:
-[01-spike-gate](./01-spike-gate.md)(开工闸门) ·
+[01-spike-gate](./01-spike-gate.md)(开工检查) ·
 [02-translation](./02-translation.md)(翻译器) ·
 [03-memory-model](./03-memory-model.md)(共见内存) ·
 [04-trampoline](./04-trampoline.md)(跨层互调) ·

@@ -8,7 +8,7 @@
 > 主要借鉴 [Liam0205/pineapple](https://github.com/Liam0205/pineapple) 的实践(同作者多语言
 > monorepo,hooks/CI/nightly-fuzz 体系成熟),并补强其四处已知缺口(经评审定稿):
 > **`-race` 进硬门禁、commit-msg 强制校验、Makefile 任务入口、nightly fuzz 自动开 issue**。
-> 落地时机:**M0(工程地基,先于 M1 arena)**——见 [00-overview](./p1-interpreter/00-overview.md) §2。
+> 完成时机:**M0(工程地基,先于 M1 arena)**——见 [00-overview](./p1-interpreter/00-overview.md) §2。
 
 对应仓库路径:`.githooks/`、`.github/workflows/`、`Makefile`、`.golangci.yml`、`scripts/`。
 
@@ -108,7 +108,7 @@ fi
 ```
 
 - **只查本次暂存的 Go 文件**(快);工具缺失静默跳过(不绑架无 Go 环境的文档提交)。
-- 失败打印**可直接复制执行**的修复命令(原则 4,pineapple 同款)。
+- 失败打印**可直接复制执行**的修复命令(原则 4,pineapple 一样的)。
 
 ### 2.2 commit-msg:`type(scope):` 强制校验 + 标题 ASCII-only(经评审纳入;pineapple 缺口补强)
 
@@ -139,9 +139,9 @@ if [ -n "$non_ascii" ]; then
 fi
 ```
 
-- pineapple 纯靠习惯(其提交史 `type(scope):` 高度一致但无强制);望舒**强制校验**——对 agent 提交工作流尤其友好(机器生成的 message 偶发跑偏,hook 当场拦)。
+- pineapple 纯靠习惯(其提交史 `type(scope):` 高度一致但无强制);望舒**强制校验**——对 agent 提交工作流尤其友好(机器生成的 message 偶发跑偏,hook 立刻拦)。
 - scope 建议(非强制枚举):`p1`..`p5`、包名(`arena`/`crescent`/...)、`llmdoc`、`ci`。
-- **ASCII-only 标题**:2026-06-29 起本项目 commit subject 英语化(用户记忆 `feedback_code_language_english`);hook 当场拦截 CJK / em-dash / `§` 等非 ASCII 字符。body 不限制(可含 URL / 日志片段 / 等)。
+- **ASCII-only 标题**:2026-06-29 起本项目 commit subject 英语化(用户记忆 `feedback_code_language_english`);hook 立刻拦截 CJK / em-dash / `§` 等非 ASCII 字符。body 不限制(可含 URL / 日志片段 / 等)。
 
 ### 2.3 pre-push:全仓 lint(十秒级)
 
@@ -186,7 +186,7 @@ jobs:
     #   P1 解释器单 goroutine,race 主要拦「宿主并发误用 State」与测试自身的并发 bug;
     #   P3+ 跨层后价值更大。CI 时间翻倍可接受(P1 单测规模小)。
 
-  conformance:     # 12 §8 步骤 2:对拍 golden
+  conformance:     # 12 §8 步骤 2:差分测试 golden
     - run: make conformance
 
   difftest:        # 12 §8 步骤 3:固定时长差分 fuzz(三方比对 + GC 压力)
@@ -216,7 +216,7 @@ jobs:
 
 - **job 与 12 §8 五步一一对应**(单元/conformance/差分/基准/golden 高亮);dispatch A/B(12 §8 步骤 5)只在改 dispatch 的 PR 手动触发,不进默认矩阵。
 - `paths-ignore` 让纯文档 PR 不烧 CI 时长(本仓库文档提交占比高)。
-- `concurrency` 非主干 cancel-in-progress(pineapple 同款)。
+- `concurrency` 非主干 cancel-in-progress(pineapple 一样的)。
 - Go 版本经 `go-version-file: go.mod` 锁定,缓存 `go.sum`。
 
 ### 3.2 `nightly-diff-fuzz.yml`:长跑差分 + 自动开 issue(经评审纳入,pineapple 最有价值的可借鉴项)
@@ -257,7 +257,7 @@ jobs:
 ```yaml
 on: { schedule: [{ cron: '30 21 * * *' }], workflow_dispatch: }
 # 跑三档基准 → gh run download 上次成功 run 的 bench artifact → delta 对比脚本 →
-# 漂移超阈值(如 ±5%)写 STEP_SUMMARY 并开 issue;跑前停无关服务降噪(pineapple 同款)。
+# 漂移超阈值(如 ±5%)写 STEP_SUMMARY 并开 issue;跑前停无关服务降噪(pineapple 一样的)。
 ```
 
 PR 的 bench job 防"单次回退",nightly 防"温水煮蛙式缓慢劣化"(每次 PR 都在阈值内、累计漂移超标)。
@@ -289,7 +289,7 @@ case "$v" in *"5.1.5"*) echo "oracle ok: $v" ;;
 ```
 
 - 优先 `apt-get install lua5.1`(快、缓存友好);版本串校验防发行版漂移,不符则 fail(**不静默降级**——oracle 版本错会让差分结论失效)。
-- 兜底(apt 不可用/非 Ubuntu runner):源码编译 5.1.5 并以 actions cache 缓存产物,记 §7 缺口待 M14 落地时实测。
+- 兜底(apt 不可用/非 Ubuntu runner):源码编译 5.1.5 并以 actions cache 缓存产物,记 §7 缺口待 M14 完成时实测。
 - gopher-lua 是 `go.mod` 依赖,版本天然锁定(12 §2.6"锁 commit/tag")。
 - 本地 `make difftest` 同样经 `check-oracle.sh`,无 lua5.1 时给出安装指引并跳过(本地可跳,CI 必过)。
 
@@ -298,7 +298,7 @@ case "$v" in *"5.1.5"*) echo "oracle ok: $v" ;;
 ## 5. lint 工具链
 
 ```yaml
-# .golangci.yml —— v2 极简起步(pineapple 同款思路:默认 linter 集 + 噪音排除)
+# .golangci.yml —— v2 极简起步(pineapple 一样的思路:默认 linter 集 + 噪音排除)
 version: "2"
 linters:
   exclusions:
@@ -313,7 +313,7 @@ linters:
 
 ## 6. M0:工程地基里程碑(对 [00-overview](./p1-interpreter/00-overview.md) §2 的增补)
 
-本篇全部机制在 **M0** 落地(先于 M1 arena),完成定义:
+本篇全部机制在 **M0** 完成(先于 M1 arena),完成定义:
 
 | 项 | 验收 |
 |---|---|
@@ -341,11 +341,11 @@ linters:
 
 **文档缺口(记入 [doc-gaps](../../llmdoc/memory/doc-gaps.md)):**
 
-- nightly-diff-fuzz 的 `fuzz-triage.sh` 解析协议(FAIL/INFRA 分类的精确判据)待 difftest harness(M14)定稿后落地。
+- nightly-diff-fuzz 的 `fuzz-triage.sh` 解析协议(FAIL/INFRA 分类的精确判据)待 difftest harness(M14)定稿后完成。
 - 非 Ubuntu runner 的 oracle 源码编译 + 缓存方案待实测。
 - bench-gate 的回退阈值(±N%)与基线 artifact 的存储/对比协议待 M14 校准。
 - agentic workflows 的接入时机与模板源(§3.5)。
-- 覆盖率是否设硬门槛(当前仅 artifact 存档,pineapple 同款;若 P1 后期需要再议)。
+- 覆盖率是否设硬门槛(当前仅 artifact 存档,pineapple 一样的;若 P1 后期需要再议)。
 
 ---
 

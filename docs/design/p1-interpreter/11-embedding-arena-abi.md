@@ -5,7 +5,7 @@
 > `Program.Call(state, arena, args)` 语义、arena 的类型化扁平列 / 字符串区 / presence bitmap 的
 > **字段级二进制 spec**、VM 零拷贝读机制、per-item 栈式简易 API、host function 注册、
 > lightuserdata 句柄表、Program/State 并发语义、gopher-lua drop-in 定位。
-> **本文是全项目点名的最大文档缺口的落地**——[embedding-contract](../../../llmdoc/reference/embedding-contract.md)
+> **本文是全项目点名的最大文档缺口的完成**——[embedding-contract](../../../llmdoc/reference/embedding-contract.md)
 > 与 [doc-gaps](../../../llmdoc/memory/doc-gaps.md) 第一条均指出:roadmap §8 仅给 arena ABI 概念,
 > **字符串区编码、presence bitmap 位布局、`args` 与 arena 的精确关系未给 spec**;本文把它们定死到字段级。
 > 上游契约:`docs/design/roadmap.md` (§8 宿主嵌入契约、§1 两个校准测量、§6 非目标),
@@ -29,7 +29,7 @@ P1 的绝大多数文档([01](./01-value-object-model.md)..[10](./10-stdlib.md))
 
 > 为什么这是「最大缺口」:roadmap §8 与 [embedding-contract](../../../llmdoc/reference/embedding-contract.md) 把 arena ABI 说成「类型化扁平列 + 字符串区 + presence bitmap」——这是**概念**,不是 spec。宿主程序员要写「往 arena 填一列 float64、填一列字符串、标某些槽为 null」的代码,必须知道**每个字节放什么**:列头多少字节、字符串区 offset 表怎么编码、bitmap 哪个 bit 对应哪个槽、`Program.Call` 的 `args` 和 arena 列在脚本里怎么分别拿到。本文 §3-§5 逐一定死。
 
-设计意图回顾(不重复 [design-premises](../../../llmdoc/must/design-premises.md) 前提一的长论证,只给指针):两个校准测量(roadmap §1)钉死「per-item 跨界形态下边界成本主导,脚本本体再快也被吃光」;故接口被设计成**让宿主一次调用就把整批数据交给 VM,循环写在 Lua 内**。arena 是这个意图的物理载体——它让「整批列数据」有一个 VM 能零拷贝读的二进制形态。
+设计意图回顾(不重复 [design-premises](../../../llmdoc/must/design-premises.md) 前提一的长论证,只给指针):两个校准测量(roadmap §1)钉死「per-item 跨界形式下边界成本主导,脚本本体再快也被吃光」;故接口被设计成**让宿主一次调用就把整批数据交给 VM,循环写在 Lua 内**。arena 是这个意图的物理载体——它让「整批列数据」有一个 VM 能零拷贝读的二进制形式。
 
 ---
 
@@ -107,7 +107,7 @@ func Compile(source []byte, chunkname string) (*Program, error)
 要点:
 
 - **Compile 不需要 State**。编译只产生不可变代码(Proto 住 Go 堆,[01](./01-value-object-model.md) §1),不碰任何 VM 运行期状态。这让「一次编译、多 State 复用」成立(§8):一个 `*Program` 可被多个 `*State`(多 goroutine)各自 `Call`。
-  - **例外:字符串常量的 intern 归属**。[01](./01-value-object-model.md) §5.7 说 Proto 的 `Consts` 里字符串常量是「指向 arena 的 GCRef」。但 Compile 不持 State/arena,何来 arena?**定稿:P1 的 Proto 字符串常量在编译期先以 Go `[]byte`/`string` 形态留存(`Proto.Consts` 的字符串元素暂存原始字节),首次被某个 State `Call` 时**惰性 intern 进该 State 的 arena**(写回该 State 私有的常量 GCRef 缓存)。即 `Program` 持「常量的字节原文」,`State` 持「该 Program 在本 VM 内 intern 后的 GCRef 表」。这样 Program 跨 State 共享时,每个 State 有自己的常量串副本(各自 arena),互不干扰。**这是对 [01](./01-value-object-model.md) §5.7「字符串常量是 arena GCRef」的并发细化**,需回填 [01](./01-value-object-model.md)(§9 doc-gap)。
+  - **例外:字符串常量的 intern 归属**。[01](./01-value-object-model.md) §5.7 说 Proto 的 `Consts` 里字符串常量是「指向 arena 的 GCRef」。但 Compile 不持 State/arena,何来 arena?**定稿:P1 的 Proto 字符串常量在编译期先以 Go `[]byte`/`string` 形式留存(`Proto.Consts` 的字符串元素暂存原始字节),首次被某个 State `Call` 时**惰性 intern 进该 State 的 arena**(写回该 State 私有的常量 GCRef 缓存)。即 `Program` 持「常量的字节原文」,`State` 持「该 Program 在本 VM 内 intern 后的 GCRef 表」。这样 Program 跨 State 共享时,每个 State 有自己的常量串副本(各自 arena),互不干扰。**这是对 [01](./01-value-object-model.md) §5.7「字符串常量是 arena GCRef」的并发细化**,需回填 [01](./01-value-object-model.md)(§9 doc-gap)。
 - **可编译性探测 P1 占位**:roadmap §8 把「可编译性探测与层级决定」放进 `Compile`,但那是 P2 能力(roadmap §4 P2「静态可编译性分析:varargs/coroutine/debug 标记不升层」)。P1 的 `Compile` 把这步实现为**恒真占位**:所有函数标 tier-0、恒「解释」。接口形状(返回的 Program 带每个 Proto 的「可升层标记」字段)P1 就定好,P2 只填充探测逻辑,不改 API。
 
 ### 1.4 `Program`:不可变编译产物
@@ -129,7 +129,7 @@ type Program struct {
 ### 1.5 `Program.Call`:一次调用一次跨界
 
 ```go
-// Call 在 state 上执行 prog 的主 chunk,一次调用 = 一次跨界(roadmap §8 列内核形状的 API 落地)。
+// Call 在 state 上执行 prog 的主 chunk,一次调用 = 一次跨界(roadmap §8 列内核形状的 API 完成)。
 //   - state:目标 VM(提供 globals/arena/host 注册表/句柄表)。
 //   - arena:**批量列数据**(可为 nil = 无批量数据)。脚本内经暴露的 arena 句柄迭代(§5)。
 //   - args:**标量调用参数**,传给主 chunk 的固定参数或 `...`(§4.3)。
@@ -201,7 +201,7 @@ func (e *LuaError) Error() string  // 返回 Value 的字符串形式 + tracebac
 
 1. **封装**:宿主用公共 `wangshu.Arena`(普通 Go slice 字段)构造数据,不需要、也不应碰 `internal/arena`(VM 私有线性内存)。
 2. **GC 解耦**:列数据(可能很大,百万行 float64)不进 VM 的 mark-sweep 视野([06](./06-memory-gc.md))——它们是宿主的 Go slice,由 Go GC 管(但内容是纯标量/字节,Go GC 也不追踪内部)。VM 的 GC 只管 arena 内的动态对象([06](./06-memory-gc.md) §0 铁律 2),不被宿主的大批量列拖累 pacing。
-3. **零拷贝读的真实形态**:VM 执行 `arena.col[i]` 时,不是「把整列 col 拷进 VM arena 再读」,而是「读宿主 `[]float64` 的第 i 个元素(§3.5 的 `column.f64[i]`)这一个 float64,就地 `value.NumberValue(...)` 装箱成一个栈上的 Value」(§4)。**整列从不复制**——这就是 [embedding-contract](../../../llmdoc/reference/embedding-contract.md)「宿主直接写、VM 零拷贝读」的兑现。
+3. **零拷贝读的真实形式**:VM 执行 `arena.col[i]` 时,不是「把整列 col 拷进 VM arena 再读」,而是「读宿主 `[]float64` 的第 i 个元素(§3.5 的 `column.f64[i]`)这一个 float64,就地 `value.NumberValue(...)` 装箱成一个栈上的 Value」(§4)。**整列从不复制**——这就是 [embedding-contract](../../../llmdoc/reference/embedding-contract.md)「宿主直接写、VM 零拷贝读」的兑现。
 
 > 与 roadmap §8 / [embedding-contract](../../../llmdoc/reference/embedding-contract.md)「arena 与 value-representation 的自管线性内存是同一份内存的不同视角」的关系——**澄清(本文定稿的细化)**:那句话的精确含义是「**逻辑上**两层共见同一批数据」,不是「**物理上**列数据躺在 VM arena 里」。P1 选 (B):列数据物理在宿主 buffer,VM 零拷贝读;「共见」体现在 VM 读列元素时直接装箱进值世界,无中间拷贝层。**P3 才把 arena 列映射进 Wasm linear memory**(§11),那时「物理同一块」更进一步(linear memory 既是 VM 值世界又承载列)。P1 的 (B) 与 P3 的映射不冲突:P1 定的**列布局 ABI**(下面 §3.1-§3.4)是「宿主如何组织一列数据」的逻辑 spec,P1 用 Go slice 承载、P3 用 linear memory 承载,**布局 spec 不变**(§11)。
 
@@ -209,7 +209,7 @@ func (e *LuaError) Error() string  // 返回 Value 的字符串形式 + tracebac
 
 ### 3.1 一个 arena 的整体内存图
 
-一个 arena 是**一组列(columns)+ 一个共享字符串区(string region)+ 每列一个 presence bitmap**。逻辑/二进制布局(P3 linear memory 形态;P1 用 §3.5 的 Go 结构等价承载):
+一个 arena 是**一组列(columns)+ 一个共享字符串区(string region)+ 每列一个 presence bitmap**。逻辑/二进制布局(P3 linear memory 形式;P1 用 §3.5 的 Go 结构等价承载):
 
 ```
 arena(逻辑布局):
@@ -401,7 +401,7 @@ bitmap[bitmapOff..]: ceil(nrows/64) 个 u64(小端 u64 字数组):
 
 ### 3.5 P1 的 Go 承载:`wangshu.Arena` 类型
 
-上面 §3.1-§3.4 是**逻辑/二进制布局 spec**(P3 linear memory 形态)。P1 用 `wangshu.Arena` 的 Go slice 字段**等价承载**这个逻辑结构(不实际序列化成上面那个连续字节块——P1 直接用 Go slice,P3 才序列化进 linear memory)。公共类型:
+上面 §3.1-§3.4 是**逻辑/二进制布局 spec**(P3 linear memory 形式)。P1 用 `wangshu.Arena` 的 Go slice 字段**等价承载**这个逻辑结构(不实际序列化成上面那个连续字节块——P1 直接用 Go slice,P3 才序列化进 linear memory)。公共类型:
 
 ```go
 package wangshu
@@ -453,7 +453,7 @@ func (a *Arena) AddStringColumn(name string, vals []string, present []bool) erro
 func (a *Arena) Rows() int
 ```
 
-> 设计:宿主用 `AddFloatColumn` 等**类型化方法**构造列,把一个 Go `[]float64` 整体交给 arena(零拷贝引用 slice,不复制——`column.f64 = vals`)。`present []bool` 由 arena 内部打包成 §3.4 的 u64 bitmap(`AddFloatColumn` 里 `packPresence(present)`)。**宿主侧零二进制操作**,纯 Go slice;二进制布局(§3.1-§3.4)是 ABI 契约 + P3 形态,P1 宿主看不到它。
+> 设计:宿主用 `AddFloatColumn` 等**类型化方法**构造列,把一个 Go `[]float64` 整体交给 arena(零拷贝引用 slice,不复制——`column.f64 = vals`)。`present []bool` 由 arena 内部打包成 §3.4 的 u64 bitmap(`AddFloatColumn` 里 `packPresence(present)`)。**宿主侧零二进制操作**,纯 Go slice;二进制布局(§3.1-§3.4)是 ABI 契约 + P3 形式,P1 宿主看不到它。
 
 ---
 
@@ -539,7 +539,7 @@ return cnt                     -- 返回值经 results 拷出(§4.4)
 
 - **args 走主 chunk 参数/vararg**:`Call(state, arena, args...)` 的 `args` 被推到 mainThread 值栈,作为主 chunk closure 的实参。主 chunk 编译时(`Compile`)是 vararg 函数(顶层 chunk 在 Lua 5.1 即 vararg,[02](./02-bytecode-isa.md) §6 / [04](./04-frontend-parser-codegen.md)),`...` 即 args。脚本用 `local a, b = ...` 或 `select('#', ...)` 取(§4.3.1)。
 - **arena 走全局句柄**:`Call` 步骤 5(§1.5)把 arena 句柄注入为 globals 表的一个全局名(默认 `arena`,可经 Options 配),脚本用 `arena.colname[i]` / `arena:rows()` 访问(§5.2)。arena 句柄是一个 full userdata([01](./01-value-object-model.md) §5.5),其 `__index` 元方法实现列访问(§5.2)。
-- **为什么分两个通道**:args 是「少量标量配置」(每次 Call 可能不同的参数),arena 是「大批列数据」(本次 Call 要处理的数据)。分开让「配置」和「数据」各走最优路径:args 直接进栈(几个标量,零开销);arena 经句柄零拷贝读(大批量,不进栈不复制)。**这正是 roadmap §8「`Program.Call(arena, args)`」签名的语义落地**——arena 与 args 并列是两个参数,本文定死它们一个是批量列、一个是标量参数。
+- **为什么分两个通道**:args 是「少量标量配置」(每次 Call 可能不同的参数),arena 是「大批列数据」(本次 Call 要处理的数据)。分开让「配置」和「数据」各走最优路径:args 直接进栈(几个标量,零开销);arena 经句柄零拷贝读(大批量,不进栈不复制)。**这正是 roadmap §8「`Program.Call(arena, args)`」签名的语义完成**——arena 与 args 并列是两个参数,本文定死它们一个是批量列、一个是标量参数。
 
 #### 4.3.1 args 推栈与主 chunk vararg 衔接
 
@@ -569,7 +569,7 @@ Call 步骤 7(正常返回):
               ② 若必须返回 table,P1 提供「深拷出成 Go map/slice」或「保留为不透明 handle」(§4.5,记缺口)。
 ```
 
-> **public Value 的双重形态**(§4.5):公共 `wangshu.Value` 对标量是 NaN-box u64(值语义,跨 Call 安全);对 string 持 Go string(脱离 arena);对 table/function 等持「handle + 源 State 引用」(只在源 State 存活期有效)。详 §4.5。
+> **public Value 的双重形式**(§4.5):公共 `wangshu.Value` 对标量是 NaN-box u64(值语义,跨 Call 安全);对 string 持 Go string(脱离 arena);对 table/function 等持「handle + 源 State 引用」(只在源 State 存活期有效)。详 §4.5。
 
 ### 4.5 公共 `Value` 类型
 
@@ -642,7 +642,7 @@ arena:rows()         -- __index(arena, "rows") → host 方法,返回 nrows
 > **为什么用 userdata 而非全局表**(讨论:任务点名「userdata 或全局表」):
 > - **方案 α(选定):arena = full userdata + metatable `__index`**。优点:① 列访问 `arena.col[i]` 走 `__index` 元方法,可**惰性即时装箱**(§4.1)——不预先把整列变成 Lua table(那会复制整列成 arena Table,违背零拷贝);② userdata 不可被脚本意外改结构(只读,§5.3);③ 与 Lua 习惯一致(C 扩展常把外部数据包成 userdata)。
 > - **方案 β:arena = 一个全局 Lua table,每列是一个 Lua table**。缺点:要把每列**预先物化**成 Lua table(`{v1,v2,...,vn}`)——这是**复制整列进 VM arena Table**,正是零拷贝要避免的(1M 行 float 列变成 1M 槽的 arena Table,大量分配 + GC 压力)。否决。
-> **定稿 α**:arena userdata + `__index` 惰性装箱,**零拷贝读的脚本侧落地**。列代理([col][i] 两级)让「读第 i 行某列」= 一次元方法 + 一次 ReadCell,无整列物化。
+> **定稿 α**:arena userdata + `__index` 惰性装箱,**零拷贝读的脚本侧完成**。列代理([col][i] 两级)让「读第 i 行某列」= 一次元方法 + 一次 ReadCell,无整列物化。
 
 ### 5.3 只读约定(P1)
 
@@ -704,7 +704,7 @@ func (s *State) UnpinHandle(v Value)
 package wangshu
 
 // —— per-item 栈式 API:类似 lua_State 的虚拟栈机,对标 gopher-lua 易用性 ——
-// 性能档位:走 per-item 跨界形态,落在被边界成本主导的那一档(design-premises 前提一)。
+// 性能档位:走 per-item 跨界形式,落在被边界成本主导的那一档(design-premises 前提一)。
 //          适合「偶尔调一下脚本」,不适合「循环里每 item 调一次」(那会被边界成本吃光,roadmap §1)。
 
 // Push 系列:把值压入 State 的 per-item 操作栈(独立于 VM 值栈的公共栈视图)。
@@ -745,7 +745,7 @@ for _, x := range items {                   // ⚠ 这个循环在 Go 里 = per-
 
 ### 7.2 性能档位的明确标注(契约)
 
-> **per-item API 性能契约**(写进公共 godoc,宿主必读):上面那个 `for _, x := range items { state.CallGlobal("score", ...) }` 循环**每个 item 跨一次 Go→VM 边界**。由 [design-premises](../../../llmdoc/must/design-premises.md) 前提二,**边界跨越是几十~百 ns 的固定成本**;由前提一 / roadmap §1 的两个校准测量,**per-item 形态下边界成本主导,VM 本体再快也被钉死**(真 LuaJIT 只比 luajc 快 6% 就是这个效应)。
+> **per-item API 性能契约**(写进公共 godoc,宿主必读):上面那个 `for _, x := range items { state.CallGlobal("score", ...) }` 循环**每个 item 跨一次 Go→VM 边界**。由 [design-premises](../../../llmdoc/must/design-premises.md) 前提二,**边界跨越是几十~百 ns 的固定成本**;由前提一 / roadmap §1 的两个校准测量,**per-item 形式下边界成本主导,VM 本体再快也被钉死**(真 LuaJIT 只比 luajc 快 6% 就是这个效应)。
 >
 > **结论**:per-item API **方便但慢**(落在被边界成本主导档)。它适合:① 脚本调用频率低(每秒几千次以内,边界成本可忽略);② 原型/测试/REPL;③ gopher-lua drop-in 迁移期(§9)先跑通再优化。**高频热路径应改用 arena 批量轨**(§3-§5):把 Go 里的 `for item` 循环搬进 Lua(`for i=1,arena:rows()`),一次 `Program.Call(state, arena)` 处理整批——边界成本摊薄到每批一次。
 
@@ -900,7 +900,7 @@ func myHostFn(ctx *wangshu.HostCtx) int {
 
 **任务点名:这块 arena = P3 Wasm linear memory,P1 定的 ABI 布局 P3 直接映射。** 给指针。
 
-[value-representation](../../../llmdoc/architecture/value-representation.md) 主线「两层共见同一块内存」在 P3 的形态:**P1 的 arena 列布局 ABI(§3.1-§3.4)直接映射为 P3 Wasm 编译层的 linear memory 布局**。
+[value-representation](../../../llmdoc/architecture/value-representation.md) 主线「两层共见同一块内存」在 P3 的形式:**P1 的 arena 列布局 ABI(§3.1-§3.4)直接映射为 P3 Wasm 编译层的 linear memory 布局**。
 
 - **P1**:arena 列数据物理住宿主 Go slice(§3.0 方案 B),VM 零拷贝读元素装箱(§4)。「共见」是逻辑的(VM 读列即时进值世界)。
 - **P3**(见 [../p3-wasm-tier](../p3-wasm-tier/03-memory-model.md)):值世界 = Wasm linear memory(roadmap §4 P3「P1 的 arena 直接映射,两层共见」)。此时 arena 列**序列化进 linear memory**——按 §3.1-§3.4 的**二进制布局**(ArenaHeader/ColumnDesc/数据区/字符串区/bitmap),Wasm 编译码直接 `i32.load`/`f64.load` 读列元素。**P1 定的字节布局就是 P3 的 linear memory 布局**,无需重新设计 ABI。
@@ -952,6 +952,6 @@ func myHostFn(ctx *wangshu.HostCtx) int {
 [12-testing-difftest](./12-testing-difftest.md)(gopher-lua 差分基准 / drop-in 行为兼容) ·
 [../p3-wasm-tier](../p3-wasm-tier/03-memory-model.md)(arena ABI = linear memory 布局) ·
 [architecture](../architecture.md)(包布局:公共 API 在 root package) ·
-[embedding-contract](../../../llmdoc/reference/embedding-contract.md)(本文落地的上游契约) ·
+[embedding-contract](../../../llmdoc/reference/embedding-contract.md)(本文完成的上游契约) ·
 [design-premises](../../../llmdoc/must/design-premises.md)(前提一列内核 / 前提二边界成本) ·
 [value-representation](../../../llmdoc/architecture/value-representation.md)(两层共见同一块内存)

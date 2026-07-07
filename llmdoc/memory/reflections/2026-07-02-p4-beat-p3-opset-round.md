@@ -1,6 +1,6 @@
 ---
 name: p4-beat-p3-opset-round
-description: P4 must-beat-P3 op-set 扩面轮过程教训:2026-07-02 单会话 30 commits dc9baf0..79bd6dc(分支 feat/p4-beat-p3)把 P4 amd64 native 相对 P3 wasm 的对比面从少数几核推到全 27 对基准里 25 对 ≥2%(多在 +10%~+85%)、README perf 表更新;头条**「exit-reason 协议替 mmap 内 shim call」**——jitCtx.exitArg0 打包 (helperCode, a, b, c, pc) + RETs 出 ExitInlineHelper + Go 端 dispatcher 循环 + resumeOff 回入,一步解掉 mmap+morestack 物理不兼容,并把 CALL/UNM/GETUPVAL/SETUPVAL/GETGLOBAL/SETGLOBAL/多值 RETURN 全接住(18-bit Bx 拆两 9-bit payload / HelperReturn 终结而非重入);**三条 fuzz 直接抓到的正确性 bug**:(a) x86 SSE NaN 结果 0xFFF8… 与 NaN-box tag 空间别名 → arith inline 需 result guard 路由到 host.Arith canonicalize;(b) **insertNewKey Brent 重定位改 slot 但没 BumpGen**——解释器 icGetTable per-access 复验 NodeKey 掩盖,gen-only 快路径(P4 native GETGLOBAL NodeHit + 潜在 P3 wasm emitGetGlobal 同款 gen-only guard)当场 UAF,**最深教训:invariant consumer 若跳过 per-access 复验,对 producer 纪律的要求严于解释器路径**;(c) LT/LE inline UCOMISD 缺 IsNumber 守卫使 reg operands 静默比较垃圾;**验收门比 emit 质量同样重要**——GETGLOBAL 未 gate 使 Transform CallInto 290us→332us,revert 后再带 NodeHit-IC gate + inline 快路径回来变 +11%;CALL 密度门 totalOps/callCount ≥ 16(fib 类 CALL 密集 proto 单次 exit round trip ~15-25 解释器 op 单纯亏);MinPromotableLener hook 实测 P4 固定 Run 成本 ~111ns > 解释器 78ns 使 tiny proto 下地板停 10;**dataflow-track stdlib alias**(local sqrt = math.sqrt)让 nbody 升层,副作用 P3 wasm 侧同 shape 反而 43.5→89.7ms 慢(issue #39,shared-analyzer 改进可能是 per-backend 回归);**过程教训**:共享 80 用户机器上并发无限制 fuzz + pgrep 轮询壳把 load 打到 11+ 被 kill;bench 方法论踩三雷(P3/P4 并跑互扰须串行 / test-bin -race 二进制 profiling 把 racecall 顶出来须无 race 跑 / 不同 build tag bench 名不同 GibbousJIT* vs Gibbous* 且不匹配 regex 会静默 PASS 空输出);stop-hook 机械复核目标条件,tie 解释直到 README 明确记录才被接受
+description: P4 must-beat-P3 op-set 扩面轮过程教训:2026-07-02 单会话 30 commits dc9baf0..79bd6dc(分支 feat/p4-beat-p3)把 P4 amd64 native 相对 P3 wasm 的对比面从少数几核推到全 27 对基准里 25 对 ≥2%(多在 +10%~+85%)、README perf 表更新;头条**「exit-reason 协议替 mmap 内 shim call」**——jitCtx.exitArg0 打包 (helperCode, a, b, c, pc) + RETs 出 ExitInlineHelper + Go 端 dispatcher 循环 + resumeOff 回入,一步解掉 mmap+morestack 物理不兼容,并把 CALL/UNM/GETUPVAL/SETUPVAL/GETGLOBAL/SETGLOBAL/多值 RETURN 全接住(18-bit Bx 拆两 9-bit payload / HelperReturn 终结而非重入);**三条 fuzz 直接抓到的正确性 bug**:(a) x86 SSE NaN 结果 0xFFF8… 与 NaN-box tag 空间别名 → arith inline 需 result guard 路由到 host.Arith canonicalize;(b) **insertNewKey Brent 重定位改 slot 但没 BumpGen**——解释器 icGetTable per-access 复验 NodeKey 掩盖,gen-only 快路径(P4 native GETGLOBAL NodeHit + 潜在 P3 wasm emitGetGlobal 一样的 gen-only guard)立刻 UAF,**最深教训:invariant consumer 若跳过 per-access 复验,对 producer 纪律的要求严于解释器路径**;(c) LT/LE inline UCOMISD 缺 IsNumber 守卫使 reg operands 静默比较垃圾;**验收门比 emit 质量同样重要**——GETGLOBAL 未 gate 使 Transform CallInto 290us→332us,revert 后再带 NodeHit-IC gate + inline 快路径回来变 +11%;CALL 密度门 totalOps/callCount ≥ 16(fib 类 CALL 密集 proto 单次 exit round trip ~15-25 解释器 op 单纯亏);MinPromotableLener hook 实测 P4 固定 Run 成本 ~111ns > 解释器 78ns 使 tiny proto 下地板停 10;**dataflow-track stdlib alias**(local sqrt = math.sqrt)让 nbody 升层,副作用 P3 wasm 侧同 shape 反而 43.5→89.7ms 慢(issue #39,shared-analyzer 改进可能是 per-backend 回归);**过程教训**:共享 80 用户机器上并发无限制 fuzz + pgrep 轮询壳把 load 打到 11+ 被 kill;bench 方法论踩三雷(P3/P4 并跑互扰须串行 / test-bin -race 二进制 profiling 把 racecall 顶出来须无 race 跑 / 不同 build tag bench 名不同 GibbousJIT* vs Gibbous* 且不匹配 regex 会静默 PASS 空输出);stop-hook 机械复核目标条件,tie 解释直到 README 明确记录才被接受
 metadata:
   type: reflection
   date: 2026-07-02
@@ -22,13 +22,13 @@ metadata:
 
 **Why**:前一轮的「shim call in mmap」和「exit + Go dispatch」被视作二选一,忽略了「mmap 内不需要 call Go,只需 RET 出去让 Go 端 call 完再重入」这条 U 形路径。二选一是**执行流方向**假设(段内向下嵌套),U 形是**段边界作为原子分派点**(段是「输入→输出」的纯函数,call 由外层做)。
 
-**How to apply**:mmap / unregistered code page / 任何跨受限执行环境边界的 codegen 里想调用外层 runtime helper 时,先问「能不能改成 RET 出边界 + 携带指令包 + 外层 dispatch + 重入」,别默认「段内向下调」和「段外接管」二选一。exit-reason 协议是 P5 trace JIT / OSR exit / 任何 mmap codegen 通用形态,若 P5 再撞可升 guide「受限执行环境的 exit-reason dispatch 协议」。
+**How to apply**:mmap / unregistered code page / 任何跨受限执行环境边界的 codegen 里想调用外层 runtime helper 时,先问「能不能改成 RET 出边界 + 携带指令包 + 外层 dispatch + 重入」,别默认「段内向下调」和「段外接管」二选一。exit-reason 协议是 P5 trace JIT / OSR exit / 任何 mmap codegen 通用形式,若 P5 再撞可升 guide「受限执行环境的 exit-reason dispatch 协议」。
 
 ### 2. Invariant consumer 若跳过 per-access 复验,对 producer 纪律的要求严于解释器路径
 
 `cc6557e` 修的最深 bug:`insertNewKey` 的 Brent 式重定位——新 key 抢占某个 main position 时,把该位置的既有占用者搬到自由槽——**改了 key→slot 映射但没 BumpGen**。
 
-这条在解释器路径**多年没被发现**,因为解释器 `icGetTable` 每次访问都复验 NodeKey(gen 只是快速否决,key 复验兜底)。P4 native GETGLOBAL 的 NodeHit inline 快路径把 node index 烧成编译期立即数,**只留 gen guard**——gen 不 bump ⟹ inline 命中原槽,读到搬进来的新占用者。P3 wasm emitGetGlobal 有同款 gen-only guard,是同一颗定时炸弹。Fuzz seed `4b3d10ff17c418d4` 抓出:`s=0 function add()A0=0>s end add(add())add()` P1 正确,P4 报 `attempt to compare boolean with number`。修法在 producer 侧(insertNewKey relocate 时 BumpGen)不在 consumer 侧,因为 consumer 已经把复验优化掉了、生态又有多个 consumer(P3 + P4 + 未来 P5)。
+这条在解释器路径**多年没被发现**,因为解释器 `icGetTable` 每次访问都复验 NodeKey(gen 只是快速否决,key 复验兜底)。P4 native GETGLOBAL 的 NodeHit inline 快路径把 node index 烧成编译期立即数,**只留 gen guard**——gen 不 bump ⟹ inline 命中原槽,读到搬进来的新占用者。P3 wasm emitGetGlobal 有一样的 gen-only guard,是同一颗定时炸弹。Fuzz seed `4b3d10ff17c418d4` 抓出:`s=0 function add()A0=0>s end add(add())add()` P1 正确,P4 报 `attempt to compare boolean with number`。修法在 producer 侧(insertNewKey relocate 时 BumpGen)不在 consumer 侧,因为 consumer 已经把复验优化掉了、生态又有多个 consumer(P3 + P4 + 未来 P5)。
 
 **Why**:同一条 invariant(「gen 未变 ⟹ key→slot 映射未变」)有两类 consumer:
 - **完整复验型**(解释器 icGetTable):gen 只是快速否决,invariant 松了它也能兜底 → producer 的一次遗漏是「良性」;
@@ -40,7 +40,7 @@ producer 侧代码历经多次 review 都过,是因为审的人是按松 consume
 - 引入 gen-only / 快照型 consumer 前,**逐条列 producer 侧所有能不 bump gen 但改 slot 语义的路径**(不只 insert / delete,还包括 relocate / rehash / resize-hidden-move),补 BumpGen;
 - fuzz 是唯一现实的兜底(seed 4b3d10ff 就是 fuzz 直接给的);
 - **文档**:invariant 契约必须写清「谁负责验证」——若 producer 承诺「不改语义时不 bump」,consumer 侧必须复验;若 producer 承诺「任何语义变化都 bump」,consumer 才能 gen-only。本 codebase 事实上是第二档,但从来没写清过。
-- **多 consumer 尤其危险**:P3 + P4 同款 gen-only guard,一次 producer 修复救两个;若只在 P4 侧改 consumer(加复验),P3 wasm 侧的定时炸弹留着。修 producer 是唯一多消费者友好的落点。
+- **多 consumer 尤其危险**:P3 + P4 一样的 gen-only guard,一次 producer 修复救两个;若只在 P4 侧改 consumer(加复验),P3 wasm 侧的定时炸弹留着。修 producer 是唯一多消费者友好的落点。
 
 这条**首次样本足够强**,值得推 promotion 候选进 [[design-claims-vs-codebase-physics]] 或独立立项「invariant contract 强度由最严 consumer 定义」,与 [[design-claims-vs-codebase-physics]] §2「跨层固定 token / 视图段重定位」构成对偶——那条管**空间性 held-pointer**,本条管**时序性 gen-guard**,都是「多 consumer 中的松档掩盖 producer 遗漏,严档暴露」。
 
@@ -76,15 +76,15 @@ producer 侧代码历经多次 review 都过,是因为审的人是按松 consume
 
 ### 5. 共享分析器改进可能是**per-backend 回归**——nbody 在 P4 加速 20x 但在 P3 反而慢 2x
 
-`45b8b53` 的 dataflow-track stdlib alias(`local sqrt = math.sqrt` 类)是**bridge 层共享分析器**的改进,让原本 `ReasonUnknownCall` 的形态过了 F2-b 白名单,nbody 的 advance / energy / offsetMomentum 三 hot proto 在 P3 和 P4 都能升层。P4 效果:874ms → 43.2ms(**~20x**)。P3 效果:43.5ms → 89.7ms(**≈2x**,issue #39)。
+`45b8b53` 的 dataflow-track stdlib alias(`local sqrt = math.sqrt` 类)是**bridge 层共享分析器**的改进,让原本 `ReasonUnknownCall` 的形式过了 F2-b 白名单,nbody 的 advance / energy / offsetMomentum 三 hot proto 在 P3 和 P4 都能升层。P4 效果:874ms → 43.2ms(**~20x**)。P3 效果:43.5ms → 89.7ms(**≈2x**,issue #39)。
 
-**Why**:一个 proto「能升」不代表「升了就赚」。P4 native 的 per-op 成本足够低使得 43ms 是 20x 收益;P3 wasm 的 per-op 成本(尤其涉及 `h_call` 双跨界的形态)会把 nbody 特定 shape 从 81ms 拖到 89ms。共享分析器的改进只解决「能升」这一端,「升了赚」得靠 per-backend 净胜验证——但 P2 bridge 现在**没有 per-backend 净胜判断**(F2-b 白名单是全局的)。
+**Why**:一个 proto「能升」不代表「升了就赚」。P4 native 的 per-op 成本足够低使得 43ms 是 20x 收益;P3 wasm 的 per-op 成本(尤其涉及 `h_call` 双跨界的形式)会把 nbody 特定 shape 从 81ms 拖到 89ms。共享分析器的改进只解决「能升」这一端,「升了赚」得靠 per-backend 净胜验证——但 P2 bridge 现在**没有 per-backend 净胜判断**(F2-b 白名单是全局的)。
 
 **How to apply**:
 - 共享分析器 / 通用可升层性判据改动后,**每个后端独立跑一次 all-bench 复测**;别只看主线后端(本轮 P4)的收益就 merge。
 - 若发现 per-backend 分歧(A 赚 B 亏),分类三种应对:
   1. 收窄共享分析器判据(把亏方 shape 排除掉——影响面广);
-  2. 加 per-backend 净胜门(bridge 引入 backend-hook,类似 `MinPromotableLener`——本轮 `e2b5eca` 的 hook 形态可扩);
+  2. 加 per-backend 净胜门(bridge 引入 backend-hook,类似 `MinPromotableLener`——本轮 `e2b5eca` 的 hook 形式可扩);
   3. 记录成 issue 交给后续里程碑(本轮选)。选 3 时**在 memory 里显式记录 per-backend 分歧数字**,别只提「+P4」漏「-P3」。
 - 与 [[p4-pj10-native-round]] 教训 3「入口判据窄到独占形式」邻接:那条管新 tier 入口不抢既有形式,本条管共享判据的 per-backend 分歧;都指向「跨 backend 加速面的判据要 per-backend 验证」。
 
@@ -153,4 +153,4 @@ producer 侧代码历经多次 review 都过,是因为审的人是按松 consume
 
 ## 关联
 
-[[p4-pj10-native-round]](**直接前序**:PJ10 native emit 已交付 mmap-safe 18 op inline 子集 + V15b heavy 3 本 P4>P3 2.3x-3.0x;本轮承接把 op 集扩面,教训 1 exit-reason 协议是那轮教训 1「mmap+morestack 物理不兼容」的**真解**——把 opSupported 从 18 op 扩到覆盖 CALL/GETUPVAL/SETUPVAL/GETGLOBAL/SETGLOBAL/UNM/多值 RETURN;本轮教训 3 是那轮教训 3「入口判据窄到独占形式」的 op 粒度版)· [[p4-pj10-perop-translator-round]](更前序:Go 端回放骨架 + 占位 stub 的 floor 交付)· [[design-claims-vs-codebase-physics]](教训 2 建议作 §2 空间 held-pointer 雷区的**时序对偶**补充:invariant gen-guard 也是同类跨快照 physics)· [[perf-optimization-workflow]] §7「profile 才是合同」(教训 5 per-backend 回归是「立项数字目标 vs 实测 per-backend 收益」的 backend 维度)· [[prove-the-path-under-test]](教训 4 fuzz corpus 保留纪律与「错误路径覆盖」邻接)· [[test-hardening-round]](教训 4 fuzz 兜底与那轮「fuzz 目标空转」形态互补)· `internal/gibbous/jit/peroptranslator/*.go`(exit-reason 协议 + 各 op 接入)· `internal/bridge/bridge.go`(MinPromotableLener hook + forceAll retry window)· `internal/crescent/rawtable.go`(insertNewKey BumpGen 修复)· 本会话 commits `dc9baf0..79bd6dc`(30 commits,分支 `feat/p4-beat-p3`,P4 vs P3 全表 25/27 ≥2%,README perf 表更新,follow-up issue #37/#39 + task #57)
+[[p4-pj10-native-round]](**直接前序**:PJ10 native emit 已交付 mmap-safe 18 op inline 子集 + V15b heavy 3 本 P4>P3 2.3x-3.0x;本轮承接把 op 集扩面,教训 1 exit-reason 协议是那轮教训 1「mmap+morestack 物理不兼容」的**真解**——把 opSupported 从 18 op 扩到覆盖 CALL/GETUPVAL/SETUPVAL/GETGLOBAL/SETGLOBAL/UNM/多值 RETURN;本轮教训 3 是那轮教训 3「入口判据窄到独占形式」的 op 粒度版)· [[p4-pj10-perop-translator-round]](更前序:Go 端回放骨架 + 占位 stub 的 floor 交付)· [[design-claims-vs-codebase-physics]](教训 2 建议作 §2 空间 held-pointer 雷区的**时序对偶**补充:invariant gen-guard 也是同类跨快照 physics)· [[perf-optimization-workflow]] §7「profile 才是合同」(教训 5 per-backend 回归是「立项数字目标 vs 实测 per-backend 收益」的 backend 维度)· [[prove-the-path-under-test]](教训 4 fuzz corpus 保留纪律与「错误路径覆盖」邻接)· [[test-hardening-round]](教训 4 fuzz 兜底与那轮「fuzz 目标空转」形式互补)· `internal/gibbous/jit/peroptranslator/*.go`(exit-reason 协议 + 各 op 接入)· `internal/bridge/bridge.go`(MinPromotableLener hook + forceAll retry window)· `internal/crescent/rawtable.go`(insertNewKey BumpGen 修复)· 本会话 commits `dc9baf0..79bd6dc`(30 commits,分支 `feat/p4-beat-p3`,P4 vs P3 全表 25/27 ≥2%,README perf 表更新,follow-up issue #37/#39 + task #57)

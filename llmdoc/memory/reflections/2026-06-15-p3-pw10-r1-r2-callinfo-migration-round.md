@@ -1,18 +1,18 @@
 ---
 name: p3-pw10-r1-r2-callinfo-migration-round
-description: P3 PW10 消除跨层调用税(Phase0 spike + R1 共享 funcref 表 + R2 CallInfo 迁入 linear memory = 长期延后的 VS0-e;R3 直调收益尚未交付,PW10 在飞行中)过程教训:里程碑级架构改动配 spike 闸门(承 PW0/PW9)且第二探针解 architecture FORK 能挖出远比第一可行方案简单的设计(S-C 共享表 vs S-A/S-B rebuild-all)、高风险物理数据结构迁移的「收口→只写影子→翻转→退役」增量剧本并把唯一 UAF-风险翻转单独隔离一提交、th.cur 稳定地址洞见用结构性修复消解 design-claims §2 反复出现的 held-pointer 重定位雷区(而非靠纪律躲)、wangshu_trace 自检双职(真实打包正确性安全网 + 给 lint 误判「未使用」的代码正名,且 trace-gated 自检须随重构保持接线)、空测/不公平基准陷阱第 N 次复发(这次是 apples-to-oranges 工作负载错配,非未走加速路径)
+description: P3 PW10 消除跨层调用税(Phase0 spike + R1 共享 funcref 表 + R2 CallInfo 迁入 linear memory = 长期延后的 VS0-e;R3 直调收益尚未交付,PW10 在飞行中)过程教训:里程碑级架构改动配 spike 检查(承 PW0/PW9)且第二探针解 architecture FORK 能挖出远比第一可行方案简单的设计(S-C 共享表 vs S-A/S-B rebuild-all)、高风险物理数据结构迁移的「收口→只写影子→翻转→退役」增量剧本并把唯一 UAF-风险翻转单独隔离一提交、th.cur 稳定地址洞见用结构性修复消解 design-claims §2 反复出现的 held-pointer 重定位雷区(而非靠纪律躲)、wangshu_trace 自检双职(真实打包正确性安全网 + 给 lint 误判「未使用」的代码正名,且 trace-gated 自检须随重构保持接线)、空测/不公平基准陷阱第 N 次复发(这次是 apples-to-oranges 工作负载错配,非未走加速路径)
 metadata:
   type: reflection
   date: 2026-06-15
 ---
 
-# P3 PW10 R1/R2 消除跨层调用税轮反思(spike 闸门 + 共享 funcref 表基建 + CallInfo 迁入 linear memory)
+# P3 PW10 R1/R2 消除跨层调用税轮反思(spike 检查 + 共享 funcref 表基建 + CallInfo 迁入 linear memory)
 
-> 范围:PW10 要消除 PW9 暴露的 gibbous→gibbous 跨层调用税(每次 gibbous→gibbous 调用经 `h_call` 是一次 ~143ns 的**双 host 跨界** → 调用密集核比解释器**慢 7 倍**,call 核 0.14x)。本轮交付 Phase 0(spike 闸门)+ R1(共享 funcref 表基建)+ R2(完整 CallInfo 迁入 linear memory = 长期延后的 **VS0-e**)。**R3(真正付清性能的 `call_indirect` 直接分派)+ R4 + R5 尚未做——PW10 仍在飞行中**。13 提交(`457559b..9d70247`):Phase 0 spike(`spike/p3indirect/` S-A/S-B/S-C)→ R1 共享 funcref 表(各 Proto 模块 active element 段自注册 `run`)→ R2a(COLD 字段收口走 accessor)→ R2b-1(arena 段只写影子 + `wangshu_trace` 往返自检)→ R2b-2(`growCISeg` 动态增长盖满深度,仍只写)→ R2b-3(GC 根扫描翻转为从段 READ `cl`——唯一最高 UAF-风险步,单独隔离)→ R2b-4(退役 Go slice,`currentCI`→稳定 `th.cur` 镜像)。承 `04-trampoline.md` 跨层机制 + `02-translation.md` VS0-e + `09-perf-roadmap` PW10 立项。
+> 范围:PW10 要消除 PW9 暴露的 gibbous→gibbous 跨层调用税(每次 gibbous→gibbous 调用经 `h_call` 是一次 ~143ns 的**双 host 跨界** → 调用密集核比解释器**慢 7 倍**,call 核 0.14x)。本轮交付 Phase 0(spike 检查)+ R1(共享 funcref 表基建)+ R2(完整 CallInfo 迁入 linear memory = 长期延后的 **VS0-e**)。**R3(真正付清性能的 `call_indirect` 直接分派)+ R4 + R5 尚未做——PW10 仍在飞行中**。13 提交(`457559b..9d70247`):Phase 0 spike(`spike/p3indirect/` S-A/S-B/S-C)→ R1 共享 funcref 表(各 Proto 模块 active element 段自注册 `run`)→ R2a(COLD 字段收口走 accessor)→ R2b-1(arena 段只写影子 + `wangshu_trace` 往返自检)→ R2b-2(`growCISeg` 动态增长盖满深度,仍只写)→ R2b-3(GC 根扫描翻转为从段 READ `cl`——唯一最高 UAF-风险步,单独隔离)→ R2b-4(退役 Go slice,`currentCI`→稳定 `th.cur` 镜像)。承 `04-trampoline.md` 跨层机制 + `02-translation.md` VS0-e + `09-perf-roadmap` PW10 立项。
 
 ## 核心教训
 
-### 1. 里程碑级架构改动配 spike 闸门(镜像 PW0);而一个解 architecture FORK 的第二探针,能挖出比第一个被证可行方案远更简单的设计
+### 1. 里程碑级架构改动配 spike 检查(镜像 PW0);而一个解 architecture FORK 的第二探针,能挖出比第一个被证可行方案远更简单的设计
 
 PW10 的真解(gibbous→gibbous 直接分派、不经 host)被两条**码库 physics 事实**挡住(承 PW9 教训 5 / investigator):(a) 每个 Proto 编译进**自己独立的 wazero module** → 跨 module 调用**必须**穿 host;(b) Lua 调用帧活在 Go 里(`th.cis` 切片)。生死未知数:**wazero 能不能做增量提升?** 我建了 `spike/p3indirect/`(独立 go module,镜像 PW0 的 `spike/p3boundary`)。
 
@@ -23,7 +23,7 @@ PW10 的真解(gibbous→gibbous 直接分派、不经 host)被两条**码库 ph
 
 **Why**:一个 spike 说「你那条难路可行」**不是终点**。S-A/S-B 证的是「Arch-1 这条**具体路径**能走通」,但「能走通」与「这是最简路径」是两件事。我先前把 FORK(rebuild-all vs 共享表)一笔带过,默认了第一个想到的可行方案(rebuild)。如果不补 S-C,我会基于「Arch-1 已被 spike 证绿」这个**真实但不完整**的结论,去建整个 Arch-1 的代际/跨代/O(N²) 复杂度——而那套复杂度**完全不必要**。S-C 的成本是**一个探针**;它省下的是**建整个 Arch-1 复杂度**的代价。这与 [[perf-optimization-workflow]] §3「可疑优化的 benchmark 否决门」同构,但发生在**架构选型**层:那里是「实测否决一个理论更快的优化」,这里是「实测挖出一个比已证可行方案更简单的架构分支」。
 
-**How to apply**:任何**里程碑规模**的架构改动,spike 闸门先行(承 PW0/PW9 教训 5)。但 spike 绿灯**只意味着「这条具体路可行」,不意味着「这是该走的路」**——若存在一个你**没有审视**的 architecture FORK,**在动手建难路之前,先探那条更简单的分支**。判据:当 spike 证明的方案带着明显的复杂度(代际管理 / O(N²) / 生命周期机器),停下来问「有没有一个我默认排除了、但其实没验证过的更简单分支?」,用一个增量探针去打它。多花一个探针的成本,可能省下整个复杂架构的建造与日后维护。这是对 PW9 教训 5「里程碑级改动配 spike 闸门」的**延伸**:不仅要 spike 那条 make-or-break 的难路,还要 spike 那个未审视的 FORK。
+**How to apply**:任何**里程碑规模**的架构改动,spike 检查先行(承 PW0/PW9 教训 5)。但 spike 绿灯**只意味着「这条具体路可行」,不意味着「这是该走的路」**——若存在一个你**没有审视**的 architecture FORK,**在动手建难路之前,先探那条更简单的分支**。判据:当 spike 证明的方案带着明显的复杂度(代际管理 / O(N²) / 生命周期机器),停下来问「有没有一个我默认排除了、但其实没验证过的更简单分支?」,用一个增量探针去打它。多花一个探针的成本,可能省下整个复杂架构的建造与日后维护。这是对 PW9 教训 5「里程碑级改动配 spike 检查」的**延伸**:不仅要 spike 那条 make-or-break 的难路,还要 spike 那个未审视的 FORK。
 
 ### 2. 高风险物理数据结构迁移(VS0-e CallInfo 迁移)的增量剧本,并把唯一的 UAF-风险翻转单独隔离
 
@@ -72,7 +72,7 @@ R2b-1 的 `readCISegInto` 当时**只被测试用**(生产侧的读翻转要到 
 
 于是每个数字都**自洽**了:gibbous 在**计算/循环密集**上赢(1.5-2.5x),在**调用密集**上输(h_call 税,R3 将修)。
 
-**Why**:这是 P3 内**空测/基准不公平**家族的又一实例(PW5 inline-proof / PW6 TierStuck no-op / PW9 vararg 空测),但**新形态**:PW9 是「**加速路径根本没被走到**」(vararg 不升层 → crescent==crescent),本轮是「**两列测的根本不是同一种工作负载形状**」(wrapped×50 vs bare;call-entry vs in-loop)。两者都让一个**与架构矛盾**的数字（「加速却慢 20 倍」）被生产出来,但根因不同:前者是路径替身,后者是工作负载错配。一个「慢 Nx」**与架构预期矛盾**时(spike 已证 intra-module 直调 14 倍便宜、算术在循环里 1.88x),正确反应是**隔离探针**(把算术单独放循环里量),不是 panic 接受那个数。
+**Why**:这是 P3 内**空测/基准不公平**家族的又一实例(PW5 inline-proof / PW6 TierStuck no-op / PW9 vararg 空测),但**新形式**:PW9 是「**加速路径根本没被走到**」(vararg 不升层 → crescent==crescent),本轮是「**两列测的根本不是同一种工作负载形状**」(wrapped×50 vs bare;call-entry vs in-loop)。两者都让一个**与架构矛盾**的数字（「加速却慢 20 倍」）被生产出来,但根因不同:前者是路径替身,后者是工作负载错配。一个「慢 Nx」**与架构预期矛盾**时(spike 已证 intra-module 直调 14 倍便宜、算术在循环里 1.88x),正确反应是**隔离探针**(把算术单独放循环里量),不是 panic 接受那个数。
 
 **How to apply**:读一个 tier-vs-tier 或 A-vs-B 基准数之前,验**两件事**:(1) 加速路径**真被走到**(PW9 教训:正向 tier 断言 / 非空载体);(2) 两列测的是**同一种工作负载形状**(本轮延伸:wrapper 包法、调用次数、算到 in-loop 还是 call-entry 必须对齐——否则加一个**匹配列**如 `_WangshuKernel`)。一个「慢 Nx」**与架构矛盾**时,触发**隔离探针**(把可疑成分单独拎出来量,如「同样算术放循环里」),而非接受那个数或据此立错结论。这已是该家族**第 4 个独立实例**,**强化** PW9 留下的「prove-the-path-under-test」promotion 候选——基准公平性纪律(被走到的路径 + 匹配的工作负载 + 惊人数字触发隔离探针)三件套,跨过了应当成为 first-class guide 或强力并入 [[perf-optimization-workflow]] 的阈值。
 
@@ -92,16 +92,16 @@ R1/R2 各步:4 build 组合(default / wangshu_profile / wangshu_p3 / both)+ `-ra
 
 ## promotion 候选
 
-- **教训 5**(基准公平性:被走到的路径 + 匹配的工作负载 + 惊人数字触发隔离探针)——**该家族第 4 个独立实例**(PW5 inline-proof / PW6 TierStuck no-op / PW9 vararg 空测 / 本轮工作负载错配),且本轮贡献了**新形态**(apples-to-oranges 工作负载,而非路径替身)。**强烈强化** PW9 留下的 `prove-the-path-under-test` promotion 候选——把「被测路径真被走到」与「两列测同一工作负载形状」与「与架构矛盾的数触发隔离探针」聚为一个**基准公平性判断框架**。recorder 定夺:新立 guide vs 并入 [[perf-optimization-workflow]](本轮的「隔离探针解矛盾数」与 perf §3「benchmark 否决门」、§4「归因诚实」天然相邻)。
-- **教训 1**(里程碑级改动配 spike 闸门 + **探未审视的 FORK,而非只探第一可行路**)——PW0/PW9 已立「里程碑级改动配 spike 闸门」范式,本轮是第 2 次自觉援用 **且**首次贡献「spike 绿灯≠最简路径,要探 architecture FORK」这一**延伸维度**(S-C 挖出 Arch-2 远简于已证可行的 Arch-1)。若 PW10 R3 及后续里程碑再现「spike 出可行方案后又找到更简分支」,这条连同 PW9 教训 5 可提升为一篇完整的 **spike-gate / architecture-fork 工作流 guide**(可并入 [[perf-optimization-workflow]] 或独立)。**本轮使「spike-gate」从 PW9 的首次记录进到第 2 实例 + FORK 延伸,接近提升阈值。**
+- **教训 5**(基准公平性:被走到的路径 + 匹配的工作负载 + 惊人数字触发隔离探针)——**该家族第 4 个独立实例**(PW5 inline-proof / PW6 TierStuck no-op / PW9 vararg 空测 / 本轮工作负载错配),且本轮贡献了**新形式**(apples-to-oranges 工作负载,而非路径替身)。**强烈强化** PW9 留下的 `prove-the-path-under-test` promotion 候选——把「被测路径真被走到」与「两列测同一工作负载形状」与「与架构矛盾的数触发隔离探针」聚为一个**基准公平性判断框架**。recorder 定夺:新立 guide vs 并入 [[perf-optimization-workflow]](本轮的「隔离探针解矛盾数」与 perf §3「benchmark 否决门」、§4「归因诚实」天然相邻)。
+- **教训 1**(里程碑级改动配 spike 检查 + **探未审视的 FORK,而非只探第一可行路**)——PW0/PW9 已立「里程碑级改动配 spike 检查」范式,本轮是第 2 次自觉援用 **且**首次贡献「spike 绿灯≠最简路径,要探 architecture FORK」这一**延伸维度**(S-C 挖出 Arch-2 远简于已证可行的 Arch-1)。若 PW10 R3 及后续里程碑再现「spike 出可行方案后又找到更简分支」,这条连同 PW9 教训 5 可提升为一篇完整的 **spike-gate / architecture-fork 工作流 guide**(可并入 [[perf-optimization-workflow]] 或独立)。**本轮使「spike-gate」从 PW9 的首次记录进到第 2 实例 + FORK 延伸,接近提升阈值。**
 - **教训 2**(物理数据结构迁移「收口→只写影子→翻转→退役」+ 隔离单一灾难步)——这是 VS0-a/b/c/d/e 一以贯之的 house style,**已是该 pattern 第 5 次应用**(VS0-e)。其「只写影子先行使翻转成为唯一真实变更」与「灾难步单独隔离一提交」有一般性(任何「Go 堆→arena/池」物理搬迁、任何带单一 UAF/数据损坏失败模式的改动)。**建议提升**为一篇迁移类 guide,或并入既有 P3 迁移记述——VS0 系列已提供 5 个实例的现成剧本。
 - **教训 3**(`th.cur` 稳定地址结构性消解重定位雷区)是 [[design-claims-vs-codebase-physics]] §2 的**正面扩展**(从「翻转后回传刷新值」进到「稳定地址 + 值快照使其无从失效」),建议作为 §2 的**升级应对**补进 guide,而非新立。它与 §2 既有的 PW6/PW7「回传刷新值」并列为同一雷区的两档解法(纪律档 vs 结构档)。
 - **教训 4**(build-tag 门控往返自检双职 + 须随重构保持接线)——更偏并行镜像迁移的具体工具,但「自检给未来翻转代码正名 + trace-gated 接线会被重构删掉」有复用性。**首次样本,暂留观察**;若后续镜像迁移(其它结构迁 arena)再现,可并入教训 2 的迁移 guide 作「只写影子阶段的自检接线」一节。
 
 ## 触发场景
 
-开始任何里程碑规模、核心可行性假设未验证的架构改动时(先 spike 闸门 **且** 探那个更简单的、未审视的 architecture FORK,别只探第一可行路)、做物理数据结构迁移时(套「收口→并行只写影子→翻转→退役」,把唯一 UAF/损坏-风险翻转单独隔离一提交)、引入并行镜像结构时(配 build-tag 往返自检,并确保自检随重构保持接线)、一个重定位/held-pointer 雷区**反复出现**时(找稳定地址 + 值快照的结构性修复,而非再加一轮「记得刷新」纪律)、加一个 tier-vs-tier 或 A-vs-B 基准列时(验**被走到的路径** + **匹配的工作负载形状**,与架构矛盾的数字触发**隔离探针**)、在一个会改变基线行为的 tag 下做基准时(拆开跑,别让基线背它不付的税),看这篇。
+开始任何里程碑规模、核心可行性假设未验证的架构改动时(先 spike 检查 **且** 探那个更简单的、未审视的 architecture FORK,别只探第一可行路)、做物理数据结构迁移时(套「收口→并行只写影子→翻转→退役」,把唯一 UAF/损坏-风险翻转单独隔离一提交)、引入并行镜像结构时(配 build-tag 往返自检,并确保自检随重构保持接线)、一个重定位/held-pointer 雷区**反复出现**时(找稳定地址 + 值快照的结构性修复,而非再加一轮「记得刷新」纪律)、加一个 tier-vs-tier 或 A-vs-B 基准列时(验**被走到的路径** + **匹配的工作负载形状**,与架构矛盾的数字触发**隔离探针**)、在一个会改变基线行为的 tag 下做基准时(拆开跑,别让基线背它不付的税),看这篇。
 
 ## 关联
 
-[[p3-pw9-acceptance-perf-round]](PW9 暴露跨层调用税 call 核 0.14x = 本轮 PW10 要消除的根因 / 教训 5「里程碑级改动配 spike 闸门」本轮第 2 次援用 + FORK 延伸 / 空测家族第 3 实例 vararg 空测,本轮第 4 实例工作负载错配)· [[p3-pw6-crosslayer-call-round]](h_call 双跨层 ~143ns 是本轮要消除的税 / `$base` 回传刷新值是 §2 重定位雷区的纪律档解法,本轮 `th.cur` 是结构档 / 慢路径复用解释器 = 共享表直调的对偶取舍)· [[p3-pw7-pw4b-closure-tforloop-round]](TFORLOOP base 刷新是 §2 第 4 实例的纪律档,本轮 `th.cur` 升级为结构档)· [[design-claims-vs-codebase-physics]](§2 arena 段重定位 / held-pointer 雷区——本轮教训 3 `th.cur` 稳定地址是其结构性升级应对)· [[perf-optimization-workflow]](§3 benchmark 否决门——本轮教训 1 架构层的「实测挖出更简分支」与教训 5「隔离探针解矛盾数」可并入)· [[test-hardening-round]](绿色≠在测你以为在测的——教训 5 基准公平性家族的奠基)· `must/design-premises`(前提一/前提二边界成本——h_call 双跨层税 / 共享表直调消除它的物理依据)· `docs/design/p3-wasm-tier/04-trampoline.md`(跨层机制)· `02-translation.md`(VS0-e CallInfo 迁移)· `implementation-progress.md` §12 PW10 对账 · `spike/p3indirect/`(S-A/S-B/S-C 三探针)
+[[p3-pw9-acceptance-perf-round]](PW9 暴露跨层调用税 call 核 0.14x = 本轮 PW10 要消除的根因 / 教训 5「里程碑级改动配 spike 检查」本轮第 2 次援用 + FORK 延伸 / 空测家族第 3 实例 vararg 空测,本轮第 4 实例工作负载错配)· [[p3-pw6-crosslayer-call-round]](h_call 双跨层 ~143ns 是本轮要消除的税 / `$base` 回传刷新值是 §2 重定位雷区的纪律档解法,本轮 `th.cur` 是结构档 / 慢路径复用解释器 = 共享表直调的对偶取舍)· [[p3-pw7-pw4b-closure-tforloop-round]](TFORLOOP base 刷新是 §2 第 4 实例的纪律档,本轮 `th.cur` 升级为结构档)· [[design-claims-vs-codebase-physics]](§2 arena 段重定位 / held-pointer 雷区——本轮教训 3 `th.cur` 稳定地址是其结构性升级应对)· [[perf-optimization-workflow]](§3 benchmark 否决门——本轮教训 1 架构层的「实测挖出更简分支」与教训 5「隔离探针解矛盾数」可并入)· [[test-hardening-round]](绿色≠在测你以为在测的——教训 5 基准公平性家族的奠基)· `must/design-premises`(前提一/前提二边界成本——h_call 双跨层税 / 共享表直调消除它的物理依据)· `docs/design/p3-wasm-tier/04-trampoline.md`(跨层机制)· `02-translation.md`(VS0-e CallInfo 迁移)· `implementation-progress.md` §12 PW10 对账 · `spike/p3indirect/`(S-A/S-B/S-C 三探针)

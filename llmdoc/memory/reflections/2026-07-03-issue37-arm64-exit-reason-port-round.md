@@ -1,6 +1,6 @@
 ---
 name: issue37-arm64-exit-reason-port-round
-description: issue #37 / #40 阶段 2,把 P4 native 的 exit-reason 协议从 amd64 移植到 arm64,在 darwin/arm64 真机(Apple M5 Pro)单会话完成,分支 `feat/p4-arm64-exit-reason` 8 commits(677ceb2..a4993cc)。承接上一轮 stopbleed 收尾时预写在 issue #37 评论里的 7 步实施顺序,本轮开工时 `.llmdoc-tmp` 调查报告已丢失但 issue 评论落点清单完整存活,按其执行零返工——重要移植前调查结论应写进持久渠道(issue 评论)而非只留临时缓存。核心技术教训:移植不是复制,三个实例证明硬件语义差异要求逐 op 重判——(a) arm64 UNM 加的 -NaN e2e 探针抓出 canonNaN sign-flip 变 value.Nil 位模式的静默错果,回查发现 amd64 emitUNM 有同款既有 bug(移植轮给旧 arch 挖 bug);(b) 沿用旧 arm64 scaffold 的有符号整数比较条件码在 FCMPE unordered(NaN)时错判,换 FP 安全族 MI/PL/LS/HI 后正确,旧 scaffold 从未被 NaN 输入测过;(c) arm64 不需要 arith 结果 NaN guard(AArch64 default NaN 是正的且传播保留输入)而 amd64 SSE 需要,同一 guard 两 arch 一必需一多余不能机械镜像。另有 arch 差异带来简化机会(FCMPE unordered 单跳替代双跳、表槽地址寄存器复用免重算)、e2e 探针载体须避开无关 op 噪声(GETUPVAL 往返污染 inline 命中计数)、调试代码清理误用 `git checkout` 整文件回退未提交工作(教训:精确反向编辑或先 stash)、每步独立 commit + 每步 fuzz 的节奏在移植轮工作良好、HelperCompareSlow 首次出现 dispatcher 向段内回传数据的双向通道形态。
+description: issue #37 / #40 阶段 2,把 P4 native 的 exit-reason 协议从 amd64 移植到 arm64,在 darwin/arm64 真机(Apple M5 Pro)单会话完成,分支 `feat/p4-arm64-exit-reason` 8 commits(677ceb2..a4993cc)。承接上一轮 stopbleed 收尾时预写在 issue #37 评论里的 7 步实施顺序,本轮开工时 `.llmdoc-tmp` 调查报告已丢失但 issue 评论落点清单完整存活,按其执行零返工——重要移植前调查结论应写进持久渠道(issue 评论)而非只留临时缓存。核心技术教训:移植不是复制,三个实例证明硬件语义差异要求逐 op 重判——(a) arm64 UNM 加的 -NaN e2e 探针抓出 canonNaN sign-flip 变 value.Nil 位模式的静默错果,回查发现 amd64 emitUNM 有一样的既有 bug(移植轮给旧 arch 挖 bug);(b) 沿用旧 arm64 scaffold 的有符号整数比较条件码在 FCMPE unordered(NaN)时错判,换 FP 安全族 MI/PL/LS/HI 后正确,旧 scaffold 从未被 NaN 输入测过;(c) arm64 不需要 arith 结果 NaN guard(AArch64 default NaN 是正的且传播保留输入)而 amd64 SSE 需要,同一 guard 两 arch 一必需一多余不能机械镜像。另有 arch 差异带来简化机会(FCMPE unordered 单跳替代双跳、表槽地址寄存器复用免重算)、e2e 探针载体须避开无关 op 噪声(GETUPVAL 往返污染 inline 命中计数)、调试代码清理误用 `git checkout` 整文件回退未提交工作(教训:精确反向编辑或先 stash)、每步独立 commit + 每步 fuzz 的节奏在移植轮工作良好、HelperCompareSlow 首次出现 dispatcher 向段内回传数据的双向通道形式。
 metadata:
   type: reflection
   date: 2026-07-03
@@ -24,7 +24,7 @@ metadata:
 
 三个独立实例证明,把 amd64 的 emit 逻辑直接套到 arm64 上会产生静默错误,必须针对每个 op 重新推导硬件语义:
 
-**(a) UNM 结果 guard 挖出 amd64 既有 bug**。arm64 移植 UNM 时加了 `-NaN` e2e 探针(`tostring(-(0/0))` 期待字符串 `"nan"`),抓出 canonNaN(`0x7FF8...`)sign-flip 后变成 `0xFFF8...`——这恰好是 `value.Nil` 的位模式,导致 `-(0/0)` 在 native 路径被静默算成 `nil`。回查发现 **amd64 的 `emitUNM` 有同款缺陷**,自 exit-reason op-set 扩面轮起就存在,多轮 fuzz 都没抓到(fuzz 靠随机输入命中特定 NaN 位模式的概率低)。本轮同一 commit(`508028a`)双 arch 一起修。
+**(a) UNM 结果 guard 挖出 amd64 既有 bug**。arm64 移植 UNM 时加了 `-NaN` e2e 探针(`tostring(-(0/0))` 期待字符串 `"nan"`),抓出 canonNaN(`0x7FF8...`)sign-flip 后变成 `0xFFF8...`——这恰好是 `value.Nil` 的位模式,导致 `-(0/0)` 在 native 路径被静默算成 `nil`。回查发现 **amd64 的 `emitUNM` 有一样的缺陷**,自 exit-reason op-set 扩面轮起就存在,多轮 fuzz 都没抓到(fuzz 靠随机输入命中特定 NaN 位模式的概率低)。本轮同一 commit(`508028a`)双 arch 一起修。
 
 **(b) 比较条件码族选择错误**。沿用旧 arm64 scaffold 的有符号整数条件码(GE/LT/GT/LE)在 `FCMPE` unordered(比较数含 NaN)时会错判——例如 LT 用 `N!=V` 判定,在 unordered 状态(`N=0,Z=0,C=1,V=1`)下该表达式为真,把 NaN 比较误判成 true。换成 FP 安全条件码族(MI/PL/LS/HI)后,NaN 语义无需额外分支即正确解析为 false。旧 scaffold 从未被 NaN 输入测过——它当年设计时就因为无法处理非数字整体拒收,所以这个错误条件码族选择潜伏至今没被触发。
 
@@ -32,7 +32,7 @@ metadata:
 
 **Why**:三个实例的共同结构是"移植时写新 arch 的语义测试,顺手回答了『旧 arch 这里对吗』这个从未被单独问过的问题"。移植工作天然制造了一个语义对照的时机——写新 arch 代码时脑子里必须把两个 arch 的硬件行为并排放,这种并排比较状态是平时单 arch 开发不会主动触发的。这与 [[2026-07-03-issue40-arm64-stopbleed-round]] 教训 5(fuzz 机器多样性是覆盖度维度)是邻接的一个家族:那条讲"多一台机器就多一次独立随机探索",这条讲"移植到新 arch 时的强制语义对照是一种非随机、确定性更高的挖既有 bug 手段"——两者共同点是"接入新硬件/新 arch 本身构成一类独立的 bug 发现机会",但触发机制不同(fuzz 靠随机性,移植语义对照靠强制并排推导)。
 
-**How to apply**:做跨 arch 移植时,不要把"新 arch 的 emit 逻辑照抄旧 arch 结构、只换指令编码"当作默认工作模式。对每个要移植的 op,显式问三个问题:①这个 op 在新硬件上的边界语义(NaN/溢出/符号位/舍入)与旧硬件是否一致?②旧 arch 现有的 guard/条件码选择,是不是从来没被这类边界输入测过(如果测试语料只覆盖"正常数字",边界语义 bug 会一直潜伏)?③新 arch 是否有旧 arch 没有的硬件保证,使某个 guard 变得多余(不要因为"两边都加了更安全"而无脑复制,要问清楚多余的 guard 是否只是死代码还是会引入错误路径)。写新 arch 的边界语义 e2e 测试时,顺手在旧 arch 上跑一遍同款测试。
+**How to apply**:做跨 arch 移植时,不要把"新 arch 的 emit 逻辑照抄旧 arch 结构、只换指令编码"当作默认工作模式。对每个要移植的 op,显式问三个问题:①这个 op 在新硬件上的边界语义(NaN/溢出/符号位/舍入)与旧硬件是否一致?②旧 arch 现有的 guard/条件码选择,是不是从来没被这类边界输入测过(如果测试语料只覆盖"正常数字",边界语义 bug 会一直潜伏)?③新 arch 是否有旧 arch 没有的硬件保证,使某个 guard 变得多余(不要因为"两边都加了更安全"而无脑复制,要问清楚多余的 guard 是否只是死代码还是会引入错误路径)。写新 arch 的边界语义 e2e 测试时,顺手在旧 arch 上跑一遍一样的测试。
 
 ### 3. arch 差异也能是简化机会,不只是要对抗的障碍
 
@@ -68,11 +68,11 @@ metadata:
 
 ### 7. `HelperCompareSlow` 首次出现 dispatcher 向段内回传数据的双向通道
 
-`host.Compare` 是 terminator 语义(比较结果要驱动分支跳转,需要 BB 目标,但 dispatcher 本身没有 BB 概念)。解法是 dispatcher 把 `host.Compare` 的结果(packed,bit0 是比较结果)写回 `exitArg0`,原生码段内的 resume 块读回这个值,自己做分支判断——这是 exit-reason 协议第一次出现"dispatcher 向段内回传数据"的形态,此前所有已交付的 exit-reason 场景都是单向(段内请求→dispatcher 处理→段内继续,不需要 dispatcher 传回计算结果)。
+`host.Compare` 是 terminator 语义(比较结果要驱动分支跳转,需要 BB 目标,但 dispatcher 本身没有 BB 概念)。解法是 dispatcher 把 `host.Compare` 的结果(packed,bit0 是比较结果)写回 `exitArg0`,原生码段内的 resume 块读回这个值,自己做分支判断——这是 exit-reason 协议第一次出现"dispatcher 向段内回传数据"的形式,此前所有已交付的 exit-reason 场景都是单向(段内请求→dispatcher 处理→段内继续,不需要 dispatcher 传回计算结果)。
 
 **Why**:exit-reason 协议原本的设计意图是把段内做不到的事情(涉及 Go 侧状态、栈可能增长的调用等)转交给 host,通常只需要 host"做完就好",段内继续往下走。但比较类操作的结果本身要参与段内的控制流决策,这就要求协议支持"host 算出一个值,交回给段内让它自己决定往哪跳"。
 
-**How to apply**:这是为 arm64 后续 op(issue #37 未覆盖的 SELF / LEN / CONCAT 等,如果未来也走 exit-reason 化)记录的一条可复用参考——遇到"某个 op 的慢路径结果需要驱动段内分支"这类需求时,直接复用"packed 结果写入 exitArg0 + 段内 resume 块读回自行分支"这个既有形态,不需要重新设计协议扩展点。
+**How to apply**:这是为 arm64 后续 op(issue #37 未覆盖的 SELF / LEN / CONCAT 等,如果未来也走 exit-reason 化)记录的一条可复用参考——遇到"某个 op 的慢路径结果需要驱动段内分支"这类需求时,直接复用"packed 结果写入 exitArg0 + 段内 resume 块读回自行分支"这个既有形式,不需要重新设计协议扩展点。
 
 ## 其它(较小)
 
@@ -101,7 +101,7 @@ metadata:
 - 写「快路径命中计数」类白盒探针断言时(教训 4:先枚举 kernel 里有没有无关 op 会产生同类 dispatch,载体设计成只有被测 op 可能触发)。
 - 在有未提交工作的文件上插入临时调试代码、准备清理时(教训 5:精确反向编辑或先 stash,不要 `git checkout` 整文件)。
 - 有清晰步骤划分的移植/扩面类任务开工时(教训 6:默认按步骤切 commit 边界 + 每步验证)。
-- 给受限执行环境(mmap 段/exit-reason 协议类)扩展新 op、且该 op 的慢路径结果需要驱动段内分支决策时(教训 7:复用「packed 结果写入交换字 + 段内 resume 块自行读回分支」既有形态)。
+- 给受限执行环境(mmap 段/exit-reason 协议类)扩展新 op、且该 op 的慢路径结果需要驱动段内分支决策时(教训 7:复用「packed 结果写入交换字 + 段内 resume 块自行读回分支」既有形式)。
 
 ## 关联
 

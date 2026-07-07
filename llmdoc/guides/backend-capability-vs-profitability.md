@@ -51,10 +51,10 @@ bridge 侧 `considerPromotion` 依次咨询三类 per-backend 可选接口，每
 
 **关键顺序**：**先统计再选阈值**，不是「凭直觉选个 5 跑一遍看结果」。分布统计给出候选阈值的可选区间，实测确认区间内哪个点符合当前工作负载。任何性能相关数值阈值（密度门、长度地板、时间阈值等）动手前先跑一次白盒统计给出候选工作负载在这个维度上的实际分布，再从分布上选阈值，再实测边界样本。
 
-**共享分析器改动后每后端独立复测**：共享分析器（跨后端可编译性判据）改进可能是 per-backend 分歧。参见 [[2026-07-02-p4-beat-p3-opset-round]] 教训 5：`45b8b53` 的 safe stdlib alias dataflow 追踪（`local sqrt = math.sqrt` 类）让 nbody 通过 F2-b 白名单——P4 amd64 效果 874ms → 43.2ms（≈20× 收益），P3 wasm 侧同 shape 反 43.5 → 89.7ms（≈2× 回归，就是 issue #39）。一个 proto「能升」≠「升了赚」；共享判据改动后每后端跑一次全 bench 复测，若 per-backend 分歧优选：（a）收窄共享判据 / （b）加 per-backend 净胜门（`MinPromotableLener` hook 形态可扩） / （c）记 issue 交后续里程碑并在 memory 显式记录 per-backend 分歧数字。
+**共享分析器改动后每后端独立复测**：共享分析器（跨后端可编译性判据）改进可能是 per-backend 分歧。参见 [[2026-07-02-p4-beat-p3-opset-round]] 教训 5：`45b8b53` 的 safe stdlib alias dataflow 追踪（`local sqrt = math.sqrt` 类）让 nbody 通过 F2-b 白名单——P4 amd64 效果 874ms → 43.2ms（≈20× 收益），P3 wasm 侧同 shape 反 43.5 → 89.7ms（≈2× 回归，就是 issue #39）。一个 proto「能升」≠「升了赚」；共享判据改动后每后端跑一次全 bench 复测，若 per-backend 分歧优选：（a）收窄共享判据 / （b）加 per-backend 净胜门（`MinPromotableLener` hook 形式可扩） / （c）记 issue 交后续里程碑并在 memory 显式记录 per-backend 分歧数字。
 
 ## 5. 与其他 guide 的关系
 
-- 与 [[perf-optimization-workflow]] §7「profile 才是合同」呼应：那节管「里程碑落地中数字不可达时止损」，本 guide 管「入口就用收益门挡掉不该升的 shape」，两条纪律都是「实测优先于机理估算」。
+- 与 [[perf-optimization-workflow]] §7「profile 才是合同」呼应：那节管「里程碑完成中数字不可达时止损」，本 guide 管「入口就用收益门挡掉不该升的 shape」，两条纪律都是「实测优先于机理估算」。
 - 与 [[prove-the-path-under-test]] §5「fuzz 探索空间维度」配：接受面动了立刻跑一轮 fuzz（能力面覆盖）+ 接受面动了立刻跑一轮 bench（收益面复测），两个廉价动作配对；能力层扩一格是 fuzz 探索空间维度动一格，收益层动阈值不是（收益门只影响 auto 决策，不改差分测试覆盖）。
 - 与 [[design-claims-vs-codebase-physics]] 同源：设计稿把「某 op 支持」画成一格布尔位，实际是「shape-independent 能编 × shape-dependent 净胜」二维；实现前须把二维拆开。
