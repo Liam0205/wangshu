@@ -293,6 +293,16 @@ func (b *Bridge) OnBackEdge(proto *bytecode.Proto, pc int32, onMain bool) {
 	// re-analysis on every back edge in between.
 	if pd.BackEdge[pc] == 1 || pd.BackEdge[pc] == HotBackEdgeThreshold {
 		pd.recheckedAtEntry = 0
+		// Re-arm the floor-exemption verdict at the same milestones
+		// (issue #67): ExemptFromFloor reads IC state (P4's
+		// ProtoSeg2SegEligible requires ArrayHit at GETTABLE sites), so
+		// a verdict cached while a deep-pc branch's IC was still cold
+		// (the binary-trees `check` shape, issue #40) would wrongly
+		// pin the proto to floorExemptNo forever. Clearing here grants
+		// one warm-IC re-ask per milestone — off the steady-state path.
+		if pd.floorExempt == floorExemptNo {
+			pd.floorExempt = floorExemptUnasked
+		}
 	}
 	if pd.BackEdge[pc] >= HotBackEdgeThreshold || b.forceAll {
 		if !b.forceAll && b.flooredOut(proto, pd) {

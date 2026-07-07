@@ -175,3 +175,42 @@ func TestFloorExempt_NoInterfaceKeepsFloor(t *testing.T) {
 			pd.TierState)
 	}
 }
+
+// TestFloorExempt_BackEdgeMilestoneRearmsNoVerdict: a floorExemptNo
+// verdict cached while the proto's ICs were cold is re-asked at the
+// OnBackEdge warmth milestones (BackEdge==1 / ==HotBackEdgeThreshold),
+// mirroring the issue-#40 recheck re-arm — the backend's answer can
+// flip once ICs warm (P4's ProtoSeg2SegEligible reads GETTABLE IC
+// kinds). The fake backend flips its verdict between the two asks.
+func TestFloorExempt_BackEdgeMilestoneRearmsNoVerdict(t *testing.T) {
+	b := NewBridge()
+	mock := &exemptingP3{exempt: false}
+	b.SetP3Compiler(mock)
+	p := makeShortProto()
+	pd := b.ProfileOf(p)
+	pd.Compilable = CompCompilable
+
+	// First verdict: not exempt (cold ICs) → cached No, stays floored.
+	for i := uint32(0); i < HotEntryThreshold; i++ {
+		b.OnEnter(p, true)
+	}
+	if pd.TierState != TierInterp || mock.exemptCalls != 1 {
+		t.Fatalf("setup: tier=%v exemptCalls=%d, want TierInterp/1",
+			pd.TierState, mock.exemptCalls)
+	}
+
+	// ICs "warm up": the backend would now answer true. The first back
+	// edge milestone re-arms the cached No...
+	mock.exempt = true
+	b.OnBackEdge(p, 0, true)
+	// ...and the next threshold-crossing entry re-asks and promotes.
+	b.OnEnter(p, true)
+
+	if pd.TierState != TierGibbous {
+		t.Fatalf("after warm-IC re-ask: TierState = %v, want TierGibbous", pd.TierState)
+	}
+	if mock.exemptCalls != 2 {
+		t.Errorf("ExemptFromFloor consulted %d times, want exactly 2 (once cold, once re-armed)",
+			mock.exemptCalls)
+	}
+}
