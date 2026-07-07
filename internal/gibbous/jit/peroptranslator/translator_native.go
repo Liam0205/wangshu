@@ -403,6 +403,18 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 				if bytecode.B(ins) == 0 || bytecode.C(ins) == 0 {
 					return false
 				}
+			case bytecode.SETLIST:
+				// SETLIST goes through the exit-reason path (host.SetList
+				// runs doSetList). Two forms depend on run-time state the
+				// native segment can't supply, so reject them (mirror of
+				// the CALL B=0/C=0 precedent):
+				//   B=0: fill "to top" — needs a live `top`.
+				//   C=0: the batch number lives in the NEXT instruction
+				//        word (doSetList reads Code[pc] then pc++). The CFG
+				//        builder would misdecode that data word as an op.
+				if bytecode.B(ins) == 0 || bytecode.C(ins) == 0 {
+					return false
+				}
 			}
 		}
 	}
@@ -487,18 +499,19 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 //	GETGLOBAL/SETGLOBAL (NodeHit-IC gated inline + exit-reason),
 //	SELF (HelperSelf exit-reason: IC method lookup + __index, can raise),
 //	CONCAT (HelperConcat exit-reason: doConcat + safepoint, can raise),
+//	SETLIST (HelperSetList exit-reason: doSetList + safepoint, can raise),
 //	RETURN (Go-side DoReturn after segment RET)
 //
 // **Excluded**:
 //
-//	SETLIST (emit exists but no acceptance evaluation yet),
 //	TAILCALL, CLOSURE, CLOSE, TFORLOOP (no emit — they need
 //	dedicated exit-reason shapes, see the note in emit_ops_amd64.go),
 //	VARARG (permanent design gate)
 //
 // AnalyzeNative additionally rejects Protos with non-numeric K operands
-// on inline arithmetic / compare ops, CALL with B=0/C=0, NEWTABLE with
-// B/C >= 256, and GETTABLE/SETTABLE sites without ArrayHit/NodeHit IC.
+// on inline arithmetic / compare ops, CALL with B=0/C=0, SETLIST with
+// B=0/C=0, NEWTABLE with B/C >= 256, and GETTABLE/SETTABLE sites without
+// ArrayHit/NodeHit IC.
 func opSupported(op bytecode.OpCode) bool {
 	switch op {
 	case bytecode.MOVE, bytecode.LOADK, bytecode.LOADBOOL, bytecode.LOADNIL,
@@ -511,7 +524,7 @@ func opSupported(op bytecode.OpCode) bool {
 		bytecode.GETTABLE, bytecode.SETTABLE, bytecode.NEWTABLE,
 		bytecode.GETUPVAL, bytecode.SETUPVAL,
 		bytecode.GETGLOBAL, bytecode.SETGLOBAL,
-		bytecode.SELF, bytecode.CONCAT,
+		bytecode.SELF, bytecode.CONCAT, bytecode.SETLIST,
 		bytecode.CALL,
 		bytecode.RETURN:
 		return true
