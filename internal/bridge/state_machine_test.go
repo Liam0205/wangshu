@@ -299,9 +299,11 @@ func TestForceRetryWindow_WarmICPromotesOnFirstBackEdge(t *testing.T) {
 	}
 }
 
-// TestForceRetryWindow_AbsorbsToStuckAtEntry4 窗口语义不变:恒拒后端 +
-// forceAll,第 4 次进入(EntryCount=4)吸收到 TierStuck,之后不再分析。
-func TestForceRetryWindow_AbsorbsToStuckAtEntry4(t *testing.T) {
+// TestForceRetryWindow_AbsorbsToStuck 窗口语义不变:恒拒后端 + forceAll,
+// 窗口关闭(EntryCount=64,覆盖递归 proto 的深 pc IC 预热——binary-trees
+// `check` 的第三个 GETTABLE 要到左子树全部返回后才第一次执行)后吸收到
+// TierStuck,之后不再分析。
+func TestForceRetryWindow_AbsorbsToStuck(t *testing.T) {
 	mock := &decliningP3{}
 	b := NewBridge()
 	b.SetP3Compiler(mock)
@@ -309,16 +311,16 @@ func TestForceRetryWindow_AbsorbsToStuckAtEntry4(t *testing.T) {
 	p := makeProtoWithCode(bytecode.ADD)
 	pd := b.ProfileOf(p)
 
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 63; i++ {
 		b.OnEnter(p, true)
 	}
 	if pd.TierState != TierInterp {
-		t.Fatalf("entries 1-3 should stay in the retry window, got %v", pd.TierState)
+		t.Fatalf("entries 1-63 should stay in the retry window, got %v", pd.TierState)
 	}
 
-	b.OnEnter(p, true) // EntryCount=4:窗口关闭
+	b.OnEnter(p, true) // EntryCount=64:窗口关闭
 	if pd.TierState != TierStuck {
-		t.Fatalf("entry 4 should absorb to TierStuck, got %v", pd.TierState)
+		t.Fatalf("entry 64 should absorb to TierStuck, got %v", pd.TierState)
 	}
 
 	callsAtStuck := mock.supportsCalls

@@ -1379,12 +1379,16 @@ func emitInlineGetTableArrayHit(cb *codeBuf, pc int32, a, b uint8, c int) bool {
 	// use the exit-reason protocol instead so the dispatcher does
 	// the shim work Go-side. Since exit-reason emits a RET, the
 	// fastPathJmpOff jmp lands past the whole miss block onto the
-	// next op's entry.
+	// next op's entry. When running as a seg2seg callee the miss
+	// deopts instead (issue #50: GETTABLE ArrayHit sites are
+	// seg2seg-eligible — the inline read is side-effect free, so a
+	// deopt redo is idempotent).
 	shimOff := int(cb.pos())
 	for _, po := range guardFixups {
 		rel := int32(shimOff) - int32(po+4)
 		writeRel32(cb, po, rel)
 	}
+	emitSegCallDeoptGuard(cb)
 	emitExitReason(cb, jit.HelperGetTable, pc, int32(a), int32(b), int32(c))
 
 	// Done block — patch fast-path jmp so it skips past the exit
