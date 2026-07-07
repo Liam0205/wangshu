@@ -535,8 +535,11 @@ func TranslateProtoNative(proto *bytecode.Proto, host jit.P4HostState) (*nativeC
 	c := buildCFG(proto)
 	buf := newCodeBuf(len(c.blocks))
 	// Build a raw uint64 constant table so LOADK can bake the immediate
-	// directly. Non-string constants (numbers, bool, nil) are already
-	// nan-boxed in proto.Consts. AnalyzeNative rejected string consts.
+	// directly. All constant kinds are already stored as their final bits
+	// in the per-State privatized proto.Consts: numbers / bool / nil are
+	// nan-boxed, and string slots are the interned MakeGC(TagString, ref)
+	// bits (LoadProgram interns before promotion), so a string LOADK bakes
+	// a stable GCRef imm64 (#69; see emitLOADK's #12 dependency note).
 	consts := make([]uint64, len(proto.Consts))
 	for i, v := range proto.Consts {
 		consts[i] = uint64(v)
