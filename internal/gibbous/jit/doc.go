@@ -1,8 +1,9 @@
 // Package jit 实现 P4 method JIT(gibbous tier-1 第二发射后端)。
 //
-// **当前状态:PJ0 包骨架**(`docs/design/p4-method-jit/00-overview.md` §4)。
-// SupportsAllOpcodes 返 false ⇒ 所有 Proto 仍走 crescent。
-// PJ1+ 起 amd64 trampoline + 直线模板 + 算术投机 + OSR exit 渐进交付。
+// Status: delivered (PJ0-PJ11, 2026-07-01; per-op native emit + seg2seg).
+// amd64 and arm64 both emit native code with a spec-template path, an
+// exit-reason / frame-inline protocol, and seg2seg segment-to-segment CALL
+// dispatch (issue #50). See docs/design/p4-method-jit/implementation-progress.md.
 //
 // 与 P3(`internal/gibbous/wasm`)的关系:同 tier-1 不同发射后端,共享
 // `bridge.P3Compiler` 接口面(`p2-bridge/05-p3-p4-interface.md` §0.3 接口
@@ -16,12 +17,12 @@
 // P4Deoptimized / P4StuckSpeculation`)。OSR exit / 重训练 / 拉黑投机全
 // P4 自管,P2 不感知。
 //
-// 包结构(PJ0 起立桩,后续 PJ 渐进填实):
+// 包结构:
 //   - compiler.go     P3Compiler 实现 + 渐进白名单
 //   - code.go         GibbousCode 实装(p4Code struct)
-//   - state.go        P4 投机生命周期状态机(p4SpecState)
+//   - p4state.go      P4 投机生命周期状态机(p4SpecState;spec-template deopt)
 //   - amd64/          amd64 后端(发射器 + trampoline asm)
-//   - arm64/          arm64 后端(同款,PJ8 启动)
+//   - arm64/          arm64 后端(同样的结构)
 //
 // 上游契约:
 //   - `docs/design/p4-method-jit/00-overview.md` §4 PJ 表 / §6 速查 / §9 不变式

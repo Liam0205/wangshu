@@ -3,15 +3,29 @@
 // p4state.go — P4 内部投机子状态机(承
 // docs/design/p4-method-jit/04-osr-deopt.md §5 + §11 字段定义)。
 //
-// **方案 A 决议**(承 04 头注 + 03 §4.2 + 04 §11):**P2 三态枚举不变**
-// (TierInterp / TierGibbous / TierStuck),**P4 在 internal/gibbous/jit 内部
-// 维护独立子状态字段 p4SpecState[proto]**,枚举 P4Speculative / P4Deoptimized /
-// P4StuckSpeculation,叠加在 P2 TierGibbous 之上,**P2 不感知**。
+// Scheme A: the P2 tier enum stays three-state (TierInterp / TierGibbous /
+// TierStuck); P4 keeps its own per-proto sub-state field p4SpecState[proto]
+// (P4Speculative / P4Deoptimized / P4StuckSpeculation) layered on top of P2
+// TierGibbous, invisible to P2.
 //
-// **当前 PJ5 现状**:简化形态全走 host.CallBaseline / TailCall / Self 等 baseline
-// doCall 路径(byte-equal P1 解释器),**无投机失败 deopt 路径**——本文件是
-// OSR exit 协议的工程基础(p4SpecState map + DeoptThreshold / MaxRecompileTries
-// 阈值占位),等段内 EmitCallInline 投机模板真接入时激活。
+// STATUS (active on amd64): the SELF + CALL spec template (`obj:m()` OOP
+// shape) is wired up on amd64 (archSupportsSpec() returns true). When a spec
+// segment's guard fails (receiver reshaped / key degraded / NodeVal==nil),
+// code.go's runSpecSelfCall calls onOSRExit(proto) to account the miss and
+// fall back to host.Self; once the count reaches DeoptThreshold the proto
+// flips to P4Deoptimized and the speculative code is withdrawn. This
+// spec-template deopt accounting is live in production and is proven by
+// TestPJ5_SelfCall_E2E_SpecTemplate_OSRExitToDeopt / _DeoptStorm
+// (SpecP4DeoptHits grows).
+//
+// Two distinct deopt mechanisms must not be conflated: this file is the
+// SPEC-TEMPLATE guard-miss deopt accounting (active); issue #50's seg2seg
+// uses a separate "virtual frame + deopt-redo" — a seg2seg callee whose guard
+// misses re-runs the equivalent interpreter semantics (deopt-redo) without
+// touching this file. The function-level OSR materialization (rebuilding an
+// interpreter frame) that issue #51 sketched never materialized; it was
+// superseded by seg2seg's deopt-redo (ruling: 04-osr-deopt.md header +
+// spike/p4callinline/DECISION.md).
 package jit
 
 import (
@@ -110,13 +124,15 @@ const DeoptThreshold uint32 = 16
 // **占位值**:实测期定标(承 04 §5.3:典型 1-2);本批 v0 用 2。
 const MaxRecompileTries uint32 = 2
 
-// onOSRExit 处理单帧 OSR exit 事件(承 04 §5.1 单次失败的三件事)。
+// onOSRExit handles a single spec-template guard-miss event (04 §5.1).
 //
-// **职责**:把 deopt 计数 +1,达阈值时撤投机版编译码 + 切 P4Deoptimized。
-// **不动 P2 tierState**(方案 A 严格遵守)。
+// It bumps the deopt count by 1, and on reaching the threshold withdraws the
+// speculative code and flips the proto to P4Deoptimized. Does not touch the
+// P2 tierState (Scheme A).
 //
-// **当前 PJ5 现状**:OSR exit 路径在 PJ5 简化形态中**不存在**(全走 baseline
-// host helper)。本函数是工程基础,等段内 EmitCallInline 投机模板真接入时激活。
+// STATUS (active on amd64): called from code.go's runSpecSelfCall when a SELF
+// spec segment guard fails. See the file header for the active-vs-superseded
+// deopt mechanism distinction.
 func onOSRExit(proto *bytecode.Proto) {
 	if proto == nil {
 		return
@@ -143,14 +159,14 @@ func onOSRExit(proto *bytecode.Proto) {
 	incSpecP4DeoptHits()
 }
 
-// onP4Install 注册 Proto 首次 / 重编译 P4 投机版编译码(承 04 §5.3 重编译次数 +1)。
+// onP4Install registers a proto's first / recompiled P4 speculative code
+// (04 §5.3 bumps recompileCount).
 //
-// **职责**:把 Proto 状态置 P4Speculative,recompileCount += 1(若是重编译)。
-// **不动 P2 tierState**(方案 A 严格遵守)。
+// Sets the proto state to P4Speculative, and bumps recompileCount on a
+// recompile. Does not touch the P2 tierState (Scheme A).
 //
-// **调用契约**:由 Compile 主路径在 installGibbous 完成 P4 投机版编译码安装
-// 后调用。当前 PJ5 现状:所有 P4 GibbousCode 走 baseline doCall 非投机,
-// 实际不应触发 — 留 spec inline 真接入时激活(占位接口)。
+// Call contract: invoked by compileSpecSelfCall after installing the SELF
+// spec template (compiler.go). Active on amd64 for the OOP `obj:m()` shape.
 func onP4Install(proto *bytecode.Proto) {
 	if proto == nil {
 		return

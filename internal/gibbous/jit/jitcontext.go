@@ -104,7 +104,7 @@ const (
 const (
 	ExitNormal       uint32 = 0 // 正常 RET 出段
 	ExitError        uint32 = 1 // ERR 冒泡(state.pendingErr 已置)
-	ExitOSR          uint32 = 2 // 投机失败 OSR exit
+	ExitOSR          uint32 = 2 // reserved: spec-template deopt uses a RAX sentinel, not this code (see p4state.go); kept so ExitInlineHelper stays 3
 	ExitInlineHelper uint32 = 3 // Spike 1 helper request(jitCtx.exitArg0 = helper code)
 )
 
@@ -227,12 +227,13 @@ type JITContext struct {
 	// 字段类型 [N]uintptr(N = helper 数,PJ2 起填)留 PJ2 同批扩。当前
 	// 留空(unused)等 PJ2 启动时改 struct 加字段。
 
-	// exitReasonCode 是 OSR exit 原因(05 §3.3)。
-	//
-	// PJ5+ 实装:guard 失败时 JIT 段写本字段标 OSR 类别(IsNumber 失败 / 同表
-	// 同代次失败 / 等),trampoline 出口读本字段决定再训练协议。
-	//
-	// PJ1+2 阶段恒 0(无 OSR exit 路径)。
+	// exitReasonCode carries the segment's exit reason (05 §3.3). ACTIVE:
+	// the issue #50 frame-inline exit-helper-request protocol writes
+	// ExitInlineHelper (3) here from the mmap segment; JITContextExitReasonOffset
+	// is baked into the amd64/arm64 emitters (compiler.go emits it). Do not
+	// remove this field or reorder it ahead of confirming those baked offsets.
+	// The ExitOSR (2) value below is reserved but the spec-template deopt path
+	// uses a RAX sentinel (specDeoptCode), not this field, to signal a miss.
 	exitReasonCode uint32
 
 	// spillBase 是自管机器栈 spill 区起点(05 §3.4)。
@@ -287,8 +288,9 @@ type JITContext struct {
 	// exitArg0 决定 helper 路由:HELPER_RUN_CALLEE → executeFrom callee /
 	// HELPER_GROW_STACK → arena grow / HELPER_GC_BARRIER → 写屏障(未来)。
 	//
-	// **当前 Spike 1 阶段 archSupportsFrameInline=false 屏蔽真触发**,本字段
-	// 为 future Spike 1 真接入 commit-1 准备(承 §9.20.9 实装顺序 5 commits)。
+	// ACTIVE on amd64/arm64 (archSupportsFrameInline() returns true); only
+	// the arch_other fallback leaves it dormant. Wired up by the issue #50
+	// frame-inline path (commit chain §9.20.9).
 	exitArg0 uint64
 
 	// resumeOff 是 mmap 段内 resume entry 的字节偏移(承 §9.20.9 (2)):
@@ -306,8 +308,7 @@ type JITContext struct {
 	// resume entry 计算):dispatchInlineHelper 用 `codePageAddr + resumeOff`
 	// 求 resume 入口绝对地址,经 Go wrapper 二次 CALL 重入 mmap 段。
 	//
-	// **当前 Spike 1 阶段 archSupportsFrameInline=false 屏蔽真触发**,本字段
-	// wireP4 / installGibbous 时注入。
+	// ACTIVE on amd64/arm64. Injected at wireP4 / installGibbous time.
 	codePageAddr uintptr
 
 	// segCallDepth is the native segment-to-segment call nesting depth
@@ -490,8 +491,8 @@ func (c *JITContext) SetAllAddrs(arenaBase, valueStackBase, ciDepth, ciSegBase, 
 	c.topAddr = top
 }
 
-// SetExitArg0 设置 helper request code(承 §9.20.9 协议:Spike 1 真接入 +
-// future helper request 路由)。当前 archSupportsFrameInline=false 屏蔽真触发。
+// SetExitArg0 sets the helper request code (§9.20.9 protocol). ACTIVE on
+// amd64/arm64.
 func (c *JITContext) SetExitArg0(arg uint64) {
 	c.exitArg0 = arg
 }
