@@ -24,7 +24,7 @@
 | [06-ic-feedback-consume](./06-ic-feedback-consume.md) | feedback 非投机消费 | IC 快照编译期固化、失效自然降级、快路径 = 语义分发非投机 guard、与 P2 零 deopt 口径一致、GETTABLE/CALL 的 feedback-aware 翻译形式 |
 | [07-coroutine-thread-rule](./07-coroutine-thread-rule.md) | 线程级 tier | yield 不能穿越 gibbous 帧的物理论证、线程级 tier 规则(主线程才升层)、协程线程一律走 crescent、对 [08](../p1-interpreter/08-coroutines.md) 与 P2 的回填请求 |
 | [08-testing-strategy](./08-testing-strategy.md) | 验收 | P3 验收口径总表、crescent vs gibbous 逐字节差分(CI 门禁)、强制全升模式、GC 压力 fuzz 上 gibbous、P3 性能门(循环密集 ≥2x over P1)、坐标系警告 |
-| [implementation-progress](./implementation-progress.md) | 进度 | 开工前置检查检查、P-Wasm 里程碑(预设占位)、设计期决策盘点(影响 × 不确定度三档)、跨文档回填请求收口表 |
+| [implementation-progress](./implementation-progress.md) | 进度 | 开工前置检查、P-Wasm 里程碑(预设占位)、设计期决策盘点(影响 × 不确定度三档)、跨文档回填请求收口表 |
 
 阅读顺序建议:实现者先读 00→01(检查通过才动手)→03(内存模型,翻译器骨架的物理基础)→02(翻译器主体)→04(跨层协议,与 02 同期完成)→05(safepoint,跨层 GC)→06(feedback 消费,02 翻译细化)→07(coroutine 线程规则,边界场景)→08(验收口径,每步收口查)。
 

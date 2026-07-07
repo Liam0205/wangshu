@@ -86,7 +86,7 @@ Params:
 }
 ```
 
-### Phase 2: 实现 — 逐引擎落地
+### Phase 2: 实现 — 逐引擎完成
 
 #### 2.1 Go 实现（ground truth）
 

@@ -27,7 +27,7 @@
 | [08-testing-strategy](./08-testing-strategy.md) | 验收 + 测试 | luajc 档验收口径、V1-V22 总表(P1 V1-V18 + P4 增项 V19-V22)、同 Proto 差分主防线(P4 接续 P3 force-all 套)、OSR 状态等价 V19、deopt 注入 V20、双架构双跑 V21、prove-the-path 纪律继承 |
 | [09-acceptance-checklist](./09-acceptance-checklist.md) | PJ11 验收勾选清单 | 三平台 × V1-V22 可勾表、决议项(D1 bit50 ✅ / D2 P3 退役 ⬜)、性能数字归档(V14/V15a/V15b/V16)、与设计文档差异点 |
 | [10-per-op-translator](./10-per-op-translator.md) | PJ10 工程方向 | 逐 opcode 翻译器架构、与 P3 wasm 翻译器对照、双轨(fast path 保留 + 通用 per-op 路径新增)、寄存器 ABI、opcode 翻译表、sub-PJ 拆分(PJ10a-d)、与 P5 trace JIT 的接口 |
-| [implementation-progress](./implementation-progress.md) | 进度 | 立项前置检查检查、PJ 里程碑(预设占位)、设计期决策盘点(影响 × 不确定度三档)、**跨文档回填请求收口表**(本文档集 §回填请求节聚合) |
+| [implementation-progress](./implementation-progress.md) | 进度 | 立项前置检查、PJ 里程碑(预设占位)、设计期决策盘点(影响 × 不确定度三档)、**跨文档回填请求收口表**(本文档集 §回填请求节聚合) |
 
 阅读顺序建议:**实现者**先读 00→01(立项检查通过才动手)→02(方向裁决,锁定模板编译不上 IR)→03(投机,P4 最危险面)→04(OSR exit,deopt 协议)→05(系统管线,四项税自付的物理)→06(双后端,寄存器约定与 CI 纪律)→07(P3 去留,P4 验收时决议)→08(测试,每 PJ 验收口径)→10(PJ10 逐 opcode 翻译器,2026-06-30 启动的覆盖率工程)→09(PJ11 验收勾选清单),implementation-progress 收口查。**评审者**先读 00→01→02 三篇拿到「P4 是不是该做、做什么、不做什么」三句,再按需深入 03/04(投机正确性)或 06/08(工程纪律)或 10(覆盖率工程方向)。
 
