@@ -54,6 +54,26 @@ func New() *Compiler {
 // shrink.
 func (c *Compiler) MinPromotableLen() int { return 10 }
 
+// ExemptFromFloor implements bridge.FloorExempter (issue #67): a
+// seg2seg-eligible proto is exempt from the short-proto floor. The
+// floor's calibration (tiny protos lose to nativeCode.Run's fixed
+// per-call costs) measured the host dispatch channel; a seg2seg
+// callee's hot channel is an in-segment call from an already-promoted
+// caller, which skips those costs entirely. Flooring such a proto is
+// strictly worse: every call from a promoted caller then pays an
+// ExecutePlainCall exit-reason round trip instead (spectral-norm's
+// 9-op `A(i,j)`: 144k round trips per run, auto 3.7x slower than
+// force). The occasional interpreter-frame entry still pays the Run
+// overhead, but for the "hot promoted caller + tiny pure callee"
+// shape that triggers this path, the in-segment channel dominates.
+//
+// Consulted by the bridge in auto mode only, once per proto past the
+// heat threshold (verdict cached bridge-side), so the eligibility
+// scan's cost is off the steady-state path.
+func (c *Compiler) ExemptFromFloor(proto *bytecode.Proto) bool {
+	return perOpSeg2SegAnalyzer != nil && perOpSeg2SegAnalyzer(proto)
+}
+
 // SupportsAllOpcodes 检查 Proto 中所有 opcode 是否都在后端支持集内。
 //
 // **PJ7 真接入实装**:开放白名单到「单值产生 + RETURN A 1」单 BB 形态——

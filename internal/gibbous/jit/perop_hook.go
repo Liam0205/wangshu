@@ -50,6 +50,22 @@ var perOpAnalyzer func(proto *bytecode.Proto) bool
 // AnalyzeNative), leaving the historical Compile order intact.
 var perOpNativeAnalyzer func(proto *bytecode.Proto) bool
 
+// perOpSeg2SegAnalyzer is the hook for "can this Proto serve as a
+// segment-to-segment callee?" (peroptranslator.ProtoSeg2SegEligible).
+// Compiler.ExemptFromFloor consults it to lift the short-proto floor
+// for protos whose hot dispatch channel is an in-segment call (issue
+// #67): seg2seg callees never pay nativeCode.Run's fixed per-call
+// costs, which are what the floor was calibrated against. nil when
+// peroptranslator is not imported — the floor then applies as before.
+var perOpSeg2SegAnalyzer func(proto *bytecode.Proto) bool
+
+// RegisterPerOpSeg2SegAnalyzer installs the seg2seg-eligibility
+// analyzer. Optional companion to RegisterPerOpTranslator; without it,
+// ExemptFromFloor answers false for every proto.
+func RegisterPerOpSeg2SegAnalyzer(analyzer func(*bytecode.Proto) bool) {
+	perOpSeg2SegAnalyzer = analyzer
+}
+
 // RegisterPerOpNativeAnalyzer installs the "native accepts?" analyzer.
 // Optional companion to RegisterPerOpTranslator: without it, Compile
 // stays on the historical order and only reaches the perOpTranslator

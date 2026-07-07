@@ -504,6 +504,13 @@ const (
 - **不覆盖 `!b.forceAll` 分支**:两阈值分支中,`forceAll=true`(测试入口)绕过下限——force-all 语义就是「不管热度、不管长度,能编都编」,承 [../p4-method-jit/08-testing-strategy.md](../p4-method-jit/08-testing-strategy.md) §3.7 与 P3 08 §2.2;
 - **下限调整的正确性论证**:同 §5.3 阈值不影响正确性论证——只影响「哪些 Proto 有资格升」,短 proto 走解释器仍产出正确结果,只是不赚编译收益;调高下限只是保守,调低只是激进(甚至反噬,故实测锚定)。
 
+**Per-proto 豁免钩子 `FloorExempter`**(issue #67,承 `internal/bridge/bridge.go`):地板的物理理由是「fixed Run 成本摊薄不回」,但这个成本只属于**宿主派发通道**(`nativeCode.Run`)。P4 的 seg2seg 被调方走**段内派发通道**(已升层的调用方段内直接 `call`/`blr` 进被调方段),完全不经过 `Run`——对这类 proto 地板的标定前提不成立,反而把它拦在解释器上会让每次来自已升层调用方的调用都付一次 `ExecutePlainCall` 出段往返(spectral-norm 的 9-op `A(i,j)`:144k 次/run,auto 比 force 慢 3.7×)。后端可实现可选接口 `FloorExempter { ExemptFromFloor(proto) bool }` 对特定 proto 豁免地板:
+
+- **只在 auto 模式咨询**(forceAll 本来就绕地板),且只对**低于地板、已越热度阈值**的 proto 咨询——此时 IC 已充分预热,判定稳定;
+- **裁决按 proto 缓存**在 `ProfileData.floorExempt`(三态:未问/豁免/不豁免),稳态路径只剩长度比较 + 一个字节读——eligibility 扫描(CFG 构建 + opcode 遍历)不上最热路径;
+- **P4 实现**:`ExemptFromFloor = ProtoSeg2SegEligible`(经 `RegisterPerOpSeg2SegAnalyzer` 钩子接线,保持 jit 主包不 import peroptranslator 的方向约束);
+- **fallback**:后端不实现该接口时地板无条件生效(历史行为不变)。
+
 ### 5.2 阈值数值的论证
 
 **HotBackEdgeThreshold = 1000**:

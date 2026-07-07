@@ -35,4 +35,5 @@ func init() {
 		},
 	)
 	jit.RegisterPerOpNativeAnalyzer(PreferNative)
+	jit.RegisterPerOpSeg2SegAnalyzer(ProtoSeg2SegEligible)
 }

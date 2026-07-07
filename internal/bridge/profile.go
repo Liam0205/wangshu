@@ -79,7 +79,25 @@ type ProfileData struct {
 	// OnBackEdge clears it once when a back edge crosses
 	// HotBackEdgeThreshold, granting one extra warm-IC recheck per pc.
 	recheckedAtEntry uint32
+
+	// floorExempt caches the backend's FloorExempter verdict for a
+	// below-floor proto (issue #67): asked once, when the proto first
+	// crosses the heat threshold (its ICs are as warm as they will
+	// get by then, so the answer is stable — same absorption rationale
+	// as the PromotionGater verdict). Without the cache the eligibility
+	// scan (CFG build + opcode walk) would run on every OnEnter past
+	// the threshold — per call on exactly the hottest protos.
+	floorExempt floorExemptState
 }
+
+// floorExemptState is the cached FloorExempter verdict (issue #67).
+type floorExemptState uint8
+
+const (
+	floorExemptUnasked floorExemptState = iota // backend not yet consulted
+	floorExemptYes                             // exempt: floor does not block
+	floorExemptNo                              // not exempt: floor blocks
+)
 
 // MaxBackEdge 返回该 ProfileData 中最大的单回边累计计数。
 //
