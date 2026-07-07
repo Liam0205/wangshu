@@ -41,12 +41,18 @@ func emitMOVE(cb *codeBuf, a, b uint8) {
 }
 
 // emitLOADK emits `mov rax, imm64; mov [rbx+A*8], rax` — 17 bytes.
-// R(A) := K(Bx). The immediate is baked at compile time (already a
-// nan-boxed uint64 for numbers / booleans / nil).
+// R(A) := K(Bx). The immediate is baked at compile time from the
+// per-State privatized proto.Consts[Bx] (a nan-boxed uint64).
 //
-// Callers must reject string constants upstream (F7 gate) — the string
-// Nil placeholder in Proto.Consts becomes a nil emit here, which is not
-// what a string constant means. Standard PJ0-PJ9 practice; PJ10 inherits.
+// String constants ARE supported (issue #69): the privatized Consts slot
+// already holds the interned MakeGC(TagString, ref) bits (LoadProgram
+// interns before promotion), so a string LOADK bakes a stable GCRef imm64
+// exactly like EQ-K (#56). This is safe only because the arena is
+// non-moving (mark-sweep + freelist); the string is also rooted via
+// st.strRefs. #12 DEPENDENCY: a future copy-compact GC (#12) that
+// relocates objects would dangle this baked GCRef (and every EQ-K one) —
+// #12's design must enumerate mmap-segment-baked GCRefs as a relocation
+// surface (rewrite them, or pin the baked-in objects).
 func emitLOADK(cb *codeBuf, a uint8, imm uint64) {
 	buf := jitamd64.EmitMovRaxImm64(nil, imm)
 	buf = jitamd64.EmitMovqMemRegFromRax(buf, regRBX, int32(a)*8)

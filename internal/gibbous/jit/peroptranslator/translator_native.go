@@ -264,18 +264,14 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 	if proto == nil || len(proto.Code) == 0 {
 		return false
 	}
-	// F7-a: LOADK for string constants isn't inlined (that would need
-	// an arena-relative bake). String constants used by GETGLOBAL /
-	// SETGLOBAL / GETTABLE / SETTABLE / SELF go through host shims that
-	// read proto.Consts by index — those never touch the mmap segment's
-	// LOADK path, so they're fine. Only reject a proto if any live
-	// LOADK actually references a string-tagged const.
-	stringConst := func(bx int) bool {
-		if bx < 0 || bx >= len(proto.StringLitIdx) {
-			return false
-		}
-		return proto.StringLitIdx[bx] >= 0
-	}
+	// String-constant LOADK is accepted (issue #69): the per-State
+	// privatized proto.Consts already holds the interned MakeGC(TagString,
+	// ref) bits (State.LoadProgram interns before any promotion), so
+	// emitLOADK bakes a stable imm64 exactly like EQ-K (#56). The arena is
+	// non-moving (mark-sweep + freelist, not copy-compact — see the #12
+	// followup), so the baked GCRef stays valid for the State's lifetime,
+	// and the string is separately rooted via st.strRefs. See the note on
+	// the #12 dependency in emit_amd64.go's emitLOADK.
 	// Vararg functions aren't supported (permanent VARARG gate).
 	if proto.IsVararg {
 		return false
@@ -299,14 +295,6 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 			// shim call in the current inline fast path; reject Protos
 			// that have any such shape until inline RK is supported.
 			switch op {
-			case bytecode.LOADK:
-				// LOADK writes proto.Consts[Bx] into R(A). String consts
-				// can't be baked as a raw uint64 immediate (they're
-				// arena-relative GCRefs); reject the whole proto if any
-				// live LOADK references one.
-				if stringConst(bytecode.Bx(ins)) {
-					return false
-				}
 			case bytecode.ADD, bytecode.SUB, bytecode.MUL, bytecode.DIV,
 				bytecode.LT, bytecode.LE:
 				// Inline arith/compare fast paths require numeric K

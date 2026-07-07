@@ -189,16 +189,11 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 	if proto == nil || len(proto.Code) == 0 {
 		return false
 	}
-	// F7-a: LOADK for string constants isn't inlined (arena-relative
-	// bake required). GETGLOBAL / SETGLOBAL / GETTABLE / SETTABLE / SELF
-	// route through host shims that index proto.Consts directly, so those
-	// stay fine; only reject when a live LOADK actually loads a string.
-	stringConst := func(bx int) bool {
-		if bx < 0 || bx >= len(proto.StringLitIdx) {
-			return false
-		}
-		return proto.StringLitIdx[bx] >= 0
-	}
+	// String-constant LOADK is accepted (issue #69): the per-State
+	// privatized proto.Consts already holds the interned MakeGC(TagString,
+	// ref) bits, so emitLOADKArm64 bakes a stable imm64 like EQ-K (#56).
+	// Safe under the non-moving arena; #12 (copy-compact) would need to
+	// enumerate these baked GCRefs. Mirror of amd64.
 	if proto.IsVararg {
 		return false
 	}
@@ -218,10 +213,6 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 				return false
 			}
 			switch op {
-			case bytecode.LOADK:
-				if stringConst(bytecode.Bx(ins)) {
-					return false
-				}
 			case bytecode.ADD, bytecode.SUB, bytecode.MUL, bytecode.DIV,
 				bytecode.LT, bytecode.LE:
 				// Inline arith/compare fast paths require numeric K

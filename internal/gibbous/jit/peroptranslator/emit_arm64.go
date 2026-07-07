@@ -46,7 +46,11 @@ func emitMOVEArm64(cb *codeBuf, a, b uint8) {
 	cb.emit(jitarm64.EmitStrXtToXnDisp(nil, 0, regX26, uint16(a)*8))
 }
 
-// emitLOADKArm64 emits `mov x0, imm64; str x0, [x26+A*8]`.
+// emitLOADKArm64 emits `mov x0, imm64; str x0, [x26+A*8]`. String
+// constants are supported (issue #69): the imm is the per-State
+// privatized Consts[Bx], already an interned GCRef for string slots.
+// #12 (copy-compact GC) would need to enumerate this baked GCRef — see
+// the note on amd64 emitLOADK.
 func emitLOADKArm64(cb *codeBuf, a uint8, imm uint64) {
 	cb.emit(jitarm64.EmitMovXdImm64(nil, 0, imm))
 	cb.emit(jitarm64.EmitStrXtToXnDisp(nil, 0, regX26, uint16(a)*8))
