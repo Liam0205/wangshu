@@ -411,6 +411,59 @@ func emitSETTABLEArm64(cb *codeBuf, pc int32, a uint8, b, c int) {
 	emitExitReasonArm64(cb, jit.HelperSetTable, pc, int32(a), int32(b), int32(c))
 }
 
+// emitTableNodeHitPreludeArm64 emits the shared table-identity prelude for
+// the GETTABLE/SETTABLE NodeHit inline fast paths (issue #67): IsTable
+// guard on R(tblReg), GCRef extract, TableRef identity guard, gen (Shape)
+// guard, and nodeRef resolution. Guard misses append their patch offsets
+// to *guardFixups.
+//
+// Register state on fall-through (all guards passed):
+//
+//	X1 = arena base
+//	X4 = absolute node segment base (nodeRef + arena base)
+//
+// The caller continues with the NodeKey guard + NodeVal read/write using
+// X4 + Index*24. X0/X2/X3/X5 are scratch and not preserved.
+func emitTableNodeHitPreludeArm64(cb *codeBuf, tblReg uint8, tableRef, shape uint32, guardFixups *[]int32) {
+	// Guard 1: R(tblReg) is a Table (tag == 0xFFFC). X0 = R(tblReg).
+	cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 0, regX26, uint16(tblReg)*8))
+	cb.emit(jitarm64.EmitLsrXdImm6(nil, 4, 0, 48))
+	cb.emit(jitarm64.EmitMovzWdImm16(nil, 5, uint16(value.TagTable)))
+	cb.emit(jitarm64.EmitCmpXnXm(nil, 4, 5))
+	*guardFixups = append(*guardFixups, cb.pos())
+	cb.emit(jitarm64.EmitBCond(nil, jitarm64.CondNE, 0))
+
+	// GCRef extract: X0 &= payloadMask.
+	cb.emit(jitarm64.EmitMovXdImm64(nil, 5, 0x0000_FFFF_FFFF_FFFF))
+	cb.emit(jitarm64.EmitAndXdXnXm(nil, 0, 0, 5))
+
+	// Guard 2: TableRef identity — X0 low32 == tableRef. Mask X0 to low 32
+	// bits (host compares uint32(t)) into X2, then 64-bit compare.
+	cb.emit(jitarm64.EmitMovXdImm64(nil, 5, 0x0000_0000_FFFF_FFFF))
+	cb.emit(jitarm64.EmitAndXdXnXm(nil, 2, 0, 5))
+	cb.emit(jitarm64.EmitMovXdImm64(nil, 5, uint64(tableRef)))
+	cb.emit(jitarm64.EmitCmpXnXm(nil, 2, 5))
+	*guardFixups = append(*guardFixups, cb.pos())
+	cb.emit(jitarm64.EmitBCond(nil, jitarm64.CondNE, 0))
+
+	// X1 = arena base; X3 = table abs addr = X1 + X0.
+	cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 1, regX27,
+		uint16(jit.JITContextArenaBaseOffset)))
+	cb.emit(jitarm64.EmitAddXdXnXm(nil, 3, 1, 0))
+
+	// Guard 3: gen == shape. gen = [X3+40] >> 32.
+	cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 4, 3, 40))
+	cb.emit(jitarm64.EmitLsrXdImm6(nil, 4, 4, 32))
+	cb.emit(jitarm64.EmitMovXdImm64(nil, 5, uint64(shape)))
+	cb.emit(jitarm64.EmitCmpXnXm(nil, 4, 5))
+	*guardFixups = append(*guardFixups, cb.pos())
+	cb.emit(jitarm64.EmitBCond(nil, jitarm64.CondNE, 0))
+
+	// X4 = nodeRef (word3 at [X3+24]); abs node base = X4 + X1 → X4.
+	cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 4, 3, 24))
+	cb.emit(jitarm64.EmitAddXdXnXm(nil, 4, 4, 1))
+}
+
 // emitInlineGetTableNodeHitArm64 is the arm64 mirror of the (amd64)
 // GETTABLE NodeHit inline plan — arm64-only per issue #67 (the guard
 // overhead only pays off where the exit-reason round trip is expensive;
@@ -441,43 +494,7 @@ func emitInlineGetTableNodeHitArm64(cb *codeBuf, pc int32, a, b uint8, c int) bo
 	}
 	var guardFixups []int32
 
-	// Guard 1: R(B) is a Table (tag == 0xFFFC). X0 = R(B).
-	cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 0, regX26, uint16(b)*8))
-	cb.emit(jitarm64.EmitLsrXdImm6(nil, 4, 0, 48))
-	cb.emit(jitarm64.EmitMovzWdImm16(nil, 5, uint16(value.TagTable)))
-	cb.emit(jitarm64.EmitCmpXnXm(nil, 4, 5))
-	guardFixups = append(guardFixups, cb.pos())
-	cb.emit(jitarm64.EmitBCond(nil, jitarm64.CondNE, 0))
-
-	// GCRef extract: X0 &= payloadMask.
-	cb.emit(jitarm64.EmitMovXdImm64(nil, 5, 0x0000_FFFF_FFFF_FFFF))
-	cb.emit(jitarm64.EmitAndXdXnXm(nil, 0, 0, 5))
-
-	// Guard 2: TableRef identity — X0 low32 == snap.TableRef. Mask X0 to
-	// low 32 bits (host compares uint32(t)) into X2, then 64-bit compare.
-	cb.emit(jitarm64.EmitMovXdImm64(nil, 5, 0x0000_0000_FFFF_FFFF))
-	cb.emit(jitarm64.EmitAndXdXnXm(nil, 2, 0, 5))
-	cb.emit(jitarm64.EmitMovXdImm64(nil, 5, uint64(snap.TableRef)))
-	cb.emit(jitarm64.EmitCmpXnXm(nil, 2, 5))
-	guardFixups = append(guardFixups, cb.pos())
-	cb.emit(jitarm64.EmitBCond(nil, jitarm64.CondNE, 0))
-
-	// X1 = arena base; X3 = table abs addr = X1 + X0.
-	cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 1, regX27,
-		uint16(jit.JITContextArenaBaseOffset)))
-	cb.emit(jitarm64.EmitAddXdXnXm(nil, 3, 1, 0))
-
-	// Guard 3: gen == snap.Shape. gen = [X3+40] >> 32.
-	cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 4, 3, 40))
-	cb.emit(jitarm64.EmitLsrXdImm6(nil, 4, 4, 32))
-	cb.emit(jitarm64.EmitMovXdImm64(nil, 5, uint64(snap.Shape)))
-	cb.emit(jitarm64.EmitCmpXnXm(nil, 4, 5))
-	guardFixups = append(guardFixups, cb.pos())
-	cb.emit(jitarm64.EmitBCond(nil, jitarm64.CondNE, 0))
-
-	// X4 = nodeRef (word3 at [X3+24]); abs node base = X4 + X1 → X4.
-	cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 4, 3, 24))
-	cb.emit(jitarm64.EmitAddXdXnXm(nil, 4, 4, 1))
+	emitTableNodeHitPreludeArm64(cb, b, snap.TableRef, snap.Shape, &guardFixups)
 
 	// Guard 4: NodeKey ([X4 + Index*24]) == stableKey.
 	cb.emit(jitarm64.EmitMovXdImm64(nil, 2, uint64(snap.Index)*24))
@@ -548,42 +565,7 @@ func emitInlineSetTableNodeHitArm64(cb *codeBuf, pc int32, a uint8, b, c int) bo
 	}
 	var guardFixups []int32
 
-	// Guard 1: R(A) is a Table. X0 = R(A).
-	cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 0, regX26, uint16(a)*8))
-	cb.emit(jitarm64.EmitLsrXdImm6(nil, 4, 0, 48))
-	cb.emit(jitarm64.EmitMovzWdImm16(nil, 5, uint16(value.TagTable)))
-	cb.emit(jitarm64.EmitCmpXnXm(nil, 4, 5))
-	guardFixups = append(guardFixups, cb.pos())
-	cb.emit(jitarm64.EmitBCond(nil, jitarm64.CondNE, 0))
-
-	// GCRef extract: X0 &= payloadMask.
-	cb.emit(jitarm64.EmitMovXdImm64(nil, 5, 0x0000_FFFF_FFFF_FFFF))
-	cb.emit(jitarm64.EmitAndXdXnXm(nil, 0, 0, 5))
-
-	// Guard 2: TableRef identity — X0 low32 == snap.TableRef.
-	cb.emit(jitarm64.EmitMovXdImm64(nil, 5, 0x0000_0000_FFFF_FFFF))
-	cb.emit(jitarm64.EmitAndXdXnXm(nil, 2, 0, 5))
-	cb.emit(jitarm64.EmitMovXdImm64(nil, 5, uint64(snap.TableRef)))
-	cb.emit(jitarm64.EmitCmpXnXm(nil, 2, 5))
-	guardFixups = append(guardFixups, cb.pos())
-	cb.emit(jitarm64.EmitBCond(nil, jitarm64.CondNE, 0))
-
-	// X1 = arena base; X3 = table abs addr = X1 + X0.
-	cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 1, regX27,
-		uint16(jit.JITContextArenaBaseOffset)))
-	cb.emit(jitarm64.EmitAddXdXnXm(nil, 3, 1, 0))
-
-	// Guard 3: gen == snap.Shape.
-	cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 4, 3, 40))
-	cb.emit(jitarm64.EmitLsrXdImm6(nil, 4, 4, 32))
-	cb.emit(jitarm64.EmitMovXdImm64(nil, 5, uint64(snap.Shape)))
-	cb.emit(jitarm64.EmitCmpXnXm(nil, 4, 5))
-	guardFixups = append(guardFixups, cb.pos())
-	cb.emit(jitarm64.EmitBCond(nil, jitarm64.CondNE, 0))
-
-	// X4 = nodeRef abs = [X3+24] + X1.
-	cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 4, 3, 24))
-	cb.emit(jitarm64.EmitAddXdXnXm(nil, 4, 4, 1))
+	emitTableNodeHitPreludeArm64(cb, a, snap.TableRef, snap.Shape, &guardFixups)
 
 	// Guard 4: NodeKey ([X4 + Index*24]) == stableKey.
 	cb.emit(jitarm64.EmitMovXdImm64(nil, 2, uint64(snap.Index)*24))
