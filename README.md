@@ -48,7 +48,7 @@ P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 met
 |  | HeavyRecursion | 8.99 ms | **<ins>5.07 ms (1.76×)</ins>** | <ins>5.72 ms (1.57×)</ins> | <ins>5.71 ms (1.58×)</ins> | <ins>5.36 ms (1.68×)</ins> | <ins>5.42 ms (1.66×)</ins> |
 |  | HeavyFloatloop | 410 ms | <ins>146 ms (2.81×)</ins> | <ins>51.1 ms (8.04×)</ins> | <ins>51.2 ms (8.01×)</ins> | **<ins>24.0 ms (17.1×)</ins>** | **<ins>24.0 ms (17.1×)</ins>** |
 | realworld small [^cat-realworld] | fib | 9.32 ms | 10.0 ms (0.93×) | 11.1 ms (0.84×) [^p3-gate] | 25.0 ms (0.37×) | **<ins>0.90 ms (10.3×)</ins>** [^seg2seg] | <ins>0.91 ms (10.3×)</ins> [^seg2seg] |
-|  | binary-trees | 51.5 ms | **35.8 ms (1.44×)** | 38.3 ms (1.34×) [^p3-gate] | 103.2 ms (0.50×) | 38.3 ms (1.35×) | 38.3 ms (1.35×) [^seg2seg] |
+|  | binary-trees | 51.5 ms | **35.8 ms (1.44×)** | 38.3 ms (1.34×) [^p3-gate] | 103.2 ms (0.50×) | 38.3 ms (1.35×) | 38.3 ms (1.35×) |
 |  | spectral-norm | 33.3 ms | <ins>18.3 ms (1.82×)</ins> | <ins>20.6 ms (1.62×)</ins> [^p3-gate] | 46.3 ms (0.72×) | <ins>15.6 ms (2.14×)</ins> | **<ins>2.11 ms (15.8×)</ins>** [^seg2seg] |
 |  | fannkuch | 4.15 ms | 5.60 ms (0.74×) | 5.74 ms (0.72×) | 5.74 ms (0.73×) | **<ins>0.60 ms (6.9×)</ins>** | **<ins>0.60 ms (6.9×)</ins>** [^seg2seg] |
 |  | n-body | 59.9 ms | 44.6 ms (1.34×) | 43.3 ms (1.38×) [^p3-gate] | 86.0 ms (0.70×) | **42.5 ms (1.41×)** | **42.5 ms (1.41×)** |
