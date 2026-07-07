@@ -16,6 +16,45 @@ if [ -n "$tags" ]; then
     tags_arg=(-tags "$tags")
 fi
 
+# run_target <pkg> <func>:跑一个 fuzz 目标,吞掉已知的 Go 工具链假失败。
+#
+# golang/go#75804(wangshu issue #63):-fuzztime 到点时,internal/fuzz 的
+# coordinator 用 `err == fuzzCtx.Err()` 抑制 deadline 错误,但 context 取消
+# 传播是「先关父 done channel、后 cancel 子 context」,存在一个窗口:
+# ctx.Err() 已置而 fuzzCtx.Err() 仍是 nil,抑制失败,deadline 以
+# `--- FAIL: FuzzX ... context deadline exceeded` 的形式逃逸成测试失败。
+# 无 crash、无新反例语料,纯工具链竞态(上游修复 CL 774140 未合入)。
+#
+# 判定纪律(不掩盖真失败):
+#   - 真 crasher 一定伴随 "Failing input written to testdata/fuzz/..."
+#     (testing/fuzz.go 对 fuzzCrashError 的固定输出)——出现即真失败,立即报;
+#   - 只有「失败输出含 deadline 字样且无 crasher 落盘」才判为 #75804 假失败,
+#     重试一次;重试再挂(无论什么原因)都如实失败。
+run_target() {
+    local pkg="$1" func="$2" log rc
+    log=$(mktemp)
+    for attempt in 1 2; do
+        set +e
+        go test "${tags_arg[@]+"${tags_arg[@]}"}" "./$pkg" -run='^$' \
+            -fuzz="^${func}\$" -fuzztime="$fuzztime" -timeout=120s -parallel=4 \
+            2>&1 | tee "$log"
+        rc=${PIPESTATUS[0]}
+        set -e
+        if [ "$rc" -eq 0 ]; then
+            rm -f "$log"
+            return 0
+        fi
+        if [ "$attempt" -eq 1 ] \
+           && grep -q 'context deadline exceeded' "$log" \
+           && ! grep -q 'Failing input written to' "$log"; then
+            echo "fuzz: $pkg :: $func hit golang/go#75804 (spurious deadline at fuzztime wrap-up, no crasher written) — retrying once" >&2
+            continue
+        fi
+        rm -f "$log"
+        return "$rc"
+    done
+}
+
 while IFS=: read -r file line decl; do
     func=$(echo "$decl" | sed -E 's/^func (Fuzz[A-Za-z0-9_]*).*/\1/')
     pkg=$(dirname "$file")
@@ -24,7 +63,7 @@ while IFS=: read -r file line decl; do
     # `"${arr[@]+"${arr[@]}"}"` 是 set -u 下「空数组安全展开」惯用法——macOS
     # bash 3.2(Apple 不升级 GPLv3 包)在 set -u 下展开空数组 `${arr[@]}` 触发
     # unbound variable 致命错;`${arr[@]+...}` 仅在数组已设时展开,空时跳过。
-    go test "${tags_arg[@]+"${tags_arg[@]}"}" "./$pkg" -run='^$' -fuzz="^${func}\$" -fuzztime="$fuzztime" -timeout=120s -parallel=4
+    run_target "$pkg" "$func"
     # --exclude-dir 排除:
     #   - benchmarks:独立子模块,自家 fuzz 目标已通过 benchmarks/ 单独路径覆盖
     #   - benchmarks/pineapple/.pineapple:pineapple 仓临时 clone 落点,属另一 module,

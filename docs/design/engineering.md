@@ -71,7 +71,9 @@ tidy:
 
 ### 1.1 fuzz seed 纪律(`make fuzz` 兜底机制)
 
-`scripts/go-fuzz.sh <fuzztime>` 给每个 fuzz target 一个 `-fuzztime` wall-clock 上限,**Go fuzz 框架内部用 `context.WithTimeout` 实现**——超时 cancel 时若仍有 iteration 在跑,框架报 `--- FAIL: FuzzX: context deadline exceeded` 强 fail。
+`scripts/go-fuzz.sh <fuzztime>` 给每个 fuzz target 一个 `-fuzztime` wall-clock 上限,**Go fuzz 框架内部用 `context.WithTimeout` 实现**。到点后的 deadline 错误正常应被框架抑制(`internal/fuzz` 的 `err == fuzzCtx.Err()` 检查),但 context 取消传播是「先关父 done channel、后 cancel 子 context」,存在一个竞态窗口:coordinator 在窗口内观察到 done 时,抑制检查失败,deadline 逃逸成 `--- FAIL: FuzzX: context deadline exceeded` 假失败(golang/go#75804,上游修复未合入;本仓 issue #63,机制级复现见该 issue)。`go-fuzz.sh` 对此做条件重试:失败输出含 deadline 字样**且无 `Failing input written to` crasher 落盘**才判为假失败重试一次;真 crasher(必伴随 crasher 落盘行)立即如实失败,重试后再挂也如实失败——不掩盖真反例。
+
+另一类 wall-clock 相关 false alarm 来自 seed 本身:
 
 **纪律**:fuzz seed 不应包含「靠 `SetStepBudget` 兜底的近无限循环」(如 `while true do end` / `for i = 1, 1e9 do end`)——`SetStepBudget` 的 budget 计费按指令数,跟 fuzz 框架的 wall-clock 不同步。当解释器跑完 budget 的 wall-clock 量级接近 `-fuzztime`(秒级到十秒级)时,CI runner 慢一点就触发 false alarm。
 
