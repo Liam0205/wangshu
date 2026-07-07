@@ -72,14 +72,14 @@ The same reproduction commands measured on an Apple M5 Pro (darwin/arm64, go1.26
 | Pure-VM micro | Simple (branch/compare) | 572 ns | 83.2 ns (**6.88×**) | 2.57 µs (0.22×) | 2.57 µs (0.22×) | 82.7 ns (**6.92×**) | 82.7 ns (**6.92×**) |
 | | Arith (Horner) | 605 ns | 102 ns (**5.93×**) | 6.42 µs (0.09×) | 6.38 µs (0.09×) | 105 ns (**5.76×**) | 105 ns (**5.76×**) |
 | | Loop (sum) | 20.0 µs | 9.99 µs (**2.00×**) | 498 µs (0.04×) | 499 µs (0.04×) | 12.4 µs (**1.61×**) | 12.4 µs (**1.61×**) |
-| Heavy kernels | HeavyArith | 87.2 ms | 44.3 ms (**1.97×**) | 50.9 ms (**1.71×**) | 51.3 ms (**1.70×**) | 25.6 ms (**3.40×**) | 25.3 ms (**3.45×**) |
-| | HeavyRecursion | 5.50 ms | 3.13 ms (**1.76×**) | 3.60 ms (**1.53×**) | 3.70 ms (1.48×) | 3.37 ms (**1.63×**) | 3.38 ms (**1.63×**) |
-| | HeavyFloatloop | 153 ms | 83.8 ms (**1.83×**) | 61.5 ms (**2.49×**) | 62.4 ms (**2.46×**) | 25.3 ms (**6.05×**) | 25.3 ms (**6.05×**) |
-| Realworld small | fib | 5.60 ms | 6.41 ms (0.87×) | 7.33 ms (0.76×) [^p3-gate] | 14.3 ms (0.39×) | 6.97 ms (0.80×) | 6.94 ms (0.81×) |
-| | binary-trees | 19.3 ms | 23.9 ms (0.81×) | 26.4 ms (0.73×) [^p3-gate] | 59.9 ms (0.32×) | 25.5 ms (0.76×) | 25.2 ms (0.77×) |
-| | spectral-norm | 12.9 ms | 12.2 ms (1.06×) | 13.5 ms (0.96×) [^p3-gate] | 28.3 ms (0.46×) | 12.1 ms (1.07×) | 13.2 ms (0.98×) |
-| | fannkuch | 2.46 ms | 3.64 ms (0.68×) | 3.76 ms (0.65×) | 3.72 ms (0.66×) | 0.33 ms (**7.44×**) | 0.33 ms (**7.39×**) |
-| | n-body | 30.2 ms | 27.5 ms (1.10×) | 28.9 ms (1.04×) [^p3-gate] | 50.0 ms (0.60×) | 32.9 ms (0.92×) | 32.9 ms (0.92×) |
+| Heavy kernels | HeavyArith | 87.2 ms | 44.3 ms (**1.97×**) | 50.9 ms (**1.71×**) | 51.3 ms (**1.70×**) | 24.8 ms (**3.52×**) | 24.5 ms (**3.56×**) |
+| | HeavyRecursion | 5.50 ms | 3.13 ms (**1.76×**) | 3.60 ms (**1.53×**) | 3.70 ms (1.48×) | 3.38 ms (**1.63×**) | 3.40 ms (**1.62×**) |
+| | HeavyFloatloop | 153 ms | 83.8 ms (**1.83×**) | 61.5 ms (**2.49×**) | 62.4 ms (**2.46×**) | 25.0 ms (**6.13×**) | 24.9 ms (**6.14×**) |
+| Realworld small | fib | 5.60 ms | 6.41 ms (0.87×) | 7.33 ms (0.76×) [^p3-gate] | 14.3 ms (0.39×) | 0.60 ms (**9.3×**) | 0.61 ms (**9.1×**) |
+| | binary-trees | 19.3 ms | 23.9 ms (0.81×) | 26.4 ms (0.73×) [^p3-gate] | 59.9 ms (0.32×) | 25.1 ms (0.77×) | 25.0 ms (0.77×) |
+| | spectral-norm | 12.9 ms | 12.2 ms (1.06×) | 13.5 ms (0.96×) [^p3-gate] | 28.3 ms (0.46×) | 10.2 ms (1.26×) | 2.25 ms (**5.74×**) |
+| | fannkuch | 2.46 ms | 3.64 ms (0.68×) | 3.76 ms (0.65×) | 3.72 ms (0.66×) | 0.34 ms (**7.25×**) | 0.34 ms (**7.27×**) |
+| | n-body | 30.2 ms | 27.5 ms (1.10×) | 28.9 ms (1.04×) [^p3-gate] | 50.0 ms (0.60×) | 31.0 ms (0.98×) | 30.9 ms (0.98×) |
 | Boundary mini · Call | PureVM | 490 ns | 77.5 ns (**6.32×**) | — | — | — | — |
 | | CallOnly | 54.0 ns | 104 ns (0.52×) | 105 ns (0.51×) | 165 ns (0.33×) | 105 ns (0.51×) | 106 ns (0.51×) |
 | | Boundary (+SetGlobal) | 120 ns | 179 ns (0.67×) | 177 ns (0.68×) | 180 ns (0.67×) | 176 ns (0.68×) | 176 ns (0.68×) |
@@ -91,13 +91,13 @@ The same reproduction commands measured on an Apple M5 Pro (darwin/arm64, go1.26
 | Realworld embedded · CallInto | Predicate (×1000) | 282 µs | 264 µs (1.07×) | 262 µs (1.08×) | 269 µs (1.05×) | 265 µs (1.07×) | 263 µs (1.07×) |
 | | Transform (×1000) | 212 µs | 181 µs (1.17×) | 183 µs (1.16×) | 183 µs (1.16×) | 167 µs (**1.27×**) | 167 µs (**1.27×**) |
 
-P4 vs P3 like-for-like on arm64: heavy ×3 + realworld ×5 all no worse than P3 (HeavyArith 2.03×, HeavyFloatloop 2.47×, fib 2.06×, binary-trees 2.38×, spectral-norm 2.14×, n-body 1.52×, fannkuch 11.2× over P3; HeavyRecursion ties within noise).
+P4 vs P3 like-for-like on arm64: heavy ×3 + realworld ×5 all no worse than P3 (force column: HeavyArith 2.09×, HeavyFloatloop 2.51×, fib 23.4×, binary-trees 2.40×, spectral-norm 12.6×, n-body 1.62×, fannkuch 10.9×, HeavyRecursion 1.09× over P3).
 
 [^cat-baseline]: `benchmarks/baseline`. Three self-contained scripts (Simple branch-compare, Arith six-order Horner polynomial, Loop sum 1..N), no Go↔Lua boundary crossing. Shows VM-core dispatch / arithmetic / loop cost under minimum workload.
 [^cat-heavy]: `benchmarks/heavy`. Three flat numeric kernels (HeavyArith pure arithmetic, HeavyRecursion self-recursion, HeavyFloatloop nested float loop); intentionally excludes tables, strings, library CALL and other helper-bound structures. Shows the compilation tier's performance ceiling on shapes that actually let it work.
 [^cat-realworld]: `benchmarks/realworld`. Five benchmark-game scripts (fib / binary-trees / spectral-norm / fannkuch / n-body); a single-pass semantics run is differential-tested against the official lua5.1.5 (byte-equal). Shows conventional load under a mix of calls / allocations / floats / table ops.
 [^p3-gate]: P3 auto carries a helper-density profitability gate (issue #39, 2026-07-03): when a hot proto's op mix is dominated by helper round trips (the wasm→Go boundary cost eats the promotion win), promotion is declined and the proto stays on the interpreter. Rows with this marker declined promotion; the number IS interpreter execution (the delta vs the P1 column is sampling-hook overhead). The P3 force column is unaffected (force-all bypasses the gate to preserve differential coverage).
-[^arm64-refresh]: The realworld "P3 auto" column and the fannkuch P4 columns were re-measured on 2026-07-06 (after the P3 helper-density profitability gate, issue #39, and arm64 EQ-K support, issue #56, landed); all other figures are from 2026-07-03.
+[^arm64-refresh]: The realworld "P3 auto" column was re-measured on 2026-07-06 (after the P3 helper-density profitability gate, issue #39, landed); the heavy and realworld P4 columns were re-measured on 2026-07-07 (on this branch, including the issue #50 arm64 segment-to-segment CALL dispatch and issue #56 EQ-K); all other figures are from 2026-07-03.
 [^cat-mini]: `benchmarks/embedded`, mini_bench_test.go. The minimal shape of the embed path: one SetGlobal + one Call + one result read per iter. Shows raw boundary-crossing cost, plus the delta between the allocating `Call` path and the zero-alloc `CallInto` path.
 [^cat-embed]: `benchmarks/embedded`, realworld_embedded_bench_test.go. A batch of 1000 items — per item set fields → Call predicate / feature-transform script → read scalar result, shaped after pineapple's `transform_by_lua`. Shows steady-state throughput of a real batch-processing embed.
 

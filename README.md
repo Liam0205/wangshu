@@ -74,14 +74,14 @@ P4 vs P3 同口径对比：绝大多数对照 P4 领先 ≥ 2%（多数 +10% ~ +
 | 纯 VM 微基准 | Simple (分支/比较) | 572 ns | 83.2 ns (**6.88×**) | 2.57 µs (0.22×) | 2.57 µs (0.22×) | 82.7 ns (**6.92×**) | 82.7 ns (**6.92×**) |
 | | Arith (Horner) | 605 ns | 102 ns (**5.93×**) | 6.42 µs (0.09×) | 6.38 µs (0.09×) | 105 ns (**5.76×**) | 105 ns (**5.76×**) |
 | | Loop (求和循环) | 20.0 µs | 9.99 µs (**2.00×**) | 498 µs (0.04×) | 499 µs (0.04×) | 12.4 µs (**1.61×**) | 12.4 µs (**1.61×**) |
-| heavy 内核 | HeavyArith | 87.2 ms | 44.3 ms (**1.97×**) | 50.9 ms (**1.71×**) | 51.3 ms (**1.70×**) | 25.6 ms (**3.40×**) | 25.3 ms (**3.45×**) |
-| | HeavyRecursion | 5.50 ms | 3.13 ms (**1.76×**) | 3.60 ms (**1.53×**) | 3.70 ms (1.48×) | 3.37 ms (**1.63×**) | 3.38 ms (**1.63×**) |
-| | HeavyFloatloop | 153 ms | 83.8 ms (**1.83×**) | 61.5 ms (**2.49×**) | 62.4 ms (**2.46×**) | 25.3 ms (**6.05×**) | 25.3 ms (**6.05×**) |
-| realworld small | fib | 5.60 ms | 6.41 ms (0.87×) | 7.33 ms (0.76×) [^p3-gate] | 14.3 ms (0.39×) | 6.97 ms (0.80×) | 6.94 ms (0.81×) |
-| | binary-trees | 19.3 ms | 23.9 ms (0.81×) | 26.4 ms (0.73×) [^p3-gate] | 59.9 ms (0.32×) | 25.5 ms (0.76×) | 25.2 ms (0.77×) |
-| | spectral-norm | 12.9 ms | 12.2 ms (1.06×) | 13.5 ms (0.96×) [^p3-gate] | 28.3 ms (0.46×) | 12.1 ms (1.07×) | 13.2 ms (0.98×) |
-| | fannkuch | 2.46 ms | 3.64 ms (0.68×) | 3.76 ms (0.65×) | 3.72 ms (0.66×) | 0.33 ms (**7.44×**) | 0.33 ms (**7.39×**) |
-| | n-body | 30.2 ms | 27.5 ms (1.10×) | 28.9 ms (1.04×) [^p3-gate] | 50.0 ms (0.60×) | 32.9 ms (0.92×) | 32.9 ms (0.92×) |
+| heavy 内核 | HeavyArith | 87.2 ms | 44.3 ms (**1.97×**) | 50.9 ms (**1.71×**) | 51.3 ms (**1.70×**) | 24.8 ms (**3.52×**) | 24.5 ms (**3.56×**) |
+| | HeavyRecursion | 5.50 ms | 3.13 ms (**1.76×**) | 3.60 ms (**1.53×**) | 3.70 ms (1.48×) | 3.38 ms (**1.63×**) | 3.40 ms (**1.62×**) |
+| | HeavyFloatloop | 153 ms | 83.8 ms (**1.83×**) | 61.5 ms (**2.49×**) | 62.4 ms (**2.46×**) | 25.0 ms (**6.13×**) | 24.9 ms (**6.14×**) |
+| realworld small | fib | 5.60 ms | 6.41 ms (0.87×) | 7.33 ms (0.76×) [^p3-gate] | 14.3 ms (0.39×) | 0.60 ms (**9.3×**) [^seg2seg] | 0.61 ms (**9.1×**) [^seg2seg] |
+| | binary-trees | 19.3 ms | 23.9 ms (0.81×) | 26.4 ms (0.73×) [^p3-gate] | 59.9 ms (0.32×) | 25.1 ms (0.77×) | 25.0 ms (0.77×) |
+| | spectral-norm | 12.9 ms | 12.2 ms (1.06×) | 13.5 ms (0.96×) [^p3-gate] | 28.3 ms (0.46×) | 10.2 ms (1.26×) | 2.25 ms (**5.74×**) [^seg2seg] |
+| | fannkuch | 2.46 ms | 3.64 ms (0.68×) | 3.76 ms (0.65×) | 3.72 ms (0.66×) | 0.34 ms (**7.25×**) | 0.34 ms (**7.27×**) |
+| | n-body | 30.2 ms | 27.5 ms (1.10×) | 28.9 ms (1.04×) [^p3-gate] | 50.0 ms (0.60×) | 31.0 ms (0.98×) | 30.9 ms (0.98×) |
 | 边界 mini · Call | PureVM | 490 ns | 77.5 ns (**6.32×**) | — | — | — | — |
 | | CallOnly | 54.0 ns | 104 ns (0.52×) | 105 ns (0.51×) | 165 ns (0.33×) | 105 ns (0.51×) | 106 ns (0.51×) |
 | | Boundary (+SetGlobal) | 120 ns | 179 ns (0.67×) | 177 ns (0.68×) | 180 ns (0.67×) | 176 ns (0.68×) | 176 ns (0.68×) |
@@ -93,14 +93,14 @@ P4 vs P3 同口径对比：绝大多数对照 P4 领先 ≥ 2%（多数 +10% ~ +
 | 真实负载 · CallInto | Predicate (×1000) | 282 µs | 264 µs (1.07×) | 262 µs (1.08×) | 269 µs (1.05×) | 265 µs (1.07×) | 263 µs (1.07×) |
 | | Transform (×1000) | 212 µs | 181 µs (1.17×) | 183 µs (1.16×) | 183 µs (1.16×) | 167 µs (**1.27×**) | 167 µs (**1.27×**) |
 
-P4 vs P3 同口径对比（arm64）：heavy 三本 + realworld 五本 P4 全面不差于 P3（HeavyArith 2.03×、HeavyFloatloop 2.47×、fib 2.06×、binary-trees 2.38×、spectral-norm 2.14×、n-body 1.52×、fannkuch 11.2× over P3；HeavyRecursion 打平在噪声内）。
+P4 vs P3 同口径对比（arm64）：heavy 三本 + realworld 五本 P4 全面不差于 P3（force 列:HeavyArith 2.09×、HeavyFloatloop 2.51×、fib 23.4×、binary-trees 2.40×、spectral-norm 12.6×、n-body 1.62×、fannkuch 10.9×、HeavyRecursion 1.09× over P3）。
 
 [^cat-baseline]: `benchmarks/baseline`。三个自含脚本（Simple 分支比较、Arith 六阶 Horner 多项式、Loop 求和 1..N），单次执行无 Go↔Lua 跨界。反映 VM 内核在最小工作量下的 dispatch / 算术 / 循环开销。
 [^cat-heavy]: `benchmarks/heavy`。三个扁平数值内核（HeavyArith 纯算术、HeavyRecursion 自递归、HeavyFloatloop 嵌套浮点循环），故意剔除表 / 字符串 / library CALL 与其他 helper-bound 结构。反映编译档在能真正发挥的形状上的性能上限。
 [^cat-realworld]: `benchmarks/realworld`。benchmark-game 五脚本（fib / binary-trees / spectral-norm / fannkuch / n-body），语义单次通过与官方 lua5.1.5 做差分测试（逐字节比对）。反映调用 / 分配 / 浮点 / 表操作混合场景下的常规负载。
 [^p3-gate]: P3 auto 模式带 helper 密度收益门（issue #39，2026-07-03）：热 proto 的 op 组合里 helper 往返占比过高（wasm→Go 边界成本吞掉升层收益）时拒绝升层、留在解释器。带此标注的行升层被拒，数字即解释器执行（与 P1 列的差异是采样钩子开销）。P3 force 列不受影响（force-all 绕过收益门，保差分覆盖）。
-[^arm64-refresh]: realworld 五本的「P3 auto」列与 fannkuch 的 P4 两列于 2026-07-06 复测（P3 helper 密度收益门 issue #39 与 arm64 EQ-K 支持 issue #56 合入后），其余数字为 2026-07-03 实测。
-[^seg2seg]: P4 段到段 CALL 直跳（issue #50，2026-07-04，amd64 已交付 / arm64 已合入待 CI 真机复核）：自递归 / arith-callee（fib 形状）之前每次调用付一次跨界往返税（mmap RET → Go dispatch → host.CallBaseline → mmap 重入），现在 caller 段直接 `call` 进 callee 段、callee 段内组拆帧 + native 递归、全程不出 mmap。同机同轮实测（2026-07-07，`-benchtime=2s -count=3 -cpu=1` median，over gopher-lua）：fib 从旧表 0.87× 翻到 **10.3×**、spectral-norm 从 1.28× 翻到 **15.8×**（内层 A/Av/Atv 走段到段；注意 P4 auto 只有 2.14×，force 全升层才吃满收益）、fannkuch **6.9×**。binary-trees（1.35×）/ n-body（1.41×）收益有限：二者分配 / GC 密集，递归 callee 含表 op 不进段到段，收益主要来自其余路径。arm64 端镜像实现已写完 + 交叉编译通过（linux/arm64 + darwin/arm64），真机 `-race` / difftest / benchmark 经 CI 三平台矩阵复核，追踪于 issue #61。
+[^arm64-refresh]: realworld 五本的「P3 auto」列于 2026-07-06 复测（P3 helper 密度收益门 issue #39 合入后）；heavy 三本与 realworld 五本的 P4 两列于 2026-07-07 复测（本分支,含 issue #50 arm64 段到段 CALL 直跳与 issue #56 EQ-K）；其余数字为 2026-07-03 实测。
+[^seg2seg]: P4 段到段 CALL 直跳（issue #50，2026-07-04，amd64 已交付 / arm64 已合入待 CI 真机复核）：自递归 / arith-callee（fib 形状）之前每次调用付一次跨界往返税（mmap RET → Go dispatch → host.CallBaseline → mmap 重入），现在 caller 段直接 `call` 进 callee 段、callee 段内组拆帧 + native 递归、全程不出 mmap。同机同轮实测（2026-07-07，`-benchtime=2s -count=3 -cpu=1` median，over gopher-lua）：fib 从旧表 0.87× 翻到 **10.3×**、spectral-norm 从 1.28× 翻到 **15.8×**（内层 A/Av/Atv 走段到段；注意 P4 auto 只有 2.14×，force 全升层才吃满收益）、fannkuch **6.9×**。binary-trees（1.35×）/ n-body（1.41×）收益有限：二者分配 / GC 密集，递归 callee 含表 op 不进段到段，收益主要来自其余路径。arm64 端镜像实现同分支交付,darwin/arm64 M5 Pro 真机复测(2026-07-07,见下表):fib 从 0.81× 翻到 **9.1×**、spectral-norm 从 0.98× 翻到 **5.74×**,追踪于 issue #61。
 [^cat-mini]: `benchmarks/embedded`，mini_bench_test.go。嵌入路径的最小形式：每 iter 一次 SetGlobal + 一次 Call + 一次读结果。反映边界往返成本本身，以及 `Call` 分配路径与 `CallInto` 零分配路径的成本差。
 [^cat-embed]: `benchmarks/embedded`，realworld_embedded_bench_test.go。1000 item batch，逐 item set 字段 → Call 谓词 / 特征变换脚本 → 读标量结果，写法贴近 pineapple `transform_by_lua`。反映真实批处理嵌入下的稳态吞吐。
 
