@@ -561,6 +561,8 @@ const (
 
 **所以阈值的下限实际上是「让冷 Proto 不被 considerPromotion 误中」的开销门槛**,而不是「确保只编译该编译的」。这个解耦让阈值定标完全可以放到实测阶段,设计期只给保守建议值。
 
+**测试入口 `SetHotThresholds`**(auto 覆盖缺口修复,承本节「阈值不影响正确性」论证):生产阈值(200/1000)对单次短脚本 / fuzz 输入永远够不到,导致 CI 里 P3/P4 的差分/一致性/fuzz 套长期只经 force-all 驱动升层——而 force-all 绕过或不咨询 auto 独有的决策链(运行期可编译性重判自然热度路径 / `PromotionGater` / 尺寸地板与 `FloorExempter`),auto-only 缺陷(如 issue #67)无网可兜。`Bridge.SetHotThresholds(entry, backEdge)`(0 = 保持不变)是与 `SetForceAllPromote` 同纪律的 testing-only 入口:**调低**让短用例在 run 中途真实越阈值、走完整 auto 决策链;**调到 MaxUint32** 得到同 build 下保证不升层的解释器基线。只改「何时」触发决策,不改「是否/如何」决策——正确性论证同本节。消费方:`test/difftest/auto_test.go`(层间 auto 对拍)、`test/conformance/conformance_auto_test.go`、`FuzzAutoPromote`(fuzz_auto_test.go)。
+
 ### 5.3.2 阈值边界值的语义
 
 代码骨架(§4.1):

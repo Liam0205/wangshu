@@ -51,6 +51,20 @@ type Bridge struct {
 	// (F1-F7 排除形状仍走 crescent,08 §2.3.1)。testing-only。
 	forceAll bool
 
+	// hotEntry / hotBackEdge are the effective heat thresholds,
+	// defaulting to the package constants (HotEntryThreshold /
+	// HotBackEdgeThreshold) in NewBridge. SetHotThresholds overrides
+	// them for auto-mode testing: LOWERING them lets short fuzz inputs
+	// and conformance cases reach the natural-heat promotion decision
+	// (recheckCompilabilityRuntime, PromotionGater, the short-proto
+	// floor and its FloorExempter — none of which forceAll exercises),
+	// while RAISING them to MaxUint32 yields a guaranteed
+	// never-promoted interpreter baseline on a P3/P4 build. The
+	// override changes WHEN the auto decision runs, never WHAT it
+	// decides. testing-only, same discipline as forceAll.
+	hotEntry    uint32
+	hotBackEdge uint32
+
 	// minPromotableLen is the effective short-proto floor, snapshotted
 	// from the backend in SetP3Compiler (MinPromotableCodeLen default,
 	// or the backend's MinPromotableLen override). Zero means "no
@@ -115,6 +129,20 @@ func NewBridge() *Bridge {
 		profileTable: make(map[*bytecode.Proto]*ProfileData),
 		gibbousCodes: make(map[*bytecode.Proto]GibbousCode),
 		aggregator:   NewAggregator(),
+		hotEntry:     HotEntryThreshold,
+		hotBackEdge:  HotBackEdgeThreshold,
+	}
+}
+
+// SetHotThresholds overrides the natural-heat promotion thresholds
+// (testing-only; see the hotEntry field doc). Zero keeps the current
+// value for that threshold.
+func (b *Bridge) SetHotThresholds(entry, backEdge uint32) {
+	if entry > 0 {
+		b.hotEntry = entry
+	}
+	if backEdge > 0 {
+		b.hotBackEdge = backEdge
 	}
 }
 
@@ -291,7 +319,7 @@ func (b *Bridge) OnBackEdge(proto *bytecode.Proto, pc int32, onMain bool) {
 	// as they will get). Keeps forceAll promoting everything it used to,
 	// at the same points it used to, without paying a full backend
 	// re-analysis on every back edge in between.
-	if pd.BackEdge[pc] == 1 || pd.BackEdge[pc] == HotBackEdgeThreshold {
+	if pd.BackEdge[pc] == 1 || pd.BackEdge[pc] == b.hotBackEdge {
 		pd.recheckedAtEntry = 0
 		// Re-arm the floor-exemption verdict at the same milestones
 		// (issue #67): ExemptFromFloor reads IC state (P4's
@@ -304,7 +332,7 @@ func (b *Bridge) OnBackEdge(proto *bytecode.Proto, pc int32, onMain bool) {
 			pd.floorExempt = floorExemptUnasked
 		}
 	}
-	if pd.BackEdge[pc] >= HotBackEdgeThreshold || b.forceAll {
+	if pd.BackEdge[pc] >= b.hotBackEdge || b.forceAll {
 		if !b.forceAll && b.flooredOut(proto, pd) {
 			return // short proto:dispatch 反噬 > 解释器收益,跳过升层(issue #21)
 		}
@@ -328,7 +356,7 @@ func (b *Bridge) OnEnter(proto *bytecode.Proto, onMain bool) {
 		return
 	}
 	pd.EntryCount++
-	if pd.EntryCount >= HotEntryThreshold || b.forceAll {
+	if pd.EntryCount >= b.hotEntry || b.forceAll {
 		if !b.forceAll && b.flooredOut(proto, pd) {
 			return // short proto:dispatch 反噬 > 解释器收益,跳过升层(issue #21)
 		}

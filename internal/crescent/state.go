@@ -504,6 +504,20 @@ func (st *State) SetForceAllPromote(on bool) {
 	}
 }
 
+// SetHotThresholds overrides the natural-heat promotion thresholds
+// (**testing-only**; forwards to Bridge.SetHotThresholds; 0 keeps that
+// threshold unchanged). Lowering them lets short scripts / fuzz inputs
+// actually reach the auto-mode promotion decision chain
+// (recheckCompilabilityRuntime / PromotionGater / short-proto floor +
+// FloorExempter — all of which forceAll bypasses or never consults).
+// Changes only WHEN the decision runs, never WHAT it decides. No-op
+// when bridge is nil.
+func (st *State) SetHotThresholds(entry, backEdge uint32) {
+	if st.bridge != nil {
+		st.bridge.SetHotThresholds(entry, backEdge)
+	}
+}
+
 // PromotionCount 返回当前 State 上已升层的 Proto 数量(testing-only,转发
 // Bridge.PromotionCount)。bridge 为 nil(P1-only build / P3 未注入)→ 返 0。
 //

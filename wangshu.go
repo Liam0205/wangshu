@@ -131,6 +131,21 @@ func (st *State) SetGCStressMode(on bool) { st.core.SetGCStressMode(on) }
 // 判不可编译 → 全留 crescent,本开关 no-op。
 func (st *State) SetForceAllPromote(on bool) { st.core.SetForceAllPromote(on) }
 
+// SetHotThresholds overrides the natural-heat promotion thresholds
+// (entry maps to HotEntryThreshold, backEdge to HotBackEdgeThreshold;
+// 0 keeps that threshold unchanged).
+//
+// **testing-only**: the auto-mode coverage entry point — the production
+// thresholds (200/1000) are unreachable for a single short script, so
+// tests lower them to drive the auto decision chain (runtime
+// compilability recheck / profitability gate / short-proto floor and
+// its exemption) with small cases. Changes only WHEN the promotion
+// decision runs, never WHETHER/HOW it decides. No-op on non-P3/P4
+// builds (same boundary as SetForceAllPromote).
+func (st *State) SetHotThresholds(entry, backEdge uint32) {
+	st.core.SetHotThresholds(entry, backEdge)
+}
+
 // PromotionCount 返回当前 State 上已升层(crescent → gibbous)的 Proto 数量
 // (**testing-only**)。
 //
