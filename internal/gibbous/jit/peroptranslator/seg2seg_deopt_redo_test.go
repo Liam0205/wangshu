@@ -35,6 +35,11 @@ import (
 // miss immediately at the top frame, driving a top-level deopt-redo. Lua
 // coerces the numeric string, so the result stays byte-equal.
 func TestSeg2SegDeoptRedo_ArithGuardMiss(t *testing.T) {
+	// Must stay sequential: SegToSegHitCount / SegToSegDeoptCount are
+	// process-global counters read via before/after deltas, so a
+	// t.Parallel() here (or on another test touching these counters)
+	// would let a concurrent run's increments leak into the delta. Do
+	// NOT add t.Parallel().
 	src := `
 local function poly(n, x)
   if n <= 0 then return 0 else return x * n + poly(n - 1, x) end
@@ -85,6 +90,9 @@ return acc, coerced
 // top frame. Correctness (byte-equal) proves the deopt was consumed at the
 // right place, not mid-chain.
 func TestSeg2SegDeoptRedo_NestedPropagation(t *testing.T) {
+	// Sequential-only: see the note in TestSeg2SegDeoptRedo_ArithGuardMiss
+	// — these two tests share the process-global SegToSeg* counters and
+	// must not run in parallel. Do NOT add t.Parallel().
 	// sumdown(n, x): returns x + sumdown(n-1, x) for n>0, else 0. With
 	// x=1 the result is n. The recursion is seg2seg (arith + compare +
 	// self-call via upvalue, no param write). Warm it, then call once
