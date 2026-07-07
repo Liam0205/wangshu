@@ -195,16 +195,20 @@ func TestAuto_Tiered(t *testing.T) {
 			if err != nil {
 				t.Fatalf("wangshu compile: %v", err)
 			}
-			baseline := runAutoOnce(t, prog, newInterpBaselineState(), "baseline")
-			if oracle != "" {
-				want := runOracle(t, oracle, wrapForOracle(c.src))
-				if baseline != want {
-					t.Errorf("baseline vs oracle byte-diff:\n  baseline: %q\n  oracle:   %q",
-						baseline, want)
-				}
-			}
+			// Run-for-run baseline: globals persist across Run on one
+			// State, so run N is only comparable to baseline run N
+			// (lesson from FuzzAutoPromote seed 861f54880d2009d5).
+			baseSt := newInterpBaselineState()
 			st := newAutoState()
 			for run := 1; run <= autoRuns; run++ {
+				baseline := runAutoOnce(t, prog, baseSt, "baseline")
+				if run == 1 && oracle != "" {
+					want := runOracle(t, oracle, wrapForOracle(c.src))
+					if baseline != want {
+						t.Errorf("baseline vs oracle byte-diff:\n  baseline: %q\n  oracle:   %q",
+							baseline, want)
+					}
+				}
 				got := runAutoOnce(t, prog, st, "auto")
 				if got != baseline {
 					t.Errorf("auto run %d diverged from interpreter baseline:\n  auto:     %q\n  baseline: %q",
@@ -232,9 +236,10 @@ func TestAuto_SeedCorpus(t *testing.T) {
 			if err != nil {
 				t.Fatalf("wangshu compile: %v", err)
 			}
-			baseline := runAutoOnce(t, prog, newInterpBaselineState(), "baseline")
+			baseSt := newInterpBaselineState()
 			st := newAutoState()
 			for run := 1; run <= autoRuns; run++ {
+				baseline := runAutoOnce(t, prog, baseSt, "baseline")
 				got := runAutoOnce(t, prog, st, "auto")
 				if got != baseline {
 					t.Errorf("auto run %d diverged from interpreter baseline:\n  auto:     %q\n  baseline: %q",
@@ -269,9 +274,10 @@ func TestAuto_RandomScripts(t *testing.T) {
 		if err != nil {
 			t.Fatalf("seed %d compile: %v", seed, err)
 		}
-		baseline := runAutoOnce(t, prog, newInterpBaselineState(), "baseline")
+		baseSt := newInterpBaselineState()
 		st := newAutoState()
 		for run := 1; run <= 2; run++ {
+			baseline := runAutoOnce(t, prog, baseSt, "baseline")
 			got := runAutoOnce(t, prog, st, "auto")
 			if got != baseline {
 				// DIVERGENCE line format matches TestDiff_RandomScripts
@@ -307,10 +313,10 @@ return s`},
 			}
 			baseState := newInterpBaselineState()
 			baseState.SetGCStressMode(true)
-			baseline := runAutoOnce(t, prog, baseState, "baseline")
 			st := newAutoState()
 			st.SetGCStressMode(true)
 			for run := 1; run <= autoRuns; run++ {
+				baseline := runAutoOnce(t, prog, baseState, "baseline")
 				got := runAutoOnce(t, prog, st, "auto+gcstress")
 				if got != baseline {
 					t.Errorf("auto+gcstress run %d diverged:\n  auto:     %q\n  baseline: %q",

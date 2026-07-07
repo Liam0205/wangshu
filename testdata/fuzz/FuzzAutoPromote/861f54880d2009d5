@@ -1,0 +1,2 @@
+go test fuzz v1
+string("A={A0000,function(A00)A{A00000000}end}A=setmetatable({A00},A)y=setmetatable({v=0},y).v")
