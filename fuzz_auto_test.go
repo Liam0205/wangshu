@@ -70,11 +70,16 @@ func FuzzAutoPromote(f *testing.F) {
 		}
 
 		// Interpreter baseline: thresholds unreachable on this same
-		// build — promotion cannot happen.
+		// build — promotion cannot happen. It runs the SAME number of
+		// times as the auto State and is compared run-for-run: scripts
+		// that mutate globals legitimately behave differently on later
+		// runs (state persists across Run on one State), so comparing
+		// auto run 2 against a single baseline run would flag ordinary
+		// cross-run state drift as a tier divergence (found by this
+		// fuzz target's first CI run, seed 861f54880d2009d5).
 		st1 := wangshu.NewState(wangshu.Options{})
 		st1.SetStepBudget(1 << 20)
 		st1.SetHotThresholds(^uint32(0), ^uint32(0))
-		resP1, errP1 := prog.Run(st1)
 
 		// Auto path: lowered thresholds, two runs on one State. Run 1
 		// promotes mid-run; run 2 is tier-mixed from the first call.
@@ -82,6 +87,7 @@ func FuzzAutoPromote(f *testing.F) {
 		stA.SetStepBudget(1 << 20)
 		stA.SetHotThresholds(2, 4)
 		for run := 1; run <= 2; run++ {
+			resP1, errP1 := prog.Run(st1)
 			resA, errA := prog.Run(stA)
 
 			// Error-existence divergence: budget/timing class is
