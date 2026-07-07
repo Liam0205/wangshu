@@ -127,13 +127,6 @@ func shimNewTable(ctx *jit.JITContext, base, pc, a, b, c int32) int32 {
 	return hostFromCtx(ctx).NewTable(base, pc, a, b, c)
 }
 
-// shimSetList: host.SetList(base, pc, a, b, c) int32
-//
-//go:noinline
-func shimSetList(ctx *jit.JITContext, base, pc, a, b, c int32) int32 {
-	return hostFromCtx(ctx).SetList(base, pc, a, b, c)
-}
-
 // shimForPrep: host.ForPrep(base, pc, a) int32
 //
 //go:noinline
@@ -204,12 +197,6 @@ func shimEqAddr() uint64 {
 
 func shimCompareAddr() uint64 {
 	f := shimCompare
-	p := *(*unsafe.Pointer)(unsafe.Pointer(&f))
-	return uint64(*(*uintptr)(p))
-}
-
-func shimSetListAddr() uint64 {
-	f := shimSetList
 	p := *(*unsafe.Pointer)(unsafe.Pointer(&f))
 	return uint64(*(*uintptr)(p))
 }

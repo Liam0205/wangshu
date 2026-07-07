@@ -771,9 +771,14 @@ func emitNEWTABLEArm64(cb *codeBuf, pc int32, a, b, c uint8) {
 	emitExitReasonArm64(cb, jit.HelperNewTable, pc, int32(a), int32(b), int32(c))
 }
 
-// emitSETLISTArm64 emits arm64 SETLIST via shimSetList.
+// emitSETLISTArm64 emits SETLIST A B C via the HelperSetList exit-reason
+// (the dispatcher runs host.SetList: doSetList + safepoint, may raise).
+// Mirror of amd64 emitSETLIST. AnalyzeNative rejects B=0 (to-top, needs a
+// live `top` the segment doesn't track) and C=0 (batch number lives in
+// the NEXT instruction word, which the CFG would misdecode) — same reject
+// precedent as CALL B=0/C=0 — so only fixed B/C forms reach here.
 func emitSETLISTArm64(cb *codeBuf, pc int32, a, b, c uint8) {
-	emitCallShimArm64(cb, shimSetListAddr(), []int32{0, pc, int32(a), int32(b), int32(c)})
+	emitExitReasonArm64(cb, jit.HelperSetList, pc, int32(a), int32(b), int32(c))
 }
 
 // emitCALLArm64 emits CALL A B C via the exit-reason protocol (issue

@@ -307,6 +307,16 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 				if bytecode.B(ins) >= 256 || bytecode.C(ins) >= 256 {
 					return false
 				}
+			case bytecode.SETLIST:
+				// SETLIST rides the exit-reason path (host.SetList runs
+				// doSetList). B=0 (fill "to top", needs a live `top`) and
+				// C=0 (batch number lives in the NEXT instruction word,
+				// which the CFG would misdecode as an op) depend on
+				// run-time state the segment can't supply — reject those
+				// forms. Same gate as amd64 (mirror of CALL B=0/C=0).
+				if bytecode.B(ins) == 0 || bytecode.C(ins) == 0 {
+					return false
+				}
 			}
 		}
 	}
@@ -366,6 +376,9 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 // both lower to exit-reasons (HelperSelf / HelperConcat — IC-backed
 // method lookup / doConcat happen Go-side, may raise), so one
 // `obj:method()` or `..` no longer kicks the whole proto off native.
+// SETLIST mirrors the amd64 acceptance (issue #68): it lowers to a
+// HelperSetList exit-reason (doSetList + safepoint, may raise);
+// AnalyzeNative rejects B=0 / C=0 forms.
 func opSupported(op bytecode.OpCode) bool {
 	switch op {
 	case bytecode.MOVE, bytecode.LOADK, bytecode.LOADBOOL, bytecode.LOADNIL,
@@ -380,7 +393,7 @@ func opSupported(op bytecode.OpCode) bool {
 		bytecode.GETGLOBAL, bytecode.SETGLOBAL,
 		bytecode.GETTABLE, bytecode.SETTABLE, bytecode.NEWTABLE,
 		bytecode.UNM,
-		bytecode.SELF, bytecode.CONCAT,
+		bytecode.SELF, bytecode.CONCAT, bytecode.SETLIST,
 		bytecode.RETURN:
 		return true
 	default:
@@ -564,6 +577,8 @@ func emitLinearOpArm64(buf *codeBuf, ins bytecode.Instruction, pc int32) error {
 		emitSELFArm64(buf, pc, a, bReg, cRK)
 	case bytecode.CONCAT:
 		emitCONCATArm64(buf, pc, a, bReg, uint8(cRK))
+	case bytecode.SETLIST:
+		emitSETLISTArm64(buf, pc, a, bReg, uint8(cRK))
 	default:
 		return fmt.Errorf("emitLinearOpArm64: unsupported op %v at pc %d", op, pc)
 	}
