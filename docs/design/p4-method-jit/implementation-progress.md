@@ -2517,6 +2517,49 @@ miss 尾部处理按有无副作用区分:
 
 ---
 
+## 19. issue #77 math.* intrinsic emission:消除纯数值 host 调用往返(双架构,2026-07-08)
+
+承 issue #77,是 #67 揭出来的直接后续。#67 的 NodeHit inline 把 n-body 字段访问的往返消掉后,剩下的 exit-reason dispatch(amd64 ~50k/run)几乎全是 `sqrt(dist2)` —— `math.sqrt` 是 host closure(Go 实现),native 段没法 seg2seg 进去,每次调用都出段跑 Go 再重入。
+
+### 19.1 改动:CALL 站点识别已知 math host closure 后段内发射指令
+
+经典 JIT intrinsic 手法:CALL 站点的 IC 观察到被调是特定已知纯数值 host closure(`math.sqrt`/`floor`/`ceil`/`abs`/`max`/`min`)时,段内直接发射对应指令,而不是往返调用。
+
+- **amd64**:`SQRTSD` / `ROUNDSD`(mode 1=floor / 2=ceil)/ 清符号位(abs)/ `UCOMISD` + 条件选择(max/min)。
+- **arm64**:`FSQRT` / `FRINTM`(floor)/ `FRINTP`(ceil)/ `FABS` / `FCMP` + `FCSEL`(max/min)。
+
+guard 序列:被调身份(`R(A) == 烤进 IC 的 IntrinsicCalleeVal`,一次 64 位比较锁定那个 host closure)+ 参数 IsNumber;miss → 现有 exit-reason CALL 路径(慢但绝不会错)。
+
+### 19.2 关键位置:intrinsic 检查放在 CALL 快路径的 guard-miss 慢路径上
+
+一个 math intrinsic 被调方是 **host closure**,它的 protoID 字段是 hostFnID 而非 Lua protoID,所以**必然**过不了普通快路径的 protoID guard,直接落到 guard-miss 慢路径。intrinsic 检查就挂在那里:
+
+- **热的 Lua 调用**(如 fib 的自递归)过 protoID guard → 走 seg2seg → **完全不碰任何 intrinsic guard,零开销**。
+- **math intrinsic 被调方**:protoID guard miss → 落到慢路径 → intrinsic guard 命中 → 段内发射。
+- **其他 host / shape 变化**:落到慢路径 → intrinsic guard miss → HelperCall。
+
+这个放置是「效率提升 + 不回归」的关键:实测 fib / spectral / fannkuch 无回归。
+
+### 19.3 IC 扩展
+
+`CallIC` 加两个字段(TestCallICLayout 校验偏移):`IntrinsicID`(offset 7,原 pad 字节,缓存 kind)+ `IntrinsicCalleeVal`(offset 24,烤 host closure 的完整 NaN-box 值供身份 guard)+ 新 flag `CallICFlagIsIntrinsic`。`ObserveCallCallee` 见到 host closure 时查 per-State 的 hostFnID→kind 注册表(stdlib 在 math 注册时按名字填),把 kind(bits 56..63)+ 闭包 GCRef(bits 0..47)打包进观察字;`PopulateHostIntrinsic` 缓存这些字段,而不是像普通 host closure 那样标 Stuck。
+
+### 19.4 正确性:byte-equal 依据
+
+**只在 `c == 2`(恰好一个返回值)+ `b == 2`(一元)/ `b == 3`(max/min)的形式发射**——段无法同步 top,固定单返回值形式的后续指令都读固定寄存器,不需要动 top。
+
+NaN 处理是 byte-equal 的核心:`value.NumberValue` 把任何 NaN 规范成 canonNaN(`0x7FF8...`),所以值世界里唯一的 NaN 数就是 canonNaN。SSE/NEON 对 canonNaN 的运算要么原样传播(< qNanBoxBase,直接存,与 host 一致)、要么产生负 indefinite(≥ qNanBoxBase,被 result-NaN guard 抓走路由到 host 规范化)。sqrt/floor/ceil 带这道 result guard(照 arith inline 先例);abs/max/min 结果必是某个 < qNanBoxBase 的输入,不会落进 tag 区,不需要 guard。max/min 用 order-dependent 的 `>`/`<`(与 Lua 5.1 `mathMinMax` 逐条对齐),NaN 时比较为 false 保留第一个操作数。
+
+### 19.5 验证
+
+- **e2e byte-equal sweep(arch-neutral)**:6 个 intrinsic × 边界输入(负数 / 小数 / ±0 / ±Inf / NaN / 大整数),解释器 vs force-promote 逐字节一致;max/min 两个方向都验 NaN。
+- **prove-the-path**:`IntrinsicHitCount` 增长(段内路径真的执行,不是 host 往返);amd64 dispatch-drop 测试证 sqrt kernel 每 run dispatch 6000(关)→ 0(开)。
+- **amd64 实测**(Xeon Platinum,`-benchtime=2s -count=3 -cpu=1`):n-body P4 JIT auto 6.8ms → 4.1ms(~1.65×),fib / spectral / fannkuch 无回归。
+- **arm64**:结构 well-formed 测试(整字 + 无悬空 fixup)+ cross-build;正确性交 CI arm64 difftest byte-equal,**性能待 arm64 真机实测**(承与 #67 一样的纪律)。
+- fuzz:`FuzzP4ForceAllPromote` 加 math intrinsic seeds(P4-force vs P1-interp byte-equal),45s + 30s smoke 干净。
+
+---
+
 相关:
 - [00-overview](./00-overview.md)(P4 总览,本文是其 §4 PJ 表的运行期对账 + §6 跨文档定稿决策收口)
 - [01-launch-judgment](./01-launch-judgment.md)~[08-testing-strategy](./08-testing-strategy.md)(各子系统设计文档,本文 §2 聚合其 §回填请求节)
