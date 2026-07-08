@@ -63,6 +63,35 @@ type Proto struct {
 	// CompReasons:CompNotCompilable 时的拒因位掩码(F1-F7 对应位,与
 	// internal/bridge.ReasonsBitmap 同语义)。诊断/日志用,非热路径。
 	CompReasons uint16
+
+	// IntrinsicCallPCs lists the pcs of CALL instructions whose callee is
+	// a recognized math intrinsic (issue #77): a direct `math.<name>(...)`
+	// or a `local f = math.<name>; f(...)` alias, where <name> is in
+	// MathIntrinsicNames. The frontend records these at compile time (it
+	// has the AST names + the alias dataflow); the P4 native CALL-density
+	// gate reads them to treat such calls as cheap inline ops (SQRTSD /
+	// ROUNDSD / ...) rather than exit-reason round trips, so a short
+	// function calling only math intrinsics still promotes. Compile-time
+	// write-once, cross-State read-only (same discipline as Compilability).
+	// Purely a promotion heuristic input — correctness rests on the
+	// segment's runtime intrinsic-identity guard, so a false entry (e.g.
+	// `math` shadowed at run time) only risks an unprofitable promotion,
+	// never a wrong result.
+	IntrinsicCallPCs []int32
+}
+
+// MathIntrinsicNames is the set of math.* function names the P4 native
+// JIT emits inline (issue #77). The frontend consults it to mark
+// IntrinsicCallPCs. Kept in sync with the stdlib's name->kind intrinsic
+// table (stdlib.mathIntrinsics); stdlib's TestMathIntrinsicNamesInSync
+// asserts they match so a new intrinsic can't be added to one side only.
+var MathIntrinsicNames = map[string]bool{
+	"sqrt":  true,
+	"floor": true,
+	"ceil":  true,
+	"abs":   true,
+	"max":   true,
+	"min":   true,
 }
 
 // IsStringConst reports whether Consts[i] is a string literal placeholder.

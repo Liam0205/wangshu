@@ -419,6 +419,19 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 	// on the native path than on the interpreter — measured: fib 11ms
 	// interp vs 18ms native. Require enough non-CALL work per CALL to
 	// amortize the round trip.
+	// Math-intrinsic CALL sites (issue #77) don't round-trip — they emit
+	// inline (SQRTSD / ROUNDSD / ...) like an arith op — so they must not
+	// count toward the CALL-density gate below (which exists to reject
+	// protos dominated by expensive exit-reason CALLs). The frontend
+	// recorded these pcs; they still add to totalOps (cheap inline work)
+	// but not to callCount.
+	var intrinsicCallPC map[int32]bool
+	if len(proto.IntrinsicCallPCs) > 0 {
+		intrinsicCallPC = make(map[int32]bool, len(proto.IntrinsicCallPCs))
+		for _, p := range proto.IntrinsicCallPCs {
+			intrinsicCallPC[p] = true
+		}
+	}
 	returnCount := 0
 	callCount := 0
 	totalOps := 0
@@ -432,7 +445,9 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 			case bytecode.RETURN:
 				returnCount++
 			case bytecode.CALL:
-				callCount++
+				if !intrinsicCallPC[pc] {
+					callCount++
+				}
 			}
 		}
 	}
