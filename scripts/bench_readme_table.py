@@ -55,7 +55,11 @@ def parse(path):
             m = re.match(r'^(Benchmark\S+)\s+\d+\s+([\d.]+)\s+ns/op', line)
             if not m:
                 continue
-            acc.setdefault(m.group(1), []).append(float(m.group(2)))
+            # 归一化 Go 的 GOMAXPROCS 后缀:`-cpu=1` 时 Go 不追加 `-N`,但若
+            # --format-only 喂进多核跑的日志(名字带 `-8` 之类),去掉后缀才
+            # 能和 formatter 里的裸名直查对上(否则升层列静默变 `—`)。
+            name = re.sub(r'-\d+$', '', m.group(1))
+            acc.setdefault(name, []).append(float(m.group(2)))
     return {k: statistics.median(v) for k, v in acc.items()}
 
 
