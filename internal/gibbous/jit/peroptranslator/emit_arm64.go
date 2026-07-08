@@ -494,8 +494,9 @@ func emitTableNodeHitPreludeArm64(cb *codeBuf, tblReg uint8, index, shape uint32
 // amd64 keeps the exit-reason path to avoid a ~3% table-heavy regression).
 // `R(A) := R(B)[K(C)]` for a NodeHit IC site with a CONSTANT key.
 // Mirrors emitInlineGetGlobalNodeHitArm64 but reads the table from R(B)
-// and adds an IsTable + TableRef + NodeKey guard (the global version has a
-// fixed table identity and key). Byte-equal to host icGetTable NodeHit.
+// and adds IsTable + hmask bounds + gen + nodeRef + NodeKey guards (see
+// emitTableNodeHitPreludeArm64; the global version has a fixed table
+// identity and key). Byte-equal to host icGetTable NodeHit.
 // Read is side-effect free → miss tail is seg2seg-eligible.
 func emitInlineGetTableNodeHitArm64(cb *codeBuf, pc int32, a, b uint8, c int) bool {
 	if cb.proto == nil || int(pc) < 0 || int(pc) >= len(cb.proto.IC) {

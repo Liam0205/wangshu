@@ -85,7 +85,7 @@ return p.total
 // TestPJ10_TableNodeHit_ShapeChangeDeopt: correctness under a mid-run
 // shape change. A field read is warmed as NodeHit, then the table's shape
 // changes (new field added -> gen bump), which must fail the inline
-// gen/TableRef guard and route to host.GetTable, staying byte-equal. This
+// gen guard and route to host.GetTable, staying byte-equal. This
 // guards the guard itself (on arm64; on amd64 it always takes the host
 // path, still byte-equal).
 func TestPJ10_TableNodeHit_ShapeChangeDeopt(t *testing.T) {
