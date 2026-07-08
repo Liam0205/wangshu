@@ -22,6 +22,7 @@ package wangshu_test
 import (
 	"fmt"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"testing"
 
@@ -142,9 +143,12 @@ func TestI85_ProperTailRecursionPromoted(t *testing.T) {
 // abort. The crasher shape recurses to maxLuaCallDepth (the fib(88886)
 // branch never bottoms out) under a live native re-entry chain, then
 // unwinds via "stack overflow"; iterating with forced GCs makes the
-// corruption deterministic under GOGC=1 (and still probabilistically
-// effective at default GOGC — the fuzz smoke hit it in seconds).
+// corruption deterministic at GC percent 1 (set below so the guard is
+// self-contained; at default GOGC the repro is only probabilistic —
+// though still effective enough that the fuzz smoke hit it in seconds).
 func TestI86_DeepRecursionGCStress(t *testing.T) {
+	prev := debug.SetGCPercent(1)
+	t.Cleanup(func() { debug.SetGCPercent(prev) })
 	// Exact FuzzAutoPromote harness shape: the interpreter baseline
 	// State runs interleaved with the auto State — the extra allocation
 	// traffic is what positions the goroutine SP near the stack guard
