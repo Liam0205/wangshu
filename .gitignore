@@ -9,3 +9,7 @@ luac.out
 
 # Local pre-push hook rebase-check artifact (self-wrapper); never tracked.
 .rebasechk
+
+# Python bytecode cache from scripts/ tooling.
+__pycache__/
+*.pyc
