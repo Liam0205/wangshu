@@ -771,7 +771,15 @@ func (st *State) ExecutePlainCallInlineFrame(base, callA, nargs, nresults int32)
 	st.nCcalls++
 	// Zero-cross fast path: callee is also P4-promoted → skip
 	// executeFrom's interpreter loop entirely.
-	if profileEnabled && th == st.mainTh {
+	//
+	// nCcalls watermark (gibbousReentryCCallCap): each zero-cross level
+	// is a real Go re-entry (enterGibbous → Run → dispatcher → here),
+	// so deep Lua recursion would exhaust maxCCallDepth long before
+	// maxLuaCallDepth. Past the watermark, fall through to the
+	// interpreter path below — its executeFrom drives the remaining
+	// recursion flat (doCall's gibbous branch is gated by the same
+	// watermark), costing exactly one more nCcalls total.
+	if profileEnabled && th == st.mainTh && st.nCcalls < gibbousReentryCCallCap {
 		calleeCode := st.bridge.GibbousCodeOf(st.protos[calleePID])
 		if calleeCode != nil {
 			err := st.enterGibbous(th, calleeCode, funcIdx, int(nargs), int(nresults))
@@ -1177,7 +1185,11 @@ func (st *State) ExecuteCalleeFromInlineFrame(base, callA, callArgCount, nresult
 	//    enterGibbous(内部 enterLuaFrame + code.Run + DoReturn 弹帧),跳过
 	//    executeFrom 解释器主循环 + 直接进 P4 mmap 段,实现 zero-cross 路径。
 	//    callee 非 P4 升层时回落 enterLuaFrame + executeFrom(Spike 1-4 既有路径)。
-	if profileEnabled && th == st.mainTh {
+	//    nCcalls watermark mirrors ExecutePlainCallInlineFrame (see the
+	//    gibbousReentryCCallCap doc in frame.go): past the watermark, take
+	//    the interpreter fallback so deep recursion cannot exhaust the C
+	//    stack budget.
+	if profileEnabled && th == st.mainTh && st.nCcalls < gibbousReentryCCallCap {
 		calleeCode := st.bridge.GibbousCodeOf(st.protos[calleePID])
 		if calleeCode != nil {
 			err := st.enterGibbous(th, calleeCode, funcIdx, nargs, int(nresults))

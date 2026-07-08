@@ -11,6 +11,25 @@ import (
 const (
 	maxLuaCallDepth = 20000 // LUAI_MAXCALLS:CallInfo 链长上限,超限抛 "stack overflow"
 	maxCCallDepth   = 200   // LUAI_MAXCCALLS:host→Lua 重入(真 Go 栈)上限,超限抛 "C stack overflow"
+
+	// gibbousReentryCCallCap is the soft watermark above which promoted
+	// protos are dispatched to the INTERPRETER instead of their gibbous
+	// code. Rationale: pure-Lua recursion costs no C stack on the
+	// interpreter (the execute loop drives the CI chain; PUC 5.1 is the
+	// same, which is why LUAI_MAXCALLS is 20000), but every native-tier
+	// call level is a real Go re-entry chain (Run -> dispatcher ->
+	// ExecutePlainCallInlineFrame -> enterGibbous -> Run ...), each
+	// burning one nCcalls. Deep recursion on a promoted proto would
+	// therefore hit maxCCallDepth (200) and raise "C stack overflow"
+	// where the interpreter succeeds — an auto-mode-only divergence
+	// (found by FuzzAutoPromote: `fib(1000)` self-recursion). Past this
+	// watermark, gibbous entry points fall back to the interpreter: the
+	// remaining descent runs on the CI chain with NO further Go
+	// re-entry, bounded by maxLuaCallDepth exactly like P1. Results
+	// stay byte-equal; only pathological-depth performance degrades.
+	// Half the hard cap leaves the other half as headroom for
+	// metamethod/host re-entries below the switch point.
+	gibbousReentryCCallCap = maxCCallDepth / 2
 )
 
 // enterLuaFrame 准备一帧并压 CallInfo(05 §1.4)。

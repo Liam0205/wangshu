@@ -1,0 +1,2 @@
+go test fuzz v1
+string("local function fib(n)if n<0 then return end fib(n-2)end fib(01000)")
