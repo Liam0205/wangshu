@@ -1,7 +1,7 @@
 # Guide:设计稿主张须对本码库 physics 重新验证
 
 > 适用:把设计稿热路径上的抽象记号(`(call $x)`)、固定 token(base/指针/句柄/视图)、或成本主张照搬到实现之前——尤其每指令必经的快路径、跨层/跨调用存活的值。**或处理「设计稿/task 描述/stub 注释承诺/外部依赖现状」类前序快照在事实变更后失效**(§5「时间维度」)。**或脚本/工具链/包依赖在跨 OS / shell / runtime 版本物理环境间静默挂**(§6「空间维度」)。P3 翻译全程复发,P2 编译层同理,P4 method-JIT 检查翻面期同理,CI 矩阵扩平台时同理。
-> 来源:`memory/reflections/2026-06-13-issue8-boundary-cost-round.md`(成本归类)+ `memory/reflections/2026-06-14-p3-pw5-table-ic-round.md`(边界成本预算)+ `memory/reflections/2026-06-14-p3-pw6-crosslayer-call-round.md`(段重定位 UAF)+ `2026-06-14-p3-pw7-pw4b-closure-tforloop-round.md`(难点过期)+ `2026-06-16-vs0e-varargs-stack-underflow-round.md`(调研先于实现)+ `2026-06-24-p4-doc-review-round.md`(外部依赖现状过期)+ `2026-06-30-pr27-f3-3b-darwin-arm64-execute-roundup.md`(sentinel 注释承诺与检查状态解耦)+ `2026-06-30-pr28-f3-3c-tri-platform-matrix-ci.md`(bash 3.2 vs 4+ / actions/cache symlink / homebrew 包政策 跨 OS 物理环境差异)——独立实例聚合为一个判断框架。
+> 来源:`memory/reflections/2026-06-13-issue8-boundary-cost-round.md`(成本归类)+ `memory/reflections/2026-06-14-p3-pw5-table-ic-round.md`(边界成本预算)+ `memory/reflections/2026-06-14-p3-pw6-crosslayer-call-round.md`(段重定位 UAF,§2 第一实例)+ `2026-06-14-p3-pw7-pw4b-closure-tforloop-round.md`(难点过期)+ `2026-06-16-vs0e-varargs-stack-underflow-round.md`(调研先于实现)+ `2026-06-24-p4-doc-review-round.md`(外部依赖现状过期)+ `2026-06-30-pr27-f3-3b-darwin-arm64-execute-roundup.md`(sentinel 注释承诺与检查状态解耦)+ `2026-06-30-pr28-f3-3c-tri-platform-matrix-ci.md`(bash 3.2 vs 4+ / actions/cache symlink / homebrew 包政策 跨 OS 物理环境差异)+ `2026-07-08-pr83-forprep-stackgrow-fallout-round.md`(§2 第二实例:P4 native `base` 悬垂跨子系统复现)——独立实例聚合为一个判断框架。
 
 设计稿表达的是**语义意图**,用抽象记号写在纸上;它**不携带本码库的物理不变式**。三次了:把设计稿热路径上的一条主张/记号忠实誊写到加速层,本会产出一个 bug 或一处死优化——因为设计稿对某条 wangshu 专属的物理事实是盲的(边界成本、arena 段重定位、GC 根可达性……)。**热路径上的抽象记号在实现前,必须逐条对照本码库 physics 重新推导,而不是照抄伪码。** 这条横跨**性能**(誊写出死优化)与**正确性**(誊写出 UAF)两面,故单独成 guide,不并入 [[perf-optimization-workflow]]。
 
@@ -20,6 +20,8 @@
 **实例(PW6)**:`04-trampoline.md` §2.2 把 `$base`(linear memory 字节偏移)画成 gibbous wasm 函数入口锁定、全程不变。但 gibbous 帧经 `h_call` 调更深 Lua 帧时,嵌套 `growStack`(`internal/crescent/state.go`)把值栈段在 arena 重定位、改写 `th.stackBaseW`,返回后陈旧 `$base` 指向已 Free 旧段 = **UAF**。解法:`h_call`/`h_tailcall` 返回**重算后的新 base**(i64,负哨兵表错),CALL 翻译 `local.tee`→负则 `return 1` 冒泡/否则 `local.set $base` 刷新。
 
 **判据**:这个 token 在它存活的窗口内,底层存储会不会被搬动/失效?谁有能力刷新它、在什么时机?「入口锁定、中途不能自刷新」的载体(wazero local)碰到任何「跨层调用后恢复」的点,都是潜在失效点,必须由被调侧返回时回传刷新后的值。⚠️ **解释器恰好因「每次访问经 `th.slot(i)` 现算地址」碰巧免疫,反而掩盖危险——照搬解释器「能跑」不等于加速层「能跑」**(见下「如何用」)。这是 `feedback_arena_view_aliasing`「形式 Y 别名」雷区的 gibbous 帧对偶。
+
+**第二实例(PR #83,P4 native 层,跨子系统复现同一物理事实)**:`nativeCode.Run`(`internal/crescent/gibbous_host_p4.go`)在入口捕获 `base`(arena 绝对字节偏移),把它当固定 token 传给每次 `RefreshJitCtxAddrs`;但一次会 grow 值栈的 host 调用(`enterLuaFrame` → `growStack`)同样把值栈段在 arena 重定位并释放旧段,入口 `base` 变悬垂(issue #80)。**与 PW6 是同一条物理事实(arena 段可被 grow 重定位)在两个独立加速层(P3 wasm trampoline / P4 native codegen dispatcher)里各自被撞中**——判据「谁有能力刷新它、在什么时机」在新子系统里必须重新逐条核对,不能假设「P3 已经修过,P4 就自动免疫」。解法同构:`RefreshJitCtxAddrs` 改为从活的线程状态重算 `vsBase`(`(stackBaseW + cur.base)*8`),不再信任入口捕获的参数。
 
 ## 3. 成本归类:架构成本 vs 实现浪费——援引前提判否优化前先分类
 
@@ -117,4 +119,4 @@
 
 ## 关联
 
-[[issue8-boundary-cost-round]](家族奠基:实现浪费 vs 架构成本 + 零拷贝根可达性)· [[p3-pw5-table-ic-round]](边界成本维度:`$helper` 须按 ~143ns 预算重判)· [[p3-pw6-crosslayer-call-round]](内存物理维度:`$base` 须按 arena 段重定位重核)· [[p3-pw7-pw4b-closure-tforloop-round]](§5 时间维度:难点过期)· [[vs0e-varargs-stack-underflow-round]](§5 时间维度:调研先于实现)· [[p4-doc-review-round]](§5 时间维度:外部依赖现状过期)· [[pr27-f3-3b-darwin-arm64-execute-roundup]](§5 时间维度:sentinel 注释承诺与检查状态解耦)· [[pr28-f3-3c-tri-platform-matrix-ci]](§6 空间维度:bash 3.2 vs 4+ / actions/cache symlink / homebrew 包政策)· `feedback_arena_view_aliasing`(arena=linear memory 段可重定位 / 偏移现算寻址,§2/§4 物理基础)· [[design-premises]](前提一边界成本论证 / 前提二四项税,§1/§3 成本根据)· `docs/design/p3-wasm-tier/02-translation.md` §3.4 · `04-trampoline.md` §2-§4
+[[issue8-boundary-cost-round]](家族奠基:实现浪费 vs 架构成本 + 零拷贝根可达性)· [[p3-pw5-table-ic-round]](边界成本维度:`$helper` 须按 ~143ns 预算重判)· [[p3-pw6-crosslayer-call-round]](内存物理维度:`$base` 须按 arena 段重定位重核,§2 第一实例)· [[pr83-forprep-stackgrow-fallout-round]](§2 第二实例:P4 native `base` 悬垂,同物理事实跨子系统复现)· [[p3-pw7-pw4b-closure-tforloop-round]](§5 时间维度:难点过期)· [[vs0e-varargs-stack-underflow-round]](§5 时间维度:调研先于实现)· [[p4-doc-review-round]](§5 时间维度:外部依赖现状过期)· [[pr27-f3-3b-darwin-arm64-execute-roundup]](§5 时间维度:sentinel 注释承诺与检查状态解耦)· [[pr28-f3-3c-tri-platform-matrix-ci]](§6 空间维度:bash 3.2 vs 4+ / actions/cache symlink / homebrew 包政策)· `feedback_arena_view_aliasing`(arena=linear memory 段可重定位 / 偏移现算寻址,§2/§4 物理基础)· [[design-premises]](前提一边界成本论证 / 前提二四项税,§1/§3 成本根据)· `docs/design/p3-wasm-tier/02-translation.md` §3.4 · `04-trampoline.md` §2-§4
