@@ -22,7 +22,7 @@ metadata:
 
 # issue #77 math.* intrinsic emission 轮反思(2026-07-08,PR #87)
 
-> 范围:分支 `feat/issue77-math-intrinsics`(7 个功能/测试/文档提交 `68709dc..56e17c7` + 1 个 `.rebasechk` 清理提交 `0e78ba6`)。给 P4 native JIT 加 `math.*` intrinsic emission。是 issue #67 的直接后续——NodeHit inline 修完后,n-body 剩下的 exit-reason dispatch 几乎全是 `sqrt`。
+> 范围:分支 `feat/issue77-math-intrinsics`(6 个功能/测试/文档提交 `68709dc..56e17c7` + 1 个 `.rebasechk` 清理提交 `0e78ba6`)。给 P4 native JIT 加 `math.*` intrinsic emission。是 issue #67 的直接后续——NodeHit inline 修完后,n-body 剩下的 exit-reason dispatch 几乎全是 `sqrt`。
 
 ## 任务
 
