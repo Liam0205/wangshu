@@ -2,7 +2,7 @@
 
 > 状态:**P4 已交付 (2026-07-01)** — PJ0-PJ11 全部完成 ✅(PJ1/PJ6 已由 PJ3/PJ7/PJ10 迂回闭合;详 §1 表)+ 三平台 CI 全绿(linux/amd64 + linux/arm64 + darwin/arm64,PR #29 42/42 checks)+ **PJ10 native emit amd64 端 26 op 真原生 + arm64 端 18 op 线性子集(exit-reason 端口未做,详 issues #37/#40)**(amd64 `opSupported` 白名单其后经 CALL/RETURN 等增到 30 op,2026-07-07 issue #52 再加 SELF/CONCAT 到 32 op,详 §16) + V15b heavy 三本 P4 native > P3 wasm 达标 + [09 PJ11 acceptance checklist](./09-acceptance-checklist.md) V1-V22 三平台全 ✅ + D2 P3 去留决议 2026-07-01 用户定下来主动保留(承 [07 §5.6](./07-p3-retirement.md)) + nightly-diff-fuzz P4 variant 2026-07-01 挂钩(rolling-seed diff 200 万脚本 + GC-stress 20 万脚本 + go-fuzz 45m × 4 targets 每晚跑),V21/V22 30 天累积 timer 起跑,长期健康监测不阻塞已交付状态。PJ3 FORLOOP 字节级 inline 实测 7.15-25.41x over gopher-lua,**完整超越 luajc 档 4.4x 基线**(承 §8)。**PJ4 表 IC 完整六路径**(GETTABLE/SETTABLE/SELF × ArrayHit/NodeHit)字节级 inline 主路径接入 + 严密 IsTable guard(承 §9.7-§9.10)+ 整套层级 prove-the-path 守卫(承 §9.11)。**PJ5 CALL void 二百二十子形式 + TAILCALL 一百零二子形式 + SELF method call inline 完整 0..7 参 + SELF spec template 字节级 inline 含 N=2..15 返 drop multi-ret 全形式 + OSR exit 协议接通(p4SpecState 子状态机)+ Option B 帧建立内联 Spike 1/2/3/4 + zero-cross 全套接上完整端到端 amd64 打通**(承 §9.14-§9.20.13)。**PJ8/PJ9 双架构 CI 三平台全绿**(PR #29):arch_arm64.go 的 `archSupportsSpec` / `archSupportsForLoop` / `archSupportsFrameInline` 三个检查全翻 true,darwin/arm64 W^X 由 cgo `jitcgo` 子包提供 MAP_JIT + pthread_jit_write_protect_np 真实现(隔离主库 zero-cgo 承诺),arm64 spec emit 模板 NoRet + ExitHelperRequest + helpers 全套就位;ci.yml 三平台矩阵(ubuntu-latest / ubuntu-24.04-arm 原生 GHA runner / macos-latest M1)× P1/P3/P4 × test / fuzz-smoke / conformance / difftest 全绿。**PJ11 acceptance checklist V1-V22 三平台全绿**(承 [09-acceptance-checklist.md](./09-acceptance-checklist.md);V14 luajc 档 bench-acceptance Run #28505893556 三平台 14.08x / 25.28x / 13.34x over gopher;V15b heavy geomean 5.53x / 5.45x / 4.00x over gopher;V16 边界 P4/P3 最差 0.70x 最好 0.50x;V19-V22 引用统一到 codebase 已有等效测试)。bit50 OSR 决策已记录(2026-06-29 用户确认清 0,承 §3.2)。共 **38+14+20 e2e SpecCallVoidHits/SpecTailCallHits/SpecSelfCallHits=1 prove-the-path 命中实证 + 36+13+16 difftest-p4 三方 byte-equal + 9 单测 + 7 p4SpecState 单测 + V18 -race 增量含 SELF**。
 >
-> **2026-07-07 GETTABLE/SETTABLE NodeHit inline(arm64-only,issue #67 n-body 半,PR #74)**:承 §18 详。给常量字符串 key 的 GETTABLE/SETTABLE 加段内 NodeHit inline(照既有 GETGLOBAL/SETGLOBAL NodeHit inline 先例),命中时直接读写 node slot,不再每次 exit-reason 往返到 `host.GetTable`/`host.SetTable`——这是 n-body 主循环每帧 ~25 次字符串键字段访问的瓶颈来源。**只在 arm64 开启**:amd64 实测 inline 反而 ~3% 回归(五道 guard 开销比省的 exit-reason 往返还贵,amd64 往返便宜),故 amd64 保持 exit-reason 无回归,只 `emitGETTABLEArm64`/`emitSETTABLEArm64` 接 NodeHit inline。正确性已由 cross-build + CI difftest byte-equal + 结构测试防住;**arm64 性能收益待 M5 Pro / CI arm64 实测**,#67 保持 open 直到 arm64 数字落实。issue #67 的 spectral-norm 半此前已由 #72(FloorExempter)完成。
+> **2026-07-07~08 GETTABLE/SETTABLE NodeHit inline(双架构,issue #67 n-body 半,PR #74 → 本 PR)**:承 §18 详。给常量字符串 key 的 GETTABLE/SETTABLE 加段内 NodeHit inline(照既有 GETGLOBAL/SETGLOBAL NodeHit inline 先例),命中时直接读写 node slot,不再每次 exit-reason 往返到 `host.GetTable`/`host.SetTable`——这是 n-body 主循环每帧 ~25 次字符串键字段访问的瓶颈来源。**PR #74 当时定为 arm64-only,该结论已推翻**:最初 amd64 的 ~3% 回归不是 inline 成本,而是一道烤进段的 TableRef 身份 guard 跨 Run 100% 落空(局部表每 Run 在新 arena 偏移重建,promotion 只烤一次快照),段里每次发射 guard 却从不通过、照样往返。commit 6a10721 把身份 guard 换成与表地址无关的 hmask 边界 + nodeRef != 0 guard(node 自己的 key 字段就能唯一标识 entry,无需比对表指针)。本 PR 把修正后的 guard 移植到 amd64 并实测:n-body auto **43.5ms → 7.0ms(~6.2×)**,dispatch **875k → 50k**,fib/binary-trees/spectral/fannkuch 无回归;arm64 M5 Pro 实测 n-body auto 0.98× → 5.7×。两个架构都命中。新增 `e2e_table_nodehit_crossrun_amd64_test.go` 跨 Run prove-the-path(断言每 Run dispatch < 500,身份 guard 时代是 ~18000)。issue #67 的 spectral-norm 半此前已由 #72(FloorExempter)完成。
 > **2026-07-07 字符串常量 LOADK 纳入 native 接受面(issue #69,PR #73)**:承 §17 详。放开 F7-a 门——此前 `AnalyzeNative` 见到任何含活跃字符串字面量 LOADK 的 proto 就拒收(一个 `s = "x"` / `t.name .. "-"` / `obj:m("key")` 就让整个函数连同算术 / 循环 / CALL 全掉回解释器)。spike 裁决走方向 A(直接把字符串槽的 GCRef 作为 imm64 烤进 mmap 段,镜像 EQ-K #56),三前提成立(per-State 归属 + Consts 编译期已 intern + arena 非移动)。改动只删两 arch `AnalyzeNative` 的 stringConst 拒收,emit 零改动。这是**接受面**改动而非逐 op 加速:字符串 op 密集的 kernel 仍约等于解释器速度,价值是不再因一个字符串字面量拖垮整函数;并在 emitLOADK godoc 登记了 #12 copy-compact GC 的重定位依赖。
 > **2026-07-07 issue #66 OSR 骨架裁决 + deopt-redo 注入测试**:确认 OSR 骨架**非死代码**——望舒有三套并列 deopt 机制须区分:① 函数级 OSR 物化（本文正文与 04 §1-§9 设想的重建解释器帧续跑）从未实现，已由 #50 虚拟帧 + deopt-redo 取代（裁决 `spike/p4callinline/DECISION.md`）；② `internal/gibbous/jit/p4state.go` 的 spec-template guard-miss 记账（`p4SpecState` / `onOSRExit` / `P4Deoptimized`）在 amd64/arm64 上**现在就是活跃机制**（`TestPJ5_SelfCall_E2E_SpecTemplate_OSRExitToDeopt` / `_DeoptStorm` PASS，`SpecP4DeoptHits` 实跑增长 6 / 15）；③ #50 的 seg2seg deopt-redo（`segCallDeopt` 标志逐层传播 + 顶层重跑）也活跃。issue #66「删死代码」原方案**未执行**——改为修正 `p4state.go` / `jitcontext.go` / `doc.go` 里「无 deopt 路径 / `archSupportsFrameInline=false` 屏蔽真触发 / PJ0 骨架」这批过期注释为「amd64/arm64 已激活」，并补白盒探针 `SegToSegDeoptCount` + 两个注入测试（`TestSeg2SegDeoptRedo_ArithGuardMiss` / `_NestedPropagation`，PASS，探针增长 3 / 4）。08 §2.4 的 V19/V20 兑现方式同步改写为 deopt-redo 等价（seg2seg 注入 + spec-template deopt）。
 > **2026-07-07 SELF + CONCAT 纳入 amd64 opSupported(issue #52,PR #65)**:承 §16 详。把 `bytecode.SELF` 和 `bytecode.CONCAT` 加进 amd64 的 `opSupported` 白名单(`translator_native.go`),白名单 op 数量从 30 增到 32;它们的 emit / dispatch / host 整条流水线本就存在(走 exit-reason dispatch),此前唯一缺口是 `AnalyzeNative` 见到 SELF 或 CONCAT 就拒绝整个 proto。改动后一个函数里出现一次 `obj:method()` 或一次数值 `..` 不再拖垮整函数升层,其余算术 / 循环 / CALL 可正常走 native + seg2seg。amd64 先落,arm64 同分支补齐(commit `3894cb1`)——arm64 侧发现 `emitSELFArm64` / `emitCONCATArm64` 此前挂在 legacy shim 通道而非 exit-reason,故重写走 exit-reason + 清孤儿 shim,详 §16.8;不 auto-close #52。
@@ -2243,7 +2243,7 @@ PJ10 覆盖率工程两轮交付,承 [10 §14](./10-per-op-translator.md) 详细
 1. **dispatcher 循环骨架**:`nativeCode.Run`(arm64)加与 amd64 相同的 exit-reason dispatcher 循环;`dispatchHelper` / `hostIfaceHeader` 抽到 arch 共享的 `translator_native_dispatch.go`。arm64 emit 端新写 `emitExitReasonArm64`(X16 scratch 打包 + `movz/movk-W` 拆装 32-bit resumeOff 占位 + `emitResumePreludeIfPendingArm64` 回填)——**没有复用** PJ4/5 的 `EmitFrameInlineExitHelperRequestArm64`(两套协议不同:那个只打包裸 helperCode 且额外写 exitReasonCode 字段)。首接 GETUPVAL / SETUPVAL(永不 raise,最简端到端往返)。新 `DispatchHelperCount` 白盒计数器作 prove-the-path 探针。
 2. **CALL**:exit-reason → `host.CallBaseline`;B=0 / C=0 拒 + CALL 密度门(`totalOps/callCount ≥ 16`,沿用 amd64 实测阈值)原样移植。
 3. **GETGLOBAL / SETGLOBAL**:NodeHit IC 门 + inline gen-check 快路径(taddr 超 ldr imm12 范围改 mov-imm64 + add 组地址);18-bit Bx 低 9 → b、高 9 → c 拆装。实测 warm kernel 300 迭代 dispatch delta = 0(inline 真命中)。
-4. **GETTABLE / SETTABLE / NEWTABLE**:ArrayHit inline(共享 `emitTablePreludeArm64`:IsTable tag guard + GCRef 提取 + key IsNumber + f64→int 往返校验 + live-asize 边界 + `lsl #3` 组槽地址;FCMPE unordered ⇒ Z=0 使 amd64 的 jne+jp 双跳并成单 B.NE;槽地址存活在 X3 免 SETTABLE 重算 idx)/ NodeHit 走 exit-reason;NEWTABLE 纯 exit-reason,B/C ≥ 256 拒。新 emitter 原语:`EmitLslXdImm6` / `EmitCmpXnImm12` / `EmitLdrWtFromXnDisp` / `EmitFcvtzsXdDn` / `EmitScvtfDdXn`。**现状更新(2026-07-07,issue #67 n-body 半 / PR #74)**:这里「GETTABLE / SETTABLE NodeHit 走 exit-reason」在 arm64 上已改为段内 NodeHit inline(常量字符串 key,五道 guard),消除 n-body 字段访问的往返税;amd64 仍保 NodeHit exit-reason(实测 inline 反而 ~3% 回归),详 §18。
+4. **GETTABLE / SETTABLE / NEWTABLE**:ArrayHit inline(共享 `emitTablePreludeArm64`:IsTable tag guard + GCRef 提取 + key IsNumber + f64→int 往返校验 + live-asize 边界 + `lsl #3` 组槽地址;FCMPE unordered ⇒ Z=0 使 amd64 的 jne+jp 双跳并成单 B.NE;槽地址存活在 X3 免 SETTABLE 重算 idx)/ NodeHit 走 exit-reason;NEWTABLE 纯 exit-reason,B/C ≥ 256 拒。新 emitter 原语:`EmitLslXdImm6` / `EmitCmpXnImm12` / `EmitLdrWtFromXnDisp` / `EmitFcvtzsXdDn` / `EmitScvtfDdXn`。**现状更新(2026-07-07~08,issue #67 n-body 半 / PR #74 → 后续 PR)**:这里「GETTABLE / SETTABLE NodeHit 走 exit-reason」在**两个架构**上都已改为段内 NodeHit inline(常量字符串 key,IsTable + hmask 边界 + gen + nodeRef + NodeKey + NodeVal guard),消除 n-body 字段访问的往返税。PR #74 当时因一道错误的 TableRef 身份 guard 跨 Run 落空,误判 amd64 inline ~3% 回归而定为 arm64-only;换成与表地址无关的 hmask + nodeRef guard(6a10721)后 amd64 也命中(n-body 43.5ms → 7.0ms),arm64-only 结论已推翻,详 §18。
 5. **UNM**:inline sign-flip(`eor` 0x8000...)+ IsNumber guard + **结果 guard**。结果 guard 顺带挖出一个**双 arch 既有 bug**:canonNaN(0x7FF8...)sign-flip 后是 0xFFF8... = value.Nil 的位模式,-(0/0) 在 native 路径静默变 nil——amd64 emitUNM 一样的缺陷同 commit 修复(NaN-aliasing 家族,f7f0bb1a 种子同源)。
 6. **多值 RETURN**:`MultiReturn` 检测 + 每 RETURN 位点 lower 成 HelperReturn(带各自 a/b/pc);single-return 保 `mov x0,#0; ret` 快出口。
 7. **arith / LT / LE 恢复**(issue #37 原始诉求):解除 AnalyzeNative 的整体拒收,numeric-K 门 + 运行期 IsNumber guard;guard miss 走 `HelperArithSlow` → `host.Arith`(coercion / __add byte-equal;op 从 `proto.Code[pc]` 重导出——打包字段装不下且 bytecode 不可变)/ `HelperCompareSlow` → `host.Compare`(packed bit0 经 exitArg0 传回段内 resume 块分支——分支判定需要 BB 目标,dispatcher 没有)。**比较条件码从有符号整数族(GE/LT/GT/LE)换成 FP 安全族(MI/PL/LS/HI)**:FCMPE unordered flags {N=0,Z=0,C=1,V=1} 下 LT via N!=V 对 NaN 会错判 true,FP 族让 NaN 比较无额外分支正确解析为 false。arm64 端**不需要** arith NaN 结果 guard(与 amd64 SSE 不同:AArch64 生成的 NaN 是正 default NaN 且传播保留输入,值世界只有规范正 NaN,快路径产不出 tag-space 别名位)。
@@ -2449,62 +2449,71 @@ spike 评估了三个方向,最终决定走**方向 A(直接把字符串槽的 G
 
 ---
 
-## 18. issue #67 n-body 半:GETTABLE/SETTABLE NodeHit inline(arm64-only,2026-07-07,PR #74)
+## 18. issue #67 n-body 半:GETTABLE/SETTABLE NodeHit inline(双架构,2026-07-07~08,PR #74 → 本 PR)
 
-承 issue #67。#67 分两半:spectral-norm 半此前已由 #72(FloorExempter,短-proto floor 豁免)完成;本 PR(#74)做 n-body 半。
+承 issue #67。#67 分两半:spectral-norm 半此前已由 #72(FloorExempter,短-proto floor 豁免)完成;n-body 半的 arm64 端由 PR #74 交付,amd64 端由本 PR 补齐。
+
+> **结论演进(重要)**:PR #74 当时把这条 inline 定为 **arm64-only**,理由是 amd64 上实测 inline 反而 ~3% 回归。这个结论**已被推翻**——那 3% 不是 inline 本身的成本,而是一道错误的 TableRef 身份 guard 每次都没通过造成的白费开销。换成正确的 hmask + nodeRef guard(commit 6a10721)后,amd64 也照样命中,n-body auto 43.5ms → 7.0ms(~6.2×)。详见 §18.3。
 
 ### 18.1 问题:n-body 字段访问的 exit-reason 往返
 
-n-body 主循环每帧要做 ~25 次字符串键字段访问(`body.x` / `bj.vx = ...`,编译成 GETTABLE / SETTABLE + 常量字符串 key + IC NodeHit)。此前这些 op 命中 NodeHit 时走 exit-reason 往返:出段到 Go 的 `host.GetTable` / `host.SetTable` 再回段。arm64 上这个往返税重,是 n-body 只有 0.98× 的瓶颈(同一批脚本 amd64 是 1.41×,因为 amd64 的 exit-reason 往返便宜)。
+n-body 主循环每帧要做 ~25 次字符串键字段访问(`body.x` / `bj.vx = ...`,编译成 GETTABLE / SETTABLE + 常量字符串 key + IC NodeHit)。此前这些 op 命中 NodeHit 时走 exit-reason 往返:出段到 Go 的 `host.GetTable` / `host.SetTable` 再回段。每次字段访问都往返一趟,是 n-body 的主要瓶颈。
 
 ### 18.2 改动:段内 NodeHit inline(照 GETGLOBAL 先例)
 
-照既有 GETGLOBAL / SETGLOBAL NodeHit inline 的先例(承 §14.6 第 3 条、[10 §? per-op translator]),给常量字符串 key 的 GETTABLE / SETTABLE 加段内 NodeHit inline。命中时直接读 / 写 node slot,跳过 exit-reason 往返。
+照既有 GETGLOBAL / SETGLOBAL NodeHit inline 的先例(承 §14.6 第 3 条),给常量字符串 key 的 GETTABLE / SETTABLE 加段内 NodeHit inline。命中时直接读 / 写 node slot,跳过 exit-reason 往返。
 
-五道 guard(与 host `icGetTable` / `icSetTable` 的 NodeHit 命中逐条对齐,byte-equal):
+guard 序列(与 host `icGetTable` / `icSetTable` 的 NodeHit 命中逐条对齐,byte-equal):
 
-1. **IsTable**:tag 检查,排除非 table。
-2. **TableRef 身份**:确认是编译期 IC 记录的那张表。
+1. **IsTable**:tag 检查(`R >> 48 == 0xFFFC`),排除非 table;随后从 GCRef 提取 arena 内偏移,加 arena base 得到表对象绝对地址。
+2. **hmask 边界**:`Index <= hmask`,保证 node 访问落在 hash 段内(无符号比较)。
 3. **gen(Shape)**:表 shape 未变(任何 key→slot 重定位都会 BumpGen)。
-4. **NodeKey == 常量 key**:烤进段里的常量字符串 key 与 node 的 key 一致。
-5. **NodeVal != Nil**:node 槽有值(Nil 表示键实际不存在,须走慢路径)。
+4. **nodeRef != 0**:hash 段存在。`hmask == 0` 有歧义(可能是 hash 大小 1,也可能是没有 hash 段——后者会把 node[0] 错误地指到 arena 偏移 0),这道检查排除后者。
+5. **NodeKey == 常量 key**:烤进段里的常量字符串 key 与 node 的 key 一致。
+6. **NodeVal != Nil**:node 槽有值(Nil 表示键实际不存在,须走慢路径)。SET 侧额外加一道**新值 != Nil**(写 Nil 语义是删键,不能走 inline 覆盖)。
 
-五道全过后直接读 / 写 node slot。
+全部通过后直接读 / 写 node slot。
 
 miss 尾部处理按有无副作用区分:
 
-- **GET 无副作用** → miss 尾 seg2seg-eligible(可继续留在段里换路径)。
+- **GET 无副作用** → miss 尾 seg2seg-eligible(读幂等,可继续留在段里换路径)。
 - **SET 有副作用** → miss 尾无 deopt guard(写已可能发生,不能简单回滚)。
 
 **key 必须是常量(RK ≥ 256)**:寄存器 key 在编译期无法固定 node slot 位置,所以寄存器 key 的 GETTABLE / SETTABLE 不走本 inline,仍走 exit-reason。
 
-### 18.3 arm64-only 决策(amd64 实测 ~3% 回归)
+### 18.3 结论演进:从「arm64-only」到「双架构」
 
-关键决策:**这条 inline 只在 arm64 开启,amd64 保持 exit-reason。** 依据是 amd64 上实测 inline 反而回归:
+**PR #74 当时的判断(已推翻)**:这条 inline 只在 arm64 开启,amd64 保持 exit-reason。依据是 amd64 上实测 inline 反而回归(n-body 43.1ms → 44.4ms,binary-trees 26.8ms → 27.8ms),当时归因为「amd64 exit-reason 往返便宜,guard 开销比省下的往返还贵」。
 
-- n-body:43.1ms → 44.4ms(约 +3%)
-- binary-trees:26.8ms → 27.8ms(约 +3.7%)
+**真正的原因(M5 Pro 上发现)**:最初的 guard 用了一道**烤进段里的 TableRef 身份比较**——把编译期 IC 记录的表指针烤进段,运行期比对当前表指针是否一致。问题是 n-body 的 `bodies[i]` 这种局部表**每个 Run 都在新的 arena 偏移重建**,而 promotion 只在提升那一刻烤一次快照。于是身份 guard **跨 Run 100% 落空**:段里每次都发射 guard、每次都不通过、每次都照样 exit-reason 往返到 host。之前「命中 17 万次」是**单个 Run 内**的假信号,跨 Run 稳态下从来没有真正 inline 过。所以那 3% 是白费的 guard 开销,不是 inline 本身的成本。
 
-原因是 amd64 的 exit-reason 往返本来就便宜,五道 guard 的开销比省下来的往返还贵。所以:
+**修正(commit 6a10721,原在 arm64)**:TableRef 身份 guard 对正确性并不必要——一个 node 自己的 key 字段就能唯一标识这条 entry(同一个 key 在整张表里至多出现在一个 node)。所以把 TableRef 身份 guard 换成 §18.2 里那两道**与表地址无关**的 guard:hmask 边界(保证访问在界内)+ nodeRef != 0(排除 hmask==0 歧义)。同 shape 的表(同样的 key、同样的插入顺序 → 同样的 node Index)照样命中;不同 shape 的表 guard 落空、退到 host(慢但绝不会错)。
 
-- **amd64**:不接 inline,保持 exit-reason,无回归。
-- **arm64**:`emitGETTABLEArm64` / `emitSETTABLEArm64` 接 NodeHit inline,落点在 ArrayHit 之后、exit-reason 之前。
+**本 PR:把修正后的 guard 移植到 amd64 并实测**:
 
-开发期先在 amd64 上验证过 inline 生效且正确(n-body 命中 17 万次 + difftest byte-equal),确认逻辑无误后才把开关收窄到 arm64。
+- **amd64**:`emitGETTABLEExitReason` / `emitSETTABLE` 在 ArrayHit 之后、exit-reason 之前接 NodeHit inline,共用 `emitTableNodeHitPrelude` 发射 guard 链。
+  - n-body P4 auto:**43.5ms → 7.0ms(~6.2×)**
+  - 跨 Run exit-reason dispatch:**875k → 50k**(只剩 sqrt 这类真 host 调用)
+  - fib / binary-trees / spectral / fannkuch **无回归**
+- **arm64**:`emitGETTABLEArm64` / `emitSETTABLEArm64` 接 inline(PR #74 已交付,guard 于 6a10721 修正)。M5 Pro 实测 n-body auto 0.98× → 5.7×。
+
+结论:两个架构都开启这条 inline,#67 n-body 半在两个架构上都拿到收益。
 
 ### 18.4 验证
 
-- **e2e(arch-neutral,`e2e_table_nodehit_test.go`)**:Get / Set NodeHit promote + byte-equal + ShapeChangeDeopt(shape 变触发降级)+ KeyDegradeDeopt(key 退化触发降级)。
+- **e2e(arch-neutral,`e2e_table_nodehit_test.go`)**:Get / Set NodeHit promote + byte-equal + ShapeChangeDeopt(shape 变触发降级)+ KeyDegradeDeopt(key 退化触发降级)。两个架构现在都走 inline。
+- **cross-Run prove-the-path(`e2e_table_nodehit_crossrun_amd64_test.go`,本 PR 新增)**:提升后的 kernel 每次调用重建一张同 shape 的表(新 arena 偏移,专门打身份 guard),断言每个 Run 的 exit-reason dispatch < 500(身份 guard 时代是 ~18000)。这正是 arm64 那一轮缺的跨 Run 信号——单 Run 命中数看着正常,但稳态从没真 inline。
 - **arm64 结构测试(`emit_table_nodehit_arm64_test.go`)**:查 emit well-formed + 无悬空 fixup。
-- **amd64 完整套件 + difftest-p4 + conformance-p4 + `-race`** 全绿。
+- **amd64 完整套件 + difftest-p4(20k 随机)+ conformance-p4 + `-race`** 全绿。
 - **三平台 cross-build** OK。
 
-因为开发机是 amd64,无法执行 arm64 机器码,所以 arm64 上只保证正确性(cross-build + CI difftest byte-equal + 结构测试),不能在本机跑出 arm64 性能数字。
+因为开发机是 amd64,无法在本机执行 arm64 机器码,所以 arm64 性能数字来自 Liam 的 M5 Pro 实测;amd64 数字为本机实测。
 
 ### 18.5 效果(如实标注)
 
-- **amd64**:无变化(不 inline,保持 exit-reason)。
-- **arm64**:收益**待实测**。已在 PR 里请求 M5 Pro / CI arm64 实测 n-body 的实际数字。在数字落实之前,#67 保持 open。
+- **amd64**:n-body auto 43.5ms → 7.0ms(~6.2×),dispatch 875k → 50k,无其他脚本回归。
+- **arm64**:n-body auto 0.98× → 5.7×(M5 Pro,承 6a10721)。
+- 两个架构都命中,#67 n-body 半完成。
 
 ---
 
