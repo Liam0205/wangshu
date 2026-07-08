@@ -21,6 +21,7 @@ package wangshu_test
 
 import (
 	"fmt"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -43,7 +44,8 @@ func tieredStates() map[string]*wangshu.State {
 // 1 promotes mid-run; run 2 is tiered from the first call). Depth 1000
 // is far below maxLuaCallDepth, so any error is a regression. Depth 300
 // additionally pins the seg2seg + watermark interplay on P4 (the cap
-// absorbs ~128 levels; the rest must survive the Go re-entry budget).
+// absorbs the first segToSegDepthCap levels; the rest must survive the
+// Go re-entry budget).
 func TestI85_DeepRecursionPromoted(t *testing.T) {
 	for _, depth := range []int{300, 1000} {
 		src := fmt.Sprintf(
@@ -128,5 +130,44 @@ func TestI85_ProperTailRecursionPromoted(t *testing.T) {
 				t.Errorf("%s run %d: got %v, want [0]", mode, run, res)
 			}
 		}
+	}
+}
+
+// TestI86_DeepRecursionGCStress pins the seg2seg NOSPLIT-window stack
+// overflow (FuzzAutoPromote seed 7f161a85c466adbf, PR #86): the mmap
+// segment's per-level `sub sp` is invisible to Go's nosplit accounting,
+// so with segToSegDepthCap past the ~800 B NOSPLIT allowance the native
+// descent silently underran the goroutine stack and corrupted adjacent
+// heap objects — surfacing later as a GC "found pointer to free object"
+// abort. The crasher shape recurses to maxLuaCallDepth (the fib(88886)
+// branch never bottoms out) under a live native re-entry chain, then
+// unwinds via "stack overflow"; iterating with forced GCs makes the
+// corruption deterministic under GOGC=1 (and still probabilistically
+// effective at default GOGC — the fuzz smoke hit it in seconds).
+func TestI86_DeepRecursionGCStress(t *testing.T) {
+	// Exact FuzzAutoPromote harness shape: the interpreter baseline
+	// State runs interleaved with the auto State — the extra allocation
+	// traffic is what positions the goroutine SP near the stack guard
+	// when the native descent begins (without it the corruption window
+	// rarely lines up, even at the broken cap).
+	src := `local function fib(n)if n<0 then return 0 end return fib(n-1)+fib(88888-2) end  return fib(70)`
+	for iter := 0; iter < 20; iter++ {
+		prog, err := wangshu.Compile([]byte(src), "i86")
+		if err != nil {
+			t.Fatal(err)
+		}
+		st1 := wangshu.NewState(wangshu.Options{})
+		st1.SetStepBudget(1 << 20)
+		st1.SetHotThresholds(^uint32(0), ^uint32(0))
+		stA := wangshu.NewState(wangshu.Options{})
+		stA.SetStepBudget(1 << 20)
+		stA.SetHotThresholds(2, 4)
+		for run := 1; run <= 2; run++ {
+			// Both runs raise "stack overflow" (Lua-legal outcome);
+			// the assertion is the process surviving GC afterwards.
+			_, _ = prog.Run(st1)
+			_, _ = prog.Run(stA)
+		}
+		runtime.GC()
 	}
 }
