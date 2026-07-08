@@ -25,6 +25,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Liam0205/wangshu"
 )
@@ -173,5 +174,48 @@ func TestI86_DeepRecursionGCStress(t *testing.T) {
 			_, _ = prog.Run(stA)
 		}
 		runtime.GC()
+	}
+}
+
+// TestI89_BudgetPreemptsInSegment pins the seg2seg dispatch-fuel guard
+// (fuzz crasher f2165a93dd62892d, PR #95): with segToSegDepthCap back at
+// 128 (issue #89 spill stack), a deep fib call tree runs subtrees of
+// depth <=cap entirely in-segment — ~phi^cap calls with no Go re-entry.
+// The step budget bills synchronously in st.preempt() at call/back-edge
+// points, ALL of which the in-segment dispatch bypasses, so fib(5510)
+// under SetStepBudget hung effectively forever while the interpreter
+// erred in 50ms. The segCallFuel guard makes the fast body fall back to
+// the host path every SegCallFuelBudgeted dispatches when a budget or
+// cancel context is armed, restoring the billing points (and charging
+// the spent dispatches to the budget).
+func TestI89_BudgetPreemptsInSegment(t *testing.T) {
+	src := `local function fib(n) if n < 2 then return n end return fib(n-1) + fib(n-2) end; return fib(5510)`
+	for _, tiered := range []bool{false, true} {
+		prog, err := wangshu.Compile([]byte(src), "i89")
+		if err != nil {
+			t.Fatalf("compile: %v", err)
+		}
+		st := wangshu.NewState(wangshu.Options{})
+		st.SetStepBudget(1 << 20)
+		if tiered {
+			st.SetHotThresholds(2, 4)
+		} else {
+			st.SetHotThresholds(^uint32(0), ^uint32(0))
+		}
+		for run := 1; run <= 2; run++ {
+			done := make(chan error, 1)
+			go func() {
+				_, err := prog.Run(st)
+				done <- err
+			}()
+			select {
+			case err := <-done:
+				if err == nil || !strings.Contains(err.Error(), "instruction budget exceeded") {
+					t.Errorf("tiered=%v run %d: want budget error, got %v", tiered, run, err)
+				}
+			case <-time.After(30 * time.Second):
+				t.Fatalf("tiered=%v run %d: hung — in-segment dispatch not billing the budget", tiered, run)
+			}
+		}
 	}
 }

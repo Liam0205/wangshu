@@ -452,6 +452,18 @@ func emitCallInlineFastPathArm64(cb *codeBuf, pc int32, a, b, c uint8, callSiteI
 		cb.emit(jitarm64.EmitCmpXnXm(nil, 14, 15))
 		bhiStackOff := len(cb.bytes)
 		cb.emit(jitarm64.EmitBCond(nil, jitarm64.CondHI, 0)) // end > stackEnd -> skip_seg
+		// Dispatch fuel guard (fuzz crasher f2165a93dd62892d; mirror of
+		// the amd64 sub+jz): decrement jitCtx.segCallFuel; at zero skip
+		// to the host path so the step budget / cancel context gets a
+		// billing point (in-segment dispatch otherwise never reaches
+		// st.preempt()). w14 scratch, reloaded with segCallDepth below.
+		cb.emit(jitarm64.EmitLdrWtFromXnDisp(nil, 14, regX27,
+			uint16(jit.JITContextSegCallFuelOffset)))
+		cb.emit(jitarm64.EmitSubXdImm12(nil, 14, 14, 1))
+		cb.emit(jitarm64.EmitStrWtToXnDisp(nil, 14, regX27,
+			uint16(jit.JITContextSegCallFuelOffset)))
+		cbzFuelOff := len(cb.bytes)
+		cb.emit(jitarm64.EmitCbzX(nil, 14, 0)) // fuel exhausted -> skip_seg (w14 zero-extended)
 		// Reload w14 = segCallDepth: the bound guard clobbered it, and
 		// the increment below relies on w14 caching the depth value.
 		cb.emit(jitarm64.EmitLdrWtFromXnDisp(nil, 14, regX27,
@@ -533,6 +545,7 @@ func emitCallInlineFastPathArm64(cb *codeBuf, pc int32, a, b, c uint8, callSiteI
 		a64PatchRel19(cb, cbzSegOff, skipSegPos)
 		a64PatchRel19(cb, bhsCapOff, skipSegPos)
 		a64PatchRel19(cb, bhiStackOff, skipSegPos)
+		a64PatchRel19(cb, cbzFuelOff, skipSegPos)
 		a64PatchRel26(cb, bRedoOff, skipSegPos)
 	}
 
