@@ -13,6 +13,7 @@ import (
 
 	"github.com/Liam0205/wangshu/internal/arena"
 	"github.com/Liam0205/wangshu/internal/crescent"
+	"github.com/Liam0205/wangshu/internal/gibbous/jit"
 	"github.com/Liam0205/wangshu/internal/object"
 	"github.com/Liam0205/wangshu/internal/value"
 )
@@ -33,8 +34,8 @@ func OpenAll(st *crescent.State) {
 		cl := st.MakeHostClosure(id)
 		st.SetGlobal("__ipairs_iter", value.MakeGC(value.TagFunction, cl))
 	}
-	registerNamespaced(st, "math", append(mathFns, mathExtraFns...))
-	strTbl := registerNamespaced(st, "string", stringFns)
+	registerNamespaced(st, "math", append(mathFns, mathExtraFns...), mathIntrinsics)
+	strTbl := registerNamespaced(st, "string", stringFns, nil)
 	st.SetStringLib(strTbl) // string 值的 per-type __index(`("x"):upper()`)
 	// LUA_COMPAT_GFIND:gfind 必须与 gmatch 是同一函数对象
 	// (官方测试套断言 string.gfind == string.gmatch)
@@ -42,16 +43,16 @@ func OpenAll(st *crescent.State) {
 		gm, _ := st.RawGet(strTbl, intern(st, "gmatch"))
 		st.SetTableField(strTbl, "gfind", gm)
 	}
-	tblTbl := registerNamespaced(st, "table", tableFns)
+	tblTbl := registerNamespaced(st, "table", tableFns, nil)
 	// table.unpack 别名(5.1 主入口是全局 unpack,5.2+ 是 table.unpack;两者都给)
 	{
 		id := st.RegisterHostFn(baseFnUnpackImpl)
 		cl := st.MakeHostClosure(id)
 		st.SetTableField(tblTbl, "unpack", value.MakeGC(value.TagFunction, cl))
 	}
-	registerNamespaced(st, "os", osFns)
-	registerNamespaced(st, "io", ioFns)
-	registerNamespaced(st, "coroutine", coroutineFns)
+	registerNamespaced(st, "os", osFns, nil)
+	registerNamespaced(st, "io", ioFns, nil)
+	registerNamespaced(st, "coroutine", coroutineFns, nil)
 	registerBaseEnv(st) // _G/_VERSION/collectgarbage/gcinfo/loadfile/dofile
 	// math 常量
 	{
@@ -69,10 +70,17 @@ type entry struct {
 	fn   crescent.HostFn
 }
 
-func registerNamespaced(st *crescent.State, ns string, fns []entry) arena.GCRef {
+// registerNamespaced installs a namespaced stdlib table. The optional
+// intrinsics map tags recognized function names with a P4 native
+// intrinsic kind (jit.Intrinsic*) so the JIT can emit them inline
+// (issue #77); pass nil for namespaces with no intrinsics.
+func registerNamespaced(st *crescent.State, ns string, fns []entry, intrinsics map[string]uint8) arena.GCRef {
 	tbl := st.NewLibTable(uint32(len(fns)))
 	for _, e := range fns {
 		id := st.RegisterHostFn(e.fn)
+		if kind := intrinsics[e.name]; kind != 0 {
+			st.RegisterIntrinsic(id, kind)
+		}
 		cl := st.MakeHostClosure(id)
 		st.SetTableField(tbl, e.name, value.MakeGC(value.TagFunction, cl))
 	}
@@ -581,6 +589,20 @@ func baseFnUnpack(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 }
 
 // ----- math 子库 -----
+
+// mathIntrinsics maps math.* names the P4 native JIT can emit inline to
+// their intrinsic kind (issue #77). Only pure-numeric functions whose
+// result is byte-equal to a hardware SSE/NEON instruction are listed;
+// sin/cos/tan/exp/log stay host-only (no exact single-instruction
+// equivalent). Passed to registerNamespaced for the "math" namespace.
+var mathIntrinsics = map[string]uint8{
+	"sqrt":  jit.IntrinsicSqrt,
+	"floor": jit.IntrinsicFloor,
+	"ceil":  jit.IntrinsicCeil,
+	"abs":   jit.IntrinsicAbs,
+	"max":   jit.IntrinsicMax,
+	"min":   jit.IntrinsicMin,
+}
 
 var mathFns = []entry{
 	{"abs", mathFn1("abs", math.Abs)},

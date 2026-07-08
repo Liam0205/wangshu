@@ -24,4 +24,12 @@ func TestCallICLayout(t *testing.T) {
 	if got := unsafe.Offsetof(ic.CalleeProtoID); got != 0 {
 		t.Errorf("CallIC.CalleeProtoID offset = %d, want 0", got)
 	}
+	// Intrinsic fields (issue #77): the segment reads IntrinsicID at
+	// [icSlot+7] and IntrinsicCalleeVal at [icSlot+24].
+	if got := unsafe.Offsetof(ic.IntrinsicID); got != callICIntrinsicIDByteOffset {
+		t.Errorf("CallIC.IntrinsicID offset = %d, emit assumes %d", got, callICIntrinsicIDByteOffset)
+	}
+	if got := unsafe.Offsetof(ic.IntrinsicCalleeVal); got != callICIntrinsicValByteOffset {
+		t.Errorf("CallIC.IntrinsicCalleeVal offset = %d, emit assumes %d", got, callICIntrinsicValByteOffset)
+	}
 }

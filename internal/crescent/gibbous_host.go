@@ -842,10 +842,14 @@ func (st *State) CalleeNeverExitsSegment(protoID uint32) bool {
 // Packing (matches jit.P4HostState.ObserveCallCallee):
 //
 //	bits  0..31 : protoID (0 for host closure or non-function)
+//	            : for a math-intrinsic host closure, bits 0..47 instead
+//	              carry the closure GCRef (issue #77)
 //	bits 32..39 : proto.NumParams (0 for host / non-function)
 //	bits 40..47 : proto.MaxStack (0 for host / non-function)
 //	bits 48..55 : flags — bit0=IsVararg, bit1=NeedsArg, bit2=IsHost
-//	bits 56..63 : reserved zero
+//	bits 56..63 : math intrinsic kind (jit.Intrinsic*, 0 = none); set
+//	              only when bit2 (IsHost) is set and the host fn is a
+//	              recognized intrinsic
 //
 // The observation is racy w.r.t. concurrent GC / proto rewrites but is
 // benign: the mmap-segment guard the observation feeds re-validates
@@ -861,7 +865,18 @@ func (st *State) ObserveCallCallee(base int32, a int32) uint64 {
 	}
 	cl := value.GCRefOf(callee)
 	if object.IsHostClosure(st.arena, cl) {
-		// Host closure: IC records "stuck host" (flag bit 2 set).
+		// Host closure. If it is a recognized math intrinsic (issue #77),
+		// pack the kind (bits 56..63) and the closure GCRef (bits 0..47)
+		// so populateCallIC can cache an inline fast path + an identity
+		// guard value; otherwise record "stuck host" (flag bit 2 set) as
+		// before. The GCRef fits in 48 bits (arena byte offset); the full
+		// callee value is reconstructed host-side as
+		// MakeGC(TagFunction, gcref).
+		if kind := st.IntrinsicKindOf(object.ClosureProtoID(st.arena, cl)); kind != 0 {
+			return uint64(cl) |
+				uint64(observeCallFlagIsHost)<<48 |
+				uint64(kind)<<56
+		}
 		return uint64(observeCallFlagIsHost) << 48
 	}
 	pid := object.ClosureProtoID(st.arena, cl)
