@@ -57,7 +57,15 @@ func (st *State) doCall(th *thread, ci *callInfo, i bytecode.Instruction) (*call
 	// 且在主线程(§5 线程级 tier 规则:协程不升层)→ 经 trampoline 跳 wazero。
 	// 返回值回填 + 弹帧由 gibbous RETURN 经 h_return 完成,与 host 路径同款
 	// 返回 (nil, e)——execute 主循环 reload ci=currentCI 继续解释调用者帧。
-	if profileEnabled && th == st.mainTh {
+	//
+	// nCcalls watermark (gibbousReentryCCallCap): every gibbous call
+	// level is a real Go re-entry chain, so deep recursion would trip
+	// maxCCallDepth long before maxLuaCallDepth. Past the watermark,
+	// fall through to enterLuaFrame below — a promoted proto keeps its
+	// bytecode, so the remaining recursion interprets flat inside this
+	// executeFrom loop with zero further Go re-entry, byte-equal to P1
+	// semantics (see the constant's doc in frame.go).
+	if profileEnabled && th == st.mainTh && st.nCcalls < gibbousReentryCCallCap {
 		pid := object.ClosureProtoID(st.arena, cl)
 		if code := st.bridge.GibbousCodeOf(st.protos[pid]); code != nil {
 			return nil, st.enterGibbous(th, code, funcIdx, nargs, nresults)

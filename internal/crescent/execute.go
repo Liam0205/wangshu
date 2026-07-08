@@ -308,7 +308,15 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 			// standard interp semantics; on OK we reload ci from
 			// currentCI and continue execute() at the caller's next
 			// instruction after CALL.
-			if profileEnabled && th == st.mainTh && !ci.Gibbous() {
+			//
+			// nCcalls watermark (gibbousReentryCCallCap): a gibbous tail
+			// callee that itself TAILCALLs re-enters Go per level (Run →
+			// host.TailCall → executeFrom → here → Run ...), so unbounded
+			// proper tail recursion — legal in PUC 5.1 — would trip
+			// maxCCallDepth. Past the watermark, keep interpreting: the
+			// interp TAILCALL is O(1) depth with zero Go re-entry.
+			if profileEnabled && th == st.mainTh && !ci.Gibbous() &&
+				st.nCcalls < gibbousReentryCCallCap {
 				if gcode := st.bridge.GibbousCodeOf(proto); gcode != nil && isPJ10NativeCode(gcode) {
 					ci.SetGibbous(true)
 					th.reMirrorTop()
