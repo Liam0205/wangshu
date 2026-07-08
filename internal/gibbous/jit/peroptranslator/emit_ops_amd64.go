@@ -882,23 +882,52 @@ func emitTESTSET(cb *codeBuf, a, b, c uint8, succExec, succSkip int) {
 
 // emitFORPREP: preps a numeric for loop.
 //
-// Semantics (per Lua 5.1): R(A) -= R(A+2); jmp to FORLOOP. Three slots
-// (init, limit, step) are pre-coerced to number before entering the
-// loop; if any is non-numeric, coercion / error is needed.
+// Semantics (per Lua 5.1): coerce R(A), R(A+1), R(A+2) (init, limit,
+// step) to number — raising "'for' initial value/limit/step must be a
+// number" when coercion fails — then R(A) -= R(A+2) and jmp to FORLOOP.
 //
-// Fast path: assume all three slots are numbers (the same profile-hot
-// assumption we make for inline arith and compare). Emit:
+// Fast path guards all three slots with IsNumber (raw < qNanBoxBase),
+// then does the pre-decrement inline:
 //
+//	<IsNumber guard R(A)>      ; miss -> slow
+//	<IsNumber guard R(A+1)>    ; miss -> slow
+//	<IsNumber guard R(A+2)>    ; miss -> slow
 //	movsd xmm0, [rbx+A*8]      ; R(A)
 //	movsd xmm1, [rbx+(A+2)*8]  ; R(A+2)
 //	subsd xmm0, xmm1
 //	movsd [rbx+A*8], xmm0
 //	jmp   succBB               ; FORLOOP block
+//	slow:
+//	  <seg2seg deopt guard> + HelperForPrep exit-reason
+//	  <resume: jmp succBB>     ; host.ForPrep normalized the slots
+//
+// The guards close issue #78: without them a non-number limit's
+// NaN-box was consumed as a NaN double, FORLOOP's comparison went
+// false, and the loop exited zero-iteration WITHOUT the error the
+// interpreter raises. String limits that coerce ("10") now also
+// match the interpreter (host.ForPrep coerces, then the resumed
+// FORLOOP sees normalized numbers). NaN doubles (0/0) are genuine
+// numbers below qNanBoxBase, so they stay on the fast path, where
+// subsd/FORLOOP's unordered comparison matches the interpreter's
+// zero-iteration semantics.
 //
 // This dodges the shim-from-mmap crash and keeps FORPREP + FORLOOP body
 // entirely inline — enabling heavy_arith and heavy_recursion kernels to
 // go native.
 func emitFORPREP(cb *codeBuf, pc int32, a uint8, targetBB int) {
+	// IsNumber guards on R(A), R(A+1), R(A+2).
+	var guardFixups []int
+	for _, reg := range []uint8{a, a + 1, a + 2} {
+		// mov rax, [rbx + reg*8]
+		cb.emit(jitamd64.EmitMovqRaxFromMemReg(nil, regRBX, int32(reg)*8))
+		// mov rcx, qNanBoxBase
+		cb.emit(jitamd64.EmitMovRcxImm64(nil, qNanBoxBaseU64))
+		// cmp rax, rcx
+		cb.emit(jitamd64.EmitCmpRaxRcx(nil))
+		// jae slow
+		cb.emit(jitamd64.EmitJaeRel32(nil, 0))
+		guardFixups = append(guardFixups, int(cb.pos())-4)
+	}
 	// movsd xmm0, [rbx+A*8]
 	cb.emit(jitamd64.EmitMovsdXmmFromMem(nil, 0, regRBX, int32(a)*8))
 	// movsd xmm1, [rbx+(A+2)*8]
@@ -908,6 +937,23 @@ func emitFORPREP(cb *codeBuf, pc int32, a uint8, targetBB int) {
 	// movsd [rbx+A*8], xmm0
 	cb.emit(jitamd64.EmitMovsdMemFromXmm(nil, 0, regRBX, int32(a)*8))
 	// jmp targetBB
+	emitJMP(cb, targetBB)
+
+	// Slow block: guard misses land here.
+	slowOff := int(cb.pos())
+	for _, po := range guardFixups {
+		writeRel32(cb, po, int32(slowOff)-int32(po+4))
+	}
+	// Running as a seg2seg callee: deopt-redo instead of exiting
+	// mid-segment (the redo is safe: host.ForPrep either raises — no
+	// partial state — or the whole call redoes on the baseline).
+	emitSegCallDeoptGuard(cb)
+	emitExitReason(cb, jit.HelperForPrep, pc, int32(a), 0, 0)
+	// Resume entry: host.ForPrep normalized the slots and did the
+	// pre-decrement; jump straight to the FORLOOP block. FORPREP is a
+	// terminator, so the only pending fixup is ours — bind it here
+	// (same pattern as emitCompareExitTail).
+	emitResumePreludeIfPending(cb)
 	emitJMP(cb, targetBB)
 }
 
@@ -2364,6 +2410,35 @@ func emitCallInlineFastPath(cb *codeBuf, pc int32, a, b, c uint8, callSiteIdx in
 		// jae skip_seg   (0F 83 rel32) — depth >= cap → fall back
 		jaeCapOff := len(cb.bytes) + 2
 		cb.emit([]byte{0x0F, 0x83, 0, 0, 0, 0})
+		// Value-stack bound guard (issue #80): the callee frame
+		// (vsBase + (A+1)*8 .. + CalleeMaxStack*8) must fit inside the
+		// thread's stack segment. The interpreter path grows the stack
+		// in enterLuaFrame; an in-segment dispatch cannot, so without
+		// this check deep native recursion silently overruns the
+		// segment into neighboring arena objects. rdx holds icSlotAddr
+		// (CalleeMaxStack is the byte at +5); rcx is scratch.
+		// movzx ecx, byte [rdx+5]   (0F B6 4A 05)
+		cb.emit([]byte{0x0F, 0xB6, 0x4A, 0x05})
+		// shl rcx, 3                (48 C1 E1 03) — MaxStack slots -> bytes
+		cb.emit([]byte{0x48, 0xC1, 0xE1, 0x03})
+		// lea rcx, [rbx + rcx + (A+1)*8]   (48 8D 8C 0B disp32)
+		{
+			disp := (int32(a) + 1) * 8
+			cb.emit([]byte{0x48, 0x8D, 0x8C, 0x0B,
+				byte(uint32(disp)), byte(uint32(disp) >> 8),
+				byte(uint32(disp) >> 16), byte(uint32(disp) >> 24)})
+		}
+		// cmp rcx, [r15 + valueStackEndOff]   (49 3B 8F disp32)
+		{
+			off := int32(jit.JITContextValueStackEndOffset)
+			cb.emit([]byte{0x49, 0x3B, 0x8F,
+				byte(uint32(off)), byte(uint32(off) >> 8),
+				byte(uint32(off) >> 16), byte(uint32(off) >> 24)})
+		}
+		// ja skip_seg   (0F 87 rel32) — callee end past stack end →
+		// fall back to the host path, whose enterLuaFrame grows.
+		jaStackOff := len(cb.bytes) + 2
+		cb.emit([]byte{0x0F, 0x87, 0, 0, 0, 0})
 		// inc dword [r15 + segCallDepthOff]   (41 FF 87 disp32)
 		{
 			off := int32(jit.JITContextSegCallDepthOffset)
@@ -2512,6 +2587,7 @@ func emitCallInlineFastPath(cb *codeBuf, pc int32, a, b, c uint8, callSiteIdx in
 		writeRel32(cb, jzNeverExitsOff, int32(skipSegPos)-int32(jzNeverExitsOff+4))
 		writeRel32(cb, jzSegZeroOff, int32(skipSegPos)-int32(jzSegZeroOff+4))
 		writeRel32(cb, jaeCapOff, int32(skipSegPos)-int32(jaeCapOff+4))
+		writeRel32(cb, jaStackOff, int32(skipSegPos)-int32(jaStackOff+4))
 		writeRel32(cb, jmpRedoOff, int32(skipSegPos)-int32(jmpRedoOff+4))
 	}
 

@@ -96,6 +96,11 @@ const (
 	JITContextCurrentClosureRefOffset = unsafe.Offsetof(JITContext{}.currentClosureRef)
 	JITContextThreadStackBase0Offset  = unsafe.Offsetof(JITContext{}.threadStackBase0)
 	JITContextInlineUpvalSafeOffset   = unsafe.Offsetof(JITContext{}.inlineUpvalSafe)
+
+	// JITContextValueStackEndOffset is the byte offset of valueStackEnd
+	// (issue #80): the seg2seg CALL fast body's stack-bound guard reads
+	// it to verify the callee frame fits in the current stack segment.
+	JITContextValueStackEndOffset = unsafe.Offsetof(JITContext{}.valueStackEnd)
 )
 
 // **§9.20.9 协议状态码常量** (Spike 1 真接入 + future helper request 路由):
@@ -165,6 +170,17 @@ const (
 	// (the helper doesn't materialise a pc), so it can stay at zero
 	// or reuse the standard packing without affecting behavior.
 	HelperExecutePlainCall uint64 = 26
+
+	// HelperForPrep is the exit-reason code for the FORPREP slow path
+	// (issue #78): the inline FORPREP fast body assumes the three loop
+	// slots (init at A, limit at A+1, step at A+2) are numbers; when
+	// any slot's IsNumber guard misses, the segment exits here and the
+	// dispatcher calls host.ForPrep, which performs the PUC 5.1
+	// coercion-then-error semantics ("'for' initial value/limit/step
+	// must be a number") and, on success, normalizes all three slots
+	// to numbers and pre-decrements the index — so the resumed FORLOOP
+	// can keep assuming numbers.
+	HelperForPrep uint64 = 27
 )
 
 // HelperCodeMask masks off the low 16 bits of exitArg0 that hold the
@@ -391,6 +407,20 @@ type JITContext struct {
 	// segCallDepth>0).
 	inlineUpvalSafe uint32
 	_               uint32
+
+	// valueStackEnd is the absolute host byte address ONE PAST the
+	// running thread's value-stack segment (arenaBase + (stackBaseW +
+	// stackCap)*8). The seg2seg CALL fast body checks that the callee
+	// frame (callee vsBase + CalleeMaxStack*8) fits below this before
+	// dispatching in-segment (issue #80): the interpreter's
+	// enterLuaFrame grows the stack via ensureStack, but a seg2seg
+	// call never re-enters Go — without this bound, deep native
+	// recursion silently reads/writes past the stack segment into
+	// neighboring arena objects (wrong results, corrupted closures).
+	// Refreshed on every Run entry / dispatcher re-entry alongside the
+	// other addr fields, so it survives arena grow and stack
+	// relocation.
+	valueStackEnd uintptr
 }
 
 // NewJITContext 构造 P4 JIT 执行上下文。
@@ -552,6 +582,11 @@ func (c *JITContext) SetUpvalInlineFields(closureRef, threadStackBase0 uintptr, 
 		c.inlineUpvalSafe = 0
 	}
 }
+
+// SetValueStackEnd sets the running thread's value-stack end address
+// (issue #80; see the valueStackEnd field doc). Refreshed alongside
+// SetUpvalInlineFields on every Run entry / dispatcher re-entry.
+func (c *JITContext) SetValueStackEnd(end uintptr) { c.valueStackEnd = end }
 
 // CurrentClosureRef returns the running frame's closure GCRef (test hook
 // + used by the segment-to-segment caller emit to bake the restore).

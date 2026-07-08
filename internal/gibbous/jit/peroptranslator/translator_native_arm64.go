@@ -619,7 +619,7 @@ func emitTerminatorArm64(buf *codeBuf, c *cfg, bb *basicBlock, bbID int, ins byt
 		if len(bb.succs) != 1 {
 			return fmt.Errorf("FORPREP with %d succs at pc %d", len(bb.succs), pc)
 		}
-		emitFORPREPArm64Inline(buf, a, bb.succs[0])
+		emitFORPREPArm64Inline(buf, pc, a, bb.succs[0])
 	case bytecode.FORLOOP:
 		if len(bb.succs) != 2 {
 			return fmt.Errorf("FORLOOP with %d succs at pc %d", len(bb.succs), pc)
@@ -1071,9 +1071,25 @@ func emitNOTArm64Inline(cb *codeBuf, a, b uint8) {
 	}
 }
 
-// emitFORPREPArm64Inline emits inline FORPREP: R(A) := R(A) - R(A+2);
-// jmp to FORLOOP block. Assumes three slots are numbers.
-func emitFORPREPArm64Inline(cb *codeBuf, a uint8, targetBB int) {
+// emitFORPREPArm64Inline emits inline FORPREP with IsNumber guards
+// (issue #78; arm64 mirror of the amd64 emitFORPREP): guard R(A),
+// R(A+1), R(A+2) as numbers, then R(A) := R(A) - R(A+2) and jump to
+// the FORLOOP block. A guard miss exits via HelperForPrep, whose host
+// side performs PUC 5.1 coercion-then-error and normalizes the slots;
+// the resume re-jumps to the FORLOOP block. Without the guards a
+// non-number limit's NaN-box was consumed as a NaN double and the
+// loop exited zero-iteration without the interpreter's error.
+func emitFORPREPArm64Inline(cb *codeBuf, pc int32, a uint8, targetBB int) {
+	// IsNumber guards on R(A), R(A+1), R(A+2): raw >= qNanBoxBase
+	// (unsigned) means tagged non-number -> slow.
+	var guardFixups []int32
+	for _, reg := range []uint8{a, a + 1, a + 2} {
+		cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 0, regX26, uint16(reg)*8))
+		cb.emit(jitarm64.EmitMovXdImm64(nil, 4, qNanBoxBaseArm64))
+		cb.emit(jitarm64.EmitCmpXnXm(nil, 0, 4))
+		guardFixups = append(guardFixups, cb.pos())
+		cb.emit(jitarm64.EmitBCond(nil, jitarm64.CondHS, 0))
+	}
 	// ldr X0, [X26 + A*8]     (index)
 	cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 0, regX26, uint16(a)*8))
 	// fmov D0, X0
@@ -1089,6 +1105,20 @@ func emitFORPREPArm64Inline(cb *codeBuf, a uint8, targetBB int) {
 	// str X0, [X26 + A*8]
 	cb.emit(jitarm64.EmitStrXtToXnDisp(nil, 0, regX26, uint16(a)*8))
 	// b targetBB (rel26 fixup)
+	emitJMPArm64Fixup(cb, targetBB)
+
+	// Slow block: guard misses land here.
+	slowOff := cb.pos()
+	for _, po := range guardFixups {
+		patchBCondArm64(cb, po, slowOff)
+	}
+	// Seg2seg callee: deopt-redo (host.ForPrep either raises — no
+	// partial state — or the whole call redoes on the baseline).
+	emitSegCallDeoptGuardArm64(cb)
+	emitExitReasonArm64(cb, jit.HelperForPrep, pc, int32(a), 0, 0)
+	// Resume: host.ForPrep normalized the slots; jump to FORLOOP.
+	// FORPREP is a terminator, so the only pending fixup is ours.
+	emitResumePreludeIfPendingArm64(cb)
 	emitJMPArm64Fixup(cb, targetBB)
 }
 

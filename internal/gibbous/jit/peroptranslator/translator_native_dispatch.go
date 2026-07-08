@@ -136,6 +136,15 @@ func (c *nativeCode) dispatchHelper(base int32) bool {
 		if st := c.host.SetList(base, pc, a, b, cc); st != 0 {
 			return false
 		}
+	case jit.HelperForPrep:
+		// FORPREP slow path (issue #78): a loop slot failed the inline
+		// IsNumber guard. host.ForPrep coerces init/limit/step per PUC
+		// 5.1 (raising "'for' initial value/limit/step must be a
+		// number" when coercion fails) and normalizes the slots, so
+		// the resumed FORLOOP keeps its numbers-only assumption.
+		if st := c.host.ForPrep(base, pc, a); st != 0 {
+			return false
+		}
 	case jit.HelperGetUpval:
 		// GETUPVAL A B: R(A) := U(B). Never raises.
 		c.host.SetReg(a, c.host.GetUpval(base, b))
