@@ -91,16 +91,29 @@ func TestPJ10_MathIntrinsic_ByteEqualSweep(t *testing.T) {
 		"1.0/0.0", "-1.0/0.0", "0.0/0.0", "1e15", "-1e15",
 		"2.5", "-2.5", "0.5", "123456.789",
 	}
+	// Two spellings, both must inline + stay byte-equal (issue #77): the
+	// hoisted `local f = math.sqrt` alias AND the direct `math.sqrt(x)`.
+	// The direct form is the whole point of the density-gate exemption —
+	// before it, a direct call never promoted so the intrinsic never fired.
+	unarySrc := func(fn, in string, direct bool) string {
+		if direct {
+			return "local function k(x) local s for i=1,15 do s=math." + fn + "(x) end return s end" +
+				"\nreturn k(" + in + ")"
+		}
+		return "local f=math." + fn +
+			"\nlocal function k(x) local s for i=1,15 do s=f(x) end return s end" +
+			"\nreturn k(" + in + ")"
+	}
 	unary := []string{"sqrt", "floor", "ceil", "abs"}
 	for _, fn := range unary {
 		for _, in := range inputs {
-			src := "local f=math." + fn +
-				"\nlocal function k(x) local s for i=1,15 do s=f(x) end return s end" +
-				"\nreturn k(" + in + ")"
-			interp := runNoPromote(t, "sweep_"+fn, src)
-			jit := runIntrinsic(t, "sweep_"+fn, src)
-			if interp != jit {
-				t.Errorf("math.%s(%s): interp=%q jit=%q", fn, in, interp, jit)
+			for _, direct := range []bool{false, true} {
+				src := unarySrc(fn, in, direct)
+				interp := runNoPromote(t, "sweep_"+fn, src)
+				jit := runIntrinsic(t, "sweep_"+fn, src)
+				if interp != jit {
+					t.Errorf("math.%s(%s) direct=%v: interp=%q jit=%q", fn, in, direct, interp, jit)
+				}
 			}
 		}
 	}
@@ -111,17 +124,63 @@ func TestPJ10_MathIntrinsic_ByteEqualSweep(t *testing.T) {
 		{"1.0/0.0", "5.0"}, {"-1.0/0.0", "5.0"},
 		{"-0.0", "0.0"}, {"0.0", "-0.0"},
 	}
+	binSrc := func(fn, a, b string, direct bool) string {
+		if direct {
+			return "local function k(x,y) local s for i=1,15 do s=math." + fn + "(x,y) end return s end" +
+				"\nreturn k(" + a + "," + b + ")"
+		}
+		return "local f=math." + fn +
+			"\nlocal function k(x,y) local s for i=1,15 do s=f(x,y) end return s end" +
+			"\nreturn k(" + a + "," + b + ")"
+	}
 	for _, fn := range []string{"max", "min"} {
 		for _, p := range pairs {
-			src := "local f=math." + fn +
-				"\nlocal function k(x,y) local s for i=1,15 do s=f(x,y) end return s end" +
-				"\nreturn k(" + p[0] + "," + p[1] + ")"
-			interp := runNoPromote(t, "sweep_"+fn, src)
-			jit := runIntrinsic(t, "sweep_"+fn, src)
-			if interp != jit {
-				t.Errorf("math.%s(%s,%s): interp=%q jit=%q", fn, p[0], p[1], interp, jit)
+			for _, direct := range []bool{false, true} {
+				src := binSrc(fn, p[0], p[1], direct)
+				interp := runNoPromote(t, "sweep_"+fn, src)
+				jit := runIntrinsic(t, "sweep_"+fn, src)
+				if interp != jit {
+					t.Errorf("math.%s(%s,%s) direct=%v: interp=%q jit=%q", fn, p[0], p[1], direct, interp, jit)
+				}
 			}
 		}
+	}
+}
+
+// TestPJ10_MathIntrinsic_DirectSpellingPromotes is the regression guard
+// for the density-gate exemption (issue #77): a direct `math.sqrt(x)`
+// call (no `local` alias) must promote to native and hit the intrinsic
+// fast path. Before the exemption the containing function never promoted
+// (the CALL-density gate counted the intrinsic call as an expensive round
+// trip), so the intrinsic only fired for the hoisted-alias spelling.
+func TestPJ10_MathIntrinsic_DirectSpellingPromotes(t *testing.T) {
+	src := `
+local function kernel(n)
+  local acc = 0.0
+  for i = 1, n do acc = acc + math.sqrt(i) end
+  return acc
+end
+local r
+for j = 1, 3 do r = kernel(500) end
+return r
+`
+	prog, err := wangshu.Compile([]byte(src), "pj10intrdirect")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	st := wangshu.NewState(wangshu.Options{})
+	st.SetForceAllPromote(true)
+	before := peroptranslator.IntrinsicHitCount.Load()
+	if _, err := prog.Run(st); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if st.PromotionCount() == 0 {
+		t.Fatal("direct math.sqrt(x) kernel did not promote — density-gate " +
+			"exemption regressed (a direct math call is being counted as a " +
+			"round trip again)")
+	}
+	if hits := peroptranslator.IntrinsicHitCount.Load() - before; hits == 0 {
+		t.Fatal("direct math.sqrt(x) promoted but the intrinsic never fired")
 	}
 }
 

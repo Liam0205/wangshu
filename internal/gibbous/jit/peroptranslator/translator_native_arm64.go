@@ -324,6 +324,17 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 	// cost is the same order (trampoline + dispatch, no reflection), so
 	// start from the same threshold and re-measure on hardware when the
 	// full op set has landed (issue #40 stage 2 bench pass).
+	// Math-intrinsic CALL sites (issue #77) emit inline (FSQRT / FRINTM /
+	// ...) not exit-reason round trips, so they must not count toward the
+	// CALL-density gate (mirror of the amd64 AnalyzeNative). Frontend
+	// recorded the pcs; they still add to totalOps but not callCount.
+	var intrinsicCallPC map[int32]bool
+	if len(proto.IntrinsicCallPCs) > 0 {
+		intrinsicCallPC = make(map[int32]bool, len(proto.IntrinsicCallPCs))
+		for _, p := range proto.IntrinsicCallPCs {
+			intrinsicCallPC[p] = true
+		}
+	}
 	returnCount := 0
 	callCount := 0
 	totalOps := 0
@@ -337,7 +348,9 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 			case bytecode.RETURN:
 				returnCount++
 			case bytecode.CALL:
-				callCount++
+				if !intrinsicCallPC[pc] {
+					callCount++
+				}
 			}
 		}
 	}
