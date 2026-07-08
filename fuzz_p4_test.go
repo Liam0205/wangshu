@@ -87,6 +87,17 @@ return f(o1, o2)`,
 		`local sum = 0; local o = { m = function(self, a, b, c) sum = sum + a + b + c end }; local function caller(t) t:m(1, 2, 3) end; for i = 1, 30 do caller(o) end; return sum`,
 		// useFrameInline + vararg callee
 		`local sum = 0; local o = { m = function(self, ...) local a, b, c = ...; sum = sum + a + b + c end }; local function caller(t) t:m(1, 2, 3) end; for i = 1, 30 do caller(o) end; return sum`,
+		// issue #77 math intrinsics (aliased to a local so the proto
+		// promotes past F2-b): the inline SQRTSD/ROUNDSD/... result must
+		// stay byte-equal to the host closure across mutated inputs incl.
+		// negatives / NaN / Inf.
+		`local f=math.sqrt local function k(x) local s=0.0 for i=1,20 do s=s+f(x) end return s end return k(16.0)`,
+		`local f=math.floor local function k(x) local s=0.0 for i=1,20 do s=s+f(x) end return s end return k(-3.2)`,
+		`local f=math.ceil local function k(x) local s=0.0 for i=1,20 do s=s+f(x) end return s end return k(3.2)`,
+		`local f=math.abs local function k(x) local s=0.0 for i=1,20 do s=s+f(x) end return s end return k(-5.0)`,
+		`local f=math.max local function k(x,y) local s=0.0 for i=1,20 do s=s+f(x,y) end return s end return k(3.0,7.0)`,
+		`local f=math.min local function k(x,y) local s=0.0 for i=1,20 do s=s+f(x,y) end return s end return k(3.0,7.0)`,
+		`local sq=math.sqrt local fl=math.floor local function k(x) return fl(sq(x)) end local r for i=1,30 do r=k(50.0) end return r`,
 	}
 	for _, s := range seeds {
 		f.Add(s)
