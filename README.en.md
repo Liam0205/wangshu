@@ -18,6 +18,7 @@ Naming: *Lua* means "moon" in Portuguese; *Wangshu* (望舒) is the Chinese myth
 - Correctness: byte-equal output against the official Lua 5.1 implementation within the covered feature set.
 - Performance: lift Lua execution in the Go ecosystem from gopher-lua up to LuaJ-luajc (Java), aiming toward LuaJIT (C++).
 - Platform: verified on Linux/amd64, Linux/arm64, macOS/arm64; other platforms remain reachable.
+- Industrial-grade: Wangshu was built to serve production business needs from day one, and already runs in production at the company I work for. From testing to CI to the various nightly fuzz jobs, everything is driven toward industrial-grade project requirements. Wangshu has never been, and can never be, a personal practice project. Our goal is for Wangshu to become the de facto standard for embedding Lua in Go projects.
 
 ## Architecture
 
