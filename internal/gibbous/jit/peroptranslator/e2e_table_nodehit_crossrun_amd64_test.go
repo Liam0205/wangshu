@@ -57,10 +57,10 @@ return r
 	}
 
 	// Steady-state Runs: measure dispatch per Run. Each Run does the
-	// kernel's warmup loop (5 calls of kernel(2000)) again with a fresh
+	// kernel's warmup loop (3 calls of kernel(2000)) again with a fresh
 	// table per call. If the NodeHit reads inline, dispatch stays tiny;
 	// if the identity guard were still in place (or no inline at all),
-	// every one of the ~30000 field reads would exit-reason.
+	// every one of the ~18000 field reads would exit-reason.
 	for run := 0; run < 3; run++ {
 		before := peroptranslator.DispatchHelperCount.Load()
 		res, err := prog.Run(st)

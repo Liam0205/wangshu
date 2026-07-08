@@ -2491,7 +2491,7 @@ miss 尾部处理按有无副作用区分:
 
 **本 PR:把修正后的 guard 移植到 amd64 并实测**:
 
-- **amd64**:`emitGETTABLEExitReason` / `emitSETTABLE` 在 ArrayHit 之后、exit-reason 之前接 NodeHit inline,共用 `emitTableNodeHitPrelude` 发射 guard 链。
+- **amd64**:`emitGetTableExitReason` / `emitSETTABLE` 在 ArrayHit 之后、exit-reason 之前接 NodeHit inline,共用 `emitTableNodeHitPrelude` 发射 guard 链。
   - n-body P4 auto:**43.5ms → 7.0ms(~6.2×)**
   - 跨 Run exit-reason dispatch:**875k → 50k**(只剩 sqrt 这类真 host 调用)
   - fib / binary-trees / spectral / fannkuch **无回归**
