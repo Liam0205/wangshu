@@ -129,7 +129,47 @@ func (fs *funcState) exprCall(e *ast.CallExpr) expDesc {
 	}
 	pc := fs.emitABC(e.Line, bytecode.CALL, fnReg, b, 2) // C=2 默认单值,后续可改
 	fs.freereg = fnReg + 1                               // 调用结果默认占 R(fnReg) 1 个
+	if fs.calleeIsMathIntrinsic(e.Fn) {
+		fs.proto.IntrinsicCallPCs = append(fs.proto.IntrinsicCallPCs, int32(pc))
+	}
 	return expDesc{k: eCall, info: pc, tJmp: NoJump, fJmp: NoJump}
+}
+
+// calleeIsMathIntrinsic reports whether a CALL's callee expression names a
+// recognized math intrinsic (issue #77): a direct `math.<name>` field
+// access, or a bare name bound to one via `local f = math.<name>`
+// (tracked in localAliasAsts). Only the syntactic shape is checked —
+// `math` being shadowed / reassigned at run time is caught by the
+// segment's runtime intrinsic-identity guard, so this only feeds the
+// CALL-density promotion heuristic (a false positive risks an
+// unprofitable promotion, never a wrong result).
+func (fs *funcState) calleeIsMathIntrinsic(fn ast.Expr) bool {
+	switch e := fn.(type) {
+	case *ast.IndexExpr:
+		return isMathIntrinsicIndex(e)
+	case *ast.NameExpr:
+		if rhs, ok := fs.localAliasAsts[e.Name]; ok {
+			if idx, ok := rhs.(*ast.IndexExpr); ok {
+				return isMathIntrinsicIndex(idx)
+			}
+		}
+	}
+	return false
+}
+
+// isMathIntrinsicIndex reports whether an IndexExpr is `math.<name>` with
+// <name> in bytecode.MathIntrinsicNames (dot-field access parses to an
+// IndexExpr with a StringExpr key).
+func isMathIntrinsicIndex(idx *ast.IndexExpr) bool {
+	obj, ok := idx.Obj.(*ast.NameExpr)
+	if !ok || obj.Name != "math" {
+		return false
+	}
+	key, ok := idx.Key.(*ast.StringExpr)
+	if !ok {
+		return false
+	}
+	return bytecode.MathIntrinsicNames[key.Val]
 }
 
 // exprMethodCall 编译 obj:m(args)— SELF + CALL。
