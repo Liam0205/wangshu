@@ -219,6 +219,158 @@ func emitGETUPVALInlineArm64(cb *codeBuf, a, b uint8) {
 // HelperExecutePlainCall (fast body) or HelperCall (guard-fail slow
 // path). Returns true if it consumed the CALL.
 // -----------------------------------------------------------------------
+// emitCallIntrinsicFastPathArm64 is the arm64 mirror of
+// emitCallIntrinsicFastPath (issue #77). It emits the math intrinsic
+// guard + inline body on emitCallInlineFastPathArm64's guard-miss slow
+// path (a host-closure callee always fails the protoID guard and lands
+// there, so the hot Lua-callee seg2seg path pays zero intrinsic
+// overhead). Appends "b done" (rel26) fixup offsets to *doneFixups; all
+// guard misses fall through to the next byte (the caller's deopt guard +
+// HelperCall). Shape pre-checked by the caller: c == 2, b == 2 (unary)
+// or b == 3 (max/min).
+//
+// Doubles are shuttled through GP regs (LDR X + FMOV D) to reuse the
+// existing load/store primitives. Bodies: FSQRT / FRINTM(floor) /
+// FRINTP(ceil) / FABS / FCMP+FCSEL(max/min). sqrt/floor/ceil carry the
+// result-NaN guard (an SSE/NEON NaN in the tag-aliasing range routes to
+// the host, which canonicalizes); abs/max/min can't produce one.
+func emitCallIntrinsicFastPathArm64(cb *codeBuf, a, b uint8, callSiteIdx int, doneFixups *[]int) {
+	if cb.proto == nil || callSiteIdx < 0 || callSiteIdx >= len(cb.proto.CallICs) {
+		return
+	}
+	icSlotAddr := icSlotAddrArm64(cb, callSiteIdx)
+
+	var missCond []int // b.cond / cbnz fixups (rel19) -> miss
+	var missB []int    // b fixups (rel26) -> miss
+
+	// x9 = R(A) full value; x12 = icSlotAddr.
+	cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 9, regX26, uint16(int32(a)*8)))
+	cb.emit(jitarm64.EmitMovXdImm64(nil, 12, icSlotAddr))
+	// flags gate: w13 = [x12+6]; w13 &= (IsIntrinsic|Stuck); cmp #IsIntrinsic; b.ne miss
+	cb.emit(jitarm64.EmitLdrbWtFromXnDisp(nil, 13, 12, uint16(callICFlagsByteOffset)))
+	cb.emit(jitarm64.EmitMovzWdImm16(nil, 14, uint16(CallICFlagIsIntrinsic|CallICFlagStuck)))
+	cb.emit(jitarm64.EmitAndXdXnXm(nil, 13, 13, 14))
+	cb.emit(jitarm64.EmitCmpXnImm12(nil, 13, uint16(CallICFlagIsIntrinsic)))
+	missCond = append(missCond, len(cb.bytes))
+	cb.emit(jitarm64.EmitBCond(nil, jitarm64.CondNE, 0))
+	// identity: x13 = [x12+24]; cmp x13, x9; b.ne miss
+	cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 13, 12, uint16(callICIntrinsicValByteOffset)))
+	cb.emit(jitarm64.EmitCmpXnXm(nil, 13, 9))
+	missCond = append(missCond, len(cb.bytes))
+	cb.emit(jitarm64.EmitBCond(nil, jitarm64.CondNE, 0))
+
+	// arg IsNumber guard(s): raw >= qNanBoxBase -> miss (b.hs).
+	nargs := int(b) - 1
+	for i := 1; i <= nargs; i++ {
+		cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 14, regX26, uint16(int32(a+uint8(i))*8)))
+		cb.emit(jitarm64.EmitMovXdImm64(nil, 15, qNanBoxBaseArm64))
+		cb.emit(jitarm64.EmitCmpXnXm(nil, 14, 15))
+		missCond = append(missCond, len(cb.bytes))
+		cb.emit(jitarm64.EmitBCond(nil, jitarm64.CondHS, 0))
+	}
+
+	// dispatch on IntrinsicID.
+	cb.emit(jitarm64.EmitLdrbWtFromXnDisp(nil, 13, 12, uint16(callICIntrinsicIDByteOffset)))
+	var kinds []uint8
+	if b == 2 {
+		kinds = []uint8{jit.IntrinsicSqrt, jit.IntrinsicFloor, jit.IntrinsicCeil, jit.IntrinsicAbs}
+	} else {
+		kinds = []uint8{jit.IntrinsicMax, jit.IntrinsicMin}
+	}
+	beqFixups := make(map[uint8]int, len(kinds))
+	for _, k := range kinds {
+		cb.emit(jitarm64.EmitCmpXnImm12(nil, 13, uint16(k)))
+		beqFixups[k] = len(cb.bytes)
+		cb.emit(jitarm64.EmitBCond(nil, jitarm64.CondEQ, 0))
+	}
+	missB = append(missB, len(cb.bytes))
+	cb.emit(jitarm64.EmitB(nil, 0)) // no candidate matched -> miss
+
+	argOff := func(i int) uint16 { return uint16(int32(a+uint8(i)) * 8) }
+	dstOff := uint16(int32(a) * 8)
+
+	emitBody := func(k uint8, op func()) {
+		a64PatchRel19(cb, beqFixups[k], len(cb.bytes))
+		op()
+		// inc qword [IntrinsicHitCountAddr]
+		cb.emit(jitarm64.EmitMovXdImm64(nil, 9, IntrinsicHitCountAddr()))
+		cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 10, 9, 0))
+		cb.emit(jitarm64.EmitAddXdImm12(nil, 10, 10, 1))
+		cb.emit(jitarm64.EmitStrXtToXnDisp(nil, 10, 9, 0))
+		*doneFixups = append(*doneFixups, len(cb.bytes))
+		cb.emit(jitarm64.EmitB(nil, 0)) // b done
+	}
+
+	loadArgToD := func(dreg uint8, i int) {
+		cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 9, regX26, argOff(i)))
+		cb.emit(jitarm64.EmitFmovDdFromXn(nil, dreg, 9))
+	}
+	storeD0 := func() {
+		cb.emit(jitarm64.EmitFmovXdFromDn(nil, 9, 0))
+		cb.emit(jitarm64.EmitStrXtToXnDisp(nil, 9, regX26, dstOff))
+	}
+	// result-NaN guard: x9 = fmov d0; cmp vs qNanBoxBase; b.hs miss; else store.
+	resultNaNGuardAndStore := func() {
+		cb.emit(jitarm64.EmitFmovXdFromDn(nil, 9, 0))
+		cb.emit(jitarm64.EmitMovXdImm64(nil, 15, qNanBoxBaseArm64))
+		cb.emit(jitarm64.EmitCmpXnXm(nil, 9, 15))
+		missCond = append(missCond, len(cb.bytes))
+		cb.emit(jitarm64.EmitBCond(nil, jitarm64.CondHS, 0))
+		cb.emit(jitarm64.EmitStrXtToXnDisp(nil, 9, regX26, dstOff))
+	}
+
+	if b == 2 {
+		emitBody(jit.IntrinsicSqrt, func() {
+			loadArgToD(0, 1)
+			cb.emit(jitarm64.EmitFsqrtDdDn(nil, 0, 0))
+			resultNaNGuardAndStore()
+		})
+		emitBody(jit.IntrinsicFloor, func() {
+			loadArgToD(0, 1)
+			cb.emit(jitarm64.EmitFrintmDdDn(nil, 0, 0))
+			resultNaNGuardAndStore()
+		})
+		emitBody(jit.IntrinsicCeil, func() {
+			loadArgToD(0, 1)
+			cb.emit(jitarm64.EmitFrintpDdDn(nil, 0, 0))
+			resultNaNGuardAndStore()
+		})
+		emitBody(jit.IntrinsicAbs, func() {
+			loadArgToD(0, 1)
+			cb.emit(jitarm64.EmitFabsDdDn(nil, 0, 0))
+			storeD0()
+		})
+	} else { // max / min
+		emitBody(jit.IntrinsicMax, func() {
+			loadArgToD(0, 1) // d0 = a
+			loadArgToD(1, 2) // d1 = b
+			// max: out = (b>a) ? b : a. GT is false when unordered (NaN),
+			// so a NaN keeps the first operand, matching Lua's >.
+			cb.emit(jitarm64.EmitFcmpDnDm(nil, 1, 0))
+			cb.emit(jitarm64.EmitFcselDdDnDmCond(nil, 0, 1, 0, jitarm64.CondGT))
+			storeD0()
+		})
+		emitBody(jit.IntrinsicMin, func() {
+			loadArgToD(0, 1) // d0 = a
+			loadArgToD(1, 2) // d1 = b
+			// min: out = (a>b) ? b : a  (== b<a ? b : a).
+			cb.emit(jitarm64.EmitFcmpDnDm(nil, 0, 1))
+			cb.emit(jitarm64.EmitFcselDdDnDmCond(nil, 0, 1, 0, jitarm64.CondGT))
+			storeD0()
+		})
+	}
+
+	// miss: patch every guard-miss branch to fall through here (caller's
+	// deopt guard + HelperCall come next).
+	missPos := len(cb.bytes)
+	for _, off := range missCond {
+		a64PatchRel19(cb, off, missPos)
+	}
+	for _, off := range missB {
+		a64PatchRel26(cb, off, missPos)
+	}
+}
+
 func emitCallInlineFastPathArm64(cb *codeBuf, pc int32, a, b, c uint8, callSiteIdx int) bool {
 	if cb.proto == nil || callSiteIdx < 0 || callSiteIdx >= len(cb.proto.CallICs) {
 		return false
@@ -395,12 +547,24 @@ func emitCallInlineFastPathArm64(cb *codeBuf, pc int32, a, b, c uint8, callSiteI
 	for _, off := range slowBranches {
 		a64PatchRel19(cb, off, slowPos)
 	}
+	// Math intrinsic fast path (issue #77): a math.* host closure fails
+	// guard 2 and lands here; on a hit it computes inline + b's done, on a
+	// miss it falls through to the deopt guard + HelperCall. Hostable
+	// shapes only (c == 2; b == 2 unary / b == 3 max/min).
+	var intrinsicDoneFixups []int
+	if mathIntrinsicsEnabled && c == 2 && (b == 2 || b == 3) {
+		emitCallIntrinsicFastPathArm64(cb, a, b, callSiteIdx, &intrinsicDoneFixups)
+	}
 	emitSegCallDeoptGuardArm64(cb)
 	emitExitReasonArm64(cb, jit.HelperCall, pc, int32(a), int32(b), int32(c))
 
-	// done: seg2seg completion continues to the next op.
+	// done: seg2seg + intrinsic completion continues to the next op.
+	donePos := len(cb.bytes)
 	if jmpDoneOff >= 0 {
-		a64PatchRel26(cb, jmpDoneOff, len(cb.bytes))
+		a64PatchRel26(cb, jmpDoneOff, donePos)
+	}
+	for _, off := range intrinsicDoneFixups {
+		a64PatchRel26(cb, off, donePos)
 	}
 	return true
 }
