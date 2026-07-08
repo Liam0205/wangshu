@@ -90,6 +90,13 @@ func SegToSegHitCountAddr() uint64 {
 	return uint64(uintptr(unsafe.Pointer(&SegToSegHitCount)))
 }
 
+// IntrinsicHitCountAddr returns the address of the IntrinsicHitCount
+// counter's underlying int64, for the intrinsic fast path to bake as an
+// imm64 into an in-segment `inc qword [addr]` (issue #77).
+func IntrinsicHitCountAddr() uint64 {
+	return uint64(uintptr(unsafe.Pointer(&IntrinsicHitCount)))
+}
+
 // SegToSegDeoptCount counts top-level seg2seg deopt-redo events (issue
 // #50 Spike 5 / issue #66 subtask 3). A seg2seg callee whose in-segment
 // guard misses at run time (arith IsNumber, compare, GETTABLE ArrayHit

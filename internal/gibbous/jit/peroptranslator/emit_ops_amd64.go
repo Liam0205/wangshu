@@ -2268,6 +2268,175 @@ func emitCALL(cb *codeBuf, pc int32, a, b, c uint8) {
 	emitExitReason(cb, jit.HelperCall, pc, int32(a), int32(b), int32(c))
 }
 
+// emitCallIntrinsicFastPath emits the issue #77 math intrinsic guard +
+// inline body, called from emitCallInlineFastPath's guard-miss slow path
+// (a math intrinsic callee is a host closure, so it always fails the
+// normal protoID guard and lands here — meaning the hot Lua-callee
+// seg2seg path pays ZERO intrinsic overhead). It appends "jmp done"
+// rel32 fixup offsets to *doneFixups (the caller patches them to land
+// past the whole CALL emit, alongside the seg2seg done jump). All guard
+// misses fall through to the next byte, which the caller fills with the
+// deopt guard + HelperCall exit-reason. The shape is pre-checked by the
+// caller: c == 2 (single result), b == 2 (unary) or b == 3 (max/min).
+//
+// Guard (amd64):
+//
+//	mov rax, [rbx+A*8]        ; R(A)
+//	mov rcx, rax              ; save full callee value for identity cmp
+//	mov rdx, icSlotAddr       ; imm64
+//	mov al, [rdx+6]           ; Flags
+//	and al, IsIntrinsic|Stuck ; 0x90
+//	cmp al, IsIntrinsic       ; 0x10 — intrinsic AND not stuck?
+//	jne miss
+//	mov rax, [rdx+24]         ; IntrinsicCalleeVal
+//	cmp rax, rcx              ; R(A) == recorded closure?
+//	jne miss
+//	<IsNumber guard on each arg slot>
+//	movzx eax, [rdx+7]        ; IntrinsicID
+//	<dispatch to the body for this arity's candidate kinds>
+//
+// Each body computes the result into R(A), bumps IntrinsicHitCount, and
+// jmp's done. sqrt/floor/ceil add a result-NaN guard (an SSE NaN in the
+// tag-aliasing range routes to the host, which canonicalizes) mirroring
+// emitInlineArithWithSlowPath; abs/max/min can't produce a tag-range
+// value (result is one of the < qNanBoxBase inputs) so need none.
+func emitCallIntrinsicFastPath(cb *codeBuf, a, b uint8, callSiteIdx int, doneFixups *[]int) {
+	if cb.proto == nil || callSiteIdx < 0 || callSiteIdx >= len(cb.proto.CallICs) {
+		return
+	}
+	icSlotAddr := uintptr(unsafe.Pointer(&cb.proto.CallICs[callSiteIdx]))
+
+	var missFixups []int
+
+	// rax = R(A); rcx = R(A) saved for the identity compare.
+	cb.emit(jitamd64.EmitMovqRaxFromMemReg(nil, regRBX, int32(a)*8))
+	cb.emit([]byte{0x48, 0x89, 0xC1}) // mov rcx, rax
+	// rdx = icSlotAddr.
+	cb.emit(jitamd64.EmitMovRdxImm64(nil, uint64(icSlotAddr)))
+	// Flags gate: (Flags & (IsIntrinsic|Stuck)) == IsIntrinsic.
+	cb.emit([]byte{0x8A, 0x42, callICFlagsByteOffset})             // mov al, [rdx+6]
+	cb.emit([]byte{0x24, CallICFlagIsIntrinsic | CallICFlagStuck}) // and al, 0x90
+	cb.emit([]byte{0x3C, CallICFlagIsIntrinsic})                   // cmp al, 0x10
+	cb.emit([]byte{0x0F, 0x85, 0, 0, 0, 0})                        // jne miss
+	missFixups = append(missFixups, len(cb.bytes)-4)
+	// Identity gate: R(A) == IntrinsicCalleeVal.
+	cb.emit([]byte{0x48, 0x8B, 0x42, callICIntrinsicValByteOffset}) // mov rax, [rdx+24]
+	cb.emit([]byte{0x48, 0x39, 0xC8})                               // cmp rax, rcx
+	cb.emit([]byte{0x0F, 0x85, 0, 0, 0, 0})                         // jne miss
+	missFixups = append(missFixups, len(cb.bytes)-4)
+
+	// IsNumber guard on each fixed argument (R(A+1) [, R(A+2)]). A number
+	// is raw < qNanBoxBase; anything >= (tagged value, indefinite NaN)
+	// routes to the host, which does string coercion / raises. rdx
+	// (icSlotAddr) is preserved — these use rax/rcx only.
+	nargs := int(b) - 1
+	for i := 1; i <= nargs; i++ {
+		cb.emit(jitamd64.EmitMovqRaxFromMemReg(nil, regRBX, int32(a+uint8(i))*8))
+		cb.emit(jitamd64.EmitMovRcxImm64(nil, qNanBoxBaseU64))
+		cb.emit(jitamd64.EmitCmpRaxRcx(nil))
+		cb.emit(jitamd64.EmitJaeRel32(nil, 0)) // jae miss
+		missFixups = append(missFixups, len(cb.bytes)-4)
+	}
+
+	// Dispatch on IntrinsicID (rdx still = icSlotAddr).
+	cb.emit([]byte{0x0F, 0xB6, 0x42, callICIntrinsicIDByteOffset}) // movzx eax, byte [rdx+7]
+	// Candidate kinds for this arity. je fixups resolved to each body.
+	var kinds []uint8
+	if b == 2 {
+		kinds = []uint8{jit.IntrinsicSqrt, jit.IntrinsicFloor, jit.IntrinsicCeil, jit.IntrinsicAbs}
+	} else { // b == 3
+		kinds = []uint8{jit.IntrinsicMax, jit.IntrinsicMin}
+	}
+	jeFixups := make(map[uint8]int, len(kinds))
+	for _, k := range kinds {
+		cb.emit([]byte{0x3C, k})                // cmp al, kind
+		cb.emit([]byte{0x0F, 0x84, 0, 0, 0, 0}) // je body_k
+		jeFixups[k] = len(cb.bytes) - 4
+	}
+	// No candidate matched (e.g. max recorded at a 1-arg site): miss.
+	cb.emit([]byte{0xE9, 0, 0, 0, 0}) // jmp miss
+	missFixups = append(missFixups, len(cb.bytes)-4)
+
+	emitBody := func(k uint8, emitOp func()) {
+		writeRel32(cb, jeFixups[k], int32(len(cb.bytes))-int32(jeFixups[k]+4))
+		emitOp()
+		// inc qword [IntrinsicHitCountAddr]  (prove-the-path)
+		cb.emit(jitamd64.EmitMovRaxImm64(nil, IntrinsicHitCountAddr()))
+		cb.emit([]byte{0x48, 0xFF, 0x00})
+		cb.emit([]byte{0xE9, 0, 0, 0, 0}) // jmp done
+		*doneFixups = append(*doneFixups, len(cb.bytes)-4)
+	}
+
+	argOff := func(i int) int32 { return int32(a+uint8(i)) * 8 }
+	dstOff := int32(a) * 8
+
+	// Result-NaN guard shared by sqrt/floor/ceil: an SSE NaN in the
+	// tag-aliasing range (>= qNanBoxBase) would be misread as a boxed
+	// value; route it to the host, which canonicalizes (mirrors
+	// emitInlineArithWithSlowPath). xmm0 holds the result.
+	emitResultNaNGuard := func() {
+		cb.emit([]byte{0x66, 0x48, 0x0F, 0x7E, 0xC0}) // movq rax, xmm0
+		cb.emit(jitamd64.EmitMovRcxImm64(nil, qNanBoxBaseU64))
+		cb.emit(jitamd64.EmitCmpRaxRcx(nil))
+		cb.emit(jitamd64.EmitJaeRel32(nil, 0)) // jae miss
+		missFixups = append(missFixups, len(cb.bytes)-4)
+	}
+
+	if b == 2 {
+		emitBody(jit.IntrinsicSqrt, func() {
+			cb.emit(jitamd64.EmitSqrtsdXmmFromMem(nil, 0, regRBX, argOff(1)))
+			emitResultNaNGuard()
+			cb.emit(jitamd64.EmitMovsdMemFromXmm(nil, 0, regRBX, dstOff))
+		})
+		emitBody(jit.IntrinsicFloor, func() {
+			cb.emit(jitamd64.EmitRoundsdXmmFromMem(nil, 0, regRBX, argOff(1), 1))
+			emitResultNaNGuard()
+			cb.emit(jitamd64.EmitMovsdMemFromXmm(nil, 0, regRBX, dstOff))
+		})
+		emitBody(jit.IntrinsicCeil, func() {
+			cb.emit(jitamd64.EmitRoundsdXmmFromMem(nil, 0, regRBX, argOff(1), 2))
+			emitResultNaNGuard()
+			cb.emit(jitamd64.EmitMovsdMemFromXmm(nil, 0, regRBX, dstOff))
+		})
+		emitBody(jit.IntrinsicAbs, func() {
+			// mov rax, [rbx+arg]; btr rax, 63 (clear sign); mov [rbx+A], rax.
+			cb.emit(jitamd64.EmitMovqRaxFromMemReg(nil, regRBX, argOff(1)))
+			cb.emit([]byte{0x48, 0x0F, 0xBA, 0xF0, 0x3F}) // btr rax, 63
+			cb.emit(jitamd64.EmitMovqMemRegFromRax(nil, regRBX, dstOff))
+		})
+	} else { // b == 3: max / min
+		// Both load a into xmm0, b into xmm1, then select per Lua
+		// semantics (out = a; replace with b only when the strict
+		// comparison holds — NaN keeps a, matching Go >/< on float64).
+		emitMinMax := func(cmpFirst uint8, cmpSecond uint8) {
+			cb.emit(jitamd64.EmitMovsdXmmFromMem(nil, 0, regRBX, argOff(1))) // xmm0 = a
+			cb.emit(jitamd64.EmitMovsdXmmFromMem(nil, 1, regRBX, argOff(2))) // xmm1 = b
+			cb.emit(jitamd64.EmitUcomisdXmmXmm(nil, cmpFirst, cmpSecond))    // compare
+			cb.emit([]byte{0x76, 0x04})                                      // jbe keepA (skip 4B movsd)
+			cb.emit(jitamd64.EmitMovsdXmmXmm(nil, 0, 1))                     // xmm0 = b (replace)
+			// keepA:
+			cb.emit(jitamd64.EmitMovsdMemFromXmm(nil, 0, regRBX, dstOff))
+		}
+		emitBody(jit.IntrinsicMax, func() {
+			// max: out=a; if b>a out=b. ucomisd xmm1,xmm0 (b vs a); b>a
+			// (CF=0,ZF=0) falls through to replace; jbe (b<=a / NaN) keeps a.
+			emitMinMax(1, 0)
+		})
+		emitBody(jit.IntrinsicMin, func() {
+			// min: out=a; if b<a out=b. ucomisd xmm0,xmm1 (a vs b); a>b
+			// (i.e. b<a) falls through to replace; jbe keeps a.
+			emitMinMax(0, 1)
+		})
+	}
+
+	// miss: patch every guard-miss branch to fall through here (the next
+	// byte is the caller's deopt guard + HelperCall exit-reason).
+	missPos := len(cb.bytes)
+	for _, off := range missFixups {
+		writeRel32(cb, off, int32(missPos)-int32(off+4))
+	}
+}
+
 // emitCallInlineFastPath emits the segment-side guard + fast body for
 // the PJ10 CALL EmitCallInline fast path (issue #50). Returns true if
 // the fast path emit consumed the CALL; false if the caller should
@@ -2630,6 +2799,18 @@ func emitCallInlineFastPath(cb *codeBuf, pc int32, a, b, c uint8, callSiteIdx in
 	writeRel32(cb, jne2Off, int32(slowPathPos)-int32(jne2Off+4))
 	writeRel32(cb, jne3Off, int32(slowPathPos)-int32(jne3Off+4))
 	writeRel32(cb, jne4Off, int32(slowPathPos)-int32(jne4Off+4))
+	// Math intrinsic fast path (issue #77): a math.* host closure callee
+	// always fails guard 2 (its protoID field is the hostFnID, never the
+	// recorded Lua protoID), so it lands here — meaning the hot Lua-callee
+	// seg2seg path above never runs any intrinsic guard. Only the hostable
+	// shapes are eligible (c == 2 single result; b == 2 unary / b == 3
+	// max/min). On a hit the body computes inline + jmp's done; on a miss
+	// (not an intrinsic slot / different callee / non-number arg) it falls
+	// through to the deopt guard + HelperCall below.
+	var intrinsicDoneFixups []int
+	if mathIntrinsicsEnabled && c == 2 && (b == 2 || b == 3) {
+		emitCallIntrinsicFastPath(cb, a, b, callSiteIdx, &intrinsicDoneFixups)
+	}
 	// Same seg2seg deopt guard on the guard-fail slow path: a shape
 	// mismatch (protoID / arity / flags) while nested must deopt, not
 	// exit-reason mid-segment.
@@ -2638,13 +2819,17 @@ func emitCallInlineFastPath(cb *codeBuf, pc int32, a, b, c uint8, callSiteIdx in
 	}
 	emitExitReason(cb, jit.HelperCall, pc, int32(a), int32(b), int32(c))
 
-	// Patch the segment-to-segment `jmp done` (if emitted) to land here,
-	// past both exit-reason blocks. The seg2seg path completes in-
-	// segment and continues to the next op; both exit-reason blocks end
-	// with RET so control only reaches here via the seg2seg jmp.
+	// Patch the segment-to-segment `jmp done` (if emitted) and every
+	// intrinsic-hit `jmp done` to land here, past both exit-reason blocks.
+	// The seg2seg / intrinsic paths complete in-segment and continue to
+	// the next op; both exit-reason blocks end with RET so control only
+	// reaches here via one of those done jumps.
+	donePos := len(cb.bytes)
 	if jmpDoneOff >= 0 {
-		donePos := len(cb.bytes)
 		writeRel32(cb, jmpDoneOff, int32(donePos)-int32(jmpDoneOff+4))
+	}
+	for _, off := range intrinsicDoneFixups {
+		writeRel32(cb, off, int32(donePos)-int32(off+4))
 	}
 	return true
 }

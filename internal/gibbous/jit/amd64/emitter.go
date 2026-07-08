@@ -523,6 +523,65 @@ func EmitUcomisdXmmXmm(buf []byte, xmmDst uint8, xmmSrc uint8) []byte {
 	return buf
 }
 
+// EmitSqrtsdXmmFromMem 发射「sqrtsd xmmDst, [baseReg+disp32]」——从内存读
+// f64 开方(issue #77 math.sqrt intrinsic)。指令:F2 0F 51 modrm + disp32。
+func EmitSqrtsdXmmFromMem(buf []byte, xmmDst uint8, baseReg uint8, disp32 int32) []byte {
+	if xmmDst > 7 {
+		xmmDst = 0
+	}
+	if baseReg > 7 {
+		baseReg = 0
+	}
+	buf = append(buf, 0xF2, 0x0F, 0x51)
+	modrm := byte(0x80) | (xmmDst&0x7)<<3 | (baseReg & 0x7)
+	buf = append(buf, modrm)
+	buf = append(buf,
+		byte(uint32(disp32)),
+		byte(uint32(disp32)>>8),
+		byte(uint32(disp32)>>16),
+		byte(uint32(disp32)>>24))
+	return buf
+}
+
+// EmitRoundsdXmmFromMem 发射「roundsd xmmDst, [baseReg+disp32], imm8」——
+// SSE4.1 定向舍入(issue #77 math.floor/ceil intrinsic)。mode:1=floor
+// (round toward -inf),2=ceil(toward +inf),与 Go 的 math.Floor /
+// math.Ceil(amd64 asm 也是 ROUNDSD)逐字节一致。指令:66 0F 3A 0B modrm
+// + disp32 + imm8。
+func EmitRoundsdXmmFromMem(buf []byte, xmmDst uint8, baseReg uint8, disp32 int32, mode uint8) []byte {
+	if xmmDst > 7 {
+		xmmDst = 0
+	}
+	if baseReg > 7 {
+		baseReg = 0
+	}
+	buf = append(buf, 0x66, 0x0F, 0x3A, 0x0B)
+	modrm := byte(0x80) | (xmmDst&0x7)<<3 | (baseReg & 0x7)
+	buf = append(buf, modrm)
+	buf = append(buf,
+		byte(uint32(disp32)),
+		byte(uint32(disp32)>>8),
+		byte(uint32(disp32)>>16),
+		byte(uint32(disp32)>>24))
+	buf = append(buf, mode)
+	return buf
+}
+
+// EmitMovsdXmmXmm 发射「movsd xmmDst, xmmSrc」(reg-reg,4 字节)——用于
+// max/min 选择时把胜出操作数搬入结果寄存器。指令:F2 0F 10 modrm(mod=11)。
+func EmitMovsdXmmXmm(buf []byte, xmmDst uint8, xmmSrc uint8) []byte {
+	if xmmDst > 7 {
+		xmmDst = 0
+	}
+	if xmmSrc > 7 {
+		xmmSrc = 0
+	}
+	buf = append(buf, 0xF2, 0x0F, 0x10)
+	modrm := byte(0xC0) | (xmmDst&0x7)<<3 | (xmmSrc & 0x7)
+	buf = append(buf, modrm)
+	return buf
+}
+
 // EmitJeRel32 发射「je rel32」(0F 84 rel32,6 字节)等条件跳转。
 func EmitJeRel32(buf []byte, rel32 int32) []byte {
 	buf = append(buf, 0x0F, 0x84)

@@ -226,7 +226,21 @@ var (
 	callInlineEnabled     = true
 	inlineGetUpvalEnabled = true
 	segToSegEnabled       = true
+	// mathIntrinsicsEnabled gates the issue #77 math.* intrinsic fast
+	// path (sqrt/floor/ceil/abs/max/min emitted inline instead of an
+	// exit-reason CALL). On by default; toggle for A/B benchmarking and
+	// to isolate correctness regressions.
+	mathIntrinsicsEnabled = true
 )
+
+// SetMathIntrinsicsEnabledForTest toggles the math intrinsic fast path
+// and returns a restore func. Test / benchmark only. Because it affects
+// emit, compile Protos AFTER toggling for the change to take effect.
+func SetMathIntrinsicsEnabledForTest(on bool) (restore func()) {
+	prev := mathIntrinsicsEnabled
+	mathIntrinsicsEnabled = on
+	return func() { mathIntrinsicsEnabled = prev }
+}
 
 // SetSegToSegEnabledForTest toggles the segment-to-segment dispatch gate
 // and returns a restore func. Test / benchmark only. Because it affects
