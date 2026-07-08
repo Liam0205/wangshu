@@ -283,6 +283,27 @@ func emitCallInlineFastPathArm64(cb *codeBuf, pc int32, a, b, c uint8, callSiteI
 		cb.emit(jitarm64.EmitCmpXnXm(nil, 14, 15))
 		bhsCapOff := len(cb.bytes)
 		cb.emit(jitarm64.EmitBCond(nil, jitarm64.CondHS, 0)) // depth >= cap -> skip_seg
+		// Value-stack bound guard (issue #80; mirror of the amd64 check):
+		// callee frame end = X26 + (A+1)*8 + CalleeMaxStack*8 must be
+		// <= jitCtx.valueStackEnd, else skip_seg (the host path's
+		// enterLuaFrame grows the stack; an in-segment dispatch cannot,
+		// and overrunning the segment corrupts neighboring arena
+		// objects). w14 = MaxStack byte [ic+5]; x14 = X26 + w14*8 +
+		// (A+1)*8; cmp x14, [X27+valueStackEndOff]; b.hi skip_seg.
+		cb.emit(jitarm64.EmitLdrbWtFromXnDisp(nil, 14, 12, 5))
+		cb.emit(jitarm64.EmitLslXdImm6(nil, 14, 14, 3))
+		cb.emit(jitarm64.EmitAddXdXnXm(nil, 14, 14, regX26))
+		cb.emit(jitarm64.EmitMovXdImm64(nil, 15, uint64((int32(a)+1)*8)))
+		cb.emit(jitarm64.EmitAddXdXnXm(nil, 14, 14, 15))
+		cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 15, regX27,
+			uint16(jit.JITContextValueStackEndOffset)))
+		cb.emit(jitarm64.EmitCmpXnXm(nil, 14, 15))
+		bhiStackOff := len(cb.bytes)
+		cb.emit(jitarm64.EmitBCond(nil, jitarm64.CondHI, 0)) // end > stackEnd -> skip_seg
+		// Reload w14 = segCallDepth: the bound guard clobbered it, and
+		// the increment below relies on w14 caching the depth value.
+		cb.emit(jitarm64.EmitLdrWtFromXnDisp(nil, 14, regX27,
+			uint16(jit.JITContextSegCallDepthOffset)))
 		// save caller closure into x15; set jitCtx.currentClosureRef = callee closure
 		cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 15, regX27,
 			uint16(jit.JITContextCurrentClosureRefOffset)))
@@ -359,6 +380,7 @@ func emitCallInlineFastPathArm64(cb *codeBuf, pc int32, a, b, c uint8, callSiteI
 		a64PatchRel19(cb, cbzNeverOff, skipSegPos)
 		a64PatchRel19(cb, cbzSegOff, skipSegPos)
 		a64PatchRel19(cb, bhsCapOff, skipSegPos)
+		a64PatchRel19(cb, bhiStackOff, skipSegPos)
 		a64PatchRel26(cb, bRedoOff, skipSegPos)
 	}
 

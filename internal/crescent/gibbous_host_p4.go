@@ -26,9 +26,25 @@ func (st *State) RefreshJitCtxAddrs(ctx *jit.JITContext, base int32) {
 		return
 	}
 	arenaBase := uintptr(unsafe.Pointer(&words[0]))
+	// vsBase: recompute from the LIVE thread state instead of trusting
+	// the caller's base parameter (issue #80). base is an absolute
+	// arena byte offset captured at Run entry; a host call that grows
+	// the value stack (enterLuaFrame -> ensureStack -> growStack)
+	// RELOCATES the stack segment to a new arena offset and frees the
+	// old one — re-entering the segment with the stale offset reads
+	// and writes the freed segment (silent corruption: wrong results,
+	// "attempt to call a number value"). At the moment of any refresh,
+	// runningThread.cur is the frame this Run invocation executes
+	// (helpers never leave a pushed frame behind; DoReturn exits the
+	// loop instead), so (stackBaseW + cur.base)*8 is the live offset —
+	// equal to base at Run entry, and correct after relocation.
+	vsByte := uintptr(base)
+	if th := st.runningThread; th != nil {
+		vsByte = (uintptr(th.stackBaseW) + uintptr(th.cur.base)) * 8
+	}
 	ctx.SetAllAddrs(
 		arenaBase,
-		arenaBase+uintptr(base),
+		arenaBase+vsByte,
 		arenaBase+uintptr(st.ciDepthRef),
 		arenaBase+uintptr(st.ciSegBaseRef),
 		arenaBase+uintptr(st.topRef),
@@ -46,7 +62,14 @@ func (st *State) RefreshJitCtxAddrs(ctx *jit.JITContext, base int32) {
 			arenaBase+uintptr(th.stackBaseW)*8,
 			len(st.cos.cos) == 0 && len(st.threadChain) == 0,
 		)
+		// Value-stack end (issue #80): the seg2seg CALL fast body
+		// bounds-checks the callee frame against this before an
+		// in-segment dispatch (the interpreter path grows the stack in
+		// enterLuaFrame; the in-segment path cannot).
+		ctx.SetValueStackEnd(arenaBase +
+			uintptr(th.stackBaseW)*8 + uintptr(th.stackCap)*8)
 	} else {
 		ctx.SetUpvalInlineFields(0, 0, false)
+		ctx.SetValueStackEnd(0)
 	}
 }
