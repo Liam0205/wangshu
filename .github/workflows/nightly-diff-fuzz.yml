@@ -110,7 +110,12 @@ jobs:
           # Auto leg runs each seed 3x (baseline + 2 auto runs): third
           # of the rounds keeps wall-clock comparable to the main leg.
           AUTO_ROUNDS=$(( ROUNDS / 3 ))
-          eval WANGSHU_FUZZ_SEED_BASE=$SEED_BASE WANGSHU_FUZZ_N=$AUTO_ROUNDS \
+          # No eval here (issue #81): eval re-parses the command line and
+          # strips the -tags quoting, splitting "wangshu_p3 wangshu_profile"
+          # into a tag + a bogus package argument. The main legs need eval
+          # for their possibly-empty TAGS_ARG; this step is gated on
+          # matrix.tags != '' so a plain invocation is correct.
+          WANGSHU_FUZZ_SEED_BASE=$SEED_BASE WANGSHU_FUZZ_N=$AUTO_ROUNDS \
             go test -tags "${{ matrix.tags }}" ./test/difftest/ -run 'TestAuto_RandomScripts' -timeout 150m 2>&1 | tee autodiff.log
 
       - name: native go-fuzz long run (${{ matrix.variant }})
