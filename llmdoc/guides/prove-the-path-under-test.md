@@ -1,7 +1,7 @@
 # Guide:证明在测的路径(绿色 ≠ 在测你以为在测的)
 
-> 适用:写差分 / 差分测试 / 性能 / IC 快路径 / wasm 快路径 / 错误冒泡类**任何对路径执行做断言的测试**时,以及加 e2e 语料 / 设计验收 oracle 前;**或扩接受面 / 换硬件 / 改 fuzz 参数后要不要立刻跑 fuzz 时**(§5);**或调试机制叠加多档的崩点时**(§6);**或收到「某条路径导致 N 倍退化」类归因、动手写止血/修复计划前**(§7,诊断侧对偶)。
-> 来源:十三个独立实例聚合的家族纪律——`memory/reflections/2026-06-14-p3-pw5-table-ic-round.md`(inline-proof) + `2026-06-14-p3-pw6-crosslayer-call-round.md`(TierStuck no-op) + `2026-06-15-p3-pw9-acceptance-perf-round.md`(空测 vararg 顶层)+ `2026-06-15-p3-pw10-r3-call-indirect-round.md`(错误路径盲区)+ `2026-06-15-p3-pw10-r1-r2-callinfo-migration-round.md`(基准工作负载错配)+ `2026-06-15-p3-pw10-zerocross-stage3-round.md`(快路径命中盲区)+ `2026-06-16-vs0e-varargs-stack-underflow-round.md`(覆盖度先验证,正向侧)+ `2026-06-30-pr27-f3-3b-darwin-arm64-execute-roundup.md`(bypass 探针根因 isolate + CI runner 形式盲)+ `2026-07-03-issue40-arm64-stopbleed-round.md`(**诊断侧对偶**:退化归因前先证被怪罪的路径存在)+ `2026-07-02-p4-beat-p3-opset-round.md`/`2026-07-03-issue40-arm64-stopbleed-round.md`/`2026-07-03-issue45-issue39-round.md`(**fuzz 探索空间维度**:接受面 / 硬件 / 参数任一维动了就重探,§5 三实例)+ `2026-07-07-issue67-auto-mode-coverage-round.md`(**未强制测试静默退化**:auto 模式测试不带升层兜底断言,悄悄滑回纯解释器覆盖)。前八个实例在**测试侧**(证明「路径真被走到」);第九个在**诊断/归因侧**(证明「被怪罪的路径真的存在/被执行」)扩到止血/修复计划前;第十~十二个在**探索空间维度侧**(§5,证明「fuzz 覆盖度不是时长的单调函数」)扩到 fuzz 与接受面/硬件/参数联动;第十三个回到**测试侧**,贡献「自然触发路径(auto/natural)测试必须配白盒兜底断言」的具体解药形式。
+> 适用:写差分 / 差分测试 / 性能 / IC 快路径 / wasm 快路径 / 错误冒泡类**任何对路径执行做断言的测试**时,以及加 e2e 语料 / 设计验收 oracle 前;**或扩接受面 / 换硬件 / 改 fuzz 参数后要不要立刻跑 fuzz 时**(§5);**或调试机制叠加多档的崩点时**(§6);**或收到「某条路径导致 N 倍退化」类归因、动手写止血/修复计划前**(§7,诊断侧对偶);**或读一个投机/inline 快路径的性能收益数字、或复查一个历史 perf 裁决时**(§8,度量单位/时间窗口)。
+> 来源:十四个独立实例聚合的家族纪律——`memory/reflections/2026-06-14-p3-pw5-table-ic-round.md`(inline-proof) + `2026-06-14-p3-pw6-crosslayer-call-round.md`(TierStuck no-op) + `2026-06-15-p3-pw9-acceptance-perf-round.md`(空测 vararg 顶层)+ `2026-06-15-p3-pw10-r3-call-indirect-round.md`(错误路径盲区)+ `2026-06-15-p3-pw10-r1-r2-callinfo-migration-round.md`(基准工作负载错配)+ `2026-06-15-p3-pw10-zerocross-stage3-round.md`(快路径命中盲区)+ `2026-06-16-vs0e-varargs-stack-underflow-round.md`(覆盖度先验证,正向侧)+ `2026-06-30-pr27-f3-3b-darwin-arm64-execute-roundup.md`(bypass 探针根因 isolate + CI runner 形式盲)+ `2026-07-03-issue40-arm64-stopbleed-round.md`(**诊断侧对偶**:退化归因前先证被怪罪的路径存在)+ `2026-07-02-p4-beat-p3-opset-round.md`/`2026-07-03-issue40-arm64-stopbleed-round.md`/`2026-07-03-issue45-issue39-round.md`(**fuzz 探索空间维度**:接受面 / 硬件 / 参数任一维动了就重探,§5 三实例)+ `2026-07-07-issue67-auto-mode-coverage-round.md`(**未强制测试静默退化**:auto 模式测试不带升层兜底断言,悄悄滑回纯解释器覆盖)+ `2026-07-08-issue67-amd64-nodehit-crossrun-round.md`(**度量单位/时间窗口**:单 Run 命中数 vs 跨 Run 稳态 dispatch,§8)。前八个实例在**测试侧**(证明「路径真被走到」);第九个在**诊断/归因侧**(证明「被怪罪的路径真的存在/被执行」)扩到止血/修复计划前;第十~十二个在**探索空间维度侧**(§5,证明「fuzz 覆盖度不是时长的单调函数」)扩到 fuzz 与接受面/硬件/参数联动;第十三个回到**测试侧**,贡献「自然触发路径(auto/natural)测试必须配白盒兜底断言」的具体解药形式;第十四个在**度量侧**(§8,证明「性能收益的度量单位/时间窗口选错,会把一个从没生效的优化误判成生效但太贵」)。
 
 **核心断言**:**测试通过 ≠ 在测的路径被走到**。同一段绿色结果可能来自三类「静默替身路径」:① 静态分析挑剔(F1/F2 结构性排除)使被测路径根本没被编译/触发;② 测试 harness 自身跳过(对错误 `Fatalf` / vararg 顶层不升层 / 缓存命中前路径死);③ 被测对象语义等价两条路径(inline 快路径 vs helper 慢路径),输出 byte-equal 但**走的哪条不能从输出反推**。
 
@@ -27,6 +27,8 @@
 
 **(b) 正向 tier / 命中计数器(升层 / 快路径类)**
 对 tier-vs-tier 基准 / wasm 快路径 / inline IC,加**白盒计数器**(`atomic.AddInt64(&fastCallHits, 1)` 等),测试断言计数器单调增。例:PW10 ③b emitReturn 守卫快路径加 `doReturnHits` 计数,`TestPW9_ZeroCross_ReturnFastHit` 经 helper→f 不增计数验快路径命中;PW10 顶层升层加 `TopLevelUplift` 探针(DoReturn 增量证 wasm 入口被走)。也包含**直接断言 tier 状态**:`TestPW9_ForceAllPromoteReal` 断言 proto 真到达 `TierGibbous` 不是 `TierStuck` no-op skip。同族解药还包括**自然触发路径的兜底断言**:测试套自称覆盖 auto/natural 升层(而非 force-all)时,配 `PromotionCount>0` 一类断言证明该 run 里确实发生过至少一次真实升层——否则短用例语料可能在收益门调整后悄悄退化成纯解释器覆盖而无人发现(issue #67 auto-mode 覆盖轮:第一版语料就当场挂在这条断言上,逼语料从短核换成能通过收益密度门的长纯算术核)。
+
+⚠️ **白盒命中计数器要按稳态窗口(跨 Run)统计,不按单 Run 统计**(详见 §8)。「命中 N 次」是「机制被触发过」的证据,不是「机制在稳态生效」的证据——若快路径带一道会被跨 Run 重建打穿的身份 guard,它可能在第一个 Run 里碰巧命中(表还是 promotion 那一刻的那张)、后续 Run 全落空,单 Run 计数器看着漂亮但稳态从没真生效。读命中计数器时选跨 Run 窗口,别拿单个 Run 的命中数下结论。
 
 **(c) 非空载体 + 路径载体证据(空测类)**
 加速路径 ≈1.0x 是红旗不是发现——默认「没走加速路径」。tier A vs B 基准必须**先证 tier B 真被执行**:把 kernel 包进可升层载体(内层函数反复调用而非顶层 vararg chunk),再读数。改 bench 时**先证路径,再读数**。
@@ -96,7 +98,26 @@
 
 **与 §2/§3/§6 反向侧解药的对偶关系**:反向侧解药(毒化助手 / 命中计数器 / 错误路径用例 / bypass 探针)是「证一条已知路径真被走到」,本节是「证一条被归因的路径真的存在于当前二进制且可达」——前者面向**测试**,后者面向**诊断/归因**;两者互补,不是同一条纪律的重复。
 
-## 8. 触发场景速查
+## 8. 度量侧 — 度量单位/时间窗口选错,把从没生效的优化读成「生效但太贵」
+
+**适用场景**:读一个投机 / inline 快路径的性能「收益」数字时,或复查一个历史 perf 裁决(某优化「实测反而回归、故某平台 only / 故放弃」)时。
+
+**核心断言**:**加速数字 ≠ 机制在稳态生效**。这是 §1-§7 全部实例的**度量侧**新维度——前面几节管「路径有没有被走到 / 被归因的路径存不存在」,本节管「读收益时的度量单位/时间窗口选没选对」。收益归因前必须先证:收益来自机制在**稳态**(跨 Run)生效,而不是单个 Run 内的一次假信号。
+
+**度量教训**:任何投机 / inline 快路径的收益,度量单位必须是**跨 Run(稳态)的 exit-reason dispatch 计数**(或等价的稳态窗口指标),不是单个 Run 内的命中数。单 Run 命中数是「机制被触发过」的证据,不是「机制在稳态生效」的证据——两者的差就是一次假信号。选错度量单位会把「从没生效的优化」读成「生效但太贵」,再叠一个碰巧同向的噪声,就能推出完全错误的架构结论。
+
+**实例(issue #67 amd64 NodeHit 跨 Run inline 补齐轮,PR #82)**:PR #74 当年给 GETTABLE/SETTABLE 常量字符串 key 的段内 NodeHit inline 观察到「命中 17 万次」并据此认定 inline 机制在工作,却同时看到 ~3% 回归,推出「inline 生效但太贵」的结论,进而定下 arm64-only 的架构裁决。真相是那「命中 17 万次」是**单个 Run 内**的假信号——最初的 inline 用一道**身份 guard**(把编译期 IC 记录的表指针烤进段,运行期比对当前表指针),而 n-body 的 `bodies[i]` 这类局部表**每个 Run 都在新的 arena 偏移重建**、promotion 只烤一次快照,身份 guard 跨 Run 100% 落空:段里每次都发射 guard、每次都不通过、每次都照样 exit-reason 往返到 `host.GetTable`/`host.SetTable`。inline 快路径**跨 Run 从没真正生效过**,那 ~3% 是「每次都白发一遍身份 guard 又白退一次 host」叠出来的净开销,不是 inline 本身的成本。真正的度量单位是**跨 Run 稳态的 exit-reason dispatch 计数**,而它从来没有下降。修正(commit 6a10721)把身份 guard 换成两道与表地址无关的 guard(hmask 边界 `Index <= hmask` + `nodeRef != 0`,一个 node 自己的 key 字段就能唯一标识 entry,身份比较对正确性并不必要),跨 Run 重建的同 shape 表也能真命中,amd64 n-body auto 从 43.5ms 降到 7.0ms(~6.2×)、跨 Run dispatch 从 875k 降到 50k,PR #74 的 arm64-only 裁决被证伪。反思 [[2026-07-08-issue67-amd64-nodehit-crossrun-round]]。
+
+**解药**:`TestPJ10_TableNodeHit_CrossRunInline` 提升后的 kernel 每次调用重建一张同 shape 的表(新 arena 偏移,专门打身份 guard),断言**每 Run 的 exit-reason dispatch < 500**(身份 guard 时代 ~18000)。身份 guard 时代它稳在 ~18000、identity-free guard 时代降到 < 500,两条路径在这个断言上才可分辨。正确性 e2e 不能抓这个陷阱(inline 走没走都产出正确值,身份 guard 落空只是退 host 变慢不变错),单 Run 命中计数器又看着漂亮——缺的正交证据是「跨 Run 稳态的 dispatch 不下降」这一条。
+
+**手法**:
+- 读加速收益时,度量单位选**跨 Run 稳态的 dispatch 计数**,不是单 Run 命中数;看到「命中 N 次」漂亮但整体数字反而回归,默认怀疑「机制被触发过但跨 Run 稳态从没真生效」,加跨 Run dispatch 断言而不是信单 Run 命中计数器。
+- 给 IC / inline 快路径写「把编译期身份快照烤进段」的 guard 前,先问「这个身份在段的存活窗口内会不会被跨 Run 重建打穿」(promotion 快照 vs 运行期重建,[[design-claims-vs-codebase-physics]] §5);若被测对象每 Run 在新 arena 偏移重建,身份 guard 会跨 Run 100% 落空,优先换成与对象地址无关的 key/shape 内容 guard。
+- 遇到一个历史 perf 裁决(某优化「实测反而回归、故某平台 only / 故放弃」)时,先复查它当年的度量单位是不是单 Run 命中数 / 单窗口数,用跨 Run 稳态计数重测再决定要不要推翻。
+
+**与 §2(b)/§7 的关系**:§2(b) 是「白盒命中计数器证路径被走到」,本节补的是「命中计数器要按稳态窗口读,不按单 Run 读」——同一个计数器,窗口选错就从「证据」变成「假信号」。§7 是**诊断侧**(退化归因前先证被怪罪的路径存在),本节是**度量侧**(收益归因前先证收益来自稳态生效);两者都是「表面数字不携带路径信息」的对偶面,一个管退化、一个管收益。
+
+## 9. 触发场景速查
 
 写新测试 / 改基准 / 看一个数字反常时,问自己:
 
@@ -110,8 +131,9 @@
 - **机制叠加多档崩点诊断**(§6) → 第一步不是穷举 N 档分别诊断,是写 minimal payload bypass 末档跳一档,把 N 档收敛到一档;多后端/多平台首次「真机 execute」上线时配真机 runner
 - **收到「某条路径导致 N 倍退化」类归因,准备写止血/修复计划前**(§7) → 先 grep build tag / 读函数头注 / 跑白盒探针证该路径在当前二进制里真的存在且可达,再动手修
 - **扩接受面(opSupported 加 op) / 换新硬件跑 fuzz / 改 fuzz 参数(-parallel、-race、GOMAXPROCS)时**(§5) → 立刻跑一轮 60~120s 相关 fuzz smoke,把它当 `go test` 必经步骤,不要延后到「专门的 fuzz 里程碑」;三个独立实例都在维度动的第一次 fuzz 里就抓到既有 bug
+- **读一个投机 / inline 快路径的性能收益数字、或复查一个历史 perf 裁决时**(§8) → 度量单位选跨 Run 稳态 dispatch 计数而非单 Run 命中数;看到「命中 N 次」漂亮但整体数字反而回归,默认怀疑「机制被触发过但稳态从没真生效」;给「把身份快照烤进段」的 guard 前先问会不会被跨 Run 重建打穿
 
-## 9. 与本仓其他 guide 的关系
+## 10. 与本仓其他 guide 的关系
 
 - 与 [[design-claims-vs-codebase-physics]] 构成对偶双防线:那是**实现前**重验设计稿主张,本 guide 是**实现后**证明在测路径。
 - 与 [[perf-optimization-workflow]] §1「profile 先行」§3「benchmark 否决门」配:profile 先行决定**做什么**,本 guide 决定「机制就位后基准/测试**真的在测**什么」,数字完成前必过两关;§7 诊断侧对偶是 §1「profile 先行」的又一确认——不是「先假设瓶颈再优化」,是「先证明瓶颈在哪再优化」。
