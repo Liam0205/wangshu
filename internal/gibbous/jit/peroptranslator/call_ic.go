@@ -117,33 +117,31 @@ const callICIntrinsicIDByteOffset = 7
 // the callee-identity guard (issue #77).
 const callICIntrinsicValByteOffset = 24
 
-// segToSegDepthCap bounds native segment-to-segment recursion so the
-// goroutine stack can't overflow in the NOSPLIT window where morestack
-// can't fire (spike DECISION.md option b). Past the cap, a caller falls
-// back to the exit-reason path (host executeFrom handles deep recursion
-// on the heap-allocated CI chain).
+// segToSegDepthCap bounds native segment-to-segment recursion. With the
+// self-managed spill stack wired (issue #89), each seg2seg level's `sub sp`
+// descends on jitCtx's 64 KiB spill buffer instead of the goroutine stack's
+// NOSPLIT allowance, so the cap is a spill-stack-capacity bound rather than
+// the ~800 B NOSPLIT budget. Past the cap, a caller falls back to the
+// exit-reason path (host executeFrom handles deeper recursion on the
+// heap-allocated CI chain).
 //
-// The budget is Go's NOSPLIT chain allowance, NOT the goroutine stack
-// size: the stack guard reserves only StackNosplitBase = 800 bytes
-// (internal/abi/stack.go) below the check point, and the mmap segment's
-// per-level `sub sp` is invisible to the linker's nosplit accounting.
-// When Run is entered with SP just above the guard (e.g. under deep Go
-// re-entry chains — exactly the deep-Lua-recursion workloads that drive
-// seg2seg hard), everything past those 800 bytes silently underruns the
-// stack allocation and corrupts adjacent heap objects; the GC then
-// reports "found pointer to free object" (found by FuzzAutoPromote seed
-// 7f161a85c466adbf, PR #86).
+// History: PR #86 had to drop this from 128 to 16 because the trampoline
+// did NOT switch SP — each level's `sub sp` was invisible to Go's linker
+// nosplit accounting and, when Run was entered with SP near the stack
+// guard (the deep-Lua-recursion workloads that drive seg2seg hard), a
+// ~4 KB descent (cap=128) punched through the ~800 B allowance and
+// corrupted adjacent heap objects (GC "found pointer to free object",
+// FuzzAutoPromote seed 7f161a85c466adbf). issue #89 wired the spill stack
+// (05 §3.4; amd64 SP switch proven in spike/p4spillstack, arm64 mirrored
+// and verified on CI), so the cap moves back up.
 //
-// Per-level machine-stack cost: amd64 ~24 B (push rcx + push rbx +
-// call return address), arm64 32 B (sub sp, sp, #32). Chain overhead
-// below the last stack check: CallJITSpec's NOSPLIT frame (~96 B arm64
-// / ~64 B amd64). cap=16 tops out at 96 + 16*32 = 608 B on arm64,
-// inside the 800 B allowance with headroom; the empirical boundary on
-// darwin/arm64 (GOGC=1 stress, deep-recursion repro) is between 16
-// (never crashes) and 64 (always crashes). Raising the cap again
-// requires switching the trampoline to the self-managed spill stack
-// (jitCtx.spillBase/spillTop, designed in 05 §3.4 but never wired).
-const segToSegDepthCap = 16
+// Per-level spill-stack cost: amd64 ~24 B, arm64 32 B. The spill stack is
+// SpillStackSize = 64 KiB, i.e. ~2048 levels at 32 B/level. cap=128 uses
+// at most 128*32 = 4 KiB, a 16x margin inside the buffer, and is well past
+// any real recursion depth that stays on the native tier (deeper recursion
+// is not a native-tier win — it round-trips via exit-reason). Regression:
+// TestI86_DeepRecursionGCStress must pass 3/3 at this cap under GOGC=1.
+const segToSegDepthCap = 128
 
 // Call-IC flag bits (single byte in Flags).
 const (
