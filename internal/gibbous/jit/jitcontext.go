@@ -117,6 +117,16 @@ const (
 	// #89): the trampoline stashes the goroutine SP here before switching
 	// SP onto the spill stack, and reloads it on the way out.
 	JITContextSavedGoSPOffset = unsafe.Offsetof(JITContext{}.savedGoSP)
+
+	// JITContextSegCallFuelOffset is the byte offset of segCallFuel: the
+	// seg2seg CALL fast body decrements it once per in-segment dispatch
+	// and skips to the host path when it reaches zero, so the step
+	// budget / cancel context can preempt execution that would otherwise
+	// never leave the mmap segment (fuzz crasher f2165a93dd62892d:
+	// fib(5510) under a step budget hung forever once segToSegDepthCap
+	// made depth-128 subtrees fully in-segment — ~phi^128 calls with no
+	// billing point).
+	JITContextSegCallFuelOffset = unsafe.Offsetof(JITContext{}.segCallFuel)
 )
 
 // **§9.20.9 协议状态码常量** (Spike 1 真接入 + future helper request 路由):
@@ -456,6 +466,36 @@ type JITContext struct {
 	// outer entry has already restored SP to the goroutine stack before
 	// the inner entry runs (see spike/p4spillstack DECISION.md G3).
 	savedGoSP uintptr
+
+	// segCallFuel bounds how many seg2seg in-segment CALL dispatches may
+	// run between Go-side preemption points. The seg2seg fast body
+	// decrements it before each in-segment dispatch; at zero the caller
+	// falls back to the exit-reason host path, whose
+	// ExecutePlainCallInlineFrame -> enterLuaFrame runs st.preempt()
+	// (step budget + cancel context) and the host refills the fuel on
+	// the next Run entry / dispatcher resume.
+	//
+	// Why fuel and not the preemptFlag: the step budget has no async
+	// producer — nothing ever sets preemptFlag when a budget is armed;
+	// billing happens synchronously in st.preempt() at call/back-edge
+	// points. In-segment dispatch bypasses all of those, so a promoted
+	// call-tree can run ~phi^depthCap calls with zero billing (fuzz
+	// crasher f2165a93dd62892d: fib(5510) under SetStepBudget hung
+	// "forever" while the interpreter erred in 50ms). A decrementing
+	// fuel counter needs no async signal and costs one dec+jz pair per
+	// dispatch.
+	//
+	// When no budget/context is armed the host refills with
+	// SegCallFuelUnlimited, so steady-state workloads keep the full
+	// in-segment speed and only budget-armed States pay periodic host
+	// round trips.
+	segCallFuel uint32
+
+	// segCallFuelRefill records the value of the last SetSegCallFuel so
+	// the host can bill (refill - segCallFuel) in-segment dispatches to
+	// the step budget on the next refresh. Go-side only; the segment
+	// never reads it.
+	segCallFuelRefill uint32
 }
 
 // NewJITContext 构造 P4 JIT 执行上下文。
@@ -653,6 +693,35 @@ func (c *JITContext) SetUpvalInlineFields(closureRef, threadStackBase0 uintptr, 
 // (issue #80; see the valueStackEnd field doc). Refreshed alongside
 // SetUpvalInlineFields on every Run entry / dispatcher re-entry.
 func (c *JITContext) SetValueStackEnd(end uintptr) { c.valueStackEnd = end }
+
+// SegCallFuelUnlimited is the fuel refill for States with no step budget
+// and no cancel context: large enough that the dec+jz guard practically
+// never fires (a segment call takes >=ns, so 2^31 dispatches is minutes
+// of pure in-segment work — and any host exit refills anyway).
+const SegCallFuelUnlimited = 1 << 31
+
+// SegCallFuelBudgeted is the fuel refill while a step budget or cancel
+// context is armed: the host regains control (and bills st.preempt())
+// at least once per this many in-segment CALL dispatches. 4096 keeps
+// the budget error latency low (~us at ns-scale dispatches) while
+// amortizing the exit-reason round trip to noise.
+const SegCallFuelBudgeted = 4096
+
+// SetSegCallFuel refills the seg2seg dispatch fuel (see the segCallFuel
+// field doc). Called by the host on every Run entry / dispatcher resume.
+func (c *JITContext) SetSegCallFuel(n uint32) {
+	c.segCallFuel = n
+	c.segCallFuelRefill = n
+}
+
+// SegCallFuel returns the remaining fuel (test hook).
+func (c *JITContext) SegCallFuel() uint32 { return c.segCallFuel }
+
+// SegCallFuelSpent returns how many in-segment dispatches ran since the
+// last SetSegCallFuel, for step-budget billing on the host side.
+func (c *JITContext) SegCallFuelSpent() uint32 {
+	return c.segCallFuelRefill - c.segCallFuel
+}
 
 // CurrentClosureRef returns the running frame's closure GCRef (test hook
 // + used by the segment-to-segment caller emit to bake the restore).

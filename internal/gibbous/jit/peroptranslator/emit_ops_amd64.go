@@ -2608,6 +2608,22 @@ func emitCallInlineFastPath(cb *codeBuf, pc int32, a, b, c uint8, callSiteIdx in
 		// fall back to the host path, whose enterLuaFrame grows.
 		jaStackOff := len(cb.bytes) + 2
 		cb.emit([]byte{0x0F, 0x87, 0, 0, 0, 0})
+		// Dispatch fuel guard (fuzz crasher f2165a93dd62892d): decrement
+		// jitCtx.segCallFuel; at zero skip to the host path so the step
+		// budget / cancel context gets a billing point (see the
+		// segCallFuel field doc — in-segment dispatch otherwise never
+		// reaches st.preempt()). The host refills fuel on every Run
+		// entry / dispatcher resume, so unbudgeted States never trip it.
+		// sub dword [r15 + segCallFuelOff], 1   (41 83 AF disp32 01)
+		{
+			off := int32(jit.JITContextSegCallFuelOffset)
+			cb.emit([]byte{0x41, 0x83, 0xAF,
+				byte(uint32(off)), byte(uint32(off) >> 8),
+				byte(uint32(off) >> 16), byte(uint32(off) >> 24), 0x01})
+		}
+		// jz skip_seg   (0F 84 rel32) — fuel exhausted → host path
+		jzFuelOff := len(cb.bytes) + 2
+		cb.emit([]byte{0x0F, 0x84, 0, 0, 0, 0})
 		// inc dword [r15 + segCallDepthOff]   (41 FF 87 disp32)
 		{
 			off := int32(jit.JITContextSegCallDepthOffset)
@@ -2757,6 +2773,7 @@ func emitCallInlineFastPath(cb *codeBuf, pc int32, a, b, c uint8, callSiteIdx in
 		writeRel32(cb, jzSegZeroOff, int32(skipSegPos)-int32(jzSegZeroOff+4))
 		writeRel32(cb, jaeCapOff, int32(skipSegPos)-int32(jaeCapOff+4))
 		writeRel32(cb, jaStackOff, int32(skipSegPos)-int32(jaStackOff+4))
+		writeRel32(cb, jzFuelOff, int32(skipSegPos)-int32(jzFuelOff+4))
 		writeRel32(cb, jmpRedoOff, int32(skipSegPos)-int32(jmpRedoOff+4))
 	}
 

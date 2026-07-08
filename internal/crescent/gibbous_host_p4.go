@@ -72,4 +72,19 @@ func (st *State) RefreshJitCtxAddrs(ctx *jit.JITContext, base int32) {
 		ctx.SetUpvalInlineFields(0, 0, false)
 		ctx.SetValueStackEnd(0)
 	}
+	// Seg2seg dispatch fuel: with a step budget or cancel context armed,
+	// cap how long execution can stay in-segment between preemption
+	// points; otherwise refill to effectively-unlimited (see the
+	// segCallFuel field doc — the budget has no async producer, so an
+	// unmetered in-segment call tree would never observe it). Bill the
+	// dispatches spent since the last refill to the step budget first,
+	// so in-segment CALLs count like interpreter calls (each in-segment
+	// dispatch corresponds to one enterLuaFrame the interpreter would
+	// have billed via st.preempt()).
+	if st.stepBudget > 0 || st.ctx.Load() != nil {
+		st.stepUsed += int64(ctx.SegCallFuelSpent())
+		ctx.SetSegCallFuel(jit.SegCallFuelBudgeted)
+	} else {
+		ctx.SetSegCallFuel(jit.SegCallFuelUnlimited)
+	}
 }
