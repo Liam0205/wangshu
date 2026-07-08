@@ -48,7 +48,12 @@ type CallIC struct {
 	CalleeNumParams uint8
 	CalleeMaxStack  uint8
 	Flags           uint8
-	_               uint8
+	// IntrinsicID (offset 7, formerly pad) caches the math intrinsic kind
+	// (jit.Intrinsic*, 0 = none) when the callee is a recognized
+	// pure-numeric host closure (issue #77). Set by PopulateHostIntrinsic
+	// alongside CallICFlagIsIntrinsic; the segment reads it to pick which
+	// SSE/NEON op to emit after the callee-identity guard passes.
+	IntrinsicID uint8
 
 	// Hits: increments on every EmitCallInline fast-path hit
 	// (Spike 2+). Currently unused (Spike 1 only populates the slot;
@@ -74,19 +79,43 @@ type CallIC struct {
 	// stale segment (a shape change zeroes ProtoID, forcing the slow
 	// path before CalleeSegAddr is consulted).
 	CalleeSegAddr uint64
+
+	// IntrinsicCalleeVal (offset 24) holds the full NaN-boxed callee value
+	// (MakeGC(TagFunction, closureGCRef)) recorded when the site is a math
+	// intrinsic (issue #77). The segment's intrinsic fast path guards
+	// `R(A) == IntrinsicCalleeVal` — one 64-bit compare that pins the
+	// exact host closure (tag + GCRef). A different callee (Lua fn, other
+	// host fn, shape change) misses and falls to the exit-reason CALL path.
+	// Stable for the State's lifetime: the stdlib math closure is rooted
+	// via the globals table and the arena is non-moving (same invariant as
+	// the EQ-K / NodeHit / LOADK baked-GCRef fast paths; #12 copy-compact
+	// GC would need to revisit all of them). Only meaningful when
+	// CallICFlagIsIntrinsic is set.
+	IntrinsicCalleeVal uint64
 }
 
 // callICSegAddrByteOffset is the byte offset of CalleeSegAddr within
 // CallIC, baked into the segment-to-segment dispatch emit as a disp8.
-// Layout: ProtoID(4) + NumParams(1) + MaxStack(1) + Flags(1) + pad(1)
-// + Hits(4) + Misses(4) = 16, then CalleeSegAddr. Verified by
-// TestCallICLayout so a struct reorder can't silently break the emit.
+// Layout: ProtoID(4) + NumParams(1) + MaxStack(1) + Flags(1) +
+// IntrinsicID(1) + Hits(4) + Misses(4) = 16, then CalleeSegAddr(8), then
+// IntrinsicCalleeVal(8) = 32. Verified by TestCallICLayout so a struct
+// reorder can't silently break the emit.
 const callICSegAddrByteOffset = 16
 
 // callICFlagsByteOffset is the byte offset of the Flags field within
 // CallIC (ProtoID(4) + NumParams(1) + MaxStack(1) = 6). The
 // segment-to-segment emit tests the NeverExits bit at [icSlot+6].
 const callICFlagsByteOffset = 6
+
+// callICIntrinsicIDByteOffset is the byte offset of the IntrinsicID field
+// (offset 7, immediately after Flags). The intrinsic fast path reads it
+// to dispatch on the math kind (issue #77).
+const callICIntrinsicIDByteOffset = 7
+
+// callICIntrinsicValByteOffset is the byte offset of IntrinsicCalleeVal
+// (offset 24, after CalleeSegAddr). The intrinsic fast path loads it for
+// the callee-identity guard (issue #77).
+const callICIntrinsicValByteOffset = 24
 
 // segToSegDepthCap bounds native segment-to-segment recursion so the
 // goroutine stack can't overflow in the NOSPLIT window where morestack
@@ -111,6 +140,14 @@ const (
 	// caller segment as a plain return). Set by the dispatcher when it
 	// records a native callee that also passes ProtoNeverExitsSegment.
 	CallICFlagNeverExits uint8 = 1 << 3
+	// CallICFlagIsIntrinsic marks the slot as a recognized math intrinsic
+	// host closure (issue #77): the segment's intrinsic fast path is
+	// eligible, guarded by IntrinsicCalleeVal identity + arg IsNumber.
+	// Distinct from (and set instead of) CallICFlagStuck for these host
+	// callees — a normal host closure still goes Stuck. Not part of the
+	// Lua-callee fast-path poison mask (0x87), so the existing guard's
+	// flags test ignores it; the intrinsic path checks it explicitly.
+	CallICFlagIsIntrinsic uint8 = 1 << 4
 	// CallICFlagStuck marks the slot as permanently at the slow path:
 	// host callee observed, or repeated shape change past the budget.
 	CallICFlagStuck uint8 = 1 << 7
@@ -400,6 +437,49 @@ func (ic *CallIC) Populate(protoID uint32, numParams, maxStack, flags uint8) {
 		return
 	}
 	// Same shape: no-op (Spike 2+ increments Hits from the segment side).
+}
+
+// PopulateHostIntrinsic records a recognized math-intrinsic host closure
+// (issue #77) into the slot: it caches the intrinsic kind + the callee
+// identity value and sets CallICFlagIsIntrinsic (plus IsHost, so the
+// normal Lua-callee fast path still treats it as host). Unlike a plain
+// host observation this does NOT go Stuck — the segment's intrinsic fast
+// path uses it. A later shape change to a different callee (identity
+// guard miss) simply falls to the exit-reason path; if the SAME site
+// later observes a different intrinsic value we transition to Stuck so
+// the intrinsic guard stops firing on a moving target.
+//
+// Serialized with the segment read the same way as the rest of the IC
+// (single owning State, dispatcher and segment run on one goroutine); the
+// identity value + ID are plain writes ordered before the flag store.
+func (ic *CallIC) PopulateHostIntrinsic(kind uint8, calleeVal uint64) {
+	prevFlags := loadByte(&ic.Flags)
+	if prevFlags&CallICFlagStuck != 0 {
+		atomic.AddUint32(&ic.Misses, 1)
+		return
+	}
+	if prevFlags&CallICFlagIsIntrinsic != 0 {
+		// Already an intrinsic slot. Same callee → no-op; different
+		// callee/kind → Stuck (mono IC budget, mirrors the Lua path).
+		if ic.IntrinsicCalleeVal == calleeVal && ic.IntrinsicID == kind {
+			return
+		}
+		atomic.AddUint32(&ic.Misses, 1)
+		storeByte(&ic.Flags, prevFlags|CallICFlagStuck)
+		return
+	}
+	if atomic.LoadUint32(&ic.CalleeProtoID) != 0 {
+		// Slot already holds a Lua callee: a site that mixes a Lua fn and
+		// a host intrinsic is polymorphic — go Stuck rather than flip.
+		atomic.AddUint32(&ic.Misses, 1)
+		storeByte(&ic.Flags, prevFlags|CallICFlagStuck)
+		atomic.StoreUint32(&ic.CalleeProtoID, 0)
+		return
+	}
+	// First observation of this intrinsic site.
+	ic.IntrinsicID = kind
+	ic.IntrinsicCalleeVal = calleeVal
+	storeByte(&ic.Flags, CallICFlagIsIntrinsic|CallICFlagIsHost)
 }
 
 // CalleeProtoIDValue returns the raw protoID (0-based), or (0, false)

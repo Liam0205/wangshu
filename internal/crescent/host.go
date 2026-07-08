@@ -33,6 +33,14 @@ type hostFnRegistry struct {
 	fns  []HostFn
 	refs []int32  // 槽位引用计数(活跃 host closure 数)
 	free []uint32 // 已归零可复用的槽位
+	// intrinsics maps a HostFnID to a math intrinsic kind (jit.Intrinsic*,
+	// 0 = none) for the P4 native segment fast path (issue #77). Grown
+	// lazily by RegisterIntrinsic; indexed by HostFnID in lockstep with
+	// fns. A recycled slot (see RegisterHostFn's free-list branch) clears
+	// its entry so a reused id can't masquerade as a stale intrinsic —
+	// though in practice only globals-rooted stdlib math closures are ever
+	// tagged, and those are never collected, so their id never recycles.
+	intrinsics []uint8
 }
 
 // RegisterHostFn 注册一个 HostFn,返回它在 State 内的 HostFnID(复用空闲槽)。
@@ -43,12 +51,46 @@ func (st *State) RegisterHostFn(fn HostFn) uint32 {
 		r.free = r.free[:n-1]
 		r.fns[id] = fn
 		r.refs[id] = 0
+		if int(id) < len(r.intrinsics) {
+			r.intrinsics[id] = 0 // clear any stale intrinsic tag on reuse
+		}
 		return id
 	}
 	id := uint32(len(r.fns))
 	r.fns = append(r.fns, fn)
 	r.refs = append(r.refs, 0)
 	return id
+}
+
+// RegisterIntrinsic tags a HostFnID with a math intrinsic kind
+// (jit.Intrinsic*) so the P4 native CALL IC can recognize it and emit
+// the operation inline instead of round-tripping through the Go closure
+// (issue #77). kind == 0 is a no-op. Called by the stdlib right after
+// RegisterHostFn for the recognized math.* functions.
+func (st *State) RegisterIntrinsic(id uint32, kind uint8) {
+	if kind == 0 {
+		return
+	}
+	r := &st.hostFns
+	if int(id) >= len(r.intrinsics) {
+		grown := make([]uint8, len(r.fns))
+		copy(grown, r.intrinsics)
+		r.intrinsics = grown
+	}
+	if int(id) < len(r.intrinsics) {
+		r.intrinsics[id] = kind
+	}
+}
+
+// IntrinsicKindOf returns the math intrinsic kind tagged for a HostFnID,
+// or 0 if the id is untagged / out of range. Consulted by
+// ObserveCallCallee when a CALL site's callee is a host closure.
+func (st *State) IntrinsicKindOf(id uint32) uint8 {
+	r := &st.hostFns
+	if int(id) < len(r.intrinsics) {
+		return r.intrinsics[id]
+	}
+	return 0
 }
 
 // MakeHostClosure 包装一个已注册的 HostFnID 为 host closure(0 upvalue)。

@@ -17,6 +17,7 @@ import (
 
 	"github.com/Liam0205/wangshu/internal/bytecode"
 	jit "github.com/Liam0205/wangshu/internal/gibbous/jit"
+	"github.com/Liam0205/wangshu/internal/value"
 )
 
 // DispatchHelperCount counts exit-reason round trips handled by
@@ -58,6 +59,18 @@ var (
 // chain (NativeCalleeSegAddr → GibbousCodeOf → NativeSegAddrer) works —
 // the prerequisite for segment-to-segment dispatch.
 var CallICSegAddrCount atomic.Int64
+
+// CallICIntrinsicCount counts times populateCallIC cached a math
+// intrinsic host closure (issue #77 prove-the-path probe): nonzero proves
+// the observe → registry → PopulateHostIntrinsic warmup chain fires. The
+// segment-side hit is counted separately by IntrinsicHitCount.
+var CallICIntrinsicCount atomic.Int64
+
+// IntrinsicHitCount counts math-intrinsic fast-path hits from inside the
+// mmap segment (issue #77). Incremented via an `inc qword [imm64]` the
+// intrinsic body emits, exactly like SegToSegHitCount — proves the inline
+// path (not the exit-reason CALL) actually executed.
+var IntrinsicHitCount atomic.Int64
 
 // SegToSegHitCount counts segment-to-segment dispatch hits (issue #50
 // Spike 5). Incremented directly from the mmap segment via an
@@ -281,6 +294,20 @@ func (c *nativeCode) populateCallIC(pc int32, observed uint64) {
 		return
 	}
 	CallICPopulateCount.Add(1)
+	// Math-intrinsic host closure (issue #77): kind rides bits 56..63 and
+	// the closure GCRef rides bits 0..47. Reconstruct the full callee
+	// value (MakeGC(TagFunction, gcref)) for the segment's identity guard
+	// and cache the intrinsic instead of going Stuck like a plain host
+	// closure. Takes precedence over the generic host handling below.
+	if kind := uint8(observed >> 56); kind != 0 && uint8(observed>>48)&CallICFlagIsHost != 0 {
+		gcref := observed & 0x0000_FFFF_FFFF_FFFF
+		calleeVal := uint64(value.TagFunction)<<48 | gcref
+		c.callICs[idx].PopulateHostIntrinsic(kind, calleeVal)
+		if c.callICs[idx].Flags&CallICFlagStuck == 0 {
+			CallICIntrinsicCount.Add(1)
+		}
+		return
+	}
 	protoID := uint32(observed)
 	numParams := uint8(observed >> 32)
 	maxStack := uint8(observed >> 40)

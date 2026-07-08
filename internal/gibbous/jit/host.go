@@ -443,11 +443,13 @@ type P4HostState interface {
 	//
 	// The returned uint64 packs:
 	//
-	//	bits  0..31 : protoID (0 if host closure)
+	//	bits  0..31 : protoID (0 if host closure); for a math-intrinsic
+	//	              host closure, bits 0..47 carry the closure GCRef
 	//	bits 32..39 : numParams
 	//	bits 40..47 : maxStack
 	//	bits 48..55 : flags — bit0=IsVararg, bit1=NeedsArg, bit2=IsHost
-	//	bits 56..63 : reserved (zero)
+	//	bits 56..63 : math intrinsic kind (Intrinsic*, 0 = none), set only
+	//	              alongside IsHost for a recognized intrinsic (issue #77)
 	//
 	// When R(A) is not a function value the observation returns zero
 	// packed (protoID=0 + flags=0); the dispatcher path will hit the
