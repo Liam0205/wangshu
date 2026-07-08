@@ -16,7 +16,7 @@
 | **空测 / 不公平基准** | 测的不是宣称在测的层 / 用相同负载形式对比不可比的两层 | PW9 loop `for` 写顶层 vararg chunk(F1 不升层),实测「crescent==crescent ≈1.0x」推出「memory-resident 根本限制」并准备立**错的**后续里程碑;PW10 R1-R2 bench 把 kernel 包内层函数调 50 次对裸顶层循环,工作负载错配致 loop「慢 20 倍」误读 |
 | **静默替身** | 路径有显式 fallback / 等价语义,绿色来自 fallback 而非 happy path | PW5 IC inline 与 helper 输出 byte-equal,普通 e2e 区分不了 inline 走没走;PW6 TierStuck 吸收态使 force-all promoteProto 静默 no-op,深 baseline 测试自然 `proto.tier != TierGibbous` 但测试套不抓;PW10 R3 错误路径漂移在全成功语料 difftest 下结构性失明 |
 | **覆盖度自欺** | 自行写 11 条语料看似全面,实则远不如已有官方/oracle 测试套 | VS0-e 子步 ⑥ 计划写 11 条 vararg 形式语料,但 `test/luasuite/testdata/vararg.lua`(官方 5.1 vararg 全套)+ `closure.lua`(NeedsArg + vararg + 协程多值 yield/resume 最复杂组合)已经字节级一致通过——**手写语料比官方测试权威性低 N 倍** |
-| **未强制测试静默退化** | 测试套自称覆盖某条自然触发路径(auto/natural),但实际条件永远不满足,悄悄滑向另一条更平凡的路径 | issue #67 auto-mode 覆盖轮:CI 里 P3/P4 的差分/一致性/fuzz 套长期只经 `SetForceAllPromote(true)` 驱动,未强制的测试脚本从没长到能在生产阈值(entry 200 / back edge 1000)下自然越线,auto 在这些测试里**退化成纯解释器**,与真正测「auto 决策链」是两回事 |
+| **未强制测试静默退化** | 测试套自称覆盖某条自然触发路径(auto/natural),但实际条件永远不满足,悄悄滑向另一条更平凡的路径 | issue #67 auto-mode 覆盖轮:CI 里 P3/P4 的差分/一致性/fuzz 套长期只经 `SetForceAllPromote(true)` 驱动,未强制的测试脚本从没长到能在生产阈值(entry 200 / back edge 1000)下自然越线,auto 在这些测试里**退化成纯解释器**,与真正测「auto 决策链」是两回事。同一形式还有**静态门维度**:issue #77 math intrinsic 第一版 e2e 用直接 `math.sqrt(i)`,过不了 F2-b unknown-call ⟹ proto 根本不升 native、intrinsic 路径永远到不了,须 `local sqrt = math.sqrt` 别名才升层——不只 auto 阈值没到会退化,调用形式过不了静态门也会,两者同靠 §2(b) `PromotionCount>0` 兜底断言防住 |
 
 ## 2. 反向侧解药(证「路径真被走到」)
 
