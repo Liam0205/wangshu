@@ -57,16 +57,32 @@ p4_baseline_bench='(Simple|Arith|Loop)_Wangshu$'
 
 run_bench() {  # run_bench <tags> <bench-regex> <logfile> [append]
     local tags="$1" bench="$2" logf="$3" append="${4:-}"
+    # tagflag 判空后再展开:macOS 自带 bash 3.2 在 `set -u` 下展开空数组会
+    # 报 unbound variable(bash 4.4 才修),P1 档 tags 为空正好命中——按
+    # run-test-bins.sh 的约定用 `${#arr[@]}` 判空规避。
     local tagflag=()
     [ -n "$tags" ] && tagflag=(-tags "$tags")
     echo "→ go test ${tags:+-tags \"$tags\" }-bench='$bench' -count=$count -cpu=1 ..." >&2
+    local redir='>'
+    [ -n "$append" ] && redir='>>'
     # 只保留 Benchmark 行(其余 PASS/ok/编译输出对 formatter 无用)。
-    if [ -n "$append" ]; then
-        ( cd "$bench_mod" && go test "${tagflag[@]}" -bench="$bench" \
+    if [ "${#tagflag[@]}" -gt 0 ]; then
+        _run_go "$redir" "$logf" "${tagflag[@]}" -bench="$bench"
+    else
+        _run_go "$redir" "$logf" -bench="$bench"
+    fi
+}
+
+# _run_go <redir> <logfile> <go-test-args...>:在 bench 子模块里跑 go test,
+# 过滤出 Benchmark 行,按 redir(> / >>)写日志。抽出来避免空数组展开。
+_run_go() {
+    local redir="$1" logf="$2"; shift 2
+    if [ "$redir" = '>>' ]; then
+        ( cd "$bench_mod" && go test "$@" \
             -run='^$' -benchtime="$benchtime" -count="$count" -cpu=1 $dirs ) \
             2>&1 | grep -E '^Benchmark' >> "$logf"
     else
-        ( cd "$bench_mod" && go test "${tagflag[@]}" -bench="$bench" \
+        ( cd "$bench_mod" && go test "$@" \
             -run='^$' -benchtime="$benchtime" -count="$count" -cpu=1 $dirs ) \
             2>&1 | grep -E '^Benchmark' > "$logf"
     fi
