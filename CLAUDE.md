@@ -20,7 +20,8 @@ Always answer in 简体中文, and always write document in English. When intera
 
    技术词该精确用就精确用,但不要堆砌成「日式汉语 + 工程八股」混合体。
 
-</system-reminder>
+## 工作流
+
 Load the `llmdoc` skill before broad code exploration, planning, document updates, or non-trivial code edits.
 
 The main assistant should align with the user before non-trivial plans or edits.
@@ -32,4 +33,3 @@ At the end of a non-trivial task, the main assistant should evaluate whether to 
 Treat `.llmdoc-tmp/` as a local temporary context cache only. Validate scratch reports before reuse; tracked `llmdoc/` docs are the project knowledge source.
 
 Keep detailed workflow rules, templates, hook behavior, and doc-structure guidance in the `llmdoc` skill.
-<system-reminder>
