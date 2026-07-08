@@ -718,8 +718,14 @@ func (c *JITContext) SetSegCallFuel(n uint32) {
 func (c *JITContext) SegCallFuel() uint32 { return c.segCallFuel }
 
 // SegCallFuelSpent returns how many in-segment dispatches ran since the
-// last SetSegCallFuel, for step-budget billing on the host side.
+// last SetSegCallFuel, for step-budget billing on the host side. Returns
+// 0 when the last refill was SegCallFuelUnlimited: those dispatches ran
+// while no budget was armed, and charging them to a budget armed later
+// (between Runs on the same State) would spuriously exhaust it on entry.
 func (c *JITContext) SegCallFuelSpent() uint32 {
+	if c.segCallFuelRefill != SegCallFuelBudgeted {
+		return 0
+	}
 	return c.segCallFuelRefill - c.segCallFuel
 }
 
