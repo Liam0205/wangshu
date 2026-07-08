@@ -21,6 +21,14 @@
 
 #include "textflag.h"
 
+// JITContext field byte offsets consumed by the SP switch (issue #89).
+// These MUST match unsafe.Offsetof(JITContext{}.spillBase / .savedGoSP);
+// TestSpillStackLayout in the jit package asserts they stay in sync — if a
+// field is added/reordered ahead of these and the offsets drift, that test
+// fails rather than corrupting SP silently.
+#define JITCtxSpillBaseOff 24
+#define JITCtxSavedGoSPOff 176
+
 // func callJITSpec(codeAddr uintptr, jitCtx uintptr, vsBase uintptr) uint64
 //
 // 入参:
@@ -52,9 +60,38 @@ TEXT ·callJITSpec(SB),NOSPLIT,$0-32
 	MOVQ jitCtx+8(FP), R15
 	MOVQ vsBase+16(FP), BX
 
-	// 取 codeAddr + CALL 段
-	MOVQ codeAddr+0(FP), AX
-	CALL AX
+	// Read codeAddr into R13 BEFORE any SP switch: `+N(FP)` is SP-relative
+	// (Plan 9 virtual FP), so once SP moves onto the spill stack, codeAddr
+	// +0(FP) would point at spill-buffer garbage (issue #89: this was the
+	// first wiring bug — reading codeAddr after the switch faulted).
+	MOVQ codeAddr+0(FP), R13
+
+	// **issue #89 self-managed spill stack switch**: if jitCtx != 0 and
+	// jitCtx.spillBase != 0, stash the goroutine SP in jitCtx.savedGoSP and
+	// switch SP onto the spill stack, so deep seg2seg recursion (each level
+	// does `sub sp`) descends on the 64 KiB spill buffer instead of the
+	// goroutine stack's ~800 B NOSPLIT allowance (PR #86 / issue #89). This
+	// whole window is NOSPLIT: no Go call, no stack growth, no back-edge
+	// check between the switch and the restore, so the Go runtime never
+	// walks the stack while SP is off the goroutine stack. Restored below
+	// before the POPs read callee-saved from the goroutine stack. Nested
+	// entries (exit-reason resume) each run sequentially after the outer
+	// restore, so a single savedGoSP slot per jitCtx is safe (see
+	// spike/p4spillstack DECISION.md G3). The callee-saved PUSHes above
+	// already sit on the goroutine stack; only the segment's own frames
+	// land on the spill stack. R15 may be 0 in low-level template unit
+	// tests (jitCtx not needed) — guard against dereferencing nil.
+	TESTQ R15, R15
+	JZ    nospill
+	MOVQ JITCtxSpillBaseOff(R15), AX  // AX = spillBase
+	TESTQ AX, AX
+	JZ    nospill
+	MOVQ  SP, JITCtxSavedGoSPOff(R15) // stash goroutine SP
+	MOVQ  AX, SP                      // switch SP onto the spill stack
+
+nospill:
+	// CALL the segment (codeAddr already in R13, read before the switch).
+	CALL R13
 
 	// 段返回:RAX 已是返回值。
 	//
@@ -67,7 +104,23 @@ TEXT ·callJITSpec(SB),NOSPLIT,$0-32
 	// 故 trampoline asm 段返后直接走常规弹栈,不再 CMP RAX——Run 端读 RAX 后
 	// 路由。原 commit-3c 的 CMP + INT 3 段撤(若保留 INT 3 会在 commit-5
 	// archSupportsFrameInline=true + emit ExitInlineHelper 段后真触发 SIGTRAP)。
-	//
+
+	// **issue #89 restore**: switch SP back to the goroutine stack before
+	// the POPs read callee-saved from it. If spillBase was 0 (no switch)
+	// or jitCtx was nil, savedGoSP is stale but SP was never moved, so
+	// skip the restore. MUST NOT clobber RAX here: RAX carries the
+	// segment's return value / exit-reason status that the Go-side Run
+	// reads. Use R13 for the test (R15 is still jitCtx — P4-reserved
+	// callee-saved, unchanged by the segment; the POPs below restore R13
+	// for our caller).
+	TESTQ R15, R15
+	JZ    norestore
+	MOVQ JITCtxSpillBaseOff(R15), R13
+	TESTQ R13, R13
+	JZ    norestore
+	MOVQ  JITCtxSavedGoSPOff(R15), SP // restore goroutine SP
+
+norestore:
 	// 段返回:RAX 已是返回值。恢复 callee-saved(逆序 pop)。
 	// **R14 恢复 Go G 救济**:POP R14 把 entry 时 Go runtime 装的 G 值
 	// 写回 R14,段内 mov r14, arenaBase 的覆写到此撤消。

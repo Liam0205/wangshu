@@ -35,6 +35,12 @@
 
 #include "textflag.h"
 
+// JITContext field byte offsets consumed by the SP switch (issue #89).
+// These MUST match unsafe.Offsetof(JITContext{}.spillBase / .savedGoSP);
+// TestSpillStackLayout in the jit package asserts they stay in sync.
+#define JITCtxSpillBaseOff 24
+#define JITCtxSavedGoSPOff 176
+
 // func callJITFull(codeAddr uintptr, jitCtxAddr uintptr) uint64
 //
 // 入参:
@@ -113,11 +119,46 @@ TEXT ·callJITSpec(SB),NOSPLIT,$80-32
 	MOVD	jitCtxAddr+8(FP), R27
 	MOVD	vsBaseAddr+16(FP), R26
 
-	// 取 codeAddr 到 R8(caller-saved)
+	// 取 codeAddr 到 R8(caller-saved)。**必须在切 SP 前读**:`+N(FP)` 是
+	// SP 相对寻址(Plan 9 虚拟 FP),切 SP 到自管栈后 codeAddr+0(FP) 会指向
+	// 自管栈垃圾(issue #89,对位 amd64 一样的 FP 教训)。
 	MOVD	codeAddr+0(FP), R8
 
+	// **issue #89 self-managed spill stack switch (arm64)**: if R27 (jitCtx)
+	// != 0 and jitCtx.spillBase != 0, stash the goroutine SP in
+	// jitCtx.savedGoSP and switch SP onto the spill stack, so deep seg2seg
+	// recursion descends on the 64 KiB spill buffer instead of the
+	// goroutine stack's NOSPLIT allowance (PR #86 / issue #89). The window
+	// between the switch and the restore is NOSPLIT with no Go call / stack
+	// growth / back-edge check, so the runtime never walks the stack while
+	// SP is off the goroutine stack — the load-bearing invariant the file
+	// header's LR-slot warning is about. The manual X19-X27 STPs above are
+	// on the goroutine frame; only the segment's own frames land on the
+	// spill stack. Restored below before the manual LDPs and the Go
+	// auto-epilogue (which read from the goroutine frame). R9/R10 are
+	// caller-saved scratch, not in the saved set.
+	CBZ	R27, nospill              // jitCtx == 0 -> no switch (unit tests)
+	MOVD	JITCtxSpillBaseOff(R27), R9
+	CBZ	R9, nospill               // spillBase == 0 -> no switch
+	MOVD	RSP, R10                  // R10 = goroutine SP
+	MOVD	R10, JITCtxSavedGoSPOff(R27)
+	MOVD	R9, RSP                   // switch SP onto the spill stack
+
+nospill:
 	// 间接调用 mmap 段
 	BL	(R8)
+
+	// **issue #89 restore (arm64)**: switch SP back to the goroutine stack
+	// before the manual LDPs and auto-epilogue read from it. R0 holds the
+	// segment return value / exit-reason status — do NOT clobber it; use
+	// R9/R10 scratch. Skip if no switch happened (jitCtx nil or spillBase 0).
+	CBZ	R27, norestore
+	MOVD	JITCtxSpillBaseOff(R27), R9
+	CBZ	R9, norestore
+	MOVD	JITCtxSavedGoSPOff(R27), R10
+	MOVD	R10, RSP                  // restore goroutine SP
+
+norestore:
 
 	// 段返回:R0 是返回值。
 	//
