@@ -75,6 +75,74 @@ func TestPJ10_MathIntrinsic_Correctness(t *testing.T) {
 	}
 }
 
+// TestPJ10_MathIntrinsic_ByteEqualSweep is the correctness spine: for
+// each intrinsic it runs the SAME script interpreted (no promotion) and
+// force-promoted (intrinsic inline), over a sweep of edge-case inputs
+// (negatives, fractions, ±0, Inf, NaN, huge integral values), and asserts
+// the JIT result is byte-equal to the interpreter. The interpreter is
+// itself difftested byte-equal to Lua 5.1.5, so this pins the inline path
+// to the reference semantics without depending on random difftest happening
+// to alias a math fn.
+func TestPJ10_MathIntrinsic_ByteEqualSweep(t *testing.T) {
+	// inputs cover: normal, negative, fraction, zero, -0, +Inf, -Inf, NaN,
+	// large integral, tiny. Written as Lua expressions.
+	inputs := []string{
+		"3.0", "-3.0", "3.7", "-3.7", "0.0", "(-1.0)*0.0",
+		"1.0/0.0", "-1.0/0.0", "0.0/0.0", "1e15", "-1e15",
+		"2.5", "-2.5", "0.5", "123456.789",
+	}
+	unary := []string{"sqrt", "floor", "ceil", "abs"}
+	for _, fn := range unary {
+		for _, in := range inputs {
+			src := "local f=math." + fn +
+				"\nlocal function k(x) local s for i=1,15 do s=f(x) end return s end" +
+				"\nreturn k(" + in + ")"
+			interp := runNoPromote(t, "sweep_"+fn, src)
+			jit := runIntrinsic(t, "sweep_"+fn, src)
+			if interp != jit {
+				t.Errorf("math.%s(%s): interp=%q jit=%q", fn, in, interp, jit)
+			}
+		}
+	}
+	// max/min: sweep pairs (order matters for NaN).
+	pairs := [][2]string{
+		{"3.0", "7.0"}, {"7.0", "3.0"}, {"3.0", "3.0"},
+		{"0.0/0.0", "5.0"}, {"5.0", "0.0/0.0"},
+		{"1.0/0.0", "5.0"}, {"-1.0/0.0", "5.0"},
+		{"-0.0", "0.0"}, {"0.0", "-0.0"},
+	}
+	for _, fn := range []string{"max", "min"} {
+		for _, p := range pairs {
+			src := "local f=math." + fn +
+				"\nlocal function k(x,y) local s for i=1,15 do s=f(x,y) end return s end" +
+				"\nreturn k(" + p[0] + "," + p[1] + ")"
+			interp := runNoPromote(t, "sweep_"+fn, src)
+			jit := runIntrinsic(t, "sweep_"+fn, src)
+			if interp != jit {
+				t.Errorf("math.%s(%s,%s): interp=%q jit=%q", fn, p[0], p[1], interp, jit)
+			}
+		}
+	}
+}
+
+// runNoPromote runs src WITHOUT promotion (pure interpreter) as the oracle.
+func runNoPromote(t *testing.T, name, src string) string {
+	t.Helper()
+	prog, err := wangshu.Compile([]byte(src), name)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	st := wangshu.NewState(wangshu.Options{})
+	res, err := prog.Run(st)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if len(res) != 1 {
+		t.Fatalf("got %d results, want 1: %v", len(res), res)
+	}
+	return res[0].Display()
+}
+
 // TestPJ10_MathIntrinsic_HitPath proves the inline path (not the
 // exit-reason CALL) actually executes: IntrinsicHitCount must move once a
 // sqrt kernel is promoted and re-run. A plain byte-equal assertion can't
