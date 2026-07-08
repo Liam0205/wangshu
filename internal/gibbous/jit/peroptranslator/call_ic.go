@@ -92,12 +92,29 @@ const callICFlagsByteOffset = 6
 // goroutine stack can't overflow in the NOSPLIT window where morestack
 // can't fire (spike DECISION.md option b). Past the cap, a caller falls
 // back to the exit-reason path (host executeFrom handles deep recursion
-// on the heap-allocated CI chain). Per-level machine-stack cost: amd64
-// ~24 B (push rcx + push rbx + call return address), arm64 32 B
-// (sub sp, sp, #32); cap=128 levels tops out at ~4KB, comfortably
-// within the stack the trampoline is entered with; fib(24) recurses
-// only 24 deep.
-const segToSegDepthCap = 128
+// on the heap-allocated CI chain).
+//
+// The budget is Go's NOSPLIT chain allowance, NOT the goroutine stack
+// size: the stack guard reserves only StackNosplitBase = 800 bytes
+// (internal/abi/stack.go) below the check point, and the mmap segment's
+// per-level `sub sp` is invisible to the linker's nosplit accounting.
+// When Run is entered with SP just above the guard (e.g. under deep Go
+// re-entry chains — exactly the deep-Lua-recursion workloads that drive
+// seg2seg hard), everything past those 800 bytes silently underruns the
+// stack allocation and corrupts adjacent heap objects; the GC then
+// reports "found pointer to free object" (found by FuzzAutoPromote seed
+// 7f161a85c466adbf, PR #86).
+//
+// Per-level machine-stack cost: amd64 ~24 B (push rcx + push rbx +
+// call return address), arm64 32 B (sub sp, sp, #32). Chain overhead
+// below the last stack check: CallJITSpec's NOSPLIT frame (~96 B arm64
+// / ~64 B amd64). cap=16 tops out at 96 + 16*32 = 608 B on arm64,
+// inside the 800 B allowance with headroom; the empirical boundary on
+// darwin/arm64 (GOGC=1 stress, deep-recursion repro) is between 16
+// (never crashes) and 64 (always crashes). Raising the cap again
+// requires switching the trampoline to the self-managed spill stack
+// (jitCtx.spillBase/spillTop, designed in 05 §3.4 but never wired).
+const segToSegDepthCap = 16
 
 // Call-IC flag bits (single byte in Flags).
 const (
