@@ -98,6 +98,11 @@ return f(o1, o2)`,
 		`local f=math.max local function k(x,y) local s=0.0 for i=1,20 do s=s+f(x,y) end return s end return k(3.0,7.0)`,
 		`local f=math.min local function k(x,y) local s=0.0 for i=1,20 do s=s+f(x,y) end return s end return k(3.0,7.0)`,
 		`local sq=math.sqrt local fl=math.floor local function k(x) return fl(sq(x)) end local r for i=1,30 do r=k(50.0) end return r`,
+		// Direct (un-aliased) math.* spelling — promotes now that the
+		// density gate exempts intrinsic calls (issue #77); mutations
+		// explore the newly-native path, byte-equal vs P1 interp.
+		`local function k(x) local s=0.0 for i=1,20 do s=s+math.sqrt(x) end return s end return k(16.0)`,
+		`local function k(x,y) local s=0.0 for i=1,20 do s=s+math.max(x,y)+math.floor(x) end return s end return k(3.5,7.5)`,
 	}
 	for _, s := range seeds {
 		f.Add(s)
