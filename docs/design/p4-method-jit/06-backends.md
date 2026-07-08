@@ -528,7 +528,7 @@ per-arch 进度对账(amd64 / arm64 各自一份白名单):amd64 先行(§5.4 / 
 | **Go G(**由 Go 拥有,P4 只借读)** | `r14` | Go G 指针;shim 调用前必须从 `[r15+savedGoGOff]` 恢复回 R14 | ABIInternal 永久 G 寄存器,Go 在调用间保留 |
 | **暂存通用** | `rax` `rcx` `rdx` `rsi` `rdi` `r8`-`r11` | 模板内短暂持值 / ABIInternal arg0..arg7 | caller-saved |
 | **f64 快路径** | `xmm0..xmm3` | 算术/比较族 f64 直算 | caller-saved |
-| **栈指针** | `rsp` | 当前 goroutine 栈 SP(PJ10 阶段不切自管栈) | Go 拥有 |
+| **栈指针** | `rsp` | 进段期间指向自管 spill 栈(issue #89 trampoline 切 SP);出段切回 goroutine 栈 SP | Go 拥有 |
 | **保留** | `rbp` `r12` `r13` | Go callee-saved,P4 不占 | Go 拥有 |
 
 **arenaBase 没有专属寄存器**:实现里 arenaBase 只在 jitContext 里(`[r15+arenaBaseOff]`),需要用的时候由 inline 快路径按需 load 到 scratch(通常是 `r11`)。这样做的直接好处是——arena grow / 值栈搬家后从 `RefreshJitCtxAddrs` 刷新 `[r15+…]` 各字段即可,不需要跨 op 维护「arenaBase 寄存器一致性」这条不变式。旧稿说的「固定寄存器存 arenaBase 便于跨 op 复用」在实现里因 grow 语义而被主动放弃了。
@@ -590,21 +590,40 @@ exit_pc_N:
 
 P4 trampoline 入口(实现里叫 `CallJITSpec`,见 `internal/gibbous/jit/amd64/trampoline_spec_amd64.s`)是 Go 调用栈上的普通汇编函数。**R14 归 Go**——它是 Go ABIInternal 的永久 G 寄存器,P4 不能把它据为己有;P4 只在 mmap 段调 Go shim 前从 `jitContext.savedGoG` 把它恢复一下(见 §4.1.2)。**RBX、R15 才是 P4 独占的两条**:trampoline 入口负责把 jitContext 地址装 R15、把 vsBase 装 RBX,mmap 段 prologue 一进来就靠这两个跑;调用返回时按 ABIInternal 约定,R15 由 Go 保留(P4 不用动),RBX 需要 P4 shim 后 emit 一次 `mov rbx, [r15+valueStackBaseOff]` 重装。
 
-实现简化形式(PJ10 阶段不切自管栈,直接跑在 goroutine 栈上):
+实现形式(issue #89 已接线——trampoline 进段前切 SP 到自管 spill 栈):
 
 ```asm
 ;; internal/gibbous/jit/amd64/trampoline_spec_amd64.s(简化伪码)
 ;; func CallJITSpec(codeAddr uintptr, jitCtxAddr uintptr, vsBaseAddr uintptr) int32
 TEXT ·CallJITSpec(SB), NOSPLIT, $0-32
-    MOVQ codeAddr+0(FP),   AX      ;; mmap 段入口
+    PUSHQ ... ; ...                ;; 保存 Go callee-saved(仍落在 goroutine 栈)
     MOVQ jitCtxAddr+8(FP), R15     ;; R15 = jitContext
     MOVQ vsBaseAddr+16(FP), BX     ;; RBX = vsBase(prologue 可以再从 [r15] 装一次,保底)
-    CALL AX                         ;; 直接 CALL 进 mmap 段,不切 SP
+    ;; ★ 切 SP 前先把 codeAddr 读进寄存器:`+N(FP)` 是 SP 相对寻址,
+    ;;   切 SP 后 codeAddr+0(FP) 会指向自管栈垃圾(issue #89 第一个接线 bug)
+    MOVQ codeAddr+0(FP), R13
+    ;; ★ issue #89:jitCtx != 0 且 spillBase != 0 时,暂存 goroutine SP 到
+    ;;   jitCtx.savedGoSP,再把 SP 切到自管 spill 栈的 spillBase(高地址端)。
+    ;;   深度 seg2seg 递归每层 `sub sp` 从此消耗 64 KiB 自管栈,不吃 goroutine
+    ;;   栈的 ~800 B NOSPLIT 余量。空 jitCtx(spillBase==0)跳过切换。
+    TESTQ R15, R15
+    JZ    nospill
+    MOVQ  JITCtxSpillBaseOff(R15), AX
+    TESTQ AX, AX
+    JZ    nospill
+    MOVQ  SP, JITCtxSavedGoSPOff(R15)   ;; 暂存 goroutine SP
+    MOVQ  AX, SP                        ;; 切到自管 spill 栈
+nospill:
+    CALL R13                        ;; CALL 进 mmap 段(codeAddr 切 SP 前已读进 R13)
+    ;; ★ 出段恢复:切 SP 回 goroutine 栈,须在弹 callee-saved 之前;
+    ;;   且绝不能覆写 RAX(它带段的 exit-reason status,Go 端 Run 要读)
+    ;; ... MOVQ JITCtxSavedGoSPOff(R15), SP(spillBase 为 0 时跳过)
+    POPQ ... ; ...                  ;; 恢复 Go callee-saved
     MOVL AX, ret+24(FP)             ;; mmap 段返回 status 到 EAX
     RET
 ```
 
-mmap 段以普通 `ret` 返回,把 status 放 EAX 里——即 §4.3 exit-reason 协议里的 `exitReasonCode`(`ExitNormal=0` / `ExitError=1` / `ExitOSR=2` / `ExitInlineHelper=3`)。**没有旧稿画的 W^X 翻面 stub 之外的进出汇编**,也没有自管机器栈 SP 切换——这些留待未来 PJ 阶段(承 §7 「自管世界」不变式在 PJ10 阶段被主动降级为「shim 通道尽量少用 + exit-reason 通道优先」的折中,见 05 §7.6 勘误)。
+mmap 段以普通 `ret` 返回,把 status 放 EAX 里——即 §4.3 exit-reason 协议里的 `exitReasonCode`(`ExitNormal=0` / `ExitError=1` / `ExitOSR=2` / `ExitInlineHelper=3`)。**除 W^X 翻面外没有独立的 exit stub 进出汇编**;自管机器栈 SP 切换由本入口/出口承担(issue #89,承 05 §7.5)——从 goroutine SP 切到 `spillBase` 进段、出段(弹 callee-saved 前)切回。两条硬约束:① 切 SP 前先读 codeAddr 到寄存器;② 出段恢复不覆写 RAX。这条接线把 `segToSegDepthCap` 从 PR #86 的保守值 16 抬回 128(承 §7 「自管世界」不变式,见 05 §7.5)。
 
 ### 4.2 arm64 寄存器分配方案
 
@@ -623,7 +642,7 @@ mmap 段以普通 `ret` 返回,把 status 放 EAX 里——即 §4.3 exit-reason
 | **暂存额外** | `x10..x15` | 同暂存通用,优先级低 | caller-saved |
 | **f64 快路径** | `v0..v3` | 算术/比较族 f64 直算 | caller-saved |
 | **链接 / 帧** | `lr (x30)` `fp (x29)` | 函数调用链 / 栈帧 | Go 管 |
-| **栈指针** | `sp` | 当前 goroutine 栈 SP(PJ10 阶段不切自管栈) | Go 拥有 |
+| **栈指针** | `sp` | 进段期间指向自管 spill 栈(issue #89 trampoline 切 SP);出段切回 goroutine 栈 SP | Go 拥有 |
 | **保留** | `x16-x18` `x19-x25` | 平台保留 / 未来扩展 | x16/x17 IP / x18 平台寄存器 / x19-x25 callee-saved |
 
 **arenaBase 没有专属寄存器**:同 amd64 §4.1.1 勘误——arm64 arenaBase 也是「每次用时从 `[x27+arenaBaseOff]` 现算」,不占用一个跨 op 稳定的寄存器。旧稿把它分配给 x27 是把 amd64 假想的 r14 = arenaBase 方案一起搬到了 arm64,而实现的 amd64/arm64 都没这么做。
@@ -688,24 +707,32 @@ exit_pc_N:
 
 Go arm64 ABI 把 X19-X28 视作 callee-saved 池,其中 X28 恒为 G 寄存器(见 §4.2.1 勘误)。P4 arm64 的两条 mmap 段独占寄存器是 X26 + X27——它们都在 callee-saved 池里,但 `emit_arm64.go` 头注实测过 X26 会被 shim 调用打掉(可能是 Go ABIInternal 里把 X26 用作某个非首八个 arg 的传参位),故 shim 后必须 `ldr x26, [x27, #valueStackBaseOff]` 重装;X27 可以靠 Go 保留。X28 完全归 Go 管、mmap 段绝不写它。
 
-早前草稿画的「trampoline 入口 stp 一整套 x19-x30 + 换 x28=jitContext + 出口反向恢复」序列没有完成——PJ10 阶段的实现(承 §4.1.5 amd64 一样的结构)是让 mmap 段直接跑在当前 goroutine 栈上,`CallJITSpec` 只把 jitContext 装 X27、vsBase 装 X26,然后 `blr` 进段;段以普通 `ret` 出来,不切自管栈、不做 X28 交换。arm64 native path 具体实现还在 issue #37 / #40 跟踪中,补齐时按 amd64 §4.1.5 一样的结构完成即可。
+早前草稿画的「trampoline 入口 stp 一整套 x19-x30 + 换 x28=jitContext + 出口反向恢复」这套 **X28 交换** 方案确实没有采用(X28 归 Go G,不能覆写)。但自管 spill 栈的 SP 切换已由 issue #89 接线(arm64 镜像 amd64 §4.1.5):`CallJITSpec` 手动 STP 保存 X19-X27 到 goroutine 帧后,把 jitContext 装 X27、vsBase 装 X26;进段前若 `jitCtx.spillBase != 0` 则把 goroutine SP 暂存到 `jitCtx.savedGoSP` 再 `MOVD spillBase, RSP` 切到自管 spill 栈,`BL (R8)` 进段;段以普通 `ret` 出来后(手动 LDP 与 Go auto-epilogue 读 goroutine 帧之前)切回 goroutine SP。两条硬约束与 amd64 对称:① 切 SP 前先把 codeAddr 读进 R8(`+N(FP)` 切 SP 后会指向自管栈垃圾);② 出段恢复用 R9/R10 scratch,不覆写 R0(它带段的 exit-reason status)。X28 全程归 Go、mmap 段绝不写它。arm64 为镜像实现 + 交叉编译通过,执行正确性交 CI arm64 矩阵 + 另一台 arm64 机器。
 
-下面这段是「未来切自管栈形式」的设计目标伪码,当前 arm64 实现并未走到这一步(参 §4.2 头部勘误)——保留供 issue #37 / #40 补齐时参考,寄存器角色已按实现约定改正(X27 = jitContext / X26 = vsBase / X28 = Go G,不覆盖):
+切 SP 序列已接线(issue #89),下面是 `trampoline_arm64.s::callJITSpec` 的形式(寄存器角色:X27 = jitContext / X26 = vsBase / X28 = Go G 不覆盖):
 
 ```asm
-;; trampoline_arm64.s —— 进入 stub 未来形式(设计目标,PJ10 阶段未完成)
-TEXT ·enterJIT(SB), NOSPLIT, $0-24
-    stp   x19, x20, [sp, #-16]!         ; 成对 push callee-saved(x28 归 Go,不需保存)
-    stp   x21, x22, [sp, #-16]!
-    stp   x23, x24, [sp, #-16]!
-    stp   x25, x26, [sp, #-16]!
-    stp   x27, x29, [sp, #-16]!         ; x27 是 P4 独占,x29 是 fp
-    ldr   x27, jitCtx+0(FP)              ; x27 = jitContext(不动 x28)
-    ldr   x26, [x27, #ValueStackOff]     ; x26 = vsBase
-    ldr   x9,  [x27, #SelfStackTopOff]
-    mov   sp,  x9                        ; 切到自管机器栈(设计目标,当前 PJ10 阶段跳过)
-    ldr   x9,  codeEntry+8(FP)
-    br    x9
+;; trampoline_arm64.s —— callJITSpec 进入序列(issue #89 已接线)
+TEXT ·callJITSpec(SB), NOSPLIT, $...
+    ;; 手动 STP 保存 X19-X27 到 goroutine 帧(x28 归 Go G,不保存)
+    ;; ...
+    MOVD  jitCtxAddr+8(FP),  R27         ; x27 = jitContext(不动 x28)
+    MOVD  vsBaseAddr+16(FP), R26         ; x26 = vsBase
+    ;; ★ 切 SP 前先读 codeAddr:+N(FP) 切 SP 后会指向自管栈垃圾(issue #89)
+    MOVD  codeAddr+0(FP),    R8
+    ;; ★ issue #89:jitCtx != 0 且 spillBase != 0 时,暂存 goroutine SP 到
+    ;;   jitCtx.savedGoSP,再切 SP 到自管 spill 栈(spillBase 高地址端)
+    CBZ   R27, nospill
+    MOVD  JITCtxSpillBaseOff(R27), R9
+    CBZ   R9, nospill
+    MOVD  RSP, R10
+    MOVD  R10, JITCtxSavedGoSPOff(R27)   ; 暂存 goroutine SP
+    MOVD  R9,  RSP                       ; 切到自管 spill 栈
+nospill:
+    BL    (R8)                           ; 进段(codeAddr 切 SP 前已读进 R8)
+    ;; 出段(手动 LDP 与 auto-epilogue 读 goroutine 帧之前)切回 goroutine SP;
+    ;; 用 R9/R10 scratch,不覆写 R0(段的 exit-reason status)
+    ;; ... MOVD JITCtxSavedGoSPOff(R27), RSP(spillBase 为 0 时跳过)
 ```
 
 #### 4.2.6 icache flush(arm64 独有)
@@ -752,7 +779,7 @@ R14 / X28 归 Go,不是「P4 独占并 push/pop」的 callee-saved。P4 mmap 段
 | amd64 | `r15` `rbx` | `r14`(G,shim 前需 `mov r14, [r15+savedGoGOff]` 恢复) | `r15` | `rbx`(shim 后 `mov rbx, [r15+valueStackBaseOff]` 重装) |
 | arm64 | `x27` `x26` | `x28`(G,Go 自动保留) | `x27` | `x26`(shim 后 `ldr x26, [x27, #valueStackBaseOff]` 重装) |
 
-PJ10 阶段的 `CallJITSpec`(§4.1.5)入口只装 R15/X27 与 RBX/X26 两条,不做批量 stp / PUSH——因为 mmap 段直接跑在 goroutine 栈上而不是自管栈,Go 自己的 callee-saved 契约会在跨 Go 函数调用点保持;P4 只需管好「shim 前恢复 G,shim 后重装 vsBase」这两个具体动作。
+`CallJITSpec`(§4.1.5)入口保存 Go callee-saved(amd64 PUSHQ / arm64 手动 STP,落在 goroutine 帧)后装 R15/X27 与 RBX/X26 两条;issue #89 接线后进段前还把 SP 切到自管 spill 栈(见 §4.1.5 / §4.2.5),出段(弹 callee-saved 前)切回 goroutine SP。Go 自己的 callee-saved 契约在跨 Go 函数调用点保持;P4 另外管好「切 SP 前先读 codeAddr、出段恢复不覆写 RAX/R0」两条硬约束 + 「shim 前恢复 G,shim 后重装 vsBase」两个具体动作。
 
 > Go arm64 X28 = G 是 ABIInternal 强制约束,P4 arm64 mmap 段绝不写 X28;这条与 amd64 R14 = G 完全对称。「切换 X28 = jitContext」的方案不成立——旧稿的这条设计目标被实现弃用了(见 §4.2.1 勘误)。
 
