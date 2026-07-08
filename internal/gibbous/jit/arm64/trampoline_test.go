@@ -22,6 +22,19 @@ import (
 	"unsafe"
 )
 
+// dummyJITCtx returns the address of a zeroed buffer large enough to stand
+// in for a *JITContext in trampoline round-trip tests. It must be at least
+// as large as the real struct so the trampoline's issue #89 spill-stack
+// read ([jitCtx+spillBaseOff], [jitCtx+savedGoSPOff]) stays in bounds. All
+// bytes are 0, so spillBase reads as 0 and the trampoline takes the
+// no-switch path — these tests exercise jitCtx loading, not the SP switch.
+// (This package can't import the jit package for the real JITContext: jit
+// imports jit/arm64, which would be an import cycle.)
+func dummyJITCtx() uintptr {
+	buf := new([32]uint64) // 256 B, well past savedGoSP at offset 176
+	return uintptr(unsafe.Pointer(buf))
+}
+
 // TestPJ8_CallJITFull_RoundTrip 验完整 trampoline asm 工作:
 //   - 保存 callee-saved 寄存器(X19-X27)
 //   - 装 X27 = jitCtx(实参传入 uintptr)
@@ -39,8 +52,7 @@ func TestPJ8_CallJITFull_RoundTrip(t *testing.T) {
 		0xcafebabedeadbeef,
 		^uint64(0),
 	}
-	ctx := struct{ dummy uint64 }{dummy: 0xfeedface}
-	jitCtxAddr := uintptr(unsafe.Pointer(&ctx))
+	jitCtxAddr := dummyJITCtx()
 
 	for _, imm := range cases {
 		t.Run("", func(t *testing.T) {
@@ -79,8 +91,7 @@ func TestPJ8_CallJITSpec_RoundTrip(t *testing.T) {
 		0xcafebabe_deadbeef,
 		^uint64(0),
 	}
-	ctx := struct{ dummy uint64 }{dummy: 0xfeedface}
-	jitCtxAddr := uintptr(unsafe.Pointer(&ctx))
+	jitCtxAddr := dummyJITCtx()
 	// vsBase 用占位 dummy 地址(模板不读它,trampoline 装入但 mmap 段不解引用)
 	vsBase := struct{ dummy uint64 }{dummy: 0xcafefeed}
 	vsBaseAddr := uintptr(unsafe.Pointer(&vsBase))
@@ -123,8 +134,7 @@ func TestPJ8_CallJITSpec_CalleeSavedPreserved(t *testing.T) {
 	}
 	defer func() { _ = page.Munmap() }()
 
-	ctx := struct{ dummy uint64 }{dummy: 0xfeedface}
-	jitCtxAddr := uintptr(unsafe.Pointer(&ctx))
+	jitCtxAddr := dummyJITCtx()
 	vsBase := struct{ dummy uint64 }{dummy: 0xcafefeed}
 	vsBaseAddr := uintptr(unsafe.Pointer(&vsBase))
 
