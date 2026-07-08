@@ -101,6 +101,22 @@ const (
 	// (issue #80): the seg2seg CALL fast body's stack-bound guard reads
 	// it to verify the callee frame fits in the current stack segment.
 	JITContextValueStackEndOffset = unsafe.Offsetof(JITContext{}.valueStackEnd)
+
+	// JITContextSpillBaseOffset / JITContextSpillTopOffset are the byte
+	// offsets of the self-managed spill stack bounds (issue #89). The
+	// trampoline reads spillBase to switch SP onto the spill stack before
+	// entering the segment (MOVQ [r15+spillBaseOff], SP), so deep seg2seg
+	// recursion descends on the spill buffer instead of the goroutine
+	// stack's NOSPLIT allowance. spillBase is the high-address end (SP
+	// entry point for a down-growing stack); spillTop is the low-address
+	// growth limit. Both 0 => no switch (baseline, goroutine stack).
+	JITContextSpillBaseOffset = unsafe.Offsetof(JITContext{}.spillBase)
+	JITContextSpillTopOffset  = unsafe.Offsetof(JITContext{}.spillTop)
+
+	// JITContextSavedGoSPOffset is the byte offset of savedGoSP (issue
+	// #89): the trampoline stashes the goroutine SP here before switching
+	// SP onto the spill stack, and reloads it on the way out.
+	JITContextSavedGoSPOffset = unsafe.Offsetof(JITContext{}.savedGoSP)
 )
 
 // **§9.20.9 协议状态码常量** (Spike 1 真接入 + future helper request 路由):
@@ -421,17 +437,67 @@ type JITContext struct {
 	// other addr fields, so it survives arena grow and stack
 	// relocation.
 	valueStackEnd uintptr
+
+	// spillBacking holds the Go-heap []byte that backs the self-managed
+	// spill stack (issue #89). spillBase / spillTop point into it. Kept as
+	// a field so the GC never frees the buffer while the trampoline has SP
+	// switched onto it (the trampoline holds only a raw uintptr, which the
+	// GC does not treat as a reference). Nil until AllocSpillStack runs.
+	spillBacking []byte
+
+	// savedGoSP holds the goroutine stack pointer that the trampoline
+	// stashes before switching SP onto the spill stack (issue #89), so it
+	// can restore SP on the way out. It lives in the jitCtx (not a
+	// register) because the segment CALL clobbers caller-saved registers
+	// and the trampoline's own callee-saved slots are on the goroutine
+	// stack we are switching away from. Nested trampoline entries (a fresh
+	// CallJITSpec from the goroutine stack during exit-reason resume) each
+	// overwrite and restore it in LIFO order, which is correct because the
+	// outer entry has already restored SP to the goroutine stack before
+	// the inner entry runs (see spike/p4spillstack DECISION.md G3).
+	savedGoSP uintptr
 }
 
 // NewJITContext 构造 P4 JIT 执行上下文。
 //
 // 调用方:crescent.State 在 wireP4 后单例建一份(留 PJ2 实装时接入)。
 //
-// **PJ1+2 阶段**:本函数返回的 JITContext 字段全 0——尚不接入 trampoline。
-// PJ2 完整接入时改为 wireP4 同批传 arena base + 分配自管栈 + 填 spillBase/Top。
+// The self-managed spill stack (issue #89) is allocated here so every
+// translation product gets one; the trampoline switches SP onto it before
+// entering a segment, so deep seg2seg recursion descends on this buffer
+// instead of the goroutine stack's NOSPLIT allowance.
 func NewJITContext() *JITContext {
-	return &JITContext{}
+	c := &JITContext{}
+	c.AllocSpillStack()
+	return c
 }
+
+// SpillStackSize is the size of the self-managed spill stack (issue #89).
+// 64 KiB per the 05 §3.4 design; at 32 B/level (the conservative seg2seg
+// per-level cost) that is ~2048 levels of headroom, far above any depth
+// cap we set. The buffer holds only register spills / return addresses,
+// never Lua values or Go heap pointers, so it is invisible to the GC.
+const SpillStackSize = 64 * 1024
+
+// AllocSpillStack allocates the self-managed spill stack and fills
+// spillBase / spillTop (issue #89). spillBase is the high-address end
+// (the SP entry point for a down-growing stack), 16-byte aligned as the
+// amd64/arm64 ABI requires; spillTop is the low-address growth limit. The
+// trampoline reads spillBase via [r15+JITContextSpillBaseOffset] to switch
+// SP before entering a segment. Idempotent: a second call keeps the
+// existing buffer.
+func (c *JITContext) AllocSpillStack() {
+	if c.spillBacking != nil {
+		return
+	}
+	c.spillBacking = make([]byte, SpillStackSize)
+	lo := uintptr(unsafe.Pointer(&c.spillBacking[0]))
+	c.spillTop = lo
+	c.spillBase = (lo + uintptr(len(c.spillBacking))) &^ 0xf // 16-byte aligned
+}
+
+// SpillBase returns the spill-stack SP entry point (testing hook).
+func (c *JITContext) SpillBase() uintptr { return c.spillBase }
 
 // SetPreemptFlag 设置抢占标志(crescent 端调,JIT 端 atomic 读)。
 //
