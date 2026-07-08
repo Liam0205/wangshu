@@ -1096,6 +1096,9 @@ func emitGetTableExitReason(cb *codeBuf, pc int32, a, b uint8, c int) {
 	if emitInlineGetTableArrayHit(cb, pc, a, b, c) {
 		return
 	}
+	if emitInlineGetTableNodeHit(cb, pc, a, b, c) {
+		return
+	}
 	emitGetTableExitOnly(cb, pc, a, b, c)
 }
 
@@ -1403,7 +1406,243 @@ func emitSETTABLE(cb *codeBuf, pc int32, a uint8, b, c int) {
 	if emitInlineSetTableArrayHit(cb, pc, a, b, c) {
 		return
 	}
+	if emitInlineSetTableNodeHit(cb, pc, a, b, c) {
+		return
+	}
 	emitExitReason(cb, jit.HelperSetTable, pc, int32(a), int32(b), int32(c))
+}
+
+// emitTableNodeHitPrelude emits the shared table prelude for the amd64
+// GETTABLE/SETTABLE NodeHit inline fast paths (issue #67, ported from the
+// arm64 version after M5 Pro measurement corrected the guard set): IsTable
+// guard on R(tblReg), GCRef extract, arena base load, hmask bounds guard,
+// gen (Shape) guard, and nodeRef resolution. Guard misses append their
+// rel32 patch offsets to *guardFixups.
+//
+// No table-identity (TableRef) guard — deliberately. The identity guard
+// made the inline useless on the workloads it exists for (n-body, M5 Pro:
+// 875k dispatches/run with the guard, 0 inline hits): sites like
+// `bodies[i].x` rotate over same-shaped tables, and tables built per Run
+// land at fresh arena offsets, so a single baked TableRef misses 100%
+// across Runs. Correctness never needed identity: the node's OWN key field
+// identifies the entry — the caller's NodeKey guard (node[Index].key ==
+// stableKey) proves node[Index] is THIS table's entry for K (a key occurs
+// in at most one node), so reading/writing its val is byte-equal to the
+// host path for whatever table is in R(tblReg). The hmask bounds guard
+// (Index <= hmask, word1[63:32]) plus the nodeRef != 0 guard keep the
+// node[Index] access in-bounds for smaller-hashed / hash-less tables,
+// which then miss here (or on NodeKey) and fall to the host — slower,
+// never wrong.
+//
+// Register state on fall-through (all guards passed):
+//
+//	R11 = arena base
+//	RCX = absolute node segment base (nodeRef + arena base)
+//
+// RAX/RDX are scratch and not preserved.
+func emitTableNodeHitPrelude(cb *codeBuf, tblReg uint8, index, shape uint32, guardFixups *[]int) {
+	arenaBaseOff := int32(jit.JITContextArenaBaseOffset)
+	recordFixup := func() {
+		*guardFixups = append(*guardFixups, int(cb.pos())-4)
+	}
+
+	// Guard 1: R(tblReg) is Table (high 16 bits == 0xFFFC). RAX = R(tblReg).
+	cb.emit(jitamd64.EmitMovqRaxFromMemReg(nil, regRBX, int32(tblReg)*8))
+	cb.emit([]byte{0x48, 0x89, 0xC1})                   // mov rcx, rax
+	cb.emit([]byte{0x48, 0xC1, 0xE9, 0x30})             // shr rcx, 48
+	cb.emit([]byte{0x81, 0xF9, 0xFC, 0xFF, 0x00, 0x00}) // cmp ecx, 0xFFFC
+	cb.emit(jitamd64.EmitJneRel32(nil, 0))
+	recordFixup()
+
+	// rcx = R(tblReg) payload (GCRef) = rax & 0x0000_FFFF_FFFF_FFFF.
+	cb.emit([]byte{0x48, 0x89, 0xC1})                             // mov rcx, rax
+	cb.emit(jitamd64.EmitMovRdxImm64(nil, 0x0000_FFFF_FFFF_FFFF)) // mov rdx, mask
+	cb.emit([]byte{0x48, 0x21, 0xD1})                             // and rcx, rdx
+
+	// r11 = arena base. Table words are read as [r11 + rcx + off].
+	cb.emit([]byte{0x4D, 0x8B, 0x9F,
+		byte(arenaBaseOff), byte(arenaBaseOff >> 8),
+		byte(arenaBaseOff >> 16), byte(arenaBaseOff >> 24)}) // mov r11, [r15+arenaBaseOff]
+
+	// Guard 2: hmask bounds — index <= hmask (word1[63:32] at [r11+rcx+8]).
+	// Miss (unsigned hmask < index) → node[Index] would be out of bounds;
+	// fall to the host.
+	// mov rax, [r11+rcx+8]  (5B: 49 8B 44 0B 08); shr rax, 32; cmp eax, index; jb miss
+	cb.emit([]byte{0x49, 0x8B, 0x44, 0x0B, 8})
+	cb.emit([]byte{0x48, 0xC1, 0xE8, 0x20}) // shr rax, 32
+	cb.emit([]byte{0x3D,
+		byte(index), byte(index >> 8),
+		byte(index >> 16), byte(index >> 24)}) // cmp eax, imm32
+	cb.emit(jitamd64.EmitJbRel32(nil, 0))
+	recordFixup()
+
+	// Guard 3: gen == shape. gen = word5[63:32] = [r11+rcx+40] >> 32.
+	cb.emit([]byte{0x49, 0x8B, 0x44, 0x0B, 40}) // mov rax, [r11+rcx+40]
+	cb.emit([]byte{0x48, 0xC1, 0xE8, 0x20})     // shr rax, 32
+	cb.emit([]byte{0x3D,
+		byte(shape), byte(shape >> 8),
+		byte(shape >> 16), byte(shape >> 24)}) // cmp eax, imm32
+	cb.emit(jitamd64.EmitJneRel32(nil, 0))
+	recordFixup()
+
+	// rax = nodeRef (word3 at [r11+rcx+24]). Guard 4: nodeRef != 0 —
+	// hmask==0 is ambiguous between "hash size 1" and "no hash segment"
+	// (nodeRef==0); the latter would alias node[0] onto arena offset 0.
+	cb.emit([]byte{0x49, 0x8B, 0x44, 0x0B, 24}) // mov rax, [r11+rcx+24]
+	cb.emit([]byte{0x48, 0x85, 0xC0})           // test rax, rax
+	cb.emit(jitamd64.EmitJeRel32(nil, 0))
+	recordFixup()
+
+	// rcx = abs node base = nodeRef (rax) + arena base (r11).
+	cb.emit([]byte{0x48, 0x89, 0xC1}) // mov rcx, rax
+	cb.emit([]byte{0x4C, 0x01, 0xD9}) // add rcx, r11
+}
+
+func emitInlineGetTableNodeHit(cb *codeBuf, pc int32, a, b uint8, c int) bool {
+	if cb.proto == nil || int(pc) < 0 || int(pc) >= len(cb.proto.IC) {
+		return false
+	}
+	snap := cb.proto.IC[pc]
+	if snap.Kind != bytecode.ICKindNodeHit {
+		return false
+	}
+	if c < 256 {
+		return false
+	}
+	kidx := c - 256
+	if kidx < 0 || kidx >= len(cb.proto.Consts) {
+		return false
+	}
+	stableKey := cb.proto.Consts[kidx]
+	if value.Value(stableKey) == value.Nil {
+		return false
+	}
+	var guardFixups []int
+	emitTableNodeHitPrelude(cb, b, snap.Index, snap.Shape, &guardFixups)
+
+	keyOff := int32(snap.Index) * 24
+	valOff := int32(snap.Index)*24 + 8
+
+	// Guard 5: NodeKey ([rcx+keyOff]) == stableKey.
+	cb.emit([]byte{0x48, 0x8B, 0x81,
+		byte(uint32(keyOff)), byte(uint32(keyOff) >> 8),
+		byte(uint32(keyOff) >> 16), byte(uint32(keyOff) >> 24)}) // mov rax, [rcx+keyOff]
+	cb.emit(jitamd64.EmitMovRdxImm64(nil, stableKey))
+	cb.emit([]byte{0x48, 0x39, 0xD0}) // cmp rax, rdx
+	cb.emit(jitamd64.EmitJneRel32(nil, 0))
+	guardFixups = append(guardFixups, int(cb.pos())-4)
+
+	// rax = NodeVal ([rcx+valOff]); Guard 6: rax != Nil.
+	cb.emit([]byte{0x48, 0x8B, 0x81,
+		byte(uint32(valOff)), byte(uint32(valOff) >> 8),
+		byte(uint32(valOff) >> 16), byte(uint32(valOff) >> 24)}) // mov rax, [rcx+valOff]
+	cb.emit(jitamd64.EmitMovRdxImm64(nil, 0xFFFE_0000_0000_0000)) // NilBits
+	cb.emit([]byte{0x48, 0x39, 0xD0})                             // cmp rax, rdx
+	cb.emit(jitamd64.EmitJeRel32(nil, 0))
+	guardFixups = append(guardFixups, int(cb.pos())-4)
+
+	// Store R(A) = rax; jmp done.
+	cb.emit(jitamd64.EmitMovqMemRegFromRax(nil, regRBX, int32(a)*8))
+	cb.emit([]byte{0xE9, 0, 0, 0, 0})
+	fastPathJmpOff := int(cb.pos()) - 4
+
+	// miss: seg2seg deopt guard (read idempotent) + exit-reason.
+	missOff := int(cb.pos())
+	for _, po := range guardFixups {
+		writeRel32(cb, po, int32(missOff)-int32(po+4))
+	}
+	emitSegCallDeoptGuard(cb)
+	emitExitReason(cb, jit.HelperGetTable, pc, int32(a), int32(b), int32(c))
+
+	// done:
+	doneOff := int(cb.pos())
+	writeRel32(cb, fastPathJmpOff, int32(doneOff)-int32(fastPathJmpOff+4))
+	return true
+}
+
+// emitInlineSetTableNodeHit emits the amd64 SETTABLE NodeHit inline fast
+// path for `R(A)[K(B)] := RK(C)` when the IC snapshot is NodeHit and the
+// key is a CONSTANT (B >= 256). Overwrites an existing key's value — a raw
+// arena store, no rehash / __newindex / gen bump. Byte-equal to host
+// icSetTable's NodeHit hit. Miss tail has NO seg2seg deopt guard (write
+// has side effects). Uses the same identity-free prelude as GET.
+func emitInlineSetTableNodeHit(cb *codeBuf, pc int32, a uint8, b, c int) bool {
+	if cb.proto == nil || int(pc) < 0 || int(pc) >= len(cb.proto.IC) {
+		return false
+	}
+	snap := cb.proto.IC[pc]
+	if snap.Kind != bytecode.ICKindNodeHit {
+		return false
+	}
+	if b < 256 {
+		return false
+	}
+	bkidx := b - 256
+	if bkidx < 0 || bkidx >= len(cb.proto.Consts) {
+		return false
+	}
+	stableKey := cb.proto.Consts[bkidx]
+	if value.Value(stableKey) == value.Nil {
+		return false
+	}
+	if c >= 256 {
+		if ckidx := c - 256; ckidx < 0 || ckidx >= len(cb.proto.Consts) {
+			return false
+		}
+	}
+	var guardFixups []int
+	emitTableNodeHitPrelude(cb, a, snap.Index, snap.Shape, &guardFixups)
+
+	keyOff := int32(snap.Index) * 24
+	valOff := int32(snap.Index)*24 + 8
+
+	// Guard 5: NodeKey ([rcx+keyOff]) == stableKey.
+	cb.emit([]byte{0x48, 0x8B, 0x81,
+		byte(uint32(keyOff)), byte(uint32(keyOff) >> 8),
+		byte(uint32(keyOff) >> 16), byte(uint32(keyOff) >> 24)}) // mov rax, [rcx+keyOff]
+	cb.emit(jitamd64.EmitMovRdxImm64(nil, stableKey))
+	cb.emit([]byte{0x48, 0x39, 0xD0}) // cmp rax, rdx
+	cb.emit(jitamd64.EmitJneRel32(nil, 0))
+	guardFixups = append(guardFixups, int(cb.pos())-4)
+
+	// Guard 6: existing NodeVal ([rcx+valOff]) != Nil (key exists).
+	cb.emit([]byte{0x48, 0x8B, 0x81,
+		byte(uint32(valOff)), byte(uint32(valOff) >> 8),
+		byte(uint32(valOff) >> 16), byte(uint32(valOff) >> 24)}) // mov rax, [rcx+valOff]
+	cb.emit(jitamd64.EmitMovRdxImm64(nil, 0xFFFE_0000_0000_0000)) // NilBits
+	cb.emit([]byte{0x48, 0x39, 0xD0})                             // cmp rax, rdx
+	cb.emit(jitamd64.EmitJeRel32(nil, 0))
+	guardFixups = append(guardFixups, int(cb.pos())-4)
+
+	// rax = RK(C) value; Guard 7: rax != Nil (writing Nil deletes).
+	if c < 256 {
+		cb.emit(jitamd64.EmitMovqRaxFromMemReg(nil, regRBX, int32(c)*8)) // mov rax, [rbx+C*8]
+	} else {
+		cb.emit(jitamd64.EmitMovRaxImm64(nil, cb.proto.Consts[c-256]))
+	}
+	// rdx still holds NilBits from Guard 6.
+	cb.emit([]byte{0x48, 0x39, 0xD0}) // cmp rax, rdx
+	cb.emit(jitamd64.EmitJeRel32(nil, 0))
+	guardFixups = append(guardFixups, int(cb.pos())-4)
+
+	// Store [rcx+valOff] = rax; jmp done.
+	cb.emit([]byte{0x48, 0x89, 0x81,
+		byte(uint32(valOff)), byte(uint32(valOff) >> 8),
+		byte(uint32(valOff) >> 16), byte(uint32(valOff) >> 24)}) // mov [rcx+valOff], rax
+	cb.emit([]byte{0xE9, 0, 0, 0, 0})
+	fastPathJmpOff := int(cb.pos()) - 4
+
+	// miss: NO seg2seg deopt guard (write has side effects) + exit-reason.
+	missOff := int(cb.pos())
+	for _, po := range guardFixups {
+		writeRel32(cb, po, int32(missOff)-int32(po+4))
+	}
+	emitExitReason(cb, jit.HelperSetTable, pc, int32(a), int32(b), int32(c))
+
+	// done:
+	doneOff := int(cb.pos())
+	writeRel32(cb, fastPathJmpOff, int32(doneOff)-int32(fastPathJmpOff+4))
+	return true
 }
 
 // emitInlineSetTableArrayHit emits an inline array-hit fast path for
