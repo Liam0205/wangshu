@@ -6,3 +6,6 @@ test-bin/
 .pineapple/
 luac.out
 .llmdoc-tmp/
+
+# Local pre-push hook rebase-check artifact (self-wrapper); never tracked.
+.rebasechk
