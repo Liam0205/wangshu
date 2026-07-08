@@ -423,6 +423,54 @@ func EmitFmovXdFromDn(buf []byte, xd, dn uint8) []byte {
 // EncodedFmovXdFromDnLen = 4.
 const EncodedFmovXdFromDnLen = 4
 
+// EmitFsqrtDdDn 发射 arm64「fsqrt Dd, Dn」(双精度开方,issue #77
+// math.sqrt intrinsic)。编码:0001_1110_0110_0001_1100_00nn_nnnn_dddd
+// = 0x1E61C000 + Rn<<5 + Rd。
+func EmitFsqrtDdDn(buf []byte, dd, dn uint8) []byte {
+	insn := uint32(0x1E61C000) | (uint32(dn)&0x1F)<<5 | uint32(dd)&0x1F
+	return appendArm64Insn(buf, insn)
+}
+
+// EmitFabsDdDn 发射 arm64「fabs Dd, Dn」(双精度绝对值 = 清符号位,issue
+// #77 math.abs intrinsic)。编码:0x1E60C000 + Rn<<5 + Rd。
+func EmitFabsDdDn(buf []byte, dd, dn uint8) []byte {
+	insn := uint32(0x1E60C000) | (uint32(dn)&0x1F)<<5 | uint32(dd)&0x1F
+	return appendArm64Insn(buf, insn)
+}
+
+// EmitFrintmDdDn 发射 arm64「frintm Dd, Dn」(向 -inf 取整 = floor,issue
+// #77 math.floor intrinsic;与 Go math.Floor 逐字节一致)。编码:
+// 0x1E654000 + Rn<<5 + Rd。
+func EmitFrintmDdDn(buf []byte, dd, dn uint8) []byte {
+	insn := uint32(0x1E654000) | (uint32(dn)&0x1F)<<5 | uint32(dd)&0x1F
+	return appendArm64Insn(buf, insn)
+}
+
+// EmitFrintpDdDn 发射 arm64「frintp Dd, Dn」(向 +inf 取整 = ceil,issue
+// #77 math.ceil intrinsic;与 Go math.Ceil 逐字节一致)。编码:
+// 0x1E64C000 + Rn<<5 + Rd。
+func EmitFrintpDdDn(buf []byte, dd, dn uint8) []byte {
+	insn := uint32(0x1E64C000) | (uint32(dn)&0x1F)<<5 | uint32(dd)&0x1F
+	return appendArm64Insn(buf, insn)
+}
+
+// EmitFcmpDnDm 发射 arm64「fcmp Dn, Dm」(双精度比较,非信号版——见到
+// NaN 只置 FPSR 标志不陷阱,适合可能见 NaN 的 max/min)。编码:
+// 0x1E602000 + Rm<<16 + Rn<<5。
+func EmitFcmpDnDm(buf []byte, dn, dm uint8) []byte {
+	insn := uint32(0x1E602000) | (uint32(dm)&0x1F)<<16 | (uint32(dn)&0x1F)<<5
+	return appendArm64Insn(buf, insn)
+}
+
+// EmitFcselDdDnDmCond 发射 arm64「fcsel Dd, Dn, Dm, cond」(cond 成立取
+// Dn 否则 Dm,issue #77 max/min 选择)。编码:0x1E600C00 + Rm<<16 +
+// cond<<12 + Rn<<5 + Rd。
+func EmitFcselDdDnDmCond(buf []byte, dd, dn, dm, cond uint8) []byte {
+	insn := uint32(0x1E600C00) | (uint32(dm)&0x1F)<<16 |
+		(uint32(cond)&0xF)<<12 | (uint32(dn)&0x1F)<<5 | uint32(dd)&0x1F
+	return appendArm64Insn(buf, insn)
+}
+
 // EmitFaddDdDnDm 发射 arm64「fadd Dd, Dn, Dm」(双精度加,IEEE 754)。
 //
 // 编码:0001_1110_011_mmmmm_001010_nnnnn_ddddd = 0x1E602800 + Rm<<16 + Rn<<5 + Rd
