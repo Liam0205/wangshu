@@ -869,9 +869,14 @@ func (c *JITContext) LoopFuelSpent() uint32 {
 // segment's dec+jnz for replay paths (PerOpCode.runForLoop) that
 // iterate loops in Go instead of native code: the caller invokes
 // host.LoopPreempt when this returns true, exactly like the segment's
-// HelperLoopFuel exit.
+// HelperLoopFuel exit. Saturates at 0 instead of wrapping (a stranded
+// counter — see the deopt repair in RefreshJitCtxAddrs — then reports
+// exhausted every tick until LoopPreempt refills, rather than running
+// 2^32 unbilled iterations).
 func (c *JITContext) LoopFuelTick() bool {
-	c.loopFuel--
+	if c.loopFuel > 0 {
+		c.loopFuel--
+	}
 	return c.loopFuel == 0
 }
 

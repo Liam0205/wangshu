@@ -166,3 +166,47 @@ func TestI102_UnbudgetedLoopCompletes(t *testing.T) {
 		}
 	}
 }
+
+// TestI102_DeoptStrandRepaired (PR #105 review): a seg2seg callee's
+// loop that drains loopFuel at segCallDepth>0 deopts (set flag + ret)
+// instead of exiting via HelperLoopFuel — LoopPreempt never runs and
+// the CALLER's jitCtx counter parks at 0. Without repair, the caller's
+// next inline back-edge wraps 0 -> 2^32 and runs unbilled — reopening
+// exactly the #102 window this PR closes. RefreshJitCtxAddrs repairs
+// the strand (armed && loopFuel==0 can only mean a deopt strand: a
+// legit drain always refills through LoopPreempt before resume).
+//
+// Shape: inner's 10000-iteration loop exceeds the 4096 fuel quantum,
+// so every seg2seg dispatch of inner deopts at depth>0 (inner's body
+// needs >= 3 ops for AnalyzeNative to route it native — a 1-op body
+// compiles to the PJ3 spec template, which is not a seg2seg target);
+// outer's k-loop after the call sites must still trip the budget
+// promptly. The SegToSegDeoptCount delta proves the deopt-strand path
+// actually executed (prove-the-path; without it a cold IC would
+// silently skip the scenario under test).
+func TestI102_DeoptStrandRepaired(t *testing.T) {
+	src := `local function inner()
+  local s = 0
+  local u = 0
+  for i=1,10000 do s=s+1 u=u+2 s=s+u end
+  return s
+end
+local function outer()
+  local s=0
+  for j=1,50 do s = s + inner() end
+  for k=1,3000000000 do s=s+1 end
+  return s
+end
+return outer()`
+	deopt0 := peroptranslator.SegToSegDeoptCount.Load()
+	err, elapsed := runBudgeted(t, src, true)
+	if err == nil || !strings.Contains(err.Error(), "instruction budget exceeded") {
+		t.Fatalf("want budget error, got %v (elapsed %v)", err, elapsed)
+	}
+	if elapsed > 5*time.Second {
+		t.Errorf("budget error too slow: %v — loopFuel likely stranded at 0", elapsed)
+	}
+	if delta := peroptranslator.SegToSegDeoptCount.Load() - deopt0; delta == 0 {
+		t.Errorf("SegToSegDeoptCount did not increment — the deopt-strand scenario was not exercised (seg2seg dispatch never engaged?)")
+	}
+}

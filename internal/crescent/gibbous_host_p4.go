@@ -94,11 +94,25 @@ func (st *State) RefreshJitCtxAddrs(ctx *jit.JITContext, base int32) {
 	// erased every iteration by an unconditional refill — the guard
 	// would never fire and nothing else checks the budget on that path
 	// (host-closure CALLs never reach st.preempt()). Between
-	// transitions, host.LoopPreempt is the only refiller.
+	// transitions, host.LoopPreempt is the only refiller — with one
+	// exception below.
 	if st.stepBudget > 0 || st.ctx.Load() != nil {
 		if !ctx.LoopFuelArmedBudgeted() {
 			// Arming transition: the pre-arming drain reports 0 spent
 			// (Unlimited-mode rule), so nothing is billed here.
+			ctx.SetLoopFuel(jit.SegCallFuelBudgeted)
+		} else if ctx.LoopFuel() == 0 {
+			// Deopt stranding repair (PR #105 review): a seg2seg
+			// callee's loop that drains the fuel at segCallDepth>0
+			// deopts (set flag + ret) instead of exiting via
+			// HelperLoopFuel, so LoopPreempt never runs and the
+			// counter parks at 0 — where the segment's sub+jnz would
+			// wrap to 2^32 before the next billing point. A LEGIT
+			// drain always refills through LoopPreempt before the
+			// segment resumes, so observing 0 here means a strand.
+			// Refill WITHOUT billing: the deopt-redo re-runs those
+			// same iterations on the baseline, which bills them via
+			// st.preempt — billing the strand would double-charge.
 			ctx.SetLoopFuel(jit.SegCallFuelBudgeted)
 		}
 	} else if ctx.LoopFuelArmedBudgeted() {
