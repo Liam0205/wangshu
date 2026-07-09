@@ -174,7 +174,7 @@ func (c *cfg) linkSuccs(bb *basicBlock) {
 // is out of SubNUps range (AnalyzeNative rejects such protos first).
 func closurePseudoSkip(proto *bytecode.Proto, ins bytecode.Instruction) int32 {
 	bx := bytecode.Bx(ins)
-	if bx < 0 || bx >= len(proto.SubNUps) {
+	if bx >= len(proto.SubNUps) {
 		return 0
 	}
 	return int32(proto.SubNUps[bx])
