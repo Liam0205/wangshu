@@ -2668,6 +2668,32 @@ P4 验收测试的多返回值 host 尾调用用例暴露一个 clean master 上
 
 与 §16/§17 一致:含活跃字符串字面量 LOADK 的 proto 走 #69 已放开;VARARG 仍是永久设计门。TAILCALL/TFORLOOP/CLOSURE/CLOSE 均为 exit-reason 往返形态,是**接受面**改动(不再拖垮整函数)而非逐 op 加速——密集出现这些 op 的 kernel 速度约等于解释器。
 
+## 23. issue #102 段内循环回边计费(双架构,2026-07-09/10,PR #105)
+
+### 23.1 问题
+
+P4 native FORLOOP 的回边完全在段内,当循环体全部内联(纯算术,或 #77 的 math intrinsic 如 FABS)时,整个循环碰不到任何 Go 侧的计费点(`st.preempt()` 只在解释器的 call / 回边点执行)。fuzz 种子 `3edb662d8f1525de` 复现了这个问题:277M 次迭代 + `SetStepBudget(1<<20)`,解释器 40ms 就报 "instruction budget exceeded",而 P4 force-all 要 9 秒才跑完全部迭代。这是 issue #89 `segCallFuel`(CALL 派发一侧)的姊妹缺口。
+
+### 23.2 修法
+
+- 新增 `JITContext.loopFuel` 计数器(与 `segCallFuel` 分离,原因见下)。FORLOOP 的 condTrue 内联一段 dec+jnz(amd64 `sub dword [r15+off],1; jnz succBack`);负 sBx 的 JMP terminator 同样计量(覆盖 while / repeat 的回边);arm64 镜像 `ldr-sub-str + cbnz`(`emitLoopFuelBackEdgeArm64`)。
+- 燃料耗尽时经新的 exit-reason `HelperLoopFuel`(= 32)出段,`host.LoopPreempt` 完成计费(`LoopFuelSpent` 记入 `stepUsed`)+ 重灌 + 执行与 `st.preempt()` 等价的检查(budget + cancel context),然后段内从回边的继续点 resume。
+- **为什么 `loopFuel` 必须与 `segCallFuel` 分离**:dispatcher 在每次 Run resume 时无条件重灌 `segCallFuel`(这对 CALL 派发是安全的——host 的 CALL 路径本身就是计费点),但循环体每迭代经 exit-reason helper 往返一次的场景(冷 CALL 等)会让这个重灌把每迭代的回边扣减抹掉;白盒探针实测第一版(直接复用 `segCallFuel`)有 7.7M 次 helper 往返、零次报错。而且 host-closure 的 CALL 永远到不了 `st.preempt()`,就算计了费也没人检查——「计费」与「检查」是两个独立义务,检查必须在 `LoopPreempt` 内完成。`loopFuel` 只在 `LoopPreempt` 和 `RefreshJitCtxAddrs` 的 armed 状态切换时重灌。
+- PerOpCode 的 Go 回放路径(`runForLoop` / `runTForLoop`)经 `LoopFuelTick` 按迭代扣同一个计数器(host-closure 迭代器如 `next` 一样碰不到 `st.preempt()`)。
+- **seg2seg deopt 搁置修复(review bot 发现)**:seg2seg callee 的循环在 `segCallDepth>0` 耗尽燃料时走 deopt(set flag + ret),不经 `LoopPreempt`,计数器停在 0,段内的 sub+jnz 会从 0 回绕到 2^32,跑 2^32 次不计费的迭代。修法:`RefreshJitCtxAddrs` 里把 armed && `loopFuel==0` 判定为搁置状态(合法的耗尽总在 resume 前经 `LoopPreempt` 重灌,refresh 不可能观察到 0),重灌但不计费(deopt-redo 会在 baseline 重跑那些迭代、由 `st.preempt` 计费,再计就双记);`LoopFuelTick` 在 0 处饱和,不回绕。
+
+### 23.3 验证
+
+- 复现脚本的 P4 force-all 从 9 秒跑完 → ~60ms 报 "instruction budget exceeded"。
+- `TestI102_BudgetPreemptsInlineLoop`:{intrinsic 体, 纯算术体, while-true 回边} × {force, auto},native 路径的组合断言 `LoopFuelExitCount` 白盒探针(纯算术体会升到 PJ3 spec 模板,其计费已单独探针验证);`TestI102_ContextCancelPreemptsInlineLoop`(cancel context 同路检查);`TestI102_UnbudgetedLoopCompletes`(无预算完整跑完 + 结果正确);`TestI102_DeoptStrandRepaired`(搁置修复的回归,`SegToSegDeoptCount` 的 delta 证明场景真被执行——inner 循环体需 ≥3 op 否则会编成 PJ3 spec 模板进不了 seg2seg;反向验证:回退修复后该测试失败)。
+- fuzz 种子 `3edb662d8f1525de` 入 corpus;60s fuzz smoke 干净;CI 39 项全绿(含 arm64 difftest / conformance 矩阵);review bot 两轮,第二轮 APPROVE。
+- perf A/B vs master(`-benchtime=2s -count=3+ -cpu=1` 串行):HeavyArith 15.0 → 15.4ms(+2.9%)/ HeavyFloatloop 26.0 → 26.5ms(+2.0%)/ n-body、fib 无变化。每回边一条对 jitCtx 槽位的 sub 是不可避免的成本——升层通常发生在 `SetStepBudget` 之前,守卫无法在编译期按需生成(issue 自己的分析);Unlimited 重灌把无预算负载保持在每迭代一对 dec+jnz。
+
+### 23.4 教训(详反思 `2026-07-10-issue102-loop-fuel-round`)
+
+- 计费点与检查点是两个独立义务;fuel counter 家族(`segCallFuel` / `loopFuel`)每个重灌点都须回答三问:谁计费、谁检查、drain 归零而无法出段时怎么办。
+- 白盒探针在设计期就暴露了「build 绿但机制一次未触发」(prove-the-path 在设计期的应用)。
+
 ---
 
 相关:
