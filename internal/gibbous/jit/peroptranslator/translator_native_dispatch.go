@@ -123,12 +123,14 @@ func SegToSegDeoptCountAddr() uint64 {
 	return uint64(uintptr(unsafe.Pointer(&SegToSegDeoptCount)))
 }
 
-// LoopFuelExitCount counts HelperLoopFuel exits handled by the
-// dispatcher (issue #102): an in-segment loop back-edge drained
-// segCallFuel to zero and round-tripped to host.LoopPreempt. White-box
-// prove-the-path probe — a budgeted loop test asserts this increments,
-// since "the budget error was raised" alone can't distinguish the
-// back-edge fuel guard from some other billing point.
+// LoopFuelExitCount counts loop-fuel exhaustion round trips to
+// host.LoopPreempt (issue #102): HelperLoopFuel exits handled by the
+// dispatcher, plus the PerOpCode replay paths' LoopFuelTick hits
+// (runForLoop / runTForLoop call LoopPreempt directly, without a
+// dispatcher exit). White-box prove-the-path probe — a budgeted loop
+// test asserts this increments, since "the budget error was raised"
+// alone can't distinguish the back-edge fuel guard from some other
+// billing point.
 var LoopFuelExitCount atomic.Int64
 
 // dispatchHelper handles a single ExitInlineHelper request from the
