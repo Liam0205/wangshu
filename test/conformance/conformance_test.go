@@ -347,6 +347,16 @@ return tostring(ok), (e:gsub("^[^:]+:%d+: ", ""))`,
 local function f(...) return ... end
 local a, b, c = f(1, 2, 3)
 return c`, "3"},
+	// Tail-calling a host function with multiple results: doTailCall used
+	// to pass the parent frame's fixed nresults to callHost (should be -1
+	// multret, matching PUC's luaD_call(L, ra, LUA_MULTRET)); the
+	// fixed-count branch reset top so the trailing RETURN B=0 dropped
+	// trailing results (`return unpack(t)` returned only 2 values; found
+	// by issue #52 P4 acceptance, one shared fix covers P1/P3/P4).
+	{"tailcall_host_multret", `
+local function k(t) return unpack(t) end
+local a, b, c = k({7, 8, 9})
+return a, b, c`, "7\t8\t9"},
 }
 
 func TestConformance(t *testing.T) {
