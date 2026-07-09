@@ -28,6 +28,13 @@ import (
 // interpreter fallback.
 var DispatchHelperCount atomic.Int64
 
+// TailCallRunCount counts HelperTailCall exits handled by the Run
+// loops (both arches). TAILCALL terminates the run and is handled
+// before dispatchHelper (like HelperReturn), so DispatchHelperCount
+// never sees it — prove-the-path tests for issue #52's TAILCALL
+// acceptance check this counter instead.
+var TailCallRunCount atomic.Int64
+
 // CallInlineFastHitCount counts times the segment-side EmitCallInline
 // fast body fired (guard passed → HelperExecutePlainCall exit-reason,
 // issue #50 Spike 2 step 4b prove-the-path probe). Incremented from
@@ -249,6 +256,38 @@ func (c *nativeCode) dispatchHelper(base int32) bool {
 			return false
 		}
 		c.jitCtx.SetExitArg0(uint64(packed & 1))
+	case jit.HelperTForLoop:
+		// TFORLOOP A C (issue #52): host.TForLoop invokes the iterator
+		// R(A)(R(A+1), R(A+2)), writes R(A+3..A+2+C), and updates the
+		// control variable. Its i64 return is a tri-state: >= 0 means
+		// continue (the value is the refreshed frame base for P3 wasm's
+		// benefit — the P4 Run loop refreshes addrs itself, so only the
+		// sign matters here), -2 means exit (first result nil), -1
+		// means error raised. The continue verdict rides exitArg0 back
+		// into the segment (1 = continue, 0 = exit), mirror of
+		// HelperCompareSlow's branch-result protocol.
+		ret := c.host.TForLoop(base, pc, a, cc)
+		if ret == -1 {
+			return false
+		}
+		if ret >= 0 {
+			c.jitCtx.SetExitArg0(1)
+		} else {
+			c.jitCtx.SetExitArg0(0)
+		}
+	case jit.HelperClosure:
+		// CLOSURE A Bx (issue #52): host.Closure builds the closure
+		// into R(A), consuming the pseudo-instruction words after
+		// CLOSURE (one MOVE/GETUPVAL per upvalue) via ci.pc. Bx rides
+		// the 18-bit b|c split (same packing as GETGLOBAL).
+		if st := c.host.Closure(base, pc, a, b|(cc<<9)); st != 0 {
+			return false
+		}
+	case jit.HelperClose:
+		// CLOSE A (issue #52): close all open upvalues >= R(A).
+		if st := c.host.Close(base, pc, a); st != 0 {
+			return false
+		}
 	default:
 		return false
 	}

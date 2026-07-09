@@ -161,6 +161,37 @@ func (c *cfg) linkSuccs(bb *basicBlock) {
 	}
 }
 
+// closurePseudoSkip returns the number of pseudo-instruction words that
+// follow a CLOSURE (one MOVE/GETUPVAL per upvalue captured by the child
+// proto, issue #52). These words are DATA consumed by host.Closure /
+// makeClosure, not executable ops — the emit loops and AnalyzeNative
+// walks must skip them (mirror of P3 wasm translate.go's emitOpcode
+// skip). They never create CFG leaders (their bit patterns decode as
+// MOVE/GETUPVAL, neither of which is a branch), so buildCFG needs no
+// skip; but a leader CAN sit immediately after the pseudos (e.g. an
+// if-exit jump target), making a pseudo word the last instruction of a
+// BB — emitBB handles that consumed-terminator case. Returns 0 when bx
+// is out of SubNUps range (AnalyzeNative rejects such protos first).
+func closurePseudoSkip(proto *bytecode.Proto, ins bytecode.Instruction) int32 {
+	bx := bytecode.Bx(ins)
+	if bx < 0 || bx >= len(proto.SubNUps) {
+		return 0
+	}
+	return int32(proto.SubNUps[bx])
+}
+
+// nextRealPC returns the pc of the next real instruction after pc,
+// stepping over CLOSURE's trailing pseudo words. All translator walks
+// (AnalyzeNative, the RETURN/CALL counting pass, emitBB) must advance
+// with this instead of pc++ so pseudo words are never decoded as ops.
+func nextRealPC(proto *bytecode.Proto, pc int32) int32 {
+	ins := proto.Code[pc]
+	if bytecode.Op(ins) == bytecode.CLOSURE {
+		return pc + 1 + closurePseudoSkip(proto, ins)
+	}
+	return pc + 1
+}
+
 // isReducible checks whether the CFG is reducible (no jumps to BB middles).
 // Lua 5.1 codegen never produces goto, so this must always be true.
 //

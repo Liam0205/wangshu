@@ -2858,13 +2858,69 @@ func emitSELF(cb *codeBuf, pc int32, a, b uint8, c int) {
 	emitExitReason(cb, jit.HelperSelf, pc, int32(a), int32(b), int32(c))
 }
 
-// TAILCALL / CLOSURE / CLOSE / TFORLOOP have no native emit: they are
-// excluded from opSupported (AnalyzeNative rejects any Proto containing
-// them) and their semantics don't fit the current exit-reason
-// dispatcher — TAILCALL's tri-state return (0 = frame already replaced,
-// skip DoReturn) needs a terminate-without-DoReturn channel like
-// HelperReturn, and TFORLOOP's resume must branch on the iterator
-// result inside the segment. The emit loop errors out on them
-// defensively (issue #45 removed their legacy shim-call emitters —
-// shim calls from mmap crash the Go stack unwinder under nested +
-// concurrent load, see issue #38).
+// emitTAILCALL emits the TAILCALL A B C exit-reason (issue #52). Like
+// HelperReturn it ALWAYS terminates the segment run: the dispatcher
+// loop in Run handles HelperTailCall directly (before dispatchHelper),
+// calling host.TailCall and branching on its tri-state return —
+// 0 = Lua tail call completed (the caller frame was replaced and driven
+// to completion; Run returns 0 WITHOUT DoReturn), 1 = err, 2 = host
+// tail call (results are in R(A..); Run decodes the trailing dead
+// RETURN luac always emits at pc+1 and finishes via host.DoReturn,
+// mirroring the interpreter falling through to that RETURN). No arm
+// reenters the segment, so the resume fixup is dropped like
+// HelperReturn's.
+//
+// No seg2seg deopt guard: TAILCALL is not in seg2segOpsEligible, so a
+// Proto containing it never runs as an in-segment callee (same as
+// SELF / CONCAT / SETLIST).
+func emitTAILCALL(cb *codeBuf, pc int32, a, b, c uint8) {
+	emitExitReason(cb, jit.HelperTailCall, pc, int32(a), int32(b), int32(c))
+	cb.pendingResumeOffFixups = cb.pendingResumeOffFixups[:0]
+}
+
+// emitTFORLOOP emits the TFORLOOP A C exit-reason + packed-result branch
+// (issue #52; mirror of emitCompareExitTail's protocol). The dispatcher
+// calls host.TForLoop (iterator invocation + R(A+3..A+2+C) writes +
+// control-var update) and stores the continue verdict into exitArg0
+// (1 = continue, 0 = exit); the resume block reads it back and branches
+// to succBack (the back-edge JMP) or succOut — the branch must happen
+// in-segment, only the segment knows the successor offsets.
+func emitTFORLOOP(cb *codeBuf, pc int32, a, c uint8, succBack, succOut int) {
+	emitExitReason(cb, jit.HelperTForLoop, pc, int32(a), 0, int32(c))
+	// Bind the resume entry right here (mirror of emitCompareExitTail).
+	emitResumePreludeIfPending(cb)
+	// mov rax, [r15 + exitArg0Off]  (7B: 49 8B 87 disp32)
+	{
+		off := int32(jit.JITContextExitArg0Offset)
+		cb.emit([]byte{0x49, 0x8B, 0x87,
+			byte(uint32(off)),
+			byte(uint32(off) >> 8),
+			byte(uint32(off) >> 16),
+			byte(uint32(off) >> 24)})
+	}
+	// test rax, rax; jnz succBack (continue); jmp succOut (exit)
+	cb.emit([]byte{0x48, 0x85, 0xC0})       // test rax, rax
+	cb.emit([]byte{0x0F, 0x85, 0, 0, 0, 0}) // jnz succBack
+	cb.addFixup(cb.pos()-4, cb.pos(), succBack)
+	patchOff := cb.pos() + 1
+	cb.emit([]byte{0xE9, 0, 0, 0, 0}) // jmp succOut
+	cb.addFixup(patchOff, cb.pos(), succOut)
+}
+
+// emitCLOSURE emits the CLOSURE A Bx exit-reason (issue #52). The
+// dispatcher calls host.Closure, which builds the closure into R(A) and
+// consumes the pseudo-instructions (MOVE/GETUPVAL per upvalue) that
+// follow CLOSURE in the bytecode — the translator's walks skip those
+// words (see realPCs in emitBB), so the segment's resume entry is the
+// op after the pseudos. Bx exceeds the 9-bit b/c payload slots; pack it
+// like GETGLOBAL's 18-bit split (b = low 9, c = high 9).
+func emitCLOSURE(cb *codeBuf, pc int32, a uint8, bx int) {
+	emitExitReason(cb, jit.HelperClosure, pc, int32(a),
+		int32(bx&0x1FF), int32((bx>>9)&0x1FF))
+}
+
+// emitCLOSE emits the CLOSE A exit-reason (issue #52): the dispatcher
+// calls host.Close (closes all open upvalues >= R(A); never raises).
+func emitCLOSE(cb *codeBuf, pc int32, a uint8) {
+	emitExitReason(cb, jit.HelperClose, pc, int32(a), 0, 0)
+}
