@@ -123,6 +123,14 @@ func SegToSegDeoptCountAddr() uint64 {
 	return uint64(uintptr(unsafe.Pointer(&SegToSegDeoptCount)))
 }
 
+// LoopFuelExitCount counts HelperLoopFuel exits handled by the
+// dispatcher (issue #102): an in-segment loop back-edge drained
+// segCallFuel to zero and round-tripped to host.LoopPreempt. White-box
+// prove-the-path probe — a budgeted loop test asserts this increments,
+// since "the budget error was raised" alone can't distinguish the
+// back-edge fuel guard from some other billing point.
+var LoopFuelExitCount atomic.Int64
+
 // dispatchHelper handles a single ExitInlineHelper request from the
 // mmap segment. Returns true on success (segment can be re-entered
 // at resumeOff), false on error (host method raised → caller returns
@@ -170,6 +178,16 @@ func (c *nativeCode) dispatchHelper(base int32) bool {
 		// number" when coercion fails) and normalizes the slots, so
 		// the resumed FORLOOP keeps its numbers-only assumption.
 		if st := c.host.ForPrep(base, pc, a); st != 0 {
+			return false
+		}
+	case jit.HelperLoopFuel:
+		// In-segment loop back-edge fuel exhausted (issue #102):
+		// host.LoopPreempt bills the spent fuel to the step budget,
+		// refills, and raises "instruction budget exceeded" /
+		// "context canceled" when tripped. On 0 the segment resumes
+		// at the back-edge continuation.
+		LoopFuelExitCount.Add(1)
+		if st := c.host.LoopPreempt(c.jitCtx, base, pc); st != 0 {
 			return false
 		}
 	case jit.HelperGetUpval:

@@ -369,6 +369,17 @@ func (m *mockP4Host) ExecuteCalleeFromInlineFrame(base, callA, callArgCount, nre
 // ForPrep mock stub(PJ3 reg-limit deopt 路径用,单测路径不触达)。
 func (m *mockP4Host) ForPrep(base, pc, a int32) int32 { _ = base; _ = pc; _ = a; return 0 }
 
+// LoopPreempt mock stub (issue #102 loop back-edge fuel): unit tests
+// never arm a budget, so refill unlimited and report OK.
+func (m *mockP4Host) LoopPreempt(ctx *JITContext, base, pc int32) int32 {
+	_ = base
+	_ = pc
+	if ctx != nil {
+		ctx.SetSegCallFuel(SegCallFuelUnlimited)
+	}
+	return 0
+}
+
 // ObserveCallCallee mock stub (issue #50 Spike 1): returns zero so the
 // per-CALL-site IC populate is a no-op in unit tests. Real observation
 // is exercised via the end-to-end crescent tests.

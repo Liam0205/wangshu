@@ -184,6 +184,21 @@ type P4HostState interface {
 	// 返回:0=OK / 1=ERR(raise pending,'for' init/limit/step must be a number)。
 	ForPrep(base int32, pc int32, a int32) int32
 
+	// LoopPreempt is the HelperLoopFuel dispatcher target (issue #102):
+	// an in-segment loop back-edge (FORLOOP / negative-sBx JMP) drained
+	// segCallFuel to zero. The host bills the spent fuel to the step
+	// budget, refills (SegCallFuelBudgeted when a budget/context is
+	// armed, SegCallFuelUnlimited otherwise), and runs the standard
+	// preemption check — exactly what st.preempt() does on interpreter
+	// back-edges. Billing happens HERE and not in the Run loop's
+	// post-dispatch RefreshJitCtxAddrs because the check must see the
+	// spent fuel on stepUsed before deciding to raise.
+	//
+	// Returns 0=OK (segment resumes at the back-edge continuation) /
+	// 1=ERR ("instruction budget exceeded" or "context canceled"
+	// raised, pending on the host).
+	LoopPreempt(ctx *JITContext, base int32, pc int32) int32
+
 	// CallBaseline 处理 CALL A B C 的 baseline 同步路径(承
 	// docs/design/p4-method-jit/05-system-pipeline.md §4.3,**绕过 P3 R3 indirect
 	// 直调哨兵协议**——简化版只走 baseline doCall 分派 + 同步驱动被调帧到完

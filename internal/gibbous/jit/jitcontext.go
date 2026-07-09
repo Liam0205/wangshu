@@ -240,6 +240,23 @@ const (
 	// dispatcher calls host.Close, closing all open upvalues at or
 	// above R(A). Never raises.
 	HelperClose uint64 = 31
+
+	// HelperLoopFuel is the exit-reason code for an in-segment loop
+	// back-edge whose segCallFuel decrement hit zero (issue #102). A
+	// fully-inline loop body (arithmetic, or a #77 math intrinsic)
+	// otherwise never reaches a Go-side billing point, so a budgeted
+	// State could run a 277M-iteration loop to completion while the
+	// interpreter raised "instruction budget exceeded" in ms. The
+	// dispatcher calls host.LoopPreempt, which bills the spent fuel to
+	// the step budget, refills, and runs the standard preemption check
+	// (budget + cancel context); on success the segment resumes at the
+	// back-edge continuation. Emitted on FORLOOP back-edges and
+	// negative-sBx JMP terminators (while/repeat back-edges — same
+	// airtight-loop class). Unconditional: promotion generally happens
+	// before SetStepBudget, so the check cannot be compile-time gated;
+	// the SegCallFuelUnlimited refill keeps unbudgeted workloads at one
+	// dec+jnz per iteration.
+	HelperLoopFuel uint64 = 32
 )
 
 // HelperCodeMask masks off the low 16 bits of exitArg0 that hold the
@@ -500,13 +517,17 @@ type JITContext struct {
 	// the inner entry runs (see spike/p4spillstack DECISION.md G3).
 	savedGoSP uintptr
 
-	// segCallFuel bounds how many seg2seg in-segment CALL dispatches may
-	// run between Go-side preemption points. The seg2seg fast body
-	// decrements it before each in-segment dispatch; at zero the caller
-	// falls back to the exit-reason host path, whose
+	// segCallFuel bounds how many seg2seg in-segment CALL dispatches and
+	// in-segment loop back-edges (issue #102) may run between Go-side
+	// preemption points. The seg2seg fast body decrements it before each
+	// in-segment dispatch; at zero the caller falls back to the
+	// exit-reason host path, whose
 	// ExecutePlainCallInlineFrame -> enterLuaFrame runs st.preempt()
 	// (step budget + cancel context) and the host refills the fuel on
-	// the next Run entry / dispatcher resume.
+	// the next Run entry / dispatcher resume. Loop back-edges (FORLOOP /
+	// negative-sBx JMP) decrement the same counter and exit via
+	// HelperLoopFuel at zero — host.LoopPreempt bills + refills + checks,
+	// then the segment resumes on the back-edge continuation.
 	//
 	// Why fuel and not the preemptFlag: the step budget has no async
 	// producer — nothing ever sets preemptFlag when a budget is armed;
