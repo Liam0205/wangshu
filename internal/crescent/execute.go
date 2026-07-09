@@ -366,7 +366,13 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 			limit := value.AsNumber(reg(th, ci, a+1))
 			idx += step
 			cont := false
-			if step >= 0 {
+			// PUC 5.1 lvm.c: `luai_numlt(0, step) ? idx<=limit :
+			// limit<=idx` — step == 0 takes the DESCENDING branch, so
+			// `for i=0,1,0` is zero iterations while `for i=1,0,0`
+			// loops forever (issue #97: `step >= 0` here sent step=0
+			// down the ascending branch, inverting both shapes vs the
+			// oracle and vs the P4 native emit).
+			if step > 0 {
 				cont = idx <= limit
 			} else {
 				cont = idx >= limit

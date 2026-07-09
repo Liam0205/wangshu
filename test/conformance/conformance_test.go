@@ -140,6 +140,26 @@ return s`, "15"},
 local n = 0
 for i = 1, 2, 0.5 do n = n + 1 end
 return n`, "3"},
+	// step == 0 takes PUC's DESCENDING branch (lvm.c luai_numlt(0, step)):
+	// ascending range -> zero iterations, descending/equal range -> loops
+	// until break (issue #97: `step >= 0` in the interpreter inverted
+	// both shapes; found by nightly fuzz seed f1e595a2f2ed7b31).
+	{"for_zero_step_ascending", `
+local n = 0
+for i = 0, 1, 0 do n = n + 1 if n > 2 then break end end
+return n`, "0"},
+	{"for_zero_step_descending", `
+local n = 0
+for i = 1, 0, 0 do n = n + 1 if n > 2 then break end end
+return n`, "3"},
+	{"for_zero_step_equal", `
+local n = 0
+for i = 0, 0, 0 do n = n + 1 if n > 2 then break end end
+return n`, "3"},
+	{"for_nan_step", `
+local n = 0
+for i = 0, 1, 0/0 do n = n + 1 if n > 2 then break end end
+return n`, "0"},
 
 	// —— 元表语义(07) ——
 	{"index_chain_two_levels", `

@@ -288,16 +288,20 @@ func (c *Compiler) emitForLoopTerm(em *emitter, proto *bytecode.Proto, cfg *cfg,
 }
 
 // emitForContinueTest 算数值 for 续行条件 → localI32:
-// (step>=0) ? idx<=limit : idx>=limit。idx 在 localF64,step/limit 现读栈槽。
+// (step>0) ? idx<=limit : idx>=limit。idx 在 localF64,step/limit 现读栈槽。
+//
+// step 分支必须是严格 `>`(PUC 5.1 lvm.c `luai_numlt(0, step)`):step==0
+// 走降序分支,`for i=0,1,0` 零迭代、`for i=1,0,0` 无限循环(issue #97 修正
+// 此处原 `>=` 与解释器同因倒置)。
 func (c *Compiler) emitForContinueTest(em *emitter, a uint32) {
 	// step = R(A+2)
 	em.localGet(localBase)
 	em.i64Load(8 * (a + 2))
 	em.f64ReinterpretI64()
 	em.f64Const(0)
-	em.f64Ge()
+	em.f64Gt()
 	em.ifVoid()
-	// step>=0:idx <= limit
+	// step>0:idx <= limit
 	em.localGet(localF64)
 	em.localGet(localBase)
 	em.i64Load(8 * (a + 1))
@@ -305,7 +309,7 @@ func (c *Compiler) emitForContinueTest(em *emitter, a uint32) {
 	em.f64Le()
 	em.localSet(localI32)
 	em.elseOp()
-	// step<0:idx >= limit
+	// step<=0:idx >= limit
 	em.localGet(localF64)
 	em.localGet(localBase)
 	em.i64Load(8 * (a + 1))
