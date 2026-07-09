@@ -100,6 +100,17 @@ func BenchmarkArith_Gopher(b *testing.B)  { benchGopher(b, arithSrc) }
 func BenchmarkLoop_Wangshu(b *testing.B) { benchWangshu(b, loopSrc) }
 func BenchmarkLoop_Gopher(b *testing.B)  { benchGopher(b, loopSrc) }
 
+// _GopherKernel: gopher runs the exact same wrapKernel(body)x50 shape
+// as the P3 `_Gibbous`/`_WangshuKernel` benches (issue #93). The README
+// baseline rows use these as the denominator for the P3 columns — a
+// vararg top-level chunk never promotes, so the P3 columns must measure
+// the kernel-wrapped shape; dividing that kernel-x50 number by the
+// top-level-x1 gopher number understated P3 by ~50x. wrapKernel + the
+// body constants live in baseline_kernel_test.go (tag-neutral).
+func BenchmarkSimple_GopherKernel(b *testing.B) { benchGopher(b, wrapKernel(simpleBody)) }
+func BenchmarkArith_GopherKernel(b *testing.B)  { benchGopher(b, wrapKernel(arithBody)) }
+func BenchmarkLoop_GopherKernel(b *testing.B)   { benchGopher(b, wrapKernel(loopBody)) }
+
 // PJ3 同款空 body for 循环(gopher 对位):
 func BenchmarkPJ3EmptyLoop100_Gopher(b *testing.B)   { benchGopher(b, pj3EmptyLoop100Src) }
 func BenchmarkPJ3EmptyLoop1000_Gopher(b *testing.B)  { benchGopher(b, pj3EmptyLoop1000Src) }

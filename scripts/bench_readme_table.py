@@ -27,6 +27,17 @@ import statistics
 #      沿用历史名 `_Gibbous`(就是 CallInto 零分配变体);MiniBoundary 才有
 #      显式 `_GibbousCallInto`。
 # 改了 benchmark 命名后,这两处要跟着改。
+#
+# -- baseline P3 column workload basis (issue #93) --------------------------
+# The P3 baseline benches measure the wrapKernel(body)x50 shape (a vararg
+# top-level chunk never promotes, so the body must be kernel-wrapped),
+# which is a DIFFERENT workload from the bare top-level x1 the gopher /
+# P1 / P4 columns run. The ratio denominator is therefore the same-shape
+# `_GopherKernel` (baseline_test.go: gopher running the identical
+# wrapKernel x50), the cell carries a [^p3-kernel] footnote, and the wall
+# time is excluded from the row's "fastest" bold comparison (comparing
+# wall times across shapes is meaningless). The old basis divided by the
+# top-level x1 gopher number, understating P3 by ~50x.
 
 # ── 脚注标记:哪个 cell 挂哪个脚注(编辑口径,改脚注时同步这里)────────────
 # key = (row_key, column)  column ∈ {p3a, p3f, p4a, p4f}
@@ -91,20 +102,30 @@ def cell_core(g, ns, unit):
 
 
 def build_row(label, unit, g, cols):
-    """cols = [(ns, is_wangshu_cell, note), ...] 对应 P1/P3a/P3f/P4a/P4f。
-    gopher 列单列 wall time,不带倍率。粗体给全行 wall time 最快者(含 gopher);
-    脚注挂在粗体外侧(遵循 README 既有排版:`**...**  [^x]`)。"""
-    walls = [g] + [c[0] for c in cols if c[0] is not None]
+    """cols = [(ns, gden, note), ...] for P1/P3a/P3f/P4a/P4f.
+
+    gden is the cell's ratio denominator: None = same workload as the
+    row's gopher (use g); non-None = the cell measures a different
+    workload shape (issue #93: baseline P3 columns run kernel x50, so
+    the denominator must be the same-shape _GopherKernel) — the ratio
+    then uses gden and the wall time is excluded from the row's
+    "fastest" bold comparison (cross-shape wall times don't compare).
+
+    The gopher column shows wall time only, no ratio. Bold goes to the
+    row's fastest wall time (gopher included); footnotes attach outside
+    the bold (matching the README's existing layout: `**...** [^x]`)."""
+    walls = [g] + [c[0] for c in cols if c[0] is not None and c[1] is None]
     fastest = min(walls)
     out = []
     gtxt = fmt_time(g, unit)
     out.append(f'**{gtxt}**' if g == fastest else gtxt)
-    for ns, _is_w, note in cols:
+    for ns, gden, note in cols:
         if ns is None:
             out.append('—')
             continue
-        txt = cell_core(g, ns, unit)
-        if ns == fastest:
+        den = gden if gden is not None else g
+        txt = cell_core(den, ns, unit)
+        if gden is None and ns == fastest:
             txt = f'**{txt}**'
         if note:
             txt = f'{txt} {note}'
@@ -135,12 +156,22 @@ def main():
     for i, (label, key, unit) in enumerate(base):
         cat = '纯 VM 微基准 [^cat-baseline]' if i == 0 else ''
         g = p1[f'Benchmark{key}_Gopher']
+        # The P3 columns' workload is wrapKernel(body)x50 (a vararg
+        # top-level chunk never promotes, so P3 must measure the
+        # kernel-wrapped shape); the ratio denominator is the
+        # same-shape _GopherKernel (issue #93: dividing by the
+        # top-level x1 g understated P3 by ~50x). When _GopherKernel is
+        # missing (old logs) pass None so the cell prints `—` instead
+        # of a wrong ratio.
+        gk = p1.get(f'Benchmark{key}_GopherKernel')
+        p3a = p3.get(f'Benchmark{key}_WangshuKernel') if gk is not None else None
+        p3f = p3.get(f'Benchmark{key}_Gibbous') if gk is not None else None
         cols = [
-            (p1.get(f'Benchmark{key}_Wangshu'), True, fn(key, 'p1')),
-            (p3.get(f'Benchmark{key}_WangshuKernel'), True, fn(key, 'p3a')),
-            (p3.get(f'Benchmark{key}_Gibbous'), True, fn(key, 'p3f')),
-            (p4.get(f'Benchmark{key}_Wangshu'), True, fn(key, 'p4a')),
-            (p4.get(f'Benchmark{key}_Wangshu'), True, fn(key, 'p4f')),
+            (p1.get(f'Benchmark{key}_Wangshu'), None, fn(key, 'p1')),
+            (p3a, gk, fn(key, 'p3a') or '[^p3-kernel]'),
+            (p3f, gk, fn(key, 'p3f') or '[^p3-kernel]'),
+            (p4.get(f'Benchmark{key}_Wangshu'), None, fn(key, 'p4a')),
+            (p4.get(f'Benchmark{key}_Wangshu'), None, fn(key, 'p4f')),
         ]
         lines.append(_row_with_cat(cat, label, unit, g, cols))
 
@@ -167,8 +198,8 @@ def main():
                              ('CallInto', '边界 mini · CallInto [^cat-mini]')]:
         # PureVM 行:只有 P1,升层列 —
         g = p1['BenchmarkMiniPureVM_Gopher']
-        pv_cols = [(p1.get('BenchmarkMiniPureVM_Wangshu'), True, ''),
-                   (None, True, ''), (None, True, ''), (None, True, ''), (None, True, '')]
+        pv_cols = [(p1.get('BenchmarkMiniPureVM_Wangshu'), None, ''),
+                   (None, None, ''), (None, None, ''), (None, None, ''), (None, None, '')]
         lines.append(_row_with_cat(catname, 'PureVM', 'ns', g, pv_cols))
         for label, key in [('CallOnly', 'MiniCallOnly'), ('Boundary (+SetGlobal)', 'MiniBoundary')]:
             g = p1[f'Benchmark{key}_Gopher']
@@ -197,11 +228,11 @@ def _row_with_cat(cat, label, unit, g, cols):
 
 def _hr_cols(p1, p3, p4, key, fn):
     return [
-        (p1.get(f'Benchmark{key}_Wangshu'), True, fn(key, 'p1')),
-        (p3.get(f'Benchmark{key}_GibbousAuto'), True, fn(key, 'p3a')),
-        (p3.get(f'Benchmark{key}_Gibbous'), True, fn(key, 'p3f')),
-        (p4.get(f'Benchmark{key}_GibbousJITAuto'), True, fn(key, 'p4a')),
-        (p4.get(f'Benchmark{key}_GibbousJIT'), True, fn(key, 'p4f')),
+        (p1.get(f'Benchmark{key}_Wangshu'), None, fn(key, 'p1')),
+        (p3.get(f'Benchmark{key}_GibbousAuto'), None, fn(key, 'p3a')),
+        (p3.get(f'Benchmark{key}_Gibbous'), None, fn(key, 'p3f')),
+        (p4.get(f'Benchmark{key}_GibbousJITAuto'), None, fn(key, 'p4a')),
+        (p4.get(f'Benchmark{key}_GibbousJIT'), None, fn(key, 'p4f')),
     ]
 
 
@@ -212,11 +243,11 @@ def _emb_cols(p1, p3, p4, key, variant):
     else:
         p3f = p3.get(f'Benchmark{key}_Gibbous{variant}')
     return [
-        (p1.get(f'Benchmark{key}_Wangshu{variant}'), True, ''),
-        (p3.get(f'Benchmark{key}_GibbousAuto{variant}'), True, ''),
-        (p3f, True, ''),
-        (p4.get(f'Benchmark{key}_GibbousJITAuto{variant}'), True, ''),
-        (p4.get(f'Benchmark{key}_GibbousJIT{variant}'), True, ''),
+        (p1.get(f'Benchmark{key}_Wangshu{variant}'), None, ''),
+        (p3.get(f'Benchmark{key}_GibbousAuto{variant}'), None, ''),
+        (p3f, None, ''),
+        (p4.get(f'Benchmark{key}_GibbousJITAuto{variant}'), None, ''),
+        (p4.get(f'Benchmark{key}_GibbousJIT{variant}'), None, ''),
     ]
 
 

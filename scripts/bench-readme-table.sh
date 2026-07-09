@@ -45,8 +45,9 @@ done
 # DIRS/FLAGS 与 README 复现命令小节保持一致。
 dirs="./baseline/ ./heavy/ ./realworld/ ./embedded/"
 
-# P1(默认 build):crescent 解释器 + gopher 基线。
-p1_bench='_(Wangshu|WangshuCall|WangshuCallInto|Gopher)$'
+# P1 (default build): crescent interpreter + gopher baseline (GopherKernel
+# is the same-shape denominator for the baseline P3 columns, issue #93).
+p1_bench='_(Wangshu|WangshuCall|WangshuCallInto|Gopher|GopherKernel)$'
 # P3(gibbous-wasm):auto 走 _WangshuKernel/_GibbousAuto*,force 走 _Gibbous*。
 p3_bench='_(Gibbous|GibbousCall|GibbousCallInto|GibbousAuto|GibbousAutoCall|GibbousAutoCallInto|WangshuKernel)$'
 # P4(gibbous-jit):auto 走 _GibbousJITAuto*,force 走 _GibbousJIT*。

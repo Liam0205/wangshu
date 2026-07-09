@@ -42,9 +42,9 @@ Numbers taken on one machine (linux/amd64, Intel Xeon Platinum, 24 core, go1.26.
 
 | Category | Script | gopher | P1 | P3 auto | P3 force | P4 auto | P4 force |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| Pure-VM micro [^cat-baseline] | Simple (branch/compare) | 954 ns | **<ins>135 ns (7.07×)</ins>** | 4062 ns (0.23×) | 4116 ns (0.23×) | <ins>145 ns (6.58×)</ins> | <ins>145 ns (6.58×)</ins> |
-|  | Arith (Horner) | 1045 ns | **<ins>175 ns (5.97×)</ins>** | 10135 ns (0.10×) | 10321 ns (0.10×) | <ins>183 ns (5.71×)</ins> | <ins>183 ns (5.71×)</ins> |
-|  | Loop (sum) | 37.2 µs | **<ins>17.0 µs (2.18×)</ins>** | 364 µs (0.10×) | 365 µs (0.10×) | <ins>21.4 µs (1.74×)</ins> | <ins>21.4 µs (1.74×)</ins> |
+| Pure-VM micro [^cat-baseline] | Simple (branch/compare) | 954 ns | **<ins>135 ns (7.07×)</ins>** | — [^p3-kernel] | — [^p3-kernel] | <ins>145 ns (6.58×)</ins> | <ins>145 ns (6.58×)</ins> |
+|  | Arith (Horner) | 1045 ns | **<ins>175 ns (5.97×)</ins>** | — [^p3-kernel] | — [^p3-kernel] | <ins>183 ns (5.71×)</ins> | <ins>183 ns (5.71×)</ins> |
+|  | Loop (sum) | 37.2 µs | **<ins>17.0 µs (2.18×)</ins>** | — [^p3-kernel] | — [^p3-kernel] | <ins>21.4 µs (1.74×)</ins> | <ins>21.4 µs (1.74×)</ins> |
 | Heavy kernels [^cat-heavy] | HeavyArith | 240 ms | <ins>78.3 ms (3.06×)</ins> | <ins>86.4 ms (2.77×)</ins> | <ins>86.4 ms (2.77×)</ins> | <ins>14.2 ms (16.8×)</ins> | **<ins>13.7 ms (17.5×)</ins>** |
 |  | HeavyRecursion | 8.99 ms | **<ins>5.07 ms (1.76×)</ins>** | <ins>5.72 ms (1.57×)</ins> | <ins>5.71 ms (1.58×)</ins> | <ins>5.36 ms (1.68×)</ins> | <ins>5.42 ms (1.66×)</ins> |
 |  | HeavyFloatloop | 410 ms | <ins>146 ms (2.81×)</ins> | <ins>51.1 ms (8.04×)</ins> | <ins>51.2 ms (8.01×)</ins> | **<ins>24.0 ms (17.1×)</ins>** | **<ins>24.0 ms (17.1×)</ins>** |
@@ -66,13 +66,13 @@ Numbers taken on one machine (linux/amd64, Intel Xeon Platinum, 24 core, go1.26.
 
 ### darwin/arm64 measurements (Apple M5 Pro)
 
-The same reproduction commands measured on an Apple M5 Pro (darwin/arm64, go1.26.4, `-benchtime=2s -count=3 -cpu=1`, median).
+The same reproduction commands measured on an Apple M5 Pro (darwin/arm64, go1.26.4, `-benchtime=2s -count=3 -cpu=1`, median). The three Pure-VM micro rows were re-measured 2026-07-09 on the same machine under the issue #93 corrected basis.
 
 | Category | Script | gopher | P1 | P3 auto | P3 force | P4 auto | P4 force |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| Pure-VM micro | Simple (branch/compare) | 572 ns | <ins>83.2 ns (6.88×)</ins> | 2.57 µs (0.22×) | 2.57 µs (0.22×) | **<ins>82.7 ns (6.92×)</ins>** | **<ins>82.7 ns (6.92×)</ins>** |
-|  | Arith (Horner) | 605 ns | **<ins>102 ns (5.93×)</ins>** | 6.42 µs (0.09×) | 6.38 µs (0.09×) | <ins>105 ns (5.76×)</ins> | <ins>105 ns (5.76×)</ins> |
-|  | Loop (sum) | 20.0 µs | **<ins>9.99 µs (2.00×)</ins>** | 498 µs (0.04×) | 499 µs (0.04×) | <ins>12.4 µs (1.61×)</ins> | <ins>12.4 µs (1.61×)</ins> |
+| Pure-VM micro | Simple (branch/compare) | 491 ns | **<ins>83.2 ns (5.90×)</ins>** | 5211 ns (0.88×) [^p3-kernel] | 5132 ns (0.89×) [^p3-kernel] | <ins>86.2 ns (5.69×)</ins> | <ins>86.2 ns (5.69×)</ins> |
+|  | Arith (Horner) | 561 ns | **<ins>106 ns (5.29×)</ins>** | 6440 ns (1.33×) [^p3-kernel] | 6472 ns (1.33×) [^p3-kernel] | <ins>109 ns (5.14×)</ins> | <ins>109 ns (5.14×)</ins> |
+|  | Loop (sum) | 31.2 µs | **<ins>9.61 µs (3.24×)</ins>** | <ins>530 µs (2.99×)</ins> [^p3-kernel] | <ins>496 µs (3.20×)</ins> [^p3-kernel] | <ins>12.5 µs (2.49×)</ins> | <ins>12.5 µs (2.49×)</ins> |
 | Heavy kernels | HeavyArith | 87.2 ms | <ins>44.3 ms (1.97×)</ins> | <ins>50.9 ms (1.71×)</ins> | <ins>51.3 ms (1.70×)</ins> | <ins>24.8 ms (3.52×)</ins> | **<ins>24.5 ms (3.56×)</ins>** |
 |  | HeavyRecursion | 5.50 ms | **<ins>3.13 ms (1.76×)</ins>** | <ins>3.60 ms (1.53×)</ins> | 3.70 ms (1.48×) | <ins>3.38 ms (1.63×)</ins> | <ins>3.40 ms (1.62×)</ins> |
 |  | HeavyFloatloop | 153 ms | <ins>83.8 ms (1.83×)</ins> | <ins>61.5 ms (2.49×)</ins> | <ins>62.4 ms (2.46×)</ins> | <ins>25.0 ms (6.13×)</ins> | **<ins>24.9 ms (6.14×)</ins>** |
@@ -96,6 +96,7 @@ The same reproduction commands measured on an Apple M5 Pro (darwin/arm64, go1.26
 [^cat-heavy]: `benchmarks/heavy`. Three flat numeric kernels (HeavyArith pure arithmetic, HeavyRecursion self-recursion, HeavyFloatloop nested float loop); intentionally excludes tables, strings, library CALL and other helper-bound structures. Shows the compilation tier's performance ceiling on shapes that actually let it work.
 [^cat-realworld]: `benchmarks/realworld`. Five benchmark-game scripts (fib / binary-trees / spectral-norm / fannkuch / n-body); a single-pass semantics run is differential-tested against the official lua5.1.5 (byte-equal). Shows conventional load under a mix of calls / allocations / floats / table ops.
 [^p3-gate]: P3 auto carries a helper-density profitability gate (issue #39, 2026-07-03): when a hot proto's op mix is dominated by helper round trips (the wasm→Go boundary cost eats the promotion win), promotion is declined and the proto stays on the interpreter. Rows with this marker declined promotion; the number IS interpreter execution (the delta vs the P1 column is sampling-hook overhead). The P3 force column is unaffected (force-all bypasses the gate to preserve differential coverage).
+[^p3-kernel]: The baseline P3 columns run a different workload from the other columns (issue #93): a top-level chunk is vararg and never promotes, so P3 must measure the body wrapped in an inner kernel called 50 times, while the other columns run the bare top-level ×1. The P3 ratios therefore use the SAME-shape gopher baseline (`_GopherKernel`, gopher running the identical kernel×50) as denominator, and the wall times are not directly comparable with the rest of the row (~50× the work). The table previously divided by the top-level ×1 gopher number, understating P3 by ~50× (the old 0.06×-0.25× cells were really 1.3×-3.2×). The amd64 P3 cells await a same-machine re-measure with the fixed formatter (`—` = same-shape denominator missing from the old logs); the arm64 cells were re-measured 2026-07-09.
 [^seg2seg]: P4 segment-to-segment CALL dispatch (issue #50, 2026-07-04, delivered on both amd64 and arm64): self-recursive / arith-callee shapes (the fib pattern) used to pay a cross-boundary round trip per call (mmap RET → Go dispatch → host.CallBaseline → mmap re-entry); the caller segment now `call`s directly into the callee segment, which builds/tears its frame in-segment and recurses natively without ever leaving mmap. Same-machine same-batch measurements (2026-07-07, `-benchtime=2s -count=3 -cpu=1` median, over gopher-lua): fib flipped from 0.87× to **10.3×**, spectral-norm from 1.28× to **15.8×** (the inner A/Av/Atv go segment-to-segment; note P4 auto only reaches 2.14× — full promotion under force is needed to capture the whole win), fannkuch **6.9×**. n-body (1.41×) gains little: allocation/GC-bound, its recursive callees carry table ops that stay off the segment-to-segment path. binary-trees' `check` (self-recursion + GETTABLE ArrayHit table reads) unlocked once GETTABLE ArrayHit sites became seg2seg-eligible and the forceAll retry window widened (a recursive proto's deep-pc ICs only warm after a subtree returns) — amd64 went from 1.35× to **1.98×**, arm64 from 0.77× to 1.16× (the remaining bottleneck is bottomup's allocation). The arm64 mirror shipped on the same branch; darwin/arm64 M5 Pro re-measurements (2026-07-07, table below): fib flipped from 0.81× to **9.1×**, spectral-norm from 0.98× to **5.74×**; tracked in issue #61.
 [^cat-mini]: `benchmarks/embedded`, mini_bench_test.go. The minimal shape of the embed path: one SetGlobal + one Call + one result read per iter. Shows raw boundary-crossing cost, plus the delta between the allocating `Call` path and the zero-alloc `CallInto` path.
 [^cat-embed]: `benchmarks/embedded`, realworld_embedded_bench_test.go. A batch of 1000 items — per item set fields → Call predicate / feature-transform script → read scalar result, shaped after pineapple's `transform_by_lua`. Shows steady-state throughput of a real batch-processing embed.
@@ -134,8 +135,9 @@ Three builds, `-count=3` for median, whole set finishes in ~6-10 minutes:
 DIRS='./benchmarks/baseline/ ./benchmarks/heavy/ ./benchmarks/realworld/ ./benchmarks/embedded/'
 FLAGS='-run=^$ -benchtime=2s -count=3'
 
-# P1: crescent interpreter (default build)
-go test -bench='_(Wangshu|WangshuCall|WangshuCallInto|Gopher)$' $FLAGS $DIRS
+# P1: crescent interpreter (default build; GopherKernel is the same-shape
+# denominator for the baseline P3 columns)
+go test -bench='_(Wangshu|WangshuCall|WangshuCallInto|Gopher|GopherKernel)$' $FLAGS $DIRS
 
 # P3: gibbous-wasm (auto goes through _WangshuKernel/_GibbousAuto*; force through _Gibbous*)
 go test -tags "wangshu_p3 wangshu_profile" \
