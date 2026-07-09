@@ -183,22 +183,13 @@ func (r *relooper) computeScopes(order, pos []int) ([]scope, [][]int, error) {
 		if begin >= pos[d] {
 			continue // 无前向跨越(仅 fallthrough),无需 block
 		}
-		// 嵌套修复:若已有作用域 s 的 begin 落在 (begin, pos[d]) 内但 end ≥
-		// pos[d],把 begin 前移到 s.begin 之前形成包含(保证两两不交或嵌套)。
-		changed := true
-		for changed {
-			changed = false
-			for _, s := range scopes {
-				if s.begin > begin && s.begin < pos[d] && s.end >= pos[d] {
-					begin = s.begin - 1
-					changed = true
-				}
-			}
-		}
-		if begin < 0 {
-			return nil, nil, fmt.Errorf("p4 relooper: block scope begin underflow for BB %d", d)
-		}
 		scopes = append(scopes, scope{kind: scBlock, target: d, begin: begin, end: pos[d] - 1})
+	}
+
+	// --- Normalize: widen block begins until all scopes are pairwise
+	// disjoint or nested (issue #91) ---
+	if err := normalizeScopes(scopes); err != nil {
+		return nil, nil, err
 	}
 
 	// --- 校验作用域两两不交或嵌套 ---
@@ -241,6 +232,59 @@ func overlapImproper(a, b scope) bool {
 		return false
 	}
 	return true // 部分交叠
+}
+
+// normalizeScopes widens partially-overlapping scopes into containment
+// (issue #91).
+//
+// Physical constraints: a block's end is pinned (the br landing point
+// must sit right before the merge BB) but its begin can move earlier
+// freely (an extra Wasm nesting level has no semantic cost — br depths
+// adapt via the emit-time stack lookup); a loop's begin AND end are
+// both pinned (header position + body extent). So for any partially
+// overlapping pair, the only fix is for the scope with the larger end
+// to move its begin back until it contains the other — and that scope
+// must be a block. A loop having the larger end would mean a forward
+// edge lands in the middle of a loop body (a second loop entry), which
+// isReducible already rejects; the error arm here is defensive.
+//
+// The old repair only checked one direction at block-construction time
+// (an EXISTING scope's begin falling inside the NEW scope's range),
+// missing the symmetric case (an earlier scope's end falling inside a
+// later scope's range) — exactly what a top-level if/else diamond's two
+// merge blocks produce, so those CFAILed outright (issue #91). Run a
+// fixed-point pass over all pairs after every scope is built instead,
+// covering both directions.
+//
+// Termination: each repair strictly decreases some block's begin and
+// begins are bounded below by 0, so the fixed-point iteration halts.
+func normalizeScopes(scopes []scope) error {
+	changed := true
+	for changed {
+		changed = false
+		for i := range scopes {
+			for j := i + 1; j < len(scopes); j++ {
+				if !overlapImproper(scopes[i], scopes[j]) {
+					continue
+				}
+				// outer = the one with the larger end (must absorb
+				// the other); equal ends cannot be improper (one
+				// necessarily contains the other then).
+				oi := i
+				if scopes[j].end > scopes[i].end {
+					oi = j
+				}
+				inner := i + j - oi
+				if scopes[oi].kind != scBlock {
+					return fmt.Errorf("p4 relooper: improper scope overlap %v vs %v (outer is not a block)",
+						scopes[i], scopes[j])
+				}
+				scopes[oi].begin = scopes[inner].begin
+				changed = true
+			}
+		}
+	}
+	return nil
 }
 
 // buildStructPlan 跑 Phase A+B 产结构化计划(translate 调用)。
