@@ -1043,9 +1043,22 @@ func emitCALLArm64(cb *codeBuf, pc int32, a, b, c uint8) {
 	emitExitReasonArm64(cb, jit.HelperCall, pc, int32(a), int32(b), int32(c))
 }
 
-// emitTAILCALLArm64 emits arm64 TAILCALL via shimTailCall.
+// emitTAILCALLArm64 emits the TAILCALL A B C exit-reason (issue #52;
+// mirror of amd64 emitTAILCALL, rewritten off the legacy shim channel).
+// Like HelperReturn it ALWAYS terminates the segment run: Run's
+// dispatcher loop handles HelperTailCall directly, calling
+// host.TailCall and branching on its tri-state return — 0 = Lua tail
+// call completed (Run returns 0 WITHOUT DoReturn), 1 = err, 2 = host
+// tail call (results in R(A..); Run decodes the trailing dead RETURN at
+// pc+1 and finishes via host.DoReturn). No arm reenters the segment, so
+// the resume fixup is dropped like HelperReturn's.
+//
+// No seg2seg deopt guard: TAILCALL is not in seg2segOpsEligible, so a
+// Proto containing it never runs as an in-segment callee (same as
+// SELF / CONCAT / SETLIST).
 func emitTAILCALLArm64(cb *codeBuf, pc int32, a, b, c uint8) {
-	emitCallShimArm64(cb, shimTailCallAddr(), []int32{0, pc, int32(a), int32(b), int32(c)})
+	emitExitReasonArm64(cb, jit.HelperTailCall, pc, int32(a), int32(b), int32(c))
+	cb.pendingResumeOffFixups = cb.pendingResumeOffFixups[:0]
 }
 
 // emitSELFArm64 emits SELF A B C (R(A+1) := R(B); R(A) := R(B)[RK(C)])
@@ -1058,14 +1071,25 @@ func emitSELFArm64(cb *codeBuf, pc int32, a, b uint8, c int) {
 	emitExitReasonArm64(cb, jit.HelperSelf, pc, int32(a), int32(b), int32(c))
 }
 
-// emitCLOSUREArm64 emits arm64 CLOSURE via shimClosure.
-func emitCLOSUREArm64(cb *codeBuf, pc int32, a uint8, bx uint16) {
-	emitCallShimArm64(cb, shimClosureAddr(), []int32{0, pc, int32(a), int32(bx)})
+// emitCLOSUREArm64 emits the CLOSURE A Bx exit-reason (issue #52; mirror
+// of amd64 emitCLOSURE, rewritten off the legacy shim channel). The
+// dispatcher calls host.Closure, which builds the closure into R(A) and
+// consumes the upvalue pseudo-instructions host-side; the translator's
+// walks skip those words (see nextRealPC), so the segment's resume
+// entry is the op after the pseudos. Bx exceeds the 9-bit b/c payload
+// slots; pack it like GETGLOBAL's 18-bit split (b = low 9, c = high 9).
+// No deopt guard: CLOSURE is not in seg2segOpsEligible.
+func emitCLOSUREArm64(cb *codeBuf, pc int32, a uint8, bx int) {
+	emitExitReasonArm64(cb, jit.HelperClosure, pc, int32(a),
+		int32(bx&0x1FF), int32((bx>>9)&0x1FF))
 }
 
-// emitCLOSEArm64 emits arm64 CLOSE via shimClose.
+// emitCLOSEArm64 emits the CLOSE A exit-reason (issue #52; mirror of
+// amd64 emitCLOSE): the dispatcher calls host.Close (closes all open
+// upvalues >= R(A); never raises). No deopt guard: CLOSE is not in
+// seg2segOpsEligible.
 func emitCLOSEArm64(cb *codeBuf, pc int32, a uint8) {
-	emitCallShimArm64(cb, shimCloseAddr(), []int32{0, pc, int32(a)})
+	emitExitReasonArm64(cb, jit.HelperClose, pc, int32(a), 0, 0)
 }
 
 // emitFORPREPArm64 emits arm64 FORPREP via shimForPrep + jump to
@@ -1094,15 +1118,26 @@ func emitLEArm64(cb *codeBuf, pc int32, a uint8, b, c int) {
 	_ = a
 }
 
-// emitTFORLOOPArm64 emits arm64 TFORLOOP via shimTForLoop. shim
-// returns int64: -2=exit, -1=error, >=0=continue.
+// emitTFORLOOPArm64 emits the TFORLOOP A C exit-reason + packed-result
+// branch (issue #52; mirror of amd64 emitTFORLOOP, rewritten off the
+// legacy shim channel — the old shim version had a TODO'd unconditional
+// fall-through). The dispatcher calls host.TForLoop and stores the
+// continue verdict into exitArg0 (1 = continue, 0 = exit); the resume
+// block reads it back and branches to succBack (the back-edge JMP) or
+// succOut, mirroring inlineNumericCompareArm64's slow-block protocol.
+// No deopt guard: TFORLOOP is not in seg2segOpsEligible.
 func emitTFORLOOPArm64(cb *codeBuf, pc int32, a, c uint8, succBack, succOut int) {
-	emitCallShimArm64(cb, shimTForLoopAddr(), []int32{0, pc, int32(a), int32(c)})
-	// After shim returns, X0 holds -2 / -1 / continue.
-	// TODO: proper 3-way branch on X0 with rel19/rel26 fixups. For now
-	// unconditional fall-through to succBack (loop body).
-	emitJMPArm64(cb, succBack)
-	_ = succOut
+	emitExitReasonArm64(cb, jit.HelperTForLoop, pc, int32(a), 0, int32(c))
+	// Bind the resume entry right here (the branch decision must happen
+	// in-segment; only the segment knows the successor offsets).
+	emitResumePreludeIfPendingArm64(cb)
+	// ldr X0, [X27 + exitArg0Off]; cbnz X0 -> succBack; b succOut
+	cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 0, regX27,
+		uint16(jit.JITContextExitArg0Offset)))
+	cbnzOff := cb.pos()
+	cb.emit(jitarm64.EmitCbnzW(nil, 0, 0))
+	cb.addFixupKind(cbnzOff, cb.pos(), succBack, fixupKindArm64Cond)
+	emitJMPArm64Fixup(cb, succOut)
 }
 
 // emitNOTArm64 emits arm64 NOT R(A) := not R(B). Never raises.

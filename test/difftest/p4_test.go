@@ -943,6 +943,82 @@ local function loop(n) local s = 0; for i = 1, n do s = s + i end; return s end
 local sum = 0
 for i = 1, 50 do sum = sum + loop(100) end  -- 50 outer * 100 inner forloop
 return sum`},
+	// -- issue #52 PJ10 native acceptance for the last four ops:
+	// TAILCALL / TFORLOOP / CLOSURE / CLOSE all lower to exit-reasons
+	// now, so kernels containing them promote to the native path.
+	// Repeated calls force the promoted segment to actually run; the
+	// three-way diff (oracle / crescent / p4) proves byte-equality.
+	{"p4_iss52_tailcall_lua_arm", `
+local function helper(a, b) return a + b end
+local function kernel(n)
+  local x = n * 2 + 1
+  return helper(x, 1)
+end
+local s = 0
+for i = 1, 50 do s = s + kernel(i) end
+return s`},
+	{"p4_iss52_tailcall_host_arm", `
+local ts = tostring
+local function kernel(n)
+  local x = n * 3 + 1
+  return ts(x)
+end
+local last
+for i = 1, 50 do last = kernel(i) end
+return last`},
+	{"p4_iss52_tailcall_host_multret", `
+local up = unpack
+local function kernel(t)
+  local x = 1 + 1
+  return up(t)
+end
+local a, b, c
+for i = 1, 50 do a, b, c = kernel({i, i + 1, i + 2}) end
+return a, b, c`},
+	{"p4_iss52_tforloop_next", `
+local t = {10, 20, 30, 40}
+local nx = next
+local function kernel()
+  local sum = 0
+  for k, v in nx, t do sum = sum + k * v end
+  return sum
+end
+local s = 0
+for i = 1, 50 do s = s + kernel() end
+return s`},
+	{"p4_iss52_closure_close_loop", `
+local fns = {}
+local function kernel(n)
+  local acc = 0
+  for i = 1, n do
+    do
+      local x = i * 2
+      local f = function() return x end
+      fns[i] = f
+      acc = acc + f() + i + x - 1 + 2 - 2 + 0 + 0 + 0
+    end
+  end
+  return acc
+end
+local s = 0
+for i = 1, 20 do s = s + kernel(5) end
+return s, fns[1](), fns[5]()`},
+	{"p4_iss52_tforloop_iter_raises", `
+local boom = function(s, ctrl)
+  if ctrl ~= nil and ctrl >= 2 then error("iter-boom") end
+  if ctrl == nil then return 1, 10 end
+  return ctrl + 1, 10
+end
+local function kernel()
+  local sum = 0
+  for i, v in boom, nil do
+    sum = sum + i + v + 0 + 0 + 0 + 0 + 0 + 0 + 0
+  end
+  return sum
+end
+local ok, e
+for i = 1, 20 do ok, e = pcall(kernel) end
+return tostring(ok), (e and e:match("iter%-boom")) or "?"`},
 }
 
 // TestP4_Tiered 三方对拍:oracle / crescent / p4-jit 全 byte-equal。

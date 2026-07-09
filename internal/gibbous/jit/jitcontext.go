@@ -207,6 +207,39 @@ const (
 	// to numbers and pre-decrements the index — so the resumed FORLOOP
 	// can keep assuming numbers.
 	HelperForPrep uint64 = 27
+
+	// HelperTailCall is the exit-reason code for TAILCALL (issue #52).
+	// Like HelperReturn it ALWAYS terminates the run: host.TailCall
+	// returns a tri-state — 0 = Lua tail call completed (frame already
+	// replaced and driven to completion; Run returns 0 WITHOUT
+	// DoReturn), 1 = error, 2 = host tail call (results are at
+	// R(A..top); Run finishes via DoReturn on the trailing dead RETURN
+	// luac always emits at pc+1, whose B=0 multret form reads the live
+	// top). No arm reenters the segment.
+	HelperTailCall uint64 = 28
+
+	// HelperTForLoop is the exit-reason code for TFORLOOP (issue #52).
+	// The dispatcher calls host.TForLoop (invoking the iterator and
+	// writing R(A+3..A+2+C)) and passes the continue/exit verdict back
+	// through exitArg0 (1 = continue: first result non-nil, control
+	// vars updated; 0 = exit loop), mirroring HelperCompareSlow's
+	// packed-result protocol: the branch decision must happen inside
+	// the segment, which alone knows the successor BB offsets.
+	HelperTForLoop uint64 = 29
+
+	// HelperClosure is the exit-reason code for CLOSURE A Bx (issue
+	// #52). The dispatcher calls host.Closure, which materialises the
+	// closure into R(A) and consumes the pseudo-instructions following
+	// CLOSURE (one MOVE/GETUPVAL per upvalue) on the host side. The
+	// segment's resumeOff points past the pseudos (the translator never
+	// emits them). Bx exceeds the 9-bit b/c slots, so it is packed like
+	// GETGLOBAL's 18-bit split: b = Bx & 0x1FF, c = Bx >> 9.
+	HelperClosure uint64 = 30
+
+	// HelperClose is the exit-reason code for CLOSE A (issue #52): the
+	// dispatcher calls host.Close, closing all open upvalues at or
+	// above R(A). Never raises.
+	HelperClose uint64 = 31
 )
 
 // HelperCodeMask masks off the low 16 bits of exitArg0 that hold the

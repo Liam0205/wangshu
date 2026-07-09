@@ -91,11 +91,35 @@ func (c *nativeCode) Run(stack []uint64, base uint32) (status int32) {
 		// HelperReturn terminates the run: multi-return Protos lower
 		// each RETURN to this exit-reason so every site carries its
 		// own (a, b, pc).
-		if arg0 := c.jitCtx.ExitArg0(); arg0&jit.HelperCodeMask == jit.HelperReturn {
+		arg0 := c.jitCtx.ExitArg0()
+		if arg0&jit.HelperCodeMask == jit.HelperReturn {
 			a := int32((arg0 >> 16) & 0xFF)
 			b := int32((arg0 >> 24) & 0x1FF)
 			pc := int32((arg0 >> 42) & 0x3FFFFF)
 			return c.host.DoReturn(int32(base), pc, a, b)
+		}
+		// HelperTailCall also terminates the run (issue #52; mirror of
+		// amd64): 0 = Lua tail call completed (frame replaced + driven
+		// to completion — return WITHOUT DoReturn), 2 = host callee
+		// (results at R(A..top); finish via the trailing dead RETURN at
+		// pc+1, whose B=0 multret DoReturn reads the live top), else
+		// error.
+		if arg0&jit.HelperCodeMask == jit.HelperTailCall {
+			TailCallRunCount.Add(1)
+			a := int32((arg0 >> 16) & 0xFF)
+			b := int32((arg0 >> 24) & 0x1FF)
+			cc := int32((arg0 >> 33) & 0x1FF)
+			pc := int32((arg0 >> 42) & 0x3FFFFF)
+			switch st := c.host.TailCall(int32(base), pc, a, b, cc); st {
+			case 0:
+				return 0
+			case 2:
+				retIns := c.proto.Code[pc+1]
+				return c.host.DoReturn(int32(base), pc+1,
+					int32(bytecode.A(retIns)), int32(bytecode.B(retIns)))
+			default:
+				return 1
+			}
 		}
 		// Snapshot resumeOff BEFORE dispatching: HelperCall drives the
 		// callee synchronously, and a recursive call into this same
@@ -206,7 +230,9 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 		if !reach[id] {
 			continue
 		}
-		for pc := bb.startPC; pc < bb.endPC; pc++ {
+		// Walk real instructions only: nextRealPC steps over CLOSURE's
+		// trailing pseudo words (data, not ops — issue #52).
+		for pc := bb.startPC; pc < bb.endPC; {
 			ins := proto.Code[pc]
 			op := bytecode.Op(ins)
 			if !opSupported(op) {
@@ -264,6 +290,37 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 				if bytecode.B(ins) == 0 || bytecode.C(ins) == 0 {
 					return false
 				}
+			case bytecode.TAILCALL:
+				// TAILCALL rides the HelperTailCall exit-reason (issue
+				// #52). B=0 (args to top) needs a live `top` — reject,
+				// mirror of CALL. C is ALWAYS 0 for TAILCALL (luac
+				// convention), so no C gate. Run's host arm finishes
+				// via the trailing dead RETURN at pc+1 — require it
+				// defensively. Same gate as amd64.
+				if bytecode.B(ins) == 0 {
+					return false
+				}
+				if pc+1 >= int32(len(proto.Code)) {
+					return false
+				}
+				if ret := proto.Code[pc+1]; bytecode.Op(ret) != bytecode.RETURN ||
+					bytecode.B(ret) != 0 {
+					return false
+				}
+			case bytecode.CLOSURE:
+				// CLOSURE rides the HelperClosure exit-reason (issue #52).
+				// Bx must be in SubNUps range so closurePseudoSkip can
+				// step the walks over the trailing pseudo words. Same
+				// gate as amd64.
+				if bx := bytecode.Bx(ins); bx >= len(proto.SubNUps) {
+					return false
+				}
+				// A BB boundary strictly inside the pseudo run would make
+				// the next BB start mid-pseudo and decode data as ops —
+				// reject defensively (same gate as amd64).
+				if pc+1+closurePseudoSkip(proto, ins) > bb.endPC {
+					return false
+				}
 			case bytecode.GETGLOBAL, bytecode.SETGLOBAL:
 				// Only enter native emit when the IC snapshot says
 				// NodeHit — the inline fast path is a gen check + fixed
@@ -309,6 +366,7 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 					return false
 				}
 			}
+			pc = nextRealPC(proto, pc)
 		}
 	}
 	// Count reachable RETURNs: single-return Protos use the fast
@@ -338,15 +396,18 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 	returnCount := 0
 	callCount := 0
 	totalOps := 0
+	tailCallCount := 0
 	for id, bb := range c.blocks {
 		if !reach[id] {
 			continue
 		}
-		for pc := bb.startPC; pc < bb.endPC; pc++ {
+		for pc := bb.startPC; pc < bb.endPC; pc = nextRealPC(proto, pc) {
 			totalOps++
 			switch bytecode.Op(proto.Code[pc]) {
 			case bytecode.RETURN:
 				returnCount++
+			case bytecode.TAILCALL:
+				tailCallCount++
 			case bytecode.CALL:
 				if !intrinsicCallPC[pc] {
 					callCount++
@@ -354,7 +415,11 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 			}
 		}
 	}
-	if returnCount == 0 {
+	// TAILCALL is also a run-terminating teardown (HelperTailCall — Run
+	// finishes Go-side on all three arms), so a proto whose only exits
+	// are tail calls (its trailing RETURNs are CFG-unreachable) is fine.
+	// Mirror of amd64.
+	if returnCount == 0 && tailCallCount == 0 {
 		return false
 	}
 	// CALL density gate — relaxed for seg2seg (issue #50 Spike 5): a
@@ -382,7 +447,12 @@ func AnalyzeNative(proto *bytecode.Proto) bool {
 // `obj:method()` or `..` no longer kicks the whole proto off native.
 // SETLIST mirrors the amd64 acceptance (issue #68): it lowers to a
 // HelperSetList exit-reason (doSetList + safepoint, may raise);
-// AnalyzeNative rejects B=0 / C=0 forms.
+// AnalyzeNative rejects B=0 / C=0 forms. TAILCALL / TFORLOOP / CLOSURE
+// / CLOSE complete the sweep (issue #52): all four lower to
+// exit-reasons (HelperTailCall terminates the run on the Lua arm like
+// HelperReturn; HelperTForLoop passes the continue verdict back through
+// exitArg0 like HelperCompareSlow; HelperClosure consumes the upvalue
+// pseudo-instructions host-side and the emit loop skips them).
 func opSupported(op bytecode.OpCode) bool {
 	switch op {
 	case bytecode.MOVE, bytecode.LOADK, bytecode.LOADBOOL, bytecode.LOADNIL,
@@ -393,11 +463,12 @@ func opSupported(op bytecode.OpCode) bool {
 		bytecode.TEST, bytecode.TESTSET,
 		bytecode.JMP, bytecode.FORPREP, bytecode.FORLOOP,
 		bytecode.GETUPVAL, bytecode.SETUPVAL,
-		bytecode.CALL,
+		bytecode.CALL, bytecode.TAILCALL,
 		bytecode.GETGLOBAL, bytecode.SETGLOBAL,
 		bytecode.GETTABLE, bytecode.SETTABLE, bytecode.NEWTABLE,
 		bytecode.UNM,
 		bytecode.SELF, bytecode.CONCAT, bytecode.SETLIST,
+		bytecode.TFORLOOP, bytecode.CLOSURE, bytecode.CLOSE,
 		bytecode.RETURN:
 		return true
 	default:
@@ -438,7 +509,7 @@ func TranslateProtoNative(proto *bytecode.Proto, host jit.P4HostState) (*nativeC
 			if !reach[id] {
 				continue
 			}
-			for pc := bb.startPC; pc < bb.endPC; pc++ {
+			for pc := bb.startPC; pc < bb.endPC; pc = nextRealPC(proto, pc) {
 				switch bytecode.Op(proto.Code[pc]) {
 				case bytecode.RETURN:
 					returns++
@@ -505,10 +576,26 @@ func emitBBArm64(buf *codeBuf, c *cfg, bb *basicBlock, bbID int) error {
 	if lastPC < bb.startPC {
 		return nil
 	}
-	for pc := bb.startPC; pc < lastPC; pc++ {
+	// Emit straight-line prefix. nextRealPC steps over CLOSURE's
+	// trailing pseudo words (data, not ops — issue #52).
+	pc := bb.startPC
+	for pc < lastPC {
 		if err := emitLinearOpArm64(buf, code[pc], pc); err != nil {
 			return err
 		}
+		pc = nextRealPC(c.proto, pc)
+	}
+	if pc > lastPC {
+		// The last real op was a CLOSURE whose pseudo words run to the
+		// BB boundary — the "terminator" slot holds a pseudo word, not
+		// an op. Bind the CLOSURE's resume entry and fall through to
+		// the single successor (mirror of amd64 emitBB).
+		if len(bb.succs) != 1 {
+			return fmt.Errorf("pseudo-consumed terminator with %d succs at pc %d", len(bb.succs), lastPC)
+		}
+		emitResumePreludeIfPendingArm64(buf)
+		emitJMPArm64Fixup(buf, bb.succs[0])
+		return nil
 	}
 	termIns := code[lastPC]
 	return emitTerminatorArm64(buf, c, bb, bbID, termIns, lastPC)
@@ -583,6 +670,10 @@ func emitLinearOpArm64(buf *codeBuf, ins bytecode.Instruction, pc int32) error {
 		emitCONCATArm64(buf, pc, a, bReg, uint8(cRK))
 	case bytecode.SETLIST:
 		emitSETLISTArm64(buf, pc, a, bReg, uint8(cRK))
+	case bytecode.CLOSURE:
+		emitCLOSUREArm64(buf, pc, a, int(bx))
+	case bytecode.CLOSE:
+		emitCLOSEArm64(buf, pc, a)
 	default:
 		return fmt.Errorf("emitLinearOpArm64: unsupported op %v at pc %d", op, pc)
 	}
@@ -668,6 +759,19 @@ func emitTerminatorArm64(buf *codeBuf, c *cfg, bb *basicBlock, bbID int, ins byt
 			return fmt.Errorf("LOADBOOL terminator with %d succs at pc %d", len(bb.succs), pc)
 		}
 		emitJMPArm64Fixup(buf, bb.succs[0])
+	case bytecode.TAILCALL:
+		// ALWAYS terminates the run (issue #52; mirror of amd64): Run's
+		// HelperTailCall arm finishes Go-side on all three host.TailCall
+		// arms. No successor jump, no resume reentry — the trailing
+		// RETURN BB stays CFG-unreachable and unemitted.
+		emitTAILCALLArm64(buf, pc, a, b, uint8(cRK))
+	case bytecode.TFORLOOP:
+		if len(bb.succs) != 2 {
+			return fmt.Errorf("TFORLOOP with %d succs at pc %d", len(bb.succs), pc)
+		}
+		// linkSuccs: succs[0] = pc+1 (the back-edge JMP), succs[1] = pc+2
+		// (exit past the JMP).
+		emitTFORLOOPArm64(buf, pc, a, uint8(cRK), bb.succs[0], bb.succs[1])
 	default:
 		if err := emitLinearOpArm64(buf, ins, pc); err != nil {
 			return err
