@@ -168,8 +168,11 @@ def main():
         p3f = p3.get(f'Benchmark{key}_Gibbous') if gk is not None else None
         cols = [
             (p1.get(f'Benchmark{key}_Wangshu'), None, fn(key, 'p1')),
-            (p3a, gk, fn(key, 'p3a') or '[^p3-kernel]'),
-            (p3f, gk, fn(key, 'p3f') or '[^p3-kernel]'),
+            # Concatenate rather than pick-one: a cell that ever needs
+            # both a gate footnote and the kernel-shape footnote shows
+            # both (PR #101 review note).
+            (p3a, gk, (fn(key, 'p3a') + ' [^p3-kernel]').strip()),
+            (p3f, gk, (fn(key, 'p3f') + ' [^p3-kernel]').strip()),
             (p4.get(f'Benchmark{key}_Wangshu'), None, fn(key, 'p4a')),
             (p4.get(f'Benchmark{key}_Wangshu'), None, fn(key, 'p4f')),
         ]
