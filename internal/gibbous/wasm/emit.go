@@ -45,6 +45,7 @@ const (
 
 	opF64Eq        byte = 0x61
 	opF64Lt        byte = 0x63
+	opF64Gt        byte = 0x64
 	opF64Le        byte = 0x65
 	opF64Ge        byte = 0x66
 	opF64Ne        byte = 0x62
@@ -182,6 +183,7 @@ func (e *emitter) f64Neg()   { e.raw(opF64Neg) }
 func (e *emitter) f64Floor() { e.raw(opF64Floor) }
 func (e *emitter) f64Ne()    { e.raw(opF64Ne) }
 func (e *emitter) f64Lt()    { e.raw(opF64Lt) }
+func (e *emitter) f64Gt()    { e.raw(opF64Gt) }
 func (e *emitter) f64Le()    { e.raw(opF64Le) }
 func (e *emitter) f64Ge()    { e.raw(opF64Ge) }
 func (e *emitter) f64Eq()    { e.raw(opF64Eq) }
