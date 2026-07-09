@@ -86,18 +86,19 @@ func TestPromotionCount_P3_NoForce_HotEntry_Lifts(t *testing.T) {
 
 	// f 含 ≥10 opcodes:Lua 5.1 用 RK 编码省 LOADK,纯算术压得很短;改用
 	// 多变量 + 多步骤 + 比较确保 opcode 数过阈值。
+	//
+	// **issue #92 守卫**(straightLineMinCodeLen):f 还必须带回边(内层
+	// for)——无回边的直线小体会被 WorthPromoting 的回边维度拒收(每次
+	// 调用付 wasm 边界往返、无循环摊薄),即便过了长度地板也不升层。
 	prog, err := wangshu.Compile([]byte(`
 		local function f(x)
 			local a = x * 2
 			local b = a + 3
 			local c = b * x
-			local d = c - a
-			local e = d * 2
-			local g = e + b
-			local h = g - c
-			local i = h * d
-			if i > 0 then return i + a end
-			return i - a
+			local acc = 0
+			for k = 1, 4 do acc = acc + a + b - c end
+			if acc > 0 then return acc + a end
+			return acc - a
 		end
 		local sum = 0
 		for i = 1, 1000 do sum = sum + f(i) end
