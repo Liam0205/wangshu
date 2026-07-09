@@ -1337,43 +1337,100 @@ func emitFORLOOPArm64Inline(cb *codeBuf, a uint8, succBack, succOut int) {
 // promotion, so the bits are stable). Returns false only when a K
 // index is out of range (AnalyzeNative already rejected those).
 func inlineRawEqArm64(cb *codeBuf, a uint8, b, c int, succExec, succSkip int) bool {
+	// Two IEEE exceptions break the raw-bit rule for numbers (issue
+	// #103; mirror of amd64 inlineRawEq):
+	//   - NaN: the value world canonicalizes every NaN to the single
+	//     canonNaN bit pattern, so two NaN operands are bit-identical —
+	//     yet PUC's luai_numeq says NaN == NaN is FALSE.
+	//   - Negative zero: -0.0 and +0.0 differ in bits but compare EQUAL.
+	// Each check is emitted only when a K operand doesn't already rule
+	// it out (see the amd64 doc for the skip conditions).
+	needNaN := true  // equal bits could be canonNaN
+	needZero := true // differing bits could be a +/-0 pair
+	for _, rk := range [2]int{b, c} {
+		if rk >= 256 {
+			kidx := rk - 256
+			if cb.proto == nil || kidx < 0 || kidx >= len(cb.proto.Consts) {
+				return false
+			}
+			if cb.proto.Consts[kidx] != value.CanonNaN() {
+				needNaN = false
+			}
+			if cb.proto.Consts[kidx]<<1 != 0 {
+				needZero = false
+			}
+		}
+	}
 	// Load RK(B) into X0.
 	if b < 256 {
 		// ldr X0, [X26 + B*8]
 		cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 0, regX26, uint16(b)*8))
 	} else {
-		kidx := b - 256
-		if cb.proto == nil || kidx < 0 || kidx >= len(cb.proto.Consts) {
-			return false
-		}
-		cb.emit(jitarm64.EmitMovXdImm64(nil, 0, cb.proto.Consts[kidx]))
+		cb.emit(jitarm64.EmitMovXdImm64(nil, 0, cb.proto.Consts[b-256]))
 	}
 	// Load RK(C) into X1.
 	if c < 256 {
 		// ldr X1, [X26 + C*8]
 		cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 1, regX26, uint16(c)*8))
 	} else {
-		kidx := c - 256
-		if cb.proto == nil || kidx < 0 || kidx >= len(cb.proto.Consts) {
-			return false
-		}
-		cb.emit(jitarm64.EmitMovXdImm64(nil, 1, cb.proto.Consts[kidx]))
+		cb.emit(jitarm64.EmitMovXdImm64(nil, 1, cb.proto.Consts[c-256]))
 	}
 	// cmp X0, X1
 	cb.emit(jitarm64.EmitCmpXnXm(nil, 0, 1))
-	// Branch to succExec when condition matches A.
-	//   A=0: match when NOT(B==C) -> CondNE (0x1)
-	//   A=1: match when B==C      -> CondEQ (0x0)
-	var cond uint8
-	if a == 0 {
-		cond = jitarm64.CondNE
-	} else {
-		cond = jitarm64.CondEQ
+	if !needNaN && !needZero {
+		// Fast two-branch form: raw bit equality is exact.
+		// Branch to succExec when condition matches A.
+		//   A=0: match when NOT(B==C) -> CondNE (0x1)
+		//   A=1: match when B==C      -> CondEQ (0x0)
+		var cond uint8
+		if a == 0 {
+			cond = jitarm64.CondNE
+		} else {
+			cond = jitarm64.CondEQ
+		}
+		patchOff := cb.pos()
+		cb.emit(jitarm64.EmitBCond(nil, cond, 0))
+		cb.addFixupKind(patchOff, cb.pos(), succExec, fixupKindArm64Cond)
+		emitJMPArm64Fixup(cb, succSkip)
+		return true
 	}
-	patchOff := cb.pos()
-	cb.emit(jitarm64.EmitBCond(nil, cond, 0))
-	cb.addFixupKind(patchOff, cb.pos(), succExec, fixupKindArm64Cond)
-	emitJMPArm64Fixup(cb, succSkip)
+	// IEEE-aware form. condTrue/condFalse successors by A.
+	condTrue, condFalse := succExec, succSkip
+	if a == 0 {
+		condTrue, condFalse = succSkip, succExec
+	}
+	if needNaN {
+		// b.ne differ (local forward, patched below)
+		differPatch := cb.pos()
+		cb.emit(jitarm64.EmitBCond(nil, jitarm64.CondNE, 0))
+		// Equal bits — condition false anyway if the value is canonNaN:
+		// mov X4, canonNaN; cmp X0, X4; b.eq condFalse
+		cb.emit(jitarm64.EmitMovXdImm64(nil, 4, value.CanonNaN()))
+		cb.emit(jitarm64.EmitCmpXnXm(nil, 0, 4))
+		po := cb.pos()
+		cb.emit(jitarm64.EmitBCond(nil, jitarm64.CondEQ, 0))
+		cb.addFixupKind(po, cb.pos(), condFalse, fixupKindArm64Cond)
+		// Bits equal, not NaN -> condition true.
+		emitJMPArm64Fixup(cb, condTrue)
+		// differ:
+		patchBCondArm64(cb, differPatch, cb.pos())
+	} else {
+		// b.eq condTrue (equal bits are exact when NaN is ruled out)
+		po := cb.pos()
+		cb.emit(jitarm64.EmitBCond(nil, jitarm64.CondEQ, 0))
+		cb.addFixupKind(po, cb.pos(), condTrue, fixupKindArm64Cond)
+	}
+	if needZero {
+		// Differing bits — still equal iff both are +/-0 (OR of the
+		// raw operands shifted left by one is zero: at most the sign
+		// bit set). orr X4, X0, X1; lsl X4, X4, #1; cbz X4 -> condTrue.
+		cb.emit(jitarm64.EmitOrrXdXnXm(nil, 4, 0, 1))
+		cb.emit(jitarm64.EmitLslXdImm6(nil, 4, 4, 1))
+		po := cb.pos()
+		cb.emit(jitarm64.EmitCbzX(nil, 4, 0))
+		cb.addFixupKind(po, cb.pos(), condTrue, fixupKindArm64Cond)
+	}
+	emitJMPArm64Fixup(cb, condFalse)
 	return true
 }
 

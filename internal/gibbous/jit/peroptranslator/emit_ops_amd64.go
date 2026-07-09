@@ -482,64 +482,127 @@ func emitCompare(cb *codeBuf, op bytecode.OpCode, pc int32, a uint8, b, c int, s
 // metamethod is skipped — safe for numeric-only Protos (the current
 // gate's use case).
 //
+// Two IEEE exceptions break the raw-bit rule for numbers (issue #103):
+//
+//   - NaN: the value world canonicalizes every NaN to the single
+//     canonNaN bit pattern, so two NaN operands are bit-identical —
+//     yet PUC's luai_numeq says NaN == NaN is FALSE. Equal bits that
+//     are canonNaN route to the condition-false successor.
+//   - Negative zero: -0.0 and +0.0 differ in bits but compare EQUAL.
+//     Differing bits whose OR has zero magnitude (at most the sign bit
+//     set) route to the condition-true successor.
+//
+// Each check is emitted only when a K operand doesn't already rule it
+// out: a K != canonNaN pins the equal-bits value (skip the NaN check);
+// a K with non-zero magnitude cannot be one side of a ±0 pair (skip
+// the zero check). The common `x == 1` / `x == "key"` shapes pay
+// nothing; `x == 0` pays the zero check on its differ path only.
+//
 // Semantics: cond = (RK(B) == RK(C)); if cond != A then pc++ (succSkip);
 // else fall through to JMP (succExec).
-//
-// Sequence:
-//
-//	mov rax, {B}      ; load 64 bits of RK(B) into RAX
-//	<cmp rax, {C}>    ; compare with RK(C)
-//	<je | jne> succExec  ; based on A
-//	jmp succSkip
 //
 // For K operands the 64-bit imm is baked; for reg it's from [rbx+X*8].
 // Returns false if any K operand is out of range (caller falls back).
 func inlineRawEq(cb *codeBuf, a uint8, b, c int, succExec, succSkip int) bool {
+	needNaN := true  // equal bits could be canonNaN
+	needZero := true // differing bits could be a +/-0 pair
+	for _, rk := range [2]int{b, c} {
+		if rk >= 256 {
+			kidx := rk - 256
+			if cb.proto == nil || kidx < 0 || kidx >= len(cb.proto.Consts) {
+				return false
+			}
+			if cb.proto.Consts[kidx] != value.CanonNaN() {
+				needNaN = false
+			}
+			if cb.proto.Consts[kidx]<<1 != 0 {
+				needZero = false
+			}
+		}
+	}
 	// Load RK(B) into RAX.
 	if b < 256 {
 		// mov rax, [rbx + B*8]
 		cb.emit(jitamd64.EmitMovqRaxFromMemReg(nil, regRBX, int32(b)*8))
 	} else {
-		kidx := b - 256
-		if cb.proto == nil || kidx < 0 || kidx >= len(cb.proto.Consts) {
-			return false
-		}
-		cb.emit(jitamd64.EmitMovRaxImm64(nil, cb.proto.Consts[kidx]))
+		cb.emit(jitamd64.EmitMovRaxImm64(nil, cb.proto.Consts[b-256]))
 	}
-	// Compare RAX with RK(C).
+	if !needNaN && !needZero {
+		// Fast two-branch form: raw bit equality is exact.
+		// Compare RAX with RK(C).
+		if c < 256 {
+			// cmp rax, [rbx + C*8]  (48 3B 83 disp32; 7 bytes)
+			disp := int32(c) * 8
+			cb.emit([]byte{0x48, 0x3B, 0x83,
+				byte(disp), byte(disp >> 8), byte(disp >> 16), byte(disp >> 24)})
+		} else {
+			// mov rcx, imm64; cmp rax, rcx
+			cb.emit(jitamd64.EmitMovRcxImm64(nil, cb.proto.Consts[c-256]))
+			cb.emit(jitamd64.EmitCmpRaxRcx(nil))
+		}
+		// Lua: if (B == C) != A then pc++. Branch to succExec when the
+		// condition matches A.
+		//   A=0: match when (B==C)==0, i.e., B!=C. Use jne (0x85).
+		//   A=1: match when (B==C)==1, i.e., B==C. Use je  (0x84).
+		var jccOpcode byte
+		if a == 0 {
+			jccOpcode = 0x85 // jne
+		} else {
+			jccOpcode = 0x84 // je
+		}
+		// 0F <jcc> rel32: 6 bytes
+		cb.emit([]byte{0x0F, jccOpcode, 0x00, 0x00, 0x00, 0x00})
+		cb.addFixup(cb.pos()-4, cb.pos(), succExec)
+		// jmp rel32 -> succSkip
+		patchOff2 := cb.pos() + 1
+		cb.emit([]byte{0xE9, 0x00, 0x00, 0x00, 0x00})
+		cb.addFixup(patchOff2, cb.pos(), succSkip)
+		return true
+	}
+	// IEEE-aware form. RK(C) goes through RCX so the +/-0 check can OR
+	// the raw operands.
 	if c < 256 {
-		// cmp rax, [rbx + C*8]  (48 3B 83 disp32; 7 bytes)
+		// mov rcx, [rbx + C*8]  (48 8B 8B disp32; 7 bytes)
 		disp := int32(c) * 8
-		cb.emit([]byte{0x48, 0x3B, 0x83,
+		cb.emit([]byte{0x48, 0x8B, 0x8B,
 			byte(disp), byte(disp >> 8), byte(disp >> 16), byte(disp >> 24)})
 	} else {
-		kidx := c - 256
-		if cb.proto == nil || kidx < 0 || kidx >= len(cb.proto.Consts) {
-			return false
-		}
-		// mov rcx, imm64
-		cb.emit(jitamd64.EmitMovRcxImm64(nil, cb.proto.Consts[kidx]))
-		// cmp rax, rcx
-		cb.emit(jitamd64.EmitCmpRaxRcx(nil))
+		cb.emit(jitamd64.EmitMovRcxImm64(nil, cb.proto.Consts[c-256]))
 	}
-	// Lua: if (B == C) != A then pc++. Branch to succExec when the
-	// condition matches A.
-	//   A=0: match when (B==C)==0, i.e., B!=C. Use jne (0x85).
-	//   A=1: match when (B==C)==1, i.e., B==C. Use je  (0x84).
-	var jccOpcode byte
+	cb.emit(jitamd64.EmitCmpRaxRcx(nil))
+	// condTrue/condFalse successors by A.
+	condTrue, condFalse := succExec, succSkip
 	if a == 0 {
-		jccOpcode = 0x85 // jne
-	} else {
-		jccOpcode = 0x84 // je
+		condTrue, condFalse = succSkip, succExec
 	}
-	// 0F <jcc> rel32: 6 bytes
-	cb.emit([]byte{0x0F, jccOpcode, 0x00, 0x00, 0x00, 0x00})
-	patchOff := cb.pos() - 4
-	cb.addFixup(patchOff, cb.pos(), succExec)
-	// jmp rel32 -> succSkip
-	patchOff2 := cb.pos() + 1
-	cb.emit([]byte{0xE9, 0x00, 0x00, 0x00, 0x00})
-	cb.addFixup(patchOff2, cb.pos(), succSkip)
+	if needNaN {
+		// jne differ (local forward rel32, patched below)
+		cb.emit([]byte{0x0F, 0x85, 0x00, 0x00, 0x00, 0x00})
+		differPatch := int(cb.pos()) - 4
+		// Equal bits — condition false anyway if the value is canonNaN.
+		cb.emit(jitamd64.EmitMovRcxImm64(nil, value.CanonNaN()))
+		cb.emit(jitamd64.EmitCmpRaxRcx(nil))
+		cb.emit([]byte{0x0F, 0x84, 0x00, 0x00, 0x00, 0x00}) // je condFalse
+		cb.addFixup(cb.pos()-4, cb.pos(), condFalse)
+		cb.emit([]byte{0xE9, 0x00, 0x00, 0x00, 0x00}) // jmp condTrue
+		cb.addFixup(cb.pos()-4, cb.pos(), condTrue)
+		// differ:
+		writeRel32(cb, differPatch, int32(cb.pos())-int32(differPatch+4))
+	} else {
+		// je condTrue (equal bits are exact when NaN is ruled out)
+		cb.emit([]byte{0x0F, 0x84, 0x00, 0x00, 0x00, 0x00})
+		cb.addFixup(cb.pos()-4, cb.pos(), condTrue)
+	}
+	if needZero {
+		// Differing bits — still equal iff both are +/-0 (OR of the
+		// raw operands has zero magnitude: at most the sign bit set).
+		cb.emit([]byte{0x48, 0x09, 0xC1})                   // or rcx, rax
+		cb.emit([]byte{0x48, 0xD1, 0xE1})                   // shl rcx, 1
+		cb.emit([]byte{0x0F, 0x84, 0x00, 0x00, 0x00, 0x00}) // je condTrue
+		cb.addFixup(cb.pos()-4, cb.pos(), condTrue)
+	}
+	cb.emit([]byte{0xE9, 0x00, 0x00, 0x00, 0x00}) // jmp condFalse
+	cb.addFixup(cb.pos()-4, cb.pos(), condFalse)
 	return true
 }
 
@@ -615,6 +678,28 @@ func inlineNumericCompare(cb *codeBuf, op bytecode.OpCode, pc int32, a uint8, b,
 	//	LT + A=1: match when (B<C)==1, i.e., B<C.  Use jb  (0x82).
 	//	LE + A=0: match when (B<=C)==0, i.e., B>C. Use ja  (0x87).
 	//	LE + A=1: match when (B<=C)==1, i.e., B<=C. Use jbe (0x86).
+	//
+	// Unordered (NaN operand) sets ZF=CF=PF=1, which the naive jcc
+	// above resolves to the WRONG successor in all four cases (issue
+	// #103, fuzz seed 765ba4598e721c69: `NaN < 0` judged true made a
+	// non-terminating recursion terminate). PUC semantics: any ordered
+	// comparison with NaN is FALSE, so the condition (B op C) is false
+	// and "match" = (false == A):
+	//
+	//	A=1: no match -> succSkip.   A=0: match -> succExec.
+	//
+	// x86 has no jcc that tests the ordered relation AND routes
+	// unordered to a chosen side, so pre-branch on PF (jp = unordered)
+	// to the correct successor before the relation jcc — the mirror of
+	// arm64's FP-safe MI/PL/LS/HI condition family (issue #37 step 7),
+	// which needed no extra branch.
+	nanTarget := succSkip
+	if a == 0 {
+		nanTarget = succExec
+	}
+	// 0F 8A rel32: jp (PF=1, unordered) -> nanTarget
+	cb.emit([]byte{0x0F, 0x8A, 0x00, 0x00, 0x00, 0x00})
+	cb.addFixup(cb.pos()-4, cb.pos(), nanTarget)
 	var jccOpcode byte
 	switch op {
 	case bytecode.LT:
