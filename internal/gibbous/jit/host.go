@@ -186,13 +186,12 @@ type P4HostState interface {
 
 	// LoopPreempt is the HelperLoopFuel dispatcher target (issue #102):
 	// an in-segment loop back-edge (FORLOOP / negative-sBx JMP) drained
-	// segCallFuel to zero. The host bills the spent fuel to the step
+	// loopFuel to zero. The host bills the spent fuel to the step
 	// budget, refills (SegCallFuelBudgeted when a budget/context is
 	// armed, SegCallFuelUnlimited otherwise), and runs the standard
 	// preemption check — exactly what st.preempt() does on interpreter
-	// back-edges. Billing happens HERE and not in the Run loop's
-	// post-dispatch RefreshJitCtxAddrs because the check must see the
-	// spent fuel on stepUsed before deciding to raise.
+	// back-edges. The check must run here (not deferred): a loop whose
+	// body never enters a Lua frame has no other preemption point.
 	//
 	// Returns 0=OK (segment resumes at the back-edge continuation) /
 	// 1=ERR ("instruction budget exceeded" or "context canceled"

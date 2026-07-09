@@ -87,25 +87,44 @@ func (st *State) RefreshJitCtxAddrs(ctx *jit.JITContext, base int32) {
 	} else {
 		ctx.SetSegCallFuel(jit.SegCallFuelUnlimited)
 	}
+	// Loop back-edge fuel (issue #102): refill ONLY on an armed-state
+	// transition. This refresh runs after every dispatcher resume, and a
+	// loop whose body round-trips through an exit-reason helper each
+	// iteration (cold CALL, GETTABLE...) would have its back-edge drain
+	// erased every iteration by an unconditional refill — the guard
+	// would never fire and nothing else checks the budget on that path
+	// (host-closure CALLs never reach st.preempt()). Between
+	// transitions, host.LoopPreempt is the only refiller.
+	if st.stepBudget > 0 || st.ctx.Load() != nil {
+		if !ctx.LoopFuelArmedBudgeted() {
+			// Arming transition: the pre-arming drain reports 0 spent
+			// (Unlimited-mode rule), so nothing is billed here.
+			ctx.SetLoopFuel(jit.SegCallFuelBudgeted)
+		}
+	} else if ctx.LoopFuelArmedBudgeted() {
+		// Disarming transition: drop the budgeted quantum, go
+		// unlimited (the partial drain has no budget to bill).
+		ctx.SetLoopFuel(jit.SegCallFuelUnlimited)
+	}
 }
 
 // LoopPreempt implements the HelperLoopFuel dispatcher target (issue
 // #102): an in-segment loop back-edge (FORLOOP / negative-sBx JMP)
-// drained segCallFuel to zero. Bill the spent fuel to the step budget,
-// refill, and run the same preemption check st.preempt() performs on
-// interpreter back-edges — raising "instruction budget exceeded" /
-// "context canceled" as a recoverable error when tripped.
+// drained loopFuel to zero. Bill the spent back-edges to the step
+// budget, refill, and run the same preemption check st.preempt()
+// performs on interpreter back-edges — raising "instruction budget
+// exceeded" / "context canceled" as a recoverable error when tripped.
 //
-// Billing must happen here, BEFORE the check: the Run loop's
-// post-dispatch RefreshJitCtxAddrs also bills spent fuel, but by then
-// the verdict would already be decided on a stale stepUsed. The refill
-// via SetSegCallFuel resets segCallFuelRefill so the subsequent
-// RefreshJitCtxAddrs sees zero spent and never double-bills.
+// The check must happen HERE, not deferred to st.preempt(): a loop
+// whose body never enters a Lua frame (inline arithmetic, math
+// intrinsics, host-closure CALLs) has no other preemption point, so
+// billing without checking would let stepUsed sail past the budget
+// unenforced (probe-verified: 7.7M helper round trips, zero raises).
 func (st *State) LoopPreempt(ctx *jit.JITContext, base, pc int32) int32 {
 	_ = base
 	if st.stepBudget > 0 || st.ctx.Load() != nil {
-		st.stepUsed += int64(ctx.SegCallFuelSpent())
-		ctx.SetSegCallFuel(jit.SegCallFuelBudgeted)
+		st.stepUsed += int64(ctx.LoopFuelSpent())
+		ctx.SetLoopFuel(jit.SegCallFuelBudgeted)
 		if st.stepBudget > 0 && st.stepUsed > st.stepBudget {
 			th := st.runningThread
 			if th != nil && th.ciDepth > 0 {
@@ -124,6 +143,6 @@ func (st *State) LoopPreempt(ctx *jit.JITContext, base, pc int32) int32 {
 		}
 		return 0
 	}
-	ctx.SetSegCallFuel(jit.SegCallFuelUnlimited)
+	ctx.SetLoopFuel(jit.SegCallFuelUnlimited)
 	return 0
 }

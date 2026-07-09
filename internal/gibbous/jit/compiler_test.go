@@ -375,7 +375,7 @@ func (m *mockP4Host) LoopPreempt(ctx *JITContext, base, pc int32) int32 {
 	_ = base
 	_ = pc
 	if ctx != nil {
-		ctx.SetSegCallFuel(SegCallFuelUnlimited)
+		ctx.SetLoopFuel(SegCallFuelUnlimited)
 	}
 	return 0
 }

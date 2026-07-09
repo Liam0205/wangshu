@@ -1042,6 +1042,57 @@ func emitFORPREP(cb *codeBuf, pc int32, a uint8, targetBB int) {
 	emitJMP(cb, targetBB)
 }
 
+// emitLoopFuelBackEdge emits the issue #102 loop back-edge fuel guard
+// followed by the back-edge jump:
+//
+//	sub dword [r15 + loopFuelOff], 1
+//	jnz succBack                    ; fuel remaining — take the back edge
+//	<seg2seg deopt guard>           ; callee: deopt-redo, never exit mid-seg
+//	<exit-reason HelperLoopFuel>    ; host.LoopPreempt bills + refills + checks
+//	resume: mov rbx, [r15+vsBaseOff]
+//	jmp succBack
+//
+// A fully-inline loop body otherwise never reaches a Go-side billing
+// point, so a budgeted State would run the whole loop to completion
+// (277M iterations vs the interpreter's ms-scale budget error — see the
+// issue). loopFuel is a separate counter from segCallFuel because the
+// dispatcher refills segCallFuel on every resume, which would erase the
+// back-edge drain for loops whose bodies round-trip through an
+// exit-reason helper each iteration (see the loopFuel field doc).
+// Unbudgeted States refill SegCallFuelUnlimited (1<<31), keeping the
+// steady-state cost at one dec+jnz per iteration; budgeted States get a
+// billing point every SegCallFuelBudgeted back-edges.
+//
+// Deopt on the exhausted path mirrors emitFORPREP's slow tail: a
+// seg2seg callee must not exit mid-segment (the caller's `call` would
+// misread the exit-reason RET as a normal return), so it deopts and the
+// top-level redo re-runs the call on the host path, which bills per
+// back-edge normally. host.LoopPreempt either raises — no partial
+// state — or refills, so the redo is safe.
+func emitLoopFuelBackEdge(cb *codeBuf, pc int32, succBack int) {
+	// sub dword [r15 + loopFuelOff], 1   (41 83 AF disp32 01)
+	{
+		off := int32(jit.JITContextLoopFuelOffset)
+		cb.emit([]byte{0x41, 0x83, 0xAF,
+			byte(uint32(off)), byte(uint32(off) >> 8),
+			byte(uint32(off) >> 16), byte(uint32(off) >> 24), 0x01})
+	}
+	// jnz succBack   (0F 85 rel32 fixup) — fuel remaining
+	{
+		patchOff := cb.pos() + 2
+		cb.emit([]byte{0x0F, 0x85, 0, 0, 0, 0})
+		cb.addFixup(patchOff, cb.pos(), succBack)
+	}
+	// Fuel exhausted.
+	emitSegCallDeoptGuard(cb)
+	emitExitReason(cb, jit.HelperLoopFuel, pc, 0, 0, 0)
+	// Resume: LoopPreempt refilled the fuel; take the back edge. The
+	// terminator cleared earlier pendings, so the only pending fixup is
+	// ours (same pattern as emitFORPREP's resume bind).
+	emitResumePreludeIfPending(cb)
+	emitJMP(cb, succBack)
+}
+
 // emitFORLOOP emits the numeric for-loop back-edge:
 //
 //	R(A) += R(A+2)                   ; step index
@@ -1076,15 +1127,20 @@ func emitFORPREP(cb *codeBuf, pc int32, a uint8, targetBB int) {
 // condTrue:
 //
 //	movsd [rbx+(A+3)*8], xmm0       ; visible index
-//	jmp succBack
+//	jmp fuel                        ; issue #102 back-edge fuel guard
 //
 // condFalse:
 //
 //	jmp succOut
 //
-// Total ~85 bytes. Non-trivial but avoids a shim call for the hot
-// loop body.
-func emitFORLOOP(cb *codeBuf, a uint8, succBack, succOut int) {
+// fuel:
+//
+//	<emitLoopFuelBackEdge>          ; dec fuel; jnz succBack; else
+//	                                ; HelperLoopFuel round trip
+//
+// Total ~85 bytes plus the fuel guard. Non-trivial but avoids a shim
+// call for the hot loop body.
+func emitFORLOOP(cb *codeBuf, pc int32, a uint8, succBack, succOut int) {
 	// movsd xmm0, [rbx+A*8]
 	cb.emit(jitamd64.EmitMovsdXmmFromMem(nil, 0, regRBX, int32(a)*8))
 	// movsd xmm2, [rbx+(A+2)*8]
@@ -1114,18 +1170,22 @@ func emitFORLOOP(cb *codeBuf, a uint8, succBack, succOut int) {
 	//
 	// After both blocks: condTrue block:
 	//     movsd [rbx+(A+3)*8], xmm0   (5 bytes disp8 or 9 disp32)
-	//     jmp succBack (rel32, 5 bytes)
+	//     jmp fuel (rel32, 5 bytes)   ; static +5 over condFalse
 	//   = 14 bytes (with disp32 movsd)
 	//
 	// condFalse block:
 	//     jmp succOut (rel32, 5 bytes)
 	//   = 5 bytes
 	//
+	// fuel block (issue #102, emitLoopFuelBackEdge):
+	//     sub fuel; jnz succBack; deopt guard + HelperLoopFuel tail
+	//
 	// Layout:
 	//   [00..]  step<=0 (8 bytes)
 	//   [08..]  stepPositive (8 bytes)
 	//   [16..]  condTrue (14 bytes)
 	//   [30..]  condFalse (5 bytes)
+	//   [35..]  fuel
 	//
 	// ja to stepPositive: delta = 8 (skip step<=0 block).
 	cb.emit([]byte{0x77, 8}) // ja +8
@@ -1168,12 +1228,10 @@ func emitFORLOOP(cb *codeBuf, a uint8, succBack, succOut int) {
 	// condTrue block:
 	// movsd [rbx+(A+3)*8], xmm0    (disp32 form always used)
 	cb.emit(jitamd64.EmitMovsdMemFromXmm(nil, 0, regRBX, int32(a+3)*8))
-	// jmp rel32 -> succBack
-	{
-		patchOff := cb.pos() + 1
-		cb.emit([]byte{0xE9, 0x00, 0x00, 0x00, 0x00})
-		cb.addFixup(patchOff, cb.pos(), succBack)
-	}
+	// jmp rel32 +5 -> fuel block (static: skip condFalse's 5-byte jmp).
+	// The back edge itself is taken inside emitLoopFuelBackEdge — via
+	// its jnz on the fuel decrement (issue #102).
+	cb.emit([]byte{0xE9, 0x05, 0x00, 0x00, 0x00})
 
 	// condFalse block:
 	// jmp rel32 -> succOut
@@ -1182,6 +1240,9 @@ func emitFORLOOP(cb *codeBuf, a uint8, succBack, succOut int) {
 		cb.emit([]byte{0xE9, 0x00, 0x00, 0x00, 0x00})
 		cb.addFixup(patchOff, cb.pos(), succOut)
 	}
+
+	// fuel block: dec fuel; jnz succBack; exhausted -> HelperLoopFuel.
+	emitLoopFuelBackEdge(cb, pc, succBack)
 }
 
 // emitTFORLOOP was removed with the shim-call channel (issue #45):

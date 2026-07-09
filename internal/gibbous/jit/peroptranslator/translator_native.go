@@ -957,6 +957,13 @@ func emitTerminator(buf *codeBuf, c *cfg, bb *basicBlock, bbID int, ins bytecode
 		if len(bb.succs) != 1 {
 			return fmt.Errorf("JMP with %d succs at pc %d", len(bb.succs), pc)
 		}
+		if bytecode.SBx(ins) < 0 {
+			// Back-edge JMP (while/repeat loop): same airtight-loop
+			// class as FORLOOP — route through the fuel guard so a
+			// budgeted State keeps its billing cadence (issue #102).
+			emitLoopFuelBackEdge(buf, pc, bb.succs[0])
+			break
+		}
 		emitJMP(buf, bb.succs[0])
 	case bytecode.FORPREP:
 		if len(bb.succs) != 1 {
@@ -968,7 +975,7 @@ func emitTerminator(buf *codeBuf, c *cfg, bb *basicBlock, bbID int, ins bytecode
 			return fmt.Errorf("FORLOOP with %d succs at pc %d", len(bb.succs), pc)
 		}
 		// succs[0] = back-edge target, succs[1] = fall-out.
-		emitFORLOOP(buf, a, bb.succs[0], bb.succs[1])
+		emitFORLOOP(buf, pc, a, bb.succs[0], bb.succs[1])
 	case bytecode.TFORLOOP:
 		if len(bb.succs) != 2 {
 			return fmt.Errorf("TFORLOOP with %d succs at pc %d", len(bb.succs), pc)
