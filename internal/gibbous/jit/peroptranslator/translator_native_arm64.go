@@ -718,6 +718,13 @@ func emitTerminatorArm64(buf *codeBuf, c *cfg, bb *basicBlock, bbID int, ins byt
 		if len(bb.succs) != 1 {
 			return fmt.Errorf("JMP with %d succs at pc %d", len(bb.succs), pc)
 		}
+		if bytecode.SBx(ins) < 0 {
+			// Back-edge JMP (while/repeat loop): same airtight-loop
+			// class as FORLOOP — route through the fuel guard so a
+			// budgeted State keeps its billing cadence (issue #102).
+			emitLoopFuelBackEdgeArm64(buf, pc, bb.succs[0])
+			break
+		}
 		emitJMPArm64Fixup(buf, bb.succs[0])
 	case bytecode.FORPREP:
 		if len(bb.succs) != 1 {
@@ -728,7 +735,7 @@ func emitTerminatorArm64(buf *codeBuf, c *cfg, bb *basicBlock, bbID int, ins byt
 		if len(bb.succs) != 2 {
 			return fmt.Errorf("FORLOOP with %d succs at pc %d", len(bb.succs), pc)
 		}
-		emitFORLOOPArm64Inline(buf, a, bb.succs[0], bb.succs[1])
+		emitFORLOOPArm64Inline(buf, pc, a, bb.succs[0], bb.succs[1])
 	case bytecode.LT, bytecode.LE:
 		if len(bb.succs) != 2 {
 			return fmt.Errorf("%v with %d succs at pc %d", op, len(bb.succs), pc)
@@ -1239,6 +1246,38 @@ func emitFORPREPArm64Inline(cb *codeBuf, pc int32, a uint8, targetBB int) {
 	emitJMPArm64Fixup(cb, targetBB)
 }
 
+// emitLoopFuelBackEdgeArm64 emits the issue #102 loop back-edge fuel
+// guard followed by the back-edge jump (mirror of the amd64
+// emitLoopFuelBackEdge — see its doc for the design rationale):
+//
+//	ldr  w16, [x27, #loopFuelOff]
+//	sub  w16, w16, #1
+//	str  w16, [x27, #loopFuelOff]
+//	cbnz w16, succBack             ; fuel remaining — take the back edge
+//	<seg2seg deopt guard>          ; callee: deopt-redo, never exit mid-seg
+//	<exit-reason HelperLoopFuel>   ; host.LoopPreempt bills+refills+checks
+//	resume: ldr x26, [x27+vsBaseOff]
+//	b succBack
+func emitLoopFuelBackEdgeArm64(cb *codeBuf, pc int32, succBack int) {
+	cb.emit(jitarm64.EmitLdrWtFromXnDisp(nil, 16, regX27,
+		uint16(jit.JITContextLoopFuelOffset)))
+	cb.emit(jitarm64.EmitSubXdImm12(nil, 16, 16, 1))
+	cb.emit(jitarm64.EmitStrWtToXnDisp(nil, 16, regX27,
+		uint16(jit.JITContextLoopFuelOffset)))
+	// cbnz w16, succBack (rel19 fixup — resolveLabels' fixupKindArm64Cond
+	// patches bits 5..23, the shared imm19 slot of B.cond/CBZ/CBNZ).
+	cbnzOff := cb.pos()
+	cb.emit(jitarm64.EmitCbnzW(nil, 16, 0))
+	cb.addFixupKind(cbnzOff, cbnzOff+4, succBack, fixupKindArm64Cond)
+	// Fuel exhausted.
+	emitSegCallDeoptGuardArm64(cb)
+	emitExitReasonArm64(cb, jit.HelperLoopFuel, pc, 0, 0, 0)
+	// Resume: LoopPreempt refilled; take the back edge. The terminator
+	// prelude cleared earlier pendings, so the only pending fixup is ours.
+	emitResumePreludeIfPendingArm64(cb)
+	emitJMPArm64Fixup(cb, succBack)
+}
+
 // emitFORLOOPArm64Inline emits inline FORLOOP back-edge (mirror of
 // amd64 emitFORLOOP).
 //
@@ -1247,12 +1286,12 @@ func emitFORPREPArm64Inline(cb *codeBuf, pc int32, a uint8, targetBB int) {
 //	R(A) += R(A+2)
 //	if step > 0: cond = R(A) <= R(A+1)
 //	else:        cond = R(A) >= R(A+1)
-//	if cond: R(A+3) := R(A); jmp succBack
+//	if cond: R(A+3) := R(A); jmp fuel   ; issue #102 back-edge fuel guard
 //	else:    jmp succOut
 //
 // arm64 encoding: fixed-4-byte instructions. Layout is straightforward
 // forward-branch on inequality.
-func emitFORLOOPArm64Inline(cb *codeBuf, a uint8, succBack, succOut int) {
+func emitFORLOOPArm64Inline(cb *codeBuf, pc int32, a uint8, succBack, succOut int) {
 	// ldr X0, [X26 + A*8]; fmov D0, X0        ; D0 = idx
 	cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 0, regX26, uint16(a)*8))
 	cb.emit(jitarm64.EmitFmovDdFromXn(nil, 0, 0))
@@ -1288,9 +1327,12 @@ func emitFORLOOPArm64Inline(cb *codeBuf, a uint8, succBack, succOut int) {
 	//   condTrue:
 	//   [pos_A +28]  fmov X0, D0
 	//   [pos_A +32]  str X0, [X26 + (A+3)*8]
-	//   [pos_A +36]  b succBack (rel26 fixup)
+	//   [pos_A +36]  b fuel (static +8: skip condFalse)
 	//   condFalse:
 	//   [pos_A +40]  b succOut (rel26 fixup)
+	//   fuel:
+	//   [pos_A +44]  <emitLoopFuelBackEdgeArm64>  ; issue #102: dec fuel,
+	//                cbnz succBack, else HelperLoopFuel round trip
 
 	posA := int32(len(cb.bytes))
 	// b.gt +4 -> stepPositive (pos_A+16). wordDisp = (16-0)/4 = 4.
@@ -1316,15 +1358,17 @@ func emitFORLOOPArm64Inline(cb *codeBuf, a uint8, succBack, succOut int) {
 	cb.emit(jitarm64.EmitFmovXdFromDn(nil, 0, 0))
 	// str X0, [X26 + (A+3)*8]
 	cb.emit(jitarm64.EmitStrXtToXnDisp(nil, 0, regX26, uint16(a+3)*8))
-	// b succBack (rel26 fixup)
-	backOff := int32(len(cb.bytes))
-	cb.emit([]byte{0x00, 0x00, 0x00, 0x14})
-	cb.addFixupKind(backOff, backOff+4, succBack, fixupKindArm64B26)
+	// b fuel (static +2 words: skip condFalse's single b). The back edge
+	// itself is taken inside emitLoopFuelBackEdgeArm64 — via its cbnz on
+	// the fuel decrement (issue #102).
+	cb.emit([]byte{0x02, 0x00, 0x00, 0x14})
 	// condFalse:
 	outOff := int32(len(cb.bytes))
 	cb.emit([]byte{0x00, 0x00, 0x00, 0x14})
 	cb.addFixupKind(outOff, outOff+4, succOut, fixupKindArm64B26)
 	_ = posA
+	// fuel: dec loopFuel; cbnz succBack; exhausted -> HelperLoopFuel.
+	emitLoopFuelBackEdgeArm64(cb, pc, succBack)
 }
 
 // inlineRawEqArm64 emits inline 64-bit bit-equality for EQ. Semantics
