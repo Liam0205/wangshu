@@ -1,0 +1,2 @@
+go test fuzz v1
+string("local f=math.abs function k(x)local s for A=0,277777770 do A=0 f(0)end end return k(0)")
