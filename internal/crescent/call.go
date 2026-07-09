@@ -129,7 +129,19 @@ func (st *State) doTailCall(th *thread, ci *callInfo, i bytecode.Instruction) (*
 		// host 尾调用 = 普通 host 调用,结果作为本帧返回值。M12 简化:落到原 funcIdx 起,
 		// 然后让本帧 RETURN(主循环紧随会执行 RETURN A=funcIdx, B=0,但 codegen 紧跟一条
 		// RETURN A B=0 设计文档承诺存在);所以这里完成 host 后让 ci 继续即可。
-		return nil, st.callHost(th, funcIdx, nargs, ci.NResults())
+		//
+		// nresults MUST be -1 (multret), matching PUC lvm.c OP_TAILCALL's
+		// luaD_call(L, ra, LUA_MULTRET): the result count is collected by
+		// the trailing RETURN B=0 from the live top, and callHost's
+		// multret branch sets top = funcIdx + n exactly. Passing the
+		// parent frame's ci.NResults() was wrong: callHost's fixed-count
+		// branch resets top back to base+MaxStack after writing results,
+		// so the trailing RETURN B=0 either swept dead registers between
+		// funcIdx and the frame top into the return values or truncated
+		// trailing results (`return unpack(t)` dropped the third value;
+		// found by the issue #52 P4 acceptance tests — P1/P3/P4 all share
+		// this function, so one fix covers all tiers).
+		return nil, st.callHost(th, funcIdx, nargs, -1)
 	}
 	st.closeUpvals(th, ci.base)
 	dst := ci.FuncIdx()
