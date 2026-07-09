@@ -733,6 +733,10 @@ func (st *State) LoadProgram(mainID uint32, protos []*bytecode.Proto) arena.GCRe
 	cl := st.allocLuaClosure(base+mainID, 0)
 	st.loadedCls = append(st.loadedCls, cl)
 	st.rebuildProtoCache()
+	// Size the bridge's ProtoID-indexed ProfileData fast path (issue #94)
+	// to the new proto count, so the OnEnterID/OnBackEdgeID hot hooks run
+	// a slice index instead of a map lookup.
+	st.bridge.GrowProfileIndex(len(st.protos))
 	return cl
 }
 

@@ -23,6 +23,19 @@ type Bridge struct {
 	// 惰性建表:首次 onBackEdge / onEnter 命中 Proto 时分配。
 	profileTable map[*bytecode.Proto]*ProfileData
 
+	// pdByID is a ProtoID-indexed fast path over profileTable (issue
+	// #94): OnEnter runs on every Lua frame entry, and on declined
+	// call-dense workloads (the [^p3-gate] rows) ~94% of those calls do
+	// nothing but "look up pd, see TierState != TierInterp, return" — a
+	// map access costing ~6% of total run time. The interpreter always
+	// has the ProtoID at hand (callInfo.protoID / enterLuaFrame's pid),
+	// so a slice index replaces the map on the hot path. Grown by
+	// GrowProfileIndex after LoadProgram; a pid outside the slice (or a
+	// nil slot from a proto first seen by a map-only path) falls back to
+	// profileTable, so callers without a real pid (tests, mock drivers)
+	// keep working unchanged.
+	pdByID []*ProfileData
+
 	// p3: P3/P4 编译器接口(05 §2)。注入式;nil 表示 P1-only / mock 未装载。
 	p3 P3Compiler
 
@@ -205,6 +218,36 @@ func (b *Bridge) profileOf(proto *bytecode.Proto) *ProfileData {
 	return pd
 }
 
+// GrowProfileIndex sizes the ProtoID-indexed ProfileData fast path
+// (issue #94). crescent calls it after LoadProgram with the new total
+// proto count; pids ≥ the previous length get nil slots that
+// profileOfID fills lazily. Never shrinks.
+func (b *Bridge) GrowProfileIndex(n int) {
+	if n <= len(b.pdByID) {
+		return
+	}
+	grown := make([]*ProfileData, n)
+	copy(grown, b.pdByID)
+	b.pdByID = grown
+}
+
+// profileOfID is profileOf with a ProtoID-indexed slice fast path
+// (issue #94). The hot case — steady-state OnEnter on an
+// already-decided proto — is one bounds check and one slice load. A
+// miss (pid out of range, or first sight of this proto) delegates to
+// profileOf so the map stays the authority, then caches the pointer.
+func (b *Bridge) profileOfID(proto *bytecode.Proto, pid uint32) *ProfileData {
+	if int(pid) < len(b.pdByID) {
+		if pd := b.pdByID[pid]; pd != nil {
+			return pd
+		}
+		pd := b.profileOf(proto)
+		b.pdByID[pid] = pd
+		return pd
+	}
+	return b.profileOf(proto)
+}
+
 // CompilabilityOf 04 状态机查询入口(只读,03 §5.3)。
 //
 // 优先读 Proto 旁字段(Compile 时一次写,跨 State 共享只读);若 Proto 字段
@@ -302,7 +345,17 @@ func (b *Bridge) recheckCompilabilityRuntime(proto *bytecode.Proto) Compilabilit
 // 前 return——保留 profile 诊断完整(EntryCount / BackEdge 准确,profile_test 期望)
 // 同时跳过升层动作(避免 wasm 反噬)。
 func (b *Bridge) OnBackEdge(proto *bytecode.Proto, pc int32, onMain bool) {
-	pd := b.profileOf(proto)
+	b.onBackEdgePD(b.profileOf(proto), proto, pc, onMain)
+}
+
+// OnBackEdgeID is OnBackEdge with the caller-supplied ProtoID driving the
+// slice-indexed ProfileData fast path (issue #94). The interpreter's back
+// edges always have the pid at hand (callInfo.protoID).
+func (b *Bridge) OnBackEdgeID(proto *bytecode.Proto, pid uint32, pc int32, onMain bool) {
+	b.onBackEdgePD(b.profileOfID(proto, pid), proto, pc, onMain)
+}
+
+func (b *Bridge) onBackEdgePD(pd *ProfileData, proto *bytecode.Proto, pc int32, onMain bool) {
 	if pd.TierState != TierInterp {
 		return // 已升 Gibbous / 已卡 Stuck:无需再计数(01 §4.1 守卫)
 	}
@@ -351,7 +404,18 @@ func (b *Bridge) OnBackEdge(proto *bytecode.Proto, pc int32, onMain bool) {
 // EntryCount 后在 considerPromotion 调用前 return——profile 诊断完整,只跳过
 // 升层动作。
 func (b *Bridge) OnEnter(proto *bytecode.Proto, onMain bool) {
-	pd := b.profileOf(proto)
+	b.onEnterPD(b.profileOf(proto), proto, onMain)
+}
+
+// OnEnterID is OnEnter with the caller-supplied ProtoID driving the
+// slice-indexed ProfileData fast path (issue #94): frame entry is the
+// hottest sampling hook, and the interpreter's enterLuaFrame always has
+// the pid at hand.
+func (b *Bridge) OnEnterID(proto *bytecode.Proto, pid uint32, onMain bool) {
+	b.onEnterPD(b.profileOfID(proto, pid), proto, onMain)
+}
+
+func (b *Bridge) onEnterPD(pd *ProfileData, proto *bytecode.Proto, onMain bool) {
 	if pd.TierState != TierInterp {
 		return
 	}
