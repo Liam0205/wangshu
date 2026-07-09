@@ -864,6 +864,17 @@ func (c *JITContext) LoopFuelSpent() uint32 {
 	return c.loopFuelRefill - c.loopFuel
 }
 
+// LoopFuelTick decrements the loop back-edge fuel by one and reports
+// whether it is exhausted (issue #102). Go-side counterpart of the
+// segment's dec+jnz for replay paths (PerOpCode.runForLoop) that
+// iterate loops in Go instead of native code: the caller invokes
+// host.LoopPreempt when this returns true, exactly like the segment's
+// HelperLoopFuel exit.
+func (c *JITContext) LoopFuelTick() bool {
+	c.loopFuel--
+	return c.loopFuel == 0
+}
+
 // CurrentClosureRef returns the running frame's closure GCRef (test hook
 // + used by the segment-to-segment caller emit to bake the restore).
 func (c *JITContext) CurrentClosureRef() uintptr { return c.currentClosureRef }
