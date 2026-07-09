@@ -197,6 +197,61 @@ local function f(n) local d = {}; for i = 1, n do d[i] = i end return process(d,
 local s = 0
 for i = 1, 25 do s = s + f(i) end
 return s`},
+
+	// -- issue #91: top-level if/else diamonds (not inside any loop) --
+	// the relooper's block-scope nesting repair missed the symmetric
+	// partial-overlap direction, so these shapes all CFAILed and stayed
+	// on the interpreter. After the fix they must promote and stay
+	// byte-equal (the promotion assertion lives in
+	// TestP3_TopLevelDiamondPromotes).
+	{"p3_iss91_diamond", `
+local function k(a, b) local r = 0 if a < b then r = a else r = b end return r end
+local s = 0
+for i = 1, 50 do s = s + k(i, 25) end
+return s`},
+	{"p3_iss91_single_arm_if", `
+local function k(a, b) local r = b if a < b then r = a end return r end
+local s = 0
+for i = 1, 50 do s = s + k(i, 25) end
+return s`},
+	{"p3_iss91_nested_diamond", `
+local function k(a, b, c)
+  local r = 0
+  if a < b then
+    if a < c then r = a else r = c end
+  else
+    if b < c then r = b else r = c end
+  end
+  return r
+end
+local s = 0
+for i = 1, 50 do s = s + k(i, 25, 37) end
+return s`},
+	{"p3_iss91_diamond_then_loop", `
+local function k(a, b, n)
+  local r = 0
+  if a < b then r = a else r = b end
+  for i = 1, n do r = r + 1 end
+  return r
+end
+local s = 0
+for i = 1, 50 do s = s + k(i, 25, 3) end
+return s`},
+	{"p3_iss91_early_return", `
+local function k(a, b) if a < b then return a end return b end
+local s = 0
+for i = 1, 50 do s = s + k(i, 25) end
+return s`},
+	{"p3_iss91_elseif_chain", `
+local function k(x)
+  if x < 3 then return 1
+  elseif x < 6 then return 2
+  elseif x < 9 then return 3
+  else return 4 end
+end
+local s = 0
+for i = 1, 12 do s = s + k(i) end
+return s`},
 }
 
 // TestP3_Tiered 三方对拍:oracle / crescent / gibbous 全 byte-equal(V1-V13)。
@@ -216,6 +271,50 @@ func TestP3_Tiered(t *testing.T) {
 				if gibbous != want {
 					t.Errorf("gibbous vs oracle byte-diff:\n  gibbous: %q\n  oracle:  %q", gibbous, want)
 				}
+			}
+		})
+	}
+}
+
+// TestP3_TopLevelDiamondPromotes — issue #91 prove-the-path: beyond
+// byte-equality we must prove the top-level-diamond kernels actually
+// PROMOTED. Before the fix these shapes CFAILed (improper scope
+// overlap) and silently fell back to the interpreter, and the tier
+// diff stayed green regardless — green alone doesn't prove the
+// promoted path was under test, hence the PromotionCount white-box
+// assertion.
+func TestP3_TopLevelDiamondPromotes(t *testing.T) {
+	srcs := map[string]string{
+		"diamond": `
+local function k(a, b) local r = 0 if a < b then r = a else r = b end return r end
+local s = 0
+for i = 1, 50 do s = s + k(i, 25) end
+return s`,
+		"single_arm_if": `
+local function k(a, b) local r = b if a < b then r = a end return r end
+local s = 0
+for i = 1, 50 do s = s + k(i, 25) end
+return s`,
+		"early_return": `
+local function k(a, b) if a < b then return a end return b end
+local s = 0
+for i = 1, 50 do s = s + k(i, 25) end
+return s`,
+	}
+	for name, src := range srcs {
+		t.Run(name, func(t *testing.T) {
+			prog, err := wangshu.Compile([]byte(src), "p3iss91")
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+			st := wangshu.NewState(wangshu.Options{})
+			st.SetForceAllPromote(true)
+			if _, err := prog.Run(st); err != nil {
+				t.Fatalf("run: %v", err)
+			}
+			if st.PromotionCount() == 0 {
+				t.Fatal("PromotionCount = 0; top-level diamond kernel did not promote " +
+					"(relooper scope overlap regression, issue #91)")
 			}
 		})
 	}
