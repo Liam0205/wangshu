@@ -68,31 +68,31 @@ Numbers taken on one machine (linux/amd64, Intel Xeon Platinum, 24 core, go1.26.
 
 ### darwin/arm64 measurements (Apple M5 Pro)
 
-The same reproduction commands measured on an Apple M5 Pro (darwin/arm64, go1.26.4, `-benchtime=2s -count=3 -cpu=1`, median). The three Pure-VM micro rows were re-measured 2026-07-09 on the same machine under the issue #93 corrected basis.
+The same reproduction commands measured on an Apple M5 Pro (darwin/arm64, go1.26.4, `-benchtime=2s -count=3 -cpu=1`, median; full table re-measured 2026-07-09 with the #91-#94 fixes, same code as the amd64 table above).
 
 | Category | Script | gopher | P1 | P3 auto | P3 force | P4 auto | P4 force |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| Pure-VM micro | Simple (branch/compare) | 491 ns | **<ins>83.2 ns (5.90×)</ins>** | 5211 ns (0.88×) [^p3-kernel] | 5132 ns (0.89×) [^p3-kernel] | <ins>86.2 ns (5.69×)</ins> | <ins>86.2 ns (5.69×)</ins> |
-|  | Arith (Horner) | 561 ns | **<ins>106 ns (5.29×)</ins>** | 6440 ns (1.33×) [^p3-kernel] | 6472 ns (1.33×) [^p3-kernel] | <ins>109 ns (5.14×)</ins> | <ins>109 ns (5.14×)</ins> |
-|  | Loop (sum) | 31.2 µs | **<ins>9.61 µs (3.24×)</ins>** | <ins>530 µs (2.99×)</ins> [^p3-kernel] | <ins>496 µs (3.20×)</ins> [^p3-kernel] | <ins>12.5 µs (2.49×)</ins> | <ins>12.5 µs (2.49×)</ins> |
-| Heavy kernels | HeavyArith | 87.2 ms | <ins>44.3 ms (1.97×)</ins> | <ins>50.9 ms (1.71×)</ins> | <ins>51.3 ms (1.70×)</ins> | <ins>24.8 ms (3.52×)</ins> | **<ins>24.5 ms (3.56×)</ins>** |
-|  | HeavyRecursion | 5.50 ms | **<ins>3.13 ms (1.76×)</ins>** | <ins>3.60 ms (1.53×)</ins> | 3.70 ms (1.48×) | <ins>3.38 ms (1.63×)</ins> | <ins>3.40 ms (1.62×)</ins> |
-|  | HeavyFloatloop | 153 ms | <ins>83.8 ms (1.83×)</ins> | <ins>61.5 ms (2.49×)</ins> | <ins>62.4 ms (2.46×)</ins> | <ins>25.0 ms (6.13×)</ins> | **<ins>24.9 ms (6.14×)</ins>** |
-| Realworld small | fib | 5.60 ms | 6.41 ms (0.87×) | 7.33 ms (0.76×) [^p3-gate] | 14.3 ms (0.39×) | **<ins>0.60 ms (9.3×)</ins>** [^seg2seg] | <ins>0.61 ms (9.1×)</ins> [^seg2seg] |
-|  | binary-trees | 19.3 ms | 23.9 ms (0.81×) | 26.4 ms (0.73×) [^p3-gate] | 59.9 ms (0.32×) | 16.7 ms (1.16×) [^seg2seg] | **16.6 ms (1.16×)** [^seg2seg] |
-|  | spectral-norm | 12.9 ms | 12.2 ms (1.06×) | 13.5 ms (0.96×) [^p3-gate] | 28.3 ms (0.46×) | 10.2 ms (1.26×) | **<ins>2.25 ms (5.74×)</ins>** [^seg2seg] |
-|  | fannkuch | 2.46 ms | 3.64 ms (0.68×) | 3.76 ms (0.65×) | 3.72 ms (0.66×) | **<ins>0.34 ms (7.25×)</ins>** | **<ins>0.34 ms (7.27×)</ins>** |
-|  | n-body | 30.2 ms | **27.5 ms (1.10×)** | 28.9 ms (1.04×) [^p3-gate] | 50.0 ms (0.60×) | 31.0 ms (0.98×) | 30.9 ms (0.98×) |
-| Boundary mini · Call | PureVM | 490 ns | **<ins>77.5 ns (6.32×)</ins>** | — | — | — | — |
-|  | CallOnly | **54.0 ns** | 104 ns (0.52×) | 105 ns (0.51×) | 165 ns (0.33×) | 105 ns (0.51×) | 106 ns (0.51×) |
-|  | Boundary (+SetGlobal) | **120 ns** | 179 ns (0.67×) | 177 ns (0.68×) | 180 ns (0.67×) | 176 ns (0.68×) | 176 ns (0.68×) |
-| Boundary mini · CallInto | PureVM | 490 ns | **<ins>77.5 ns (6.32×)</ins>** | — | — | — | — |
-|  | CallOnly | 54.0 ns | **46.4 ns (1.17×)** | 48.7 ns (1.11×) | 103 ns (0.53×) | 48.9 ns (1.11×) | 48.4 ns (1.12×) |
-|  | Boundary (+SetGlobal) | **120 ns** | **120 ns (1.01×)** | **120 ns (1.00×)** | 121 ns (1.00×) | **120 ns (1.01×)** | 122 ns (0.99×) |
-| Realworld embedded · Call | Predicate (×1000) | **282 µs** | 321 µs (0.88×) | 323 µs (0.87×) | 327 µs (0.86×) | 322 µs (0.88×) | 324 µs (0.87×) |
-|  | Transform (×1000) | **212 µs** | 236 µs (0.90×) | 239 µs (0.89×) | 243 µs (0.88×) | 224 µs (0.95×) | 222 µs (0.96×) |
-| Realworld embedded · CallInto | Predicate (×1000) | 282 µs | 264 µs (1.07×) | **262 µs (1.08×)** | 269 µs (1.05×) | 265 µs (1.07×) | 263 µs (1.07×) |
-|  | Transform (×1000) | 212 µs | 181 µs (1.17×) | 183 µs (1.16×) | 183 µs (1.16×) | **167 µs (1.27×)** | **167 µs (1.27×)** |
+| Pure-VM micro | Simple (branch/compare) | 494 ns | **<ins>83.8 ns (5.89×)</ins>** | <ins>2606 ns (1.77×)</ins> [^p3-kernel] | 5155 ns (0.89×) [^p3-kernel] | <ins>84.9 ns (5.81×)</ins> | <ins>84.9 ns (5.81×)</ins> |
+|  | Arith (Horner) | 509 ns | **<ins>103 ns (4.95×)</ins>** | <ins>3659 ns (2.26×)</ins> [^p3-kernel] | 6483 ns (1.27×) [^p3-kernel] | <ins>109 ns (4.69×)</ins> | <ins>109 ns (4.69×)</ins> |
+|  | Loop (sum) | 30.3 µs | **<ins>9.54 µs (3.18×)</ins>** | <ins>483 µs (3.07×)</ins> [^p3-kernel] | <ins>483 µs (3.07×)</ins> [^p3-kernel] | <ins>12.4 µs (2.44×)</ins> | <ins>12.4 µs (2.44×)</ins> |
+| Heavy kernels | HeavyArith | 127 ms | <ins>44.9 ms (2.82×)</ins> | <ins>50.8 ms (2.50×)</ins> | <ins>50.8 ms (2.50×)</ins> | **<ins>24.5 ms (5.19×)</ins>** | <ins>24.6 ms (5.15×)</ins> |
+|  | HeavyRecursion | 6.07 ms | **<ins>3.07 ms (1.98×)</ins>** | <ins>3.46 ms (1.75×)</ins> | <ins>3.58 ms (1.69×)</ins> | 4.49 ms (1.35×) | 4.50 ms (1.35×) |
+|  | HeavyFloatloop | 221 ms | <ins>84.9 ms (2.61×)</ins> | <ins>59.8 ms (3.70×)</ins> | <ins>58.8 ms (3.76×)</ins> | **<ins>24.9 ms (8.90×)</ins>** | <ins>25.2 ms (8.79×)</ins> |
+| Realworld small | fib | 5.48 ms | 6.24 ms (0.88×) | 7.03 ms (0.78×) [^p3-gate] | 14.1 ms (0.39×) | <ins>0.64 ms (8.57×)</ins> [^seg2seg] | **<ins>0.63 ms (8.71×)</ins>** [^seg2seg] |
+|  | binary-trees | 30.0 ms | 23.6 ms (1.27×) | 25.1 ms (1.20×) [^p3-gate] | 59.6 ms (0.50×) | <ins>16.6 ms (1.81×)</ins> | **<ins>16.4 ms (1.83×)</ins>** [^seg2seg] |
+|  | spectral-norm | 19.5 ms | <ins>12.0 ms (1.62×)</ins> | 13.3 ms (1.46×) [^p3-gate] | 27.8 ms (0.70×) | <ins>2.21 ms (8.82×)</ins> | **<ins>2.20 ms (8.87×)</ins>** [^seg2seg] |
+|  | fannkuch | 2.48 ms | 3.61 ms (0.69×) | 3.71 ms (0.67×) | 3.70 ms (0.67×) | **<ins>0.37 ms (6.75×)</ins>** | <ins>0.37 ms (6.73×)</ins> [^seg2seg] |
+|  | n-body | 37.8 ms | 31.1 ms (1.22×) | 27.8 ms (1.36×) [^p3-gate] | 49.3 ms (0.77×) | <ins>3.83 ms (9.88×)</ins> [^math-intrinsic] | **<ins>3.82 ms (9.91×)</ins>** [^math-intrinsic] |
+| Boundary mini · Call | PureVM | 452 ns | **<ins>83.4 ns (5.41×)</ins>** | — | — | — | — |
+|  | CallOnly | **53.9 ns** | 107 ns (0.51×) | 110 ns (0.49×) | 168 ns (0.32×) | 143 ns (0.38×) | 141 ns (0.38×) |
+|  | Boundary (+SetGlobal) | **118 ns** | 174 ns (0.68×) | 180 ns (0.66×) | 384 ns (0.31×) | 187 ns (0.63×) | 178 ns (0.66×) |
+| Boundary mini · CallInto | PureVM | 452 ns | **<ins>83.4 ns (5.41×)</ins>** | — | — | — | — |
+|  | CallOnly | 53.9 ns | **46.4 ns (1.16×)** | 50.0 ns (1.08×) | 103 ns (0.52×) | 72.1 ns (0.75×) | 71.9 ns (0.75×) |
+|  | Boundary (+SetGlobal) | 118 ns | 117 ns (1.01×) | 120 ns (0.99×) | 317 ns (0.37×) | 116 ns (1.02×) | **116 ns (1.02×)** |
+| Real workload · Call | Predicate (×1000) | 302 µs | 321 µs (0.94×) | 325 µs (0.93×) | 611 µs (0.49×) | 299 µs (1.01×) | **296 µs (1.02×)** |
+|  | Transform (×1000) | 252 µs | **237 µs (1.06×)** | 245 µs (1.03×) | 372 µs (0.68×) | 249 µs (1.01×) | 251 µs (1.00×) |
+| Real workload · CallInto | Predicate (×1000) | 302 µs | 258 µs (1.17×) | 259 µs (1.17×) | 539 µs (0.56×) | 226 µs (1.33×) | **223 µs (1.36×)** |
+|  | Transform (×1000) | 252 µs | **176 µs (1.43×)** | 181 µs (1.40×) | 305 µs (0.83×) | 177 µs (1.42×) | 178 µs (1.42×) |
 
 [^cat-baseline]: `benchmarks/baseline`. Three self-contained scripts (Simple branch-compare, Arith six-order Horner polynomial, Loop sum 1..N), no Go↔Lua boundary crossing. Shows VM-core dispatch / arithmetic / loop cost under minimum workload.
 [^cat-heavy]: `benchmarks/heavy`. Three flat numeric kernels (HeavyArith pure arithmetic, HeavyRecursion self-recursion, HeavyFloatloop nested float loop); intentionally excludes tables, strings, library CALL and other helper-bound structures. Shows the compilation tier's performance ceiling on shapes that actually let it work.
