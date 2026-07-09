@@ -88,3 +88,42 @@ func (st *State) RefreshJitCtxAddrs(ctx *jit.JITContext, base int32) {
 		ctx.SetSegCallFuel(jit.SegCallFuelUnlimited)
 	}
 }
+
+// LoopPreempt implements the HelperLoopFuel dispatcher target (issue
+// #102): an in-segment loop back-edge (FORLOOP / negative-sBx JMP)
+// drained segCallFuel to zero. Bill the spent fuel to the step budget,
+// refill, and run the same preemption check st.preempt() performs on
+// interpreter back-edges — raising "instruction budget exceeded" /
+// "context canceled" as a recoverable error when tripped.
+//
+// Billing must happen here, BEFORE the check: the Run loop's
+// post-dispatch RefreshJitCtxAddrs also bills spent fuel, but by then
+// the verdict would already be decided on a stale stepUsed. The refill
+// via SetSegCallFuel resets segCallFuelRefill so the subsequent
+// RefreshJitCtxAddrs sees zero spent and never double-bills.
+func (st *State) LoopPreempt(ctx *jit.JITContext, base, pc int32) int32 {
+	_ = base
+	if st.stepBudget > 0 || st.ctx.Load() != nil {
+		st.stepUsed += int64(ctx.SegCallFuelSpent())
+		ctx.SetSegCallFuel(jit.SegCallFuelBudgeted)
+		if st.stepBudget > 0 && st.stepUsed > st.stepBudget {
+			th := st.runningThread
+			if th != nil && th.ciDepth > 0 {
+				st.gibCI(th).pc = pc + 1 // anchor the error line
+			}
+			return st.raiseGibbous(errf("instruction budget exceeded"))
+		}
+		if h := st.ctx.Load(); h != nil {
+			if err := h.err(); err != nil {
+				th := st.runningThread
+				if th != nil && th.ciDepth > 0 {
+					st.gibCI(th).pc = pc + 1
+				}
+				return st.raiseGibbous(errf("context canceled: %s", err.Error()))
+			}
+		}
+		return 0
+	}
+	ctx.SetSegCallFuel(jit.SegCallFuelUnlimited)
+	return 0
+}
