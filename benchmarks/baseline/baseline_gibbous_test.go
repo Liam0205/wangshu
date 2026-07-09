@@ -19,10 +19,9 @@ import (
 	"github.com/Liam0205/wangshu"
 )
 
-// 把顶层脚本主体包进非 vararg 内层 kernel 反复调(避开 vararg 顶层不升层的空测)。
-func wrapKernel(body string) string {
-	return "local function kernel()\n" + body + "\nend\nlocal t = 0\nfor _ = 1, 50 do t = kernel() end\nreturn t"
-}
+// wrapKernel + the kernel body constants live in baseline_kernel_test.go
+// (tag-neutral, shared with the P1 build's _GopherKernel same-shape
+// counterpart benches, issue #93).
 
 func benchGibbous(b *testing.B, body string, force bool) {
 	prog, err := wangshu.Compile([]byte(wrapKernel(body)), "bench-gib")
@@ -41,22 +40,6 @@ func benchGibbous(b *testing.B, body string, force bool) {
 		}
 	}
 }
-
-// kernel body(去掉顶层 local 声明的 return 形态,与原 src 等价语义)。
-const simpleBody = `
-  local a, b = 1, 2
-  local r = 0
-  if a < b then r = a else r = b end
-  return r`
-
-const arithBody = `
-  local x = 1.5
-  return ((((x + 2) * x + 3) * x + 4) * x + 5) * x + 6`
-
-const loopBody = `
-  local s = 0
-  for i = 1, 1000 do s = s + i * i end
-  return s`
 
 // Minimal-body kernels (1-instruction body): isolate the boundary
 // (call_indirect + return) cost. Same body strings as P4 side in

@@ -44,9 +44,9 @@ P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 met
 
 | 类别 | 脚本 | gopher | P1 | P3 auto | P3 force | P4 auto | P4 force |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 纯 VM 微基准 [^cat-baseline] | Simple (分支/比较) | 812 ns | **<ins>141 ns (5.77×)</ins>** | 4122 ns (0.20×) | 4105 ns (0.20×) | <ins>160 ns (5.08×)</ins> | <ins>160 ns (5.08×)</ins> |
-|  | Arith (Horner) | 945 ns | **<ins>186 ns (5.08×)</ins>** | 10557 ns (0.09×) | 10412 ns (0.09×) | <ins>195 ns (4.85×)</ins> | <ins>195 ns (4.85×)</ins> |
-|  | Loop (求和循环) | 56.2 µs | **<ins>17.2 µs (3.27×)</ins>** | 365 µs (0.15×) | 365 µs (0.15×) | <ins>22.0 µs (2.56×)</ins> | <ins>22.0 µs (2.56×)</ins> |
+| 纯 VM 微基准 [^cat-baseline] | Simple (分支/比较) | 812 ns | **<ins>141 ns (5.77×)</ins>** | — [^p3-kernel] | — [^p3-kernel] | <ins>160 ns (5.08×)</ins> | <ins>160 ns (5.08×)</ins> |
+|  | Arith (Horner) | 945 ns | **<ins>186 ns (5.08×)</ins>** | — [^p3-kernel] | — [^p3-kernel] | <ins>195 ns (4.85×)</ins> | <ins>195 ns (4.85×)</ins> |
+|  | Loop (求和循环) | 56.2 µs | **<ins>17.2 µs (3.27×)</ins>** | — [^p3-kernel] | — [^p3-kernel] | <ins>22.0 µs (2.56×)</ins> | <ins>22.0 µs (2.56×)</ins> |
 | heavy 内核 [^cat-heavy] | HeavyArith | 248 ms | <ins>76.4 ms (3.24×)</ins> | <ins>91.2 ms (2.71×)</ins> | <ins>91.4 ms (2.71×)</ins> | <ins>14.6 ms (16.9×)</ins> | **<ins>14.2 ms (17.5×)</ins>** |
 |  | HeavyRecursion | 8.82 ms | **<ins>5.22 ms (1.69×)</ins>** | 5.89 ms (1.50×) | <ins>5.86 ms (1.50×)</ins> | <ins>5.54 ms (1.59×)</ins> | <ins>5.56 ms (1.59×)</ins> |
 |  | HeavyFloatloop | 420 ms | <ins>148 ms (2.83×)</ins> | <ins>52.6 ms (7.98×)</ins> | <ins>52.7 ms (7.97×)</ins> | **<ins>25.3 ms (16.6×)</ins>** | <ins>25.3 ms (16.6×)</ins> |
@@ -68,13 +68,13 @@ P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 met
 
 ### darwin/arm64 实测（Apple M5 Pro）
 
-同一套复现命令在 Apple M5 Pro（darwin/arm64, go1.26.4, `-benchtime=2s -count=3 -cpu=1`, 取 median，2026-07-08 实测，与上方 amd64 表同一代码）。gopher 基线与倍率只在本表内横向可比。
+同一套复现命令在 Apple M5 Pro（darwin/arm64, go1.26.4, `-benchtime=2s -count=3 -cpu=1`, 取 median，2026-07-08 实测，与上方 amd64 表同一代码；纯 VM 微基准三行 2026-07-09 按 issue #93 修正后的口径同机重测）。gopher 基线与倍率只在本表内横向可比。
 
 | 类别 | 脚本 | gopher | P1 | P3 auto | P3 force | P4 auto | P4 force |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 纯 VM 微基准 | Simple (分支/比较) | 489 ns | <ins>91.6 ns (5.34×)</ins> | 2.47 µs (0.20×) | 2.47 µs (0.20×) | **<ins>82.6 ns (5.92×)</ins>** | **<ins>82.6 ns (5.92×)</ins>** |
-|  | Arith (Horner) | 555 ns | **<ins>104 ns (5.35×)</ins>** | 6.46 µs (0.09×) | 6.48 µs (0.09×) | <ins>106 ns (5.21×)</ins> | <ins>106 ns (5.21×)</ins> |
-|  | Loop (求和循环) | 29.9 µs | **<ins>9.67 µs (3.09×)</ins>** | 488 µs (0.06×) | 520 µs (0.06×) | <ins>12.4 µs (2.41×)</ins> | <ins>12.4 µs (2.41×)</ins> |
+| 纯 VM 微基准 | Simple (分支/比较) | 491 ns | **<ins>83.2 ns (5.90×)</ins>** | 5211 ns (0.88×) [^p3-kernel] | 5132 ns (0.89×) [^p3-kernel] | <ins>86.2 ns (5.69×)</ins> | <ins>86.2 ns (5.69×)</ins> |
+|  | Arith (Horner) | 561 ns | **<ins>106 ns (5.29×)</ins>** | 6440 ns (1.33×) [^p3-kernel] | 6472 ns (1.33×) [^p3-kernel] | <ins>109 ns (5.14×)</ins> | <ins>109 ns (5.14×)</ins> |
+|  | Loop (求和循环) | 31.2 µs | **<ins>9.61 µs (3.24×)</ins>** | <ins>530 µs (2.99×)</ins> [^p3-kernel] | <ins>496 µs (3.20×)</ins> [^p3-kernel] | <ins>12.5 µs (2.49×)</ins> | <ins>12.5 µs (2.49×)</ins> |
 | heavy 内核 | HeavyArith | 125 ms | <ins>44.5 ms (2.81×)</ins> | <ins>51.1 ms (2.44×)</ins> | <ins>51.1 ms (2.45×)</ins> | <ins>24.9 ms (5.03×)</ins> | **<ins>24.5 ms (5.10×)</ins>** |
 |  | HeavyRecursion | 5.93 ms | **<ins>3.06 ms (1.94×)</ins>** | <ins>3.51 ms (1.69×)</ins> | <ins>3.51 ms (1.69×)</ins> | <ins>3.30 ms (1.80×)</ins> | <ins>3.31 ms (1.79×)</ins> |
 |  | HeavyFloatloop | 221 ms | <ins>84.3 ms (2.63×)</ins> | <ins>60.4 ms (3.66×)</ins> | <ins>60.5 ms (3.66×)</ins> | **<ins>25.1 ms (8.83×)</ins>** | <ins>28.1 ms (7.87×)</ins> |
@@ -98,6 +98,7 @@ P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 met
 [^cat-heavy]: `benchmarks/heavy`。三个扁平数值内核（HeavyArith 纯算术、HeavyRecursion 自递归、HeavyFloatloop 嵌套浮点循环），故意剔除表 / 字符串 / library CALL 与其他 helper-bound 结构。反映编译档在能真正发挥的形状上的性能上限。
 [^cat-realworld]: `benchmarks/realworld`。benchmark-game 五脚本（fib / binary-trees / spectral-norm / fannkuch / n-body），语义单次通过与官方 lua5.1.5 做差分测试（逐字节比对）。反映调用 / 分配 / 浮点 / 表操作混合场景下的常规负载。
 [^p3-gate]: P3 auto 模式带 helper 密度收益门（issue #39，2026-07-03）：热 proto 的 op 组合里 helper 往返占比过高（wasm→Go 边界成本吞掉升层收益）时拒绝升层、留在解释器。带此标注的行升层被拒，数字即解释器执行（与 P1 列的差异是采样钩子开销）。P3 force 列不受影响（force-all 绕过收益门，保差分覆盖）。
+[^p3-kernel]: baseline P3 列的工作负载与其它列不同（issue #93）：顶层 chunk 是 vararg 永不升层，P3 必须测「包进内层 kernel 调 50 次」的形状；其它列跑裸顶层 ×1。因此 P3 列的倍率分母是**同形状**的 gopher 基准（`_GopherKernel`，gopher 跑一样的 kernel×50），wall time 与同行其它列不可直接比（工作量 ≈50 倍）。此前表格误拿顶层 ×1 的 gopher 当分母，把 P3 低估约 50 倍（旧表 0.06×-0.25× 实为 1.3×-3.2×）。amd64 行的 P3 格待下轮同机重测补数（formatter 已改口径，`—` 为缺同形状分母）。arm64 行 2026-07-09 同机重测。
 [^seg2seg]: P4 段到段 CALL 直跳（issue #50，2026-07-04，amd64 + arm64 已交付）：自递归 / arith-callee（fib 形状）之前每次调用付一次跨界往返税（mmap RET → Go dispatch → host.CallBaseline → mmap 重入），现在 caller 段直接 `call` 进 callee 段、callee 段内组拆帧 + native 递归、全程不出 mmap。amd64 同轮实测（2026-07-08，`scripts/bench-readme-table.sh`，`-benchtime=2s -count=3 -cpu=1` median，over gopher-lua）：fib **10.2×**、spectral-norm auto 与 force 都到约 **16×**（内层 A/Av/Atv 走段到段；#77 的密度门修复后 auto 也能吃满收益，不再只有 force 受益）、fannkuch **7.13×**、binary-trees **2.00×**（`check` 自递归 + GETTABLE ArrayHit 读表，随 ArrayHit 站点纳入段到段资格 + forceAll 重试窗口放宽而解锁，剩余瓶颈是 bottomup 的分配）。darwin/arm64 M5 Pro 同日复测（见下表）：fib **8.67×**、spectral-norm **8.75×**（auto 同到 8.73×，与 amd64 一样吃到 #77 密度门修复）、binary-trees **1.82×**，双架构收益形状一致。
 [^math-intrinsic]: P4 math.* intrinsic emission（issue #77 / PR #87，2026-07-08，amd64 + arm64 已交付）：CALL 站点 IC 观察到被调是已知纯数值 host closure（sqrt / floor / ceil / abs / max / min）时，段内直接发射硬件指令（amd64 SQRTSD / ROUNDSD 等）而不再 exit-reason 往返到 Go host closure。n-body 的稳态几乎全是 `sqrt(dist2)` 调用，之前既因每次 sqrt 付一次跨界往返、又因 CALL 密度门把带 sqrt 的热函数误判成「调用太密、升层不划算」而拒绝升层，两头卡住（P4 ≈ P1，1.41×）；#77 一并修好后（intrinsic CALL 不计入密度门 + sqrt 内联发射），n-body 从 1.40× 翻到 **14.3×**（60.5 ms → 4.23 ms）。结果与解释器逐字节一致（含 NaN / Inf / ±0）。darwin/arm64 M5 Pro 同日复测同样生效（FSQRT / FRINTM 等 arm64 对应指令）：n-body 从 0.98× 翻到 **9.65×**（30.9 ms → 3.81 ms），auto 与 force 一致。
 [^cat-mini]: `benchmarks/embedded`，mini_bench_test.go。嵌入路径的最小形式：每 iter 一次 SetGlobal + 一次 Call + 一次读结果。反映边界往返成本本身，以及 `Call` 分配路径与 `CallInto` 零分配路径的成本差。
@@ -146,8 +147,8 @@ cd benchmarks
 DIRS='./baseline/ ./heavy/ ./realworld/ ./embedded/'
 FLAGS='-run=^$ -benchtime=2s -count=3 -cpu=1'
 
-# P1: crescent 解释器 (默认 build)
-go test -bench='_(Wangshu|WangshuCall|WangshuCallInto|Gopher)$' $FLAGS $DIRS
+# P1: crescent 解释器 (默认 build；GopherKernel 是 baseline P3 列的同形状分母)
+go test -bench='_(Wangshu|WangshuCall|WangshuCallInto|Gopher|GopherKernel)$' $FLAGS $DIRS
 
 # P3: gibbous-wasm (auto 走 _WangshuKernel/_GibbousAuto*，force 走 _Gibbous*)
 go test -tags "wangshu_p3 wangshu_profile" \
