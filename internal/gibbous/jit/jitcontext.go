@@ -127,6 +127,15 @@ const (
 	// made depth-128 subtrees fully in-segment — ~phi^128 calls with no
 	// billing point).
 	JITContextSegCallFuelOffset = unsafe.Offsetof(JITContext{}.segCallFuel)
+
+	// JITContextLoopFuelOffset is the byte offset of loopFuel: the loop
+	// back-edge budget counter (issue #102). The FORLOOP / negative-sBx
+	// JMP back-edge emit decrements it (amd64 `sub dword [r15+off],1`,
+	// arm64 ldr-sub-str) and exits via HelperLoopFuel at zero, giving
+	// budgeted States a billing point on loops whose bodies never leave
+	// the mmap segment (issue #102: a 277M-iteration loop with an
+	// inline math-intrinsic body ran to completion under a 1M budget).
+	JITContextLoopFuelOffset = unsafe.Offsetof(JITContext{}.loopFuel)
 )
 
 // **§9.20.9 协议状态码常量** (Spike 1 真接入 + future helper request 路由):
@@ -242,7 +251,7 @@ const (
 	HelperClose uint64 = 31
 
 	// HelperLoopFuel is the exit-reason code for an in-segment loop
-	// back-edge whose segCallFuel decrement hit zero (issue #102). A
+	// back-edge whose loopFuel decrement hit zero (issue #102). A
 	// fully-inline loop body (arithmetic, or a #77 math intrinsic)
 	// otherwise never reaches a Go-side billing point, so a budgeted
 	// State could run a 277M-iteration loop to completion while the
@@ -517,17 +526,15 @@ type JITContext struct {
 	// the inner entry runs (see spike/p4spillstack DECISION.md G3).
 	savedGoSP uintptr
 
-	// segCallFuel bounds how many seg2seg in-segment CALL dispatches and
-	// in-segment loop back-edges (issue #102) may run between Go-side
-	// preemption points. The seg2seg fast body decrements it before each
-	// in-segment dispatch; at zero the caller falls back to the
-	// exit-reason host path, whose
+	// segCallFuel bounds how many seg2seg in-segment CALL dispatches may
+	// run between Go-side preemption points. The seg2seg fast body
+	// decrements it before each in-segment dispatch; at zero the caller
+	// falls back to the exit-reason host path, whose
 	// ExecutePlainCallInlineFrame -> enterLuaFrame runs st.preempt()
 	// (step budget + cancel context) and the host refills the fuel on
-	// the next Run entry / dispatcher resume. Loop back-edges (FORLOOP /
-	// negative-sBx JMP) decrement the same counter and exit via
-	// HelperLoopFuel at zero — host.LoopPreempt bills + refills + checks,
-	// then the segment resumes on the back-edge continuation.
+	// the next Run entry / dispatcher resume. Loop back-edges use the
+	// separate loopFuel counter below (issue #102) — see its doc for
+	// why the two cannot share.
 	//
 	// Why fuel and not the preemptFlag: the step budget has no async
 	// producer — nothing ever sets preemptFlag when a budget is armed;
@@ -550,6 +557,40 @@ type JITContext struct {
 	// the step budget on the next refresh. Go-side only; the segment
 	// never reads it.
 	segCallFuelRefill uint32
+
+	// loopFuel bounds how many in-segment loop back-edges (FORLOOP /
+	// negative-sBx JMP) may run between Go-side preemption points
+	// (issue #102). The back-edge emit decrements it; at zero the
+	// segment exits via HelperLoopFuel and host.LoopPreempt bills the
+	// spent back-edges to the step budget, refills, and runs the
+	// standard preemption check.
+	//
+	// Deliberately SEPARATE from segCallFuel: the dispatcher refills
+	// segCallFuel on every Run entry / resume (the host CALL path is
+	// itself a billing point, so erasing the drain there is fine), but
+	// a loop whose body round-trips through an exit-reason helper each
+	// iteration (e.g. a not-yet-warmed CALL) would then never
+	// accumulate enough back-edge decrements to trip the guard — and
+	// host-closure CALLs never reach st.preempt(), so nothing would
+	// ever CHECK the billed budget (probe: 7.7M helper round trips,
+	// stepUsed billed past the budget, zero raises). loopFuel is
+	// refilled ONLY by LoopPreempt and by RefreshJitCtxAddrs on an
+	// armed-state TRANSITION (budget armed <-> disarmed), so the drain
+	// survives dispatcher resumes.
+	//
+	// Initialized to SegCallFuelBudgeted (with an Unlimited refill
+	// marker so the pre-arming drain never bills): an unbudgeted State
+	// pays one HelperLoopFuel round trip after the first 4096
+	// back-edges, gets an Unlimited refill, and stays in-segment for
+	// 2^31 back-edges thereafter.
+	loopFuel uint32
+
+	// loopFuelRefill mirrors segCallFuelRefill for the loop back-edge
+	// counter: records the last SetLoopFuel value so LoopFuelSpent can
+	// bill (refill - loopFuel), returning 0 for Unlimited-mode drains
+	// (same rationale as SegCallFuelSpent — those back-edges ran while
+	// no budget was armed).
+	loopFuelRefill uint32
 }
 
 // NewJITContext 构造 P4 JIT 执行上下文。
@@ -563,6 +604,15 @@ type JITContext struct {
 func NewJITContext() *JITContext {
 	c := &JITContext{}
 	c.AllocSpillStack()
+	// Loop back-edge fuel (issue #102): start with the budgeted quantum
+	// but the Unlimited refill marker, so (a) a State that arms a budget
+	// mid-life reaches a billing point within the first 4096 back-edges
+	// even if RefreshJitCtxAddrs hasn't seen the transition yet, and
+	// (b) LoopFuelSpent reports 0 for the pre-arming drain (never bill
+	// unbudgeted back-edges to a later-armed budget — PR #95 review
+	// note, same rule as segCallFuel).
+	c.loopFuel = SegCallFuelBudgeted
+	c.loopFuelRefill = SegCallFuelUnlimited
 	return c
 }
 
@@ -781,6 +831,37 @@ func (c *JITContext) SegCallFuelSpent() uint32 {
 		return 0
 	}
 	return c.segCallFuelRefill - c.segCallFuel
+}
+
+// SetLoopFuel refills the loop back-edge fuel (issue #102; see the
+// loopFuel field doc). Called by host.LoopPreempt on every
+// HelperLoopFuel exit, and by RefreshJitCtxAddrs only on an armed-state
+// transition — NOT on every refresh, or a loop body that round-trips
+// through the dispatcher each iteration would keep resetting the
+// counter and never reach a billing point.
+func (c *JITContext) SetLoopFuel(n uint32) {
+	c.loopFuel = n
+	c.loopFuelRefill = n
+}
+
+// LoopFuel returns the remaining loop back-edge fuel (test hook).
+func (c *JITContext) LoopFuel() uint32 { return c.loopFuel }
+
+// LoopFuelArmedBudgeted reports whether the last loop-fuel refill was
+// the budgeted quantum (host-side transition detection).
+func (c *JITContext) LoopFuelArmedBudgeted() bool {
+	return c.loopFuelRefill == SegCallFuelBudgeted
+}
+
+// LoopFuelSpent returns how many in-segment loop back-edges ran since
+// the last SetLoopFuel, for step-budget billing. Returns 0 when the
+// last refill was Unlimited (mirror of SegCallFuelSpent: unbudgeted
+// back-edges must not bill a later-armed budget).
+func (c *JITContext) LoopFuelSpent() uint32 {
+	if c.loopFuelRefill != SegCallFuelBudgeted {
+		return 0
+	}
+	return c.loopFuelRefill - c.loopFuel
 }
 
 // CurrentClosureRef returns the running frame's closure GCRef (test hook

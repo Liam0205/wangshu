@@ -187,13 +187,17 @@ const (
 //	MOVE, LOADK (numeric; string LOADK is rejected by AnalyzeNative),
 //	LOADBOOL, LOADNIL, JMP, RETURN, FORPREP, FORLOOP, TEST, TESTSET.
 //
-// FORPREP/FORLOOP do assume-number NEON/SSE arithmetic but never emit
-// an exit-reason (a NaN is a correctness concern for the RESULT, the
-// same one the normal native path already accepts — not an exit). TEST/
-// TESTSET are pure Nil/False bit-compares, also no exit. These give
-// multi-BB never-exits shapes (via FORLOOP back-edge / TEST branch),
-// which is what makes a callee both native-compiled (PreferNative needs
-// multi-BB) AND a valid segment-to-segment target.
+// FORPREP/FORLOOP do assume-number NEON/SSE arithmetic but their only
+// exit paths are deopt-guarded (a NaN is a correctness concern for the
+// RESULT, the same one the normal native path already accepts — not an
+// exit; the issue #102 back-edge fuel exhaustion and the FORPREP guard
+// miss both deopt-redo when running as a seg2seg callee instead of
+// exiting mid-segment). Negative-sBx JMP back-edges carry the same
+// deopt-guarded fuel check. TEST/TESTSET are pure Nil/False
+// bit-compares, also no exit. These give multi-BB never-exits shapes
+// (via FORLOOP back-edge / TEST branch), which is what makes a callee
+// both native-compiled (PreferNative needs multi-BB) AND a valid
+// segment-to-segment target.
 //
 // Excluded — each can exit mid-execution:
 //   - ADD/SUB/MUL/DIV/UNM: IsNumber guard miss → HelperArithSlow.

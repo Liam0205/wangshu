@@ -94,7 +94,7 @@ func (h *fakeHost) ForPrep(base, pc, a int32) int32         { return 0 }
 // arm a budget — refill unlimited so the loop keeps running.
 func (h *fakeHost) LoopPreempt(ctx *jit.JITContext, base, pc int32) int32 {
 	if ctx != nil {
-		ctx.SetSegCallFuel(jit.SegCallFuelUnlimited)
+		ctx.SetLoopFuel(jit.SegCallFuelUnlimited)
 	}
 	return 0
 }
