@@ -150,7 +150,7 @@ func (st *State) enterLuaFrame(th *thread, funcIdx, nargs, nresults int, entry b
 	}
 	th.setTop(base + int(proto.MaxStack))
 	if profileEnabled {
-		st.bridge.OnEnter(proto, th == st.mainTh)
+		st.bridge.OnEnterID(proto, pid, th == st.mainTh)
 	}
 	return nil
 }
