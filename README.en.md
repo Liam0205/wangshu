@@ -38,31 +38,33 @@ Architectural invariants:
 
 ## Performance
 
-Numbers taken on one machine (linux/amd64, Intel Xeon Platinum, 24 core, go1.26.2, `-benchtime=2s -count=3 -cpu=1`, median). Format is "wall time (ratio over gopher-lua)"; larger is better; **bold** marks the fastest cell in a row, <ins>underline</ins> marks ratios ≥ 1.5×. Reproduction commands are in the [section below](#reproduction-commands). darwin/arm64 measurements are in the subsection below.
+Numbers taken on one machine (linux/amd64, Intel Xeon Platinum, 24 core, go1.26.2, `-benchtime=2s -count=3 -cpu=1`, median, measured 2026-07-09). Format is "wall time (ratio over gopher-lua)"; larger is better; **bold** marks the fastest cell in a row, <ins>underline</ins> marks ratios ≥ 1.5×. The whole table is reproducible with `scripts/bench-readme-table.sh` (see the [section below](#reproduction-commands)). darwin/arm64 measurements are in the subsection below.
+
+> Note: the ratio denominator is gopher-lua measured on the same machine in the SAME round; machine state (co-tenants / thermals / turbo) drifts the gopher baseline between rounds, so ratios only compare within one round — compare wall times across rounds instead.
 
 | Category | Script | gopher | P1 | P3 auto | P3 force | P4 auto | P4 force |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| Pure-VM micro [^cat-baseline] | Simple (branch/compare) | 954 ns | **<ins>135 ns (7.07×)</ins>** | — [^p3-kernel] | — [^p3-kernel] | <ins>145 ns (6.58×)</ins> | <ins>145 ns (6.58×)</ins> |
-|  | Arith (Horner) | 1045 ns | **<ins>175 ns (5.97×)</ins>** | — [^p3-kernel] | — [^p3-kernel] | <ins>183 ns (5.71×)</ins> | <ins>183 ns (5.71×)</ins> |
-|  | Loop (sum) | 37.2 µs | **<ins>17.0 µs (2.18×)</ins>** | — [^p3-kernel] | — [^p3-kernel] | <ins>21.4 µs (1.74×)</ins> | <ins>21.4 µs (1.74×)</ins> |
-| Heavy kernels [^cat-heavy] | HeavyArith | 240 ms | <ins>78.3 ms (3.06×)</ins> | <ins>86.4 ms (2.77×)</ins> | <ins>86.4 ms (2.77×)</ins> | <ins>14.2 ms (16.8×)</ins> | **<ins>13.7 ms (17.5×)</ins>** |
-|  | HeavyRecursion | 8.99 ms | **<ins>5.07 ms (1.76×)</ins>** | <ins>5.72 ms (1.57×)</ins> | <ins>5.71 ms (1.58×)</ins> | <ins>5.36 ms (1.68×)</ins> | <ins>5.42 ms (1.66×)</ins> |
-|  | HeavyFloatloop | 410 ms | <ins>146 ms (2.81×)</ins> | <ins>51.1 ms (8.04×)</ins> | <ins>51.2 ms (8.01×)</ins> | **<ins>24.0 ms (17.1×)</ins>** | **<ins>24.0 ms (17.1×)</ins>** |
-| Realworld small [^cat-realworld] | fib | 9.32 ms | 10.0 ms (0.93×) | 11.1 ms (0.84×) [^p3-gate] | 25.0 ms (0.37×) | **<ins>0.90 ms (10.3×)</ins>** [^seg2seg] | <ins>0.91 ms (10.3×)</ins> [^seg2seg] |
-|  | binary-trees | 51.5 ms | 35.8 ms (1.44×) | 38.6 ms (1.34×) [^p3-gate] | 103.6 ms (0.50×) | <ins>26.0 ms (1.98×)</ins> | **<ins>26.1 ms (1.98×)</ins>** [^seg2seg] |
-|  | spectral-norm | 33.3 ms | <ins>18.3 ms (1.82×)</ins> | <ins>20.6 ms (1.62×)</ins> [^p3-gate] | 46.3 ms (0.72×) | <ins>15.6 ms (2.14×)</ins> | **<ins>2.11 ms (15.8×)</ins>** [^seg2seg] |
-|  | fannkuch | 4.15 ms | 5.60 ms (0.74×) | 5.74 ms (0.72×) | 5.74 ms (0.73×) | **<ins>0.60 ms (6.9×)</ins>** | **<ins>0.60 ms (6.9×)</ins>** [^seg2seg] |
-|  | n-body | 59.9 ms | 44.6 ms (1.34×) | 43.3 ms (1.38×) [^p3-gate] | 86.0 ms (0.70×) | **42.5 ms (1.41×)** | **42.5 ms (1.41×)** |
-| Boundary mini · Call [^cat-mini] | PureVM | 945 ns | **<ins>138 ns (6.85×)</ins>** | — | — | — | — |
-|  | CallOnly | **85.2 ns** | 194 ns (0.44×) | 200 ns (0.43×) | 314 ns (0.27×) | 197 ns (0.43×) | 200 ns (0.43×) |
-|  | Boundary (+SetGlobal) | **185 ns** | 324 ns (0.57×) | 328 ns (0.56×) | 343 ns (0.54×) | 329 ns (0.56×) | 335 ns (0.55×) |
-| Boundary mini · CallInto [^cat-mini] | PureVM | 945 ns | **<ins>138 ns (6.85×)</ins>** | — | — | — | — |
-|  | CallOnly | 85.2 ns | 79.4 ns (1.07×) | 79.2 ns (1.08×) | 181 ns (0.47×) | 79.5 ns (1.07×) | **79.0 ns (1.08×)** |
-|  | Boundary (+SetGlobal) | 185 ns | **180 ns (1.03×)** | 192.7 ns (0.96×) | 195 ns (0.95×) | 189.3 ns (0.98×) | 191.2 ns (0.97×) |
-| Realworld embedded · Call [^cat-embed] | Predicate (×1000) | **476 µs** | 583 µs (0.82×) | 569 µs (0.84×) | 589 µs (0.81×) | 561 µs (0.85×) | 560 µs (0.85×) |
-|  | Transform (×1000) | **337 µs** | 436 µs (0.77×) | 436 µs (0.77×) | 438 µs (0.77×) | 431 µs (0.78×) | 435 µs (0.77×) |
-| Realworld embedded · CallInto [^cat-embed] | Predicate (×1000) | 476 µs | 407 µs (1.17×) | 421 µs (1.13×) | 425 µs (1.12×) | **404 µs (1.18×)** | 409 µs (1.16×) |
-|  | Transform (×1000) | 337 µs | **287 µs (1.18×)** | 290 µs (1.16×) | 290 µs (1.16×) | 288 µs (1.17×) | 291 µs (1.16×) |
+| Pure-VM micro [^cat-baseline] | Simple (branch/compare) | 845 ns | **<ins>149 ns (5.67×)</ins>** | <ins>4426 ns (1.85×)</ins> [^p3-kernel] | 9675 ns (0.85×) [^p3-kernel] | <ins>162 ns (5.22×)</ins> | <ins>162 ns (5.22×)</ins> |
+|  | Arith (Horner) | 1003 ns | **<ins>196 ns (5.11×)</ins>** | <ins>6577 ns (2.23×)</ins> [^p3-kernel] | 11152 ns (1.32×) [^p3-kernel] | <ins>199 ns (5.04×)</ins> | <ins>199 ns (5.04×)</ins> |
+|  | Loop (sum) | 60.0 µs | **<ins>18.2 µs (3.30×)</ins>** | <ins>396 µs (7.39×)</ins> [^p3-kernel] | <ins>393 µs (7.45×)</ins> [^p3-kernel] | <ins>23.0 µs (2.61×)</ins> | <ins>23.0 µs (2.61×)</ins> |
+| Heavy kernels [^cat-heavy] | HeavyArith | 249 ms | <ins>79.5 ms (3.13×)</ins> | <ins>95.3 ms (2.61×)</ins> | <ins>95.1 ms (2.61×)</ins> | <ins>15.6 ms (15.9×)</ins> | **<ins>15.2 ms (16.4×)</ins>** |
+|  | HeavyRecursion | 8.94 ms | **<ins>5.49 ms (1.63×)</ins>** | <ins>5.87 ms (1.52×)</ins> | 6.18 ms (1.45×) | 6.48 ms (1.38×) | 6.48 ms (1.38×) |
+|  | HeavyFloatloop | 445 ms | <ins>157 ms (2.83×)</ins> | <ins>55.2 ms (8.06×)</ins> | <ins>55.1 ms (8.07×)</ins> | **<ins>26.6 ms (16.7×)</ins>** | <ins>26.8 ms (16.6×)</ins> |
+| Realworld small [^cat-realworld] | fib | 10.2 ms | 10.9 ms (0.93×) | 11.9 ms (0.86×) [^p3-gate] | 27.1 ms (0.38×) | <ins>1.04 ms (9.81×)</ins> [^seg2seg] | **<ins>1.04 ms (9.83×)</ins>** [^seg2seg] |
+|  | binary-trees | 55.1 ms | 38.9 ms (1.42×) | 41.7 ms (1.32×) [^p3-gate] | 113 ms (0.49×) | **<ins>28.3 ms (1.95×)</ins>** | <ins>28.3 ms (1.95×)</ins> [^seg2seg] |
+|  | spectral-norm | 36.7 ms | <ins>19.5 ms (1.89×)</ins> | <ins>22.5 ms (1.63×)</ins> [^p3-gate] | 51.0 ms (0.72×) | <ins>2.34 ms (15.7×)</ins> | **<ins>2.33 ms (15.7×)</ins>** [^seg2seg] |
+|  | fannkuch | 4.47 ms | 5.91 ms (0.76×) | 6.20 ms (0.72×) | 6.20 ms (0.72×) | <ins>0.67 ms (6.70×)</ins> | **<ins>0.66 ms (6.76×)</ins>** [^seg2seg] |
+|  | n-body | 66.9 ms | 45.7 ms (1.46×) | 48.3 ms (1.39×) [^p3-gate] | 94.0 ms (0.71×) | <ins>4.48 ms (15.0×)</ins> [^math-intrinsic] | **<ins>4.48 ms (15.0×)</ins>** [^math-intrinsic] |
+| Boundary mini · Call [^cat-mini] | PureVM | 845 ns | **<ins>150 ns (5.62×)</ins>** | — | — | — | — |
+|  | CallOnly | **91.1 ns** | 210 ns (0.43×) | 223 ns (0.41×) | 340 ns (0.27×) | 241 ns (0.38×) | 241 ns (0.38×) |
+|  | Boundary (+SetGlobal) | **198 ns** | 348 ns (0.57×) | 362 ns (0.55×) | 744 ns (0.27×) | 324 ns (0.61×) | 320 ns (0.62×) |
+| Boundary mini · CallInto [^cat-mini] | PureVM | 845 ns | **<ins>150 ns (5.62×)</ins>** | — | — | — | — |
+|  | CallOnly | 91.1 ns | **84.3 ns (1.08×)** | 85.9 ns (1.06×) | 181 ns (0.50×) | 110 ns (0.83×) | 110 ns (0.83×) |
+|  | Boundary (+SetGlobal) | 198 ns | 194 ns (1.02×) | 206 ns (0.96×) | 588 ns (0.34×) | **172 ns (1.15×)** | 172 ns (1.15×) |
+| Realworld embedded · Call [^cat-embed] | Predicate (×1000) | 542 µs | 591 µs (0.92×) | 611 µs (0.89×) | 1138 µs (0.48×) | **500 µs (1.08×)** | 502 µs (1.08×) |
+|  | Transform (×1000) | **388 µs** | 454 µs (0.85×) | 471 µs (0.82×) | 716 µs (0.54×) | 430 µs (0.90×) | 425 µs (0.91×) |
+| Realworld embedded · CallInto [^cat-embed] | Predicate (×1000) | 542 µs | 427 µs (1.27×) | 452 µs (1.20×) | 965 µs (0.56×) | <ins>348 µs (1.56×)</ins> | **<ins>348 µs (1.56×)</ins>** |
+|  | Transform (×1000) | 388 µs | 291 µs (1.33×) | 312 µs (1.24×) | 553 µs (0.70×) | **276 µs (1.40×)** | 278 µs (1.40×) |
 
 ### darwin/arm64 measurements (Apple M5 Pro)
 
@@ -96,7 +98,7 @@ The same reproduction commands measured on an Apple M5 Pro (darwin/arm64, go1.26
 [^cat-heavy]: `benchmarks/heavy`. Three flat numeric kernels (HeavyArith pure arithmetic, HeavyRecursion self-recursion, HeavyFloatloop nested float loop); intentionally excludes tables, strings, library CALL and other helper-bound structures. Shows the compilation tier's performance ceiling on shapes that actually let it work.
 [^cat-realworld]: `benchmarks/realworld`. Five benchmark-game scripts (fib / binary-trees / spectral-norm / fannkuch / n-body); a single-pass semantics run is differential-tested against the official lua5.1.5 (byte-equal). Shows conventional load under a mix of calls / allocations / floats / table ops.
 [^p3-gate]: P3 auto carries a helper-density profitability gate (issue #39, 2026-07-03): when a hot proto's op mix is dominated by helper round trips (the wasm→Go boundary cost eats the promotion win), promotion is declined and the proto stays on the interpreter. Rows with this marker declined promotion; the number IS interpreter execution (the delta vs the P1 column is sampling-hook overhead). The P3 force column is unaffected (force-all bypasses the gate to preserve differential coverage).
-[^p3-kernel]: The baseline P3 columns run a different workload from the other columns (issue #93): a top-level chunk is vararg and never promotes, so P3 must measure the body wrapped in an inner kernel called 50 times, while the other columns run the bare top-level ×1. The P3 ratios therefore use the SAME-shape gopher baseline (`_GopherKernel`, gopher running the identical kernel×50) as denominator, and the wall times are not directly comparable with the rest of the row (~50× the work). The table previously divided by the top-level ×1 gopher number, understating P3 by ~50× (the old 0.06×-0.25× cells were really 1.3×-3.2×). The amd64 P3 cells await a same-machine re-measure with the fixed formatter (`—` = same-shape denominator missing from the old logs); the arm64 cells were re-measured 2026-07-09.
+[^p3-kernel]: The baseline P3 columns run a different workload from the other columns (issue #93): a top-level chunk is vararg and never promotes, so P3 must measure the body wrapped in an inner kernel called 50 times, while the other columns run the bare top-level ×1. The P3 ratios therefore use the SAME-shape gopher baseline (`_GopherKernel`, gopher running the identical kernel×50) as denominator, and the wall times are not directly comparable with the rest of the row (~50× the work). The table previously divided by the top-level ×1 gopher number, understating P3 by ~50× (the old 0.06×-0.25× cells were really 1.3×-3.2×). Both the amd64 and arm64 rows were re-measured on their same machines under the corrected basis (2026-07-09).
 [^seg2seg]: P4 segment-to-segment CALL dispatch (issue #50, 2026-07-04, delivered on both amd64 and arm64): self-recursive / arith-callee shapes (the fib pattern) used to pay a cross-boundary round trip per call (mmap RET → Go dispatch → host.CallBaseline → mmap re-entry); the caller segment now `call`s directly into the callee segment, which builds/tears its frame in-segment and recurses natively without ever leaving mmap. Same-machine same-batch measurements (2026-07-07, `-benchtime=2s -count=3 -cpu=1` median, over gopher-lua): fib flipped from 0.87× to **10.3×**, spectral-norm from 1.28× to **15.8×** (the inner A/Av/Atv go segment-to-segment; note P4 auto only reaches 2.14× — full promotion under force is needed to capture the whole win), fannkuch **6.9×**. n-body (1.41×) gains little: allocation/GC-bound, its recursive callees carry table ops that stay off the segment-to-segment path. binary-trees' `check` (self-recursion + GETTABLE ArrayHit table reads) unlocked once GETTABLE ArrayHit sites became seg2seg-eligible and the forceAll retry window widened (a recursive proto's deep-pc ICs only warm after a subtree returns) — amd64 went from 1.35× to **1.98×**, arm64 from 0.77× to 1.16× (the remaining bottleneck is bottomup's allocation). The arm64 mirror shipped on the same branch; darwin/arm64 M5 Pro re-measurements (2026-07-07, table below): fib flipped from 0.81× to **9.1×**, spectral-norm from 0.98× to **5.74×**; tracked in issue #61.
 [^cat-mini]: `benchmarks/embedded`, mini_bench_test.go. The minimal shape of the embed path: one SetGlobal + one Call + one result read per iter. Shows raw boundary-crossing cost, plus the delta between the allocating `Call` path and the zero-alloc `CallInto` path.
 [^cat-embed]: `benchmarks/embedded`, realworld_embedded_bench_test.go. A batch of 1000 items — per item set fields → Call predicate / feature-transform script → read scalar result, shaped after pineapple's `transform_by_lua`. Shows steady-state throughput of a real batch-processing embed.
