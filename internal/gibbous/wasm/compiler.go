@@ -160,11 +160,20 @@ func (c *Compiler) WorthPromoting(proto *bytecode.Proto) bool {
 	if len(proto.Code) == 0 {
 		return true
 	}
+	// Back-edge dimension (issue #92): P3's win comes from dispatch saved
+	// INSIDE loops; the price is a per-call wasm boundary round trip
+	// (~130ns/call vs ~73ns/call interpreted, measured on the Arith
+	// kernel). A straight-line body (no back edge) has nothing to
+	// amortize that tax — a small one loses on every call (Arith kernel:
+	// promoted 6450ns vs interpreted 3666ns, 1.76x SLOWER). Reject small
+	// straight-line bodies; large ones (>= straightLineMinCodeLen) carry
+	// enough per-call dispatch savings to cover the boundary.
+	hasBackEdge := false
 	total := 0
 	helperBound := 0
 	for _, ins := range proto.Code {
 		total++
-		switch bytecode.Op(ins) {
+		switch op := bytecode.Op(ins); op {
 		case bytecode.GETTABLE, bytecode.SETTABLE, bytecode.SELF,
 			bytecode.GETGLOBAL, bytecode.SETGLOBAL,
 			bytecode.CALL, bytecode.TAILCALL,
@@ -172,7 +181,16 @@ func (c *Compiler) WorthPromoting(proto *bytecode.Proto) bool {
 			bytecode.NEWTABLE, bytecode.SETLIST,
 			bytecode.CLOSURE, bytecode.CLOSE:
 			helperBound++
+		case bytecode.FORLOOP, bytecode.TFORLOOP:
+			hasBackEdge = true
+		case bytecode.JMP:
+			if bytecode.SBx(ins) < 0 {
+				hasBackEdge = true
+			}
 		}
+	}
+	if !hasBackEdge && len(proto.Code) < straightLineMinCodeLen {
+		return false
 	}
 	if helperBound == 0 {
 		return true
@@ -193,6 +211,18 @@ func (c *Compiler) WorthPromoting(proto *bytecode.Proto) bool {
 // wasmHelperDensityFloor is the minimum total-ops-per-helper-bound-op
 // ratio for promotion to be predicted profitable (see WorthPromoting).
 const wasmHelperDensityFloor = 7
+
+// straightLineMinCodeLen is the minimum Code length for a proto with NO
+// back edge to be predicted profitable (issue #92). Balance point: the
+// per-call boundary tax (call_indirect entry/exit, ~57ns measured on
+// the Arith kernel: 130ns promoted vs 73ns interpreted per call) over
+// the per-instruction dispatch saving (~2-4ns). At 32+ straight-line
+// instructions the saved dispatch covers the boundary; below it the
+// call is a net loss on every entry. Calibrated on darwin/arm64 (issue
+// #92 PoC) and re-checked on amd64 Xeon: Arith kernel (10 insns)
+// 6450 -> 3551 ns/op back at interpreter level, Loop kernel (back edge)
+// keeps promoting, heavy suite unchanged (all have back edges).
+const straightLineMinCodeLen = 32
 
 // SupportsAllOpcodes 实现 F7 后端能力查询(03 §3.7 + 02 §5.2)。
 //
