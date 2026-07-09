@@ -523,6 +523,17 @@ func (c *PerOpCode) runTForLoop(base uint32) int32 {
 		// Go-side replay we don't actually move arenaBase pointers — we
 		// always call host.GetReg/SetReg which re-derive addresses each
 		// time, so the only thing we need is to keep going.
+		//
+		// Loop back-edge fuel (issue #102): a host-closure iterator
+		// (e.g. next) never enters a Lua frame, so nothing else bills
+		// or checks the step budget per iteration — the interpreter
+		// preempts on every TFORLOOP continuation (execute.go).
+		if c.jitCtx.LoopFuelTick() {
+			LoopFuelExitCount.Add(1)
+			if st := c.host.LoopPreempt(c.jitCtx, int32(base), int32(c.tforLoopPC)); st != 0 {
+				return st
+			}
+		}
 		for _, be := range c.bodyEffects {
 			if st := c.runEffect(base, be, nil); st != 0 {
 				if st == -1 {
@@ -570,6 +581,18 @@ func (c *PerOpCode) runForLoop(base uint32) int32 {
 		}
 		if !cont {
 			return 0
+		}
+		// Loop back-edge fuel (issue #102): the Go-side replay has the
+		// same airtight-loop exposure as the native FORLOOP back-edge —
+		// a body of pure register effects never reaches st.preempt().
+		// Mirror the segment's dec+jnz: tick the shared loopFuel and
+		// round-trip host.LoopPreempt (bill + refill + check) when it
+		// drains.
+		if c.jitCtx.LoopFuelTick() {
+			LoopFuelExitCount.Add(1)
+			if st := c.host.LoopPreempt(c.jitCtx, int32(base), int32(c.forLoopPC)); st != 0 {
+				return st
+			}
 		}
 		c.host.SetReg(int32(c.forLoopA)+3, uint64(value.NumberValue(idx)))
 		for _, be := range c.bodyEffects {
