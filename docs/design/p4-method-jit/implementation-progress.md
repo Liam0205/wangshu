@@ -2605,6 +2605,39 @@ darwin/arm64 M5 Pro 真机接力验证中 FuzzAutoPromote 撞出 `f2165a93dd6289
 
 **架构判据**(反思 `2026-07-08-pr95-spill-stack-fuel-round`):给绕过 host 的快路径设计抢占感知时,先分清上层是异步信号模型(flag 检查够用)还是同步计费模型(需燃料/配额预支)——两者的段内接线完全不同。cap=16 曾碰巧兜底计费频率(强制每 ~φ^16 次调用回 Go),解除 workaround 时须列出它顺带提供的隐式保障。
 
+## 22. issue #103 inline 比较快路径的 IEEE 边值修复(双架构,2026-07-09,PR #104)
+
+master 合入 PR #101 后的 push CI 上,`FuzzAutoPromote` seed `765ba4598e721c69`(`fib(0%0)`,NaN 流进
+`n < 0`)撞出 P1/P4 tier divergence:PUC 语义下与 NaN 的有序比较恒 false,无限递归 → stack overflow 是
+正确结果;P4 amd64 inline 把 `NaN < 0` 判成 true,递归提前终止正常返回。解释器与 exit-reason 慢路径
+(host.Compare)始终正确,只有段内 inline 快路径分叉。
+
+### 22.1 两类根因
+
+- **amd64 LT/LE(`inlineNumericCompare`)**:UCOMISD + 单条裸 jcc。NaN(unordered)置 ZF=CF=PF=1,
+  jb/jae/jbe/ja 四种 op/A 组合全部落到错误后继。**arm64 不受影响**——2026-07-03 端口轮(issue #37
+  step 7)就用 FP 安全条件码族 MI/PL/LS/HI 处理了 unordered,但当时没有回头对齐 amd64,裸 jcc 从 PJ10
+  native(2026-07-01)带病至今。修法:关系 jcc 前加 `jp`(PF=1 = unordered)预分支到条件 false 侧后继
+  (x86 没有单条 jcc 能同时测有序关系并把 unordered 路由到指定侧)。
+- **两 arch EQ(`inlineRawEq` / `inlineRawEqArm64`)**:64 位裸位相等比较漏 IEEE 两个例外——canonNaN
+  规范化使所有 NaN 位相同,`NaN == NaN` 误 true(PUC:false);`-0.0` 与 `+0.0` 位不同,`-0.0 == 0.0`
+  误 false(PUC:true)。修法:位相等且值为 canonNaN → 条件 false 侧;位不等但两操作数 OR 后幅值为零
+  (至多符号位)→ 条件 true 侧。**成本用 K 操作数门控**:K ≠ canonNaN 跳过 NaN 检查、K 幅值非零跳过零
+  检查,`x == 1` / `x == "key"` 常见形状保持原两分支形式零开销;新增 arm64 发射原语 `EmitOrrXdXnXm`。
+
+### 22.2 验证
+
+`e2e_compare_nan_test.go`(arch-neutral,两架构 native-runner tag 同跑):四种 LT/LE op/A 臂 + GT/GE
+换操作数形状 + fuzz seed 的有界递归版 + EQ/NEQ × NaN / 运行期 -0.0(reg-reg 与 reg-K)+ 普通数字
+sanity,全部升层断言(PromotionCount>0 + NativeRunCount 增量)+ 与解释器 byte-equal。seed 入 corpus;
+三 build 全量 + 90s/60s 双 fuzz 摇测 + peroptranslator -race 绿;linux/amd64 交叉构建过。
+
+### 22.3 教训(详反思 `2026-07-09-issue103-compare-ieee-round`)
+
+双后端修某类语义 bug 时须跨 arch 反向扫同类站点(与 issue #67 NodeHit 构成「双后端修复不对称」模式第 2
+实例);canonNaN 规范化是双刃剑——审计不变式除了问「谁依赖它成立」还要问「谁的正确性恰好依赖它不成立」;
+一个 fuzz 失败顺手扫全 family(LT/LE 查完顺手查 EQ,多挖出两个两 arch 都中的潜伏 bug)。
+
 ## 21. issue #52 收口:TAILCALL / TFORLOOP / CLOSURE / CLOSE 纳入双架构 opSupported(2026-07-09,PR #99)
 
 承 §16(SELF/CONCAT 片)与 §16.9「不 auto-close #52」:本 PR 补齐 issue #52 剩余的最后四个 op,双架构同步落地,PR 关闭 #52。自此 `opSupported` 白名单只剩 VARARG 一个永久设计门,一次尾调用 / 泛型 for / 闭包构造不再拖垮整个 proto 的升层。
