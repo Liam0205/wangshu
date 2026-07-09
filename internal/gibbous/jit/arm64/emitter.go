@@ -682,6 +682,31 @@ func EmitEorXdXnXm(buf []byte, rd, rn, rm uint8) []byte {
 // EncodedEorXdXnXmLen = 4.
 const EncodedEorXdXnXmLen = 4
 
+// EmitOrrXdXnXm emits arm64 "orr Xd, Xn, Xm" (bitwise OR, shifted
+// register form with shift=00 LSL 0).
+//
+// Encoding: 1010_1010_000_mmmmm_000000_nnnnn_ddddd = 0xAA000000 base
+//
+// Use case: PJ10 arm64 EQ inline +/-0 check (issue #103) — OR the two
+// raw operands; a zero magnitude after shifting out the sign bit means
+// both values are +/-0.
+func EmitOrrXdXnXm(buf []byte, rd, rn, rm uint8) []byte {
+	if rd > 30 {
+		rd = 0
+	}
+	if rn > 30 {
+		rn = 0
+	}
+	if rm > 30 {
+		rm = 0
+	}
+	insn := uint32(0xAA000000) | (uint32(rm)&0x1F)<<16 | (uint32(rn)&0x1F)<<5 | uint32(rd)&0x1F
+	return appendArm64Insn(buf, insn)
+}
+
+// EncodedOrrXdXnXmLen = 4.
+const EncodedOrrXdXnXmLen = 4
+
 // EmitLsrXdImm6 发射 arm64「lsr Xd, Xn, #imm6」(逻辑右移,unsigned 6-bit
 // 位数,等价 UBFM Xd, Xn, #imm6, #63)。
 //
