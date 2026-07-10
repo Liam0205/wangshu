@@ -248,6 +248,26 @@ n := st.PromotionCount() // >0 means promotion has occurred
 
 `SetForceAllPromote` only bypasses the heat threshold; it does **not** bypass the F1-F7 compilability checks (coroutines, top-level vararg, Protos with `ReasonUnknownCall` or VARARG opcodes still do not promote). Non-promotable Protos silently fall back to P1; cross-tier byte-equal output is preserved.
 
+### Production runtime switch and observability
+
+The production admin API for tiered execution (unlike the testing-only force switch above):
+
+```go
+// One-flip fallback to the interpreter: new promotions stop, and
+// already-promoted functions run on P1 again; compiled code is kept,
+// so re-enabling resumes without recompiling.
+st.SetTierEnabled(false)
+st.SetTierEnabled(true)
+
+// Per-State tier distribution snapshot
+stats := st.TierStatsSnapshot()
+// stats.Promoted            number of promoted protos
+// stats.StuckCompileFailed  real compile failures — nonzero is worth investigating
+// stats.TierEnabled         switch state
+```
+
+Deployment requirements (P4's exec-mmap environment constraints), rollout advice, and step-budget semantics under tiered execution are covered in [docs/embedding-tiers.md](docs/embedding-tiers.md).
+
 ### Managing and reusing arena
 
 `Options` exposes the initial and upper-bound sizes of the arena:
@@ -321,6 +341,7 @@ Everything else "exists but is not byte-compared" (`collectgarbage("count")` / `
 By role:
 
 - **Just want to use it**: this README "Quick start" section → the [pkg.go.dev](https://pkg.go.dev/github.com/Liam0205/wangshu) API reference for `Compile` / `Program.Run` / `Program.Call` / `State.CallInto`.
+- **Going to production with P3/P4 tiered execution**: [docs/embedding-tiers.md](docs/embedding-tiers.md) — deployment requirements (exec-mmap environment constraints), runtime switch, TierStats observability, step-budget semantics, launch checklist.
 - **Understanding the architecture**: [docs/design/architecture.md](docs/design/architecture.md) (package layout / component dependencies / tier mapping) → [docs/design/roadmap.md](docs/design/roadmap.md) (motivation / calibration measurement / evolution path / non-goals).
 - **Deep dive into a tier**:
   - P1 interpreter (13 docs): start from [docs/design/p1-interpreter/00-overview.md](docs/design/p1-interpreter/00-overview.md); progress at [implementation-progress](docs/design/p1-interpreter/implementation-progress.md).

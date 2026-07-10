@@ -248,6 +248,25 @@ n := st.PromotionCount() // >0 表示已经升层
 
 `SetForceAllPromote` 只绕过热度阈值，**不**绕过 F1-F7 可编译性检查（协程、顶层 vararg、含 `ReasonUnknownCall`、含 VARARG opcode 的 proto 依然不升层）。升不动的 proto 无声降级回 P1 解释器，输出层间 byte-equal 不变。
 
+### 生产环境的运行期开关与观测
+
+分层执行的生产 admin API（与上面 testing-only 的 force 开关不同）：
+
+```go
+// 一键退回解释器：新升层停止，已升层的函数也回 P1 执行；
+// 编译产物保留，重新打开即恢复，不需要重新编译。
+st.SetTierEnabled(false)
+st.SetTierEnabled(true)
+
+// State 级分层执行分布快照
+stats := st.TierStatsSnapshot()
+// stats.Promoted            已升层 proto 数
+// stats.StuckCompileFailed  真编译失败数——非零值得排查
+// stats.TierEnabled         开关状态
+```
+
+部署要求（P4 的 exec-mmap 环境约束）、灰度建议与 step budget 在分层执行下的语义，详见 [docs/embedding-tiers.md](docs/embedding-tiers.md)。
+
 ### 管理与复用 arena
 
 `Options` 提供 arena 容量的初始值 / 上限：
@@ -321,6 +340,7 @@ for i := 0; i < 1000; i++ {
 按角色路径：
 
 - **想用起来**：本 README 「快速开始」→ [pkg.go.dev](https://pkg.go.dev/github.com/Liam0205/wangshu) 的 `Compile` / `Program.Run` / `Program.Call` / `State.CallInto` API 参考。
+- **想上生产（P3/P4 分层执行）**：[docs/embedding-tiers.md](docs/embedding-tiers.md)——部署要求（exec-mmap 环境约束）、运行期开关、TierStats 观测、step budget 语义、上线检查清单。
 - **想理解架构**：[docs/design/architecture.md](docs/design/architecture.md)（包布局 / 组件依赖 / tier 映射）→ [docs/design/roadmap.md](docs/design/roadmap.md)（动机 / 校准测量 / 演进路线 / 非目标）。
 - **深入某一层**：
   - P1 解释器（13 篇）：[docs/design/p1-interpreter/00-overview.md](docs/design/p1-interpreter/00-overview.md) 起 · 进度对账 [implementation-progress](docs/design/p1-interpreter/implementation-progress.md)
