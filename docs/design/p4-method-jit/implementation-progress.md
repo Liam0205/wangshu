@@ -2735,3 +2735,13 @@ PUC 5.1 尾调用复用 caller 帧(`doTailCall`:搬 callee+args 到 funcIdx、po
 - 绕过 host 隐式维护的不变式(closeUpvals)时,证明义务是「该不变式在此形状下恒空」,手段是字节码层面的静态蕴含链,不是「跑了没挂」。
 - 前两轮教训(#107 guard 位宽 / #102 回边计费)在设计期直接复用,零返工——guide 的跨 session 价值首次在设计期消费中实证。
 - 性能 issue 的 diagnosis 做到「修法可按图施工」的深度,是把探索成本从实现轮搬到 diagnosis 轮的杠杆。
+
+## 25. issue #117/#118 PJ3 spec 模板 NaN 死循环修复(双架构,2026-07-11,PR #119)
+
+nightly go-fuzz 两个 crasher 同一根因:PJ3 字节级 FORLOOP spec 模板(EmptyConst / RegLimit / WithRegKBody / Body2)的退出比较在 NaN 上永假,mmap 段内死循环,safepoint(单线程无人置 preempt 标志)与 step budget(spec 模板通道没有计费点)都救不了。
+
+- **触发形状**:`for A=0,0%0 do end` —— `0%0` 被编译期常量折叠成 NaN;NaN 是货真价实的 number(低于 NaN-box tag 空间),通过 analyzeForLoopForm 的 number 门。
+- **根因**:amd64 `ucomisd idx, limit; ja exit` —— ucomisd 对 unordered 置 CF=ZF=1,`ja` 要求 CF=0 且 ZF=0,退出分支永不触发;arm64 镜像是 `fcmpe; b.gt`(GT 对 unordered 为假)。per-op 翻译器的 emitFORLOOP 不受影响(它换序比较 + jae,unordered 即退出)。
+- **修法三件**:amd64 四处模板换序比较 `ucomisd limit, idx` + `jb` 退出(CF=1 同时覆盖 limit < idx 与 unordered,与解释器 NaN 零迭代语义一致);arm64 四处 `CondGT → CondHI`(fcmpe 对 unordered 置 C=1,Z=0,HI 退出);三处 form analyzer 的 step 门 `step <= 0` 改写为 `!(step > 0)`,NaN step(两种比较都为假)从「误编译」变为「拒绝模板」。
+- **prove-the-path**:回归测试用 `SpecForLoopHits` delta 证明载体真的命中 spec 模板——初版测试的载体带非空 body,静默落到从没坏过的 per-op 路径,探针当场抓出空测;NaN step 情形断言反向(delta == 0,门必须拒)。两个 nightly corpus 入库 `testdata/fuzz/` 常驻回归。
+- **教训**:①「比较语义在 unordered 上的行为」是 #103(inline compare)→ 本轮(spec 模板)的同族第二例,凡手写浮点比较 + 条件跳转,unordered 分支去向必须显式论证;② `x <= 0` 与 `!(x > 0)` 在 NaN 上不同值——守卫门的比较方向要按「拒绝侧默认」写;③ spec 模板通道没有 loopFuel 计费点,这是它与 per-op 通道的结构差异,后续如果扩 spec 模板形状要把这条写进检查单。
