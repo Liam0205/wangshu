@@ -1,0 +1,106 @@
+name: bench-readme-table
+
+# Manual-trigger benchmark table run on hosted runners (2026-07-10).
+#
+# Runs scripts/bench-readme-table.sh (the exact same script that
+# produces the README performance table) on the selected platform(s)
+# and uploads the raw logs + formatted Markdown table as artifacts.
+#
+# HOSTED-RUNNER CAVEATS (read before using the numbers):
+#   - Hosted runners are shared VMs: co-tenant interference makes
+#     absolute wall times swing 10-20% between runs. Do NOT paste these
+#     numbers into the README as-is — the README promises same-machine
+#     same-round measurements (currently a dedicated Xeon + an M5 Pro).
+#   - Within-round RATIOS are usable: the gopher baseline runs in the
+#     same round on the same VM, so the denominator carries the same
+#     pollution (the README table itself declares ratios only compare
+#     within one round).
+#   - ubuntu-24.04-arm is Cobalt 100 (Neoverse-N2 class), NOT Apple
+#     M5 Pro — treat its output as "an arm64 data point", not a
+#     replacement for the M5 Pro rows.
+#
+# Primary use: quick cross-platform ratio checks after a perf-relevant
+# merge (e.g. issue #112's arm64 row) without borrowing a physical
+# machine; final README numbers still come from dedicated hardware.
+
+on:
+  workflow_dispatch:
+    inputs:
+      os:
+        description: 'Platform(s) to run'
+        type: choice
+        default: 'all'
+        options: ['all', 'amd64', 'arm64', 'macos']
+      count:
+        description: 'Repetitions per benchmark (median taken)'
+        default: '3'
+      benchtime:
+        description: 'Time per benchmark'
+        default: '2s'
+
+permissions:
+  contents: read
+
+jobs:
+  # Resolve the os choice into a runner matrix. workflow_dispatch choice
+  # inputs can't express "list of runners" directly, so a tiny setup job
+  # emits the JSON matrix.
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      runners: ${{ steps.pick.outputs.runners }}
+    steps:
+      - id: pick
+        run: |
+          case "${{ inputs.os }}" in
+            amd64) echo 'runners=["ubuntu-latest"]' >> "$GITHUB_OUTPUT" ;;
+            arm64) echo 'runners=["ubuntu-24.04-arm"]' >> "$GITHUB_OUTPUT" ;;
+            macos) echo 'runners=["macos-latest"]' >> "$GITHUB_OUTPUT" ;;
+            *)     echo 'runners=["ubuntu-latest","ubuntu-24.04-arm","macos-latest"]' >> "$GITHUB_OUTPUT" ;;
+          esac
+
+  bench:
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(needs.plan.outputs.runners) }}
+    name: bench (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: run bench table script
+        run: |
+          set -o pipefail
+          mkdir -p bench-logs
+          ./scripts/bench-readme-table.sh \
+            --outdir bench-logs \
+            --count "${{ inputs.count }}" \
+            --benchtime "${{ inputs.benchtime }}" \
+            2> >(tee bench-logs/progress.log >&2) \
+            | tee bench-logs/table.md
+
+      - name: upload logs and table
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bench-readme-table-${{ matrix.os }}-${{ github.run_id }}
+          path: bench-logs/
+          if-no-files-found: error
+
+      - name: table to job summary
+        if: always()
+        run: |
+          {
+            echo "### bench-readme-table (${{ matrix.os }})"
+            echo ""
+            echo "> Hosted-runner numbers: ratios comparable within this round only;"
+            echo "> do not paste into README (see workflow header comment)."
+            echo ""
+            cat bench-logs/table.md
+          } >> "$GITHUB_STEP_SUMMARY"
