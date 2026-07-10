@@ -1,0 +1,2 @@
+go test fuzz v1
+string("local f=math.sin function k()for A=0,333333333333333333333331 do f(0)end end return k()")

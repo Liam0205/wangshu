@@ -373,27 +373,46 @@ func (c *Compiler) emitArithFast(em *emitter, op bytecode.OpCode, a uint32) {
 }
 
 // emitUnm UNM A B —— R(A) := -R(B)(02 §3.2.3)。
-// 快路径 f64.neg(不产生新 NaN,不需规范化);否则 h_unm。
+// Fast path f64.neg + result guard; otherwise h_unm.
+//
+// Result guard (issue #107): f64.neg never produces a NEW NaN, but it
+// flips canonNaN (0x7FF8...) into 0xFFF8_0000_0000_0000 — exactly
+// value.Nil's bit pattern. `-(0%0)` on the unguarded fast path stored
+// that Nil, and the next arithmetic op raised "attempt to perform
+// arithmetic on a nil value". Mirror of the P4 emitUNM fix from the
+// issue #37 port round (fuzz seed f7f0bb1a NaN-aliasing family): when
+// the flipped bits land back in the tag space (>= qNanBoxBase), route
+// to h_unm, whose host side canonicalizes via NumberValue. Fast-path
+// condition = IsNumber(vb) && negged < qNanBoxBase.
 func (c *Compiler) emitUnm(em *emitter, ins bytecode.Instruction, pc int32) {
 	a := uint32(bytecode.A(ins))
 	b := uint32(bytecode.B(ins))
 	em.localGet(localBase)
 	em.i64Load(8 * b)
 	em.localSet(localI64a)
-	// IsNumber(vb)
-	em.localGet(localI64a)
-	em.i64Const(qNanBoxBase)
-	em.i64LtU()
-	em.ifVoid()
-	// 快路径:f64.neg
-	em.localGet(localBase)
+	// negged = i64.reinterpret(f64.neg(f64.reinterpret(vb))). Garbage
+	// bits for boxed non-numbers are harmless — the combined condition
+	// below routes those to the slow path anyway.
 	em.localGet(localI64a)
 	em.f64ReinterpretI64()
 	em.f64Neg()
 	em.i64ReinterpretF64()
+	em.localSet(localI64b)
+	// IsNumber(vb) && negged < qNanBoxBase
+	em.localGet(localI64a)
+	em.i64Const(qNanBoxBase)
+	em.i64LtU()
+	em.localGet(localI64b)
+	em.i64Const(qNanBoxBase)
+	em.i64LtU()
+	em.i32And()
+	em.ifVoid()
+	// Fast path: store negged directly.
+	em.localGet(localBase)
+	em.localGet(localI64b)
 	em.i64Store(8 * a)
 	em.elseOp()
-	// 慢路径:h_unm(base,pc,b,a)
+	// Slow path: h_unm(base,pc,b,a)
 	em.localGet(localBase)
 	em.i32Const(pc)
 	em.i32Const(int32(b))
