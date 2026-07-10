@@ -133,6 +133,22 @@ func SegToSegDeoptCountAddr() uint64 {
 // billing point.
 var LoopFuelExitCount atomic.Int64
 
+// SelfTailCallHitCount counts in-segment self-tail-call loop hits
+// (issue #112). Incremented from the mmap segment via an
+// `inc qword [imm64]` the fast body emits after the identity guard
+// passes and the args are moved — proves the tail call looped
+// in-segment instead of exiting through HelperTailCall (which
+// TailCallRunCount counts). Same baked-address pattern as
+// SegToSegHitCount.
+var SelfTailCallHitCount atomic.Int64
+
+// SelfTailCallHitCountAddr returns the address of the counter's
+// underlying int64 for the emit to bake as an imm64 (mirror of
+// SegToSegHitCountAddr).
+func SelfTailCallHitCountAddr() uint64 {
+	return uint64(uintptr(unsafe.Pointer(&SelfTailCallHitCount)))
+}
+
 // dispatchHelper handles a single ExitInlineHelper request from the
 // mmap segment. Returns true on success (segment can be re-entered
 // at resumeOff), false on error (host method raised → caller returns
