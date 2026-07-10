@@ -49,7 +49,7 @@ P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 met
 |  | Arith (Horner) | 1003 ns | **<ins>196 ns (5.11×)</ins>** | <ins>6577 ns (2.23×)</ins> [^p3-kernel] | 11152 ns (1.32×) [^p3-kernel] | <ins>199 ns (5.04×)</ins> | <ins>199 ns (5.04×)</ins> |
 |  | Loop (求和循环) | 60.0 µs | **<ins>18.2 µs (3.30×)</ins>** | <ins>396 µs (7.39×)</ins> [^p3-kernel] | <ins>393 µs (7.45×)</ins> [^p3-kernel] | <ins>23.0 µs (2.61×)</ins> | <ins>23.0 µs (2.61×)</ins> |
 | heavy 内核 [^cat-heavy] | HeavyArith | 249 ms | <ins>79.5 ms (3.13×)</ins> | <ins>95.3 ms (2.61×)</ins> | <ins>95.1 ms (2.61×)</ins> | <ins>15.6 ms (15.9×)</ins> | **<ins>15.2 ms (16.4×)</ins>** |
-|  | HeavyRecursion | 8.94 ms | **<ins>5.49 ms (1.63×)</ins>** | <ins>5.87 ms (1.52×)</ins> | 6.18 ms (1.45×) | 6.48 ms (1.38×) | 6.48 ms (1.38×) |
+|  | HeavyRecursion | 8.94 ms | <ins>5.49 ms (1.63×)</ins> | <ins>5.87 ms (1.52×)</ins> | 6.18 ms (1.45×) | <ins>1.87 ms (4.78×)</ins> [^selftail] | **<ins>1.85 ms (4.83×)</ins>** [^selftail] |
 |  | HeavyFloatloop | 445 ms | <ins>157 ms (2.83×)</ins> | <ins>55.2 ms (8.06×)</ins> | <ins>55.1 ms (8.07×)</ins> | **<ins>26.6 ms (16.7×)</ins>** | <ins>26.8 ms (16.6×)</ins> |
 | realworld small [^cat-realworld] | fib | 10.2 ms | 10.9 ms (0.93×) | 11.9 ms (0.86×) [^p3-gate] | 27.1 ms (0.38×) | <ins>1.04 ms (9.81×)</ins> [^seg2seg] | **<ins>1.04 ms (9.83×)</ins>** [^seg2seg] |
 |  | binary-trees | 55.1 ms | 38.9 ms (1.42×) | 41.7 ms (1.32×) [^p3-gate] | 113 ms (0.49×) | **<ins>28.3 ms (1.95×)</ins>** | <ins>28.3 ms (1.95×)</ins> [^seg2seg] |
@@ -96,6 +96,7 @@ P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 met
 |  | Transform (×1000) | 252 µs | **176 µs (1.43×)** | 181 µs (1.40×) | 305 µs (0.83×) | 177 µs (1.42×) | 178 µs (1.42×) |
 
 [^cat-baseline]: `benchmarks/baseline`。三个独立的纯 Lua 脚本（Simple 分支比较、Arith 六阶 Horner 多项式、Loop 求和 1..N），单次执行无 Go↔Lua 跨界。反映 VM 内核在最小工作量下的 dispatch / 算术 / 循环开销。
+[^selftail]: P4 HeavyRecursion 行为 2026-07-10 单项重测（issue #112 自尾调用段内循环；同机同参数，其余行仍为 2026-07-09 数字）。arm64 行待重测。
 [^cat-heavy]: `benchmarks/heavy`。三个扁平数值内核（HeavyArith 纯算术、HeavyRecursion 自递归、HeavyFloatloop 嵌套浮点循环），故意剔除表 / 字符串 / library CALL 与其他 helper-bound 结构。反映编译档在能真正发挥的形状上的性能上限。
 [^cat-realworld]: `benchmarks/realworld`。benchmark-game 五脚本（fib / binary-trees / spectral-norm / fannkuch / n-body），语义单次通过与官方 lua5.1.5 做差分测试（逐字节比对）。反映调用 / 分配 / 浮点 / 表操作混合场景下的常规负载。
 [^p3-gate]: P3 auto 模式带 helper 密度收益门（issue #39，2026-07-03）：热 proto 的 op 组合里 helper 往返占比过高（wasm→Go 边界成本吞掉升层收益）时拒绝升层、留在解释器。带此标注的行升层被拒，数字即解释器执行（与 P1 列的差异是采样钩子开销）。P3 force 列不受影响（force-all 绕过收益门，保差分覆盖）。
