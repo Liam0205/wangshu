@@ -947,11 +947,15 @@ func emitTerminator(buf *codeBuf, c *cfg, bb *basicBlock, bbID int, ins bytecode
 		}
 		cb.emit([]byte{0x31, 0xC0, 0xC3}) // xor eax, eax; ret
 	case bytecode.TAILCALL:
-		// ALWAYS terminates the run (issue #52): Run's HelperTailCall
-		// arm finishes Go-side on all three host.TailCall arms (Lua
-		// tail = frame replaced, host tail = DoReturn on the trailing
-		// dead RETURN, err). No successor jump, no resume reentry — the
-		// trailing RETURN BB stays CFG-unreachable and unemitted.
+		// Issue #112: mono self-tail-call loops in-segment (arg move +
+		// nil-fill + fuel-guarded jmp to BB 0); everything else — and
+		// the fast body's guard miss — terminates the run via the
+		// HelperTailCall exit-reason (issue #52): Run's arm finishes
+		// Go-side on all three host.TailCall arms (Lua tail = frame
+		// replaced, host tail = DoReturn on the trailing dead RETURN,
+		// err). No successor jump, no resume reentry — the trailing
+		// RETURN BB stays CFG-unreachable and unemitted.
+		emitSelfTailCallLoop(buf, c.proto, pc, a, b)
 		emitTAILCALL(buf, pc, a, b, cc)
 	case bytecode.JMP:
 		if len(bb.succs) != 1 {

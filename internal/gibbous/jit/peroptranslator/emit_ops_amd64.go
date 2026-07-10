@@ -3056,6 +3056,145 @@ func emitTAILCALL(cb *codeBuf, pc int32, a, b, c uint8) {
 	cb.pendingResumeOffFixups = cb.pendingResumeOffFixups[:0]
 }
 
+// emitSelfTailCallLoop emits the issue #112 in-segment self-tail-call
+// fast path in front of the HelperTailCall exit-reason:
+//
+//	mov rax, [rbx + A*8]            ; callee value
+//	mov rdx, payloadMask
+//	and rax, rdx                    ; callee GCRef payload
+//	cmp rax, [r15 + currentClosureRefOff]
+//	jne slow                        ; not a self call
+//	<move args>                     ; R(k) = R(A+1+k), k = 0..nargs-1
+//	<nil-fill>                      ; R(nargs..MaxStack-1) = Nil
+//	sub dword [r15 + loopFuelOff], 1
+//	jnz entry                       ; back edge to BB 0 (post-prologue)
+//	<HelperLoopFuel exit tail>      ; bill + refill + preempt, resume -> entry
+//	slow:
+//	<HelperTailCall exit-reason>    ; the historical always-terminate path
+//
+// Semantics: a PUC 5.1 tail call REUSES the caller frame (doTailCall
+// moves callee+args to the caller funcIdx, pops, re-enters). When the
+// callee IS the running closure, the reused frame is bit-identical to
+// re-entering this segment with the moved arguments — so the whole
+// round trip (segment exit, host.TailCall, executeFrom, per-level Go
+// re-entry that made HeavyRecursion 12% SLOWER than the interpreter,
+// issue #112) collapses to a register shuffle + jmp. The nil-fill
+// mirrors enterLuaFrame's clear of [numFixed, MaxStack): stale locals
+// from the previous iteration must not leak into the next (the
+// interpreter path never shows them either).
+//
+// Identity guard: R(A)'s FULL 64 bits must equal the TagFunction
+// boxing of jitCtx.currentClosureRef — the running frame's closure
+// GCRef, maintained on Run entry (RefreshJitCtxAddrs) and across
+// seg2seg dispatch (the CALL fast body swaps it). A payload-only
+// compare would be the #107 aliasing family all over again: a plain
+// double's low 48 bits can collide with any GCRef, and `return x(...)`
+// on that number must miss to the slow path (which raises "attempt to
+// call a number value"), not loop. Non-self callees, host closures,
+// __call values: all miss to the slow path, unchanged behavior.
+//
+// The back edge re-enters BB 0's label (bound AFTER the prologue's
+// vsBase load — labels[0] points at the first BB 0 instruction, and
+// rbx is still live/correct within the segment, no reload needed).
+//
+// Fuel: the new back edge makes an airtight in-segment loop (a
+// self-recursive f() with no other ops would never reach a billing
+// point), so it carries the same loopFuel dec+jnz as FORLOOP back
+// edges — mandatory per issue #102's acceptance for this issue (#112).
+//
+// Gate (compile-time; anything failing simply skips the fast body so
+// the site is pure HelperTailCall, unchanged):
+//   - TAILCALL B != 0 (fixed argc; B==0 already rejected by AnalyzeNative)
+//   - non-vararg proto, nargs <= NumParams (extra args would need the
+//     interpreter's discard semantics; fewer is fine — the nil-fill
+//     covers missing params exactly like enterLuaFrame)
+//   - proto contains NO CLOSURE op: doTailCall runs closeUpvals before
+//     the frame is reused, and a body that creates closures over its
+//     locals needs each iteration's captures closed at the tail call —
+//     looping in-segment would leave one shared open upvalue across
+//     all iterations (every capture would see the LAST iteration's
+//     value). No CLOSURE ⟹ no upvalue over this frame's locals can
+//     exist ⟹ closeUpvals is a no-op ⟹ skipping it is sound.
+func emitSelfTailCallLoop(cb *codeBuf, proto *bytecode.Proto, pc int32, a, b uint8) bool {
+	if proto == nil || proto.IsVararg {
+		return false
+	}
+	nargs := int32(b) - 1
+	if b == 0 || nargs > int32(proto.NumParams) {
+		return false
+	}
+	for _, ins := range proto.Code {
+		if bytecode.Op(ins) == bytecode.CLOSURE {
+			return false
+		}
+	}
+	maxStack := int32(proto.MaxStack)
+
+	// Identity guard (full 64-bit compare).
+	// mov rax, [rbx + A*8]                    ; callee value
+	cb.emit(jitamd64.EmitMovqRaxFromMemReg(nil, regRBX, int32(a)*8))
+	// mov rdx, [r15 + currentClosureRefOff]   (49 8B 97 disp32)
+	{
+		off := int32(jit.JITContextCurrentClosureRefOffset)
+		cb.emit([]byte{0x49, 0x8B, 0x97,
+			byte(uint32(off)), byte(uint32(off) >> 8),
+			byte(uint32(off) >> 16), byte(uint32(off) >> 24)})
+	}
+	// mov rcx, TagFunction<<48; or rdx, rcx   ; box the ref
+	cb.emit(jitamd64.EmitMovRcxImm64(nil, uint64(value.TagFunction)<<48))
+	cb.emit([]byte{0x48, 0x09, 0xCA}) // or rdx, rcx
+	// cmp rax, rdx
+	cb.emit([]byte{0x48, 0x39, 0xD0})
+	// jne slow   (0F 85 rel32)
+	jneSlowOff := int(cb.pos()) + 2
+	cb.emit([]byte{0x0F, 0x85, 0, 0, 0, 0})
+
+	// Arg move: R(k) = R(A+1+k). Forward copy is safe — src A+1+k >
+	// dst k always (A >= 0 so A+1 >= 1 > 0, and the windows advance in
+	// lockstep), matching doTailCall's ascending copy.
+	for k := int32(0); k < nargs; k++ {
+		// movsd xmm0, [rbx + (A+1+k)*8]; movsd [rbx + k*8], xmm0
+		cb.emit(jitamd64.EmitMovsdXmmFromMem(nil, 0, regRBX, (int32(a)+1+k)*8))
+		cb.emit(jitamd64.EmitMovsdMemFromXmm(nil, 0, regRBX, k*8))
+	}
+	// Nil-fill [nargs, MaxStack): mirrors enterLuaFrame's clear, which
+	// covers both missing params (nargs < NumParams) and stale locals.
+	if nargs < maxStack {
+		// mov rax, nilBits
+		cb.emit(jitamd64.EmitMovRaxImm64(nil, uint64(value.Nil)))
+		for k := nargs; k < maxStack; k++ {
+			// mov [rbx + k*8], rax
+			cb.emit(jitamd64.EmitMovqMemRegFromRax(nil, regRBX, k*8))
+		}
+	}
+	// Prove-the-path: inc qword [SelfTailCallHitCountAddr].
+	cb.emit(jitamd64.EmitMovRaxImm64(nil, SelfTailCallHitCountAddr()))
+	cb.emit([]byte{0x48, 0xFF, 0x00})
+	// Loop back-edge fuel (issue #102): dec; jnz entry (BB 0).
+	{
+		off := int32(jit.JITContextLoopFuelOffset)
+		cb.emit([]byte{0x41, 0x83, 0xAF,
+			byte(uint32(off)), byte(uint32(off) >> 8),
+			byte(uint32(off) >> 16), byte(uint32(off) >> 24), 0x01})
+	}
+	{
+		patchOff := cb.pos() + 2
+		cb.emit([]byte{0x0F, 0x85, 0, 0, 0, 0})
+		cb.addFixup(patchOff, cb.pos(), 0) // BB 0 = entry
+	}
+	// Fuel exhausted: HelperLoopFuel round trip, resume takes the back
+	// edge. No seg2seg deopt guard — TAILCALL protos are never seg2seg
+	// callees (not in seg2segOpsEligible), segCallDepth is always 0 here.
+	emitExitReason(cb, jit.HelperLoopFuel, pc, 0, 0, 0)
+	emitResumePreludeIfPending(cb)
+	emitJMP(cb, 0)
+
+	// slow: fall through to the HelperTailCall exit-reason.
+	slowPos := int(cb.pos())
+	writeRel32(cb, jneSlowOff, int32(slowPos)-int32(jneSlowOff+4))
+	return true
+}
+
 // emitTFORLOOP emits the TFORLOOP A C exit-reason + packed-result branch
 // (issue #52; mirror of emitCompareExitTail's protocol). The dispatcher
 // calls host.TForLoop (iterator invocation + R(A+3..A+2+C) writes +
