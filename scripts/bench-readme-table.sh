@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# bench-readme-table.sh [--format-only <logdir>] [--outdir <logdir>] [--count N]
+# bench-readme-table.sh [--format-only <logdir>] [--outdir <logdir>] [--count N] [--benchtime T]
 #
 # 一键复现 README「性能指标」表格:跑三档 build 的 benchmark、收集原始日志、
 # 用 scripts/bench_readme_table.py 整理成可直接贴进 README 的 Markdown 表格。
@@ -15,6 +15,7 @@
 #   ./scripts/bench-readme-table.sh --outdir /tmp/bl  # 日志落在指定目录
 #   ./scripts/bench-readme-table.sh --format-only /tmp/bl  # 只重排已有日志
 #   ./scripts/bench-readme-table.sh --count 5       # 每档跑 5 次取 median
+#   ./scripts/bench-readme-table.sh --benchtime 1s  # 每 benchmark 时长(默认 2s)
 #
 # 跨平台:goos/goarch 自动探测,arm64 机器上直接跑同一脚本即可补 arm64 表。
 #
@@ -35,6 +36,7 @@ while [ $# -gt 0 ]; do
         --format-only) format_only="${2:-}"; outdir="${2:-}"; shift 2 ;;
         --outdir)      outdir="${2:-}"; shift 2 ;;
         --count)       count="${2:-}"; shift 2 ;;
+        --benchtime)   benchtime="${2:-}"; shift 2 ;;
         -h|--help)
             grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *)

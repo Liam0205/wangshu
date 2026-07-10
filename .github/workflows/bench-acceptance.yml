@@ -23,16 +23,6 @@ on:
         description: 'Time per benchmark (default 2s)'
         required: false
         default: '2s'
-  # Temporary push trigger so PJ10 acceptance benchmarks can run from
-  # feat/p4-reworded3 before the workflow has been merged to master
-  # (GitHub requires workflow_dispatch workflows to first appear on the
-  # default branch). REMOVE THIS push BLOCK once PJ10 is signed off and
-  # the workflow is on master.
-  push:
-    branches:
-      - feat/p4-reworded3
-    paths:
-      - '.github/workflows/bench-acceptance.yml'
 
 jobs:
   bench-p4:
