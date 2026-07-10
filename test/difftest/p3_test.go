@@ -79,6 +79,15 @@ local function f(x) local n = -x; if not (n > 0) then return -n end return n end
 local s = 0
 for i = 1, 40 do s = s + f(i) end
 return s`},
+	// UNM of canonNaN (issue #107): -(0%0) sign-flips canonNaN into
+	// value.Nil's bit pattern; the unguarded wasm fast path stored that
+	// Nil and the next arithmetic op raised "attempt to perform
+	// arithmetic on a nil value" from the second Run on (post-promotion).
+	{"p3_unm_nan_alias", `
+local function f() local a = 0%0 a = -a%1 return tostring(a) end
+local s
+for i = 1, 40 do s = f() end
+return s`},
 
 	// —— V3-V4 比较 + 控制流(if/while/for/relooper) ——
 	{"p3_compare_branch", `
