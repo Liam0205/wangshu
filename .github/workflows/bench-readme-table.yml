@@ -78,12 +78,18 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p bench-logs
+          # Plain 2> redirect (not process substitution): bash does not
+          # wait for a >(tee ...) substitution at command end, which
+          # could race the upload step on progress.log. Live progress is
+          # already visible in the run log via the tail step below.
           ./scripts/bench-readme-table.sh \
             --outdir bench-logs \
             --count "${{ inputs.count }}" \
             --benchtime "${{ inputs.benchtime }}" \
-            2> >(tee bench-logs/progress.log >&2) \
+            2> bench-logs/progress.log \
             | tee bench-logs/table.md
+          echo "── progress log ──"
+          cat bench-logs/progress.log
 
       - name: upload logs and table
         if: always()
