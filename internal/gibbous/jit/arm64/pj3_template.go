@@ -94,9 +94,13 @@ func EmitForLoopEmptyConstArm64(buf []byte, kInit, kLimit, kStep uint64, preempt
 	// cmp idx, limit:fcmpe d0, d1(4 字节,signaling ordered)
 	buf = EmitFcmpeDnDm(buf, 0, 1)
 
-	// b.gt after_loop placeholder(forward,fixup 后)
+	// b.hi after_loop placeholder(forward,fixup 后)。
+	// HI (C=1 && Z=0) exits on idx > limit OR unordered — fcmpe sets
+	// C=1,Z=0 for NaN operands, so a NaN limit/init leaves with zero
+	// iterations like the interpreter (issues #117/#118; b.gt is false
+	// on unordered and looped forever).
 	bGtOff := len(buf)
-	buf = EmitBCond(buf, CondGT, 0) // placeholder imm19=0
+	buf = EmitBCond(buf, CondHI, 0) // placeholder imm19=0
 
 	// (可选)safepoint check:ldrb w0, [x27+pfOff]; cbnz w0, after_loop
 	// (对位 amd64 cmp byte [r15+pfOff],0 + jne after_loop 14B;
@@ -211,9 +215,9 @@ func EmitForLoopRegLimitArm64(buf []byte, kInit, kStep uint64,
 	buf = EmitFaddDdDnDm(buf, 0, 0, 2)
 	buf = EmitFcmpeDnDm(buf, 0, 1)
 
-	// b.gt after_loop placeholder
+	// b.hi after_loop placeholder (exit on unordered too — #117/#118)
 	bGtOff := len(buf)
-	buf = EmitBCond(buf, CondGT, 0)
+	buf = EmitBCond(buf, CondHI, 0)
 
 	// (可选)safepoint check
 	var safepointCbnzOff int = -1
@@ -358,9 +362,9 @@ func EmitForLoopWithRegKBodyArm64(buf []byte, kS, kInit, kLimit, kStep, kBody ui
 	buf = EmitFaddDdDnDm(buf, 0, 0, 2)
 	buf = EmitFcmpeDnDm(buf, 0, 1)
 
-	// 6. b.gt after_loop placeholder
+	// 6. b.hi after_loop placeholder (exit on unordered too — #117/#118)
 	bGtOff := len(buf)
-	buf = EmitBCond(buf, CondGT, 0)
+	buf = EmitBCond(buf, CondHI, 0)
 
 	// 7. body:R(aS) = R(aS) op K_body
 	buf = EmitLdrXtFromXnDisp(buf, 0, 26, uint16(aS)*8) // load s
@@ -474,9 +478,9 @@ func EmitForLoopWithRegKBody2Arm64(buf []byte, kS, kInit, kLimit, kStep, kBody1,
 	buf = EmitFaddDdDnDm(buf, 0, 0, 2)
 	buf = EmitFcmpeDnDm(buf, 0, 1)
 
-	// 6. b.gt after_loop
+	// 6. b.hi after_loop (exit on unordered too — #117/#118)
 	bGtOff := len(buf)
-	buf = EmitBCond(buf, CondGT, 0)
+	buf = EmitBCond(buf, CondHI, 0)
 
 	// 7. body:load s 一次,然后两段 op 共享 d3
 	buf = EmitLdrXtFromXnDisp(buf, 0, 26, uint16(aS)*8)

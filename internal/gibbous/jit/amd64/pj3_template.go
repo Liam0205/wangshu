@@ -31,8 +31,8 @@ package amd64
 //	[45] subsd xmm0, xmm2           ; 4 bytes (FORPREP 预减:idx = init - step)
 //	[49] ; loop_start
 //	[49] addsd xmm0, xmm2           ; 4 bytes (FORLOOP: idx += step)
-//	[53] ucomisd xmm0, xmm1         ; 4 bytes (cmp idx, limit)
-//	[57] ja  after_loop             ; 6 bytes (forward jcc;rel32 = +5 / +19 含 safepoint)
+//	[53] ucomisd xmm1, xmm0         ; 4 bytes (cmp limit, idx;操作数序为 NaN 退出,#117/#118)
+//	[57] jb  after_loop             ; 6 bytes (forward jcc;CF=1 含 unordered;rel32 = +5 / +19 含 safepoint)
 //	[63] ; (optional safepoint check)
 //	[63] cmp byte [r15+pfOff], 0    ; 8 bytes (仅 preemptFlagOff >= 0 时)
 //	[71] jne after_loop             ; 6 bytes (forward jcc)
@@ -67,11 +67,17 @@ func EmitForLoopEmptyConst(buf []byte, kInit, kLimit, kStep uint64, preemptFlagO
 	// FORLOOP idx+=step:xmm0 += xmm2
 	buf = EmitAddsdXmmXmm(buf, 0, 2) // addsd xmm0, xmm2
 
-	// cmp idx, limit
-	buf = EmitUcomisdXmmXmm(buf, 0, 1) // ucomisd xmm0, xmm1
+	// cmp limit, idx — operand order matters for NaN (issues #117/#118):
+	// ucomisd sets CF=ZF=1 on unordered, so with `ucomisd idx, limit; ja`
+	// a NaN limit/init never took the exit branch and the segment looped
+	// forever. Comparing limit-vs-idx and exiting on `jb` (CF=1) exits on
+	// BOTH limit < idx AND unordered — matching the interpreter's
+	// zero-iteration semantics for NaN (same shape as the per-op
+	// emitFORLOOP's jae-on-swapped-operands).
+	buf = EmitUcomisdXmmXmm(buf, 1, 0) // ucomisd xmm1, xmm0
 
-	// ja after_loop placeholder rel32=0(forward fixup)
-	buf = EmitJaRel32(buf, 0)
+	// jb after_loop placeholder rel32=0(forward fixup)
+	buf = EmitJbRel32(buf, 0)
 	jaRel32Off := len(buf) - 4
 
 	// (可选)safepoint check:cmp byte [r15+pfOff], 0;jne after_loop
@@ -108,7 +114,7 @@ func EmitForLoopEmptyConst(buf []byte, kInit, kLimit, kStep uint64, preemptFlagO
 
 // EncodedForLoopEmptyConstLen 是「全常量 init/limit/step + 空 body FORLOOP」
 // 无 safepoint 版本字节数:10*3(mov×3) + 5*3(movq×3) + 4(subsd) + 4(addsd) + 4(ucomisd)
-// + 6(ja) + 5(jmp) + 1(ret) = 69 字节。
+// + 6(jb) + 5(jmp) + 1(ret) = 69 字节。
 const EncodedForLoopEmptyConstLen = EncodedMovRaxImm64Len*3 +
 	EncodedMovqXmmFromRaxLen*3 +
 	EncodedSseBinopLen + // subsd
@@ -139,8 +145,8 @@ const EncodedForLoopEmptyConstWithSafepointLen = EncodedForLoopEmptyConstLen +
 //	[68] subsd xmm0, xmm2                     ; 4 bytes
 //	[72] ; loop_start
 //	[72] addsd xmm0, xmm2                     ; 4 bytes
-//	[76] ucomisd xmm0, xmm1                   ; 4 bytes
-//	[80] ja  after_loop                       ; 6 bytes (forward fixup)
+//	[76] ucomisd xmm1, xmm0                   ; 4 bytes (cmp limit, idx;NaN 退出,#117/#118)
+//	[80] jb  after_loop                       ; 6 bytes (forward fixup;CF=1 含 unordered)
 //	[86] ; (optional safepoint)
 //	[86] cmp byte [r15+pfOff], 0              ; 8 bytes (若 pfOff>=0)
 //	[94] jne after_loop                       ; 6 bytes
@@ -189,11 +195,13 @@ func EmitForLoopRegLimit(buf []byte, kInit, kStep uint64,
 	// FORLOOP idx+=step
 	buf = EmitAddsdXmmXmm(buf, 0, 2)
 
-	// cmp idx, limit
-	buf = EmitUcomisdXmmXmm(buf, 0, 1)
+	// cmp limit, idx + jb: exit on limit < idx OR unordered (NaN limit
+	// from the guarded reg slot is a genuine number — issues #117/#118,
+	// see EmitForLoopEmptyConst).
+	buf = EmitUcomisdXmmXmm(buf, 1, 0)
 
-	// ja after_loop placeholder
-	buf = EmitJaRel32(buf, 0)
+	// jb after_loop placeholder
+	buf = EmitJbRel32(buf, 0)
 	jaRel32Off := len(buf) - 4
 
 	// (可选)safepoint check
@@ -309,8 +317,10 @@ func EmitForLoopWithRegKBody(buf []byte, kS, kInit, kLimit, kStep, kBody uint64,
 	// loop_start
 	loopStart := len(buf)
 	buf = EmitAddsdXmmXmm(buf, 0, 2)
-	buf = EmitUcomisdXmmXmm(buf, 0, 1)
-	buf = EmitJaRel32(buf, 0)
+	// cmp limit, idx + jb: exit on limit < idx OR unordered (NaN in a
+	// const slot — issues #117/#118, see EmitForLoopEmptyConst).
+	buf = EmitUcomisdXmmXmm(buf, 1, 0)
+	buf = EmitJbRel32(buf, 0)
 	jaOff := len(buf) - 4
 
 	// body: R(aS) = R(aS) sseOp K (用 xmm3/xmm4,避开 idx/limit/step xmm0/1/2)
@@ -403,8 +413,10 @@ func EmitForLoopWithRegKBody2(buf []byte, kS, kInit, kLimit, kStep, kBody1, kBod
 
 	loopStart := len(buf)
 	buf = EmitAddsdXmmXmm(buf, 0, 2)
-	buf = EmitUcomisdXmmXmm(buf, 0, 1)
-	buf = EmitJaRel32(buf, 0)
+	// cmp limit, idx + jb: exit on limit < idx OR unordered (NaN in a
+	// const slot — issues #117/#118, see EmitForLoopEmptyConst).
+	buf = EmitUcomisdXmmXmm(buf, 1, 0)
+	buf = EmitJbRel32(buf, 0)
 	jaOff := len(buf) - 4
 
 	// body:load s 一次,然后两段 SSE op 共享 xmm3
