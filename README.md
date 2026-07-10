@@ -39,90 +39,90 @@ P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 met
 
 ## 性能指标
 
-数字来自 GitHub Actions hosted runner 上的标准化基准轮（`bench-readme-table` workflow，`-benchtime=2s -count=3 -cpu=1`，取 median，2026-07-10，[run 29079804565](https://github.com/Liam0205/wangshu/actions/runs/29079804565)），三平台同一轮、同一份代码。格式为「wall time (倍率 over gopher-lua)」，倍率越大越好；**粗体**表示该行最快，<ins>下划线</ins>表示倍率 ≥ 1.5×。
+数字来自 GitHub Actions hosted runner 上的标准化基准轮（`bench-readme-table` workflow，`-benchtime=2s -count=3 -cpu=1`，取 median，2026-07-10，[run 29098511106](https://github.com/Liam0205/wangshu/actions/runs/29098511106)），三平台同一轮、同一份代码。格式为「wall time (倍率 over gopher-lua)」，倍率越大越好；**粗体**表示该行最快，<ins>下划线</ins>表示倍率 ≥ 1.5×。
 
 > **怎么读**：hosted runner 是共享虚拟机，绝对 wall time 轮间可漂 10-20%——**请以倍率为主**，wall time 只作同轮内的量级参考。倍率的分母是 gopher-lua 在**同一轮同一台 runner** 上的实测值（分子分母同受干扰，倍率自洽），跨轮、跨平台都不要直接比 wall time。任何数字都可回溯到 run artifact 里的原始日志。
 
-### linux/amd64（Intel Xeon Platinum 8370C）
+### linux/amd64（Intel Xeon Platinum 8573C）
 
 | 类别 | 脚本 | gopher | P1 | P3 auto | P3 force | P4 auto | P4 force |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 纯 VM 微基准 [^cat-baseline] | Simple (分支/比较) | 992 ns | **<ins>196 ns (5.07×)</ins>** | <ins>5966 ns (1.70×)</ins> [^p3-kernel] | 12155 ns (0.83×) [^p3-kernel] | <ins>229 ns (4.34×)</ins> | <ins>229 ns (4.34×)</ins> |
-|  | Arith (Horner) | 1203 ns | **<ins>260 ns (4.63×)</ins>** | <ins>8513 ns (2.28×)</ins> [^p3-kernel] | 13896 ns (1.39×) [^p3-kernel] | <ins>288 ns (4.18×)</ins> | <ins>288 ns (4.18×)</ins> |
-|  | Loop (求和循环) | 77.8 µs | **<ins>22.9 µs (3.39×)</ins>** | <ins>486 µs (7.69×)</ins> [^p3-kernel] | <ins>485 µs (7.71×)</ins> [^p3-kernel] | <ins>29.5 µs (2.64×)</ins> | <ins>29.5 µs (2.64×)</ins> |
-| heavy 内核 [^cat-heavy] | HeavyArith | 314 ms | <ins>99.3 ms (3.16×)</ins> | <ins>117 ms (2.69×)</ins> | <ins>117 ms (2.69×)</ins> | <ins>17.6 ms (17.8×)</ins> | **<ins>16.8 ms (18.6×)</ins>** |
-|  | HeavyRecursion | 11.5 ms | <ins>7.08 ms (1.62×)</ins> | 7.79 ms (1.47×) | 8.28 ms (1.39×) | <ins>2.33 ms (4.91×)</ins> | **<ins>2.33 ms (4.92×)</ins>** [^selftail] |
-|  | HeavyFloatloop | 559 ms | <ins>195 ms (2.86×)</ins> | <ins>73.3 ms (7.63×)</ins> | <ins>73.6 ms (7.60×)</ins> | <ins>30.9 ms (18.1×)</ins> | **<ins>30.8 ms (18.2×)</ins>** |
-| realworld small [^cat-realworld] | fib | 12.7 ms | 14.3 ms (0.89×) | 15.8 ms (0.80×) [^p3-gate] | 33.8 ms (0.38×) | **<ins>1.37 ms (9.25×)</ins>** [^seg2seg] | <ins>1.38 ms (9.20×)</ins> [^seg2seg] |
-|  | binary-trees | 70.6 ms | 53.5 ms (1.32×) | 56.6 ms (1.25×) [^p3-gate] | 139 ms (0.51×) | <ins>39.1 ms (1.80×)</ins> | **<ins>38.9 ms (1.82×)</ins>** [^seg2seg] |
-|  | spectral-norm | 48.1 ms | <ins>26.3 ms (1.83×)</ins> | <ins>30.8 ms (1.56×)</ins> [^p3-gate] | 62.3 ms (0.77×) | <ins>2.99 ms (16.1×)</ins> | **<ins>2.98 ms (16.1×)</ins>** [^seg2seg] |
-|  | fannkuch | 5.80 ms | 8.11 ms (0.71×) | 8.66 ms (0.67×) | 8.65 ms (0.67×) | <ins>0.74 ms (7.84×)</ins> | **<ins>0.73 ms (7.92×)</ins>** [^seg2seg] |
-|  | n-body | 70.0 ms | 63.3 ms (1.11×) | 66.3 ms (1.06×) [^p3-gate] | 118 ms (0.59×) | **<ins>5.68 ms (12.3×)</ins>** [^math-intrinsic] | <ins>5.68 ms (12.3×)</ins> [^math-intrinsic] |
-| 边界 mini · Call [^cat-mini] | PureVM | 987 ns | **<ins>194 ns (5.09×)</ins>** | — | — | — | — |
-|  | CallOnly | **119 ns** | 289 ns (0.41×) | 309 ns (0.38×) | 442 ns (0.27×) | 339 ns (0.35×) | 336 ns (0.35×) |
-|  | Boundary (+SetGlobal) | **257 ns** | 483 ns (0.53×) | 499 ns (0.52×) | 976 ns (0.26×) | 450 ns (0.57×) | 445 ns (0.58×) |
-| 边界 mini · CallInto [^cat-mini] | PureVM | 987 ns | **<ins>194 ns (5.09×)</ins>** | — | — | — | — |
-|  | CallOnly | 119 ns | **98.9 ns (1.20×)** | 106 ns (1.12×) | 226 ns (0.53×) | 139 ns (0.86×) | 139 ns (0.86×) |
-|  | Boundary (+SetGlobal) | 257 ns | 282 ns (0.91×) | 302 ns (0.85×) | 742 ns (0.35×) | **248 ns (1.04×)** | 250 ns (1.03×) |
-| 真实负载 · Call [^cat-embed] | Predicate (×1000) | **652 µs** | 784 µs (0.83×) | 811 µs (0.80×) | 1487 µs (0.44×) | 679 µs (0.96×) | 680 µs (0.96×) |
-|  | Transform (×1000) | **528 µs** | 607 µs (0.87×) | 637 µs (0.83×) | 950 µs (0.56×) | 585 µs (0.90×) | 586 µs (0.90×) |
-| 真实负载 · CallInto [^cat-embed] | Predicate (×1000) | 652 µs | 583 µs (1.12×) | 603 µs (1.08×) | 1237 µs (0.53×) | **473 µs (1.38×)** | 476 µs (1.37×) |
-|  | Transform (×1000) | 528 µs | 406 µs (1.30×) | 428 µs (1.24×) | 717 µs (0.74×) | **382 µs (1.38×)** | 383 µs (1.38×) |
+| 纯 VM 微基准 [^cat-baseline] | Simple (分支/比较) | 826 ns | **<ins>149 ns (5.54×)</ins>** | <ins>4246 ns (2.00×)</ins> [^p3-kernel] | 9613 ns (0.88×) [^p3-kernel] | <ins>165 ns (5.02×)</ins> | <ins>165 ns (5.02×)</ins> |
+|  | Arith (Horner) | 994 ns | <ins>209 ns (4.75×)</ins> | <ins>6512 ns (2.35×)</ins> [^p3-kernel] | 11423 ns (1.34×) [^p3-kernel] | **<ins>207 ns (4.81×)</ins>** | **<ins>207 ns (4.81×)</ins>** |
+|  | Loop (求和循环) | 60.6 µs | **<ins>20.1 µs (3.01×)</ins>** | <ins>419 µs (7.25×)</ins> [^p3-kernel] | <ins>405 µs (7.49×)</ins> [^p3-kernel] | <ins>22.8 µs (2.66×)</ins> | <ins>22.8 µs (2.66×)</ins> |
+| heavy 内核 [^cat-heavy] | HeavyArith | 292 ms | <ins>84.3 ms (3.46×)</ins> | <ins>97.6 ms (2.99×)</ins> | <ins>97.2 ms (3.00×)</ins> | <ins>16.2 ms (18.0×)</ins> | **<ins>15.7 ms (18.5×)</ins>** |
+|  | HeavyRecursion | 9.34 ms | <ins>5.51 ms (1.69×)</ins> | <ins>5.93 ms (1.58×)</ins> | 6.44 ms (1.45×) | <ins>1.94 ms (4.80×)</ins> | **<ins>1.89 ms (4.93×)</ins>** [^selftail] |
+|  | HeavyFloatloop | 464 ms | <ins>166 ms (2.80×)</ins> | <ins>57.7 ms (8.03×)</ins> | <ins>60.0 ms (7.73×)</ins> | <ins>26.2 ms (17.7×)</ins> | **<ins>25.7 ms (18.0×)</ins>** |
+| realworld small [^cat-realworld] | fib | 10.2 ms | 11.8 ms (0.87×) | 12.8 ms (0.80×) [^p3-gate] | 27.7 ms (0.37×) | **<ins>1.09 ms (9.35×)</ins>** [^seg2seg] | <ins>1.12 ms (9.10×)</ins> [^seg2seg] |
+|  | binary-trees | 56.0 ms | 41.4 ms (1.35×) | 45.1 ms (1.24×) [^p3-gate] | 118 ms (0.48×) | **<ins>29.7 ms (1.89×)</ins>** | <ins>31.5 ms (1.78×)</ins> [^seg2seg] |
+|  | spectral-norm | 37.0 ms | <ins>21.1 ms (1.75×)</ins> | 25.3 ms (1.46×) [^p3-gate] | 53.4 ms (0.69×) | <ins>2.46 ms (15.0×)</ins> | **<ins>2.40 ms (15.4×)</ins>** [^seg2seg] |
+|  | fannkuch | 4.87 ms | 6.32 ms (0.77×) | 7.00 ms (0.70×) | 7.12 ms (0.68×) | <ins>0.65 ms (7.51×)</ins> | **<ins>0.62 ms (7.87×)</ins>** [^seg2seg] |
+|  | n-body | 68.4 ms | 53.7 ms (1.27×) | 56.0 ms (1.22×) [^p3-gate] | 108 ms (0.63×) | <ins>4.70 ms (14.5×)</ins> [^math-intrinsic] | **<ins>4.64 ms (14.7×)</ins>** [^math-intrinsic] |
+| 边界 mini · Call [^cat-mini] | PureVM | 844 ns | **<ins>151 ns (5.58×)</ins>** | — | — | — | — |
+|  | CallOnly | **104 ns** | 222 ns (0.47×) | 235 ns (0.44×) | 365 ns (0.28×) | 251 ns (0.41×) | 251 ns (0.41×) |
+|  | Boundary (+SetGlobal) | **220 ns** | 392 ns (0.56×) | 400 ns (0.55×) | 830 ns (0.27×) | 351 ns (0.63×) | 342 ns (0.64×) |
+| 边界 mini · CallInto [^cat-mini] | PureVM | 844 ns | **<ins>151 ns (5.58×)</ins>** | — | — | — | — |
+|  | CallOnly | 104 ns | **84.9 ns (1.22×)** | 85.6 ns (1.21×) | 196 ns (0.53×) | 114 ns (0.90×) | 115 ns (0.90×) |
+|  | Boundary (+SetGlobal) | 220 ns | 230 ns (0.96×) | 244 ns (0.90×) | 618 ns (0.36×) | **191 ns (1.15×)** | 198 ns (1.11×) |
+| 真实负载 · Call [^cat-embed] | Predicate (×1000) | 568 µs | 660 µs (0.86×) | 697 µs (0.82×) | 1241 µs (0.46×) | 571 µs (0.99×) | **554 µs (1.03×)** |
+|  | Transform (×1000) | **466 µs** | 493 µs (0.95×) | 532 µs (0.88×) | 801 µs (0.58×) | 488 µs (0.95×) | 475 µs (0.98×) |
+| 真实负载 · CallInto [^cat-embed] | Predicate (×1000) | 568 µs | 489 µs (1.16×) | 507 µs (1.12×) | 1043 µs (0.54×) | **382 µs (1.49×)** | 394 µs (1.44×) |
+|  | Transform (×1000) | 466 µs | 355 µs (1.31×) | 348 µs (1.34×) | 589 µs (0.79×) | <ins>310 µs (1.51×)</ins> | **<ins>306 µs (1.52×)</ins>** |
 
 ### linux/arm64（Azure Cobalt 100，Neoverse-N2 类）
 
 | 类别 | 脚本 | gopher | P1 | P3 auto | P3 force | P4 auto | P4 force |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 纯 VM 微基准 [^cat-baseline] | Simple (分支/比较) | 965 ns | **<ins>202 ns (4.77×)</ins>** | <ins>5951 ns (1.68×)</ins> [^p3-kernel] | 10202 ns (0.98×) [^p3-kernel] | <ins>212 ns (4.56×)</ins> | <ins>212 ns (4.56×)</ins> |
-|  | Arith (Horner) | 1141 ns | **<ins>247 ns (4.63×)</ins>** | <ins>8344 ns (2.19×)</ins> [^p3-kernel] | <ins>12179 ns (1.50×)</ins> [^p3-kernel] | <ins>259 ns (4.41×)</ins> | <ins>259 ns (4.41×)</ins> |
-|  | Loop (求和循环) | 75.9 µs | **<ins>23.1 µs (3.28×)</ins>** | <ins>594 µs (6.10×)</ins> [^p3-kernel] | <ins>594 µs (6.09×)</ins> [^p3-kernel] | <ins>28.9 µs (2.63×)</ins> | <ins>28.9 µs (2.63×)</ins> |
-| heavy 内核 [^cat-heavy] | HeavyArith | 303 ms | <ins>96.4 ms (3.14×)</ins> | <ins>118 ms (2.57×)</ins> | <ins>118 ms (2.57×)</ins> | <ins>23.1 ms (13.1×)</ins> | **<ins>22.0 ms (13.8×)</ins>** |
-|  | HeavyRecursion | 9.66 ms | 6.58 ms (1.47×) | 7.48 ms (1.29×) | 8.12 ms (1.19×) | **<ins>2.43 ms (3.98×)</ins>** | <ins>2.43 ms (3.98×)</ins> [^selftail] |
-|  | HeavyFloatloop | 542 ms | <ins>189 ms (2.87×)</ins> | <ins>84.9 ms (6.38×)</ins> | <ins>85.0 ms (6.38×)</ins> | **<ins>37.0 ms (14.7×)</ins>** | <ins>37.0 ms (14.6×)</ins> |
-| realworld small [^cat-realworld] | fib | 12.5 ms | 15.8 ms (0.79×) | 16.3 ms (0.77×) [^p3-gate] | 29.8 ms (0.42×) | **<ins>1.46 ms (8.57×)</ins>** [^seg2seg] | <ins>1.46 ms (8.57×)</ins> [^seg2seg] |
-|  | binary-trees | 66.2 ms | 52.1 ms (1.27×) | 54.9 ms (1.21×) [^p3-gate] | 120 ms (0.55×) | <ins>37.0 ms (1.79×)</ins> | **<ins>37.0 ms (1.79×)</ins>** [^seg2seg] |
-|  | spectral-norm | 46.6 ms | <ins>27.3 ms (1.70×)</ins> | 31.7 ms (1.47×) [^p3-gate] | 54.9 ms (0.85×) | <ins>5.62 ms (8.29×)</ins> | **<ins>5.62 ms (8.29×)</ins>** [^seg2seg] |
-|  | fannkuch | 5.63 ms | 7.67 ms (0.73×) | 7.50 ms (0.75×) | 7.50 ms (0.75×) | <ins>0.84 ms (6.72×)</ins> | **<ins>0.83 ms (6.75×)</ins>** [^seg2seg] |
-|  | n-body | 70.9 ms | 57.4 ms (1.23×) | 59.2 ms (1.20×) [^p3-gate] | 106 ms (0.67×) | **<ins>8.86 ms (8.00×)</ins>** [^math-intrinsic] | <ins>8.88 ms (7.98×)</ins> [^math-intrinsic] |
-| 边界 mini · Call [^cat-mini] | PureVM | 972 ns | **<ins>204 ns (4.76×)</ins>** | — | — | — | — |
-|  | CallOnly | **132 ns** | 285 ns (0.46×) | 306 ns (0.43×) | 428 ns (0.31×) | 375 ns (0.35×) | 379 ns (0.35×) |
-|  | Boundary (+SetGlobal) | **278 ns** | 468 ns (0.59×) | 494 ns (0.56×) | 897 ns (0.31×) | 491 ns (0.57×) | 490 ns (0.57×) |
-| 边界 mini · CallInto [^cat-mini] | PureVM | 972 ns | **<ins>204 ns (4.76×)</ins>** | — | — | — | — |
-|  | CallOnly | 132 ns | **132 ns (1.00×)** | 146 ns (0.91×) | 215 ns (0.62×) | 200 ns (0.66×) | 200 ns (0.66×) |
-|  | Boundary (+SetGlobal) | **278 ns** | 312 ns (0.89×) | 324 ns (0.86×) | 672 ns (0.41×) | 317 ns (0.88×) | 316 ns (0.88×) |
-| 真实负载 · Call [^cat-embed] | Predicate (×1000) | **657 µs** | 796 µs (0.83×) | 828 µs (0.79×) | 1383 µs (0.47×) | 757 µs (0.87×) | 756 µs (0.87×) |
-|  | Transform (×1000) | **570 µs** | 639 µs (0.89×) | 666 µs (0.86×) | 934 µs (0.61×) | 676 µs (0.84×) | 674 µs (0.85×) |
-| 真实负载 · CallInto [^cat-embed] | Predicate (×1000) | 657 µs | 621 µs (1.06×) | 630 µs (1.04×) | 1156 µs (0.57×) | **558 µs (1.18×)** | 563 µs (1.17×) |
-|  | Transform (×1000) | 570 µs | **469 µs (1.21×)** | 498 µs (1.14×) | 709 µs (0.80×) | 485 µs (1.17×) | 475 µs (1.20×) |
+| 纯 VM 微基准 [^cat-baseline] | Simple (分支/比较) | 987 ns | **<ins>196 ns (5.03×)</ins>** | <ins>6016 ns (1.66×)</ins> [^p3-kernel] | 10223 ns (0.97×) [^p3-kernel] | <ins>206 ns (4.80×)</ins> | <ins>206 ns (4.80×)</ins> |
+|  | Arith (Horner) | 1162 ns | **<ins>236 ns (4.92×)</ins>** | <ins>8277 ns (2.19×)</ins> [^p3-kernel] | 12312 ns (1.47×) [^p3-kernel] | <ins>252 ns (4.62×)</ins> | <ins>252 ns (4.62×)</ins> |
+|  | Loop (求和循环) | 73.4 µs | **<ins>23.1 µs (3.18×)</ins>** | <ins>594 µs (6.04×)</ins> [^p3-kernel] | <ins>594 µs (6.04×)</ins> [^p3-kernel] | <ins>29.0 µs (2.53×)</ins> | <ins>29.0 µs (2.53×)</ins> |
+| heavy 内核 [^cat-heavy] | HeavyArith | 300 ms | <ins>96.5 ms (3.11×)</ins> | <ins>119 ms (2.52×)</ins> | <ins>119 ms (2.53×)</ins> | <ins>23.1 ms (13.0×)</ins> | **<ins>22.0 ms (13.7×)</ins>** |
+|  | HeavyRecursion | 9.53 ms | 6.59 ms (1.45×) | 7.59 ms (1.26×) | 8.07 ms (1.18×) | **<ins>2.42 ms (3.93×)</ins>** | <ins>2.42 ms (3.93×)</ins> [^selftail] |
+|  | HeavyFloatloop | 524 ms | <ins>190 ms (2.76×)</ins> | <ins>84.9 ms (6.17×)</ins> | <ins>85.0 ms (6.17×)</ins> | **<ins>37.0 ms (14.2×)</ins>** | <ins>37.1 ms (14.1×)</ins> |
+| realworld small [^cat-realworld] | fib | 12.5 ms | 14.4 ms (0.87×) | 16.1 ms (0.78×) [^p3-gate] | 29.9 ms (0.42×) | <ins>1.46 ms (8.56×)</ins> [^seg2seg] | **<ins>1.46 ms (8.57×)</ins>** [^seg2seg] |
+|  | binary-trees | 63.9 ms | 52.0 ms (1.23×) | 54.9 ms (1.16×) [^p3-gate] | 120 ms (0.53×) | **<ins>37.1 ms (1.72×)</ins>** | <ins>37.1 ms (1.72×)</ins> [^seg2seg] |
+|  | spectral-norm | 45.5 ms | <ins>27.3 ms (1.67×)</ins> | 31.8 ms (1.43×) [^p3-gate] | 55.4 ms (0.82×) | <ins>5.62 ms (8.10×)</ins> | **<ins>5.62 ms (8.10×)</ins>** [^seg2seg] |
+|  | fannkuch | 5.76 ms | 7.21 ms (0.80×) | 7.46 ms (0.77×) | 7.46 ms (0.77×) | <ins>0.83 ms (6.90×)</ins> | **<ins>0.83 ms (6.92×)</ins>** [^seg2seg] |
+|  | n-body | 77.7 ms | 57.4 ms (1.35×) | 59.5 ms (1.30×) [^p3-gate] | 106 ms (0.73×) | <ins>8.86 ms (8.77×)</ins> [^math-intrinsic] | **<ins>8.86 ms (8.77×)</ins>** [^math-intrinsic] |
+| 边界 mini · Call [^cat-mini] | PureVM | 1000 ns | **<ins>198 ns (5.05×)</ins>** | — | — | — | — |
+|  | CallOnly | **132 ns** | 279 ns (0.48×) | 301 ns (0.44×) | 429 ns (0.31×) | 368 ns (0.36×) | 364 ns (0.36×) |
+|  | Boundary (+SetGlobal) | **279 ns** | 460 ns (0.61×) | 488 ns (0.57×) | 902 ns (0.31×) | 479 ns (0.58×) | 482 ns (0.58×) |
+| 边界 mini · CallInto [^cat-mini] | PureVM | 1000 ns | **<ins>198 ns (5.05×)</ins>** | — | — | — | — |
+|  | CallOnly | 132 ns | **132 ns (1.00×)** | 147 ns (0.90×) | 216 ns (0.61×) | 202 ns (0.65×) | 204 ns (0.65×) |
+|  | Boundary (+SetGlobal) | **279 ns** | 312 ns (0.89×) | 325 ns (0.86×) | 689 ns (0.41×) | 319 ns (0.87×) | 319 ns (0.87×) |
+| 真实负载 · Call [^cat-embed] | Predicate (×1000) | **665 µs** | 812 µs (0.82×) | 810 µs (0.82×) | 1388 µs (0.48×) | 746 µs (0.89×) | 751 µs (0.88×) |
+|  | Transform (×1000) | **546 µs** | 634 µs (0.86×) | 660 µs (0.83×) | 935 µs (0.58×) | 670 µs (0.81×) | 666 µs (0.82×) |
+| 真实负载 · CallInto [^cat-embed] | Predicate (×1000) | 665 µs | 645 µs (1.03×) | 632 µs (1.05×) | 1190 µs (0.56×) | **556 µs (1.20×)** | 563 µs (1.18×) |
+|  | Transform (×1000) | 546 µs | **471 µs (1.16×)** | 505 µs (1.08×) | 727 µs (0.75×) | 489 µs (1.12×) | 481 µs (1.13×) |
 
 ### darwin/arm64（Apple M 系，macos-latest）
 
 | 类别 | 脚本 | gopher | P1 | P3 auto | P3 force | P4 auto | P4 force |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 纯 VM 微基准 [^cat-baseline] | Simple (分支/比较) | 767 ns | <ins>149 ns (5.16×)</ins> | <ins>4143 ns (2.72×)</ins> [^p3-kernel] | 7896 ns (1.43×) [^p3-kernel] | **<ins>132 ns (5.83×)</ins>** | **<ins>132 ns (5.83×)</ins>** |
-|  | Arith (Horner) | 876 ns | <ins>188 ns (4.65×)</ins> | <ins>6233 ns (3.07×)</ins> [^p3-kernel] | <ins>10743 ns (1.78×)</ins> [^p3-kernel] | **<ins>165 ns (5.32×)</ins>** | **<ins>165 ns (5.32×)</ins>** |
-|  | Loop (求和循环) | 77.8 µs | **<ins>18.4 µs (4.23×)</ins>** | <ins>914 µs (3.83×)</ins> [^p3-kernel] | <ins>837 µs (4.18×)</ins> [^p3-kernel] | <ins>21.0 µs (3.71×)</ins> | <ins>21.0 µs (3.71×)</ins> |
-| heavy 内核 [^cat-heavy] | HeavyArith | 292 ms | <ins>109 ms (2.67×)</ins> | <ins>92.2 ms (3.17×)</ins> | <ins>94.6 ms (3.09×)</ins> | <ins>40.0 ms (7.30×)</ins> | **<ins>37.3 ms (7.84×)</ins>** |
-|  | HeavyRecursion | 12.0 ms | <ins>6.50 ms (1.84×)</ins> | <ins>6.40 ms (1.87×)</ins> | <ins>6.61 ms (1.81×)</ins> | <ins>2.04 ms (5.87×)</ins> | **<ins>1.91 ms (6.25×)</ins>** [^selftail] |
-|  | HeavyFloatloop | 481 ms | <ins>149 ms (3.22×)</ins> | <ins>112 ms (4.29×)</ins> | <ins>111 ms (4.32×)</ins> | <ins>45.5 ms (10.6×)</ins> | **<ins>40.3 ms (11.9×)</ins>** |
-| realworld small [^cat-realworld] | fib | 13.2 ms | 15.0 ms (0.88×) | 13.1 ms (1.01×) [^p3-gate] | 22.2 ms (0.60×) | **<ins>1.08 ms (12.2×)</ins>** [^seg2seg] | <ins>1.14 ms (11.6×)</ins> [^seg2seg] |
-|  | binary-trees | 54.5 ms | 41.0 ms (1.33×) | 41.2 ms (1.32×) [^p3-gate] | 94.8 ms (0.57×) | <ins>27.9 ms (1.95×)</ins> | **<ins>27.5 ms (1.98×)</ins>** [^seg2seg] |
-|  | spectral-norm | 33.3 ms | <ins>20.4 ms (1.63×)</ins> | <ins>21.2 ms (1.57×)</ins> [^p3-gate] | 45.8 ms (0.73×) | **<ins>4.92 ms (6.78×)</ins>** | <ins>4.93 ms (6.77×)</ins> [^seg2seg] |
-|  | fannkuch | 4.41 ms | 6.21 ms (0.71×) | 6.44 ms (0.68×) | 6.40 ms (0.69×) | <ins>0.74 ms (5.98×)</ins> | **<ins>0.72 ms (6.11×)</ins>** [^seg2seg] |
-|  | n-body | 65.4 ms | 44.7 ms (1.46×) | 46.2 ms (1.42×) [^p3-gate] | 79.5 ms (0.82×) | **<ins>7.35 ms (8.89×)</ins>** [^math-intrinsic] | <ins>7.40 ms (8.83×)</ins> [^math-intrinsic] |
-| 边界 mini · Call [^cat-mini] | PureVM | 846 ns | **<ins>144 ns (5.88×)</ins>** | — | — | — | — |
-|  | CallOnly | **97.5 ns** | 179 ns (0.54×) | 191 ns (0.51×) | 280 ns (0.35×) | 218 ns (0.45×) | 246 ns (0.40×) |
-|  | Boundary (+SetGlobal) | **197 ns** | 333 ns (0.59×) | 311 ns (0.64×) | 641 ns (0.31×) | 291 ns (0.68×) | 286 ns (0.69×) |
-| 边界 mini · CallInto [^cat-mini] | PureVM | 846 ns | **<ins>144 ns (5.88×)</ins>** | — | — | — | — |
-|  | CallOnly | 97.5 ns | **71.5 ns (1.36×)** | 82.2 ns (1.19×) | 167 ns (0.58×) | 110 ns (0.88×) | 117 ns (0.84×) |
-|  | Boundary (+SetGlobal) | 197 ns | 193 ns (1.02×) | 198 ns (1.00×) | 528 ns (0.37×) | **179 ns (1.10×)** | 179 ns (1.10×) |
-| 真实负载 · Call [^cat-embed] | Predicate (×1000) | 548 µs | 528 µs (1.04×) | 577 µs (0.95×) | 1055 µs (0.52×) | **465 µs (1.18×)** | 469 µs (1.17×) |
-|  | Transform (×1000) | 459 µs | 506 µs (0.91×) | 440 µs (1.04×) | 637 µs (0.72×) | **412 µs (1.12×)** | 421 µs (1.09×) |
-| 真实负载 · CallInto [^cat-embed] | Predicate (×1000) | 548 µs | 494 µs (1.11×) | 446 µs (1.23×) | 905 µs (0.61×) | **<ins>348 µs (1.57×)</ins>** | <ins>360 µs (1.52×)</ins> |
-|  | Transform (×1000) | 459 µs | 359 µs (1.28×) | 309 µs (1.49×) | 521 µs (0.88×) | **<ins>295 µs (1.56×)</ins>** | <ins>295 µs (1.56×)</ins> |
+| 纯 VM 微基准 [^cat-baseline] | Simple (分支/比较) | 792 ns | <ins>141 ns (5.63×)</ins> | <ins>5002 ns (1.62×)</ins> [^p3-kernel] | 8899 ns (0.91×) [^p3-kernel] | **<ins>134 ns (5.93×)</ins>** | **<ins>134 ns (5.93×)</ins>** |
+|  | Arith (Horner) | 909 ns | <ins>188 ns (4.82×)</ins> | <ins>6509 ns (2.31×)</ins> [^p3-kernel] | 11250 ns (1.34×) [^p3-kernel] | **<ins>169 ns (5.37×)</ins>** | **<ins>169 ns (5.37×)</ins>** |
+|  | Loop (求和循环) | 56.5 µs | **<ins>18.0 µs (3.14×)</ins>** | <ins>850 µs (3.24×)</ins> [^p3-kernel] | <ins>820 µs (3.36×)</ins> [^p3-kernel] | <ins>21.1 µs (2.68×)</ins> | <ins>21.1 µs (2.68×)</ins> |
+| heavy 内核 [^cat-heavy] | HeavyArith | 214 ms | <ins>95.5 ms (2.24×)</ins> | <ins>97.0 ms (2.21×)</ins> | <ins>97.4 ms (2.20×)</ins> | **<ins>34.2 ms (6.26×)</ins>** | <ins>35.2 ms (6.08×)</ins> |
+|  | HeavyRecursion | 10.9 ms | <ins>5.24 ms (2.08×)</ins> | <ins>6.38 ms (1.71×)</ins> | <ins>6.84 ms (1.59×)</ins> | <ins>1.76 ms (6.19×)</ins> | **<ins>1.75 ms (6.23×)</ins>** [^selftail] |
+|  | HeavyFloatloop | 423 ms | <ins>144 ms (2.95×)</ins> | <ins>118 ms (3.59×)</ins> | <ins>119 ms (3.56×)</ins> | **<ins>37.3 ms (11.3×)</ins>** | <ins>37.6 ms (11.3×)</ins> |
+| realworld small [^cat-realworld] | fib | 10.4 ms | 12.2 ms (0.85×) | 13.0 ms (0.80×) [^p3-gate] | 25.2 ms (0.41×) | **<ins>0.99 ms (10.5×)</ins>** [^seg2seg] | <ins>1.00 ms (10.4×)</ins> [^seg2seg] |
+|  | binary-trees | 59.8 ms | 47.0 ms (1.27×) | 41.6 ms (1.44×) [^p3-gate] | 94.1 ms (0.64×) | **<ins>26.0 ms (2.30×)</ins>** | <ins>26.0 ms (2.30×)</ins> [^seg2seg] |
+|  | spectral-norm | 36.1 ms | <ins>21.8 ms (1.65×)</ins> | <ins>22.6 ms (1.59×)</ins> [^p3-gate] | 45.6 ms (0.79×) | **<ins>4.51 ms (8.01×)</ins>** | <ins>4.63 ms (7.80×)</ins> [^seg2seg] |
+|  | fannkuch | 4.84 ms | 6.75 ms (0.72×) | 6.18 ms (0.78×) | 6.20 ms (0.78×) | **<ins>0.69 ms (6.99×)</ins>** | <ins>0.71 ms (6.82×)</ins> [^seg2seg] |
+|  | n-body | 65.5 ms | 45.3 ms (1.45×) | 44.3 ms (1.48×) [^p3-gate] | 79.4 ms (0.83×) | **<ins>6.88 ms (9.52×)</ins>** [^math-intrinsic] | <ins>6.91 ms (9.48×)</ins> [^math-intrinsic] |
+| 边界 mini · Call [^cat-mini] | PureVM | 908 ns | **<ins>145 ns (6.28×)</ins>** | — | — | — | — |
+|  | CallOnly | **97.3 ns** | 190 ns (0.51×) | 178 ns (0.55×) | 307 ns (0.32×) | 223 ns (0.44×) | 224 ns (0.43×) |
+|  | Boundary (+SetGlobal) | **212 ns** | 323 ns (0.66×) | 297 ns (0.72×) | 719 ns (0.30×) | 308 ns (0.69×) | 298 ns (0.71×) |
+| 边界 mini · CallInto [^cat-mini] | PureVM | 908 ns | **<ins>145 ns (6.28×)</ins>** | — | — | — | — |
+|  | CallOnly | 97.3 ns | **75.4 ns (1.29×)** | 79.6 ns (1.22×) | 170 ns (0.57×) | 112 ns (0.87×) | 113 ns (0.86×) |
+|  | Boundary (+SetGlobal) | 212 ns | 196 ns (1.08×) | 188 ns (1.13×) | 516 ns (0.41×) | **177 ns (1.20×)** | 178 ns (1.20×) |
+| 真实负载 · Call [^cat-embed] | Predicate (×1000) | 566 µs | 581 µs (0.97×) | 522 µs (1.08×) | 967 µs (0.59×) | **472 µs (1.20×)** | 480 µs (1.18×) |
+|  | Transform (×1000) | 423 µs | **406 µs (1.04×)** | 407 µs (1.04×) | 610 µs (0.69×) | 418 µs (1.01×) | 415 µs (1.02×) |
+| 真实负载 · CallInto [^cat-embed] | Predicate (×1000) | 566 µs | 442 µs (1.28×) | 432 µs (1.31×) | 856 µs (0.66×) | **<ins>348 µs (1.63×)</ins>** | <ins>350 µs (1.62×)</ins> |
+|  | Transform (×1000) | 423 µs | 330 µs (1.28×) | 301 µs (1.40×) | 498 µs (0.85×) | **293 µs (1.44×)** | 294 µs (1.44×) |
 
 [^cat-baseline]: `benchmarks/baseline`。三个独立的纯 Lua 脚本（Simple 分支比较、Arith 六阶 Horner 多项式、Loop 求和 1..N），单次执行无 Go↔Lua 跨界。反映 VM 内核在最小工作量下的 dispatch / 算术 / 循环开销。
-[^selftail]: P4 mono 自尾调用段内循环（issue #112 / PR #113，2026-07-10，amd64 + arm64 已交付）：`return f(...)` 且被调就是当前 closure 时，段内直接参数搬移 + 跳回入口（PUC 尾调用帧复用语义下与重进本段位级等价），不再每层付一次段退出 + Go 重入。HeavyRecursion（collatz，递归调用全是 TAILCALL）此前是全表唯一「升层比 P1 解释器还慢」的负载（amd64 1.15× vs P1 1.58×；Cobalt arm64 0.98× 直接输 gopher），本轮翻到 amd64 **4.92×** / arm64 **3.98×** / macOS **6.25×**，三平台 ~4× 改善，fib / HeavyArith 同轮逐字持平无回归。
+[^selftail]: P4 mono 自尾调用段内循环（issue #112 / PR #113，2026-07-10，amd64 + arm64 已交付）：`return f(...)` 且被调就是当前 closure 时，段内直接参数搬移 + 跳回入口（PUC 尾调用帧复用语义下与重进本段位级等价），不再每层付一次段退出 + Go 重入。HeavyRecursion（collatz，递归调用全是 TAILCALL）此前是全表唯一「升层比 P1 解释器还慢」的负载（amd64 1.15× vs P1 1.58×；Cobalt arm64 0.98× 直接输 gopher），本轮翻到 amd64 **4.93×** / arm64 **3.93×** / macOS **6.23×**，三平台 ~4× 改善，fib / HeavyArith 同轮逐字持平无回归。
 [^cat-heavy]: `benchmarks/heavy`。三个扁平数值内核（HeavyArith 纯算术、HeavyRecursion 自递归、HeavyFloatloop 嵌套浮点循环），故意剔除表 / 字符串 / library CALL 与其他 helper-bound 结构。反映编译档在能真正发挥的形状上的性能上限。
 [^cat-realworld]: `benchmarks/realworld`。benchmark-game 五脚本（fib / binary-trees / spectral-norm / fannkuch / n-body），语义单次通过与官方 lua5.1.5 做差分测试（逐字节比对）。反映调用 / 分配 / 浮点 / 表操作混合场景下的常规负载。
 [^p3-gate]: P3 auto 模式带 helper 密度收益门（issue #39，2026-07-03）：热 proto 的 op 组合里 helper 往返占比过高（wasm→Go 边界成本吞掉升层收益）时拒绝升层、留在解释器。带此标注的行升层被拒，数字即解释器执行（与 P1 列的差异是采样钩子开销）。P3 force 列不受影响（force-all 绕过收益门，保差分覆盖）。
