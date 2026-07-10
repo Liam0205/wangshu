@@ -45,6 +45,11 @@ if [ -z "$outdir" ]; then
     outdir="$(mktemp -d "${TMPDIR:-/tmp}/wangshu-vsluajit.XXXXXX")"
 fi
 mkdir -p "$outdir"
+# Resolve to an absolute path: the go build below runs inside a
+# `cd "$bench_mod"` subshell, so a relative --outdir would drop the
+# binaries under benchmarks/<outdir>/ while the run_engine calls
+# resolve it from the caller's cwd (bit the first CI run).
+outdir="$(cd "$outdir" && pwd)"
 echo "logs -> $outdir" >&2
 
 # 构建两个 benchlua 二进制(P1 默认 build / P4 build)。
