@@ -82,6 +82,21 @@
 - `State.MaybeCollectNow()`:按阈值条件触发(命中才 collect,否则 no-op),等价让 host 触发一次 safepoint 检查。比 Collect 廉价但不保证 sweep,强约束需 sweep 直接调 Collect;
 - `State.SetHostTriggeredCollect(on bool)`:**experimental opt-in,默认 off**。开启后任何 host alloc 跨 GC 阈直接 sweep。⚠️ **安全契约**:调用方须保证所有 transient GCRef 都 reachable from GC root——current stdlib + string intern 的 mid-construction transient GCRef 未全经 pin/shadow stack 登记,**未审计前生产开启有 UAF 风险**(已知 break:luasuite gc/literals/nextvar/pm/strings)。**推荐替代**:用 `Collect()` / `MaybeCollectNow()` 显式 cadence 控制(production-safe)。
 
+## 分层执行运行期管理:kill switch 与观测(admin API)
+
+> 状态:**已完成**(PR #115,2026-07-10)。面向生产灰度 P3/P4 分层执行:线上怀疑升层路径(wasm 段 / 原生段)有问题时,不必重建 State 或重新编译进程即可降级到纯解释器,配合观测快照定位。非 `wangshu_p3` / `wangshu_p4` build 下解释器是唯一执行层,这组 API 均 no-op(观测返回零分布 + `TierEnabled=true`)。
+
+**运行期总开关**:
+
+- `State.SetTierEnabled(enabled bool)`:分层执行的运行期 kill switch(默认开启)。关闭后不再发生新升层(入口/回边采样短路、不再累积热度)、**已升层的 Proto 也回到解释器执行**(下一次分派决策起生效,正在段内执行的一次调用正常跑完);已编译产物保留在缓存,重新开启即恢复分层、**不重新编译**;
+- `State.TierEnabled() bool`:返回开关当前状态。
+
+**State 级观测**:
+
+- `State.TierStatsSnapshot() TierStats`:返回本 State 的分层执行分布快照(诊断路径,开销很小但不建议逐帧轮询)。`TierStats` 字段:`Promoted`(已装 wasm/原生产物的 Proto 数)/ `StuckNotCompilable`(可编译性检查排除形状,预期内)/ `StuckDeclined`(profitability gate 判不划算,预期内)/ `StuckCompileFailed`(**非零值得排查**)/ `Profiled`(进过采样钩点的 Proto 数)/ `TierEnabled`(镜像开关状态)。
+
+> `SetTierEnabled` godoc 明标「生产 admin API」,与 testing-only 的 `SetForceAllPromote` 措辞区分。三向 kill switch 语义的正确测法(promote→off→on 三段式,只断言「结果一致」等价于没测)见 [[prove-the-path-under-test]] §2(d)。嵌入方选层 / P4 部署要求 / kill switch 用法的完整部署指南见 `docs/embedding-tiers.md`;过程背景见 `memory/reflections/2026-07-10-tier-admin-luajit-bench-round.md`。
+
 ## 宿主绑定与 drop-in
 
 - **首个目标宿主**:一个**多运行时规则引擎**(其 Go 运行时现用 gopher-lua);但接口**不绑定任何宿主**。
