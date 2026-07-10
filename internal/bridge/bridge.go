@@ -93,8 +93,12 @@ type Bridge struct {
 
 	// tierOff is the runtime tier kill switch (production admin API,
 	// unlike forceAll/hotEntry which are testing-only). When set:
-	//   - OnEnter/OnBackEdge return before counting, so no new
-	//     promotions happen (and no profiling accrues while off);
+	//   - OnEnter/OnBackEdge short-circuit before counting, so hot
+	//     counters do not accrue and no new promotions happen. (A
+	//     zero-counted ProfileData slot may still be created by the
+	//     get-or-create profileOf on the way in — the slot exists,
+	//     nothing is written to it. Once the switch flips back on,
+	//     the slot resumes counting normally.)
 	//   - GibbousCodeOf returns nil, so every dispatch decision falls
 	//     back to the interpreter — including protos promoted BEFORE
 	//     the switch flipped. Installed GibbousCode stays in
