@@ -82,7 +82,7 @@ func TestTierAdmin_KillSwitchRoutesToInterpreter(t *testing.T) {
 	if got := peroptranslator.NativeRunCount.Load(); got != off {
 		t.Fatalf("tier off but native path ran: NativeRunCount %d -> %d", off, got)
 	}
-	if !st.TierStatsSnapshot().TierEnabled == false {
+	if st.TierStatsSnapshot().TierEnabled {
 		t.Fatal("TierStatsSnapshot().TierEnabled must be false while off")
 	}
 
