@@ -930,7 +930,7 @@ func analyzeForLoopBody2Form(proto *bytecode.Proto) (shapeInfo, bool) {
 		!value.IsNumber(kLimit) || !value.IsNumber(kStep) {
 		return shapeInfo{}, false
 	}
-	if value.AsNumber(kStep) <= 0 {
+	if !(value.AsNumber(kStep) > 0) { // negated form: NaN step must also decline (#117/#118)
 		return shapeInfo{}, false
 	}
 
@@ -1076,7 +1076,7 @@ func analyzeForLoopBodyForm(proto *bytecode.Proto) (shapeInfo, bool) {
 	}
 
 	// step > 0 仅(jcc=ja 退出)
-	if value.AsNumber(kStep) <= 0 {
+	if !(value.AsNumber(kStep) > 0) { // negated form: NaN step must also decline (#117/#118)
 		return shapeInfo{}, false
 	}
 
@@ -1207,7 +1207,7 @@ func analyzeForLoopForm(proto *bytecode.Proto) (shapeInfo, bool) {
 	// **step > 0 才支持本简化模板**(jcc 选 ja:idx > limit 退出)。
 	// step ≤ 0 或负 step 留 PJ3+ 扩(jcc 选 jb:idx < limit 退出)。
 	stepF := value.AsNumber(kStep)
-	if stepF <= 0 {
+	if !(stepF > 0) { // negated form: NaN step must also decline (#117/#118)
 		return shapeInfo{}, false
 	}
 
