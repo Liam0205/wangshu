@@ -78,7 +78,7 @@ func EmitForLoopEmptyConst(buf []byte, kInit, kLimit, kStep uint64, preemptFlagO
 
 	// jb after_loop placeholder rel32=0(forward fixup)
 	buf = EmitJbRel32(buf, 0)
-	jaRel32Off := len(buf) - 4
+	jbRel32Off := len(buf) - 4
 
 	// (可选)safepoint check:cmp byte [r15+pfOff], 0;jne after_loop
 	var safepointJneRel32Off int = -1
@@ -99,9 +99,9 @@ func EmitForLoopEmptyConst(buf []byte, kInit, kLimit, kStep uint64, preemptFlagO
 	// ret
 	buf = EmitRet(buf)
 
-	// patch ja forward rel32 = afterLoop - (ja rel32 起点 + 4)
-	forwardRel32 := int32(afterLoop) - int32(jaRel32Off+4)
-	PatchRel32(buf, jaRel32Off, forwardRel32)
+	// patch jb forward rel32 = afterLoop - (ja rel32 起点 + 4)
+	forwardRel32 := int32(afterLoop) - int32(jbRel32Off+4)
+	PatchRel32(buf, jbRel32Off, forwardRel32)
 
 	// patch safepoint jne forward(若启用)
 	if safepointJneRel32Off >= 0 {
@@ -202,7 +202,7 @@ func EmitForLoopRegLimit(buf []byte, kInit, kStep uint64,
 
 	// jb after_loop placeholder
 	buf = EmitJbRel32(buf, 0)
-	jaRel32Off := len(buf) - 4
+	jbRel32Off := len(buf) - 4
 
 	// (可选)safepoint check
 	var safepointJneRel32Off int = -1
@@ -228,9 +228,9 @@ func EmitForLoopRegLimit(buf []byte, kInit, kStep uint64,
 	buf = EmitMovRaxImm64(buf, deoptCode)
 	buf = EmitRet(buf)
 
-	// patch ja forward rel32 (target = after_loop)
-	forwardRel32 := int32(afterLoop) - int32(jaRel32Off+4)
-	PatchRel32(buf, jaRel32Off, forwardRel32)
+	// patch jb forward rel32 (target = after_loop)
+	forwardRel32 := int32(afterLoop) - int32(jbRel32Off+4)
+	PatchRel32(buf, jbRel32Off, forwardRel32)
 
 	// patch safepoint jne (target = after_loop)
 	if safepointJneRel32Off >= 0 {
@@ -321,7 +321,7 @@ func EmitForLoopWithRegKBody(buf []byte, kS, kInit, kLimit, kStep, kBody uint64,
 	// const slot — issues #117/#118, see EmitForLoopEmptyConst).
 	buf = EmitUcomisdXmmXmm(buf, 1, 0)
 	buf = EmitJbRel32(buf, 0)
-	jaOff := len(buf) - 4
+	jbOff := len(buf) - 4
 
 	// body: R(aS) = R(aS) sseOp K (用 xmm3/xmm4,避开 idx/limit/step xmm0/1/2)
 	buf = EmitMovsdXmmFromMem(buf, 3, 3 /*rbx*/, int32(aS)*8)
@@ -349,7 +349,7 @@ func EmitForLoopWithRegKBody(buf []byte, kS, kInit, kLimit, kStep, kBody uint64,
 	buf = EmitRet(buf)
 
 	// patch forward fixups
-	PatchRel32(buf, jaOff, int32(afterLoop)-int32(jaOff+4))
+	PatchRel32(buf, jbOff, int32(afterLoop)-int32(jbOff+4))
 	if safepointJneOff >= 0 {
 		PatchRel32(buf, safepointJneOff, int32(afterLoop)-int32(safepointJneOff+4))
 	}
@@ -417,7 +417,7 @@ func EmitForLoopWithRegKBody2(buf []byte, kS, kInit, kLimit, kStep, kBody1, kBod
 	// const slot — issues #117/#118, see EmitForLoopEmptyConst).
 	buf = EmitUcomisdXmmXmm(buf, 1, 0)
 	buf = EmitJbRel32(buf, 0)
-	jaOff := len(buf) - 4
+	jbOff := len(buf) - 4
 
 	// body:load s 一次,然后两段 SSE op 共享 xmm3
 	buf = EmitMovsdXmmFromMem(buf, 3, 3, int32(aS)*8)
@@ -445,7 +445,7 @@ func EmitForLoopWithRegKBody2(buf []byte, kS, kInit, kLimit, kStep, kBody1, kBod
 	afterLoop := len(buf)
 	buf = EmitRet(buf)
 
-	PatchRel32(buf, jaOff, int32(afterLoop)-int32(jaOff+4))
+	PatchRel32(buf, jbOff, int32(afterLoop)-int32(jbOff+4))
 	if safepointJneOff >= 0 {
 		PatchRel32(buf, safepointJneOff, int32(afterLoop)-int32(safepointJneOff+4))
 	}

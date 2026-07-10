@@ -39,7 +39,7 @@ func TestPJ8_EmitForLoopEmptyConstArm64_Length(t *testing.T) {
 //   - [60-63] FSUB d0, d0, d2(FORPREP 预减)
 //   - [64-67] FADD d0, d0, d2(loop body idx+=step)
 //   - [68-71] FCMPE d0, d1
-//   - [72-75] B.GT after_loop
+//   - [72-75] B.HI after_loop(unordered 退出,#117/#118)
 //   - [76-79] B loop_start backward
 //   - [80-83] RET
 func TestPJ8_EmitForLoopEmptyConstArm64_Layout(t *testing.T) {
@@ -93,15 +93,16 @@ func TestPJ8_EmitForLoopEmptyConstArm64_Layout(t *testing.T) {
 		t.Errorf("[68] FCMPE d0, d1 = 0x%08x, want 0x%08x", insn, wantFcmpe)
 	}
 
-	// [72-75] B.GT after_loop(0x54000000 + cond=GT=0xC + imm19)
+	// [72-75] B.HI after_loop(0x54000000 + cond=HI=0x8 + imm19)—
+	// HI, not GT: unordered (NaN limit) must exit (#117/#118).
 	insn = binary.LittleEndian.Uint32(buf[72:76])
-	if (insn & 0xFF00000F) != (0x54000000 | uint32(CondGT)) {
-		t.Errorf("[72] B.GT base/cond bits wrong: 0x%08x", insn)
+	if (insn & 0xFF00000F) != (0x54000000 | uint32(CondHI)) {
+		t.Errorf("[72] B.HI base/cond bits wrong: 0x%08x", insn)
 	}
-	// imm19 = (after_loop - b.gt 自身) / 4 = (80 - 72)/4 = 2
+	// imm19 = (after_loop - b.hi 自身) / 4 = (80 - 72)/4 = 2
 	gotImm19 := (insn >> 5) & 0x7FFFF
 	if gotImm19 != 2 {
-		t.Errorf("[72] B.GT imm19 = %d, want 2(forward 2 words to ret)", gotImm19)
+		t.Errorf("[72] B.HI imm19 = %d, want 2(forward 2 words to ret)", gotImm19)
 	}
 
 	// [76-79] B loop_start backward(0x14000000 + imm26 negative)
@@ -161,7 +162,7 @@ func TestPJ8_EmitForLoopEmptyConstArm64_ConstantsBurnedIn(t *testing.T) {
 
 // TestPJ8_EmitForLoopEmptyConstArm64_WithSafepoint 验启用 safepoint
 // (preemptFlagOff>=0)模板字节长度 92 = 84 + ldrb 4 + cbnz 4。
-// safepoint 位置在 b.gt(限退出)之后、b loop_start 回边之前,
+// safepoint 位置在 b.hi(限退出)之后、b loop_start 回边之前,
 // 与 RegLimit/WithBody/WithBody2 同款 hot path 范本(承 review S-1):
 //   - [76-79] LDRB W0, [x27, #pfOff]
 //   - [80-83] CBNZ W0, after_loop(imm19 forward)
