@@ -145,6 +145,14 @@ PB7 已完成,本文按以下协议更新:
 2. P3 接入时把 mock P3 替换为真 wazero 后端,本文 §1 PB6 行追加「P3 真后端完成」对账;
 3. 跨文档回填请求(§2)逐项实施,实施时把对应行从「⚠️ 待实施」改「✅ 已完成」。
 
+## 7. 生产 admin API 扩展(2026-07-10,PR #115)
+
+设计期未预设、由生产化需求追加的 Bridge 级公开能力(与 forceAll / hotEntry 等 testing-only 入口的边界在 godoc 明确区分):
+
+1. **运行期分层开关**(`Bridge.SetTierEnabled` / `TierEnabled`,公共面 `State.SetTierEnabled`):`tierOff` 置位后 OnEnter/OnBackEdge 在计数前短路(不再累积热度、不再触发升层),且 `GibbousCodeOf` 返 nil——**已升层 proto 也回解释器**,分派决策粒度生效;`gibbousCodes` 缓存保留,重新开启不重编译。04 状态机不变式不受影响:TierState 本身不回迁(TierGibbous 仍是吸收态),回退发生在分派查询层而非状态机层。
+2. **State 级观测**(`Bridge.TierStatsSnapshot`,公共面 `State.TierStatsSnapshot`):Promoted / StuckNotCompilable / StuckDeclined / StuckCompileFailed / Profiled / TierEnabled。TierStuck 三处转移点(P2 不可编译、P2' profitability decline、P3-fail 编译失败)各自维护分因计数——`CompileTried` 在三条路径都置位,事后遍历无法区分,所以在转移点埋计数(教训沉淀见 llmdoc 反思 2026-07-10-tier-admin-luajit-bench-round)。
+3. 嵌入方视角文档:`docs/embedding-tiers.md`(部署要求 / 开关语义 / 观测接入 / step budget 粒度)。
+
 ---
 
 相关:
