@@ -99,7 +99,7 @@ func EmitForLoopEmptyConstArm64(buf []byte, kInit, kLimit, kStep uint64, preempt
 	// C=1,Z=0 for NaN operands, so a NaN limit/init leaves with zero
 	// iterations like the interpreter (issues #117/#118; b.gt is false
 	// on unordered and looped forever).
-	bGtOff := len(buf)
+	bHiOff := len(buf)
 	buf = EmitBCond(buf, CondHI, 0) // placeholder imm19=0
 
 	// (可选)safepoint check:ldrb w0, [x27+pfOff]; cbnz w0, after_loop
@@ -129,8 +129,8 @@ func EmitForLoopEmptyConstArm64(buf []byte, kInit, kLimit, kStep uint64, preempt
 	buf = EmitRet(buf)
 
 	// patch b.gt imm19 = (after_loop - b.gt 自身位置) / 4 字数偏移
-	imm19BGt := int32(afterLoopOff-bGtOff) / 4
-	patchBCondImm19(buf, bGtOff, imm19BGt)
+	imm19BGt := int32(afterLoopOff-bHiOff) / 4
+	patchBCondImm19(buf, bHiOff, imm19BGt)
 
 	// patch safepoint cbnz forward(若启用)
 	if safepointCbnzOff >= 0 {
@@ -216,7 +216,7 @@ func EmitForLoopRegLimitArm64(buf []byte, kInit, kStep uint64,
 	buf = EmitFcmpeDnDm(buf, 0, 1)
 
 	// b.hi after_loop placeholder (exit on unordered too — #117/#118)
-	bGtOff := len(buf)
+	bHiOff := len(buf)
 	buf = EmitBCond(buf, CondHI, 0)
 
 	// (可选)safepoint check
@@ -244,7 +244,7 @@ func EmitForLoopRegLimitArm64(buf []byte, kInit, kStep uint64,
 	buf = EmitRet(buf)
 
 	// patch B.GT forward(target = after_loop)
-	patchBCondImm19(buf, bGtOff, int32(afterLoopOff-bGtOff)/4)
+	patchBCondImm19(buf, bHiOff, int32(afterLoopOff-bHiOff)/4)
 
 	// patch safepoint CBNZ forward(target = after_loop)
 	if safepointCbnzOff >= 0 {
@@ -363,7 +363,7 @@ func EmitForLoopWithRegKBodyArm64(buf []byte, kS, kInit, kLimit, kStep, kBody ui
 	buf = EmitFcmpeDnDm(buf, 0, 1)
 
 	// 6. b.hi after_loop placeholder (exit on unordered too — #117/#118)
-	bGtOff := len(buf)
+	bHiOff := len(buf)
 	buf = EmitBCond(buf, CondHI, 0)
 
 	// 7. body:R(aS) = R(aS) op K_body
@@ -395,7 +395,7 @@ func EmitForLoopWithRegKBodyArm64(buf []byte, kS, kInit, kLimit, kStep, kBody ui
 	buf = EmitRet(buf)
 
 	// 12. patch forward fixups
-	patchBCondImm19(buf, bGtOff, int32(afterLoopOff-bGtOff)/4)
+	patchBCondImm19(buf, bHiOff, int32(afterLoopOff-bHiOff)/4)
 	if safepointCbnzOff >= 0 {
 		patchCbnzImm19(buf, safepointCbnzOff, int32(afterLoopOff-safepointCbnzOff)/4)
 	}
@@ -479,7 +479,7 @@ func EmitForLoopWithRegKBody2Arm64(buf []byte, kS, kInit, kLimit, kStep, kBody1,
 	buf = EmitFcmpeDnDm(buf, 0, 1)
 
 	// 6. b.hi after_loop (exit on unordered too — #117/#118)
-	bGtOff := len(buf)
+	bHiOff := len(buf)
 	buf = EmitBCond(buf, CondHI, 0)
 
 	// 7. body:load s 一次,然后两段 op 共享 d3
@@ -520,7 +520,7 @@ func EmitForLoopWithRegKBody2Arm64(buf []byte, kS, kInit, kLimit, kStep, kBody1,
 	buf = EmitRet(buf)
 
 	// 12. patch forward fixups
-	patchBCondImm19(buf, bGtOff, int32(afterLoopOff-bGtOff)/4)
+	patchBCondImm19(buf, bHiOff, int32(afterLoopOff-bHiOff)/4)
 	if safepointCbnzOff >= 0 {
 		patchCbnzImm19(buf, safepointCbnzOff, int32(afterLoopOff-safepointCbnzOff)/4)
 	}
