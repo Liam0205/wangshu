@@ -38,7 +38,7 @@
 
 - **P3 开工前置确认(待办)** — P3 开工前须向首个宿主确认「列内核是否跑在协程里」,决定协程不升层是否成立(决策第 7 项;`docs/design/p3-wasm-tier/07-coroutine-thread-rule.md` §3.2)。依赖宿主,设计期无法收口。
 
-- **engineering.md 的脚本协议待定稿** — 测试加固轮已完成其中一项:nightly 长跑 + INFRA/DIVERGENCE 分流自动开 issue 已由 `.github/workflows/nightly-diff-fuzz.yml` 实现(triage 判据内联在 workflow 而非独立 `fuzz-triage.sh`);审查修复轮区间内的 `a8bdca3` 把分流判据改为**机器可读 DIVERGENCE 标记**——测试侧输出 `seed=`/`kind=` 三类标记,workflow 只 grep 该标记,不再靠 grep "byte-diff" 文本启发式;**该新判据仍未经真实失败检验**,首次真实告警时需验证。仍待定:非 Ubuntu runner 的 oracle 源码编译缓存、bench-gate 回退阈值、agentic workflows 接入时机(见 `docs/design/engineering.md` §7);engineering.md §3.2 文本与完成形式(内联 vs 独立脚本、标记协议)的差异待回填轮顺手对账。nightly-benchmark 待办现已有现成基础:`benchmarks/realworld/` 五脚本 + `benchmarks/baseline/` 三档可直接作为夜跑基准面。
+- **engineering.md 的脚本协议待定稿** — 测试加固轮已完成其中一项:nightly 长跑 + INFRA/DIVERGENCE 分流自动开 issue 已由 `.github/workflows/nightly-diff-fuzz.yml` 实现(triage 判据内联在 workflow 而非独立 `fuzz-triage.sh`);审查修复轮区间内的 `a8bdca3` 把分流判据改为**机器可读 DIVERGENCE 标记**——测试侧输出 `seed=`/`kind=` 三类标记,workflow 只 grep 该标记,不再靠 grep "byte-diff" 文本启发式;**该新判据仍未经真实失败检验**,首次真实告警时需验证。仍待定:非 Ubuntu runner 的 oracle 源码编译缓存、bench-gate 回退阈值、agentic workflows 接入时机(见 `docs/design/engineering.md` §7);engineering.md §3.2 文本与完成形式(内联 vs 独立脚本、标记协议)的差异待回填轮顺手对账(2026-07-10 部分回填:调度频率 + 小时级 epoch 种子已同步进 §3.2,伪码里的 fuzz-triage.sh / fuzztime 形式差异仍待对账)。nightly-benchmark 待办现已有现成基础:`benchmarks/realworld/` 五脚本 + `benchmarks/baseline/` 三档可直接作为夜跑基准面。
 
 - **三层禁用机制(LibsSafe/Libs/Exclude)未完整完成** — 评审轮定稿的 stdlib 三层收紧机制(`docs/design/p1-interpreter/10-stdlib.md` §12.1:LibsSafe 预设 / Libs 位掩码 / Exclude 函数级)当前只完成了单点门控 `Options.AllowFileLoad`(loadfile/dofile 默认禁用,显式开启;豁免注册表已登记);完整位掩码机制留待首个宿主接入前完成。[[embedding-contract]] 措辞已同步为「设计承诺三层、现状单点门控」。
 
