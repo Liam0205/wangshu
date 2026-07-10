@@ -767,10 +767,13 @@ func emitTerminatorArm64(buf *codeBuf, c *cfg, bb *basicBlock, bbID int, ins byt
 		}
 		emitJMPArm64Fixup(buf, bb.succs[0])
 	case bytecode.TAILCALL:
-		// ALWAYS terminates the run (issue #52; mirror of amd64): Run's
-		// HelperTailCall arm finishes Go-side on all three host.TailCall
-		// arms. No successor jump, no resume reentry — the trailing
-		// RETURN BB stays CFG-unreachable and unemitted.
+		// Issue #112: mono self-tail-call loops in-segment (mirror of
+		// amd64); guard miss / other callees terminate the run via the
+		// HelperTailCall exit-reason (issue #52): Run's arm finishes
+		// Go-side on all three host.TailCall arms. No successor jump,
+		// no resume reentry — the trailing RETURN BB stays
+		// CFG-unreachable and unemitted.
+		emitSelfTailCallLoopArm64(buf, c.proto, pc, a, b)
 		emitTAILCALLArm64(buf, pc, a, b, uint8(cRK))
 	case bytecode.TFORLOOP:
 		if len(bb.succs) != 2 {
