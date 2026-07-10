@@ -1061,6 +1061,85 @@ func emitTAILCALLArm64(cb *codeBuf, pc int32, a, b, c uint8) {
 	cb.pendingResumeOffFixups = cb.pendingResumeOffFixups[:0]
 }
 
+// emitSelfTailCallLoopArm64 emits the issue #112 in-segment
+// self-tail-call fast path (mirror of the amd64 emitSelfTailCallLoop —
+// see its doc for semantics, the full-64-bit identity guard rationale,
+// the no-CLOSURE gate, and the mandatory #102 fuel guard):
+//
+//	ldr  x9, [x26 + A*8]           ; callee value
+//	ldr  x10, [x27 + closureRefOff]
+//	mov  x11, TagFunction<<48
+//	orr  x10, x10, x11             ; boxed self closure
+//	cmp  x9, x10
+//	b.ne slow
+//	<move args>                    ; R(k) = R(A+1+k)
+//	<nil-fill>                     ; R(nargs..MaxStack-1) = Nil
+//	<hit counter inc>
+//	ldr-sub-str loopFuel; cbnz entry
+//	<HelperLoopFuel exit tail>     ; resume -> b entry
+//	slow:
+func emitSelfTailCallLoopArm64(cb *codeBuf, proto *bytecode.Proto, pc int32, a, b uint8) bool {
+	if proto == nil || proto.IsVararg {
+		return false
+	}
+	nargs := int32(b) - 1
+	if b == 0 || nargs > int32(proto.NumParams) {
+		return false
+	}
+	for _, ins := range proto.Code {
+		if bytecode.Op(ins) == bytecode.CLOSURE {
+			return false
+		}
+	}
+	maxStack := int32(proto.MaxStack)
+
+	// Identity guard (full 64-bit compare).
+	cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 9, regX26, uint16(a)*8))
+	cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 10, regX27,
+		uint16(jit.JITContextCurrentClosureRefOffset)))
+	cb.emit(jitarm64.EmitMovXdImm64(nil, 11, uint64(value.TagFunction)<<48))
+	cb.emit(jitarm64.EmitOrrXdXnXm(nil, 10, 10, 11))
+	cb.emit(jitarm64.EmitCmpXnXm(nil, 9, 10))
+	bneSlowOff := int(cb.pos())
+	cb.emit(jitarm64.EmitBCond(nil, jitarm64.CondNE, 0)) // -> slow
+
+	// Arg move: R(k) = R(A+1+k) (ascending, mirror of doTailCall).
+	for k := int32(0); k < nargs; k++ {
+		cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 9, regX26, uint16((int32(a)+1+k)*8)))
+		cb.emit(jitarm64.EmitStrXtToXnDisp(nil, 9, regX26, uint16(k*8)))
+	}
+	// Nil-fill [nargs, MaxStack).
+	if nargs < maxStack {
+		cb.emit(jitarm64.EmitMovXdImm64(nil, 9, uint64(value.Nil)))
+		for k := nargs; k < maxStack; k++ {
+			cb.emit(jitarm64.EmitStrXtToXnDisp(nil, 9, regX26, uint16(k*8)))
+		}
+	}
+	// Prove-the-path: inc qword [SelfTailCallHitCountAddr].
+	cb.emit(jitarm64.EmitMovXdImm64(nil, 9, SelfTailCallHitCountAddr()))
+	cb.emit(jitarm64.EmitLdrXtFromXnDisp(nil, 10, 9, 0))
+	cb.emit(jitarm64.EmitAddXdImm12(nil, 10, 10, 1))
+	cb.emit(jitarm64.EmitStrXtToXnDisp(nil, 10, 9, 0))
+	// Loop back-edge fuel (issue #102): ldr-sub-str + cbnz entry (BB 0).
+	cb.emit(jitarm64.EmitLdrWtFromXnDisp(nil, 16, regX27,
+		uint16(jit.JITContextLoopFuelOffset)))
+	cb.emit(jitarm64.EmitSubXdImm12(nil, 16, 16, 1))
+	cb.emit(jitarm64.EmitStrWtToXnDisp(nil, 16, regX27,
+		uint16(jit.JITContextLoopFuelOffset)))
+	cbnzOff := cb.pos()
+	cb.emit(jitarm64.EmitCbnzW(nil, 16, 0))
+	cb.addFixupKind(cbnzOff, cbnzOff+4, 0, fixupKindArm64Cond) // -> BB 0
+	// Fuel exhausted: HelperLoopFuel round trip, resume -> entry. No
+	// seg2seg deopt guard (TAILCALL protos never run as seg2seg callees).
+	emitExitReasonArm64(cb, jit.HelperLoopFuel, pc, 0, 0, 0)
+	emitResumePreludeIfPendingArm64(cb)
+	emitJMPArm64Fixup(cb, 0)
+
+	// slow:
+	patchBCondArm64(cb, int32(bneSlowOff), cb.pos())
+	return true
+}
+
 // emitSELFArm64 emits SELF A B C (R(A+1) := R(B); R(A) := R(B)[RK(C)])
 // via the HelperSelf exit-reason (the dispatcher runs host.Self:
 // IC-backed method lookup + __index, may raise). Mirror of amd64
