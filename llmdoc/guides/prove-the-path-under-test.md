@@ -30,6 +30,17 @@
 
 ⚠️ **白盒命中计数器要按稳态窗口(跨 Run)统计,不按单 Run 统计**(详见 §8)。「命中 N 次」是「机制被触发过」的证据,不是「机制在稳态生效」的证据——若快路径带一道会被跨 Run 重建打穿的身份 guard,它可能在第一个 Run 里碰巧命中(表还是 promotion 那一刻的那张)、后续 Run 全落空,单 Run 计数器看着漂亮但稳态从没真生效。读命中计数器时选跨 Run 窗口,别拿单个 Run 的命中数下结论。
 
+⚠️ **测「吸收态分类」的载体调用次数要过完 force-all 的 warm-up retry window**。`PromotionCount>0` 一类断言只证升层吸收(TierGibbous)真发生,吸收到 Stuck 分类(`StuckNotCompilable` / `StuckDeclined` / `StuckCompileFailed`)的断言另有陷阱:`considerPromotion` 对 not-compilable 的 proto 在 forceAll 下有 `pd.EntryCount < 64` 的显式 return(issue #40 留下的 warm-up retry window,给 IC-gated 后端几十次机会热起来再判死),载体调用次数少于 64 就永远停在 `TierInterp`、吸收态计数器保持 0、断言 `StuckNotCompilable != 0` 直接挂——测的是 Interp 状态不是 Stuck 状态,与真正想测的分类语义无关。可复用判据:**测 tier 状态机吸收态相关的断言时,载体的调用次数要显式跨过 retry window**(当前是 64,若阈值改动就跟着改)。实例 `TestTierAdmin_StatsClassifyStuck` 第一版载体只调 vararg 函数 20 次,`StuckNotCompilable == 0` 挂了才发现;改到 100 次并把这个约束在 Lua 注释里写清楚后过线。
+
+**(d) 运行期开关的三段式路径证明(kill switch 类)**
+测运行期状态切换(kill switch / `SetTierEnabled` 类)不能只断言「结果一致」——结果一致在切换语义测试里等价于**没测**(关掉 tier 之后跑对了不等于关成功了,可能根本没关或者关了又自己开回来)。三段式:
+
+1. **开启 + 驱动一遍**:断言路径命中(`NativeRunCount` / 相应 tier 的 dispatch 计数 delta > 0),否则后续两段测的是 vacuous 状态;
+2. **关闭 + 驱动**:断言 delta == 0 **且** 结果 byte-equal 于第一段——两条断言各证一件事,delta==0 证「真的关掉了」,byte-equal 证「关掉之后走的解释器路径产出同样的正确结果」;
+3. **重开 + 驱动**:断言 delta > 0 **且** 已有缓存指标(`TierStatsSnapshot().Promoted` 一类)相对第一段末尾不变——第二条把「重开不重编译」这个不在 issue 描述里的隐性约定钉死;如果实现把 tier off 意外拆掉了缓存表,Promoted 会掉到 0 再重新长回来,`==` 断言直接抓。
+
+三段式的价值在把开关切换的语义拆成三个独立可验的正交断言,任一环回退都能被单点抓到,而不是靠一个「关掉之后结果对」的整体判断兜住。实例 `TestTierAdmin_KillSwitchRoutesToInterpreter` 完成 PR #115 的 `SetTierEnabled` 三向验证。
+
 **(c) 非空载体 + 路径载体证据(空测类)**
 加速路径 ≈1.0x 是红旗不是发现——默认「没走加速路径」。tier A vs B 基准必须**先证 tier B 真被执行**:把 kernel 包进可升层载体(内层函数反复调用而非顶层 vararg chunk),再读数。改 bench 时**先证路径,再读数**。
 
@@ -128,6 +139,8 @@
 - **加 e2e 语料前** → `grep test/luasuite/testdata/` 看是否已覆盖,优先官方套件而非手写
 - **写 force-all / 缓存裁决 / IC 命中类** → 同时 (a) 白盒断言「真到达加速 tier 不是 stuck no-op」+ (b) 输入侧也加结构盲区用例(vararg 顶层 / 字符串常量值 / 协程不升层)
 - **写「auto / 自然触发路径」测试套(不带 force-all)** → 配 `PromotionCount>0` 一类白盒兜底断言,证明该 run 里确实发生过真实升层;否则短用例语料可能悄悄退化成纯解释器覆盖(见 §1「未强制测试静默退化」)
+- **测 tier 状态机的吸收态分类断言**(`StuckNotCompilable` 类)→ 载体调用次数要显式跨过 force-all 的 warm-up retry window(当前 64),否则测的是 `TierInterp` 状态不是 Stuck 状态(见 §2 补丁)
+- **测运行期开关 / kill switch 类切换语义**(`SetTierEnabled` 一类)→ 三段式(promote→off→on),每段各配路径断言(`NativeRunCount` delta > 0 / == 0 / > 0)+ 第三段的「缓存指标不变」断言把「重开不重编译」隐性约定钉死(见 §2(d));只断言「结果一致」等价于没测
 - **机制叠加多档崩点诊断**(§6) → 第一步不是穷举 N 档分别诊断,是写 minimal payload bypass 末档跳一档,把 N 档收敛到一档;多后端/多平台首次「真机 execute」上线时配真机 runner
 - **收到「某条路径导致 N 倍退化」类归因,准备写止血/修复计划前**(§7) → 先 grep build tag / 读函数头注 / 跑白盒探针证该路径在当前二进制里真的存在且可达,再动手修
 - **扩接受面(opSupported 加 op) / 换新硬件跑 fuzz / 改 fuzz 参数(-parallel、-race、GOMAXPROCS)时**(§5) → 立刻跑一轮 60~120s 相关 fuzz smoke,把它当 `go test` 必经步骤,不要延后到「专门的 fuzz 里程碑」;三个独立实例都在维度动的第一次 fuzz 里就抓到既有 bug
