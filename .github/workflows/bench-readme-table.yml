@@ -80,8 +80,8 @@ jobs:
           mkdir -p bench-logs
           # Plain 2> redirect (not process substitution): bash does not
           # wait for a >(tee ...) substitution at command end, which
-          # could race the upload step on progress.log. Live progress is
-          # already visible in the run log via the tail step below.
+          # could race the upload step on progress.log. Progress lands
+          # in the run log via the cat below once the script finishes.
           ./scripts/bench-readme-table.sh \
             --outdir bench-logs \
             --count "${{ inputs.count }}" \
