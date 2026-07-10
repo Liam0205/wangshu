@@ -131,6 +131,62 @@ func (st *State) SetGCStressMode(on bool) { st.core.SetGCStressMode(on) }
 // 判不可编译 → 全留 crescent,本开关 no-op。
 func (st *State) SetForceAllPromote(on bool) { st.core.SetForceAllPromote(on) }
 
+// SetTierEnabled 是分层执行的运行期总开关(**生产 admin API**,默认开启)。
+//
+// 关闭(enabled=false)后:
+//   - 不再发生新的升层(入口/回边采样直接短路,也不再累积热度);
+//   - **已升层的 Proto 也回到解释器执行**——下一次分派决策起生效
+//     (正在原生段/wasm 段内执行的一次调用会正常跑完);
+//   - 已编译的产物保留在缓存中,重新开启(enabled=true)即恢复分层执行,
+//     不需要重新编译。
+//
+// 典型用途:生产灰度 P3/P4 时的「一键退回解释器」手段——线上怀疑升层路径
+// 有问题时,不必重建 State / 重新编译进程即可降级,配合 TierStats 观测定位。
+// 非 wangshu_p3 / wangshu_p4 build 下解释器是唯一执行层,本开关 no-op。
+func (st *State) SetTierEnabled(enabled bool) { st.core.SetTierEnabled(enabled) }
+
+// TierEnabled 返回分层执行运行期开关的当前状态(见 SetTierEnabled)。
+// 非 P3/P4 build 恒返 true(解释器即唯一执行层,无层可关)。
+func (st *State) TierEnabled() bool { return st.core.TierEnabled() }
+
+// TierStats 是 State 级分层执行观测快照(生产 admin API,与 SetTierEnabled
+// 开关配套)。各字段按本 State 自己的 profile 表 / 升层缓存统计。
+type TierStats struct {
+	// Promoted:已升层(装了 P3 wasm / P4 原生编译产物)的 Proto 数。
+	Promoted int
+	// StuckNotCompilable:因可编译性检查排除形状(vararg / 协程 / 不支持的
+	// opcode 等)而永久留在解释器的 Proto 数。预期内,无需关注。
+	StuckNotCompilable int
+	// StuckDeclined:后端能编译但判定升层不划算而放弃的 Proto 数
+	// (profitability gate)。同样预期内。
+	StuckDeclined int
+	// StuckCompileFailed:进入真编译但失败(后端报错 / panic)的 Proto 数。
+	// **非零值得排查**——与上面两类预期内的 Stuck 不同。
+	StuckCompileFailed int
+	// Profiled:有任何 profile 数据(至少进过一次采样钩点)的 Proto 数。
+	Profiled int
+	// TierEnabled:运行期开关当前状态(镜像 State.TierEnabled())。
+	TierEnabled bool
+}
+
+// TierStatsSnapshot 返回当前 State 的分层执行分布快照。
+//
+// 典型用途:生产灰度 P3/P4 时定位性能异常——Promoted 是否符合预期、
+// StuckCompileFailed 是否非零;配合 SetTierEnabled 做「关掉再看」的
+// 对照实验。诊断路径,开销很小(几次计数读取),但不建议逐帧轮询。
+// 非 P3/P4 build 返回零分布 + TierEnabled=true。
+func (st *State) TierStatsSnapshot() TierStats {
+	s := st.core.TierStatsSnapshot()
+	return TierStats{
+		Promoted:           s.Promoted,
+		StuckNotCompilable: s.StuckNotCompilable,
+		StuckDeclined:      s.StuckDeclined,
+		StuckCompileFailed: s.StuckCompileFailed,
+		Profiled:           s.Profiled,
+		TierEnabled:        s.TierEnabled,
+	}
+}
+
 // SetHotThresholds overrides the natural-heat promotion thresholds
 // (entry maps to HotEntryThreshold, backEdge to HotBackEdgeThreshold;
 // 0 keeps that threshold unchanged).

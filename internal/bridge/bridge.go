@@ -90,6 +90,30 @@ type Bridge struct {
 	// minPromotableLen. nil when the backend does not implement
 	// FloorExempter — the floor then applies unconditionally.
 	floorExempter FloorExempter
+
+	// tierOff is the runtime tier kill switch (production admin API,
+	// unlike forceAll/hotEntry which are testing-only). When set:
+	//   - OnEnter/OnBackEdge return before counting, so no new
+	//     promotions happen (and no profiling accrues while off);
+	//   - GibbousCodeOf returns nil, so every dispatch decision falls
+	//     back to the interpreter — including protos promoted BEFORE
+	//     the switch flipped. Installed GibbousCode stays in
+	//     gibbousCodes (no recompile on re-enable).
+	// The Bridge is per-State and single-goroutine (01 §6.3 (B)), so a
+	// plain bool is race-free, same as forceAll. A native/wasm run
+	// already in flight when the host flips the switch finishes
+	// normally; the switch takes effect at the next dispatch decision.
+	tierOff bool
+
+	// stuckNotCompilable / stuckDeclined / stuckCompileFailed break the
+	// TierStuck absorbing state down by cause for TierStatsSnapshot
+	// (the three Stuck transition sites in considerPromotion each bump
+	// exactly one). Kept as counters rather than re-derived from
+	// ProfileData because CompileTried is set on every Stuck path and
+	// cannot distinguish them after the fact.
+	stuckNotCompilable int
+	stuckDeclined      int
+	stuckCompileFailed int
 }
 
 // MinPromotableLener is an optional interface a P3Compiler may
@@ -294,6 +318,57 @@ func (b *Bridge) SetCompilability(proto *bytecode.Proto, c Compilability, r Reas
 // 开关,非支持的运行模式)。
 func (b *Bridge) SetForceAllPromote(on bool) { b.forceAll = on }
 
+// SetTierEnabled flips the runtime tier kill switch (production admin
+// API — see the tierOff field doc). enabled=false stops new promotions
+// AND routes already-promoted protos back to the interpreter at the
+// next dispatch decision; enabled=true restores tiered execution,
+// reusing previously installed GibbousCode without recompiling.
+func (b *Bridge) SetTierEnabled(enabled bool) { b.tierOff = !enabled }
+
+// TierEnabled reports the runtime tier kill switch state.
+func (b *Bridge) TierEnabled() bool { return !b.tierOff }
+
+// TierStats is the per-State tier observability snapshot (production
+// admin API, sister of the SetTierEnabled kill switch). All counts
+// come from this Bridge's own profileTable / counters, so with one
+// Bridge per State the numbers are State-scoped.
+type TierStats struct {
+	// Promoted is the number of protos with installed gibbous code
+	// (P3 wasm or P4 native, whichever backend is wired).
+	Promoted int
+	// StuckNotCompilable counts protos absorbed to permanent
+	// interpreter because the compilability gate excluded their shape
+	// (vararg / coroutine / unsupported opcodes...). Expected and
+	// harmless — these shapes are designed to stay interpreted.
+	StuckNotCompilable int
+	// StuckDeclined counts protos the backend could compile but
+	// declined as unprofitable (PromotionGater). Also expected.
+	StuckDeclined int
+	// StuckCompileFailed counts protos that reached try-compile and
+	// failed (backend error or panic). A nonzero value here is worth
+	// investigating, unlike the two expected Stuck classes above.
+	StuckCompileFailed int
+	// Profiled is the number of protos with any profiling data
+	// (entered at least once through a sampling hook).
+	Profiled int
+	// TierEnabled mirrors the runtime kill switch state.
+	TierEnabled bool
+}
+
+// TierStatsSnapshot returns the current per-State tier distribution.
+// Diagnostics path — cheap (counter reads plus two map length reads),
+// but not intended for per-frame polling.
+func (b *Bridge) TierStatsSnapshot() TierStats {
+	return TierStats{
+		Promoted:           len(b.gibbousCodes),
+		StuckNotCompilable: b.stuckNotCompilable,
+		StuckDeclined:      b.stuckDeclined,
+		StuckCompileFailed: b.stuckCompileFailed,
+		Profiled:           len(b.profileTable),
+		TierEnabled:        !b.tierOff,
+	}
+}
+
 // recheckCompilabilityRuntime 运行期对真实后端重判可编译性(issue #18 / 08 §2.2)。
 //
 // **为何需要**:编译期 analyzeCompilability 用临时 Bridge 跑 F7(checkF7BackendSupport),
@@ -356,6 +431,9 @@ func (b *Bridge) OnBackEdgeID(proto *bytecode.Proto, pid uint32, pc int32, onMai
 }
 
 func (b *Bridge) onBackEdgePD(pd *ProfileData, proto *bytecode.Proto, pc int32, onMain bool) {
+	if b.tierOff {
+		return // runtime kill switch: no counting, no promotion
+	}
 	if pd.TierState != TierInterp {
 		return // 已升 Gibbous / 已卡 Stuck:无需再计数(01 §4.1 守卫)
 	}
@@ -416,6 +494,9 @@ func (b *Bridge) OnEnterID(proto *bytecode.Proto, pid uint32, onMain bool) {
 }
 
 func (b *Bridge) onEnterPD(pd *ProfileData, proto *bytecode.Proto, onMain bool) {
+	if b.tierOff {
+		return // runtime kill switch: no counting, no promotion
+	}
 	if pd.TierState != TierInterp {
 		return
 	}
@@ -533,6 +614,7 @@ func (b *Bridge) considerPromotion(proto *bytecode.Proto, pd *ProfileData, onMai
 		// (P2) 不可编译 / 未分析 → 永久解释(04 §1.4 静态 fallback)
 		pd.TierState = TierStuck
 		pd.CompileTried = true
+		b.stuckNotCompilable++
 		if b.logger != nil {
 			b.logger.LogStuck(proto, pd, comp)
 		}
@@ -551,6 +633,7 @@ func (b *Bridge) considerPromotion(proto *bytecode.Proto, pd *ProfileData, onMai
 		if g, ok := b.p3.(PromotionGater); ok && !g.WorthPromoting(proto) {
 			pd.TierState = TierStuck
 			pd.CompileTried = true
+			b.stuckDeclined++
 			if b.logger != nil {
 				b.logger.LogStuck(proto, pd, comp)
 			}
@@ -586,6 +669,7 @@ func (b *Bridge) considerPromotion(proto *bytecode.Proto, pd *ProfileData, onMai
 	if err != nil {
 		// (P3-fail)编译失败 → 永久解释(04 §1.4 try-compile fallback)
 		pd.TierState = TierStuck
+		b.stuckCompileFailed++
 		if b.logger != nil {
 			b.logger.LogCompileFail(proto, pd, err)
 		}
@@ -665,7 +749,7 @@ func (b *Bridge) PromotionCount() int {
 // 同一 GibbousCode,04 §6.4)。热路径查询——map 命中是一次哈希;profileEnabled
 // 关闭时 crescent 整段不调此函数(编译期消去)。
 func (b *Bridge) GibbousCodeOf(proto *bytecode.Proto) GibbousCode {
-	if len(b.gibbousCodes) == 0 {
+	if b.tierOff || len(b.gibbousCodes) == 0 {
 		return nil
 	}
 	return b.gibbousCodes[proto]
