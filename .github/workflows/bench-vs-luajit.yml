@@ -1,0 +1,105 @@
+name: bench-vs-luajit
+
+# Manual-trigger wangshu-vs-LuaJIT comparison on hosted runners.
+#
+# Runs scripts/bench-vs-luajit.sh (P1 / P4-auto / P4-force / LuaJIT,
+# one identical self-timing Lua suite) on the selected platform(s) and
+# uploads raw logs + the formatted Markdown table as artifacts.
+#
+# HOSTED-RUNNER CAVEATS: same as bench-readme-table.yml — shared VMs
+# swing absolute wall times 10-20% between runs; within-round RATIOS
+# are the usable signal (all four engines run in the same round on the
+# same VM). The LuaJIT column is the roadmap §0 "approach the LuaJIT
+# tier" yardstick, not a claim of parity.
+#
+# LuaJIT install: apt on both ubuntu runners, brew on macOS. If the
+# package is unavailable the script degrades to an n/a column rather
+# than failing the run.
+
+on:
+  workflow_dispatch:
+    inputs:
+      os:
+        description: 'Platform(s) to run'
+        type: choice
+        default: 'all'
+        options: ['all', 'amd64', 'arm64', 'macos']
+      count:
+        description: 'Rounds per engine (median taken)'
+        default: '3'
+
+permissions:
+  contents: read
+
+jobs:
+  # Same plan-job pattern as bench-readme-table.yml: resolve the os
+  # choice into a runner matrix.
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      runners: ${{ steps.pick.outputs.runners }}
+    steps:
+      - id: pick
+        run: |
+          case "${{ inputs.os }}" in
+            amd64) echo 'runners=["ubuntu-latest"]' >> "$GITHUB_OUTPUT" ;;
+            arm64) echo 'runners=["ubuntu-24.04-arm"]' >> "$GITHUB_OUTPUT" ;;
+            macos) echo 'runners=["macos-latest"]' >> "$GITHUB_OUTPUT" ;;
+            *)     echo 'runners=["ubuntu-latest","ubuntu-24.04-arm","macos-latest"]' >> "$GITHUB_OUTPUT" ;;
+          esac
+
+  bench:
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(needs.plan.outputs.runners) }}
+    name: bench (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: install luajit
+        run: |
+          if command -v apt-get >/dev/null 2>&1; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq luajit || true
+          elif command -v brew >/dev/null 2>&1; then
+            brew install luajit || true
+          fi
+          luajit -v || echo "luajit unavailable — column will be n/a"
+
+      - name: run comparison
+        run: |
+          set -o pipefail
+          mkdir -p bench-logs
+          ./scripts/bench-vs-luajit.sh \
+            --outdir bench-logs \
+            --count "${{ inputs.count }}" \
+            2> bench-logs/progress.log \
+            | tee bench-logs/table.md
+          echo "── progress log ──"
+          cat bench-logs/progress.log
+
+      - name: upload logs and table
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bench-vs-luajit-${{ matrix.os }}-${{ github.run_id }}
+          path: bench-logs/
+          if-no-files-found: error
+
+      - name: table to job summary
+        if: always()
+        run: |
+          {
+            echo "### bench-vs-luajit (${{ matrix.os }})"
+            echo ""
+            echo "> Hosted-runner numbers: ratios comparable within this round only"
+            echo "> (see workflow header comment)."
+            echo ""
+            cat bench-logs/table.md
+          } >> "$GITHUB_STEP_SUMMARY"
