@@ -283,6 +283,42 @@ local s = 0
 for i = 1, 30 do s = s + bounce() end
 return s`},
 
+	// —— Issue #112 self-tail-call in-segment loop: the identity guard
+	// admits only the running closure. Collatz-style self recursion,
+	// arg underflow (nil-fill parity with enterLuaFrame), deep
+	// accumulator recursion, and stale-local clearing across loop
+	// iterations all byte-equal against the oracle + interpreter.
+	{"p4_selftail_collatz", `
+local function collatz(n, steps)
+  if n == 1 then return steps end
+  if n % 2 == 0 then return collatz(n / 2, steps + 1) end
+  return collatz(3 * n + 1, steps + 1)
+end
+local total = 0
+for i = 1, 60 do total = total + collatz(i, 0) end
+return total`},
+	{"p4_selftail_arg_underflow", `
+local function f(n, m)
+  if n == nil then return -1 end
+  if m == nil then m = 0 end
+  if n <= 0 then return m end
+  if n == 3 then return f() end
+  return f(n - 1, m + n)
+end
+return f(8)`},
+	{"p4_selftail_acc_deep", `
+local function f(n, acc) if n <= 0 then return acc end return f(n - 1, acc + n) end
+return f(5000, 0)`},
+	{"p4_selftail_stale_local_clear", `
+local function f(n, probe)
+  local x
+  if probe then return x == nil end
+  if n <= 0 then return f(0, true) end
+  x = n
+  return f(n - 1)
+end
+return f(5)`},
+
 	// —— PJ5 TAILCALL 形态 TB1K:GETUPVAL+LOADK+TAILCALL+...(1 K 参 1 返)
 	// (`local function take(x) return x*2 end; local function bounce() return take(7) end`)
 	{"p4_tailcall_upval_1argk", `
