@@ -1,13 +1,17 @@
 name: nightly-diff-fuzz
 
 # 长跑差分 + 自动开 issue(engineering.md §3.2):
-#   - PR 门禁(ci.yml)用固定种子防回归;nightly 用日期滚动种子拓新;
+#   - PR 门禁(ci.yml)用固定种子防回归;本 workflow 用小时滚动种子拓新;
 #   - 真分歧(byte-diff)与环境失败(oracle 不可用等)分流开 issue,不混信号;
 #   - 撞出的分歧应经最小化回流为 conformance 用例(12 §3.6),回归不靠再次随机撞中。
 
 on:
   schedule:
-    - cron: '0 21 * * *' # 北京时间 05:00
+    # 每 4 小时一轮(6 轮/天,2026-07-10 从每日一轮加密):单轮墙钟
+    # ~3h40m < 4h 间隔,不会自我重叠。保留 21:00 UTC(北京时间 05:00)
+    # 原档位。种子空间按小时 epoch 滚动(见 SEED_BASE),各轮探索
+    # 不同种子段,加频即加覆盖。
+    - cron: '0 1,5,9,13,17,21 * * *'
   workflow_dispatch:
     inputs:
       rounds:
@@ -66,13 +70,17 @@ jobs:
       - name: rolling-seed differential fuzz (${{ matrix.variant }})
         id: difffuzz
         run: |
-          # Date epoch as rolling seed base: fresh seed space each day, seed
-          # for a failing run replays deterministically. Seed segment stride
-          # 1e7, sized for 2M scripts/night (~1ms/script locally, 35-60 min)
-          # with 5x safety headroom. p3 (wazero init + promotion + wasm
-          # dispatch) and p4 (jit mmap + native emit + trampoline) may be
-          # slightly slower than p1; the 150m timeout absorbs both.
-          SEED_BASE=$(( $(date -u +%s) / 86400 * 10000000 ))
+          # Hour epoch as rolling seed base (2026-07-10, was day epoch —
+          # required by the 6x/day schedule: a day epoch would make all
+          # six daily runs re-explore the same segment). Fresh seed space
+          # each run; the seed for a failing run replays
+          # deterministically. Seed segment stride 1e7, sized for 2M
+          # scripts/run (~1ms/script locally, 35-60 min) with 5x safety
+          # headroom; consecutive hour buckets never overlap (2M << 1e7).
+          # p3 (wazero init + promotion + wasm dispatch) and p4 (jit mmap
+          # + native emit + trampoline) may be slightly slower than p1;
+          # the 150m timeout absorbs both.
+          SEED_BASE=$(( $(date -u +%s) / 3600 * 10000000 ))
           ROUNDS="${{ github.event.inputs.rounds || '2000000' }}"
           echo "seed_base=$SEED_BASE" >> "$GITHUB_OUTPUT"
           echo "rounds=$ROUNDS" >> "$GITHUB_OUTPUT"
@@ -105,7 +113,12 @@ jobs:
         if: always() && matrix.tags != ''
         run: |
           set -o pipefail
-          SEED_BASE=$(( $(date -u +%s) / 86400 * 10000000 ))
+          # Hour epoch, same formula as the main leg. This step starts
+          # later in the same job, so the recompute may land in the next
+          # hour bucket — harmless: each leg's replay only needs its own
+          # SEED_BASE, and the auto leg exploring a different segment
+          # from the main leg costs nothing.
+          SEED_BASE=$(( $(date -u +%s) / 3600 * 10000000 ))
           ROUNDS="${{ github.event.inputs.rounds || '2000000' }}"
           # Auto leg runs each seed 3x (baseline + 2 auto runs): third
           # of the rounds keeps wall-clock comparable to the main leg.
