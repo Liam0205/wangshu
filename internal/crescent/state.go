@@ -504,6 +504,38 @@ func (st *State) SetForceAllPromote(on bool) {
 	}
 }
 
+// SetTierEnabled flips the runtime tier kill switch (production admin
+// API). enabled=false stops new promotions and routes already-promoted
+// protos back to the interpreter at the next dispatch decision
+// (Bridge.GibbousCodeOf returns nil while off); enabled=true restores
+// tiered execution reusing installed code. No-op when bridge is nil
+// (P1-only build — there is no tier to disable).
+func (st *State) SetTierEnabled(enabled bool) {
+	if st.bridge != nil {
+		st.bridge.SetTierEnabled(enabled)
+	}
+}
+
+// TierEnabled reports the runtime tier kill switch state. Always true
+// on a P1-only build (nil bridge): the interpreter is the only tier.
+func (st *State) TierEnabled() bool {
+	if st.bridge != nil {
+		return st.bridge.TierEnabled()
+	}
+	return true
+}
+
+// TierStatsSnapshot returns the per-State tier distribution (forwards
+// to Bridge.TierStatsSnapshot; production admin API). On a P1-only
+// build (nil bridge) it returns the zero distribution with
+// TierEnabled=true — the interpreter is the only tier.
+func (st *State) TierStatsSnapshot() bridge.TierStats {
+	if st.bridge != nil {
+		return st.bridge.TierStatsSnapshot()
+	}
+	return bridge.TierStats{TierEnabled: true}
+}
+
 // SetHotThresholds overrides the natural-heat promotion thresholds
 // (**testing-only**; forwards to Bridge.SetHotThresholds; 0 keeps that
 // threshold unchanged). Lowering them lets short scripts / fuzz inputs
