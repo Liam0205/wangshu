@@ -91,6 +91,7 @@
 
 ## 相关
 
+- [[unreproducible-crasher-triage]]——差分 fuzz 报层间分歧信号(P1-vs-auto / P1-vs-force / 后端 A vs 后端 B),进入本 guide 的修复流程之前,先按该 guide「真 crasher 但失败形式是层间分歧」节的 oracle 归因步骤确认 bug 真的在 tier / 后端侧;若 oracle 与两层都不符,bug 在共享前端 / stdlib / VM 共享语义,不属于本 guide 的修复范围。共享前端 bug 伪装成层间分歧的实例见 [[2026-07-11-issue125-return-freereg-round]](`return f() or (f())` 的 RETURN 操作数计算读预捕获 freereg 拿栈垃圾,两个 tier 各自读到不同历史值让分歧显性化)。
 - [[prove-the-path-under-test]]——修复后证明每个后端的修复站点真被测试执行。
 - [[design-claims-vs-codebase-physics]]——「不产生新 NaN 所以不需规范化」这类头注主张要对位模式物理
   重新验证(#107 的头注对了一半,结论错)。
