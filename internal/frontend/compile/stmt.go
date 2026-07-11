@@ -419,10 +419,17 @@ func (fs *funcState) stmtReturn(s *ast.ReturnStmt) {
 			fs.emitABC(s.Line, bytecode.RETURN, single.info, 2, 0)
 			return
 		}
-		base := fs.freereg
+		// RETURN must read the register exp2reg actually materialized
+		// into (single.info), not a pre-captured freereg: exp2NextReg
+		// first frees the expression's own temp (freereg drops back)
+		// and re-materializes one slot lower, so a base captured
+		// BEFORE the call can point one past the value. The or-chain
+		// `return f()or(f())` landed its result in R(1) but emitted
+		// RETURN A=2, returning stale stack garbage (issue #125; PUC
+		// luac emits RETURN 1 2 here).
 		fs.exp2NextReg(s.Line, &single)
-		fs.emitABC(s.Line, bytecode.RETURN, base, 2, 0)
-		fs.freereg = base
+		fs.emitABC(s.Line, bytecode.RETURN, single.info, 2, 0)
+		fs.freereg = single.info
 		return
 	}
 	// 普通 return:多值末位走 B=0 到 top

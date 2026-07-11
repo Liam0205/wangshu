@@ -39,6 +39,33 @@ return ok, (e:gsub("^[^:]+:%d+: ", ""))`},
 	// string 必做列已全覆盖(pattern 全集);string.dump 在豁免列
 
 	// coroutine 必做列已全覆盖
+
+	// —— Issue #125: `return <single-non-call-expr-with-jump-chain>`
+	// codegen read a pre-captured freereg for RETURN's A instead of
+	// the register exp2reg materialized into. exp2NextReg first frees
+	// the expression's own temp (freereg drops back one) before
+	// re-materializing, so RETURN read one slot PAST the value —
+	// stale stack garbage that varied by tier/history (nightly fuzz
+	// caught it as a P1-vs-auto divergence: P1 read a leftover 0,
+	// tiered read nil). The or-chain over a no-result call is the
+	// crasher shape; siblings pin and/not variants and a shifted
+	// register base.
+	{"corner_ret_orchain_nocall", `
+local function f() local x = 7 end
+return f() or (f())`},
+	{"corner_ret_orchain_global", `
+function sum() for A = 0, 0 do end end
+return sum() or (sum())`},
+	{"corner_ret_andchain", `
+local function f() for A = 0, 0 do end end
+return f() and 5 or 6`},
+	{"corner_ret_orchain_shifted", `
+local a = 1
+local function f() end
+return f() or (f())`},
+	{"corner_ret_or_value", `
+local function f() return 3 end
+return f() or (f())`},
 }
 
 // exemptions:设计豁免清单(10 §11 ❌ 列 + 正文裁量),显式记录防"漏了"误判。
