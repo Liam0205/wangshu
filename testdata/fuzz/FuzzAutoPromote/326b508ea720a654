@@ -1,0 +1,2 @@
+go test fuzz v1
+string("function sum()for B=0,60 do Y=0 Y=A X=O end sum()end sum()")

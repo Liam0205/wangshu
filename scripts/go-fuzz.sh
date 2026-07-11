@@ -35,6 +35,16 @@ run_target() {
     log=$(mktemp)
     for attempt in 1 2; do
         set +e
+        # GOMEMLIMIT (issue #123 diagnostic hardening): a nightly p4
+        # worker died silently ("terminated unexpectedly: exit status 2",
+        # no panic output) after 35min / 51M execs, and the written-out
+        # input replays clean from every angle — the signature of
+        # process-level resource exhaustion, not an input-determined bug.
+        # A soft memory limit makes a memory-exhaustion death loud: the
+        # Go runtime fails with an explicit out-of-memory fatal + stack
+        # instead of being killed from outside. 6GiB fits the hosted
+        # runners (7GB RAM) with headroom for the fuzz coordinator.
+        GOMEMLIMIT="${GOMEMLIMIT:-6GiB}" \
         go test "${tags_arg[@]+"${tags_arg[@]}"}" "./$pkg" -run='^$' \
             -fuzz="^${func}\$" -fuzztime="$fuzztime" -timeout=120s -parallel=4 \
             2>&1 | tee "$log"
@@ -43,6 +53,14 @@ run_target() {
         if [ "$rc" -eq 0 ]; then
             rm -f "$log"
             return 0
+        fi
+        # Diagnostic breadcrumbs for silent worker deaths (issue #123):
+        # capture memory/map-count state at failure time into the log
+        # stream so the uploaded artifact carries it.
+        if grep -q 'hung or terminated unexpectedly' "$log"; then
+            echo "── silent-worker-death diagnostics (issue #123) ──" >&2
+            free -m >&2 2>/dev/null || true
+            echo "vm.max_map_count: $(cat /proc/sys/vm/max_map_count 2>/dev/null || echo n/a)" >&2
         fi
         if [ "$attempt" -eq 1 ] \
            && grep -q 'context deadline exceeded' "$log" \
