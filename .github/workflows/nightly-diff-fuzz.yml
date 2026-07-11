@@ -189,6 +189,17 @@ jobs:
           elif grep -q "Failing input written to" gofuzz.log 2>/dev/null; then
             CRASH_PATH=$(grep -ohP 'Failing input written to \K\S+' gofuzz.log 2>/dev/null | head -1 || true)
             CRASH_NAME=$(basename "$CRASH_PATH")
+            # Fuzz target = the path segment above the corpus hash
+            # (testdata/fuzz/<FuzzTarget>/<hash>) — needed for an exact
+            # -run pattern. The old template ran the bare hash with no
+            # target prefix and no build tags, matching nothing
+            # ("no tests to run"; PR #126 review finding).
+            CRASH_TARGET=$(basename "$(dirname "$CRASH_PATH")")
+            case "${{ matrix.variant }}" in
+              p3) REPLAY_TAGS='wangshu_p3 wangshu_profile' ;;
+              p4) REPLAY_TAGS='wangshu_p4 wangshu_profile' ;;
+              *)  REPLAY_TAGS='' ;;
+            esac
             TITLE="go-fuzz crash (${{ matrix.variant }}): ${CRASH_NAME:-unknown} ($(date -u +%F))"
             LABEL="bug"
             BODY=$(cat <<EOF
@@ -202,13 +213,16 @@ jobs:
           # 从 run artifact 下载 corpus(若仓库还没入库)
           gh run download ${{ github.run_id }} --repo ${{ github.repository }}
           # 复制到对应路径
-          cp nightly-fuzz-${{ github.run_id }}/$CRASH_PATH $CRASH_PATH
-          # 重放
-          go test . -run='${CRASH_NAME%/*}' -timeout 60s -v
+          cp nightly-fuzz-${{ matrix.variant }}-${{ github.run_id }}/$CRASH_PATH $CRASH_PATH
+          # 重放(tags 对应崩溃的 ${{ matrix.variant }} 腿)
+          go test${REPLAY_TAGS:+ -tags "$REPLAY_TAGS"} . \\
+            -run="^${CRASH_TARGET}/${CRASH_NAME}\$" -count=1 -timeout 60s -v
           \`\`\`
 
           **后续**(12 §4.9 嵌入式 hardening 阈值纪律):定位触发 crash 的 stdlib/VM 路径,加 fail-fast 阈值;
-          补回归用例入 \`hardening_test.go\`;crash corpus 留在 \`testdata/fuzz/\` 作常驻回归。
+          补回归用例;corpus 入库位置按 llmdoc/guides/unreproducible-crasher-triage.md 的判据选
+          (轻量 budget-bounded 形状 → \`testdata/fuzz/\` 常驻回归;重 workload → 显式回归测试,防
+          fuzz coordinator 并行重放压垮 worker)。
           日志与 crash corpus 见 run artifacts:${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           EOF
           )

@@ -66,6 +66,9 @@ return f() or (f())`},
 	{"corner_ret_or_value", `
 local function f() return 3 end
 return f() or (f())`},
+	{"corner_ret_notchain", `
+local function f() for A = 0, 0 do end end
+return (not f()) and f()`},
 }
 
 // exemptions:设计豁免清单(10 §11 ❌ 列 + 正文裁量),显式记录防"漏了"误判。

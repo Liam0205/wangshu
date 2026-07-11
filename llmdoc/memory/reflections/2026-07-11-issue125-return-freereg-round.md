@@ -190,7 +190,7 @@ mutation 探索周边形状;与 #123 的重 workload corpus 放在 `test/regress
 - **教训 1「层间分歧归因先问 oracle」** 值得进 guide,可能的归属:
   - 并入 `prove-the-path` 的诊断侧(「先证明失败路径」的分诊前置——证明的前提
     是知道真值);
-  - 或并入 [[cross-backend-consistency-sweep]] 的分诊前置(那个 guide 目前
+  - 或并入 [[cross-backend-semantic-fix-sweep]] 的分诊前置(那个 guide 目前
     覆盖「一个 backend 修了另一个 backend 也要 sweep」,可以扩到「差分信号
     归因前先拿 oracle 真值」);
   - 或新开一篇「差分信号归因」独立 guide,与 unreproducible-crasher-triage 并列。
@@ -223,7 +223,7 @@ mutation 探索周边形状;与 #123 的重 workload corpus 放在 `test/regress
 
 [[2026-07-11-issue123-unreproducible-crasher-round]](本轮消费该轮 guide 的
 「corpus 位置判据」——轻量 budget-bounded 形状走 `testdata/fuzz/`,#125 corpus
-是判据首次正向消费的例子)· [[cross-backend-consistency-sweep]](教训 2 横向
+是判据首次正向消费的例子)· [[cross-backend-semantic-fix-sweep]](教训 2 横向
 审计四处 sibling 的做法是该 guide「一处修好后立刻 sweep 同族」纪律在前端 codegen
 内的对应物;教训 1 归因纪律可能升格并入该 guide 的分诊前置)· PR #126 ·
 issue #125 · `internal/frontend/compile/stmt.go` · `test/difftest/corners_test.go` ·
