@@ -45,10 +45,11 @@ var issue123Corpora = []struct {
 // exactly the harness FuzzAutoPromote would apply (thresholds 2/4,
 // budget 1<<20, two runs on one auto State, P1 baseline compared
 // for byte-equality) — but sequentially, not under fuzz coordinator
-// -parallel=4. Both the auto path and the P1 baseline must
-// terminate in under 5s (nightly and CI both showed the pathological
-// shape drains its 1<<20 budget in well under a second; a 5s cap
-// pins that we stay budget-bounded, not stack-unbounded).
+// -parallel=4. Each run must terminate within 30s: locally the shape
+// drains its 1<<20 budget in ~1.5s, but shared CI runners run the
+// pure-interpreter leg several times slower (a 5s cap flunked the
+// ubuntu-latest P1 leg), so the cap only pins "budget-bounded, not
+// hung", not a latency promise.
 func TestI123_NightlyCorporaMirrorFuzzHarness(t *testing.T) {
 	for _, tc := range issue123Corpora {
 		t.Run(tc.name, func(t *testing.T) {
@@ -65,11 +66,11 @@ func TestI123_NightlyCorporaMirrorFuzzHarness(t *testing.T) {
 			stA.SetHotThresholds(2, 4)
 
 			for run := 1; run <= 2; run++ {
-				runP1 := runWithDeadlineErr(t, "P1 run "+strconv.Itoa(run), 5*time.Second, func() error {
+				runP1 := runWithDeadlineErr(t, "P1 run "+strconv.Itoa(run), 30*time.Second, func() error {
 					_, err := prog.Run(st1)
 					return err
 				})
-				runA := runWithDeadlineErr(t, "auto run "+strconv.Itoa(run), 5*time.Second, func() error {
+				runA := runWithDeadlineErr(t, "auto run "+strconv.Itoa(run), 30*time.Second, func() error {
 					_, err := prog.Run(stA)
 					return err
 				})
