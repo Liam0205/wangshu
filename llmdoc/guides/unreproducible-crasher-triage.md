@@ -1,0 +1,134 @@
+# 不可复现 crasher 的处置模式(unreproducible crasher triage)
+
+## 适用场景
+
+fuzz / nightly / CI 报了一个 crasher,给出了一个落盘 input,但本地精确重放该 input 无论多少次都不
+复现。典型征象:
+
+- `go test -fuzz` 在 nightly / 长跑里 worker 死亡,报 `fuzzing process hung or terminated
+  unexpectedly: exit status 2`,artifact 里挂了一个 `testdata/fuzz/FuzzXxx/<hash>`;
+- 拿到该 input 精确重放,单次 / N 次都 PASS,harness 镜像跑 hammer 也 PASS;
+- 几千万到上亿 execs 之后才死一次,复现窗口远长于一次典型 fuzz smoke。
+
+本 guide 管的是**这种「不可复现」问题怎么止损**;它不管「可复现问题怎么修对」——那属于
+[[prove-the-path-under-test]](修复后证在测的路径真被走到)和 [[cross-backend-semantic-fix-sweep]]
+(修同一语义时枚举全部后端 × 通道)的范围。三者构成:
+
+- 可复现 crasher(input 决定的 VM bug)→ prove-the-path + cross-backend sweep;
+- 不可复现 crasher(进程级资源耗尽 / 工具链 flake / 已修复代码 remnant)→ **本 guide**。
+
+## 第一步永远是版本核对(不是复现矩阵)
+
+看到「落盘 input 无法复现」这个信号后,**第一件事是核对失败 run 使用的代码版本相对当前 master 是否
+已含相关修复**,不是撒复现矩阵。
+
+**判据**:「撞的是已修复代码,当时的 headSha 还没含修复」是所有解释里**最便宜**的一条,一条命令就能
+排除,复现矩阵每条要几分钟到几十分钟。把最便宜的解释放到最后,是「先撒大网再省钱」的反模式。
+
+**手法**:
+
+```
+gh run view <run-id> --json headSha,event,createdAt
+git log --oneline <headSha>..HEAD -- <suspected-path>
+git merge-base --is-ancestor <fix-commit> <headSha>; echo $?
+```
+
+分三档:
+
+- 失败 headSha **早于**最近相关修复 → 判「已在 master 修好」,corpus 入库常驻回归,复现矩阵不撒;
+- 失败 headSha **已含**相关修复 → 便宜解释已排除,再走下面的分诊 + 复现矩阵;
+- 失败 headSha 与相关修复无明确因果 → 走分诊,顺带记「versions checked, no direct match」进 issue。
+
+**教训来源**:#123 轮走反了顺序——先精确重放 → 镜像 hammer → 恢复路径 → mmap 探针 → 定向 fuzz →
+GC 压力 → 最后才核 headSha,前六条都跑完再核版本。等排除掉「已修复代码」这条最平凡的解释后回头看,
+前六条至少有一半可以不撒。反思 [[2026-07-11-issue123-unreproducible-crasher-round]] 教训 1。
+
+## 真假 crasher 分界(承 2026-07-03 分诊纪律)
+
+go-fuzz 的失败模型是「worker 挂掉时把当前 input 落盘」,但 worker 挂掉的原因可以是 input 触发
+panic(input 决定),也可以是 worker 进程被 OS 因资源耗尽 kill(与 input 无关,input 只是刚好在跑
+而已)。两种原因需要完全不同的处置路径,**「落盘 input 能否精确重放」是区分二者的最直接判据**。
+
+三种典型征象与对应判定:
+
+| 征象 | 判定 | 处置方向 |
+|---|---|---|
+| `context deadline exceeded` + **无** failing input 文件 | fuzz 引擎 30s 窗口收尾时的工具链 flake(golang/go#75804 一类) | 单独复跑即过,不入 corpus,不开 issue(反复出现再入 doc-gaps) |
+| `Failing input written to testdata/...` + input **可精确重放** | 真 crasher,input 决定的 VM bug | 走常规调查,定位 VM 侧根因 |
+| `Failing input written to testdata/...` + input 精确重放**多次干净** + 几千万 execs 后才死一次 | 进程级资源耗尽嫌疑(内存 / mmap 数 / OS OOM killer) | **本 guide 剩余各节** |
+
+**Why**:分诊纪律的价值就是把「进程级资源耗尽」和「input 决定的 VM bug」两类原因显式分开,让「无法
+复现」这个信号有明确的下一步(不是继续挖根因,而是转向进程级观测手段)。若没有这条纪律,自然反应是
+把 input 当作 VM bug 触发点去追,可能会围绕这个 corpus 硬编一个「防御性修复」——但那个修复其实什么
+也没修,因为 VM 侧根本没 bug。
+
+**教训来源**:2026-07-03 issue #40 分诊沉淀 + #123 轮直接消费。反思
+[[2026-07-11-issue123-unreproducible-crasher-round]] 教训 2。
+
+## 复现矩阵检查单(七角度)
+
+版本核对已排除便宜解释、精确重放确认干净后,若还要继续调查,以下七角度是「crasher 落盘 input 无法
+复现时,还能穷举什么」的实用检查单。逐条对照,不用现场想角度。
+
+1. **精确重放**:corpus 原样跑 N 次(N ≥ 10),观察是否真的 100% 干净;
+2. **harness 镜像 hammer**:阈值 / budget 参数与真实 fuzz worker 对齐后 hammer(N ≥ 300);形状对
+   不上会静默落进别的路径,把 harness 里所有与 worker 一样的调参列清楚再跑;
+3. **错误恢复路径**:`bare` / `pcall` / `coroutine` 三种包裹分别试,验证异常路径可正确恢复(不是
+   死循环、不是 State 污染无法复用);
+4. **资源泄漏探针**:重复触发升层 / 分配 / mmap 的操作跑 N 轮(N ≥ 300),观察 `/proc/self/maps`
+   段数 + RSS 曲线是否单调增(mmap 段数不回收是常见嫌疑);
+5. **定向 fuzz**:以 corpus 为种子跑短时(6~10min)定向 fuzz,让 mutation 探索附近形状;若邻域内
+   有真 crasher 应短时抓到;
+6. **GC 压力**:`GOGC=1` + `SetGCStressMode`(或等价),让 GC 时序变化暴露顺序依赖 bug;
+7. **版本核对**:见上一节——**实际做的时候排最前**,写在这里是为了做检查单时不漏。
+
+**七角度全部干净 + 几千万 execs 后无声死 + input 精确重放干净**这一组合的画像与「input 决定的 VM
+bug」不匹配,更像 fuzz worker 进程级资源耗尽(内存 / mmap 数 / OS OOM killer)。此时**转处置模式**,
+不继续无限挖根因。
+
+**#123 轮实例**:七角度全干净,同 headSha `d6e05bd` 的 p1 腿 45 分钟 / 9100 万 execs 也没崩,特征
+指向 fuzz worker 进程级资源耗尽,处置转向 corpus 入库 + 诊断硬化。
+
+## 处置模式(判定为不可复现后)
+
+不硬编修复,不无限挖根因。做两件事:
+
+### 1. corpus 入库常驻回归
+
+即使这个 input 是**合法通过用例**(#123 那个 `326b508ea720a654` 是无界非尾递归 + 每层 60 次全局写
+循环,行为正确),也入 `testdata/fuzz/FuzzXxx/<hash>`。理由:
+
+- 入库无成本(fuzz 引擎自动跑,不额外写 test);
+- 站岗有价值——若这段代码将来因某处改动真的变成 VM bug 触发点,这个种子会立刻抓到;
+- 常驻回归是「已经付过一次调查代价」的最便宜产出。
+
+### 2. 诊断硬化 —— 让下次复发自带诊断
+
+无声外部 kill 之所以难查,是因为它没留下任何 in-process 证据——Go runtime 什么都来不及打,artifact
+里只有一句 `exit status 2`。正确的投资方向是**把外部 kill 转成 in-process fatal**,或者**在被外部
+kill 前 dump 系统状态快照**。#123 轮的两条硬化:
+
+- `GOMEMLIMIT=6GiB`(在 `scripts/go-fuzz.sh` 或等价脚本里):内存耗尽在到达 OS OOM killer 边界之前
+  先触发 Go runtime 自己的 OOM fatal,带完整 goroutine 栈 + heap 摘要;
+- worker 无声死时 dump `free -m` + `vm.max_map_count`(以及等价的 OS 状态量)进上传 artifact,
+  下次复发时 artifact 里就有当时的系统状态快照,不用对着 CI 日志一句话硬猜。
+
+**Why**:低频罕见事件的调查成本大头不是「修」,是「等下一次复发」。等的时候免费,但复发时若信息不够
+又要再等,循环下去。投资应该投在「让复发时的信息一次性够用」,不是投在「这次尽力挖」。
+
+**How to apply**:遇到「本地无法复现 + 生产 / CI 出现」类问题,除了调查根因之外,并行考虑:能不能加
+一个便宜的诊断改动,让下次复发时留下更多信息?能就先做诊断硬化,再看要不要继续挖这次。
+
+**教训来源**:反思 [[2026-07-11-issue123-unreproducible-crasher-round]] 教训 3。
+
+## 与其他 guide 的关系
+
+- 与 [[prove-the-path-under-test]] 互补:那篇管**可复现问题的修复怎么修对**(证在测的路径真被
+  走到、证被归因的路径真的存在、证收益来自稳态生效);本篇管**不可复现问题怎么止损**(判定为
+  不可复现后不硬编修复,corpus 入库 + 诊断硬化让下次复发自带信息)。
+- 与 [[cross-backend-semantic-fix-sweep]] 互补:那篇管**修同一语义类 bug 时枚举全部后端 × 通道**;
+  本篇的判定前提是「input 决定的 VM bug 与进程级资源耗尽已经分开」,分开之后属于 VM bug 的那类才
+  可能进入 cross-backend sweep 的范围。
+- 反思实例:`2026-07-11-issue123-unreproducible-crasher-round`(七角度复现矩阵 + 分诊 + corpus
+  入库 + `GOMEMLIMIT` 诊断硬化) · `2026-07-03-issue40-arm64-stopbleed-round` §「其它(较小)」
+  fuzz 失败形式分诊纪律(deadline vs failing-input 判据的来源)。

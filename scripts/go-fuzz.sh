@@ -42,8 +42,11 @@ run_target() {
         # process-level resource exhaustion, not an input-determined bug.
         # A soft memory limit makes a memory-exhaustion death loud: the
         # Go runtime fails with an explicit out-of-memory fatal + stack
-        # instead of being killed from outside. 6GiB fits the hosted
-        # runners (7GB RAM) with headroom for the fuzz coordinator.
+        # instead of being killed from outside. NOTE: the env var is
+        # inherited by each of the -parallel=4 worker processes, so
+        # 6GiB is a PER-WORKER cap, not a machine-wide one — effective
+        # for the single-worker-blowup case (the likely one), best-
+        # effort if all four grow evenly on a 7GB runner.
         GOMEMLIMIT="${GOMEMLIMIT:-6GiB}" \
         go test "${tags_arg[@]+"${tags_arg[@]}"}" "./$pkg" -run='^$' \
             -fuzz="^${func}\$" -fuzztime="$fuzztime" -timeout=120s -parallel=4 \
