@@ -93,14 +93,26 @@ bug」不匹配,更像 fuzz worker 进程级资源耗尽(内存 / mmap 数 / OS 
 
 不硬编修复,不无限挖根因。做两件事:
 
-### 1. corpus 入库常驻回归
+### 1. corpus 入库常驻回归——但要挑对入库位置
 
 即使这个 input 是**合法通过用例**(#123 那个 `326b508ea720a654` 是无界非尾递归 + 每层 60 次全局写
-循环,行为正确),也入 `testdata/fuzz/FuzzXxx/<hash>`。理由:
+循环,行为正确),也保留常驻回归。理由:
 
-- 入库无成本(fuzz 引擎自动跑,不额外写 test);
+- 入库无成本;
 - 站岗有价值——若这段代码将来因某处改动真的变成 VM bug 触发点,这个种子会立刻抓到;
 - 常驻回归是「已经付过一次调查代价」的最便宜产出。
+
+**入库位置的取舍**(#123 轮踩过一次):默认把 corpus 放进 `testdata/fuzz/FuzzXxx/<hash>`,但要先
+判断 workload 本身的资源密度。fuzz coordinator 启动时在 `-parallel=N` 下**并行重放全部 seed
+corpus** 作为 baseline coverage sweep;若 corpus 触发的 workload 本身很重(深递归 / 长循环 / 高
+分配),并行重放瞬间放大资源压力,恰恰命中「不可复现 crasher」判定为进程级资源耗尽时怀疑的根因。
+#123 轮的实测:corpus 入 `testdata/fuzz/` 后 fuzz-smoke 三条腿(mac / p3 / p4 ubuntu)在 30s 内
+连挂——不是 corpus 有语义 bug,是 fuzz coordinator 的并发放大导致 worker 死。
+
+判据:input 单独跑消耗几百 ms 以上 CPU、或触发深递归 / 大分配的,**改走 Go 回归测试**——写一个
+显式测试(串行、单进程、逐 seed 跑一遍)覆盖同一形状,而不是入 `testdata/fuzz/`。功能等价,不搅
+动 fuzz coordinator。#123 轮就是这样处理的:两个 corpus(`326b508e` / `8c132ff5`)从
+`testdata/fuzz/FuzzAutoPromote/` 撤回,改成 `issue123_regression_test.go` 里的显式测试。
 
 ### 2. 诊断硬化 —— 让下次复发自带诊断
 
