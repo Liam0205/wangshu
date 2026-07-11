@@ -1,0 +1,2 @@
+go test fuzz v1
+string("function k()for A=0,10%0 do end end k(k())")
