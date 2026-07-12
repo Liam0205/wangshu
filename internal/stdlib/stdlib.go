@@ -364,7 +364,13 @@ func baseFnSetMetatable(st *crescent.State, args []value.Value) ([]value.Value, 
 }
 
 func baseFnGetMetatable(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
-	if len(args) == 0 || value.Tag(args[0]) != value.TagTable {
+	// PUC luaB_getmetatable: luaL_checkany raises on a missing
+	// argument (oracle diff fuzz catch: getmetatable() errors);
+	// any PRESENT value, nil included, returns nil for no metatable.
+	if len(args) == 0 {
+		return nil, crescent.NewError("bad argument #1 to 'getmetatable' (value expected)")
+	}
+	if value.Tag(args[0]) != value.TagTable {
 		return []value.Value{value.Nil}, nil
 	}
 	mt := st.MetaOf(value.GCRefOf(args[0]))
