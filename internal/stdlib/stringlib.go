@@ -404,8 +404,13 @@ func stringFnFormat(st *crescent.State, args []value.Value) ([]value.Value, *cre
 			argn++
 		case 'u', 'x', 'X', 'o':
 			// PUC casts through unsigned LUA_INTFRM_T: %u/%x/%o of -1
-			// print the two's-complement value, not "-1".
-			n, _ := toNumberStr(st, args[argn])
+			// print the two's-complement value, not "-1". Non-number
+			// arguments raise via luaL_checknumber (oracle diff fuzz
+			// caught the silently-ignored conversion failure).
+			n, ok := toNumberStr(st, args[argn])
+			if !ok {
+				return nil, crescent.NewError(fmt.Sprintf("bad argument #%d to 'format' (number expected, got %s)", argn+1, st.TypeName(args[argn])))
+			}
 			v := verb
 			if v == 'u' {
 				v = 'd'
@@ -418,7 +423,10 @@ func stringFnFormat(st *crescent.State, args []value.Value) ([]value.Value, *cre
 			// multi-byte UTF-8, so render the single byte through %s
 			// with the same spec (C %c and %s share width/flag
 			// semantics for a one-char string).
-			n, _ := toNumberStr(st, args[argn])
+			n, ok := toNumberStr(st, args[argn])
+			if !ok {
+				return nil, crescent.NewError(fmt.Sprintf("bad argument #%d to 'format' (number expected, got %s)", argn+1, st.TypeName(args[argn])))
+			}
 			out = append(out, []byte(fmt.Sprintf(string(append(spec, 's')), string([]byte{byte(int64(n))})))...)
 			argn++
 		case 'f', 'e', 'E', 'g', 'G':
