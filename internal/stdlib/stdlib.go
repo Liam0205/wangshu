@@ -213,7 +213,11 @@ func baseFnLoad(st *crescent.State, args []value.Value) ([]value.Value, *crescen
 	for i := 0; i < maxReaderPieces; i++ {
 		results, e := st.ProtectedCallDirect(args[0], nil)
 		if e != nil {
-			return nil, e
+			// PUC lua_load 经 luaD_protectedparser 跑 reader:reader 抛错
+			// 被捕获,load 以 (nil, errmsg) 返回而非上抛(oracle diff
+			// fuzz 撞出 load(load) 分歧——reader 内的错误属"加载失败",
+			// 不属调用方错误)。
+			return []value.Value{value.Nil, intern(st, e.Error())}, nil
 		}
 		if len(results) == 0 || results[0] == value.Nil {
 			done = true

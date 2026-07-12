@@ -311,12 +311,13 @@ for i := 0; i < 1000; i++ {
 
 望舒实现的是 Lua 5.1 核心语言（与 LuaJIT 一致的语法层），覆盖 Lua 5.1 参考手册中定义的 38 个字节码 opcode 除 `VARARG` 外的全部（`VARARG` 在 P3/P4 编译层永不接入，走 P1 解释器路径），以及 stdlib 的 base / string / table / math / os / io / coroutine 全部必做面。
 
-正确性验证四层：
+正确性验证五层：
 
 1. **官方测试套 byte-equal**：13 个 5.1.5 官方文件（vararg / sort / pm 整文件 + 其余截至豁免线）逐字节一致。
 2. **手册逐节 probe**：100 项手册特性 + 12 项边角 + 29 条错误消息（含行号断言）+ 70 条种子用例逐字节一致。
 3. **差分随机 fuzz**：nightly-diff-fuzz workflow 每晚 2M 条随机脚本与 Lua 5.1.5 oracle 做差分测试（P1 + P3 + P4 三档并行）。
 4. **三方差分**：crescent（P1）vs gibbous（P3/P4）在 P4 build 下每 CI 跑一次 byte-equal，PR #29/#31 tri-platform matrix 全绿。
+5. **cgo 内嵌 oracle 差分 fuzz**：`internal/oracle` 把官方 5.1.5 源码经 cgo 嵌进测试二进制（build tag `wangshu_oracle_cgo`，默认 build 保持零 cgo），`FuzzOracleDiff` 用 go-fuzz 变异的**任意不规则源码**（不限于 generator 的规整脚本）在进程内对拍：两侧跑同一段 prelude（输出捕获 + 确定性 stub + 排序迭代 + 白名单裁剪）后比输出 byte-equal。PR 门禁 60s 冒烟（oracle-smoke job），nightly p1 腿 45m 长跑。首轮上线即抓出 7 处 P1 与官方的语义分歧（string 库 number 自动转串、`__tostring` 原样透传、协程错误消息 type 名、未知转义字面放行、`upper`/`lower` 按字节、`string.char` 范围检查、`select` 首字符分派）。
 
 **豁免清单**（`test/difftest/corners_test.go::exemptions`，共 15 项，`go test -v -run TestExemptions_Documented` 可审计）：
 
@@ -365,6 +366,7 @@ make test-p4          # 单独跑 P4 build 全套测试
 make test-p3          # 单独跑 P3 build
 make difftest         # 三档 × 三平台差分测试
 make fuzz-p4          # P4 build 下 fuzz 冒烟
+make fuzz-oracle      # cgo 内嵌官方 5.1.5 进程内差分 fuzz（需本机 gcc）
 make bench            # baseline 微基准
 make release TAG=vX.Y.Z MESSAGE_FILE=notes.txt  # 打 annotated tag（本地不 push）
 ```
