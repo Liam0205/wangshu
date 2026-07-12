@@ -457,7 +457,14 @@ func stringFnFormat(st *crescent.State, args []value.Value) ([]value.Value, *cre
 			if !hasPrec && len(sv) >= 100 {
 				out = append(out, sv...)
 			} else {
-				formatted := fmt.Sprintf(string(append(spec, 's')), sv)
+				// C printf ignores the '0' flag for %s (space pad);
+				// Go's %0Ns really zero-pads strings. Strip 0s from
+				// the FLAG region only -- width digits may legally
+				// contain zeros (%10s). Flags end at the first
+				// nonzero digit or '.' (format("%02s", 0) == " 0",
+				// oracle diff fuzz catch).
+				sSpec := stripZeroFlag(spec)
+				formatted := fmt.Sprintf(string(append(sSpec, 's')), sv)
 				if i := strings.IndexByte(formatted, 0); i >= 0 {
 					formatted = formatted[:i]
 				}
@@ -551,6 +558,24 @@ func stringFnChar(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 		out[i] = byte(n)
 	}
 	return []value.Value{intern(st, string(out))}, nil
+}
+
+// stripZeroFlag returns spec without '0' FLAG characters (the leading
+// zeros before any width digits). Width digits are untouched: in
+// "%010s" the first 0 is a flag, the "10" is width.
+func stripZeroFlag(spec []byte) []byte {
+	out := make([]byte, 0, len(spec))
+	out = append(out, spec[0]) // '%'
+	i := 1
+	// flag region: "-+ #0" repeated
+	for i < len(spec) && bytes.IndexByte([]byte("-+ #0"), spec[i]) >= 0 {
+		if spec[i] != '0' {
+			out = append(out, spec[i])
+		}
+		i++
+	}
+	out = append(out, spec[i:]...)
+	return out
 }
 
 // cPadChar renders C sprintf's %c: one byte, space-padded to the spec
