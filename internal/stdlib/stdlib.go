@@ -572,7 +572,9 @@ func baseFnSelect(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 	first := args[0]
 	if value.Tag(first) == value.TagString {
 		s := string(object.StringBytes(st.Arena(), value.GCRefOf(first)))
-		if s == "#" {
+		// PUC luaB_select 只看首字符(*lua_tostring == '#'):
+		// select("#0") 也走 "#" 分支。oracle diff fuzz 撞出整串比较分歧。
+		if len(s) > 0 && s[0] == '#' {
 			return []value.Value{value.NumberValue(float64(len(args) - 1))}, nil
 		}
 	}
