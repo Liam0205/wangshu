@@ -2,6 +2,7 @@
 package stdlib
 
 import (
+	"bytes"
 	"fmt"
 	"strconv"
 	"strings"
@@ -425,15 +426,17 @@ func stringFnFormat(st *crescent.State, args []value.Value) ([]value.Value, *cre
 			argn++
 		case 'c':
 			// PUC sprintf's the char with the full spec (width/flags
-			// apply: %5c pads). Go's %c would encode bytes >= 0x80 as
-			// multi-byte UTF-8, so render the single byte through %s
-			// with the same spec (C %c and %s share width/flag
-			// semantics for a one-char string).
+			// apply: %5c pads with spaces; the 0 flag is numeric-only
+			// and ignored) and appends buff with strlen -- so a NUL
+			// char truncates everything from itself on
+			// (format("%002c", 0) == " "). Go's %c would encode
+			// bytes >= 0x80 as multi-byte UTF-8, so pad manually and
+			// mirror the strlen cut (oracle diff fuzz catch).
 			n, ok := toNumberStr(st, args[argn])
 			if !ok {
 				return nil, crescent.NewError(fmt.Sprintf("bad argument #%d to 'format' (number expected, got %s)", argn+1, st.TypeName(args[argn])))
 			}
-			out = append(out, []byte(fmt.Sprintf(string(append(spec, 's')), string([]byte{byte(int64(n))})))...)
+			out = append(out, cPadChar(spec, byte(int64(n)))...)
 			argn++
 		case 'f', 'e', 'E', 'g', 'G':
 			n, ok := toNumberStr(st, args[argn])
@@ -444,7 +447,20 @@ func stringFnFormat(st *crescent.State, args []value.Value) ([]value.Value, *cre
 			argn++
 		case 's':
 			sv := valueToString(st, args[argn])
-			out = append(out, []byte(fmt.Sprintf(string(append(spec, 's')), sv))...)
+			// PUC str_format 's': strings >= 100 chars WITHOUT a
+			// precision bypass sprintf (pushed whole, NULs intact);
+			// everything else goes through sprintf + strlen append,
+			// which truncates at the first NUL byte.
+			hasPrec := bytes.ContainsRune(spec, '.')
+			if !hasPrec && len(sv) >= 100 {
+				out = append(out, sv...)
+			} else {
+				formatted := fmt.Sprintf(string(append(spec, 's')), sv)
+				if i := strings.IndexByte(formatted, 0); i >= 0 {
+					formatted = formatted[:i]
+				}
+				out = append(out, formatted...)
+			}
 			argn++
 		case 'q':
 			sb, e2 := strArg(st, args, argn, "format")
@@ -533,6 +549,51 @@ func stringFnChar(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 		out[i] = byte(n)
 	}
 	return []value.Value{intern(st, string(out))}, nil
+}
+
+// cPadChar renders C sprintf's %c: one byte, space-padded to the spec
+// width ('-' left-aligns; '0' is numeric-only, spaces regardless),
+// then truncated at the first NUL like PUC's strlen-append.
+func cPadChar(spec []byte, c byte) []byte {
+	width := 0
+	left := false
+	for _, f := range spec[1:] { // skip '%'
+		switch {
+		case f == '-':
+			left = true
+		case f >= '0' && f <= '9':
+			// A leading 0 is the (ignored-for-%c) zero flag only when
+			// no width digits were seen; C parses "00" flags then "2"
+			// width for %002c. Treating every leading 0 as flag and
+			// later digits as width matches: width = width*10 only
+			// after a nonzero digit or a prior width digit.
+			if width == 0 && f == '0' {
+				continue // zero flag (repeatable), no width yet
+			}
+			width = width*10 + int(f-'0')
+		}
+	}
+	var body []byte
+	if c != 0 {
+		body = []byte{c}
+	} // NUL: strlen(buff) cuts before any right-padding is visible...
+	// ...but LEFT padding (right-aligned, the default) precedes the
+	// char in buff, so spaces survive: sprintf("% 2c", 0) -> " \0",
+	// strlen -> " ".
+	pad := width - 1
+	if pad < 0 {
+		pad = 0
+	}
+	if left {
+		// left-aligned: char first, then padding; a NUL char cuts
+		// everything (strlen == 0).
+		if c == 0 {
+			return nil
+		}
+		return append(body, bytes.Repeat([]byte{' '}, pad)...)
+	}
+	outb := append(bytes.Repeat([]byte{' '}, pad), body...)
+	return outb
 }
 
 // 保留 strconv 引用(strInitPos 等未来扩展)。
