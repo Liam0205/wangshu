@@ -176,11 +176,34 @@ func TestShortString(t *testing.T) {
 }
 
 func TestStringEscapeErrors(t *testing.T) {
-	for _, s := range []string{`"unterminated`, "\"\nnewline\"", `"\x41"` /* hex 5.2+ 排除 */, `"\999"`} {
+	for _, s := range []string{`"unterminated`, "\"\nnewline\"", `"\999"`} {
 		lx := New([]byte(s), "test")
 		_, err := lx.Next()
 		if err == nil {
 			t.Errorf("%q: expected lex error", s)
+		}
+	}
+}
+
+// PUC 5.1 对未知转义按字面放行(llex.c read_string default 分支
+// save_and_next):"\A" == "A","\x41" == "x41"(hex 转义是 5.2 特性,
+// 5.1 里 x 只是普通未知转义)。cgo oracle 差分 fuzz 撞出旧行为(报
+// invalid escape sequence)与官方 5.1.5 的分歧。
+func TestStringUnknownEscapePassthrough(t *testing.T) {
+	cases := []struct{ src, want string }{
+		{`"\A"`, "A"},
+		{`"\x41"`, "x41"},
+		{`"\!"`, "!"},
+	}
+	for _, c := range cases {
+		lx := New([]byte(c.src), "test")
+		tok, err := lx.Next()
+		if err != nil {
+			t.Errorf("%q: unexpected error: %v", c.src, err)
+			continue
+		}
+		if tok.Str != c.want {
+			t.Errorf("%q: got %q, want %q", c.src, tok.Str, c.want)
 		}
 	}
 }

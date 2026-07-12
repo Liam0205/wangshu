@@ -120,21 +120,26 @@ func valueToString(st *crescent.State, v value.Value) string {
 }
 
 // valueToStringMeta 是 tostring 的完整语义:先查 __tostring 元方法(07)。
-func valueToStringMeta(st *crescent.State, v value.Value) (string, *crescent.LuaError) {
+//
+// PUC 5.1(luaB_tostring)把元方法的返回值**原样**透传——返回 nil/number/
+// table 都不折叠成字符串;要求"必须是 string"的是 print 这样的消费方
+// (lua_tostring 对 string/number 之外返回 NULL → 报错)。这里对齐:
+// hadMeta=true 时 raw 是元方法首个返回值原样(无返回值 → Nil)。
+func valueToStringMeta(st *crescent.State, v value.Value) (raw value.Value, hadMeta bool, e *crescent.LuaError) {
 	if value.Tag(v) == value.TagTable {
 		h := st.MetaFieldOf(v, "__tostring")
 		if value.Tag(h) == value.TagFunction {
 			results, e := st.ProtectedCallDirect(h, []value.Value{v})
 			if e != nil {
-				return "", e
+				return value.Nil, true, e
 			}
 			if len(results) > 0 {
-				return valueToString(st, results[0]), nil
+				return results[0], true, nil
 			}
-			return "nil", nil
+			return value.Nil, true, nil
 		}
 	}
-	return valueToString(st, v), nil
+	return v, false, nil
 }
 
 // 通用辅助:Value → float64(数字 + 可转字符串);失败返回 (0, false)。
@@ -196,7 +201,7 @@ func baseFnLoad(st *crescent.State, args []value.Value) ([]value.Value, *crescen
 	}
 	if value.Tag(args[0]) != value.TagFunction {
 		return nil, crescent.NewError("bad argument #1 to 'load' (function expected, got " +
-			crescent.TypeNameOf(args[0]) + ")")
+			st.TypeName(args[0]) + ")")
 	}
 	chunkname := "=(load)"
 	if len(args) >= 2 && value.Tag(args[1]) == value.TagString {
@@ -400,11 +405,16 @@ func baseFnRawEqual(_ *crescent.State, args []value.Value) ([]value.Value, *cres
 func baseFnPrint(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	parts := make([]string, len(args))
 	for i, a := range args {
-		s, e := valueToStringMeta(st, a) // print 经 tostring 语义(__tostring 生效)
+		raw, hadMeta, e := valueToStringMeta(st, a) // print 经 tostring 语义(__tostring 生效)
 		if e != nil {
 			return nil, e
 		}
-		parts[i] = s
+		// PUC print 对 tostring 结果做 lua_tostring:string/number 之外
+		// 报错("'tostring' must return a string to 'print'")。
+		if hadMeta && value.Tag(raw) != value.TagString && !value.IsNumber(raw) {
+			return nil, crescent.NewError("'tostring' must return a string to 'print'")
+		}
+		parts[i] = valueToString(st, raw)
 	}
 	fmt.Println(strings.Join(parts, "\t"))
 	return nil, nil
@@ -414,11 +424,15 @@ func baseFnToString(st *crescent.State, args []value.Value) ([]value.Value, *cre
 	if len(args) == 0 {
 		return nil, crescent.NewError("bad argument #1 to 'tostring' (value expected)")
 	}
-	s, e := valueToStringMeta(st, args[0])
+	raw, hadMeta, e := valueToStringMeta(st, args[0])
 	if e != nil {
 		return nil, e
 	}
-	return []value.Value{intern(st, s)}, nil
+	if hadMeta {
+		// PUC 透传元方法返回值原样(nil/table/… 不折叠为字符串)。
+		return []value.Value{raw}, nil
+	}
+	return []value.Value{intern(st, valueToString(st, raw))}, nil
 }
 
 func baseFnToNumber(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
@@ -440,7 +454,7 @@ func baseFnToNumber(st *crescent.State, args []value.Value) ([]value.Value, *cre
 		}
 		if value.Tag(args[0]) != value.TagString {
 			return nil, crescent.NewError("bad argument #1 to 'tonumber' (string expected, got " +
-				crescent.TypeNameOf(args[0]) + ")")
+				st.TypeName(args[0]) + ")")
 		}
 		s := strings.TrimSpace(string(object.StringBytes(st.Arena(), value.GCRefOf(args[0]))))
 		if s == "" {
@@ -508,7 +522,7 @@ func baseFnType(st *crescent.State, args []value.Value) ([]value.Value, *crescen
 	if st.IsCoroutineHandle(args[0]) {
 		return []value.Value{intern(st, "thread")}, nil
 	}
-	return []value.Value{intern(st, crescent.TypeNameOf(args[0]))}, nil
+	return []value.Value{intern(st, st.TypeName(args[0]))}, nil
 }
 
 func baseFnAssert(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
@@ -627,7 +641,7 @@ func mathFn1(name string, f func(float64) float64) crescent.HostFn {
 		}
 		x, ok := toNumberStr(st, args[0])
 		if !ok {
-			return nil, crescent.NewError(fmt.Sprintf("bad argument #1 to '%s' (number expected, got %s)", name, crescent.TypeNameOf(args[0])))
+			return nil, crescent.NewError(fmt.Sprintf("bad argument #1 to '%s' (number expected, got %s)", name, st.TypeName(args[0])))
 		}
 		return []value.Value{value.NumberValue(f(x))}, nil
 	}
@@ -649,12 +663,12 @@ func mathMinMax(st *crescent.State, args []value.Value, name string, better func
 	}
 	out, ok := toNumberStr(st, args[0])
 	if !ok {
-		return nil, crescent.NewError(fmt.Sprintf("bad argument #1 to '%s' (number expected, got %s)", name, crescent.TypeNameOf(args[0])))
+		return nil, crescent.NewError(fmt.Sprintf("bad argument #1 to '%s' (number expected, got %s)", name, st.TypeName(args[0])))
 	}
 	for i, a := range args[1:] {
 		f, ok := toNumberStr(st, a)
 		if !ok {
-			return nil, crescent.NewError(fmt.Sprintf("bad argument #%d to '%s' (number expected, got %s)", i+2, name, crescent.TypeNameOf(a)))
+			return nil, crescent.NewError(fmt.Sprintf("bad argument #%d to '%s' (number expected, got %s)", i+2, name, st.TypeName(a)))
 		}
 		if better(f, out) {
 			out = f
@@ -682,34 +696,41 @@ var stringFns = []entry{
 }
 
 func stringFnLen(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
-	if len(args) == 0 || value.Tag(args[0]) != value.TagString {
-		return nil, crescent.NewError("bad argument #1 to 'len' (string expected)")
+	// strArg, not a raw tag check: PUC's luaL_checklstring coerces
+	// numbers to strings (string.len(123) == 3). Caught by the cgo
+	// oracle diff fuzz; find/match/gsub already went through strArg.
+	s, e := strArg(st, args, 0, "len")
+	if e != nil {
+		return nil, e
 	}
-	n := object.StringLen(st.Arena(), value.GCRefOf(args[0]))
-	return []value.Value{value.NumberValue(float64(n))}, nil
+	return []value.Value{value.NumberValue(float64(len(s)))}, nil
 }
 
 func stringFnUpper(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
-	if len(args) == 0 || value.Tag(args[0]) != value.TagString {
-		return nil, crescent.NewError("bad argument #1 to 'upper'")
+	s, e := strArg(st, args, 0, "upper")
+	if e != nil {
+		return nil, e
 	}
-	s := string(object.StringBytes(st.Arena(), value.GCRefOf(args[0])))
-	return []value.Value{intern(st, strings.ToUpper(s))}, nil
+	return []value.Value{intern(st, strings.ToUpper(string(s)))}, nil
 }
 
 func stringFnLower(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
-	if len(args) == 0 || value.Tag(args[0]) != value.TagString {
-		return nil, crescent.NewError("bad argument #1 to 'lower'")
+	s, e := strArg(st, args, 0, "lower")
+	if e != nil {
+		return nil, e
 	}
-	s := string(object.StringBytes(st.Arena(), value.GCRefOf(args[0])))
-	return []value.Value{intern(st, strings.ToLower(s))}, nil
+	return []value.Value{intern(st, strings.ToLower(string(s)))}, nil
 }
 
 func stringFnSub(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
-	if len(args) < 2 || value.Tag(args[0]) != value.TagString {
+	sb, e := strArg(st, args, 0, "sub")
+	if e != nil {
+		return nil, e
+	}
+	if len(args) < 2 {
 		return nil, crescent.NewError("bad argument to 'sub'")
 	}
-	s := string(object.StringBytes(st.Arena(), value.GCRefOf(args[0])))
+	s := string(sb)
 	startF, ok := toNumberStr(st, args[1])
 	if !ok {
 		return nil, crescent.NewError("bad argument #2 to 'sub'")
@@ -737,10 +758,14 @@ func stringFnSub(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 }
 
 func stringFnRep(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
-	if len(args) < 2 || value.Tag(args[0]) != value.TagString {
+	sb, e := strArg(st, args, 0, "rep")
+	if e != nil {
+		return nil, e
+	}
+	if len(args) < 2 {
 		return nil, crescent.NewError("bad argument to 'rep'")
 	}
-	s := string(object.StringBytes(st.Arena(), value.GCRefOf(args[0])))
+	s := string(sb)
 	nF, ok := toNumberStr(st, args[1])
 	if !ok {
 		return nil, crescent.NewError("bad argument #2 to 'rep'")
@@ -761,10 +786,10 @@ func stringFnRep(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 }
 
 func stringFnReverse(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
-	if len(args) == 0 || value.Tag(args[0]) != value.TagString {
-		return nil, crescent.NewError("bad argument #1 to 'reverse'")
+	s, e := strArg(st, args, 0, "reverse")
+	if e != nil {
+		return nil, e
 	}
-	s := object.StringBytes(st.Arena(), value.GCRefOf(args[0]))
 	out := make([]byte, len(s))
 	for i := range s {
 		out[len(s)-1-i] = s[i]

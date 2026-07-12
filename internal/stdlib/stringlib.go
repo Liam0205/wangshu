@@ -24,7 +24,7 @@ func strArg(st *crescent.State, args []value.Value, n int, fname string) ([]byte
 		return []byte(crescent.FormatLuaNumber(value.AsNumber(v))), nil
 	}
 	return nil, crescent.NewError(fmt.Sprintf("bad argument #%d to '%s' (string expected, got %s)",
-		n+1, fname, crescent.TypeNameOf(v)))
+		n+1, fname, st.TypeName(v)))
 }
 
 // numArg 取第 n 个参数为 number(可缺省)。
@@ -302,7 +302,7 @@ func st2gsubRepl(st *crescent.State, src []byte, s, e int, caps []capResult, rep
 		}
 		b, ok := valueToBytesForGsub(st, results[0])
 		if !ok {
-			return nil, crescent.NewError("invalid replacement value (a " + crescent.TypeNameOf(results[0]) + ")")
+			return nil, crescent.NewError("invalid replacement value (a " + st.TypeName(results[0]) + ")")
 		}
 		return b, nil
 	case value.Tag(repl) == value.TagTable:
@@ -317,7 +317,7 @@ func st2gsubRepl(st *crescent.State, src []byte, s, e int, caps []capResult, rep
 		}
 		b, ok := valueToBytesForGsub(st, v)
 		if !ok {
-			return nil, crescent.NewError("invalid replacement value (a " + crescent.TypeNameOf(v) + ")")
+			return nil, crescent.NewError("invalid replacement value (a " + st.TypeName(v) + ")")
 		}
 		return b, nil
 	}
