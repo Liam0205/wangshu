@@ -19,7 +19,7 @@
         build build-all build-p1 build-p3 build-p4 build-clean \
         test test-all test-p1 test-p3 test-p4 test-trace \
         bench bench-all bench-p1 bench-p3 bench-p4 bench-test bench-pineapple bench-pineapple-fetch \
-        fuzz fuzz-all fuzz-p1 fuzz-p3 fuzz-p4 \
+        fuzz fuzz-all fuzz-p1 fuzz-p3 fuzz-p4 fuzz-oracle \
         difftest difftest-all difftest-p1 difftest-p3 difftest-p4 \
         conformance conformance-all conformance-p1 conformance-p3 conformance-p4 \
         cover hooks check-pr-ci tidy release
@@ -87,6 +87,10 @@ fuzz-p3:                                            ## P3 build 下全部 fuzz �
 
 fuzz-p4:                                            ## P4 build 下全部 fuzz 目标各跑一轮冒烟(wangshu_p4,PJ0 阶段与 P1 等价路径)
 	./scripts/go-fuzz.sh 30s "wangshu_p4 wangshu_profile"
+
+fuzz-oracle:                                        ## cgo 内嵌官方 5.1.5 进程内差分 fuzz(需本机 gcc;不进 all——唯一 cgo 面,shim 单测 + FuzzOracleDiff 冒烟)
+	CGO_ENABLED=1 go test -tags wangshu_oracle_cgo ./internal/oracle/ -count=1
+	CGO_ENABLED=1 ./scripts/go-fuzz.sh 30s "wangshu_oracle_cgo"
 
 # ─── conformance ───────────────────────────────────────────────────────────
 conformance: conformance-all                        ## 别名:make conformance = conformance-all

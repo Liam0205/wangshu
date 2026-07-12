@@ -139,6 +139,22 @@ jobs:
           set -o pipefail
           ./scripts/go-fuzz.sh "${{ github.event.inputs.gofuzztime || '45m' }}" "${{ matrix.tags }}" 2>&1 | tee gofuzz.log
 
+      # cgo oracle differential go-fuzz (p1 leg only): the embedded
+      # official 5.1.5 diffs against the interpreter tier -- P1 is the
+      # semantic anchor; p3/p4 close the loop against P1 via the
+      # existing three-way difftests above. Unlike the rolling-seed
+      # leg (well-formed generator scripts), go-fuzz mutates arbitrary
+      # source bytes, covering irregular/adversarial shapes. Crashes
+      # land in gofuzz-triage via the same "Failing input written to"
+      # marker, so the log is appended to gofuzz.log's triage scope.
+      - name: oracle-diff go-fuzz long run (p1 vs embedded 5.1.5)
+        if: always() && matrix.variant == 'p1'
+        run: |
+          set -o pipefail
+          CGO_ENABLED=1 ./scripts/go-fuzz.sh \
+            "${{ github.event.inputs.gofuzztime || '45m' }}" \
+            "wangshu_oracle_cgo" 2>&1 | tee oraclefuzz.log
+
       - name: upload logs and crash corpus
         if: always()
         uses: actions/upload-artifact@v7
@@ -149,6 +165,7 @@ jobs:
             gcstress.log
             autodiff.log
             gofuzz.log
+            oraclefuzz.log
             **/testdata/fuzz/**
           if-no-files-found: ignore
 
@@ -186,8 +203,8 @@ jobs:
           日志与 crash corpus 见 run artifacts:${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           EOF
           )
-          elif grep -q "Failing input written to" gofuzz.log 2>/dev/null; then
-            CRASH_PATH=$(grep -ohP 'Failing input written to \K\S+' gofuzz.log 2>/dev/null | head -1 || true)
+          elif grep -q "Failing input written to" gofuzz.log oraclefuzz.log 2>/dev/null; then
+            CRASH_PATH=$(grep -ohP 'Failing input written to \K\S+' gofuzz.log oraclefuzz.log 2>/dev/null | head -1 || true)
             CRASH_NAME=$(basename "$CRASH_PATH")
             # Fuzz target = the path segment above the corpus hash
             # (testdata/fuzz/<FuzzTarget>/<hash>) — needed for an exact
@@ -195,10 +212,15 @@ jobs:
             # target prefix and no build tags, matching nothing
             # ("no tests to run"; PR #126 review finding).
             CRASH_TARGET=$(basename "$(dirname "$CRASH_PATH")")
-            case "${{ matrix.variant }}" in
-              p3) REPLAY_TAGS='wangshu_p3 wangshu_profile' ;;
-              p4) REPLAY_TAGS='wangshu_p4 wangshu_profile' ;;
-              *)  REPLAY_TAGS='' ;;
+            case "$CRASH_TARGET" in
+              # oracle-diff crashers replay under the cgo oracle build,
+              # regardless of the matrix leg that caught them.
+              FuzzOracleDiff) REPLAY_TAGS='wangshu_oracle_cgo' ;;
+              *) case "${{ matrix.variant }}" in
+                   p3) REPLAY_TAGS='wangshu_p3 wangshu_profile' ;;
+                   p4) REPLAY_TAGS='wangshu_p4 wangshu_profile' ;;
+                   *)  REPLAY_TAGS='' ;;
+                 esac ;;
             esac
             TITLE="go-fuzz crash (${{ matrix.variant }}): ${CRASH_NAME:-unknown} ($(date -u +%F))"
             LABEL="bug"
@@ -214,7 +236,7 @@ jobs:
           gh run download ${{ github.run_id }} --repo ${{ github.repository }}
           # 复制到对应路径
           cp nightly-fuzz-${{ matrix.variant }}-${{ github.run_id }}/$CRASH_PATH $CRASH_PATH
-          # 重放(tags 对应崩溃的 ${{ matrix.variant }} 腿)
+          # 重放(tags 对应崩溃目标;FuzzOracleDiff 需 CGO_ENABLED=1)
           go test${REPLAY_TAGS:+ -tags "$REPLAY_TAGS"} . \\
             -run="^${CRASH_TARGET}/${CRASH_NAME}\$" -count=1 -timeout 60s -v
           \`\`\`
