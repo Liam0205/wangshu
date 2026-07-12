@@ -90,8 +90,26 @@ while IFS=: read -r file line decl; do
     # the trailing "ok ..." line, failing the pipeline despite the
     # match. </dev/null keeps the probe from consuming the while-read
     # target list on stdin.
+    #
+    # A probe FAILURE (test package does not compile under these tags)
+    # is fatal, not a skip: swallowing it lets a broken build tag or a
+    # tag-specific compile error silently drop the target while other
+    # targets keep the run green (PR review finding). "Compiles fine
+    # but target absent" (rc=0, name missing) is the only skip case.
+    probe_rc=0
     listing=$(go test "${tags_arg[@]+"${tags_arg[@]}"}" "./$pkg" -run='^$' \
-        -list "^${func}\$" </dev/null 2>/dev/null || true)
+        -list "^${func}\$" </dev/null 2>&1) || probe_rc=$?
+    if [ "$probe_rc" -ne 0 ]; then
+        if grep -q "matched no packages\|build constraints exclude all Go files" <<<"$listing"; then
+            # The whole package vanishes under these tags (all files
+            # tag-gated) — genuine not-buildable-here, skip.
+            echo "fuzz: $pkg :: $func not buildable under tags=${tags:-default},skip"
+            continue
+        fi
+        echo "fuzz: probe for $pkg :: $func FAILED under tags=${tags:-default} (compile error?):" >&2
+        echo "$listing" >&2
+        exit "$probe_rc"
+    fi
     if ! grep -q "^${func}\$" <<<"$listing"; then
         echo "fuzz: $pkg :: $func not buildable under tags=${tags:-default},skip"
         continue

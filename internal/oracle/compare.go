@@ -9,23 +9,25 @@ import (
 	"strings"
 )
 
-// addrRe matches hex pointer spellings embedded by tostring
-// ("table: 0x...", "function: 0x..."): the two engines print real,
-// necessarily different addresses. Over-matching a script's own
-// "0x..." string literal is harmless -- both sides get the identical
-// rewrite, so equality is preserved; it could only ever mask a
-// divergence confined to the interior of a hex token.
-var addrRe = regexp.MustCompile(`0x[0-9a-fA-F]+`)
+// addrRe matches ONLY the reference-value spellings tostring emits
+// ("table: 0x...", "function: 0x...", "thread: 0x...",
+// "userdata: 0x..."): the two engines print real, necessarily
+// different addresses there. The type-prefix anchor keeps a script's
+// own hex output (string.format("0x%x", n), plain "0x1" literals)
+// fully comparable -- an unanchored 0x[0-9a-f]+ rule would normalize
+// 0x1 and 0x2 to the same token and mask genuine value divergences
+// (PR review finding).
+var addrRe = regexp.MustCompile(`\b(table|function|thread|userdata): 0x[0-9a-fA-F]+`)
 
 // NormalizeOutput rewrites engine-dependent-but-semantically-equal
 // spellings before byte comparison:
-//   - hex addresses -> 0xADDR (see addrRe);
+//   - reference-value addresses -> "<type>: 0xADDR" (see addrRe);
 //   - "-nan" -> "nan": C's %g prints the sign bit of a NaN, and the
 //     default quiet NaN of x86 arithmetic is negative, so PUC on
 //     glibc prints "-nan" where wangshu (and PUC on other libcs)
 //     prints "nan". IEEE 754 assigns no meaning to a NaN's sign.
 func NormalizeOutput(s string) string {
-	s = addrRe.ReplaceAllString(s, "0xADDR")
+	s = addrRe.ReplaceAllString(s, "${1}: 0xADDR")
 	s = strings.ReplaceAll(s, "-nan", "nan")
 	return s
 }
