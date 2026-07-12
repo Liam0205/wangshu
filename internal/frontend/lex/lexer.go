@@ -149,6 +149,14 @@ func (l *Lexer) skipLongBracket(level int) error {
 		switch c {
 		case '\n', '\r':
 			l.inclineFromCurrent()
+		case '[':
+			// PUC LUA_COMPAT_LSTR == 1 (5.1.5 default): a nested `[[`
+			// inside a level-0 long bracket raises. Oracle diff fuzz
+			// catch (--[[[[]] parses clean here, errors on 5.1.5).
+			if level == 0 && l.matchNestedOpen() {
+				return l.errorf("nesting of [[...]] is deprecated near '['")
+			}
+			l.pos++
 		case ']':
 			if l.matchLongBracketClose(level) {
 				return nil
@@ -159,6 +167,12 @@ func (l *Lexer) skipLongBracket(level int) error {
 		}
 	}
 	return l.errorf("unfinished long comment")
+}
+
+// matchNestedOpen reports whether l.pos sits on the first '[' of a
+// level-0 `[[` pair (PUC skip_sep == 0 check). Position is unchanged.
+func (l *Lexer) matchNestedOpen() bool {
+	return l.pos+1 < len(l.src) && l.src[l.pos+1] == '['
 }
 
 // matchLongBracketClose: at l.pos = ']'; tries to match `]=*]` of given level.
@@ -192,6 +206,13 @@ func (l *Lexer) readLongString(level int) (string, error) {
 		switch c {
 		case '\n', '\r':
 			l.inclineFromCurrent()
+		case '[':
+			// PUC LUA_COMPAT_LSTR == 1: same deprecation error as in
+			// long comments (read_long_string is shared upstream).
+			if level == 0 && l.matchNestedOpen() {
+				return "", l.errorf("nesting of [[...]] is deprecated near '['")
+			}
+			l.pos++
 		case ']':
 			contentEnd := l.pos
 			if l.matchLongBracketClose(level) {
