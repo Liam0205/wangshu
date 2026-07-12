@@ -177,6 +177,13 @@ jobs:
           go-version-file: go.mod
       - name: oracle shim unit tests
         run: CGO_ENABLED=1 go test -tags wangshu_oracle_cgo ./internal/oracle/ -count=1
+      - name: FuzzOracleDiff required-target assertion
+        # The smoke must fail loudly if the target stops compiling into
+        # the root package under the oracle tags (PR review: go-fuzz.sh
+        # would otherwise skip it while other targets keep the job green).
+        run: |
+          CGO_ENABLED=1 go test -tags wangshu_oracle_cgo . -run='^$' -list '^FuzzOracleDiff$' | grep -q '^FuzzOracleDiff$' \
+            || { echo "FuzzOracleDiff missing under wangshu_oracle_cgo (build tag broken?)" >&2; exit 1; }
       - name: oracle diff fuzz smoke
         run: CGO_ENABLED=1 ./scripts/go-fuzz.sh 60s "wangshu_oracle_cgo"
       - if: failure()

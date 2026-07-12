@@ -49,11 +49,17 @@ func (st *State) metaField(t arena.GCRef, name string) value.Value {
 	return v
 }
 
-// metaFieldOfValue 对任意 Value 查元方法(M11 仅支持 table;string 等 per-type
-// 元表留 P1 后续)。
+// metaFieldOfValue 对任意 Value 查元方法:table 查自身元表,string 查
+// 共享 string 元表(PUC per-type 元表对位——__add/__concat/__lt/__call/
+// __tostring 等全部经此入口对 string 生效,不只 __index)。
 func (st *State) metaFieldOfValue(v value.Value, name string) value.Value {
 	if value.Tag(v) == value.TagTable {
 		return st.metaField(value.GCRefOf(v), name)
+	}
+	if value.Tag(v) == value.TagString && st.stringMeta != 0 {
+		key := value.MakeGC(value.TagString, st.gc.Intern([]byte(name)))
+		h, _ := st.tableGet(st.stringMeta, key)
+		return h
 	}
 	return value.Nil
 }
@@ -84,12 +90,11 @@ func (st *State) indexWithMeta(th *thread, obj, key value.Value) (value.Value, *
 		}
 		if value.Tag(obj) == value.TagString {
 			// string per-type metatable: PUC reads __index from the
-			// shared string metatable LIVE, so script mutation of
-			// getmetatable("").__index takes effect. Fall back to the
-			// stringLib shortcut when no metatable is registered.
+			// shared string metatable LIVE (script mutation of
+			// getmetatable("").__index takes effect). Falls back to
+			// the stringLib shortcut when no metatable is registered.
 			if st.stringMeta != 0 {
-				ikey := value.MakeGC(value.TagString, st.gc.Intern([]byte("__index")))
-				h, _ := st.tableGet(st.stringMeta, ikey)
+				h := st.metaFieldOfValue(obj, "__index")
 				if h == value.Nil {
 					return value.Nil, nil
 				}

@@ -20,6 +20,16 @@ var cornerProbes = []diffCase{
 	{"corner_global_via_G", `x_corner = 42; return _G.x_corner`},
 	{"corner_unpack_global", `return unpack({7, 8, 9})`},
 
+	// string 共享元表(PUC per-type 元表对拍;PR review 阻塞项 2:
+	// 元表不只 __index 可见——__add/__tostring/__concat/__lt 等全部
+	// 经共享元表生效,且脚本改动全局可见)
+	{"corner_strmt_shape", `local mt = getmetatable("") return type(mt), mt.__index == string, getmetatable("x") == mt`},
+	{"corner_strmt_add", `getmetatable("").__add = function(a, b) return 42 end return "x" + "y"`},
+	{"corner_strmt_tostring", `getmetatable("").__tostring = function(s) return "S:" .. string.len(s) end return tostring("abc")`},
+	{"corner_strmt_index_override", `getmetatable("").__index = {probe = function() return "custom" end} return ("a").probe()`},
+	{"corner_strmt_concat", `getmetatable("").__concat = function(a, b) return "CC" end return {} .. "x"`},
+	{"corner_strmt_lt", `getmetatable("").__lt = function(a, b) return false end return "a" < "b"`},
+
 	// math 必做列:atan2/frexp/ldexp/sinh/cosh/tanh(此前未实现/未测)
 	{"corner_math_atan2", `return math.atan2(1, 1) > 0.78 and math.atan2(1, 1) < 0.79`},
 	{"corner_math_frexp", `return math.frexp(8)`},

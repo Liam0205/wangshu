@@ -6,23 +6,26 @@
 // condition is false for NaN), not spin forever inside the mmap
 // segment.
 //
-// `for A=0,0%0 do end` const-folds 0%0 to NaN, which is a genuine
-// number (below the NaN-box tag space) and so passes the template's
-// analyzeForLoopForm number gates. The template's exit compare was
-// `ucomisd idx, limit; ja exit` — ucomisd sets CF=ZF=PF=1 on
-// unordered, so `ja` (CF=0 && ZF=0) never jumped and the segment
-// looped forever, unreachable by safepoint or step budget (arm64
-// mirror: `fcmpe; b.gt` — GT is false on unordered). The per-op
-// translator's emitFORLOOP already exits correctly on unordered;
-// only the PJ3 spec templates were affected.
+// HISTORY: `for A=0,0%0 do end` USED to const-fold 0%0 to NaN, which
+// passed analyzeForLoopForm's number gates into the EmptyConst
+// template, whose exit compare was `ucomisd idx, limit; ja exit` —
+// ja never jumps on unordered, so the segment looped forever,
+// unreachable by safepoint or step budget (arm64 mirror: fcmpe;
+// b.gt). The per-op translator's emitFORLOOP already exited
+// correctly; only the PJ3 spec templates were affected.
 //
-// Test discipline (prove-the-path): the template only matches the
-// EXACT 6/7-op empty-body shape (`for i=K1,K2 do end` + empty
-// RETURN), and only executes on the promoted dispatch AFTER the
-// promoting run — so each case runs prog twice on one State and
-// asserts jit.SpecForLoopHits() advanced (a carrier that misses the
-// template silently tests the per-op path instead, which was never
-// broken — the first draft of this test did exactly that).
+// PUC-parity constant folding (oracle diff fuzz round) later removed
+// the SOURCE-level carrier entirely: official 5.1.5 refuses to fold
+// x%0 / NaN results, so `0%0` now compiles to a runtime MOD and a
+// NaN can no longer reach a Proto const slot from any source text.
+// The shapes below therefore no longer hit the spec template (their
+// loop bounds aren't Proto consts anymore) — the template-level
+// unordered-exit obligation is pinned INSIDE the emitters instead
+// (TestPJ3_ForLoopEmptyConst_RoundTrip NaN cases run real NaN bits
+// through the mmap'd template; the arm64 byte-layout test asserts
+// B.HI). What remains here is the end-to-end guarantee the fuzz
+// crashers actually demand: these EXACT shapes terminate promptly
+// under force-all/auto promotion and match P1 results.
 //
 // Found by nightly go-fuzz (FuzzAutoPromote eb8fb93a433d40b2 hung the
 // worker; FuzzP4ForceAllPromote 5159747aad201f47 hung during
@@ -60,27 +63,28 @@ var forloopNaNShapes = []struct {
 	name string
 	src  string
 }{
-	// EmptyConst form, NaN limit (the fuzz crasher shape).
+	// The original fuzz crasher shape: NaN limit (0%0 is now a
+	// runtime MOD, not a folded const — see file header).
 	{"nan_limit", `local function k() for A = 0, 0%0 do end end
 k() k()`},
-	// EmptyConst form, NaN init: FORPREP's pre-decrement and the
-	// first addsd keep idx NaN — same unordered-exit obligation.
+	// NaN init: FORPREP's pre-decrement and the first add keep idx
+	// NaN — same unordered-exit obligation on every tier.
 	{"nan_init", `local function k() for A = 0%0, 10 do end end
 k() k()`},
-	// EmptyConst form, NaN step: analyzeForLoopForm's step>0 gate
-	// must decline NaN (`NaN <= 0` is false in Go, so a naive gate
-	// admits it and emits the template with an unordered compare
-	// every iteration).
+	// NaN step: the step>0 gate must not admit NaN (`NaN <= 0` is
+	// false in Go, so a naive gate admits it).
 	{"nan_step", `local function k() for A = 1, 10, 0%0 do end end
 k() k()`},
 }
 
-// TestI117_SpecForLoopNaNTerminates pins the template fix: two runs
-// on a force-all State (run 1 promotes, run 2 executes the mmap
-// segment), with a SpecForLoopHits delta proving the spec template
-// (not the per-op path) actually compiled the kernel. nan_step is
-// the exception: the analyzer must DECLINE it, so its probe
-// assertion is inverted.
+// TestI117_SpecForLoopNaNTerminates: two runs on a force-all State
+// (run 1 promotes, run 2 executes the promoted dispatch — the run
+// that used to hang). Since PUC-parity folding removed compile-time
+// NaN consts, the shapes exercise the runtime-NaN promoted paths;
+// each must terminate promptly AND match the interpreter (zero
+// iterations for NaN limit/init/step). SpecForLoopHits must NOT
+// advance for any of them — a delta means a compile-time NaN const
+// snuck back into the template, i.e. the folding regressed.
 func TestI117_SpecForLoopNaNTerminates(t *testing.T) {
 	for _, tc := range forloopNaNShapes {
 		t.Run(tc.name, func(t *testing.T) {
@@ -99,15 +103,8 @@ func TestI117_SpecForLoopNaNTerminates(t *testing.T) {
 				_, err := prog.Run(st)
 				return err
 			})
-			delta := jit.SpecForLoopHits() - before
-			if tc.name == "nan_step" {
-				if delta != 0 {
-					t.Fatalf("NaN step must be declined by the shape gate, but spec template compiled (delta=%d)", delta)
-				}
-				return
-			}
-			if delta == 0 {
-				t.Fatal("carrier missed the PJ3 spec template (SpecForLoopHits unchanged); test is vacuous")
+			if delta := jit.SpecForLoopHits() - before; delta != 0 {
+				t.Fatalf("NaN loop bound reached a Proto const slot (spec template hit, delta=%d) — PUC-parity constant folding regressed", delta)
 			}
 		})
 	}

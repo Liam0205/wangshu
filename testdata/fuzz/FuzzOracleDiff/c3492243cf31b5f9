@@ -1,0 +1,2 @@
+go test fuzz v1
+string("print(string.format(\"%100X\",0))")

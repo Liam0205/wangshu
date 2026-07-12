@@ -29,6 +29,15 @@ func TestPJ3_ForLoopEmptyConst_RoundTrip(t *testing.T) {
 		{1, 1000, 1, "1..1000 step 1"},
 		{1, 10, 2, "1..10 step 2"},
 		{1, 100, 0.5, "1..100 step 0.5(200 次)"},
+		// #117/#118 unordered-exit pins: a NaN in limit or init must
+		// exit on the FIRST compare (ja: CF=0&&ZF=0 is false when
+		// ucomisd sets CF=ZF=PF=1 on unordered). Source-level
+		// carriers no longer exist -- PUC-parity constant folding
+		// refuses to fold 0%0, so a NaN can never reach a Proto
+		// const slot from source -- but the emitters still accept
+		// arbitrary bits and must stay unordered-safe.
+		{1, math.NaN(), 1, "NaN limit(unordered 立即退出)"},
+		{math.NaN(), 10, 1, "NaN init(unordered 立即退出)"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

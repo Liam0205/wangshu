@@ -136,7 +136,10 @@ func valueToString(st *crescent.State, v value.Value) string {
 // what raises). Mirrored here: with hadMeta=true, raw is the
 // metamethod's first return verbatim (no returns -> Nil).
 func valueToStringMeta(st *crescent.State, v value.Value) (raw value.Value, hadMeta bool, e *crescent.LuaError) {
-	if value.Tag(v) == value.TagTable {
+	if value.Tag(v) == value.TagTable || value.Tag(v) == value.TagString {
+		// MetaFieldOf covers both table metatables and the shared
+		// string metatable (PUC: a __tostring installed on
+		// getmetatable("") applies to every string).
 		h := st.MetaFieldOf(v, "__tostring")
 		if value.Tag(h) == value.TagFunction {
 			results, e := st.ProtectedCallDirect(h, []value.Value{v})

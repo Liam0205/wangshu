@@ -362,35 +362,37 @@ func stringFnFormat(st *crescent.State, args []value.Value) ([]value.Value, *cre
 			i++
 			continue
 		}
-		// 取 flags/width/precision
-		// 嵌入式 hardening:width/precision 拼装在 spec 里直接交给 fmt.Sprintf,
-		// `%.99999999999d` 会让 Go runtime 分配巨量字节直至 OOM 崩宿主。
-		// 与 string.rep 同源,1 GiB 阈值兜住上亿位变体(width/precision 是
-		// 十进制字符数,1<<30 = ~10 亿,记 maxFormatNumeric = 1 << 30)。
-		const maxFormatNumeric = 1 << 30
+		// flags/width/precision:对齐 PUC scanformat 的硬限——flags 最多
+		// 5 个(sizeof(FLAGS)-1;第 6 个报 repeated flags),width 与
+		// precision 各最多 2 位数字(第 3 位报 width or precision too
+		// long)。这同时就是嵌入式 hardening:2 位宽度上限彻底封死
+		// `%.99999999999d` 型 OOM(旧防线是自设的 1 GiB 阈值,PUC 语义
+		// 更严且 byte-equal;oracle diff fuzz 撞出 %100X 的分歧)。
 		spec := []byte{'%'}
+		flagStart := i
 		for i < len(f) && strings.ContainsRune("-+ #0", rune(f[i])) {
 			spec = append(spec, f[i])
 			i++
 		}
-		widthStart := i
-		for i < len(f) && isdigit(f[i]) {
+		if i-flagStart >= 6 {
+			return nil, crescent.NewError("invalid format (repeated flags)")
+		}
+		for d := 0; d < 2 && i < len(f) && isdigit(f[i]); d++ {
 			spec = append(spec, f[i])
 			i++
 		}
-		if i-widthStart > 10 || (i > widthStart && atoiSimple(f[widthStart:i]) > maxFormatNumeric) {
-			return nil, crescent.NewError("invalid format width (too large)")
+		if i < len(f) && isdigit(f[i]) {
+			return nil, crescent.NewError("invalid format (width or precision too long)")
 		}
 		if i < len(f) && f[i] == '.' {
 			spec = append(spec, f[i])
 			i++
-			precStart := i
-			for i < len(f) && isdigit(f[i]) {
+			for d := 0; d < 2 && i < len(f) && isdigit(f[i]); d++ {
 				spec = append(spec, f[i])
 				i++
 			}
-			if i-precStart > 10 || (i > precStart && atoiSimple(f[precStart:i]) > maxFormatNumeric) {
-				return nil, crescent.NewError("invalid format precision (too large)")
+			if i < len(f) && isdigit(f[i]) {
+				return nil, crescent.NewError("invalid format (width or precision too long)")
 			}
 		}
 		if i >= len(f) {
