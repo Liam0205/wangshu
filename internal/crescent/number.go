@@ -33,21 +33,25 @@ func ParseLuaNumber(s string) (float64, bool) {
 	if !ok {
 		return 0, false
 	}
-	// luaO_str2d:strtod 停在 'x'/'X' ⟹ 十六进制整数重解(覆盖 "0x10"
-	// 在 pre-C99 libc 的停点;C99 下只剩 "0x" 无位数形状会走到这里,
-	// 而它 strtoul 也解不出 ⟹ 失败,正好对齐 tonumber("0x") = nil)。
+	// luaO_str2d:strtod 停在 'x'/'X' ⟹ 从串头按 strtoul(s, 16) 重解,
+	// 之后仍走同一 endptr 契约(跳尾随空白,余任何字符 ⟹ 失败)。
+	// strtoul 语义:可选符号 + 可选 "0x" 前缀 + 最长十六进制位串;
+	// 溢出饱和 ULONG_MAX。C99 下本回退几乎恒失败(整串合法的 hex 已被
+	// strtod 的 hex float 吃掉;"1X0"/"0x" 这类停点形状 strtoul 也
+	// 消费不完整串)——oracle diff fuzz 撞出旧实现(盲目取 [2:] 当
+	// hex 位串)把 tonumber("1X0") 解成 0 的分歧。
 	if n < len(rest) && (rest[n] == 'x' || rest[n] == 'X') {
-		t := strings.TrimRight(rest, " \t\n\v\f\r")
-		u, err := strconv.ParseUint(t[2:], 16, 64)
-		if err != nil {
-			// strtoul 溢出饱和 ULONG_MAX;非法位数则失败。
-			if errors.Is(err, strconv.ErrRange) {
-				u = ^uint64(0)
-			} else {
-				return 0, false
-			}
+		u, n2, ok2 := strtoulHexPrefix(rest)
+		if !ok2 {
+			return 0, false
 		}
-		return float64(u), true
+		for n2 < len(rest) && isLuaSpace(rest[n2]) {
+			n2++
+		}
+		if n2 != len(rest) {
+			return 0, false
+		}
+		return u, true
 	}
 	for n < len(rest) && isLuaSpace(rest[n]) {
 		n++
@@ -56,6 +60,57 @@ func ParseLuaNumber(s string) (float64, bool) {
 		return 0, false
 	}
 	return f, true
+}
+
+// strtoulHexPrefix 模拟 C strtoul(s, &end, 16) 的前缀解析:可选符号 +
+// 可选 "0x"/"0X" 前缀 + 最长十六进制位串。返回 (值, 消耗字节数, 成功);
+// 溢出饱和 ULONG_MAX(strtoul 语义,不查 errno 对位 luaO_str2d);
+// 负号按 C 无符号回绕后转 double。
+func strtoulHexPrefix(s string) (float64, int, bool) {
+	i := 0
+	neg := false
+	if i < len(s) && (s[i] == '+' || s[i] == '-') {
+		neg = s[i] == '-'
+		i++
+	}
+	digitStart := i
+	if i+1 < len(s) && s[i] == '0' && (s[i+1] == 'x' || s[i+1] == 'X') && i+2 < len(s) && isHexDigitByte(s[i+2]) {
+		i += 2
+		digitStart = i
+	}
+	u := uint64(0)
+	overflow := false
+	for i < len(s) && isHexDigitByte(s[i]) {
+		d := hexVal(s[i])
+		if u > (^uint64(0)-uint64(d))/16 {
+			overflow = true
+		}
+		u = u*16 + uint64(d)
+		i++
+	}
+	if i == digitStart {
+		return 0, 0, false
+	}
+	if overflow {
+		u = ^uint64(0)
+	}
+	f := float64(u)
+	if neg {
+		f = float64(-u) // C unsigned negation wraps, then cast_num
+	}
+	return f, i, true
+}
+
+// hexVal 返回十六进制位的数值(caller 已验 isHexDigitByte)。
+func hexVal(c byte) byte {
+	switch {
+	case c >= '0' && c <= '9':
+		return c - '0'
+	case c >= 'a' && c <= 'f':
+		return c - 'a' + 10
+	default:
+		return c - 'A' + 10
+	}
 }
 
 // isLuaSpace 对齐 C isspace(默认 locale)。
