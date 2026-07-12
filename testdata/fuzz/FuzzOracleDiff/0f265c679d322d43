@@ -1,0 +1,2 @@
+go test fuzz v1
+string("print(string.format(\"%002c\",0))")
