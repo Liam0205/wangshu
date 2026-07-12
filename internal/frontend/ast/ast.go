@@ -157,10 +157,18 @@ func (*FuncExpr) exprNode()    {}
 // ----- Table constructor -----
 
 type TableExpr struct {
-	Line  int32
-	AKeys []Expr // 数组部分:无键项,按出现序;末位可多值
-	HKeys []Expr // 哈希部分键(与 HVals 等长)
-	HVals []Expr // 哈希部分值
+	Line int32
+	// Items 按**源码出现序**保存全部字段:PUC 的构造器代码按序交错
+	// 生成 SETTABLE(键值字段,当场)与 SETLIST(位置字段,攒批),
+	// 后写覆盖先写({B,0,C,[1]=""} 里 SETLIST 的位置项覆盖 [1]="")。
+	// 拆成数组/哈希两个列表会丢顺序(cgo oracle 差分 fuzz 撞出)。
+	Items []TableItem
+}
+
+// TableItem 是表构造器的一个字段:Key == nil 表示位置(数组)项。
+type TableItem struct {
+	Key Expr // nil = 位置项;非 nil = [k]=v 或 name=v
+	Val Expr
 }
 
 func (e *TableExpr) Pos() int32 { return e.Line }

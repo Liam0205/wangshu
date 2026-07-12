@@ -1,0 +1,2 @@
+go test fuzz v1
+string("local t={B,0,A00,[1]=\"\"}for A in pairs(t)do print(0)end")

@@ -493,23 +493,57 @@ func (fs *funcState) emitSetList(line int32, tReg, b, batchNo int) {
 	fs.emit(line, bytecode.Instruction(batchNo)) // 官方同走 luaK_code 裸字
 }
 
-// exprTable 编译表构造:NEWTABLE + SETLIST(批量数组) + SETTABLE(哈希字段)。
+// exprTable 编译表构造:NEWTABLE + 按源码序交错生成 SETTABLE(键值字段,
+// 当场)与 SETLIST(位置字段,攒满一批 flush)。
+//
+// **顺序即语义**(PUC lparser.c 构造器循环同款):后写覆盖先写——
+// `{B,0,C,[1]=""}` 里 [1]="" 先 SETTABLE,批尾 SETLIST 再覆盖 t[1]=B。
+// 旧实现把位置项/键值项拆两阶段(先全部 SETLIST 后全部 SETTABLE),
+// 覆盖方向反转(cgo oracle 差分 fuzz 撞出)。
 func (fs *funcState) exprTable(e *ast.TableExpr) expDesc {
 	tReg := fs.freereg
 	pc := fs.emitABC(e.Line, bytecode.NEWTABLE, tReg, 0, 0) // B/C 后续回填
 	fs.reserveRegs(e.Line, 1)
 
-	// —— 数组部分 ——
-	nArr := len(e.AKeys)
 	flush := bytecode.FieldsPerFlush
 	pending := 0 // 当前批已落到 R(tReg+1+pending) 的项数
 	batchNo := 1 // 批号(SETLIST 的 C)
-	for i, v := range e.AKeys {
-		isLast := i == nArr-1
-		ve := fs.expr(v)
-		if isLast && fs.openMultiRet(&ve, -1) {
+	nArr := 0    // 位置项总数(NEWTABLE B 回填)
+	nHash := 0   // 键值项总数(NEWTABLE C 回填)
+
+	// 找最后一个位置项的下标(多值展开只对它生效,与 PUC 一致:
+	// 只有 constructor 末尾的位置项保留多值)。
+	lastPositional := -1
+	for i := len(e.Items) - 1; i >= 0; i-- {
+		if e.Items[i].Key == nil {
+			lastPositional = i
+			break
+		}
+	}
+	lastIsMulti := lastPositional == len(e.Items)-1
+
+	for i, it := range e.Items {
+		if it.Key != nil {
+			// 键值字段:当场 SETTABLE(顺序语义所在)。
+			ke := fs.expr(it.Key)
+			rkK := fs.exp2RK(e.Line, &ke)
+			ve := fs.expr(it.Val)
+			rkV := fs.exp2RK(e.Line, &ve)
+			fs.emitABC(e.Line, bytecode.SETTABLE, tReg, rkK, rkV)
+			if !bytecode.IsK(rkV) {
+				fs.freeReg(rkV)
+			}
+			if !bytecode.IsK(rkK) {
+				fs.freeReg(rkK)
+			}
+			nHash++
+			continue
+		}
+		nArr++
+		ve := fs.expr(it.Val)
+		if i == lastPositional && lastIsMulti && fs.openMultiRet(&ve, -1) {
 			fs.emitSetList(e.Line, tReg, 0, batchNo)
-			fs.freereg = tReg + 1
+			fs.freereg = tReg + 1 + 0
 			pending = 0
 			continue
 		}
@@ -527,28 +561,10 @@ func (fs *funcState) exprTable(e *ast.TableExpr) expDesc {
 		fs.freereg = tReg + 1
 	}
 
-	// —— 哈希部分 ——
-	for i := range e.HKeys {
-		ke := fs.expr(e.HKeys[i])
-		rkK := fs.exp2RK(e.Line, &ke)
-		ve := fs.expr(e.HVals[i])
-		rkV := fs.exp2RK(e.Line, &ve)
-		fs.emitABC(e.Line, bytecode.SETTABLE, tReg, rkK, rkV)
-		// 释放哈希字段的临时
-		if !bytecode.IsK(rkV) {
-			fs.freeReg(rkV)
-		}
-		if !bytecode.IsK(rkK) {
-			fs.freeReg(rkK)
-		}
-	}
-
 	// 回填 NEWTABLE 的 B/C
-	asz := uint32(nArr)
-	hsz := uint32(len(e.HKeys))
 	ins := fs.proto.Code[pc]
-	ins = bytecode.SetB(ins, int(bytecode.Int2Fb(asz)))
-	ins = bytecode.SetC(ins, int(bytecode.Int2Fb(hsz)))
+	ins = bytecode.SetB(ins, int(bytecode.Int2Fb(uint32(nArr))))
+	ins = bytecode.SetC(ins, int(bytecode.Int2Fb(uint32(nHash))))
 	fs.proto.Code[pc] = ins
 
 	// 把 NEWTABLE 落点暴露为 ENonReloc(已在 R(tReg))

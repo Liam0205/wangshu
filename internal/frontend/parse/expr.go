@@ -342,8 +342,7 @@ func (p *Parser) parseTableExpr() (ast.Expr, error) {
 			if err != nil {
 				return nil, err
 			}
-			t.HKeys = append(t.HKeys, k)
-			t.HVals = append(t.HVals, v)
+			t.Items = append(t.Items, ast.TableItem{Key: k, Val: v})
 		case p.match(token.NAME):
 			// 可能是 Name = expr,也可能是 Name 作为值表达式起点。
 			ahead, err := p.peek()
@@ -363,21 +362,20 @@ func (p *Parser) parseTableExpr() (ast.Expr, error) {
 				if err != nil {
 					return nil, err
 				}
-				t.HKeys = append(t.HKeys, &ast.StringExpr{Line: keyLine, Val: name})
-				t.HVals = append(t.HVals, v)
+				t.Items = append(t.Items, ast.TableItem{Key: &ast.StringExpr{Line: keyLine, Val: name}, Val: v})
 			} else {
 				v, err := p.parseExpr(0)
 				if err != nil {
 					return nil, err
 				}
-				t.AKeys = append(t.AKeys, v)
+				t.Items = append(t.Items, ast.TableItem{Val: v})
 			}
 		default:
 			v, err := p.parseExpr(0)
 			if err != nil {
 				return nil, err
 			}
-			t.AKeys = append(t.AKeys, v)
+			t.Items = append(t.Items, ast.TableItem{Val: v})
 		}
 		// fieldsep
 		if !p.match(token.COMMA) && !p.match(token.SEMI) {
