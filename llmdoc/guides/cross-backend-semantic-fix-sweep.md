@@ -89,6 +89,12 @@
 > 0)` 是这条纪律的直接应用,配合 unordered 修法一起把 NaN limit / init / step 三种形状全部收敛
 到拒绝路径。
 
+## PUC 语义由 C 实现定义,不由手册定义
+
+与 PUC Lua 5.1.5 做逐字节差分测试时,分歧的权威依据是官方 `_lua515/` 里的 C 源码,不是 5.1 参考手册。手册对边界值经常写得比实现松、或干脆不写:`string.format` 的 flags 数量上限 / width 与 precision 的位数上限 / `%s` 忽略 `'0'` / 无符号 verb 忽略 `' '` 与 `'+'` / `tonumber` 走 C99 `strtod` 加 hex 整数 fallback 的 `strtoul` endptr 约定 / 常量折叠拒 div-by-zero 与 NaN 结果 / 算术 RK 物化顺序先 o2 后 o1——这些细节全在 `lstrlib.c` / `lobject.c` / `llex.c` 里明写,手册要么略过要么写得更宽。C 侧还有一层「宿主 libc 边界也是 PUC 语义的一部分」的隐含依赖:`sprintf` 与 `strtod` 走宿主 libc,`\'` 转义的接受面走底层字符类判断。差分对手是 C 实现本身,不是文档。
+
+工作流:任何「与 PUC byte-equal」的分歧,先在 `internal/oracle/_lua515/` 里 grep 对应实现,把 C 侧的接受面 / 拒绝面 / 边界值 / hard limit 写进 wangshu 侧,再用 `FuzzOracleDiff` 校验;不要在 wangshu 侧凭手册或探针试常数猜边界。反思实例见 `memory/reflections/2026-07-12-cgo-oracle-fuzz-round.md` 教训 2(一轮里 35 处分歧全部经此手法定位)。与本 guide 已有的「跨后端 / 跨通道枚举」纪律同域:跨后端扫要枚举实现,与 PUC 差分要枚举权威源码。
+
 ## 相关
 
 - [[unreproducible-crasher-triage]]——差分 fuzz 报层间分歧信号(P1-vs-auto / P1-vs-force / 后端 A vs 后端 B),进入本 guide 的修复流程之前,先按该 guide「真 crasher 但失败形式是层间分歧」节的 oracle 归因步骤确认 bug 真的在 tier / 后端侧;若 oracle 与两层都不符,bug 在共享前端 / stdlib / VM 共享语义,不属于本 guide 的修复范围。共享前端 bug 伪装成层间分歧的实例见 [[2026-07-11-issue125-return-freereg-round]](`return f() or (f())` 的 RETURN 操作数计算读预捕获 freereg 拿栈垃圾,两个 tier 各自读到不同历史值让分歧显性化)。
