@@ -317,7 +317,7 @@ for i := 0; i < 1000; i++ {
 2. **手册逐节 probe**：100 项手册特性 + 12 项边角 + 29 条错误消息（含行号断言）+ 70 条种子用例逐字节一致。
 3. **差分随机 fuzz**：nightly-diff-fuzz workflow 每晚 2M 条随机脚本与 Lua 5.1.5 oracle 做差分测试（P1 + P3 + P4 三档并行）。
 4. **三方差分**：crescent（P1）vs gibbous（P3/P4）在 P4 build 下每 CI 跑一次 byte-equal，PR #29/#31 tri-platform matrix 全绿。
-5. **cgo 内嵌 oracle 差分 fuzz**：`internal/oracle` 把官方 5.1.5 源码经 cgo 嵌进测试二进制（build tag `wangshu_oracle_cgo`，默认 build 保持零 cgo），`FuzzOracleDiff` 用 go-fuzz 变异的**任意不规则源码**（不限于 generator 的规整脚本）在进程内对拍：两侧跑同一段 prelude（输出捕获 + 确定性 stub + 排序迭代 + 白名单裁剪）后比输出 byte-equal。PR 门禁 60s 冒烟（oracle-smoke job），nightly p1 腿 45m 长跑。首轮上线（含配套的 stdlib 全函数 × 退化参数系统性扫描）抓出 **24 处** P1 与官方的语义分歧并全部修复——覆盖 string 库 number 自动转串、`__tostring` 原样透传、协程错误消息 type 名、未知转义字面放行、`upper`/`lower` 按字节、`string.format` verb 集与无符号转型、编译期常量折叠 ±0/NaN 规则、真实共享 string 元表（`getmetatable("")` 可改且全局生效）、`load` 只收 reader 函数、`os.time` 表协议等。
+5. **cgo 内嵌 oracle 差分 fuzz**：`internal/oracle` 把官方 5.1.5 源码经 cgo 嵌进测试二进制（build tag `wangshu_oracle_cgo`，默认 build 保持零 cgo），`FuzzOracleDiff` 用 go-fuzz 变异的**任意不规则源码**（不限于 generator 的规整脚本）在进程内对拍：两侧跑同一段 prelude（输出捕获 + 确定性 stub + 排序迭代 + 白名单裁剪）后比输出 byte-equal。PR 门禁 60s 冒烟（oracle-smoke job），nightly p1 腿 45m 长跑。上线首日（fuzz 长跑 + 配套的 stdlib 全函数 × 退化参数系统性扫描）抓出 **32 处** P1 与官方的语义分歧并全部修复——覆盖 string 库 number 自动转串、`__tostring` 原样透传、协程错误消息 type 名、未知转义字面放行、长括号嵌套 deprecation、`upper`/`lower` 按字节、`string.format` verb 集/无符号转型/`%c` NUL 截断/scanformat 硬限、编译期常量折叠 ±0/NaN 规则与 RK 物化序、`tonumber` 的 C99 strtod 接受面（hex float / inf / nan）、表构造器源码序覆盖语义、真实共享 string 元表（`getmetatable("")` 可改且全部元方法全局生效）、`load` 只收 reader 函数、`os.time` 表协议等。
 
 **豁免清单**（`test/difftest/corners_test.go::exemptions`，共 15 项，`go test -v -run TestExemptions_Documented` 可审计）：
 
