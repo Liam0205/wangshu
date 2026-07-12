@@ -580,7 +580,13 @@ func baseFnUnpackImpl(st *crescent.State, args []value.Value) ([]value.Value, *c
 	if !ok {
 		return nil, crescent.NewError(fmt.Sprintf("bad argument #3 to 'unpack' (number expected, got %s)", st.TypeName(args[2])))
 	}
-	i, j := int(iF), int(jF)
+	// PUC luaL_checkint is (int)luaL_checkinteger: a 64-bit hardware
+	// float->int conversion truncated to 32 bits. NaN converts to
+	// INT64_MIN on x86 (cvttsd2si), whose low 32 bits are 0 -- so
+	// unpack({}, 0, 0/0) reads t[0] (one nil) instead of seeing an
+	// empty range. Mirror the exact double-narrowing (oracle diff
+	// fuzz catch: unpack({}, 0, 7%00)).
+	i, j := int(int32(int64(iF))), int(int32(int64(jF)))
 	if i > j {
 		return nil, nil // 空区间
 	}

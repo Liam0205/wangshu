@@ -1,0 +1,2 @@
+go test fuzz v1
+string("print(unpack({},0,7%00))")
