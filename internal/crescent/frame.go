@@ -204,12 +204,13 @@ func errf(format string, args ...any) *LuaError {
 	return &LuaError{Msg: msg}
 }
 
-// typeName 返回 Lua 类型名(用于错误消息)。
+// typeName returns the Lua type name (for error messages).
 //
-// 协程句柄注意:wangshu 的协程是 lightuserdata 句柄(TagLightUD),本
-// 函数无 State 上下文,只能报 "userdata"。错误消息路径应一律用
-// st.typeNameOf——PUC 对 thread 值报 "thread"(cgo oracle 差分 fuzz
-// 撞出:attempt to call a thread value)。
+// Coroutine-handle caveat: wangshu models coroutines as lightuserdata
+// handles (TagLightUD); without State context this function can only
+// say "userdata". Error-message paths must use st.typeNameOf instead:
+// PUC reports "thread" for thread values (cgo oracle diff fuzz catch:
+// "attempt to call a thread value").
 func typeName(v value.Value) string {
 	if value.IsNumber(v) {
 		return "number"

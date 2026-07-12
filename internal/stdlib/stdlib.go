@@ -119,12 +119,15 @@ func valueToString(st *crescent.State, v value.Value) string {
 	return "<?>"
 }
 
-// valueToStringMeta 是 tostring 的完整语义:先查 __tostring 元方法(07)。
+// valueToStringMeta is tostring's full semantics: consult the
+// __tostring metamethod first (07).
 //
-// PUC 5.1(luaB_tostring)把元方法的返回值**原样**透传——返回 nil/number/
-// table 都不折叠成字符串;要求"必须是 string"的是 print 这样的消费方
-// (lua_tostring 对 string/number 之外返回 NULL → 报错)。这里对齐:
-// hadMeta=true 时 raw 是元方法首个返回值原样(无返回值 → Nil)。
+// PUC 5.1 (luaB_tostring) passes the metamethod's return value through
+// UNCHANGED -- nil/number/table results are not folded into strings;
+// the "must be a string" requirement belongs to consumers like print
+// (lua_tostring returns NULL for anything but string/number, which is
+// what raises). Mirrored here: with hadMeta=true, raw is the
+// metamethod's first return verbatim (no returns -> Nil).
 func valueToStringMeta(st *crescent.State, v value.Value) (raw value.Value, hadMeta bool, e *crescent.LuaError) {
 	if value.Tag(v) == value.TagTable {
 		h := st.MetaFieldOf(v, "__tostring")
@@ -213,10 +216,12 @@ func baseFnLoad(st *crescent.State, args []value.Value) ([]value.Value, *crescen
 	for i := 0; i < maxReaderPieces; i++ {
 		results, e := st.ProtectedCallDirect(args[0], nil)
 		if e != nil {
-			// PUC lua_load 经 luaD_protectedparser 跑 reader:reader 抛错
-			// 被捕获,load 以 (nil, errmsg) 返回而非上抛(oracle diff
-			// fuzz 撞出 load(load) 分歧——reader 内的错误属"加载失败",
-			// 不属调用方错误)。
+			// PUC's lua_load runs the reader inside
+			// luaD_protectedparser: an error raised BY the reader is
+			// caught and surfaces as load's (nil, errmsg) result
+			// instead of propagating (oracle diff fuzz catch:
+			// load(load) -- a reader error is a load failure, not a
+			// caller error).
 			return []value.Value{value.Nil, intern(st, e.Error())}, nil
 		}
 		if len(results) == 0 || results[0] == value.Nil {
@@ -409,12 +414,13 @@ func baseFnRawEqual(_ *crescent.State, args []value.Value) ([]value.Value, *cres
 func baseFnPrint(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	parts := make([]string, len(args))
 	for i, a := range args {
-		raw, hadMeta, e := valueToStringMeta(st, a) // print 经 tostring 语义(__tostring 生效)
+		raw, hadMeta, e := valueToStringMeta(st, a) // print goes through tostring semantics (__tostring applies)
 		if e != nil {
 			return nil, e
 		}
-		// PUC print 对 tostring 结果做 lua_tostring:string/number 之外
-		// 报错("'tostring' must return a string to 'print'")。
+		// PUC print runs lua_tostring on the tostring result: anything
+		// but string/number raises "'tostring' must return a string to
+		// 'print'".
 		if hadMeta && value.Tag(raw) != value.TagString && !value.IsNumber(raw) {
 			return nil, crescent.NewError("'tostring' must return a string to 'print'")
 		}
@@ -433,7 +439,8 @@ func baseFnToString(st *crescent.State, args []value.Value) ([]value.Value, *cre
 		return nil, e
 	}
 	if hadMeta {
-		// PUC 透传元方法返回值原样(nil/table/… 不折叠为字符串)。
+		// PUC passes the metamethod result through verbatim
+		// (nil/table/... are not folded into strings).
 		return []value.Value{raw}, nil
 	}
 	return []value.Value{intern(st, valueToString(st, raw))}, nil
@@ -576,8 +583,9 @@ func baseFnSelect(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 	first := args[0]
 	if value.Tag(first) == value.TagString {
 		s := string(object.StringBytes(st.Arena(), value.GCRefOf(first)))
-		// PUC luaB_select 只看首字符(*lua_tostring == '#'):
-		// select("#0") 也走 "#" 分支。oracle diff fuzz 撞出整串比较分歧。
+		// PUC luaB_select tests only the first character
+		// (*lua_tostring == '#'): select("#0") takes the "#" branch
+		// too. The oracle diff fuzz caught the whole-string compare.
 		if len(s) > 0 && s[0] == '#' {
 			return []value.Value{value.NumberValue(float64(len(args) - 1))}, nil
 		}

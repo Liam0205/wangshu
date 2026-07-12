@@ -236,7 +236,7 @@ jobs:
           gh run download ${{ github.run_id }} --repo ${{ github.repository }}
           # 复制到对应路径
           cp nightly-fuzz-${{ matrix.variant }}-${{ github.run_id }}/$CRASH_PATH $CRASH_PATH
-          # 重放(tags 对应崩溃目标;FuzzOracleDiff 需 CGO_ENABLED=1)
+          # replay (tags match the crashed target; FuzzOracleDiff needs CGO_ENABLED=1)
           go test${REPLAY_TAGS:+ -tags "$REPLAY_TAGS"} . \\
             -run="^${CRASH_TARGET}/${CRASH_NAME}\$" -count=1 -timeout 60s -v
           \`\`\`
