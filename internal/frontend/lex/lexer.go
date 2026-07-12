@@ -433,9 +433,10 @@ func (l *Lexer) scanShortString(startLine int32, quote byte) (token.Token, error
 					}
 					buf = append(buf, byte(n))
 				} else {
-					// PUC 5.1 未知转义按字面放行("\A" == "A";llex.c
-					// read_string default 分支 save_and_next)。5.2 才改
-					// 报错;cgo oracle 差分 fuzz 撞出本分歧。
+					// PUC 5.1 passes unknown escapes through literally
+					// ("\A" == "A"; llex.c read_string default branch,
+					// save_and_next). Rejecting is 5.2 behavior; caught
+					// by the cgo oracle diff fuzz.
 					buf = append(buf, esc)
 					l.pos++
 				}

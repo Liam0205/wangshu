@@ -185,10 +185,11 @@ func TestStringEscapeErrors(t *testing.T) {
 	}
 }
 
-// PUC 5.1 对未知转义按字面放行(llex.c read_string default 分支
-// save_and_next):"\A" == "A","\x41" == "x41"(hex 转义是 5.2 特性,
-// 5.1 里 x 只是普通未知转义)。cgo oracle 差分 fuzz 撞出旧行为(报
-// invalid escape sequence)与官方 5.1.5 的分歧。
+// PUC 5.1 passes unknown escapes through literally (llex.c
+// read_string default branch, save_and_next): "\A" == "A",
+// "\x41" == "x41" (hex escapes are a 5.2 feature; in 5.1 the x is
+// just another unknown escape). The cgo oracle diff fuzz caught the
+// old reject-with-error behavior diverging from official 5.1.5.
 func TestStringUnknownEscapePassthrough(t *testing.T) {
 	cases := []struct{ src, want string }{
 		{`"\A"`, "A"},

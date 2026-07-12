@@ -154,11 +154,14 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
-  # cgo oracle 冒烟(engineering.md §1;tmp/cgo-oracle-fuzz.md 设计):
-  # 内嵌官方 Lua 5.1.5 的进程内差分 oracle 是唯一 cgo 面(默认 build 零
-  # cgo 不受影响),PR 门禁验:包可建、shim 单测过、FuzzOracleDiff 短跑
-  # 干净。长跑在 nightly-diff-fuzz p1 腿。linux/amd64 + linux/arm64 两平台
-  # (nightly 跑 ubuntu-latest,arm64 提前暴露 C 端字节序/ABI 意外)。
+  # cgo oracle smoke (engineering.md §1; design notes in the
+  # internal/oracle package godocs): the process-embedded official Lua
+  # 5.1.5 differential oracle is the repo's only cgo surface (the
+  # default build stays zero-cgo). PR gate checks: package builds,
+  # shim unit tests pass, FuzzOracleDiff runs a clean short round.
+  # The long run lives in the nightly-diff-fuzz p1 leg. Two platforms
+  # (linux/amd64 + linux/arm64): nightly runs ubuntu-latest only, so
+  # arm64 here surfaces C-side endianness/ABI surprises early.
   oracle-smoke:
     needs: test
     runs-on: ${{ matrix.os }}
