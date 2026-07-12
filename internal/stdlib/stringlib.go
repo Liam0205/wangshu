@@ -448,7 +448,14 @@ func stringFnFormat(st *crescent.State, args []value.Value) ([]value.Value, *cre
 			out = append(out, []byte(fmt.Sprintf(string(append(spec, verb)), n))...)
 			argn++
 		case 's':
-			sv := valueToString(st, args[argn])
+			// PUC 's' reads via luaL_checklstring: string/number only
+			// -- nil/boolean/table raise (oracle diff fuzz catch;
+			// tostring-style acceptance is a Lua 5.2+ behavior).
+			svb, e2 := strArg(st, args, argn, "format")
+			if e2 != nil {
+				return nil, crescent.NewError(fmt.Sprintf("bad argument #%d to 'format' (string expected, got %s)", argn+1, st.TypeName(args[argn])))
+			}
+			sv := string(svb)
 			// PUC str_format 's': strings >= 100 chars WITHOUT a
 			// precision bypass sprintf (pushed whole, NULs intact);
 			// everything else goes through sprintf + strlen append,
