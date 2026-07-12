@@ -52,11 +52,9 @@ echo "pre-push: all lint checks passed."
 # 都能正确处理。
 zero="0000000000000000000000000000000000000000"
 refspecs=()
-# Per-refspec `--force-with-lease=<ref>:<expect>` 参数。**精确形式**比裸
-# `--force-with-lease` 准:裸形式按**远端跟踪引用**(`refs/remotes/origin/*`)
-# 算 lease,本地若没 `fetch` 跟踪引用陈旧,lease 会误判 mismatch 拒掉用户显式
-# 发起的 force push。`remote_sha` 已经从 stdin 拿到了 git 当前看到的远端实际
-# sha,直接用它做 lease 才准。
+# Per-refspec `--force-with-lease=<ref>:<expect>` 参数,**仅在
+# PREPUSH_ALLOW_FORCE=1 时填充**(否则非快进 push 由远端正常拒绝,
+# 不被 hook 静默升级为强推;详见下方循环内注释)。
 force_lease_args=()
 have_update=0          # 至少有一条非删除的 ref ⟹ CI watch 有意义
 head_branch_pushed=0   # refspecs 是否包含当前 HEAD 所在的分支
@@ -73,11 +71,22 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   else
     refspecs+=("${local_ref}:${remote_ref}")
     have_update=1
-    # 非快进(远端有本地没有的 commit)⟹ 普通 push 会被拒,用户必然用了 --force。
-    # INNER push 用 `--force-with-lease=<ref>:<remote_sha>` 精确镜像,避免被拒。
+    # 非快进(远端有本地没有的 commit)⟹ 普通 push 会被拒。此前 hook 会
+    # 无条件把 INNER push 升级为 `--force-with-lease`,导致**普通 push 被
+    # 静默升级成强推**(用户没带 --force 也会覆盖远端)。现在收紧:仅当
+    # 用户显式设 PREPUSH_ALLOW_FORCE=1 时才加 lease 参数;否则不加,让
+    # INNER push 被远端正常拒掉(与无 hook 时的 git 行为一致)。
+    # lease 用 `--force-with-lease=<ref>:<remote_sha>` 精确形式:裸形式按
+    # 远端跟踪引用(`refs/remotes/origin/*`)算 lease,本地跟踪引用陈旧
+    # 时会误拒;`remote_sha` 是 git 当前看到的远端实际 sha,才准。
     if [ "$remote_sha" != "$zero" ] \
        && ! git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
-      force_lease_args+=("--force-with-lease=${remote_ref}:${remote_sha}")
+      if [ "${PREPUSH_ALLOW_FORCE:-}" = "1" ]; then
+        force_lease_args+=("--force-with-lease=${remote_ref}:${remote_sha}")
+      else
+        echo "pre-push: non-fast-forward push to ${remote_ref} — NOT escalating to force." >&2
+        echo "pre-push:   if the rewrite is intentional, re-run with PREPUSH_ALLOW_FORCE=1 git push --force ..." >&2
+      fi
     fi
     # 当前 HEAD 分支被推送 ⟹ 候选 -u 目标
     if [ -n "$head_ref" ] && [ "$local_ref" = "$head_ref" ]; then

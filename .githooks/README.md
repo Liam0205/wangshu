@@ -24,7 +24,7 @@ make hooks    # 即 git config core.hooksPath .githooks
 
 git 无原生 post-push hook。`pre-push` 模拟办法:
 
-1. **OUTER push 进入 hook**:跑 lint → lint 过后从 stdin 读 refspec → 用 `GIT_POSTPUSH=1` 标记跑一次 **INNER push**(逐字镜像 refspec,force/tag/delete/multi-ref 都正确)
+1. **OUTER push 进入 hook**:跑 lint → lint 过后从 stdin 读 refspec → 用 `GIT_POSTPUSH=1` 标记跑一次 **INNER push**(逐字镜像 refspec,tag/delete/multi-ref 都正确;**非快进 push 默认不升级为 force**——只有显式 `PREPUSH_ALLOW_FORCE=1` 时 INNER 才带 `--force-with-lease=<ref>:<sha>`,否则由远端正常拒绝)
 2. **INNER push 重入 hook**:看到 `GIT_POSTPUSH` 标记从顶部直接 `exit 0` 放行
 3. **控制流回 OUTER**:调用 `scripts/check-pr-ci.sh` 阻塞等 CI 结果 + 抓 PR 评论活动
 4. **OUTER push 紧接着会失败**(原子 ref 保护 / 连接被掐),这是**预期且无害**的——push 已经经 INNER 成功。真正的 verdict 看 `pre-push` 的 stderr ✓/✗ 报告
