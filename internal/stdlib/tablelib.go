@@ -499,8 +499,17 @@ func baseFnUnpackImpl(st *crescent.State, args []value.Value) ([]value.Value, *c
 		return nil, e
 	}
 	t := value.GCRefOf(tv)
-	iF, _ := numArg(st, args, 1, 1)
-	jF, _ := numArg(st, args, 2, float64(st.RawBorder(t)))
+	// PUC luaB_unpack: i/j go through luaL_optint/luaL_checkint --
+	// nil defaults, but a present non-number argument raises (oracle
+	// diff fuzz catch: unpack({}, false) errors in 5.1.5).
+	iF, ok := numArg(st, args, 1, 1)
+	if !ok {
+		return nil, crescent.NewError(fmt.Sprintf("bad argument #2 to 'unpack' (number expected, got %s)", st.TypeName(args[1])))
+	}
+	jF, ok := numArg(st, args, 2, float64(st.RawBorder(t)))
+	if !ok {
+		return nil, crescent.NewError(fmt.Sprintf("bad argument #3 to 'unpack' (number expected, got %s)", st.TypeName(args[2])))
+	}
 	i, j := int(iF), int(jF)
 	if i > j {
 		return nil, nil // 空区间
