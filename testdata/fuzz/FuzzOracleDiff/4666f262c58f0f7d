@@ -1,0 +1,2 @@
+go test fuzz v1
+string("print(tonumber(\"0X.0\"))")
