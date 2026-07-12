@@ -543,7 +543,7 @@ func (fs *funcState) exprTable(e *ast.TableExpr) expDesc {
 		ve := fs.expr(it.Val)
 		if i == lastPositional && lastIsMulti && fs.openMultiRet(&ve, -1) {
 			fs.emitSetList(e.Line, tReg, 0, batchNo)
-			fs.freereg = tReg + 1 + 0
+			fs.freereg = tReg + 1
 			pending = 0
 			continue
 		}
