@@ -434,14 +434,11 @@ func (v *compilabilityVisitor) walkExpr(e ast.Expr) {
 	case *ast.FuncExpr:
 		v.walkFuncExpr(n)
 	case *ast.TableExpr:
-		for _, k := range n.HKeys {
-			v.walkExpr(k)
-		}
-		for _, e := range n.HVals {
-			v.walkExpr(e)
-		}
-		for _, e := range n.AKeys {
-			v.walkExpr(e)
+		for _, it := range n.Items {
+			if it.Key != nil {
+				v.walkExpr(it.Key)
+			}
+			v.walkExpr(it.Val)
 		}
 	}
 }

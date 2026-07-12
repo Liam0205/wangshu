@@ -181,11 +181,24 @@ func TestTableConstructor(t *testing.T) {
 	b := parseSrc(t, "local t = {1, 2, x = 3, [4+1] = 5; nested = {a=1}}")
 	ls := b.Stmts[0].(*ast.LocalStmt)
 	te := ls.Exprs[0].(*ast.TableExpr)
-	if len(te.AKeys) != 2 {
-		t.Errorf("array part: %d", len(te.AKeys))
+	// Items preserves SOURCE order (positional + keyed interleaved);
+	// count each kind and assert the order of the keyed fields.
+	var nPos, nKey int
+	for _, it := range te.Items {
+		if it.Key == nil {
+			nPos++
+		} else {
+			nKey++
+		}
 	}
-	if len(te.HKeys) != 3 {
-		t.Errorf("hash part: %d", len(te.HKeys))
+	if nPos != 2 {
+		t.Errorf("positional items: %d", nPos)
+	}
+	if nKey != 3 {
+		t.Errorf("keyed items: %d", nKey)
+	}
+	if len(te.Items) != 5 || te.Items[0].Key != nil || te.Items[2].Key == nil {
+		t.Errorf("source order not preserved: %+v", te.Items)
 	}
 }
 
