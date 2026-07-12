@@ -402,19 +402,26 @@ func stringFnFormat(st *crescent.State, args []value.Value) ([]value.Value, *cre
 			}
 			out = append(out, []byte(fmt.Sprintf(string(append(spec, 'd')), int64(n)))...)
 			argn++
-		case 'u':
+		case 'u', 'x', 'X', 'o':
+			// PUC casts through unsigned LUA_INTFRM_T: %u/%x/%o of -1
+			// print the two's-complement value, not "-1".
 			n, _ := toNumberStr(st, args[argn])
-			out = append(out, []byte(fmt.Sprintf(string(append(spec, 'd')), int64(n)))...)
-			argn++
-		case 'x', 'X', 'o':
-			n, _ := toNumberStr(st, args[argn])
-			out = append(out, []byte(fmt.Sprintf(string(append(spec, verb)), int64(n)))...)
+			v := verb
+			if v == 'u' {
+				v = 'd'
+			}
+			out = append(out, []byte(fmt.Sprintf(string(append(spec, v)), uint64(int64(n))))...)
 			argn++
 		case 'c':
+			// PUC sprintf's the char with the full spec (width/flags
+			// apply: %5c pads). Go's %c would encode bytes >= 0x80 as
+			// multi-byte UTF-8, so render the single byte through %s
+			// with the same spec (C %c and %s share width/flag
+			// semantics for a one-char string).
 			n, _ := toNumberStr(st, args[argn])
-			out = append(out, byte(int64(n)))
+			out = append(out, []byte(fmt.Sprintf(string(append(spec, 's')), string([]byte{byte(int64(n))})))...)
 			argn++
-		case 'f', 'F', 'e', 'E', 'g', 'G':
+		case 'f', 'e', 'E', 'g', 'G':
 			n, ok := toNumberStr(st, args[argn])
 			if !ok {
 				return nil, crescent.NewError(fmt.Sprintf("bad argument #%d to 'format' (number expected)", argn+1))
