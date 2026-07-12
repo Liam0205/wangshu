@@ -424,7 +424,13 @@ func stringFnFormat(st *crescent.State, args []value.Value) ([]value.Value, *cre
 			if v == 'u' {
 				v = 'd'
 			}
-			out = append(out, []byte(fmt.Sprintf(string(append(spec, v)), uint64(int64(n))))...)
+			// C ignores the ' ' and '+' flags for unsigned
+			// conversions; Go's fmt applies them ("% x" of 0 prints
+			// " 0"). Strip both (CI arm64 oracle-smoke catch:
+			// format("% 00X0", 0)).
+			uSpec := bytes.ReplaceAll(spec, []byte{' '}, nil)
+			uSpec = bytes.ReplaceAll(uSpec, []byte{'+'}, nil)
+			out = append(out, []byte(fmt.Sprintf(string(append(uSpec, v)), uint64(int64(n))))...)
 			argn++
 		case 'c':
 			// PUC sprintf's the char with the full spec (width/flags
