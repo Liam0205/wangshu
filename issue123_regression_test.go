@@ -22,10 +22,8 @@
 package wangshu_test
 
 import (
-	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/Liam0205/wangshu"
 )
@@ -45,11 +43,19 @@ var issue123Corpora = []struct {
 // exactly the harness FuzzAutoPromote would apply (thresholds 2/4,
 // budget 1<<20, two runs on one auto State, P1 baseline compared
 // for byte-equality) — but sequentially, not under fuzz coordinator
-// -parallel=4. Each run must terminate within 30s: locally the shape
-// drains its 1<<20 budget in ~1.5s, but shared CI runners run the
-// pure-interpreter leg several times slower (a 5s cap flunked the
-// ubuntu-latest P1 leg), so the cap only pins "budget-bounded, not
-// hung", not a latency promise.
+// -parallel=4.
+//
+// Hang detection is DELEGATED to go test's package-level -timeout
+// (default 10m), on purpose. This test used to wrap each run in its
+// own wall-clock deadline, and the constant lost twice: 5s flunked
+// the ubuntu-latest P1 leg, 30s flunked p4/macos-latest right after
+// PR #128 merged (-race runs this shape in ~21s on a fast machine;
+// shared runners have no slowness upper bound). "Genuinely hung" vs
+// "legitimately slow" cannot be told apart by any finite in-test
+// cap, but a real #123-style in-segment hang NEVER returns — the
+// package timeout catches it with a full goroutine dump (better
+// diagnostics than the old t.Fatalf), at the acceptable cost of a
+// slower failure only in the case that must fail anyway.
 func TestI123_NightlyCorporaMirrorFuzzHarness(t *testing.T) {
 	for _, tc := range issue123Corpora {
 		t.Run(tc.name, func(t *testing.T) {
@@ -66,14 +72,8 @@ func TestI123_NightlyCorporaMirrorFuzzHarness(t *testing.T) {
 			stA.SetHotThresholds(2, 4)
 
 			for run := 1; run <= 2; run++ {
-				runP1 := runWithDeadlineErr(t, "P1 run "+strconv.Itoa(run), 30*time.Second, func() error {
-					_, err := prog.Run(st1)
-					return err
-				})
-				runA := runWithDeadlineErr(t, "auto run "+strconv.Itoa(run), 30*time.Second, func() error {
-					_, err := prog.Run(stA)
-					return err
-				})
+				_, runP1 := prog.Run(st1)
+				_, runA := prog.Run(stA)
 				// Both must terminate with the SAME error kind
 				// (budget-exceeded / stack-overflow — this shape
 				// dies one way or the other by design). Byte-equal
@@ -94,18 +94,5 @@ func TestI123_NightlyCorporaMirrorFuzzHarness(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-func runWithDeadlineErr(t *testing.T, what string, deadline time.Duration, fn func() error) error {
-	t.Helper()
-	ch := make(chan error, 1)
-	go func() { ch <- fn() }()
-	select {
-	case err := <-ch:
-		return err
-	case <-time.After(deadline):
-		t.Fatalf("%s did not terminate within %v", what, deadline)
-		return nil
 	}
 }
