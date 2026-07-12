@@ -228,6 +228,12 @@ func tableFnSort(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 		return nil, e
 	}
 	t := value.GCRefOf(tv)
+	// PUC sort: a present non-nil comparator must be a function
+	// (luaL_checktype after !lua_isnoneornil); a non-function comp was
+	// silently ignored here (oracle diff fuzz catch: table:sort(0)).
+	if len(args) >= 2 && args[1] != value.Nil && value.Tag(args[1]) != value.TagFunction {
+		return nil, crescent.NewError(fmt.Sprintf("bad argument #2 to 'sort' (function expected, got %s)", st.TypeName(args[1])))
+	}
 	n := int(st.RawBorder(t))
 	vals := make([]value.Value, n)
 	for i := 0; i < n; i++ {
