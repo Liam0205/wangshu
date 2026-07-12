@@ -482,8 +482,16 @@ func stringFnByte(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 	if e != nil {
 		return nil, e
 	}
-	iF, _ := numArg(st, args, 1, 1)
-	jF, _ := numArg(st, args, 2, iF)
+	// PUC luaL_optinteger: nil defaults, but a present non-number
+	// argument raises (string.byte("abc", "y") errors; "2" coerces).
+	iF, ok := numArg(st, args, 1, 1)
+	if !ok {
+		return nil, crescent.NewError(fmt.Sprintf("bad argument #2 to 'byte' (number expected, got %s)", st.TypeName(args[1])))
+	}
+	jF, ok := numArg(st, args, 2, iF)
+	if !ok {
+		return nil, crescent.NewError(fmt.Sprintf("bad argument #3 to 'byte' (number expected, got %s)", st.TypeName(args[2])))
+	}
 	i := normIdx(int(iF), len(s))
 	j := normIdx(int(jF), len(s))
 	if i < 1 {

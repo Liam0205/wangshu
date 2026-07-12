@@ -203,11 +203,11 @@ var baseFns = []entry{
 // 5.1:反复调 reader 函数拿源码片段,返回 nil/空串/无值表示结束,拼成完整
 // chunk 再编译。字符串实参也容(等价 loadstring,宽容形态)。
 func baseFnLoad(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
+	// PUC 5.1's load is reader-function ONLY (luaL_checktype
+	// LUA_TFUNCTION); accepting a string is 5.2 behavior. The oracle
+	// diff arg sweep caught load("") diverging (PUC raises).
 	if len(args) == 0 {
-		return nil, crescent.NewError("bad argument #1 to 'load' (function expected)")
-	}
-	if value.Tag(args[0]) == value.TagString {
-		return baseFnLoadstring(st, args)
+		return nil, crescent.NewError("bad argument #1 to 'load' (function expected, got no value)")
 	}
 	if value.Tag(args[0]) != value.TagFunction {
 		return nil, crescent.NewError("bad argument #1 to 'load' (function expected, got " +
@@ -259,10 +259,13 @@ func baseFnLoad(st *crescent.State, args []value.Value) ([]value.Value, *crescen
 
 // baseFnLoadstring:loadstring(s [, chunkname]) → function | (nil, errmsg)。
 func baseFnLoadstring(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
-	if len(args) == 0 || value.Tag(args[0]) != value.TagString {
-		return nil, crescent.NewError("bad argument #1 to 'loadstring' (string expected)")
+	// strArg (not a raw tag check): PUC's luaL_checklstring coerces
+	// numbers, so loadstring(0) compiles the chunk "0" (a syntax
+	// error returned as (nil, errmsg), not a raised type error).
+	src, e := strArg(st, args, 0, "loadstring")
+	if e != nil {
+		return nil, e
 	}
-	src := object.StringBytes(st.Arena(), value.GCRefOf(args[0]))
 	// 默认 chunkname = 源串本身(官方 luaL_optstring(L,2,s)),错误前缀
 	// 显示为 [string "首行..."](luaO_chunkid 截断)。
 	chunkname := string(src)
