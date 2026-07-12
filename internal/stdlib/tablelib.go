@@ -339,8 +339,56 @@ func osFnDifftime(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 	return []value.Value{value.NumberValue(t2 - t1)}, nil
 }
 
-func osFnTime(_ *crescent.State, _ []value.Value) ([]value.Value, *crescent.LuaError) {
-	return []value.Value{value.NumberValue(float64(time.Now().Unix()))}, nil
+func osFnTime(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
+	// PUC os_time: no arg / nil -> current time; anything else must be
+	// a table (luaL_checktype) whose day/month/year fields are
+	// mandatory (getfield with d<0 raises "field 'X' missing in date
+	// table"); sec/min default 0, hour defaults 12.
+	if len(args) == 0 || args[0] == value.Nil {
+		return []value.Value{value.NumberValue(float64(time.Now().Unix()))}, nil
+	}
+	if value.Tag(args[0]) != value.TagTable {
+		return nil, crescent.NewError("bad argument #1 to 'time' (table expected, got " +
+			st.TypeName(args[0]) + ")")
+	}
+	t := value.GCRefOf(args[0])
+	getfield := func(key string, def int) (int, *crescent.LuaError) {
+		v, _ := st.RawGet(t, intern(st, key))
+		if value.IsNumber(v) {
+			return int(value.AsNumber(v)), nil
+		}
+		if def < 0 {
+			return 0, crescent.NewError("field '" + key + "' missing in date table")
+		}
+		return def, nil
+	}
+	sec, e := getfield("sec", 0)
+	if e != nil {
+		return nil, e
+	}
+	minute, e := getfield("min", 0)
+	if e != nil {
+		return nil, e
+	}
+	hour, e := getfield("hour", 12)
+	if e != nil {
+		return nil, e
+	}
+	day, e := getfield("day", -1)
+	if e != nil {
+		return nil, e
+	}
+	month, e := getfield("month", -1)
+	if e != nil {
+		return nil, e
+	}
+	year, e := getfield("year", -1)
+	if e != nil {
+		return nil, e
+	}
+	// mktime semantics: local time, out-of-range fields normalize.
+	tt := time.Date(year, time.Month(month), day, hour, minute, sec, 0, time.Local)
+	return []value.Value{value.NumberValue(float64(tt.Unix()))}, nil
 }
 
 var processStart = time.Now()
@@ -358,7 +406,17 @@ func osFnDate(st *crescent.State, args []value.Value) ([]value.Value, *crescent.
 		}
 		format = string(fb)
 	}
+	// PUC os_date: the second argument goes through luaL_checknumber
+	// when present -- non-numbers raise (oracle diff arg sweep catch).
 	now := time.Now()
+	if len(args) >= 2 && args[1] != value.Nil {
+		f, ok := toNumberStr(st, args[1])
+		if !ok {
+			return nil, crescent.NewError("bad argument #2 to 'date' (number expected, got " +
+				st.TypeName(args[1]) + ")")
+		}
+		now = time.Unix(int64(f), 0)
+	}
 	// 极简 strftime 子集(%Y %m %d %H %M %S %c)
 	r := strings.NewReplacer(
 		"%Y", fmt.Sprintf("%04d", now.Year()),
@@ -488,11 +546,17 @@ func mathFnRandom(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 }
 
 func mathFnRandomSeed(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
-	if len(args) >= 1 {
-		if f, ok := toNumberStr(st, args[0]); ok {
-			rngSeed(int64(f))
-		}
+	// PUC math_randomseed: luaL_checknumber -- the seed is mandatory
+	// and non-numbers raise (oracle diff arg sweep catch).
+	if len(args) == 0 {
+		return nil, crescent.NewError("bad argument #1 to 'randomseed' (number expected, got no value)")
 	}
+	f, ok := toNumberStr(st, args[0])
+	if !ok {
+		return nil, crescent.NewError("bad argument #1 to 'randomseed' (number expected, got " +
+			st.TypeName(args[0]) + ")")
+	}
+	rngSeed(int64(f))
 	return nil, nil
 }
 
