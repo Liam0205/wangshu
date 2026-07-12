@@ -757,8 +757,12 @@ func stringFnSub(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 	if !ok {
 		return nil, crescent.NewError("bad argument #2 to 'sub'")
 	}
-	endF := float64(len(s))
-	if len(args) >= 3 {
+	endF := float64(-1)
+	// PUC str_sub: end is luaL_optinteger(L, 3, -1) -- an explicit nil
+	// third argument counts as absent (default -1 = end of string).
+	// Oracle diff fuzz caught rejecting sub(0, nil)-shaped calls where
+	// the nil comes from an undefined global.
+	if len(args) >= 3 && args[2] != value.Nil {
 		f, ok := toNumberStr(st, args[2])
 		if !ok {
 			return nil, crescent.NewError("bad argument #3 to 'sub'")
