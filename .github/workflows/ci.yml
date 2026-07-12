@@ -154,6 +154,36 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
+  # cgo oracle 冒烟(engineering.md §1;tmp/cgo-oracle-fuzz.md 设计):
+  # 内嵌官方 Lua 5.1.5 的进程内差分 oracle 是唯一 cgo 面(默认 build 零
+  # cgo 不受影响),PR 门禁验:包可建、shim 单测过、FuzzOracleDiff 短跑
+  # 干净。长跑在 nightly-diff-fuzz p1 腿。linux/amd64 + linux/arm64 两平台
+  # (nightly 跑 ubuntu-latest,arm64 提前暴露 C 端字节序/ABI 意外)。
+  oracle-smoke:
+    needs: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm]
+    name: oracle-smoke (${{ matrix.os }})
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: oracle shim unit tests
+        run: CGO_ENABLED=1 go test -tags wangshu_oracle_cgo ./internal/oracle/ -count=1
+      - name: oracle diff fuzz smoke
+        run: CGO_ENABLED=1 ./scripts/go-fuzz.sh 60s "wangshu_oracle_cgo"
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: oracle-fuzz-failure-${{ matrix.os }}
+          path: testdata/fuzz/
+          if-no-files-found: ignore
+          retention-days: 30
+
   conformance:
     # M5/M9 后启用实际用例;占位 job 保持绿(test/conformance 空包时 go test 直接过)
     # 矩阵覆盖:p1 = 新月解释器路径;p3 = 凸月升层后路径;p4 = JIT 升层后路径

@@ -79,6 +79,23 @@ run_target() {
 while IFS=: read -r file line decl; do
     func=$(echo "$decl" | sed -E 's/^func (Fuzz[A-Za-z0-9_]*).*/\1/')
     pkg=$(dirname "$file")
+    # Skip targets that are not buildable under the current tags:
+    # tag-gated fuzz files (e.g. FuzzOracleDiff needs wangshu_oracle_cgo
+    # + CGO_ENABLED=1) are invisible to `go test -list` in other
+    # builds, and running -fuzz against an absent target burns a full
+    # fuzztime slot on "no fuzz tests to fuzz". `-list` compiles the
+    # test binary but runs nothing, so the probe is cheap.
+    # Capture-then-grep, NOT `go test | grep -q`: under pipefail,
+    # grep -q exits on first match and go test dies of SIGPIPE writing
+    # the trailing "ok ..." line, failing the pipeline despite the
+    # match. </dev/null keeps the probe from consuming the while-read
+    # target list on stdin.
+    listing=$(go test "${tags_arg[@]+"${tags_arg[@]}"}" "./$pkg" -run='^$' \
+        -list "^${func}\$" </dev/null 2>/dev/null || true)
+    if ! grep -q "^${func}\$" <<<"$listing"; then
+        echo "fuzz: $pkg :: $func not buildable under tags=${tags:-default},skip"
+        continue
+    fi
     found=1
     echo "fuzz: $pkg :: $func ($fuzztime) tags=${tags:-default}"
     # `"${arr[@]+"${arr[@]}"}"` 是 set -u 下「空数组安全展开」惯用法——macOS
