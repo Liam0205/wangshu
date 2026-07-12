@@ -65,11 +65,12 @@ macos-latest) 上失败:`TestI123_NightlyCorporaMirrorFuzzHarness/i123_326b508e`
 
 ## 结构性修法
 
-删掉自建的 `runWithDeadlineErr`(它经 `time.AfterFunc` + channel 实现了一个每次
-run 的 wall-clock)。恢复 `runP1Once` / `runP3Once` / `runP4Once` 走裸的
-`ProgramCall`,一旦命中 #123 类段内无限循环,go test 包级 `-timeout`(默认 10min,
-CI 未覆写)会把整个 test binary 拿下,同时 dump 全部 goroutine 栈——严格优于旧
-版本一行 `t.Fatalf("P1 run %d did not terminate within Ns")` 提供的信息量。
+删掉自建的 `runWithDeadlineErr`(goroutine + channel + `time.After` 实现的每次
+run wall-clock)。两条腿恢复为内联的 `prog.Run(st1)`(P1 baseline)与
+`prog.Run(stA)`(auto-promote),一旦命中 #123 类段内无限循环,go test 包级
+`-timeout`(默认 10min,CI 未覆写)会把整个 test binary 拿下,同时 dump 全部
+goroutine 栈——严格优于旧版本一行 `t.Fatalf("... did not terminate within Ns")`
+提供的信息量。
 
 关键论证(接下来复用):
 
@@ -186,5 +187,5 @@ corpus 与同一个测试函数)· [[unreproducible-crasher-triage]](2026-07-11 
 promote 出的 guide,本轮修的是它落地的 harness 侧裁判机制)·
 [[prove-the-path-under-test]](邻族:那篇管路径是否被走到,本轮管裁判机制能否
 判定它想判定的事,都是「测试自身是否称职」的元问题)· issue #123 · PR #129 ·
-commit 706ba26 · `test/regression/i123_nightly_corpora_test.go` ·
+commit 706ba26 · `issue123_regression_test.go`(仓库根目录)·
 `testdata/fuzz/FuzzAutoPromote/326b508ea720a654`
