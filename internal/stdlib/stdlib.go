@@ -37,6 +37,13 @@ func OpenAll(st *crescent.State) {
 	registerNamespaced(st, "math", append(mathFns, mathExtraFns...), mathIntrinsics)
 	strTbl := registerNamespaced(st, "string", stringFns, nil)
 	st.SetStringLib(strTbl) // string 值的 per-type __index(`("x"):upper()`)
+	// PUC 对位:string 共享元表是**真实存在的表** {__index = string} ——
+	// getmetatable("") 返回它,脚本可改它(官方 5.1.5 允许,改动全局生效)。
+	{
+		mt := st.NewLibTable(1)
+		st.SetTableField(mt, "__index", value.MakeGC(value.TagTable, strTbl))
+		st.SetStringMeta(mt)
+	}
 	// LUA_COMPAT_GFIND:gfind 必须与 gmatch 是同一函数对象
 	// (官方测试套断言 string.gfind == string.gmatch)
 	{
@@ -369,6 +376,13 @@ func baseFnGetMetatable(st *crescent.State, args []value.Value) ([]value.Value, 
 	// any PRESENT value, nil included, returns nil for no metatable.
 	if len(args) == 0 {
 		return nil, crescent.NewError("bad argument #1 to 'getmetatable' (value expected)")
+	}
+	if value.Tag(args[0]) == value.TagString {
+		// PUC: strings share one real metatable ({__index = string}).
+		if smt := st.StringMeta(); smt != 0 {
+			return []value.Value{value.MakeGC(value.TagTable, smt)}, nil
+		}
+		return []value.Value{value.Nil}, nil
 	}
 	if value.Tag(args[0]) != value.TagTable {
 		return []value.Value{value.Nil}, nil

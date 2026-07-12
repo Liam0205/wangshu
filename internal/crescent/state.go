@@ -58,6 +58,7 @@ type State struct {
 	runningThread *thread           // 当前正在执行的 thread(GC ExtraValues 来源)
 	hostFns       hostFnRegistry    // host function 注册表(M12)
 	stringLib     arena.GCRef       // string 库表(string 值的 per-type __index,07 §1.2)
+	stringMeta    arena.GCRef       // string 值的共享元表 {__index = string}(PUC 对位;getmetatable("") 返回它)
 	cos           coRegistry        // 协程注册表(08;coID = lightuserdata 句柄)
 
 	// uvOwner 记录每个【开放】upvalue 属于哪个 thread 的栈(01 §5.4 的
@@ -257,6 +258,15 @@ func (st *State) CompileAndLoad(src []byte, chunkname string) (value.Value, erro
 // (`("x"):upper()` 语法支撑,07 §1.2)。
 func (st *State) SetStringLib(t arena.GCRef) { st.stringLib = t }
 
+// SetStringMeta registers the REAL shared string metatable (PUC shape:
+// {__index = string}). getmetatable("") returns it, and the string
+// __index path reads its __index field live, so scripts mutating the
+// table (getmetatable("").__index = ...) behave like official 5.1.5.
+func (st *State) SetStringMeta(t arena.GCRef) { st.stringMeta = t }
+
+// StringMeta returns the shared string metatable (0 if unset).
+func (st *State) StringMeta() arena.GCRef { return st.stringMeta }
+
 // New constructs a fresh State (arena + collector + empty globals)。
 // New 建一个 State,arena 用默认容量(64 KiB 初始 / 2 GiB 上限)。
 // 含 arena 容量定制需求时用 NewWithOptions。
@@ -423,6 +433,14 @@ func (st *State) visitThreadValues(th *thread, seen map[*thread]bool, visit func
 func (st *State) visitExtraRefs(visit func(arena.GCRef)) {
 	for _, cl := range st.loadedCls {
 		visit(cl)
+	}
+	// stringMeta is held only by this Go-side field (unlike stringLib,
+	// which is also reachable via the "string" global): without a root
+	// here the collector frees it and the next string index is a
+	// use-after-free (caught by TestGCStress_AllocHeavy on the first
+	// build that added the table).
+	if !st.stringMeta.IsNull() {
+		visit(st.stringMeta)
 	}
 	for _, r := range st.pinnedRefs {
 		if !r.IsNull() {

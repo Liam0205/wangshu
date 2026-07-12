@@ -82,10 +82,27 @@ func (st *State) indexWithMeta(th *thread, obj, key value.Value) (value.Value, *
 			obj = h // __index 是表:沿链重查
 			continue
 		}
-		if value.Tag(obj) == value.TagString && st.stringLib != 0 {
-			// string 的 per-type __index = string 库(`("x"):upper()`)
-			obj = value.MakeGC(value.TagTable, st.stringLib)
-			continue
+		if value.Tag(obj) == value.TagString {
+			// string per-type metatable: PUC reads __index from the
+			// shared string metatable LIVE, so script mutation of
+			// getmetatable("").__index takes effect. Fall back to the
+			// stringLib shortcut when no metatable is registered.
+			if st.stringMeta != 0 {
+				ikey := value.MakeGC(value.TagString, st.gc.Intern([]byte("__index")))
+				h, _ := st.tableGet(st.stringMeta, ikey)
+				if h == value.Nil {
+					return value.Nil, nil
+				}
+				if value.Tag(h) == value.TagFunction {
+					return st.callMetaHandler(th, h, []value.Value{obj, key}, 1)
+				}
+				obj = h
+				continue
+			}
+			if st.stringLib != 0 {
+				obj = value.MakeGC(value.TagTable, st.stringLib)
+				continue
+			}
 		}
 		return value.Nil, errf("attempt to index a %s value", st.typeNameOf(obj))
 	}
