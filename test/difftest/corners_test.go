@@ -29,6 +29,15 @@ var cornerProbes = []diffCase{
 	{"corner_strmt_index_override", `getmetatable("").__index = {probe = function() return "custom" end} return ("a").probe()`},
 	{"corner_strmt_concat", `getmetatable("").__concat = function(a, b) return "CC" end return {} .. "x"`},
 	{"corner_strmt_lt", `getmetatable("").__lt = function(a, b) return false end return "a" < "b"`},
+	{"corner_strmt_newindex_fn", `local s = "a"
+getmetatable("").__newindex = function(x, k, v) rawset(_G, "got_ni", x .. k .. v) end
+s.x = 2
+return got_ni`},
+	{"corner_strmt_newindex_chain", `local sink = {}
+getmetatable("").__newindex = sink
+local s = "b"
+s.k = "v"
+return sink.k`},
 
 	// math 必做列:atan2/frexp/ldexp/sinh/cosh/tanh(此前未实现/未测)
 	{"corner_math_atan2", `return math.atan2(1, 1) > 0.78 and math.atan2(1, 1) < 0.79`},
