@@ -138,7 +138,20 @@ func (st *State) setIndexWithMeta(th *thread, obj, key, val value.Value) *LuaErr
 			obj = h
 			continue
 		}
-		return errf("attempt to index a %s value", st.typeNameOf(obj))
+		// Non-table: PUC luaV_settable consults the per-type metatable
+		// for TM_NEWINDEX before erroring -- a __newindex installed on
+		// getmetatable("") intercepts every string write (PR #128
+		// review round 2 blocking item; metaFieldOfValue covers the
+		// string metatable).
+		h := st.metaFieldOfValue(obj, "__newindex")
+		if h == value.Nil {
+			return errf("attempt to index a %s value", st.typeNameOf(obj))
+		}
+		if value.Tag(h) == value.TagFunction {
+			_, e := st.callMetaHandler(th, h, []value.Value{obj, key, val}, 0)
+			return e
+		}
+		obj = h
 	}
 	return errf("'__newindex' chain too long; possible loop")
 }
