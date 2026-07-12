@@ -78,7 +78,7 @@ func Prelude(keep GlobalSet) string {
 var preludeCapture = `
 local __acc, __n, __len = {}, 0, 0
 local __tostring, __type, __select = tostring, type, select
-local __concat, __error, __format = table.concat, error, string.format
+local __concat, __error = table.concat, error
 local function __emit(s)
   __len = __len + #s
   if __len > ` + strconv.Itoa(OutputCapBytes) + ` then
@@ -105,7 +105,13 @@ io.write = function(...)
     local v = (__select(i, ...))
     local tv = __type(v)
     if tv == "number" then
-      __emit(__format("%.14g", v))
+      -- tostring, not string.format("%.14g"): PUC renders numbers with
+      -- LUA_NUMBER_FMT (= %.14g) for BOTH tostring and io.write, so
+      -- tostring is faithful there; going through each engine's own
+      -- tostring keeps nonfinite spellings (inf/nan) consistent with
+      -- the engine's print output instead of forking on the format
+      -- function's C-vs-Go %g behavior.
+      __emit(__tostring(v))
     elseif tv == "string" then
       __emit(v)
     else
@@ -130,7 +136,13 @@ gcinfo = function() return 0 end
 math.random = function() return 0.5 end
 math.randomseed = function() end
 loadfile = function() return nil, "oracle-harness: loadfile disabled" end
-dofile = function() __error("oracle-harness: dofile disabled") end
+dofile = function() error("oracle-harness: dofile disabled") end
+-- __ipairs_iter: wangshu implements ipairs via this internal global
+-- (its enumeration puts it on the whitelist, so the trim keeps it).
+-- PUC has no such global; give it PUC's own ipairs aux iterator so
+-- BOTH sides expose a working function with the same (t, i) ->
+-- (i+1, t[i+1]) | nil contract. Symmetric text, equivalent result.
+__ipairs_iter = __ipairs_iter or select(1, ipairs({}))
 `
 
 // preludeGuards: input-bounding wrappers. All error texts are either
