@@ -492,7 +492,16 @@ func stringFnChar(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 		if !ok {
 			return nil, crescent.NewError(fmt.Sprintf("bad argument #%d to 'char' (number expected)", i+1))
 		}
-		out[i] = byte(int64(f))
+		// PUC str_char: luaL_checkint truncates toward zero, then
+		// luaL_argcheck(uchar(c) == c) rejects anything outside
+		// [0, 255] ("invalid value"): char(-1)/char(256) error,
+		// char(3.7) == char(3). Oracle diff fuzz caught the old
+		// silent byte() wraparound.
+		n := int64(f)
+		if n < 0 || n > 255 {
+			return nil, crescent.NewError(fmt.Sprintf("bad argument #%d to 'char' (invalid value)", i+1))
+		}
+		out[i] = byte(n)
 	}
 	return []value.Value{intern(st, string(out))}, nil
 }
