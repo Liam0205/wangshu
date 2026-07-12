@@ -81,7 +81,13 @@ func stringFnFind(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 	if init > len(s) {
 		return []value.Value{value.Nil}, nil
 	}
-	plain := len(args) >= 4 && value.Truthy(args[3])
+	// PUC str_find_aux fast path: plain search when explicitly
+	// requested OR when the pattern contains no SPECIALS ("^$*+?.([%-").
+	// Note ')' is NOT special -- find("", ")") plain-searches and
+	// returns nil where match/gsub raise "invalid pattern capture"
+	// (oracle diff fuzz catch).
+	plain := (len(args) >= 4 && value.Truthy(args[3])) ||
+		!strings.ContainsAny(string(pat), "^$*+?.([%-")
 	if plain {
 		idx := strings.Index(string(s[init:]), string(pat))
 		if idx < 0 {
