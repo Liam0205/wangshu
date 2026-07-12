@@ -299,21 +299,40 @@ func constFold(op ast.BinOp, l, r *expDesc) (float64, bool) {
 		return 0, false
 	}
 	a, b := l.nval, r.nval
+	var res float64
 	switch op {
 	case ast.OpAdd:
-		return a + b, true
+		res = a + b
 	case ast.OpSub:
-		return a - b, true
+		res = a - b
 	case ast.OpMul:
-		return a * b, true
+		res = a * b
 	case ast.OpDiv:
-		return a / b, true
+		// PUC constfolding: do not attempt to divide by 0.
+		if b == 0 {
+			return 0, false
+		}
+		res = a / b
 	case ast.OpMod:
-		return a - math.Floor(a/b)*b, true
+		if b == 0 {
+			return 0, false
+		}
+		res = a - math.Floor(a/b)*b
 	case ast.OpPow:
-		return math.Pow(a, b), true
+		res = math.Pow(a, b)
+	default:
+		return 0, false
 	}
-	return 0, false
+	// PUC constfolding: do not attempt to produce NaN. Beyond keeping
+	// the constant table free of NaN, refusing changes which literal
+	// registers the FIRST zero constant slot -- ±0 dedup by numeric
+	// equality is first-come-wins, so folding here where PUC does not
+	// flips print(-0) between "0" and "-0" (oracle diff fuzz catch:
+	// print(000%0, -0)).
+	if res != res {
+		return 0, false
+	}
+	return res, true
 }
 
 // exprCompare 编译比较;EQ/LT/LE 三档,?= / > / >= 通过交换+取反映射。
