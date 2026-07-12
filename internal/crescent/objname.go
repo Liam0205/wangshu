@@ -190,9 +190,9 @@ func (st *State) errWithName(ci *callInfo, verb string, rkOperand int, v value.V
 		name = describeReg(st.protoOf(ci), ci.pc-1, rkOperand)
 	}
 	if name != "" {
-		return errf("attempt to %s %s (a %s value)", verb, name, typeName(v))
+		return errf("attempt to %s %s (a %s value)", verb, name, st.typeNameOf(v))
 	}
-	return errf("attempt to %s a %s value", verb, typeName(v))
+	return errf("attempt to %s a %s value", verb, st.typeNameOf(v))
 }
 
 // describeRKForArith 给算术错误找出错操作数(b 先 c 后:不能转数字的那个)。
@@ -221,12 +221,12 @@ func (st *State) enhanceIndexErr(e *LuaError, ci *callInfo, reg int, obj value.V
 	if e == errYieldSentinel || e.annotated {
 		return e
 	}
-	plain := fmt.Sprintf("attempt to index a %s value", typeName(obj))
+	plain := fmt.Sprintf("attempt to index a %s value", st.typeNameOf(obj))
 	if e.Msg != plain {
 		return e
 	}
 	if name := describeReg(st.protoOf(ci), ci.pc-1, reg); name != "" {
-		e.Msg = fmt.Sprintf("attempt to index %s (a %s value)", name, typeName(obj))
+		e.Msg = fmt.Sprintf("attempt to index %s (a %s value)", name, st.typeNameOf(obj))
 	}
 	return e
 }

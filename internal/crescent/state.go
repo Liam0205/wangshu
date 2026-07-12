@@ -713,6 +713,19 @@ func (e *LuaError) MarkAnnotated() { e.annotated = true }
 // TypeNameOf 暴露内部 typeName 给 stdlib 实现 type() 内建。
 func TypeNameOf(v value.Value) string { return typeName(v) }
 
+// TypeName 是 State 感知的类型名:比包级 TypeNameOf 多识别协程句柄
+// (lightuserdata + 注册表内 → "thread",PUC 对位)。错误消息与 type()
+// 都应走这条,包级形态只服务无 State 上下文的场合。
+func (st *State) TypeName(v value.Value) string { return st.typeNameOf(v) }
+
+// typeNameOf:typeName 的 State 感知内部形态(错误消息路径统一入口)。
+func (st *State) typeNameOf(v value.Value) string {
+	if st.IsCoroutineHandle(v) {
+		return "thread"
+	}
+	return typeName(v)
+}
+
 // NewLibTable 给 stdlib 提供一个新表(挂 stdlib 命名空间用)。
 func (st *State) NewLibTable(approxFields uint32) arena.GCRef {
 	hsz := uint32(8)

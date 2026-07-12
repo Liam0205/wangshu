@@ -423,11 +423,11 @@ func mathFn2(name string, f func(a, b float64) float64) crescent.HostFn {
 		}
 		a, ok1 := toNumberStr(st, args[0])
 		if !ok1 {
-			return nil, crescent.NewError(fmt.Sprintf("bad argument #1 to '%s' (number expected, got %s)", name, crescent.TypeNameOf(args[0])))
+			return nil, crescent.NewError(fmt.Sprintf("bad argument #1 to '%s' (number expected, got %s)", name, st.TypeName(args[0])))
 		}
 		b, ok2 := toNumberStr(st, args[1])
 		if !ok2 {
-			return nil, crescent.NewError(fmt.Sprintf("bad argument #2 to '%s' (number expected, got %s)", name, crescent.TypeNameOf(args[1])))
+			return nil, crescent.NewError(fmt.Sprintf("bad argument #2 to '%s' (number expected, got %s)", name, st.TypeName(args[1])))
 		}
 		return []value.Value{value.NumberValue(f(a, b))}, nil
 	}

@@ -87,7 +87,7 @@ func (st *State) indexWithMeta(th *thread, obj, key value.Value) (value.Value, *
 			obj = value.MakeGC(value.TagTable, st.stringLib)
 			continue
 		}
-		return value.Nil, errf("attempt to index a %s value", typeName(obj))
+		return value.Nil, errf("attempt to index a %s value", st.typeNameOf(obj))
 	}
 	return value.Nil, errf("'__index' chain too long; possible loop")
 }
@@ -116,7 +116,7 @@ func (st *State) setIndexWithMeta(th *thread, obj, key, val value.Value) *LuaErr
 			obj = h
 			continue
 		}
-		return errf("attempt to index a %s value", typeName(obj))
+		return errf("attempt to index a %s value", st.typeNameOf(obj))
 	}
 	return errf("'__newindex' chain too long; possible loop")
 }
@@ -134,10 +134,10 @@ func (st *State) arithMeta(th *thread, name string, b, c value.Value) (value.Val
 		if value.IsNumber(b) {
 			bad = c
 		}
-		return value.Nil, errf("attempt to perform arithmetic on a %s value", typeName(bad))
+		return value.Nil, errf("attempt to perform arithmetic on a %s value", st.typeNameOf(bad))
 	}
 	if value.Tag(h) != value.TagFunction {
-		return value.Nil, errf("attempt to call a %s value", typeName(h))
+		return value.Nil, errf("attempt to call a %s value", st.typeNameOf(h))
 	}
 	return st.callMetaHandler(th, h, []value.Value{b, c}, 1)
 }
@@ -172,7 +172,7 @@ func (st *State) callLuaFromHost(th *thread, fn value.Value, args []value.Value)
 	if value.Tag(fn) != value.TagFunction {
 		h := st.metaFieldOfValue(fn, "__call")
 		if value.Tag(h) != value.TagFunction {
-			return nil, errf("attempt to call a %s value", typeName(fn))
+			return nil, errf("attempt to call a %s value", st.typeNameOf(fn))
 		}
 		args = append([]value.Value{fn}, args...)
 		fn = h
@@ -288,7 +288,7 @@ func (st *State) LessThan(a, b value.Value) (bool, *LuaError) {
 		}
 		return value.Truthy(res), nil
 	}
-	return false, errf("attempt to compare two %s values", typeName(a))
+	return false, errf("attempt to compare two %s values", st.typeNameOf(a))
 }
 
 // MetaFieldOf 暴露任意 Value 的元方法查找(stdlib __tostring 等用)。

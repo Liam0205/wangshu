@@ -51,7 +51,7 @@ func (st *State) enterLuaFrame(th *thread, funcIdx, nargs, nresults int, entry b
 	}
 	v := th.slot(funcIdx)
 	if value.Tag(v) != value.TagFunction {
-		return errf("attempt to call a %s value", typeName(v))
+		return errf("attempt to call a %s value", st.typeNameOf(v))
 	}
 	cl := value.GCRefOf(v)
 	if object.IsHostClosure(st.arena, cl) {
@@ -205,6 +205,11 @@ func errf(format string, args ...any) *LuaError {
 }
 
 // typeName 返回 Lua 类型名(用于错误消息)。
+//
+// 协程句柄注意:wangshu 的协程是 lightuserdata 句柄(TagLightUD),本
+// 函数无 State 上下文,只能报 "userdata"。错误消息路径应一律用
+// st.typeNameOf——PUC 对 thread 值报 "thread"(cgo oracle 差分 fuzz
+// 撞出:attempt to call a thread value)。
 func typeName(v value.Value) string {
 	if value.IsNumber(v) {
 		return "number"

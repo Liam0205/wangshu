@@ -653,7 +653,7 @@ func (st *State) doCompare(th *thread, ci *callInfo, i bytecode.Instruction) (bo
 			}
 		}
 		// 无元方法:同类报 "two X values",异类报 "X with Y"(5.1)
-		tb, tc := typeName(b), typeName(c)
+		tb, tc := st.typeNameOf(b), st.typeNameOf(c)
 		if tb == tc {
 			return false, errf("attempt to compare two %s values", tb)
 		}

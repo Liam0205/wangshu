@@ -433,7 +433,11 @@ func (l *Lexer) scanShortString(startLine int32, quote byte) (token.Token, error
 					}
 					buf = append(buf, byte(n))
 				} else {
-					return token.Token{}, l.errorf("invalid escape sequence '\\%c'", esc)
+					// PUC 5.1 未知转义按字面放行("\A" == "A";llex.c
+					// read_string default 分支 save_and_next)。5.2 才改
+					// 报错;cgo oracle 差分 fuzz 撞出本分歧。
+					buf = append(buf, esc)
+					l.pos++
 				}
 			}
 		} else {
