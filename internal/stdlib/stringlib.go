@@ -453,7 +453,7 @@ func stringFnFormat(st *crescent.State, args []value.Value) ([]value.Value, *cre
 			// tostring-style acceptance is a Lua 5.2+ behavior).
 			svb, e2 := strArg(st, args, argn, "format")
 			if e2 != nil {
-				return nil, crescent.NewError(fmt.Sprintf("bad argument #%d to 'format' (string expected, got %s)", argn+1, st.TypeName(args[argn])))
+				return nil, e2 // strArg's message already matches PUC
 			}
 			sv := string(svb)
 			// PUC str_format 's': strings >= 100 chars WITHOUT a
