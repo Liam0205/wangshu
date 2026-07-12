@@ -82,15 +82,6 @@ func isalpha(c byte) bool { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= '
 func isdigit(c byte) bool { return c >= '0' && c <= '9' }
 func isalnum(c byte) bool { return isalpha(c) || isdigit(c) }
 
-// atoiSimple 把已知全为十进制数字的 byte 切片解析为 int(无溢出守护;
-// 调用方应先按位数限制阻断超长输入,见 stringFnFormat 嵌入式 hardening)。
-func atoiSimple(b []byte) int {
-	n := 0
-	for _, c := range b {
-		n = n*10 + int(c-'0')
-	}
-	return n
-}
 func isspace(c byte) bool {
 	return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f'
 }
