@@ -252,17 +252,36 @@ func (fs *funcState) exprBin(e *ast.BinExpr) expDesc {
 		out.nval = folded
 		return out
 	}
+	// Materialization order in the numeral-left (delayed) path follows
+	// PUC codearith: o2 = exp2RK(e2) BEFORE o1 = exp2RK(e1). The order
+	// decides which literal registers a constant slot first, and +-0
+	// dedup by numeric equality keeps the FIRST sign: 0 % -0 must put
+	// -0 in the shared zero slot so a later literal 0 prints "-0"
+	// (oracle diff fuzz catch). Non-numeral left was already
+	// materialized before the right subtree (luaK_infix order).
 	rb := lrk
+	var rc int
 	if rb < 0 {
+		rc = fs.exp2RK(e.Line, &r)
 		rb = fs.exp2RK(e.Line, &l)
+	} else {
+		rc = fs.exp2RK(e.Line, &r)
 	}
-	rc := fs.exp2RK(e.Line, &r)
 	// 顺序:先归还高位临时再归还低位(维持栈式)
-	if !bytecode.IsK(rc) {
-		fs.freeReg(rc)
-	}
-	if !bytecode.IsK(rb) {
-		fs.freeReg(rb)
+	if rb > rc {
+		if !bytecode.IsK(rb) {
+			fs.freeReg(rb)
+		}
+		if !bytecode.IsK(rc) {
+			fs.freeReg(rc)
+		}
+	} else {
+		if !bytecode.IsK(rc) {
+			fs.freeReg(rc)
+		}
+		if !bytecode.IsK(rb) {
+			fs.freeReg(rb)
+		}
 	}
 	op := arithOpcode(e.Op)
 	pc := fs.emitABC(e.Line, op, 0, rb, rc)
