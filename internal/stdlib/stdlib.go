@@ -711,7 +711,7 @@ func stringFnUpper(st *crescent.State, args []value.Value) ([]value.Value, *cres
 	if e != nil {
 		return nil, e
 	}
-	return []value.Value{intern(st, strings.ToUpper(string(s)))}, nil
+	return []value.Value{intern(st, asciiMapCase(s, 'a', 'z', -32))}, nil
 }
 
 func stringFnLower(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
@@ -719,7 +719,23 @@ func stringFnLower(st *crescent.State, args []value.Value) ([]value.Value, *cres
 	if e != nil {
 		return nil, e
 	}
-	return []value.Value{intern(st, strings.ToLower(string(s)))}, nil
+	return []value.Value{intern(st, asciiMapCase(s, 'A', 'Z', 32))}, nil
+}
+
+// asciiMapCase shifts bytes in [lo, hi] by delta, all other bytes pass
+// through untouched. PUC 5.1 upper/lower are per-byte C toupper/
+// tolower ("C" locale = ASCII); Go's strings.ToUpper decodes UTF-8
+// and rewrites invalid bytes to U+FFFD, corrupting binary strings
+// (oracle diff fuzz: ("\x95"):upper()).
+func asciiMapCase(s []byte, lo, hi byte, delta int) string {
+	out := make([]byte, len(s))
+	for i, c := range s {
+		if c >= lo && c <= hi {
+			c = byte(int(c) + delta)
+		}
+		out[i] = c
+	}
+	return string(out)
 }
 
 func stringFnSub(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
