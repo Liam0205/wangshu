@@ -17,7 +17,6 @@
 package wangshu_test
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/Liam0205/wangshu"
@@ -126,13 +125,16 @@ return f(o1, o2)`,
 			return // 编译错误是合法结果
 		}
 
-		// 跑 P1 解释器路径(force-all=false)
-		st1 := wangshu.NewState(wangshu.Options{})
+		// 跑 P1 解释器路径(force-all=false)。MaxArenaBytes 兜住
+		// 二次方 concat 类垃圾风暴(issues #127/#130:未封顶时单次
+		// exec 冲到 2 GiB arena / 13 GiB Go 堆,4 个并行 worker 直接
+		// 把 fuzz 进程压死);两个 State 同帽保持比较对称。
+		st1 := wangshu.NewState(wangshu.Options{MaxArenaBytes: 64 << 20})
 		st1.SetStepBudget(1 << 20)
 		resP1, errP1 := prog.Run(st1)
 
 		// 跑 P4 force-all 路径
-		st4 := wangshu.NewState(wangshu.Options{})
+		st4 := wangshu.NewState(wangshu.Options{MaxArenaBytes: 64 << 20})
 		st4.SetStepBudget(1 << 20)
 		st4.SetForceAllPromote(true)
 		resP4, errP4 := prog.Run(st4)
@@ -150,8 +152,7 @@ return f(o1, o2)`,
 		//
 		// fuzz harness 验补充发现:**非 budget 类**的存在性分叉仍硬 fail。
 		if (errP1 == nil) != (errP4 == nil) {
-			budgetTiming := (errP1 != nil && strings.Contains(errP1.Error(), "instruction budget exceeded")) ||
-				(errP4 != nil && strings.Contains(errP4.Error(), "instruction budget exceeded"))
+			budgetTiming := isResourceLimitErr(errP1) || isResourceLimitErr(errP4)
 			if budgetTiming {
 				t.Skipf("预算/时机类分叉(非 byte-equal 违反):P1=%v P4=%v", errP1, errP4)
 				return
