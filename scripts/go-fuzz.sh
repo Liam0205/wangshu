@@ -1,14 +1,20 @@
 #!/usr/bin/env bash
-# go-fuzz.sh <fuzztime> [build_tags]:自动发现全部 func Fuzz* 目标,各跑一轮冒烟。
-# engineering.md §1。
+# go-fuzz.sh <fuzztime> [build_tags] [target_regex]:自动发现全部 func Fuzz*
+# 目标,各跑一轮冒烟。engineering.md §1。
 #
-# build_tags(可选,默认空 = 默认 build):传给 go test -tags。典型用法:
+# build_tags(可选,默认空 = 默认 build):传给 go test -tags。
+# target_regex(可选,默认全部):只跑函数名匹配该 ERE 的目标。build tag 是
+# 加法——比如 wangshu_oracle_cgo build 下默认 build 的目标也全部可编,不过滤
+# 就会把整套目标重跑一遍(nightly p1 腿曾因此 5×45m 冲破 350m job timeout
+# 被静默 cancel)。典型用法:
 #   ./scripts/go-fuzz.sh 30s                          # 默认 build(新月解释器)
 #   ./scripts/go-fuzz.sh 30s "wangshu_p3 wangshu_profile"  # 凸月 build(force-all 升层后路径)
+#   ./scripts/go-fuzz.sh 45m wangshu_oracle_cgo FuzzOracleDiff  # 只跑 oracle 差分
 set -euo pipefail
 
 fuzztime="${1:-30s}"
 tags="${2:-}"
+target_regex="${3:-}"
 found=0
 
 tags_arg=()
@@ -79,6 +85,9 @@ run_target() {
 while IFS=: read -r file line decl; do
     func=$(echo "$decl" | sed -E 's/^func (Fuzz[A-Za-z0-9_]*).*/\1/')
     pkg=$(dirname "$file")
+    if [ -n "$target_regex" ] && ! grep -qE "^${target_regex}\$" <<<"$func"; then
+        continue
+    fi
     # Skip targets that are not buildable under the current tags:
     # tag-gated fuzz files (e.g. FuzzOracleDiff needs wangshu_oracle_cgo
     # + CGO_ENABLED=1) are invisible to `go test -list` in other
@@ -130,5 +139,10 @@ done < <(grep -rn --include='*_test.go' \
     -E '^func Fuzz[A-Za-z0-9_]*\(f \*testing\.F\)' . 2>/dev/null || true)
 
 if [ "$found" -eq 0 ]; then
-    echo "no fuzz targets found (func Fuzz*),skip"
+    echo "no fuzz targets found (func Fuzz*${target_regex:+ matching \"$target_regex\"}),skip"
+    if [ -n "$target_regex" ]; then
+        # An explicit target filter matching nothing is a caller error
+        # (typo'd name / target renamed), not a benign empty sweep.
+        exit 1
+    fi
 fi
