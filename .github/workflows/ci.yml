@@ -185,7 +185,11 @@ jobs:
           CGO_ENABLED=1 go test -tags wangshu_oracle_cgo . -run='^$' -list '^FuzzOracleDiff$' | grep -q '^FuzzOracleDiff$' \
             || { echo "FuzzOracleDiff missing under wangshu_oracle_cgo (build tag broken?)" >&2; exit 1; }
       - name: oracle diff fuzz smoke
-        run: CGO_ENABLED=1 ./scripts/go-fuzz.sh 60s "wangshu_oracle_cgo"
+        # FuzzOracleDiff filter: build tags are additive, so without it
+        # the sweep re-runs every default-build target too (5 x 60s) --
+        # the default-build targets already get their smoke in the
+        # fuzz-smoke matrix above.
+        run: CGO_ENABLED=1 ./scripts/go-fuzz.sh 60s "wangshu_oracle_cgo" FuzzOracleDiff
       - if: failure()
         uses: actions/upload-artifact@v7
         with:
