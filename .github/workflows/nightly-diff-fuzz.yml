@@ -147,13 +147,17 @@ jobs:
       # source bytes, covering irregular/adversarial shapes. Crashes
       # land in gofuzz-triage via the same "Failing input written to"
       # marker, so the log is appended to gofuzz.log's triage scope.
+      # The FuzzOracleDiff filter is required: build tags are additive,
+      # so the cgo build also compiles every default-build target and
+      # an unfiltered sweep re-runs all of them (5 x 45m blew past the
+      # 350m job timeout and the p1 leg got cancelled silently).
       - name: oracle-diff go-fuzz long run (p1 vs embedded 5.1.5)
         if: always() && matrix.variant == 'p1'
         run: |
           set -o pipefail
           CGO_ENABLED=1 ./scripts/go-fuzz.sh \
             "${{ github.event.inputs.gofuzztime || '45m' }}" \
-            "wangshu_oracle_cgo" 2>&1 | tee oraclefuzz.log
+            "wangshu_oracle_cgo" FuzzOracleDiff 2>&1 | tee oraclefuzz.log
 
       - name: upload logs and crash corpus
         if: always()
