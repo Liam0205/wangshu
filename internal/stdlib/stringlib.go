@@ -420,17 +420,13 @@ func stringFnFormat(st *crescent.State, args []value.Value) ([]value.Value, *cre
 			if !ok {
 				return nil, crescent.NewError(fmt.Sprintf("bad argument #%d to 'format' (number expected, got %s)", argn+1, st.TypeName(args[argn])))
 			}
-			v := verb
-			if v == 'u' {
-				v = 'd'
-			}
-			// C ignores the ' ' and '+' flags for unsigned
-			// conversions; Go's fmt applies them ("% x" of 0 prints
-			// " 0"). Strip both (CI arm64 oracle-smoke catch:
-			// format("% 00X0", 0)).
-			uSpec := bytes.ReplaceAll(spec, []byte{' '}, nil)
-			uSpec = bytes.ReplaceAll(uSpec, []byte{'+'}, nil)
-			out = append(out, []byte(fmt.Sprintf(string(append(uSpec, v)), uint64(int64(n))))...)
+			// Rendered manually: Go's fmt diverges from C printf on
+			// the '#' flag ("%#X" of 0 prints "0X0" -- C omits the
+			// prefix for zero; "%#08X" pads outside the prefix; "%#.0o"
+			// of 0 prints "" -- C forces one octal zero) and applies
+			// ' '/'+' to unsigned verbs that C ignores. Oracle diff
+			// fuzz catches: format("% 00X0", 0), format("%#X", 0).
+			out = append(out, cUnsignedFormat(spec, verb, uint64(int64(n)))...)
 			argn++
 		case 'c':
 			// PUC sprintf's the char with the full spec (width/flags
@@ -571,6 +567,95 @@ func stringFnChar(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 		out[i] = byte(n)
 	}
 	return []value.Value{intern(st, string(out))}, nil
+}
+
+// cUnsignedFormat renders C sprintf's %u/%x/%X/%o. Go's fmt cannot be
+// reused here: it diverges from C on the '#' flag ("%#X" of 0 prints
+// "0X0" where C omits the prefix for a zero value; "%#08X" must
+// zero-pad INSIDE the prefix; "%#o" forces a leading octal zero by
+// widening precision, and "%#.0o" of 0 prints "0" where Go prints ""),
+// and it honors ' '/'+' on unsigned verbs that C ignores.
+func cUnsignedFormat(spec []byte, verb byte, v uint64) []byte {
+	minus, zero, hash := false, false, false
+	i := 1 // skip '%'
+	for ; i < len(spec); i++ {
+		switch spec[i] {
+		case '-':
+			minus = true
+		case '0':
+			zero = true
+		case '#':
+			hash = true
+		case '+', ' ':
+			// C ignores sign flags for unsigned conversions.
+		default:
+			goto flagsDone
+		}
+	}
+flagsDone:
+	width := 0
+	for ; i < len(spec) && isdigit(spec[i]); i++ {
+		width = width*10 + int(spec[i]-'0')
+	}
+	hasPrec := false
+	prec := 0
+	if i < len(spec) && spec[i] == '.' {
+		hasPrec = true
+		for i++; i < len(spec) && isdigit(spec[i]); i++ {
+			prec = prec*10 + int(spec[i]-'0')
+		}
+	}
+
+	var digits string
+	switch verb {
+	case 'x':
+		digits = strconv.FormatUint(v, 16)
+	case 'X':
+		digits = strings.ToUpper(strconv.FormatUint(v, 16))
+	case 'o':
+		digits = strconv.FormatUint(v, 8)
+	default: // 'u'
+		digits = strconv.FormatUint(v, 10)
+	}
+	// C: a zero value with an explicit zero precision converts to no
+	// characters.
+	if v == 0 && hasPrec && prec == 0 {
+		digits = ""
+	}
+	if hasPrec && len(digits) < prec {
+		digits = strings.Repeat("0", prec-len(digits)) + digits
+	}
+	prefix := ""
+	if hash {
+		switch verb {
+		case 'x':
+			if v != 0 {
+				prefix = "0x"
+			}
+		case 'X':
+			if v != 0 {
+				prefix = "0X"
+			}
+		case 'o':
+			// Alternate octal form: force the first digit to be zero
+			// (this also resurrects "%#.0o" of 0 as "0").
+			if len(digits) == 0 || digits[0] != '0' {
+				digits = "0" + digits
+			}
+		}
+	}
+	body := prefix + digits
+	if pad := width - len(body); pad > 0 {
+		switch {
+		case minus: // '-' beats '0' in C
+			body += strings.Repeat(" ", pad)
+		case zero && !hasPrec: // '0' is ignored when a precision is given
+			body = prefix + strings.Repeat("0", pad) + digits
+		default:
+			body = strings.Repeat(" ", pad) + body
+		}
+	}
+	return []byte(body)
 }
 
 // stripZeroFlag returns spec without '0' FLAG characters (the leading
