@@ -95,6 +95,14 @@
 
 工作流:任何「与 PUC byte-equal」的分歧,先在 `internal/oracle/_lua515/` 里 grep 对应实现,把 C 侧的接受面 / 拒绝面 / 边界值 / hard limit 写进 wangshu 侧,再用 `FuzzOracleDiff` 校验;不要在 wangshu 侧凭手册或探针试常数猜边界。反思实例见 `memory/reflections/2026-07-12-cgo-oracle-fuzz-round.md` 教训 2(一轮里 35 处分歧全部经此手法定位)。与本 guide 已有的「跨后端 / 跨通道枚举」纪律同域:跨后端扫要枚举实现,与 PUC 差分要枚举权威源码。
 
+延伸:「改写输入再委托宿主标准库」是不收敛适配路径,第 N 次被打穿时换成手写。同一个 site(比如 `internal/stdlib/stringlib.go` 的 stringFnFormat unsigned 分支)如果曾经通过「改写 spec 后交给 Go `fmt.Sprintf` / `strconv.*` / 宿主 libc 类库」的方式适配 C 语义,而 `FuzzOracleDiff` 又反复在这个 site 上撞出新分歧(Go `fmt` 与 C `printf` 对 `%#X` 零值前缀 / `%#08X` 补零位置 / `%#.0o` 零值 / `%s` 的 `'0'` flag 是否 pad 等等就有多处分歧,ICU / RE2 / 宿主时区表也同样),这条路径就是不收敛的:两个实现各自演进,分歧集合是开放的,补丁式修复只能覆盖「已被撞到的那一处」。判据一旦成立(同一 site 第 2 次以上被打穿,且新分歧仍在同一语法维度上),就把这一段整段换成手写的 C 语义 renderer,把语义收敛为封闭规则(C99 printf 一页写完 / 官方 `_lua515/` 对应的 C 函数几十行写完)。实证:2026-07-13 nightly 巡检轮里 stringFnFormat 的 `%u/%x/%X/%o` 分支第三次被打穿(前两次 `%100X` 宽度与 `% 00X0` 忽略旗标,这次 `%#X` 零值),从 `bytes.ReplaceAll(spec, ...) + fmt.Sprintf` 换成手写 `cUnsignedFormat`,41 个覆盖前缀 / 宽度 / 精度 / 旗标交互的用例逐字节等于 PUC。触发场景:同一个「改写输入 + 委托宿主标准库」site 被 differential fuzz 打穿第 2 次时,不要再补一发 `ReplaceAll` 或 `strings.ReplaceAll`,直接换手写实现;写新 site 前也要看 Go 标准库对该语义有没有已知的多点分歧,有就直接手写。同族反思实例见 `memory/reflections/2026-07-13-nightly-concat-oom-and-format-hash-round.md`。
+
+## 同族 harness 防护不对称
+
+跨后端 / 跨通道扫的心理边界是「同一段语义在系统里的全部实现站点」,同样的原则也适用于测试与防护本身的「同类 harness」。当给一个 fuzz harness / smoke 脚本 / CI 检查加防护(资源上限帽、豁免规则、异常路径断言、artifact upload、种子清单等)时,不能只加在触发本次修复的那一个,要立刻横向问一句「兄弟 harness 有没有同样的暴露面」,一起加。心理边界停在「当前 harness」而不是「全部同类站点」就是欠账,下一次同类问题在没被防护到的兄弟 harness 上炸出来。
+
+实证:2026-07-13 处置的 issue #127(p3)/ #130(p4)两个 nightly crasher 是同根因 quadratic concat 风暴打爆默认 2 GiB arena 触发进程级 kill。上周 PR #128 给 FuzzOracleDiff 上线时明确考虑了资源问题、加了 `MaxArenaBytes: 64 << 20`,但没横向扫 fuzz_test.go / fuzz_auto_test.go / fuzz_p4_test.go 三个更老的 fuzz harness——它们全都没帽。两个 crasher 本质就是这次不对称欠下的债。修法把三个老 harness 一起补上帽,与 FuzzOracleDiff 对齐。触发场景:任何时候给一个 fuzz / smoke / CI 检查加防护时(资源上限、豁免规则、异常路径、artifact upload、种子清单),立刻 grep 同仓所有兄弟 harness,同一轮补齐;新 harness 上线时也要横向扫兄弟 harness 有没有该同步过来的既有防护。同族反思实例见 `memory/reflections/2026-07-13-nightly-concat-oom-and-format-hash-round.md` 教训 2。
+
 ## 相关
 
 - [[unreproducible-crasher-triage]]——差分 fuzz 报层间分歧信号(P1-vs-auto / P1-vs-force / 后端 A vs 后端 B),进入本 guide 的修复流程之前,先按该 guide「真 crasher 但失败形式是层间分歧」节的 oracle 归因步骤确认 bug 真的在 tier / 后端侧;若 oracle 与两层都不符,bug 在共享前端 / stdlib / VM 共享语义,不属于本 guide 的修复范围。共享前端 bug 伪装成层间分歧的实例见 [[2026-07-11-issue125-return-freereg-round]](`return f() or (f())` 的 RETURN 操作数计算读预捕获 freereg 拿栈垃圾,两个 tier 各自读到不同历史值让分歧显性化)。
