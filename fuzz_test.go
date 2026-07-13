@@ -45,7 +45,15 @@ return coroutine.resume(co)`,
 		if err != nil {
 			return // 编译错误是合法结果
 		}
-		st := wangshu.NewState(wangshu.Options{})
+		// MaxArenaBytes (issues #127/#130): quadratic-concat shapes
+		// (`out = out .. f(i)` loops) balloon the default 2 GiB arena
+		// before the step budget fires — one exec peaked at 13 GiB of
+		// Go-side memory (grow doubling keeps old+new backings alive),
+		// and 4 parallel fuzz workers multiplied that into silent
+		// worker deaths. A 64 MiB cap bounds the shape to ~1s and a
+		// few hundred MiB; hitting the cap is a legal error outcome
+		// (same discipline as FuzzOracleDiff's runWangshuSide).
+		st := wangshu.NewState(wangshu.Options{MaxArenaBytes: 64 << 20})
 		// 回边指令预算兜住超长循环(for i=1,1e6 等);fuzz 引擎也会生成
 		// 远超 budget 的循环变体,SetStepBudget 是结构性兜底。比源码子串
 		// 过滤健壮:loadstring/拼接构造的循环同样兜得住。

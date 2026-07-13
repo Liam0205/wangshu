@@ -1,0 +1,2 @@
+go test fuzz v1
+string("function cat(i)return\"2\"..i end out=\"\"for i=1,700066 do out=out..cat(i)end")

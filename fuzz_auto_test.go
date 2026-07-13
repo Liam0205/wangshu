@@ -77,13 +77,17 @@ func FuzzAutoPromote(f *testing.F) {
 		// auto run 2 against a single baseline run would flag ordinary
 		// cross-run state drift as a tier divergence (found by this
 		// fuzz target's first CI run, seed 861f54880d2009d5).
-		st1 := wangshu.NewState(wangshu.Options{})
+		// MaxArenaBytes (issues #127/#130): quadratic-concat garbage
+		// ballooned the uncapped arena to 2 GiB / 13 GiB Go-side per
+		// exec and killed nightly workers; 64 MiB bounds it. Both
+		// States get the SAME cap so the comparison stays symmetric.
+		st1 := wangshu.NewState(wangshu.Options{MaxArenaBytes: 64 << 20})
 		st1.SetStepBudget(1 << 20)
 		st1.SetHotThresholds(^uint32(0), ^uint32(0))
 
 		// Auto path: lowered thresholds, two runs on one State. Run 1
 		// promotes mid-run; run 2 is tier-mixed from the first call.
-		stA := wangshu.NewState(wangshu.Options{})
+		stA := wangshu.NewState(wangshu.Options{MaxArenaBytes: 64 << 20})
 		stA.SetStepBudget(1 << 20)
 		stA.SetHotThresholds(2, 4)
 		for run := 1; run <= 2; run++ {
@@ -95,8 +99,11 @@ func FuzzAutoPromote(f *testing.F) {
 			// boundary inputs); semantic divergence hard-fails —
 			// same discipline as FuzzP4ForceAllPromote.
 			if (errP1 == nil) != (errA == nil) {
-				budgetTiming := (errP1 != nil && strings.Contains(errP1.Error(), "instruction budget exceeded")) ||
-					(errA != nil && strings.Contains(errA.Error(), "instruction budget exceeded"))
+				// Resource-limit class (step budget OR arena cap) is
+				// exempted: tiers charge steps and allocate at
+				// different points, so boundary inputs can trip a
+				// limit on one leg only.
+				budgetTiming := isResourceLimitErr(errP1) || isResourceLimitErr(errA)
 				if budgetTiming {
 					t.Skipf("budget/timing divergence (not a byte-equal violation): P1=%v auto=%v", errP1, errA)
 					return
@@ -121,4 +128,18 @@ func FuzzAutoPromote(f *testing.F) {
 			}
 		}
 	})
+}
+
+// isResourceLimitErr reports whether err is a harness resource limit
+// (step budget or the fuzz arena cap) rather than a semantic result.
+// Divergence checks skip when either leg trips one: tiers charge
+// steps and allocate at different points, so boundary inputs can
+// legally trip a limit on one leg only.
+func isResourceLimitErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "instruction budget exceeded") ||
+		strings.Contains(msg, "internal VM panic: arena:")
 }
