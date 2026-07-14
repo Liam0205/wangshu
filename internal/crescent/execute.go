@@ -418,9 +418,12 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 			iter := reg(th, ci, a)
 			state := reg(th, ci, a+1)
 			ctrl := reg(th, ci, a+2)
-			results, e := st.callLuaFromHost(th, iter, []value.Value{state, ctrl})
+			results, e := st.callLuaFromHostNamed(th, iter, []value.Value{state, ctrl})
 			if e != nil {
-				return e
+				// PUC getfuncname 认 OP_TFORLOOP 为命名调用站点:host 迭代器
+				// 的 arg 错误按 R(A) 命名(典型 "(for generator)",issue #133);
+				// 主循环已 ci.pc++,TFORLOOP 自身在 ci.pc-1。
+				return st.resolveArgError(e, ci, ci.pc-1, a)
 			}
 			ci = currentCI(th)
 			proto = st.protoOf(ci)

@@ -59,6 +59,18 @@ var errCorpus = []errCase{
 	{"arith_on_upvalue", `local up; local f = function() return up + 1 end; return f()`},
 	{"call_upvalue", `local upf; local f = function() return upf() end; return f()`},
 	{"index_upvalue", `local upt; local f = function() return upt.k end; return f()`},
+	// luaL_argerror 函数名按【调用点】派生(issue #133):PUC getfuncname 经
+	// getobjname symbexec 调用指令的 A 操作数——local 别名报别名、global
+	// 报 global 名、method 调用 self 不计数(#N 减 1)、self 自身坏时改用
+	// "calling 'X' on bad self"、TFORLOOP 站点报 "(for generator)"、纯 C
+	// 边界(pcall 直调)回落 '?'。
+	{"argerr_global_field", `return string.rep(nil)`},
+	{"argerr_local_alias", `local r = string.rep; return r(nil)`},
+	{"argerr_method_decrement", `local s = "x"; return s:rep()`},
+	{"argerr_bad_self", `local t = setmetatable({}, {__index = string}); return t:rep(1)`},
+	{"argerr_for_generator", `for k in string.rep do end`},
+	{"argerr_c_caller_fallback", `local _, e = pcall(string.rep); error(e, 0)`},
+	{"argerr_cocreate_cfunction", `return coroutine.create(print)`},
 }
 
 // stripPos 截掉 "chunkname:line: " 位置前缀,返回 (line 段, 余下消息)。

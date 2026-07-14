@@ -196,7 +196,28 @@ func (st *State) callMetaHandler(th *thread, fn value.Value, args []value.Value,
 //
 // 把 fn+args 推到栈顶,enterLuaFrame(entry=true) 后新起一层 execute。
 // 这是"Go 栈 +1"的 host→Lua 重入边界。非函数经 __call 转发(07)。
+//
+// Arg-error naming (issue #133): errors leaving this boundary get
+// argNarg finalized to 0, freezing the C-caller fallback '?'. PUC's
+// getfuncname requires the CALLING frame to be Lua — pcall(f, ...),
+// sort comparators and metamethod handlers are C callers, so their
+// callees' arg errors keep '?' even if a host fn propagates them up
+// to an outer Lua CALL site. The TFORLOOP interpreter/gibbous sites
+// are Lua callers (PUC names OP_TFORLOOP call sites) and use
+// callLuaFromHostNamed instead.
 func (st *State) callLuaFromHost(th *thread, fn value.Value, args []value.Value) ([]value.Value, *LuaError) {
+	out, e := st.callLuaFromHostNamed(th, fn, args)
+	if e != nil {
+		e.argNarg = 0
+	}
+	return out, e
+}
+
+// callLuaFromHostNamed is callLuaFromHost without the argNarg
+// finalization — for call boundaries that PUC's getfuncname treats as
+// named Lua call sites (TFORLOOP), where the caller resolves the arg
+// error itself via resolveArgError.
+func (st *State) callLuaFromHostNamed(th *thread, fn value.Value, args []value.Value) ([]value.Value, *LuaError) {
 	// host→Lua 重入深度上限(05 §7.4):防「Lua 调 host 调 Lua …」交替真把
 	// Go 栈打爆(Go maxstacksize fatal 不可恢复,必须先用可恢复错误拦下)。
 	if st.nCcalls >= maxCCallDepth {

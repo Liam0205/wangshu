@@ -181,6 +181,94 @@ func constStringAt(proto *bytecode.Proto, k int) (string, bool) {
 	return "", false
 }
 
+// callSiteFuncName mirrors PUC getfuncname/getobjname for luaL_argerror
+// (issue #133): derive the callee's NAME as seen at the caller's call
+// site. Unlike describeReg it does not filter compiler-internal "(...)"
+// locals — "(for generator)" is a legal PUC arg-error name — and it
+// returns name and namewhat separately ("method" drives the self-arg
+// decrement in resolveArgError).
+func callSiteFuncName(proto *bytecode.Proto, pc int32, reg int) (name, namewhat string) {
+	return callSiteFuncNameDepth(proto, pc, reg, 0)
+}
+
+func callSiteFuncNameDepth(proto *bytecode.Proto, pc int32, reg int, depth int) (string, string) {
+	if depth > 4 {
+		return "", ""
+	}
+	if n := localName(proto, pc, reg); n != "" {
+		return n, "local"
+	}
+	ins, ok := symbexec(proto, pc, reg)
+	if !ok {
+		return "", ""
+	}
+	switch bytecode.Op(ins) {
+	case bytecode.MOVE:
+		if b := bytecode.B(ins); b < bytecode.A(ins) {
+			return callSiteFuncNameDepth(proto, pc, b, depth+1)
+		}
+	case bytecode.GETGLOBAL:
+		if n, ok := constStringAt(proto, bytecode.Bx(ins)); ok {
+			return n, "global"
+		}
+	case bytecode.GETUPVAL:
+		if idx := bytecode.B(ins); idx < len(proto.UpvalDescs) {
+			if n := proto.UpvalDescs[idx].Name; n != "" {
+				return n, "upvalue"
+			}
+		}
+	case bytecode.GETTABLE:
+		if rk := bytecode.C(ins); bytecode.IsK(rk) {
+			if n, ok := constStringAt(proto, bytecode.KIdx(rk)); ok {
+				return n, "field"
+			}
+		}
+	case bytecode.SELF:
+		if rk := bytecode.C(ins); bytecode.IsK(rk) {
+			if n, ok := constStringAt(proto, bytecode.KIdx(rk)); ok {
+				return n, "method"
+			}
+		}
+	}
+	return "", ""
+}
+
+// resolveArgError rewrites a host-raised arg error (NewArgError) with
+// the caller-derived function name, mirroring PUC luaL_argerror +
+// getfuncname: the name in "bad argument #N to 'name'" comes from
+// getobjname on the caller's call operand, NOT from the callee's own
+// identity (a local alias `local r = coroutine.resume; r(nil)` blames
+// 'r'; oracle diff fuzz corpus e8534c580042ec44). "method" call sites
+// do not count self (narg-1); the self argument itself being bad
+// becomes the "calling 'X' on bad self" form. callPC is the pc of the
+// CALL/TAILCALL/TFORLOOP instruction in the caller frame (conventions
+// differ per site: the interpreter loop has already incremented ci.pc,
+// gibbous helpers receive the raw pc); funcReg is the caller-frame
+// register holding the callee. Resolution happens once, at the
+// innermost Lua call boundary; errors crossing only host-to-host
+// boundaries (pcall, sort comparators, metamethod handlers) keep the
+// C-caller fallback '?', matching PUC.
+func (st *State) resolveArgError(e *LuaError, ci *callInfo, callPC int32, funcReg int) *LuaError {
+	if e == nil || e == errYieldSentinel || e.argNarg == 0 || e.annotated {
+		return e
+	}
+	narg := e.argNarg
+	e.argNarg = 0
+	name, namewhat := callSiteFuncName(st.protoOf(ci), callPC, funcReg)
+	if namewhat == "method" {
+		narg--
+		if narg == 0 {
+			e.Msg = fmt.Sprintf("calling '%s' on bad self (%s)", name, e.argExtra)
+			return e
+		}
+	}
+	if name == "" {
+		name = "?"
+	}
+	e.Msg = fmt.Sprintf("bad argument #%d to '%s' (%s)", narg, name, e.argExtra)
+	return e
+}
+
 // errWithName 构造带名字描述的类型错误(5.1 格式:
 // "attempt to <verb> <name> (a <type> value)";无名退回 "attempt to <verb> a <type> value")。
 func (st *State) errWithName(ci *callInfo, verb string, rkOperand int, v value.Value) *LuaError {

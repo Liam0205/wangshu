@@ -15,7 +15,7 @@ import (
 // strArg 取第 n 个参数为 string 字节(数字自动转字符串,Lua 5.1 行为)。
 func strArg(st *crescent.State, args []value.Value, n int, fname string) ([]byte, *crescent.LuaError) {
 	if n >= len(args) {
-		return nil, crescent.NewError(fmt.Sprintf("bad argument #%d to '%s' (string expected, got no value)", n+1, fname))
+		return nil, crescent.NewArgError(n+1, "string expected, got no value")
 	}
 	v := args[n]
 	if value.Tag(v) == value.TagString {
@@ -24,8 +24,7 @@ func strArg(st *crescent.State, args []value.Value, n int, fname string) ([]byte
 	if value.IsNumber(v) {
 		return []byte(crescent.FormatLuaNumber(value.AsNumber(v))), nil
 	}
-	return nil, crescent.NewError(fmt.Sprintf("bad argument #%d to '%s' (string expected, got %s)",
-		n+1, fname, st.TypeName(v)))
+	return nil, crescent.NewArgError(n+1, "string expected, got "+st.TypeName(v))
 }
 
 // numArg 取第 n 个参数为 number(可缺省)。
@@ -76,7 +75,7 @@ func stringFnFind(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 	}
 	initF, ok := numArg(st, args, 2, 1)
 	if !ok {
-		return nil, crescent.NewError("bad argument #3 to 'find' (number expected)")
+		return nil, crescent.NewArgError(3, "number expected, got "+st.TypeName(args[2]))
 	}
 	init := strInitPos(initF, len(s))
 	if init > len(s) {
@@ -129,7 +128,7 @@ func stringFnMatch(st *crescent.State, args []value.Value) ([]value.Value, *cres
 	}
 	initF, ok := numArg(st, args, 2, 1)
 	if !ok {
-		return nil, crescent.NewError("bad argument #3 to 'match' (number expected)")
+		return nil, crescent.NewArgError(3, "number expected, got "+st.TypeName(args[2]))
 	}
 	init := strInitPos(initF, len(s))
 	if init > len(s) {
@@ -198,14 +197,14 @@ func stringFnGsub(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 		return nil, e
 	}
 	if len(args) < 3 {
-		return nil, crescent.NewError("bad argument #3 to 'gsub' (string/function/table expected)")
+		return nil, crescent.NewArgError(3, "string/function/table expected")
 	}
 	repl := args[2]
 	maxN := -1
 	if len(args) >= 4 && args[3] != value.Nil {
 		f, ok := toNumberStr(st, args[3])
 		if !ok {
-			return nil, crescent.NewError("bad argument #4 to 'gsub' (number expected)")
+			return nil, crescent.NewArgError(4, "number expected, got "+st.TypeName(args[3]))
 		}
 		maxN = int(f)
 	}
@@ -328,7 +327,7 @@ func st2gsubRepl(st *crescent.State, src []byte, s, e int, caps []capResult, rep
 		}
 		return b, nil
 	}
-	return nil, crescent.NewError("bad argument #3 to 'gsub' (string/function/table expected)")
+	return nil, crescent.NewArgError(3, "string/function/table expected")
 }
 
 func valueToBytesForGsub(st *crescent.State, v value.Value) ([]byte, bool) {
@@ -401,13 +400,13 @@ func stringFnFormat(st *crescent.State, args []value.Value) ([]value.Value, *cre
 		verb := f[i]
 		i++
 		if argn >= len(args) && verb != '%' {
-			return nil, crescent.NewError(fmt.Sprintf("bad argument #%d to 'format' (no value)", argn+1))
+			return nil, crescent.NewArgError(argn+1, "no value")
 		}
 		switch verb {
 		case 'd', 'i':
 			n, ok := toNumberStr(st, args[argn])
 			if !ok {
-				return nil, crescent.NewError(fmt.Sprintf("bad argument #%d to 'format' (number expected)", argn+1))
+				return nil, crescent.NewArgError(argn+1, "number expected, got "+st.TypeName(args[argn]))
 			}
 			out = append(out, []byte(fmt.Sprintf(string(append(spec, 'd')), int64(n)))...)
 			argn++
@@ -418,7 +417,7 @@ func stringFnFormat(st *crescent.State, args []value.Value) ([]value.Value, *cre
 			// caught the silently-ignored conversion failure).
 			n, ok := toNumberStr(st, args[argn])
 			if !ok {
-				return nil, crescent.NewError(fmt.Sprintf("bad argument #%d to 'format' (number expected, got %s)", argn+1, st.TypeName(args[argn])))
+				return nil, crescent.NewArgError(argn+1, fmt.Sprintf("number expected, got %s", st.TypeName(args[argn])))
 			}
 			// Rendered manually: Go's fmt diverges from C printf on
 			// the '#' flag ("%#X" of 0 prints "0X0" -- C omits the
@@ -438,14 +437,14 @@ func stringFnFormat(st *crescent.State, args []value.Value) ([]value.Value, *cre
 			// mirror the strlen cut (oracle diff fuzz catch).
 			n, ok := toNumberStr(st, args[argn])
 			if !ok {
-				return nil, crescent.NewError(fmt.Sprintf("bad argument #%d to 'format' (number expected, got %s)", argn+1, st.TypeName(args[argn])))
+				return nil, crescent.NewArgError(argn+1, fmt.Sprintf("number expected, got %s", st.TypeName(args[argn])))
 			}
 			out = append(out, cPadChar(spec, byte(int64(n)))...)
 			argn++
 		case 'f', 'e', 'E', 'g', 'G':
 			n, ok := toNumberStr(st, args[argn])
 			if !ok {
-				return nil, crescent.NewError(fmt.Sprintf("bad argument #%d to 'format' (number expected)", argn+1))
+				return nil, crescent.NewArgError(argn+1, "number expected, got "+st.TypeName(args[argn]))
 			}
 			out = append(out, []byte(fmt.Sprintf(string(append(spec, verb)), n))...)
 			argn++
@@ -526,11 +525,11 @@ func stringFnByte(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 	// argument raises (string.byte("abc", "y") errors; "2" coerces).
 	iF, ok := numArg(st, args, 1, 1)
 	if !ok {
-		return nil, crescent.NewError(fmt.Sprintf("bad argument #2 to 'byte' (number expected, got %s)", st.TypeName(args[1])))
+		return nil, crescent.NewArgError(2, fmt.Sprintf("number expected, got %s", st.TypeName(args[1])))
 	}
 	jF, ok := numArg(st, args, 2, iF)
 	if !ok {
-		return nil, crescent.NewError(fmt.Sprintf("bad argument #3 to 'byte' (number expected, got %s)", st.TypeName(args[2])))
+		return nil, crescent.NewArgError(3, fmt.Sprintf("number expected, got %s", st.TypeName(args[2])))
 	}
 	i := normIdx(int(iF), len(s))
 	j := normIdx(int(jF), len(s))
@@ -553,7 +552,7 @@ func stringFnChar(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 	for i, a := range args {
 		f, ok := toNumberStr(st, a)
 		if !ok {
-			return nil, crescent.NewError(fmt.Sprintf("bad argument #%d to 'char' (number expected)", i+1))
+			return nil, crescent.NewArgError(i+1, "number expected, got "+st.TypeName(a))
 		}
 		// PUC str_char: luaL_checkint truncates toward zero, then
 		// luaL_argcheck(uchar(c) == c) rejects anything outside
@@ -562,7 +561,7 @@ func stringFnChar(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 		// silent byte() wraparound.
 		n := int64(f)
 		if n < 0 || n > 255 {
-			return nil, crescent.NewError(fmt.Sprintf("bad argument #%d to 'char' (invalid value)", i+1))
+			return nil, crescent.NewArgError(i+1, "invalid value")
 		}
 		out[i] = byte(n)
 	}

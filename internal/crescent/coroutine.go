@@ -7,6 +7,7 @@
 package crescent
 
 import (
+	"github.com/Liam0205/wangshu/internal/object"
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
@@ -51,8 +52,12 @@ type coRegistry struct {
 
 // NewCoroutine 创建一个 suspended 协程,返回其 coID(lightuserdata 句柄)。
 func (st *State) NewCoroutine(fn value.Value) (uint64, *LuaError) {
-	if value.Tag(fn) != value.TagFunction {
-		return 0, errf("bad argument #1 to 'create' (function expected)")
+	// PUC luaB_cocreate: lua_isfunction && !lua_iscfunction -- host
+	// closures (C functions) are rejected too, with "Lua function
+	// expected" (issue #133 patrol: we used to accept host fns, so
+	// coroutine.create(print) diverged from the oracle).
+	if value.Tag(fn) != value.TagFunction || object.IsHostClosure(st.arena, value.GCRefOf(fn)) {
+		return 0, NewArgError(1, "Lua function expected")
 	}
 	co := &coroutine{
 		th:     st.newThread(),

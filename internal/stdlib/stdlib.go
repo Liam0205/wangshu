@@ -210,11 +210,10 @@ func baseFnLoad(st *crescent.State, args []value.Value) ([]value.Value, *crescen
 	// LUA_TFUNCTION); accepting a string is 5.2 behavior. The oracle
 	// diff arg sweep caught load("") diverging (PUC raises).
 	if len(args) == 0 {
-		return nil, crescent.NewError("bad argument #1 to 'load' (function expected, got no value)")
+		return nil, crescent.NewArgError(1, "function expected, got no value")
 	}
 	if value.Tag(args[0]) != value.TagFunction {
-		return nil, crescent.NewError("bad argument #1 to 'load' (function expected, got " +
-			st.TypeName(args[0]) + ")")
+		return nil, crescent.NewArgError(1, "function expected, got "+st.TypeName(args[0]))
 	}
 	chunkname := "=(load)"
 	if len(args) >= 2 && value.Tag(args[1]) == value.TagString {
@@ -285,7 +284,7 @@ func baseFnLoadstring(st *crescent.State, args []value.Value) ([]value.Value, *c
 // baseFnNext:next(t [, key]) → (nextKey, nextVal) | nil。
 func baseFnNext(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	if len(args) == 0 || value.Tag(args[0]) != value.TagTable {
-		return nil, crescent.NewError("bad argument #1 to 'next' (table expected)")
+		return nil, crescent.NewArgError(1, "table expected")
 	}
 	key := value.Nil
 	if len(args) >= 2 {
@@ -304,7 +303,7 @@ func baseFnNext(st *crescent.State, args []value.Value) ([]value.Value, *crescen
 // baseFnPairs:pairs(t) → (next, t, nil)。
 func baseFnPairs(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	if len(args) == 0 || value.Tag(args[0]) != value.TagTable {
-		return nil, crescent.NewError("bad argument #1 to 'pairs' (table expected)")
+		return nil, crescent.NewArgError(1, "table expected")
 	}
 	nextFn, _ := st.RawGet(st.Globals(), intern(st, "next"))
 	return []value.Value{nextFn, args[0], value.Nil}, nil
@@ -313,7 +312,7 @@ func baseFnPairs(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 // baseFnIpairs:ipairs(t) → (iter, t, 0);iter(t, i) → (i+1, t[i+1]) | nil。
 func baseFnIpairs(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	if len(args) == 0 || value.Tag(args[0]) != value.TagTable {
-		return nil, crescent.NewError("bad argument #1 to 'ipairs' (table expected)")
+		return nil, crescent.NewArgError(1, "table expected")
 	}
 	iterFn, _ := st.RawGet(st.Globals(), intern(st, "__ipairs_iter"))
 	return []value.Value{iterFn, args[0], value.NumberValue(0)}, nil
@@ -321,8 +320,16 @@ func baseFnIpairs(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 
 // ipairsIter 是 ipairs 的步进迭代器(注册为内部全局 __ipairs_iter)。
 func ipairsIter(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
-	if len(args) < 2 || value.Tag(args[0]) != value.TagTable || !value.IsNumber(args[1]) {
-		return nil, crescent.NewError("bad argument to ipairs iterator")
+	// PUC ipairsaux: luaL_checkint(L, 2) FIRST, then checktype(L, 1, TABLE).
+	if len(args) < 2 || !value.IsNumber(args[1]) {
+		got := "no value"
+		if len(args) >= 2 {
+			got = st.TypeName(args[1])
+		}
+		return nil, crescent.NewArgError(2, "number expected, got "+got)
+	}
+	if value.Tag(args[0]) != value.TagTable {
+		return nil, crescent.NewArgError(1, "table expected, got "+st.TypeName(args[0]))
 	}
 	i := value.AsNumber(args[1]) + 1
 	v, e := st.RawGet(value.GCRefOf(args[0]), value.NumberValue(i))
@@ -338,7 +345,7 @@ func ipairsIter(st *crescent.State, args []value.Value) ([]value.Value, *crescen
 // baseFnPcall:pcall(f, ...) → (true, results...) | (false, errval)(09 §pcall;05 §9.3)。
 func baseFnPcall(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	if len(args) == 0 {
-		return nil, crescent.NewError("bad argument #1 to 'pcall' (value expected)")
+		return nil, crescent.NewArgError(1, "value expected")
 	}
 	results, e := st.ProtectedCall(args[0], args[1:])
 	if e != nil {
@@ -356,7 +363,7 @@ func baseFnPcall(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 
 func baseFnSetMetatable(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	if len(args) < 2 || value.Tag(args[0]) != value.TagTable {
-		return nil, crescent.NewError("bad argument #1 to 'setmetatable' (table expected)")
+		return nil, crescent.NewArgError(1, "table expected")
 	}
 	t := value.GCRefOf(args[0])
 	// 受保护元表(__metatable 域)不可改(5.1)
@@ -371,7 +378,7 @@ func baseFnSetMetatable(st *crescent.State, args []value.Value) ([]value.Value, 
 	case value.TagNil:
 		st.SetMeta(t, 0)
 	default:
-		return nil, crescent.NewError("bad argument #2 to 'setmetatable' (nil or table expected)")
+		return nil, crescent.NewArgError(2, "nil or table expected")
 	}
 	return []value.Value{args[0]}, nil
 }
@@ -381,7 +388,7 @@ func baseFnGetMetatable(st *crescent.State, args []value.Value) ([]value.Value, 
 	// argument (oracle diff fuzz catch: getmetatable() errors);
 	// any PRESENT value, nil included, returns nil for no metatable.
 	if len(args) == 0 {
-		return nil, crescent.NewError("bad argument #1 to 'getmetatable' (value expected)")
+		return nil, crescent.NewArgError(1, "value expected")
 	}
 	if value.Tag(args[0]) == value.TagString {
 		// PUC: strings share one real metatable ({__index = string}).
@@ -406,8 +413,15 @@ func baseFnGetMetatable(st *crescent.State, args []value.Value) ([]value.Value, 
 }
 
 func baseFnRawGet(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
-	if len(args) < 2 || value.Tag(args[0]) != value.TagTable {
-		return nil, crescent.NewError("bad argument to 'rawget'")
+	if len(args) < 1 || value.Tag(args[0]) != value.TagTable {
+		got := "no value"
+		if len(args) >= 1 {
+			got = st.TypeName(args[0])
+		}
+		return nil, crescent.NewArgError(1, "table expected, got "+got)
+	}
+	if len(args) < 2 {
+		return nil, crescent.NewArgError(2, "value expected")
 	}
 	v, e := st.RawGet(value.GCRefOf(args[0]), args[1])
 	if e != nil {
@@ -417,8 +431,18 @@ func baseFnRawGet(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 }
 
 func baseFnRawSet(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
-	if len(args) < 3 || value.Tag(args[0]) != value.TagTable {
-		return nil, crescent.NewError("bad argument to 'rawset'")
+	if len(args) < 1 || value.Tag(args[0]) != value.TagTable {
+		got := "no value"
+		if len(args) >= 1 {
+			got = st.TypeName(args[0])
+		}
+		return nil, crescent.NewArgError(1, "table expected, got "+got)
+	}
+	if len(args) < 2 {
+		return nil, crescent.NewArgError(2, "value expected")
+	}
+	if len(args) < 3 {
+		return nil, crescent.NewArgError(3, "value expected")
 	}
 	if e := st.RawSet(value.GCRefOf(args[0]), args[1], args[2]); e != nil {
 		return nil, e
@@ -427,8 +451,11 @@ func baseFnRawSet(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 }
 
 func baseFnRawEqual(_ *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
+	if len(args) < 1 {
+		return nil, crescent.NewArgError(1, "value expected")
+	}
 	if len(args) < 2 {
-		return nil, crescent.NewError("bad argument to 'rawequal'")
+		return nil, crescent.NewArgError(2, "value expected")
 	}
 	eq := args[0] == args[1]
 	if !eq && value.IsNumber(args[0]) && value.IsNumber(args[1]) {
@@ -458,7 +485,7 @@ func baseFnPrint(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 
 func baseFnToString(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	if len(args) == 0 {
-		return nil, crescent.NewError("bad argument #1 to 'tostring' (value expected)")
+		return nil, crescent.NewArgError(1, "value expected")
 	}
 	raw, hadMeta, e := valueToStringMeta(st, args[0])
 	if e != nil {
@@ -475,7 +502,7 @@ func baseFnToString(st *crescent.State, args []value.Value) ([]value.Value, *cre
 func baseFnToNumber(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	if len(args) == 0 {
 		// 官方 luaL_checkany:无参是错误(≠ tonumber(nil) 的返回 nil)
-		return nil, crescent.NewError("bad argument #1 to 'tonumber' (value expected)")
+		return nil, crescent.NewArgError(1, "value expected")
 	}
 	if len(args) >= 2 && args[1] != value.Nil {
 		// tonumber(s, base):base 2-36,逐字符按进制解析(5.1 strtoul 语义,
@@ -483,15 +510,14 @@ func baseFnToNumber(st *crescent.State, args []value.Value) ([]value.Value, *cre
 		// 直觉的 -255;已登记差分豁免)
 		baseF, ok := toNumberStr(st, args[1])
 		if !ok {
-			return nil, crescent.NewError("bad argument #2 to 'tonumber' (number expected)")
+			return nil, crescent.NewArgError(2, "number expected, got "+st.TypeName(args[1]))
 		}
 		base := int(baseF)
 		if base < 2 || base > 36 {
-			return nil, crescent.NewError("bad argument #2 to 'tonumber' (base out of range)")
+			return nil, crescent.NewArgError(2, "base out of range")
 		}
 		if value.Tag(args[0]) != value.TagString {
-			return nil, crescent.NewError("bad argument #1 to 'tonumber' (string expected, got " +
-				st.TypeName(args[0]) + ")")
+			return nil, crescent.NewArgError(1, "string expected, got "+st.TypeName(args[0]))
 		}
 		s := strings.TrimSpace(string(object.StringBytes(st.Arena(), value.GCRefOf(args[0]))))
 		if s == "" {
@@ -554,7 +580,7 @@ func crescentToNumber(st *crescent.State, v value.Value) (float64, bool) {
 
 func baseFnType(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	if len(args) == 0 {
-		return nil, crescent.NewError("bad argument #1 to 'type' (value expected)")
+		return nil, crescent.NewArgError(1, "value expected")
 	}
 	if st.IsCoroutineHandle(args[0]) {
 		return []value.Value{intern(st, "thread")}, nil
@@ -604,7 +630,7 @@ func baseFnError(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 
 func baseFnSelect(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	if len(args) == 0 {
-		return nil, crescent.NewError("bad argument #1 to 'select'")
+		return nil, crescent.NewArgError(1, "number expected, got no value")
 	}
 	first := args[0]
 	if value.Tag(first) == value.TagString {
@@ -618,7 +644,7 @@ func baseFnSelect(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 	}
 	f, ok := toNumberStr(st, first)
 	if !ok {
-		return nil, crescent.NewError("bad argument #1 to 'select' (number expected)")
+		return nil, crescent.NewArgError(1, "number expected, got "+st.TypeName(args[0]))
 	}
 	idx := int(f)
 	n := len(args) - 1
@@ -626,10 +652,10 @@ func baseFnSelect(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 		// 负索引:从尾部数(5.1);越界报错
 		idx = n + idx + 1
 		if idx < 1 {
-			return nil, crescent.NewError("bad argument #1 to 'select' (index out of range)")
+			return nil, crescent.NewArgError(1, "index out of range")
 		}
 	} else if idx == 0 {
-		return nil, crescent.NewError("bad argument #1 to 'select' (index out of range)")
+		return nil, crescent.NewArgError(1, "index out of range")
 	}
 	if idx > n {
 		return nil, nil
@@ -677,11 +703,11 @@ var mathFns = []entry{
 func mathFn1(name string, f func(float64) float64) crescent.HostFn {
 	return func(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 		if len(args) == 0 {
-			return nil, crescent.NewError(fmt.Sprintf("bad argument #1 to '%s' (number expected, got no value)", name))
+			return nil, crescent.NewArgError(1, "number expected, got no value")
 		}
 		x, ok := toNumberStr(st, args[0])
 		if !ok {
-			return nil, crescent.NewError(fmt.Sprintf("bad argument #1 to '%s' (number expected, got %s)", name, st.TypeName(args[0])))
+			return nil, crescent.NewArgError(1, fmt.Sprintf("number expected, got %s", st.TypeName(args[0])))
 		}
 		return []value.Value{value.NumberValue(f(x))}, nil
 	}
@@ -699,16 +725,16 @@ func mathFnMin(st *crescent.State, args []value.Value) ([]value.Value, *crescent
 // luaL_checknumber(首参曾被静默吞错:math.max("x", 2) 错误地返回 2)。
 func mathMinMax(st *crescent.State, args []value.Value, name string, better func(a, b float64) bool) ([]value.Value, *crescent.LuaError) {
 	if len(args) == 0 {
-		return nil, crescent.NewError(fmt.Sprintf("bad argument #1 to '%s' (number expected, got no value)", name))
+		return nil, crescent.NewArgError(1, "number expected, got no value")
 	}
 	out, ok := toNumberStr(st, args[0])
 	if !ok {
-		return nil, crescent.NewError(fmt.Sprintf("bad argument #1 to '%s' (number expected, got %s)", name, st.TypeName(args[0])))
+		return nil, crescent.NewArgError(1, fmt.Sprintf("number expected, got %s", st.TypeName(args[0])))
 	}
 	for i, a := range args[1:] {
 		f, ok := toNumberStr(st, a)
 		if !ok {
-			return nil, crescent.NewError(fmt.Sprintf("bad argument #%d to '%s' (number expected, got %s)", i+2, name, st.TypeName(a)))
+			return nil, crescent.NewArgError(i+2, fmt.Sprintf("number expected, got %s", st.TypeName(a)))
 		}
 		if better(f, out) {
 			out = f
@@ -784,12 +810,12 @@ func stringFnSub(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 		return nil, e
 	}
 	if len(args) < 2 {
-		return nil, crescent.NewError("bad argument to 'sub'")
+		return nil, crescent.NewArgError(2, "number expected, got no value")
 	}
 	s := string(sb)
 	startF, ok := toNumberStr(st, args[1])
 	if !ok {
-		return nil, crescent.NewError("bad argument #2 to 'sub'")
+		return nil, crescent.NewArgError(2, "number expected, got "+st.TypeName(args[1]))
 	}
 	endF := float64(-1)
 	// PUC str_sub: end is luaL_optinteger(L, 3, -1) -- an explicit nil
@@ -799,7 +825,7 @@ func stringFnSub(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 	if len(args) >= 3 && args[2] != value.Nil {
 		f, ok := toNumberStr(st, args[2])
 		if !ok {
-			return nil, crescent.NewError("bad argument #3 to 'sub'")
+			return nil, crescent.NewArgError(3, "number expected, got "+st.TypeName(args[2]))
 		}
 		endF = f
 	}
@@ -823,12 +849,12 @@ func stringFnRep(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 		return nil, e
 	}
 	if len(args) < 2 {
-		return nil, crescent.NewError("bad argument to 'rep'")
+		return nil, crescent.NewArgError(2, "number expected, got no value")
 	}
 	s := string(sb)
 	nF, ok := toNumberStr(st, args[1])
 	if !ok {
-		return nil, crescent.NewError("bad argument #2 to 'rep'")
+		return nil, crescent.NewArgError(2, "number expected, got "+st.TypeName(args[1]))
 	}
 	n := int(nF)
 	if n < 0 {

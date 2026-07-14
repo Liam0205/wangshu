@@ -50,8 +50,11 @@ func (st *State) doCall(th *thread, ci *callInfo, i bytecode.Instruction) (*call
 				nresults:   nresults,
 				entryDepth: st.entryDepthOf(th),
 			}
+			return nil, e
 		}
-		return nil, e
+		// PUC luaL_argerror:arg 错误的函数名取自本 CALL 站点(issue #133);
+		// 主循环已 ci.pc++,CALL 自身在 ci.pc-1。
+		return nil, st.resolveArgError(e, ci, ci.pc-1, a)
 	}
 	// gibbous 升层分支(VS0-d / 04-trampoline §2.2):被调 Proto 已升 gibbous
 	// 且在主线程(§5 线程级 tier 规则:协程不升层)→ 经 trampoline 跳 wazero。
@@ -135,7 +138,7 @@ func (st *State) doTailCall(th *thread, ci *callInfo, i bytecode.Instruction) (*
 		// results from the live top, which callHost's multret branch sets
 		// to funcIdx + n exactly. A fixed nresults resets top and drops
 		// trailing results (issue #52 P4 acceptance; shared by P1/P3/P4).
-		return nil, st.callHost(th, funcIdx, nargs, -1)
+		return nil, st.resolveArgError(st.callHost(th, funcIdx, nargs, -1), ci, ci.pc-1, a)
 	}
 	st.closeUpvals(th, ci.base)
 	dst := ci.FuncIdx()
