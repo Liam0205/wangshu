@@ -36,6 +36,16 @@ type LuaError struct {
 	Traceback string // 错误冒泡到顶层时构建(09;pcall 捕获的错误不带)
 	Level     int    // error(msg, level) 的 level(09);0 = 不加位置前缀
 	annotated bool   // 已加 chunkname:line: 前缀(只加一次)
+	// PUC luaL_argerror mirror (issue #133): the function name in
+	// "bad argument #N to 'name'" comes from the CALLER's call site
+	// (getobjname on the CALL/TAILCALL/TFORLOOP operand), not from the
+	// callee's own identity. Host functions raise the structured pair
+	// below via NewArgError (Msg pre-filled with the C-caller fallback
+	// "'?'"); the interpreter's host-call sites rewrite Msg through
+	// resolveArgError before annotation. argNarg == 0 means "not an
+	// arg error / already resolved".
+	argNarg  int
+	argExtra string
 }
 
 func (e *LuaError) Error() string {
@@ -718,6 +728,21 @@ func (st *State) SetHostTriggeredCollect(on bool) {
 // NewError 构造一个带消息的 LuaError(供 stdlib 等 host 函数使用)。
 func NewError(msg string) *LuaError {
 	return &LuaError{Msg: msg}
+}
+
+// NewArgError mirrors PUC luaL_argerror for host functions (issue
+// #133): narg is 1-based, extra is the parenthesized detail ("string
+// expected, got nil"). Msg starts with the C-caller fallback "'?'"
+// (what PUC prints when no Lua frame can name the callee — pcall(f,
+// ...), sort comparators, metamethod handlers); the interpreter's
+// Lua-side call boundaries rewrite it with the caller-derived name via
+// resolveArgError before position annotation.
+func NewArgError(narg int, extra string) *LuaError {
+	return &LuaError{
+		Msg:      fmt.Sprintf("bad argument #%d to '?' (%s)", narg, extra),
+		argNarg:  narg,
+		argExtra: extra,
+	}
 }
 
 // NewErrorVal 构造一个携带 Lua Value 的错误(对应 error(v) 内建)。

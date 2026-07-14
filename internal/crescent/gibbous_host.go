@@ -689,9 +689,12 @@ func (st *State) TForLoop(base, pc, a, c int32) int64 {
 	iter := reg(th, ci, ra)
 	state := reg(th, ci, ra+1)
 	ctrl := reg(th, ci, ra+2)
-	results, e := st.callLuaFromHost(th, iter, []value.Value{state, ctrl})
+	results, e := st.callLuaFromHostNamed(th, iter, []value.Value{state, ctrl})
 	if e != nil {
-		st.raiseGibbous(e) // 锚定行号(callLuaFromHost 错误若未标注则按当前 TFORLOOP 帧标)
+		// PUC getfuncname 认 OP_TFORLOOP 为命名调用站点(issue #133),
+		// pc 即本 TFORLOOP 指令下标;resolveArgError 在 raiseGibbous
+		// 锚定行号之前改写函数名。
+		st.raiseGibbous(st.resolveArgError(e, ci, pc, ra))
 		return -1
 	}
 	ci = st.gibCI(th)

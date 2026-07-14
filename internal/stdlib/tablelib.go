@@ -35,7 +35,7 @@ func tableFnForeach(st *crescent.State, args []value.Value) ([]value.Value, *cre
 		return nil, e
 	}
 	if len(args) < 2 || value.Tag(args[1]) != value.TagFunction {
-		return nil, crescent.NewError("bad argument #2 to 'foreach' (function expected)")
+		return nil, crescent.NewArgError(2, "function expected")
 	}
 	t := value.GCRefOf(tv)
 	key := value.Nil
@@ -67,7 +67,7 @@ func tableFnForeachi(st *crescent.State, args []value.Value) ([]value.Value, *cr
 		return nil, e
 	}
 	if len(args) < 2 || value.Tag(args[1]) != value.TagFunction {
-		return nil, crescent.NewError("bad argument #2 to 'foreachi' (function expected)")
+		return nil, crescent.NewArgError(2, "function expected")
 	}
 	t := value.GCRefOf(tv)
 	n := int(st.RawBorder(t))
@@ -92,7 +92,7 @@ func tableFnSetn(_ *crescent.State, _ []value.Value) ([]value.Value, *crescent.L
 
 func tblArg(args []value.Value, n int, fname string) (value.Value, *crescent.LuaError) {
 	if n >= len(args) || value.Tag(args[n]) != value.TagTable {
-		return value.Nil, crescent.NewError(fmt.Sprintf("bad argument #%d to '%s' (table expected)", n+1, fname))
+		return value.Nil, crescent.NewArgError(n+1, "table expected")
 	}
 	return args[n], nil
 }
@@ -114,11 +114,11 @@ func tableFnInsert(st *crescent.State, args []value.Value) ([]value.Value, *cres
 	case 3:
 		posF, ok := toNumberStr(st, args[1])
 		if !ok {
-			return nil, crescent.NewError("bad argument #2 to 'insert' (number expected)")
+			return nil, crescent.NewArgError(2, "number expected, got "+st.TypeName(args[1]))
 		}
 		pos := int(posF)
 		if pos < 1 || pos > n+1 {
-			return nil, crescent.NewError("bad argument #2 to 'insert' (position out of bounds)")
+			return nil, crescent.NewArgError(2, "position out of bounds")
 		}
 		// 右移 [pos, n] → [pos+1, n+1]
 		for i := n; i >= pos; i-- {
@@ -148,7 +148,7 @@ func tableFnRemove(st *crescent.State, args []value.Value) ([]value.Value, *cres
 	if len(args) >= 2 {
 		posF, ok := toNumberStr(st, args[1])
 		if !ok {
-			return nil, crescent.NewError("bad argument #2 to 'remove' (number expected)")
+			return nil, crescent.NewArgError(2, "number expected, got "+st.TypeName(args[1]))
 		}
 		pos = int(posF)
 	}
@@ -232,7 +232,7 @@ func tableFnSort(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 	// (luaL_checktype after !lua_isnoneornil); a non-function comp was
 	// silently ignored here (oracle diff fuzz catch: table:sort(0)).
 	if len(args) >= 2 && args[1] != value.Nil && value.Tag(args[1]) != value.TagFunction {
-		return nil, crescent.NewError(fmt.Sprintf("bad argument #2 to 'sort' (function expected, got %s)", st.TypeName(args[1])))
+		return nil, crescent.NewArgError(2, fmt.Sprintf("function expected, got %s", st.TypeName(args[1])))
 	}
 	n := int(st.RawBorder(t))
 	vals := make([]value.Value, n)
@@ -322,18 +322,18 @@ var osFns = []entry{
 // osFnDifftime:os.difftime(t2, t1) = t2 - t1(POSIX 秒,5.1)。
 func osFnDifftime(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	if len(args) < 1 {
-		return nil, crescent.NewError("bad argument #1 to 'difftime'")
+		return nil, crescent.NewArgError(1, "number expected, got no value")
 	}
 	t2, ok := toNumberStr(st, args[0])
 	if !ok {
-		return nil, crescent.NewError("bad argument #1 to 'difftime' (number expected)")
+		return nil, crescent.NewArgError(1, "number expected, got "+st.TypeName(args[0]))
 	}
 	t1 := 0.0
 	if len(args) >= 2 && args[1] != value.Nil {
 		var ok2 bool
 		t1, ok2 = toNumberStr(st, args[1])
 		if !ok2 {
-			return nil, crescent.NewError("bad argument #2 to 'difftime' (number expected)")
+			return nil, crescent.NewArgError(2, "number expected, got "+st.TypeName(args[1]))
 		}
 	}
 	return []value.Value{value.NumberValue(t2 - t1)}, nil
@@ -348,8 +348,7 @@ func osFnTime(st *crescent.State, args []value.Value) ([]value.Value, *crescent.
 		return []value.Value{value.NumberValue(float64(time.Now().Unix()))}, nil
 	}
 	if value.Tag(args[0]) != value.TagTable {
-		return nil, crescent.NewError("bad argument #1 to 'time' (table expected, got " +
-			st.TypeName(args[0]) + ")")
+		return nil, crescent.NewArgError(1, "table expected, got "+st.TypeName(args[0]))
 	}
 	t := value.GCRefOf(args[0])
 	getfield := func(key string, def int) (int, *crescent.LuaError) {
@@ -412,8 +411,7 @@ func osFnDate(st *crescent.State, args []value.Value) ([]value.Value, *crescent.
 	if len(args) >= 2 && args[1] != value.Nil {
 		f, ok := toNumberStr(st, args[1])
 		if !ok {
-			return nil, crescent.NewError("bad argument #2 to 'date' (number expected, got " +
-				st.TypeName(args[1]) + ")")
+			return nil, crescent.NewArgError(2, "number expected, got "+st.TypeName(args[1]))
 		}
 		now = time.Unix(int64(f), 0)
 	}
@@ -483,15 +481,15 @@ var mathExtraFns = []entry{
 func mathFn2(name string, f func(a, b float64) float64) crescent.HostFn {
 	return func(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 		if len(args) < 2 {
-			return nil, crescent.NewError(fmt.Sprintf("bad argument #%d to '%s' (number expected, got no value)", len(args)+1, name))
+			return nil, crescent.NewArgError(len(args)+1, "number expected, got no value")
 		}
 		a, ok1 := toNumberStr(st, args[0])
 		if !ok1 {
-			return nil, crescent.NewError(fmt.Sprintf("bad argument #1 to '%s' (number expected, got %s)", name, st.TypeName(args[0])))
+			return nil, crescent.NewArgError(1, fmt.Sprintf("number expected, got %s", st.TypeName(args[0])))
 		}
 		b, ok2 := toNumberStr(st, args[1])
 		if !ok2 {
-			return nil, crescent.NewError(fmt.Sprintf("bad argument #2 to '%s' (number expected, got %s)", name, st.TypeName(args[1])))
+			return nil, crescent.NewArgError(2, fmt.Sprintf("number expected, got %s", st.TypeName(args[1])))
 		}
 		return []value.Value{value.NumberValue(f(a, b))}, nil
 	}
@@ -503,11 +501,11 @@ func mathFnFmod(st *crescent.State, args []value.Value) ([]value.Value, *crescen
 
 func mathFnFrexp(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	if len(args) < 1 {
-		return nil, crescent.NewError("bad argument #1 to 'frexp'")
+		return nil, crescent.NewArgError(1, "number expected, got no value")
 	}
 	x, ok := toNumberStr(st, args[0])
 	if !ok {
-		return nil, crescent.NewError("bad argument #1 to 'frexp' (number expected)")
+		return nil, crescent.NewArgError(1, "number expected, got "+st.TypeName(args[0]))
 	}
 	m, e := frexp(x)
 	return []value.Value{value.NumberValue(m), value.NumberValue(float64(e))}, nil
@@ -515,11 +513,11 @@ func mathFnFrexp(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 
 func mathFnModf(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	if len(args) < 1 {
-		return nil, crescent.NewError("bad argument #1 to 'modf'")
+		return nil, crescent.NewArgError(1, "number expected, got no value")
 	}
 	x, ok := toNumberStr(st, args[0])
 	if !ok {
-		return nil, crescent.NewError("bad argument #1 to 'modf' (number expected)")
+		return nil, crescent.NewArgError(1, "number expected, got "+st.TypeName(args[0]))
 	}
 	ip, fp := modf(x)
 	return []value.Value{value.NumberValue(ip), value.NumberValue(fp)}, nil
@@ -532,14 +530,14 @@ func mathFnRandom(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 	case 1:
 		m, ok := toNumberStr(st, args[0])
 		if !ok || m < 1 {
-			return nil, crescent.NewError("bad argument #1 to 'random' (interval is empty)")
+			return nil, crescent.NewArgError(1, "interval is empty")
 		}
 		return []value.Value{value.NumberValue(float64(rngInt(1, int64(m))))}, nil
 	default:
 		lo, ok1 := toNumberStr(st, args[0])
 		hi, ok2 := toNumberStr(st, args[1])
 		if !ok1 || !ok2 || lo > hi {
-			return nil, crescent.NewError("bad argument #2 to 'random' (interval is empty)")
+			return nil, crescent.NewArgError(2, "interval is empty")
 		}
 		return []value.Value{value.NumberValue(float64(rngInt(int64(lo), int64(hi))))}, nil
 	}
@@ -549,12 +547,11 @@ func mathFnRandomSeed(st *crescent.State, args []value.Value) ([]value.Value, *c
 	// PUC math_randomseed: luaL_checknumber -- the seed is mandatory
 	// and non-numbers raise (oracle diff arg sweep catch).
 	if len(args) == 0 {
-		return nil, crescent.NewError("bad argument #1 to 'randomseed' (number expected, got no value)")
+		return nil, crescent.NewArgError(1, "number expected, got no value")
 	}
 	f, ok := toNumberStr(st, args[0])
 	if !ok {
-		return nil, crescent.NewError("bad argument #1 to 'randomseed' (number expected, got " +
-			st.TypeName(args[0]) + ")")
+		return nil, crescent.NewArgError(1, "number expected, got "+st.TypeName(args[0]))
 	}
 	rngSeed(int64(f))
 	return nil, nil
@@ -574,11 +571,11 @@ func baseFnUnpackImpl(st *crescent.State, args []value.Value) ([]value.Value, *c
 	// diff fuzz catch: unpack({}, false) errors in 5.1.5).
 	iF, ok := numArg(st, args, 1, 1)
 	if !ok {
-		return nil, crescent.NewError(fmt.Sprintf("bad argument #2 to 'unpack' (number expected, got %s)", st.TypeName(args[1])))
+		return nil, crescent.NewArgError(2, fmt.Sprintf("number expected, got %s", st.TypeName(args[1])))
 	}
 	jF, ok := numArg(st, args, 2, float64(st.RawBorder(t)))
 	if !ok {
-		return nil, crescent.NewError(fmt.Sprintf("bad argument #3 to 'unpack' (number expected, got %s)", st.TypeName(args[2])))
+		return nil, crescent.NewArgError(3, fmt.Sprintf("number expected, got %s", st.TypeName(args[2])))
 	}
 	// PUC luaL_checkint is (int)luaL_checkinteger: a 64-bit hardware
 	// float->int conversion truncated to 32 bits. NaN converts to
@@ -611,7 +608,7 @@ func baseFnUnpackImpl(st *crescent.State, args []value.Value) ([]value.Value, *c
 // 这是已记录的简化,见 implementation-progress)。
 func baseFnXpcall(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	if len(args) < 2 {
-		return nil, crescent.NewError("bad argument #2 to 'xpcall' (value expected)")
+		return nil, crescent.NewArgError(2, "value expected")
 	}
 	fn, handler := args[0], args[1]
 	results, e := st.ProtectedCall(fn, nil)

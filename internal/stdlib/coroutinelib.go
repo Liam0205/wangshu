@@ -18,7 +18,7 @@ var coroutineFns = []entry{
 // coFnCreate:coroutine.create(f) → thread 句柄(lightuserdata)。
 func coFnCreate(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	if len(args) == 0 {
-		return nil, crescent.NewError("bad argument #1 to 'create' (function expected)")
+		return nil, crescent.NewArgError(1, "Lua function expected")
 	}
 	id, e := st.NewCoroutine(args[0])
 	if e != nil {
@@ -30,7 +30,7 @@ func coFnCreate(st *crescent.State, args []value.Value) ([]value.Value, *crescen
 // coFnResume:coroutine.resume(co, ...) → (true, ...) | (false, errmsg)。
 func coFnResume(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	if len(args) == 0 || !st.IsCoroutineHandle(args[0]) {
-		return nil, crescent.NewError("bad argument #1 to 'resume' (coroutine expected)")
+		return nil, crescent.NewArgError(1, "coroutine expected")
 	}
 	id := value.AsLightUD(args[0])
 	results, ok, e := st.Resume(id, args[1:])
@@ -61,7 +61,7 @@ func coFnYield(st *crescent.State, args []value.Value) ([]value.Value, *crescent
 // coFnStatus:coroutine.status(co)。
 func coFnStatus(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	if len(args) == 0 || !st.IsCoroutineHandle(args[0]) {
-		return nil, crescent.NewError("bad argument #1 to 'status' (coroutine expected)")
+		return nil, crescent.NewArgError(1, "coroutine expected")
 	}
 	return []value.Value{intern(st, st.CoStatusOf(value.AsLightUD(args[0])))}, nil
 }
@@ -69,7 +69,7 @@ func coFnStatus(st *crescent.State, args []value.Value) ([]value.Value, *crescen
 // coFnWrap:coroutine.wrap(f) → 函数;调用它 = resume,错误直接抛出。
 func coFnWrap(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	if len(args) == 0 {
-		return nil, crescent.NewError("bad argument #1 to 'wrap' (function expected)")
+		return nil, crescent.NewArgError(1, "Lua function expected")
 	}
 	id, e := st.NewCoroutine(args[0])
 	if e != nil {

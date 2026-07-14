@@ -43,11 +43,10 @@ func baseFnCollectGarbage(st *crescent.State, args []value.Value) ([]value.Value
 		// "invalid option".
 		if value.Tag(args[0]) != value.TagString {
 			if value.IsNumber(args[0]) {
-				return nil, crescent.NewError("bad argument #1 to 'collectgarbage' (invalid option '" +
-					crescent.FormatLuaNumber(value.AsNumber(args[0])) + "')")
+				return nil, crescent.NewArgError(1, "invalid option '"+
+					crescent.FormatLuaNumber(value.AsNumber(args[0]))+"'")
 			}
-			return nil, crescent.NewError("bad argument #1 to 'collectgarbage' (string expected, got " +
-				st.TypeName(args[0]) + ")")
+			return nil, crescent.NewArgError(1, "string expected, got "+st.TypeName(args[0]))
 		}
 		opt = string(object.StringBytes(st.Arena(), value.GCRefOf(args[0])))
 	}
@@ -70,7 +69,7 @@ func baseFnCollectGarbage(st *crescent.State, args []value.Value) ([]value.Value
 		// STW GC 无增量调参;占位返回 0(可观察但不可逐字节比项,10 §13)
 		return []value.Value{value.NumberValue(0)}, nil
 	}
-	return nil, crescent.NewError("bad argument #1 to 'collectgarbage' (invalid option '" + opt + "')")
+	return nil, crescent.NewArgError(1, "invalid option '"+opt+"'")
 }
 
 // baseFnGcInfo:gcinfo() = collectgarbage("count") 的 5.1 遗留整数形态(10 §4.6)。
@@ -91,8 +90,7 @@ func baseFnLoadfile(st *crescent.State, args []value.Value) ([]value.Value, *cre
 	// coerce like every luaL_*string reader.
 	if len(args) >= 1 && args[0] != value.Nil &&
 		value.Tag(args[0]) != value.TagString && !value.IsNumber(args[0]) {
-		return nil, crescent.NewError("bad argument #1 to 'loadfile' (string expected, got " +
-			st.TypeName(args[0]) + ")")
+		return nil, crescent.NewArgError(1, "string expected, got "+st.TypeName(args[0]))
 	}
 	if !st.AllowFileLoad() {
 		return []value.Value{value.Nil, intern(st, "loadfile disabled (enable with Options.AllowFileLoad)")}, nil
@@ -101,7 +99,7 @@ func baseFnLoadfile(st *crescent.State, args []value.Value) ([]value.Value, *cre
 		return []value.Value{value.Nil, intern(st, "loadfile: reading stdin not supported")}, nil
 	}
 	if value.Tag(args[0]) != value.TagString {
-		return nil, crescent.NewError("bad argument #1 to 'loadfile' (string expected)")
+		return nil, crescent.NewArgError(1, "string expected")
 	}
 	path := string(object.StringBytes(st.Arena(), value.GCRefOf(args[0])))
 	src, err := os.ReadFile(path)
