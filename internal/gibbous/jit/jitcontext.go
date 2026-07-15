@@ -151,6 +151,18 @@ const (
 	// the mmap segment (issue #102: a 277M-iteration loop with an
 	// inline math-intrinsic body ran to completion under a 1M budget).
 	JITContextLoopFuelOffset = unsafe.Offsetof(JITContext{}.loopFuel)
+
+	// JITContextLoopSpill0/1/2Offset are the byte offsets of the three
+	// PJ3 spec-FORLOOP register-spill slots (issue #143). The
+	// exhausted-tail of a PJ3 loopFuel back-edge spills xmm0/xmm1/xmm2
+	// (idx / limit / step) into these words before the HelperLoopFuel
+	// exit RET, and the resume entry reloads them (movsd xmm,[r15+off])
+	// before jumping back to the loop head — the round trip through
+	// host.LoopPreempt clobbers the xmm registers, so the induction
+	// state has to live in the jitCtx across it.
+	JITContextLoopSpill0Offset = unsafe.Offsetof(JITContext{}.loopSpill0)
+	JITContextLoopSpill1Offset = unsafe.Offsetof(JITContext{}.loopSpill1)
+	JITContextLoopSpill2Offset = unsafe.Offsetof(JITContext{}.loopSpill2)
 )
 
 // **§9.20.9 protocol status-code constants** (Spike 1 wired up + future
@@ -641,6 +653,28 @@ type JITContext struct {
 	// (same rationale as SegCallFuelSpent — those back-edges ran while
 	// no budget was armed).
 	loopFuelRefill uint32
+
+	// loopSpill0 / loopSpill1 / loopSpill2 are the register-spill slots
+	// the PJ3 spec FORLOOP templates use to survive a HelperLoopFuel
+	// round trip (issue #143). Those templates keep the loop induction
+	// variable, limit, and step in xmm0/xmm1/xmm2 for the whole segment
+	// (they never touch the value stack mid-loop), but a loopFuel-driven
+	// exit RETs to Go so host.LoopPreempt can bill the step budget — and
+	// no ABI preserves xmm across that call + the re-CALL to the resume
+	// entry. The back-edge exhausted-tail spills xmm0/1/2 into these three
+	// slots (movsd [r15+off], xmm), and the resume entry reloads them
+	// (movsd xmm, [r15+off]) before jumping back to the loop head.
+	//
+	// SEPARATE from the seg2seg spillBase/spillTop machine stack: that is
+	// a down-growing SP region the trampoline switches onto; these are
+	// three fixed jitCtx words addressed by r15+offset, alive only across
+	// a single loopFuel exit/resume and rewritten on each exhaustion.
+	// Placed at the struct tail so their addition cannot shift the
+	// spillBase (24) / savedGoSP (176) offsets the trampoline .s files
+	// hardcode (see TestSpillStackLayout).
+	loopSpill0 uint64
+	loopSpill1 uint64
+	loopSpill2 uint64
 }
 
 // NewJITContext constructs a P4 JIT execution context.

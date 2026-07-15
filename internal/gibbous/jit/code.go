@@ -116,6 +116,24 @@ type p4Code struct {
 	// Lua value) to avoid false positives.
 	specDeoptCode uint64
 
+	// specLoopFuelCode is the RAX sentinel the PJ3 loopFuel exhausted-tail
+	// returns (issue #143). Run checks raxSpec == specLoopFuelCode BEFORE
+	// the specDeoptCode guard-failure check, calls host.LoopPreempt to bill
+	// + refill + budget-check, then re-enters the segment at codePage +
+	// loopFuelResumeOff. Must differ from specDeoptCode (both are in the
+	// 0xFFFCDEAD_* NaN-box range). Zero means no fuel-exit path (legacy
+	// shapes without the fuel machinery).
+	specLoopFuelCode uint64
+
+	// loopFuelResumeOff is the byte offset of the PJ3 loopFuel resume entry
+	// within the mmap segment (issue #143). After host.LoopPreempt refills
+	// the fuel, Run computes resumeAddr = codePage.Addr() +
+	// uintptr(loopFuelResumeOff) and re-enters via archCallJITSpec; the
+	// resume entry reloads xmm0/1/2 (idx/limit/step) from the jitCtx
+	// loopSpill slots and jumps to the loop head. Zero when
+	// specLoopFuelCode is zero (no fuel path).
+	loopFuelResumeOff uint32
+
 	// PJ3 FORLOOP reg-limit deopt path flags:
 	//   - forLoopDeopt = true: this p4Code is the PJ3 reg-limit FORLOOP shape;
 	//     when Run detects raxSpec==deoptCode it calls host.ForPrep rather than
@@ -379,6 +397,29 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 			c.host.SetReg(int32(c.forLoopLimitReg), upvalVal)
 		}
 		raxSpec := archCallJITSpec(c.codePage.Addr(), jitCtxAddr, vsBaseAddr)
+
+		// **PJ3 FORLOOP loopFuel dispatch loop (issue #143)**: the PJ3
+		// template's exhausted-tail spills xmm0/1/2 into jitCtx loopSpill
+		// slots and returns loopFuelCode in RAX. Bill the spent fuel to the
+		// step budget, refill, check budget / cancel context (raises when
+		// tripped), then re-enter the segment at the resume prologue that
+		// reloads xmm and jumps to loop_start. Repeat until the loop exits
+		// normally (raxSpec != loopFuelCode) or the budget raises (st != 0).
+		// The FORLOOP pc is retPC-1 (FORLOOP opcode); the LoopPreempt
+		// anchor is pc+1 = retPC, matching the interpreter's ci.pc after
+		// fetch (execute.go FORLOOP case does pc++ before the preempt check).
+		for c.specLoopFuelCode != 0 && raxSpec == c.specLoopFuelCode {
+			forloopPC := int32(c.retPC) - 1
+			if st := c.host.LoopPreempt(c.jitCtx, int32(base), forloopPC); st != 0 {
+				return st
+			}
+			// Arena may have grown; refresh all addr fields.
+			c.host.RefreshJitCtxAddrs(c.jitCtx, int32(base))
+			vsBaseAddr = c.jitCtx.ValueStackBase()
+			resumeAddr := c.codePage.Addr() + uintptr(c.loopFuelResumeOff)
+			raxSpec = archCallJITSpec(resumeAddr, jitCtxAddr, vsBaseAddr)
+		}
+
 		if raxSpec == c.specDeoptCode {
 			// **PJ4 IC ArrayHit deopt** path: call host.GetTable byte-equal P1
 			// (via IC + hash + __index metamethod chain; preludeOp/Arg/C already

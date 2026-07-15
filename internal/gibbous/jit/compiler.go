@@ -4511,6 +4511,18 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 		// has already loaded r15.
 		pfOff := int32(JITContextPreemptFlagOffset)
 
+		// loopFuel back-edge accounting (issue #143): every PJ3 template's
+		// back-edge decrements jitCtx.loopFuel; on exhaustion the segment
+		// spills xmm-resident idx/limit/step into the loopSpill slots and
+		// returns loopFuelCode in RAX. Run routes that sentinel to
+		// host.LoopPreempt (bill + refill + budget check) and re-enters at
+		// the resume offset. Same never-collides NaN-box-range constant
+		// family as the deopt codes; must stay distinct from every
+		// specDeoptCode below so Run can tell fuel exits from guard deopts.
+		fuelOff := int32(JITContextLoopFuelOffset)
+		spillOff := int32(JITContextLoopSpill0Offset)
+		const loopFuelCode uint64 = 0xFFFCDEAD_DEADFEE1
+
 		// **hasBody2 = true: two-stage body shape** (`local s; for i=K1,K2 do
 		// s = s op1 K3; s = s op2 K4 end; return s`): a 154-byte template
 		// reuses xmm3 across both SSE ops, saving one load/store. Decided
@@ -4531,26 +4543,30 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 		}
 
 		if info.hasBody2 {
-			buf = archEmitForLoopWithBody2(buf, info.forBodyKS, info.forInitK,
+			var resumeOff int
+			buf, resumeOff = archEmitForLoopWithBody2(buf, info.forBodyKS, info.forInitK,
 				info.forLimitK, info.forStepK,
 				info.bodyKValue, info.bodyKValue2,
-				info.forBodyAS, info.bodyOp, info.bodyOp2, pfOff)
+				info.forBodyAS, info.bodyOp, info.bodyOp2,
+				pfOff, fuelOff, spillOff, loopFuelCode)
 			page, err := archMmapCode(buf)
 			if err != nil {
 				return nil, err
 			}
 			incSpecForLoopHits()
 			return &p4Code{
-				proto:         proto,
-				codePage:      page,
-				jitCtx:        NewJITContext(),
-				retA:          info.retA,
-				retB:          info.retB,
-				retPC:         info.retPC,
-				writeRetA:     false,
-				host:          c.hostState,
-				useSpec:       true,
-				specDeoptCode: 0xFFFCDEAD_DEADFFFF,
+				proto:             proto,
+				codePage:          page,
+				jitCtx:            NewJITContext(),
+				retA:              info.retA,
+				retB:              info.retB,
+				retPC:             info.retPC,
+				writeRetA:         false,
+				host:              c.hostState,
+				useSpec:           true,
+				specDeoptCode:     0xFFFCDEAD_DEADFFFF,
+				specLoopFuelCode:  loopFuelCode,
+				loopFuelResumeOff: uint32(resumeOff),
 			}, nil
 		}
 
@@ -4561,9 +4577,11 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 		// (the body has already written R(aS)= s via movsd [rbx+aS*8] xmm3;
 		// host.DoReturn reads it back to return).
 		if info.hasBody {
-			buf = archEmitForLoopWithBody(buf, info.forBodyKS, info.forInitK,
+			var resumeOff int
+			buf, resumeOff = archEmitForLoopWithBody(buf, info.forBodyKS, info.forInitK,
 				info.forLimitK, info.forStepK, info.bodyKValue,
-				info.forBodyAS, info.bodyOp, pfOff)
+				info.forBodyAS, info.bodyOp,
+				pfOff, fuelOff, spillOff, loopFuelCode)
 			page, err := archMmapCode(buf)
 			if err != nil {
 				return nil, err
@@ -4584,7 +4602,9 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 				// **no deopt**: this simplest body shape has no guard, so
 				// specDeoptCode uses a "never-collides" value; Run detects
 				// raxSpec != deoptCode and takes the normal path directly.
-				specDeoptCode: 0xFFFCDEAD_DEADFFFF,
+				specDeoptCode:     0xFFFCDEAD_DEADFFFF,
+				specLoopFuelCode:  loopFuelCode,
+				loopFuelResumeOff: uint32(resumeOff),
 			}, nil
 		}
 
@@ -4601,34 +4621,40 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 			// template expects, then takes the reg-limit byte-level template
 			// (guard + loop).
 			const deoptCode uint64 = 0xFFFCDEAD_DEADBE00
-			buf = archEmitForLoopRegLimit(buf, info.forInitK, info.forStepK,
-				info.forLimitReg, deoptCode, pfOff)
+			var resumeOff int
+			buf, resumeOff = archEmitForLoopRegLimit(buf, info.forInitK, info.forStepK,
+				info.forLimitReg, deoptCode,
+				pfOff, fuelOff, spillOff, loopFuelCode)
 			page, err := archMmapCode(buf)
 			if err != nil {
 				return nil, err
 			}
 			incSpecForLoopHits()
 			return &p4Code{
-				proto:           proto,
-				codePage:        page,
-				jitCtx:          NewJITContext(),
-				retA:            info.retA,
-				retB:            info.retB,
-				retPC:           info.retPC,
-				writeRetA:       false,
-				preludeOp:       0, // does not go through the prelude switch
-				host:            c.hostState,
-				useSpec:         true,
-				specDeoptCode:   deoptCode,
-				forLoopDeopt:    true,
-				forLoopA:        info.forA,
-				forLoopLimitReg: info.forLimitReg,
-				forLoopUpvalIdx: info.forLimitUpvalIdx,
+				proto:             proto,
+				codePage:          page,
+				jitCtx:            NewJITContext(),
+				retA:              info.retA,
+				retB:              info.retB,
+				retPC:             info.retPC,
+				writeRetA:         false,
+				preludeOp:         0, // does not go through the prelude switch
+				host:              c.hostState,
+				useSpec:           true,
+				specDeoptCode:     deoptCode,
+				specLoopFuelCode:  loopFuelCode,
+				loopFuelResumeOff: uint32(resumeOff),
+				forLoopDeopt:      true,
+				forLoopA:          info.forA,
+				forLoopLimitReg:   info.forLimitReg,
+				forLoopUpvalIdx:   info.forLimitUpvalIdx,
 			}, nil
 		}
 
 		// all-constant empty-body FORLOOP (landed in this batch)
-		buf = archEmitForLoopEmptyConst(buf, info.forInitK, info.forLimitK, info.forStepK, pfOff)
+		var resumeOff int
+		buf, resumeOff = archEmitForLoopEmptyConst(buf, info.forInitK, info.forLimitK, info.forStepK,
+			pfOff, fuelOff, spillOff, loopFuelCode)
 		page, err := archMmapCode(buf)
 		if err != nil {
 			return nil, err
@@ -4646,10 +4672,18 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 			// write RAX, and only calls DoReturn to pop the frame
 			writeRetA: false,
 			host:      c.hostState,
-			// useSpec=false takes archCallJITFull (in-segment self-loop; the
-			// full trampoline loads r15, which is unnecessary but OK — the
-			// template does not read r15)
-			useSpec: false,
+			// useSpec=true takes archCallJITSpec so Run's spec path can
+			// route the loopFuel RAX sentinel (issue #143). The template
+			// itself reads only r15 (fuel counter + spill slots); the
+			// rbx=vsBase the spec trampoline loads is unused but harmless.
+			// This branch's compile gate requires ArenaBaseAddr() != 0, so
+			// the Run-side vsBaseAddr != 0 spec-path condition always
+			// holds here. specDeoptCode keeps the never-collides value
+			// (this shape has no guard, so no deopt exit exists).
+			useSpec:           true,
+			specDeoptCode:     0xFFFCDEAD_DEADFFFF,
+			specLoopFuelCode:  loopFuelCode,
+			loopFuelResumeOff: uint32(resumeOff),
 		}, nil
 	}
 

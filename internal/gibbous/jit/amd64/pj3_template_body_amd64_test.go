@@ -20,7 +20,7 @@ func TestPJ3_ForLoopWithBody_ADD(t *testing.T) {
 	vsBase := uintptr(unsafe.Pointer(&pj2TestStack[0]))
 
 	var buf []byte
-	buf = EmitForLoopWithRegKBody(buf,
+	buf, _ = EmitForLoopWithRegKBody(buf,
 		math.Float64bits(0),   // K_s = 0
 		math.Float64bits(1),   // K_init = 1
 		math.Float64bits(100), // K_limit = 100
@@ -29,7 +29,7 @@ func TestPJ3_ForLoopWithBody_ADD(t *testing.T) {
 		0,                     // aS = R(0)
 		SseOpAddsd,
 		-1, // no safepoint
-	)
+		-1, 0, 0)
 
 	page, err := MmapCode(buf)
 	if err != nil {
@@ -51,12 +51,12 @@ func TestPJ3_ForLoopWithBody_ADD_BigK(t *testing.T) {
 	vsBase := uintptr(unsafe.Pointer(&pj2TestStack[0]))
 
 	var buf []byte
-	buf = EmitForLoopWithRegKBody(buf,
+	buf, _ = EmitForLoopWithRegKBody(buf,
 		math.Float64bits(0),
 		math.Float64bits(1), math.Float64bits(1000), math.Float64bits(1),
 		math.Float64bits(2),
 		0, SseOpAddsd, -1,
-	)
+		-1, 0, 0)
 
 	page, _ := MmapCode(buf)
 	defer page.Munmap()
@@ -74,12 +74,12 @@ func TestPJ3_ForLoopWithBody_MUL(t *testing.T) {
 	vsBase := uintptr(unsafe.Pointer(&pj2TestStack[0]))
 
 	var buf []byte
-	buf = EmitForLoopWithRegKBody(buf,
+	buf, _ = EmitForLoopWithRegKBody(buf,
 		math.Float64bits(1),
 		math.Float64bits(1), math.Float64bits(5), math.Float64bits(1),
 		math.Float64bits(2),
 		0, SseOpMulsd, -1,
-	)
+		-1, 0, 0)
 
 	page, _ := MmapCode(buf)
 	defer page.Munmap()
@@ -97,12 +97,12 @@ func TestPJ3_ForLoopWithBody_SUB(t *testing.T) {
 	vsBase := uintptr(unsafe.Pointer(&pj2TestStack[0]))
 
 	var buf []byte
-	buf = EmitForLoopWithRegKBody(buf,
+	buf, _ = EmitForLoopWithRegKBody(buf,
 		math.Float64bits(100),
 		math.Float64bits(1), math.Float64bits(10), math.Float64bits(1),
 		math.Float64bits(3),
 		0, SseOpSubsd, -1,
-	)
+		-1, 0, 0)
 
 	page, _ := MmapCode(buf)
 	defer page.Munmap()
@@ -127,13 +127,13 @@ func TestPJ3_ForLoopWithBody2_AddMul(t *testing.T) {
 	vsBase := uintptr(unsafe.Pointer(&pj2TestStack[0]))
 
 	var buf []byte
-	buf = EmitForLoopWithRegKBody2(buf,
+	buf, _ = EmitForLoopWithRegKBody2(buf,
 		math.Float64bits(0),
 		math.Float64bits(1), math.Float64bits(5), math.Float64bits(1),
 		math.Float64bits(1), // K_body1 = 1 (s+=1)
 		math.Float64bits(2), // K_body2 = 2 (s*=2)
 		0, SseOpAddsd, SseOpMulsd, -1,
-	)
+		-1, 0, 0)
 
 	page, _ := MmapCode(buf)
 	defer page.Munmap()

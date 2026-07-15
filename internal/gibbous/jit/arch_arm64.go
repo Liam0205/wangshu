@@ -203,11 +203,17 @@ func archEmitArithSpecChainKKWithGuard(buf []byte, sseOp1, sseOp2 byte, a, b uin
 // 69/83 bytes; arm64 is 15 bytes larger overall due to the 16B MOV imm64 sequence
 // vs amd64's 15B movq accumulating with RISC fixed-length encoding.
 //
-// **Hookup path**: the Compile main path does not go through the spec trampoline;
-// it calls this template directly via the callJITFull path, independent of
-// archSupportsSpec. The true mmap+RX end-to-end awaits the physical runner.
-func archEmitForLoopEmptyConst(buf []byte, kInit, kLimit, kStep uint64, preemptFlagOff int32) []byte {
-	return jitarm64.EmitForLoopEmptyConstArm64(buf, kInit, kLimit, kStep, preemptFlagOff)
+// **loopFuel (issue #143)**: the arm64 templates do not yet emit the loopFuel
+// back-edge machinery (loopFuelOff/loopSpillOff/loopFuelCode are accepted to
+// match the cross-arch signature but are not wired — they are forwarded to the
+// arm64 emitter which ignores them and emits a plain backward branch). The arm64
+// fuel path is task #3 in the issue #143 fix batch.
+func archEmitForLoopEmptyConst(buf []byte, kInit, kLimit, kStep uint64,
+	preemptFlagOff, loopFuelOff, loopSpillOff int32, loopFuelCode uint64) ([]byte, int) {
+	_ = loopFuelOff
+	_ = loopSpillOff
+	_ = loopFuelCode
+	return jitarm64.EmitForLoopEmptyConstArm64(buf, kInit, kLimit, kStep, preemptFlagOff), 0
 }
 
 // archEmitForLoopRegLimit is the arm64 hookup of the PJ3 FORLOOP reg-limit
@@ -216,8 +222,12 @@ func archEmitForLoopEmptyConst(buf []byte, kInit, kLimit, kStep uint64, preemptF
 // sequence vs amd64's 15B movq accumulating with RISC fixed-length encoding).
 //
 // guard: LDR R(limitReg) → CMP qNanBoxBase → B.HS deopt (if not a number).
-func archEmitForLoopRegLimit(buf []byte, kInit, kStep uint64, limitReg uint8, deoptCode uint64, preemptFlagOff int32) []byte {
-	return jitarm64.EmitForLoopRegLimitArm64(buf, kInit, kStep, limitReg, deoptCode, preemptFlagOff)
+func archEmitForLoopRegLimit(buf []byte, kInit, kStep uint64, limitReg uint8, deoptCode uint64,
+	preemptFlagOff, loopFuelOff, loopSpillOff int32, loopFuelCode uint64) ([]byte, int) {
+	_ = loopFuelOff
+	_ = loopSpillOff
+	_ = loopFuelCode
+	return jitarm64.EmitForLoopRegLimitArm64(buf, kInit, kStep, limitReg, deoptCode, preemptFlagOff), 0
 }
 
 // archEmitForLoopWithBody is the arm64 hookup of the PJ3 FORLOOP body template in
@@ -227,9 +237,13 @@ func archEmitForLoopRegLimit(buf []byte, kInit, kStep uint64, limitReg uint8, de
 //
 // sseOp is auto-translated: 0x58/0x5C/0x59/0x5E → arm64 FADD/FSUB/FMUL/FDIV.
 func archEmitForLoopWithBody(buf []byte, kS, kInit, kLimit, kStep, kBody uint64,
-	aS uint8, sseOp byte, preemptFlagOff int32) []byte {
+	aS uint8, sseOp byte,
+	preemptFlagOff, loopFuelOff, loopSpillOff int32, loopFuelCode uint64) ([]byte, int) {
+	_ = loopFuelOff
+	_ = loopSpillOff
+	_ = loopFuelCode
 	return jitarm64.EmitForLoopWithRegKBodyArm64(buf, kS, kInit, kLimit, kStep, kBody,
-		aS, sseOp, preemptFlagOff)
+		aS, sseOp, preemptFlagOff), 0
 }
 
 // archEmitForLoopWithBody2 is the arm64 hookup of the PJ3 FORLOOP two-stage body
@@ -240,9 +254,13 @@ func archEmitForLoopWithBody(buf []byte, kS, kInit, kLimit, kStep, kBody uint64,
 // The two-stage body shares the d3 register (mirroring amd64's xmm3), saving one
 // LDR/STR R(aS) round-trip (8 bytes / iter).
 func archEmitForLoopWithBody2(buf []byte, kS, kInit, kLimit, kStep, kBody1, kBody2 uint64,
-	aS uint8, sseOp1, sseOp2 byte, preemptFlagOff int32) []byte {
+	aS uint8, sseOp1, sseOp2 byte,
+	preemptFlagOff, loopFuelOff, loopSpillOff int32, loopFuelCode uint64) ([]byte, int) {
+	_ = loopFuelOff
+	_ = loopSpillOff
+	_ = loopFuelCode
 	return jitarm64.EmitForLoopWithRegKBody2Arm64(buf, kS, kInit, kLimit, kStep,
-		kBody1, kBody2, aS, sseOp1, sseOp2, preemptFlagOff)
+		kBody1, kBody2, aS, sseOp1, sseOp2, preemptFlagOff), 0
 }
 
 // archEmitGetTableArrayHit is the arm64 PJ4 IC ArrayHit byte-level direct-slot

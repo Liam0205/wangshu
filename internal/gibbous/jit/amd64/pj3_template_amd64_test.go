@@ -48,11 +48,12 @@ func TestPJ3_ForLoopEmptyConst_RoundTrip(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var buf []byte
-			buf = EmitForLoopEmptyConst(buf,
+			buf, _ = EmitForLoopEmptyConst(buf,
 				math.Float64bits(tc.init),
 				math.Float64bits(tc.limit),
 				math.Float64bits(tc.step),
-				-1 /* no safepoint check */)
+				-1, /* no safepoint check */
+				-1, 0, 0)
 
 			if len(buf) != EncodedForLoopEmptyConstLen {
 				t.Fatalf("buf len=%d, want %d", len(buf), EncodedForLoopEmptyConstLen)
