@@ -358,9 +358,19 @@ func brDepth(stack []scope, dst int, kind scopeKind) (uint32, bool) {
 
 // emitEdge 发一条 CFG 边 src→dst:能 fallthrough(dst 是发射序下一 BB 且无中间
 // 作用域边界)就不发指令;否则 br 到对应作用域(回边=loop / 前向=block)。
-func (c *Compiler) emitEdge(em *emitter, plan *structPlan, stack []scope, srcBB, dst int) error {
+//
+// 回边(dst 是栈上某 loop header)是唯一的循环 back-edge choke point——所有循环
+// 形态(数值 FORLOOP / while / repeat / 比较驱动的 JMP 回边)都经此发 br 回 loop
+// 头。step-budget 计费 safepoint 必须挂在这里、`br` 之前,否则某类循环 opcode 的
+// 回边会漏计费(P3 里 host helper 不计 budget,预算只在回边 safepoint 计;while/
+// repeat 的负位移 JMP 回边曾漏挂 → 全 inline 死循环升 P3 后永挂)。
+func (c *Compiler) emitEdge(em *emitter, cfg *cfg, plan *structPlan, stack []scope, srcBB, dst int) error {
 	// 回边:dst 是栈上某 loop header。
 	if d, ok := brDepth(stack, dst, scLoop); ok {
+		// back-edge step-budget + GC safepoint(挂在唯一 choke point:covers
+		// FORLOOP / while / repeat / 比较驱动回边一律计费,#135 家族)。back-edge
+		// 指令 pc = 源 BB 末指令 pc(错误行锚定用)。
+		c.emitBackEdgeSafepoint(em, cfg.blocks[srcBB].endPC-1)
 		em.br(d)
 		return nil
 	}
