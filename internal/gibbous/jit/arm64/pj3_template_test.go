@@ -16,11 +16,12 @@ import (
 func TestPJ8_EmitForLoopEmptyConstArm64_Length(t *testing.T) {
 	var buf []byte
 	// kInit=1.0 / kLimit=100.0 / kStep=1.0(IEEE 754 NaN-box bits)
-	buf = EmitForLoopEmptyConstArm64(buf,
+	buf, _ = EmitForLoopEmptyConstArm64(buf,
 		0x3FF0000000000000, // 1.0
 		0x4059000000000000, // 100.0
 		0x3FF0000000000000, // 1.0
 		-1,                 // no safepoint
+		0, 0, 0,            // no loopFuel
 	)
 
 	const wantLen = 84
@@ -44,11 +45,12 @@ func TestPJ8_EmitForLoopEmptyConstArm64_Length(t *testing.T) {
 //   - [80-83] RET
 func TestPJ8_EmitForLoopEmptyConstArm64_Layout(t *testing.T) {
 	var buf []byte
-	buf = EmitForLoopEmptyConstArm64(buf,
+	buf, _ = EmitForLoopEmptyConstArm64(buf,
 		0x3FF0000000000000,
 		0x4059000000000000,
 		0x3FF0000000000000,
-		-1)
+		-1,
+		0, 0, 0)
 
 	if len(buf) < 84 {
 		t.Fatalf("buf too short: %d", len(buf))
@@ -135,7 +137,8 @@ func TestPJ8_EmitForLoopEmptyConstArm64_ConstantsBurnedIn(t *testing.T) {
 	const kStep uint64 = 0xFFFF000011112222
 
 	var buf []byte
-	buf = EmitForLoopEmptyConstArm64(buf, kInit, kLimit, kStep, -1)
+	buf, _ = EmitForLoopEmptyConstArm64(buf, kInit, kLimit, kStep, -1,
+		0, 0, 0)
 
 	// Each 16-byte segment = 1 movz + 3 movk; verify each imm16 field.
 	// [0-15] mov x0, kInit
@@ -170,8 +173,9 @@ func TestPJ8_EmitForLoopEmptyConstArm64_ConstantsBurnedIn(t *testing.T) {
 func TestPJ8_EmitForLoopEmptyConstArm64_WithSafepoint(t *testing.T) {
 	var buf []byte
 	const pfOff int32 = 24
-	buf = EmitForLoopEmptyConstArm64(buf,
-		0x3FF0000000000000, 0x4059000000000000, 0x3FF0000000000000, pfOff)
+	buf, _ = EmitForLoopEmptyConstArm64(buf,
+		0x3FF0000000000000, 0x4059000000000000, 0x3FF0000000000000, pfOff,
+		0, 0, 0)
 
 	const wantLen = 92
 	if len(buf) != wantLen {
@@ -220,12 +224,13 @@ func TestPJ8_EmitForLoopRegLimitArm64_Length(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var buf []byte
-			buf = EmitForLoopRegLimitArm64(buf,
+			buf, _ = EmitForLoopRegLimitArm64(buf,
 				0x3FF0000000000000, // kInit=1.0
 				0x3FF0000000000000, // kStep=1.0
 				5,                  // limitReg
 				0xCAFEBABE,         // deoptCode
-				tc.pfOff)
+				tc.pfOff,
+				0, 0, 0)
 			if len(buf) != tc.wantLen {
 				t.Errorf("总长度 = %d, want %d", len(buf), tc.wantLen)
 			}
@@ -250,8 +255,9 @@ func TestPJ8_EmitForLoopRegLimitArm64_Length(t *testing.T) {
 func TestPJ8_EmitForLoopRegLimitArm64_GuardSegment(t *testing.T) {
 	const limitReg uint8 = 5
 	var buf []byte
-	buf = EmitForLoopRegLimitArm64(buf, 0x3FF0000000000000, 0x3FF0000000000000,
-		limitReg, 0xCAFEBABE, -1)
+	buf, _ = EmitForLoopRegLimitArm64(buf, 0x3FF0000000000000, 0x3FF0000000000000,
+		limitReg, 0xCAFEBABE, -1,
+		0, 0, 0)
 
 	if len(buf) < 28 {
 		t.Fatalf("buf too short: %d", len(buf))
@@ -301,8 +307,9 @@ func TestPJ8_EmitForLoopRegLimitArm64_GuardSegment(t *testing.T) {
 func TestPJ8_EmitForLoopRegLimitArm64_DeoptBlock(t *testing.T) {
 	const deoptCode uint64 = 0xDEAD_BEEF_CAFE_BABE
 	var buf []byte
-	buf = EmitForLoopRegLimitArm64(buf, 0x3FF0000000000000, 0x3FF0000000000000,
-		5, deoptCode, -1)
+	buf, _ = EmitForLoopRegLimitArm64(buf, 0x3FF0000000000000, 0x3FF0000000000000,
+		5, deoptCode, -1,
+		0, 0, 0)
 
 	if len(buf) < 120 {
 		t.Fatalf("buf too short: %d", len(buf))
@@ -340,7 +347,7 @@ func TestPJ8_EmitForLoopWithRegKBodyArm64_Length(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var buf []byte
-			buf = EmitForLoopWithRegKBodyArm64(buf,
+			buf, _ = EmitForLoopWithRegKBodyArm64(buf,
 				0x0,                // kS=0
 				0x3FF0000000000000, // kInit=1.0
 				0x4059000000000000, // kLimit=100.0
@@ -348,7 +355,8 @@ func TestPJ8_EmitForLoopWithRegKBodyArm64_Length(t *testing.T) {
 				0x3FF0000000000000, // kBody=1.0
 				3,                  // aS
 				tc.sseOp,
-				tc.pfOff)
+				tc.pfOff,
+				0, 0, 0)
 			if len(buf) != tc.wantLen {
 				t.Errorf("总长度 = %d, want %d", len(buf), tc.wantLen)
 			}
@@ -367,7 +375,8 @@ func TestPJ8_EmitForLoopWithRegKBodyArm64_Length(t *testing.T) {
 // TestPJ8_EmitForLoopWithRegKBodyArm64_UnknownOp verifies an unrecognized sseOp does not touch buf.
 func TestPJ8_EmitForLoopWithRegKBodyArm64_UnknownOp(t *testing.T) {
 	var buf []byte
-	buf = EmitForLoopWithRegKBodyArm64(buf, 0, 0, 0, 0, 0, 0, 0xFF, -1)
+	buf, _ = EmitForLoopWithRegKBodyArm64(buf, 0, 0, 0, 0, 0, 0, 0xFF, -1,
+		0, 0, 0)
 	if len(buf) != 0 {
 		t.Errorf("unknown sseOp 应不操作 buf,实际 len=%d", len(buf))
 	}
@@ -389,9 +398,10 @@ func TestPJ8_EmitForLoopWithRegKBodyArm64_BodyFopBytes(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var buf []byte
-			buf = EmitForLoopWithRegKBodyArm64(buf,
+			buf, _ = EmitForLoopWithRegKBodyArm64(buf,
 				0x0, 0x3FF0000000000000, 0x4059000000000000, 0x3FF0000000000000,
-				0x3FF0000000000000, 3, tc.sseOp, -1)
+				0x3FF0000000000000, 3, tc.sseOp, -1,
+				0, 0, 0)
 
 			if len(buf) < 128 {
 				t.Fatalf("buf too short: %d", len(buf))
@@ -424,7 +434,7 @@ func TestPJ8_EmitForLoopWithRegKBody2Arm64_Length(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var buf []byte
-			buf = EmitForLoopWithRegKBody2Arm64(buf,
+			buf, _ = EmitForLoopWithRegKBody2Arm64(buf,
 				0x0,                // kS=0
 				0x3FF0000000000000, // kInit
 				0x4059000000000000, // kLimit
@@ -433,7 +443,8 @@ func TestPJ8_EmitForLoopWithRegKBody2Arm64_Length(t *testing.T) {
 				0x4000000000000000, // kBody2=2.0
 				3,                  // aS
 				tc.op1, tc.op2,
-				tc.pfOff)
+				tc.pfOff,
+				0, 0, 0)
 			if len(buf) != tc.wantLen {
 				t.Errorf("总长度 = %d, want %d", len(buf), tc.wantLen)
 			}
@@ -452,11 +463,13 @@ func TestPJ8_EmitForLoopWithRegKBody2Arm64_Length(t *testing.T) {
 // TestPJ8_EmitForLoopWithRegKBody2Arm64_UnknownOp verifies that if either op is unrecognized buf is not touched.
 func TestPJ8_EmitForLoopWithRegKBody2Arm64_UnknownOp(t *testing.T) {
 	var buf []byte
-	buf = EmitForLoopWithRegKBody2Arm64(buf, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0x58, -1)
+	buf, _ = EmitForLoopWithRegKBody2Arm64(buf, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0x58, -1,
+		0, 0, 0)
 	if len(buf) != 0 {
 		t.Errorf("unknown sseOp1 应不操作 buf,实际 len=%d", len(buf))
 	}
-	buf = EmitForLoopWithRegKBody2Arm64(buf, 0, 0, 0, 0, 0, 0, 0, 0x58, 0xFF, -1)
+	buf, _ = EmitForLoopWithRegKBody2Arm64(buf, 0, 0, 0, 0, 0, 0, 0, 0x58, 0xFF, -1,
+		0, 0, 0)
 	if len(buf) != 0 {
 		t.Errorf("unknown sseOp2 应不操作 buf,实际 len=%d", len(buf))
 	}
@@ -477,9 +490,10 @@ func TestPJ8_EmitForLoopWithRegKBody2Arm64_BodyFopsBytes(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var buf []byte
-			buf = EmitForLoopWithRegKBody2Arm64(buf,
+			buf, _ = EmitForLoopWithRegKBody2Arm64(buf,
 				0x0, 0x3FF0000000000000, 0x4059000000000000, 0x3FF0000000000000,
-				0x3FF0000000000000, 0x4000000000000000, 3, tc.op1, tc.op2, -1)
+				0x3FF0000000000000, 0x4000000000000000, 3, tc.op1, tc.op2, -1,
+				0, 0, 0)
 
 			if len(buf) < 152 {
 				t.Fatalf("buf too short: %d", len(buf))
@@ -508,7 +522,8 @@ func TestPJ8_EmitForLoopRegLimitArm64_ConstantsBurnedIn(t *testing.T) {
 	const kStep uint64 = 0xFEED_F00D_BABE_C001
 
 	var buf []byte
-	buf = EmitForLoopRegLimitArm64(buf, kInit, kStep, 5, 0xCAFEBABE, -1)
+	buf, _ = EmitForLoopRegLimitArm64(buf, kInit, kStep, 5, 0xCAFEBABE, -1,
+		0, 0, 0)
 
 	verifyMov := func(label string, offset int, want uint64) {
 		expectedImm16 := [4]uint16{
@@ -549,8 +564,9 @@ func TestPJ8_EmitForLoopWithRegKBodyArm64_ConstantsBurnedIn(t *testing.T) {
 	const kBody uint64 = 0xDEAD_BEEF_CAFE_BABE
 
 	var buf []byte
-	buf = EmitForLoopWithRegKBodyArm64(buf, kS, kInit, kLimit, kStep, kBody,
-		3, 0x58 /* SseOpAddsd */, -1)
+	buf, _ = EmitForLoopWithRegKBodyArm64(buf, kS, kInit, kLimit, kStep, kBody,
+		3, 0x58 /* SseOpAddsd */, -1,
+		0, 0, 0)
 
 	verifyMov := func(label string, offset int, want uint64) {
 		expectedImm16 := [4]uint16{
@@ -594,8 +610,9 @@ func TestPJ8_EmitForLoopWithRegKBody2Arm64_ConstantsBurnedIn(t *testing.T) {
 	const kBody2 uint64 = 0xFEED_F00D_BABE_C001
 
 	var buf []byte
-	buf = EmitForLoopWithRegKBody2Arm64(buf, kS, kInit, kLimit, kStep,
-		kBody1, kBody2, 3, 0x59 /* SseOpMulsd */, 0x58 /* SseOpAddsd */, -1)
+	buf, _ = EmitForLoopWithRegKBody2Arm64(buf, kS, kInit, kLimit, kStep,
+		kBody1, kBody2, 3, 0x59 /* SseOpMulsd */, 0x58 /* SseOpAddsd */, -1,
+		0, 0, 0)
 
 	verifyMov := func(label string, offset int, want uint64) {
 		expectedImm16 := [4]uint16{

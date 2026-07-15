@@ -45,6 +45,57 @@
 
 package arm64
 
+// emitPJ3LoopFuelBackEdgeArm64 emits the arm64 loopFuel back-edge decrement
+// + exhausted tail (mirrors emitPJ3LoopFuelBackEdge on amd64):
+//
+//	ldr  w16, [x27, #loopFuelOff]    ; 4 bytes
+//	sub  w16, w16, #1                ; 4 bytes
+//	str  w16, [x27, #loopFuelOff]    ; 4 bytes
+//	cbnz w16, loop_start             ; 4 bytes (backward, fuel remaining)
+//	; exhausted tail:
+//	str  d0, [x27, #spill0Off]       ; 4 bytes (idx)
+//	str  d1, [x27, #spill1Off]       ; 4 bytes (limit)
+//	str  d2, [x27, #spill2Off]       ; 4 bytes (step)
+//	mov  x0, loopFuelCode            ; 16 bytes
+//	ret                              ; 4 bytes
+func emitPJ3LoopFuelBackEdgeArm64(buf []byte, loopStart int,
+	loopFuelOff uint16, loopSpillOff uint16, loopFuelCode uint64) []byte {
+	// fuel dec: ldr w16 + sub + str
+	buf = EmitLdrWtFromXnDisp(buf, 16, 27, loopFuelOff)
+	buf = EmitSubXdImm12(buf, 16, 16, 1)
+	buf = EmitStrWtToXnDisp(buf, 16, 27, loopFuelOff)
+	// cbnz w16, loop_start (backward)
+	cbnzOff := len(buf)
+	imm19 := int32(loopStart-cbnzOff) / 4
+	buf = EmitCbnzW(buf, 16, imm19)
+	// exhausted tail: spill d0/d1/d2
+	buf = EmitStrDtToXnDisp(buf, 0, 27, loopSpillOff)
+	buf = EmitStrDtToXnDisp(buf, 1, 27, loopSpillOff+8)
+	buf = EmitStrDtToXnDisp(buf, 2, 27, loopSpillOff+16)
+	// mov x0, loopFuelCode; ret
+	buf = EmitMovXdImm64(buf, 0, loopFuelCode)
+	buf = EmitRet(buf)
+	return buf
+}
+
+// emitPJ3LoopFuelResumeArm64 emits the loopFuel resume entry and returns its
+// byte offset (mirrors emitPJ3LoopFuelResume on amd64):
+//
+//	ldr d0, [x27, #spill0Off]        ; 4 bytes
+//	ldr d1, [x27, #spill1Off]        ; 4 bytes
+//	ldr d2, [x27, #spill2Off]        ; 4 bytes
+//	b   loop_start                   ; 4 bytes
+func emitPJ3LoopFuelResumeArm64(buf []byte, loopStart int, loopSpillOff uint16) ([]byte, int) {
+	resumeOff := len(buf)
+	buf = EmitLdrDtFromXnDisp(buf, 0, 27, loopSpillOff)
+	buf = EmitLdrDtFromXnDisp(buf, 1, 27, loopSpillOff+8)
+	buf = EmitLdrDtFromXnDisp(buf, 2, 27, loopSpillOff+16)
+	bOff := len(buf)
+	imm26 := int32(loopStart-bOff) / 4
+	buf = EmitB(buf, imm26)
+	return buf, resumeOff
+}
+
 // EmitForLoopEmptyConstArm64 assembles the arm64 "all-constant init/limit/step +
 // empty-body FORLOOP byte-level template" (mirrors amd64 EmitForLoopEmptyConst,
 // with an optional safepoint check section).
@@ -77,7 +128,8 @@ package arm64
 // Use case: byte-level demonstration of the PJ3 FORLOOP empty-body form on the
 // arm64 side (the 7.15-25.41x speedup vs the amd64 same-form is left to the
 // arm64 physical runner to measure).
-func EmitForLoopEmptyConstArm64(buf []byte, kInit, kLimit, kStep uint64, preemptFlagOff int32) []byte {
+func EmitForLoopEmptyConstArm64(buf []byte, kInit, kLimit, kStep uint64, preemptFlagOff int32,
+	loopFuelOff, loopSpillOff uint16, loopFuelCode uint64) ([]byte, int) {
 	// Load init/limit/step into d0/d1/d2 (20 bytes each: mov x0 imm64 16 + fmov 4)
 	buf = EmitMovXdImm64(buf, 0, kInit) // mov x0, kInit
 	buf = EmitFmovDdFromXn(buf, 0, 0)   // fmov d0, x0
@@ -125,16 +177,26 @@ func EmitForLoopEmptyConstArm64(buf []byte, kInit, kLimit, kStep uint64, preempt
 		buf = EmitCbnzW(buf, 0, 0) // placeholder imm19=0
 	}
 
-	// b loop_start backward (4 bytes)
-	bLoopOff := len(buf)
-	imm26 := int32(loopStart-bLoopOff) / 4
-	buf = EmitB(buf, imm26)
+	// b loop_start backward or loopFuel back-edge (4 bytes plain / ~40 bytes with fuel)
+	if loopFuelCode != 0 {
+		buf = emitPJ3LoopFuelBackEdgeArm64(buf, loopStart, loopFuelOff, loopSpillOff, loopFuelCode)
+	} else {
+		bLoopOff := len(buf)
+		imm26 := int32(loopStart-bLoopOff) / 4
+		buf = EmitB(buf, imm26)
+	}
 
 	// after_loop label
 	afterLoopOff := len(buf)
 
 	// ret (4 bytes)
 	buf = EmitRet(buf)
+
+	// resume entry (loopFuelCode != 0): reload d0/d1/d2 + b loop_start
+	resumeOff := 0
+	if loopFuelCode != 0 {
+		buf, resumeOff = emitPJ3LoopFuelResumeArm64(buf, loopStart, loopSpillOff)
+	}
 
 	// patch b.gt imm19 = (after_loop - b.gt's own position) / 4 word offset
 	imm19BGt := int32(afterLoopOff-bHiOff) / 4
@@ -146,7 +208,7 @@ func EmitForLoopEmptyConstArm64(buf []byte, kInit, kLimit, kStep uint64, preempt
 		patchCbnzImm19(buf, safepointCbnzOff, safepointImm19)
 	}
 
-	return buf
+	return buf, resumeOff
 }
 
 // EncodedForLoopEmptyConstArm64Len is the arm64 PJ3 FORLOOP empty-body template
@@ -198,7 +260,8 @@ const EncodedForLoopEmptyConstArm64Len = 3*(EncodedMovXdImm64Len+EncodedFmovDdFr
 // (empty-body form), so on deopt it returns deoptCode directly, and the caller
 // degrades to calling the host via the Run path (same as amd64).
 func EmitForLoopRegLimitArm64(buf []byte, kInit, kStep uint64,
-	limitReg uint8, deoptCode uint64, preemptFlagOff int32) []byte {
+	limitReg uint8, deoptCode uint64, preemptFlagOff int32,
+	loopFuelOff, loopSpillOff uint16, loopFuelCode uint64) ([]byte, int) {
 	// guard: LDR R(limitReg) -> MOV qNanBoxBase -> CMP -> B.HS deopt
 	buf = EmitLdrXtFromXnDisp(buf, 0, 26, uint16(limitReg)*8)
 	buf = EmitMovXdImm64(buf, 1, qNanBoxBase)
@@ -238,10 +301,14 @@ func EmitForLoopRegLimitArm64(buf []byte, kInit, kStep uint64,
 		buf = EmitCbnzW(buf, 0, 0) // placeholder imm19=0
 	}
 
-	// b loop_start backward
-	bLoopOff := len(buf)
-	imm26 := int32(loopStart-bLoopOff) / 4
-	buf = EmitB(buf, imm26)
+	// b loop_start backward or loopFuel back-edge
+	if loopFuelCode != 0 {
+		buf = emitPJ3LoopFuelBackEdgeArm64(buf, loopStart, loopFuelOff, loopSpillOff, loopFuelCode)
+	} else {
+		bLoopOff := len(buf)
+		imm26 := int32(loopStart-bLoopOff) / 4
+		buf = EmitB(buf, imm26)
+	}
 
 	// after_loop label
 	afterLoopOff := len(buf)
@@ -254,6 +321,12 @@ func EmitForLoopRegLimitArm64(buf []byte, kInit, kStep uint64,
 	buf = EmitMovXdImm64(buf, 0, deoptCode)
 	buf = EmitRet(buf)
 
+	// resume entry (loopFuelCode != 0)
+	resumeOff := 0
+	if loopFuelCode != 0 {
+		buf, resumeOff = emitPJ3LoopFuelResumeArm64(buf, loopStart, loopSpillOff)
+	}
+
 	// patch B.GT forward (target = after_loop)
 	patchBCondImm19(buf, bHiOff, int32(afterLoopOff-bHiOff)/4)
 
@@ -265,7 +338,7 @@ func EmitForLoopRegLimitArm64(buf []byte, kInit, kStep uint64,
 	// patch B.HS deopt (target = deopt_block start)
 	patchBCondImm19(buf, bHsDeoptOff, int32(deoptStart-bHsDeoptOff)/4)
 
-	return buf
+	return buf, resumeOff
 }
 
 // EncodedForLoopRegLimitArm64NoSafepointLen is the without-safepoint form byte count (120).
@@ -348,10 +421,11 @@ func arm64ArithOpForSseOp(sseOp byte) func([]byte, uint8, uint8, uint8) []byte {
 // **deopt path**: no guard, no deopt block (the body is all-constant K, no
 // runtime form check); mirrors amd64's same minimal form.
 func EmitForLoopWithRegKBodyArm64(buf []byte, kS, kInit, kLimit, kStep, kBody uint64,
-	aS uint8, sseOp byte, preemptFlagOff int32) []byte {
+	aS uint8, sseOp byte, preemptFlagOff int32,
+	loopFuelOff, loopSpillOff uint16, loopFuelCode uint64) ([]byte, int) {
 	emitFop := arm64ArithOpForSseOp(sseOp)
 	if emitFop == nil {
-		return buf
+		return buf, 0
 	}
 
 	// 1. Init R(aS) = K_s
@@ -397,10 +471,14 @@ func EmitForLoopWithRegKBodyArm64(buf []byte, kS, kInit, kLimit, kStep, kBody ui
 		buf = EmitCbnzW(buf, 0, 0)
 	}
 
-	// 9. b loop_start backward
-	bLoopOff := len(buf)
-	imm26 := int32(loopStart-bLoopOff) / 4
-	buf = EmitB(buf, imm26)
+	// 9. b loop_start backward or loopFuel back-edge
+	if loopFuelCode != 0 {
+		buf = emitPJ3LoopFuelBackEdgeArm64(buf, loopStart, loopFuelOff, loopSpillOff, loopFuelCode)
+	} else {
+		bLoopOff := len(buf)
+		imm26 := int32(loopStart-bLoopOff) / 4
+		buf = EmitB(buf, imm26)
+	}
 
 	// 10. after_loop label
 	afterLoopOff := len(buf)
@@ -408,13 +486,19 @@ func EmitForLoopWithRegKBodyArm64(buf []byte, kS, kInit, kLimit, kStep, kBody ui
 	// 11. ret
 	buf = EmitRet(buf)
 
+	// resume entry (loopFuelCode != 0)
+	resumeOff := 0
+	if loopFuelCode != 0 {
+		buf, resumeOff = emitPJ3LoopFuelResumeArm64(buf, loopStart, loopSpillOff)
+	}
+
 	// 12. patch forward fixups
 	patchBCondImm19(buf, bHiOff, int32(afterLoopOff-bHiOff)/4)
 	if safepointCbnzOff >= 0 {
 		patchCbnzImm19(buf, safepointCbnzOff, int32(afterLoopOff-safepointCbnzOff)/4)
 	}
 
-	return buf
+	return buf, resumeOff
 }
 
 // EncodedForLoopWithRegKBodyArm64NoSafepointLen is the without-safepoint form byte count (144).
@@ -464,11 +548,12 @@ const EncodedForLoopWithRegKBodyArm64WithSafepointLen = 152
 // **deopt path**: no guard, no deopt block (K_body1/K_body2 are both constants;
 // mirrors amd64's same minimal form).
 func EmitForLoopWithRegKBody2Arm64(buf []byte, kS, kInit, kLimit, kStep, kBody1, kBody2 uint64,
-	aS uint8, sseOp1, sseOp2 byte, preemptFlagOff int32) []byte {
+	aS uint8, sseOp1, sseOp2 byte, preemptFlagOff int32,
+	loopFuelOff, loopSpillOff uint16, loopFuelCode uint64) ([]byte, int) {
 	emitFop1 := arm64ArithOpForSseOp(sseOp1)
 	emitFop2 := arm64ArithOpForSseOp(sseOp2)
 	if emitFop1 == nil || emitFop2 == nil {
-		return buf
+		return buf, 0
 	}
 
 	// 1. Init R(aS) = K_s
@@ -523,10 +608,14 @@ func EmitForLoopWithRegKBody2Arm64(buf []byte, kS, kInit, kLimit, kStep, kBody1,
 		buf = EmitCbnzW(buf, 0, 0)
 	}
 
-	// 9. b loop_start backward
-	bLoopOff := len(buf)
-	imm26 := int32(loopStart-bLoopOff) / 4
-	buf = EmitB(buf, imm26)
+	// 9. b loop_start backward or loopFuel back-edge
+	if loopFuelCode != 0 {
+		buf = emitPJ3LoopFuelBackEdgeArm64(buf, loopStart, loopFuelOff, loopSpillOff, loopFuelCode)
+	} else {
+		bLoopOff := len(buf)
+		imm26 := int32(loopStart-bLoopOff) / 4
+		buf = EmitB(buf, imm26)
+	}
 
 	// 10. after_loop
 	afterLoopOff := len(buf)
@@ -534,13 +623,19 @@ func EmitForLoopWithRegKBody2Arm64(buf []byte, kS, kInit, kLimit, kStep, kBody1,
 	// 11. ret
 	buf = EmitRet(buf)
 
+	// resume entry (loopFuelCode != 0)
+	resumeOff := 0
+	if loopFuelCode != 0 {
+		buf, resumeOff = emitPJ3LoopFuelResumeArm64(buf, loopStart, loopSpillOff)
+	}
+
 	// 12. patch forward fixups
 	patchBCondImm19(buf, bHiOff, int32(afterLoopOff-bHiOff)/4)
 	if safepointCbnzOff >= 0 {
 		patchCbnzImm19(buf, safepointCbnzOff, int32(afterLoopOff-safepointCbnzOff)/4)
 	}
 
-	return buf
+	return buf, resumeOff
 }
 
 // EncodedForLoopWithRegKBody2Arm64NoSafepointLen is the without-safepoint form byte count (168).
