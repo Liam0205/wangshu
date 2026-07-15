@@ -139,8 +139,9 @@ const EncodedPJ3LoopFuelExtraLen = EncodedPJ3LoopFuelBackEdgeLen +
 //   - <  0: skip safepoint (for tests / strictly single-segment compute cases)
 //
 // Parameters loopFuelOff / loopSpillOff / loopFuelCode: the jitCtx loopFuel
-// counter offset, the loopSpill0 slot offset (spill1/2 are assumed contiguous
-// at +8/+16 — asserted by the jit package's layout test), and the RAX
+// counter offset, the loopSpill0 slot offset (spill1/2 are contiguous at
+// +8/+16, guaranteed by Go's adjacent-uint64 field layout with no padding;
+// TestSpillStackLayout additionally asserts the contiguity), and the RAX
 // sentinel Run uses to detect a fuel exit. loopFuelOff < 0 disables the fuel
 // machinery (byte-level unit tests that call with jitCtx = 0).
 //

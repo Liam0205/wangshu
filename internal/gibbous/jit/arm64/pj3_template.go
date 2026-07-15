@@ -49,7 +49,9 @@ package arm64
 // + exhausted tail (mirrors emitPJ3LoopFuelBackEdge on amd64):
 //
 //	ldr  w16, [x27, #loopFuelOff]    ; 4 bytes
-//	sub  w16, w16, #1                ; 4 bytes
+//	sub  x16, x16, #1               ; 4 bytes (X form; ldr w16 zero-extends,
+//	                                 ;   so the sub is equivalent to the W form;
+//	                                 ;   str w16 + cbnz w16 only read the low 32)
 //	str  w16, [x27, #loopFuelOff]    ; 4 bytes
 //	cbnz w16, loop_start             ; 4 bytes (backward, fuel remaining)
 //	; exhausted tail:
