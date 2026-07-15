@@ -2,7 +2,7 @@
 name: 2026-07-14-issue137-cmp-const-order-round
 description: >
   2026-07-14 定时巡检补跑轮之一(分支 fix/nightly-137-135-frontend-const-order,
-  PR #138,CI 全绿)。nightly oracle fuzz 报的 issue #137(corpus 9e5e75e5c04112a2:
+  PR #140,CI 全绿)。nightly oracle fuzz 报的 issue #137(corpus 9e5e75e5c04112a2:
   `print(0*-0~=0%0,0)`)是真实分歧:尾部字面 0 被打印成 "0",PUC 5.1.5 打印 "-0"。
   根因是常量表登记顺序——PUC luaK_infix 在解析右子树之前就把比较运算符的左操作数
   exp2RK,使折叠出的 -0 先占共享零槽(±0 去重按数值相等、先到先得),后续字面 0
@@ -19,11 +19,11 @@ metadata:
   date: 2026-07-14
 ---
 
-# issue #137:比较运算符左操作数的常量登记顺序(2026-07-14,PR #138)
+# issue #137:比较运算符左操作数的常量登记顺序(2026-07-14,PR #140)
 
-> 范围:分支 `fix/nightly-137-135-frontend-const-order`,PR #138(CI 全绿)。
+> 范围:分支 `fix/nightly-137-135-frontend-const-order`,PR #140(CI 全绿)。
 > 2026-07-14 定时巡检补跑轮处理的三个 crasher 之一(另两个:#136 P4 call-void
-> 误接受、#133 argerror caller-site,各自独立 PR)。
+> 误接受、#135 不可复现资源耗尽;#137+#136+#135 合并进本 PR #140,#133 已先行 PR #134 合入)。
 
 ## 任务
 
