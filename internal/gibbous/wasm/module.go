@@ -22,7 +22,7 @@ package wasm
 //   type 0: (i32, i32) -> (i64)            h_getupval
 //   type 1: (i32, i32, i64) -> ()          h_setupval
 //   type 2: (i32, i32, i32, i32) -> (i32)  h_return
-//   type 3: (i32, i32) -> ()               h_safepoint
+//   type 3: (i32, i32) -> (i32)            h_safepoint(base,pc → status)
 //   type 4: (i32) -> (i32)                 入口 run(base) -> status
 //   type 5: (i32,i32,i32,i32,i32,i32)->(i32) h_arith(base,pc,op,b,c,a)
 //   type 6: (i32,i32,i32,i32) -> (i32)     h_unm(base,pc,b,a) / h_eq(base,pc,b,c)
@@ -120,8 +120,8 @@ func typeSection() []byte {
 	p = append(p, 0x60, 0x03, wvtI32, wvtI32, wvtI64, 0x00)
 	// type 2: (i32,i32,i32,i32)->(i32)
 	p = append(p, 0x60, 0x04, wvtI32, wvtI32, wvtI32, wvtI32, 0x01, wvtI32)
-	// type 3: (i32,i32)->()
-	p = append(p, 0x60, 0x02, wvtI32, wvtI32, 0x00)
+	// type 3: (i32,i32)->(i32)  h_safepoint(base,pc → status:0 OK / 1 raise)
+	p = append(p, 0x60, 0x02, wvtI32, wvtI32, 0x01, wvtI32)
 	// type 4: (i32)->(i32)
 	p = append(p, 0x60, 0x01, wvtI32, 0x01, wvtI32)
 	// type 5: (i32,i32,i32,i32,i32,i32)->(i32)  h_arith

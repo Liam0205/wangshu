@@ -32,8 +32,12 @@ type HostState interface {
 	// DoReturn 处理 RETURN A B:返回值回填到调用者期望槽 + 记 savedPC。
 	// 返回 status(0=OK / 1=ERR);gibbous 函数据此 return。
 	DoReturn(base int32, pc int32, a int32, b int32) int32
-	// Safepoint 回边 GC 检查点(PW4 用;PW2 先声明)。
-	Safepoint(base int32, pc int32)
+	// Safepoint 回边检查点(GC + 循环 step-budget 计费)。返回 status
+	// (0=OK / 1=raise:budget 超额或 ctx 取消),gibbous 段据此 return 1 冒泡。
+	Safepoint(base int32, pc int32) int32
+	// LoopBudgetAddr 返回 loop-budget fuel 字的 linear memory 字节地址(P3
+	// 循环 step-budget 修复):回边 inline 自减它,归零才跨层 h_safepoint。
+	LoopBudgetAddr() uint32
 	// SetSavedPC 写回 CallInfo.savedPC(pc 物化,02 §4.2)。
 	SetSavedPC(base int32, pc int32)
 
@@ -192,9 +196,10 @@ func (h *helperSet) goReturn(_ context.Context, stack []uint64) {
 	stack[0] = api.EncodeI32(st)
 }
 
-// goSafepoint: (base i32, pc i32) -> ()  type 3 / h_safepoint。
+// goSafepoint: (base i32, pc i32) -> (i32)  type 4 / h_safepoint。
 func (h *helperSet) goSafepoint(_ context.Context, stack []uint64) {
-	h.host.Safepoint(api.DecodeI32(stack[0]), api.DecodeI32(stack[1]))
+	st := h.host.Safepoint(api.DecodeI32(stack[0]), api.DecodeI32(stack[1]))
+	stack[0] = api.EncodeI32(st)
 }
 
 // goArith: (base,pc,op,b,c,a i32) -> (i32)  type 5 / h_arith。

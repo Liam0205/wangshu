@@ -215,6 +215,10 @@ func (st *State) SetHotThresholds(entry, backEdge uint32) {
 // wangshu_p3 build / P3 未注入时永远返 0(等价 no-op)。
 func (st *State) PromotionCount() int { return st.core.PromotionCount() }
 
+// SafepointCalls 返回 gibbous 回边跨层到 host.Safepoint 的累计次数(白盒探针,
+// 测试用:证明无 budget 时热循环几乎不跨层)。
+func (st *State) SafepointCalls() int64 { return st.core.SafepointCalls() }
+
 // GCCountKB 返回 arena 当前已用 KB(= bump 指针;含 freelist 上待复用的空闲块)。
 // 长稳观测用:稳态下 freelist 循环复用,本值应有界。
 func (st *State) GCCountKB() float64 { return st.core.GCCountKB() }

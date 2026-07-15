@@ -20,6 +20,7 @@ type mockHost struct {
 	getUpvalFn         func(base, b int32) uint64
 	globalsRaw         uint64
 	gcPendingAddr      uint32
+	loopBudgetAddr     uint32
 	ciTransferAddr     uint32
 	ciDepthAddr        uint32
 	ciSegBaseAddr      uint32
@@ -44,8 +45,8 @@ func (m *mockHost) DoReturn(base, pc, a, b int32) int32 {
 	m.returnCalls = append(m.returnCalls, retCall{base, pc, a, b})
 	return 0 // OK
 }
-func (m *mockHost) Safepoint(base, pc int32)  {}
-func (m *mockHost) SetSavedPC(base, pc int32) {}
+func (m *mockHost) Safepoint(base, pc int32) int32 { return 0 }
+func (m *mockHost) SetSavedPC(base, pc int32)      {}
 
 func (m *mockHost) Arith(base, pc, op, b, c, a int32) int32 { return 0 }
 func (m *mockHost) Unm(base, pc, b, a int32) int32          { return 0 }
@@ -75,6 +76,7 @@ func (m *mockHost) Close(base, pc, a int32) int32           { return 0 }
 func (m *mockHost) TForLoop(base, pc, a, c int32) int64     { return -2 }
 func (m *mockHost) GlobalsRaw() uint64                      { return m.globalsRaw }
 func (m *mockHost) GCPendingAddr() uint32                   { return m.gcPendingAddr }
+func (m *mockHost) LoopBudgetAddr() uint32                  { return m.loopBudgetAddr }
 func (m *mockHost) CITransferAddr() uint32                  { return m.ciTransferAddr }
 func (m *mockHost) CIDepthAddr() uint32                     { return m.ciDepthAddr }
 func (m *mockHost) CISegBaseAddr() uint32                   { return m.ciSegBaseAddr }
