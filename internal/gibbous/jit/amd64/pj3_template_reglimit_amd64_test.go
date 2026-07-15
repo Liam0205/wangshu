@@ -24,12 +24,13 @@ func TestPJ3_ForLoopRegLimit_FastPath(t *testing.T) {
 	const deoptCode uint64 = 0xDEAD
 
 	var buf []byte
-	buf = EmitForLoopRegLimit(buf,
+	buf, _ = EmitForLoopRegLimit(buf,
 		math.Float64bits(1), // init
 		math.Float64bits(1), // step
 		0,                   // limitReg = R(0)
 		deoptCode,
-		-1 /* no safepoint (unit test: r15 has no jitContext) */)
+		-1, /* no safepoint (unit test: r15 has no jitContext) */
+		-1, 0, 0)
 
 	if len(buf) != EncodedForLoopRegLimitWithSafepointLen-EncodedCmpByteR15DispImm8Len-EncodedJccRel32Len {
 		t.Logf("buf len=%d(无 safepoint 版本)", len(buf))
@@ -57,12 +58,13 @@ func TestPJ3_ForLoopRegLimit_DeoptPath(t *testing.T) {
 	const deoptCode uint64 = 0xCAFE
 
 	var buf []byte
-	buf = EmitForLoopRegLimit(buf,
+	buf, _ = EmitForLoopRegLimit(buf,
 		math.Float64bits(1),
 		math.Float64bits(1),
 		0,
 		deoptCode,
-		-1)
+		-1,
+		-1, 0, 0)
 
 	page, err := MmapCode(buf)
 	if err != nil {
@@ -85,12 +87,13 @@ func TestPJ3_ForLoopRegLimit_LongLoop(t *testing.T) {
 	vsBase := uintptr(unsafe.Pointer(&pj2TestStack[0]))
 
 	var buf []byte
-	buf = EmitForLoopRegLimit(buf,
+	buf, _ = EmitForLoopRegLimit(buf,
 		math.Float64bits(1),
 		math.Float64bits(1),
 		0,
 		0xDEAD,
-		-1)
+		-1,
+		-1, 0, 0)
 
 	page, err := MmapCode(buf)
 	if err != nil {

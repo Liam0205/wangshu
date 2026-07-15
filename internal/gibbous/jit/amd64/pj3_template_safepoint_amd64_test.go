@@ -40,11 +40,12 @@ func TestPJ3_ForLoopSafepoint_EarlyExit(t *testing.T) {
 	// Byte-level template: run 1e7 loop iters, wiring up the safepoint check
 	// (passing spikePreemptOff)
 	var buf []byte
-	buf = EmitForLoopEmptyConst(buf,
+	buf, _ = EmitForLoopEmptyConst(buf,
 		math.Float64bits(1),
 		math.Float64bits(1e7),
 		math.Float64bits(1),
-		spikePreemptOff /* safepoint check enabled */)
+		spikePreemptOff, /* safepoint check enabled */
+		-1, 0, 0)
 
 	if len(buf) != EncodedForLoopEmptyConstWithSafepointLen {
 		t.Fatalf("buf len=%d, want %d", len(buf), EncodedForLoopEmptyConstWithSafepointLen)
@@ -74,11 +75,12 @@ func TestPJ3_ForLoopSafepoint_NormalLoop(t *testing.T) {
 	// Moderate loop of 1000 iters (the safepoint check adds two instructions
 	// per iter, but it still finishes in the μs range)
 	var buf []byte
-	buf = EmitForLoopEmptyConst(buf,
+	buf, _ = EmitForLoopEmptyConst(buf,
 		math.Float64bits(1),
 		math.Float64bits(1000),
 		math.Float64bits(1),
-		spikePreemptOff)
+		spikePreemptOff,
+		-1, 0, 0)
 
 	page, err := MmapCode(buf)
 	if err != nil {

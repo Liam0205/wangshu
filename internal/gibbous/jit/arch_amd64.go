@@ -103,40 +103,52 @@ func archEmitArithSpecChainKKWithGuard(buf []byte, sseOp1, sseOp2 byte, a, b uin
 }
 
 // archEmitForLoopEmptyConst splices the PJ3 all-constant init/limit/step
-// empty-body FORLOOP template (69 bytes without safepoint / 83 bytes with
-// safepoint: float idx accumulation + ucomisd limit + backward jcc + optional
-// r15+disp byte-cmp safepoint check). On amd64 it delegates to
-// jitamd64.EmitForLoopEmptyConst.
+// empty-body FORLOOP template (69 bytes bare; + safepoint 83; + loopFuel
+// machinery 162 — float idx accumulation + ucomisd limit + backward jcc +
+// optional r15+disp byte-cmp safepoint check + issue #143 loopFuel back-edge
+// accounting). On amd64 it delegates to jitamd64.EmitForLoopEmptyConst.
 //
 // When preemptFlagOff >= 0 the template includes the safepoint check (per V18
 // -race preemption discipline); when < 0 it is omitted (unit-test / spike use
-// cases).
-func archEmitForLoopEmptyConst(buf []byte, kInit, kLimit, kStep uint64, preemptFlagOff int32) []byte {
-	return jitamd64.EmitForLoopEmptyConst(buf, kInit, kLimit, kStep, preemptFlagOff)
+// cases). When loopFuelOff >= 0 the back-edge decrements jitCtx.loopFuel and
+// on exhaustion spills xmm0/1/2 to the loopSpill slots + returns loopFuelCode
+// in RAX; the returned resume offset re-enters after host.LoopPreempt.
+func archEmitForLoopEmptyConst(buf []byte, kInit, kLimit, kStep uint64,
+	preemptFlagOff, loopFuelOff, loopSpillOff int32, loopFuelCode uint64) ([]byte, int) {
+	return jitamd64.EmitForLoopEmptyConst(buf, kInit, kLimit, kStep,
+		preemptFlagOff, loopFuelOff, loopSpillOff, loopFuelCode)
 }
 
 // archEmitForLoopRegLimit splices the PJ3 reg-limit empty-body FORLOOP
 // template (the hot-path form `for i=1, n do end`): IsNumber guard + float
-// loop + optional safepoint + deopt block. On amd64 it delegates to
-// jitamd64.EmitForLoopRegLimit.
-func archEmitForLoopRegLimit(buf []byte, kInit, kStep uint64, limitReg uint8, deoptCode uint64, preemptFlagOff int32) []byte {
-	return jitamd64.EmitForLoopRegLimit(buf, kInit, kStep, limitReg, deoptCode, preemptFlagOff)
+// loop + optional safepoint + issue #143 loopFuel back-edge + deopt block. On
+// amd64 it delegates to jitamd64.EmitForLoopRegLimit.
+func archEmitForLoopRegLimit(buf []byte, kInit, kStep uint64, limitReg uint8, deoptCode uint64,
+	preemptFlagOff, loopFuelOff, loopSpillOff int32, loopFuelCode uint64) ([]byte, int) {
+	return jitamd64.EmitForLoopRegLimit(buf, kInit, kStep, limitReg, deoptCode,
+		preemptFlagOff, loopFuelOff, loopSpillOff, loopFuelCode)
 }
 
 // archEmitForLoopWithBody splices the PJ3 FORLOOP template for a body
 // containing a reg-K op (`local s=K_s; for i=K1,K2 do s = s op K3 end; return
-// s`). 135 bytes including the safepoint check.
+// s`). 135 bytes including the safepoint check; 214 with the issue #143
+// loopFuel machinery.
 func archEmitForLoopWithBody(buf []byte, kS, kInit, kLimit, kStep, kBody uint64,
-	aS uint8, sseOp byte, preemptFlagOff int32) []byte {
-	return jitamd64.EmitForLoopWithRegKBody(buf, kS, kInit, kLimit, kStep, kBody, aS, sseOp, preemptFlagOff)
+	aS uint8, sseOp byte,
+	preemptFlagOff, loopFuelOff, loopSpillOff int32, loopFuelCode uint64) ([]byte, int) {
+	return jitamd64.EmitForLoopWithRegKBody(buf, kS, kInit, kLimit, kStep, kBody, aS, sseOp,
+		preemptFlagOff, loopFuelOff, loopSpillOff, loopFuelCode)
 }
 
 // archEmitForLoopWithBody2 splices the PJ3 FORLOOP two-stage body template
 // (`local s; for i=K1,K2 do s = s op1 K3; s = s op2 K4 end; return s`).
-// 154 bytes, reusing xmm3 across both stages to save one load/store.
+// 154 bytes with the safepoint, reusing xmm3 across both stages to save one
+// load/store; 233 with the issue #143 loopFuel machinery.
 func archEmitForLoopWithBody2(buf []byte, kS, kInit, kLimit, kStep, kBody1, kBody2 uint64,
-	aS uint8, sseOp1, sseOp2 byte, preemptFlagOff int32) []byte {
-	return jitamd64.EmitForLoopWithRegKBody2(buf, kS, kInit, kLimit, kStep, kBody1, kBody2, aS, sseOp1, sseOp2, preemptFlagOff)
+	aS uint8, sseOp1, sseOp2 byte,
+	preemptFlagOff, loopFuelOff, loopSpillOff int32, loopFuelCode uint64) ([]byte, int) {
+	return jitamd64.EmitForLoopWithRegKBody2(buf, kS, kInit, kLimit, kStep, kBody1, kBody2, aS, sseOp1, sseOp2,
+		preemptFlagOff, loopFuelOff, loopSpillOff, loopFuelCode)
 }
 
 // archEmitGetTableArrayHit splices the PJ4 IC ArrayHit byte-level direct-slot

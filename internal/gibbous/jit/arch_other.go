@@ -91,27 +91,36 @@ func archEmitArithSpecChainKKWithGuard(buf []byte, sseOp1, sseOp2 byte, a, b uin
 }
 
 // archEmitForLoopEmptyConst not supported on other archs.
-func archEmitForLoopEmptyConst(buf []byte, kInit, kLimit, kStep uint64, preemptFlagOff int32) []byte {
+func archEmitForLoopEmptyConst(buf []byte, kInit, kLimit, kStep uint64,
+	preemptFlagOff, loopFuelOff, loopSpillOff int32, loopFuelCode uint64) ([]byte, int) {
 	_ = kInit
 	_ = kLimit
 	_ = kStep
 	_ = preemptFlagOff
-	return buf
+	_ = loopFuelOff
+	_ = loopSpillOff
+	_ = loopFuelCode
+	return buf, 0
 }
 
 // archEmitForLoopRegLimit not supported on other archs.
-func archEmitForLoopRegLimit(buf []byte, kInit, kStep uint64, limitReg uint8, deoptCode uint64, preemptFlagOff int32) []byte {
+func archEmitForLoopRegLimit(buf []byte, kInit, kStep uint64, limitReg uint8, deoptCode uint64,
+	preemptFlagOff, loopFuelOff, loopSpillOff int32, loopFuelCode uint64) ([]byte, int) {
 	_ = kInit
 	_ = kStep
 	_ = limitReg
 	_ = deoptCode
 	_ = preemptFlagOff
-	return buf
+	_ = loopFuelOff
+	_ = loopSpillOff
+	_ = loopFuelCode
+	return buf, 0
 }
 
 // archEmitForLoopWithBody not supported on other archs.
 func archEmitForLoopWithBody(buf []byte, kS, kInit, kLimit, kStep, kBody uint64,
-	aS uint8, sseOp byte, preemptFlagOff int32) []byte {
+	aS uint8, sseOp byte,
+	preemptFlagOff, loopFuelOff, loopSpillOff int32, loopFuelCode uint64) ([]byte, int) {
 	_ = kS
 	_ = kInit
 	_ = kLimit
@@ -120,12 +129,16 @@ func archEmitForLoopWithBody(buf []byte, kS, kInit, kLimit, kStep, kBody uint64,
 	_ = aS
 	_ = sseOp
 	_ = preemptFlagOff
-	return buf
+	_ = loopFuelOff
+	_ = loopSpillOff
+	_ = loopFuelCode
+	return buf, 0
 }
 
 // archEmitForLoopWithBody2 not supported on other archs.
 func archEmitForLoopWithBody2(buf []byte, kS, kInit, kLimit, kStep, kBody1, kBody2 uint64,
-	aS uint8, sseOp1, sseOp2 byte, preemptFlagOff int32) []byte {
+	aS uint8, sseOp1, sseOp2 byte,
+	preemptFlagOff, loopFuelOff, loopSpillOff int32, loopFuelCode uint64) ([]byte, int) {
 	_ = kS
 	_ = kInit
 	_ = kLimit
@@ -136,7 +149,10 @@ func archEmitForLoopWithBody2(buf []byte, kS, kInit, kLimit, kStep, kBody1, kBod
 	_ = sseOp1
 	_ = sseOp2
 	_ = preemptFlagOff
-	return buf
+	_ = loopFuelOff
+	_ = loopSpillOff
+	_ = loopFuelCode
+	return buf, 0
 }
 
 // archEmitGetTableArrayHit not supported on other archs.

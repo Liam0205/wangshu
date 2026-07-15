@@ -494,6 +494,85 @@ func EmitMovqRaxFromR15Disp(buf []byte, disp32 int32) []byte {
 	return buf
 }
 
+// EmitMovsdR15DispFromXmm emits "movsd [r15+disp32], xmm" — spilling a 64-bit
+// double from an xmm register into a JITContext field addressed via r15.
+//
+// Unlike EmitMovsdMemFromXmm (which clamps the base register to [0,7] and so
+// cannot address r15), this uses REX.B to select r15 as the rm base. Used by
+// the PJ3 loopFuel exhausted-tail to save idx/limit/step (xmm0/1/2) into the
+// loopSpill0/1/2 slots before the HelperLoopFuel exit-reason round trip
+// (issue #143 — the PJ3 templates keep loop state in xmm, which no ABI
+// preserves across the RET-to-Go dispatch, so it must be spilled).
+//
+// Encoding: F2 41 0F 11 /r disp32 (9 bytes).
+//   - F2       = scalar-double prefix
+//   - 41       = REX.B (selects r15 as the rm base)
+//   - 0F 11    = MOVSD xmm/m64, xmm
+//   - ModRM    = mod=10 (disp32) reg=xmmSrc rm=111 (r15 via REX.B)
+func EmitMovsdR15DispFromXmm(buf []byte, xmmSrc uint8, disp32 int32) []byte {
+	if xmmSrc > 7 {
+		xmmSrc = 0
+	}
+	buf = append(buf, 0xF2, 0x41, 0x0F, 0x11)
+	modrm := byte(0x80) | (xmmSrc&0x7)<<3 | 0x7 // rm=111 (r15)
+	buf = append(buf, modrm)
+	buf = append(buf,
+		byte(uint32(disp32)),
+		byte(uint32(disp32)>>8),
+		byte(uint32(disp32)>>16),
+		byte(uint32(disp32)>>24))
+	return buf
+}
+
+// EmitMovsdXmmFromR15Disp emits "movsd xmm, [r15+disp32]" — the reload
+// counterpart of EmitMovsdR15DispFromXmm, restoring idx/limit/step into
+// xmm0/1/2 at the PJ3 loopFuel resume entry (issue #143).
+//
+// Encoding: F2 41 0F 10 /r disp32 (9 bytes).
+func EmitMovsdXmmFromR15Disp(buf []byte, xmmDst uint8, disp32 int32) []byte {
+	if xmmDst > 7 {
+		xmmDst = 0
+	}
+	buf = append(buf, 0xF2, 0x41, 0x0F, 0x10)
+	modrm := byte(0x80) | (xmmDst&0x7)<<3 | 0x7 // rm=111 (r15)
+	buf = append(buf, modrm)
+	buf = append(buf,
+		byte(uint32(disp32)),
+		byte(uint32(disp32)>>8),
+		byte(uint32(disp32)>>16),
+		byte(uint32(disp32)>>24))
+	return buf
+}
+
+// EncodedMovsdR15DispLen is the byte length of the MOVSD xmm <-> [r15+disp32]
+// spill/reload sequence (9): F2(1) + REX.B(1) + 0F(1) + opcode(1) + ModRM(1) +
+// disp32(4).
+const EncodedMovsdR15DispLen = 9
+
+// EmitSubDwordR15DispImm8 emits "sub dword [r15+disp32], imm8" — the loopFuel
+// back-edge decrement (issue #143 PJ3, mirroring the per-op native emit's
+// emitLoopFuelBackEdge at emit_ops_amd64.go).
+//
+// Encoding: 41 83 AF disp32 imm8 (8 bytes).
+//   - 41    = REX.B (selects r15 as the rm base)
+//   - 83    = group-1 r/m32, imm8 (sign-extended)
+//   - AF    = ModRM: mod=10 (disp32) reg=101 (/5 = SUB) rm=111 (r15)
+//   - disp32, imm8
+func EmitSubDwordR15DispImm8(buf []byte, disp32 int32, imm8 byte) []byte {
+	buf = append(buf, 0x41, 0x83, 0xAF)
+	buf = append(buf,
+		byte(uint32(disp32)),
+		byte(uint32(disp32)>>8),
+		byte(uint32(disp32)>>16),
+		byte(uint32(disp32)>>24))
+	buf = append(buf, imm8)
+	return buf
+}
+
+// EncodedSubDwordR15DispImm8Len is the byte length of "sub dword [r15+disp32],
+// imm8" (8): REX.B(1) + opcode(1) + ModRM(1) + disp32(4) + imm8(1).
+const EncodedSubDwordR15DispImm8Len = 8
+
 // EmitMovqRaxFromMemReg emits "mov rax, [reg+disp32]", loading into rax from a
 // given base register (used to read the value-stack slot at valueStackBase +
 // reg*8 — but valueStackBase must first be loaded into some base register).
