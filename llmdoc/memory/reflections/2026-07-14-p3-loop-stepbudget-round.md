@@ -71,6 +71,26 @@ fuel 缺口)的 **P3 对偶**:那轮修的是 P4 native 的 `loopFuel`,这轮是
 `Safepoint` 签名从 `(base,pc)->()` 改为 `->i32`(wasm type 3 加返回值),`h_safepoint`
 调用点检返回值 == 1 则 `return 1`。
 
+## review 抓出的漏洞:第一版只覆盖 FORLOOP,漏了 while/repeat 的 JMP 回边
+
+第一版把 `emitBackEdgeSafepoint` **只挂在 `emitForLoopTerm`(数值 FORLOOP)**——review
+bot(REQUEST_CHANGES)指出 while/repeat 循环的回边是**负位移 JMP**,走 `emitJmpTerm`
+→ `emitEdge`,对回边只发**裸 `br`、没有任何 safepoint**。P3 里 step budget 只在回边
+safepoint 计(host helper 不计),所以 while/repeat 的全 inline 死循环升 P3 后仍会挂
+——正是要修的同一类 bug,只是换了个循环 opcode。P4(#102)的实现覆盖了 JMP 回边,
+第一版 P3「自称是 #102 的 P3 对偶却漏了这一半」。
+
+**反事实验证 bot 判断为真**:把回边 safepoint 换回 gc-only(第一版对 while 的等价
+行为),crasher 结构的无限 while(`while i<=n do X=0*i i=i+1 end`,n=inf,顶层调
+`sum` 两次 auto 升层)**挂 5s**;装回 budget-aware safepoint 后**立即 raise**。
+
+**修法:把 safepoint 挪到唯一的 back-edge choke point**——`emitEdge` 的 `scLoop`
+分支。所有循环形态(FORLOOP / while / repeat / 比较驱动的 JMP 回边)都经此发 `br`
+回 loop 头,挂在这里一次覆盖全部,并删掉 `emitForLoopTerm` 里的单独调用(避免
+FORLOOP 双发)。`emitEdge` 加 `cfg` 参数取 back-edge 指令 pc(源 BB 末指令)锚错误行。
+prove-the-path:3M 迭代的 budgeted while 跨 Safepoint 46876 次(≈3M/64,证 JMP 回边
+真计费),1e6 无 budget 循环跨 0 次(快路径不变)。
+
 ## 验证
 
 - crasher `bb525447c652d8d9` 重放从「挂 70s」变「0.24s 干净」;
@@ -107,6 +127,22 @@ tier(auto / force-all / P3 / P4)才暴露,判不可复现前必须在**报告它
 模式**下重放(harness 用 auto 就用 auto 跑,别只用解释器)。这是 [[unreproducible-
 crasher-triage]] 的补充:该 guide 的「精确重放」步骤要明确「用报告 crasher 的 tier
 重放」,不是默认解释器。**候选补入 [[unreproducible-crasher-triage]]**(首次样本暂留)。
+
+### 教训 3:「同一语义装在多个 opcode / 多条终结边」时,修在唯一 choke point 而非逐个终结符
+
+第一版把回边 safepoint 只挂在 FORLOOP 终结符,漏了 while/repeat 的 JMP 回边(review
+bot 抓出)。根因是把「回边计费」这件事绑在**一个具体的循环 opcode**(FORLOOP)上,
+而真实边界是「所有回边」——FORLOOP / while 的负位移 JMP / 比较驱动的 JMP 回边是
+同一语义(跳回 loop 头)的不同 opcode 表达。正解是找到它们汇合的**唯一 choke
+point**(`emitEdge` 的 `scLoop` 分支——所有回边都经此发 `br`),把计费挂在那里一次
+覆盖全部,而不是给每个终结符分别补。判据:给「某类控制流边」加统一处理(计费 /
+safepoint / 插桩)时,先问「这类边在代码里有没有一个汇合点」,有就挂在汇合点;若
+分散在多个 opcode 的终结逻辑里各挂一次,一定会漏掉某个 opcode(这正是 P3 PW4b
+TFORLOOP / while JMP 各走独立终结函数留下的坑)。这与教训 1(跨 tier 对称)是**同
+一 PR 内的 tier 内对偶**:教训 1 说「同一不变量跨 tier 都要复刻」,本条说「同一
+tier 内同一语义的多个 opcode 表达都要覆盖,找 choke point」。与 [[cross-backend-
+semantic-fix-sweep]] 的「per-op / spec-模板多通道」同族(那里是修语义 bug 要扫所有
+通道,这里是加计费要挂在通道汇合点)。首次样本暂留观察。
 
 ## promotion 决策
 
