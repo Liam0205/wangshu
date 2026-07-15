@@ -1,0 +1,2 @@
+go test fuzz v1
+string("local function make()x=0 return function()A=make()return 0 end end f=make()return f()%A()")
