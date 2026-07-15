@@ -100,6 +100,15 @@ type State struct {
 	stepBudget int64
 	stepUsed   int64
 
+	// loopFuelRefill 记录上次写入 loopBudget 字的重填额,供 Safepoint 用
+	// 「refill - 当前值」精确计费本批回边(P3 循环 step-budget 修复;Go 侧
+	// 私有,gibbous 段不读)。
+	loopFuelRefill int64
+
+	// safepointCalls 统计 gibbous 回边跨层到 host.Safepoint 的次数(白盒探针,
+	// 证明无 budget 时 loopFuel unlimited 重填使热循环几乎不跨层)。仅测试读。
+	safepointCalls int64
+
 	// ctx 是 SetContext 注入的取消信号(issue #4):preempt 的同一抢占
 	// 点(回边 / 函数进帧 / CALL)做 ctx.Err() 检查。Atomic 包裹是因为
 	// 跨 goroutine 取消的常见模式:VM 在 goroutine A 跑,timer/ctx 在
@@ -174,6 +183,18 @@ type State struct {
 	// GC 状态转移点把「是否 due」镜像到此字(linear memory),gibbous FORLOOP
 	// 回边 inline i32.load 它,只在 due 时才跨层调 h_safepoint。0 = 未分配。
 	gcPendingRef arena.GCRef
+
+	// loopBudgetRef 是 gibbous 回边 fuel 计数字的 arena GCRef(issue: P3 循环
+	// step-budget 缺口,#102 的 P3 对偶)。P4 native 用 JITContext.loopFuel 计数、
+	// 回边 inline dec+jz 只在归零时跨层 host.LoopPreempt 计费;P3 wasm 没有等价
+	// 机制,回边只 inline 检 gcPending(纯 GC 用),step budget 无 async producer
+	// ⟹ 全 inline 的死循环(for i=0,1/0 do X=0 end)在解释器 preempt 立即抛
+	// "instruction budget exceeded",升 P3 却永远挂住。此字是 P3 版 loopFuel:
+	// 回边 inline 自减 + 归零(或 gcPending 置位)才跨层 h_safepoint,Safepoint
+	// 把消耗的 quantum 计入 stepBudget、重填、超额时 raise。budget/ctx armed 时
+	// 重填小额(loopFuelQuantum),否则重填大额 ⟹ 稳态循环几乎不跨层(镜像 P4
+	// SegCallFuelUnlimited)。0 = 未分配(非 p3 build 也分配,offset 逻辑统一)。
+	loopBudgetRef arena.GCRef
 
 	// ciTransferRef 是 gibbous→gibbous call_indirect 直调的 base 中转字(PW10 R3)。
 	// DoCall 判被调已升 gibbous 时,把被调帧 base 字节偏移写入此字 + 返回 indirect
@@ -297,6 +318,11 @@ func NewWithOptions(arenaOpts arena.Options) *State {
 	st.gcPendingRef = a.AllocWords(1)
 	a.SetWordAt(st.gcPendingRef, 0)
 	c.SetGCPendingRef(st.gcPendingRef)
+	// loop-budget fuel 字(P3 循环 step-budget 缺口修复):gibbous 回边 inline
+	// 自减此字,归零才跨层 h_safepoint 计费。早分配 → 偏移稳定;初值 0 使升层
+	// 后首个回边立即跨层一次(Safepoint 据 armed 状态重填正确 quantum)。
+	st.loopBudgetRef = a.AllocWords(1)
+	a.SetWordAt(st.loopBudgetRef, 0)
 	// ci-transfer 中转字(P3 PW10 R3):gibbous→gibbous call_indirect 直调经此字
 	// 传被调/刷新后 base 字节偏移(详见字段注释)。早分配 → 偏移稳定。
 	st.ciTransferRef = a.AllocWords(1)
@@ -588,6 +614,10 @@ func (st *State) PromotionCount() int {
 	}
 	return 0
 }
+
+// SafepointCalls 返回 gibbous 回边跨层到 host.Safepoint 的累计次数(白盒探针,
+// 测试用:证明无 budget 时 loopFuel unlimited 重填使热循环几乎不跨层)。
+func (st *State) SafepointCalls() int64 { return st.safepointCalls }
 
 // SetStepBudget 设置回边指令预算(<=0 关闭)。超额时脚本以
 // "instruction budget exceeded" 可恢复错误终止——宿主侧脚本配额特性,

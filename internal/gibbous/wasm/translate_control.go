@@ -272,10 +272,10 @@ func (c *Compiler) emitForLoopTerm(em *emitter, proto *bytecode.Proto, cfg *cfg,
 	em.localGet(localF64)
 	em.i64ReinterpretF64()
 	em.i64Store(8 * (a + 3))
-	// 回边 safepoint(P3 PW9 优化):inline 检查 gcPending 标志,非 0 才跨层调
-	// h_safepoint。热循环每迭代无 GC due 时此分支恒不跳,零跨层(05 §3 / 08 §5.1.2)。
-	// baseline memory-resident 下三槽已写回栈槽,GC 根经 R5 覆盖。
-	c.emitGCPendingSafepoint(em, lastPC)
+	// 回边 safepoint(P3 PW9 + 循环 step-budget 计费):inline 自减 loopBudget,
+	// 归零(或 gcPending 置位)才跨层 h_safepoint;超额 return 1 冒泡。热循环
+	// 每迭代只付几条纯段内指令,零跨层(05 §3 / 08 §5.1.2)。
+	c.emitBackEdgeSafepoint(em, lastPC)
 	// br 回 loop header(回边)。
 	if e := c.emitEdge(em, plan, *stack, bb, idBody); e != nil {
 		return e
@@ -386,26 +386,53 @@ func (c *Compiler) emitTForLoopTerm(em *emitter, cfg *cfg, plan *structPlan, sta
 	return nil
 }
 
-// emitGCPendingSafepoint 发回边 safepoint 的 inline gcPending 检查(P3 PW9):
+// emitBackEdgeSafepoint 发回边 safepoint 的 inline 检查(P3 PW9 GC + 循环
+// step-budget 计费,#102 的 P3 对偶):
 //
-//	(if (i32.load offset=gcPendingAddr (i32.const 0))
-//	  (then (call h_safepoint (base) (pc))))
+//	loopBudget := loopBudget - 1                       ;; i32,linear memory 字
+//	i32.store loopBudget
+//	(if (i32.or (i32.le_s loopBudget 0) (i32.load gcPending))
+//	  (then
+//	    (if (i32.eq (call h_safepoint base pc) 1)
+//	      (then (return 1)))))                          ;; budget 超额 → 冒泡
 //
-// gcPending 标志字由 collector 在 GC 状态转移点镜像(due 时置 1)。热循环无 GC due
-// 时此分支恒不跳,零跨层——只在 GC 真正 due 时才跨层调 h_safepoint(否则每迭代无
-// 条件跨层 ~143ns 吞掉消灭 dispatch 的收益,05 §3 / 08 §5.1.2)。
+// 热循环里 loopBudget 从重填额(无 budget 时约 10 亿)自减,几乎永不归零 ⟹
+// 每迭代只付「load/sub/store + 比较」几条纯段内指令,零跨层(镜像 P4 loopFuel
+// 的 dec+jz)。只有 budget/ctx armed(fuzz/脚本配额)才周期性(每 quantum 次)
+// 跨层 h_safepoint 计费;或 GC due 时(gcPending 置位)跨层收 GC。Safepoint 返
+// status,1 = raise(budget 超额 / ctx 取消),段 return 1 冒泡,与解释器 preempt
+// 在回边抛 "instruction budget exceeded" 逐字节一致。
 //
-// 正确性:flag 保守覆盖「stressMode 或 bytesAllocSince≥threshold」(collector
-// updateGCPending),GC 该触发时 flag 必为 1;跳过仅发生在「无分配 due」时,此时
-// h_safepoint 的 MaybeCollect 本就 no-op,跳过等价。stressMode 下 flag 恒 1,每迭代
-// 仍跨层 → GC 压力测试(V5/V13)语义不变。
-func (c *Compiler) emitGCPendingSafepoint(em *emitter, pc int32) {
-	addr := c.host.GCPendingAddr()
-	em.i32Const(0)   // 地址操作数(基址 0 + offset=addr 立即数)
-	em.i32Load(addr) // i32.load offset=gcPendingAddr:读标志字低 4 字节
+// 正确性:gcPending 语义不变(due 时 flag 必 1,见旧注释);新增的 budget 计费
+// 只在 stepBudget>0 或 ctx armed 时改变行为(否则 Safepoint 只重填大额、不 raise),
+// 稳态无 budget 负载零语义影响。
+func (c *Compiler) emitBackEdgeSafepoint(em *emitter, pc int32) {
+	lbAddr := c.host.LoopBudgetAddr()
+	// loopBudget -= 1(读-减-写)。
+	em.i32Const(0)
+	em.i32Const(0)
+	em.i32Load(lbAddr)
+	em.i32Const(1)
+	em.i32Sub()
+	em.i32Store(lbAddr)
+	// cond = (loopBudget <= 0) || (gcPending != 0)
+	em.i32Const(0)
+	em.i32Load(lbAddr)
+	em.i32Const(1)
+	em.i32LtS() // loopBudget < 1  ⟺  loopBudget <= 0
+	em.i32Const(0)
+	em.i32Load(c.host.GCPendingAddr())
+	em.raw(0x72) // i32.or
 	em.ifVoid()
+	// status = h_safepoint(base, pc);status==1 → return 1(冒泡)。
 	em.localGet(localBase)
 	em.i32Const(pc)
 	em.call(helperSafepoint)
+	em.i32Const(1)
+	em.i32Eq()
+	em.ifVoid()
+	em.i32Const(1)
+	em.ret()
+	em.end()
 	em.end()
 }

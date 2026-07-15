@@ -420,7 +420,7 @@ func (c *Compiler) ensureHostModule() error {
 	add("h_getupval", hs.goGetUpval, p2, retI64)
 	add("h_setupval", hs.goSetUpval, []api.ValueType{i32, i32, i64}, none)
 	add("h_return", hs.goReturn, p4, retI32)
-	add("h_safepoint", hs.goSafepoint, p2, none)
+	add("h_safepoint", hs.goSafepoint, p2, retI32)
 	add("h_arith", hs.goArith, p6, retI32)
 	add("h_unm", hs.goUnm, p4, retI32)
 	add("h_len", hs.goLen, p4, retI32)

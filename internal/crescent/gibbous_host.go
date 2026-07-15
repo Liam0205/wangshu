@@ -321,9 +321,61 @@ func (st *State) PopErrFrame() {
 	}
 }
 
-// Safepoint 回边 GC 检查点(h_safepoint,04 §3.3;PW4 回边落地时接通,PW2 桩)。
-func (st *State) Safepoint(base int32, pc int32) {
+// loopFuelQuantum 是 budget/ctx armed 时 gibbous 回边 fuel 的重填额:每跑
+// 这么多回边跨层 h_safepoint 一次,把这一批计入 stepBudget。~143ns 的跨层
+// 成本摊到 quantum 次迭代上(64 → 每迭代约 2ns)。镜像 P4 HelperLoopFuel=32
+// 的取值意图(P3 跨层稍贵,取略大)。
+const loopFuelQuantum = 64
+
+// loopFuelUnlimited 是无 budget/ctx 时的重填额:一个大值使稳态循环几乎不
+// 跨层(镜像 P4 SegCallFuelUnlimited)。i32 存储,取值远小于 MaxInt32 留自减
+// 余量。约 10 亿次回边跨层一次,普通嵌入零感知。
+const loopFuelUnlimited = 1 << 30
+
+// Safepoint 回边检查点(h_safepoint,04 §3.3):GC + 循环 step-budget 计费。
+// 返回 0 正常 / 1 表示 raise(budget 超额或 ctx 取消,与解释器 preempt 同语义)。
+//
+// gibbous 回边 inline 自减 loopBudget 字,归零(或 gcPending 置位)才跨层到
+// 这里。P4 的 host.LoopPreempt 对偶(issue #102 的 P3 版):全 inline 的循环
+// 体(纯算术 / 无 Lua 帧)没有别的抢占点,只在此处把消耗的 quantum 计入
+// stepBudget 并检查——否则死循环(for i=0,1/0 do X=0 end)升 P3 后永挂。
+func (st *State) Safepoint(base int32, pc int32) int32 {
+	st.safepointCalls++
 	st.gc.MaybeCollect()
+	// 重填 loop fuel + 计费。budget/ctx armed 时用小额 quantum(周期性回到这里
+	// 检查),否则用大额(稳态零感知)。当前字值 = refill - spent;回边在字 <= 0
+	// 时才跨层,故 spent 约等于上次 refill。用「上次 refill - 当前值」精确计费。
+	cur := int64(int32(st.arena.WordAt(st.loopBudgetRef)))
+	if st.stepBudget > 0 || st.ctx.Load() != nil {
+		spent := int64(st.loopFuelRefill) - cur
+		if spent < 0 {
+			spent = 0
+		}
+		st.stepUsed += spent
+		st.loopFuelRefill = loopFuelQuantum
+		st.arena.SetWordAt(st.loopBudgetRef, uint64(uint32(loopFuelQuantum)))
+		if st.stepBudget > 0 && st.stepUsed > st.stepBudget {
+			return st.raiseGibbousAtPC(pc, errf("instruction budget exceeded"))
+		}
+		if h := st.ctx.Load(); h != nil {
+			if err := h.err(); err != nil {
+				return st.raiseGibbousAtPC(pc, errf("context canceled: %s", err.Error()))
+			}
+		}
+		return 0
+	}
+	st.loopFuelRefill = loopFuelUnlimited
+	st.arena.SetWordAt(st.loopBudgetRef, uint64(uint32(loopFuelUnlimited)))
+	return 0
+}
+
+// raiseGibbousAtPC 锚定错误行号(pc)后经 raiseGibbous 暂存,返回 1。回边超额
+// 的错误行落在回边指令 pc 上(与解释器 preempt 的行为口径一致)。
+func (st *State) raiseGibbousAtPC(pc int32, e *LuaError) int32 {
+	if th := st.runningThread; th != nil && th.ciDepth > 0 {
+		st.gibCI(th).pc = pc + 1 // errWithName 读 ci.pc-1 == pc
+	}
+	return st.raiseGibbous(e)
 }
 
 // SetSavedPC 写回当前帧 savedPC(pc 物化,04 §4.5)。
@@ -600,6 +652,12 @@ func (st *State) GlobalsRaw() uint64 {
 // gibbous FORLOOP 回边 inline 读它(i32.load),非 0 才跨层调 h_safepoint。
 func (st *State) GCPendingAddr() uint32 {
 	return uint32(st.gcPendingRef)
+}
+
+// LoopBudgetAddr 返回 loop-budget fuel 字的 linear memory 字节地址(P3 循环
+// step-budget 修复)。gibbous 回边 inline 自减它,归零才跨层 h_safepoint。
+func (st *State) LoopBudgetAddr() uint32 {
+	return uint32(st.loopBudgetRef)
 }
 
 // CITransferAddr 返回 ci-transfer 中转字的 linear memory 字节地址(P3 PW10 R3)。
