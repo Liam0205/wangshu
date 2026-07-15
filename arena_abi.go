@@ -1,4 +1,4 @@
-// Arena ABI — 宿主侧列数据容器(11 §3.5 P1 Go 承载)+ VM 零拷贝读视图(11 §4-§5)。
+// Arena ABI — host-side columnar data container (11 §3.5, P1 carried by Go) plus VM zero-copy read views (11 §4-§5).
 package wangshu
 
 import (
@@ -17,7 +17,7 @@ const (
 type column struct {
 	tag      colType
 	name     string
-	presence []uint64 // nil = 全 present;否则 bit i = 第 i 行 present
+	presence []uint64 // nil = all present; otherwise bit i = row i present
 	f64      []float64
 	i64      []int64
 	boolBits []uint64
@@ -26,17 +26,18 @@ type column struct {
 
 type strSlot struct{ off, len uint32 }
 
-// Arena 是宿主侧的列数据容器(11 §3.5)。宿主用类型化方法构造列;
-// VM 零拷贝读其元素(读一个元素就地 NaN-box,整列不复制)。
+// Arena is the host-side columnar data container (11 §3.5). The host builds
+// columns with typed methods; the VM reads elements zero-copy (reading one
+// element NaN-boxes it in place, the whole column is never copied).
 type Arena struct {
 	nrows    uint32
 	cols     []column
 	names    map[string]int
-	strBytes []byte // ColString 共享字节池(11 §3.3.4)
+	strBytes []byte // ColString shared byte pool (11 §3.3.4)
 	strDedup map[string]strSlot
 }
 
-// NewArena 创建一个 nrows 行的列容器;所有列必须等长 = nrows(11 §3.1)。
+// NewArena creates a columnar container with nrows rows; all columns must have equal length = nrows (11 §3.1).
 func NewArena(nrows int) *Arena {
 	return &Arena{
 		nrows:    uint32(nrows),
@@ -45,7 +46,7 @@ func NewArena(nrows int) *Arena {
 	}
 }
 
-// Rows 返回行数。
+// Rows returns the row count.
 func (a *Arena) Rows() int { return int(a.nrows) }
 
 func (a *Arena) checkLen(name string, n int) error {
@@ -71,7 +72,7 @@ func packPresence(present []bool) []uint64 {
 	return out
 }
 
-// AddFloatColumn 加一列 float64(零拷贝引用 vals;present=nil 表示全 present)。
+// AddFloatColumn adds a float64 column (zero-copy reference to vals; present=nil means all present).
 func (a *Arena) AddFloatColumn(name string, vals []float64, present []bool) error {
 	if err := a.checkLen(name, len(vals)); err != nil {
 		return err
@@ -81,7 +82,7 @@ func (a *Arena) AddFloatColumn(name string, vals []float64, present []bool) erro
 	return nil
 }
 
-// AddInt64Column 加一列 int64(读出转 double;|v| > 2^53 报错,评审决策第 3 项)。
+// AddInt64Column adds an int64 column (read out as double; |v| > 2^53 errors, per review decision item 3).
 func (a *Arena) AddInt64Column(name string, vals []int64, present []bool) error {
 	if err := a.checkLen(name, len(vals)); err != nil {
 		return err
@@ -91,7 +92,7 @@ func (a *Arena) AddInt64Column(name string, vals []int64, present []bool) error 
 	return nil
 }
 
-// AddBoolColumn 加一列 bool(u64 位打包,11 §3.3.3)。
+// AddBoolColumn adds a bool column (bit-packed into u64, 11 §3.3.3).
 func (a *Arena) AddBoolColumn(name string, vals []bool, present []bool) error {
 	if err := a.checkLen(name, len(vals)); err != nil {
 		return err
@@ -101,7 +102,7 @@ func (a *Arena) AddBoolColumn(name string, vals []bool, present []bool) error {
 	return nil
 }
 
-// AddStringColumn 加一列 string(字节拷进共享池,相同串去重,11 §3.3.4 方案 α)。
+// AddStringColumn adds a string column (bytes copied into the shared pool, identical strings deduped, 11 §3.3.4 scheme α).
 func (a *Arena) AddStringColumn(name string, vals []string, present []bool) error {
 	if err := a.checkLen(name, len(vals)); err != nil {
 		return err
@@ -122,7 +123,7 @@ func (a *Arena) AddStringColumn(name string, vals []string, present []bool) erro
 	return nil
 }
 
-// present 判定第 row 行是否非 null。
+// present reports whether row `row` is non-null.
 func (c *column) present(row uint32) bool {
 	if c.presence == nil {
 		return true

@@ -1,13 +1,13 @@
 //go:build !wangshu_p3 && !lua_gopher
 
-// pineapple_wangshu_p1_test.go:wangshu 默认 build 作 pineapple 默认 lua backend
-// 时的 benchmark(新月解释器路径,P3 dead-code)。
+// pineapple_wangshu_p1_test.go: benchmark for the wangshu default build acting
+// as pineapple's default lua backend (crescent interpreter path, P3 dead-code).
 //
-// 互斥 tag:
-//   - !wangshu_p3:与 pineapple_wangshu_p3_test.go(wangshu_p3 && wangshu_profile)互斥
-//   - !lua_gopher:与 pineapple_gopher_test.go(lua_gopher)互斥
+// Mutually exclusive tags:
+//   - !wangshu_p3: mutually exclusive with pineapple_wangshu_p3_test.go (wangshu_p3 && wangshu_profile)
+//   - !lua_gopher: mutually exclusive with pineapple_gopher_test.go (lua_gopher)
 //
-// 跑法:`go test -bench=. ./benchmarks/pineapple/`(默认 tag,即本文件生效)。
+// How to run: `go test -bench=. ./benchmarks/pineapple/` (default tags, i.e. this file is in effect).
 package pineapple_bench
 
 import "testing"

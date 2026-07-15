@@ -9,23 +9,26 @@ import (
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
-// TestPJ7_IdentityForm_NoOverwrite identity 形态(`function(x) return x end`)
-// writeRetA=false 路径专属 prove-the-path 命中证据。
+// TestPJ7_IdentityForm_NoOverwrite prove-the-path hit evidence dedicated to the
+// writeRetA=false path for the identity form (`function(x) return x end`).
 //
-// **背景**:writeRetA=false 路径只有 e2e 隐性覆盖,缺 jit 包内显式正向单测;
-// 加本测确保 identity 函数路径(R(A) 不被 mmap 段 dummy RAX 覆盖)有显式
-// 命中证据。本测断言:
-//   - SetReg 未被调用(R(A) 不被 mmap 段覆盖)
-//   - DoReturn 调 1 次(弹帧路径走到)
+// **Background**: the writeRetA=false path only has implicit e2e coverage; it
+// lacks an explicit positive unit test inside the jit package. This test ensures
+// the identity function path (R(A) not overwritten by the mmap segment's dummy
+// RAX) has explicit hit evidence. It asserts:
+//   - SetReg is not called (R(A) is not overwritten by the mmap segment)
+//   - DoReturn is called once (the frame-pop path is reached)
 //
-// 这是 [[prove-the-path-under-test]] 实例——避免 writeRetA 逻辑误改后
-// identity 函数静默错果(返参 → 返 nil)而 LOADK e2e 测试仍过的盲区。
+// This is a [[prove-the-path-under-test]] instance — it guards against the blind
+// spot where a mistaken change to writeRetA logic makes the identity function
+// silently return the wrong result (return arg → return nil) while the LOADK e2e
+// test still passes.
 func TestPJ7_IdentityForm_NoOverwrite(t *testing.T) {
-	// `function(x) return x end` 编译为 RETURN 0 2(luac 优化形态,长度 1 / 2)
+	// `function(x) return x end` compiles to RETURN 0 2 (luac-optimized form, length 1 / 2)
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
-			bytecode.EncodeABC(bytecode.RETURN, 0, 2, 0), // 真执行:return R(0)
-			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0), // dead(luac 尾部冗余)
+			bytecode.EncodeABC(bytecode.RETURN, 0, 2, 0), // real execution: return R(0)
+			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0), // dead (luac trailing redundancy)
 		},
 	}
 	gc, host := compileWithHost(t, proto)
@@ -40,22 +43,22 @@ func TestPJ7_IdentityForm_NoOverwrite(t *testing.T) {
 	if host.doReturnCalls != 1 {
 		t.Errorf("DoReturn 应调 1 次, got %d", host.doReturnCalls)
 	}
-	// retA 应是 RETURN 的 A=0
+	// retA should be RETURN's A=0
 	if host.lastReturnA != 0 {
 		t.Errorf("DoReturn A = %d, want 0", host.lastReturnA)
 	}
-	// retB = 2(返 1 个值)
+	// retB = 2 (returns 1 value)
 	if host.lastReturnB != 2 {
 		t.Errorf("DoReturn B = %d, want 2", host.lastReturnB)
 	}
-	// retPC = 0(首条 RETURN 是真执行的,长度 2 luac 优化形态)
+	// retPC = 0 (the first RETURN is the one really executed, length-2 luac-optimized form)
 	if host.lastReturnPC != 0 {
 		t.Errorf("DoReturn PC = %d, want 0", host.lastReturnPC)
 	}
 }
 
-// TestPJ7_EmptyFunctionForm_NoOverwrite `function() end` 单条 RETURN 0 1
-// (B=1,0 返回值)形态,writeRetA=false + retB=1 双重不写槽。
+// TestPJ7_EmptyFunctionForm_NoOverwrite `function() end` single RETURN 0 1
+// (B=1, 0 return values) form: writeRetA=false + retB=1 both skip writing the slot.
 func TestPJ7_EmptyFunctionForm_NoOverwrite(t *testing.T) {
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
@@ -79,12 +82,12 @@ func TestPJ7_EmptyFunctionForm_NoOverwrite(t *testing.T) {
 	}
 }
 
-// TestPJ7_MoveForm_RetargetA MOVE A B + RETURN A 2 形态:retA 应被设为 B
-// (跳过 R(A) = R(B) 中转,直接返 R(B))。
+// TestPJ7_MoveForm_RetargetA MOVE A B + RETURN A 2 form: retA should be set to B
+// (skip the R(A) = R(B) staging move and return R(B) directly).
 func TestPJ7_MoveForm_RetargetA(t *testing.T) {
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
-			bytecode.EncodeABC(bytecode.MOVE, 1, 0, 0), // MOVE 1 0(R(1) = R(0))
+			bytecode.EncodeABC(bytecode.MOVE, 1, 0, 0), // MOVE 1 0 (R(1) = R(0))
 			bytecode.EncodeABC(bytecode.RETURN, 1, 2, 0),
 		},
 	}
@@ -97,14 +100,14 @@ func TestPJ7_MoveForm_RetargetA(t *testing.T) {
 	if len(host.regs) != 0 {
 		t.Errorf("MOVE+RETURN 形态不应调 SetReg(R(B) 已是参数值), got regs=%v", host.regs)
 	}
-	// DoReturn 的 A 应是 MOVE 的 B(0,跳过中转直接返 R(0))
+	// DoReturn's A should be MOVE's B (0, skipping the staging move and returning R(0) directly)
 	if host.lastReturnA != 0 {
 		t.Errorf("DoReturn A = %d, want 0(retA 设为 MOVE B 跳过中转)", host.lastReturnA)
 	}
 }
 
-// TestPJ7_GetUpvalForm_HostRoute GETUPVAL A B + RETURN A 2 形态:Run 调
-// host.GetUpval + SetReg(prelude opcode 路径)。
+// TestPJ7_GetUpvalForm_HostRoute GETUPVAL A B + RETURN A 2 form: Run calls
+// host.GetUpval + SetReg (prelude opcode path).
 func TestPJ7_GetUpvalForm_HostRoute(t *testing.T) {
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
@@ -114,7 +117,7 @@ func TestPJ7_GetUpvalForm_HostRoute(t *testing.T) {
 	}
 	gc, host := compileWithHost(t, proto)
 	defer tryDispose(t, gc)
-	// 预设 upval[0] = NaN-box number 99
+	// preset upval[0] = NaN-box number 99
 	expected := uint64(value.NumberValue(99))
 	host.upvals[0] = expected
 	stack := make([]uint64, 4)
@@ -133,16 +136,20 @@ func TestPJ7_GetUpvalForm_HostRoute(t *testing.T) {
 	}
 }
 
-// TestPJ7_ArithForm_HostRoute_OK ADD/SUB/MUL/DIV/MOD/POW + RETURN A 2 形态:
-// Run 调 host.Arith helper 完成算术,OK 路径写 R(A) 经 SetReg + DoReturn 弹帧。
+// TestPJ7_ArithForm_HostRoute_OK ADD/SUB/MUL/DIV/MOD/POW + RETURN A 2 form:
+// Run calls the host.Arith helper to do the arithmetic; the OK path writes R(A)
+// via SetReg + DoReturn pops the frame.
 //
-// **背景**:本批扩 PJ7 支持算术族(`function(x, y) return x + y end` /
-// `function(x) return x + 1 end` 等),mmap 段保持 dummy(`mov rax, _; ret`),
-// 真值在 Go 端 Run prelude 路径调 host.Arith 完成。mock host 跳过算术语义,
-// 只验「prelude 路径调通 + 入参传递正确 + 写 R(A) + DoReturn」机械。
+// **Background**: this batch extends PJ7 to support the arithmetic family
+// (`function(x, y) return x + y end` / `function(x) return x + 1 end`, etc.).
+// The mmap segment stays a dummy (`mov rax, _; ret`); the real value is produced
+// by the Go-side Run prelude path calling host.Arith. The mock host skips the
+// arithmetic semantics and only checks the mechanics: "prelude path reached +
+// arguments passed correctly + R(A) written + DoReturn".
 //
-// **prove-the-path 命中证据**:若 analyzeShape 误回退到拒 ADD/SUB/...
-// (preludeOp 未填),本测立即抓出:arithCalls=0 → R(A) 未被写 → 断言失败。
+// **prove-the-path hit evidence**: if analyzeShape mistakenly falls back to
+// rejecting ADD/SUB/... (preludeOp left unset), this test catches it
+// immediately: arithCalls=0 → R(A) not written → assertion fails.
 func TestPJ7_ArithForm_HostRoute_OK(t *testing.T) {
 	cases := []struct {
 		name string
@@ -157,8 +164,8 @@ func TestPJ7_ArithForm_HostRoute_OK(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			// op A=2 B=0 C=1 + RETURN A=2 B=2(`function(x,y) return x+y end`
-			// 形态:R(2) = R(0) <op> R(1); return R(2))
+			// op A=2 B=0 C=1 + RETURN A=2 B=2 (`function(x,y) return x+y end`
+			// form: R(2) = R(0) <op> R(1); return R(2))
 			proto := &bytecode.Proto{
 				Code: []bytecode.Instruction{
 					bytecode.EncodeABC(tc.op, 2, 0, 1),
@@ -202,13 +209,15 @@ func TestPJ7_ArithForm_HostRoute_OK(t *testing.T) {
 	}
 }
 
-// TestPJ7_ArithForm_HostRoute_Err ADD + RETURN 形态 Arith 错误路径:helper
-// 返 1 → Run 返 1(ERR)→ enterGibbous 取 pendingErr 冒泡。本测验 Run 不
-// 调 DoReturn(ERR 路径绕过弹帧,由 enterGibbous 兜底)。
+// TestPJ7_ArithForm_HostRoute_Err ADD + RETURN form, Arith error path: the
+// helper returns 1 → Run returns 1 (ERR) → enterGibbous picks up pendingErr and
+// bubbles it. This test checks that Run does not call DoReturn (the ERR path
+// bypasses the frame pop, which enterGibbous handles as a fallback).
 //
-// **背景**:算术族 prelude 引入错误路径(perform arithmetic on
-// string/table 等 raise),与 LOADK/MOVE/GETUPVAL 三档「永不错」不同。
-// 本测断言错误冒泡路径机械:status != 0 → DoReturn 跳过。
+// **Background**: the arithmetic-family prelude introduces an error path (raise
+// on "perform arithmetic on string/table", etc.), unlike the LOADK/MOVE/GETUPVAL
+// trio which "never errors". This test asserts the error-bubbling mechanics:
+// status != 0 → DoReturn skipped.
 func TestPJ7_ArithForm_HostRoute_Err(t *testing.T) {
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
@@ -219,7 +228,7 @@ func TestPJ7_ArithForm_HostRoute_Err(t *testing.T) {
 	c := New()
 	host := newMockP4Host()
 	c.SetHostState(host)
-	host.arithRetCode = 1 // 模拟 helper raise
+	host.arithRetCode = 1 // simulate helper raise
 	gc, err := c.Compile(proto, nil)
 	if err != nil {
 		t.Fatalf("Compile failed: %v", err)
@@ -241,29 +250,30 @@ func TestPJ7_ArithForm_HostRoute_Err(t *testing.T) {
 	}
 }
 
-// TestPJ7_UnaryForm_HostRoute_OK UNM/LEN A B + RETURN A 2 形态:Run 调
-// host.Unm/Len helper,OK 路径写 R(A)。
+// TestPJ7_UnaryForm_HostRoute_OK UNM/LEN A B + RETURN A 2 form: Run calls the
+// host.Unm/Len helper; the OK path writes R(A).
 //
-// **背景**:UNM(`function(x) return -x end`)/ LEN(`function(s)
-// return #s end`)是 unary 算术 + 长度运算族,host helper 签名 (base, pc,
-// b, a) int32 与 Arith 的 (base, pc, op, b, c, a) 不同;analyzeShape 走
-// 独立 case + Run 走独立 host helper 接口方法。
+// **Background**: UNM (`function(x) return -x end`) / LEN (`function(s)
+// return #s end`) are the unary-arithmetic + length family. The host helper
+// signature (base, pc, b, a) int32 differs from Arith's (base, pc, op, b, c, a);
+// analyzeShape uses a separate case and Run uses a separate host helper
+// interface method.
 //
-// **prove-the-path 命中证据**:mock host unaryCalls 计数 + lastUnaryOp tag
-// 验证 UNM 调 Unm / LEN 调 Len(不混调)。
+// **prove-the-path hit evidence**: the mock host unaryCalls counter +
+// lastUnaryOp tag verify that UNM calls Unm / LEN calls Len (no cross-dispatch).
 func TestPJ7_UnaryForm_HostRoute_OK(t *testing.T) {
 	cases := []struct {
 		name      string
 		op        bytecode.OpCode
-		expectTag int32 // mock 内 tag:1=Unm / 2=Len
+		expectTag int32 // tag inside mock: 1=Unm / 2=Len
 	}{
 		{"UNM", bytecode.UNM, 1},
 		{"LEN", bytecode.LEN, 2},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			// op A=1 B=0 + RETURN A=1 B=2(`function(x) return op(x) end`
-			// 形态:R(1) = op R(0); return R(1))
+			// op A=1 B=0 + RETURN A=1 B=2 (`function(x) return op(x) end`
+			// form: R(1) = op R(0); return R(1))
 			proto := &bytecode.Proto{
 				Code: []bytecode.Instruction{
 					bytecode.EncodeABC(tc.op, 1, 0, 0),
@@ -308,7 +318,7 @@ func TestPJ7_UnaryForm_HostRoute_OK(t *testing.T) {
 	}
 }
 
-// TestPJ7_UnaryForm_HostRoute_Err UNM 错误路径(helper 返 1)。
+// TestPJ7_UnaryForm_HostRoute_Err UNM error path (helper returns 1).
 func TestPJ7_UnaryForm_HostRoute_Err(t *testing.T) {
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
@@ -335,11 +345,13 @@ func TestPJ7_UnaryForm_HostRoute_Err(t *testing.T) {
 	}
 }
 
-// TestPJ7_NotForm_HostRoute_OK NOT A B + RETURN A 2 形态——本批 GetReg
-// 接口实装后,NOT 路径走 host.GetReg + value.Truthy + SetReg。
+// TestPJ7_NotForm_HostRoute_OK NOT A B + RETURN A 2 form — with the GetReg
+// interface added in this batch, the NOT path routes through host.GetReg +
+// value.Truthy + SetReg.
 //
-// **历史**:之前的 TestPJ7_NotForm_Rejected 防回归测试断言「NOT 应被拒」
-// (无 GetReg 接口),本批已加 GetReg → NOT 已可接入,改测「OK 路径」。
+// **History**: the earlier TestPJ7_NotForm_Rejected regression test asserted
+// "NOT should be rejected" (no GetReg interface). This batch adds GetReg → NOT
+// can now be supported, so the test is changed to check the "OK path".
 func TestPJ7_NotForm_HostRoute_OK(t *testing.T) {
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
@@ -350,7 +362,7 @@ func TestPJ7_NotForm_HostRoute_OK(t *testing.T) {
 	c := New()
 	host := newMockP4Host()
 	c.SetHostState(host)
-	// 预设 R(0) = number 0(Truthy=true → NOT = false)
+	// preset R(0) = number 0 (Truthy=true → NOT = false)
 	host.regs[0] = uint64(value.NumberValue(0))
 	gc, err := c.Compile(proto, nil)
 	if err != nil {
@@ -369,7 +381,7 @@ func TestPJ7_NotForm_HostRoute_OK(t *testing.T) {
 		t.Errorf("R(1) = 0x%x, want False(=0x%x;NOT number 0 = false 因 0 在 Lua 为 truthy)",
 			got, uint64(value.False))
 	}
-	// 再测 nil(Truthy=false → NOT = true)
+	// now test nil (Truthy=false → NOT = true)
 	host = newMockP4Host()
 	c.SetHostState(host)
 	host.regs[0] = uint64(value.Nil)
@@ -386,7 +398,7 @@ func TestPJ7_NotForm_HostRoute_OK(t *testing.T) {
 	}
 }
 
-// TestPJ7_SetUpvalForm_HostRoute_OK SETUPVAL A B + RETURN A 1 setter 形态。
+// TestPJ7_SetUpvalForm_HostRoute_OK SETUPVAL A B + RETURN A 1 setter form.
 func TestPJ7_SetUpvalForm_HostRoute_OK(t *testing.T) {
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
@@ -417,8 +429,8 @@ func TestPJ7_SetUpvalForm_HostRoute_OK(t *testing.T) {
 	}
 }
 
-// TestPJ7_NewTableForm_HostRoute NEWTABLE A B C + RETURN A 2 形态:Run 调
-// host.NewTable helper,永不 raise。
+// TestPJ7_NewTableForm_HostRoute NEWTABLE A B C + RETURN A 2 form: Run calls the
+// host.NewTable helper, which never raises.
 func TestPJ7_NewTableForm_HostRoute(t *testing.T) {
 	// NEWTABLE A=0 B=0 C=0 + RETURN A=0 B=2(`function() return {} end`)
 	proto := &bytecode.Proto{
@@ -430,7 +442,7 @@ func TestPJ7_NewTableForm_HostRoute(t *testing.T) {
 	c := New()
 	host := newMockP4Host()
 	c.SetHostState(host)
-	expected := uint64(0x1234567890abcdef) // 模拟 NaN-box table ref
+	expected := uint64(0x1234567890abcdef) // simulated NaN-box table ref
 	host.tableResult = expected
 	gc, err := c.Compile(proto, nil)
 	if err != nil {
@@ -459,8 +471,8 @@ func TestPJ7_NewTableForm_HostRoute(t *testing.T) {
 	}
 }
 
-// TestPJ7_GetTableForm_HostRoute_OK GETTABLE A B C + RETURN A 2 形态:Run 调
-// host.GetTable helper,OK 路径写 R(A)。
+// TestPJ7_GetTableForm_HostRoute_OK GETTABLE A B C + RETURN A 2 form: Run calls
+// the host.GetTable helper; the OK path writes R(A).
 func TestPJ7_GetTableForm_HostRoute_OK(t *testing.T) {
 	// GETTABLE A=2 B=0 C=1 + RETURN A=2 B=2(`function(t, k) return t[k] end`)
 	proto := &bytecode.Proto{
@@ -495,7 +507,7 @@ func TestPJ7_GetTableForm_HostRoute_OK(t *testing.T) {
 	}
 }
 
-// TestPJ7_GetTableForm_HostRoute_Err GETTABLE 错误路径(helper 返 1)。
+// TestPJ7_GetTableForm_HostRoute_Err GETTABLE error path (helper returns 1).
 func TestPJ7_GetTableForm_HostRoute_Err(t *testing.T) {
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
@@ -522,14 +534,14 @@ func TestPJ7_GetTableForm_HostRoute_Err(t *testing.T) {
 	}
 }
 
-// TestPJ7_GetGlobalForm_HostRoute_OK GETGLOBAL A Bx + RETURN A 2 形态。
+// TestPJ7_GetGlobalForm_HostRoute_OK GETGLOBAL A Bx + RETURN A 2 form.
 func TestPJ7_GetGlobalForm_HostRoute_OK(t *testing.T) {
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
 			bytecode.EncodeABx(bytecode.GETGLOBAL, 0, 5),
 			bytecode.EncodeABC(bytecode.RETURN, 0, 2, 0),
 		},
-		Consts:       make([]value.Value, 10), // 占位长度,Bx=5 不越界
+		Consts:       make([]value.Value, 10), // placeholder length, Bx=5 in bounds
 		StringLitIdx: make([]int32, 10),
 	}
 	c := New()
@@ -558,8 +570,9 @@ func TestPJ7_GetGlobalForm_HostRoute_OK(t *testing.T) {
 	}
 }
 
-// TestPJ7_SetTableForm_HostRoute_OK SETTABLE A B C + RETURN A 1 setter 形态。
-// 验证 retB=1 走 prelude(之前 retB>=2 守卫会拦下,新拆分守卫修复)。
+// TestPJ7_SetTableForm_HostRoute_OK SETTABLE A B C + RETURN A 1 setter form.
+// Verifies that retB=1 goes through the prelude (previously the retB>=2 guard
+// would reject it; the new split guard fixes this).
 func TestPJ7_SetTableForm_HostRoute_OK(t *testing.T) {
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
@@ -585,17 +598,17 @@ func TestPJ7_SetTableForm_HostRoute_OK(t *testing.T) {
 	if host.lastTableA != 0 || host.lastTableB != 1 || host.lastTableC != 2 {
 		t.Errorf("SetTable ABC = (%d,%d,%d), want (0,1,2)", host.lastTableA, host.lastTableB, host.lastTableC)
 	}
-	// setter 不写 R(A)
+	// setter does not write R(A)
 	if _, ok := host.regs[0]; ok {
 		t.Errorf("setter 不应写 R(A), got regs=%v", host.regs)
 	}
-	// retB=1 → DoReturn 仍调(弹帧)
+	// retB=1 → DoReturn still called (frame pop)
 	if host.doReturnCalls != 1 {
 		t.Errorf("DoReturn 应调 1 次, got %d", host.doReturnCalls)
 	}
 }
 
-// TestPJ7_SetTableForm_HostRoute_Err SETTABLE 错误路径。
+// TestPJ7_SetTableForm_HostRoute_Err SETTABLE error path.
 func TestPJ7_SetTableForm_HostRoute_Err(t *testing.T) {
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
@@ -622,15 +635,16 @@ func TestPJ7_SetTableForm_HostRoute_Err(t *testing.T) {
 	}
 }
 
-// TestPJ7_CompareForm_AnalyzeShape 验 analyzeCompareForm 识别 EQ/LT/LE
-// 6-op 模板形态(承上批审查 🟢:e2e 已覆盖但 jit 包内单元定向回归缺失)。
+// TestPJ7_CompareForm_AnalyzeShape verifies that analyzeCompareForm recognizes
+// the EQ/LT/LE 6-op template form (following the previous batch's review 🟢:
+// e2e covers it, but the jit-package targeted unit regression was missing).
 //
-// 本测对 analyzeShape 直接断言:
-//   - EQ/LT/LE × cmpA(0/1) 5/6-op 形态 ok=true 且各字段映射正确
-//   - 模板任一槽位偏离(JMP sBx≠1 / LOADBOOL 错序 / RETURN A 不一致 / 长度 ≠ {5,6})
-//     立即 ok=false。
+// This test asserts directly against analyzeShape:
+//   - EQ/LT/LE × cmpA(0/1) 5/6-op forms give ok=true with all fields mapped correctly
+//   - any deviation in a template slot (JMP sBx≠1 / LOADBOOL out of order /
+//     RETURN A inconsistent / length ∉ {5,6}) gives ok=false immediately.
 func TestPJ7_CompareForm_AnalyzeShape(t *testing.T) {
-	// 辅助:构造模板 EQ/LT/LE 6-op 形态(可选 dead RETURN)。
+	// helper: build the template EQ/LT/LE 6-op form (with optional dead RETURN).
 	build := func(cmpOp bytecode.OpCode, cmpA, cmpB, cmpC, retA int, withDead bool) *bytecode.Proto {
 		code := []bytecode.Instruction{
 			bytecode.EncodeABC(cmpOp, cmpA, cmpB, cmpC),
@@ -645,7 +659,7 @@ func TestPJ7_CompareForm_AnalyzeShape(t *testing.T) {
 		return &bytecode.Proto{Code: code}
 	}
 
-	// OK 子用例:EQ/LT/LE × cmpA(0/1) × dead(true/false)
+	// OK sub-cases: EQ/LT/LE × cmpA(0/1) × dead(true/false)
 	okCases := []struct {
 		op   bytecode.OpCode
 		cmpA int
@@ -698,16 +712,16 @@ func TestPJ7_CompareForm_AnalyzeShape(t *testing.T) {
 		})
 	}
 
-	// 拒绝子用例:模板偏离应立即返 ok=false
+	// Reject sub-cases: template deviation should return ok=false immediately
 	t.Run("Reject/cmpA_outOfRange", func(t *testing.T) {
-		// cmpA=2 越 {0,1}
+		// cmpA=2 outside {0,1}
 		if analyzeShape(build(bytecode.EQ, 2, 0, 1, 1, false)).ok {
 			t.Error("cmpA=2 应被拒")
 		}
 	})
 
 	t.Run("Reject/cmpOp_notSupported", func(t *testing.T) {
-		// 用 ADD 代替 EQ
+		// use ADD instead of EQ
 		proto := build(bytecode.EQ, 1, 0, 1, 1, false)
 		proto.Code[0] = bytecode.EncodeABC(bytecode.ADD, 1, 0, 1)
 		if analyzeShape(proto).ok {
@@ -717,7 +731,7 @@ func TestPJ7_CompareForm_AnalyzeShape(t *testing.T) {
 
 	t.Run("Reject/JMP_sBx_notOne", func(t *testing.T) {
 		proto := build(bytecode.EQ, 1, 0, 1, 1, false)
-		proto.Code[1] = bytecode.EncodeAsBx(bytecode.JMP, 0, 2) // sBx=2 不符
+		proto.Code[1] = bytecode.EncodeAsBx(bytecode.JMP, 0, 2) // sBx=2 does not match
 		if analyzeShape(proto).ok {
 			t.Error("JMP sBx≠1 应被拒")
 		}
@@ -725,7 +739,7 @@ func TestPJ7_CompareForm_AnalyzeShape(t *testing.T) {
 
 	t.Run("Reject/LOADBOOL_falseSlot_wrongBC", func(t *testing.T) {
 		proto := build(bytecode.EQ, 1, 0, 1, 1, false)
-		proto.Code[2] = bytecode.EncodeABC(bytecode.LOADBOOL, 1, 1, 0) // 应是 B=0 C=1
+		proto.Code[2] = bytecode.EncodeABC(bytecode.LOADBOOL, 1, 1, 0) // should be B=0 C=1
 		if analyzeShape(proto).ok {
 			t.Error("LOADBOOL slot[2] B/C 错应被拒")
 		}
@@ -748,7 +762,7 @@ func TestPJ7_CompareForm_AnalyzeShape(t *testing.T) {
 	})
 
 	t.Run("Reject/length_4", func(t *testing.T) {
-		// 长度 4 不在 {5,6} 范围
+		// length 4 not in {5,6}
 		proto := &bytecode.Proto{
 			Code: []bytecode.Instruction{
 				bytecode.EncodeABC(bytecode.EQ, 1, 0, 1),
@@ -763,7 +777,7 @@ func TestPJ7_CompareForm_AnalyzeShape(t *testing.T) {
 	})
 
 	t.Run("Reject/length_7", func(t *testing.T) {
-		// 长度 7 不在 {5,6} 范围
+		// length 7 not in {5,6}
 		proto := build(bytecode.EQ, 1, 0, 1, 1, true)
 		proto.Code = append(proto.Code, bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0))
 		if analyzeShape(proto).ok {
@@ -772,12 +786,12 @@ func TestPJ7_CompareForm_AnalyzeShape(t *testing.T) {
 	})
 }
 
-// TestPJ7_CompareForm_RunFolding 验 Run 路径折叠语义:
+// TestPJ7_CompareForm_RunFolding verifies the Run-path folding semantics:
 //   - cmpA=1 + cmpResult=1 → True
 //   - cmpA=1 + cmpResult=0 → False
-//   - cmpA=0 + cmpResult=0 → True(取反)
+//   - cmpA=0 + cmpResult=0 → True (negated)
 //   - cmpA=0 + cmpResult=1 → False
-//   - cmpErr → Run 返 1
+//   - cmpErr → Run returns 1
 func TestPJ7_CompareForm_RunFolding(t *testing.T) {
 	cases := []struct {
 		name       string

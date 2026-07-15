@@ -1,11 +1,12 @@
-// consts_test.go:embedded 包内被多 build variant 共用的 const + type + helper。
-// 无 build tag → p1 / p3 build 都能引用,避免文件级 build tag 在重分桶时丢
-// 共享依赖(issue #15 review)。
+// consts_test.go: const + type + helper shared across build variants within the
+// embedded package. No build tag → referenceable from both p1 and p3 builds,
+// avoiding loss of the shared dependency when file-level build tags are
+// re-bucketed (issue #15 review).
 //
-// 各 benchmark 文件的形态:
-//   - mini_bench_test.go(!wangshu_p3):`_Wangshu` / `_Gopher` mini benchmark
-//   - realworld_embedded_bench_test.go(!wangshu_p3):同形态 realworld bench
-//   - embedded_gibbous_test.go(wangshu_p3):`_Gibbous` benchmark,亦读这里的 const
+// Shape of each benchmark file:
+//   - mini_bench_test.go (!wangshu_p3): `_Wangshu` / `_Gopher` mini benchmark
+//   - realworld_embedded_bench_test.go (!wangshu_p3): same-shape realworld bench
+//   - embedded_gibbous_test.go (wangshu_p3): `_Gibbous` benchmark, also reads the consts here
 package embedded
 
 // official baseline "simple": data hardcoded as locals, no host data passed in.

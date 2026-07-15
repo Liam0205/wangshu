@@ -9,9 +9,10 @@ import (
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
-// gibbous_spec_chain_e2e_test.go —— PJ2 二段链式 chain-KK 投机模板真升层
-// e2e:`function(x) return x*2+1 end` 等 luac 编为 MUL+ADD chain(K1/K2
-// 编译期烧入,一次 mmap 段调用完成两段算术,省一次 boundary 跨界)。
+// gibbous_spec_chain_e2e_test.go — PJ2 two-stage chained chain-KK speculative
+// template real promotion e2e: `function(x) return x*2+1 end` etc. compile to a
+// MUL+ADD chain (K1/K2 baked in at compile time; a single mmap segment call does
+// both arithmetic ops, saving one boundary crossing).
 
 // TestPJ2_SpecChain_MulAdd_FastPath:f(x)=x*2+1 → f(3)=7.
 func TestPJ2_SpecChain_MulAdd_FastPath(t *testing.T) {
@@ -37,9 +38,9 @@ return f(3)`
 		jit.SpecChainHits(), jit.SpecRegKHits(), jit.SpecRegRegHits())
 }
 
-// TestPJ2_SpecChain_AddMul_FastPath:f(x)=(x+1)*2 → f(3)=8(注 Lua 优先级
-// 实际为 x + 1*2 = 5,加括号才是 (x+1)*2;但 luac 对 (x+1)*2 编 ADD+MUL 链)
-// 测试用括号显式化。
+// TestPJ2_SpecChain_AddMul_FastPath: f(x)=(x+1)*2 → f(3)=8 (note: by Lua
+// precedence this is actually x + 1*2 = 5; parentheses make it (x+1)*2, and luac
+// compiles (x+1)*2 into an ADD+MUL chain). The test uses explicit parentheses.
 func TestPJ2_SpecChain_AddMul_FastPath(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -61,8 +62,8 @@ return f(3)`
 	}
 }
 
-// TestPJ2_SpecChain_DeoptPath:table*2+1 → guard 失败 → host.Arith × 2
-// → raise byte-equal 解释器(table*number 报错).
+// TestPJ2_SpecChain_DeoptPath: table*2+1 → guard fails → host.Arith × 2
+// → raise byte-equal with the interpreter (table*number errors).
 func TestPJ2_SpecChain_DeoptPath(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `

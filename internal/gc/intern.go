@@ -1,9 +1,12 @@
-// String interning 与 JSHash(06 §9)。
+// String interning and JSHash (06 §9).
 //
-// 弱可达索引(06 §9.2):string intern 表**不延命**——串的存活由其它根可达性决定;
-// sweep 时若该串死白,从 bucket 链摘除。
+// Weakly-reachable index (06 §9.2): the string intern table does **not** keep
+// strings alive — a string's liveness is decided by reachability from other
+// roots; if the string is dead-white at sweep time, it is unlinked from its
+// bucket chain.
 //
-// 哈希算法:Lua 5.1 JSHash 分段采样(06 §9.3 定稿,与官方逐位一致)。
+// Hash algorithm: Lua 5.1 JSHash with sampling step (finalized in 06 §9.3,
+// bit-for-bit identical to upstream).
 package gc
 
 import (
@@ -13,14 +16,15 @@ import (
 
 // HashString computes Lua 5.1's JSHash with sampling step.
 //
-// 公式(对照 lstring.c luaS_newlstr):
+// Formula (cf. lstring.c luaS_newlstr):
 //
 //	h = len
 //	step = (len >> 5) + 1
 //	for i := len; i >= step; i -= step:
 //	    h = h ^ ((h<<5) + (h>>2) + uint32(b[i-1]))
 //
-// 短串(≤31 字节)逐字节;长串最多采样 ~32 字节(step 增大跳采)。
+// Short strings (≤31 bytes) are hashed byte-by-byte; long strings sample at
+// most ~32 bytes (step grows to skip-sample).
 func HashString(b []byte) uint32 {
 	l := uint32(len(b))
 	h := l
@@ -31,10 +35,12 @@ func HashString(b []byte) uint32 {
 	return h
 }
 
-// Intern 返回内容等于 b 的 String 对象 GCRef:命中复用,未命中分配并入表。
+// Intern returns the GCRef of a String object whose content equals b: reuse on
+// hit, otherwise allocate and insert into the table.
 //
-// 调用方契约(06 §9.1):若分配触发 GC,b 必须从根可达(通常 b 来自 Lua 栈或 host
-// 栈持有的 Go 切片,本函数不主动 push shadow stack)。
+// Caller contract (06 §9.1): if the allocation triggers a GC, b must stay
+// reachable from a root (typically b comes from the Lua stack or a Go slice held
+// by the host stack; this function does not push a shadow stack itself).
 func (c *Collector) Intern(b []byte) arena.GCRef {
 	h := HashString(b)
 	bucket := h & c.strMask
@@ -43,9 +49,10 @@ func (c *Collector) Intern(b []byte) arena.GCRef {
 			return ref
 		}
 	}
-	// 未命中:分配新 String + 入表。这次分配可能触发 GC——见调用方契约。
+	// Miss: allocate a new String and insert it. This allocation may trigger a
+	// GC — see the caller contract.
 	ref := object.AllocString(c.a, b, h)
-	c.LinkSweep(ref) // 挂入 sweep 链
+	c.LinkSweep(ref) // link into the sweep chain
 	c.AllocCharge(object.StringObjectBytes(uint32(len(b))))
 	c.strBuckets[bucket] = append(c.strBuckets[bucket], ref)
 	c.strCount++
@@ -78,7 +85,7 @@ func (c *Collector) removeFromStringTable(ref arena.GCRef) {
 	chain := c.strBuckets[bucket]
 	for i, r := range chain {
 		if r == ref {
-			// swap-remove(顺序无关)
+			// swap-remove (order-independent)
 			n := len(chain) - 1
 			chain[i] = chain[n]
 			c.strBuckets[bucket] = chain[:n]

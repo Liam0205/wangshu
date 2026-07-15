@@ -1,22 +1,24 @@
 //go:build wangshu_p4 && arm64
 
-// pj3_template.go —— PJ8 arm64 PJ3 FORLOOP 空 body 字节级模板(对位
-// amd64 pj3_template.go::EmitForLoopEmptyConst 69/83 字节 SSE2 版的 arm64
-// 端镜像)。
+// pj3_template.go — PJ8 arm64 PJ3 FORLOOP empty-body byte-level template
+// (mirrors amd64 pj3_template.go::EmitForLoopEmptyConst's 69/83-byte SSE2
+// version on arm64).
 //
-// **真接入状态**:本批 archEmitForLoopEmptyConst stub→ 真代理已落地,
-// Compile 主路径经 callJITFull 可调本模板;真 mmap+RX 端到端测试留物理
-// self-hosted runner(arm64 trampoline asm 已就绪 trampoline_arm64.s)。
+// **Integration status**: this batch's archEmitForLoopEmptyConst stub -> real
+// delegate has landed, and the Compile main path can call this template via
+// callJITFull; the real mmap+RX end-to-end test is left to a physical
+// self-hosted runner (the arm64 trampoline asm is already in place,
+// trampoline_arm64.s).
 //
-// **arm64 vs amd64 PJ3 模板对位**:
-//   - amd64 EmitForLoopEmptyConst 69/83 字节(无/含 safepoint):
-//     mov+movq×3(15*3=45)+ subsd+addsd+ucomisd+ja+jmp+ret(4+4+4+6+5+1=24)
-//     + safepoint(cmp 8 + jne 6 = 14)
-//   - arm64 84/92 字节(无/含 safepoint):
-//     mov+fmov×3(20*3=60)+ fsub+fadd+fcmpe+b.cond+b+ret(4*6=24)
-//     + safepoint(ldrb 4 + cbnz 4 = 8)
+// **arm64 vs amd64 PJ3 template mapping**:
+//   - amd64 EmitForLoopEmptyConst 69/83 bytes (without/with safepoint):
+//     mov+movq×3 (15*3=45) + subsd+addsd+ucomisd+ja+jmp+ret (4+4+4+6+5+1=24)
+//     + safepoint (cmp 8 + jne 6 = 14)
+//   - arm64 84/92 bytes (without/with safepoint):
+//     mov+fmov×3 (20*3=60) + fsub+fadd+fcmpe+b.cond+b+ret (4*6=24)
+//     + safepoint (ldrb 4 + cbnz 4 = 8)
 //
-// 字节布局图(arm64,无 safepoint 形态):
+// Byte layout (arm64, without-safepoint form):
 //
 //	[ 0-15]  mov x0, K_init imm64       ; 16
 //	[16-19]  fmov d0, x0                 ; 4
@@ -24,55 +26,59 @@
 //	[36-39]  fmov d1, x0                 ; 4
 //	[40-55]  mov x0, K_step imm64        ; 16
 //	[56-59]  fmov d2, x0                 ; 4
-//	[60-63]  fsub d0, d0, d2             ; 4(FORPREP 预减)
+//	[60-63]  fsub d0, d0, d2             ; 4 (FORPREP pre-decrement)
 //	[64-67]  ; loop_start
-//	[64-67]  fadd d0, d0, d2             ; 4(idx += step)
-//	[68-71]  fcmpe d0, d1                ; 4(cmp idx, limit)
-//	[72-75]  b.gt after_loop             ; 4(forward,idx > limit → exit)
-//	[76-79]  b loop_start                ; 4(backward jmp)
+//	[64-67]  fadd d0, d0, d2             ; 4 (idx += step)
+//	[68-71]  fcmpe d0, d1                ; 4 (cmp idx, limit)
+//	[72-75]  b.gt after_loop             ; 4 (forward, idx > limit -> exit)
+//	[76-79]  b loop_start                ; 4 (backward jmp)
 //	[80-83]  ; after_loop
 //	[80-83]  ret                          ; 4
-//	——— 总长 84 字节(无 safepoint)———
+//	--- total 84 bytes (without safepoint) ---
 //
-// 含 safepoint 形态(preemptFlagOff>=0,92 字节):b.gt(限退出)**之后**、
-// b loop_start(回边)**之前** 插 ldrb w0,[x27+pfOff] 4 + cbnz w0,
-// after_loop 4 = 8 字节,与 RegLimit/WithBody/WithBody2 + amd64 EmptyConst
-// 同款 hot path 范本(承 review COMMENT 17 S-1 统一位置);对位 amd64 14B
-// safepoint check arm64 仅 8B(RISC fixed-length 紧凑)。
+// With-safepoint form (preemptFlagOff>=0, 92 bytes): insert ldrb w0,[x27+pfOff]
+// 4 + cbnz w0, after_loop 4 = 8 bytes **after** b.gt (limit exit) and **before**
+// b loop_start (back-edge), the same hot-path pattern as
+// RegLimit/WithBody/WithBody2 + amd64 EmptyConst (per review COMMENT 17 S-1
+// unified position); versus amd64's 14B safepoint check, arm64 is only 8B (RISC
+// fixed-length is compact).
 
 package arm64
 
-// EmitForLoopEmptyConstArm64 拼接 arm64「全常量 init/limit/step + 空 body
-// FORLOOP 字节级模板」(对位 amd64 EmitForLoopEmptyConst,含可选 safepoint
-// check 段)。
+// EmitForLoopEmptyConstArm64 assembles the arm64 "all-constant init/limit/step +
+// empty-body FORLOOP byte-level template" (mirrors amd64 EmitForLoopEmptyConst,
+// with an optional safepoint check section).
 //
-// 参数:
-//   - kInit / kLimit / kStep:三个常量的 NaN-box raw bits(由 caller 经
-//     value.NumberValue(K).Bits() 算好,与 amd64 同款)
-//   - preemptFlagOff:r27+disp 处的 preempt 字段 byte 偏移
-//   - >= 0:启用 safepoint check(承 V18 -race 抢占纪律)
-//   - <  0:跳过 safepoint(测试用 / 严格单段计算用例)
+// Parameters:
+//   - kInit / kLimit / kStep: the three constants' NaN-box raw bits (computed by
+//     the caller via value.NumberValue(K).Bits(), same as amd64)
+//   - preemptFlagOff: the byte offset of the preempt field at r27+disp
+//   - >= 0: enable the safepoint check (per V18 -race preemption discipline)
+//   - <  0: skip the safepoint (for tests / strict single-segment compute cases)
 //
-// 返回追加后的 buf。
+// Returns the appended buf.
 //
-// **字节布局**(84 字节无 safepoint / 92 字节含 safepoint):
-//   - 无 safepoint:mov+fmov×3 60 + fsub 4 + fadd 4 + fcmpe 4 + b.gt 4
+// **Byte layout** (84 bytes without safepoint / 92 bytes with safepoint):
+//   - without safepoint: mov+fmov×3 60 + fsub 4 + fadd 4 + fcmpe 4 + b.gt 4
 //   - b 4 + ret 4 = 84
-//   - 含 safepoint:84 + ldrb 4 + cbnz 4 = 92(safepoint check 插在
-//     b.gt **之后**、b loop_start 回边 **之前**——与 RegLimit/WithBody
-//     /WithBody2 + amd64 EmptyConst 同款 hot path 范本,承 review
-//     COMMENT 17 S-1 位置统一)
+//   - with safepoint: 84 + ldrb 4 + cbnz 4 = 92 (the safepoint check is inserted
+//     **after** b.gt and **before** the b loop_start back-edge — the same
+//     hot-path pattern as RegLimit/WithBody/WithBody2 + amd64 EmptyConst, per
+//     review COMMENT 17 S-1 unified position)
 //
-// **预设条件**:
-//   - arm64 trampoline 协议(承 06 §4.2):x27=jitContext / x26=valueStackBase;
-//     启用 safepoint 时读 [x27+preemptFlagOff] 一字节
-//   - R(A) idx 槽不写(空 body 不需要)
-//   - 返回 x0 是 dummy(段返回后 host 不读)
+// **Preconditions**:
+//   - arm64 trampoline protocol (per 06 §4.2): x27=jitContext /
+//     x26=valueStackBase; when safepoint is enabled, read one byte at
+//     [x27+preemptFlagOff]
+//   - the R(A) idx slot is not written (an empty body does not need it)
+//   - the returned x0 is a dummy (the host does not read it after the segment
+//     returns)
 //
-// 用例:PJ3 FORLOOP 空 body 形态 arm64 端字节级实证(对位 amd64 同款形态
-// 的 7.15-25.41x 加速比留 arm64 物理 runner 实测)。
+// Use case: byte-level demonstration of the PJ3 FORLOOP empty-body form on the
+// arm64 side (the 7.15-25.41x speedup vs the amd64 same-form is left to the
+// arm64 physical runner to measure).
 func EmitForLoopEmptyConstArm64(buf []byte, kInit, kLimit, kStep uint64, preemptFlagOff int32) []byte {
-	// 装 init/limit/step 到 d0/d1/d2(各 20 字节:mov x0 imm64 16 + fmov 4)
+	// Load init/limit/step into d0/d1/d2 (20 bytes each: mov x0 imm64 16 + fmov 4)
 	buf = EmitMovXdImm64(buf, 0, kInit) // mov x0, kInit
 	buf = EmitFmovDdFromXn(buf, 0, 0)   // fmov d0, x0
 
@@ -82,19 +88,19 @@ func EmitForLoopEmptyConstArm64(buf []byte, kInit, kLimit, kStep uint64, preempt
 	buf = EmitMovXdImm64(buf, 0, kStep) // mov x0, kStep
 	buf = EmitFmovDdFromXn(buf, 2, 0)   // fmov d2, x0
 
-	// FORPREP 预减:d0 = init - step(4 字节)
+	// FORPREP pre-decrement: d0 = init - step (4 bytes)
 	buf = EmitFsubDdDnDm(buf, 0, 0, 2)
 
 	// loop_start label
 	loopStart := len(buf)
 
-	// FORLOOP idx+=step:d0 += d2(4 字节)
+	// FORLOOP idx+=step: d0 += d2 (4 bytes)
 	buf = EmitFaddDdDnDm(buf, 0, 0, 2)
 
-	// cmp idx, limit:fcmpe d0, d1(4 字节,signaling ordered)
+	// cmp idx, limit: fcmpe d0, d1 (4 bytes, signaling ordered)
 	buf = EmitFcmpeDnDm(buf, 0, 1)
 
-	// b.hi after_loop placeholder(forward,fixup 后)。
+	// b.hi after_loop placeholder (forward, after fixup).
 	// HI (C=1 && Z=0) exits on idx > limit OR unordered — fcmpe sets
 	// C=1,Z=0 for NaN operands, so a NaN limit/init leaves with zero
 	// iterations like the interpreter (issues #117/#118; b.gt is false
@@ -102,14 +108,16 @@ func EmitForLoopEmptyConstArm64(buf []byte, kInit, kLimit, kStep uint64, preempt
 	bHiOff := len(buf)
 	buf = EmitBCond(buf, CondHI, 0) // placeholder imm19=0
 
-	// (可选)safepoint check:ldrb w0, [x27+pfOff]; cbnz w0, after_loop
-	// (对位 amd64 cmp byte [r15+pfOff],0 + jne after_loop 14B;
-	//  arm64 端 ldrb+cbnz 共 8B)
+	// (optional) safepoint check: ldrb w0, [x27+pfOff]; cbnz w0, after_loop
+	// (mirrors amd64 cmp byte [r15+pfOff],0 + jne after_loop 14B; the arm64
+	//  ldrb+cbnz is 8B total)
 	//
-	// **位置**:b.gt(限退出)**之后**、b loop_start(回边)**之前**——与
-	// RegLimit/WithBody/WithBody2 + amd64 EmptyConst 同款 hot path 范本
-	// (先算+判退出再 check,而非 loop_start 后立即 check);避免空 iter
-	// 多一次 ldrb 开销,且与四形态保持位置统一(承 review COMMENT 17 S-1)。
+	// **Position**: **after** b.gt (limit exit) and **before** b loop_start
+	// (back-edge) — the same hot-path pattern as
+	// RegLimit/WithBody/WithBody2 + amd64 EmptyConst (compute + check-for-exit
+	// first, rather than checking right after loop_start); this avoids an extra
+	// ldrb on an empty iteration, and keeps the position unified across the four
+	// forms (per review COMMENT 17 S-1).
 	var safepointCbnzOff int = -1
 	if preemptFlagOff >= 0 {
 		buf = EmitLdrbWtFromXnDisp(buf, 0, 27, uint16(preemptFlagOff))
@@ -117,7 +125,7 @@ func EmitForLoopEmptyConstArm64(buf []byte, kInit, kLimit, kStep uint64, preempt
 		buf = EmitCbnzW(buf, 0, 0) // placeholder imm19=0
 	}
 
-	// b loop_start backward(4 字节)
+	// b loop_start backward (4 bytes)
 	bLoopOff := len(buf)
 	imm26 := int32(loopStart-bLoopOff) / 4
 	buf = EmitB(buf, imm26)
@@ -125,14 +133,14 @@ func EmitForLoopEmptyConstArm64(buf []byte, kInit, kLimit, kStep uint64, preempt
 	// after_loop label
 	afterLoopOff := len(buf)
 
-	// ret(4 字节)
+	// ret (4 bytes)
 	buf = EmitRet(buf)
 
-	// patch b.gt imm19 = (after_loop - b.gt 自身位置) / 4 字数偏移
+	// patch b.gt imm19 = (after_loop - b.gt's own position) / 4 word offset
 	imm19BGt := int32(afterLoopOff-bHiOff) / 4
 	patchBCondImm19(buf, bHiOff, imm19BGt)
 
-	// patch safepoint cbnz forward(若启用)
+	// patch safepoint cbnz forward (if enabled)
 	if safepointCbnzOff >= 0 {
 		safepointImm19 := int32(afterLoopOff-safepointCbnzOff) / 4
 		patchCbnzImm19(buf, safepointCbnzOff, safepointImm19)
@@ -141,61 +149,64 @@ func EmitForLoopEmptyConstArm64(buf []byte, kInit, kLimit, kStep uint64, preempt
 	return buf
 }
 
-// EncodedForLoopEmptyConstArm64Len arm64 PJ3 FORLOOP 空 body 模板字节数
-// (84 字节无 safepoint / 92 字节含 safepoint;指本批 caller 关注的
-// 无 safepoint 上限,含 safepoint 由 caller 经 EncodedSafepointCheckLen 加)。
+// EncodedForLoopEmptyConstArm64Len is the arm64 PJ3 FORLOOP empty-body template
+// byte count (84 bytes without safepoint / 92 bytes with safepoint; here refers
+// to the without-safepoint upper bound this batch's caller cares about, with the
+// with-safepoint case added by the caller via EncodedSafepointCheckLen).
 const EncodedForLoopEmptyConstArm64Len = 3*(EncodedMovXdImm64Len+EncodedFmovDdFromXnLen) +
 	EncodedFsubDdDnDmLen + EncodedFaddDdDnDmLen + EncodedFcmpeDnDmLen +
 	EncodedBCondLen + EncodedBLen + EncodedRetLen
 
-// EmitForLoopRegLimitArm64 拼接「init/step 常量 + limit 是 reg + 空 body
-// FORLOOP」arm64 模板(对位 amd64 EmitForLoopRegLimit 103/117 字节,arm64
-// 因 MOV imm64 序列与 RISC fixed-length 累积长)。
+// EmitForLoopRegLimitArm64 assembles the "init/step constant + limit is a reg +
+// empty-body FORLOOP" arm64 template (mirrors amd64 EmitForLoopRegLimit's
+// 103/117 bytes; arm64 accumulates longer due to the MOV imm64 sequence + RISC
+// fixed-length).
 //
-// 字节布局(以 step>0 + safepoint 启用为例,128 字节):
+// Byte layout (with step>0 + safepoint enabled as an example, 128 bytes):
 //
-//	[ 0-3 ] LDR x0, [x26+limitReg*8]      ; 4(load R(limitReg))
+//	[ 0-3 ] LDR x0, [x26+limitReg*8]      ; 4 (load R(limitReg))
 //	[ 4-19] MOV x1, qNanBoxBase imm64     ; 16
 //	[20-23] CMP x0, x1                    ; 4
-//	[24-27] B.HS deopt                    ; 4(若 R(limitReg) >= qNanBoxBase 非 number,deopt)
+//	[24-27] B.HS deopt                    ; 4 (if R(limitReg) >= qNanBoxBase, not a number, deopt)
 //	[28-43] MOV x0, K_init imm64           ; 16
 //	[44-47] FMOV d0, x0                    ; 4
-//	[48-51] LDR x0, [x26+limitReg*8]       ; 4(再 load limit,作为 f64 bits)
+//	[48-51] LDR x0, [x26+limitReg*8]       ; 4 (re-load limit, as f64 bits)
 //	[52-55] FMOV d1, x0                    ; 4
 //	[56-71] MOV x0, K_step imm64           ; 16
 //	[72-75] FMOV d2, x0                    ; 4
-//	[76-79] FSUB d0, d0, d2                ; 4(FORPREP 预减)
+//	[76-79] FSUB d0, d0, d2                ; 4 (FORPREP pre-decrement)
 //	[80-83] ; loop_start
 //	[80-83] FADD d0, d0, d2                ; 4
 //	[84-87] FCMPE d0, d1                   ; 4
-//	[88-91] B.GT after_loop                ; 4(forward)
-//	[92-95] LDRB W0, [x27+pfOff]           ; 4(safepoint)
+//	[88-91] B.GT after_loop                ; 4 (forward)
+//	[92-95] LDRB W0, [x27+pfOff]           ; 4 (safepoint)
 //	[96-99] CBNZ W0, after_loop            ; 4
 //	[100-103] B loop_start backward        ; 4
 //	[104-107] ; after_loop
 //	[104-107] RET                          ; 4
-//	[108-123] MOV x0, deoptCode imm64      ; 16(deopt block)
+//	[108-123] MOV x0, deoptCode imm64      ; 16 (deopt block)
 //	[124-127] RET                          ; 4
-//	——— 含 safepoint:128 字节 ———
-//	——— 无 safepoint(preemptFlagOff<0,省 8 字节):120 字节 ———
+//	--- with safepoint: 128 bytes ---
+//	--- without safepoint (preemptFlagOff<0, saves 8 bytes): 120 bytes ---
 //
-// **预设条件**:
-//   - x26 = valueStackBase(承 06 §4.2 trampoline 装)
-//   - x27 = jitContext(safepoint check 用)
-//   - limitReg ∈ [0, 254]
+// **Preconditions**:
+//   - x26 = valueStackBase (per 06 §4.2 trampoline load)
+//   - x27 = jitContext (used by the safepoint check)
+//   - limitReg in [0, 254]
 //
-// **deopt 路径**(byte-equal P1):本模板不写 R(A) idx 槽(空 body 形态),
-// deopt 时直接返 deoptCode,caller 经 Run 路径降级调 host(同款 amd64)。
+// **deopt path** (byte-equal P1): this template does not write the R(A) idx slot
+// (empty-body form), so on deopt it returns deoptCode directly, and the caller
+// degrades to calling the host via the Run path (same as amd64).
 func EmitForLoopRegLimitArm64(buf []byte, kInit, kStep uint64,
 	limitReg uint8, deoptCode uint64, preemptFlagOff int32) []byte {
-	// guard:LDR R(limitReg) → MOV qNanBoxBase → CMP → B.HS deopt
+	// guard: LDR R(limitReg) -> MOV qNanBoxBase -> CMP -> B.HS deopt
 	buf = EmitLdrXtFromXnDisp(buf, 0, 26, uint16(limitReg)*8)
 	buf = EmitMovXdImm64(buf, 1, qNanBoxBase)
 	buf = EmitCmpXnXm(buf, 0, 1)
 	bHsDeoptOff := len(buf)
 	buf = EmitBCond(buf, CondHS, 0) // placeholder imm19=0
 
-	// 装 init/limit/step
+	// Load init/limit/step
 	buf = EmitMovXdImm64(buf, 0, kInit)
 	buf = EmitFmovDdFromXn(buf, 0, 0)
 
@@ -205,7 +216,7 @@ func EmitForLoopRegLimitArm64(buf []byte, kInit, kStep uint64,
 	buf = EmitMovXdImm64(buf, 0, kStep)
 	buf = EmitFmovDdFromXn(buf, 2, 0)
 
-	// FORPREP 预减
+	// FORPREP pre-decrement
 	buf = EmitFsubDdDnDm(buf, 0, 0, 2)
 
 	// loop_start label
@@ -219,7 +230,7 @@ func EmitForLoopRegLimitArm64(buf []byte, kInit, kStep uint64,
 	bHiOff := len(buf)
 	buf = EmitBCond(buf, CondHI, 0)
 
-	// (可选)safepoint check
+	// (optional) safepoint check
 	var safepointCbnzOff int = -1
 	if preemptFlagOff >= 0 {
 		buf = EmitLdrbWtFromXnDisp(buf, 0, 27, uint16(preemptFlagOff))
@@ -243,37 +254,37 @@ func EmitForLoopRegLimitArm64(buf []byte, kInit, kStep uint64,
 	buf = EmitMovXdImm64(buf, 0, deoptCode)
 	buf = EmitRet(buf)
 
-	// patch B.GT forward(target = after_loop)
+	// patch B.GT forward (target = after_loop)
 	patchBCondImm19(buf, bHiOff, int32(afterLoopOff-bHiOff)/4)
 
-	// patch safepoint CBNZ forward(target = after_loop)
+	// patch safepoint CBNZ forward (target = after_loop)
 	if safepointCbnzOff >= 0 {
 		patchCbnzImm19(buf, safepointCbnzOff, int32(afterLoopOff-safepointCbnzOff)/4)
 	}
 
-	// patch B.HS deopt(target = deopt_block start)
+	// patch B.HS deopt (target = deopt_block start)
 	patchBCondImm19(buf, bHsDeoptOff, int32(deoptStart-bHsDeoptOff)/4)
 
 	return buf
 }
 
-// EncodedForLoopRegLimitArm64NoSafepointLen 无 safepoint 形态字节数(120)。
+// EncodedForLoopRegLimitArm64NoSafepointLen is the without-safepoint form byte count (120).
 const EncodedForLoopRegLimitArm64NoSafepointLen = 120
 
-// EncodedForLoopRegLimitArm64WithSafepointLen 含 safepoint 形态字节数(128)。
+// EncodedForLoopRegLimitArm64WithSafepointLen is the with-safepoint form byte count (128).
 const EncodedForLoopRegLimitArm64WithSafepointLen = 128
 
-// arm64ArithOpForSseOp 把 amd64 SSE opcode 字节(F2 0F xx ModRM)的 xx
-// 翻译成 arm64 浮点 binop 选择子(0/1/2/3 → FADD/FSUB/FMUL/FDIV)。
+// arm64ArithOpForSseOp translates the xx of an amd64 SSE opcode byte (F2 0F xx
+// ModRM) into an arm64 float binop selector (0/1/2/3 -> FADD/FSUB/FMUL/FDIV).
 //
-// amd64 SSE opcode 取值(承 amd64 pj2_template.go::SseOp 常量):
-//   - 0x58 ADDSD → FADD(arm64 0x1E602800)
-//   - 0x5C SUBSD → FSUB(arm64 0x1E603800)
-//   - 0x59 MULSD → FMUL(arm64 0x1E600800)
-//   - 0x5E DIVSD → FDIV(arm64 0x1E601800)
+// amd64 SSE opcode values (per amd64 pj2_template.go::SseOp constants):
+//   - 0x58 ADDSD -> FADD (arm64 0x1E602800)
+//   - 0x5C SUBSD -> FSUB (arm64 0x1E603800)
+//   - 0x59 MULSD -> FMUL (arm64 0x1E600800)
+//   - 0x5E DIVSD -> FDIV (arm64 0x1E601800)
 //
-// 返回 emit 函数指针(`func(buf []byte, dd, dn, dm uint8) []byte`)。
-// 不识别的 op 返 nil(caller 必须保证 op ∈ {0x58,0x59,0x5C,0x5E})。
+// Returns the emit function pointer (`func(buf []byte, dd, dn, dm uint8) []byte`).
+// An unrecognized op returns nil (the caller must guarantee op in {0x58,0x59,0x5C,0x5E}).
 func arm64ArithOpForSseOp(sseOp byte) func([]byte, uint8, uint8, uint8) []byte {
 	switch sseOp {
 	case 0x58: // ADDSD
@@ -289,50 +300,53 @@ func arm64ArithOpForSseOp(sseOp byte) func([]byte, uint8, uint8, uint8) []byte {
 	}
 }
 
-// EmitForLoopWithRegKBodyArm64 拼接「全常量 init/limit/step + reg-K body
-// FORLOOP」arm64 模板(对位 amd64 EmitForLoopWithRegKBody 121/135 字节)。
+// EmitForLoopWithRegKBodyArm64 assembles the "all-constant init/limit/step +
+// reg-K body FORLOOP" arm64 template (mirrors amd64 EmitForLoopWithRegKBody's
+// 121/135 bytes).
 //
-// 形态:`local s=K_s; for i=K_init, K_limit, K_step do s = s op K_body end;
-// return s`,sseOp 决定 body 算术(ADD/SUB/MUL/DIV)。
+// Form: `local s=K_s; for i=K_init, K_limit, K_step do s = s op K_body end;
+// return s`, with sseOp deciding the body arithmetic (ADD/SUB/MUL/DIV).
 //
-// 字节布局(含 safepoint,152 字节):
+// Byte layout (with safepoint, 152 bytes):
 //
 //	[ 0-15]  MOV x0, K_s imm64                ; 16
-//	[16-19]  STR x0, [x26+aS*8]               ; 4(init R(aS)=s)
+//	[16-19]  STR x0, [x26+aS*8]               ; 4 (init R(aS)=s)
 //	[20-35]  MOV x0, K_init imm64              ; 16
 //	[36-39]  FMOV d0, x0                       ; 4
 //	[40-55]  MOV x0, K_limit imm64             ; 16
 //	[56-59]  FMOV d1, x0                       ; 4
 //	[60-75]  MOV x0, K_step imm64              ; 16
 //	[76-79]  FMOV d2, x0                       ; 4
-//	[80-83]  FSUB d0, d0, d2                   ; 4(FORPREP)
+//	[80-83]  FSUB d0, d0, d2                   ; 4 (FORPREP)
 //	[84-87]  ; loop_start
 //	[84-87]  FADD d0, d0, d2                   ; 4
 //	[88-91]  FCMPE d0, d1                      ; 4
 //	[92-95]  B.GT after_loop                   ; 4
-//	[96-99]  LDR x0, [x26+aS*8]                ; 4(load s 经 GP 再 FMOV)
+//	[96-99]  LDR x0, [x26+aS*8]                ; 4 (load s via GP then FMOV)
 //	[100-103] FMOV d3, x0                       ; 4
 //	[104-119] MOV x0, K_body imm64              ; 16
 //	[120-123] FMOV d4, x0                       ; 4
-//	[124-127] <FOP> d3, d3, d4                  ; 4(body s op K)
-//	[128-131] FMOV x0, d3                       ; 4(回 GP 准备 STR)
-//	[132-135] STR x0, [x26+aS*8]                ; 4(store s)
-//	[136-139] LDRB W0, [x27+pfOff]              ; 4(safepoint)
+//	[124-127] <FOP> d3, d3, d4                  ; 4 (body s op K)
+//	[128-131] FMOV x0, d3                       ; 4 (back to GP to prepare STR)
+//	[132-135] STR x0, [x26+aS*8]                ; 4 (store s)
+//	[136-139] LDRB W0, [x27+pfOff]              ; 4 (safepoint)
 //	[140-143] CBNZ W0, after_loop               ; 4
 //	[144-147] B loop_start                      ; 4
 //	[148-151] ; after_loop
 //	[148-151] RET                               ; 4
-//	——— 含 safepoint:152 字节 ———
-//	——— 无 safepoint(pfOff<0,省 8 字节):144 字节 ———
+//	--- with safepoint: 152 bytes ---
+//	--- without safepoint (pfOff<0, saves 8 bytes): 144 bytes ---
 //
-// **预设条件**:
-//   - x26 = valueStackBase,x27 = jitContext
-//   - aS ∈ [0, 254],与 idx/limit/step 寄存器号(d0/d1/d2)独立
-//   - sseOp ∈ {SseOpAddsd 0x58, SseOpSubsd 0x5C, SseOpMulsd 0x59,
-//     SseOpDivsd 0x5E};不识别返原 buf 不操作(本函数对 nil op 静默放弃)
+// **Preconditions**:
+//   - x26 = valueStackBase, x27 = jitContext
+//   - aS in [0, 254], independent of the idx/limit/step register numbers
+//     (d0/d1/d2)
+//   - sseOp in {SseOpAddsd 0x58, SseOpSubsd 0x5C, SseOpMulsd 0x59,
+//     SseOpDivsd 0x5E}; an unrecognized one returns buf untouched (this function
+//     silently gives up on a nil op)
 //
-// **deopt 路径**:无 guard 无 deopt block(body 全常量 K,无运行时
-// 形态校验);对位 amd64 同款最简形态。
+// **deopt path**: no guard, no deopt block (the body is all-constant K, no
+// runtime form check); mirrors amd64's same minimal form.
 func EmitForLoopWithRegKBodyArm64(buf []byte, kS, kInit, kLimit, kStep, kBody uint64,
 	aS uint8, sseOp byte, preemptFlagOff int32) []byte {
 	emitFop := arm64ArithOpForSseOp(sseOp)
@@ -344,7 +358,7 @@ func EmitForLoopWithRegKBodyArm64(buf []byte, kS, kInit, kLimit, kStep, kBody ui
 	buf = EmitMovXdImm64(buf, 0, kS)
 	buf = EmitStrXtToXnDisp(buf, 0, 26, uint16(aS)*8)
 
-	// 2. FORLOOP setup:装 init/limit/step 到 d0/d1/d2
+	// 2. FORLOOP setup: load init/limit/step into d0/d1/d2
 	buf = EmitMovXdImm64(buf, 0, kInit)
 	buf = EmitFmovDdFromXn(buf, 0, 0)
 	buf = EmitMovXdImm64(buf, 0, kLimit)
@@ -352,7 +366,7 @@ func EmitForLoopWithRegKBodyArm64(buf []byte, kS, kInit, kLimit, kStep, kBody ui
 	buf = EmitMovXdImm64(buf, 0, kStep)
 	buf = EmitFmovDdFromXn(buf, 2, 0)
 
-	// 3. FORPREP 预减
+	// 3. FORPREP pre-decrement
 	buf = EmitFsubDdDnDm(buf, 0, 0, 2)
 
 	// 4. loop_start label
@@ -366,7 +380,7 @@ func EmitForLoopWithRegKBodyArm64(buf []byte, kS, kInit, kLimit, kStep, kBody ui
 	bHiOff := len(buf)
 	buf = EmitBCond(buf, CondHI, 0)
 
-	// 7. body:R(aS) = R(aS) op K_body
+	// 7. body: R(aS) = R(aS) op K_body
 	buf = EmitLdrXtFromXnDisp(buf, 0, 26, uint16(aS)*8) // load s
 	buf = EmitFmovDdFromXn(buf, 3, 0)                   // d3 = s
 	buf = EmitMovXdImm64(buf, 0, kBody)                 // x0 = K_body
@@ -375,7 +389,7 @@ func EmitForLoopWithRegKBodyArm64(buf []byte, kS, kInit, kLimit, kStep, kBody ui
 	buf = EmitFmovXdFromDn(buf, 0, 3)                   // x0 = d3
 	buf = EmitStrXtToXnDisp(buf, 0, 26, uint16(aS)*8)   // store s
 
-	// 8. (可选)safepoint check
+	// 8. (optional) safepoint check
 	var safepointCbnzOff int = -1
 	if preemptFlagOff >= 0 {
 		buf = EmitLdrbWtFromXnDisp(buf, 0, 27, uint16(preemptFlagOff))
@@ -403,51 +417,52 @@ func EmitForLoopWithRegKBodyArm64(buf []byte, kS, kInit, kLimit, kStep, kBody ui
 	return buf
 }
 
-// EncodedForLoopWithRegKBodyArm64NoSafepointLen 无 safepoint 形态字节数(144)。
+// EncodedForLoopWithRegKBodyArm64NoSafepointLen is the without-safepoint form byte count (144).
 const EncodedForLoopWithRegKBodyArm64NoSafepointLen = 144
 
-// EncodedForLoopWithRegKBodyArm64WithSafepointLen 含 safepoint 形态字节数(152)。
+// EncodedForLoopWithRegKBodyArm64WithSafepointLen is the with-safepoint form byte count (152).
 const EncodedForLoopWithRegKBodyArm64WithSafepointLen = 152
 
-// EmitForLoopWithRegKBody2Arm64 拼接「全常量 + reg-K 二段 body FORLOOP」
-// arm64 模板(对位 amd64 EmitForLoopWithRegKBody2 140/154 字节)。
+// EmitForLoopWithRegKBody2Arm64 assembles the "all-constant + reg-K two-section
+// body FORLOOP" arm64 template (mirrors amd64 EmitForLoopWithRegKBody2's 140/154
+// bytes).
 //
-// 形态:`local s=K_s; for i=K1,K2,K3 do s = s op1 K_body1; s = s op2 K_body2
-// end; return s`。body 内两段 reg-K op 共享 d3 寄存器跨两段(节省一次
-// LDR/STR R(aS) round-trip,对位 amd64 同款 xmm3 共享形态)。
+// Form: `local s=K_s; for i=K1,K2,K3 do s = s op1 K_body1; s = s op2 K_body2
+// end; return s`. The two reg-K ops in the body share d3 across both sections
+// (saving one LDR/STR R(aS) round-trip; mirrors amd64's same xmm3-sharing form).
 //
-// 字节布局(含 safepoint,176 字节):
+// Byte layout (with safepoint, 176 bytes):
 //
-//	[ 0-19] MOV K_s + STR R(aS)         ; 20(init s)
+//	[ 0-19] MOV K_s + STR R(aS)         ; 20 (init s)
 //	[20-79] setup d0/d1/d2 + FORPREP     ; 60
 //	[80-83] FSUB d0,d0,d2                ; 4
 //	[84-87] ; loop_start
 //	[84-95] FADD + FCMPE + B.GT          ; 12
-//	[96-99] LDR x0, [x26+aS*8]           ; 4(load s 一次)
+//	[96-99] LDR x0, [x26+aS*8]           ; 4 (load s once)
 //	[100-103] FMOV d3, x0                ; 4
 //	[104-119] MOV x0, K_body1 imm64      ; 16
 //	[120-123] FMOV d4, x0                ; 4
-//	[124-127] <FOP1> d3, d3, d4          ; 4(s op1 K1)
+//	[124-127] <FOP1> d3, d3, d4          ; 4 (s op1 K1)
 //	[128-143] MOV x0, K_body2 imm64      ; 16
 //	[144-147] FMOV d4, x0                ; 4
-//	[148-151] <FOP2> d3, d3, d4          ; 4(s op2 K2)
-//	[152-155] FMOV x0, d3                ; 4(回 GP)
-//	[156-159] STR x0, [x26+aS*8]         ; 4(store s 一次)
-//	[160-163] LDRB W0, [x27+pfOff]       ; 4(safepoint)
+//	[148-151] <FOP2> d3, d3, d4          ; 4 (s op2 K2)
+//	[152-155] FMOV x0, d3                ; 4 (back to GP)
+//	[156-159] STR x0, [x26+aS*8]         ; 4 (store s once)
+//	[160-163] LDRB W0, [x27+pfOff]       ; 4 (safepoint)
 //	[164-167] CBNZ W0, after_loop        ; 4
 //	[168-171] B loop_start backward      ; 4
 //	[172-175] ; after_loop
 //	[172-175] RET                         ; 4
-//	——— 含 safepoint:176 字节 ———
-//	——— 无 safepoint(pfOff<0):168 字节 ———
+//	--- with safepoint: 176 bytes ---
+//	--- without safepoint (pfOff<0): 168 bytes ---
 //
-// **预设条件**:
-//   - x26 = valueStackBase,x27 = jitContext
-//   - aS ∈ [0, 254]
-//   - sseOp1/sseOp2 ∈ {0x58 ADDSD, 0x5C SUBSD, 0x59 MULSD, 0x5E DIVSD}
+// **Preconditions**:
+//   - x26 = valueStackBase, x27 = jitContext
+//   - aS in [0, 254]
+//   - sseOp1/sseOp2 in {0x58 ADDSD, 0x5C SUBSD, 0x59 MULSD, 0x5E DIVSD}
 //
-// **deopt 路径**:无 guard 无 deopt block(K_body1/K_body2 都是常量;
-// 对位 amd64 同款最简形态)。
+// **deopt path**: no guard, no deopt block (K_body1/K_body2 are both constants;
+// mirrors amd64's same minimal form).
 func EmitForLoopWithRegKBody2Arm64(buf []byte, kS, kInit, kLimit, kStep, kBody1, kBody2 uint64,
 	aS uint8, sseOp1, sseOp2 byte, preemptFlagOff int32) []byte {
 	emitFop1 := arm64ArithOpForSseOp(sseOp1)
@@ -482,7 +497,7 @@ func EmitForLoopWithRegKBody2Arm64(buf []byte, kS, kInit, kLimit, kStep, kBody1,
 	bHiOff := len(buf)
 	buf = EmitBCond(buf, CondHI, 0)
 
-	// 7. body:load s 一次,然后两段 op 共享 d3
+	// 7. body: load s once, then the two op sections share d3
 	buf = EmitLdrXtFromXnDisp(buf, 0, 26, uint16(aS)*8)
 	buf = EmitFmovDdFromXn(buf, 3, 0) // d3 = s
 
@@ -496,11 +511,11 @@ func EmitForLoopWithRegKBody2Arm64(buf []byte, kS, kInit, kLimit, kStep, kBody1,
 	buf = EmitFmovDdFromXn(buf, 4, 0)
 	buf = emitFop2(buf, 3, 3, 4) // d3 = d3 op2 d4
 
-	// store s 一次
+	// store s once
 	buf = EmitFmovXdFromDn(buf, 0, 3)
 	buf = EmitStrXtToXnDisp(buf, 0, 26, uint16(aS)*8)
 
-	// 8. (可选)safepoint
+	// 8. (optional) safepoint
 	var safepointCbnzOff int = -1
 	if preemptFlagOff >= 0 {
 		buf = EmitLdrbWtFromXnDisp(buf, 0, 27, uint16(preemptFlagOff))
@@ -528,8 +543,8 @@ func EmitForLoopWithRegKBody2Arm64(buf []byte, kS, kInit, kLimit, kStep, kBody1,
 	return buf
 }
 
-// EncodedForLoopWithRegKBody2Arm64NoSafepointLen 无 safepoint 形态字节数(168)。
+// EncodedForLoopWithRegKBody2Arm64NoSafepointLen is the without-safepoint form byte count (168).
 const EncodedForLoopWithRegKBody2Arm64NoSafepointLen = 168
 
-// EncodedForLoopWithRegKBody2Arm64WithSafepointLen 含 safepoint 形态字节数(176)。
+// EncodedForLoopWithRegKBody2Arm64WithSafepointLen is the with-safepoint form byte count (176).
 const EncodedForLoopWithRegKBody2Arm64WithSafepointLen = 176

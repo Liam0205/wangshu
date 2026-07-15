@@ -1,13 +1,17 @@
 //go:build wangshu_p3 && wangshu_profile
 
-// 凸月(gibbous)档:embedded 边界基准的 evaluate() 经 force-all 升 wazero 执行,
-// 与新月(crescent,WangshuCallInto)+ gopher 三方对比。
+// Gibbous tier: the embedded boundary benchmark's evaluate() runs on wazero
+// after a force-all promotion, giving a three-way comparison against crescent
+// (WangshuCallInto) and gopher.
 //
-// 测的是「宿主每 item 跨边界 + 调一次脚本函数」路径:边界拷贝成本(CallInto 零
-// 分配)与升层正交,凸月差异只体现在 evaluate() 函数体内部的 VM 执行。evaluate
-// 是非 vararg 内层函数(host→Lua 调),force-all + 预热后升 gibbous,凸月路径真走到。
+// This measures the "host crosses the boundary once per item + calls one script
+// function" path: the boundary copy cost (CallInto is zero-alloc) is orthogonal
+// to promotion, so the gibbous difference shows up only in the VM execution
+// inside evaluate()'s body. evaluate is a non-vararg inner function (host→Lua
+// call); with force-all + warmup it promotes to gibbous, so the gibbous path is
+// actually exercised.
 //
-// 运行:go test -tags "wangshu_p3 wangshu_profile" -bench 'Gibbous' ./benchmarks/embedded/
+// Run: go test -tags "wangshu_p3 wangshu_profile" -bench 'Gibbous' ./benchmarks/embedded/
 
 package embedded
 
@@ -17,8 +21,9 @@ import (
 	"github.com/Liam0205/wangshu"
 )
 
-// warmEvaluate:force-all + 预热升层后,经 CallInto 反复调 evaluate(零分配边界)。
-// preset 在预热调用前设好脚本依赖的 globals(避免读 nil)。
+// warmEvaluate: after force-all + warmup promotion, repeatedly calls evaluate
+// via CallInto (zero-alloc boundary). preset sets up the globals the script
+// depends on before the warmup call (to avoid reading nil).
 func warmEvaluate(b *testing.B, st *wangshu.State, preset func()) wangshu.Value {
 	b.Helper()
 	st.SetForceAllPromote(true)
@@ -26,7 +31,8 @@ func warmEvaluate(b *testing.B, st *wangshu.State, preset func()) wangshu.Value 
 	if preset != nil {
 		preset()
 	}
-	// 预热:首调驱动 evaluate 升 gibbous(首调 crescent)。
+	// Warmup: the first call drives evaluate to promote to gibbous (first call
+	// runs on crescent).
 	var dst [1]wangshu.Value
 	if _, err := st.CallInto(dst[:], fn); err != nil {
 		b.Fatalf("warmup: %v", err)
@@ -42,7 +48,7 @@ func BenchmarkMiniCallOnly_Gibbous(b *testing.B) {
 	if _, err := prog.Run(st); err != nil {
 		b.Fatal(err)
 	}
-	fn := warmEvaluate(b, st, nil) // const predicate 不读 globals
+	fn := warmEvaluate(b, st, nil) // const predicate reads no globals
 	defer fn.Release()
 	var dst [1]wangshu.Value
 	b.ReportAllocs()

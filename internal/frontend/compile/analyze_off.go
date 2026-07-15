@@ -7,8 +7,9 @@ import (
 	"github.com/Liam0205/wangshu/internal/frontend/ast"
 )
 
-// analyzeCompilabilityWithOuter 默认 build 下是 no-op——P1-only 部署不引入
-// bridge 包(避免增加 import 图),Proto.Compilability 留零值(等价
-// CompUnknown)。
+// analyzeCompilabilityWithOuter is a no-op under the default build — a P1-only
+// deployment does not pull in the bridge package (avoiding growth of the import
+// graph), leaving Proto.Compilability at its zero value (equivalent to
+// CompUnknown).
 func analyzeCompilabilityWithOuter(_ *ast.FuncExpr, _ *bytecode.Proto, _ *funcState) {
 }

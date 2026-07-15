@@ -1,14 +1,17 @@
 //go:build wangshu_p4 && wangshu_profile
 
-// conformance_p4_test.go —— P4 build conformance 测试 P4 路径触达守卫。
+// conformance_p4_test.go — P4-build conformance guard that the P4 path is
+// actually reached.
 //
-// **背景**(承外部 review 🔴 阻塞):make conformance-p4 跑通用 cases,但
-// ~91% conformance 用例不达 P4 升层闸门(short proto + 单次调用),
-// 故 conformance-p4 "全过" 不代表 P4 路径真被走到。
+// **Background** (from an external review 🔴 blocker): make conformance-p4 runs
+// the generic cases, but ~91% of conformance cases don't reach the P4 promotion
+// gate (short proto + a single call), so conformance-p4 "all pass" does not mean
+// the P4 path is actually exercised.
 //
-// 本测试加一个**专门为 P4 升层形态设计的 conformance 用例**(重复调用 +
-// SupportsAllOpcodes 白名单内单 BB 形态)+ PromotionCount>0 fail-stop
-// 守卫,确保 conformance-p4 至少有一个 P4 路径真触达。
+// This test adds a conformance case **designed specifically for the P4 promotion
+// shape** (repeated calls + a single-BB shape within the SupportsAllOpcodes
+// whitelist) plus a PromotionCount>0 fail-stop guard, ensuring conformance-p4
+// exercises at least one real P4 path.
 
 package conformance
 
@@ -18,16 +21,18 @@ import (
 	"github.com/Liam0205/wangshu"
 )
 
-// TestConformance_P4PathTriggered P4 build 下专门验「conformance 全套至少
-// 有一个 P4 路径真触达」(fail-stop 守卫)。
+// TestConformance_P4PathTriggered verifies, under the P4 build, that "the whole
+// conformance suite exercises at least one real P4 path" (fail-stop guard).
 //
-// 形态:单 BB 函数 + 重复调用(对位 p4_test.go::TestP4_PromotionTriggered
-// 同款设计)。force-all 真升 inner kernel 后,PromotionCount > 0 才能过。
+// Shape: single-BB function + repeated calls (mirrors the design of
+// p4_test.go::TestP4_PromotionTriggered). Once force-all really promotes the
+// inner kernel, PromotionCount > 0 is required to pass.
 //
-// **prove-the-path 工程纪律**:防止 conformance-p4 "21 binary 全过" 是
-// 静默空绿(force-all 形式上调用但实际 0 个 Proto 升层)。
+// **prove-the-path engineering discipline**: prevents conformance-p4's "all 21
+// binaries pass" from being a silent empty green (force-all is nominally invoked
+// but 0 Protos are actually promoted).
 func TestConformance_P4PathTriggered(t *testing.T) {
-	// 选 P4 SupportsAllOpcodes 白名单形态:reg-K arith chain
+	// Pick a P4 SupportsAllOpcodes whitelist shape: reg-K arith chain
 	src := `
 local function f(x) return x * 2 + 1 end
 local s = 0

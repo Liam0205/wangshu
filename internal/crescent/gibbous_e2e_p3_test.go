@@ -1,17 +1,19 @@
 //go:build wangshu_p3 && wangshu_profile
 
-// PW2-d 端到端验收(docs/design/p3-wasm-tier/04-trampoline.md §2 + 08 §V):
-// crescent doCall 检测到 Proto 已升 gibbous(wazero wasm)时经 trampoline
-// 跳 wazero 执行,返回值经共见值栈(arena=linear memory,VS0-c)回填,与
-// 解释器执行逐字节一致。
+// PW2-d end-to-end acceptance (docs/design/p3-wasm-tier/04-trampoline.md §2 + 08 §V):
+// when crescent doCall detects a Proto has been promoted to gibbous (wazero wasm),
+// it goes through the trampoline into wazero to execute; the return value is written
+// back via the shared value stack (arena=linear memory, VS0-c), byte-for-byte
+// identical to interpreter execution.
 //
-// 仅 wangshu_p3 && wangshu_profile build 跑:p3 提供真 gibbous Compiler +
-// 收养 wazero memory;profile 启用 considerPromotion 升层路径。
+// Only runs under wangshu_p3 && wangshu_profile builds: p3 provides the real gibbous
+// Compiler + adopts wazero memory; profile enables the considerPromotion path.
 //
-// **升层驱动**:compile 期 AnalyzeProto 无 P3 注入恒标 NotCompilable(见
-// frontend/compile/analyze_on.go);运行期自动重分析留后续(需 AST 保留)。
-// 本测试按 analyze_on.go §对 PB7 影响 所述手工 SetCompilability(模拟「真
-// P3 下 F7 放行」)+ 驱动 OnEnter 越阈值触发真升层,测真 trampoline 路径。
+// **Promotion driver**: at compile time AnalyzeProto without P3 injection always marks
+// NotCompilable (see frontend/compile/analyze_on.go); runtime auto re-analysis is left
+// for later (requires AST retention). This test manually SetCompilability as described in
+// analyze_on.go §impact on PB7 (simulating "F7 allowed under real P3") + drives OnEnter
+// past the threshold to trigger real promotion, exercising the real trampoline path.
 package crescent
 
 import (
@@ -25,7 +27,7 @@ import (
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
-// loadFn 编译 src 为 Program,装载主 chunk,返回 State + 主 closure。
+// loadFn compiles src into a Program, loads the main chunk, and returns State + main closure.
 func loadFn(t *testing.T, src string) (*State, value.Value) {
 	t.Helper()
 	lx := lex.New([]byte(src), "pw2d")
@@ -42,14 +44,16 @@ func loadFn(t *testing.T, src string) (*State, value.Value) {
 	return st, value.MakeGC(value.TagFunction, cl)
 }
 
-// promoteProto 手工驱动一个 Proto 走真升层路径(SetCompilability + OnEnter
-// 越阈值 → considerPromotion → 真 gibbous Compile + installGibbous)。
-// 返回是否成功升层(SupportsAllOpcodes 不支持的形状会 Stuck,返 false)。
+// promoteProto manually drives a Proto through the real promotion path (SetCompilability +
+// OnEnter past the threshold → considerPromotion → real gibbous Compile + installGibbous).
+// Returns whether promotion succeeded (shapes not supported by SupportsAllOpcodes get Stuck,
+// returning false).
 //
-// **forceAll 绕过 MinPromotableCodeLen 守卫**(issue #21):e2e 测试用的 hot
-// proto 普遍是 short(`return x`/`return a+1` 类 1-2 opcodes),自然热度路径
-// 下被守卫拦下。promoteProto 作为 testing helper 显式调 SetForceAllPromote
-// 绕过守卫,符合 forceAll 的"测试入口允许覆盖 perf 优化"语义。
+// **forceAll bypasses the MinPromotableCodeLen guard** (issue #21): hot protos used in e2e
+// tests are generally short (`return x`/`return a+1` style, 1-2 opcodes) and get blocked by
+// the guard on the natural hotness path. promoteProto, as a testing helper, explicitly calls
+// SetForceAllPromote to bypass the guard, matching forceAll's "test entry point may override
+// perf optimizations" semantics.
 func promoteProto(st *State, pid uint32) bool {
 	proto := st.protos[pid]
 	b := st.bridge
@@ -62,15 +66,16 @@ func promoteProto(st *State, pid uint32) bool {
 	return b.GibbousCodeOf(proto) != nil
 }
 
-// TestPW2d_IdentityReturn 端到端:`local function id(x) return x end` 升 gibbous
-// 后,id(v) 经 trampoline 跳 wazero 执行,返回值与解释器逐字节一致。
+// TestPW2d_IdentityReturn end-to-end: after `local function id(x) return x end` is
+// promoted to gibbous, id(v) goes through the trampoline into wazero; the return value
+// is byte-for-byte identical to the interpreter.
 func TestPW2d_IdentityReturn(t *testing.T) {
 	src := `
 local function id(x) return x end
 return id
 `
 	st, mainCl := loadFn(t, src)
-	// 跑主 chunk 拿到 id closure(主 chunk 返回 id)。
+	// Run the main chunk to obtain the id closure (main chunk returns id).
 	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
 	if err != nil {
 		t.Fatalf("run main: %v", err)
@@ -81,7 +86,7 @@ return id
 	}
 	idProto := object.ClosureProtoID(st.arena, value.GCRefOf(idVal))
 
-	// 升层前先记解释器结果(byte-equal 基线)。
+	// Record the interpreter result before promotion (byte-equal baseline).
 	want := float64(12345)
 	base, e := st.Call(value.GCRefOf(idVal), []value.Value{value.NumberValue(want)}, 1)
 	if e != nil {
@@ -91,12 +96,12 @@ return id
 		t.Fatalf("interp id(%v) = %v, want %v", want, base[0], want)
 	}
 
-	// 驱动真升层。
+	// Drive the real promotion.
 	if !promoteProto(st, idProto) {
 		t.Skip("id proto not supported by current gibbous whitelist (SupportsAllOpcodes false)")
 	}
 
-	// 升层后调用:经 trampoline 跳 wazero。结果须 byte-equal。
+	// Post-promotion call: goes through the trampoline into wazero. Result must be byte-equal.
 	got, e2 := st.Call(value.GCRefOf(idVal), []value.Value{value.NumberValue(want)}, 1)
 	if e2 != nil {
 		t.Fatalf("gibbous call: %v", e2)
@@ -105,7 +110,8 @@ return id
 		t.Errorf("gibbous id(%v) = %v, want %v (byte-equal with interp)", want, got[0], want)
 	}
 
-	// 多次调用:wazero module 复用稳定(共见值栈每次 base 偏移正确)。
+	// Repeated calls: wazero module reuse is stable (the shared value stack computes the
+	// correct base offset each time).
 	for _, v := range []float64{0, -1, 3.14, 1e9} {
 		r, e := st.Call(value.GCRefOf(idVal), []value.Value{value.NumberValue(v)}, 1)
 		if e != nil {
@@ -117,8 +123,8 @@ return id
 	}
 }
 
-// TestPW2d_ConstReturn `local function k() return 42 end`:LOADK + RETURN
-// 升 gibbous 后返回数字常量,byte-equal。
+// TestPW2d_ConstReturn `local function k() return 42 end`: LOADK + RETURN; after
+// promotion to gibbous, returns a numeric constant, byte-equal.
 func TestPW2d_ConstReturn(t *testing.T) {
 	src := `
 local function k() return 42 end
@@ -144,8 +150,8 @@ return k
 	}
 }
 
-// TestPW2d_PromotionHappened 验证升层真发生(TierGibbous + GibbousCode 装载),
-// 否则上面两个测试可能因 Skip 假阳性通过。
+// TestPW2d_PromotionHappened verifies promotion actually happened (TierGibbous +
+// GibbousCode loaded); otherwise the two tests above might pass as false positives via Skip.
 func TestPW2d_PromotionHappened(t *testing.T) {
 	src := `
 local function id(x) return x end
@@ -162,8 +168,9 @@ return id
 	}
 }
 
-// TestPW3_ArithE2E `local function f(a,b) return a+b end`:ADD 双 number 快路径
-// 升 gibbous 后经 trampoline 跳 wazero,结果与解释器逐字节一致。
+// TestPW3_ArithE2E `local function f(a,b) return a+b end`: the ADD double-number
+// fast path, after promotion to gibbous, jumps to wazero via the trampoline;
+// the result is byte-for-byte identical to the interpreter.
 func TestPW3_ArithE2E(t *testing.T) {
 	cases := []struct {
 		name string
@@ -188,7 +195,7 @@ func TestPW3_ArithE2E(t *testing.T) {
 			fVal := rets[0]
 			pid := object.ClosureProtoID(st.arena, value.GCRefOf(fVal))
 
-			// 解释器基线。
+			// Interpreter baseline.
 			base, e := st.Call(value.GCRefOf(fVal), tc.args, 1)
 			if e != nil {
 				t.Fatalf("interp call: %v", e)
@@ -200,7 +207,7 @@ func TestPW3_ArithE2E(t *testing.T) {
 			if !promoteProto(st, pid) {
 				t.Skipf("%s proto not supported by gibbous whitelist", tc.name)
 			}
-			// 升层后:经 trampoline 跳 wazero,byte-equal。
+			// After promotion: jumps to wazero via the trampoline, byte-equal.
 			got, e2 := st.Call(value.GCRefOf(fVal), tc.args, 1)
 			if e2 != nil {
 				t.Fatalf("gibbous call: %v", e2)
@@ -212,10 +219,11 @@ func TestPW3_ArithE2E(t *testing.T) {
 	}
 }
 
-// TestPW3_ArithSlowPathE2E 混合类型(string coercion)走慢路径助手 h_arith,
-// 与解释器 doArithSlow 逐字节一致。
+// TestPW3_ArithSlowPathE2E: a mixed-type case (string coercion) goes through
+// the slow-path helper h_arith, byte-for-byte identical to the interpreter's
+// doArithSlow.
 func TestPW3_ArithSlowPathE2E(t *testing.T) {
-	// "10" + 5:string coercion → 15(Lua 5.1 算术 coercion)
+	// "10" + 5: string coercion → 15 (Lua 5.1 arithmetic coercion)
 	src := `local function f(a,b) return a+b end; return f`
 	st, mainCl := loadFn(t, src)
 	rets, _ := st.Call(value.GCRefOf(mainCl), nil, 1)
@@ -224,7 +232,7 @@ func TestPW3_ArithSlowPathE2E(t *testing.T) {
 	if !promoteProto(st, pid) {
 		t.Skip("proto not supported")
 	}
-	// "10" 是字符串:gibbous ADD 快路径 IsNumber 失败 → h_arith 慢路径 coercion。
+	// "10" is a string: the gibbous ADD fast path fails IsNumber → h_arith slow-path coercion.
 	strV := value.MakeGC(value.TagString, st.gc.Intern([]byte("10")))
 	got, e := st.Call(value.GCRefOf(fVal), []value.Value{strV, value.NumberValue(5)}, 1)
 	if e != nil {
@@ -235,10 +243,12 @@ func TestPW3_ArithSlowPathE2E(t *testing.T) {
 	}
 }
 
-// TestPW5a_GlobalIC PW5-a:GETGLOBAL/SETGLOBAL inline IC 快照固化。
-// 升层前跑解释器基线填 IC(NodeHit)→ 升层 inline 快路径(同 gen 直达 node 槽
-// 跳哈希)→ byte-equal。失效路径:新增全局触发 globals rehash → gen bump →
-// inline gen 校验失败 → 走 h_getglobal/h_setglobal 助手仍正确。
+// TestPW5a_GlobalIC PW5-a: GETGLOBAL/SETGLOBAL inline IC snapshot freezing.
+// Before promotion the interpreter baseline is run to fill the IC (NodeHit) →
+// after promotion the inline fast path (same gen reaches the node slot directly,
+// skipping the hash) → byte-equal. Invalidation path: adding a new global
+// triggers globals rehash → gen bump → inline gen check fails → falling back to
+// the h_getglobal/h_setglobal helper is still correct.
 func TestPW5a_GlobalIC(t *testing.T) {
 	t.Run("getglobal-hit", func(t *testing.T) {
 		src := `local function f() return gx end; return f`
@@ -251,7 +261,7 @@ func TestPW5a_GlobalIC(t *testing.T) {
 		fVal := rets[0]
 		pid := object.ClosureProtoID(st.arena, value.GCRefOf(fVal))
 
-		// 解释器基线(同时填充 GETGLOBAL 的 IC slot 为 NodeHit)。
+		// Interpreter baseline (also fills GETGLOBAL's IC slot to NodeHit).
 		base, e := st.Call(value.GCRefOf(fVal), nil, 1)
 		if e != nil {
 			t.Fatalf("interp: %v", e)
@@ -263,7 +273,7 @@ func TestPW5a_GlobalIC(t *testing.T) {
 		if !promoteProto(st, pid) {
 			t.Skip("f proto not supported by gibbous whitelist")
 		}
-		// inline IC 快路径:同 gen 直达 node 槽。
+		// inline IC fast path: same gen reaches the node slot directly.
 		got, e2 := st.Call(value.GCRefOf(fVal), nil, 1)
 		if e2 != nil {
 			t.Fatalf("gibbous: %v", e2)
@@ -272,14 +282,14 @@ func TestPW5a_GlobalIC(t *testing.T) {
 			t.Errorf("gibbous f() = %v, want 99 (inline IC hit)", got[0])
 		}
 
-		// 改既有全局值(改值不 bump gen,IC 持续命中)。
+		// Change an existing global's value (changing the value does not bump gen, the IC keeps hitting).
 		st.SetGlobal("gx", value.NumberValue(7))
 		got2, _ := st.Call(value.GCRefOf(fVal), nil, 1)
 		if !value.IsNumber(got2[0]) || value.AsNumber(got2[0]) != 7 {
 			t.Errorf("gibbous f() after value change = %v, want 7", got2[0])
 		}
 
-		// 失效路径:新增大量全局触发 rehash → gen bump → inline 校验失败 → 助手仍正确。
+		// Invalidation path: adding many globals triggers rehash → gen bump → inline check fails → helper is still correct.
 		for i := 0; i < 32; i++ {
 			st.SetGlobal("pad"+string(rune('a'+i)), value.NumberValue(float64(i)))
 		}
@@ -295,7 +305,7 @@ func TestPW5a_GlobalIC(t *testing.T) {
 	t.Run("setglobal-hit", func(t *testing.T) {
 		src := `local function f(v) gy = v; return gy end; return f`
 		st, mainCl := loadFn(t, src)
-		st.SetGlobal("gy", value.NumberValue(0)) // 预存键(SETGLOBAL 改值快路径要求键存在)
+		st.SetGlobal("gy", value.NumberValue(0)) // pre-store the key (the SETGLOBAL value-change fast path requires the key to exist)
 		rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
 		if err != nil {
 			t.Fatalf("run main: %v", err)
@@ -324,9 +334,10 @@ func TestPW5a_GlobalIC(t *testing.T) {
 	})
 }
 
-// TestPW5b_TableIC PW5-b:GETTABLE/SETTABLE inline IC(键匹配)。
-// const-key NodeHit(t.x)/ register-key ArrayHit(t[1])命中 inline 跳哈希;
-// 升层前跑解释器基线填 IC + byte-equal 对拍。
+// TestPW5b_TableIC PW5-b: GETTABLE/SETTABLE inline IC (key match).
+// const-key NodeHit (t.x) / register-key ArrayHit (t[1]) hits the inline path,
+// skipping the hash; before promotion the interpreter baseline is run to fill
+// the IC + byte-equal differential test.
 func TestPW5b_TableIC(t *testing.T) {
 	run := func(t *testing.T, src string, setup func(*State) []value.Value, want float64) {
 		st, mainCl := loadFn(t, src)
@@ -376,23 +387,24 @@ func TestPW5b_TableIC(t *testing.T) {
 	})
 }
 
-// TestPW5d_NewTableSetList PW5-d:NEWTABLE/SETLIST 经助手(分配+批量写+GC 助手内)。
-// 表构造 {10,20,30} 后取元素,升 gibbous byte-equal。
+// TestPW5d_NewTableSetList PW5-d: NEWTABLE/SETLIST via helper (allocate + bulk
+// write + GC inside the helper). Construct the table {10,20,30} then fetch an
+// element; promote to gibbous byte-equal.
 func TestPW5d_NewTableSetList(t *testing.T) {
 	cases := []struct {
 		name string
 		src  string
 		want float64
 	}{
-		// NEWTABLE + LOADK×3(数字)+ SETLIST(B=3,C=1)+ GETTABLE t[2]
+		// NEWTABLE + LOADK×3 (numbers) + SETLIST (B=3,C=1) + GETTABLE t[2]
 		{"array-ctor", `local function f() local t={10,20,30} return t[2] end; return f`, 20},
-		// 数组求和(NEWTABLE + SETLIST + for 遍历)
+		// array sum (NEWTABLE + SETLIST + for iteration)
 		{"array-sum", `local function f() local t={1,2,3,4} local s=0 for i=1,4 do s=s+t[i] end return s end; return f`, 10},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			st, mainCl := loadFn(t, tc.src)
-			st.SetGCStressMode(true) // 分配密集:freelist 复用暴露漏根/残值
+			st.SetGCStressMode(true) // allocation-heavy: freelist reuse exposes missed roots / residual values
 			rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
 			if err != nil {
 				t.Fatalf("run main: %v", err)
@@ -420,7 +432,8 @@ func TestPW5d_NewTableSetList(t *testing.T) {
 	}
 }
 
-// newTableArg 构造一个测试表(string→number 字段 + 数组段),返回其 value。
+// newTableArg constructs a test table (string→number fields + an array
+// segment) and returns its value.
 func (st *State) newTableArg(fields map[string]float64, arr []float64) value.Value {
 	asz := uint32(len(arr))
 	t := st.allocTable(asz, roundUpPow2(uint32(len(fields))))
@@ -433,8 +446,9 @@ func (st *State) newTableArg(fields map[string]float64, arr []float64) value.Val
 	return value.MakeGC(value.TagTable, t)
 }
 
-// TestPW4_ControlFlowE2E PW4 relooper:含分支/循环的函数升 gibbous 后经
-// trampoline 跳 wazero,与解释器逐字节一致。
+// TestPW4_ControlFlowE2E PW4 relooper: a function with branches/loops, after
+// promotion to gibbous, jumps to wazero via the trampoline, byte-for-byte
+// identical to the interpreter.
 func TestPW4_ControlFlowE2E(t *testing.T) {
 	cases := []struct {
 		name string
@@ -442,21 +456,21 @@ func TestPW4_ControlFlowE2E(t *testing.T) {
 		args []value.Value
 		want float64
 	}{
-		// 数值 for 循环(FORPREP/FORLOOP + 回边 safepoint)
+		// numeric for loop (FORPREP/FORLOOP + back-edge safepoint)
 		{"sum-for", `local function f(n) local s=0 for i=1,n do s=s+i end return s end; return f`,
 			[]value.Value{value.NumberValue(100)}, 5050},
-		// if-then-else(TEST/JMP 比较 + 分支)
+		// if-then-else (TEST/JMP comparison + branch)
 		{"abs-pos", `local function f(x) if x<0 then return -x else return x end end; return f`,
 			[]value.Value{value.NumberValue(7)}, 7},
 		{"abs-neg", `local function f(x) if x<0 then return -x else return x end end; return f`,
 			[]value.Value{value.NumberValue(-7)}, 7},
-		// 比较 LT 快路径 + 分支
+		// comparison LT fast path + branch
 		{"max", `local function f(a,b) if a<b then return b else return a end end; return f`,
 			[]value.Value{value.NumberValue(3), value.NumberValue(8)}, 8},
-		// 嵌套 for(PW4b 形态,可能 Skip 若 relooper 不支持)
+		// nested for (PW4b shape, may Skip if the relooper does not support it)
 		{"nested-for", `local function f(n) local s=0 for i=1,n do for j=1,n do s=s+1 end end return s end; return f`,
 			[]value.Value{value.NumberValue(10)}, 100},
-		// while 循环
+		// while loop
 		{"while", `local function f(n) local s=0 local i=1 while i<=n do s=s+i i=i+1 end return s end; return f`,
 			[]value.Value{value.NumberValue(10)}, 55},
 	}
@@ -470,7 +484,7 @@ func TestPW4_ControlFlowE2E(t *testing.T) {
 			fVal := rets[0]
 			pid := object.ClosureProtoID(st.arena, value.GCRefOf(fVal))
 
-			// 解释器基线。
+			// Interpreter baseline.
 			base, e := st.Call(value.GCRefOf(fVal), tc.args, 1)
 			if e != nil {
 				t.Fatalf("interp call: %v", e)
@@ -482,7 +496,7 @@ func TestPW4_ControlFlowE2E(t *testing.T) {
 			if !promoteProto(st, pid) {
 				t.Skipf("%s proto not supported by gibbous relooper (fallback interp)", tc.name)
 			}
-			// 升层后:经 trampoline 跳 wazero,byte-equal。
+			// After promotion: jumps to wazero via the trampoline, byte-equal.
 			got, e2 := st.Call(value.GCRefOf(fVal), tc.args, 1)
 			if e2 != nil {
 				t.Fatalf("gibbous call: %v", e2)
@@ -494,11 +508,12 @@ func TestPW4_ControlFlowE2E(t *testing.T) {
 	}
 }
 
-// TestPW6a_CallDispatch PW6-a:gibbous 帧内 CALL 三向分派 byte-equal。
-// 外层 f 升 gibbous,调用 ① 未升层 crescent helper ② 另一升层 gibbous ③ host。
+// TestPW6a_CallDispatch PW6-a: three-way dispatch of a CALL inside a gibbous
+// frame, byte-equal. The outer f is promoted to gibbous and calls ① an
+// un-promoted crescent helper ② another promoted gibbous ③ a host.
 func TestPW6a_CallDispatch(t *testing.T) {
 	t.Run("call-crescent", func(t *testing.T) {
-		// f 调未升层 helper(crescent fresh reentry 路径)
+		// f calls an un-promoted helper (crescent fresh-reentry path)
 		src := `
 local function helper(x) return x * 2 end
 local function f(a) return helper(a) + 1 end
@@ -531,7 +546,7 @@ return f`
 	})
 
 	t.Run("call-gibbous", func(t *testing.T) {
-		// f 与 helper 都升层(gibbous→gibbous 经 h_call 再 enterGibbous)
+		// both f and helper are promoted (gibbous→gibbous via h_call then enterGibbous)
 		src := `
 local function helper(x) return x * 2 end
 local function f(a) return helper(a) + 1 end
@@ -562,12 +577,16 @@ return f, helper`
 	})
 }
 
-// TestPW6a_CallBaseRefresh PW6-a 核心:被调帧深递归撑爆初始栈(64 槽)触发
-// growStack 段重定位后,gibbous 续算用刷新后的 base 读对寄存器。GC stress 下
-// 若 base 没刷新会读到已 Free 旧段 → 值错乱/UAF。
+// TestPW6a_CallBaseRefresh PW6-a core: after the callee frame's deep recursion
+// overflows the initial stack (64 slots) and triggers growStack segment
+// relocation, gibbous continues computing and reads registers correctly using
+// the refreshed base. Under GC stress, if base is not refreshed it would read
+// an already-Freed old segment → value corruption/UAF.
 func TestPW6a_CallBaseRefresh(t *testing.T) {
-	// helper 递归深度 100(每层一个 Lua 帧,撑爆初始 64 槽必 growStack);
-	// f 调 helper 后再 + 7,验返回后 f 的寄存器(base 相对)仍读对。
+	// helper recursion depth 100 (one Lua frame per level; overflowing the
+	// initial 64 slots is guaranteed to growStack); f calls helper then adds 7,
+	// verifying that after returning f's registers (base-relative) still read
+	// correctly.
 	src := `
 local function helper(n) if n <= 0 then return 0 else return helper(n-1) + 1 end end
 local function f(a) local r = helper(100) return r + a end
@@ -600,13 +619,16 @@ return f`
 	}
 }
 
-// TestPW6b_TailCall PW6-b:gibbous 帧内 TAILCALL byte-equal + 栈深度恒定。
-// 尾递归 f(n,acc):升层后经 h_tailcall 复用帧,proper tail call O(1) 栈
-// (executeFrom 在解释器内迭代尾调用链),深度 1e5 不溢出。
+// TestPW6b_TailCall PW6-b: TAILCALL inside a gibbous frame, byte-equal + constant
+// stack depth. Tail recursion f(n,acc): after promotion, reuses the frame via
+// h_tailcall, a proper tail call with O(1) stack (executeFrom iterates the
+// tail-call chain inside the interpreter), depth 1e5 without overflow.
 //
-// 注:深尾递归 baseline 会触发自然升层(回边越阈)→ 编译期 NotCompilable →
-// TierStuck 吸收态,使后续 promoteProto 失效。故 oracle 与 gibbous 各用独立
-// State:gibbous State 在任何深递归运行前先 promoteProto。
+// Note: a deep tail-recursion baseline triggers natural promotion (back-edge
+// crosses the threshold) → NotCompilable at compile time → the TierStuck
+// absorbing state, making a subsequent promoteProto fail. So the oracle and
+// gibbous each use an independent State: the gibbous State runs promoteProto
+// before any deep-recursion run.
 func TestPW6b_TailCall(t *testing.T) {
 	src := `
 local function f(n, acc)
@@ -622,7 +644,7 @@ return f`
 		return st, rets[0]
 	}
 	args := []value.Value{value.NumberValue(1000), value.NumberValue(0)}
-	// oracle:独立 State 跑解释器。
+	// oracle: an independent State runs the interpreter.
 	stO, fO := loadF()
 	base, e := stO.Call(value.GCRefOf(fO), args, 1)
 	if e != nil {
@@ -631,7 +653,7 @@ return f`
 	if value.AsNumber(base[0]) != 500500 {
 		t.Fatalf("interp f(1000,0) = %v, want 500500", base[0])
 	}
-	// gibbous:独立 State,深递归前先 promoteProto(避免自然升层 stuck)。
+	// gibbous: an independent State, run promoteProto before the deep recursion (to avoid natural-promotion stuck).
 	st, fVal := loadF()
 	pid := object.ClosureProtoID(st.arena, value.GCRefOf(fVal))
 	if !promoteProto(st, pid) {
@@ -645,7 +667,7 @@ return f`
 		t.Errorf("gibbous f(1000,0) = %v, want 500500 (tail call byte-equal)", got[0])
 	}
 
-	// 深尾递归(1e5):proper tail call 不溢出(若误当普通 CALL 会 stack overflow)。
+	// Deep tail recursion (1e5): a proper tail call does not overflow (if mistakenly treated as an ordinary CALL it would stack overflow).
 	deep := []value.Value{value.NumberValue(100000), value.NumberValue(0)}
 	gotDeep, e3 := st.Call(value.GCRefOf(fVal), deep, 1)
 	if e3 != nil {
@@ -656,11 +678,13 @@ return f`
 	}
 }
 
-// TestPW6c_ErrorCrossesGibbous PW6-c:错误穿越 gibbous 帧冒泡到 pcall 边界
-// byte-equal(错误消息 + 是否被捕获)。
+// TestPW6c_ErrorCrossesGibbous PW6-c: an error crossing a gibbous frame bubbles
+// up to the pcall boundary, byte-equal (error message + whether it is caught).
 func TestPW6c_ErrorCrossesGibbous(t *testing.T) {
-	// f 调 helper,helper 对 nil 做算术报错;错误经 h_call status 链冒泡出 f,
-	// 再经 ProtectedCall 边界捕获。gibbous 与解释器错误消息逐字节一致。
+	// f calls helper, helper does arithmetic on nil and errors; the error
+	// bubbles out of f via the h_call status chain, then is caught at the
+	// ProtectedCall boundary. The gibbous and interpreter error messages are
+	// byte-for-byte identical.
 	src := `
 local function helper(x) return x + 1 end   -- helper(nil) → 对 nil 算术报错
 local function f(a) return helper(a) end
@@ -675,7 +699,7 @@ return f`
 	}
 	badArg := []value.Value{value.Nil}
 
-	// oracle:解释器跑 f(nil),经 ProtectedCall 捕获错误消息。
+	// oracle: the interpreter runs f(nil), catching the error message via ProtectedCall.
 	stO, fO := loadF()
 	_, eO := stO.ProtectedCall(fO, badArg)
 	if eO == nil {
@@ -683,7 +707,7 @@ return f`
 	}
 	wantMsg := eO.Msg
 
-	// gibbous:f 升层后,错误经 h_call status 链冒泡,ProtectedCall 捕获,消息同款。
+	// gibbous: after f is promoted, the error bubbles via the h_call status chain, ProtectedCall catches it, message is the same.
 	st, fVal := loadF()
 	pid := object.ClosureProtoID(st.arena, value.GCRefOf(fVal))
 	if !promoteProto(st, pid) {
@@ -698,8 +722,9 @@ return f`
 	}
 }
 
-// TestPW7a_Closure PW7-a:gibbous 帧内 CLOSURE 造闭包 byte-equal。
-// 外层 f 升 gibbous,内部 CLOSURE 造 g 捕获局部 x(MOVE 伪指令),调用 g。
+// TestPW7a_Closure PW7-a: CLOSURE creating a closure inside a gibbous frame,
+// byte-equal. The outer f is promoted to gibbous, and its inner CLOSURE creates
+// g capturing the local x (MOVE pseudo-instruction), then calls g.
 func TestPW7a_Closure(t *testing.T) {
 	cases := []struct {
 		name string
@@ -707,7 +732,7 @@ func TestPW7a_Closure(t *testing.T) {
 		arg  float64
 		want float64
 	}{
-		// CLOSURE 捕获栈局部 x(MOVE 伪指令)
+		// CLOSURE captures the stack local x (MOVE pseudo-instruction)
 		{"capture-local", `
 local function f(a)
   local x = a + 10
@@ -715,7 +740,7 @@ local function f(a)
   return g()
 end
 return f`, 5, 30},
-		// 嵌套捕获:g 捕获 x,h 经 g 的 upvalue 捕获 x(GETUPVAL 伪指令)
+		// nested capture: g captures x, h captures x via g's upvalue (GETUPVAL pseudo-instruction)
 		{"capture-upval", `
 local function f(a)
   local x = a
@@ -762,18 +787,20 @@ return f`, 7, 8},
 	}
 }
 
-// TestPW4b_TForLoop PW4b:gibbous 帧内 TFORLOOP 泛型 for byte-equal。
-// 迭代器经 h_tforloop 跨层调(复用 callLuaFromHost);base 刷新(迭代器调用可能
-// growStack)。用自定义迭代器(crescent 测试无 stdlib,ipairs/pairs 是 nil 全局;
-// TFORLOOP opcode 不关心迭代器来源,均为 R(A)(R(A+1),R(A+2)),自定义迭代器走完全
-// 相同的 TFORLOOP 路径)。
+// TestPW4b_TForLoop PW4b: TFORLOOP generic for inside a gibbous frame,
+// byte-equal. The iterator is called across layers via h_tforloop (reusing
+// callLuaFromHost); base is refreshed (an iterator call may growStack). Uses a
+// custom iterator (the crescent tests have no stdlib, so ipairs/pairs are nil
+// globals; the TFORLOOP opcode does not care about the iterator's origin, always
+// R(A)(R(A+1),R(A+2)), and a custom iterator goes through the exact same
+// TFORLOOP path).
 func TestPW4b_TForLoop(t *testing.T) {
 	cases := []struct {
 		name string
 		src  string
 		want float64
 	}{
-		// 自定义范围迭代器(无状态,闭包计数)
+		// custom range iterator (stateless, closure counter)
 		{"range-sum", `
 local function range(n)
   local i = 0
@@ -785,7 +812,7 @@ local function f()
   return s
 end
 return f`, 15},
-		// 经典 stateless iterator(iter, state, control 三元组,模拟 ipairs)
+		// classic stateless iterator (iter, state, control triple, simulating ipairs)
 		{"stateful-iter", `
 local function iter(t, i)
   i = i + 1
@@ -799,7 +826,7 @@ local function f()
   return s
 end
 return f`, 100},
-		// 深迭代(撑爆初始栈,验 base 刷新)
+		// deep iteration (overflows the initial stack, verifies base refresh)
 		{"deep-iter", `
 local function range(n)
   local i = 0
@@ -831,7 +858,7 @@ return f`, 2001000},
 				t.Fatalf("interp = %v, want %v", base[0], tc.want)
 			}
 			st, fVal := loadF()
-			st.SetGCStressMode(true) // 迭代器调用密集分配,freelist 复用暴露 base/根问题
+			st.SetGCStressMode(true) // iterator calls allocate heavily; freelist reuse exposes base/root problems
 			pid := object.ClosureProtoID(st.arena, value.GCRefOf(fVal))
 			if !promoteProto(st, pid) {
 				t.Skipf("%s f not supported", tc.name)
@@ -847,9 +874,11 @@ return f`, 2001000},
 	}
 }
 
-// TestPW8_CoroutineNoPromote PW8 线程级 tier 规则:协程线程上的执行不升层
-// (07-coroutine-thread-rule §2)。协程内 hot 函数越阈值后保持 TierInterp
-// (考虑升层入口的 onMain 守卫拦下);同 Proto 在主线程驱动则正常升层。
+// TestPW8_CoroutineNoPromote PW8 thread-level tier rule: execution on a
+// coroutine thread is not promoted (07-coroutine-thread-rule §2). A hot function
+// inside a coroutine stays TierInterp after crossing the threshold (the onMain
+// guard of the promotion-consideration entry blocks it); the same Proto is
+// promoted normally when driven on the main thread.
 func TestPW8_CoroutineNoPromote(t *testing.T) {
 	src := `
 local function hot(a) return a + 1 end
@@ -866,10 +895,10 @@ return hot, body`
 	}
 	hotVal, bodyVal := rets[0], rets[1]
 	hotPid := object.ClosureProtoID(st.arena, value.GCRefOf(hotVal))
-	// hot 可编译(单 BB ADD + RETURN);手工标 Compilable 模拟真 P3 F7 放行。
+	// hot is compilable (single BB ADD + RETURN); manually mark it Compilable to simulate real P3 F7 allowing it.
 	st.bridge.SetCompilability(st.protos[hotPid], bridge.CompCompilable, 0)
 
-	// 在协程线程上跑 body(body 内调 hot 十万次,远超 HotEntryThreshold)。
+	// Run body on a coroutine thread (body calls hot 100k times inside, far exceeding HotEntryThreshold).
 	coID, ce := st.NewCoroutine(bodyVal)
 	if ce != nil {
 		t.Fatalf("NewCoroutine: %v", ce)
@@ -881,13 +910,13 @@ return hot, body`
 	if value.AsNumber(res[0]) != 100000 {
 		t.Fatalf("coroutine body() = %v, want 100000", res[0])
 	}
-	// ★ 协程内 hot 极热,但线程级 tier 规则使其不升层(onMain 守卫拦考虑升层入口)。
+	// ★ hot is extremely hot inside the coroutine, but the thread-level tier rule keeps it un-promoted (the onMain guard blocks the promotion-consideration entry).
 	if st.bridge.GibbousCodeOf(st.protos[hotPid]) != nil {
 		t.Error("协程内 hot 函数不应升层(线程级 tier 规则;onMain 守卫应拦下 considerPromotion)")
 	}
 
-	// 对照:同 Proto 在主线程驱动升层成功(证明 hot 本身可编译,上面不升层是
-	// 线程门禁而非不可编译)。
+	// Control: the same Proto driven on the main thread is promoted successfully (proving hot itself is compilable, and the non-promotion above is
+	// a thread gate, not incompilability).
 	if !promoteProto(st, hotPid) {
 		t.Fatal("hot 在主线程应能升层(单 BB ADD+RETURN),onMain=true 门禁放行")
 	}
@@ -896,16 +925,23 @@ return hot, body`
 	}
 }
 
-// TestPW9_ForceAllPromoteReal 验证 SetForceAllPromote 真实路径(PW9-b 非空保证)。
+// TestPW9_ForceAllPromoteReal verifies the real path of SetForceAllPromote
+// (PW9-b's non-empty guarantee).
 //
-// **为何关键**:层间差分套(test/difftest/p3_test.go)靠 force-all 把核函数升 gibbous,
-// 若 force-all 实际没升任何 Proto,则 crescent==gibbous 退化为 crescent==crescent 的
-// 假阳性。本测经**真实公共路径**(SetForceAllPromote + 反复调用触发 OnEnter,而非
-// promoteProto 的手工 SetCompilability)断言核函数真达 TierGibbous,锁死非空性。
+// **Why this matters**: the inter-layer differential suite
+// (test/difftest/p3_test.go) relies on force-all to promote the kernel
+// functions to gibbous; if force-all actually promotes no Proto, then
+// crescent==gibbous degenerates into the false positive of crescent==crescent.
+// This test asserts, via the **real public path** (SetForceAllPromote +
+// repeated calls triggering OnEnter, not promoteProto's manual
+// SetCompilability), that the kernel functions truly reach TierGibbous, locking
+// down non-emptiness.
 //
-// 同时验证 recheckCompilabilityRuntime:编译期 F7 因无 P3 注入把 hot 烧成
-// CompNotCompilable,force-all 重判后(F1-F6 无、真实后端 SupportsAllOpcodes 放行)
-// 升层成功——证明「绕编译期 F7 占位、不绕 F1-F6」逻辑生效。
+// It also verifies recheckCompilabilityRuntime: compile-time F7, lacking P3
+// injection, burns hot into CompNotCompilable; after force-all re-checks (no
+// F1-F6, and the real backend's SupportsAllOpcodes allows it), promotion
+// succeeds — proving the "bypass the compile-time F7 placeholder, do not bypass
+// F1-F6" logic works.
 func TestPW9_ForceAllPromoteReal(t *testing.T) {
 	src := `
 local function hot(a) return a + 1 end
@@ -923,13 +959,14 @@ return hot, body`
 	hotVal, bodyVal := rets[0], rets[1]
 	hotPid := object.ClosureProtoID(st.arena, value.GCRefOf(hotVal))
 
-	// 前置:编译期 F7(无 P3 注入)应已把 hot 烧成 NotCompilable——这是 force-all
-	// 必须翻越的历史包袱。若不是,本测的「重判」语义就失去验证意义。
+	// Precondition: compile-time F7 (no P3 injection) should already have burned
+	// hot into NotCompilable — this is the historical baggage that force-all must
+	// climb over. If not, this test's "re-check" semantics lose their meaning.
 	if st.bridge.CompilabilityOf(st.protos[hotPid]) == bridge.CompCompilable {
 		t.Fatal("前置假设破:hot 编译期不应是 CompCompilable(无 P3 注入 F7 应触发)")
 	}
 
-	// 真实公共路径:开 force-all,反复调 body(body 调 hot)驱动 OnEnter 触发升层。
+	// Real public path: enable force-all, repeatedly call body (body calls hot) to drive OnEnter to trigger promotion.
 	st.SetForceAllPromote(true)
 	for k := 0; k < 3; k++ {
 		if _, e := st.Call(value.GCRefOf(bodyVal), nil, 1); e != nil {
@@ -937,12 +974,12 @@ return hot, body`
 		}
 	}
 
-	// ★ force-all 经 recheckCompilabilityRuntime 重判 + 升层:hot 应已是 TierGibbous。
+	// ★ Under force-all, via recheckCompilabilityRuntime re-check + promotion: hot should already be TierGibbous.
 	if st.bridge.GibbousCodeOf(st.protos[hotPid]) == nil {
 		t.Fatal("force-all 下 hot 应升 gibbous(重判 F7 放行),但 GibbousCodeOf 为 nil —— 层间差分套将退化为假阳性")
 	}
 
-	// 结果正确性:gibbous 执行 hot 五次自增,body() == 5,与解释器一致。
+	// Result correctness: gibbous runs hot's five increments, body() == 5, consistent with the interpreter.
 	got, e := st.Call(value.GCRefOf(bodyVal), nil, 1)
 	if e != nil {
 		t.Fatalf("gibbous body(): %v", e)
@@ -952,10 +989,13 @@ return hot, body`
 	}
 }
 
-// TestPW9_ForceAllRespectsStructuralGates 验证 force-all **不绕** F1-F6 真实闸门。
+// TestPW9_ForceAllRespectsStructuralGates verifies that force-all does **not**
+// bypass the real F1-F6 gates.
 //
-// vararg 函数(F1)即便 force-all 也必须留 crescent——recheckCompilabilityRuntime 只清
-// 编译期 F7 占位,F1-F6 结构性排除原样保留(08 §2.3.1 / §2.2 「不绕可编译性闸门」)。
+// A vararg function (F1) must stay crescent even under force-all —
+// recheckCompilabilityRuntime only clears the compile-time F7 placeholder, and
+// the F1-F6 structural exclusions are preserved as-is (08 §2.3.1 / §2.2 "do not
+// bypass the compilability gate").
 func TestPW9_ForceAllRespectsStructuralGates(t *testing.T) {
 	src := `
 local function va(...) local a, b = ...; return (a or 0) + (b or 0) end
@@ -980,7 +1020,7 @@ return va, body`
 		}
 	}
 
-	// ★ vararg 函数即便 force-all 也不升层(F1 真实排除,recheck 保留 ReasonVararg)。
+	// ★ A vararg function is not promoted even under force-all (F1 real exclusion, recheck preserves ReasonVararg).
 	if st.bridge.GibbousCodeOf(st.protos[vaPid]) != nil {
 		t.Error("vararg 函数 force-all 下不应升层(F1 真实闸门;recheckCompilabilityRuntime 只清 F7 占位,保留 F1-F6)")
 	}

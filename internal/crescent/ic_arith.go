@@ -1,37 +1,41 @@
-// Arith IC 双计数挪用(`docs/design/p2-bridge/02-ic-feedback.md` §3)。
+// Arith IC dual-counter repurposing (`docs/design/p2-bridge/02-ic-feedback.md` §3).
 //
-// P1 写不读纯供料(05 §6.4):算术快路径 IsNumber(b) && IsNumber(c) 现场判,
-// 不读 IC slot 决定走哪条路。算术 IC 是纯旁路写——P2 聚合器读取此处计数
-// 算 confidence(numHits / (numHits+metaHits))。
+// P1 write-only, no read (05 §6.4): the arithmetic fast path checks
+// IsNumber(b) && IsNumber(c) inline and does not read the IC slot to pick a
+// branch. The arithmetic IC is a pure side-channel write — the P2 aggregator
+// reads these counts to compute confidence (numHits / (numHits+metaHits)).
 //
-// 字段挪用规约(02 §3.2 + bytecode/proto.go ICSlot 注释):
-//   - Shape    = numHits  (快路径双 number 命中数)
-//   - Index    = metaHits (慢路径 string coercion / 元方法命中数)
-//   - TableRef = 留空恒 0(算术无表无身份)
-//   - Kind     = 0 未观测 / 1 已观测过(P2 表示「已被执行,可读双计数」)
+// Field repurposing convention (02 §3.2 + bytecode/proto.go ICSlot comment):
+//   - Shape    = numHits  (fast-path dual-number hit count)
+//   - Index    = metaHits (slow-path string coercion / metamethod hit count)
+//   - TableRef = left as constant 0 (arithmetic has no table, no identity)
+//   - Kind     = 0 unobserved / 1 observed (P2 reads it as "already executed,
+//     dual counters readable")
 //
-// **饱和不回绕**(02 §3.3 + 不变式 6):numHits / metaHits 接近 2^32 时停止
-// 递增,避免某超热点跑 2^32 次后 confidence 突变。饱和值 2^32-1 对
-// `numHits/total` 比例的影响完全可忽略。
+// **Saturate, no wrap-around** (02 §3.3 + invariant 6): numHits / metaHits stop
+// incrementing as they approach 2^32, avoiding a sudden confidence shift after
+// a super-hot spot runs 2^32 times. The saturation value 2^32-1 has a
+// completely negligible effect on the `numHits/total` ratio.
 package crescent
 
 import (
 	"github.com/Liam0205/wangshu/internal/bytecode"
 )
 
-const arithCounterSaturation uint32 = ^uint32(0) // 2^32-1,饱和上限
+const arithCounterSaturation uint32 = ^uint32(0) // 2^32-1, saturation cap
 
-// recordArithNumHit 算术快路径双 number 命中(02 §3.3)。
+// recordArithNumHit records an arithmetic fast-path dual-number hit (02 §3.3).
 //
 //go:nosplit
 func recordArithNumHit(s *bytecode.ICSlot) {
 	if s.Shape != arithCounterSaturation {
 		s.Shape++
 	}
-	s.Kind = 1 // 已观测(算术 IC 上 Kind∈{0,1};表 IC kind∈{1,2,3,4})
+	s.Kind = 1 // observed (arithmetic IC Kind∈{0,1}; table IC kind∈{1,2,3,4})
 }
 
-// recordArithMetaHit 算术慢路径 string coercion / 元方法命中(02 §3.3)。
+// recordArithMetaHit records an arithmetic slow-path string coercion /
+// metamethod hit (02 §3.3).
 //
 //go:nosplit
 func recordArithMetaHit(s *bytecode.ICSlot) {

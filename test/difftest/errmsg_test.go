@@ -1,8 +1,11 @@
-// 错误消息差分(12 §4 错误措辞口径):pcall 捕获的 errmsg 与官方 5.1.5 对拍。
+// Error message diff (12 §4 error-wording convention): the errmsg captured by
+// pcall is diff-tested against the official 5.1.5.
 //
-// 对拍规则:errmsg 含 "chunkname:line:" 前缀——两边 chunkname 不同(wangshu
-// 用 chunkname 参数,oracle 经 stdin 是 "stdin"),归一化:截掉首个 ": " 之前
-// 的 chunkname 段,行号段与正文分别断言一致。
+// Diff rule: an errmsg carries a "chunkname:line:" prefix — the chunknames
+// differ on the two sides (wangshu uses the chunkname argument, the oracle
+// reads from stdin so it is "stdin"). Normalize by stripping the chunkname
+// segment before the first ": ", then assert the line segment and the body
+// text match separately.
 package difftest
 
 import (
@@ -13,57 +16,59 @@ import (
 	"github.com/Liam0205/wangshu"
 )
 
-// errCase 是一个错误用例:脚本经 pcall 包裹,return tostring(errmsg)。
+// errCase is one error case: the script is wrapped by pcall, return tostring(errmsg).
 type errCase struct {
 	name string
-	expr string // 出错表达式(在函数体内执行)
+	expr string // faulting expression (executed inside a function body)
 }
 
 var errCorpus = []errCase{
-	// 算术类型错误
+	// arithmetic type errors
 	{"arith_on_nil", `local x; return x + 1`},
 	{"arith_on_string_bad", `return "zz" + 1`},
 	{"arith_on_table", `return {} + 1`},
 	{"arith_on_bool", `return true + 1`},
 	{"unm_on_table", `return -({})`},
-	// 调用错误
+	// call errors
 	{"call_nil", `local f; return f()`},
 	{"call_number", `local f = 42; return f()`},
 	{"call_string", `local f = "s"; return f()`},
-	// 索引错误
+	// index errors
 	{"index_nil", `local t; return t.x`},
 	{"index_number", `local t = 5; return t.x`},
 	{"index_boolean", `local t = true; return t.x`},
 	{"newindex_nil", `local t; t.x = 1`},
-	// 比较错误
+	// comparison errors
 	{"compare_num_str", `return 1 < "x"`},
 	{"compare_bool_bool", `return true < false`},
 	{"compare_table_num", `return {} < 1`},
-	// 长度错误
+	// length errors
 	{"len_on_number", `return #42`},
 	{"len_on_nil", `local x; return #x`},
 	{"len_on_bool", `return #true`},
-	// 拼接错误
+	// concat errors
 	{"concat_nil", `local x; return "a" .. x`},
 	{"concat_table", `return "a" .. {}`},
 	{"concat_bool", `return "a" .. true`},
-	// for 错误
+	// for errors
 	{"for_init_string", `for i = "x", 10 do end`},
 	{"for_limit_table", `for i = 1, {} do end`},
 	{"for_step_nil", `local s; for i = 1, 10, s do end`},
-	// table 索引键错误
+	// table index key errors
 	{"table_index_nil_key", `local t = {}; local k; t[k] = 1`},
 	{"table_index_nan_key", `local t = {}; t[0/0] = 1`},
-	// upvalue 名字形态(expr 内再嵌一层函数,外层局部被捕获为 upvalue;
-	// 官方 getobjname 走 getupvalname 分支报 "upvalue 'x'")
+	// upvalue name form (expr nests one more function so the outer local is
+	// captured as an upvalue; the official getobjname takes the getupvalname
+	// branch and reports "upvalue 'x'")
 	{"arith_on_upvalue", `local up; local f = function() return up + 1 end; return f()`},
 	{"call_upvalue", `local upf; local f = function() return upf() end; return f()`},
 	{"index_upvalue", `local upt; local f = function() return upt.k end; return f()`},
-	// luaL_argerror 函数名按【调用点】派生(issue #133):PUC getfuncname 经
-	// getobjname symbexec 调用指令的 A 操作数——local 别名报别名、global
-	// 报 global 名、method 调用 self 不计数(#N 减 1)、self 自身坏时改用
-	// "calling 'X' on bad self"、TFORLOOP 站点报 "(for generator)"、纯 C
-	// 边界(pcall 直调)回落 '?'。
+	// luaL_argerror derives the function name from the [call site] (issue #133):
+	// PUC getfuncname runs getobjname symbexec over the A operand of the call
+	// instruction — a local alias reports the alias, a global reports the global
+	// name, a method call does not count self (#N minus 1), a bad self itself
+	// switches to "calling 'X' on bad self", a TFORLOOP site reports
+	// "(for generator)", and a pure-C boundary (pcall direct call) falls back to '?'.
 	{"argerr_global_field", `return string.rep(nil)`},
 	{"argerr_local_alias", `local r = string.rep; return r(nil)`},
 	{"argerr_method_decrement", `local s = "x"; return s:rep()`},
@@ -73,7 +78,8 @@ var errCorpus = []errCase{
 	{"argerr_cocreate_cfunction", `return coroutine.create(print)`},
 }
 
-// stripPos 截掉 "chunkname:line: " 位置前缀,返回 (line 段, 余下消息)。
+// stripPos strips the "chunkname:line: " position prefix and returns
+// (line segment, remaining message).
 var posRe = regexp.MustCompile(`^[^:]+:(\d+): (.*)$`)
 
 func stripPos(msg string) (string, string) {
@@ -84,8 +90,10 @@ func stripPos(msg string) (string, string) {
 	return m[1], m[2]
 }
 
-// TestDiff_ErrorMessages 对拍错误消息:正文逐字节 + 行号段也断言一致
-// (两边脚本结构相同,行号应相等;LineInfo 错位类 bug 经此防线)。
+// TestDiff_ErrorMessages diff-tests error messages: byte-for-byte body plus
+// the line segment is also asserted equal (the two sides share the same script
+// structure so the line numbers should be equal; LineInfo misalignment bugs are
+// caught by this guard).
 func TestDiff_ErrorMessages(t *testing.T) {
 	oracle := findOracle()
 	if oracle == "" {

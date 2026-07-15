@@ -1,4 +1,5 @@
-// string 库的 pattern 相关函数 + format/byte/char(10 §7-§8)。
+// Pattern-related functions of the string library + format/byte/char
+// (10 §7-§8).
 package stdlib
 
 import (
@@ -12,7 +13,8 @@ import (
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
-// strArg 取第 n 个参数为 string 字节(数字自动转字符串,Lua 5.1 行为)。
+// strArg fetches the n-th argument as string bytes (numbers coerce to strings,
+// per Lua 5.1 behavior).
 func strArg(st *crescent.State, args []value.Value, n int, fname string) ([]byte, *crescent.LuaError) {
 	if n >= len(args) {
 		return nil, crescent.NewArgError(n+1, "string expected, got no value")
@@ -27,7 +29,7 @@ func strArg(st *crescent.State, args []value.Value, n int, fname string) ([]byte
 	return nil, crescent.NewArgError(n+1, "string expected, got "+st.TypeName(v))
 }
 
-// numArg 取第 n 个参数为 number(可缺省)。
+// numArg fetches the n-th argument as a number (may be absent).
 func numArg(st *crescent.State, args []value.Value, n int, def float64) (float64, bool) {
 	if n >= len(args) || args[n] == value.Nil {
 		return def, true
@@ -35,7 +37,8 @@ func numArg(st *crescent.State, args []value.Value, n int, def float64) (float64
 	return toNumberStr(st, args[n])
 }
 
-// strInitPos 把 Lua 的 init 参数(1-based,可负)规约为 0-based 下标。
+// strInitPos reduces Lua's init argument (1-based, possibly negative) to a
+// 0-based index.
 func strInitPos(init float64, slen int) int {
 	i := int(init)
 	if i < 0 {
@@ -47,7 +50,8 @@ func strInitPos(init float64, slen int) int {
 	return i - 1
 }
 
-// capsToValues 把捕获物化为 Lua 值;无显式捕获时返回整个匹配串。
+// capsToValues materializes captures into Lua values; with no explicit
+// captures it returns the whole matched string.
 func capsToValues(st *crescent.State, src []byte, s, e int, caps []capResult) []value.Value {
 	if len(caps) == 0 {
 		return []value.Value{intern(st, string(src[s:e]))}
@@ -63,7 +67,7 @@ func capsToValues(st *crescent.State, src []byte, s, e int, caps []capResult) []
 	return out
 }
 
-// stringFnFind:string.find(s, pat [, init [, plain]])。
+// stringFnFind: string.find(s, pat [, init [, plain]]).
 func stringFnFind(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	s, e := strArg(st, args, 0, "find")
 	if e != nil {
@@ -116,7 +120,7 @@ func stringFnFind(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 	return out, nil
 }
 
-// stringFnMatch:string.match(s, pat [, init])。
+// stringFnMatch: string.match(s, pat [, init]).
 func stringFnMatch(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	s, e := strArg(st, args, 0, "match")
 	if e != nil {
@@ -144,9 +148,10 @@ func stringFnMatch(st *crescent.State, args []value.Value) ([]value.Value, *cres
 	return capsToValues(st, s, start, end, caps), nil
 }
 
-// stringFnGmatch:string.gmatch(s, pat) → 迭代器闭包。
+// stringFnGmatch: string.gmatch(s, pat) → iterator closure.
 //
-// 迭代器是 host closure,经 State 注册;状态(下次起点)收在 Go 闭包变量。
+// The iterator is a host closure registered through State; its state (the next
+// start position) is held in a Go closure variable.
 func stringFnGmatch(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	s, e := strArg(st, args, 0, "gmatch")
 	if e != nil {
@@ -172,9 +177,12 @@ func stringFnGmatch(st *crescent.State, args []value.Value) ([]value.Value, *cre
 			return []value.Value{value.Nil}, nil
 		}
 		if end == start {
-			// 空匹配:从命中位置 +1 推进(官方 gmatch_aux `if (e==src) newstart++`;
-			// 注意命中位置可能在 pos 之后——条件是 end==start 而非 end==pos,
-			// 否则扫描前进后的空匹配不推进,迭代器原地死循环重复输出)。
+			// empty match: advance by +1 from the hit position (PUC
+			// gmatch_aux `if (e==src) newstart++`; note the hit position
+			// may be past pos — the condition is end==start, not
+			// end==pos, otherwise an empty match found after the scan
+			// advanced wouldn't move and the iterator would spin in place
+			// repeating output).
 			pos = end + 1
 		} else {
 			pos = end
@@ -186,7 +194,8 @@ func stringFnGmatch(st *crescent.State, args []value.Value) ([]value.Value, *cre
 	return []value.Value{value.MakeGC(value.TagFunction, cl)}, nil
 }
 
-// stringFnGsub:string.gsub(s, pat, repl [, n])。repl 支持 string/function/table。
+// stringFnGsub: string.gsub(s, pat, repl [, n]). repl supports
+// string/function/table.
 func stringFnGsub(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	s, e := strArg(st, args, 0, "gsub")
 	if e != nil {
@@ -217,7 +226,8 @@ func stringFnGsub(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 		if err != nil {
 			return nil, crescent.NewError(err.Error())
 		}
-		// 锚点模式只在 pos 处匹配(patternFind 已保证);未中或非串首中皆停
+		// An anchored pattern only matches at pos (patternFind already
+		// guarantees this); stop on either no match or a match not at pos.
 		if !found || (anchored && start != pos) {
 			break
 		}
@@ -237,7 +247,7 @@ func stringFnGsub(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 			pos = end
 		}
 		if anchored {
-			break // lstrlib:锚点 gsub 至多替换一次
+			break // lstrlib: an anchored gsub replaces at most once
 		}
 	}
 	if pos < len(s) {
@@ -246,7 +256,7 @@ func stringFnGsub(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 	return []value.Value{intern(st, string(out)), value.NumberValue(float64(count))}, nil
 }
 
-// st2gsubRepl 计算一次替换文本。
+// st2gsubRepl computes the replacement text for one match.
 func st2gsubRepl(st *crescent.State, src []byte, s, e int, caps []capResult, repl value.Value) ([]byte, *crescent.LuaError) {
 	whole := src[s:e]
 	capVal := func(i int) value.Value {
@@ -275,12 +285,13 @@ func st2gsubRepl(st *crescent.State, src []byte, s, e int, caps []capResult, rep
 					if c == '0' {
 						out = append(out, whole...)
 					} else {
-						// %n 越界(超出捕获数;无显式捕获时仅 %1 合法 = 整匹配)
-						// 官方 push_onecapture 报 invalid capture index。
+						// %n out of range (beyond the capture count; with no
+						// explicit captures only %1 is valid = whole match).
+						// PUC push_onecapture raises invalid capture index.
 						idx := int(c - '1')
 						nCaps := len(caps)
 						if nCaps == 0 {
-							nCaps = 1 // 无显式捕获:捕获 1 = 整个匹配
+							nCaps = 1 // no explicit captures: capture 1 = whole match
 						}
 						if idx >= nCaps {
 							return nil, crescent.NewError(fmt.Sprintf("invalid capture index %%%c", c))
@@ -313,7 +324,8 @@ func st2gsubRepl(st *crescent.State, src []byte, s, e int, caps []capResult, rep
 		return b, nil
 	case value.Tag(repl) == value.TagTable:
 		key := capVal(0)
-		// 经 __index 链(官方 gsub 走 lua_gettable,元方法可见)
+		// Through the __index chain (PUC gsub uses lua_gettable, so
+		// metamethods are visible).
 		v, le := st.IndexWithMeta(repl, key)
 		if le != nil {
 			return nil, le
@@ -340,7 +352,7 @@ func valueToBytesForGsub(st *crescent.State, v value.Value) ([]byte, bool) {
 	return nil, false
 }
 
-// stringFnFormat:string.format(fmt, ...) — %d %i %u %f %g %e %s %q %x %X %o %c %%。
+// stringFnFormat: string.format(fmt, ...) — %d %i %u %f %g %e %s %q %x %X %o %c %%.
 func stringFnFormat(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	f, e := strArg(st, args, 0, "format")
 	if e != nil {
@@ -361,12 +373,14 @@ func stringFnFormat(st *crescent.State, args []value.Value) ([]value.Value, *cre
 			i++
 			continue
 		}
-		// flags/width/precision:对齐 PUC scanformat 的硬限——flags 最多
-		// 5 个(sizeof(FLAGS)-1;第 6 个报 repeated flags),width 与
-		// precision 各最多 2 位数字(第 3 位报 width or precision too
-		// long)。这同时就是嵌入式 hardening:2 位宽度上限彻底封死
-		// `%.99999999999d` 型 OOM(旧防线是自设的 1 GiB 阈值,PUC 语义
-		// 更严且 byte-equal;oracle diff fuzz 撞出 %100X 的分歧)。
+		// flags/width/precision: matches PUC scanformat's hard limits —
+		// at most 5 flags (sizeof(FLAGS)-1; the 6th raises repeated
+		// flags), and width and precision each at most 2 digits (the 3rd
+		// raises width or precision too long). This doubles as embedded
+		// hardening: the 2-digit width cap fully seals off
+		// `%.99999999999d`-style OOM (the old defense was a self-imposed
+		// 1 GiB threshold; PUC semantics are stricter and byte-equal;
+		// oracle diff fuzz turned up the %100X divergence).
 		spec := []byte{'%'}
 		flagStart := i
 		for i < len(f) && strings.ContainsRune("-+ #0", rune(f[i])) {
@@ -493,9 +507,10 @@ func stringFnFormat(st *crescent.State, args []value.Value) ([]value.Value, *cre
 	return []value.Value{intern(st, string(out))}, nil
 }
 
-// quoteLuaString 实现 %q(逐字节对齐官方 addquoted):
-// `"` `\` 前置反斜杠;`\n` 输出为反斜杠+真实换行(非 \n 两字符);
-// `\r` → \r;NUL → \000(三位,防后随数字粘连)。
+// quoteLuaString implements %q (byte-for-byte aligned with PUC addquoted):
+// `"` and `\` get a leading backslash; `\n` is emitted as backslash + a real
+// newline (not the two chars \n); `\r` → \r; NUL → \000 (three digits, to keep
+// a following digit from sticking to it).
 func quoteLuaString(s []byte) []byte {
 	out := []byte{'"'}
 	for _, c := range s {
@@ -515,7 +530,7 @@ func quoteLuaString(s []byte) []byte {
 	return append(out, '"')
 }
 
-// stringFnByte:string.byte(s [, i [, j]])。
+// stringFnByte: string.byte(s [, i [, j]]).
 func stringFnByte(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	s, e := strArg(st, args, 0, "byte")
 	if e != nil {
@@ -546,7 +561,7 @@ func stringFnByte(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 	return out, nil
 }
 
-// stringFnChar:string.char(...)。
+// stringFnChar: string.char(...).
 func stringFnChar(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	out := make([]byte, len(args))
 	for i, a := range args {
@@ -720,5 +735,5 @@ func cPadChar(spec []byte, c byte) []byte {
 	return outb
 }
 
-// 保留 strconv 引用(strInitPos 等未来扩展)。
+// Keep the strconv reference alive (for future extensions like strInitPos).
 var _ = strconv.Itoa

@@ -1,7 +1,8 @@
-// CALL / TAILCALL / RETURN / VARARG / SETLIST / 闭包构造。
+// CALL / TAILCALL / RETURN / VARARG / SETLIST / closure construction.
 //
-// 注:M9 范围内 generic for(TFORLOOP)只支持 host 迭代器(M12 提供 next 等);
-// 用 Lua 函数当迭代器尚未在 M9 验收要求里(05 §10.2 是后置工作)。
+// Note: within M9 scope, generic for (TFORLOOP) only supports host iterators
+// (M12 provides next etc.); using a Lua function as an iterator is not yet in
+// the M9 acceptance requirements (05 §10.2 is deferred work).
 package crescent
 
 import (
@@ -11,8 +12,9 @@ import (
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
-// doCall 执行一条 CALL,返回新的 ci(若进入了一个新 Lua 帧);
-// 若调用走 host 路径,host 函数同步执行后返回 (nil, nil),主循环不切 ci。
+// doCall executes one CALL, returning the new ci (if it entered a new Lua frame);
+// if the call takes the host path, the host function runs synchronously and
+// returns (nil, nil), and the main loop does not switch ci.
 func (st *State) doCall(th *thread, ci *callInfo, i bytecode.Instruction) (*callInfo, *LuaError) {
 	a := bytecode.A(i)
 	b := bytecode.B(i)
@@ -27,7 +29,8 @@ func (st *State) doCall(th *thread, ci *callInfo, i bytecode.Instruction) (*call
 	nresults := c - 1
 	callee := th.slot(funcIdx)
 	if value.Tag(callee) != value.TagFunction {
-		// __call 元方法(07):args 右移一格,原 callee 变第 1 实参,handler 上位
+		// __call metamethod (07): shift args right by one, the original callee
+		// becomes the 1st argument, the handler takes its place
 		h := st.metaFieldOfValue(callee, "__call")
 		if value.Tag(h) != value.TagFunction {
 			return nil, st.errWithName(ci, "call", a, callee)
@@ -39,11 +42,12 @@ func (st *State) doCall(th *thread, ci *callInfo, i bytecode.Instruction) (*call
 	}
 	cl := value.GCRefOf(callee)
 	if object.IsHostClosure(st.arena, cl) {
-		// 同步调用 host;调用后 ci 不变(主循环 next=nil 表示不切帧)
+		// call host synchronously; ci is unchanged after the call (main loop next=nil means no frame switch)
 		e := st.callHost(th, funcIdx, nargs, nresults)
 		if e == errYieldSentinel {
-			// yield 冒泡(08 §3.4):记录恢复信息(从本 CALL 的下一条恢复;
-			// resume 参数将写到本 CALL 的结果寄存器)。
+			// yield bubbling (08 §3.4): record resume info (resume from the
+			// instruction after this CALL; resume args will be written to this
+			// CALL's result register).
 			th.pendingResume = &pendingResumeInfo{
 				ciIndex:    th.ciDepth - 1,
 				dst:        funcIdx,
@@ -52,14 +56,17 @@ func (st *State) doCall(th *thread, ci *callInfo, i bytecode.Instruction) (*call
 			}
 			return nil, e
 		}
-		// PUC luaL_argerror:arg 错误的函数名取自本 CALL 站点(issue #133);
-		// 主循环已 ci.pc++,CALL 自身在 ci.pc-1。
+		// PUC luaL_argerror: the function name for an arg error is taken from
+		// this CALL site (issue #133); the main loop has already done ci.pc++,
+		// so the CALL itself is at ci.pc-1.
 		return nil, st.resolveArgError(e, ci, ci.pc-1, a)
 	}
-	// gibbous 升层分支(VS0-d / 04-trampoline §2.2):被调 Proto 已升 gibbous
-	// 且在主线程(§5 线程级 tier 规则:协程不升层)→ 经 trampoline 跳 wazero。
-	// 返回值回填 + 弹帧由 gibbous RETURN 经 h_return 完成,与 host 路径同款
-	// 返回 (nil, e)——execute 主循环 reload ci=currentCI 继续解释调用者帧。
+	// gibbous promotion branch (VS0-d / 04-trampoline §2.2): the callee Proto
+	// has been promoted to gibbous and is on the main thread (§5 thread-level
+	// tier rule: coroutines are not promoted) → jump to wazero via trampoline.
+	// Return-value writeback + frame pop are done by gibbous RETURN through
+	// h_return, returning (nil, e) the same as the host path — the execute main
+	// loop reloads ci=currentCI and keeps interpreting the caller frame.
 	//
 	// nCcalls watermark (gibbousReentryCCallCap): every gibbous call
 	// level is a real Go re-entry chain, so deep recursion would trip
@@ -80,7 +87,8 @@ func (st *State) doCall(th *thread, ci *callInfo, i bytecode.Instruction) (*call
 	return currentCI(th), nil
 }
 
-// entryDepthOf 找当前最内层 fresh 帧的深度(yield 恢复后的冒泡边界)。
+// entryDepthOf finds the depth of the current innermost fresh frame (the
+// bubbling boundary after a yield resume).
 func (st *State) entryDepthOf(th *thread) int {
 	for i := th.ciDepth - 1; i >= 0; i-- {
 		ci := th.ciAt(i)
@@ -91,8 +99,9 @@ func (st *State) entryDepthOf(th *thread) int {
 	return 0
 }
 
-// insertCallSelf 为 __call 重排栈:args 右移一格,原 callee 留在 funcIdx+1
-// 作第 1 实参,handler 由调用方写入 funcIdx(07 __call 语义)。
+// insertCallSelf rearranges the stack for __call: shift args right by one, the
+// original callee stays at funcIdx+1 as the 1st argument, and the handler is
+// written to funcIdx by the caller (07 __call semantics).
 func (st *State) insertCallSelf(th *thread, funcIdx, nargs int) {
 	need := funcIdx + 2 + nargs
 	th.ensureStack(need)
@@ -104,7 +113,7 @@ func (st *State) insertCallSelf(th *thread, funcIdx, nargs int) {
 	}
 }
 
-// doTailCall 复用当前帧执行新 closure 的调用。
+// doTailCall reuses the current frame to execute a call to a new closure.
 func (st *State) doTailCall(th *thread, ci *callInfo, i bytecode.Instruction) (*callInfo, *LuaError) {
 	a := bytecode.A(i)
 	b := bytecode.B(i)
@@ -117,7 +126,7 @@ func (st *State) doTailCall(th *thread, ci *callInfo, i bytecode.Instruction) (*
 	}
 	callee := th.slot(funcIdx)
 	if value.Tag(callee) != value.TagFunction {
-		// __call 元方法(07):与 doCall 同构
+		// __call metamethod (07): isomorphic to doCall
 		h := st.metaFieldOfValue(callee, "__call")
 		if value.Tag(h) != value.TagFunction {
 			return nil, st.errWithName(ci, "call", a, callee)
@@ -129,9 +138,11 @@ func (st *State) doTailCall(th *thread, ci *callInfo, i bytecode.Instruction) (*
 	}
 	cl := value.GCRefOf(callee)
 	if object.IsHostClosure(st.arena, cl) {
-		// host 尾调用 = 普通 host 调用,结果作为本帧返回值。M12 简化:落到原 funcIdx 起,
-		// 然后让本帧 RETURN(主循环紧随会执行 RETURN A=funcIdx, B=0,但 codegen 紧跟一条
-		// RETURN A B=0 设计文档承诺存在);所以这里完成 host 后让 ci 继续即可。
+		// host tail call = ordinary host call, with results as this frame's return
+		// values. M12 simplification: place them starting at the original funcIdx,
+		// then let this frame RETURN (the main loop will run RETURN A=funcIdx, B=0
+		// right after; codegen guarantees a following RETURN A B=0 per the design
+		// doc); so here we just finish the host call and let ci continue.
 		//
 		// nresults MUST be -1 (multret, PUC lvm.c OP_TAILCALL's
 		// luaD_call(L, ra, LUA_MULTRET)): the trailing RETURN B=0 collects
@@ -153,11 +164,11 @@ func (st *State) doTailCall(th *thread, ci *callInfo, i bytecode.Instruction) (*
 	}
 	cci := currentCI(th)
 	cci.SetTailcall(true)
-	th.reMirrorTop() // PW10 R2b-1:cold 字段(tailcall)变更后重镜像 ci 段
+	th.reMirrorTop() // PW10 R2b-1: re-mirror the ci segment after a cold field (tailcall) change
 	return cci, nil
 }
 
-// doReturn 退出当前帧。terminate=true 表示退出了 entry 帧 → execute 结束。
+// doReturn exits the current frame. terminate=true means the entry frame was exited → execute ends.
 func (st *State) doReturn(th *thread, ci *callInfo, i bytecode.Instruction, entryDepth int) (*callInfo, bool) {
 	a := bytecode.A(i)
 	b := bytecode.B(i)
@@ -198,7 +209,8 @@ func (st *State) doReturn(th *thread, ci *callInfo, i bytecode.Instruction, entr
 	return caller, false
 }
 
-// makeClosure 构造一个 Lua closure 并按后随伪指令(MOVE/GETUPVAL)填充 upvalue。
+// makeClosure constructs a Lua closure and fills upvalues according to the
+// following pseudo-instructions (MOVE/GETUPVAL).
 func (st *State) makeClosure(th *thread, ci *callInfo, i bytecode.Instruction) arena.GCRef {
 	pid := st.protoOf(ci).Protos[bytecode.Bx(i)]
 	subProto := st.protos[pid]
@@ -219,7 +231,7 @@ func (st *State) makeClosure(th *thread, ci *callInfo, i bytecode.Instruction) a
 	return cl
 }
 
-// doSetList 批量填表 array 部分(05 §11.2)。
+// doSetList batch-fills the array part of a table (05 §11.2).
 func (st *State) doSetList(th *thread, ci *callInfo, i bytecode.Instruction) *LuaError {
 	a := bytecode.A(i)
 	b := bytecode.B(i)
@@ -246,23 +258,26 @@ func (st *State) doSetList(th *thread, ci *callInfo, i bytecode.Instruction) *Lu
 		st.tableSetInt(tref, base0+uint32(j), reg(th, ci, a+j))
 	}
 	if restoreTop {
-		// 消费完"到 top"的多值窗口后恢复帧逻辑顶(对齐 lvm.c OP_SETLIST
-		// `L->top = L->ci->top`):否则后续指令写 top 之上的寄存器,GC 扫根
-		// 只见 [0,top) → 活值漏标,freelist 复用内存下即 use-after-free。
+		// After consuming the "to top" multi-value window, restore the frame's
+		// logical top (aligning with lvm.c OP_SETLIST `L->top = L->ci->top`):
+		// otherwise later instructions write registers above top, and GC root
+		// scanning only sees [0,top) → live values are missed, becoming a
+		// use-after-free once the freelist reuses the memory.
 		th.ensureStack(ci.base + int(st.protoOf(ci).MaxStack))
 		th.setTop(ci.base + int(st.protoOf(ci).MaxStack))
 	}
 	return nil
 }
 
-// doConcat 实现 R(A) := R(B) .. .. R(C)。
+// doConcat implements R(A) := R(B) .. .. R(C).
 //
-// 快路径全 string/number 一次线性拼接;遇到非法操作数走 __concat 元方法
-// (右结合,07);仍无则报带名字描述的错误(09 §8.3)。
+// The fast path linearly concatenates all string/number operands in one pass;
+// on an invalid operand it goes to the __concat metamethod (right-associative,
+// 07); if still absent it reports an error with a name description (09 §8.3).
 func (st *State) doConcat(th *thread, ci *callInfo, i bytecode.Instruction) *LuaError {
 	bIdx := bytecode.B(i)
 	cIdx := bytecode.C(i)
-	// 快路径检查:全部可串化
+	// fast-path check: all operands are stringifiable
 	allPlain := true
 	for k := bIdx; k <= cIdx; k++ {
 		v := reg(th, ci, k)
@@ -281,7 +296,7 @@ func (st *State) doConcat(th *thread, ci *callInfo, i bytecode.Instruction) *Lua
 		setReg(th, ci, bytecode.A(i), value.MakeGC(value.TagString, ref))
 		return nil
 	}
-	// 慢路径:从右向左两两折叠(右结合);__concat 先左后右查
+	// slow path: fold pairwise from right to left (right-associative); __concat is looked up left first, then right
 	acc := reg(th, ci, cIdx)
 	for k := cIdx - 1; k >= bIdx; k-- {
 		l := reg(th, ci, k)
@@ -317,18 +332,21 @@ func (st *State) doConcat(th *thread, ci *callInfo, i bytecode.Instruction) *Lua
 	return nil
 }
 
-// doVararg 实现 VARARG A B:把栈下区 [base-nVarargs..base) vararg 内容拷到
-// R(A..A+B-2);B=0 时全部拷贝并把 top 设到多值区末(对齐官方 `L->top = ra + n`)。
-// VS0-e:vararg 数据 source 从 ci.varargs Go slice 迁到栈下区,直接经 th.slot
-// 现读(对齐官方 lvm.c `OP_VARARG`)。
+// doVararg implements VARARG A B: copies the vararg contents in the below-stack
+// region [base-nVarargs..base) to R(A..A+B-2); when B=0 it copies all and sets
+// top to the end of the multi-value region (aligning with the official
+// `L->top = ra + n`). VS0-e: the vararg data source is moved from the ci.varargs
+// Go slice to the below-stack region and read live via th.slot (aligning with
+// the official lvm.c `OP_VARARG`).
 func (st *State) doVararg(th *thread, ci *callInfo, i bytecode.Instruction) *LuaError {
 	a := bytecode.A(i)
 	b := bytecode.B(i)
 	n := int(ci.nVarargs)
-	vbase := ci.base - n // 栈下区起点(vararg0 槽位)
+	vbase := ci.base - n // start of the below-stack region (vararg0 slot)
 	if b == 0 {
-		// 全部 vararg 到 top。top 必须双向设置(不只抬不降):此前更高的
-		// 残留 top 会让消费方(doCall 的 nargs = top-funcIdx-1)高估实参数。
+		// all varargs up to top. top must be set both ways (not just raised, not
+		// only lowered): a higher leftover top would make the consumer (doCall's
+		// nargs = top-funcIdx-1) overestimate the argument count.
 		need := ci.base + a + n
 		if need > th.size() {
 			th.ensureStack(need)

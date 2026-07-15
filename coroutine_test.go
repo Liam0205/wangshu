@@ -1,4 +1,4 @@
-// Coroutine end-to-end tests(08 路线 B 验收)。
+// Coroutine end-to-end tests (08 route B acceptance).
 package wangshu_test
 
 import (
@@ -74,7 +74,7 @@ func TestCo_ErrorInsideBecomesFalse(t *testing.T) {
 local co = coroutine.create(function() error("inside") end)
 local ok, err = coroutine.resume(co)
 return tostring(ok), err, coroutine.status(co)`)
-	// error(string) 自动加 chunkname:line: 前缀(5.1)
+	// error(string) automatically adds the chunkname:line: prefix (5.1)
 	if r[0].Str() != "false" || !strings.HasSuffix(r[1].Str(), ": inside") || r[2].Str() != "dead" {
 		t.Errorf("got %q %q %q", r[0].Display(), r[1].Display(), r[2].Display())
 	}

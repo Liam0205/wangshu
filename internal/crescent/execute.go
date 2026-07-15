@@ -1,5 +1,6 @@
-// Main interpreter loop — 取指 → 译码 → 执行 (05 §2.3 / §12)。M9 范围内不接
-// IC、元表、协程、GC,不写 safepoint(M10 增量补 §5)。
+// Main interpreter loop — fetch → decode → execute (05 §2.3 / §12). Within the
+// M9 scope it hooks up no IC, metatables, coroutines, or GC, and emits no
+// safepoints (M10 fills in §5 incrementally).
 package crescent
 
 import (
@@ -11,17 +12,21 @@ import (
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
-// execute 跑当前栈顶 fresh CallInfo 直到它退出(05 §7.3 entry edge)。
+// execute runs the fresh CallInfo currently on top of the stack until it exits
+// (05 §7.3 entry edge).
 //
-// reentry 模型:Lua-call-Lua 通过修改 ci/proto/code 局部变量在同一个 Go 栈帧里
-// 重入 — Go 栈深度恒为 1(05 §7.1)。
+// Reentry model: Lua-call-Lua re-enters within the same Go stack frame by
+// mutating the ci/proto/code local variables — Go stack depth stays fixed at 1
+// (05 §7.1).
 func (st *State) execute(th *thread) *LuaError {
 	return st.executeFrom(th, th.ciDepth-1)
 }
 
-// executeFrom 以指定 entry 深度跑主循环(协程 resume 恢复时复用,08 §3.5)。
+// executeFrom runs the main loop at the given entry depth (reused when a
+// coroutine resumes, 08 §3.5).
 //
-// 出错时(非 yield 哨兵)统一加 "chunkname:line:" 位置前缀(09)。
+// On error (other than the yield sentinel) it uniformly prepends the
+// "chunkname:line:" position prefix (09).
 func (st *State) executeFrom(th *thread, entryDepth int) *LuaError {
 	e := st.executeLoop(th, entryDepth)
 	if e != nil && e != errYieldSentinel && th.ciDepth > 0 {
@@ -105,7 +110,7 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 			if e != nil {
 				return st.enhanceIndexErr(e, ci, bytecode.B(i), tbl)
 			}
-			// __index handler 可能重入 execute(append cis)→ 刷新 ci 指针
+			// __index handler may re-enter execute (append cis) → refresh the ci pointer
 			ci = currentCI(th)
 			proto = st.protoOf(ci)
 			code = proto.Code
@@ -126,7 +131,7 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 		case bytecode.NEWTABLE:
 			asz := bytecode.Fb2Int(uint32(bytecode.B(i)))
 			hsz := bytecode.Fb2Int(uint32(bytecode.C(i)))
-			// Lua 5.1 NEWTABLE 的 hsize 在 fb 解码后未必是 2 的幂;allocTable 要求 2 的幂。
+			// Lua 5.1 NEWTABLE's hsize is not necessarily a power of two after fb decoding; allocTable requires a power of two.
 			t := st.allocTable(asz, roundUpPow2(hsz))
 			setReg(th, ci, bytecode.A(i), value.MakeGC(value.TagTable, t))
 			st.safepoint(th, ci)
@@ -148,7 +153,7 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 			if e := st.doArith(th, ci, i); e != nil {
 				return e
 			}
-			// __add 等 handler 可能重入 execute → 刷新
+			// __add and friends' handlers may re-enter execute → refresh
 			ci = currentCI(th)
 			proto = st.protoOf(ci)
 			code = proto.Code
@@ -218,8 +223,9 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 			ci.pc += int32(bytecode.SBx(i))
 
 		case bytecode.EQ, bytecode.LT, bytecode.LE:
-			// 快路径内联:双 number 直比,零函数调用、零 ci 刷新
-			// (loop 档热路径 `i < n` 每迭代一次,05 §3.4)。
+			// Fast-path inline: two numbers compared directly, zero function
+			// calls, zero ci refresh (hot path in the loop preset `i < n`,
+			// once per iteration, 05 §3.4).
 			b := rk(th, ci, proto, bytecode.B(i))
 			c := rk(th, ci, proto, bytecode.C(i))
 			var res bool
@@ -233,9 +239,11 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 				default:
 					res = x <= y
 				}
-				// 算术 IC 双计数:LT/LE 双 number 走快路径(02 §2.4 注:LT/LE
-				// 的 numHits 不区分 number/string 子分支,粒度损失 §9.2 已记)。
-				// EQ 不带 IC(02 §1.2 注 1)。
+				// Arithmetic IC double counting: LT/LE with two numbers takes
+				// the fast path (02 §2.4 note: LT/LE's numHits do not
+				// distinguish the number/string sub-branches, granularity loss
+				// recorded in §9.2).
+				// EQ carries no IC (02 §1.2 note 1).
 				if profileEnabled && bytecode.Op(i) != bytecode.EQ {
 					recordArithNumHit(&proto.IC[ci.pc-1])
 				}
@@ -245,7 +253,7 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 				if e != nil {
 					return e
 				}
-				// __eq/__lt/__le handler 可能重入 execute → 刷新 ci
+				// __eq/__lt/__le handler may re-enter execute → refresh ci
 				ci = currentCI(th)
 				proto = st.protoOf(ci)
 				code = proto.Code
@@ -279,8 +287,10 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 			if next != nil {
 				ci = next
 			} else {
-				// host 路径:host 内部可能重入 execute(pcall 等)改变帧深度,
-				// 旧 ci 指针在 R2b-4 前来自可重定位段——刷新到稳定的 th.cur。
+				// host path: the host may internally re-enter execute (pcall
+				// etc.) and change the frame depth, so the old ci pointer, which
+				// before R2b-4 came from a relocatable segment, is refreshed to
+				// the stable th.cur.
 				ci = currentCI(th)
 			}
 			proto = st.protoOf(ci)
@@ -391,7 +401,7 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 
 		case bytecode.FORPREP:
 			a := bytecode.A(i)
-			// 三槽校验:可经 string coercion(5.1 对 for 也做 tonumber,07 §5.2)
+			// Three-slot check: may go through string coercion (5.1 also runs tonumber for `for`, 07 §5.2)
 			init, ok1 := st.toNumberCoerce(reg(th, ci, a))
 			limit, ok2 := st.toNumberCoerce(reg(th, ci, a+1))
 			step, ok3 := st.toNumberCoerce(reg(th, ci, a+2))
@@ -410,9 +420,9 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 			ci.pc += int32(bytecode.SBx(i))
 
 		case bytecode.TFORLOOP:
-			// 调用迭代器 R(A)(R(A+1), R(A+2)),结果落 R(A+3..A+2+C)(05 §10.2)。
-			// 迭代器经 callLuaFromHost 同步取结果(Lua 迭代器走 host→Lua 重入;
-			// next 等 host 迭代器走 host 直调)。
+			// Call the iterator R(A)(R(A+1), R(A+2)); results land in R(A+3..A+2+C) (05 §10.2).
+			// The iterator syncs its results via callLuaFromHost (Lua iterators go
+			// host→Lua reentry; host iterators such as next are called directly host-side).
 			a := bytecode.A(i)
 			c := bytecode.C(i)
 			iter := reg(th, ci, a)
@@ -420,9 +430,10 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 			ctrl := reg(th, ci, a+2)
 			results, e := st.callLuaFromHostNamed(th, iter, []value.Value{state, ctrl})
 			if e != nil {
-				// PUC getfuncname 认 OP_TFORLOOP 为命名调用站点:host 迭代器
-				// 的 arg 错误按 R(A) 命名(典型 "(for generator)",issue #133);
-				// 主循环已 ci.pc++,TFORLOOP 自身在 ci.pc-1。
+				// PUC getfuncname treats OP_TFORLOOP as a named call site: a
+				// host iterator's arg error is named after R(A) (typically
+				// "(for generator)", issue #133); the main loop has already done
+				// ci.pc++, so TFORLOOP itself sits at ci.pc-1.
 				return st.resolveArgError(e, ci, ci.pc-1, a)
 			}
 			ci = currentCI(th)
@@ -436,10 +447,10 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 				setReg(th, ci, a+3+k, v)
 			}
 			if c >= 1 && len(results) >= 1 && results[0] != value.Nil {
-				setReg(th, ci, a+2, results[0]) // 控制变量 = 首返回值
-				// 落到紧随的回边 JMP
+				setReg(th, ci, a+2, results[0]) // control variable = first return value
+				// fall through to the immediately following back-edge JMP
 			} else {
-				ci.pc++ // 首值 nil:跳过回边,退出循环
+				ci.pc++ // first value nil: skip the back edge, exit the loop
 			}
 
 		case bytecode.SETLIST:
@@ -467,8 +478,9 @@ func (st *State) executeLoop(th *thread, entryDepth int) *LuaError {
 	}
 }
 
-// toNumber 把 Value 转 float64;成功返回值 + true。number 直接转;
-// string 经 ParseLuaNumber(07 §5.2 唯一入口:算术/数值 for/tonumber 共用)。
+// toNumber converts a Value to float64; on success returns the value and true.
+// number converts directly; string goes through ParseLuaNumber (07 §5.2, the
+// single entry point shared by arithmetic / numeric for / tonumber).
 func (st *State) toNumberCoerce(v value.Value) (float64, bool) {
 	if value.IsNumber(v) {
 		return value.AsNumber(v), true
@@ -479,12 +491,14 @@ func (st *State) toNumberCoerce(v value.Value) (float64, bool) {
 	return 0, false
 }
 
-// 算术辅助。快路径双 number;string coercion(07 §5.2);慢路径 __add 等元方法。
+// Arithmetic helper. Fast path for two numbers; string coercion (07 §5.2);
+// slow path for __add and other metamethods.
 func (st *State) doArith(th *thread, ci *callInfo, i bytecode.Instruction) *LuaError {
 	proto := st.protoOf(ci)
 	b := rk(th, ci, proto, bytecode.B(i))
 	c := rk(th, ci, proto, bytecode.C(i))
-	// 快路径:双 number 直算(单比较判定,无 coercion 开销;05 §4.1)
+	// Fast path: two numbers computed directly (single comparison check, no
+	// coercion overhead; 05 §4.1)
 	if value.IsNumber(b) && value.IsNumber(c) {
 		x, y := value.AsNumber(b), value.AsNumber(c)
 		var r float64
@@ -511,8 +525,8 @@ func (st *State) doArith(th *thread, ci *callInfo, i bytecode.Instruction) *LuaE
 	return st.doArithSlow(th, ci, i, b, c)
 }
 
-// doArithSlow:string coercion → 元方法 → 带名字报错(从快路径拆出,
-// 保持 doArith 可内联进主循环)。
+// doArithSlow: string coercion → metamethod → error with a name (split out of
+// the fast path so doArith stays inlinable into the main loop).
 func (st *State) doArithSlow(th *thread, ci *callInfo, i bytecode.Instruction, b, c value.Value) *LuaError {
 	proto := st.protoOf(ci)
 	x, okB := st.toNumberCoerce(b)
@@ -534,13 +548,13 @@ func (st *State) doArithSlow(th *thread, ci *callInfo, i bytecode.Instruction, b
 			r = math.Pow(x, y)
 		}
 		setReg(th, ci, bytecode.A(i), value.NumberValue(r))
-		// 触发 string coercion 即「不是稳定 number」——记 metaHits(02 §3.3 注 3)
+		// Any string coercion means "not a stable number" — record metaHits (02 §3.3 note 3)
 		if profileEnabled {
 			recordArithMetaHit(&proto.IC[ci.pc-1])
 		}
 		return nil
 	}
-	// 慢路径:__add 等元方法;无元方法时报带名字描述的错误(09 §8.3)
+	// Slow path: __add and other metamethods; when none exists, raise an error with a named description (09 §8.3)
 	mmName := arithMetaName(bytecode.Op(i))
 	h := st.metaFieldOfValue(b, mmName)
 	if h == value.Nil {
@@ -578,7 +592,8 @@ func arithMetaName(op bytecode.OpCode) string {
 	return "__add"
 }
 
-// 比较辅助。快路径双 number / 双 string;慢路径 __eq/__lt/__le 元方法(07)。
+// Comparison helper. Fast path for two numbers / two strings; slow path for the
+// __eq/__lt/__le metamethods (07).
 func (st *State) doCompare(th *thread, ci *callInfo, i bytecode.Instruction) (bool, *LuaError) {
 	proto := st.protoOf(ci)
 	b := rk(th, ci, proto, bytecode.B(i))
@@ -588,8 +603,9 @@ func (st *State) doCompare(th *thread, ci *callInfo, i bytecode.Instruction) (bo
 		if st.rawEqual(b, c) {
 			return true, nil
 		}
-		// __eq:仅两操作数同为 table(或同为 userdata)且【两边元方法是同一个
-		// 函数】才触发(5.1 get_compTM:handler 不同 → 直接 false)
+		// __eq: only triggers when both operands are tables (or both userdata)
+		// AND [both sides' metamethods are the same function] (5.1 get_compTM:
+		// different handlers → false directly)
 		if value.Tag(b) == value.TagTable && value.Tag(c) == value.TagTable {
 			h := st.metaFieldOfValue(b, "__eq")
 			h2 := st.metaFieldOfValue(c, "__eq")
@@ -617,7 +633,7 @@ func (st *State) doCompare(th *thread, ci *callInfo, i bytecode.Instruction) (bo
 			}
 			return cmp <= 0, nil
 		}
-		// 元方法慢路径(07):__lt / __le;5.1 特有:无 __le 用 not __lt(c, b) 回退
+		// Metamethod slow path (07): __lt / __le; 5.1-specific: with no __le, fall back to not __lt(c, b)
 		if bytecode.Op(i) == bytecode.LT {
 			h := st.metaFieldOfValue(b, "__lt")
 			if h == value.Nil {
@@ -642,7 +658,7 @@ func (st *State) doCompare(th *thread, ci *callInfo, i bytecode.Instruction) (bo
 				}
 				return value.Truthy(res), nil
 			}
-			// __le→__lt 回退:a <= b ⟺ not (b < a)
+			// __le→__lt fallback: a <= b ⟺ not (b < a)
 			h = st.metaFieldOfValue(b, "__lt")
 			if h == value.Nil {
 				h = st.metaFieldOfValue(c, "__lt")
@@ -655,7 +671,7 @@ func (st *State) doCompare(th *thread, ci *callInfo, i bytecode.Instruction) (bo
 				return !value.Truthy(res), nil
 			}
 		}
-		// 无元方法:同类报 "two X values",异类报 "X with Y"(5.1)
+		// No metamethod: same type raises "two X values", different types raise "X with Y" (5.1)
 		tb, tc := st.typeNameOf(b), st.typeNameOf(c)
 		if tb == tc {
 			return false, errf("attempt to compare two %s values", tb)
@@ -666,7 +682,7 @@ func (st *State) doCompare(th *thread, ci *callInfo, i bytecode.Instruction) (bo
 }
 
 func (st *State) rawEqual(a, b value.Value) bool {
-	// 数字必须先走浮点比较:canonNaN bits 相等但 NaN ≠ NaN(IEEE);+0 == -0。
+	// Numbers must go through float comparison first: canonNaN bits compare equal but NaN ≠ NaN (IEEE); +0 == -0.
 	if value.IsNumber(a) && value.IsNumber(b) {
 		return value.AsNumber(a) == value.AsNumber(b)
 	}

@@ -1,8 +1,9 @@
 // Package ast defines the AST node types produced by the parser (04 §3).
 //
-// 节点是纯 Go 堆数据(不入 arena);编译后可被 GC。所有节点带 Line int32(取自首 token,
-// 用于错误与未来 LineInfo)。Sealed-interface(空方法 exprNode/stmtNode)使 codegen 的类型
-// switch 穷尽性更易审查。
+// Nodes are plain Go heap data (not placed in the arena); they can be GC'd after compilation.
+// Every node carries Line int32 (taken from the first token, used for errors and future LineInfo).
+// The sealed interface (empty exprNode/stmtNode methods) makes the codegen type
+// switch easier to audit for exhaustiveness.
 package ast
 
 // Node is the common interface for all AST nodes.
@@ -60,7 +61,7 @@ type IndexExpr struct {
 	Key  Expr
 }
 
-// ParenExpr 包裹括号表达式:`(f())` 强制单值(04 §9.4 / Lua 5.1 语义)。
+// ParenExpr wraps a parenthesized expression: `(f())` forces a single value (04 §9.4 / Lua 5.1 semantics).
 type ParenExpr struct {
 	Line int32
 	E    Expr
@@ -144,8 +145,8 @@ type FuncExpr struct {
 	Line     int32
 	Params   []string
 	IsVararg bool
-	// NoArgTable:main chunk 合成的 FuncExpr 置 true——官方 main 只有
-	// VARARG_ISVARARG,不带 HASARG(无隐式 arg 表;LUA_COMPAT_VARARG)。
+	// NoArgTable: the synthesized main-chunk FuncExpr sets this true —— the official main only has
+	// VARARG_ISVARARG, without HASARG (no implicit arg table; LUA_COMPAT_VARARG).
 	NoArgTable bool
 	Body       *Block
 	EndLine    int32
@@ -158,16 +159,17 @@ func (*FuncExpr) exprNode()    {}
 
 type TableExpr struct {
 	Line int32
-	// Items 按**源码出现序**保存全部字段:PUC 的构造器代码按序交错
-	// 生成 SETTABLE(键值字段,当场)与 SETLIST(位置字段,攒批),
-	// 后写覆盖先写({B,0,C,[1]=""} 里 SETLIST 的位置项覆盖 [1]="")。
-	// 拆成数组/哈希两个列表会丢顺序(cgo oracle 差分 fuzz 撞出)。
+	// Items holds all fields in **source appearance order**: PUC's constructor code
+	// emits, in order and interleaved, SETTABLE (key-value fields, immediately) and
+	// SETLIST (positional fields, batched), where later writes overwrite earlier ones
+	// (in {B,0,C,[1]=""} the SETLIST positional item overwrites [1]="").
+	// Splitting into separate array/hash lists would lose ordering (caught by cgo-oracle differential fuzzing).
 	Items []TableItem
 }
 
-// TableItem 是表构造器的一个字段:Key == nil 表示位置(数组)项。
+// TableItem is one field of a table constructor: Key == nil means a positional (array) item.
 type TableItem struct {
-	Key Expr // nil = 位置项;非 nil = [k]=v 或 name=v
+	Key Expr // nil = positional item; non-nil = [k]=v or name=v
 	Val Expr
 }
 
@@ -192,12 +194,12 @@ type LocalFuncStmt struct {
 }
 type AssignStmt struct {
 	Line    int32
-	Targets []Expr // 每项必须是 NameExpr 或 IndexExpr(parser 校验)
+	Targets []Expr // each item must be a NameExpr or IndexExpr (parser-validated)
 	Exprs   []Expr
 }
 type CallStmt struct {
 	Line int32
-	Call Expr // CallExpr 或 MethodCallExpr
+	Call Expr // CallExpr or MethodCallExpr
 }
 type DoStmt struct {
 	Line int32
@@ -211,7 +213,7 @@ type WhileStmt struct {
 type RepeatStmt struct {
 	Line int32
 	Body *Block
-	Cond Expr // until 在 Body 作用域内可见局部
+	Cond Expr // until can see locals within the Body scope
 }
 
 type IfClause struct {
@@ -221,7 +223,7 @@ type IfClause struct {
 type IfStmt struct {
 	Line    int32
 	Clauses []IfClause
-	Else    *Block // 可空
+	Else    *Block // nullable
 }
 
 type NumForStmt struct {
@@ -229,19 +231,19 @@ type NumForStmt struct {
 	Var   string
 	Init  Expr
 	Limit Expr
-	Step  Expr // 可空 → 默认 1
+	Step  Expr // nullable → defaults to 1
 	Body  *Block
 }
 type GenForStmt struct {
 	Line  int32
 	Names []string
-	Exprs []Expr // 迭代器三元组来源
+	Exprs []Expr // source of the iterator triple
 	Body  *Block
 }
 type FuncStmt struct {
 	Line     int32
-	Target   Expr // NameExpr / IndexExpr 链
-	IsMethod bool // a.b:m → 给 Fn.Params 注入隐式 self
+	Target   Expr // NameExpr / IndexExpr chain
+	IsMethod bool // a.b:m → inject an implicit self into Fn.Params
 	Fn       *FuncExpr
 }
 type ReturnStmt struct {

@@ -1,16 +1,23 @@
 // Package value implements Lua's NaN-boxed Value, GCRef encoding, and tag predicates.
 //
-// 设计:docs/design/p1-interpreter/01-value-object-model.md §3。
+// Design: docs/design/p1-interpreter/01-value-object-model.md §3.
 //
-// Value 是一个 uint64,利用 IEEE-754 double 的 NaN 空间编码非数字类型:
-//   - 数字:整个 64-bit 是 IEEE-754 double(IsNumber ⟺ v < 0xFFF8_0000_0000_0000)。
-//   - 非数字 boxed:高 16 bit 是 tag(0xFFF8..0xFFFF),低 48 bit 是 payload。
+// Value is a uint64 that uses the NaN space of an IEEE-754 double to encode
+// non-number types:
+//   - number: the entire 64 bits is an IEEE-754 double
+//     (IsNumber ⟺ v < 0xFFF8_0000_0000_0000).
+//   - boxed non-number: the high 16 bits are the tag (0xFFF8..0xFFFF), the low
+//     48 bits are the payload.
 //
-// 不变式(贯穿全 VM):
-//   - NaN 规范化:值世界中任何 NaN 数字必须是 0x7FF8_0000_0000_0000(canonNaN)。
-//     入口 NumberValue 兜底:NaN 一律规范成 canonNaN,防外部负 NaN 渗入(否则会被误判 boxed)。
-//   - 8 个 tag 用满 0xFFF8..0xFFFF,Lua 5.1 类型集封闭(无空槽是设计意图)。
-//   - 可回收类型 = tag ∈ [TagString, TagThread] (即 0xFFFB..0xFFFF) — IsCollectable 单比较。
+// Invariants (hold throughout the VM):
+//   - NaN canonicalization: any NaN number in the value world must be
+//     0x7FF8_0000_0000_0000 (canonNaN). The NumberValue entry point enforces
+//     this: every NaN is canonicalized to canonNaN, preventing an external
+//     negative NaN from leaking in (otherwise it would be misread as boxed).
+//   - The 8 tags fill 0xFFF8..0xFFFF; the Lua 5.1 type set is closed (no empty
+//     slot, by design).
+//   - Collectable type = tag ∈ [TagString, TagThread] (i.e. 0xFFFB..0xFFFF) —
+//     IsCollectable is a single comparison.
 package value
 
 import (
@@ -22,16 +29,17 @@ import (
 // Value is a 64-bit NaN-boxed Lua value.
 type Value uint64
 
-// 边界 / payload 掩码 / canonical NaN(01 §3.5)。
+// Boundary / payload mask / canonical NaN (01 §3.5).
 const (
-	// qNanBoxBase 是非数字 boxed 段的下界:v < qNanBoxBase ⟺ v 是数字。
+	// qNanBoxBase is the lower bound of the boxed non-number range:
+	// v < qNanBoxBase ⟺ v is a number.
 	qNanBoxBase uint64 = 0xFFF8_0000_0000_0000
 	payloadMask uint64 = 0x0000_FFFF_FFFF_FFFF
-	// canonNaN 是值世界唯一允许的 NaN bits(IEEE 正 quiet NaN)。
+	// canonNaN is the only NaN bits allowed in the value world (IEEE positive quiet NaN).
 	canonNaN uint64 = 0x7FF8_0000_0000_0000
 )
 
-// 8 个非数字 tag,用满 0xFFF8..0xFFFF。
+// The 8 non-number tags, filling 0xFFF8..0xFFFF.
 const (
 	TagNil      uint16 = 0xFFF8
 	TagBool     uint16 = 0xFFF9
@@ -42,10 +50,10 @@ const (
 	TagUserdata uint16 = 0xFFFE
 	TagThread   uint16 = 0xFFFF
 
-	collectableMin uint16 = TagString // 可回收下限,见 IsCollectable
+	collectableMin uint16 = TagString // collectable lower bound, see IsCollectable
 )
 
-// 常量值。
+// Constant values.
 const (
 	Nil   Value = Value(uint64(TagNil) << 48)    // 0xFFF8_0000_0000_0000
 	False Value = Value(uint64(TagBool) << 48)   // 0xFFF9_0000_0000_0000
@@ -56,7 +64,7 @@ const (
 func IsNumber(v Value) bool { return uint64(v) < qNanBoxBase }
 
 // IsCollectable reports whether v references an arena GC object (single 16-bit comparison).
-// 等价于 tag ∈ [TagString, TagThread] = [0xFFFB, 0xFFFF]。
+// Equivalent to tag ∈ [TagString, TagThread] = [0xFFFB, 0xFFFF].
 func IsCollectable(v Value) bool {
 	return uint64(v) >= uint64(collectableMin)<<48
 }
@@ -69,8 +77,10 @@ func Truthy(v Value) bool { return v != Nil && v != False }
 
 // NumberValue boxes a float64 with NaN canonicalization (01 §3.4).
 //
-// 任何 NaN(包括外部负 NaN、0/0、Inf-Inf 产生的实现 NaN)都被规范成 canonNaN。
-// 这一处兜底使整个值世界的 NaN bits 唯一,IsNumber 边界判定可信。
+// Any NaN (including an external negative NaN, or an implementation NaN produced
+// by 0/0 or Inf-Inf) is canonicalized to canonNaN. This one fallback makes the
+// NaN bits unique across the whole value world, so the IsNumber boundary test is
+// trustworthy.
 func NumberValue(f float64) Value {
 	if f != f { // NaN
 		return Value(canonNaN)
@@ -90,7 +100,7 @@ func BoolValue(b bool) Value {
 }
 
 // AsBool extracts the bool payload (caller ensures Tag(v) == TagBool).
-// 仅当 v 是 boolean 时有意义:TagBool 的 payload 0 = false,1 = true。
+// Only meaningful when v is a boolean: a TagBool payload of 0 = false, 1 = true.
 func AsBool(v Value) bool { return uint64(v)&1 == 1 }
 
 // MakeGC packages a (tag, GCRef) into a Value. Caller ensures tag is collectable
@@ -104,7 +114,8 @@ func MakeGC(tag uint16, ref arena.GCRef) Value {
 func GCRefOf(v Value) arena.GCRef { return arena.GCRef(uint64(v) & payloadMask) }
 
 // LightUDValue boxes a 48-bit opaque handle as lightuserdata.
-// handle 必须 ≤ payloadMask;高 16 bit 会被截断(01 §3.5 lightuserdata 限制)。
+// handle must be ≤ payloadMask; the high 16 bits are truncated
+// (01 §3.5 lightuserdata restriction).
 func LightUDValue(handle uint64) Value {
 	return Value(uint64(TagLightUD)<<48 | handle&payloadMask)
 }

@@ -7,11 +7,14 @@ import (
 	"testing"
 )
 
-// TestPJ8_EmitMovX0Imm64Encoding 验证 arm64 movz+movk 序列字节编码正确。
+// TestPJ8_EmitMovX0Imm64Encoding verifies that the arm64 movz+movk sequence is
+// byte-encoded correctly.
 //
-// 不真执行段(linux/arm64 mmap+W^X 工程组件已落地,但端到端执行需 trampoline
-// asm 留 PJ8+ 完整版接入);本测试只验「字节编码符合 ARM64 ISA」——以官方
-// movz/movk 编码格式为参照(`Arm Architecture Reference Manual`)。
+// It does not actually execute the code (the linux/arm64 mmap+W^X infrastructure
+// is already in place, but end-to-end execution needs the trampoline asm, wired
+// up in the full PJ8+ version); this test only checks that "the byte encoding
+// conforms to the ARM64 ISA" — using the official movz/movk encoding format as
+// reference (`Arm Architecture Reference Manual`).
 func TestPJ8_EmitMovX0Imm64Encoding(t *testing.T) {
 	const imm = uint64(0xdead_beef_cafe_babe)
 
@@ -23,26 +26,26 @@ func TestPJ8_EmitMovX0Imm64Encoding(t *testing.T) {
 		t.Fatalf("encoded length = %d, want %d", len(buf), EncodedMovX0Imm64Len+EncodedRetLen)
 	}
 
-	// 解析每条 32-bit instruction,验证 movz/movk imm16 字段
+	// Parse each 32-bit instruction, verifying the movz/movk imm16 field
 	expected := []uint16{0xbabe, 0xcafe, 0xbeef, 0xdead}
 	for i, want := range expected {
 		insn := binary.LittleEndian.Uint32(buf[i*4 : (i+1)*4])
-		// movz/movk 指令:base 0xD2800000 (movz) / 0xF2800000 (movk),
-		// imm16 在 bit [20:5]
+		// movz/movk instructions: base 0xD2800000 (movz) / 0xF2800000 (movk),
+		// imm16 in bits [20:5]
 		gotImm16 := uint16((insn >> 5) & 0xFFFF)
 		if gotImm16 != want {
 			t.Errorf("insn %d imm16 = 0x%04x, want 0x%04x", i, gotImm16, want)
 		}
 	}
 
-	// 第 5 条应是 ret(0xd65f03c0 LE)
+	// The 5th instruction should be ret (0xd65f03c0 LE)
 	gotRet := binary.LittleEndian.Uint32(buf[16:20])
 	if gotRet != 0xd65f03c0 {
 		t.Errorf("ret encoding = 0x%08x, want 0xd65f03c0", gotRet)
 	}
 }
 
-// TestPJ8_EmitMovXdImm64 通用 Xd 寄存器版本(rd != 0)。
+// TestPJ8_EmitMovXdImm64 covers the generic Xd register version (rd != 0).
 func TestPJ8_EmitMovXdImm64(t *testing.T) {
 	var buf []byte
 	buf = EmitMovXdImm64(buf, 5, 0x12345678) // mov x5, ...
@@ -50,7 +53,7 @@ func TestPJ8_EmitMovXdImm64(t *testing.T) {
 	if len(buf) != EncodedMovXdImm64Len {
 		t.Fatalf("len = %d, want %d", len(buf), EncodedMovXdImm64Len)
 	}
-	// 第一条 movz x5, imm[15:0] = 0x5678,Rd 字段(low 5 bits)= 5
+	// First instruction is movz x5, imm[15:0] = 0x5678; Rd field (low 5 bits) = 5
 	insn0 := binary.LittleEndian.Uint32(buf[0:4])
 	if insn0&0x1F != 5 {
 		t.Errorf("Rd = %d, want 5", insn0&0x1F)
@@ -70,9 +73,9 @@ func TestPJ8_EmitMovXdFromXn(t *testing.T) {
 		t.Fatalf("len = %d, want %d", len(buf), EncodedMovXdFromXnLen)
 	}
 	insn := binary.LittleEndian.Uint32(buf[0:4])
-	// ORR base 0xAA000000,Rn=5 (bit 16-20),Rm/shift_reg=31(XZR,bit 16-20 等同 Rn 字段)
-	// 实际编码:Rn=Rm=5(我们 emit 时 Rn 字段填 Rm=5),Rm 字段(bit 16-20)
-	// wait — 我们的实现:Rn=5 在 bit 16-20,XZR(31)在 bit 5-9,Rd=3 bit 0-4
+	// ORR base 0xAA000000, Rn=5 (bits 16-20), Rm/shift_reg=31 (XZR, bits 16-20 same as the Rn field)
+	// Actual encoding: Rn=Rm=5 (when we emit, the Rn field holds Rm=5), Rm field (bits 16-20)
+	// wait — our implementation: Rn=5 in bits 16-20, XZR (31) in bits 5-9, Rd=3 in bits 0-4
 	if insn&0x1F != 3 {
 		t.Errorf("Rd = %d, want 3", insn&0x1F)
 	}
@@ -93,7 +96,7 @@ func TestPJ8_EmitAddXdImm12(t *testing.T) {
 		t.Fatalf("len = %d, want %d", len(buf), EncodedAddXdImm12Len)
 	}
 	insn := binary.LittleEndian.Uint32(buf[0:4])
-	// base 0x91000000,Rd=0,Rn=0,imm12=100
+	// base 0x91000000, Rd=0, Rn=0, imm12=100
 	if insn&0x1F != 0 {
 		t.Errorf("Rd = %d, want 0", insn&0x1F)
 	}
@@ -127,33 +130,33 @@ func TestPJ8_EmitB(t *testing.T) {
 		t.Fatalf("len = %d, want %d", len(buf), EncodedBLen)
 	}
 	insn := binary.LittleEndian.Uint32(buf[0:4])
-	// base 0x14000000;imm26 = -2 in two's complement 26-bit = 0x3FFFFFE
+	// base 0x14000000; imm26 = -2 in two's complement 26-bit = 0x3FFFFFE
 	wantInsn := uint32(0x14000000) | (uint32(negImm) & 0x03FFFFFF)
 	if insn != wantInsn {
 		t.Errorf("b -2 = 0x%08x, want 0x%08x", insn, wantInsn)
 	}
 }
 
-// TestPJ8_EmitLdrXtFromXnDisp 验「ldr Xt, [Xn, #pimm12]」64-bit load。
-// 编码:0xF9400000 base + imm12<<10(scaled by 8)+ Rn<<5 + Rt。
+// TestPJ8_EmitLdrXtFromXnDisp verifies "ldr Xt, [Xn, #pimm12]" 64-bit load.
+// Encoding: 0xF9400000 base + imm12<<10 (scaled by 8) + Rn<<5 + Rt.
 //
-// 用例:PJ4 IC inline arm64 端——load arena base / table words(对位
-// amd64 `mov rax, [r14+rcx+disp]` 8 字节)。
+// Use case: the arm64 side of PJ4 IC inline — load arena base / table words
+// (mirroring amd64 `mov rax, [r14+rcx+disp]`, 8 bytes).
 func TestPJ8_EmitLdrXtFromXnDisp(t *testing.T) {
 	cases := []struct {
 		name    string
 		rt, rn  uint8
 		byteOff uint16
-		// 期望 insn(LE 32-bit)
+		// expected insn (LE 32-bit)
 	}{
-		// ldr x0, [x1, #0]:0xF9400020(rt=0 rn=1 imm12=0)
+		// ldr x0, [x1, #0]: 0xF9400020 (rt=0 rn=1 imm12=0)
 		{"ldr x0, [x1, #0]", 0, 1, 0}, // imm12=0
 
-		// ldr x2, [x3, #8]:imm12=1 → byte off 8
+		// ldr x2, [x3, #8]: imm12=1 → byte off 8
 		{"ldr x2, [x3, #8]", 2, 3, 8},
-		// ldr x5, [x6, #40]:imm12=5 → byte off 40(table.word5 access)
+		// ldr x5, [x6, #40]: imm12=5 → byte off 40 (table.word5 access)
 		{"ldr x5, [x6, #40] (table.word5)", 5, 6, 40},
-		// ldr x10, [x11, #32760]:imm12=4095(max)→ byte off 32760
+		// ldr x10, [x11, #32760]: imm12=4095 (max) → byte off 32760
 		{"ldr x10, [x11, #max]", 10, 11, 32760},
 	}
 	for _, tc := range cases {
@@ -164,11 +167,11 @@ func TestPJ8_EmitLdrXtFromXnDisp(t *testing.T) {
 				t.Fatalf("len = %d, want %d", len(buf), EncodedLdrXtFromXnDispLen)
 			}
 			insn := binary.LittleEndian.Uint32(buf[0:4])
-			// 验各字段
+			// verify each field
 			gotImm12 := (insn >> 10) & 0xFFF
 			gotRn := (insn >> 5) & 0x1F
 			gotRt := insn & 0x1F
-			gotBase := insn & 0xFFC003E0 // 高/中部 + Rd/Rn 之外的固定 bits
+			gotBase := insn & 0xFFC003E0 // upper/middle fixed bits, excluding Rd/Rn
 			wantImm12 := uint32(tc.byteOff / 8)
 			if gotImm12 != wantImm12 {
 				t.Errorf("imm12 = %d, want %d", gotImm12, wantImm12)
@@ -176,8 +179,8 @@ func TestPJ8_EmitLdrXtFromXnDisp(t *testing.T) {
 			if uint8(gotRn) != tc.rn || uint8(gotRt) != tc.rt {
 				t.Errorf("Rn/Rt = %d/%d, want %d/%d", gotRn, gotRt, tc.rn, tc.rt)
 			}
-			// base bits 高位 + 中位固定部分(忽略 Rn/Rt/imm12 位)
-			// 0xF9400000 高 22 bits = size+V+opc+L+固定
+			// upper + middle fixed base bits (ignoring the Rn/Rt/imm12 bits)
+			// 0xF9400000 upper 22 bits = size+V+opc+L+fixed
 			if (insn & 0xFFC00000) != 0xF9400000 {
 				t.Errorf("base bits = 0x%08x, want 0xF940 prefix", insn&0xFFC00000)
 			}
@@ -186,8 +189,8 @@ func TestPJ8_EmitLdrXtFromXnDisp(t *testing.T) {
 	}
 }
 
-// TestPJ8_EmitStrXtToXnDisp 验「str Xt, [Xn, #pimm12]」64-bit store。
-// 编码同 LDR 但 opc=00 → base 0xF9000000。
+// TestPJ8_EmitStrXtToXnDisp verifies "str Xt, [Xn, #pimm12]" 64-bit store.
+// Encoding same as LDR but opc=00 → base 0xF9000000.
 func TestPJ8_EmitStrXtToXnDisp(t *testing.T) {
 	var buf []byte
 	buf = EmitStrXtToXnDisp(buf, 5, 6, 56) // str x5, [x6, #56] (SET NodeVal slot)
@@ -208,8 +211,8 @@ func TestPJ8_EmitStrXtToXnDisp(t *testing.T) {
 	}
 }
 
-// TestPJ8_EmitCmpXnXm 验「cmp Xn, Xm」(实际 SUBS XZR, Xn, Xm)字节级。
-// 编码:0xEB00001F base + Xm<<16 + Xn<<5。
+// TestPJ8_EmitCmpXnXm verifies "cmp Xn, Xm" (actually SUBS XZR, Xn, Xm) at the byte level.
+// Encoding: 0xEB00001F base + Xm<<16 + Xn<<5.
 func TestPJ8_EmitCmpXnXm(t *testing.T) {
 	var buf []byte
 	buf = EmitCmpXnXm(buf, 1, 2) // cmp x1, x2 (SUBS XZR, X1, X2)
@@ -218,20 +221,20 @@ func TestPJ8_EmitCmpXnXm(t *testing.T) {
 		t.Fatalf("len = %d, want %d", len(buf), EncodedCmpXnXmLen)
 	}
 	insn := binary.LittleEndian.Uint32(buf[0:4])
-	// 验 base bits + Rm/Rn 字段
+	// verify base bits + Rm/Rn fields
 	// 0xEB00001F + Rm=2 << 16 = 0xEB02001F + Rn=1 << 5 = 0xEB02003F
 	wantInsn := uint32(0xEB00001F) | uint32(2)<<16 | uint32(1)<<5
 	if insn != wantInsn {
 		t.Errorf("cmp x1, x2 = 0x%08x, want 0x%08x", insn, wantInsn)
 	}
-	// Rd 字段 = XZR(31)
+	// Rd field = XZR (31)
 	if insn&0x1F != 31 {
 		t.Errorf("Rd = %d, want 31 (XZR)", insn&0x1F)
 	}
 }
 
-// TestPJ8_EmitBCond 验「b.cond label」条件分支字节级。
-// 编码:0x54000000 base + imm19<<5 + cond.
+// TestPJ8_EmitBCond verifies "b.cond label" conditional branch at the byte level.
+// Encoding: 0x54000000 base + imm19<<5 + cond.
 func TestPJ8_EmitBCond(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -252,7 +255,7 @@ func TestPJ8_EmitBCond(t *testing.T) {
 				t.Fatalf("len = %d, want %d", len(buf), EncodedBCondLen)
 			}
 			insn := binary.LittleEndian.Uint32(buf[0:4])
-			// base 0x54000000 高 8 bits = 0x54
+			// base 0x54000000, upper 8 bits = 0x54
 			if (insn & 0xFF000000) != 0x54000000 {
 				t.Errorf("base bits = 0x%08x, want 0x54 prefix", insn&0xFF000000)
 			}
@@ -272,8 +275,8 @@ func TestPJ8_EmitBCond(t *testing.T) {
 	}
 }
 
-// TestPJ8_EmitFmovDdFromXn 验「fmov Dd, Xn」(GP→FP)字节级。
-// 编码:0x9E670000 base + Xn<<5 + Dd。
+// TestPJ8_EmitFmovDdFromXn verifies "fmov Dd, Xn" (GP→FP) at the byte level.
+// Encoding: 0x9E670000 base + Xn<<5 + Dd.
 func TestPJ8_EmitFmovDdFromXn(t *testing.T) {
 	var buf []byte
 	buf = EmitFmovDdFromXn(buf, 3, 5) // fmov d3, x5
@@ -288,8 +291,8 @@ func TestPJ8_EmitFmovDdFromXn(t *testing.T) {
 	}
 }
 
-// TestPJ8_EmitFmovXdFromDn 验「fmov Xd, Dn」(FP→GP)字节级。
-// 编码:0x9E660000 base + Dn<<5 + Xd。
+// TestPJ8_EmitFmovXdFromDn verifies "fmov Xd, Dn" (FP→GP) at the byte level.
+// Encoding: 0x9E660000 base + Dn<<5 + Xd.
 func TestPJ8_EmitFmovXdFromDn(t *testing.T) {
 	var buf []byte
 	buf = EmitFmovXdFromDn(buf, 7, 2) // fmov x7, d2
@@ -304,8 +307,8 @@ func TestPJ8_EmitFmovXdFromDn(t *testing.T) {
 	}
 }
 
-// TestPJ8_EmitFaddDdDnDm 验「fadd Dd, Dn, Dm」(双精度加)字节级。
-// 编码:0x1E602800 base + Dm<<16 + Dn<<5 + Dd。
+// TestPJ8_EmitFaddDdDnDm verifies "fadd Dd, Dn, Dm" (double-precision add) at the byte level.
+// Encoding: 0x1E602800 base + Dm<<16 + Dn<<5 + Dd.
 func TestPJ8_EmitFaddDdDnDm(t *testing.T) {
 	var buf []byte
 	buf = EmitFaddDdDnDm(buf, 0, 1, 2) // fadd d0, d1, d2
@@ -320,7 +323,7 @@ func TestPJ8_EmitFaddDdDnDm(t *testing.T) {
 	}
 }
 
-// TestPJ8_EmitFsubDdDnDm 验「fsub Dd, Dn, Dm」字节级。base 0x1E603800。
+// TestPJ8_EmitFsubDdDnDm verifies "fsub Dd, Dn, Dm" at the byte level. base 0x1E603800.
 func TestPJ8_EmitFsubDdDnDm(t *testing.T) {
 	var buf []byte
 	buf = EmitFsubDdDnDm(buf, 0, 1, 2)
@@ -335,7 +338,7 @@ func TestPJ8_EmitFsubDdDnDm(t *testing.T) {
 	}
 }
 
-// TestPJ8_EmitFmulDdDnDm 验「fmul Dd, Dn, Dm」字节级。base 0x1E600800。
+// TestPJ8_EmitFmulDdDnDm verifies "fmul Dd, Dn, Dm" at the byte level. base 0x1E600800.
 func TestPJ8_EmitFmulDdDnDm(t *testing.T) {
 	var buf []byte
 	buf = EmitFmulDdDnDm(buf, 0, 1, 2)
@@ -350,7 +353,7 @@ func TestPJ8_EmitFmulDdDnDm(t *testing.T) {
 	}
 }
 
-// TestPJ8_EmitFdivDdDnDm 验「fdiv Dd, Dn, Dm」字节级。base 0x1E601800。
+// TestPJ8_EmitFdivDdDnDm verifies "fdiv Dd, Dn, Dm" at the byte level. base 0x1E601800.
 func TestPJ8_EmitFdivDdDnDm(t *testing.T) {
 	var buf []byte
 	buf = EmitFdivDdDnDm(buf, 0, 1, 2)
@@ -365,9 +368,9 @@ func TestPJ8_EmitFdivDdDnDm(t *testing.T) {
 	}
 }
 
-// TestPJ8_EmitFcmpeDnDm 验「fcmpe Dn, Dm」(signaling ordered compare)字节级。
-// 编码:0x1E602010 base + Dm<<16 + Dn<<5。
-// 对位 amd64 ucomisd xmm0, xmm1(F2 0F 2E C0+reg 4 字节)。
+// TestPJ8_EmitFcmpeDnDm verifies "fcmpe Dn, Dm" (signaling ordered compare) at the byte level.
+// Encoding: 0x1E602010 base + Dm<<16 + Dn<<5.
+// Mirrors amd64 ucomisd xmm0, xmm1 (F2 0F 2E C0+reg, 4 bytes).
 func TestPJ8_EmitFcmpeDnDm(t *testing.T) {
 	var buf []byte
 	buf = EmitFcmpeDnDm(buf, 1, 2) // fcmpe d1, d2
@@ -382,8 +385,8 @@ func TestPJ8_EmitFcmpeDnDm(t *testing.T) {
 	}
 }
 
-// TestPJ8_EmitAddXdXnXm 验「add Xd, Xn, Xm」(shifted register,shift=00)字节级。
-// 编码:0x8B000000 base + Rm<<16 + Rn<<5 + Rd。
+// TestPJ8_EmitAddXdXnXm verifies "add Xd, Xn, Xm" (shifted register, shift=00) at the byte level.
+// Encoding: 0x8B000000 base + Rm<<16 + Rn<<5 + Rd.
 func TestPJ8_EmitAddXdXnXm(t *testing.T) {
 	var buf []byte
 	buf = EmitAddXdXnXm(buf, 2, 14, 1) // add x2, x14, x1
@@ -398,8 +401,8 @@ func TestPJ8_EmitAddXdXnXm(t *testing.T) {
 	}
 }
 
-// TestPJ8_EmitAndXdXnXm 验「and Xd, Xn, Xm」字节级。
-// 编码:0x8A000000 base + Rm<<16 + Rn<<5 + Rd。
+// TestPJ8_EmitAndXdXnXm verifies "and Xd, Xn, Xm" at the byte level.
+// Encoding: 0x8A000000 base + Rm<<16 + Rn<<5 + Rd.
 func TestPJ8_EmitAndXdXnXm(t *testing.T) {
 	var buf []byte
 	buf = EmitAndXdXnXm(buf, 0, 0, 1) // and x0, x0, x1
@@ -414,8 +417,8 @@ func TestPJ8_EmitAndXdXnXm(t *testing.T) {
 	}
 }
 
-// TestPJ8_EmitLsrXdImm6 验「lsr Xd, Xn, #imm6」字节级(UBFM 别名)。
-// 编码:0xD340FC00 base + immr=imm6<<16 + Rn<<5 + Rd。
+// TestPJ8_EmitLsrXdImm6 verifies "lsr Xd, Xn, #imm6" at the byte level (UBFM alias).
+// Encoding: 0xD340FC00 base + immr=imm6<<16 + Rn<<5 + Rd.
 func TestPJ8_EmitLsrXdImm6(t *testing.T) {
 	cases := []struct {
 		name string
@@ -452,8 +455,8 @@ func TestPJ8_EmitLsrXdImm6(t *testing.T) {
 	}
 }
 
-// TestPJ8_EmitLdrbWtFromXnDisp 验「ldrb Wt, [Xn, #pimm12]」字节级
-// (32-bit zero-extended byte load,byte-scaled offset)。
+// TestPJ8_EmitLdrbWtFromXnDisp verifies "ldrb Wt, [Xn, #pimm12]" at the byte level
+// (32-bit zero-extended byte load, byte-scaled offset).
 func TestPJ8_EmitLdrbWtFromXnDisp(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -481,8 +484,8 @@ func TestPJ8_EmitLdrbWtFromXnDisp(t *testing.T) {
 	}
 }
 
-// TestPJ8_EmitCbnzW 验「cbnz Wt, label」字节级(32-bit compare-branch
-// nonzero)。imm19 是字偏移 sign-extended,目标 = PC + imm19 * 4。
+// TestPJ8_EmitCbnzW verifies "cbnz Wt, label" at the byte level (32-bit compare-branch
+// nonzero). imm19 is a sign-extended word offset, target = PC + imm19 * 4.
 func TestPJ8_EmitCbnzW(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -518,7 +521,7 @@ func TestPJ8_EmitCbnzW(t *testing.T) {
 	}
 }
 
-// TestPJ8_EmitBlrXn 验「blr Xn」字节级:base 0xD63F0000 + Rn<<5。
+// TestPJ8_EmitBlrXn verifies "blr Xn" at the byte level: base 0xD63F0000 + Rn<<5.
 func TestPJ8_EmitBlrXn(t *testing.T) {
 	cases := []struct {
 		name string
@@ -545,8 +548,8 @@ func TestPJ8_EmitBlrXn(t *testing.T) {
 	}
 }
 
-// TestPJ8_EmitHelperCallArm64_Length 验 helper call 通用宏总长 20 字节
-// (mov X16 imm64 16 + blr X16 4)。
+// TestPJ8_EmitHelperCallArm64_Length verifies the helper call macro totals 20 bytes
+// (mov X16 imm64 16 + blr X16 4).
 func TestPJ8_EmitHelperCallArm64_Length(t *testing.T) {
 	var buf []byte
 	buf = EmitHelperCallArm64(buf, 0xDEAD_BEEF_CAFE_BABE)
@@ -558,9 +561,9 @@ func TestPJ8_EmitHelperCallArm64_Length(t *testing.T) {
 	}
 }
 
-// TestPJ8_EmitHelperCallArm64_ByteLayout 验字节布局:
-//   - [0-15]  MOV X16, helperAddr imm64(movz+movk×3,Rd=16)
-//   - [16-19] BLR X16(0xD63F0000 + Rn=16<<5)
+// TestPJ8_EmitHelperCallArm64_ByteLayout verifies the byte layout:
+//   - [0-15]  MOV X16, helperAddr imm64 (movz+movk×3, Rd=16)
+//   - [16-19] BLR X16 (0xD63F0000 + Rn=16<<5)
 func TestPJ8_EmitHelperCallArm64_ByteLayout(t *testing.T) {
 	const helperAddr uint64 = 0xDEAD_BEEF_CAFE_BABE
 	var buf []byte
@@ -570,7 +573,7 @@ func TestPJ8_EmitHelperCallArm64_ByteLayout(t *testing.T) {
 		t.Fatalf("buf too short: %d", len(buf))
 	}
 
-	// MOV X16 imm64:movz + 3×movk,验各 imm16 字段 + Rd=16
+	// MOV X16 imm64: movz + 3×movk, verify each imm16 field + Rd=16
 	expectedImm16 := [4]uint16{
 		uint16(helperAddr & 0xFFFF),
 		uint16((helperAddr >> 16) & 0xFFFF),

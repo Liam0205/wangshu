@@ -1,21 +1,22 @@
-// Conformance harness — 固定语义用例,断言 Wangshu 输出与期望逐字节一致(12 §2)。
+// Conformance harness — fixed semantic cases, asserting Wangshu output is byte-for-byte equal to the expected (12 §2).
 //
-// 与 difftest 的分工:conformance 是人写的、有意覆盖语义角落的固定用例
-// (期望值内置,不依赖 oracle 进程);difftest 是对拍官方 5.1.5 的随机/种子脚本。
+// Division of labor with difftest: conformance is human-written fixed cases that deliberately cover semantic
+// corners (expected values built in, not depending on an oracle process); difftest is random/seeded scripts
+// differentially tested against the official 5.1.5.
 //
-// p1/p3 双 build 覆盖(PR #15 review):用例经 `newConformanceState()` 取
-// State,该 helper 在所有用例上调用 `SetForceAllPromote(true)`——默认 build
-// 下是 no-op(P3 后端未注入,可编译性闸门 F7 永久判不可编译);
-// `wangshu_p3 wangshu_profile` build 下兑现「P3 凸月路径覆盖」承诺,
-// 让那 83 个一次性小脚本(入口次数=1,达不到 HotEntryThreshold)也经凸月
-// wasm 执行路径跑,而非退化成 p3-tag 编译的解释器路径。
+// p1/p3 dual-build coverage (PR #15 review): cases get their State via `newConformanceState()`,
+// a helper that calls `SetForceAllPromote(true)` on every case — under the default build it is a no-op
+// (the P3 backend is not injected, and the F7 compilability gate permanently judges not-compilable);
+// under the `wangshu_p3 wangshu_profile` build it delivers on the "P3 gibbous path coverage" promise,
+// letting those 83 one-shot small scripts (entry count = 1, not reaching HotEntryThreshold) also run through
+// the gibbous wasm execution path, instead of degrading to the p3-tag-compiled interpreter path.
 //
-// **P4 build 边界**(承外部 review 🔴 阻塞):P4 build 下 force-all 形式上
-// 启用,但 conformance 用例多为单次小脚本,~91% 不达 P4 升层闸门
-// (analyzeCompilability / recheckCompilabilityRuntime 闸门 + SupportsAllOpcodes
-// 白名单限制)。这是 conformance 用例形态决定的,**真 P4 路径验收以
-// `test/difftest/p4_test.go` 为准**(重复调用 + PromotionCount>0 守卫)。
-// 本文件 build tag 中立(P1/P3/P4 全 build 跑),但 P4 build 下不强断言升层。
+// **P4 build boundary** (per external review 🔴 blocker): under the P4 build, force-all is nominally
+// enabled, but conformance cases are mostly one-shot small scripts, ~91% not reaching the P4 promotion gate
+// (analyzeCompilability / recheckCompilabilityRuntime gate + SupportsAllOpcodes whitelist limit). This is
+// determined by the form of the conformance cases; **acceptance of the real P4 path is per
+// `test/difftest/p4_test.go`** (repeated calls + PromotionCount>0 guard).
+// This file is build-tag neutral (runs under all P1/P3/P4 builds), but under the P4 build it does not strongly assert promotion.
 package conformance
 
 import (
@@ -26,9 +27,9 @@ import (
 	"github.com/Liam0205/wangshu"
 )
 
-// newConformanceState 是所有 conformance 用例的 State 工厂。在 p3 build 下
-// 把 force-all 升层模式打开,以确保每个用例都走凸月 wasm 执行路径;p1 build
-// 下 SetForceAllPromote 是 no-op,行为不变。
+// newConformanceState is the State factory for all conformance cases. Under the p3 build it
+// turns on force-all promotion mode, to ensure every case takes the gibbous wasm execution path; under the p1
+// build, SetForceAllPromote is a no-op and behavior is unchanged.
 func newConformanceState() *wangshu.State {
 	st := wangshu.NewState(wangshu.Options{})
 	st.SetForceAllPromote(true)
@@ -38,37 +39,38 @@ func newConformanceState() *wangshu.State {
 type confCase struct {
 	name string
 	src  string
-	want string // return 值的 Display 形态,用 \t join
+	want string // Display form of the return value, joined with \t
 }
 
 var cases = []confCase{
-	// —— 真值语义:仅 nil/false 为假(01 §6) ——
+	// —— Truthiness semantics: only nil/false are falsy (01 §6) ——
 	{"truthy_zero", `if 0 then return "t" else return "f" end`, "t"},
 	{"truthy_empty_str", `if "" then return "t" else return "f" end`, "t"},
 	{"truthy_nil", `if nil then return "t" else return "f" end`, "f"},
 	{"truthy_false", `if false then return "t" else return "f" end`, "f"},
 
-	// —— 算术语义(02 §4) ——
-	{"mod_lua_semantics", `return -7 % 3`, "2"},    // a-floor(a/b)*b ⇒ 2(C 语义是 -1)
-	{"div_is_float", `return 7 / 2`, "3.5"},        // 浮点除
-	{"pow_right_assoc", `return 2 ^ 3 ^ 2`, "512"}, // 右结合 2^(3^2)
+	// —— Arithmetic semantics (02 §4) ——
+	{"mod_lua_semantics", `return -7 % 3`, "2"},    // a-floor(a/b)*b ⇒ 2 (C semantics is -1)
+	{"div_is_float", `return 7 / 2`, "3.5"},        // floating-point division
+	{"pow_right_assoc", `return 2 ^ 3 ^ 2`, "512"}, // right-associative 2^(3^2)
 	{"unm_neg_zero", `return tostring(-0)`, "-0"},  // Lua 5.1 tostring(-0) = "-0"
-	// 负零常量表去重(nightly fuzz seed 206160008016,issue #7):PUC addk 用
-	// 数值相等去重(+0.0 == -0.0 命中同槽),物理存先到的零、保留其符号,后到
-	// 复用。折叠出的 -0.0 在前置 +0 常量后复用 +0 槽 → "0"(不是 "-0")。
-	{"negzero_fold_after_poszero", `local z = 0; return tostring(0.0 * -1)`, "0"},                           // +0 先到,折叠 -0 复用 → 0
-	{"negzero_literal_after_poszero", `local z = 0; return tostring(-0.0)`, "0"},                            // +0 先到,-0 字面量复用 → 0
-	{"negzero_first_poszero_reuses", `local a = -0.0; return tostring(a) .. "|" .. tostring(0.0)`, "-0|-0"}, // -0 先到,+0 复用 → -0
-	{"negzero_runtime_not_folded", `local z = 0; local m = -1; return tostring(0.0 * m)`, "-0"},             // 运行期 -0 不经常量表 → -0
+	// Negative-zero constant-table deduplication (nightly fuzz seed 206160008016, issue #7): PUC addk
+	// deduplicates by numeric equality (+0.0 == -0.0 hit the same slot), physically stores the zero that
+	// arrives first and keeps its sign, later ones reuse it. A folded-out -0.0 reuses the +0 slot after a
+	// preceding +0 constant → "0" (not "-0").
+	{"negzero_fold_after_poszero", `local z = 0; return tostring(0.0 * -1)`, "0"},                           // +0 arrives first, folded -0 reuses → 0
+	{"negzero_literal_after_poszero", `local z = 0; return tostring(-0.0)`, "0"},                            // +0 arrives first, -0 literal reuses → 0
+	{"negzero_first_poszero_reuses", `local a = -0.0; return tostring(a) .. "|" .. tostring(0.0)`, "-0|-0"}, // -0 arrives first, +0 reuses → -0
+	{"negzero_runtime_not_folded", `local z = 0; local m = -1; return tostring(0.0 * m)`, "-0"},             // runtime -0 does not go through the constant table → -0
 
 	{"concat_right_assoc", `return "a" .. "b" .. "c"`, "abc"},
 
-	// —— 比较语义(05 §4.4) ——
+	// —— Comparison semantics (05 §4.4) ——
 	{"nan_ne_nan", `return tostring(0/0 ~= 0/0)`, "true"},
-	{"string_lt_bytewise", `return tostring("Z" < "a")`, "true"}, // 字典序按 byte
-	{"eq_diff_types", `return tostring(1 == "1")`, "false"},      // 异类不等不 coerce
+	{"string_lt_bytewise", `return tostring("Z" < "a")`, "true"}, // lexicographic order by byte
+	{"eq_diff_types", `return tostring(1 == "1")`, "false"},      // different types unequal, no coercion
 
-	// —— 短路语义 ——
+	// —— Short-circuit semantics ——
 	{"and_returns_second", `return 1 and 2`, "2"},
 	{"or_returns_first_truthy", `return false or "x"`, "x"},
 	{"and_short_circuit", `
@@ -76,8 +78,9 @@ local called = false
 local function f() called = true; return true end
 local r = false and f()
 return tostring(called)`, "false"},
-	// 短路结果直接参与算术/取负:带跳转链的 eKNum 不可常量折叠(官方
-	// isnumeral 语义)——折叠丢链曾让 TESTSET 的 255 占位越界,Go 级 panic。
+	// A short-circuit result feeding directly into arithmetic/negation: an eKNum carrying a jump chain
+	// cannot be constant-folded (official isnumeral semantics) — folding that drops the chain once made
+	// TESTSET's 255 placeholder go out of bounds, a Go-level panic.
 	{"shortcircuit_into_arith", `return (true and 7 or -1) + 1`, "8"},
 	{"shortcircuit_into_arith_var", `local a = true return (a and 7 or -1) + 1`, "8"},
 	{"shortcircuit_into_unm", `return -(true and 1 or 2)`, "-1"},
@@ -85,7 +88,7 @@ return tostring(called)`, "false"},
 	{"shortcircuit_into_concat", `return (true and 7 or -1) .. ""`, "7"},
 	{"shortcircuit_into_compare", `return tostring((true and 7 or -1) < 8)`, "true"},
 
-	// —— 作用域 / 闭包(04 §5.8) ——
+	// —— Scoping / closures (04 §5.8) ——
 	{"local_shadow", `
 local x = 1
 do local x = 2 end
@@ -93,14 +96,14 @@ return x`, "1"},
 	{"local_rhs_outer", `
 local a = 10
 local a = a + 1
-return a`, "11"}, // local a = a 的 RHS 是外层 a
+return a`, "11"}, // the RHS of local a = a is the outer a
 	{"closure_per_capture", `
 local fns = {}
 local function mk(i) return function() return i end end
 for i = 1, 3 do fns[i] = mk(i) end
 return fns[1]() + fns[2]() + fns[3]()`, "6"},
 
-	// —— repeat-until 作用域(04 §6.4) ——
+	// —— repeat-until scoping (04 §6.4) ——
 	{"repeat_until_sees_local", `
 local n = 0
 repeat
@@ -109,7 +112,7 @@ repeat
 until done
 return n`, "4"},
 
-	// —— 多值规约(04 §6.2) ——
+	// —— Multi-value reduction (04 §6.2) ——
 	{"multi_value_truncate", `
 local function two() return 1, 2 end
 local a, b, c = two()
@@ -117,7 +120,7 @@ return tostring(a) .. tostring(b) .. tostring(c)`, "12nil"},
 	{"multi_value_paren_single", `
 local function two() return 1, 2 end
 local a, b = (two())
-return tostring(a) .. tostring(b)`, "1nil"}, // 括号强制单值
+return tostring(a) .. tostring(b)`, "1nil"}, // parentheses force a single value
 
 	// —— vararg ——
 	{"vararg_count_fixed", `
@@ -127,7 +130,7 @@ local function f(a, ...)
 end
 return f(1, 2, 3)`, "123"},
 
-	// —— 数值 for 边界(05 §10.1) ——
+	// —— Numeric for boundaries (05 §10.1) ——
 	{"for_zero_iterations", `
 local n = 0
 for i = 5, 1 do n = n + 1 end
@@ -161,7 +164,7 @@ local n = 0
 for i = 0, 1, 0/0 do n = n + 1 if n > 2 then break end end
 return n`, "0"},
 
-	// —— 元表语义(07) ——
+	// —— Metatable semantics (07) ——
 	{"index_chain_two_levels", `
 local a = { v = 42 }
 local b = setmetatable({}, { __index = a })
@@ -182,12 +185,12 @@ end)
 return tostring(ok1)`, "false"},
 	{"error_value_passthrough", `
 local _, e = pcall(function() error("custom-msg", 0) end)
-return e`, "custom-msg"}, // level=0 不加位置前缀(5.1)
+return e`, "custom-msg"}, // level=0 adds no position prefix (5.1)
 	{"error_with_position", `
 local _, e = pcall(function() error("pfx") end)
-return (string.find(e, ": pfx") ~= nil)`, "true"}, // 默认 level=1 带 chunkname:line:
+return (string.find(e, ": pfx") ~= nil)`, "true"}, // default level=1 carries chunkname:line:
 
-	// —— 覆盖率审计补充(2026-06-12):此前无测试覆盖的语法/库路径 ——
+	// —— Coverage-audit additions (2026-06-12): syntax/library paths previously untested ——
 	{"method_call_self", `
 local t = { v = 10 }
 function t.get(self) return self.v end
@@ -250,7 +253,7 @@ while true do
 end
 return i`, "3"},
 
-	// —— P1 收尾轮新功能(2026-06-12) ——
+	// —— P1 wrap-up round new features (2026-06-12) ——
 	{"generic_for_ipairs", `
 local t = { 5, 6, 7 }
 local sum = 0
@@ -328,21 +331,22 @@ return math.fmod(7, 3), math.max(1, 9, 5), math.floor(math.pi)`, "1\t9\t3"},
 local function f(...) return select(2, ...) end
 return f("a", "b", "c")`, "b\tc"},
 
-	// —— 历史 bug 保护(集中修复轮固化) ——
-	// infix 求值顺序:左操作数须在右子(含 CALL)编译前物化为 RK(luaK_infix),
-	// 否则右子的副作用改写左值后才读取——曾返回 100(求值序错误)。
+	// —— Historical bug protection (frozen from a consolidated fix round) ——
+	// infix evaluation order: the left operand must be materialized into an RK before the right subtree
+	// (including CALL) is compiled (luaK_infix), otherwise it is read only after the right subtree's side
+	// effect has overwritten the left value — once returned 100 (evaluation-order error).
 	{"infix_eval_order_left_first", `
 local a = { 1 }
 local function g() a[1] = 99; return 1 end
 return a[1] + g()`, "2"},
-	// pcall 双返回值(`local ok, e = pcall(...)`)曾触发末位多值源 A 覆盖崩溃。
+	// pcall two return values (`local ok, e = pcall(...)`) once triggered a trailing multi-value source A overwrite crash.
 	{"pcall_two_returns", `
 local ok, e = pcall(function() local x = nil + 1 end)
 return tostring(ok), (e:gsub("^[^:]+:%d+: ", ""))`,
 		"false\tattempt to perform arithmetic on a nil value"},
-	// 字符串算术强转(luaV_tonumber):曾报 attempt to perform arithmetic。
+	// String arithmetic coercion (luaV_tonumber): once reported attempt to perform arithmetic.
 	{"string_arith_coercion", `return "10" + 1, "3" * "4"`, "11\t12"},
-	// 多返回值传给多目标(return-vararg 路径曾把末位收敛单值致 c=nil)。
+	// Multiple return values passed to multiple targets (the return-vararg path once collapsed the trailing one to a single value, making c=nil).
 	{"multi_assign_from_call", `
 local function f(...) return ... end
 local a, b, c = f(1, 2, 3)
@@ -383,11 +387,12 @@ func TestConformance(t *testing.T) {
 	}
 }
 
-// TestSetListBatchOverflow:>25550 项表构造的 SETLIST 批号超 9-bit C 字段,
-// codegen 须按官方 luaK_setlist 发 C=0 + 后随裸批号指令。旧实现 C 被静默
-// &0x1FF 截断回绕,解释器把下一条正常指令当批号吞掉(挂死/错果)。
+// TestSetListBatchOverflow: for a table constructor of >25550 items, the SETLIST batch number
+// exceeds the 9-bit C field, so codegen must follow the official luaK_setlist and emit C=0 + a
+// following bare batch-number instruction. The old implementation silently truncated C by &0x1FF
+// and wrapped around, and the interpreter swallowed the next normal instruction as the batch number (hang / wrong result).
 func TestSetListBatchOverflow(t *testing.T) {
-	const n = 25551 // 511 批 × 50 + 1,第 512 批触发溢出路径
+	const n = 25551 // 511 batches × 50 + 1, the 512th batch triggers the overflow path
 	var sb strings.Builder
 	sb.WriteString("local t = {")
 	for i := 1; i <= n; i++ {

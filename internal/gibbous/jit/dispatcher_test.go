@@ -7,16 +7,20 @@ import (
 	"testing"
 )
 
-// dispatcher_test.go —— Spike 1 trampoline exit-resume 协议 commit-3a
-// dispatcher 函数地址静态测试(承 §9.20.9 (5) Go 端 dispatcher 协议
-// + helpers_test.go 同款范本)。
+// dispatcher_test.go — Spike 1 trampoline exit-resume protocol commit-3a
+// dispatcher function-address static test (per §9.20.9 (5) Go-side dispatcher
+// protocol + the same template as helpers_test.go).
 //
-// 真接入 prerequisite:trampoline asm 经 `CALL ·dispatchInlineHelper(SB)` 调本
-// 函数,asm 链接器经函数符号取地址。本测试经 reflect.ValueOf 验函数符号
-// 可被 Go 端取到,确保 trampoline asm 链接不出错。
+// Wiring prerequisite: the trampoline asm calls this function via
+// `CALL ·dispatchInlineHelper(SB)`, and the asm linker resolves the address
+// through the function symbol. This test uses reflect.ValueOf to verify the
+// function symbol can be obtained from the Go side, ensuring the trampoline asm
+// links without error.
 //
-// **archSupportsFrameInline=false 屏蔽真触发**,本测试仅验函数符号存在 +
-// emit 地址可取;production 路径不触达本 dispatcher(commit-5 翻闸门后启用)。
+// **archSupportsFrameInline=false disables real triggering**; this test only
+// verifies the function symbol exists + the emit address is obtainable; the
+// production path does not reach this dispatcher (enabled after the commit-5
+// switch is flipped).
 
 func TestDispatchInlineHelper_AddressNonZero(t *testing.T) {
 	addr := reflect.ValueOf(dispatchInlineHelper).Pointer()

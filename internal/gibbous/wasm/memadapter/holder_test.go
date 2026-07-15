@@ -11,9 +11,9 @@ import (
 	"github.com/Liam0205/wangshu/internal/arena"
 )
 
-// PW1 验收(03-memory-model §1 + 00-overview §4 PW1 完成定义):
-// arena 收养 wazero memory 后,值读写 / grow 行为与 Go 堆 backing 一致;
-// grow 后 GCRef(字节偏移)不失效。
+// PW1 acceptance (03-memory-model §1 + 00-overview §4 PW1 completion criteria):
+// after the arena adopts the wazero memory, value read/write and grow behavior
+// match a Go-heap backing; a GCRef (byte offset) stays valid across grow.
 
 func newHolder(t *testing.T) (*MemoryHolder, func()) {
 	t.Helper()
@@ -26,8 +26,9 @@ func newHolder(t *testing.T) (*MemoryHolder, func()) {
 	return h, func() { _ = h.Close(); _ = rt.Close(ctx) }
 }
 
-// TestPW1_AdoptedArena_BasicAllocRead arena 收养 wazero memory 后,基本
-// 分配 + 读写正确(收养对 arena 上层透明)。
+// TestPW1_AdoptedArena_BasicAllocRead after the arena adopts the wazero memory,
+// basic allocation plus read/write is correct (adoption is transparent to the
+// arena's upper layers).
 func TestPW1_AdoptedArena_BasicAllocRead(t *testing.T) {
 	h, cleanup := newHolder(t)
 	defer cleanup()
@@ -39,7 +40,7 @@ func TestPW1_AdoptedArena_BasicAllocRead(t *testing.T) {
 		InPlaceBacking: true,
 	})
 
-	// 分配一块,写 NaN-box 值,读回一致
+	// Allocate a block, write a NaN-box value, read it back unchanged
 	ref := a.AllocBytes(16)
 	if ref.IsNull() {
 		t.Fatal("AllocBytes returned null")
@@ -49,16 +50,17 @@ func TestPW1_AdoptedArena_BasicAllocRead(t *testing.T) {
 	words[idx] = 0xC0FFEE_DEADBEEF
 	words[idx+1] = 0x1234_5678
 
-	// 重取视图读回(模拟跨操作)
+	// Re-fetch the view and read back (simulates a cross-operation access)
 	w2 := a.Words()
 	if w2[idx] != 0xC0FFEE_DEADBEEF || w2[idx+1] != 0x1234_5678 {
 		t.Errorf("adopted arena read mismatch: %#x %#x", w2[idx], w2[idx+1])
 	}
 }
 
-// TestPW1_AdoptedArena_GrowPreservesData 收养模式下 grow(memory.grow 原地
-// 扩,不 copy)后,grow 前写入的数据仍可经 GCRef 偏移读回——验证
-// InPlaceBacking 语义正确(03-memory-model §1.6 + arena grow64 适配)。
+// TestPW1_AdoptedArena_GrowPreservesData under adoption, after a grow
+// (memory.grow extends in place, no copy) data written before the grow is still
+// readable via the GCRef offset — verifying InPlaceBacking semantics are correct
+// (03-memory-model §1.6 + arena grow64 adaptation).
 func TestPW1_AdoptedArena_GrowPreservesData(t *testing.T) {
 	h, cleanup := newHolder(t)
 	defer cleanup()
@@ -70,25 +72,26 @@ func TestPW1_AdoptedArena_GrowPreservesData(t *testing.T) {
 		InPlaceBacking: true,
 	})
 
-	// 在初始容量内分配并写一个哨兵
+	// Allocate within the initial capacity and write a sentinel
 	ref := a.AllocBytes(16)
 	idx := uint32(ref) / 8
 	const sentinel = uint64(0xABCD_1234_5678_9EF0)
 	a.Words()[idx] = sentinel
 
-	// 分配超过 1 page 触发 grow(memory.grow 原地扩)
-	bigRef := a.AllocBytes(128 * 1024) // 128 KiB > 1 page,必 grow
+	// Allocate beyond 1 page to trigger a grow (memory.grow extends in place)
+	bigRef := a.AllocBytes(128 * 1024) // 128 KiB > 1 page, must grow
 	if bigRef.IsNull() {
 		t.Fatal("big alloc returned null")
 	}
 
-	// grow 后:哨兵经 GCRef 偏移仍读回原值(偏移寻址不变 + 原地 grow 保留旧数据)
+	// After grow: the sentinel still reads back via the GCRef offset (offset
+	// addressing is unchanged + in-place grow preserves old data)
 	w := a.Words()
 	if w[idx] != sentinel {
 		t.Errorf("grow lost data at ref %#x: got %#x, want %#x", uint32(ref), w[idx], sentinel)
 	}
 
-	// grow 后能写新区域
+	// After grow, the new region is writable
 	bigIdx := uint32(bigRef) / 8
 	w[bigIdx] = 0x9999
 	if a.Words()[bigIdx] != 0x9999 {
@@ -96,8 +99,9 @@ func TestPW1_AdoptedArena_GrowPreservesData(t *testing.T) {
 	}
 }
 
-// TestPW1_AdoptedArena_ManyAllocsGrow 大量分配触发多次 grow,GCRef 全程
-// 有效(模拟 longevity 形态的收养版本)。
+// TestPW1_AdoptedArena_ManyAllocsGrow many allocations trigger repeated grows,
+// with GCRefs staying valid throughout (an adopted version of the longevity
+// scenario).
 func TestPW1_AdoptedArena_ManyAllocsGrow(t *testing.T) {
 	h, cleanup := newHolder(t)
 	defer cleanup()
@@ -112,11 +116,11 @@ func TestPW1_AdoptedArena_ManyAllocsGrow(t *testing.T) {
 	const n = 5000
 	refs := make([]arena.GCRef, n)
 	for i := 0; i < n; i++ {
-		r := a.AllocBytes(64) // 64 B 各块,5000 块 = 320 KiB 触发多次 grow
+		r := a.AllocBytes(64) // 64 B per block, 5000 blocks = 320 KiB triggers several grows
 		refs[i] = r
-		a.Words()[uint32(r)/8] = uint64(i) // 写入序号
+		a.Words()[uint32(r)/8] = uint64(i) // write the index
 	}
-	// 全部读回校验(grow 多次后所有旧 GCRef 仍指向正确数据)
+	// Read all back and verify (after several grows, every old GCRef still points at the right data)
 	for i := 0; i < n; i++ {
 		got := a.Words()[uint32(refs[i])/8]
 		if got != uint64(i) {
@@ -125,8 +129,9 @@ func TestPW1_AdoptedArena_ManyAllocsGrow(t *testing.T) {
 	}
 }
 
-// TestPW1_MemoryShared_GoWasmView 验证 holder 的 Memory() 与 arena backing
-// 视图同源(同一块 wazero linear memory)——这是「两层共见」的物理基础。
+// TestPW1_MemoryShared_GoWasmView verifies the holder's Memory() and the arena
+// backing view share the same source (the same wazero linear memory) — the
+// physical basis for "both layers see the same memory".
 func TestPW1_MemoryShared_GoWasmView(t *testing.T) {
 	h, cleanup := newHolder(t)
 	defer cleanup()
@@ -138,11 +143,11 @@ func TestPW1_MemoryShared_GoWasmView(t *testing.T) {
 		InPlaceBacking: true,
 	})
 
-	// 经 arena 视图写
+	// Write through the arena view
 	ref := a.AllocBytes(8)
 	a.Words()[uint32(ref)/8] = 0x7777_8888
 
-	// 经 wazero Memory 接口读同一偏移(字节偏移 = ref)
+	// Read the same offset through the wazero Memory interface (byte offset = ref)
 	got, ok := h.Memory().ReadUint64Le(uint32(ref))
 	if !ok {
 		t.Fatal("Memory.ReadUint64Le failed")
@@ -152,9 +157,11 @@ func TestPW1_MemoryShared_GoWasmView(t *testing.T) {
 	}
 }
 
-// TestPW10_EnvTableExported 验证 env holder module 导出共享 funcref 表(PW10
-// Arch-2 升层函数注册表的物理底座)——表声明须使 holder 二进制仍能实例化,且
-// 表可被后续 gibbous module 经 `import env.table` 共享 + active element 自注册。
+// TestPW10_EnvTableExported verifies the env holder module exports a shared
+// funcref table (the physical foundation of the PW10 Arch-2 upper-layer function
+// registry) — the table declaration must keep the holder binary instantiable, and
+// the table must be shareable by a later gibbous module via `import env.table`
+// plus active-element self-registration.
 func TestPW10_EnvTableExported(t *testing.T) {
 	ctx := context.Background()
 	rt := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfigCompiler())
@@ -165,9 +172,11 @@ func TestPW10_EnvTableExported(t *testing.T) {
 	}
 	defer h.Close()
 
-	// 实测:一个 import env.table 的 module 经 active element 把 func 注册进
-	// table[0],另一个 import env.table 的 module call_indirect table[0] 调到它。
-	// 这复刻 spike S-C,锚定 holder 的表确实是「可被跨 module 共享 + element 写」的表。
+	// Real test: one module that imports env.table registers a func into table[0]
+	// via an active element, and another module that imports env.table reaches it
+	// with call_indirect table[0].
+	// This reproduces spike S-C, confirming the holder's table really is one that
+	// "can be shared across modules + written by an element".
 	provider := []byte{
 		0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
 		// type: (i32)->(i32)

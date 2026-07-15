@@ -4,7 +4,7 @@ package jit
 
 import "testing"
 
-// TestArm64ArenaBaseOff_Valid 验合法偏移正常返回。
+// TestArm64ArenaBaseOff_Valid checks that valid offsets return normally.
 func TestArm64ArenaBaseOff_Valid(t *testing.T) {
 	cases := []struct {
 		in   int32
@@ -13,7 +13,7 @@ func TestArm64ArenaBaseOff_Valid(t *testing.T) {
 		{0, 0},
 		{8, 8},
 		{40, 40},
-		{32760, 32760}, // 上限(arm64 LDR pimm12=4095 → byteOff=32760)
+		{32760, 32760}, // upper bound (arm64 LDR pimm12=4095 → byteOff=32760)
 	}
 	for _, tc := range cases {
 		got := arenaBaseOffArm64(tc.in)
@@ -23,7 +23,7 @@ func TestArm64ArenaBaseOff_Valid(t *testing.T) {
 	}
 }
 
-// TestArm64ArenaBaseOff_Negative 验负值 panic(arm64 LDR pimm12 unsigned)。
+// TestArm64ArenaBaseOff_Negative checks that a negative value panics (arm64 LDR pimm12 is unsigned).
 func TestArm64ArenaBaseOff_Negative(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {
@@ -33,8 +33,9 @@ func TestArm64ArenaBaseOff_Negative(t *testing.T) {
 	arenaBaseOffArm64(-1)
 }
 
-// TestArm64ArenaBaseOff_TooLarge 验超 32760 panic(防 JITContext 字段
-// 未来重排把 arenaBase 推到 ≥32760 时静默退化为读 [x27+0])。
+// TestArm64ArenaBaseOff_TooLarge checks that exceeding 32760 panics (guards against
+// a future JITContext field reordering pushing arenaBase to ≥32760 and silently
+// degrading to reading [x27+0]).
 func TestArm64ArenaBaseOff_TooLarge(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {
@@ -44,8 +45,9 @@ func TestArm64ArenaBaseOff_TooLarge(t *testing.T) {
 	arenaBaseOffArm64(32768)
 }
 
-// TestArm64ArenaBaseOff_NotAligned 验非 8 字节对齐 panic(防字段类型改成
-// 更小字段后 arenaBase 偏移失去 8 字节对齐时静默兜底)。
+// TestArm64ArenaBaseOff_NotAligned checks that a non-8-byte-aligned value panics
+// (guards against arenaBase losing 8-byte alignment and silently falling back after
+// a field type is changed to a smaller one).
 func TestArm64ArenaBaseOff_NotAligned(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {

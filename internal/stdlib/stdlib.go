@@ -1,8 +1,9 @@
 // Package stdlib provides the P1 minimal Lua 5.1 standard library subset.
 //
-// 设计:docs/design/p1-interpreter/10-stdlib.md(P1 裁剪表)。M12 范围实现
-// base 子库的最小可用子集 + math 算术常用 + string 部分。完整的 pattern matcher、
-// io / os / coroutine 等留 P1 后续推进。
+// Design: docs/design/p1-interpreter/10-stdlib.md (the P1 trim table). The M12
+// scope implements the minimal usable subset of the base sublibrary + common
+// math arithmetic + part of string. The full pattern matcher, io / os /
+// coroutine, etc. are deferred to later P1 work.
 package stdlib
 
 import (
@@ -18,17 +19,21 @@ import (
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
-// OpenAll 在 state 上注册 P1 最小标准库面(对齐 gopher-lua 默认提供面的子集)。
+// OpenAll registers the P1 minimal standard-library surface on the state
+// (a subset of what gopher-lua provides by default).
 //
-// 完整的"libsSafe / Libs / Exclude 三层禁用"机制(10 §12.1)留后续。当前一律
-// 注册全部内建函数到 globals。
+// The full "libsSafe / Libs / Exclude three-tier disable" mechanism (10 §12.1)
+// is deferred. For now every builtin function is unconditionally registered
+// into globals.
 func OpenAll(st *crescent.State) {
 	for _, e := range baseFns {
 		id := st.RegisterHostFn(e.fn)
 		cl := st.MakeHostClosure(id)
 		st.SetGlobal(e.name, value.MakeGC(value.TagFunction, cl))
 	}
-	// ipairs 的内部步进迭代器(经全局名间接引用,脚本不可见性不作要求——5.1 也暴露 next)
+	// The internal stepping iterator of ipairs (referenced indirectly via a
+	// global name; script-side invisibility is not required -- 5.1 exposes
+	// next too).
 	{
 		id := st.RegisterHostFn(ipairsIter)
 		cl := st.MakeHostClosure(id)
@@ -36,22 +41,24 @@ func OpenAll(st *crescent.State) {
 	}
 	registerNamespaced(st, "math", append(mathFns, mathExtraFns...), mathIntrinsics)
 	strTbl := registerNamespaced(st, "string", stringFns, nil)
-	st.SetStringLib(strTbl) // string 值的 per-type __index(`("x"):upper()`)
-	// PUC 对位:string 共享元表是**真实存在的表** {__index = string} ——
-	// getmetatable("") 返回它,脚本可改它(官方 5.1.5 允许,改动全局生效)。
+	st.SetStringLib(strTbl) // per-type __index for string values (`("x"):upper()`)
+	// PUC parity: the shared string metatable is a REAL table {__index =
+	// string} -- getmetatable("") returns it, and a script may mutate it
+	// (allowed by official 5.1.5; the change takes effect globally).
 	{
 		mt := st.NewLibTable(1)
 		st.SetTableField(mt, "__index", value.MakeGC(value.TagTable, strTbl))
 		st.SetStringMeta(mt)
 	}
-	// LUA_COMPAT_GFIND:gfind 必须与 gmatch 是同一函数对象
-	// (官方测试套断言 string.gfind == string.gmatch)
+	// LUA_COMPAT_GFIND: gfind must be the same function object as gmatch
+	// (the official test suite asserts string.gfind == string.gmatch).
 	{
 		gm, _ := st.RawGet(strTbl, intern(st, "gmatch"))
 		st.SetTableField(strTbl, "gfind", gm)
 	}
 	tblTbl := registerNamespaced(st, "table", tableFns, nil)
-	// table.unpack 别名(5.1 主入口是全局 unpack,5.2+ 是 table.unpack;两者都给)
+	// table.unpack alias (in 5.1 the main entry is the global unpack; in
+	// 5.2+ it is table.unpack; provide both).
 	{
 		id := st.RegisterHostFn(baseFnUnpackImpl)
 		cl := st.MakeHostClosure(id)
@@ -61,7 +68,7 @@ func OpenAll(st *crescent.State) {
 	registerNamespaced(st, "io", ioFns, nil)
 	registerNamespaced(st, "coroutine", coroutineFns, nil)
 	registerBaseEnv(st) // _G/_VERSION/collectgarbage/gcinfo/loadfile/dofile
-	// math 常量
+	// math constants
 	{
 		mathTblV, _ := st.RawGet(st.Globals(), intern(st, "math"))
 		if value.Tag(mathTblV) == value.TagTable {
@@ -95,8 +102,9 @@ func registerNamespaced(st *crescent.State, ns string, fns []entry, intrinsics m
 	return tbl
 }
 
-// 通用辅助:把 Value 转 string(用于 print/tostring;__tostring 经
-// valueToStringMeta,本函数是无元方法的 raw 形态)。
+// Generic helper: convert a Value to a string (used by print/tostring;
+// __tostring goes through valueToStringMeta -- this function is the raw form
+// without metamethods).
 func valueToString(st *crescent.State, v value.Value) string {
 	if value.IsNumber(v) {
 		return crescent.FormatLuaNumber(value.AsNumber(v))
@@ -155,7 +163,8 @@ func valueToStringMeta(st *crescent.State, v value.Value) (raw value.Value, hadM
 	return v, false, nil
 }
 
-// 通用辅助:Value → float64(数字 + 可转字符串);失败返回 (0, false)。
+// Generic helper: Value -> float64 (numbers + convertible strings); returns
+// (0, false) on failure.
 func toNumberStr(st *crescent.State, v value.Value) (float64, bool) {
 	if value.IsNumber(v) {
 		return value.AsNumber(v), true
@@ -170,13 +179,13 @@ func toNumberStr(st *crescent.State, v value.Value) (float64, bool) {
 	return 0, false
 }
 
-// 把字符串 intern 进 state arena,得 string Value。
+// Intern a string into the state arena, yielding a string Value.
 func intern(st *crescent.State, s string) value.Value {
 	ref := st.InternForEmbed([]byte(s))
 	return value.MakeGC(value.TagString, ref)
 }
 
-// ----- base 子库 -----
+// ----- base sublibrary -----
 
 var baseFns = []entry{
 	{"print", baseFnPrint},
@@ -201,10 +210,12 @@ var baseFns = []entry{
 	{"load", baseFnLoad},
 }
 
-// baseFnLoad:load(func [, chunkname])(10 §4.7 reader 循环完整形态)。
+// baseFnLoad: load(func [, chunkname]) (10 §4.7, the full reader loop form).
 //
-// 5.1:反复调 reader 函数拿源码片段,返回 nil/空串/无值表示结束,拼成完整
-// chunk 再编译。字符串实参也容(等价 loadstring,宽容形态)。
+// 5.1: repeatedly call the reader function to get source fragments; a return of
+// nil/empty-string/no-value signals end, and the fragments are concatenated
+// into a complete chunk before compiling. A string argument is also accepted
+// (equivalent to loadstring, the lenient form).
 func baseFnLoad(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	// PUC 5.1's load is reader-function ONLY (luaL_checktype
 	// LUA_TFUNCTION); accepting a string is 5.2 behavior. The oracle
@@ -220,7 +231,7 @@ func baseFnLoad(st *crescent.State, args []value.Value) ([]value.Value, *crescen
 		chunkname = string(object.StringBytes(st.Arena(), value.GCRefOf(args[1])))
 	}
 	var srcBuf []byte
-	const maxReaderPieces = 1 << 20 // 护栏:防恶意 reader 永不返回 nil
+	const maxReaderPieces = 1 << 20 // guardrail: guard against a malicious reader that never returns nil
 	done := false
 	for i := 0; i < maxReaderPieces; i++ {
 		results, e := st.ProtectedCallDirect(args[0], nil)
@@ -243,13 +254,15 @@ func baseFnLoad(st *crescent.State, args []value.Value) ([]value.Value, *crescen
 		piece := object.StringBytes(st.Arena(), value.GCRefOf(results[0]))
 		if len(piece) == 0 {
 			done = true
-			break // 空串 = 结束(5.1)
+			break // empty string = end (5.1)
 		}
 		srcBuf = append(srcBuf, piece...)
 	}
 	if !done {
-		// 超限静默截断会把不完整源码当完整 chunk 编译(莫名 syntax error,
-		// 或截断点恰好语法完整时静默错果)——显式报错。
+		// Silently truncating on overrun would compile incomplete source as
+		// a complete chunk (a puzzling syntax error, or a silent wrong result
+		// when the truncation point happens to be syntactically complete) --
+		// report an explicit error.
 		return []value.Value{value.Nil, intern(st, "reader function: too many pieces")}, nil
 	}
 	fn, err := st.CompileAndLoad(srcBuf, chunkname)
@@ -259,7 +272,7 @@ func baseFnLoad(st *crescent.State, args []value.Value) ([]value.Value, *crescen
 	return []value.Value{fn}, nil
 }
 
-// baseFnLoadstring:loadstring(s [, chunkname]) → function | (nil, errmsg)。
+// baseFnLoadstring: loadstring(s [, chunkname]) -> function | (nil, errmsg).
 func baseFnLoadstring(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	// strArg (not a raw tag check): PUC's luaL_checklstring coerces
 	// numbers, so loadstring(0) compiles the chunk "0" (a syntax
@@ -268,8 +281,9 @@ func baseFnLoadstring(st *crescent.State, args []value.Value) ([]value.Value, *c
 	if e != nil {
 		return nil, e
 	}
-	// 默认 chunkname = 源串本身(官方 luaL_optstring(L,2,s)),错误前缀
-	// 显示为 [string "首行..."](luaO_chunkid 截断)。
+	// Default chunkname = the source string itself (official
+	// luaL_optstring(L,2,s)); the error prefix is shown as
+	// [string "first line..."] (luaO_chunkid truncation).
 	chunkname := string(src)
 	if len(args) >= 2 && value.Tag(args[1]) == value.TagString {
 		chunkname = string(object.StringBytes(st.Arena(), value.GCRefOf(args[1])))
@@ -281,7 +295,7 @@ func baseFnLoadstring(st *crescent.State, args []value.Value) ([]value.Value, *c
 	return []value.Value{fn}, nil
 }
 
-// baseFnNext:next(t [, key]) → (nextKey, nextVal) | nil。
+// baseFnNext: next(t [, key]) -> (nextKey, nextVal) | nil.
 func baseFnNext(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	if len(args) == 0 || value.Tag(args[0]) != value.TagTable {
 		return nil, crescent.NewArgError(1, "table expected")
@@ -300,7 +314,7 @@ func baseFnNext(st *crescent.State, args []value.Value) ([]value.Value, *crescen
 	return []value.Value{k, v}, nil
 }
 
-// baseFnPairs:pairs(t) → (next, t, nil)。
+// baseFnPairs: pairs(t) -> (next, t, nil).
 func baseFnPairs(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	if len(args) == 0 || value.Tag(args[0]) != value.TagTable {
 		return nil, crescent.NewArgError(1, "table expected")
@@ -309,7 +323,7 @@ func baseFnPairs(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 	return []value.Value{nextFn, args[0], value.Nil}, nil
 }
 
-// baseFnIpairs:ipairs(t) → (iter, t, 0);iter(t, i) → (i+1, t[i+1]) | nil。
+// baseFnIpairs: ipairs(t) -> (iter, t, 0); iter(t, i) -> (i+1, t[i+1]) | nil.
 func baseFnIpairs(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	if len(args) == 0 || value.Tag(args[0]) != value.TagTable {
 		return nil, crescent.NewArgError(1, "table expected")
@@ -318,7 +332,8 @@ func baseFnIpairs(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 	return []value.Value{iterFn, args[0], value.NumberValue(0)}, nil
 }
 
-// ipairsIter 是 ipairs 的步进迭代器(注册为内部全局 __ipairs_iter)。
+// ipairsIter is the stepping iterator of ipairs (registered as the internal
+// global __ipairs_iter).
 func ipairsIter(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	// PUC ipairsaux: luaL_checkint(L, 2) FIRST, then checktype(L, 1, TABLE).
 	if len(args) < 2 || !value.IsNumber(args[1]) {
@@ -342,7 +357,7 @@ func ipairsIter(st *crescent.State, args []value.Value) ([]value.Value, *crescen
 	return []value.Value{value.NumberValue(i), v}, nil
 }
 
-// baseFnPcall:pcall(f, ...) → (true, results...) | (false, errval)(09 §pcall;05 §9.3)。
+// baseFnPcall: pcall(f, ...) -> (true, results...) | (false, errval) (09 §pcall; 05 §9.3).
 func baseFnPcall(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	if len(args) == 0 {
 		return nil, crescent.NewArgError(1, "value expected")
@@ -366,7 +381,7 @@ func baseFnSetMetatable(st *crescent.State, args []value.Value) ([]value.Value, 
 		return nil, crescent.NewArgError(1, "table expected")
 	}
 	t := value.GCRefOf(args[0])
-	// 受保护元表(__metatable 域)不可改(5.1)
+	// A protected metatable (the __metatable field) cannot be changed (5.1)
 	if old := st.MetaOf(t); old != 0 {
 		if shield, e := st.RawGet(old, intern(st, "__metatable")); e == nil && shield != value.Nil {
 			return nil, crescent.NewError("cannot change a protected metatable")
@@ -404,7 +419,8 @@ func baseFnGetMetatable(st *crescent.State, args []value.Value) ([]value.Value, 
 	if mt == 0 {
 		return []value.Value{value.Nil}, nil
 	}
-	// __metatable shield(5.1):元表带 __metatable 域时返回该域而非元表本身
+	// __metatable shield (5.1): when the metatable has a __metatable field,
+	// return that field rather than the metatable itself
 	shield, e := st.RawGet(mt, intern(st, "__metatable"))
 	if e == nil && shield != value.Nil {
 		return []value.Value{shield}, nil
@@ -501,13 +517,16 @@ func baseFnToString(st *crescent.State, args []value.Value) ([]value.Value, *cre
 
 func baseFnToNumber(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	if len(args) == 0 {
-		// 官方 luaL_checkany:无参是错误(≠ tonumber(nil) 的返回 nil)
+		// Official luaL_checkany: no argument is an error (unlike
+		// tonumber(nil), which returns nil)
 		return nil, crescent.NewArgError(1, "value expected")
 	}
 	if len(args) >= 2 && args[1] != value.Nil {
-		// tonumber(s, base):base 2-36,逐字符按进制解析(5.1 strtoul 语义,
-		// 负数回绕除外——官方 '-ff' 经 C strtoul 回绕成 2^64-255,本实现取
-		// 直觉的 -255;已登记差分豁免)
+		// tonumber(s, base): base 2-36, parsed character by character in the
+		// given radix (5.1 strtoul semantics, except for negative-number
+		// wraparound -- the official '-ff' wraps to 2^64-255 via C strtoul,
+		// whereas this implementation takes the intuitive -255; already
+		// registered as a diff exemption)
 		baseF, ok := toNumberStr(st, args[1])
 		if !ok {
 			return nil, crescent.NewArgError(2, "number expected, got "+st.TypeName(args[1]))
@@ -528,8 +547,9 @@ func baseFnToNumber(st *crescent.State, args []value.Value) ([]value.Value, *cre
 			neg = s[0] == '-'
 			s = s[1:]
 		}
-		// strtoul 接受 base=16 的可选 0x/0X 前缀(tonumber("0x10", 16) = 16;
-		// 配置写 "0xff" 再按 16 转换是常见形态)。
+		// strtoul accepts an optional 0x/0X prefix for base=16
+		// (tonumber("0x10", 16) = 16; writing "0xff" in config and then
+		// converting with base 16 is a common form).
 		if base == 16 && len(s) >= 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X') {
 			s = s[2:]
 		}
@@ -567,7 +587,8 @@ func baseFnToNumber(st *crescent.State, args []value.Value) ([]value.Value, *cre
 	return []value.Value{value.NumberValue(f)}, nil
 }
 
-// crescentToNumber 走 ParseLuaNumber 唯一入口(支持 0x 十六进制,07 §5.2)。
+// crescentToNumber goes through the single ParseLuaNumber entry point
+// (supports 0x hex, 07 §5.2).
 func crescentToNumber(st *crescent.State, v value.Value) (float64, bool) {
 	if value.IsNumber(v) {
 		return value.AsNumber(v), true
@@ -613,15 +634,17 @@ func baseFnError(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 			level = int(f)
 		}
 	}
-	// 官方 luaB_error 的加前缀条件是 lua_isstring(对 number 也真,
-	// lua_concat 把它转成字符串):error(0) → "file:line: 0" 字符串。
+	// Official luaB_error's prefixing condition is lua_isstring (true for
+	// numbers too, since lua_concat converts them to strings):
+	// error(0) -> the string "file:line: 0".
 	if level > 0 && value.IsNumber(v) {
 		v = intern(st, crescent.FormatLuaNumber(value.AsNumber(v)))
 	}
 	e := crescent.NewErrorVal(v, valueToString(st, v))
 	e.Level = level
 	if level == 0 || value.Tag(v) != value.TagString {
-		// level=0 或非字符串错误值:不加位置前缀(5.1 语义)
+		// level=0 or a non-string error value: no position prefix is added
+		// (5.1 semantics)
 		e.Level = 0
 		e.MarkAnnotated()
 	}
@@ -649,7 +672,7 @@ func baseFnSelect(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 	idx := int(f)
 	n := len(args) - 1
 	if idx < 0 {
-		// 负索引:从尾部数(5.1);越界报错
+		// Negative index: count from the tail (5.1); out of range errors
 		idx = n + idx + 1
 		if idx < 1 {
 			return nil, crescent.NewArgError(1, "index out of range")
@@ -663,12 +686,12 @@ func baseFnSelect(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 	return args[idx:], nil
 }
 
-// baseFnUnpack:unpack(t [, i [, j]])(实现委托 tablelib 的 baseFnUnpackImpl)。
+// baseFnUnpack: unpack(t [, i [, j]]) (implementation delegates to tablelib's baseFnUnpackImpl).
 func baseFnUnpack(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	return baseFnUnpackImpl(st, args)
 }
 
-// ----- math 子库 -----
+// ----- math sublibrary -----
 
 // mathIntrinsics maps math.* names the P4 native JIT can emit inline to
 // their intrinsic kind (issue #77). Only pure-numeric functions whose
@@ -698,8 +721,8 @@ var mathFns = []entry{
 	{"min", mathFnMin},
 }
 
-// mathFn1 包装一元 math 函数;错误措辞对齐官方 luaL_checknumber
-// (bad argument #1 to 'sin' (number expected, got string))。
+// mathFn1 wraps a unary math function; the error wording matches the official
+// luaL_checknumber (bad argument #1 to 'sin' (number expected, got string)).
 func mathFn1(name string, f func(float64) float64) crescent.HostFn {
 	return func(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 		if len(args) == 0 {
@@ -721,8 +744,10 @@ func mathFnMin(st *crescent.State, args []value.Value) ([]value.Value, *crescent
 	return mathMinMax(st, args, "min", func(a, b float64) bool { return a < b })
 }
 
-// mathMinMax 收口 max/min:全部参数(含首参)统一校验,错误措辞对齐官方
-// luaL_checknumber(首参曾被静默吞错:math.max("x", 2) 错误地返回 2)。
+// mathMinMax consolidates max/min: all arguments (including the first) are
+// validated uniformly, with error wording matching the official
+// luaL_checknumber (the first argument used to be silently swallowed:
+// math.max("x", 2) wrongly returned 2).
 func mathMinMax(st *crescent.State, args []value.Value, name string, better func(a, b float64) bool) ([]value.Value, *crescent.LuaError) {
 	if len(args) == 0 {
 		return nil, crescent.NewArgError(1, "number expected, got no value")
@@ -743,7 +768,7 @@ func mathMinMax(st *crescent.State, args []value.Value, name string, better func
 	return []value.Value{value.NumberValue(out)}, nil
 }
 
-// ----- string 子库 -----
+// ----- string sublibrary -----
 
 var stringFns = []entry{
 	{"len", stringFnLen},
@@ -860,10 +885,12 @@ func stringFnRep(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 	if n < 0 {
 		n = 0
 	}
-	// 嵌入式 hardening:阻断脚本经 string.rep 触发宿主进程 OOM crash。
-	// 1 GiB 阈值是「实际使用足够 + 拦住上亿变体」的折中,与 PUC 5.1.5 /
-	// gopher-lua 不一致(两者均不防御直接 OOM),但「宿主进程不可崩」
-	// 优先级高于字节一致(12 §10 豁免)。可被 pcall 兜住。
+	// Embedded hardening: block a script from triggering a host-process OOM
+	// crash via string.rep. The 1 GiB threshold is a compromise between
+	// "enough for real use" and "blocks hundreds of millions of variants";
+	// it disagrees with PUC 5.1.5 / gopher-lua (neither defends against
+	// direct OOM), but "the host process must not crash" has higher priority
+	// than byte parity (12 §10 exemption). Can be caught by pcall.
 	const maxRepBytes = 1 << 30
 	if len(s) > 0 && n > 0 && len(s) > maxRepBytes/n {
 		return nil, crescent.NewError("string length overflow")
@@ -883,7 +910,7 @@ func stringFnReverse(st *crescent.State, args []value.Value) ([]value.Value, *cr
 	return []value.Value{intern(st, string(out))}, nil
 }
 
-// normIdx 处理 Lua 风格的负索引(-1 = 末位)。
+// normIdx handles Lua-style negative indices (-1 = last position).
 func normIdx(i, n int) int {
 	if i < 0 {
 		return n + i + 1

@@ -7,7 +7,7 @@ import (
 
 func TestNullReserved(t *testing.T) {
 	a := New(Options{})
-	// 第一次分配的 GCRef 必须 ≥ 8(offset 0 保留为 null)。
+	// The first allocated GCRef must be ≥ 8 (offset 0 is reserved for null).
 	r := a.AllocBytes(8)
 	if r == 0 {
 		t.Fatalf("first allocation returned null GCRef")
@@ -15,7 +15,7 @@ func TestNullReserved(t *testing.T) {
 	if r < GCRef(nullReserve) {
 		t.Fatalf("first allocation %d below nullReserve %d", r, nullReserve)
 	}
-	// null GCRef 的语义。
+	// Semantics of the null GCRef.
 	if !GCRef(0).IsNull() {
 		t.Fatalf("GCRef(0).IsNull() = false, want true")
 	}
@@ -26,14 +26,14 @@ func TestNullReserved(t *testing.T) {
 
 func TestAlignment(t *testing.T) {
 	a := New(Options{})
-	// 任意大小请求都必须返回 8 对齐的 GCRef(low 3 bit = 0)。
+	// Any size request must return an 8-aligned GCRef (low 3 bits = 0).
 	for _, n := range []uint32{1, 3, 7, 8, 9, 15, 16, 17, 100, 1023} {
 		r := a.AllocBytes(n)
 		if r&7 != 0 {
 			t.Fatalf("AllocBytes(%d) returned misaligned %#x", n, uint64(r))
 		}
 	}
-	// AllocWords 同理。
+	// Same for AllocWords.
 	for _, w := range []uint32{1, 3, 9} {
 		r := a.AllocWords(w)
 		if r&7 != 0 {
@@ -57,7 +57,7 @@ func TestBumpProgression(t *testing.T) {
 	a := New(Options{})
 	prev := uint32(nullReserve)
 	for i := 0; i < 100; i++ {
-		r := a.AllocBytes(13) // 向上对齐到 16
+		r := a.AllocBytes(13) // rounds up to 16
 		if uint32(r) != prev {
 			t.Fatalf("alloc #%d: ref=%d, expected bump=%d", i, r, prev)
 		}
@@ -70,18 +70,19 @@ func TestBumpProgression(t *testing.T) {
 
 func TestDualViewAlias(t *testing.T) {
 	a := New(Options{})
-	// 在某偏移写一个 uint64,通过字节视图读出 8 个字节,反之亦然——同一段内存的两个视图。
+	// Write a uint64 at some offset, read the 8 bytes back through the byte view,
+	// and vice versa —— two views of the same piece of memory.
 	r := a.AllocWords(1)
 	a.SetWordAt(r, 0x0123456789ABCDEF)
 	off := uint32(r)
 	bytes := a.Bytes()
-	// 小端
+	// Little-endian
 	for i, want := range []byte{0xEF, 0xCD, 0xAB, 0x89, 0x67, 0x45, 0x23, 0x01} {
 		if got := bytes[off+uint32(i)]; got != want {
 			t.Fatalf("byte view[%d] = %#x, want %#x", off+uint32(i), got, want)
 		}
 	}
-	// 改字节视图,字视图同步可见
+	// Mutate the byte view; the word view sees it immediately
 	bytes[off] = 0xFF
 	if got := a.WordAt(r); got != 0x0123456789ABCDFF {
 		t.Fatalf("word after byte mutation = %#x", got)
@@ -90,7 +91,7 @@ func TestDualViewAlias(t *testing.T) {
 
 func TestDualViewBacking(t *testing.T) {
 	a := New(Options{InitialBytes: 64})
-	// words 与 bytes 必须共享同一段底层内存(unsafe alias)。
+	// words and bytes must share the same underlying memory (unsafe alias).
 	if len(a.Bytes()) != len(a.Words())*8 {
 		t.Fatalf("bytes len %d != words len %d * 8", len(a.Bytes()), len(a.Words())*8)
 	}
@@ -101,20 +102,21 @@ func TestDualViewBacking(t *testing.T) {
 
 func TestGrowPreservesContent(t *testing.T) {
 	a := New(Options{InitialBytes: 64})
-	// 装满 64 字节(分配 7 个 8 字节,加上 nullReserve 占 8)。
+	// Fill up 64 bytes (allocate 7 × 8 bytes, plus nullReserve taking 8).
 	refs := make([]GCRef, 7)
 	for i := range refs {
 		refs[i] = a.AllocWords(1)
 		a.SetWordAt(refs[i], uint64(0xCAFE0000+i))
 	}
 	beforeCap := a.Cap()
-	// 下一次分配触发 grow:cap 翻倍。
+	// The next allocation triggers a grow: cap doubles.
 	r := a.AllocWords(1)
 	a.SetWordAt(r, 0xDEADBEEF)
 	if a.Cap() <= beforeCap {
 		t.Fatalf("cap did not grow: %d -> %d", beforeCap, a.Cap())
 	}
-	// 旧 GCRef 必须仍可读出原值——这是偏移寻址的红利。
+	// Old GCRefs must still read back their original values —— this is the payoff
+	// of offset-based addressing.
 	for i, ref := range refs {
 		if got := a.WordAt(ref); got != uint64(0xCAFE0000+i) {
 			t.Fatalf("after grow: ref %d = %#x, want %#x", ref, got, uint64(0xCAFE0000+i))
@@ -150,7 +152,7 @@ func TestCustomBacking(t *testing.T) {
 	if called != 1 {
 		t.Fatalf("backing called %d times after New, want 1", called)
 	}
-	// 触发 grow → backing 工厂再被调一次。
+	// Trigger a grow → the backing factory is called once more.
 	for a.Cap() == 32 {
 		a.AllocWords(1)
 	}
@@ -171,7 +173,8 @@ func TestMisalignedRefPanics(t *testing.T) {
 
 func TestAllocBytesZero(t *testing.T) {
 	a := New(Options{})
-	// 零长度分配 → 至少 8 字节,且 GCRef 仍唯一(防退化为 null)。
+	// Zero-length allocation → at least 8 bytes, and the GCRef is still unique
+	// (guarding against degenerating into null).
 	r1 := a.AllocBytes(0)
 	r2 := a.AllocBytes(0)
 	if r1 == 0 || r2 == 0 || r1 == r2 {

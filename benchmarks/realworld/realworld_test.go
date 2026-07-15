@@ -1,15 +1,21 @@
-// Package realworld benchmarks benchmark-game 经典脚本(fib / binary-trees /
-// spectral-norm / fannkuch / n-body)on Wangshu vs gopher-lua,并以官方
-// lua5.1 输出为正确性 oracle(TestRealWorld_OracleParity)。
+// Package realworld benchmarks the classic benchmark-game scripts (fib /
+// binary-trees / spectral-norm / fannkuch / n-body) on Wangshu vs gopher-lua,
+// using the official lua5.1 output as the correctness oracle
+// (TestRealWorld_OracleParity).
 //
-// 与 baseline 三档微基准互补:这些是调用/分配/浮点/表操作的真实负载混合,
-// 回应「微基准 ≠ 真实负载」的性能故事缺口。运行:`make bench-p1`。
+// These complement the three-tier baseline microbenchmarks: they are a
+// realistic mixed workload of calls / allocations / floating-point / table
+// operations, addressing the "microbenchmark != real workload" gap in the
+// performance story. Run: `make bench-p1`.
 //
-// 本文件无 build tag——`TestRealWorld_OracleParity` 在 p1/p3 两 build 下都需要
-// (验证 wangshu 自身行为对位官方 5.1.5,与 build variant 无关)。
-// Benchmark 部分(`_Wangshu` / `_Gopher`)拆到 `realworld_bench_test.go`,带
-// `!wangshu_p3` 避免 p3 build 的采样钩污染(issue #15 review)。
-// `_Gibbous` benchmark 在 `realworld_gibbous_test.go` 里独有 wangshu_p3 tag。
+// This file has no build tag -- `TestRealWorld_OracleParity` is needed under
+// both the p1 and p3 builds (it verifies that wangshu's own behavior matches
+// official 5.1.5, independent of the build variant).
+// The benchmark parts (`_Wangshu` / `_Gopher`) are split into
+// `realworld_bench_test.go` with `!wangshu_p3` to avoid contamination from the
+// p3 build's sampling hooks (issue #15 review).
+// The `_Gibbous` benchmark lives in `realworld_gibbous_test.go` with its own
+// wangshu_p3 tag.
 package realworld
 
 import (
@@ -52,7 +58,8 @@ func runWangshu(tb testing.TB, src []byte, name string) string {
 	return strings.Join(parts, "\t")
 }
 
-// TestRealWorld_OracleParity 与官方 lua5.1 对拍每个脚本的返回值。
+// TestRealWorld_OracleParity checks each script's return value against the
+// official lua5.1 oracle.
 func TestRealWorld_OracleParity(t *testing.T) {
 	oracle, err := exec.LookPath("lua5.1")
 	if err != nil {
@@ -61,7 +68,8 @@ func TestRealWorld_OracleParity(t *testing.T) {
 	for _, name := range scripts {
 		t.Run(name, func(t *testing.T) {
 			src := loadScript(t, name)
-			// oracle 侧:把 return 值 print 出来(\t join 与 wangshu 侧一致)
+			// Oracle side: print the return values (\t join matches the
+			// wangshu side)
 			wrapped := "local function __chunk() " + string(src) + "\nend\n" +
 				"print(__chunk())"
 			cmd := exec.Command(oracle, "-")

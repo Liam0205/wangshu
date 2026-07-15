@@ -1,80 +1,89 @@
 //go:build wangshu_p4
 
-// dispatcher.go —— P4 Option B Spike 1 trampoline exit-resume 协议 Go 端
-// dispatcher(承
-// docs/design/p4-method-jit/implementation-progress.md §9.20.9 (5) Go 端
-// dispatcher 详细设计 + 实装顺序 5 commits commit-3a)。
+// dispatcher.go —— Go-side dispatcher for the P4 Option B Spike 1 trampoline
+// exit-resume protocol (per
+// docs/design/p4-method-jit/implementation-progress.md §9.20.9 (5) Go-side
+// dispatcher detailed design + implementation order 5 commits commit-3a).
 //
-// **协议位置**(承 §9.20.9 (1)):
+// **Protocol position** (per §9.20.9 (1)):
 //
-//	[mmap 段] exit-helper-request 段写 jitCtx.exitArg0=HelperRunCallee + ret
+//	[mmap segment] exit-helper-request segment writes jitCtx.exitArg0=HelperRunCallee + ret
 //	   │
 //	   ▼
 //	[trampoline asm] CMPQ AX, $ExitInlineHelper / CALL ·dispatchInlineHelper
 //	   │
 //	   ▼
-//	[本文件 dispatchInlineHelper] switch jitCtx.exitArg0 路由:
-//	   case HelperRunCallee: 经 P4HostState.ExecuteCalleeFromInlineFrame
-//	   case HelperGrowStack: arena grow(未来)
-//	   case HelperGCBarrier: GC 写屏障(未来,只在写 Go 堆时)
+//	[this file dispatchInlineHelper] switch jitCtx.exitArg0 routes:
+//	   case HelperRunCallee: via P4HostState.ExecuteCalleeFromInlineFrame
+//	   case HelperGrowStack: arena grow (future)
+//	   case HelperGCBarrier: GC write barrier (future, only when writing the Go heap)
 //	   │
 //	   ▼
-//	[本文件 返 resumeAddr] trampoline 用 codePageAddr + resumeOff 重新 CALL
+//	[this file returns resumeAddr] trampoline re-CALLs with codePageAddr + resumeOff
 //	   │
 //	   ▼
-//	[mmap 段 resume entry] PopVoid0Arg + ret(callee 帧已被 dispatcher 跑完)
+//	[mmap segment resume entry] PopVoid0Arg + ret (callee frame already run by dispatcher)
 //
-// **当前 Spike 1 阶段状态**(2026-06-28,commit-3a):
-//   - archSupportsFrameInline=false 屏蔽真触发,本 dispatcher 在 production
-//     路径不会被触达,但被 trampoline asm CALL 调用站点(commit-3b)预留
-//     地址 + 测试钩子使用
-//   - 本批 panic 占位(承 jit.HelperRunCalleeAfterFrameInline 同款工程基础
-//     锚点),真实装留 commit-5 翻 archSupportsFrameInline=true 同批落地
-//   - host 路由经 *Compiler 注入的 P4HostState 接口(承
-//     compiler.go::hostState 字段),不引入 jitContext.hostStatePtr 新字段
-//     (减少 ABI 表面;真实装时由 trampoline asm 经独立 helper 函数转发)
+// **Current Spike 1 stage status** (2026-06-28, commit-3a):
+//   - archSupportsFrameInline=false blocks real triggering; this dispatcher is
+//     never reached on the production path, but its call site CALLed from the
+//     trampoline asm (commit-3b) reserves the address + is used by test hooks.
+//   - This batch is a panic placeholder (per the same engineering anchor as
+//     jit.HelperRunCalleeAfterFrameInline); the real implementation lands with
+//     commit-5 flipping archSupportsFrameInline=true in the same batch.
+//   - host routing goes through the P4HostState interface injected by *Compiler
+//     (per compiler.go::hostState field), without introducing a new
+//     jitContext.hostStatePtr field (reduces the ABI surface; the real
+//     implementation forwards from the trampoline asm via a dedicated helper
+//     function).
 //
-// **未来真实装路径**(Step C-2,等 archSupportsFrameInline 翻 true):
-//  1. dispatcher 接受 jitCtx 同时取 host(经独立 setter 注入)
-//  2. switch jitCtx.exitArg0 case HelperRunCallee:host.ExecuteCalleeFromInlineFrame
-//  3. 返 codePageAddr + resumeOff 让 trampoline 续跑
+// **Future real implementation path** (Step C-2, once archSupportsFrameInline
+// flips to true):
+//  1. dispatcher takes jitCtx and also obtains host (injected via a dedicated setter)
+//  2. switch jitCtx.exitArg0 case HelperRunCallee: host.ExecuteCalleeFromInlineFrame
+//  3. return codePageAddr + resumeOff to let the trampoline resume
 //
-// 设计依据:
-//   - §9.20.9 (5) Go 端 dispatcher 详细设计(switch + executeFrom)
-//   - §9.20.9 (8) 风险点:dispatcher 内 executeFrom 非 nosplit → 必须切回
-//     Go 栈再调(承 §9.20.6 (4) SP 切换协议)
-//   - §9.20.9 (8) 错误冒泡:HelperRunCalleeAfterFrameInline 内 raise 时
-//     设 jitCtx.exitReason=ExitError + pendingErr,dispatcher 返 0 让
-//     trampoline 走错误路径
+// Design basis:
+//   - §9.20.9 (5) Go-side dispatcher detailed design (switch + executeFrom)
+//   - §9.20.9 (8) risk: executeFrom inside the dispatcher is not nosplit → must
+//     switch back to the Go stack before calling (per §9.20.6 (4) SP switch protocol)
+//   - §9.20.9 (8) error bubbling: when HelperRunCalleeAfterFrameInline raises, it
+//     sets jitCtx.exitReason=ExitError + pendingErr, and the dispatcher returns 0
+//     to make the trampoline take the error path
 package jit
 
-// dispatchInlineHelper 是 trampoline 出段后的 helper request 路由器(承
-// §9.20.9 (5))。trampoline asm 检 AX=ExitInlineHelper 时 CALL 本函数,
-// 本函数读 jitCtx.exitArg0 路由到对应 helper,返 resumeAddr(若 0 则错误
-// 路径)。
+// dispatchInlineHelper is the helper-request router for after the trampoline
+// exits its segment (per §9.20.9 (5)). When the trampoline asm detects
+// AX=ExitInlineHelper it CALLs this function; this function reads
+// jitCtx.exitArg0, routes to the corresponding helper, and returns resumeAddr
+// (0 means the error path).
 //
-// **入参**:
-//   - jitCtx:*JITContext(承 trampoline asm 经 r15 拷给 rdi/SysV ABI)
+// **Params**:
+//   - jitCtx: *JITContext (per the trampoline asm copying r15 to rdi/SysV ABI)
 //
-// **返**:
-//   - resumeAddr (uintptr):mmap 段内 resume entry 地址(codePageAddr +
-//     resumeOff);0 表示错误(trampoline 走错误路径)
+// **Returns**:
+//   - resumeAddr (uintptr): resume entry address inside the mmap segment
+//     (codePageAddr + resumeOff); 0 means error (trampoline takes the error path)
 //
-// **Spike 1 阶段未实装**:本 stub panic 标识未真接入路径——archSupportsFrameInline
-// 当前 false,Compile 路径不会真 emit ExitInlineHelper 协议;trampoline asm
-// 也不 CALL 本函数(commit-3b 加 dispatcher CALL 段但 dispatcher 不路由);
-// production 路径屏蔽 SIGSEGV 风险。真实装留 commit-5 翻 archSupportsFrameInline
-// =true 同批落地。
+// **Not yet implemented in the Spike 1 stage**: this stub panics to mark the
+// path is not really wired up — archSupportsFrameInline is currently false, so
+// the Compile path never really emits the ExitInlineHelper protocol; the
+// trampoline asm also does not CALL this function (commit-3b adds the dispatcher
+// CALL segment but the dispatcher does not route); the production path is
+// shielded from SIGSEGV risk. The real implementation lands with commit-5
+// flipping archSupportsFrameInline=true in the same batch.
 //
-// **nosplit + noinline**:承 §9.20.6 (4) helper ABI 协议 + §9.20.9 (8) 风险
-// 缓解。
+// **nosplit + noinline**: per the §9.20.6 (4) helper ABI protocol + §9.20.9 (8)
+// risk mitigation.
 //
 //go:nosplit
 //go:noinline
 func dispatchInlineHelper(jitCtx *JITContext) uintptr {
 	_ = jitCtx
-	// **未实装占位**:commit-5 真实装时去 panic,加 switch jitCtx.exitArg0
-	// + host 路由逻辑。当前 archSupportsFrameInline=false 屏蔽真调用站点,
-	// 本 panic 是工程基础锚点(出现 = 真接入未启用 / Compile bug)。
+	// **Not-yet-implemented placeholder**: for the commit-5 real implementation,
+	// remove the panic and add the switch jitCtx.exitArg0 + host routing logic.
+	// archSupportsFrameInline=false currently blocks the real call site; this
+	// panic is an engineering anchor (reaching it = real wiring not enabled /
+	// Compile bug).
 	panic("internal/gibbous/jit.dispatchInlineHelper: not implemented (Spike 1 commit-5 占位)")
 }

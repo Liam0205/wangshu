@@ -2,22 +2,22 @@
 
 package arm64
 
-// CallJITFull 非真实装平台占位 stub——用于 cross-compile 通过。
+// CallJITFull is a placeholder stub for non-real platforms — used to make cross-compilation pass.
 //
-// 路径分布(承 trampoline_real.go build tag 互补):
+// Path distribution (complements trampoline_real.go build tags):
 //   - linux/arm64                    → trampoline_real.go + trampoline_arm64.s
-//   - darwin/arm64 && cgo            → trampoline_real.go + trampoline_arm64.s (同份 Plan 9 asm)
-//   - darwin/arm64 && !cgo           → 本 stub (cross-build CGO_ENABLED=0)
-//   - 其它 (amd64 / windows / 32-bit) → 本 stub (cross-compile 冒烟)
+//   - darwin/arm64 && cgo            → trampoline_real.go + trampoline_arm64.s (same Plan 9 asm)
+//   - darwin/arm64 && !cgo           → this stub (cross-build CGO_ENABLED=0)
+//   - others (amd64 / windows / 32-bit) → this stub (cross-compile smoke test)
 //
-// amd64 build 用 arch_amd64.go,不会真调到 arm64 包的 CallJITFull/CallJITSpec。
+// The amd64 build uses arch_amd64.go and never actually calls the arm64 package's CallJITFull/CallJITSpec.
 func CallJITFull(codeAddr uintptr, jitCtxAddr uintptr) uint64 {
 	_ = codeAddr
 	_ = jitCtxAddr
 	panic("internal/gibbous/jit/arm64: CallJITFull not supported on this OS/arch (CGO_ENABLED=0 stub on darwin/arm64;amd64 应走 arch_amd64.go)")
 }
 
-// CallJITSpec 非真实装平台占位 stub——同 CallJITFull,用于 cross-compile 通过。
+// CallJITSpec is a placeholder stub for non-real platforms — same as CallJITFull, used to make cross-compilation pass.
 func CallJITSpec(codeAddr uintptr, jitCtxAddr uintptr, vsBaseAddr uintptr) uint64 {
 	_ = codeAddr
 	_ = jitCtxAddr

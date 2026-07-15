@@ -1,16 +1,16 @@
-// Aggregator 单测(`docs/design/p2-bridge/02-ic-feedback.md` §6 验收)。
+// Aggregator unit tests (`docs/design/p2-bridge/02-ic-feedback.md` §6 acceptance).
 //
-// 三类合成 ICSlot 输入对应三类 FeedbackKind 输出 + Confidence 计算:
+// Three classes of synthetic ICSlot input map to three FeedbackKind outputs + Confidence computation:
 //
-//   - 算术 IC 双计数:numHits=99 metaHits=1 ⇒ FBArithStableNumber, conf=0.99
-//   - 表 IC kind=2 (node hit) ⇒ FBTableMono(GETTABLE)/FBGlobalStable
+//   - arithmetic IC dual-count: numHits=99 metaHits=1 ⇒ FBArithStableNumber, conf=0.99
+//   - table IC kind=2 (node hit) ⇒ FBTableMono(GETTABLE)/FBGlobalStable
 //     (GETGLOBAL)/FBSelfMono(SELF)
-//   - 表 IC kind=4 (megamorphic) ⇒ FBTableMega
+//   - table IC kind=4 (megamorphic) ⇒ FBTableMega
 //
-// 边界情况:
-//   - kind=0(未观测)⇒ Points[pc] 是零值(FBUnstable, conf=0,跳过)
-//   - 算术 IC numHits+metaHits < MinObservations ⇒ FBUnstable(样本不足)
-//   - 比例介于 0.5..0.99 ⇒ FBUnstable(混合态)
+// Edge cases:
+//   - kind=0 (unobserved) ⇒ Points[pc] is the zero value (FBUnstable, conf=0, skipped)
+//   - arithmetic IC numHits+metaHits < MinObservations ⇒ FBUnstable (too few samples)
+//   - ratio between 0.5..0.99 ⇒ FBUnstable (mixed state)
 package bridge
 
 import (
@@ -19,12 +19,14 @@ import (
 	"github.com/Liam0205/wangshu/internal/bytecode"
 )
 
-// makeProtoWithCode 造一个含特定 opcode 的 Proto + 等长 IC 数组。
+// makeProtoWithCode builds a Proto containing specific opcodes + an equal-length IC array.
 //
-// **MinPromotableCodeLen padding**(issue #21):若 ops 数少于 MinPromotableCodeLen,
-// 自动 padding 到 MinPromotableCodeLen 长度(用 NOP),让 considerPromotion 路径
-// 测试不被守卫拦截。前 len(ops) 个 opcode 仍是测试指定的形态,IC 索引也对应前
-// len(ops) 个 slot(后续 padding NOP 的 IC slot 都是零值)。
+// **MinPromotableCodeLen padding** (issue #21): if the op count is less than
+// MinPromotableCodeLen, it is automatically padded (with NOP) up to
+// MinPromotableCodeLen length, so the considerPromotion path under test is not
+// blocked by the guard. The first len(ops) opcodes remain the test-specified
+// forms, and the IC indices correspond to those first len(ops) slots (the IC
+// slots of the padding NOPs are all zero values).
 func makeProtoWithCode(ops ...bytecode.OpCode) *bytecode.Proto {
 	n := len(ops)
 	if n < MinPromotableCodeLen {
@@ -34,22 +36,22 @@ func makeProtoWithCode(ops ...bytecode.OpCode) *bytecode.Proto {
 	for i, op := range ops {
 		code[i] = bytecode.Instruction(uint32(op))
 	}
-	// padding 位置默认是 0,即 OpCode=MOVE(实际不会被解析,只是过守卫长度)
+	// padding slots default to 0, i.e. OpCode=MOVE (never actually decoded, only to pass the guard's length check)
 	return &bytecode.Proto{
 		Code: code,
 		IC:   make([]bytecode.ICSlot, n),
 	}
 }
 
-// TestAggregator_ArithStable 算术 IC 比例 ≥ 0.99 + 总命中 ≥ 100 ⇒
-// FBArithStableNumber。
+// TestAggregator_ArithStable: arithmetic IC ratio ≥ 0.99 + total hits ≥ 100 ⇒
+// FBArithStableNumber.
 func TestAggregator_ArithStable(t *testing.T) {
 	p := makeProtoWithCode(bytecode.ADD, bytecode.MUL, bytecode.SUB)
-	// pc=0 ADD: 99% number, 1% meta(99 + 1 = 100,边界等于阈值)
+	// pc=0 ADD: 99% number, 1% meta (99 + 1 = 100, boundary equal to threshold)
 	p.IC[0] = bytecode.ICSlot{Shape: 990, Index: 10, Kind: 1} // 990/(990+10)=0.99
-	// pc=1 MUL: 全 number, 200 hits
+	// pc=1 MUL: all number, 200 hits
 	p.IC[1] = bytecode.ICSlot{Shape: 200, Index: 0, Kind: 1}
-	// pc=2 SUB: 未观测
+	// pc=2 SUB: unobserved
 	p.IC[2] = bytecode.ICSlot{Kind: 0}
 
 	a := NewAggregator()
@@ -77,13 +79,13 @@ func TestAggregator_ArithStable(t *testing.T) {
 	}
 }
 
-// TestAggregator_ArithUnstable 比例 < 0.99 ⇒ FBUnstable;但 confidence 仍带
-// 比例值供诊断。
+// TestAggregator_ArithUnstable: ratio < 0.99 ⇒ FBUnstable; but confidence still
+// carries the ratio value for diagnostics.
 func TestAggregator_ArithUnstable(t *testing.T) {
 	p := makeProtoWithCode(bytecode.ADD, bytecode.MUL)
-	// pc=0 70% number 30% meta(混合态)
+	// pc=0 70% number 30% meta (mixed state)
 	p.IC[0] = bytecode.ICSlot{Shape: 700, Index: 300, Kind: 1}
-	// pc=1 50/50(诊断比例)
+	// pc=1 50/50 (diagnostic ratio)
 	p.IC[1] = bytecode.ICSlot{Shape: 500, Index: 500, Kind: 1}
 
 	a := NewAggregator()
@@ -103,10 +105,10 @@ func TestAggregator_ArithUnstable(t *testing.T) {
 	}
 }
 
-// TestAggregator_ArithSampleTooFew 样本量 < MinObservations(100) ⇒ FBUnstable。
+// TestAggregator_ArithSampleTooFew: sample count < MinObservations (100) ⇒ FBUnstable.
 func TestAggregator_ArithSampleTooFew(t *testing.T) {
 	p := makeProtoWithCode(bytecode.ADD)
-	// 99 numHits 0 metaHits = 比例 1.0 但样本量 < 100
+	// 99 numHits 0 metaHits = ratio 1.0 but sample count < 100
 	p.IC[0] = bytecode.ICSlot{Shape: 99, Index: 0, Kind: 1}
 
 	a := NewAggregator()
@@ -123,11 +125,11 @@ func TestAggregator_ArithSampleTooFew(t *testing.T) {
 	}
 }
 
-// TestAggregator_TableIC 表 IC kind 2 (node hit) → FBTableMono(GETTABLE)/
-// FBGlobalStable(GETGLOBAL)/FBSelfMono(SELF)。
+// TestAggregator_TableIC: table IC kind 2 (node hit) → FBTableMono(GETTABLE)/
+// FBGlobalStable(GETGLOBAL)/FBSelfMono(SELF).
 func TestAggregator_TableIC(t *testing.T) {
 	p := makeProtoWithCode(bytecode.GETTABLE, bytecode.GETGLOBAL, bytecode.SELF, bytecode.SETTABLE, bytecode.SETGLOBAL)
-	// 各 pc 都设 node hit
+	// set node hit on every pc
 	for i := range p.IC {
 		p.IC[i] = bytecode.ICSlot{
 			Shape:    42,
@@ -166,7 +168,7 @@ func TestAggregator_TableIC(t *testing.T) {
 }
 
 // TestAggregator_TableMega kind=4 megamorphic → FBTableMega + confidence 0 +
-// stable shape/index 清 0(02 §6.3 防御性翻译,P1 当前不写 kind=4)。
+// stable shape/index cleared to 0 (02 §6.3 defensive translation, P1 does not currently write kind=4).
 func TestAggregator_TableMega(t *testing.T) {
 	p := makeProtoWithCode(bytecode.GETTABLE)
 	p.IC[0] = bytecode.ICSlot{
@@ -191,11 +193,11 @@ func TestAggregator_TableMega(t *testing.T) {
 	}
 }
 
-// TestAggregator_RefillTriggersMega P2+ #4:Refill ≥ MegamorphicRefillThreshold
-// (默认 3)即便 Kind 仍是 mono 也主动翻译为 FBTableMega。
+// TestAggregator_RefillTriggersMega P2+ #4: when Refill ≥ MegamorphicRefillThreshold
+// (default 3), proactively translate to FBTableMega even if Kind is still mono.
 func TestAggregator_RefillTriggersMega(t *testing.T) {
 	p := makeProtoWithCode(bytecode.GETTABLE)
-	// Kind=NodeHit 看似单态,但 Refill=5 表示历史经过多次重填(多态)
+	// Kind=NodeHit looks monomorphic, but Refill=5 means it was refilled many times historically (polymorphic)
 	p.IC[0] = bytecode.ICSlot{
 		Shape:    42,
 		Index:    7,
@@ -215,8 +217,8 @@ func TestAggregator_RefillTriggersMega(t *testing.T) {
 	}
 }
 
-// TestAggregator_RefillBelowThresholdStillMono Refill < threshold 时仍按
-// kind 判 mono(单态命中虽偶有重填但不算多态)。
+// TestAggregator_RefillBelowThresholdStillMono: when Refill < threshold, still judge mono
+// by kind (a monomorphic hit may occasionally refill but does not count as polymorphic).
 func TestAggregator_RefillBelowThresholdStillMono(t *testing.T) {
 	p := makeProtoWithCode(bytecode.GETTABLE)
 	p.IC[0] = bytecode.ICSlot{
@@ -224,7 +226,7 @@ func TestAggregator_RefillBelowThresholdStillMono(t *testing.T) {
 		Index:    7,
 		TableRef: 0xdeadbeef,
 		Kind:     bytecode.ICKindNodeHit,
-		Refill:   2, // < 3 阈值
+		Refill:   2, // < 3 threshold
 	}
 
 	a := NewAggregator()
@@ -235,8 +237,8 @@ func TestAggregator_RefillBelowThresholdStillMono(t *testing.T) {
 	}
 }
 
-// TestAggregator_NonICOpsAreUnstable 非 IC 指令对应槽是 FBUnstable 零值
-// (LOADK/MOVE/RETURN/...)——P3/P4 应跳过。
+// TestAggregator_NonICOpsAreUnstable: slots for non-IC instructions are the FBUnstable zero value
+// (LOADK/MOVE/RETURN/...) — P3/P4 should skip them.
 func TestAggregator_NonICOpsAreUnstable(t *testing.T) {
 	p := makeProtoWithCode(bytecode.LOADK, bytecode.MOVE, bytecode.RETURN)
 
@@ -251,8 +253,8 @@ func TestAggregator_NonICOpsAreUnstable(t *testing.T) {
 	}
 }
 
-// TestAggregator_GenerationMonotonic 多次 Aggregate 同一 Proto generation 单调
-// 递增——P3/P4 据此判 feedback 快照新旧。
+// TestAggregator_GenerationMonotonic: multiple Aggregate calls on the same Proto give a
+// monotonically increasing generation — P3/P4 uses this to tell whether a feedback snapshot is stale.
 func TestAggregator_GenerationMonotonic(t *testing.T) {
 	p := makeProtoWithCode(bytecode.ADD)
 	p.IC[0] = bytecode.ICSlot{Shape: 200, Index: 0, Kind: 1}
@@ -266,8 +268,8 @@ func TestAggregator_GenerationMonotonic(t *testing.T) {
 	}
 }
 
-// TestBridgeInstallFeedback 单 State Feedback 一次性安装(02 §4.5 不重聚合
-// 策略)——多次调 installFeedback 不覆盖。
+// TestBridgeInstallFeedback: per-State Feedback is installed once (02 §4.5 no-re-aggregation
+// strategy) — calling installFeedback multiple times does not overwrite.
 func TestBridgeInstallFeedback(t *testing.T) {
 	b := NewBridge()
 	p := makeProtoWithCode(bytecode.ADD)
@@ -281,7 +283,7 @@ func TestBridgeInstallFeedback(t *testing.T) {
 		t.Errorf("Feedback not installed (got %p, want %p)", pd.Feedback, fb1)
 	}
 
-	// 第二次 install 应被忽略(初版只聚合一次)
+	// the second install should be ignored (the initial version aggregates only once)
 	fb2 := b.Aggregator().Aggregate(p)
 	b.installFeedback(p, fb2)
 	if pd.Feedback != fb1 {

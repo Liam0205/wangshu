@@ -1,4 +1,4 @@
-// math 的随机数与浮点 helper(独立文件,集中 math 依赖)。
+// Random-number and floating-point helpers for math (separate file, centralizes the math dependency).
 package stdlib
 
 import (
@@ -9,7 +9,7 @@ import (
 
 var (
 	rngMu sync.Mutex
-	rng   = rand.New(rand.NewSource(0)) // Lua 5.1 默认种子确定
+	rng   = rand.New(rand.NewSource(0)) // Lua 5.1 uses a fixed default seed
 )
 
 func rngFloat() float64 {
@@ -60,5 +60,5 @@ func ldexp(m float64, e int) float64 { return math.Ldexp(m, e) }
 
 const luaPi = math.Pi
 
-// luaHuge = +Inf(math.huge,5.1)。
+// luaHuge = +Inf (math.huge, 5.1).
 func luaHuge() float64 { return math.Inf(1) }

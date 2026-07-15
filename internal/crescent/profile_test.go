@@ -1,13 +1,13 @@
 //go:build wangshu_profile
 
-// PB1 采样钩点接入验收(`docs/design/p2-bridge/01-profiling.md` §1.4 + §4):
-//   - 回边/入口计数累积非零(三档脚本:数值循环 / while / 函数入口)
-//   - profileEnabled=true 切换不改 byte-equal(测试 = 默认 build 已过 ⇒
-//     此处只验「profile=on 下结果与脚本预期值一致」,与 default 一致即
-//     间接验「开关切换不改 byte-equal」)
+// PB1 sampling-hook integration acceptance (`docs/design/p2-bridge/01-profiling.md` §1.4 + §4):
+//   - Back-edge / entry counts accumulate to nonzero (three script tiers: numeric loop / while / function entry)
+//   - Flipping profileEnabled=true does not change byte-equal (test = the default build already passes ⇒
+//     here we only verify "under profile=on the result matches the script's expected value"; matching the default
+//     indirectly verifies "toggling the switch does not change byte-equal")
 //
-// 仅 `-tags wangshu_profile` 时编译——profileEnabled=false 下钩点编译期
-// 消去,profileTable 永远空,本组测试无意义。
+// Compiled only under `-tags wangshu_profile` — with profileEnabled=false the hooks are
+// compiled away, profileTable is always empty, and this test group is meaningless.
 package crescent
 
 import (
@@ -20,9 +20,9 @@ import (
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
-// runLuaWithBridge 像 runLua 但把 bridge 暴露给测试
-// (用 wangshu.NewState 一类的包装会让本测试成为 e2e,过重——直接走
-// crescent.New)。
+// runLuaWithBridge is like runLua but exposes the bridge to the test
+// (using a wrapper like wangshu.NewState would make this test an e2e, too heavy — go straight through
+// crescent.New).
 func runLuaWithBridge(t *testing.T, src string) *State {
 	t.Helper()
 	lx := lex.New([]byte(src), "test_profile")
@@ -42,8 +42,8 @@ func runLuaWithBridge(t *testing.T, src string) *State {
 	return st
 }
 
-// TestProfile_BackEdgeAccumulates 数值循环跑 N 轮 ⇒ 至少有一个回边
-// pc 累计 ≈ N 次。
+// TestProfile_BackEdgeAccumulates runs a numeric loop for N iterations ⇒ at least one back-edge
+// pc accumulates ≈ N times.
 func TestProfile_BackEdgeAccumulates(t *testing.T) {
 	src := `
 local function f(n)
@@ -70,8 +70,8 @@ result = f(50)
 	}
 }
 
-// findProtoByParams 找到 NumParams 等于 want 且非 main chunk(IsVararg=false)
-// 的第一个 Proto——主 chunk 是 vararg,跳过它。
+// findProtoByParams finds the first Proto whose NumParams equals want and is not the main chunk
+// (IsVararg=false) — the main chunk is vararg, so skip it.
 func findProtoByParams(t *testing.T, st *State, want uint8) *bytecode.Proto {
 	t.Helper()
 	for _, p := range st.protos {
@@ -86,8 +86,8 @@ func findProtoByParams(t *testing.T, st *State, want uint8) *bytecode.Proto {
 	return nil
 }
 
-// TestProfile_WhileLoopBackEdge 验证 while/repeat 一类 JMP 回边也被计数
-// (路线 B 覆盖 §1.3 表里全部回边形态)。
+// TestProfile_WhileLoopBackEdge verifies that JMP back edges of the while/repeat kind are also counted
+// (route B covers all back-edge forms in the §1.3 table).
 func TestProfile_WhileLoopBackEdge(t *testing.T) {
 	src := `
 local function f(n)
@@ -111,10 +111,10 @@ result = f(30)
 	}
 }
 
-// TestProfile_EntryCountAccumulates 反复调用同函数 ⇒ entryCount 累积。
+// TestProfile_EntryCountAccumulates calls the same function repeatedly ⇒ entryCount accumulates.
 //
-// 验证 enterLuaFrame 钩点同时覆盖 doCall 与 doTailCall(05 §7.5;
-// doTailCall 内部经 enterLuaFrame 因此天然覆盖,无需独立钩点)。
+// Verifies that the enterLuaFrame hook covers both doCall and doTailCall (05 §7.5;
+// doTailCall internally goes through enterLuaFrame and is therefore covered naturally, with no separate hook needed).
 func TestProfile_EntryCountAccumulates(t *testing.T) {
 	src := `
 local function inner(x) return x*x end
@@ -135,8 +135,8 @@ result = caller(20)
 		t.Fatalf("script result = %v, want %v", debugVal(st, v), want)
 	}
 
-	// inner 是单参数非 vararg 的小函数(`local function inner(x) return x*x end`),
-	// 应被调 20 次。
+	// inner is a small single-parameter non-vararg function (`local function inner(x) return x*x end`),
+	// and should be called 20 times.
 	innerProto := findProtoByParams(t, st, 1)
 	pd := st.bridge.ProfileOf(innerProto)
 	if pd.EntryCount != 20 {
@@ -144,9 +144,9 @@ result = caller(20)
 	}
 }
 
-// TestProfile_TierGuardBlocksWhenStuck 验证 ProfileData.TierState=TierStuck
-// 时 onBackEdge / onEnter 直接 return(01 §4.1 守卫,bridge 包测试已验,
-// 此处验 crescent → bridge 接线层面也守住)。
+// TestProfile_TierGuardBlocksWhenStuck verifies that when ProfileData.TierState=TierStuck
+// onBackEdge / onEnter return immediately (01 §4.1 guard; already verified in the bridge package's tests,
+// here we verify the crescent → bridge wiring layer holds the guard too).
 func TestProfile_TierGuardBlocksWhenStuck(t *testing.T) {
 	src := `
 local function f(n)
@@ -156,14 +156,14 @@ local function f(n)
 end
 result = f(10)
 `
-	// 第一次执行让计数累积
+	// The first run lets the counts accumulate
 	st := runLuaWithBridge(t, src)
 	innerProto := findProtoByParams(t, st, 1)
 	pd := st.bridge.ProfileOf(innerProto)
 	before := pd.MaxBackEdge()
 
-	// 把 TierState 强制设到 TierStuck,再跑一遍 ⇒ 计数不应再涨
-	pd.TierState = 2 // TierStuck (避免循环 import bridge 包)
+	// Force TierState to TierStuck, then run again ⇒ the count should no longer rise
+	pd.TierState = 2 // TierStuck (avoids a circular import of the bridge package)
 	cl := st.loadedCls[0]
 	if _, err := st.Call(cl, nil, 0); err != nil {
 		t.Fatalf("second Run: %v", err)

@@ -1,13 +1,14 @@
 // Package compile turns an AST into a bytecode.Proto with Lua 5.1-compatible
-// register allocation (04 §1 软承诺;§5-§9 主体)。
+// register allocation (04 §1 soft commitments; §5-§9 the main body).
 //
-// Compile 是包顶层入口:
+// Compile is the package's top-level entry point:
 //
 //	proto, protos, err := compile.Compile(ast.Block, sourceName)
 //
-// proto 是主 chunk 的 *bytecode.Proto,protos 是按 ProtoID 顺序的全部子 Proto(含
-// proto 自身在末尾)。子 Proto 在 proto.Protos 中以 protos 切片下标引用(对应 02 §4
-// CLOSURE 的 Bx 字段)。
+// proto is the main chunk's *bytecode.Proto; protos is every sub-Proto in ProtoID
+// order (with proto itself appended at the end). A sub-Proto is referenced inside
+// proto.Protos by its index in the protos slice (corresponding to the Bx field of
+// 02 §4 CLOSURE).
 package compile
 
 import (
@@ -16,7 +17,7 @@ import (
 )
 
 // Compile turns the parsed AST chunk into the main Proto plus its full
-// nested Proto registry. main chunk 等价于 vararg 函数体(Lua 5.1)。
+// nested Proto registry. The main chunk is equivalent to a vararg function body (Lua 5.1).
 func Compile(block *ast.Block, source string) (mainID uint32, protos []*bytecode.Proto, err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -32,7 +33,7 @@ func Compile(block *ast.Block, source string) (mainID uint32, protos []*bytecode
 		Line:       1,
 		Params:     nil,
 		IsVararg:   true,
-		NoArgTable: true, // main chunk 无隐式 arg 表(官方 VARARG_ISVARARG only)
+		NoArgTable: true, // main chunk has no implicit arg table (official VARARG_ISVARARG only)
 		Body:       block,
 	}
 	cg.compileFunc(nil, mainExpr)
@@ -40,22 +41,24 @@ func Compile(block *ast.Block, source string) (mainID uint32, protos []*bytecode
 	return mainID, cg.protos, nil
 }
 
-// compileFunc 编译一个 FuncExpr,把产物加入 cg.protos 并返回该 Proto。
+// compileFunc compiles a single FuncExpr, appends the result to cg.protos, and returns that Proto.
 //
-// outerFS 为 nil 表示主 chunk(无外层函数);否则用于 upvalue 沿链解析。
+// outerFS == nil means the main chunk (no enclosing function); otherwise it is used
+// for resolving upvalues along the chain.
 func (cg *codegen) compileFunc(outerFS *funcState, fe *ast.FuncExpr) *bytecode.Proto {
 	fs := newFuncState(cg, outerFS, cg.source, fe.Line)
 	fs.proto.NumParams = uint8(len(fe.Params))
 	fs.proto.IsVararg = fe.IsVararg
-	fs.proto.NeedsArg = fe.IsVararg && !fe.NoArgTable // LUA_COMPAT_VARARG 隐式 arg 表
+	fs.proto.NeedsArg = fe.IsVararg && !fe.NoArgTable // LUA_COMPAT_VARARG implicit arg table
 	fs.proto.LineEnd = fe.EndLine
 	fs.isVararg = fe.IsVararg
 
-	// 形参注册为 R(0..NumParams-1) 上的局部
+	// parameters are registered as locals in R(0..NumParams-1)
 	for _, p := range fe.Params {
 		fs.registerLocal(fe.Line, p)
 	}
-	// 隐式 arg 表占形参后第一个寄存器(官方 "arg" 局部;进帧时由解释器填表)
+	// the implicit arg table takes the first register after the parameters (the official
+	// "arg" local; the interpreter fills the table on frame entry)
 	if fs.proto.NeedsArg {
 		fs.registerLocal(fe.Line, "arg")
 	}
@@ -66,13 +69,14 @@ func (cg *codegen) compileFunc(outerFS *funcState, fe *ast.FuncExpr) *bytecode.P
 
 	fs.block(fe.Body)
 
-	// 始终发尾部隐式 RETURN(对齐 Lua 5.1 close_func:无条件 luaK_ret(0,0))。
+	// always emit a trailing implicit RETURN (matching Lua 5.1 close_func: an
+	// unconditional luaK_ret(0,0)).
 	fs.emitABC(fe.EndLine, bytecode.RETURN, 0, 1, 0)
 
-	// 关闭尚活的局部
+	// close the locals still alive
 	fs.removeVars(0)
 
-	// 回填局部变量调试表(01 §5.7 LocVars;09 §8.4 错误名字推断用)
+	// backfill the local-variable debug table (01 §5.7 LocVars; used by 09 §8.4 error-name inference)
 	fs.proto.LocVars = make([]bytecode.LocalVar, len(fs.locvars))
 	for i, lv := range fs.locvars {
 		fs.proto.LocVars[i] = bytecode.LocalVar{
@@ -82,20 +86,22 @@ func (cg *codegen) compileFunc(outerFS *funcState, fe *ast.FuncExpr) *bytecode.P
 		}
 	}
 
-	// MaxStack 至少 2(Lua 5.1 LUA_MINSTACK 余量;调用至少需放函数+1参,04 §5.3)
+	// MaxStack is at least 2 (Lua 5.1 LUA_MINSTACK headroom; a call needs room for at least the function + 1 arg, 04 §5.3)
 	if fs.proto.MaxStack < 2 {
 		fs.proto.MaxStack = 2
 	}
 
 	cg.protos = append(cg.protos, fs.proto)
-	// P2 PB7 接线:profile build 下跑可编译性分析,把结果写进
-	// Proto.Compilability + Proto.CompReasons(03 §6.3 接线 + 02 §2.4 AST 用
-	// 完即弃方案 ①)。!wangshu_profile build 下 no-op,Proto 字段留零值。
+	// P2 PB7 wiring: under a profile build, run compilability analysis and write the
+	// result into Proto.Compilability + Proto.CompReasons (03 §6.3 wiring + 02 §2.4
+	// AST use-and-discard scheme ①). Under a !wangshu_profile build this is a no-op,
+	// and the Proto fields keep their zero values.
 	//
-	// **PJ5 扩展(2026-06-27)**:走 WithOuter 路径传入 outerFS,让 AnalyzeProto
-	// 看到外层 funcState 链上 localFnAsts(承 03 §9 GAP-5 scope-aware
-	// 名字解析)— 让闭包内调外层 local known fn 形态识别为 known 而非
-	// unknown call,P4 PJ5 GETUPVAL+CALL+RETURN void 形态升层路径打通。
+	// **PJ5 extension (2026-06-27)**: the WithOuter path passes in outerFS so that
+	// AnalyzeProto can see localFnAsts on the enclosing funcState chain (per 03 §9
+	// GAP-5 scope-aware name resolution) — this lets a closure's call to an
+	// enclosing local known fn be recognized as a known call rather than an unknown
+	// call, opening the promotion path for the P4 PJ5 GETUPVAL+CALL+RETURN void case.
 	analyzeCompilabilityWithOuter(fe, fs.proto, outerFS)
 	return fs.proto
 }

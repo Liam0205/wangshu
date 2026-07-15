@@ -1,48 +1,50 @@
 //go:build wangshu_p4 && !amd64 && !arm64
 
-// arch_other.go —— P4 PJ8 arch 路由非 amd64/arm64 build stub。
+// arch_other.go — P4 PJ8 arch-routing build stub for non-amd64/arm64.
 //
-// 当前 P4 仅 amd64/arm64 双后端(承 06-backends.md §1)。其它 GOARCH(386/
-// mips/riscv64 等)build 下提供编译期可见的 stub:archEmitLoadKReturn 返空
-// → archMmapCode 返错(空段被 emitter_nonamd64.go 那条路径同款拒)→
-// Compile 返 ErrCompileUnsupportedShape ⇒ TierStuck,行为等价 P1。
+// P4 currently ships only the amd64/arm64 dual backends (per 06-backends.md §1).
+// On other GOARCH builds (386/mips/riscv64 etc.) this provides compile-time
+// visible stubs: archEmitLoadKReturn returns an empty buffer → archMmapCode
+// returns an error (the empty segment is rejected the same way as the
+// emitter_nonamd64.go path) → Compile returns ErrCompileUnsupportedShape ⇒
+// TierStuck, behaving the same as P1.
 package jit
 
 import "errors"
 
-// archCodePage stub(空 struct 占位,跨 arch 编译期可见)。
+// archCodePage stub (empty struct placeholder, compile-time visible across archs).
 type archCodePage struct{}
 
-// Addr 占位返 0(永不真用)。
+// Addr placeholder returns 0 (never actually used).
 func (*archCodePage) Addr() uintptr { return 0 }
 
-// Length 占位返 0。
+// Length placeholder returns 0.
 func (*archCodePage) Length() int { return 0 }
 
-// Munmap 占位 no-op。
+// Munmap placeholder no-op.
 func (*archCodePage) Munmap() error { return nil }
 
-// archEmitLoadKReturn stub:返空 buf(MmapCode 见空段返错)。
+// archEmitLoadKReturn stub: returns an empty buf (MmapCode errors on empty segment).
 func archEmitLoadKReturn(buf []byte, value uint64) []byte {
 	_ = value
 	return buf
 }
 
-// archMmapCode stub:返错(无 amd64/arm64 后端可用)。
+// archMmapCode stub: returns an error (no amd64/arm64 backend available).
 func archMmapCode(code []byte) (*archCodePage, error) {
 	_ = code
 	return nil, errors.New("internal/gibbous/jit: P4 unsupported on this GOARCH (only amd64/arm64)")
 }
 
-// archCallJITFull stub:不应被调到(MmapCode 已返错让 Compile 拒)。防御
-// 性 panic 让违约场景显式。
+// archCallJITFull stub: should never be reached (MmapCode already errors so
+// Compile rejects). Defensive panic makes contract violations explicit.
 func archCallJITFull(codeAddr uintptr, jitCtxAddr uintptr) uint64 {
 	_ = codeAddr
 	_ = jitCtxAddr
 	panic("internal/gibbous/jit: archCallJITFull called on unsupported GOARCH")
 }
 
-// archCallJITSpec stub:同 archCallJITFull。
+// archCallJITSpec stub: same as archCallJITFull.
 func archCallJITSpec(codeAddr uintptr, jitCtxAddr uintptr, vsBase uintptr) uint64 {
 	_ = codeAddr
 	_ = jitCtxAddr
@@ -50,13 +52,13 @@ func archCallJITSpec(codeAddr uintptr, jitCtxAddr uintptr, vsBase uintptr) uint6
 	panic("internal/gibbous/jit: archCallJITSpec called on unsupported GOARCH")
 }
 
-// archSseOpForArith 其它 arch 不支持(sentinel 返 false)。
+// archSseOpForArith not supported on other archs (sentinel returns false).
 func archSseOpForArith(op uint8) (byte, bool) {
 	_ = op
 	return 0, false
 }
 
-// archEmitArithSpecBinopWithGuard 其它 arch 不支持。
+// archEmitArithSpecBinopWithGuard not supported on other archs.
 func archEmitArithSpecBinopWithGuard(buf []byte, sseOp byte, a, b, c uint8, deoptCode uint64) []byte {
 	_ = sseOp
 	_ = a
@@ -66,7 +68,7 @@ func archEmitArithSpecBinopWithGuard(buf []byte, sseOp byte, a, b, c uint8, deop
 	return buf
 }
 
-// archEmitArithSpecBinopRegKWithGuard 其它 arch 不支持。
+// archEmitArithSpecBinopRegKWithGuard not supported on other archs.
 func archEmitArithSpecBinopRegKWithGuard(buf []byte, sseOp byte, a, b uint8, kvalue, deoptCode uint64) []byte {
 	_ = sseOp
 	_ = a
@@ -76,7 +78,7 @@ func archEmitArithSpecBinopRegKWithGuard(buf []byte, sseOp byte, a, b uint8, kva
 	return buf
 }
 
-// archEmitArithSpecChainKKWithGuard 其它 arch 不支持。
+// archEmitArithSpecChainKKWithGuard not supported on other archs.
 func archEmitArithSpecChainKKWithGuard(buf []byte, sseOp1, sseOp2 byte, a, b uint8, k1value, k2value, deoptCode uint64) []byte {
 	_ = sseOp1
 	_ = sseOp2
@@ -88,7 +90,7 @@ func archEmitArithSpecChainKKWithGuard(buf []byte, sseOp1, sseOp2 byte, a, b uin
 	return buf
 }
 
-// archEmitForLoopEmptyConst 其它 arch 不支持。
+// archEmitForLoopEmptyConst not supported on other archs.
 func archEmitForLoopEmptyConst(buf []byte, kInit, kLimit, kStep uint64, preemptFlagOff int32) []byte {
 	_ = kInit
 	_ = kLimit
@@ -97,7 +99,7 @@ func archEmitForLoopEmptyConst(buf []byte, kInit, kLimit, kStep uint64, preemptF
 	return buf
 }
 
-// archEmitForLoopRegLimit 其它 arch 不支持。
+// archEmitForLoopRegLimit not supported on other archs.
 func archEmitForLoopRegLimit(buf []byte, kInit, kStep uint64, limitReg uint8, deoptCode uint64, preemptFlagOff int32) []byte {
 	_ = kInit
 	_ = kStep
@@ -107,7 +109,7 @@ func archEmitForLoopRegLimit(buf []byte, kInit, kStep uint64, limitReg uint8, de
 	return buf
 }
 
-// archEmitForLoopWithBody 其它 arch 不支持。
+// archEmitForLoopWithBody not supported on other archs.
 func archEmitForLoopWithBody(buf []byte, kS, kInit, kLimit, kStep, kBody uint64,
 	aS uint8, sseOp byte, preemptFlagOff int32) []byte {
 	_ = kS
@@ -121,7 +123,7 @@ func archEmitForLoopWithBody(buf []byte, kS, kInit, kLimit, kStep, kBody uint64,
 	return buf
 }
 
-// archEmitForLoopWithBody2 其它 arch 不支持。
+// archEmitForLoopWithBody2 not supported on other archs.
 func archEmitForLoopWithBody2(buf []byte, kS, kInit, kLimit, kStep, kBody1, kBody2 uint64,
 	aS uint8, sseOp1, sseOp2 byte, preemptFlagOff int32) []byte {
 	_ = kS
@@ -137,7 +139,7 @@ func archEmitForLoopWithBody2(buf []byte, kS, kInit, kLimit, kStep, kBody1, kBod
 	return buf
 }
 
-// archEmitGetTableArrayHit 其它 arch 不支持。
+// archEmitGetTableArrayHit not supported on other archs.
 func archEmitGetTableArrayHit(buf []byte, aReg, bReg uint8, stableShape, stableIndex uint32, arenaBaseOff int32, deoptCode uint64) []byte {
 	_ = aReg
 	_ = bReg
@@ -148,7 +150,7 @@ func archEmitGetTableArrayHit(buf []byte, aReg, bReg uint8, stableShape, stableI
 	return buf
 }
 
-// archEmitGetTableNodeHit 其它 arch 不支持。
+// archEmitGetTableNodeHit not supported on other archs.
 func archEmitGetTableNodeHit(buf []byte, aReg, bReg uint8,
 	stableShape, stableIndex uint32, stableKey uint64,
 	arenaBaseOff int32, deoptCode uint64) []byte {
@@ -162,7 +164,7 @@ func archEmitGetTableNodeHit(buf []byte, aReg, bReg uint8,
 	return buf
 }
 
-// archEmitSetTableArrayHit 其它 arch 不支持。
+// archEmitSetTableArrayHit not supported on other archs.
 func archEmitSetTableArrayHit(buf []byte, aReg, cReg uint8,
 	stableShape, stableIndex uint32, arenaBaseOff int32, deoptCode uint64) []byte {
 	_ = aReg
@@ -174,7 +176,7 @@ func archEmitSetTableArrayHit(buf []byte, aReg, cReg uint8,
 	return buf
 }
 
-// archEmitSelfArrayHit 其它 arch 不支持。
+// archEmitSelfArrayHit not supported on other archs.
 func archEmitSelfArrayHit(buf []byte, aReg, bReg uint8,
 	stableShape, stableIndex uint32, arenaBaseOff int32, deoptCode uint64) []byte {
 	_ = aReg
@@ -186,7 +188,7 @@ func archEmitSelfArrayHit(buf []byte, aReg, bReg uint8,
 	return buf
 }
 
-// archEmitSetTableNodeHit 其它 arch 不支持。
+// archEmitSetTableNodeHit not supported on other archs.
 func archEmitSetTableNodeHit(buf []byte, aReg, cReg uint8,
 	stableShape, stableIndex uint32, stableKey uint64,
 	arenaBaseOff int32, deoptCode uint64) []byte {
@@ -200,7 +202,7 @@ func archEmitSetTableNodeHit(buf []byte, aReg, cReg uint8,
 	return buf
 }
 
-// archEmitSelfNodeHit 其它 arch 不支持。
+// archEmitSelfNodeHit not supported on other archs.
 func archEmitSelfNodeHit(buf []byte, aReg, bReg uint8,
 	stableShape, stableIndex uint32, stableKey uint64,
 	arenaBaseOff int32, deoptCode uint64) []byte {
@@ -214,7 +216,7 @@ func archEmitSelfNodeHit(buf []byte, aReg, bReg uint8,
 	return buf
 }
 
-// archEmitSelfNodeHitNoRet 其它 arch 占位(archSupportsFrameInline=false 屏蔽)。
+// archEmitSelfNodeHitNoRet placeholder on other archs (masked by archSupportsFrameInline=false).
 func archEmitSelfNodeHitNoRet(buf []byte, aReg, bReg uint8,
 	stableShape, stableIndex uint32, stableKey uint64,
 	arenaBaseOff int32, deoptCode uint64) []byte {
@@ -228,7 +230,7 @@ func archEmitSelfNodeHitNoRet(buf []byte, aReg, bReg uint8,
 	return buf
 }
 
-// archEmitSpecArgLoadK / archEmitSpecArgLoadReg 其它 arch stub。
+// archEmitSpecArgLoadK / archEmitSpecArgLoadReg stubs on other archs.
 func archEmitSpecArgLoadK(buf []byte, dstReg uint8, k uint64) []byte {
 	_ = dstReg
 	_ = k
@@ -240,26 +242,26 @@ func archEmitSpecArgLoadReg(buf []byte, dstReg uint8, srcReg uint8) []byte {
 	return buf
 }
 
-// archSupportsSpec 其它 arch 不支持。
+// archSupportsSpec not supported on other archs.
 func archSupportsSpec() bool { return false }
 
-// archSupportsForLoop 其它 arch 不支持(无 emitter)。
+// archSupportsForLoop not supported on other archs (no emitter).
 func archSupportsForLoop() bool { return false }
 
-// archEmitHelperCall 其它 arch 不支持(无 emitter)。
+// archEmitHelperCall not supported on other archs (no emitter).
 func archEmitHelperCall(buf []byte, helperAddr uint64) []byte {
 	_ = helperAddr
 	return buf
 }
 
-// archEncodedHelperCallLen 其它 arch 占位 0(本 build 下不调到)。
+// archEncodedHelperCallLen placeholder 0 on other archs (not reached in this build).
 const archEncodedHelperCallLen = 0
 
-// archSupportsFrameInline 其它 arch 不支持(承 §9.20 Option B Spike 1)。
+// archSupportsFrameInline not supported on other archs (per §9.20 Option B Spike 1).
 func archSupportsFrameInline() bool { return false }
 
-// archEmitFrameInlineBuildVoid0ArgSkeleton 其它 arch 占位(本 build 下
-// archSupportsFrameInline=false 屏蔽 Compile 路径不触达)。
+// archEmitFrameInlineBuildVoid0ArgSkeleton placeholder on other archs (in this
+// build archSupportsFrameInline=false masks it so the Compile path never reaches it).
 func archEmitFrameInlineBuildVoid0ArgSkeleton(buf []byte,
 	ciDepthAddrOff, ciSegBaseAddrOff int32, callARecv uint8,
 	w0, w1, w2, w4 uint64) []byte {
@@ -273,13 +275,13 @@ func archEmitFrameInlineBuildVoid0ArgSkeleton(buf []byte,
 	return buf
 }
 
-// archEmitFrameInlinePopVoid0ArgSkeleton 其它 arch 占位。
+// archEmitFrameInlinePopVoid0ArgSkeleton placeholder on other archs.
 func archEmitFrameInlinePopVoid0ArgSkeleton(buf []byte, ciDepthAddrOff int32) []byte {
 	_ = ciDepthAddrOff
 	return buf
 }
 
-// archEmitFrameInlineExitHelperRequest 其它 arch 占位。
+// archEmitFrameInlineExitHelperRequest placeholder on other archs.
 func archEmitFrameInlineExitHelperRequest(buf []byte,
 	exitReasonOff, exitArg0Off int32, helperCode uint64) []byte {
 	_ = exitReasonOff
@@ -288,11 +290,11 @@ func archEmitFrameInlineExitHelperRequest(buf []byte,
 	return buf
 }
 
-// archEncodedFrameInlineBuildVoid0ArgSkeletonLen 其它 arch 占位 0。
+// archEncodedFrameInlineBuildVoid0ArgSkeletonLen placeholder 0 on other archs.
 const archEncodedFrameInlineBuildVoid0ArgSkeletonLen = 0
 
-// archEncodedFrameInlinePopVoid0ArgSkeletonLen 其它 arch 占位 0。
+// archEncodedFrameInlinePopVoid0ArgSkeletonLen placeholder 0 on other archs.
 const archEncodedFrameInlinePopVoid0ArgSkeletonLen = 0
 
-// archEncodedFrameInlineExitHelperRequestLen 其它 arch 占位 0。
+// archEncodedFrameInlineExitHelperRequestLen placeholder 0 on other archs.
 const archEncodedFrameInlineExitHelperRequestLen = 0

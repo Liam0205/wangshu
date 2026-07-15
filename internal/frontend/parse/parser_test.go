@@ -50,7 +50,7 @@ func TestLocalAssignment(t *testing.T) {
 }
 
 func TestArithExprPrecedence(t *testing.T) {
-	// 1 + 2 * 3 应解析为 1 + (2 * 3)。
+	// 1 + 2 * 3 should parse as 1 + (2 * 3).
 	b := parseSrc(t, "local x = 1 + 2 * 3")
 	ls := b.Stmts[0].(*ast.LocalStmt)
 	bin := ls.Exprs[0].(*ast.BinExpr)
@@ -64,7 +64,7 @@ func TestArithExprPrecedence(t *testing.T) {
 }
 
 func TestPowerRightAssoc(t *testing.T) {
-	// 2^3^2 = 2^(3^2) = 512(右结合)。
+	// 2^3^2 = 2^(3^2) = 512 (right-associative).
 	b := parseSrc(t, "local x = 2^3^2")
 	ls := b.Stmts[0].(*ast.LocalStmt)
 	bin := ls.Exprs[0].(*ast.BinExpr)
@@ -97,9 +97,9 @@ func TestUnaryAndComparison(t *testing.T) {
 	b := parseSrc(t, "local v = not -a < b")
 	ls := b.Stmts[0].(*ast.LocalStmt)
 	// `not -a < b` ⇒ not ((-a) < b)?
-	// Lua 5.1:not 是一元(prio 8),< 是 (3,3),- 是 (8) 一元——
-	// 路径:not <unary>(-a) → not 后是更高 prio 的子表达式;然后 < b 在外层。
-	// `not (-a) < b` 实际是 not(-a) < b → not 优先级 8 高于 < 的 3,所以是 (not (-a)) < b。
+	// Lua 5.1: not is unary (prio 8), < is (3,3), - is unary (8) —
+	// path: not <unary>(-a) → after not comes a higher-prio subexpression; then < b at the outer level.
+	// `not (-a) < b` is actually not(-a) < b → not's prio 8 is higher than <'s 3, so it is (not (-a)) < b.
 	bin, ok := ls.Exprs[0].(*ast.BinExpr)
 	if !ok {
 		t.Fatalf("top is not BinExpr: %T", ls.Exprs[0])
@@ -153,25 +153,25 @@ func TestGenericFor(t *testing.T) {
 }
 
 func TestAssignmentVsCallDisambig(t *testing.T) {
-	// 赋值。
+	// Assignment.
 	b := parseSrc(t, "a, b.c = 1, 2")
 	if _, ok := b.Stmts[0].(*ast.AssignStmt); !ok {
 		t.Errorf("expected AssignStmt: %T", b.Stmts[0])
 	}
-	// 函数调用作语句。
+	// Function call as a statement.
 	b2 := parseSrc(t, "f(x)")
 	if cs, ok := b2.Stmts[0].(*ast.CallStmt); !ok {
 		t.Errorf("expected CallStmt: %T", b2.Stmts[0])
 	} else if _, ok := cs.Call.(*ast.CallExpr); !ok {
 		t.Errorf("expected CallExpr: %T", cs.Call)
 	}
-	// 方法调用。
+	// Method call.
 	b3 := parseSrc(t, "obj:m(1)")
 	cs := b3.Stmts[0].(*ast.CallStmt)
 	if _, ok := cs.Call.(*ast.MethodCallExpr); !ok {
 		t.Errorf("expected MethodCallExpr: %T", cs.Call)
 	}
-	// 裸表达式不允许作语句。
+	// A bare expression is not allowed as a statement.
 	if err := parseErr(t, "a + b"); err == nil {
 		t.Errorf("expected syntax error for bare expression")
 	}
@@ -208,29 +208,29 @@ func TestFunctionDefAndMethod(t *testing.T) {
 	if !fs.IsMethod {
 		t.Errorf("IsMethod should be true")
 	}
-	// self 自动注入。
+	// self is auto-injected.
 	if len(fs.Fn.Params) < 1 || fs.Fn.Params[0] != "self" {
 		t.Errorf("self injection: %v", fs.Fn.Params)
 	}
 }
 
 func TestVarargFunctions(t *testing.T) {
-	// vararg 函数体内 ... 合法。
+	// ... is legal inside a vararg function body.
 	if err := parseErr(t, "local f = function(...) return ... end"); err != nil {
 		t.Errorf("vararg fn: %v", err)
 	}
-	// 非 vararg 函数体内 ... 报错。
+	// ... inside a non-vararg function body is an error.
 	if err := parseErr(t, "local f = function() return ... end"); err == nil {
 		t.Errorf("expected error for ... in non-vararg fn")
 	}
-	// chunk 顶层是隐式 vararg。
+	// The chunk top level is implicitly vararg.
 	if err := parseErr(t, "return ..."); err != nil {
 		t.Errorf("top-level vararg: %v", err)
 	}
 }
 
 func TestRepeatScope(t *testing.T) {
-	// repeat 的 until 在 body 作用域内可见局部(语法层 OK,作用域校验在 codegen)。
+	// repeat's until can see locals in the body scope (syntactically OK; scope checking is in codegen).
 	b := parseSrc(t, "repeat local x = 1 until x > 0")
 	rs := b.Stmts[0].(*ast.RepeatStmt)
 	if rs.Cond == nil || len(rs.Body.Stmts) != 1 {
@@ -239,18 +239,18 @@ func TestRepeatScope(t *testing.T) {
 }
 
 func TestReturnAndBreakAtEnd(t *testing.T) {
-	// return 必须是 block 末句:之后还跟语句应报错。
+	// return must be the last statement of a block: a statement after it should error.
 	if err := parseErr(t, "return 1 local x = 2"); err == nil {
 		t.Errorf("expected error: stmt after return")
 	}
-	// break 必须是 block 末句。
+	// break must be the last statement of a block.
 	if err := parseErr(t, "while true do break local x = 1 end"); err == nil {
 		t.Errorf("expected error: stmt after break")
 	}
 }
 
 func TestExample8FromDesignDoc(t *testing.T) {
-	// 04 §10 / 02 §8 的 f(n) 求和示例。
+	// The f(n) summation example from 04 §10 / 02 §8.
 	src := `local function f(n)
   local s = 0
   for i = 1, n do s = s + i*i end
@@ -299,8 +299,9 @@ func TestLexErrorPropagates(t *testing.T) {
 	}
 }
 
-// 括号表达式是 rvalue,不可作赋值目标(官方 lparser 只接受 VLOCAL/VGLOBAL/
-// VINDEXED)。单值内核解包会把 `(a)` 还原成 NameExpr 被错误接受执行。
+// A parenthesized expression is an rvalue and cannot be an assignment target (official
+// lparser only accepts VLOCAL/VGLOBAL/VINDEXED). Single-value core unwrapping would
+// reduce `(a)` back to a NameExpr and wrongly accept it.
 func TestParenNotAssignable(t *testing.T) {
 	for _, src := range []string{
 		"local a = 1; (a) = 5",
@@ -310,14 +311,15 @@ func TestParenNotAssignable(t *testing.T) {
 			t.Errorf("%q: expected syntax error (paren expr is rvalue)", src)
 		}
 	}
-	// `(t).x = 1` 合法:索引链落在括号外,目标是 IndexExpr。
+	// `(t).x = 1` is legal: the index chain sits outside the parens, so the target is an IndexExpr.
 	if err := parseErr(t, "local t = {}; (t).x = 1"); err != nil {
 		t.Errorf("(t).x = 1 should parse: %v", err)
 	}
 }
 
-// 5.1 特设检查(lparser.c funcargs):'(' 与函数前缀不同行报 ambiguous
-// syntax(5.2 移除;锁 5.1 保留)。同行调用、STRING/LBRACE 实参不受影响。
+// 5.1 ad-hoc check (lparser.c funcargs): a '(' on a different line from the function
+// prefix reports ambiguous syntax (removed in 5.2; kept since we pin 5.1). Same-line
+// calls and STRING/LBRACE arguments are unaffected.
 func TestAmbiguousSyntaxCrossLineCall(t *testing.T) {
 	for _, src := range []string{
 		"local f = print\nf\n(3)",
@@ -332,7 +334,7 @@ func TestAmbiguousSyntaxCrossLineCall(t *testing.T) {
 		"local f = print f(3)",
 		"local f = print\nf \"x\"",
 		"local f = print\nf {1}",
-		"local f = print\nf(\n3)", // 跨行的是实参,不是 '('
+		"local f = print\nf(\n3)", // the cross-line part is an argument, not a '('
 	} {
 		if err := parseErr(t, src); err != nil {
 			t.Errorf("%q: should parse, got %v", src, err)
@@ -340,7 +342,7 @@ func TestAmbiguousSyntaxCrossLineCall(t *testing.T) {
 	}
 }
 
-// 索引链行号统一取运算符('.'/'[')所在行(对齐官方 5.1)。
+// The index-chain line uniformly takes the line of the operator ('.'/'[') (matching official 5.1).
 func TestIndexExprLineIsOperatorLine(t *testing.T) {
 	b := parseSrc(t, "local t = {}\nlocal v = t\n .x")
 	ls, ok := b.Stmts[1].(*ast.LocalStmt)
@@ -361,15 +363,16 @@ func TestIndexExprLineIsOperatorLine(t *testing.T) {
 	}
 }
 
-// 深嵌套护栏:官方 200 层报 chunk has too many syntax levels;无护栏时
-// 20 万层嵌套括号曾打爆 goroutine 栈(不可恢复 fatal,DoS 入口)。
+// Deep-nesting guard: official reports "chunk has too many syntax levels" at 200 levels;
+// without a guard, 200k levels of nested parens once blew the goroutine stack
+// (unrecoverable fatal, a DoS entry point).
 func TestParseDepthGuard(t *testing.T) {
 	deep := strings.Repeat("(", 300) + "1" + strings.Repeat(")", 300)
 	err := parseErr(t, "return "+deep)
 	if err == nil || !strings.Contains(err.Error(), "too many syntax levels") {
 		t.Errorf("want 'chunk has too many syntax levels', got %v", err)
 	}
-	// 上限内正常
+	// Within the limit, works fine
 	ok := strings.Repeat("(", 100) + "1" + strings.Repeat(")", 100)
 	if err := parseErr(t, "return "+ok); err != nil {
 		t.Errorf("100-deep nesting should parse: %v", err)

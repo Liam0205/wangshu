@@ -9,28 +9,31 @@ import (
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
-// gibbous_pj5_call_e2e_test.go —— PJ5 CALL void 真升层 e2e:
-// `local function noop()...end; local function invoker() noop() end`(形态
-// B,GETUPVAL+CALL+RETURN void)经 P4 升层后 Run prelude 路径调
-// host.GetUpval + SetReg + CallBaseline 完成 baseline doCall(byte-equal P1
-// doCall 分派)+ DoReturn 弹帧。
+// gibbous_pj5_call_e2e_test.go —— PJ5 CALL void real-promotion e2e:
+// `local function noop()...end; local function invoker() noop() end` (form
+// B, GETUPVAL+CALL+RETURN void); after P4 promotion the Run prelude path calls
+// host.GetUpval + SetReg + CallBaseline to complete the baseline doCall (byte-equal
+// with the P1 doCall dispatch) + DoReturn to pop the frame.
 //
-// **PJ5 真接入主路径** 的物理证据(从 PJ7 简化形态扩到调用族 inline):
-// P4 首次接入 CALL opcode + host.CallBaseline 跨 Go 端边界。**简化形态仅
-// 0 参 0 返**(MOVE/GETUPVAL+CALL+RETURN void)+ baseline doCall
-// (host/crescent/__call/gibbous 全形态同步跑完),不走 P3 R3 indirect 哨兵。
+// **Physical evidence that PJ5 wires into the main path** (extending the PJ7
+// simplified form to inline the call family):
+// P4 wires in the CALL opcode + host.CallBaseline crossing the Go-side boundary
+// for the first time. **The simplified form covers only 0-arg 0-ret**
+// (MOVE/GETUPVAL+CALL+RETURN void) + baseline doCall
+// (host/crescent/__call/gibbous all run through in lockstep), and does not take
+// the P3 R3 indirect sentinel.
 //
-// **关联 P2 analyzer 扩展**:本测试也验证 P2 scope-aware AnalyzeProto
-// 跨 Proto 边界传递 outer localFnAsts(承同批 commit 扩展)— 否则 invoker
-// 内调 noop 会被标 ReasonUnknownCall,Compilable=NotCompilable,P4 路径
-// 不触达。
+// **Related P2 analyzer extension**: this test also verifies that P2 scope-aware
+// AnalyzeProto propagates the outer localFnAsts across Proto boundaries (added in
+// the same batch of commits) — otherwise invoker's call to noop would be marked
+// ReasonUnknownCall, Compilable=NotCompilable, and the P4 path would not be reached.
 
-// TestPJ5_CallVoid_E2E_FormB_Upval:形态 B(GETUPVAL+CALL+RETURN void)
-// 真升层 — `local function noop()...end; local function invoker() noop() end`,
-// 重复调 invoker 让 P4 升层后真走 PJ5 CALL void 模板。
+// TestPJ5_CallVoid_E2E_FormB_Upval: form B (GETUPVAL+CALL+RETURN void)
+// real promotion — `local function noop()...end; local function invoker() noop() end`,
+// repeatedly calling invoker so that after P4 promotion it truly takes the PJ5 CALL void template.
 //
-// 关键探针:**SpecCallVoidHits**——只有 Compile 命中 isCallVoid=true 时
-// 才 ++。若 P4 升层未触达或形态识别失败,SpecCallVoidHits 永 0(测试失败)。
+// Key probe: **SpecCallVoidHits** — increments only when Compile hits isCallVoid=true.
+// If P4 promotion is not reached or form recognition fails, SpecCallVoidHits stays 0 (test fails).
 func TestPJ5_CallVoid_E2E_FormB_Upval(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -55,10 +58,10 @@ return count`
 	t.Logf("SpecCallVoidHits=%d", jit.SpecCallVoidHits())
 }
 
-// TestPJ5_CallVoid_E2E_FormB1K_UpvalArg:形态 B1K(GETUPVAL+LOADK+CALL+RETURN
-// void)真升层 — `local function take(x)...end; local function tick() take(42) end`,
-// 1 K 常量参 0 返。LOADK 在 mmap 段是 dummy,Run 端 host.SetReg(callA+1, K)
-// 装到参数槽。
+// TestPJ5_CallVoid_E2E_FormB1K_UpvalArg: form B1K (GETUPVAL+LOADK+CALL+RETURN
+// void) real promotion — `local function take(x)...end; local function tick() take(42) end`,
+// 1 constant K arg, 0 ret. LOADK is a dummy in the mmap segment; on the Run side
+// host.SetReg(callA+1, K) loads it into the argument slot.
 func TestPJ5_CallVoid_E2E_FormB1K_UpvalArg(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -83,10 +86,10 @@ return sum`
 	t.Logf("SpecCallVoidHits=%d", jit.SpecCallVoidHits())
 }
 
-// TestPJ5_CallVoid_E2E_FormB1R_UpvalArg:形态 B1R(GETUPVAL+MOVE+CALL+RETURN
-// void)真升层 — `local function take(x)...end; local function tick(v) take(v) end`,
-// 1 reg 参 0 返。MOVE 在 mmap 段是 dummy,Run 端 host.GetReg(srcReg) +
-// SetReg(callA+1, val)装到参数槽。
+// TestPJ5_CallVoid_E2E_FormB1R_UpvalArg: form B1R (GETUPVAL+MOVE+CALL+RETURN
+// void) real promotion — `local function take(x)...end; local function tick(v) take(v) end`,
+// 1 reg arg, 0 ret. MOVE is a dummy in the mmap segment; on the Run side
+// host.GetReg(srcReg) + SetReg(callA+1, val) loads it into the argument slot.
 func TestPJ5_CallVoid_E2E_FormB1R_UpvalArg(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -113,10 +116,10 @@ return sum`
 	t.Logf("SpecCallVoidHits=%d", jit.SpecCallVoidHits())
 }
 
-// TestPJ5_CallVoid_E2E_FormBR1_GetterUpval:形态 BR1(GETUPVAL+CALL+RETURN+
-// dead RETURN getter)真升层 — `local function f() return 42 end;
-// local function get() local x = f(); return x end`,0 参 1 返。被调返回
-// 值落 R(callA),Run 端 host.DoReturn(retA=callA, retB=2)返该值。
+// TestPJ5_CallVoid_E2E_FormBR1_GetterUpval: form BR1 (GETUPVAL+CALL+RETURN+
+// dead RETURN getter) real promotion — `local function f() return 42 end;
+// local function get() local x = f(); return x end`, 0 arg, 1 ret. The callee's
+// return value lands in R(callA); on the Run side host.DoReturn(retA=callA, retB=2) returns it.
 func TestPJ5_CallVoid_E2E_FormBR1_GetterUpval(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -141,19 +144,21 @@ return s`
 	t.Logf("SpecCallVoidHits=%d", jit.SpecCallVoidHits())
 }
 
-// **注**:形态 A* parameter-callee 形态(如 `function(g) g() end`)真升层
-// 不可达——P2 analyzer 把 parameter call 标 ReasonUnknownCall(parameter
-// 是任意 value,可能是 coroutine.yield),visitor 设计上保守拒。形态 A* 真
-// 升层需要 P2 放宽 unknown call 纪律,这违反 P2 设计原则(承
-// docs/design/p2-bridge/03-compilability-analysis.md §1)。形态 A* 单测
-// 覆盖在 jit 包内通过 mock host 直接验 Compile + Run 路径(`compiler_pj5_call_test.go::
-// TestPJ5_RunCallVoidPath` 等),但 crescent e2e 路径不可达。real-world
-// 业务高频形态是 closure 调外层 known fn(形态 B*),那条路径已通。
+// **Note**: form A* parameter-callee forms (e.g. `function(g) g() end`) are
+// not reachable by real promotion — the P2 analyzer marks a parameter call as
+// ReasonUnknownCall (a parameter is an arbitrary value, possibly coroutine.yield),
+// and the visitor conservatively rejects it by design. Real promotion of form A*
+// would require P2 to relax its unknown-call discipline, which violates the P2
+// design principle (per docs/design/p2-bridge/03-compilability-analysis.md §1).
+// Form A* unit coverage lives in the jit package, verifying the Compile + Run
+// path directly through a mock host (`compiler_pj5_call_test.go::TestPJ5_RunCallVoidPath`
+// etc.), but the crescent e2e path is not reachable. The high-frequency real-world
+// business form is a closure calling an outer known fn (form B*), and that path already works.
 
-// TestPJ5_CallVoid_E2E_FormB2K_UpvalArgs:形态 B2K(GETUPVAL+LOADK+LOADK+
-// CALL+RETURN void)真升层 — `local function take(a, b)...end;
-// local function tick() take(10, 20) end`,2 K 常量参 0 返。Run 端
-// host.SetReg(callA+1, K1) + SetReg(callA+2, K2) 装到参数槽。
+// TestPJ5_CallVoid_E2E_FormB2K_UpvalArgs: form B2K (GETUPVAL+LOADK+LOADK+
+// CALL+RETURN void) real promotion — `local function take(a, b)...end;
+// local function tick() take(10, 20) end`, 2 constant K args, 0 ret. On the Run side
+// host.SetReg(callA+1, K1) + SetReg(callA+2, K2) loads them into the argument slots.
 func TestPJ5_CallVoid_E2E_FormB2K_UpvalArgs(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -179,9 +184,9 @@ return sum`
 	t.Logf("SpecCallVoidHits=%d", jit.SpecCallVoidHits())
 }
 
-// TestPJ5_CallVoid_E2E_FormB1K1R:形态 B1K1R(GETUPVAL+LOADK+MOVE+CALL+RETURN
-// void)真升层 — `local function take(a, b)...end; local function tick(v) take(7, v) end`,
-// 1 K + 1 reg 参 0 返。
+// TestPJ5_CallVoid_E2E_FormB1K1R: form B1K1R (GETUPVAL+LOADK+MOVE+CALL+RETURN
+// void) real promotion — `local function take(a, b)...end; local function tick(v) take(7, v) end`,
+// 1 K + 1 reg arg, 0 ret.
 func TestPJ5_CallVoid_E2E_FormB1K1R(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -206,9 +211,9 @@ return sum`
 	}
 }
 
-// TestPJ5_CallVoid_E2E_FormB1R1K:形态 B1R1K(GETUPVAL+MOVE+LOADK+CALL+RETURN
-// void)真升层 — `local function take(a, b)...end; local function tick(v) take(v, 7) end`,
-// 1 reg + 1 K 参 0 返。
+// TestPJ5_CallVoid_E2E_FormB1R1K: form B1R1K (GETUPVAL+MOVE+LOADK+CALL+RETURN
+// void) real promotion — `local function take(a, b)...end; local function tick(v) take(v, 7) end`,
+// 1 reg + 1 K arg, 0 ret.
 func TestPJ5_CallVoid_E2E_FormB1R1K(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -233,9 +238,9 @@ return sum`
 	}
 }
 
-// TestPJ5_CallVoid_E2E_FormB2R:形态 B2R(GETUPVAL+MOVE+MOVE+CALL+RETURN
-// void)真升层 — `local function take(a, b)...end; local function tick(u, v) take(u, v) end`,
-// 2 reg 参 0 返。
+// TestPJ5_CallVoid_E2E_FormB2R: form B2R (GETUPVAL+MOVE+MOVE+CALL+RETURN
+// void) real promotion — `local function take(a, b)...end; local function tick(u, v) take(u, v) end`,
+// 2 reg args, 0 ret.
 func TestPJ5_CallVoid_E2E_FormB2R(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -260,9 +265,9 @@ return sum`
 	}
 }
 
-// TestPJ5_CallGetter_E2E_FormB1KR1:形态 B1KR1(GETUPVAL+LOADK+CALL B=2 C=2+RETURN A=callA B=2+dead)
-// 真升层 — `local function take(x) return x*2 end; local function get() local y = take(7); return y end`,
-// 1 K 参 1 返 getter。
+// TestPJ5_CallGetter_E2E_FormB1KR1: form B1KR1 (GETUPVAL+LOADK+CALL B=2 C=2+RETURN A=callA B=2+dead)
+// real promotion — `local function take(x) return x*2 end; local function get() local y = take(7); return y end`,
+// 1 K arg, 1 ret getter.
 func TestPJ5_CallGetter_E2E_FormB1KR1(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -278,7 +283,7 @@ return s`
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	// get() × 30 each take(7)→14,sum=420
+	// get() × 30 each take(7)→14, sum=420
 	if got := value.AsNumber(value.Value(rets[0])); got != 420 {
 		t.Errorf("rets = %v, want 420 (get()×30 each take(7)→14)", got)
 	}
@@ -288,9 +293,9 @@ return s`
 	t.Logf("SpecCallVoidHits=%d", jit.SpecCallVoidHits())
 }
 
-// TestPJ5_CallGetter_E2E_FormB1RR1:形态 B1RR1(GETUPVAL+MOVE+CALL B=2 C=2+RETURN A=callA B=2+dead)
-// 真升层 — `local function take(x) return x*2 end; local function get(v) local y = take(v); return y end`,
-// 1 reg 参 1 返 getter。
+// TestPJ5_CallGetter_E2E_FormB1RR1: form B1RR1 (GETUPVAL+MOVE+CALL B=2 C=2+RETURN A=callA B=2+dead)
+// real promotion — `local function take(x) return x*2 end; local function get(v) local y = take(v); return y end`,
+// 1 reg arg, 1 ret getter.
 func TestPJ5_CallGetter_E2E_FormB1RR1(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -315,9 +320,9 @@ return s`
 	}
 }
 
-// TestPJ5_CallGetter_E2E_FormB2KR1:形态 B2KR1(GETUPVAL+LOADK+LOADK+CALL B=3 C=2+RETURN A=callA B=2+dead)
-// 真升层 — `local function take(a, b) return a+b end; local function get() local y = take(7, 9); return y end`,
-// 2 K 参 1 返 getter。
+// TestPJ5_CallGetter_E2E_FormB2KR1: form B2KR1 (GETUPVAL+LOADK+LOADK+CALL B=3 C=2+RETURN A=callA B=2+dead)
+// real promotion — `local function take(a, b) return a+b end; local function get() local y = take(7, 9); return y end`,
+// 2 K args, 1 ret getter.
 func TestPJ5_CallGetter_E2E_FormB2KR1(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -333,7 +338,7 @@ return s`
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	// get() × 30 each take(7,9)→16,sum = 30*16 = 480
+	// get() × 30 each take(7,9)→16, sum = 30*16 = 480
 	if got := value.AsNumber(value.Value(rets[0])); got != 480 {
 		t.Errorf("rets = %v, want 480 (get()×30 each take(7,9)→16)", got)
 	}
@@ -343,8 +348,8 @@ return s`
 	t.Logf("SpecCallVoidHits=%d", jit.SpecCallVoidHits())
 }
 
-// TestPJ5_CallGetter_E2E_FormB2RR1:形态 B2RR1(GETUPVAL+MOVE+MOVE+CALL B=3 C=2+RETURN A=callA B=2+dead)
-// 真升层 — 2 reg 参 1 返 getter。
+// TestPJ5_CallGetter_E2E_FormB2RR1: form B2RR1 (GETUPVAL+MOVE+MOVE+CALL B=3 C=2+RETURN A=callA B=2+dead)
+// real promotion — 2 reg args, 1 ret getter.
 func TestPJ5_CallGetter_E2E_FormB2RR1(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -369,7 +374,7 @@ return s`
 	}
 }
 
-// TestPJ5_CallGetter_E2E_FormB1K1RR1:形态 B1K1RR1(K+R 2 参 1 返 getter)
+// TestPJ5_CallGetter_E2E_FormB1K1RR1: form B1K1RR1 (K+R 2 args, 1 ret getter)
 func TestPJ5_CallGetter_E2E_FormB1K1RR1(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -394,8 +399,8 @@ return s`
 	}
 }
 
-// TestPJ5_CallVoid_E2E_FormB3K:形态 B3K(GETUPVAL+LOADK×3+CALL B=4 C=1+RETURN void)
-// 真升层 — 3 K 参 0 返 setter,长度 6。
+// TestPJ5_CallVoid_E2E_FormB3K: form B3K (GETUPVAL+LOADK×3+CALL B=4 C=1+RETURN void)
+// real promotion — 3 K args, 0 ret setter, length 6.
 func TestPJ5_CallVoid_E2E_FormB3K(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -420,7 +425,7 @@ return sum`
 	}
 }
 
-// TestPJ5_CallVoid_E2E_FormB3R:形态 B3R(3 reg 参 0 返 setter,长度 6)
+// TestPJ5_CallVoid_E2E_FormB3R: form B3R (3 reg args, 0 ret setter, length 6)
 func TestPJ5_CallVoid_E2E_FormB3R(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -445,7 +450,7 @@ return sum`
 	}
 }
 
-// TestPJ5_CallGetter_E2E_FormB3RR1:形态 B3RR1(3 reg 参 1 返 getter,长度 7)
+// TestPJ5_CallGetter_E2E_FormB3RR1: form B3RR1 (3 reg args, 1 ret getter, length 7)
 func TestPJ5_CallGetter_E2E_FormB3RR1(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -470,9 +475,9 @@ return s`
 	}
 }
 
-// TestPJ5_CallMultiRet_E2E_FormB2RetN2:形态 0 参 N=2 返值 getter
-// `local a, b = take(); return a, b` 形态 — luac 编 GETUPVAL+CALL B=1 C=3 + MOVE×2 + RETURN A=callA+2 B=3
-// Run 端 CallBaseline 后做 2 个 MOVE 拷贝保留 byte-equal。
+// TestPJ5_CallMultiRet_E2E_FormB2RetN2: form with 0 args, N=2 return values getter
+// `local a, b = take(); return a, b` form — luac emits GETUPVAL+CALL B=1 C=3 + MOVE×2 + RETURN A=callA+2 B=3
+// On the Run side, after CallBaseline, 2 MOVE copies keep it byte-equal.
 func TestPJ5_CallMultiRet_E2E_FormB2RetN2(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -491,7 +496,7 @@ return s`
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	// get() × 30 each (10+20)=30,sum=900
+	// get() × 30 each (10+20)=30, sum=900
 	if got := value.AsNumber(value.Value(rets[0])); got != 900 {
 		t.Errorf("rets = %v, want 900 (get()×30 each take()→(10,20))", got)
 	}
@@ -501,8 +506,8 @@ return s`
 	t.Logf("SpecCallVoidHits=%d", jit.SpecCallVoidHits())
 }
 
-// TestPJ5_CallMultiRet_E2E_FormB3RetN3:形态 0 参 N=3 返值 getter
-// `local a, b, c = take(); return a, b, c` 形态 — luac 编 GETUPVAL+CALL B=1 C=4 + MOVE×3 + RETURN A=callA+3 B=4
+// TestPJ5_CallMultiRet_E2E_FormB3RetN3: form with 0 args, N=3 return values getter
+// `local a, b, c = take(); return a, b, c` form — luac emits GETUPVAL+CALL B=1 C=4 + MOVE×3 + RETURN A=callA+3 B=4
 func TestPJ5_CallMultiRet_E2E_FormB3RetN3(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -521,7 +526,7 @@ return s`
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	// get() × 30 each (1+2+3)=6,sum=180
+	// get() × 30 each (1+2+3)=6, sum=180
 	if got := value.AsNumber(value.Value(rets[0])); got != 180 {
 		t.Errorf("rets = %v, want 180 (get()×30 each take()→(1,2,3))", got)
 	}
@@ -530,7 +535,7 @@ return s`
 	}
 }
 
-// TestPJ5_CallVoid_E2E_FormB4R:4 reg 参 setter,长度 7
+// TestPJ5_CallVoid_E2E_FormB4R: 4 reg args setter, length 7
 func TestPJ5_CallVoid_E2E_FormB4R(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -555,7 +560,7 @@ return sum`
 	}
 }
 
-// TestPJ5_CallGetter_E2E_FormB4RR1:4 reg 参 1 返 getter,长度 8
+// TestPJ5_CallGetter_E2E_FormB4RR1: 4 reg args, 1 ret getter, length 8
 func TestPJ5_CallGetter_E2E_FormB4RR1(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -580,7 +585,7 @@ return s`
 	}
 }
 
-// TestPJ5_CallMultiRet_E2E_FormB1KRetN2:1 K 参 N=2 返值形态(长度 7)
+// TestPJ5_CallMultiRet_E2E_FormB1KRetN2: 1 K arg, N=2 return-value form (length 7)
 // `local function take(k) return k, k*2 end; local function get() local a,b=take(7); return a,b end`
 func TestPJ5_CallMultiRet_E2E_FormB1KRetN2(t *testing.T) {
 	jit.ResetSpecHits()
@@ -600,7 +605,7 @@ return s`
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	// get() × 30 each take(7)→(7, 14),sum=30*21=630
+	// get() × 30 each take(7)→(7, 14), sum=30*21=630
 	if got := value.AsNumber(value.Value(rets[0])); got != 630 {
 		t.Errorf("rets = %v, want 630 (get()×30 each take(7)→(7,14))", got)
 	}
@@ -610,7 +615,7 @@ return s`
 	t.Logf("SpecCallVoidHits=%d", jit.SpecCallVoidHits())
 }
 
-// TestPJ5_CallMultiRet_E2E_FormB1RRetN2:1 reg 参 N=2 返值形态(长度 7)
+// TestPJ5_CallMultiRet_E2E_FormB1RRetN2: 1 reg arg, N=2 return-value form (length 7)
 func TestPJ5_CallMultiRet_E2E_FormB1RRetN2(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -638,7 +643,7 @@ return s`
 	}
 }
 
-// TestPJ5_CallVoid_E2E_FormB5R:5 reg 参 setter,长度 8
+// TestPJ5_CallVoid_E2E_FormB5R: 5 reg args setter, length 8
 func TestPJ5_CallVoid_E2E_FormB5R(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -663,7 +668,7 @@ return sum`
 	}
 }
 
-// TestPJ5_CallVoid_E2E_FormB5K:5 K 参 setter,长度 8
+// TestPJ5_CallVoid_E2E_FormB5K: 5 K args setter, length 8
 func TestPJ5_CallVoid_E2E_FormB5K(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -688,7 +693,7 @@ return sum`
 	}
 }
 
-// TestPJ5_CallGetter_E2E_FormB5RR1:5 reg 参 1 返 getter,长度 9
+// TestPJ5_CallGetter_E2E_FormB5RR1: 5 reg args, 1 ret getter, length 9
 func TestPJ5_CallGetter_E2E_FormB5RR1(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -713,7 +718,7 @@ return s`
 	}
 }
 
-// TestPJ5_CallVoid_E2E_FormB6K:6 K 参 setter,长度 10
+// TestPJ5_CallVoid_E2E_FormB6K: 6 K args setter, length 10
 func TestPJ5_CallVoid_E2E_FormB6K(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -738,7 +743,7 @@ return sum`
 	}
 }
 
-// TestPJ5_CallGetter_E2E_FormB6RR1:6 reg 参 1 返 getter,长度 10
+// TestPJ5_CallGetter_E2E_FormB6RR1: 6 reg args, 1 ret getter, length 10
 func TestPJ5_CallGetter_E2E_FormB6RR1(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -763,7 +768,7 @@ return total`
 	}
 }
 
-// TestPJ5_CallMultiRet_E2E_FormB1KRetN3:1 K 参 N=3 返值形态(长度 8)
+// TestPJ5_CallMultiRet_E2E_FormB1KRetN3: 1 K arg, N=3 return-value form (length 8)
 func TestPJ5_CallMultiRet_E2E_FormB1KRetN3(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -782,7 +787,7 @@ return s`
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	// get() × 30 each take(7)→(7,14,21),sum=30*42=1260
+	// get() × 30 each take(7)→(7,14,21), sum=30*42=1260
 	if got := value.AsNumber(value.Value(rets[0])); got != 1260 {
 		t.Errorf("rets = %v, want 1260 (get()×30 each take(7)→(7,14,21))", got)
 	}
@@ -791,7 +796,7 @@ return s`
 	}
 }
 
-// TestPJ5_CallMultiRet_E2E_FormB1RRetN3:1 reg 参 N=3 返值形态(长度 8)
+// TestPJ5_CallMultiRet_E2E_FormB1RRetN3: 1 reg arg, N=3 return-value form (length 8)
 func TestPJ5_CallMultiRet_E2E_FormB1RRetN3(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -819,7 +824,7 @@ return s`
 	}
 }
 
-// TestPJ5_CallVoid_E2E_FormB7K:7 K 参 setter,长度 10
+// TestPJ5_CallVoid_E2E_FormB7K: 7 K args setter, length 10
 func TestPJ5_CallVoid_E2E_FormB7K(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -844,7 +849,7 @@ return sum`
 	}
 }
 
-// TestPJ5_CallGetter_E2E_FormB7RR1:7 reg 参 1 返 getter,长度 11
+// TestPJ5_CallGetter_E2E_FormB7RR1: 7 reg args, 1 ret getter, length 11
 func TestPJ5_CallGetter_E2E_FormB7RR1(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `

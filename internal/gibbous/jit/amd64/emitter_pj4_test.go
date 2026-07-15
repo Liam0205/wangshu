@@ -4,33 +4,37 @@ package amd64
 
 import "testing"
 
-// TestPJ4_EmitCmpRaxImm32_RoundTrip 比较 + 跳转 mmap 段执行(承 06 §3.2
-// IsNumber guard 物理基础)。
+// TestPJ4_EmitCmpRaxImm32_RoundTrip runs compare + jump on an mmap'd segment
+// (the physical basis for the 06 §3.2 IsNumber guard).
 //
-// 经构造「rax = sentA / cmp rax, sentA / je .skip / mov rax, sentB / .skip:
-// ret」序列(若 cmp 不工作或 jcc 不跳,RAX 会是 sentB 而非 sentA)。
+// It constructs the sequence "rax = sentA / cmp rax, sentA / je .skip / mov rax,
+// sentB / .skip: ret" (if cmp does not work or the jcc does not jump, RAX will
+// be sentB rather than sentA).
 //
-// **PJ4 简化形态边界**:本测试主验「cmp + jcc 字节编码工作 + jcc 真按
-// flag 跳」,完整 IsNumber guard 模板(NaN-box 边界 + OSR exit 路径)留 PJ4+
-// 启用切栈时同批落地。
+// **PJ4 simplified-form boundary**: this test only verifies "cmp + jcc byte
+// encoding works + the jcc genuinely jumps on the flag"; the full IsNumber guard
+// template (NaN-box boundary + OSR exit path) lands in the same batch as the
+// stack switch is enabled in PJ4+.
 func TestPJ4_EmitCmpRaxImm32_Equal(t *testing.T) {
 	// rax = 100; cmp rax, 100; je after_branch; mov rax, 0xbad; after_branch: ret
-	// JE rel8: 74 ii(2 字节,本测试用 6 字节 jae rel32 替代,因为 rel8 jcc 未实装;
-	// 实际验证「rax >= 100 jae after_branch」, 100 >= 100 ⇒ jae 跳过 mov bad)
+	// JE rel8: 74 ii (2 bytes; this test uses the 6-byte jae rel32 instead, since
+	// rel8 jcc is not implemented yet; it actually verifies "rax >= 100 jae
+	// after_branch", 100 >= 100 ⇒ jae skips the mov bad)
 	const sent = 100
 	const bad = uint64(0xbad)
 
-	// 计算 jae rel32:跳过 mov rax, 0xbad(11 字节,EncodedMovRaxImm64Len)
-	// jae rel32 自身 6 字节,rel32 是「下条指令起的偏移」,跳过的距离 = 11 字节
-	// (mov rax, bad 占 10 字节 + 0 字节其它 = 10 字节;但 EncodedMovRaxImm64Len = 10)
+	// Compute jae rel32: skip mov rax, 0xbad (11 bytes, EncodedMovRaxImm64Len)
+	// jae rel32 is itself 6 bytes; rel32 is "the offset from the next instruction",
+	// so the distance skipped = 11 bytes
+	// (mov rax, bad takes 10 bytes + 0 bytes other = 10 bytes; but EncodedMovRaxImm64Len = 10)
 	rel := int32(EncodedMovRaxImm64Len)
 
 	var buf []byte
-	buf = EmitMovRaxImm64(buf, sent) // 10 字节 — rax = 100
-	buf = EmitCmpRaxImm32(buf, sent) // 7  字节 — cmp rax, 100
-	buf = EmitJaeRel32(buf, rel)     // 6  字节 — jae +10(若 rax >= 100 跳过 mov bad)
-	buf = EmitMovRaxImm64(buf, bad)  // 10 字节 — mov rax, 0xbad(被跳过)
-	buf = EmitRet(buf)               // 1  字节 — ret(rax = sent)
+	buf = EmitMovRaxImm64(buf, sent) // 10 bytes — rax = 100
+	buf = EmitCmpRaxImm32(buf, sent) // 7  bytes — cmp rax, 100
+	buf = EmitJaeRel32(buf, rel)     // 6  bytes — jae +10 (if rax >= 100, skip mov bad)
+	buf = EmitMovRaxImm64(buf, bad)  // 10 bytes — mov rax, 0xbad (skipped)
+	buf = EmitRet(buf)               // 1  byte  — ret (rax = sent)
 
 	page, err := MmapCode(buf)
 	if err != nil {
@@ -44,18 +48,18 @@ func TestPJ4_EmitCmpRaxImm32_Equal(t *testing.T) {
 	}
 }
 
-// TestPJ4_EmitJmpRel32_RoundTrip 无条件 jmp 跳过 dead code 段。
+// TestPJ4_EmitJmpRel32_RoundTrip uses an unconditional jmp to skip a dead-code segment.
 func TestPJ4_EmitJmpRel32_RoundTrip(t *testing.T) {
 	const good = uint64(0xfeedface)
 	const bad = uint64(0xdeadbeef)
 
-	// jmp +10(跳过 mov rax, bad);mov rax, bad;mov rax, good;ret
+	// jmp +10 (skip mov rax, bad); mov rax, bad; mov rax, good; ret
 	rel := int32(EncodedMovRaxImm64Len)
 
 	var buf []byte
-	buf = EmitJmpRel32(buf, rel)     // 5  字节 — jmp +10
-	buf = EmitMovRaxImm64(buf, bad)  // 10 字节 — 被跳过
-	buf = EmitMovRaxImm64(buf, good) // 10 字节 — rax = good
+	buf = EmitJmpRel32(buf, rel)     // 5  bytes — jmp +10
+	buf = EmitMovRaxImm64(buf, bad)  // 10 bytes — skipped
+	buf = EmitMovRaxImm64(buf, good) // 10 bytes — rax = good
 	buf = EmitRet(buf)
 
 	page, err := MmapCode(buf)
@@ -70,7 +74,7 @@ func TestPJ4_EmitJmpRel32_RoundTrip(t *testing.T) {
 	}
 }
 
-// TestPJ4_EncodedLengths PJ4 新增编码长度常量验证。
+// TestPJ4_EncodedLengths verifies the encoded-length constants newly added in PJ4.
 func TestPJ4_EncodedLengths(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -103,7 +107,7 @@ func TestPJ4_EncodedLengths(t *testing.T) {
 	}
 }
 
-// —— PJ4 表 IC inline 字节级原语(承 emitter_pj4.go)——
+// —— PJ4 table IC inline byte-level primitives (see emitter_pj4.go) ——
 
 func TestPJ4_EmitMovqR14FromR15Disp(t *testing.T) {
 	cases := []struct {
@@ -169,8 +173,8 @@ func TestPJ4_EmitAndRaxImm32(t *testing.T) {
 	}
 }
 
-// TestPJ4_EmitShrRaxImm8 —— shr rax, 48(严密 IsTable guard 字节级第一步)。
-// 编码:48 C1 E8 30(30=48 十进制)。Intel SDM Vol.2B SHR /5。
+// TestPJ4_EmitShrRaxImm8 —— shr rax, 48 (byte-level first step of the strict IsTable guard).
+// Encoding: 48 C1 E8 30 (30 = 48 decimal). Intel SDM Vol.2B SHR /5.
 func TestPJ4_EmitShrRaxImm8(t *testing.T) {
 	got := EmitShrRaxImm8(nil, 48)
 	want := []byte{0x48, 0xC1, 0xE8, 48}
@@ -179,9 +183,9 @@ func TestPJ4_EmitShrRaxImm8(t *testing.T) {
 	}
 }
 
-// TestPJ4_EmitCmpEaxImm32 —— cmp eax, 0xFFFC(严密 IsTable guard 字节级
-// 第二步,验高 16 位 tag = TagTable 0xFFFC)。
-// 编码:3D FC FF 00 00(short form,无 ModRM,RAX/EAX 隐式)。
+// TestPJ4_EmitCmpEaxImm32 —— cmp eax, 0xFFFC (byte-level second step of the strict
+// IsTable guard, verifying the high 16-bit tag = TagTable 0xFFFC).
+// Encoding: 3D FC FF 00 00 (short form, no ModRM, RAX/EAX implicit).
 func TestPJ4_EmitCmpEaxImm32(t *testing.T) {
 	got := EmitCmpEaxImm32(nil, 0xFFFC)
 	want := []byte{0x3D, 0xFC, 0xFF, 0x00, 0x00}
@@ -190,10 +194,10 @@ func TestPJ4_EmitCmpEaxImm32(t *testing.T) {
 	}
 }
 
-// TestPJ4_EmitMovRdxImm64 —— mov rdx, imm64(NodeHit 烧 stableKey)。
-// 编码:48 BA imm64_LE_bytes。
+// TestPJ4_EmitMovRdxImm64 —— mov rdx, imm64 (NodeHit burns the stableKey).
+// Encoding: 48 BA imm64_LE_bytes.
 func TestPJ4_EmitMovRdxImm64(t *testing.T) {
-	got := EmitMovRdxImm64(nil, 0xFFFB_DEAD_BEEF_CAFE) // 模拟 string NaN-box
+	got := EmitMovRdxImm64(nil, 0xFFFB_DEAD_BEEF_CAFE) // simulate a string NaN-box
 	want := []byte{0x48, 0xBA,
 		0xFE, 0xCA, 0xEF, 0xBE, 0xAD, 0xDE, 0xFB, 0xFF}
 	if string(got) != string(want) {
@@ -201,8 +205,8 @@ func TestPJ4_EmitMovRdxImm64(t *testing.T) {
 	}
 }
 
-// TestPJ4_EmitCmpRaxRdx —— cmp rax, rdx(NodeHit 验 NodeKey == stableKey)。
-// 编码:48 39 D0(REX.W / opcode CMP r/m64,r64 / ModRM mod=11 reg=010 rm=000)。
+// TestPJ4_EmitCmpRaxRdx —— cmp rax, rdx (NodeHit verifies NodeKey == stableKey).
+// Encoding: 48 39 D0 (REX.W / opcode CMP r/m64,r64 / ModRM mod=11 reg=010 rm=000).
 func TestPJ4_EmitCmpRaxRdx(t *testing.T) {
 	got := EmitCmpRaxRdx(nil)
 	want := []byte{0x48, 0x39, 0xD0}
@@ -211,10 +215,10 @@ func TestPJ4_EmitCmpRaxRdx(t *testing.T) {
 	}
 }
 
-// TestPJ4_EmitMovqMemR14PlusRcxFromRax —— 反向 SIB store:
-// `mov [r14 + rcx*1 + disp32], rax`(8 字节,PJ4 SETTABLE IC inline 用)。
-// 编码:49 89 84 0E disp32(LE)。
-// SIB 0E = scale=00 index=001(rcx) base=110(r14 w/ REX.B)。
+// TestPJ4_EmitMovqMemR14PlusRcxFromRax —— reverse SIB store:
+// `mov [r14 + rcx*1 + disp32], rax` (8 bytes, used by PJ4 SETTABLE IC inline).
+// Encoding: 49 89 84 0E disp32 (LE).
+// SIB 0E = scale=00 index=001(rcx) base=110(r14 w/ REX.B).
 func TestPJ4_EmitMovqMemR14PlusRcxFromRax(t *testing.T) {
 	got := EmitMovqMemR14PlusRcxFromRax(nil, 0x12345678)
 	want := []byte{0x49, 0x89, 0x84, 0x0E, 0x78, 0x56, 0x34, 0x12}
@@ -222,7 +226,7 @@ func TestPJ4_EmitMovqMemR14PlusRcxFromRax(t *testing.T) {
 		t.Errorf("got %x, want %x", got, want)
 	}
 
-	// 小 disp 也用 disp32(模板字节布局自洽,即便 disp 较小也保持 8 字节)
+	// A small disp also uses disp32 (the template byte layout is self-consistent, keeping 8 bytes even when disp is small)
 	got2 := EmitMovqMemR14PlusRcxFromRax(nil, 32)
 	want2 := []byte{0x49, 0x89, 0x84, 0x0E, 0x20, 0x00, 0x00, 0x00}
 	if string(got2) != string(want2) {
@@ -230,10 +234,10 @@ func TestPJ4_EmitMovqMemR14PlusRcxFromRax(t *testing.T) {
 	}
 }
 
-// TestPJ4_EmitMovqMemR14PlusRcxFromRdx —— 反向 SIB store 从 rdx:
-// `mov [r14 + rcx*1 + disp32], rdx`(8 字节,PJ4 SETTABLE IC inline value 写)。
-// 编码:49 89 94 0E disp32(LE)。
-// ModRM 94 = mod=10 reg=010(rdx)rm=100(SIB)(对位 84 的 reg=000=rax)。
+// TestPJ4_EmitMovqMemR14PlusRcxFromRdx —— reverse SIB store from rdx:
+// `mov [r14 + rcx*1 + disp32], rdx` (8 bytes, used by PJ4 SETTABLE IC inline value write).
+// Encoding: 49 89 94 0E disp32 (LE).
+// ModRM 94 = mod=10 reg=010(rdx) rm=100(SIB) (compare with 84's reg=000=rax).
 func TestPJ4_EmitMovqMemR14PlusRcxFromRdx(t *testing.T) {
 	got := EmitMovqMemR14PlusRcxFromRdx(nil, 0x12345678)
 	want := []byte{0x49, 0x89, 0x94, 0x0E, 0x78, 0x56, 0x34, 0x12}
@@ -242,8 +246,8 @@ func TestPJ4_EmitMovqMemR14PlusRcxFromRdx(t *testing.T) {
 	}
 }
 
-// TestPJ4_EmitMovqRdxFromMemRbx —— load rdx from [rbx+disp32](值寻址)。
-// 编码:48 8B 93 disp32(7 字节,ModRM 93=mod=10 reg=010(rdx) rm=011(rbx))。
+// TestPJ4_EmitMovqRdxFromMemRbx —— load rdx from [rbx+disp32] (value addressing).
+// Encoding: 48 8B 93 disp32 (7 bytes, ModRM 93=mod=10 reg=010(rdx) rm=011(rbx)).
 func TestPJ4_EmitMovqRdxFromMemRbx(t *testing.T) {
 	got := EmitMovqRdxFromMemRbx(nil, 16) // R(2) = [rbx+16]
 	want := []byte{0x48, 0x8B, 0x93, 0x10, 0x00, 0x00, 0x00}

@@ -1,16 +1,16 @@
 //go:build wangshu_p3
 
-// Package wasm is the P3 gibbous tier:字节码 → Wasm 编译器 + wazero 执行环境
-// (docs/design/p3-wasm-tier/)。
+// Package wasm is the P3 gibbous tier: bytecode → Wasm compiler + wazero execution environment
+// (docs/design/p3-wasm-tier/).
 //
-// 仅 wangshu_p3 build 编译——默认 / wangshu_profile build 下本包不进 import
-// 图,主库不链接 wazero 运行期代码。
+// Compiled only under the wangshu_p3 build — under the default / wangshu_profile builds this
+// package is not in the import graph, and the main library does not link wazero runtime code.
 //
-// PW 进度(02-translation §1.3 渐进白名单):
-//   - PW1(本轮):包骨架 + Compiler 实现 bridge.P3Compiler;
-//     SupportsAllOpcodes 永远 false(supported 全 false)→ 无 Proto 升层 →
-//     与 P1-only byte-equal。arena 收养 wazero memory 经 memadapter 子包。
-//   - PW2+:逐档扩 supported 白名单 + emit 翻译(见 02-translation §3)。
+// PW progress (02-translation §1.3 incremental whitelist):
+//   - PW1 (this round): package skeleton + Compiler implements bridge.P3Compiler;
+//     SupportsAllOpcodes always false (supported all false) → no Proto promotion →
+//     byte-equal with P1-only. The arena adopts wazero memory via the memadapter subpackage.
+//   - PW2+: expand the supported whitelist tier by tier + emit translation (see 02-translation §3).
 package wasm
 
 import (
@@ -25,55 +25,56 @@ import (
 	"github.com/Liam0205/wangshu/internal/bytecode"
 )
 
-// Compiler 实现 bridge.P3Compiler(02-translation §5)。
+// Compiler implements bridge.P3Compiler (02-translation §5).
 //
-// 一个 Compiler 服务一个 State(持该 State 的 wazero Runtime,与 memadapter
-// 的 MemoryHolder 同源)。多 State 各持独立 Compiler / Runtime / Memory
-// (arena 单 State 私有,03 §1.5)。
+// One Compiler serves one State (holding that State's wazero Runtime, sharing the same
+// source as the memadapter MemoryHolder). Multiple States each hold an independent
+// Compiler / Runtime / Memory (the arena is private to a single State, 03 §1.5).
 type Compiler struct {
 	ctx     context.Context
 	runtime wazero.Runtime
 
-	// host 是注入的执行期状态抽象(crescent.State 实现 HostState)——
-	// helper callback 经它操作 CallInfo/值栈/upvalue,解 crescent⇄gibbous 环。
+	// host is the injected runtime state abstraction (crescent.State implements HostState) —
+	// helper callbacks operate on CallInfo / value stack / upvalues through it, breaking the crescent⇄gibbous cycle.
 	host HostState
 
-	// hostModInstantiated 标记 env host module(含 memory + helpers)是否已
-	// 注册到 runtime。首次 Compile 时注册一次,后续 Proto 复用。
+	// hostModInstantiated marks whether the env host module (with memory + helpers) has
+	// been registered to the runtime. Registered once on the first Compile, reused by later Protos.
 	hostModReady bool
 
-	// supported[op] = 该 opcode 是否已实装 Wasm 翻译。
-	// PW1:全 false(保守缺省,02-translation §1.3 + §5.2)。
-	// PW2:直线 opcode(MOVE/LOADK/LOADBOOL/LOADNIL/GETUPVAL/SETUPVAL/JMP)。
+	// supported[op] = whether this opcode already has a Wasm translation.
+	// PW1: all false (conservative default, 02-translation §1.3 + §5.2).
+	// PW2: straight-line opcodes (MOVE/LOADK/LOADBOOL/LOADNIL/GETUPVAL/SETUPVAL/JMP).
 	supported [numOpcodes]bool
 
-	// slotOf:Proto → 共享 env.table 槽号(PW10 Arch-2)。每个升层 Proto 在
-	// Compile 时分配一个单调递增 slot,其 module 经 element 段把 run 注册进该槽;
-	// gibbous→gibbous CALL 据被调 Proto 的 slot 经 call_indirect 跨 module 直达
-	// (R3 接线)。-1(不在表内)= 未升层/超容量 → 回退 h_call。
+	// slotOf: Proto → shared env.table slot number (PW10 Arch-2). Each promoted Proto is
+	// assigned a monotonically increasing slot at Compile time; its module registers run into
+	// that slot via the element segment; a gibbous→gibbous CALL reaches across modules directly
+	// via call_indirect using the callee Proto's slot (R3 wiring). -1 (not in table) = not
+	// promoted / over capacity → fall back to h_call.
 	slotOf   map[*bytecode.Proto]uint32
 	nextSlot uint32
 }
 
-// maxTableSlots 是 Compiler 可分配的 slot 上限(= memadapter.TableSlots,env
-// 共享表容量)。超出则该 Proto 不分配 slot(回退 h_call,正确性不破)。
-// 硬编码避免 wasm 包(非测试代码)反向 import memadapter 形成 import 环倒置;
-// 两值须一致(TestPW10_SlotCapAligned 断言对齐)。
+// maxTableSlots is the upper bound of slots the Compiler can allocate (= memadapter.TableSlots,
+// the env shared table capacity). Beyond it a Proto gets no slot (falls back to h_call, correctness intact).
+// Hardcoded to avoid the wasm package (non-test code) reverse-importing memadapter and forming an
+// inverted import cycle; the two values must agree (TestPW10_SlotCapAligned asserts alignment).
 const maxTableSlots = 8192
 
-// numOpcodes 是 P1 活跃 opcode 数(0..37)+ 预留区上界守卫。
-// bytecode.OpCode 是 6-bit(0..63);supported 数组按 64 长度建,
-// 越界 opcode(38..63 预留)天然落 false。
+// numOpcodes is the count of P1 active opcodes (0..37) + a reserved-region upper-bound guard.
+// bytecode.OpCode is 6-bit (0..63); the supported array is built at length 64, so
+// out-of-range opcodes (38..63 reserved) naturally land on false.
 const numOpcodes = 64
 
-// NewCompiler 构造一个 Compiler(PW1:supported 全 false)。
+// NewCompiler constructs a Compiler (PW1: supported all false).
 //
-// runtime 由门面层(crescent 在 wangshu_p3 build 下)创建并注入,与
-// memadapter.MemoryHolder 共用同一 Runtime——确保 gibbous module 经 import
-// memory 能共享 arena 收养的那块 linear memory。host 是执行期状态抽象
-// (crescent.State 实现 HostState),helper callback 经它操作执行期状态。
+// runtime is created and injected by the facade layer (crescent under the wangshu_p3 build),
+// sharing the same Runtime as memadapter.MemoryHolder — ensuring the gibbous module can share,
+// via imported memory, the linear memory adopted by the arena. host is the runtime state
+// abstraction (crescent.State implements HostState); helper callbacks operate on runtime state through it.
 //
-// PW2 supported 白名单:直线 opcode(02-translation §1.3 PW2 档)。
+// PW2 supported whitelist: straight-line opcodes (02-translation §1.3 PW2 tier).
 func NewCompiler(ctx context.Context, runtime wazero.Runtime, host HostState) *Compiler {
 	c := &Compiler{
 		ctx:     ctx,
@@ -88,8 +89,8 @@ func NewCompiler(ctx context.Context, runtime wazero.Runtime, host HostState) *C
 	c.supported[bytecode.GETUPVAL] = true
 	c.supported[bytecode.SETUPVAL] = true
 	c.supported[bytecode.JMP] = true
-	c.supported[bytecode.RETURN] = true // 单 BB Proto 出口必需
-	// PW3:直线算术(不切 BB)。比较 EQ/LT/LE/TEST/TESTSET 切 BB,留 PW4。
+	c.supported[bytecode.RETURN] = true // required as the exit of a single-BB Proto
+	// PW3: straight-line arithmetic (no BB split). Comparisons EQ/LT/LE/TEST/TESTSET split BBs, left to PW4.
 	c.supported[bytecode.ADD] = true
 	c.supported[bytecode.SUB] = true
 	c.supported[bytecode.MUL] = true
@@ -100,7 +101,7 @@ func NewCompiler(ctx context.Context, runtime wazero.Runtime, host HostState) *C
 	c.supported[bytecode.NOT] = true
 	c.supported[bytecode.LEN] = true
 	c.supported[bytecode.CONCAT] = true
-	// PW4:控制流 + 比较(relooper 解锁多 BB)。
+	// PW4: control flow + comparisons (relooper unlocks multi-BB).
 	c.supported[bytecode.EQ] = true
 	c.supported[bytecode.LT] = true
 	c.supported[bytecode.LE] = true
@@ -108,7 +109,7 @@ func NewCompiler(ctx context.Context, runtime wazero.Runtime, host HostState) *C
 	c.supported[bytecode.TESTSET] = true
 	c.supported[bytecode.FORPREP] = true
 	c.supported[bytecode.FORLOOP] = true
-	// PW5:表 IC opcode(inline 快照固化 + 失效降级助手)。
+	// PW5: table IC opcodes (inline snapshot freezing + invalidation downgrade helpers).
 	c.supported[bytecode.GETGLOBAL] = true
 	c.supported[bytecode.SETGLOBAL] = true
 	c.supported[bytecode.GETTABLE] = true
@@ -116,23 +117,25 @@ func NewCompiler(ctx context.Context, runtime wazero.Runtime, host HostState) *C
 	c.supported[bytecode.SELF] = true
 	c.supported[bytecode.NEWTABLE] = true
 	c.supported[bytecode.SETLIST] = true
-	// PW6:CALL 三向分派 + base 刷新(跨层互调)。
+	// PW6: CALL three-way dispatch + base refresh (cross-tier mutual calls).
 	c.supported[bytecode.CALL] = true
 	c.supported[bytecode.TAILCALL] = true
-	// PW7:闭包构造 + 作用域 upvalue 关闭(全经助手)。
+	// PW7: closure construction + scoped upvalue closing (all via helpers).
 	c.supported[bytecode.CLOSURE] = true
 	c.supported[bytecode.CLOSE] = true
-	// PW4b:TFORLOOP 泛型 for(经 h_tforloop 调迭代器 + base 刷新)。
+	// PW4b: TFORLOOP generic for (calls the iterator via h_tforloop + base refresh).
 	c.supported[bytecode.TFORLOOP] = true
-	// PW5+ 逐档解锁(02-translation §1.3)。VARARG 永不加入。
+	// PW5+ unlocked tier by tier (02-translation §1.3). VARARG is never added.
 	return c
 }
 
-// SlotOf 返回 Proto 在共享 env.table 的槽号 + 是否已登记(PW10 Arch-2)。
+// SlotOf returns the Proto's slot number in the shared env.table + whether it is registered (PW10 Arch-2).
 //
-// R3 CALL 翻译用:被调 Proto 已升 gibbous 且有有效 slot(< maxTableSlots)⟹
-// 经 call_indirect <slot> 跨 module 直达;否则(未登记 / 表满哨兵)回退 h_call。
-// ok=false 表示该 Proto 尚未编译过(无 slot);返回 maxTableSlots 表示表满未入表。
+// Used by R3 CALL translation: if the callee Proto is already promoted to gibbous and has a valid slot
+// (< maxTableSlots) ⟹ reach it directly across modules via call_indirect <slot>; otherwise
+// (not registered / table-full sentinel) fall back to h_call.
+// ok=false means the Proto has not been compiled yet (no slot); returning maxTableSlots means the table
+// was full and it did not enter the table.
 func (c *Compiler) SlotOf(proto *bytecode.Proto) (uint32, bool) {
 	s, ok := c.slotOf[proto]
 	return s, ok
@@ -224,30 +227,30 @@ const wasmHelperDensityFloor = 7
 // keeps promoting, heavy suite unchanged (all have back edges).
 const straightLineMinCodeLen = 32
 
-// SupportsAllOpcodes 实现 F7 后端能力查询(03 §3.7 + 02 §5.2)。
+// SupportsAllOpcodes implements the F7 backend capability query (03 §3.7 + 02 §5.2).
 //
-// 纯只读、不修改 Proto、不 panic(越界 opcode 编号天然落 false)。
+// Pure read-only, does not modify the Proto, does not panic (out-of-range opcode numbers naturally land on false).
 //
-// 限制:
-//   - 所有可达 BB 的 opcode 都在 supported 白名单;
-//   - 多 BB 时 CFG 必须可约简(relooper 只处理 reducible CFG,PW4);
-//   - 含字符串常量的 LOADK:Consts 是 State 私有惰性 intern(编译期 Nil
-//     占位),烧不出真 GCRef → 拒(留 PW5 经助手取)。
+// Constraints:
+//   - all opcodes in reachable BBs are in the supported whitelist;
+//   - for multi-BB, the CFG must be reducible (the relooper only handles reducible CFGs, PW4);
+//   - LOADK with a string constant: Consts is a State-private lazy intern (Nil placeholder at
+//     compile time), so no real GCRef can be baked out → reject (left to PW5 to fetch via a helper).
 //
-// 注意本方法只回答「能不能编」;「编了赚不赚」是 WorthPromoting 的职责。
+// Note this method only answers "can it be compiled"; "is compiling it worth it" is WorthPromoting's job.
 func (c *Compiler) SupportsAllOpcodes(proto *bytecode.Proto) bool {
 	if len(proto.Code) == 0 {
-		return true // 空 Proto vacuously supported(实际不会被 P2 判热点)
+		return true // empty Proto vacuously supported (in practice never judged hot by P2)
 	}
 	cfg := buildCFG(proto)
 	reach := cfg.reachableBlocks()
-	// 多 BB:必须可约简(relooper 只处理 reducible CFG)。
+	// Multi-BB: must be reducible (the relooper only handles reducible CFGs).
 	if len(reach) > 1 {
 		if !analyzeRelooper(cfg).isReducible() {
 			return false
 		}
 	}
-	// 扫所有**可达** BB 的 opcode(死代码块永不执行,不影响支持判定)。
+	// Scan the opcodes of all **reachable** BBs (dead-code blocks never execute, so they do not affect the support decision).
 	for _, blk := range cfg.blocks {
 		if !reach[blk.id] {
 			continue
@@ -258,30 +261,30 @@ func (c *Compiler) SupportsAllOpcodes(proto *bytecode.Proto) bool {
 			if int(op) >= numOpcodes || !c.supported[op] {
 				return false
 			}
-			// LOADK 字符串常量:编译期烧不出真值
+			// LOADK string constant: the real value cannot be baked out at compile time
 			if op == bytecode.LOADK {
 				bx := bytecode.Bx(ins)
 				if proto.IsStringConst(bx) {
 					return false
 				}
 			}
-			// SETLIST C=0:下一指令字是大批次号(数据,非 opcode)——线性发射器
-			// 会误当 opcode 翻译 → 拒。B=0(填到 top)依赖 gibbous 帧 top 维护
-			// (PW7 前未接)→ 拒。常见 {1,2,3}(B≥1,C≥1)放行。
+			// SETLIST C=0: the next instruction word is a large batch number (data, not an opcode) — the
+			// linear emitter would mistakenly translate it as an opcode → reject. B=0 (fill to top) depends on
+			// gibbous frame top maintenance (not wired before PW7) → reject. The common {1,2,3} (B≥1, C≥1) is allowed.
 			if op == bytecode.SETLIST {
 				if bytecode.C(ins) == 0 || bytecode.B(ins) == 0 {
 					return false
 				}
 			}
-			// CALL B=0(参数到 top)/ C=0(返回到 top)是多值窗口,依赖 th.top
-			// 跨 opcode 维护——gibbous 直线代码不维护 top → 拒。定参定返(B≥1,C≥1)
-			// 放行(常见 local x = f(a,b) 形态)。多值传播留后续。
+			// CALL B=0 (args to top) / C=0 (returns to top) are multi-value windows, depending on th.top
+			// maintained across opcodes — gibbous straight-line code does not maintain top → reject. Fixed args
+			// and fixed returns (B≥1, C≥1) are allowed (the common local x = f(a,b) form). Multi-value propagation left for later.
 			if op == bytecode.CALL {
 				if bytecode.C(ins) == 0 || bytecode.B(ins) == 0 {
 					return false
 				}
 			}
-			// TAILCALL B=0(参数到 top)同 CALL 依赖 th.top → 拒(定参 B≥1 放行)。
+			// TAILCALL B=0 (args to top) depends on th.top like CALL → reject (fixed args B≥1 allowed).
 			if op == bytecode.TAILCALL {
 				if bytecode.B(ins) == 0 {
 					return false
@@ -292,14 +295,14 @@ func (c *Compiler) SupportsAllOpcodes(proto *bytecode.Proto) bool {
 	return true
 }
 
-// Compile 把 Proto 编译成 GibbousCode(02 §5.1 + §5.5 panic 兜底)。
+// Compile compiles a Proto into GibbousCode (02 §5.1 + §5.5 panic fallback).
 //
-// 流程:① 确保 host module(helpers)已注册 ② translate 翻译产函数体
-// ③ buildGibbousModuleBinary 组完整 module ④ wazero CompileModule +
-// InstantiateModule(import env.memory + host.h_*)⑤ 包装 p3Code。
+// Flow: ① ensure the host module (helpers) is registered ② translate produces the function body
+// ③ buildGibbousModuleBinary assembles the complete module ④ wazero CompileModule +
+// InstantiateModule (import env.memory + host.h_*) ⑤ wrap in p3Code.
 //
-// defer recover 兜底:翻译 / wazero 调用的任何 panic 转
-// *CompileError(Kind=BackendPanic),不穿越本接口(02 §1.4)。
+// The defer recover fallback: any panic from translation / wazero calls is turned into a
+// *CompileError (Kind=BackendPanic), which does not cross this interface (02 §1.4).
 func (c *Compiler) Compile(proto *bytecode.Proto, fb *bridge.TypeFeedback) (gc bridge.GibbousCode, err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -312,7 +315,7 @@ func (c *Compiler) Compile(proto *bytecode.Proto, fb *bridge.TypeFeedback) (gc b
 		}
 	}()
 
-	// ① host module(helpers)注册一次
+	// ① register the host module (helpers) once
 	if err := c.ensureHostModule(); err != nil {
 		return nil, &bridge.CompileError{
 			Kind: bridge.CompileErrOutOfResources, Proto: proto,
@@ -320,7 +323,7 @@ func (c *Compiler) Compile(proto *bytecode.Proto, fb *bridge.TypeFeedback) (gc b
 		}
 	}
 
-	// ② 翻译
+	// ② translate
 	body, terr := c.translate(proto)
 	if terr != nil {
 		return nil, &bridge.CompileError{
@@ -329,14 +332,17 @@ func (c *Compiler) Compile(proto *bytecode.Proto, fb *bridge.TypeFeedback) (gc b
 		}
 	}
 
-	// 分配共享 env.table 槽(PW10 Arch-2):本 module 的 run 经 element 段注册进
-	// table[slot],gibbous→gibbous 经 call_indirect 此槽跨 module 直达(R3)。
-	// 幂等:同 Proto 复编(多 State 共享同 Proto,理论上各 Compiler 独立)复用既有 slot。
+	// Allocate a shared env.table slot (PW10 Arch-2): this module's run is registered into
+	// table[slot] via the element segment, and gibbous→gibbous reaches across modules directly via
+	// call_indirect on this slot (R3).
+	// Idempotent: recompiling the same Proto (multiple States share the same Proto; each Compiler is
+	// independent in theory) reuses the existing slot.
 	slot, ok := c.slotOf[proto]
 	if !ok {
 		if c.nextSlot >= maxTableSlots {
-			// 表满:不分配 slot,该 Proto 的 run 不进表(R3 据「无 slot」回退 h_call)。
-			// 仍可编译执行,只是 gibbous→它 走慢路径。用哨兵 maxTableSlots 标记。
+			// Table full: no slot allocated, this Proto's run does not enter the table (R3 falls back to
+			// h_call based on "no slot"). It can still compile and execute, only gibbous→it takes the slow
+			// path. Marked with the sentinel maxTableSlots.
 			slot = maxTableSlots
 		} else {
 			slot = c.nextSlot
@@ -345,11 +351,12 @@ func (c *Compiler) Compile(proto *bytecode.Proto, fb *bridge.TypeFeedback) (gc b
 		c.slotOf[proto] = slot
 	}
 
-	// ③ 组 module 二进制(slot 注册进 element 段;表满哨兵时仍发 element 写
-	// table[maxTableSlots] 会越界——故表满时不发 element,见 buildGibbousModuleBinary)。
+	// ③ assemble the module binary (slot registered into the element segment; on the table-full
+	// sentinel, still emitting an element to write table[maxTableSlots] would go out of bounds — so on
+	// table full no element is emitted, see buildGibbousModuleBinary).
 	bin := buildGibbousModuleBinary(body, slot)
 
-	// ④ wazero 编译 + 实例化
+	// ④ wazero compile + instantiate
 	compiled, cerr := c.runtime.CompileModule(c.ctx, bin)
 	if cerr != nil {
 		return nil, &bridge.CompileError{
@@ -386,21 +393,22 @@ func (c *Compiler) Compile(proto *bytecode.Proto, fb *bridge.TypeFeedback) (gc b
 	}, nil
 }
 
-// ensureHostModule 注册 host module(helper Go 函数)到 runtime,一次性。
+// ensureHostModule registers the host module (helper Go functions) to the runtime, once.
 //
-// helper callback 经 c.host(HostState)转发到执行期状态(crescent.State)。
-// module name "host",与 gibbous module 的 `import "host" "h_*"` 对应。
+// helper callbacks forward to the runtime state (crescent.State) through c.host (HostState).
+// module name "host", corresponding to the gibbous module's `import "host" "h_*"`.
 //
-// **零分配注册(PW10 R3.5)**:用 WithGoFunction(api.GoFunc,stack-based)而非
-// WithFunc(反射)——后者每次跨层 callGoFunc 都 reflect.New 逐参装箱(call 核
-// ~14 allocs/调,支配退化)。stack-based 从 []uint64 直接解参/回写,零反射零分配。
-// params/results ValueType 必须与 module.go 的 type 声明逐位对齐。
+// **Zero-allocation registration (PW10 R3.5)**: use WithGoFunction (api.GoFunc, stack-based) rather than
+// WithFunc (reflection) — the latter does reflect.New per-argument boxing on every cross-tier callGoFunc
+// (~14 allocs/call at the call core, a dominant regression). Stack-based decodes args / writes back
+// directly from []uint64, zero reflection and zero allocation.
+// The params/results ValueType must align bit-for-bit with the type declaration in module.go.
 func (c *Compiler) ensureHostModule() error {
 	if c.hostModReady {
 		return nil
 	}
 	hs := &helperSet{host: c.host}
-	// 复用的 wasm 值类型签名(对齐 module.go type 声明)。
+	// Reused wasm value type signatures (aligned with the module.go type declarations).
 	i32 := api.ValueTypeI32
 	i64 := api.ValueTypeI64
 	var (
@@ -448,8 +456,8 @@ func (c *Compiler) ensureHostModule() error {
 	return nil
 }
 
-// gibbousModuleName 给每个 Proto 的 gibbous module 一个唯一名(wazero 要求
-// 已命名 module 名唯一)。用 Proto 指针地址 —— 单 State 内唯一且稳定。
+// gibbousModuleName gives each Proto's gibbous module a unique name (wazero requires
+// already-named module names to be unique). Uses the Proto pointer address — unique and stable within a single State.
 func gibbousModuleName(proto *bytecode.Proto) string {
 	return fmt.Sprintf("gib_%p", proto)
 }

@@ -1,6 +1,6 @@
-// 公共面 Table API 测试——issue #2:pineapple common-mode mixed-type list
-// 投喂、GetGlobal/SetGlobal/State.Call 复合值 round-trip、嵌套 table 与
-// function、Len 语义、跨 State 与 Release 后误用。
+// Public-facing Table API tests — issue #2: feeding in pineapple common-mode
+// mixed-type lists, GetGlobal/SetGlobal/State.Call compound-value round-trip,
+// nested tables and functions, Len semantics, cross-State and use-after-Release.
 package wangshu_test
 
 import (
@@ -56,8 +56,8 @@ func TestTable_ScalarsRoundTrip(t *testing.T) {
 }
 
 func TestTable_MixedTypeListPineapple(t *testing.T) {
-	// pineapple common-mode 形态:mixed-type []any list,允许 nil 占位、
-	// number 和 string 混在同一 list。issue #2 验收用例。
+	// pineapple common-mode shape: mixed-type []any list, allowing nil
+	// placeholders and number/string mixed in the same list. issue #2 acceptance case.
 	st := wangshu.NewState(wangshu.Options{})
 	tv := st.NewTable()
 	defer tv.Release()
@@ -67,7 +67,7 @@ func TestTable_MixedTypeListPineapple(t *testing.T) {
 	mustSet(t, tbl.SetIndex(3, wangshu.Nil()))
 	mustSet(t, tbl.SetIndex(4, wangshu.Bool(true)))
 
-	// 装进 globals,脚本可以遍历
+	// Put into globals so the script can iterate over it
 	st.SetGlobal("items", tv)
 	prog, _ := wangshu.Compile([]byte(`
 local s = ""
@@ -104,7 +104,7 @@ func TestSetGlobal_TableScriptVisible(t *testing.T) {
 }
 
 func TestGetGlobal_TableFromScript(t *testing.T) {
-	// 脚本里建表写 globals;Go 端 GetGlobal 取出并读字段。
+	// Script builds a table into globals; Go side pulls it out via GetGlobal and reads fields.
 	st := wangshu.NewState(wangshu.Options{})
 	prog, _ := wangshu.Compile([]byte(`
 result = { name = "wangshu", ver = 11, list = {10, 20, 30} }
@@ -155,7 +155,7 @@ func TestTable_NestedTableSet(t *testing.T) {
 }
 
 func TestTable_FunctionValue(t *testing.T) {
-	// 脚本里定义函数 → GetGlobal 取出 → 装进 Table → SetGlobal → 脚本调用。
+	// Script defines a function → GetGlobal pulls it out → put into a Table → SetGlobal → script calls it.
 	st := wangshu.NewState(wangshu.Options{})
 	prog, _ := wangshu.Compile([]byte(`function double(x) return x * 2 end`), "def")
 	if _, err := prog.Run(st); err != nil {
@@ -180,8 +180,8 @@ func TestTable_FunctionValue(t *testing.T) {
 }
 
 func TestTable_LenBorderSemantics(t *testing.T) {
-	// # 语义 = rawBorder:对带洞数组返回任意一个 border(t[n]~=nil && t[n+1]==nil)。
-	// 这里用无洞数组验证基本一致性,避免 border 二分非确定性引入 flakey。
+	// # semantics = rawBorder: for an array with holes it returns any one border (t[n]~=nil && t[n+1]==nil).
+	// Here we use a hole-free array to verify basic consistency, avoiding flakiness from the nondeterministic border binary search.
 	st := wangshu.NewState(wangshu.Options{})
 	tv := st.NewTable()
 	defer tv.Release()
@@ -195,7 +195,7 @@ func TestTable_LenBorderSemantics(t *testing.T) {
 }
 
 func TestTable_SetNilDelete(t *testing.T) {
-	// 写 nil 等于删除键(Lua 表语义)。
+	// Writing nil is equivalent to deleting the key (Lua table semantics).
 	st := wangshu.NewState(wangshu.Options{})
 	tv := st.NewTable()
 	defer tv.Release()
@@ -211,8 +211,8 @@ func TestTable_SetNilDelete(t *testing.T) {
 }
 
 func TestTable_CrossStateSet(t *testing.T) {
-	// 把 state1 的 table 写入 state2 的 globals,toInner 应映射为 Nil 兜底
-	// (跨 State 引用是 GCRef 跨 arena,绝不能透传)。
+	// Write state1's table into state2's globals; toInner should map it to a Nil fallback
+	// (a cross-State reference is a GCRef across arenas and must never pass through).
 	st1 := wangshu.NewState(wangshu.Options{})
 	st2 := wangshu.NewState(wangshu.Options{})
 	tv := st1.NewTable()
@@ -230,7 +230,7 @@ func TestTable_AfterRelease(t *testing.T) {
 	tv := st.NewTable()
 	tbl := tv.AsTable()
 	tv.Release()
-	// AsTable 句柄持有的是 pinIdx;Release 后 PinnedRefAt 返回 Null → Get/Set 安全失效
+	// The AsTable handle holds a pinIdx; after Release, PinnedRefAt returns Null → Get/Set safely become no-ops
 	if err := tbl.Set(wangshu.String("x"), wangshu.Number(1)); err == nil ||
 		!strings.Contains(err.Error(), "released") {
 		t.Errorf("after release err = %v", err)
@@ -241,12 +241,12 @@ func TestTable_AfterRelease(t *testing.T) {
 	if tbl.Len() != 0 {
 		t.Errorf("after release Len = %d", tbl.Len())
 	}
-	tv.Release() // 重复 Release 无副作用
+	tv.Release() // repeated Release has no side effects
 }
 
 func TestTable_PinSurvivesGlobalOverwrite(t *testing.T) {
-	// 同 GetGlobal_PinSurvivesGlobalOverwrite 的 table 对偶:取出 → globals
-	// 覆盖 → GC 压力下表仍可用(pin 表把 GCRef 当根)。
+	// The table dual of GetGlobal_PinSurvivesGlobalOverwrite: pull out → globals
+	// overwritten → table still usable under GC pressure (the pin table treats the GCRef as a root).
 	st := wangshu.NewState(wangshu.Options{})
 	prog, _ := wangshu.Compile([]byte(`t = { x = 42 }`), "x")
 	if _, err := prog.Run(st); err != nil {
@@ -263,7 +263,7 @@ func TestTable_PinSurvivesGlobalOverwrite(t *testing.T) {
 }
 
 func TestTable_ReturnFromState_Call(t *testing.T) {
-	// 脚本函数返回 table → Go 端 state.Call 取得 → 读字段 round-trip。
+	// Script function returns a table → Go side gets it via state.Call → reads fields round-trip.
 	st := wangshu.NewState(wangshu.Options{})
 	prog, _ := wangshu.Compile([]byte(`
 function make(n)
@@ -292,8 +292,8 @@ end
 }
 
 func TestTable_ForEach_MixedKeys(t *testing.T) {
-	// pineapple 「return map」场景:string-key map + 整数 key 混在一表,
-	// adapter 桥到 map[string]any。
+	// pineapple "return map" scenario: string-key map + integer keys mixed in one table,
+	// bridged by the adapter to map[string]any.
 	st := wangshu.NewState(wangshu.Options{})
 	prog, _ := wangshu.Compile([]byte(`
 function f() return { name = "alice", age = 30, [1] = "first" } end
@@ -351,7 +351,7 @@ func TestTable_ForEach_EmptyTable(t *testing.T) {
 }
 
 func TestTable_ForEach_EarlyTerminate(t *testing.T) {
-	// fn 返 false 提前终止;只收集前 2 项。
+	// fn returns false to terminate early; only collect the first 2 items.
 	st := wangshu.NewState(wangshu.Options{})
 	tv := st.NewTable()
 	defer tv.Release()
@@ -362,7 +362,7 @@ func TestTable_ForEach_EarlyTerminate(t *testing.T) {
 	seen := 0
 	err := tbl.ForEach(func(_, _ wangshu.Value) bool {
 		seen++
-		return seen < 2 // 收到第 2 项后下次返 false
+		return seen < 2 // return false on the call after the 2nd item
 	})
 	if err != nil {
 		t.Fatalf("ForEach: %v", err)
@@ -373,7 +373,7 @@ func TestTable_ForEach_EarlyTerminate(t *testing.T) {
 }
 
 func TestTable_ForEach_NestedTable(t *testing.T) {
-	// fn 内拿到 nested table val,继续 ForEach 子表;复合值 Release。
+	// Inside fn, grab the nested table val and keep ForEach-ing the sub-table; Release compound values.
 	st := wangshu.NewState(wangshu.Options{})
 	prog, _ := wangshu.Compile([]byte(`
 function f() return { inner = { 100, 200, 300 } } end
@@ -421,7 +421,7 @@ func TestTable_ForEach_AfterRelease(t *testing.T) {
 }
 
 func TestTable_ForEach_DeterministicOrder(t *testing.T) {
-	// rawNext 序确定性:同形状下迭代序稳定(12 pairs 序口径)
+	// rawNext order determinism: iteration order is stable for the same shape (12-pairs ordering convention)
 	st := wangshu.NewState(wangshu.Options{})
 	tv := st.NewTable()
 	defer tv.Release()

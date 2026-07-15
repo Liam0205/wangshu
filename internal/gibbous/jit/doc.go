@@ -1,32 +1,35 @@
-// Package jit 实现 P4 method JIT(gibbous tier-1 第二发射后端)。
+// Package jit implements the P4 method JIT (gibbous tier-1 second emit backend).
 //
 // Status: delivered (PJ0-PJ11, 2026-07-01; per-op native emit + seg2seg).
 // amd64 and arm64 both emit native code with a spec-template path, an
 // exit-reason / frame-inline protocol, and seg2seg segment-to-segment CALL
 // dispatch (issue #50). See docs/design/p4-method-jit/implementation-progress.md.
 //
-// 与 P3(`internal/gibbous/wasm`)的关系:同 tier-1 不同发射后端,共享
-// `bridge.P3Compiler` 接口面(`p2-bridge/05-p3-p4-interface.md` §0.3 接口
-// 稳定性)——P3 发 wasm 交 wazero 跑、P4 发原生码自管 codegen。Build tag
-// 互斥:`wangshu_p3` 与 `wangshu_p4` 不同时启用(主助理裁决,与 P3 单字段
-// `b.p3` 注入对齐;PJ11 P3 退役时 P4 完全接手,见 07-p3-retirement.md §5)。
+// Relationship to P3 (`internal/gibbous/wasm`): same tier-1, different emit
+// backend, sharing the `bridge.P3Compiler` interface surface (`p2-bridge/05-p3-p4-interface.md`
+// §0.3 interface stability) — P3 emits wasm handed to wazero to run, P4 emits
+// native code and manages codegen itself. Build tags are mutually exclusive:
+// `wangshu_p3` and `wangshu_p4` are not enabled at the same time (main-assistant
+// decision, aligned with P3's single-field `b.p3` injection; when P3 is retired
+// in PJ11, P4 fully takes over — see 07-p3-retirement.md §5).
 //
-// **方案 A 投机生命周期 P4 自管**(`03-speculation-ic.md` §4 / §8 + 用户
-// 裁决 d0e57f4):P2 三态枚举 `TierInterp/TierGibbous/TierStuck` 不变;
-// P4 在本包内维护 `p4SpecState[proto]` 子状态机(`P4Speculative /
-// P4Deoptimized / P4StuckSpeculation`)。OSR exit / 重训练 / 拉黑投机全
-// P4 自管,P2 不感知。
+// **Approach A: speculation lifecycle self-managed by P4** (`03-speculation-ic.md`
+// §4 / §8 + user decision d0e57f4): the P2 three-state enum
+// `TierInterp/TierGibbous/TierStuck` stays unchanged; within this package P4
+// maintains a `p4SpecState[proto]` sub-state-machine (`P4Speculative /
+// P4Deoptimized / P4StuckSpeculation`). OSR exit / retraining / blacklisting
+// speculation are all self-managed by P4, transparent to P2.
 //
-// 包结构:
-//   - compiler.go     P3Compiler 实现 + 渐进白名单
-//   - code.go         GibbousCode 实装(p4Code struct)
-//   - p4state.go      P4 投机生命周期状态机(p4SpecState;spec-template deopt)
-//   - amd64/          amd64 后端(发射器 + trampoline asm)
-//   - arm64/          arm64 后端(同样的结构)
+// Package structure:
+//   - compiler.go     P3Compiler implementation + progressive whitelist
+//   - code.go         GibbousCode implementation (p4Code struct)
+//   - p4state.go      P4 speculation lifecycle state machine (p4SpecState; spec-template deopt)
+//   - amd64/          amd64 backend (emitter + trampoline asm)
+//   - arm64/          arm64 backend (same structure)
 //
-// 上游契约:
-//   - `docs/design/p4-method-jit/00-overview.md` §4 PJ 表 / §6 速查 / §9 不变式
-//   - `docs/design/p4-method-jit/02-template-direction.md` 方向裁决
-//   - `docs/design/p4-method-jit/05-system-pipeline.md` 系统管线四件套
-//   - `docs/design/p4-method-jit/06-backends.md` 双后端切分
+// Upstream contracts:
+//   - `docs/design/p4-method-jit/00-overview.md` §4 PJ table / §6 quick-reference / §9 invariants
+//   - `docs/design/p4-method-jit/02-template-direction.md` direction decision
+//   - `docs/design/p4-method-jit/05-system-pipeline.md` the system-pipeline four-piece set
+//   - `docs/design/p4-method-jit/06-backends.md` dual-backend split
 package jit

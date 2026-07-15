@@ -1,8 +1,10 @@
-// Random script generator for differential fuzzing (12 §3.2)。
+// Random script generator for differential fuzzing (12 §3.2).
 //
-// 受控文法生成确定性脚本(同 seed 同输出):只产"可安全对拍"的构造——
-// 数值算术/字符串拼接/比较/局部变量/控制流/函数调用。避开实现定义行为
-// (pairs 序、tostring(table) 地址等),保证输出可逐字节对拍。
+// A controlled grammar generates deterministic scripts (same seed, same output):
+// it only produces constructs that are "safe to diff" — numeric arithmetic /
+// string concatenation / comparison / local variables / control flow / function
+// calls. It avoids implementation-defined behavior (pairs order, tostring(table)
+// address, etc.), guaranteeing the output is byte-for-byte diffable.
 package difftest
 
 import (
@@ -26,15 +28,15 @@ type genState struct {
 	depth  int
 }
 
-// generateScript 产一个以 `return <expr>` 结尾的确定性脚本。
+// generateScript produces a deterministic script ending with `return <expr>`.
 func generateScript(seed int64) string {
 	g := &genState{rng: rand.New(rand.NewSource(seed))}
 	n := 3 + g.rng.Intn(5)
 	for i := 0; i < n; i++ {
 		g.stmt()
 	}
-	// 终结:return 全部局部的 tostring 拼接(输出依赖全部路径)。
-	// 表局部取 #t(长度可对拍;内容序不可对拍)。
+	// Terminate: return the tostring concatenation of all locals (output depends on all paths).
+	// A table local uses #t (length is diffable; content order is not).
 	g.sb.WriteString("return ")
 	if len(g.locals) == 0 {
 		g.sb.WriteString(g.numExpr())
@@ -102,10 +104,11 @@ func (g *genState) newLocal(k localKind) string {
 	return name
 }
 
-// pickLocal 找一个指定类型的局部;没有则新建。
+// pickLocal finds a local of the given type; creates a new one if none exists.
 //
-// 新建路径必须按"声明语句产生的局部下标"回查(decl* 内部可能级联新建其它
-// 类型局部,len-1 不一定是目标类型)。
+// The creation path must re-look-up by "the local index the declaration
+// statement produced" (a decl* may cascade into creating locals of other types,
+// so len-1 is not necessarily the target type).
 func (g *genState) pickLocal(k localKind) string {
 	var cand []int
 	for i, lk := range g.locals {
@@ -122,7 +125,7 @@ func (g *genState) pickLocal(k localKind) string {
 		case localTbl:
 			g.declTbl()
 		}
-		// 重新扫描:取新建后第一个该类型局部
+		// Rescan: take the first local of this type after creation
 		for i, lk := range g.locals {
 			if lk == k {
 				return fmt.Sprintf("v%d", i)
@@ -142,7 +145,7 @@ func (g *genState) declStr() {
 	fmt.Fprintf(&g.sb, "local %s = %s\n", name, g.strExpr())
 }
 
-// declTbl 声明一个数组表局部 + 若干写操作。
+// declTbl declares an array-table local + several write operations.
 func (g *genState) declTbl() {
 	name := g.newLocal(localTbl)
 	n := 1 + g.rng.Intn(4)
@@ -151,7 +154,7 @@ func (g *genState) declTbl() {
 		elems[i] = g.numExpr()
 	}
 	fmt.Fprintf(&g.sb, "local %s = { %s }\n", name, strings.Join(elems, ", "))
-	// 随机追加写/读
+	// Randomly append a write/read
 	switch g.rng.Intn(3) {
 	case 0:
 		fmt.Fprintf(&g.sb, "%s[#%s + 1] = %s\n", name, name, g.numExpr())
@@ -196,12 +199,12 @@ func (g *genState) ifStmt() {
 		fmt.Fprintf(&g.sb, "if %s > %d then %s = %s else %s = %s end\n",
 			v, g.rng.Intn(100), v, g.numExpr(), v, g.numExpr())
 	case 1:
-		// elseif 链
+		// elseif chain
 		fmt.Fprintf(&g.sb, "if %s > %d then %s = %s elseif %s > %d then %s = %s else %s = %s end\n",
 			v, 50+g.rng.Intn(50), v, g.numExpr(),
 			v, g.rng.Intn(50), v, g.numExpr(), v, g.numExpr())
 	case 2:
-		// 逻辑算符条件
+		// logical-operator condition
 		w := g.pickLocal(localNum)
 		fmt.Fprintf(&g.sb, "if %s > 0 and %s >= 0 or %s == %s then %s = %s + 1 end\n",
 			v, w, v, w, v, v)
@@ -215,7 +218,7 @@ func (g *genState) funcDef() {
 		name, op, name, name, g.rng.Intn(100), 1+g.rng.Intn(100))
 }
 
-// closureDef 闭包捕获 + 多次调用。
+// closureDef: closure capture + multiple calls.
 func (g *genState) closureDef() {
 	name := g.newLocal(localNum)
 	fmt.Fprintf(&g.sb, `local function mk%s()
@@ -228,7 +231,7 @@ local %s = c%s()
 `, name, g.rng.Intn(10), name, name, name, name, name)
 }
 
-// multiAssign 多值返回 + 截断/补 nil。
+// multiAssign: multi-value return + truncate/pad with nil.
 func (g *genState) multiAssign() {
 	a := g.newLocal(localNum)
 	b := g.newLocal(localNum)
@@ -236,21 +239,22 @@ func (g *genState) multiAssign() {
 		a, g.numExpr(), g.numExpr(), a, b, a)
 }
 
-// genericFor 泛型 for:ipairs 序确定可直接对拍;pairs 用序无关聚合(求和/计数)。
+// genericFor: generic for — ipairs order is deterministic and directly diffable;
+// pairs uses order-independent aggregation (sum/count).
 func (g *genState) genericFor() {
 	t := g.pickLocal(localTbl)
 	acc := g.pickLocal(localNum)
 	if g.rng.Intn(2) == 0 {
-		// ipairs:序确定
+		// ipairs: deterministic order
 		fmt.Fprintf(&g.sb, "for i, x in ipairs(%s) do %s = %s + i * (x %% 97) end\n", t, acc, acc)
 	} else {
-		// pairs:只做序无关聚合(键计数 + 数值求和)
+		// pairs: only order-independent aggregation (key count + numeric sum)
 		fmt.Fprintf(&g.sb, "for k, x in pairs(%s) do %s = %s + 1 + (type(x) == \"number\" and (x %% 89) or 0) end\n",
 			t, acc, acc)
 	}
 }
 
-// nestedFunc 两层嵌套函数定义(内层捕获外层形参)。
+// nestedFunc: two-level nested function definition (inner captures the outer parameter).
 func (g *genState) nestedFunc() {
 	name := g.newLocal(localNum)
 	fmt.Fprintf(&g.sb, `local function outer%s(a)
@@ -261,7 +265,8 @@ local %s = outer%s(%d)
 `, name, g.numExpr(), name, name, g.rng.Intn(100))
 }
 
-// patternStmt 受控模式集的 string.find/match/gsub(模式固定白名单,主语随机)。
+// patternStmt: string.find/match/gsub over a controlled pattern set (fixed
+// pattern whitelist, random subject).
 func (g *genState) patternStmt() {
 	name := g.newLocal(localStr)
 	subjects := []string{
@@ -287,7 +292,7 @@ for w in string.gmatch(%s, "%%w+") do %s = %s .. w .. "," end
 	}
 }
 
-// metaIndex 元表 __index 两形态(表链 / 函数)。
+// metaIndex: metatable __index in two forms (table chain / function).
 func (g *genState) metaIndex() {
 	name := g.newLocal(localNum)
 	if g.rng.Intn(2) == 0 {
@@ -302,7 +307,7 @@ local %s = t%s.somekey
 	}
 }
 
-// coroutineStmt 协程 yield 次序对拍(yield 序确定)。
+// coroutineStmt: coroutine yield-order diffing (yield order is deterministic).
 func (g *genState) coroutineStmt() {
 	name := g.newLocal(localStr)
 	n := 2 + g.rng.Intn(3)
@@ -319,12 +324,13 @@ end
 `, name, n, name, name, g.rng.Intn(20), n+1, name, name, name, name)
 }
 
-// metaOperators 算术/比较元方法(__add/__lt/__le/__eq 随机一种,行为确定)。
+// metaOperators: arithmetic/comparison metamethods (random one of
+// __add/__lt/__le/__eq, deterministic behavior).
 func (g *genState) metaOperators() {
 	name := g.newLocal(localStr)
 	switch g.rng.Intn(4) {
 	case 0:
-		// __add:b 可能是裸 number,须 type 判别后取值(number 不可索引)
+		// __add: b may be a bare number, must type-check before taking the value (a number is not indexable)
 		fmt.Fprintf(&g.sb, `local mt%s = { __add = function(a, b)
   local av = type(a) == "table" and a.v or a
   local bv = type(b) == "table" and b.v or b
@@ -340,7 +346,7 @@ local b%s = setmetatable({ v = %d }, mt%s)
 local %s = tostring(a%s < b%s)
 `, name, name, g.rng.Intn(50), name, name, g.rng.Intn(50), name, name, name, name)
 	case 2:
-		// __le 经 __lt 回退(5.1 特有)
+		// __le falls back through __lt (5.1-specific)
 		fmt.Fprintf(&g.sb, `local mt%s = { __lt = function(a, b) return a.v < b.v end }
 local a%s = setmetatable({ v = %d }, mt%s)
 local b%s = setmetatable({ v = %d }, mt%s)
@@ -355,7 +361,7 @@ local %s = tostring(a%s == b%s)
 	}
 }
 
-// metaCallable __call 可调用对象。
+// metaCallable: __call callable object.
 func (g *genState) metaCallable() {
 	name := g.newLocal(localNum)
 	op := []string{"+", "*", "-"}[g.rng.Intn(3)]
@@ -364,7 +370,7 @@ local %s = c%s(%d)
 `, name, g.rng.Intn(100), op, name, name, 1+g.rng.Intn(100))
 }
 
-// loadstringStmt 动态编译执行(代码串确定)。
+// loadstringStmt: dynamic compile-and-run (the code string is deterministic).
 func (g *genState) loadstringStmt() {
 	name := g.newLocal(localNum)
 	a, b := g.rng.Intn(100), 1+g.rng.Intn(100)
@@ -373,7 +379,7 @@ func (g *genState) loadstringStmt() {
 		name, a, op, b, name, name)
 }
 
-// tostringMeta __tostring 元方法。
+// tostringMeta: __tostring metamethod.
 func (g *genState) tostringMeta() {
 	name := g.newLocal(localStr)
 	fmt.Fprintf(&g.sb, `local o%s = setmetatable({}, { __tostring = function() return "obj<%d>" end })
@@ -381,7 +387,7 @@ local %s = tostring(o%s)
 `, name, g.rng.Intn(1000), name, name)
 }
 
-// numExpr 产一个安全的数值表达式。
+// numExpr produces a safe numeric expression.
 func (g *genState) numExpr() string {
 	if g.depth > 3 {
 		return fmt.Sprintf("%d", g.rng.Intn(1000))
@@ -392,7 +398,7 @@ func (g *genState) numExpr() string {
 	case 0:
 		return fmt.Sprintf("%d", g.rng.Intn(1000))
 	case 1:
-		// 控制小数位避免 %.14g 边缘(由 seed corpus 的专项用例覆盖)
+		// Control the number of decimal places to avoid %.14g edge cases (covered by dedicated cases in the seed corpus)
 		return fmt.Sprintf("%.4f", g.rng.Float64()*100)
 	case 2:
 		return fmt.Sprintf("(%s + %s)", g.numExpr(), g.numExpr())
@@ -405,12 +411,13 @@ func (g *genState) numExpr() string {
 	case 6:
 		return fmt.Sprintf("math.max(%s, %s)", g.numExpr(), g.numExpr())
 	case 7:
-		return fmt.Sprintf("(%s %% %d)", g.numExpr(), 1+g.rng.Intn(9)) // mod 非零
+		return fmt.Sprintf("(%s %% %d)", g.numExpr(), 1+g.rng.Intn(9)) // nonzero mod
 	case 8:
-		return fmt.Sprintf("#%s", g.strExpr()) // 字符串长度
+		return fmt.Sprintf("#%s", g.strExpr()) // string length
 	case 9:
-		// 短路表达式嵌入算术:`(cond and K1 or K2) op K3`——带跳转链的
-		// eKNum 不可折叠(isnumeral),此形态曾绕过全部防线触发 Go panic。
+		// Short-circuit expression embedded in arithmetic: `(cond and K1 or K2) op K3` —
+		// an eKNum with a jump chain cannot be folded (isnumeral); this shape once
+		// slipped past every guard and triggered a Go panic.
 		cond := []string{"true", "false", "(1 < 2)", "(2 < 1)"}[g.rng.Intn(4)]
 		return fmt.Sprintf("((%s and %d or %d) + %d)",
 			cond, g.rng.Intn(100), g.rng.Intn(100), g.rng.Intn(100))
@@ -418,7 +425,7 @@ func (g *genState) numExpr() string {
 	return "0"
 }
 
-// strExpr 产一个安全的字符串表达式。
+// strExpr produces a safe string expression.
 func (g *genState) strExpr() string {
 	words := []string{`"abc"`, `"hello"`, `"x"`, `""`, `"42"`}
 	if g.depth > 2 {

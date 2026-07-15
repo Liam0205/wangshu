@@ -8,14 +8,15 @@ import (
 	"github.com/Liam0205/wangshu/internal/bytecode"
 )
 
-// p4state_test.go — P4 内部投机子状态机单测(承
-// docs/design/p4-method-jit/04-osr-deopt.md §5 状态转移表)。
+// p4state_test.go — unit tests for the P4 internal speculation sub-state machine
+// (follows docs/design/p4-method-jit/04-osr-deopt.md §5 state-transition table).
 //
-// 本批落地是 OSR exit 协议的工程基础(p4SpecState map + DeoptThreshold /
-// MaxRecompileTries 阈值占位 + onOSRExit / onP4Install 转移函数 + 探针),
-// 等段内 EmitCallInline 投机模板真接入时激活。
+// This batch lands the engineering groundwork for the OSR exit protocol (the
+// p4SpecState map + DeoptThreshold / MaxRecompileTries threshold placeholders +
+// onOSRExit / onP4Install transition functions + probes); it activates once the
+// in-segment EmitCallInline speculative template is actually wired in.
 
-// TestP4SpecState_DefaultIsUnknown 未注册 Proto 默认 P4SpecUnknown。
+// TestP4SpecState_DefaultIsUnknown: an unregistered Proto defaults to P4SpecUnknown.
 func TestP4SpecState_DefaultIsUnknown(t *testing.T) {
 	ResetP4SpecState()
 	proto := &bytecode.Proto{}
@@ -24,17 +25,17 @@ func TestP4SpecState_DefaultIsUnknown(t *testing.T) {
 	}
 }
 
-// TestP4SpecState_NilProtoSafe nil Proto 安全返回 P4SpecUnknown 不 panic。
+// TestP4SpecState_NilProtoSafe: a nil Proto safely returns P4SpecUnknown without panicking.
 func TestP4SpecState_NilProtoSafe(t *testing.T) {
 	ResetP4SpecState()
 	if got := P4SpecStateOf(nil); got != P4SpecUnknown {
 		t.Errorf("nil proto = %v, want P4SpecUnknown", got)
 	}
-	onOSRExit(nil) // 不 panic
+	onOSRExit(nil) // does not panic
 	onP4Install(nil)
 }
 
-// TestP4SpecState_InstallTransitions onP4Install:首次 → P4Speculative。
+// TestP4SpecState_InstallTransitions onP4Install: first install → P4Speculative.
 func TestP4SpecState_InstallTransitions(t *testing.T) {
 	ResetP4SpecState()
 	proto := &bytecode.Proto{}
@@ -44,7 +45,7 @@ func TestP4SpecState_InstallTransitions(t *testing.T) {
 	}
 }
 
-// TestP4SpecState_DeoptCountUnderThreshold 单次 OSR exit 不切状态。
+// TestP4SpecState_DeoptCountUnderThreshold: a single OSR exit does not switch state.
 func TestP4SpecState_DeoptCountUnderThreshold(t *testing.T) {
 	ResetP4SpecState()
 	ResetSpecHits()
@@ -61,7 +62,7 @@ func TestP4SpecState_DeoptCountUnderThreshold(t *testing.T) {
 	}
 }
 
-// TestP4SpecState_DeoptCountReachThreshold 达 DeoptThreshold → P4Deoptimized。
+// TestP4SpecState_DeoptCountReachThreshold: reaching DeoptThreshold → P4Deoptimized.
 func TestP4SpecState_DeoptCountReachThreshold(t *testing.T) {
 	ResetP4SpecState()
 	ResetSpecHits()
@@ -79,33 +80,33 @@ func TestP4SpecState_DeoptCountReachThreshold(t *testing.T) {
 }
 
 // TestP4SpecState_RecompileTransitions P4Deoptimized → P4Speculative
-// (重编译 recompileCount += 1)。
+// (recompile, recompileCount += 1).
 func TestP4SpecState_RecompileTransitions(t *testing.T) {
 	ResetP4SpecState()
 	ResetSpecHits()
 	proto := &bytecode.Proto{}
 	onP4Install(proto)
-	// 触发 deopt
+	// trigger deopt
 	for i := 0; i < int(DeoptThreshold); i++ {
 		onOSRExit(proto)
 	}
 	if got := P4SpecStateOf(proto); got != P4Deoptimized {
 		t.Fatalf("应已 P4Deoptimized,got %v", got)
 	}
-	// 重编译
+	// recompile
 	onP4Install(proto)
 	if got := P4SpecStateOf(proto); got != P4Speculative {
 		t.Errorf("重编译后状态 = %v, want P4Speculative", got)
 	}
 }
 
-// TestP4SpecState_MaxRecompileTriesReachedStuck 重编译次数达上限 → P4StuckSpeculation。
+// TestP4SpecState_MaxRecompileTriesReachedStuck: recompile count hits the cap → P4StuckSpeculation.
 func TestP4SpecState_MaxRecompileTriesReachedStuck(t *testing.T) {
 	ResetP4SpecState()
 	ResetSpecHits()
 	proto := &bytecode.Proto{}
 	onP4Install(proto)
-	// 循环触发 deopt + 重编译 MaxRecompileTries 次
+	// loop: trigger deopt + recompile MaxRecompileTries times
 	for r := uint32(0); r < MaxRecompileTries; r++ {
 		for i := 0; i < int(DeoptThreshold); i++ {
 			onOSRExit(proto)
@@ -113,9 +114,9 @@ func TestP4SpecState_MaxRecompileTriesReachedStuck(t *testing.T) {
 		if got := P4SpecStateOf(proto); got != P4Deoptimized {
 			t.Fatalf("第 %d 次 deopt 后应 P4Deoptimized,got %v", r, got)
 		}
-		onP4Install(proto) // 重编译
+		onP4Install(proto) // recompile
 	}
-	// 再次 deopt:recompileCount 已达 MaxRecompileTries,本批 deopt 切 P4StuckSpeculation
+	// deopt again: recompileCount has reached MaxRecompileTries, so this batch of deopt switches to P4StuckSpeculation
 	for i := 0; i < int(DeoptThreshold); i++ {
 		onOSRExit(proto)
 	}

@@ -1,8 +1,9 @@
-// 尺寸入口加固回归。
+// Size-entry hardening regression.
 //
-// uint32 回绕族:nbytes 接近 0xFFFFFFFF 时 roundUp8 / bump+need / words*8
-// 都会回绕成小值,超大请求被静默"成功"切走 8 字节(错误别名,静默错果)。
-// 加固后必须 fail-fast panic。
+// uint32 wraparound family: when nbytes is near 0xFFFFFFFF, roundUp8 /
+// bump+need / words*8 all wrap around to small values, so an oversized
+// request is silently "succeeded" and hands back an 8-byte slice (aliased
+// error, silent wrong result). After hardening these must fail-fast panic.
 package arena
 
 import "testing"
@@ -48,10 +49,10 @@ func TestAllocBytes_SmallStillWorksAfterGuards(t *testing.T) {
 	}
 }
 
-// freelist 行为:Free 后复用、复用块清零、LARGE 首次适配。
+// freelist behavior: reuse after Free, zero-fill the reused block, LARGE first-fit.
 func TestFreelist_ReuseAndZeroFill(t *testing.T) {
 	a := New(Options{InitialBytes: 4096})
-	r1 := a.AllocBytes(24) // 3 字 → class 2
+	r1 := a.AllocBytes(24) // 3 words → class 2
 	a.SetWordAt(r1, 0xDEADBEEF)
 	a.SetWordAt(r1+8, 0xDEADBEEF)
 	a.Free(r1, 24)
@@ -66,14 +67,14 @@ func TestFreelist_ReuseAndZeroFill(t *testing.T) {
 
 func TestFreelist_LargeFirstFit(t *testing.T) {
 	a := New(Options{InitialBytes: 64 * 1024})
-	big := a.AllocBytes(200 * 8) // 200 字 > 64 → LARGE
+	big := a.AllocBytes(200 * 8) // 200 words > 64 → LARGE
 	a.Free(big, 200*8)
-	got := a.AllocBytes(200 * 8) // 精确命中
+	got := a.AllocBytes(200 * 8) // exact hit
 	if got != big {
 		t.Fatalf("LARGE exact-fit reuse failed: want %d got %d", big, got)
 	}
 	a.Free(got, 200*8)
-	// 200 字块对 70 字请求:剩 130 > 64 独立成 LARGE 块
+	// 200-word block for a 70-word request: 130 remaining > 64, becomes its own LARGE block
 	part := a.AllocBytes(70 * 8)
 	if part != big {
 		t.Fatalf("LARGE split reuse failed: want %d got %d", big, part)
@@ -81,41 +82,44 @@ func TestFreelist_LargeFirstFit(t *testing.T) {
 	if a.FreeBytes() == 0 {
 		t.Fatal("split remainder not returned to freelist")
 	}
-	// 100 字块对 70 字请求:剩 30 ≤ 64 → 向下取整入定长桶(不再滞留)
+	// 100-word block for a 70-word request: 30 remaining ≤ 64 → floored into a
+	// fixed-size bucket (no longer stranded)
 	small := a.AllocBytes(100 * 8)
 	a.Free(small, 100*8)
 	taken := a.AllocBytes(70 * 8)
 	if taken != small {
 		t.Fatalf("slightly-larger LARGE block must be taken (no stranding): want %d got %d", small, taken)
 	}
-	// 剩余 30 字进了桶:28 字(class 14 代表)请求应命中该余块
+	// remaining 30 words went into a bucket: a 28-word (class-14 representative)
+	// request should hit that remainder block
 	rem := a.AllocBytes(28 * 8)
 	if rem != small+GCRef(70*8) {
 		t.Fatalf("remainder not bucketed: want %d got %d", small+GCRef(70*8), rem)
 	}
 }
 
-// --- LARGE multi-bucket size-class (issue #10 root fix) 直接单测 ---
+// --- LARGE multi-bucket size-class (issue #10 root fix) direct unit tests ---
 
-// TestLargeSizeClass_Boundaries 验证 largeSizeClass 在 power-of-2 边界 + 中间值的桶号映射。
-// 桶 i 对应 words ∈ ((1<<(6+i)), (1<<(7+i))]:桶 0=65..128, 桶 1=129..256, ...
+// TestLargeSizeClass_Boundaries verifies largeSizeClass bucket mapping at
+// power-of-2 boundaries plus in-between values.
+// Bucket i covers words ∈ ((1<<(6+i)), (1<<(7+i))]: bucket 0=65..128, bucket 1=129..256, ...
 func TestLargeSizeClass_Boundaries(t *testing.T) {
 	cases := []struct {
 		words  uint32
 		bucket int
 	}{
-		{65, 0},       // 桶 0 起点
-		{100, 0},      // 桶 0 中段
-		{128, 0},      // 桶 0 终点(精确 2^7)
-		{129, 1},      // 桶 1 起点
-		{200, 1},      // 桶 1 中段
-		{256, 1},      // 桶 1 终点(精确 2^8)
-		{257, 2},      // 桶 2 起点
-		{512, 2},      // 桶 2 终点
-		{513, 3},      // 桶 3 起点
-		{1024, 3},     // 桶 3 终点
-		{1 << 20, 13}, // 1M words = 1<<20,桶 13(2^20)
-		{1 << 28, 21}, // 2GB words 上限(=MaxBytes/8 量级)
+		{65, 0},       // bucket 0 start
+		{100, 0},      // bucket 0 middle
+		{128, 0},      // bucket 0 end (exactly 2^7)
+		{129, 1},      // bucket 1 start
+		{200, 1},      // bucket 1 middle
+		{256, 1},      // bucket 1 end (exactly 2^8)
+		{257, 2},      // bucket 2 start
+		{512, 2},      // bucket 2 end
+		{513, 3},      // bucket 3 start
+		{1024, 3},     // bucket 3 end
+		{1 << 20, 13}, // 1M words = 1<<20, bucket 13 (2^20)
+		{1 << 28, 21}, // 2GB words upper limit (= MaxBytes/8 magnitude)
 	}
 	for _, c := range cases {
 		if got := largeSizeClass(c.words); got != c.bucket {
@@ -124,28 +128,30 @@ func TestLargeSizeClass_Boundaries(t *testing.T) {
 	}
 }
 
-// TestLargeSizeClass_Clamp 验证超大 words(超 numLargeClasses 范围)clamp 到末桶。
+// TestLargeSizeClass_Clamp verifies that oversized words (beyond the
+// numLargeClasses range) clamp to the last bucket.
 func TestLargeSizeClass_Clamp(t *testing.T) {
 	if got := largeSizeClass(1 << 31); got != numLargeClasses-1 {
 		t.Errorf("largeSizeClass clamp at boundary: got %d, want %d", got, numLargeClasses-1)
 	}
 }
 
-// TestLargeFreelist_BucketSegregation 验证不同 size 块入不同桶。Free 多个 size 后
-// 反复 Alloc 同 size 应直接命中对应桶,不跨桶扫描。
+// TestLargeFreelist_BucketSegregation verifies that blocks of different sizes go
+// into different buckets. After Free'ing several sizes, repeatedly Alloc'ing the
+// same size should hit the matching bucket directly, without scanning across buckets.
 func TestLargeFreelist_BucketSegregation(t *testing.T) {
 	a := New(Options{InitialBytes: 1 << 16})
-	// 分配 5 个不同 size:128, 256, 512, 1024, 2048 字(各占独立桶)
+	// Allocate 5 different sizes: 128, 256, 512, 1024, 2048 words (each in its own bucket)
 	sizes := []uint32{128, 256, 512, 1024, 2048}
 	refs := make([]GCRef, len(sizes))
 	for i, s := range sizes {
 		refs[i] = a.AllocBytes(s * 8)
 	}
-	// Free 全部
+	// Free them all
 	for i, s := range sizes {
 		a.Free(refs[i], s*8)
 	}
-	// 反复 Alloc 同 size 应命中各自桶的头部(LIFO)
+	// Repeatedly Alloc'ing the same size should hit the head of its own bucket (LIFO)
 	for i, s := range sizes {
 		got := a.AllocBytes(s * 8)
 		if got != refs[i] {
@@ -154,30 +160,30 @@ func TestLargeFreelist_BucketSegregation(t *testing.T) {
 	}
 }
 
-// TestLargeFreelist_CrossBucketUpgrade 验证桶 c0 空时升桶 c0+1 查找。
+// TestLargeFreelist_CrossBucketUpgrade verifies upgrading to bucket c0+1 when bucket c0 is empty.
 func TestLargeFreelist_CrossBucketUpgrade(t *testing.T) {
 	a := New(Options{InitialBytes: 1 << 16})
-	// 只在 桶 1(129..256 字)Free 一块 200 字
+	// Free a single 200-word block into bucket 1 (129..256 words) only
 	big := a.AllocBytes(200 * 8)
 	a.Free(big, 200*8)
-	// 请求 100 字(桶 0,65..128)— 桶 0 空,升到 桶 1 找到 200 字
+	// Request 100 words (bucket 0, 65..128) — bucket 0 is empty, upgrade to bucket 1 and find the 200-word block
 	got := a.AllocBytes(100 * 8)
 	if got != big {
 		t.Fatalf("cross-bucket upgrade failed: want %d got %d", big, got)
 	}
 }
 
-// TestLargeFreelist_PopLarge_EmptyReturnsZero 验证全桶空时 popLarge 返 0。
+// TestLargeFreelist_PopLarge_EmptyReturnsZero verifies popLarge returns 0 when all buckets are empty.
 func TestLargeFreelist_PopLarge_EmptyReturnsZero(t *testing.T) {
 	a := New(Options{InitialBytes: 1 << 16})
-	// 没有任何 Free → 所有 LARGE 桶空
+	// No Free at all → all LARGE buckets empty
 	if ref := a.popLarge(200); !ref.IsNull() {
 		t.Errorf("popLarge with empty buckets returned non-null: %d", ref)
 	}
 }
 
-// TestLargeFreelist_ExactHitO1 验证桶 c0 头部精确同 size 命中 O(1)。
-// 通过反复 Alloc+Free 同 size 验证 LIFO 头部命中。
+// TestLargeFreelist_ExactHitO1 verifies that an exact same-size hit at the head of bucket c0 is O(1).
+// It repeatedly Alloc+Free's the same size to verify LIFO head hits.
 func TestLargeFreelist_ExactHitO1(t *testing.T) {
 	a := New(Options{InitialBytes: 1 << 18})
 	const words = uint32(512)
@@ -192,46 +198,48 @@ func TestLargeFreelist_ExactHitO1(t *testing.T) {
 	}
 }
 
-// TestLargeFreelist_RemainderToCorrectBucket 验证剩余切到对应桶(>64 字 LARGE / ≤64 字 small)。
+// TestLargeFreelist_RemainderToCorrectBucket verifies the remainder is split into
+// the right bucket (>64 words LARGE / ≤64 words small).
 func TestLargeFreelist_RemainderToCorrectBucket(t *testing.T) {
 	a := New(Options{InitialBytes: 1 << 16})
-	// 200 字块 — Free + Alloc 70 字 → 剩 130 字 > 64 → 进 LARGE 桶 1(129..256)
+	// 200-word block — Free + Alloc 70 words → 130 words remaining > 64 → into LARGE bucket 1 (129..256)
 	big := a.AllocBytes(200 * 8)
 	a.Free(big, 200*8)
 	taken := a.AllocBytes(70 * 8)
 	if taken != big {
 		t.Fatalf("alloc 70w from 200w block failed: want %d got %d", big, taken)
 	}
-	// 剩 130 字应该能被 Alloc 130 字 popLarge 命中
+	// The remaining 130 words should be hit by popLarge for an Alloc of 130 words
 	rem := a.AllocBytes(130 * 8)
 	if rem != big+GCRef(70*8) {
 		t.Fatalf("remainder 130 not in correct bucket: want %d got %d", big+GCRef(70*8), rem)
 	}
 }
 
-// TestLargeFreelist_RemainderToSmallBucket 验证剩余 ≤ 64 字进 small 桶。
+// TestLargeFreelist_RemainderToSmallBucket verifies a remainder ≤ 64 words goes into a small bucket.
 func TestLargeFreelist_RemainderToSmallBucket(t *testing.T) {
 	a := New(Options{InitialBytes: 1 << 16})
-	// 130 字块 — Free + Alloc 100 字 → 剩 30 字 ≤ 64 → 向下取整到 small 桶
+	// 130-word block — Free + Alloc 100 words → 30 words remaining ≤ 64 → floored into a small bucket
 	big := a.AllocBytes(130 * 8)
 	a.Free(big, 130*8)
 	taken := a.AllocBytes(100 * 8)
 	if taken != big {
 		t.Fatalf("alloc 100w from 130w LARGE block failed: want %d got %d", big, taken)
 	}
-	// 剩 30 字进 small 桶:28 字(class 14 代表)请求应命中
+	// remaining 30 words into a small bucket: a 28-word (class-14 representative) request should hit
 	rem := a.AllocBytes(28 * 8)
 	if rem != big+GCRef(100*8) {
 		t.Fatalf("remainder ≤64 not in small bucket: want %d got %d", big+GCRef(100*8), rem)
 	}
 }
 
-// TestLargeFreelist_FragmentationAvoidance 模拟 issue #10 反复 doublings 工作负载,
-// 验证 multi-bucket 下扫描深度 bounded(不会出现 O(N) 单链)。
-// 间接验证手法:反复 1000 次 build 多 doublings 后,Alloc 仍 O(1) ish。
+// TestLargeFreelist_FragmentationAvoidance simulates the repeated-doublings workload
+// from issue #10, verifying that scan depth stays bounded under multi-bucket layout
+// (no O(N) single chain). Indirect verification: after 1000 rounds of building many
+// doublings, Alloc is still O(1)-ish.
 func TestLargeFreelist_FragmentationAvoidance(t *testing.T) {
 	a := New(Options{InitialBytes: 1 << 20})
-	// 模拟 #10 用法:反复分配 array seg 不同尺寸 + Free
+	// Simulate #10 usage: repeatedly allocate array segs of different sizes + Free
 	sizes := []uint32{128, 256, 512, 1024, 2048, 4096}
 	for round := 0; round < 100; round++ {
 		refs := make([]GCRef, len(sizes))
@@ -242,8 +250,9 @@ func TestLargeFreelist_FragmentationAvoidance(t *testing.T) {
 			a.Free(refs[i], sizes[i]*8)
 		}
 	}
-	// 累计 100 轮 × 6 sizes = 600 free + alloc 后,再一次 Alloc 各 size 应仍命中桶头部 O(1)
-	// (LIFO + multi-bucket 双重保证)
+	// After 100 rounds × 6 sizes = 600 free + alloc, one more Alloc of each size
+	// should still hit the bucket head O(1)
+	// (guaranteed by both LIFO + multi-bucket)
 	for _, s := range sizes {
 		ref := a.AllocBytes(s * 8)
 		if ref.IsNull() {
@@ -253,7 +262,7 @@ func TestLargeFreelist_FragmentationAvoidance(t *testing.T) {
 	}
 }
 
-// TestLargeFreelist_ZeroFillOnReuse 验证 LARGE 块复用时 zeroFill 清旧脏数据。
+// TestLargeFreelist_ZeroFillOnReuse verifies zeroFill clears old stale data when a LARGE block is reused.
 func TestLargeFreelist_ZeroFillOnReuse(t *testing.T) {
 	a := New(Options{InitialBytes: 1 << 16})
 	big := a.AllocBytes(200 * 8)
@@ -269,9 +278,9 @@ func TestLargeFreelist_ZeroFillOnReuse(t *testing.T) {
 	}
 }
 
-// --- arena Compact (issue #11 方向 1) 直接单测 ---
+// --- arena Compact (issue #11 direction 1) direct unit tests ---
 
-// TestCompact_NoOpAtMinCap 验证 cap ≤ max(bump, 64 KiB) 时 Compact no-op。
+// TestCompact_NoOpAtMinCap verifies Compact is a no-op when cap ≤ max(bump, 64 KiB).
 func TestCompact_NoOpAtMinCap(t *testing.T) {
 	a := New(Options{InitialBytes: 64 * 1024})
 	cap0 := a.Cap()
@@ -281,10 +290,10 @@ func TestCompact_NoOpAtMinCap(t *testing.T) {
 	}
 }
 
-// TestCompact_ShrinkAfterGrowDoubling 验证 grow doubling 后 Compact 真缩回 bump。
+// TestCompact_ShrinkAfterGrowDoubling verifies Compact actually shrinks back to bump after grow doubling.
 func TestCompact_ShrinkAfterGrowDoubling(t *testing.T) {
 	a := New(Options{InitialBytes: 64 * 1024})
-	// 分配 200 KB → 触发 grow doubling 到 256 KB
+	// Allocate 200 KB → triggers grow doubling to 256 KB
 	r := a.AllocBytes(200 * 1024)
 	if r.IsNull() {
 		t.Fatal("alloc 200KB failed")
@@ -300,7 +309,7 @@ func TestCompact_ShrinkAfterGrowDoubling(t *testing.T) {
 	}
 }
 
-// TestCompact_Idempotent 验证多次 Compact 第二次 no-op。
+// TestCompact_Idempotent verifies a second Compact is a no-op.
 func TestCompact_Idempotent(t *testing.T) {
 	a := New(Options{InitialBytes: 64 * 1024})
 	_ = a.AllocBytes(200 * 1024)
@@ -313,10 +322,10 @@ func TestCompact_Idempotent(t *testing.T) {
 	}
 }
 
-// TestCompact_GCRefValidAfterCompact 验证 Compact 后已 Alloc 的 GCRef 仍合法读写。
+// TestCompact_GCRefValidAfterCompact verifies GCRefs already Alloc'd are still valid for read/write after Compact.
 func TestCompact_GCRefValidAfterCompact(t *testing.T) {
 	a := New(Options{InitialBytes: 64 * 1024})
-	// 分配多个块,写已知值,Compact 后读应一致
+	// Allocate several blocks, write known values, and after Compact reads should match
 	type record struct {
 		ref   GCRef
 		words uint32
@@ -332,10 +341,10 @@ func TestCompact_GCRefValidAfterCompact(t *testing.T) {
 		}
 		records = append(records, record{ref, w, vals})
 	}
-	// 触发 grow doubling 让 Compact 有缩空间
+	// Trigger grow doubling so Compact has room to shrink
 	_ = a.AllocBytes(200 * 1024)
 	a.Compact()
-	// Compact 后所有 GCRef 应能读出原值
+	// After Compact all GCRefs should read back their original values
 	for _, r := range records {
 		for i := uint32(0); i < r.words; i++ {
 			got := a.WordAt(r.ref + GCRef(i*8))
@@ -347,27 +356,28 @@ func TestCompact_GCRefValidAfterCompact(t *testing.T) {
 	}
 }
 
-// TestCompact_FreelistValidAfterCompact 验证 Compact 后 freelist 复用仍正确。
+// TestCompact_FreelistValidAfterCompact verifies freelist reuse is still correct after Compact.
 func TestCompact_FreelistValidAfterCompact(t *testing.T) {
 	a := New(Options{InitialBytes: 64 * 1024})
-	// 触发 grow + 一些 Free 进 freelist
+	// Trigger grow + some Frees into the freelist
 	r1 := a.AllocBytes(200 * 8)
 	r2 := a.AllocBytes(400 * 8)
 	a.Free(r1, 200*8)
 	a.Free(r2, 400*8)
-	// 触发 grow doubling
+	// Trigger grow doubling
 	_ = a.AllocBytes(150 * 1024)
 	a.Compact()
-	// Compact 后再 Free + Alloc 应仍可走 freelist
-	r3 := a.AllocBytes(200 * 8) // 应能命中 r1 残留
+	// After Compact, Free + Alloc should still go through the freelist
+	r3 := a.AllocBytes(200 * 8) // should hit the r1 remnant
 	if r3 != r1 {
 		t.Errorf("post-Compact freelist reuse broke: want %d got %d", r1, r3)
 	}
 }
 
-// TestCompact_InPlaceBackingNoOp 验证 InPlaceBacking 模式下 Compact no-op
-// (P3 收养 wazero linear memory 不可缩,但默认 BackingFn 没设 InPlaceBacking 默认 false;
-// 这里手动 Options.InPlaceBacking=true 测 P3 路径)。
+// TestCompact_InPlaceBackingNoOp verifies Compact is a no-op under InPlaceBacking mode
+// (P3 adopts wazero linear memory which cannot shrink; the default BackingFn leaves
+// InPlaceBacking at its default false, so here we manually set Options.InPlaceBacking=true
+// to test the P3 path).
 func TestCompact_InPlaceBackingNoOp(t *testing.T) {
 	a := New(Options{InitialBytes: 64 * 1024, InPlaceBacking: true})
 	_ = a.AllocBytes(200 * 1024)
@@ -378,7 +388,7 @@ func TestCompact_InPlaceBackingNoOp(t *testing.T) {
 	}
 }
 
-// floorClass 边界:入参契约 1..64,>64 须 clamp 而非越界 panic。
+// floorClass bounds: the input contract is 1..64; >64 must clamp rather than panic out of bounds.
 func TestFloorClassBounds(t *testing.T) {
 	if c := floorClass(0); c != -1 {
 		t.Errorf("floorClass(0) = %d, want -1", c)
@@ -389,7 +399,7 @@ func TestFloorClassBounds(t *testing.T) {
 	if c := floorClass(64); classWords(c) > 64 {
 		t.Errorf("floorClass(64) rep %d exceeds 64", classWords(c))
 	}
-	// >64 clamp 到 64,不 panic
+	// >64 clamps to 64, no panic
 	if c := floorClass(100); classWords(c) > 64 {
 		t.Errorf("floorClass(100) rep %d exceeds 64 (clamp failed)", classWords(c))
 	}

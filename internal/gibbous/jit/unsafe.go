@@ -4,14 +4,14 @@ package jit
 
 import "unsafe"
 
-// jitContextAddr 把 *JITContext 转 uintptr,供 callJITFull 的 r15 装载入参。
+// jitContextAddr converts *JITContext to uintptr, for loading into r15 as an argument to callJITFull.
 //
-// **unsafe 范围**:JITContext 是 Go 堆对象,GC 不会移动 Go 堆;uintptr 在
-// JITContext 生命期内稳定(承 05-system-pipeline §1.3.4 「JIT 不持任何 Go 栈
-// 指针,jitContext 在 Go 堆」)。
+// **unsafe scope**: JITContext is a Go heap object, and the GC does not move the Go heap; the uintptr
+// stays stable for the lifetime of the JITContext (per 05-system-pipeline §1.3.4 "the JIT holds no Go
+// stack pointers, and jitContext lives on the Go heap").
 //
-// 注:本函数返回 uintptr 后,调用方负责在 JIT 世界期间不让 jitCtx 被 GC
-// 回收(p4Code 持 *JITContext 字段保活)。
+// Note: after this function returns a uintptr, the caller is responsible for keeping jitCtx from being
+// reclaimed by the GC while in the JIT world (the p4Code holds a *JITContext field to keep it alive).
 func jitContextAddr(ctx *JITContext) uintptr {
 	if ctx == nil {
 		return 0

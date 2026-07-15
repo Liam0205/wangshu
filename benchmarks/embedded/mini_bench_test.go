@@ -10,11 +10,11 @@
 // by per-call boundary cost, not VM-core speed. This tier measures that path
 // honestly, and contrasts the allocating Call() against the zero-alloc CallInto().
 //
-// build tag `!wangshu_p3 && !wangshu_p4`:与 `embedded_gibbous_test.go`
-// (wangshu_p3)/`embedded_gibbous_jit_test.go`(wangshu_p4)互斥,避免 p3/p4
-// build 的 wangshu_profile 采样钩污染 `_Wangshu` / `_Gopher` 数字 + 与 bench-p1
-// 重复(issue #15 review)。共享 const / type / makeItems 在 `consts_test.go`
-// 里(无 build tag)。
+// build tag `!wangshu_p3 && !wangshu_p4`: mutually exclusive with `embedded_gibbous_test.go`
+// (wangshu_p3) / `embedded_gibbous_jit_test.go` (wangshu_p4), to avoid the p3/p4
+// build's wangshu_profile sampling hook polluting the `_Wangshu` / `_Gopher` numbers +
+// duplication with bench-p1 (issue #15 review). Shared const / type / makeItems live in
+// `consts_test.go` (no build tag).
 //
 // Run: `make bench-p1`
 package embedded

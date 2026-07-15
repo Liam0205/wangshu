@@ -2,13 +2,17 @@
 
 package crescent
 
-// profileEnabled 是 P2 计数开关的编译期常量(`docs/design/p2-bridge/01-profiling.md`
-// §3.5 路线 B 旁路计数 + §0.1 不变式 1):
+// profileEnabled is the compile-time constant of the P2 counting switch
+// (`docs/design/p2-bridge/01-profiling.md` §3.5 route B bypass counting + §0.1
+// invariant 1):
 //
-//   - 默认 false:回边 / 入口采样钩点全段被 Go 编译器消去——P1-only 部署
-//     完全不付计数税(零开销),与 P1 行为逐字节一致。
-//   - `go build -tags wangshu_profile` 启用为 true,激活 P2 决策机。
+//   - Default false: the back-edge / entry sampling hook points are entirely
+//     eliminated by the Go compiler — a P1-only deployment pays no counting tax
+//     at all (zero overhead), byte-for-byte identical to P1 behavior.
+//   - `go build -tags wangshu_profile` enables it as true, activating the P2
+//     decision machine.
 //
-// 这是「每阶段独立交付」(原则 3)在 P1 ↔ P2 边界的物理兑现:**P2 启用是
-// 内部行为切换,公共 API 不变**。
+// This is the physical realization of "independent per-stage delivery"
+// (principle 3) at the P1 ↔ P2 boundary: **enabling P2 is an internal behavior
+// switch, the public API is unchanged**.
 const profileEnabled = false

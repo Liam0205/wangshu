@@ -9,44 +9,46 @@ import (
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
-// gibbous_pj4_table_e2e_test.go —— PJ4 IC ArrayHit 字节级 inline 真升层
-// e2e:`function(t) return t[1] end` 形态经 P4 升层后 mmap 段直发 IC 直达槽
-// inline,跳过哈希 + byte-equal P1。
+// gibbous_pj4_table_e2e_test.go —— PJ4 IC ArrayHit byte-level inline real promotion
+// e2e: `function(t) return t[1] end` shape, after P4 promotion the mmap segment
+// dispatches the IC direct-hit slot inline, skipping the hash + byte-equal P1 path.
 //
-// **prove-the-path**:SpecTableHits 探针实证模板真编译。
+// **prove-the-path**: SpecTableHits probe proves the template is really compiled.
 //
-// **关键路径理解**(下次踩坑前看清):
+// **Critical-path understanding** (read before the next pitfall):
 //
-// PJ4 IC inline 走通的链路如下:
+// The PJ4 IC inline path works through the following chain:
 //
-//  1. P1 解释器跑 inner f(t) 时,GETTABLE → icGetTable 填 IC[0].Kind=ArrayHit
-//     + Shape + Index(per-State,经 LoadProgram 时 cp.IC=make);
-//  2. inner f 升层时 considerPromotion → Aggregate 把 IC[0] 聚合为
+//  1. When the P1 interpreter runs inner f(t), GETTABLE → icGetTable fills
+//     IC[0].Kind=ArrayHit + Shape + Index (per-State, via cp.IC=make at LoadProgram);
+//  2. When inner f is promoted, considerPromotion → Aggregate folds IC[0] into
 //     feedback.Points[0] (Kind=FBTableMono, Confidence=1.0, StableShape/Index);
-//  3. jit.Compile 经 analyzeGetTableArrayHit 验「proto 形态 + IC slot 已填
-//     + feedback mono + shape/index 一致」,命中 → compileIcArrayHit;
-//  4. compileIcArrayHit emit 129 字节模板 + incSpecTableHits() ++,Run 经
-//     callJITSpec 直发 mmap 段。
+//  3. jit.Compile goes through analyzeGetTableArrayHit to check "proto shape + IC slot
+//     filled + feedback mono + shape/index consistent"; on a hit → compileIcArrayHit;
+//  4. compileIcArrayHit emits the 129-byte template + incSpecTableHits() ++, and Run
+//     dispatches straight to the mmap segment via callJITSpec.
 //
-// **第 1 步是关键**:若用 SetForceAllPromote(true) 让 outer 进入即升层,
-// outer 调 inner 时 inner 也立即升层,IC[0] 还没被 P1 跑过 → 步骤 3 失败
-// 「IC slot Kind=None」→ analyzeGetTableArrayHit 返 false → 降级到
-// analyzeShape 的 GETTABLE host helper 路径(byte-equal 但无加速)。
+// **Step 1 is the key one**: if SetForceAllPromote(true) makes outer promote on entry,
+// then when outer calls inner, inner is promoted immediately too, so IC[0] has not yet
+// been run by P1 → step 3 fails with "IC slot Kind=None" → analyzeGetTableArrayHit
+// returns false → falls back to analyzeShape's GETTABLE host helper path (byte-equal
+// but with no speedup).
 //
-// 正确测法:**先关 force-all 跑 warmup 让 P1 解释器填 IC[0],再开 force-all
-// 让 considerPromotion 升 inner f**。
+// Correct way to test: **first turn force-all off and run warmup so the P1 interpreter
+// fills IC[0], then turn force-all on so considerPromotion promotes inner f**.
 
-// TestPJ4_TableArrayHit_E2E_WarmupThenForce:**字面命中** PJ4 IC ArrayHit
-// 字节级 inline。
+// TestPJ4_TableArrayHit_E2E_WarmupThenForce: **literal hit** on PJ4 IC ArrayHit
+// byte-level inline.
 //
-// 步骤:
-//  1. 第一次 Call 不开 force-all,outer chunk 跑 100 次 inner f(t),
-//     icGetTable 填 IC[0]=ArrayHit;outer 自身不会升层(outer chunk 长度
-//     5 op < MinPromotableCodeLen=10);inner f 也不升层(EntryCount=100 <
-//     HotEntryThreshold=200,且 len(Code)=2<10 short-proto 守卫拒)。
-//  2. 第二次 Call 开 force-all 重新跑 outer。outer 升层时 outer 进入即立
-//     即升;但 outer 调 inner 时 inner 也 force-all 升层,此时 IC[0] 已
-//     被第 1 步填好 → analyzeGetTableArrayHit 命中 → 字节级 inline。
+// Steps:
+//  1. The first Call keeps force-all off; the outer chunk runs inner f(t) 100 times,
+//     icGetTable fills IC[0]=ArrayHit; outer itself is not promoted (outer chunk length
+//     5 op < MinPromotableCodeLen=10); inner f is not promoted either (EntryCount=100 <
+//     HotEntryThreshold=200, and len(Code)=2<10 rejected by the short-proto guard).
+//  2. The second Call turns force-all on and reruns outer. When outer is promoted it
+//     promotes on entry; but when outer calls inner, inner is force-all promoted too,
+//     and at this point IC[0] is already filled by step 1 → analyzeGetTableArrayHit
+//     hits → byte-level inline.
 func TestPJ4_TableArrayHit_E2E_WarmupThenForce(t *testing.T) {
 	jit.ResetSpecHits()
 
@@ -58,8 +60,9 @@ return f(t)`
 
 	st, mainCl := loadFnP4(t, src)
 
-	// Phase 1:不开 force-all → outer/inner 都不升层,P1 解释器跑完
-	// warmup,IC[0] 被填(对照后续 Phase 2 force-all 升层路径)。
+	// Phase 1: force-all off → neither outer nor inner is promoted; the P1
+	// interpreter finishes warmup and IC[0] gets filled (contrast with the
+	// later Phase 2 force-all promotion path).
 	rets1, err := st.Call(value.GCRefOf(mainCl), nil, 1)
 	if err != nil {
 		t.Fatalf("Phase 1 run: %v", err)
@@ -67,14 +70,14 @@ return f(t)`
 	if got := value.AsNumber(value.Value(rets1[0])); got != 42 {
 		t.Errorf("Phase 1 result = %v, want 42", got)
 	}
-	// 此时 SpecTableHits 应为 0(P1 解释器路径未升 inner)
+	// At this point SpecTableHits should be 0 (the P1 interpreter path did not promote inner)
 	if jit.SpecTableHits() != 0 {
 		t.Errorf("Phase 1 末:SpecTableHits=%d, want 0(P1 路径不应触发 IC inline 编译)",
 			jit.SpecTableHits())
 	}
 
-	// Phase 2:开 force-all + 再次 Call。inner f 此时被强制升层,IC[0] 已
-	// 经 Phase 1 填好 → analyzeGetTableArrayHit 命中 → 字节级 inline 编译。
+	// Phase 2: turn force-all on + Call again. inner f is now force-promoted, IC[0]
+	// is already filled by Phase 1 → analyzeGetTableArrayHit hits → byte-level inline compile.
 	st.bridge.SetForceAllPromote(true)
 	hitsBefore := jit.SpecTableHits()
 	rets2, err := st.Call(value.GCRefOf(mainCl), nil, 1)
@@ -94,9 +97,9 @@ return f(t)`
 	}
 }
 
-// TestPJ4_TableArrayHit_E2E_NumericKey:验数字键(`t[2]`)走 IC ArrayHit
-// inline——数字键的 arrayIndex 就是键值本身,IC.Index = stableIndex 直接命中
-// array 段。
+// TestPJ4_TableArrayHit_E2E_NumericKey: verifies a numeric key (`t[2]`) takes the IC
+// ArrayHit inline —— for a numeric key the arrayIndex is the key value itself, IC.Index =
+// stableIndex directly hits the array segment.
 func TestPJ4_TableArrayHit_E2E_NumericKey(t *testing.T) {
 	jit.ResetSpecHits()
 
@@ -131,14 +134,14 @@ return f(t)`
 	t.Logf("NumericKey SpecTableHits=%d → %d", hitsBefore, hitsAfter)
 }
 
-// TestPJ4_TableArrayHit_E2E_ForceAllFallsToHost:旧版形态——只开 force-all
-// 不预热,inner kernel 一进入即升层时 IC slot 还没填(P1 解释器路径被
-// SetForceAllPromote(true) 跳过),analyzeGetTableArrayHit 返 false →
-// fall through 到 analyzeShape 的 GETTABLE host helper 路径,byte-equal
-// 但无字节级 inline 加速。SpecTableHits 应恒为 0(prove-the-path
-// negative side:无证据说 IC inline 路径触达)。
+// TestPJ4_TableArrayHit_E2E_ForceAllFallsToHost: the old-style shape —— only turn
+// force-all on without warmup; when the inner kernel is promoted on entry the IC slot
+// is not yet filled (the P1 interpreter path is skipped by SetForceAllPromote(true)),
+// analyzeGetTableArrayHit returns false → falls through to analyzeShape's GETTABLE host
+// helper path, byte-equal but with no byte-level inline speedup. SpecTableHits should
+// stay 0 (prove-the-path negative side: no evidence that the IC inline path is reached).
 //
-// 保留作 force-all 路径 byte-equal 正确性对照(返回值仍对)。
+// Kept as a byte-equal correctness reference for the force-all path (return value still correct).
 func TestPJ4_TableArrayHit_E2E_ForceAllFallsToHost(t *testing.T) {
 	jit.ResetSpecHits()
 
@@ -158,9 +161,10 @@ return f(t)`
 	if got := value.AsNumber(value.Value(rets[0])); got != 42 {
 		t.Errorf("f(t) = %v, want 42(t[1])", got)
 	}
-	// force-all 路径下 SpecTableHits 应恒为 0(inner kernel 升层时 IC slot
-	// 还没被 P1 解释器填,analyzeGetTableArrayHit 返 false → fall through
-	// 到 GETTABLE host helper 路径)。
+	// On the force-all path SpecTableHits should stay 0 (when the inner kernel is
+	// promoted the IC slot has not been filled by the P1 interpreter,
+	// analyzeGetTableArrayHit returns false → falls through to the GETTABLE host
+	// helper path).
 	if jit.SpecTableHits() != 0 {
 		t.Errorf("ForceAllFallsToHost:SpecTableHits=%d, want 0"+
 			"(force-all 应让 inner kernel 一进入即升,IC slot 未填→fall through)",
@@ -170,8 +174,8 @@ return f(t)`
 		jit.SpecTableHits(), jit.SpecForLoopHits(), jit.SpecRegKHits())
 }
 
-// TestPJ4_TableArrayHit_E2E_NotPromotedWithoutWarmup:不预热(无 IC slot)
-// 时 P4 应不走 IC inline 路径(析出 false,fall through 到 host helper)。
+// TestPJ4_TableArrayHit_E2E_NotPromotedWithoutWarmup: without warmup (no IC slot),
+// P4 should not take the IC inline path (analysis returns false, falls through to the host helper).
 func TestPJ4_TableArrayHit_E2E_NotPromotedWithoutWarmup(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -196,13 +200,13 @@ return f(t)`
 	}
 }
 
-// TestPJ4_TableNodeHit_E2E_WarmupThenForce:**字面命中** PJ4 IC NodeHit
-// 字节级 inline——hash 段(`t["x"]`)而非 array 段(`t[1]`)。
+// TestPJ4_TableNodeHit_E2E_WarmupThenForce: **literal hit** on PJ4 IC NodeHit
+// byte-level inline —— the hash segment (`t["x"]`) rather than the array segment (`t[1]`).
 //
-// 与 ArrayHit 同款两 phase 形态,但表只有 hash 段(无数组段)→ 触发
-// icGetTable 走 hash 路径 + IC[0].Kind = ICKindNodeHit。force-all 升 inner
-// kernel 时 analyzeGetTableNodeHit 命中 → 字节级 NodeHit inline 编译 →
-// SpecTableHits 增量 +1。
+// Same two-phase shape as ArrayHit, but the table has only a hash segment (no array
+// segment) → icGetTable takes the hash path + IC[0].Kind = ICKindNodeHit. When force-all
+// promotes the inner kernel, analyzeGetTableNodeHit hits → byte-level NodeHit inline
+// compile → SpecTableHits increments by +1.
 func TestPJ4_TableNodeHit_E2E_WarmupThenForce(t *testing.T) {
 	jit.ResetSpecHits()
 
@@ -214,7 +218,7 @@ return f(t)`
 
 	st, mainCl := loadFnP4(t, src)
 
-	// Phase 1:不开 force-all → outer/inner 都不升层,P1 跑完 warmup 填 IC[0]
+	// Phase 1: force-all off → neither outer nor inner is promoted; P1 finishes warmup and fills IC[0]
 	rets1, err := st.Call(value.GCRefOf(mainCl), nil, 1)
 	if err != nil {
 		t.Fatalf("Phase 1 run: %v", err)
@@ -226,8 +230,8 @@ return f(t)`
 		t.Errorf("Phase 1 末:SpecTableHits=%d, want 0", jit.SpecTableHits())
 	}
 
-	// Phase 2:开 force-all + 再次 Call。inner f 升 P4,IC[0]=NodeHit 已填 →
-	// analyzeGetTableNodeHit 命中 → NodeHit 字节级 inline 编译。
+	// Phase 2: turn force-all on + Call again. inner f is promoted to P4, IC[0]=NodeHit
+	// is filled → analyzeGetTableNodeHit hits → NodeHit byte-level inline compile.
 	st.bridge.SetForceAllPromote(true)
 	hitsBefore := jit.SpecTableHits()
 	rets2, err := st.Call(value.GCRefOf(mainCl), nil, 1)
@@ -246,13 +250,14 @@ return f(t)`
 	}
 }
 
-// TestPJ4_TableNodeHit_E2E_NumberKey:用数字常量键 `t[7]`,但**值不在 array
-// 段**(数组段 size=0,所有键都进 hash 段)→ 触发 NodeHit 路径而非 ArrayHit。
-// 这是 NodeHit 路径的「数字键 in hash 段」实证。
+// TestPJ4_TableNodeHit_E2E_NumberKey: uses the numeric constant key `t[7]`, but **the
+// value is not in the array segment** (array segment size=0, all keys go to the hash
+// segment) → triggers the NodeHit path rather than ArrayHit. This proves the NodeHit
+// path for a "numeric key in the hash segment".
 func TestPJ4_TableNodeHit_E2E_NumberKey(t *testing.T) {
 	jit.ResetSpecHits()
 
-	// 用 dict-style `{[7]=42}` 显式让 7 进 hash 段(注:`{42}` 是 array 段)
+	// Use dict-style `{[7]=42}` to explicitly force 7 into the hash segment (note: `{42}` is the array segment)
 	src := `
 local function f(t) return t[7] end
 local t = {[7] = 42, [11] = 99}
@@ -279,25 +284,26 @@ return f(t)`
 	}
 	hitsAfter := jit.SpecTableHits()
 	t.Logf("NumberKey-in-hash SpecTableHits=%d → %d", hitsBefore, hitsAfter)
-	// 注:此 case 实际可能仍走 ArrayHit(luac 可能优化 `[7]=42` 进 array 段
-	// 的 ASIZE 自动扩);若 SpecTableHits 增长则 ArrayHit 或 NodeHit 都验证
-	// IC inline 真编译。
+	// Note: this case may in fact still take ArrayHit (luac may optimize `[7]=42` into
+	// the array segment via automatic ASIZE expansion); if SpecTableHits grows then
+	// either ArrayHit or NodeHit proves the IC inline was really compiled.
 	if hitsAfter <= hitsBefore {
 		t.Errorf("NumberKey-in-hash:SpecTableHits 未增长 → IC inline 未触发")
 	}
 }
 
-// TestPJ4_TableSetArrayHit_E2E_WarmupThenForce:**字面命中** PJ4 SETTABLE
-// IC ArrayHit 字节级 inline——array 段反向写。
+// TestPJ4_TableSetArrayHit_E2E_WarmupThenForce: **literal hit** on PJ4 SETTABLE
+// IC ArrayHit byte-level inline —— reverse write into the array segment.
 //
-// 形态:`function(t, v) t[K] = v end`(setter,数字键 K,value 是 reg)。
-// 两 phase 形态:Phase 1 warmup 让 P1 解释器跑 setter → icSetTable 填
-// IC[0]=ArrayHit;Phase 2 force-all 升 inner kernel → analyzeSetTable
-// ArrayHit 命中 → SETTABLE 字节级 inline 编译 → SpecTableHits++=1。
+// Shape: `function(t, v) t[K] = v end` (setter, numeric key K, value is a reg).
+// Two-phase shape: Phase 1 warmup lets the P1 interpreter run setter → icSetTable fills
+// IC[0]=ArrayHit; Phase 2 force-all promotes the inner kernel → analyzeSetTable
+// ArrayHit hits → SETTABLE byte-level inline compile → SpecTableHits++=1.
 //
-// **值证伪强化**(承外部 review 反馈):Phase 2 末次写值用「与 warmup
-// 末次值不同」的值(99),让 return t[1] 能区分「Phase 2 真写入 vs Phase
-// 2 写错索引/未写依赖 Phase 1 残值」两种情况。
+// **Value-falsification hardening** (per external review feedback): Phase 2's last
+// write uses a value (99) that differs from warmup's last value, so that `return t[1]`
+// can distinguish "Phase 2 really wrote" from "Phase 2 wrote the wrong index / did not
+// write and relies on Phase 1's leftover value".
 func TestPJ4_TableSetArrayHit_E2E_WarmupThenForce(t *testing.T) {
 	jit.ResetSpecHits()
 
@@ -310,8 +316,8 @@ return t[1]`
 
 	st, mainCl := loadFnP4(t, src)
 
-	// Phase 1:不开 force-all,P1 跑 warmup 末次 t[1]=100 + setter(t,99)
-	// 注:Phase 1 实际是 P1 跑完整 chunk(包含末段 setter(t,99))→ t[1]=99
+	// Phase 1: force-all off, P1 runs warmup last write t[1]=100 + setter(t,99)
+	// Note: Phase 1 actually runs the full chunk with P1 (including the trailing setter(t,99)) → t[1]=99
 	rets1, err := st.Call(value.GCRefOf(mainCl), nil, 1)
 	if err != nil {
 		t.Fatalf("Phase 1 run: %v", err)
@@ -323,8 +329,8 @@ return t[1]`
 		t.Errorf("Phase 1 末:SpecTableHits=%d, want 0", jit.SpecTableHits())
 	}
 
-	// Phase 2:开 force-all + 再次 Call。inner setter 升 P4,IC[0]=ArrayHit
-	// 已填 → analyzeSetTableArrayHit 命中 → SETTABLE 字节级 inline 编译。
+	// Phase 2: turn force-all on + Call again. inner setter is promoted to P4, IC[0]=ArrayHit
+	// is filled → analyzeSetTableArrayHit hits → SETTABLE byte-level inline compile.
 	st.bridge.SetForceAllPromote(true)
 	hitsBefore := jit.SpecTableHits()
 	rets2, err := st.Call(value.GCRefOf(mainCl), nil, 1)
@@ -344,30 +350,30 @@ return t[1]`
 	}
 }
 
-// TestPJ4_TableSelfArrayHit_E2E_WarmupThenForce:**字面命中** PJ4 SELF
-// IC ArrayHit 字节级 inline——`obj:method()` 形态(数字键 method,罕见但
-// 有效)。
+// TestPJ4_TableSelfArrayHit_E2E_WarmupThenForce: **literal hit** on PJ4 SELF
+// IC ArrayHit byte-level inline —— the `obj:method()` shape (numeric key method, rare
+// but valid).
 //
-// **形态**:`function(obj) local m = obj[1] end`(数字键 in array 段)。
-// **注**:实际 `obj:method()` luac 编 SELF+CALL+...,本测用 SELF+RETURN
-// 单 BB 形态(\`local m = obj:method;return m\`)接近 SELF ArrayHit shape
-// 识别条件。method 是数字 K 命中 array 段(real-world `obj:method()` 用
-// 字符串 method 名,走 NodeHit,留 PJ4+)。
+// **Shape**: `function(obj) local m = obj[1] end` (numeric key in array segment).
+// **Note**: in reality `obj:method()` is compiled by luac to SELF+CALL+...; this test
+// uses a single-BB SELF+RETURN shape (`local m = obj:method;return m`) close to the SELF
+// ArrayHit shape-recognition condition. method is a numeric K hitting the array segment
+// (real-world `obj:method()` uses a string method name, takes NodeHit, left for PJ4+).
 func TestPJ4_TableSelfArrayHit_E2E_WarmupThenForce(t *testing.T) {
 	jit.ResetSpecHits()
 
-	// luac 编 `local m = obj:method` 形态:
-	//   SELF A=R(m) B=R(obj) C=K(数字键 method 索引)
-	//   RETURN A 2(取 m)
-	// 实际 obj 是 table,method 是 obj[1] 这种数字键。
-	// 用 obj:f(...) 语法需要 method 名 — 但 method 名是字符串(NodeHit);
-	// 直接用 obj[1] 不走 SELF(GETTABLE 也可)。
-	// 唯一让 SELF 形态触发的方式 = 真用 `obj:something`,但 something 必
-	// 是 ident 不能数字。所以 ArrayHit SELF 实际几乎不出现在 luac 编译产物。
+	// luac compiles the `local m = obj:method` shape to:
+	//   SELF A=R(m) B=R(obj) C=K(numeric key method index)
+	//   RETURN A 2 (take m)
+	// Here obj is a table and method is a numeric key like obj[1].
+	// The obj:f(...) syntax requires a method name — but a method name is a string (NodeHit);
+	// using obj[1] directly does not take SELF (GETTABLE also works).
+	// The only way to trigger the SELF shape = actually use `obj:something`, but something
+	// must be an ident, not a number. So ArrayHit SELF almost never appears in luac output.
 	//
-	// 本测试声明边界:跑非 SELF 路径,主要测 SELF 模板 emit 字节级正确性
-	// (已在 jit/amd64 包字节级单测覆盖)。SELF 主路径 e2e 真升层留
-	// NodeHit SELF(下一阶段)。
+	// This test states its boundary: it runs a non-SELF path, mainly testing the byte-level
+	// correctness of the SELF template emit (already covered by byte-level unit tests in the
+	// jit/amd64 package). The SELF main-path e2e real promotion is left for NodeHit SELF (next stage).
 	src := `
 local function f(t) return t[1] end
 local t = {42}
@@ -393,9 +399,10 @@ return f(t)`
 		t.Errorf("f(t) = %v, want 42", got)
 	}
 	hitsAfter := jit.SpecTableHits()
-	// SELF ArrayHit 形态 luac 不真编译(method 名只能是 ident,不是数字)
-	// → 此测试实际走 GETTABLE ArrayHit 路径,SpecTableHits 仍增长(ArrayHit
-	// 路径)。本测验 SELF ArrayHit 主路径**不破坏**现有 ArrayHit 路径。
+	// The SELF ArrayHit shape is not really compiled by luac (a method name can only be an
+	// ident, not a number) → this test actually takes the GETTABLE ArrayHit path, and
+	// SpecTableHits still grows (ArrayHit path). This test verifies the SELF ArrayHit
+	// main path **does not break** the existing ArrayHit path.
 	t.Logf("SELF-ArrayHit edge:SpecTableHits=%d → %d(实际走 ArrayHit 路径)",
 		hitsBefore, hitsAfter)
 	if hitsAfter <= hitsBefore {
@@ -403,16 +410,16 @@ return f(t)`
 	}
 }
 
-// TestPJ4_TableSetNodeHit_E2E_WarmupThenForce:**字面命中** PJ4 SETTABLE
-// NodeHit 字节级 inline——字符串键 in hash 段反向写。
+// TestPJ4_TableSetNodeHit_E2E_WarmupThenForce: **literal hit** on PJ4 SETTABLE
+// NodeHit byte-level inline —— reverse write with a string key in the hash segment.
 //
-// 形态:`function(t, v) t["x"] = v end`(setter,字符串键,value 是 reg)。
-// 两 phase 形态:Phase 1 warmup 让 P1 解释器跑 setter → icSetTable 填
-// IC[0]=NodeHit;Phase 2 force-all 升 inner kernel → analyzeSetTableNodeHit
-// 命中 → SETTABLE NodeHit 字节级 inline 编译 → SpecTableHits++=1。
+// Shape: `function(t, v) t["x"] = v end` (setter, string key, value is a reg).
+// Two-phase shape: Phase 1 warmup lets the P1 interpreter run setter → icSetTable fills
+// IC[0]=NodeHit; Phase 2 force-all promotes the inner kernel → analyzeSetTableNodeHit
+// hits → SETTABLE NodeHit byte-level inline compile → SpecTableHits++=1.
 //
-// **值证伪强化**:Phase 2 末次写 99 与 warmup 末值(100)不同,让
-// return t.x 能区分。
+// **Value-falsification hardening**: Phase 2's last write of 99 differs from warmup's
+// last value (100), so that `return t.x` can distinguish them.
 func TestPJ4_TableSetNodeHit_E2E_WarmupThenForce(t *testing.T) {
 	jit.ResetSpecHits()
 
@@ -425,7 +432,7 @@ return t.x`
 
 	st, mainCl := loadFnP4(t, src)
 
-	// Phase 1:P1 跑 warmup 末次 + setter(t, 99) → t.x = 99
+	// Phase 1: P1 runs warmup last write + setter(t, 99) → t.x = 99
 	rets1, err := st.Call(value.GCRefOf(mainCl), nil, 1)
 	if err != nil {
 		t.Fatalf("Phase 1 run: %v", err)
@@ -437,8 +444,8 @@ return t.x`
 		t.Errorf("Phase 1 末:SpecTableHits=%d, want 0", jit.SpecTableHits())
 	}
 
-	// Phase 2:开 force-all + 再次 Call。inner setter 升 P4,IC[0]=NodeHit
-	// 已填 → analyzeSetTableNodeHit 命中 → SETTABLE NodeHit 字节级编译
+	// Phase 2: turn force-all on + Call again. inner setter is promoted to P4, IC[0]=NodeHit
+	// is filled → analyzeSetTableNodeHit hits → SETTABLE NodeHit byte-level compile
 	st.bridge.SetForceAllPromote(true)
 	hitsBefore := jit.SpecTableHits()
 	rets2, err := st.Call(value.GCRefOf(mainCl), nil, 1)
@@ -457,27 +464,27 @@ return t.x`
 	}
 }
 
-// TestPJ4_TableSelfNodeHit_E2E_LuacBoundary 声明 SELF NodeHit e2e 形态边界。
+// TestPJ4_TableSelfNodeHit_E2E_LuacBoundary states the SELF NodeHit e2e shape boundary.
 //
-// **luac 形态边界**:`obj:method` 必须有括号 `()` 才是 Lua 合法语法,
-// 但 `obj:method()` 编 SELF + CALL + RETURN(3+ op)而非 SELF + RETURN
-// 2-op 形态——后者不匹配 analyzeSelfNodeHit 形态守卫。
+// **luac shape boundary**: `obj:method` must have parentheses `()` to be valid Lua
+// syntax, but `obj:method()` compiles to SELF + CALL + RETURN (3+ op) rather than the
+// SELF + RETURN 2-op shape —— the latter does not match the analyzeSelfNodeHit shape guard.
 //
-// 即:**luac 不真编出「SELF + RETURN A 2」+ NodeHit 形态**(同 SELF
-// ArrayHit 边界)。SELF NodeHit 主路径接入是工程基础,**真升层 e2e 需要
-// PJ5 CALL 字节级 inline 接入后**(SELF + CALL + RETURN 形态识别)才能
-// 触达。
+// That is: **luac does not actually emit the "SELF + RETURN A 2" + NodeHit shape** (same
+// as the SELF ArrayHit boundary). Wiring up the SELF NodeHit main path is the engineering
+// foundation, but **real-promotion e2e requires the PJ5 CALL byte-level inline wiring**
+// (SELF + CALL + RETURN shape recognition) before it can be reached.
 //
-// 本测试退化为「跑 `return obj.method` 形态(GETTABLE NodeHit 路径)」
-// 验 SELF NodeHit 主路径接入不破坏现有 NodeHit get 路径。SELF NodeHit
-// 模板字节级 emit + 主路径 Compile 调用链路由合成驱动单测兜底(承
-// jit 包 compiler_pj4_self_test.go 同款形态,留 SELF NodeHit 合成驱动
-// 单测同 commit 补)。
+// This test degrades to "run the `return obj.method` shape (GETTABLE NodeHit path)" to
+// verify that wiring up the SELF NodeHit main path does not break the existing NodeHit
+// get path. The SELF NodeHit template byte-level emit + main-path Compile call chain are
+// backstopped by synthetic-driven unit tests (same shape as compiler_pj4_self_test.go in
+// the jit package; the SELF NodeHit synthetic-driven unit test is added in the same commit).
 func TestPJ4_TableSelfNodeHit_E2E_LuacBoundary(t *testing.T) {
 	jit.ResetSpecHits()
 
-	// 形态退化:用 GETTABLE NodeHit 路径(obj.method 是 GETTABLE,不是 SELF)
-	// 验本批接入不破坏 NodeHit get 路径
+	// Shape degradation: use the GETTABLE NodeHit path (obj.method is GETTABLE, not SELF)
+	// to verify this batch of wiring does not break the NodeHit get path
 	src := `
 local function f(obj) return obj.method end
 local obj = {method = 42, other = 99}
@@ -505,7 +512,7 @@ return f(obj)`
 	hitsAfter := jit.SpecTableHits()
 	t.Logf("SELF NodeHit edge:实测走 GETTABLE NodeHit 路径,SpecTableHits=%d→%d",
 		hitsBefore, hitsAfter)
-	// 实际走 GETTABLE NodeHit 路径(NodeHit get SpecTableHits 增长)
+	// actually takes the GETTABLE NodeHit path (NodeHit get SpecTableHits grows)
 	if hitsAfter <= hitsBefore {
 		t.Errorf("GETTABLE NodeHit 路径 SpecTableHits 未增长 → 退化")
 	}

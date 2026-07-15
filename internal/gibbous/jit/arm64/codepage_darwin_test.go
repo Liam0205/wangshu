@@ -6,35 +6,36 @@ import (
 	"testing"
 )
 
-// TestDarwinMmapCode_RoundTrip 验证 darwin/arm64 MAP_JIT mmap + W^X 翻面 +
-// icache flush 的 round-trip 路径在 macos-latest runner 上跑通。
+// TestDarwinMmapCode_RoundTrip verifies that the darwin/arm64 MAP_JIT mmap + W^X flip +
+// icache flush round-trip path runs successfully on the macos-latest runner.
 //
-// 承 codepage_darwin.go::MmapCode 七步流程:
-//  1. runtime.LockOSThread 钉线程
+// Per the seven-step flow in codepage_darwin.go::MmapCode:
+//  1. runtime.LockOSThread pins the thread
 //  2. mmap MAP_JIT|MAP_ANON|MAP_PRIVATE + PROT_RWX
-//  3. pthread_jit_write_protect_np(0) 进入可写态
+//  3. pthread_jit_write_protect_np(0) enters the writable state
 //  4. copy code
-//  5. pthread_jit_write_protect_np(1) 翻 RX
-//  6. sys_icache_invalidate 刷 i-cache
+//  5. pthread_jit_write_protect_np(1) flips to RX
+//  6. sys_icache_invalidate flushes the i-cache
 //  7. UnlockOSThread (deferred)
 //
-// **build tag 严格匹配 darwin && arm64 && cgo**:linux 端 / cross-build
-// CGO_ENABLED=0 端本文件不编译,故无需 t.Skip。
+// **build tag strictly matches darwin && arm64 && cgo**: this file is not compiled on
+// the linux side or in a cross-build with CGO_ENABLED=0, so no t.Skip is needed.
 //
-// 关键断言:
-//   - 空 code 报错
-//   - 写入 NOP+RET 字节序(arm64 NOP=0x1f2003d5, RET=0xc0035fd6 LE)能取回
-//     Addr 非 0 + Length 至少一页
-//   - Munmap 幂等(二次调用零错)
-//   - 写入段后 Munmap 不泄漏 — 反复 N 次不 OOM
+// Key assertions:
+//   - empty code errors out
+//   - after writing the NOP+RET byte sequence (arm64 NOP=0x1f2003d5, RET=0xc0035fd6 LE),
+//     the result can be read back with a non-zero Addr + Length of at least one page
+//   - Munmap is idempotent (a second call returns no error)
+//   - Munmap does not leak after writing a segment — repeating N times does not OOM
 //
-// **本测试不真 call mmap 段**:darwin/arm64 真执行需 trampoline_arm64.s
-// 接入 + Hardened Runtime JIT entitlement 配合,本测试只验 codepage
-// 字节级 round-trip 路径。真执行验证留 C5/C6/C7 翻闸门后 macos-latest
-// CI 跑完整 V18 -race 套(详 tmp/wangshu-p4-todo.md §二.4)。
+// **this test does not actually call into the mmap segment**: real darwin/arm64 execution
+// needs trampoline_arm64.s wired in + a Hardened Runtime JIT entitlement; this test only
+// verifies the byte-level round-trip path of codepage. Real-execution verification is left
+// to the full V18 -race suite on macos-latest CI after the C5/C6/C7 switches are opened
+// (see tmp/wangshu-p4-todo.md §2.4).
 func TestDarwinMmapCode_RoundTrip(t *testing.T) {
 	// arm64 NOP = 0xd503201f (LE: 1f 20 03 d5), RET = 0xd65f03c0 (LE: c0 03 5f d6).
-	// 字节级写入,不依赖 emitter pkg state。
+	// Byte-level write, independent of emitter pkg state.
 	code := []byte{
 		0x1f, 0x20, 0x03, 0xd5, // NOP
 		0xc0, 0x03, 0x5f, 0xd6, // RET
@@ -48,7 +49,7 @@ func TestDarwinMmapCode_RoundTrip(t *testing.T) {
 		if err := cp.Munmap(); err != nil {
 			t.Fatalf("Munmap failed: %v", err)
 		}
-		// 幂等:二次调用零错。
+		// Idempotent: a second call returns no error.
 		if err := cp.Munmap(); err != nil {
 			t.Fatalf("Munmap idempotent check failed: %v", err)
 		}
@@ -75,10 +76,11 @@ func TestDarwinMmapCode_EmptyCode(t *testing.T) {
 	}
 }
 
-// TestDarwinMmapCode_NilSafety 验证 nil CodePage 上调三方法不 panic。
+// TestDarwinMmapCode_NilSafety verifies that calling the three methods on a nil CodePage
+// does not panic.
 //
-// 防御性:实际生产路径不会传 nil,但 emit 失败时调用方可能误调
-// Munmap/Addr/Length,接口必须幂等无 panic。
+// Defensive: the real production path never passes nil, but on emit failure a caller might
+// mistakenly call Munmap/Addr/Length, so the interface must be idempotent and panic-free.
 func TestDarwinMmapCode_NilSafety(t *testing.T) {
 	var cp *CodePage
 	if cp.Addr() != 0 {
@@ -92,11 +94,12 @@ func TestDarwinMmapCode_NilSafety(t *testing.T) {
 	}
 }
 
-// TestDarwinMmapCode_NoLeak 验证反复 mmap/munmap 不泄漏 mmap 段(50 轮)。
+// TestDarwinMmapCode_NoLeak verifies that repeated mmap/munmap does not leak mmap segments
+// (50 rounds).
 //
-// macOS 进程 mmap 段总量有上限(vm.max_proc_map / RLIMIT_AS),泄漏即
-// OOM;同时反复翻 W^X 验证线程局部状态正确还原(不会因为忘了某次
-// UnlockOSThread 把 goroutine 钉死)。
+// A macOS process has an upper bound on total mmap segments (vm.max_proc_map / RLIMIT_AS),
+// so a leak means OOM; meanwhile repeatedly flipping W^X verifies that the thread-local
+// state is restored correctly (a forgotten UnlockOSThread would not pin the goroutine).
 func TestDarwinMmapCode_NoLeak(t *testing.T) {
 	code := []byte{
 		0x1f, 0x20, 0x03, 0xd5, // NOP
@@ -113,24 +116,27 @@ func TestDarwinMmapCode_NoLeak(t *testing.T) {
 	}
 }
 
-// TestDarwinMmapCode_ExecSanityProbe 真物理 darwin/arm64 mmap 段 RX 翻面
-// + 字节级写入合法地址验证。
+// TestDarwinMmapCode_ExecSanityProbe verifies real physical darwin/arm64 mmap
+// segment RX flip + byte-level write to a valid address.
 //
-// **历史**(F3-#3 调试):此探针承 macos-latest CI 第一次实证 PC=0x2000
-// SIGSEGV 时的「MmapCode 是否生效」隔离。F3-#3b 真物理 M1 调试已定位根因
-// 是 trampoline_arm64.s STP/LDP 覆盖 Go auto-prologue LR slot(STP 偏移 +8
-// 修复),MmapCode 路径与 W^X 翻面、icache flush 全部健康。本探针保留作
-// 长期回归 baseline。
+// **History** (F3-#3 debugging): this probe originally served to isolate "is
+// MmapCode working" when the macos-latest CI first hit a PC=0x2000 SIGSEGV.
+// F3-#3b real physical M1 debugging has since pinned the root cause to
+// trampoline_arm64.s STP/LDP overwriting the Go auto-prologue LR slot (fixed by
+// shifting the STP offset by +8); the MmapCode path along with the W^X flip and
+// icache flush are all healthy. This probe is kept as a long-term regression
+// baseline.
 //
-// 本测试只用 codepage_darwin.go::MmapCode(不经 trampoline_arm64.s),验证:
-//   - mmap 段 Addr 在合法地址区间(>= 0x100000000 macOS arm64 mmap 区)
-//   - 段长度 >= 输入字节
-//   - addr 不在 macOS 低保护页(0x2000 量级)
+// This test uses only codepage_darwin.go::MmapCode (not via trampoline_arm64.s)
+// and verifies:
+//   - the mmap segment Addr is in the valid address range (>= 0x100000000 macOS arm64 mmap zone)
+//   - the segment length >= input bytes
+//   - addr is not in the macOS low protected page (order of 0x2000)
 //
-// 真 execute 路径覆盖在 trampoline_test.go::TestPJ8_CallJITFull_RoundTrip
-// (经 trampoline)+ MapCode 字节读回在 NoLeak / RoundTrip 测试。
+// The real-execute path is covered in trampoline_test.go::TestPJ8_CallJITFull_RoundTrip
+// (via trampoline) + MapCode byte read-back in the NoLeak / RoundTrip tests.
 func TestDarwinMmapCode_ExecSanityProbe(t *testing.T) {
-	// 字节序列(arm64 LE):
+	// byte sequence (arm64 LE):
 	//   movz x0, #0x42      ; 0xD2800840 → 40 08 80 d2
 	//   ret                  ; 0xD65F03C0 → c0 03 5f d6
 	code := []byte{
@@ -146,9 +152,10 @@ func TestDarwinMmapCode_ExecSanityProbe(t *testing.T) {
 	addr := cp.Addr()
 	t.Logf("mmap segment addr = 0x%x (length = %d)", addr, cp.Length())
 
-	// **不真 call** — 本探针仅验 MmapCode 路径行为(addr 合法 + 字节写入)。
-	// 真 execute 经 callJITFull 路径在 trampoline_test.go 测,如那条崩本测试
-	// 不崩,则隔离根因到 trampoline 而非 codepage。
+	// **do not actually call** — this probe only verifies the MmapCode path
+	// behavior (valid addr + byte write). Real execute goes through the
+	// callJITFull path tested in trampoline_test.go; if that one crashes but
+	// this test does not, the root cause is isolated to trampoline rather than codepage.
 	if addr == 0 {
 		t.Fatalf("Addr() == 0")
 	}
@@ -156,9 +163,10 @@ func TestDarwinMmapCode_ExecSanityProbe(t *testing.T) {
 		t.Fatalf("Length = %d, want >= %d", cp.Length(), len(code))
 	}
 
-	// macOS arm64 mmap 区起 ≥ 0x100000000(4 GB)— 不在低 4 GB 中(那里是
-	// __DATA/__TEXT 等 Mach-O segments)。验 addr 远 >= 0x10000(64KB),0x2000
-	// = 8KB 处是 macOS 低保护页;若 addr 落在 0x2000 量级则系统配置异常。
+	// macOS arm64 mmap zone starts ≥ 0x100000000 (4 GB) — not in the low 4 GB
+	// (which holds __DATA/__TEXT etc. Mach-O segments). Verify addr is well
+	// >= 0x10000 (64KB); 0x2000 = 8KB is the macOS low protected page; if addr
+	// falls at the 0x2000 order the system config is abnormal.
 	if addr < 0x10000 {
 		t.Errorf("addr = 0x%x is suspiciously low (low-memory protected zone)", addr)
 	}

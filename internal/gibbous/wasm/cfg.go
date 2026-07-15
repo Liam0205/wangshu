@@ -2,23 +2,32 @@
 
 package wasm
 
-// 控制流图(CFG)构造 + relooper(02-translation §3.1.7 控制流结构化)。
+// Control-flow graph (CFG) construction + relooper (02-translation §3.1.7
+// control-flow structuring).
 //
-// 问题:Wasm 控制流是**结构化**的(嵌套 block/loop/if + br depth),Lua 字节码
-// JMP 是**任意 pc 跳转**。relooper 把字节码 CFG 重构成嵌套 Wasm 结构。
+// Problem: Wasm control flow is **structured** (nested block/loop/if + br
+// depth), whereas Lua bytecode JMP is an **arbitrary pc jump**. The relooper
+// reshapes the bytecode CFG into nested Wasm structures.
 //
-// 关键事实:Lua codegen 产出的 CFG 是**可约简的**(reducible)——源语言
-// (if/while/for/repeat/and/or)是结构化的,编译产物的跳转图天然可约简
-// (每个循环有唯一入口,无跨循环跳入)。这让 relooper 可用相对简单的
-// 「支配树 + 自然循环检测」方案,无需处理不可约简图的节点复制。
+// Key fact: the CFG produced by Lua codegen is **reducible** — the source
+// language (if/while/for/repeat/and/or) is structured, so the compiled jump
+// graph is naturally reducible (each loop has a single entry, no cross-loop
+// jumps into a loop body). This lets the relooper use the relatively simple
+// "dominator tree + natural-loop detection" approach, with no need for node
+// duplication as an irreducible graph would require.
 //
-// 实装策略(Stackifier 风格,对 reducible CFG):
-//  1. 把 Proto.Code 切成 basic block(BB)——跳转目标 / 跳转后一条是 BB 边界;
-//  2. 算 BB 的支配关系,识别自然循环(回边:目标支配源);
-//  3. 按支配树 DFS 生成嵌套 Wasm 结构:循环头包 loop,前向汇合点包 block,
-//     前向跳 = br 到对应 block end,回边 = br 到对应 loop 头。
+// Implementation strategy (Stackifier style, for a reducible CFG):
+//  1. Split Proto.Code into basic blocks (BB) — a jump target / the
+//     instruction after a jump is a BB boundary;
+//  2. Compute BB dominance, identify natural loops (back edge: target
+//     dominates source);
+//  3. Generate nested Wasm structures by DFS over the dominator tree: wrap
+//     loop headers in loop, wrap forward join points in block; a forward jump
+//     = br to the corresponding block end, a back edge = br to the
+//     corresponding loop header.
 //
-// 本文件建 CFG 结构;relooper 主算法在 relooper.go。
+// This file builds the CFG structure; the main relooper algorithm lives in
+// relooper.go.
 
 import (
 	"sort"
@@ -26,41 +35,45 @@ import (
 	"github.com/Liam0205/wangshu/internal/bytecode"
 )
 
-// basicBlock 是一段无内部跳转的连续指令([startPC, endPC))。
+// basicBlock is a run of instructions with no internal jumps ([startPC, endPC)).
 type basicBlock struct {
 	id      int
 	startPC int32
-	endPC   int32 // 开区间:[startPC, endPC)
+	endPC   int32 // half-open range: [startPC, endPC)
 
-	// 后继:fallthrough(顺序下一条)与 jumpTarget(若末指令是跳转)。
-	// Lua 控制流指令的后继语义:
-	//   - JMP:无条件,唯一后继 = jumpTarget
-	//   - 条件(EQ/LT/LE/TEST/TESTSET/TFORLOOP):pc++ 跳过紧邻 JMP / 落入 JMP,
-	//     两后继 = fallthrough(pc+1)与 fallthrough+1(被跳过的指令之后)
-	//   - FORLOOP:回跳(succ=jumpTarget,回边)或落出(succ=fallthrough)
-	//   - FORPREP:无条件跳到 FORLOOP(succ=jumpTarget)
-	//   - RETURN / TAILCALL(末):无后继(函数出口)
-	succs []int // 后继 BB id(去重、有序)
+	// Successors: fallthrough (the next instruction in order) and jumpTarget
+	// (if the last instruction is a jump).
+	// Successor semantics of Lua control-flow instructions:
+	//   - JMP: unconditional, single successor = jumpTarget
+	//   - conditional (EQ/LT/LE/TEST/TESTSET/TFORLOOP): pc++ skips the
+	//     adjacent JMP / falls into the JMP, two successors = fallthrough
+	//     (pc+1) and fallthrough+1 (after the skipped instruction)
+	//   - FORLOOP: jump back (succ=jumpTarget, back edge) or fall out
+	//     (succ=fallthrough)
+	//   - FORPREP: unconditional jump to FORLOOP (succ=jumpTarget)
+	//   - RETURN / TAILCALL (as last): no successor (function exit)
+	succs []int // successor BB ids (deduped, ordered)
 }
 
-// cfg 是一个 Proto 的控制流图。
+// cfg is the control-flow graph of a single Proto.
 type cfg struct {
 	proto  *bytecode.Proto
 	blocks []*basicBlock
-	pcToBB map[int32]int // 每个 BB 起始 pc → BB id
-	entry  int           // 入口 BB id(pc=0 所在 BB)
+	pcToBB map[int32]int // start pc of each BB → BB id
+	entry  int           // entry BB id (the BB containing pc=0)
 }
 
-// buildCFG 从 Proto.Code 构造 CFG。
+// buildCFG constructs the CFG from Proto.Code.
 func buildCFG(proto *bytecode.Proto) *cfg {
 	code := proto.Code
 	n := int32(len(code))
 
-	// 1) 找所有 BB 边界(leader pc):
+	// 1) Find all BB boundaries (leader pcs):
 	//    - pc=0
-	//    - 任何跳转的目标 pc
-	//    - 任何跳转指令的下一条 pc
-	//    - 条件指令(可能 pc++)的下一条与再下一条
+	//    - the target pc of any jump
+	//    - the pc following any jump instruction
+	//    - the next and the one-after-next pc of a conditional instruction
+	//      (which may pc++)
 	leaders := map[int32]bool{0: true}
 	for pc := int32(0); pc < n; pc++ {
 		ins := code[pc]
@@ -81,7 +94,8 @@ func buildCFG(proto *bytecode.Proto) *cfg {
 		case bytecode.EQ, bytecode.LT, bytecode.LE,
 			bytecode.TEST, bytecode.TESTSET, bytecode.TFORLOOP,
 			bytecode.LOADBOOL:
-			// 这些可能 pc++(跳过下一条);下一条与再下一条都是 leader
+			// These may pc++ (skip the next instruction); both the next and
+			// the one-after-next are leaders
 			if pc+1 < n {
 				leaders[pc+1] = true
 			}
@@ -95,7 +109,7 @@ func buildCFG(proto *bytecode.Proto) *cfg {
 		}
 	}
 
-	// 2) 按 leader 切 BB
+	// 2) Split into BBs by leader
 	var leaderPCs []int32
 	for pc := range leaders {
 		if pc < n {
@@ -116,18 +130,20 @@ func buildCFG(proto *bytecode.Proto) *cfg {
 	}
 	c.entry = c.pcToBB[0]
 
-	// 3) 连后继边
+	// 3) Link successor edges
 	for _, bb := range c.blocks {
 		c.linkSuccs(bb)
 	}
 	return c
 }
 
-// reachableBlocks 从 entry 出发 BFS 求可达 BB id 集合。
+// reachableBlocks does a BFS from entry to find the set of reachable BB ids.
 //
-// Lua codegen 在每个 RETURN 后追加一条「兜底 RETURN A 1」(返回 0 值)死
-// 代码——它使 RETURN 后一条 pc 成 leader,切出一个**不可达** BB。判定「单
-// 直线 BB」时须只数可达 BB(死代码块永不执行,不影响翻译正确性)。
+// After each RETURN, Lua codegen appends a "fallback RETURN A 1" (returns 0
+// values) as dead code — it makes the pc following a RETURN a leader, carving
+// out an **unreachable** BB. When deciding "single straight-line BB", only
+// reachable BBs must be counted (dead-code blocks never execute and do not
+// affect translation correctness).
 func (c *cfg) reachableBlocks() map[int]bool {
 	seen := map[int]bool{c.entry: true}
 	stack := []int{c.entry}
@@ -144,7 +160,7 @@ func (c *cfg) reachableBlocks() map[int]bool {
 	return seen
 }
 
-// linkSuccs 给一个 BB 连后继边(按末指令语义)。
+// linkSuccs links a BB's successor edges (per its last instruction's semantics).
 func (c *cfg) linkSuccs(bb *basicBlock) {
 	code := c.proto.Code
 	lastPC := bb.endPC - 1
@@ -154,7 +170,7 @@ func (c *cfg) linkSuccs(bb *basicBlock) {
 
 	addSucc := func(pc int32) {
 		if pc < 0 || pc >= n {
-			return // 出界(函数末尾 fallthrough)= 无后继
+			return // out of bounds (fallthrough past function end) = no successor
 		}
 		id, ok := c.pcToBB[pc]
 		if !ok {
@@ -174,12 +190,12 @@ func (c *cfg) linkSuccs(bb *basicBlock) {
 	case bytecode.FORPREP:
 		addSucc(lastPC + 1 + int32(bytecode.SBx(last)))
 	case bytecode.FORLOOP:
-		addSucc(lastPC + 1 + int32(bytecode.SBx(last))) // 回跳
-		addSucc(lastPC + 1)                             // 落出
+		addSucc(lastPC + 1 + int32(bytecode.SBx(last))) // jump back
+		addSucc(lastPC + 1)                             // fall out
 	case bytecode.EQ, bytecode.LT, bytecode.LE,
 		bytecode.TEST, bytecode.TESTSET, bytecode.TFORLOOP:
-		addSucc(lastPC + 1) // 不 pc++:落下一条
-		addSucc(lastPC + 2) // pc++:跳过下一条
+		addSucc(lastPC + 1) // no pc++: fall to next instruction
+		addSucc(lastPC + 2) // pc++: skip the next instruction
 	case bytecode.LOADBOOL:
 		// LOADBOOL skip semantics are compile-time fixed by the C field
 		// (Lua reference manual: "if C, then pc++"). Comparison opcodes
@@ -188,13 +204,13 @@ func (c *cfg) linkSuccs(bb *basicBlock) {
 		// rejects it via translate.go default branch ("unexpected 2 succs
 		// after LOADBOOL"). Pick the single live edge by C.
 		if bytecode.C(last) != 0 {
-			addSucc(lastPC + 2) // C != 0:运行期一定 pc++
+			addSucc(lastPC + 2) // C != 0: always pc++ at runtime
 		} else {
-			addSucc(lastPC + 1) // C == 0:落下一条
+			addSucc(lastPC + 1) // C == 0: fall to next instruction
 		}
 	case bytecode.RETURN, bytecode.TAILCALL:
-		// 函数出口:无后继
+		// function exit: no successor
 	default:
-		addSucc(lastPC + 1) // 普通指令:fallthrough
+		addSucc(lastPC + 1) // ordinary instruction: fallthrough
 	}
 }

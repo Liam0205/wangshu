@@ -1,7 +1,9 @@
-// codegen — AST → bytecode.Proto 的主遍历(04 §5-§9)。
+// codegen — the main AST → bytecode.Proto traversal (04 §5-§9).
 //
-// expr 路径:expr() 返回 expDesc,延迟物化由调用方按需 exp2NextReg / exp2RK / goIfTrue 等驱动。
-// stmt 路径:stmt() 直接产生指令并维护 freereg / nactvar 不变式。
+// expr path: expr() returns an expDesc; deferred materialization is driven
+// on demand by the caller via exp2NextReg / exp2RK / goIfTrue etc.
+// stmt path: stmt() emits instructions directly and maintains the freereg /
+// nactvar invariants.
 package compile
 
 import (
@@ -11,24 +13,26 @@ import (
 	"github.com/Liam0205/wangshu/internal/frontend/ast"
 )
 
-// resolveName 在词法链上解析一个 NameExpr,返回 expDesc 与匹配类型(local/upval/global)。
+// resolveName resolves a NameExpr along the lexical chain, returning an
+// expDesc and its match kind (local/upval/global).
 //
-// 04 §8.4 词法作用域链查找:本函数局部 → 已捕获 upvalue → 外层链(沿 prev) → 全局穿透。
+// 04 §8.4 lexical scope-chain lookup: this function's locals → already
+// captured upvalues → outer chain (following prev) → global fall-through.
 func (fs *funcState) resolveName(line int32, name string) expDesc {
-	// 1) 本函数局部
+	// 1) local of this function
 	if r := fs.findLocal(name); r >= 0 {
 		return newExp(eLocal, r)
 	}
-	// 2) 已登记 upvalue
+	// 2) already-registered upvalue
 	if u := fs.findUpval(name); u >= 0 {
 		return newExp(eUpval, u)
 	}
-	// 3) 沿外层链
+	// 3) along the outer chain
 	if fs.prev != nil {
 		outer := fs.prev.resolveName(line, name)
 		switch outer.k {
 		case eLocal:
-			// 标记外层 block hasUpval,使其退出时 CLOSE
+			// mark the outer block hasUpval so it CLOSEs on exit
 			fs.prev.markUpvalCapture(outer.info)
 			idx := fs.addUpval(line, name, true, uint8(outer.info))
 			return newExp(eUpval, idx)
@@ -36,15 +40,16 @@ func (fs *funcState) resolveName(line int32, name string) expDesc {
 			idx := fs.addUpval(line, name, false, uint8(outer.info))
 			return newExp(eUpval, idx)
 		case eGlobal:
-			// 全局穿透
+			// global fall-through
 		}
 	}
-	// 4) 全局
+	// 4) global
 	k := fs.strK(line, name)
 	return newExp(eGlobal, k)
 }
 
-// markUpvalCapture 把第 reg 个局部所在 block(及其所有更内层块)标 hasUpval(04 §6.1 / §8.4)。
+// markUpvalCapture marks the block holding local reg (and all inner blocks)
+// hasUpval (04 §6.1 / §8.4).
 func (fs *funcState) markUpvalCapture(reg int) {
 	for b := fs.bl; b != nil; b = b.prev {
 		if reg >= b.nactvarSnap {
@@ -54,7 +59,7 @@ func (fs *funcState) markUpvalCapture(reg int) {
 	}
 }
 
-// expr 把一个 ast.Expr 编译为 expDesc(延迟物化)。
+// expr compiles an ast.Expr into an expDesc (deferred materialization).
 func (fs *funcState) expr(node ast.Expr) expDesc {
 	switch e := node.(type) {
 	case *ast.NilExpr:
@@ -74,16 +79,18 @@ func (fs *funcState) expr(node ast.Expr) expDesc {
 		if !fs.isVararg {
 			raise(fs, e.Line, "cannot use '...' outside a vararg function")
 		}
-		// LUA_COMPAT_VARARG:函数体用了 `...` 即不再需要隐式 arg 表
-		// (官方 lparser:fs->f->is_vararg &= ~VARARG_NEEDSARG;
-		// "arg" 局部仍占寄存器,值留 nil)。
+		// LUA_COMPAT_VARARG: once the body uses `...` the implicit arg table
+		// is no longer needed (upstream lparser: fs->f->is_vararg &=
+		// ~VARARG_NEEDSARG; the "arg" local still occupies a register, its
+		// value left nil).
 		fs.proto.NeedsArg = false
 		pc := fs.emitABC(e.Line, bytecode.VARARG, 0, 1, 0)
 		return newExp(eVararg, pc)
 	case *ast.NameExpr:
 		return fs.resolveName(e.Line, e.Name)
 	case *ast.ParenExpr:
-		// 括号强制单值:把内部的 Call/Vararg 收敛为单值形态(04 §9.4)
+		// Parentheses force a single value: collapse an inner Call/Vararg
+		// into single-value form (04 §9.4).
 		inner := fs.expr(e.E)
 		fs.dischargeVars(e.Line, &inner)
 		return inner
@@ -106,7 +113,7 @@ func (fs *funcState) expr(node ast.Expr) expDesc {
 	return expDesc{}
 }
 
-// exprIndex 编译 t[k] / t.field。
+// exprIndex compiles t[k] / t.field.
 func (fs *funcState) exprIndex(e *ast.IndexExpr) expDesc {
 	obj := fs.expr(e.Obj)
 	tableReg := fs.exp2AnyReg(e.Line, &obj)
@@ -117,18 +124,19 @@ func (fs *funcState) exprIndex(e *ast.IndexExpr) expDesc {
 	return exp
 }
 
-// exprCall 编译 f(args...);末位多值时设 B=0(到 top)。
+// exprCall compiles f(args...); when the last arg is multi-value, sets B=0
+// (up to top).
 func (fs *funcState) exprCall(e *ast.CallExpr) expDesc {
 	fnReg := fs.freereg
 	fnExp := fs.expr(e.Fn)
 	fs.exp2NextReg(e.Line, &fnExp)
 	nargs := fs.compileArgList(e.Args, e.Line)
 	b := nargs + 1
-	if nargs < 0 { // 末位多值
+	if nargs < 0 { // last arg is multi-value
 		b = 0
 	}
-	pc := fs.emitABC(e.Line, bytecode.CALL, fnReg, b, 2) // C=2 默认单值,后续可改
-	fs.freereg = fnReg + 1                               // 调用结果默认占 R(fnReg) 1 个
+	pc := fs.emitABC(e.Line, bytecode.CALL, fnReg, b, 2) // C=2 default single value, may be changed later
+	fs.freereg = fnReg + 1                               // the call result occupies R(fnReg), 1 slot by default
 	if fs.calleeIsMathIntrinsic(e.Fn) {
 		fs.proto.IntrinsicCallPCs = append(fs.proto.IntrinsicCallPCs, int32(pc))
 	}
@@ -172,16 +180,16 @@ func isMathIntrinsicIndex(idx *ast.IndexExpr) bool {
 	return bytecode.MathIntrinsicNames[key.Val]
 }
 
-// exprMethodCall 编译 obj:m(args)— SELF + CALL。
+// exprMethodCall compiles obj:m(args) — SELF + CALL.
 func (fs *funcState) exprMethodCall(e *ast.MethodCallExpr) expDesc {
 	baseReg := fs.freereg
 	recv := fs.expr(e.Recv)
 	fs.exp2NextReg(e.Line, &recv) // R(baseReg) = obj
-	// 方法名走 RK 常量
+	// method name goes through an RK constant
 	method := newExp(eK, fs.strK(e.Line, e.Method))
 	rk := fs.exp2RK(e.Line, &method)
 	fs.emitABC(e.Line, bytecode.SELF, baseReg, baseReg, rk)
-	fs.reserveRegs(e.Line, 1) // SELF 额外占 R(baseReg+1)(self)
+	fs.reserveRegs(e.Line, 1) // SELF additionally occupies R(baseReg+1) (self)
 	nargs := fs.compileArgList(e.Args, e.Line)
 	b := nargs + 1 + 1 // self + nargs
 	if nargs < 0 {
@@ -192,7 +200,8 @@ func (fs *funcState) exprMethodCall(e *ast.MethodCallExpr) expDesc {
 	return expDesc{k: eCall, info: pc, tJmp: NoJump, fJmp: NoJump}
 }
 
-// compileArgList 把 args 落到连续寄存器;末位多值返回 -1,固定个数返回个数。
+// compileArgList lays args into consecutive registers; returns -1 when the
+// last arg is multi-value, otherwise the fixed count.
 func (fs *funcState) compileArgList(args []ast.Expr, line int32) int {
 	n := len(args)
 	if n == 0 {
@@ -210,16 +219,19 @@ func (fs *funcState) compileArgList(args []ast.Expr, line int32) int {
 	return n
 }
 
-// exprBin 编译二元表达式;算术折叠,比较走 EQ/LT/LE,逻辑走短路。
+// exprBin compiles a binary expression; arithmetic folds, comparisons go
+// through EQ/LT/LE, logicals go through short-circuit.
 func (fs *funcState) exprBin(e *ast.BinExpr) expDesc {
 	switch e.Op {
 	case ast.OpAnd:
 		l := fs.expr(e.L)
-		fs.goIfTrue(e.Line, &l) // l 为假则跳(链入 fJmp);真则继续(落到右子)
+		fs.goIfTrue(e.Line, &l) // if l is false, jump (linked into fJmp); if true, continue (fall into right subexpr)
 		r := fs.expr(e.R)
-		// 对齐 Lua 5.1 luaK_posfix(OPR_AND):先 dischargeVars(e2) 把 VCALL/VVARARG
-		// 收敛为单值形态——否则带跳转链的 eCall 会被 adjustExprList 误走多值分支,
-		// 跳转链永不回填(JMP sBx=-1 死循环)。
+		// Match Lua 5.1 luaK_posfix(OPR_AND): first dischargeVars(e2) to
+		// collapse VCALL/VVARARG into single-value form — otherwise an
+		// eCall carrying a jump chain would be misrouted through
+		// adjustExprList's multi-value branch and the jump chain would
+		// never be patched (JMP sBx=-1 infinite loop).
 		fs.dischargeVars(e.Line, &r)
 		fs.concat(&r.fJmp, l.fJmp)
 		return r
@@ -235,12 +247,15 @@ func (fs *funcState) exprBin(e *ast.BinExpr) expDesc {
 	case ast.OpConcat:
 		return fs.exprConcat(e)
 	}
-	// 算术
-	// 对齐 Lua 5.1 luaK_infix:左操作数必须在编译右子表达式之前物化为 RK
-	// ——否则右子的 CALL/GETGLOBAL 等会覆盖左结果将要落的寄存器。
-	// 豁免条件 = 官方 isnumeral:eKNum 且无未决跳转链。带链的 eKNum
-	// (如 `(a and 7 or -1)`)若延迟物化,链中 TESTSET 会跳过右子指令
-	// (求值序错误),折叠则直接丢链(NoRegister 占位越界 panic)。
+	// arithmetic
+	// Match Lua 5.1 luaK_infix: the left operand must be materialized to RK
+	// before the right subexpression is compiled — otherwise the right's
+	// CALL/GETGLOBAL etc. would clobber the register the left result is about
+	// to land in. The exemption = upstream isnumeral: eKNum with no pending
+	// jump chain. A jump-chained eKNum (e.g. `(a and 7 or -1)`), if
+	// deferred, has TESTSET in its chain skip the right subexpr's
+	// instructions (wrong evaluation order); folding it drops the chain
+	// outright (NoRegister placeholder → out-of-bounds panic).
 	l := fs.expr(e.L)
 	lrk := -1
 	if !isNumeral(&l) {
@@ -267,7 +282,8 @@ func (fs *funcState) exprBin(e *ast.BinExpr) expDesc {
 	} else {
 		rc = fs.exp2RK(e.Line, &r)
 	}
-	// 顺序:先归还高位临时再归还低位(维持栈式)
+	// Order: free the higher-numbered temp first, then the lower one
+	// (keeps the stack discipline).
 	if rb > rc {
 		if !bytecode.IsK(rb) {
 			fs.freeReg(rb)
@@ -306,13 +322,15 @@ func arithOpcode(op ast.BinOp) bytecode.OpCode {
 	return bytecode.ADD
 }
 
-// isNumeral 等价官方 lcode.c isnumeral:纯数字字面量(无未决跳转链)
-// 才可延迟物化 / 参与常量折叠。
+// isNumeral is equivalent to upstream lcode.c isnumeral: only a plain
+// numeric literal (with no pending jump chain) may be deferred /
+// participate in constant folding.
 func isNumeral(e *expDesc) bool {
 	return e.k == eKNum && !e.hasJumps()
 }
 
-// constFold 在双方都是纯数字字面量(isNumeral)时编译期算结果。
+// constFold computes the result at compile time when both sides are plain
+// numeric literals (isNumeral).
 func constFold(op ast.BinOp, l, r *expDesc) (float64, bool) {
 	if !isNumeral(l) || !isNumeral(r) {
 		return 0, false
@@ -354,7 +372,8 @@ func constFold(op ast.BinOp, l, r *expDesc) (float64, bool) {
 	return res, true
 }
 
-// exprCompare 编译比较;EQ/LT/LE 三档,?= / > / >= 通过交换+取反映射。
+// exprCompare compiles a comparison; three forms EQ/LT/LE, with ?= / > / >=
+// mapped via swap + negate.
 func (fs *funcState) exprCompare(e *ast.BinExpr) expDesc {
 	op := e.Op
 	swap := false
@@ -402,9 +421,10 @@ func (fs *funcState) exprCompare(e *ast.BinExpr) expDesc {
 	return expDesc{k: eJmp, info: pc, tJmp: NoJump, fJmp: NoJump}
 }
 
-// exprConcat 编译 a..b..c — 右结合,折叠为单条 CONCAT(B..C)。
+// exprConcat compiles a..b..c — right-associative, folded into a single
+// CONCAT(B..C).
 func (fs *funcState) exprConcat(e *ast.BinExpr) expDesc {
-	// 收集右展开的所有操作数:a..(b..(c..d)) 平铺为 [a,b,c,d]
+	// collect all right-expanded operands: a..(b..(c..d)) flattened to [a,b,c,d]
 	parts := []ast.Expr{e.L}
 	cur := e.R
 	for {
@@ -423,19 +443,21 @@ func (fs *funcState) exprConcat(e *ast.BinExpr) expDesc {
 	}
 	last := fs.freereg - 1
 	pc := fs.emitABC(e.Line, bytecode.CONCAT, 0, base, last)
-	// 释放 base..last(待 exp2reg 时回填 A,寄存器水位先回到 base 之前)
+	// free base..last (A is patched later at exp2reg time; the register
+	// watermark first drops back below base)
 	for fs.freereg > base {
 		fs.freereg--
 	}
 	return expDesc{k: eRelocable, info: pc, tJmp: NoJump, fJmp: NoJump}
 }
 
-// exprUn 编译一元;-/not/#。
+// exprUn compiles a unary expression; -/not/#.
 func (fs *funcState) exprUn(e *ast.UnExpr) expDesc {
 	sub := fs.expr(e.E)
 	switch e.Op {
 	case ast.OpUnm:
-		// 常量折叠:-数字字面量(isnumeral:带跳转链不可折,链会被丢弃)
+		// constant folding: -numeric-literal (isnumeral: a jump-chained
+		// value cannot be folded, the chain would be dropped)
 		if isNumeral(&sub) {
 			out := newExp(eKNum, 0)
 			out.nval = -sub.nval
@@ -446,7 +468,7 @@ func (fs *funcState) exprUn(e *ast.UnExpr) expDesc {
 		pc := fs.emitABC(e.Line, bytecode.UNM, 0, sub.info, 0)
 		return expDesc{k: eRelocable, info: pc, tJmp: NoJump, fJmp: NoJump}
 	case ast.OpNot:
-		// 短路:对带跳转链的表达式直接交换 t/f
+		// short-circuit: for a jump-chained expression just swap t/f
 		fs.exp2AnyReg(e.Line, &sub)
 		fs.freeExp(&sub)
 		pc := fs.emitABC(e.Line, bytecode.NOT, 0, sub.info, 0)
@@ -461,15 +483,15 @@ func (fs *funcState) exprUn(e *ast.UnExpr) expDesc {
 	return expDesc{}
 }
 
-// exprFunc 编译函数字面量(嵌套 Proto + CLOSURE)。
+// exprFunc compiles a function literal (nested Proto + CLOSURE).
 func (fs *funcState) exprFunc(e *ast.FuncExpr) expDesc {
 	proto := fs.cg.compileFunc(fs, e)
-	idx := uint32(len(fs.cg.protos) - 1) // 最近登记的 ProtoID
+	idx := uint32(len(fs.cg.protos) - 1) // most recently registered ProtoID
 	fs.proto.Protos = append(fs.proto.Protos, idx)
 	fs.proto.SubNUps = append(fs.proto.SubNUps, uint8(len(proto.UpvalDescs)))
 	closureIdx := len(fs.proto.Protos) - 1
 	pc := fs.emitABx(e.Line, bytecode.CLOSURE, 0, closureIdx)
-	// 紧跟 nupvals 条伪指令
+	// followed by nupvals pseudo-instructions
 	for _, u := range proto.UpvalDescs {
 		if u.InStack {
 			fs.emitABC(e.Line, bytecode.MOVE, 0, int(u.Idx), 0)
@@ -480,39 +502,45 @@ func (fs *funcState) exprFunc(e *ast.FuncExpr) expDesc {
 	return expDesc{k: eRelocable, info: pc, tJmp: NoJump, fJmp: NoJump}
 }
 
-// emitSetList 发射 SETLIST(对齐官方 luaK_setlist):批号 c 超 9-bit C 字段
-// (MaxBC=511)时发 C=0 + 后随一条裸批号指令——旧实现 EncodeABC 对 C 静默
-// &0x1FF 截断,第 512 批回绕成 0,解释器把下一条正常指令当批号吞掉
-// (>25550 项的表构造挂死)。
+// emitSetList emits SETLIST (matching upstream luaK_setlist): when the batch
+// number c exceeds the 9-bit C field (MaxBC=511), emit C=0 followed by a
+// bare batch-number instruction — the old implementation had EncodeABC
+// silently &0x1FF-truncate C, so batch 512 wrapped to 0 and the interpreter
+// swallowed the next normal instruction as the batch number (a table
+// constructor with >25550 items would hang).
 func (fs *funcState) emitSetList(line int32, tReg, b, batchNo int) {
 	if batchNo <= bytecode.MaxBC {
 		fs.emitABC(line, bytecode.SETLIST, tReg, b, batchNo)
 		return
 	}
 	fs.emitABC(line, bytecode.SETLIST, tReg, b, 0)
-	fs.emit(line, bytecode.Instruction(batchNo)) // 官方同走 luaK_code 裸字
+	fs.emit(line, bytecode.Instruction(batchNo)) // upstream also emits a bare word via luaK_code
 }
 
-// exprTable 编译表构造:NEWTABLE + 按源码序交错生成 SETTABLE(键值字段,
-// 当场)与 SETLIST(位置字段,攒满一批 flush)。
+// exprTable compiles a table constructor: NEWTABLE + interleaved emission in
+// source order of SETTABLE (key-value fields, emitted inline) and SETLIST
+// (positional fields, flushed once a batch fills).
 //
-// **顺序即语义**(PUC lparser.c 构造器循环同款):后写覆盖先写——
-// `{B,0,C,[1]=""}` 里 [1]="" 先 SETTABLE,批尾 SETLIST 再覆盖 t[1]=B。
-// 旧实现把位置项/键值项拆两阶段(先全部 SETLIST 后全部 SETTABLE),
-// 覆盖方向反转(cgo oracle 差分 fuzz 撞出)。
+// **Order is semantics** (same as the PUC lparser.c constructor loop):
+// later writes overwrite earlier ones — in `{B,0,C,[1]=""}` the [1]=""
+// SETTABLE runs first, then the trailing SETLIST overwrites t[1]=B.
+// The old implementation split positional/key-value items into two phases
+// (all SETLIST first, then all SETTABLE), reversing the overwrite direction
+// (caught by cgo oracle diff fuzz).
 func (fs *funcState) exprTable(e *ast.TableExpr) expDesc {
 	tReg := fs.freereg
-	pc := fs.emitABC(e.Line, bytecode.NEWTABLE, tReg, 0, 0) // B/C 后续回填
+	pc := fs.emitABC(e.Line, bytecode.NEWTABLE, tReg, 0, 0) // B/C patched later
 	fs.reserveRegs(e.Line, 1)
 
 	flush := bytecode.FieldsPerFlush
-	pending := 0 // 当前批已落到 R(tReg+1+pending) 的项数
-	batchNo := 1 // 批号(SETLIST 的 C)
-	nArr := 0    // 位置项总数(NEWTABLE B 回填)
-	nHash := 0   // 键值项总数(NEWTABLE C 回填)
+	pending := 0 // items landed in R(tReg+1+pending) for the current batch
+	batchNo := 1 // batch number (SETLIST's C)
+	nArr := 0    // total positional items (patched into NEWTABLE B)
+	nHash := 0   // total key-value items (patched into NEWTABLE C)
 
-	// 找最后一个位置项的下标(多值展开只对它生效,与 PUC 一致:
-	// 只有 constructor 末尾的位置项保留多值)。
+	// Find the index of the last positional item (multi-value expansion
+	// applies only to it, matching PUC: only the trailing positional item
+	// of a constructor keeps multi-value).
 	lastPositional := -1
 	for i := len(e.Items) - 1; i >= 0; i-- {
 		if e.Items[i].Key == nil {
@@ -524,7 +552,8 @@ func (fs *funcState) exprTable(e *ast.TableExpr) expDesc {
 
 	for i, it := range e.Items {
 		if it.Key != nil {
-			// 键值字段:当场 SETTABLE(顺序语义所在)。
+			// key-value field: SETTABLE inline (this is where the order
+			// semantics live).
 			ke := fs.expr(it.Key)
 			rkK := fs.exp2RK(e.Line, &ke)
 			ve := fs.expr(it.Val)
@@ -561,12 +590,12 @@ func (fs *funcState) exprTable(e *ast.TableExpr) expDesc {
 		fs.freereg = tReg + 1
 	}
 
-	// 回填 NEWTABLE 的 B/C
+	// patch NEWTABLE's B/C
 	ins := fs.proto.Code[pc]
 	ins = bytecode.SetB(ins, int(bytecode.Int2Fb(uint32(nArr))))
 	ins = bytecode.SetC(ins, int(bytecode.Int2Fb(uint32(nHash))))
 	fs.proto.Code[pc] = ins
 
-	// 把 NEWTABLE 落点暴露为 ENonReloc(已在 R(tReg))
+	// expose the NEWTABLE landing site as ENonReloc (already in R(tReg))
 	return expDesc{k: eNonReloc, info: tReg, tJmp: NoJump, fJmp: NoJump}
 }

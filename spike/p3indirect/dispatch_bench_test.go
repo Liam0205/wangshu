@@ -7,15 +7,18 @@ import (
 	"github.com/tetratelabs/wazero/api"
 )
 
-// S-A:dispatch 单次成本对比(call_indirect vs direct call vs imported host call)。
+// S-A: per-call dispatch cost comparison (call_indirect vs direct call vs
+// imported host call).
 //
-// driver 在紧循环里调 leaf callN 次,ns/op ÷ callN = 单次 dispatch 摊销成本
-// (摊掉外层 fn.Call 的 ctx/stack 开销 ~36ns)。三形态 leaf 体相同、循环骨架
-// 相同,差异全在调用机制 → 直接对比。
+// The driver calls leaf callN times in a tight loop; ns/op ÷ callN = the
+// amortized per-call dispatch cost (amortizing away the outer fn.Call ctx/stack
+// overhead of ~36ns). All three forms have the same leaf body and the same loop
+// skeleton; the only difference is the call mechanism → a direct comparison.
 //
-// 闸门:indirect 必须 ≪ host(~143ns,跨层税);目标 <30ns(近原生 indirect)。
+// Gate: indirect must be ≪ host (~143ns, cross-layer tax); target <30ns
+// (near-native indirect).
 //
-// 跑法:GOFLAGS=-mod=mod go test -bench BenchmarkSA -benchtime=2s -count=3
+// How to run: GOFLAGS=-mod=mod go test -bench BenchmarkSA -benchtime=2s -count=3
 const callN = 10000
 
 func benchDispatch(b *testing.B, kind callKind) {
@@ -39,15 +42,15 @@ func benchDispatch(b *testing.B, kind callKind) {
 			b.Fatal(err)
 		}
 	}
-	// ns/op 是「一次 driver(callN)」成本;÷callN 得单次 dispatch 摊销(手工换算)。
+	// ns/op is the cost of "one driver(callN)"; ÷callN gives the amortized per-call dispatch (manual conversion).
 	b.ReportMetric(float64(callN), "calls/op")
 }
 
-// BenchmarkSA_Indirect — 单 module 内 call_indirect 调 leaf(本方案目标形态)。
+// BenchmarkSA_Indirect — call_indirect to leaf within a single module (this scheme's target form).
 func BenchmarkSA_Indirect(b *testing.B) { benchDispatch(b, kindIndirect) }
 
-// BenchmarkSA_Direct — 单 module 内 call 直调 leaf(地板基线,无表查)。
+// BenchmarkSA_Direct — direct call to leaf within a single module (floor baseline, no table lookup).
 func BenchmarkSA_Direct(b *testing.B) { benchDispatch(b, kindDirect) }
 
-// BenchmarkSA_Host — call imported Go leaf(= PW0 S3N 跨层税基线 ~143ns)。
+// BenchmarkSA_Host — call imported Go leaf (= PW0 S3N cross-layer tax baseline ~143ns).
 func BenchmarkSA_Host(b *testing.B) { benchDispatch(b, kindHost) }

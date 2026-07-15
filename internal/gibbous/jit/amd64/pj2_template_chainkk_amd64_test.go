@@ -9,13 +9,14 @@ import (
 	"unsafe"
 )
 
-// pj2_template_chainkk_amd64_test.go —— PJ2 二段链式 reg-K-K 投机模板真
-// mmap+RX round-trip 验证。
+// pj2_template_chainkk_amd64_test.go — real mmap+RX round-trip verification of
+// the PJ2 two-stage chained reg-K-K speculative template.
 //
-// 形态:`R(A) = R(B) op1 K1 op2 K2`(luac 编 `x*2+1` 等 = MUL+ADD 链式)。
-// 模板复用 xmm0 不写回 stack 中间值,一次 mmap 段调用完成两次 SSE binop。
+// Form: `R(A) = R(B) op1 K1 op2 K2` (luac compiles `x*2+1` etc. into a MUL+ADD
+// chain). The template reuses xmm0 without writing the intermediate value back
+// to the stack, completing two SSE binops in a single mmap'd segment call.
 
-// TestPJ2_SpecChainKK_MUL_ADD:R(0)=3 * K1(2) + K2(1) = 7.
+// TestPJ2_SpecChainKK_MUL_ADD: R(0)=3 * K1(2) + K2(1) = 7.
 func TestPJ2_SpecChainKK_MUL_ADD(t *testing.T) {
 	pj2TestStack[0] = math.Float64bits(3.0)
 	pj2TestStack[1] = 0
@@ -47,8 +48,9 @@ func TestPJ2_SpecChainKK_MUL_ADD(t *testing.T) {
 	}
 }
 
-// TestPJ2_SpecChainKK_ADD_MUL:R(0)=3 + K1(1) * K2(2) = 8(注意:Lua 优
-// 先级实际是 (3+1)*2=8;模板按 op 顺序串行,xmm0 链接).
+// TestPJ2_SpecChainKK_ADD_MUL: R(0)=3 + K1(1) * K2(2) = 8 (note: Lua
+// precedence actually yields (3+1)*2=8; the template runs the ops serially in
+// order, chaining through xmm0).
 func TestPJ2_SpecChainKK_ADD_MUL(t *testing.T) {
 	pj2TestStack[0] = math.Float64bits(3.0)
 	pj2TestStack[1] = 0
@@ -74,7 +76,7 @@ func TestPJ2_SpecChainKK_ADD_MUL(t *testing.T) {
 	}
 }
 
-// TestPJ2_SpecChainKK_Deopt:R(0) 非 number → guard 失败 → rax=deoptCode.
+// TestPJ2_SpecChainKK_Deopt: R(0) not a number → guard fails → rax=deoptCode.
 func TestPJ2_SpecChainKK_Deopt(t *testing.T) {
 	pj2TestStack[0] = 0xFFFC000000000001 // table NaN-box
 	pj2TestStack[1] = 0

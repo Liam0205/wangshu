@@ -8,15 +8,17 @@ import (
 	"testing"
 )
 
-// pj3_template_amd64_test.go —— PJ3 FORLOOP 模板真 mmap+RX round-trip
-// 验证。承 docs/design/p4-method-jit/05-system-pipeline.md §6.3。
+// pj3_template_amd64_test.go —— PJ3 FORLOOP template real mmap+RX round-trip
+// verification. Follows docs/design/p4-method-jit/05-system-pipeline.md §6.3.
 
-// TestPJ3_ForLoopEmptyConst_RoundTrip:`for i=1,100 do end` 全常量空 body,
-// 段执行后 rax 不被读(模板末 ret 时 rax 状态不重要,主要验证段 RET 正常)。
+// TestPJ3_ForLoopEmptyConst_RoundTrip: `for i=1,100 do end`, all-constant empty
+// body. After the segment runs, rax is not read (rax state is irrelevant at the
+// template's terminating ret; the point is to verify the segment RETs cleanly).
 //
-// 实际验证项:模板**真在 mmap+RX 跑通 99 次回边 + 末次 ja 退出**——
-// 若 backward jmp / ucomisd / ja 有任一字节错,会 SIGSEGV / SIGILL /
-// 死循环(测试 timeout)。本测试通过 = 物理可行性硬证据。
+// What is actually verified: the template **really runs 99 back-edges + a final
+// ja exit under mmap+RX** -- if any byte of the backward jmp / ucomisd / ja is
+// wrong, it SIGSEGVs / SIGILLs / spins forever (test timeout). A passing test =
+// hard evidence of physical feasibility.
 func TestPJ3_ForLoopEmptyConst_RoundTrip(t *testing.T) {
 	cases := []struct {
 		init, limit, step float64
@@ -62,18 +64,21 @@ func TestPJ3_ForLoopEmptyConst_RoundTrip(t *testing.T) {
 			}
 			defer func() { _ = page.Munmap() }()
 
-			// CallJITSpec 不读 vsBase(模板不寻址 rbx);用 0 即可,但保险传
-			// 个 dummy 非 0 地址避免万一段读 rbx
+			// CallJITSpec does not read vsBase (the template doesn't address
+			// rbx); 0 works, but pass a dummy non-zero address as insurance in
+			// case the segment reads rbx.
 			dummyStack := make([]uint64, 4)
 			vsBase := uintptr(0)
 			_ = vsBase
 			rax := CallJITSpec(page.Addr(), 0, uintptr(0))
 			runtime.KeepAlive(dummyStack)
 
-			// rax 是段返回值,本模板末 ret 时 rax 不是有意义值(可能是 ja
-			// 之前 ucomisd 的 flag 影响后的 rax,或上层 trampoline 保留)。
-			// 我们只验段正常 ret——若 backward jmp 死循环 → testing
-			// timeout;若字节错 → SIGSEGV。
+			// rax is the segment return value; at this template's terminating
+			// ret rax is not a meaningful value (it may be the rax left after
+			// the flag effect of the ucomisd before ja, or whatever the upper
+			// trampoline preserved). We only verify the segment RETs normally
+			// -- a spinning backward jmp → testing timeout; a wrong byte →
+			// SIGSEGV.
 			t.Logf("%s: rax=0x%x(段正常退出,backward jmp + ja 字节级跑通)",
 				tc.name, rax)
 		})

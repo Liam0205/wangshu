@@ -1,7 +1,7 @@
-// stdLogger — 默认 Logger 实现(`docs/design/p2-bridge/04-try-compile-fallback.md` §6.4)。
+// stdLogger — the default Logger implementation (`docs/design/p2-bridge/04-try-compile-fallback.md` §6.4).
 //
-// 写 stderr(io.Writer 注入式,默认 os.Stderr);宿主代码可注入自定义实现
-// (structured log / metrics)。
+// Writes to stderr (io.Writer is injectable, defaulting to os.Stderr); host
+// code may inject a custom implementation (structured log / metrics).
 package bridge
 
 import (
@@ -14,7 +14,7 @@ import (
 	"github.com/Liam0205/wangshu/internal/bytecode"
 )
 
-// NewStdLogger 默认 Logger 写入指定 Writer(nil 等价 os.Stderr)。
+// NewStdLogger creates the default Logger writing to the given Writer (nil is equivalent to os.Stderr).
 func NewStdLogger(w io.Writer) Logger {
 	if w == nil {
 		w = os.Stderr
@@ -24,7 +24,7 @@ func NewStdLogger(w io.Writer) Logger {
 
 type stdLogger struct{ out io.Writer }
 
-// LogPromoted 升层成功(T1):
+// LogPromoted logs a successful promotion (T1):
 //
 //	function <name> promoted to gibbous (entry=<E>, backedge=<B>, feedback=<F>)
 func (l *stdLogger) LogPromoted(proto *bytecode.Proto, pd *ProfileData) {
@@ -32,7 +32,7 @@ func (l *stdLogger) LogPromoted(proto *bytecode.Proto, pd *ProfileData) {
 		protoName(proto), pd.EntryCount, pd.MaxBackEdge(), feedbackSummary(pd.Feedback))
 }
 
-// LogStuck 不可编译永久解释(T2):
+// LogStuck logs a function that stays permanently interpreted because it is not compilable (T2):
 //
 //	function <name> stays interpreted (not compilable: F<n> <reason>)
 func (l *stdLogger) LogStuck(proto *bytecode.Proto, pd *ProfileData, comp Compilability) {
@@ -47,7 +47,7 @@ func (l *stdLogger) LogStuck(proto *bytecode.Proto, pd *ProfileData, comp Compil
 		protoName(proto), reason)
 }
 
-// LogCompileFail 编译失败永久解释(T3):
+// LogCompileFail logs a compile failure leading to permanent interpretation (T3):
 //
 //	WARN function <name> compile failed, stays interpreted: <err>
 func (l *stdLogger) LogCompileFail(proto *bytecode.Proto, _ *ProfileData, err error) {
@@ -55,19 +55,21 @@ func (l *stdLogger) LogCompileFail(proto *bytecode.Proto, _ *ProfileData, err er
 		protoName(proto), err)
 }
 
-// LogPanic P3 后端 panic 兜底诊断(T3 子类):完整 stack 走独立 channel,
-// 升层日志只说一行。
+// LogPanic is the fallback diagnostic for a P3 backend panic (a T3 subtype): the
+// full stack goes through a separate channel, while the promotion log emits just one line.
 func (l *stdLogger) LogPanic(proto *bytecode.Proto, panicValue interface{}) {
 	fmt.Fprintf(l.out, "ERROR function %s P3 backend panic: %v\n%s\n",
 		protoName(proto), panicValue, debug.Stack())
 }
 
-// silentLogger 是无操作 Logger——considerPromotion 在 b.logger == nil 下走
-// nil 检查,但有时希望主动注入「明确不打印」的 Logger 而非依赖 nil
-// 检查(避免 nil 接口的隐式行为)。测试可用此 Logger 安全跑而不刷屏。
+// silentLogger is a no-op Logger. considerPromotion already handles b.logger == nil
+// via a nil check, but sometimes it is preferable to actively inject a Logger that
+// "explicitly prints nothing" rather than relying on the nil check (avoiding the
+// implicit behavior of a nil interface). Tests can use this Logger to run safely
+// without flooding the console.
 type silentLogger struct{}
 
-// NewSilentLogger 返回一个不打任何日志的 Logger。
+// NewSilentLogger returns a Logger that logs nothing.
 func NewSilentLogger() Logger { return silentLogger{} }
 
 func (silentLogger) LogPromoted(_ *bytecode.Proto, _ *ProfileData)               {}
@@ -75,10 +77,11 @@ func (silentLogger) LogStuck(_ *bytecode.Proto, _ *ProfileData, _ Compilability)
 func (silentLogger) LogCompileFail(_ *bytecode.Proto, _ *ProfileData, _ error)   {}
 func (silentLogger) LogPanic(_ *bytecode.Proto, _ interface{})                   {}
 
-// protoName 取 Proto 的可读名字(优先 Source,降级 line:Source)。
+// protoName returns a readable name for a Proto (preferring Source, falling back to line:Source).
 //
-// 当前 Proto 没有独立的 Name 字段(05 §1.7 简化),P1 实装把函数定义信息
-// 留在 Source + LineDefined。完整 traceback 形态参见 09。
+// The current Proto has no dedicated Name field (05 §1.7 simplification); the P1
+// implementation keeps function-definition info in Source + LineDefined. For the
+// full traceback form, see 09.
 func protoName(proto *bytecode.Proto) string {
 	if proto == nil {
 		return "<nil>"
@@ -89,7 +92,7 @@ func protoName(proto *bytecode.Proto) string {
 	return fmt.Sprintf("%s:%d", proto.Source, proto.LineDefined)
 }
 
-// formatReasons 把 ReasonsBitmap 翻成 "F<n> <name>" 列表(逗号分隔)。
+// formatReasons renders a ReasonsBitmap into a comma-separated "F<n> <name>" list.
 func formatReasons(r ReasonsBitmap) string {
 	if r == 0 {
 		return "F0 none"
@@ -99,7 +102,7 @@ func formatReasons(r ReasonsBitmap) string {
 		parts = append(parts, "F1 vararg")
 	}
 	if r&(ReasonYield|ReasonResume|ReasonCoroutine|ReasonUnknownCall|ReasonSelfCall) != 0 {
-		// F2 多个位合并显示——不分别报每位,避免日志冗长
+		// F2 merges several bits into one display — do not report each bit separately, to avoid verbose logs
 		parts = append(parts, "F2 "+formatF2(r))
 	}
 	if r&ReasonDebug != 0 {
@@ -162,9 +165,9 @@ func formatF6(r ReasonsBitmap) string {
 	return strings.Join(parts, "+")
 }
 
-// feedbackSummary 把 TypeFeedback 简略统计成「arith=N mono=M mega=K」格式。
+// feedbackSummary condenses a TypeFeedback into the "arith=N mono=M mega=K" format.
 //
-// 主用途:升层日志末段 feedback=<F> 字段(04 §6.1)。nil 时返 "nil"。
+// Main use: the trailing feedback=<F> field of the promotion log (04 §6.1). Returns "nil" when nil.
 func feedbackSummary(fb *TypeFeedback) string {
 	if fb == nil {
 		return "nil"

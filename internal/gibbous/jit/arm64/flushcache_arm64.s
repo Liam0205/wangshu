@@ -1,25 +1,28 @@
 //go:build wangshu_p4 && linux && arm64
 
-// flushcache_arm64.s —— P4 PJ8 arm64 i-cache flush(承 codepage_linux.go
-// flushICacheArm64 占位的真实装)。
+// flushcache_arm64.s —— P4 PJ8 arm64 i-cache flush (the real implementation
+// backing the flushICacheArm64 placeholder in codepage_linux.go).
 //
-// 承 docs/design/p4-method-jit/05-system-pipeline.md §2.3.1 arm64 icache
-// 协议:写 mmap 段后必须做 DC CVAU + IC IVAU + DSB + ISB,否则 i-cache 与
-// d-cache 不一致,执行段会取到旧 i-cache 内容。
+// Follows the arm64 icache protocol in
+// docs/design/p4-method-jit/05-system-pipeline.md §2.3.1: after writing an
+// mmap segment, DC CVAU + IC IVAU + DSB + ISB must be performed, otherwise the
+// i-cache and d-cache are inconsistent and the executable segment will fetch
+// stale i-cache contents.
 //
-// 实现参考 Linux kernel arch/arm64/lib/__clear_cache.S 简化版。每条 cache
-// line 走一遍 DC CVAU + IC IVAU(Cache line 大小经 CTR_EL0 读取,这里用
-// 保守 64 字节,大多数 arm64 实现 d-line 64 / i-line 64 或更小)。
+// Implementation adapted from a simplified version of the Linux kernel's
+// arch/arm64/lib/__clear_cache.S. Each cache line goes through DC CVAU + IC
+// IVAU (cache line size is read from CTR_EL0; here we use a conservative 64
+// bytes, as most arm64 implementations have d-line 64 / i-line 64 or smaller).
 
 #include "textflag.h"
 
 // func flushICacheArm64Asm(start, end uintptr)
 //
-// 入参:
-//   start +0(FP)  uintptr  ← 段起点
-//   end   +8(FP)  uintptr  ← 段终点(exclusive)
+// Params:
+//   start +0(FP)  uintptr  ← segment start
+//   end   +8(FP)  uintptr  ← segment end (exclusive)
 //
-// 流程:
+// Flow:
 //   for addr := start &~ 63; addr < end; addr += 64 {
 //       DC CVAU, addr  // clean d-cache to point of unification
 //   }
@@ -33,12 +36,13 @@ TEXT ·flushICacheArm64Asm(SB),NOSPLIT|NOFRAME,$0-16
 	MOVD	start+0(FP), R0
 	MOVD	end+8(FP), R1
 
-	// align R0 down to 64-byte boundary(假设 cache line ≤ 64;真值经
-	// CTR_EL0[3:0] 的 IminLine 读出,大部分 ARMv8 实现 = 4(16 字节)或
-	// 6(64 字节);保守用 64,多扫几条 line 不害正确性,只稍慢)。
+	// align R0 down to 64-byte boundary (assumes cache line ≤ 64; the true
+	// value is read from CTR_EL0[3:0] IminLine, and most ARMv8 implementations
+	// = 4 (16 bytes) or 6 (64 bytes); conservatively using 64 scans a few extra
+	// lines, which does not hurt correctness, only slightly slower).
 	BIC	$63, R0, R2  // R2 = aligned start
 
-	// pass 1: DC CVAU 全段
+	// pass 1: DC CVAU over the whole segment
 	MOVD	R2, R3
 loopDC:
 	CMP	R1, R3
@@ -47,9 +51,9 @@ loopDC:
 	ADD	$64, R3, R3
 	B	loopDC
 doneDC:
-	WORD	$0xd5033b9f  // DSB ISH(Data Sync Barrier, Inner Shareable;ARMv8 manual C6.2.91)
+	WORD	$0xd5033b9f  // DSB ISH (Data Sync Barrier, Inner Shareable; ARMv8 manual C6.2.91)
 
-	// pass 2: IC IVAU 全段
+	// pass 2: IC IVAU over the whole segment
 	MOVD	R2, R3
 loopIC:
 	CMP	R1, R3

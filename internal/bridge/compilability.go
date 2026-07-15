@@ -1,30 +1,33 @@
 // Compilability enum and reasons bitmap (`docs/design/p2-bridge/03-compilability-analysis.md`).
 package bridge
 
-// Compilability 描述一个 Proto 的静态可编译性判定结果(03 §5.1)。
+// Compilability describes the static compilability verdict of a Proto (03 §5.1).
 //
-// 三态枚举:
-//   - CompUnknown      未分析(P1-only build / Compile 还没跑 AnalyzeProto)
-//   - CompCompilable   F1-F7 全部通过,可参与升层决策
-//   - CompNotCompilable F1-F7 任一触发,永久解释
+// Three-state enum:
+//   - CompUnknown      not analyzed (P1-only build / Compile has not run AnalyzeProto yet)
+//   - CompCompilable   F1-F7 all pass, eligible for promotion decisions
+//   - CompNotCompilable any of F1-F7 triggers, interpret forever
 //
-// **重要纪律**(03 §1):**保守第一,宁漏勿误**——把不可编译形状判成可编译
-// 的后果是灾难性的(P3 编译错误代码或运行期崩溃,fallback 不会被触发,
-// 系统不知道结果是错的);把可编译的判成不可编译只是「少赚加速」。所以
-// 任何拿不准的形状一律判 CompNotCompilable。
+// **Key discipline** (03 §1): **conservative first, prefer false negatives over
+// false positives** — misjudging a non-compilable shape as compilable is
+// catastrophic (P3 emits wrong code or crashes at runtime, fallback is never
+// triggered, and the system does not know the result is wrong); misjudging a
+// compilable shape as non-compilable merely "misses some speedup". So any shape
+// we are unsure about is judged CompNotCompilable.
 type Compilability uint8
 
 const (
-	// CompUnknown:Compile 尚未跑 AnalyzeProto(或 P1-only build 未启 P2)。
-	// 04 状态机视同 NotCompilable(再保守一层,03 §5.5),保守不升层。
+	// CompUnknown: Compile has not run AnalyzeProto yet (or P1-only build with P2 disabled).
+	// The 04 state machine treats this as NotCompilable (one more layer of caution,
+	// 03 §5.5), conservatively not promoting.
 	CompUnknown Compilability = iota
 
-	// CompCompilable:可编译——F1-F7 全部通过,可参与升层决策。
-	// 升层后 04 状态机可调 P3 编译。
+	// CompCompilable: compilable — F1-F7 all pass, eligible for promotion decisions.
+	// After promotion the 04 state machine may invoke P3 compilation.
 	CompCompilable
 
-	// CompNotCompilable:不可编译——F1-F7 任一触发,永久解释。
-	// 04 状态机的 considerPromotion 直接跳过此 Proto(永远 tier-0)。
+	// CompNotCompilable: not compilable — any of F1-F7 triggers, interpret forever.
+	// The 04 state machine's considerPromotion skips this Proto outright (always tier-0).
 	CompNotCompilable
 )
 
@@ -39,83 +42,91 @@ func (c Compilability) String() string {
 	}
 }
 
-// ReasonsBitmap 是 F1-F7 拒因的位掩码(03 §5.1 reasonsBitmap)。
+// ReasonsBitmap is the bitmask of F1-F7 rejection reasons (03 §5.1 reasonsBitmap).
 //
-// 每个 F<n> 形状对应一位(下文常量按设计文档 03 §3 顺序排列);Compilable
-// 时为 0;NotCompilable 时至少一位为 1(可能多位同时——「保守第一」的体现:
-// 多条规则同时判不可编译,冗余 = 安全)。
+// Each F<n> shape maps to one bit (the constants below follow design doc 03 §3
+// order); it is 0 when Compilable; at least one bit is 1 when NotCompilable
+// (possibly several at once — an expression of "conservative first": multiple
+// rules judging non-compilable at the same time, redundancy = safety).
 type ReasonsBitmap uint16
 
 const (
-	// ReasonVararg(F1):vararg 函数(03 §3.1)。
+	// ReasonVararg (F1): vararg function (03 §3.1).
 	ReasonVararg ReasonsBitmap = 1 << iota
 
-	// ReasonYield(F2-a):直接调 coroutine.yield。
+	// ReasonYield (F2-a): direct call to coroutine.yield.
 	ReasonYield
 
-	// ReasonResume(F2-a'):直接调 coroutine.resume。
+	// ReasonResume (F2-a'): direct call to coroutine.resume.
 	ReasonResume
 
-	// ReasonCoroutine(F2-a''):任何 coroutine.* 调用。
+	// ReasonCoroutine (F2-a''): any coroutine.* call.
 	ReasonCoroutine
 
-	// ReasonUnknownCall(F2-b):调用了无法静态确定不 yield 的函数。
+	// ReasonUnknownCall (F2-b): calls a function that cannot be statically proven not to yield.
 	ReasonUnknownCall
 
-	// ReasonDebug(F3):引用了 debug 表(03 §3.3)。
+	// ReasonDebug (F3): references the debug table (03 §3.3).
 	ReasonDebug
 
-	// ReasonSetfenv(F4):调用了 setfenv / getfenv(03 §3.4)。
+	// ReasonSetfenv (F4): calls setfenv / getfenv (03 §3.4).
 	ReasonSetfenv
 
-	// ReasonOverSize(F5):函数指令数超 MaxCompilableInsns(03 §3.5)。
+	// ReasonOverSize (F5): function instruction count exceeds MaxCompilableInsns (03 §3.5).
 	ReasonOverSize
 
-	// ReasonOverRegs(F5):寄存器数超 MaxCompilableRegs(03 §3.5)。
+	// ReasonOverRegs (F5): register count exceeds MaxCompilableRegs (03 §3.5).
 	ReasonOverRegs
 
-	// ReasonNestedDeep(F6):嵌套深度超 MaxClosureDepth(03 §3.6)。
+	// ReasonNestedDeep (F6): nesting depth exceeds MaxClosureDepth (03 §3.6).
 	ReasonNestedDeep
 
-	// ReasonOverUpval(F6):upvalue 数超 MaxUpvalCount(03 §3.6)。
+	// ReasonOverUpval (F6): upvalue count exceeds MaxUpvalCount (03 §3.6).
 	ReasonOverUpval
 
-	// ReasonBackendUnsupp(F7):P3 后端不支持某 opcode(03 §3.7)。
+	// ReasonBackendUnsupp (F7): P3 backend does not support some opcode (03 §3.7).
 	ReasonBackendUnsupp
 
-	// ReasonSelfCall(F2-c):`obj:method(...)` 形态(SELF + CALL/TAILCALL)。
+	// ReasonSelfCall (F2-c): `obj:method(...)` shape (SELF + CALL/TAILCALL).
 	//
-	// **占位位语义**(承 ReasonBackendUnsupp 同款手法):method receiver 的
-	// 方法表无法静态析出,callee 内部可能 yield/setfenv/debug —— 编译期保守
-	// 标拒占位。运行期 P4 jit 注入后,如果 `SupportsAllOpcodes(proto)` 命中
-	// PJ5 SELF inline 形态(MOVE/GETUPVAL + SELF + (args) + CALL/TAILCALL +
-	// RETURN),`recheckCompilabilityRuntime` 撤本位 —— byte-equal P1 由
-	// host.Self + host.CallBaseline / host.TailCall 整段交接保证(callee 内
-	// yield/__call/meta 全 P1 doCall 路径处理)。
+	// **Placeholder-bit semantics** (same technique as ReasonBackendUnsupp): the
+	// method receiver's method table cannot be resolved statically, and the callee
+	// may internally yield/setfenv/debug — so we conservatively mark it as rejected
+	// as a placeholder at compile time. After the P4 jit is injected at runtime, if
+	// `SupportsAllOpcodes(proto)` matches the PJ5 SELF inline shape (MOVE/GETUPVAL +
+	// SELF + (args) + CALL/TAILCALL + RETURN), `recheckCompilabilityRuntime` clears
+	// this bit — byte-equal with P1 is guaranteed by the whole handoff via
+	// host.Self + host.CallBaseline / host.TailCall (callee-internal
+	// yield/__call/meta all handled by the P1 doCall path).
 	//
-	// **与 ReasonUnknownCall 的边界**:method call 不再叠加 ReasonUnknownCall
-	// —— 占位 vs 真拒分开记录,运行期重判才能精准撤位而不动 F2-b 已知 yield
-	// 风险。
+	// **Boundary with ReasonUnknownCall**: a method call no longer also sets
+	// ReasonUnknownCall — placeholder vs real rejection are recorded separately, so
+	// the runtime re-check can clear the bit precisely without touching the known
+	// yield risk of F2-b.
 	ReasonSelfCall
 )
 
 // HasAny reports whether any reason bit is set.
 func (r ReasonsBitmap) HasAny() bool { return r != 0 }
 
-// 阈值常量(03 §3.5 / §3.6 建议值——实测后定标,见 03 §9 缺口)。
+// Threshold constants (03 §3.5 / §3.6 suggested values — calibrated after
+// measurement, see 03 §9 gaps).
 const (
-	// MaxCompilableInsns:Proto.Code 长度上限,超出判 F5。
-	// 2000 指令 ≈ 100-300 行 Lua,绝大多数热点函数远小于此。
+	// MaxCompilableInsns: upper bound on Proto.Code length; exceeding it triggers F5.
+	// 2000 instructions ≈ 100-300 lines of Lua; the vast majority of hot functions
+	// are far smaller.
 	MaxCompilableInsns = 2000
 
-	// MaxCompilableRegs:Proto.MaxStack 上限,超出判 F5。
-	// 200 是 Lua 5.1 单函数寄存器合理上限(02 §1 max regs ≈ 250)的余量版本。
+	// MaxCompilableRegs: upper bound on Proto.MaxStack; exceeding it triggers F5.
+	// 200 is a padded version of the reasonable per-function register ceiling for
+	// Lua 5.1 (02 §1 max regs ≈ 250).
 	MaxCompilableRegs = 200
 
-	// MaxClosureDepth:嵌套函数深度上限(F6)。
-	// 偏严保守(嵌套 1-2 层是绝大多数);P3 upvalue 编译协议成熟后放宽。
+	// MaxClosureDepth: upper bound on nested function depth (F6).
+	// Deliberately strict and conservative (1-2 levels of nesting covers the vast
+	// majority); relaxed once the P3 upvalue compilation protocol matures.
 	MaxClosureDepth = 3
 
-	// MaxUpvalCount:Proto.UpvalDescs 长度上限(F6)。
+	// MaxUpvalCount: upper bound on Proto.UpvalDescs length (F6).
 	MaxUpvalCount = 8
 )

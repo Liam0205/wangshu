@@ -1,20 +1,20 @@
 // Package bytecode defines Wangshu's register-based instruction set, encoding,
 // Proto layout, and IC slot. See docs/design/p1-interpreter/02-bytecode-isa.md.
 //
-// 指令固定 32 bit:
+// Fixed 32-bit instruction:
 //
-//	格式 ABC :  | B:9 | C:9 | A:8 | OP:6 |  (31..23 = B, 22..14 = C, 13..6 = A, 5..0 = OP)
-//	格式 ABx :  |     Bx:18      | A:8 | OP:6 |
-//	格式 AsBx:  |     sBx:18     | A:8 | OP:6 |  (sBx = Bx - 131071)
+//	format ABC :  | B:9 | C:9 | A:8 | OP:6 |  (31..23 = B, 22..14 = C, 13..6 = A, 5..0 = OP)
+//	format ABx :  |     Bx:18      | A:8 | OP:6 |
+//	format AsBx:  |     sBx:18     | A:8 | OP:6 |  (sBx = Bx - 131071)
 //
-// RK 编码:B/C 高位置 1(操作数 ≥ 256)= 常量 K[operand-256];否则 = 寄存器 R。
-// 具体见 02 §2 / §4。
+// RK encoding: B/C high bit set (operand ≥ 256) = constant K[operand-256]; otherwise
+// = register R. See 02 §2 / §4 for details.
 package bytecode
 
 // Instruction is a 32-bit encoded VM instruction.
 type Instruction uint32
 
-// 字段位宽与上限(02 §2)。
+// Field bit widths and limits (02 §2).
 const (
 	OpBits = 6
 	ABits  = 8
@@ -32,44 +32,44 @@ const (
 	BShift  = CShift + BCBits // 23
 	BxShift = AShift + ABits  // 14
 
-	// MaxA / MaxBC / MaxBx / MaxStack(02 §2 / §9 不变式)。
+	// MaxA / MaxBC / MaxBx / MaxStack (02 §2 / §9 invariants).
 	MaxA     = int(AMask)         // 255
 	MaxBC    = int(BCMask)        // 511
-	MaxK     = 256                // RK 槽位 0..255 = 寄存器,256..511 = 常量
+	MaxK     = 256                // RK slots 0..255 = registers, 256..511 = constants
 	MaxBx    = int(BxMask)        // 262143
 	SBxBias  = (int(BxMask) >> 1) // 131071
-	MaxStack = 250                // 02 §2:留 fixstack 余量,与 5.1 一致
+	MaxStack = 250                // 02 §2: reserve fixstack headroom, consistent with 5.1
 
-	// 编译期上限(09 / 04 §9 错误目录)。
+	// Compile-time limits (09 / 04 §9 error catalog).
 	MaxLocVars     = 200 // LUAI_MAXVARS
 	MaxUpvalues    = 60  // LUAI_MAXUPVALUES
-	FieldsPerFlush = 50  // 02 §4 SETLIST 的 LFIELDS_PER_FLUSH
+	FieldsPerFlush = 50  // 02 §4 SETLIST's LFIELDS_PER_FLUSH
 )
 
-// IsK 判定一个 9-bit RK 操作数是否指向常量。
+// IsK reports whether a 9-bit RK operand points to a constant.
 func IsK(rk int) bool { return rk >= MaxK }
 
-// KIdx 取常量索引(rk - MaxK,前置 IsK)。
+// KIdx returns the constant index (rk - MaxK, requires IsK first).
 func KIdx(rk int) int { return rk - MaxK }
 
-// 编解码 helper(02 §2)。
+// Encode/decode helpers (02 §2).
 
-// Op 取 opcode。
+// Op returns the opcode.
 func Op(i Instruction) OpCode { return OpCode(uint32(i) & OpMask) }
 
-// A 取 A 字段(8-bit 寄存器)。
+// A returns the A field (8-bit register).
 func A(i Instruction) int { return int((uint32(i) >> AShift) & AMask) }
 
-// B 取 B 字段(9-bit RK)。
+// B returns the B field (9-bit RK).
 func B(i Instruction) int { return int((uint32(i) >> BShift) & BCMask) }
 
-// C 取 C 字段(9-bit RK)。
+// C returns the C field (9-bit RK).
 func C(i Instruction) int { return int((uint32(i) >> CShift) & BCMask) }
 
-// Bx 取 18-bit 无符号 Bx。
+// Bx returns the 18-bit unsigned Bx.
 func Bx(i Instruction) int { return int((uint32(i) >> BxShift) & BxMask) }
 
-// SBx 取 18-bit 有符号 sBx。
+// SBx returns the 18-bit signed sBx.
 func SBx(i Instruction) int { return Bx(i) - SBxBias }
 
 // EncodeABC encodes an iABC instruction.
@@ -92,16 +92,18 @@ func EncodeAsBx(op OpCode, a, sbx int) Instruction {
 	return EncodeABx(op, a, sbx+SBxBias)
 }
 
-// NoRegister marks "no destination register yet" in TESTSET A field (04 §5.6)。
+// NoRegister marks "no destination register yet" in TESTSET A field (04 §5.6).
 //
-// 取 0xFF(超过 MaxStack=250),保证不会与任何合法寄存器号撞车,后续
-// patchTestReg/exp2reg 时回填具体 reg 或退化为 TEST(无 A)。
+// Set to 0xFF (beyond MaxStack=250), guaranteeing it never collides with any valid
+// register number; a later patchTestReg/exp2reg backfills the concrete reg or
+// degrades to TEST (no A).
 const NoRegister = int(AMask) // 255
 
 // SetA returns ins with the A field rewritten to a, keeping the OP/B/C/Bx region intact.
 //
-// 用于 codegen 的"占位指令回填"路径(GETGLOBAL/GETTABLE/算术 ABC、LOADK 的 ABx 等
-// 指令在发射时 A 不知,后续 exp2reg 时回填——保留 B/C/Bx 共占的 18-bit 高位段)。
+// Used by codegen's "placeholder instruction backfill" path (GETGLOBAL/GETTABLE,
+// arithmetic ABC, LOADK's ABx, etc. don't know A at emit time and backfill it later
+// during exp2reg -- preserving the 18-bit high segment shared by B/C/Bx).
 func SetA(ins Instruction, a int) Instruction {
 	return Instruction((uint32(ins) &^ (AMask << AShift)) | (uint32(a)&AMask)<<AShift)
 }

@@ -1,15 +1,19 @@
 //go:build wangshu_p3 && wangshu_profile
 
-// 凸月(gibbous, P3)档:heavy 三脚本经 force-all 升 wazero 执行,与新月
-// (crescent,默认档 BenchmarkXxx_Wangshu)+ gopher 三方对比。
+// Gibbous (P3) tier: the three heavy scripts run under force-all-lifted wazero
+// execution, compared against crescent (the default tier, BenchmarkXxx_Wangshu)
+// plus gopher as a third-party baseline.
 //
-// 仅 wangshu_p3 && wangshu_profile build 编译:p3 提供真 gibbous Compiler;
-// profile 启用 OnEnter/OnBackEdge 采样(force-all 经它触发升层)。
+// Compiled only under the wangshu_p3 && wangshu_profile build: p3 supplies the
+// real gibbous Compiler; profile enables OnEnter/OnBackEdge sampling (force-all
+// triggers promotion through it).
 //
-// **非空保证**:heavy 三脚本均含内层非 vararg kernel(probe 实测均升 1 个 Proto),
-// force-all 下首调驱动升层,二调起经 call_indirect 直调 gibbous → 凸月路径真被走到。
+// **Non-empty guarantee**: all three heavy scripts contain an inner non-vararg
+// kernel (probes confirm each lifts one Proto). Under force-all the first call
+// drives promotion, and from the second call on the gibbous path is reached
+// directly via call_indirect — so the gibbous path is genuinely exercised.
 //
-// 运行:go test -tags "wangshu_p3 wangshu_profile" -bench 'Gibbous' ./benchmarks/heavy/
+// Run: go test -tags "wangshu_p3 wangshu_profile" -bench 'Gibbous' ./benchmarks/heavy/
 package heavy
 
 import (

@@ -2,10 +2,10 @@ package gc
 
 import "github.com/Liam0205/wangshu/internal/value"
 
-// Push 登记一个临时持有的 arena 引用为根(06 §6.2)。返回 handle(== 当前栈深度)
-// 用于配对校验。
+// Push registers a temporarily held arena reference as a root (06 §6.2).
+// Returns a handle (== current stack depth) used for pairing checks.
 //
-// host 代码模式:
+// Host code pattern:
 //
 //	ref := arena.NewString(...)
 //	h := gc.Push(value.MakeGC(value.TagString, ref))
@@ -16,13 +16,17 @@ func (c *Collector) Push(v value.Value) int {
 	return len(c.shadow)
 }
 
-// Pop 弹出到深度 handle-1。只做范围校验,不校验"等于最近一次 Push 的返回值":
-// 乱序弹出(先 Pop 外层 handle)会静默截掉更深层登记——LIFO 配对由调用方
-// defer 纪律保证(06 §6.3),此处仅兜越界。
+// Pop unwinds to depth handle-1. It only does a range check, not an
+// "equals the most recent Push return value" check: out-of-order pops
+// (popping an outer handle first) silently truncate deeper registrations —
+// LIFO pairing is guaranteed by the caller's defer discipline (06 §6.3);
+// here we only guard against going out of range.
 func (c *Collector) Pop(handle int) {
 	if handle <= 0 || handle > len(c.shadow) {
-		// 防御:漏配对的链路被截断,后续 Push/Pop 的 handle 都将偏移。
-		// 这是 06 §6.3 host 纪律违反的兜底报错入口;P1 panic,M11 host fn 接入后改为 vm.raise。
+		// Defensive: a link that skipped its pairing gets truncated, and the
+		// handles of subsequent Push/Pop calls will all be off.
+		// This is the fallback error entry point for 06 §6.3 host discipline
+		// violations; P1 panics, and once M11 host fns are wired in this becomes vm.raise.
 		panic("gc: shadow stack pop out of range")
 	}
 	c.shadow = c.shadow[:handle-1]
@@ -36,8 +40,9 @@ func (c *Collector) ShadowDepth() int { return len(c.shadow) }
 // P1: no-op (STW GC, no incremental marking → three-color invariant trivially holds).
 // P3+ (incremental GC): if isBlack(parent) && isWhite(child) && incrementalMarking { ... }.
 //
-// 望舒不复刻 Go runtime.gcWriteBarrier(roadmap §6 非目标)——arena 内引用是 GCRef 整数,
-// Go 编译器**不会**对它们插屏障,所以 Go 屏障税我们一分不付。
+// Wangshu does not replicate Go's runtime.gcWriteBarrier (roadmap §6 non-goal):
+// arena-internal references are GCRef integers, and the Go compiler will **not**
+// insert barriers for them, so we pay none of Go's barrier tax.
 func (c *Collector) WriteBarrier(parent, child value.Value) {
 	_ = parent
 	_ = child

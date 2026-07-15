@@ -8,20 +8,25 @@ import (
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
-// gibbous_spec_subdivmul_e2e_test.go —— PJ2 投机模板扩 SUB/MUL/DIV 三档
-// 真升层 e2e:`function(x,y) return x-y end` / `return x*y` / `return x/y`
-// 经 P4 升层后 mmap 段真发字节级模板(对应 SSE op = F2 0F 5C/59/5E C1)。
+// gibbous_spec_subdivmul_e2e_test.go —— PJ2 speculative template extended to
+// the three ops SUB/MUL/DIV. Real-promotion e2e:
+// `function(x,y) return x-y end` / `return x*y` / `return x/y`. After P4
+// promotion the mmap segment emits a real byte-level template (corresponding
+// SSE op = F2 0F 5C/59/5E C1).
 //
-// 与 ADD e2e 对位:每档 fast-path(双 number 输入 byte-equal 解释器)+
-// deopt-path(table+number 触发 IsNumber guard 失败 → host.Arith → raise
-// byte-equal 解释器报错信息)。
+// Mirrors the ADD e2e: each op has a fast-path (two number inputs, byte-equal
+// with the interpreter) plus a deopt-path (table+number trips the IsNumber
+// guard → host.Arith → raise, byte-equal with the interpreter's error
+// message).
 //
-// **prove-the-path 命中证据**:本测真升层 + 真在 mmap+RX 段跑——不同于
-// jit 包内 byte-equal 字节单测(只验编码)和 mmap+RX round-trip(只验
-// SSE op 真跑),本测覆盖 useSpec 主路径(compiler.go::Compile → bridge
-// 注入 → enterGibbous → p4Code.Run → callJITSpec → deopt 检测降级)。
+// **prove-the-path hit evidence**: this test really promotes and really runs
+// in the mmap+RX segment — unlike the jit-package byte-equal unit tests (which
+// only verify encoding) and the mmap+RX round-trip (which only verifies the
+// SSE op actually runs), this test covers the useSpec main path
+// (compiler.go::Compile → bridge injection → enterGibbous → p4Code.Run →
+// callJITSpec → deopt detection and downgrade).
 
-// TestPJ2_SpeculativeSUB_E2E_FastPath:f(11,7) = 4(SUB 快路径 byte-equal).
+// TestPJ2_SpeculativeSUB_E2E_FastPath: f(11,7) = 4 (SUB fast-path, byte-equal).
 func TestPJ2_SpeculativeSUB_E2E_FastPath(t *testing.T) {
 	src := `
 local function f(x, y) return x - y end
@@ -39,8 +44,8 @@ return f(11, 7)`
 	}
 }
 
-// TestPJ2_SpeculativeSUB_E2E_DeoptPath:table-number → IsNumber 失败 →
-// host.Arith → raise(byte-equal 解释器报错)。
+// TestPJ2_SpeculativeSUB_E2E_DeoptPath: table-number → IsNumber fails →
+// host.Arith → raise (byte-equal with the interpreter's error).
 func TestPJ2_SpeculativeSUB_E2E_DeoptPath(t *testing.T) {
 	src := `
 local function f(x, y) return x - y end
@@ -55,7 +60,7 @@ return f({}, 1)`
 	}
 }
 
-// TestPJ2_SpeculativeMUL_E2E_FastPath:f(6,7) = 42(MUL 快路径).
+// TestPJ2_SpeculativeMUL_E2E_FastPath: f(6,7) = 42 (MUL fast-path).
 func TestPJ2_SpeculativeMUL_E2E_FastPath(t *testing.T) {
 	src := `
 local function f(x, y) return x * y end
@@ -73,8 +78,9 @@ return f(6, 7)`
 	}
 }
 
-// TestPJ2_SpeculativeMUL_E2E_DeoptPath:string*number 触发 deopt → host.Arith
-// → string-to-number 自动转换(Lua 5.1 隐式转 number);用 nil 强制 raise.
+// TestPJ2_SpeculativeMUL_E2E_DeoptPath: string*number trips deopt → host.Arith
+// → string-to-number auto-conversion (Lua 5.1 implicit number coercion); use
+// nil to force a raise.
 func TestPJ2_SpeculativeMUL_E2E_DeoptPath(t *testing.T) {
 	src := `
 local function f(x, y) return x * y end
@@ -89,7 +95,7 @@ return f(nil, 1)`
 	}
 }
 
-// TestPJ2_SpeculativeDIV_E2E_FastPath:f(42,6) = 7(DIV 快路径).
+// TestPJ2_SpeculativeDIV_E2E_FastPath: f(42,6) = 7 (DIV fast-path).
 func TestPJ2_SpeculativeDIV_E2E_FastPath(t *testing.T) {
 	src := `
 local function f(x, y) return x / y end
@@ -107,8 +113,8 @@ return f(42, 6)`
 	}
 }
 
-// TestPJ2_SpeculativeDIV_E2E_DeoptPath:table/number 触发 deopt → host.Arith
-// → raise(byte-equal 解释器报错).
+// TestPJ2_SpeculativeDIV_E2E_DeoptPath: table/number trips deopt → host.Arith
+// → raise (byte-equal with the interpreter's error).
 func TestPJ2_SpeculativeDIV_E2E_DeoptPath(t *testing.T) {
 	src := `
 local function f(x, y) return x / y end
@@ -123,8 +129,8 @@ return f({}, 1)`
 	}
 }
 
-// TestPJ2_SpeculativeDIV_E2E_DivByZero:f(1,0) = +Inf(IEEE 754,Lua 5.1
-// 不抛错,spec 快路径与解释器一致 byte-equal)。
+// TestPJ2_SpeculativeDIV_E2E_DivByZero: f(1,0) = +Inf (IEEE 754; Lua 5.1 does
+// not raise; spec fast-path is byte-equal with the interpreter).
 func TestPJ2_SpeculativeDIV_E2E_DivByZero(t *testing.T) {
 	src := `
 local function f(x, y) return x / y end
@@ -138,7 +144,7 @@ return f(1, 0)`
 		t.Fatalf("run: %v", err)
 	}
 	got := value.AsNumber(value.Value(rets[0]))
-	// IEEE 754:1.0/0.0 = +Inf,Lua 5.1 不 raise(crescent doArith byte-equal)
+	// IEEE 754: 1.0/0.0 = +Inf, Lua 5.1 does not raise (crescent doArith byte-equal)
 	if got <= 0 || got != got+1 { // +Inf == +Inf + 1
 		t.Errorf("f(1,0) = %v, want +Inf(IEEE 754;spec DIV / 解释器同语义)", got)
 	}

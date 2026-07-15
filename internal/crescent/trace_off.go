@@ -2,11 +2,13 @@
 
 package crescent
 
-// traceExec 是逐指令 trace 的编译期开关:默认 false,主循环的 trace 分支
-// 被编译器整体消除(零开销,且非全局变量,无并发数据竞争面)。
-// 排障时 `go build -tags wangshu_trace` 启用。
+// traceExec is the compile-time switch for per-instruction trace: default
+// false, the main loop's trace branch is entirely eliminated by the compiler
+// (zero overhead, and not a global variable, so no concurrent data race
+// surface). For troubleshooting, enable with `go build -tags wangshu_trace`.
 const traceExec = false
 
-// ciMirrorCheck 默认 false:PW10 R2b-1 的 ci 段镜像自检在默认构建编译消去
-// (零开销)。`go build -tags wangshu_trace` 启用回读自检。
+// ciMirrorCheck default false: the ci segment mirror self-check from
+// PW10 R2b-1 is compiled away in the default build (zero overhead).
+// `go build -tags wangshu_trace` enables the read-back self-check.
 const ciMirrorCheck = false

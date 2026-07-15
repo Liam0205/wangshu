@@ -1,16 +1,18 @@
 //go:build wangshu_p3
 
-// Package memadapter 让 arena 收养 wazero linear memory 作 backing
-// (docs/design/p3-wasm-tier/03-memory-model.md §1)。
+// Package memadapter lets the arena adopt a wazero linear memory as its backing
+// (docs/design/p3-wasm-tier/03-memory-model.md §1).
 //
-// 仅 wangshu_p3 build 编译——默认 / wangshu_profile build 下 arena 走
-// DefaultBacking(Go 堆 make),不引入 wazero。
+// Compiled only under the wangshu_p3 build tag: in the default / wangshu_profile
+// builds the arena uses DefaultBacking (Go-heap make) and does not pull in wazero.
 //
-// **实装与设计骨架的偏差(承 PW0 spike 实测,SP-A)**:03-memory-model §1.5
-// 骨架用 `mem.UnsafeUnderlyingBuffer()`,但 PW0 spike(spike/p3boundary)
-// 实测确认用 `mem.Read(0, size)` 取 write-through 零拷贝视图更稳(wazero
-// v1.12.0 公开 API,语义明确:返回底层 buffer 直接视图,grow 后 disconnect
-// 需重取)。本子包按实测结论用 Read。
+// **Deviation from the design skeleton (per the PW0 spike measurements, SP-A)**:
+// 03-memory-model §1.5's skeleton uses `mem.UnsafeUnderlyingBuffer()`, but the
+// PW0 spike (spike/p3boundary) confirmed empirically that `mem.Read(0, size)`
+// yields a more robust write-through zero-copy view (a public wazero v1.12.0 API
+// with well-defined semantics: it returns a direct view of the underlying buffer,
+// which disconnects after a grow and must be re-fetched). This subpackage follows
+// that finding and uses Read.
 package memadapter
 
 import (
@@ -26,11 +28,12 @@ import (
 
 const wasmPageBytes = 65536 // 64 KiB
 
-// MemoryHolder 持有为某个 State 主 arena 当 backing 用的 wazero Memory。
+// MemoryHolder holds the wazero Memory used as the backing for some State's main arena.
 //
-// 一份 MemoryHolder 服务一个 State 的主 arena(arena 单 State 私有,03 §1.5)。
-// holder module 仅声明 + 导出 memory,不带函数;gibbous 翻译产物经独立 module
-// 经 import memory 共享这块 memory(04-trampoline §2 / §3)。
+// One MemoryHolder serves one State's main arena (an arena is private to a single
+// State, 03 §1.5). The holder module only declares and exports the memory, carrying
+// no functions; the modules produced by gibbous translation share this memory via
+// import memory (04-trampoline §2 / §3).
 type MemoryHolder struct {
 	ctx     context.Context
 	runtime wazero.Runtime
@@ -39,16 +42,20 @@ type MemoryHolder struct {
 	maxPage uint32
 }
 
-// TableSlots 是共享 funcref 表的容量(PW10 Arch-2 升层函数注册表的 slot 上限)。
+// TableSlots is the capacity of the shared funcref table (the slot cap of the
+// PW10 Arch-2 tiered-up function registry).
 //
-// 表在 env holder module 声明一次(固定容量,无 max);每个升层 Proto 占一个 slot
-// (单调分配,Compiler 维护 Proto→slot 注册表)。8192 远超单 State 内热点 Proto 数的
-// 现实量级(典型 Program 升层函数 ≪ 百级);越界由 Compiler 在分配时检测(超出则该
-// Proto 不经 call_indirect 直调、回退 h_call,正确性不破)。
+// The table is declared once in the env holder module (fixed capacity, no max);
+// each tiered-up Proto occupies one slot (monotonic allocation, with the Compiler
+// maintaining the Proto→slot registry). 8192 far exceeds the realistic count of
+// hot Protos within a single State (a typical Program has ≪ hundreds of tiered-up
+// functions); overflow is detected by the Compiler at allocation time (if exceeded,
+// that Proto is not called directly via call_indirect and falls back to h_call,
+// without breaking correctness).
 const TableSlots = 8192
 
-// New 构造 MemoryHolder,分配 initialBytes(向上对齐 64 KiB 页)的 linear
-// memory,上限 maxBytes。
+// New constructs a MemoryHolder, allocating a linear memory of initialBytes
+// (rounded up to a 64 KiB page boundary) with an upper limit of maxBytes.
 func New(ctx context.Context, runtime wazero.Runtime, initialBytes, maxBytes uint32) (*MemoryHolder, error) {
 	initPage := ceilDivPage(initialBytes)
 	maxPage := ceilDivPage(maxBytes)
@@ -67,8 +74,8 @@ func New(ctx context.Context, runtime wazero.Runtime, initialBytes, maxBytes uin
 	if err != nil {
 		return nil, fmt.Errorf("memadapter: compile holder module: %w", err)
 	}
-	// 命名 "env":gibbous module 经 `import "env" "memory"` 共享这块 memory
-	// (PW2 跨 module memory 共享,03 §3.1)。
+	// Named "env": the gibbous module shares this memory via
+	// `import "env" "memory"` (PW2 cross-module memory sharing, 03 §3.1).
 	mod, err := runtime.InstantiateModule(ctx, compiled,
 		wazero.NewModuleConfig().WithName("env"))
 	if err != nil {
@@ -87,17 +94,19 @@ func New(ctx context.Context, runtime wazero.Runtime, initialBytes, maxBytes uin
 	}, nil
 }
 
-// Memory 暴露底层 wazero Memory(gibbous module import memory 时需要)。
+// Memory exposes the underlying wazero Memory (needed when the gibbous module
+// imports memory).
 func (h *MemoryHolder) Memory() api.Memory { return h.memory }
 
-// Backing 返回 arena.BackingFn 适配器。每次 arena 请求 backing(初始 +
-// 每次 grow)时,确保 wazero memory 容量足够,再取 write-through 视图别名
-// 成 []uint64 返回。
+// Backing returns an arena.BackingFn adapter. On each arena backing request (the
+// initial one plus every grow) it ensures the wazero memory has enough capacity,
+// then takes a write-through view aliased as []uint64 and returns it.
 //
-// **arena.grow64 配套**(03 §1.6 + arena GrowInPlace 标志):收养模式下
-// memory.grow 是原地扩展(旧内容保留),返回的新视图已含旧数据 —— arena
-// 必须用 InPlaceBacking 语义(不 copy),否则 copy 源(旧视图)已 disconnect
-// 是 UB。见 arena.Options.InPlaceBacking。
+// **Companion to arena.grow64** (03 §1.6 + arena GrowInPlace flag): under the
+// adoption model, memory.grow is an in-place expansion (old contents preserved),
+// so the returned new view already contains the old data — the arena must use
+// InPlaceBacking semantics (no copy), otherwise the copy source (the old view) has
+// already disconnected and reading it is UB. See arena.Options.InPlaceBacking.
 func (h *MemoryHolder) Backing() arena.BackingFn {
 	return func(words uint32) []uint64 {
 		needBytes := uint64(words) * 8
@@ -106,8 +115,9 @@ func (h *MemoryHolder) Backing() arena.BackingFn {
 	}
 }
 
-// ensureBytes 在 wazero memory 容量不足 needBytes 时 grow。grow 后旧视图
-// 失效(spike 实测),由 Backing 闭包随后重取新视图覆盖。
+// ensureBytes grows the wazero memory when its capacity falls short of needBytes.
+// After a grow the old view is invalidated (per the spike measurements); the
+// Backing closure then re-fetches a fresh view to replace it.
 func (h *MemoryHolder) ensureBytes(needBytes uint64) {
 	cur := uint64(h.memory.Size())
 	if cur >= needBytes {
@@ -122,12 +132,13 @@ func (h *MemoryHolder) ensureBytes(needBytes uint64) {
 	}
 }
 
-// viewWords 取 wazero memory 前 words*8 字节的 write-through 视图,unsafe
-// 别名成 []uint64。
+// viewWords takes a write-through view of the first words*8 bytes of the wazero
+// memory, unsafely aliased as []uint64.
 //
-// 安全性:① mem.Read 返回底层 buffer 直接切片(write-through,spike 实测);
-// ② wazero memory 起始 64 KiB 页对齐,远超 uint64 的 8 字节对齐要求;
-// ③ 视图长度恰为 words*8(arena 注入点契约 1)。
+// Safety: ① mem.Read returns a direct slice of the underlying buffer (write-through,
+// per the spike measurements); ② the wazero memory starts 64 KiB page-aligned, far
+// exceeding uint64's 8-byte alignment requirement; ③ the view length is exactly
+// words*8 (arena injection-point contract 1).
 func (h *MemoryHolder) viewWords(words uint32) []uint64 {
 	byteLen := uint64(words) * 8
 	buf, ok := h.memory.Read(0, uint32(byteLen))
@@ -140,7 +151,8 @@ func (h *MemoryHolder) viewWords(words uint32) []uint64 {
 	return unsafe.Slice((*uint64)(unsafe.Pointer(&buf[0])), words)
 }
 
-// Close 释放 holder module 与 runtime 持有的资源(State 销毁时调)。
+// Close releases the resources held by the holder module and runtime (called when
+// the State is destroyed).
 func (h *MemoryHolder) Close() error {
 	return h.module.Close(h.ctx)
 }

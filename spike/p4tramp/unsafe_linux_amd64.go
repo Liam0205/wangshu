@@ -6,14 +6,15 @@ import (
 	"unsafe"
 )
 
-// memAddr 返回 []byte 底层数组首地址(uintptr)。
+// memAddr returns the address of the []byte's underlying array (uintptr).
 //
-// **unsafe 范围**:仅用于把 mmap 出来的段地址转为 uintptr 给 callJIT。Go GC
-// 不会移动 mmap 段(它不是 Go 堆对象,unix.Mmap 返回的 []byte 经 syscall 暴露
-// 给 Go,但底层是 anonymous mmap,Go GC 不感知);因此 uintptr 稳定。
+// **unsafe scope**: used only to convert an mmap'd segment address into a uintptr
+// for callJIT. The Go GC does not move mmap segments (they are not Go heap objects;
+// the []byte returned by unix.Mmap is exposed to Go via syscall, but its backing is
+// an anonymous mmap that the Go GC is unaware of), so the uintptr is stable.
 //
-// 本 spike 之外的主库代码(internal/gibbous/jit)同款形态会用 codePagePool,
-// 同源依赖此性质。
+// Beyond this spike, the main library code (internal/gibbous/jit) uses the same
+// pattern via codePagePool, relying on this same property.
 func memAddr(mem []byte) uintptr {
 	return uintptr(unsafe.Pointer(&mem[0]))
 }

@@ -1,18 +1,20 @@
 // Package mock provides P3Compiler test doubles for P2 bridge users
-// (`docs/design/p2-bridge/05-p3-p4-interface.md` §7 + 06 §11.1 RB-T4)。
+// (`docs/design/p2-bridge/05-p3-p4-interface.md` §7 + 06 §11.1 RB-T4).
 //
-// 三种 mock 行为变体(覆盖 PB7 端到端测试矩阵):
+// Three mock behavior variants (covering the PB7 end-to-end test matrix):
 //
-//   - DummyCompile: SupportsAllOpcodes=true / Compile 永远成功
-//     (TierGibbous 路径验收)
-//   - RejectAll:    SupportsAllOpcodes=false(F7 永远触发,所有 Proto
-//     永久解释,等价 P1-only 行为)
-//   - PanicOnce:    Compile 第一次 panic,后续不再触发(测 defer recover
-//     兜底 + Stuck 不重试纪律)
+//   - DummyCompile: SupportsAllOpcodes=true / Compile always succeeds
+//     (TierGibbous path acceptance)
+//   - RejectAll:    SupportsAllOpcodes=false (F7 always fires, every Proto
+//     stays interpreted forever, equivalent to P1-only behavior)
+//   - PanicOnce:    Compile panics on the first call, never fires again (tests
+//     the defer recover fallback + the Stuck no-retry discipline)
 //
-// 为什么提到子包导出:bridge 主包的 _test.go 里已有同款 mocks(state_machine_test
-// 与 std_logger_test),但 wangshu 主包 e2e 测试也需要——跨包共享走公共
-// 导出(internal/bridge/mock),包路径仍在 internal 不破公共面。
+// Why the sub-package export: the bridge main package's _test.go already has
+// the same mocks (state_machine_test and std_logger_test), but the wangshu
+// main package's e2e tests need them too — cross-package sharing goes through a
+// shared export (internal/bridge/mock); the package path stays under internal
+// so the public surface is unaffected.
 package mock
 
 import (
@@ -20,7 +22,7 @@ import (
 	"github.com/Liam0205/wangshu/internal/bytecode"
 )
 
-// DummyCompile P3:SupportsAllOpcodes=true,Compile 永远成功产空 GibbousCode。
+// DummyCompile P3: SupportsAllOpcodes=true, Compile always succeeds producing an empty GibbousCode.
 type DummyCompile struct{}
 
 func (DummyCompile) SupportsAllOpcodes(_ *bytecode.Proto) bool { return true }
@@ -28,25 +30,28 @@ func (DummyCompile) Compile(p *bytecode.Proto, _ *bridge.TypeFeedback) (bridge.G
 	return dummyCode{proto: p}, nil
 }
 
-// RejectAll P3:SupportsAllOpcodes=false,任何 Proto 都 F7 拒。
+// RejectAll P3: SupportsAllOpcodes=false, F7-rejects any Proto.
 //
-// 等价于 P3 还没注入(b.p3 == nil)的语义,但显式注入此 mock 在测试里更
-// 清晰(避免 F7 无 P3 的特殊路径与「明确不支持」混淆)。
+// Semantically equivalent to P3 not yet being injected (b.p3 == nil), but
+// injecting this mock explicitly is clearer in tests (avoids conflating the
+// no-P3 F7 special path with an explicit "not supported").
 type RejectAll struct{}
 
 func (RejectAll) SupportsAllOpcodes(_ *bytecode.Proto) bool { return false }
 func (RejectAll) Compile(_ *bytecode.Proto, _ *bridge.TypeFeedback) (bridge.GibbousCode, error) {
-	// SupportsAllOpcodes=false 时 F7 应已拦在 AnalyzeProto 阶段——本路径
-	// 理论上不可达。防御性返 err。
+	// When SupportsAllOpcodes=false, F7 should already have stopped this at
+	// the AnalyzeProto stage — this path is theoretically unreachable.
+	// Return err defensively.
 	return nil, &bridge.CompileError{
 		Kind:   bridge.CompileErrBackendDeclined,
 		Reason: "RejectAll mock: SupportsAllOpcodes=false should have stopped this",
 	}
 }
 
-// PanicOnce P3:第一次 Compile panic(测 defer recover);后续 Compile 仍
-// panic(Stuck 后不会再触发,所以「后续是否 panic」无法直接观察——但语义
-// 上保持一致)。
+// PanicOnce P3: Compile panics on the first call (tests defer recover);
+// subsequent Compile calls still panic (Stuck means it never fires again, so
+// "whether it panics later" can't be observed directly — but the semantics
+// stay consistent).
 type PanicOnce struct{}
 
 func (PanicOnce) SupportsAllOpcodes(_ *bytecode.Proto) bool { return true }
@@ -54,8 +59,9 @@ func (PanicOnce) Compile(_ *bytecode.Proto, _ *bridge.TypeFeedback) (bridge.Gibb
 	panic("synthetic backend bug for testing")
 }
 
-// dummyCode 是 GibbousCode 的最小实现(P2 视角不透明)。Run 是 no-op 占位
-// (mock 不真执行;trampoline 端到端测试用真 P3 gibbous,见 wangshu_p3 build)。
+// dummyCode is the minimal implementation of GibbousCode (opaque from the P2
+// perspective). Run is a no-op placeholder (the mock doesn't actually execute;
+// trampoline end-to-end tests use real P3 gibbous, see the wangshu_p3 build).
 type dummyCode struct{ proto *bytecode.Proto }
 
 func (d dummyCode) Proto() *bytecode.Proto         { return d.proto }

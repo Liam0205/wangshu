@@ -1,9 +1,10 @@
 // Package crescent is the tier-0 interpreter (P1 main loop) — the single
 // execution layer of P1 and the deopt landing point for all future tiers
-// (roadmap §5 原则 1)。
+// (roadmap §5 principle 1).
 //
-// 设计:docs/design/p1-interpreter/05-interpreter-loop.md。M9 范围内只跑
-// 算术 / 循环 / 调用三档;IC、元表、协程、GC 留 M10/M11。
+// Design: docs/design/p1-interpreter/05-interpreter-loop.md. Within the M9
+// scope it only runs the three tiers arithmetic / loop / call; IC, metatables,
+// coroutines and GC are left to M10/M11.
 package crescent
 
 import (
@@ -19,23 +20,25 @@ import (
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
-// ctxHolder 包裹 context.Context,通过 atomic.Pointer 跨 goroutine 安全
-// 替换。剥离接口签名,避免 internal/crescent 直接依赖标准库 context。
+// ctxHolder wraps context.Context and is swapped safely across goroutines via
+// atomic.Pointer. It strips the interface signature to avoid making
+// internal/crescent depend directly on the standard-library context.
 type ctxHolder struct {
 	err func() error
 }
 
-// LuaError carries a Lua-level error value (05 §9.2)。
+// LuaError carries a Lua-level error value (05 §9.2).
 type LuaError struct {
 	Value value.Value
-	// HasValue:Value 字段是否携带真实错误值。不能用 Value 的零值判
-	// "未设置"——NaN-boxing 下 bits 0 恰是合法数字 +0.0,error(0, 0)
-	// 的错误值会被误判替换成 Msg 字符串。
+	// HasValue: whether the Value field carries a real error value. We cannot
+	// use Value's zero value to decide "unset" — under NaN-boxing, bits 0
+	// happen to be the legal number +0.0, so the error value of error(0, 0)
+	// would be misjudged and replaced by the Msg string.
 	HasValue  bool
-	Msg       string // 缓存给 Go 错误接口
-	Traceback string // 错误冒泡到顶层时构建(09;pcall 捕获的错误不带)
-	Level     int    // error(msg, level) 的 level(09);0 = 不加位置前缀
-	annotated bool   // 已加 chunkname:line: 前缀(只加一次)
+	Msg       string // cached for the Go error interface
+	Traceback string // built when the error bubbles to the top level (09; errors caught by pcall carry none)
+	Level     int    // the level of error(msg, level) (09); 0 = no position prefix
+	annotated bool   // chunkname:line: prefix already added (added only once)
 	// PUC luaL_argerror mirror (issue #133): the function name in
 	// "bad argument #N to 'name'" comes from the CALLER's call site
 	// (getobjname on the CALL/TAILCALL/TFORLOOP operand), not from the
@@ -57,222 +60,272 @@ func (e *LuaError) Error() string {
 
 // State is the embedding-facing VM state.
 //
-// M9 范围简化:值栈用 Go slice,后续 M13 切到 arena 上的视图(arena backing
-// 注入点;05 §1.3 / 06 §1.1 留口)。
+// M9-scope simplification: the value stack uses a Go slice, later switched in
+// M13 to a view over the arena (arena backing injection point; 05 §1.3 / 06
+// §1.1 leaves the hook).
 type State struct {
 	arena         *arena.Arena
 	gc            *gc.Collector
-	protos        []*bytecode.Proto // ProtoID → Proto(由 Compile 注入,见 LoadProgram)
-	strRefs       [][]arena.GCRef   // protos[id] 内字面量 → 已 intern 的 GCRef(R6 根,详见 11 §1.4)
-	globals       arena.GCRef       // _G(globals 表)
-	runningThread *thread           // 当前正在执行的 thread(GC ExtraValues 来源)
-	hostFns       hostFnRegistry    // host function 注册表(M12)
-	stringLib     arena.GCRef       // string 库表(string 值的 per-type __index,07 §1.2)
-	stringMeta    arena.GCRef       // string 值的共享元表 {__index = string}(PUC 对位;getmetatable("") 返回它)
-	cos           coRegistry        // 协程注册表(08;coID = lightuserdata 句柄)
+	protos        []*bytecode.Proto // ProtoID → Proto (injected by Compile, see LoadProgram)
+	strRefs       [][]arena.GCRef   // literals in protos[id] → interned GCRef (R6 root, see 11 §1.4)
+	globals       arena.GCRef       // _G (globals table)
+	runningThread *thread           // the thread currently executing (source of GC ExtraValues)
+	hostFns       hostFnRegistry    // host function registry (M12)
+	stringLib     arena.GCRef       // string library table (per-type __index for string values, 07 §1.2)
+	stringMeta    arena.GCRef       // shared metatable for string values {__index = string} (PUC parity; getmetatable("") returns it)
+	cos           coRegistry        // coroutine registry (08; coID = lightuserdata handle)
 
-	// uvOwner 记录每个【开放】upvalue 属于哪个 thread 的栈(01 §5.4 的
-	// (threadRef, stackIdx) 二元组的 Go 侧形态;值栈 arena 化后改存 threadRef)。
-	// 关闭后从此表删除(自持值不再依赖 thread)。
+	// uvOwner records which thread's stack each [open] upvalue belongs to (the
+	// Go-side form of the (threadRef, stackIdx) pair in 01 §5.4; once the value
+	// stack is arena-ized it stores threadRef instead).
+	// Removed from this table on close (the self-held value no longer depends on the thread).
 	uvOwner map[arena.GCRef]*thread
 
-	// compileFn 是 loadstring/load 的编译回调(由 wangshu 门面注入,
-	// 避免 crescent → frontend 反向依赖)。返回 (mainID, protos, err)。
+	// compileFn is the compile callback for loadstring/load (injected by the
+	// wangshu facade to avoid a reverse crescent → frontend dependency).
+	// Returns (mainID, protos, err).
 	compileFn func(src []byte, chunkname string) (uint32, []*bytecode.Proto, error)
 
-	// nCcalls 是 host→Lua 重入深度(真 Go 栈消耗;05 §7.4 LUAI_MAXCCALLS 等价)。
-	// callLuaFromHost 进入 +1 / 返回 -1;超 maxCCallDepth 抛 "C stack overflow"。
+	// nCcalls is the host→Lua re-entry depth (real Go stack consumption;
+	// equivalent to 05 §7.4 LUAI_MAXCCALLS). callLuaFromHost does +1 on entry
+	// / -1 on return; exceeding maxCCallDepth raises "C stack overflow".
 	nCcalls int
 
-	// threadChain 是 resume 链上被挂起的调用者线程(06 §5.1 R4/R5:
-	// runningThread 只覆盖当前线程,链上其余线程的栈也必须是根——
-	// freelist 复用内存后漏根即 use-after-free)。Resume 进入时压入、返回时弹出。
+	// threadChain is the suspended caller threads on the resume chain (06 §5.1
+	// R4/R5: runningThread only covers the current thread, but the stacks of the
+	// other threads on the chain must also be roots — after the freelist reuses
+	// their memory, a missed root is a use-after-free). Pushed on Resume entry, popped on return.
 	threadChain []*thread
 
-	// loadedCls 是 LoadProgram 返回的主 chunk closure(R8 类常驻根:仅被
-	// Go 侧 loaded 缓存持有,不入根会被回收,freelist 下块复用 = 串台执行
-	// 另一个 Program)。State 生命周期内不清除(11 §1.3 loaded 不逐出)。
+	// loadedCls is the main-chunk closure returned by LoadProgram (R8-class
+	// resident root: held only by the Go-side loaded cache; without a root it is
+	// collected, and after the freelist reuses the block it cross-executes
+	// another Program). Never cleared during the State's lifetime (11 §1.3 loaded is not evicted).
 	loadedCls []arena.GCRef
 
-	// stepBudget > 0 时启用指令预算:回边(JMP/FORLOOP 负位移)每跨过
-	// stepQuantum 条指令检查一次,超额抛 "instruction budget exceeded"。
-	// 宿主侧脚本配额特性的种子;fuzz 用它替代脆弱的源码子串过滤。
+	// When stepBudget > 0 the instruction budget is enabled: back edges
+	// (JMP/FORLOOP negative displacement) check once every stepQuantum
+	// instructions crossed, and raise "instruction budget exceeded" on overrun.
+	// The seed for a host-side script quota feature; fuzzing uses it instead of
+	// fragile source-substring filtering.
 	stepBudget int64
 	stepUsed   int64
 
-	// loopFuelRefill 记录上次写入 loopBudget 字的重填额,供 Safepoint 用
-	// 「refill - 当前值」精确计费本批回边(P3 循环 step-budget 修复;Go 侧
-	// 私有,gibbous 段不读)。
+	// loopFuelRefill records the last refill amount written to the loopBudget
+	// word, so Safepoint can bill this batch of back edges precisely with
+	// "refill - current value" (P3 loop step-budget fix; Go-side private, the
+	// gibbous segment does not read it).
 	loopFuelRefill int64
 
-	// safepointCalls 统计 gibbous 回边跨层到 host.Safepoint 的次数(白盒探针,
-	// 证明无 budget 时 loopFuel unlimited 重填使热循环几乎不跨层)。仅测试读。
+	// safepointCalls counts how many times a gibbous back edge crosses tiers into
+	// host.Safepoint (white-box probe, proving that with no budget the unlimited
+	// loopFuel refill keeps a hot loop from crossing tiers almost entirely). Read only by tests.
 	safepointCalls int64
 
-	// ctx 是 SetContext 注入的取消信号(issue #4):preempt 的同一抢占
-	// 点(回边 / 函数进帧 / CALL)做 ctx.Err() 检查。Atomic 包裹是因为
-	// 跨 goroutine 取消的常见模式:VM 在 goroutine A 跑,timer/ctx 在
-	// goroutine B 调 cancel()——context 实现本身已 race-safe,但我们这
-	// 边对 ctx 字段的读写跨 goroutine,需 atomic 包裹避免 data race。
+	// ctx is the cancellation signal injected by SetContext (issue #4): the same
+	// preempt points (back edge / frame entry / CALL) do a ctx.Err() check. The
+	// atomic wrapper is because of the common cross-goroutine cancellation
+	// pattern: the VM runs in goroutine A while the timer/ctx calls cancel() in
+	// goroutine B — the context implementation is itself race-safe, but our reads
+	// and writes of the ctx field cross goroutines, so an atomic wrapper is needed to avoid a data race.
 	ctx atomic.Pointer[ctxHolder]
 
-	// gcSeen/gcSeenRefs 是根扫描去重 map 的缓存(多线程慢路径用;每轮
-	// Collect 复用 clear,避免根扫描自身制造 Go 堆垃圾)。
+	// gcSeen/gcSeenRefs cache the root-scan dedup maps (used by the multi-thread
+	// slow path; each Collect round reuses them with clear, avoiding root scanning
+	// itself creating Go-heap garbage).
 	gcSeen     map[*thread]bool
 	gcSeenRefs map[*thread]bool
 
-	// argsPool 是 callHost 实参缓冲池(LIFO;host→Lua→host 嵌套自然加深)。
-	// 池中空闲切片不持活跃 Value(归还即逻辑失效),不入 GC 根。
+	// argsPool is the callHost argument buffer pool (LIFO; host→Lua→host nesting
+	// deepens naturally). Idle slices in the pool hold no live Value (return means
+	// logically invalid), so they are not GC roots.
 	argsPool [][]value.Value
 
-	// mainTh 是主线程缓存(State.Call 跨 Run 复用,免每次 newThread)。
+	// mainTh is the main-thread cache (State.Call reuses it across Runs, avoiding a newThread each time).
 	mainTh *thread
 
-	// pinnedRefs 是公共面 Value 持有的 GCRef 句柄表(R8 类常驻根:门面
-	// GetGlobal 取出 function/table 后由用户长期持有,不入根则 globals 覆盖
-	// 旧值就会被回收 → freelist 复用 → Value 调用即 UAF)。
-	// 槽位回收:UnpinRef 把槽置 Null 并推入 freePins,PinRef 优先复用空闲槽
-	// (公共面 Value.Release 显式释放走这条路;不 Release 仅累积槽 + GCRef,
-	// 小害,见 wangshu.go godoc 提示)。
+	// pinnedRefs is the table of GCRef handles held by public-facing Values
+	// (R8-class resident root: after the facade GetGlobal hands out a
+	// function/table the user holds it long-term; without a root, overwriting the
+	// old value in globals collects it → freelist reuse → calling the Value is a UAF).
+	// Slot recycling: UnpinRef sets the slot to Null and pushes onto freePins;
+	// PinRef reuses a free slot first (the public-facing Value.Release explicitly
+	// frees via this path; not calling Release only accumulates slots + GCRefs,
+	// a minor harm, see the wangshu.go godoc note).
 	pinnedRefs []arena.GCRef
 	freePins   []uint32
 
-	// baseline 是 globals 快照(issue #6):MarkGlobalsBaseline 拍下,
-	// ResetGlobalsToBaseline 用之恢复。baseline 中的复合 value(table/
-	// function GCRef)经 visitExtraValues 入 GC 根防 globals 覆盖后被
-	// 回收(同 pin 表对偶面:pin 表管「公共 API 暴露的长持 GCRef」,
-	// baseline 管「内部状态恢复需要的长持 GCRef」)。
+	// baseline is a globals snapshot (issue #6): MarkGlobalsBaseline takes it,
+	// ResetGlobalsToBaseline restores from it. The compound values in baseline
+	// (table/function GCRef) enter the GC roots via visitExtraValues so that
+	// overwriting globals does not collect them (the dual of the pin table: the
+	// pin table manages "long-held GCRefs exposed by the public API", baseline
+	// manages "long-held GCRefs needed to restore internal state").
 	baseline []baselineEntry
 
-	// allowFileLoad:loadfile/dofile 是否允许读宿主文件系统。默认 false
-	// (嵌入式 VM 接不可信脚本,文件读是越权探测面;10 §12.1 LibsSafe 思路
-	// 的最小落地)。宿主经 Options.AllowFileLoad 显式开启。
+	// allowFileLoad: whether loadfile/dofile may read the host filesystem.
+	// Default false (an embedded VM taking untrusted scripts, where file reads
+	// are an over-privilege probe surface; the minimal landing of the 10 §12.1
+	// LibsSafe idea). The host enables it explicitly via Options.AllowFileLoad.
 	allowFileLoad bool
 
-	// bridge: P2 分层桥(`docs/design/p2-bridge/`)。State 私有,挂在
-	// 这里让回边 / 入口采样钩点(crescent 主循环 + enterLuaFrame)调到
-	// `bridge.OnBackEdge` / `OnEnter`(profileEnabled=true 时;否则编译期
-	// 整段消去,零开销)。bridge 包不依赖 crescent(基建非执行层),反
-	// 向钩点经此字段以接口形式注入。
+	// bridge: the P2 tiering bridge (`docs/design/p2-bridge/`). State-private,
+	// hung here so the back-edge / entry sampling hook points (crescent main loop
+	// + enterLuaFrame) can call into `bridge.OnBackEdge` / `OnEnter` (when
+	// profileEnabled=true; otherwise the whole segment is compiled away, zero
+	// overhead). The bridge package does not depend on crescent (infrastructure,
+	// not the execution layer), so the reverse hook points are injected as an interface through this field.
 	//
-	// 生命期:与 State 同生(New 时构造;State 销毁则 Bridge 一同释放,
-	// 包括其 profileTable / gibbousCodes 引用)。
-	// 多 goroutine 并发不共享:01 §6.3 (B) 方案——profileTable 挂 State
-	// 私有;-race 自然通过(00 §4 PB7 验收(d))。
+	// Lifetime: born with State (constructed at New; destroying State releases
+	// Bridge together, including its profileTable / gibbousCodes references).
+	// Not shared under multi-goroutine concurrency: the 01 §6.3 (B) scheme —
+	// profileTable is hung State-private; -race passes naturally (00 §4 PB7 acceptance (d)).
 	bridge *bridge.Bridge
 
-	// arenaCleanup: State 销毁时释放 arena backing 持有的外部资源
-	// (wangshu_p3 build 下 = 关闭收养的 wazero memory holder + runtime;
-	// 默认 build 下 = nil)。由 newStateArena 返回,Close 时调。
+	// arenaCleanup: releases the external resources held by the arena backing when
+	// State is destroyed (under the wangshu_p3 build = close the adopted wazero
+	// memory holder + runtime; under the default build = nil). Returned by
+	// newStateArena, called by Close.
 	arenaCleanup func()
 
-	// gibStack 是 crescent→gibbous 跨层复用栈缓冲(CallWithStack 零分配路径,
-	// 04-trampoline §2.2)。惰性建,单 goroutine 复用。
+	// gibStack is the crescent→gibbous cross-tier reused stack buffer (the
+	// zero-alloc path of CallWithStack, 04-trampoline §2.2). Built lazily, reused single-goroutine.
 	gibStack []uint64
 
-	// gibbousPendingErr 是 gibbous helper(DoReturn/h_raise)冒泡的错误暂存
-	// (04 §4 status 链):helper 内置 pendingErr,trampoline ERR 时取走。
+	// gibbousPendingErr is the error staging bubbled by gibbous helpers
+	// (DoReturn/h_raise) (04 §4 status chain): the helper stashes pendingErr, and the trampoline takes it on ERR.
 	gibbousPendingErr *LuaError
 
-	// p3env 持 wangshu_p3 build 下的 wazero Runtime + memadapter holder
-	// (newStateArena 建,wireP3 取来构造 gibbous Compiler 共享同一 runtime/
-	// memory)。默认 build 恒 nil。类型擦除为 any 避免全 build 依赖 wazero。
+	// p3env holds the wazero Runtime + memadapter holder under the wangshu_p3
+	// build (built by newStateArena, taken by wireP3 to construct the gibbous
+	// Compiler sharing the same runtime/memory). Always nil in the default build.
+	// Type-erased to any to avoid depending on wazero across all builds.
 	p3env any
 
-	// gcPendingRef 是 gcPending 标志字的 arena GCRef(P3 PW9):collector 在
-	// GC 状态转移点把「是否 due」镜像到此字(linear memory),gibbous FORLOOP
-	// 回边 inline i32.load 它,只在 due 时才跨层调 h_safepoint。0 = 未分配。
+	// gcPendingRef is the arena GCRef of the gcPending flag word (P3 PW9): at GC
+	// state-transition points the collector mirrors "is it due" into this word
+	// (linear memory), and the gibbous FORLOOP back edge inline-i32.loads it,
+	// crossing tiers to h_safepoint only when due. 0 = not allocated.
 	gcPendingRef arena.GCRef
 
-	// loopBudgetRef 是 gibbous 回边 fuel 计数字的 arena GCRef(issue: P3 循环
-	// step-budget 缺口,#102 的 P3 对偶)。P4 native 用 JITContext.loopFuel 计数、
-	// 回边 inline dec+jz 只在归零时跨层 host.LoopPreempt 计费;P3 wasm 没有等价
-	// 机制,回边只 inline 检 gcPending(纯 GC 用),step budget 无 async producer
-	// ⟹ 全 inline 的死循环(for i=0,1/0 do X=0 end)在解释器 preempt 立即抛
-	// "instruction budget exceeded",升 P3 却永远挂住。此字是 P3 版 loopFuel:
-	// 回边 inline 自减 + 归零(或 gcPending 置位)才跨层 h_safepoint,Safepoint
-	// 把消耗的 quantum 计入 stepBudget、重填、超额时 raise。budget/ctx armed 时
-	// 重填小额(loopFuelQuantum),否则重填大额 ⟹ 稳态循环几乎不跨层(镜像 P4
-	// SegCallFuelUnlimited)。0 = 未分配(非 p3 build 也分配,offset 逻辑统一)。
+	// loopBudgetRef is the arena GCRef of the gibbous back-edge fuel counter word
+	// (issue: the P3 loop step-budget gap, the P3 dual of #102). P4 native counts
+	// via JITContext.loopFuel, and the back edge inline dec+jz crosses tiers to
+	// host.LoopPreempt to bill only on hitting zero; P3 wasm has no equivalent
+	// mechanism — the back edge only inline-checks gcPending (pure GC use), so with
+	// no async producer for the step budget ⟹ a fully-inlined infinite loop
+	// (for i=0,1/0 do X=0 end) that the interpreter preempts and immediately raises
+	// "instruction budget exceeded" would hang forever once lifted to P3. This word
+	// is the P3 version of loopFuel: the back edge inline-decrements it, and only on
+	// hitting zero (or gcPending being set) crosses tiers to h_safepoint; Safepoint
+	// bills the consumed quantum into stepBudget, refills, and raises on overrun.
+	// When budget/ctx is armed it refills a small amount (loopFuelQuantum),
+	// otherwise a large amount ⟹ a steady-state loop crosses tiers almost never
+	// (mirrors P4 SegCallFuelUnlimited). 0 = not allocated (also allocated in
+	// non-p3 builds, so the offset logic is unified).
 	loopBudgetRef arena.GCRef
 
-	// ciTransferRef 是 gibbous→gibbous call_indirect 直调的 base 中转字(PW10 R3)。
-	// DoCall 判被调已升 gibbous 时,把被调帧 base 字节偏移写入此字 + 返回 indirect
-	// 哨兵;caller wasm 读它作 call_indirect 实参。call_indirect 返回后 DoReturn 已
-	// 把刷新后的 caller base 写回此字,caller 读它续算寻址。LIFO 安全(每次写后紧跟
-	// 唯一读者,无交错)。0 = 未分配(非 p3 build 也分配,offset 逻辑统一)。
+	// ciTransferRef is the base transfer word for the gibbous→gibbous
+	// call_indirect direct call (PW10 R3). When DoCall finds the callee already
+	// lifted to gibbous, it writes the callee's frame base byte offset into this
+	// word + returns an indirect sentinel; the caller wasm reads it as the
+	// call_indirect argument. After call_indirect returns, DoReturn has already
+	// written the refreshed caller base back into this word, and the caller reads
+	// it to continue addressing. LIFO-safe (each write is immediately followed by
+	// the sole reader, no interleaving). 0 = not allocated (also allocated in
+	// non-p3 builds, so the offset logic is unified).
 	ciTransferRef arena.GCRef
 
-	// ciDepthRef 是主线程帧深度 th.ciDepth 的 linear-memory 镜像字(PW10 零跨界
-	// Stage 1a)。Wasm 侧帧建拆(Stage 2/3)increment/decrement 它免回 Go 改 ciDepth。
-	// 仅 mainTh 写它(协程不升层,gibbous 只在 mainTh 跑)——经 mainTh.ciDepthWordRef
-	// 接通。0 = 未分配(非 p3 build 也分配,offset 逻辑统一)。
+	// ciDepthRef is the linear-memory mirror word of the main thread's frame depth
+	// th.ciDepth (PW10 zero-cross Stage 1a). The Wasm-side frame build/teardown
+	// (Stage 2/3) increments/decrements it without going back to Go to change
+	// ciDepth. Only mainTh writes it (coroutines do not lift, gibbous only runs on
+	// mainTh) — wired through mainTh.ciDepthWordRef. 0 = not allocated (also
+	// allocated in non-p3 builds, so the offset logic is unified).
 	ciDepthRef arena.GCRef
 
-	// ciSegBaseRef 是主线程 CI 段当前字节基址(ciBaseW*8)的 linear-memory 镜像字
-	// (PW10 零跨界 Stage 2)。CI 段经 growCISeg 可重定位,Wasm 侧帧建拆须读此字现算
-	// 帧地址(段基址 + depth*ciWords*8 + word*8),不能烧编译期立即数。仅 mainTh 写
-	// (经 ciSegBaseWordRef),growCISeg/newThread 更新。0 = 未分配。
+	// ciSegBaseRef is the linear-memory mirror word of the main thread's CI
+	// segment current byte base (ciBaseW*8) (PW10 zero-cross Stage 2). The CI
+	// segment can be relocated by growCISeg, so the Wasm-side frame build/teardown
+	// must read this word to compute the frame address on the fly (segment base +
+	// depth*ciWords*8 + word*8) rather than burning a compile-time immediate. Only
+	// mainTh writes it (via ciSegBaseWordRef), updated by growCISeg/newThread. 0 = not allocated.
 	ciSegBaseRef arena.GCRef
 
-	// openGuardRef 是「开放 upvalue 守卫值」的 linear-memory 镜像字(PW10 零跨界
-	// Stage 2)。值 = maxOpenIdx+1(openUvs 非空)/ 0(空)。Wasm 侧 RETURN 快路径守卫
-	// 「本帧无开放 upvalue 须关闭」⟺ frameBase ≥ openGuard(空时 ≥0 恒真;非空时
-	// ≥maxOpenIdx+1 ⟺ >maxOpenIdx = closeUpvals 的 no-op 条件)。仅 mainTh 写。
+	// openGuardRef is the linear-memory mirror word of the "open upvalue guard
+	// value" (PW10 zero-cross Stage 2). Value = maxOpenIdx+1 (openUvs non-empty) /
+	// 0 (empty). The Wasm-side RETURN fast-path guard "this frame has no open
+	// upvalue to close" ⟺ frameBase ≥ openGuard (always true when empty since ≥0;
+	// when non-empty ≥maxOpenIdx+1 ⟺ >maxOpenIdx = the no-op condition of
+	// closeUpvals). Only mainTh writes it.
 	openGuardRef arena.GCRef
 
-	// topRef 是主线程栈顶 th.top 的 linear-memory 镜像字(PW10 零跨界 ①)。Wasm 侧
-	// 帧建拆(④建帧设 callee 帧顶 / ③拆帧由 caller 自恢复)写它免回 Go 改 th.top。
-	// **存槽索引(非字节地址)**:th.top 是相对 stackBaseW 的槽索引,growStack 改
-	// stackBaseW 但槽索引不变 → 存槽索引则 grow 安全、零 re-sync(arena 视图别名雷区
-	// 的兑现:不缓存派生绝对地址)。仅 mainTh 写(经 topWordRef)。0 = 未分配。
+	// topRef is the linear-memory mirror word of the main thread's stack top
+	// th.top (PW10 zero-cross ①). The Wasm-side frame build/teardown (④ set the
+	// callee frame top when building / ③ the caller self-restores when tearing
+	// down) writes it without going back to Go to change th.top.
+	// **Stores the slot index (not the byte address)**: th.top is a slot index
+	// relative to stackBaseW; growStack changes stackBaseW but the slot index is
+	// unchanged → storing the slot index makes grow safe with zero re-sync (the
+	// arena view-aliasing hazard cashed in: do not cache derived absolute
+	// addresses). Only mainTh writes it (via topWordRef). 0 = not allocated.
 	topRef arena.GCRef
 
-	// protoCacheRef 是 proto 字段缓存段(PW10 零跨界基建-b)。长度 = len(st.protos)
-	// words,每 proto 一字,布局:[15:0]MaxStack | [23:16]NumParams | [24]IsVararg |
-	// [25]NeedsArg | [63:26]reserved。④ emitCall 守卫快路径读此免 Go map 取 Proto 字段。
-	// LoadProgram 时(重)分配 + 写所有 cache 字;运行期不再变更(proto 字段编译期固定)。
-	// 段可重定位 → 基址经 protoCacheBaseRef 镜像字给 Wasm 现读。
+	// protoCacheRef is the proto-field cache segment (PW10 zero-cross infra-b).
+	// Length = len(st.protos) words, one word per proto, layout: [15:0]MaxStack |
+	// [23:16]NumParams | [24]IsVararg | [25]NeedsArg | [63:26]reserved. ④ emitCall
+	// guard fast path reads this to avoid a Go map lookup of Proto fields.
+	// (Re)allocated + all cache words written at LoadProgram; never changed at
+	// runtime (proto fields are fixed at compile time). The segment can be
+	// relocated → the base is mirrored to Wasm for on-the-fly reads via protoCacheBaseRef.
 	protoCacheRef     arena.GCRef
 	protoCacheBaseRef arena.GCRef
-	protoCacheLen     uint32 // 当前 protoCacheRef 段字数(Free 旧段用)
+	protoCacheLen     uint32 // current word count of the protoCacheRef segment (for freeing the old one)
 
-	// fastCallHitsRef 是 ④ emitCall 守卫快路径命中次数 mirror 字(PW10 零跨界 ④
-	// 验证用)。Wasm 内 i64 ++(单线程 mainTh 无 race),Go 测试侧读字。当 ④ 命中
-	// 时不调 helperCall,故 indirectCalls 不增长——本字补「快路径命中可见性」,使
-	// R3/PW10 测试断言可放宽为「indirectCalls + fastCallHits ≥ before+1」。生产无功能。
+	// fastCallHitsRef is the mirror word of the ④ emitCall guard fast-path hit
+	// count (for PW10 zero-cross ④ verification). i64 ++ inside Wasm (single-thread
+	// mainTh, no race), read by the Go test side. When ④ hits it does not call
+	// helperCall, so indirectCalls does not grow — this word supplies "fast-path
+	// hit visibility", letting R3/PW10 test assertions relax to "indirectCalls +
+	// fastCallHits ≥ before+1". No production function.
 	fastCallHitsRef arena.GCRef
 
-	// indirectCalls 计 gibbous→gibbous call_indirect 直调命中次数(PW10 R3 验证用,
-	// tryIndirectCallee 返 indirect 哨兵时 ++)。仅测试读,确认直调路径真走到(非
-	// 静默回退 code.Run)。生产无功能含义,1 个 int 开销可忽略。
+	// indirectCalls counts gibbous→gibbous call_indirect direct-call hits (for PW10
+	// R3 verification, ++ when tryIndirectCallee returns the indirect sentinel).
+	// Read only by tests, confirming the direct-call path is actually taken (not a
+	// silent fallback to code.Run). No production meaning; the one int overhead is negligible.
 	indirectCalls uint64
 
-	// doReturnHits 计 h_return(DoReturn)被调次数(PW10 零跨界 ③b 验证用)。Wasm 内
-	// RETURN 守卫快路径命中时**不**调 DoReturn,故此计数停滞证明快路径真生效(非全
-	// 程 helperReturn 回退的假绿)。仅测试读。生产无功能含义。
+	// doReturnHits counts how many times h_return (DoReturn) is called (for PW10
+	// zero-cross ③b verification). When the Wasm-side RETURN guard fast path hits
+	// it does **not** call DoReturn, so this counter stalling proves the fast path
+	// really took effect (not a fake-green from falling back to helperReturn
+	// everywhere). Read only by tests. No production meaning.
 	doReturnHits uint64
 
-	// frameInlineZeroCrossHits zero-cross 路径命中(承 §9.20.12 commit-5u):
-	// helper ExecuteCalleeFromInlineFrame 内反查 callee 也 P4 升层时,直接调
-	// enterGibbous 跳过 executeFrom 解释器主循环的次数。
+	// frameInlineZeroCrossHits counts zero-cross path hits (following §9.20.12
+	// commit-5u): the number of times the helper ExecuteCalleeFromInlineFrame,
+	// finding the reverse-looked-up callee is also P4-lifted, calls enterGibbous
+	// directly, skipping the executeFrom interpreter main loop.
 	frameInlineZeroCrossHits uint64
 }
 
-// SetCompileFn 注入编译回调(wangshu.NewState 时装配;loadstring 用)。
+// SetCompileFn injects the compile callback (assembled at wangshu.NewState;
+// used by loadstring).
 func (st *State) SetCompileFn(fn func(src []byte, chunkname string) (uint32, []*bytecode.Proto, error)) {
 	st.compileFn = fn
 }
 
-// Bridge 暴露 P2 分层桥(`docs/design/p2-bridge/`)给 internal 包内部使用
-// (主循环采样钩点 / Compile 期 AnalyzeProto)。
+// Bridge exposes the P2 tiering bridge (`docs/design/p2-bridge/`) for use
+// inside the internal packages (main-loop sampling hook points / AnalyzeProto at Compile time).
 //
-// **不暴露给公共 API**——门面层 wangshu.go 通过 SetBridgeP3Compiler /
-// SetBridgeLogger 等 setter 注入,不直接拿 *bridge.Bridge,避免公共面对
-// internal/bridge 类型形成依赖。
+// **Not exposed to the public API** — the facade layer wangshu.go injects via
+// setters like SetBridgeP3Compiler / SetBridgeLogger, not taking a
+// *bridge.Bridge directly, to avoid the public face forming a dependency on the
+// internal/bridge type.
 func (st *State) Bridge() *bridge.Bridge { return st.bridge }
 
-// CompileAndLoad 编译一段源码并装载为 closure(loadstring 的核心)。
+// CompileAndLoad compiles a piece of source and loads it as a closure (the core of loadstring).
 func (st *State) CompileAndLoad(src []byte, chunkname string) (value.Value, error) {
 	if st.compileFn == nil {
 		return value.Nil, errf("loadstring: compiler not available")
@@ -285,8 +338,8 @@ func (st *State) CompileAndLoad(src []byte, chunkname string) (value.Value, erro
 	return value.MakeGC(value.TagFunction, cl), nil
 }
 
-// SetStringLib 注册 string 库表为 string 值的 per-type 元表 __index
-// (`("x"):upper()` 语法支撑,07 §1.2)。
+// SetStringLib registers the string library table as the per-type metatable
+// __index for string values (backs the `("x"):upper()` syntax, 07 §1.2).
 func (st *State) SetStringLib(t arena.GCRef) { st.stringLib = t }
 
 // SetStringMeta registers the REAL shared string metatable (PUC shape:
@@ -298,67 +351,80 @@ func (st *State) SetStringMeta(t arena.GCRef) { st.stringMeta = t }
 // StringMeta returns the shared string metatable (0 if unset).
 func (st *State) StringMeta() arena.GCRef { return st.stringMeta }
 
-// New constructs a fresh State (arena + collector + empty globals)。
-// New 建一个 State,arena 用默认容量(64 KiB 初始 / 2 GiB 上限)。
-// 含 arena 容量定制需求时用 NewWithOptions。
+// New constructs a fresh State (arena + collector + empty globals).
+// New builds a State with the arena at default capacity (64 KiB initial / 2 GiB cap).
+// Use NewWithOptions when arena capacity customization is needed.
 func New() *State { return NewWithOptions(arena.Options{}) }
 
-// NewWithOptions 建一个 State,arenaOpts 透传 wangshu.Options.{InitialArenaBytes,
-// MaxArenaBytes} 到 arena.New(零值由 arena.New 内部回落默认 64 KiB / 2 GiB,
-// issue #11 方向 2)。
+// NewWithOptions builds a State, passing arenaOpts (wangshu.Options.{InitialArenaBytes,
+// MaxArenaBytes}) through to arena.New (zero values fall back inside arena.New
+// to the default 64 KiB / 2 GiB, issue #11 direction 2).
 func NewWithOptions(arenaOpts arena.Options) *State {
 	a, cleanup, p3env := newStateArena(arenaOpts)
 	c := gc.New(a, gc.Options{})
 	st := &State{arena: a, gc: c, bridge: bridge.NewBridge(), arenaCleanup: cleanup, p3env: p3env}
 	st.globals = object.AllocTable(a, 0, 8)
 	c.LinkSweep(st.globals)
-	// gcPending 标志字(P3 PW9):分配一个 arena 字,collector 镜像 GC due 状态,
-	// gibbous FORLOOP 回边 inline 读它(免每迭代无条件跨层 h_safepoint)。
-	// 早分配 → 偏移稳定;非 p3 build 也分配(1 字开销可忽略,offset 逻辑统一)。
+	// gcPending flag word (P3 PW9): allocate one arena word; the collector
+	// mirrors the GC-due state, and the gibbous FORLOOP back edge inline-reads it
+	// (avoiding an unconditional cross-tier h_safepoint every iteration).
+	// Allocated early → stable offset; also allocated in non-p3 builds (the 1-word
+	// overhead is negligible, so the offset logic is unified).
 	st.gcPendingRef = a.AllocWords(1)
 	a.SetWordAt(st.gcPendingRef, 0)
 	c.SetGCPendingRef(st.gcPendingRef)
-	// loop-budget fuel 字(P3 循环 step-budget 缺口修复):gibbous 回边 inline
-	// 自减此字,归零才跨层 h_safepoint 计费。早分配 → 偏移稳定;初值 0 使升层
-	// 后首个回边立即跨层一次(Safepoint 据 armed 状态重填正确 quantum)。
+	// loop-budget fuel word (P3 loop step-budget gap fix): the gibbous back edge
+	// inline-decrements this word, crossing tiers to h_safepoint to bill only on
+	// hitting zero. Allocated early → stable offset; the initial value 0 makes the
+	// first back edge after lifting cross tiers once (Safepoint refills the correct
+	// quantum per the armed state).
 	st.loopBudgetRef = a.AllocWords(1)
 	a.SetWordAt(st.loopBudgetRef, 0)
-	// ci-transfer 中转字(P3 PW10 R3):gibbous→gibbous call_indirect 直调经此字
-	// 传被调/刷新后 base 字节偏移(详见字段注释)。早分配 → 偏移稳定。
+	// ci-transfer relay word (P3 PW10 R3): the gibbous→gibbous call_indirect direct
+	// call passes the callee/refreshed base byte offset through this word (see the
+	// field comment). Allocated early → stable offset.
 	st.ciTransferRef = a.AllocWords(1)
 	a.SetWordAt(st.ciTransferRef, 0)
-	// ci-depth 游标字(P3 PW10 零跨界 Stage 1a):主线程帧深度 th.ciDepth 的 linear-
-	// memory 镜像,Wasm 侧帧建拆(Stage 2/3)increment/decrement 它免回 Go。早分配 →
-	// 偏移稳定;非 p3 build 也分配(1 字开销可忽略)。仅 mainTh 写它(协程不升层)。
+	// ci-depth cursor word (P3 PW10 zero-cross Stage 1a): the linear-memory mirror
+	// of the main thread's frame depth th.ciDepth; the Wasm-side frame
+	// build/teardown (Stage 2/3) increments/decrements it without going back to Go.
+	// Allocated early → stable offset; also allocated in non-p3 builds (the 1-word
+	// overhead is negligible). Only mainTh writes it (coroutines do not lift).
 	st.ciDepthRef = a.AllocWords(1)
 	a.SetWordAt(st.ciDepthRef, 0)
-	// ci-seg-base 字(PW10 零跨界 Stage 2):主线程 CI 段当前字节基址,growCISeg 重定位
-	// 后更新,Wasm 侧帧建拆读它现算帧地址(段可重定位,不能烧立即数)。
+	// ci-seg-base word (PW10 zero-cross Stage 2): the main thread's CI segment
+	// current byte base, updated after growCISeg relocates, so the Wasm-side frame
+	// build/teardown reads it to compute the frame address on the fly (the segment
+	// can be relocated, cannot burn an immediate).
 	st.ciSegBaseRef = a.AllocWords(1)
 	a.SetWordAt(st.ciSegBaseRef, 0)
-	// open-upvalue 守卫字(PW10 零跨界 Stage 2):maxOpenIdx+1 / 0,Wasm RETURN 快路径
-	// 守卫「本帧无开放 upvalue」用。
+	// open-upvalue guard word (PW10 zero-cross Stage 2): maxOpenIdx+1 / 0, used by
+	// the Wasm RETURN fast-path guard "this frame has no open upvalue".
 	st.openGuardRef = a.AllocWords(1)
 	a.SetWordAt(st.openGuardRef, 0)
-	// top 镜像字(PW10 零跨界 ①):主线程栈顶 th.top(槽索引)的 linear-memory 镜像,
-	// Wasm 侧帧建拆写它免回 Go 改 th.top(GC 栈根扫描上界)。存槽索引 → grow 安全。
+	// top mirror word (PW10 zero-cross ①): the linear-memory mirror of the main
+	// thread's stack top th.top (slot index); the Wasm-side frame build/teardown
+	// writes it without going back to Go to change th.top (the GC stack-root scan
+	// upper bound). Stores the slot index → grow-safe.
 	st.topRef = a.AllocWords(1)
 	a.SetWordAt(st.topRef, 0)
-	// proto cache 基址镜像字(PW10 零跨界基建-b):protoCacheRef 段字节基址,LoadProgram
-	// (重)分配段后更新。Wasm ④ emitCall 守卫快路径现读此基址 + protoID*8 取 cache 字。
+	// proto cache base mirror word (PW10 zero-cross infra-b): the byte base of the
+	// protoCacheRef segment, updated after LoadProgram (re)allocates the segment.
+	// The Wasm ④ emitCall guard fast path reads this base + protoID*8 on the fly to fetch the cache word.
 	st.protoCacheBaseRef = a.AllocWords(1)
 	a.SetWordAt(st.protoCacheBaseRef, 0)
-	// fast-call hits 计数字(PW10 零跨界 ④ 验证用):Wasm ④ 命中时内 ++,测试合 R3
-	// indirectCalls 一起断言 R3/④ 路径命中可见性。
+	// fast-call hits counter word (PW10 zero-cross ④ verification): ++ inside Wasm
+	// on ④ hit, asserted by tests together with R3 indirectCalls for R3/④ path hit visibility.
 	st.fastCallHitsRef = a.AllocWords(1)
 	a.SetWordAt(st.fastCallHitsRef, 0)
 	st.installRoots()
-	st.wireP3() // wangshu_p3 build:构造 gibbous wasm Compiler 注入 bridge;默认 build / p4 build no-op
-	st.wireP4() // wangshu_p4 build:构造 gibbous jit Compiler 注入 bridge;默认 build / p3 build no-op
-	// host closure 槽位回收(gmatch 迭代器、mountArena 列代理等动态注册的
-	// HostFn 在其 closure 被 GC 后释放槽,注册表有界)。
+	st.wireP3() // wangshu_p3 build: construct the gibbous wasm Compiler and inject into bridge; default build / p4 build no-op
+	st.wireP4() // wangshu_p4 build: construct the gibbous jit Compiler and inject into bridge; default build / p3 build no-op
+	// host closure slot recycling (dynamically registered HostFns like the gmatch
+	// iterator, mountArena column proxies, etc. release their slot after their
+	// closure is GC'd, keeping the registry bounded).
 	c.SetHostFnReleaser(st.releaseHostFn)
-	// __gc finalizer 调度(06 §10):userdata 死亡复活后调用其 __gc 元方法。
+	// __gc finalizer scheduling (06 §10): call the __gc metamethod of a userdata after it dies and is resurrected.
 	c.SetFinalizerRunner(func(ud arena.GCRef) {
 		meta := object.UserdataMetaRef(st.arena, ud)
 		if meta.IsNull() {
@@ -370,16 +436,17 @@ func NewWithOptions(arenaOpts arena.Options) *State {
 			return
 		}
 		udv := value.MakeGC(value.TagUserdata, ud)
-		// finalizer 出错被吞(5.1:错误不传播,GC 流程继续)
+		// a finalizer error is swallowed (5.1: the error does not propagate, the GC process continues)
 		_, _ = st.callLuaFromHost(st.runningThread, h, []value.Value{udv})
 	})
 	return st
 }
 
-// installRoots 把当前 State 的根集合注入 collector。
+// installRoots injects the current State's root set into the collector.
 //
-// 值栈住 Go 切片期间经 ExtraValues 暴露;表数据已住 arena 原生布局,
-// 所有 Value 也走 ExtraValues(M11 切到 arena 哈希后撤销)。
+// While the value stack lives in a Go slice it is exposed via ExtraValues; the
+// table data already lives in the arena native layout, and all Values also go
+// through ExtraValues (revoked after M11 switches to the arena hash).
 func (st *State) installRoots() {
 	st.gc.SetRoots(gc.Roots{
 		Globals:           st.globals,
@@ -389,7 +456,7 @@ func (st *State) installRoots() {
 	})
 }
 
-// visitProgramStringRefs 暴露 R6:每个 Proto 内字符串字面量的 intern GCRef。
+// visitProgramStringRefs exposes R6: the interned GCRef of each string literal within each Proto.
 func (st *State) visitProgramStringRefs(visit func(arena.GCRef)) {
 	for _, refs := range st.strRefs {
 		for _, r := range refs {
@@ -400,19 +467,23 @@ func (st *State) visitProgramStringRefs(visit func(arena.GCRef)) {
 	}
 }
 
-// visitExtraValues 暴露所有活线程栈持有的 Value(值栈住 Go 切片期间的旁路根)。
+// visitExtraValues exposes the Values held by all live thread stacks (the
+// bypass root while the value stack lives in a Go slice).
 //
-// freelist 复用内存后,漏根即 use-after-free:除 runningThread 外,
-// resume 链上挂起的调用者线程(threadChain)、全部非 dead 协程的栈、
-// 协程主函数(首次 resume 前仅 Go struct 持有)与 xfer 传值区都必须可达。
-// globals baseline 的复合值(issue #6 ResetGlobalsToBaseline 的根)也在此扫。
+// After the freelist reuses memory, a missed root is a use-after-free: besides
+// runningThread, the suspended caller threads on the resume chain
+// (threadChain), the stacks of all non-dead coroutines, the coroutine main
+// function (held only by the Go struct before the first resume) and the xfer
+// transfer area must all be reachable. The compound values of the globals
+// baseline (the root for issue #6 ResetGlobalsToBaseline) are scanned here too.
 func (st *State) visitExtraValues(visit func(value.Value)) {
-	// globals baseline:复合值不接根 → 下次 Reset 时写进 _G 就是已死 GCRef
+	// globals baseline: compound values without a root → the next Reset writes an already-dead GCRef into _G
 	for i := range st.baseline {
 		visit(st.baseline[i].val)
 	}
-	// 快路径(绝大多数负载):无协程、无 resume 链 → 直扫 runningThread,
-	// 零 map 分配(每轮 Collect 都走根扫描,慢路径的 seen map 是 GC 自伤)。
+	// fast path (the vast majority of loads): no coroutines, no resume chain →
+	// scan runningThread directly, zero map allocation (every Collect round does a
+	// root scan, and the slow path's seen map is GC self-harm).
 	if len(st.cos.cos) == 0 && len(st.threadChain) == 0 {
 		st.visitThreadValues(st.runningThread, nil, visit)
 		return
@@ -437,8 +508,8 @@ func (st *State) visitExtraValues(visit func(value.Value)) {
 	}
 }
 
-// visitThreadValues 扫一个线程的栈/varargs;seen=nil 表示单线程快路径
-// (不去重、不分配)。
+// visitThreadValues scans one thread's stack/varargs; seen=nil means the
+// single-thread fast path (no dedup, no allocation).
 func (st *State) visitThreadValues(th *thread, seen map[*thread]bool, visit func(value.Value)) map[*thread]bool {
 	if th == nil || (seen != nil && seen[th]) {
 		return seen
@@ -446,26 +517,31 @@ func (st *State) visitThreadValues(th *thread, seen map[*thread]bool, visit func
 	if seen != nil {
 		seen[th] = true
 	}
-	// PW10 零跨界 ①:GC 栈根扫描上界读 liveTop()(Wasm 帧建拆改 top 字后段为权威);
-	// ①落地时 Wasm 尚未写字,liveTop 恒等 th.top,翻转零行为变更。
+	// PW10 zero-cross ①: the GC stack-root scan upper bound reads liveTop() (after
+	// the Wasm frame build/teardown changes the top word, the segment is
+	// authoritative); when ① lands the Wasm has not yet written the word, so
+	// liveTop equals th.top and the flip is a zero behavior change.
 	top := th.liveTop()
 	for i := 0; i < top; i++ {
 		visit(th.slot(i))
 	}
-	// top 之上的陈旧残值清 nil(对齐官方 lgc.c traversestack):否则死引用
-	// 留在槽里,top 回涨覆盖后下轮 GC 会把它当活根扫——freelist 复用内存下
-	// 即 use-after-free(mark 写已释放块 = 腐蚀 freelist 链)。
+	// Clear stale residue above top to nil (aligning with the official lgc.c
+	// traversestack): otherwise a dead reference stays in the slot, and after top
+	// rises and overwrites it the next GC scans it as a live root — a
+	// use-after-free under freelist memory reuse (marking a freed block corrupts the freelist chain).
 	for i := top; i < th.size(); i++ {
 		th.setSlot(i, value.Nil)
 	}
-	// VS0-e 后 vararg 区住栈下区 stack[base-nVarargs..base),与寄存器同段。栈扫
-	// [0, top) 自然覆盖所有活跃帧的 vararg(vararg 槽 < base < top),无独立 ciVarargs
-	// 根扫;旧 ciVarargs scan 退役。
+	// After VS0-e the vararg area lives in the lower stack region
+	// stack[base-nVarargs..base), in the same segment as the registers. Scanning
+	// the stack [0, top) naturally covers every active frame's varargs (vararg slot
+	// < base < top), so there is no separate ciVarargs root scan; the old ciVarargs scan is retired.
 	return seen
 }
 
-// visitExtraRefs 暴露所有活线程上 ci/openUvs 直接以 GCRef 形式持有的对象,
-// 以及 LoadProgram 产物 closure(loaded 缓存常驻根)、公共面 Value pin 表。
+// visitExtraRefs exposes the objects that all live threads hold directly as
+// GCRefs on ci/openUvs, plus the LoadProgram-produced closures (loaded-cache
+// resident roots) and the public-facing Value pin table.
 func (st *State) visitExtraRefs(visit func(arena.GCRef)) {
 	for _, cl := range st.loadedCls {
 		visit(cl)
@@ -510,13 +586,17 @@ func (st *State) visitThreadRefs(th *thread, seen map[*thread]bool, visit func(a
 	if seen != nil {
 		seen[th] = true
 	}
-	// PW10 R2b-3:每帧 closure 根从 arena ci 段读(word3),段是根权威源。
-	// cl 在 push 时写段、之后不变,故段对全部活跃帧 [0,ciDepth) 持正确 cl
-	// (含当前帧——th.cur 是热镜像,但 cl 不在热路径改)。形态 Y 现算寻址。
-	// PW10 Stage 1c:深度读 liveCIDepth(Wasm 侧帧建拆改深度后段为权威,否则
-	// Wasm 新压帧的 closure 漏扫 = UAF;Wasm 弹帧后即时减字 = 不过扫)。GC 单
-	// goroutine + Wasm 不在栈上,扫描期间 live 不变 → 提循环不变量,与上方
-	// visitThreadValues 同款风格(state.go:406)。
+	// PW10 R2b-3: each frame's closure root is read from the arena ci segment
+	// (word3), the segment being the authoritative root source. cl is written to
+	// the segment at push and never changes afterward, so the segment holds the
+	// correct cl for all active frames [0, ciDepth) (including the current frame —
+	// th.cur is the hot mirror, but cl is not changed on the hot path). Form Y computes the address on the fly.
+	// PW10 Stage 1c: the depth reads liveCIDepth (after the Wasm-side frame
+	// build/teardown changes the depth, the segment is authoritative; otherwise the
+	// closure of a Wasm-newly-pushed frame is missed = UAF; the immediate word
+	// decrement after a Wasm frame pop = no over-scan). GC is single-goroutine + Wasm
+	// is not on the stack, so live does not change during the scan → hoist as a loop
+	// invariant, same style as visitThreadValues above (state.go:406).
 	live := th.liveCIDepth()
 	for depth := 0; depth < live; depth++ {
 		if cl := th.ciSegCl(depth); !cl.IsNull() {
@@ -531,27 +611,29 @@ func (st *State) visitThreadRefs(th *thread, seen map[*thread]bool, visit func(a
 	return seen
 }
 
-// Arena exposes the underlying arena (for tests / embedding APIs)。
+// Arena exposes the underlying arena (for tests / embedding APIs).
 func (st *State) Arena() *arena.Arena { return st.arena }
 
 // Globals returns the GCRef of the globals table.
 func (st *State) Globals() arena.GCRef { return st.globals }
 
 // InternForEmbed exposes the collector's string intern path for the embedding
-// API (11 §1.3 字符串常量惰性 intern;Value 桥接需要)。
+// API (11 §1.3 lazy interning of string constants; needed for Value bridging).
 func (st *State) InternForEmbed(b []byte) arena.GCRef {
 	return st.gc.Intern(b)
 }
 
-// SetGCStressMode 开关高频 GC 压力模式(12 §5 GC 透明性 fuzz 用)。
+// SetGCStressMode toggles the high-frequency GC stress mode (used by the 12 §5 GC-transparency fuzz).
 func (st *State) SetGCStressMode(on bool) { st.gc.SetStressMode(on) }
 
-// SetForceAllPromote 开关强制全升模式(P3 PW9 层间差分测试入口,08 §2.2)。
+// SetForceAllPromote toggles the force-all-promote mode (P3 PW9 inter-tier differential-test entry, 08 §2.2).
 //
-// 转发到 Bridge.SetForceAllPromote:置位后所有可编译 Proto 首次执行即升 gibbous
-// (绕过热度阈值,**不绕可编译性闸门**),消除「哪些 Proto 够热」的时序不确定性,
-// 使 crescent vs gibbous 层间差分可复现 + 覆盖最大化。bridge 为 nil(P1-only build)
-// 时 no-op。**testing-only**——经门面层 testing 入口暴露,非支持的运行模式。
+// Forwards to Bridge.SetForceAllPromote: once set, every compilable Proto is
+// lifted to gibbous on first execution (bypassing the heat threshold, **not**
+// bypassing the compilability gate), removing the timing nondeterminism of
+// "which Protos are hot enough", making crescent vs gibbous inter-tier
+// differences reproducible + maximizing coverage. No-op when bridge is nil
+// (P1-only build). **Testing-only** — exposed via the facade-layer testing entry, not a supported run mode.
 func (st *State) SetForceAllPromote(on bool) {
 	if st.bridge != nil {
 		st.bridge.SetForceAllPromote(on)
@@ -604,10 +686,11 @@ func (st *State) SetHotThresholds(entry, backEdge uint32) {
 	}
 }
 
-// PromotionCount 返回当前 State 上已升层的 Proto 数量(testing-only,转发
-// Bridge.PromotionCount)。bridge 为 nil(P1-only build / P3 未注入)→ 返 0。
+// PromotionCount returns the number of Protos already lifted on the current
+// State (testing-only, forwards to Bridge.PromotionCount). Returns 0 when bridge
+// is nil (P1-only build / P3 not injected).
 //
-// 用途见 bridge.go PromotionCount godoc:auto-lifting 形态下断言「真升过」。
+// See the bridge.go PromotionCount godoc for usage: assert "really promoted" under the auto-lifting form.
 func (st *State) PromotionCount() int {
 	if st.bridge != nil {
 		return st.bridge.PromotionCount()
@@ -615,41 +698,46 @@ func (st *State) PromotionCount() int {
 	return 0
 }
 
-// SafepointCalls 返回 gibbous 回边跨层到 host.Safepoint 的累计次数(白盒探针,
-// 测试用:证明无 budget 时 loopFuel unlimited 重填使热循环几乎不跨层)。
+// SafepointCalls returns the cumulative number of times a gibbous back edge
+// crosses tiers into host.Safepoint (white-box probe, for tests: proving that
+// with no budget the unlimited loopFuel refill keeps a hot loop from crossing tiers almost entirely).
 func (st *State) SafepointCalls() int64 { return st.safepointCalls }
 
-// SetStepBudget 设置回边指令预算(<=0 关闭)。超额时脚本以
-// "instruction budget exceeded" 可恢复错误终止——宿主侧脚本配额特性,
-// fuzz 用它替代脆弱的源码子串过滤兜住无限/超长循环。
+// SetStepBudget sets the back-edge instruction budget (<=0 disables). On
+// overrun the script terminates with a recoverable "instruction budget
+// exceeded" error — a host-side script quota feature, used by fuzzing instead of
+// fragile source-substring filtering to catch infinite/overlong loops.
 func (st *State) SetStepBudget(n int64) {
 	st.stepBudget = n
 	st.stepUsed = 0
 }
 
-// SetAllowFileLoad 开关 loadfile/dofile 的文件系统读能力(默认关)。
+// SetAllowFileLoad toggles the filesystem-read capability of loadfile/dofile (default off).
 func (st *State) SetAllowFileLoad(on bool) { st.allowFileLoad = on }
 
-// AllowFileLoad 查询文件读开关(stdlib loadfile/dofile 用)。
+// AllowFileLoad queries the file-read switch (used by stdlib loadfile/dofile).
 func (st *State) AllowFileLoad() bool { return st.allowFileLoad }
 
-// preempt 是 VM 抢占点入口(回边 / 函数进帧 / TFORLOOP 各调一次)。
-// 对齐 Go runtime preemption 语义:抢占点是「在指令边界检查是否要让
-// 出执行权」。本实现的让出条件:
-//   - stepBudget > 0 且 stepUsed 超额 → "instruction budget exceeded"
-//   - ctx 注入且 ctx.Err() 非空 → "context canceled: <err>"
+// preempt is the VM preempt point entry (called once each by back edge / frame
+// entry / TFORLOOP). It aligns with Go runtime preemption semantics: a preempt
+// point is "check at an instruction boundary whether to yield execution". This
+// implementation's yield conditions:
+//   - stepBudget > 0 and stepUsed overrun → "instruction budget exceeded"
+//   - ctx injected and ctx.Err() non-nil → "context canceled: <err>"
 //
-// 调用方契约:必须在指令边界(opcode/帧间)调用,不能在 opcode 中段。
-// 三处抢占点(execute.go JMP 回边 / execute.go TFORLOOP 续跑 / frame.go
-// enterLuaFrame 函数进帧)共用同一入口——P3+ JIT 生成代码里同款抢占点
-// 也走这条逻辑(可直接复制或 inline 为机器码)。
+// Caller contract: must be called at an instruction boundary (between
+// opcodes/frames), not mid-opcode. The three preempt points (execute.go JMP back
+// edge / execute.go TFORLOOP continuation / frame.go enterLuaFrame frame entry)
+// share this single entry — the same preempt point in P3+ JIT-generated code
+// also goes through this logic (can be copied directly or inlined as machine code).
 //
-// 性能:无 budget、无 ctx 的快路径是「两个字段判 0/nil → return nil」,
-// 已被 inline;启用任一时多一次 atomic.Load 或 int 比较,性能轮基准
-// 未观测可见影响。
+// Performance: the fast path with no budget and no ctx is "check two fields for
+// 0/nil → return nil", already inlined; enabling either adds one atomic.Load or
+// int comparison, with no visible effect observed on the perf benchmark round.
 //
-// 历史:v0.1.2 前命名为 chargeStep(只算 budget),issue #4 上 SetContext
-// 时并入 ctx 检查,审计后改名 preempt 反映「抢占点」而非「计费」语义。
+// History: before v0.1.2 named chargeStep (only billed budget); when SetContext
+// landed on issue #4 the ctx check was merged in, and after audit it was renamed
+// preempt to reflect the "preempt point" rather than "billing" semantics.
 func (st *State) preempt() *LuaError {
 	if st.stepBudget > 0 {
 		st.stepUsed++
@@ -665,9 +753,10 @@ func (st *State) preempt() *LuaError {
 	return nil
 }
 
-// SetCancelHook 注入一个取消回调(issue #4 公共 SetContext 的内部桥)。
-// fn 返回非 nil error 时,VM 在下一个抢占点中止当前 Call/Run。原子
-// 替换,跨 goroutine 安全;传 nil 等价 RemoveCancelHook。
+// SetCancelHook injects a cancellation callback (the internal bridge of the
+// issue #4 public SetContext). When fn returns a non-nil error, the VM aborts the
+// current Call/Run at the next preempt point. Atomically replaced, cross-goroutine
+// safe; passing nil is equivalent to RemoveCancelHook.
 func (st *State) SetCancelHook(fn func() error) {
 	if fn == nil {
 		st.ctx.Store(nil)
@@ -676,16 +765,16 @@ func (st *State) SetCancelHook(fn func() error) {
 	st.ctx.Store(&ctxHolder{err: fn})
 }
 
-// CancelHookActive 报告是否当前安装了取消回调(诊断/测试用)。
+// CancelHookActive reports whether a cancellation callback is currently installed (diagnostics/tests).
 func (st *State) CancelHookActive() bool { return st.ctx.Load() != nil }
 
-// GCCollect 触发一次 full GC(collectgarbage("collect") 用)。
+// GCCollect triggers one full GC (used by collectgarbage("collect")).
 func (st *State) GCCollect() { st.gc.Collect() }
 
-// GCSetStopped 暂停/恢复自动 GC(collectgarbage("stop"/"restart"))。
+// GCSetStopped pauses/resumes automatic GC (collectgarbage("stop"/"restart")).
 func (st *State) GCSetStopped(on bool) { st.gc.SetStopped(on) }
 
-// getArgsBuf / putArgsBuf:callHost 实参缓冲池。
+// getArgsBuf / putArgsBuf: the callHost argument buffer pool.
 func (st *State) getArgsBuf(n int) []value.Value {
 	if last := len(st.argsPool) - 1; last >= 0 {
 		buf := st.argsPool[last]
@@ -701,9 +790,11 @@ func (st *State) getArgsBuf(n int) []value.Value {
 }
 
 func (st *State) putArgsBuf(buf []value.Value) {
-	// 清引用防池中切片延长 arena 对象的 Go 侧可见性(非 GC 根,纯卫生)。
-	// trace 构建下填毒值:HostFn 违约保留 args 时读到毒值立即显形,
-	// 而非"被后续调用静默覆写"的远端症状。
+	// Clear references so a pooled slice does not extend the Go-side visibility of
+	// arena objects (not a GC root, purely hygiene).
+	// Under the trace build fill a poison value: if a HostFn violates the contract
+	// by retaining args, reading the poison shows up immediately, rather than the
+	// remote symptom of "being silently overwritten by a later call".
 	poison := value.Nil
 	if traceExec {
 		poison = value.NumberValue(-6.66e66)
@@ -714,48 +805,58 @@ func (st *State) putArgsBuf(buf []value.Value) {
 	st.argsPool = append(st.argsPool, buf)
 }
 
-// GCCountKB 返回 arena 当前活跃 KB 数(collectgarbage("count") / gcinfo):
-// bump - freelist 空闲字节,逼近官方 totalbytes 语义(GC 回收后回落,
-// 官方测试套 gc.lua 的 "run until gc" 循环依赖该回落)。仍属可观察不可
-// 逐字节比项(10 §13:freelist 粒度/附属块口径与官方分配器不同)。
+// GCCountKB returns the arena's current live KB (collectgarbage("count") /
+// gcinfo): bump - freelist free bytes, approximating the official totalbytes
+// semantics (falls back after a GC collection; the official test suite gc.lua's
+// "run until gc" loop depends on that fall-back). Still an observable-but-not-
+// byte-comparable item (10 §13: the freelist granularity / auxiliary-block
+// accounting differs from the official allocator).
 func (st *State) GCCountKB() float64 {
 	used := uint64(st.arena.Bump()) - st.arena.FreeBytes()
 	return float64(used) / 1024.0
 }
 
-// ArenaCapKB 返回 arena backing 当前**容量** KB(issue #11 方向 3)。
-// 与 GCCountKB 的区别:GCCountKB 测「live bytes」会被 Collect 缩;ArenaCapKB
-// 测「backing slab 容量」反映真实 Go 堆驻留(grow-only 时单调上涨)。pool 层
-// 据此阈值化决定是否 drop fat state。
+// ArenaCapKB returns the arena backing's current **capacity** in KB (issue #11
+// direction 3). The difference from GCCountKB: GCCountKB measures "live bytes"
+// and shrinks on Collect; ArenaCapKB measures "backing slab capacity", reflecting
+// the real Go-heap residency (monotonically rising when grow-only). The pool
+// layer thresholds on this to decide whether to drop a fat state.
 func (st *State) ArenaCapKB() float64 {
 	return float64(st.arena.Cap()) / 1024.0
 }
 
-// Collect 强制触发一次 full GC sweep(对应 Lua collectgarbage("collect"))。
-// issue #9 方向 2:让 host 嵌入层显式驱动 GC 节奏,免去走 collectgarbage 脚本
-// 调用的迂回路径。短脚本 / host-driven allocation 形态下定期调用可使 arena
-// 内部账面保持有界(但 backing 容量不缩,见 ArenaCapKB / issue #11)。
+// Collect forcibly triggers one full GC sweep (corresponds to Lua
+// collectgarbage("collect")). Issue #9 direction 2: let the host embedding layer
+// explicitly drive the GC cadence, avoiding the roundabout path of a
+// collectgarbage script call. Under short scripts / host-driven allocation,
+// calling it periodically keeps the arena's internal accounting bounded (but the
+// backing capacity does not shrink, see ArenaCapKB / issue #11).
 func (st *State) Collect() {
 	st.gc.Collect()
 }
 
-// MaybeCollectNow 按 GC 阈值条件触发(可能 collect 也可能 no-op)。等价于 host
-// 触发一次 safepoint 检查——issue #9 方向 2 最小安全表面。短脚本嵌入下定期调
-// 用替代 VM opcode safepoint 触发频率不足的 starvation。
+// MaybeCollectNow triggers conditionally on the GC threshold (may collect or may
+// no-op). Equivalent to the host triggering one safepoint check — the minimal safe
+// surface of issue #9 direction 2. Under short-script embedding, calling it
+// periodically substitutes for the starvation from insufficient VM-opcode
+// safepoint trigger frequency.
 func (st *State) MaybeCollectNow() {
 	st.gc.MaybeCollect()
 }
 
-// SetHostTriggeredCollect 开关 host alloc 跨阈直接触发 collect(issue #9 方向 1)。
-// **opt-in,默认 off**——开启需调用方保证所有 transient GCRef 均 pin/shadow stack
-// 可达。详细安全契约见 gc.Collector.SetHostTriggeredCollect godoc。
-// 现 stdlib/intern 路径有 mid-construction transient,**未经审计前不建议生产开启**;
-// 推荐用 Collect() / MaybeCollectNow() 显式 cadence 控制(issue #9 方向 2)。
+// SetHostTriggeredCollect toggles host-alloc crossing-threshold directly
+// triggering collect (issue #9 direction 1).
+// **Opt-in, off by default** — enabling requires the caller to guarantee all
+// transient GCRefs are pin/shadow-stack reachable. See the
+// gc.Collector.SetHostTriggeredCollect godoc for the detailed safety contract.
+// The current stdlib/intern paths have mid-construction transients, **so enabling
+// in production is not recommended before audit**; the recommended approach is
+// explicit cadence control via Collect() / MaybeCollectNow() (issue #9 direction 2).
 func (st *State) SetHostTriggeredCollect(on bool) {
 	st.gc.SetHostTriggeredCollect(on)
 }
 
-// NewError 构造一个带消息的 LuaError(供 stdlib 等 host 函数使用)。
+// NewError constructs a LuaError with a message (for use by stdlib and other host functions).
 func NewError(msg string) *LuaError {
 	return &LuaError{Msg: msg}
 }
@@ -775,15 +876,15 @@ func NewArgError(narg int, extra string) *LuaError {
 	}
 }
 
-// NewErrorVal 构造一个携带 Lua Value 的错误(对应 error(v) 内建)。
+// NewErrorVal constructs an error carrying a Lua Value (corresponds to the error(v) builtin).
 func NewErrorVal(v value.Value, msg string) *LuaError {
 	return &LuaError{Value: v, HasValue: true, Msg: msg, Level: 1}
 }
 
-// MarkAnnotated 阻止位置前缀注解(error(v, 0) / 非字符串错误值)。
+// MarkAnnotated blocks the position-prefix annotation (error(v, 0) / non-string error value).
 func (e *LuaError) MarkAnnotated() { e.annotated = true }
 
-// TypeNameOf 暴露内部 typeName 给 stdlib 实现 type() 内建。
+// TypeNameOf exposes the internal typeName for stdlib to implement the type() builtin.
 func TypeNameOf(v value.Value) string { return typeName(v) }
 
 // TypeName is the State-aware type name: unlike package-level
@@ -802,7 +903,7 @@ func (st *State) typeNameOf(v value.Value) string {
 	return typeName(v)
 }
 
-// NewLibTable 给 stdlib 提供一个新表(挂 stdlib 命名空间用)。
+// NewLibTable provides a new table to stdlib (for hanging the stdlib namespace).
 func (st *State) NewLibTable(approxFields uint32) arena.GCRef {
 	hsz := uint32(8)
 	for hsz < approxFields {
@@ -812,7 +913,7 @@ func (st *State) NewLibTable(approxFields uint32) arena.GCRef {
 	return t
 }
 
-// SetTableField 给 stdlib 提供"以字符串键写入表字段"的便捷接口。
+// SetTableField gives stdlib a convenient interface to "write a table field by string key".
 func (st *State) SetTableField(t arena.GCRef, name string, v value.Value) {
 	ref := st.gc.Intern([]byte(name))
 	key := value.MakeGC(value.TagString, ref)
@@ -820,22 +921,23 @@ func (st *State) SetTableField(t arena.GCRef, name string, v value.Value) {
 }
 
 // LoadProgram registers the compiled Protos and lazy-interns their string
-// literals (Proto §字面量惰性 intern;06 §5.1 R6 改写)。返回 mainID 对应的
-// closure GCRef(0 upvalue;主 chunk)。
+// literals (Proto §lazy literal interning; 06 §5.1 R6 rewrite). Returns the
+// closure GCRef corresponding to mainID (0 upvalues; main chunk).
 //
-// Program 不可变、可跨 State 共享(11 §1.4):这里对每个 Proto 做 State 私有
-// 浅拷贝——共享只读的 Code/StringLits/LineInfo,私有化 Consts(intern 进本
-// State arena)、IC(运行期可写)与 Protos(相对下标 → 本 State 绝对 ProtoID)。
+// A Program is immutable and shareable across States (11 §1.4): here each Proto
+// is shallow-copied State-private — sharing the read-only Code/StringLits/LineInfo,
+// privatizing Consts (interned into this State's arena), IC (runtime-writable) and
+// Protos (relative index → this State's absolute ProtoID).
 func (st *State) LoadProgram(mainID uint32, protos []*bytecode.Proto) arena.GCRef {
 	base := uint32(len(st.protos))
 	for _, p := range protos {
-		cp := *p // 浅拷贝:Code/StringLits/LineInfo/UpvalDescs/LocVars 共享只读底层数组
-		// 私有 Protos:相对下标修正为绝对 ProtoID
+		cp := *p // shallow copy: Code/StringLits/LineInfo/UpvalDescs/LocVars share the read-only underlying arrays
+		// private Protos: relative index fixed up to absolute ProtoID
 		cp.Protos = make([]uint32, len(p.Protos))
 		for i, id := range p.Protos {
 			cp.Protos[i] = base + id
 		}
-		// 私有 Consts:字符串字面量 intern 进本 State arena
+		// private Consts: string literals interned into this State's arena
 		cp.Consts = make([]value.Value, len(p.Consts))
 		copy(cp.Consts, p.Consts)
 		refs := make([]arena.GCRef, len(p.Consts))
@@ -846,7 +948,7 @@ func (st *State) LoadProgram(mainID uint32, protos []*bytecode.Proto) arena.GCRe
 				cp.Consts[i] = value.MakeGC(value.TagString, refs[i])
 			}
 		}
-		// 私有 IC(运行期可写;不能跨 State 共享)
+		// private IC (runtime-writable; cannot be shared across States)
 		cp.IC = make([]bytecode.ICSlot, len(p.Code))
 		st.protos = append(st.protos, &cp)
 		st.strRefs = append(st.strRefs, refs)
@@ -861,19 +963,22 @@ func (st *State) LoadProgram(mainID uint32, protos []*bytecode.Proto) arena.GCRe
 	return cl
 }
 
-// rebuildProtoCache (重)分配 protoCacheRef 段并填入所有 protos 的字段缓存(PW10
-// 零跨界基建-b)。多次 LoadProgram 时旧段 Free + 新段全表重填,protoCacheBaseRef
-// 镜像字同步更新(段可重定位,Wasm ④ 现读基址 + protoID*8 寻址)。
+// rebuildProtoCache (re)allocates the protoCacheRef segment and fills in the
+// field cache of all protos (PW10 zero-cross infra-b). On a repeated LoadProgram
+// the old segment is Free'd + the new segment is fully rewritten, and the
+// protoCacheBaseRef mirror word is updated in sync (the segment can be relocated,
+// and Wasm ④ reads the base + protoID*8 on the fly to address).
 //
-// 字布局(每 proto 一 u64 字):
+// Word layout (one u64 word per proto):
 //
-//	[15:0]  MaxStack(uint8 但留 16 位余量)
-//	[23:16] NumParams(uint8)
+//	[15:0]  MaxStack (uint8, but 16 bits of headroom left)
+//	[23:16] NumParams (uint8)
 //	[24]    IsVararg
 //	[25]    NeedsArg
 //	[63:26] reserved
 //
-// 不在 Wasm 执行期调用(LoadProgram 是顶层 API 边界),故 Free 旧段 + 写新基址安全。
+// Not called during Wasm execution (LoadProgram is a top-level API boundary), so
+// Free'ing the old segment + writing the new base is safe.
 func (st *State) rebuildProtoCache() {
 	a := st.arena
 	if st.protoCacheRef != 0 {
@@ -905,81 +1010,94 @@ func (st *State) rebuildProtoCache() {
 
 // Call executes a Lua closure with the given args, returning all results.
 //
-// args 是按值传入的实参;返回值数受被调函数控制(显式 RETURN 给出多少返回多少)。
-// nresults < 0 表示"全部返回";否则按个数裁剪/补 nil。
+// args are the arguments passed by value; the number of return values is
+// controlled by the callee (an explicit RETURN returns as many as it gives).
+// nresults < 0 means "return all"; otherwise trim/pad with nil to the count.
 func (st *State) Call(cl arena.GCRef, args []value.Value, nresults int) ([]value.Value, error) {
 	rets, err := st.callOnStack(cl, args, nresults)
 	if err != nil {
 		return nil, err
 	}
-	// 拷出独立 slice:旧契约下返回值在下次 Call 后仍可读(调用方可长持)。
+	// Copy out an independent slice: under the old contract the return values are
+	// still readable after the next Call (the caller may hold them long-term).
 	return append([]value.Value(nil), rets...), nil
 }
 
-// callOnStack 执行闭包,返回值直接是主 thread 栈上的活动切片(零拷贝)。
+// callOnStack executes the closure, returning the active slice directly on the
+// main thread's stack (zero copy).
 //
-// ⚠️ 切片底层是复用的 th.stack:下次 Call/Run 复位 top 后会被覆写。调用方
-// 必须在下次进入 VM 前消费完(读出标量 / 拷贝 / 经 pin 表登记复合值)。
-// runningThread 复位为 nil 后 mainTh 仍是 loadedCls 同级常驻根 → 返回值在
-// GC 下保持可达(栈未缩容,槽位值仍被 mainTh.stack 引用)。
+// ⚠️ The underlying slice is the reused th.stack: it is overwritten after the
+// next Call/Run resets top. The caller must consume it before next entering the
+// VM (read out scalars / copy / register compound values via the pin table).
+// After runningThread is reset to nil, mainTh is still a resident root at the
+// same level as loadedCls → the return values stay reachable under GC (the stack
+// is not shrunk, and the slot values are still referenced by mainTh.stack).
 func (st *State) callOnStack(cl arena.GCRef, args []value.Value, nresults int) ([]value.Value, error) {
 	if object.IsHostClosure(st.arena, cl) {
-		// 从 Go 端直接 Call host closure 需要临时栈帧脚手架,本期未做;
-		// 已 Register 的 host fn 由 Lua 内调用闭环工作(callHost 路径)。
+		// Calling a host closure directly from the Go side needs a temporary stack
+		// frame scaffold, not done this cycle; a Register'd host fn works in a closed
+		// loop when called from within Lua (the callHost path).
 		return nil, fmt.Errorf("Call: host closure cannot be called from Go end; invoke it from Lua side instead")
 	}
-	// 复用主 thread(规则引擎形状 = 长驻 State 高频 Run 短脚本;每次
-	// newThread 的栈切片/扩容是无谓的 Go 堆 churn)。State 单 goroutine,
-	// 主 thread 不会重入(host→Lua 重入走同一 th 的 execute 叠层,协程
-	// 各有独立 th)。复位:top 清零 + 帧深度回退到 0(truncateCI),openUvs
-	// 沿用(上次 Run 末 closeUpvals 已清空)。
+	// Reuse the main thread (rule-engine shape = a long-resident State running
+	// short scripts at high frequency; a newThread's stack slice/growth each time
+	// is pointless Go-heap churn). State is single-goroutine, and the main thread
+	// does not re-enter (host→Lua re-entry stacks up on the same th's execute,
+	// coroutines each have their own th). Reset: top zeroed + frame depth rewound
+	// to 0 (truncateCI), openUvs reused (the last Run's terminal closeUpvals already emptied it).
 	th := st.mainTh
 	if th == nil {
 		th = st.newThread()
 		st.mainTh = th
-		// 主线程帧深度镜像到 ciDepthRef(PW10 零跨界 Stage 1a):仅 mainTh 接通,
-		// 协程 th 恒不镜像(协程不升层)。setCIDepth 据此字段决定是否写字。
+		// mirror the main thread's frame depth to ciDepthRef (PW10 zero-cross Stage 1a):
+		// only mainTh is wired, coroutine th is never mirrored (coroutines do not lift).
+		// setCIDepth decides whether to write the word based on this field.
 		th.ciDepthWordRef = st.ciDepthRef
-		th.topWordRef = st.topRef             // ①:栈顶 th.top 镜像(Wasm 帧建拆写/GC 读)
-		th.setTop(0)                          // 初始化 top 镜像字(newThread 已 top=0)
-		th.ciSegBaseWordRef = st.ciSegBaseRef // Stage 2:CI 段基址镜像(Wasm 现算帧地址)
-		th.openGuardWordRef = st.openGuardRef // Stage 2:开放 upvalue 守卫字
-		th.setCIDepth(0)                      // 初始化字 = 0(与新线程 ciDepth=0 同步)
-		th.syncCISegBase()                    // 初始化段基址字(newThread 已建段)
-		th.syncOpenGuard()                    // 初始化守卫字(新线程无开放 upvalue → 0)
+		th.topWordRef = st.topRef             // ①: stack top th.top mirror (Wasm frame build/teardown writes / GC reads)
+		th.setTop(0)                          // initialize the top mirror word (newThread already top=0)
+		th.ciSegBaseWordRef = st.ciSegBaseRef // Stage 2: CI segment base mirror (Wasm computes frame address on the fly)
+		th.openGuardWordRef = st.openGuardRef // Stage 2: open-upvalue guard word
+		th.setCIDepth(0)                      // initialize word = 0 (in sync with the new thread's ciDepth=0)
+		th.syncCISegBase()                    // initialize the segment base word (newThread already built the segment)
+		th.syncOpenGuard()                    // initialize the guard word (new thread has no open upvalue → 0)
 	} else {
 		th.setTop(0)
 		th.truncateCI(0)
 		th.pendingResume = nil
-		// 上次 Run 经错误退出时 unwind 不走 closeUpvals,openUvs 可能残留
-		// 指向已失效栈位的开放 uv——关闭它们(自持快照值),清 uvOwner。
+		// If the last Run exited via error, unwind did not go through closeUpvals,
+		// so openUvs may still hold open uvs pointing to now-invalid stack positions —
+		// close them (self-held snapshot values), clear uvOwner.
 		if len(th.openUvs) > 0 {
 			st.closeUpvals(th, 0)
 		}
 	}
 	st.runningThread = th
 	defer func() { st.runningThread = nil }()
-	// 推 callee + args 到栈底
+	// push callee + args to the stack bottom
 	th.push(value.MakeGC(value.TagFunction, cl))
 	for _, v := range args {
 		th.push(v)
 	}
-	// PW10 零跨界顶层升层 + P4 真接入:
-	// 之前 `code.Slot() == ok` 检查是 P3 wasm `call_indirect` 内部直调要求,
-	// 但顶层 enterGibbous 不依赖 slot——任何 GibbousCode(P3 / P4)都能走。
-	// P4 `Slot()` 恒返 (0, false)(原生码无 wasm 表概念),之前的 ok 检查
-	// 让 P4 顶层升层路径永远跳过(host 直调 P4 升层 closure 时 mmap 段不被
-	// 走,profile 数字测的就是解释器,违反 prove-the-path)。
+	// PW10 zero-cross top-level lift + P4 real hookup:
+	// the previous `code.Slot() == ok` check was a requirement of the P3 wasm
+	// `call_indirect` internal direct call, but the top-level enterGibbous does not
+	// depend on slot — any GibbousCode (P3 / P4) can go through it.
+	// P4 `Slot()` always returns (0, false) (native code has no wasm-table concept),
+	// so the previous ok check made the P4 top-level lift path always skip (when the
+	// host directly calls a P4-lifted closure the mmap segment is not taken, and the
+	// profile numbers measure the interpreter, violating prove-the-path).
 	//
-	// 现修为「有 GibbousCode 就走 enterGibbous」——P3 / P4 共用此路径;P3
-	// 内部 gibbous→gibbous CALL 仍经 wasm `call_indirect`(R3 协议,要 slot
-	// ok),但那是 enterGibbous 之内 wasm 段执行的细节,不影响顶层入口。
+	// Now fixed to "go through enterGibbous if there is GibbousCode" — P3 / P4 share
+	// this path; the P3-internal gibbous→gibbous CALL still goes through wasm
+	// `call_indirect` (R3 protocol, requires slot ok), but that is a detail of the
+	// wasm segment execution within enterGibbous, not affecting the top-level entry.
 	if !object.IsHostClosure(st.arena, cl) && profileEnabled && th == st.mainTh && st.bridge != nil {
 		pid := object.ClosureProtoID(st.arena, cl)
 		if code := st.bridge.GibbousCodeOf(st.protos[pid]); code != nil {
-			// nresults 传 -1(callee 全返回),callOnStack 末尾按用户 nresults 截取/补 nil,
-			// 与解释器路径同款。enterGibbous 内 entry=false(fresh=false),但 wasm 路径不
-			// 进 execute 主循环、不依赖 fresh;DoReturn 不看 fresh,仅按 nresults 处理。
+			// pass nresults -1 (callee returns all); at the end callOnStack trims/pads
+			// with nil per the user's nresults, same as the interpreter path. Inside
+			// enterGibbous entry=false (fresh=false), but the wasm path does not enter the
+			// execute main loop and does not depend on fresh; DoReturn ignores fresh and just processes per nresults.
 			if err := st.enterGibbous(th, code, 0 /*funcIdx*/, len(args), -1); err != nil {
 				if err.Traceback == "" {
 					err.Traceback = st.buildTraceback(th)
@@ -1001,7 +1119,7 @@ func (st *State) callOnStack(cl arena.GCRef, args []value.Value, nresults int) (
 		}
 	}
 
-	// 进入主 frame(解释器路径:cl 未升层 / host / vararg main chunk / 协程线程)
+	// enter the main frame (interpreter path: cl not lifted / host / vararg main chunk / coroutine thread)
 	if err := st.enterLuaFrame(th, 0 /*funcIdx in stack*/, len(args), -1 /*caller wants all*/, true /*entry*/); err != nil {
 		return nil, err
 	}
@@ -1011,8 +1129,9 @@ func (st *State) callOnStack(cl arena.GCRef, args []value.Value, nresults int) (
 		}
 		return nil, err
 	}
-	// 顶层执行结束后返回值在栈底起若干个(由 RETURN 落点 dst=funcIdx 决定)。
-	// 零拷贝:直接切 th.stack 活动区(契约见 callOnStack 文档)。
+	// After top-level execution ends, the return values are a few slots starting at
+	// the stack bottom (determined by the RETURN landing point dst=funcIdx).
+	// Zero copy: slice th.stack's active region directly (contract in the callOnStack doc).
 	rets := th.activeSlice(th.top)
 	if nresults >= 0 {
 		if len(rets) > nresults {
@@ -1027,109 +1146,128 @@ func (st *State) callOnStack(cl arena.GCRef, args []value.Value, nresults int) (
 	return rets, nil
 }
 
-// CallOnStack 是 callOnStack 的导出形,供门面层零分配 CallInto 使用。
-// 返回值是主 thread 栈上的活动切片(零拷贝,下次进入 VM 前有效),契约
-// 见 callOnStack 文档。
+// CallOnStack is the exported form of callOnStack, for the facade layer's
+// zero-alloc CallInto. The return value is the active slice on the main thread's
+// stack (zero copy, valid until next entering the VM); see the callOnStack doc for the contract.
 func (st *State) CallOnStack(cl arena.GCRef, args []value.Value, nresults int) ([]value.Value, error) {
 	return st.callOnStack(cl, args, nresults)
 }
 
-// thread 是执行线程:值栈住 arena 段(VS0-c 形态 Y),CallInfo 仍住 Go 切片。
+// thread is an execution thread: the value stack lives in an arena segment
+// (VS0-c form Y), the CallInfo still lives in a Go slice.
 //
-// **值栈 arena 化(VS0-c)**:stack 不再是 Go slice,而是 arena 内一段
-// Value[stackCap](01 §5.6 valueStackRef)。寄存器 R(i) = arena 段第 i 槽
-// (stackBaseW 字偏移 + i)。物理上与 gibbous wasm 的 i64.load offset=8*i
-// 读写同一块 linear memory(P3 build 下)——这是端到端共见的基础。
+// **Value stack arena-ization (VS0-c)**: stack is no longer a Go slice but a
+// stretch of Value[stackCap] inside the arena (01 §5.6 valueStackRef). Register
+// R(i) = the i-th slot of the arena segment (stackBaseW word offset + i).
+// Physically it reads/writes the same block of linear memory as gibbous wasm's
+// i64.load offset=8*i (under the P3 build) — this is the foundation of the
+// end-to-end shared view.
 //
-// 形态 Y:slot/setSlot 每次经 arena.Words() 当前视图寻址(不缓存派生切片),
-// 免疫 arena grow(grow 时 arena.words 字段由 setBacking 更新,下次 Words()
-// 取到新视图)。段满时 growStack 在 arena 内重分配更大段 + 拷旧 + Free 旧;
-// 开放 upvalue 经 owner.slot(idx) 寻址,stackBaseW 更新后自动指向新段同位置
-// (无需额外重定位)。
+// Form Y: slot/setSlot addresses each time via the current view of arena.Words()
+// (does not cache a derived slice), immune to arena grow (on grow the arena.words
+// field is updated by setBacking, and the next Words() takes the new view). When
+// the segment is full, growStack reallocates a larger segment inside the arena +
+// copies the old + Free's the old; open upvalues address via owner.slot(idx), and
+// after stackBaseW is updated they automatically point to the same position in the
+// new segment (no extra relocation needed).
 type thread struct {
-	arena      *arena.Arena           // 值栈段所在 arena(段寻址 + grow 用)
-	stackBaseW uint32                 // 值栈段在 arena 的字偏移(= valueStackRef>>3)
-	stackCap   int                    // 段容量(槽数;= size())
-	top        int                    // 当前栈顶(超过 ci.top 的临时区)
-	openUvs    map[uint32]arena.GCRef // stackIdx → open Upvalue ref(M9 简化,M10 改降序链)
+	arena      *arena.Arena           // the arena where the value stack segment lives (for segment addressing + grow)
+	stackBaseW uint32                 // the value stack segment's word offset in the arena (= valueStackRef>>3)
+	stackCap   int                    // segment capacity (slot count; = size())
+	top        int                    // current stack top (the temporary region above ci.top)
+	openUvs    map[uint32]arena.GCRef // stackIdx → open Upvalue ref (M9 simplification, M10 switches to a descending-order chain)
 
-	// --- CallInfo 状态(PW10 R2b-4:退役 Go []callInfo,arena 段为权威)---
+	// --- CallInfo state (PW10 R2b-4: retire the Go []callInfo, the arena segment is authoritative) ---
 	//
-	// cur 是当前栈顶帧的工作副本(热镜像)。currentCI 返回 &cur——**地址稳定**,
-	// 故热循环持 ci 指针永不悬垂(消除旧 &th.cis[len-1] 的 append 重定位雷区,
-	// design-claims-vs-codebase-physics §2 构造性消解)。push/pop 同步 cur ↔ 段:
-	// push 先把 cur 刷回段[ciDepth-1](保 caller pc/base/top)再载入 callee;
-	// pop 弹 cur 后从段重载 caller。
+	// cur is the working copy of the current top frame (hot mirror). currentCI
+	// returns &cur — **address-stable**, so a hot loop holding a ci pointer never
+	// dangles (eliminating the old &th.cis[len-1] append-relocation hazard,
+	// design-claims-vs-codebase-physics §2 constructive resolution). push/pop sync
+	// cur ↔ segment: push first flushes cur back to segment[ciDepth-1] (preserving
+	// caller pc/base/top) then loads the callee; pop pops cur then reloads the caller from the segment.
 	cur     callInfo
-	ciDepth int // 逻辑帧深度(= 旧 len(th.cis));段[0..ciDepth-1] 是活跃帧
+	ciDepth int // logical frame depth (= old len(th.cis)); segment[0..ciDepth-1] are the active frames
 	ciBaseW uint32
 	ciCap   int
-	// ciDepthWordRef 非零时,setCIDepth 把 ciDepth 镜像到此 arena 字(PW10 零跨界
-	// Stage 1a)。仅 mainTh 接通(State.New 后 = st.ciDepthRef);协程 th 恒 0(不镜像)。
+	// When ciDepthWordRef is non-zero, setCIDepth mirrors ciDepth to this arena
+	// word (PW10 zero-cross Stage 1a). Only mainTh is wired (= st.ciDepthRef after
+	// State.New); coroutine th is always 0 (not mirrored).
 	ciDepthWordRef arena.GCRef
-	// ciSegBaseWordRef 非零时,syncCISegBase 把 CI 段当前字节基址(ciBaseW*8)镜像到此
-	// arena 字(PW10 零跨界 Stage 2),Wasm 侧帧建拆现算帧地址用。仅 mainTh 接通。
+	// When ciSegBaseWordRef is non-zero, syncCISegBase mirrors the CI segment's
+	// current byte base (ciBaseW*8) to this arena word (PW10 zero-cross Stage 2),
+	// for the Wasm-side frame build/teardown to compute the frame address on the fly. Only mainTh is wired.
 	ciSegBaseWordRef arena.GCRef
-	// openGuardWordRef 非零时,syncOpenGuard 把开放 upvalue 守卫值(maxOpenIdx+1 / 0)
-	// 镜像到此 arena 字(PW10 零跨界 Stage 2),Wasm RETURN 快路径守卫用。仅 mainTh。
+	// When openGuardWordRef is non-zero, syncOpenGuard mirrors the open-upvalue
+	// guard value (maxOpenIdx+1 / 0) to this arena word (PW10 zero-cross Stage 2),
+	// for the Wasm RETURN fast-path guard. Only mainTh.
 	openGuardWordRef arena.GCRef
-	// topWordRef 非零时,setTop 把 th.top(槽索引)镜像到此 arena 字(PW10 零跨界 ①)。
-	// Wasm 侧帧建拆写它,GC 栈根扫描读 liveTop()。仅 mainTh 接通;协程 th 恒 0。
+	// When topWordRef is non-zero, setTop mirrors th.top (slot index) to this arena
+	// word (PW10 zero-cross ①). The Wasm-side frame build/teardown writes it, the GC
+	// stack-root scan reads liveTop(). Only mainTh is wired; coroutine th is always 0.
 	topWordRef arena.GCRef
-	// maxOpenIdx 是 openUvs 中最大的 stackIdx(官方降序链表头的等价物):
-	// closeUpvals(level) 在 level > maxOpenIdx 时 O(1) 返回——RETURN 每帧
-	// 都调 closeUpvals,无此快路径时每次都全量迭代 map(曾占 20% CPU)。
-	// 不变式:openUvs 非空 ⇒ maxOpenIdx = max(keys);空 ⇒ 值无意义。
+	// maxOpenIdx is the largest stackIdx in openUvs (the equivalent of the official
+	// descending-chain head): closeUpvals(level) returns in O(1) when level >
+	// maxOpenIdx — RETURN calls closeUpvals every frame, and without this fast path
+	// it would fully iterate the map each time (once took 20% CPU).
+	// Invariant: openUvs non-empty ⇒ maxOpenIdx = max(keys); empty ⇒ the value is meaningless.
 	maxOpenIdx uint32
 
-	// pendingResume 在 yield 冒泡出 execute 时记录恢复信息(08 §3.3 saveFrame
-	// 的 P1 形态);resume 时由 executeResume 消费。
+	// pendingResume records the resume info when a yield bubbles out of execute
+	// (the P1 form of the 08 §3.3 saveFrame); consumed by executeResume on resume.
 	pendingResume *pendingResumeInfo
 }
 
-// initialStackSlots 是 thread 值栈段的初始槽数(对齐旧 Go slice cap 64)。
+// initialStackSlots is the initial slot count of a thread's value stack segment
+// (aligned with the old Go slice cap 64).
 const initialStackSlots = 64
 
-// ciWords 是每个 CallInfo 在 arena ci 段占的字数(VS0-e 子步 ②:4 → 5)。
+// ciWords is the word count each CallInfo occupies in the arena ci segment
+// (VS0-e substep ②: 4 → 5).
 //
-// **物理布局(承 04-trampoline §1.2 word2 packing;VS0-e 子步 ② 扩 word4)**:
+// **Physical layout (following 04-trampoline §1.2 word2 packing; VS0-e substep ② extends word4)**:
 //
 //	word0 [31:0]base   [63:32]funcIdx
 //	word1 [31:0]top    [63:32]pc(savedPC)
 //	word2 [31:0]protoID [47:32]nresults [48]tailcall [49]fresh [50]gibbous
 //	word3 cl(GCRef)
-//	word4 [15:0]nVarargs (VS0-e 子步 ②;子步 ③ 之后栈下区 [base-nVarargs..base) 是 vararg 区权威)
+//	word4 [15:0]nVarargs (VS0-e substep ②; after substep ③ the lower stack region [base-nVarargs..base) is the authoritative vararg area)
 //
-// ci 段是冷字段 + GC 根的权威源(R2b-3 起)。**Wasm 端段帧步长**:
-// internal/gibbous/wasm/helpers_index.go ciFrameBytes 须严格等于 ciWords*8(本轮 40)。
-// 当前栈顶帧的工作副本在 th.cur(热镜像,currentCI 返回 &cur)。
+// The ci segment is the authoritative source of cold fields + GC roots (since
+// R2b-3). **The Wasm-side segment frame stride**:
+// internal/gibbous/wasm/helpers_index.go ciFrameBytes must be strictly equal to
+// ciWords*8 (40 this round). The working copy of the current top frame is in
+// th.cur (hot mirror, currentCI returns &cur).
 const ciWords = 5
 
-// initialCISlots 是 ci 段初始帧数(典型程序调用深度 ≪ 此值;深则 growCISeg)。
+// initialCISlots is the ci segment's initial frame count (a typical program's
+// call depth ≪ this value; deeper triggers growCISeg).
 const initialCISlots = 64
 
-// newThread 建一个值栈住 arena 段的 thread(VS0-c)。主线程与协程统一经此
-// 入口,故主线程栈与协程栈一并 arena 化。
+// newThread builds a thread whose value stack lives in an arena segment (VS0-c).
+// The main thread and coroutines go through this single entry, so the main
+// thread's stack and coroutine stacks are arena-ized together.
 func (st *State) newThread() *thread {
 	th := &thread{arena: st.arena}
 	ref := st.arena.AllocWords(initialStackSlots)
 	th.stackBaseW = uint32(ref) >> 3
 	th.stackCap = initialStackSlots
-	// CallInfo arena 段(PW10 R2b):每帧 ciWords 字,初始 initialCISlots 帧。
+	// CallInfo arena segment (PW10 R2b): ciWords words per frame, initially initialCISlots frames.
 	ciRef := st.arena.AllocWords(initialCISlots * ciWords)
 	th.ciBaseW = uint32(ciRef) >> 3
 	th.ciCap = initialCISlots
 	return th
 }
 
-// --- CallInfo arena 段写入(PW10 R2b-1:cold 字段只写镜像)---
+// --- CallInfo arena segment writes (PW10 R2b-1: cold fields write only the mirror) ---
 //
-// writeCISeg 把一个 callInfo 的字段打包进 ci 段第 depth 帧(4 word,布局见
-// thread.ciBaseW)。R2b-1 在 enterLuaFrame 压帧后 + 任何 cold 字段变更后调,
-// 使段与 Go cis 镜像同步;R2b-2 起 cold accessor 改读此段。
+// writeCISeg packs a callInfo's fields into the depth-th frame of the ci segment
+// (5 words, layout see thread.ciBaseW). R2b-1 calls it after enterLuaFrame pushes
+// a frame + after any cold-field change, keeping the segment in sync with the Go
+// cis mirror; since R2b-2 the cold accessors read this segment.
 //
-// 形态 Y:经 SetWordAt 现算地址(读 arena.words 当前值),不缓存派生切片,
-// 免疫 grow(growCISeg / 任何 alloc 触发的物理 grow)。
+// Form Y: computes the address on the fly via SetWordAt (reading arena.words's
+// current value), does not cache a derived slice, immune to grow (growCISeg / any
+// alloc-triggered physical grow).
 func (th *thread) writeCISeg(depth int, ci *callInfo) {
 	a := th.arena
 	wordRef := func(w int) arena.GCRef {
@@ -1139,11 +1277,12 @@ func (th *thread) writeCISeg(depth int, ci *callInfo) {
 	a.SetWordAt(wordRef(1), uint64(uint32(ci.top))|uint64(uint32(ci.pc))<<32)
 	a.SetWordAt(wordRef(2), packCIWord2(ci))
 	a.SetWordAt(wordRef(3), uint64(ci.cl))
-	a.SetWordAt(wordRef(4), uint64(ci.nVarargs)) // VS0-e 子步 ②:nVarargs 镜像(其他位预留)
+	a.SetWordAt(wordRef(4), uint64(ci.nVarargs)) // VS0-e substep ②: nVarargs mirror (other bits reserved)
 }
 
-// packCIWord2 打包 protoID/nresults/flags 进 word2(04-trampoline §1.2 布局)。
-// nresults 是 int(-1 表可变),取低 16 位存(C-1 语义 ≤ 0xFFFF;-1 → 0xFFFF)。
+// packCIWord2 packs protoID/nresults/flags into word2 (04-trampoline §1.2
+// layout). nresults is an int (-1 means variable), storing the low 16 bits (C-1
+// semantics ≤ 0xFFFF; -1 → 0xFFFF).
 func packCIWord2(ci *callInfo) uint64 {
 	w := uint64(ci.protoID)
 	w |= uint64(uint16(ci.nresults)) << 32
@@ -1159,7 +1298,8 @@ func packCIWord2(ci *callInfo) uint64 {
 	return w
 }
 
-// readCISegInto 从 ci 段第 depth 帧解包到 out(R2b-1 往返自检 + R2b-2 起 accessor 用)。
+// readCISegInto unpacks the depth-th frame of the ci segment into out (R2b-1
+// round-trip self-check + used by accessors since R2b-2).
 func (th *thread) readCISegInto(depth int, out *callInfo) {
 	a := th.arena
 	wordRef := func(w int) arena.GCRef {
@@ -1173,47 +1313,59 @@ func (th *thread) readCISegInto(depth int, out *callInfo) {
 	out.top = int(int32(uint32(w1)))
 	out.pc = int32(uint32(w1 >> 32))
 	out.protoID = uint32(w2)
-	out.nresults = int(int16(uint16(w2 >> 32))) // 符号扩展(-1 → 0xFFFF → -1)
+	out.nresults = int(int16(uint16(w2 >> 32))) // sign extension (-1 → 0xFFFF → -1)
 	out.tailcall = w2&(1<<48) != 0
 	out.fresh = w2&(1<<49) != 0
 	out.gibbous = w2&(1<<50) != 0
 	out.cl = arena.GCRef(a.WordAt(wordRef(3)))
-	out.nVarargs = uint16(a.WordAt(wordRef(4))) // VS0-e 子步 ②:从 word4 解包 nVarargs
+	out.nVarargs = uint16(a.WordAt(wordRef(4))) // VS0-e substep ②: unpack nVarargs from word4
 }
 
-// syncCurFromSeg 把段为权威翻转的「Go 侧反向同步」收口(PW10 零跨界 Stage 1b)。
+// syncCurFromSeg closes off the "Go-side reverse sync" of the segment-is-
+// authoritative flip (PW10 zero-cross Stage 1b).
 //
-// **段为权威**:Stage 2/3 起 Wasm 侧帧建拆 increment/decrement ciDepth 字 + 写段帧,
-// 全程不回 Go,故 Go 的 th.ciDepth / th.cur 在 Wasm 执行期被冻结而段是活的。控制权
-// 跨回 Go 时(code.Run 返回 / 回退 helper 入口),Go 必须以段为准反向同步:读 ciDepth
-// 字,若与 th.ciDepth 不同(Wasm 改过),采纳字深度 + 从段重载 th.cur。
+// **Segment is authoritative**: since Stage 2/3 the Wasm-side frame
+// build/teardown increments/decrements the ciDepth word + writes segment frames,
+// all without going back to Go, so Go's th.ciDepth / th.cur are frozen while Wasm
+// executes and the segment is the live one. When control crosses back to Go
+// (code.Run returns / fallback helper entry), Go must reverse-sync from the
+// segment as the source of truth: read the ciDepth word, and if it differs from
+// th.ciDepth (Wasm changed it), adopt the word depth + reload th.cur from the segment.
 //
-// **Stage 1b 是验证性 no-op**:此阶段无 Wasm 写,字恒等于 th.ciDepth,故同步不触发
-// (wangshu_trace 下断言一致)。其目的是先把「段为权威」的反向同步纪律收口,使
-// Stage 2/3 落 Wasm 写后此处自动生效。th.cur 的 pc/top 在 gibbous 帧执行期住 Wasm
-// local(非 th.cur),故重载 th.cur 不丢「比段新」的信息——gibbous 帧从不靠 th.cur 续算。
+// **Stage 1b is a verification no-op**: at this stage there is no Wasm write, the
+// word always equals th.ciDepth, so the sync does not trigger (under wangshu_trace
+// the consistency is asserted). Its purpose is to first close off the "segment is
+// authoritative" reverse-sync discipline, so that after Stage 2/3 lands Wasm
+// writes this takes effect automatically. th.cur's pc/top live in a Wasm local
+// (not th.cur) during gibbous frame execution, so reloading th.cur does not lose
+// information "newer than the segment" — a gibbous frame never continues from th.cur.
 func (th *thread) syncCurFromSeg() {
 	if th.ciDepthWordRef == 0 {
-		return // 非 mainTh(协程不升层,无字镜像)
+		return // not mainTh (coroutines do not lift, no word mirror)
 	}
 	wd := int(uint32(th.arena.WordAt(th.ciDepthWordRef)))
 	if wd == th.ciDepth {
-		return // 字与 Go 一致(Stage 1b 恒走此路;Stage 2/3 Wasm 未改深度时也走此)
+		return // the word matches Go (Stage 1b always takes this path; Stage 2/3 also takes it when Wasm has not changed the depth)
 	}
-	// Wasm 改过深度(Stage 2/3):采纳字深度 + 从段重载栈顶帧。VS0-e 后 vararg 区
-	// 住栈下区(stack[base-nVarargs..base)),syncCurFromSeg 不再恢复 cur.varargs
-	// Go 切片(已退役);nVarargs 经 readCISegInto 从 word4 解出 + 栈访问拿数据。
+	// Wasm changed the depth (Stage 2/3): adopt the word depth + reload the top
+	// frame from the segment. After VS0-e the vararg area lives in the lower stack
+	// region (stack[base-nVarargs..base)), so syncCurFromSeg no longer restores the
+	// cur.varargs Go slice (retired); nVarargs is unpacked from word4 via
+	// readCISegInto + the data is fetched via stack access.
 	th.ciDepth = wd
 	if wd > 0 {
 		th.readCISegInto(wd-1, &th.cur)
 	}
 }
 
-// ciAt 读第 depth 帧的 callInfo 值副本(非当前帧只读访问:traceback / 协程恢复)。
-// 当前栈顶帧(depth==ciDepth-1)直接返回热镜像 th.cur(它可能 pc/top 比段新);
-// 其余帧从段解包(VS0-e 后 nVarargs 经 word4 解出,vararg 区在栈下区现读)。
-// **返回值副本**——调用方不得缓存指针跨分配(form-Y:每次按 depth 现读,消除
-// *callInfo 悬垂)。
+// ciAt reads a value copy of the depth-th frame's callInfo (read-only access to a
+// non-current frame: traceback / coroutine resume).
+// The current top frame (depth==ciDepth-1) returns the hot mirror th.cur directly
+// (its pc/top may be newer than the segment); the rest are unpacked from the
+// segment (after VS0-e nVarargs is unpacked from word4, and the vararg area is
+// read on the fly from the lower stack region).
+// **Returns a value copy** — the caller must not cache the pointer across an
+// allocation (form-Y: read on the fly by depth each time, eliminating *callInfo dangling).
 func (th *thread) ciAt(depth int) callInfo {
 	if depth == th.ciDepth-1 {
 		return th.cur
@@ -1223,18 +1375,26 @@ func (th *thread) ciAt(depth int) callInfo {
 	return ci
 }
 
-// liveCIDepth 返回 GC 根扫描应采纳的权威帧深度(PW10 零跨界 Stage 1c)。
+// liveCIDepth returns the authoritative frame depth the GC root scan should adopt
+// (PW10 zero-cross Stage 1c).
 //
-// **为何读字而非 th.ciDepth**:Stage 2/3 起 Wasm 侧帧建拆在 Wasm 执行期 increment/
-// decrement ciDepth 字 + 写段帧,**全程不回 Go**,故此刻 th.ciDepth(Go 字段)落后于
-// 真实深度。gibbous 帧体内可命中 safepoint(alloc/回边)触发 GC——此时 GC 必须按
-// **字**的深度扫段帧 closure 根,否则 Wasm 新压的活跃帧漏扫 = closure 被误回收 = UAF。
-// mainTh 读字(ciDepthWordRef≠0);协程 th 无字镜像(不升层),退回 th.ciDepth。
+// **Why read the word rather than th.ciDepth**: since Stage 2/3 the Wasm-side
+// frame build/teardown increments/decrements the ciDepth word + writes segment
+// frames during Wasm execution, **all without going back to Go**, so at this
+// moment th.ciDepth (the Go field) lags the real depth. A gibbous frame body can
+// hit a safepoint (alloc/back edge) triggering GC — at which point GC must scan
+// segment-frame closure roots by the **word** depth, otherwise the Wasm-newly-
+// pushed active frame is missed = the closure is wrongly collected = UAF.
+// mainTh reads the word (ciDepthWordRef≠0); coroutine th has no word mirror (does
+// not lift), falling back to th.ciDepth.
 //
-// 安全性:Stage 3 Wasm 建帧发射顺序「先写段帧 4 字、再 ciDepth++」保证字增时段帧
-// closure 已就位(不漏扫);Stage 2 拆帧「先减 ciDepth」使弹出帧不再被扫(不过扫)。
-// Stage 1c 落地时 Wasm 尚未写字(Stage 2/3 才写),故 liveCIDepth 恒等 th.ciDepth,
-// 翻转是零行为变更;wangshu_trace 自检(syncCurFromSeg/setCIDepth)守字与 Go 一致。
+// Safety: the Stage 3 Wasm frame-build emission order "first write the 4 words of
+// the segment frame, then ciDepth++" guarantees that when the word increments the
+// segment frame's closure is already in place (no miss); the Stage 2 frame
+// teardown "first decrement ciDepth" makes the popped frame no longer scanned (no
+// over-scan). When Stage 1c lands, Wasm has not yet written the word (Stage 2/3
+// does), so liveCIDepth always equals th.ciDepth and the flip is a zero behavior
+// change; the wangshu_trace self-check (syncCurFromSeg/setCIDepth) guards the word being consistent with Go.
 func (th *thread) liveCIDepth() int {
 	if th.ciDepthWordRef != 0 {
 		return int(uint32(th.arena.WordAt(th.ciDepthWordRef)))
@@ -1242,19 +1402,22 @@ func (th *thread) liveCIDepth() int {
 	return th.ciDepth
 }
 
-// syncCISegBase 把 CI 段当前字节基址(ciBaseW*8)镜像到 linear-memory 字(PW10
-// 零跨界 Stage 2)。newThread(mainTh)+ growCISeg 重定位后调,使 Wasm 侧帧建拆读到
-// 最新段基址现算帧地址。仅 mainTh 接通(ciSegBaseWordRef≠0)。
+// syncCISegBase mirrors the CI segment's current byte base (ciBaseW*8) to the
+// linear-memory word (PW10 zero-cross Stage 2). Called after newThread (mainTh) +
+// growCISeg relocation, so the Wasm-side frame build/teardown reads the latest
+// segment base to compute the frame address on the fly. Only mainTh is wired
+// (ciSegBaseWordRef≠0).
 func (th *thread) syncCISegBase() {
 	if th.ciSegBaseWordRef != 0 {
 		th.arena.SetWordAt(th.ciSegBaseWordRef, uint64(th.ciBaseW*8))
 	}
 }
 
-// syncOpenGuard 把开放 upvalue 守卫值镜像到 linear-memory 字(PW10 零跨界 Stage 2)。
-// 值 = maxOpenIdx+1(openUvs 非空)/ 0(空)。Wasm RETURN 快路径守卫 frameBase ≥ 此值
-// ⟺ 本帧无 ≥base 的开放 upvalue 须关闭(= closeUpvals no-op)。openUvs / maxOpenIdx
-// 任一变更后调(findOrCreateUpval / closeUpvals)。仅 mainTh 接通。
+// syncOpenGuard mirrors the open-upvalue guard value to the linear-memory word
+// (PW10 zero-cross Stage 2). Value = maxOpenIdx+1 (openUvs non-empty) / 0 (empty).
+// The Wasm RETURN fast-path guard frameBase ≥ this value ⟺ this frame has no open
+// upvalue ≥base to close (= closeUpvals no-op). Called after any change to openUvs
+// / maxOpenIdx (findOrCreateUpval / closeUpvals). Only mainTh is wired.
 func (th *thread) syncOpenGuard() {
 	if th.openGuardWordRef == 0 {
 		return
@@ -1266,17 +1429,21 @@ func (th *thread) syncOpenGuard() {
 	th.arena.SetWordAt(th.openGuardWordRef, uint64(g))
 }
 
-// setCIDepth 设帧深度 + 镜像到 linear-memory 字(PW10 零跨界 Stage 1a)。
-// 所有 th.ciDepth 写经此收口(enterLuaFrame ++ / popCallInfo -- / truncateCI =),
-// 使 ciDepthWordRef(mainTh)与 Go ciDepth 同步。Stage 1a 只写影子(Go 仍读 ciDepth);
-// Stage 2/3 Wasm 侧增减该字、Go 侧经 syncCurFromSeg 反向读回(段为权威翻转)。
+// setCIDepth sets the frame depth + mirrors it to the linear-memory word (PW10
+// zero-cross Stage 1a).
+// All writes of th.ciDepth are closed off through here (enterLuaFrame ++ /
+// popCallInfo -- / truncateCI =), keeping ciDepthWordRef (mainTh) in sync with Go
+// ciDepth. Stage 1a only writes the shadow (Go still reads ciDepth); in Stage 2/3
+// the Wasm side increments/decrements the word and the Go side reads it back via
+// syncCurFromSeg (the segment-is-authoritative flip).
 func (th *thread) setCIDepth(n int) {
 	th.ciDepth = n
 	if th.ciDepthWordRef != 0 {
 		th.arena.SetWordAt(th.ciDepthWordRef, uint64(uint32(n)))
 		if ciMirrorCheck {
-			// wangshu_trace 安全网:回读字自检镜像与 Go ciDepth 一致(Stage 1a),
-			// 捕 wrong-ref / 编码 bug;Stage 1c 翻转读字后此自检防回归。
+			// wangshu_trace safety net: read the word back to self-check the mirror is
+			// consistent with Go ciDepth (Stage 1a), catching wrong-ref / encoding bugs;
+			// after the Stage 1c flip to reading the word, this self-check guards against regression.
 			if got := uint32(th.arena.WordAt(th.ciDepthWordRef)); got != uint32(n) {
 				panic(fmt.Sprintf("crescent: ciDepth 字镜像不一致 got=%d want=%d", got, n))
 			}
@@ -1284,10 +1451,13 @@ func (th *thread) setCIDepth(n int) {
 	}
 }
 
-// setTop 设栈顶 + 镜像到 linear-memory 字(PW10 零跨界 ①)。所有 th.top 写经此收口
-// (call/return/meta/host 各路径),使 topWordRef(mainTh)与 Go th.top 同步。
-// ① 只写影子(GC 读 liveTop,Wasm 尚不写字);④ Wasm 建帧 / ③ caller 自恢复 top
-// 起 Wasm 侧写该字、Go 边界经 syncCurFromSeg 邻接读回。**存槽索引**(grow 安全)。
+// setTop sets the stack top + mirrors it to the linear-memory word (PW10
+// zero-cross ①). All writes of th.top are closed off through here (call / return /
+// meta / host paths), keeping topWordRef (mainTh) in sync with Go th.top.
+// ① only writes the shadow (GC reads liveTop, Wasm does not yet write the word);
+// starting from ④ Wasm frame build / ③ caller self-restore of top, the Wasm side
+// writes this word and the Go boundary reads it back adjacently via
+// syncCurFromSeg. **Stores the slot index** (grow-safe).
 func (th *thread) setTop(n int) {
 	th.top = n
 	if th.topWordRef != 0 {
@@ -1300,12 +1470,16 @@ func (th *thread) setTop(n int) {
 	}
 }
 
-// liveTop 返回 GC 栈根扫描该用的栈顶(槽索引)。Stage ④ 起 Wasm 侧帧建拆在 Wasm
-// 执行期写 top 字(建 callee 帧设帧顶 / caller 自恢复),全程不回 Go,故 th.top
-// (Go 字段)落后真实值;gibbous 帧体内 safepoint 触发 GC 必须按**字**的 top 扫
-// [0,top) 栈根 + nil-clear [top,size),否则 Wasm 新压活跃槽漏扫 / 误清 = UAF。
-// mainTh 读字(topWordRef≠0);协程 th 无字镜像(不升层),退回 th.top。①落地时
-// Wasm 尚未写字,liveTop 恒等 th.top,翻转零行为变更。
+// liveTop returns the stack top (slot index) the GC stack-root scan should use.
+// Starting from Stage ④ the Wasm-side frame build/teardown writes the top word
+// during Wasm execution (setting the frame top when building a callee frame /
+// caller self-restore), all without going back to Go, so th.top (the Go field)
+// lags the real value; a safepoint in a gibbous frame body triggering GC must scan
+// the [0,top) stack roots by the **word** top + nil-clear [top,size), otherwise a
+// Wasm-newly-pushed active slot is missed / wrongly cleared = UAF.
+// mainTh reads the word (topWordRef≠0); coroutine th has no word mirror (does not
+// lift), falling back to th.top. When ① lands, Wasm has not yet written the word,
+// so liveTop always equals th.top and the flip is a zero behavior change.
 func (th *thread) liveTop() int {
 	if th.topWordRef != 0 {
 		return int(uint32(th.arena.WordAt(th.topWordRef)))
@@ -1313,10 +1487,12 @@ func (th *thread) liveTop() int {
 	return th.top
 }
 
-// truncateCI 把帧深度回退到 newDepth(pcall/元方法/yield 边界清理,替代旧
-// th.cis = th.cis[:newDepth])。回退后从段重载新栈顶帧到 th.cur。VS0-e 后 vararg
-// 区住栈下区,无独立 ciVarargs 清理(被截断帧的栈区在 setTop 缩 top 之后由
-// visitThreadValues 的 [top, size) nil-clear 覆盖)。R2b-4 + VS0-e。
+// truncateCI rewinds the frame depth to newDepth (pcall/metamethod/yield boundary
+// cleanup, replacing the old th.cis = th.cis[:newDepth]). After the rewind it
+// reloads the new top frame from the segment into th.cur. After VS0-e the vararg
+// area lives in the lower stack region, with no separate ciVarargs cleanup (the
+// truncated frames' stack region is covered by visitThreadValues's [top, size)
+// nil-clear after setTop shrinks top). R2b-4 + VS0-e.
 func (th *thread) truncateCI(newDepth int) {
 	th.setCIDepth(newDepth)
 	if newDepth > 0 {
@@ -1324,20 +1500,25 @@ func (th *thread) truncateCI(newDepth int) {
 	}
 }
 
-// reMirrorTop 把当前栈顶帧热镜像(th.cur)刷回 ci 段(cold 字段经 currentCI 改
-// th.cur 后调,如 SetTailcall/SetGibbous,R2b-4)。
+// reMirrorTop flushes the current top frame's hot mirror (th.cur) back to the ci
+// segment (called after a cold field changes th.cur via currentCI, e.g.
+// SetTailcall/SetGibbous, R2b-4).
 func (th *thread) reMirrorTop() {
 	if th.ciDepth > 0 {
 		th.writeCISeg(th.ciDepth-1, &th.cur)
 	}
 }
 
-// growCISeg 在 ci 段容量不足 need 帧时重分配更大段(仿 growStack,PW10 R2b-2)。
+// growCISeg reallocates a larger segment when the ci segment lacks capacity for
+// need frames (mimicking growStack, PW10 R2b-2).
 //
-// 形态 Y:经 WordAt/SetWordAt 现算地址拷旧帧(读 arena.words 当前值,免缓存
-// 派生切片,免疫 AllocWords 触发的物理 grow)。ci 段只经 ciBaseW + depth 现算
-// 寻址(无跨 grow 存活的派生指针),重定位后下次 writeCISeg/readCISegInto 自动
-// 指向新段;栈顶帧热镜像在 th.cur(地址稳定,不受段重定位影响)。
+// Form Y: copies old frames via WordAt/SetWordAt computing the address on the fly
+// (reading arena.words's current value, free of a cached derived slice, immune to
+// the physical grow triggered by AllocWords). The ci segment addresses only via
+// ciBaseW + depth computed on the fly (no derived pointer surviving across grow),
+// and after relocation the next writeCISeg/readCISegInto automatically points to
+// the new segment; the top frame's hot mirror is in th.cur (address-stable,
+// unaffected by segment relocation).
 func (th *thread) growCISeg(need int) {
 	newCap := need + 8
 	if d := th.ciCap * 2; d > newCap {
@@ -1346,7 +1527,7 @@ func (th *thread) growCISeg(need int) {
 	a := th.arena
 	newRef := a.AllocWords(uint32(newCap * ciWords))
 	oldRef := arena.GCRef(th.ciBaseW) << 3
-	// 拷已有活跃帧 [0,ciDepth)(已镜像);新帧由调用方随后 writeCISeg。
+	// copy the existing active frames [0,ciDepth) (already mirrored); new frames are writeCISeg'd by the caller afterward.
 	copyFrames := th.ciDepth
 	if copyFrames > th.ciCap {
 		copyFrames = th.ciCap
@@ -1357,22 +1538,25 @@ func (th *thread) growCISeg(need int) {
 	oldCap := th.ciCap
 	th.ciBaseW = uint32(newRef) >> 3
 	th.ciCap = newCap
-	th.syncCISegBase() // PW10 Stage 2:段重定位后更新 Wasm 可见的段基址字
+	th.syncCISegBase() // PW10 Stage 2: update the Wasm-visible segment base word after segment relocation
 	if !oldRef.IsNull() {
 		a.Free(oldRef, uint32(oldCap*ciWords)*8)
 	}
 }
 
-// ciSegCl 从 ci 段第 depth 帧读 cl(word3,GCRef)。R2b-3 GC 根扫描经此从 arena
-// 段读每帧 closure 根(而非 Go cis[depth].cl)——证明段是正确的 GC 根源(漏根=UAF)。
-// 形态 Y:WordAt 现算地址免缓存。
+// ciSegCl reads cl (word3, GCRef) from the depth-th frame of the ci segment. The
+// R2b-3 GC root scan reads each frame's closure root from the arena segment
+// through here (rather than Go cis[depth].cl) — proving the segment is the correct
+// GC root source (a missed root = UAF). Form Y: WordAt computes the address on the
+// fly, free of caching.
 func (th *thread) ciSegCl(depth int) arena.GCRef {
 	ref := arena.GCRef(th.ciBaseW+uint32(depth*ciWords+3)) << 3
 	return arena.GCRef(th.arena.WordAt(ref))
 }
 
-// (PW10 R2b-1 安全网,仅 ciMirrorCheck=wangshu_trace 构建启用)。打包/解包
-// bug 在此立即 panic 显形,而非 R2b-2 翻转读段后症状离根因很远。
+// (PW10 R2b-1 safety net, enabled only under ciMirrorCheck=wangshu_trace build).
+// A pack/unpack bug panics here immediately, rather than the symptom being far
+// from the root cause after the R2b-2 flip to reading the segment.
 func (th *thread) verifyCISeg(depth int, want *callInfo) {
 	var got callInfo
 	th.readCISegInto(depth, &got)
@@ -1384,26 +1568,28 @@ func (th *thread) verifyCISeg(depth int, want *callInfo) {
 	}
 }
 
-// --- 值栈访问收口(VS0 形态 Y)---
+// --- Value stack access closure (VS0 form Y) ---
 //
-// slot/setSlot 是值栈槽的唯一标量读写收口;size/copyOut/copyIn/activeSlice
-// 覆盖容量查询与批量搬移。形态 Y:每次经 arena.Words() 当前视图偏移寻址,
-// 不缓存派生切片(免疫 arena grow),opcode 与调用约定代码经 VS0-a 收口后不动。
+// slot/setSlot are the single scalar read/write closure of a value stack slot;
+// size/copyOut/copyIn/activeSlice cover capacity queries and bulk moves. Form Y:
+// each time addresses via the current view of arena.Words() by offset, without
+// caching a derived slice (immune to arena grow); after the VS0-a closure, the
+// opcode and calling-convention code stay unchanged.
 
-// slot 读绝对栈位 i 的值(arena 段第 stackBaseW+i 字)。
+// slot reads the value at absolute stack position i (the stackBaseW+i-th word of the arena segment).
 func (th *thread) slot(i int) value.Value {
 	return value.Value(th.arena.Words()[th.stackBaseW+uint32(i)])
 }
 
-// setSlot 写绝对栈位 i。
+// setSlot writes absolute stack position i.
 func (th *thread) setSlot(i int, v value.Value) {
 	th.arena.Words()[th.stackBaseW+uint32(i)] = uint64(v)
 }
 
-// size 返回值栈段容量(= stackCap;容量边界判断用)。
+// size returns the value stack segment capacity (= stackCap; for capacity boundary checks).
 func (th *thread) size() int { return th.stackCap }
 
-// copyOut 把 [lo,hi) 槽拷进调用方 Go slice dst(返回值搬移)。
+// copyOut copies slots [lo,hi) into the caller's Go slice dst (return value move).
 func (th *thread) copyOut(dst []value.Value, lo, hi int) {
 	w := th.arena.Words()
 	for i := lo; i < hi; i++ {
@@ -1411,7 +1597,7 @@ func (th *thread) copyOut(dst []value.Value, lo, hi int) {
 	}
 }
 
-// copyIn 把 src 拷进 [lo,...) 槽(resume 写值)。
+// copyIn copies src into slots [lo,...) (resume writes values).
 func (th *thread) copyIn(lo int, src []value.Value) {
 	w := th.arena.Words()
 	for i, v := range src {
@@ -1419,9 +1605,11 @@ func (th *thread) copyIn(lo int, src []value.Value) {
 	}
 }
 
-// activeSlice 返回 [0,hi) 的零拷贝活动切片(callOnStack 返回值;契约见
-// callOnStack 文档:下次进 VM 前消费完——grow 只在进 VM 时发生,故此切片
-// 在消费窗口内有效)。形态 Y 下经 unsafe 别名 arena 段(Value 底层 = uint64)。
+// activeSlice returns the zero-copy active slice of [0,hi) (the callOnStack return
+// value; see the callOnStack doc for the contract: consume it before next entering
+// the VM — grow only happens on entering the VM, so this slice is valid within the
+// consumption window). Under form Y it aliases the arena segment via unsafe (Value
+// underlying = uint64).
 func (th *thread) activeSlice(hi int) []value.Value {
 	if hi == 0 {
 		return nil
@@ -1430,7 +1618,7 @@ func (th *thread) activeSlice(hi int) []value.Value {
 	return unsafe.Slice((*value.Value)(unsafe.Pointer(&w[th.stackBaseW])), hi)
 }
 
-// push 压一个值到栈顶(段满则 growStack)。
+// push pushes a value onto the stack top (growStack if the segment is full).
 func (th *thread) push(v value.Value) {
 	if th.top >= th.stackCap {
 		th.growStack(th.top + 1)
@@ -1439,22 +1627,24 @@ func (th *thread) push(v value.Value) {
 	th.setTop(th.top + 1)
 }
 
-// ensureStack 确保段容量 ≥ n(段满则 growStack)。
+// ensureStack ensures the segment capacity ≥ n (growStack if the segment is full).
 func (th *thread) ensureStack(n int) {
 	if n > th.stackCap {
 		th.growStack(n)
 	}
 }
 
-// growStack 在 arena 内重分配更大段、拷旧槽、改 stackBaseW、Free 旧段
-// (lua_realloc stack 风格)。
+// growStack reallocates a larger segment inside the arena, copies old slots,
+// changes stackBaseW, Free's the old segment (lua_realloc stack style).
 //
-// **grow 视图陷阱**:AllocWords 可能触发 arena 物理 grow64 使旧视图失效;
-// 拷贝经 WordAt/SetWordAt 现算地址(读 arena.words 当前值,grow 后偏移不变),
-// 不缓存任何派生切片(形态 Y 免疫的兑现)。
+// **The grow view trap**: AllocWords may trigger an arena physical grow64 that
+// invalidates the old view; the copy computes the address on the fly via
+// WordAt/SetWordAt (reading arena.words's current value, the offset unchanged after
+// grow), without caching any derived slice (cashing in form Y immunity).
 //
-// **upvalue 自动重定位**:开放 upvalue 经 owner.slot(idx) 寻址,stackBaseW
-// 更新后自动指向新段同位置,无需改 openUvs 的 stackIdx 键。
+// **Automatic upvalue relocation**: open upvalues address via owner.slot(idx), and
+// after stackBaseW is updated they automatically point to the same position in the
+// new segment, with no need to change openUvs's stackIdx keys.
 func (th *thread) growStack(need int) {
 	newCap := need + 8
 	if d := th.stackCap * 2; d > newCap {
@@ -1474,53 +1664,60 @@ func (th *thread) growStack(need int) {
 	}
 }
 
-// callInfo 持久化每个活跃 Lua 调用的状态(05 §1.2)。M9 简化字段。
+// callInfo persists the state of each active Lua call (05 §1.2). M9-simplified fields.
 //
-// pc 字段在 M9 是"当前正在执行的指令位置"(主循环直接读写它,不像设计文档的
-// savedPC 是"返回时恢复的 pc")。M11 协程接入时把 pc/top 落回 ci 与 saveFrame
-// 抽象拉齐(05 §1.3 reloadFrame/saveFrame 对称约定)。
+// The pc field in M9 is "the position of the instruction currently executing"
+// (the main loop reads/writes it directly, unlike the design doc's savedPC which
+// is "the pc restored on return"). When coroutines hook up in M11, pc/top are
+// aligned back to ci and the saveFrame abstraction (05 §1.3 reloadFrame/saveFrame symmetric convention).
 //
-// **proto 经 protoID 引用(VS0-b)**:Go 指针 *bytecode.Proto 不能进 linear
-// memory(03-memory-model §5 Go 堆侧资产划界);改存 protoID(uint32),用时
-// st.protos[id] 查。这与 P3 trampoline 的 ci.protoID 接口拉齐(04 §2.2)。
+// **proto referenced by protoID (VS0-b)**: a Go pointer *bytecode.Proto cannot
+// enter linear memory (03-memory-model §5 Go-heap-side asset demarcation);
+// instead store protoID (uint32), looked up via st.protos[id] when used. This
+// aligns with the P3 trampoline's ci.protoID interface (04 §2.2).
 //
-// **gibbous 标识位**(p2-bridge/04 §4.4 word2 bit50 callStatus_gibbous):
-// gibbous 帧入口 trampoline 压新 CallInfo 时置 1,标识此帧走 Wasm 路径
-// (04 §1.2)。P1 解释器主循环不读它(对它透明,04 §1.3);trampoline 在
-// 跨层调度/错误冒泡时读它判流向。形态 b 简化版(bool,与 tailcall/fresh
-// 同款;word 位打包延后到 VS0-e)。
+// **gibbous flag bit** (p2-bridge/04 §4.4 word2 bit50 callStatus_gibbous):
+// set to 1 when the gibbous frame entry trampoline pushes a new CallInfo,
+// marking this frame as going through the Wasm path (04 §1.2). The P1 interpreter
+// main loop does not read it (transparent to it, 04 §1.3); the trampoline reads
+// it to decide the flow when cross-tier scheduling / error bubbling. The form-b
+// simplified version (bool, same as tailcall/fresh; the word-bit packing is deferred to VS0-e).
 type callInfo struct {
-	base     int         // R0 在 stack 的绝对索引
-	funcIdx  int         // 被调 closure 槽(funcIdx = base-1)
-	top      int         // 本帧逻辑顶
-	protoID  uint32      // 当前 Proto 的 ID(st.protos[protoID];VS0-b 替换 *Proto)
-	cl       arena.GCRef // 当前 closure
-	nresults int         // 调用者期望的返回数;-1 = 可变
+	base     int         // the absolute index of R0 in stack
+	funcIdx  int         // the callee closure slot (funcIdx = base-1)
+	top      int         // this frame's logical top
+	protoID  uint32      // the current Proto's ID (st.protos[protoID]; VS0-b replaces *Proto)
+	cl       arena.GCRef // the current closure
+	nresults int         // the number of returns the caller expects; -1 = variable
 	tailcall bool
-	fresh    bool // execute 重入边界
-	gibbous  bool // 本帧在 gibbous(Wasm)编译码中执行(04 §1.2;P1 恒 false)
+	fresh    bool // execute re-entry boundary
+	gibbous  bool // this frame executes in gibbous (Wasm) compiled code (04 §1.2; always false in P1)
 
 	pc int32
 
-	// nVarargs 是本帧 vararg 区长度(VS0-e 子步 ④:M14 留口落地)。vararg 区在栈
-	// 下区 stack[base-nVarargs..base);doVararg 直接 th.slot(base-nVarargs+k) 读;
-	// GC 扫栈 [0, top) 自然覆盖(vararg < base < top)。段 word4 镜像。
+	// nVarargs is this frame's vararg-area length (VS0-e substep ④: M14 hook
+	// landed). The vararg area is in the lower stack region
+	// stack[base-nVarargs..base); doVararg reads th.slot(base-nVarargs+k) directly;
+	// the GC stack scan [0, top) naturally covers it (vararg < base < top). Mirrored in segment word4.
 	nVarargs uint16
 }
 
-// protoOf 取 callInfo 的 Proto(VS0-b:protoID → *Proto 收口)。
+// protoOf takes the callInfo's Proto (VS0-b: protoID → *Proto closure).
 func (st *State) protoOf(ci *callInfo) *bytecode.Proto { return st.protos[ci.protoID] }
 
-// --- CallInfo 字段访问收口(R2a,PW10 VS0-e 前置)---
+// --- CallInfo field access closure (R2a, PW10 VS0-e prerequisite) ---
 //
-// 所有 callInfo 字段读写经以下 accessor,使 R2b 把 ci 物理迁入 linear memory
-// 时只改方法体 + struct,不动 ~171 处调用点(同 VS0-a 值栈寻址收口的纪律)。
+// All callInfo field reads/writes go through the accessors below, so that when
+// R2b physically migrates ci into linear memory, only the method bodies + struct
+// change, not the ~171 call sites (same discipline as the VS0-a value-stack addressing closure).
 //
-// **热/冷分野(R2b 物理布局依据)**:Base/SetBase 与 Pc/SetPc 是热寄存器(每
-// 指令经 reg/setReg/主循环读写),R2b 拟保留为当前帧的 Go 镜像、仅在 push/pop/
-// 层边界与 arena ci 段同步;其余字段(cl/nresults/funcIdx/protoID/top/flags/
-// nVarargs)是冷字段(仅调用边界触),R2b 直接 arena 段读写。本轮 accessor 全部
-// 是直通(返回/写 Go 字段),零行为变更。
+// **Hot/cold split (basis for the R2b physical layout)**: Base/SetBase and
+// Pc/SetPc are hot registers (read/written every instruction via
+// reg/setReg/main loop); R2b plans to keep them as the current frame's Go mirror,
+// syncing with the arena ci segment only at push/pop/tier boundaries; the rest
+// (cl/nresults/funcIdx/protoID/top/flags/nVarargs) are cold fields (touched only
+// at call boundaries), which R2b reads/writes directly on the arena segment. This
+// round the accessors are all pass-through (return/write the Go field), a zero behavior change.
 func (ci *callInfo) Base() int            { return ci.base }
 func (ci *callInfo) FuncIdx() int         { return ci.funcIdx }
 func (ci *callInfo) Top() int             { return ci.top }

@@ -28,13 +28,13 @@ func (c *Collector) markRoots() {
 	if c.roots.ExtraRefs != nil {
 		c.roots.ExtraRefs(func(ref arena.GCRef) { c.markRef(ref) })
 	}
-	// shadow stack(R7)。
+	// shadow stack (R7).
 	for _, v := range c.shadow {
 		c.markValue(v)
 	}
 }
 
-// markValue 把可回收 Value 置灰入栈(若它当前是死白)。
+// markValue grays and pushes a collectable Value (if it is currently dead-white).
 func (c *Collector) markValue(v value.Value) {
 	if !value.IsCollectable(v) {
 		return
@@ -42,7 +42,7 @@ func (c *Collector) markValue(v value.Value) {
 	c.markRef(value.GCRefOf(v))
 }
 
-// markRef 把 ref 指向的对象置灰入栈(若它当前是死白)。
+// markRef grays and pushes the object pointed to by ref (if it is currently dead-white).
 func (c *Collector) markRef(ref arena.GCRef) {
 	if ref.IsNull() {
 		return
@@ -53,7 +53,7 @@ func (c *Collector) markRef(ref arena.GCRef) {
 	}
 	color := object.ColorOf(h)
 	if color != c.deadWhite() {
-		return // 已灰/黑/或当前白(已处理或新生),跳过
+		return // already gray/black/or current-white (processed or newly born), skip
 	}
 	object.SetHeader(c.a, ref, object.SetColor(h, object.ColorGray))
 	c.gray = append(c.gray, ref)
@@ -65,7 +65,7 @@ func (c *Collector) markAll() {
 		n := len(c.gray) - 1
 		ref := c.gray[n]
 		c.gray = c.gray[:n]
-		// 出栈即黑(string 是叶子节点也走相同路径,scanObject 是 no-op)。
+		// blacken on pop (a string is a leaf but takes the same path; scanObject is a no-op).
 		h := object.HeaderOf(c.a, ref)
 		object.SetHeader(c.a, ref, object.SetColor(h, object.ColorBlack))
 		c.scanObject(ref, object.OTypeOf(h))
@@ -76,7 +76,7 @@ func (c *Collector) markAll() {
 func (c *Collector) scanObject(ref arena.GCRef, ot object.OBJType) {
 	switch ot {
 	case object.OBJ_STRING:
-		// 叶子,无子引用。
+		// leaf, no child references.
 	case object.OBJ_TABLE:
 		c.scanTable(ref)
 	case object.OBJ_CLOSURE:
@@ -87,22 +87,25 @@ func (c *Collector) scanObject(ref arena.GCRef, ot object.OBJType) {
 	case object.OBJ_THREAD:
 		c.scanThread(ref)
 	case object.OBJ_UPVAL:
-		// 关闭态:扫 self-held value;开放态:其值在 Thread 栈槽,由 Thread 扫到。
+		// closed: scan the self-held value; open: its value lives in a Thread stack
+		// slot and is reached when scanning the Thread.
 		if object.UpvalIsClosed(c.a, ref) {
 			c.markValue(object.UpvalClosedValue(c.a, ref))
 		}
 	}
 }
 
-// scanTable: 数组段全槽 + 哈希节点 key/val + metaRef。
+// scanTable: all array-segment slots + hash node key/val + metaRef.
 //
-// 弱表例外(06 §8.4):若 table 元表 __mode 含 'k'/'v',弱侧不标记并登记 weakList。
-// M5 阶段:object.TableWeakMode 是 stub(返回 0),故全部走强引用语义;M11 接入元表后此分支生效。
+// Weak-table exception (06 §8.4): if the table metatable's __mode contains
+// 'k'/'v', the weak side is not marked and the table is registered in weakList.
+// M5 stage: object.TableWeakMode is a stub (returns 0), so everything uses
+// strong-reference semantics; this branch activates once M11 wires up metatables.
 func (c *Collector) scanTable(t arena.GCRef) {
 	mode := object.TableWeakMode(c.a, t)
-	weakKey := mode == 'k' || mode == 'a' // 'a' = key+value 双弱(TableWeakMode 定稿值)
+	weakKey := mode == 'k' || mode == 'a' // 'a' = both key+value weak (final TableWeakMode value)
 	weakVal := mode == 'v' || mode == 'a'
-	// 数组段:键是数字,弱键不影响;值受 weakVal 控。
+	// Array segment: keys are numbers, so weak keys have no effect; values are governed by weakVal.
 	asize := object.TableASize(c.a, t)
 	for i := uint32(0); i < asize; i++ {
 		v := object.TableArrayAt(c.a, t, i)
@@ -110,12 +113,12 @@ func (c *Collector) scanTable(t arena.GCRef) {
 			c.markValue(v)
 		}
 	}
-	// 哈希段。
+	// Hash segment.
 	hsize := object.TableHSize(c.a, t)
 	for i := uint32(0); i < hsize; i++ {
 		k := object.NodeKey(c.a, t, i)
 		v := object.NodeVal(c.a, t, i)
-		// 空槽 key=Nil 不可回收,markValue 内自动跳过。
+		// An empty slot has key=Nil which is not collectable; markValue skips it automatically.
 		if !weakKey {
 			c.markValue(k)
 		}
@@ -124,13 +127,14 @@ func (c *Collector) scanTable(t arena.GCRef) {
 		}
 	}
 	c.markRef(object.TableMetaRef(c.a, t))
-	// 弱表登记(M11 元表落地后 mode 才会非 0;M5 暂不会进此分支)。
+	// Weak-table registration (mode only becomes non-zero after M11 lands metatables;
+	// M5 does not reach this branch for now).
 	if mode != 0 {
 		c.weakList = append(c.weakList, t)
 	}
 }
 
-// scanClosure: Lua 闭包扫 upvalRef[];host 闭包扫直接 Value upvalues。
+// scanClosure: a Lua closure scans upvalRef[]; a host closure scans its direct Value upvalues.
 func (c *Collector) scanClosure(cl arena.GCRef) {
 	n := uint32(object.ClosureNUpvals(c.a, cl))
 	if object.IsHostClosure(c.a, cl) {
@@ -144,14 +148,16 @@ func (c *Collector) scanClosure(cl arena.GCRef) {
 	}
 }
 
-// scanThread: 值栈 [0,top) + 开放 upvalue 链 + resumeFrom。CallInfo 帧的 closure/Value 字段
-// 由 05 定的 CallInfo 布局决定;M9 接入解释器后再展开扫描细节,此处先扫值栈与 openUpvalues。
+// scanThread: value stack [0,top) + open upvalue chain + resumeFrom. The closure/Value
+// fields of CallInfo frames are determined by the CallInfo layout fixed in 05; once M9
+// wires up the interpreter the scan details are expanded, for now only the value stack and
+// openUpvalues are scanned.
 func (c *Collector) scanThread(th arena.GCRef) {
 	top := object.ThreadTop(c.a, th)
 	for i := uint32(0); i < top; i++ {
 		c.markValue(object.ThreadValueStackAt(c.a, th, i))
 	}
-	// 开放 upvalue 链(降序)
+	// Open upvalue chain (descending order)
 	uv := object.ThreadOpenUpvalHead(c.a, th)
 	for !uv.IsNull() {
 		c.markRef(uv)
@@ -160,5 +166,5 @@ func (c *Collector) scanThread(th arena.GCRef) {
 	c.markRef(object.ThreadResumeFrom(c.a, th))
 }
 
-// deadWhite 返回本轮回收色(= 上轮的 currentWhite)。
+// deadWhite returns this cycle's collection color (= last cycle's currentWhite).
 func (c *Collector) deadWhite() uint8 { return c.currentWhite ^ 1 }

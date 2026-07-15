@@ -1,5 +1,6 @@
-// End-to-end fuzz:任意源码经 Compile + Run 不得 panic
-// (编译错误/运行期错误经 error 返回;无限/超长循环由回边指令预算兜住)。
+// End-to-end fuzz: arbitrary source through Compile + Run must not panic
+// (compile errors / runtime errors are returned as error; infinite/overlong
+// loops are bounded by the back-edge instruction budget).
 package wangshu_test
 
 import (
@@ -26,12 +27,15 @@ return coroutine.resume(co)`,
 		`return string.rep("a", 3)`,
 		`local a, b = 1 return b`,
 		`for i = 1, 1e5 do end`,
-		// 1e5 而非 1e9:fuzz 框架 -fuzztime 内部用 context.WithTimeout
-		// 实现 wall-clock 超时,1e9 解释器跑 100ms-1s+ 接近 wall-clock 量级,
-		// CI runner 慢一点时框架报 "context deadline exceeded" 强 fail。
-		// 1e5 等价测「循环 + 预算兜底路径」,wall-clock 留余量(1e6 在 fuzz
-		// 引擎变体下也观察到 0/sec 拖尾)。fuzz seed 不应包含「靠 budget
-		// 兜底的近无限循环」是项目纪律(engineering.md §1.1)。
+		// 1e5 rather than 1e9: the fuzz framework's -fuzztime uses
+		// context.WithTimeout internally for a wall-clock timeout; 1e9 runs
+		// the interpreter for 100ms-1s+, close to the wall-clock scale, so on
+		// a slower CI runner the framework reports "context deadline exceeded"
+		// and force-fails. 1e5 equivalently tests the "loop + budget fallback
+		// path" while leaving wall-clock headroom (1e6 also showed a 0/sec
+		// tail on some fuzz-engine variants). A fuzz seed should not contain a
+		// "near-infinite loop relying on the budget fallback" — that is project
+		// discipline (engineering.md §1.1).
 		`local n = 0 for i = 1, 1e5 do n = n + i end return n`,
 	}
 	for _, s := range seeds {
@@ -43,7 +47,7 @@ return coroutine.resume(co)`,
 		}
 		prog, err := wangshu.Compile([]byte(src), "fuzz")
 		if err != nil {
-			return // 编译错误是合法结果
+			return // a compile error is a legal outcome
 		}
 		// MaxArenaBytes (issues #127/#130): quadratic-concat shapes
 		// (`out = out .. f(i)` loops) balloon the default 2 GiB arena
@@ -54,10 +58,12 @@ return coroutine.resume(co)`,
 		// few hundred MiB; hitting the cap is a legal error outcome
 		// (same discipline as FuzzOracleDiff's runWangshuSide).
 		st := wangshu.NewState(wangshu.Options{MaxArenaBytes: 64 << 20})
-		// 回边指令预算兜住超长循环(for i=1,1e6 等);fuzz 引擎也会生成
-		// 远超 budget 的循环变体,SetStepBudget 是结构性兜底。比源码子串
-		// 过滤健壮:loadstring/拼接构造的循环同样兜得住。
+		// The back-edge instruction budget bounds overlong loops (for i=1,1e6
+		// etc.); the fuzz engine also generates loop variants far exceeding
+		// the budget, so SetStepBudget is a structural fallback. It is more
+		// robust than filtering source substrings: loops built via
+		// loadstring/concatenation are bounded just the same.
 		st.SetStepBudget(1 << 20)
-		_, _ = prog.Run(st) // 运行期错误(含预算超额)是合法结果;panic 才是 bug
+		_, _ = prog.Run(st) // a runtime error (incl. budget overrun) is a legal outcome; only a panic is a bug
 	})
 }

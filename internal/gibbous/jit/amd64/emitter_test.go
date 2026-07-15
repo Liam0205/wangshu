@@ -4,14 +4,17 @@ package amd64
 
 import "testing"
 
-// TestPJ1_Emitter_MovRaxRet 端到端实证:Emitter 发射「mov rax, imm; ret」
-// 序列 → MmapCode 翻面 → CallJIT 拿到 imm。对位 spike/p4tramp::TestSpike_S1,
-// 但本测试在主库 internal/gibbous/jit/amd64 内,意义是「spike 闸门 ✅ → 主库
-// emitter 工作」。
+// TestPJ1_Emitter_MovRaxRet is an end-to-end check: the Emitter emits the
+// "mov rax, imm; ret" sequence -> MmapCode flips it to executable -> CallJIT
+// reads back imm. Mirrors spike/p4tramp::TestSpike_S1, but this test lives in
+// the main tree internal/gibbous/jit/amd64, so it means "spike gate passed ->
+// main-tree emitter works".
 //
-// 这是 PJ1 验收口径(00 §4 PJ1 行 + 06 §6.1)的最小实证:LOADK + RETURN
-// 直线 Proto 经 P4 amd64 后端编译产物 → mmap 段 → callJIT → byte-equal
-// crescent 解释结果(本测试只验前半段:「imm 经发射→执行→返回」管线工作)。
+// This is the minimal check for the PJ1 acceptance criteria (00 §4 PJ1 row +
+// 06 §6.1): a straight-line LOADK + RETURN Proto compiled by the P4 amd64
+// backend -> mmap segment -> callJIT -> byte-equal with the crescent
+// interpreter result (this test only covers the first half: "imm goes through
+// emit -> execute -> return and the pipeline works").
 func TestPJ1_Emitter_MovRaxRet(t *testing.T) {
 	cases := []uint64{
 		0,
@@ -22,7 +25,7 @@ func TestPJ1_Emitter_MovRaxRet(t *testing.T) {
 	}
 	for _, imm := range cases {
 		t.Run("", func(t *testing.T) {
-			// 发射:[mov rax, imm; ret]
+			// emit: [mov rax, imm; ret]
 			var buf []byte
 			buf = EmitMovRaxImm64(buf, imm)
 			buf = EmitRet(buf)
@@ -31,7 +34,7 @@ func TestPJ1_Emitter_MovRaxRet(t *testing.T) {
 					EncodedMovRaxImm64Len+EncodedRetLen, len(buf))
 			}
 
-			// W^X 翻面 + mmap
+			// W^X flip + mmap
 			page, err := MmapCode(buf)
 			if err != nil {
 				t.Fatalf("MmapCode failed: %v", err)
@@ -51,8 +54,8 @@ func TestPJ1_Emitter_MovRaxRet(t *testing.T) {
 	}
 }
 
-// TestPJ1_RepeatedCalls 同段反复调返回值稳定(承 spike S2 同款形态,主库
-// 镜像)。
+// TestPJ1_RepeatedCalls checks that repeated calls to the same segment return a
+// stable value (follows the same shape as spike S2, mirrored in the main tree).
 func TestPJ1_RepeatedCalls(t *testing.T) {
 	imm := uint64(0xfeedface00c0ffee)
 	var buf []byte
@@ -74,12 +77,14 @@ func TestPJ1_RepeatedCalls(t *testing.T) {
 	}
 }
 
-// BenchmarkPJ1_CallJIT 单 CALL 成本基线(主库版本,对位 spike Bench 的
-// 1.95ns/op 实测)。
+// BenchmarkPJ1_CallJIT is the single-CALL cost baseline (main-tree version,
+// mirrors the spike Bench's measured 1.95ns/op).
 //
-// 本 bench 是 PJ1 阶段的性能基线起点;PJ2-PJ5 渐进扩 trampoline(切 SP +
-// callee-saved 等)时本 bench 数字会上浮——「PJ1 简化形态 vs 完整 trampoline」
-// 的成本差正是 PJ1+ 工程取舍的实证依据。
+// This bench is the starting point of the PJ1 performance baseline; as PJ2-PJ5
+// progressively extend the trampoline (switching SP + callee-saved regs, etc.),
+// this number will drift upward -- the cost gap between "the simplified PJ1
+// shape vs the full trampoline" is exactly the evidence behind the PJ1+
+// engineering trade-offs.
 func BenchmarkPJ1_CallJIT(b *testing.B) {
 	imm := uint64(0xdeadbeef)
 	var buf []byte
@@ -102,12 +107,14 @@ func BenchmarkPJ1_CallJIT(b *testing.B) {
 	}
 }
 
-// TestPJ2_SSE_Encoding 验 PJ2 字节级算术 SSE 指令编码符合 Intel x86-64 ISA。
+// TestPJ2_SSE_Encoding verifies that PJ2's byte-level arithmetic SSE
+// instruction encodings conform to the Intel x86-64 ISA.
 //
-// 不真执行(完整 mmap+RX 执行需 jitContext 切 SP + 寄存器分配 codegen,
-// 留 PJ2-PJ5 完整版),只断言字节编码与 ISA 文档一致。
+// It does not actually execute (full mmap+RX execution needs jitContext to
+// switch SP + register-allocation codegen, deferred to the full PJ2-PJ5
+// version); it only asserts that the byte encodings match the ISA docs.
 func TestPJ2_SSE_Encoding(t *testing.T) {
-	// MOVSD xmm0, [rax+0]:F2 0F 10 00 + disp32=0(4 字节)= 8 字节
+	// MOVSD xmm0, [rax+0]: F2 0F 10 00 + disp32=0 (4 bytes) = 8 bytes
 	t.Run("MovsdXmmFromMem_xmm0_rax_0", func(t *testing.T) {
 		var buf []byte
 		buf = EmitMovsdXmmFromMem(buf, 0, 0, 0)
@@ -117,7 +124,7 @@ func TestPJ2_SSE_Encoding(t *testing.T) {
 		}
 	})
 
-	// MOVSD xmm1, [rcx+8]:F2 0F 10 89 08 00 00 00
+	// MOVSD xmm1, [rcx+8]: F2 0F 10 89 08 00 00 00
 	t.Run("MovsdXmmFromMem_xmm1_rcx_8", func(t *testing.T) {
 		var buf []byte
 		buf = EmitMovsdXmmFromMem(buf, 1, 1, 8)
@@ -127,7 +134,7 @@ func TestPJ2_SSE_Encoding(t *testing.T) {
 		}
 	})
 
-	// MOVSD [rax+0], xmm0:F2 0F 11 80 + disp32=0
+	// MOVSD [rax+0], xmm0: F2 0F 11 80 + disp32=0
 	t.Run("MovsdMemFromXmm_xmm0_rax_0", func(t *testing.T) {
 		var buf []byte
 		buf = EmitMovsdMemFromXmm(buf, 0, 0, 0)
@@ -137,7 +144,7 @@ func TestPJ2_SSE_Encoding(t *testing.T) {
 		}
 	})
 
-	// ADDSD xmm0, xmm1:F2 0F 58 C1
+	// ADDSD xmm0, xmm1: F2 0F 58 C1
 	t.Run("AddsdXmmXmm_xmm0_xmm1", func(t *testing.T) {
 		var buf []byte
 		buf = EmitAddsdXmmXmm(buf, 0, 1)
@@ -147,7 +154,7 @@ func TestPJ2_SSE_Encoding(t *testing.T) {
 		}
 	})
 
-	// SUBSD xmm0, xmm1:F2 0F 5C C1
+	// SUBSD xmm0, xmm1: F2 0F 5C C1
 	t.Run("SubsdXmmXmm_xmm0_xmm1", func(t *testing.T) {
 		var buf []byte
 		buf = EmitSubsdXmmXmm(buf, 0, 1)
@@ -157,7 +164,7 @@ func TestPJ2_SSE_Encoding(t *testing.T) {
 		}
 	})
 
-	// MULSD xmm0, xmm1:F2 0F 59 C1
+	// MULSD xmm0, xmm1: F2 0F 59 C1
 	t.Run("MulsdXmmXmm_xmm0_xmm1", func(t *testing.T) {
 		var buf []byte
 		buf = EmitMulsdXmmXmm(buf, 0, 1)
@@ -167,7 +174,7 @@ func TestPJ2_SSE_Encoding(t *testing.T) {
 		}
 	})
 
-	// DIVSD xmm0, xmm1:F2 0F 5E C1
+	// DIVSD xmm0, xmm1: F2 0F 5E C1
 	t.Run("DivsdXmmXmm_xmm0_xmm1", func(t *testing.T) {
 		var buf []byte
 		buf = EmitDivsdXmmXmm(buf, 0, 1)
@@ -177,18 +184,18 @@ func TestPJ2_SSE_Encoding(t *testing.T) {
 		}
 	})
 
-	// disp32 范围测试:-128 应负数 LE 编码
+	// disp32 range test: -128 should encode as a negative LE value
 	t.Run("MovsdXmmFromMem_disp32_negative", func(t *testing.T) {
 		var buf []byte
 		buf = EmitMovsdXmmFromMem(buf, 0, 0, -128)
-		// disp32 = -128 = 0xFFFFFF80(LE: 80 FF FF FF)
+		// disp32 = -128 = 0xFFFFFF80 (LE: 80 FF FF FF)
 		want := []byte{0xF2, 0x0F, 0x10, 0x80, 0x80, 0xFF, 0xFF, 0xFF}
 		if !bytesEqual(buf, want) {
 			t.Errorf("MOVSD xmm0,[rax-128] = %x, want %x", buf, want)
 		}
 	})
 
-	// 字节数常量
+	// byte-count constants
 	t.Run("Constants", func(t *testing.T) {
 		if EncodedMovsdMemLen != 8 {
 			t.Errorf("EncodedMovsdMemLen = %d, want 8", EncodedMovsdMemLen)
@@ -211,10 +218,10 @@ func bytesEqual(a, b []byte) bool {
 	return true
 }
 
-// TestPJ2_MovqMemEncoding 验「mov rax, [r15+disp32]」+「mov rax, [reg+disp32]」
-// 字节级 ISA 编码。
+// TestPJ2_MovqMemEncoding verifies the byte-level ISA encodings for
+// "mov rax, [r15+disp32]" + "mov rax, [reg+disp32]".
 func TestPJ2_MovqMemEncoding(t *testing.T) {
-	// mov rax, [r15+0]:49 8B 87 00 00 00 00
+	// mov rax, [r15+0]: 49 8B 87 00 00 00 00
 	t.Run("MovqRaxFromR15Disp_0", func(t *testing.T) {
 		var buf []byte
 		buf = EmitMovqRaxFromR15Disp(buf, 0)
@@ -224,7 +231,7 @@ func TestPJ2_MovqMemEncoding(t *testing.T) {
 		}
 	})
 
-	// mov rax, [r15+16]:49 8B 87 10 00 00 00
+	// mov rax, [r15+16]: 49 8B 87 10 00 00 00
 	t.Run("MovqRaxFromR15Disp_16", func(t *testing.T) {
 		var buf []byte
 		buf = EmitMovqRaxFromR15Disp(buf, 16)
@@ -234,7 +241,7 @@ func TestPJ2_MovqMemEncoding(t *testing.T) {
 		}
 	})
 
-	// mov rax, [rax+0]:48 8B 80 00 00 00 00(reg=0=rax)
+	// mov rax, [rax+0]: 48 8B 80 00 00 00 00 (reg=0=rax)
 	t.Run("MovqRaxFromMemReg_rax_0", func(t *testing.T) {
 		var buf []byte
 		buf = EmitMovqRaxFromMemReg(buf, 0, 0)
@@ -244,7 +251,7 @@ func TestPJ2_MovqMemEncoding(t *testing.T) {
 		}
 	})
 
-	// mov rax, [rcx+24]:48 8B 81 18 00 00 00
+	// mov rax, [rcx+24]: 48 8B 81 18 00 00 00
 	t.Run("MovqRaxFromMemReg_rcx_24", func(t *testing.T) {
 		var buf []byte
 		buf = EmitMovqRaxFromMemReg(buf, 1, 24)
@@ -264,7 +271,8 @@ func TestPJ2_MovqMemEncoding(t *testing.T) {
 	})
 }
 
-// TestPJ2_StoreAndJccEncoding 验存 + 比较 + 全档 jcc 字节级编码。
+// TestPJ2_StoreAndJccEncoding verifies the byte-level encodings for store +
+// compare + the full set of jcc instructions.
 func TestPJ2_StoreAndJccEncoding(t *testing.T) {
 	t.Run("MovqMemRegFromRax_rax_0", func(t *testing.T) {
 		var buf []byte
@@ -316,13 +324,16 @@ func TestPJ2_StoreAndJccEncoding(t *testing.T) {
 	})
 }
 
-// TestPJ2_SpeculativeAddTemplate 验 EmitArithSpeculativeAdd 拼接的
-// 双 number ADD 投机模板字节级序列与 ISA 文档逐字节一致。
+// TestPJ2_SpeculativeAddTemplate verifies that the two-number ADD speculative
+// template assembled by EmitArithSpeculativeAdd matches the ISA docs byte for
+// byte.
 //
-// 不真执行(完整接入需 trampoline 切 SP + rbx 装 valueStackBase + IsNumber
-// guard codegen + OSR exit 路径,留 PJ2 完整版)。本测仅断言字节拼接正确。
+// It does not actually execute (full wiring needs the trampoline to switch SP +
+// rbx to load valueStackBase + the IsNumber guard codegen + the OSR exit path,
+// deferred to the full PJ2 version). This test only asserts that the byte
+// assembly is correct.
 func TestPJ2_SpeculativeAddTemplate(t *testing.T) {
-	// ADD A=2 B=0 C=1 双 number(rbx = valueStackBase):
+	// ADD A=2 B=0 C=1, two numbers (rbx = valueStackBase):
 	//   movsd xmm0, [rbx+0]    F2 0F 10 83 00 00 00 00
 	//   movsd xmm1, [rbx+8]    F2 0F 10 8B 08 00 00 00
 	//   addsd xmm0, xmm1       F2 0F 58 C1

@@ -12,24 +12,31 @@ import (
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
-// gibbous_pj5_self_e2e_test.go —— PJ5 SELF method call inline 形态真升层 e2e:
-// `obj:method(args)` 经 P4 升层后 Run prelude 路径先调 host.Self(byte-equal
-// P1 SELF + icGetTable + __index 元方法链)装 method 入 R(callA) + self
-// R(callA+1),然后调 host.CallBaseline / TailCall 完成 baseline doCall。
+// gibbous_pj5_self_e2e_test.go —— e2e for real promotion of the PJ5 SELF
+// method call inline form: after `obj:method(args)` is promoted to P4, the Run
+// prelude path first calls host.Self (byte-equal to P1 SELF + icGetTable +
+// __index metamethod chain) to load the method into R(callA) and self into
+// R(callA+1), then calls host.CallBaseline / TailCall to complete the baseline
+// doCall.
 //
-// **PJ5 SELF 真接入主路径** 的物理证据:之前 P4 PJ5 inline 形态只接受 callee 经
-// MOVE/GETUPVAL 装载,SELF method call(obj 方法分派)路径走 P2 ReasonUnknownCall
-// 守门拒。本批拆 visitMethodCallExpr 标 ReasonSelfCall 占位位 + P4 端
-// recheckCompilabilityRuntime 撤位 + SupportsAllOpcodes(经 analyzeSelfCallForm)
-// 真守门:obj:method() 形态命中 PJ5 SELF inline 模板。
+// Physical evidence that **PJ5 SELF is really wired into the main path**:
+// previously the P4 PJ5 inline form only accepted a callee loaded via
+// MOVE/GETUPVAL, and the SELF method call path (obj method dispatch) was
+// rejected by the P2 ReasonUnknownCall gate. This batch splits it out:
+// visitMethodCallExpr sets the ReasonSelfCall placeholder bit, the P4 side
+// clears it in recheckCompilabilityRuntime, and SupportsAllOpcodes (via
+// analyzeSelfCallForm) does the real gating: the obj:method() form matches the
+// PJ5 SELF inline template.
 //
-// **关键探针**:SpecSelfCallHits —— 只有 Compile 命中 isSelfCall=true 时才 ++。
+// **Key probe**: SpecSelfCallHits —— only incremented when Compile matches
+// isSelfCall=true.
 
-// TestPJ5_SelfCall_E2E_M0_VoidCall 形态 M0 0 参 void:
-// `local _ = function(o) o:m() end`(MOVE+SELF+CALL+RETURN void 长度 4)。
+// TestPJ5_SelfCall_E2E_M0_VoidCall form M0, 0 args, void:
+// `local _ = function(o) o:m() end` (MOVE+SELF+CALL+RETURN void, length 4).
 //
-// 因主 chunk 必须含本闭包,外层 closure 闭包注册 + force-all 升层 ⇒
-// inner 形态 M0 命中 isSelfCall=true。
+// Because the main chunk must contain this closure, the outer closure
+// registration + force-all promotion ⇒ the inner form M0 matches
+// isSelfCall=true.
 func TestPJ5_SelfCall_E2E_M0_VoidCall(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -54,8 +61,8 @@ return count`
 	t.Logf("SpecSelfCallHits=%d", jit.SpecSelfCallHits())
 }
 
-// TestPJ5_SelfCall_E2E_U0_VoidCall 形态 U0 0 参 void(GETUPVAL recv):
-// closure 内 `o:m() end`,o 是外层 local 通过 upval 访问。
+// TestPJ5_SelfCall_E2E_U0_VoidCall form U0, 0 args, void (GETUPVAL recv):
+// `o:m() end` inside a closure, where o is an outer local accessed via upval.
 func TestPJ5_SelfCall_E2E_U0_VoidCall(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -80,8 +87,8 @@ return count`
 	t.Logf("SpecSelfCallHits=%d", jit.SpecSelfCallHits())
 }
 
-// TestPJ5_SelfCall_E2E_M1K_VoidArg 形态 M1K 1 K 参 void:
-// `caller(o)` → `t:m(42)`。
+// TestPJ5_SelfCall_E2E_M1K_VoidArg form M1K, 1 K arg, void:
+// `caller(o)` → `t:m(42)`.
 func TestPJ5_SelfCall_E2E_M1K_VoidArg(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -106,8 +113,8 @@ return sum`
 	t.Logf("SpecSelfCallHits=%d", jit.SpecSelfCallHits())
 }
 
-// TestPJ5_SelfCall_E2E_M1R_VoidArg 形态 M1R 1 reg 参 void:
-// `caller(o, x)` → `t:m(x)`。
+// TestPJ5_SelfCall_E2E_M1R_VoidArg form M1R, 1 reg arg, void:
+// `caller(o, x)` → `t:m(x)`.
 func TestPJ5_SelfCall_E2E_M1R_VoidArg(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -133,8 +140,8 @@ return sum`
 	t.Logf("SpecSelfCallHits=%d", jit.SpecSelfCallHits())
 }
 
-// TestPJ5_SelfCall_E2E_TailCall_M0 形态 TM0 0 参 TAILCALL:
-// `return t:m()` luac 编 SELF+TAILCALL+RETURN(B=0)。
+// TestPJ5_SelfCall_E2E_TailCall_M0 form TM0, 0 args, TAILCALL:
+// `return t:m()` luac emits SELF+TAILCALL+RETURN(B=0).
 func TestPJ5_SelfCall_E2E_TailCall_M0(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -160,8 +167,9 @@ return last`
 	t.Logf("SpecSelfCallHits=%d", jit.SpecSelfCallHits())
 }
 
-// TestPJ5_SelfCall_E2E_GetterCall_M0 形态 MR1 0 参 1 返 CALL getter:
-// `local r = t:m()` 形态(luac 实测见 obj:m() 在 local 赋值上下文编 CALL B=2 C=2)。
+// TestPJ5_SelfCall_E2E_GetterCall_M0 form MR1, 0 args, 1 return, CALL getter:
+// `local r = t:m()` form (empirically luac emits CALL B=2 C=2 for obj:m() in a
+// local-assignment context).
 func TestPJ5_SelfCall_E2E_GetterCall_M0(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -186,8 +194,8 @@ return s`
 	t.Logf("SpecSelfCallHits=%d", jit.SpecSelfCallHits())
 }
 
-// TestPJ5_SelfCall_E2E_M3K_VoidCall 形态 M3K 3 K 参 void(长度 7):
-// `function(t) t:m(1, 2, 3) end`。
+// TestPJ5_SelfCall_E2E_M3K_VoidCall form M3K, 3 K args, void (length 7):
+// `function(t) t:m(1, 2, 3) end`.
 func TestPJ5_SelfCall_E2E_M3K_VoidCall(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -212,7 +220,7 @@ return sum`
 	t.Logf("SpecSelfCallHits=%d", jit.SpecSelfCallHits())
 }
 
-// TestPJ5_SelfCall_E2E_M3R_VoidCall 形态 M3R 3 reg 参 void(长度 7)。
+// TestPJ5_SelfCall_E2E_M3R_VoidCall form M3R, 3 reg args, void (length 7).
 func TestPJ5_SelfCall_E2E_M3R_VoidCall(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -239,7 +247,7 @@ return sum`
 	t.Logf("SpecSelfCallHits=%d", jit.SpecSelfCallHits())
 }
 
-// TestPJ5_SelfCall_E2E_M4R_VoidCall 形态 M4R 4 reg 参 void(长度 8)。
+// TestPJ5_SelfCall_E2E_M4R_VoidCall form M4R, 4 reg args, void (length 8).
 func TestPJ5_SelfCall_E2E_M4R_VoidCall(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -265,7 +273,7 @@ return sum`
 	t.Logf("SpecSelfCallHits=%d", jit.SpecSelfCallHits())
 }
 
-// TestPJ5_SelfCall_E2E_M5R_VoidCall 形态 M5R 5 reg 参 void(长度 9)。
+// TestPJ5_SelfCall_E2E_M5R_VoidCall form M5R, 5 reg args, void (length 9).
 func TestPJ5_SelfCall_E2E_M5R_VoidCall(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -291,7 +299,7 @@ return sum`
 	t.Logf("SpecSelfCallHits=%d", jit.SpecSelfCallHits())
 }
 
-// TestPJ5_SelfCall_E2E_M6R_VoidCall 形态 M6R 6 reg 参 void(长度 10)。
+// TestPJ5_SelfCall_E2E_M6R_VoidCall form M6R, 6 reg args, void (length 10).
 func TestPJ5_SelfCall_E2E_M6R_VoidCall(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -318,7 +326,7 @@ return sum`
 	t.Logf("SpecSelfCallHits=%d", jit.SpecSelfCallHits())
 }
 
-// TestPJ5_SelfCall_E2E_M7R_VoidCall 形态 M7R 7 reg 参 void(长度 11)。
+// TestPJ5_SelfCall_E2E_M7R_VoidCall form M7R, 7 reg args, void (length 11).
 func TestPJ5_SelfCall_E2E_M7R_VoidCall(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -345,8 +353,8 @@ return sum`
 	t.Logf("SpecSelfCallHits=%d", jit.SpecSelfCallHits())
 }
 
-// TestPJ5_SelfCall_E2E_TailCall_3K 形态 TM 3 K 参 TAILCALL(长度 8):
-// `function(t) return t:m(1,2,3) end`。
+// TestPJ5_SelfCall_E2E_TailCall_3K form TM, 3 K args, TAILCALL (length 8):
+// `function(t) return t:m(1,2,3) end`.
 func TestPJ5_SelfCall_E2E_TailCall_3K(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -371,8 +379,8 @@ return s`
 	t.Logf("SpecSelfCallHits=%d", jit.SpecSelfCallHits())
 }
 
-// TestPJ5_SelfCall_E2E_TailCall_5R 形态 SELF + TAILCALL 5 reg 参(长度 9 在 form9
-// 已覆盖,本测验测调用链 byte-equal P1)。
+// TestPJ5_SelfCall_E2E_TailCall_5R form SELF + TAILCALL, 5 reg args (length 9,
+// already covered by form9; this test checks the call chain is byte-equal to P1).
 func TestPJ5_SelfCall_E2E_TailCall_5R(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -398,9 +406,10 @@ return total`
 	t.Logf("SpecSelfCallHits=%d", jit.SpecSelfCallHits())
 }
 
-// TestPJ5_SelfCall_E2E_MultiRetN2_0arg 形态 MR2 N=2 返值 0 参(长度 4):
-// `local a, b = t:m()`,caller 体只此一行(其它逻辑通过 side-effect 验证)。
-// R(callA)/R(callA+1) 落 a, b — luac 编 RETURN A=0 B=1 收尾(返 0 值)。
+// TestPJ5_SelfCall_E2E_MultiRetN2_0arg form MR2, N=2 returns, 0 args (length 4):
+// `local a, b = t:m()`, the caller body is only this one line (other logic is
+// verified via side effects).
+// R(callA)/R(callA+1) land a, b — luac emits RETURN A=0 B=1 to finish (0 returns).
 func TestPJ5_SelfCall_E2E_MultiRetN2_0arg(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -419,16 +428,18 @@ return sum`
 	if got := value.AsNumber(value.Value(rets[0])); got != 30*33 {
 		t.Errorf("rets = %v, want %d", got, 30*33)
 	}
-	// 注:本 src 的 caller 含 sum += a+b 故 caller 形态较复杂,SELF inline 形态
-	// 在更窄的 luac 编出 `local a,b = t:m() end` 时才命中长度 4;此测验主要做
-	// byte-equal 路径(不强断 SpecSelfCallHits — caller 体不只 SELF+CALL+RETURN)。
+	// Note: this src's caller contains sum += a+b, so the caller form is more
+	// complex; the SELF inline form only hits length 4 when luac emits the
+	// narrower `local a,b = t:m() end`. This test mainly exercises the
+	// byte-equal path (no hard assert on SpecSelfCallHits — the caller body is
+	// not just SELF+CALL+RETURN).
 	if jit.SpecSelfCallHits() == 0 {
 		t.Logf("SpecSelfCallHits=0(caller 含算术 + setter,SELF inline 不在简化形态命中区,但 byte-equal 应保)")
 	}
 }
 
-// TestPJ5_SelfCall_E2E_MultiRetN3_0arg 形态 MR3 N=3 返值 0 参(长度 4):
-// `local a, b, c = t:m()`。
+// TestPJ5_SelfCall_E2E_MultiRetN3_0arg form MR3, N=3 returns, 0 args (length 4):
+// `local a, b, c = t:m()`.
 func TestPJ5_SelfCall_E2E_MultiRetN3_0arg(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -449,7 +460,7 @@ return sum`
 	}
 }
 
-// TestPJ5_SelfCall_E2E_MultiRetN2_1Karg 形态 N=2 返值 1 K 参(长度 5)。
+// TestPJ5_SelfCall_E2E_MultiRetN2_1Karg form N=2 returns, 1 K arg (length 5).
 func TestPJ5_SelfCall_E2E_MultiRetN2_1Karg(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -470,9 +481,10 @@ return sum`
 	}
 }
 
-// TestPJ5_SelfCall_E2E_ErrorBubbleUp_NilRecv 验 SELF 形态 receiver 为 nil 时
-// host.Self raise "attempt to index nil value" 错误透明冒泡到 Call 返错误
-// (byte-equal P1 解释器路径,P4 不拦截错误)。
+// TestPJ5_SelfCall_E2E_ErrorBubbleUp_NilRecv checks that when the SELF form
+// receiver is nil, host.Self raises "attempt to index nil value" and the error
+// bubbles up transparently to Call (byte-equal to the P1 interpreter path; P4
+// does not intercept the error).
 func TestPJ5_SelfCall_E2E_ErrorBubbleUp_NilRecv(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -486,14 +498,15 @@ return 0`
 	if err == nil {
 		t.Fatal("应 raise 'attempt to index nil value' 错误,但 Call 成功返回")
 	}
-	// err 消息应含 "attempt to index" 或 "index nil"
+	// err message should contain "attempt to index" or "index nil"
 	if !strings.Contains(err.Error(), "index") {
 		t.Errorf("err 消息 = %q,应含 'index' 关键字", err.Error())
 	}
 }
 
-// TestPJ5_SelfCall_E2E_ErrorBubbleUp_BadMethod 验 SELF 形态 method 字段为
-// non-function 时 CALL raise "attempt to call a {type} value" 错误透明冒泡。
+// TestPJ5_SelfCall_E2E_ErrorBubbleUp_BadMethod checks that when the SELF form
+// method field is a non-function, CALL raises "attempt to call a {type} value"
+// and the error bubbles up transparently.
 func TestPJ5_SelfCall_E2E_ErrorBubbleUp_BadMethod(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -512,11 +525,13 @@ return 0`
 	}
 }
 
-// TestPJ5_SelfCall_E2E_NestedSelfChain 嵌套两层 SELF inline 链:
-// caller(o1) → o1:m() → 内层 inner(o2) → o2:n() → byte-equal P1 解释器
+// TestPJ5_SelfCall_E2E_NestedSelfChain nested two-level SELF inline chain:
+// caller(o1) → o1:m() → inner inner(o2) → o2:n() → byte-equal to P1 interpreter
 //
-// 业务高频形态:OOP 多对象组合(observer 通知 listener,wrapper 委托 inner 等)。
-// 验链式 SELF inline 不互相干扰(两条 PJ5 SELF inline 路径独立命中,SpecSelfCallHits >= 2)。
+// Common business form: OOP multi-object composition (observer notifying a
+// listener, wrapper delegating to inner, etc.).
+// Checks that chained SELF inline calls do not interfere with each other (the
+// two PJ5 SELF inline paths hit independently, SpecSelfCallHits >= 2).
 func TestPJ5_SelfCall_E2E_NestedSelfChain(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -537,8 +552,9 @@ return total`
 	if got := value.AsNumber(value.Value(rets[0])); got != 465 {
 		t.Errorf("rets = %v, want 465", got)
 	}
-	// 嵌套两层 SELF 真升层:外层 caller 内 t:m(v) + 内层 outer.m 内 inner:n(v) 各
-	// 命中一次 PJ5 SELF inline 形态,SpecSelfCallHits 应 >= 2(两个独立 Proto)
+	// Nested two-level SELF really promoted: t:m(v) in the outer caller and
+	// inner:n(v) inside the inner outer.m each hit the PJ5 SELF inline form
+	// once, so SpecSelfCallHits should be >= 2 (two independent Protos).
 	if jit.SpecSelfCallHits() < 2 {
 		t.Errorf("SpecSelfCallHits = %d,want >= 2(嵌套两层 SELF inline 各命中一次)",
 			jit.SpecSelfCallHits())
@@ -546,9 +562,10 @@ return total`
 	t.Logf("SpecSelfCallHits=%d", jit.SpecSelfCallHits())
 }
 
-// TestPJ5_SelfCall_E2E_SelfThenCall 同 closure 内 SELF + regular CALL 链。
-// `function(t) t:m(); other() end` 编 SELF + CALL + ... + RETURN,但 SELF
-// 不在 SubProto 单独 inline 形态(>5 op 超 form6),验整路 byte-equal 不破坏。
+// TestPJ5_SelfCall_E2E_SelfThenCall SELF + regular CALL chain within the same
+// closure. `function(t) t:m(); other() end` compiles to SELF + CALL + ... +
+// RETURN, but SELF is not a standalone SubProto inline form (>5 ops exceeds
+// form6); checks that the whole path is byte-equal and not broken.
 func TestPJ5_SelfCall_E2E_SelfThenCall(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -574,15 +591,18 @@ return mCount, oCount`
 	}
 }
 
-// TestPJ5_SelfCall_E2E_SpecTemplate_WarmupThenForce 验 PJ5 SELF + CALL spec
-// template 真接入(承 §9.10 EmitSelfNodeHit 复用 + §9.17 升级):
+// TestPJ5_SelfCall_E2E_SpecTemplate_WarmupThenForce checks that the PJ5 SELF +
+// CALL spec template is really wired in (continuing §9.10 EmitSelfNodeHit reuse
+// + §9.17 upgrade):
 //
-// **prove-the-path**:SpecSelfCallSpecHits 探针实证字节级 SELF 段模板真编译。
-// Phase 1 warmup 让 P1 解释器在 SELF pc=1 填 IC NodeHit + feedback 聚合;
-// Phase 2 force-all 升 caller 时 analyzeSelfCallSpecForm 命中 → 字节级 inline。
+// **prove-the-path**: the SpecSelfCallSpecHits probe proves the byte-level SELF
+// segment template is really compiled. Phase 1 warmup lets the P1 interpreter
+// fill IC NodeHit at SELF pc=1 + aggregate feedback; Phase 2 force-all promotes
+// caller and analyzeSelfCallSpecForm hits → byte-level inline.
 //
-// caller(t) { t:m() } 形态:MOVE + SELF + CALL + RETURN void,method `m` 是
-// 字符串键(hash 段 NodeHit)。spec 段 SELF 跳过 host.Self,CALL 走 host.CallBaseline。
+// caller(t) { t:m() } form: MOVE + SELF + CALL + RETURN void, method `m` is a
+// string key (hash-segment NodeHit). The spec-segment SELF skips host.Self, and
+// CALL goes through host.CallBaseline.
 func TestPJ5_SelfCall_E2E_SpecTemplate_WarmupThenForce(t *testing.T) {
 	jit.ResetSpecHits()
 
@@ -596,7 +616,7 @@ return count`
 
 	st, mainCl := loadFnP4(t, src)
 
-	// Phase 1:不开 force-all → caller 不升层,P1 跑 warmup 填 IC[1]
+	// Phase 1: without force-all → caller is not promoted, P1 runs warmup to fill IC[1]
 	rets1, err := st.Call(value.GCRefOf(mainCl), nil, 1)
 	if err != nil {
 		t.Fatalf("Phase 1 run: %v", err)
@@ -609,8 +629,8 @@ return count`
 			jit.SpecSelfCallSpecHits())
 	}
 
-	// Phase 2:force-all 升 caller。IC[1] 已被 Phase 1 填 NodeHit →
-	// analyzeSelfCallSpecForm 命中 → 字节级 SELF 段 inline 编译。
+	// Phase 2: force-all promotes caller. IC[1] was filled with NodeHit in
+	// Phase 1 → analyzeSelfCallSpecForm hits → byte-level SELF segment inline compile.
 	st.bridge.SetForceAllPromote(true)
 	specBefore := jit.SpecSelfCallSpecHits()
 	rets2, err := st.Call(value.GCRefOf(mainCl), nil, 1)
@@ -628,10 +648,10 @@ return count`
 	}
 }
 
-// TestPJ5_SelfCall_E2E_SpecTemplate_1KArg 验 PJ5 SELF + CALL spec template
-// 1 K 参形态(承 §9.19 扩展从 0 参到 0..7 参):caller(t) { t:m(42) }
-// warmup 让 SELF IC 稳定 + force-all 升 caller → spec template 命中 +
-// args 装载 + host.CallBaseline byte-equal P1。
+// TestPJ5_SelfCall_E2E_SpecTemplate_1KArg checks the PJ5 SELF + CALL spec
+// template 1 K arg form (continuing §9.19 extension from 0 args to 0..7 args):
+// caller(t) { t:m(42) }. Warmup stabilizes the SELF IC + force-all promotes
+// caller → spec template hits + args loaded + host.CallBaseline byte-equal to P1.
 func TestPJ5_SelfCall_E2E_SpecTemplate_1KArg(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -643,13 +663,13 @@ caller(o)
 return sum`
 	st, mainCl := loadFnP4(t, src)
 
-	// Phase 1:warmup 填 SELF IC[1]=NodeHit + FBSelfMono
+	// Phase 1: warmup fills SELF IC[1]=NodeHit + FBSelfMono
 	_, err := st.Call(value.GCRefOf(mainCl), nil, 1)
 	if err != nil {
 		t.Fatalf("Phase 1 run: %v", err)
 	}
 
-	// Phase 2:force-all 升 caller → spec template 1 K 参形态命中
+	// Phase 2: force-all promotes caller → spec template 1 K arg form hits
 	st.bridge.SetForceAllPromote(true)
 	specBefore := jit.SpecSelfCallSpecHits()
 	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
@@ -667,7 +687,7 @@ return sum`
 	t.Logf("SpecSelfCallSpecHits: %d → %d(增量 = %d)", specBefore, specAfter, specAfter-specBefore)
 }
 
-// TestPJ5_SelfCall_E2E_SpecTemplate_1RegArg 1 reg 参形态。
+// TestPJ5_SelfCall_E2E_SpecTemplate_1RegArg 1 reg arg form.
 func TestPJ5_SelfCall_E2E_SpecTemplate_1RegArg(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -690,8 +710,8 @@ return sum`
 	if err != nil {
 		t.Fatalf("Phase 2 run: %v", err)
 	}
-	// 1+2+..+100 = 5050,+1000 = 6050(Phase 1 + Phase 2 累积)
-	// Phase 1 sum: 5050;Phase 2 sum: 5050 + 1000 = 6050
+	// 1+2+..+100 = 5050, +1000 = 6050 (Phase 1 + Phase 2 accumulated)
+	// Phase 1 sum: 5050; Phase 2 sum: 5050 + 1000 = 6050
 	if got := value.AsNumber(value.Value(rets[0])); got != 6050 {
 		t.Errorf("Phase 2 result = %v, want 6050", got)
 	}
@@ -702,7 +722,7 @@ return sum`
 	t.Logf("SpecSelfCallSpecHits: %d → %d", specBefore, specAfter)
 }
 
-// TestPJ5_SelfCall_E2E_SpecTemplate_3Args 3 reg 参形态。
+// TestPJ5_SelfCall_E2E_SpecTemplate_3Args 3 reg arg form.
 func TestPJ5_SelfCall_E2E_SpecTemplate_3Args(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -738,7 +758,7 @@ return sum`
 }
 
 // TestPJ5_SelfCall_E2E_SpecTemplate_TailCall_M0 PJ5 SELF + TAILCALL spec template
-// 0 参形态(`function(t) return t:m() end`)。
+// 0 arg form (`function(t) return t:m() end`).
 func TestPJ5_SelfCall_E2E_SpecTemplate_TailCall_M0(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -771,8 +791,8 @@ return sum`
 	t.Logf("SpecSelfCallSpecHits: %d → %d", specBefore, specAfter)
 }
 
-// TestPJ5_SelfCall_E2E_SpecTemplate_Getter_M0 PJ5 SELF + CALL getter 1 返
-// 形态(`function(t) local r = t:m(); return r end`)spec template。
+// TestPJ5_SelfCall_E2E_SpecTemplate_Getter_M0 PJ5 SELF + CALL getter 1-return
+// form (`function(t) local r = t:m(); return r end`) spec template.
 func TestPJ5_SelfCall_E2E_SpecTemplate_Getter_M0(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -805,11 +825,12 @@ return sum`
 	t.Logf("SpecSelfCallSpecHits: %d → %d", specBefore, specAfter)
 }
 
-// TestPJ5_SelfCall_E2E_SpecTemplate_UpvalRecv PJ5 SELF spec template 用 GETUPVAL
-// receiver(承 analyzeSelfCallForm 已支持 form U*,叠加 spec 守门应自动 work)。
+// TestPJ5_SelfCall_E2E_SpecTemplate_UpvalRecv PJ5 SELF spec template with a
+// GETUPVAL receiver (analyzeSelfCallForm already supports form U*; layering the
+// spec gate on top should work automatically).
 func TestPJ5_SelfCall_E2E_SpecTemplate_UpvalRecv(t *testing.T) {
 	jit.ResetSpecHits()
-	// caller 是闭包,o 通过 upvalue 访问 → SELF receiver = GETUPVAL form
+	// caller is a closure, o is accessed via upvalue → SELF receiver = GETUPVAL form
 	src := `
 local count = 0
 local o = { m = function(self) count = count + 1 end }
@@ -841,7 +862,7 @@ return count`
 }
 
 // TestPJ5_SelfCall_E2E_SpecTemplate_TailCall_1RegArg PJ5 SELF + TAILCALL spec
-// template 1 reg 参形态。
+// template 1 reg arg form.
 func TestPJ5_SelfCall_E2E_SpecTemplate_TailCall_1RegArg(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -877,11 +898,11 @@ return sum`
 }
 
 // TestPJ5_SelfCall_E2E_SpecTemplate_MultiRet0Param PJ5 SELF + CALL form4
-// N=2 返 0 参形态(`function(_, t) local a, b = t:m() end` drop multi-ret)
-// spec template。
+// N=2 returns, 0 args form (`function(_, t) local a, b = t:m() end` drop multi-ret)
+// spec template.
 //
-// caller 编出 4 op:[0]MOVE A=2 B=1,[1]SELF A=2 B=2 C=K,[2]CALL B=2 C=3,
-// [3]RETURN B=1。analyzeSelfCallForm4 line 2662 已识别 cC=3/4 + retB=1 形态。
+// caller emits 4 ops: [0]MOVE A=2 B=1, [1]SELF A=2 B=2 C=K, [2]CALL B=2 C=3,
+// [3]RETURN B=1. analyzeSelfCallForm4 line 2662 already recognizes the cC=3/4 + retB=1 form.
 func TestPJ5_SelfCall_E2E_SpecTemplate_MultiRet0Param(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -904,7 +925,7 @@ return count`
 	if err != nil {
 		t.Fatalf("Phase 2 run: %v", err)
 	}
-	// Phase 2:main chunk 重跑(count 重新 init=0),101 次调用 → count=101
+	// Phase 2: main chunk reruns (count re-init=0), 101 calls → count=101
 	if got := value.AsNumber(value.Value(rets[0])); got != 101 {
 		t.Errorf("Phase 2 result = %v, want 101", got)
 	}
@@ -916,10 +937,10 @@ return count`
 }
 
 // TestPJ5_SelfCall_E2E_SpecTemplate_MultiRet1KArg PJ5 SELF + CALL form5
-// N=2 返 1 K 参形态(`function(_, t) local a, b = t:m(7) end`)spec template。
+// N=2 returns, 1 K arg form (`function(_, t) local a, b = t:m(7) end`) spec template.
 //
-// caller 编出 5 op:[0]MOVE A=2 B=1,[1]SELF A=2 B=2 C=K,[2]LOADK A=4 Bx=K,
-// [3]CALL B=3 C=3,[4]RETURN B=1。analyzeSelfCallForm5 line 2848 已识别。
+// caller emits 5 ops: [0]MOVE A=2 B=1, [1]SELF A=2 B=2 C=K, [2]LOADK A=4 Bx=K,
+// [3]CALL B=3 C=3, [4]RETURN B=1. analyzeSelfCallForm5 line 2848 already recognizes it.
 func TestPJ5_SelfCall_E2E_SpecTemplate_MultiRet1KArg(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -942,7 +963,7 @@ return count`
 	if err != nil {
 		t.Fatalf("Phase 2 run: %v", err)
 	}
-	// Phase 2:101 次 * 7 = 707
+	// Phase 2: 101 times * 7 = 707
 	if got := value.AsNumber(value.Value(rets[0])); got != 707 {
 		t.Errorf("Phase 2 result = %v, want 707", got)
 	}
@@ -954,7 +975,7 @@ return count`
 }
 
 // TestPJ5_SelfCall_E2E_SpecTemplate_MultiRet1RegArg PJ5 SELF + CALL form5
-// N=2 返 1 reg 参形态(`function(_, t, v) local a, b = t:m(v) end`).
+// N=2 returns, 1 reg arg form (`function(_, t, v) local a, b = t:m(v) end`).
 func TestPJ5_SelfCall_E2E_SpecTemplate_MultiRet1RegArg(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -989,10 +1010,10 @@ return count`
 }
 
 // TestPJ5_SelfCall_E2E_SpecTemplate_MultiRet2KArg PJ5 SELF + CALL form6 N=2
-// 返 2 K 参形态(`function(_, t) local a, b = t:m(7, 8) end`)spec template。
+// returns 2 K args form (`function(_, t) local a, b = t:m(7, 8) end`) spec template.
 //
-// caller 编出 6 op:MOVE+SELF+LOADK+LOADK+CALL B=4 C=3+RETURN B=1。
-// analyzeSelfCallForm6 (b)(c) 扩 cC=1/3/4 已支持 N=2/3 返。
+// caller emits 6 ops: MOVE+SELF+LOADK+LOADK+CALL B=4 C=3+RETURN B=1.
+// analyzeSelfCallForm6 (b)(c) extended cC=1/3/4 already supports N=2/3 returns.
 func TestPJ5_SelfCall_E2E_SpecTemplate_MultiRet2KArg(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -1015,7 +1036,7 @@ return count`
 	if err != nil {
 		t.Fatalf("Phase 2 run: %v", err)
 	}
-	// Phase 2: 101 次 * (7+8) = 1515
+	// Phase 2: 101 times * (7+8) = 1515
 	if got := value.AsNumber(value.Value(rets[0])); got != 1515 {
 		t.Errorf("Phase 2 result = %v, want 1515", got)
 	}
@@ -1027,10 +1048,10 @@ return count`
 }
 
 // TestPJ5_SelfCall_E2E_SpecTemplate_MultiRet3KArg PJ5 SELF + CALL form7 N=2
-// 返 3 K 参形态(`function(_, t) local a, b = t:m(7, 8, 9) end`)spec template。
+// returns 3 K args form (`function(_, t) local a, b = t:m(7, 8, 9) end`) spec template.
 //
-// caller 编出 7 op:MOVE+SELF+LOADK×3+CALL B=5 C=3+RETURN B=1。
-// analyzeSelfCallForm7 Code[5]=CALL 分支 cC=1/3/4 已支持 N=2/3 返。
+// caller emits 7 ops: MOVE+SELF+LOADK×3+CALL B=5 C=3+RETURN B=1.
+// analyzeSelfCallForm7 Code[5]=CALL branch cC=1/3/4 already supports N=2/3 returns.
 func TestPJ5_SelfCall_E2E_SpecTemplate_MultiRet3KArg(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -1053,7 +1074,7 @@ return count`
 	if err != nil {
 		t.Fatalf("Phase 2 run: %v", err)
 	}
-	// Phase 2: 101 次 * (7+8+9) = 2424
+	// Phase 2: 101 times * (7+8+9) = 2424
 	if got := value.AsNumber(value.Value(rets[0])); got != 2424 {
 		t.Errorf("Phase 2 result = %v, want 2424", got)
 	}
@@ -1065,10 +1086,10 @@ return count`
 }
 
 // TestPJ5_SelfCall_E2E_SpecTemplate_MultiRet4KArg PJ5 SELF + CALL form8 N=2
-// 返 4 K 参形态(`function(_, t) local a, b = t:m(7, 8, 9, 10) end`)spec template。
+// returns 4 K args form (`function(_, t) local a, b = t:m(7, 8, 9, 10) end`) spec template.
 //
-// caller 编出 8 op:MOVE+SELF+LOADK×4+CALL B=6 C=3+RETURN B=1。
-// analyzeSelfCallForm8 Code[6]=CALL 分支 cC=1/3/4 已支持 N=2/3 返。
+// caller emits 8 ops: MOVE+SELF+LOADK×4+CALL B=6 C=3+RETURN B=1.
+// analyzeSelfCallForm8 Code[6]=CALL branch cC=1/3/4 already supports N=2/3 returns.
 func TestPJ5_SelfCall_E2E_SpecTemplate_MultiRet4KArg(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -1091,7 +1112,7 @@ return count`
 	if err != nil {
 		t.Fatalf("Phase 2 run: %v", err)
 	}
-	// Phase 2: 101 次 * (7+8+9+10) = 3434
+	// Phase 2: 101 times * (7+8+9+10) = 3434
 	if got := value.AsNumber(value.Value(rets[0])); got != 3434 {
 		t.Errorf("Phase 2 result = %v, want 3434", got)
 	}
@@ -1103,10 +1124,10 @@ return count`
 }
 
 // TestPJ5_SelfCall_E2E_SpecTemplate_MultiRet5KArg PJ5 SELF + CALL form9 N=2
-// 返 5 K 参形态(`function(_, t) local a, b = t:m(7,8,9,10,11) end`)spec template。
+// returns 5 K args form (`function(_, t) local a, b = t:m(7,8,9,10,11) end`) spec template.
 //
-// caller 编出 9 op:MOVE+SELF+LOADK×5+CALL B=7 C=3+RETURN B=1。
-// analyzeSelfCallForm9 Code[7]=CALL 分支 cC=1/3/4 已支持 N=2/3 返。
+// caller emits 9 ops: MOVE+SELF+LOADK×5+CALL B=7 C=3+RETURN B=1.
+// analyzeSelfCallForm9 Code[7]=CALL branch cC=1/3/4 already supports N=2/3 returns.
 func TestPJ5_SelfCall_E2E_SpecTemplate_MultiRet5KArg(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -1129,7 +1150,7 @@ return count`
 	if err != nil {
 		t.Fatalf("Phase 2 run: %v", err)
 	}
-	// Phase 2: 101 次 * (7+8+9+10+11) = 4545
+	// Phase 2: 101 times * (7+8+9+10+11) = 4545
 	if got := value.AsNumber(value.Value(rets[0])); got != 4545 {
 		t.Errorf("Phase 2 result = %v, want 4545", got)
 	}
@@ -1141,10 +1162,10 @@ return count`
 }
 
 // TestPJ5_SelfCall_E2E_SpecTemplate_MultiRet6KArg PJ5 SELF + CALL formN N=2
-// 返 6 K 参形态(`function(_, t) local a, b = t:m(7,...,12) end`)spec template。
+// returns 6 K args form (`function(_, t) local a, b = t:m(7,...,12) end`) spec template.
 //
-// caller 编出 10 op:MOVE+SELF+LOADK×6+CALL B=8 C=3+RETURN B=1。
-// analyzeSelfCallFormN cC=1/3/4 已支持 N=2/3 返。
+// caller emits 10 ops: MOVE+SELF+LOADK×6+CALL B=8 C=3+RETURN B=1.
+// analyzeSelfCallFormN cC=1/3/4 already supports N=2/3 returns.
 func TestPJ5_SelfCall_E2E_SpecTemplate_MultiRet6KArg(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -1167,7 +1188,7 @@ return count`
 	if err != nil {
 		t.Fatalf("Phase 2 run: %v", err)
 	}
-	// Phase 2: 101 次 * (7+8+9+10+11+12) = 5757
+	// Phase 2: 101 times * (7+8+9+10+11+12) = 5757
 	if got := value.AsNumber(value.Value(rets[0])); got != 5757 {
 		t.Errorf("Phase 2 result = %v, want 5757", got)
 	}
@@ -1179,10 +1200,10 @@ return count`
 }
 
 // TestPJ5_SelfCall_E2E_SpecTemplate_MultiRetN4_0Param PJ5 SELF + CALL form4
-// N=4 返 0 参形态(`local a,b,c,d = t:m()` drop multi-ret)spec template。
+// N=4 returns, 0 args form (`local a,b,c,d = t:m()` drop multi-ret) spec template.
 //
-// caller 编出 4 op:MOVE+SELF+CALL B=2 C=5(N=4 返)+RETURN B=1。
-// 承本批 isValidSpecCallRetCount 扩到 cC∈{1,3..16} 后真接入。
+// caller emits 4 ops: MOVE+SELF+CALL B=2 C=5 (N=4 returns)+RETURN B=1.
+// Really wired in after this batch's isValidSpecCallRetCount extension to cC∈{1,3..16}.
 func TestPJ5_SelfCall_E2E_SpecTemplate_MultiRetN4_0Param(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -1216,7 +1237,7 @@ return count`
 }
 
 // TestPJ5_SelfCall_E2E_SpecTemplate_MultiRetN5_0Param PJ5 SELF + CALL form4
-// N=5 返 0 参形态(`local a..e = t:m()`)cC=6 spec template。
+// N=5 returns, 0 args form (`local a..e = t:m()`) cC=6 spec template.
 func TestPJ5_SelfCall_E2E_SpecTemplate_MultiRetN5_0Param(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -1250,7 +1271,7 @@ return count`
 }
 
 // TestPJ5_SelfCall_E2E_SpecTemplate_MultiRetN4_1KArg PJ5 SELF + CALL form5
-// N=4 返 1 K 参形态(`local a..d = t:m(7)`)cC=5 spec template。
+// N=4 returns, 1 K arg form (`local a..d = t:m(7)`) cC=5 spec template.
 func TestPJ5_SelfCall_E2E_SpecTemplate_MultiRetN4_1KArg(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -1284,8 +1305,9 @@ return count`
 }
 
 // TestPJ5_SelfCall_E2E_SpecTemplate_MultiRetN4_1RegArg PJ5 SELF + CALL form5
-// N=4 返 1 reg 参形态(`local a..d = t:m(v)` 1 reg 参 + multi-ret drop)。
-// 承 84c7ed4 cC∈{1,3..16} 扩,验 1 reg 参在 N>=4 返路径同款命中。
+// N=4 returns, 1 reg arg form (`local a..d = t:m(v)` 1 reg arg + multi-ret drop).
+// Continuing the 84c7ed4 cC∈{1,3..16} extension, checks that 1 reg arg hits the
+// same way on the N>=4 return path.
 func TestPJ5_SelfCall_E2E_SpecTemplate_MultiRetN4_1RegArg(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -1308,7 +1330,7 @@ return count`
 	if err != nil {
 		t.Fatalf("Phase 2 run: %v", err)
 	}
-	// Phase 2:sum_{i=1..100} i + 1000 = 5050 + 1000 = 6050
+	// Phase 2: sum_{i=1..100} i + 1000 = 5050 + 1000 = 6050
 	if got := value.AsNumber(value.Value(rets[0])); got != 6050 {
 		t.Errorf("Phase 2 result = %v, want 6050", got)
 	}
@@ -1320,8 +1342,8 @@ return count`
 }
 
 // TestPJ5_SelfCall_E2E_SpecTemplate_MultiRetN4_3KArg PJ5 SELF + CALL form7
-// N=4 返 3 K 参形态(`local a..d = t:m(7,8,9)` 3 K 参 + multi-ret drop)。
-// caller 编出 7 op:MOVE+SELF+LOADK×3+CALL B=5 C=5+RETURN B=1。
+// N=4 returns, 3 K args form (`local a..d = t:m(7,8,9)` 3 K args + multi-ret drop).
+// caller emits 7 ops: MOVE+SELF+LOADK×3+CALL B=5 C=5+RETURN B=1.
 func TestPJ5_SelfCall_E2E_SpecTemplate_MultiRetN4_3KArg(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -1344,7 +1366,7 @@ return count`
 	if err != nil {
 		t.Fatalf("Phase 2 run: %v", err)
 	}
-	// Phase 2:101 次 * (7+8+9) = 2424
+	// Phase 2: 101 times * (7+8+9) = 2424
 	if got := value.AsNumber(value.Value(rets[0])); got != 2424 {
 		t.Errorf("Phase 2 result = %v, want 2424", got)
 	}
@@ -1356,12 +1378,13 @@ return count`
 }
 
 // TestPJ5_SelfCall_E2E_SpecTemplate_MultiRetN8_0Param PJ5 SELF + CALL form4
-// **N=8 返**(cC=9)0 参形态(`local a..h = t:m()`)spec template — 验
-// isValidSpecCallRetCount cC∈{1,3..16} 上界附近边界(N=15 是上界,N=8 是
-// 实用业务多返值常见上界,本测试代表实用场景)。
+// **N=8 returns** (cC=9) 0 args form (`local a..h = t:m()`) spec template — checks
+// isValidSpecCallRetCount cC∈{1,3..16} boundary near the upper limit (N=15 is the
+// upper limit, N=8 is a common practical upper limit for business multi-return;
+// this test represents a practical scenario).
 //
-// caller 编出 4 op:MOVE+SELF+CALL B=2 C=9+RETURN B=1
-// (8 返 callee 落 R(callA..callA+7))。
+// caller emits 4 ops: MOVE+SELF+CALL B=2 C=9+RETURN B=1
+// (8 returns land in R(callA..callA+7)).
 func TestPJ5_SelfCall_E2E_SpecTemplate_MultiRetN8_0Param(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -1395,8 +1418,9 @@ return count`
 }
 
 // TestPJ5_SelfCall_E2E_SpecTemplate_MultiRetN15_0Param PJ5 SELF + CALL form4
-// **N=15 返**(cC=16)0 参——验 isValidSpecCallRetCount cC<=16 严格上界。
-// 注:cC=16 是 spec template 允许的最大 N=15 返;cC=17 应被守门拒。
+// **N=15 returns** (cC=16) 0 args — checks the strict isValidSpecCallRetCount cC<=16
+// upper limit. Note: cC=16 is the max N=15 returns the spec template allows; cC=17
+// should be rejected by the gate.
 func TestPJ5_SelfCall_E2E_SpecTemplate_MultiRetN15_0Param(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -1432,14 +1456,16 @@ return count`
 		specBefore, specAfter)
 }
 
-// TestPJ5_SelfCall_E2E_SpecTemplate_ErrorBubbleUp_NilRecv 验 PJ5 SELF spec
-// template 路径下 receiver 为 nil 时错误冒泡正确性(承 PR #26 评论建议 3
-// 深度覆盖路径 + R14 修复后 Go G 正确性)。
+// TestPJ5_SelfCall_E2E_SpecTemplate_ErrorBubbleUp_NilRecv checks the correctness
+// of error bubbling when the receiver is nil under the PJ5 SELF spec template path
+// (continuing PR #26 comment suggestion 3: deep coverage path + Go G correctness
+// after the R14 fix).
 //
-// **场景**:warmup 阶段填 IC NodeHit + FBSelfMono feedback,Phase 2 升 P4
-// spec template 路径;Phase 3 用 nil receiver 触发 spec NodeHit guard 失败
-// → onOSRExit 累积 deopt → 降级 host.Self 完整 P1 SELF 段 → raise
-// "attempt to index nil value" 错误透明冒泡。
+// **Scenario**: warmup phase fills IC NodeHit + FBSelfMono feedback, Phase 2
+// promotes to the P4 spec template path; Phase 3 uses a nil receiver to make the
+// spec NodeHit guard fail → onOSRExit accumulates deopt → falls back to the full
+// P1 SELF segment via host.Self → raises "attempt to index nil value" which
+// bubbles up transparently.
 func TestPJ5_SelfCall_E2E_SpecTemplate_ErrorBubbleUp_NilRecv(t *testing.T) {
 	jit.ResetSpecHits()
 	// Phase 1: warmup IC NodeHit + FBSelfMono feedback
@@ -1462,7 +1488,7 @@ return sum`
 		t.Fatal("Phase 2 SpecSelfCallSpecHits=0 — spec template 未触达,测试前提失败")
 	}
 
-	// Phase 3:同 caller 但 receiver=nil → spec template NodeHit guard 必失败
+	// Phase 3: same caller but receiver=nil → spec template NodeHit guard must fail
 	// → deopt → host.Self → raise "index nil"
 	nilSrc := `
 local mt = { m = function(self) return 42 end }
@@ -1480,16 +1506,18 @@ return caller(nil)`
 	t.Logf("spec template 错误冒泡正确:%v", err)
 }
 
-// TestPJ5_SelfCall_E2E_SpecTemplate_ErrorBubbleUp_BadMethod 验 PJ5 SELF spec
-// template 路径下 method 字段为 non-function 时错误冒泡正确性。
+// TestPJ5_SelfCall_E2E_SpecTemplate_ErrorBubbleUp_BadMethod checks the correctness
+// of error bubbling when the method field is a non-function under the PJ5 SELF
+// spec template path.
 //
-// **场景**:warmup 阶段 method 是 function 填 IC NodeHit + FBSelfMono;
-// Phase 2 spec template 命中;Phase 3 用不同 receiver,其 method 字段是 number
-// → spec NodeHit guard 失败(shape 变 / NodeVal kind 不同)→ deopt → host.Self
-// → method 是 number → CALL 段 raise "attempt to call a number value"。
+// **Scenario**: in warmup the method is a function, filling IC NodeHit + FBSelfMono;
+// Phase 2 the spec template hits; Phase 3 uses a different receiver whose method
+// field is a number → spec NodeHit guard fails (shape change / different NodeVal
+// kind) → deopt → host.Self → method is a number → CALL segment raises "attempt
+// to call a number value".
 func TestPJ5_SelfCall_E2E_SpecTemplate_ErrorBubbleUp_BadMethod(t *testing.T) {
 	jit.ResetSpecHits()
-	// Phase 1+2:warmup 用 method=function 填 IC NodeHit
+	// Phase 1+2: warmup uses method=function to fill IC NodeHit
 	warmupSrc := `
 local mt = { m = function(self) return 42 end }
 local function caller(t) return t:m() end
@@ -1508,7 +1536,7 @@ return sum`
 		t.Fatal("Phase 2 SpecSelfCallSpecHits=0 — spec template 未触达")
 	}
 
-	// Phase 3:method 是 number → spec deopt → host.Self 取到 number → CALL raise
+	// Phase 3: method is a number → spec deopt → host.Self gets a number → CALL raise
 	badSrc := `
 local bad = { m = 42 }
 return bad:m()`
@@ -1524,21 +1552,24 @@ return bad:m()`
 	t.Logf("spec template BadMethod 错误冒泡正确:%v", err)
 }
 
-// TestPJ5_SelfCall_E2E_SpecTemplate_OSRExitToDeopt 验 OSR exit 协议完整闭环
-// 第一阶段:连续触发 ≥ DeoptThreshold 次 spec NodeHit guard 失败 → onOSRExit
-// 累积 deopt → 状态切 P4Deoptimized + SpecP4DeoptHits 增长。
+// TestPJ5_SelfCall_E2E_SpecTemplate_OSRExitToDeopt checks the full OSR exit
+// protocol closed loop, first stage: repeatedly triggering ≥ DeoptThreshold spec
+// NodeHit guard failures → onOSRExit accumulates deopt → state switches to
+// P4Deoptimized + SpecP4DeoptHits grows.
 //
-// 承 §9.18 OSR exit 协议骨架 + §9.19 PJ5 SELF spec template 真接入,本批
-// 端到端验真业务路径下完整状态机转移(非 p4state_test.go 合成驱动)。
+// Continuing §9.18 OSR exit protocol skeleton + §9.19 PJ5 SELF spec template
+// wiring, this batch verifies end-to-end the full state machine transition under
+// a real business path (not the synthetic driver in p4state_test.go).
 //
-// **场景**:caller 反复跑,每次 force-all 升 P4 spec template 后跑不同
-// receiver shape → spec NodeHit guard 失败 → 16 次 onOSRExit 后切
-// P4Deoptimized + SpecP4DeoptHits=1。
+// **Scenario**: caller runs repeatedly; each time force-all promotes to P4 spec
+// template then runs a different receiver shape → spec NodeHit guard fails → after
+// 16 onOSRExit calls switch to
+// P4Deoptimized + SpecP4DeoptHits=1.
 func TestPJ5_SelfCall_E2E_SpecTemplate_OSRExitToDeopt(t *testing.T) {
 	jit.ResetSpecHits()
 	jit.ResetP4SpecState()
 
-	// 主形态:caller(t) 走 spec template path,以 m1 reciever warmup
+	// Main form: caller(t) takes the spec template path, warmed up with the m1 receiver
 	src := `
 local m1 = { m = function(self) return 1 end }
 local m2 = { m = function(self, x) return 2 end, other = 99, more = 88 }
@@ -1562,9 +1593,10 @@ return sum`
 	}
 	deoptAfter := jit.SpecP4DeoptHits()
 
-	// **prove-the-path 强断言**(承 §9.18 OSR exit 协议闭环):真业务路径下
-	// 30 次 m2 调用触发 ≥ DeoptThreshold(16)次 onOSRExit,SpecP4DeoptHits
-	// 应至少 += 1(累积达阈值触发 P4Deoptimized 转移 + incSpecP4DeoptHits)。
+	// **prove-the-path hard assertion** (continuing §9.18 OSR exit protocol loop):
+	// under a real business path, 30 m2 calls trigger ≥ DeoptThreshold (16) onOSRExit
+	// calls, so SpecP4DeoptHits should at least += 1 (accumulation reaching the
+	// threshold triggers the P4Deoptimized transition + incSpecP4DeoptHits).
 	if deoptAfter <= deoptBefore {
 		t.Errorf("SpecP4DeoptHits 未增长(%d → %d)— OSR exit 协议未真接入 spec template 路径",
 			deoptBefore, deoptAfter)
@@ -1573,20 +1605,23 @@ return sum`
 		deoptBefore, deoptAfter, deoptAfter-deoptBefore)
 }
 
-// TestPJ5_SelfCall_E2E_SpecTemplate_DeoptStorm V20 deopt 风暴 e2e:多个不同
-// Proto 反复 deopt → 多个 p4SpecState 独立累积 + 互不干扰。
+// TestPJ5_SelfCall_E2E_SpecTemplate_DeoptStorm V20 deopt storm e2e: multiple
+// different Protos repeatedly deopt → multiple p4SpecState accumulate independently
+// without interference.
 //
-// **承 [08 §V20] deopt 风暴**:验 OSR exit 协议在并发多 Proto 多路径 deopt
-// 下行为正确性 — 各 Proto p4SpecEntry 独立(per-Proto 字段),累积 deopt
-// 互不干扰,p4SpecMu 串行化保证 race-free。
+// **Continuing [08 §V20] deopt storm**: checks OSR exit protocol correctness under
+// concurrent multi-Proto multi-path deopt — each Proto's p4SpecEntry is independent
+// (per-Proto fields), accumulated deopt does not interfere, and p4SpecMu
+// serialization guarantees race-free.
 //
-// **场景**:10 个不同 caller proto + 10 个不同 receiver shape,每对 caller
-// + bad_recv 触发独立 deopt 累积,各 proto state 独立。
+// **Scenario**: 10 different caller protos + 10 different receiver shapes; each
+// caller + bad_recv pair triggers independent deopt accumulation, with each proto
+// state independent.
 func TestPJ5_SelfCall_E2E_SpecTemplate_DeoptStorm(t *testing.T) {
 	jit.ResetSpecHits()
 	jit.ResetP4SpecState()
 
-	// 多个 caller proto 反复跑各自 spec template + bad receiver 触发 deopt
+	// Multiple caller protos repeatedly run their own spec template + bad receiver to trigger deopt
 	src := `
 local m_ok = { m = function(self) return 1 end }
 local m_bad = { m = function(self) return 2 end, x1 = 1, x2 = 2 }  -- 不同 shape
@@ -1626,9 +1661,11 @@ return sum`
 	}
 	deoptAfter := jit.SpecP4DeoptHits()
 
-	// **prove-the-path 强断言**:5 个独立 caller proto 各自累积 deopt → 阈值
-	// 触发 P4Deoptimized → SpecP4DeoptHits 累积 ≥ 5(每 caller 至少 1 次)。
-	// 实测应远 > 5(每 caller 跑 30 次 m_bad,每 16 次切 P4Deoptimized 一次)。
+	// **prove-the-path hard assertion**: 5 independent caller protos each accumulate
+	// deopt → threshold triggers P4Deoptimized → SpecP4DeoptHits accumulates ≥ 5
+	// (each caller at least once).
+	// In practice should be far > 5 (each caller runs 30 m_bad calls, switching to
+	// P4Deoptimized once every 16 calls).
 	growth := deoptAfter - deoptBefore
 	if growth < 5 {
 		t.Errorf("SpecP4DeoptHits 增长 %d, want >= 5(5 caller 各至少 1 次 deopt 切换)",
@@ -1638,15 +1675,15 @@ return sum`
 		deoptBefore, deoptAfter, growth)
 }
 
-// TestPJ5_FrameInline_E2E_GatingOpen_HitsOne 验 PJ5 Option B Spike 1 帧建立
-// 内联(承 commit-5m ciDepth Go vs mirror 同步 bug 修):amd64
-// archSupportsFrameInline=true + analyzeSelfCallSpecForm useFrameInline 守门
-// 启用 + 全端到端 byte-equal P1。
+// TestPJ5_FrameInline_E2E_GatingOpen_HitsOne checks PJ5 Option B Spike 1 frame
+// setup inlining (continuing the commit-5m ciDepth Go vs mirror sync bug fix):
+// amd64 archSupportsFrameInline=true + analyzeSelfCallSpecForm useFrameInline gate
+// enabled + full end-to-end byte-equal to P1.
 //
-// **prove-the-path 强断言**:
-//   - 程序输出正确(byte-equal P1):count=50
-//   - amd64:SpecFrameInlineHits >= 1(Compile) + SpecFrameInlineRunHits >= 1(Run)
-//   - arm64:archSupportsFrameInline=false 闸门关闭,程序正确性断言仍跑
+// **prove-the-path hard assertion**:
+//   - program output correct (byte-equal P1): count=50
+//   - amd64: SpecFrameInlineHits >= 1 (Compile) + SpecFrameInlineRunHits >= 1 (Run)
+//   - arm64: archSupportsFrameInline=false gate closed, program correctness assertion still runs
 func TestPJ5_FrameInline_E2E_GatingOpen_HitsOne(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -1668,7 +1705,7 @@ return count`
 		t.Errorf("rets = %v, want 50(byte-equal P1:Run 期 dispatcher + helper 真接入)", got)
 	}
 
-	// **arm64 阻塞修复**(承 PR comment d8fc8ba):仅 amd64 强断言 Hits/RunHits
+	// **arm64 blocker fix** (continuing PR comment d8fc8ba): only amd64 hard-asserts Hits/RunHits
 	if archSupportsFrameInlineForTest() {
 		if h := jit.SpecFrameInlineHits(); h == 0 {
 			t.Errorf("SpecFrameInlineHits = 0, want >= 1(amd64 闸门 open)")
@@ -1681,9 +1718,10 @@ return count`
 		jit.SpecFrameInlineHits(), jit.SpecFrameInlineRunHits())
 }
 
-// TestPJ5_FrameInline_E2E_Spike2_3KArg 验 Spike 2 N 参 fixed args setter
-// 形态 useFrameInline 真接入(承 commit-5p:callArgCount 守门扩 0..7)。
-// 3 K 参形态:t:m(1,2,3),callee body 用 self+a+b+c 计算 sum。
+// TestPJ5_FrameInline_E2E_Spike2_3KArg checks that Spike 2 N-arg fixed-args setter
+// form useFrameInline is really wired in (continuing commit-5p: callArgCount gate
+// extended to 0..7).
+// 3 K arg form: t:m(1,2,3), callee body computes sum from self+a+b+c.
 func TestPJ5_FrameInline_E2E_Spike2_3KArg(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -1713,9 +1751,10 @@ return sum`
 	t.Logf("Spike 2 3 K 参:Hits=%d / RunHits=%d", jit.SpecFrameInlineHits(), jit.SpecFrameInlineRunHits())
 }
 
-// TestPJ5_FrameInline_E2E_Spike4_Getter 验 Spike 4 1 返 getter 形态 useFrameInline
-// 真接入(承 commit-5q:nresults 参数从 callC-1 算)。
-// 形态:`local r = t:m(); return r`,callC=2,1 返。
+// TestPJ5_FrameInline_E2E_Spike4_Getter checks that Spike 4 1-return getter form
+// useFrameInline is really wired in (continuing commit-5q: nresults param computed
+// from callC-1).
+// Form: `local r = t:m(); return r`, callC=2, 1 return.
 func TestPJ5_FrameInline_E2E_Spike4_Getter(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -1745,25 +1784,28 @@ return s`
 	t.Logf("Spike 4 getter: Hits=%d / RunHits=%d", jit.SpecFrameInlineHits(), jit.SpecFrameInlineRunHits())
 }
 
-// **复制 arch 矩阵**(承 PR comment c5ef665 评审):本函数硬编码复制
-// jit/arch_*.go::archSupportsFrameInline() 矩阵,将来 arch 支持面扩展时
-// 本处需手动跟进。jit 包未导出真源函数(包内 unexported),测试包无法直接
-// 调用,故折中复制。**新 arch 启用 archSupportsFrameInline 时,记得同步
-// 更新本函数返值矩阵**(grep `archSupportsFrameInlineForTest` 找所有用例)。
+// **Copied arch matrix** (continuing PR comment c5ef665 review): this function
+// hardcodes a copy of the jit/arch_*.go::archSupportsFrameInline() matrix; when the
+// arch support surface expands in the future, this needs manual updating. The jit
+// package does not export the real source function (unexported within the package),
+// so the test package cannot call it directly, hence the compromise copy. **When a
+// new arch enables archSupportsFrameInline, remember to update this function's
+// return matrix accordingly** (grep `archSupportsFrameInlineForTest` to find all uses).
 func archSupportsFrameInlineForTest() bool {
 	return runtime.GOARCH == "amd64"
 }
 
-// TestPJ5_FrameInline_E2E_SelfUsage 验 PJ5 Option B Spike 1 帧建立内联 +
-// callee 体真用 self 字段:
-// `o:m()` callee 体 `self.val = self.val + 1`,验证 R(callA+1)=self 真传给
-// callee,helper 内 enterLuaFrame nargs 计算正确。
+// TestPJ5_FrameInline_E2E_SelfUsage checks PJ5 Option B Spike 1 frame setup inlining
+// + callee body really using the self field:
+// `o:m()` callee body `self.val = self.val + 1`, verifies R(callA+1)=self is really
+// passed to callee, and enterLuaFrame nargs is computed correctly inside the helper.
 //
-// **真接入正确性强断言**:Spike 1 当前 nargs=0 实装的 byte-equal 兜底验证。
-// 若 nargs 计算错(漏 self / 漏 args),callee 读 self.val 会读到 nil 触发
-// 运行期错误或 t.val 不增。
+// **Wiring correctness hard assertion**: byte-equal fallback verification of Spike 1's
+// current nargs=0 implementation. If nargs is computed wrong (missing self / missing
+// args), callee reading self.val would read nil, triggering a runtime error or t.val
+// not incrementing.
 //
-// **commit-5i**:加 SpecFrameInlineRunHits 区分 Compile vs Run 触达。
+// **commit-5i**: adds SpecFrameInlineRunHits to distinguish Compile vs Run reach.
 func TestPJ5_FrameInline_E2E_SelfUsage(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -1787,9 +1829,9 @@ return t.val`
 		jit.SpecFrameInlineHits(), jit.SpecFrameInlineRunHits())
 }
 
-// TestPJ5_FrameInline_E2E_RunHit 验 Run 期真触达 runFrameInlineDispatcher
-// (commit-5m ciDepth Go vs mirror 同步 bug 修后 prove-the-path):200 iter
-// 全 useFrameInline 路径,SpecFrameInlineRunHits 应 = 200(amd64)或 0(arm64)。
+// TestPJ5_FrameInline_E2E_RunHit checks that Run really reaches runFrameInlineDispatcher
+// (prove-the-path after the commit-5m ciDepth Go vs mirror sync bug fix): 200 iters
+// all on the useFrameInline path, SpecFrameInlineRunHits should = 200 (amd64) or 0 (arm64).
 func TestPJ5_FrameInline_E2E_RunHit(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -1819,10 +1861,10 @@ return count`
 		jit.SpecFrameInlineHits(), jit.SpecFrameInlineRunHits())
 }
 
-// TestPJ5_FrameInline_E2E_Spike3_Vararg 验 Spike 3 vararg callee 形态
-// useFrameInline 真接入(callee 接 self + vararg `...`)。
-// 形态:`function(self, ...) local a,b,c=...; sum = sum + a + b + c end`,
-// callee.IsVararg=true。
+// TestPJ5_FrameInline_E2E_Spike3_Vararg checks that Spike 3 vararg callee form
+// useFrameInline is really wired in (callee takes self + vararg `...`).
+// Form: `function(self, ...) local a,b,c=...; sum = sum + a + b + c end`,
+// callee.IsVararg=true.
 func TestPJ5_FrameInline_E2E_Spike3_Vararg(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -1852,13 +1894,15 @@ return sum`
 	t.Logf("Spike 3 vararg: Hits=%d / RunHits=%d", jit.SpecFrameInlineHits(), jit.SpecFrameInlineRunHits())
 }
 
-// TestPJ5_FrameInline_E2E_Spike5_ZeroCross 验 commit-5u 真 zero-cross 优化:
-// callee 也 P4 升层时,helper 内直接调 enterGibbous 跳过 executeFrom 主循环。
-// **状态级探针 st.frameInlineZeroCrossHits** 直接读 State 字段。
+// TestPJ5_FrameInline_E2E_Spike5_ZeroCross checks the commit-5u true zero-cross
+// optimization: when the callee is also P4-promoted, the helper calls enterGibbous
+// directly, skipping the executeFrom main loop.
+// **State-level probe st.frameInlineZeroCrossHits** reads the State field directly.
 //
-// callee 用「PJ7 form `function(self) return self.x end`」(GETTABLE + RETURN),
-// PJ4 IC ArrayHit/NodeHit P4 支持(承 §9.7-§9.10)。getter 形态 callC=2 + caller
-// `local r = t:m(); return r` 走 useFrameInline 1 返路径。
+// The callee uses the "PJ7 form `function(self) return self.x end`" (GETTABLE +
+// RETURN), which PJ4 IC ArrayHit/NodeHit supports at P4 (continuing §9.7-§9.10). The
+// getter form callC=2 + caller `local r = t:m(); return r` takes the useFrameInline
+// 1-return path.
 func TestPJ5_FrameInline_E2E_Spike5_ZeroCross(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -1883,9 +1927,9 @@ return s`
 	zcGrowth := st.frameInlineZeroCrossHits - beforeZC
 	t.Logf("Spike 5 zero-cross: RunHits=%d / ZeroCrossHits 增长=%d",
 		jit.SpecFrameInlineRunHits(), zcGrowth)
-	// callee `m` (PJ4 GETTABLE + RETURN form)在 force-all 下应升 P4,zero-cross
-	// 路径应触达;若 zcGrowth=0 = callee form 限制下回落 enterLuaFrame +
-	// executeFrom 路径仍 byte-equal P1 兜底。
+	// callee `m` (PJ4 GETTABLE + RETURN form) should promote to P4 under force-all,
+	// and the zero-cross path should be reached; if zcGrowth=0 = under callee form
+	// limits it falls back to the enterLuaFrame + executeFrom path, still byte-equal to P1.
 	if archSupportsFrameInlineForTest() && zcGrowth > 0 {
 		t.Logf("✅ zero-cross 路径真触达(callee P4 升层 + helper 跳 executeFrom)")
 	} else {
@@ -1893,9 +1937,10 @@ return s`
 	}
 }
 
-// TestPJ5_FrameInline_E2E_V18Race_ZeroCross 验 V18 -race 多 State 并发安全
-// (SELF spec template + useFrameInline + zero-cross 路径全链路)。
-// 8 个独立 State 并发跑 zero-cross 路径,go test -race 检测数据竞争。
+// TestPJ5_FrameInline_E2E_V18Race_ZeroCross checks V18 -race multi-State concurrency
+// safety (SELF spec template + useFrameInline + zero-cross path, full chain).
+// 8 independent States concurrently run the zero-cross path, go test -race detects
+// data races.
 func TestPJ5_FrameInline_E2E_V18Race_ZeroCross(t *testing.T) {
 	const N = 8
 	var wg sync.WaitGroup

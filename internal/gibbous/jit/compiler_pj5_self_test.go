@@ -10,21 +10,21 @@ import (
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
-// PJ5 SELF method call inline 形态识别单测。覆盖:
-//   - 长度 4:0 参 0 返 SELF + CALL void / SELF + TAILCALL
-//   - 长度 5:0 参 1 返 SELF + CALL getter / 1 K/reg 参 SELF + CALL void /
-//     1 K/reg 参 SELF + TAILCALL
-//   - 长度 6:1 K/reg 参 SELF + CALL getter 1 返 / 2 K/reg 参 SELF + CALL void /
-//     2 K/reg 参 SELF + TAILCALL
+// PJ5 SELF method call inline form-recognition unit tests. Coverage:
+//   - length 4: 0-arg 0-ret SELF + CALL void / SELF + TAILCALL
+//   - length 5: 0-arg 1-ret SELF + CALL getter / 1 K/reg-arg SELF + CALL void /
+//     1 K/reg-arg SELF + TAILCALL
+//   - length 6: 1 K/reg-arg SELF + CALL getter 1-ret / 2 K/reg-arg SELF + CALL void /
+//     2 K/reg-arg SELF + TAILCALL
 //
-// 双 receiver(M*=MOVE reg / U*=GETUPVAL upval)各形态对位。
+// Both receiver forms (M*=MOVE reg / U*=GETUPVAL upval) are covered pairwise.
 
-// TestPJ5_AnalyzeSelfCallForm_M0_VoidCall 形态 M0:
-// MOVE+SELF+CALL+RETURN void(`function(o) o:m() end`)。
+// TestPJ5_AnalyzeSelfCallForm_M0_VoidCall form M0:
+// MOVE+SELF+CALL+RETURN void (`function(o) o:m() end`).
 func TestPJ5_AnalyzeSelfCallForm_M0_VoidCall(t *testing.T) {
 	// MOVE 1 0;        // R(1) = R(0) recv
-	// SELF 1 1 256;    // R(1)=R(1)[K0]; R(2)=R(1) self  (C=256 即 K(0))
-	// CALL 1 2 1;      // 0 参 0 返
+	// SELF 1 1 256;    // R(1)=R(1)[K0]; R(2)=R(1) self  (C=256 i.e. K(0))
+	// CALL 1 2 1;      // 0 args 0 rets
 	// RETURN 0 1
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
@@ -61,8 +61,8 @@ func TestPJ5_AnalyzeSelfCallForm_M0_VoidCall(t *testing.T) {
 	}
 }
 
-// TestPJ5_AnalyzeSelfCallForm_U0_VoidCall 形态 U0:
-// GETUPVAL+SELF+CALL+RETURN void(`function() o:m() end`,o 是 upval)。
+// TestPJ5_AnalyzeSelfCallForm_U0_VoidCall form U0:
+// GETUPVAL+SELF+CALL+RETURN void (`function() o:m() end`, o is an upval).
 func TestPJ5_AnalyzeSelfCallForm_U0_VoidCall(t *testing.T) {
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
@@ -91,8 +91,8 @@ func TestPJ5_AnalyzeSelfCallForm_U0_VoidCall(t *testing.T) {
 	}
 }
 
-// TestPJ5_AnalyzeSelfCallForm_M0_TailCall 形态 TM0:
-// MOVE+SELF+TAILCALL+RETURN(B=0 dead)(`function(o) return o:m() end`)。
+// TestPJ5_AnalyzeSelfCallForm_M0_TailCall form TM0:
+// MOVE+SELF+TAILCALL+RETURN (B=0 dead) (`function(o) return o:m() end`).
 func TestPJ5_AnalyzeSelfCallForm_M0_TailCall(t *testing.T) {
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
@@ -117,13 +117,13 @@ func TestPJ5_AnalyzeSelfCallForm_M0_TailCall(t *testing.T) {
 	}
 }
 
-// TestPJ5_AnalyzeSelfCallForm_M0_GetterCall 形态 MR1:
-// MOVE+SELF+CALL+RETURN(callA,2)+RETURN(0,1) 0 参 1 返
-// (`function(o) return o:m() end` 编 luac SubProto 主路径 — 实测 TAILCALL,
-// 但合成驱动验形态)。
+// TestPJ5_AnalyzeSelfCallForm_M0_GetterCall form MR1:
+// MOVE+SELF+CALL+RETURN(callA,2)+RETURN(0,1) 0-arg 1-ret
+// (`function(o) return o:m() end` compiled by luac takes the SubProto main path
+// — measured as TAILCALL, but this synthetic driver validates the form).
 func TestPJ5_AnalyzeSelfCallForm_M0_GetterCall(t *testing.T) {
 	// MOVE 1 0;        SELF 1 1 256;
-	// CALL 1 2 2;      // 0 参 1 返
+	// CALL 1 2 2;      // 0 args 1 ret
 	// RETURN 1 2;
 	// RETURN 0 1;
 	proto := &bytecode.Proto{
@@ -150,11 +150,11 @@ func TestPJ5_AnalyzeSelfCallForm_M0_GetterCall(t *testing.T) {
 	}
 }
 
-// TestPJ5_AnalyzeSelfCallForm_M1K_VoidCall 形态 M1K:
-// MOVE+SELF+LOADK+CALL+RETURN void(`function(o) o:m(1) end`)1 K 参 0 返。
+// TestPJ5_AnalyzeSelfCallForm_M1K_VoidCall form M1K:
+// MOVE+SELF+LOADK+CALL+RETURN void (`function(o) o:m(1) end`) 1 K-arg 0-ret.
 func TestPJ5_AnalyzeSelfCallForm_M1K_VoidCall(t *testing.T) {
-	// MOVE 1 0;     SELF 1 1 256(K0=method);
-	// LOADK 3 1(K1=1);  CALL 1 3 1;  RETURN 0 1
+	// MOVE 1 0;     SELF 1 1 256 (K0=method);
+	// LOADK 3 1 (K1=1);  CALL 1 3 1;  RETURN 0 1
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
 			bytecode.EncodeABC(bytecode.MOVE, 1, 0, 0),
@@ -183,10 +183,10 @@ func TestPJ5_AnalyzeSelfCallForm_M1K_VoidCall(t *testing.T) {
 	}
 }
 
-// TestPJ5_AnalyzeSelfCallForm_M1R_VoidCall 形态 M1R:
-// MOVE+SELF+MOVE+CALL+RETURN void(`function(o,a) o:m(a) end`)1 reg 参 0 返。
+// TestPJ5_AnalyzeSelfCallForm_M1R_VoidCall form M1R:
+// MOVE+SELF+MOVE+CALL+RETURN void (`function(o,a) o:m(a) end`) 1 reg-arg 0-ret.
 func TestPJ5_AnalyzeSelfCallForm_M1R_VoidCall(t *testing.T) {
-	// 注:实际 luac 编 `function(o,a) o:m(a) end` 是
+	// Note: luac actually compiles `function(o,a) o:m(a) end` as
 	// MOVE 2 0;SELF 2 2 256;MOVE 4 1;CALL 2 3 1;RETURN 0 1
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
@@ -212,7 +212,7 @@ func TestPJ5_AnalyzeSelfCallForm_M1R_VoidCall(t *testing.T) {
 	}
 }
 
-// TestPJ5_AnalyzeSelfCallForm_RejectShortCode 拒识别长度 < 4。
+// TestPJ5_AnalyzeSelfCallForm_RejectShortCode rejects recognition when length < 4.
 func TestPJ5_AnalyzeSelfCallForm_RejectShortCode(t *testing.T) {
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
@@ -225,12 +225,12 @@ func TestPJ5_AnalyzeSelfCallForm_RejectShortCode(t *testing.T) {
 	}
 }
 
-// TestPJ5_AnalyzeSelfCallForm_RejectNoSelf 拒形态 [1] != SELF。
+// TestPJ5_AnalyzeSelfCallForm_RejectNoSelf rejects the form when [1] != SELF.
 func TestPJ5_AnalyzeSelfCallForm_RejectNoSelf(t *testing.T) {
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
 			bytecode.EncodeABC(bytecode.MOVE, 1, 0, 0),
-			bytecode.EncodeABC(bytecode.GETTABLE, 1, 1, 256), // 不是 SELF
+			bytecode.EncodeABC(bytecode.GETTABLE, 1, 1, 256), // not SELF
 			bytecode.EncodeABC(bytecode.CALL, 1, 2, 1),
 			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
 		},
@@ -240,12 +240,12 @@ func TestPJ5_AnalyzeSelfCallForm_RejectNoSelf(t *testing.T) {
 	}
 }
 
-// TestPJ5_AnalyzeSelfCallForm_RejectMethodReg SELF.C < 256(reg 形态)拒。
+// TestPJ5_AnalyzeSelfCallForm_RejectMethodReg rejects SELF.C < 256 (reg form).
 func TestPJ5_AnalyzeSelfCallForm_RejectMethodReg(t *testing.T) {
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
 			bytecode.EncodeABC(bytecode.MOVE, 1, 0, 0),
-			bytecode.EncodeABC(bytecode.SELF, 1, 1, 0), // C=0 即 R(0)
+			bytecode.EncodeABC(bytecode.SELF, 1, 1, 0), // C=0 i.e. R(0)
 			bytecode.EncodeABC(bytecode.CALL, 1, 2, 1),
 			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
 		},
@@ -255,11 +255,11 @@ func TestPJ5_AnalyzeSelfCallForm_RejectMethodReg(t *testing.T) {
 	}
 }
 
-// TestPJ5_AnalyzeSelfCallSpecForm_M0 验 analyzeSelfCallSpecForm 识别长度 4
-// SELF + CALL void 0 参形态 + IC NodeHit feedback 命中 → useSpecSelfCall=true。
+// TestPJ5_AnalyzeSelfCallSpecForm_M0 verifies analyzeSelfCallSpecForm recognizes the
+// length-4 SELF + CALL void 0-arg form + IC NodeHit feedback hit → useSpecSelfCall=true.
 //
-// 形态:MOVE 1 0; SELF 1 1 256; CALL 1 2 1; RETURN 0 1
-// IC[1](SELF pc)= NodeHit + feedback.Points[1] = FBTableMono。
+// Form: MOVE 1 0; SELF 1 1 256; CALL 1 2 1; RETURN 0 1
+// IC[1] (SELF pc) = NodeHit + feedback.Points[1] = FBTableMono.
 func TestPJ5_AnalyzeSelfCallSpecForm_M0(t *testing.T) {
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
@@ -269,15 +269,15 @@ func TestPJ5_AnalyzeSelfCallSpecForm_M0(t *testing.T) {
 			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
 		},
 		IC:     make([]bytecode.ICSlot, 4),
-		Consts: []value.Value{value.Value(0x42)}, // K[0] method key(非 Nil)
+		Consts: []value.Value{value.Value(0x42)}, // K[0] method key (non-Nil)
 	}
-	// IC[1] = SELF 的 IC slot:NodeHit + Shape=7 + Index=2
+	// IC[1] = SELF's IC slot: NodeHit + Shape=7 + Index=2
 	proto.IC[1] = bytecode.ICSlot{Kind: bytecode.ICKindNodeHit, Shape: 7, Index: 2}
 
-	// feedback.Points[1] 对位 SELF pc=1
+	// feedback.Points[1] aligned to SELF pc=1
 	feedback := &bridge.TypeFeedback{
 		Points: []bridge.PointFeedback{
-			{}, // Points[0] dummy(MOVE pc=0)
+			{}, // Points[0] dummy (MOVE pc=0)
 			{Kind: bridge.FBSelfMono, Confidence: 1.0, StableShape: 7, StableIndex: 2},
 		},
 	}
@@ -306,7 +306,7 @@ func TestPJ5_AnalyzeSelfCallSpecForm_M0(t *testing.T) {
 	}
 }
 
-// TestPJ5_AnalyzeSelfCallSpecForm_RejectNoFeedback 无 feedback 时拒(走普通 host.Self 路径)。
+// TestPJ5_AnalyzeSelfCallSpecForm_RejectNoFeedback rejects when there is no feedback (falls back to the plain host.Self path).
 func TestPJ5_AnalyzeSelfCallSpecForm_RejectNoFeedback(t *testing.T) {
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
@@ -324,7 +324,7 @@ func TestPJ5_AnalyzeSelfCallSpecForm_RejectNoFeedback(t *testing.T) {
 	}
 }
 
-// TestPJ5_AnalyzeSelfCallSpecForm_RejectNoNodeHit IC 非 NodeHit 时拒。
+// TestPJ5_AnalyzeSelfCallSpecForm_RejectNoNodeHit rejects when the IC is not NodeHit.
 func TestPJ5_AnalyzeSelfCallSpecForm_RejectNoNodeHit(t *testing.T) {
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
@@ -336,7 +336,7 @@ func TestPJ5_AnalyzeSelfCallSpecForm_RejectNoNodeHit(t *testing.T) {
 		IC:     make([]bytecode.ICSlot, 4),
 		Consts: []value.Value{value.Value(0x42)},
 	}
-	// IC[1] = ArrayHit(非 NodeHit）
+	// IC[1] = ArrayHit (not NodeHit)
 	proto.IC[1] = bytecode.ICSlot{Kind: bytecode.ICKindArrayHit, Shape: 7, Index: 2}
 	feedback := &bridge.TypeFeedback{
 		Points: []bridge.PointFeedback{
@@ -349,22 +349,22 @@ func TestPJ5_AnalyzeSelfCallSpecForm_RejectNoNodeHit(t *testing.T) {
 	}
 }
 
-// TestPJ5_IsValidSpecCallRetCount 验 isValidSpecCallRetCount cC∈{1,3..16}
-// 严格上界(承 84c7ed4 N=2..15 返扩 + 7f5f641 N=15 上界边界 e2e)。
+// TestPJ5_IsValidSpecCallRetCount verifies isValidSpecCallRetCount cC∈{1,3..16}
+// strict upper bound (extends 84c7ed4 N=2..15 ret expansion + 7f5f641 N=15 upper-bound edge e2e).
 func TestPJ5_IsValidSpecCallRetCount(t *testing.T) {
 	tests := []struct {
 		cC   int
 		want bool
 		desc string
 	}{
-		// 接受
+		// accept
 		{1, true, "cC=1 (0 返/void/setter)"},
 		{3, true, "cC=3 (N=2 返)"},
 		{4, true, "cC=4 (N=3 返)"},
 		{5, true, "cC=5 (N=4 返)"},
 		{9, true, "cC=9 (N=8 返)"},
 		{16, true, "cC=16 (N=15 返上界)"},
-		// 拒
+		// reject
 		{0, false, "cC=0 (multi-ret 不识别)"},
 		{2, false, "cC=2 (1 返 getter 走独立分支)"},
 		{17, false, "cC=17 (N=16 返超严格上界)"},
@@ -380,11 +380,11 @@ func TestPJ5_IsValidSpecCallRetCount(t *testing.T) {
 	}
 }
 
-// TestPJ5_AnalyzeSelfCallSpecForm_RejectLowConfidence Confidence < 0.99 拒。
+// TestPJ5_AnalyzeSelfCallSpecForm_RejectLowConfidence rejects when Confidence < 0.99.
 //
-// 承 compiler.go::analyzeSelfCallSpecForm line 2564:`pf.Confidence < 0.99
-// 应返 false`。承 03-speculation-ic.md FBSelfMono 多态化降低 Confidence
-// 时降级 host.Self 安全。
+// Follows compiler.go::analyzeSelfCallSpecForm line 2564: `pf.Confidence < 0.99
+// should return false`. Follows 03-speculation-ic.md: when FBSelfMono polymorphizes
+// and lowers Confidence, degrading to host.Self is safe.
 func TestPJ5_AnalyzeSelfCallSpecForm_RejectLowConfidence(t *testing.T) {
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
@@ -397,7 +397,7 @@ func TestPJ5_AnalyzeSelfCallSpecForm_RejectLowConfidence(t *testing.T) {
 		Consts: []value.Value{value.Value(0x42)},
 	}
 	proto.IC[1] = bytecode.ICSlot{Kind: bytecode.ICKindNodeHit, Shape: 7, Index: 2}
-	// Confidence 0.5(<0.99 阈值)
+	// Confidence 0.5 (< 0.99 threshold)
 	feedback := &bridge.TypeFeedback{
 		Points: []bridge.PointFeedback{
 			{},
@@ -409,10 +409,10 @@ func TestPJ5_AnalyzeSelfCallSpecForm_RejectLowConfidence(t *testing.T) {
 	}
 }
 
-// TestPJ5_AnalyzeSelfCallSpecForm_RejectShapeMismatch IC.Shape != feedback.StableShape 拒。
+// TestPJ5_AnalyzeSelfCallSpecForm_RejectShapeMismatch rejects when IC.Shape != feedback.StableShape.
 //
-// 承 compiler.go::analyzeSelfCallSpecForm line 2567:Shape/Index 不一致时返 false
-// (IC 与 feedback 失同步,可能 IC slot 后更新或 feedback 期旧 shape)。
+// Follows compiler.go::analyzeSelfCallSpecForm line 2567: return false when Shape/Index disagree
+// (IC and feedback are out of sync, e.g. the IC slot was updated later or the feedback holds a stale shape).
 func TestPJ5_AnalyzeSelfCallSpecForm_RejectShapeMismatch(t *testing.T) {
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
@@ -426,7 +426,7 @@ func TestPJ5_AnalyzeSelfCallSpecForm_RejectShapeMismatch(t *testing.T) {
 	}
 	// IC.Shape = 7
 	proto.IC[1] = bytecode.ICSlot{Kind: bytecode.ICKindNodeHit, Shape: 7, Index: 2}
-	// feedback.StableShape = 99(mismatch)
+	// feedback.StableShape = 99 (mismatch)
 	feedback := &bridge.TypeFeedback{
 		Points: []bridge.PointFeedback{
 			{},
@@ -438,8 +438,8 @@ func TestPJ5_AnalyzeSelfCallSpecForm_RejectShapeMismatch(t *testing.T) {
 	}
 }
 
-// TestPJ5_AnalyzeSelfCallSpecForm_RejectStableKeyNil stableKey=Nil 拒
-// (SELF.C 常量为 Nil 时无法烧入,防 SELF NodeHit guard 误命中)。
+// TestPJ5_AnalyzeSelfCallSpecForm_RejectStableKeyNil rejects when stableKey=Nil
+// (when SELF.C's constant is Nil it cannot be baked in; guards against a false SELF NodeHit guard hit).
 func TestPJ5_AnalyzeSelfCallSpecForm_RejectStableKeyNil(t *testing.T) {
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
@@ -463,8 +463,8 @@ func TestPJ5_AnalyzeSelfCallSpecForm_RejectStableKeyNil(t *testing.T) {
 	}
 }
 
-// TestPJ5_AnalyzeSelfCallForm_RejectCodeLenTooSmall codeLen<4 应拒
-// (SELF 至少需要 MOVE/GETUPVAL + SELF + CALL + RETURN = 4 op)。
+// TestPJ5_AnalyzeSelfCallForm_RejectCodeLenTooSmall codeLen<4 should be rejected
+// (SELF needs at least MOVE/GETUPVAL + SELF + CALL + RETURN = 4 ops).
 func TestPJ5_AnalyzeSelfCallForm_RejectCodeLenTooSmall(t *testing.T) {
 	for _, codeLen := range []int{1, 2, 3} {
 		proto := &bytecode.Proto{
@@ -477,19 +477,19 @@ func TestPJ5_AnalyzeSelfCallForm_RejectCodeLenTooSmall(t *testing.T) {
 	}
 }
 
-// TestPJ5_AnalyzeSelfCallForm_RejectCodeLenTooLarge codeLen>11 应拒
-// (8+ 参形态 codeLen >= 12,spec template + inline 都未接入,降级 host
-// helper round-trip 路径,承 §9.19 N=0..7 参覆盖上界)。
+// TestPJ5_AnalyzeSelfCallForm_RejectCodeLenTooLarge codeLen>11 should be rejected
+// (8+ arg forms have codeLen >= 12; neither the spec template nor inline covers them, so they
+// degrade to the host helper round-trip path; follows §9.19 N=0..7 arg coverage upper bound).
 //
-// 本测试显性化 8+ 参 spec template 边界,防 future regression(若 form12+
-// 接入,本测试需同步修正上界)。
+// This test makes the 8+ arg spec template boundary explicit, guarding against future regression
+// (if form12+ gets covered, this test's upper bound must be updated accordingly).
 func TestPJ5_AnalyzeSelfCallForm_RejectCodeLenTooLarge(t *testing.T) {
 	for _, codeLen := range []int{12, 13, 14, 20} {
 		proto := &bytecode.Proto{
 			Code:   make([]bytecode.Instruction, codeLen),
 			Consts: []value.Value{},
 		}
-		// 填入合法 SELF 形态前 4 op,后续 op 填 NOP(实际不会被读到)
+		// Fill in a valid SELF form for the first 4 ops; the rest are NOP (never actually read)
 		proto.Code[0] = bytecode.EncodeABC(bytecode.MOVE, 1, 0, 0)
 		proto.Code[1] = bytecode.EncodeABC(bytecode.SELF, 1, 1, 256)
 		if _, ok := analyzeSelfCallForm(proto); ok {

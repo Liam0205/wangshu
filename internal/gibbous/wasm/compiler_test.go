@@ -12,7 +12,7 @@ import (
 	"github.com/Liam0205/wangshu/internal/bytecode"
 )
 
-// PW1/PW2 Compiler 基础验收。SupportsAllOpcodes 白名单随 PW 推进扩充。
+// PW1/PW2 Compiler basic acceptance. The SupportsAllOpcodes whitelist grows as PW progresses.
 
 func newTestCompiler(t *testing.T) (*Compiler, func()) {
 	t.Helper()
@@ -22,12 +22,12 @@ func newTestCompiler(t *testing.T) (*Compiler, func()) {
 	return c, func() { _ = rt.Close(ctx) }
 }
 
-// TestCompiler_SupportsWhitelist PW2 白名单:直线 opcode 支持,未实装的拒。
+// TestCompiler_SupportsWhitelist PW2 whitelist: straight-line opcodes are supported, unimplemented ones are rejected.
 func TestCompiler_SupportsWhitelist(t *testing.T) {
 	c, cleanup := newTestCompiler(t)
 	defer cleanup()
 
-	// 单 BB 直线 opcode → 支持
+	// Single-BB straight-line opcodes → supported
 	supported := []struct {
 		name string
 		code []bytecode.Instruction
@@ -57,7 +57,7 @@ func TestCompiler_SupportsWhitelist(t *testing.T) {
 		})
 	}
 
-	// 未实装 opcode(VARARG 永不支持,02 §1.3)→ 拒
+	// Unimplemented opcode (VARARG is never supported, 02 §1.3) → rejected
 	notYet := []bytecode.Instruction{
 		bytecode.EncodeABC(bytecode.VARARG, 0, 0, 0),
 		bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
@@ -67,32 +67,33 @@ func TestCompiler_SupportsWhitelist(t *testing.T) {
 	}
 }
 
-// TestCompiler_ImplementsP3Compiler 编译期断言 Compiler 实现接口。
+// TestCompiler_ImplementsP3Compiler compile-time assertion that Compiler implements the interface.
 func TestCompiler_ImplementsP3Compiler(t *testing.T) {
 	c, cleanup := newTestCompiler(t)
 	defer cleanup()
 	var _ bridge.P3Compiler = c
 }
 
-// TestCompiler_PanicRecover Compile 内部 panic 被 defer recover 兜底转
-// *CompileError(BackendPanic),不穿越接口(02 §1.4)。
+// TestCompiler_PanicRecover a panic inside Compile is caught by defer recover
+// and converted to *CompileError(BackendPanic), without crossing the interface (02 §1.4).
 //
-// 用一个会让 translate panic 的畸形 Proto 触发(Consts 越界:LOADK 引用
-// 不存在的常量索引)。SupportsAllOpcodes 先放行(数字常量假设),Compile
-// 翻译时 Consts[bx] 越界 panic → recover。
+// Triggered with a malformed Proto that makes translate panic (Consts out of bounds:
+// LOADK references a nonexistent constant index). SupportsAllOpcodes lets it through
+// first (numeric-constant assumption), then Compile panics on the out-of-bounds
+// Consts[bx] during translation → recover.
 func TestCompiler_PanicRecover(t *testing.T) {
 	c, cleanup := newTestCompiler(t)
 	defer cleanup()
 
-	// LOADK 引用 Consts[5] 但 Consts 为空 → translate emitLoadK 越界 panic
+	// LOADK references Consts[5] but Consts is empty → translate emitLoadK panics out of bounds
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
 			bytecode.EncodeABx(bytecode.LOADK, 0, 5),
 			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
 		},
-		Consts: nil, // 空 → Consts[5] 越界
+		Consts: nil, // empty → Consts[5] out of bounds
 	}
-	// SupportsAllOpcodes:LOADK 非字符串常量(StringLitIdx 空)→ 放行;单 BB。
+	// SupportsAllOpcodes: LOADK is a non-string constant (StringLitIdx empty) → allowed; single BB.
 	if !c.SupportsAllOpcodes(proto) {
 		t.Skip("proto not supported, panic path not reachable")
 	}
@@ -108,7 +109,7 @@ func TestCompiler_PanicRecover(t *testing.T) {
 	}
 }
 
-// TestCompiler_EmptyProtoVacuous 空 Proto vacuously supported(无 unsupported op)。
+// TestCompiler_EmptyProtoVacuous an empty Proto is vacuously supported (no unsupported op).
 func TestCompiler_EmptyProtoVacuous(t *testing.T) {
 	c, cleanup := newTestCompiler(t)
 	defer cleanup()

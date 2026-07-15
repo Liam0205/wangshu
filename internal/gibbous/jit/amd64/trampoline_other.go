@@ -2,11 +2,12 @@
 
 package amd64
 
-// CallJIT 在非 linux/amd64 平台上 panic——PJ1 阶段验收平台 = linux/amd64
-// (06 §6.1 PJ1 行)。
+// CallJIT panics on non-linux/amd64 platforms — the PJ1 acceptance platform is
+// linux/amd64 (06 §6.1, PJ1 row).
 //
-// 非 linux/amd64 平台启用 wangshu_p4 时,Compiler.SupportsAllOpcodes 仍全
-// false(承 PJ0 验收口径),不应触达本函数;若触达说明上游绕过了 F7 闸门。
+// When wangshu_p4 is enabled on a non-linux/amd64 platform, Compiler.SupportsAllOpcodes
+// still returns false everywhere (per the PJ0 acceptance rule), so this function
+// should never be reached; reaching it means the upstream bypassed the F7 gate.
 func CallJIT(codeAddr uintptr) uint64 {
 	_ = codeAddr
 	panic("internal/gibbous/jit/amd64: CallJIT unsupported on this platform (PJ1 only on linux/amd64)")

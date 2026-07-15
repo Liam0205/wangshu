@@ -1,8 +1,10 @@
-// Bridge 包骨架冒烟测试(PB0)——验证类型定义、Bridge 构造、钩点 no-op
-// 形态、profileTable 惰性建表、零分配常态。
+// Bridge package skeleton smoke tests (PB0) — verify type definitions, Bridge
+// construction, no-op hook points, lazy profileTable population, and the
+// zero-allocation steady state.
 //
-// **本测试不验证状态机转移**(那是 PB4 落地后的事)——PB0 阶段
-// considerPromotion 是 no-op 占位,任何越阈值都不真正升层。
+// **This test does not verify state-machine transitions** (that comes after
+// PB4 lands) — in the PB0 phase considerPromotion is a no-op placeholder, so
+// crossing any threshold does not actually promote a tier.
 package bridge
 
 import (
@@ -11,8 +13,9 @@ import (
 	"github.com/Liam0205/wangshu/internal/bytecode"
 )
 
-// TestEnumStrings 锁定 String() 输出格式——升层日志(04 §6)与诊断工具
-// 都依赖这些字符串,不能因实装迭代漂移。
+// TestEnumStrings pins the String() output format — tier-promotion logs
+// (04 §6) and diagnostic tools both depend on these strings, so they must not
+// drift as the implementation evolves.
 func TestEnumStrings(t *testing.T) {
 	t.Helper()
 	cases := []struct {
@@ -45,9 +48,10 @@ func TestEnumStrings(t *testing.T) {
 	}
 }
 
-// TestProfileDataZeroValue 锁定 Go 零值即 TierInterp + CompUnknown
-// (01 §6.5 profileTable 惰性建表的基石——`pd := &ProfileData{}` 即合法
-// 起点,无需显式 set)。
+// TestProfileDataZeroValue pins that the Go zero value is exactly TierInterp +
+// CompUnknown (01 §6.5, the cornerstone of lazy profileTable population —
+// `pd := &ProfileData{}` is a valid starting point with no explicit set
+// needed).
 func TestProfileDataZeroValue(t *testing.T) {
 	pd := &ProfileData{}
 	if pd.TierState != TierInterp {
@@ -64,8 +68,9 @@ func TestProfileDataZeroValue(t *testing.T) {
 	}
 }
 
-// TestBridgeProfileOfLazy 验证 profileTable 惰性建表(同一 Proto 多次 ProfileOf
-// 应得到同一指针;不同 Proto 得到不同 pd)。
+// TestBridgeProfileOfLazy verifies lazy profileTable population (repeated
+// ProfileOf on the same Proto must return the same pointer; different Protos
+// get different pds).
 func TestBridgeProfileOfLazy(t *testing.T) {
 	b := NewBridge()
 	p1 := &bytecode.Proto{Code: make([]bytecode.Instruction, 4)}
@@ -82,12 +87,14 @@ func TestBridgeProfileOfLazy(t *testing.T) {
 	}
 }
 
-// TestOnBackEdgeAccumulates 验证回边计数自增 + 阈值前不触发升层。
+// TestOnBackEdgeAccumulates verifies that the back-edge counter increments and
+// that no tier promotion is triggered before the threshold.
 //
-// **PB0 没有真升层**——OnBackEdge 越阈值后调 considerPromotion 是 no-op,
-// TierState 仍是 TierInterp。本测试锁定 PB0 的占位语义,PB4 落地后会被
-// 加强(届时 TierState 应转 TierStuck:Compilable=CompUnknown 视同
-// CompNotCompilable,03 §5.5)。
+// **PB0 has no real promotion** — the considerPromotion that OnBackEdge calls
+// after crossing the threshold is a no-op, so TierState stays TierInterp. This
+// test pins the PB0 placeholder semantics; it will be strengthened after PB4
+// lands (at which point TierState should transition to TierStuck:
+// Compilable=CompUnknown is treated as CompNotCompilable, 03 §5.5).
 func TestOnBackEdgeAccumulates(t *testing.T) {
 	b := NewBridge()
 	p := &bytecode.Proto{Code: make([]bytecode.Instruction, 8)}
@@ -104,7 +111,7 @@ func TestOnBackEdgeAccumulates(t *testing.T) {
 	}
 }
 
-// TestOnEnterAccumulates 函数入口计数自增。
+// TestOnEnterAccumulates increments the function-entry counter.
 func TestOnEnterAccumulates(t *testing.T) {
 	b := NewBridge()
 	p := &bytecode.Proto{Code: make([]bytecode.Instruction, 4)}
@@ -118,9 +125,9 @@ func TestOnEnterAccumulates(t *testing.T) {
 	}
 }
 
-// TestTierGuardBlocksCounting 验证 TierState != TierInterp 时 onBackEdge /
-// onEnter 直接 return(01 §4.1 守卫)——已升 Gibbous / 已卡 Stuck 的 Proto
-// 不应再累计计数。
+// TestTierGuardBlocksCounting verifies that when TierState != TierInterp,
+// onBackEdge / onEnter return immediately (01 §4.1 guard) — a Proto already
+// promoted to Gibbous or stuck at Stuck should no longer accumulate counts.
 func TestTierGuardBlocksCounting(t *testing.T) {
 	b := NewBridge()
 	p := &bytecode.Proto{Code: make([]bytecode.Instruction, 4)}
@@ -138,7 +145,8 @@ func TestTierGuardBlocksCounting(t *testing.T) {
 	}
 }
 
-// TestSetCompilability 锁定一次写、运行期只读语义(03 §5.4)。
+// TestSetCompilability pins the write-once, read-only-at-runtime semantics
+// (03 §5.4).
 func TestSetCompilability(t *testing.T) {
 	b := NewBridge()
 	p := &bytecode.Proto{Code: make([]bytecode.Instruction, 4)}
@@ -156,8 +164,9 @@ func TestSetCompilability(t *testing.T) {
 	}
 }
 
-// TestProfileDataMaxBackEdge 验证 MaxBackEdge 取最大单回边累计(用于诊断
-// 日志「累计 N 次回边」,01 §2.5 (a) 升层后保留 backEdge 用)。
+// TestProfileDataMaxBackEdge verifies that MaxBackEdge returns the maximum
+// per-back-edge count (used by the diagnostic log "N accumulated back edges",
+// 01 §2.5 (a) which keeps backEdge after promotion).
 func TestProfileDataMaxBackEdge(t *testing.T) {
 	pd := &ProfileData{BackEdge: []uint32{3, 17, 5, 9}}
 	if got := pd.MaxBackEdge(); got != 17 {

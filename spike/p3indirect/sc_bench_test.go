@@ -8,10 +8,12 @@ import (
 	"github.com/tetratelabs/wazero/api"
 )
 
-// S-C dispatch 成本:跨 module call_indirect(经共享 imported 表)单次成本,确认
-// 与 intra-module(S-A ~2.5ns)无显著差(跨 module 不引入额外 dispatch 惩罚)。
+// S-C dispatch cost: per-call cost of a cross-module call_indirect (via a
+// shared imported table), confirming there is no significant difference from
+// the intra-module case (S-A ~2.5ns), i.e. crossing modules adds no extra
+// dispatch penalty.
 //
-// 跑法:GOFLAGS=-mod=mod go test -run '^$' -bench BenchmarkSC -benchtime=2s -count=3
+// Run: GOFLAGS=-mod=mod go test -run '^$' -bench BenchmarkSC -benchtime=2s -count=3
 func BenchmarkSC_CrossModuleIndirect(b *testing.B) {
 	ctx := context.Background()
 	rt := newCompilerRuntime(ctx)

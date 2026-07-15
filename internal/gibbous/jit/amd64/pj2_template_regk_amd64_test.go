@@ -9,15 +9,17 @@ import (
 	"unsafe"
 )
 
-// pj2_template_regk_amd64_test.go —— PJ2 reg-K 形态投机模板真 mmap+RX
-// round-trip 验证。形态 `R(A) = R(B) op K` 中 K 在编译期烧成 imm64,
-// 单 guard 仅校验 R(B)。
+// pj2_template_regk_amd64_test.go —— PJ2 reg-K form speculative-template real
+// mmap+RX round-trip verification. In the form `R(A) = R(B) op K`, K is baked
+// into an imm64 at compile time, and the single guard only checks R(B).
 //
-// **设计基础**:`x + 1` / `n * 2` 等 hot path 常量化形态——luac 把 `x+1`
-// 编成 `ADD A B 256+kidx`(C 高位置 1 = 常量),K[kidx] 是 NumberValue(1).
-// 编译期解析 K 必须是 number(否则降级 host),然后烧入 imm64 直发段。
+// **Design basis**: hot paths like `x + 1` / `n * 2` in a constant-folded
+// form -- luac compiles `x+1` into `ADD A B 256+kidx` (C high bit set = a
+// constant), where K[kidx] is NumberValue(1). At compile time, K must resolve
+// to a number (otherwise fall back to host), then it is baked into an imm64
+// emitted directly into the segment.
 
-// TestPJ2_SpeculativeBinopRegK_ADD:R(0)=10 + K(5) = 15.
+// TestPJ2_SpeculativeBinopRegK_ADD: R(0)=10 + K(5) = 15.
 func TestPJ2_SpeculativeBinopRegK_ADD(t *testing.T) {
 	pj2TestStack[0] = math.Float64bits(10.0)
 	pj2TestStack[1] = 0
@@ -46,7 +48,7 @@ func TestPJ2_SpeculativeBinopRegK_ADD(t *testing.T) {
 	}
 }
 
-// TestPJ2_SpeculativeBinopRegK_SUB:R(0)=10 - K(3) = 7.
+// TestPJ2_SpeculativeBinopRegK_SUB: R(0)=10 - K(3) = 7.
 func TestPJ2_SpeculativeBinopRegK_SUB(t *testing.T) {
 	pj2TestStack[0] = math.Float64bits(10.0)
 	pj2TestStack[1] = 0
@@ -70,7 +72,7 @@ func TestPJ2_SpeculativeBinopRegK_SUB(t *testing.T) {
 	}
 }
 
-// TestPJ2_SpeculativeBinopRegK_MUL:R(0)=7 * K(6) = 42.
+// TestPJ2_SpeculativeBinopRegK_MUL: R(0)=7 * K(6) = 42.
 func TestPJ2_SpeculativeBinopRegK_MUL(t *testing.T) {
 	pj2TestStack[0] = math.Float64bits(7.0)
 	pj2TestStack[1] = 0
@@ -94,7 +96,7 @@ func TestPJ2_SpeculativeBinopRegK_MUL(t *testing.T) {
 	}
 }
 
-// TestPJ2_SpeculativeBinopRegK_DIV:R(0)=42 / K(6) = 7.
+// TestPJ2_SpeculativeBinopRegK_DIV: R(0)=42 / K(6) = 7.
 func TestPJ2_SpeculativeBinopRegK_DIV(t *testing.T) {
 	pj2TestStack[0] = math.Float64bits(42.0)
 	pj2TestStack[1] = 0
@@ -118,8 +120,8 @@ func TestPJ2_SpeculativeBinopRegK_DIV(t *testing.T) {
 	}
 }
 
-// TestPJ2_SpeculativeBinopRegK_WithGuard_FastPath:R(B) 是 number → guard
-// 通过 → 走 reg-K 快路径 → R(A) = R(B) + K.
+// TestPJ2_SpeculativeBinopRegK_WithGuard_FastPath: R(B) is a number → guard
+// passes → takes the reg-K fast path → R(A) = R(B) + K.
 func TestPJ2_SpeculativeBinopRegK_WithGuard_FastPath(t *testing.T) {
 	pj2TestStack[0] = math.Float64bits(10.0)
 	pj2TestStack[1] = 0
@@ -152,8 +154,8 @@ func TestPJ2_SpeculativeBinopRegK_WithGuard_FastPath(t *testing.T) {
 	}
 }
 
-// TestPJ2_SpeculativeBinopRegK_WithGuard_DeoptPath:R(B) 是 table NaN-box
-// (非 number)→ guard 失败 → 跳 deopt block → rax = deoptCode.
+// TestPJ2_SpeculativeBinopRegK_WithGuard_DeoptPath: R(B) is a table NaN-box
+// (not a number) → guard fails → jumps to the deopt block → rax = deoptCode.
 func TestPJ2_SpeculativeBinopRegK_WithGuard_DeoptPath(t *testing.T) {
 	pj2TestStack[0] = 0xFFFC000000000001 // table NaN-box
 	pj2TestStack[1] = 0

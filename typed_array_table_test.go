@@ -1,6 +1,6 @@
-// 类型化 array table 构造器测试(issue #13)——
-// NewFloatArrayTable / NewInt64ArrayTable / NewBoolArrayTable / NewStringArrayTable。
-// 验证 round-trip、脚本读出形态、空/nil slice、int64 精度边界。
+// Typed array-table constructor tests (issue #13) —
+// NewFloatArrayTable / NewInt64ArrayTable / NewBoolArrayTable / NewStringArrayTable.
+// Verify round-trip, script-visible shape, empty/nil slice, int64 precision bounds.
 package wangshu_test
 
 import (
@@ -10,8 +10,9 @@ import (
 	"github.com/Liam0205/wangshu"
 )
 
-// TestNewFloatArrayTable_RoundTrip 验证 float64 进 array 段、`xs[i]` 与 `#xs`
-// 读出与 NewArrayTable([]Value{Number(...)}) 字节等价。
+// TestNewFloatArrayTable_RoundTrip verifies float64 values land in the array
+// segment and that `xs[i]` / `#xs` read back byte-equal to
+// NewArrayTable([]Value{Number(...)}).
 func TestNewFloatArrayTable_RoundTrip(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{})
 	tv := st.NewFloatArrayTable([]float64{1.5, 2.5, 3.5})
@@ -34,8 +35,9 @@ func TestNewFloatArrayTable_RoundTrip(t *testing.T) {
 	}
 }
 
-// TestNewFloatArrayTable_ScriptVisible 验证脚本侧 `xs[i]` 看到的就是普通 array,
-// 不是 arena 列轨的 `__index` 代理表(关键 parity 承诺)。
+// TestNewFloatArrayTable_ScriptVisible verifies the script side sees `xs[i]` as
+// a plain array, not the arena column track's `__index` proxy table (a key
+// parity promise).
 func TestNewFloatArrayTable_ScriptVisible(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{})
 	tv := st.NewFloatArrayTable([]float64{10, 20, 30, 40, 50})
@@ -62,7 +64,8 @@ func TestNewFloatArrayTable_ScriptVisible(t *testing.T) {
 	}
 }
 
-// TestNewFloatArrayTable_EmptyAndNil 验证空 slice 与 nil slice 都合法,返回空表。
+// TestNewFloatArrayTable_EmptyAndNil verifies both an empty slice and a nil
+// slice are valid and return an empty table.
 func TestNewFloatArrayTable_EmptyAndNil(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{})
 	for _, vals := range [][]float64{{}, nil} {
@@ -74,7 +77,8 @@ func TestNewFloatArrayTable_EmptyAndNil(t *testing.T) {
 	}
 }
 
-// TestNewInt64ArrayTable_RoundTrip 验证 int64 元素 round-trip 到 float64 后正确读出。
+// TestNewInt64ArrayTable_RoundTrip verifies int64 elements read back correctly
+// after round-tripping through float64.
 func TestNewInt64ArrayTable_RoundTrip(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{})
 	tv, err := st.NewInt64ArrayTable([]int64{10, 20, 30})
@@ -91,8 +95,8 @@ func TestNewInt64ArrayTable_RoundTrip(t *testing.T) {
 	}
 }
 
-// TestNewInt64ArrayTable_PrecisionOverflow 验证 |v| > 2^53 触发错误且返回 Nil。
-// 与 Arena.AddInt64Column 同款规则(评审决策第 3 项)。
+// TestNewInt64ArrayTable_PrecisionOverflow verifies |v| > 2^53 triggers an error
+// and returns Nil. Same rule as Arena.AddInt64Column (review decision item 3).
 func TestNewInt64ArrayTable_PrecisionOverflow(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{})
 	cases := []struct {
@@ -120,7 +124,8 @@ func TestNewInt64ArrayTable_PrecisionOverflow(t *testing.T) {
 	}
 }
 
-// TestNewInt64ArrayTable_BoundaryValuesAccepted 验证 ±2^53 边界本身被接受(只有超出才报错)。
+// TestNewInt64ArrayTable_BoundaryValuesAccepted verifies the ±2^53 boundary
+// itself is accepted (only values beyond it error out).
 func TestNewInt64ArrayTable_BoundaryValuesAccepted(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{})
 	tv, err := st.NewInt64ArrayTable([]int64{1 << 53, -(1 << 53)})
@@ -133,7 +138,7 @@ func TestNewInt64ArrayTable_BoundaryValuesAccepted(t *testing.T) {
 	}
 }
 
-// TestNewBoolArrayTable_RoundTrip 验证 bool 元素 round-trip。
+// TestNewBoolArrayTable_RoundTrip verifies bool element round-trip.
 func TestNewBoolArrayTable_RoundTrip(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{})
 	tv := st.NewBoolArrayTable([]bool{true, false, true})
@@ -150,7 +155,8 @@ func TestNewBoolArrayTable_RoundTrip(t *testing.T) {
 	}
 }
 
-// TestNewBoolArrayTable_ScriptVisible 验证脚本侧 `flags[i]` 与 `and/or` 短路操作正常。
+// TestNewBoolArrayTable_ScriptVisible verifies the script side handles
+// `flags[i]` and `and`/`or` short-circuit operations correctly.
 func TestNewBoolArrayTable_ScriptVisible(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{})
 	tv := st.NewBoolArrayTable([]bool{true, false, true, true})
@@ -170,7 +176,7 @@ func TestNewBoolArrayTable_ScriptVisible(t *testing.T) {
 	}
 }
 
-// TestNewStringArrayTable_RoundTrip 验证 string 元素 round-trip。
+// TestNewStringArrayTable_RoundTrip verifies string element round-trip.
 func TestNewStringArrayTable_RoundTrip(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{})
 	tv := st.NewStringArrayTable([]string{"alice", "bob", "carol"})
@@ -187,8 +193,9 @@ func TestNewStringArrayTable_RoundTrip(t *testing.T) {
 	}
 }
 
-// TestNewStringArrayTable_ScriptConcat 验证脚本侧 string concat/比较行为一致
-// (重点:intern 后 GCRef 与 wangshu.String 字面量等价)。
+// TestNewStringArrayTable_ScriptConcat verifies the script side has consistent
+// string concat/comparison behavior (key point: after interning, the GCRef is
+// equivalent to a wangshu.String literal).
 func TestNewStringArrayTable_ScriptConcat(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{})
 	tv := st.NewStringArrayTable([]string{"foo", "bar", "baz"})
@@ -206,8 +213,9 @@ func TestNewStringArrayTable_ScriptConcat(t *testing.T) {
 	}
 }
 
-// TestNewStringArrayTable_InternDedup 验证重复 string 元素共享 intern 槽
-// (隐式契约:相同字面量在 array 段里仍正确比较等价)。
+// TestNewStringArrayTable_InternDedup verifies duplicate string elements share
+// an intern slot (implicit contract: identical literals still compare equal
+// inside the array segment).
 func TestNewStringArrayTable_InternDedup(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{})
 	tv := st.NewStringArrayTable([]string{"alice", "alice", "alice"})
@@ -223,14 +231,15 @@ func TestNewStringArrayTable_InternDedup(t *testing.T) {
 	}
 }
 
-// TestNewArrayTable_NoAllocPerElement_NonPanic 兼具 smoke 测试与 stress 用途:
-// 在 GCStressMode 下连跑多次 typed-array 构造 + 脚本读 + Release,确保无 panic
-// 或泄漏(重点:typed-array 不走 fromInnerWithPin,但仍要兼容 GC 压力)。
+// TestNewArrayTable_NoAllocPerElement_NonPanic serves as both a smoke test and a
+// stress test: under GCStressMode it repeatedly runs typed-array construction +
+// script read + Release, ensuring no panic or leak (key point: typed-array does
+// not go through fromInnerWithPin, but must still tolerate GC pressure).
 func TestNewArrayTable_NoAllocPerElement_NonPanic(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{})
 	st.SetGCStressMode(true)
 	for r := 0; r < 50; r++ {
-		// 每轮换一种 typed-array 跑一遍
+		// run a different typed-array each round
 		tv1 := st.NewFloatArrayTable([]float64{1, 2, 3, 4, 5})
 		tv1.Release()
 

@@ -1,67 +1,69 @@
 // Proto layout (01 §5.7) — Go-heap-resident, referenced by integer ProtoID.
 //
-// 含设计文档定稿的回填字段:LocVars(09 §8.4)与 UpvalDescs.Name(04 §8.3)。
+// Includes the back-filled fields finalized in the design docs: LocVars (09 §8.4) and UpvalDescs.Name (04 §8.3).
 package bytecode
 
 import "github.com/Liam0205/wangshu/internal/value"
 
 // UpvalDesc describes how an upvalue is captured by an inner function (04 §8.3).
 type UpvalDesc struct {
-	Name    string // 调试名(09 §8 函数名推断 / traceback 用)
-	InStack bool   // true: 捕获外层局部寄存器;false: 捕获外层 upvalue
-	Idx     uint8  // InStack=true:外层寄存器号;false:外层 upvalue 索引
+	Name    string // debug name (09 §8 function-name inference / traceback)
+	InStack bool   // true: captures an enclosing local register; false: captures an enclosing upvalue
+	Idx     uint8  // InStack=true: enclosing register number; false: enclosing upvalue index
 }
 
-// LocalVar describes a local variable's name and live range (04 §5.9 / 09 §8.4 回填)。
+// LocalVar describes a local variable's name and live range (04 §5.9 / 09 §8.4 back-fill).
 type LocalVar struct {
 	Name    string
-	StartPC int32 // 闭区间起点
-	EndPC   int32 // 开区间终点 [StartPC, EndPC)
+	StartPC int32 // inclusive start
+	EndPC   int32 // exclusive end [StartPC, EndPC)
 }
 
 // Proto is the immutable compilation unit (one per Lua function).
 //
-// 字符串字面量惰性 intern(承 01 §5.7 / 06 §5.1 R6 改写):codegen 期间 Consts 中字符串
-// 槽位置 Nil 占位,真实字面量原文在 StringLits;StringLitIdx[i] >= 0 表示 Consts[i] 是
-// 字符串占位且原文在 StringLits[StringLitIdx[i]];= -1 表示真常量(Number/Bool/Nil)。
-// 每个 State 首次执行该 Proto 时把 StringLits 逐个 intern 进自己的 arena,得到该 State
-// 私有的 GCRef 表(GC 根,R6)。这使一个 Program 可被多 State / 多 goroutine 复用(11 §1.4)。
+// Lazy interning of string literals (per 01 §5.7 / 06 §5.1 R6 rewrite): during codegen the string
+// slots in Consts hold a Nil placeholder while the real literal text lives in StringLits;
+// StringLitIdx[i] >= 0 means Consts[i] is a string placeholder whose text is at
+// StringLits[StringLitIdx[i]]; = -1 means a true constant (Number/Bool/Nil).
+// The first time a State executes this Proto it interns each StringLits entry into its own arena,
+// yielding that State's private GCRef table (a GC root, R6). This lets one Program be reused across
+// multiple States / goroutines (11 §1.4).
 type Proto struct {
-	Source      string // 源名(chunkname),用于错误回溯前缀
-	LineDefined int32  // 函数定义起始行
-	LineEnd     int32  // 函数定义结束行(`end` 行)
+	Source      string // source name (chunkname), used as the error-traceback prefix
+	LineDefined int32  // starting line of the function definition
+	LineEnd     int32  // ending line of the function definition (the `end` line)
 
-	NumParams uint8 // 形参个数
-	IsVararg  bool  // 是否 vararg 函数
-	NeedsArg  bool  // LUA_COMPAT_VARARG:vararg 函数隐式 arg 表(5.1 默认 compat;main chunk 无)
-	MaxStack  uint8 // 寄存器水位线(04 §5.3),解释器进帧时备栈
+	NumParams uint8 // number of formal parameters
+	IsVararg  bool  // whether this is a vararg function
+	NeedsArg  bool  // LUA_COMPAT_VARARG: implicit arg table for vararg functions (5.1 defaults to compat; the main chunk has none)
+	MaxStack  uint8 // register high-water mark (04 §5.3), reserved on the stack when the interpreter enters the frame
 
-	Code         []Instruction // 32-bit 指令流
-	Consts       []value.Value // 常量槽:数字直接 boxed;字符串槽是 Nil 占位(由 State 装载期惰性替换)
-	StringLits   []string      // 字符串字面量原文(Compile 期间收集,跨 State 共享只读)
-	StringLitIdx []int32       // Consts 中字符串槽 → StringLits 下标的映射;非字符串槽 = -1
-	Protos       []uint32      // 嵌套 Proto 的 ProtoID(下标,见 protos 注册表)
-	SubNUps      []uint8       // 与 Protos 下标对齐:子函数 upvalue 数(= CLOSURE 后随伪指令数;symbexec 精确跳过用,官方经 p->p[bx]->nups 取)
+	Code         []Instruction // 32-bit instruction stream
+	Consts       []value.Value // constant slots: numbers are boxed directly; string slots are Nil placeholders (lazily replaced by the State at load time)
+	StringLits   []string      // string-literal text (collected during Compile, shared read-only across States)
+	StringLitIdx []int32       // maps a string slot in Consts → its StringLits index; non-string slots = -1
+	Protos       []uint32      // ProtoIDs of nested Protos (indices; see the protos registry)
+	SubNUps      []uint8       // aligned with the Protos indices: upvalue count of each sub-function (= number of pseudo-instructions following CLOSURE; used for symbexec exact skipping, obtained officially via p->p[bx]->nups)
 	UpvalDescs   []UpvalDesc
 
-	// 调试信息(可选;按 [架构] 选择是否保留——P1 保留以支持 traceback / 错误变量名后缀)。
-	LineInfo []int32    // 每条指令对应的源行(len(LineInfo) == len(Code) 或为 0 = 无调试信息)
-	LocVars  []LocalVar // 局部变量名 + 活跃区间(09 §8.4)
+	// Debug info (optional; whether to keep it is chosen per [architecture] — P1 keeps it to support traceback / error variable-name suffixes).
+	LineInfo []int32    // source line of each instruction (len(LineInfo) == len(Code), or 0 = no debug info)
+	LocVars  []LocalVar // local variable names + live ranges (09 §8.4)
 
-	// IC slots(02 §7,按 pc 索引)。
-	// 长度 == len(Code);非 IC 指令对应槽空闲(可挪用为 P2 算术 IC 双计数,见 02 §7)。
+	// IC slots (02 §7, indexed by pc).
+	// Length == len(Code); slots for non-IC instructions are idle (may be repurposed for P2 arithmetic IC dual-counting, see 02 §7).
 	IC []ICSlot
 
-	// Compilability:P2 静态可编译性判定(`docs/design/p2-bridge/03-compilability-analysis.md`
-	// §5.5)。Compile 时一次写、跨 State 只读共享(Go memory model 自动保证
-	// write-once before any reader 的可见性)。值含义见 internal/bridge.Compilability:
-	//   0 = CompUnknown(默认,P1-only build / Compile 未跑 AnalyzeProto)
+	// Compilability: P2 static compilability decision (`docs/design/p2-bridge/03-compilability-analysis.md`
+	// §5.5). Written once at Compile time, shared read-only across States (the Go memory model
+	// automatically guarantees visibility of a write-once-before-any-reader). See internal/bridge.Compilability for the value meanings:
+	//   0 = CompUnknown (default, P1-only build / Compile did not run AnalyzeProto)
 	//   1 = CompCompilable
 	//   2 = CompNotCompilable
-	// 用 uint8 存值而非引入 bridge 类型,避免 bytecode → bridge 反向依赖。
+	// Stored as uint8 rather than pulling in the bridge type, to avoid a bytecode → bridge back-dependency.
 	Compilability uint8
-	// CompReasons:CompNotCompilable 时的拒因位掩码(F1-F7 对应位,与
-	// internal/bridge.ReasonsBitmap 同语义)。诊断/日志用,非热路径。
+	// CompReasons: rejection-reason bitmask when CompNotCompilable (bits for F1-F7, same semantics as
+	// internal/bridge.ReasonsBitmap). For diagnostics/logging, not a hot path.
 	CompReasons uint16
 
 	// IntrinsicCallPCs lists the pcs of CALL instructions whose callee is
@@ -95,38 +97,39 @@ var MathIntrinsicNames = map[string]bool{
 }
 
 // IsStringConst reports whether Consts[i] is a string literal placeholder.
-// 调用方在 LOADK 路径根据这个判定决定走 State.programStringRefs 还是直接读 Consts[i]。
+// On the LOADK path the caller uses this to decide whether to go through State.programStringRefs or read Consts[i] directly.
 func (p *Proto) IsStringConst(i int) bool {
 	return i < len(p.StringLitIdx) && p.StringLitIdx[i] >= 0
 }
 
-// ICSlot 是 inline cache 槽(02 §7 + 05 §6 定稿,含 tableRef / 双计数挪用)。
+// ICSlot is an inline cache slot (02 §7 + 05 §6 finalized, includes tableRef / dual-count repurposing).
 //
-// 表 IC(GETTABLE/SETTABLE/GETGLOBAL/SETGLOBAL/SELF):
-//   - Shape:目标表的 gen 代次
-//   - Index:命中槽位(array 下标 / node 下标)
-//   - TableRef:目标表 arena 偏移低 32 位(身份比对,非 GC 根)
-//   - Kind:0/未初始化  1/array hit  2/node hit  3/mono-meta  4/megamorphic
-//   - Refill:换表/换形重填计数(P2 后续优化轮 #4 megamorphic 主动识别,
-//     02 §6.2 方案 (B) 简化版):P1 ic.go 在 miss-after-fill(本来命中
-//     某表/形,但当前操作目标不同表/不同 gen)路径累计;P2 聚合时若
-//     ≥ MegamorphicRefillThreshold 主动翻译为 FBTableMega(02 §6.3)。
+// Table IC (GETTABLE/SETTABLE/GETGLOBAL/SETGLOBAL/SELF):
+//   - Shape: the target table's gen generation
+//   - Index: the hit slot (array index / node index)
+//   - TableRef: low 32 bits of the target table's arena offset (identity check, not a GC root)
+//   - Kind: 0/uninitialized  1/array hit  2/node hit  3/mono-meta  4/megamorphic
+//   - Refill: table-swap/shape-change refill count (P2 follow-up optimization round #4 megamorphic
+//     proactive detection, simplified version of 02 §6.2 scheme (B)): P1 ic.go accumulates it on the
+//     miss-after-fill path (previously hit some table/shape, but the current operation targets a
+//     different table / different gen); during P2 aggregation, if ≥ MegamorphicRefillThreshold it is
+//     proactively translated to FBTableMega (02 §6.3).
 //
-// 算术 IC(ADD..POW、UNM、CONCAT 的快/慢路径计数):
-//   - 字段挪用:Shape = numHits(快路径命中数)
-//     Index = metaHits(元方法慢路径命中数)
-//     TableRef 闲置(置 0)
-//     Refill 闲置(置 0)
-//     Kind 仍按 P2 类型 feedback 语义使用
+// Arithmetic IC (fast/slow path counts for ADD..POW, UNM, CONCAT):
+//   - field repurposing: Shape = numHits (fast-path hit count)
+//     Index = metaHits (metamethod slow-path hit count)
+//     TableRef idle (set to 0)
+//     Refill idle (set to 0)
+//     Kind still used with P2 type-feedback semantics
 type ICSlot struct {
 	Shape    uint32
 	Index    uint32
 	TableRef uint32
 	Kind     uint8
-	Refill   uint8 // P2+ #4 重填计数(表 IC 用;饱和到 255)
+	Refill   uint8 // P2+ #4 refill count (used by table IC; saturates at 255)
 }
 
-// IC kind 常量(02 §7)。
+// IC kind constants (02 §7).
 const (
 	ICKindNone        uint8 = 0
 	ICKindArrayHit    uint8 = 1
@@ -138,7 +141,7 @@ const (
 // ProtoID is an index into the State.protos registry.
 type ProtoID uint32
 
-// HostFnID is an index into the State.hostFns registry (Go heap;01 §1).
+// HostFnID is an index into the State.hostFns registry (Go heap; 01 §1).
 type HostFnID uint32
 
 // HostFnIDSentinel marks "this CallInfo frame belongs to a host function" (05 §1.2).

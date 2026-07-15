@@ -9,14 +9,15 @@ import (
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
-// gibbous_spec_regk_e2e_test.go —— PJ2 reg-K 投机模板真升层 e2e:
-// `function(x) return x + 1 end` 等 hot path 常量化形态经 P4 升层后
-// mmap 段直发 reg-K 模板(73 字节,单 guard reg 端 + K imm64 烧入)。
+// gibbous_spec_regk_e2e_test.go — PJ2 reg-K speculation template real-promotion e2e:
+// hot-path constant-folded forms such as `function(x) return x + 1 end` emit, after
+// P4 promotion, a reg-K template directly in the mmap segment (73 bytes, single guard
+// on the reg operand + K imm64 burned in).
 //
-// luac 编码:`x + K` 形态 → ADD A B(reg) C(>=256 = K idx),
-// wangshu compiler 同款。
+// luac encoding: `x + K` form → ADD A B(reg) C(>=256 = K idx),
+// same for the wangshu compiler.
 
-// TestPJ2_SpecRegK_ADD_FastPath:f(x)=x+5(K=5 烧入)经 reg-K 模板.
+// TestPJ2_SpecRegK_ADD_FastPath: f(x)=x+5 (K=5 burned in) via the reg-K template.
 func TestPJ2_SpecRegK_ADD_FastPath(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -39,7 +40,7 @@ return f(10)`
 	t.Logf("SpecRegKHits=%d / SpecRegRegHits=%d", jit.SpecRegKHits(), jit.SpecRegRegHits())
 }
 
-// TestPJ2_SpecRegK_SUB_FastPath:f(x)=x-3.
+// TestPJ2_SpecRegK_SUB_FastPath: f(x)=x-3.
 func TestPJ2_SpecRegK_SUB_FastPath(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -61,7 +62,7 @@ return f(10)`
 	}
 }
 
-// TestPJ2_SpecRegK_MUL_FastPath:f(x)=x*2(常见 hot path 倍乘形态).
+// TestPJ2_SpecRegK_MUL_FastPath: f(x)=x*2 (common hot-path multiply form).
 func TestPJ2_SpecRegK_MUL_FastPath(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -83,7 +84,7 @@ return f(7)`
 	}
 }
 
-// TestPJ2_SpecRegK_DIV_FastPath:f(x)=x/6.
+// TestPJ2_SpecRegK_DIV_FastPath: f(x)=x/6.
 func TestPJ2_SpecRegK_DIV_FastPath(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -105,8 +106,8 @@ return f(42)`
 	}
 }
 
-// TestPJ2_SpecRegK_DeoptPath:table+常量 → IsNumber guard 失败 → host.Arith
-// → raise(byte-equal 解释器报错).
+// TestPJ2_SpecRegK_DeoptPath: table+constant → IsNumber guard fails → host.Arith
+// → raise (byte-equal interpreter error).
 func TestPJ2_SpecRegK_DeoptPath(t *testing.T) {
 	src := `
 local function f(x) return x + 5 end
@@ -121,13 +122,14 @@ return f({})`
 	}
 }
 
-// TestPJ2_SpecRegK_StringNotInvested:f(x)=x.."str" 形态 K 是字符串,
-// 不走 spec(只支持 number 常量)→ 降级 host.Arith;ADD A B Kstring
-// 会触发 helper attempt to perform arithmetic on string——byte-equal
-// 解释器。
+// TestPJ2_SpecRegK_StringNotInvested: in the f(x)=x.."str" form, K is a string,
+// so it does not take the spec path (only number constants are supported) → falls
+// back to host.Arith; ADD A B Kstring triggers the helper "attempt to perform
+// arithmetic on string" — byte-equal to the interpreter.
 //
-// 注:本测试既验证 reg-K 投机不误吸 string K(应降级 host),又验证
-// host 路径的 string + number 算术报错行为正确。
+// Note: this test verifies both that reg-K speculation does not wrongly absorb a
+// string K (should fall back to host), and that the host path's string + number
+// arithmetic error behavior is correct.
 func TestPJ2_SpecRegK_StringNotInvested(t *testing.T) {
 	src := `
 local function f(x) return x + 5 end
@@ -138,9 +140,9 @@ return f("not_a_number")`
 
 	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
 	if err != nil {
-		// "not_a_number" 不能 coerce 成 number → raise(正确)
+		// "not_a_number" cannot coerce to a number → raise (correct)
 		return
 	}
-	// 万一通过(若有 string coercion 成功)
+	// In case it passes (if string coercion somehow succeeded)
 	t.Logf("rets=%v (string coercion 成功,与解释器路径一致)", rets)
 }

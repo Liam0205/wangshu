@@ -1,10 +1,13 @@
-// Longevity tests — 长稳承诺验证(06 §2 freelist 复用 + 05 §7.4 调用深度上限)。
+// Longevity tests — verify the long-run stability guarantees (06 §2 freelist
+// reuse + 05 §7.4 call-depth limit).
 //
-// 三类断言:
-//  1. arena 占用有界:同一 State 反复 Run 分配密集脚本,稳态下 freelist 循环
-//     复用,arena cap 不随轮次无限 grow。
-//  2. Lua 深递归报 "stack overflow"(可被 pcall 捕获),不打爆 Go 栈。
-//  3. host→Lua 交替重入报 "C stack overflow",同样可恢复。
+// Three kinds of assertions:
+//  1. Bounded arena usage: running an allocation-heavy script repeatedly on the
+//     same State cycles the freelist at steady state, so arena cap does not grow
+//     without bound across rounds.
+//  2. Deep Lua recursion reports "stack overflow" (catchable by pcall) without
+//     blowing the Go stack.
+//  3. Alternating host→Lua re-entry reports "C stack overflow", also recoverable.
 package wangshu_test
 
 import (
@@ -14,10 +17,13 @@ import (
 	"github.com/Liam0205/wangshu"
 )
 
-// TestLongevity_ArenaBounded 同一 State 重复跑分配密集脚本,断言内存有界。
+// TestLongevity_ArenaBounded runs an allocation-heavy script repeatedly on the
+// same State and asserts memory stays bounded.
 //
-// 脚本每轮制造 ~2000 个临时对象(表/字符串/闭包)且全部不外逃;若 sweep
-// 没把死对象归还 freelist(或归还后分配不复用),arena 会随轮次线性涨。
+// Each round produces ~2000 temporary objects (tables/strings/closures) none of
+// which escape; if sweep fails to return dead objects to the freelist (or the
+// freed space is not reused on allocation), the arena grows linearly with the
+// number of rounds.
 func TestLongevity_ArenaBounded(t *testing.T) {
 	if testing.Short() {
 		t.Skip("longevity test skipped in -short")
@@ -36,7 +42,8 @@ return acc`
 	}
 	st := wangshu.NewState(wangshu.Options{})
 
-	// 预热 50 轮让 arena/threshold 到稳态,再记基线。
+	// Warm up 50 rounds to let arena/threshold reach steady state, then record
+	// the baseline.
 	for i := 0; i < 50; i++ {
 		if _, err := prog.Run(st); err != nil {
 			t.Fatalf("warmup run %d: %v", i, err)
@@ -49,14 +56,16 @@ return acc`
 		}
 	}
 	after := st.GCCountKB()
-	// bump 指针只在 freelist 落空时前进;稳态下应基本不动。给 4x 余量
-	// (rehash 尺寸阶梯、intern 表增长等良性余地)。
+	// The bump pointer only advances when the freelist comes up empty; at steady
+	// state it should barely move. Allow 4x headroom (rehash size steps, intern
+	// table growth, and other benign slack).
 	if after > base*4 {
 		t.Errorf("arena usage not bounded: base=%.1fKB after 2000 runs=%.1fKB", base, after)
 	}
 }
 
-// TestLongevity_DeepRecursionOverflow 深递归必须报 Lua 语义的 stack overflow。
+// TestLongevity_DeepRecursionOverflow deep recursion must report a Lua-semantics
+// stack overflow.
 func TestLongevity_DeepRecursionOverflow(t *testing.T) {
 	src := `
 local function f(n) return 1 + f(n + 1) end
@@ -79,7 +88,8 @@ return tostring(ok), tostring(err)`
 	}
 }
 
-// TestLongevity_DeepRecursionWithinLimit 上限内的深递归(含尾调用消除)不受影响。
+// TestLongevity_DeepRecursionWithinLimit deep recursion within the limit
+// (including tail-call elimination) is unaffected.
 func TestLongevity_DeepRecursionWithinLimit(t *testing.T) {
 	src := `
 local function f(n) if n <= 0 then return 0 end return 1 + f(n - 1) end
@@ -102,8 +112,8 @@ return f(19000), loop(1000000, 0)`
 	}
 }
 
-// TestLongevity_CStackOverflow host→Lua 交替重入(pcall 自递归)必须被
-// "C stack overflow" 拦下而非 Go 栈 fatal。
+// TestLongevity_CStackOverflow alternating host→Lua re-entry (pcall recursing on
+// itself) must be caught as "C stack overflow" rather than fataling the Go stack.
 func TestLongevity_CStackOverflow(t *testing.T) {
 	src := `
 local f
@@ -119,15 +129,17 @@ return tostring(ok), tostring(e)`
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	// 最深一层 pcall 返回 (false, "C stack overflow"),其外层 pcall 全部
-	// 成功返回 true —— 顶层观察 ok=true(与官方 5.1 行为一致)。
+	// The deepest pcall returns (false, "C stack overflow"); every outer pcall
+	// returns true successfully — so the top level observes ok=true (matching
+	// official 5.1 behavior).
 	if results[0].Str() != "true" {
 		t.Errorf("top ok = %s, want true", results[0].Display())
 	}
 }
 
-// TestLongevity_StateReuse 同一 State 上多 Program 反复装载执行,loaded 缓存
-// 生效(IC/intern 跨 Run 保留)且互不污染。
+// TestLongevity_StateReuse repeatedly loads and runs multiple Programs on the
+// same State, asserting the loaded cache takes effect (IC/intern preserved across
+// Runs) without cross-contamination.
 func TestLongevity_StateReuse(t *testing.T) {
 	progA, err := wangshu.Compile([]byte(`return 1 + 1`), "a")
 	if err != nil {

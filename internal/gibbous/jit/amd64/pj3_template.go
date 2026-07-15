@@ -1,26 +1,29 @@
 //go:build wangshu_p4 && amd64
 
-// pj3_template.go —— P4 PJ3 字节级 FORLOOP 内联模板(承
-// docs/design/p4-method-jit/05-system-pipeline.md §6.3 回边 +
-// 06-backends.md §3.3 数值 for)。
+// pj3_template.go —— P4 PJ3 byte-level FORLOOP inline templates (implements
+// docs/design/p4-method-jit/05-system-pipeline.md §6.3 back-edge +
+// 06-backends.md §3.3 numeric for).
 //
-// **PJ3 最简形态**:全常量 init/limit/step + 空 body 的 FORLOOP 内联
-// (`function() for i=1,100 do end end` 类)。验证 mmap 段内自循环 +
-// 浮点 idx 累加 + ucomisd limit + backward jcc 字节级可工作。
+// **PJ3 minimal form**: all-constant init/limit/step + empty-body FORLOOP
+// inline (the `function() for i=1,100 do end end` shape). Verifies that an
+// in-mmap self-loop + float idx accumulation + ucomisd limit + backward jcc
+// work at the byte level.
 //
-// **不包含**(留 PJ3 真接入扩展):
-//   - body inline opcodes(需 reg-K spec 模板 inline +寄存器分配)
-//   - limit 是 reg(MOVE)形态(需 IsNumber guard)
-//   - 安全点检查(safepoint check)— 当前模板纯计算无副作用,可后续扩
-//   - 非正 step(jcc 选 jb 而非 ja)
-//   - 嵌套 / break
+// **Not included** (left for real PJ3 extension):
+//   - body inline opcodes (need reg-K spec template inline + register allocation)
+//   - limit-is-reg (MOVE) form (needs IsNumber guard)
+//   - safepoint check — the current template is pure computation with no side
+//     effects, so this can be added later
+//   - non-positive step (jcc picks jb instead of ja)
+//   - nesting / break
 
 package amd64
 
-// EmitForLoopEmptyConst 拼接「全常量 init/limit/step + 空 body FORLOOP
-// 字节级模板」。
+// EmitForLoopEmptyConst assembles the "all-constant init/limit/step + empty-body
+// FORLOOP byte-level template".
 //
-// 字节布局(承上面文件头注的设计图;preemptFlagOff < 0 时省略 safepoint check):
+// Byte layout (per the design diagram in the file header above; the safepoint
+// check is omitted when preemptFlagOff < 0):
 //
 //	[ 0] mov rax, K_init_imm64     ; 10 bytes
 //	[10] movq xmm0, rax             ; 5 bytes
@@ -28,27 +31,28 @@ package amd64
 //	[25] movq xmm1, rax             ; 5 bytes
 //	[30] mov rax, K_step_imm64     ; 10 bytes
 //	[40] movq xmm2, rax             ; 5 bytes
-//	[45] subsd xmm0, xmm2           ; 4 bytes (FORPREP 预减:idx = init - step)
+//	[45] subsd xmm0, xmm2           ; 4 bytes (FORPREP pre-subtract: idx = init - step)
 //	[49] ; loop_start
 //	[49] addsd xmm0, xmm2           ; 4 bytes (FORLOOP: idx += step)
-//	[53] ucomisd xmm1, xmm0         ; 4 bytes (cmp limit, idx;操作数序为 NaN 退出,#117/#118)
-//	[57] jb  after_loop             ; 6 bytes (forward jcc;CF=1 含 unordered;rel32 = +5 / +19 含 safepoint)
+//	[53] ucomisd xmm1, xmm0         ; 4 bytes (cmp limit, idx; operand order exits on NaN, #117/#118)
+//	[57] jb  after_loop             ; 6 bytes (forward jcc; CF=1 covers unordered; rel32 = +5 / +19 with safepoint)
 //	[63] ; (optional safepoint check)
-//	[63] cmp byte [r15+pfOff], 0    ; 8 bytes (仅 preemptFlagOff >= 0 时)
+//	[63] cmp byte [r15+pfOff], 0    ; 8 bytes (only when preemptFlagOff >= 0)
 //	[71] jne after_loop             ; 6 bytes (forward jcc)
 //	[77] jmp loop_start             ; 5 bytes (backward jmp)
 //	[82] ; after_loop
 //	[82] ret                        ; 1 byte
-//	——— 总长 = 69 字节(无 safepoint) / 83 字节(含 safepoint) ———
+//	——— total len = 69 bytes (no safepoint) / 83 bytes (with safepoint) ———
 //
-// 参数 preemptFlagOff:r15+disp32 处的 preempt 字段 byte 偏移;
-//   - >= 0:启用 safepoint check(承 V18 -race 抢占纪律)
-//   - <  0:跳过 safepoint(测试用 / 严格单段计算用例)
+// Parameter preemptFlagOff: byte offset of the preempt field at r15+disp32.
+//   - >= 0: enable safepoint check (per V18 -race preemption discipline)
+//   - <  0: skip safepoint (for tests / strictly single-segment compute cases)
 //
-// **预设条件**:trampoline 装 r15(safepoint check 读 r15);R(A) idx 槽
-// 不写(空 body 不需要);返回 rax 是 dummy(段返回后 host 不读)。
+// **Preconditions**: the trampoline loads r15 (the safepoint check reads r15);
+// the R(A) idx slot is not written (an empty body does not need it); the
+// returned rax is a dummy (the host does not read it after the segment returns).
 func EmitForLoopEmptyConst(buf []byte, kInit, kLimit, kStep uint64, preemptFlagOff int32) []byte {
-	// 装 init/limit/step 到 xmm0/xmm1/xmm2
+	// load init/limit/step into xmm0/xmm1/xmm2
 	buf = EmitMovRaxImm64(buf, kInit) // mov rax, K_init
 	buf = EmitMovqXmmFromRax(buf, 0)  // movq xmm0, rax
 
@@ -58,13 +62,13 @@ func EmitForLoopEmptyConst(buf []byte, kInit, kLimit, kStep uint64, preemptFlagO
 	buf = EmitMovRaxImm64(buf, kStep) // mov rax, K_step
 	buf = EmitMovqXmmFromRax(buf, 2)  // movq xmm2, rax
 
-	// FORPREP 预减:xmm0 = init - step
+	// FORPREP pre-subtract: xmm0 = init - step
 	buf = EmitSubsdXmmXmm(buf, 0, 2) // subsd xmm0, xmm2
 
 	// loop_start label
 	loopStart := len(buf)
 
-	// FORLOOP idx+=step:xmm0 += xmm2
+	// FORLOOP idx+=step: xmm0 += xmm2
 	buf = EmitAddsdXmmXmm(buf, 0, 2) // addsd xmm0, xmm2
 
 	// cmp limit, idx — operand order matters for NaN (issues #117/#118):
@@ -76,11 +80,11 @@ func EmitForLoopEmptyConst(buf []byte, kInit, kLimit, kStep uint64, preemptFlagO
 	// emitFORLOOP's jae-on-swapped-operands).
 	buf = EmitUcomisdXmmXmm(buf, 1, 0) // ucomisd xmm1, xmm0
 
-	// jb after_loop placeholder rel32=0(forward fixup)
+	// jb after_loop placeholder rel32=0 (forward fixup)
 	buf = EmitJbRel32(buf, 0)
 	jbRel32Off := len(buf) - 4
 
-	// (可选)safepoint check:cmp byte [r15+pfOff], 0;jne after_loop
+	// (optional) safepoint check: cmp byte [r15+pfOff], 0; jne after_loop
 	var safepointJneRel32Off int = -1
 	if preemptFlagOff >= 0 {
 		buf = EmitCmpByteR15DispImm8(buf, preemptFlagOff, 0)
@@ -99,11 +103,11 @@ func EmitForLoopEmptyConst(buf []byte, kInit, kLimit, kStep uint64, preemptFlagO
 	// ret
 	buf = EmitRet(buf)
 
-	// patch jb forward rel32 = afterLoop - (ja rel32 起点 + 4)
+	// patch jb forward rel32 = afterLoop - (ja rel32 start + 4)
 	forwardRel32 := int32(afterLoop) - int32(jbRel32Off+4)
 	PatchRel32(buf, jbRel32Off, forwardRel32)
 
-	// patch safepoint jne forward(若启用)
+	// patch safepoint jne forward (if enabled)
 	if safepointJneRel32Off >= 0 {
 		safepointRel32 := int32(afterLoop) - int32(safepointJneRel32Off+4)
 		PatchRel32(buf, safepointJneRel32Off, safepointRel32)
@@ -112,9 +116,10 @@ func EmitForLoopEmptyConst(buf []byte, kInit, kLimit, kStep uint64, preemptFlagO
 	return buf
 }
 
-// EncodedForLoopEmptyConstLen 是「全常量 init/limit/step + 空 body FORLOOP」
-// 无 safepoint 版本字节数:10*3(mov×3) + 5*3(movq×3) + 4(subsd) + 4(addsd) + 4(ucomisd)
-// + 6(jb) + 5(jmp) + 1(ret) = 69 字节。
+// EncodedForLoopEmptyConstLen is the byte count of the "all-constant
+// init/limit/step + empty-body FORLOOP" no-safepoint version:
+// 10*3 (mov×3) + 5*3 (movq×3) + 4 (subsd) + 4 (addsd) + 4 (ucomisd)
+// + 6 (jb) + 5 (jmp) + 1 (ret) = 69 bytes.
 const EncodedForLoopEmptyConstLen = EncodedMovRaxImm64Len*3 +
 	EncodedMovqXmmFromRaxLen*3 +
 	EncodedSseBinopLen + // subsd
@@ -124,15 +129,17 @@ const EncodedForLoopEmptyConstLen = EncodedMovRaxImm64Len*3 +
 	EncodedJmpRel32Len + // jmp
 	EncodedRetLen
 
-// EncodedForLoopEmptyConstWithSafepointLen 含 safepoint check 版本字节数:
-// 上面 69 + 8(cmp byte [r15+disp], 0)+ 6(jne)= 83 字节。
+// EncodedForLoopEmptyConstWithSafepointLen is the byte count of the version
+// that includes the safepoint check:
+// the 69 above + 8 (cmp byte [r15+disp], 0) + 6 (jne) = 83 bytes.
 const EncodedForLoopEmptyConstWithSafepointLen = EncodedForLoopEmptyConstLen +
 	EncodedCmpByteR15DispImm8Len + EncodedJccRel32Len
 
-// EmitForLoopRegLimit 拼接「init/step 常量 + limit 是 reg + 空 body FORLOOP」
-// 模板(承 reg-limit hot path 真实生产负载:`for i=1, n do end`)。
+// EmitForLoopRegLimit assembles the "init/step constant + limit-is-reg +
+// empty-body FORLOOP" template (for the reg-limit hot path's real production
+// load: `for i=1, n do end`).
 //
-// 字节布局(以 step>0 + safepoint 启用为例):
+// Byte layout (example with step>0 + safepoint enabled):
 //
 //	[ 0] mov rax, [rbx + limitReg*8]        ; 7 bytes (load R(limitReg))
 //	[ 7] mov rcx, qNanBoxBase imm64         ; 10 bytes
@@ -145,38 +152,39 @@ const EncodedForLoopEmptyConstWithSafepointLen = EncodedForLoopEmptyConstLen +
 //	[68] subsd xmm0, xmm2                     ; 4 bytes
 //	[72] ; loop_start
 //	[72] addsd xmm0, xmm2                     ; 4 bytes
-//	[76] ucomisd xmm1, xmm0                   ; 4 bytes (cmp limit, idx;NaN 退出,#117/#118)
-//	[80] jb  after_loop                       ; 6 bytes (forward fixup;CF=1 含 unordered)
+//	[76] ucomisd xmm1, xmm0                   ; 4 bytes (cmp limit, idx; exits on NaN, #117/#118)
+//	[80] jb  after_loop                       ; 6 bytes (forward fixup; CF=1 covers unordered)
 //	[86] ; (optional safepoint)
-//	[86] cmp byte [r15+pfOff], 0              ; 8 bytes (若 pfOff>=0)
+//	[86] cmp byte [r15+pfOff], 0              ; 8 bytes (if pfOff>=0)
 //	[94] jne after_loop                       ; 6 bytes
-//	[100] jmp loop_start                      ; 5 bytes (backward;rel32=-(72-(100+5))=-33)
+//	[100] jmp loop_start                      ; 5 bytes (backward; rel32=-(72-(100+5))=-33)
 //	[105] ; after_loop
 //	[105] ret                                 ; 1 byte
 //	[106] ; deopt_block
 //	[106] mov rax, deoptCode imm64            ; 10 bytes
 //	[116] ret                                 ; 1 byte
-//	——— 含 safepoint:117 字节 ———
-//	——— 无 safepoint:117 - 14 = 103 字节 ———
+//	——— with safepoint: 117 bytes ———
+//	——— without safepoint: 117 - 14 = 103 bytes ———
 //
-// **预设条件**:
-//   - rbx = valueStackBase(callJITSpec trampoline 装)
-//   - limitReg = 寄存器号 ∈ [0, 254]
-//   - guard 失败 → deopt 返 deoptCode → caller 走 host helper 慢路径
+// **Preconditions**:
+//   - rbx = valueStackBase (loaded by the callJITSpec trampoline)
+//   - limitReg = register number ∈ [0, 254]
+//   - guard failure → deopt returns deoptCode → caller takes the host-helper slow path
 //
-// **deopt 路径**:本模板不写 R(A) idx 槽(空 body 形态),deopt 时直接
-// 返 deoptCode,caller 经 Run 路径降级调 host(经 doForPrep / doForLoop
-// 同步语义 byte-equal 解释器)。
+// **deopt path**: this template does not write the R(A) idx slot (empty-body
+// form); on deopt it directly returns deoptCode, and the caller falls back via
+// the Run path to the host (via doForPrep / doForLoop, byte-equal to the
+// interpreter's synchronized semantics).
 func EmitForLoopRegLimit(buf []byte, kInit, kStep uint64,
 	limitReg uint8, deoptCode uint64, preemptFlagOff int32) []byte {
-	// guard:load R(limitReg) → IsNumber check
+	// guard: load R(limitReg) → IsNumber check
 	buf = EmitMovqRaxFromMemReg(buf, 3 /* rbx */, int32(limitReg)*8)
 	buf = EmitMovRcxImm64(buf, qNanBoxBaseConst)
 	buf = EmitCmpRaxRcx(buf)
 	buf = EmitJaeRel32(buf, 0) // placeholder rel32 to deopt
 	deoptJaeRel32Off := len(buf) - 4
 
-	// 装 init/limit/step 到 xmm0/xmm1/xmm2(limit 经第二次 load 从 stack 取)
+	// load init/limit/step into xmm0/xmm1/xmm2 (limit fetched from the stack via a second load)
 	buf = EmitMovRaxImm64(buf, kInit) // mov rax, K_init
 	buf = EmitMovqXmmFromRax(buf, 0)  // movq xmm0, rax
 
@@ -186,7 +194,7 @@ func EmitForLoopRegLimit(buf []byte, kInit, kStep uint64,
 	buf = EmitMovRaxImm64(buf, kStep) // mov rax, K_step
 	buf = EmitMovqXmmFromRax(buf, 2)  // movq xmm2, rax
 
-	// FORPREP 预减
+	// FORPREP pre-subtract
 	buf = EmitSubsdXmmXmm(buf, 0, 2)
 
 	// loop_start label
@@ -204,7 +212,7 @@ func EmitForLoopRegLimit(buf []byte, kInit, kStep uint64,
 	buf = EmitJbRel32(buf, 0)
 	jbRel32Off := len(buf) - 4
 
-	// (可选)safepoint check
+	// (optional) safepoint check
 	var safepointJneRel32Off int = -1
 	if preemptFlagOff >= 0 {
 		buf = EmitCmpByteR15DispImm8(buf, preemptFlagOff, 0)
@@ -220,10 +228,10 @@ func EmitForLoopRegLimit(buf []byte, kInit, kStep uint64,
 	// after_loop label
 	afterLoop := len(buf)
 
-	// ret(正常退出)
+	// ret (normal exit)
 	buf = EmitRet(buf)
 
-	// deopt block:mov rax, deoptCode;ret
+	// deopt block: mov rax, deoptCode; ret
 	deoptStart := len(buf)
 	buf = EmitMovRaxImm64(buf, deoptCode)
 	buf = EmitRet(buf)
@@ -245,10 +253,10 @@ func EmitForLoopRegLimit(buf []byte, kInit, kStep uint64,
 	return buf
 }
 
-// EncodedForLoopRegLimitWithSafepointLen 含 safepoint 版字节数:
-// 7(load1)+10(movrcx)+3(cmp)+6(jae)+10(mov init)+5(movq)+7(load2)
-// +5(movq)+10(mov step)+5(movq)+4(subsd)+4(addsd)+4(ucomisd)+6(ja)
-// +8(cmp byte)+6(jne)+5(jmp)+1(ret)+10(mov deopt)+1(ret) = 117 字节。
+// EncodedForLoopRegLimitWithSafepointLen is the byte count of the with-safepoint version:
+// 7 (load1)+10 (movrcx)+3 (cmp)+6 (jae)+10 (mov init)+5 (movq)+7 (load2)
+// +5 (movq)+10 (mov step)+5 (movq)+4 (subsd)+4 (addsd)+4 (ucomisd)+6 (ja)
+// +8 (cmp byte)+6 (jne)+5 (jmp)+1 (ret)+10 (mov deopt)+1 (ret) = 117 bytes.
 const EncodedForLoopRegLimitWithSafepointLen = EncodedMovqFromMemRegLen + // load1
 	EncodedMovRcxImm64Len + EncodedCmpRaxRcxLen + EncodedJccRel32Len + // guard
 	EncodedMovRaxImm64Len + EncodedMovqXmmFromRaxLen + // K_init
@@ -263,11 +271,11 @@ const EncodedForLoopRegLimitWithSafepointLen = EncodedMovqFromMemRegLen + // loa
 	EncodedRetLen + // ret normal
 	EncodedMovRaxImm64Len + EncodedRetLen // deopt block
 
-// EmitForLoopWithRegKBody 拼接「全常量 init/limit/step + reg-K body FORLOOP」
-// 模板(承 hot path 真实生产负载:`local s=K_s; for i=K1,K2 do s=s op K3 end;
-// return s`)。
+// EmitForLoopWithRegKBody assembles the "all-constant init/limit/step + reg-K
+// body FORLOOP" template (for the hot path's real production load:
+// `local s=K_s; for i=K1,K2 do s=s op K3 end; return s`).
 //
-// 字节布局(含 safepoint):
+// Byte layout (with safepoint):
 //
 //	[ 0] mov rax, K_s_imm64;  mov [rbx+aS*8], rax     ; 17 (init R(aS)=s)
 //	[17] mov rax, K_init imm64;movq xmm0,rax           ; 15
@@ -282,23 +290,24 @@ const EncodedForLoopRegLimitWithSafepointLen = EncodedMovqFromMemRegLen + // loa
 //	[88] mov rax, K_body imm64; movq xmm4,rax          ; 15
 //	[103] <sseOp> xmm3, xmm4                           ; 4 (s op K)
 //	[107] movsd [rbx+aS*8], xmm3                       ; 8 (store s)
-//	[115] cmp byte [r15+pfOff], 0                      ; 8 (可选 safepoint)
+//	[115] cmp byte [r15+pfOff], 0                      ; 8 (optional safepoint)
 //	[123] jne after_loop                               ; 6
-//	[129] jmp loop_start                               ; 5 (backward;rel32=-(66-(129+5))=-68)
+//	[129] jmp loop_start                               ; 5 (backward; rel32=-(66-(129+5))=-68)
 //	[134] ; after_loop
 //	[134] ret                                          ; 1
-//	——— 含 safepoint:135 字节 ———
-//	——— 无 safepoint:135 - 14 = 121 字节 ———
+//	——— with safepoint: 135 bytes ———
+//	——— without safepoint: 135 - 14 = 121 bytes ———
 //
-// **预设条件**:
+// **Preconditions**:
 //   - rbx = valueStackBase
-//   - aS:s 的寄存器号(R(aS),与 init/limit/step 的 A_init 独立,
-//     由 caller 校验 aS != A_init/+1/+2/+3 避免覆盖)
-//   - sseOp:F2 0F <op> C0 形式 SSE binop(ADD/SUB/MUL/DIV)
-//   - 完全无 guard(K_s/K_body 都是 number 编译期烧 imm,init/limit/step
-//     也是 K;reg-limit + body inline 形态留 PJ3+ 扩)
+//   - aS: register number of s (R(aS), independent of init/limit/step's A_init;
+//     the caller checks aS != A_init/+1/+2/+3 to avoid clobbering)
+//   - sseOp: SSE binop in the F2 0F <op> C0 form (ADD/SUB/MUL/DIV)
+//   - fully guard-free (K_s/K_body are both numbers burned as imm at compile
+//     time, init/limit/step are also K; the reg-limit + body inline form is left
+//     for PJ3+ extension)
 //
-// **deopt 路径**:本最简 body 形态无 guard,无 deopt block。
+// **deopt path**: this minimal body form is guard-free, with no deopt block.
 func EmitForLoopWithRegKBody(buf []byte, kS, kInit, kLimit, kStep, kBody uint64,
 	aS uint8, sseOp byte, preemptFlagOff int32) []byte {
 	// 1. Init R(aS) = K_s
@@ -323,16 +332,16 @@ func EmitForLoopWithRegKBody(buf []byte, kS, kInit, kLimit, kStep, kBody uint64,
 	buf = EmitJbRel32(buf, 0)
 	jbOff := len(buf) - 4
 
-	// body: R(aS) = R(aS) sseOp K (用 xmm3/xmm4,避开 idx/limit/step xmm0/1/2)
+	// body: R(aS) = R(aS) sseOp K (uses xmm3/xmm4, avoiding idx/limit/step xmm0/1/2)
 	buf = EmitMovsdXmmFromMem(buf, 3, 3 /*rbx*/, int32(aS)*8)
 	buf = EmitMovRaxImm64(buf, kBody)
 	buf = EmitMovqXmmFromRax(buf, 4)
-	// sseOp xmm3, xmm4:F2 0F <op> ModRM
+	// sseOp xmm3, xmm4: F2 0F <op> ModRM
 	// ModRM = 0xC0 | (3<<3) | 4 = 0xDC
 	buf = append(buf, 0xF2, 0x0F, sseOp, 0xDC)
 	buf = EmitMovsdMemFromXmm(buf, 3, 3 /*rbx*/, int32(aS)*8)
 
-	// safepoint check(可选)
+	// safepoint check (optional)
 	var safepointJneOff int = -1
 	if preemptFlagOff >= 0 {
 		buf = EmitCmpByteR15DispImm8(buf, preemptFlagOff, 0)
@@ -357,9 +366,9 @@ func EmitForLoopWithRegKBody(buf []byte, kS, kInit, kLimit, kStep, kBody uint64,
 	return buf
 }
 
-// EncodedForLoopWithRegKBodyWithSafepointLen 含 safepoint 版字节数:
-// 10+7(init R(aS))+10+5+10+5+10+5(setup) + 4(subsd) + 4(addsd)+4(ucomisd)
-// +6(ja) + 8+10+5+4+8(body) + 8+6(safepoint) + 5(jmp) + 1(ret) = 135.
+// EncodedForLoopWithRegKBodyWithSafepointLen is the byte count of the with-safepoint version:
+// 10+7 (init R(aS))+10+5+10+5+10+5 (setup) + 4 (subsd) + 4 (addsd)+4 (ucomisd)
+// +6 (ja) + 8+10+5+4+8 (body) + 8+6 (safepoint) + 5 (jmp) + 1 (ret) = 135.
 const EncodedForLoopWithRegKBodyWithSafepointLen = EncodedMovRaxImm64Len + EncodedMovqMemFromRaxLen + // init R(aS)
 	EncodedMovRaxImm64Len + EncodedMovqXmmFromRaxLen + // K_init
 	EncodedMovRaxImm64Len + EncodedMovqXmmFromRaxLen + // K_limit
@@ -373,12 +382,13 @@ const EncodedForLoopWithRegKBodyWithSafepointLen = EncodedMovRaxImm64Len + Encod
 	EncodedJmpRel32Len + // backward jmp
 	EncodedRetLen // ret
 
-// EmitForLoopWithRegKBody2 拼接二段 body 模板:`local s; for i=K1,K2 do
-// s = s op1 K3; s = s op2 K4 end; return s`。body 内连续两个 reg-K op,
-// 共享 R(aS) 寄存器(中间值落 R(aS)),用 xmm3 寄存器跨两段(避 load/store
-// 中转)。
+// EmitForLoopWithRegKBody2 assembles a two-op body template: `local s; for
+// i=K1,K2 do s = s op1 K3; s = s op2 K4 end; return s`. The body has two
+// consecutive reg-K ops sharing the R(aS) register (the intermediate value
+// stays in R(aS)), using the xmm3 register across both ops (avoiding a
+// load/store round-trip).
 //
-// 字节布局(含 safepoint):
+// Byte layout (with safepoint):
 //
 //	[init]   mov rax, K_s; mov [rbx+aS*8], rax        ; 17
 //	[setup]  init xmm0/1/2 + subsd                     ; 49
@@ -392,10 +402,10 @@ const EncodedForLoopWithRegKBodyWithSafepointLen = EncodedMovRaxImm64Len + Encod
 //	  jmp loop_start                                    ; 5
 //	[after_loop]
 //	  ret                                              ; 1
-//	——— 含 safepoint:154 字节 ———
+//	——— with safepoint: 154 bytes ———
 //
-// 比单 body 模板节省一次 load+store(共享 xmm3 跨 2 op):每 iter 节省 16 字节
-// 内存访问。
+// Saves one load+store versus the single-body template (sharing xmm3 across 2
+// ops): saves 16 bytes of memory access per iteration.
 func EmitForLoopWithRegKBody2(buf []byte, kS, kInit, kLimit, kStep, kBody1, kBody2 uint64,
 	aS uint8, sseOp1, sseOp2 byte, preemptFlagOff int32) []byte {
 	// 1. Init R(aS) = K_s
@@ -419,7 +429,7 @@ func EmitForLoopWithRegKBody2(buf []byte, kS, kInit, kLimit, kStep, kBody1, kBod
 	buf = EmitJbRel32(buf, 0)
 	jbOff := len(buf) - 4
 
-	// body:load s 一次,然后两段 SSE op 共享 xmm3
+	// body: load s once, then two SSE ops share xmm3
 	buf = EmitMovsdXmmFromMem(buf, 3, 3, int32(aS)*8)
 	// op1
 	buf = EmitMovRaxImm64(buf, kBody1)

@@ -1,33 +1,43 @@
-// Package p4tramp 是 P4 PJ1 spike——Go → mmap 出来的 amd64 → ret 回 Go 的最小
-// round-trip 实证(承 docs/design/p4-method-jit/06-backends.md §1.7 闸门纪律)。
+// Package p4tramp is the P4 PJ1 spike -- a minimal round-trip demonstration of
+// Go → mmap'd amd64 → ret back to Go (follows
+// docs/design/p4-method-jit/06-backends.md §1.7 gate discipline).
 //
-// 不污染主库:独立 go module(类比 spike/p3boundary / spike/p3indirect 同款)。
+// Does not pollute the main library: an independent go module (analogous to
+// spike/p3boundary / spike/p3indirect).
 //
-// 实证目标(承 06 §6.1 PJ1 验收):
+// Demonstration goals (follows 06 §6.1 PJ1 acceptance):
 //
-//   - 闸门 ① exec mmap + W^X 翻面工作:syscall.Mmap PROT_READ|PROT_WRITE →
-//     unix.Mprotect PROT_READ|PROT_EXEC,然后从 Go 跳进去执行;
-//   - 闸门 ② trampoline 进/出对称:Go → asm stub → 自管栈 → mmap 段 → ret →
-//     恢复 Go 栈;不踩 Go runtime(GS/FS 段不动,callee-saved 寄存器保存恢复);
-//   - 闸门 ③ 单条直线模板可发射 + 可执行:发射「mov rax, IMM64; ret」八字节
-//     序列,Go 调进去拿到 IMM64 值——这是 LOADK 模板的物理基础;
-//   - 闸门 ④ exec mmap 单次成本上限实证:与 P3 spike S1/S2/S3 同款形态,产出
-//     ns/op 数字进档作为 PJ1+ 性能基线。
+//   - Gate ① exec mmap + W^X flip works: syscall.Mmap PROT_READ|PROT_WRITE →
+//     unix.Mprotect PROT_READ|PROT_EXEC, then jump in from Go and execute;
+//   - Gate ② trampoline entry/exit symmetry: Go → asm stub → self-managed
+//     stack → mmap segment → ret → restore Go stack; don't step on the Go
+//     runtime (GS/FS segments untouched, callee-saved registers saved and
+//     restored);
+//   - Gate ③ a single straight-line template can be emitted + executed: emit
+//     the eight-byte sequence "mov rax, IMM64; ret", Go calls in and gets the
+//     IMM64 value back -- this is the physical basis of the LOADK template;
+//   - Gate ④ demonstrate the single-shot cost upper bound of exec mmap: same
+//     form as the P3 spike S1/S2/S3, producing an ns/op number filed as the
+//     PJ1+ performance baseline.
 //
-// **闸门红绿决策**(失败即返工):
-//   - 绿(全部 ①②③④ 通过):PJ1 emitter trait 签名 + amd64 trampoline asm 落地;
-//   - 红(任一失败):本节实测细节回反 06 §2.4 / §4.1 落地形态,可能改寄存器
-//     约定 / 进入协议 / W^X 时序;不允许在 spike 红的状态下推 emitter trait。
+// **Gate red/green decision** (failure means rework):
+//   - Green (all of ①②③④ pass): land the PJ1 emitter trait signature + amd64
+//     trampoline asm;
+//   - Red (any failure): the measured details of this section feed back into
+//     the landed form of 06 §2.4 / §4.1, possibly changing register
+//     conventions / entry protocol / W^X timing; the emitter trait must not
+//     be pushed while the spike is red.
 //
-// 平台覆盖(PJ1 spike 范围):
-//   - linux/amd64:基础闸门(本 spike 主体);
-//   - darwin/arm64:W^X 形态 spike(MAP_JIT + pthread_jit_write_protect_np vs
-//     RW→RX seal 二折一)留 PJ8 启动前补;PJ1 主助理裁决项 ③ 已登记。
+// Platform coverage (PJ1 spike scope):
+//   - linux/amd64: the basic gates (the main body of this spike);
+//   - darwin/arm64: the W^X-form spike (MAP_JIT + pthread_jit_write_protect_np
+//     vs RW→RX seal, pick one of two) is deferred to before PJ8 starts; PJ1
+//     main-assistant ruling item ③ is registered.
 //
-// 上游契约:
-//   - docs/design/p4-method-jit/06-backends.md §1.7 spike 闸门纪律
-//   - docs/design/p4-method-jit/05-system-pipeline.md §2 系统四件套(exec mmap /
-//     W^X / icache / trampoline)
-//   - spike/p3boundary、spike/p3indirect:P3 同款 spike 范本(独立 module / 三档
-//     样本 / 决策报告归档)
+// Upstream contracts:
+//   - docs/design/p4-method-jit/06-backends.md §1.7 spike gate discipline
+//   - docs/design/p4-method-jit/05-system-pipeline.md §2 the system four-piece
+//     set (exec mmap / W^X / icache / trampoline)
+//   - spike/p3boundary, spike/p3indirect: the same P3 spike template
+//     (independent module / three-tier samples / archived decision report)
 package p4tramp

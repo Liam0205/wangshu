@@ -7,7 +7,8 @@ import (
 	"testing"
 )
 
-// TestJITContext_NewReturnsNonNil 构造不 nil(承 wireP4 装载路径依赖)。
+// TestJITContext_NewReturnsNonNil: construction is non-nil (relied on by the
+// wireP4 load path).
 func TestJITContext_NewReturnsNonNil(t *testing.T) {
 	ctx := NewJITContext()
 	if ctx == nil {
@@ -15,8 +16,8 @@ func TestJITContext_NewReturnsNonNil(t *testing.T) {
 	}
 }
 
-// TestJITContext_PreemptFlag preempt 标志位 atomic 工作(V18 -race 友好,承
-// 承诺 atomic.Uint32 不引入数据竞争)。
+// TestJITContext_PreemptFlag: the preempt flag works atomically (V18 -race
+// friendly; guarantees atomic.Uint32 introduces no data race).
 func TestJITContext_PreemptFlag(t *testing.T) {
 	ctx := NewJITContext()
 
@@ -35,12 +36,13 @@ func TestJITContext_PreemptFlag(t *testing.T) {
 	}
 }
 
-// TestJITContext_OptionBAddrFields PJ5 Option B Spike 1:验 ciDepthAddr /
-// ciSegBaseAddr / topAddr 三 setter/getter 工作 + 初始 0(承 §9.20)。
+// TestJITContext_OptionBAddrFields PJ5 Option B Spike 1: verifies the
+// ciDepthAddr / ciSegBaseAddr / topAddr setters/getters work + initial 0
+// (per §9.20).
 func TestJITContext_OptionBAddrFields(t *testing.T) {
 	ctx := NewJITContext()
 
-	// 初始 0(未接入)
+	// initial 0 (not yet wired)
 	if ctx.CIDepthAddr() != 0 {
 		t.Errorf("初始 ciDepthAddr 应 0,得 %d", ctx.CIDepthAddr())
 	}
@@ -51,7 +53,7 @@ func TestJITContext_OptionBAddrFields(t *testing.T) {
 		t.Errorf("初始 topAddr 应 0,得 %d", ctx.TopAddr())
 	}
 
-	// 写入后回读一致
+	// write then read back consistently
 	ctx.SetCIDepthAddr(0x100)
 	ctx.SetCISegBaseAddr(0x200)
 	ctx.SetTopAddr(0x300)
@@ -67,11 +69,12 @@ func TestJITContext_OptionBAddrFields(t *testing.T) {
 	}
 }
 
-// TestJITContext_OptionBAddrOffsetsStable PJ5 Option B Spike 1:验
-// JITContextCIDepthAddrOffset / CISegBaseAddrOffset / TopAddrOffset
-// 编译期常量稳定(供 mmap 模板字节级 emit 使用)。
+// TestJITContext_OptionBAddrOffsetsStable PJ5 Option B Spike 1: verifies that
+// JITContextCIDepthAddrOffset / CISegBaseAddrOffset / TopAddrOffset are stable
+// compile-time constants (for use by byte-level emit of the mmap template).
 func TestJITContext_OptionBAddrOffsetsStable(t *testing.T) {
-	// 三 offset 必须互不重叠且非 0(承字段定义后于其他字段)
+	// The three offsets must be mutually non-overlapping and non-zero (per the
+	// field definitions coming after other fields)
 	if JITContextCIDepthAddrOffset == 0 {
 		t.Error("JITContextCIDepthAddrOffset 不应为 0(承字段在 spillTop 后)")
 	}
@@ -87,14 +90,14 @@ func TestJITContext_OptionBAddrOffsetsStable(t *testing.T) {
 	if JITContextCISegBaseAddrOffset == JITContextTopAddrOffset {
 		t.Error("ciSegBase/top offset 不应相等")
 	}
-	// 8 字节对齐(uintptr field)
+	// 8-byte aligned (uintptr field)
 	if JITContextCIDepthAddrOffset%8 != 0 {
 		t.Errorf("JITContextCIDepthAddrOffset %% 8 = %d, want 0", JITContextCIDepthAddrOffset%8)
 	}
 }
 
-// TestJITContext_ConcurrentPreempt -race 验证 preemptFlag 多 goroutine 安全
-// (V18 验收口径)。
+// TestJITContext_ConcurrentPreempt: -race verifies preemptFlag is safe across
+// multiple goroutines (V18 acceptance criterion).
 func TestJITContext_ConcurrentPreempt(t *testing.T) {
 	ctx := NewJITContext()
 	const N = 100
@@ -113,18 +116,18 @@ func TestJITContext_ConcurrentPreempt(t *testing.T) {
 	}
 	wg.Wait()
 
-	// 至少 N 次 SetPreemptFlag 后必为 1
+	// after at least N SetPreemptFlag calls it must be 1
 	if !ctx.PreemptFlagPending() {
 		t.Error("N 次并发 SetPreemptFlag 后 preemptFlag 应为 1")
 	}
 }
 
-// TestJITContext_ExitResumeFields PJ5 §9.20.9 trampoline exit-resume 协议
-// commit-1:验 exitArg0 / resumeOff 三 setter/getter 工作 + 初始 0。
+// TestJITContext_ExitResumeFields PJ5 §9.20.9 trampoline exit-resume protocol
+// commit-1: verifies the exitArg0 / resumeOff setters/getters work + initial 0.
 func TestJITContext_ExitResumeFields(t *testing.T) {
 	ctx := NewJITContext()
 
-	// 初始 0(未启用)
+	// initial 0 (not yet enabled)
 	if ctx.ExitArg0() != 0 {
 		t.Errorf("初始 exitArg0 应 0,得 %d", ctx.ExitArg0())
 	}
@@ -132,7 +135,7 @@ func TestJITContext_ExitResumeFields(t *testing.T) {
 		t.Errorf("初始 resumeOff 应 0,得 %d", ctx.ResumeOff())
 	}
 
-	// 写入后回读一致
+	// write then read back consistently
 	ctx.SetExitArg0(HelperRunCallee)
 	ctx.SetResumeOff(120)
 
@@ -144,8 +147,9 @@ func TestJITContext_ExitResumeFields(t *testing.T) {
 	}
 }
 
-// TestJITContext_ExitResumeOffsetsStable 验 JITContextExitArg0Offset /
-// ResumeOffOffset 编译期常量稳定(供 trampoline asm 字节级 emit 使用)。
+// TestJITContext_ExitResumeOffsetsStable: verifies JITContextExitArg0Offset /
+// ResumeOffOffset are stable compile-time constants (for use by byte-level emit
+// of the trampoline asm).
 func TestJITContext_ExitResumeOffsetsStable(t *testing.T) {
 	if JITContextExitArg0Offset == 0 {
 		t.Error("JITContextExitArg0Offset 不应为 0(承字段位置在末尾)")
@@ -156,14 +160,15 @@ func TestJITContext_ExitResumeOffsetsStable(t *testing.T) {
 	if JITContextExitArg0Offset == JITContextResumeOffOffset {
 		t.Error("exitArg0/resumeOff offset 不应相等")
 	}
-	// 8 字节对齐(uint64 + uint32 with padding;exitArg0 是 uint64 必 8 对齐)
+	// 8-byte aligned (uint64 + uint32 with padding; exitArg0 is uint64, must be 8-aligned)
 	if JITContextExitArg0Offset%8 != 0 {
 		t.Errorf("JITContextExitArg0Offset %% 8 = %d, want 0 (uint64 字段)",
 			JITContextExitArg0Offset%8)
 	}
 }
 
-// TestJITContext_ExitReasonCodesUnique 验 exit reason 常量唯一(防协议冲突)。
+// TestJITContext_ExitReasonCodesUnique: verifies the exit reason constants are
+// unique (guards against protocol collisions).
 func TestJITContext_ExitReasonCodesUnique(t *testing.T) {
 	codes := []uint32{ExitNormal, ExitError, ExitOSR, ExitInlineHelper}
 	seen := make(map[uint32]bool)
@@ -173,14 +178,14 @@ func TestJITContext_ExitReasonCodesUnique(t *testing.T) {
 		}
 		seen[c] = true
 	}
-	// 显性化协议状态码(承 §9.20.9 (3))
+	// Make the protocol status codes explicit (per §9.20.9 (3))
 	if ExitNormal != 0 || ExitError != 1 || ExitOSR != 2 || ExitInlineHelper != 3 {
 		t.Errorf("协议状态码值变化(承 §9.20.9 (3) 设计)— ExitNormal=%d Error=%d OSR=%d InlineHelper=%d",
 			ExitNormal, ExitError, ExitOSR, ExitInlineHelper)
 	}
 }
 
-// TestJITContext_HelperRequestCodesUnique 验 helper request code 唯一。
+// TestJITContext_HelperRequestCodesUnique: verifies helper request codes are unique.
 func TestJITContext_HelperRequestCodesUnique(t *testing.T) {
 	codes := []uint64{HelperRunCallee, HelperGrowStack, HelperGCBarrier}
 	seen := make(map[uint64]bool)
@@ -195,9 +200,9 @@ func TestJITContext_HelperRequestCodesUnique(t *testing.T) {
 	}
 }
 
-// TestJITContext_CodePageAddrField PJ5 §9.20.9 trampoline exit-resume 协议
-// commit-3b:验 codePageAddr setter/getter 工作 + 初始 0(承 dispatcher
-// 算 resume entry = codePageAddr + resumeOff)。
+// TestJITContext_CodePageAddrField PJ5 §9.20.9 trampoline exit-resume protocol
+// commit-3b: verifies the codePageAddr setter/getter works + initial 0 (the
+// dispatcher computes resume entry = codePageAddr + resumeOff).
 func TestJITContext_CodePageAddrField(t *testing.T) {
 	ctx := NewJITContext()
 
@@ -212,18 +217,19 @@ func TestJITContext_CodePageAddrField(t *testing.T) {
 	}
 }
 
-// TestJITContext_CodePageAddrOffsetStable 验 JITContextCodePageAddrOffset
-// 编译期常量稳定(供 trampoline asm + Go wrapper 字节级 emit 使用)。
+// TestJITContext_CodePageAddrOffsetStable: verifies JITContextCodePageAddrOffset
+// is a stable compile-time constant (for use by byte-level emit of the
+// trampoline asm + Go wrapper).
 func TestJITContext_CodePageAddrOffsetStable(t *testing.T) {
 	if JITContextCodePageAddrOffset == 0 {
 		t.Error("JITContextCodePageAddrOffset 不应为 0(承字段在末尾)")
 	}
-	// 8 字节对齐(uintptr 字段)
+	// 8-byte aligned (uintptr field)
 	if JITContextCodePageAddrOffset%8 != 0 {
 		t.Errorf("JITContextCodePageAddrOffset %% 8 = %d, want 0",
 			JITContextCodePageAddrOffset%8)
 	}
-	// 应在 resumeOff(72)+ padding(4)= 76 之后,即 ≥ 80
+	// should be after resumeOff(72) + padding(4) = 76, i.e. ≥ 80
 	if JITContextCodePageAddrOffset < JITContextResumeOffOffset+4 {
 		t.Errorf("CodePageAddrOffset = %d, 应 ≥ ResumeOffOffset+4 = %d",
 			JITContextCodePageAddrOffset, JITContextResumeOffOffset+4)

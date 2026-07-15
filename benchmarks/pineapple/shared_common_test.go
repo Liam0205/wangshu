@@ -1,18 +1,24 @@
-// shared_common_test.go:对位 common-mode + per-item-mode 的 batch wrapper 假设。
+// shared_common_test.go: tests the batch-wrapper hypothesis for common-mode vs.
+// per-item-mode.
 //
-// 设计动机:per-item mode 把 host loop 放在 Go 端,1000 items 触发 1000 次
-// boundary 跨界。如果改成 batch wrapper 形态(host 灌整列,VM 内循环),
-// boundary 从 1000 减到 1 —— pineapple `function_for_common` 模式恰好就是
-// 这个形态(只是 user 自己写整列处理 lua_script,而非 adapter 自动 wrap)。
+// Design motivation: per-item mode keeps the host loop on the Go side, so 1000 items
+// trigger 1000 boundary crossings. If reshaped into a batch-wrapper form (host feeds
+// the whole column, the loop runs inside the VM), the boundary count drops from 1000
+// to 1 — pineapple's `function_for_common` mode is exactly this form (except the user
+// writes the whole-column processing lua_script themselves, rather than the adapter
+// auto-wrapping it).
 //
-// 收益假设(本 spike 验证):
-//  1. common mode 比 per-item mode 快 ~25%(boundary 跨界省 999 次)
-//  2. column storage 在 common mode 下反败为胜(VM 内整列 SetGlobal 是 column
-//     storage 的甜区,backing array 直接 zero-copy 提取)
-//  3. wangshu p3 在 common mode 下因 VM 内层有真循环可能触发凸月升层
+// Benefit hypotheses (validated by this spike):
+//  1. common mode is ~25% faster than per-item mode (boundary crossings save 999)
+//  2. column storage turns from loser to winner under common mode (a whole-column
+//     SetGlobal inside the VM is column storage's sweet spot, extracting the backing
+//     array with zero-copy)
+//  3. wangshu p3 under common mode may trigger a gibbous tier-up, because the inner
+//     VM layer has a real loop
 //
-// 结果对 row/column×per-item/common 二维矩阵的实证支撑直接决定是否值得在
-// pineapple cross-repo 推动 batch wrapper adapter 优化。
+// The empirical support this gives to the row/column × per-item/common 2D matrix
+// directly decides whether it's worth driving a batch-wrapper adapter optimization
+// across the pineapple cross-repo.
 package pineapple_bench
 
 import (
@@ -22,13 +28,15 @@ import (
 	pine "github.com/Liam0205/pineapple/pine-go"
 )
 
-// scriptArithCommon 是 scriptArith 的 common-mode 对位:
-// 在 VM 内对 item_price 列遍历 + 算术变换,返回结果列。
-// 业务逻辑与 per-item scriptArith 等价,只是 host loop 翻进 VM。
+// scriptArithCommon is the common-mode counterpart of scriptArith:
+// inside the VM it iterates over the item_price column + applies an arithmetic
+// transform, returning the result column. The business logic is equivalent to the
+// per-item scriptArith, only the host loop is moved into the VM.
 //
-// 注意 globals 名是 item_price 不是 item_prices——pineapple executeForCommon
-// 把 `ItemInput` 字段名直接作 globals,投喂的是该字段的整列 list,所以脚本
-// 里的 `item_price` 此时是个 array,需要 [i] 索引。
+// Note the globals name is item_price, not item_prices — pineapple's
+// executeForCommon uses the `ItemInput` field name directly as the globals name, and
+// feeds the whole-column list of that field, so `item_price` in the script is an
+// array here and needs [i] indexing.
 const (
 	scriptArithCommon = `
 function f()
@@ -43,14 +51,15 @@ end
 	funcArithCommon = "f"
 )
 
-// buildLuaConfigCommon 复刻 buildLuaConfig 但用 function_for_common 模式。
+// buildLuaConfigCommon replicates buildLuaConfig but uses the function_for_common mode.
 //
-// 关键差别:metadata 用 common_output(不是 item_output),因为 common-mode
-// 返回值是 common scope 的整列。但下游 pipeline 想用这列作 item-level 数据
-// 仍需要 common→item 投影——pineapple 现成机制?
+// Key difference: metadata uses common_output (not item_output), because the
+// common-mode return value is the whole column in common scope. But if a downstream
+// pipeline wants to use this column as item-level data, it still needs a common→item
+// projection — is there an existing pineapple mechanism for that?
 //
-// 简化:只测 LuaOp.Execute 本身,不关心下游怎么消费 commonOutput,只看 ns/op
-// 与 alloc 二维变化。
+// Simplification: only benchmark LuaOp.Execute itself; we don't care how downstream
+// consumes commonOutput, only the 2D changes in ns/op and alloc.
 func buildLuaConfigCommon(luaScript, luaFunc string, items []any, storageMode string) map[string]any {
 	luaOp := map[string]any{
 		"type_name":           "transform_by_lua",
@@ -87,7 +96,7 @@ func buildLuaConfigCommon(luaScript, luaFunc string, items []any, storageMode st
 	return cfg
 }
 
-// runBenchmarkCommon 对位 runBenchmark 的 common-mode 版本。
+// runBenchmarkCommon is the common-mode counterpart of runBenchmark.
 func runBenchmarkCommon(b *testing.B, storageMode string) {
 	const itemCount = 1000
 	items := makeItems(itemCount)

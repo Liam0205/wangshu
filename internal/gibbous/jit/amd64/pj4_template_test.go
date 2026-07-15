@@ -6,9 +6,11 @@ import (
 	"testing"
 )
 
-// pj4_template_test.go —— PJ4 IC ArrayHit 模板字节级长度自洽 + emit 不
-// panic 测试。真 mmap+RX round-trip 需要构造真 table(arena + table head
-// + array 段),涉及跨 internal package 依赖,留 crescent e2e 真升层测试。
+// pj4_template_test.go —— PJ4 IC ArrayHit template byte-level length
+// consistency + emit-does-not-panic tests. A real mmap+RX round-trip needs a
+// real table constructed (arena + table head + array segment), which pulls in
+// cross-internal-package dependencies; that is left to the crescent e2e
+// higher-level tests.
 
 func TestPJ4_EmitGetTableArrayHit_Length(t *testing.T) {
 	var buf []byte
@@ -17,17 +19,17 @@ func TestPJ4_EmitGetTableArrayHit_Length(t *testing.T) {
 		0,          // bReg = R(0) (table)
 		7,          // stableShape (gen)
 		3,          // stableIndex
-		16,         // arenaBaseOff(jitContext field offset 示例)
+		16,         // arenaBaseOff(jitContext field offset example)
 		0xCAFEBABE, // deoptCode
 	)
 
-	// 不强制具体长度,只验非空 + 不 panic
+	// Do not require an exact length, only assert non-empty + no panic
 	if len(buf) == 0 {
 		t.Fatal("EmitGetTableArrayHit returned empty buf")
 	}
 	t.Logf("EmitGetTableArrayHit emitted %d bytes", len(buf))
 
-	// 验证模板末尾有 ret(0xC3)
+	// Verify the template ends with ret(0xC3)
 	if buf[len(buf)-1] != 0xC3 {
 		t.Errorf("template should end with ret(0xC3), got 0x%02x", buf[len(buf)-1])
 	}
@@ -38,8 +40,8 @@ func TestPJ4_EmitGetTableArrayHit_DeoptBlockPresent(t *testing.T) {
 	const deopt uint64 = 0xDEADBEEF12345678
 	buf = EmitGetTableArrayHit(buf, 0, 0, 0, 0, 0, deopt)
 
-	// deopt block 是 mov rax, deoptCode + ret(48 B8 deoptCode + C3 = 11 字节)
-	// 在模板末尾。检查最后 11 字节
+	// The deopt block is mov rax, deoptCode + ret (48 B8 deoptCode + C3 = 11
+	// bytes) at the end of the template. Check the last 11 bytes.
 	if len(buf) < 11 {
 		t.Fatal("buf too short")
 	}
@@ -54,36 +56,37 @@ func TestPJ4_EmitGetTableArrayHit_DeoptBlockPresent(t *testing.T) {
 				i, tail[2+i], byte(deopt>>(8*i)))
 		}
 	}
-	// 末尾 ret
+	// Trailing ret
 	if tail[10] != 0xC3 {
 		t.Errorf("deopt block tail = 0x%02x, want 0xC3(ret)", tail[10])
 	}
 }
 
-// TestPJ4_EmitGetTableArrayHit_StrictIsTableGuard 验严密 IsTable guard 字节
-// 序列在模板前段(7-22 字节):
+// TestPJ4_EmitGetTableArrayHit_StrictIsTableGuard verifies the strict IsTable
+// guard byte sequence in the front of the template (bytes 7-22):
 //
-//	[ 0-6 ] mov rax, [rbx + bReg*8]    (7 字节)
-//	[ 7-10] shr rax, 48                (4 字节,48 C1 E8 30)
-//	[11-15] cmp eax, 0xFFFC            (5 字节,3D FC FF 00 00)
-//	[16-21] jne deopt (rel32 placeholder)(6 字节,0F 85 ...)
+//	[ 0-6 ] mov rax, [rbx + bReg*8]    (7 bytes)
+//	[ 7-10] shr rax, 48                (4 bytes, 48 C1 E8 30)
+//	[11-15] cmp eax, 0xFFFC            (5 bytes, 3D FC FF 00 00)
+//	[16-21] jne deopt (rel32 placeholder)(6 bytes, 0F 85 ...)
 //
-// 严密 guard 替换原简化版 mov rcx,0xFFFC<<48 + cmp rax,rcx + jb deopt
-// (10+3+6=19 字节),省 4 字节 + 真严密 IsTable check。
+// The strict guard replaces the original simplified version mov rcx,0xFFFC<<48
+// + cmp rax,rcx + jb deopt (10+3+6=19 bytes), saving 4 bytes and giving a real
+// strict IsTable check.
 func TestPJ4_EmitGetTableArrayHit_StrictIsTableGuard(t *testing.T) {
 	var buf []byte
 	buf = EmitGetTableArrayHit(buf, 1, 0, 7, 3, 16, 0xCAFEBABE)
 
-	// 跳过前 7 字节(mov rax, [rbx + 0*8])= 48 8B 03 00 00 00 00
-	// 实际 EmitMovqRaxFromMemReg 可能用 [rbx+disp8] 而非 disp32,断言时
-	// 先看 shr rax, 48 出现位置(48 C1 E8 30)
+	// Skip the first 7 bytes (mov rax, [rbx + 0*8]) = 48 8B 03 00 00 00 00.
+	// EmitMovqRaxFromMemReg may use [rbx+disp8] rather than disp32, so when
+	// asserting, first find where shr rax, 48 appears (48 C1 E8 30).
 	const shrSig = uint32(0x48C1E830) // bytes: 48 C1 E8 30 -> as uint32 LE
-	// 直接在 buf 前 20 字节内 grep shr 字节序列
+	// grep the shr byte sequence directly within the first 20 bytes of buf
 	found := false
 	for i := 0; i <= 20-4; i++ {
 		if buf[i] == 0x48 && buf[i+1] == 0xC1 && buf[i+2] == 0xE8 && buf[i+3] == 48 {
 			found = true
-			// 紧随其后应是 cmp eax, 0xFFFC = 3D FC FF 00 00
+			// Immediately after should be cmp eax, 0xFFFC = 3D FC FF 00 00
 			if i+8 >= len(buf) {
 				t.Fatalf("cmp 段越界")
 			}
@@ -93,7 +96,7 @@ func TestPJ4_EmitGetTableArrayHit_StrictIsTableGuard(t *testing.T) {
 				t.Errorf("cmp eax, 0xFFFC bytes wrong at %d: got %x, want 3D FC FF 00 00",
 					i+4, buf[i+4:i+9])
 			}
-			// 紧随其后应是 jne rel32 = 0F 85 ...(6 字节)
+			// Immediately after should be jne rel32 = 0F 85 ... (6 bytes)
 			if i+10 >= len(buf) {
 				t.Fatalf("jne 段越界")
 			}
@@ -112,24 +115,28 @@ func TestPJ4_EmitGetTableArrayHit_StrictIsTableGuard(t *testing.T) {
 	}
 }
 
-// TestPJ4_EmitGetTableArrayHit_NoSimplifiedGuard 反向断言:模板字节不应包含
-// 原简化版 IsTable guard 序列(mov rcx, 0xFFFC<<48 = 48 B9 00 00 00 00 00 00
-// FC FF + cmp rax, rcx = 48 39 C8 + jb rel32 = 0F 82 ...)。
+// TestPJ4_EmitGetTableArrayHit_NoSimplifiedGuard is a negative assertion: the
+// template bytes should not contain the original simplified IsTable guard
+// sequence (mov rcx, 0xFFFC<<48 = 48 B9 00 00 00 00 00 00 FC FF + cmp rax, rcx
+// = 48 39 C8 + jb rel32 = 0F 82 ...).
 //
-// 严密版替换简化版后,模板字节序列里不应再出现 0xFFFC<<48 = 0xFFFC_0000_0000_0000
-// 的小端字节 00 00 00 00 00 00 FC FF。注意 nil mask(0xFFFE_...)和
-// stableShape 仍可能出现在模板末尾(nil check + cmp eax stableShape),所以
-// 我们只查特征字节序列 mov rcx, imm64 + cmp rax, rcx + jb 组合的存在。
+// After the strict version replaces the simplified one, the template bytes
+// should no longer contain the little-endian bytes 00 00 00 00 00 00 FC FF of
+// 0xFFFC<<48 = 0xFFFC_0000_0000_0000. Note the nil mask (0xFFFE_...) and
+// stableShape may still appear at the tail of the template (nil check + cmp eax
+// stableShape), so we only look for the presence of the characteristic byte
+// sequence mov rcx, imm64 + cmp rax, rcx + jb combination.
 //
-// 简化版组合特征:48 B9 [..imm64..] 48 39 C8 0F 82
+// Simplified-version signature: 48 B9 [..imm64..] 48 39 C8 0F 82
 func TestPJ4_EmitGetTableArrayHit_NoSimplifiedGuard(t *testing.T) {
 	var buf []byte
 	buf = EmitGetTableArrayHit(buf, 1, 0, 7, 3, 16, 0xCAFEBABE)
 
-	// 简化版特征:48 B9 [imm64 8字节] 48 39 C8 0F 82(共 15 字节)
-	// 严密版替换后,buf 前 25 字节内不应出现这个组合(后续 mov rcx 是 nil
-	// mask 0xFFFE...,但后跟的是 cmp rax rcx + je 而非 jb,所以特征不会
-	// 误匹配)。
+	// Simplified-version signature: 48 B9 [imm64 8 bytes] 48 39 C8 0F 82 (15
+	// bytes total). After the strict version replaces it, this combination
+	// should not appear within the first 25 bytes of buf (a later mov rcx is
+	// the nil mask 0xFFFE..., but it is followed by cmp rax rcx + je rather than
+	// jb, so the signature will not false-match).
 	for i := 0; i+14 < 25; i++ {
 		if buf[i] == 0x48 && buf[i+1] == 0xB9 && // mov rcx, imm64
 			buf[i+10] == 0x48 && buf[i+11] == 0x39 && buf[i+12] == 0xC8 && // cmp rax, rcx
@@ -142,9 +149,10 @@ func TestPJ4_EmitGetTableArrayHit_NoSimplifiedGuard(t *testing.T) {
 	}
 }
 
-// TestPJ4_EmitGetTableNodeHit_Length 验 NodeHit 模板字节级长度自洽。
-// 预期长度 ~159 字节(ArrayHit 132 字节 + key 比对 27 字节:NodeKey load
-// 8 + mov rdx imm64 10 + cmp rax rdx 3 + jne rel32 6)。
+// TestPJ4_EmitGetTableNodeHit_Length verifies the NodeHit template byte-level
+// length consistency. Expected length ~159 bytes (ArrayHit 132 bytes + key
+// comparison 27 bytes: NodeKey load 8 + mov rdx imm64 10 + cmp rax rdx 3 + jne
+// rel32 6).
 func TestPJ4_EmitGetTableNodeHit_Length(t *testing.T) {
 	var buf []byte
 	buf = EmitGetTableNodeHit(buf,
@@ -152,7 +160,7 @@ func TestPJ4_EmitGetTableNodeHit_Length(t *testing.T) {
 		0,                     // bReg = R(0)(table)
 		7,                     // stableShape (gen)
 		2,                     // stableIndex
-		0xFFFB_DEAD_BEEF_CAFE, // stableKey(模拟 string NaN-box)
+		0xFFFB_DEAD_BEEF_CAFE, // stableKey (simulated string NaN-box)
 		16,                    // arenaBaseOff
 		0xFFFCDEAD_DEADBEAD,   // deoptCode
 	)
@@ -166,19 +174,20 @@ func TestPJ4_EmitGetTableNodeHit_Length(t *testing.T) {
 	}
 }
 
-// TestPJ4_EmitGetTableNodeHit_StrictIsTableGuard 验 NodeHit 模板复用同款
-// 严密 IsTable guard 字节序列(对位 ArrayHit StrictIsTableGuard)。
+// TestPJ4_EmitGetTableNodeHit_StrictIsTableGuard verifies the NodeHit template
+// reuses the same strict IsTable guard byte sequence (mirroring ArrayHit
+// StrictIsTableGuard).
 func TestPJ4_EmitGetTableNodeHit_StrictIsTableGuard(t *testing.T) {
 	var buf []byte
 	buf = EmitGetTableNodeHit(buf, 1, 0, 7, 2, 0xFFFB_0000_0000_0001,
 		16, 0xCAFEBABE)
 
-	// 查 shr rax, 48(48 C1 E8 30)在模板前 20 字节
+	// Look for shr rax, 48 (48 C1 E8 30) within the first 20 bytes
 	found := false
 	for i := 0; i <= 20-4; i++ {
 		if buf[i] == 0x48 && buf[i+1] == 0xC1 && buf[i+2] == 0xE8 && buf[i+3] == 48 {
 			found = true
-			// 紧随其后 cmp eax, 0xFFFC + jne rel32
+			// Immediately after: cmp eax, 0xFFFC + jne rel32
 			if i+10 >= len(buf) {
 				t.Fatalf("strict guard 段越界")
 			}
@@ -198,17 +207,19 @@ func TestPJ4_EmitGetTableNodeHit_StrictIsTableGuard(t *testing.T) {
 	}
 }
 
-// TestPJ4_EmitGetTableNodeHit_KeyComparison 验 NodeHit 模板含 key 比对段
-// (mov rdx, stableKey + cmp rax, rdx + jne deopt 19 字节序列)。
+// TestPJ4_EmitGetTableNodeHit_KeyComparison verifies the NodeHit template
+// contains the key comparison segment (mov rdx, stableKey + cmp rax, rdx +
+// jne deopt, a 19-byte sequence).
 //
-// stableKey 用 0xFFFB_1234_5678_9ABC 模拟 string NaN-box,验 imm64 字节
-// 序列 BC 9A 78 56 34 12 FB FF(小端)出现在 mov rdx 后。
+// stableKey uses 0xFFFB_1234_5678_9ABC to simulate a string NaN-box; verify
+// the imm64 byte sequence BC 9A 78 56 34 12 FB FF (little-endian) appears
+// after mov rdx.
 func TestPJ4_EmitGetTableNodeHit_KeyComparison(t *testing.T) {
 	const stableKey uint64 = 0xFFFB_1234_5678_9ABC
 	var buf []byte
 	buf = EmitGetTableNodeHit(buf, 1, 0, 7, 2, stableKey, 16, 0xCAFEBABE)
 
-	// 查 mov rdx imm64 = 48 BA + imm64 LE 字节
+	// find mov rdx imm64 = 48 BA + imm64 LE bytes
 	wantSig := []byte{0x48, 0xBA,
 		0xBC, 0x9A, 0x78, 0x56, 0x34, 0x12, 0xFB, 0xFF}
 	found := false
@@ -222,7 +233,7 @@ func TestPJ4_EmitGetTableNodeHit_KeyComparison(t *testing.T) {
 		}
 		if match {
 			found = true
-			// 后跟 cmp rax, rdx = 48 39 D0(3 字节)+ jne rel32 = 0F 85 ...(6 字节)
+			// followed by cmp rax, rdx = 48 39 D0 (3 bytes) + jne rel32 = 0F 85 ... (6 bytes)
 			if i+12 >= len(buf) {
 				t.Fatalf("key 比对段越界")
 			}
@@ -243,14 +254,15 @@ func TestPJ4_EmitGetTableNodeHit_KeyComparison(t *testing.T) {
 	}
 }
 
-// TestPJ4_EmitSetTableArrayHit_Length 验 PJ4 SETTABLE ArrayHit 模板字节
-// 级长度自洽。预期 ~122 字节(getter ArrayHit 132 字节但 nil check 改 load
-// R(C)/反向 store + 无 NodeKey 比对,简化掉 nil mask 加载 + cmp + je)。
+// TestPJ4_EmitSetTableArrayHit_Length verifies the PJ4 SETTABLE ArrayHit
+// template byte-level length self-consistency. Expected ~122 bytes (getter
+// ArrayHit is 132 bytes but the nil check becomes load R(C)/reverse store +
+// no NodeKey comparison, dropping the nil mask load + cmp + je).
 func TestPJ4_EmitSetTableArrayHit_Length(t *testing.T) {
 	var buf []byte
 	buf = EmitSetTableArrayHit(buf,
-		0,          // aReg = R(0)(table)
-		1,          // cReg = R(1)(value)
+		0,          // aReg = R(0) (table)
+		1,          // cReg = R(1) (value)
 		7,          // stableShape (gen)
 		3,          // stableIndex
 		16,         // arenaBaseOff
@@ -266,8 +278,8 @@ func TestPJ4_EmitSetTableArrayHit_Length(t *testing.T) {
 	}
 }
 
-// TestPJ4_EmitSetTableArrayHit_StrictIsTableGuard 验 SETTABLE 模板复用同款
-// 严密 IsTable guard(shr@7 / cmp@11 / jne@16)。
+// TestPJ4_EmitSetTableArrayHit_StrictIsTableGuard verifies the SETTABLE
+// template reuses the same strict IsTable guard (shr@7 / cmp@11 / jne@16).
 func TestPJ4_EmitSetTableArrayHit_StrictIsTableGuard(t *testing.T) {
 	var buf []byte
 	buf = EmitSetTableArrayHit(buf, 0, 1, 7, 3, 16, 0xCAFEBABE)
@@ -295,14 +307,14 @@ func TestPJ4_EmitSetTableArrayHit_StrictIsTableGuard(t *testing.T) {
 	}
 }
 
-// TestPJ4_EmitSetTableArrayHit_ReverseStore 验 SETTABLE 模板含反向 store
-// 字节序列(load rdx from [rbx+cReg*8] = 48 8B 93 disp32 + mov [r14+rcx+...]
-// from rdx = 49 89 94 0E disp32)。
+// TestPJ4_EmitSetTableArrayHit_ReverseStore verifies the SETTABLE template
+// contains the reverse store byte sequence (load rdx from [rbx+cReg*8] =
+// 48 8B 93 disp32 + mov [r14+rcx+...] from rdx = 49 89 94 0E disp32).
 func TestPJ4_EmitSetTableArrayHit_ReverseStore(t *testing.T) {
 	var buf []byte
 	buf = EmitSetTableArrayHit(buf, 0, 1, 7, 3, 16, 0xCAFEBABE) // cReg=1 → disp=8
 
-	// 查 mov rdx, [rbx + 8] = 48 8B 93 08 00 00 00(7 字节)
+	// find mov rdx, [rbx + 8] = 48 8B 93 08 00 00 00 (7 bytes)
 	wantLoadRdx := []byte{0x48, 0x8B, 0x93, 0x08, 0x00, 0x00, 0x00}
 	found := -1
 	for i := 0; i+6 < len(buf); i++ {
@@ -323,8 +335,8 @@ func TestPJ4_EmitSetTableArrayHit_ReverseStore(t *testing.T) {
 	}
 	t.Logf("load rdx 在 offset %d 找到", found)
 
-	// 紧随其后:反向 store mov [r14+rcx+stableIndex*8], rdx
-	// stableIndex=3, *8 = 24 → 49 89 94 0E 18 00 00 00(8 字节)
+	// what follows: reverse store mov [r14+rcx+stableIndex*8], rdx
+	// stableIndex=3, *8 = 24 → 49 89 94 0E 18 00 00 00 (8 bytes)
 	wantStoreRdx := []byte{0x49, 0x89, 0x94, 0x0E, 0x18, 0x00, 0x00, 0x00}
 	if found+7+7 >= len(buf) {
 		t.Fatalf("反向 store 段越界")
@@ -337,14 +349,15 @@ func TestPJ4_EmitSetTableArrayHit_ReverseStore(t *testing.T) {
 	}
 }
 
-// TestPJ4_EmitSelfArrayHit_Length 验 PJ4 SELF ArrayHit 模板字节级长度自洽。
-// 预期 ~141 字节(getter ArrayHit 132 + R(A+1) 拷段 7 字节,实测取决于
-// EmitMovqMemRegFromRax disp 编码)。
+// TestPJ4_EmitSelfArrayHit_Length verifies the PJ4 SELF ArrayHit template
+// byte-level length self-consistency. Expected ~141 bytes (getter ArrayHit
+// 132 + R(A+1) copy segment 7 bytes; the measured value depends on the
+// EmitMovqMemRegFromRax disp encoding).
 func TestPJ4_EmitSelfArrayHit_Length(t *testing.T) {
 	var buf []byte
 	buf = EmitSelfArrayHit(buf,
-		2,          // aReg = R(2)(method 结果)→ R(A+1)=R(3)
-		0,          // bReg = R(0)(obj)
+		2,          // aReg = R(2) (method result) → R(A+1)=R(3)
+		0,          // bReg = R(0) (obj)
 		7,          // stableShape
 		1,          // stableIndex
 		16,         // arenaBaseOff
@@ -360,25 +373,26 @@ func TestPJ4_EmitSelfArrayHit_Length(t *testing.T) {
 	}
 }
 
-// TestPJ4_EmitSelfArrayHit_SelfStore 验 SELF 模板含「R(A+1) := R(B)」拷段
-// (load rax from [rbx+bReg*8] + store [rbx+(aReg+1)*8] from rax 在模板前部)。
+// TestPJ4_EmitSelfArrayHit_SelfStore verifies the SELF template contains the
+// "R(A+1) := R(B)" copy segment (load rax from [rbx+bReg*8] + store
+// [rbx+(aReg+1)*8] from rax, in the front of the template).
 func TestPJ4_EmitSelfArrayHit_SelfStore(t *testing.T) {
 	var buf []byte
-	// aReg=2 → R(A+1) = R(3) 槽偏移 24
-	// bReg=0 → R(B) 槽偏移 0
+	// aReg=2 → R(A+1) = R(3) slot offset 24
+	// bReg=0 → R(B) slot offset 0
 	buf = EmitSelfArrayHit(buf, 2, 0, 7, 1, 16, 0xCAFEBABE)
 
-	// 模板前部应有:
-	// [0-6] load rax from [rbx + 0]  = 48 8B 03 00 00 00 00(7 字节)
-	// [7-13] store [rbx + 24], rax  = 48 89 83 18 00 00 00(7 字节)
-	// 紧跟 shr rax, 48 = 48 C1 E8 30(4 字节)
+	// The front of the template should have:
+	// [0-6] load rax from [rbx + 0]  = 48 8B 03 00 00 00 00 (7 bytes)
+	// [7-13] store [rbx + 24], rax  = 48 89 83 18 00 00 00 (7 bytes)
+	// followed by shr rax, 48 = 48 C1 E8 30 (4 bytes)
 	if len(buf) < 18 {
 		t.Fatal("模板太短")
 	}
-	// 第二段 store [rbx+24], rax 字节
-	// EmitMovqMemRegFromRax 编码:48 89 83 (rm=011=rbx) disp32 (or disp8 short)
-	// 用 disp32 时 ModRM=83=mod10 reg=000 rm=011;disp8 时 ModRM=43=mod01 reg=000 rm=011
-	// 实测看哪个
+	// second segment store [rbx+24], rax bytes
+	// EmitMovqMemRegFromRax encoding: 48 89 83 (rm=011=rbx) disp32 (or disp8 short)
+	// with disp32: ModRM=83=mod10 reg=000 rm=011; with disp8: ModRM=43=mod01 reg=000 rm=011
+	// measure to see which
 	storeStart := 7
 	if buf[storeStart] != 0x48 || buf[storeStart+1] != 0x89 {
 		t.Errorf("store R(A+1) 前缀错位 at %d: got %x %x, want 48 89",
@@ -387,17 +401,19 @@ func TestPJ4_EmitSelfArrayHit_SelfStore(t *testing.T) {
 	t.Logf("SELF 模板前 18 字节 = %x", buf[:18])
 }
 
-// TestPJ4_EmitSetTableNodeHit_Length 验 SETTABLE NodeHit 模板字节长度自洽。
-// 预期 140 字节(GetTable NodeHit 159 - getter 段 34 + setter 段 15)。
+// TestPJ4_EmitSetTableNodeHit_Length verifies the SETTABLE NodeHit template
+// byte-level length self-consistency. Expected 140 bytes (GetTable NodeHit
+// 159 - getter segment 34 + setter segment 15).
 //
-// **精确长度断言**(承外部审查 🟢 反馈):锁死布局契约,防未来误改原语导致
-// 长度漂移而 length 测试不能抓出。
+// **Exact length assertion** (per external review 🟢 feedback): locks down the
+// layout contract, preventing a future accidental change to the primitive that
+// drifts the length in a way the length test can catch.
 func TestPJ4_EmitSetTableNodeHit_Length(t *testing.T) {
 	const stableKey uint64 = 0xFFFB_1234_5678_9ABC
 	var buf []byte
 	buf = EmitSetTableNodeHit(buf,
-		0, // aReg = R(0)(table)
-		1, // cReg = R(1)(value)
+		0, // aReg = R(0) (table)
+		1, // cReg = R(1) (value)
 		7, // stableShape
 		2, // stableIndex
 		stableKey,
@@ -416,8 +432,8 @@ func TestPJ4_EmitSetTableNodeHit_Length(t *testing.T) {
 	}
 }
 
-// TestPJ4_EmitSetTableNodeHit_StrictIsTableGuard 验 SETTABLE NodeHit 模板
-// 复用同款严密 IsTable guard。
+// TestPJ4_EmitSetTableNodeHit_StrictIsTableGuard verifies the SETTABLE NodeHit
+// template reuses the same strict IsTable guard.
 func TestPJ4_EmitSetTableNodeHit_StrictIsTableGuard(t *testing.T) {
 	var buf []byte
 	buf = EmitSetTableNodeHit(buf, 0, 1, 7, 2, 0xFFFB_0000_0000_0001,
@@ -446,17 +462,17 @@ func TestPJ4_EmitSetTableNodeHit_StrictIsTableGuard(t *testing.T) {
 	}
 }
 
-// TestPJ4_EmitSetTableNodeHit_KeyCompareAndReverseStore 验 NodeHit setter
-// 含 key 比对段 + 反向 store NodeVal 段。
+// TestPJ4_EmitSetTableNodeHit_KeyCompareAndReverseStore verifies the NodeHit
+// setter contains the key comparison segment + reverse store NodeVal segment.
 func TestPJ4_EmitSetTableNodeHit_KeyCompareAndReverseStore(t *testing.T) {
 	const stableKey uint64 = 0xFFFB_DEAD_BEEF_CAFE
 	var buf []byte
 	// aReg=0 → R(A)=[rbx+0]
-	// cReg=1 → R(C)=[rbx+8](value)
+	// cReg=1 → R(C)=[rbx+8] (value)
 	// stableIndex=2 → NodeKey @ rcx+48 / NodeVal @ rcx+56
 	buf = EmitSetTableNodeHit(buf, 0, 1, 7, 2, stableKey, 16, 0xCAFEBABE)
 
-	// 查 mov rdx, stableKey = 48 BA + imm64 LE
+	// find mov rdx, stableKey = 48 BA + imm64 LE
 	wantMovRdx := []byte{0x48, 0xBA,
 		0xFE, 0xCA, 0xEF, 0xBE, 0xAD, 0xDE, 0xFB, 0xFF}
 	movRdxOff := -1
@@ -478,7 +494,7 @@ func TestPJ4_EmitSetTableNodeHit_KeyCompareAndReverseStore(t *testing.T) {
 	}
 	t.Logf("mov rdx stableKey 在 offset %d 找到", movRdxOff)
 
-	// 紧随其后:cmp rax, rdx(3 字节)+ jne rel32(6 字节)= 9 字节 key 比对段
+	// what follows: cmp rax, rdx (3 bytes) + jne rel32 (6 bytes) = 9-byte key comparison segment
 	if movRdxOff+12 >= len(buf) {
 		t.Fatal("key 比对段越界")
 	}
@@ -489,12 +505,12 @@ func TestPJ4_EmitSetTableNodeHit_KeyCompareAndReverseStore(t *testing.T) {
 		t.Errorf("jne rel32 prefix 字节错位")
 	}
 
-	// 紧接 key 比对(9 字节)后:load R(C) → rdx(7 字节)+ 反向 store
-	// (8 字节)
-	// load rdx 段:48 8B 93 disp32(cReg=1 → disp=8)
-	loadRdxOff := movRdxOff + 9 + 9 - 1 // movRdx(10) + cmp(3) + jne(6) = 19 字节后开始
-	// 实际:movRdx 起点 movRdxOff,占 10 字节;cmp 3 字节,jne 6 字节
-	// 总 19 字节后是 load R(C) → rdx 段
+	// right after the key comparison (9 bytes): load R(C) → rdx (7 bytes) + reverse store
+	// (8 bytes)
+	// load rdx segment: 48 8B 93 disp32 (cReg=1 → disp=8)
+	loadRdxOff := movRdxOff + 9 + 9 - 1 // starts after movRdx(10) + cmp(3) + jne(6) = 19 bytes
+	// actual: movRdx starts at movRdxOff, takes 10 bytes; cmp 3 bytes, jne 6 bytes
+	// the load R(C) → rdx segment is 19 bytes later
 	loadRdxStart := movRdxOff + 19
 	if loadRdxStart+6 >= len(buf) {
 		t.Fatal("load R(C) 段越界")
@@ -507,8 +523,8 @@ func TestPJ4_EmitSetTableNodeHit_KeyCompareAndReverseStore(t *testing.T) {
 		}
 	}
 
-	// 紧随 load rdx(7 字节)后:反向 store mov [r14+rcx+stableIndex*24+8], rdx
-	// stableIndex=2,24*2+8=56 → 49 89 94 0E 38 00 00 00(8 字节)
+	// right after load rdx (7 bytes): reverse store mov [r14+rcx+stableIndex*24+8], rdx
+	// stableIndex=2, 24*2+8=56 → 49 89 94 0E 38 00 00 00 (8 bytes)
 	storeStart := loadRdxStart + 7
 	wantStore := []byte{0x49, 0x89, 0x94, 0x0E, 0x38, 0x00, 0x00, 0x00}
 	if storeStart+7 >= len(buf) {
@@ -520,20 +536,22 @@ func TestPJ4_EmitSetTableNodeHit_KeyCompareAndReverseStore(t *testing.T) {
 				j, buf[storeStart+j], b, storeStart+j)
 		}
 	}
-	_ = loadRdxOff // 保留作未来扩展用,当前不验证
+	_ = loadRdxOff // kept for future extension, not verified currently
 }
 
-// TestPJ4_EmitSelfNodeHit_Length 验 SELF NodeHit 模板字节长度自洽。
-// 预期 166 字节(SELF ArrayHit 139 + key 比对段 27)。
+// TestPJ4_EmitSelfNodeHit_Length verifies the SELF NodeHit template byte-level
+// length self-consistency. Expected 166 bytes (SELF ArrayHit 139 + key
+// comparison segment 27).
 //
-// **精确长度断言**(承外部审查 🟢 反馈):锁死布局契约,防未来误改原语导致
-// 长度漂移而 length 测试不能抓出。
+// **Exact length assertion** (per external review 🟢 feedback): locks down the
+// layout contract, preventing a future accidental change to the primitive that
+// drifts the length in a way the length test can catch.
 func TestPJ4_EmitSelfNodeHit_Length(t *testing.T) {
 	const stableKey uint64 = 0xFFFB_1234_5678_9ABC
 	var buf []byte
 	buf = EmitSelfNodeHit(buf,
-		2, // aReg = R(2)(method 结果)→ R(A+1)=R(3)
-		0, // bReg = R(0)(obj)
+		2, // aReg = R(2) (method result) → R(A+1)=R(3)
+		0, // bReg = R(0) (obj)
 		7, // stableShape
 		1, // stableIndex
 		stableKey,
@@ -552,17 +570,18 @@ func TestPJ4_EmitSelfNodeHit_Length(t *testing.T) {
 	}
 }
 
-// TestPJ4_EmitSelfNodeHit_SelfStoreAndKeyCompare 验 SELF NodeHit 模板含:
-//   - 前部 R(A+1) := R(B) 拷段(对位 SELF ArrayHit)
-//   - 后部 NodeKey 比对段(mov rdx stableKey + cmp rax rdx + jne)
+// TestPJ4_EmitSelfNodeHit_SelfStoreAndKeyCompare verifies the SELF NodeHit
+// template contains:
+//   - front R(A+1) := R(B) copy segment (mirroring SELF ArrayHit)
+//   - trailing NodeKey comparison segment (mov rdx stableKey + cmp rax rdx + jne)
 func TestPJ4_EmitSelfNodeHit_SelfStoreAndKeyCompare(t *testing.T) {
 	const stableKey uint64 = 0xFFFB_AAAA_BBBB_CCCC
 	var buf []byte
-	// aReg=2 → R(A+1)=R(3) 槽偏移 24
-	// bReg=0 → R(B) 槽偏移 0
+	// aReg=2 → R(A+1)=R(3) slot offset 24
+	// bReg=0 → R(B) slot offset 0
 	buf = EmitSelfNodeHit(buf, 2, 0, 7, 1, stableKey, 16, 0xCAFEBABE)
 
-	// 前部:load R(B) + store R(A+1) (14 字节)
+	// front: load R(B) + store R(A+1) (14 bytes)
 	if buf[0] != 0x48 || buf[1] != 0x8B {
 		t.Errorf("SELF NodeHit 前部 load R(B) 字节错位")
 	}
@@ -570,7 +589,7 @@ func TestPJ4_EmitSelfNodeHit_SelfStoreAndKeyCompare(t *testing.T) {
 		t.Errorf("SELF NodeHit 前部 store R(A+1) 字节错位")
 	}
 
-	// 查 mov rdx, stableKey(中部 key 比对段)
+	// find mov rdx, stableKey (middle key comparison segment)
 	wantMovRdx := []byte{0x48, 0xBA,
 		0xCC, 0xCC, 0xBB, 0xBB, 0xAA, 0xAA, 0xFB, 0xFF}
 	found := false
@@ -584,7 +603,7 @@ func TestPJ4_EmitSelfNodeHit_SelfStoreAndKeyCompare(t *testing.T) {
 		}
 		if match {
 			found = true
-			// 紧随其后 cmp rax, rdx + jne rel32
+			// what follows: cmp rax, rdx + jne rel32
 			if buf[i+10] != 0x48 || buf[i+11] != 0x39 || buf[i+12] != 0xD0 {
 				t.Errorf("cmp rax, rdx 字节错位 at %d", i+10)
 			}
@@ -600,8 +619,8 @@ func TestPJ4_EmitSelfNodeHit_SelfStoreAndKeyCompare(t *testing.T) {
 	}
 }
 
-// TestPJ5_EmitSpecArgLoadK_Length 验 PJ5 SELF spec args 装载 K 字节级模板长度
-// (10 字节 mov rax imm64 + 7 字节 mov [rbx+dst*8] rax = 17 字节)。
+// TestPJ5_EmitSpecArgLoadK_Length verifies the PJ5 SELF spec args load-K
+// byte-level template length (10-byte mov rax imm64 + 7-byte mov [rbx+dst*8] rax = 17 bytes).
 func TestPJ5_EmitSpecArgLoadK_Length(t *testing.T) {
 	var buf []byte
 	buf = EmitSpecArgLoadK(buf, 5, 0xDEADBEEF12345678)
@@ -610,8 +629,8 @@ func TestPJ5_EmitSpecArgLoadK_Length(t *testing.T) {
 	}
 }
 
-// TestPJ5_EmitSpecArgLoadReg_Length 验 PJ5 SELF spec args 装载 reg 字节级模板长度
-// (7 字节 mov rax [rbx+src*8] + 7 字节 mov [rbx+dst*8] rax = 14 字节)。
+// TestPJ5_EmitSpecArgLoadReg_Length verifies the PJ5 SELF spec args load-reg
+// byte-level template length (7-byte mov rax [rbx+src*8] + 7-byte mov [rbx+dst*8] rax = 14 bytes).
 func TestPJ5_EmitSpecArgLoadReg_Length(t *testing.T) {
 	var buf []byte
 	buf = EmitSpecArgLoadReg(buf, 5, 3)
@@ -620,9 +639,9 @@ func TestPJ5_EmitSpecArgLoadReg_Length(t *testing.T) {
 	}
 }
 
-// TestPJ5_EmitFrameInlineCIDepthInc_Length 验 ciDepth++ 字节级 inline 模板
-// 长度(7 字节 mov rax [r15+disp32] + 3 字节 inc qword ptr [rax] = 10 字节)。
-// 承 §9.20 Option B Spike 1 起手积木。
+// TestPJ5_EmitFrameInlineCIDepthInc_Length verifies the ciDepth++ byte-level
+// inline template length (7-byte mov rax [r15+disp32] + 3-byte inc qword ptr [rax] = 10 bytes).
+// Per §9.20 Option B Spike 1 starting building block.
 func TestPJ5_EmitFrameInlineCIDepthInc_Length(t *testing.T) {
 	var buf []byte
 	buf = EmitFrameInlineCIDepthInc(buf, 0x40)
@@ -631,9 +650,9 @@ func TestPJ5_EmitFrameInlineCIDepthInc_Length(t *testing.T) {
 	}
 }
 
-// TestPJ5_EmitFrameInlineCIDepthInc_Encoding 验 inc 字节级编码。
+// TestPJ5_EmitFrameInlineCIDepthInc_Encoding verifies the inc byte-level encoding.
 //
-// 期望:[4C 8B 87 40 00 00 00 | 48 FF 00] = mov rax,[r15+0x40] + inc [rax]
+// Expected: [4C 8B 87 40 00 00 00 | 48 FF 00] = mov rax,[r15+0x40] + inc [rax]
 func TestPJ5_EmitFrameInlineCIDepthInc_Encoding(t *testing.T) {
 	var buf []byte
 	buf = EmitFrameInlineCIDepthInc(buf, 0x40)
@@ -652,8 +671,8 @@ func TestPJ5_EmitFrameInlineCIDepthInc_Encoding(t *testing.T) {
 	}
 }
 
-// TestPJ5_EmitFrameInlineCIDepthDec_Length 验 ciDepth-- 字节级 inline 模板
-// 长度同 Inc(10 字节)。承 §9.20 popCallInfo 反向。
+// TestPJ5_EmitFrameInlineCIDepthDec_Length verifies the ciDepth-- byte-level
+// inline template length, same as Inc (10 bytes). Per §9.20 popCallInfo reverse.
 func TestPJ5_EmitFrameInlineCIDepthDec_Length(t *testing.T) {
 	var buf []byte
 	buf = EmitFrameInlineCIDepthDec(buf, 0x40)
@@ -662,7 +681,7 @@ func TestPJ5_EmitFrameInlineCIDepthDec_Length(t *testing.T) {
 	}
 }
 
-// TestPJ5_EmitFrameInlineCIDepthDec_Encoding 验 dec 字节级编码(末尾 inc 改 dec)。
+// TestPJ5_EmitFrameInlineCIDepthDec_Encoding verifies the dec byte-level encoding (trailing inc becomes dec).
 func TestPJ5_EmitFrameInlineCIDepthDec_Encoding(t *testing.T) {
 	var buf []byte
 	buf = EmitFrameInlineCIDepthDec(buf, 0x40)
@@ -678,8 +697,8 @@ func TestPJ5_EmitFrameInlineCIDepthDec_Encoding(t *testing.T) {
 	}
 }
 
-// TestPJ5_EmitFrameInlineLoadCISlotAddr_Length 验 amd64 CI 段第 depth 帧
-// 地址加载模板长度(30 字节,承 §9.20 Option B Spike 1)。
+// TestPJ5_EmitFrameInlineLoadCISlotAddr_Length verifies the amd64 CI-segment
+// depth-th frame address load template length (30 bytes, per §9.20 Option B Spike 1).
 func TestPJ5_EmitFrameInlineLoadCISlotAddr_Length(t *testing.T) {
 	var buf []byte
 	buf = EmitFrameInlineLoadCISlotAddr(buf, 0x40, 0x48)
@@ -689,20 +708,20 @@ func TestPJ5_EmitFrameInlineLoadCISlotAddr_Length(t *testing.T) {
 	}
 }
 
-// TestPJ5_EmitFrameInlineLoadCISlotAddr_Encoding 验关键字节(imul rcx, rcx, 40)。
+// TestPJ5_EmitFrameInlineLoadCISlotAddr_Encoding verifies the key bytes (imul rcx, rcx, 40).
 //
-// 验:序列含 [48 6B C9 28]= imul rcx, rcx, 40(40 = ciSlotBytes = ciWords*8)
+// Verify: the sequence contains [48 6B C9 28] = imul rcx, rcx, 40 (40 = ciSlotBytes = ciWords*8)
 func TestPJ5_EmitFrameInlineLoadCISlotAddr_Encoding(t *testing.T) {
 	var buf []byte
 	buf = EmitFrameInlineLoadCISlotAddr(buf, 0x40, 0x48)
-	// 序列布局:
-	// [0..6]   mov rax, [r15+ciDepthOff]   (7字节)
-	// [7..9]   mov rcx, rax                (3字节)
-	// [10..12] mov rcx, [rcx]              (3字节)
-	// [13..19] mov rax, [r15+ciSegBaseOff] (7字节)
-	// [20..22] mov rax, [rax]              (3字节)
-	// [23..26] imul rcx, rcx, 40           (4字节)
-	// [27..29] add rax, rcx                (3字节)
+	// sequence layout:
+	// [0..6]   mov rax, [r15+ciDepthOff]   (7 bytes)
+	// [7..9]   mov rcx, rax                (3 bytes)
+	// [10..12] mov rcx, [rcx]              (3 bytes)
+	// [13..19] mov rax, [r15+ciSegBaseOff] (7 bytes)
+	// [20..22] mov rax, [rax]              (3 bytes)
+	// [23..26] imul rcx, rcx, 40           (4 bytes)
+	// [27..29] add rax, rcx                (3 bytes)
 	wantImul := []byte{0x48, 0x6B, 0xC9, 0x28}
 	for i, b := range wantImul {
 		if buf[23+i] != b {
@@ -710,7 +729,7 @@ func TestPJ5_EmitFrameInlineLoadCISlotAddr_Encoding(t *testing.T) {
 				i, buf[23+i], b, 23+i)
 		}
 	}
-	// add rax, rcx 应在 offset 27-29
+	// add rax, rcx should be at offset 27-29
 	wantAdd := []byte{0x48, 0x01, 0xC8}
 	for i, b := range wantAdd {
 		if buf[27+i] != b {
@@ -720,9 +739,9 @@ func TestPJ5_EmitFrameInlineLoadCISlotAddr_Encoding(t *testing.T) {
 	}
 }
 
-// TestPJ5_EmitFrameInlineWriteCIWord_Length 验 amd64 CI 帧 word 写入模板
-// 长度(10 字节 mov rcx imm64 + 4 字节 mov [rax+disp8] rcx = 14 字节)。
-// 承 §9.20 Option B Spike 1。
+// TestPJ5_EmitFrameInlineWriteCIWord_Length verifies the amd64 CI-frame word
+// write template length (10-byte mov rcx imm64 + 4-byte mov [rax+disp8] rcx = 14 bytes).
+// Per §9.20 Option B Spike 1.
 func TestPJ5_EmitFrameInlineWriteCIWord_Length(t *testing.T) {
 	var buf []byte
 	buf = EmitFrameInlineWriteCIWord(buf, 0, 0xDEADBEEF)
@@ -732,17 +751,17 @@ func TestPJ5_EmitFrameInlineWriteCIWord_Length(t *testing.T) {
 	}
 }
 
-// TestPJ5_EmitFrameInlineBuildVoid0ArgSkeleton_Length 验 amd64 Spike 1
-// enterLuaFrame 字节级 inline 骨架 v2 总长度(30 + 42 + 20 + 4 + 14 + 10 =
-// 120 字节,word3 改用 runtime GCRef 装载多 10 字节)。
-// 承 §9.20 Option B Spike 1。
+// TestPJ5_EmitFrameInlineBuildVoid0ArgSkeleton_Length verifies the amd64 Spike 1
+// enterLuaFrame byte-level inline skeleton v2 total length (30 + 42 + 20 + 4 + 14 + 10 =
+// 120 bytes; word3 switches to runtime GCRef load, adding 10 bytes).
+// Per §9.20 Option B Spike 1.
 func TestPJ5_EmitFrameInlineBuildVoid0ArgSkeleton_Length(t *testing.T) {
 	var buf []byte
 	words := FrameInlineCISlotWords{
 		Word0: 0x0000000100000010, // funcIdx=1, base=0x10
 		Word1: 0x0000000000000020, // top=0x20
 		Word2: 0x0000000000000005, // protoID=5
-		Word3: 0,                  // v2 忽略,改 callARecv 装载
+		Word3: 0,                  // ignored in v2, switched to callARecv load
 		Word4: 0,
 	}
 	buf = EmitFrameInlineBuildVoid0ArgSkeleton(buf, 0x40, 0x48, 5 /*callARecv*/, words)
@@ -752,9 +771,9 @@ func TestPJ5_EmitFrameInlineBuildVoid0ArgSkeleton_Length(t *testing.T) {
 	}
 }
 
-// TestPJ5_EmitFrameInlinePopVoid0ArgSkeleton_CIDepthDecPlusRet 验 amd64
-// Spike 1 popCallInfo 骨架字节级 = CIDepthDec 10 byte + xor eax,eax 2 byte +
-// ret 1 byte = 13 byte(承 commit-5l 修 missing ret bug)。
+// TestPJ5_EmitFrameInlinePopVoid0ArgSkeleton_CIDepthDecPlusRet verifies the amd64
+// Spike 1 popCallInfo skeleton byte-level = CIDepthDec 10 byte + xor eax,eax 2 byte +
+// ret 1 byte = 13 byte (per commit-5l fixing the missing ret bug).
 func TestPJ5_EmitFrameInlinePopVoid0ArgSkeleton_CIDepthDecPlusRet(t *testing.T) {
 	var bufA []byte
 	bufA = EmitFrameInlinePopVoid0ArgSkeleton(bufA, 0x40)
@@ -762,7 +781,7 @@ func TestPJ5_EmitFrameInlinePopVoid0ArgSkeleton_CIDepthDecPlusRet(t *testing.T) 
 		t.Errorf("PopVoid0ArgSkeleton 长度 = %d, want %d",
 			len(bufA), EncodedFrameInlinePopVoid0ArgSkeletonLen)
 	}
-	// 前 10 byte = CIDepthDec(EmitMovqRaxFromR15Disp + EmitDecQwordPtrAtRax)
+	// first 10 byte = CIDepthDec (EmitMovqRaxFromR15Disp + EmitDecQwordPtrAtRax)
 	var bufB []byte
 	bufB = EmitFrameInlineCIDepthDec(bufB, 0x40)
 	for i := range bufB {
@@ -771,15 +790,15 @@ func TestPJ5_EmitFrameInlinePopVoid0ArgSkeleton_CIDepthDecPlusRet(t *testing.T) 
 				i, bufA[i], bufB[i])
 		}
 	}
-	// 末 3 byte = 0x31 0xc0 0xc3(xor eax,eax + ret)
+	// last 3 byte = 0x31 0xc0 0xc3 (xor eax,eax + ret)
 	if bufA[10] != 0x31 || bufA[11] != 0xC0 || bufA[12] != 0xC3 {
 		t.Errorf("PopVoid0Arg 末 3 byte = 0x%02X%02X%02X, want 0x31C0C3(xor eax,eax + ret)",
 			bufA[10], bufA[11], bufA[12])
 	}
 }
 
-// TestPJ5_EmitFrameInlineLoadClosureGCRef_Length 验 amd64 Spike 1 closure
-// GCRef NaN-box 解析模板长度(7+10+3 = 20 字节)。
+// TestPJ5_EmitFrameInlineLoadClosureGCRef_Length verifies the amd64 Spike 1 closure
+// GCRef NaN-box decode template length (7+10+3 = 20 bytes).
 func TestPJ5_EmitFrameInlineLoadClosureGCRef_Length(t *testing.T) {
 	var buf []byte
 	buf = EmitFrameInlineLoadClosureGCRef(buf, 5)
@@ -789,13 +808,13 @@ func TestPJ5_EmitFrameInlineLoadClosureGCRef_Length(t *testing.T) {
 	}
 }
 
-// TestPJ5_EmitFrameInlineLoadClosureGCRef_Encoding 验关键字节(mov rcx [rbx]
-// + mov rdx payloadMask + and rcx rdx)。
+// TestPJ5_EmitFrameInlineLoadClosureGCRef_Encoding verifies the key bytes (mov rcx [rbx]
+// + mov rdx payloadMask + and rcx rdx).
 func TestPJ5_EmitFrameInlineLoadClosureGCRef_Encoding(t *testing.T) {
 	var buf []byte
 	buf = EmitFrameInlineLoadClosureGCRef(buf, 5)
 
-	// mov rcx, [rbx + 40] 在 offset 0-6(48 8B 8B disp32 + 5*8=40)
+	// mov rcx, [rbx + 40] at offset 0-6 (48 8B 8B disp32 + 5*8=40)
 	if buf[0] != 0x48 || buf[1] != 0x8B || buf[2] != 0x8B {
 		t.Errorf("mov rcx,[rbx+disp32] 前缀 = 0x%02X%02X%02X, want 0x488B8B",
 			buf[0], buf[1], buf[2])
@@ -803,27 +822,27 @@ func TestPJ5_EmitFrameInlineLoadClosureGCRef_Encoding(t *testing.T) {
 	if buf[3] != 40 {
 		t.Errorf("disp32 = %d, want 40(=5*8)", buf[3])
 	}
-	// mov rdx, payloadMask 在 offset 7-16(48 BA + 8 字节 imm)
+	// mov rdx, payloadMask at offset 7-16 (48 BA + 8-byte imm)
 	if buf[7] != 0x48 || buf[8] != 0xBA {
 		t.Errorf("mov rdx imm64 前缀 = 0x%02X%02X, want 0x48BA",
 			buf[7], buf[8])
 	}
-	// imm64 = 0x0000_FFFF_FFFF_FFFF(LE 字节序:FF FF FF FF FF FF 00 00)
+	// imm64 = 0x0000_FFFF_FFFF_FFFF (LE byte order: FF FF FF FF FF FF 00 00)
 	wantMask := []byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00}
 	for i, b := range wantMask {
 		if buf[9+i] != b {
 			t.Errorf("payloadMask imm64 字节[%d]=0x%02X, want 0x%02X", i, buf[9+i], b)
 		}
 	}
-	// and rcx, rdx 在 offset 17-19(48 21 D1)
+	// and rcx, rdx at offset 17-19 (48 21 D1)
 	if buf[17] != 0x48 || buf[18] != 0x21 || buf[19] != 0xD1 {
 		t.Errorf("and rcx,rdx 字节[17-19]=0x%02X%02X%02X, want 0x4821D1",
 			buf[17], buf[18], buf[19])
 	}
 }
 
-// TestPJ5_EmitFrameInlineWriteCIWordFromRcx_Length 验 amd64 word 写入 rcx
-// 模板长度(4 字节)。
+// TestPJ5_EmitFrameInlineWriteCIWordFromRcx_Length verifies the amd64 word
+// write-from-rcx template length (4 bytes).
 func TestPJ5_EmitFrameInlineWriteCIWordFromRcx_Length(t *testing.T) {
 	var buf []byte
 	buf = EmitFrameInlineWriteCIWordFromRcx(buf, 3)
@@ -833,7 +852,7 @@ func TestPJ5_EmitFrameInlineWriteCIWordFromRcx_Length(t *testing.T) {
 	}
 }
 
-// TestPJ5_EmitFrameInlineWriteCIWordFromRcx_Encoding 验各 wordIdx disp8。
+// TestPJ5_EmitFrameInlineWriteCIWordFromRcx_Encoding verifies the disp8 for each wordIdx.
 func TestPJ5_EmitFrameInlineWriteCIWordFromRcx_Encoding(t *testing.T) {
 	for _, wordIdx := range []uint8{0, 1, 2, 3, 4} {
 		var buf []byte
@@ -851,74 +870,74 @@ func TestPJ5_EmitFrameInlineWriteCIWordFromRcx_Encoding(t *testing.T) {
 	}
 }
 
-// TestPJ5_EmitFrameInlineBuildVoid0ArgSkeleton_StructuralBoundaries 验骨架 v2
-// 段间边界(承 v2 word3 改用 runtime GCRef 装载):
+// TestPJ5_EmitFrameInlineBuildVoid0ArgSkeleton_StructuralBoundaries verifies the
+// skeleton v2 inter-segment boundaries (per v2, word3 switches to runtime GCRef load):
 //
-//	[0..29]   LoadCISlotAddr            (30 字节)
-//	[30..43]  WriteCIWord(0) imm64       (14 字节)
-//	[44..57]  WriteCIWord(1) imm64       (14 字节)
-//	[58..71]  WriteCIWord(2) imm64       (14 字节)
-//	[72..91]  LoadClosureGCRef(callARecv)(20 字节)— rcx = R(callARecv) GCRef
-//	[92..95]  WriteCIWordFromRcx(3)      (4 字节) — word3 = rcx
-//	[96..109] WriteCIWord(4) imm64       (14 字节)
-//	[110..119] CIDepthInc                 (10 字节)
+//	[0..29]   LoadCISlotAddr            (30 bytes)
+//	[30..43]  WriteCIWord(0) imm64       (14 bytes)
+//	[44..57]  WriteCIWord(1) imm64       (14 bytes)
+//	[58..71]  WriteCIWord(2) imm64       (14 bytes)
+//	[72..91]  LoadClosureGCRef(callARecv)(20 bytes)— rcx = R(callARecv) GCRef
+//	[92..95]  WriteCIWordFromRcx(3)      (4 bytes) — word3 = rcx
+//	[96..109] WriteCIWord(4) imm64       (14 bytes)
+//	[110..119] CIDepthInc                 (10 bytes)
 //
-// 通过查特征字节位置验证段堆叠正确。
+// Verifies correct segment stacking by checking the positions of signature bytes.
 func TestPJ5_EmitFrameInlineBuildVoid0ArgSkeleton_StructuralBoundaries(t *testing.T) {
 	var buf []byte
 	words := FrameInlineCISlotWords{Word0: 1, Word1: 2, Word2: 3, Word4: 5}
 	buf = EmitFrameInlineBuildVoid0ArgSkeleton(buf, 0x40, 0x48, 5 /*callARecv*/, words)
 
-	// LoadCISlotAddr 段末:add rax, rcx 在 offset 27-29(0x48 0x01 0xC8)
+	// LoadCISlotAddr segment tail: add rax, rcx at offset 27-29 (0x48 0x01 0xC8)
 	if buf[27] != 0x48 || buf[28] != 0x01 || buf[29] != 0xC8 {
 		t.Errorf("LoadCISlotAddr 段末 add rax,rcx 字节[27-29]=0x%02X%02X%02X, want 0x4801C8",
 			buf[27], buf[28], buf[29])
 	}
-	// WriteCIWord(0) 段头:offset 30 mov rcx, imm64(0x48 0xB9)
+	// WriteCIWord(0) segment head: offset 30 mov rcx, imm64 (0x48 0xB9)
 	if buf[30] != 0x48 || buf[31] != 0xB9 {
 		t.Errorf("WriteCIWord(0) 段头 mov rcx imm64 字节[30-31]=0x%02X%02X, want 0x48B9",
 			buf[30], buf[31])
 	}
-	// LoadClosureGCRef 段头:offset 72 mov rcx, [rbx + 5*8=40](0x48 0x8B 0x8B)
+	// LoadClosureGCRef segment head: offset 72 mov rcx, [rbx + 5*8=40] (0x48 0x8B 0x8B)
 	if buf[72] != 0x48 || buf[73] != 0x8B || buf[74] != 0x8B {
 		t.Errorf("LoadClosureGCRef 段头 mov rcx [rbx+disp32] 字节[72-74]=0x%02X%02X%02X, want 0x488B8B",
 			buf[72], buf[73], buf[74])
 	}
-	// WriteCIWordFromRcx 段:offset 92 mov [rax+24] rcx(0x48 0x89 0x48 0x18)
+	// WriteCIWordFromRcx segment: offset 92 mov [rax+24] rcx (0x48 0x89 0x48 0x18)
 	if buf[92] != 0x48 || buf[93] != 0x89 || buf[94] != 0x48 || buf[95] != 0x18 {
 		t.Errorf("WriteCIWordFromRcx(3) 字节[92-95]=0x%02X%02X%02X%02X, want 0x48894818",
 			buf[92], buf[93], buf[94], buf[95])
 	}
-	// WriteCIWord(4) 段头:offset 96 mov rcx imm64(0x48 0xB9)
+	// WriteCIWord(4) segment head: offset 96 mov rcx imm64 (0x48 0xB9)
 	if buf[96] != 0x48 || buf[97] != 0xB9 {
 		t.Errorf("WriteCIWord(4) 段头字节[96-97]=0x%02X%02X, want 0x48B9",
 			buf[96], buf[97])
 	}
-	// CIDepthInc 段头:offset 110 mov rax, [r15+0x40](0x49 0x8B 0x87)
+	// CIDepthInc segment head: offset 110 mov rax, [r15+0x40] (0x49 0x8B 0x87)
 	if buf[110] != 0x49 || buf[111] != 0x8B || buf[112] != 0x87 {
 		t.Errorf("CIDepthInc 段头 mov rax,[r15+disp32] 字节[110-112]=0x%02X%02X%02X, want 0x498B87",
 			buf[110], buf[111], buf[112])
 	}
-	// CIDepthInc 段末:offset 117-119 inc qword ptr [rax](0x48 0xFF 0x00)
+	// CIDepthInc segment tail: offset 117-119 inc qword ptr [rax] (0x48 0xFF 0x00)
 	if buf[117] != 0x48 || buf[118] != 0xFF || buf[119] != 0x00 {
 		t.Errorf("CIDepthInc 段末 inc qword ptr [rax] 字节[117-119]=0x%02X%02X%02X, want 0x48FF00",
 			buf[117], buf[118], buf[119])
 	}
 }
 
-// TestPJ5_EmitFrameInlineWriteCIWord_Encoding 验各 word_idx 关键字节
-// (mov rcx imm64 + mov [rax+wordIdx*8] rcx)。
+// TestPJ5_EmitFrameInlineWriteCIWord_Encoding verifies the key bytes for each word_idx
+// (mov rcx imm64 + mov [rax+wordIdx*8] rcx).
 func TestPJ5_EmitFrameInlineWriteCIWord_Encoding(t *testing.T) {
 	for _, wordIdx := range []uint8{0, 1, 2, 3, 4} {
 		var buf []byte
 		buf = EmitFrameInlineWriteCIWord(buf, wordIdx, 0xCAFEBABE12345678)
 
-		// mov rcx, imm64 在 offset 0(REX.W=0x48 + 0xB9=mov rcx, imm64 + 8 字节 imm)
+		// mov rcx, imm64 at offset 0 (REX.W=0x48 + 0xB9=mov rcx, imm64 + 8-byte imm)
 		if buf[0] != 0x48 || buf[1] != 0xB9 {
 			t.Errorf("word_idx=%d: mov rcx, imm64 前缀 = 0x%02X%02X, want 0x48B9",
 				wordIdx, buf[0], buf[1])
 		}
-		// mov [rax + wordIdx*8], rcx 在 offset 10(48 89 48 disp8)
+		// mov [rax + wordIdx*8], rcx at offset 10 (48 89 48 disp8)
 		if buf[10] != 0x48 || buf[11] != 0x89 || buf[12] != 0x48 {
 			t.Errorf("word_idx=%d: mov [rax+disp8] rcx 前缀 = 0x%02X%02X%02X, want 0x488948",
 				wordIdx, buf[10], buf[11], buf[12])
@@ -931,13 +950,13 @@ func TestPJ5_EmitFrameInlineWriteCIWord_Encoding(t *testing.T) {
 	}
 }
 
-// TestPJ5_EmitFrameInlineExitHelperRequest_Length 验 amd64 Spike 1 trampoline
-// exit-resume 协议 exit-helper-request 段总长度(24 字节,承 §9.20.9 (4)
-// 优化版:10 + 4 + 5 + 4 + 1 = 24,reorder rax 复用 ExitInlineHelper 作返值)。
+// TestPJ5_EmitFrameInlineExitHelperRequest_Length verifies the amd64 Spike 1 trampoline
+// exit-resume protocol exit-helper-request segment total length (24 bytes, per §9.20.9 (4)
+// optimized version: 10 + 4 + 5 + 4 + 1 = 24; reorder rax to reuse ExitInlineHelper as the return value).
 func TestPJ5_EmitFrameInlineExitHelperRequest_Length(t *testing.T) {
 	var buf []byte
-	// 用 small disp8 offset(exitReason=20, exitArg0=64,与 jitContext 实际 offset
-	// 等价,disp8 形态)。
+	// use small disp8 offset (exitReason=20, exitArg0=64, equivalent to the actual jitContext
+	// offset, disp8 form).
 	buf = EmitFrameInlineExitHelperRequest(buf, 20 /*exitReasonOff*/, 64 /*exitArg0Off*/, 1 /*HelperRunCallee*/)
 	if len(buf) != EncodedFrameInlineExitHelperRequestLen {
 		t.Errorf("EmitFrameInlineExitHelperRequest 长度 = %d, want %d (disp8 form)",
@@ -945,8 +964,8 @@ func TestPJ5_EmitFrameInlineExitHelperRequest_Length(t *testing.T) {
 	}
 }
 
-// TestPJ5_EmitFrameInlineExitHelperRequest_Encoding 验关键字节结构(承
-// §9.20.9 (4) 协议规范):
+// TestPJ5_EmitFrameInlineExitHelperRequest_Encoding verifies the key byte structure (per
+// §9.20.9 (4) protocol spec):
 //
 //	[0..1]   48 B8        ; mov rax, imm64
 //	[2..9]   helperCode imm64 (HelperRunCallee=1 → 01 00 00 00 00 00 00 00)

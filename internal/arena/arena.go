@@ -1,17 +1,24 @@
 // Package arena provides the self-managed linear memory backing the value world.
 //
-// 设计:docs/design/p1-interpreter/06-memory-gc.md §1-§3。
+// Design: docs/design/p1-interpreter/06-memory-gc.md §1-§3.
 //
-// 核心契约:
-//   - 双视图 backing:同一底层经 unsafe 别名出 []uint64 (字视图) 与 []byte (字节视图)。
-//   - 偏移寻址:GCRef 是 48-bit 字节偏移(对 Go GC 是普通整数,绕开写屏障税)。
-//   - 8 字节对齐:所有分配按字对齐;GCRef 低 3 bit 恒为 0。
-//   - offset 0 保留为 null GCRef(语义上「无对象」),bump 初值 = 8。
-//   - grow 翻倍扩容,内部用 GCRef 引用关系不变(偏移寻址的红利)。
-//   - backing 来源经注入点(NewBacking),P3 替换为 wazero linear memory adapter。
+// Core contract:
+//   - Dual-view backing: the same underlying storage is aliased via unsafe into
+//     []uint64 (word view) and []byte (byte view).
+//   - Offset addressing: GCRef is a 48-bit byte offset (a plain integer to the Go
+//     GC, sidestepping the write-barrier tax).
+//   - 8-byte alignment: all allocations are word-aligned; the low 3 bits of a
+//     GCRef are always 0.
+//   - Offset 0 is reserved as the null GCRef ("no object" semantically); bump
+//     starts at 8.
+//   - grow doubles the capacity; the internal reference relationships expressed
+//     via GCRef stay unchanged (the payoff of offset addressing).
+//   - The backing comes from an injection point (NewBacking), replaced in P3 by
+//     the wazero linear memory adapter.
 //
-// 本阶段不含 GCHeader / freelist / sweep 链:它们由 gc 包(M5)接入,本包只暴露 AllocBytes
-// 字节分配原语 + Words/Bytes 双视图访问。
+// This stage has no GCHeader / freelist / sweep chain: those are wired in by the
+// gc package (M5). This package only exposes the AllocBytes byte-allocation
+// primitive plus Words/Bytes dual-view access.
 package arena
 
 import (
@@ -19,79 +26,94 @@ import (
 	"unsafe"
 )
 
-// GCRef 是 arena 内对象的字节偏移引用(48-bit 有效,uint64 承载方便嵌入 NaN-box)。
-// 0 = null(无对象);非零值低 3 bit 恒为 0(8 字节对齐)。
+// GCRef is a byte-offset reference to an object within the arena (48-bit
+// effective, carried in a uint64 for easy NaN-box embedding).
+// 0 = null (no object); the low 3 bits of a non-zero value are always 0
+// (8-byte alignment).
 type GCRef uint64
 
 // IsNull reports whether ref is the null reference.
 func (r GCRef) IsNull() bool { return r == 0 }
 
-// 上限。bump/cap 用 uint32 ⇒ uint32 寻址理论上限 4 GiB,实际取 2 GiB
-// 留一半 headroom 防 uint32 边界溢出(06 §3)。
+// Limits. bump/cap use uint32 ⇒ the theoretical uint32 addressing ceiling is
+// 4 GiB; in practice we cap at 2 GiB, leaving half as headroom against uint32
+// boundary overflow (06 §3).
 const (
-	// MaxBytes 是单 arena 容量上限。
+	// MaxBytes is the per-arena capacity ceiling.
 	MaxBytes uint32 = 1 << 31 // 2 GiB
-	// nullReserve 是 offset 0 保留区(字节)。bump 初值 = 8。
+	// nullReserve is the reserved region at offset 0 (bytes). bump starts at 8.
 	nullReserve uint32 = 8
 )
 
-// BackingFn 是 backing 内存的工厂。P1 默认实现为 make([]uint64, n);P3 替换为 wazero
-// linear memory adapter(承 06 §1.1 与 p3-wasm-tier §4.2 回填请求)。
+// BackingFn is the factory for backing memory. The P1 default is make([]uint64, n);
+// P3 replaces it with the wazero linear memory adapter (per the backfill request in
+// 06 §1.1 and p3-wasm-tier §4.2).
 type BackingFn func(words uint32) []uint64
 
-// DefaultBacking 是 P1 默认 backing 工厂(纯 Go 堆分配)。
+// DefaultBacking is the P1 default backing factory (pure Go heap allocation).
 func DefaultBacking(words uint32) []uint64 { return make([]uint64, words) }
 
-// Options 配置 Arena 行为。
+// Options configures Arena behavior.
 type Options struct {
-	// InitialBytes 初始容量(字节,自动向上对齐到 8 的倍数)。零值 = 64 KiB。
+	// InitialBytes is the initial capacity (bytes, rounded up to a multiple of 8).
+	// Zero value = 64 KiB.
 	InitialBytes uint32
-	// MaxBytes 上限(字节)。零值 = arena.MaxBytes。
+	// MaxBytes is the ceiling (bytes). Zero value = arena.MaxBytes.
 	MaxBytes uint32
-	// NewBacking backing 工厂,nil 用 DefaultBacking。
+	// NewBacking is the backing factory; nil uses DefaultBacking.
 	NewBacking BackingFn
-	// InPlaceBacking 标记 NewBacking 是「原地扩展」语义(P3 收养 wazero
-	// linear memory:memory.grow 原地扩,返回的新视图已含旧数据)而非
-	// 「realloc」语义(P1 默认 make:新地址,需 copy 旧内容)。
+	// InPlaceBacking marks NewBacking as having "in-place grow" semantics (P3
+	// adopting wazero linear memory: memory.grow extends in place, and the new
+	// view returned already contains the old data) rather than "realloc"
+	// semantics (the P1 default make: new address, requiring a copy of the old
+	// contents).
 	//
-	// false(P1 默认):grow 时 copy(newWords, oldWords) 迁移旧数据。
-	// true(P3 收养):grow 时**不 copy**——新视图已含旧数据,且旧视图在
-	//   wazero memory.grow 后已 disconnect(PW0 spike 实测),copy 源是 UB。
+	// false (P1 default): grow copies via copy(newWords, oldWords) to migrate old data.
+	// true (P3 adoption): grow does **not** copy — the new view already contains
+	//   the old data, and the old view is disconnected after wazero memory.grow
+	//   (verified by the PW0 spike), so copying from it is UB.
 	//
-	// 详见 docs/design/p3-wasm-tier/03-memory-model.md §1.6。
+	// See docs/design/p3-wasm-tier/03-memory-model.md §1.6 for details.
 	InPlaceBacking bool
 }
 
-// Arena 是自管线性内存。包含 backing 双视图与 bump 指针。
+// Arena is self-managed linear memory. It holds the backing dual views and the
+// bump pointer.
 //
-// 注意:Arena 内部对象互引用经 GCRef(整数),Go GC 看不到内部图——这是孤立 Go 写屏障
-// 税的物理手段(roadmap §2)。
+// Note: objects inside an Arena cross-reference via GCRef (integers), so the Go
+// GC cannot see the internal graph — this is the physical means of isolating the
+// Go write-barrier tax (roadmap §2).
 type Arena struct {
-	words   []uint64 // 字视图(真实 backing)
-	bytes   []byte   // 字节视图(unsafe 别名,与 words 共享同一段内存)
-	bump    uint32   // 下一个未分配字节偏移(始终 8 对齐)
-	cap     uint32   // 当前容量(字节,= len(words)*8)
-	maxCap  uint32   // 上限(字节)
+	words   []uint64 // word view (the real backing)
+	bytes   []byte   // byte view (unsafe alias sharing the same memory as words)
+	bump    uint32   // next unallocated byte offset (always 8-aligned)
+	cap     uint32   // current capacity (bytes, = len(words)*8)
+	maxCap  uint32   // ceiling (bytes)
 	backing BackingFn
-	inPlace bool // Options.InPlaceBacking:grow 时是否跳过 copy(P3 收养语义)
+	inPlace bool // Options.InPlaceBacking: whether grow skips the copy (P3 adoption semantics)
 
-	// freelist(06 §2):20 个 small size-class 定长桶 + LARGE 多桶(power-of-2
-	// 字数,桶 0=65..128 字 / 桶 1=129..256 / .../桶 23=...)。空闲块以 GCRef 偏移
-	// 串链(word0 = next, word1 = words),grow 后偏移不失效。
-	// **LARGE 多桶(issue #10 root fix)**:旧单链 first-fit 在反复分配单调递增
-	// 尺寸(如 rehash array 段 doublings)下产生 O(N) 链长 + O(N) 扫描成本 ⟹ O(N²)
-	// 整体退化;multi-bucket 后每次 alloc 扫桶内短链,典型 power-of-2 alloc O(1) 命中。
+	// freelist (06 §2): 20 small size-class fixed-length buckets + LARGE
+	// multi-bucket (power-of-2 word counts, bucket 0=65..128 words / bucket
+	// 1=129..256 / ... / bucket 23=...). Free blocks are chained by GCRef offset
+	// (word0 = next, word1 = words), and offsets survive a grow.
+	// **LARGE multi-bucket (issue #10 root fix)**: the old single-chain first-fit,
+	// under repeated allocation of monotonically increasing sizes (e.g. rehash
+	// array segment doublings), produces O(N) chain length + O(N) scan cost ⟹
+	// O(N²) overall degradation; with multi-bucket, each alloc scans a short
+	// in-bucket chain, and a typical power-of-2 alloc hits in O(1).
 	freeHeads      [numSizeClasses]GCRef
 	largeFreeHeads [numLargeClasses]GCRef
-	freeBytes      uint64 // freelist 上的总空闲字节(观测/测试)
+	freeBytes      uint64 // total free bytes on the freelist (observation/testing)
 
-	// freeSet/freeSite(debugFreelist 排障用):当前空闲的全部字偏移与释放点。
+	// freeSet/freeSite (for debugFreelist troubleshooting): all currently free
+	// word offsets and their free sites.
 	freeSet  map[GCRef]uint32
 	freeSite map[GCRef]string
 }
 
 // New creates an Arena with the given options.
-// InitialBytes > MaxBytes 直接 panic(fail-fast,与 grow 超限一致,不静默截断)。
+// InitialBytes > MaxBytes panics outright (fail-fast, consistent with grow
+// overflow, no silent truncation).
 func New(opts Options) *Arena {
 	cap := opts.InitialBytes
 	if cap == 0 {
@@ -122,11 +144,12 @@ func New(opts Options) *Arena {
 
 // setBacking installs a fresh backing slice and re-derives the byte view.
 //
-// 注意双视图建立顺序:从 words 派生 bytes(06 §1.1:[]byte 起始地址不保证 8 对齐,
-// 反向派生在某些平台读 uint64 会触发非对齐访问)。
+// Note the dual-view construction order: derive bytes from words (06 §1.1: a
+// []byte start address is not guaranteed 8-aligned, and deriving in reverse
+// would trigger unaligned uint64 reads on some platforms).
 func (a *Arena) setBacking(words []uint64) {
 	if len(words)*8 > int(a.maxCap) || len(words)*8 < int(a.cap) {
-		// 防御:backing 必须能装下 a.cap 字节。
+		// Defensive: the backing must be able to hold a.cap bytes.
 		panic(fmt.Sprintf("arena: backing size mismatch: want >=%d bytes, got %d", a.cap, len(words)*8))
 	}
 	a.words = words
@@ -146,31 +169,37 @@ func (a *Arena) Bump() uint32 { return a.bump }
 
 // Words returns the word view of the entire backing. **The returned slice is invalidated
 // by any subsequent allocation that triggers a grow** — callers must re-fetch after such ops
-// (engineering.md §-2 约束:reloadFrame 纪律).
+// (engineering.md §-2 constraint: reloadFrame discipline).
 func (a *Arena) Words() []uint64 { return a.words }
 
 // Bytes returns the byte view of the entire backing. Same invalidation rule as Words.
 func (a *Arena) Bytes() []byte { return a.bytes }
 
-// Compact 缩 backing 容量到 max(bump, 64 KiB)(issue #11 方向 1)。GCRef offset
-// 不变(语义保留),仅是 backing slab 物理换一个较小的——Go runtime 把旧 slab
-// (可能很大,如曾因一次 transient 大分配 doubling 到高水位)收回堆,缓解长寿命
-// State pool 里 fat state 永驻问题。
+// Compact shrinks the backing capacity to max(bump, 64 KiB) (issue #11
+// direction 1). GCRef offsets stay unchanged (semantics preserved); only the
+// physical backing slab is swapped for a smaller one — the Go runtime reclaims
+// the old slab (possibly large, e.g. once doubled to a high-water mark by a
+// transient large allocation) back to the heap, easing the problem of a fat
+// state permanently residing in a long-lived State pool.
 //
-// **生效条件**:
-//   - 非 InPlaceBacking 模式(P3 wangshu_p3 收养 wazero linear memory 不可缩,
-//     本方法 no-op)
-//   - cap > max(bump, 64 KiB)(否则没有可缩空间)
+// **Conditions for effect**:
+//   - non-InPlaceBacking mode (P3 wangshu_p3 adopting wazero linear memory
+//     cannot shrink; this method is a no-op there)
+//   - cap > max(bump, 64 KiB) (otherwise there is no room to shrink)
 //
-// 调用时机:Collector.Collect 之后触发(freelist 已经把死区累积进 freeBytes,
-// 但 bump 单调增不回退;Compact 把 cap 从「曾经的 high-water」缩到「当前 bump」。
+// When to call: triggered after Collector.Collect (the freelist has already
+// accumulated dead regions into freeBytes, but bump grows monotonically and
+// never retreats; Compact shrinks cap from its "former high-water" to the
+// "current bump").
 //
-// **不动 bump,不重映射 GCRef**:本方法不是 copy-compact GC,只换 slab。仍然
-// 留下「freelist 上 [bump 内的死块]」的逻辑碎片(待 freelist 复用)——这部分
-// 是 issue #11 方向 1 真实 copy-compact 的剩余目标,留 followup。
+// **Does not touch bump, does not remap GCRef**: this method is not a
+// copy-compact GC, it only swaps the slab. It still leaves the logical
+// fragmentation of "[dead blocks within bump] on the freelist" (awaiting
+// freelist reuse) — that part is the remaining target of issue #11 direction 1's
+// real copy-compact, left as a followup.
 func (a *Arena) Compact() {
 	if a.inPlace {
-		return // P3 收养 wazero linear memory 不可缩
+		return // P3 adoption of wazero linear memory cannot shrink
 	}
 	const minCap = uint32(64 * 1024)
 	targetCap := roundUp8(a.bump)
@@ -178,33 +207,39 @@ func (a *Arena) Compact() {
 		targetCap = minCap
 	}
 	if targetCap >= a.cap {
-		return // 没有可缩空间
+		return // no room to shrink
 	}
 	newWords := a.backing(targetCap / 8)
-	copy(newWords, a.words[:a.bump/8]) // 只拷 [0..bump),后面是未分配区
+	copy(newWords, a.words[:a.bump/8]) // copy only [0..bump); the rest is unallocated
 	a.cap = targetCap
 	a.setBacking(newWords)
 }
 
-// AllocBytes 分配 nbytes 字节(自动向上对齐到 8),返回起始字节偏移 GCRef。
+// AllocBytes allocates nbytes bytes (rounded up to 8), returning the starting
+// byte offset as a GCRef.
 //
-// 两级:freelist 命中(size-class 定长桶 / LARGE 首次适配)→ bump 线性切分。
-// 不写 GCHeader、不挂 sweep 链——那是 gc 包的责任。
+// Two levels: freelist hit (size-class fixed buckets / LARGE first-fit) → bump
+// linear carve. Does not write a GCHeader or attach a sweep chain — that is the
+// gc package's responsibility.
 //
-// 注意:freelist 复用的内存是脏的(残留旧对象内容/链指针),调用方(object
-// 构造函数)必须显式初始化全部字段。
+// Note: memory reused from the freelist is dirty (residual old object
+// content/chain pointers); the caller (the object constructor) must explicitly
+// initialize all fields.
 //
-// 容量不足 → 触发 grow(GC 由 gc 包的 MaybeCollect 在分配计费路径介入)。
-// 超 maxCap(含 uint32 回绕级请求)→ panic(fail-fast,不静默错果)。
+// Insufficient capacity → triggers grow (GC is handled by the gc package's
+// MaybeCollect on the allocation-accounting path).
+// Exceeding maxCap (including uint32-wraparound-level requests) → panic
+// (fail-fast, no silent wrong result).
 func (a *Arena) AllocBytes(nbytes uint32) GCRef {
-	// 尺寸检查在 uint64 域:nbytes 接近 0xFFFFFFFF 时 roundUp8 / bump+need
-	// 都会回绕成小值,4 GiB 请求被静默"成功"切走 8 字节(错误别名)。
+	// Do the size check in the uint64 domain: when nbytes is near 0xFFFFFFFF,
+	// both roundUp8 and bump+need wrap to a small value, so a 4 GiB request would
+	// be silently "succeed" by carving off 8 bytes (a wrong alias).
 	if uint64(nbytes) > uint64(a.maxCap) {
 		panic(fmt.Sprintf("arena: allocation of %d bytes exceeds max capacity %d", nbytes, a.maxCap))
 	}
 	need := roundUp8(nbytes)
 	if need == 0 {
-		need = 8 // 至少分配一字,避免零长引用
+		need = 8 // allocate at least one word, avoiding a zero-length reference
 	}
 	words := need / 8
 	if words <= largeThresholdWords {
@@ -213,7 +248,8 @@ func (a *Arena) AllocBytes(nbytes uint32) GCRef {
 			a.zeroFill(ref, classWords(c))
 			return ref
 		}
-		// 桶内尺寸统一:bump 也按桶代表字数切(保证未来 Free 回桶可复用)
+		// Uniform size within a bucket: bump also carves by the bucket's
+		// representative word count (ensuring a future Free back to the bucket can reuse it).
 		need = classWords(c) * 8
 	} else if ref := a.popLarge(words); !ref.IsNull() {
 		a.zeroFill(ref, words)
@@ -227,8 +263,9 @@ func (a *Arena) AllocBytes(nbytes uint32) GCRef {
 	return ref
 }
 
-// zeroFill 清零一个复用块(freelist 内存是脏的;bump 区新内存天然是零,
-// 统一在此清使两路分配对调用方等价)。
+// zeroFill clears a reused block (freelist memory is dirty; freshly bumped
+// memory is naturally zero — clearing uniformly here makes both allocation paths
+// equivalent to the caller).
 func (a *Arena) zeroFill(ref GCRef, words uint32) {
 	base := ref >> 3
 	for i := uint32(0); i < words; i++ {
@@ -237,7 +274,8 @@ func (a *Arena) zeroFill(ref GCRef, words uint32) {
 }
 
 // AllocWords is a convenience wrapper for AllocBytes(words*8).
-// words > MaxBytes/8 级请求在乘法回绕前拦截(fail-fast)。
+// words > MaxBytes/8 level requests are intercepted before the multiplication
+// wraps around (fail-fast).
 func (a *Arena) AllocWords(words uint32) GCRef {
 	if uint64(words)*8 > uint64(a.maxCap) {
 		panic(fmt.Sprintf("arena: allocation of %d words exceeds max capacity %d bytes", words, a.maxCap))
@@ -270,7 +308,7 @@ func (a *Arena) SetWordAt(ref GCRef, v uint64) {
 
 // grow64 doubles the capacity until at least minBytes is available, then copies the old
 // backing into the new one. GCRefs/bump remain valid (offset addressing's payoff).
-// minBytes 在 uint64 域(调用方 bump+need 可能超 uint32)。
+// minBytes is in the uint64 domain (the caller's bump+need may exceed uint32).
 func (a *Arena) grow64(minBytes uint64) {
 	if minBytes > uint64(a.maxCap) {
 		panic(fmt.Sprintf("arena: cannot grow to %d bytes (max %d)", minBytes, a.maxCap))
@@ -280,7 +318,7 @@ func (a *Arena) grow64(minBytes uint64) {
 		newCap = nullReserve
 	}
 	for uint64(newCap) < minBytes {
-		// 翻倍直到够用。注意 uint32 溢出。
+		// Double until sufficient. Watch out for uint32 overflow.
 		if newCap > a.maxCap/2 {
 			newCap = a.maxCap
 			break
@@ -291,9 +329,11 @@ func (a *Arena) grow64(minBytes uint64) {
 		panic(fmt.Sprintf("arena: cannot grow to %d bytes (max %d)", minBytes, a.maxCap))
 	}
 	newWords := a.backing(newCap / 8)
-	// P1 默认(realloc 语义):新 backing 是新地址,copy 迁移旧数据。
-	// P3 收养(InPlaceBacking):memory.grow 原地扩,newWords 已含旧数据,
-	// 且旧 a.words 视图在 grow 后已 disconnect(PW0 spike 实测),不能 copy。
+	// P1 default (realloc semantics): the new backing is a new address, so copy
+	// to migrate the old data.
+	// P3 adoption (InPlaceBacking): memory.grow extends in place, newWords
+	// already contains the old data, and the old a.words view is disconnected
+	// after the grow (verified by the PW0 spike), so it must not be copied.
 	if !a.inPlace {
 		copy(newWords, a.words)
 	}

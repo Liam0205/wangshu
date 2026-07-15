@@ -30,7 +30,7 @@ func (p *Parser) parseStatement() (ast.Stmt, error) {
 // local Name {, Name} ['=' explist]  |  local function Name funcbody
 func (p *Parser) parseLocal() (ast.Stmt, error) {
 	line := p.tok.Line
-	if err := p.next(); err != nil { // 吃掉 'local'
+	if err := p.next(); err != nil { // eat 'local'
 		return nil, err
 	}
 	if p.match(token.KW_FUNCTION) {
@@ -167,7 +167,7 @@ func (p *Parser) parseDo() (ast.Stmt, error) {
 	return &ast.DoStmt{Line: line, Body: body}, nil
 }
 
-// repeat block until cond  (until 在 body 作用域内可见局部,04 §3.3)
+// repeat block until cond  (locals are visible in the until scope, 04 §3.3)
 func (p *Parser) parseRepeat() (ast.Stmt, error) {
 	line := p.tok.Line
 	if err := p.next(); err != nil {
@@ -189,8 +189,8 @@ func (p *Parser) parseRepeat() (ast.Stmt, error) {
 	return &ast.RepeatStmt{Line: line, Body: body, Cond: cond}, nil
 }
 
-// for Name '=' init ',' limit [',' step] do block end       (数值)
-// for Namelist 'in' explist do block end                     (泛型)
+// for Name '=' init ',' limit [',' step] do block end       (numeric)
+// for Namelist 'in' explist do block end                     (generic)
 func (p *Parser) parseFor() (ast.Stmt, error) {
 	line := p.tok.Line
 	if err := p.next(); err != nil { // 'for'
@@ -205,7 +205,7 @@ func (p *Parser) parseFor() (ast.Stmt, error) {
 	}
 	switch p.tok.Kind {
 	case token.EQ:
-		// 数值 for
+		// numeric for
 		if err := p.next(); err != nil {
 			return nil, err
 		}
@@ -244,7 +244,7 @@ func (p *Parser) parseFor() (ast.Stmt, error) {
 		}
 		return &ast.NumForStmt{Line: line, Var: first, Init: init, Limit: limit, Step: step, Body: body}, nil
 	case token.COMMA, token.KW_IN:
-		// 泛型 for
+		// generic for
 		names := []string{first}
 		for p.match(token.COMMA) {
 			if err := p.next(); err != nil {
@@ -347,7 +347,8 @@ func (p *Parser) parseReturn() (ast.Stmt, error) {
 	return &ast.ReturnStmt{Line: line, Exprs: exprs}, nil
 }
 
-// expression-statement: 以 prefixexp 起头,后接 '='/',' = AssignStmt;否则 = CallStmt(04 §4.4)。
+// expression-statement: starts with a prefixexp; if followed by '='/',' it's an
+// AssignStmt, otherwise a CallStmt (04 §4.4).
 func (p *Parser) parseExprStmt() (ast.Stmt, error) {
 	line := p.tok.Line
 	first, err := p.parsePrefixExpr()
@@ -355,7 +356,7 @@ func (p *Parser) parseExprStmt() (ast.Stmt, error) {
 		return nil, err
 	}
 	if p.match(token.EQ) || p.match(token.COMMA) {
-		// 赋值。
+		// assignment.
 		if !isAssignable(first) {
 			return nil, p.errorf("syntax error near '%s'", p.tok.String())
 		}
@@ -382,7 +383,7 @@ func (p *Parser) parseExprStmt() (ast.Stmt, error) {
 		}
 		return &ast.AssignStmt{Line: line, Targets: targets, Exprs: exprs}, nil
 	}
-	// 调用语句:first 必须是 Call/MethodCall。
+	// call statement: first must be a Call/MethodCall.
 	switch first.(type) {
 	case *ast.CallExpr, *ast.MethodCallExpr:
 		return &ast.CallStmt{Line: line, Call: first}, nil

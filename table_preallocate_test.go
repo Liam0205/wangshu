@@ -7,21 +7,21 @@ import (
 	"github.com/Liam0205/wangshu"
 )
 
-// TestPreallocate_DataPreserved 验证 Preallocate 不丢失现有 array 段数据。
+// TestPreallocate_DataPreserved verifies that Preallocate does not lose existing array-part data.
 func TestPreallocate_DataPreserved(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{})
 	tv := st.NewTable()
 	defer tv.Release()
 	tt := tv.AsTable()
-	// 先写入几个键(rehash 后 asize > 0)
+	// Write a few keys first (asize > 0 after rehash)
 	for i := 1; i <= 5; i++ {
 		_ = tt.SetIndex(i, wangshu.Number(float64(i*10)))
 	}
-	// Preallocate 扩到 100
+	// Preallocate grows to 100
 	if e := tt.Preallocate(100); e != nil {
 		t.Fatalf("Preallocate: %v", e)
 	}
-	// 原数据仍在
+	// Original data is still present
 	for i := 1; i <= 5; i++ {
 		v := tt.GetIndex(i)
 		if v.Number() != float64(i*10) {
@@ -30,7 +30,7 @@ func TestPreallocate_DataPreserved(t *testing.T) {
 	}
 }
 
-// TestPreallocate_NoShrink 验证 Preallocate(n) 仅扩不缩(n ≤ 当前 asize no-op)。
+// TestPreallocate_NoShrink verifies that Preallocate(n) only grows, never shrinks (n ≤ current asize is a no-op).
 func TestPreallocate_NoShrink(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{})
 	tv := st.NewTable()
@@ -42,11 +42,11 @@ func TestPreallocate_NoShrink(t *testing.T) {
 	for i := 1; i <= 30; i++ {
 		_ = tt.SetIndex(i, wangshu.Number(float64(i)))
 	}
-	// 缩小尝试:no-op
+	// Shrink attempt: no-op
 	if e := tt.Preallocate(10); e != nil {
 		t.Fatalf("Preallocate(10): %v", e)
 	}
-	// 全 30 个键仍能读到
+	// All 30 keys are still readable
 	for i := 1; i <= 30; i++ {
 		v := tt.GetIndex(i)
 		if v.Number() != float64(i) {
@@ -55,7 +55,7 @@ func TestPreallocate_NoShrink(t *testing.T) {
 	}
 }
 
-// TestNewArrayTable_Basic 验证 NewArrayTable 一次性构建正确写入数据。
+// TestNewArrayTable_Basic verifies that NewArrayTable builds a table in one shot with data written correctly.
 func TestNewArrayTable_Basic(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{})
 	vals := make([]wangshu.Value, 100)
@@ -76,11 +76,11 @@ func TestNewArrayTable_Basic(t *testing.T) {
 	}
 }
 
-// TestPreallocate_FixesQuadraticBuild 验证 issue #10:Preallocate 后 SetIndex
-// 顺序构建 ns/elem 是 flat(不是 O(N²) 退化)。对照 issue #10 数据。
+// TestPreallocate_FixesQuadraticBuild verifies issue #10: after Preallocate, sequential
+// SetIndex build keeps ns/elem flat (no O(N²) degradation). Compared against issue #10 data.
 func TestPreallocate_FixesQuadraticBuild(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{InitialArenaBytes: 1 << 20})
-	// 暖身
+	// Warm-up
 	for i := 0; i < 200; i++ {
 		tv := st.NewTable()
 		tt := tv.AsTable()
@@ -90,7 +90,7 @@ func TestPreallocate_FixesQuadraticBuild(t *testing.T) {
 		}
 		tv.Release()
 	}
-	// 测两点:N=100 vs N=1000,要求 ns/elem 比值 < 3×(O(N) 摊销)
+	// Measure two points: N=100 vs N=1000, requiring the ns/elem ratio < 3× (O(N) amortized)
 	measure := func(n int) float64 {
 		const iters = 500
 		t0 := time.Now()
@@ -109,16 +109,16 @@ func TestPreallocate_FixesQuadraticBuild(t *testing.T) {
 	ns1000 := measure(1000)
 	ratio := ns1000 / ns100
 	t.Logf("Preallocate ns/elem: N=100 %.1f ns, N=1000 %.1f ns, ratio %.2f×", ns100, ns1000, ratio)
-	// **阈值 5.0× 而非 3.0×**(2026-06-29 macos-latest CI 实证 4.13× 触发):
-	// macos-latest runner 共享虚拟机,小 N 时单测量噪声波动放大;真 quadratic
-	// 退化(O(N²) 摊销)会是 ratio ≥ 10×(N=1000 vs N=100),5.0× 仍能抓
-	// 退化但不被 macos-latest runner 性能抖动 false-positive。
+	// **Threshold 5.0× rather than 3.0×** (2026-06-29 macos-latest CI observed 4.13× tripping it):
+	// the macos-latest runner is a shared VM, so per-measurement noise is amplified at small N; a real
+	// quadratic degradation (O(N²) amortized) would be ratio ≥ 10× (N=1000 vs N=100), and 5.0× still
+	// catches degradation without being false-positived by macos-latest runner performance jitter.
 	if ratio > 5.0 {
 		t.Errorf("Preallocate N=1000 ns/elem ratio = %.2f× over N=100, expected ≤ 5.0× (O(N) amortized); got quadratic-like degradation", ratio)
 	}
 }
 
-// TestNewArrayTable_FixesQuadraticBuild 验证 NewArrayTable 也 flat。
+// TestNewArrayTable_FixesQuadraticBuild verifies NewArrayTable is flat too.
 func TestNewArrayTable_FixesQuadraticBuild(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{InitialArenaBytes: 1 << 20})
 	makeVals := func(n int) []wangshu.Value {
@@ -128,7 +128,7 @@ func TestNewArrayTable_FixesQuadraticBuild(t *testing.T) {
 		}
 		return vals
 	}
-	// 暖身
+	// Warm-up
 	for i := 0; i < 200; i++ {
 		tv := st.NewArrayTable(makeVals(100))
 		tv.Release()
@@ -147,15 +147,15 @@ func TestNewArrayTable_FixesQuadraticBuild(t *testing.T) {
 	ns1000 := measure(1000)
 	ratio := ns1000 / ns100
 	t.Logf("NewArrayTable ns/elem: N=100 %.1f ns, N=1000 %.1f ns, ratio %.2f×", ns100, ns1000, ratio)
-	// **阈值 5.0× 同上 Preallocate** 同理(macos-latest runner 抖动 + N 量级
-	// 单测量噪声)。
+	// **Threshold 5.0×, same as Preallocate above** for the same reason (macos-latest runner jitter +
+	// per-measurement noise at this order of N).
 	if ratio > 5.0 {
 		t.Errorf("NewArrayTable N=1000 ns/elem ratio = %.2f× over N=100, expected ≤ 5.0× (O(N))", ratio)
 	}
 }
 
-// BenchmarkTableBuild_NaiveSetIndex 对照基线:NewTable + SetIndex(1..N),issue #10 现状
-// (O(N²)),N=1000 应远比 N=100 慢。
+// BenchmarkTableBuild_NaiveSetIndex baseline for comparison: NewTable + SetIndex(1..N), the current
+// state of issue #10 (O(N²)); N=1000 should be far slower than N=100.
 func BenchmarkTableBuild_NaiveSetIndex(b *testing.B) {
 	for _, n := range []int{50, 100, 200, 400, 800, 1000} {
 		b.Run("N="+itoa(n), func(b *testing.B) {
@@ -173,7 +173,7 @@ func BenchmarkTableBuild_NaiveSetIndex(b *testing.B) {
 	}
 }
 
-// BenchmarkTableBuild_Preallocate Preallocate(N) + SetIndex(1..N),issue #10 方向 2。
+// BenchmarkTableBuild_Preallocate Preallocate(N) + SetIndex(1..N), issue #10 direction 2.
 func BenchmarkTableBuild_Preallocate(b *testing.B) {
 	for _, n := range []int{50, 100, 200, 400, 800, 1000} {
 		b.Run("N="+itoa(n), func(b *testing.B) {
@@ -192,7 +192,7 @@ func BenchmarkTableBuild_Preallocate(b *testing.B) {
 	}
 }
 
-// BenchmarkTableBuild_NewArrayTable 一次性 NewArrayTable(vals),最优形态。
+// BenchmarkTableBuild_NewArrayTable one-shot NewArrayTable(vals), the optimal form.
 func BenchmarkTableBuild_NewArrayTable(b *testing.B) {
 	for _, n := range []int{50, 100, 200, 400, 800, 1000} {
 		b.Run("N="+itoa(n), func(b *testing.B) {

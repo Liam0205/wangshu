@@ -1,11 +1,12 @@
 //go:build !wangshu_p3
 
-// 默认 build(非 wangshu_p3)专属测试。
+// Tests specific to the default build (non-wangshu_p3).
 //
-// P3 build 下 newStateArena 设 InPlaceBacking=true(wazero linear memory 收养),
-// arena.Compact 故意 no-op(wazero memory.grow 只增不减)——本文件测试的「Compact
-// 真缩 cap」语义只在默认 build 成立。P3 build 下的对应行为见
-// embedding_admin_p3_test.go TestP3_Compact_NoOpInP3Mode。
+// Under the P3 build, newStateArena sets InPlaceBacking=true (adopting wazero
+// linear memory), and arena.Compact is deliberately a no-op (wazero memory.grow
+// only grows, never shrinks) — the "Compact really shrinks cap" semantics that
+// this file tests only hold on the default build. For the corresponding P3-build
+// behavior, see embedding_admin_p3_test.go TestP3_Compact_NoOpInP3Mode.
 package wangshu_test
 
 import (
@@ -14,15 +15,16 @@ import (
 	"github.com/Liam0205/wangshu"
 )
 
-// TestCompact_ShrinkAfterTransientPeak 验证 issue #11 方向 1:transient 大分配
-// 触发 grow doubling 后,Release + Collect → arena.Compact 缩 cap,backing
-// 回收。ArenaCapKB 应从 grow doubling 高水位降回。
+// TestCompact_ShrinkAfterTransientPeak verifies issue #11 direction 1: after a
+// transient large allocation triggers grow doubling, Release + Collect →
+// arena.Compact shrinks cap and reclaims the backing. ArenaCapKB should fall
+// back from the grow-doubling high-water mark.
 func TestCompact_ShrinkAfterTransientPeak(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{InitialArenaBytes: 64 * 1024})
-	// transient 触发 grow 涨到 ~1 MB
+	// transient allocation triggers grow up to ~1 MB
 	tv := st.NewArrayTable(make([]wangshu.Value, 100000))
 	capPeak := st.ArenaCapKB()
-	if capPeak < 800 { // 至少涨到几百 KB
+	if capPeak < 800 { // should grow to at least a few hundred KB
 		t.Fatalf("ArenaCapKB did not grow as expected: %.1f", capPeak)
 	}
 	tv.Release()

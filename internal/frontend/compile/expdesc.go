@@ -1,42 +1,45 @@
-// expdesc — 延迟物化的表达式描述(04 §5.2),与 Lua 5.1 lcode.c 同构。
+// expdesc — deferred-materialization expression description (04 §5.2), isomorphic
+// with Lua 5.1 lcode.c.
 //
-// 表达式被先计算成 expDesc(描述"这个值现在在哪、怎么取"),到必须落寄存器/作 RK/参与
-// 跳转时才 discharge。短路逻辑(and/or)与比较则同时驱动 t/f 跳转链。
+// An expression is first computed into an expDesc (describing "where this value is
+// now, how to fetch it"), and is only discharged when it must land in a
+// register/serve as an RK/participate in a jump. Short-circuit logic (and/or) and
+// comparisons simultaneously drive the t/f jump chains.
 package compile
 
 import (
 	"github.com/Liam0205/wangshu/internal/bytecode"
 )
 
-// expKind 列出表达式的延迟物化形态(04 §5.2)。
+// expKind lists the deferred-materialization forms of an expression (04 §5.2).
 type expKind uint8
 
 const (
-	eVoid      expKind = iota // 无值占位
-	eNil                      // 字面 nil(尚未发指令)
-	eTrue                     // 字面 true
-	eFalse                    // 字面 false
-	eKNum                     // 数字字面量(尚未入常量池),值在 nval
-	eK                        // 已在常量池,info = K 索引
-	eLocal                    // 局部变量,info = 寄存器号
-	eUpval                    // upvalue,info = upvalue 索引
-	eGlobal                   // 全局,info = 名字的 K 索引
-	eIndexed                  // t[k]:info = 表寄存器, aux = 键 RK
-	eJmp                      // 比较 (EQ/LT/LE) 已发,info = JMP 指令 pc(其后 JMP 待定/已链)
-	eRelocable                // 结果寄存器未定的指令(GETGLOBAL/GETTABLE/NEWTABLE/CALL单值),info = 指令 pc
-	eNonReloc                 // 结果已落某寄存器,info = 寄存器号
-	eCall                     // 函数调用,info = CALL 指令 pc(可改 C)
-	eVararg                   // ... ,info = VARARG 指令 pc
+	eVoid      expKind = iota // valueless placeholder
+	eNil                      // literal nil (no instruction emitted yet)
+	eTrue                     // literal true
+	eFalse                    // literal false
+	eKNum                     // number literal (not yet in constant pool), value in nval
+	eK                        // already in constant pool, info = K index
+	eLocal                    // local variable, info = register number
+	eUpval                    // upvalue, info = upvalue index
+	eGlobal                   // global, info = K index of the name
+	eIndexed                  // t[k]: info = table register, aux = key RK
+	eJmp                      // comparison (EQ/LT/LE) emitted, info = JMP instruction pc (subsequent JMP pending/chained)
+	eRelocable                // instruction whose result register is undetermined (GETGLOBAL/GETTABLE/NEWTABLE/CALL single value), info = instruction pc
+	eNonReloc                 // result already landed in some register, info = register number
+	eCall                     // function call, info = CALL instruction pc (C can be changed)
+	eVararg                   // ... , info = VARARG instruction pc
 )
 
-// expDesc 是表达式描述符(04 §5.2)。
+// expDesc is the expression descriptor (04 §5.2).
 type expDesc struct {
 	k    expKind
-	info int     // 含义随 k(见上)
-	aux  int     // eIndexed 的键 RK
-	nval float64 // eKNum 的数字
-	tJmp int     // 真则跳的回填链(NoJump=空)
-	fJmp int     // 假则跳的回填链
+	info int     // meaning follows k (see above)
+	aux  int     // key RK of eIndexed
+	nval float64 // number of eKNum
+	tJmp int     // patch chain to jump when true (NoJump=empty)
+	fJmp int     // patch chain to jump when false
 }
 
 func newExp(k expKind, info int) expDesc {
@@ -45,9 +48,10 @@ func newExp(k expKind, info int) expDesc {
 
 func (e *expDesc) hasJumps() bool { return e.tJmp != NoJump || e.fJmp != NoJump }
 
-// dischargeVars 把 EGlobal/EUpval/ELocal/EIndexed 翻译成"可取值形式"(可能仍是 ERelocable)。
+// dischargeVars translates EGlobal/EUpval/ELocal/EIndexed into a "fetchable form"
+// (may still be ERelocable).
 //
-// 04 §5.3:对应 Lua 5.1 luaK_dischargevars。
+// 04 §5.3: corresponds to Lua 5.1 luaK_dischargevars.
 func (fs *funcState) dischargeVars(line int32, e *expDesc) {
 	switch e.k {
 	case eLocal:
@@ -61,7 +65,7 @@ func (fs *funcState) dischargeVars(line int32, e *expDesc) {
 		e.k = eRelocable
 		e.info = pc
 	case eIndexed:
-		// 先归还 RK 占用的寄存器(若有),再发 GETTABLE。
+		// First return the register occupied by the RK (if any), then emit GETTABLE.
 		if !bytecode.IsK(e.aux) {
 			fs.freeReg(e.aux)
 		}
@@ -74,25 +78,26 @@ func (fs *funcState) dischargeVars(line int32, e *expDesc) {
 	}
 }
 
-// setOneRet 设置一个 Call/Vararg 表达式只取 1 个返回值。
+// setOneRet sets a Call/Vararg expression to take only 1 return value.
 func (fs *funcState) setOneRet(e *expDesc) {
 	switch e.k {
 	case eCall:
-		// CALL 的 C = 取值数+1。1 值 ⇒ C=2。
+		// CALL's C = number of values taken + 1. 1 value ⟹ C=2.
 		ins := fs.proto.Code[e.info]
 		fs.proto.Code[e.info] = bytecode.SetC(ins, 2)
 		e.k = eNonReloc
-		e.info = bytecode.A(ins) // 调用结果落 R(A)
+		e.info = bytecode.A(ins) // call result lands in R(A)
 	case eVararg:
-		// VARARG 的 B = 取值数+1。1 值 ⇒ B=2。
+		// VARARG's B = number of values taken + 1. 1 value ⟹ B=2.
 		ins := fs.proto.Code[e.info]
 		fs.proto.Code[e.info] = bytecode.SetB(ins, 2)
 		e.k = eRelocable
 	}
 }
 
-// setReturns 设置一个 Call/Vararg 表达式的返回值数(用于 explist 末位多值)。
-// nResults < 0 表示"到 top"(B/C=0)。
+// setReturns sets the number of return values of a Call/Vararg expression (used for
+// the last position multi-value in an explist).
+// nResults < 0 means "to top" (B/C=0).
 func (fs *funcState) setReturns(e *expDesc, nResults int) {
 	switch e.k {
 	case eCall:
@@ -110,13 +115,16 @@ func (fs *funcState) setReturns(e *expDesc, nResults int) {
 	}
 }
 
-// openMultiRet 把末位多值源(eCall/eVararg)展开为 nResults 个值(<0 = 到 top),
-// 返回 true 表示 e 确实是多值源(调用方走多值分支)。
+// openMultiRet expands a last-position multi-value source (eCall/eVararg) into
+// nResults values (<0 = to top), returning true when e is indeed a multi-value
+// source (the caller takes the multi-value branch).
 //
-// 同构逻辑单点收口——历史上 stmtReturn / compileArgList / exprTable 三处手写,
-// 同族 bug 出了三次(eCall 误 SetA 把"函数所在槽"改写,返回值落错寄存器):
-//   - eCall:CALL 的 A 已是 fnReg(结果落点),绝不可改写;
-//   - eVararg:VARARG 发射时 A=0 占位,此处统一回填 A=freereg(多值起点)。
+// Isomorphic logic single-point consolidation — historically stmtReturn /
+// compileArgList / exprTable were hand-written in three places, and the same-family
+// bug occurred three times (eCall mistakenly SetA overwriting "the slot the function
+// is in", so return values land in the wrong register):
+//   - eCall: CALL's A is already fnReg (the result landing spot), must never be overwritten;
+//   - eVararg: when VARARG is emitted A=0 as placeholder, here we uniformly backfill A=freereg (multi-value start).
 func (fs *funcState) openMultiRet(e *expDesc, nResults int) bool {
 	switch e.k {
 	case eCall:
@@ -130,7 +138,7 @@ func (fs *funcState) openMultiRet(e *expDesc, nResults int) bool {
 	return false
 }
 
-// dischargeToAnyReg 把 e 物化到某寄存器(若已在则原地)。
+// dischargeToAnyReg materializes e into some register (in place if already there).
 func (fs *funcState) dischargeToAnyReg(line int32, e *expDesc) {
 	if e.k != eNonReloc {
 		fs.reserveRegs(line, 1)
@@ -138,14 +146,14 @@ func (fs *funcState) dischargeToAnyReg(line int32, e *expDesc) {
 	}
 }
 
-// exp2AnyReg 把 e 物化到某寄存器并返回寄存器号。
+// exp2AnyReg materializes e into some register and returns the register number.
 func (fs *funcState) exp2AnyReg(line int32, e *expDesc) int {
 	fs.dischargeVars(line, e)
 	if e.k == eNonReloc {
 		if !e.hasJumps() {
 			return e.info
 		}
-		if e.info >= fs.nactvar { // 是临时:可在原寄存器物化
+		if e.info >= fs.nactvar { // is temporary: can materialize in the original register
 			fs.exp2reg(line, e, e.info)
 			return e.info
 		}
@@ -154,7 +162,7 @@ func (fs *funcState) exp2AnyReg(line int32, e *expDesc) int {
 	return e.info
 }
 
-// exp2NextReg 把 e 落到 freereg 并把水位 +1(变成 ENonReloc)。
+// exp2NextReg lands e in freereg and bumps the watermark +1 (becomes ENonReloc).
 func (fs *funcState) exp2NextReg(line int32, e *expDesc) {
 	fs.dischargeVars(line, e)
 	fs.freeExp(e)
@@ -162,7 +170,7 @@ func (fs *funcState) exp2NextReg(line int32, e *expDesc) {
 	fs.exp2reg(line, e, fs.freereg-1)
 }
 
-// dischargeToReg 把 e 落到指定寄存器 reg(不处理 t/f 跳转链)。
+// dischargeToReg lands e in the specified register reg (does not handle t/f jump chains).
 func (fs *funcState) dischargeToReg(line int32, e *expDesc, reg int) {
 	fs.dischargeVars(line, e)
 	switch e.k {
@@ -184,19 +192,19 @@ func (fs *funcState) dischargeToReg(line int32, e *expDesc, reg int) {
 			fs.emitABC(line, bytecode.MOVE, reg, e.info, 0)
 		}
 	case eJmp:
-		// 留给 exp2reg 处理(此处不发指令)
+		// leave for exp2reg to handle (no instruction emitted here)
 		return
 	default:
-		// eVoid 不应到这
+		// eVoid should not reach here
 	}
 	e.k = eNonReloc
 	e.info = reg
 }
 
-// exp2reg 把"带跳转的表达式"物化到具体寄存器(04 §5.7)。
+// exp2reg materializes a "jump-carrying expression" into a specific register (04 §5.7).
 func (fs *funcState) exp2reg(line int32, e *expDesc, reg int) {
 	fs.dischargeToReg(line, e, reg)
-	if e.k == eJmp { // 比较自身的 JMP 计入 t 链
+	if e.k == eJmp { // the comparison's own JMP counts into the t chain
 		fs.concat(&e.tJmp, e.info)
 	}
 	if e.hasJumps() {
@@ -206,7 +214,7 @@ func (fs *funcState) exp2reg(line int32, e *expDesc, reg int) {
 			if e.k != eJmp {
 				fj = fs.jump(line)
 			}
-			pf = fs.codeLoadBool(line, reg, 0, 1) // false 并跳过下一条
+			pf = fs.codeLoadBool(line, reg, 0, 1) // false and skip the next one
 			pt = fs.codeLoadBool(line, reg, 1, 0)
 			fs.patchToHere(fj)
 			final = fs.getLabel()
@@ -223,12 +231,13 @@ func (fs *funcState) exp2reg(line int32, e *expDesc, reg int) {
 	e.info = reg
 }
 
-// codeLoadBool 发射 LOADBOOL R(A)=B,if C!=0 then pc++(返回 pc)。
+// codeLoadBool emits LOADBOOL R(A)=B, if C!=0 then pc++ (returns pc).
 func (fs *funcState) codeLoadBool(line int32, a, b, c int) int {
 	return fs.emitABC(line, bytecode.LOADBOOL, a, b, c)
 }
 
-// needValue 判定链中是否含"非 TESTSET"的 JMP(那些需要 LOADBOOL 兜底落值)。
+// needValue determines whether the chain contains a "non-TESTSET" JMP (those need
+// LOADBOOL as a fallback to land the value).
 func needValue(fs *funcState, list int) bool {
 	for ; list != NoJump; list = fs.getJump(list) {
 		if list == 0 {
@@ -242,10 +251,12 @@ func needValue(fs *funcState, list int) bool {
 	return false
 }
 
-// patchTestReg 若 list 前一条是 TESTSET,把它的 A=reg 并把跳转回填到 vtarget;
-// 否则把 TESTSET 退化为 TEST 并把跳转回填到 dtarget(04 §5.4)。
+// patchTestReg: if the instruction before list is a TESTSET, set its A=reg and
+// backfill the jump to vtarget; otherwise degrade the TESTSET to TEST and backfill
+// the jump to dtarget (04 §5.4).
 //
-// 返回 true 表示已处理(把这条 JMP 接到 vtarget),false 表示退化(接到 dtarget)。
+// Returns true meaning handled (this JMP is wired to vtarget), false meaning
+// degraded (wired to dtarget).
 func (fs *funcState) patchTestReg(node, reg int) bool {
 	if node == 0 {
 		return false
@@ -258,14 +269,15 @@ func (fs *funcState) patchTestReg(node, reg int) bool {
 	if reg != bytecode.NoRegister && reg != bytecode.B(ins) {
 		fs.proto.Code[ctrl] = bytecode.SetA(ins, reg)
 	} else {
-		// 退化为 TEST:A=B(源寄存器), C 不变
+		// degrade to TEST: A=B (source register), C unchanged
 		fs.proto.Code[ctrl] = bytecode.EncodeABC(bytecode.TEST,
 			bytecode.B(ins), 0, bytecode.C(ins))
 	}
 	return true
 }
 
-// patchListAux 遍历链:对每个节点用 patchTestReg(node, reg) 判定走 vtarget 还是 dtarget。
+// patchListAux traverses the chain: for each node uses patchTestReg(node, reg) to
+// decide whether to go to vtarget or dtarget.
 func (fs *funcState) patchListAux(list, vtarget, reg, dtarget int) {
 	for list != NoJump {
 		nxt := fs.getJump(list)
@@ -278,9 +290,11 @@ func (fs *funcState) patchListAux(list, vtarget, reg, dtarget int) {
 	}
 }
 
-// exp2RK 尽量把 e 折叠为 RK 形式(返回 RK 操作数);否则物化到寄存器返回寄存器号(04 §5.3)。
+// exp2RK tries to fold e into RK form (returning the RK operand); otherwise
+// materializes it into a register and returns the register number (04 §5.3).
 //
-// 注意:nil/true/false 不入常量池(02 §5),走 RK 时会落寄存器(LOADNIL/LOADBOOL)。
+// Note: nil/true/false do not enter the constant pool (02 §5); when going through RK
+// they land in a register (LOADNIL/LOADBOOL).
 func (fs *funcState) exp2RK(line int32, e *expDesc) int {
 	fs.exp2Val(line, e)
 	switch e.k {
@@ -301,7 +315,8 @@ func (fs *funcState) exp2RK(line int32, e *expDesc) int {
 	return fs.exp2AnyReg(line, e)
 }
 
-// exp2Val 若 e 带未决跳转链,先合流物化(给 exp2RK / exp2AnyReg 之前)。
+// exp2Val: if e carries a pending jump chain, merge and materialize first (before
+// exp2RK / exp2AnyReg).
 func (fs *funcState) exp2Val(line int32, e *expDesc) {
 	if e.hasJumps() {
 		fs.exp2AnyReg(line, e)
@@ -310,11 +325,14 @@ func (fs *funcState) exp2Val(line int32, e *expDesc) {
 	}
 }
 
-// goIfTrue:若 e 为真则继续,为假则跳(把跳链入 e.fJmp)。配合 04 §5.6 短路。
+// goIfTrue: if e is true then continue, if false then jump (chain the jump into
+// e.fJmp). Works with 04 §5.6 short-circuit.
 //
-// 严格对齐 5.1 luaK_goiftrue:VK/VKNUM/VTRUE 常真不跳;VFALSE 恒跳(短路值
-// 恰为 false,LOADBOOL 物化正确);VNIL 落 default jumpOnCond(TESTSET 保留
-// 原值——`nil and 2` 须返回 nil,LOADBOOL 会错产 false)。
+// Strictly aligned with 5.1 luaK_goiftrue: VK/VKNUM/VTRUE are constant-true so
+// don't jump; VFALSE always jumps (the short-circuit value is exactly false,
+// LOADBOOL materializes correctly); VNIL falls to the default jumpOnCond (TESTSET
+// preserves the original value — `nil and 2` must return nil, LOADBOOL would wrongly
+// produce false).
 func (fs *funcState) goIfTrue(line int32, e *expDesc) {
 	fs.dischargeVars(line, e)
 	var pc int
@@ -334,11 +352,13 @@ func (fs *funcState) goIfTrue(line int32, e *expDesc) {
 	e.tJmp = NoJump
 }
 
-// goIfFalse:若 e 为假则继续,为真则跳(把跳链入 e.tJmp)。
+// goIfFalse: if e is false then continue, if true then jump (chain the jump into
+// e.tJmp).
 //
-// 严格对齐 5.1 luaK_goiffalse:VNIL/VFALSE 常假不跳;VTRUE 恒跳(短路值恰为
-// true);VK/VKNUM 落 default jumpOnCond(TESTSET 保留原值——`1 or 2` 须返回
-// 1 而非 true)。
+// Strictly aligned with 5.1 luaK_goiffalse: VNIL/VFALSE are constant-false so don't
+// jump; VTRUE always jumps (the short-circuit value is exactly true); VK/VKNUM fall
+// to the default jumpOnCond (TESTSET preserves the original value — `1 or 2` must
+// return 1 rather than true).
 func (fs *funcState) goIfFalse(line int32, e *expDesc) {
 	fs.dischargeVars(line, e)
 	var pc int
@@ -357,7 +377,7 @@ func (fs *funcState) goIfFalse(line int32, e *expDesc) {
 	e.fJmp = NoJump
 }
 
-// invertJmp:翻转一个比较指令的期望布尔(用于 not / goIfTrue)。
+// invertJmp: flips the expected boolean of a comparison instruction (used for not / goIfTrue).
 func (fs *funcState) invertJmp(e *expDesc) {
 	pc := e.info
 	ctrl := pc - 1
@@ -367,12 +387,12 @@ func (fs *funcState) invertJmp(e *expDesc) {
 	fs.proto.Code[ctrl] = bytecode.EncodeABC(op, 1-a, bytecode.B(ins), bytecode.C(ins))
 }
 
-// jumpOnCond 发 TEST/TESTSET + JMP,返回 JMP 的 pc;cond=0 假则跳,1 真则跳。
+// jumpOnCond emits TEST/TESTSET + JMP, returning the JMP's pc; cond=0 jump when false, 1 jump when true.
 func (fs *funcState) jumpOnCond(line int32, e *expDesc, cond int) int {
 	if e.k == eRelocable {
 		ins := fs.proto.Code[e.info]
 		if bytecode.Op(ins) == bytecode.NOT {
-			// 撤销那条 NOT,改为 TEST 取反 cond(对齐 Lua 5.1 jumponcond 优化)
+			// undo that NOT, change to TEST with negated cond (aligned with Lua 5.1 jumponcond optimization)
 			fs.proto.Code = fs.proto.Code[:e.info]
 			fs.proto.LineInfo = fs.proto.LineInfo[:e.info]
 			fs.proto.IC = fs.proto.IC[:e.info]
@@ -384,7 +404,7 @@ func (fs *funcState) jumpOnCond(line int32, e *expDesc, cond int) int {
 	return fs.condJump(line, bytecode.TESTSET, bytecode.NoRegister, e.info, cond)
 }
 
-// condJump 发一条比较型指令 + JMP,返回 JMP pc。
+// condJump emits one comparison-type instruction + JMP, returning the JMP pc.
 func (fs *funcState) condJump(line int32, op bytecode.OpCode, a, b, c int) int {
 	fs.emitABC(line, op, a, b, c)
 	return fs.jump(line)

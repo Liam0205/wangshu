@@ -1,5 +1,6 @@
-// HostFn 注册与模块化暴露——把 Go 函数挂进 Lua 全局/模块表,供 Lua 端调用。
-// 设计形态:11 §10 列表风格的 P1 版本(不是 §10.1 栈机风格 HostCtx)。
+// HostFn registration and modular exposure -- attaches Go functions into the
+// Lua global/module tables so the Lua side can call them.
+// Design form: the P1 version of the 11 §10 list style (not the §10.1 stack-machine style HostCtx).
 package wangshu
 
 import (
@@ -7,19 +8,23 @@ import (
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
-// HostFn 是注册到 Lua 全局/模块表后由 Lua 端调用的 Go 函数签名(11 §10
-// 的 P1 列表风格版本——不是 §10.1 的栈机风格 HostCtx,见 godoc 备注)。
+// HostFn is the signature of a Go function that, once registered into the Lua
+// global/module table, is called from the Lua side (the P1 list-style version
+// of 11 §10 -- not the §10.1 stack-machine style HostCtx, see godoc note).
 //
-// st 为 fn 所属 State(单 goroutine 约定见 11 §8)。args 为 Lua 端传入的
-// 实参,顺序与脚本调用一致。返回 results 是 Lua 端接收的多返回值;返回
-// error 时 Lua 端可由 pcall/xpcall 捕获(err.Error() → 错误消息)。
+// st is the State that fn belongs to (single-goroutine convention, see 11 §8).
+// args are the actual arguments passed in from the Lua side, in the same order
+// as the script call. The returned results are the multiple return values the
+// Lua side receives; when an error is returned, the Lua side can catch it via
+// pcall/xpcall (err.Error() → error message).
 //
-// 当前范围:args 中的 table/function/userdata 仍映射为 Nil(fromInner 收紧,
-// 本期面只暴露 function 的 GetGlobal/Call 闭环,不暴露 host fn 接收的 Lua
-// function);标量(nil/bool/number/string)往返正常。
+// Current scope: table/function/userdata in args are still mapped to Nil
+// (fromInner tightens this; this iteration only exposes the GetGlobal/Call
+// round trip for function, not the Lua function received by a host fn); scalars
+// (nil/bool/number/string) round-trip normally.
 type HostFn = func(*State, []Value) ([]Value, error)
 
-// wrapHostFn 把公共 HostFn 包装为 internal crescent.HostFn(签名形态对齐)。
+// wrapHostFn wraps a public HostFn into an internal crescent.HostFn (signature forms aligned).
 func (st *State) wrapHostFn(fn HostFn) crescent.HostFn {
 	return func(_ *crescent.State, iargs []value.Value) ([]value.Value, *crescent.LuaError) {
 		args := make([]Value, len(iargs))
@@ -38,25 +43,30 @@ func (st *State) wrapHostFn(fn HostFn) crescent.HostFn {
 	}
 }
 
-// Register 把 Go 函数 fn 注册为全局名 name 的 Lua 可调用函数(对标
-// gopher-lua `L.SetGlobal(name, L.NewFunction(fn))` 与 `L.Register`)。
+// Register registers the Go function fn as a Lua-callable function under the
+// global name name (mirrors gopher-lua `L.SetGlobal(name, L.NewFunction(fn))`
+// and `L.Register`).
 //
-// 调用形态:Lua 端 `name(args...)` 触发 fn(st, args),返回值即 Lua 端接收
-// 的多返回值;err != nil 时 Lua 端经 pcall/xpcall 捕获。
+// Call form: `name(args...)` on the Lua side triggers fn(st, args); the return
+// values are the multiple return values the Lua side receives; when err != nil
+// the Lua side catches it via pcall/xpcall.
 //
-// host closure 的 Go 侧直接 Call(state.Call(fn, ...))本轮未开,只能从
-// Lua 内调用。
+// Calling a host closure directly from the Go side (state.Call(fn, ...)) is not
+// enabled in this iteration; it can only be called from within Lua.
 func (st *State) Register(name string, fn HostFn) {
 	id := st.core.RegisterHostFn(st.wrapHostFn(fn))
 	cl := st.core.MakeHostClosure(id)
 	st.core.SetGlobal(name, value.MakeGC(value.TagFunction, cl))
 }
 
-// RegisterModule 把一组 Go 函数注册为一个全局表 name(对标 gopher-lua
-// `L.SetGlobal(name, L.SetFuncs(L.NewTable(), funcs))` 的简化)。
+// RegisterModule registers a group of Go functions as a single global table
+// name (a simplification of gopher-lua
+// `L.SetGlobal(name, L.SetFuncs(L.NewTable(), funcs))`).
 //
-// 用法:Lua 端 `name.fname(args...)` 触发对应 fn;表本身只在创建瞬间填好,
-// Lua 端动态写入 / 覆盖此表的能力沿用普通 Lua 表语义(无只读保护)。
+// Usage: `name.fname(args...)` on the Lua side triggers the corresponding fn;
+// the table itself is only populated at the moment of creation, and the ability
+// of the Lua side to dynamically write to / overwrite this table follows normal
+// Lua table semantics (no read-only protection).
 func (st *State) RegisterModule(name string, fns map[string]HostFn) {
 	tbl := st.core.NewLibTable(uint32(len(fns)))
 	for fname, fn := range fns {

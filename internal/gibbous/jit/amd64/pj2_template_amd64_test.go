@@ -9,24 +9,28 @@ import (
 	"unsafe"
 )
 
-// pj2TestStack 是 PJ2 真接入测试用的全局 heap slice——必须 heap 分配,
-// Go 栈分配会被 morestack 搬走让 vsBase 指针 stale(承 05 §1.3「JIT 不持
-// 任何 Go 栈指针」纪律)。Go 自动逃逸分析:全局 var make 必定 heap。
+// pj2TestStack is the global heap slice used by the PJ2 integration test — it
+// must be heap-allocated. A Go stack allocation could be moved by morestack,
+// leaving the vsBase pointer stale (per 05 §1.3 "JIT holds no Go stack
+// pointers"). Go's escape analysis guarantees a global var make always lands on the heap.
 var pj2TestStack = make([]uint64, 16)
 
-// TestPJ2_SpeculativeAddRoundTrip 真接入测试:用 EmitArithSpeculativeAdd
-// 拼装的模板 + MmapCode + CallJITSpec 在本机 amd64 真执行,验证双 number
-// 快路径模板正确返回 R(B) + R(C) 的浮点和。
+// TestPJ2_SpeculativeAddRoundTrip integration test: a template assembled with
+// EmitArithSpeculativeAdd + MmapCode + CallJITSpec, executed for real on this
+// amd64 machine, verifying that the two-number fast-path template correctly
+// returns the floating-point sum of R(B) + R(C).
 //
-// **prove-the-path 命中证据**:字节级单测(TestPJ2_SpeculativeAddTemplate)
-// 只验编码字节正确;**本测真 mmap+RX+execute** 段,验证 ADDSD 在真 CPU
-// 上工作 + rbx 寻址正确 + ret 弹回 trampoline。
+// **prove-the-path evidence**: the byte-level unit test (TestPJ2_SpeculativeAddTemplate)
+// only verifies encoding-byte correctness; **this test actually mmap+RX+executes**
+// the segment, verifying that ADDSD works on a real CPU + rbx addressing is
+// correct + ret returns to the trampoline.
 //
-// **arena 视图别名雷区实证**:本测的 pj2TestStack 必须 heap 分配
-// (全局 var),Go 栈分配的 slice 在 trampoline 期间可能被 morestack 搬走,
-// 让 vsBase 指针 stale → 段写到陈旧地址 → 测试看不到结果。这正好实证 P4
-// 设计 05 §1.3「JIT 不持 Go 栈指针」纪律——真 P4 路径上 arena.Words 在
-// Go heap(arena 是 heap object),不会被搬。
+// **arena view-aliasing hazard evidence**: this test's pj2TestStack must be
+// heap-allocated (a global var); a stack-allocated slice could be moved by
+// morestack during the trampoline, leaving vsBase stale → the segment writes
+// to a stale address → the test never sees the result. This is exactly the
+// evidence for P4 design 05 §1.3 "JIT holds no Go stack pointers" — on the real
+// P4 path arena.Words lives in the Go heap (arena is a heap object) and won't be moved.
 func TestPJ2_SpeculativeAddRoundTrip(t *testing.T) {
 	pj2TestStack[0] = math.Float64bits(3.0)
 	pj2TestStack[1] = math.Float64bits(4.0)
@@ -34,7 +38,7 @@ func TestPJ2_SpeculativeAddRoundTrip(t *testing.T) {
 
 	vsBase := uintptr(unsafe.Pointer(&pj2TestStack[0]))
 
-	// 拼模板:ADD A=2 B=0 C=1
+	// Assemble the template: ADD A=2 B=0 C=1
 	var buf []byte
 	buf = EmitArithSpeculativeAdd(buf, 2, 0, 1)
 
@@ -45,14 +49,14 @@ func TestPJ2_SpeculativeAddRoundTrip(t *testing.T) {
 	defer func() { _ = page.Munmap() }()
 
 	CallJITSpec(page.Addr(), 0, vsBase)
-	runtime.KeepAlive(pj2TestStack) // 防 GC 在 trampoline 期间动 slice
+	runtime.KeepAlive(pj2TestStack) // prevent GC from moving the slice during the trampoline
 
 	got := math.Float64frombits(pj2TestStack[2])
 	if got != 7.0 {
 		t.Errorf("R(2) = %v, want 7.0(R(0) + R(1) = 3.0 + 4.0)", got)
 	}
 
-	// 多档值
+	// Multiple value cases
 	pj2TestStack[0] = math.Float64bits(1.5)
 	pj2TestStack[1] = math.Float64bits(2.5)
 	pj2TestStack[2] = 0
@@ -72,14 +76,15 @@ func TestPJ2_SpeculativeAddRoundTrip(t *testing.T) {
 	}
 }
 
-// TestPJ2_SpeculativeAddWithGuard_FastPath 双 number 输入走快路径:
-// IsNumber guard ×2 通过 → ADDSD → 写回 R(A) → ret with rax=0(快路径
-// rax 是 movsd 后某值,但 deopt block 才设 rax = deoptCode;快路径不进
-// deopt block,rax 是上次 movsd 写后的值,与 deoptCode 不同——caller
-// 检测 rax != deoptCode 即走快路径 OK 路径)。
+// TestPJ2_SpeculativeAddWithGuard_FastPath: two number inputs take the fast
+// path: IsNumber guard ×2 passes → ADDSD → write back to R(A) → ret with rax=0
+// (on the fast path rax is some value left after movsd, but only the deopt
+// block sets rax = deoptCode; the fast path never enters the deopt block, so
+// rax is whatever the last movsd wrote, which differs from deoptCode — the
+// caller detecting rax != deoptCode means the fast-path OK route was taken).
 //
-// 实测:R(0)=3.0 + R(1)=4.0 → R(2)=7.0(快路径走通,快路径 ret 时 rax
-// 是 stack[A]=7.0 NaN-box,与 deoptCode 0xDEAD 不同)。
+// Observed: R(0)=3.0 + R(1)=4.0 → R(2)=7.0 (fast path succeeds; at fast-path
+// ret, rax is the NaN-box of stack[A]=7.0, which differs from deoptCode 0xDEAD).
 func TestPJ2_SpeculativeAddWithGuard_FastPath(t *testing.T) {
 	pj2TestStack[0] = math.Float64bits(3.0) // number
 	pj2TestStack[1] = math.Float64bits(4.0) // number
@@ -114,14 +119,15 @@ func TestPJ2_SpeculativeAddWithGuard_FastPath(t *testing.T) {
 	}
 }
 
-// TestPJ2_SpeculativeAddWithGuard_DeoptPath R(B) 是非 number(NaN-box
-// table/string 等)→ IsNumber guard 失败 jump 到 deopt block → 段返
-// rax = deoptCode → caller 应据此走 host helper 慢路径降级。
+// TestPJ2_SpeculativeAddWithGuard_DeoptPath: R(B) is a non-number (a NaN-box
+// table/string etc.) → IsNumber guard fails, jumps to the deopt block → the
+// segment returns rax = deoptCode → the caller should then fall back to the
+// host helper slow path.
 //
-// 实测:R(0)=NaN-box(假 GCRef,值 0xFFFB000000000001 模拟 string) →
-// IsNumber=false → jae deopt → rax=deoptCode。
+// Observed: R(0)=NaN-box (a fake GCRef, value 0xFFFB000000000001 simulating a
+// string) → IsNumber=false → jae deopt → rax=deoptCode.
 func TestPJ2_SpeculativeAddWithGuard_DeoptPath(t *testing.T) {
-	// R(0) 非 number(模拟 string NaN-box,Tag=0xFFFB)
+	// R(0) is a non-number (simulating a string NaN-box, Tag=0xFFFB)
 	pj2TestStack[0] = 0xFFFB000000000001
 	pj2TestStack[1] = math.Float64bits(4.0)
 	pj2TestStack[2] = 0
@@ -146,14 +152,14 @@ func TestPJ2_SpeculativeAddWithGuard_DeoptPath(t *testing.T) {
 	if rax != deoptCode {
 		t.Errorf("deopt 路径:rax = 0x%x, want 0x%x(string 非 number 应触发 IsNumber guard 失败)", rax, deoptCode)
 	}
-	// R(2) 不应被写(快路径未跑到 movsd [rbx+A*8])
+	// R(2) should not be written (the fast path never reaches movsd [rbx+A*8])
 	if pj2TestStack[2] != 0 {
 		t.Errorf("deopt 路径不应写 R(2),got 0x%x", pj2TestStack[2])
 	}
 }
 
-// TestPJ2_SpeculativeAddWithGuard_DeoptOnC R(C) 非 number 触发第二
-// guard 失败。
+// TestPJ2_SpeculativeAddWithGuard_DeoptOnC: R(C) is a non-number, triggering
+// the second guard failure.
 func TestPJ2_SpeculativeAddWithGuard_DeoptOnC(t *testing.T) {
 	pj2TestStack[0] = math.Float64bits(3.0)
 	pj2TestStack[1] = 0xFFFC000000000001 // table NaN-box

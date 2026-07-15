@@ -4,9 +4,9 @@ package amd64
 
 import "testing"
 
-// TestPJ6_LoadKReturnTemplate 完整模板封装等价于「mov rax, imm; ret」。
+// TestPJ6_LoadKReturnTemplate: the full template wrapper is equivalent to "mov rax, imm; ret".
 //
-// 验证 EmitLoadKReturnTemplate 字节级完全等同于 EmitMovRaxImm64 + EmitRet 拼接。
+// Verifies EmitLoadKReturnTemplate is byte-for-byte identical to EmitMovRaxImm64 + EmitRet concatenated.
 func TestPJ6_LoadKReturnTemplate_Equiv(t *testing.T) {
 	const konst = uint64(0xdeadbeef)
 
@@ -30,9 +30,10 @@ func TestPJ6_LoadKReturnTemplate_Equiv(t *testing.T) {
 	}
 }
 
-// TestPJ6_PrologEpilog_RoundTrip prolog + epilog 完整 round-trip,
-// rax 中间被改但通过 push/pop 恢复(简化版仅验 prolog/epilog 字节编码无崩,
-// 不验真实 callee-saved 协议——那由 trampoline_full_amd64.s 直接实装)。
+// TestPJ6_PrologEpilog_RoundTrip: full prolog + epilog round-trip, rax is
+// modified in the middle but restored via push/pop (the simplified version only
+// verifies the prolog/epilog byte encoding does not crash, not the real
+// callee-saved protocol — that is implemented directly by trampoline_full_amd64.s).
 func TestPJ6_PrologEpilog_RoundTrip(t *testing.T) {
 	const sent = uint64(0xfeedface)
 
@@ -55,9 +56,9 @@ func TestPJ6_PrologEpilog_RoundTrip(t *testing.T) {
 	}
 }
 
-// TestPJ6_PrologEpilog_StackPreserved 多次调用 prolog/epilog 嵌套不破坏栈。
+// TestPJ6_PrologEpilog_StackPreserved: nested prolog/epilog calls do not corrupt the stack.
 //
-// 验证 callee-saved push/pop 配对,栈指针前后一致(否则下次 CALL 会段错)。
+// Verifies callee-saved push/pop are paired and the stack pointer is consistent before and after (otherwise the next CALL segfaults).
 func TestPJ6_PrologEpilog_StackPreserved(t *testing.T) {
 	const sent = uint64(0x123456789abcdef0)
 
@@ -83,7 +84,7 @@ func TestPJ6_PrologEpilog_StackPreserved(t *testing.T) {
 	}
 }
 
-// TestPJ6_EncodedLengths PJ6 新增长度常量。
+// TestPJ6_EncodedLengths: PJ6's new length constants.
 func TestPJ6_EncodedLengths(t *testing.T) {
 	if got := len(EmitLoadKReturnTemplate(nil, 0)); got != EncodedLoadKReturnTemplateLen {
 		t.Errorf("EmitLoadKReturnTemplate = %d, want %d", got, EncodedLoadKReturnTemplateLen)

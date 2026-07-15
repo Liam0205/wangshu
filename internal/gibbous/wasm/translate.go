@@ -2,17 +2,20 @@
 
 package wasm
 
-// 翻译主流程 + 7 直线 opcode emit(02-translation §3.1 + §6.2)。
+// Translation main flow + 7 straight-line opcode emits (02-translation §3.1 + §6.2).
 //
-// **PW2 控制流范围**:relooper 分析层(cfg.go/relooper.go)已建好并验证,
-// 但结构化生成层(任意 reducible CFG → 嵌套 block/loop + br depth)留 PW3
-// 完整落地(那时有条件跳 + 循环的端到端反馈验证)。PW2 翻译器只处理
-// **单 basic block 的 Proto**(无跳转 / 纯直线 + 尾 RETURN)——这覆盖
-// PW2 完成定义「5-op Proto 升层 byte-equal」的最小可验收形态。
+// **PW2 control-flow scope**: the relooper analysis layer (cfg.go/relooper.go)
+// is built and verified, but the structured generation layer (arbitrary
+// reducible CFG → nested block/loop + br depth) is left for PW3 to complete
+// (by then there is end-to-end feedback verification with conditional jumps +
+// loops). The PW2 translator only handles **single-basic-block Protos**
+// (no jumps / pure straight-line + trailing RETURN) — this covers the minimal
+// acceptable form of PW2's completion definition "5-op Proto lift byte-equal".
 //
-// 含 JMP 但 CFG 多于一个 BB 的 Proto:isStructurable 返 false → translate
-// 返 unsupported → Compile 返 error → P2 fallback 该 Proto(保守,正确)。
-// PW3 用完整 relooper 解锁多 BB。
+// Protos containing JMP but with more than one BB in the CFG: isStructurable
+// returns false → translate returns unsupported → Compile returns error → P2
+// falls back on that Proto (conservative, correct). PW3 uses the full relooper
+// to unlock multi-BB.
 
 import (
 	"fmt"
@@ -20,40 +23,48 @@ import (
 	"github.com/Liam0205/wangshu/internal/bytecode"
 )
 
-// Wasm 函数 local 槽位分配(gibbous 函数体内用的临时 local)。
-// 入参 $base 占 local 0;翻译用的临时从 1 起。声明顺序(module.go
-// codeSectionEntry)必须与此一致:2×i64 + 1×i32 + 1×f64。
+// Wasm function local slot allocation (temporaries used inside the gibbous
+// function body). The param $base occupies local 0; translation temporaries
+// start at 1. The declaration order (module.go codeSectionEntry) must match
+// this: 2×i64 + 1×i32 + 1×f64.
 const (
 	localBase = 0 // param $base i32
-	localI64a = 1 // i64 临时 a(load/store 中转 / 算术操作数 vb)
-	localI64b = 2 // i64 临时 b(算术操作数 vc)
-	localI32  = 3 // i32 临时(helper status 等)
-	localF64  = 4 // f64 临时(算术结果)
-	localI32b = 5 // i32 临时 b(PW5 表字节地址)
-	localI64c = 6 // i64 临时 c(PW5 键 / 槽值中转)
+	localI64a = 1 // i64 temp a (load/store scratch / arithmetic operand vb)
+	localI64b = 2 // i64 temp b (arithmetic operand vc)
+	localI32  = 3 // i32 temp (helper status, etc.)
+	localF64  = 4 // f64 temp (arithmetic result)
+	localI32b = 5 // i32 temp b (PW5 table byte address)
+	localI64c = 6 // i64 temp c (PW5 key / slot value scratch)
 
-	// localSavedTop 是 caller 自恢复 top 的快照(PW10 零跨界 ③a)。函数 prologue
-	// 读 top 镜像字一次存入(此刻 = 本帧 base+MaxStack 槽索引,enterLuaFrame 刚设);
-	// 每个定额(C≠0)CALL 经 call_indirect 直调返回后写回 top 字——被调 emitReturn
-	// 快路径(③b)不再恢复 caller top,由 caller 自恢复。存槽索引(grow 安全:被调
-	// 嵌套 growStack 改 stackBaseW 但槽索引不变,免 stackBaseW 换算)。
+	// localSavedTop is the caller's snapshot for self-restoring top (PW10
+	// zero-cross ③a). The function prologue reads the top mirror word once and
+	// stores it (at this moment = this frame's base+MaxStack slot index, just
+	// set by enterLuaFrame); after each fixed-arity (C≠0) CALL returns via
+	// call_indirect, the top word is written back — the callee's emitReturn
+	// fast path (③b) no longer restores the caller top, the caller restores it
+	// itself. Stores the slot index (grow-safe: a callee's nested growStack
+	// changes stackBaseW but the slot index is unchanged, avoiding stackBaseW
+	// conversion).
 	localSavedTop = 7
 
-	// 兼容旧名(PW2 直线 opcode 用 localTmp64/localTmp32)。
+	// Compat aliases (PW2 straight-line opcodes use localTmp64/localTmp32).
 	localTmp64 = localI64a
 	localTmp32 = localI32
 )
 
-// translateError 表示某 Proto 无法被 PW2 翻译(控制流过复杂 / 含未实装
-// opcode 形态)——Compile 据此返回 unsupported,P2 fallback。
+// translateError indicates a Proto cannot be translated by PW2 (control flow
+// too complex / contains an unimplemented opcode form) — Compile returns
+// unsupported based on this, and P2 falls back.
 type translateError struct{ reason string }
 
 func (e *translateError) Error() string { return e.reason }
 
-// translate 把 Proto.Code 翻译成 Wasm 函数体字节(不含 local decl 与末尾
-// end,由 module 组装包裹)。返回 (body, error)。
+// translate translates Proto.Code into Wasm function body bytes (excluding the
+// local decls and the trailing end, which the module assembles and wraps).
+// Returns (body, error).
 //
-// 单可达 BB 走 PW2/PW3 直线路径;多 BB 走 PW4 relooper 结构化生成。
+// A single reachable BB takes the PW2/PW3 straight-line path; multiple BBs take
+// the PW4 relooper structured generation.
 func (c *Compiler) translate(proto *bytecode.Proto) ([]byte, error) {
 	cfg := buildCFG(proto)
 	reach := cfg.reachableBlocks()
@@ -61,21 +72,22 @@ func (c *Compiler) translate(proto *bytecode.Proto) ([]byte, error) {
 	c.emitPrologue(em)
 
 	if len(reach) == 1 {
-		// 单可达 BB:直线翻译(死代码块——RETURN 后兜底 RETURN——不发射)。
+		// Single reachable BB: straight-line translation (dead blocks — the
+		// fallback RETURN after RETURN — are not emitted).
 		entry := cfg.blocks[cfg.entry]
 		for pc := entry.startPC; pc < entry.endPC; {
 			skip, err := c.emitOpcode(em, proto, pc)
 			if err != nil {
 				return nil, err
 			}
-			pc += 1 + int32(skip) // CLOSURE 跳过后随伪指令
+			pc += 1 + int32(skip) // skip CLOSURE's trailing pseudo-instructions
 		}
 		em.i32Const(0)
 		em.ret()
 		return em.bytes(), nil
 	}
 
-	// 多 BB:PW4 relooper 结构化生成。
+	// Multiple BBs: PW4 relooper structured generation.
 	plan, err := buildStructPlan(cfg)
 	if err != nil {
 		return nil, &translateError{reason: err.Error()}
@@ -83,31 +95,40 @@ func (c *Compiler) translate(proto *bytecode.Proto) ([]byte, error) {
 	if err := c.emitStructured(em, proto, cfg, plan); err != nil {
 		return nil, &translateError{reason: err.Error()}
 	}
-	// 兜底 return 0(理论上每条出口 BB 已发 RETURN;防御 wasm 校验「函数末尾
-	// 缺值」——结构化发射后控制流可能落到函数体末)。
+	// Fallback return 0 (in theory every exit BB has already emitted RETURN;
+	// this defends the wasm validation "missing value at function end" — after
+	// structured emission control flow may fall to the function body's end).
 	em.i32Const(0)
 	em.ret()
 	return em.bytes(), nil
 }
 
-// emitPrologue 发射函数入口序言(PW10 零跨界 ③a):快照 top 镜像字进 localSavedTop。
+// emitPrologue emits the function entry prologue (PW10 zero-cross ③a):
+// snapshot the top mirror word into localSavedTop.
 //
 //	(local.set $savedTop (i32.load offset=topAddr (i32.const 0)))
 //
-// 此刻(run 入口,enterLuaFrame 刚 setTop(base+MaxStack))top 字 = 本帧 base+MaxStack
-// 槽索引,正是本帧每个定额 CALL 返回后须恢复的 th.top。caller 据此自恢复,使被调
-// emitReturn 快路径(③b)无须跨函数取 caller.MaxStack / 换算 stackBaseW。
+// At this moment (run entry, enterLuaFrame has just setTop(base+MaxStack)) the
+// top word = this frame's base+MaxStack slot index, which is exactly the th.top
+// that must be restored after each of this frame's fixed-arity CALLs returns.
+// The caller self-restores based on this, so the callee's emitReturn fast path
+// (③b) need not reach across the function to fetch caller.MaxStack / convert
+// stackBaseW.
 //
-// **③a 零行为变更**:本阶段被调仍走 helperReturn(DoReturn 已恢复同值 base+MaxStack),
-// caller 写回 = 写同值,纯幂等;③b 落地后被调不再恢复,caller 写回成为唯一恢复点。
+// **③a is behavior-neutral**: in this stage the callee still goes through
+// helperReturn (DoReturn already restored the same value base+MaxStack), and
+// the caller's write-back = writing the same value, purely idempotent; once ③b
+// lands the callee no longer restores, and the caller's write-back becomes the
+// sole restore point.
 func (c *Compiler) emitPrologue(em *emitter) {
 	em.i32Const(0)
 	em.i32Load(c.host.TopAddr())
 	em.localSet(localSavedTop)
 }
 
-// 层据后继与作用域栈处理)。终结指令(JMP / 比较 / FOR* / RETURN)不在
-// emitOpcode 里发控制流——只有本层知道后继 BB 的 br depth。
+// this layer handles based on successors and the scope stack). Terminator
+// instructions (JMP / comparisons / FOR* / RETURN) do not emit control flow in
+// emitOpcode — only this layer knows the successor BB's br depth.
 func (c *Compiler) emitBlockBody(em *emitter, proto *bytecode.Proto, cfg *cfg, plan *structPlan, bb int, stack *[]scope) error {
 	blk := cfg.blocks[bb]
 	if blk.startPC >= blk.endPC {
@@ -117,28 +138,29 @@ func (c *Compiler) emitBlockBody(em *emitter, proto *bytecode.Proto, cfg *cfg, p
 	term := proto.Code[lastPC]
 	termOp := bytecode.Op(term)
 
-	// 直线前缀(终结指令之前的所有指令)。
+	// Straight-line prefix (all instructions before the terminator).
 	for pc := blk.startPC; pc < lastPC; {
 		skip, err := c.emitOpcode(em, proto, pc)
 		if err != nil {
 			return err
 		}
-		pc += 1 + int32(skip) // CLOSURE 跳过后随伪指令
+		pc += 1 + int32(skip) // skip CLOSURE's trailing pseudo-instructions
 	}
 
 	switch termOp {
 	case bytecode.RETURN:
-		// 自带 return,无后继边。
+		// Self-contained return, no successor edge.
 		_, err := c.emitOpcode(em, proto, lastPC)
 		return err
 
 	case bytecode.TAILCALL:
-		// 尾调用复用帧(PW6-b):自闭 return(Lua 完成/host 落 RETURN/ERR 冒泡)。
+		// Tail call reuses the frame (PW6-b): self-closing return (Lua
+		// completes / host lands RETURN / ERR bubbles up).
 		c.emitTailCall(em, proto.Code[lastPC], lastPC)
 		return nil
 
 	case bytecode.JMP:
-		// 无条件跳:发射边到唯一后继。
+		// Unconditional jump: emit the edge to the sole successor.
 		return c.emitJmpTerm(em, cfg, plan, stack, bb)
 
 	case bytecode.EQ, bytecode.LT, bytecode.LE, bytecode.TEST, bytecode.TESTSET:
@@ -154,9 +176,12 @@ func (c *Compiler) emitBlockBody(em *emitter, proto *bytecode.Proto, cfg *cfg, p
 		return c.emitTForLoopTerm(em, cfg, plan, stack, bb, lastPC)
 
 	default:
-		// 普通 op 因「下一条是 leader」切 BB(单后继 fallthrough)。先发该 op,
-		// 再发 fallthrough 边。(普通 op skip=0;CLOSURE 不会落此分支——它后随
-		// 伪指令,其 BB 边界在伪指令之后,CLOSURE 不是 BB 末指令。)
+		// An ordinary op splits the BB because "the next instruction is a
+		// leader" (single-successor fallthrough). Emit that op first, then
+		// emit the fallthrough edge. (Ordinary op skip=0; CLOSURE never lands
+		// in this branch — it is followed by pseudo-instructions, and its BB
+		// boundary is after those pseudo-instructions, so CLOSURE is not a BB's
+		// last instruction.)
 		if _, err := c.emitOpcode(em, proto, lastPC); err != nil {
 			return err
 		}
@@ -170,7 +195,7 @@ func (c *Compiler) emitBlockBody(em *emitter, proto *bytecode.Proto, cfg *cfg, p
 	}
 }
 
-// emitJmpTerm JMP 终结:唯一后继(jumpTarget)。
+// emitJmpTerm JMP terminator: sole successor (jumpTarget).
 func (c *Compiler) emitJmpTerm(em *emitter, cfg *cfg, plan *structPlan, stack *[]scope, bb int) error {
 	blk := cfg.blocks[bb]
 	if len(blk.succs) != 1 {
@@ -179,9 +204,11 @@ func (c *Compiler) emitJmpTerm(em *emitter, cfg *cfg, plan *structPlan, stack *[
 	return c.emitEdge(em, cfg, plan, *stack, bb, blk.succs[0])
 }
 
-// emitOpcode 翻译一条非终结直线指令。返回 (skip, err):skip = 本指令额外消耗的
-// 后随指令数(CLOSURE 后随 SubNUps 条伪指令 = 数据非 opcode,须跳过不翻译),
-// 其余 opcode skip=0。调用方据 skip 步进 pc(pc += 1 + skip)。
+// emitOpcode translates one non-terminator straight-line instruction. Returns
+// (skip, err): skip = the number of trailing instructions this instruction
+// consumes additionally (CLOSURE is followed by SubNUps pseudo-instructions =
+// data, not opcodes, which must be skipped and not translated); all other
+// opcodes have skip=0. The caller steps pc by skip (pc += 1 + skip).
 func (c *Compiler) emitOpcode(em *emitter, proto *bytecode.Proto, pc int32) (int, error) {
 	ins := proto.Code[pc]
 	op := bytecode.Op(ins)
@@ -201,8 +228,10 @@ func (c *Compiler) emitOpcode(em *emitter, proto *bytecode.Proto, pc int32) (int
 	case bytecode.RETURN:
 		c.emitReturn(em, ins, pc)
 	case bytecode.TAILCALL:
-		// 单 BB 路径(TAILCALL 后仅死代码 RETURN,reachableBlocks==1)的尾调用。
-		// 多 BB 路径由 emitBlockBody 终结分派(两路均调 emitTailCall,自闭 return)。
+		// Tail call on the single-BB path (after TAILCALL only dead-code
+		// RETURN, reachableBlocks==1). The multi-BB path is dispatched by
+		// emitBlockBody's terminator (both paths call emitTailCall,
+		// self-closing return).
 		c.emitTailCall(em, ins, pc)
 	case bytecode.ADD, bytecode.SUB, bytecode.MUL, bytecode.DIV, bytecode.MOD, bytecode.POW:
 		c.emitArith(em, proto, ins, pc)
@@ -233,8 +262,10 @@ func (c *Compiler) emitOpcode(em *emitter, proto *bytecode.Proto, pc int32) (int
 	case bytecode.CLOSE:
 		c.emitClose(em, ins, pc)
 	case bytecode.CLOSURE:
-		// 后随 SubNUps[Bx] 条伪指令(MOVE/GETUPVAL,描述 upvalue 捕获)是数据非
-		// opcode,翻译跳过(makeClosure 在助手内读它们);返回 skip 让调用方步 pc。
+		// Followed by SubNUps[Bx] pseudo-instructions (MOVE/GETUPVAL,
+		// describing upvalue capture) which are data, not opcodes; translation
+		// skips them (makeClosure reads them inside the helper); return skip so
+		// the caller steps pc.
 		c.emitClosure(em, ins, pc)
 		bx := bytecode.Bx(ins)
 		if bx < len(proto.SubNUps) {
@@ -247,9 +278,11 @@ func (c *Compiler) emitOpcode(em *emitter, proto *bytecode.Proto, pc int32) (int
 	return 0, nil
 }
 
-// loadRK 把 RK 操作数(寄存器 R(rk) 或常量 K(rk-256))压到 Wasm 栈顶(i64)。
-//   - 寄存器(rk<MaxK):i64.load offset=8*rk (base)
-//   - 常量(rk≥MaxK):i64.const 常量 raw u64(字符串常量已被 SupportsAllOpcodes 拒)
+// loadRK pushes an RK operand (register R(rk) or constant K(rk-256)) onto the
+// Wasm stack top (i64).
+//   - register (rk<MaxK): i64.load offset=8*rk (base)
+//   - constant (rk≥MaxK): i64.const constant raw u64 (string constants are
+//     already rejected by SupportsAllOpcodes)
 func (c *Compiler) loadRK(em *emitter, proto *bytecode.Proto, rk int) {
 	if rk < bytecode.MaxK {
 		em.localGet(localBase)
@@ -259,8 +292,8 @@ func (c *Compiler) loadRK(em *emitter, proto *bytecode.Proto, rk int) {
 	em.i64Const(uint64(proto.Consts[rk-bytecode.MaxK]))
 }
 
-// emitArith ADD/SUB/MUL/DIV/MOD/POW —— 双 number 快路径(Wasm 内直发 f64 +
-// NaN 规范化)+ 慢路径助手(02 §3.2.1)。
+// emitArith ADD/SUB/MUL/DIV/MOD/POW —— double-number fast path (f64 emitted
+// directly inside Wasm + NaN canonicalization) + slow-path helper (02 §3.2.1).
 //
 //	vb := RK(B); vc := RK(C)
 //	if IsNumber(vb) && IsNumber(vc):
@@ -273,8 +306,9 @@ func (c *Compiler) emitArith(em *emitter, proto *bytecode.Proto, ins bytecode.In
 	cc := bytecode.C(ins)
 	op := bytecode.Op(ins)
 
-	// POW 无 f64.pow 指令:整条走慢路径助手(Go math.Pow,byte-equal),
-	// 不发快路径(02 §3.2.2:POW 基线走助手最简)。
+	// POW has no f64.pow instruction: the whole thing goes through the
+	// slow-path helper (Go math.Pow, byte-equal), no fast path emitted
+	// (02 §3.2.2: POW baseline goes through the helper, simplest).
 	if op == bytecode.POW {
 		c.emitArithSlow(em, op, b, cc, a, pc)
 		return
@@ -286,7 +320,7 @@ func (c *Compiler) emitArith(em *emitter, proto *bytecode.Proto, ins bytecode.In
 	c.loadRK(em, proto, cc)
 	em.localSet(localI64b)
 
-	// IsNumber(vb) && IsNumber(vc):vb < qNanBoxBase && vc < qNanBoxBase
+	// IsNumber(vb) && IsNumber(vc): vb < qNanBoxBase && vc < qNanBoxBase
 	em.localGet(localI64a)
 	em.i64Const(qNanBoxBase)
 	em.i64LtU()
@@ -295,16 +329,17 @@ func (c *Compiler) emitArith(em *emitter, proto *bytecode.Proto, ins bytecode.In
 	em.i64LtU()
 	em.i32And()
 	em.ifVoid()
-	// --- 快路径:f64 算术 ---
+	// --- Fast path: f64 arithmetic ---
 	c.emitArithFast(em, op, a)
 	em.elseOp()
-	// --- 慢路径:h_arith ---
+	// --- Slow path: h_arith ---
 	c.emitArithSlow(em, op, b, cc, a, pc)
 	em.end()
 }
 
-// emitArithSlow 发射算术慢路径助手调用:h_arith(base,pc,op,b,c,a)→status;
-// status==1 则 return 1(错误冒泡,04 §4.1)。
+// emitArithSlow emits the arithmetic slow-path helper call:
+// h_arith(base,pc,op,b,c,a)→status; status==1 then return 1 (error bubbles up,
+// 04 §4.1).
 func (c *Compiler) emitArithSlow(em *emitter, op bytecode.OpCode, b, cc int, a uint32, pc int32) {
 	em.localGet(localBase)
 	em.i32Const(pc)
@@ -322,12 +357,13 @@ func (c *Compiler) emitArithSlow(em *emitter, op bytecode.OpCode, b, cc int, a u
 	em.end()
 }
 
-// emitArithFast 发射双 number 快路径:f64(vb) op f64(vc) → 规范化 → store R(A)。
-// 操作数在 localI64a/localI64b(POW 不走此路,无 f64.pow)。
+// emitArithFast emits the double-number fast path: f64(vb) op f64(vc) →
+// canonicalize → store R(A). Operands are in localI64a/localI64b (POW does not
+// take this path, no f64.pow).
 func (c *Compiler) emitArithFast(em *emitter, op bytecode.OpCode, a uint32) {
 	switch op {
 	case bytecode.MOD:
-		// Lua MOD:a - floor(a/b)*b。
+		// Lua MOD: a - floor(a/b)*b.
 		em.localGet(localI64a)
 		em.f64ReinterpretI64()
 		em.localGet(localI64a)
@@ -372,7 +408,7 @@ func (c *Compiler) emitArithFast(em *emitter, op bytecode.OpCode, a uint32) {
 	em.i64Store(8 * a)
 }
 
-// emitUnm UNM A B —— R(A) := -R(B)(02 §3.2.3)。
+// emitUnm UNM A B —— R(A) := -R(B) (02 §3.2.3).
 // Fast path f64.neg + result guard; otherwise h_unm.
 //
 // Result guard (issue #107): f64.neg never produces a NEW NaN, but it
@@ -428,8 +464,8 @@ func (c *Compiler) emitUnm(em *emitter, ins bytecode.Instruction, pc int32) {
 	em.end()
 }
 
-// emitNot NOT A B —— R(A) := not R(B)(02 §3.2.4,无元方法)。
-// Truthy(v) = v != Nil && v != False;not Truthy → BoolValue。
+// emitNot NOT A B —— R(A) := not R(B) (02 §3.2.4, no metamethod).
+// Truthy(v) = v != Nil && v != False;not Truthy → BoolValue.
 func (c *Compiler) emitNot(em *emitter, ins bytecode.Instruction) {
 	a := uint32(bytecode.A(ins))
 	b := uint32(bytecode.B(ins))
@@ -457,8 +493,9 @@ func (c *Compiler) emitNot(em *emitter, ins bytecode.Instruction) {
 	em.end()
 }
 
-// emitLen LEN A B —— R(A) := #R(B)(02 §3.2.5)。全经 h_len(string 长度 /
-// table border / 异类报错——内联过复杂,助手复用 execute.go LEN 段)。
+// emitLen LEN A B —— R(A) := #R(B) (02 §3.2.5). All go through h_len (string
+// length / table border / error on other types — inlining is too complex, the
+// helper reuses execute.go's LEN section).
 func (c *Compiler) emitLen(em *emitter, ins bytecode.Instruction, pc int32) {
 	a := uint32(bytecode.A(ins))
 	b := uint32(bytecode.B(ins))
@@ -476,8 +513,8 @@ func (c *Compiler) emitLen(em *emitter, ins bytecode.Instruction, pc int32) {
 	em.end()
 }
 
-// emitConcat CONCAT A B C —— R(A) := R(B)..…..R(C)(02 §3.2.6)。
-// 全经 h_concat(复用 execute.go doConcat 全逻辑 + safepoint)。
+// emitConcat CONCAT A B C —— R(A) := R(B)..…..R(C) (02 §3.2.6). All go through
+// h_concat (reuses execute.go doConcat's full logic + safepoint).
 func (c *Compiler) emitConcat(em *emitter, ins bytecode.Instruction, pc int32) {
 	a := uint32(bytecode.A(ins))
 	b := uint32(bytecode.B(ins))
@@ -497,7 +534,7 @@ func (c *Compiler) emitConcat(em *emitter, ins bytecode.Instruction, pc int32) {
 	em.end()
 }
 
-// emitMove MOVE A B —— R(A) := R(B)(02 §3.1.1)。
+// emitMove MOVE A B —— R(A) := R(B) (02 §3.1.1).
 //
 //	(i64.store offset=8*A (local.get $base)
 //	  (i64.load offset=8*B (local.get $base)))
@@ -510,27 +547,32 @@ func (c *Compiler) emitMove(em *emitter, ins bytecode.Instruction) {
 	em.i64Store(8 * a)     // store R(A)
 }
 
-// emitLoadK LOADK A Bx —— R(A) := K(Bx)(02 §3.1.2)。
-// 常量值在编译期已知,烧成 i64.const 立即数。
+// emitLoadK LOADK A Bx —— R(A) := K(Bx) (02 §3.1.2).
+// The constant value is known at compile time, baked into an i64.const
+// immediate.
 //
-// **PW2 限制**:字符串常量是 State 私有惰性 intern(Proto.Consts 中是 Nil
-// 占位,真值在装载期才填),编译期拿不到 GCRef——含字符串常量的 LOADK
-// 暂不支持(返回 unsupported,P2 fallback)。数字/bool/nil 常量可烧。
+// **PW2 limitation**: string constants are State-private lazy interns (Nil
+// placeholders in Proto.Consts, the real value is filled only at load time), so
+// the GCRef cannot be obtained at compile time — LOADK containing a string
+// constant is not yet supported (returns unsupported, P2 falls back).
+// Number/bool/nil constants can be baked.
 func (c *Compiler) emitLoadK(em *emitter, proto *bytecode.Proto, ins bytecode.Instruction) {
 	bx := bytecode.Bx(ins)
 	a := uint32(bytecode.A(ins))
-	// 字符串常量:编译期是 Nil 占位(IsStringConst),真值 State 私有,不能烧。
-	// 这种情况应已被 isCompilableConsts 在 SupportsAllOpcodes 拦下;此处防御。
+	// String constant: at compile time it is a Nil placeholder (IsStringConst),
+	// the real value is State-private and cannot be baked. This case should
+	// already be caught by isCompilableConsts in SupportsAllOpcodes; defensive
+	// here.
 	raw := uint64(proto.Consts[bx])
 	em.localGet(localBase)
 	em.i64Const(raw)
 	em.i64Store(8 * a)
 }
 
-// emitLoadBool LOADBOOL A B C —— R(A) := bool(B); if C≠0 then pc++(02 §3.1.3)。
+// emitLoadBool LOADBOOL A B C —— R(A) := bool(B); if C≠0 then pc++ (02 §3.1.3).
 //
-// PW2 单 BB 路径:C≠0 的「pc++」是控制流(切 BB),不会进单 BB 路径。
-// C=0 时纯赋值。
+// PW2 single-BB path: the "pc++" when C≠0 is control flow (splits the BB), so
+// it never enters the single-BB path. When C=0 it is a pure assignment.
 func (c *Compiler) emitLoadBool(em *emitter, proto *bytecode.Proto, ins bytecode.Instruction, pc int32) {
 	a := uint32(bytecode.A(ins))
 	b := bytecode.B(ins)
@@ -543,11 +585,13 @@ func (c *Compiler) emitLoadBool(em *emitter, proto *bytecode.Proto, ins bytecode
 	em.localGet(localBase)
 	em.i64Const(v)
 	em.i64Store(8 * a)
-	// C≠0 的 pc++ 由 CFG 切 BB,单 BB 路径不处理(若出现说明 translate
-	// 单 BB 假设被违反,但 LOADBOOL C≠0 会让 buildCFG 切 BB,不会到这)。
+	// The pc++ when C≠0 is handled by the CFG splitting the BB, the single-BB
+	// path does not handle it (if it appears, translate's single-BB assumption
+	// has been violated, but LOADBOOL C≠0 makes buildCFG split the BB, so it
+	// won't reach here).
 }
 
-// emitLoadNil LOADNIL A B —— R(A..B) := nil(闭区间,02 §3.1.4)。
+// emitLoadNil LOADNIL A B —— R(A..B) := nil (closed interval, 02 §3.1.4).
 func (c *Compiler) emitLoadNil(em *emitter, ins bytecode.Instruction) {
 	a := bytecode.A(ins)
 	b := bytecode.B(ins)
@@ -559,7 +603,7 @@ func (c *Compiler) emitLoadNil(em *emitter, ins bytecode.Instruction) {
 	}
 }
 
-// emitGetUpval GETUPVAL A B —— R(A) := Upval(B)(02 §3.1.5,经助手)。
+// emitGetUpval GETUPVAL A B —— R(A) := Upval(B) (02 §3.1.5, via helper).
 func (c *Compiler) emitGetUpval(em *emitter, ins bytecode.Instruction, pc int32) {
 	a := uint32(bytecode.A(ins))
 	b := int32(bytecode.B(ins))
@@ -574,7 +618,7 @@ func (c *Compiler) emitGetUpval(em *emitter, ins bytecode.Instruction, pc int32)
 	em.i64Store(8 * a)
 }
 
-// emitSetUpval SETUPVAL A B —— Upval(B) := R(A)(02 §3.1.6,经助手)。
+// emitSetUpval SETUPVAL A B —— Upval(B) := R(A) (02 §3.1.6, via helper).
 func (c *Compiler) emitSetUpval(em *emitter, ins bytecode.Instruction, pc int32) {
 	a := uint32(bytecode.A(ins))
 	b := int32(bytecode.B(ins))
@@ -586,20 +630,29 @@ func (c *Compiler) emitSetUpval(em *emitter, ins bytecode.Instruction, pc int32)
 	em.call(helperSetUpval)
 }
 
-// emitReturn RETURN A B(02 §3.6.3)。PW10 零跨界 ③b:定额返回(B≠0 且 nret≤8)
-// 发守卫快路径(Wasm 内拆帧免 h_return 跨界),任一守卫失败 br 回退 helperReturn;
-// 变长返回(B==0 到 top)/ 超长 nret 只发 helperReturn。
+// emitReturn RETURN A B (02 §3.6.3). PW10 zero-cross ③b: fixed-arity return
+// (B≠0 and nret≤8) emits a guarded fast path (frame teardown inside Wasm,
+// avoiding the h_return cross), and any guard failure does a br fallback to
+// helperReturn; variadic return (B==0 to top) / oversized nret only emit
+// helperReturn.
 //
-// **逐字节镜像 DoReturn**(gibbous_host.go):nret=B-1 个结果 R(A..)→funcIdx 起,
-// 减 ciDepth,写 caller base 中转字。**不碰 top**(caller 经 ③a savedTop 自恢复)、
-// 不物化 pc(RETURN 不抛错,弹后段帧不再读)、无 safepoint(快路径无分配/GC 窗口)。
+// **Byte-for-byte mirror of DoReturn** (gibbous_host.go): nret=B-1 results
+// R(A..) → starting at funcIdx, decrement ciDepth, write the caller base
+// transfer word. **Does not touch top** (the caller self-restores via ③a
+// savedTop), does not materialize pc (RETURN raises no error, later-popped
+// frames no longer read it), no safepoint (the fast path has no allocation/GC
+// window).
 //
-// **守卫**(任一失败 br $slow → helperReturn,逐字节回退):
-//   - G5 ciDepth<2:无 gibbous caller 可直拆(最外帧 RETURN 回 crescent)→ Go 拆。
-//     须最先判,否则后续读 caller 段帧(depth-2)越界。
-//   - G3 openGuard≠0:本帧有开放 upvalue,closeUpvals 非 no-op → Go 关闭。
-//   - G2 caller 段 word2 bit50==0:caller 非 gibbous(top/中转字须 Go 处理)→ Go。
-//   - G4 callee 段 nresults≠nret:多退少补 / want-all(nresults=-1)→ Go 调整。
+// **Guards** (any failure br $slow → helperReturn, byte-for-byte fallback):
+//   - G5 ciDepth<2: no gibbous caller can be torn down directly (the outermost
+//     frame's RETURN returns to crescent) → Go teardown. Must be checked first,
+//     otherwise the later reads of the caller frame (depth-2) go out of bounds.
+//   - G3 openGuard≠0: this frame has open upvalues, closeUpvals is non-no-op →
+//     Go closes them.
+//   - G2 caller frame word2 bit50==0: caller is non-gibbous (top/transfer word
+//     must be handled by Go) → Go.
+//   - G4 callee frame nresults≠nret: over/under supply / want-all
+//     (nresults=-1) → Go adjusts.
 func (c *Compiler) emitReturn(em *emitter, ins bytecode.Instruction, pc int32) {
 	a := int32(bytecode.A(ins))
 	b := int32(bytecode.B(ins))
@@ -607,21 +660,23 @@ func (c *Compiler) emitReturn(em *emitter, ins bytecode.Instruction, pc int32) {
 	if b != 0 && nret >= 0 && nret <= maxReturnFast {
 		c.emitReturnFast(em, a, nret)
 	}
-	// 回退(慢路径 / 守卫 miss 落点):h_return(base,pc,a,b)。
+	// Fallback (slow path / guard-miss landing point): h_return(base,pc,a,b).
 	em.localGet(localBase)
 	em.i32Const(pc)
 	em.i32Const(a)
 	em.i32Const(b)
 	em.call(helperReturn)
-	em.ret() // return status(h_return 的返回值)
+	em.ret() // return status (h_return's return value)
 }
 
-// emitCIFrameAddr 发射「第 (depth + idxDelta) 帧的段字节地址」到 Wasm 栈(PW10 零跨界
-// ③b)。地址 = load(ciSegBaseAddr) + (load(ciDepthAddr)+idxDelta)*ciFrameBytes。idxDelta
-// 为 -1(callee 顶帧)或 -2(caller)。段基址/深度每次现读(段可重定位,免缓存悬垂)。
+// emitCIFrameAddr emits the "byte address of frame (depth + idxDelta)'s segment"
+// onto the Wasm stack (PW10 zero-cross ③b). Address = load(ciSegBaseAddr) +
+// (load(ciDepthAddr)+idxDelta)*ciFrameBytes. idxDelta is -1 (callee top frame)
+// or -2 (caller). The segment base / depth are read fresh each time (the
+// segment may be relocated, avoiding a cached dangling pointer).
 func (c *Compiler) emitCIFrameAddr(em *emitter, idxDelta int32) {
 	em.i32Const(0)
-	em.i32Load(c.host.CISegBaseAddr()) // segBase 字节基址
+	em.i32Load(c.host.CISegBaseAddr()) // segBase byte base address
 	em.i32Const(0)
 	em.i32Load(c.host.CIDepthAddr()) // depth
 	em.i32Const(idxDelta)
@@ -631,52 +686,58 @@ func (c *Compiler) emitCIFrameAddr(em *emitter, idxDelta int32) {
 	em.i32Add() // segBase + (depth+idxDelta)*32
 }
 
-// emitReturnFast 发射 ③b 守卫快路径(见 emitReturn 文档)。在 block $slow 内:任一
-// 守卫 br_if 0 落到 block 末(= emitReturn 的 helperReturn 回退);全过则快路径体
-// return 0 退出函数。
+// emitReturnFast emits the ③b guarded fast path (see emitReturn's doc). Inside
+// block $slow: any guard br_if 0 lands at the block's end (= emitReturn's
+// helperReturn fallback); if all pass, the fast-path body returns 0 and exits
+// the function.
 func (c *Compiler) emitReturnFast(em *emitter, a, nret int32) {
-	em.block() // $slow:守卫失败跳到此 block 末(深度 0)
+	em.block() // $slow: guard failure jumps to this block's end (depth 0)
 
-	// G5:ciDepth < 2 → slow(无 gibbous caller 帧;须先判防 caller 段帧越界)。
+	// G5: ciDepth < 2 → slow (no gibbous caller frame; must be checked first to
+	// prevent the caller frame read from going out of bounds).
 	em.i32Const(0)
 	em.i32Load(c.host.CIDepthAddr())
 	em.i32Const(2)
 	em.i32LtS()
 	em.brIf(0)
 
-	// G3:openGuard ≠ 0 → slow(有开放 upvalue,closeUpvals 非 no-op)。
+	// G3: openGuard ≠ 0 → slow (has open upvalues, closeUpvals is non-no-op).
 	em.i32Const(0)
 	em.i32Load(c.host.OpenGuardAddr())
 	em.brIf(0)
 
-	// G2:caller 段 word2 bit50(gibbous)清 → slow。
-	c.emitCIFrameAddr(em, -2) // caller 帧地址
+	// G2: caller frame word2 bit50 (gibbous) clear → slow.
+	c.emitCIFrameAddr(em, -2) // caller frame address
 	em.i64Load(ciWord2Off)
 	em.i64Const(ciGibbousBit)
 	em.i64And()
 	em.i64Eqz() // (callerW2 & bit50)==0 → 1
 	em.brIf(0)
 
-	// G4:callee 段 nresults([47:32]) ≠ nret → slow(含 want-all nresults=-1)。
-	c.emitCIFrameAddr(em, -1) // callee 帧地址
+	// G4: callee frame nresults ([47:32]) ≠ nret → slow (includes want-all
+	// nresults=-1).
+	c.emitCIFrameAddr(em, -1) // callee frame address
 	em.i64Load(ciWord2Off)
 	em.i64Const(32)
 	em.i64ShrU()
 	em.i32WrapI64()
 	em.i32Const(0xffff)
-	em.i32And() // nresults 16 位字段
+	em.i32And() // nresults 16-bit field
 	em.i32Const(nret)
 	em.i32Ne()
 	em.brIf(0)
 
-	// --- 快路径体(逐字节镜像 DoReturn:moveResults → 中转字 → ciDepth--)---
-	// moveResults:dstBase = funcIdx 字节址 = localBase - 8(base = funcIdx+1)。
+	// --- Fast-path body (byte-for-byte mirror of DoReturn: moveResults →
+	// transfer word → ciDepth--) ---
+	// moveResults: dstBase = funcIdx byte address = localBase - 8
+	// (base = funcIdx+1).
 	em.localGet(localBase)
 	em.i32Const(8)
 	em.i32Sub()
 	em.localSet(localI32b) // dstBase
-	// nret 个结果:mem[dstBase + 8k] = mem[localBase + 8*(a+k)](前向拷贝,源在目标之上,
-	// 无写后读破坏——同 DoReturn for k:=0..nret 升序)。
+	// nret results: mem[dstBase + 8k] = mem[localBase + 8*(a+k)] (forward copy,
+	// source is above the destination, no read-after-write corruption — same as
+	// DoReturn for k:=0..nret ascending).
 	for k := int32(0); k < nret; k++ {
 		em.localGet(localI32b)
 		em.localGet(localBase)
@@ -684,14 +745,15 @@ func (c *Compiler) emitReturnFast(em *emitter, a, nret int32) {
 		em.i64Store(uint32(8 * k))
 	}
 
-	// 中转字 = (stackBaseW+caller.base)*8 = localBase + (callerBase - calleeBase)*8
-	// (两 base 槽自各自段 word0 低 32 读差值,免 stackBaseW;承 R3 base 刷新契约)。
-	// 须在 ciDepth-- 之前(emitCIFrameAddr 现读 depth)。
-	em.i32Const(0) // i32.store 地址操作数(基 0 + offset=ciTransferAddr)
+	// Transfer word = (stackBaseW+caller.base)*8 = localBase + (callerBase -
+	// calleeBase)*8 (both bases read the low-32 difference from their own
+	// segment's word0, avoiding stackBaseW; upholds the R3 base-refresh
+	// contract). Must be before ciDepth-- (emitCIFrameAddr reads depth fresh).
+	em.i32Const(0) // i32.store address operand (base 0 + offset=ciTransferAddr)
 	em.localGet(localBase)
-	c.emitCIFrameAddr(em, -2) // caller 帧
-	em.i32Load(0)             // callerBase(word0 低 32)
-	c.emitCIFrameAddr(em, -1) // callee 帧
+	c.emitCIFrameAddr(em, -2) // caller frame
+	em.i32Load(0)             // callerBase (word0 low 32)
+	c.emitCIFrameAddr(em, -1) // callee frame
 	em.i32Load(0)             // calleeBase
 	em.i32Sub()               // callerBase - calleeBase
 	em.i32Const(8)
@@ -699,17 +761,18 @@ func (c *Compiler) emitReturnFast(em *emitter, a, nret int32) {
 	em.i32Add() // localBase + (callerBase-calleeBase)*8
 	em.i32Store(c.host.CITransferAddr())
 
-	// ciDepth--(popCallInfo;快路径无 GC 窗口,顺序对 GC 不敏感,置最后)。
-	em.i32Const(0) // store 地址操作数
+	// ciDepth-- (popCallInfo; the fast path has no GC window, order is
+	// GC-insensitive, placed last).
+	em.i32Const(0) // store address operand
 	em.i32Const(0)
 	em.i32Load(c.host.CIDepthAddr())
 	em.i32Const(1)
 	em.i32Sub()
 	em.i32Store(c.host.CIDepthAddr())
 
-	// 快路径完成:return 0(OK status)。
+	// Fast path done: return 0 (OK status).
 	em.i32Const(0)
 	em.ret()
 
-	em.end() // $slow 末:落到此 = 守卫 miss,继续 emitReturn 的 helperReturn 回退
+	em.end() // $slow end: landing here = guard miss, continue emitReturn's helperReturn fallback
 }

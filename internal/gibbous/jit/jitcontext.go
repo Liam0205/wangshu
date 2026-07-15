@@ -1,29 +1,34 @@
 //go:build wangshu_p4
 
-// jitcontext.go —— P4 JIT 执行上下文 struct(承
-// docs/design/p4-method-jit/05-system-pipeline.md §3.3 jitContext 字段表)。
+// jitcontext.go —— the P4 JIT execution-context struct (per
+// docs/design/p4-method-jit/05-system-pipeline.md §3.3 jitContext field table).
 //
-// **方案 A**(用户裁决,03 §4 + §8):**P4 投机生命周期 P4 自管**。jitContext
-// 是 P4 跨 Go ↔ JIT 世界边界的「关键耦合点 #4」(00 §3 关键耦合点 4)——
-// 承载「JIT 码所需的所有 Go 侧能力(arena base / helper 表 / preemptFlag /
-// exit reason code)」装入 Go 堆上的 jitContext struct,经固定寄存器(amd64
-// r15)传入。
+// **Option A** (user decision, 03 §4 + §8): **P4 owns the speculation
+// lifecycle itself**. jitContext is P4's "key coupling point #4" across the
+// Go ↔ JIT world boundary (00 §3 key coupling point 4) — it carries "all the
+// Go-side capabilities the JIT code needs (arena base / helper table /
+// preemptFlag / exit reason code)" packed into a jitContext struct on the Go
+// heap, passed in via a fixed register (amd64 r15).
 //
-// **PJ1+2 阶段简化形态**:本文件先建 struct 字段骨架 + 构造函数 + 测试
-// 钩子,但**不在 PJ1 完整接入 trampoline asm**(PJ1 简化形态不切 SP 不装
-// jitContext,trampoline 单 CALL+RET 即可)。完整接入(amd64 trampoline 切
-// SP 时 MOVQ jitContext, R15)留 PJ2+ 启动时同批落地。
+// **Simplified PJ1+2-stage form**: this file first builds the struct field
+// skeleton + constructor + test hooks, but does **not** fully wire up the
+// trampoline asm in PJ1 (the simplified PJ1 form does not switch SP and does
+// not load jitContext; a single CALL+RET trampoline suffices). Full wiring
+// (the amd64 trampoline doing MOVQ jitContext, R15 when it switches SP) lands
+// as one batch at PJ2+ startup.
 //
-// 设计依据:
-//   - 05 §3.3:jitContext struct 字段(arena base / 值栈 base / preemptFlag /
-//     helper 表 / exit reason code / spill 区起点);per-arch 寄存器固定
-//     (amd64 r15);Go 堆分配纪律。
-//   - 06 §4.1:amd64 寄存器约定(r15 = jitContext);06 §4.2:arm64 寄存器约定
-//     (x28 = jitContext)。
-//   - 03 §8:P4 自管投机生命周期——p4SpecState 子状态字段挂 jitContext 还是
-//     独立 map?当前定稿独立 map(per-Proto 状态,跨调用持久,jitContext 是
-//     per-call scratch),减少 jitContext 字段量(承 03 §8.4 ✅ 自管 deopt 计数
-//     与 P4StuckSpeculation 状态)。
+// Design basis:
+//   - 05 §3.3: jitContext struct fields (arena base / value-stack base /
+//     preemptFlag / helper table / exit reason code / spill-area start);
+//     per-arch fixed register (amd64 r15); Go-heap allocation discipline.
+//   - 06 §4.1: amd64 register convention (r15 = jitContext); 06 §4.2: arm64
+//     register convention (x28 = jitContext).
+//   - 03 §8: P4 self-managed speculation lifecycle — do the p4SpecState
+//     substate fields hang off jitContext or a separate map? The current
+//     decision is a separate map (per-Proto state, persistent across calls,
+//     whereas jitContext is per-call scratch), which reduces the jitContext
+//     field count (per 03 §8.4 ✅ self-managed deopt count and
+//     P4StuckSpeculation state).
 package jit
 
 import (
@@ -31,40 +36,50 @@ import (
 	"unsafe"
 )
 
-// JITContextPreemptFlagOffset 是 preemptFlag 字段相对 *JITContext 的字节
-// 偏移——JIT 模板字节级 codegen 读取本偏移做 safepoint check
-// (cmp byte ptr [r15 + JITContextPreemptFlagOffset], 0;jne deopt)。
+// JITContextPreemptFlagOffset is the byte offset of the preemptFlag field
+// relative to *JITContext — the JIT template's byte-level codegen reads this
+// offset to do the safepoint check
+// (cmp byte ptr [r15 + JITContextPreemptFlagOffset], 0; jne deopt).
 //
-// **byte 比较纪律**:preemptFlag 是 atomic.Uint32(4 字节)但实际只取
-// 0/1 两值,crescent 端置 1 时设 low byte=1(little-endian),故 `cmpb 0`
-// 检测 !=0 在当前协议下正确——避免发 dword cmp 浪费一字节 + ModRM SIB。
-// 如未来扩展 preemptFlag 用高位 bit 需改 `cmpd` 形态(对位 EmitCmpDword
-// 留 PJ3+ 工程基础)。
+// **byte-comparison discipline**: preemptFlag is an atomic.Uint32 (4 bytes)
+// but effectively only takes the two values 0/1; the crescent side sets the
+// low byte=1 (little-endian) when raising it, so `cmpb 0` correctly detects
+// !=0 under the current protocol — this avoids emitting a dword cmp, which
+// wastes a byte + ModRM SIB. Should preemptFlag be extended to use a high bit
+// in the future, it must switch to a `cmpd` form (the matching EmitCmpDword
+// is left as PJ3+ engineering groundwork).
 //
-// 用 unsafe.Offsetof 算出而非硬编码:Go runtime 不保证 struct 内字段顺序
-// 跨版本一致(虽然 64-bit 系统 + 顺序对齐通常稳定),Offsetof 一次性算
-// 死编译期常量。PJ3+ FORLOOP 字节级内联回边检查点经本偏移直发。
+// Computed via unsafe.Offsetof rather than hardcoded: the Go runtime does not
+// guarantee struct field order is consistent across versions (though on
+// 64-bit systems with sequential alignment it is usually stable), and
+// Offsetof pins it down once as a compile-time constant. The PJ3+ FORLOOP
+// byte-level inline back-edge checkpoint emits directly through this offset.
 const (
 	JITContextArenaBaseOffset      = unsafe.Offsetof(JITContext{}.arenaBase)
 	JITContextValueStackBaseOffset = unsafe.Offsetof(JITContext{}.valueStackBase)
 	JITContextPreemptFlagOffset    = unsafe.Offsetof(JITContext{}.preemptFlag)
 	JITContextExitReasonOffset     = unsafe.Offsetof(JITContext{}.exitReasonCode)
-	// PJ5 Option B Spike 1+ 帧建立内联:暴露 ciDepth / ciSegBase / top 的 host
-	// 字节地址(承 §9.20),mmap 段经 r15+offset 解引 uintptr 后字节级 inc/dec
-	// CI 段。复用 P3 PW10 Stage 1a/2 镜像字(crescent.State.ciDepthRef /
-	// ciSegBaseRef / topRef),但用 host addr(uintptr)而非 wasm linear memory
-	// offset(P3 wasm 段 vs P4 mmap 段两端不同寻址协议)。
+	// PJ5 Option B Spike 1+ frame-establishment inlining: exposes the host
+	// byte addresses of ciDepth / ciSegBase / top (per §9.20); after
+	// dereferencing the mmap segment's `r15+offset` to a uintptr, the CI
+	// segment is inc/dec'd at the byte level. Reuses the P3 PW10 Stage 1a/2
+	// mirror words (crescent.State.ciDepthRef / ciSegBaseRef / topRef), but
+	// uses host addrs (uintptr) rather than wasm linear-memory offsets (the
+	// P3 wasm segment vs P4 mmap segment use different addressing protocols
+	// on each end).
 	JITContextCIDepthAddrOffset   = unsafe.Offsetof(JITContext{}.ciDepthAddr)
 	JITContextCISegBaseAddrOffset = unsafe.Offsetof(JITContext{}.ciSegBaseAddr)
 	JITContextTopAddrOffset       = unsafe.Offsetof(JITContext{}.topAddr)
 
-	// **§9.20.9 trampoline exit-resume 协议字段** (Spike 1 真接入 commit-1):
+	// **§9.20.9 trampoline exit-resume protocol fields** (Spike 1 wired up in
+	// commit-1):
 	JITContextExitArg0Offset  = unsafe.Offsetof(JITContext{}.exitArg0)
 	JITContextResumeOffOffset = unsafe.Offsetof(JITContext{}.resumeOff)
 
-	// **§9.20.9 trampoline exit-resume 协议 codePageAddr 字段** (Spike 1
-	// 真接入 commit-3b):dispatcher 算 resume entry 用 codePageAddr +
-	// resumeOff;Run 端 emit 时记录 codePage 起点。承设计草案 (5)。
+	// **§9.20.9 trampoline exit-resume protocol codePageAddr field** (Spike 1
+	// wired up in commit-3b): the dispatcher computes the resume entry via
+	// codePageAddr + resumeOff; the Run side records the codePage start when
+	// emitting. Per design draft (5).
 	JITContextCodePageAddrOffset = unsafe.Offsetof(JITContext{}.codePageAddr)
 
 	// **PJ10-native addition**: savedGoG is used by mmap-segment helper
@@ -138,21 +153,23 @@ const (
 	JITContextLoopFuelOffset = unsafe.Offsetof(JITContext{}.loopFuel)
 )
 
-// **§9.20.9 协议状态码常量** (Spike 1 真接入 + future helper request 路由):
+// **§9.20.9 protocol status-code constants** (Spike 1 wired up + future
+// helper-request routing):
 
-// JIT exit reason codes(承 §9.20.9 (3) 协议状态码 + exitReasonCode 字段):
+// JIT exit reason codes (per §9.20.9 (3) protocol status codes + the
+// exitReasonCode field):
 const (
-	ExitNormal       uint32 = 0 // 正常 RET 出段
-	ExitError        uint32 = 1 // ERR 冒泡(state.pendingErr 已置)
+	ExitNormal       uint32 = 0 // normal RET exit from segment
+	ExitError        uint32 = 1 // ERR propagation (state.pendingErr already set)
 	ExitOSR          uint32 = 2 // reserved: spec-template deopt uses a RAX sentinel, not this code (see p4state.go); kept so ExitInlineHelper stays 3
-	ExitInlineHelper uint32 = 3 // Spike 1 helper request(jitCtx.exitArg0 = helper code)
+	ExitInlineHelper uint32 = 3 // Spike 1 helper request (jitCtx.exitArg0 = helper code)
 )
 
-// JIT inline helper request codes(承 §9.20.9 (3) 协议状态码):
+// JIT inline helper request codes (per §9.20.9 (3) protocol status codes):
 const (
-	HelperRunCallee uint64 = 1 // Spike 1 Step C-1:跑 callee Lua 体
-	HelperGrowStack uint64 = 2 // 未来:arena grow 触发
-	HelperGCBarrier uint64 = 3 // 未来:GC 写屏障(只在写 Go 堆时)
+	HelperRunCallee uint64 = 1 // Spike 1 Step C-1: run the callee Lua body
+	HelperGrowStack uint64 = 2 // future: arena grow trigger
+	HelperGCBarrier uint64 = 3 // future: GC write barrier (only when writing the Go heap)
 
 	// PJ10 native emit exit-reason codes for shim-based ops that can't
 	// be shim-called from inside the mmap segment (issue #38). The
@@ -272,61 +289,77 @@ const (
 // helper discriminator; the high 48 bits carry op-specific packed args.
 const HelperCodeMask uint64 = 0xFFFF
 
-// JITContext 是 P4 跨边界的执行上下文(05 §3.3)。
+// JITContext is P4's cross-boundary execution context (05 §3.3).
 //
-// **生命周期**:每 State 一份 jitContext(crescent.State 持有)?还是 per-call
-// 一份(每次 P4 升层调用临时建)?——PJ1+2 阶段定**per-State 单例**(承
-// 05 §3.4 自管栈布局:State 内复用,减少 GC 压力)。具体 State 字段挂载点
-// 在 PJ2 wireP4 时同批补。
+// **Lifecycle**: one jitContext per State (held by crescent.State)? Or one
+// per-call (built afresh each time a P4 up-tier call happens)? — the PJ1+2
+// stage settles on **per-State singleton** (per 05 §3.4 self-managed stack
+// layout: reused within the State to reduce GC pressure). The specific State
+// field mount point is added as a batch during PJ2 wireP4.
 //
-// **Go 堆分配纪律**(承 05 §1.3.4):
-//   - jitContext 必须 Go 堆分配(`new(JITContext)`),不放栈上;
-//   - Go GC 不会移动 Go 堆对象,但移动栈上对象——栈上分配会让 jitContext 指针
-//     在 morestack 时 stale,违反 05 §1.3 「JIT 不持任何 Go 栈指针」纪律;
-//   - 经 amd64 r15 传入 JIT 段,段内只 load/store r15+offset 不解引用为 Go
-//     指针(写屏障白赚,承 05 §1.4)。
+// **Go-heap allocation discipline** (per 05 §1.3.4):
+//   - jitContext must be Go-heap allocated (`new(JITContext)`), never on the
+//     stack;
+//   - the Go GC does not move Go-heap objects, but it does move stack objects
+//     — stack allocation would leave the jitContext pointer stale after a
+//     morestack, violating the 05 §1.3 "JIT holds no Go stack pointer"
+//     discipline;
+//   - passed into the JIT segment via amd64 r15; inside the segment only
+//     load/store r15+offset happens, never a dereference-as-Go-pointer (a
+//     free pass on write barriers, per 05 §1.4).
 //
-// **per-arch 一致性**(承 06 §4.1/§4.2):amd64 r15 = JITContext,arm64 x28 =
-// JITContext。Go 端经 unsafe.Pointer 把 *JITContext 转 uintptr 装进 trampoline
-// (留 PJ2 实装)。
+// **per-arch consistency** (per 06 §4.1/§4.2): amd64 r15 = JITContext, arm64
+// x28 = JITContext. The Go side converts *JITContext to a uintptr via
+// unsafe.Pointer and packs it into the trampoline (wiring left to PJ2).
 type JITContext struct {
-	// arenaBase 是 arena `[]byte` 起点的 uintptr(承 05 §1.3.3 / §3.3)。
+	// arenaBase is the uintptr of the arena `[]byte` start (per 05 §1.3.3 /
+	// §3.3).
 	//
-	// JIT 段经 r14 = arenaBase 寻址 GCRef offset → 字节地址。arena 扩容
-	// (grow)时本字段会刷(承 05 §5 arena base 重载协议)。
+	// The JIT segment addresses via r14 = arenaBase, turning a GCRef offset
+	// into a byte address. This field is refreshed when the arena grows (per
+	// 05 §5 arena base reload protocol).
 	//
-	// **PJ1+2 阶段不接入 trampoline**(简化形态不需要 arena base);PJ2 算术
-	// 模板若涉及 NaN-box load/store 时启用。
+	// **Not wired into the trampoline in the PJ1+2 stage** (the simplified
+	// form does not need an arena base); enabled once the PJ2 arithmetic
+	// templates involve a NaN-box load/store.
 	arenaBase uintptr
 
-	// valueStackBase 是当前帧 R0 的 uintptr(承 05 §3.3 + 06 §4.1 amd64 rbx)。
+	// valueStackBase is the uintptr of the current frame's R0 (per 05 §3.3 +
+	// 06 §4.1 amd64 rbx).
 	//
-	// crescent 调 GibbousCode.Run 时传 base offset(uint32),trampoline 进入
-	// 时算 valueStackBase = arenaBase + base*8 装入 rbx。本字段是「每次进入
-	// JIT 前算好的栈槽起点」。
+	// When crescent calls GibbousCode.Run it passes a base offset (uint32);
+	// on entry the trampoline computes valueStackBase = arenaBase + base*8
+	// and loads it into rbx. This field is "the stack-slot start computed
+	// before each JIT entry".
 	valueStackBase uintptr
 
-	// preemptFlag 是抢占信号(承 05 §1.2.2 + §6.3)。
+	// preemptFlag is the preemption signal (per 05 §1.2.2 + §6.3).
 	//
-	// 异步抢占在 Go 下不可用(roadmap §2 runtime 所有权);P4 用回边检查点
-	// + preemptFlag 协作终止——回边模板 inline `cmpb [r15+offset], 0` +
-	// `jne exit_stub`。值非 0 即触发 OSR exit 退出 JIT 世界。
+	// Async preemption is unavailable under Go (roadmap §2 runtime
+	// ownership); P4 terminates cooperatively via back-edge checkpoints +
+	// preemptFlag — the back-edge template inlines `cmpb [r15+offset], 0` +
+	// `jne exit_stub`. Any nonzero value triggers an OSR exit out of the JIT
+	// world.
 	//
-	// crescent 端调度让出 / GC 触发时把本字段置 1;trampoline 出口时清 0。
+	// The crescent side sets this field to 1 on a scheduling yield / GC
+	// trigger; the trampoline clears it to 0 on exit.
 	//
-	// uint32 + atomic Load(crescent 写,JIT 读)避免数据竞争(`-race` 通过
-	// 是 V18 验收口径)。
+	// uint32 + atomic Load (crescent writes, JIT reads) avoids a data race
+	// (passing `-race` is the V18 acceptance criterion).
 	preemptFlag atomic.Uint32
 
-	// helperTable 是慢路径 helper 函数表(05 §4.3)。
+	// helperTable is the slow-path helper function table (05 §4.3).
 	//
-	// **PJ1 阶段空表**:LOADK/RETURN 直线模板不调 helper。PJ2 算术 + 慢路径
-	// 启用时填表(每个慢路径一个 Go 函数指针),JIT 段经 r15+offset 间接
-	// CALL。具体 helper 列表与 P3 04-trampoline §3.3 同款映射(arith /
-	// gettable / call / safepoint)。
+	// **Empty table in the PJ1 stage**: the LOADK/RETURN straight-line
+	// templates call no helper. The table is filled once PJ2 arithmetic +
+	// slow paths are enabled (one Go function pointer per slow path), and the
+	// JIT segment does an indirect CALL via r15+offset. The specific helper
+	// list uses the same mapping as P3 04-trampoline §3.3 (arith / gettable /
+	// call / safepoint).
 	//
-	// 字段类型 [N]uintptr(N = helper 数,PJ2 起填)留 PJ2 同批扩。当前
-	// 留空(unused)等 PJ2 启动时改 struct 加字段。
+	// The field type [N]uintptr (N = helper count, filled from PJ2 on) is
+	// left to be extended as a batch in PJ2. Currently left empty (unused)
+	// until PJ2 startup adds fields to the struct.
 
 	// exitReasonCode carries the segment's exit reason (05 §3.3). ACTIVE:
 	// the issue #50 frame-inline exit-helper-request protocol writes
@@ -337,77 +370,94 @@ type JITContext struct {
 	// uses a RAX sentinel (specDeoptCode), not this field, to signal a miss.
 	exitReasonCode uint32
 
-	// spillBase 是自管机器栈 spill 区起点(05 §3.4)。
+	// spillBase is the start of the self-managed machine-stack spill area
+	// (05 §3.4).
 	//
-	// **PJ1 阶段不切 SP**——本字段 0;PJ2 完整 trampoline 启用切 SP 时填实
-	// (每 P4 编译产物分配一段 Go 堆 []byte 作自管栈,spillBase 指向其末尾,
-	// trampoline 进入时 MOVQ spillBase, SP)。
+	// **PJ1 stage does not switch SP** — this field is 0; it is filled once
+	// the full PJ2 trampoline enables SP switching (each P4 compilation
+	// product allocates a Go-heap []byte as its self-managed stack, spillBase
+	// points at its end, and the trampoline does MOVQ spillBase, SP on
+	// entry).
 	spillBase uintptr
 
-	// spillTop 是自管机器栈 spill 区上界(承 05 §3.4)。
+	// spillTop is the upper bound of the self-managed machine-stack spill
+	// area (per 05 §3.4).
 	//
-	// PJ1 阶段 0;PJ2 启用切 SP 时 = spillBase + 自管栈大小(典型 64 KiB,
-	// 承 implementation-progress §3.1 「自管机器栈大小」开放问题,PJ0/PJ1
-	// 实测定)。
+	// 0 in the PJ1 stage; once PJ2 enables SP switching = spillBase +
+	// self-managed stack size (typically 64 KiB, per the
+	// implementation-progress §3.1 "self-managed machine-stack size" open
+	// question, to be fixed by PJ0/PJ1 measurement).
 	spillTop uintptr
 
-	// ciDepthAddr 是 thread.ciDepth 镜像字的 host 字节地址(承 §9.20
-	// Option B Spike 1)。
+	// ciDepthAddr is the host byte address of the thread.ciDepth mirror word
+	// (per §9.20 Option B Spike 1).
 	//
-	// **复用 P3 PW10 Stage 1a 镜像字**(crescent.State.ciDepthRef):
-	// crescent 端 wireP4 时把 `&arena.Words()[ciDepthRef].byte` 注入。
-	// mmap 段 emit `mov rax, [r15+ciDepthAddr]; inc qword ptr [rax]`
-	// 字节级 ciDepth++(enterLuaFrame inline)/ `dec ...`(popCallInfo inline)。
+	// **Reuses the P3 PW10 Stage 1a mirror word** (crescent.State.ciDepthRef):
+	// the crescent side injects `&arena.Words()[ciDepthRef].byte` during
+	// wireP4. The mmap segment emits `mov rax, [r15+ciDepthAddr]; inc qword
+	// ptr [rax]` for a byte-level ciDepth++ (enterLuaFrame inline) / `dec ...`
+	// (popCallInfo inline).
 	//
-	// **0 = 未接入**(Spike 0 阶段);Spike 1 真接入时 crescent setter 写入。
+	// **0 = not wired** (the Spike 0 stage); the crescent setter writes it
+	// when Spike 1 is wired up.
 	ciDepthAddr uintptr
 
-	// ciSegBaseAddr 是 CI 段当前字节基址镜像字的 host 字节地址(承 §9.20
-	// Option B Spike 1)。
+	// ciSegBaseAddr is the host byte address of the mirror word holding the
+	// CI segment's current byte base (per §9.20 Option B Spike 1).
 	//
-	// **复用 P3 PW10 Stage 2 镜像字**(crescent.State.ciSegBaseRef):
-	// CI 段是可重定位的(grow 后字节基址变),crescent 端 wireP4 时把
-	// `&arena.Words()[ciSegBaseRef].byte` 注入。mmap 段 emit `mov rax,
-	// [r15+ciSegBaseAddr]; mov rbx, [rax]` 先解引出当前 CI 段基址,然后
-	// 算 `rbx + depth*ciSlotSize + word*8` 寻址 CallInfo[depth] 字段。
+	// **Reuses the P3 PW10 Stage 2 mirror word** (crescent.State.ciSegBaseRef):
+	// the CI segment is relocatable (its byte base changes after a grow), so
+	// the crescent side injects `&arena.Words()[ciSegBaseRef].byte` during
+	// wireP4. The mmap segment emits `mov rax, [r15+ciSegBaseAddr]; mov rbx,
+	// [rax]` to first dereference the current CI segment base, then computes
+	// `rbx + depth*ciSlotSize + word*8` to address a CallInfo[depth] field.
 	ciSegBaseAddr uintptr
 
-	// topAddr 是 thread.top 镜像字的 host 字节地址(承 §9.20 Option B Spike 1)。
+	// topAddr is the host byte address of the thread.top mirror word (per
+	// §9.20 Option B Spike 1).
 	//
-	// **复用 P3 PW10 Stage 1a 镜像字**(crescent.State.topRef):
-	// thread.top 是栈槽索引(grow 安全坐标),enterLuaFrame 设 callee 帧顶
-	// 时写本字(top = base + MaxStack)。mmap 段 emit `mov rax, [r15+topAddr];
-	// mov qword ptr [rax], topVal` 字节级 top 设置。
+	// **Reuses the P3 PW10 Stage 1a mirror word** (crescent.State.topRef):
+	// thread.top is a stack-slot index (a grow-safe coordinate); enterLuaFrame
+	// writes this word when setting the callee frame top (top = base +
+	// MaxStack). The mmap segment emits `mov rax, [r15+topAddr]; mov qword
+	// ptr [rax], topVal` for a byte-level top set.
 	topAddr uintptr
 
-	// exitArg0 是 mmap 段经 exit-helper-request 协议返 trampoline 时携带的
-	// helper request code(承 §9.20.9 trampoline exit-resume 协议详细设计草案
-	// + §9.20.6 helper call ABI 协议)。
+	// exitArg0 is the helper request code the mmap segment carries when
+	// returning to the trampoline via the exit-helper-request protocol (per
+	// the §9.20.9 trampoline exit-resume protocol detailed design draft +
+	// §9.20.6 helper call ABI protocol).
 	//
-	// **协议流程**:mmap 段 emit `mov rax, HELPER_RUN_CALLEE; mov [r15+
-	// exitArg0Off], rax`,然后 `ret` 出段。trampoline dispatcher 读 jitCtx.
-	// exitArg0 决定 helper 路由:HELPER_RUN_CALLEE → executeFrom callee /
-	// HELPER_GROW_STACK → arena grow / HELPER_GC_BARRIER → 写屏障(未来)。
+	// **Protocol flow**: the mmap segment emits `mov rax, HELPER_RUN_CALLEE;
+	// mov [r15+exitArg0Off], rax`, then `ret` out of the segment. The
+	// trampoline dispatcher reads jitCtx.exitArg0 to decide helper routing:
+	// HELPER_RUN_CALLEE → executeFrom callee / HELPER_GROW_STACK → arena grow
+	// / HELPER_GC_BARRIER → write barrier (future).
 	//
 	// ACTIVE on amd64/arm64 (archSupportsFrameInline() returns true); only
 	// the arch_other fallback leaves it dormant. Wired up by the issue #50
 	// frame-inline path (commit chain §9.20.9).
 	exitArg0 uint64
 
-	// resumeOff 是 mmap 段内 resume entry 的字节偏移(承 §9.20.9 (2)):
-	// BuildVoid0Arg 后 exit-helper-request 段返 trampoline → Go dispatcher
-	// 跑 callee 完成 → trampoline 用 `codePageAddr + resumeOff` 求 resume
-	// entry 地址 → 再次 CALL 跳进 mmap 段续跑 PopVoid0Arg(popCallInfo)+ ret。
+	// resumeOff is the byte offset of the resume entry within the mmap
+	// segment (per §9.20.9 (2)): after BuildVoid0Arg the exit-helper-request
+	// segment returns to the trampoline → the Go dispatcher runs the callee
+	// to completion → the trampoline computes the resume entry address via
+	// `codePageAddr + resumeOff` → it CALLs back into the mmap segment again
+	// to resume running PopVoid0Arg (popCallInfo) + ret.
 	//
-	// **codePage 不重定位**(mmap PROT_RX 段一次性 alloc),resumeOff 编译期
-	// 确定即可。compileSpecSelfCall useFrameInline 分支 emit 时记录本字段。
+	// **codePage does not relocate** (the mmap PROT_RX segment is allocated
+	// once), so resumeOff can be determined at compile time. The
+	// compileSpecSelfCall useFrameInline branch records this field when it
+	// emits.
 	resumeOff uint32
 
-	_ [4]byte // 8 字节对齐 padding(uint32 resumeOff 后)
+	_ [4]byte // 8-byte alignment padding (after uint32 resumeOff)
 
-	// codePageAddr 是 PROT_RX mmap 段起点的 host 字节地址(承 §9.20.9 (5)
-	// resume entry 计算):dispatchInlineHelper 用 `codePageAddr + resumeOff`
-	// 求 resume 入口绝对地址,经 Go wrapper 二次 CALL 重入 mmap 段。
+	// codePageAddr is the host byte address of the PROT_RX mmap segment start
+	// (per §9.20.9 (5) resume entry computation): dispatchInlineHelper uses
+	// `codePageAddr + resumeOff` to compute the absolute resume entry address,
+	// then re-enters the mmap segment via a second CALL from the Go wrapper.
 	//
 	// ACTIVE on amd64/arm64. Injected at wireP4 / installGibbous time.
 	codePageAddr uintptr
@@ -593,9 +643,10 @@ type JITContext struct {
 	loopFuelRefill uint32
 }
 
-// NewJITContext 构造 P4 JIT 执行上下文。
+// NewJITContext constructs a P4 JIT execution context.
 //
-// 调用方:crescent.State 在 wireP4 后单例建一份(留 PJ2 实装时接入)。
+// Caller: crescent.State builds one singleton after wireP4 (wiring left to
+// PJ2).
 //
 // The self-managed spill stack (issue #89) is allocated here so every
 // translation product gets one; the trampoline switches SP onto it before
@@ -643,75 +694,87 @@ func (c *JITContext) AllocSpillStack() {
 // SpillBase returns the spill-stack SP entry point (testing hook).
 func (c *JITContext) SpillBase() uintptr { return c.spillBase }
 
-// SetPreemptFlag 设置抢占标志(crescent 端调,JIT 端 atomic 读)。
+// SetPreemptFlag sets the preemption flag (called by the crescent side, read
+// atomically by the JIT side).
 //
-// 调用方:GC 触发 / 调度让出时(crescent.State 持本 ctx 引用)。
+// Caller: on a GC trigger / scheduling yield (crescent.State holds a
+// reference to this ctx).
 func (c *JITContext) SetPreemptFlag() {
 	c.preemptFlag.Store(1)
 }
 
-// ClearPreemptFlag 清抢占标志(trampoline 出口调)。
+// ClearPreemptFlag clears the preemption flag (called at the trampoline exit).
 func (c *JITContext) ClearPreemptFlag() {
 	c.preemptFlag.Store(0)
 }
 
-// PreemptFlagPending 返回抢占标志是否已置(测试钩子,prove-the-path 命中
-// 计数器)。
+// PreemptFlagPending reports whether the preemption flag is set (test hook,
+// prove-the-path hit counter).
 func (c *JITContext) PreemptFlagPending() bool {
 	return c.preemptFlag.Load() != 0
 }
 
-// SetArenaBase 设置 arena `[]byte` 起点的 uintptr(承 05 §1.3.3 / §3.3
-// arena base 重载协议)。crescent 端 wireP4 + Run 入口经 host 接口算出
-// 当前 arena.Words() 起点字节地址,经本 setter 注入。
+// SetArenaBase sets the uintptr of the arena `[]byte` start (per 05 §1.3.3 /
+// §3.3 arena base reload protocol). The crescent side computes the current
+// arena.Words() start byte address via the host interface at wireP4 + Run
+// entry and injects it via this setter.
 //
-// **PJ2 完整接入预备**:本字段配合 valueStackBase 在 PJ2 字节级算术
-// codegen 时被 mmap 段经 r15+offset 读取——「movsd xmm0, [r15+arenaBase
-// +vsbase+reg*8]」字节级模板。当前 PJ7 简化形态尚不读本字段(mmap 段
-// 是 dummy mov+ret,prelude 经 host helper 接口取值)。
+// **PJ2 full-wiring preparation**: together with valueStackBase, this field
+// is read by the mmap segment via r15+offset during PJ2 byte-level arithmetic
+// codegen — the `movsd xmm0, [r15+arenaBase+vsbase+reg*8]` byte-level
+// template. The current simplified PJ7 form does not yet read this field (the
+// mmap segment is a dummy mov+ret, and the prelude fetches values via the
+// host helper interface).
 func (c *JITContext) SetArenaBase(addr uintptr) {
 	c.arenaBase = addr
 }
 
-// SetValueStackBase 设置当前帧 R0 的 uintptr(承 05 §3.3 + 06 §4.1)。
+// SetValueStackBase sets the uintptr of the current frame's R0 (per 05 §3.3 +
+// 06 §4.1).
 //
-// 调用契约:Run 入口算 valueStackBase = arena.Words().bytePtr +
-// (stackBaseW + ci.base) * 8,装入 mmap 段经 r15+offset 间接寻址 R(idx)。
-// 本 setter 在 Run 入口被调,确保每次 P4 帧执行前 valueStackBase 反映
-// 当前帧的真实槽位起点。
+// Calling contract: the Run entry computes valueStackBase = arena.Words().
+// bytePtr + (stackBaseW + ci.base) * 8, loaded so the mmap segment addresses
+// R(idx) indirectly via r15+offset. This setter is called at the Run entry to
+// ensure valueStackBase reflects the current frame's real slot start before
+// each P4 frame execution.
 func (c *JITContext) SetValueStackBase(addr uintptr) {
 	c.valueStackBase = addr
 }
 
-// ArenaBase 返回 arena base(测试钩子)。
+// ArenaBase returns the arena base (test hook).
 func (c *JITContext) ArenaBase() uintptr { return c.arenaBase }
 
-// ValueStackBase 返回当前帧 R0 字节地址(测试钩子)。
+// ValueStackBase returns the current frame's R0 byte address (test hook).
 func (c *JITContext) ValueStackBase() uintptr { return c.valueStackBase }
 
-// SetCIDepthAddr 设置 thread.ciDepth 镜像字的 host 字节地址(承 §9.20
-// Option B Spike 1)。承 crescent.State.wireP4 注入。
+// SetCIDepthAddr sets the host byte address of the thread.ciDepth mirror word
+// (per §9.20 Option B Spike 1). Injected by crescent.State.wireP4.
 func (c *JITContext) SetCIDepthAddr(addr uintptr) {
 	c.ciDepthAddr = addr
 }
 
-// CIDepthAddr 返回 thread.ciDepth 镜像字的 host 字节地址(测试钩子)。
+// CIDepthAddr returns the host byte address of the thread.ciDepth mirror word
+// (test hook).
 func (c *JITContext) CIDepthAddr() uintptr { return c.ciDepthAddr }
 
-// SetCISegBaseAddr 设置 CI 段当前字节基址镜像字的 host 字节地址(承 §9.20)。
+// SetCISegBaseAddr sets the host byte address of the mirror word holding the
+// CI segment's current byte base (per §9.20).
 func (c *JITContext) SetCISegBaseAddr(addr uintptr) {
 	c.ciSegBaseAddr = addr
 }
 
-// CISegBaseAddr 返回 CI 段镜像字的 host 字节地址(测试钩子)。
+// CISegBaseAddr returns the host byte address of the CI segment mirror word
+// (test hook).
 func (c *JITContext) CISegBaseAddr() uintptr { return c.ciSegBaseAddr }
 
-// SetTopAddr 设置 thread.top 镜像字的 host 字节地址(承 §9.20)。
+// SetTopAddr sets the host byte address of the thread.top mirror word (per
+// §9.20).
 func (c *JITContext) SetTopAddr(addr uintptr) {
 	c.topAddr = addr
 }
 
-// TopAddr 返回 thread.top 镜像字的 host 字节地址(测试钩子)。
+// TopAddr returns the host byte address of the thread.top mirror word (test
+// hook).
 func (c *JITContext) TopAddr() uintptr { return c.topAddr }
 
 // SetAllAddrs writes all five arena-relative address fields at once.
@@ -737,25 +800,28 @@ func (c *JITContext) SetExitArg0(arg uint64) {
 	c.exitArg0 = arg
 }
 
-// ExitArg0 返回 helper request code(测试钩子,承 §9.20.9 真接入预备)。
+// ExitArg0 returns the helper request code (test hook, per §9.20.9 wiring
+// preparation).
 func (c *JITContext) ExitArg0() uint64 { return c.exitArg0 }
 
-// SetResumeOff 设置 mmap 段内 resume entry 字节偏移(承 §9.20.9 (2))。
-// compileSpecSelfCall useFrameInline 分支 emit 时记录。
+// SetResumeOff sets the byte offset of the resume entry within the mmap
+// segment (per §9.20.9 (2)). Recorded when the compileSpecSelfCall
+// useFrameInline branch emits.
 func (c *JITContext) SetResumeOff(off uint32) {
 	c.resumeOff = off
 }
 
-// ResumeOff 返回 resume entry 字节偏移(测试钩子)。
+// ResumeOff returns the resume entry byte offset (test hook).
 func (c *JITContext) ResumeOff() uint32 { return c.resumeOff }
 
-// SetCodePageAddr 设置 mmap 段起点(承 §9.20.9 (5) resume entry 计算)。
-// installGibbous 时注入 PROT_RX 段起点字节地址。
+// SetCodePageAddr sets the mmap segment start (per §9.20.9 (5) resume entry
+// computation). The PROT_RX segment start byte address is injected at
+// installGibbous time.
 func (c *JITContext) SetCodePageAddr(addr uintptr) {
 	c.codePageAddr = addr
 }
 
-// CodePageAddr 返回 mmap 段起点(测试钩子)。
+// CodePageAddr returns the mmap segment start (test hook).
 func (c *JITContext) CodePageAddr() uintptr { return c.codePageAddr }
 
 // SavedGoGSlot returns &c.savedGoG for the saveGoG asm helper to write.

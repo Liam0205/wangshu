@@ -1,4 +1,4 @@
-// stdlib end-to-end tests via public Run path (M12)。
+// stdlib end-to-end tests via public Run path (M12).
 package wangshu_test
 
 import (
@@ -142,7 +142,7 @@ return tostring(rawequal(t, t)) .. tostring(rawequal({}, {}))`)
 }
 
 func TestStdlib_Print(t *testing.T) {
-	// print 输出进 stdout,这里只验证不报错且返回 0 值。
+	// print writes to stdout; here we only verify it does not error and returns zero values.
 	prog, err := wangshu.Compile([]byte(`print("hello", 42, nil, true)`), "p")
 	if err != nil {
 		t.Fatalf("compile: %v", err)
@@ -185,7 +185,7 @@ func TestStdlib_MathExtended(t *testing.T) {
 }
 
 func TestStdlib_MathRandomDeterministic(t *testing.T) {
-	// randomseed 后序列确定;range 形态各值都在界内
+	// after randomseed the sequence is deterministic; in the range forms every value stays within bounds
 	got := runOne(t, `
 math.randomseed(7)
 local a = math.random()

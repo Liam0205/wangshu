@@ -9,29 +9,36 @@ import (
 	"unsafe"
 )
 
-// pj3_template_safepoint_test.go —— PJ3 FORLOOP 模板 safepoint check 真
-// mmap+RX 触发实证(承 review 反馈 + 05 §1.2.2 V18 -race 抢占纪律)。
+// pj3_template_safepoint_test.go —— empirical proof that the PJ3 FORLOOP
+// template's safepoint check actually fires under mmap+RX (per review
+// feedback + 05 §1.2.2 V18 -race preemption discipline).
 //
-// 与 emitter_pj3_loop_spike_amd64_test.go::TestPJ3_BackwardJmpLoop_EarlyExit
-// 同款 spikeCtx 形态,但用 FORLOOP 模板形态 + 真 safepoint check 实测
-// preemptFlag 中途置 1 → loop 早退出。
+// Uses the same spikeCtx shape as
+// emitter_pj3_loop_spike_amd64_test.go::TestPJ3_BackwardJmpLoop_EarlyExit,
+// but exercises the FORLOOP template form with a real safepoint check:
+// preemptFlag is set to 1 mid-run → the loop exits early.
 //
-// pj3SafepointCtx 用 spikeCtx 同款结构(_ [3]uintptr + preemptFlag,
-// preemptFlag 偏移 = 24 字节)避免依赖 jit 包内 JITContext。
+// pj3SafepointCtx uses the same struct layout as spikeCtx (_ [3]uintptr +
+// preemptFlag, so preemptFlag sits at offset 24 bytes) to avoid depending on
+// JITContext inside the jit package.
 //
-// 共享 spikeCtxInstance / spikePreemptOff(在 emitter_pj3_loop_spike_amd64_test.go)。
+// Shares spikeCtxInstance / spikePreemptOff (defined in
+// emitter_pj3_loop_spike_amd64_test.go).
 
-// TestPJ3_ForLoopSafepoint_EarlyExit:preemptFlag=1 让 FORLOOP 模板第一次
-// iter 后 safepoint check 即触发 jne after_loop,早退出。
+// TestPJ3_ForLoopSafepoint_EarlyExit: preemptFlag=1 makes the FORLOOP
+// template's safepoint check fire after the first iter, triggering
+// jne after_loop and exiting early.
 //
-// 用 1000 万次 loop,若 safepoint 不工作会 timeout(每 iter ~3ns × 1e7 = 30ms,
-// 加 safepoint cmp+jne ~2ns × 1e7 = 50ms,仍 ms 级正常完成)。
-// 若 safepoint 工作,preemptFlag=1 时第一次 iter 就退出(< 1μs)。
+// Runs a 10-million-iteration loop; if the safepoint were broken this would
+// time out (~3ns/iter × 1e7 = 30ms, plus safepoint cmp+jne ~2ns × 1e7 = 50ms,
+// still finishing in the ms range). If the safepoint works, preemptFlag=1
+// makes it exit on the very first iter (< 1μs).
 func TestPJ3_ForLoopSafepoint_EarlyExit(t *testing.T) {
 	spikeCtxInstance.preemptFlag = 1
 	defer func() { spikeCtxInstance.preemptFlag = 0 }()
 
-	// 模板字节级:跑 1e7 次 loop,装 safepoint check(传 spikePreemptOff)
+	// Byte-level template: run 1e7 loop iters, wiring up the safepoint check
+	// (passing spikePreemptOff)
 	var buf []byte
 	buf = EmitForLoopEmptyConst(buf,
 		math.Float64bits(1),
@@ -53,16 +60,19 @@ func TestPJ3_ForLoopSafepoint_EarlyExit(t *testing.T) {
 	rax := CallJITFull(page.Addr(), ctxAddr)
 	runtime.KeepAlive(spikeCtxInstance)
 
-	// 段早退出后正常 ret,rax 是某 xmm 状态(不重要,验段未死循环即 OK)
+	// After the early exit the code still returns normally; rax holds some xmm
+	// state (unimportant — we only check the code didn't hang in an infinite loop)
 	t.Logf("safepoint early exit rax=0x%x(段在 preemptFlag=1 下早退出,未跑满 1e7 iter)", rax)
 }
 
-// TestPJ3_ForLoopSafepoint_NormalLoop:preemptFlag=0,loop 跑满。对照测试,
-// 验 safepoint check 不会误退(只在 preemptFlag != 0 时退)。
+// TestPJ3_ForLoopSafepoint_NormalLoop: preemptFlag=0, so the loop runs to
+// completion. Control test verifying the safepoint check doesn't exit
+// spuriously (it only exits when preemptFlag != 0).
 func TestPJ3_ForLoopSafepoint_NormalLoop(t *testing.T) {
 	spikeCtxInstance.preemptFlag = 0
 
-	// 适中循环 1000 次(safepoint check 每 iter 多两指令,但仍 μs 级完成)
+	// Moderate loop of 1000 iters (the safepoint check adds two instructions
+	// per iter, but it still finishes in the μs range)
 	var buf []byte
 	buf = EmitForLoopEmptyConst(buf,
 		math.Float64bits(1),

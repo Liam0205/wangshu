@@ -1,5 +1,6 @@
-// Bridge — P2 主结构,贯穿计数 / IC 反馈 / 可编译性 / 状态机 / 升层日志
-// (`docs/design/p2-bridge/01-profiling.md` §6 + `04-try-compile-fallback.md` §3-§5)。
+// Bridge — the P2 main structure, threading through counting / IC feedback /
+// compilability / state machine / promotion logging
+// (`docs/design/p2-bridge/01-profiling.md` §6 + `04-try-compile-fallback.md` §3-§5).
 package bridge
 
 import (
@@ -9,18 +10,21 @@ import (
 	"github.com/Liam0205/wangshu/internal/bytecode"
 )
 
-// Bridge 是 P2 决策机的主结构(每个 State 一份;profileTable 挂 State 私有,
-// 跨 goroutine 不共享——01 §6.3 (B) 方案)。
+// Bridge is the P2 decision engine's main structure (one per State;
+// profileTable is State-private and not shared across goroutines — the
+// 01 §6.3 (B) design).
 //
-// 注入式接线(避免反向依赖 internal/crescent):
-//   - p3 由门面层(wangshu.NewState)在 P3 上线后注入;P1-only build / P2 PB0
-//     不注入,p3 == nil → SupportsAllOpcodes 返 false → F7 永久判不可编译,
-//     与 P1 行为一致。
-//   - logger 由门面层注入 stdLogger 默认实现;测试可注入捕获式 Logger 验证
-//     升层日志格式(04 §6.5 测试断言)。
+// Injection-style wiring (avoids a reverse dependency on internal/crescent):
+//   - p3 is injected by the facade layer (wangshu.NewState) once P3 is live;
+//     P1-only builds / P2 PB0 do not inject it, so p3 == nil →
+//     SupportsAllOpcodes returns false → F7 permanently deems it
+//     uncompilable, matching P1 behavior.
+//   - logger is injected by the facade layer with the stdLogger default
+//     implementation; tests may inject a capturing Logger to verify the
+//     promotion log format (the 04 §6.5 test assertions).
 type Bridge struct {
-	// profileTable: Proto -> ProfileData(State 私有,01 §6.3)。
-	// 惰性建表:首次 onBackEdge / onEnter 命中 Proto 时分配。
+	// profileTable: Proto -> ProfileData (State-private, 01 §6.3).
+	// Lazily built: allocated the first time onBackEdge / onEnter hits a Proto.
 	profileTable map[*bytecode.Proto]*ProfileData
 
 	// pdByID is a ProtoID-indexed fast path over profileTable (issue
@@ -36,32 +40,39 @@ type Bridge struct {
 	// keep working unchanged.
 	pdByID []*ProfileData
 
-	// p3: P3/P4 编译器接口(05 §2)。注入式;nil 表示 P1-only / mock 未装载。
+	// p3: the P3/P4 compiler interface (05 §2). Injection-style; nil means
+	// P1-only / mock not loaded.
 	p3 P3Compiler
 
-	// gibbousCodes: 已升层 Proto → GibbousCode(04 §4.4 installGibbous 安装
-	// 之后挂在此处,防止 wasm module / 原生码段被 GC 早释放,直到 Bridge
-	// 自身释放为止)。
+	// gibbousCodes: promoted Proto → GibbousCode (attached here after 04 §4.4
+	// installGibbous installs it, keeping the wasm module / native code
+	// section from being GC'd early, until the Bridge itself is released).
 	gibbousCodes map[*bytecode.Proto]GibbousCode
 
-	// compileMu: try-compile + installGibbous 关键段的全局互斥锁
-	// (04 §4.5 (A) 方案——Bridge 级粗粒度,简单可靠;多 Proto 不并行
-	// 编译是合理代价,因为 P2 不在热路径)。
+	// compileMu: the global mutex for the try-compile + installGibbous
+	// critical section (the 04 §4.5 (A) design — Bridge-level coarse
+	// granularity, simple and reliable; not compiling multiple Protos in
+	// parallel is a reasonable cost, since P2 is off the hot path).
 	compileMu sync.Mutex
 
-	// logger: 升层日志诊断接口(04 §6.4)。注入式;nil 时 silentLogger
-	// 替代(单测默认场景)。
+	// logger: the promotion-log diagnostic interface (04 §6.4).
+	// Injection-style; silentLogger substitutes when nil (the default unit
+	// test scenario).
 	logger Logger
 
-	// aggregator: IC 反馈聚合器(02 §6.4)。Bridge 内嵌一份,considerPromotion
-	// 升层时调 Aggregate(proto) 产 TypeFeedback 喂给 P3。
+	// aggregator: the IC feedback aggregator (02 §6.4). The Bridge embeds
+	// one; on promotion, considerPromotion calls Aggregate(proto) to produce
+	// the TypeFeedback fed to P3.
 	aggregator *Aggregator
 
-	// forceAll: 强制全升模式(P3 PW9 测试入口,08 §2.2)。置位后 OnEnter/
-	// OnBackEdge 首次调用即触发 considerPromotion(绕过热度阈值),所有
-	// CompCompilable Proto 在首次执行时直接编译——消除「哪些 Proto 够热」的
-	// 时序不确定性,使层间差分可复现 + 覆盖最大化。**不绕可编译性闸门**
-	// (F1-F7 排除形状仍走 crescent,08 §2.3.1)。testing-only。
+	// forceAll: force-promote-all mode (the P3 PW9 test entry, 08 §2.2). Once
+	// set, the first OnEnter/OnBackEdge call triggers considerPromotion
+	// (bypassing the heat threshold), so every CompCompilable Proto compiles
+	// directly on its first execution — this removes the timing
+	// nondeterminism of "which Protos get hot enough", making cross-tier
+	// differential tests reproducible and maximizing coverage. It does NOT
+	// bypass the compilability gate (F1-F7 excluded shapes still go through
+	// crescent, 08 §2.3.1). testing-only.
 	forceAll bool
 
 	// hotEntry / hotBackEdge are the effective heat thresholds,
@@ -161,10 +172,12 @@ type FloorExempter interface {
 	ExemptFromFloor(proto *bytecode.Proto) bool
 }
 
-// NewBridge 构造一个空 Bridge,挂在 State 上(crescent 端 setter 注入)。
+// NewBridge constructs an empty Bridge, attached to a State (injected via a
+// crescent-side setter).
 //
-// p3 / logger 都可以后续 SetXxx 注入;构造时不强求(支持「先建 Bridge,后
-// 注入 P3」这种 P3 落地前的过渡形态)。
+// Both p3 and logger can be injected later via SetXxx; the constructor does
+// not require them (this supports the "build the Bridge first, inject P3
+// later" transitional form before P3 has landed).
 func NewBridge() *Bridge {
 	return &Bridge{
 		profileTable: make(map[*bytecode.Proto]*ProfileData),
@@ -187,8 +200,9 @@ func (b *Bridge) SetHotThresholds(entry, backEdge uint32) {
 	}
 }
 
-// SetP3Compiler 注入 P3/P4 编译器。可在 Bridge 创建后任意时刻调用,
-// 但**实际编译触发**(considerPromotion 走 try-compile 路径)前必须装好。
+// SetP3Compiler injects the P3/P4 compiler. It may be called at any time
+// after the Bridge is created, but must be wired in before compilation is
+// actually triggered (considerPromotion taking the try-compile path).
 func (b *Bridge) SetP3Compiler(p3 P3Compiler) {
 	b.p3 = p3
 	// Backends with cheaper dispatch than P3 wasm may opt into a lower
@@ -205,7 +219,8 @@ func (b *Bridge) SetP3Compiler(p3 P3Compiler) {
 	b.floorExempter, _ = p3.(FloorExempter)
 }
 
-// SetLogger 注入升层日志接口(测试可捕获;门面层装 stdLogger 默认实现)。
+// SetLogger injects the promotion-log interface (capturable by tests; the
+// facade layer wires in the stdLogger default implementation).
 func (b *Bridge) SetLogger(l Logger) { b.logger = l }
 
 // effectiveMinPromotableLen returns the short-proto floor in effect:
@@ -218,22 +233,27 @@ func (b *Bridge) effectiveMinPromotableLen() int {
 	return MinPromotableCodeLen
 }
 
-// Aggregator 暴露 IC 反馈聚合器供 considerPromotion 升层路径调
-// (Aggregate(proto) → *TypeFeedback)。**P2 写不消费**(02 §7):
-// installFeedback 写 ProfileData.Feedback,P2 自身不读此字段。
+// Aggregator exposes the IC feedback aggregator for the considerPromotion
+// promotion path (Aggregate(proto) → *TypeFeedback). P2 writes it but does
+// NOT consume it (02 §7): installFeedback writes ProfileData.Feedback, and
+// P2 itself never reads that field.
 func (b *Bridge) Aggregator() *Aggregator { return b.aggregator }
 
-// ProfileOf 返回 Proto 在本 State 上的 ProfileData,惰性建表。
+// ProfileOf returns the Proto's ProfileData on this State, lazily building
+// the table.
 //
-// **不是热路径常用接口**:onBackEdge / onEnter 内部走 profileOf 拿 pd,但
-// 这是为内部调用设计的;外部诊断工具用此接口。
+// NOT a commonly used hot-path interface: onBackEdge / onEnter internally
+// use profileOf to get pd, but that path is designed for internal calls;
+// external diagnostic tools use this interface.
 func (b *Bridge) ProfileOf(proto *bytecode.Proto) *ProfileData { return b.profileOf(proto) }
 
-// profileOf 是 ProfileOf 的内部别名。命名一致性:Bridge 内私有 helper 用
-// 小写,公共 API 大写。
+// profileOf is the internal alias of ProfileOf. Naming consistency:
+// Bridge-internal private helpers use lowercase, public APIs uppercase.
 //
-// 惰性建表时从 Proto 旁字段同步 Compilability(Compile 时已经写过,跨 State
-// 一致;profileTable 是 State 私有副本,首次见 Proto 时复制一次)。
+// When lazily building the table, it syncs Compilability from the Proto's
+// side field (already written at Compile time, consistent across States;
+// profileTable is a State-private copy, copied once the first time a Proto
+// is seen).
 func (b *Bridge) profileOf(proto *bytecode.Proto) *ProfileData {
 	pd, ok := b.profileTable[proto]
 	if !ok {
@@ -276,13 +296,16 @@ func (b *Bridge) profileOfID(proto *bytecode.Proto, pid uint32) *ProfileData {
 	return b.profileOf(proto)
 }
 
-// CompilabilityOf 04 状态机查询入口(只读,03 §5.3)。
+// CompilabilityOf is the 04 state machine's query entry (read-only, 03 §5.3).
 //
-// 优先读 Proto 旁字段(Compile 时一次写,跨 State 共享只读);若 Proto 字段
-// 为零(P1-only 未跑 AnalyzeProto)则回退查 profileTable(支持 considerPromotion
-// 路径中可能出现的 SetCompilability 直接写——主要用于测试)。
+// It prefers the Proto's side field (written once at Compile time, shared
+// read-only across States); if the Proto field is zero (P1-only, AnalyzeProto
+// not run) it falls back to profileTable (supporting the direct
+// SetCompilability writes that may appear on the considerPromotion path —
+// mainly used by tests).
 //
-// 字段是编译期一次写、运行期只读(03 §5.4),无需 atomic / mutex。
+// The field is written once at compile time and read-only at runtime
+// (03 §5.4), so no atomic / mutex is needed.
 func (b *Bridge) CompilabilityOf(proto *bytecode.Proto) Compilability {
 	if c := Compilability(proto.Compilability); c != CompUnknown {
 		return c
@@ -294,14 +317,17 @@ func (b *Bridge) CompilabilityOf(proto *bytecode.Proto) Compilability {
 	return pd.Compilable
 }
 
-// SetCompilability Compile 时一次写入(由 AnalyzeProto 调用,PB3 落地)。
+// SetCompilability is written once at Compile time (called by AnalyzeProto,
+// landed in PB3).
 //
-// 优先写 Proto 旁字段(跨 State 共享只读);同时写 profileTable 副本以便
-// considerPromotion 内的 pd.Compilable 读取一致(本期实装让 considerPromotion
-// 走 pd.Compilable 而非 CompilabilityOf,故需保持二者同步)。
+// It prefers to write the Proto's side field (shared read-only across
+// States); it also writes the profileTable copy so that the pd.Compilable
+// read inside considerPromotion stays consistent (this iteration has
+// considerPromotion go through pd.Compilable rather than CompilabilityOf, so
+// the two must stay in sync).
 //
-// **不变式**(03 §5.4):字段只在 Compile 阶段一次写;运行期任何路径都不
-// 修改 Compilable / Reasons。
+// Invariant (03 §5.4): the field is written only once, during the Compile
+// phase; no runtime path modifies Compilable / Reasons.
 func (b *Bridge) SetCompilability(proto *bytecode.Proto, c Compilability, r ReasonsBitmap) {
 	proto.Compilability = uint8(c)
 	proto.CompReasons = uint16(r)
@@ -310,16 +336,21 @@ func (b *Bridge) SetCompilability(proto *bytecode.Proto, c Compilability, r Reas
 	pd.Reasons = r
 }
 
-// SetForceAllPromote 开关强制全升模式(P3 PW9 测试入口,08 §2.2)。
+// SetForceAllPromote toggles force-promote-all mode (the P3 PW9 test entry,
+// 08 §2.2).
 //
-// on=true:此后 OnEnter/OnBackEdge 首次调用即触发 considerPromotion(绕过热度
-// 阈值)——所有 CompCompilable Proto 在首次执行时直接编译。用于层间差分消除
-// 「哪些 Proto 够热」的时序不确定性(可复现 + 覆盖最大化)。
+// on=true: thereafter the first OnEnter/OnBackEdge call triggers
+// considerPromotion (bypassing the heat threshold) — every CompCompilable
+// Proto compiles directly on its first execution. Used in cross-tier
+// differential testing to remove the timing nondeterminism of "which Protos
+// get hot enough" (reproducible + maximal coverage).
 //
-// **不绕可编译性闸门**:F1-F7 排除形状(vararg/coroutine/SupportsAllOpcodes 不支持
-// 等)即便 forceAll 也走 crescent(considerPromotion 内 comp != CompCompilable → Stuck,
-// 08 §2.3.1)。**testing-only**——不进 wangshu 公共 API(强制全升是测试用消除时序的
-// 开关,非支持的运行模式)。
+// It does NOT bypass the compilability gate: F1-F7 excluded shapes
+// (vararg/coroutine/SupportsAllOpcodes-unsupported, etc.) go through crescent
+// even under forceAll (inside considerPromotion, comp != CompCompilable →
+// Stuck, 08 §2.3.1). testing-only — not part of the wangshu public API
+// (force-promote-all is a test switch for removing timing effects, not a
+// supported run mode).
 func (b *Bridge) SetForceAllPromote(on bool) { b.forceAll = on }
 
 // SetTierEnabled flips the runtime tier kill switch (production admin
@@ -373,56 +404,73 @@ func (b *Bridge) TierStatsSnapshot() TierStats {
 	}
 }
 
-// recheckCompilabilityRuntime 运行期对真实后端重判可编译性(issue #18 / 08 §2.2)。
+// recheckCompilabilityRuntime re-decides compilability against the real
+// backend at runtime (issue #18 / 08 §2.2).
 //
-// **为何需要**:编译期 analyzeCompilability 用临时 Bridge 跑 F7(checkF7BackendSupport),
-// 那时 b.p3 == nil → F7 恒触发 → 所有 Proto 被烧成 CompNotCompilable + ReasonBackendUnsupp
-// (analyze_on.go §F7 行为)。这不是「后端真不支持」的陈述,只是「编译期还不知道运行期
-// 注入哪个 P3」的占位。**运行期重跑 F7 是 analyze_on.go 留的「P3 注入后扩展」**,本函数
-// 实装这一步。
+// Why it is needed: at compile time analyzeCompilability runs F7
+// (checkF7BackendSupport) with a temporary Bridge, where b.p3 == nil → F7
+// always fires → every Proto is burned as CompNotCompilable +
+// ReasonBackendUnsupp (the analyze_on.go §F7 behavior). This is not a
+// statement that "the backend really doesn't support it", only a placeholder
+// for "at compile time we don't yet know which P3 will be injected at
+// runtime". Re-running F7 at runtime is the "extension after P3 injection"
+// that analyze_on.go left open, and this function implements that step.
 //
-// **不绕真实可编译性闸门**:只清「编译期占位位」(`ReasonBackendUnsupp` + `ReasonSelfCall`
-// —— 承 P4 PJ5 SELF inline 形态真接入决策,SELF 占位位同款 "后端注入后重判" 撤位),
-// F1-F6 + F2-a/F2-b 真实排除(vararg/coroutine/yield/unknownCall/debug/setfenv/oversize/
-// nested,已烧进 proto.CompReasons,不依赖 AST)原样保留 —— 任一仍置位即留 CompNotCompilable。
-// 清掉占位后再对**真实注入的后端**查 SupportsAllOpcodes(F7 的正解 + SELF inline 形态
-// 守门由 P4 analyzeShape 收尾)。
+// It does NOT bypass the real compilability gate: it only clears the
+// "compile-time placeholder bits" (`ReasonBackendUnsupp` + `ReasonSelfCall`
+// — following the P4 PJ5 SELF inline shape's "re-decide after backend
+// injection" clearing, the SELF placeholder bit uses the same technique).
+// The F1-F6 + F2-a/F2-b real exclusions
+// (vararg/coroutine/yield/unknownCall/debug/setfenv/oversize/nested, already
+// burned into proto.CompReasons and not AST-dependent) are preserved as-is —
+// if any remains set, it stays CompNotCompilable. After clearing the
+// placeholders it queries SupportsAllOpcodes against the actually-injected
+// backend (the true answer to F7 + the SELF inline shape gate is finished by
+// P4 analyzeShape).
 //
-// **调用路径**:considerPromotion 在两种场景调本函数:
+// Call paths: considerPromotion calls this function in two scenarios:
 //
-//	(a) forceAll 测试入口(08 §2.2 PW9 差分),热度阈值前即 force 升;
-//	(b) 自然热度路径(issue #18):热度过 HotEntryThreshold 后,看到
-//	    pd.Compilable == CompNotCompilable + 占位位 + b.p3 != nil
-//	    时调本函数重判——这是 p3/p4 build 自然热度升层路径的真正生效点。
+//	(a) the forceAll test entry (08 §2.2 PW9 diff), which force-promotes
+//	    before the heat threshold;
+//	(b) the natural-heat path (issue #18): after heat crosses
+//	    HotEntryThreshold, on seeing pd.Compilable == CompNotCompilable +
+//	    placeholder bit + b.p3 != nil, it calls this function to re-decide —
+//	    this is the true activation point of the natural-heat promotion path
+//	    on a p3/p4 build.
 func (b *Bridge) recheckCompilabilityRuntime(proto *bytecode.Proto) Compilability {
-	// 取编译期烧的 F1-F6 + F2-a/F2-b 结构性排除位(去掉 F7 + SELF 占位)。
+	// Take the compile-time-burned F1-F6 + F2-a/F2-b structural exclusion
+	// bits (dropping the F7 + SELF placeholders).
 	const placeholderReasons = ReasonBackendUnsupp | ReasonSelfCall
 	structural := ReasonsBitmap(proto.CompReasons) &^ placeholderReasons
 	if structural.HasAny() {
-		return CompNotCompilable // F1-F6 / F2-a/F2-b 真实排除,留解释
+		return CompNotCompilable // F1-F6 / F2-a/F2-b real exclusion, keep the explanation
 	}
-	// F7 对真实后端重判(b.p3 已注入);SELF inline 形态收尾在 P4 jit
-	// analyzeShape (P4 SupportsAllOpcodes 内调) 内做真判 —— 若不命中
-	// PJ5 SELF inline 形态守卫,SupportsAllOpcodes 返 false 等价拒升。
+	// Re-decide F7 against the real backend (b.p3 is now injected); the SELF
+	// inline shape is finished inside P4 jit analyzeShape (called within P4
+	// SupportsAllOpcodes) — if the PJ5 SELF inline shape guard is not hit,
+	// SupportsAllOpcodes returns false, equivalent to declining promotion.
 	if b.checkF7BackendSupport(proto) {
-		return CompNotCompilable // 真实后端不支持此 Proto 的 opcode 形状
+		return CompNotCompilable // the real backend does not support this Proto's opcode shape
 	}
 	return CompCompilable
 }
 
-// OnBackEdge 回边采样钩点(01 §4.1)。
+// OnBackEdge is the back-edge sampling hook (01 §4.1).
 //
-// 调用契约(由 crescent 主循环 FORLOOP / JMP 回跳后调用,PB1 接线):
-//   - proto:当前帧 Proto;
-//   - pc:回边目标 pc(已 += SBx 后的值)。
+// Call contract (called by the crescent main loop after a FORLOOP / JMP
+// back-jump, wired in PB1):
+//   - proto: the current frame's Proto;
+//   - pc: the back-edge target pc (the value after += SBx).
 //
-// **保证零分配**(常态未越阈值):map 查找 + 切片索引 + 自增 + 比较——一次
-// 函数调用约 24ns 预算(01 §4.5 估算)。
+// Guarantees zero allocation (in the steady state, when the threshold isn't
+// crossed): a map lookup + slice index + increment + compare — roughly a
+// 24ns budget per call (the 01 §4.5 estimate).
 //
-// **MinPromotableCodeLen 守卫**(issue #21):short proto(Code 长度 <
-// MinPromotableCodeLen)在阈值越过后**仍累积 counter**,只在调 considerPromotion
-// 前 return——保留 profile 诊断完整(EntryCount / BackEdge 准确,profile_test 期望)
-// 同时跳过升层动作(避免 wasm 反噬)。
+// MinPromotableCodeLen guard (issue #21): a short proto (Code length <
+// MinPromotableCodeLen) still accumulates its counter after the threshold is
+// crossed, and only returns before calling considerPromotion — keeping the
+// profile diagnostics complete (accurate EntryCount / BackEdge, as profile_test
+// expects) while skipping the promotion action (avoiding wasm's downside).
 func (b *Bridge) OnBackEdge(proto *bytecode.Proto, pc int32, onMain bool) {
 	b.onBackEdgePD(b.profileOf(proto), proto, pc, onMain)
 }
@@ -439,11 +487,11 @@ func (b *Bridge) onBackEdgePD(pd *ProfileData, proto *bytecode.Proto, pc int32, 
 		return // runtime kill switch: no counting, no promotion
 	}
 	if pd.TierState != TierInterp {
-		return // 已升 Gibbous / 已卡 Stuck:无需再计数(01 §4.1 守卫)
+		return // already promoted to Gibbous / stuck in Stuck: no need to keep counting (01 §4.1 guard)
 	}
 	pd.allocBackEdge(proto)
 	if pc < 0 || int(pc) >= len(pd.BackEdge) {
-		return // 防御性边界检查(理论上不该发生)
+		return // defensive bounds check (should not happen in theory)
 	}
 	pd.BackEdge[pc]++
 	// Re-arm the per-entry recheck dedup at two warmth milestones per pc
@@ -469,22 +517,25 @@ func (b *Bridge) onBackEdgePD(pd *ProfileData, proto *bytecode.Proto, pc int32, 
 	}
 	if pd.BackEdge[pc] >= b.hotBackEdge || b.forceAll {
 		if !b.forceAll && b.flooredOut(proto, pd) {
-			return // short proto:dispatch 反噬 > 解释器收益,跳过升层(issue #21)
+			return // short proto: dispatch downside > interpreter gain, skip promotion (issue #21)
 		}
 		b.considerPromotion(proto, pd, onMain)
 	}
 }
 
-// OnEnter 函数入口采样钩点(01 §4.2)。
+// OnEnter is the function-entry sampling hook (01 §4.2).
 //
-// 调用契约(由 crescent enterLuaFrame / TAILCALL 重载后调用,PB1 接线)。
+// Call contract (called by crescent enterLuaFrame / after TAILCALL reload,
+// wired in PB1).
 //
-// onMain:当前执行线程是否为主线程(线程级 tier 规则,07 §2.4)。协程线程上
-// profile 仍累加(诊断价值,07 §2.4 选 (A)),但越阈值不触发升层。
+// onMain: whether the currently executing thread is the main thread (the
+// thread-level tier rule, 07 §2.4). Profile still accumulates on coroutine
+// threads (diagnostic value, 07 §2.4 chooses (A)), but crossing the
+// threshold does not trigger promotion.
 //
-// **MinPromotableCodeLen 守卫**(issue #21):同 OnBackEdge,short proto 累积
-// EntryCount 后在 considerPromotion 调用前 return——profile 诊断完整,只跳过
-// 升层动作。
+// MinPromotableCodeLen guard (issue #21): same as OnBackEdge, a short proto
+// accumulates EntryCount and then returns before the considerPromotion call —
+// profile diagnostics stay complete, only the promotion action is skipped.
 func (b *Bridge) OnEnter(proto *bytecode.Proto, onMain bool) {
 	b.onEnterPD(b.profileOf(proto), proto, onMain)
 }
@@ -507,7 +558,7 @@ func (b *Bridge) onEnterPD(pd *ProfileData, proto *bytecode.Proto, onMain bool) 
 	pd.EntryCount++
 	if pd.EntryCount >= b.hotEntry || b.forceAll {
 		if !b.forceAll && b.flooredOut(proto, pd) {
-			return // short proto:dispatch 反噬 > 解释器收益,跳过升层(issue #21)
+			return // short proto: dispatch downside > interpreter gain, skip promotion (issue #21)
 		}
 		b.considerPromotion(proto, pd, onMain)
 	}
@@ -536,41 +587,53 @@ func (b *Bridge) flooredOut(proto *bytecode.Proto, pd *ProfileData) bool {
 	return pd.floorExempt == floorExemptNo
 }
 
-// considerPromotion 升层决策入口(04 §3)。
+// considerPromotion is the promotion decision entry (04 §3).
 //
-// 调用契约(参考 [04 §3.1] + [01 §4.3]):
-//  1. 幂等:多次调用不出错——本函数自身用 pd.TierState != TierInterp 守卫;
-//  2. 不重载 frame——onBackEdge/onEnter 调用方无需 reloadFrame;
-//  3. 不在最热路径——只在阈值临界点发生,摊薄到每回边几十 ns;
-//  4. 无返回值——升/留/失败都通过 pd.TierState 表达。
+// Call contract (see [04 §3.1] + [01 §4.3]):
+//  1. Idempotent: multiple calls do not error — the function guards itself
+//     with pd.TierState != TierInterp;
+//  2. Does not reload the frame — the onBackEdge/onEnter caller needs no
+//     reloadFrame;
+//  3. Not on the hottest path — happens only at the threshold crossing,
+//     amortized to tens of ns per back edge;
+//  4. No return value — promote/stay/fail are all expressed via pd.TierState.
 //
-// 处理路径(四条,对应 04 §3.2):
+// Processing paths (four, corresponding to 04 §3.2):
 //
-//	(P1) 已经在吸收态(TierGibbous / TierStuck) → 直接 return(防抖)
-//	(P2) Compilable != CompCompilable(含 CompUnknown / CompNotCompilable)→ 转 Stuck
-//	(P3) 可编译 → try-compile;成功转 Gibbous 安装;失败转 Stuck。
+//	(P1) Already in an absorbing state (TierGibbous / TierStuck) → return directly (debounce)
+//	(P2) Compilable != CompCompilable (includes CompUnknown / CompNotCompilable) → go to Stuck
+//	(P3) Compilable → try-compile; success → Gibbous install; failure → Stuck.
 func (b *Bridge) considerPromotion(proto *bytecode.Proto, pd *ProfileData, onMain bool) {
-	// (P1) 已转吸收态 → no-op(双重防抖,onBackEdge/OnEnter 守卫已先拦一道)
+	// (P1) already in an absorbing state → no-op (double debounce, the
+	// onBackEdge/OnEnter guard already caught one pass)
 	if pd.TierState != TierInterp {
 		return
 	}
 
-	// (P0') 线程级 tier 规则(07 §2.4):协程线程上即便热度越阈值也不升层——
-	// 协程内即便升 gibbous 也用不上(doCall gibbous 分支 th==mainTh 守卫强制走
-	// crescent),编译工作浪费;且 gibbous 帧不可穿越 yield(07 §1),协程必须
-	// 留在 crescent。profile 已累加(诊断保留,07 §2.4 选 (A)),此处仅决策门禁。
+	// (P0') thread-level tier rule (07 §2.4): even if heat crosses the
+	// threshold on a coroutine thread, do not promote — a gibbous promotion
+	// is unusable inside a coroutine (the doCall gibbous branch's th==mainTh
+	// guard forces crescent), so the compile work is wasted; and a gibbous
+	// frame cannot cross a yield (07 §1), so coroutines must stay in crescent.
+	// Profile has already accumulated (diagnostics kept, 07 §2.4 chooses (A));
+	// this is only the decision gate.
 	if !onMain {
 		return
 	}
 
 	comp := pd.Compilable
-	// 运行期重判可编译性(issue #18):编译期 analyzeCompilability 用临时 Bridge
-	// 没注入 P3,所有 Proto 烧 ReasonBackendUnsupp 占位。运行期 P3 已注入时此位
-	// 需重判,否则任何 Proto 即便达 HotEntryThreshold 也直接 Stuck——p3 build
-	// 自然热度升层路径形同虚设。recheckCompilabilityRuntime 实装了「清 F7 占位 +
-	// 对真实后端重判 + F1-F6 保守保留」,两种场景调它:
-	//   (a) forceAll:测试入口 PW9 差分,绕过热度阈值即 force 升;
-	//   (b) 自然热度 + 占位位:issue #18 修复,生产形态升层路径。
+	// Re-decide compilability at runtime (issue #18): at compile time
+	// analyzeCompilability uses a temporary Bridge with no P3 injected, so
+	// every Proto burns the ReasonBackendUnsupp placeholder. When P3 is
+	// injected at runtime this bit needs re-deciding, otherwise any Proto —
+	// even after reaching HotEntryThreshold — goes straight to Stuck, making
+	// the p3 build's natural-heat promotion path a dead letter.
+	// recheckCompilabilityRuntime implements "clear the F7 placeholder +
+	// re-decide against the real backend + conservatively preserve F1-F6",
+	// and is called in two scenarios:
+	//   (a) forceAll: the PW9 diff test entry, force-promoting past the heat threshold;
+	//   (b) natural heat + placeholder bit: the issue #18 fix, the production
+	//       promotion path.
 	needsAutoRecheck := b.p3 != nil &&
 		ReasonsBitmap(proto.CompReasons)&(ReasonBackendUnsupp|ReasonSelfCall) != 0
 	if comp != CompCompilable && (b.forceAll || needsAutoRecheck) {
@@ -588,11 +651,14 @@ func (b *Bridge) considerPromotion(proto *bytecode.Proto, pd *ProfileData, onMai
 		pd.recheckedAtEntry = pd.EntryCount + 1
 		comp = b.recheckCompilabilityRuntime(proto)
 		if comp == CompCompilable {
-			// 同步 pd 副本(State 私有):后续 CompilabilityOf / 二次诊断
-			// 路径读 pd 时看到真实结果而非编译期烧的占位。proto.Compilability
-			// 不动——跨 State 共享只读 + 不同 State 注入的 P3 实例能力可能不同,
-			// 这是"编译期一次写"不变式(03 §5.4)与"运行期 State 私有 mutable"
-			// 的边界划分。
+			// Sync the pd copy (State-private): later CompilabilityOf /
+			// secondary-diagnostic paths reading pd see the real result
+			// rather than the compile-time-burned placeholder.
+			// proto.Compilability is left untouched — it is shared read-only
+			// across States, and P3 instances injected by different States
+			// may have different capabilities; this is the boundary between
+			// the "written once at compile time" invariant (03 §5.4) and the
+			// "State-private mutable at runtime" state.
 			pd.Compilable = CompCompilable
 			pd.Reasons = 0
 		}
@@ -615,7 +681,7 @@ func (b *Bridge) considerPromotion(proto *bytecode.Proto, pd *ProfileData, onMai
 		if b.forceAll && pd.EntryCount < 64 {
 			return // stay TierInterp; retry on a later entry
 		}
-		// (P2) 不可编译 / 未分析 → 永久解释(04 §1.4 静态 fallback)
+		// (P2) uncompilable / unanalyzed → permanently interpreted (04 §1.4 static fallback)
 		pd.TierState = TierStuck
 		pd.CompileTried = true
 		b.stuckNotCompilable++
@@ -646,14 +712,16 @@ func (b *Bridge) considerPromotion(proto *bytecode.Proto, pd *ProfileData, onMai
 	}
 
 	// (P3) try-compile
-	// 加锁:多 State 共享 Proto 时只让一个 State 真正编译(04 §4.5 (A) 方案)。
-	// profileTable 是 State 私有,但 gibbousCodes 是 Bridge 共享——锁守住后者
-	// 与 trampoline 注册的关键段。
+	// Lock: when multiple States share a Proto, let only one State actually
+	// compile (the 04 §4.5 (A) design). profileTable is State-private, but
+	// gibbousCodes is Bridge-shared — the lock guards the latter together
+	// with the trampoline-registration critical section.
 	b.compileMu.Lock()
 	defer b.compileMu.Unlock()
 
-	// 加锁后双重检查 gibbousCodes:别的 State 抢先编译并安装了 → 复用现有
-	// GibbousCode,不重复编译(04 §4.5)。
+	// Double-check gibbousCodes after locking: another State compiled and
+	// installed first → reuse the existing GibbousCode, do not recompile
+	// (04 §4.5).
 	if existing, ok := b.gibbousCodes[proto]; ok {
 		_ = existing
 		pd.TierState = TierGibbous
@@ -664,14 +732,14 @@ func (b *Bridge) considerPromotion(proto *bytecode.Proto, pd *ProfileData, onMai
 		return
 	}
 
-	// 聚合 IC feedback 喂给 P3(02 §4.5 一次性聚合)
+	// Aggregate IC feedback to feed P3 (02 §4.5 one-shot aggregation)
 	fb := b.aggregator.Aggregate(proto)
 	pd.Feedback = fb
 	pd.CompileTried = true
 
 	code, err := b.tryCompile(proto, fb)
 	if err != nil {
-		// (P3-fail)编译失败 → 永久解释(04 §1.4 try-compile fallback)
+		// (P3-fail) compilation failed → permanently interpreted (04 §1.4 try-compile fallback)
 		pd.TierState = TierStuck
 		b.stuckCompileFailed++
 		if b.logger != nil {
@@ -680,7 +748,7 @@ func (b *Bridge) considerPromotion(proto *bytecode.Proto, pd *ProfileData, onMai
 		return
 	}
 
-	// (P3-success)升层成功:登记 gibbous 代码 + 转 TierGibbous
+	// (P3-success) promotion succeeded: register the gibbous code + go to TierGibbous
 	b.installGibbous(proto, code)
 	pd.TierState = TierGibbous
 	if b.logger != nil {
@@ -688,14 +756,16 @@ func (b *Bridge) considerPromotion(proto *bytecode.Proto, pd *ProfileData, onMai
 	}
 }
 
-// tryCompile 包装 P3.Compile + defer recover 兜底(04 §5.2)。
+// tryCompile wraps P3.Compile + a defer recover fallback (04 §5.2).
 //
-// **后端 panic 不穿越本接口**——P2 不能因后端 bug 让 P1 主循环崩溃,
-// 只能 fallback 该 Proto。recover 把 panic 转成 *CompileError(Kind=Panic),
-// considerPromotion 见到 err != nil 走 fallback 路径转 Stuck。
+// A backend panic does NOT cross this interface — P2 must not let a backend
+// bug crash the P1 main loop; it can only fall back that Proto. recover turns
+// the panic into a *CompileError (Kind=Panic), and considerPromotion, seeing
+// err != nil, takes the fallback path to Stuck.
 func (b *Bridge) tryCompile(proto *bytecode.Proto, fb *TypeFeedback) (code GibbousCode, err error) {
 	if b.p3 == nil {
-		// 没注入 P3 不应走到这里(F7 应在 AnalyzeProto 阶段拦),防御性兜底。
+		// Reaching here with no P3 injected should not happen (F7 should
+		// catch it in the AnalyzeProto phase); defensive fallback.
 		return nil, &CompileError{
 			Kind:   CompileErrBackendUnsupported(),
 			Proto:  proto,
@@ -718,40 +788,51 @@ func (b *Bridge) tryCompile(proto *bytecode.Proto, fb *TypeFeedback) (code Gibbo
 	return b.p3.Compile(proto, fb)
 }
 
-// installGibbous 升层成功后安装 gibbous 代码(04 §4.4)。
+// installGibbous installs the gibbous code after a successful promotion
+// (04 §4.4).
 //
-// 挂 gibbousCodes map(GC 防早释 + trampoline 查询源)。Proto 的 tierState
-// 转 TierGibbous 由 considerPromotion 写 ProfileData.TierState;crescent
-// doCall 经 GibbousCodeOf 查此表决定是否走 gibbous 分支(VS0-d)。
+// Attached to the gibbousCodes map (GC anti-early-release + trampoline query
+// source). The Proto's tierState transition to TierGibbous is written by
+// considerPromotion into ProfileData.TierState; crescent doCall queries this
+// table via GibbousCodeOf to decide whether to take the gibbous branch (VS0-d).
 func (b *Bridge) installGibbous(proto *bytecode.Proto, code GibbousCode) {
 	b.gibbousCodes[proto] = code
 }
 
-// PromotionCount 返回**当前 Bridge 上已升层的 Proto 数量**(testing-only)。
+// PromotionCount returns the number of Protos already promoted on the current
+// Bridge (testing-only).
 //
-// 用途:benchmark / e2e test 想白盒断言「这次 run 真触发了升层、不是退化到
-// 解释器」时调用。auto-lifting 形态(SetForceAllPromote(false))下尤其重要——
-// HotEntryThreshold 没触发的话,p3 build 测出来的数字就是解释器路径数字,
-// 跟 p1 几乎无差,数字不可读(参见 prove-the-path-under-test guide)。
+// Purpose: called when a benchmark / e2e test wants to white-box assert "this
+// run really triggered a promotion, rather than degrading to the
+// interpreter". Especially important under the auto-lifting form
+// (SetForceAllPromote(false)) — if HotEntryThreshold never fires, the numbers
+// a p3 build measures are the interpreter-path numbers, nearly indistinguishable
+// from p1, and unreadable (see the prove-the-path-under-test guide).
 //
-// 形态:non-decreasing(升层只增不减);多 State 共享同一 Bridge 时返回总数;
-// 单 State 下足够作「至少升过一个」的判据。返回值是 installGibbous 调用次数
-// 上界(其实就是 gibbousCodes map 大小,本质等价但语义更清楚)。
+// Form: non-decreasing (promotion only grows, never shrinks); when multiple
+// States share one Bridge it returns the total; under a single State it is
+// enough as a "promoted at least one" criterion. The return value is an upper
+// bound on the number of installGibbous calls (in fact just the gibbousCodes
+// map size, essentially equivalent but with clearer semantics).
 //
-// **testing-only**:非 wangshu_p3 build / P3 未注入时 Bridge 为 nil,
-// 公共面 State.PromotionCount 直接返 0(等价 no-op)。
+// testing-only: on a non-wangshu_p3 build / when P3 is not injected, the
+// Bridge is nil, and the public-facing State.PromotionCount returns 0 directly
+// (equivalent no-op).
 func (b *Bridge) PromotionCount() int {
 	return len(b.gibbousCodes)
 }
 
-// GibbousCodeOf 查 Proto 是否已升层并取其 GibbousCode(VS0-d trampoline 入口)。
+// GibbousCodeOf checks whether a Proto has been promoted and gets its
+// GibbousCode (the VS0-d trampoline entry).
 //
-// crescent doCall 在 Lua closure 分支调此查询:返回非 nil ⇒ 该 Proto 已升
-// gibbous,走 trampoline 跳 wazero 执行;nil ⇒ 走解释器(未升 / TierStuck)。
+// crescent doCall calls this query in the Lua closure branch: a non-nil
+// return ⇒ the Proto has been promoted to gibbous, take the trampoline to
+// wazero execution; nil ⇒ take the interpreter (not promoted / TierStuck).
 //
-// 读 gibbousCodes map(installGibbous 后只增不减,运行期稳定;多 State 共享
-// 同一 GibbousCode,04 §6.4)。热路径查询——map 命中是一次哈希;profileEnabled
-// 关闭时 crescent 整段不调此函数(编译期消去)。
+// Reads the gibbousCodes map (only grows after installGibbous, stable at
+// runtime; multiple States share the same GibbousCode, 04 §6.4). Hot-path
+// query — a map hit is one hash; when profileEnabled is off, crescent does
+// not call this function at all (compile-time elimination).
 func (b *Bridge) GibbousCodeOf(proto *bytecode.Proto) GibbousCode {
 	if b.tierOff || len(b.gibbousCodes) == 0 {
 		return nil
@@ -759,13 +840,16 @@ func (b *Bridge) GibbousCodeOf(proto *bytecode.Proto) GibbousCode {
 	return b.gibbousCodes[proto]
 }
 
-// fmtPanic 把 recover 拿到的 panic 值格式化(避免直接对 interface{} 用 %v
-// 错过 stack 信息)。简化版——P2 PB5 落地完整 stack 时升级。
+// fmtPanic formats the panic value obtained from recover (avoiding a direct
+// %v on interface{} that would miss the stack info). Simplified version —
+// upgraded when P2 PB5 lands full stack support.
 func fmtPanic(r interface{}) string {
 	return fmt.Sprintf("%v", r)
 }
 
-// CompileErrBackendUnsupported 是「P3 未注入」的内部错误码(04 §5.2 边角)。
-// 不暴露在 CompileErrKind 枚举常量里——用一个 helper 函数避免 enum 增加
-// 不必要的对外语义(P3 注入是 Bridge 装配阶段的事,不是运行期常态)。
+// CompileErrBackendUnsupported is the internal error code for "P3 not
+// injected" (04 §5.2 edge case). Not exposed in the CompileErrKind enum
+// constants — a helper function is used to avoid the enum accruing
+// unnecessary external semantics (P3 injection is a Bridge-assembly-phase
+// matter, not a runtime norm).
 func CompileErrBackendUnsupported() CompileErrKind { return CompileErrBackendDeclined }

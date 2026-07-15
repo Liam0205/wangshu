@@ -4,117 +4,140 @@ package jit
 
 import "sync/atomic"
 
-// probes.go —— P4 jit 包内白盒命中计数器(承 llmdoc/guides/prove-the-
-// path-under-test §4 正向侧解药:测试经 SpecRegKHits() 断言 reg-K 模板
-// 真被 Compile 出来,而非降级 host helper 慢路径)。
+// probes.go —— P4 in-package white-box hit counters for the jit package
+// (per llmdoc/guides/prove-the-path-under-test §4 positive-side remedy:
+// tests use SpecRegKHits() to assert the reg-K template is actually
+// Compile-emitted, not a fall-back to the slow host-helper path).
 //
-// 生产无功能含义,atomic 单调递增成本可忽略(每次 Compile 一次,远低于
-// Compile 自身 µs 级时间)。仅测试读。
+// No functional meaning in production; the atomic monotonic increment cost
+// is negligible (one per Compile, far below Compile's own µs-scale time).
+// Read only in tests.
 
-// specRegKHits 是 reg-K 投机模板编译命中次数。每次 Compile 走 useSpecRegK
-// 分支时 ++1。SpecRegKHits() / ResetSpecRegKHits() 是测试公共接口。
+// specRegKHits is the compile hit count for the reg-K speculative template.
+// ++1 each time Compile takes the useSpecRegK branch. SpecRegKHits() /
+// ResetSpecRegKHits() are the public test interfaces.
 var specRegKHits uint64
 
-// specRegRegHits 是 reg-reg 投机模板编译命中次数(对照 reg-K)。
+// specRegRegHits is the compile hit count for the reg-reg speculative template
+// (counterpart to reg-K).
 var specRegRegHits uint64
 
-// specChainHits 是二段链式 chain-KK 投机模板编译命中次数。
+// specChainHits is the compile hit count for the two-stage chain-KK
+// speculative template.
 var specChainHits uint64
 
-// specForLoopHits 是 PJ3 FORLOOP 字节级 inline 编译命中次数(空 body
-// 全常量形态)。
+// specForLoopHits is the compile hit count for PJ3 FORLOOP byte-level inline
+// (empty body, all-constant form).
 var specForLoopHits uint64
 
-// specTableHits 是 PJ4 表 IC ArrayHit 字节级 inline 编译命中次数。
+// specTableHits is the compile hit count for PJ4 table-IC ArrayHit byte-level
+// inline.
 var specTableHits uint64
 
-// specCallVoidHits 是 PJ5 CALL void 形态(MOVE+CALL+RETURN void)Compile
-// 命中次数。Run prelude 路径调 host.CallBaseline 完成 baseline doCall —
-// 命中后跳过 P3 R3 indirect 哨兵,等价 P1 解释器 doCall。
+// specCallVoidHits is the Compile hit count for the PJ5 CALL void form
+// (MOVE+CALL+RETURN void). The Run prelude path calls host.CallBaseline to
+// complete the baseline doCall — on hit it skips the P3 R3 indirect sentinel,
+// equivalent to the P1 interpreter doCall.
 var specCallVoidHits uint64
 
-// specTailCallHits 是 PJ5 TAILCALL 形态(MOVE/GETUPVAL+...+TAILCALL+dead
-// RETURN B=0+隐式 RETURN B=1)Compile 命中次数。Run prelude 路径调
-// host.TailCall 三态分支(0=Lua 尾完成 / 1=ERR / 2=host 尾完成)。
+// specTailCallHits is the Compile hit count for the PJ5 TAILCALL form
+// (MOVE/GETUPVAL+...+TAILCALL+dead RETURN B=0+implicit RETURN B=1). The Run
+// prelude path calls host.TailCall's tri-state branch (0=Lua tail complete /
+// 1=ERR / 2=host tail complete).
 var specTailCallHits uint64
 
-// specSelfCallHits 是 PJ5 SELF method call inline 形态(MOVE/GETUPVAL +
-// SELF + ... + CALL/TAILCALL + RETURN)Compile 命中次数。Run prelude 路径
-// 先调 host.Self 取 method + 装 self,然后调 host.CallBaseline / TailCall
-// 完成 byte-equal P1 doCall 分派(SELF + CALL = baseline + DoReturn;
-// SELF + TAILCALL = 三态分支)。
+// specSelfCallHits is the Compile hit count for the PJ5 SELF method call inline
+// form (MOVE/GETUPVAL + SELF + ... + CALL/TAILCALL + RETURN). The Run prelude
+// path first calls host.Self to fetch the method + load self, then calls
+// host.CallBaseline / TailCall to complete the byte-equal P1 doCall dispatch
+// (SELF + CALL = baseline + DoReturn; SELF + TAILCALL = tri-state branch).
 var specSelfCallHits uint64
 
-// specSelfCallSpecHits 是 PJ5 SELF + CALL spec template 形态(IC NodeHit
-// 命中时 SELF 段走字节级 EmitSelfNodeHit 模板跳过 host.Self)Compile 命中次数。
-// 是 specSelfCallHits 的子集(spec 路径同时 ++ 两个计数)。
+// specSelfCallSpecHits is the Compile hit count for the PJ5 SELF + CALL spec
+// template form (on IC NodeHit the SELF segment takes the byte-level
+// EmitSelfNodeHit template and skips host.Self). It is a subset of
+// specSelfCallHits (the spec path increments both counters).
 var specSelfCallSpecHits uint64
 
-// specFrameInlineHits 是 PJ5 Option B Spike 1 帧建立内联 Compile 命中次数
-// (承 §9.20)。useFrameInline=true 路径 emit BuildVoid0ArgSkeleton +
-// archEmitHelperCall(HelperRunCalleeAfterFrameInline)+ PopVoid0ArgSkeleton
-// 时 ++。
+// specFrameInlineHits is the Compile hit count for PJ5 Option B Spike 1 frame
+// building inline (per §9.20). Incremented when the useFrameInline=true path
+// emits BuildVoid0ArgSkeleton + archEmitHelperCall(HelperRunCalleeAfterFrameInline)
+// + PopVoid0ArgSkeleton.
 //
-// **Spike 1 阶段**:archSupportsFrameInline=false 屏蔽真触发,本计数器
-// 当前恒 0;Step C-2 真接入 + Step D 翻 archSupportsFrameInline=true 后
-// 才会 ++,作为 prove-the-path 命中实证。
+// **Spike 1 phase**: archSupportsFrameInline=false blocks real triggering, so
+// this counter is currently always 0; it only increments after Step C-2 wires
+// it up + Step D flips archSupportsFrameInline=true, as prove-the-path hit
+// evidence.
 var specFrameInlineHits uint64
 
-// specFrameInlineRunHits 是 PJ5 Option B Spike 1 帧建立内联 Run 期触达次数
-// (runFrameInlineDispatcher 被调到的次数,raxSpec==ExitInlineHelper 路径真
-// 触发)。承 §9.20.9 commit-5i 区分 Compile 命中 vs Run 期触达。
+// specFrameInlineRunHits is the PJ5 Option B Spike 1 frame building inline
+// Run-time reach count (how many times runFrameInlineDispatcher is called, the
+// raxSpec==ExitInlineHelper path actually firing). Per §9.20.9 commit-5i,
+// distinguishes Compile hit vs Run-time reach.
 var specFrameInlineRunHits uint64
 
-// SpecRegKHits 返回当前累计 reg-K 模板编译命中次数。仅测试用。
+// SpecRegKHits returns the cumulative reg-K template compile hit count. Test
+// use only.
 func SpecRegKHits() uint64 { return atomic.LoadUint64(&specRegKHits) }
 
-// SpecRegRegHits 返回当前累计 reg-reg 模板编译命中次数。仅测试用。
+// SpecRegRegHits returns the cumulative reg-reg template compile hit count.
+// Test use only.
 func SpecRegRegHits() uint64 { return atomic.LoadUint64(&specRegRegHits) }
 
-// SpecChainHits 返回当前累计 chain-KK 模板编译命中次数。仅测试用。
+// SpecChainHits returns the cumulative chain-KK template compile hit count.
+// Test use only.
 func SpecChainHits() uint64 { return atomic.LoadUint64(&specChainHits) }
 
-// SpecForLoopHits 返回当前累计 FORLOOP 模板编译命中次数。仅测试用。
+// SpecForLoopHits returns the cumulative FORLOOP template compile hit count.
+// Test use only.
 func SpecForLoopHits() uint64 { return atomic.LoadUint64(&specForLoopHits) }
 
-// SpecTableHits 返回当前累计 IC ArrayHit 模板编译命中次数。仅测试用。
+// SpecTableHits returns the cumulative IC ArrayHit template compile hit count.
+// Test use only.
 func SpecTableHits() uint64 { return atomic.LoadUint64(&specTableHits) }
 
-// SpecCallVoidHits 返回当前累计 PJ5 CALL void 形态 Compile 命中次数。
-// 仅测试用。
+// SpecCallVoidHits returns the cumulative PJ5 CALL void form Compile hit count.
+// Test use only.
 func SpecCallVoidHits() uint64 { return atomic.LoadUint64(&specCallVoidHits) }
 
-// SpecTailCallHits 返回当前累计 PJ5 TAILCALL 形态 Compile 命中次数。
-// 仅测试用。
+// SpecTailCallHits returns the cumulative PJ5 TAILCALL form Compile hit count.
+// Test use only.
 func SpecTailCallHits() uint64 { return atomic.LoadUint64(&specTailCallHits) }
 
-// SpecSelfCallHits 返回当前累计 PJ5 SELF method call inline 形态 Compile
-// 命中次数。仅测试用。
+// SpecSelfCallHits returns the cumulative PJ5 SELF method call inline form
+// Compile hit count. Test use only.
 func SpecSelfCallHits() uint64 { return atomic.LoadUint64(&specSelfCallHits) }
 
-// SpecSelfCallSpecHits 返回当前累计 PJ5 SELF + CALL spec template 形态
-// Compile 命中次数(IC NodeHit 命中走字节级模板)。仅测试用。
+// SpecSelfCallSpecHits returns the cumulative PJ5 SELF + CALL spec template
+// form Compile hit count (on IC NodeHit taking the byte-level template). Test
+// use only.
 func SpecSelfCallSpecHits() uint64 { return atomic.LoadUint64(&specSelfCallSpecHits) }
 
-// SpecFrameInlineHits 返回当前累计 PJ5 Option B Spike 1 帧建立内联 Compile
-// 命中次数(BuildVoid0ArgSkeleton + helper call + PopVoid0ArgSkeleton)。
-// 仅测试用。Spike 1 当前阶段恒 0(archSupportsFrameInline=false 屏蔽)。
+// SpecFrameInlineHits returns the cumulative PJ5 Option B Spike 1 frame
+// building inline Compile hit count (BuildVoid0ArgSkeleton + helper call +
+// PopVoid0ArgSkeleton). Test use only. Currently always 0 in the Spike 1 phase
+// (blocked by archSupportsFrameInline=false).
 func SpecFrameInlineHits() uint64 { return atomic.LoadUint64(&specFrameInlineHits) }
 
-// SpecFrameInlineRunHits 返回当前累计 PJ5 Option B Spike 1 帧建立内联 Run 期
-// 触达次数(runFrameInlineDispatcher 被调到的次数,raxSpec==ExitInlineHelper
-// 路径真触发)。**与 SpecFrameInlineHits 的区别**:Compile 命中只证 emit 段
-// 产生;Run 期触达证实际 mmap 段 SELF NodeHit guard 通过 + ExitHelperRequest
-// 段返 RAX=3 + Run 端 dispatcher 真接管。Spike 1 真接入 prove-the-path 强断言
-// 用本探针。
+// SpecFrameInlineRunHits returns the cumulative PJ5 Option B Spike 1 frame
+// building inline Run-time reach count (how many times runFrameInlineDispatcher
+// is called, the raxSpec==ExitInlineHelper path actually firing).
+// **Difference from SpecFrameInlineHits**: a Compile hit only proves the emit
+// segment was produced; a Run-time reach proves the actual mmap segment's SELF
+// NodeHit guard passed + the ExitHelperRequest segment returned RAX=3 + the Run
+// side dispatcher actually took over. Spike 1's wired-up prove-the-path strong
+// assertion uses this probe.
 func SpecFrameInlineRunHits() uint64 { return atomic.LoadUint64(&specFrameInlineRunHits) }
 
-// Note: zero-cross 路径命中探针位于 crescent.State.frameInlineZeroCrossHits
-// (承 §9.20.12 commit-5u),因 crescent 不可 import jit(循环依赖)+ 需访问
-// st.bridge.GibbousCodeOf,故计数器存 State 级 + 由 e2e 测试直接读 st 字段。
+// Note: the zero-cross path hit probe lives in
+// crescent.State.frameInlineZeroCrossHits (per §9.20.12 commit-5u); because
+// crescent cannot import jit (circular dependency) + needs to access
+// st.bridge.GibbousCodeOf, the counter is stored at State level + read
+// directly from the st field by e2e tests.
 
-// ResetSpecHits 把所有 spec 命中计数清零(测试开始前调,防之前其它测试
-// 残留累积影响断言)。仅测试用。
+// ResetSpecHits zeroes all spec hit counters (called before a test starts, to
+// prevent leftover accumulation from earlier tests affecting assertions). Test
+// use only.
 func ResetSpecHits() {
 	atomic.StoreUint64(&specRegKHits, 0)
 	atomic.StoreUint64(&specRegRegHits, 0)
@@ -131,38 +154,39 @@ func ResetSpecHits() {
 	atomic.StoreUint64(&specP4StuckHits, 0)
 }
 
-// incSpecRegKHits 包内 ++(Compile 触发 useSpecRegK 时调)。
+// incSpecRegKHits in-package ++ (called when Compile triggers useSpecRegK).
 func incSpecRegKHits() { atomic.AddUint64(&specRegKHits, 1) }
 
-// incSpecRegRegHits 包内 ++(Compile 触发 useSpec reg-reg 时调)。
+// incSpecRegRegHits in-package ++ (called when Compile triggers useSpec reg-reg).
 func incSpecRegRegHits() { atomic.AddUint64(&specRegRegHits, 1) }
 
-// incSpecChainHits 包内 ++(Compile 触发 useSpecChain 时调)。
+// incSpecChainHits in-package ++ (called when Compile triggers useSpecChain).
 func incSpecChainHits() { atomic.AddUint64(&specChainHits, 1) }
 
-// incSpecForLoopHits 包内 ++(Compile 触发 FORLOOP inline 时调)。
+// incSpecForLoopHits in-package ++ (called when Compile triggers FORLOOP inline).
 func incSpecForLoopHits() { atomic.AddUint64(&specForLoopHits, 1) }
 
-// incSpecTableHits 包内 ++(Compile 触发 IC ArrayHit inline 时调)。
+// incSpecTableHits in-package ++ (called when Compile triggers IC ArrayHit inline).
 func incSpecTableHits() { atomic.AddUint64(&specTableHits, 1) }
 
-// incSpecCallVoidHits 包内 ++(Compile 触发 PJ5 CALL void 形态 inline 时调)。
+// incSpecCallVoidHits in-package ++ (called when Compile triggers PJ5 CALL void form inline).
 func incSpecCallVoidHits() { atomic.AddUint64(&specCallVoidHits, 1) }
 
-// incSpecTailCallHits 包内 ++(Compile 触发 PJ5 TAILCALL 形态 inline 时调)。
+// incSpecTailCallHits in-package ++ (called when Compile triggers PJ5 TAILCALL form inline).
 func incSpecTailCallHits() { atomic.AddUint64(&specTailCallHits, 1) }
 
-// incSpecSelfCallHits 包内 ++(Compile 触发 PJ5 SELF method call inline 时调)。
+// incSpecSelfCallHits in-package ++ (called when Compile triggers PJ5 SELF method call inline).
 func incSpecSelfCallHits() { atomic.AddUint64(&specSelfCallHits, 1) }
 
-// incSpecSelfCallSpecHits 包内 ++(Compile 触发 PJ5 SELF + CALL spec template 时调)。
+// incSpecSelfCallSpecHits in-package ++ (called when Compile triggers PJ5 SELF + CALL spec template).
 func incSpecSelfCallSpecHits() { atomic.AddUint64(&specSelfCallSpecHits, 1) }
 
-// incSpecFrameInlineHits 包内 ++(Compile 触发 PJ5 Option B Spike 1 帧建立
-// 内联时调)。承 §9.20 Spike 1。当前 archSupportsFrameInline=false 屏蔽,
-// 调用站点留 Step C-2 真接入(compileSpecSelfCall useFrameInline 分支)。
+// incSpecFrameInlineHits in-package ++ (called when Compile triggers PJ5
+// Option B Spike 1 frame building inline). Per §9.20 Spike 1. Currently blocked
+// by archSupportsFrameInline=false; the call site is left for Step C-2 wire-up
+// (the compileSpecSelfCall useFrameInline branch).
 func incSpecFrameInlineHits() { atomic.AddUint64(&specFrameInlineHits, 1) }
 
-// incSpecFrameInlineRunHits Run 期 ++(runFrameInlineDispatcher 进入时)。
-// 承 §9.20.9 commit-5i 区分 Compile vs Run 期。
+// incSpecFrameInlineRunHits Run-time ++ (on entering runFrameInlineDispatcher).
+// Per §9.20.9 commit-5i, distinguishes Compile vs Run-time.
 func incSpecFrameInlineRunHits() { atomic.AddUint64(&specFrameInlineRunHits, 1) }

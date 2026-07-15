@@ -6,15 +6,17 @@ import (
 	"github.com/Liam0205/wangshu/internal/arena"
 )
 
-// TestClosureGibbousSlot 验证 slot 缓存编码往返(PW10 零跨界惰性填充 IC):
-// 存 slot+1 / 0=未填充,且回写只动 word1 高 16 位、不腐蚀 protoID / nupvals。
+// TestClosureGibbousSlot verifies the slot-cache encoding round trip (PW10
+// zero-cross-boundary lazy-fill IC): stores slot+1 / 0=unfilled, and the
+// write-back only touches the high 16 bits of word1, without corrupting
+// protoID / nupvals.
 func TestClosureGibbousSlot(t *testing.T) {
 	a := arena.New(arena.Options{})
 	const protoID = 0x0BADF00D
 	const nupvals = 3
 	cl := AllocLuaClosure(a, protoID, nupvals)
 
-	// 初始未填充。
+	// Initially unfilled.
 	if _, ok := ClosureGibbousSlot(a, cl); ok {
 		t.Fatalf("fresh closure 应未填充 slot")
 	}
@@ -25,12 +27,12 @@ func TestClosureGibbousSlot(t *testing.T) {
 		t.Fatalf("nupvals 初始: %d", got)
 	}
 
-	// 填充 slot=0(边界:slot 0 编码为 1,须可区分于未填充)。
+	// Fill slot=0 (edge case: slot 0 is encoded as 1, must be distinguishable from unfilled).
 	SetClosureGibbousSlot(a, cl, 0)
 	if got, ok := ClosureGibbousSlot(a, cl); !ok || got != 0 {
 		t.Fatalf("slot=0 往返: got=%d ok=%v", got, ok)
 	}
-	// 填充不腐蚀 protoID / nupvals。
+	// Filling does not corrupt protoID / nupvals.
 	if got := ClosureProtoID(a, cl); got != protoID {
 		t.Fatalf("protoID 被腐蚀: %#x", got)
 	}
@@ -38,7 +40,7 @@ func TestClosureGibbousSlot(t *testing.T) {
 		t.Fatalf("nupvals 被腐蚀: %d", got)
 	}
 
-	// 改填 slot=8191(maxTableSlots-1,生产上界)。
+	// Refill with slot=8191 (maxTableSlots-1, production upper bound).
 	SetClosureGibbousSlot(a, cl, 8191)
 	if got, ok := ClosureGibbousSlot(a, cl); !ok || got != 8191 {
 		t.Fatalf("slot=8191 往返: got=%d ok=%v", got, ok)
@@ -47,13 +49,13 @@ func TestClosureGibbousSlot(t *testing.T) {
 		t.Fatalf("protoID 被腐蚀(改填后): %#x", got)
 	}
 
-	// 超 16 位编码域:不缓存(保持原值不变)。
+	// Beyond the 16-bit encoding domain: not cached (keeps the original value unchanged).
 	SetClosureGibbousSlot(a, cl, 0xffff)
 	if got, ok := ClosureGibbousSlot(a, cl); !ok || got != 8191 {
 		t.Fatalf("超域写应 no-op,保持 8191: got=%d ok=%v", got, ok)
 	}
 
-	// upvalue 槽不受 slot 缓存影响(高位与 upvalRef[] 物理隔离)。
+	// The upvalue slots are unaffected by the slot cache (the high bits are physically isolated from upvalRef[]).
 	uvRef := arena.GCRef(0xABCD8)
 	SetClosureUpvalRef(a, cl, 1, uvRef)
 	if got := ClosureUpvalRef(a, cl, 1); got != uvRef {

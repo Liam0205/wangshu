@@ -1,8 +1,9 @@
 // Table get/set / upvalue / string utilities.
 //
-// tableGet/tableSet 是 raw 访问入口(不触发元方法;元方法链在 meta.go)。
-// 自 P1 收尾轮起,表数据走 arena 原生 array+hash 布局(rawtable.go),
-// 旁路 Go map 已移除。
+// tableGet/tableSet are the raw access entry points (no metamethod trigger; the
+// metamethod chain is in meta.go). Since the P1 wrap-up round, table data uses
+// the arena-native array+hash layout (rawtable.go); the bypass Go map has been
+// removed.
 package crescent
 
 import (
@@ -14,25 +15,26 @@ import (
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
-// tableGet 实现 raw get。
+// tableGet implements raw get.
 func (st *State) tableGet(t arena.GCRef, key value.Value) (value.Value, *LuaError) {
 	return st.rawGet(t, key), nil
 }
 
-// tableSet 实现 raw set。
+// tableSet implements raw set.
 func (st *State) tableSet(t arena.GCRef, key, val value.Value) *LuaError {
 	return st.rawSet(t, key, val)
 }
 
-// tableSetInt 是 SETLIST 的快路径:整数键写入。
+// tableSetInt is the SETLIST fast path: integer-key write.
 func (st *State) tableSetInt(t arena.GCRef, idx uint32, val value.Value) {
 	_ = st.rawSet(t, value.NumberValue(float64(idx)), val)
 }
 
-// upvalGet / upvalSet:开放/关闭分派(05 §8.1)。
+// upvalGet / upvalSet: open/closed dispatch (05 §8.1).
 //
-// 开放 upvalue 经 uvOwner 找属主 thread 的栈(协程各有独立栈,01 §5.4 的
-// threadRef 语义);属主缺失时回退当前 thread(主线程场景)。
+// An open upvalue finds its owner thread's stack via uvOwner (coroutines each
+// have an independent stack, the threadRef semantics of 01 §5.4); when the owner
+// is missing, fall back to the current thread (main-thread case).
 func (st *State) upvalGet(th *thread, uv arena.GCRef) value.Value {
 	if object.UpvalIsClosed(st.arena, uv) {
 		return object.UpvalClosedValue(st.arena, uv)
@@ -61,11 +63,12 @@ func (st *State) uvOwnerOf(uv arena.GCRef, fallback *thread) *thread {
 	return fallback
 }
 
-// findOrCreateUpval 查找或新建一个指向 thread.stack[stackIdx] 的开放 upvalue
-// (按 stackIdx 降序链;05 §8.3)。
+// findOrCreateUpval finds or creates an open upvalue pointing at
+// thread.stack[stackIdx] (descending chain by stackIdx; 05 §8.3).
 //
-// P1 简化:用 thread 上的 Go map 缓存 stackIdx → uvRef(不影响共享语义);
-// 完整降序链结构是值栈 arena 化的一部分(见 implementation-progress)。
+// P1 simplification: use a Go map on the thread to cache stackIdx → uvRef (does
+// not affect shared semantics); the full descending-chain structure is part of
+// arena-izing the value stack (see implementation-progress).
 func (st *State) findOrCreateUpval(th *thread, stackIdx uint32) arena.GCRef {
 	if th.openUvs == nil {
 		th.openUvs = map[uint32]arena.GCRef{}
@@ -78,7 +81,7 @@ func (st *State) findOrCreateUpval(th *thread, stackIdx uint32) arena.GCRef {
 		th.maxOpenIdx = stackIdx
 	}
 	th.openUvs[stackIdx] = uv
-	th.syncOpenGuard() // PW10 Stage 2:openUvs/maxOpenIdx 变更后镜像守卫字
+	th.syncOpenGuard() // PW10 Stage 2: mirror the guard word after openUvs/maxOpenIdx changes
 	if st.uvOwner == nil {
 		st.uvOwner = map[arena.GCRef]*thread{}
 	}
@@ -86,10 +89,11 @@ func (st *State) findOrCreateUpval(th *thread, stackIdx uint32) arena.GCRef {
 	return uv
 }
 
-// closeUpvals 关闭所有 stackIdx ≥ level 的开放 upvalue。
+// closeUpvals closes all open upvalues with stackIdx ≥ level.
 //
-// 快路径:level > maxOpenIdx(或无开放 uv)时 O(1) 返回——RETURN 每帧
-// 都经此,深递归负载下慢路径的 map 全量迭代是真实热点。
+// Fast path: return O(1) when level > maxOpenIdx (or no open uv) — every RETURN
+// frame goes through here, so the slow-path full map iteration is a real hotspot
+// under deep-recursion load.
 func (st *State) closeUpvals(th *thread, level int) {
 	if len(th.openUvs) == 0 || level > int(th.maxOpenIdx) {
 		return
@@ -106,10 +110,10 @@ func (st *State) closeUpvals(th *thread, level int) {
 		}
 	}
 	th.maxOpenIdx = remainMax
-	th.syncOpenGuard() // PW10 Stage 2:关闭后镜像守卫字(可能转空 → 守卫值 0)
+	th.syncOpenGuard() // PW10 Stage 2: mirror the guard word after closing (may become empty → guard value 0)
 }
 
-// toStringBytes 把 Value 转为 []byte(用于 CONCAT)。
+// toStringBytes converts a Value to []byte (used by CONCAT).
 func (st *State) toStringBytes(v value.Value) ([]byte, bool) {
 	if value.IsNumber(v) {
 		f := value.AsNumber(v)
@@ -121,14 +125,15 @@ func (st *State) toStringBytes(v value.Value) ([]byte, bool) {
 	return nil, false
 }
 
-// FormatLuaNumber 暴露 %.14g 格式(stdlib tostring 与 difftest 共用一套,
-// 保证 tostring(x) 与 CONCAT 的数字格式逐字节一致)。
+// FormatLuaNumber exposes the %.14g format (shared by stdlib tostring and
+// difftest, ensuring the number format of tostring(x) and CONCAT is byte-for-byte
+// identical).
 func FormatLuaNumber(f float64) string { return formatLuaNumber(f) }
 
-// formatLuaNumber 用 %.14g 格式化(05 §4.6)。
+// formatLuaNumber formats with %.14g (05 §4.6).
 //
-// Inf/NaN 措辞对齐 Lua 5.1 C printf:"inf" / "-inf" / "nan"(Go 默认 "+Inf"
-// 等,差分会 byte-diff,12 §10 口径)。
+// Inf/NaN wording matches Lua 5.1 C printf: "inf" / "-inf" / "nan" (Go defaults
+// to "+Inf" etc., which would byte-diff in difftest, 12 §10 convention).
 func formatLuaNumber(f float64) string {
 	if math.IsInf(f, 1) {
 		return "inf"
@@ -142,7 +147,7 @@ func formatLuaNumber(f float64) string {
 	return strconv.FormatFloat(f, 'g', 14, 64)
 }
 
-// stringCompare 字典序逐字节比较(05 §4.4)。返回 -1/0/+1。
+// stringCompare compares byte-by-byte in lexicographic order (05 §4.4). Returns -1/0/+1.
 func stringCompare(st *State, a, b arena.GCRef) int {
 	ab := object.StringBytes(st.arena, a)
 	bb := object.StringBytes(st.arena, b)

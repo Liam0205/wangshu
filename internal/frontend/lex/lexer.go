@@ -1,17 +1,17 @@
 // Package lex implements the Lua 5.1 lexer (03).
 //
-// 接口契约(回答 04 §13 第一条缺口):
-//   - pull 式 Next() 拉一个 token;parser 自缓存一格 lookahead(03 §2 与官方 llex.c 一致)。
-//   - 数字字面量经 NumberValue 入口规范(canonicalize NaN);字符串字面量产 Go string,
-//     intern 留 codegen(04 §11)。
-//   - 长括号 / 长字符串 / 长注释共用一个扫描子程序。
-//   - 行号:四种换行(\n / \r / \r\n / \n\r)统一计 1 行(Lua 5.1 inclinenumber 语义)。
+// Interface contract (answering the first gap in 04 §13):
+//   - Pull-style Next() fetches one token; the parser caches one slot of lookahead itself (03 §2, consistent with the official llex.c).
+//   - Number literals are normalized through the NumberValue entry point (canonicalize NaN); string literals produce a Go string,
+//     with interning left to codegen (04 §11).
+//   - Long brackets / long strings / long comments share a single scanning subroutine.
+//   - Line numbers: all four newline forms (\n / \r / \r\n / \n\r) count as 1 line (Lua 5.1 inclinenumber semantics).
 //
-// Lua 5.1 词法约束(roadmap §6 锁,显式排除 5.2+ 特性):
-//   - 标识符:[A-Za-z_][A-Za-z0-9_]*(ASCII)
-//   - 数字:十进制整/小数 + e/E 指数 + 0x/0X 十六进制(整数);无 hex float 0x1p4(那是 5.2+)
-//   - 字符串转义:\a \b \f \n \r \t \v \\ \" \' \<newline> \ddd(最多 3 位十进制)
-//     无 \x / \u{} / \z(那些是 5.2+/5.3)
+// Lua 5.1 lexical constraints (locked by roadmap §6, explicitly excluding 5.2+ features):
+//   - Identifiers: [A-Za-z_][A-Za-z0-9_]* (ASCII)
+//   - Numbers: decimal integer/fraction + e/E exponent + 0x/0X hexadecimal (integer); no hex float 0x1p4 (that is 5.2+)
+//   - String escapes: \a \b \f \n \r \t \v \\ \" \' \<newline> \ddd (at most 3 decimal digits)
+//     no \x / \u{} / \z (those are 5.2+/5.3)
 package lex
 
 import (
@@ -29,7 +29,7 @@ type Lexer struct {
 	src    []byte
 	pos    int
 	line   int32
-	source string // chunkname,用于错误前缀(03 §11)
+	source string // chunkname, used as the error prefix (03 §11)
 }
 
 // New creates a Lexer for the given source bytes.
@@ -93,12 +93,12 @@ func (l *Lexer) skipWhitespaceAndComments() error {
 		case '\n', '\r':
 			l.inclineFromCurrent()
 		case '-':
-			// 可能是 `-` 算符或 `--` 注释。
+			// May be a `-` operator or a `--` comment.
 			if l.peek(1) != '-' {
 				return nil
 			}
-			l.pos += 2 // 吃掉 `--`
-			// 长注释 `--[[ ... ]]` / `--[=*[ ... ]=*]`?
+			l.pos += 2 // consume `--`
+			// A long comment `--[[ ... ]]` / `--[=*[ ... ]=*]`?
 			if l.pos < len(l.src) && l.src[l.pos] == '[' {
 				if level, ok := l.tryReadLongBracketOpen(); ok {
 					if err := l.skipLongBracket(level); err != nil {
@@ -107,7 +107,7 @@ func (l *Lexer) skipWhitespaceAndComments() error {
 					continue
 				}
 			}
-			// 短注释:到行尾。
+			// Short comment: to end of line.
 			for !l.atEnd() && l.src[l.pos] != '\n' && l.src[l.pos] != '\r' {
 				l.pos++
 			}
@@ -119,7 +119,7 @@ func (l *Lexer) skipWhitespaceAndComments() error {
 }
 
 // tryReadLongBracketOpen tries to read a `[=*[` opener starting at l.pos (which is at '[').
-// 成功:level 返回等号数;失败:l.pos 复位。
+// On success: level returns the number of equals signs; on failure: l.pos is reset.
 func (l *Lexer) tryReadLongBracketOpen() (level int, ok bool) {
 	if l.pos >= len(l.src) || l.src[l.pos] != '[' {
 		return 0, false
@@ -131,8 +131,8 @@ func (l *Lexer) tryReadLongBracketOpen() (level int, ok bool) {
 		l.pos++
 	}
 	if l.pos < len(l.src) && l.src[l.pos] == '[' {
-		l.pos++ // 吃掉第二个 [
-		// 紧跟的换行被丢弃(Lua 5.1 长字符串/注释规则)。
+		l.pos++ // consume the second [
+		// The immediately following newline is discarded (Lua 5.1 long string/comment rule).
 		if !l.atEnd() && (l.src[l.pos] == '\n' || l.src[l.pos] == '\r') {
 			l.inclineFromCurrent()
 		}
@@ -176,7 +176,7 @@ func (l *Lexer) matchNestedOpen() bool {
 }
 
 // matchLongBracketClose: at l.pos = ']'; tries to match `]=*]` of given level.
-// 成功:l.pos 移动到关闭括号之后并返回 true;失败:l.pos 不变。
+// On success: l.pos moves past the closing bracket and returns true; on failure: l.pos is unchanged.
 func (l *Lexer) matchLongBracketClose(level int) bool {
 	saved := l.pos
 	if l.src[l.pos] != ']' {
@@ -197,7 +197,7 @@ func (l *Lexer) matchLongBracketClose(level int) bool {
 }
 
 // readLongString reads a long string body after its opener has been consumed.
-// 返回去掉对齐前的紧随换行后的内容(无转义解码)。
+// It returns the content after the leading newline has been stripped (no escape decoding).
 func (l *Lexer) readLongString(level int) (string, error) {
 	startLine := l.line
 	contentStart := l.pos
@@ -241,7 +241,7 @@ func (l *Lexer) Next() (token.Token, error) {
 	case '"', '\'':
 		return l.scanShortString(startLine, c)
 	case '[':
-		// 可能是长字符串 / 普通 LBRACK。
+		// May be a long string / a plain LBRACK.
 		saved := l.pos
 		if level, ok := l.tryReadLongBracketOpen(); ok {
 			s, err := l.readLongString(level)
@@ -286,25 +286,25 @@ func (l *Lexer) scanIdentifierOrKeyword(startLine int32) token.Token {
 	return token.Token{Kind: token.NAME, Line: startLine, Str: name}
 }
 
-// scanNumber 对齐官方 llex.c read_numeral 的「贪心吃完 + 整体校验」(03 §5.2):
-// 先吃所有数字与小数点,可选指数标记(eE 后可带 +-),再吃尾随的字母数字与
-// 下划线,整段交 parseNumeral 校验;解析不尽即 malformed number。
-// `1or`/`3..5`/`1.2.3`/`1abc` 等与官方一致拒绝——结构化扫描"吃不动就停"会把
-// 它们拆成相邻 token 静默接受(`return 1or 2` 错误地执行返回 1)。
+// scanNumber follows the official llex.c read_numeral's "consume greedily + validate as a whole" (03 §5.2):
+// it first consumes all digits and decimal points, an optional exponent marker (eE may be followed by +-), then
+// trailing alphanumerics and underscores, handing the whole span to parseNumeral for validation; a partial parse is a malformed number.
+// `1or`/`3..5`/`1.2.3`/`1abc` and the like are rejected consistently with the official implementation — a structured scan that "stops when it can no longer consume" would
+// split them into adjacent tokens and silently accept them (`return 1or 2` would wrongly execute a return of 1).
 func (l *Lexer) scanNumber(startLine int32) (token.Token, error) {
 	start := l.pos
-	// 贪心一段:数字与 '.'(官方 do-while isdigit || '.')
+	// Greedy phase one: digits and '.' (official do-while isdigit || '.')
 	for !l.atEnd() && (isDigit(l.src[l.pos]) || l.src[l.pos] == '.') {
 		l.pos++
 	}
-	// 可选指数标记(官方 check_next "Ee" + check_next "+-",各至多一次)
+	// Optional exponent marker (official check_next "Ee" + check_next "+-", each at most once)
 	if !l.atEnd() && (l.src[l.pos] == 'e' || l.src[l.pos] == 'E') {
 		l.pos++
 		if !l.atEnd() && (l.src[l.pos] == '+' || l.src[l.pos] == '-') {
 			l.pos++
 		}
 	}
-	// 贪心二段:字母数字与下划线(`1or` 的 or、`0x10` 的 x10 都吃进来整体校验)
+	// Greedy phase two: alphanumerics and underscores (the or in `1or` and the x10 in `0x10` are all consumed for whole-span validation)
 	for !l.atEnd() {
 		c := l.src[l.pos]
 		if isAlpha(c) || isDigit(c) || c == '_' {
@@ -321,11 +321,11 @@ func (l *Lexer) scanNumber(startLine int32) (token.Token, error) {
 	return token.Token{Kind: token.NUMBER, Line: startLine, Num: f, Raw: lit}, nil
 }
 
-// parseNumeral 等价官方 luaO_str2d(整段消费,不尽即失败):
-//   - 0x/0X 前缀走 hex 路径(任意位数累乘取浮点近似,可带 C99 p 指数——
-//     oracle 5.1.5 经系统 strtod 接受 `0x1p4` = 16);
-//   - 十进制走 strtod 语义(溢出 ErrRange 取 ±Inf,5.1 合法字面量);
-//   - 下划线分组是 Go 字面量扩展,C strtod 不接受,先行拒绝。
+// parseNumeral is equivalent to the official luaO_str2d (consumes the whole span, failing if not fully consumed):
+//   - a 0x/0X prefix takes the hex path (any number of digits, multiplied out into a float approximation, may carry a C99 p exponent —
+//     oracle 5.1.5 accepts `0x1p4` = 16 via the system strtod);
+//   - decimal follows strtod semantics (on overflow ErrRange it takes ±Inf, a valid 5.1 literal);
+//   - underscore grouping is a Go literal extension that C strtod does not accept, so it is rejected up front.
 func parseNumeral(s string) (float64, bool) {
 	if strings.IndexByte(s, '_') >= 0 {
 		return 0, false
@@ -343,9 +343,9 @@ func parseNumeral(s string) (float64, bool) {
 	return f, true
 }
 
-// parseHexNumeral 解析 0x 后的部分:hexdigits(≥1,任意位数,float64 域累乘
-// 容忍精度丢失),可选 [pP][decdigits](二进制指数)。负指数不可达:贪心
-// 二段在 '-' 处停止,官方 read_numeral 缓冲同样到不了符号。
+// parseHexNumeral parses the part after 0x: hexdigits (≥1, any number of digits, multiplied out in the
+// float64 domain, tolerating precision loss), with an optional [pP][decdigits] (binary exponent). A negative
+// exponent is unreachable: greedy phase two stops at '-', and the official read_numeral buffer likewise never reaches the sign.
 func parseHexNumeral(s string) (float64, bool) {
 	i := 0
 	f := 0.0
@@ -368,7 +368,7 @@ func parseHexNumeral(s string) (float64, bool) {
 	for i < len(s) && isDigit(s[i]) {
 		exp = exp*10 + int(s[i]-'0')
 		if exp > 1<<16 {
-			exp = 1 << 16 // Ldexp 饱和 ±Inf,防 int 溢出
+			exp = 1 << 16 // Ldexp saturates to ±Inf; guards against int overflow
 		}
 		i++
 	}
@@ -391,7 +391,7 @@ func hexDigitVal(c byte) int {
 
 func (l *Lexer) scanShortString(startLine int32, quote byte) (token.Token, error) {
 	rawStart := l.pos
-	l.pos++ // 吃掉开始的引号
+	l.pos++ // consume the opening quote
 	var buf []byte
 	for {
 		if l.atEnd() || l.src[l.pos] == '\n' || l.src[l.pos] == '\r' {
@@ -435,12 +435,12 @@ func (l *Lexer) scanShortString(startLine int32, quote byte) (token.Token, error
 				buf = append(buf, esc)
 				l.pos++
 			case '\n', '\r':
-				// \<newline> 转成换行;一并按 inclineFromCurrent 处理(行号 +1)。
+				// \<newline> is turned into a newline; also handled via inclineFromCurrent (line number +1).
 				buf = append(buf, '\n')
 				l.inclineFromCurrent()
 			default:
 				if isDigit(esc) {
-					// \ddd:1-3 位十进制,值 ≤ 255。
+					// \ddd: 1-3 decimal digits, value ≤ 255.
 					n := 0
 					for k := 0; k < 3; k++ {
 						if l.atEnd() || !isDigit(l.src[l.pos]) {
@@ -533,7 +533,7 @@ func (l *Lexer) scanSymbol(startLine int32) (token.Token, error) {
 		if l.peek(1) == '.' {
 			return mk(token.CONCAT, 2), nil
 		}
-		// `.5e1` 这类以 `.` 开头的数字字面量(Lua 5.1 允许)。
+		// Number literals starting with `.` such as `.5e1` (allowed by Lua 5.1).
 		if isDigit(l.peek(1)) {
 			return l.scanNumber(startLine)
 		}
