@@ -1,23 +1,27 @@
 #!/usr/bin/env bash
 # build-test-bins.sh <variant>
 #
-# 把所有含 test 的包编译为 `.test` binary,落到 test-bin/<variant>/。
-# 配合 run-test-bins.sh 把 build 与 run 分阶段——`go test -c` 编一次,
-# 后续 `make test` / `make bench` 跑同一份 binary,避免每次重编。
+# Compile every package containing tests into a `.test` binary under
+# test-bin/<variant>/. Together with run-test-bins.sh this splits build from
+# run -- `go test -c` compiles once, and subsequent `make test` / `make
+# bench` invocations run the same binaries instead of recompiling each time.
 #
 # variant:
-#   p1  默认 build(新月解释器,P3/P4 完全 dead-code)
-#   p3  wangshu_p3 + wangshu_profile build(P1 解释器 + P3 凸月 wasm 编译层)
-#   p4  wangshu_p4 build(P1 解释器 + P4 凸月 jit 编译层;PJ0 阶段:supported 全 false ⇒ 行为等价 P1)
-#   future: p5 同款接入。
+#   p1  default build (crescent interpreter, P3/P4 fully dead-code)
+#   p3  wangshu_p3 + wangshu_profile build (P1 interpreter + P3 gibbous wasm tier)
+#   p4  wangshu_p4 build (P1 interpreter + P4 gibbous jit tier; at the PJ0
+#       stage supported is all-false => behaviorally equivalent to P1)
+#   future: p5 plugs in the same way.
 #
-# **P3+P4 互斥 build tag**(用户裁决,docs/design/p4-method-jit/06-backends.md §1):
-# wangshu_p3 与 wangshu_p4 不允许同时启用——本脚本拒此组合。
+# **P3+P4 build tags are mutually exclusive** (user decision,
+# docs/design/p4-method-jit/06-backends.md §1): wangshu_p3 and wangshu_p4
+# must not be enabled together -- this script rejects that combination.
 #
-# 主模块 + benchmarks 子模块都编(子模块独立 go.mod)。包名经
-# `path-to-name` 规范化:`github.com/Liam0205/wangshu/internal/arena` →
-# `internal-arena.test`,root 包(`github.com/Liam0205/wangshu`)→ `root.test`,
-# 子模块包前缀化为 `bench-`。
+# Both the main module and the benchmarks submodule are compiled (the
+# submodule has its own go.mod). Package names are normalized via
+# `path-to-name`: `github.com/Liam0205/wangshu/internal/arena` ->
+# `internal-arena.test`, the root package (`github.com/Liam0205/wangshu`) ->
+# `root.test`, submodule packages get a `bench-` prefix.
 set -uo pipefail
 
 variant="${1:-}"
@@ -46,17 +50,19 @@ outdir="$repo_root/test-bin/$variant"
 mkdir -p "$outdir"
 
 # pkg_to_name <full import path>
-# 主模块 root(`github.com/Liam0205/wangshu`)→ `root`
-# 主模块子包(`...wangshu/internal/arena`)→ `internal-arena`
-# benchmarks 子模块(`...wangshu/benchmarks/baseline`)→ `bench-baseline`
-# 前缀化是隔离手段——避免未来主模块新增顶层包与子模块包名冲突,
-# `.test` 在 test-bin/<variant>/ 平铺时互相覆盖(issue #15 review)。
+# main module root (`github.com/Liam0205/wangshu`) -> `root`
+# main module subpackage (`...wangshu/internal/arena`) -> `internal-arena`
+# benchmarks submodule (`...wangshu/benchmarks/baseline`) -> `bench-baseline`
+# The prefix is an isolation measure -- it prevents a future top-level
+# package in the main module from colliding with a submodule package name
+# and overwriting its `.test` in the flat test-bin/<variant>/ layout
+# (issue #15 review).
 pkg_to_name() {
     local p=$1
     p=${p#github.com/Liam0205/wangshu}
     p=${p#/}
     [ -z "$p" ] && { echo "root"; return; }
-    # benchmarks/baseline → bench-baseline(显式前缀,兑现注释承诺)
+    # benchmarks/baseline -> bench-baseline (explicit prefix, honoring the comment above)
     if [[ "$p" == benchmarks/* ]]; then
         p=${p#benchmarks/}
         echo "bench-${p//\//-}"
@@ -66,9 +72,10 @@ pkg_to_name() {
 }
 
 # build_pkg <full import path> <module_root_dir>
-# 写入 binary + 把它的源码 dir 记到 manifest.txt(供 run 阶段 cd 进去,
-# 因为预编译 binary 跑时 cwd 是调用方,不是 `go test` 默认那样自动 cd 到
-# 包目录——`testdata/` 等相对路径需要在跑前手工 cd 兜住)。
+# Write the binary + record its source dir in manifest.txt (the run stage
+# cds into it: a precompiled binary runs with the caller's cwd, unlike
+# `go test` which auto-cds into the package directory -- relative paths
+# like `testdata/` need a manual cd before running).
 build_pkg() {
     local pkg=$1
     local mod_root=$2
@@ -81,18 +88,22 @@ build_pkg() {
         args+=(-tags "$tags")
     fi
 
-    # `go test -c` 在没 test 的包上会写空 binary 也不报错;为避免后续 run 阶段
-    # 误以为是有效 binary 跑出 "no tests to run" 噪音,这里先按 .TestGoFiles +
-    # .XTestGoFiles 过滤。调用方保证只传含 test 的包。
+    # `go test -c` on a test-less package writes an empty binary without
+    # complaint; to keep the run stage from treating it as valid and
+    # emitting "no tests to run" noise, packages are pre-filtered by
+    # .TestGoFiles + .XTestGoFiles. Callers guarantee only test-bearing
+    # packages are passed.
     if ! go test "${args[@]}" "$pkg"; then
         echo "✗ build failed: $pkg ($variant)" >&2
         return 1
     fi
 
-    # 把包源码 dir(绝对路径)记到 manifest;run-test-bins.sh 据此 cd。
-    # **传 -tags 给 go list**:build tag-only 包(如 internal/gibbous/wasm 在
-    # wangshu_p3 build / internal/gibbous/jit 在 wangshu_p4 build)未传
-    # tag 时 `go list` 会跳过解析,失败时报「no Go files」类错。
+    # Record the package source dir (absolute path) in the manifest;
+    # run-test-bins.sh cds based on it.
+    # **Pass -tags to go list**: for tag-only packages (e.g.
+    # internal/gibbous/wasm under the wangshu_p3 build,
+    # internal/gibbous/jit under wangshu_p4), `go list` without the tag
+    # skips parsing and fails with "no Go files"-style errors.
     local src_dir
     if [ -n "$tags" ]; then
         src_dir=$(go list -tags "$tags" -f '{{.Dir}}' "$pkg" 2>/dev/null)
@@ -108,14 +119,16 @@ build_pkg() {
     echo "  $name.test  ←  $pkg"
 }
 
-# 第一阶段:主模块
+# Stage 1: main module
 echo "===== build $variant test binaries → test-bin/$variant/ ====="
 rm -f "$outdir/manifest.txt"
 echo "[1/2] main module"
-# 替代 bash 4 `mapfile`:while read 配 process substitution(bash 3.2 兼容)
-# **传 -tags 给 go list**:build tag-only 包(如 internal/gibbous/wasm 在
-# wangshu_p3 build 下、internal/gibbous/jit 在 wangshu_p4 build 下)经此被
-# 识别;否则 go list 默认 build 不会列出它们(测试漏跑)。
+# Replacement for bash 4 `mapfile`: while read with process substitution
+# (bash 3.2 compatible)
+# **Pass -tags to go list**: tag-only packages (e.g. internal/gibbous/wasm
+# under the wangshu_p3 build, internal/gibbous/jit under wangshu_p4) are
+# recognized this way; without the tags the default build's go list would
+# omit them (tests silently skipped).
 main_pkgs=()
 list_args=(-f '{{if or (len .TestGoFiles) (len .XTestGoFiles)}}{{.ImportPath}}{{end}}')
 if [ -n "$tags" ]; then
@@ -130,7 +143,7 @@ for pkg in "${main_pkgs[@]}"; do
     (cd "$repo_root" && build_pkg "$pkg" "$repo_root") || exit 1
 done
 
-# 第二阶段:benchmarks 子模块(独立 go.mod)
+# Stage 2: benchmarks submodule (own go.mod)
 echo "[2/2] benchmarks submodule"
 bench_pkgs=()
 while IFS= read -r pkg; do

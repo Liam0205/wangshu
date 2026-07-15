@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 # bench_vs_luajit_table.py <logdir>
 #
-# 把 bench-vs-luajit.sh 落在 <logdir> 里的各引擎日志(p1.log / p4auto.log /
-# p4force.log / luajit.log,每行 "name<TAB>iters<TAB>us_per_iter",count 轮
-# 追加)解析成 Markdown 对比表。
+# Parse the per-engine logs bench-vs-luajit.sh drops into <logdir>
+# (p1.log / p4auto.log / p4force.log / luajit.log; one
+# "name<TAB>iters<TAB>us_per_iter" line per kernel, appended across count
+# rounds) into a Markdown comparison table.
 #
-# 每个 kernel 取多轮 median(us/iter);倍率列 = P1 / X(越大越好,X 相对
-# 解释器的加速比)。LuaJIT 日志缺失时该列输出 n/a。
+# Each kernel takes the median (us/iter) over its rounds; the ratio column
+# is P1 / X (higher is better, X's speedup over the interpreter). When the
+# LuaJIT log is missing its column prints n/a.
 #
-# 单独跑:python3 scripts/bench_vs_luajit_table.py <logdir>
-# 一般经 scripts/bench-vs-luajit.sh 调用。
+# Standalone: python3 scripts/bench_vs_luajit_table.py <logdir>
+# Normally invoked via scripts/bench-vs-luajit.sh.
 
 import os
 import statistics

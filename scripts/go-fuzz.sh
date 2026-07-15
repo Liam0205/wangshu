@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# go-fuzz.sh <fuzztime> [build_tags] [target_regex]:自动发现全部 func Fuzz*
-# 目标,各跑一轮冒烟。engineering.md §1。
+# go-fuzz.sh <fuzztime> [build_tags] [target_regex]: auto-discover every
+# func Fuzz* target and run one smoke round each. engineering.md §1.
 #
-# build_tags(可选,默认空 = 默认 build):传给 go test -tags。
-# target_regex(可选,默认全部):只跑函数名匹配该 ERE 的目标。build tag 是
-# 加法——比如 wangshu_oracle_cgo build 下默认 build 的目标也全部可编,不过滤
-# 就会把整套目标重跑一遍(nightly p1 腿曾因此 5×45m 冲破 350m job timeout
-# 被静默 cancel)。典型用法:
-#   ./scripts/go-fuzz.sh 30s                          # 默认 build(新月解释器)
-#   ./scripts/go-fuzz.sh 30s "wangshu_p3 wangshu_profile"  # 凸月 build(force-all 升层后路径)
-#   ./scripts/go-fuzz.sh 45m wangshu_oracle_cgo FuzzOracleDiff  # 只跑 oracle 差分
+# build_tags (optional, default empty = default build): passed to go test -tags.
+# target_regex (optional, default all): only run targets whose function name
+# matches this ERE. Build tags are additive -- e.g. under the
+# wangshu_oracle_cgo build every default-build target also compiles, and an
+# unfiltered sweep re-runs the whole set (the nightly p1 leg once blew past
+# the 350m job timeout at 5x45m and got silently cancelled). Typical usage:
+#   ./scripts/go-fuzz.sh 30s                          # default build (crescent interpreter)
+#   ./scripts/go-fuzz.sh 30s "wangshu_p3 wangshu_profile"  # gibbous build (force-all promoted paths)
+#   ./scripts/go-fuzz.sh 45m wangshu_oracle_cgo FuzzOracleDiff  # oracle diff only
 set -euo pipefail
 
 fuzztime="${1:-30s}"
@@ -22,20 +23,26 @@ if [ -n "$tags" ]; then
     tags_arg=(-tags "$tags")
 fi
 
-# run_target <pkg> <func>:跑一个 fuzz 目标,吞掉已知的 Go 工具链假失败。
+# run_target <pkg> <func>: run one fuzz target, swallowing a known Go
+# toolchain spurious failure.
 #
-# golang/go#75804(wangshu issue #63):-fuzztime 到点时,internal/fuzz 的
-# coordinator 用 `err == fuzzCtx.Err()` 抑制 deadline 错误,但 context 取消
-# 传播是「先关父 done channel、后 cancel 子 context」,存在一个窗口:
-# ctx.Err() 已置而 fuzzCtx.Err() 仍是 nil,抑制失败,deadline 以
-# `--- FAIL: FuzzX ... context deadline exceeded` 的形式逃逸成测试失败。
-# 无 crash、无新反例语料,纯工具链竞态(上游修复 CL 774140 未合入)。
+# golang/go#75804 (wangshu issue #63): when -fuzztime expires, the
+# internal/fuzz coordinator suppresses the deadline error via
+# `err == fuzzCtx.Err()`, but context cancellation propagates as "close the
+# parent done channel first, cancel the child context later", leaving a
+# window where ctx.Err() is set while fuzzCtx.Err() is still nil; the
+# suppression misses and the deadline escapes as a test failure of the form
+# `--- FAIL: FuzzX ... context deadline exceeded`. No crash, no new
+# counterexample corpus -- a pure toolchain race (upstream fix CL 774140
+# not yet merged).
 #
-# 判定纪律(不掩盖真失败):
-#   - 真 crasher 一定伴随 "Failing input written to testdata/fuzz/..."
-#     (testing/fuzz.go 对 fuzzCrashError 的固定输出)——出现即真失败,立即报;
-#   - 只有「失败输出含 deadline 字样且无 crasher 落盘」才判为 #75804 假失败,
-#     重试一次;重试再挂(无论什么原因)都如实失败。
+# Adjudication discipline (never mask real failures):
+#   - a real crasher always comes with "Failing input written to
+#     testdata/fuzz/..." (testing/fuzz.go's fixed output for
+#     fuzzCrashError) -- if present, it is a real failure, report at once;
+#   - only "failure output mentions deadline AND no crasher was written" is
+#     judged a #75804 spurious failure and retried once; if the retry fails
+#     again (for any reason), fail honestly.
 run_target() {
     local pkg="$1" func="$2" log rc
     log=$(mktemp)
@@ -125,14 +132,18 @@ while IFS=: read -r file line decl; do
     fi
     found=1
     echo "fuzz: $pkg :: $func ($fuzztime) tags=${tags:-default}"
-    # `"${arr[@]+"${arr[@]}"}"` 是 set -u 下「空数组安全展开」惯用法——macOS
-    # bash 3.2(Apple 不升级 GPLv3 包)在 set -u 下展开空数组 `${arr[@]}` 触发
-    # unbound variable 致命错;`${arr[@]+...}` 仅在数组已设时展开,空时跳过。
+    # `"${arr[@]+"${arr[@]}"}"` is the empty-array-safe expansion idiom
+    # under set -u -- macOS bash 3.2 (Apple does not upgrade GPLv3
+    # packages) treats expanding an empty array `${arr[@]}` under set -u
+    # as a fatal unbound-variable error; `${arr[@]+...}` expands only when
+    # the array is set and skips when empty.
     run_target "$pkg" "$func"
-    # --exclude-dir 排除:
-    #   - benchmarks:独立子模块,自家 fuzz 目标已通过 benchmarks/ 单独路径覆盖
-    #   - benchmarks/pineapple/.pineapple:pineapple 仓临时 clone 落点,属另一 module,
-    #     go test 跑会报 "main module does not contain package"
+    # --exclude-dir exclusions:
+    #   - benchmarks: independent submodule; its own fuzz targets are
+    #     covered via the separate benchmarks/ path
+    #   - benchmarks/pineapple/.pineapple: scratch clone of the pineapple
+    #     repo, a different module; go test there reports "main module
+    #     does not contain package"
 done < <(grep -rn --include='*_test.go' \
     --exclude-dir=benchmarks \
     --exclude-dir=.pineapple \

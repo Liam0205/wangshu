@@ -1,25 +1,28 @@
 #!/usr/bin/env bash
-# fetch-pineapple.sh —— git clone(或 git fetch + reset)pineapple 到本仓
-# benchmarks/pineapple/.pineapple/,跟踪 master HEAD。
+# fetch-pineapple.sh -- git clone (or git fetch + reset) pineapple into this
+# repo's benchmarks/pineapple/.pineapple/, tracking master HEAD.
 #
-# 设计原则:
-#   - .pineapple/ 在 benchmarks/pineapple/.gitignore 里,不进 wangshu 版本控制
-#   - 不 pin commit hash,clone master HEAD;开发者本地各自 fetch 最新
-#   - 数字随 pineapple master 漂——这是有意的「下游真实形态」,pineapple 落地
-#     新 adapter 优化时 wangshu bench 数字就会跟上,反之亦然
-#   - CI 在 workflow 步骤里 fetch,本地开发者每次跑 bench 前自己 fetch 一遍
-#   - idempotent:已存在 .pineapple/ 就 fetch + reset,不重复 clone
+# Design principles:
+#   - .pineapple/ is in benchmarks/pineapple/.gitignore, never tracked by wangshu
+#   - no pinned commit hash; clone master HEAD and let each developer fetch
+#     the latest locally
+#   - numbers drift with pineapple master -- intentionally the "real
+#     downstream shape": when pineapple ships a new adapter optimization the
+#     wangshu bench numbers follow, and vice versa
+#   - CI fetches in a workflow step; local developers fetch before each bench run
+#   - idempotent: an existing .pineapple/ gets fetch + reset, no re-clone
 #
-# 风险记录(用户已确认接受):pineapple master 可能引入 breaking change 让
-# wangshu bench 编不过——届时需要本地同步看 pineapple 改了什么;wangshu
-# 自身的功能测试(make all)不受影响,因为 .pineapple/ 只被 benchmarks/
-# pineapple/ 这个独立子模块依赖。
+# Risk record (accepted by the user): pineapple master may introduce a
+# breaking change that stops the wangshu bench from compiling -- then look at
+# what pineapple changed and sync locally; wangshu's own functional tests
+# (make all) are unaffected because .pineapple/ is a dependency only of the
+# independent benchmarks/pineapple/ submodule.
 set -euo pipefail
 
 PINEAPPLE_REPO="${PINEAPPLE_REPO:-https://github.com/Liam0205/pineapple.git}"
 PINEAPPLE_BRANCH="${PINEAPPLE_BRANCH:-master}"
 
-# 脚本所在目录的上一级 = benchmarks/pineapple/,clone 落点在 .pineapple/
+# The script's parent directory = benchmarks/pineapple/; clone target is .pineapple/
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 mod_dir="$(cd "$script_dir/.." && pwd)"
 target="$mod_dir/.pineapple"
@@ -33,7 +36,7 @@ else
     git clone --depth=1 --branch "$PINEAPPLE_BRANCH" "$PINEAPPLE_REPO" "$target"
 fi
 
-# 报告当前锁定的 commit(方便 debug 数字漂动)
+# Report the currently pinned commit (helps debug number drift)
 head_sha=$(git -C "$target" rev-parse HEAD)
 head_msg=$(git -C "$target" log -1 --format='%s')
 echo "[fetch-pineapple] HEAD = $head_sha"

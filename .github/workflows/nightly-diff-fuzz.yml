@@ -1,18 +1,25 @@
 name: nightly-diff-fuzz
 
-# 长跑差分 + 自动开 issue(engineering.md §3.2):
-#   - PR 门禁(ci.yml)用固定种子防回归;本 workflow 用小时滚动种子拓新;
-#   - 真分歧(byte-diff)与环境失败(oracle 不可用等)分流开 issue,不混信号;
-#   - 撞出的分歧应经最小化回流为 conformance 用例(12 §3.6),回归不靠再次随机撞中。
+# Long-running differential fuzz + automatic issue filing (engineering.md §3.2):
+#   - The PR gate (ci.yml) uses fixed seeds against regressions; this workflow
+#     explores new ground with hourly rolling seeds;
+#   - Real divergences (byte-diff) and environment failures (oracle
+#     unavailable, ...) are filed as separate issues, keeping signals apart;
+#   - Divergences it hits should be minimized and folded back into conformance
+#     cases (12 §3.6) so regression coverage does not rely on randomly hitting
+#     them again.
 
 on:
   schedule:
-    # 每 4 小时一轮(6 轮/天,2026-07-10 从每日一轮加密)。单轮墙钟
-    # ~3h40m,极端慢跑下与下一轮短暂重叠也无害:并发 run 各自落在
-    # 不同小时桶(SEED_BASE 不同,种子段不冲突),issue 按标题去重,
-    # 代价只是短暂 2x runner 占用——间隔是预算选择,不是防重叠约束。
-    # 种子空间按小时 epoch 滚动(见 SEED_BASE),各轮探索不同种子段,
-    # 加频即加覆盖。
+    # One round every 4 hours (6/day; raised from daily on 2026-07-10).
+    # A round's wall-clock is ~3h40m, and a brief overlap with the next
+    # round on an extremely slow run is harmless: concurrent runs land in
+    # different hour buckets (different SEED_BASE, so seed segments never
+    # clash), issues are deduped by title, and the only cost is a brief 2x
+    # runner occupancy -- the interval is a budget choice, not an
+    # anti-overlap constraint. The seed space rolls by hour epoch (see
+    # SEED_BASE); each round explores a different segment, so more
+    # frequency means more coverage.
     - cron: '0 */4 * * *'
   workflow_dispatch:
     inputs:
@@ -180,11 +187,11 @@ jobs:
           SEED_BASE: ${{ steps.difffuzz.outputs.seed_base }}
           ROUNDS: ${{ steps.difffuzz.outputs.rounds }}
         run: |
-          # 三档分流(机器可读标记 API,与测试侧约定):
-          #   1. DIVERGENCE seed=<n> kind=<bytediff|gcstress|oracle-error>(差分/GC 透明性)→ bug
-          #   2. go-fuzz crash:gofuzz.log 含 "Failing input written to <path>" → bug + crash corpus 路径
-          #   3. 其它无标记失败(oracle 装不上、环境问题) → ci
-          # 优先级:DIVERGENCE > go-fuzz crash > INFRA(同时撞中只开 1 个 issue,以 DIVERGENCE 为准)
+          # Three-way triage (machine-readable marker API, agreed with the test side):
+          #   1. DIVERGENCE seed=<n> kind=<bytediff|gcstress|oracle-error> (diff / GC transparency) -> bug
+          #   2. go-fuzz crash: gofuzz.log contains "Failing input written to <path>" -> bug + crash corpus path
+          #   3. any other unmarked failure (oracle install failure, environment issues) -> ci
+          # Priority: DIVERGENCE > go-fuzz crash > INFRA (only 1 issue is filed when several hit at once, DIVERGENCE wins)
           if grep -q "DIVERGENCE" difffuzz.log gcstress.log autodiff.log 2>/dev/null; then
             FIRST_SEED=$(grep -ohP 'DIVERGENCE seed=\K\d+' difffuzz.log gcstress.log autodiff.log 2>/dev/null | head -1 || true)
             FIRST_KIND=$(grep -ohP 'DIVERGENCE seed=\d+ kind=\K\S+' difffuzz.log gcstress.log autodiff.log 2>/dev/null | head -1 || true)
@@ -257,7 +264,7 @@ jobs:
             LABEL="ci"
             BODY="nightly fuzz 失败但无 DIVERGENCE 标记 / 无 go-fuzz crash(环境/基础设施类:oracle 不可用、超时、依赖装不上等)。日志见 run artifacts:${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           fi
-          # 同标题去重:已有 open issue 则追加评论而非新开
+          # Dedupe by title: comment on an existing open issue instead of filing a new one
           EXISTING=$(gh issue list --state open --search "in:title \"$TITLE\"" --json number --jq '.[0].number' || true)
           if [ -n "$EXISTING" ] && [ "$EXISTING" != "null" ]; then
             gh issue comment "$EXISTING" --body "再次触发:run ${{ github.run_id }}"

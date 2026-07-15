@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# check-oracle.sh:校验官方 Lua 5.1.5 oracle 可用(12 §2.6 / engineering.md §4)。
-# 无 oracle 一律 fail(本地与 CI 同标准;difftest 自身对无 oracle 会 skip,
-# 但显式跑本脚本即要求 oracle 在位)。
+# check-oracle.sh: verify the official Lua 5.1.5 oracle is available
+# (12 §2.6 / engineering.md §4). No oracle always fails (same bar locally
+# and in CI; difftest itself skips without an oracle, but explicitly running
+# this script demands the oracle be present).
 set -euo pipefail
 
 if ! command -v lua5.1 >/dev/null 2>&1; then

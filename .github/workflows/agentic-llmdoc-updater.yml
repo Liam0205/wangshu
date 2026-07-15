@@ -2,7 +2,7 @@ name: Agentic llmdoc Updater
 
 on:
   schedule:
-    # 每天北京时间 5:00 (UTC 21:00) 自动更新 llmdoc 文档
+    # Auto-update llmdoc docs daily at 5:00 Beijing time (21:00 UTC)
     - cron: '0 21 * * *'
   workflow_dispatch:
     inputs:

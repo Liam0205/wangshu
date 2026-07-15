@@ -1,8 +1,8 @@
 *.test
 test-bin/
 
-# pineapple repo 临时 clone 落点(benchmarks/pineapple/.pineapple/),
-# 也兜底防御 root 不被误纳入
+# Scratch clone target of the pineapple repo (benchmarks/pineapple/.pineapple/);
+# also a root-level backstop against accidental inclusion
 .pineapple/
 luac.out
 .llmdoc-tmp/

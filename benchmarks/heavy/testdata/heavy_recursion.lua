@@ -1,7 +1,9 @@
--- heavy_recursion: collatz 序列,深尾递归 + 整数算术。
--- 形态:1 个非 vararg kernel(n, steps) 自递归 → 升层后 gibbous→gibbous
--- 走 call_indirect 直达,不经 h_call helper。每帧体:比较 + 算术 + RETURN,
--- 帧体工作量 / 帧建拆比值合理。外层主循环驱动 1000 次 collatz 调用。
+-- heavy_recursion: collatz sequence, deep tail recursion + integer arithmetic.
+-- Shape: 1 non-vararg self-recursive kernel(n, steps) -> after promotion,
+-- gibbous->gibbous goes direct via call_indirect, bypassing the h_call
+-- helper. Per-frame body: compare + arithmetic + RETURN, a reasonable ratio
+-- of frame-body work to frame setup/teardown. The outer main loop drives
+-- 1000 collatz calls.
 local function collatz(n, steps)
   if n == 1 then return steps end
   if n % 2 == 0 then return collatz(n / 2, steps + 1) end
