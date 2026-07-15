@@ -252,6 +252,58 @@ func EmitStrWtToXnDisp(buf []byte, rt, rn uint8, byteOff uint16) []byte {
 // EncodedStrWtToXnDispLen = 4.
 const EncodedStrWtToXnDispLen = 4
 
+// EmitStrDtToXnDisp emits arm64 "str Dt, [Xn, #pimm12]" — 64-bit FP store
+// with unsigned scaled offset. Spills one FP register into a jitContext field
+// (issue #143 PJ3 loopFuel: d0/d1/d2 → loopSpill0/1/2 before the
+// HelperLoopFuel exit).
+//
+// arm64 encoding: 1111_1101_00_iiiiiiiiiiii_nnnnn_ttttt = 0xFD000000 base
+//   - size=11 (64-bit), V=1 (FP/SIMD), opc=00 (STR unsigned offset)
+//   - imm12 is an **8-byte scaled offset** (byte offset = imm12 * 8), range
+//     [0, 32760], step 8
+func EmitStrDtToXnDisp(buf []byte, dt, xn uint8, byteOff uint16) []byte {
+	if dt > 31 {
+		dt = 0
+	}
+	if xn > 30 {
+		xn = 0
+	}
+	if byteOff%8 != 0 || byteOff > 32760 {
+		byteOff = 0
+	}
+	imm12 := uint32(byteOff / 8)
+	insn := uint32(0xFD000000) | (imm12&0xFFF)<<10 | (uint32(xn)&0x1F)<<5 | uint32(dt)&0x1F
+	return appendArm64Insn(buf, insn)
+}
+
+// EncodedStrDtToXnDispLen = 4.
+const EncodedStrDtToXnDispLen = 4
+
+// EmitLdrDtFromXnDisp emits arm64 "ldr Dt, [Xn, #pimm12]" — 64-bit FP load
+// with unsigned scaled offset. Reloads one FP register from a jitContext field
+// (issue #143 PJ3 loopFuel resume: loopSpill0/1/2 → d0/d1/d2).
+//
+// arm64 encoding: 1111_1101_01_iiiiiiiiiiii_nnnnn_ttttt = 0xFD400000 base
+//   - size=11 (64-bit), V=1 (FP/SIMD), opc=01 (LDR unsigned offset)
+//   - imm12 is an 8-byte scaled offset, same as EmitStrDtToXnDisp
+func EmitLdrDtFromXnDisp(buf []byte, dt, xn uint8, byteOff uint16) []byte {
+	if dt > 31 {
+		dt = 0
+	}
+	if xn > 30 {
+		xn = 0
+	}
+	if byteOff%8 != 0 || byteOff > 32760 {
+		byteOff = 0
+	}
+	imm12 := uint32(byteOff / 8)
+	insn := uint32(0xFD400000) | (imm12&0xFFF)<<10 | (uint32(xn)&0x1F)<<5 | uint32(dt)&0x1F
+	return appendArm64Insn(buf, insn)
+}
+
+// EncodedLdrDtFromXnDispLen = 4.
+const EncodedLdrDtFromXnDispLen = 4
+
 // EmitMovzWdImm16 emits arm64 "movz Wd, #imm16" (32-bit version, clearing
 // the high 32 bits) as a single 4-byte instruction.
 //
