@@ -1,18 +1,22 @@
 #!/bin/bash
-# check-pr-ci.sh — 阻塞等当前分支的 PR CI 跑完,然后报告。
+# check-pr-ci.sh -- block until the current branch's PR CI finishes, then report.
 #
 # Exit codes:
-#   0  所有 CI checks 过 AND 自上次 push 起无新 review 活动 AND 无未解决 review
-#      thread —— terminal state。
-#   1  一项或多项 CI checks 失败(失败 job 在 stderr 列出)。
-#   2  当前分支没找到 PR,或 gh 不可用(调用方 hook 当非致命处理,本脚本独立
-#      报这个码以便区分)。
-#   75 CI 过了,但自上次 push 起有新 review 活动 / 未解决 review thread。退出
-#      前的 instruction block 说明下一步该干什么。这里 surface 成非零独立码,
-#      让调用方 hook 让 OUTER push 失败,让只看 exit status 的工具(比如 agent
-#      loop)不会把 stderr 指令当 silent context 漏掉。
+#   0  All CI checks pass AND no new review activity since the last push AND no
+#      unresolved review threads -- terminal state.
+#   1  One or more CI checks failed (failing jobs listed on stderr).
+#   2  No PR found for the current branch, or gh unavailable (the calling hook
+#      treats this as non-fatal; the script reports a distinct code so callers
+#      can tell the cases apart).
+#   75 CI passed, but there is new review activity / an unresolved review
+#      thread since the last push. The instruction block printed before exit
+#      explains the next step. Surfaced as a distinct non-zero code so the
+#      calling hook fails the OUTER push and tools that only look at the exit
+#      status (e.g. an agent loop) do not miss the stderr instructions as
+#      silent context.
 #
-# 本脚本**不 push**。它只查已经 push 过的分支对应 PR 的状态。
+# This script does **not** push. It only inspects the PR state of a branch
+# that has already been pushed.
 set -uo pipefail
 
 log() { echo "$@" >&2; }
@@ -22,8 +26,9 @@ if ! command -v gh >/dev/null 2>&1; then
   exit 2
 fi
 
-# jq 用来 parse check 列表。gh 自带 --jq filter,但下面还有独立 jq parse;
-# 缺 jq 会静默漏掉失败(false green),所以缺则致命退出。
+# jq parses the check list. gh has a built-in --jq filter, but there are
+# standalone jq parses below; a missing jq would silently drop failures
+# (false green), so treat it as fatal.
 if ! command -v jq >/dev/null 2>&1; then
   log "post-push: jq not found — cannot reliably parse CI checks. Failing safe."
   exit 1
@@ -31,13 +36,15 @@ fi
 
 branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
 
-# Lock 「新活动」的时间截止点 NOW,在花数分钟看 CI **之前** —— 任何 createdAt >
-# 此刻的 GitHub 评论严格晚于我们最近一次 push。提前锁(不放 CI watch 之后)
-# 这样 CI 期间到达的合法 review 活动仍算新。UTC('Z')与 GitHub UTC createdAt
-# 字段对齐;本地 tz offset 如 "+08:00" 会对 'Z' 字面比较错乱。
+# Lock the "new activity" cutoff to NOW, **before** spending minutes watching
+# CI -- any GitHub comment with createdAt > this instant is strictly newer
+# than our latest push. Locking early (not after the CI watch) means
+# legitimate review activity arriving during CI still counts as new. UTC
+# ('Z') matches GitHub's UTC createdAt field; a local tz offset like
+# "+08:00" would break the literal comparison against 'Z' timestamps.
 push_cutoff="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-# 找当前分支对应的 PR。没就没什么可看。
+# Find the PR for the current branch. Nothing to watch without one.
 pr_number="$(gh pr view --json number --jq '.number' 2>/dev/null)"
 if [ -z "$pr_number" ]; then
   log "post-push: no open PR for branch '$branch' yet — skipping CI check."
@@ -47,11 +54,12 @@ fi
 
 log "post-push: watching CI for PR #${pr_number} (branch '$branch')..."
 
-# 刚 push 完,GitHub 需要几秒才会为新 head commit 注册 check run。先 poll 直到
-# 出现至少一项 check(或放弃),否则我们会把「还没创建」误判成「没 CI」。
-# Env 可调:
-#   WANGSHU_PREPUSH_CHECK_POLL_TRIES    (默认 24)
-#   WANGSHU_PREPUSH_CHECK_POLL_INTERVAL (默认 5,秒)
+# Right after a push, GitHub takes a few seconds to register check runs for
+# the new head commit. Poll until at least one check appears (or give up),
+# otherwise "not created yet" would be misread as "no CI".
+# Tunable via env:
+#   WANGSHU_PREPUSH_CHECK_POLL_TRIES    (default 24)
+#   WANGSHU_PREPUSH_CHECK_POLL_INTERVAL (default 5, seconds)
 poll_tries="${WANGSHU_PREPUSH_CHECK_POLL_TRIES:-24}"
 poll_interval="${WANGSHU_PREPUSH_CHECK_POLL_INTERVAL:-5}"
 for _ in $(seq 1 "$poll_tries"); do
@@ -62,19 +70,21 @@ for _ in $(seq 1 "$poll_tries"); do
   sleep "$poll_interval"
 done
 
-# 阻塞等所有 checks 跑完。--fail-fast 任一失败立即返回。这里故意忽略 watch
-# exit code,最终 verdict 重新由 --json query 算 —— 报告逻辑只有一份源。
+# Block until all checks finish. --fail-fast returns as soon as any check
+# fails. The watch exit code is deliberately ignored; the final verdict is
+# recomputed from a --json query so the reporting logic has a single source.
 gh pr checks "$pr_number" --watch --fail-fast --interval 15 >/dev/null 2>&1 || true
 
-# 重新拉一次所有 checks 的快照。
+# Re-fetch a snapshot of all checks.
 checks_json="$(gh pr checks "$pr_number" --json name,state,bucket,link 2>/dev/null)"
 if [ -z "$checks_json" ]; then
   log "post-push: could not read CI checks for PR #${pr_number}."
   exit 2
 fi
 
-# 收集所有失败 job(bucket == fail 或 cancel)作 "name<TAB>link" 行列表。jq
-# 强制依赖(上面已检),保持依赖最小化,避免某解释器缺失时静默返回空。
+# Collect all failing jobs (bucket == fail or cancel) as "name<TAB>link"
+# lines. jq is a hard dependency (checked above); keeping dependencies
+# minimal avoids silently returning empty when some interpreter is missing.
 failures="$(printf '%s' "$checks_json" \
   | jq -r '.[] | select(.bucket=="fail" or .bucket=="cancel") | "\(.name)\t\(.link // "")"')"
 
@@ -104,33 +114,39 @@ log "  ✓ post-push: all CI checks passed for PR #${pr_number}"
 log "  → PR review decision: ${review_decision}"
 log "════════════════════════════════════════════════════════════"
 
-# ── instruction block for Claude Code ──────────────────────────────────────
-# 当本脚本在 Claude Code background bash 任务里跑时,以上 stderr 全部会在任务
-# 结束时回灌到主对话。下面这段是写给 Claude 直接消费的:用具体的 gh 命令拼出
-# 下一步循环(拉 review 评论 → 逐条理解 → 改真问题 → 再 push),省掉「让人去
-# address review feedback」的回合。
+# -- instruction block for Claude Code ---------------------------------------
+# When this script runs inside a Claude Code background bash task, all the
+# stderr above is fed back into the main conversation when the task ends.
+# The block below is written for Claude to consume directly: concrete gh
+# commands that assemble the next loop iteration (fetch review comments ->
+# understand each one -> fix real issues -> push again), skipping the
+# "ask a human to address review feedback" round-trip.
 #
-# 触发模型(故意只看信号,不看语义):
-#   我们**不去 grep** review bot 输出里有没有 "APPROVE" 字样。bot 自己也是 LLM,
-#   措辞非确定性,即便 APPROVE 也常带「非阻塞」建议,我们仍要评估。所以脚本
-#   只判定「自当前 HEAD push 之后是否有任何新东西」,实际判断(真问题 vs 假阳性、
-#   blocking vs nit)交给 Claude。
+# Trigger model (deliberately signal-only, no semantics):
+#   We do **not** grep the review bot output for the word "APPROVE". The bot
+#   is itself an LLM with non-deterministic wording, and even an APPROVE
+#   often carries "non-blocking" suggestions we still want to evaluate. So
+#   the script only decides "is there anything new since the current HEAD
+#   was pushed"; the actual judgment (real issue vs false positive,
+#   blocking vs nit) is left to Claude.
 #
-# 出指令 block 的条件(任一为真):
-#   - 自 HEAD push 时刻起的新顶层 issue 评论
-#   - 自 HEAD push 时刻起的新 inline review 评论
-#   - 自 HEAD push 时刻起的新 review 提交(APPROVE / CHANGES_REQUESTED 事件
-#     本身就算新活动)
-#   - 任何未解决 review thread(不限年龄 —— 老的未解决 thread 仍是 loop 没
-#     合上的债务)
+# The instruction block fires when any of these hold:
+#   - new top-level issue comments since the HEAD push
+#   - new inline review comments since the HEAD push
+#   - new review submissions since the HEAD push (an APPROVE /
+#     CHANGES_REQUESTED event itself counts as new activity)
+#   - any unresolved review thread (regardless of age -- an old unresolved
+#     thread is still debt the loop has not closed)
 #
-# 以上都没有就静默 exit 0 + 单行成功,自动循环读作「done」。
+# If none of the above, exit 0 quietly with a one-line success; automated
+# loops read that as "done".
 
 owner="$(gh repo view --json owner --jq '.owner.login' 2>/dev/null)"
 repo="$(gh repo view --json name --jq '.name' 2>/dev/null)"
 
-# 单次 GraphQL round-trip 拉齐「自 push 后新活动」检测要用的全部数据。每列
-# 独立按 createdAt > $push_cutoff(脚本开始时锁好的,CI watch 之前)在 jq 过滤。
+# One GraphQL round-trip fetches everything the "new activity since push"
+# detection needs. Each column is filtered independently in jq by
+# createdAt > $push_cutoff (locked at script start, before the CI watch).
 activity_json="$(gh api graphql -f query='
   query($owner:String!, $repo:String!, $pr:Int!) {
     repository(owner:$owner, name:$repo) {
@@ -148,23 +164,26 @@ activity_json="$(gh api graphql -f query='
   }' \
   -F owner="$owner" -F repo="$repo" -F pr="$pr_number" 2>/dev/null)"
 
-# 两种「读不到活动」情况:
-#   (a) gh 完全没 stdout(网络断 / gh 坏 / 无 auth)
-#   (b) gh 返回 GraphQL 错误信封 `{"errors":[...]}` + exit 0 —— auth 过期 /
-#       transient 5xx / schema mismatch 常见形态。信封非空,所以 `[ -z ]` 不
-#       够;不加这个分支下面的 jq 过滤会在 `.data == null` 上炸 "Cannot iterate
-#       over null",四个 counter 全空,后面 `[ -eq ]` 漏出 "integer expression
-#       expected"。
-# 两个 path 都要 surface 成「work remains」,让 next-step block 触发、运营方手
-# 工看 PR —— 静默把畸形信封当 clean terminal 会把自治 loop 毁掉。
+# Two ways activity can be unreadable:
+#   (a) gh produces no stdout at all (network down / broken gh / no auth)
+#   (b) gh returns a GraphQL error envelope `{"errors":[...]}` with exit 0 --
+#       the usual shape for expired auth / transient 5xx / schema mismatch.
+#       The envelope is non-empty, so `[ -z ]` is not enough; without this
+#       branch the jq filters below blow up on `.data == null` with "Cannot
+#       iterate over null", all four counters end up empty, and the later
+#       `[ -eq ]` leaks "integer expression expected".
+# Both paths must surface as "work remains" so the next-step block fires and
+# the operator inspects the PR manually -- silently treating a malformed
+# envelope as a clean terminal would break the autonomous loop.
 activity_unreadable=0
 if [ -z "$activity_json" ]; then
   activity_unreadable=1
 elif ! printf '%s' "$activity_json" | jq empty >/dev/null 2>&1; then
-  # gh 非空 stdout 但不是合法 JSON(auth interstitial、captive-portal HTML、
-  # transient gateway error page 等)。没这个 guard 下面 `jq -e has("errors")`
-  # 自己也 parse 失败,elif 为 false,会落到「可读」分支,每个 counter 经
-  # `${var:-0}` 缩为 0 —— 伪装成 clean terminal "done"。
+  # gh produced non-empty stdout that is not valid JSON (auth interstitial,
+  # captive-portal HTML, transient gateway error page, ...). Without this
+  # guard the `jq -e has("errors")` below fails to parse too, the elif is
+  # false, we fall into the "readable" branch, and every counter collapses
+  # to 0 via `${var:-0}` -- masquerading as a clean terminal "done".
   activity_unreadable=1
 elif printf '%s' "$activity_json" \
        | jq -e 'has("errors") or .data == null' >/dev/null 2>&1; then
@@ -173,17 +192,18 @@ fi
 
 if [ "$activity_unreadable" -eq 1 ]; then
   log "  ! could not query PR activity — assuming work remains, see comments manually."
-  # 强制让 next-step block 触发(total_new > 0),让运营方手工看 PR,而不是
-  # 脚本静默 exit 0。
+  # Force the next-step block to fire (total_new > 0) so the operator
+  # inspects the PR manually instead of the script exiting 0 silently.
   new_issue_comments=1
   new_review_submissions=0
   new_inline_comments=0
   unresolved_threads=0
 else
-  # `// []` 把缺失或 null 的 `nodes` 缩成空数组,jq 在部分响应下仍保 total;
-  # 内层 inline-comments traversal 上的 `?` 容忍 thread node 没 comments。
-  # `2>/dev/null` + `${var:-0}` 让四个 counter 在任何意外下保持数值,后面算
-  # 术与 `[ -eq ]` 不会落到空 operand。
+  # `// []` collapses a missing or null `nodes` to an empty array so jq
+  # still yields totals on partial responses; the `?` on the inner
+  # inline-comments traversal tolerates thread nodes without comments.
+  # `2>/dev/null` + `${var:-0}` keep all four counters numeric under any
+  # surprise, so later arithmetic and `[ -eq ]` never see an empty operand.
   new_issue_comments="$(printf '%s' "$activity_json" \
     | jq --arg t "$push_cutoff" \
         '[(.data.repository.pullRequest.comments.nodes // [])[] | select(.createdAt > $t)] | length' 2>/dev/null)"
@@ -203,8 +223,8 @@ fi
 
 total_new=$(( new_issue_comments + new_review_submissions + new_inline_comments ))
 
-# Terminal state:push 之后没有新东西 AND 没有未解决 thread。静默 —— 自动 loop
-# 读作「done」。
+# Terminal state: nothing new since the push AND no unresolved threads.
+# Quiet -- automated loops read this as "done".
 if [ "$total_new" -eq 0 ] && [ "$unresolved_threads" -eq 0 ]; then
   log "  ✓ no new review activity since last push, no unresolved threads — done."
   exit 0

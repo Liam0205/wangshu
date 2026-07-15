@@ -1,4 +1,4 @@
--- fannkuch-redux: benchmark game 经典(表索引/交换密集)
+-- fannkuch-redux: benchmark game classic (table indexing/swap heavy)
 local function fannkuch(n)
   local p, q, s, sign, maxflips, sum = {}, {}, {}, 1, 0, 0
   for i = 1, n do p[i] = i; q[i] = i; s[i] = i end

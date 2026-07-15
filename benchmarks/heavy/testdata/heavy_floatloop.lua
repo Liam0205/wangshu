@@ -1,20 +1,25 @@
--- heavy_floatloop:浮点平面累积核 + 嵌套 FORLOOP。
--- 形态:单函数 kernel(x0, y0),内层固定 256 迭代纯算术,所有像素都跑满 — 让
--- P3 relooper(承 "improper scope overlap" 限制)能升起内层函数。
+-- heavy_floatloop: floating-point plane accumulation kernel + nested FORLOOP.
+-- Shape: a single kernel(x0, y0) function, inner loop fixed at 256 pure-
+-- arithmetic iterations, every pixel runs the full count -- so the P3
+-- relooper (under the "improper scope overlap" limitation) can promote the
+-- inner function.
 --
--- P3/P4 当前形态子集下「单函数大热点 + 长 BB + 纯浮点」最直接的发挥场景:
---   - kernel(x0, y0):非 vararg,内层 while + 算术,容易升;
---   - 主循环 10000 次调 kernel,每次内层 256 迭代 → 256 万次纯浮点工作。
--- 没有 if/and/or/break/table/string/CALL(数学库都不用)。
+-- The most direct showcase of "single-function hotspot + long BB + pure
+-- float" under the current P3/P4 shape subset:
+--   - kernel(x0, y0): non-vararg, inner while + arithmetic, easy to promote;
+--   - the main loop calls kernel 10000 times, 256 inner iterations each
+--     -> 2.56M pure floating-point operations.
+-- No if/and/or/break/table/string/CALL (not even the math library).
 --
--- 形态:线性递推 + 累积 sin/cos 近似(纯算术,无溢出)。
+-- Shape: linear recurrence + accumulated sin/cos approximation (pure
+-- arithmetic, no overflow).
 local function kernel(x0, y0)
   local x = x0
   local y = y0
   local s = 0.0
   local i = 0
   while i < 256 do
-    -- 旋转近似:无溢出的线性核
+    -- rotation approximation: an overflow-free linear kernel
     local xt = x - 0.001953125 * y
     local yt = y + 0.001953125 * x
     x = xt

@@ -1,24 +1,26 @@
 #!/usr/bin/env bash
-# pre-commit:staged-only gofmt + golangci-lint 检查。engineering.md §2.1。
+# pre-commit: staged-only gofmt + golangci-lint checks. engineering.md §2.1.
 #
-# **bash 3.2 兼容**(承 F3-#3c 修):macOS 默认 bash 是 3.2(Apple GPLv3
-# 政策不升级);避免 mapfile / declare -A 等 bash 4+ 语法,只用 bash 3.2
-# 通用语法,Linux bash 4+/5+ 兼容运行。
+# **bash 3.2 compatible** (carried from the F3-#3c fix): the default macOS
+# bash is 3.2 (Apple's GPLv3 policy keeps it there); avoid bash 4+ syntax
+# like mapfile / declare -A and use only bash 3.2 constructs, which also run
+# fine on Linux bash 4+/5+.
 set -euo pipefail
 
-# CI 环境短路
+# Short-circuit in CI environments
 if [ -n "${CI:-}" ] || [ -n "${GITHUB_ACTIONS:-}" ]; then exit 0; fi
-# 工具缺失静默跳过(不绑架无 Go 环境的文档提交)
+# Skip silently when tools are missing (do not hold docs-only commits hostage
+# to a Go toolchain)
 command -v gofmt >/dev/null 2>&1 || exit 0
 
-# bash 3.2 兼容:while-read 循环填数组,替代 mapfile -t
+# bash 3.2 compatible: fill the array with a while-read loop instead of mapfile -t
 staged=()
 while IFS= read -r line; do
     [ -n "$line" ] && staged+=("$line")
 done < <(git diff --cached --name-only --diff-filter=ACM -- '*.go')
 [ ${#staged[@]} -eq 0 ] && exit 0
 
-# 1) gofmt 格式检查
+# 1) gofmt formatting check
 unformatted=$(gofmt -l "${staged[@]}")
 if [ -n "$unformatted" ]; then
     echo "✗ gofmt 未通过:"
@@ -29,48 +31,51 @@ if [ -n "$unformatted" ]; then
     exit 1
 fi
 
-# 2) golangci-lint 静态检查(仅 staged 文件涉及的包)
+# 2) golangci-lint static checks (only for packages touched by staged files)
 #
-# 按 go.mod 边界分组:独立子模块(spike/ benchmarks/ 等有自己 go.mod)
-# 的包路径不能喂给主库 golangci-lint(报「main module does not contain
-# package」)——必须 cd 进各自 module 根目录跑。算法:每个 staged .go 文件
-# 向上找最近的 go.mod 确定其 module 根,同根的包分一组在该根下跑。
+# Group by go.mod boundary: package paths in independent submodules
+# (spike/, benchmarks/, ... with their own go.mod) cannot be fed to the main
+# module's golangci-lint (it reports "main module does not contain package")
+# -- each group must run with cwd at its own module root. Algorithm: for
+# every staged .go file walk upward to the nearest go.mod to determine its
+# module root, then run packages sharing a root together under that root.
 command -v golangci-lint >/dev/null 2>&1 || exit 0
 
-# 找一个目录向上最近的 go.mod 所在目录(module 根)
+# Find the nearest ancestor directory containing go.mod (the module root)
 module_root() {
     local d="$1"
     while [ "$d" != "." ] && [ "$d" != "/" ]; do
         if [ -f "$d/go.mod" ]; then echo "$d"; return; fi
         d=$(dirname "$d")
     done
-    echo "."  # 兜底:仓库根
+    echo "."  # fallback: the repository root
 }
 
-# bash 3.2 兼容:不用 declare -A 关联数组,改用「<root>\t<rel> 行流 + sort -u
-# 后按 root 分组」。先把 (root, rel) 对收集到 tab-separated 行数组里。
+# bash 3.2 compatible: instead of a declare -A associative array, use a
+# "<root>\t<rel> line stream + sort -u, then group by root" scheme. First
+# collect the (root, rel) pairs into a tab-separated line array.
 pairs=()
 for f in "${staged[@]}"; do
     dir=$(dirname "$f")
     root=$(module_root "$dir")
-    # 包相对 module 根的路径
+    # Package path relative to the module root
     if [ "$root" = "." ]; then
         rel="./$dir"
     elif [ "$dir" = "$root" ]; then
-        rel="."  # 文件直接在 module 根目录
+        rel="."  # the file sits directly in the module root
     else
         rel="./${dir#"$root"/}"
     fi
     pairs+=("$root"$'\t'"$rel")
 done
 
-# 按 root 排序去重,然后按 root 分组循环
+# Sort and dedupe by root, then loop grouping by root
 sorted=()
 while IFS= read -r line; do
     [ -n "$line" ] && sorted+=("$line")
 done < <(printf '%s\n' "${pairs[@]}" | sort -u)
 
-# 按 root 分组:遇到新 root 时把上一组跑完
+# Group by root: when a new root appears, flush the previous group first
 current_root=""
 current_rels=()
 
@@ -79,16 +84,20 @@ run_group() {
     shift
     local rels=("$@")
     [ ${#rels[@]} -eq 0 ] && return 0
-    # 捕获输出:整包在非默认 build tag 下时(如 //go:build wangshu_p3),默认
-    # lint 报「build constraints exclude all Go files」——这不是真 lint 错误
-    # (该包只是不在默认 build),应放行。真 lint issue 仍失败。
+    # Capture output: when a whole package sits behind a non-default build
+    # tag (e.g. //go:build wangshu_p3), the default lint reports "build
+    # constraints exclude all Go files" -- not a real lint error (the
+    # package just is not part of the default build), so let it through.
+    # Real lint issues still fail.
     local out
     out=$(cd "$root" && golangci-lint run "${rels[@]}" 2>&1) && return 0
-    # 失败了:过滤掉「build constraints exclude all」误报行,看是否还有真错误
+    # It failed: filter out the "build constraints exclude all" false-positive
+    # lines and see whether real errors remain
     local real
     real=$(printf '%s\n' "$out" | grep -v "build constraints exclude all Go files" | grep -iE "level=error|\.go:[0-9]+:" || true)
     if [ -z "$real" ]; then
-        # 仅 build-constraint 误报(包在别的 build tag 下)→ 放行
+        # Only build-constraint false positives (package behind another
+        # build tag) -> let it through
         return 0
     fi
     echo "$out"
@@ -101,7 +110,7 @@ for line in "${sorted[@]}"; do
     root="${line%%$'\t'*}"
     rel="${line#*$'\t'}"
     if [ "$root" != "$current_root" ]; then
-        # 切换组:跑上一组(如有)
+        # Root changed: run the previous group (if any)
         if [ -n "$current_root" ]; then
             run_group "$current_root" "${current_rels[@]}" || exit 1
         fi
@@ -110,7 +119,7 @@ for line in "${sorted[@]}"; do
     fi
     current_rels+=("$rel")
 done
-# 跑最后一组
+# Run the final group
 if [ -n "$current_root" ]; then
     run_group "$current_root" "${current_rels[@]}" || exit 1
 fi

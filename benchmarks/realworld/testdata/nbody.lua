@@ -1,4 +1,4 @@
--- n-body: benchmark game 经典(浮点 + 表字段读写密集)
+-- n-body: benchmark game classic (floating-point + table field access heavy)
 local sqrt = math.sqrt
 
 local PI = 3.141592653589793

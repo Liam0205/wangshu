@@ -1,17 +1,20 @@
 #!/usr/bin/env bash
 # run-test-bins.sh <mode> [variant...]
 #
-# 跑 test-bin/<variant>/*.test 里的预编译 binary,按 mode 切两种用法:
-#   test   跑所有测试函数(-test.v 默认开,不开 -test.bench)
-#   bench  只跑 benchmark 函数(-test.run=^$ -test.bench=.)
+# Run the precompiled binaries under test-bin/<variant>/*.test, in one of
+# two modes:
+#   test   run all test functions (-test.v on by default, no -test.bench)
+#   bench  run only benchmark functions (-test.run=^$ -test.bench=.)
 #
-# variant 缺省 = test-bin/ 下所有目录;指定时只跑给出的几个(如 `p1`)。
-# 默认枚举顺序按目录字典序(p1 → p3 → p4),稳定可读。
+# variant defaults to every directory under test-bin/; when given, only the
+# listed ones run (e.g. `p1`). Default enumeration is directory-lexicographic
+# (p1 -> p3 -> p4), stable and readable.
 #
-# 跑前若 binary 不存在,提示先 `make build-all`。
+# If a binary is missing, the script suggests `make build-all` first.
 #
-# 兼容性(issue #15 review):脚本避用 GNU `find -printf` / bash 4
-# `mapfile` / `declare -A`,可在 macOS(BSD find + bash 3.2)直接跑。
+# Compatibility (issue #15 review): the script avoids GNU `find -printf` /
+# bash 4 `mapfile` / `declare -A`, so it runs directly on macOS (BSD find +
+# bash 3.2).
 set -uo pipefail
 
 mode="${1:-}"
@@ -35,19 +38,20 @@ if [ ! -d "$bindir" ]; then
     exit 1
 fi
 
-# 收集要跑的 variants
+# Collect the variants to run
 variants=()
 if [ $# -gt 0 ]; then
     variants=("$@")
 else
-    # 替代 `find -printf '%f\n'`:用 glob + basename。glob 命中目录为 0 时
-    # `nullglob` 让 `for` 不进入循环,空 variants 由下面的 check 兜住。
+    # Replacement for `find -printf '%f\n'`: glob + basename. With zero
+    # matching directories, `nullglob` keeps the `for` from iterating;
+    # empty variants are caught by the check below.
     shopt -s nullglob
     for d in "$bindir"/*/; do
         variants+=("$(basename "$d")")
     done
     shopt -u nullglob
-    # 按字典序稳定排:p1 → p3 → p4
+    # Stable lexicographic sort: p1 -> p3 -> p4
     if [ "${#variants[@]}" -gt 0 ]; then
         IFS=$'\n' variants=($(printf '%s\n' "${variants[@]}" | sort))
         unset IFS
@@ -61,9 +65,10 @@ fi
 
 overall_rc=0
 
-# manifest_lookup <binary basename>:从已加载的 names[]/dirs[] 平行数组里
-# 找对应源码 dir,找不到回空。替代 bash 4 `declare -A`(macOS 默认 bash 3.2
-# 不支持 associative array,issue #15 review)。
+# manifest_lookup <binary basename>: look up the source dir in the loaded
+# names[]/dirs[] parallel arrays; empty when not found. Replacement for
+# bash 4 `declare -A` (default macOS bash 3.2 has no associative arrays,
+# issue #15 review).
 manifest_lookup() {
     local needle=$1
     local i
@@ -83,7 +88,7 @@ for v in "${variants[@]}"; do
         continue
     fi
 
-    # 替代 `mapfile -t bins < <(find ... | sort)`:循环读 + glob
+    # Replacement for `mapfile -t bins < <(find ... | sort)`: read loop + glob
     bins=()
     shopt -s nullglob
     for f in "$vdir"/*.test; do
@@ -101,10 +106,11 @@ for v in "${variants[@]}"; do
         continue
     fi
 
-    # 读 manifest:`<basename>.test <绝对源码目录>` 一行一项。
-    # 预编译 binary 跑时 cwd 是调用方,而非 `go test` 自动 cd 到的包目录,
-    # `testdata/*.lua` 类相对路径需要 cd 兜住。
-    # 用平行数组 _man_names[] / _man_dirs[](bash 3.2 无 associative array)
+    # Read the manifest: one `<basename>.test <absolute source dir>` entry
+    # per line. A precompiled binary runs with the caller's cwd rather than
+    # the package dir `go test` auto-cds into, so relative paths like
+    # `testdata/*.lua` need a cd. Parallel arrays _man_names[] /
+    # _man_dirs[] (bash 3.2 has no associative arrays)
     _man_names=()
     _man_dirs=()
     if [ -f "$vdir/manifest.txt" ]; then
@@ -127,7 +133,7 @@ for v in "${variants[@]}"; do
         echo "→ $v/$name${sdir:+  (cwd=$sdir)}"
         case "$mode" in
             test)
-                # -test.v 给 noisy 但便于人看;-test.timeout 防 fuzz/long 卡死
+                # -test.v is noisy but human-friendly; -test.timeout guards against fuzz/long hangs
                 if [ -n "$sdir" ]; then
                     if ! (cd "$sdir" && "$bin" -test.v -test.timeout=600s); then
                         echo "✗ $v/$name failed" >&2
@@ -141,7 +147,7 @@ for v in "${variants[@]}"; do
                 fi
                 ;;
             bench)
-                # benchmark only;非 bench binary(无 Benchmark*)会瞬时退出
+                # benchmark only; non-bench binaries (no Benchmark*) exit instantly
                 if [ -n "$sdir" ]; then
                     if ! (cd "$sdir" && "$bin" -test.run='^$' -test.bench='.' -test.benchmem -test.count=1); then
                         echo "✗ $v/$name failed" >&2

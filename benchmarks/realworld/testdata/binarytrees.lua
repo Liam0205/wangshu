@@ -1,4 +1,4 @@
--- binary-trees: benchmark game 经典(分配/GC 密集)
+-- binary-trees: benchmark game classic (allocation/GC heavy)
 local function bottomup(depth)
   if depth > 0 then
     depth = depth - 1

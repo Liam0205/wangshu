@@ -1,25 +1,30 @@
 #!/usr/bin/env bash
 # bench-readme-table.sh [--format-only <logdir>] [--outdir <logdir>] [--count N] [--benchtime T]
 #
-# 一键复现 README「性能指标」表格:跑三档 build 的 benchmark、收集原始日志、
-# 用 scripts/bench_readme_table.py 整理成可直接贴进 README 的 Markdown 表格。
+# One-shot reproduction of the README performance table: run the benchmarks
+# under all three builds, collect the raw logs, and format them with
+# scripts/bench_readme_table.py into a Markdown table ready to paste into
+# the README.
 #
-# 三档 build 各跑一次(P1 默认 build / P3 gibbous-wasm / P4 gibbous-jit),
-# 选取的 benchmark 与 README「复现命令」小节一致。每档 `-count` 次取 median。
+# Each of the three builds runs once (P1 default build / P3 gibbous-wasm /
+# P4 gibbous-jit); the selected benchmarks match the README "reproduction
+# commands" section. Each build runs `-count` times and takes the median.
 #
-# 共享机纪律(见 llmdoc feedback_shared_machine_resource_limits):
-#   固定 `-cpu=1` 串行跑,一次只占一个核,不打满机器。
+# Shared-machine discipline (see llmdoc feedback_shared_machine_resource_limits):
+#   fixed `-cpu=1`, serial runs, one core at a time, never saturate the box.
 #
-# 用法:
-#   ./scripts/bench-readme-table.sh                 # 全跑 + 出表(约 20-30 min)
-#   ./scripts/bench-readme-table.sh --outdir /tmp/bl  # 日志落在指定目录
-#   ./scripts/bench-readme-table.sh --format-only /tmp/bl  # 只重排已有日志
-#   ./scripts/bench-readme-table.sh --count 5       # 每档跑 5 次取 median
-#   ./scripts/bench-readme-table.sh --benchtime 1s  # 每 benchmark 时长(默认 2s)
+# Usage:
+#   ./scripts/bench-readme-table.sh                 # full run + table (~20-30 min)
+#   ./scripts/bench-readme-table.sh --outdir /tmp/bl  # logs into a given dir
+#   ./scripts/bench-readme-table.sh --format-only /tmp/bl  # only reformat existing logs
+#   ./scripts/bench-readme-table.sh --count 5       # 5 runs per build, median
+#   ./scripts/bench-readme-table.sh --benchtime 1s  # per-benchmark time (default 2s)
 #
-# 跨平台:goos/goarch 自动探测,arm64 机器上直接跑同一脚本即可补 arm64 表。
+# Cross-platform: goos/goarch auto-detected; run the same script on an arm64
+# machine to fill in the arm64 table.
 #
-# 兼容性同 run-test-bins.sh:避用 GNU-only 特性,macOS(BSD)可直接跑。
+# Compatibility matches run-test-bins.sh: avoid GNU-only features so stock
+# macOS (BSD tools) runs it directly.
 set -uo pipefail
 
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
@@ -44,31 +49,34 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-# DIRS/FLAGS 与 README 复现命令小节保持一致。
+# DIRS/FLAGS stay in sync with the README reproduction-commands section.
 dirs="./baseline/ ./heavy/ ./realworld/ ./embedded/"
 
 # P1 (default build): crescent interpreter + gopher baseline (GopherKernel
 # is the same-shape denominator for the baseline P3 columns, issue #93).
 p1_bench='_(Wangshu|WangshuCall|WangshuCallInto|Gopher|GopherKernel)$'
-# P3(gibbous-wasm):auto 走 _WangshuKernel/_GibbousAuto*,force 走 _Gibbous*。
+# P3 (gibbous-wasm): auto uses _WangshuKernel/_GibbousAuto*, force uses _Gibbous*.
 p3_bench='_(Gibbous|GibbousCall|GibbousCallInto|GibbousAuto|GibbousAutoCall|GibbousAutoCallInto|WangshuKernel)$'
-# P4(gibbous-jit):auto 走 _GibbousJITAuto*,force 走 _GibbousJIT*。
+# P4 (gibbous-jit): auto uses _GibbousJITAuto*, force uses _GibbousJIT*.
 p4_bench='_(GibbousJIT|GibbousJITCall|GibbousJITCallInto|GibbousJITAuto|GibbousJITAutoCall|GibbousJITAutoCallInto)$'
-# P4 baseline 补跑:Simple/Arith/Loop 在 P4 build 下无独立 kernel bench,
-# 直接用 `_Wangshu`(顶层 chunk 不升层,auto == force,见 formatter 头注释)。
+# P4 baseline extra pass: Simple/Arith/Loop have no separate kernel bench
+# under the P4 build; use `_Wangshu` directly (the top-level chunk never
+# promotes, so auto == force; see the formatter header comment).
 p4_baseline_bench='(Simple|Arith|Loop)_Wangshu$'
 
 run_bench() {  # run_bench <tags> <bench-regex> <logfile> [append]
     local tags="$1" bench="$2" logf="$3" append="${4:-}"
-    # tagflag 判空后再展开:macOS 自带 bash 3.2 在 `set -u` 下展开空数组会
-    # 报 unbound variable(bash 4.4 才修),P1 档 tags 为空正好命中——按
-    # run-test-bins.sh 的约定用 `${#arr[@]}` 判空规避。
+    # Check tagflag for emptiness before expanding: stock macOS bash 3.2
+    # reports unbound variable when expanding an empty array under `set -u`
+    # (fixed only in bash 4.4), and the P1 build's empty tags hits exactly
+    # that -- follow run-test-bins.sh's convention of guarding with
+    # `${#arr[@]}`.
     local tagflag=()
     [ -n "$tags" ] && tagflag=(-tags "$tags")
     echo "→ go test ${tags:+-tags \"$tags\" }-bench='$bench' -count=$count -cpu=1 ..." >&2
     local redir='>'
     [ -n "$append" ] && redir='>>'
-    # 只保留 Benchmark 行(其余 PASS/ok/编译输出对 formatter 无用)。
+    # Keep only Benchmark lines (PASS/ok/compile output is useless to the formatter).
     if [ "${#tagflag[@]}" -gt 0 ]; then
         _run_go "$redir" "$logf" "${tagflag[@]}" -bench="$bench"
     else
@@ -76,8 +84,9 @@ run_bench() {  # run_bench <tags> <bench-regex> <logfile> [append]
     fi
 }
 
-# _run_go <redir> <logfile> <go-test-args...>:在 bench 子模块里跑 go test,
-# 过滤出 Benchmark 行,按 redir(> / >>)写日志。抽出来避免空数组展开。
+# _run_go <redir> <logfile> <go-test-args...>: run go test in the bench
+# submodule, filter Benchmark lines, write the log per redir (> / >>).
+# Factored out to avoid empty-array expansion.
 _run_go() {
     local redir="$1" logf="$2"; shift 2
     if [ "$redir" = '>>' ]; then
@@ -108,7 +117,8 @@ if [ ! -f "$outdir/p1.log" ]; then
     exit 1
 fi
 
-# 表头一行:平台 / CPU / toolchain / 参数(README 表头照抄这行即可)。
+# Header line: platform / CPU / toolchain / parameters (the README header
+# can copy this line verbatim).
 goos="$(go env GOOS)"; goarch="$(go env GOARCH)"
 gover="$(go version | awk '{print $3}')"
 cpu="$(grep -m1 'model name' /proc/cpuinfo 2>/dev/null | sed 's/.*: //')"

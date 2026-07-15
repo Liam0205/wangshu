@@ -1,32 +1,36 @@
 #!/usr/bin/env python3
 # bench_readme_table.py <logdir>
 #
-# 把 bench-readme-table.sh 落在 <logdir> 里的三份原始 benchmark 日志
-# (p1.log / p3.log / p4.log)解析成 README「性能指标」表格的 Markdown 文本。
+# Parse the three raw benchmark logs bench-readme-table.sh drops into
+# <logdir> (p1.log / p3.log / p4.log) into the Markdown text of the README
+# performance table.
 #
-# 每个 benchmark 取 -count 多次的 median(ns/op),倍率 = gopher / X(越大越好)。
-# 输出遵循 README 既有排版约定:
-#   - 格式「wall time (倍率×)」
-#   - **粗体** = 该行 wall time 最快(含 gopher 列)
-#   - <ins>下划线</ins> = 倍率 >= 1.5×
-#   - `—` = 该场景不涉及此列
+# Each benchmark takes the median (ns/op) over its -count runs; the ratio is
+# gopher / X (higher is better). Output follows the README's existing layout
+# conventions:
+#   - format "wall time (ratio x)"
+#   - **bold** = fastest wall time in the row (gopher column included)
+#   - <ins>underline</ins> = ratio >= 1.5x
+#   - `—` = the scenario does not apply to this column
 #
-# 单独跑:python3 scripts/bench_readme_table.py <logdir>
-# 一般经 scripts/bench-readme-table.sh 调用。
+# Standalone: python3 scripts/bench_readme_table.py <logdir>
+# Normally invoked via scripts/bench-readme-table.sh.
 
 import os
 import re
 import sys
 import statistics
 
-# ── benchmark 命名映射的两处不对称(见 benchmarks/ 各 *_test.go)──────────
-#   1. baseline(Simple/Arith/Loop)在 P4 build 下没有独立 kernel bench:
-#      baseline_test.go 是 `!wangshu_p3` tag,P4 build 也会编译,profiling
-#      开着但顶层 chunk 不升层,所以 P4 auto == P4 force == `_Wangshu` 实测。
-#   2. P3 force 的 CallInto:MiniCallOnly / RealworldPredicate / Transform
-#      沿用历史名 `_Gibbous`(就是 CallInto 零分配变体);MiniBoundary 才有
-#      显式 `_GibbousCallInto`。
-# 改了 benchmark 命名后,这两处要跟着改。
+# -- two asymmetries in the benchmark naming map (see the *_test.go files
+#    under benchmarks/):
+#   1. baseline (Simple/Arith/Loop) has no separate kernel bench under the P4
+#      build: baseline_test.go carries the `!wangshu_p3` tag, so the P4 build
+#      compiles it too; profiling is on but the top-level chunk never
+#      promotes, hence P4 auto == P4 force == the measured `_Wangshu`.
+#   2. P3 force CallInto: MiniCallOnly / RealworldPredicate / Transform keep
+#      the historical `_Gibbous` name (which IS the zero-alloc CallInto
+#      variant); only MiniBoundary has an explicit `_GibbousCallInto`.
+# If benchmark names change, update both spots here.
 #
 # -- baseline P3 column workload basis (issue #93) --------------------------
 # The P3 baseline benches measure the wrapKernel(body)x50 shape (a vararg
@@ -39,7 +43,8 @@ import statistics
 # wall times across shapes is meaningless). The old basis divided by the
 # top-level x1 gopher number, understating P3 by ~50x.
 
-# ── 脚注标记:哪个 cell 挂哪个脚注(编辑口径,改脚注时同步这里)────────────
+# -- footnote markers: which cell carries which footnote (editorial mapping;
+#    keep in sync when footnotes change) --
 # key = (row_key, column)  column ∈ {p3a, p3f, p4a, p4f}
 FOOTNOTES = {
     ('Fib', 'p3a'): '[^p3-gate]',
@@ -57,7 +62,7 @@ FOOTNOTES = {
 
 
 def parse(path):
-    """读一份日志,返回 {benchmark 名: median(ns/op)}。"""
+    """Read one log; return {benchmark name: median(ns/op)}."""
     acc = {}
     if not os.path.exists(path):
         return acc
@@ -66,9 +71,11 @@ def parse(path):
             m = re.match(r'^(Benchmark\S+)\s+\d+\s+([\d.]+)\s+ns/op', line)
             if not m:
                 continue
-            # 归一化 Go 的 GOMAXPROCS 后缀:`-cpu=1` 时 Go 不追加 `-N`,但若
-            # --format-only 喂进多核跑的日志(名字带 `-8` 之类),去掉后缀才
-            # 能和 formatter 里的裸名直查对上(否则升层列静默变 `—`)。
+            # Normalize Go's GOMAXPROCS suffix: with `-cpu=1` Go appends no
+            # `-N`, but if --format-only is fed a multi-core log (names
+            # carrying `-8` etc.), the suffix must be stripped for the bare
+            # names in the formatter to match (otherwise the promoted-tier
+            # columns silently become `—`).
             name = re.sub(r'-\d+$', '', m.group(1))
             acc.setdefault(name, []).append(float(m.group(2)))
     return {k: statistics.median(v) for k, v in acc.items()}
@@ -94,7 +101,7 @@ def fmt_ratio(g, x):
 
 
 def cell_core(g, ns, unit):
-    """wangshu cell 的核心(wall time + 倍率 + 可选下划线),不含粗体 / 脚注。"""
+    """Core of a wangshu cell (wall time + ratio + optional underline), without bold / footnotes."""
     txt = f'{fmt_time(ns, unit)} ({fmt_ratio(g, ns)})'
     if g / ns >= 1.5:
         txt = f'<ins>{txt}</ins>'
@@ -149,7 +156,7 @@ def main():
     lines.append('| 类别 | 脚本 | gopher | P1 | P3 auto | P3 force | P4 auto | P4 force |')
     lines.append('| --- | --- | --- | --- | --- | --- | --- | --- |')
 
-    # ── 纯 VM 微基准(baseline)────────────────────────────────────────────
+    # -- pure-VM micro benchmarks (baseline) --
     base = [('Simple (分支/比较)', 'Simple', 'ns'),
             ('Arith (Horner)', 'Arith', 'ns'),
             ('Loop (求和循环)', 'Loop', 'us')]
@@ -178,7 +185,7 @@ def main():
         ]
         lines.append(_row_with_cat(cat, label, unit, g, cols))
 
-    # ── heavy 内核 + realworld small ──────────────────────────────────────
+    # -- heavy kernels + realworld small --
     heavy = [('HeavyArith', 'HeavyArith', 'ms'), ('HeavyRecursion', 'HeavyRecursion', 'ms'),
              ('HeavyFloatloop', 'HeavyFloatloop', 'ms')]
     for i, (label, key, unit) in enumerate(heavy):
@@ -196,10 +203,10 @@ def main():
         cols = _hr_cols(p1, p3, p4, key, fn)
         lines.append(_row_with_cat(cat, label, unit, g, cols))
 
-    # ── 边界 mini(Call / CallInto)────────────────────────────────────────
+    # -- boundary mini (Call / CallInto) --
     for variant, catname in [('Call', '边界 mini · Call [^cat-mini]'),
                              ('CallInto', '边界 mini · CallInto [^cat-mini]')]:
-        # PureVM 行:只有 P1,升层列 —
+        # PureVM row: P1 only; promoted-tier columns are `—`
         g = p1['BenchmarkMiniPureVM_Gopher']
         pv_cols = [(p1.get('BenchmarkMiniPureVM_Wangshu'), None, ''),
                    (None, None, ''), (None, None, ''), (None, None, ''), (None, None, '')]
@@ -208,7 +215,7 @@ def main():
             g = p1[f'Benchmark{key}_Gopher']
             lines.append(_row_with_cat('', label, 'ns', g, _emb_cols(p1, p3, p4, key, variant)))
 
-    # ── 真实负载(Call / CallInto)─────────────────────────────────────────
+    # -- realworld workloads (Call / CallInto) --
     for variant, catname in [('Call', '真实负载 · Call [^cat-embed]'),
                              ('CallInto', '真实负载 · CallInto [^cat-embed]')]:
         first = True
@@ -224,8 +231,8 @@ def main():
 
 def _row_with_cat(cat, label, unit, g, cols):
     row = build_row(label, unit, g, cols)
-    # build_row 产出 `| <label> | ...`,把首列换成 `| <cat> | <label> |`
-    body = row[len(f'| {label} '):]  # 去掉 `| <label> `
+    # build_row emits `| <label> | ...`; replace the first column with `| <cat> | <label> |`
+    body = row[len(f'| {label} '):]  # strip `| <label> `
     return f'| {cat} | {label} {body}'
 
 
@@ -240,7 +247,7 @@ def _hr_cols(p1, p3, p4, key, fn):
 
 
 def _emb_cols(p1, p3, p4, key, variant):
-    # P3 force CallInto 的历史命名不对称(见文件头注释 2)
+    # P3 force CallInto historical naming asymmetry (see header comment 2)
     if variant == 'CallInto' and key in ('MiniCallOnly', 'RealworldPredicate', 'RealworldTransform'):
         p3f = p3.get(f'Benchmark{key}_Gibbous')
     else:

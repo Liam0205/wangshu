@@ -22,15 +22,18 @@ jobs:
           go-version-file: go.mod
       - uses: golangci/golangci-lint-action@v9
 
-  # **F3-#3c 三平台矩阵化**(2026-06-30):承用户「arm64 与 amd64 地位等同」
-  # 决策,test/difftest/conformance/fuzz-smoke 四大 job 全部加 os 维度矩阵
-  # (linux/amd64 + linux/arm64 ubuntu-24.04-arm + darwin/arm64 macos-latest)。
-  # 三平台并行跑,wall-clock 由最慢平台决定(典型 ~5 min);public repo GHA
-  # 免费。原独立 test-linux-arm64 / test-darwin-arm64 job 已删(被矩阵吸收)。
+  # **F3-#3c tri-platform matrix** (2026-06-30): following the user decision
+  # that arm64 and amd64 have equal standing, all four big jobs
+  # (test/difftest/conformance/fuzz-smoke) gained an os matrix dimension
+  # (linux/amd64 + linux/arm64 ubuntu-24.04-arm + darwin/arm64 macos-latest).
+  # The three platforms run in parallel; wall-clock is set by the slowest
+  # (typically ~5 min); GHA is free for public repos. The old standalone
+  # test-linux-arm64 / test-darwin-arm64 jobs were removed (absorbed by the
+  # matrix).
   test:
     runs-on: ${{ matrix.os }}
     strategy:
-      fail-fast: false # P1/P3/P4 × os 独立跑,一个失败不阻塞其它收集
+      fail-fast: false # P1/P3/P4 x os run independently; one failure does not block collecting the rest
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
         variant: [p1, p3, p4]
@@ -50,9 +53,11 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      # -race 是硬门禁(经评审定稿,engineering.md §3.1)
-      # 三平台同款跑 -race,arm64 也跑(F3-#3c:本 PR 修的 trampoline LR slot
-      # bug 是并发型问题原型,arm64 端 -race 可能抓同款未来 bug)
+      # -race is a hard gate (finalized in review, engineering.md §3.1)
+      # All three platforms run -race the same way, arm64 included (F3-#3c:
+      # the trampoline LR-slot bug fixed in that PR is the prototype of a
+      # concurrency-shaped issue; arm64 -race may catch a future bug of the
+      # same kind)
       - name: go test (${{ matrix.variant }} / ${{ matrix.os }})
         run: |
           if [ -n "${{ matrix.tags }}" ]; then
@@ -64,21 +69,27 @@ jobs:
               -coverprofile=${{ matrix.cov_prefix }}-${{ matrix.os }}.out \
               -covermode=atomic ./...
           fi
-      # benchmarks 子模块只在 p1 build 跑功能测试(realworld oracle parity);
-      # 凸月 benchmark 由本仓 `make bench-p3`(本地)/ nightly-benchmark(未来 CI)覆盖
-      # **lua 5.1.5 oracle 装**:ubuntu apt 直接装(arm64 + amd64 都有 5.1.5);
-      # macOS homebrew 自 2024 年起已废弃 lua@5.1 formula(只剩 lua@5.4),
-      # 故从源码编译 5.1.5(7 MB tarball,~10s 编译)。
-      # **cache 策略**:缓 lua-5.1.5 编译产物目录(build artifact + bin/lua),
-      # restore 后 sudo make install 把 binary + 头文件 + lib 装到 /usr/local/
-      # (install 是 cp 操作 ~0.1s),并 ln -sf 标准入口名 lua5.1。
-      # cache key 含 runner.os + runner.arch + lua 版本,跨 runner image 复用。
+      # The benchmarks submodule used to run functional tests (realworld
+      # oracle parity) only under the p1 build; gibbous benchmarks are
+      # covered by `make bench-p3` locally / nightly-benchmark (future CI).
+      # **lua 5.1.5 oracle install**: ubuntu installs via apt directly
+      # (5.1.5 exists for both arm64 and amd64); macOS homebrew deprecated
+      # the lua@5.1 formula in 2024 (only lua@5.4 remains), so 5.1.5 is
+      # built from source (7 MB tarball, ~10s compile).
+      # **Cache strategy**: cache the lua-5.1.5 build output directory
+      # (build artifact + bin/lua); after restore, sudo make install copies
+      # binary + headers + lib into /usr/local/ (install is a cp, ~0.1s),
+      # then ln -sf the standard entry name lua5.1. The cache key includes
+      # runner.os + runner.arch + the lua version, reusable across runner
+      # images.
       #
-      # **三 variant 都需 lua5.1 oracle**:benchmarks/realworld 在 p1/p3/p4 下
-      # 都跑 oracle parity(TestRealWorld_OracleParity 无 build tag,出现在每
-      # 个 variant 的 benchmarks 子模块测试集中)。原 `matrix.variant == 'p1'`
-      # 守卫使 p3/p4 跳过 lua5.1 install + benchmarks test ⟹ binarytrees
-      # P3 升层 bug 等真 bug 长期不在 CI 抓到(2026-06-30 发现)。
+      # **All three variants need the lua5.1 oracle**: benchmarks/realworld
+      # runs oracle parity under p1/p3/p4 alike (TestRealWorld_OracleParity
+      # has no build tag and appears in every variant's benchmarks submodule
+      # test set). The old `matrix.variant == 'p1'` guard made p3/p4 skip
+      # the lua5.1 install + benchmarks tests => real bugs like the
+      # binarytrees P3 promotion bug went uncaught in CI for a long time
+      # (discovered 2026-06-30).
       - if: startsWith(matrix.os, 'macos')
         id: cache-lua51-test
         uses: actions/cache@v6
@@ -88,30 +99,34 @@ jobs:
       - if: startsWith(matrix.os, 'ubuntu')
         run: sudo apt-get update && sudo apt-get install -y lua5.1
       - if: startsWith(matrix.os, 'macos') && steps.cache-lua51-test.outputs.cache-hit != 'true'
-        # cache miss:下载 + 编译
+        # cache miss: download + build
         run: |
           curl -fsSL https://www.lua.org/ftp/lua-5.1.5.tar.gz | tar xz
           cd lua-5.1.5
           make macosx CC=cc
       - if: startsWith(matrix.os, 'macos')
-        # cache hit 或 miss 都跑 install + symlink(install 是 cp,可重复执行)
+        # install + symlink runs on both cache hit and miss (install is a cp, safe to repeat)
         run: |
           cd lua-5.1.5
           sudo make install INSTALL_TOP=/usr/local INSTALL_BIN=/usr/local/bin INSTALL_INC=/usr/local/include INSTALL_LIB=/usr/local/lib INSTALL_MAN=/usr/local/share/man/man1
           sudo ln -sf /usr/local/bin/lua /usr/local/bin/lua5.1
           lua5.1 -v
-      # benchmarks/ 子模块在三 variant 下都跑(用对应 build tag),让
-      # bench-realworld / bench-heavy / bench-baseline 类对拍/性能测试在
-      # p3/p4 build 下也被 CI 守门(本步漏掉是 binarytrees P3 升层 bug 长期
-      # 漏报的根因)。
+      # The benchmarks/ submodule runs under all three variants (with the
+      # matching build tags) so parity/perf tests like bench-realworld /
+      # bench-heavy / bench-baseline are CI-gated under p3/p4 builds too
+      # (skipping this step was the root cause of the long-unreported
+      # binarytrees P3 promotion bug).
       - if: matrix.tags == ''
         run: cd benchmarks && go test -race ./...
       - if: matrix.tags != ''
         run: cd benchmarks && go test -race -tags "${{ matrix.tags }}" ./...
-      # 交叉编译冒烟(只在 linux/amd64 跑,与 OS 无关,跨平台编译信号一次即可)。
-      # 项目承诺「不依赖 cgo,保持交叉编译能力」,32 位 GOARCH 的 int 宽度差异
-      # 曾导致编译失败而 amd64 门禁抓不到。P4 build cross 含 darwin/arm64 +
-      # linux/arm64,验 wangshu_p4 build tag 跨架构编译。
+      # Cross-compile smoke (linux/amd64 only; OS-independent, one signal
+      # for cross-platform compilability is enough). The project promises
+      # "no cgo dependency, cross-compilation preserved"; int-width
+      # differences on 32-bit GOARCH once broke the build in ways the amd64
+      # gate could not catch. The P4 cross build covers darwin/arm64 +
+      # linux/arm64 to verify the wangshu_p4 build tag compiles across
+      # architectures.
       - if: matrix.variant == 'p1' && matrix.os == 'ubuntu-latest'
         run: GOOS=linux GOARCH=386 go build ./...
       - if: matrix.variant == 'p1' && matrix.os == 'ubuntu-latest'
@@ -132,7 +147,7 @@ jobs:
     needs: test
     runs-on: ${{ matrix.os }}
     strategy:
-      fail-fast: false # P1/P3/P4 × os 独立 fuzz
+      fail-fast: false # P1/P3/P4 x os fuzz independently
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
         variant: [p1, p3, p4]
@@ -143,9 +158,10 @@ jobs:
         with:
           go-version-file: go.mod
       - run: make fuzz-${{ matrix.variant }}
-      # **F3-#3c PR #28**:fuzz fail 时上传 testdata/fuzz/ 失败 input
-      # (go test 默认写到这里,minimizer 完成后或 hang 时都会落盘),让后续
-      # 复现+修可以拿到具体输入。retention-days 30 与 difftest 同款。
+      # **F3-#3c PR #28**: on fuzz failure, upload the failing inputs under
+      # testdata/fuzz/ (go test writes there by default, both after the
+      # minimizer finishes and on hang) so later reproduction + fixing has
+      # the concrete input. retention-days 30 matches difftest.
       - if: failure()
         uses: actions/upload-artifact@v7
         with:
@@ -199,9 +215,12 @@ jobs:
           retention-days: 30
 
   conformance:
-    # M5/M9 后启用实际用例;占位 job 保持绿(test/conformance 空包时 go test 直接过)
-    # 矩阵覆盖:p1 = 新月解释器路径;p3 = 凸月升层后路径;p4 = JIT 升层后路径
-    # × 三平台(linux/amd64 + linux/arm64 + darwin/arm64),验跨平台一致
+    # Real cases enabled after M5/M9; the placeholder job stayed green
+    # (go test passes on an empty test/conformance package).
+    # Matrix coverage: p1 = crescent interpreter path; p3 = gibbous
+    # post-promotion path; p4 = JIT post-promotion path, x three platforms
+    # (linux/amd64 + linux/arm64 + darwin/arm64) for cross-platform
+    # consistency
     needs: test
     runs-on: ${{ matrix.os }}
     strategy:
@@ -218,9 +237,12 @@ jobs:
       - run: make conformance-${{ matrix.variant }}
 
   difftest:
-    # M14 启用差分 fuzz;此前只校验 oracle 供给路径
-    # 矩阵覆盖:p1/p3/p4 三档(V1-V13 三方逐字节验收口径)× 三平台
-    # 需 lua5.1 二进制 oracle(check-oracle.sh 强校验版本 5.1.5)
+    # Differential fuzz enabled at M14; before that only the oracle supply
+    # path was validated.
+    # Matrix coverage: p1/p3/p4 (the V1-V13 three-way byte-equal acceptance
+    # bar) x three platforms.
+    # Needs the lua5.1 binary oracle (check-oracle.sh strictly verifies
+    # version 5.1.5)
     needs: test
     runs-on: ${{ matrix.os }}
     strategy:
@@ -243,13 +265,13 @@ jobs:
       - if: startsWith(matrix.os, 'ubuntu')
         run: sudo apt-get update && sudo apt-get install -y lua5.1
       - if: startsWith(matrix.os, 'macos') && steps.cache-lua51-difftest.outputs.cache-hit != 'true'
-        # cache miss:下载 + 编译(macOS homebrew 自 2024 年起已废弃 lua@5.1)
+        # cache miss: download + build (macOS homebrew deprecated lua@5.1 in 2024)
         run: |
           curl -fsSL https://www.lua.org/ftp/lua-5.1.5.tar.gz | tar xz
           cd lua-5.1.5
           make macosx CC=cc
       - if: startsWith(matrix.os, 'macos')
-        # install + symlink(install 是 cp,可重复执行;cache hit 或 miss 都跑)
+        # install + symlink (install is a cp, safe to repeat; runs on both cache hit and miss)
         run: |
           cd lua-5.1.5
           sudo make install INSTALL_TOP=/usr/local INSTALL_BIN=/usr/local/bin INSTALL_INC=/usr/local/include INSTALL_LIB=/usr/local/lib INSTALL_MAN=/usr/local/share/man/man1
