@@ -1965,6 +1965,24 @@ func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
 		bytecode.Op(proto.Code[retIdx]) != bytecode.RETURN {
 		return shapeInfo{}, false
 	}
+	// Every instruction strictly between the CALL and the RETURN must be a
+	// multi-return MOVE copy (R(callA+nret+k) <- R(callA+k)); the call-void
+	// prelude places all argument loads BEFORE the CALL. Any other op here
+	// (e.g. SETGLOBAL / a return-slot-overwriting LOADK doing real work)
+	// means this is NOT a call-void form — reject so it routes to a
+	// faithful path instead of silently dropping those ops and returning
+	// the CALL result. The clC>=3 N-return getter branch re-validates the
+	// exact MOVE operands below; this guard also covers the clC==1 setter
+	// and clC==2 1-return getter branches, which otherwise never inspected
+	// the gap. (Nightly oracle fuzz #136: a length-6 proto
+	// `GETUPVAL; CALL 0 1 2; SETGLOBAL 0; LOADK 0; RETURN 0 2` was
+	// mis-accepted as a 1-return getter, so the callee closure was returned
+	// instead of the LOADK'd 0 once the proto was entered a second time.)
+	for k := callIdx + 1; k < retIdx; k++ {
+		if bytecode.Op(proto.Code[k]) != bytecode.MOVE {
+			return shapeInfo{}, false
+		}
+	}
 	clA := bytecode.A(proto.Code[callIdx])
 	clB := bytecode.B(proto.Code[callIdx])
 	clC := bytecode.C(proto.Code[callIdx])
