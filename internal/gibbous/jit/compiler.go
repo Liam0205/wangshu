@@ -2003,11 +2003,21 @@ func analyzeCallVoidForm(proto *bytecode.Proto) (shapeInfo, bool) {
 	var retACalc, retBCalc uint8
 	var multiRet uint8
 	if clC == 1 && rtB == 1 {
-		// setter 形态
+		// setter 形态:0 返值,RETURN 紧跟 CALL,中间无指令。
+		if retIdx != callIdx+1 {
+			return shapeInfo{}, false
+		}
 		retACalc = 0
 		retBCalc = 1
 	} else if clC == 2 && rtB == 2 {
-		// getter 1 返形态:RETURN.A 必须 = callA(被调返回值落 R(callA))
+		// getter 1 返形态:RETURN.A 必须 = callA(被调返回值落 R(callA))。
+		// 1 返值不需要中间 MOVE 拷贝,RETURN 紧跟 CALL,中间无指令 —— luac
+		// 从不在此夹指令。显式断言无间隙(比上方 CALL..RETURN 全 MOVE 守卫
+		// 更严的不变量),防未来新增把 callIdx/retIdx 拉开的分派分支在
+		// clC<3 时静默吞掉夹在中间的 MOVE(nightly fuzz #136 的加固面)。
+		if retIdx != callIdx+1 {
+			return shapeInfo{}, false
+		}
 		if rtA != clA {
 			return shapeInfo{}, false
 		}
