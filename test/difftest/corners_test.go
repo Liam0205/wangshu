@@ -1,9 +1,12 @@
-// Manual-corner probes + explicit exemptions(10 §11 提供面三列的探测面镜像)。
+// Manual-corner probes + explicit exemptions (a probe-surface mirror of the
+// three provisioning columns in 10 §11).
 //
-// 三类条目:
-//   - probe(必做列):对拍 oracle,缺失/不一致 = FAIL;
-//   - exempt(❌ 缺口列 / 设计豁免):显式 skip + 设计文档出处——区分"豁免"与"漏了";
-//   - approx(△ 简化列的不可逐字节比项):只验证存在性/形态,不比值。
+// Three kinds of entries:
+//   - probe (required column): difftest oracle; missing/mismatched = FAIL;
+//   - exempt (❌ gap column / design exemption): explicit skip + design-doc
+//     citation — distinguishes "exempted" from "missed";
+//   - approx (△ simplified column, items not byte-comparable): only checks
+//     existence/shape, does not compare values.
 package difftest
 
 import (
@@ -12,17 +15,19 @@ import (
 	"github.com/Liam0205/wangshu"
 )
 
-// cornerProbes:10 §11 必做列中此前未覆盖的边角(对拍 oracle)。
+// cornerProbes: corners in the required columns of 10 §11 not covered before
+// (difftest oracle).
 var cornerProbes = []diffCase{
-	// base 必做列补充
+	// base required-column supplements
 	{"corner_G_identity", `return _G._G == _G, type(_G)`},
 	{"corner_VERSION", `return _VERSION`},
 	{"corner_global_via_G", `x_corner = 42; return _G.x_corner`},
 	{"corner_unpack_global", `return unpack({7, 8, 9})`},
 
-	// string 共享元表(PUC per-type 元表对拍;PR review 阻塞项 2:
-	// 元表不只 __index 可见——__add/__tostring/__concat/__lt 等全部
-	// 经共享元表生效,且脚本改动全局可见)
+	// string shared metatable (PUC per-type metatable difftest; PR review
+	// blocker item 2: the metatable exposes more than __index — __add/
+	// __tostring/__concat/__lt etc. all take effect through the shared
+	// metatable, and script mutations are globally visible)
 	{"corner_strmt_shape", `local mt = getmetatable("") return type(mt), mt.__index == string, getmetatable("x") == mt`},
 	{"corner_strmt_add", `getmetatable("").__add = function(a, b) return 42 end return "x" + "y"`},
 	{"corner_strmt_tostring", `getmetatable("").__tostring = function(s) return "S:" .. string.len(s) end return tostring("abc")`},
@@ -39,25 +44,29 @@ local s = "b"
 s.k = "v"
 return sink.k`},
 
-	// math 必做列:atan2/frexp/ldexp/sinh/cosh/tanh(此前未实现/未测)
+	// math required column: atan2/frexp/ldexp/sinh/cosh/tanh (previously
+	// unimplemented/untested)
 	{"corner_math_atan2", `return math.atan2(1, 1) > 0.78 and math.atan2(1, 1) < 0.79`},
 	{"corner_math_frexp", `return math.frexp(8)`},
 	{"corner_math_ldexp", `return math.ldexp(0.5, 4)`},
 	{"corner_math_hyperbolic", `
 return math.sinh(0), math.cosh(0), math.tanh(0)`},
 
-	// os 必做列:difftime
+	// os required column: difftime
 	{"corner_os_difftime", `return os.difftime(100, 40)`},
 
-	// table 简化列:setn(5.1.5 实测报 obsolete,对拍报错文本)
+	// table simplified column: setn (5.1.5 reports obsolete in practice;
+	// difftest the error text)
 	{"corner_table_setn", `
 local ok, e = pcall(function() table.setn({}, 1) end)
 return ok, (e:gsub("^[^:]+:%d+: ", ""))`},
 
-	// io 必做列:read 的存在性经 approx 验证(交互输入不可对拍);write 已测
-	// string 必做列已全覆盖(pattern 全集);string.dump 在豁免列
+	// io required column: read's existence is verified via approx
+	// (interactive input can't be difftested); write is already tested
+	// string required column fully covered (full pattern set); string.dump
+	// is in the exemption column
 
-	// coroutine 必做列已全覆盖
+	// coroutine required column fully covered
 
 	// —— Issue #125: `return <single-non-call-expr-with-jump-chain>`
 	// codegen read a pre-captured freereg for RETURN's A instead of
@@ -90,7 +99,8 @@ local function f() for A = 0, 0 do end end
 return (not f()) and f()`},
 }
 
-// exemptions:设计豁免清单(10 §11 ❌ 列 + 正文裁量),显式记录防"漏了"误判。
+// exemptions: the design-exemption list (10 §11 ❌ columns + prose
+// discretion), recorded explicitly to guard against "missed" misjudgments.
 var exemptions = []struct {
 	name   string
 	reason string
@@ -112,7 +122,7 @@ var exemptions = []struct {
 	{"loadfile/dofile 默认禁用", "文件系统读默认关(不可信脚本越权探测面);Options.AllowFileLoad 显式开启后行为对齐官方"},
 }
 
-// TestDiff_CornerProbes 对拍手册边角必做项。
+// TestDiff_CornerProbes difftests the handbook's required corner-case items.
 func TestDiff_CornerProbes(t *testing.T) {
 	oracle := findOracle()
 	if oracle == "" {
@@ -130,9 +140,10 @@ func TestDiff_CornerProbes(t *testing.T) {
 	}
 }
 
-// TestExemptions_Documented 把设计豁免清单固化为显式 skip 记录:
-// 每项产生一个 SKIP 测试,豁免面一目了然(go test -v 可审计);
-// 若未来某豁免被实现,应从此表移除并加入 probe。
+// TestExemptions_Documented pins the design-exemption list down as explicit
+// skip records: each item produces one SKIP test, so the exemption surface is
+// obvious at a glance (auditable via go test -v); if some exemption is ever
+// implemented, it should be dropped from this table and added as a probe.
 func TestExemptions_Documented(t *testing.T) {
 	for _, e := range exemptions {
 		t.Run(e.name, func(t *testing.T) {
@@ -141,8 +152,10 @@ func TestExemptions_Documented(t *testing.T) {
 	}
 }
 
-// TestApprox_ExistenceOnly 验证 △ 简化列的"存在但不可逐字节比"项:
-// 只断言可调用且返回形态正确,不比值(10 §13 可观察不可比清单)。
+// TestApprox_ExistenceOnly verifies the △ simplified-column "present but not
+// byte-comparable" items: it only asserts that they are callable and return
+// the correct shape, without comparing values (10 §13 observable-but-
+// incomparable list).
 func TestApprox_ExistenceOnly(t *testing.T) {
 	cases := []struct {
 		name string

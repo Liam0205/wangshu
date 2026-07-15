@@ -1,19 +1,20 @@
-// Table 对象布局(01 §5.2,含回填:word5 高 32 位 = gen 代次):
+// Table object layout (01 §5.2, incl. backfill: word5 high 32 bits = gen generation):
 //
-//	word0: GCHeader (otype=TABLE; flags bit0 = 有 metatable)
-//	word1: [31:0] asize(数组槽数) | [63:32] hmask(哈希槽数-1,2 的幂)
+//	word0: GCHeader (otype=TABLE; flags bit0 = has metatable)
+//	word1: [31:0] asize (array slot count) | [63:32] hmask (hash slot count-1, power of two)
 //	word2: arrayRef  (GCRef→ Value[asize])
 //	word3: nodeRef   (GCRef→ Node[hmask+1])
-//	word4: metaRef   (GCRef→ metatable Table,或 0)
-//	word5: [31:0] lastfree(哈希空闲槽搜索游标) | [63:32] gen(IC 代次)
+//	word4: metaRef   (GCRef→ metatable Table, or 0)
+//	word5: [31:0] lastfree (hash free-slot search cursor) | [63:32] gen (IC generation)
 //
-// Node(哈希槽,3 字 = 24 字节):
+// Node (hash slot, 3 words = 24 bytes):
 //
 //	word0: key   (Value)
 //	word1: val   (Value)
-//	word2: [31:0] next(int32,链入冲突链;-1=无) | [63:32] reserved
+//	word2: [31:0] next (int32, links into collision chain; -1=none) | [63:32] reserved
 //
-// 关键:Table 头是 6 字头对象;array/node 段是无 GCHeader 的附属块。
+// Key point: the Table head is a 6-word head object; the array/node segments are
+// attached blocks without a GCHeader.
 package object
 
 import (
@@ -31,7 +32,7 @@ const (
 	nodeWords        = 3
 )
 
-// 标志位(GCHeader.flags,4 bit;01 §5.2 bit0 = hasMeta,bit1/bit2 = weak k/v 缓存)
+// Flag bits (GCHeader.flags, 4 bits; 01 §5.2 bit0 = hasMeta, bit1/bit2 = weak k/v cache)
 const (
 	tableFlagHasMeta uint8 = 1 << 0
 	tableFlagWeakKey uint8 = 1 << 1
@@ -39,7 +40,8 @@ const (
 )
 
 // AllocTable allocates a Table head with the given pre-allocated array/hash sizes.
-// asize/hsize 0 时不分配对应附属块(arrayRef/nodeRef 留 0);hsize 必须为 2 的幂或 0。
+// When asize/hsize is 0 the corresponding attached block is not allocated
+// (arrayRef/nodeRef left as 0); hsize must be a power of two or 0.
 func AllocTable(a *arena.Arena, asize, hsize uint32) arena.GCRef {
 	if hsize != 0 && (hsize&(hsize-1)) != 0 {
 		panic("object: hsize must be a power of two")
@@ -47,7 +49,7 @@ func AllocTable(a *arena.Arena, asize, hsize uint32) arena.GCRef {
 	headRef := allocateRaw(a, OBJ_TABLE, tableHeadWords, 0)
 	var arrayRef, nodeRef arena.GCRef
 	if asize > 0 {
-		arrayRef = a.AllocWords(asize) // 附属块,无 GCHeader
+		arrayRef = a.AllocWords(asize) // attached block, no GCHeader
 		initArraySlots(a, arrayRef, asize)
 	}
 	if hsize > 0 {
@@ -66,7 +68,7 @@ func AllocTable(a *arena.Arena, asize, hsize uint32) arena.GCRef {
 	return headRef
 }
 
-// TableASize / THMask / TableArrayRef / TableNodeRef / TableMetaRef 字段访问。
+// TableASize / THMask / TableArrayRef / TableNodeRef / TableMetaRef field accessors.
 func TableASize(a *arena.Arena, t arena.GCRef) uint32 {
 	return uint32(wordAt(a, t, tableSizesIdx))
 }
@@ -96,7 +98,7 @@ func TableMetaRef(a *arena.Arena, t arena.GCRef) arena.GCRef {
 	return arena.GCRef(wordAt(a, t, tableMetaIdx))
 }
 
-// SetTableMeta 设置 metatable,同步更新 flags 的 hasMeta 位 + bump gen(05 §6.5)。
+// SetTableMeta sets the metatable, syncing the hasMeta flag bit + bumping gen (05 §6.5).
 func SetTableMeta(a *arena.Arena, t arena.GCRef, meta arena.GCRef) {
 	setWordAt(a, t, tableMetaIdx, uint64(meta))
 	h := HeaderOf(a, t)
@@ -107,15 +109,15 @@ func SetTableMeta(a *arena.Arena, t arena.GCRef, meta arena.GCRef) {
 		flags |= tableFlagHasMeta
 	}
 	SetHeader(a, t, SetFlags(h, flags))
-	BumpGen(a, t) // metatable 改变 → IC 代次失效
+	BumpGen(a, t) // metatable changed → IC generation invalidated
 }
 
-// TableHasMeta:flags bit0 的快判位。
+// TableHasMeta: fast check of flags bit0.
 func TableHasMeta(a *arena.Arena, t arena.GCRef) bool {
 	return FlagsOf(HeaderOf(a, t))&tableFlagHasMeta != 0
 }
 
-// TableGen / BumpGen:IC 代次(05 §6 / 01 §5.2 回填)。
+// TableGen / BumpGen: IC generation (05 §6 / 01 §5.2 backfill).
 func TableGen(a *arena.Arena, t arena.GCRef) uint32 {
 	return uint32(wordAt(a, t, tableLastFreeGen) >> 32)
 }
@@ -126,7 +128,8 @@ func BumpGen(a *arena.Arena, t arena.GCRef) {
 	setWordAt(a, t, tableLastFreeGen, uint64(uint32(w))|uint64(gen)<<32)
 }
 
-// TableLastFree / SetTableLastFree:哈希空闲槽搜索游标(P1 简化:存槽索引,实现期再调)。
+// TableLastFree / SetTableLastFree: hash free-slot search cursor (P1 simplification:
+// stores the slot index, to be revised during implementation).
 func TableLastFree(a *arena.Arena, t arena.GCRef) uint32 {
 	return uint32(wordAt(a, t, tableLastFreeGen))
 }
@@ -136,14 +139,15 @@ func SetTableLastFree(a *arena.Arena, t arena.GCRef, lf uint32) {
 	setWordAt(a, t, tableLastFreeGen, uint64(lf)|(w&0xFFFFFFFF00000000))
 }
 
-// SetTableArray 替换数组段(rehash 用):arrayRef 0 = 无数组段。
+// SetTableArray replaces the array segment (used by rehash): arrayRef 0 = no array segment.
 func SetTableArray(a *arena.Arena, t arena.GCRef, arrayRef arena.GCRef, asize uint32) {
 	w := wordAt(a, t, tableSizesIdx)
 	setWordAt(a, t, tableSizesIdx, uint64(asize)|(w&0xFFFFFFFF00000000))
 	setWordAt(a, t, tableArrayIdx, uint64(arrayRef))
 }
 
-// SetTableNode 替换哈希段(rehash 用):nodeRef 0 = 无哈希段(hmask 同时清 0)。
+// SetTableNode replaces the hash segment (used by rehash): nodeRef 0 = no hash segment
+// (hmask cleared to 0 at the same time).
 func SetTableNode(a *arena.Arena, t arena.GCRef, nodeRef arena.GCRef, hsize uint32) {
 	hmask := uint32(0)
 	if hsize > 0 {
@@ -154,9 +158,10 @@ func SetTableNode(a *arena.Arena, t arena.GCRef, nodeRef arena.GCRef, hsize uint
 	setWordAt(a, t, tableNodeIdx, uint64(nodeRef))
 }
 
-// initArraySlots 批量把数组段初始化为 Nil:raw 0 会被解读为数字 +0.0
-// (合法 Value),不能依赖零值。直接拿字视图切片紧循环写,免逐槽
-// SetWordAt 的对齐/边界检查(NEWTABLE 是分配热路径)。
+// initArraySlots bulk-initializes the array segment to Nil: a raw 0 would be read
+// as the number +0.0 (a valid Value), so the zero value cannot be relied upon. It
+// slices the word view directly and writes in a tight loop, avoiding the per-slot
+// alignment/bounds checks of SetWordAt (NEWTABLE is an allocation hot path).
 func initArraySlots(a *arena.Arena, ref arena.GCRef, asize uint32) {
 	w := a.Words()[ref>>3 : (ref>>3)+arena.GCRef(asize)]
 	for i := range w {
@@ -164,7 +169,7 @@ func initArraySlots(a *arena.Arena, ref arena.GCRef, asize uint32) {
 	}
 }
 
-// initNodeSlots 批量初始化哈希段(key/val=Nil, next=-1)。
+// initNodeSlots bulk-initializes the hash segment (key/val=Nil, next=-1).
 func initNodeSlots(a *arena.Arena, ref arena.GCRef, hsize uint32) {
 	w := a.Words()[ref>>3 : (ref>>3)+arena.GCRef(hsize*nodeWords)]
 	for i := uint32(0); i < hsize; i++ {
@@ -175,22 +180,22 @@ func initNodeSlots(a *arena.Arena, ref arena.GCRef, hsize uint32) {
 	}
 }
 
-// AllocTableArray 分配一个 asize 槽的数组附属块(全 Nil 初始化)。
+// AllocTableArray allocates an asize-slot array attached block (all-Nil initialized).
 func AllocTableArray(a *arena.Arena, asize uint32) arena.GCRef {
 	ref := a.AllocWords(asize)
 	initArraySlots(a, ref, asize)
 	return ref
 }
 
-// AllocTableNode 分配一个 hsize 槽的哈希附属块(key/val=Nil, next=-1)。
-// hsize 必须是 2 的幂。
+// AllocTableNode allocates an hsize-slot hash attached block (key/val=Nil, next=-1).
+// hsize must be a power of two.
 func AllocTableNode(a *arena.Arena, hsize uint32) arena.GCRef {
 	ref := a.AllocWords(nodeWords * hsize)
 	initNodeSlots(a, ref, hsize)
 	return ref
 }
 
-// 数组段访问。
+// Array segment accessors.
 func TableArrayAt(a *arena.Arena, t arena.GCRef, i uint32) value.Value {
 	arr := TableArrayRef(a, t)
 	return value.Value(a.WordAt(arr + arena.GCRef(i*8)))
@@ -201,7 +206,7 @@ func SetTableArrayAt(a *arena.Arena, t arena.GCRef, i uint32, v value.Value) {
 	a.SetWordAt(arr+arena.GCRef(i*8), uint64(v))
 }
 
-// 哈希节点访问(idx 0..hmask)。
+// Hash node accessors (idx 0..hmask).
 func NodeKey(a *arena.Arena, t arena.GCRef, idx uint32) value.Value {
 	node := TableNodeRef(a, t)
 	return value.Value(a.WordAt(node + arena.GCRef(idx*nodeWords*8)))
@@ -222,14 +227,16 @@ func SetNode(a *arena.Arena, t arena.GCRef, idx uint32, key, val value.Value, ne
 	base := node + arena.GCRef(idx*nodeWords*8)
 	a.SetWordAt(base, uint64(key))
 	a.SetWordAt(base+8, uint64(val))
-	// next 占低 32 位,高 32 位 reserved。保留高 32 位现状(目前恒 0)。
+	// next occupies the low 32 bits, the high 32 bits are reserved. Preserve the
+	// current high 32 bits (currently always 0).
 	a.SetWordAt(base+16, uint64(uint32(next)))
 }
 
-// TableWeakMode 返回弱表模式:'k'/'v'/'a'(both)/0(强表)。
+// TableWeakMode returns the weak-table mode: 'k'/'v'/'a'(both)/0(strong table).
 //
-// 模式缓存在 GCHeader.flags 的 bit1/bit2(setmetatable 时由 SetTableWeakFlags
-// 写入——GC 不在 mark 阶段解析 __mode 字符串,06 §8.4 协作纪律)。
+// The mode is cached in GCHeader.flags bit1/bit2 (written by SetTableWeakFlags at
+// setmetatable time -- GC does not parse the __mode string during the mark phase,
+// 06 §8.4 cooperation discipline).
 func TableWeakMode(a *arena.Arena, t arena.GCRef) byte {
 	f := FlagsOf(HeaderOf(a, t))
 	wk := f&tableFlagWeakKey != 0
@@ -245,7 +252,7 @@ func TableWeakMode(a *arena.Arena, t arena.GCRef) byte {
 	return 0
 }
 
-// SetTableWeakFlags 写弱表模式缓存位(setmetatable 时调用,07 §13)。
+// SetTableWeakFlags writes the weak-table mode cache bits (called at setmetatable time, 07 §13).
 func SetTableWeakFlags(a *arena.Arena, t arena.GCRef, weakKey, weakVal bool) {
 	h := HeaderOf(a, t)
 	f := FlagsOf(h)

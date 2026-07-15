@@ -1,32 +1,36 @@
 //go:build wangshu_p4 && darwin && arm64 && cgo
 
-// Package jitcgo darwin/arm64 后端 cgo 隔离子包 —— 只导出 cgo 不可避免的两个
-// 原语(pthread_jit_write_protect_np + sys_icache_invalidate),其余 mmap /
-// munmap 由父包用 golang.org/x/sys/unix 纯 Go syscall 直接调。
+// Package jitcgo is the cgo-isolation subpackage for the darwin/arm64 backend — it exports only
+// the two primitives that cgo makes unavoidable (pthread_jit_write_protect_np +
+// sys_icache_invalidate); the rest, mmap / munmap, are called directly by the parent package via
+// golang.org/x/sys/unix pure-Go syscalls.
 //
-// **独立子包目的**(F1 修复):承父包 internal/gibbous/jit/arm64 含 Plan 9
-// arm64 汇编(trampoline_arm64.s / flushcache_arm64.s),Go 工具链规则
-// 「同一 package 启用 cgo 时不能含 Plan 9 .s 文件」(macos-latest CI 实证报
-// `package using cgo has Go assembly file trampoline_arm64.s`)。
+// **Purpose of the standalone subpackage** (F1 fix): the parent package internal/gibbous/jit/arm64
+// contains Plan 9 arm64 assembly (trampoline_arm64.s / flushcache_arm64.s), and the Go toolchain
+// rule "a package with cgo enabled may not contain Plan 9 .s files" (macos-latest CI confirmed
+// this by reporting `package using cgo has Go assembly file trampoline_arm64.s`).
 //
-// 解法:把 cgo 实装隔离到本独立 package,父包通过函数调用走 forward,父包
-// 自己不 import "C",仍是非 cgo 包,Plan 9 asm 兼容。
+// Solution: isolate the cgo implementation into this standalone package; the parent package
+// forwards to it through function calls, does not import "C" itself, remains a non-cgo package,
+// and stays Plan 9 asm compatible.
 //
-// 承 docs/design/p4-method-jit/05-system-pipeline.md §2.1 exec mmap 协议 +
-// §2.3 arm64 icache flush 协议 + tmp/wangshu-p4-todo.md §三 darwin/arm64
-// W^X 真实装。
+// Per docs/design/p4-method-jit/05-system-pipeline.md §2.1 exec mmap protocol + §2.3 arm64 icache
+// flush protocol + tmp/wangshu-p4-todo.md §III darwin/arm64 W^X implementation.
 //
-// **macOS 专属约束**:
-//  1. mmap 必须带 MAP_JIT(0x800)flag — 由父包传 unix.MAP_JIT 给 unix.Mmap;
-//  2. W^X 翻面经 pthread_jit_write_protect_np(0=可写,1=可执行)切换;
-//     **线程局部状态**,故 caller(父包)负责 runtime.LockOSThread + defer
-//     UnlockOSThread 钉线程防 goroutine 调度污染其它 goroutine 可写态;
-//  3. icache flush 用 sys_icache_invalidate(libkern/OSCacheControl.h)
-//     而非 linux 端的手写 DC CVAU/IC IVAU。
+// **macOS-specific constraints**:
+//  1. mmap must carry the MAP_JIT (0x800) flag — the parent package passes unix.MAP_JIT to
+//     unix.Mmap;
+//  2. the W^X flip is done via pthread_jit_write_protect_np (0=writable, 1=executable);
+//     it is **thread-local state**, so the caller (parent package) is responsible for
+//     runtime.LockOSThread + defer UnlockOSThread to pin the thread and prevent goroutine
+//     scheduling from polluting other goroutines' writable state;
+//  3. icache flush uses sys_icache_invalidate (libkern/OSCacheControl.h) rather than the
+//     hand-written DC CVAU / IC IVAU on the linux side.
 //
-// **cgo 隔离纪律**(承用户拍板方案 I):build tag 第四位 `cgo` 严守 — 主库
-// 默认 build(CGO_ENABLED=0 cross-build 或 amd64 主路径)走父包
-// codepage_other.go stub,只有 macos-latest CI 启用 cgo 时才链本子包真实装。
+// **cgo isolation discipline** (per the user-decided plan I): the fourth build-tag position `cgo`
+// is strictly enforced — the main library's default build (CGO_ENABLED=0 cross-build or the amd64
+// main path) takes the parent package's codepage_other.go stub, and only the macos-latest CI with
+// cgo enabled links this subpackage's real implementation.
 package jitcgo
 
 /*
@@ -37,37 +41,38 @@ import "C"
 
 import "unsafe"
 
-// JITWriteProtectEnter 切线程的 JIT 段为「可写不可执行」态。
+// JITWriteProtectEnter switches the thread's JIT region to the "writable, non-executable" state.
 //
-// macOS arm64 强制 W^X,经 pthread_jit_write_protect_np(0)进入可写态。
-// **caller 必须在 runtime.LockOSThread 区内调用**(pthread_jit_write_protect_np
-// 影响线程局部状态)。
+// macOS arm64 enforces W^X; enters the writable state via pthread_jit_write_protect_np(0).
+// **The caller must invoke this inside a runtime.LockOSThread region** (pthread_jit_write_protect_np
+// affects thread-local state).
 //
-// 用例:父包 codepage_darwin.go::MmapCode 在 unix.Mmap MAP_JIT 段后、
-// copy(mem, code) 前调本函数进入可写态。
+// Use case: the parent package's codepage_darwin.go::MmapCode calls this to enter the writable
+// state after unix.Mmap on the MAP_JIT region and before copy(mem, code).
 func JITWriteProtectEnter() {
 	C.pthread_jit_write_protect_np(0)
 }
 
-// JITWriteProtectExit 切线程的 JIT 段为「可执行不可写」态(RX)。
+// JITWriteProtectExit switches the thread's JIT region to the "executable, non-writable" state (RX).
 //
-// 对位 JITWriteProtectEnter,经 pthread_jit_write_protect_np(1)翻 RX。
-// **caller 必须在 runtime.LockOSThread 区内调用**。
+// The counterpart to JITWriteProtectEnter; flips to RX via pthread_jit_write_protect_np(1).
+// **The caller must invoke this inside a runtime.LockOSThread region**.
 //
-// 用例:父包 codepage_darwin.go::MmapCode 在 copy(mem, code) 后调本函数
-// 翻 RX,接下来调 ICacheInvalidate 刷 i-cache。
+// Use case: the parent package's codepage_darwin.go::MmapCode calls this to flip to RX after
+// copy(mem, code), then calls ICacheInvalidate to flush the i-cache.
 func JITWriteProtectExit() {
 	C.pthread_jit_write_protect_np(1)
 }
 
-// ICacheInvalidate 经 libSystem sys_icache_invalidate 刷段的 i-cache。
+// ICacheInvalidate flushes the region's i-cache via libSystem sys_icache_invalidate.
 //
-// macOS arm64 必需 —— 写完段后必须刷 i-cache,否则 CPU 取指会取到 i-cache
-// 旧内容(承 05 §2.3.1)。macOS 不暴露 EL0 cache 维护指令(DC CVAU / IC IVAU),
-// 必须经 libSystem syscall。
+// Required on macOS arm64 — after writing the region the i-cache must be flushed, otherwise the
+// CPU's instruction fetch would pick up stale i-cache contents (per 05 §2.3.1). macOS does not
+// expose the EL0 cache-maintenance instructions (DC CVAU / IC IVAU), so it must go through a
+// libSystem syscall.
 //
-// **参数**:addr / length 描述要刷的段范围(unsafe.Pointer 来自父包 mmap
-// 返回的 mem[0] 地址)。
+// **Parameters**: addr / length describe the region range to flush (unsafe.Pointer is the address
+// of mem[0] returned by the parent package's mmap).
 func ICacheInvalidate(addr unsafe.Pointer, length uintptr) {
 	C.sys_icache_invalidate(addr, C.size_t(length))
 }

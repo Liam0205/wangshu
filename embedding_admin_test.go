@@ -7,8 +7,9 @@ import (
 	"github.com/Liam0205/wangshu"
 )
 
-// TestArenaOptions_DefaultZeroValue 验证 issue #11 方向 2:Options.InitialArenaBytes/
-// MaxArenaBytes 零值时退默认(arena 64 KiB 初始 / 2 GiB 上限),NewState 不 panic。
+// TestArenaOptions_DefaultZeroValue verifies issue #11 direction 2: when
+// Options.InitialArenaBytes/MaxArenaBytes are zero they fall back to defaults
+// (arena 64 KiB initial / 2 GiB cap), and NewState does not panic.
 func TestArenaOptions_DefaultZeroValue(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{})
 	cap0 := st.ArenaCapKB()
@@ -17,7 +18,7 @@ func TestArenaOptions_DefaultZeroValue(t *testing.T) {
 	}
 }
 
-// TestArenaOptions_InitialBytes 验证 InitialArenaBytes 真传到 arena.Cap()。
+// TestArenaOptions_InitialBytes verifies InitialArenaBytes is really passed through to arena.Cap().
 func TestArenaOptions_InitialBytes(t *testing.T) {
 	const want = uint32(1 << 20) // 1 MiB
 	st := wangshu.NewState(wangshu.Options{InitialArenaBytes: want})
@@ -27,11 +28,12 @@ func TestArenaOptions_InitialBytes(t *testing.T) {
 	}
 }
 
-// TestArenaOptions_MaxBytesFailFast 验证 MaxArenaBytes 上限触发 grow64 fail-fast。
-// 上限设 256 KiB(足够 stdlib 装载),然后反复构造大表必然超限。
+// TestArenaOptions_MaxBytesFailFast verifies the MaxArenaBytes cap triggers grow64 fail-fast.
+// The cap is set to 256 KiB (enough to load stdlib), then repeatedly building large tables
+// is bound to exceed it.
 func TestArenaOptions_MaxBytesFailFast(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{
-		MaxArenaBytes: 256 * 1024, // 256 KiB:够 stdlib,不够大表
+		MaxArenaBytes: 256 * 1024, // 256 KiB: enough for stdlib, not for large tables
 	})
 	defer func() {
 		r := recover()
@@ -47,12 +49,12 @@ func TestArenaOptions_MaxBytesFailFast(t *testing.T) {
 	}
 }
 
-// TestArenaCapKB_TracksGrow 验证 ArenaCapKB 随大分配单调上涨(grow-only,
-// issue #11 现状)。
+// TestArenaCapKB_TracksGrow verifies ArenaCapKB rises monotonically with large allocations
+// (grow-only, issue #11 current state).
 func TestArenaCapKB_TracksGrow(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{InitialArenaBytes: 16 * 1024})
 	cap0 := st.ArenaCapKB()
-	// 构造一个大表,逼迫 arena grow
+	// Build a large table to force the arena to grow
 	tv := st.NewTable()
 	for i := 0; i < 2000; i++ {
 		_ = tv.AsTable().SetIndex(i+1, wangshu.Number(float64(i)))
@@ -63,11 +65,11 @@ func TestArenaCapKB_TracksGrow(t *testing.T) {
 	}
 }
 
-// TestCollect_FreesUnreferenced 验证 issue #9 方向 2:State.Collect() 真触发
-// 一次 sweep,GCCountKB 落回(类似 collectgarbage("collect"))。
+// TestCollect_FreesUnreferenced verifies issue #9 direction 2: State.Collect() really triggers
+// one sweep and GCCountKB drops back (similar to collectgarbage("collect")).
 func TestCollect_FreesUnreferenced(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{})
-	// 制造一些垃圾(Release 后即可回收)
+	// Produce some garbage (reclaimable once Released)
 	for r := 0; r < 100; r++ {
 		tv := st.NewTable()
 		for i := 0; i < 50; i++ {
@@ -83,23 +85,24 @@ func TestCollect_FreesUnreferenced(t *testing.T) {
 	}
 }
 
-// TestMaybeCollectNow_Idempotent 验证 MaybeCollectNow 不超阈不 collect(no-op
-// 安全),超阈时 collect。
+// TestMaybeCollectNow_Idempotent verifies MaybeCollectNow does not collect below the threshold
+// (no-op safe), and collects when over the threshold.
 func TestMaybeCollectNow_Idempotent(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{})
 	cap0 := st.ArenaCapKB()
 	st.MaybeCollectNow()
 	cap1 := st.ArenaCapKB()
-	// MaybeCollectNow 不改 backing 容量(只可能缩 GCCountKB)
+	// MaybeCollectNow does not change backing capacity (it can only shrink GCCountKB)
 	if cap0 != cap1 {
 		t.Fatalf("MaybeCollectNow changed ArenaCapKB unexpectedly: before=%.1f after=%.1f", cap0, cap1)
 	}
 }
 
-// TestSetHostTriggeredCollect_OptInOffByDefault 验证 #9 方向 1 默认 off,
-// 开启后 AllocCharge 跨阈真触发 collect。
+// TestSetHostTriggeredCollect_OptInOffByDefault verifies #9 direction 1 is off by default,
+// and once enabled AllocCharge crossing the threshold really triggers a collect.
 func TestSetHostTriggeredCollect_OptInOffByDefault(t *testing.T) {
-	// 默认 off:NewTable 反复后 GCCountKB 持续涨(host 路径累积,VM safepoint 不触发)
+	// Default off: after repeated NewTable, GCCountKB keeps rising (host path accumulates,
+	// the VM safepoint does not trigger)
 	st := wangshu.NewState(wangshu.Options{})
 	used0 := st.GCCountKB()
 	for r := 0; r < 50; r++ {
@@ -112,7 +115,7 @@ func TestSetHostTriggeredCollect_OptInOffByDefault(t *testing.T) {
 	usedOff := st.GCCountKB()
 	t.Logf("host-trigger OFF: GCCountKB %.1f → %.1f", used0, usedOff)
 
-	// 开启:同样负载下 GCCountKB 应被 auto-collect 控制
+	// Enabled: under the same load GCCountKB should be kept in check by auto-collect
 	st2 := wangshu.NewState(wangshu.Options{})
 	st2.SetHostTriggeredCollect(true)
 	used2_0 := st2.GCCountKB()
@@ -130,9 +133,9 @@ func TestSetHostTriggeredCollect_OptInOffByDefault(t *testing.T) {
 	}
 }
 
-// --- Group B:公共 API 边界 + 异常路径 + 状态机 ---
+// --- Group B: public API boundaries + error paths + state machine ---
 
-// TestPreallocate_Zero 验证 Preallocate(0) no-op,不破坏现有 array 段。
+// TestPreallocate_Zero verifies Preallocate(0) is a no-op and does not damage the existing array segment.
 func TestPreallocate_Zero(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{})
 	tv := st.NewTable()
@@ -147,7 +150,7 @@ func TestPreallocate_Zero(t *testing.T) {
 	}
 }
 
-// TestPreallocate_AfterRelease 验证已 Release 的 Table 上 Preallocate 返回 error。
+// TestPreallocate_AfterRelease verifies Preallocate returns an error on an already-Released Table.
 func TestPreallocate_AfterRelease(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{})
 	tv := st.NewTable()
@@ -158,7 +161,7 @@ func TestPreallocate_AfterRelease(t *testing.T) {
 	}
 }
 
-// TestNewArrayTable_Empty 验证空 slice 合法,返回空表。
+// TestNewArrayTable_Empty verifies an empty slice is valid and returns an empty table.
 func TestNewArrayTable_Empty(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{})
 	tv := st.NewArrayTable([]wangshu.Value{})
@@ -169,7 +172,7 @@ func TestNewArrayTable_Empty(t *testing.T) {
 	}
 }
 
-// TestNewArrayTable_Nil 验证 nil slice 合法等价于空 slice。
+// TestNewArrayTable_Nil verifies a nil slice is valid and equivalent to an empty slice.
 func TestNewArrayTable_Nil(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{})
 	tv := st.NewArrayTable(nil)
@@ -180,8 +183,8 @@ func TestNewArrayTable_Nil(t *testing.T) {
 	}
 }
 
-// TestNewArrayTable_WithTableValues 验证含 Table-kind Value 的 vals 正确 pin 互动。
-// 内部 toInner 转换 + pin 表 + 后续读应仍能取出原 GCRef。
+// TestNewArrayTable_WithTableValues verifies vals containing Table-kind Values interact with pinning correctly.
+// The internal toInner conversion + pinning the tables + later reads should still return the original GCRef.
 func TestNewArrayTable_WithTableValues(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{})
 	inner1 := st.NewTable()
@@ -194,7 +197,8 @@ func TestNewArrayTable_WithTableValues(t *testing.T) {
 	tv := st.NewArrayTable([]wangshu.Value{inner1, inner2})
 	defer tv.Release()
 	tt := tv.AsTable()
-	// 取出两个子表;Value 经 fromInnerWithPin 注册新 pin 槽,变量持有 + defer Release
+	// Fetch the two child tables; the Value registers a new pin slot via fromInnerWithPin,
+	// held by a variable + defer Release
 	v1 := tt.GetIndex(1)
 	defer v1.Release()
 	got1 := v1.AsTable()
@@ -215,7 +219,7 @@ func TestNewArrayTable_WithTableValues(t *testing.T) {
 	}
 }
 
-// TestNewArrayTable_WithMixedKinds 验证混合 number/string/bool/nil 全部正确传入。
+// TestNewArrayTable_WithMixedKinds verifies mixed number/string/bool/nil are all passed in correctly.
 func TestNewArrayTable_WithMixedKinds(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{})
 	vals := []wangshu.Value{
@@ -245,7 +249,7 @@ func TestNewArrayTable_WithMixedKinds(t *testing.T) {
 	}
 }
 
-// TestPreallocate_ExceedsMaxArenaBytes 验证 Preallocate 超 MaxArenaBytes 触发 panic。
+// TestPreallocate_ExceedsMaxArenaBytes verifies Preallocate exceeding MaxArenaBytes triggers a panic.
 func TestPreallocate_ExceedsMaxArenaBytes(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{MaxArenaBytes: 256 * 1024})
 	tv := st.NewTable()
@@ -259,7 +263,7 @@ func TestPreallocate_ExceedsMaxArenaBytes(t *testing.T) {
 	_ = tv.AsTable().Preallocate(100_000) // 100k * 8 bytes = 800 KB > 256 KiB
 }
 
-// TestSetHostTriggeredCollect_ToggleOnOff 验证开关状态机:off→on→off。
+// TestSetHostTriggeredCollect_ToggleOnOff verifies the toggle state machine: off→on→off.
 func TestSetHostTriggeredCollect_ToggleOnOff(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{})
 	allocSome := func() {
@@ -271,14 +275,14 @@ func TestSetHostTriggeredCollect_ToggleOnOff(t *testing.T) {
 			tv.Release()
 		}
 	}
-	// 初始 off
+	// Initially off
 	allocSome()
 	usedOff1 := st.GCCountKB()
-	// 开 on
+	// Turn on
 	st.SetHostTriggeredCollect(true)
 	allocSome()
 	usedOn := st.GCCountKB()
-	// 关回 off,GCCountKB 应再累积涨
+	// Turn back off; GCCountKB should resume accumulating
 	st.SetHostTriggeredCollect(false)
 	allocSome()
 	usedOff2 := st.GCCountKB()
@@ -288,16 +292,16 @@ func TestSetHostTriggeredCollect_ToggleOnOff(t *testing.T) {
 	}
 }
 
-// --- Group C:#10 root fix 算法不变式高阶验证 ---
+// --- Group C: #10 root-fix algorithm-invariant higher-order verification ---
 
-// TestNaiveSetIndex_LinearScaling 验证 #10 root fix 后,naive NewTable + SetIndex(1..N)
-// 也能保持 O(N) 摊销(无需用户用 Preallocate/NewArrayTable)。
+// TestNaiveSetIndex_LinearScaling verifies that after the #10 root fix, naive NewTable + SetIndex(1..N)
+// also keeps O(N) amortized cost (without the user needing Preallocate/NewArrayTable).
 //
-// 对照 Preallocate/NewArrayTable 测试(ratio < 3×),naive 路径在 root fix 后也应
-// ratio < 5×(略宽口径,因 naive 路径仍带 doublings 开销)。
+// Compared with the Preallocate/NewArrayTable tests (ratio < 3×), the naive path after the root fix
+// should also be ratio < 5× (a slightly looser bound, since the naive path still carries doubling overhead).
 func TestNaiveSetIndex_LinearScaling(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{InitialArenaBytes: 1 << 20})
-	// 暖身
+	// Warm-up
 	for i := 0; i < 200; i++ {
 		tv := st.NewTable()
 		tt := tv.AsTable()
@@ -328,6 +332,6 @@ func TestNaiveSetIndex_LinearScaling(t *testing.T) {
 	}
 }
 
-// TestCompact_ShrinkAfterTransientPeak 在 embedding_admin_default_test.go
-// (只在非 P3 build,因 P3 newStateArena 设 InPlaceBacking=true,Compact no-op)。
-// P3 build 下的对应行为见 embedding_admin_p3_test.go TestP3_Compact_NoOpInP3Mode。
+// TestCompact_ShrinkAfterTransientPeak lives in embedding_admin_default_test.go
+// (only in non-P3 builds, because P3 newStateArena sets InPlaceBacking=true, making Compact a no-op).
+// For the corresponding behavior under a P3 build see embedding_admin_p3_test.go TestP3_Compact_NoOpInP3Mode.

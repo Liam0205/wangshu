@@ -1,5 +1,6 @@
-// Options.HideFileLoaders 测试——严格沙箱模式 gopher-lua 对位
-// (issue #3:loader 三件套 + load 从 globals 刮除,脚本调用 fatal)。
+// Options.HideFileLoaders tests — strict sandbox mode matched against
+// gopher-lua (issue #3: the loader trio + load stripped from globals, script
+// calls fatal).
 package wangshu_test
 
 import (
@@ -11,13 +12,13 @@ import (
 
 func TestHideFileLoaders_LoadfileNilCall(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{HideFileLoaders: true})
-	// loader 三件套 + load 应都被刮除为 nil
+	// The loader trio + load should all be stripped to nil
 	for _, name := range []string{"loadfile", "dofile", "loadstring", "load"} {
 		if v := st.GetGlobal(name); !v.IsNil() {
 			t.Errorf("global %q = %s, want nil", name, v.Display())
 		}
 	}
-	// 脚本调用 → "attempt to call a nil value"
+	// Script call → "attempt to call a nil value"
 	prog, _ := wangshu.Compile([]byte(`return loadfile("x.lua")`), "x")
 	_, err := prog.Run(st)
 	if err == nil {
@@ -47,8 +48,9 @@ func TestHideFileLoaders_LoadstringFatal(t *testing.T) {
 }
 
 func TestHideFileLoaders_DefaultPreservesPucBehavior(t *testing.T) {
-	// 默认 HideFileLoaders=false:loadfile 仍可调,返回 (nil, errmsg)
-	// (PUC 5.1.5 对位)——pineapple 之外的宿主依赖此行为对拍 oracle。
+	// Default HideFileLoaders=false: loadfile is still callable, returning
+	// (nil, errmsg) (matching PUC 5.1.5) — hosts other than pineapple rely on
+	// this behavior to diff against the oracle.
 	st := wangshu.NewState(wangshu.Options{})
 	prog, _ := wangshu.Compile([]byte(`
 local f, err = loadfile("x.lua")
@@ -81,7 +83,7 @@ func TestHideFileLoaders_AllowFileLoadConflictPanics(t *testing.T) {
 }
 
 func TestHideFileLoaders_OtherStdlibIntact(t *testing.T) {
-	// HideFileLoaders 只针对 loader 三件套 + load,不影响其它 stdlib。
+	// HideFileLoaders only targets the loader trio + load, and does not affect other stdlib.
 	st := wangshu.NewState(wangshu.Options{HideFileLoaders: true})
 	prog, _ := wangshu.Compile([]byte(`
 return type(math.pi), string.upper("ab"), tonumber("42"), pcall(function() error("x") end)

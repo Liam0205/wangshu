@@ -4,11 +4,12 @@ package amd64
 
 import "testing"
 
-// emitter_pj3_loopops_test.go —— PJ3 整数循环 emit 原语(inc/dec r64 +
-// mov r64,imm32-signed)字节级验证。承 docs/design/p4-method-jit/
-// 05-system-pipeline.md §6.3 回边 + §1.2.2 抢占检查的整数侧支持。
+// emitter_pj3_loopops_test.go —— byte-level verification of the PJ3 integer
+// loop emit primitives (inc/dec r64 + mov r64,imm32-signed). Provides the
+// integer-side support for docs/design/p4-method-jit/05-system-pipeline.md
+// §6.3 back-edge + §1.2.2 preemption check.
 
-// TestPJ3_EmitIncReg64_Encoding:48 FF C0+rd 各寄存器。
+// TestPJ3_EmitIncReg64_Encoding: 48 FF C0+rd for each register.
 func TestPJ3_EmitIncReg64_Encoding(t *testing.T) {
 	cases := []struct {
 		reg  uint8
@@ -31,7 +32,7 @@ func TestPJ3_EmitIncReg64_Encoding(t *testing.T) {
 	}
 }
 
-// TestPJ3_EmitDecReg64_Encoding:48 FF C8+rd 各寄存器。
+// TestPJ3_EmitDecReg64_Encoding: 48 FF C8+rd for each register.
 func TestPJ3_EmitDecReg64_Encoding(t *testing.T) {
 	cases := []struct {
 		reg  uint8
@@ -54,7 +55,7 @@ func TestPJ3_EmitDecReg64_Encoding(t *testing.T) {
 	}
 }
 
-// TestPJ3_EmitMovReg64Imm32SignExt_Encoding:48 C7 C0+rd imm32 各 imm.
+// TestPJ3_EmitMovReg64Imm32SignExt_Encoding: 48 C7 C0+rd imm32 for each imm.
 func TestPJ3_EmitMovReg64Imm32SignExt_Encoding(t *testing.T) {
 	cases := []struct {
 		reg  uint8

@@ -9,8 +9,8 @@ import (
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
-// TestPJ7_LoadBoolReturnSucceeds 真接入扩展:LOADBOOL A B 0; RETURN A 1
-// 形态经 P4 端到端 byte-equal(经 mock host.SetReg 验值)。
+// TestPJ7_LoadBoolReturnSucceeds real-path extension: LOADBOOL A B 0; RETURN A 1
+// This form goes end-to-end byte-equal through P4 (value verified via mock host.SetReg).
 func TestPJ7_LoadBoolReturnSucceeds(t *testing.T) {
 	cases := []struct {
 		name string
@@ -47,12 +47,12 @@ func TestPJ7_LoadBoolReturnSucceeds(t *testing.T) {
 	}
 }
 
-// TestPJ7_LoadBoolPCBumpRejected LOADBOOL C != 0 拒(单 BB 不能跳 pc)。
+// TestPJ7_LoadBoolPCBumpRejected LOADBOOL C != 0 is rejected (a single BB cannot skip pc).
 func TestPJ7_LoadBoolPCBumpRejected(t *testing.T) {
 	c := New()
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
-			bytecode.EncodeABC(bytecode.LOADBOOL, 0, 1, 1), // C=1 触发 pc++
+			bytecode.EncodeABC(bytecode.LOADBOOL, 0, 1, 1), // C=1 triggers pc++
 			bytecode.EncodeABC(bytecode.RETURN, 0, 2, 0),
 		},
 	}
@@ -61,8 +61,8 @@ func TestPJ7_LoadBoolPCBumpRejected(t *testing.T) {
 	}
 }
 
-// TestPJ7_LoadNilReturnSucceeds 真接入扩展:LOADNIL A A; RETURN A 1
-// 形态经 P4 端到端 byte-equal(经 mock host.SetReg 验值)。
+// TestPJ7_LoadNilReturnSucceeds real-path extension: LOADNIL A A; RETURN A 1
+// This form goes end-to-end byte-equal through P4 (value verified via mock host.SetReg).
 func TestPJ7_LoadNilReturnSucceeds(t *testing.T) {
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
@@ -87,13 +87,13 @@ func TestPJ7_LoadNilReturnSucceeds(t *testing.T) {
 	}
 }
 
-// TestPJ7_LoadNilMultiRegisterRejected LOADNIL A B (A != B) 拒——本 PJ7 简化
-// 形态只支持单寄存器赋 nil。
+// TestPJ7_LoadNilMultiRegisterRejected LOADNIL A B (A != B) is rejected: this simplified
+// PJ7 form only supports assigning nil to a single register.
 func TestPJ7_LoadNilMultiRegisterRejected(t *testing.T) {
 	c := New()
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
-			bytecode.EncodeABC(bytecode.LOADNIL, 0, 2, 0), // LOADNIL 0 2 (A=0, B=2,多寄存器)
+			bytecode.EncodeABC(bytecode.LOADNIL, 0, 2, 0), // LOADNIL 0 2 (A=0, B=2, multi-register)
 			bytecode.EncodeABC(bytecode.RETURN, 0, 2, 0),
 		},
 	}

@@ -1,4 +1,4 @@
-// Arena ABI end-to-end tests(11 §3-§5)。
+// Arena ABI end-to-end tests (11 §3-§5).
 package wangshu_test
 
 import (
@@ -8,7 +8,7 @@ import (
 )
 
 func TestArena_ColumnKernelShape(t *testing.T) {
-	// 列内核形状(design-premises 前提一):循环在 Lua 内,一次调用进一次 VM
+	// Column kernel shape (design-premises premise 1): the loop lives in Lua, one call enters the VM once
 	prog, err := wangshu.Compile([]byte(`
 local price = arena.price
 local qty = arena.qty
@@ -151,7 +151,7 @@ func TestArena_RowsAccessor(t *testing.T) {
 }
 
 func TestArena_StringDedupShared(t *testing.T) {
-	// 相同字符串去重(共享字节池):脚本侧读出仍正确
+	// Identical strings deduplicated (shared byte pool): reads on the script side are still correct
 	prog, err := wangshu.Compile([]byte(`
 local n = arena.name
 return n[1] .. n[2] .. n[3]`), "dedup")

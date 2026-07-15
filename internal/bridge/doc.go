@@ -1,32 +1,40 @@
 // Package bridge is the P2 layered-bridge subsystem (basecraft, not an
 // execution layer).
 //
-// 设计文档:docs/design/p2-bridge/(00-overview..06-testing-strategy)。
+// Design docs: docs/design/p2-bridge/ (00-overview..06-testing-strategy).
 //
-// P2 一句话定位:在 P1 解释器(crescent)之上加一台「分层决策机器」,产出
-// 三样东西(热度、IC 类型 feedback、可编译性判定)喂给 P3/P4 编译层,自己
-// 不在执行热路径上(`docs/design/p2-bridge/00-overview.md` §1)。
+// P2 in one sentence: on top of the P1 interpreter (crescent), add a "layered
+// decision machine" that produces three things (hotness, IC type feedback,
+// compilability judgment) to feed the P3/P4 compile layer, while itself
+// staying off the execution hot path (`docs/design/p2-bridge/00-overview.md`
+// §1).
 //
-// 包布局(每个文件一组紧密耦合的类型,不与执行层 internal/crescent 互相
-// 依赖——bridge 是基建非执行层):
+// Package layout (each file holds one group of tightly-coupled types; does not
+// mutually depend on the execution layer internal/crescent -- bridge is
+// infrastructure, not an execution layer):
 //
-//   - profile.go        热度计数(回边 / 入口)与 ProfileData 字段
-//   - feedback.go       TypeFeedback / PointFeedback / FeedbackKind 枚举
-//   - compilability.go  Compilability 三态枚举与 reasonsBitmap
-//   - tier.go           TierState 状态机三态枚举
-//   - p3compiler.go     P3Compiler 接口(P3/P4 共享前端)与 GibbousCode 抽象
-//   - bridge.go         Bridge 主结构 + onBackEdge / onEnter 钩点 +
-//     considerPromotion 状态机入口
+//   - profile.go        hotness counters (back edge / entry) and ProfileData fields
+//   - feedback.go       TypeFeedback / PointFeedback / FeedbackKind enums
+//   - compilability.go  the Compilability three-state enum and reasonsBitmap
+//   - tier.go           the TierState state-machine three-state enum
+//   - p3compiler.go     the P3Compiler interface (shared P3/P4 front end) and the GibbousCode abstraction
+//   - bridge.go         the Bridge main struct + onBackEdge / onEnter hook points +
+//     the considerPromotion state-machine entry
 //
-// **重要不变式**(贯穿全包,失守即设计失败):
+// **Important invariants** (span the whole package; breaking them is a design
+// failure):
 //
-//   - bridge 不依赖 internal/crescent —— 反向钩点由 crescent 端注入
-//     (interface + setter)避免循环依赖。
-//   - bridge 自己不发射代码、不跑 Proto;一旦本包出现「跑 Proto」逻辑
-//     就违反了 P2 「自己不在执行热路径」的铁律。
-//   - 所有 P2 计数自增、可编译性查询都要在 ProfileEnabled() 为 false 时
-//     可被编译期消去(P1-only 部署零开销)。
+//   - bridge does not depend on internal/crescent -- the reverse hook points
+//     are injected from the crescent side (interface + setter) to avoid a
+//     circular dependency.
+//   - bridge itself does not emit code and does not run Protos; once "run
+//     Proto" logic appears in this package it violates P2's iron rule of
+//     "staying off the execution hot path".
+//   - all P2 counter increments and compilability queries must be
+//     compile-time eliminable when ProfileEnabled() is false (zero overhead
+//     for P1-only deployments).
 //
-// 状态机不变式:TierState 单向 + 吸收(无 TierGibbous→TierInterp 反向边),
-// 这是 P2/P3 「零 deopt」的形式化体现(`04-try-compile-fallback.md` §2.4)。
+// State-machine invariant: TierState is one-directional + absorbing (no
+// reverse TierGibbous→TierInterp edge), which is the formalization of the
+// P2/P3 "zero deopt" property (`04-try-compile-fallback.md` §2.4).
 package bridge

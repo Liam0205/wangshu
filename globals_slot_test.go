@@ -1,5 +1,6 @@
-// GlobalsSlot 预解析句柄测试(issue #13 B 件)。验证 SetBySlot/GetBySlot
-// 与 SetGlobal/GetGlobal 语义等价、跨 State 误用 panic、Release 卫生。
+// GlobalsSlot pre-resolved handle tests (issue #13 item B). Verify that
+// SetBySlot/GetBySlot are semantically equivalent to SetGlobal/GetGlobal,
+// that cross-State misuse panics, and that Release is well-behaved.
 package wangshu_test
 
 import (
@@ -9,8 +10,8 @@ import (
 	"github.com/Liam0205/wangshu"
 )
 
-// TestGlobalsSlot_RoundTripScalar 验证标量(number/bool/string/nil)走 slot
-// 写读语义等价于 SetGlobal/GetGlobal。
+// TestGlobalsSlot_RoundTripScalar verifies that scalars (number/bool/string/nil)
+// written and read via slot are semantically equivalent to SetGlobal/GetGlobal.
 func TestGlobalsSlot_RoundTripScalar(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{})
 	cases := []struct {
@@ -37,8 +38,9 @@ func TestGlobalsSlot_RoundTripScalar(t *testing.T) {
 	}
 }
 
-// TestGlobalsSlot_ScriptVisible 验证经 slot 写入的全局,脚本侧 `GETGLOBAL name`
-// 能正常读到——slot 路径与 SetGlobal 写到的就是同一个 globals 表的同一槽。
+// TestGlobalsSlot_ScriptVisible verifies that a global written via slot is
+// readable from the script side through `GETGLOBAL name`—the slot path writes
+// to the very same slot of the same globals table that SetGlobal writes to.
 func TestGlobalsSlot_ScriptVisible(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{})
 	priceSlot := st.GlobalsSlot("item_price")
@@ -58,15 +60,16 @@ func TestGlobalsSlot_ScriptVisible(t *testing.T) {
 	}
 }
 
-// TestGlobalsSlot_OverwriteAcrossBorrowSimulation 模拟 pineapple LuaOp 复用
-// state 的形态:Init 期取一次 slot,Execute 循环里反复改写、读出,且经
-// SetGlobal(name, v) 一致写入。
+// TestGlobalsSlot_OverwriteAcrossBorrowSimulation simulates how pineapple's
+// LuaOp reuses a state: acquire the slot once during Init, then repeatedly
+// overwrite and read it within the Execute loop, with writes consistent with
+// SetGlobal(name, v).
 func TestGlobalsSlot_OverwriteAcrossBorrowSimulation(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{})
 	slot := st.GlobalsSlot("x")
 	defer slot.Release()
 
-	// 通过 slot 反复改写;每次读出应反映最新值
+	// Repeatedly overwrite via slot; each read should reflect the latest value
 	for i := 0; i < 100; i++ {
 		st.SetBySlot(slot, wangshu.Number(float64(i)))
 		v := st.GetBySlot(slot)
@@ -75,7 +78,7 @@ func TestGlobalsSlot_OverwriteAcrossBorrowSimulation(t *testing.T) {
 		}
 	}
 
-	// slot 写入与 SetGlobal 写入应触达同一 globals 槽
+	// slot writes and SetGlobal writes should reach the same globals slot
 	st.SetBySlot(slot, wangshu.Number(7))
 	via := st.GetGlobal("x")
 	if got := via.Number(); got != 7 {
@@ -89,8 +92,9 @@ func TestGlobalsSlot_OverwriteAcrossBorrowSimulation(t *testing.T) {
 	}
 }
 
-// TestGlobalsSlot_TableValueWritePersists 验证写 table 类 Value 经 slot 落进
-// globals,后续脚本能读出、Release 后表内容仍由 globals 持有保活。
+// TestGlobalsSlot_TableValueWritePersists verifies that writing a table-typed
+// Value via slot lands in globals, that a later script can read it, and that
+// after Release the table contents are kept alive by the globals holding them.
 func TestGlobalsSlot_TableValueWritePersists(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{})
 	slot := st.GlobalsSlot("xs")
@@ -98,7 +102,7 @@ func TestGlobalsSlot_TableValueWritePersists(t *testing.T) {
 
 	tv := st.NewFloatArrayTable([]float64{1, 2, 3, 4, 5})
 	st.SetBySlot(slot, tv)
-	tv.Release() // 全局表持有,表本身仍可达
+	tv.Release() // held by the global table, the table itself stays reachable
 
 	prog, _ := wangshu.Compile([]byte(`
 		local s = 0
@@ -114,8 +118,9 @@ func TestGlobalsSlot_TableValueWritePersists(t *testing.T) {
 	}
 }
 
-// TestGlobalsSlot_CrossStatePanics 验证跨 State 误用 SetBySlot 触发 panic
-// (fail-fast 风格,同 State.Call 跨 State 函数实参)。
+// TestGlobalsSlot_CrossStatePanics verifies that cross-State misuse of SetBySlot
+// triggers a panic (fail-fast style, same as passing a cross-State function
+// argument to State.Call).
 func TestGlobalsSlot_CrossStatePanics(t *testing.T) {
 	st1 := wangshu.NewState(wangshu.Options{})
 	st2 := wangshu.NewState(wangshu.Options{})
@@ -149,7 +154,8 @@ func TestGlobalsSlot_CrossStatePanics(t *testing.T) {
 	})
 }
 
-// TestGlobalsSlot_UseAfterReleasePanics 验证 Release 后再用 panic。
+// TestGlobalsSlot_UseAfterReleasePanics verifies that using a slot after Release
+// panics.
 func TestGlobalsSlot_UseAfterReleasePanics(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{})
 	slot := st.GlobalsSlot("zombie")
@@ -161,12 +167,14 @@ func TestGlobalsSlot_UseAfterReleasePanics(t *testing.T) {
 			t.Fatal("expected panic on use-after-Release")
 		}
 	}()
-	// Release 后 slot.st 置 nil ⟹ 跨 State 校验先 trip("different State");
-	// 这是合理的 fail-fast(只要 panic 就达到目的,不强求文本)。
+	// After Release, slot.st is set to nil ⟹ the cross-State check trips first
+	// ("different State"); this is a reasonable fail-fast (any panic serves the
+	// purpose, the exact message is not required).
 	st.SetBySlot(slot, wangshu.Number(1))
 }
 
-// TestGlobalsSlot_DoubleReleaseSafe 验证重复 Release 安全(同 Value.Release)。
+// TestGlobalsSlot_DoubleReleaseSafe verifies that a repeated Release is safe
+// (same as Value.Release).
 func TestGlobalsSlot_DoubleReleaseSafe(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{})
 	slot := st.GlobalsSlot("x")
@@ -174,7 +182,8 @@ func TestGlobalsSlot_DoubleReleaseSafe(t *testing.T) {
 	slot.Release() // should be no-op, not panic
 }
 
-// TestGlobalsSlot_EmptyName 验证空字符串 name 合法(等价 SetGlobal("", v))。
+// TestGlobalsSlot_EmptyName verifies that an empty-string name is valid
+// (equivalent to SetGlobal("", v)).
 func TestGlobalsSlot_EmptyName(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{})
 	slot := st.GlobalsSlot("")
@@ -185,8 +194,10 @@ func TestGlobalsSlot_EmptyName(t *testing.T) {
 	}
 }
 
-// TestGlobalsSlot_SameNameSharedKey 验证同 name 多次取 slot 写到同一 globals
-// 槽——两个 slot 内部 GCRef 指向 intern 的同一字符串,落 globals 同一 bucket。
+// TestGlobalsSlot_SameNameSharedKey verifies that acquiring a slot multiple
+// times under the same name writes to the same globals slot—the two slots'
+// internal GCRefs point to the same interned string and land in the same
+// globals bucket.
 func TestGlobalsSlot_SameNameSharedKey(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{})
 	a := st.GlobalsSlot("shared")
@@ -204,8 +215,9 @@ func TestGlobalsSlot_SameNameSharedKey(t *testing.T) {
 	}
 }
 
-// TestGlobalsSlot_GCStressMode 在 GC 压力下反复 slot 操作,验证 pin 持有的
-// name string GCRef 不被回收(否则 SetBySlot/GetBySlot 会读到错绑 arena)。
+// TestGlobalsSlot_GCStressMode performs repeated slot operations under GC
+// pressure, verifying that the pinned name-string GCRef is not reclaimed
+// (otherwise SetBySlot/GetBySlot would read from a mis-bound arena).
 func TestGlobalsSlot_GCStressMode(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{})
 	st.SetGCStressMode(true)

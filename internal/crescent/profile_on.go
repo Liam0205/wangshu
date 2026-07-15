@@ -2,5 +2,5 @@
 
 package crescent
 
-// profileEnabled = true 启用 P2 计数(详见 profile_off.go 总纲)。
+// profileEnabled = true enables P2 counting (see profile_off.go for the overview).
 const profileEnabled = true

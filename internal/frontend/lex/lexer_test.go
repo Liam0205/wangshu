@@ -8,7 +8,7 @@ import (
 	"github.com/Liam0205/wangshu/internal/frontend/token"
 )
 
-// scan all 把整段源码扫成 token 列表(忽略 EOF)。
+// scanAll scans an entire source string into a token list (ignoring EOF).
 func scanAll(t *testing.T, src string) []token.Token {
 	t.Helper()
 	lx := New([]byte(src), "test")
@@ -85,9 +85,12 @@ func TestNumbers(t *testing.T) {
 }
 
 func TestNumberMalformed(t *testing.T) {
-	// 官方 read_numeral 是「贪心吃完 + 整体校验」:数字后紧跟字母/多余的点
-	// 整段进入校验并报 malformed number。结构化扫描"吃不动就停"会把这些
-	// 拆成相邻 token 静默接受——`return 1or 2` 曾被错误执行返回 1。
+	// The official read_numeral is "greedily consume everything, then validate
+	// as a whole": a number immediately followed by a letter or an extra dot
+	// makes the whole run enter validation and report a malformed number. A
+	// structured "stop when it can't consume more" scan would split these into
+	// adjacent tokens and silently accept them — `return 1or 2` was once
+	// wrongly executed as returning 1.
 	for _, s := range []string{
 		"0x", "1ee", "1e+",
 		"1or", "3..5", "1.2.3", "1abc",
@@ -102,9 +105,10 @@ func TestNumberMalformed(t *testing.T) {
 }
 
 func TestNumberGreedyEdges(t *testing.T) {
-	// 与 oracle 5.1.5 逐项核对的合法边角:
-	// 1. = 1 / 1.e2 = 100(尾点合法);0x1p4 = 16(系统 strtod 的 C99 hex float);
-	// 超 64-bit hex 取浮点近似;10e500 溢出取 +Inf。
+	// Legal corner cases cross-checked item by item against oracle 5.1.5:
+	// 1. = 1 / 1.e2 = 100 (trailing dot is legal); 0x1p4 = 16 (the system
+	// strtod's C99 hex float); hex beyond 64-bit takes a float approximation;
+	// 10e500 overflows to +Inf.
 	cases := []struct {
 		src string
 		num float64
@@ -124,8 +128,9 @@ func TestNumberGreedyEdges(t *testing.T) {
 			t.Errorf("%q: got %v, want %v", c.src, toks[0].Num, c.num)
 		}
 	}
-	// `1e5.5`:贪心段在第二个点前停止(指数后不吃点),官方同样是
-	// NUMBER(1e5) 后跟 parser 级 syntax error,词法层不报错。
+	// `1e5.5`: the greedy run stops before the second dot (no dot is consumed
+	// after the exponent); officially this is likewise NUMBER(1e5) followed by
+	// a parser-level syntax error, with no error at the lexer layer.
 	toks := scanAll(t, "1e5.5")
 	if len(toks) != 2 || toks[0].Num != 1e5 {
 		t.Errorf("1e5.5: got %v, want NUMBER(100000) NUMBER(0.5)", toks)
@@ -215,7 +220,7 @@ func TestLongString(t *testing.T) {
 	}{
 		{`[[hello]]`, "hello"},
 		{`[==[a]=]b]==]`, "a]=]b"},
-		// 长字符串内容紧随的换行被丢弃。
+		// A newline immediately following the long-string opener is discarded.
 		{"[[\nfoo]]", "foo"},
 		{"[[line1\nline2]]", "line1\nline2"},
 	}
@@ -247,7 +252,7 @@ comment ]] return x`
 }
 
 func TestLineNumbers(t *testing.T) {
-	// 四种换行序列各计 1 行(03 §9)。
+	// Each of the four newline sequences counts as 1 line (03 §9).
 	for _, nl := range []string{"\n", "\r", "\r\n", "\n\r"} {
 		src := strings.Join([]string{"a", "b", "c"}, nl)
 		toks := scanAll(t, src)

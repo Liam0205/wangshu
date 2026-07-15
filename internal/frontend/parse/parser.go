@@ -1,8 +1,9 @@
 // Package parse implements the Lua 5.1 recursive-descent parser with precedence
 // climbing for expressions (04 §3-§4). LL(2) lookahead is held in the parser
-// (一格 ahead),lexer 只暴露 Next()(03 §2)。
+// (one token ahead); the lexer only exposes Next() (03 §2).
 //
-// 错误策略:首错即停(04 §13 末条),配合 commit-msg / pre-commit hooks。
+// Error strategy: stop at the first error (04 §13, last item), paired with
+// commit-msg / pre-commit hooks.
 package parse
 
 import (
@@ -33,28 +34,33 @@ type Parser struct {
 	ahead    token.Token
 	hasAhead bool
 
-	// lastLine 是上一个已消费 token 的行号(官方 ls->lastline 等价;
-	// funcargs 的 ambiguous syntax 检查用)。
+	// lastLine is the line number of the last consumed token (equivalent to
+	// the reference ls->lastline; used by funcargs' ambiguous-syntax check).
 	lastLine int32
 
-	// 在 vararg 函数体内 → 允许 `...`(VarargExpr)。enterFuncBody 切换。
+	// Inside a vararg function body → `...` (VarargExpr) is allowed. Toggled by
+	// enterFuncBody.
 	insideVararg bool
 
-	// depth 是语法嵌套深度(表达式递归 + 块嵌套),护栏防深嵌套打爆 Go 栈
-	// (对齐 Lua 5.1 LUAI_MAXCCALLS 思路;fatal stack overflow 不可恢复,
-	// 必须在之前用可恢复错误拦下)。
+	// depth is the syntax nesting depth (expression recursion + block nesting);
+	// a guard against deep nesting blowing the Go stack (following Lua 5.1's
+	// LUAI_MAXCCALLS idea; a fatal stack overflow is unrecoverable and must be
+	// caught earlier with a recoverable error).
 	depth int
 
-	// loopDepth 是当前循环嵌套层数(官方 fs->bl 的 isbreakable 链等价):
-	// break 不在循环内时 parse 期报 "no loop to break"(官方 breakstat)。
-	// 函数体边界保存/重置(break 不跨函数)。
+	// loopDepth is the current loop nesting level (equivalent to the reference
+	// fs->bl isbreakable chain): a break outside any loop reports
+	// "no loop to break" at parse time (reference breakstat).
+	// Saved/reset at function-body boundaries (break does not cross functions).
 	loopDepth int
 }
 
-// maxParseDepth 是语法嵌套上限(5.1 的 200 偏保守,Go 栈帧更大,取同值)。
+// maxParseDepth is the syntax nesting cap (5.1's 200 is conservative; Go stack
+// frames are larger, but we keep the same value).
 const maxParseDepth = 200
 
-// enterDepth 进入一层语法递归;超限报 5.1 同款措辞。
+// enterDepth enters one level of syntactic recursion; on overflow it reports the
+// same wording as 5.1.
 func (p *Parser) enterDepth() error {
 	p.depth++
 	if p.depth > maxParseDepth {
@@ -67,8 +73,8 @@ func (p *Parser) leaveDepth() { p.depth-- }
 
 // Parse parses an entire chunk (top-level Block) into AST.
 //
-// chunk 顶层等价于一个 vararg 函数体(Lua 5.1 main chunk 接受 `...`),所以
-// insideVararg 初始置 true。
+// The top-level chunk is equivalent to a vararg function body (a Lua 5.1 main
+// chunk accepts `...`), so insideVararg starts out true.
 func Parse(lx *lex.Lexer, source string) (*ast.Block, error) {
 	p := &Parser{lx: lx, source: source, insideVararg: true}
 	if err := p.next(); err != nil {
@@ -151,19 +157,21 @@ func (p *Parser) parseBlock() (*ast.Block, error) {
 	defer p.leaveDepth()
 	block := &ast.Block{}
 	for !isBlockEnd(p.tok.Kind) {
-		// 5.1 文法:';' 只能作语句分隔符(chunk ::= {stat [';']}),不能
-		// 独立成句——`;` / `a=1;;` 官方报 unexpected symbol(5.2 才放开)。
+		// 5.1 grammar: ';' is only a statement separator (chunk ::= {stat [';']}),
+		// it cannot stand alone as a statement — `;` / `a=1;;` reports
+		// unexpected symbol in the reference (relaxed only in 5.2).
 		if p.match(token.SEMI) {
 			return nil, p.errorf("unexpected symbol near '%s'", p.tok.String())
 		}
-		// `return` / `break` 是 block 的最后一句(Lua 5.1 限制)。
+		// `return` / `break` must be the last statement of a block (Lua 5.1
+		// restriction).
 		if p.match(token.KW_RETURN) {
 			ret, err := p.parseReturn()
 			if err != nil {
 				return nil, err
 			}
 			block.Stmts = append(block.Stmts, ret)
-			// return 后允许一个 `;`,然后必须是 block 终结。
+			// After return one `;` is allowed, then the block must terminate.
 			if _, err := p.consume(token.SEMI); err != nil {
 				return nil, err
 			}
@@ -190,7 +198,7 @@ func (p *Parser) parseBlock() (*ast.Block, error) {
 		if stmt != nil {
 			block.Stmts = append(block.Stmts, stmt)
 		}
-		// 语句后缀分隔符(至多一个)
+		// Statement trailing separator (at most one)
 		if _, err := p.consume(token.SEMI); err != nil {
 			return nil, err
 		}

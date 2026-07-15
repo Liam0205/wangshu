@@ -1,10 +1,12 @@
-// Compilability analyzer 测试(`docs/design/p2-bridge/03-compilability-analysis.md` §3 验收)。
+// Compilability analyzer tests (`docs/design/p2-bridge/03-compilability-analysis.md` §3 acceptance).
 //
-// F1-F7 各形状的对应一组测试脚本,断言 AnalyzeProto 判 CompNotCompilable
-// 且 reasonsBitmap 含对应位。
+// Each of the F1-F7 shapes has a corresponding set of test scripts asserting
+// that AnalyzeProto returns CompNotCompilable and that reasonsBitmap holds the
+// matching bit.
 //
-// 同时验证「保守第一」铁律:不可编译形状的零误判(没有任何形状会从
-// CompNotCompilable 滑回 CompCompilable)。
+// Also verifies the "conservative first" rule: zero false negatives on
+// non-compilable shapes (no shape ever slips from CompNotCompilable back to
+// CompCompilable).
 package bridge
 
 import (
@@ -14,15 +16,16 @@ import (
 	"github.com/Liam0205/wangshu/internal/frontend/ast"
 )
 
-// makeFuncBody 构造一个 FuncExpr(body=单 ReturnStmt 不含表达式)用于 F1
-// 等只看 IsVararg/UpvalDescs 等元数据的测试。
+// makeFuncBody builds a FuncExpr (body = a single ReturnStmt with no
+// expressions) for F1-style tests that only inspect metadata such as
+// IsVararg/UpvalDescs.
 func makeFuncBody(stmts ...ast.Stmt) *ast.FuncExpr {
 	return &ast.FuncExpr{
 		Body: &ast.Block{Stmts: stmts},
 	}
 }
 
-// makeProto 造一个能让 protoIsVararg / Code/MaxStack 检查走通的 Proto。
+// makeProto builds a Proto that passes the protoIsVararg / Code / MaxStack checks.
 func makeProto(opts ...func(*bytecode.Proto)) *bytecode.Proto {
 	p := &bytecode.Proto{
 		Code: []bytecode.Instruction{},
@@ -49,8 +52,8 @@ func withUpvalCount(n int) func(*bytecode.Proto) {
 	}
 }
 
-// TestAnalyze_F1_Vararg `function(...)`:三重识别 AST + Proto + opcode 任一
-// 触发即判 NotCompilable。
+// TestAnalyze_F1_Vararg `function(...)`: triple detection via AST + Proto +
+// opcode; any one hit marks it NotCompilable.
 func TestAnalyze_F1_Vararg(t *testing.T) {
 	b := NewBridge()
 	fn := &ast.FuncExpr{
@@ -68,10 +71,10 @@ func TestAnalyze_F1_Vararg(t *testing.T) {
 	}
 }
 
-// TestAnalyze_F2_Yield `coroutine.yield(...)` 直接调 → ReasonYield + ReasonCoroutine。
+// TestAnalyze_F2_Yield `coroutine.yield(...)` direct call → ReasonYield + ReasonCoroutine.
 func TestAnalyze_F2_Yield(t *testing.T) {
 	b := NewBridge()
-	// Lua 等价:`function() coroutine.yield(1) end`
+	// Lua equivalent: `function() coroutine.yield(1) end`
 	yieldCall := &ast.CallStmt{
 		Call: &ast.CallExpr{
 			Fn: &ast.IndexExpr{
@@ -97,10 +100,10 @@ func TestAnalyze_F2_Yield(t *testing.T) {
 	}
 }
 
-// TestAnalyze_F2_UnknownCall 未知函数调用(非 local known)→ ReasonUnknownCall。
+// TestAnalyze_F2_UnknownCall unknown function call (not a known local) → ReasonUnknownCall.
 func TestAnalyze_F2_UnknownCall(t *testing.T) {
 	b := NewBridge()
-	// `function() print("hi") end` —— print 是全局,不是 known local
+	// `function() print("hi") end` — print is a global, not a known local
 	fn := makeFuncBody(&ast.CallStmt{
 		Call: &ast.CallExpr{
 			Fn:   &ast.NameExpr{Name: "print"},
@@ -119,9 +122,10 @@ func TestAnalyze_F2_UnknownCall(t *testing.T) {
 	}
 }
 
-// TestAnalyze_F2c_SelfCall `obj:m(...)` → ReasonSelfCall(占位位)+ 不叠
-// ReasonUnknownCall(承 P4 PJ5 SELF inline 形态真接入决策)。运行期 P4
-// 注入后 `recheckCompilabilityRuntime` 撤位 + SupportsAllOpcodes 守门。
+// TestAnalyze_F2c_SelfCall `obj:m(...)` → ReasonSelfCall (occupy bit), and does
+// NOT also set ReasonUnknownCall (per the P4 PJ5 SELF-inline decision to truly
+// wire it up). After the P4 runtime injection, `recheckCompilabilityRuntime`
+// clears the bit and SupportsAllOpcodes gates it.
 func TestAnalyze_F2c_SelfCall(t *testing.T) {
 	b := NewBridge()
 	// `function(o) o:m() end`
@@ -148,8 +152,9 @@ func TestAnalyze_F2c_SelfCall(t *testing.T) {
 	}
 }
 
-// TestAnalyze_F2_KnownLocalCall_Pure 已知 local 函数调用 + 该 local 自身纯
-// 计算 → 不应触发 unknown(用户拍板:isKnownLocalCall 真实现)。
+// TestAnalyze_F2_KnownLocalCall_Pure a known local function call where the local
+// itself is pure computation → should not trigger unknown (user decision:
+// isKnownLocalCall is genuinely implemented).
 func TestAnalyze_F2_KnownLocalCall_Pure(t *testing.T) {
 	b := NewBridge()
 	// `function() local function helper(x) return x*x end; local s = helper(5) end`
@@ -179,8 +184,9 @@ func TestAnalyze_F2_KnownLocalCall_Pure(t *testing.T) {
 			},
 		},
 	)
-	// F7 缺省 b.p3 == nil → 始终判不可编译(F7 触发)。我们要测 F2 不触发,
-	// 所以注入一个 mock P3 使 F7 不触发。
+	// With no P3, b.p3 == nil → always judged non-compilable (F7 triggers). We
+	// want to test that F2 does not trigger, so inject a mock P3 that keeps F7
+	// from triggering.
 	b.SetP3Compiler(allowAllOpcodes{})
 	p := makeProto()
 
@@ -192,13 +198,15 @@ func TestAnalyze_F2_KnownLocalCall_Pure(t *testing.T) {
 	}
 }
 
-// TestAnalyze_F2_KnownLocalCall_Yield 已知 local 但子函数 yield → 父也判 F2。
+// TestAnalyze_F2_KnownLocalCall_Yield known local but the callee yields → parent also judged F2.
 //
-// 这是「保守第一」的体现:父调用子,子真 yield 时父也判不可编译——visitCallExpr
-// 第 5 步「递归 walk 子函数体」把子的 callsYield 信号传染到父 visitor。
+// This embodies "conservative first": when a parent calls a child and the child
+// actually yields, the parent is judged non-compilable too — step 5 of
+// visitCallExpr ("recursively walk the child function body") propagates the
+// child's callsYield signal up to the parent visitor.
 func TestAnalyze_F2_KnownLocalCall_Yield(t *testing.T) {
 	b := NewBridge()
-	// helper 含 yield
+	// helper contains yield
 	helper := &ast.FuncExpr{
 		Body: &ast.Block{Stmts: []ast.Stmt{
 			&ast.CallStmt{
@@ -231,7 +239,7 @@ func TestAnalyze_F2_KnownLocalCall_Yield(t *testing.T) {
 	}
 }
 
-// TestAnalyze_F3_Debug `debug.traceback()` → ReasonDebug。
+// TestAnalyze_F3_Debug `debug.traceback()` → ReasonDebug.
 func TestAnalyze_F3_Debug(t *testing.T) {
 	b := NewBridge()
 	fn := makeFuncBody(&ast.CallStmt{
@@ -254,7 +262,7 @@ func TestAnalyze_F3_Debug(t *testing.T) {
 	}
 }
 
-// TestAnalyze_F4_Setfenv `setfenv(1, env)` → ReasonSetfenv。
+// TestAnalyze_F4_Setfenv `setfenv(1, env)` → ReasonSetfenv.
 func TestAnalyze_F4_Setfenv(t *testing.T) {
 	b := NewBridge()
 	fn := makeFuncBody(&ast.CallStmt{
@@ -274,7 +282,7 @@ func TestAnalyze_F4_Setfenv(t *testing.T) {
 	}
 }
 
-// TestAnalyze_F5_OverSize Code 长度 > MaxCompilableInsns → ReasonOverSize。
+// TestAnalyze_F5_OverSize Code length > MaxCompilableInsns → ReasonOverSize.
 func TestAnalyze_F5_OverSize(t *testing.T) {
 	b := NewBridge()
 	fn := makeFuncBody()
@@ -289,7 +297,7 @@ func TestAnalyze_F5_OverSize(t *testing.T) {
 	}
 }
 
-// TestAnalyze_F5_OverRegs MaxStack > MaxCompilableRegs → ReasonOverRegs。
+// TestAnalyze_F5_OverRegs MaxStack > MaxCompilableRegs → ReasonOverRegs.
 func TestAnalyze_F5_OverRegs(t *testing.T) {
 	b := NewBridge()
 	fn := makeFuncBody()
@@ -304,10 +312,10 @@ func TestAnalyze_F5_OverRegs(t *testing.T) {
 	}
 }
 
-// TestAnalyze_F6_NestedDeep 嵌套深度超过 MaxClosureDepth(=3)。
+// TestAnalyze_F6_NestedDeep nesting depth exceeds MaxClosureDepth (=3).
 func TestAnalyze_F6_NestedDeep(t *testing.T) {
 	b := NewBridge()
-	// 嵌套 4 层 function:用户编写嵌套函数 D4 在 D3 内,D3 在 D2 内...
+	// 4 levels of nested function: user-written nested D4 inside D3, D3 inside D2...
 	d4 := &ast.FuncExpr{Body: &ast.Block{}}
 	d3 := &ast.FuncExpr{Body: &ast.Block{Stmts: []ast.Stmt{
 		&ast.LocalFuncStmt{Name: "d4", Fn: d4},
@@ -332,7 +340,7 @@ func TestAnalyze_F6_NestedDeep(t *testing.T) {
 	}
 }
 
-// TestAnalyze_F6_OverUpval upvalue 数 > MaxUpvalCount(=8)。
+// TestAnalyze_F6_OverUpval upvalue count > MaxUpvalCount (=8).
 func TestAnalyze_F6_OverUpval(t *testing.T) {
 	b := NewBridge()
 	fn := makeFuncBody()
@@ -347,10 +355,10 @@ func TestAnalyze_F6_OverUpval(t *testing.T) {
 	}
 }
 
-// TestAnalyze_F7_NoP3 P1-only build / P3 未注入 → F7 触发。
+// TestAnalyze_F7_NoP3 P1-only build / P3 not injected → F7 triggers.
 func TestAnalyze_F7_NoP3(t *testing.T) {
 	b := NewBridge()
-	// 简单纯计算函数,F1-F6 全过
+	// simple pure-computation function; F1-F6 all pass
 	fn := makeFuncBody(&ast.ReturnStmt{
 		Exprs: []ast.Expr{&ast.NumberExpr{Val: 42}},
 	})
@@ -365,13 +373,13 @@ func TestAnalyze_F7_NoP3(t *testing.T) {
 	}
 }
 
-// TestAnalyze_F1toF7_AllPass 全部 F1-F7 都不触发 → CompCompilable。
+// TestAnalyze_F1toF7_AllPass none of F1-F7 trigger → CompCompilable.
 //
-// 注入 allowAllOpcodes mock 让 F7 通过,合法 reasons 为零。
+// Inject the allowAllOpcodes mock so F7 passes; the valid reasons are zero.
 func TestAnalyze_F1toF7_AllPass(t *testing.T) {
 	b := NewBridge()
 	b.SetP3Compiler(allowAllOpcodes{})
-	// `function(x) return x + 1 end`——纯计算 helper
+	// `function(x) return x + 1 end` — a pure-computation helper
 	fn := &ast.FuncExpr{
 		Params: []string{"x"},
 		Body: &ast.Block{Stmts: []ast.Stmt{
@@ -395,12 +403,12 @@ func TestAnalyze_F1toF7_AllPass(t *testing.T) {
 	}
 }
 
-// TestAnalyze_VarargMismatchPanic AST.IsVararg 与 Proto.IsVararg 不一致即
-// codegen bug,AnalyzeProto 应 panic(03 §2.3 不变式 1)。
+// TestAnalyze_VarargMismatchPanic an AST.IsVararg / Proto.IsVararg mismatch is a
+// codegen bug; AnalyzeProto should panic (03 §2.3 invariant 1).
 func TestAnalyze_VarargMismatchPanic(t *testing.T) {
 	b := NewBridge()
 	fn := &ast.FuncExpr{Body: &ast.Block{}, IsVararg: true}
-	p := makeProto(withVararg(false)) // 不一致
+	p := makeProto(withVararg(false)) // mismatch
 
 	defer func() {
 		if r := recover(); r == nil {
@@ -410,9 +418,10 @@ func TestAnalyze_VarargMismatchPanic(t *testing.T) {
 	b.AnalyzeProto(fn, p)
 }
 
-// TestAnalyze_F2_StdlibSafeCalls P2 后续优化轮 #1:stdlib 白名单生效后,
-// 调用 type / tostring / math.sqrt / string.format / table.insert 等不再标
-// unknown,纯计算 + stdlib 调用的函数应判 Compilable。
+// TestAnalyze_F2_StdlibSafeCalls P2 follow-up optimization round #1: once the
+// stdlib whitelist is in effect, calls to type / tostring / math.sqrt /
+// string.format / table.insert etc. are no longer flagged unknown, so a function
+// doing pure computation + stdlib calls should be judged Compilable.
 func TestAnalyze_F2_StdlibSafeCalls(t *testing.T) {
 	cases := []struct {
 		name string
@@ -479,44 +488,45 @@ func TestAnalyze_F2_StdlibSafeCalls(t *testing.T) {
 	}
 }
 
-// TestAnalyze_F2_StdlibUnsafeCalls 不在白名单的 stdlib(string.gsub /
-// table.foreach / pcall / pairs / print / error)仍判 unknown(F2 触发)。
+// TestAnalyze_F2_StdlibUnsafeCalls stdlib functions not on the whitelist
+// (string.gsub / table.foreach / pcall / pairs / print / error) are still judged
+// unknown (F2 triggers).
 func TestAnalyze_F2_StdlibUnsafeCalls(t *testing.T) {
 	cases := []*ast.CallExpr{
-		// string.gsub 第三参可为 fn ⇒ 不安全
+		// string.gsub's third arg may be a fn ⇒ unsafe
 		{
 			Fn: &ast.IndexExpr{
 				Obj: &ast.NameExpr{Name: "string"},
 				Key: &ast.StringExpr{Val: "gsub"},
 			},
 		},
-		// table.foreach 接 fn ⇒ 不安全
+		// table.foreach takes a fn ⇒ unsafe
 		{
 			Fn: &ast.IndexExpr{
 				Obj: &ast.NameExpr{Name: "table"},
 				Key: &ast.StringExpr{Val: "foreach"},
 			},
 		},
-		// os.execute IO 边界 ⇒ 不安全
+		// os.execute is an IO boundary ⇒ unsafe
 		{
 			Fn: &ast.IndexExpr{
 				Obj: &ast.NameExpr{Name: "os"},
 				Key: &ast.StringExpr{Val: "execute"},
 			},
 		},
-		// pcall 不在白名单(执行任意 Lua,可能含 yield/coroutine)
+		// pcall not on the whitelist (runs arbitrary Lua, may contain yield/coroutine)
 		{
 			Fn: &ast.NameExpr{Name: "pcall"},
 		},
-		// pairs 与迭代器协议耦合 ⇒ 不在白名单
+		// pairs couples with the iterator protocol ⇒ not on the whitelist
 		{
 			Fn: &ast.NameExpr{Name: "pairs"},
 		},
-		// print 是 IO 边界 ⇒ 不在白名单
+		// print is an IO boundary ⇒ not on the whitelist
 		{
 			Fn: &ast.NameExpr{Name: "print"},
 		},
-		// error 触发 longjmp ⇒ 不在白名单
+		// error triggers longjmp ⇒ not on the whitelist
 		{
 			Fn: &ast.NameExpr{Name: "error"},
 		},
@@ -539,7 +549,7 @@ func TestAnalyze_F2_StdlibUnsafeCalls(t *testing.T) {
 	}
 }
 
-// funcExprName 给 unsafe stdlib 测试用名(便于失败时显示)。
+// funcExprName provides a name for the unsafe-stdlib tests (for readable failures).
 func funcExprName(fn ast.Expr) string {
 	if name, ok := fn.(*ast.NameExpr); ok {
 		return name.Name
@@ -554,15 +564,18 @@ func funcExprName(fn ast.Expr) string {
 	return "unknown"
 }
 
-// TestAnalyze_F2_RecursiveClosureLiteral_NoStackOverflow 递归 local 函数体内
-// 的 closure 字面量不得让 known-local 展开无限互递归(fuzz seed
-// 648e96a2d9661b88:`local function A() return function() A() end end`)。
+// TestAnalyze_F2_RecursiveClosureLiteral_NoStackOverflow a closure literal inside
+// a recursive local function body must not let known-local expansion recurse into
+// each other forever (fuzz seed 648e96a2d9661b88:
+// `local function A() return function() A() end end`).
 //
-// 崩溃链:visitCallExpr 展开 A(inlinedKnownCalls 标记 A)→ A body 内的
-// FuncExpr 走 walkFuncExpr 建 **fresh sub-visitor**(旧版 guard 表不继承)
-// → sub 里再遇 A() 调用,guard 空 → 再展开 A → 再建 sub → ... 直到 Go
-// 栈溢出(fatal, 不可 recover)。修复:walkFuncExpr 把祖先 guard 表拷贝进
-// sub。本测试在修复前会直接 stack overflow 崩掉进程,而非 assert 失败。
+// Crash chain: visitCallExpr expands A (inlinedKnownCalls marks A) → the FuncExpr
+// inside A's body goes through walkFuncExpr and builds a **fresh sub-visitor**
+// (the old version's guard table was not inherited) → the sub hits an A() call
+// again, its guard is empty → expands A again → builds another sub → ... until
+// the Go stack overflows (fatal, not recoverable). Fix: walkFuncExpr copies the
+// ancestor guard table into the sub. Before the fix this test crashes the process
+// with a stack overflow rather than failing an assert.
 func TestAnalyze_F2_RecursiveClosureLiteral_NoStackOverflow(t *testing.T) {
 	b := NewBridge()
 	b.SetP3Compiler(allowAllOpcodes{})
@@ -581,13 +594,14 @@ func TestAnalyze_F2_RecursiveClosureLiteral_NoStackOverflow(t *testing.T) {
 	fn := makeFuncBody(&ast.LocalFuncStmt{Name: "A", Fn: outer})
 	p := makeProto()
 
-	// 只要能返回(不 stack overflow)就是修复生效;结论本身两可
-	// (A 展开后信号干净 → Compilable),不锁死具体判定。
+	// As long as it returns (no stack overflow) the fix is working; the verdict
+	// itself is either-way (after A expands the signals are clean → Compilable),
+	// so we don't pin down the specific judgment.
 	_ = b.AnalyzeProto(fn, p)
 }
 
-// allowAllOpcodes 是 mock P3 编译器,SupportsAllOpcodes 永远返 true。
-// 用于测试 F1-F6 的判定不被 F7 兜底影响。
+// allowAllOpcodes is a mock P3 compiler whose SupportsAllOpcodes always returns
+// true. Used to test that the F1-F6 judgments are not affected by the F7 fallback.
 type allowAllOpcodes struct{}
 
 func (allowAllOpcodes) SupportsAllOpcodes(_ *bytecode.Proto) bool { return true }

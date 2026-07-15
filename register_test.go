@@ -1,4 +1,4 @@
-// Register / RegisterModule 测试——Go 函数注册到 Lua 全局/模块表(11 §10)。
+// Register / RegisterModule tests — Go functions registered into Lua globals / module tables (11 §10).
 package wangshu_test
 
 import (
@@ -49,10 +49,11 @@ return ok, err
 }
 
 func TestCall_HostClosureRejected(t *testing.T) {
-	// 当前裁口:Register 注册的 host fn 只能 Lua 内调,Go 端经 GetGlobal
-	// 取出 + state.Call 直接调用应被清晰拒绝(internal callHost 入口
-	// 未对接 Go 端临时栈帧)。本测试保护这条边界 — 未来真做了支持时,
-	// 错误措辞同步移除即可。
+	// Current cut: a host fn registered via Register can only be called from
+	// within Lua; fetching it on the Go side via GetGlobal + state.Call should
+	// be cleanly rejected (the internal callHost entry does not wire up a Go-side
+	// temporary stack frame). This test guards that boundary — once real support
+	// lands, just drop the error wording accordingly.
 	st := wangshu.NewState(wangshu.Options{})
 	st.Register("noop", func(_ *wangshu.State, _ []wangshu.Value) ([]wangshu.Value, error) {
 		return nil, nil

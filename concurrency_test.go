@@ -1,9 +1,10 @@
-// Concurrency tests — Program 跨 goroutine 共享承诺(11 §1.4 / §8)。
+// Concurrency tests — the Program cross-goroutine sharing contract (11 §1.4 / §8).
 //
-// Program 不可变、可被多 State 并发复用;State 含可变状态,每 goroutine 一个。
-// LoadProgram 对每个 Proto 做 State 私有浅拷贝(Consts intern 进私有 arena、
-// IC 私有、Protos 重定位),共享的只读底层(Code/StringLits/LineInfo)并发读。
-// 本文件全部用例须在 `go test -race` 下通过(engineering.md -race 硬门禁)。
+// A Program is immutable and can be reused concurrently by many States; a State holds
+// mutable state, one per goroutine. LoadProgram makes a State-private shallow copy of each
+// Proto (Consts interned into the private arena, IC private, Protos relocated); only the
+// read-only backing (Code/StringLits/LineInfo) is shared and read concurrently.
+// Every case in this file must pass under `go test -race` (the engineering.md -race hard gate).
 package wangshu_test
 
 import (
@@ -14,7 +15,7 @@ import (
 	"github.com/Liam0205/wangshu"
 )
 
-// TestConcurrent_SharedProgram N 个 goroutine 各持独立 State 跑同一 Program。
+// TestConcurrent_SharedProgram: N goroutines each hold an independent State running the same Program.
 func TestConcurrent_SharedProgram(t *testing.T) {
 	src := `
 local n = ...
@@ -64,7 +65,7 @@ return acc`
 	}
 }
 
-// TestConcurrent_MultiProgramPerState 多 Program 在多 State 上交叉并发。
+// TestConcurrent_MultiProgramPerState: multiple Programs run interleaved across multiple States.
 func TestConcurrent_MultiProgramPerState(t *testing.T) {
 	progs := make([]*wangshu.Program, 4)
 	for i := range progs {
@@ -116,8 +117,8 @@ return s`, i+1)
 	}
 }
 
-// TestConcurrent_GCIndependence 各 State 的 GC 完全独立:一个 State 高压
-// GC(stress mode)不得影响其它 State 的结果。
+// TestConcurrent_GCIndependence: each State's GC is fully independent — one State under heavy
+// GC (stress mode) must not affect the results of any other State.
 func TestConcurrent_GCIndependence(t *testing.T) {
 	src := `
 local keep = {}
@@ -141,7 +142,7 @@ return count, sum`
 		go func(id int) {
 			defer wg.Done()
 			st := wangshu.NewState(wangshu.Options{})
-			st.SetGCStressMode(id%2 == 0) // 半数 State 全程压力 GC
+			st.SetGCStressMode(id%2 == 0) // half of the States run stress GC throughout
 			var first string
 			for r := 0; r < 20; r++ {
 				results, err := prog.Run(st)

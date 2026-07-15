@@ -1,13 +1,14 @@
-// State machine 测试(`docs/design/p2-bridge/04-try-compile-fallback.md` §2-§5)。
+// State machine tests (`docs/design/p2-bridge/04-try-compile-fallback.md` §2-§5).
 //
-// 验证 considerPromotion 四路径 + TierState 单向 + 吸收态:
+// Validates the four considerPromotion paths + the one-way TierState + absorbing states:
 //
-//	(P1) 已吸收态 → no-op(防抖)
+//	(P1) already-absorbed state → no-op (debounce)
 //	(P2) CompUnknown / CompNotCompilable → TierStuck
-//	(P3) Compilable + try-compile 成功 → TierGibbous
+//	(P3) Compilable + try-compile succeeds → TierGibbous
 //	(P3-fail) Compilable + try-compile err → TierStuck
 //
-// **零 deopt 不变式**:任何转移后状态都不会回 TierInterp(04 §2.4 形式化论证)。
+// **Zero-deopt invariant**: after any transition, the state never returns to
+// TierInterp (formalized in 04 §2.4).
 package bridge
 
 import (
@@ -17,17 +18,17 @@ import (
 	"github.com/Liam0205/wangshu/internal/bytecode"
 )
 
-// TestStateMachine_NotCompilable_Stuck (P2) 路径:CompNotCompilable → Stuck。
+// TestStateMachine_NotCompilable_Stuck (P2) path: CompNotCompilable → Stuck.
 func TestStateMachine_NotCompilable_Stuck(t *testing.T) {
 	b := NewBridge()
 	p := makeProtoWithCode(bytecode.ADD)
 	pd := b.ProfileOf(p)
 
-	// 模拟 PB3 已分析判 NotCompilable
+	// Simulate PB3 analysis having judged NotCompilable
 	pd.Compilable = CompNotCompilable
 	pd.Reasons = ReasonVararg
 
-	// 触发越阈值 considerPromotion
+	// Trigger a threshold-crossing considerPromotion
 	for i := uint32(0); i < HotEntryThreshold; i++ {
 		b.OnEnter(p, true)
 	}
@@ -40,13 +41,13 @@ func TestStateMachine_NotCompilable_Stuck(t *testing.T) {
 	}
 }
 
-// TestStateMachine_Unknown_Stuck CompUnknown 视同 NotCompilable(03 §5.5
-// + 04 §3.2)→ Stuck。这是 P1-only build 退化兜底。
+// TestStateMachine_Unknown_Stuck CompUnknown is treated as NotCompilable (03 §5.5
+// + 04 §3.2) → Stuck. This is the P1-only build degradation fallback.
 func TestStateMachine_Unknown_Stuck(t *testing.T) {
 	b := NewBridge()
 	p := makeProtoWithCode(bytecode.ADD)
 	pd := b.ProfileOf(p)
-	// 默认 CompUnknown(P1 占位)
+	// default CompUnknown (P1 placeholder)
 
 	for i := uint32(0); i < HotEntryThreshold; i++ {
 		b.OnEnter(p, true)
@@ -57,8 +58,8 @@ func TestStateMachine_Unknown_Stuck(t *testing.T) {
 	}
 }
 
-// TestStateMachine_Compilable_Promoted (P3-success) 路径:Compilable +
-// 编译成功 → TierGibbous。
+// TestStateMachine_Compilable_Promoted (P3-success) path: Compilable +
+// compile succeeds → TierGibbous.
 func TestStateMachine_Compilable_Promoted(t *testing.T) {
 	b := NewBridge()
 	b.SetP3Compiler(dummyCompileP3{})
@@ -81,8 +82,8 @@ func TestStateMachine_Compilable_Promoted(t *testing.T) {
 	}
 }
 
-// TestStateMachine_CompileFail_Stuck (P3-fail) 路径:Compilable + Compile
-// 返 err → TierStuck。
+// TestStateMachine_CompileFail_Stuck (P3-fail) path: Compilable + Compile
+// returns err → TierStuck.
 func TestStateMachine_CompileFail_Stuck(t *testing.T) {
 	b := NewBridge()
 	b.SetP3Compiler(failingP3{err: errors.New("synthetic compile error")})
@@ -99,8 +100,8 @@ func TestStateMachine_CompileFail_Stuck(t *testing.T) {
 	}
 }
 
-// TestStateMachine_BackendPanic_Stuck P3 内部 panic 经 defer recover 转 err
-// → TierStuck;不让 panic 穿越接口。
+// TestStateMachine_BackendPanic_Stuck a P3-internal panic is converted to an err
+// via defer recover → TierStuck; the panic must not cross the interface.
 func TestStateMachine_BackendPanic_Stuck(t *testing.T) {
 	b := NewBridge()
 	b.SetP3Compiler(panicP3{})
@@ -123,17 +124,18 @@ func TestStateMachine_BackendPanic_Stuck(t *testing.T) {
 	}
 }
 
-// TestStateMachine_Idempotent_Stuck 一旦 Stuck 不再触发 considerPromotion——
-// 后续越阈值守卫拦下,P3 编译次数恒 0。
+// TestStateMachine_Idempotent_Stuck once Stuck, considerPromotion is never
+// triggered again — subsequent threshold-crossings are stopped by the guard, and
+// the P3 compile count stays at 0.
 func TestStateMachine_Idempotent_Stuck(t *testing.T) {
 	mock := &countingP3{}
 	b := NewBridge()
 	b.SetP3Compiler(mock)
 	p := makeProtoWithCode(bytecode.ADD)
 	pd := b.ProfileOf(p)
-	pd.Compilable = CompNotCompilable // 直接 Stuck 路径
+	pd.Compilable = CompNotCompilable // straight to the Stuck path
 
-	// 跑足够多回 EntryCount,守卫每次都直接 return
+	// Run enough EntryCount rounds; the guard returns directly every time
 	for i := 0; i < 10*int(HotEntryThreshold); i++ {
 		b.OnEnter(p, true)
 	}
@@ -141,7 +143,7 @@ func TestStateMachine_Idempotent_Stuck(t *testing.T) {
 		t.Errorf("Stuck should never trigger Compile, got %d calls", mock.compileCalls)
 	}
 
-	// 切到 Compilable 后仍守住——TierState 已是 Stuck,守卫继续拦
+	// Even after switching to Compilable it still holds — TierState is already Stuck, the guard keeps stopping it
 	pd.Compilable = CompCompilable
 	for i := 0; i < int(HotEntryThreshold); i++ {
 		b.OnEnter(p, true)
@@ -151,8 +153,8 @@ func TestStateMachine_Idempotent_Stuck(t *testing.T) {
 	}
 }
 
-// TestStateMachine_Idempotent_Gibbous Gibbous 也是吸收态——后续越阈值不
-// 触发再编译。
+// TestStateMachine_Idempotent_Gibbous Gibbous is also an absorbing state —
+// subsequent threshold-crossings do not trigger recompilation.
 func TestStateMachine_Idempotent_Gibbous(t *testing.T) {
 	mock := &countingP3{}
 	b := NewBridge()
@@ -171,7 +173,7 @@ func TestStateMachine_Idempotent_Gibbous(t *testing.T) {
 		t.Fatalf("first round should compile once, got %d", mock.compileCalls)
 	}
 
-	// 持续 OnEnter ⇒ 守卫拦下,不再调 Compile
+	// Continued OnEnter ⇒ the guard stops it, no more Compile calls
 	for i := 0; i < 10*int(HotEntryThreshold); i++ {
 		b.OnEnter(p, true)
 	}
@@ -180,12 +182,14 @@ func TestStateMachine_Idempotent_Gibbous(t *testing.T) {
 	}
 }
 
-// TestStateMachine_NoReverseEdge 「零 deopt」形式化:任何转移后,手工把
-// TierState 设回 TierInterp 然后再 considerPromotion——状态机不会自然
-// 「降」。这条断言是 04 §2.4 的代码级体现:状态机不存在
-// TierGibbous → TierInterp / TierStuck → TierInterp 反向边——只有用户主动
-// 重置才可能让状态回到起点(本测试不试图阻止主动重置,只验证「自然
-// 转移序列」不会回头)。
+// TestStateMachine_NoReverseEdge "zero deopt" formalized: after any transition,
+// manually setting TierState back to TierInterp and then calling considerPromotion —
+// the state machine will not "downgrade" on its own. This assertion is the
+// code-level embodiment of 04 §2.4: the state machine has no
+// TierGibbous → TierInterp / TierStuck → TierInterp reverse edge — only a user's
+// deliberate reset can return the state to the start (this test does not attempt to
+// prevent a deliberate reset, it only verifies that the "natural transition
+// sequence" does not go back).
 func TestStateMachine_NoReverseEdge(t *testing.T) {
 	b := NewBridge()
 	b.SetP3Compiler(dummyCompileP3{})
@@ -200,7 +204,7 @@ func TestStateMachine_NoReverseEdge(t *testing.T) {
 		t.Fatalf("expected Gibbous, got %v", pd.TierState)
 	}
 
-	// 模拟许多次后续事件——TierGibbous 应保持
+	// Simulate many subsequent events — TierGibbous should hold
 	for i := 0; i < 1000; i++ {
 		b.OnEnter(p, true)
 		b.OnBackEdge(p, 0, true)
@@ -212,8 +216,9 @@ func TestStateMachine_NoReverseEdge(t *testing.T) {
 
 // ----- mock P3 helpers -----
 
-// decliningP3:SupportsAllOpcodes 恒 false 且计数(测 issue #40 recheck
-// dedup——forceAll retry window 内每回边不应重跑全量后端分析)。
+// decliningP3: SupportsAllOpcodes is always false and counts calls (tests the
+// issue #40 recheck dedup — within the forceAll retry window, each back edge must
+// not rerun the full backend analysis).
 type decliningP3 struct{ supportsCalls int }
 
 func (d *decliningP3) SupportsAllOpcodes(_ *bytecode.Proto) bool {
@@ -224,8 +229,9 @@ func (*decliningP3) Compile(_ *bytecode.Proto, _ *TypeFeedback) (GibbousCode, er
 	return nil, errors.New("declining backend must not be asked to compile")
 }
 
-// flippingP3:SupportsAllOpcodes 先拒后收(accept=true 后接受),模拟
-// IC-gated 后端在解释器跑过一轮、IC 变暖之后改判接受。
+// flippingP3: SupportsAllOpcodes declines first then accepts (accepts once
+// accept=true), simulating an IC-gated backend that changes its verdict to accept
+// after the interpreter has run a round and the IC has warmed up.
 type flippingP3 struct {
 	accept        bool
 	supportsCalls int
@@ -241,11 +247,12 @@ func (f *flippingP3) Compile(p *bytecode.Proto, _ *TypeFeedback) (GibbousCode, e
 	return dummyCode{proto: p}, nil
 }
 
-// TestForceRetryWindow_RecheckDedupPerEntry (issue #40):forceAll 下被后端
-// 拒收的 proto 停留在 retry window 内时,同一次进入(EntryCount 不变)的
-// 海量回边**不得**每条都重跑 recheckCompilabilityRuntime 全量分析——
-// HeavyArith 形态(单次进入 + 2M 回边)实测该路径占 22% CPU + 1.5 GB/op。
-// dedup 后每 pc 每次进入至多 3 次(入口 + 首回边 + HotBackEdgeThreshold)。
+// TestForceRetryWindow_RecheckDedupPerEntry (issue #40): while a proto declined by
+// the backend under forceAll stays within the retry window, the massive number of
+// back edges during a single entry (EntryCount unchanged) **must not** each rerun
+// the full recheckCompilabilityRuntime analysis — the HeavyArith shape (a single
+// entry + 2M back edges) measured this path at 22% CPU + 1.5 GB/op. After dedup,
+// each pc runs at most 3 times per entry (entry + first back edge + HotBackEdgeThreshold).
 func TestForceRetryWindow_RecheckDedupPerEntry(t *testing.T) {
 	mock := &decliningP3{}
 	b := NewBridge()
@@ -263,18 +270,20 @@ func TestForceRetryWindow_RecheckDedupPerEntry(t *testing.T) {
 	if pd.TierState != TierInterp {
 		t.Fatalf("declined proto within retry window should stay TierInterp, got %v", pd.TierState)
 	}
-	// 入口 1 次 + 回边 count==1 再武装 1 次 + count==HotBackEdgeThreshold
-	// 再武装 1 次 = 3;留一点余量防未来再武装点微调,但必须远小于回边数。
+	// entry once + rearm once at back-edge count==1 + rearm once at
+	// count==HotBackEdgeThreshold = 3; leave a little slack for future rearm-point
+	// tweaks, but it must be far below the back-edge count.
 	if mock.supportsCalls > 5 {
 		t.Errorf("SupportsAllOpcodes ran %d times for %d back edges within one entry; dedup should cap it at ~3",
 			mock.supportsCalls, edges)
 	}
 }
 
-// TestForceRetryWindow_WarmICPromotesOnFirstBackEdge (issue #40 dedup 的
-// 对偶面,保 retry window 原始目的):IC-gated 后端冷 IC 拒收、循环体跑过
-// 一轮后改判接受——dedup 在首个回边(count==1)重新武装 recheck,升层点
-// 不得比修复前更晚。
+// TestForceRetryWindow_WarmICPromotesOnFirstBackEdge (the dual of the issue #40
+// dedup, preserving the retry window's original purpose): an IC-gated backend
+// declines on a cold IC, then changes its verdict to accept after the loop body has
+// run a round — dedup rearms recheck at the first back edge (count==1), and the
+// promotion point must not be later than before the fix.
 func TestForceRetryWindow_WarmICPromotesOnFirstBackEdge(t *testing.T) {
 	mock := &flippingP3{}
 	b := NewBridge()
@@ -282,13 +291,13 @@ func TestForceRetryWindow_WarmICPromotesOnFirstBackEdge(t *testing.T) {
 	b.SetForceAllPromote(true)
 	p := makeProtoWithCode(bytecode.ADD)
 
-	b.OnEnter(p, true) // 冷 IC:拒收,进 retry window
+	b.OnEnter(p, true) // cold IC: declines, enters the retry window
 	pd := b.ProfileOf(p)
 	if pd.TierState != TierInterp {
 		t.Fatalf("cold decline should stay TierInterp, got %v", pd.TierState)
 	}
 
-	mock.accept = true // 模拟循环体首轮跑完,IC 已暖
+	mock.accept = true // simulate the loop body finishing its first round, IC now warm
 	b.OnBackEdge(p, 0, true)
 
 	if pd.TierState != TierGibbous {
@@ -299,10 +308,11 @@ func TestForceRetryWindow_WarmICPromotesOnFirstBackEdge(t *testing.T) {
 	}
 }
 
-// TestForceRetryWindow_AbsorbsToStuck 窗口语义不变:恒拒后端 + forceAll,
-// 窗口关闭(EntryCount=64,覆盖递归 proto 的深 pc IC 预热——binary-trees
-// `check` 的第三个 GETTABLE 要到左子树全部返回后才第一次执行)后吸收到
-// TierStuck,之后不再分析。
+// TestForceRetryWindow_AbsorbsToStuck the window semantics are unchanged: an
+// always-declining backend + forceAll, once the window closes (EntryCount=64,
+// covering deep-pc IC warmup for recursive protos — the third GETTABLE of
+// binary-trees `check` only executes for the first time after the entire left
+// subtree returns), it absorbs to TierStuck and no longer analyzes.
 func TestForceRetryWindow_AbsorbsToStuck(t *testing.T) {
 	mock := &decliningP3{}
 	b := NewBridge()
@@ -318,7 +328,7 @@ func TestForceRetryWindow_AbsorbsToStuck(t *testing.T) {
 		t.Fatalf("entries 1-63 should stay in the retry window, got %v", pd.TierState)
 	}
 
-	b.OnEnter(p, true) // EntryCount=64:窗口关闭
+	b.OnEnter(p, true) // EntryCount=64: window closes
 	if pd.TierState != TierStuck {
 		t.Fatalf("entry 64 should absorb to TierStuck, got %v", pd.TierState)
 	}
@@ -334,7 +344,7 @@ func TestForceRetryWindow_AbsorbsToStuck(t *testing.T) {
 	}
 }
 
-// dummyCompileP3:Compile 永远成功,产出空 GibbousCode。
+// dummyCompileP3: Compile always succeeds, producing an empty GibbousCode.
 type dummyCompileP3 struct{}
 
 func (dummyCompileP3) SupportsAllOpcodes(_ *bytecode.Proto) bool { return true }
@@ -349,7 +359,7 @@ func (d dummyCode) Run(_ []uint64, _ uint32) int32 { return 0 }
 func (d dummyCode) PendingErr() error              { return nil }
 func (d dummyCode) Slot() (uint32, bool)           { return 0, false }
 
-// failingP3:Compile 总返指定 err。
+// failingP3: Compile always returns the specified err.
 type failingP3 struct{ err error }
 
 func (failingP3) SupportsAllOpcodes(_ *bytecode.Proto) bool { return true }
@@ -357,7 +367,7 @@ func (f failingP3) Compile(_ *bytecode.Proto, _ *TypeFeedback) (GibbousCode, err
 	return nil, f.err
 }
 
-// panicP3:Compile 直接 panic(测 defer recover)。
+// panicP3: Compile panics directly (tests defer recover).
 type panicP3 struct{}
 
 func (panicP3) SupportsAllOpcodes(_ *bytecode.Proto) bool { return true }
@@ -365,7 +375,7 @@ func (panicP3) Compile(_ *bytecode.Proto, _ *TypeFeedback) (GibbousCode, error) 
 	panic("synthetic backend bug")
 }
 
-// countingP3:记录 Compile 调用次数(测幂等)。
+// countingP3: records the Compile call count (tests idempotence).
 type countingP3 struct{ compileCalls int }
 
 func (countingP3) SupportsAllOpcodes(_ *bytecode.Proto) bool { return true }
@@ -374,25 +384,27 @@ func (c *countingP3) Compile(p *bytecode.Proto, _ *TypeFeedback) (GibbousCode, e
 	return dummyCode{proto: p}, nil
 }
 
-// TestStateMachine_Coroutine_NoPromote (V11 协程不升层):承
-// bridge.go::considerPromotion line 263-265 onMain=false 守门 + [07 §2.4]
-// 协程内即便热度越阈值也不升层(原样继承 P3 规则)。
+// TestStateMachine_Coroutine_NoPromote (V11 coroutines do not promote): follows
+// the onMain=false guard at bridge.go::considerPromotion line 263-265 + [07 §2.4] —
+// inside a coroutine, even if hotness crosses the threshold there is no promotion
+// (inherits the P3 rule verbatim).
 //
-// **场景**:协程线程上 OnEnter(p, false=onMain) 反复触发达 HotEntryThreshold,
-// 但因 onMain=false,considerPromotion 直接 return,Proto 永远 TierInterp。
+// **Scenario**: OnEnter(p, false=onMain) on a coroutine thread fires repeatedly up
+// to HotEntryThreshold, but because onMain=false, considerPromotion returns
+// directly and the Proto stays TierInterp forever.
 //
-// **prove-the-path**:HotEntryThreshold 次 OnEnter(p, false) 后,
-// pd.TierState 仍 TierInterp(主线程下早就 TierGibbous 或 TierStuck)。
+// **prove-the-path**: after HotEntryThreshold OnEnter(p, false) calls, pd.TierState
+// is still TierInterp (on the main thread it would long since be TierGibbous or TierStuck).
 func TestStateMachine_Coroutine_NoPromote(t *testing.T) {
 	b := NewBridge()
 	b.SetP3Compiler(dummyCompileP3{})
 	p := makeProtoWithCode(bytecode.ADD)
 	pd := b.ProfileOf(p)
-	pd.Compilable = CompCompilable // 主线程下应升 TierGibbous
+	pd.Compilable = CompCompilable // on the main thread this should promote to TierGibbous
 
-	// 协程触发(onMain=false):承 V11 不升层
+	// Coroutine trigger (onMain=false): per V11, no promotion
 	for i := uint32(0); i < HotEntryThreshold*2; i++ {
-		b.OnEnter(p, false) // 协程线程
+		b.OnEnter(p, false) // coroutine thread
 	}
 
 	if pd.TierState != TierInterp {
@@ -403,9 +415,11 @@ func TestStateMachine_Coroutine_NoPromote(t *testing.T) {
 	}
 }
 
-// TestStateMachine_Coroutine_NoPromote_AfterMainPromote 主线程先升后协程
-// 反复调用:主线程升 TierGibbous 后,协程内 OnEnter(p, false) 应 no-op
-// (P1 已吸收态守门,与 onMain 无关)。验 V11 + 主线程升层不互扰。
+// TestStateMachine_Coroutine_NoPromote_AfterMainPromote the main thread promotes
+// first, then the coroutine calls repeatedly: after the main thread promotes to
+// TierGibbous, OnEnter(p, false) inside a coroutine should be a no-op (the P1
+// already-absorbed-state guard, independent of onMain). Verifies V11 + that main-thread
+// promotion and coroutines do not interfere.
 func TestStateMachine_Coroutine_NoPromote_AfterMainPromote(t *testing.T) {
 	b := NewBridge()
 	b.SetP3Compiler(&countingP3{})
@@ -413,7 +427,7 @@ func TestStateMachine_Coroutine_NoPromote_AfterMainPromote(t *testing.T) {
 	pd := b.ProfileOf(p)
 	pd.Compilable = CompCompilable
 
-	// 主线程升层
+	// Main thread promotes
 	for i := uint32(0); i < HotEntryThreshold; i++ {
 		b.OnEnter(p, true)
 	}
@@ -421,7 +435,7 @@ func TestStateMachine_Coroutine_NoPromote_AfterMainPromote(t *testing.T) {
 		t.Fatalf("主线程升层前提失败:TierState = %v, want TierGibbous", pd.TierState)
 	}
 
-	// 协程反复调用:不应触发 Compile 二次(P1 守门 + onMain=false 双重保险)
+	// Coroutine calls repeatedly: must not trigger a second Compile (P1 guard + onMain=false double insurance)
 	compileCallsBefore := b.p3.(*countingP3).compileCalls
 	for i := uint32(0); i < HotEntryThreshold*2; i++ {
 		b.OnEnter(p, false)
@@ -437,7 +451,7 @@ func TestStateMachine_Coroutine_NoPromote_AfterMainPromote(t *testing.T) {
 	}
 }
 
-// gatedP3:能编译一切,但 WorthPromoting 拒绝(测 PromotionGater,issue #39)。
+// gatedP3: can compile anything, but WorthPromoting declines (tests PromotionGater, issue #39).
 type gatedP3 struct {
 	dummyCompileP3
 	gateCalls int
@@ -448,8 +462,8 @@ func (g *gatedP3) WorthPromoting(_ *bytecode.Proto) bool {
 	return false
 }
 
-// TestPromotionGater_AutoDeclinesToStuck:auto 模式下后端 WorthPromoting
-// 返 false → TierStuck 吸收(不 try-compile),且 Compile 从未被调。
+// TestPromotionGater_AutoDeclinesToStuck: in auto mode, the backend's WorthPromoting
+// returning false → TierStuck absorption (no try-compile), and Compile is never called.
 func TestPromotionGater_AutoDeclinesToStuck(t *testing.T) {
 	b := NewBridge()
 	mock := &gatedP3{}
@@ -479,8 +493,8 @@ func TestPromotionGater_AutoDeclinesToStuck(t *testing.T) {
 	}
 }
 
-// TestPromotionGater_ForceAllBypasses:forceAll 模式绕过 profitability
-// gate——差分覆盖不因收益判断缩水(issue #39)。
+// TestPromotionGater_ForceAllBypasses: forceAll mode bypasses the profitability
+// gate — differential coverage does not shrink due to a profitability judgment (issue #39).
 func TestPromotionGater_ForceAllBypasses(t *testing.T) {
 	b := NewBridge()
 	mock := &gatedP3{}

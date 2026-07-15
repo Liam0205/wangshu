@@ -1,4 +1,4 @@
-// Weak table GC tests(06 §8.4 / 07 §13)。
+// Weak table GC tests (06 §8.4 / 07 §13).
 package crescent
 
 import (
@@ -8,14 +8,14 @@ import (
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
-// TestWeak_ValueModeCleared:__mode="v" 的表,GC 后不可达的值条目被清。
+// TestWeak_ValueModeCleared: for a table with __mode="v", unreachable value entries are cleared after GC.
 func TestWeak_ValueModeCleared(t *testing.T) {
 	st := New()
 	th := st.newThread()
 	st.runningThread = th
 	defer func() { st.runningThread = nil }()
 
-	// weak 表 + 元表
+	// weak table + metatable
 	weak := st.allocTable(0, 8)
 	meta := st.allocTable(0, 8)
 	modeKey := value.MakeGC(value.TagString, st.gc.Intern([]byte("__mode")))
@@ -28,20 +28,20 @@ func TestWeak_ValueModeCleared(t *testing.T) {
 		t.Fatalf("weak mode = %c, want v", object.TableWeakMode(st.arena, weak))
 	}
 
-	// 放一个"不可达"的表为值(只有弱表引用它)
+	// Put an "unreachable" table as a value (only the weak table references it)
 	dead := st.allocTable(0, 8)
 	k1 := value.NumberValue(1)
 	if e := st.tableSet(weak, k1, value.MakeGC(value.TagTable, dead)); e != nil {
 		t.Fatalf("set weak[1]: %v", e)
 	}
-	// 放一个"可达"的值(栈上引用)
+	// Put a "reachable" value (referenced from the stack)
 	live := st.allocTable(0, 8)
 	th.push(value.MakeGC(value.TagTable, live))
 	k2 := value.NumberValue(2)
 	if e := st.tableSet(weak, k2, value.MakeGC(value.TagTable, live)); e != nil {
 		t.Fatalf("set weak[2]: %v", e)
 	}
-	// 弱表自身从栈可达
+	// The weak table itself is reachable from the stack
 	th.push(value.MakeGC(value.TagTable, weak))
 
 	st.gc.Collect()
@@ -56,7 +56,7 @@ func TestWeak_ValueModeCleared(t *testing.T) {
 	}
 }
 
-// TestWeak_KeyModeCleared:__mode="k" 的表,键死则条目清。
+// TestWeak_KeyModeCleared: for a table with __mode="k", an entry is cleared when its key dies.
 func TestWeak_KeyModeCleared(t *testing.T) {
 	st := New()
 	th := st.newThread()
@@ -76,14 +76,14 @@ func TestWeak_KeyModeCleared(t *testing.T) {
 
 	st.gc.Collect()
 
-	// 死键条目应被清:rawNext 应该一个都遍历不到
+	// The dead-key entry should be cleared: rawNext should not reach any entry
 	_, _, ok, _ := st.rawNext(weak, value.Nil)
 	if ok {
 		t.Errorf("weak-key table should be empty after GC (key died)")
 	}
 }
 
-// TestWeak_StrongTableKeepsAll:无 __mode 的表完全不受影响。
+// TestWeak_StrongTableKeepsAll: a table without __mode is completely unaffected.
 func TestWeak_StrongTableKeepsAll(t *testing.T) {
 	st := New()
 	th := st.newThread()

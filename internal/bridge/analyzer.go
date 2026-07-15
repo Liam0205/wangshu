@@ -1,11 +1,14 @@
-// Compilability analyzer (`docs/design/p2-bridge/03-compilability-analysis.md` §4-§5)。
+// Compilability analyzer (`docs/design/p2-bridge/03-compilability-analysis.md` §4-§5).
 //
-// `compilabilityVisitor` 在一次 AST 遍历中收集 F1-F4 + F6 的不升层信号;
-// F5 / F7 在 Proto 层独立判(visitor 不参与)。
+// `compilabilityVisitor` collects the F1-F4 + F6 no-tier-up signals in a
+// single AST walk; F5 / F7 are decided independently at the Proto level
+// (the visitor is not involved).
 //
-// **保守第一,宁漏勿误**(03 §1):任何拿不准的形状一律判 NotCompilable。
-// 误判(把不可编译形状判可编译)的后果是 P3 编译错误代码或运行期崩溃,
-// fallback 不会被触发——这是 P2 的设计红线。
+// **Conservative first, prefer false negatives over false positives**
+// (03 §1): any shape we are unsure about is judged NotCompilable. A
+// misjudgment (treating a non-compilable shape as compilable) leads P3 to
+// emit wrong code or crash at runtime, and the fallback is not triggered —
+// this is P2's design red line.
 package bridge
 
 import (
@@ -15,43 +18,50 @@ import (
 	"github.com/Liam0205/wangshu/internal/frontend/ast"
 )
 
-// AnalyzeProto 是 Compile 时被 codegen 回调的可编译性分析入口(03 §5.2)。
+// AnalyzeProto is the compilability-analysis entry point invoked by codegen
+// as a callback at Compile time (03 §5.2).
 //
-// 调用契约:
-//   - 由 compile.Gen 在产出 `*bytecode.Proto` 后调用,把结果写进
-//     `ProfileData.Compilable`(03 §2.5);
-//   - `!profile` build tag 下 codegen 不调本函数,所有 Proto 留 CompUnknown
-//     (03 §2.6);
-//   - **嵌套 Proto 独立判定**(03 §7):codegen 对每个产出的 Proto 都独立调
-//     一次本函数,父函数判定不传染子函数。
+// Call contract:
+//   - Called by compile.Gen after producing a `*bytecode.Proto`, writing the
+//     result into `ProfileData.Compilable` (03 §2.5);
+//   - Under the `!profile` build tag codegen does not call this function, so
+//     all Protos stay CompUnknown (03 §2.6);
+//   - **Nested Protos are judged independently** (03 §7): codegen calls this
+//     function once for every Proto it produces; a parent's verdict does not
+//     propagate to its children.
 //
-// 不变式:
-//  1. 一次分析,结果不变(03 §5.4)——本函数返回后 Compilable 不再修改;
-//  2. 保守优先——任一 F1-F7 信号触发即判 NotCompilable;
-//  3. AST 用完即弃(03 §2.4 决策方案 ①)——本函数返回后不持有 fn 引用。
+// Invariants:
+//  1. Analyze once, result immutable (03 §5.4) — Compilable is not modified
+//     after this function returns;
+//  2. Conservative first — any of the F1-F7 signals firing yields NotCompilable;
+//  3. AST used then discarded (03 §2.4 decision option ①) — this function does
+//     not retain a reference to fn after returning.
 func (b *Bridge) AnalyzeProto(fn *ast.FuncExpr, proto *bytecode.Proto) Compilability {
 	return b.AnalyzeProtoWithOuter(fn, proto, nil, nil)
 }
 
-// AnalyzeProtoWithOuter 是 AnalyzeProto 的 scope-aware 版本(承 P4 PJ5
-// PJ5 + 03 §9 GAP-5):outerLocalFuncs 是 outer scope 链上的 local fn 名字
-// 映射,让本 proto 内调 outer local fn 形态识别为 known 而非 unknown call。
+// AnalyzeProtoWithOuter is the scope-aware version of AnalyzeProto (from P4
+// PJ5 + 03 §9 GAP-5): outerLocalFuncs is a name mapping of local fns on the
+// outer scope chain, letting calls to outer local fns inside this proto be
+// recognized as known rather than unknown calls.
 //
-// outerLocalFuncs = nil 时行为等价 AnalyzeProto(向后兼容)。
+// When outerLocalFuncs = nil the behavior is equivalent to AnalyzeProto
+// (backward compatible).
 //
-// 典型场景:嵌套 closure
+// Typical scenario: nested closure
 //
-//	local function noop() end                -- outer 注册 noop
-//	local function invoker() noop() end     -- 本 proto 内调 outer noop
+//	local function noop() end                -- outer registers noop
+//	local function invoker() noop() end     -- outer noop called inside this proto
 //
-// 不扩展(nil)时:visitor.localFuncs 空 → noop 标 callsUnknownFn → invoker
-// NotCompilable;
-// 扩展时:visitor.localFuncs 含 noop → isKnownLocalCall=true → 递归判
-// noop.Body(同款语义传染:noop 含 yield 则 invoker 也含),invoker 可
-// Compilable。
+// Without extension (nil): visitor.localFuncs empty → noop marked
+// callsUnknownFn → invoker NotCompilable;
+// With extension: visitor.localFuncs contains noop → isKnownLocalCall=true →
+// recursively judge noop.Body (same signal-contagion semantics: if noop
+// contains yield then invoker does too), so invoker can be Compilable.
 //
-// **遮蔽安全**:outerLocalFuncs 中与本 proto Params 同名的条目被剔除,
-// 避免误把 parameter 当 known local fn。
+// **Shadowing safety**: entries in outerLocalFuncs whose name collides with
+// this proto's Params are dropped, avoiding mistaking a parameter for a known
+// local fn.
 //
 // outerAliases carries `local sqrt = math.sqrt`-style bindings from the
 // outer funcState chain (name -> RHS expression). Entries whose RHS
@@ -61,7 +71,8 @@ func (b *Bridge) AnalyzeProto(fn *ast.FuncExpr, proto *bytecode.Proto) Compilabi
 // outerLocalFuncs.
 func (b *Bridge) AnalyzeProtoWithOuter(fn *ast.FuncExpr, proto *bytecode.Proto, outerLocalFuncs map[string]*ast.FuncExpr, outerAliases map[string]ast.Expr) Compilability {
 	v := newCompilabilityVisitor()
-	// 继承 outer local funcs 快照,减去本函数参数同名遮蔽项
+	// Inherit the outer local funcs snapshot, minus entries shadowed by this
+	// function's parameter names.
 	for name, fnAST := range outerLocalFuncs {
 		shadowed := false
 		for _, p := range fn.Params {
@@ -92,17 +103,17 @@ func (b *Bridge) AnalyzeProtoWithOuter(fn *ast.FuncExpr, proto *bytecode.Proto, 
 
 	var reasons ReasonsBitmap
 
-	// F1: vararg(三重识别 03 §3.1.3:AST.IsVararg + Proto.IsVararg + visitor.sawVararg)
+	// F1: vararg (triple detection 03 §3.1.3: AST.IsVararg + Proto.IsVararg + visitor.sawVararg)
 	if fn.IsVararg || v.sawVararg || protoIsVararg(proto) {
 		reasons |= ReasonVararg
 	}
-	// AST/Proto IsVararg 必须一致(03 §2.3 不变式 1)——不一致即 codegen bug
+	// AST/Proto IsVararg must agree (03 §2.3 invariant 1) — a mismatch is a codegen bug
 	if fn.IsVararg != proto.IsVararg {
 		panic(fmt.Sprintf("compilability: AST/Proto IsVararg mismatch (ast=%v, proto=%v)",
 			fn.IsVararg, proto.IsVararg))
 	}
 
-	// F2: 协程相关
+	// F2: coroutine-related
 	if v.callsYield {
 		reasons |= ReasonYield
 	}
@@ -115,8 +126,8 @@ func (b *Bridge) AnalyzeProtoWithOuter(fn *ast.FuncExpr, proto *bytecode.Proto, 
 	if v.callsUnknownFn {
 		reasons |= ReasonUnknownCall
 	}
-	// F2-c: SELF method call(占位位,与 ReasonBackendUnsupp 同款手法 —
-	// 承 P4 PJ5 SELF inline 形态真接入)
+	// F2-c: SELF method call (placeholder bit, same technique as
+	// ReasonBackendUnsupp — from the P4 PJ5 SELF inline shape wiring)
 	if v.sawSelfCall {
 		reasons |= ReasonSelfCall
 	}
@@ -129,7 +140,7 @@ func (b *Bridge) AnalyzeProtoWithOuter(fn *ast.FuncExpr, proto *bytecode.Proto, 
 		reasons |= ReasonSetfenv
 	}
 
-	// F5: 过大函数(Proto 层)
+	// F5: oversized function (Proto level)
 	if len(proto.Code) > MaxCompilableInsns {
 		reasons |= ReasonOverSize
 	}
@@ -137,7 +148,7 @@ func (b *Bridge) AnalyzeProtoWithOuter(fn *ast.FuncExpr, proto *bytecode.Proto, 
 		reasons |= ReasonOverRegs
 	}
 
-	// F6: 深嵌套 / upvalue 数
+	// F6: deep nesting / upvalue count
 	if v.maxClosureDepth > MaxClosureDepth {
 		reasons |= ReasonNestedDeep
 	}
@@ -145,12 +156,13 @@ func (b *Bridge) AnalyzeProtoWithOuter(fn *ast.FuncExpr, proto *bytecode.Proto, 
 		reasons |= ReasonOverUpval
 	}
 
-	// F7: P3 后端能力查询(放最后,F1-F6 全过才查——03 §3.7.5 + 不变式 I8)
+	// F7: P3 backend capability query (last, only queried once F1-F6 all pass —
+	// 03 §3.7.5 + invariant I8)
 	if reasons == 0 && b.checkF7BackendSupport(proto) {
 		reasons |= ReasonBackendUnsupp
 	}
 
-	// 决策与缓存
+	// Decision and cache
 	result := CompCompilable
 	if reasons.HasAny() {
 		result = CompNotCompilable
@@ -159,18 +171,21 @@ func (b *Bridge) AnalyzeProtoWithOuter(fn *ast.FuncExpr, proto *bytecode.Proto, 
 	return result
 }
 
-// checkF7BackendSupport F7 P3 后端能力查询(03 §3.7.6)。
+// checkF7BackendSupport is the F7 P3 backend capability query (03 §3.7.6).
 //
-// b.p3 == nil(P1-only / P2 PB0..PB5 P3 未注入)→ 视为不支持(保守拒)。
-// 这保证 P1-only 行为与 P2 启用前一致——所有 Proto 永久 tier-0 解释。
+// b.p3 == nil (P1-only / P2 PB0..PB5 with P3 not injected) → treated as
+// unsupported (conservative reject). This guarantees P1-only behavior stays
+// identical to before P2 was enabled — all Protos stay permanently tier-0
+// interpreted.
 func (b *Bridge) checkF7BackendSupport(proto *bytecode.Proto) bool {
 	if b.p3 == nil {
-		return true // 无 P3 = 不支持任何 opcode = F7 触发
+		return true // no P3 = supports no opcode = F7 fires
 	}
 	return !b.p3.SupportsAllOpcodes(proto)
 }
 
-// protoIsVararg 扫 Proto.Code 看是否含 VARARG opcode(纵深防御,03 §3.1.3)。
+// protoIsVararg scans Proto.Code to see if it contains a VARARG opcode
+// (defense in depth, 03 §3.1.3).
 func protoIsVararg(proto *bytecode.Proto) bool {
 	for _, ins := range proto.Code {
 		if bytecode.Op(ins) == bytecode.VARARG {
@@ -180,43 +195,50 @@ func protoIsVararg(proto *bytecode.Proto) bool {
 	return false
 }
 
-// compilabilityVisitor 收集 F1-F4 + F6 的信号(03 §4.1)。
+// compilabilityVisitor collects the F1-F4 + F6 signals (03 §4.1).
 //
-// **嵌套不传染**(03 §7.3):visitor 进入子 FuncExpr 时挂 sub-visitor,只把
-// maxClosureDepth 信号回写父——子函数的 yield/debug/setfenv 等内容信号
-// 由它自己的独立 AnalyzeProto 调用判定。
+// **Nesting does not propagate** (03 §7.3): when the visitor enters a child
+// FuncExpr it spins up a sub-visitor and only writes the maxClosureDepth
+// signal back to the parent — a child's yield/debug/setfenv content signals
+// are judged by its own independent AnalyzeProto call.
 //
-// **作用域感知**(用户拍板:isKnownLocalCall 真实现):跟踪 local 函数名 →
-// 子 FuncExpr 引用 的映射,visitor 看到 `f()` 形态时:
-//   - 如果 f 是 local 名且指向当前 Proto 的某子 FuncExpr → 递归判子
-//     (复用本 visitor 的判定结果,共享 callsXxx 信号)而非简单标 unknown。
-//   - 这样一个调用纯计算 helper 的函数仍可编译(纯计算 helper 自身无
-//     yield/debug/setfenv,递归判 known safe)。
+// **Scope-aware** (user decision: isKnownLocalCall real implementation):
+// tracks the mapping of local fn name → child FuncExpr reference. When the
+// visitor sees an `f()` shape:
+//   - If f is a local name pointing at some child FuncExpr of the current
+//     Proto → recursively judge the child (reusing this visitor's verdict,
+//     sharing the callsXxx signals) rather than simply marking unknown.
+//   - This way a function that only calls a pure-computation helper is still
+//     compilable (a pure-computation helper itself has no yield/debug/setfenv,
+//     recursively judged known safe).
 type compilabilityVisitor struct {
-	// F1: vararg 兜底捕捉(主判定看 FuncExpr.IsVararg,03 §3.1.4)
+	// F1: vararg fallback capture (the main verdict looks at FuncExpr.IsVararg, 03 §3.1.4)
 	sawVararg bool
 
-	// F2: 协程相关
+	// F2: coroutine-related
 	callsYield     bool
 	callsResume    bool
 	callsCoroutine bool
 	callsUnknownFn bool
 
-	// F2-c: SELF method call 占位信号(承 P4 PJ5 SELF inline 形态真接入)。
-	// 默认走 ReasonSelfCall 占位拒,运行期 P4 注入后 `recheckCompilabilityRuntime`
-	// 撤位 + 由 SupportsAllOpcodes 形态守门做真判定。
+	// F2-c: SELF method call placeholder signal (from the P4 PJ5 SELF inline
+	// shape wiring). By default takes the ReasonSelfCall placeholder reject; at
+	// runtime, once P4 is injected, `recheckCompilabilityRuntime` clears the
+	// placeholder and SupportsAllOpcodes shape-gating does the real verdict.
 	sawSelfCall bool
 
 	// F3 / F4
 	usesDebug   bool
 	usesSetfenv bool
 
-	// F6: 嵌套深度
+	// F6: nesting depth
 	currentDepth    int
 	maxClosureDepth int
 
-	// 作用域:local 函数名 → 子 FuncExpr 引用(F2 isKnownLocalCall 真实现的依据)。
-	// 单 visitor 实例内的局部表,跨子函数边界不共享(嵌套 Proto 独立判定)。
+	// Scope: local fn name → child FuncExpr reference (the basis for the F2
+	// isKnownLocalCall real implementation). A local table within a single
+	// visitor instance, not shared across child-function boundaries (nested
+	// Protos judged independently).
 	localFuncs map[string]*ast.FuncExpr
 
 	// safeAliases tracks `local sqrt = math.sqrt`-style aliases of
@@ -229,14 +251,17 @@ type compilabilityVisitor struct {
 	// `sqrt(x)`-style calls and skips the callsUnknownFn mark on hit.
 	safeAliases map[string]bool
 
-	// localShadows 用于跟踪「同名 local 重定义」遮蔽外层 known function。
-	// 简单 push/pop 栈即可——本 P2 初版用 nil-check + map 写覆盖,Pop 时
-	// 显式清理(scope-aware 实装)。
+	// localShadows tracks a same-name local redefinition shadowing an outer
+	// known function. A simple push/pop stack suffices — this initial P2
+	// version uses nil-check + map overwrite, with explicit cleanup on Pop
+	// (scope-aware implementation).
 	scopeStack []scopeFrame
 
-	// inlinedKnownCalls 防自递归无限——同一 FuncExpr 在 isKnownLocalCall
-	// 路径下展开过一次后不再展开(03 §3.2.6 注:循环图亦保守判,反正 yield
-	// 就不可编译;单次展开足以决定父函数是否含 yield)。
+	// inlinedKnownCalls prevents self-recursion from looping forever — the
+	// same FuncExpr, once expanded on the isKnownLocalCall path, is not
+	// expanded again (03 §3.2.6 note: cyclic graphs are also judged
+	// conservatively, since yield alone makes it non-compilable; a single
+	// expansion is enough to decide whether the parent function contains yield).
 	inlinedKnownCalls map[*ast.FuncExpr]bool
 }
 
@@ -253,8 +278,8 @@ func newCompilabilityVisitor() *compilabilityVisitor {
 	}
 }
 
-// pushScope / popScope 进入 / 退出一个 block(do/while/for/if/repeat)时
-// 保存 / 恢复 localFuncs + safeAliases(简单栈实装)。
+// pushScope / popScope save / restore localFuncs + safeAliases on entering /
+// exiting a block (do/while/for/if/repeat) (simple stack implementation).
 func (v *compilabilityVisitor) pushScope() {
 	saved := make(map[string]*ast.FuncExpr, len(v.localFuncs))
 	for k, e := range v.localFuncs {
@@ -277,7 +302,7 @@ func (v *compilabilityVisitor) popScope() {
 	v.safeAliases = frame.savedAliases
 }
 
-// walkBlock 遍历一个 block(语句列表)。
+// walkBlock walks a block (a list of statements).
 func (v *compilabilityVisitor) walkBlock(b *ast.Block) {
 	if b == nil {
 		return
@@ -287,16 +312,18 @@ func (v *compilabilityVisitor) walkBlock(b *ast.Block) {
 	}
 }
 
-// walkStmt 遍历一条语句。
+// walkStmt walks a single statement.
 func (v *compilabilityVisitor) walkStmt(s ast.Stmt) {
 	switch n := s.(type) {
 	case *ast.LocalStmt:
-		// `local x, y, z = a, b, function() ... end`——若某个 expr 是
-		// FuncExpr 文字,把对应名字挂到 localFuncs(F2 known local call 依据)。
+		// `local x, y, z = a, b, function() ... end` — if some expr is a
+		// FuncExpr literal, bind the corresponding name into localFuncs (the
+		// basis for F2 known local call).
 		for _, e := range n.Exprs {
 			v.walkExpr(e)
 		}
-		// 注册 local 函数(同名后定义会覆盖前定义,符合 Lua 5.1 作用域语义)
+		// Register local functions (a later definition of the same name
+		// overwrites the earlier one, matching Lua 5.1 scope semantics).
 		for i, name := range n.Names {
 			if i < len(n.Exprs) {
 				if fn, ok := n.Exprs[i].(*ast.FuncExpr); ok {
@@ -316,14 +343,16 @@ func (v *compilabilityVisitor) walkStmt(s ast.Stmt) {
 					continue
 				}
 			}
-			// 不是 FuncExpr 字面量 ⇒ 不挂(若 name 之前指向 local fn,
-			// 现在被遮蔽,从 map 移除避免误判)
+			// Not a FuncExpr literal ⇒ do not bind (if name previously pointed
+			// at a local fn and is now shadowed, remove it from the map to
+			// avoid a misjudgment).
 			delete(v.localFuncs, name)
 			delete(v.safeAliases, name)
 		}
 	case *ast.LocalFuncStmt:
-		// `local function f() ... end` —— 直接挂 localFuncs。
-		// 注意作用域:函数体内可见自身(允许递归),先挂再 walk 体。
+		// `local function f() ... end` — bind localFuncs directly.
+		// Note the scope: the function body can see itself (recursion allowed),
+		// so bind first, then walk the body.
 		v.localFuncs[n.Name] = n.Fn
 		delete(v.safeAliases, n.Name)
 		v.walkFuncExpr(n.Fn)
@@ -334,9 +363,10 @@ func (v *compilabilityVisitor) walkStmt(s ast.Stmt) {
 		for _, e := range n.Exprs {
 			v.walkExpr(e)
 		}
-		// `f = function() end` 形态——若 target 是 NameExpr 且 RHS 是 FuncExpr,
-		// 但赋全局/upvalue 的 f 不是 local,**保守不挂 localFuncs**
-		// (赋值后 f 可能被外部覆盖)。
+		// `f = function() end` shape — if the target is a NameExpr and the RHS
+		// is a FuncExpr, but a global/upvalue f being assigned is not a local,
+		// **conservatively do not bind localFuncs** (after assignment f may be
+		// overwritten externally).
 		// Any reassignment to a tracked name invalidates its known-fn /
 		// safe-alias record (dataflow invalidation).
 		for _, tgt := range n.Targets {
@@ -357,7 +387,7 @@ func (v *compilabilityVisitor) walkStmt(s ast.Stmt) {
 		v.walkBlock(n.Body)
 		v.popScope()
 	case *ast.RepeatStmt:
-		// repeat-until:Cond 在 Body 作用域内可见局部
+		// repeat-until: Cond can see locals within the Body scope
 		v.pushScope()
 		v.walkBlock(n.Body)
 		v.walkExpr(n.Cond)
@@ -391,8 +421,8 @@ func (v *compilabilityVisitor) walkStmt(s ast.Stmt) {
 		v.walkBlock(n.Body)
 		v.popScope()
 	case *ast.FuncStmt:
-		// `function a.b.c.m() ... end`——target 是 NameExpr/IndexExpr 链。
-		// 不挂 localFuncs(全局或表字段,不是 local)。
+		// `function a.b.c.m() ... end` — the target is a NameExpr/IndexExpr chain.
+		// Do not bind localFuncs (global or table field, not a local).
 		v.walkExpr(n.Target)
 		v.walkFuncExpr(n.Fn)
 	case *ast.ReturnStmt:
@@ -400,11 +430,11 @@ func (v *compilabilityVisitor) walkStmt(s ast.Stmt) {
 			v.walkExpr(e)
 		}
 	case *ast.BreakStmt:
-		// 无表达式,nothing to walk
+		// no expression, nothing to walk
 	}
 }
 
-// walkExpr 遍历一个表达式。
+// walkExpr walks a single expression.
 func (v *compilabilityVisitor) walkExpr(e ast.Expr) {
 	if e == nil {
 		return
@@ -443,10 +473,11 @@ func (v *compilabilityVisitor) walkExpr(e ast.Expr) {
 	}
 }
 
-// visitNameExpr 捕捉 debug / setfenv / getfenv 等关键名字(F3 / F4)。
+// visitNameExpr captures key names like debug / setfenv / getfenv (F3 / F4).
 //
-// 假阳性容忍:用户重定义局部 `debug` 也会触发(罕见反模式)。精确识别
-// (scope-aware 名字解析)留 §9 缺口 GAP-5。
+// False-positive tolerance: a user redefining a local `debug` also fires this
+// (a rare anti-pattern). Precise recognition (scope-aware name resolution) is
+// left to gap GAP-5 in §9.
 func (v *compilabilityVisitor) visitNameExpr(e *ast.NameExpr) {
 	switch e.Name {
 	case "debug":
@@ -456,13 +487,13 @@ func (v *compilabilityVisitor) visitNameExpr(e *ast.NameExpr) {
 	}
 }
 
-// visitCallExpr 处理 f(args) 形态(F2)。
+// visitCallExpr handles the f(args) shape (F2).
 func (v *compilabilityVisitor) visitCallExpr(e *ast.CallExpr) {
-	// 1. 先 walk Args(args 也可能含 yield 等)
+	// 1. Walk Args first (args can also contain yield etc.)
 	for _, a := range e.Args {
 		v.walkExpr(a)
 	}
-	// 2. 识别 coroutine.* 调用
+	// 2. Recognize coroutine.* calls
 	if isCoroutineCall(e.Fn) {
 		v.callsCoroutine = true
 		switch methodName(e.Fn) {
@@ -473,20 +504,21 @@ func (v *compilabilityVisitor) visitCallExpr(e *ast.CallExpr) {
 		}
 		return
 	}
-	// 3. 识别 debug.* 调用(F3 加强)
+	// 3. Recognize debug.* calls (F3 reinforcement)
 	if isDebugCall(e.Fn) {
 		v.usesDebug = true
 		return
 	}
-	// 4. 识别 setfenv/getfenv 直接调用(F4 加强)
+	// 4. Recognize direct setfenv/getfenv calls (F4 reinforcement)
 	if name, ok := e.Fn.(*ast.NameExpr); ok {
 		if name.Name == "setfenv" || name.Name == "getfenv" {
 			v.usesSetfenv = true
 			return
 		}
 	}
-	// 5. stdlib 白名单(P2 后续优化轮 #1):明确不会 yield 的 stdlib 调用
-	// 不标 unknown,让纯计算 + stdlib 调用的函数可被判 Compilable。
+	// 5. stdlib whitelist (P2 follow-up optimization round #1): stdlib calls
+	// that definitely will not yield are not marked unknown, letting functions
+	// with pure computation + stdlib calls be judged Compilable.
 	if isSafeStdlibCall(e.Fn) {
 		return
 	}
@@ -498,37 +530,48 @@ func (v *compilabilityVisitor) visitCallExpr(e *ast.CallExpr) {
 	if name, ok := e.Fn.(*ast.NameExpr); ok && v.safeAliases[name.Name] {
 		return
 	}
-	// 6. 一般调用——isKnownLocalCall 真实现(用户拍板不要全 false)
+	// 6. General call — isKnownLocalCall real implementation (user decided
+	// not to make it always false)
 	if v.isKnownLocalCall(e.Fn) {
-		// 已知 local 指向当前 Proto 的某子 FuncExpr → 把子函数体并入父的
-		// 判定(walkBlock 而非 walkFuncExpr——后者会创建 sub-visitor 隔离信号,
-		// 那是用于「子函数定义」场景而非「父调用子」语义)。
-		// 父调用子等同于「父在执行流上等同于执行 helper 体」——信号要传染。
+		// A known local pointing at some child FuncExpr of the current Proto →
+		// merge the child function body into the parent's verdict (walkBlock,
+		// not walkFuncExpr — the latter creates a sub-visitor that isolates
+		// signals, which is for the "child function definition" scenario, not
+		// the "parent calls child" semantics).
+		// A parent calling a child is equivalent to "the parent, on its
+		// execution path, effectively runs the helper body" — the signals must
+		// propagate.
 		name := e.Fn.(*ast.NameExpr).Name
 		fn := v.localFuncs[name]
-		// 防自递归无限循环(03 §3.2.6 注:同一 FuncExpr 第二次进入直接跳过)
+		// Prevent infinite self-recursion (03 §3.2.6 note: a second entry into
+		// the same FuncExpr is skipped)
 		if !v.inlinedKnownCalls[fn] {
 			v.inlinedKnownCalls[fn] = true
 			v.walkBlock(fn.Body)
 		}
 		return
 	}
-	// 7. 也 walk 一下 Fn 表达式(非 NameExpr 等可能含 IndexExpr 链等)
+	// 7. Also walk the Fn expression (non-NameExpr etc. may contain an
+	// IndexExpr chain and so on)
 	v.walkExpr(e.Fn)
-	// 8. 任何不能静态确定为「local 已知子 Proto」或「stdlib 安全调用」的
-	// 调用都视作 unknown(03 §3.2 (b))。
+	// 8. Any call that cannot be statically determined to be a "known local
+	// child Proto" or a "safe stdlib call" is treated as unknown (03 §3.2 (b)).
 	v.callsUnknownFn = true
 }
 
-// visitMethodCallExpr `obj:method(args)` 形态 —— 拆为「receiver/args walk +
-// 标 sawSelfCall 信号」。**不再硬叠 callsUnknownFn**(承 P4 PJ5 SELF inline
-// 形态真接入决策):method call 的 callee 跟 PJ5 既有 known-fn 形态(MOVE/
-// GETUPVAL)同款 —— callee 内部 yield/__call/meta 由 host.Self + host.
-// CallBaseline / host.TailCall 整段交接 byte-equal P1 doCall 路径处理。
+// visitMethodCallExpr handles the `obj:method(args)` shape — decomposed into
+// "receiver/args walk + mark sawSelfCall signal". **No longer hard-stacks
+// callsUnknownFn** (from the P4 PJ5 SELF inline shape wiring decision): the
+// method call's callee is the same as PJ5's existing known-fn shape (MOVE/
+// GETUPVAL) — the callee's internal yield/__call/meta are handed off wholesale
+// to host.Self + host.CallBaseline / host.TailCall for byte-equal P1 doCall
+// path handling.
 //
-// **占位位语义**:default 仍判 NotCompilable + ReasonSelfCall(占位),运行
-// 期 P4 注入后 `recheckCompilabilityRuntime` 撤位(承 ReasonBackendUnsupp
-// 同款 "P3/P4 注入后重判" 手法)。F1-F6 真实结构性排除原样保留。
+// **Placeholder-bit semantics**: the default still judges NotCompilable +
+// ReasonSelfCall (placeholder); at runtime, once P4 is injected,
+// `recheckCompilabilityRuntime` clears the placeholder (same "re-judge after
+// P3/P4 injection" technique as ReasonBackendUnsupp). The F1-F6 real
+// structural exclusions are preserved as-is.
 func (v *compilabilityVisitor) visitMethodCallExpr(e *ast.MethodCallExpr) {
 	v.walkExpr(e.Recv)
 	for _, a := range e.Args {
@@ -537,42 +580,49 @@ func (v *compilabilityVisitor) visitMethodCallExpr(e *ast.MethodCallExpr) {
 	v.sawSelfCall = true
 }
 
-// walkFuncExpr 嵌套 FuncExpr 处理(03 §7.3 信号传染隔离)。
+// walkFuncExpr handles a nested FuncExpr (03 §7.3 signal-contagion isolation).
 //
-// 进入子函数前 +1 currentDepth + 记 maxClosureDepth;子函数体单独跑一个
-// sub-visitor,只把嵌套深度信号回写父——子的 yield/debug/setfenv 等内容
-// 信号由它自己的独立 AnalyzeProto 调用判定。
+// Before entering the child function: +1 currentDepth + record maxClosureDepth;
+// the child function body runs in its own sub-visitor, which only writes the
+// nesting-depth signal back to the parent — the child's yield/debug/setfenv
+// content signals are judged by its own independent AnalyzeProto call.
 //
-// **例外**:isKnownLocalCall 路径(visitCallExpr 第 5 步)仍走当前 visitor
-// 递归子——那是为了把已知 local call 的 yield 含量传染回父函数。两条路径
-// 不冲突:子函数定义本身不传染,但父调用子时按调用语义传染。
+// **Exception**: the isKnownLocalCall path (visitCallExpr step 5) still
+// recurses into the child using the current visitor — that is to propagate a
+// known local call's yield content back to the parent function. The two paths
+// do not conflict: a child function definition itself does not propagate, but
+// when the parent calls the child, propagation follows call semantics.
 //
-// **PJ5 扩展(2026-06-27)**:sub-visitor.localFuncs 继承父 visitor 的快照
-// (减去 closure 自身参数同名遮蔽项),让 closure 内调外层 local known fn
-// 形态识别为 known(承 03 §9 GAP-5 scope-aware 名字解析)。例:
+// **PJ5 extension (2026-06-27)**: sub-visitor.localFuncs inherits the parent
+// visitor's snapshot (minus entries shadowed by the closure's own parameter
+// names), letting outer local known fns called inside the closure be
+// recognized as known (from 03 §9 GAP-5 scope-aware name resolution). Example:
 //
 //	local function noop() end
-//	local function invoker() noop() end  -- noop 在 invoker 内是 upvalue
+//	local function invoker() noop() end  -- noop is an upvalue inside invoker
 //
-// 不扩展时:invoker.body 看 noop() 时 sub.localFuncs 空 → noop 标
-// callsUnknownFn → ReasonUnknownCall → invoker NotCompilable;
-// 扩展后:sub.localFuncs 含 noop → isKnownLocalCall=true → 递归判 noop.Body
-// (与 parent 同款语义传染:noop 含 yield 则 invoker 也含),
-// invoker 形态 Compilable + P4 PJ5 升层可触达。
+// Without extension: when invoker.body sees noop() the sub.localFuncs is empty
+// → noop marked callsUnknownFn → ReasonUnknownCall → invoker NotCompilable;
+// With extension: sub.localFuncs contains noop → isKnownLocalCall=true →
+// recursively judge noop.Body (same signal-contagion semantics as the parent:
+// if noop contains yield then invoker does too), so invoker's shape is
+// Compilable + P4 PJ5 tier-up reachable.
 //
-// **遮蔽安全**:closure 自身 Params(`function(name) ... end`)从继承表里
-// 删掉,避免 parent 的 `noop` 与 closure 的 parameter `noop` 误识别。
-// closure 体内重定义 local 由 walkStmt::LocalStmt 覆盖父继承条目。
+// **Shadowing safety**: the closure's own Params (`function(name) ... end`)
+// are removed from the inherited table, avoiding mistaking the parent's `noop`
+// for the closure's parameter `noop`. A local redefined inside the closure
+// body overwrites the inherited parent entry via walkStmt::LocalStmt.
 func (v *compilabilityVisitor) walkFuncExpr(e *ast.FuncExpr) {
 	v.currentDepth++
 	if v.currentDepth > v.maxClosureDepth {
 		v.maxClosureDepth = v.currentDepth
 	}
 
-	// 子函数体单独跑(隔离信号)
+	// The child function body runs on its own (isolated signals)
 	sub := newCompilabilityVisitor()
 	sub.currentDepth = v.currentDepth
-	// 继承父 localFuncs + safeAliases 快照,减去 closure 自身参数同名遮蔽项
+	// Inherit the parent's localFuncs + safeAliases snapshot, minus entries
+	// shadowed by the closure's own parameter names.
 	for k, fn := range v.localFuncs {
 		shadowed := false
 		for _, p := range e.Params {
@@ -613,7 +663,7 @@ func (v *compilabilityVisitor) walkFuncExpr(e *ast.FuncExpr) {
 	}
 	sub.walkBlock(e.Body)
 
-	// 只回写嵌套深度
+	// Only write back the nesting depth
 	if sub.maxClosureDepth > v.maxClosureDepth {
 		v.maxClosureDepth = sub.maxClosureDepth
 	}
@@ -621,10 +671,11 @@ func (v *compilabilityVisitor) walkFuncExpr(e *ast.FuncExpr) {
 	v.currentDepth--
 }
 
-// isKnownLocalCall:fn 是否是「已知 local 名,指向当前 Proto 的某子 Proto」。
+// isKnownLocalCall: whether fn is a "known local name pointing at some child
+// Proto of the current Proto".
 //
-// 用户拍板真实现:跟踪 local 函数名 → 子 FuncExpr 映射(LocalStmt /
-// LocalFuncStmt 时挂表)。
+// User-decided real implementation: tracks the local fn name → child FuncExpr
+// mapping (bound to the table at LocalStmt / LocalFuncStmt).
 func (v *compilabilityVisitor) isKnownLocalCall(fn ast.Expr) bool {
 	name, ok := fn.(*ast.NameExpr)
 	if !ok {
@@ -634,7 +685,7 @@ func (v *compilabilityVisitor) isKnownLocalCall(fn ast.Expr) bool {
 	return isLocal
 }
 
-// isCoroutineCall 检测 coroutine.<method>(...) 模式(03 §3.2.4 (1))。
+// isCoroutineCall detects the coroutine.<method>(...) pattern (03 §3.2.4 (1)).
 func isCoroutineCall(fn ast.Expr) bool {
 	idx, ok := fn.(*ast.IndexExpr)
 	if !ok {
@@ -648,7 +699,7 @@ func isCoroutineCall(fn ast.Expr) bool {
 	return ok
 }
 
-// isDebugCall 检测 debug.<method>(...) 模式。
+// isDebugCall detects the debug.<method>(...) pattern.
 func isDebugCall(fn ast.Expr) bool {
 	idx, ok := fn.(*ast.IndexExpr)
 	if !ok {
@@ -662,7 +713,7 @@ func isDebugCall(fn ast.Expr) bool {
 	return ok
 }
 
-// methodName 取 <table>.<method> 中的 method 名。
+// methodName extracts the method name from <table>.<method>.
 func methodName(fn ast.Expr) string {
 	if idx, ok := fn.(*ast.IndexExpr); ok {
 		if key, ok := idx.Key.(*ast.StringExpr); ok {
@@ -672,43 +723,52 @@ func methodName(fn ast.Expr) string {
 	return ""
 }
 
-// safeStdlibFuncs Lua 5.1.5 stdlib 中**明确不会 yield 也不间接执行用户 Lua**
-// 的函数白名单(P2 后续优化轮 #1 「精确 yield 分析」)。
+// safeStdlibFuncs is the whitelist of Lua 5.1.5 stdlib functions that
+// **definitely will not yield nor indirectly execute user Lua** (P2 follow-up
+// optimization round #1 "precise yield analysis").
 //
-// 收录原则:
-//   - **不 yield**:函数自身不调 coroutine.yield;
-//   - **不间接执行用户 Lua**:函数不接收 callback 参数(否则 callback 可能
-//     yield)——这排除了 string.gsub(可接 fn) / table.foreach 等;
-//   - **不重入解释器执行用户 metamethod**:函数操作的对象不会触发
-//     `__index`/`__newindex` 等 metamethod——这是为什么 `pairs` / `next`
-//     **不在白名单**(`pairs(t)` 触发 `__pairs` 在 5.2+,5.1 无此元方法,
-//     `next` 直接读 raw,但保守起见仍排除)。
+// Inclusion principles:
+//   - **No yield**: the function itself does not call coroutine.yield;
+//   - **No indirect execution of user Lua**: the function does not take a
+//     callback argument (otherwise the callback might yield) — this excludes
+//     string.gsub (can take a fn) / table.foreach etc.;
+//   - **No re-entering the interpreter to run user metamethods**: the objects
+//     the function operates on do not trigger `__index`/`__newindex` etc.
+//     metamethods — this is why `pairs` / `next` are **not on the whitelist**
+//     (`pairs(t)` triggers `__pairs` in 5.2+, 5.1 has no such metamethod;
+//     `next` reads raw directly, but conservatively still excluded).
 //
-// pcall / xpcall **不在白名单**——尽管 pcall 自身有 yield-barrier,但其
-// 内执行的 fn 含 metamethod 或 coroutine 接口的概率不可忽略,把它们排除
-// 让保守边界与 P3 wasm 编译能力一致(P3 跨 pcall 边界编译复杂)。
+// pcall / xpcall are **not on the whitelist** — although pcall itself has a
+// yield-barrier, the fn it runs has a non-negligible chance of containing
+// metamethods or coroutine interfaces; excluding them keeps the conservative
+// boundary consistent with P3 wasm compilation capability (P3 compilation
+// across a pcall boundary is complex).
 //
-// 主要白名单类别:
-//   - 全局类型操作:type, tostring, tonumber, select, unpack
-//   - 表 raw 操作:rawget, rawset, rawequal
-//   - metatable 操作:setmetatable, getmetatable
-//   - 算术 helper:math.* 全部
-//   - 字符串 helper:string.* 不接收 fn 参数的(byte/char/find/format/len/
-//     lower/upper/rep/reverse/sub/match/dump)——排除 gsub(接 fn)/gmatch(返迭代器)
-//   - 表 helper:table.* 不接 fn 的(concat/insert/remove/sort/maxn)——
-//     注意 sort 接 cmp fn 是用户 Lua,严格说也该排除;但实务里 cmp fn
-//     极少 yield,放行更实用,留实测验证后调整
+// Main whitelist categories:
+//   - global type operations: type, tostring, tonumber, select, unpack
+//   - table raw operations: rawget, rawset, rawequal
+//   - metatable operations: setmetatable, getmetatable
+//   - arithmetic helpers: all of math.*
+//   - string helpers: string.* that do not take a fn argument (byte/char/find/
+//     format/len/lower/upper/rep/reverse/sub/match/dump) — excludes gsub
+//     (takes fn) / gmatch (returns an iterator)
+//   - table helpers: table.* that do not take a fn (concat/insert/remove/sort/
+//     maxn) — note sort takes a cmp fn which is user Lua and strictly should
+//     also be excluded; but in practice cmp fns very rarely yield, so allowing
+//     it is more useful, left for adjustment after real-world testing
 //
-// 不在白名单的 stdlib 函数(显式拒绝):
-//   - print / write / read / io.* / os.execute(IO 调用边界)
-//   - error / assert(error 触发 pcall barrier 之外的 longjmp 语义)
-//   - load / loadstring / loadfile / dofile(动态执行用户代码)
-//   - string.gsub(接 fn 参数) / string.gmatch(返迭代器需 yield 链)
-//   - table.foreach / table.foreachi(接 fn 参数)
-//   - pairs / ipairs(返迭代器,与泛型 for 协议耦合)
-//   - next(本身不 yield 但与迭代器协议耦合,保守排除)
+// stdlib functions NOT on the whitelist (explicitly rejected):
+//   - print / write / read / io.* / os.execute (IO call boundary)
+//   - error / assert (error triggers longjmp semantics outside the pcall barrier)
+//   - load / loadstring / loadfile / dofile (dynamic execution of user code)
+//   - string.gsub (takes a fn argument) / string.gmatch (returns an iterator,
+//     needs a yield chain)
+//   - table.foreach / table.foreachi (take a fn argument)
+//   - pairs / ipairs (return iterators, coupled with the generic-for protocol)
+//   - next (does not yield itself but is coupled with the iterator protocol,
+//     conservatively excluded)
 var safeStdlibFuncs = map[string]bool{
-	// 全局
+	// global
 	"type":         true,
 	"tostring":     true,
 	"tonumber":     true,
@@ -721,46 +781,50 @@ var safeStdlibFuncs = map[string]bool{
 	"getmetatable": true,
 }
 
-// safeStdlibLibs 整库白名单 stdlib.<method> 全部安全(具体方法不再列举);
-// 但仍排除每库内的「接 fn 参数」函数(safeStdlibLibFuncs 黑名单)。
+// safeStdlibLibs marks whole libraries as whitelisted: all of stdlib.<method>
+// is safe (specific methods no longer enumerated); but each library's
+// "takes-a-fn-argument" functions are still excluded (the safeStdlibLibFuncs
+// blacklist).
 var safeStdlibLibs = map[string]bool{
 	"math":   true,
 	"string": true,
 	"table":  true,
-	"os":     true, // os.time/os.date/os.clock 等不 yield;os.execute 是 IO 但本期保守放行
+	"os":     true, // os.time/os.date/os.clock etc. do not yield; os.execute is IO but conservatively allowed this round
 }
 
-// safeStdlibLibFuncs 在 safeStdlibLibs 内但仍要排除的具体方法(接 fn / 返
-// 迭代器 / 动态执行 类)。
+// unsafeStdlibLibFuncs lists specific methods within safeStdlibLibs that must
+// still be excluded (take a fn / return an iterator / dynamic-execution kinds).
 var unsafeStdlibLibFuncs = map[string]map[string]bool{
 	"string": {
-		"gsub":   true, // 第三参可为 fn(执行用户代码)
-		"gmatch": true, // 返迭代器(与泛型 for 协议耦合)
+		"gsub":   true, // third arg can be a fn (executes user code)
+		"gmatch": true, // returns an iterator (coupled with the generic-for protocol)
 	},
 	"table": {
-		"foreach":  true, // 接 fn 参数
-		"foreachi": true, // 同上
+		"foreach":  true, // takes a fn argument
+		"foreachi": true, // same as above
 	},
 	"os": {
-		"execute": true, // IO 边界
+		"execute": true, // IO boundary
 	},
 }
 
-// isSafeStdlibCall 判断 fn 是否是 stdlib 白名单调用(P2 后续优化轮 #1)。
+// isSafeStdlibCall judges whether fn is a whitelisted stdlib call (P2 follow-up
+// optimization round #1).
 //
-// 三种识别形态:
-//   - NameExpr{name}:全局函数(type/tostring/...)→ 查 safeStdlibFuncs
-//   - IndexExpr{Obj=NameExpr{lib}, Key=StringExpr{m}}:lib.m 形态 →
-//     查 safeStdlibLibs / unsafeStdlibLibFuncs
+// Two recognized shapes:
+//   - NameExpr{name}: global function (type/tostring/...) → look up safeStdlibFuncs
+//   - IndexExpr{Obj=NameExpr{lib}, Key=StringExpr{m}}: lib.m shape →
+//     look up safeStdlibLibs / unsafeStdlibLibFuncs
 //
-// 任何其它形态(`obj:m()` 方法调用 / 传参 / 表字段保存 fn 后调等)统一
-// 走 unknown 路径(保守第一)。
+// Any other shape (`obj:m()` method call / passing as an argument / saving a fn
+// in a table field then calling it, etc.) uniformly takes the unknown path
+// (conservative first).
 func isSafeStdlibCall(fn ast.Expr) bool {
-	// 形态 1:全局名字直调
+	// Shape 1: direct call of a global name
 	if name, ok := fn.(*ast.NameExpr); ok {
 		return safeStdlibFuncs[name.Name]
 	}
-	// 形态 2:lib.method 形态
+	// Shape 2: lib.method shape
 	idx, ok := fn.(*ast.IndexExpr)
 	if !ok {
 		return false
@@ -776,7 +840,7 @@ func isSafeStdlibCall(fn ast.Expr) bool {
 	if !safeStdlibLibs[libName.Name] {
 		return false
 	}
-	// 检查具体方法是否在该库的不安全黑名单
+	// Check whether the specific method is in that library's unsafe blacklist
 	if unsafe, ok := unsafeStdlibLibFuncs[libName.Name]; ok {
 		if unsafe[mName.Val] {
 			return false

@@ -1,13 +1,16 @@
-// ChunkID — 官方 luaO_chunkid 的同构实现(错误消息里的 chunkname 显示形态)。
+// ChunkID — isomorphic implementation of the official luaO_chunkid (the
+// display form of chunkname in error messages).
 package bytecode
 
-// chunkIDLen 对齐官方 LUA_IDSIZE-1(buf 60 含 NUL)。
+// chunkIDLen matches the official LUA_IDSIZE-1 (buf of 60 including the NUL).
 const chunkIDLen = 59
 
-// ChunkID 把原始 chunkname 转为错误消息前缀显示形态:
-//   - "=name" → name 原样(去 '=',截断到上限);
-//   - "@file" → 文件名(过长保尾部,前缀 "...");
-//   - 其它   → [string "首行内容"],超长或含换行截断加 "..."。
+// ChunkID converts a raw chunkname into the display form used as an error
+// message prefix:
+//   - "=name" → name verbatim (drop '=', truncate to the limit);
+//   - "@file" → filename (if too long keep the tail, prefix "...");
+//   - otherwise → [string "first line"], truncated with "..." if too long or
+//     containing a newline.
 func ChunkID(source string) string {
 	if source == "" {
 		return "?"
@@ -26,7 +29,7 @@ func ChunkID(source string) string {
 		}
 		return s
 	default:
-		// [string "..."] 形态:取首行,官方预算 = IDSIZE - sizeof(" [string \"...\"] ")
+		// [string "..."] form: take the first line, official budget = IDSIZE - sizeof(" [string \"...\"] ")
 		const budget = chunkIDLen - len(` [string "..."] `)
 		line := source
 		truncated := false

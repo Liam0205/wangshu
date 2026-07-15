@@ -1,25 +1,33 @@
 // Package p3indirect is the PW10 spike harness for eliminating the
 // gibbous→gibbous cross-layer call tax (docs/design/p3-wasm-tier/04-trampoline.md
-// §9 缺口 + 02-translation.md §1.2).
+// §9 gap + 02-translation.md §1.2).
 //
-// 背景:P3 PW9 实测发现 gibbous→gibbous 调用经 h_call 双跨层(Wasm→Go→Wasm,
-// PW0 实测 ~143ns/次)使调用密集核退化(call 核比 crescent 慢 7x)。真解是
-// 「单 module + 内部函数表 + call_indirect 直调」——但这是里程碑级架构改,被
-// 两条码库 physics 卡死(每 Proto 独立 module + Lua 帧住 Go),且有一个生死
-// 未知数:wazero 能否增量编译/重实例化 module(增量升层需要)。
+// Background: P3 PW9 measurements found that a gibbous→gibbous call goes through
+// h_call with a double cross-layer hop (Wasm→Go→Wasm, PW0 measured ~143ns/call),
+// which degrades call-intensive kernels (call kernel 7x slower than crescent).
+// The real fix is "single module + internal function table + call_indirect direct
+// call" — but this is a milestone-level architectural change, blocked by two
+// codebase physics constraints (each Proto is an independent module + Lua frames
+// live in Go), and with one make-or-break unknown: whether wazero can
+// incrementally compile / re-instantiate a module (incremental promotion needs
+// it).
 //
-// 本 spike 是 PW10 的开工闸门(对齐 PW0 先例),验两个生死假设:
+// This spike is PW10's kickoff gate (following the PW0 precedent), validating two
+// make-or-break assumptions:
 //
-//   - S-A:单 module 内 call_indirect 单次成本——必须 ≪143ns(host 往返),
-//     目标 <30ns(近原生 indirect call)。不达标 ⇒ 整个大修无意义。
-//   - S-B:增量升层的 module 重编成本 + 实例热交换生命周期——验证「重编
-//     module{A} → module{A,B} 并安全切换实例」可行(旧实例上有 in-flight
-//     gibbous 帧时不能 Close)。
+//   - S-A: the per-call cost of call_indirect within a single module — must be
+//     ≪143ns (host round trip), target <30ns (near-native indirect call). If it
+//     misses, the whole overhaul is pointless.
+//   - S-B: the module re-compile cost of incremental promotion + the
+//     instance-hot-swap lifecycle — validate that "re-compile module{A} →
+//     module{A,B} and safely switch instances" is feasible (cannot Close the old
+//     instance while it has an in-flight gibbous frame).
 //
-// 对照基线 S-Host 复刻 PW0 S3N 的 imported 调用单次摊销成本(~143ns),供
-// S-A 直接对比加速倍率。
+// The baseline S-Host replicates PW0 S3N's per-call amortized cost of an imported
+// call (~143ns), for S-A to directly compare the speedup factor.
 //
-// **独立 go module**:不污染主库零外部依赖纪律(同 spike/p3boundary + benchmarks/)。
-// 数据进 docs/design/p3-wasm-tier/implementation-progress.md §11 PW10 决策后,
-// 本目录保留作回归。
+// **Independent go module**: does not pollute the main library's zero-external-
+// dependency discipline (same as spike/p3boundary + benchmarks/). After the data
+// goes into docs/design/p3-wasm-tier/implementation-progress.md §11 PW10
+// decision, this directory is kept as a regression.
 package p3indirect

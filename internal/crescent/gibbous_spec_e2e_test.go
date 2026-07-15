@@ -7,10 +7,11 @@ import (
 	"testing"
 )
 
-// TestPJ2_SpeculativeADD_E2E_RealMmap 真接入 e2e:`function(x,y) return x+y end`
-// 经 P4 升层后 mmap 段真发 movsd/addsd/movsd 投机模板,字节级 byte-equal
-// 解释器路径(双 number 输入)+ 投机失败时 deopt 降级 host.Arith
-// (字符串/表输入)。
+// TestPJ2_SpeculativeADD_E2E_RealMmap wires up the real e2e path:
+// `function(x,y) return x+y end`. After P4 promotion, the mmap segment
+// really emits the movsd/addsd/movsd speculative template, byte-equal with
+// the interpreter path (two number inputs). On speculation failure it deopts
+// down to host.Arith (string/table inputs).
 func TestPJ2_SpeculativeADD_E2E_FastPath(t *testing.T) {
 	src := `
 local function f(x, y) return x + y end
@@ -33,11 +34,12 @@ return f(7, 11)`
 	t.Logf("PJ2 投机 ADD 真接入 e2e:f(7,11) = %v(spec 模板真在 mmap 段跑)", got)
 }
 
-// TestPJ2_SpeculativeADD_E2E_DeoptPath 投机失败 deopt 降级:
-// `function(x, y) return x + y end` 调 f(table, 1) 触发 IsNumber guard 失败
-// → mmap 段返 deoptCode → Run 降级调 host.Arith 慢路径 → host.Arith 经
-// doArith 检 string/table coercion → 失败 raise "attempt to perform
-// arithmetic on local 'x'(a table value)"——byte-equal 解释器。
+// TestPJ2_SpeculativeADD_E2E_DeoptPath speculation failure deopt fallback:
+// `function(x, y) return x + y end` called as f(table, 1) trips the IsNumber
+// guard → mmap segment returns deoptCode → Run falls back to the host.Arith
+// slow path → host.Arith checks string/table coercion via doArith → fails and
+// raises "attempt to perform arithmetic on local 'x'(a table value)"
+// — byte-equal with the interpreter.
 func TestPJ2_SpeculativeADD_E2E_DeoptPath(t *testing.T) {
 	src := `
 local function f(x, y) return x + y end

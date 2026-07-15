@@ -1,35 +1,40 @@
 package p3indirect
 
-// S-C:跨 module call_indirect 经**共享 imported funcref 表**是否可行(R1 架构岔路)。
+// S-C: is cross-module call_indirect via a **shared imported funcref table**
+// feasible (R1 architecture fork).
 //
-// S-B 证了「重编整个 module + 新实例」可行(Arch-1 rebuild-all),但复杂(代际实例 +
-// 跨代分派守卫)。Arch-2 更简单:保留每 Proto 一 module,所有 module 共享 env 导出的
-// 一张 funcref 表——新升层 = 实例化一个新 module,它经 active element 段把自己的函数
-// **自注册**进表的一个槽,免重编已有 module。caller module `call_indirect` 该表槽
-// 跨 module 调到 provider 的函数。
+// S-B proved that "rebuild the whole module + new instance" works (Arch-1
+// rebuild-all), but it is complex (generational instances + cross-generation
+// dispatch guards). Arch-2 is simpler: keep one module per Proto, and have all
+// modules share a single funcref table exported by env -- a new upgrade =
+// instantiating a new module, which **self-registers** its own function into a
+// table slot via its active element segment, avoiding recompilation of existing
+// modules. The caller module's `call_indirect` on that table slot reaches the
+// provider's function across modules.
 //
-// 生死问题:wazero 是否支持「module B 的 active element 段填 env 导出的 imported 表 +
-// module C 经 imported 表 call_indirect 解析到 module B 定义的函数」。通过 ⇒ Arch-2
-// (R1 大幅简化);失败 ⇒ 退 Arch-1(已证)。
+// Make-or-break question: does wazero support "module B's active element segment
+// filling the imported table exported by env + module C resolving a function
+// defined in module B via call_indirect on the imported table". Passing ⇒ Arch-2
+// (R1 greatly simplified); failing ⇒ fall back to Arch-1 (already proven).
 
-// envTableMemModule — env module 导出 memory + 一张 funcref table(min=numSlots)。
-// 所有 gibbous module import 这两者;表是它们共享的「升层函数注册表」。
+// envTableMemModule — env module exporting memory + one funcref table (min=numSlots).
+// All gibbous modules import both; the table is their shared "upgrade function registry".
 func envTableMemModule(numSlots int) []byte {
 	var b []byte
 	b = append(b, 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00)
-	// Table section:1 张 funcref 表,flags=0 min=numSlots。
+	// Table section: 1 funcref table, flags=0 min=numSlots.
 	b = append(b, sec(0x04, concat(
 		uleb(1),
 		[]byte{0x70},           // elemtype funcref
 		[]byte{0x00},           // limits flags=0(no max)
 		uleb(uint32(numSlots)), // min
 	))...)
-	// Memory section:1 memory min=1 max=16。
+	// Memory section: 1 memory min=1 max=16.
 	b = append(b, sec(0x05, concat(
 		uleb(1),
 		[]byte{0x01, 0x01, 0x10},
 	))...)
-	// Export section:table(kind=0x01 idx0)+ memory(kind=0x02 idx0)。
+	// Export section: table (kind=0x01 idx0) + memory (kind=0x02 idx0).
 	b = append(b, sec(0x07, concat(
 		uleb(2),
 		[]byte{0x05}, []byte("table"), []byte{0x01, 0x00},
@@ -38,28 +43,28 @@ func envTableMemModule(numSlots int) []byte {
 	return b
 }
 
-// providerModule — 一个「升层 Proto」module:import env.table + env.memory,定义
-// leaf(x)=x*mulK+1,经 active element 段把 leaf 自注册进 table[slot]。无需 export
-// (实例化即运行 element 段填表)。
+// providerModule — an "upgrade Proto" module: imports env.table + env.memory, defines
+// leaf(x)=x*mulK+1, and self-registers leaf into table[slot] via an active element segment.
+// No export needed (instantiation runs the element segment to fill the table).
 //
-// func 索引空间:table/memory import 不占 func index ⟹ leaf = func 0。
+// func index space: table/memory imports do not occupy func index ⟹ leaf = func 0.
 func providerModule(slot int, mulK byte) []byte {
 	var b []byte
 	b = append(b, 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00)
-	// Type section:type0 (i32)->(i32)。
+	// Type section: type0 (i32)->(i32).
 	b = append(b, sec(0x01, concat(
 		uleb(1),
 		[]byte{0x60, 0x01, 0x7f, 0x01, 0x7f},
 	))...)
-	// Import section:env.table + env.memory。
+	// Import section: env.table + env.memory.
 	b = append(b, sec(0x02, concat(
 		uleb(2),
 		importTableEntry("env", "table", 0),
 		importMemEntry("env", "memory"),
 	))...)
-	// Function section:1 func(leaf)type0。
+	// Function section: 1 func (leaf) type0.
 	b = append(b, sec(0x03, concat(uleb(1), uleb(0)))...)
-	// Element section:active segment,table 0,offset=(i32.const slot),func[0]=leaf。
+	// Element section: active segment, table 0, offset=(i32.const slot), func[0]=leaf.
 	b = append(b, sec(0x09, concat(
 		uleb(1),                                       // 1 segment
 		[]byte{0x00},                                  // flags=0(active, table 0, offset expr)
@@ -67,7 +72,7 @@ func providerModule(slot int, mulK byte) []byte {
 		uleb(1), // 1 funcidx
 		uleb(0), // leaf = func 0
 	))...)
-	// Code section:leaf(x)=x*mulK+1。
+	// Code section: leaf(x)=x*mulK+1.
 	leaf := concat(
 		[]byte{0x00}, // 0 locals
 		[]byte{0x20, 0x00, 0x41, mulK, 0x6c, 0x41, 0x01, 0x6a}, // local.get0; const mulK; mul; const1; add
@@ -77,8 +82,9 @@ func providerModule(slot int, mulK byte) []byte {
 	return b
 }
 
-// callerModule — driver(n) 经 imported 表 call_indirect 槽 slot 调 leaf 累加 n 次。
-// import env.table + env.memory;driver = func 0(table/memory import 不占 func idx)。
+// callerModule — driver(n) calls leaf via call_indirect on the imported table at slot,
+// accumulating n times. imports env.table + env.memory; driver = func 0 (table/memory
+// imports do not occupy func idx).
 func callerModule(slot int) []byte {
 	var b []byte
 	b = append(b, 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00)
@@ -96,7 +102,7 @@ func callerModule(slot int) []byte {
 		uleb(1),
 		[]byte{0x06}, []byte("driver"), []byte{0x00, 0x00}, // export driver func0
 	))...)
-	// driver body:locals $acc;loop 调 call_indirect table[slot] 累加。
+	// driver body: locals $acc; loop calling call_indirect table[slot] to accumulate.
 	locals := []byte{0x01, 0x01, 0x7f}
 	body := concat(
 		[]byte{
@@ -124,7 +130,7 @@ func callerModule(slot int) []byte {
 	return b
 }
 
-// importTableEntry — import mod.name : table(funcref, flags=0 min)。
+// importTableEntry — import mod.name : table (funcref, flags=0 min).
 func importTableEntry(mod, name string, min uint32) []byte {
 	return concat(
 		[]byte{byte(len(mod))}, []byte(mod),
@@ -136,7 +142,8 @@ func importTableEntry(mod, name string, min uint32) []byte {
 	)
 }
 
-// sleb — signed LEB128(i32.const 立即数)。slot 小(<64)单字节即可,但通用编码。
+// sleb — signed LEB128 (i32.const immediate). A small slot (<64) fits in a single byte,
+// but this is the general encoding.
 func sleb(v int32) []byte {
 	var out []byte
 	for {

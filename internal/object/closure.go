@@ -1,22 +1,22 @@
-// Closure (Lua 与 Host)、Upvalue 对象布局(01 §5.3 / §5.4)。
+// Closure (Lua and Host) + Upvalue object layout (01 §5.3 / §5.4).
 //
-// Lua 闭包:
+// Lua closure:
 //
 //	word0: GCHeader (otype=CLOSURE; flags bit0=0)
-//	word1: [31:0] protoID | [47:32] nupvals | [63:48] gibbousSlot+1(0=未填充,PW10 零跨界)
-//	word2..: upvalRef[nupvals]  (各 GCRef→ Upvalue 对象)
+//	word1: [31:0] protoID | [47:32] nupvals | [63:48] gibbousSlot+1 (0=unfilled, PW10 zero-cross)
+//	word2..: upvalRef[nupvals]  (each GCRef→ Upvalue object)
 //
-// Host 闭包:
+// Host closure:
 //
 //	word0: GCHeader (otype=CLOSURE; flags bit0=1)
 //	word1: [31:0] hostFnID | [47:32] nupvals
-//	word2..: upval[nupvals]  (Value,直接捕获;非 Upvalue 对象)
+//	word2..: upval[nupvals]  (Value, captured directly; not an Upvalue object)
 //
-// Upvalue(开放/关闭两态;flags bit0 = 0 开放 / 1 关闭):
+// Upvalue (open/closed two states; flags bit0 = 0 open / 1 closed):
 //
 //	word0: GCHeader (otype=UPVAL)
-//	word1: 开放: [31:0] stackIdx | [63:32] threadRef 低 32 位;  关闭: 未用
-//	word2: 开放: nextOpen(GCRef→ 降序链下一节点);              关闭: value (Value 自持值)
+//	word1: open: [31:0] stackIdx | [63:32] low 32 bits of threadRef;  closed: unused
+//	word2: open: nextOpen (GCRef→ next node in the descending chain);  closed: value (Value self-held)
 package object
 
 import (
@@ -33,9 +33,10 @@ const (
 	closureFlagHost uint8 = 1 << 0
 	upvalFlagClosed uint8 = 1 << 0
 
-	// closureSlotShift 是 gibbous slot 缓存在 closure word1 内的位移([63:48]
-	// reserved 区,PW10 零跨界)。存 slot+1(0=未填充);Wasm 侧 emitCall 读此 16 位
-	// 免 Go map 查找(bridge.GibbousCodeOf+Slot)。掩码 0xffff,故 slot ≤ 65534。
+	// closureSlotShift is the shift for the gibbous slot cached in closure word1
+	// ([63:48] reserved region, PW10 zero-cross). Stores slot+1 (0=unfilled); the
+	// Wasm-side emitCall reads these 16 bits to avoid a Go map lookup
+	// (bridge.GibbousCodeOf+Slot). Mask 0xffff, so slot ≤ 65534.
 	closureSlotShift uint   = 48
 	closureSlotMask  uint64 = 0xffff << closureSlotShift
 )
@@ -77,9 +78,10 @@ func ClosureNUpvals(a *arena.Arena, c arena.GCRef) uint16 {
 	return uint16(wordAt(a, c, closureMetaIdx) >> 32)
 }
 
-// ClosureGibbousSlot 返回缓存的 gibbous table slot(PW10 零跨界惰性填充 IC)。
-// 返回 (slot, true) 表示已填充;(0, false) 表示未填充(未升层 / 首次调用前 /
-// host closure)。Wasm 侧 emitCall 读 closure word1 高 16 位 == 此编码,免 Go map。
+// ClosureGibbousSlot returns the cached gibbous table slot (PW10 zero-cross lazily
+// filled IC). Returns (slot, true) if filled; (0, false) if unfilled (not promoted /
+// before the first call / host closure). The Wasm-side emitCall reads the high 16
+// bits of closure word1 == this encoding, avoiding a Go map.
 func ClosureGibbousSlot(a *arena.Arena, c arena.GCRef) (uint32, bool) {
 	enc := uint32(wordAt(a, c, closureMetaIdx) >> closureSlotShift)
 	if enc == 0 {
@@ -88,13 +90,15 @@ func ClosureGibbousSlot(a *arena.Arena, c arena.GCRef) (uint32, bool) {
 	return enc - 1, true
 }
 
-// SetClosureGibbousSlot 缓存 gibbous slot 进 closure word1 高 16 位(存 slot+1,
-// 0=未填充)。tryIndirectCallee 首次经 Go map 查到 slot 后回写;只动高 16 位,保
-// protoID([31:0])/nupvals([47:32]) 不变。slot 超 0xfffe(不可能,maxTableSlots=8192)
-// 则不缓存(返回原值不变),Wasm 永走回退,正确性不破。
+// SetClosureGibbousSlot caches the gibbous slot into the high 16 bits of closure
+// word1 (stores slot+1, 0=unfilled). tryIndirectCallee writes it back after the
+// first Go-map lookup finds the slot; it only touches the high 16 bits, keeping
+// protoID ([31:0]) / nupvals ([47:32]) unchanged. If slot exceeds 0xfffe
+// (impossible, maxTableSlots=8192) it is not cached (returns the value unchanged),
+// so Wasm always takes the fallback and correctness is not broken.
 func SetClosureGibbousSlot(a *arena.Arena, c arena.GCRef, slot uint32) {
 	if slot >= 0xffff {
-		return // 超 16 位编码域(理论不可达);不缓存,Wasm 回退 h_call
+		return // exceeds the 16-bit encoding domain (unreachable in theory); do not cache, Wasm falls back to h_call
 	}
 	w := wordAt(a, c, closureMetaIdx)
 	w = (w &^ closureSlotMask) | (uint64(slot+1) << closureSlotShift)
@@ -124,7 +128,7 @@ func SetHostClosureUpval(a *arena.Arena, c arena.GCRef, i uint16, v value.Value)
 // nextOpen is the head of the thread's open-upvalue descending chain (or 0 for tail).
 func AllocOpenUpvalue(a *arena.Arena, threadRef arena.GCRef, stackIdx uint32, nextOpen arena.GCRef) arena.GCRef {
 	ref := allocateRaw(a, OBJ_UPVAL, 3, 0) // flags = 0 (open)
-	// word1: stackIdx (low 32) | threadRef low 32 (high 32) - 偏移寻址下 threadRef 通常 ≤ 4GiB,低 32 位足够
+	// word1: stackIdx (low 32) | threadRef low 32 (high 32) - under offset addressing threadRef is usually ≤ 4GiB, low 32 bits suffice
 	setWordAt(a, ref, upvalLocIdx, uint64(stackIdx)|uint64(uint32(threadRef))<<32)
 	setWordAt(a, ref, upvalValueIdx, uint64(nextOpen))
 	return ref
@@ -149,7 +153,7 @@ func UpvalStackIdx(a *arena.Arena, uv arena.GCRef) uint32 {
 }
 
 // UpvalThreadRefLo returns the low 32 bits of the thread reference (open state).
-// arena 上限 2 GiB(MaxBytes),GCRef 实际 ≤ 31 bit,低 32 位无损还原。
+// The arena is capped at 2 GiB (MaxBytes), so a GCRef is effectively ≤ 31 bits and the low 32 bits restore it losslessly.
 func UpvalThreadRefLo(a *arena.Arena, uv arena.GCRef) uint32 {
 	return uint32(wordAt(a, uv, upvalLocIdx) >> 32)
 }

@@ -12,26 +12,30 @@ import (
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
-// gibbous_p4_r14_abi_test.go —— PJ4/PJ5 mmap 段 R14 ABI 违约修复后验
-// (承 PR #26 外部审查 5b28c8a + trampoline_spec_amd64.s PUSH/POP R14)。
+// gibbous_p4_r14_abi_test.go — post-fix verification for the PJ4/PJ5 mmap segment
+// R14 ABI violation (follows PR #26 external review 5b28c8a + PUSH/POP R14 in
+// trampoline_spec_amd64.s).
 //
-// 外部审查警告:R14 是 Go amd64 ABIInternal g 寄存器,PJ4 IC 模板 + PJ5
-// SELF spec template 字节级 emit 把 arena base 装 R14 后段尾 RET 直接污染
-// Go G,生产负载 morestack/抢占/同步取 g 时 SEGV。修复方案 trampoline
-// PUSH/POP R14 救济:段瞬时覆写,段尾 POP 恢复 Go G,Go runtime 后续操作
-// 见正确 G 值。
+// External review warning: R14 is the Go amd64 ABIInternal g register. The PJ4 IC
+// template + PJ5 SELF spec template byte-level emit loads the arena base into R14,
+// so a RET at the segment tail directly corrupts the Go G; under production load,
+// SEGV occurs when morestack/preemption/sync fetch g. The fix uses trampoline
+// PUSH/POP R14 as relief: the segment transiently overwrites it, and the POP at the
+// tail restores the Go G so subsequent Go runtime operations see the correct G value.
 //
-// 本测试**直接触发** Go runtime 取 g 的路径(morestack / GC / 抢占)与
-// spec template 路径混跑,显性化任何 R14 残留导致的 G 损坏:
-//   1. TestPJ4PJ5_R14ABI_GCStress:spec template 路径反复跑 + 强制 GC,
-//      验 GC mark/sweep 期间取 g 正确(若 R14 残留 GC 即 SEGV)
-//   2. TestPJ4PJ5_R14ABI_ConcurrentGC:多 goroutine 并发跑 spec template
-//      + GC stress,验 Go runtime stop-the-world 取所有 g 时 g 正确
-//   3. TestPJ4PJ5_R14ABI_DeepStack:深递归触发 morestack 拷栈,验 morestack
-//      期间取 g 正确
+// This test **directly triggers** the Go runtime's g-fetch paths (morestack / GC /
+// preemption) mixed with the spec template path, exposing any G corruption caused by
+// R14 residue:
+//   1. TestPJ4PJ5_R14ABI_GCStress: repeatedly run the spec template path + force GC,
+//      verifying g is fetched correctly during GC mark/sweep (if R14 lingers, GC SEGVs)
+//   2. TestPJ4PJ5_R14ABI_ConcurrentGC: run the spec template concurrently across
+//      goroutines + GC stress, verifying g is correct when the Go runtime fetches all
+//      g's during stop-the-world
+//   3. TestPJ4PJ5_R14ABI_DeepStack: deep recursion triggering a morestack stack copy,
+//      verifying g is fetched correctly during morestack
 
-// TestPJ4PJ5_R14ABI_GCStress mmap 段反复跑 + 强制 GC + finalize,验
-// 修复后 R14 救济成功(R14 残留则 GC 取 g SEGV)。
+// TestPJ4PJ5_R14ABI_GCStress repeatedly runs the mmap segment + force GC + finalize,
+// verifying the post-fix R14 relief succeeds (if R14 lingers, GC's g-fetch SEGVs).
 func TestPJ4PJ5_R14ABI_GCStress(t *testing.T) {
 	src := `
 local o = { m = function(self) return 42 end }
@@ -42,13 +46,13 @@ sum = sum + caller(o)
 return sum`
 	st, mainCl := loadFnP4(t, src)
 
-	// warmup phase 1(填 IC NodeHit + FBSelfMono feedback)
+	// warmup phase 1 (populate IC NodeHit + FBSelfMono feedback)
 	if _, err := st.Call(value.GCRefOf(mainCl), nil, 1); err != nil {
 		t.Fatalf("warmup: %v", err)
 	}
 	st.bridge.SetForceAllPromote(true)
 
-	// 跑 spec template + 强制 GC 交替(50 轮)
+	// alternate running the spec template + forced GC (50 rounds)
 	for i := 0; i < 50; i++ {
 		rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
 		if err != nil {
@@ -57,20 +61,22 @@ return sum`
 		if got := value.AsNumber(value.Value(rets[0])); got != 101*42 {
 			t.Errorf("iter %d result = %v, want %d", i, got, 101*42)
 		}
-		// 强制 GC + finalize(GC mark/sweep 期间取所有 g,若 R14 残留即 SEGV)
+		// force GC + finalize (during GC mark/sweep all g's are fetched; if R14 lingers, SEGV)
 		runtime.GC()
 		debug.FreeOSMemory()
 	}
 }
 
-// TestPJ4PJ5_R14ABI_ConcurrentGC 多 goroutine 并发跑 spec template + GC
-// stress,验 Go runtime stop-the-world 取所有 g 时 g 正确。
+// TestPJ4PJ5_R14ABI_ConcurrentGC runs the spec template concurrently across
+// goroutines + GC stress, verifying g is correct when the Go runtime fetches all g's
+// during stop-the-world.
 //
-// **修正(PR #26 评论 d8a5899..83f0b2e 重要建议)**:
-//   - callersWG 单独追 caller goroutine 完成,GC stresser 在 caller 全程
-//     运行,显著扩大「并发 GC + stop-the-world 取 g」重叠窗口
-//   - loadFnP4 内调 t.Fatalf 仅安全在主 goroutine,所有 State 预先在主
-//     线程构造,goroutine 内只跑 st.Call(返 error 路径)
+// **Revision (important suggestions from PR #26 comments d8a5899..83f0b2e)**:
+//   - callersWG separately tracks caller goroutine completion; the GC stresser runs
+//     for the full duration of the callers, substantially widening the "concurrent GC +
+//     stop-the-world g-fetch" overlap window
+//   - t.Fatalf inside loadFnP4 is only safe on the main goroutine, so all States are
+//     constructed on the main thread up front; goroutines only run st.Call (error-return path)
 func TestPJ4PJ5_R14ABI_ConcurrentGC(t *testing.T) {
 	const goroutines = 8
 	const itersPerGoroutine = 30
@@ -83,7 +89,7 @@ for i = 1, 50 do sum = sum + caller(nil, mt, i) end  -- warmup
 sum = sum + caller(nil, mt, 100)
 return sum`
 
-	// 主线程预编译 N 个 State(loadFnP4 内含 t.Fatalf,只在主 goroutine 安全)
+	// precompile N States on the main thread (loadFnP4 uses t.Fatalf, only safe on the main goroutine)
 	type stateBundle struct {
 		st     *State
 		mainCl arena.GCRef
@@ -91,7 +97,7 @@ return sum`
 	bundles := make([]stateBundle, goroutines)
 	for g := 0; g < goroutines; g++ {
 		st, mainCl := loadFnP4(t, src)
-		// warmup phase 1 + force-all(主线程顺序跑,避免 goroutine 内 t.Fatalf)
+		// warmup phase 1 + force-all (run sequentially on the main thread to avoid t.Fatalf inside a goroutine)
 		if _, err := st.Call(value.GCRefOf(mainCl), nil, 1); err != nil {
 			t.Fatalf("bundle %d warmup: %v", g, err)
 		}
@@ -99,7 +105,7 @@ return sum`
 		bundles[g] = stateBundle{st: st, mainCl: value.GCRefOf(mainCl)}
 	}
 
-	// callers wg + GC stresser 独立 goroutine
+	// callers wg + GC stresser as an independent goroutine
 	var callersWG sync.WaitGroup
 	callersWG.Add(goroutines)
 
@@ -119,7 +125,7 @@ return sum`
 		}
 	}()
 
-	// callers:并发跑 spec template
+	// callers: run the spec template concurrently
 	for g := 0; g < goroutines; g++ {
 		go func(idx int) {
 			defer callersWG.Done()
@@ -133,23 +139,24 @@ return sum`
 		}(g)
 	}
 
-	// 等所有 caller 完成,然后停 GC stresser(承评论修正:
-	// caller 全程 GC stress 显性化「并发 GC + stop-the-world 取 g」)
+	// wait for all callers to finish, then stop the GC stresser (per the review revision:
+	// GC stress running for the full caller duration exposes "concurrent GC + stop-the-world g-fetch")
 	callersWG.Wait()
 	close(stopGC)
 	gcWG.Wait()
 }
 
-// TestPJ4PJ5_R14ABI_DeepStack 深递归(20 层)触发 morestack 拷栈,验
-// morestack 期间取 g 正确。
+// TestPJ4PJ5_R14ABI_DeepStack triggers a morestack stack copy via deep recursion
+// (20 levels), verifying g is fetched correctly during morestack.
 //
-// **morestack 触发条件**:Go goroutine 默认栈 8KB,函数 frame 占用足够大
-// 时栈不足触发 morestack 拷大栈;morestack 路径用 r14=g 寻址 g 字段。若
-// spec template 段后 R14 残留垃圾值,morestack 取 g 时 SEGV / 拷错栈。
+// **morestack trigger condition**: a Go goroutine's default stack is 8KB; when a
+// function frame is large enough, the stack runs short and triggers morestack to copy
+// to a bigger stack; the morestack path uses r14=g to address g's fields. If the spec
+// template segment leaves garbage in R14, morestack's g-fetch SEGVs / copies the wrong stack.
 //
-// 本测试用 Lua 递归调用 + 大栈帧 caller 触发 Go 端 morestack:
-//   - lua function `recurse(n)` 自调 20 层,每层调 `t:m()` spec template
-//   - 20 层 Lua 调用栈 + 各层 host helper / executeFrom 栈,触发 Go morestack
+// This test triggers Go-side morestack via Lua recursive calls + a large-frame caller:
+//   - the lua function `recurse(n)` self-calls 20 levels, each calling the `t:m()` spec template
+//   - the 20-level Lua call stack + each level's host helper / executeFrom stack triggers Go morestack
 func TestPJ4PJ5_R14ABI_DeepStack(t *testing.T) {
 	src := `
 local o = { m = function(self) return 1 end }
@@ -175,9 +182,9 @@ return result`
 	}
 }
 
-// TestPJ4_R14ABI_GCStress_GetTable PJ4 GETTABLE IC ArrayHit/NodeHit 段
-// R14 ABI 后验:同 PJ5 SELF spec template 路径,IC 段也用 R14 装 arena base,
-// 验 GC + 反复跑下 Go G 正确性。
+// TestPJ4_R14ABI_GCStress_GetTable is the post-fix verification for the PJ4 GETTABLE
+// IC ArrayHit/NodeHit segment R14 ABI: like the PJ5 SELF spec template path, the IC
+// segment also loads the arena base into R14; verifies Go G correctness under GC + repeated runs.
 func TestPJ4_R14ABI_GCStress_GetTable(t *testing.T) {
 	src := `
 local function f(t) return t[1] end
@@ -205,8 +212,9 @@ return sum`
 	}
 }
 
-// TestPJ4_R14ABI_GCStress_SetTable PJ4 SETTABLE IC ArrayHit/NodeHit 段
-// R14 ABI 后验:同款验 setter 路径下 R14 不残留 + Go G 正确。
+// TestPJ4_R14ABI_GCStress_SetTable is the post-fix verification for the PJ4 SETTABLE
+// IC ArrayHit/NodeHit segment R14 ABI: same check that the setter path leaves no R14
+// residue + Go G stays correct.
 func TestPJ4_R14ABI_GCStress_SetTable(t *testing.T) {
 	src := `
 local function setter(t, v) t["x"] = v end
@@ -233,12 +241,13 @@ return t.x`
 	}
 }
 
-// TestPJ3_R14ABI_GCStress_FORLOOP PJ3 FORLOOP 字节级 inline 段 R14 ABI
-// 后验:FORLOOP 经 callJITFull 主路径(不经 spec trampoline)但同样
-// 用 R14 装 arena base,验 GC + 反复跑下 Go G 正确性。
+// TestPJ3_R14ABI_GCStress_FORLOOP is the post-fix verification for the PJ3 FORLOOP
+// byte-level inline segment R14 ABI: FORLOOP goes through the callJITFull main path
+// (not the spec trampoline) but likewise loads the arena base into R14; verifies Go G
+// correctness under GC + repeated runs.
 //
-// 承 §8 PJ3 FORLOOP 7-25x over gopher-lua + 本批 R14 修复后 trampoline
-// PUSH/POP R14 救济。
+// Follows §8 PJ3 FORLOOP 7-25x over gopher-lua + this batch's R14 fix with trampoline
+// PUSH/POP R14 relief.
 func TestPJ3_R14ABI_GCStress_FORLOOP(t *testing.T) {
 	src := `
 local function loop(n)
@@ -266,8 +275,9 @@ return sum`
 	}
 }
 
-// TestPJ7_R14ABI_GCStress_Arith PJ7 算术 inline 段 R14 ABI 后验:
-// ADD..POW 6 op + UNM/LEN/NOT 经 callJITFull 主路径,验 R14 救济正确性。
+// TestPJ7_R14ABI_GCStress_Arith is the post-fix verification for the PJ7 arithmetic
+// inline segment R14 ABI: ADD..POW 6 ops + UNM/LEN/NOT go through the callJITFull main
+// path; verifies R14 relief correctness.
 func TestPJ7_R14ABI_GCStress_Arith(t *testing.T) {
 	src := `
 local function arith(x) return x * 2 + 1 end

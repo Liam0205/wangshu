@@ -1,7 +1,7 @@
 //go:build wangshu_p4
 
-// p4state.go — P4 内部投机子状态机(承
-// docs/design/p4-method-jit/04-osr-deopt.md §5 + §11 字段定义)。
+// p4state.go — P4 internal speculation sub-state machine (per the field
+// definitions in docs/design/p4-method-jit/04-osr-deopt.md §5 + §11).
 //
 // Scheme A: the P2 tier enum stays three-state (TierInterp / TierGibbous /
 // TierStuck); P4 keeps its own per-proto sub-state field p4SpecState[proto]
@@ -35,28 +35,32 @@ import (
 	"github.com/Liam0205/wangshu/internal/bytecode"
 )
 
-// P4SpecState 是 P4 内部投机子状态(承 04 §5.2 状态图)。
+// P4SpecState is the P4 internal speculation sub-state (per 04 §5.2 state diagram).
 type P4SpecState uint8
 
 const (
-	// P4SpecUnknown:未跟踪 / 首次见(默认值,Proto 升 P4 后下次 install
-	// 编译期才置 P4Speculative)
+	// P4SpecUnknown: not tracked / first seen (the default value; once a Proto
+	// is promoted to P4, the next install's compile phase sets it to
+	// P4Speculative)
 	P4SpecUnknown P4SpecState = iota
 
-	// P4Speculative:已装 P4 投机版编译码,guard 在跑。OSR exit 单次失败
-	// 不切状态(留观察,deopt 计数 +1)
+	// P4Speculative: the P4 speculative code is installed and its guard is
+	// running. A single OSR exit failure does not switch state (keep observing,
+	// deopt count += 1)
 	P4Speculative
 
-	// P4Deoptimized:deopt 计数超阈值,P4 端撤投机版编译码,等解释期
-	// IC 自然稀释 confidence 后重训练 + 重编译
+	// P4Deoptimized: the deopt count exceeded the threshold, the P4 side
+	// withdrew the speculative code, and it waits for the interpreter-phase IC
+	// to naturally dilute confidence before retraining + recompiling
 	P4Deoptimized
 
-	// P4StuckSpeculation:重编译次数超 MaxRecompileTries 仍反复 deopt,
-	// P4 端拉黑投机(P2 看仍 TierGibbous,只是当前未装投机版 GibbousCode)
+	// P4StuckSpeculation: recompiles exceeded MaxRecompileTries and it still
+	// keeps deopting, so the P4 side blacklists speculation (P2's view is still
+	// TierGibbous, it just has no speculative GibbousCode installed right now)
 	P4StuckSpeculation
 )
 
-// String 返回状态名(用于日志 / 探针 readback)。
+// String returns the state name (for logging / probe readback).
 func (s P4SpecState) String() string {
 	switch s {
 	case P4Speculative:
@@ -70,58 +74,67 @@ func (s P4SpecState) String() string {
 	}
 }
 
-// p4SpecEntry 是 p4SpecState[proto] 的 per-Proto 字段(承 04 §5.6 字段集)。
+// p4SpecEntry is the per-Proto field for p4SpecState[proto] (per 04 §5.6 field set).
 //
-// **方案 A**(P4 自管):**不**挂 P2 ProfileData / TierState 任何字段——P2 视角
-// 看 Proto 仍是 TierGibbous,P4 端独立子状态机叠加。
+// **Scheme A** (P4 self-managed): it attaches **no** fields to P2's
+// ProfileData / TierState — from P2's view the Proto is still TierGibbous, with
+// the P4-side sub-state machine layered on top independently.
 type p4SpecEntry struct {
-	// state 是当前子状态(P4Speculative / P4Deoptimized / P4StuckSpeculation)。
+	// state is the current sub-state (P4Speculative / P4Deoptimized / P4StuckSpeculation).
 	state P4SpecState
 
-	// deoptCount 是累计 OSR exit 次数(承 04 §5.2 单次失败 += 1)。
-	// 达 DeoptThreshold 切 P4Deoptimized 撤投机版编译码。
+	// deoptCount is the cumulative OSR exit count (per 04 §5.2, += 1 per failure).
+	// Reaching DeoptThreshold switches to P4Deoptimized and withdraws the speculative code.
 	deoptCount uint32
 
-	// recompileCount 是累计重编译次数(承 04 §5.3 重编译次数硬上限)。
-	// 达 MaxRecompileTries 切 P4StuckSpeculation 拉黑投机。
+	// recompileCount is the cumulative recompile count (per 04 §5.3 hard cap on recompiles).
+	// Reaching MaxRecompileTries switches to P4StuckSpeculation and blacklists speculation.
 	recompileCount uint32
 }
 
-// p4SpecStateMap 是 proto → p4SpecEntry 映射。
+// p4SpecStateMap is the proto → p4SpecEntry map.
 //
-// **package-level 全局 map**(承 PR #26 外部审查纠正注释 2026-06-28):
-// 实装是 `var p4SpecState = make(map[*bytecode.Proto]*p4SpecEntry)` 包级
-// 全局变量,**多 State 共享同一 map**——经 `sync.Mutex` 守护(load /
-// store / increment 都过 lock),V18 -race 友好(承 R3 已立 race-free
-// 纪律)。
+// **package-level global map** (per PR #26 external-review comment correction
+// 2026-06-28): the implementation is the package-level global variable
+// `var p4SpecState = make(map[*bytecode.Proto]*p4SpecEntry)`, **shared across
+// multiple States** — guarded by `sync.Mutex` (load / store / increment all go
+// through the lock), and V18 -race friendly (per the race-free discipline
+// established in R3).
 //
-// **多 State 并发安全性论证**:
-//   - *bytecode.Proto 全局唯一(per-Proto 单例,frontend.compile 输出固定指针)
-//   - 多 State 跑同一 Proto 时共享 p4SpecEntry 状态(deoptCount/state/
-//     recompileCount 三字段),状态语义 per-Proto 而非 per-State,正确;
-//   - 跨不同 Proto 经 map key 隔离,无冲突;
-//   - 单 entry 内并发增 deoptCount 走 p4SpecMu 串行化,无 race;
-//   - 重编译触发(deoptCount ≥ DeoptThreshold)虽可能多 State 并发触发,
-//     但 onP4Install 路径同样过 lock,只首个状态转移生效,后续 state==
-//     P4Speculative ⇒ 等价 idempotent。
+// **Multi-State concurrency-safety argument**:
+//   - *bytecode.Proto is globally unique (a per-Proto singleton; frontend.compile
+//     emits a fixed pointer)
+//   - when multiple States run the same Proto they share the p4SpecEntry state
+//     (the three fields deoptCount/state/recompileCount); the state semantics are
+//     per-Proto rather than per-State, which is correct;
+//   - across distinct Protos the map key isolates them, so there is no conflict;
+//   - concurrent increments of deoptCount within a single entry are serialized by
+//     p4SpecMu, so there is no race;
+//   - a recompile trigger (deoptCount ≥ DeoptThreshold), though it may be triggered
+//     concurrently by multiple States, also takes the lock on the onP4Install path,
+//     so only the first state transition takes effect and subsequent state==
+//     P4Speculative ⇒ equivalently idempotent.
 //
-// **历史注释**(被 2026-06-28 纠正):此前曾称「per-Compiler 单例(per-State
-// 因 jit.Compiler 是 per-State)」,与实装不符。p4SpecState 是包级全局,
-// 跨多 State 共享。
+// **Historical note** (corrected 2026-06-28): this was previously described as a
+// "per-Compiler singleton (per-State, since jit.Compiler is per-State)", which
+// does not match the implementation. p4SpecState is a package-level global,
+// shared across multiple States.
 //
-// **OSR exit 路径热度**:OSR exit 是冷路径(单帧投机失败才触发),lock 开销
-// 可忽略。后续若 OSR exit 触发率高,可改 sync.Map(本批 v0 简化)。
+// **OSR exit path heat**: OSR exit is a cold path (only triggered when a single
+// frame's speculation fails), so the lock overhead is negligible. If the OSR exit
+// trigger rate turns out to be high later, this can switch to sync.Map (this batch
+// is the v0 simplification).
 var (
 	p4SpecMu    sync.Mutex
 	p4SpecState = make(map[*bytecode.Proto]*p4SpecEntry)
 )
 
-// DeoptThreshold 是单 Proto 累计 OSR exit 次数阈值(承 04 §5.2 + §5.6 校准)。
-// **占位值**:实测期定标(承 04 §5.6:典型 3-5);本批 v0 用宽松值 16 防误触发。
+// DeoptThreshold is the per-Proto cumulative OSR exit count threshold (per 04 §5.2 + §5.6 calibration).
+// **Placeholder value**: to be calibrated during measurement (per 04 §5.6: typically 3-5); this batch's v0 uses a loose 16 to avoid false triggers.
 const DeoptThreshold uint32 = 16
 
-// MaxRecompileTries 是 Proto 累计重编译次数上限(承 04 §5.3 + §5.6 校准)。
-// **占位值**:实测期定标(承 04 §5.3:典型 1-2);本批 v0 用 2。
+// MaxRecompileTries is the per-Proto cumulative recompile count cap (per 04 §5.3 + §5.6 calibration).
+// **Placeholder value**: to be calibrated during measurement (per 04 §5.3: typically 1-2); this batch's v0 uses 2.
 const MaxRecompileTries uint32 = 2
 
 // onOSRExit handles a single spec-template guard-miss event (04 §5.1).
@@ -146,16 +159,16 @@ func onOSRExit(proto *bytecode.Proto) {
 	}
 	entry.deoptCount++
 	if entry.deoptCount < DeoptThreshold {
-		return // 单次失败,继续观察
+		return // single failure, keep observing
 	}
-	// 阈值触达:撤 P4 投机版编译码 + 切 P4Deoptimized
+	// Threshold reached: withdraw the P4 speculative code + switch to P4Deoptimized
 	if entry.recompileCount >= MaxRecompileTries {
-		entry.state = P4StuckSpeculation // 拉黑投机(P4 内吸收态)
+		entry.state = P4StuckSpeculation // blacklist speculation (P4-internal absorbing state)
 		incSpecP4StuckHits()
 		return
 	}
 	entry.state = P4Deoptimized
-	entry.deoptCount = 0 // 计数清零,等 IC 自然稀释 confidence 后重训练 + 重编译
+	entry.deoptCount = 0 // reset the count, wait for the IC to naturally dilute confidence before retraining + recompiling
 	incSpecP4DeoptHits()
 }
 
@@ -179,14 +192,14 @@ func onP4Install(proto *bytecode.Proto) {
 		p4SpecState[proto] = entry
 		return
 	}
-	// 重编译:状态从 P4Deoptimized 回 P4Speculative,recompileCount += 1
+	// Recompile: state goes from P4Deoptimized back to P4Speculative, recompileCount += 1
 	if entry.state == P4Deoptimized {
 		entry.state = P4Speculative
 		entry.recompileCount++
 	}
 }
 
-// P4SpecStateOf 返 proto 当前子状态(测试 + 调试用)。
+// P4SpecStateOf returns the proto's current sub-state (for tests + debugging).
 func P4SpecStateOf(proto *bytecode.Proto) P4SpecState {
 	if proto == nil {
 		return P4SpecUnknown
@@ -200,27 +213,27 @@ func P4SpecStateOf(proto *bytecode.Proto) P4SpecState {
 	return entry.state
 }
 
-// ResetP4SpecState 把 p4SpecState 全清(测试 isolation 用)。
+// ResetP4SpecState clears p4SpecState entirely (for test isolation).
 func ResetP4SpecState() {
 	p4SpecMu.Lock()
 	defer p4SpecMu.Unlock()
 	p4SpecState = make(map[*bytecode.Proto]*p4SpecEntry)
 }
 
-// specP4DeoptHits 是 P4Deoptimized 状态转移命中次数(prove-the-path 探针)。
+// specP4DeoptHits is the P4Deoptimized state-transition hit count (prove-the-path probe).
 var specP4DeoptHits uint64
 
-// specP4StuckHits 是 P4StuckSpeculation 状态转移命中次数。
+// specP4StuckHits is the P4StuckSpeculation state-transition hit count.
 var specP4StuckHits uint64
 
-// SpecP4DeoptHits 返累计 P4Deoptimized 状态转移命中次数(测试用)。
+// SpecP4DeoptHits returns the cumulative P4Deoptimized state-transition hit count (for tests).
 func SpecP4DeoptHits() uint64 { return atomic.LoadUint64(&specP4DeoptHits) }
 
-// SpecP4StuckHits 返累计 P4StuckSpeculation 状态转移命中次数(测试用)。
+// SpecP4StuckHits returns the cumulative P4StuckSpeculation state-transition hit count (for tests).
 func SpecP4StuckHits() uint64 { return atomic.LoadUint64(&specP4StuckHits) }
 
-// incSpecP4DeoptHits 包内 ++(onOSRExit 触达 P4Deoptimized 时调)。
+// incSpecP4DeoptHits does an in-package ++ (called when onOSRExit reaches P4Deoptimized).
 func incSpecP4DeoptHits() { atomic.AddUint64(&specP4DeoptHits, 1) }
 
-// incSpecP4StuckHits 包内 ++(onOSRExit 触达 P4StuckSpeculation 时调)。
+// incSpecP4StuckHits does an in-package ++ (called when onOSRExit reaches P4StuckSpeculation).
 func incSpecP4StuckHits() { atomic.AddUint64(&specP4StuckHits, 1) }

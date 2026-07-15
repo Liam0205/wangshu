@@ -1,31 +1,38 @@
 //go:build wangshu_p4 && darwin && arm64 && cgo
 
-// Package arm64 darwin/arm64 后端代码页管理(MAP_JIT + W^X 翻面 + icache flush)。
+// Package arm64 manages darwin/arm64 backend code pages (MAP_JIT + W^X flip + icache flush).
 //
-// **本文件无 cgo 直接 import**(承 F1 修复:父包 arm64 含 Plan 9 .s 文件,
-// 启用 cgo 会触 Go 工具链「same-package cgo + Go asm 互斥」规则);cgo
-// 不可避免的 pthread_jit_write_protect_np + sys_icache_invalidate 隔离到
-// 子包 internal/gibbous/jit/arm64/jitcgo,父包经普通 Go 函数调用走 forward。
+// **This file has no direct cgo import** (per the F1 fix: the parent arm64
+// package contains Plan 9 .s files, and enabling cgo trips the Go toolchain's
+// "same-package cgo + Go asm are mutually exclusive" rule); the unavoidable cgo
+// calls pthread_jit_write_protect_np + sys_icache_invalidate are isolated into
+// the subpackage internal/gibbous/jit/arm64/jitcgo, and the parent package
+// forwards to them via ordinary Go function calls.
 //
-// 承 docs/design/p4-method-jit/05-system-pipeline.md §2.1 exec mmap 协议 +
-// §2.3 arm64 icache flush 协议 + 06-backends.md §4.2 arm64 寄存器约定 +
-// tmp/wangshu-p4-todo.md §三 darwin/arm64 W^X 真实装。
+// Per docs/design/p4-method-jit/05-system-pipeline.md §2.1 exec mmap protocol +
+// §2.3 arm64 icache flush protocol + 06-backends.md §4.2 arm64 register
+// conventions + tmp/wangshu-p4-todo.md §3 darwin/arm64 W^X real implementation.
 //
-// **macOS 专属约束**(linux 路径见 codepage_linux.go):
-//  1. mmap 必须带 MAP_JIT(0x800)flag — macOS Hardened Runtime 默认禁
-//     PROT_EXEC,只有 MAP_JIT 段例外(需 `com.apple.security.cs.allow-jit`
-//     entitlement,GH Actions macos-latest runner `go test` 子进程默认允许);
-//  2. W^X 翻面不能用 mprotect — macOS arm64 强制 W^X,经
-//     pthread_jit_write_protect_np(0=可写,1=可执行)切换;**线程局部状态**,
-//     故 runtime.LockOSThread + defer UnlockOSThread 钉线程防 goroutine 调度
-//     污染其它 goroutine 可写态;
-//  3. icache flush 用 sys_icache_invalidate(libkern/OSCacheControl.h)
-//     而非 linux 端的手写 DC CVAU/IC IVAU(macOS 不暴露 EL0 cache 维护指令)。
+// **macOS-specific constraints** (linux path see codepage_linux.go):
+//  1. mmap must carry the MAP_JIT (0x800) flag — the macOS Hardened Runtime
+//     forbids PROT_EXEC by default, and only MAP_JIT segments are exempt (needs
+//     the `com.apple.security.cs.allow-jit` entitlement; the GH Actions
+//     macos-latest runner's `go test` subprocess allows it by default);
+//  2. the W^X flip cannot use mprotect — macOS arm64 enforces W^X, switched via
+//     pthread_jit_write_protect_np (0=writable, 1=executable); **thread-local
+//     state**, so runtime.LockOSThread + defer UnlockOSThread pins the thread to
+//     stop goroutine scheduling from polluting other goroutines' writable state;
+//  3. icache flush uses sys_icache_invalidate (libkern/OSCacheControl.h) rather
+//     than the linux side's hand-written DC CVAU/IC IVAU (macOS does not expose
+//     the EL0 cache-maintenance instructions).
 //
-// **cgo 隔离纪律**(承用户拍板方案 I):build tag 第四位 `cgo` 严守 — 主库
-// 默认 build(CGO_ENABLED=0 cross-build 或 amd64 主路径)走 codepage_other.go
-// stub,只有 macos-latest CI 启用 cgo 时才链 jitcgo 子包真实装。**主库零
-// cgo import 承诺不变**:父包 arm64 无 import "C",cgo 仅活在 jitcgo 子包内。
+// **cgo isolation discipline** (per the user-decided plan I): the 4th build tag
+// position `cgo` is strictly enforced — the main library's default build
+// (CGO_ENABLED=0 cross-build or amd64 main path) uses the codepage_other.go
+// stub, and only when macos-latest CI enables cgo does it link the jitcgo
+// subpackage's real implementation. **The main library's zero-cgo-import promise
+// stays unchanged**: the parent arm64 package has no import "C"; cgo lives only
+// inside the jitcgo subpackage.
 package arm64
 
 import (
@@ -50,21 +57,24 @@ type CodePage struct {
 	disposed atomic.Bool
 }
 
-// MmapCode 分配 MAP_JIT 段,写入 code,W^X 翻面 + arm64 icache flush。
+// MmapCode allocates a MAP_JIT segment, writes code, flips W^X + flushes the
+// arm64 icache.
 //
-// 流程(对位 codepage_linux.go MmapCode 同款结构 + macOS 特定步骤):
-//  1. runtime.LockOSThread:把当前 goroutine 钉死本 OS 线程,
-//     pthread_jit_write_protect_np 影响线程局部状态;UnlockOSThread 经
-//     defer 在翻 RX + icache flush 后释放;
-//  2. unix.Mmap MAP_ANON|MAP_PRIVATE|MAP_JIT,PROT_READ|PROT_WRITE|PROT_EXEC
-//     — macOS MAP_JIT 段必须一开始就带 PROT_EXEC(mmap flag 不带后续无法翻);
-//  3. jitcgo.JITWriteProtectEnter():进入可写态(cgo forward);
-//  4. copy code 进段;
-//  5. jitcgo.JITWriteProtectExit():翻 RX(cgo forward);
-//  6. jitcgo.ICacheInvalidate(addr, length):刷 i-cache(cgo forward);
-//  7. runtime.UnlockOSThread(deferred)。
+// Flow (mirrors the codepage_linux.go MmapCode structure + macOS-specific steps):
+//  1. runtime.LockOSThread: pins the current goroutine to this OS thread, since
+//     pthread_jit_write_protect_np affects thread-local state; UnlockOSThread is
+//     deferred to release after the RX flip + icache flush;
+//  2. unix.Mmap MAP_ANON|MAP_PRIVATE|MAP_JIT, PROT_READ|PROT_WRITE|PROT_EXEC —
+//     macOS MAP_JIT segments must carry PROT_EXEC from the start (without the
+//     mmap flag it cannot be flipped later);
+//  3. jitcgo.JITWriteProtectEnter(): enter the writable state (cgo forward);
+//  4. copy code into the segment;
+//  5. jitcgo.JITWriteProtectExit(): flip to RX (cgo forward);
+//  6. jitcgo.ICacheInvalidate(addr, length): flush the i-cache (cgo forward);
+//  7. runtime.UnlockOSThread (deferred).
 //
-// 错误路径必须 unmap + UnlockOSThread,防资源 / 线程钉死泄漏。
+// The error path must unmap + UnlockOSThread to avoid leaking resources / a
+// pinned thread.
 func MmapCode(code []byte) (*CodePage, error) {
 	if len(code) == 0 {
 		return nil, errors.New("internal/gibbous/jit/arm64: empty code")
@@ -72,12 +82,13 @@ func MmapCode(code []byte) (*CodePage, error) {
 	pageSize := unix.Getpagesize()
 	length := ((len(code) + pageSize - 1) / pageSize) * pageSize
 
-	// Step 1:钉线程 — pthread_jit_write_protect_np 是线程局部状态,
-	// goroutine 跨线程调度会污染其它 goroutine 的可写态。
+	// Step 1: pin the thread — pthread_jit_write_protect_np is thread-local
+	// state, and goroutine cross-thread scheduling would pollute other
+	// goroutines' writable state.
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	// Step 2:mmap MAP_JIT + PROT_RWX。
+	// Step 2: mmap MAP_JIT + PROT_RWX.
 	mem, err := unix.Mmap(
 		-1, 0, length,
 		unix.PROT_READ|unix.PROT_WRITE|unix.PROT_EXEC,
@@ -87,16 +98,16 @@ func MmapCode(code []byte) (*CodePage, error) {
 		return nil, fmt.Errorf("internal/gibbous/jit/arm64: mmap MAP_JIT failed: %w", err)
 	}
 
-	// Step 3:进入可写态(jitcgo forward,线程局部)。
+	// Step 3: enter the writable state (jitcgo forward, thread-local).
 	jitcgo.JITWriteProtectEnter()
 
-	// Step 4:copy code 进段。
+	// Step 4: copy code into the segment.
 	copy(mem, code)
 
-	// Step 5:翻 RX(jitcgo forward)。
+	// Step 5: flip to RX (jitcgo forward).
 	jitcgo.JITWriteProtectExit()
 
-	// Step 6:刷 i-cache(jitcgo forward;macOS arm64 必需)。
+	// Step 6: flush the i-cache (jitcgo forward; required on macOS arm64).
 	jitcgo.ICacheInvalidate(unsafe.Pointer(&mem[0]), uintptr(length))
 
 	cp := &CodePage{mem: mem, length: length}

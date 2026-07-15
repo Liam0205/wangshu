@@ -1,13 +1,16 @@
 //go:build wangshu_p3 && wangshu_profile
 
-// P3 性能轴实测(docs/design/p3-wasm-tier/08-testing-strategy.md V14-V16)。
+// P3 performance-axis measurement (docs/design/p3-wasm-tier/08-testing-strategy.md V14-V16).
 //
-// 经公共 force-all 入口对比同一循环密集核的 crescent(force=false)vs gibbous
-// (force=true)。**实测口径**:每个 b.N 迭代新建 State + 反复跑 kernel,使核函数
-// 升层后真走 wazero(首调 crescent,二调起 gibbous)。
+// Compares the same loop-heavy kernel via the shared force-all entry: crescent
+// (force=false) vs gibbous (force=true). **Measurement protocol**: each b.N
+// iteration builds a new State + repeatedly runs the kernel, so the kernel
+// function truly goes through wazero after promotion (first call crescent,
+// second call onward gibbous).
 //
-// 仅记录现状用——性能轴(≥2x)若不达标,诚实记录,不阻断正确性轴交付(用户拍板
-// 「先交正确性,性能拆后续」,见 §11 PW9 对账)。
+// For recording current status only — if the performance axis (≥2x) is not
+// met, record it honestly; do not block correctness-axis delivery (user
+// decision "ship correctness first, defer performance", see §11 PW9 reconcile).
 
 package difftest
 
@@ -17,13 +20,15 @@ import (
 	"github.com/Liam0205/wangshu"
 )
 
-// loopKernel 循环密集核:被反复调用的内层函数 sumto 在 force-all 下升 gibbous。
+// loopKernel is a loop-heavy kernel: the repeatedly-called inner function
+// sumto is promoted to gibbous under force-all.
 const loopKernel = `
 local function sumto(n) local s = 0; for i = 1, n do s = s + i * 2 - 1 end return s end
 local function body() local t = 0; for k = 1, 200 do t = t + sumto(1000) end return t end
 return body`
 
-// 多形态核(V15 geomean 用):算术循环 / 表读写 / 嵌套调用 / 混合。
+// Multi-form kernels (used by V15 geomean): arithmetic loop / table
+// read-write / nested calls / mixed.
 var benchKernels = map[string]string{
 	"loop": loopKernel,
 	"table": `
@@ -74,7 +79,7 @@ func callBody(st *wangshu.State, body wangshu.Value) ([]wangshu.Value, int, erro
 func BenchmarkP3_LoopCrescent(b *testing.B) { benchTiered(b, false) }
 func BenchmarkP3_LoopGibbous(b *testing.B)  { benchTiered(b, true) }
 
-// BenchmarkP3_Kernels 多形态 crescent vs gibbous(V14 loop ≥2x / V15 geomean ≥1.5x)。
+// BenchmarkP3_Kernels multi-form crescent vs gibbous (V14 loop ≥2x / V15 geomean ≥1.5x).
 func BenchmarkP3_Kernels(b *testing.B) {
 	for _, name := range []string{"loop", "table", "call", "mixed"} {
 		src := benchKernels[name]

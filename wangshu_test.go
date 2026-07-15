@@ -1,4 +1,4 @@
-// Public API end-to-end tests — 验证 Compile / Program.Run / Value 桥接(M13)。
+// Public API end-to-end tests — verify Compile / Program.Run / Value bridging (M13).
 package wangshu_test
 
 import (

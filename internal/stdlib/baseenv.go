@@ -1,4 +1,4 @@
-// base 库的环境/GC/加载函数(10 §4.6/§4.7 + §11 提供面)。
+// Environment/GC/loading functions of the base library (10 §4.6/§4.7 + §11 surface).
 package stdlib
 
 import (
@@ -9,11 +9,11 @@ import (
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
-// registerBaseEnv 注册 _G/_VERSION 全局变量与 GC 控制函数。
+// registerBaseEnv registers the _G/_VERSION globals and the GC control functions.
 func registerBaseEnv(st *crescent.State) {
-	// _G:globals 表自身(_G._G == _G,01 §1)
+	// _G: the globals table itself (_G._G == _G, 01 §1)
 	st.SetGlobal("_G", value.MakeGC(value.TagTable, st.Globals()))
-	// _VERSION:恒 "Lua 5.1"(roadmap §6)
+	// _VERSION: always "Lua 5.1" (roadmap §6)
 	st.SetGlobal("_VERSION", intern(st, "Lua 5.1"))
 	for _, e := range []entry{
 		{"collectgarbage", baseFnCollectGarbage},
@@ -27,10 +27,11 @@ func registerBaseEnv(st *crescent.State) {
 	}
 }
 
-// baseFnCollectGarbage:collectgarbage([opt [, arg]])(10 §4.6;06 GC 控制)。
+// baseFnCollectGarbage: collectgarbage([opt [, arg]]) (10 §4.6; 06 GC control).
 //
-// P1 支持:collect(full GC)/count(KB)/stop/restart/setpause(空操作占位,
-// STW GC 无增量参数)/step(= collect,STW 无步进)。
+// P1 support: collect (full GC) / count (KB) / stop / restart / setpause (no-op
+// placeholder, STW GC has no incremental knobs) / step (= collect, STW has no
+// stepping).
 func baseFnCollectGarbage(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	opt := "collect"
 	if len(args) >= 1 && args[0] != value.Nil {
@@ -54,7 +55,7 @@ func baseFnCollectGarbage(st *crescent.State, args []value.Value) ([]value.Value
 	case "collect", "step":
 		st.GCCollect()
 		if opt == "step" {
-			return []value.Value{value.True}, nil // step 完成一轮 → true(5.1)
+			return []value.Value{value.True}, nil // step completes one round → true (5.1)
 		}
 		return []value.Value{value.NumberValue(0)}, nil
 	case "count":
@@ -66,22 +67,24 @@ func baseFnCollectGarbage(st *crescent.State, args []value.Value) ([]value.Value
 		st.GCSetStopped(false)
 		return []value.Value{value.NumberValue(0)}, nil
 	case "setpause", "setstepmul":
-		// STW GC 无增量调参;占位返回 0(可观察但不可逐字节比项,10 §13)
+		// STW GC has no incremental tuning; placeholder returns 0 (observable but not byte-comparable, 10 §13)
 		return []value.Value{value.NumberValue(0)}, nil
 	}
 	return nil, crescent.NewArgError(1, "invalid option '"+opt+"'")
 }
 
-// baseFnGcInfo:gcinfo() = collectgarbage("count") 的 5.1 遗留整数形态(10 §4.6)。
+// baseFnGcInfo: gcinfo() = the 5.1 legacy integer form of collectgarbage("count") (10 §4.6).
 func baseFnGcInfo(st *crescent.State, _ []value.Value) ([]value.Value, *crescent.LuaError) {
 	return []value.Value{value.NumberValue(float64(int64(st.GCCountKB())))}, nil
 }
 
-// baseFnLoadfile:loadfile([filename]) → function | (nil, errmsg)(10 §4.7)。
+// baseFnLoadfile: loadfile([filename]) → function | (nil, errmsg) (10 §4.7).
 //
-// 文件系统读默认关闭(嵌入式 VM 接不可信脚本时,loadfile("/etc/passwd")
-// 是越权探测面;官方 standalone 才默认开放)。宿主经 Options.AllowFileLoad
-// 显式开启;关闭时与"文件不存在"同形态返回 (nil, errmsg) 软错误。
+// Filesystem reads are off by default (when an embedded VM runs untrusted
+// scripts, loadfile("/etc/passwd") is a privilege-probing surface; only the
+// official standalone opens it by default). The host enables it explicitly via
+// Options.AllowFileLoad; when disabled it returns the same (nil, errmsg) soft
+// error shape as "file not found".
 func baseFnLoadfile(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	// Argument type check FIRST (PUC luaL_optstring): loadfile(true)
 	// raises even before the sandbox gate -- keeping the acceptance
@@ -113,7 +116,7 @@ func baseFnLoadfile(st *crescent.State, args []value.Value) ([]value.Value, *cre
 	return []value.Value{fn}, nil
 }
 
-// baseFnDofile:dofile([filename]) = loadfile + 立即调用(10 §4.7)。
+// baseFnDofile: dofile([filename]) = loadfile + immediate call (10 §4.7).
 func baseFnDofile(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	r, e := baseFnLoadfile(st, args)
 	if e != nil {

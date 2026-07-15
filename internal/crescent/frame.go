@@ -1,4 +1,4 @@
-// Frame management — enterLuaFrame / popCallInfo / execute 的栈布局。
+// Frame management — the stack layout of enterLuaFrame / popCallInfo / execute.
 package crescent
 
 import (
@@ -7,10 +7,10 @@ import (
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
-// 调用深度上限(05 §7.4,对齐官方 5.1.5 luaconf.h)。
+// Call-depth limits (05 §7.4, aligned with the official 5.1.5 luaconf.h).
 const (
-	maxLuaCallDepth = 20000 // LUAI_MAXCALLS:CallInfo 链长上限,超限抛 "stack overflow"
-	maxCCallDepth   = 200   // LUAI_MAXCCALLS:host→Lua 重入(真 Go 栈)上限,超限抛 "C stack overflow"
+	maxLuaCallDepth = 20000 // LUAI_MAXCALLS: upper bound on the CallInfo chain length; overflow raises "stack overflow"
+	maxCCallDepth   = 200   // LUAI_MAXCCALLS: upper bound on host→Lua re-entry (the real Go stack); overflow raises "C stack overflow"
 
 	// gibbousReentryCCallCap is the soft watermark above which promoted
 	// protos are dispatched to the INTERPRETER instead of their gibbous
@@ -32,20 +32,24 @@ const (
 	gibbousReentryCCallCap = maxCCallDepth / 2
 )
 
-// enterLuaFrame 准备一帧并压 CallInfo(05 §1.4)。
+// enterLuaFrame prepares a frame and pushes its CallInfo (05 §1.4).
 //
-// funcIdx 是被调 closure 在栈上的索引;实参紧随其后(funcIdx+1..funcIdx+1+nargs)。
-// nresults<0 表示调用者要"全部返回"。entry=true 标 callStatus_fresh(execute 边界,
-// RETURN 退到此帧之下即终止 execute)。
+// funcIdx is the index of the callee closure on the stack; the arguments follow
+// right after it (funcIdx+1..funcIdx+1+nargs). nresults<0 means the caller wants
+// "all returns". entry=true marks callStatus_fresh (the execute boundary: once
+// RETURN unwinds below this frame, execute terminates).
 func (st *State) enterLuaFrame(th *thread, funcIdx, nargs, nresults int, entry bool) *LuaError {
-	// Lua 调用深度上限(05 §7.4;LUAI_MAXCALLS=20000 等价,对齐 5.1.5 luaconf.h)。
-	// TAILCALL 先 pop 再 enter,净深度不变,proper tail call 不受限。
+	// Lua call-depth limit (05 §7.4; equivalent to LUAI_MAXCALLS=20000, aligned
+	// with 5.1.5 luaconf.h). TAILCALL pops before it enters, so net depth is
+	// unchanged and a proper tail call is not limited.
 	if th.ciDepth >= maxLuaCallDepth {
 		return errf("stack overflow")
 	}
-	// 指令预算的调用计费点:纯递归风暴(蹦床式互递归在深度限内反复进出)
-	// 不经回边,只在此计费才兜得住。预算关闭且 ctx 未注入时 preempt
-	// 内部短路。
+	// The call-billing point for the instruction budget: a pure-recursion storm
+	// (trampoline-style mutual recursion that repeatedly enters/exits within the
+	// depth limit) never crosses a back-edge, so only billing here catches it.
+	// When the budget is off and no ctx is injected, preempt short-circuits
+	// internally.
 	if e := st.preempt(); e != nil {
 		return e
 	}
@@ -55,37 +59,42 @@ func (st *State) enterLuaFrame(th *thread, funcIdx, nargs, nresults int, entry b
 	}
 	cl := value.GCRefOf(v)
 	if object.IsHostClosure(st.arena, cl) {
-		// 防御:正常 Lua → host 走 doCall/doTailCall 的 callHost 分支;
-		// 走到 enterLuaFrame 意味着调用入口绕过了 dispatch(internal bug)。
+		// Defense: a normal Lua → host call goes through the callHost branch of
+		// doCall/doTailCall; reaching enterLuaFrame means the call entry bypassed
+		// dispatch (internal bug).
 		return errf("call: host closure cannot enter Lua frame (internal dispatch bug)")
 	}
 	pid := object.ClosureProtoID(st.arena, cl)
 	proto := st.protos[pid]
 	numFixed := int(proto.NumParams)
-	// VS0-e:base 重排(官方 Lua 5.1 真栈布局)。
+	// VS0-e: base reshuffle (the official Lua 5.1 real stack layout).
 	//
-	// 原布局: [funcIdx | fix0..fixN-1 | extra0..extraM-1 | gap..MaxStack-1]
-	// 新布局: [funcIdx | vararg0..varargM-1 | R(0)=fix0..R(N-1)=fixN-1 | gap..MaxStack-1]
+	// Old layout: [funcIdx | fix0..fixN-1 | extra0..extraM-1 | gap..MaxStack-1]
+	// New layout: [funcIdx | vararg0..varargM-1 | R(0)=fix0..R(N-1)=fixN-1 | gap..MaxStack-1]
 	//         base = funcIdx + 1 + nVarargs
-	// vararg 区在栈下区 stack[base-nVarargs..base);VARARG 经 th.slot(base-nV+k) 现读;
-	// GC 扫栈 [0, top) 自然覆盖(vararg < base < top)。无独立 ciVarargs / ci.varargs
-	// Go 切片(VS0-e 子步 ④ 退役)。
+	// The vararg region sits in the below-stack area stack[base-nVarargs..base);
+	// VARARG reads it live via th.slot(base-nV+k); GC scanning [0, top) covers it
+	// naturally (vararg < base < top). No separate ciVarargs / ci.varargs Go
+	// slice (retired in VS0-e substep ④).
 	nVarargs := 0
 	if nargs > numFixed && proto.IsVararg {
 		nVarargs = nargs - numFixed
 	}
 	base := funcIdx + 1 + nVarargs
-	// 先备栈到新 base + MaxStack(覆盖重排目标区 + nil-clear 区;ensureStack 触发的段
-	// 重定位经 slot/setSlot 形态 Y 现算寻址自动用新段视图)。
+	// Reserve the stack up to the new base + MaxStack first (covers the reshuffle
+	// target region + the nil-clear region; a segment relocation triggered by
+	// ensureStack is automatically picked up by slot/setSlot form-Y live
+	// addressing against the new segment view).
 	need := base + int(proto.MaxStack)
 	if need > th.size() {
 		th.ensureStack(need)
 	}
 	if nVarargs > 0 {
-		// 重排三步(避免覆盖):
-		// ① vararg 临时读到 Go slice(短临时;子步 ④ 内 enterLuaFrame 本地,不入 ci/thread)
-		// ② 固参从高到低搬到 stack[base+i] = stack[funcIdx+1+i](dst > src 防覆盖)
-		// ③ vararg 写栈下区 stack[funcIdx+1+i] = vararg[i]
+		// Reshuffle in three steps (to avoid overwriting):
+		// ① read varargs temporarily into a Go slice (a short temporary; local to
+		//    enterLuaFrame in substep ④, does not enter ci/thread)
+		// ② move fixed params high-to-low: stack[base+i] = stack[funcIdx+1+i] (dst > src prevents overwrite)
+		// ③ write varargs into the below-stack area: stack[funcIdx+1+i] = vararg[i]
 		buf := make([]value.Value, nVarargs)
 		for i := 0; i < nVarargs; i++ {
 			buf[i] = th.slot(funcIdx + 1 + numFixed + i)
@@ -97,21 +106,24 @@ func (st *State) enterLuaFrame(th *thread, funcIdx, nargs, nresults int, entry b
 			th.setSlot(funcIdx+1+i, buf[i])
 		}
 	} else if nargs < numFixed {
-		// 实参不足:nVarargs=0 ⟹ base=funcIdx+1=原,固参就位,补 nil 到 numFixed。
+		// Too few arguments: nVarargs=0 ⟹ base=funcIdx+1=original, fixed params
+		// are in place, pad nil up to numFixed.
 		for i := nargs; i < numFixed; i++ {
 			th.setSlot(base+i, value.Nil)
 		}
 	}
-	// nargs > numFixed && !IsVararg:超额实参在 [base+numFixed..base+nargs-1] 区,被
-	// 下面 nil-clear 覆盖(原 Lua 5.1 行为:丢弃)。
+	// nargs > numFixed && !IsVararg: the excess arguments in [base+numFixed..base+nargs-1]
+	// are covered by the nil-clear below (original Lua 5.1 behavior: discarded).
 	//
-	// nil-clear 区 [base+numFixed, base+MaxStack)。
+	// nil-clear region [base+numFixed, base+MaxStack).
 	for i := base + numFixed; i < base+int(proto.MaxStack); i++ {
 		th.setSlot(i, value.Nil)
 	}
-	// LUA_COMPAT_VARARG:隐式 arg 表(5.1 默认 compat;arg = {n=#varargs, ...},
-	// 占形参后第一个寄存器,codegen 已 registerLocal("arg") 预留)。VS0-e:从栈下区
-	// stack[base-nVarargs..base) 现读 vararg(子步 ③ 落地后栈下区是权威 source)。
+	// LUA_COMPAT_VARARG: the implicit arg table (5.1 default compat; arg = {n=#varargs, ...},
+	// occupying the first register after the formal params; codegen has already reserved it
+	// via registerLocal("arg")). VS0-e: read varargs live from the below-stack area
+	// stack[base-nVarargs..base) (after substep ③ lands, the below-stack area is the
+	// authoritative source).
 	if proto.NeedsArg {
 		argTbl := st.allocTable(uint32(nVarargs), 8)
 		for i := 0; i < nVarargs; i++ {
@@ -121,7 +133,8 @@ func (st *State) enterLuaFrame(th *thread, funcIdx, nargs, nresults int, entry b
 		_ = st.tableSet(argTbl, nKey, value.NumberValue(float64(nVarargs)))
 		th.setSlot(base+numFixed, value.MakeGC(value.TagTable, argTbl))
 	}
-	// 压 CallInfo(PW10 R2b-4:arena 段为权威,th.cur 是栈顶帧热镜像)。
+	// Push CallInfo (PW10 R2b-4: the arena segment is authoritative, th.cur is the
+	// hot mirror of the top frame).
 	ci := callInfo{
 		base:     base,
 		funcIdx:  funcIdx,
@@ -131,9 +144,10 @@ func (st *State) enterLuaFrame(th *thread, funcIdx, nargs, nresults int, entry b
 		nresults: nresults,
 		fresh:    entry,
 		pc:       0,
-		nVarargs: uint16(nVarargs), // 与栈下区 [base-nVarargs..base) 严格对齐 + 段 word4 镜像
+		nVarargs: uint16(nVarargs), // strictly aligned with the below-stack area [base-nVarargs..base) + segment word4 mirror
 	}
-	// 先把当前栈顶帧(th.cur,可能 pc/top 已推进)刷回段,再载入新帧。
+	// Flush the current top frame (th.cur, whose pc/top may have advanced) back to
+	// the segment first, then load the new frame.
 	if th.ciDepth > 0 {
 		th.writeCISeg(th.ciDepth-1, &th.cur)
 	}
@@ -145,7 +159,8 @@ func (st *State) enterLuaFrame(th *thread, funcIdx, nargs, nresults int, entry b
 	th.setCIDepth(depth + 1)
 	th.writeCISeg(depth, &th.cur)
 	if ciMirrorCheck {
-		// wangshu_trace 安全网:回读段自检打包/解包与 th.cur 逐字段一致(R2b-1)。
+		// wangshu_trace safety net: read back the segment and self-check that pack/unpack
+		// is field-for-field identical to th.cur (R2b-1).
 		th.verifyCISeg(depth, &th.cur)
 	}
 	th.setTop(base + int(proto.MaxStack))
@@ -155,9 +170,11 @@ func (st *State) enterLuaFrame(th *thread, funcIdx, nargs, nresults int, entry b
 	return nil
 }
 
-// popCallInfo 弹出栈顶帧,返回其副本(供 doReturn 拿 nresults 等)。弹出后从段
-// 重载 caller 帧到 th.cur(若仍有 caller)。PW10 R2b-4 + VS0-e:vararg 区住栈下区
-// 不再需要 ciVarargs 影子恢复;nVarargs 经段 word4 与 caller 一并解出。
+// popCallInfo pops the top frame and returns a copy of it (for doReturn to read
+// nresults, etc.). After popping it reloads the caller frame from the segment
+// into th.cur (if a caller still exists). PW10 R2b-4 + VS0-e: the vararg region
+// lives in the below-stack area, so ciVarargs shadow restoration is no longer
+// needed; nVarargs is decoded from segment word4 together with the caller.
 func (st *State) popCallInfo(th *thread) callInfo {
 	ci := th.cur
 	th.setCIDepth(th.ciDepth - 1)
@@ -167,21 +184,27 @@ func (st *State) popCallInfo(th *thread) callInfo {
 	return ci
 }
 
-// currentCI 返回栈顶帧热镜像的指针。**地址稳定**(指向 th.cur,非可重定位的段/
-// slice 元素)——故热循环持此指针跨 CALL/分配永不悬垂(PW10 R2b-4 消除 append
-// 重定位雷区,design-claims-vs-codebase-physics §2)。修改经它直接改 th.cur,
-// 下次 push/pop 边界由 writeCISeg 刷回段。
+// currentCI returns a pointer to the hot mirror of the top frame. **The address is
+// stable** (it points at th.cur, not a relocatable segment/slice element) — so a
+// hot loop holding this pointer never dangles across a CALL/allocation (PW10 R2b-4
+// eliminates the append-relocation minefield, design-claims-vs-codebase-physics §2).
+// Mutations through it modify th.cur directly, and the next push/pop boundary
+// flushes back to the segment via writeCISeg.
 //
-// **PW10 零跨界 Stage 1b 持有者审计**:Wasm 侧帧建拆(Stage 2/3)在 Wasm 执行期改
-// ciDepth 字 + 段帧,但 th.cur 是**地址稳定**的固定 struct 字段——syncCurFromSeg 在
-// 跨回 Go 的边界**原地更新 th.cur 内容**(非换地址),故任何持 &th.cur 的指针自动
-// 见到 resync 后的内容、不悬垂。Go helper 仅在 Wasm 跨回时运行(此时 Wasm 不在栈上),
-// 入口 fresh 取 currentCI;解释器调 gibbous 后按既有纪律 reload ci(execute.go)。
-// ⟹ 无新陈旧持有者雷区。
+// **PW10 zero-crossing Stage 1b holder audit**: the Wasm-side frame build/teardown
+// (Stage 2/3) modifies the ciDepth word + segment frames during Wasm execution, but
+// th.cur is an **address-stable** fixed struct field — syncCurFromSeg **updates the
+// contents of th.cur in place** (not swapping addresses) at the boundary back into Go,
+// so any pointer holding &th.cur automatically sees the resync'd contents and does not
+// dangle. The Go helper only runs when Wasm crosses back (at which point Wasm is not on
+// the stack); the entry takes fresh from currentCI; after the interpreter calls gibbous
+// it reloads ci per existing discipline (execute.go).
+// ⟹ no new stale-holder minefield.
 func currentCI(th *thread) *callInfo { return &th.cur }
 
-// rk 取一个 RK 操作数:< 256 取寄存器 R(rk);>=256 取常量 K(rk-256)。
-// proto 由调用方传入(VS0-b:ci 不再持 *Proto,常量表经 proto.Consts 取)。
+// rk fetches an RK operand: < 256 reads register R(rk); >=256 reads constant K(rk-256).
+// proto is passed in by the caller (VS0-b: ci no longer holds *Proto; the constant table
+// is taken via proto.Consts).
 func rk(th *thread, ci *callInfo, proto *bytecode.Proto, rk int) value.Value {
 	if rk < bytecode.MaxK {
 		return th.slot(ci.base + rk)
@@ -189,16 +212,16 @@ func rk(th *thread, ci *callInfo, proto *bytecode.Proto, rk int) value.Value {
 	return proto.Consts[rk-bytecode.MaxK]
 }
 
-// reg 简便寄存器读。
+// reg is a convenience register read.
 func reg(th *thread, ci *callInfo, r int) value.Value { return th.slot(ci.base + r) }
 
-// setReg 简便寄存器写。
+// setReg is a convenience register write.
 func setReg(th *thread, ci *callInfo, r int, v value.Value) {
 	th.setSlot(ci.base+r, v)
 }
 
-// errf 构造一个 LuaError(M9 简化:Value 直接是错误字符串内容,
-// 暂不 intern 进 arena;M11 错误模块再拉齐)。
+// errf builds a LuaError (M9 simplification: the Value is the error string content
+// directly, not yet interned into the arena; the M11 error module will align this).
 func errf(format string, args ...any) *LuaError {
 	msg := sprintf(format, args...)
 	return &LuaError{Msg: msg}

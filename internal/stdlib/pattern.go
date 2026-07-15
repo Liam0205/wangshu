@@ -1,8 +1,9 @@
-// Lua 5.1 pattern matcher (10 §7) — 对齐 lstrlib.c 的 match 引擎。
+// Lua 5.1 pattern matcher (10 §7) — mirrors the match engine in lstrlib.c.
 //
-// 支持:字符类(%a %d %s %w %x %p %c %l %u + 取反大写)、集合 [..]/[^..]
-// (含 []] 首字面 ])、量词(* + - ?)、锚点 ^ / $、捕获 () 与位置捕获、
-// %b 平衡匹配、%f[set] frontier、%1-%9 反向引用。
+// Supports: character classes (%a %d %s %w %x %p %c %l %u + uppercase for
+// negation), sets [..]/[^..] (including []] where the leading ] is literal),
+// quantifiers (* + - ?), anchors ^ / $, captures () and position captures,
+// %b balanced match, %f[set] frontier, %1-%9 back references.
 package stdlib
 
 import (
@@ -11,13 +12,13 @@ import (
 
 const (
 	maxCaptures   = 32
-	capPosition   = -2 // 位置捕获标记
+	capPosition   = -2 // position capture marker
 	capUnfinished = -1
 )
 
 type capture struct {
-	init int // 捕获起点(字节下标)
-	len  int // capPosition / capUnfinished / 实际长度
+	init int // capture start (byte offset)
+	len  int // capPosition / capUnfinished / actual length
 }
 
 type matchState struct {
@@ -25,19 +26,21 @@ type matchState struct {
 	pat      []byte
 	level    int
 	captures [maxCaptures]capture
-	depth    int // 递归保护(深度)
-	steps    int // 回溯预算(宽度):多层量词的组合回溯是指数级,必须有界
+	depth    int // recursion guard (depth)
+	steps    int // backtracking budget (width): the combinatorial backtracking of nested quantifiers is exponential, so it must be bounded
 }
 
 const (
 	maxMatchDepth = 200
-	// maxMatchSteps 是单次 patternFind 的 match 调用总预算。
-	// 灾难性回溯(如 ".*.+%A*" 对长主语)在 5.1 C 实现里会真跑很久;
-	// 纯 Go 实现选择有界失败("pattern too complex"),保证 fuzz/嵌入场景不挂起。
+	// maxMatchSteps is the total budget for match calls within a single patternFind.
+	// Catastrophic backtracking (e.g. ".*.+%A*" against a long subject) really can
+	// run for a long time in the 5.1 C implementation; the pure-Go implementation
+	// chooses bounded failure ("pattern too complex") to guarantee fuzz/embedded
+	// scenarios do not hang.
 	maxMatchSteps = 1 << 20
 )
 
-// classMatch 判定字符 c 是否属于类 cl(%a 等单字母类)。
+// classMatch reports whether byte c belongs to class cl (single-letter classes like %a).
 func classMatch(c byte, cl byte) bool {
 	var res bool
 	switch lower(cl) {
@@ -60,8 +63,9 @@ func classMatch(c byte, cl byte) bool {
 	case 'x':
 		res = isxdigit(c)
 	case 'z':
-		// 5.1 特有(5.2 移除):%z 匹配 NUL(模式串自身经 C 字符串传递
-		// 放不下 \0,用 %z 表达);%Z 取反 = 任意非 NUL。
+		// Specific to 5.1 (removed in 5.2): %z matches NUL (the pattern string,
+		// passed through as a C string, cannot hold \0, so %z expresses it);
+		// %Z is the negation = any non-NUL byte.
 		res = c == 0
 	default:
 		return cl == c
@@ -91,7 +95,7 @@ func isupper(c byte) bool  { return c >= 'A' && c <= 'Z' }
 func ispunct(c byte) bool  { return c >= 0x21 && c <= 0x7E && !isalnum(c) }
 func isxdigit(c byte) bool { return isdigit(c) || (lower(c) >= 'a' && lower(c) <= 'f') }
 
-// classEnd 返回模式中从 p 开始的"单个匹配单元"之后的位置(lstrlib classEnd)。
+// classEnd returns the position just after the "single match unit" starting at p in the pattern (lstrlib classEnd).
 func (ms *matchState) classEnd(p int) (int, error) {
 	c := ms.pat[p]
 	p++
@@ -105,8 +109,9 @@ func (ms *matchState) classEnd(p int) (int, error) {
 		if p < len(ms.pat) && ms.pat[p] == '^' {
 			p++
 		}
-		// 对齐官方 do-while:先无条件消费一个字符再查终结 ']'——
-		// `[` / `[^` 后的第一个 `]` 因此是字面量([]] = 含 ] 的类)。
+		// Mirror the official do-while: unconditionally consume one character
+		// before checking for the terminating ']' — so the first ']' after
+		// `[` / `[^` is a literal ([]] = a class containing ]).
 		for {
 			if p >= len(ms.pat) {
 				return 0, fmt.Errorf("malformed pattern (missing ']')")
@@ -114,7 +119,7 @@ func (ms *matchState) classEnd(p int) (int, error) {
 			cc := ms.pat[p]
 			p++
 			if cc == '%' && p < len(ms.pat) {
-				p++ // 跳过转义(如 %])
+				p++ // skip the escape (e.g. %])
 			}
 			if p < len(ms.pat) && ms.pat[p] == ']' {
 				return p + 1, nil
@@ -127,7 +132,7 @@ func (ms *matchState) classEnd(p int) (int, error) {
 	return p, nil
 }
 
-// singleMatch 判定 src[s] 是否匹配 pat[p..ep)(一个匹配单元)。
+// singleMatch reports whether src[s] matches pat[p..ep) (a single match unit).
 func (ms *matchState) singleMatch(s, p, ep int) bool {
 	if s >= len(ms.src) {
 		return false
@@ -145,10 +150,10 @@ func (ms *matchState) singleMatch(s, p, ep int) bool {
 	}
 }
 
-// matchClass 判定 c 是否落在集合 [p..ec)(p 指向 '[',ec 指向 ']')。
+// matchClass reports whether c falls in the set [p..ec) (p points at '[', ec points at ']').
 func (ms *matchState) matchClass(c byte, p, ec int) bool {
 	neg := false
-	p++ // 跳过 '['
+	p++ // skip '['
 	if ms.pat[p] == '^' {
 		neg = true
 		p++
@@ -161,7 +166,7 @@ func (ms *matchState) matchClass(c byte, p, ec int) bool {
 			}
 			p++
 		} else if p+2 < ec && ms.pat[p+1] == '-' {
-			// 范围 a-z
+			// range a-z
 			if ms.pat[p] <= c && c <= ms.pat[p+2] {
 				return !neg
 			}
@@ -176,7 +181,7 @@ func (ms *matchState) matchClass(c byte, p, ec int) bool {
 	return neg
 }
 
-// match 是匹配主递归(lstrlib do_match):返回匹配结束位置或 -1。
+// match is the main matching recursion (lstrlib do_match): returns the match end position or -1.
 func (ms *matchState) match(s, p int) (int, error) {
 	ms.depth++
 	if ms.depth > maxMatchDepth {
@@ -207,7 +212,7 @@ func (ms *matchState) match(s, p int) (int, error) {
 				}
 				return -1, nil
 			}
-			// '$' 不在末尾:按字面量
+			// '$' not at the end: treat as a literal
 		case '%':
 			if p+1 < len(ms.pat) {
 				nc := ms.pat[p+1]
@@ -215,8 +220,10 @@ func (ms *matchState) match(s, p int) (int, error) {
 					return ms.matchBalance(s, p+2)
 				}
 				if nc == 'f' {
-					// %f[set] frontier(5.1 有,手册 5.2 才文档化):前一字符
-					// 不在 set(串首视作 '\0')且当前字符在 set 时零宽匹配。
+					// %f[set] frontier (present in 5.1, documented only in the 5.2
+					// manual): zero-width match when the previous character is not
+					// in set (start of string treated as '\0') and the current
+					// character is in set.
 					fp := p + 2
 					if fp >= len(ms.pat) || ms.pat[fp] != '[' {
 						return -1, fmt.Errorf("missing '[' after '%%f' in pattern")
@@ -225,11 +232,11 @@ func (ms *matchState) match(s, p int) (int, error) {
 					if err != nil {
 						return -1, err
 					}
-					var prev byte // 串首 = '\0'
+					var prev byte // start of string = '\0'
 					if s > 0 {
 						prev = ms.src[s-1]
 					}
-					var cur byte // 串尾 = '\0'(官方 *s 在 NUL 终止串上)
+					var cur byte // end of string = '\0' (official *s on a NUL-terminated string)
 					if s < len(ms.src) {
 						cur = ms.src[s]
 					}
@@ -240,8 +247,9 @@ func (ms *matchState) match(s, p int) (int, error) {
 					return -1, nil
 				}
 				if nc >= '0' && nc <= '9' {
-					// %0 在模式中不是合法反向引用(官方 check_capture
-					// l==-1 报 invalid capture index);%1-%9 正常。
+					// %0 is not a valid back reference in a pattern (official
+					// check_capture reports "invalid capture index" for l==-1);
+					// %1-%9 are normal.
 					if nc == '0' {
 						return -1, fmt.Errorf("invalid capture index")
 					}
@@ -249,7 +257,7 @@ func (ms *matchState) match(s, p int) (int, error) {
 				}
 			}
 		}
-		// 普通匹配单元 + 可选量词
+		// ordinary match unit + optional quantifier
 		ep, err := ms.classEnd(p)
 		if err != nil {
 			return -1, err
@@ -288,7 +296,7 @@ func (ms *matchState) match(s, p int) (int, error) {
 	}
 }
 
-// maxExpand 贪婪量词(* +):先吃到最长,再回退。
+// maxExpand handles greedy quantifiers (* +): consume as much as possible, then back off.
 func (ms *matchState) maxExpand(s, p, ep int) (int, error) {
 	i := 0
 	for ms.singleMatch(s+i, p, ep) {
@@ -307,7 +315,7 @@ func (ms *matchState) maxExpand(s, p, ep int) (int, error) {
 	return -1, nil
 }
 
-// minExpand 懒惰量词(-):先试最短。
+// minExpand handles the lazy quantifier (-): try the shortest first.
 func (ms *matchState) minExpand(s, p, ep int) (int, error) {
 	for {
 		r, err := ms.match(s, ep+1)
@@ -325,7 +333,7 @@ func (ms *matchState) minExpand(s, p, ep int) (int, error) {
 	}
 }
 
-// startCapture 开启一个捕获。
+// startCapture opens a capture.
 func (ms *matchState) startCapture(s, p, what int) (int, error) {
 	if ms.level >= maxCaptures {
 		return -1, fmt.Errorf("too many captures")
@@ -342,7 +350,7 @@ func (ms *matchState) startCapture(s, p, what int) (int, error) {
 	return r, nil
 }
 
-// endCapture 闭合最近未闭合捕获。
+// endCapture closes the most recent unclosed capture.
 func (ms *matchState) endCapture(s, p int) (int, error) {
 	l := ms.captureToClose()
 	if l < 0 {
@@ -368,7 +376,7 @@ func (ms *matchState) captureToClose() int {
 	return -1
 }
 
-// matchBalance %bxy:匹配 x..y 平衡串。
+// matchBalance handles %bxy: match a balanced string x..y.
 func (ms *matchState) matchBalance(s, p int) (int, error) {
 	if p+1 >= len(ms.pat) {
 		return -1, fmt.Errorf("missing arguments to '%%b'")
@@ -394,9 +402,9 @@ func (ms *matchState) matchBalance(s, p int) (int, error) {
 	return -1, nil
 }
 
-// matchCapture %1-%9:反向引用已闭合捕获。
+// matchCapture handles %1-%9: back reference to a closed capture.
 //
-// 位置捕获(len=capPosition)不可被反向引用(5.1 报 invalid capture)。
+// A position capture (len=capPosition) cannot be back-referenced (5.1 reports invalid capture).
 func (ms *matchState) matchCapture(s, p, l int) (int, error) {
 	if l >= ms.level || ms.captures[l].len < 0 {
 		return -1, fmt.Errorf("invalid capture index %%%d", l+1)
@@ -421,11 +429,12 @@ func bytesEqual(a, b []byte) bool {
 	return true
 }
 
-// patternFind 在 src[init:] 中找 pat 的首个匹配。
-// 返回 (start, end, captures, found):start/end 是 0-based 字节区间 [start, end)。
+// patternFind finds the first match of pat in src[init:].
+// Returns (start, end, captures, found): start/end is the 0-based byte range [start, end).
 //
-// 回溯预算(maxMatchSteps)横跨全部起点共享:逐起点重试不重置 steps,
-// 保证单次 find 总耗时有界。
+// The backtracking budget (maxMatchSteps) is shared across all start positions:
+// retrying from each start does not reset steps, guaranteeing a single find has
+// bounded total cost.
 func patternFind(src, pat []byte, init int) (int, int, []capResult, bool, error) {
 	anchored := len(pat) > 0 && pat[0] == '^'
 	p := 0
@@ -454,16 +463,16 @@ func patternFind(src, pat []byte, init int) (int, int, []capResult, bool, error)
 	}
 }
 
-// capResult 是一个捕获的物化结果。
+// capResult is the materialized result of one capture.
 type capResult struct {
-	pos   bool // 位置捕获(值 = init+1,Lua 1-based)
+	pos   bool // position capture (value = init+1, Lua 1-based)
 	start int
 	len   int
 }
 
 func collectCaptures(ms *matchState, s, e int) ([]capResult, error) {
 	if ms.level == 0 {
-		// 无显式捕获:整个匹配作为捕获 0(由调用方决定如何呈现)
+		// no explicit captures: the whole match acts as capture 0 (the caller decides how to present it)
 		return nil, nil
 	}
 	out := make([]capResult, ms.level)
@@ -473,8 +482,9 @@ func collectCaptures(ms *matchState, s, e int) ([]capResult, error) {
 		case capPosition:
 			out[i] = capResult{pos: true, start: c.init}
 		case capUnfinished:
-			// `"(."`:匹配成功但捕获未闭合(官方 push_onecapture 报此错;
-			// len=-1 物化切片会越界 panic)
+			// `"(."`: match succeeded but the capture is unclosed (official
+			// push_onecapture reports this error; materializing a slice with
+			// len=-1 would panic on out-of-range)
 			return nil, fmt.Errorf("unfinished capture")
 		default:
 			out[i] = capResult{start: c.init, len: c.len}

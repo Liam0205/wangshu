@@ -1,7 +1,8 @@
-// GC 透明性 fuzz(12 §5):同一脚本在"正常 GC"与"高频压力 GC(每个
-// safepoint 强制 Collect)"两种模式下输出必须 byte-equal。
+// GC transparency fuzz (12 §5): the same script must produce byte-equal output under
+// two modes — "normal GC" and "high-pressure stress GC (force Collect at every safepoint)".
 //
-// 差异 = GC 漏根/早回收/搬迁破坏活跃对象——这是 GC 正确性的主防线。
+// A difference = GC missing a root / early reclaim / relocation corrupting a live object —
+// this is the primary line of defense for GC correctness.
 package difftest
 
 import (
@@ -13,7 +14,7 @@ import (
 	"github.com/Liam0205/wangshu"
 )
 
-// runWithStress 跑脚本,stress 控制 GC 压力模式。返回 (output, runError)。
+// runWithStress runs the script; stress controls the GC pressure mode. Returns (output, runError).
 func runWithStress(t *testing.T, src string, stress bool) (string, error) {
 	t.Helper()
 	prog, err := wangshu.Compile([]byte(src), "gcstress")
@@ -33,7 +34,7 @@ func runWithStress(t *testing.T, src string, stress bool) (string, error) {
 	return strings.Join(parts, "\t"), nil
 }
 
-// TestGCStress_SeedCorpus 对 seed corpus 全量做双模式对照。
+// TestGCStress_SeedCorpus runs the dual-mode comparison over the entire seed corpus.
 func TestGCStress_SeedCorpus(t *testing.T) {
 	for _, c := range seedCorpus {
 		t.Run(c.name, func(t *testing.T) {
@@ -55,9 +56,9 @@ func TestGCStress_SeedCorpus(t *testing.T) {
 	}
 }
 
-// TestGCStress_RandomScripts 对随机生成脚本做双模式对照(默认 200 种子;
-// nightly 经 WANGSHU_GCSTRESS_N 放大;与 oracle 对拍的种子共享 generator,
-// 这里只对照自身两模式)。
+// TestGCStress_RandomScripts runs the dual-mode comparison over randomly generated scripts
+// (200 seeds by default; scaled up in nightly via WANGSHU_GCSTRESS_N; it shares the generator
+// with the seeds used for the oracle differential test, but here it only compares its own two modes).
 func TestGCStress_RandomScripts(t *testing.T) {
 	nScripts := int64(200)
 	if v := os.Getenv("WANGSHU_GCSTRESS_N"); v != "" {
@@ -83,7 +84,7 @@ func TestGCStress_RandomScripts(t *testing.T) {
 	}
 }
 
-// TestGCStress_AllocHeavy 高分配密度定向脚本(表/闭包/字符串高频构造)。
+// TestGCStress_AllocHeavy runs allocation-dense targeted scripts (frequent construction of tables/closures/strings).
 func TestGCStress_AllocHeavy(t *testing.T) {
 	cases := []diffCase{
 		{"table_churn", `
@@ -132,9 +133,9 @@ for n = 1, 10 do
   out = out + v
 end
 return out`},
-		// freelist UAF 回归两例(随机 fuzz 撞出后定值固化):
-		// ① 协程 churn 后 setmetatable——top 之上残值复活 + SETLIST 多值窗
-		//    top 未恢复曾让 __index 表被误回收(压力模式 nil);
+		// Two freelist UAF regression cases (fixed after random fuzz hit them):
+		// (1) setmetatable after coroutine churn — residual values above top resurrect + the SETLIST multi-value window
+		//     failing to restore top once caused the __index table to be wrongly reclaimed (nil under stress mode);
 		{"uaf_coroutine_then_meta", `
 local cov = coroutine.create(function(z)
   for i = 1, 4 do z = coroutine.yield(z + i) end
@@ -154,7 +155,7 @@ local base = { v = 807 }
 local probe1 = base.v
 local tv = setmetatable({}, { __index = base })
 return v0, tostring(probe1), tostring(tv.v)`},
-		// ② 表构造含 host 调用(SETLIST B=0 消费多值窗)后 setmetatable。
+		// (2) setmetatable after a table constructor containing a host call (SETLIST B=0 consuming the multi-value window).
 		{"uaf_setlist_then_meta", `
 local v1 = { 650, math.floor(math.max(#"abc", #"42")) }
 v1[#v1 + 1] = 34.6561

@@ -1,14 +1,16 @@
-// gibbous trampoline + HostState 实装(VS0-d / PW2-d)。
+// gibbous trampoline + HostState implementation (VS0-d / PW2-d).
 //
-// crescent ↔ gibbous(P3 wasm)跨层桥(docs/design/p3-wasm-tier/04-trampoline.md):
-//   - enterGibbous:crescent doCall 检测到 Proto 已升 gibbous 时,经 bridge
-//     的 GibbousCode.Run 跳进 wazero 执行(§2.2)。trampoline 逻辑住 crescent
-//     全 build,经 bridge.GibbousCode 接口调 Run——不 import p3-build-only 的
-//     gibbous 包(P3/P4 共用同一套 trampoline,§0.4)。
-//   - HostState 方法:gibbous wasm 的 imported helper(h_getupval/h_setupval/
-//     h_return/h_safepoint)回调入口(§3)。方法签名是原始类型(int32/uint64),
-//     住全 build;p3 build 的 gibbous.NewCompiler 接 *State 作 HostState 注入
-//     (binding 在 wangshu_p3 注入文件做)。
+// crescent <-> gibbous (P3 wasm) cross-tier bridge (docs/design/p3-wasm-tier/04-trampoline.md):
+//   - enterGibbous: when crescent doCall detects a Proto has been promoted to
+//     gibbous, it jumps into wazero execution via the bridge's GibbousCode.Run
+//     (§2.2). The trampoline logic lives in crescent across all builds and
+//     calls Run through the bridge.GibbousCode interface — it does not import
+//     the p3-build-only gibbous package (P3/P4 share the same trampoline, §0.4).
+//   - HostState methods: callback entry points for gibbous wasm's imported
+//     helpers (h_getupval/h_setupval/h_return/h_safepoint) (§3). The method
+//     signatures use primitive types (int32/uint64) and live across all builds;
+//     the p3 build's gibbous.NewCompiler takes *State as the injected HostState
+//     (binding is done in the wangshu_p3 injection file).
 package crescent
 
 import (
@@ -20,36 +22,45 @@ import (
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
-// enterGibbous 是 crescent → gibbous 升层入口(04 §2.2)。
+// enterGibbous is the crescent -> gibbous tier-up entry (04 §2.2).
 //
-// 调用方:doCall 的 gibbous 分支(仅 th==mainTh,§5 线程级 tier 规则)。
-// 前置:形参已搬到 funcIdx+1..(与 host/Lua 调用同款,doCall 已备好)。
+// Caller: doCall's gibbous branch (only th==mainTh, §5 thread-level tier rule).
+// Precondition: arguments are already moved to funcIdx+1.. (same as host/Lua
+// calls; doCall has prepared them).
 //
-// 三步走:① enterLuaFrame 压帧(复用解释器备栈/vararg 逻辑,标 gibbous=true)
-// ② 算 base 字节偏移(值栈段基址 + 帧 base) ③ code.Run 进 wazero。
-// 返回值回填 + 弹帧由 gibbous RETURN 经 h_return(DoReturn)在 Run 内完成,
-// 故本函数返回后栈状态等同解释器跑完该帧——doCall 返回 (nil, nil),execute
-// 主循环 reload ci=currentCI(与 host 调用路径同款,call.go doCall)。
+// Three steps: (1) enterLuaFrame pushes the frame (reuses the interpreter's
+// stack-reserve/vararg logic, marks gibbous=true) (2) compute the base byte
+// offset (value-stack segment base + frame base) (3) code.Run enters wazero.
+// Result write-back + frame pop are done by gibbous RETURN via h_return
+// (DoReturn) inside Run, so after this function returns the stack state is
+// identical to the interpreter having run that frame — doCall returns
+// (nil, nil), and the execute main loop reloads ci=currentCI (same as the host
+// call path, call.go doCall).
 func (st *State) enterGibbous(th *thread, code bridge.GibbousCode, funcIdx, nargs, nresults int) *LuaError {
 	if e := st.enterLuaFrame(th, funcIdx, nargs, nresults, false); e != nil {
 		return e
 	}
 	ci := st.gibCI(th)
-	ci.SetGibbous(true) // bit50 callStatus_gibbous(04 §1.2):本帧走 Wasm 路径
-	th.reMirrorTop()    // PW10 R2b-1:cold 字段(gibbous)变更后重镜像 ci 段
+	ci.SetGibbous(true) // bit50 callStatus_gibbous (04 §1.2): this frame takes the Wasm path
+	th.reMirrorTop()    // PW10 R2b-1: re-mirror the ci segment after a cold field (gibbous) change
 
-	// base 字节偏移:R0 在共见 linear memory 的字节地址 =
-	//   (值栈段字偏移 stackBaseW + 帧 base 槽) * 8(每槽 8 字节 NaN-box u64)。
-	// 这是对 04 §2.2 baseBytes 的精确化:栈段非零起始,基准 = 段基址 + 帧偏移。
+	// base byte offset: R0's byte address in the shared linear memory =
+	//   (value-stack segment word offset stackBaseW + frame base slot) * 8
+	//   (each slot is an 8-byte NaN-box u64).
+	// This refines 04 §2.2's baseBytes: the stack segment has a non-zero start,
+	// so the base = segment base + frame offset.
 	baseByte := (th.stackBaseW + uint32(ci.base)) * 8
 
 	status := code.Run(st.gibbousStack(), baseByte)
-	// 段为权威反向同步(PW10 零跨界 Stage 1b):Wasm 执行期可能 increment/decrement
-	// ciDepth 字 + 写段帧(Stage 2/3),此处以段为准重载 th.ciDepth/th.cur。Stage 1b
-	// 无 Wasm 写,字恒等 ciDepth → 验证性 no-op。
+	// The segment is the authoritative reverse-sync source (PW10 zero-cross
+	// Stage 1b): Wasm execution may increment/decrement the ciDepth word + write
+	// segment frames (Stage 2/3), so here we reload th.ciDepth/th.cur from the
+	// segment as the source of truth. In Stage 1b there is no Wasm write, so the
+	// word stays equal to ciDepth -> a verifying no-op.
 	th.syncCurFromSeg()
 	if status != 0 {
-		// ERR:DoReturn/h_raise 已置 pendingErr,或 wazero 内部错误(PendingErr)。
+		// ERR: DoReturn/h_raise has already set pendingErr, or a wazero-internal
+		// error (PendingErr).
 		if st.gibbousPendingErr == nil {
 			if e := code.PendingErr(); e != nil {
 				st.gibbousPendingErr = &LuaError{Msg: "gibbous: " + e.Error()}
@@ -59,18 +70,21 @@ func (st *State) enterGibbous(th *thread, code bridge.GibbousCode, funcIdx, narg
 		}
 		e := st.gibbousPendingErr
 		st.gibbousPendingErr = nil
-		// 弹本帧 CallInfo(若 DoReturn 未弹——ERR 路径不经 RETURN)。
+		// Pop this frame's CallInfo (if DoReturn did not — the ERR path does not
+		// go through RETURN).
 		if th.ciDepth > 0 && currentCI(th).Gibbous() {
 			st.popCallInfo(th)
 		}
 		return e
 	}
-	// OK:返回值已由 h_return(DoReturn)回填 funcIdx 起 + 弹帧。
+	// OK: the result has been written back to funcIdx.. and the frame popped by
+	// h_return (DoReturn).
 	return nil
 }
 
-// gibbousStack 返回复用的跨层栈缓冲(CallWithStack 零分配路径,04 §2.2 step3
-// 注:PW0 spike 实测 14.8ns)。len≥1:stack[0]=base 入参,返回后 stack[0]=status。
+// gibbousStack returns the reused cross-tier stack buffer (CallWithStack
+// zero-alloc path, 04 §2.2 step3 note: PW0 spike measured 14.8ns). len>=1:
+// stack[0]=base input arg, and on return stack[0]=status.
 func (st *State) gibbousStack() []uint64 {
 	if st.gibStack == nil {
 		st.gibStack = make([]uint64, 1)
@@ -78,53 +92,64 @@ func (st *State) gibbousStack() []uint64 {
 	return st.gibStack
 }
 
-// --- HostState 实装(gibbous imported helper 回调,04 §3)---
+// --- HostState implementation (gibbous imported-helper callbacks, 04 §3) ---
 //
-// 方法签名匹配 gibbous/wasm 的 HostState 接口(原始类型);p3 build 注入
-// *State 作 HostState。所有方法以 base(本帧 R0 字节偏移)或 runningThread
-// 当前帧为坐标——gibbous 帧与解释器帧共享同一值栈(03-memory-model)。
+// The method signatures match the gibbous/wasm HostState interface (primitive
+// types); the p3 build injects *State as the HostState. All methods use base
+// (this frame's R0 byte offset) or the runningThread's current frame as
+// coordinates — gibbous frames and interpreter frames share the same value
+// stack (03-memory-model).
 
-// gibCI 取 gibbous 边界的当前帧(PW10 零跨界 ③b)。先 syncCurFromSeg 以**段为准**
-// 反向同步——Wasm RETURN 快路径(emitReturnFast)在 wasm 执行期减段 ciDepth 字 +
-// 拆帧、全程不回 Go,故 Go 的 th.cur/th.ciDepth 被冻结而段是活的。所有 HostState
-// helper 入口经此取 ci,确保 Wasm 改段后 Go 侧读到最新帧(非陈旧的已死帧 → 寄存器
-// 寻址错位腐蚀,Option A 风险 #1)。syncCurFromSeg 幂等廉价(字==Go 时 no-op),
-// 慢路径 helper 本就已跨界,开销可忽略。
+// gibCI gets the current frame at the gibbous boundary (PW10 zero-cross (3)b).
+// It first runs syncCurFromSeg to reverse-sync with the **segment as the source
+// of truth** — the Wasm RETURN fast path (emitReturnFast) decrements the ciDepth
+// word + tears down the frame during wasm execution, never returning to Go, so
+// Go's th.cur/th.ciDepth are frozen while the segment is live. All HostState
+// helper entries get ci through here, ensuring that after Wasm modifies the
+// segment the Go side reads the latest frame (not a stale dead frame ->
+// register-addressing misalignment corruption, Option A risk #1). syncCurFromSeg
+// is idempotent and cheap (a no-op when word==Go), and the slow-path helper has
+// already crossed the tier boundary anyway, so the cost is negligible.
 func (st *State) gibCI(th *thread) *callInfo {
 	th.syncCurFromSeg()
 	return &th.cur
 }
 
-// SetReg 直接写当前帧的 R(idx) 槽位为 val(NaN-box u64,gibbous-jit P4 PJ7
-// 简化形态专用)。
+// SetReg writes val directly into the current frame's R(idx) slot (NaN-box u64;
+// dedicated to the gibbous-jit P4 PJ7 simplified form).
 //
-// **依赖解环**(P4HostState 接口,jit/host.go):p4Code.Run 在 mmap 段执行后,
-// 需要把 RAX(NaN-box 值)写到 R(retA) 槽位(arena 值栈本体)——不经 P3
-// CallWithStack 的 1 槽 buffer 协议(P3 stack 协议与 P4 不兼容)。
+// **Dependency untangling** (P4HostState interface, jit/host.go): after
+// p4Code.Run executes in the mmap segment, it needs to write RAX (a NaN-box
+// value) into the R(retA) slot (the arena value-stack proper) — bypassing the
+// P3 CallWithStack 1-slot buffer protocol (the P3 stack protocol is
+// incompatible with P4).
 //
-// 参数:
-//   - idx:寄存器号(R(idx),= ci.base + idx 即 thread 槽位下标)
-//   - val:NaN-box u64 值
+// Parameters:
+//   - idx: register number (R(idx), = ci.base + idx, i.e. the thread slot index)
+//   - val: NaN-box u64 value
 //
-// 实装:经 ci.base + idx 算槽位,直接 setSlot 写入。本方法语义同
-// `execute.go::SETREG`-类操作(arena 值栈直写,无 GC 屏障——因 NaN-box u64
-// 写入是原子单字)。
+// Implementation: computes the slot via ci.base + idx and writes directly with
+// setSlot. This method's semantics match `execute.go::SETREG`-class operations
+// (direct arena value-stack write, no GC barrier — since a NaN-box u64 write is
+// an atomic single word).
 func (st *State) SetReg(idx int32, val uint64) {
 	th := st.runningThread
 	ci := st.gibCI(th)
 	th.setSlot(ci.base+int(idx), value.Value(val))
 }
 
-// GetReg 读取当前帧 R(idx)(P4HostState 接口,与 SetReg 对偶)。
+// GetReg reads the current frame's R(idx) (P4HostState interface, dual of
+// SetReg).
 func (st *State) GetReg(idx int32) uint64 {
 	th := st.runningThread
 	ci := st.gibCI(th)
 	return uint64(th.slot(ci.base + int(idx)))
 }
 
-// SetUpvalFromReg 把 R(a) 写入当前 closure 的 upvalue b(execute.go SETUPVAL
-// 段同款,P4HostState 专用「读 reg + 写 upvalue」原子 helper,避免引入
-// 通用 GetReg+SetUpval 的两 round-trip)。
+// SetUpvalFromReg writes R(a) into the current closure's upvalue b (same as the
+// execute.go SETUPVAL section; a P4HostState-dedicated "read reg + write
+// upvalue" atomic helper that avoids introducing the two round-trips of a
+// generic GetReg+SetUpval).
 func (st *State) SetUpvalFromReg(base int32, a int32, b int32) {
 	th := st.runningThread
 	ci := st.gibCI(th)
@@ -132,13 +157,15 @@ func (st *State) SetUpvalFromReg(base int32, a int32, b int32) {
 	st.upvalSet(th, uv, reg(th, ci, int(a)))
 }
 
-// ArenaBaseAddr 返回 arena `[]byte` 起点的 uintptr(承 05 §3.3 P4HostState
-// 接口)。PJ2 完整投机模板预备——mmap 段经 r15+offset 读本字段后字节级
-// 寻址值栈槽。当前 PJ7 简化形态不调用。
+// ArenaBaseAddr returns the uintptr of the arena `[]byte`'s start (per 05 §3.3
+// P4HostState interface). Prepared for the PJ2 full speculative template — the
+// mmap segment reads this field via r15+offset and then byte-addresses value
+// stack slots. The current PJ7 simplified form does not call it.
 //
-// **arena 重定位**:Words() 在 grow 时返新切片,本字段返当前 Words 起点。
-// 调用方(jit.Compile)在 Run 入口现算,不缓存(承 05 §5 arena base 重载
-// 协议——arena 视图别名 grow 雷区,见 [[feedback-arena-view-aliasing]])。
+// **arena relocation**: Words() returns a new slice on grow, and this field
+// returns the current Words start. The caller (jit.Compile) computes it live at
+// the Run entry and does not cache it (per 05 §5 arena base reload protocol —
+// the arena-view aliasing grow hazard, see [[feedback-arena-view-aliasing]]).
 func (st *State) ArenaBaseAddr() uintptr {
 	words := st.arena.Words()
 	if len(words) == 0 {
@@ -147,12 +174,13 @@ func (st *State) ArenaBaseAddr() uintptr {
 	return uintptr(unsafe.Pointer(&words[0]))
 }
 
-// ValueStackBaseAddr 返回当前帧 R0 的字节地址(承 05 §3.3 + 06 §4.1
-// rbx = valueStackBase)。
+// ValueStackBaseAddr returns the byte address of the current frame's R0 (per 05
+// §3.3 + 06 §4.1 rbx = valueStackBase).
 //
-// 参数 base 是 enterGibbous 算的字节偏移(`(stackBaseW + ci.base) * 8`),
-// 本函数返 arena.Words 起点 uintptr + base。**arena grow 雷区**:同
-// ArenaBaseAddr,需 Run 入口现算不缓存。
+// The base parameter is the byte offset computed by enterGibbous
+// (`(stackBaseW + ci.base) * 8`), and this function returns the arena.Words
+// start uintptr + base. **arena grow hazard**: same as ArenaBaseAddr, must be
+// computed live at the Run entry, not cached.
 func (st *State) ValueStackBaseAddr(base int32) uintptr {
 	words := st.arena.Words()
 	if len(words) == 0 {
@@ -161,18 +189,20 @@ func (st *State) ValueStackBaseAddr(base int32) uintptr {
 	return uintptr(unsafe.Pointer(&words[0])) + uintptr(base)
 }
 
-// CIDepthHostAddr 返回 thread.ciDepth 镜像字的 host 字节地址(承
-// docs/design/p4-method-jit/implementation-progress.md §9.20 Option B
-// Spike 1 + P4HostState 接口)。
+// CIDepthHostAddr returns the host byte address of the thread.ciDepth mirror
+// word (per docs/design/p4-method-jit/implementation-progress.md §9.20 Option B
+// Spike 1 + P4HostState interface).
 //
-// **复用 P3 PW10 Stage 1a 镜像字**(st.ciDepthRef):同一 arena 镜像字,
-// crescent 端经 thread.setCIDepth 写入(`a.SetWordAt(st.ciDepthRef, ...)`),
-// P4 mmap 段经本字段返回的 host addr 字节级 inc/dec(enterLuaFrame +
-// popCallInfo 字节级 inline)。
+// **Reuses the P3 PW10 Stage 1a mirror word** (st.ciDepthRef): the same arena
+// mirror word, written on the crescent side via thread.setCIDepth
+// (`a.SetWordAt(st.ciDepthRef, ...)`), and byte-level inc/dec'd by the P4 mmap
+// segment through the host addr this returns (enterLuaFrame + popCallInfo
+// byte-level inline).
 //
-// 返回 = arena.Words().bytePtr + (ciDepthRef bytes)。**arena 重定位**:
-// 同 ArenaBaseAddr,grow 出 JIT 世界后回来从 jitContext 重载;Spike 1
-// 阶段每次 Run 入口现算注入(承 05 §5 arena base 重载协议)。
+// Returns = arena.Words().bytePtr + (ciDepthRef bytes). **arena relocation**:
+// same as ArenaBaseAddr, reloaded from jitContext on returning to the JIT world
+// after a grow; in the Spike 1 phase it is computed live and injected at each
+// Run entry (per 05 §5 arena base reload protocol).
 func (st *State) CIDepthHostAddr() uintptr {
 	words := st.arena.Words()
 	if len(words) == 0 {
@@ -181,13 +211,14 @@ func (st *State) CIDepthHostAddr() uintptr {
 	return uintptr(unsafe.Pointer(&words[0])) + uintptr(st.ciDepthRef)
 }
 
-// CISegBaseHostAddr 返回 CI 段当前字节基址镜像字的 host 字节地址(承 §9.20
-// Option B Spike 1)。
+// CISegBaseHostAddr returns the host byte address of the CI segment's current
+// byte-base mirror word (per §9.20 Option B Spike 1).
 //
-// **复用 P3 PW10 Stage 2 镜像字**(st.ciSegBaseRef):CI 段可重定位
-// (growCISeg / newThread 更新 ciBaseW),syncCISegBase 把 ciBaseW*8 镜像
-// 到此 arena 字。P4 mmap 段经本字段返回 host addr 解引出当前 CI 段基址,
-// 然后算 CallInfo[depth] 帧地址(基址 + depth*40)。
+// **Reuses the P3 PW10 Stage 2 mirror word** (st.ciSegBaseRef): the CI segment
+// is relocatable (growCISeg / newThread update ciBaseW), and syncCISegBase
+// mirrors ciBaseW*8 into this arena word. The P4 mmap segment dereferences the
+// host addr this returns to get the current CI segment base, then computes the
+// CallInfo[depth] frame address (base + depth*40).
 func (st *State) CISegBaseHostAddr() uintptr {
 	words := st.arena.Words()
 	if len(words) == 0 {
@@ -196,11 +227,12 @@ func (st *State) CISegBaseHostAddr() uintptr {
 	return uintptr(unsafe.Pointer(&words[0])) + uintptr(st.ciSegBaseRef)
 }
 
-// TopHostAddr 返回 thread.top 镜像字的 host 字节地址(承 §9.20 Option B
-// Spike 1)。
+// TopHostAddr returns the host byte address of the thread.top mirror word (per
+// §9.20 Option B Spike 1).
 //
-// **复用 P3 PW10 Stage 1a 镜像字**(st.topRef):top 是栈槽索引,
-// enterLuaFrame 设 callee 帧顶时 P4 mmap 段写入(top = base + MaxStack)。
+// **Reuses the P3 PW10 Stage 1a mirror word** (st.topRef): top is a stack slot
+// index, written by the P4 mmap segment when enterLuaFrame sets the callee
+// frame top (top = base + MaxStack).
 func (st *State) TopHostAddr() uintptr {
 	words := st.arena.Words()
 	if len(words) == 0 {
@@ -213,7 +245,8 @@ func (st *State) TopHostAddr() uintptr {
 // which is wangshu_p4-tagged; keeping it out of this untagged file avoids
 // pulling jit into non-P4 builds).
 
-// GetUpval 取当前 closure 的 upvalue b(execute.go GETUPVAL 段同款)。
+// GetUpval gets the current closure's upvalue b (same as the execute.go
+// GETUPVAL section).
 func (st *State) GetUpval(base int32, b int32) uint64 {
 	th := st.runningThread
 	ci := st.gibCI(th)
@@ -221,7 +254,8 @@ func (st *State) GetUpval(base int32, b int32) uint64 {
 	return uint64(st.upvalGet(th, uv))
 }
 
-// SetUpval 写当前 closure 的 upvalue b(execute.go SETUPVAL 段同款)。
+// SetUpval writes the current closure's upvalue b (same as the execute.go
+// SETUPVAL section).
 func (st *State) SetUpval(base int32, b int32, val uint64) {
 	th := st.runningThread
 	ci := st.gibCI(th)
@@ -229,16 +263,18 @@ func (st *State) SetUpval(base int32, b int32, val uint64) {
 	st.upvalSet(th, uv, value.Value(val))
 }
 
-// DoReturn 处理 gibbous RETURN A B(h_return,04 §4.7)。
+// DoReturn handles gibbous RETURN A B (h_return, 04 §4.7).
 //
-// 镜像 doReturn 的非终止路径(call.go doReturn):moveResults 把 R(A..A+nret-1)
-// 回填 funcIdx 起、按调用者 nresults 多退少补、弹本帧 CallInfo、恢复 caller top。
-// gibbous 帧由 trampoline 经此弹出(对称于 enterLuaFrame 压入);返回 status=0。
+// It mirrors doReturn's non-terminal path (call.go doReturn): moveResults
+// writes R(A..A+nret-1) back starting at funcIdx, adjusts to the caller's
+// nresults (truncating or padding), pops this frame's CallInfo, and restores
+// the caller top. The gibbous frame is popped here by the trampoline
+// (symmetric to enterLuaFrame's push); returns status=0.
 func (st *State) DoReturn(base int32, pc int32, a int32, b int32) int32 {
 	th := st.runningThread
-	st.doReturnHits++ // PW10 零跨界 ③b 验证:快路径命中时不经此(计数停滞证快路径生效)
+	st.doReturnHits++ // PW10 zero-cross (3)b verification: the fast path does not go through here (a stalled count proves the fast path is active)
 	ci := st.gibCI(th)
-	ci.pc = pc // pc 物化(savedPC,04 §4.5;traceback 用)
+	ci.pc = pc // materialize pc (savedPC, 04 §4.5; used by traceback)
 	var nret int
 	if b == 0 {
 		nret = th.top - (ci.base + int(a))
@@ -266,9 +302,11 @@ func (st *State) DoReturn(base int32, pc int32, a int32, b int32) int32 {
 			th.setTop(dst + wantedN)
 		}
 	}
-	// PW10 R3:把弹帧后的 caller base 字节偏移写中转字,供 caller 的 call_indirect
-	// 返回后读取续算(caller 是 gibbous-via-call_indirect 时需要刷新 base——被调可能
-	// growStack 段重定位)。caller 非 gibbous 或走 baseline Run 路径时此写被忽略,无害。
+	// PW10 R3: write the post-pop caller base byte offset into the transfer
+	// word, for the caller's call_indirect to read and resume after returning
+	// (needed to refresh base when the caller is gibbous-via-call_indirect — the
+	// callee may have growStack-relocated the segment). Ignored (harmless) when
+	// the caller is non-gibbous or takes the baseline Run path.
 	if th.ciDepth > 0 {
 		caller := st.gibCI(th)
 		st.arena.SetWordAt(st.ciTransferRef, uint64((th.stackBaseW+uint32(caller.base))*8))
@@ -276,21 +314,31 @@ func (st *State) DoReturn(base int32, pc int32, a int32, b int32) int32 {
 	return 0 // OK
 }
 
-// raiseGibbous 锚定并暂存 gibbous 帧抛出的错误(PW10 R3c-fix)。
+// raiseGibbous anchors and stashes the error thrown by a gibbous frame (PW10
+// R3c-fix).
 //
-// **为何在出错点锚定**:gibbous 错误经 status 链冒泡时,沿途各帧(gibbous 被调
-// 由 PopErrFrame、gibbous caller 由其 enterGibbous launcher)会被弹出 → 等冒泡到
-// 顶层 executeFrom 时 currentCI 已不是出错帧,annotateError 读到错的帧 → 行号/
-// traceback 漂移(R3c 已知回归)。解法:在出错点(currentCI 仍是出错帧)立即
-// annotateError 锚定 "chunkname:line:" 前缀 + 物化 traceback,并标 annotated;
-// 顶层 executeFrom 见 annotated 跳过重标,行号不再受后续弹帧影响。
+// **Why anchor at the throw site**: as a gibbous error bubbles up the status
+// chain, the frames along the way (the gibbous callee via PopErrFrame, the
+// gibbous caller via its enterGibbous launcher) get popped -> by the time it
+// bubbles to the top-level executeFrom, currentCI is no longer the throwing
+// frame, so annotateError reads the wrong frame -> line-number/traceback drift
+// (R3c known regression). The fix: at the throw site (where currentCI is still
+// the throwing frame), immediately annotateError to anchor the
+// "chunkname:line:" prefix + materialize the traceback, and mark annotated; the
+// top-level executeFrom sees annotated and skips re-annotating, so the line
+// number is no longer affected by subsequent frame pops.
 //
-// 与解释器一致:解释器在顶层 executeFrom 标注时 currentCI 恰是出错帧(解释器不在
-// 错误路径弹帧),故标注行号 = 出错帧行号。gibbous 在出错点标注达成同一行号,使
-// gibbous 错误消息追平解释器(层间 byte-equal)。
+// Consistent with the interpreter: when the interpreter annotates at the
+// top-level executeFrom, currentCI is exactly the throwing frame (the
+// interpreter does not pop frames on the error path), so the annotated line =
+// throwing-frame line. gibbous anchors at the throw site to reach the same line
+// number, making gibbous error messages match the interpreter (byte-equal
+// across tiers).
 //
-// 幂等:e 已 annotated(来自更深 metamethod 子调用的解释器标注)时 annotateError
-// 直接返回,不重复加前缀。返回 1(status 链 ERR 码),调用点 `return st.raiseGibbous(e)`。
+// Idempotent: when e is already annotated (from a deeper metamethod
+// sub-call's interpreter annotation), annotateError returns directly without
+// re-adding the prefix. Returns 1 (the status-chain ERR code); call sites do
+// `return st.raiseGibbous(e)`.
 func (st *State) raiseGibbous(e *LuaError) int32 {
 	th := st.runningThread
 	if th.ciDepth > 0 {
@@ -303,17 +351,24 @@ func (st *State) raiseGibbous(e *LuaError) int32 {
 	return 1
 }
 
-// PopErrFrame 弹出 call_indirect 直调失败时遗留的 gibbous 被调帧(PW10 R3)。
+// PopErrFrame pops the leftover gibbous callee frame when a call_indirect
+// direct call fails (PW10 R3).
 //
-// gibbous 被调出错时自身 `return 1` 不弹帧(对称于 baseline:被调的 enterGibbous
-// launcher 才弹)。R3 call_indirect 直调免去了中间 launcher,故 caller wasm 在
-// call_indirect 返回非 0 时调本助手补弹——精确复刻 baseline enterGibbous 错误路径
-// 的「currentCI 是 gibbous 帧才弹」条件(gibbous_host.go enterGibbous ERR 分支),使
-// ciDepth/currentCI 轨迹逐帧一致。否则顶层 executeFrom 的 annotateError 读到错的
-// currentCI → 错误行号前缀变 → 破层间 byte-equal 差分(V1-V13)。
+// When a gibbous callee errors, its own `return 1` does not pop the frame
+// (symmetric to baseline: it is the callee's enterGibbous launcher that pops).
+// R3 call_indirect direct calls skip the intermediate launcher, so when
+// call_indirect returns non-zero the caller wasm calls this helper to pop —
+// precisely replicating the baseline enterGibbous error path's "pop only if
+// currentCI is a gibbous frame" condition (gibbous_host.go enterGibbous ERR
+// branch), keeping the ciDepth/currentCI trajectory frame-for-frame identical.
+// Otherwise the top-level executeFrom's annotateError reads the wrong currentCI
+// -> the error line-number prefix changes -> breaking the cross-tier byte-equal
+// diff (V1-V13).
 //
-// 被调出错却 currentCI 非 gibbous(被调经 fallback 同步路径跑 crescent 子帧、子帧
-// 出错遗留)时不弹——与 baseline enterGibbous 同条件(留给 protected 边界 truncateCI)。
+// When a callee errors but currentCI is not gibbous (the callee took the
+// fallback sync path running a crescent sub-frame, and that sub-frame errored
+// and was left behind), do not pop — same condition as baseline enterGibbous
+// (left to the protected boundary's truncateCI).
 func (st *State) PopErrFrame() {
 	th := st.runningThread
 	if th.ciDepth > 0 && st.gibCI(th).Gibbous() {
@@ -321,30 +376,40 @@ func (st *State) PopErrFrame() {
 	}
 }
 
-// loopFuelQuantum 是 budget/ctx armed 时 gibbous 回边 fuel 的重填额:每跑
-// 这么多回边跨层 h_safepoint 一次,把这一批计入 stepBudget。~143ns 的跨层
-// 成本摊到 quantum 次迭代上(64 → 每迭代约 2ns)。镜像 P4 HelperLoopFuel=32
-// 的取值意图(P3 跨层稍贵,取略大)。
+// loopFuelQuantum is the refill amount for gibbous back-edge fuel when a
+// budget/ctx is armed: every this-many back-edges cross the tier boundary into
+// h_safepoint once, charging this batch to stepBudget. The ~143ns cross-tier
+// cost is amortized over quantum iterations (64 -> about 2ns per iteration).
+// Mirrors the intent of P4's HelperLoopFuel=32 (P3 cross-tier is slightly more
+// expensive, so a slightly larger value).
 const loopFuelQuantum = 64
 
-// loopFuelUnlimited 是无 budget/ctx 时的重填额:一个大值使稳态循环几乎不
-// 跨层(镜像 P4 SegCallFuelUnlimited)。i32 存储,取值远小于 MaxInt32 留自减
-// 余量。约 10 亿次回边跨层一次,普通嵌入零感知。
+// loopFuelUnlimited is the refill amount when there is no budget/ctx: a large
+// value so a steady-state loop almost never crosses the tier boundary (mirrors
+// P4's SegCallFuelUnlimited). Stored as i32, well below MaxInt32 to leave
+// self-decrement headroom. About 1 billion back-edges per cross, so a plain
+// embedding never notices.
 const loopFuelUnlimited = 1 << 30
 
-// Safepoint 回边检查点(h_safepoint,04 §3.3):GC + 循环 step-budget 计费。
-// 返回 0 正常 / 1 表示 raise(budget 超额或 ctx 取消,与解释器 preempt 同语义)。
+// Safepoint is the back-edge checkpoint (h_safepoint, 04 §3.3): GC + loop
+// step-budget accounting. Returns 0 for normal / 1 for raise (budget exceeded
+// or ctx canceled, same semantics as the interpreter's preempt).
 //
-// gibbous 回边 inline 自减 loopBudget 字,归零(或 gcPending 置位)才跨层到
-// 这里。P4 的 host.LoopPreempt 对偶(issue #102 的 P3 版):全 inline 的循环
-// 体(纯算术 / 无 Lua 帧)没有别的抢占点,只在此处把消耗的 quantum 计入
-// stepBudget 并检查——否则死循环(for i=0,1/0 do X=0 end)升 P3 后永挂。
+// A gibbous back-edge inline-decrements the loopBudget word, and only crosses
+// the tier boundary here when it hits zero (or gcPending is set). Dual of P4's
+// host.LoopPreempt (the P3 version of issue #102): a fully inlined loop body
+// (pure arithmetic / no Lua frame) has no other preemption point, so it is only
+// here that the consumed quantum is charged to stepBudget and checked —
+// otherwise an infinite loop (for i=0,1/0 do X=0 end) would hang forever after
+// tier-up to P3.
 func (st *State) Safepoint(base int32, pc int32) int32 {
 	st.safepointCalls++
 	st.gc.MaybeCollect()
-	// 重填 loop fuel + 计费。budget/ctx armed 时用小额 quantum(周期性回到这里
-	// 检查),否则用大额(稳态零感知)。当前字值 = refill - spent;回边在字 <= 0
-	// 时才跨层,故 spent 约等于上次 refill。用「上次 refill - 当前值」精确计费。
+	// Refill loop fuel + charge. When a budget/ctx is armed, use a small quantum
+	// (periodically returning here to check); otherwise use a large amount
+	// (steady-state, unnoticed). The current word value = refill - spent; the
+	// back-edge only crosses when the word <= 0, so spent is roughly the last
+	// refill. Charge precisely using "last refill - current value".
 	cur := int64(int32(st.arena.WordAt(st.loopBudgetRef)))
 	if st.stepBudget > 0 || st.ctx.Load() != nil {
 		spent := int64(st.loopFuelRefill) - cur
@@ -369,32 +434,38 @@ func (st *State) Safepoint(base int32, pc int32) int32 {
 	return 0
 }
 
-// raiseGibbousAtPC 锚定错误行号(pc)后经 raiseGibbous 暂存,返回 1。回边超额
-// 的错误行落在回边指令 pc 上(与解释器 preempt 的行为口径一致)。
+// raiseGibbousAtPC anchors the error line number (pc), then stashes via
+// raiseGibbous and returns 1. A back-edge budget-exceeded error's line falls on
+// the back-edge instruction's pc (consistent with the interpreter's preempt
+// behavior).
 func (st *State) raiseGibbousAtPC(pc int32, e *LuaError) int32 {
 	if th := st.runningThread; th != nil && th.ciDepth > 0 {
-		st.gibCI(th).pc = pc + 1 // errWithName 读 ci.pc-1 == pc
+		st.gibCI(th).pc = pc + 1 // errWithName reads ci.pc-1 == pc
 	}
 	return st.raiseGibbous(e)
 }
 
-// SetSavedPC 写回当前帧 savedPC(pc 物化,04 §4.5)。
+// SetSavedPC writes back the current frame's savedPC (materialize pc, 04 §4.5).
 func (st *State) SetSavedPC(base int32, pc int32) {
 	st.gibCI(st.runningThread).pc = pc
 }
 
-// --- PW3 算术慢路径助手(快路径双 number 在 Wasm 内直发,失败回 Go)---
+// --- PW3 arithmetic slow-path helpers (fast path for two numbers is emitted
+// inline in Wasm; on failure it falls back to Go) ---
 //
-// 重建 bytecode.Instruction 复用解释器 doArith/doArithSlow/doConcat/LEN 逻辑,
-// 保证 gibbous 慢路径与 crescent 逐字节同构。helper 内经 gibCI 取的即 gibbous
-// 帧(enterGibbous 已压),寄存器寻址经 reg/setReg(已 VS0-c arena 化)。
+// These reconstruct a bytecode.Instruction to reuse the interpreter's
+// doArith/doArithSlow/doConcat/LEN logic, ensuring the gibbous slow path is
+// byte-for-byte isomorphic with crescent. Inside the helper, the ci obtained
+// via gibCI is the gibbous frame (enterGibbous already pushed it), and register
+// addressing goes through reg/setReg (already arena-ized in VS0-c).
 
-// Arith 算术慢路径(ADD/SUB/MUL/DIV/MOD/POW)。op 是 bytecode.OpCode 值;
-// 直接调 doArith(含快路径再判 + 慢路径 coercion/元方法),与解释器同构。
+// Arith is the arithmetic slow path (ADD/SUB/MUL/DIV/MOD/POW). op is the
+// bytecode.OpCode value; it calls doArith directly (which re-checks the fast
+// path + slow-path coercion/metamethods), isomorphic with the interpreter.
 func (st *State) Arith(base, pc, op, b, c, a int32) int32 {
 	th := st.runningThread
 	ci := st.gibCI(th)
-	ci.pc = pc + 1 // pc 物化:解释器执行该 op 时 ci.pc 已 ++,errWithName 的 ci.pc-1==pc(R3c-fix)
+	ci.pc = pc + 1 // materialize pc: when the interpreter executes this op ci.pc has already ++'d, so errWithName's ci.pc-1==pc (R3c-fix)
 	ins := bytecode.EncodeABC(bytecode.OpCode(op), int(a), int(b), int(c))
 	if e := st.doArith(th, ci, ins); e != nil {
 		return st.raiseGibbous(e)
@@ -402,12 +473,13 @@ func (st *State) Arith(base, pc, op, b, c, a int32) int32 {
 	return 0
 }
 
-// Unm UNM 慢路径(string coercion + __unm)。重建 UNM 指令复用 execute.go
-// UNM 段逻辑(此处直接重跑该段的慢路径分支)。
+// Unm is the UNM slow path (string coercion + __unm). It reconstructs the UNM
+// instruction to reuse the execute.go UNM section logic (here directly re-runs
+// that section's slow-path branch).
 func (st *State) Unm(base, pc, b, a int32) int32 {
 	th := st.runningThread
 	ci := st.gibCI(th)
-	ci.pc = pc + 1 // R3c-fix:errWithName 的 ci.pc-1==pc(失败 op 索引)
+	ci.pc = pc + 1 // R3c-fix: errWithName's ci.pc-1==pc (the failing op index)
 	bv := reg(th, ci, int(b))
 	if f, ok := st.toNumberCoerce(bv); ok {
 		setReg(th, ci, int(a), value.NumberValue(-f))
@@ -425,7 +497,8 @@ func (st *State) Unm(base, pc, b, a int32) int32 {
 	return 0
 }
 
-// Len LEN(string 长度 / table border / 异类报错;复用 execute.go LEN 段)。
+// Len handles LEN (string length / table border / error on other types; reuses
+// the execute.go LEN section).
 func (st *State) Len(base, pc, b, a int32) int32 {
 	th := st.runningThread
 	ci := st.gibCI(th)
@@ -445,7 +518,8 @@ func (st *State) Len(base, pc, b, a int32) int32 {
 	}
 }
 
-// Concat CONCAT(复用 execute.go doConcat 全逻辑 + safepoint)。
+// Concat handles CONCAT (reuses the full execute.go doConcat logic +
+// safepoint).
 func (st *State) Concat(base, pc, a, b, c int32) int32 {
 	th := st.runningThread
 	ci := st.gibCI(th)
@@ -458,8 +532,8 @@ func (st *State) Concat(base, pc, a, b, c int32) int32 {
 	return 0
 }
 
-// Compare LT/LE 慢路径(string 比较 / __lt/__le 元方法;复用 doCompare)。
-// 返回 packed:bit0=比较结果,bit1=错误标志。
+// Compare is the LT/LE slow path (string comparison / __lt/__le metamethods;
+// reuses doCompare). Returns packed: bit0=comparison result, bit1=error flag.
 func (st *State) Compare(base, pc, op, b, c int32) int32 {
 	th := st.runningThread
 	ci := st.gibCI(th)
@@ -468,7 +542,7 @@ func (st *State) Compare(base, pc, op, b, c int32) int32 {
 	res, e := st.doCompare(th, ci, ins)
 	if e != nil {
 		st.raiseGibbous(e)
-		return 2 // bit1 = error(raiseGibbous 已置 pendingErr + 锚定行号)
+		return 2 // bit1 = error (raiseGibbous has set pendingErr + anchored the line number)
 	}
 	if res {
 		return 1 // bit0 = true
@@ -476,8 +550,8 @@ func (st *State) Compare(base, pc, op, b, c int32) int32 {
 	return 0
 }
 
-// Eq EQ 的 __eq 元方法路径(raw 不等时;复用 doCompare EQ 分支)。
-// 返回 packed:bit0=结果,bit1=错误。
+// Eq handles EQ's __eq metamethod path (when raw not-equal; reuses the
+// doCompare EQ branch). Returns packed: bit0=result, bit1=error.
 func (st *State) Eq(base, pc, b, c int32) int32 {
 	th := st.runningThread
 	ci := st.gibCI(th)
@@ -494,8 +568,8 @@ func (st *State) Eq(base, pc, b, c int32) int32 {
 	return 0
 }
 
-// ForPrep FORPREP 三槽校验 + coercion + 预减(复用 execute.go FORPREP 段逻辑)。
-// 返回 status(0=OK / 1=ERR)。
+// ForPrep handles FORPREP three-slot validation + coercion + pre-decrement
+// (reuses the execute.go FORPREP section logic). Returns status (0=OK / 1=ERR).
 func (st *State) ForPrep(base, pc, a int32) int32 {
 	th := st.runningThread
 	ci := st.gibCI(th)
@@ -513,21 +587,25 @@ func (st *State) ForPrep(base, pc, a int32) int32 {
 	if !ok3 {
 		return st.raiseGibbous(errf("'for' step must be a number"))
 	}
-	// 预减 + 三槽规范化为 number(进入 FORLOOP 后快路径无须再校验类型)。
+	// Pre-decrement + normalize the three slots to numbers (after entering
+	// FORLOOP the fast path no longer needs to re-check types).
 	setReg(th, ci, ra, value.NumberValue(init-step))
 	setReg(th, ci, ra+1, value.NumberValue(limit))
 	setReg(th, ci, ra+2, value.NumberValue(step))
 	return 0
 }
 
-// --- PW5 表 IC 慢路径助手(快路径 inline 跳哈希,失效/复杂形态回 Go)---
+// --- PW5 table IC slow-path helpers (fast path inlines a hash probe; on
+// invalidation/complex forms it falls back to Go) ---
 //
-// pc 物化:gibbous 传 opcode 索引 pc;解释器执行该 opcode 时 ci.pc 已 ++(指向
-// 下一条),故设 ci.pc=pc+1 使 enhanceIndexErr 的 ci.pc-1 == pc(describeReg
-// 取本指令)。icGetTable/icSetTable 的 pc 参数 = IC slot 索引 = opcode 索引。
-// icGetTable 经 __index 元方法可能重入 execute(append cis)→ 返回后刷新 ci。
+// materialize pc: gibbous passes the opcode index pc; when the interpreter
+// executes this opcode ci.pc has already ++'d (pointing at the next one), so we
+// set ci.pc=pc+1 to make enhanceIndexErr's ci.pc-1 == pc (describeReg picks the
+// current instruction). icGetTable/icSetTable's pc parameter = IC slot index =
+// opcode index. icGetTable may re-enter execute via the __index metamethod
+// (appending cis) -> refresh ci after it returns.
 
-// GetTable 处理 GETTABLE A B C 慢路径(execute.go :101-112 同款)。
+// GetTable handles the GETTABLE A B C slow path (same as execute.go :101-112).
 func (st *State) GetTable(base, pc, a, b, c int32) int32 {
 	th := st.runningThread
 	ci := st.gibCI(th)
@@ -544,7 +622,8 @@ func (st *State) GetTable(base, pc, a, b, c int32) int32 {
 	return 0
 }
 
-// SetTable 处理 SETTABLE A B C 慢路径(execute.go :114-124 同款 + safepoint)。
+// SetTable handles the SETTABLE A B C slow path (same as execute.go :114-124 +
+// safepoint).
 func (st *State) SetTable(base, pc, a, b, c int32) int32 {
 	th := st.runningThread
 	ci := st.gibCI(th)
@@ -561,7 +640,7 @@ func (st *State) SetTable(base, pc, a, b, c int32) int32 {
 	return 0
 }
 
-// DoGetGlobal 处理 GETGLOBAL A Bx 慢路径(execute.go :78-88 同款)。
+// DoGetGlobal handles the GETGLOBAL A Bx slow path (same as execute.go :78-88).
 func (st *State) DoGetGlobal(base, pc, a, bx int32) int32 {
 	th := st.runningThread
 	ci := st.gibCI(th)
@@ -578,7 +657,8 @@ func (st *State) DoGetGlobal(base, pc, a, bx int32) int32 {
 	return 0
 }
 
-// DoSetGlobal 处理 SETGLOBAL A Bx 慢路径(execute.go :90-99 同款 + safepoint)。
+// DoSetGlobal handles the SETGLOBAL A Bx slow path (same as execute.go :90-99 +
+// safepoint).
 func (st *State) DoSetGlobal(base, pc, a, bx int32) int32 {
 	th := st.runningThread
 	ci := st.gibCI(th)
@@ -594,8 +674,10 @@ func (st *State) DoSetGlobal(base, pc, a, bx int32) int32 {
 	return 0
 }
 
-// Self 处理 SELF A B C(execute.go :134-144 同款)。助手内含 self 传递 R(A+1):=R(B),
-// 与 inline 快路径的 store 幂等(inline miss 时已 store,助手重做无副作用)。
+// Self handles SELF A B C (same as execute.go :134-144). The helper includes
+// the self-pass R(A+1):=R(B), which is idempotent with the inline fast path's
+// store (on an inline miss the store already happened, and the helper redoing
+// it has no side effect).
 func (st *State) Self(base, pc, a, b, c int32) int32 {
 	th := st.runningThread
 	ci := st.gibCI(th)
@@ -613,7 +695,8 @@ func (st *State) Self(base, pc, a, b, c int32) int32 {
 	return 0
 }
 
-// NewTable 处理 NEWTABLE A B C(execute.go :126-132 同款,分配+GC 全助手内)。
+// NewTable handles NEWTABLE A B C (same as execute.go :126-132; allocation + GC
+// all inside the helper).
 func (st *State) NewTable(base, pc, a, b, c int32) int32 {
 	th := st.runningThread
 	ci := st.gibCI(th)
@@ -626,9 +709,11 @@ func (st *State) NewTable(base, pc, a, b, c int32) int32 {
 	return 0
 }
 
-// SetList 处理 SETLIST A B C(execute.go :385-386 / doSetList 同款 + safepoint)。
-// doSetList 可能消费 C=0 的「下一指令为大批次号」→ 读 Proto.Code[ci.pc] 并 ci.pc++,
-// 故须先把 ci.pc 设成 opcode 之后(pc+1),与解释器取指后状态一致。
+// SetList handles SETLIST A B C (same as execute.go :385-386 / doSetList +
+// safepoint). doSetList may consume the C=0 "next instruction holds the large
+// batch number" -> reading Proto.Code[ci.pc] and ci.pc++, so we must first set
+// ci.pc to just past the opcode (pc+1), consistent with the interpreter's
+// post-fetch state.
 func (st *State) SetList(base, pc, a, b, c int32) int32 {
 	th := st.runningThread
 	ci := st.gibCI(th)
@@ -642,76 +727,95 @@ func (st *State) SetList(base, pc, a, b, c int32) int32 {
 	return 0
 }
 
-// GlobalsRaw 返回 globals 表的 NaN-box u64(编译期烧立即数;GETGLOBAL/SETGLOBAL
-// inline 快路径用)。globals 在 State 生命期内身份恒定不移动(arena 对象不迁移)。
+// GlobalsRaw returns the globals table's NaN-box u64 (burned as an immediate at
+// compile time; used by the GETGLOBAL/SETGLOBAL inline fast path). globals has a
+// constant identity that never moves during the State's lifetime (arena objects
+// do not relocate).
 func (st *State) GlobalsRaw() uint64 {
 	return uint64(value.MakeGC(value.TagTable, st.globals))
 }
 
-// GCPendingAddr 返回 gcPending 标志字的 linear memory 字节地址(P3 PW9)。
-// gibbous FORLOOP 回边 inline 读它(i32.load),非 0 才跨层调 h_safepoint。
+// GCPendingAddr returns the linear-memory byte address of the gcPending flag
+// word (P3 PW9). The gibbous FORLOOP back-edge inline-reads it (i32.load) and
+// only crosses the tier boundary to call h_safepoint when non-zero.
 func (st *State) GCPendingAddr() uint32 {
 	return uint32(st.gcPendingRef)
 }
 
-// LoopBudgetAddr 返回 loop-budget fuel 字的 linear memory 字节地址(P3 循环
-// step-budget 修复)。gibbous 回边 inline 自减它,归零才跨层 h_safepoint。
+// LoopBudgetAddr returns the linear-memory byte address of the loop-budget fuel
+// word (P3 loop step-budget fix). The gibbous back-edge inline-decrements it and
+// only crosses the tier boundary to h_safepoint when it hits zero.
 func (st *State) LoopBudgetAddr() uint32 {
 	return uint32(st.loopBudgetRef)
 }
 
-// CITransferAddr 返回 ci-transfer 中转字的 linear memory 字节地址(P3 PW10 R3)。
-// gibbous→gibbous call_indirect 直调经此字传被调/刷新后 base 字节偏移。
+// CITransferAddr returns the linear-memory byte address of the ci-transfer
+// relay word (P3 PW10 R3). A gibbous->gibbous call_indirect direct call passes
+// the callee/refreshed base byte offset through this word.
 func (st *State) CITransferAddr() uint32 {
 	return uint32(st.ciTransferRef)
 }
 
-// CIDepthAddr 返回 ci-depth 游标字的 linear memory 字节地址(P3 PW10 零跨界 Stage 1a)。
-// Wasm 侧帧建拆 increment/decrement 此 i32 字免回 Go 改 th.ciDepth。
+// CIDepthAddr returns the linear-memory byte address of the ci-depth cursor
+// word (P3 PW10 zero-cross Stage 1a). The Wasm side increments/decrements this
+// i32 word during frame build/teardown, avoiding a return to Go to modify
+// th.ciDepth.
 func (st *State) CIDepthAddr() uint32 {
 	return uint32(st.ciDepthRef)
 }
 
-// CISegBaseAddr 返回 ci-seg-base 字的 linear memory 字节地址(P3 PW10 零跨界 Stage 2)。
-// 此字内含 CI 段当前字节基址(可重定位);Wasm 侧帧建拆读它现算帧地址(段基址 +
-// depth*ciWords*8 + word*8)。
+// CISegBaseAddr returns the linear-memory byte address of the ci-seg-base word
+// (P3 PW10 zero-cross Stage 2). This word holds the CI segment's current byte
+// base (relocatable); the Wasm-side frame build/teardown reads it to compute
+// the frame address live (segment base + depth*ciWords*8 + word*8).
 func (st *State) CISegBaseAddr() uint32 {
 	return uint32(st.ciSegBaseRef)
 }
 
-// OpenGuardAddr 返回 open-upvalue 守卫字的 linear memory 字节地址(P3 PW10 零跨界
-// Stage 2)。字值 = maxOpenIdx+1(有开放 upvalue)/ 0(无);Wasm RETURN 快路径守卫
-// frameBase ≥ 此值 ⟺ 本帧无须关闭的开放 upvalue(closeUpvals no-op)。
+// OpenGuardAddr returns the linear-memory byte address of the open-upvalue guard
+// word (P3 PW10 zero-cross Stage 2). Word value = maxOpenIdx+1 (has open
+// upvalues) / 0 (none); the Wasm RETURN fast-path guard frameBase >= this value
+// <=> this frame has no open upvalues to close (closeUpvals is a no-op).
 func (st *State) OpenGuardAddr() uint32 {
 	return uint32(st.openGuardRef)
 }
 
-// TopAddr 返回 top 镜像字的 linear memory 字节地址(P3 PW10 零跨界 ①)。字值 =
-// th.top(槽索引);Wasm 建帧设 callee 帧顶 / caller 自恢复 top 时写它,GC 栈根
-// 扫描读它定 [0,top) 上界。槽索引坐标(grow 安全)。State 生命期内地址恒定。
+// TopAddr returns the linear-memory byte address of the top mirror word (P3
+// PW10 zero-cross (1)). Word value = th.top (slot index); the Wasm frame build
+// writes it when setting the callee frame top / the caller restores top itself,
+// and the GC stack-root scan reads it to bound [0,top). A slot-index coordinate
+// (grow-safe). The address is constant during the State's lifetime.
 func (st *State) TopAddr() uint32 {
 	return uint32(st.topRef)
 }
 
-// ProtoCacheBaseAddr 返回 proto 字段缓存段基址镜像字的字节地址(PW10 零跨界
-// 基建-b)。Wasm ④ emitCall 守卫快路径现读此基址 + protoID*8 取 callee Proto 的
-// MaxStack/NumParams/IsVararg/NeedsArg 缓存,免 Go map 查 Proto 字段。State 生命期
-// 内此 mirror 字地址恒定;段本身可重定位(LoadProgram 重分配)经此字现读。
+// ProtoCacheBaseAddr returns the byte address of the proto-field-cache segment
+// base mirror word (PW10 zero-cross infra-b). The Wasm (4) emitCall guard fast
+// path reads this base + protoID*8 live to get the callee Proto's
+// MaxStack/NumParams/IsVararg/NeedsArg cache, avoiding a Go map lookup of Proto
+// fields. This mirror word's address is constant during the State's lifetime;
+// the segment itself is relocatable (LoadProgram reallocates) and is read live
+// through this word.
 func (st *State) ProtoCacheBaseAddr() uint32 {
 	return uint32(st.protoCacheBaseRef)
 }
 
-// FastCallHitsAddr 返回 ④ emitCall 守卫快路径命中计数字的字节地址(PW10 零跨界
-// ④ 验证用)。Wasm 命中后 i64 ++;Go 测试读字合 indirectCalls 一起断言路径命中。
+// FastCallHitsAddr returns the byte address of the (4) emitCall guard fast-path
+// hit-count word (PW10 zero-cross (4) verification). On a Wasm hit it i64++'s;
+// the Go test reads the word together with indirectCalls to assert the path was
+// hit.
 func (st *State) FastCallHitsAddr() uint32 {
 	return uint32(st.fastCallHitsRef)
 }
 
-// --- PW7 闭包构造 + 作用域 upvalue 关闭(全经助手,复用解释器)---
+// --- PW7 closure construction + scope upvalue closing (all via helpers,
+// reusing the interpreter) ---
 
-// Closure 处理 CLOSURE A Bx(execute.go:394-397 同款)。makeClosure 读后随伪指令
-// (ci.pc 处的 MOVE/GETUPVAL)消化 upvalue 捕获——故须先把 ci.pc 设到 CLOSURE 之后
-// (pc+1),与解释器取指后状态一致。无需 base 刷新(不进嵌套帧、不 growStack)。
+// Closure handles CLOSURE A Bx (same as execute.go:394-397). After makeClosure
+// reads it, the following pseudo-instructions (MOVE/GETUPVAL at ci.pc) consume
+// the upvalue captures — so we must first set ci.pc to just past CLOSURE (pc+1),
+// consistent with the interpreter's post-fetch state. No base refresh needed
+// (does not enter a nested frame, does not growStack).
 func (st *State) Closure(base, pc, a, bx int32) int32 {
 	th := st.runningThread
 	ci := st.gibCI(th)
@@ -723,7 +827,8 @@ func (st *State) Closure(base, pc, a, bx int32) int32 {
 	return 0
 }
 
-// Close 处理 CLOSE A(execute.go:391-392 同款):关闭所有 ≥ base+A 的开放 upvalue。
+// Close handles CLOSE A (same as execute.go:391-392): closes all open upvalues
+// >= base+A.
 func (st *State) Close(base, pc, a int32) int32 {
 	th := st.runningThread
 	ci := st.gibCI(th)
@@ -731,14 +836,18 @@ func (st *State) Close(base, pc, a int32) int32 {
 	return 0
 }
 
-// TForLoop 处理 TFORLOOP A C(execute.go:355-383 同款):调迭代器 R(A)(R(A+1),R(A+2)),
-// 结果落 R(A+3..A+2+C)。首值非 nil → 控制变量 R(A+2):=首值,继续;首值 nil → 退出。
+// TForLoop handles TFORLOOP A C (same as execute.go:355-383): calls the
+// iterator R(A)(R(A+1),R(A+2)) and lands the results in R(A+3..A+2+C). First
+// value non-nil -> control variable R(A+2):=first value, continue; first value
+// nil -> exit.
 //
-// **base 刷新(PW4b 核心)**:迭代器调用经 callLuaFromHost 可能 growStack 使值栈段
-// 在 arena 重定位(stackBaseW 变),陈旧 base 失效 = UAF(同 PW6 h_call,见
-// design-claims-vs-codebase-physics §2)。返回 i64:
+// **base refresh (PW4b core)**: the iterator call via callLuaFromHost may
+// growStack, relocating the value-stack segment in the arena (stackBaseW
+// changes), making a stale base invalid = UAF (same as PW6 h_call, see
+// design-claims-vs-codebase-physics §2). Returns i64:
 //
-//	≥0 = 刷新后的本帧 base 字节偏移(继续循环)/ -1 = ERR / -2 = 退出(首值 nil)。
+//	>=0 = the refreshed base byte offset for this frame (continue the loop) /
+//	-1 = ERR / -2 = exit (first value nil).
 func (st *State) TForLoop(base, pc, a, c int32) int64 {
 	th := st.runningThread
 	ci := st.gibCI(th)
@@ -749,9 +858,9 @@ func (st *State) TForLoop(base, pc, a, c int32) int64 {
 	ctrl := reg(th, ci, ra+2)
 	results, e := st.callLuaFromHostNamed(th, iter, []value.Value{state, ctrl})
 	if e != nil {
-		// PUC getfuncname 认 OP_TFORLOOP 为命名调用站点(issue #133),
-		// pc 即本 TFORLOOP 指令下标;resolveArgError 在 raiseGibbous
-		// 锚定行号之前改写函数名。
+		// PUC getfuncname treats OP_TFORLOOP as a named call site (issue #133);
+		// pc is this TFORLOOP instruction's index; resolveArgError rewrites the
+		// function name before raiseGibbous anchors the line number.
 		st.raiseGibbous(st.resolveArgError(e, ci, pc, ra))
 		return -1
 	}
@@ -764,10 +873,10 @@ func (st *State) TForLoop(base, pc, a, c int32) int64 {
 		setReg(th, ci, ra+3+k, v)
 	}
 	if c >= 1 && len(results) >= 1 && results[0] != value.Nil {
-		setReg(th, ci, ra+2, results[0]) // 控制变量 = 首返回值,继续循环
+		setReg(th, ci, ra+2, results[0]) // control variable = first return value, continue the loop
 		return int64((th.stackBaseW + uint32(ci.base)) * 8)
 	}
-	return -2 // 首值 nil:退出循环
+	return -2 // first value nil: exit the loop
 }
 
 // ExecutePlainCallInlineFrame is the plain-CALL variant of
@@ -977,44 +1086,54 @@ const (
 	observeCallFlagIsHost   uint8 = 1 << 2
 )
 
-// tryIndirectCallee 判被调是否「gibbous-有-slot 的 Lua closure(主线程)」——是则
-// 自己压帧 + 置 gibbous 位 + 写被调帧 base 到中转字,返回 (sentinel, true) 让 caller
-// wasm 经 call_indirect 直达(免 code.Run 双跨层);否则返回 (0, false) 走回退。
+// tryIndirectCallee decides whether the callee is a "gibbous-with-slot Lua
+// closure (main thread)" — if so, it pushes the frame itself + sets the gibbous
+// bit + writes the callee frame base to the transfer word, returning
+// (sentinel, true) to let the caller wasm reach it directly via call_indirect
+// (avoiding code.Run's double tier-cross); otherwise it returns (0, false) to
+// take the fallback.
 //
-// 与 doCall 的被调解析严格同构(nargs/nresults 解码、funcIdx 定位),但**只**拦截
-// 「普通 Lua closure + 已升 gibbous + 有 slot」这一种;host / __call / 未升层 / 表满
-// gibbous 一律不拦(handled=false),由 DoCall 回退路径的 doCall 统一分派,保正确性。
+// It is strictly isomorphic with doCall's callee resolution (nargs/nresults
+// decode, funcIdx locate), but **only** intercepts the one case of "plain Lua
+// closure + already gibbous-promoted + has slot"; host / __call / not-promoted /
+// table-full gibbous are all not intercepted (handled=false) and dispatched
+// uniformly by DoCall's fallback-path doCall, preserving correctness.
 //
-// **压帧等价 enterGibbous**:enterLuaFrame(标 fresh=false)+ SetGibbous(true) +
-// reMirrorTop——与 crescent→gibbous 入口的 enterGibbous(gibbous_host.go)逐字段同款,
-// 差别仅在「不在此处 code.Run,改由 caller call_indirect 跑」。被调 RETURN 经 DoReturn
-// 弹本帧 + 写刷新后 caller base 到中转字(对称 enterGibbous 由 trampoline 弹帧)。
+// **Frame push equivalent to enterGibbous**: enterLuaFrame (marks fresh=false) +
+// SetGibbous(true) + reMirrorTop — field-for-field identical to the
+// crescent->gibbous entry's enterGibbous (gibbous_host.go), differing only in
+// "not doing code.Run here, running via the caller's call_indirect instead". The
+// callee RETURN pops this frame + writes the refreshed caller base to the
+// transfer word via DoReturn (symmetric to enterGibbous where the trampoline
+// pops the frame).
 func (st *State) tryIndirectCallee(th *thread, ci *callInfo, a, b, c int32) (int64, bool) {
 	if !profileEnabled || th != st.mainTh {
-		return 0, false // 协程线程不升层(§5),非 profile build 无 gibbous
+		return 0, false // coroutine threads do not tier up (§5); a non-profile build has no gibbous
 	}
 	funcIdx := ci.base + int(a)
 	callee := th.slot(funcIdx)
 	if value.Tag(callee) != value.TagFunction {
-		return 0, false // __call 元方法 / 非可调用 → 回退(doCall 处理)
+		return 0, false // __call metamethod / non-callable -> fallback (handled by doCall)
 	}
 	cl := value.GCRefOf(callee)
 	if object.IsHostClosure(st.arena, cl) {
-		return 0, false // host fn → 回退
+		return 0, false // host fn -> fallback
 	}
 	pid := object.ClosureProtoID(st.arena, cl)
 	code := st.bridge.GibbousCodeOf(st.protos[pid])
 	if code == nil {
-		return 0, false // 未升层(crescent)→ 回退
+		return 0, false // not promoted (crescent) -> fallback
 	}
 	slot, ok := code.Slot()
 	if !ok {
-		return 0, false // 表满哨兵(无 slot)→ 回退走 code.Run(baseline)
+		return 0, false // table-full sentinel (no slot) -> fallback via code.Run (baseline)
 	}
-	// PW10 零跨界惰性填充 IC:把 slot 缓存进 closure word1 高 16 位,后续 Wasm 侧
-	// emitCall 直读免本路径的 Go map 查找(GibbousCodeOf + Slot)。幂等(每次写同值)。
+	// PW10 zero-cross lazy IC fill: cache slot into the closure's word1 high 16
+	// bits, so subsequent Wasm-side emitCall reads it directly, avoiding this
+	// path's Go map lookup (GibbousCodeOf + Slot). Idempotent (writes the same
+	// value each time).
 	object.SetClosureGibbousSlot(st.arena, cl, slot)
-	// nargs/nresults 解码(与 doCall 同款:B=0 取到 top,C=0 留到 top)。
+	// nargs/nresults decode (same as doCall: B=0 takes to top, C=0 leaves to top).
 	var nargs int
 	if b == 0 {
 		nargs = th.top - funcIdx - 1
@@ -1022,48 +1141,59 @@ func (st *State) tryIndirectCallee(th *thread, ci *callInfo, a, b, c int32) (int
 		nargs = int(b) - 1
 	}
 	nresults := int(c) - 1
-	// 压帧(等价 enterGibbous:enterLuaFrame + 置 gibbous 位 + 重镜像)。
+	// Push the frame (equivalent to enterGibbous: enterLuaFrame + set gibbous
+	// bit + re-mirror).
 	if e := st.enterLuaFrame(th, funcIdx, nargs, nresults, false); e != nil {
-		st.raiseGibbous(e) // 锚定行号(currentCI 仍是调用者帧)
+		st.raiseGibbous(e) // anchor the line number (currentCI is still the caller frame)
 		return -1, true
 	}
 	cci := st.gibCI(th)
 	cci.SetGibbous(true)
 	th.reMirrorTop()
-	// 被调帧 base 字节偏移写中转字,供 caller wasm 读作 call_indirect 实参。
+	// Write the callee frame base byte offset to the transfer word, for the
+	// caller wasm to read as the call_indirect argument.
 	calleeBaseByte := (th.stackBaseW + uint32(cci.base)) * 8
 	st.arena.SetWordAt(st.ciTransferRef, uint64(calleeBaseByte))
-	st.indirectCalls++              // 计直调命中(R3 验证用)
-	return int64(slot)<<1 | 1, true // indirect 哨兵(奇数)
+	st.indirectCalls++              // count direct-call hits (R3 verification)
+	return int64(slot)<<1 | 1, true // indirect sentinel (odd)
 }
 
-// Call 处理 gibbous 帧内的 CALL A B C(04-trampoline §3 + PW10 R3 直调)。
+// Call handles CALL A B C inside a gibbous frame (04-trampoline §3 + PW10 R3
+// direct call).
 //
-// **R3 快路径**:被调是 gibbous-有-slot 的 Lua closure ⟹ tryIndirectCallee 自己
-// 压帧 + 置 gibbous 位 + 把被调帧 base 写中转字,返回 indirect 哨兵——caller wasm
-// 据此 `call_indirect <slot>` 跨 module 直达(免 code.Run ~143ns 双跨层重入)。
+// **R3 fast path**: the callee is a gibbous-with-slot Lua closure ==>
+// tryIndirectCallee pushes the frame itself + sets the gibbous bit + writes the
+// callee frame base to the transfer word, returning an indirect sentinel — the
+// caller wasm uses it to `call_indirect <slot>` across modules directly
+// (avoiding code.Run's ~143ns double tier-cross re-entry).
 //
-// **回退**:host / crescent(未升层)/ __call 元方法 / 无-slot gibbous(表满)⟹
-// 复用 doCall 统一分派同步跑完(baseline,返回值已落 R(A..),next==nil 或起一层
-// executeFrom 驱动未升层 Lua 帧)。
+// **Fallback**: host / crescent (not promoted) / __call metamethod / no-slot
+// gibbous (table full) ==> reuses doCall's uniform dispatch to run to
+// completion synchronously (baseline; the result is already in R(A..), next==nil
+// or starts a layer of executeFrom to drive the un-promoted Lua frame).
 //
-// **base 刷新(PW6 核心,回退路径)**:被调帧可能 growStack 使值栈段在 arena 重定位,
-// 本帧 $base 随之失效。回退路径返回时按当前 stackBaseW + ci.base 重算新 base 字节
-// 偏移(偶数);R3 直调路径的 base 刷新由被调 RETURN 经 DoReturn 写中转字完成。
+// **base refresh (PW6 core, fallback path)**: the callee frame may growStack,
+// relocating the value-stack segment in the arena, invalidating this frame's
+// $base. On return the fallback path recomputes the new base byte offset from
+// the current stackBaseW + ci.base (even); the R3 direct-call path's base
+// refresh is done by the callee RETURN via DoReturn writing the transfer word.
 //
-// 返回(i64 三态,Wasm 侧据此分派,负检查须先于奇偶):
-//   - < 0(-1):错误,pendingErr 已置,status 链冒泡;
-//   - 奇数 (slot<<1)|1:indirect 直调,被调帧 base 已写中转字;
-//   - 偶数(8 的倍数):done,值 = 刷新后的本帧 base 字节偏移(回退路径同步跑完)。
+// Returns (i64 tri-state, dispatched on the Wasm side; the negative check must
+// come before the odd/even check):
+//   - < 0 (-1): error, pendingErr is set, bubbles up the status chain;
+//   - odd (slot<<1)|1: indirect direct call, callee frame base already written
+//     to the transfer word;
+//   - even (multiple of 8): done, value = the refreshed base byte offset for
+//     this frame (fallback path ran to completion synchronously).
 func (st *State) DoCall(base, pc, a, b, c int32) int64 {
 	th := st.runningThread
 	ci := st.gibCI(th)
 	ci.pc = pc
-	// R3 快路径:被调 gibbous-有-slot ⟹ 压帧 + 返 indirect 哨兵(caller call_indirect)。
+	// R3 fast path: callee is gibbous-with-slot ==> push the frame + return the indirect sentinel (caller call_indirect).
 	if ret, handled := st.tryIndirectCallee(th, ci, a, b, c); handled {
 		return ret
 	}
-	// 回退:host / crescent / __call / 无-slot gibbous —— 同步跑完(baseline)。
+	// Fallback: host / crescent / __call / no-slot gibbous — run to completion synchronously (baseline).
 	ins := bytecode.EncodeABC(bytecode.CALL, int(a), int(b), int(c))
 	next, e := st.doCall(th, ci, ins)
 	if e != nil {
@@ -1071,9 +1201,11 @@ func (st *State) DoCall(base, pc, a, b, c int32) int64 {
 		return -1
 	}
 	if next != nil {
-		// 进入一个新 Lua 帧(被调是未升层 closure)——同步驱动到完成。
-		// nCcalls 计费:executeFrom 是新的 Go 栈重入边界,防 gibbous↔crescent
-		// 交替递归打爆 Go 栈(meta.go callLuaFromHost 同款守卫)。
+		// Entering a new Lua frame (the callee is an un-promoted closure) —
+		// drive it to completion synchronously. nCcalls accounting: executeFrom
+		// is a new Go stack re-entry boundary, preventing alternating
+		// gibbous<->crescent recursion from blowing the Go stack (same guard as
+		// meta.go callLuaFromHost).
 		if st.nCcalls >= maxCCallDepth {
 			st.raiseGibbous(errf("C stack overflow"))
 			return -1
@@ -1087,26 +1219,32 @@ func (st *State) DoCall(base, pc, a, b, c int32) int64 {
 			return -1
 		}
 	}
-	// 刷新 base(嵌套帧可能 growStack 段重定位,陈旧 base 指向已 Free 段 = UAF)。
+	// Refresh base (a nested frame may have growStack-relocated the segment; a
+	// stale base points at a Free'd segment = UAF).
 	ci = st.gibCI(th)
 	return int64((th.stackBaseW + uint32(ci.base)) * 8)
 }
 
-// CallBaseline 处理 P4 PJ5 简化形态的 CALL A B C(承
-// internal/gibbous/jit/host.go::P4HostState.CallBaseline)。
+// CallBaseline handles the P4 PJ5 simplified-form CALL A B C (per
+// internal/gibbous/jit/host.go::P4HostState.CallBaseline).
 //
-// **与 DoCall 的差异**:DoCall 经 tryIndirectCallee 走 P3 R3 indirect 快路径
-// (返回 (slot<<1)|1 哨兵让 caller wasm 经 call_indirect 跳被调 run);P4 PJ5
-// 简化形态没有 wasm-level 段内 indirect 通道,所以 CallBaseline 直接走
-// baseline doCall 分派(host/crescent/__call/全形态 gibbous 一律同步跑完),
-// 避免压被调帧但永不执行的悬挂。
+// **Difference from DoCall**: DoCall takes the P3 R3 indirect fast path via
+// tryIndirectCallee (returning the (slot<<1)|1 sentinel to let the caller wasm
+// jump to the callee run via call_indirect); the P4 PJ5 simplified form has no
+// wasm-level in-segment indirect channel, so CallBaseline goes straight to the
+// baseline doCall dispatch (host/crescent/__call/all gibbous forms run to
+// completion synchronously), avoiding a pushed-but-never-executed dangling
+// callee frame.
 //
-// 返回:0=OK / 1=ERR(pendingErr 已置,raiseGibbous)。本路径完成后被调帧
-// 已结算 + 结果已落 R(A..A+C-2),caller 帧仍活,等待 Run 端 DoReturn 弹帧。
+// Returns: 0=OK / 1=ERR (pendingErr set, raiseGibbous). After this path
+// completes the callee frame is settled + results landed in R(A..A+C-2), the
+// caller frame is still live, awaiting the Run side's DoReturn to pop the frame.
 //
-// **base 刷新**:本简化形态 mmap 段不读 valueStackBase(callBaseline 直走
-// host 同步路径),所以 baseline 内 growStack 段重定位对 P4 段内不可见——
-// 仅 host 端见到 stale base 风险,doCall 内已正确刷新 ci.base 续算。
+// **base refresh**: this simplified form's mmap segment does not read
+// valueStackBase (callBaseline goes straight to the host sync path), so a
+// baseline-internal growStack relocation is invisible to the P4 segment — only
+// the host side sees the stale-base risk, and doCall already correctly refreshes
+// ci.base to resume.
 func (st *State) CallBaseline(base, pc, a, b, c int32) int32 {
 	th := st.runningThread
 	ci := st.gibCI(th)
@@ -1118,8 +1256,9 @@ func (st *State) CallBaseline(base, pc, a, b, c int32) int32 {
 		return 1
 	}
 	if next != nil {
-		// 进入新 Lua 帧(被调是未升层 closure 或 gibbous 无-slot)——同步驱动
-		// 到完成。nCcalls 计费同 DoCall(meta.go callLuaFromHost 同款守卫)。
+		// Entering a new Lua frame (the callee is an un-promoted closure or a
+		// no-slot gibbous) — drive it to completion synchronously. nCcalls
+		// accounting same as DoCall (same guard as meta.go callLuaFromHost).
 		if st.nCcalls >= maxCCallDepth {
 			st.raiseGibbous(errf("C stack overflow"))
 			return 1
@@ -1136,19 +1275,25 @@ func (st *State) CallBaseline(base, pc, a, b, c int32) int32 {
 	return 0
 }
 
-// TailCall 处理 gibbous 帧内的 TAILCALL A B C(尾调用复用帧,04-trampoline §2.5)。
+// TailCall handles TAILCALL A B C inside a gibbous frame (tail call reuses the
+// frame, 04-trampoline §2.5).
 //
-// 复用 doTailCall:
-//   - 普通 Lua closure / __call:doTailCall 关 upvalue + 下移参数 + 弹本帧(G)+
-//     压 callee 帧(复用 G 的 funcIdx,nresults 继承 G 的 nresults)。本函数随后
-//     executeFrom 同步驱动 callee 链到完成——**尾递归在解释器内 O(1) 栈/CallInfo
-//     深度迭代**(callee 自身再 TAILCALL 时 doTailCall 弹+压同深度,同一 execute
-//     循环续跑),返回 0;gibbous 函数据此直接 return 0(本帧已被替换,跳过尾随
-//     RETURN)。
-//   - host fn:doTailCall 内 callHost(结果落 base+a),G 帧不弹 → 返回 2,
-//     gibbous 落到尾随 RETURN 由 DoReturn 完成最终返回(镜像解释器)。
+// Reuses doTailCall:
+//   - plain Lua closure / __call: doTailCall closes upvalues, shifts args down,
+//     pops this frame (G), and pushes the callee frame (reusing G's funcIdx,
+//     nresults inherits G's nresults). This function then drives the callee
+//     chain to completion via executeFrom — **tail recursion iterates at O(1)
+//     stack/CallInfo depth inside the interpreter** (when the callee itself
+//     TAILCALLs again, doTailCall pops+pushes at the same depth, continuing in
+//     the same execute loop), returning 0; the gibbous function then directly
+//     returns 0 (this frame has been replaced, skipping the trailing RETURN).
+//   - host fn: doTailCall internally callHosts (result lands at base+a), and
+//     the G frame is not popped -> returns 2; the gibbous falls through to the
+//     trailing RETURN, with DoReturn doing the final return (mirroring the
+//     interpreter).
 //
-// 返回:0=Lua 尾调用完成(gibbous return 0)/ 1=ERR / 2=host(落尾随 RETURN)。
+// Returns: 0=Lua tail call complete (gibbous return 0) / 1=ERR / 2=host (falls
+// through to the trailing RETURN).
 func (st *State) TailCall(base, pc, a, b, c int32) int32 {
 	th := st.runningThread
 	ci := st.gibCI(th)
@@ -1160,10 +1305,12 @@ func (st *State) TailCall(base, pc, a, b, c int32) int32 {
 		return 1
 	}
 	if next == nil {
-		// host 尾调用:结果已落 base+a,G 帧未弹 → 回退给尾随 RETURN(DoReturn)。
+		// Host tail call: the result already landed at base+a, and the G frame
+		// was not popped -> fall back to the trailing RETURN (DoReturn).
 		return 2
 	}
-	// Lua 尾调用:G 已被 callee 帧替换。同步驱动 callee 链到完成。
+	// Lua tail call: G has been replaced by the callee frame. Drive the callee
+	// chain to completion synchronously.
 	if st.nCcalls >= maxCCallDepth {
 		st.raiseGibbous(errf("C stack overflow"))
 		return 1
@@ -1179,47 +1326,60 @@ func (st *State) TailCall(base, pc, a, b, c int32) int32 {
 	return 0
 }
 
-// ExecuteCalleeFromInlineFrame Spike 1 Step C-1 helper(承
+// ExecuteCalleeFromInlineFrame is the Spike 1 Step C-1 helper (per
 // `docs/design/p4-method-jit/implementation-progress.md` §9.20.9 trampoline
-// exit-resume 协议 commit-2 接口 + commit-5d 真实装 + commit-5f 真接入策略
-// 重定:从 mmap 段 BuildVoid0Arg 写入数据反查 closure GCRef → callee Proto →
-// 调 enterLuaFrame + executeFrom 完整重做帧建)。
+// exit-resume protocol commit-2 interface + commit-5d real implementation +
+// commit-5f real-integration strategy redirect: from the data written by the
+// mmap segment's BuildVoid0Arg, look up the closure GCRef -> callee Proto ->
+// call enterLuaFrame + executeFrom to fully redo the frame build).
 //
-// **设计澄清**(承 commit-5e 整合验证 + §9.20.5 P3 PW10 同源参考的实装差异):
-// 原 P3 PW10 §14.8 ④-i 设计期待 mmap 段完整 emit 帧建(arena proto cache 段
-// + 5 word 真实计算),helper 只跑 executeFrom;P4 Spike 1 真接入采用更保守
-// 的「帧建数据反查 + helper 内 enterLuaFrame 重做」策略,放弃零跨界但保证
-// 正确性 + 工程可达。
+// **Design clarification** (per commit-5e integration verification + §9.20.5
+// P3 PW10 same-source reference implementation differences): the original P3
+// PW10 §14.8 (4)-i design expected the mmap segment to fully emit the frame
+// build (arena proto cache segment + 5-word real computation), with the helper
+// only running executeFrom; the P4 Spike 1 real integration takes a more
+// conservative "frame-build-data lookup + in-helper enterLuaFrame redo"
+// strategy, giving up zero-cross but guaranteeing correctness + engineering
+// feasibility.
 //
-// **流程**(承 §9.20.9 (1) 协议 + commit-5f 重定 + commit-5j 自检修正):
-//  1. mmap 段 BuildVoid0Arg 已 ciDepth++ + 写 CallInfo[ciDepth-1] 5 word
-//     (其中 word3 = closure GCRef payload,Spike 1 唯一可信字段)
-//  2. 反查 callee Proto:read word3 → closure GCRef → object.ClosureProtoID
-//     → st.protos[pid]
-//  3. ciDepth-- 抵消 BuildVoid0Arg 副作用(enterLuaFrame 内会再 ciDepth++)
-//  4. funcIdx = calleeCI.funcIdx(mmap 段 BuildVoid0Arg word0 写入,当前
-//     commit-4b emit 时是 0 占位 — Spike 1 commit-5k 工程需 P2 Bridge analyzer
-//     传 callee FuncExpr → bytecode.Proto 反查 + 编译期固化 word0=base|funcIdx<<32)
-//  5. nargs = 0(Spike 1 简化 0 参形态;callee.NumParams=0 守门)
-//  6. nresults = 0(Spike 1 0 返值 setter 形态;承下方 L976 `const nresults=0`)
-//  7. enterLuaFrame + executeFrom + popCallInfo(由 callee RETURN 自动)
-//  8. **出口 ciDepth++ 平衡**:让 mmap 段后续 PopVoid0Arg dec 到正确 caller depth
+// **Flow** (per §9.20.9 (1) protocol + commit-5f redirect + commit-5j
+// self-check fix):
+//  1. the mmap segment's BuildVoid0Arg has already ciDepth++'d + written
+//     CallInfo[ciDepth-1]'s 5 words (of which word3 = closure GCRef payload, the
+//     only trustworthy field in Spike 1)
+//  2. look up the callee Proto: read word3 -> closure GCRef ->
+//     object.ClosureProtoID -> st.protos[pid]
+//  3. ciDepth-- to cancel out the BuildVoid0Arg side effect (enterLuaFrame will
+//     ciDepth++ again)
+//  4. funcIdx = calleeCI.funcIdx (written by the mmap segment's BuildVoid0Arg
+//     word0; at the current commit-4b emit it is a 0 placeholder — Spike 1
+//     commit-5k engineering needs the P2 Bridge analyzer to pass the callee
+//     FuncExpr -> bytecode.Proto lookup + compile-time hardcode
+//     word0=base|funcIdx<<32)
+//  5. nargs = 0 (Spike 1 simplified 0-arg form; callee.NumParams=0 guards)
+//  6. nresults = 0 (Spike 1 0-return setter form; per L976 `const nresults=0`
+//     below)
+//  7. enterLuaFrame + executeFrom + popCallInfo (automatically by callee RETURN)
+//  8. **exit ciDepth++ balance**: lets the mmap segment's subsequent
+//     PopVoid0Arg dec to the correct caller depth
 //
-// **当前 Spike 1 真接入未完成**(commit-5j 自检):analyzeSelfCallSpecForm 撤销
-// useFrameInline 守门 → info.useFrameInline 不真设 → Compile 端 useFrameInline
-// 分支 dead-code → 本 helper Run 期不被调到。剩 commit-5k 工程:callee Proto
-// 元数据接入 + word0/1/2/4 真实计算 + 守门重启用。
+// **Current Spike 1 real integration not yet complete** (commit-5j self-check):
+// analyzeSelfCallSpecForm revokes the useFrameInline guard -> info.useFrameInline
+// is not really set -> the Compile-side useFrameInline branch is dead code ->
+// this helper is not reached during Run. Remaining commit-5k engineering: callee
+// Proto metadata integration + word0/1/2/4 real computation + guard re-enable.
 //
-//   - 0=OK(callee 完成 + 返值已落 R(callA..callA+nresults-1))
-//   - 1=ERR(state.pendingErr 已置,Run 端 dispatcher 返 1 错误冒泡)
+//   - 0=OK (callee complete + returns landed in R(callA..callA+nresults-1))
+//   - 1=ERR (state.pendingErr set, the Run-side dispatcher returns 1 and the
+//     error bubbles up)
 func (st *State) ExecuteCalleeFromInlineFrame(base, callA, callArgCount, nresults int32) int32 {
-	_ = base // 实参 base 是 jitContext.valueStackBase 算出的 R0 字节偏移,Spike 1 helper 不读
+	_ = base // the base arg is the R0 byte offset computed by jitContext.valueStackBase, unread by the Spike 1 helper
 	th := st.runningThread
-	// **commit-5m 修 ciDepth Go vs mirror 不同步 bug**
+	// **commit-5m fixes the ciDepth Go-vs-mirror desync bug**
 	if th.ciDepthWordRef != 0 {
 		th.ciDepth = int(uint32(th.arena.WordAt(th.ciDepthWordRef)))
 	}
-	// 1. 反查 callee Proto:read CI[ciDepth-1].word3 → closure GCRef
+	// 1. Look up the callee Proto: read CI[ciDepth-1].word3 -> closure GCRef
 	depth := th.ciDepth - 1
 	var calleeCI callInfo
 	th.readCISegInto(depth, &calleeCI)
@@ -1231,15 +1391,16 @@ func (st *State) ExecuteCalleeFromInlineFrame(base, callA, callArgCount, nresult
 	if int(calleePID) >= len(st.protos) || st.protos[calleePID] == nil {
 		return st.raiseGibbous(errf("ExecuteCalleeFromInlineFrame: invalid callee protoID %d", calleePID))
 	}
-	// 2. ciDepth-- 抵消 BuildVoid0Arg 副作用
+	// 2. ciDepth-- to cancel out the BuildVoid0Arg side effect
 	th.setCIDepth(th.ciDepth - 1)
-	// 3. funcIdx = th.cur.base + callA(SELF + CALL 形态下 method 在 R(callA))
+	// 3. funcIdx = th.cur.base + callA (under the SELF + CALL form the method is in R(callA))
 	funcIdx := th.cur.base + int(callA)
-	// 4. nargs = 1 + callArgCount(self + N user args,Spike 2);nresults 从
-	//    caller's CALL.C 算(Spike 4 多返值多形态):callC=1=0返/2=1返/3..16=
-	//    N=2..15 返 drop multi-ret。
+	// 4. nargs = 1 + callArgCount (self + N user args, Spike 2); nresults is
+	//    computed from the caller's CALL.C (Spike 4 multi-return multi-form):
+	//    callC=1=0 returns / 2=1 return / 3..16=N=2..15 returns, dropping
+	//    multi-ret.
 	nargs := 1 + int(callArgCount)
-	// 5. C stack 限深检查 + nCcalls++
+	// 5. C stack depth check + nCcalls++
 	if st.nCcalls >= maxCCallDepth {
 		return st.raiseGibbous(errf("C stack overflow"))
 	}
@@ -1250,11 +1411,14 @@ func (st *State) ExecuteCalleeFromInlineFrame(base, callA, callArgCount, nresult
 	// switch at the same depth (PR #86 review).
 	underWatermark := st.nCcalls < gibbousReentryCCallCap
 	st.nCcalls++
-	// 6. **commit-5u 真 zero-cross 优化**(承 §9.20.12 剩余 zero-cross 工程):
-	//    若 callee Proto 也是 P4 升层(GibbousCodeOf 非 nil 且主线程),直接调
-	//    enterGibbous(内部 enterLuaFrame + code.Run + DoReturn 弹帧),跳过
-	//    executeFrom 解释器主循环 + 直接进 P4 mmap 段,实现 zero-cross 路径。
-	//    callee 非 P4 升层时回落 enterLuaFrame + executeFrom(Spike 1-4 既有路径)。
+	// 6. **commit-5u real zero-cross optimization** (per §9.20.12 remaining
+	//    zero-cross engineering): if the callee Proto is also P4-promoted
+	//    (GibbousCodeOf non-nil and main thread), call enterGibbous directly
+	//    (which internally does enterLuaFrame + code.Run + DoReturn frame pop),
+	//    skipping the executeFrom interpreter main loop + entering the P4 mmap
+	//    segment directly, achieving the zero-cross path. When the callee is not
+	//    P4-promoted, fall back to enterLuaFrame + executeFrom (the existing
+	//    Spike 1-4 path).
 	if profileEnabled && th == st.mainTh && underWatermark {
 		calleeCode := st.bridge.GibbousCodeOf(st.protos[calleePID])
 		if calleeCode != nil {
@@ -1263,30 +1427,32 @@ func (st *State) ExecuteCalleeFromInlineFrame(base, callA, callArgCount, nresult
 			if err != nil {
 				return st.raiseGibbous(err)
 			}
-			st.frameInlineZeroCrossHits++ // zero-cross 路径命中(State 级,测试读)
-			// 出口 ciDepth++ 平衡 PopVoid0Arg(承 Spike 1 commit-5d/5m)
+			st.frameInlineZeroCrossHits++ // zero-cross path hit (State-level, read by tests)
+			// exit ciDepth++ balances PopVoid0Arg (per Spike 1 commit-5d/5m)
 			th.setCIDepth(th.ciDepth + 1)
 			return 0
 		}
 	}
-	// 6.b enterLuaFrame + executeFrom(Spike 1-4 既有非 zero-cross 回落路径)
+	// 6.b enterLuaFrame + executeFrom (the existing Spike 1-4 non-zero-cross fallback path)
 	if e := st.enterLuaFrame(th, funcIdx, nargs, int(nresults), false); e != nil {
 		st.nCcalls--
 		return st.raiseGibbous(e)
 	}
-	// 7. 同步驱动 callee Lua 体到 RETURN(内嵌 popCallInfo 弹 callee 帧)
+	// 7. Drive the callee Lua body to RETURN synchronously (with an embedded popCallInfo to pop the callee frame)
 	entryDepth := th.ciDepth - 1
 	err := st.executeFrom(th, entryDepth)
 	st.nCcalls--
 	if err != nil {
 		return st.raiseGibbous(err)
 	}
-	// 8. 出口 ciDepth++ 平衡 mmap 段 PopVoid0Arg:executeFrom 弹 callee 帧后
-	//    ciDepth = caller_depth;mmap 段 PopVoid0Arg(EmitFrameInlineCIDepthDec)
-	//    会再 dec → 出口手动 ciDepth++ 抵消,让 PopVoid0Arg dec 到正确
-	//    caller_depth。无需 writeCISeg(&th.cur):PopVoid0Arg 仅 dec 镜像字 +
-	//    ret,不 readCISegInto 重载,故 ciDepth ↔ th.cur 一过渡性不一致由
-	//    p4Code.Run 出口 + syncCurFromSeg 在下次 Go 控制流处恢复。
+	// 8. exit ciDepth++ balances the mmap segment's PopVoid0Arg: after
+	//    executeFrom pops the callee frame ciDepth = caller_depth; the mmap
+	//    segment's PopVoid0Arg (EmitFrameInlineCIDepthDec) will dec again -> the
+	//    exit manual ciDepth++ cancels it out, letting PopVoid0Arg dec to the
+	//    correct caller_depth. No writeCISeg(&th.cur) needed: PopVoid0Arg only
+	//    dec's the mirror word + rets, without readCISegInto reload, so the
+	//    transient ciDepth <-> th.cur inconsistency is restored by p4Code.Run's
+	//    exit + syncCurFromSeg at the next Go control-flow point.
 	th.setCIDepth(th.ciDepth + 1)
 	return 0
 }

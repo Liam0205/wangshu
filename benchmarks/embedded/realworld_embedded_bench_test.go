@@ -17,10 +17,11 @@
 //   - WangshuCallInto: zero-alloc CallInto() (issue #8 fix)
 //   - Gopher:          gopher-lua's CallByParam + Get/Pop equivalent
 //
-// build tag `!wangshu_p3`:与 `embedded_gibbous_test.go`(wangshu_p3)互斥,
-// 避免 p3 build 的 wangshu_profile 采样钩污染 `_Wangshu` / `_Gopher` 数字 +
-// 与 bench-p1 重复(issue #15 review)。共享 const / type / makeItems 在
-// `consts_test.go` 里(无 build tag)。
+// build tag `!wangshu_p3`: mutually exclusive with `embedded_gibbous_test.go`
+// (wangshu_p3), to keep the p3 build's wangshu_profile sampling hook from
+// polluting the `_Wangshu` / `_Gopher` numbers, and to avoid duplicating
+// bench-p1 (issue #15 review). The shared const / type / makeItems live in
+// `consts_test.go` (no build tag).
 //
 // Run: `make bench-p1`
 package embedded

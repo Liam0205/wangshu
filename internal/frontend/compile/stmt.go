@@ -1,4 +1,4 @@
-// stmt — 语句级 codegen(04 §6 控制结构 + §7 调用/赋值 + §8 函数定义/闭包)。
+// stmt — statement-level codegen (04 §6 control structures + §7 calls/assignments + §8 function definitions/closures).
 package compile
 
 import (
@@ -9,7 +9,7 @@ import (
 func (fs *funcState) block(b *ast.Block) {
 	for _, s := range b.Stmts {
 		fs.stmt(s)
-		// 不变式:每条语句结束 freereg 必须收敛回 nactvar
+		// invariant: freereg must converge back to nactvar at the end of each statement
 		fs.freereg = fs.nactvar
 	}
 }
@@ -49,7 +49,7 @@ func (fs *funcState) stmt(node ast.Stmt) {
 	}
 }
 
-// stmtLocal:local a, b = e1, e2(04 §5.8)
+// stmtLocal: local a, b = e1, e2 (04 §5.8)
 func (fs *funcState) stmtLocal(s *ast.LocalStmt) {
 	nWant := len(s.Names)
 	fs.adjustExprList(s.Line, s.Exprs, nWant)
@@ -71,11 +71,11 @@ func (fs *funcState) stmtLocal(s *ast.LocalStmt) {
 	}
 }
 
-// stmtLocalFunc:local function f(): 先注册局部 f,再 codegen Fn 到该寄存器(04 §5.8)
+// stmtLocalFunc: local function f(): register the local f first, then codegen Fn into that register (04 §5.8)
 func (fs *funcState) stmtLocalFunc(s *ast.LocalFuncStmt) {
 	fs.registerLocal(s.Line, s.Name)
-	// 挂 localFnAsts:让嵌套 closure / sibling closure 的 AnalyzeProto 知道
-	// 本 fn 是 known local(承 P4 PJ5 scope-aware analyzer 扩展)。
+	// Record localFnAsts so that nested / sibling closures' AnalyzeProto knows
+	// this fn is a known local (carries the P4 PJ5 scope-aware analyzer extension).
 	fs.localFnAsts[s.Name] = s.Fn
 	reg := fs.freereg
 	fs.reserveRegs(s.Line, 1)
@@ -83,10 +83,11 @@ func (fs *funcState) stmtLocalFunc(s *ast.LocalFuncStmt) {
 	fs.exp2reg(s.Line, &fnExp, reg)
 }
 
-// adjustExprList 把 exprs 调整到 nWant 个值,落在 R(freereg) 起的连续寄存器(04 §6.2)。
+// adjustExprList adjusts exprs to nWant values, landing in consecutive registers starting at R(freereg) (04 §6.2).
 //
-// 末位是多值源(Call/Vararg)时,把其取值数 = nWant - (前面已固定值数);否则不足补 LOADNIL,
-// 多余丢弃(余者副作用仍执行)。
+// When the last element is a multi-value source (Call/Vararg), it takes nWant - (number of fixed values before it)
+// values; otherwise a shortfall is padded with LOADNIL and the excess is discarded (side effects of the discarded
+// expressions still run).
 func (fs *funcState) adjustExprList(line int32, exprs []ast.Expr, nWant int) {
 	n := len(exprs)
 	if n == 0 {
@@ -102,26 +103,26 @@ func (fs *funcState) adjustExprList(line int32, exprs []ast.Expr, nWant int) {
 	}
 	last := fs.expr(exprs[n-1])
 	if nWant < n {
-		// 仅取前 nWant 个,末位也固定 1 值;
-		// 但前面的循环已经把前 n-1 个固定。如果 nWant >= n-1,末位可作多值;否则丢弃末位。
+		// Take only the first nWant; the last element is also fixed to 1 value.
+		// But the loop above already fixed the first n-1. If nWant >= n-1, the last element can be multi-value; otherwise discard the last element.
 		switch {
 		case nWant == n-1:
-			// 末位丢弃(求值副作用仍执行)
+			// discard the last element (its evaluation side effects still run)
 			fs.exp2NextReg(line, &last)
-			fs.freereg-- // 立刻丢弃
+			fs.freereg-- // discard immediately
 		case nWant < n-1:
-			// 设计期未明确"多余表达式不执行 vs 求值丢弃"的细节,Lua 5.1 是"求值丢弃"。
+			// The design did not pin down the "excess expressions not executed vs. evaluated then discarded" detail; Lua 5.1 is "evaluate then discard".
 			fs.exp2NextReg(line, &last)
 			over := n - nWant
 			fs.freereg -= over
 		}
 		return
 	}
-	// nWant >= n:末位可能多值,补 nWant - n 个 nil
+	// nWant >= n: the last element may be multi-value, pad nWant - n nils
 	if extra := nWant - (n - 1); fs.openMultiRet(&last, extra) {
-		// openMultiRet 统一处理 A 字段纪律(eCall 的 A 不可改;eVararg 回填
-		// freereg)。预留差异:CALL 结果落 fnReg(已占 1 槽)再多留 extra-1;
-		// VARARG 落 freereg(未占槽)留 extra。
+		// openMultiRet uniformly handles the A-field discipline (eCall's A must not change;
+		// eVararg backfills freereg). Reserved difference: CALL result lands in fnReg (already
+		// occupies 1 slot) then reserve extra-1 more; VARARG lands in freereg (no slot occupied) reserve extra.
 		if last.k == eCall {
 			if extra > 1 {
 				fs.reserveRegs(line, extra-1)
@@ -138,12 +139,12 @@ func (fs *funcState) adjustExprList(line int32, exprs []ast.Expr, nWant int) {
 	}
 }
 
-// stmtAssign:lhs1, lhs2 = rhs1, rhs2(04 §5.8 + §7)。
+// stmtAssign: lhs1, lhs2 = rhs1, rhs2 (04 §5.8 + §7).
 //
-// Lua 5.1 语义:RHS 全部求值后再执行赋值;若 LHS 含 t[k] 形式,需先 evaluate 表/键。
+// Lua 5.1 semantics: all RHS are evaluated first, then the assignments are performed; if an LHS has the t[k] form, the table/key must be evaluated first.
 //
-// 单 LHS=单 RHS 走"直落 storeVar"快路径,跳过 freereg 临时(对齐 Lua 5.1 luaK_storevar
-// 的 VLOCAL 路径,可以避免无意义的 MOVE/RETURN)。
+// A single LHS = single RHS takes the "direct storeVar" fast path, skipping the freereg temporary (aligns with Lua 5.1 luaK_storevar's
+// VLOCAL path, which avoids a pointless MOVE/RETURN).
 func (fs *funcState) stmtAssign(s *ast.AssignStmt) {
 	if len(s.Targets) == 1 && len(s.Exprs) == 1 {
 		fs.storeVar(s.Line, s.Targets[0], s.Exprs[0])
@@ -182,7 +183,7 @@ func (fs *funcState) stmtAssign(s *ast.AssignStmt) {
 			raise(fs, s.Line, "syntax error")
 		}
 	}
-	// 求 RHS:落到 freereg 起的连续寄存器,数 = len(s.Targets)
+	// evaluate RHS: land in consecutive registers starting at freereg, count = len(s.Targets)
 	fs.adjustExprList(s.Line, s.Exprs, len(s.Targets))
 	rhsTop := fs.freereg - 1
 	for i := len(s.Targets) - 1; i >= 0; i-- {
@@ -205,7 +206,7 @@ func (fs *funcState) stmtAssign(s *ast.AssignStmt) {
 	fs.freereg = fs.nactvar
 }
 
-// storeVar 把 rhs 值"直接"存入 lhs 变量(单赋值快路径)。
+// storeVar stores the rhs value "directly" into the lhs variable (single-assignment fast path).
 func (fs *funcState) storeVar(line int32, lhs, rhs ast.Expr) {
 	switch tn := lhs.(type) {
 	case *ast.NameExpr:
@@ -239,7 +240,7 @@ func (fs *funcState) stmtCall(s *ast.CallStmt) {
 	if e.k != eCall {
 		raise(fs, s.Line, "syntax error")
 	}
-	// CallStmt 取 0 返回值 ⇒ C=1
+	// CallStmt takes 0 return values ⇒ C=1
 	fs.proto.Code[e.info] = bytecode.SetC(fs.proto.Code[e.info], 1)
 }
 
@@ -252,7 +253,7 @@ func (fs *funcState) stmtIf(s *ast.IfStmt) {
 		fs.enterBlock(false)
 		fs.block(cl.Body)
 		fs.leaveBlock(s.Line)
-		// 不是最后一个 clause(还有 else 或更多 elseif)需要跳到末尾
+		// not the last clause (there is an else or more elseif) needs to jump to the end
 		hasElse := s.Else != nil
 		isLast := i == len(s.Clauses)-1
 		if !isLast || hasElse {
@@ -276,7 +277,7 @@ func (fs *funcState) stmtWhile(s *ast.WhileStmt) {
 	exitList := ce.fJmp
 	fs.enterBlock(true)
 	fs.block(s.Body)
-	// 回边
+	// back edge
 	back := fs.jump(s.Line)
 	fs.patchList(back, loopStart)
 	fs.leaveBlock(s.Line)
@@ -284,12 +285,12 @@ func (fs *funcState) stmtWhile(s *ast.WhileStmt) {
 }
 
 func (fs *funcState) stmtRepeat(s *ast.RepeatStmt) {
-	// 对齐官方 repeatstat 的两层块:外层 loop(breakable),内层 scope。
-	// cond 在 scope 内求值(until 可见 body 局部)。scope 含 upvalue 捕获时
-	// 走"完整语义":cond 真 → break(CLOSE+跳出);假 → leaveBlock 发
-	// CLOSE 再回跳——每次迭代关闭本迭代局部的捕获,否则全部迭代的闭包
-	// 共享同一开放栈槽(repeat 中 `local x=i; f=function() return x end`
-	// 各迭代应各捕一份)。
+	// Align with the official repeatstat's two-level blocks: outer loop (breakable), inner scope.
+	// cond is evaluated inside the scope (until can see body locals). When the scope captures upvalues,
+	// take the "full semantics": cond true → break (CLOSE + jump out); false → leaveBlock emits
+	// CLOSE then jumps back — each iteration closes the captures of that iteration's locals, otherwise
+	// closures of all iterations share the same open stack slot (in a repeat, `local x=i; f=function() return x end`
+	// should capture a separate copy per iteration).
 	loopStart := fs.getLabel()
 	fs.enterBlock(true)  // loop block
 	fs.enterBlock(false) // scope block
@@ -297,24 +298,24 @@ func (fs *funcState) stmtRepeat(s *ast.RepeatStmt) {
 	ce := fs.expr(s.Cond)
 	fs.goIfTrue(s.Cond.Pos(), &ce)
 	if !fs.bl.hasUpval {
-		fs.leaveBlock(s.Line)            // finish scope(无 CLOSE)
-		fs.patchList(ce.fJmp, loopStart) // cond 假 ⇒ 回跳
+		fs.leaveBlock(s.Line)            // finish scope (no CLOSE)
+		fs.patchList(ce.fJmp, loopStart) // cond false ⇒ jump back
 	} else {
-		// cond 真 ⇒ break 路径(stmtBreak 发 CLOSE 并入 breakList)
+		// cond true ⇒ break path (stmtBreak emits CLOSE and joins breakList)
 		fs.stmtBreak(&ast.BreakStmt{Line: s.Line})
-		fs.patchToHere(ce.fJmp)                  // cond 假落到此
-		fs.leaveBlock(s.Line)                    // finish scope(发 CLOSE)
-		fs.patchList(fs.jump(s.Line), loopStart) // 再回跳
+		fs.patchToHere(ce.fJmp)                  // cond false lands here
+		fs.leaveBlock(s.Line)                    // finish scope (emit CLOSE)
+		fs.patchList(fs.jump(s.Line), loopStart) // jump back again
 	}
-	fs.leaveBlock(s.Line) // finish loop(break 落点)
+	fs.leaveBlock(s.Line) // finish loop (break landing point)
 }
 
-// stmtNumFor:数值 for(04 §6.5)。占 4 槽 R(base..base+3)。
+// stmtNumFor: numeric for (04 §6.5). Occupies 4 slots R(base..base+3).
 //
-// 对齐 Lua 5.1 forstat/forbody 的两层块:外层 breakable 块包含 FORLOOP
-// (break 跳到 FORLOOP 之后),内层非 breakable 块只是循环体变量作用域。
+// Aligns with Lua 5.1 forstat/forbody's two-level blocks: the outer breakable block contains FORLOOP
+// (break jumps to after FORLOOP), the inner non-breakable block is just the loop-body variable scope.
 func (fs *funcState) stmtNumFor(s *ast.NumForStmt) {
-	fs.enterBlock(true) // 外层 breakable(含三个内部控制槽)
+	fs.enterBlock(true) // outer breakable (holds three internal control slots)
 	base := fs.freereg
 	initE := fs.expr(s.Init)
 	fs.exp2NextReg(s.Line, &initE) // R(base)
@@ -332,18 +333,18 @@ func (fs *funcState) stmtNumFor(s *ast.NumForStmt) {
 	fs.registerLocal(s.Line, "(for limit)")
 	fs.registerLocal(s.Line, "(for step)")
 	prep := fs.emitAsBx(s.Line, bytecode.FORPREP, base, NoJump)
-	fs.enterBlock(false) // 内层:循环体变量作用域
+	fs.enterBlock(false) // inner: loop-body variable scope
 	fs.registerLocal(s.Line, s.Var)
 	fs.reserveRegs(s.Line, 1)
 	fs.block(s.Body)
-	fs.leaveBlock(s.Line) // 关闭 v 作用域(FORLOOP 之前)
+	fs.leaveBlock(s.Line) // close v's scope (before FORLOOP)
 	loopPC := fs.pc()
 	fs.fixJump(s.Line, prep, loopPC)
 	fs.emitAsBx(s.Line, bytecode.FORLOOP, base, prep+1-(loopPC+1))
-	fs.leaveBlock(s.Line) // 外层:break 落到 FORLOOP 之后;退三个控制槽
+	fs.leaveBlock(s.Line) // outer: break lands after FORLOOP; pop the three control slots
 }
 
-// stmtGenFor:泛型 for(04 §6.6)。占 R(base..base+2) + 循环变量。两层块同上。
+// stmtGenFor: generic for (04 §6.6). Occupies R(base..base+2) + loop variables. Two-level blocks as above.
 func (fs *funcState) stmtGenFor(s *ast.GenForStmt) {
 	fs.enterBlock(true)
 	base := fs.freereg
@@ -351,7 +352,7 @@ func (fs *funcState) stmtGenFor(s *ast.GenForStmt) {
 	fs.registerLocal(s.Line, "(for generator)")
 	fs.registerLocal(s.Line, "(for state)")
 	fs.registerLocal(s.Line, "(for control)")
-	prep := fs.jump(s.Line) // 跳到 TFORLOOP
+	prep := fs.jump(s.Line) // jump to TFORLOOP
 	bodyPC := fs.pc()
 	fs.enterBlock(false)
 	for _, n := range s.Names {
@@ -367,9 +368,9 @@ func (fs *funcState) stmtGenFor(s *ast.GenForStmt) {
 	fs.leaveBlock(s.Line)
 }
 
-// stmtFunc:function a.b.c:m() ...end(04 §8.2)
+// stmtFunc: function a.b.c:m() ...end (04 §8.2)
 func (fs *funcState) stmtFunc(s *ast.FuncStmt) {
-	// 转换为 AssignStmt 的等价形式
+	// convert to the equivalent AssignStmt form
 	assign := &ast.AssignStmt{
 		Line:    s.Line,
 		Targets: []ast.Expr{s.Target},
@@ -378,7 +379,7 @@ func (fs *funcState) stmtFunc(s *ast.FuncStmt) {
 	fs.stmtAssign(assign)
 }
 
-// stmtReturn:尾调用识别(04 §9.4)。
+// stmtReturn: tail-call recognition (04 §9.4).
 func (fs *funcState) stmtReturn(s *ast.ReturnStmt) {
 	if len(s.Exprs) == 0 {
 		fs.emitABC(s.Line, bytecode.RETURN, 0, 1, 0)
@@ -387,7 +388,7 @@ func (fs *funcState) stmtReturn(s *ast.ReturnStmt) {
 	if len(s.Exprs) == 1 {
 		switch ce := s.Exprs[0].(type) {
 		case *ast.CallExpr:
-			// 尾调用
+			// tail call
 			e := fs.exprCall(ce)
 			ins := fs.proto.Code[e.info]
 			fs.proto.Code[e.info] = bytecode.EncodeABC(bytecode.TAILCALL,
@@ -402,17 +403,17 @@ func (fs *funcState) stmtReturn(s *ast.ReturnStmt) {
 			fs.emitABC(s.Line, bytecode.RETURN, bytecode.A(ins), 0, 0)
 			return
 		case *ast.VarargExpr:
-			// return ... 返回全部 vararg(多值到 top),不可收敛单值
+			// return ... returns all varargs (multi-value to top), cannot be collapsed to a single value
 			base := fs.freereg
 			ve := fs.expr(ce)
 			fs.openMultiRet(&ve, -1)
 			fs.emitABC(s.Line, bytecode.RETURN, base, 0, 0)
 			return
 		}
-		// 单值非 Call:若是 ELocal/ENonReloc 直接用其寄存器(避免无意义 MOVE)。
-		// 带未决跳转链的表达式(如 `return (not c) and m` 的短路链)不可走
-		// 快路径——直接 RETURN 跳过 exp2reg 的链回填,链中 JMP 落点悬空
-		// (sBx 自旋,运行期死循环挂死)。
+		// Single non-Call value: if it is ELocal/ENonReloc, use its register directly (avoids a pointless MOVE).
+		// An expression with a pending jump chain (e.g. the short-circuit chain of `return (not c) and m`) cannot take
+		// the fast path — a direct RETURN skips exp2reg's chain backfill, leaving the chain's JMP landing point dangling
+		// (sBx self-loop, an infinite loop that hangs at runtime).
 		single := fs.expr(s.Exprs[0])
 		fs.dischargeVars(s.Line, &single)
 		if single.k == eNonReloc && !single.hasJumps() {
@@ -432,7 +433,7 @@ func (fs *funcState) stmtReturn(s *ast.ReturnStmt) {
 		fs.freereg = single.info
 		return
 	}
-	// 普通 return:多值末位走 B=0 到 top
+	// ordinary return: multi-value, the last element goes to top via B=0
 	base := fs.freereg
 	n := len(s.Exprs)
 	for i := 0; i < n-1; i++ {
@@ -450,9 +451,10 @@ func (fs *funcState) stmtReturn(s *ast.ReturnStmt) {
 }
 
 func (fs *funcState) stmtBreak(s *ast.BreakStmt) {
-	// 对齐官方 breakstat:从最内层块走到 breakable 块,沿途累计 upval 标志
-	// ——循环变量/体内局部的捕获标记在内层块上,只看 loop 块自身会漏发
-	// CLOSE,break 后开放 upvalue 仍指着将被覆写的栈槽(读出脏值/nil)。
+	// Align with the official breakstat: walk from the innermost block up to the breakable block, accumulating the upval
+	// flag along the way — the capture marks for loop variables / body locals live on the inner blocks; looking only at
+	// the loop block itself would miss emitting CLOSE, and after break the open upvalues would still point at the stack
+	// slots about to be overwritten (reading stale values / nil).
 	upval := false
 	var bl *blockCnt
 	for b := fs.bl; b != nil; b = b.prev {

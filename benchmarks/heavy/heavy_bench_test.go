@@ -1,10 +1,12 @@
 //go:build !wangshu_p3 && !wangshu_p4
 
-// heavy_bench_test.go:`_Wangshu`(crescent)/`_Gopher` benchmark 拆出文件,
-// 加 `!wangshu_p3 && !wangshu_p4` build tag 避免 profile 采样钩污染新月数字。
+// heavy_bench_test.go: the `_Wangshu` (crescent) / `_Gopher` benchmarks split
+// into their own file, tagged `!wangshu_p3 && !wangshu_p4` to keep profile
+// sampling hooks from polluting the crescent numbers.
 //
-// `_Gibbous` 在 `heavy_gibbous_test.go` 里(wangshu_p3 tag),`_GibbousJIT` 在
-// `heavy_gibbous_jit_test.go` 里(wangshu_p4 tag),与本文件互斥。
+// `_Gibbous` lives in `heavy_gibbous_test.go` (wangshu_p3 tag), and `_GibbousJIT`
+// lives in `heavy_gibbous_jit_test.go` (wangshu_p4 tag), both mutually exclusive
+// with this file.
 package heavy
 
 import (

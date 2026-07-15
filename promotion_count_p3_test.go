@@ -1,7 +1,8 @@
 //go:build wangshu_p3 && wangshu_profile
 
-// promotion_count_p3_test.go:State.PromotionCount() 在 p3 build + force-all
-// 下随升层发生而递增,在 p3 build + 非 force-all + 无热度时仍为 0。
+// promotion_count_p3_test.go: State.PromotionCount() increments as promotions
+// occur under p3 build + force-all, and stays 0 under p3 build + non-force-all
+// with no hotness.
 package wangshu_test
 
 import (
@@ -10,12 +11,14 @@ import (
 	"github.com/Liam0205/wangshu"
 )
 
-// TestPromotionCount_P3_ForceAll_Increments 验证 SetForceAllPromote(true)
-// 下执行内层(非 vararg)函数首次即升,PromotionCount 至少 +1。
+// TestPromotionCount_P3_ForceAll_Increments verifies that under
+// SetForceAllPromote(true), an inner (non-vararg) function is promoted on its
+// first execution, so PromotionCount goes up by at least 1.
 //
-// **关键事实**:顶层 chunk 是 vararg(Lua 5.1 main chunk 隐式 `...`),F1
-// 结构性排除永不升层。所以测试用内层非 vararg 函数 `f`,顶层 chunk 只是
-// 调用入口。
+// **Key fact**: the top-level chunk is vararg (a Lua 5.1 main chunk has an
+// implicit `...`), which F1 structurally excludes from ever being promoted. So
+// the test uses an inner non-vararg function `f`; the top-level chunk is merely
+// the call entry point.
 func TestPromotionCount_P3_ForceAll_Increments(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{})
 	st.SetForceAllPromote(true)
@@ -40,13 +43,15 @@ func TestPromotionCount_P3_ForceAll_Increments(t *testing.T) {
 	}
 }
 
-// TestPromotionCount_P3_NoForce_StaysCold 验证 p3 build 默认形态下,
-// 一次性小脚本(入口次数=1)达不到 HotEntryThreshold,PromotionCount = 0。
-// 这条恰好是 conformance-p3 注释承诺凸月路径的反例——印证「auto-lifting
-// 形态不调 SetForceAllPromote 会退化到解释器路径」的事实。
+// TestPromotionCount_P3_NoForce_StaysCold verifies that under the default p3
+// build behavior, a one-shot small script (entry count = 1) never reaches
+// HotEntryThreshold, so PromotionCount = 0. This is precisely the
+// counterexample to the gibbous path that the conformance-p3 comment promises
+// — it confirms that "the auto-lifting configuration degrades to the
+// interpreter path unless SetForceAllPromote is called".
 func TestPromotionCount_P3_NoForce_StaysCold(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{})
-	// 故意不调 SetForceAllPromote
+	// Deliberately do not call SetForceAllPromote
 
 	prog, err := wangshu.Compile([]byte(`
 		local function f(x) return x * 2 end
@@ -64,32 +69,40 @@ func TestPromotionCount_P3_NoForce_StaysCold(t *testing.T) {
 	}
 }
 
-// TestPromotionCount_P3_NoForce_HotEntry_Lifts 验证 issue #18 修复:p3 build
-// 默认形态(不调 SetForceAllPromote)下,**长** inner function 被同入口调
-// N>HotEntryThreshold 次时,运行期 considerPromotion 看到编译期 F7 占位
-// (ReasonBackendUnsupp)+ b.p3 已注入,调 recheckCompilabilityRuntime 重判 →
-// f 升 gibbous → PromotionCount > 0。
+// TestPromotionCount_P3_NoForce_HotEntry_Lifts verifies the issue #18 fix:
+// under the default p3 build behavior (without calling SetForceAllPromote),
+// when a **long** inner function is called from the same entry
+// N > HotEntryThreshold times, runtime considerPromotion sees the compile-time
+// F7 placeholder (ReasonBackendUnsupp) plus b.p3 already injected, calls
+// recheckCompilabilityRuntime to re-decide → f is lifted to gibbous →
+// PromotionCount > 0.
 //
-// 修复前(issue #18):编译期 analyzeCompilability 用临时 Bridge 无 P3,所有 Proto
-// 被烧 CompNotCompilable + ReasonBackendUnsupp;运行期 considerPromotion 看 comp
-// != CompCompilable && !forceAll → 直接 TierStuck,**任何 Proto 即便达 1000 次
-// 调用也不升层**。本测之前的 reflection 用同样脚本实证 PromotionCount==0,这是
-// 反向断言;修复后此处转正向断言 > 0。
+// Before the fix (issue #18): compile-time analyzeCompilability used a
+// temporary Bridge without P3, so every Proto got burned in as
+// CompNotCompilable + ReasonBackendUnsupp; runtime considerPromotion saw
+// comp != CompCompilable && !forceAll → straight to TierStuck, so **no Proto
+// was promoted even at 1000 calls**. The reflection preceding this test used
+// the same script to empirically show PromotionCount==0, which was the reverse
+// assertion; after the fix this flips to the positive assertion > 0.
 //
-// **issue #21 守卫**(MinPromotableCodeLen):本测必须用 ≥10 opcodes 的 f,
-// 否则被 OnEnter 顶端的 short-proto 守卫直接 return,即便达 HotEntryThreshold
-// 也不升层。用包含若干算术 + 比较 + 局部变量的 f 凑够长度,F1-F7 全过 + 真实
-// 后端支持。
+// **issue #21 guard** (MinPromotableCodeLen): this test must use an f with ≥10
+// opcodes, otherwise the short-proto guard at the top of OnEnter returns
+// directly and no lifting happens even at HotEntryThreshold. Use an f with a
+// handful of arithmetic + comparison ops and local variables to reach the
+// length, so F1-F7 all pass and real backend support is present.
 func TestPromotionCount_P3_NoForce_HotEntry_Lifts(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{})
-	// 故意不调 SetForceAllPromote——本测就是要走自然热度路径
+	// Deliberately do not call SetForceAllPromote — this test is meant to take the natural hotness path
 
-	// f 含 ≥10 opcodes:Lua 5.1 用 RK 编码省 LOADK,纯算术压得很短;改用
-	// 多变量 + 多步骤 + 比较确保 opcode 数过阈值。
+	// f contains ≥10 opcodes: Lua 5.1 uses RK encoding to save LOADK, so pure
+	// arithmetic compiles very short; use multiple variables + multiple steps +
+	// comparison to ensure the opcode count clears the threshold.
 	//
-	// **issue #92 守卫**(straightLineMinCodeLen):f 还必须带回边(内层
-	// for)——无回边的直线小体会被 WorthPromoting 的回边维度拒收(每次
-	// 调用付 wasm 边界往返、无循环摊薄),即便过了长度地板也不升层。
+	// **issue #92 guard** (straightLineMinCodeLen): f must also carry a back
+	// edge (an inner for) — a straight-line small body with no back edge is
+	// rejected by the back-edge dimension of WorthPromoting (each call pays a
+	// wasm boundary round-trip with no loop to amortize it), so it is not lifted
+	// even after clearing the length floor.
 	prog, err := wangshu.Compile([]byte(`
 		local function f(x)
 			local a = x * 2
@@ -116,23 +129,28 @@ func TestPromotionCount_P3_NoForce_HotEntry_Lifts(t *testing.T) {
 	}
 }
 
-// TestPromotionCount_P3_NoForce_ShortProto_StaysCold 验证 issue #21 守卫:
-// p3 build 自然热度路径下,short proto(Code 长度 < MinPromotableCodeLen=10)
-// 即便被同入口调 N>HotEntryThreshold 次也**不升层**——pineapple 形态下 4-opcode
-// 算术 f 升层后 wasm 反噬大于解释器收益,守卫提前在 OnEnter 拦截。
+// TestPromotionCount_P3_NoForce_ShortProto_StaysCold verifies the issue #21
+// guard: on the natural hotness path of a p3 build, a short proto (Code length
+// < MinPromotableCodeLen=10) is **not lifted** even when called from the same
+// entry N > HotEntryThreshold times — in the pineapple shape, a 4-opcode
+// arithmetic f causes more wasm backlash after lifting than the interpreter
+// gains, so the guard intercepts it early in OnEnter.
 //
-// 对照 TestPromotionCount_P3_ForceAll_Increments(forceAll 绕过守卫升层成功)
-// 与 TestPromotionCount_P3_NoForce_HotEntry_Lifts(长 proto 自然热度升层成功)
-// 形成「短/长 × forceAll/自然热度」对照矩阵。
+// Set against TestPromotionCount_P3_ForceAll_Increments (forceAll bypasses the
+// guard and lifts successfully) and
+// TestPromotionCount_P3_NoForce_HotEntry_Lifts (a long proto lifts on natural
+// hotness), it forms a "short/long × forceAll/natural-hotness" comparison
+// matrix.
 //
-// **修复前(issue #21)**:此测 PromotionCount > 0(short proto 升层后反噬,
-// pineapple p3 vs p1 慢 19%);修复后 PromotionCount == 0(short proto 不升,
-// 走解释器路径)。
+// **Before the fix (issue #21)**: this test had PromotionCount > 0 (short proto
+// backlash after lifting, pineapple p3 vs p1 was 19% slower); after the fix
+// PromotionCount == 0 (short proto is not lifted and takes the interpreter
+// path).
 func TestPromotionCount_P3_NoForce_ShortProto_StaysCold(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{})
 
-	// f 是 4 opcodes(LOADK*0.85 装常量 + MUL + ADD + RETURN),< MinPromotableCodeLen=10。
-	// 即便被 1000 次调用,守卫提前拦截,PromotionCount 应仍是 0。
+	// f is 4 opcodes (LOADK loads the 0.85 constant + MUL + ADD + RETURN), < MinPromotableCodeLen=10.
+	// Even at 1000 calls, the guard intercepts early, so PromotionCount should still be 0.
 	prog, err := wangshu.Compile([]byte(`
 		local function f(x) return x * 0.85 + 10.0 end
 		local sum = 0

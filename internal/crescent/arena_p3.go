@@ -12,20 +12,24 @@ import (
 	"github.com/Liam0205/wangshu/internal/gibbous/wasm/memadapter"
 )
 
-// p3Env 持 wangshu_p3 build 下与 State arena 同源的 wazero Runtime + holder,
-// 供 wireP3 构造 gibbous Compiler 共享同一 runtime/linear memory。
+// p3Env holds the wazero Runtime + holder that share the same origin as the
+// State arena under the wangshu_p3 build, so that wireP3 can build a gibbous
+// Compiler sharing the same runtime / linear memory.
 type p3Env struct {
 	ctx    context.Context
 	rt     wazero.Runtime
 	holder *memadapter.MemoryHolder
 }
 
-// newStateArena 建 State 主 arena —— wangshu_p3 build 下收养 wazero linear
-// memory 作 backing(docs/design/p3-wasm-tier/03-memory-model.md §1)。
+// newStateArena builds the main State arena —— under the wangshu_p3 build it
+// adopts the wazero linear memory as its backing
+// (docs/design/p3-wasm-tier/03-memory-model.md §1).
 //
-// 流程:① 建 wazero Runtime(编译模式)② memadapter 建 MemoryHolder 分配
-// linear memory ③ arena.Options 注入 holder.Backing() + InPlaceBacking=true
-// (收养语义:grow 原地扩不 copy)。返回 p3Env 供 wireP3 取 runtime 构造 Compiler。
+// Flow: ① build a wazero Runtime (compiler mode) ② memadapter builds a
+// MemoryHolder allocating linear memory ③ arena.Options injects
+// holder.Backing() + InPlaceBacking=true (adoption semantics: grow expands in
+// place without copying). Returns p3Env so that wireP3 can take the runtime to
+// build the Compiler.
 func newStateArena(arenaOpts arena.Options) (*arena.Arena, func(), any) {
 	ctx := context.Background()
 	rt := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfigCompiler())
@@ -40,8 +44,10 @@ func newStateArena(arenaOpts arena.Options) (*arena.Arena, func(), any) {
 	}
 	holder, err := memadapter.New(ctx, rt, initial, maxB)
 	if err != nil {
-		// holder 建失败是 P3 环境问题(wazero 不可用 / 内存上限非法)——
-		// fail-fast,不静默退回 Go 堆(那会让 P3 build 静默跑成 P1 形态)。
+		// A holder build failure is a P3 environment problem (wazero
+		// unavailable / illegal memory limit) —— fail-fast, do not silently
+		// fall back to the Go heap (that would make the P3 build silently run
+		// as the P1 form).
 		_ = rt.Close(ctx)
 		panic("crescent: P3 build failed to adopt wazero memory: " + err.Error())
 	}
@@ -50,7 +56,7 @@ func newStateArena(arenaOpts arena.Options) (*arena.Arena, func(), any) {
 		InitialBytes:   initial,
 		MaxBytes:       maxB,
 		NewBacking:     holder.Backing(),
-		InPlaceBacking: true, // 收养语义:memory.grow 原地扩,grow64 不 copy
+		InPlaceBacking: true, // adoption semantics: memory.grow expands in place, grow64 does not copy
 	})
 
 	cleanup := func() {
@@ -60,12 +66,14 @@ func newStateArena(arenaOpts arena.Options) (*arena.Arena, func(), any) {
 	return a, cleanup, &p3Env{ctx: ctx, rt: rt, holder: holder}
 }
 
-// wireP3 构造 gibbous Compiler 并注入 bridge(VS0-d / PW2-d)。
+// wireP3 builds the gibbous Compiler and injects the bridge (VS0-d / PW2-d).
 //
-// Compiler 与 State arena 共享同一 wazero Runtime(p3Env.rt)——gibbous module
-// 经 import "env" "memory" 共享 holder 那块 linear memory(= State 值栈所在),
-// 故 trampoline 传的 base 字节偏移在 gibbous wasm 里寻址到的就是真实寄存器。
-// host 抽象注入 *State(实现 HostState:GetUpval/SetUpval/DoReturn/...)。
+// The Compiler shares the same wazero Runtime (p3Env.rt) with the State arena
+// —— the gibbous module shares, via import "env" "memory", the block of linear
+// memory held by holder (= where the State value stack lives), so the base
+// byte offset passed by the trampoline addresses the real registers inside the
+// gibbous wasm. The host abstraction injects *State (implementing HostState:
+// GetUpval/SetUpval/DoReturn/...).
 func (st *State) wireP3() {
 	env, ok := st.p3env.(*p3Env)
 	if !ok || env == nil {
@@ -75,12 +83,14 @@ func (st *State) wireP3() {
 	st.bridge.SetP3Compiler(c)
 }
 
-// arena 容量默认值(与 arena 包默认对齐;p3 build 显式传以保证 holder 与
-// arena 容量口径一致)。
+// Default values for arena capacity (aligned with the arena package defaults;
+// the p3 build passes them explicitly to keep the holder and arena capacity
+// consistent).
 const (
-	defaultInitialArenaBytes = 64 * 1024 // 64 KiB(arena.New 零值同值)
-	defaultMaxArenaBytes     = 1 << 31   // 2 GiB(arena.MaxBytes 量级内,wasm32 4GiB 内)
+	defaultInitialArenaBytes = 64 * 1024 // 64 KiB (same as arena.New zero value)
+	defaultMaxArenaBytes     = 1 << 31   // 2 GiB (within arena.MaxBytes scale, within wasm32 4GiB)
 )
 
-// wireP4 在 wangshu_p3 build 下 no-op(P3+P4 互斥 build tag,本 build 不启用 P4)。
+// wireP4 is a no-op under the wangshu_p3 build (P3 and P4 are mutually
+// exclusive build tags; this build does not enable P4).
 func (st *State) wireP4() {}

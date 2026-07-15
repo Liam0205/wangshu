@@ -1,4 +1,4 @@
-// 端到端解释器测试 — 算术 / 循环 / 调用三档(05 M9 验收口径)。
+// End-to-end interpreter tests — three tiers: arithmetic / loops / calls (05 M9 acceptance criteria).
 package crescent
 
 import (
@@ -10,7 +10,7 @@ import (
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
-// runLua 编译 src,加载,执行 main chunk 并返回结果。
+// runLua compiles src, loads it, executes the main chunk and returns the result.
 func runLua(t *testing.T, src string) *State {
 	t.Helper()
 	lx := lex.New([]byte(src), "test")
@@ -30,7 +30,7 @@ func runLua(t *testing.T, src string) *State {
 	return st
 }
 
-// TestExec_LocalArith — 简单算术 + 局部:验证 NaN-box 直算与 R(A) 写入。
+// TestExec_LocalArith — simple arithmetic + locals: verifies NaN-box direct computation and R(A) writes.
 func TestExec_LocalArith(t *testing.T) {
 	src := `
 local function add(a, b) return a + b end
@@ -43,7 +43,7 @@ result = add(3, 4)
 	}
 }
 
-// TestExec_NumericForLoop — 02 §8 求和函数 sum(n) = sum_{i=1}^{n} i*i,验证 FORPREP/FORLOOP。
+// TestExec_NumericForLoop — 02 §8 summation function sum(n) = sum_{i=1}^{n} i*i, verifies FORPREP/FORLOOP.
 func TestExec_NumericForLoop(t *testing.T) {
 	src := `
 local function f(n)
@@ -64,7 +64,7 @@ result = f(10)
 	}
 }
 
-// TestExec_RecursiveCall — 递归 fib(10),验证 reentry 不爆 Go 栈与多层 RETURN。
+// TestExec_RecursiveCall — recursive fib(10), verifies reentry does not blow the Go stack and multi-level RETURN.
 func TestExec_RecursiveCall(t *testing.T) {
 	src := `
 local function fib(n)
@@ -80,7 +80,7 @@ result = fib(10)
 	}
 }
 
-// TestExec_TailCall — 尾递归 1e3 次不爆栈(验证 TAILCALL 复用帧)。
+// TestExec_TailCall — 1e3 tail-recursive calls without blowing the stack (verifies TAILCALL frame reuse).
 func TestExec_TailCall(t *testing.T) {
 	src := `
 local function loop(n, acc)
@@ -96,7 +96,7 @@ result = loop(1000, 0)
 	}
 }
 
-// TestExec_WhileLoop — 验证 LT + JMP 回边。
+// TestExec_WhileLoop — verifies LT + JMP back-edge.
 func TestExec_WhileLoop(t *testing.T) {
 	src := `
 local function count(n)
@@ -113,7 +113,7 @@ result = count(100)
 	}
 }
 
-// TestExec_ClosureUpvalue — 验证 CLOSURE + 后随伪指令 + GETUPVAL/SETUPVAL。
+// TestExec_ClosureUpvalue — verifies CLOSURE + trailing pseudo-instructions + GETUPVAL/SETUPVAL.
 func TestExec_ClosureUpvalue(t *testing.T) {
 	src := `
 local function make()
@@ -130,7 +130,7 @@ result = make()
 	}
 }
 
-// TestExec_IfElse — if/elseif/else 的多分支跳转。
+// TestExec_IfElse — multi-branch jumps of if/elseif/else.
 func TestExec_IfElse(t *testing.T) {
 	src := `
 local function pick(a, b)
@@ -151,13 +151,13 @@ r3 = pick(3, 3)
 	}
 }
 
-// makeStringValue intern 一个字符串字面量,返回对应 Value(便于测试查 globals)。
+// makeStringValue interns a string literal and returns the corresponding Value (convenient for tests looking up globals).
 func (st *State) makeStringValue(s string) value.Value {
 	ref := st.gc.Intern([]byte(s))
 	return value.MakeGC(value.TagString, ref)
 }
 
-// debugVal 返回一个易读字符串(测试失败时打印)。
+// debugVal returns a human-readable string (printed on test failure).
 func debugVal(st *State, v value.Value) string {
 	if value.IsNumber(v) {
 		return formatLuaNumber(value.AsNumber(v))

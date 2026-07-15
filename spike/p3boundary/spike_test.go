@@ -8,14 +8,14 @@ import (
 	"github.com/tetratelabs/wazero/api"
 )
 
-// newCompilerRuntime 建一个**编译模式** wazero runtime(非解释器)。
-// P3 生产形态是编译模式;解释模式数据无效(01-spike-gate §1.4)。
+// newCompilerRuntime builds a wazero runtime in **compiler mode** (not the interpreter).
+// The P3 production form is compiler mode; interpreter-mode data is invalid (01-spike-gate §1.4).
 func newCompilerRuntime(ctx context.Context) wazero.Runtime {
 	return wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfigCompiler())
 }
 
-// TestModulesInstantiate 验证四个手写 wasm 二进制能被 wazero 编译 + 实例化。
-// 这是 spike 的前置:手写字节正确才能跑 benchmark。
+// TestModulesInstantiate verifies that the four hand-written wasm binaries can be compiled + instantiated by wazero.
+// This is a prerequisite for the spike: only correct hand-written bytes can run the benchmark.
 func TestModulesInstantiate(t *testing.T) {
 	ctx := context.Background()
 	rt := newCompilerRuntime(ctx)
@@ -42,7 +42,7 @@ func TestModulesInstantiate(t *testing.T) {
 		t.Error("S2: mem not exported")
 	}
 
-	// S3 需要先注册 host module "env"
+	// S3 requires registering the host module "env" first
 	_, err = rt.NewHostModuleBuilder("env").
 		NewFunctionBuilder().
 		WithFunc(func() {}).
@@ -69,8 +69,8 @@ func TestModulesInstantiate(t *testing.T) {
 	}
 }
 
-// TestS2Semantics 验证 S2 模块语义正确:i64.load offset=8 → i64.store offset=0。
-// 这同时是 memory 共见的最小验证(Go 写 → Wasm 读 → Wasm 写 → Go 读)。
+// TestS2Semantics verifies the S2 module has correct semantics: i64.load offset=8 → i64.store offset=0.
+// This is also the minimal verification that memory is shared (Go writes → Wasm reads → Wasm writes → Go reads).
 func TestS2Semantics(t *testing.T) {
 	ctx := context.Background()
 	rt := newCompilerRuntime(ctx)
@@ -83,15 +83,15 @@ func TestS2Semantics(t *testing.T) {
 	fn := mod.ExportedFunction("rw")
 	mem := mod.ExportedMemory("mem")
 
-	// Go 侧写 offset=8 处一个值
+	// On the Go side, write a value at offset=8
 	const want = uint64(0xC0FFEE_DEADBEEF)
 	if !mem.WriteUint64Le(8, want) {
 		t.Fatal("WriteUint64Le failed")
 	}
-	// 先把 offset=0 清成别的值,确认 store 真的写了
+	// First set offset=0 to a different value, to confirm the store actually wrote
 	mem.WriteUint64Le(0, 0xAAAA)
 
-	// 调 Wasm:它把 [8] load 出来 store 到 [0]
+	// Call Wasm: it loads [8] and stores it to [0]
 	res, err := fn.Call(ctx, 0)
 	if err != nil {
 		t.Fatalf("call: %v", err)
@@ -100,7 +100,7 @@ func TestS2Semantics(t *testing.T) {
 		t.Errorf("status = %v, want [0]", res)
 	}
 
-	// Go 侧读 offset=0,应等于 want(Wasm 写的值,Go 直接读到 — 共见)
+	// On the Go side, read offset=0; it should equal want (the value Wasm wrote, read directly by Go — shared)
 	got, ok := mem.ReadUint64Le(0)
 	if !ok {
 		t.Fatal("ReadUint64Le failed")

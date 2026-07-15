@@ -2,28 +2,28 @@
 
 package wasm
 
-// gibbous module 二进制组装(02-translation §7 wazero 适配)。
+// gibbous module binary assembly (02-translation §7 wazero adaptation).
 //
-// 把翻译产物(function body 字节,translate.go)包成一个完整的 Wasm module
-// 二进制:import memory(共享 arena 收养的那块)+ import helpers(env.h_*)+
-// 一个导出的入口函数 proto_entry。
+// Wraps the translation output (function body bytes, translate.go) into a
+// complete Wasm module binary: import memory (the block adopted by the shared
+// arena) + import helpers (env.h_*) + one exported entry function proto_entry.
 //
-// module 结构(section 顺序按 Wasm spec):
-//   Type(1)     :函数签名(入口 + 各 helper)
-//   Import(2)   :env.memory + env.h_getupval/h_setupval/h_return/h_safepoint
-//   Function(3) :本地函数(入口)的 type 索引
-//   Export(7)   :导出入口函数 "run"
-//   Code(10)    :入口函数体
+// module structure (section order per the Wasm spec):
+//   Type(1)     : function signatures (entry + each helper)
+//   Import(2)   : env.memory + env.h_getupval/h_setupval/h_return/h_safepoint
+//   Function(3) : type index of the local function (entry)
+//   Export(7)   : export entry function "run"
+//   Code(10)    : entry function body
 
-// helper 签名(对应 helpers_index.go 的 import 顺序)。
-// 每个 helper 一个 type;入口函数也一个 type。
+// helper signatures (matching the import order in helpers_index.go).
+// One type per helper; the entry function also has a type.
 //
-// type 索引布局:
+// type index layout:
 //   type 0: (i32, i32) -> (i64)            h_getupval
 //   type 1: (i32, i32, i64) -> ()          h_setupval
 //   type 2: (i32, i32, i32, i32) -> (i32)  h_return
-//   type 3: (i32, i32) -> (i32)            h_safepoint(base,pc → status)
-//   type 4: (i32) -> (i32)                 入口 run(base) -> status
+//   type 3: (i32, i32) -> (i32)            h_safepoint(base,pc -> status)
+//   type 4: (i32) -> (i32)                 entry run(base) -> status
 //   type 5: (i32,i32,i32,i32,i32,i32)->(i32) h_arith(base,pc,op,b,c,a)
 //   type 6: (i32,i32,i32,i32) -> (i32)     h_unm(base,pc,b,a) / h_eq(base,pc,b,c)
 //   type 7: (i32,i32,i32,i32) -> (i32)     h_len(base,pc,b,a)
@@ -37,34 +37,36 @@ const (
 	typeSafepoint = 3
 	typeEntry     = 4
 	typeArith     = 5
-	typeUnm       = 6 // 同 typeReturn 形状(i32×4→i32)但单列以便阅读
+	typeUnm       = 6 // same shape as typeReturn (i32×4->i32) but listed separately for readability
 	typeLen       = 7
 	typeConcat    = 8
 	typeForPrep   = 9
-	typeCall      = 10 // (i32×5)->(i64)  h_call 返回新 base / 负哨兵
-	typeTForLoop  = 11 // (i32×4)->(i64)  h_tforloop 返回新 base / -1 ERR / -2 退出
-	typeCallErr   = 12 // ()->()  h_callerr:call_indirect 直调失败补弹遗留 gibbous 帧(PW10 R3)
+	typeCall      = 10 // (i32×5)->(i64)  h_call returns new base / negative sentinel
+	typeTForLoop  = 11 // (i32×4)->(i64)  h_tforloop returns new base / -1 ERR / -2 exit
+	typeCallErr   = 12 // ()->()  h_callerr: pops leftover gibbous frames after a direct call_indirect failure (PW10 R3)
 	numTypes      = 13
 )
 
-// Wasm value type 编码。
+// Wasm value type encoding.
 const (
 	wvtI32 byte = 0x7f
 	wvtI64 byte = 0x7e
 	wvtF64 byte = 0x7c
 )
 
-// buildGibbousModuleBinary 组装完整 module 二进制。
+// buildGibbousModuleBinary assembles the complete module binary.
 //
-// body 是 translate 产出的入口函数体(不含 local decl 与末尾 end)。
-// slot 是本 module 的 run 在共享 env.table 里的槽号(PW10 Arch-2):Element 段
-// active 写 table[slot] = run,使 gibbous→gibbous 可经 call_indirect 跨 module 直达。
-// slot == maxTableSlots(表满哨兵)时不发 Element 段(避免越界写),该 module 仍可
-// 编译执行,只是不进表(gibbous→它 回退 h_call)。
+// body is the entry function body produced by translate (without local decls
+// and the trailing end).
+// slot is the slot index of this module's run within the shared env.table
+// (PW10 Arch-2): the Element segment actively writes table[slot] = run, so that
+// gibbous->gibbous can reach across modules directly via call_indirect.
+// When slot == maxTableSlots (table-full sentinel) no Element segment is
+// emitted (to avoid an out-of-bounds write); the module still compiles and
+// runs, it just does not enter the table (gibbous->it falls back to h_call).
 func buildGibbousModuleBinary(body []byte, slot uint32) []byte {
 	var b []byte
 	b = append(b, 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00) // magic+version
-
 	b = append(b, typeSection()...)
 	b = append(b, importSection()...)
 	b = append(b, functionSection()...)
@@ -76,25 +78,27 @@ func buildGibbousModuleBinary(body []byte, slot uint32) []byte {
 	return b
 }
 
-// elementSection 把入口 run(function index = numHelpers,import 后第一个本地函数)
-// active 注册进共享 env.table 的 slot(PW10 Arch-2 自注册)。
+// elementSection actively registers the entry run (function index = numHelpers,
+// the first local function after the imports) into slot of the shared env.table
+// (PW10 Arch-2 self-registration).
 //
 //	(elem (i32.const slot) func $run)
 //
-// flags=0:active,table 0(唯一 import 表),offset 由 const expr 给。
+// flags=0: active, table 0 (the sole imported table), offset given by a const expr.
 func elementSection(slot uint32) []byte {
 	var p []byte
-	p = append(p, uleb32(1)...)                // 1 个 segment
-	p = append(p, 0x00)                        // flags=0(active, table 0, offset expr)
+	p = append(p, uleb32(1)...)                // 1 segment
+	p = append(p, 0x00)                        // flags=0 (active, table 0, offset expr)
 	p = append(p, 0x41)                        // i32.const
 	p = append(p, sleb32Bytes(int32(slot))...) // offset = slot
-	p = append(p, 0x0b)                        // end(offset expr 结束)
-	p = append(p, uleb32(1)...)                // 1 个 funcidx
-	p = append(p, uleb32(numHelpers)...)       // run = import 后第一个本地 func
+	p = append(p, 0x0b)                        // end (offset expr done)
+	p = append(p, uleb32(1)...)                // 1 funcidx
+	p = append(p, uleb32(numHelpers)...)       // run = first local func after imports
 	return sectionOf(0x09, p)
 }
 
-// sleb32Bytes 有符号 LEB128(i32.const 立即数;slot 是非负小数,但走通用编码)。
+// sleb32Bytes signed LEB128 (i32.const immediate; slot is a small non-negative
+// number, but goes through the generic encoding).
 func sleb32Bytes(v int32) []byte {
 	var out []byte
 	for {
@@ -109,7 +113,7 @@ func sleb32Bytes(v int32) []byte {
 	}
 }
 
-// typeSection 声明 5 个函数类型。
+// typeSection declares the 5 function types.
 func typeSection() []byte {
 	var p []byte
 	p = append(p, uleb32(numTypes)...) // count
@@ -120,7 +124,7 @@ func typeSection() []byte {
 	p = append(p, 0x60, 0x03, wvtI32, wvtI32, wvtI64, 0x00)
 	// type 2: (i32,i32,i32,i32)->(i32)
 	p = append(p, 0x60, 0x04, wvtI32, wvtI32, wvtI32, wvtI32, 0x01, wvtI32)
-	// type 3: (i32,i32)->(i32)  h_safepoint(base,pc → status:0 OK / 1 raise)
+	// type 3: (i32,i32)->(i32)  h_safepoint(base,pc -> status: 0 OK / 1 raise)
 	p = append(p, 0x60, 0x02, wvtI32, wvtI32, 0x01, wvtI32)
 	// type 4: (i32)->(i32)
 	p = append(p, 0x60, 0x01, wvtI32, 0x01, wvtI32)
@@ -134,43 +138,48 @@ func typeSection() []byte {
 	p = append(p, 0x60, 0x05, wvtI32, wvtI32, wvtI32, wvtI32, wvtI32, 0x01, wvtI32)
 	// type 9: (i32,i32,i32)->(i32)  h_forprep
 	p = append(p, 0x60, 0x03, wvtI32, wvtI32, wvtI32, 0x01, wvtI32)
-	// type 10: (i32,i32,i32,i32,i32)->(i64)  h_call(base,pc,a,b,c → newbase/-1)
+	// type 10: (i32,i32,i32,i32,i32)->(i64)  h_call(base,pc,a,b,c -> newbase/-1)
 	p = append(p, 0x60, 0x05, wvtI32, wvtI32, wvtI32, wvtI32, wvtI32, 0x01, wvtI64)
-	// type 11: (i32,i32,i32,i32)->(i64)  h_tforloop(base,pc,a,c → newbase/-1/-2)
+	// type 11: (i32,i32,i32,i32)->(i64)  h_tforloop(base,pc,a,c -> newbase/-1/-2)
 	p = append(p, 0x60, 0x04, wvtI32, wvtI32, wvtI32, wvtI32, 0x01, wvtI64)
-	// type 12: ()->()  h_callerr(PW10 R3:无参无返,补弹遗留 gibbous 帧)
+	// type 12: ()->()  h_callerr(PW10 R3: no params, no returns, pops leftover gibbous frames)
 	p = append(p, 0x60, 0x00, 0x00)
 
 	return sectionOf(0x01, p)
 }
 
-// importSection 声明 import memory + 4 个 helper。
+// importSection declares import memory + 4 helpers.
 //
-// memory 从 "env" module(memadapter holder,普通 module export memory);
-// helper 从 "host" module(wazero HostModuleBuilder 注册的 Go 函数)。
-// 两个 module name 不同——wazero HostModuleBuilder 不能 export memory,
-// 普通 module 不能注册 Go host 函数,故 memory 与 helper 分属不同 module
-// (PW2-c 跨 module memory 共享已 spike 验证)。
+// memory comes from the "env" module (memadapter holder, a normal module that
+// exports memory); helpers come from the "host" module (Go functions registered
+// via wazero HostModuleBuilder).
+// The two module names differ -- wazero HostModuleBuilder cannot export memory,
+// and a normal module cannot register Go host functions, so memory and helpers
+// belong to different modules
+// (PW2-c cross-module memory sharing was already validated by a spike).
 //
-// import 顺序决定 helper 的 function index(helpers_index.go 常量):
-// h_getupval=0, h_setupval=1, h_return=2, h_safepoint=3。memory import 不占
-// function index 空间。
+// The import order determines each helper's function index (constants in
+// helpers_index.go): h_getupval=0, h_setupval=1, h_return=2, h_safepoint=3. The
+// memory import does not occupy function index space.
 func importSection() []byte {
 	var p []byte
-	// count = 1 memory + 1 table + 24 funcs = 26(PW10 R3 加 env.h_callerr)
+	// count = 1 memory + 1 table + 24 funcs = 26 (PW10 R3 adds env.h_callerr)
 	p = append(p, uleb32(26)...)
 
-	// import env.memory : memory(limits flags=0 min=1)——共享 holder 的 memory
+	// import env.memory : memory (limits flags=0 min=1) -- the shared holder's memory
 	p = append(p, importEntry("env", "memory", 0x02, []byte{0x00, 0x01})...)
 
-	// import env.table : funcref table(PW10 Arch-2)——共享 holder 那张升层函数
-	// 注册表。本 module 的 run 经 element 段自注册进一个 slot;gibbous→gibbous
-	// CALL 经 call_indirect 此表跨 module 直达被调 run(R3 接线)。import 表不占
-	// function index 空间(同 memory),故 helper / entry func index 不变。
-	// limits flags=0 min=0(import 声明「至少 0」,env 实供 TableSlots)。
+	// import env.table : funcref table (PW10 Arch-2) -- the shared holder's uplevel
+	// function registry. This module's run self-registers into a slot via the
+	// element segment; a gibbous->gibbous CALL reaches the callee run across
+	// modules directly via call_indirect on this table (R3 wiring). The imported
+	// table does not occupy function index space (like memory), so helper / entry
+	// func indices stay unchanged.
+	// limits flags=0 min=0 (the import declares "at least 0"; env actually
+	// provides TableSlots).
 	p = append(p, importEntry("env", "table", 0x01, []byte{0x70, 0x00, 0x00})...)
 
-	// import host.h_* : func(顺序 = function index = helpers_index.go 常量)
+	// import host.h_* : func (order = function index = constants in helpers_index.go)
 	p = append(p, importFuncEntry("host", "h_getupval", typeGetUpval)...)
 	p = append(p, importFuncEntry("host", "h_setupval", typeSetUpval)...)
 	p = append(p, importFuncEntry("host", "h_return", typeReturn)...)
@@ -182,8 +191,8 @@ func importSection() []byte {
 	p = append(p, importFuncEntry("host", "h_compare", typeConcat)...) // (i32×5→i32)
 	p = append(p, importFuncEntry("host", "h_eq", typeUnm)...)         // (i32×4→i32)
 	p = append(p, importFuncEntry("host", "h_forprep", typeForPrep)...)
-	// PW5 表 IC 助手:gettable/settable/self/newtable/setlist 是 (base,pc,a,b,c)
-	// = i32×5→i32 = typeConcat;getglobal/setglobal 是 (base,pc,a,bx) = i32×4→i32 = typeUnm。
+	// PW5 table IC helpers: gettable/settable/self/newtable/setlist are (base,pc,a,b,c)
+	// = i32×5->i32 = typeConcat; getglobal/setglobal are (base,pc,a,bx) = i32×4->i32 = typeUnm.
 	p = append(p, importFuncEntry("host", "h_gettable", typeConcat)...)
 	p = append(p, importFuncEntry("host", "h_settable", typeConcat)...)
 	p = append(p, importFuncEntry("host", "h_getglobal", typeUnm)...)
@@ -201,16 +210,16 @@ func importSection() []byte {
 	return sectionOf(0x02, p)
 }
 
-// functionSection 声明本地函数(入口 run)的 type 索引。
-// 入口是 import 之后的 function index = numHelpers(4)。
+// functionSection declares the type index of the local function (entry run).
+// The entry is the function index after the imports = numHelpers (4).
 func functionSection() []byte {
 	var p []byte
-	p = append(p, uleb32(1)...)         // count = 1 本地函数
-	p = append(p, uleb32(typeEntry)...) // 入口用 type 4
+	p = append(p, uleb32(1)...)         // count = 1 local function
+	p = append(p, uleb32(typeEntry)...) // entry uses type 4
 	return sectionOf(0x03, p)
 }
 
-// exportSection 导出入口函数 "run"。
+// exportSection exports the entry function "run".
 func exportSection() []byte {
 	var p []byte
 	p = append(p, uleb32(1)...) // count
@@ -218,36 +227,38 @@ func exportSection() []byte {
 	p = append(p, byte(len(name)))
 	p = append(p, name...)
 	p = append(p, 0x00)                  // kind=func
-	p = append(p, uleb32(numHelpers)...) // 入口 function index = 4(import 后第一个本地)
+	p = append(p, uleb32(numHelpers)...) // entry function index = 4 (first local after imports)
 	return sectionOf(0x07, p)
 }
 
-// codeSectionEntry 入口函数 code(local decl + body + end)。
+// codeSectionEntry entry function code (local decl + body + end).
 func codeSectionEntry(body []byte) []byte {
-	// local decl(顺序决定 local index,param $base=0 之后):
-	//   组1: 2×i64 → index 1,2(localI64a/localI64b)
-	//   组2: 2×i32 → index 3,5(localI32 helper status / localI32b 表地址)
-	//   组3: 1×f64 → index 4(localF64,算术结果)
-	//   组4: 1×i64 → index 6(localI64c,PW5 键/槽值中转)
-	//   组5: 1×i32 → index 7(localSavedTop,PW10 零跨界 ③a:caller 自恢复 top 快照)
-	// 注:local index 由声明顺序决定(组内连号)。组2 声明 2×i32 占 3,4? 否——
-	// 组顺序即 index 顺序:组1 i64 占 1,2;组2 i32 占 3,4;组3 f64 占 5;组4 i64 占 6。
-	// 为保持 PW2-PW4 既有 index(localI32=3 / localF64=4)不变,组顺序须为:
-	//   组1 2×i64(1,2) / 组2 1×i32(3) / 组3 1×f64(4) / 组4 1×i32(5) / 组5 1×i64(6)
-	//   / 组6 1×i32(7,PW10 零跨界 ③a localSavedTop)。
+	// local decl (order determines local index, after param $base=0):
+	//   group1: 2×i64 -> index 1,2 (localI64a/localI64b)
+	//   group2: 2×i32 -> index 3,5 (localI32 helper status / localI32b table addr)
+	//   group3: 1×f64 -> index 4 (localF64, arithmetic result)
+	//   group4: 1×i64 -> index 6 (localI64c, PW5 key/slot value relay)
+	//   group5: 1×i32 -> index 7 (localSavedTop, PW10 zero-cross ③a: caller self-restore top snapshot)
+	// Note: local index is determined by declaration order (consecutive within a
+	// group). Group2 declares 2×i32 taking 3,4? No -- group order is index order:
+	// group1 i64 takes 1,2; group2 i32 takes 3,4; group3 f64 takes 5; group4 i64 takes 6.
+	// To keep the existing PW2-PW4 indices (localI32=3 / localF64=4) unchanged, the
+	// group order must be:
+	//   group1 2×i64(1,2) / group2 1×i32(3) / group3 1×f64(4) / group4 1×i32(5) / group5 1×i64(6)
+	//   / group6 1×i32(7, PW10 zero-cross ③a localSavedTop).
 	var locals []byte
-	locals = append(locals, uleb32(6)...) // 6 个 local 组
-	locals = append(locals, uleb32(2)...) // 2 个 i64 → index 1,2
+	locals = append(locals, uleb32(6)...) // 6 local groups
+	locals = append(locals, uleb32(2)...) // 2 i64 -> index 1,2
 	locals = append(locals, wvtI64)
-	locals = append(locals, uleb32(1)...) // 1 个 i32 → index 3(localI32)
+	locals = append(locals, uleb32(1)...) // 1 i32 -> index 3 (localI32)
 	locals = append(locals, wvtI32)
-	locals = append(locals, uleb32(1)...) // 1 个 f64 → index 4(localF64)
+	locals = append(locals, uleb32(1)...) // 1 f64 -> index 4 (localF64)
 	locals = append(locals, wvtF64)
-	locals = append(locals, uleb32(1)...) // 1 个 i32 → index 5(localI32b,PW5 表地址)
+	locals = append(locals, uleb32(1)...) // 1 i32 -> index 5 (localI32b, PW5 table addr)
 	locals = append(locals, wvtI32)
-	locals = append(locals, uleb32(1)...) // 1 个 i64 → index 6(localI64c,PW5 键/槽值)
+	locals = append(locals, uleb32(1)...) // 1 i64 -> index 6 (localI64c, PW5 key/slot value)
 	locals = append(locals, wvtI64)
-	locals = append(locals, uleb32(1)...) // 1 个 i32 → index 7(localSavedTop,PW10 零跨界 ③a)
+	locals = append(locals, uleb32(1)...) // 1 i32 -> index 7 (localSavedTop, PW10 zero-cross ③a)
 	locals = append(locals, wvtI32)
 
 	funcBody := append([]byte{}, locals...)
@@ -255,13 +266,13 @@ func codeSectionEntry(body []byte) []byte {
 	funcBody = append(funcBody, opEnd)
 
 	var p []byte
-	p = append(p, uleb32(1)...) // count = 1 函数
+	p = append(p, uleb32(1)...) // count = 1 function
 	p = append(p, uleb32(uint32(len(funcBody)))...)
 	p = append(p, funcBody...)
 	return sectionOf(0x0a, p)
 }
 
-// --- section / import 编码 helper ---
+// --- section / import encoding helpers ---
 
 func sectionOf(id byte, payload []byte) []byte {
 	out := []byte{id}
@@ -269,7 +280,7 @@ func sectionOf(id byte, payload []byte) []byte {
 	return append(out, payload...)
 }
 
-// importEntry 拼一个 import 项:mod_name + field_name + kind + desc。
+// importEntry builds one import entry: mod_name + field_name + kind + desc.
 //   - memory: kind=0x02, desc=limits(flags+min[+max])
 //   - func:   kind=0x00, desc=type index(uleb)
 func importEntry(mod, name string, kind byte, desc []byte) []byte {
@@ -287,8 +298,8 @@ func importFuncEntry(mod, name string, typeIdx uint32) []byte {
 	return importEntry(mod, name, 0x00, uleb32(typeIdx))
 }
 
-// uleb32 unsigned LEB128(module 组装用,与 emitter.uleb 同算法,独立函数
-// 避免依赖 emitter 实例)。
+// uleb32 unsigned LEB128 (for module assembly; same algorithm as emitter.uleb,
+// kept as a standalone function to avoid depending on an emitter instance).
 func uleb32(v uint32) []byte {
 	var out []byte
 	for {

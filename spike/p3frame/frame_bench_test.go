@@ -8,24 +8,34 @@ import (
 	"github.com/tetratelabs/wazero/api"
 )
 
-// Stage 0 spike 基准:对比两形态单次 leaf 调用的「建拆帧」摊销成本。
+// Stage 0 spike benchmark: compare the amortized frame build/teardown cost of
+// a single leaf call across two forms.
 //
-//   - inwasm  :建拆帧全 Wasm 内(段字写 + ciDepth 增减 + maxOpenIdx 守卫),热路径零 Go 跨界。
-//   - twocross:建拆帧经 h_call + h_return 两次 host 跨界(Go 做等价段字写 + ciDepth 调整)。
+//   - inwasm  : frame build/teardown fully inside Wasm (segment word writes +
+//     ciDepth inc/dec + maxOpenIdx guard), zero Go crossings on the hot path.
+//   - twocross: frame build/teardown via two host crossings, h_call + h_return
+//     (Go does the equivalent segment word writes + ciDepth adjustment).
 //
-// driver 紧循环调 leaf leafN(=100000)次,ns/op ÷ leafN = 单次「dispatch + 建拆帧」摊销。
-// 两形态差值 = 「两次 host 跨界」vs「Wasm 内做同样工作」的净成本。
+// The driver tightly loops the leaf leafN(=100000) times; ns/op ÷ leafN = the
+// per-call amortized "dispatch + frame build/teardown". The delta between the
+// two forms = the net cost of "two host crossings" vs "doing the same work
+// inside Wasm".
 //
-// 闸门:inwasm 必须显著快过 twocross(标尺:足以把 call 核从 0.49x 拉到 ≥1x ⟹
-// 每次调用至少省下一个数量级可观的时间)。同时 allocs/op 不回退(两者都应 ≈0)。
+// Gate: inwasm must be markedly faster than twocross (yardstick: enough to pull
+// the call kernel from 0.49x up to ≥1x ⟹ each call saves at least an order of
+// magnitude of meaningful time). allocs/op must not regress either (both should
+// be ≈0).
 //
-// 运行:cd spike/p3frame && go test -bench . -benchmem -benchtime=2s -count=3
+// Run: cd spike/p3frame && go test -bench . -benchmem -benchtime=2s -count=3
 
-// hostState 持共享 memory 句柄,h_call/h_return 经它做等价 Go 侧帧工作。
+// hostState holds the shared memory handle; h_call/h_return do the equivalent
+// Go-side frame work through it.
 type hostState struct{ mem api.Memory }
 
-// hCall 模拟 twocross 建帧:写 4 段字 @ segBase+depth*32 + ciDepth++。
-// 用 stack-based 零分配 API(对齐 R3.5 生产 WithGoModuleFunction)。
+// hCall simulates the twocross frame build: write 4 segment words @
+// segBase+depth*32 + ciDepth++.
+// Uses the stack-based zero-alloc API (matching R3.5 production
+// WithGoModuleFunction).
 func (h *hostState) hCall(_ context.Context, _ api.Module, stack []uint64) {
 	depth, _ := h.mem.ReadUint32Le(ciDepthOff)
 	addr := uint32(segBase) + depth*ciWords*8
@@ -34,23 +44,25 @@ func (h *hostState) hCall(_ context.Context, _ api.Module, stack []uint64) {
 	h.mem.WriteUint64Le(addr+16, 0x33)
 	h.mem.WriteUint64Le(addr+24, 0x44)
 	h.mem.WriteUint32Le(ciDepthOff, depth+1)
-	stack[0] = 0 // 模拟返回刷新后 base(drop)
+	stack[0] = 0 // simulate base after return refresh (drop)
 }
 
-// hReturn 模拟 twocross 拆帧:读 maxOpenIdx 守卫 + ciDepth--。
+// hReturn simulates the twocross frame teardown: read maxOpenIdx guard +
+// ciDepth--.
 func (h *hostState) hReturn(_ context.Context, _ api.Module, stack []uint64) {
-	_, _ = h.mem.ReadUint32Le(maxOpenOff) // 守卫读取(恒过)
+	_, _ = h.mem.ReadUint32Le(maxOpenOff) // guard read (always passes)
 	depth, _ := h.mem.ReadUint32Le(ciDepthOff)
 	h.mem.WriteUint32Le(ciDepthOff, depth-1)
 }
 
-// setup 建 runtime + env.memory holder + spike module,返回两 driver 入口 + 清理。
+// setup builds runtime + env.memory holder + spike module, returning the two
+// driver entries + cleanup.
 func setup(b *testing.B) (inwasm, twocross api.Function, mem api.Memory, closer func()) {
 	b.Helper()
 	ctx := context.Background()
 	rt := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfigCompiler())
 
-	// env.memory holder。
+	// env.memory holder.
 	envMod, err := rt.InstantiateWithConfig(ctx, buildEnvModule(),
 		wazero.NewModuleConfig().WithName("env"))
 	if err != nil {
@@ -59,7 +71,7 @@ func setup(b *testing.B) (inwasm, twocross api.Function, mem api.Memory, closer 
 	mem = envMod.Memory()
 	hs := &hostState{mem: mem}
 
-	// host module:h_call(type0 i32->i32)+ h_return(type1 i32->())。
+	// host module: h_call (type0 i32->i32) + h_return (type1 i32->()).
 	_, err = rt.NewHostModuleBuilder("host").
 		NewFunctionBuilder().WithGoModuleFunction(api.GoModuleFunc(hs.hCall),
 		[]api.ValueType{api.ValueTypeI32}, []api.ValueType{api.ValueTypeI32}).Export("h_call").
@@ -70,7 +82,7 @@ func setup(b *testing.B) (inwasm, twocross api.Function, mem api.Memory, closer 
 		b.Fatalf("host instantiate: %v", err)
 	}
 
-	// spike module(import env.memory + host.h_call/h_return)。
+	// spike module (import env.memory + host.h_call/h_return).
 	mod, err := rt.InstantiateWithConfig(ctx, buildFrameModule(),
 		wazero.NewModuleConfig().WithName("spike"))
 	if err != nil {
@@ -88,7 +100,7 @@ func BenchmarkFrame_Inwasm(b *testing.B) {
 	inwasm, _, mem, closer := setup(b)
 	defer closer()
 	ctx := context.Background()
-	// 初始化 ciDepth=0, maxOpenIdx=0(守卫恒过)。
+	// Initialize ciDepth=0, maxOpenIdx=0 (guard always passes).
 	mem.WriteUint32Le(ciDepthOff, 0)
 	mem.WriteUint32Le(maxOpenOff, 0)
 	stack := make([]uint64, 1)
@@ -124,9 +136,11 @@ func BenchmarkFrame_Twocross(b *testing.B) {
 	b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N)/leafN, "ns/call")
 }
 
-// BenchmarkFrame_Guarded:建拆帧全 Wasm 内 + 真实运行期守卫(段基址现读字 +
-// maxOpenIdx 守卫分支 + caller gibbous 位检查)。量「带完整守卫的内联帧建拆」是否
-// 仍显著快过 2 跨界——守卫开销会不会吞掉收益。
+// BenchmarkFrame_Guarded: frame build/teardown fully inside Wasm + the real
+// runtime guards (segment base read live as a word + maxOpenIdx guard branch +
+// caller gibbous bit check). Measures whether "inlined frame build/teardown
+// with full guards" is still markedly faster than 2 crossings — i.e. whether
+// the guard overhead eats the gain.
 func BenchmarkFrame_Guarded(b *testing.B) {
 	setup3 := func() (api.Function, api.Memory, func()) {
 		ctx := context.Background()
@@ -158,7 +172,7 @@ func BenchmarkFrame_Guarded(b *testing.B) {
 	ctx := context.Background()
 	mem.WriteUint32Le(ciDepthOff, 0)
 	mem.WriteUint32Le(maxOpenOff, 0)
-	mem.WriteUint32Le(segBaseWordOff, segBase) // 段基址镜像字(guarded 现读)
+	mem.WriteUint32Le(segBaseWordOff, segBase) // segment base mirror word (guarded reads live)
 	stack := make([]uint64, 1)
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -172,8 +186,9 @@ func BenchmarkFrame_Guarded(b *testing.B) {
 	b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N)/leafN, "ns/call")
 }
 
-// TestFrame_BothComputeSame 正确性:两 driver 都算 Σ leaf(n) = Σ(3n+1),
-// 确认建拆帧逻辑不破坏 leaf 调用结果(spike 计算自洽)。
+// TestFrame_BothComputeSame correctness: both drivers compute Σ leaf(n) =
+// Σ(3n+1), confirming the frame build/teardown logic does not corrupt the leaf
+// call result (spike computation is self-consistent).
 func TestFrame_BothComputeSame(t *testing.T) {
 	ctx := context.Background()
 	rt := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfigCompiler())
@@ -215,7 +230,7 @@ func TestFrame_BothComputeSame(t *testing.T) {
 		if uint32(out[0]) != want {
 			t.Errorf("%s = %d, want %d", name, uint32(out[0]), want)
 		}
-		// 收尾 ciDepth 应回 0(建拆帧配平)。
+		// On finish ciDepth should return to 0 (frame build/teardown balanced).
 		if d, _ := mem.ReadUint32Le(ciDepthOff); d != 0 {
 			t.Errorf("%s 收尾 ciDepth = %d, want 0(建拆帧未配平)", name, d)
 		}

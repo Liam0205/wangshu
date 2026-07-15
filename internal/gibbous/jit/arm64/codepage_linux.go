@@ -1,12 +1,12 @@
 //go:build wangshu_p4 && linux && arm64
 
-// Package arm64 arm64 后端代码页管理(W^X 翻面 + munmap + icache flush)。
+// Package arm64 manages the arm64 backend code page (W^X flip + munmap + icache flush).
 //
-// 承 docs/design/p4-method-jit/05-system-pipeline.md §2.1 exec mmap 协议 +
-// §2.3 arm64 icache flush 协议 + 06-backends.md §4.2 arm64 寄存器约定。
+// Follows docs/design/p4-method-jit/05-system-pipeline.md §2.1 exec mmap protocol +
+// §2.3 arm64 icache flush protocol + 06-backends.md §4.2 arm64 register conventions.
 //
-// **PJ8 启动版**(2026-06-25):linux/arm64 基础 mmap+W^X+icache flush 落地;
-// darwin/arm64 (MAP_JIT + pthread_jit_write_protect_np)留 PJ8+ 启动 spike。
+// **PJ8 bootstrap version** (2026-06-25): linux/arm64 basic mmap+W^X+icache flush done;
+// darwin/arm64 (MAP_JIT + pthread_jit_write_protect_np) left as a PJ8+ bootstrap spike.
 package arm64
 
 import (
@@ -158,9 +158,9 @@ func (c *CodePage) Length() int {
 	return c.length
 }
 
-// flushICacheArm64 真实装(承 05 §2.3.1):写 mmap 段后必须做 DC CVAU +
-// IC IVAU + DSB + ISB,否则取指错(i-cache 仍持旧内容)。实装在
-// flushcache_arm64.s。
+// flushICacheArm64 real implementation (follows 05 §2.3.1): after writing the mmap
+// segment, must do DC CVAU + IC IVAU + DSB + ISB, otherwise instruction fetch is wrong
+// (i-cache still holds stale content). Implemented in flushcache_arm64.s.
 func flushICacheArm64(mem []byte) {
 	if len(mem) == 0 {
 		return

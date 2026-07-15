@@ -1,9 +1,10 @@
 // Package difftest implements the cross-implementation byte-equal harness:
-// Wangshu vs official Lua 5.1.5 (12 §3 的 M14 最小可用版).
+// Wangshu vs official Lua 5.1.5 (the M14 minimal-viable version of 12 §3).
 //
-// 当前覆盖:固定脚本集(seed corpus)的输出对拍。随机脚本生成器(真 fuzz)
-// 后续接入(12 §3.2 generator)。无 lua5.1 时跳过(CI 的 oracle 供给见
-// engineering.md;本地 `make difftest` 前先跑 scripts/check-oracle.sh)。
+// Current coverage: output diffing of a fixed script set (seed corpus). The
+// random script generator (real fuzzing) is wired in later (12 §3.2 generator).
+// Skipped when lua5.1 is absent (see engineering.md for how CI provisions the
+// oracle; run scripts/check-oracle.sh before `make difftest` locally).
 package difftest
 
 import (
@@ -17,7 +18,7 @@ import (
 	"github.com/Liam0205/wangshu"
 )
 
-// findOracle 返回 lua5.1 可执行文件路径;不存在返回空。
+// findOracle returns the path to the lua5.1 executable; empty if not found.
 func findOracle() string {
 	for _, name := range []string{"lua5.1", "lua51"} {
 		if p, err := exec.LookPath(name); err == nil {
@@ -27,11 +28,13 @@ func findOracle() string {
 	return ""
 }
 
-// runOracle 用官方 lua5.1 跑脚本,返回 stdout。
+// runOracle runs the script with official lua5.1 and returns stdout.
 //
-// oracle 进程对脚本 exit 非 0 = 「官方拒绝/报错而本实现可能接受」——这是
-// 真分歧的一种(非 INFRA),输出 DIVERGENCE 标记供 nightly triage 正确分类
-// (oracle 不可用才是 INFRA,由 findOracle 兜)。
+// A non-zero exit of the oracle process on a script = "the official impl
+// rejects/errors while this impl may accept" -- that is one kind of real
+// divergence (not INFRA); emit a DIVERGENCE marker so nightly triage
+// classifies it correctly (only an unavailable oracle counts as INFRA, which
+// findOracle guards).
 func runOracle(t *testing.T, oracle, src string) string {
 	t.Helper()
 	cmd := exec.Command(oracle, "-")
@@ -47,11 +50,12 @@ func runOracle(t *testing.T, oracle, src string) string {
 	return out.String()
 }
 
-// runWangshu 用 Wangshu 跑脚本,捕获 print 输出。
+// runWangshu runs the script with Wangshu, capturing print output.
 //
-// M14 简化:print 输出直接进 Go 进程 stdout 不可捕获,因此 difftest 用
-// `return` 值对拍而非 stdout——脚本统一以 `return tostring(expr)` 形态构造,
-// oracle 侧由 wrapper 把返回值 print 出来。
+// M14 simplification: print output goes straight to the Go process stdout and
+// cannot be captured, so difftest diffs on the `return` value rather than
+// stdout -- scripts are uniformly shaped as `return tostring(expr)`, and on the
+// oracle side a wrapper prints the returned value.
 func runWangshu(t *testing.T, src string) string {
 	t.Helper()
 	prog, err := wangshu.Compile([]byte(src), "difftest")
@@ -70,13 +74,15 @@ func runWangshu(t *testing.T, src string) string {
 	return strings.Join(parts, "\t") + "\n"
 }
 
-// diffCase 是一个对拍用例:脚本必须以 return 结尾(单值或多值)。
+// diffCase is one diffing case: the script must end with a return (single or
+// multiple values).
 type diffCase struct {
 	name string
 	src  string
 }
 
-// seedCorpus 是首批固定脚本(12 §2 思路:每个语义角落一个用例)。
+// seedCorpus is the first batch of fixed scripts (12 §2 idea: one case per
+// semantic corner).
 var seedCorpus = []diffCase{
 	{"arith_basic", `return 1 + 2 * 3 - 4 / 2`},
 	{"arith_mod", `return 7 % 3`},
@@ -159,17 +165,20 @@ return tostring(ok)`},
 	{"nan_compare", `return tostring(0/0 == 0/0)`},
 	{"inf_div", `return tostring(1/0)`},
 	{"neg_zero", `return tostring(-0)`},
-	// 负零常量表去重(nightly fuzz seed 206160008016,issue #7):前置 +0 常量
-	// 后,折叠出的 -0.0 须复用 +0 槽 → "0"(PUC addk 数值相等去重)。
+	// Negative-zero constant-table dedup (nightly fuzz seed 206160008016,
+	// issue #7): with a leading +0 constant, a folded -0.0 must reuse the +0
+	// slot → "0" (PUC addk dedups on numeric equality).
 	{"neg_zero_fold_after_poszero", `local z = 0; return tostring(0.0 * -1)`},
 	{"neg_zero_first_poszero_reuses", `local a = -0.0; return tostring(a) .. "|" .. tostring(0.0)`},
-	// 比较运算符左操作数的常量登记顺序(nightly oracle fuzz seed
-	// 9e5e75e5c04112a2,issue #137):PUC luaK_infix 在解析右子树之前
-	// 就把比较的左操作数 exp2RK,使折叠出的 -0 先占共享零槽,后续字面 0
-	// 复用它 → 打印 "-0"。左操作数延迟到右子之后会让 0%0 的 +0 抢先登记。
+	// Constant-registration order of a comparison's left operand (nightly
+	// oracle fuzz seed 9e5e75e5c04112a2, issue #137): PUC luaK_infix runs
+	// exp2RK on the comparison's left operand before parsing the right
+	// subtree, so the folded -0 grabs the shared zero slot first and a later
+	// literal 0 reuses it → prints "-0". Deferring the left operand until
+	// after the right subtree would let the +0 from 0%0 register first.
 	{"cmp_left_negzero_registers_first", `return tostring(0*-0 ~= 0%0) .. "|" .. tostring(0)`},
 
-	// —— 覆盖率审计补充(2026-06-12) ——
+	// —— Coverage-audit additions (2026-06-12) ——
 	{"method_call", `
 local t = { v = 10 }
 function t.get(self) return self.v end
@@ -207,7 +216,7 @@ end
 return i`},
 	{"string_sub_neg", `return string.sub("hello", -3)`},
 	{"string_rep", `return string.rep("ab", 3)`},
-	// —— pattern matcher 对拍(P1 收尾轮) ——
+	// —— pattern matcher diffing (P1 wrap-up round) ——
 	{"find_plain", `return string.find("hello world", "world", 1, true)`},
 	{"find_pattern", `return string.find("hello123", "%d+")`},
 	{"find_anchored", `return string.find("hello", "^h")`},
@@ -242,7 +251,7 @@ return a + b + c`},
 	{"backref", `return tostring(string.match("abcabc", "(abc)%1"))`},
 }
 
-// TestDiff_SeedCorpus 对拍固定脚本集(Wangshu vs 官方 5.1.5)。
+// TestDiff_SeedCorpus diffs the fixed script set (Wangshu vs official 5.1.5).
 func TestDiff_SeedCorpus(t *testing.T) {
 	oracle := findOracle()
 	if oracle == "" {
@@ -250,7 +259,7 @@ func TestDiff_SeedCorpus(t *testing.T) {
 	}
 	for _, c := range seedCorpus {
 		t.Run(c.name, func(t *testing.T) {
-			// oracle wrapper:把 return 值 print 出来(tostring 规约)
+			// oracle wrapper: print the return value (tostring convention)
 			oracleSrc := wrapForOracle(c.src)
 			want := runOracle(t, oracle, oracleSrc)
 			got := runWangshu(t, c.src)
@@ -261,11 +270,13 @@ func TestDiff_SeedCorpus(t *testing.T) {
 	}
 }
 
-// TestDiff_RandomScripts 随机脚本对拍(12 §3.2 generator)。
+// TestDiff_RandomScripts diffs randomly generated scripts (12 §3.2 generator).
 //
-// 默认 500 个确定性种子(PR 门禁防回归,CI 可复现);nightly 长跑经环境变量
-// 拓新:WANGSHU_FUZZ_SEED_BASE 滚动起始种子(如日期纪元),WANGSHU_FUZZ_N
-// 放大数量。失败时打印 seed 与脚本全文;重放:
+// Defaults to 500 deterministic seeds (PR gate against regressions, reproducible
+// in CI); nightly long runs extend coverage via environment variables:
+// WANGSHU_FUZZ_SEED_BASE rolls the starting seed (e.g. a date epoch),
+// WANGSHU_FUZZ_N scales up the count. On failure it prints the seed and full
+// script; to replay:
 // WANGSHU_FUZZ_SEED_BASE=<seed> WANGSHU_FUZZ_N=1 go test -run TestDiff_RandomScripts ./test/difftest/
 func TestDiff_RandomScripts(t *testing.T) {
 	oracle := findOracle()
@@ -290,21 +301,25 @@ func TestDiff_RandomScripts(t *testing.T) {
 		want := runOracle(t, oracle, oracleSrc)
 		got := runWangshu(t, src)
 		if got != want {
-			// DIVERGENCE 行是 nightly triage 的机器可读 API(workflow 只
-			// grep 此标记;勿改格式)。
+			// The DIVERGENCE line is the machine-readable API for nightly
+			// triage (the workflow only greps this marker; do not change the
+			// format).
 			t.Errorf("DIVERGENCE seed=%d kind=bytediff\n  wangshu: %q\n  oracle:  %q\n--- script ---\n%s",
 				seed, got, want, src)
 		}
 	}
 }
 
-// wrapForOracle 把 `return expr` 脚本变成 oracle 侧的 print 形态。
+// wrapForOracle turns a `return expr` script into the oracle-side print form.
 //
-// 两个对拍保真细节:
-//   - 行号对齐:wrapper 头与 src 第一行拼在同一物理行(不前置换行),
-//     使 src 第 n 行在 oracle 端仍是第 n 行——错误消息里的行号才可比;
-//   - 真实返回个数:用 select("#", ...) 取个数(table 构造 {f()} 的 # 会
-//     截断尾 nil,导致 `return nil` 与 `return` 不可区分)。
+// Two fidelity details for diffing:
+//   - Line-number alignment: the wrapper header and the first line of src are
+//     joined on the same physical line (no leading newline), so line n of src
+//     is still line n on the oracle side -- only then are the line numbers in
+//     error messages comparable;
+//   - True return count: use select("#", ...) to get the count (the # of a
+//     table constructor {f()} truncates trailing nils, making `return nil`
+//     indistinguishable from `return`).
 func wrapForOracle(src string) string {
 	return `local function __chunk() ` + src + `
 end

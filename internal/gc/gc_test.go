@@ -9,7 +9,7 @@ import (
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
-// 构造一个最小 setup:arena + collector + 一个空表当 globals。
+// newTestVM builds a minimal setup: arena + collector + an empty table as globals.
 func newTestVM(t *testing.T) (*arena.Arena, *Collector) {
 	t.Helper()
 	a := arena.New(arena.Options{InitialBytes: 4096})
@@ -21,12 +21,14 @@ func newTestVM(t *testing.T) (*arena.Arena, *Collector) {
 }
 
 func TestHashStringDeterministic(t *testing.T) {
-	// JSHash 是确定性函数(无 seed,06 §9.3 末注:沿用 5.1 无 seed 哈希,差分一致优先)。
+	// JSHash is a deterministic function (no seed, 06 §9.3 closing note: keep 5.1's
+	// seedless hash, prioritizing diff consistency).
 	a, b := HashString([]byte("hello")), HashString([]byte("hello"))
 	if a != b {
 		t.Fatalf("hash not deterministic: %x vs %x", a, b)
 	}
-	// 不同串 → 不同哈希(高概率;此用例不依赖具体值,仅保证非平凡)。
+	// Different strings → different hashes (high probability; this case does not
+	// rely on specific values, only guaranteeing non-triviality).
 	if HashString([]byte("hello")) == HashString([]byte("world")) {
 		t.Fatalf("hash collision on trivial inputs")
 	}
@@ -51,12 +53,12 @@ func TestInternBasics(t *testing.T) {
 func TestInternRehash(t *testing.T) {
 	_, c := newTestVM(t)
 	for i := 0; i < 200; i++ {
-		c.Intern([]byte(strings.Repeat("x", i+1))) // 200 个不同长度的串
+		c.Intern([]byte(strings.Repeat("x", i+1))) // 200 strings of distinct lengths
 	}
 	if c.StringTableSize() != 200 {
 		t.Errorf("size = %d, want 200", c.StringTableSize())
 	}
-	// 全部仍可命中(rehash 后引用未失效——arena 偏移寻址)。
+	// All still hit (refs stay valid after rehash — arena offset addressing).
 	for i := 0; i < 200; i++ {
 		if c.Intern([]byte(strings.Repeat("x", i+1))) == 0 {
 			t.Errorf("intern miss after rehash")
@@ -68,21 +70,22 @@ func TestSweepReclaimsUnreachable(t *testing.T) {
 	a, c := newTestVM(t)
 	g := c.roots.Globals
 
-	// 把 "alive" 串挂到 globals 数组段(确保根可达)。
+	// Hang the "alive" string on the globals array segment (ensures root reachability).
 	tbl := object.AllocTable(a, 4, 0)
 	c.LinkSweep(tbl)
-	// globals 是个空表,简化起见把 tbl 直接放进它的元数据节点不便;改用:Registry 字段挂 tbl。
+	// globals is an empty table; placing tbl directly into its metadata node is
+	// inconvenient, so instead hang tbl off the Registry field.
 	c.SetRoots(Roots{Globals: g, Registry: tbl})
 	aliveStr := c.Intern([]byte("alive"))
 	object.SetTableArrayAt(a, tbl, 0, value.MakeGC(value.TagString, aliveStr))
 
-	// 创建一个不可达串。
+	// Create an unreachable string.
 	deadStr := c.Intern([]byte("dead"))
 	if deadStr == 0 || aliveStr == 0 {
 		t.Fatal("intern returned null")
 	}
 
-	// 一轮 GC,deadStr 应被从 string 表摘除;aliveStr 仍在。
+	// One GC round: deadStr should be removed from the string table; aliveStr stays.
 	c.Collect()
 	if !c.internContains([]byte("alive")) {
 		t.Errorf("alive string lost after GC")
@@ -98,7 +101,7 @@ func TestShadowStackProtects(t *testing.T) {
 	if tmp == 0 {
 		t.Fatal("intern returned null")
 	}
-	// 在没有任何 Lua 栈引用时,把它登记到 shadow stack:GC 应保留它。
+	// With no Lua stack reference, register it on the shadow stack: GC should keep it.
 	h := c.Push(value.MakeGC(value.TagString, tmp))
 	defer c.Pop(h)
 
@@ -142,12 +145,13 @@ func TestThresholdAdjustsAfterCollect(t *testing.T) {
 	_ = beforeT
 }
 
-// 高频 GC 模式压力(06 §11 / 12 §10 第 11 条):每 16 字节分配就强制 Collect,验证
-// ① 不崩溃 ② 输出仍可读(string intern 表正确性 / sweep 链不损坏)。
+// High-frequency GC mode stress (06 §11 / 12 §10 item 11): force a Collect on every
+// 16 bytes allocated, verifying ① no crash ② output stays readable (string intern
+// table correctness / sweep chain undamaged).
 func TestStressHighFrequencyGC(t *testing.T) {
 	a, c := newTestVM(t)
 	g := c.roots.Globals
-	// 用一张表把"已注册"的串都挂上,作为强引用。
+	// Use a table to hold all "registered" strings as strong references.
 	keep := object.AllocTable(a, 64, 0)
 	c.LinkSweep(keep)
 	c.SetRoots(Roots{Globals: g, Registry: keep})
@@ -155,10 +159,10 @@ func TestStressHighFrequencyGC(t *testing.T) {
 	for i := 0; i < 64; i++ {
 		s := c.Intern([]byte{byte('a' + i%26), byte('0' + i/26)})
 		object.SetTableArrayAt(a, keep, uint32(i), value.MakeGC(value.TagString, s))
-		// 每分配若干串就强制 GC。
+		// Force a GC after allocating a few strings.
 		c.Collect()
 	}
-	// 全部 64 个串应仍可达。
+	// All 64 strings should still be reachable.
 	if c.StringTableSize() != 64 {
 		t.Errorf("after stress: intern size = %d, want 64", c.StringTableSize())
 	}
@@ -175,15 +179,16 @@ func (c *Collector) internContains(b []byte) bool {
 	return false
 }
 
-// --- Group B (Collector 内部): host-trigger 状态机 + stopped/stress 兼容 ---
+// --- Group B (Collector internals): host-trigger state machine + stopped/stress compat ---
 
-// TestHostTriggeredCollect_DefaultOff 验证 SetHostTriggeredCollect 默认 off。
-// AllocCharge 累积过 threshold 不直接触发 collect(由 MaybeCollect 显式触发)。
+// TestHostTriggeredCollect_DefaultOff verifies SetHostTriggeredCollect is off by default.
+// AllocCharge accumulating past threshold does not directly trigger a collect
+// (that is triggered explicitly by MaybeCollect).
 func TestHostTriggeredCollect_DefaultOff(t *testing.T) {
 	a, c := newTestVM(t)
-	c.threshold = 64 // 极低 threshold 方便测试
+	c.threshold = 64 // very low threshold for easy testing
 	startCap := a.Cap()
-	// 默认 off:不触发 collect
+	// Default off: no collect triggered
 	c.AllocCharge(1000)
 	c.AllocCharge(1000)
 	c.AllocCharge(1000)
@@ -195,14 +200,15 @@ func TestHostTriggeredCollect_DefaultOff(t *testing.T) {
 	}
 }
 
-// TestHostTriggeredCollect_OnFiresCollect 验证 on 状态下 AllocCharge 跨阈真触发 Collect。
+// TestHostTriggeredCollect_OnFiresCollect verifies that when on, AllocCharge crossing
+// the threshold really fires a Collect.
 func TestHostTriggeredCollect_OnFiresCollect(t *testing.T) {
 	a, c := newTestVM(t)
 	c.SetHostTriggeredCollect(true)
 	c.threshold = 100
-	_ = a // arena 上无可 dropped 对象,Collect 主要看是否被调
+	_ = a // no droppable objects on the arena; Collect mainly checks whether it is invoked
 	whiteBefore := c.currentWhite
-	c.AllocCharge(200) // 200 > threshold 100 → 触发 Collect
+	c.AllocCharge(200) // 200 > threshold 100 → triggers Collect
 	whiteAfter := c.currentWhite
 	if whiteAfter == whiteBefore {
 		t.Errorf("host-trigger Collect did not flip currentWhite: before=%d after=%d", whiteBefore, whiteAfter)
@@ -212,8 +218,9 @@ func TestHostTriggeredCollect_OnFiresCollect(t *testing.T) {
 	}
 }
 
-// TestHostTriggeredCollect_StoppedRespected 验证 stopped 状态下即使 hostTrigger=true
-// 也不触发(SetStopped 优先级高于 hostTrigger)。
+// TestHostTriggeredCollect_StoppedRespected verifies that in the stopped state, even
+// with hostTrigger=true, no collect is triggered (SetStopped takes priority over
+// hostTrigger).
 func TestHostTriggeredCollect_StoppedRespected(t *testing.T) {
 	_, c := newTestVM(t)
 	c.SetHostTriggeredCollect(true)
@@ -224,25 +231,26 @@ func TestHostTriggeredCollect_StoppedRespected(t *testing.T) {
 	if c.currentWhite != whiteBefore {
 		t.Errorf("stopped state allowed host-trigger Collect: white flipped %d → %d", whiteBefore, c.currentWhite)
 	}
-	// bytesAllocSince 仍累积
+	// bytesAllocSince still accumulates
 	if c.bytesAllocSince < 200 {
 		t.Errorf("stopped state lost bytesAllocSince accumulation: got %d", c.bytesAllocSince)
 	}
 }
 
-// TestHostTriggeredCollect_StressModeCompat 验证 hostTrigger + stressMode 共存
-// (stressMode 让 MaybeCollect 每次都 collect;hostTrigger 让 AllocCharge 跨阈触发——两者独立工作)。
+// TestHostTriggeredCollect_StressModeCompat verifies hostTrigger + stressMode coexist
+// (stressMode makes MaybeCollect collect every time; hostTrigger makes AllocCharge
+// trigger on threshold crossing — the two work independently).
 func TestHostTriggeredCollect_StressModeCompat(t *testing.T) {
 	_, c := newTestVM(t)
 	c.SetHostTriggeredCollect(true)
 	c.SetStressMode(true)
-	c.threshold = 1 << 30 // 极高 threshold:让 hostTrigger 不会因 threshold 触发
+	c.threshold = 1 << 30 // very high threshold: keep hostTrigger from firing on threshold
 	whiteBefore := c.currentWhite
-	c.MaybeCollect() // stressMode 触发
+	c.MaybeCollect() // triggered by stressMode
 	if c.currentWhite == whiteBefore {
 		t.Errorf("stressMode + hostTrigger MaybeCollect did not flip white")
 	}
-	// AllocCharge 不跨 threshold(threshold 极高),不应触发 collect
+	// AllocCharge below threshold (threshold very high) should not trigger a collect
 	whiteBefore = c.currentWhite
 	c.AllocCharge(100)
 	if c.currentWhite != whiteBefore {
@@ -250,28 +258,30 @@ func TestHostTriggeredCollect_StressModeCompat(t *testing.T) {
 	}
 }
 
-// TestHostTriggeredCollect_NoRecursionInFinalizer 验证 hostTrigger 状态下 finalizer
-// 内部 alloc(AllocCharge)不会递归触发 Collect(collecting 守卫)。
+// TestHostTriggeredCollect_NoRecursionInFinalizer verifies that in the hostTrigger state,
+// an alloc (AllocCharge) inside a finalizer does not recursively trigger a Collect
+// (the collecting guard).
 func TestHostTriggeredCollect_NoRecursionInFinalizer(t *testing.T) {
 	a, c := newTestVM(t)
 	c.SetHostTriggeredCollect(true)
 	c.threshold = 100
-	// 直接调 Collect 验证 collecting 守卫:Collect 内任何 AllocCharge 不会重入
+	// Call Collect directly to verify the collecting guard: no AllocCharge inside
+	// Collect should re-enter
 	recursionDetected := false
 	c.runFinalizer = func(_ arena.GCRef) {
-		// 在 finalizer 内大量 alloc charge,试图触发递归 Collect
+		// Charge a lot of alloc inside the finalizer, attempting to trigger a recursive Collect
 		c.AllocCharge(10000)
-		// 若递归 Collect 已发生,bytesAllocSince 应被重置为 0(Collect 内 c.bytesAllocSince = 0)
-		// 但我们这里实际不该发生递归 — collecting 守卫拦截
+		// If a recursive Collect happened, bytesAllocSince would be reset to 0 (Collect sets c.bytesAllocSince = 0)
+		// But here recursion should not actually happen — the collecting guard blocks it
 		if c.bytesAllocSince == 0 {
 			recursionDetected = true
 		}
 	}
-	// 触发一次 Collect(经手动 push 一个有 finalizer 的 userdata 太复杂,直接 Collect 验证 collecting 标志)
+	// Trigger one Collect (manually pushing a userdata with a finalizer is too complex; just Collect to verify the collecting flag)
 	c.Collect()
 	_ = recursionDetected
 	_ = a
-	// 实际检查:Collect 后 collecting 应为 false(defer 已重置)
+	// Actual check: after Collect, collecting should be false (reset by defer)
 	if c.collecting {
 		t.Error("collecting flag not reset after Collect returns")
 	}

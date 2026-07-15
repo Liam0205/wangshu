@@ -7,11 +7,13 @@ import (
 	"github.com/tetratelabs/wazero"
 )
 
-// S-B 成本档:CompileModule 随函数数的伸缩。增量升层 = 重编含 N 个函数的整个
-// module(每次升层一次性事件),故关注「N 个 leaf 的 module 编译成本」是否
-// ms 级可接受(升层不在热路径,02 §1.2)。
+// S-B cost tier: how CompileModule scales with the number of functions.
+// Incremental tier-up = recompiling the whole module containing N functions
+// (a one-shot event per tier-up), so the concern is whether the "compile cost of
+// a module with N leaves" is acceptable at the ms scale (tier-up is not on the
+// hot path, 02 §1.2).
 //
-// 跑法:GOFLAGS=-mod=mod go test -run '^$' -bench BenchmarkSB_Compile -benchtime=1s
+// Run: GOFLAGS=-mod=mod go test -run '^$' -bench BenchmarkSB_Compile -benchtime=1s
 
 func benchCompile(b *testing.B, numLeaves int) {
 	ctx := context.Background()
@@ -28,13 +30,15 @@ func benchCompile(b *testing.B, numLeaves int) {
 	}
 }
 
-// 几档函数数(模拟一个 Program 内 1 / 16 / 64 / 256 个升层 Proto 的单 module)。
+// A few function counts (simulating a single module with 1 / 16 / 64 / 256
+// tiered-up Protos inside one Program).
 func BenchmarkSB_Compile1(b *testing.B)   { benchCompile(b, 1) }
 func BenchmarkSB_Compile16(b *testing.B)  { benchCompile(b, 16) }
 func BenchmarkSB_Compile64(b *testing.B)  { benchCompile(b, 64) }
 func BenchmarkSB_Compile256(b *testing.B) { benchCompile(b, 256) }
 
-// BenchmarkSB_Instantiate 实例化成本(重编后实例化为新实例的那一步)。
+// BenchmarkSB_Instantiate measures the instantiation cost (the step of
+// instantiating a fresh instance after recompilation).
 func BenchmarkSB_Instantiate(b *testing.B) {
 	ctx := context.Background()
 	rt := newCompilerRuntime(ctx)

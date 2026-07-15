@@ -1,20 +1,24 @@
-// AggregateProfile — Proto 旁全局聚合表(P2+ #3 (C) sync.Pool 双表混合方案,
-// `docs/design/p2-bridge/01-profiling.md` §6.4 设计骨架)。
+// AggregateProfile — a global aggregate table beside each Proto (P2+ #3 (C)
+// sync.Pool dual-table hybrid scheme, `docs/design/p2-bridge/01-profiling.md`
+// §6.4 design skeleton).
 //
-// 解决 sync.Pool 短生命期 State 形态下 (B) 方案的退化:每请求新 State
-// + Pool 复用 → profileTable 频繁 Reset 清空 → 热度信号永远累不到阈值,
-// 升层从不触发。
+// Solves the degradation of scheme (B) under the sync.Pool short-lived State
+// form: each request gets a new State + Pool reuse → profileTable is frequently
+// Reset and cleared → the hotness signal never accumulates to the threshold, so
+// promotion never triggers.
 //
-// 形态:
-//   - 主表:State 私有 profileTable(B 方案;高频路径 OnBackEdge / OnEnter
-//     直接写,无锁无 atomic);
-//   - 旁聚合表(本文件):Proto 维度全局共享,atomic.Uint32 计数器,跨
-//     State 累积。State.Reset / Bridge 显式调 FlushToAggregate 时把私有
-//     表数据合并入聚合表。
+// Form:
+//   - Main table: State-private profileTable (scheme B; hot paths OnBackEdge /
+//     OnEnter write directly, no lock, no atomic);
+//   - Side aggregate table (this file): globally shared per Proto,
+//     atomic.Uint32 counters, accumulated across States. When State.Reset /
+//     Bridge explicitly calls FlushToAggregate, the private table's data is
+//     merged into the aggregate table.
 //
-// 当前实装:接口预设占位 + 真聚合可启用(本文件已完成真聚合实装,但
-// State.Reset 路径暂未自动调 FlushToAggregate——sync.Pool 形态在 wangshu
-// 公共 API 落地后再接通)。
+// Current status: the interface is a preset placeholder + real aggregation can
+// be enabled (the real aggregation is implemented in this file, but the
+// State.Reset path does not yet call FlushToAggregate automatically — the
+// sync.Pool form will be wired up after the wangshu public API lands).
 package bridge
 
 import (
@@ -24,33 +28,37 @@ import (
 	"github.com/Liam0205/wangshu/internal/bytecode"
 )
 
-// AggregateProfile 是单 Proto 的跨 State 聚合数据。
+// AggregateProfile is the cross-State aggregate data for a single Proto.
 //
-// 所有计数器是 atomic——多 State 并发 Flush 时无 race。聚合表与 State
-// 私有 profileTable 字段对偶:私有用普通 uint32 写(高频快路径),全局
-// 用 atomic.Uint32(低频聚合路径)。
+// All counters are atomic — no race when multiple States Flush concurrently. The
+// aggregate table is the dual of the State-private profileTable fields: the
+// private one uses plain uint32 writes (hot fast path), while the global one uses
+// atomic.Uint32 (cold aggregate path).
 type AggregateProfile struct {
-	EntryCount atomic.Uint32 // 跨 State 累计入口数
-	// BackEdge 按 pc 索引的回跳计数。延迟分配:首次 Flush 时按
-	// len(Proto.Code) 一次性建表(与 ProfileData.BackEdge 同款延迟分配语义,
-	// 01 §2.3)。
+	EntryCount atomic.Uint32 // cross-State cumulative entry count
+	// BackEdge is the back-jump count indexed by pc. Lazily allocated: the table
+	// is built in one shot on first Flush by len(Proto.Code) (same lazy-alloc
+	// semantics as ProfileData.BackEdge, 01 §2.3).
 	BackEdge []atomic.Uint32
 }
 
-// aggregateRegistry 全局 Proto 维度聚合表(包级 var,跨所有 Bridge 实例
-// 共享)。sync.Map 提供「读多写少」的优化形态——典型场景是大量 OnEnter /
-// OnBackEdge 不写聚合表(只写 State 私有);只在 Reset 时偶尔写。
+// aggregateRegistry is the global per-Proto aggregate table (package-level var,
+// shared across all Bridge instances). sync.Map provides a "read-mostly"
+// optimized form — the typical scenario is that the many OnEnter / OnBackEdge
+// calls do not write the aggregate table (they only write the State-private
+// one); it is only written occasionally on Reset.
 //
-// 内存:每个 Proto 一项 AggregateProfile,与 Proto 同生命期;Proto 被 GC
-// 时 sync.Map 项不会自动删除(Go 标准库 sync.Map 无 finalizer 钩子)——
-// 这是已知的轻微泄漏(每 Proto 几十字节);若实测发现累积量大,改用 weak
-// reference 或 Program 析构钩子。
+// Memory: one AggregateProfile entry per Proto, same lifetime as the Proto; when
+// a Proto is GC'd the sync.Map entry is not deleted automatically (Go's stdlib
+// sync.Map has no finalizer hook) — this is a known minor leak (a few dozen bytes
+// per Proto); if measurements show large accumulation, switch to a weak reference
+// or a Program destructor hook.
 var aggregateRegistry sync.Map // map[*bytecode.Proto]*AggregateProfile
 
-// AggregateOf 取 Proto 的全局聚合表(惰性建表)。
+// AggregateOf gets the global aggregate table for a Proto (lazy table build).
 //
-// 多 State 并发 OK——sync.Map.LoadOrStore 是 atomic 的;首次调用建表,
-// 之后所有 State 共享同一份。
+// Concurrent access from multiple States is OK — sync.Map.LoadOrStore is atomic;
+// the first call builds the table, and all States afterward share the same one.
 func AggregateOf(proto *bytecode.Proto) *AggregateProfile {
 	if v, ok := aggregateRegistry.Load(proto); ok {
 		return v.(*AggregateProfile)
@@ -62,20 +70,23 @@ func AggregateOf(proto *bytecode.Proto) *AggregateProfile {
 	return actual.(*AggregateProfile)
 }
 
-// FlushToAggregate 把 State 私有 ProfileData 的计数累积入 Proto 旁全局聚合
-// 表。调用时机:State.Reset 准备归还 Pool 之前。
+// FlushToAggregate accumulates the counts from the State-private ProfileData
+// into the global aggregate table beside the Proto. Called when: State.Reset is
+// about to return to the Pool.
 //
-// 性质:
-//   - 不清 State 私有 ProfileData(调用方决定 Reset 策略,01 §6.4.1
-//     方案 (C) 推荐「全清 + 累积入聚合表」,但本函数只负责后半段)。
-//   - atomic.AddUint32 保证多 State 并发 Flush 无 race。
-//   - 不传染状态机(TierState / Compilable):聚合表只关心「热度信号」,
-//     状态机字段是 State 私有 / Proto 共享(后者跨 State 一次写),
-//     不参与跨 State 累积。
+// Properties:
+//   - Does not clear the State-private ProfileData (the caller decides the Reset
+//     policy; 01 §6.4.1 scheme (C) recommends "clear all + accumulate into
+//     aggregate table", but this function only handles the latter half).
+//   - atomic.AddUint32 guarantees no race when multiple States Flush concurrently.
+//   - Does not propagate the state machine (TierState / Compilable): the
+//     aggregate table only cares about the "hotness signal"; the state-machine
+//     fields are State-private / Proto-shared (the latter written once across
+//     States) and do not participate in cross-State accumulation.
 func (b *Bridge) FlushToAggregate() {
 	for proto, pd := range b.profileTable {
 		if pd.EntryCount == 0 && len(pd.BackEdge) == 0 {
-			continue // 该 Proto 在本 State 上没有累积,跳过
+			continue // this Proto has no accumulation on this State, skip
 		}
 		agg := AggregateOf(proto)
 		if pd.EntryCount > 0 {
@@ -89,26 +100,31 @@ func (b *Bridge) FlushToAggregate() {
 	}
 }
 
-// ResetAggregate 清空全局聚合表(测试用——避免测试间状态串台)。
-// 生产环境不应调用;聚合表与 Program 同生命期,Program 销毁后 GC 回收。
+// ResetAggregate clears the global aggregate table (for tests — avoids state
+// bleeding between tests). Should not be called in production; the aggregate
+// table has the same lifetime as the Program and is GC'd after the Program is
+// destroyed.
 func ResetAggregate() {
 	aggregateRegistry = sync.Map{}
 }
 
-// considerPromotionWithAggregate 升层决策的「双表混合」版本(P2+ #3 (C)):
-// 在 considerPromotion 之前先查全局聚合表,若聚合表的累计已越阈值,
-// 即便 State 私有计数没越也触发升层尝试。
+// considerPromotionWithAggregate is the "dual-table hybrid" version of the
+// promotion decision (P2+ #3 (C)): before considerPromotion, it first checks the
+// global aggregate table, and if the aggregate's cumulative count has crossed the
+// threshold, it triggers a promotion attempt even if the State-private count has
+// not.
 //
-// **未在主 considerPromotion 路径自动启用**——保持 (B) 默认形态稳定;
-// sync.Pool 形态用户可显式调本函数(或 Bridge 加 EnableAggregateMode 切换,
-// 待 wangshu 公共 API 落地)。
+// **Not enabled automatically on the main considerPromotion path** — keeps the
+// (B) default form stable; under the sync.Pool form the user can call this
+// function explicitly (or the Bridge can add an EnableAggregateMode toggle,
+// pending the wangshu public API).
 //
-//nolint:unused // 留 wangshu 公共 API 接通时启用;当前接口预设占位。
+//nolint:unused // reserved to be enabled when the wangshu public API is wired up; currently a preset placeholder.
 func (b *Bridge) considerPromotionWithAggregate(proto *bytecode.Proto, pd *ProfileData, onMain bool) {
 	if pd.TierState != TierInterp {
 		return
 	}
-	// 查全局聚合表
+	// query the global aggregate table
 	agg := AggregateOf(proto)
 	aggEntry := agg.EntryCount.Load()
 	var aggMaxBack uint32
@@ -117,8 +133,9 @@ func (b *Bridge) considerPromotionWithAggregate(proto *bytecode.Proto, pd *Profi
 			aggMaxBack = c
 		}
 	}
-	// 任一(本地或全局)越阈值即触发——这让 sync.Pool 形态下,即使本
-	// State 计数刚清空,全局累积仍能驱动升层。
+	// Trigger if either (local or global) crosses the threshold — this lets the
+	// global accumulation drive promotion under the sync.Pool form even when this
+	// State's count was just cleared.
 	if pd.EntryCount >= b.hotEntry ||
 		pd.MaxBackEdge() >= b.hotBackEdge ||
 		aggEntry >= b.hotEntry ||

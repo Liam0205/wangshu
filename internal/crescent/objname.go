@@ -1,7 +1,8 @@
-// describeReg — getobjname 的 P1 简化版(09 §8.3:local/global/field/method)。
+// describeReg — a P1-simplified getobjname (09 §8.3: local/global/field/method).
 //
-// 给错误消息提供 "local 'x'" / "global 'f'" / "field 'k'" / "method 'm'" 名字
-// 描述;查不到返回 ""(调用方退回无名形态 "a nil value")。
+// Supplies "local 'x'" / "global 'f'" / "field 'k'" / "method 'm'" name
+// descriptions for error messages; returns "" on miss (the caller falls
+// back to the nameless form "a nil value").
 package crescent
 
 import (
@@ -12,8 +13,9 @@ import (
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
-// localName 返回第 reg 个寄存器在 pc 处对应的活跃局部名(luaF_getlocalname
-// 同构:寄存器 r = 第 r+1 个活跃局部,局部占低位寄存器连续)。
+// localName returns the live local name that corresponds to register reg at
+// pc (isomorphic to luaF_getlocalname: register r = the (r+1)-th live local,
+// locals occupy contiguous low registers).
 func localName(proto *bytecode.Proto, pc int32, reg int) string {
 	n := reg + 1
 	for i := range proto.LocVars {
@@ -22,7 +24,8 @@ func localName(proto *bytecode.Proto, pc int32, reg int) string {
 			break
 		}
 		if pc < lv.EndPC || lv.EndPC == 0 && lv.StartPC <= pc {
-			// 活跃(EndPC==0 表示函数末尾才闭合且尚未回填的场景按活跃处理)
+			// Live (EndPC==0 means the scope only closes at the function end and
+			// has not yet been backpatched; treat such cases as live).
 			n--
 			if n == 0 {
 				return lv.Name
@@ -32,13 +35,16 @@ func localName(proto *bytecode.Proto, pc int32, reg int) string {
 	return ""
 }
 
-// describeReg 给寄存器操作数找名字描述。
+// describeReg finds a name description for a register operand.
 //
-// 顺序:① 活跃局部(LocVars);② 正向符号执行(官方 ldebug.c symbexec
-// 同构):从函数头走到出错 pc,维护"最后写 reg 的指令" last,**前向 JMP
-// 按跳转执行**(被跳过的写指令不算)、TEST/TESTSET 等测试类指令命中 reg
-// 时 last 落它(不可命名 → 无名退化,对齐官方 `(aaa or aaa)()` 报无名)。
-// 倒序朴素回看会撞上被 JMP 跳过的"未执行"指令,产出错误名字。
+// Order: ① live locals (LocVars); ② forward symbolic execution (isomorphic
+// to the official ldebug.c symbexec): walk from the function head to the
+// faulting pc, tracking last, "the instruction that last wrote reg", with
+// **forward JMPs followed as taken** (skipped writes do not count); when a
+// test-class instruction (TEST/TESTSET, etc.) hits reg, last lands on it
+// (unnameable → nameless degradation, matching the official nameless report
+// for `(aaa or aaa)()`). A naive reverse scan would run into "unexecuted"
+// instructions skipped by a JMP and produce a wrong name.
 func describeReg(proto *bytecode.Proto, pc int32, reg int) string {
 	return describeRegDepth(proto, pc, reg, 0)
 }
@@ -48,7 +54,7 @@ func describeRegDepth(proto *bytecode.Proto, pc int32, reg int, depth int) strin
 		return ""
 	}
 	if name := localName(proto, pc, reg); name != "" {
-		// 内部控制变量((for index) 等)不暴露
+		// Internal control variables ((for index), etc.) are not exposed.
 		if name[0] == '(' {
 			return ""
 		}
@@ -60,8 +66,9 @@ func describeRegDepth(proto *bytecode.Proto, pc int32, reg int, depth int) strin
 	}
 	switch bytecode.Op(ins) {
 	case bytecode.MOVE:
-		// 临时是局部的副本:跟到源寄存器(`local f; f()` 的 CALL 形状);
-		// 官方限制 b < a(只跟"高位临时 ← 低位局部"的拷贝)
+		// A temporary is a copy of a local: follow through to the source
+		// register (the CALL shape of `local f; f()`); the official code
+		// restricts b < a (only follow "high temporary ← low local" copies).
 		if b := bytecode.B(ins); b < bytecode.A(ins) {
 			return describeRegDepth(proto, pc, b, depth+1)
 		}
@@ -70,7 +77,8 @@ func describeRegDepth(proto *bytecode.Proto, pc int32, reg int, depth int) strin
 			return fmt.Sprintf("global '%s'", name)
 		}
 	case bytecode.GETUPVAL:
-		// 闭包捕获的外层变量(官方 getobjname 的 OP_GETUPVAL 分支)
+		// Outer variable captured by a closure (the OP_GETUPVAL branch of the
+		// official getobjname).
 		if idx := bytecode.B(ins); idx < len(proto.UpvalDescs) {
 			if name := proto.UpvalDescs[idx].Name; name != "" {
 				return fmt.Sprintf("upvalue '%s'", name)
@@ -92,8 +100,10 @@ func describeRegDepth(proto *bytecode.Proto, pc int32, reg int, depth int) strin
 	return ""
 }
 
-// symbexec 正向符号执行到 lastpc,返回最后写 reg 的指令(官方 symbexec
-// 的命名子集:省去字节码合法性 check,只保留 last 追踪与控制流)。
+// symbexec forward-symbolically-executes up to lastpc and returns the
+// instruction that last wrote reg (a named subset of the official symbexec:
+// drops bytecode validity checks, keeping only last tracking and control
+// flow).
 func symbexec(proto *bytecode.Proto, lastpc int32, reg int) (bytecode.Instruction, bool) {
 	last := int32(-1)
 	for pc := int32(0); pc < lastpc && pc < int32(len(proto.Code)); pc++ {
@@ -121,32 +131,37 @@ func symbexec(proto *bytecode.Proto, lastpc int32, reg int) (bytecode.Instructio
 			if reg >= a && reg <= a+3 {
 				last = pc
 			}
-			// 官方对 FORLOOP/FORPREP 也走 JMP 跳转逻辑;命名场景下回边
-			// (负位移)不跟随,前向不出现,略。
+			// The official code also runs FORLOOP/FORPREP through the JMP
+			// jump logic; in the naming scenario the back edge (negative
+			// offset) is not followed and never appears forward, so it is
+			// omitted.
 		case bytecode.JMP:
 			dest := pc + 1 + int32(bytecode.SBx(ins))
-			// 前向且不跳过 lastpc 的 JMP 按执行处理(被跳过的写指令不算)
+			// A forward JMP that does not skip past lastpc is treated as taken
+			// (skipped writes do not count).
 			if pc < dest && dest <= lastpc {
-				pc = dest - 1 // for 自增后 = dest
+				pc = dest - 1 // after the for-loop increment, = dest
 			}
 		case bytecode.CLOSURE:
 			if a == reg {
 				last = pc
 			}
-			// 精确跳过 upvalue 伪指令(官方经 p->p[bx]->nups;本实现 codegen
-			// 把伪指令数随 CLOSURE 存进 SubNUps,按 Protos 下标对齐)。
-			// 形态猜测会把 0-upvalue CLOSURE 后的真实 MOVE/GETUPVAL 吞掉,
-			// 丢失实参装载的命名信息。
+			// Precisely skip the upvalue pseudo-instructions (the official code
+			// goes via p->p[bx]->nups; this implementation has codegen store the
+			// pseudo-instruction count alongside CLOSURE in SubNUps, indexed by
+			// the Protos subscript). Guessing the shape would swallow the real
+			// MOVE/GETUPVAL after a 0-upvalue CLOSURE, losing the naming
+			// information of the argument load.
 			if idx := bytecode.Bx(ins); idx < len(proto.SubNUps) {
 				pc += int32(proto.SubNUps[idx])
 			}
 		case bytecode.SETLIST:
 			if bytecode.C(ins) == 0 {
-				pc++ // 跳过后随裸批号字
+				pc++ // skip the trailing raw batch-count word
 			}
 		default:
-			// testAMode 类(写 A 或标记 A):MOVE/LOADK/LOADBOOL/GET*/
-			// 算术/UNM/NOT/LEN/CONCAT/TEST/TESTSET/NEWTABLE/VARARG
+			// testAMode class (writes or marks A): MOVE/LOADK/LOADBOOL/GET*/
+			// arithmetic/UNM/NOT/LEN/CONCAT/TEST/TESTSET/NEWTABLE/VARARG
 			if opWritesA(op) && a == reg {
 				last = pc
 			}
@@ -158,7 +173,8 @@ func symbexec(proto *bytecode.Proto, lastpc int32, reg int) (bytecode.Instructio
 	return proto.Code[last], true
 }
 
-// opWritesA 对齐官方 testAMode 位(指令"修改/标记"寄存器 A)。
+// opWritesA matches the official testAMode bit (the instruction
+// "modifies/marks" register A).
 func opWritesA(op bytecode.OpCode) bool {
 	switch op {
 	case bytecode.MOVE, bytecode.LOADK, bytecode.LOADBOOL, bytecode.LOADNIL,
@@ -172,8 +188,9 @@ func opWritesA(op bytecode.OpCode) bool {
 	return false
 }
 
-// constStringAt 取常量池 k 槽的字符串字面量(经 StringLits 原文,Compile 期
-// 形态;装载后 Consts 已是 GCRef,从 StringLits 取最稳)。
+// constStringAt fetches the string literal in constant-pool slot k (the
+// original text via StringLits, the Compile-time form; after loading, Consts
+// is already a GCRef, so reading from StringLits is the most robust).
 func constStringAt(proto *bytecode.Proto, k int) (string, bool) {
 	if k < len(proto.StringLitIdx) && proto.StringLitIdx[k] >= 0 {
 		return proto.StringLits[proto.StringLitIdx[k]], true
@@ -269,12 +286,14 @@ func (st *State) resolveArgError(e *LuaError, ci *callInfo, callPC int32, funcRe
 	return e
 }
 
-// errWithName 构造带名字描述的类型错误(5.1 格式:
-// "attempt to <verb> <name> (a <type> value)";无名退回 "attempt to <verb> a <type> value")。
+// errWithName builds a type error with a name description (5.1 format:
+// "attempt to <verb> <name> (a <type> value)"; nameless falls back to
+// "attempt to <verb> a <type> value").
 func (st *State) errWithName(ci *callInfo, verb string, rkOperand int, v value.Value) *LuaError {
 	name := ""
 	if !bytecode.IsK(rkOperand) {
-		// pc-1:出错指令本身(主循环已自增)
+		// pc-1: the faulting instruction itself (the main loop has already
+		// incremented).
 		name = describeReg(st.protoOf(ci), ci.pc-1, rkOperand)
 	}
 	if name != "" {
@@ -283,7 +302,8 @@ func (st *State) errWithName(ci *callInfo, verb string, rkOperand int, v value.V
 	return errf("attempt to %s a %s value", verb, st.typeNameOf(v))
 }
 
-// describeRKForArith 给算术错误找出错操作数(b 先 c 后:不能转数字的那个)。
+// arithErrWithName finds the faulting operand for an arithmetic error (b
+// before c: whichever cannot be converted to a number).
 func (st *State) arithErrWithName(ci *callInfo, i bytecode.Instruction, b, c value.Value) *LuaError {
 	badV := b
 	badRK := bytecode.B(i)
@@ -294,7 +314,8 @@ func (st *State) arithErrWithName(ci *callInfo, i bytecode.Instruction, b, c val
 	return st.errWithName(ci, "perform arithmetic on", badRK, badV)
 }
 
-// coercibleToNumber 判定 v 是否可经 5.1 算术 coercion 转数字(string 形态)。
+// coercibleToNumber decides whether v can be converted to a number via 5.1
+// arithmetic coercion (the string form).
 func coercibleToNumber(st *State, v value.Value) bool {
 	if value.Tag(v) != value.TagString {
 		return false
@@ -303,8 +324,10 @@ func coercibleToNumber(st *State, v value.Value) bool {
 	return ok
 }
 
-// enhanceIndexErr 给 "attempt to index a X value" 错误补名字描述(出错对象
-// 是寄存器 reg 上的 obj 时)。其它错误(如 __index handler 内部错误)原样透传。
+// enhanceIndexErr adds a name description to an "attempt to index a X value"
+// error (when the faulting object is the obj held in register reg). Other
+// errors (e.g. errors inside an __index handler) are passed through
+// unchanged.
 func (st *State) enhanceIndexErr(e *LuaError, ci *callInfo, reg int, obj value.Value) *LuaError {
 	if e == errYieldSentinel || e.annotated {
 		return e

@@ -1,5 +1,5 @@
-// Pattern matcher fuzz:任意 (src, pattern) 不得 panic
-// (malformed pattern 经 error 返回;递归深度有 200 层护栏)。
+// Pattern matcher fuzz: any (src, pattern) must not panic
+// (malformed patterns are returned as errors; recursion depth is guarded at 200 levels).
 package stdlib
 
 import (
@@ -29,8 +29,8 @@ func FuzzPattern(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, src, pat []byte) {
 		if len(src) > 1024 || len(pat) > 256 {
-			t.Skip() // 限尺寸防极端回溯耗时
+			t.Skip() // cap size to avoid extreme backtracking time
 		}
-		_, _, _, _, _ = patternFind(src, pat, 0) // 错误是合法结果;panic 才是 bug
+		_, _, _, _, _ = patternFind(src, pat, 0) // an error is a valid result; only a panic is a bug
 	})
 }

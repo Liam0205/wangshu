@@ -1,8 +1,10 @@
-// Host function infrastructure — Go 函数挂在 Lua 闭包上、由 CALL 路径同步调用。
+// Host function infrastructure — a Go function attached to a Lua closure,
+// called synchronously by the CALL path.
 //
-// 设计:05 §7.5 + 10 §3。M12 范围内提供最小 host function 调用:
-// - HostFn 签名 = func(*State, *thread, args []value.Value) (results []value.Value, err *LuaError);
-// - 注册一个 HostFn 得到一个 HostFnID,用 object.AllocHostClosure 包装为 closure。
+// Design: 05 §7.5 + 10 §3. Within M12 scope this provides a minimal host
+// function call:
+// - HostFn signature = func(*State, *thread, args []value.Value) (results []value.Value, err *LuaError);
+// - registering a HostFn yields a HostFnID, wrapped into a closure via object.AllocHostClosure.
 package crescent
 
 import (
@@ -11,28 +13,37 @@ import (
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
-// HostFn 是宿主 Go 函数签名(10 §3 的 P1 版本)。
+// HostFn is the host Go function signature (the P1 version of 10 §3).
 //
-// args 是被调时的实参快照(由 callHost 拷出);返回 results / error。
-// HostFn 不直接操作 thread 栈,这避免了对 Go callback 的栈协议依赖。
+// args is a snapshot of the actual arguments at call time (copied out by
+// callHost); it returns results / error. HostFn does not directly manipulate
+// the thread stack, which avoids any dependence on the Go callback's stack
+// protocol.
 //
-// **args 生命期契约**:args 来自 State 的实参缓冲池,仅在本次调用内有效
-// (含作为返回值返回——callHost 在结果拷贝进栈之后才归还缓冲)。不得把
-// args(或其子切片)存进任何越过本次调用的位置(闭包、全局、协程传值区
-// 等);需要保留请显式拷贝。违约症状是"返回值被后续 host 调用覆写",
-// 离根因极远,排障时可开 wangshu_trace 构建(归还时填毒值,违约即现)。
+// **args lifetime contract**: args comes from State's argument buffer pool
+// and is valid only within this call (including when returned as a return
+// value — callHost returns the buffer only after the results have been copied
+// onto the stack). Do not store args (or a sub-slice of it) anywhere that
+// outlives this call (closure, global, coroutine transfer area, etc.); make an
+// explicit copy if you need to keep it. Violating this manifests as "the
+// return value is overwritten by a subsequent host call", far removed from the
+// root cause; when debugging, enable the wangshu_trace build (it fills the
+// buffer with a poison value on return, so a violation shows up immediately).
 type HostFn func(st *State, args []value.Value) ([]value.Value, *LuaError)
 
-// hostFnRegistry 是 State 上的 host function 注册表(整数 HostFnID 引用)。
+// hostFnRegistry is the host function registry on State (referenced by the
+// integer HostFnID).
 //
-// 槽位可回收:每个槽带引用计数(MakeHostClosure +1 / host closure 被 GC -1),
-// 归零的槽进 free 链供 RegisterHostFn 复用。否则 gmatch 每次调用、mountArena
-// 每次 Call 都永久追加闭包(长驻 State 反复执行的规则引擎形态下无界泄漏,
-// 且每个 entry 经 Go 闭包持有 src/pat 字节拷贝)。
+// Slots are reclaimable: each slot carries a reference count (MakeHostClosure
+// +1 / host closure collected by GC -1); a slot that reaches zero goes onto the
+// free list for RegisterHostFn to reuse. Otherwise every gmatch call and every
+// mountArena Call would permanently append a closure (an unbounded leak in the
+// long-lived-State, repeatedly-executing rule-engine shape, and each entry
+// holds a src/pat byte copy via its Go closure).
 type hostFnRegistry struct {
 	fns  []HostFn
-	refs []int32  // 槽位引用计数(活跃 host closure 数)
-	free []uint32 // 已归零可复用的槽位
+	refs []int32  // per-slot reference count (number of live host closures)
+	free []uint32 // slots that reached zero and can be reused
 	// intrinsics maps a HostFnID to a math intrinsic kind (jit.Intrinsic*,
 	// 0 = none) for the P4 native segment fast path (issue #77). Grown
 	// lazily by RegisterIntrinsic; indexed by HostFnID in lockstep with
@@ -43,7 +54,8 @@ type hostFnRegistry struct {
 	intrinsics []uint8
 }
 
-// RegisterHostFn 注册一个 HostFn,返回它在 State 内的 HostFnID(复用空闲槽)。
+// RegisterHostFn registers a HostFn and returns its HostFnID within State
+// (reusing a free slot).
 func (st *State) RegisterHostFn(fn HostFn) uint32 {
 	r := &st.hostFns
 	if n := len(r.free); n > 0 {
@@ -93,7 +105,8 @@ func (st *State) IntrinsicKindOf(id uint32) uint8 {
 	return 0
 }
 
-// MakeHostClosure 包装一个已注册的 HostFnID 为 host closure(0 upvalue)。
+// MakeHostClosure wraps an already-registered HostFnID into a host closure
+// (0 upvalue).
 func (st *State) MakeHostClosure(id uint32) arena.GCRef {
 	cl := object.AllocHostClosure(st.arena, id, 0)
 	st.gc.LinkSweep(cl)
@@ -102,7 +115,8 @@ func (st *State) MakeHostClosure(id uint32) arena.GCRef {
 	return cl
 }
 
-// releaseHostFn 在 host closure 被 GC 回收时释放其槽位引用(gc 包回调)。
+// releaseHostFn releases a host closure's slot reference when the host closure
+// is collected by GC (a callback from the gc package).
 func (st *State) releaseHostFn(id uint32) {
 	r := &st.hostFns
 	if int(id) >= len(r.refs) || r.refs[id] <= 0 {
@@ -110,20 +124,22 @@ func (st *State) releaseHostFn(id uint32) {
 	}
 	r.refs[id]--
 	if r.refs[id] == 0 {
-		r.fns[id] = nil // 释放 Go 闭包(及其捕获的 src/pat 等)
+		r.fns[id] = nil // release the Go closure (and its captured src/pat, etc.)
 		r.free = append(r.free, id)
 	}
 }
 
-// SetGlobal 把一个值挂到 globals 表的字符串键上(供 stdlib 注册 / 公共面转发)。
+// SetGlobal attaches a value to a string key in the globals table (for stdlib
+// registration / public-facing forwarding).
 func (st *State) SetGlobal(name string, v value.Value) {
 	ref := st.gc.Intern([]byte(name))
 	key := value.MakeGC(value.TagString, ref)
 	_ = st.tableSet(st.globals, key, v)
 }
 
-// GetGlobal 读取 globals 表的字符串键(与 SetGlobal 对称,公共面转发用)。
-// 缺失键返回 value.Nil(对齐 Lua 5.1 `_G[k]` 语义)。
+// GetGlobal reads a string key from the globals table (symmetric with
+// SetGlobal, used for public-facing forwarding). A missing key returns
+// value.Nil (matching Lua 5.1 `_G[k]` semantics).
 func (st *State) GetGlobal(name string) value.Value {
 	ref := st.gc.Intern([]byte(name))
 	key := value.MakeGC(value.TagString, ref)
@@ -131,28 +147,33 @@ func (st *State) GetGlobal(name string) value.Value {
 	return v
 }
 
-// SetGlobalByRef 用预先 intern 好的 string GCRef 作 key 写 globals,跳过
-// `gc.Intern([]byte(name))` 一步(issue #13 B 件)。`nameRef` 必须是同一
-// State 的 gc.Intern 产物——跨 State / 非 string-tag GCRef 行为未定义。
-// 公共面经 wangshu.GlobalsSlot 间接调用,Slot 持 pinned 引用保活该 nameRef。
+// SetGlobalByRef writes globals using a pre-interned string GCRef as the key,
+// skipping the `gc.Intern([]byte(name))` step (issue #13 part B). `nameRef`
+// must be a product of the same State's gc.Intern — behavior is undefined for a
+// cross-State / non-string-tag GCRef. The public facing side calls this
+// indirectly via wangshu.GlobalsSlot, whose Slot holds a pinned reference that
+// keeps that nameRef alive.
 func (st *State) SetGlobalByRef(nameRef arena.GCRef, v value.Value) {
 	key := value.MakeGC(value.TagString, nameRef)
 	_ = st.tableSet(st.globals, key, v)
 }
 
-// GetGlobalByRef 用预先 intern 好的 string GCRef 作 key 读 globals(对偶
-// SetGlobalByRef)。约束同 SetGlobalByRef,公共面经 wangshu.GlobalsSlot
-// 间接调用。
+// GetGlobalByRef reads globals using a pre-interned string GCRef as the key
+// (the dual of SetGlobalByRef). Same constraints as SetGlobalByRef; the public
+// facing side calls this indirectly via wangshu.GlobalsSlot.
 func (st *State) GetGlobalByRef(nameRef arena.GCRef) value.Value {
 	key := value.MakeGC(value.TagString, nameRef)
 	v, _ := st.tableGet(st.globals, key)
 	return v
 }
 
-// PinRef 在 pin 表中登记一个 GCRef,返回句柄索引。pin 表被 GC mark 为根,
-// 保证宿主 Go 侧持有期间该对象不被回收(globals 覆盖旧值后旧值仍可调)。
-// 复用 freePins 空闲槽,槽位无界增长仅在「长驻 State 反复 GetGlobal 不同名
-// 函数且不 Release」时出现——公共 API 用户应配套调用 Release(11 §6.2 mind)。
+// PinRef registers a GCRef in the pin table and returns a handle index. The
+// pin table is marked as a GC root, guaranteeing the object is not collected
+// while the host Go side holds it (an old value stays callable even after
+// globals overwrites it). It reuses free slots from freePins; unbounded slot
+// growth occurs only in the "long-lived State that repeatedly GetGlobals
+// different-named functions without Release" case — public-API users should
+// pair calls with Release (11 §6.2 mind).
 func (st *State) PinRef(ref arena.GCRef) uint32 {
 	if n := len(st.freePins); n > 0 {
 		idx := st.freePins[n-1]
@@ -165,8 +186,9 @@ func (st *State) PinRef(ref arena.GCRef) uint32 {
 	return idx
 }
 
-// UnpinRef 释放 pin 句柄。越界 / 已释放槽位为 no-op(公共面 Value.Release
-// 可能被重复调用,容错)。
+// UnpinRef releases a pin handle. An out-of-range / already-released slot is a
+// no-op (the public-facing Value.Release may be called repeatedly, so this is
+// fault-tolerant).
 func (st *State) UnpinRef(idx uint32) {
 	if int(idx) >= len(st.pinnedRefs) {
 		return
@@ -178,8 +200,9 @@ func (st *State) UnpinRef(idx uint32) {
 	st.freePins = append(st.freePins, idx)
 }
 
-// PinnedRefAt 取回 pin 句柄对应的 GCRef;越界 / 已释放返回 Null。
-// 供门面 State.Call 在用 Value(function) 实参时取出底层 closure。
+// PinnedRefAt retrieves the GCRef corresponding to a pin handle; returns Null
+// if out-of-range / already released. Used by the facade State.Call to extract
+// the underlying closure when a Value(function) argument is passed.
 func (st *State) PinnedRefAt(idx uint32) arena.GCRef {
 	if int(idx) >= len(st.pinnedRefs) {
 		return arena.GCRef(0)
@@ -187,26 +210,32 @@ func (st *State) PinnedRefAt(idx uint32) arena.GCRef {
 	return st.pinnedRefs[idx]
 }
 
-// baselineEntry 是 globals baseline 的一项:key 是字符串(intern 后),
-// val 是 baseline 时的 value。复合值(table/function)的 GCRef 在 val 内,
-// 但 baseline 表本身常驻 State,经 visitBaselineRefs 加入 GC 根防回收
-// (issue #6:不接根则 baseline value 在两次 Reset 之间被 GC 死掉)。
+// baselineEntry is one item of the globals baseline: key is a string (after
+// interning), val is the value at baseline time. The GCRef of a composite value
+// (table/function) is inside val, but the baseline table itself resides in
+// State and is added to the GC roots via visitBaselineRefs to prevent
+// collection (issue #6: without rooting, a baseline value gets GC'd between two
+// Resets).
 type baselineEntry struct {
 	key string
 	val value.Value
 }
 
-// MarkGlobalsBaseline 拍下当前 _G 的快照作为基线(issue #6)。
-// 重复调用覆盖旧 baseline。RawNext 遍历当前 globals 把所有 (string key,
-// value) 拷到 State 上的 baseline 切片。
+// MarkGlobalsBaseline takes a snapshot of the current _G as the baseline
+// (issue #6). A repeated call overwrites the old baseline. RawNext walks the
+// current globals and copies all (string key, value) pairs to State's baseline
+// slice.
 //
-// 调用方契约:典型时机是 NewState 装载 stdlib 完成后立即调用,
-// 把 stdlib 提供面定为基线。之后 ResetGlobalsToBaseline 可在每次
-// Borrow 之间恢复该基线。
+// Caller contract: the typical timing is to call this right after NewState
+// finishes loading stdlib, fixing the stdlib-provided surface as the baseline.
+// Afterwards ResetGlobalsToBaseline can restore that baseline between each
+// Borrow.
 //
-// **限定**:仅遍历字符串 key(stdlib 与宿主自己的全局都是字符串 key);
-// 数字 / 表 / 函数等 key 跳过(stdlib 不用,实际场景不存在)。这样可
-// 避免把 baseline 设计扩到任意 key 形态、保持转换简单。
+// **Limitation**: only string keys are walked (both stdlib and the host's own
+// globals are string keys); number / table / function etc. keys are skipped
+// (stdlib does not use them, and they do not occur in real scenarios). This
+// avoids extending the baseline design to arbitrary key shapes and keeps the
+// conversion simple.
 func (st *State) MarkGlobalsBaseline() {
 	st.baseline = st.baseline[:0]
 	key := value.Nil
@@ -216,7 +245,8 @@ func (st *State) MarkGlobalsBaseline() {
 			break
 		}
 		if value.Tag(nextKey) == value.TagString {
-			// key 已 intern,直接拷字节(intern 池保证后续 lookup 同 ref)
+			// key is already interned, so copy the bytes directly (the intern
+			// pool guarantees a subsequent lookup yields the same ref)
 			keyStr := string(object.StringBytes(st.arena, value.GCRefOf(nextKey)))
 			st.baseline = append(st.baseline, baselineEntry{key: keyStr, val: nextVal})
 		}
@@ -224,15 +254,18 @@ func (st *State) MarkGlobalsBaseline() {
 	}
 }
 
-// ResetGlobalsToBaseline 把 _G 恢复到上一次 MarkGlobalsBaseline 拍下的
-// 状态(issue #6):非 baseline 字符串 key 删除(置 Nil),baseline 字符串
-// key 写回 baseline value。未 Mark 过(baseline 空)则等价 ClearScriptGlobals
-// 行为——全部字符串 key globals 删除,慎用。
+// ResetGlobalsToBaseline restores _G to the state snapshotted by the last
+// MarkGlobalsBaseline (issue #6): non-baseline string keys are deleted (set to
+// Nil), and baseline string keys are written back to their baseline value. If
+// never Marked (baseline empty), this is equivalent to ClearScriptGlobals
+// behavior — all string-key globals are deleted; use with care.
 //
-// 实现:① 先 rawNext 遍历当前 globals 收集所有字符串 key;② 对 baseline
-// 中的 key 写 baseline value;③ 对未在 baseline 的 key 写 Nil。
+// Implementation: ① first rawNext-walk the current globals to collect all
+// string keys; ② for keys in the baseline write the baseline value; ③ for keys
+// not in the baseline write Nil.
 func (st *State) ResetGlobalsToBaseline() {
-	// 用 baseline 建 set(短表 O(N) 线性扫即可,无需 map)
+	// Build a set from the baseline (a short table, so a linear O(N) scan
+	// suffices, no map needed)
 	inBaseline := func(k string) (value.Value, bool) {
 		for i := range st.baseline {
 			if st.baseline[i].key == k {
@@ -241,8 +274,8 @@ func (st *State) ResetGlobalsToBaseline() {
 		}
 		return value.Nil, false
 	}
-	// 步骤 1:遍历当前 _G 收集字符串 key(rawNext 期间不改 globals,
-	// 避免迭代器失效)
+	// Step 1: walk the current _G to collect string keys (globals is not
+	// modified during rawNext, avoiding iterator invalidation)
 	var currentKeys []string
 	key := value.Nil
 	for {
@@ -256,33 +289,37 @@ func (st *State) ResetGlobalsToBaseline() {
 		}
 		key = nextKey
 	}
-	// 步骤 2:删除非 baseline keys
+	// Step 2: delete non-baseline keys
 	for _, k := range currentKeys {
 		if _, in := inBaseline(k); !in {
 			st.SetGlobal(k, value.Nil)
 		}
 	}
-	// 步骤 3:恢复 baseline keys 到 baseline values
+	// Step 3: restore baseline keys to their baseline values
 	for i := range st.baseline {
 		st.SetGlobal(st.baseline[i].key, st.baseline[i].val)
 	}
 }
 
-// BaselineSize 报告当前 baseline 中的 key 数(诊断/测试用)。
+// BaselineSize reports the number of keys in the current baseline (for
+// diagnostics/testing).
 func (st *State) BaselineSize() int { return len(st.baseline) }
 
-// callHost 同步调用一个 host closure(05 §7.5)。
+// callHost synchronously calls a host closure (05 §7.5).
 //
-// funcIdx:host closure 在栈上的索引;参数紧随其后;
-// nresults < 0 = 调用者要可变(栈上保留全部);否则按个数补/裁。
+// funcIdx: the host closure's index on the stack; arguments follow immediately;
+// nresults < 0 = the caller wants variable results (keep all on the stack);
+// otherwise pad/truncate to the given count.
 func (st *State) callHost(th *thread, funcIdx, nargs, nresults int) *LuaError {
 	cl := value.GCRefOf(th.slot(funcIdx))
 	hid := object.ClosureProtoID(st.arena, cl)
 	fn := st.hostFns.fns[hid]
-	// args 走 State 缓冲池(host 调用是 nbody 级负载的分配大头,91%)。
-	// HostFn 契约:不得越过本次调用保留 args 切片(返回 args 子切片如
-	// select 合法——归还在结果拷贝进栈之后);coroutine xfer 已改拷贝。
-	// host→Lua→host 嵌套时池 LIFO 自然加深。
+	// args goes through State's buffer pool (host calls are the bulk of
+	// nbody-level allocation load, 91%). HostFn contract: do not retain the
+	// args slice beyond this call (returning an args sub-slice such as select
+	// is legal — the buffer is returned after the results are copied onto the
+	// stack); coroutine xfer has been changed to copy. On host→Lua→host
+	// nesting the pool's LIFO naturally deepens.
 	args := st.getArgsBuf(nargs)
 	defer st.putArgsBuf(args)
 	for i := 0; i < nargs; i++ {
@@ -295,7 +332,7 @@ func (st *State) callHost(th *thread, funcIdx, nargs, nresults int) *LuaError {
 	dst := funcIdx
 	n := len(results)
 	if nresults < 0 {
-		// 可变:全部 results 落 dst,top = dst + n
+		// variable: all results land at dst, top = dst + n
 		if dst+n > th.size() {
 			th.ensureStack(dst + n)
 		}
@@ -316,9 +353,11 @@ func (st *State) callHost(th *thread, funcIdx, nargs, nresults int) *LuaError {
 			th.setSlot(dst+k, value.Nil)
 		}
 	}
-	// 定长结果:恢复 top 到当前帧逻辑顶(05 §1.2 CallInfo.top 维护;对齐
-	// 5.1 "L->top = ci->top")。否则前一条多值 CALL(C=0)留下的低 top 会让
-	// 后续 callLuaFromHost 的脚手架覆写活跃寄存器(TFORLOOP state 槽被毁)。
+	// Fixed-length results: restore top to the current frame's logical top
+	// (05 §1.2 CallInfo.top maintenance; matches 5.1 "L->top = ci->top").
+	// Otherwise the low top left by a preceding multi-value CALL (C=0) would let
+	// the subsequent callLuaFromHost scaffold overwrite live registers (the
+	// TFORLOOP state slot gets clobbered).
 	if th.ciDepth > 0 {
 		ci := currentCI(th)
 		frameTop := ci.base + int(st.protoOf(ci).MaxStack)

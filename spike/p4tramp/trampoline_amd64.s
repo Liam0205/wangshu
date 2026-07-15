@@ -1,37 +1,38 @@
-// trampoline_amd64.s —— P4 PJ1 spike,Go → mmap 段最小 round-trip。
+// trampoline_amd64.s —— P4 PJ1 spike, minimal Go → mmap segment round-trip.
 //
-// Plan 9 asm(Go 风格)。对位 docs/design/p4-method-jit/05-system-pipeline.md
-// §2.4(trampoline 进/出 stub)+ 06-backends.md §4.1(amd64 寄存器约定)。
+// Plan 9 asm (Go flavor). Mirrors docs/design/p4-method-jit/05-system-pipeline.md
+// §2.4 (trampoline enter/exit stub) + 06-backends.md §4.1 (amd64 register convention).
 //
-// **PJ1 spike 极简版**:不切 SP / 不装 jitContext / 不保存 callee-saved。
-// 完整版 trampoline 留 internal/gibbous/jit/amd64/trampoline_amd64.s 实装。
+// **PJ1 spike minimal version**: no SP switch / no jitContext setup / no callee-saved save.
+// The full trampoline is implemented in internal/gibbous/jit/amd64/trampoline_amd64.s.
 
 #include "textflag.h"
 
 // func CallJIT(codeAddr uintptr) uint64
 //
-// 入参:
-//   codeAddr +0(FP)  uintptr  ← mmap 段起点(PROT_RX)
-// 返回:
-//   ret      +8(FP)  uint64   ← mmap 段执行后 RAX 值
+// Params:
+//   codeAddr +0(FP)  uintptr  ← mmap segment start (PROT_RX)
+// Returns:
+//   ret      +8(FP)  uint64   ← RAX value after executing the mmap segment
 //
-// frame size 0:不分配 Go 栈帧(`NOFRAME` 标志);Go 端调用方负责栈布局。
+// frame size 0: no Go stack frame allocated (`NOFRAME` flag); the Go-side caller
+// owns the stack layout.
 //
-// 实现:
-//   MOVQ codeAddr+0(FP), AX   ; AX = mmap 段起点
-//   CALL AX                    ; 跳进 mmap 段;段以 ret 收尾,带 RAX 返回值
-//   MOVQ AX, ret+8(FP)         ; 把 RAX 写回 Go 帧返回槽
-//   RET                        ; 回 Go 调用方
+// Implementation:
+//   MOVQ codeAddr+0(FP), AX   ; AX = mmap segment start
+//   CALL AX                    ; jump into the mmap segment; the segment ends with ret carrying the RAX return value
+//   MOVQ AX, ret+8(FP)         ; write RAX back to the Go frame return slot
+//   RET                        ; return to the Go caller
 //
-// **不踩 Go runtime 的关键点**:
-//   - mmap 段执行期间不阻塞 Go 调度(段瞬时,~ns);
-//   - 不调任何 Go 函数(段只跑 mov + ret);
-//   - callee-saved 不动(mov+ret 不动 r12-r15/rbp);
-//   - Go ABI0 的 CALL 协议:caller 在 CALL 前已 push 返回地址到 SP,callee 的
-//     ret 跳回该地址——mmap 段的 `c3` (ret) 直接落到我们 CALL 的下一条 MOVQ。
+// **Key points for not tripping the Go runtime**:
+//   - the mmap segment does not block Go scheduling while executing (the segment is instantaneous, ~ns);
+//   - it calls no Go function (the segment only runs mov + ret);
+//   - callee-saved registers are untouched (mov+ret leaves r12-r15/rbp alone);
+//   - Go ABI0 CALL protocol: the caller has already pushed the return address to SP before CALL, and the callee's
+//     ret jumps back to that address —— the mmap segment's `c3` (ret) lands directly on the MOVQ following our CALL.
 //
-// NOSPLIT:不能让 Go runtime 在我们 CALL 前 / RET 后插 morestack 检查
-// (通常没必要,但为了让 trampoline 路径行为可预测)。
+// NOSPLIT: prevent the Go runtime from inserting a morestack check before our CALL / after RET
+// (usually unnecessary, but keeps the trampoline path behavior predictable).
 
 TEXT ·CallJIT(SB),NOSPLIT|NOFRAME,$0-16
 	MOVQ codeAddr+0(FP), AX

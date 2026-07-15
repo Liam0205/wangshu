@@ -1,4 +1,5 @@
-// table / os / io 子库 + base 库补全(unpack/xpcall)(10 裁剪表必做列)。
+// table / os / io sub-libraries + base library completions (unpack/xpcall)
+// (mandatory columns from the 10 trimmed-set table).
 package stdlib
 
 import (
@@ -13,7 +14,7 @@ import (
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
-// ----- table 子库 -----
+// ----- table sub-library -----
 
 var tableFns = []entry{
 	{"insert", tableFnInsert},
@@ -23,12 +24,13 @@ var tableFns = []entry{
 	{"getn", tableFnGetn},
 	{"maxn", tableFnMaxn},
 	{"setn", tableFnSetn},
-	{"foreach", tableFnForeach},   // LUA_COMPAT 5.0 遗留(官方 5.1.5 默认带)
-	{"foreachi", tableFnForeachi}, // 同上
+	{"foreach", tableFnForeach},   // LUA_COMPAT 5.0 legacy (bundled by default in official 5.1.5)
+	{"foreachi", tableFnForeachi}, // same as above
 }
 
-// tableFnForeach:table.foreach(t, f) —— 对每个键值对调 f(k, v),f 返回
-// 非 nil 即中止并返回该值(官方 ltablib foreach)。
+// tableFnForeach: table.foreach(t, f) -- calls f(k, v) for each key/value
+// pair; if f returns non-nil, stop and return that value (official ltablib
+// foreach).
 func tableFnForeach(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	tv, e := tblArg(args, 0, "foreach")
 	if e != nil {
@@ -59,8 +61,8 @@ func tableFnForeach(st *crescent.State, args []value.Value) ([]value.Value, *cre
 	return nil, nil
 }
 
-// tableFnForeachi:table.foreachi(t, f) —— 对 1..#t 调 f(i, t[i]),返回值
-// 语义同 foreach。
+// tableFnForeachi: table.foreachi(t, f) -- calls f(i, t[i]) for 1..#t; the
+// return-value semantics are the same as foreach.
 func tableFnForeachi(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	tv, e := tblArg(args, 0, "foreachi")
 	if e != nil {
@@ -84,10 +86,11 @@ func tableFnForeachi(st *crescent.State, args []value.Value) ([]value.Value, *cr
 	return nil, nil
 }
 
-// tableFnSetn:table.setn —— 5.1.5 实测直接报 "'setn' is obsolete"
-// (10 §11 △ 列写"空操作",但 oracle 行为优先:对齐报错措辞保差分)。
+// tableFnSetn: table.setn -- 5.1.5 empirically raises "'setn' is obsolete"
+// directly (the 10 §11 △ column says "no-op", but oracle behavior takes
+// priority: match the error wording to preserve the diff).
 func tableFnSetn(_ *crescent.State, _ []value.Value) ([]value.Value, *crescent.LuaError) {
-	return nil, crescent.NewError("'setn' is obsolete") // 带位置前缀(executeFrom 注解)
+	return nil, crescent.NewError("'setn' is obsolete") // with position prefix (executeFrom annotation)
 }
 
 func tblArg(args []value.Value, n int, fname string) (value.Value, *crescent.LuaError) {
@@ -97,7 +100,7 @@ func tblArg(args []value.Value, n int, fname string) (value.Value, *crescent.Lua
 	return args[n], nil
 }
 
-// tableFnInsert:table.insert(t, [pos,] v)。
+// tableFnInsert: table.insert(t, [pos,] v).
 func tableFnInsert(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	tv, e := tblArg(args, 0, "insert")
 	if e != nil {
@@ -120,7 +123,7 @@ func tableFnInsert(st *crescent.State, args []value.Value) ([]value.Value, *cres
 		if pos < 1 || pos > n+1 {
 			return nil, crescent.NewArgError(2, "position out of bounds")
 		}
-		// 右移 [pos, n] → [pos+1, n+1]
+		// shift right [pos, n] → [pos+1, n+1]
 		for i := n; i >= pos; i-- {
 			v, _ := st.RawGet(t, value.NumberValue(float64(i)))
 			if e := st.RawSet(t, value.NumberValue(float64(i+1)), v); e != nil {
@@ -136,7 +139,7 @@ func tableFnInsert(st *crescent.State, args []value.Value) ([]value.Value, *cres
 	return nil, nil
 }
 
-// tableFnRemove:table.remove(t [, pos]) → 被移除的值。
+// tableFnRemove: table.remove(t [, pos]) → the removed value.
 func tableFnRemove(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	tv, e := tblArg(args, 0, "remove")
 	if e != nil {
@@ -152,14 +155,16 @@ func tableFnRemove(st *crescent.State, args []value.Value) ([]value.Value, *cres
 		}
 		pos = int(posF)
 	}
-	// 越界 pos(含空表):返回 0 个值且不动表(官方 tremove
-	// `!(1 <= pos && pos <= e) return 0`)。旧实现无此检查,位移循环
-	// 不执行但 t[n]=nil 仍执行——静默删掉了末元素(数据损坏)。
+	// Out-of-range pos (including an empty table): return 0 values and leave
+	// the table untouched (official tremove `!(1 <= pos && pos <= e)
+	// return 0`). The old implementation lacked this check: the shift loop
+	// did not run but t[n]=nil still executed -- silently deleting the last
+	// element (data corruption).
 	if pos < 1 || pos > n {
 		return nil, nil
 	}
 	removed, _ := st.RawGet(t, value.NumberValue(float64(pos)))
-	// 左移 [pos+1, n] → [pos, n-1]
+	// shift left [pos+1, n] → [pos, n-1]
 	for i := pos; i < n; i++ {
 		v, _ := st.RawGet(t, value.NumberValue(float64(i+1)))
 		if e := st.RawSet(t, value.NumberValue(float64(i)), v); e != nil {
@@ -172,7 +177,7 @@ func tableFnRemove(st *crescent.State, args []value.Value) ([]value.Value, *cres
 	return []value.Value{removed}, nil
 }
 
-// tableFnConcat:table.concat(t [, sep [, i [, j]]])。
+// tableFnConcat: table.concat(t [, sep [, i [, j]]]).
 func tableFnConcat(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	tv, e := tblArg(args, 0, "concat")
 	if e != nil {
@@ -189,20 +194,24 @@ func tableFnConcat(st *crescent.State, args []value.Value) ([]value.Value, *cres
 	}
 	iF, _ := numArg(st, args, 2, 1)
 	jF, _ := numArg(st, args, 3, float64(st.RawBorder(t)))
-	// NaN 规范化:NaN-X=NaN、NaN>x 恒 false 会绕过下面的范围检查;且
-	// Go int(NaN)=MIN_INT64 与 PUC 5.1.5 int(NaN)=0 不一致(对位分歧)。
-	// 统一把 NaN 当 0(对齐 PUC luaL_checkint 的 NaN→0),让越界索引走
-	// 正常的 "invalid value (nil) at index" 路径而非实现定义行为。
+	// NaN normalization: NaN-X=NaN and NaN>x is always false would bypass
+	// the range check below; also Go int(NaN)=MIN_INT64 disagrees with PUC
+	// 5.1.5 int(NaN)=0 (a diff divergence). Uniformly treat NaN as 0 (match
+	// PUC luaL_checkint's NaN→0) so an out-of-range index takes the normal
+	// "invalid value (nil) at index" path rather than implementation-defined
+	// behavior.
 	if iF != iF {
 		iF = 0
 	}
 	if jF != jF {
 		jF = 0
 	}
-	// 嵌入式 hardening:j 由脚本控制,1e14 等极大值会让 parts append 循环
-	// 耗尽宿主内存。table.concat 实际工程语义只在表 # 范围内有意义,
-	// 1<<24(~16M)是 hardening 上限——大于表长无意义(为 nil 索引),
-	// 让循环一开始就被裁口,实际工作循环仍由表元素数决定。
+	// Embedded hardening: j is script-controlled, so extreme values like
+	// 1e14 make the parts-append loop exhaust host memory. table.concat's
+	// real engineering semantics only make sense within the table's # range;
+	// 1<<24 (~16M) is the hardening cap -- anything beyond the table length
+	// is meaningless (indexes nil), so cut the loop off at the start while
+	// the actual work loop is still bounded by the number of table elements.
 	const maxConcatRange = 1 << 24
 	if jF-iF > maxConcatRange {
 		return nil, crescent.NewError("table.concat range too large")
@@ -221,7 +230,7 @@ func tableFnConcat(st *crescent.State, args []value.Value) ([]value.Value, *cres
 	return []value.Value{intern(st, strings.Join(parts, sep))}, nil
 }
 
-// tableFnSort:table.sort(t [, comp])。comp 是 Lua 函数(经 ProtectedCallDirect 回调)。
+// tableFnSort: table.sort(t [, comp]). comp is a Lua function (called back via ProtectedCallDirect).
 func tableFnSort(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	tv, e := tblArg(args, 0, "sort")
 	if e != nil {
@@ -252,8 +261,9 @@ func tableFnSort(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 			}
 			return len(rs) > 0 && value.Truthy(rs[0])
 		}
-		// 默认比较走完整 `<` 语义(数字/字符串快路径 + __lt 元方法,
-		// 官方 sort_comp 经 lua_lessthan;带 __lt 的对象表可直接 sort)
+		// Default comparison uses the full `<` semantics (number/string fast
+		// path + __lt metamethod; official sort_comp goes through
+		// lua_lessthan, so object tables with __lt can be sorted directly)
 		r, e := st.LessThan(a, b)
 		if e != nil {
 			sortErr = e
@@ -273,7 +283,7 @@ func tableFnSort(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 	return nil, nil
 }
 
-// tableFnGetn:table.getn(t)(5.1 遗留,= #t)。
+// tableFnGetn: table.getn(t) (5.1 legacy, = #t).
 func tableFnGetn(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	tv, e := tblArg(args, 0, "getn")
 	if e != nil {
@@ -282,7 +292,7 @@ func tableFnGetn(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 	return []value.Value{value.NumberValue(float64(st.RawBorder(value.GCRefOf(tv))))}, nil
 }
 
-// tableFnMaxn:table.maxn(t)= 最大正数键(遍历全表,5.1)。
+// tableFnMaxn: table.maxn(t) = the largest positive numeric key (scans the whole table, 5.1).
 func tableFnMaxn(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	tv, e := tblArg(args, 0, "maxn")
 	if e != nil {
@@ -309,7 +319,7 @@ func tableFnMaxn(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 	return []value.Value{value.NumberValue(maxn)}, nil
 }
 
-// ----- os / io 最小集 -----
+// ----- os / io minimal set -----
 
 var osFns = []entry{
 	{"time", osFnTime},
@@ -319,7 +329,7 @@ var osFns = []entry{
 	{"difftime", osFnDifftime},
 }
 
-// osFnDifftime:os.difftime(t2, t1) = t2 - t1(POSIX 秒,5.1)。
+// osFnDifftime: os.difftime(t2, t1) = t2 - t1 (POSIX seconds, 5.1).
 func osFnDifftime(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	if len(args) < 1 {
 		return nil, crescent.NewArgError(1, "number expected, got no value")
@@ -415,7 +425,7 @@ func osFnDate(st *crescent.State, args []value.Value) ([]value.Value, *crescent.
 		}
 		now = time.Unix(int64(f), 0)
 	}
-	// 极简 strftime 子集(%Y %m %d %H %M %S %c)
+	// Minimal strftime subset (%Y %m %d %H %M %S %c)
 	r := strings.NewReplacer(
 		"%Y", fmt.Sprintf("%04d", now.Year()),
 		"%m", fmt.Sprintf("%02d", int(now.Month())),
@@ -455,11 +465,11 @@ func ioFnWrite(st *crescent.State, args []value.Value) ([]value.Value, *crescent
 	return nil, nil
 }
 
-// ----- math 补全 -----
+// ----- math completions -----
 
 var mathExtraFns = []entry{
 	{"fmod", mathFnFmod},
-	{"mod", mathFnFmod}, // LUA_COMPAT_MOD:5.0 别名(官方 5.1.5 默认带)
+	{"mod", mathFnFmod}, // LUA_COMPAT_MOD: 5.0 alias (bundled by default in official 5.1.5)
 	{"modf", mathFnModf},
 	{"atan2", mathFn2("atan2", atan2)},
 	{"sinh", mathFn1("sinh", sinh)},
@@ -557,9 +567,9 @@ func mathFnRandomSeed(st *crescent.State, args []value.Value) ([]value.Value, *c
 	return nil, nil
 }
 
-// ----- base 补全:unpack / xpcall -----
+// ----- base completions: unpack / xpcall -----
 
-// baseFnUnpackImpl:unpack(t [, i [, j]])。
+// baseFnUnpackImpl: unpack(t [, i [, j]]).
 func baseFnUnpackImpl(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	tv, e := tblArg(args, 0, "unpack")
 	if e != nil {
@@ -585,10 +595,12 @@ func baseFnUnpackImpl(st *crescent.State, args []value.Value) ([]value.Value, *c
 	// fuzz catch: unpack({}, 0, 7%00)).
 	i, j := int(int32(int64(iF))), int(int32(int64(jF)))
 	if i > j {
-		return nil, nil // 空区间
+		return nil, nil // empty range
 	}
-	// 范围上限对齐官方 LUAI_MAXCSTACK(luaconf.h,经 lua_checkstack 拒绝):
-	// unpack({},1,100000) 官方报错;同时防 2^30 级区间分配巨型切片拖死进程。
+	// The range upper bound matches official LUAI_MAXCSTACK (luaconf.h,
+	// rejected via lua_checkstack): unpack({},1,100000) raises officially;
+	// it also prevents a 2^30-scale range from allocating a giant slice and
+	// dragging the process down.
 	n := j - i + 1
 	if n <= 0 || n > 8000 {
 		return nil, crescent.NewError("too many results to unpack")
@@ -601,11 +613,13 @@ func baseFnUnpackImpl(st *crescent.State, args []value.Value) ([]value.Value, *c
 	return out, nil
 }
 
-// baseFnXpcall:xpcall(f, handler) → (true, results...) | (false, handler(err))。
+// baseFnXpcall: xpcall(f, handler) → (true, results...) | (false, handler(err)).
 //
-// 09 语义:handler 在栈展开前调用——P1 实现为"捕获后立刻调用 handler"
-// (栈已由 protected 边界回滚;P1 不支持 handler 内 inspect 出错栈帧,
-// 这是已记录的简化,见 implementation-progress)。
+// 09 semantics: the handler is called before the stack unwinds -- P1
+// implements this as "call the handler immediately after catching" (the
+// stack has already been rolled back by the protected boundary; P1 does not
+// support inspecting the erroring stack frame inside the handler, which is a
+// documented simplification, see implementation-progress).
 func baseFnXpcall(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	if len(args) < 2 {
 		return nil, crescent.NewArgError(2, "value expected")

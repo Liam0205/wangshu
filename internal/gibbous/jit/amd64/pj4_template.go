@@ -1,85 +1,91 @@
 //go:build wangshu_p4 && amd64
 
-// pj4_template.go —— PJ4 表 IC ArrayHit 字节级 inline 直达槽模板(承
-// docs/design/p4-method-jit/03-speculation-ic.md §6 stableShape/stable
-// Index 直达槽)。
+// pj4_template.go —— PJ4 table IC ArrayHit byte-level inline direct-hit slot
+// template (see docs/design/p4-method-jit/03-speculation-ic.md §6 stableShape/
+// stableIndex direct-hit slot).
 //
-// **形态**:`function(t) return t[K] end`(GETTABLE A B C 常量索引)
-// IC slot kind=ArrayHit + stableShape/stableIndex 命中时,字节级 inline
-// 直达 array 段读跳过哈希。
+// **Shape**: `function(t) return t[K] end` (GETTABLE A B C with constant index).
+// When the IC slot kind=ArrayHit + stableShape/stableIndex hits, byte-level
+// inline reads the array segment directly, skipping the hash lookup.
 //
-// **字节级流程**(amd64,~125 字节,严密 IsTable guard 版):
+// **Byte-level flow** (amd64, ~125 bytes, strict IsTable guard version):
 //
-//	1. load R(B) 到 rax(候选 table NaN-box)
-//	2. **严密 IsTable guard**:shr rax,48 + cmp eax,0xFFFC + jne deopt
-//	   (4+5+6=15 字节,精确验高 16 位 tag = TagTable)
-//	3. 由于 shr 已破坏 rax,需要重新 load R(B) → rax,然后 GCRef extract
-//	4. load arena base 到 r14(从 jitContext 经 EmitMovqR14FromR15Disp)
-//	5. mov rcx, rax(rcx = GCRef byte offset)
-//	6. load table.word5 = [r14+rcx+40] 到 rax → shr 32 → 与 stableShape 比
-//	7. load table.arrayRef = [r14+rcx+16] 到 rax
-//	8. load array[stableIndex] = [r14+rcx+stableIndex*8] 到 rax
-//	9. nil check:cmp rax, qNanBoxNil → je deopt
+//	1. load R(B) into rax (candidate table NaN-box)
+//	2. **strict IsTable guard**: shr rax,48 + cmp eax,0xFFFC + jne deopt
+//	   (4+5+6=15 bytes, precisely checks the top 16-bit tag = TagTable)
+//	3. since shr has clobbered rax, re-load R(B) → rax, then GCRef extract
+//	4. load arena base into r14 (from jitContext via EmitMovqR14FromR15Disp)
+//	5. mov rcx, rax (rcx = GCRef byte offset)
+//	6. load table.word5 = [r14+rcx+40] into rax → shr 32 → compare to stableShape
+//	7. load table.arrayRef = [r14+rcx+16] into rax
+//	8. load array[stableIndex] = [r14+rcx+stableIndex*8] into rax
+//	9. nil check: cmp rax, qNanBoxNil → je deopt
 //	10. store R(A) = rax
 //	11. ret
 //	12. [deopt:] mov rax, deoptCode; ret
 //
-// **预设条件**:
-//   - rbx = valueStackBase(callJITSpec 装)
-//   - r15 = jitContext(callJITSpec 装)
-//   - r14 = scratch(模板入口装 arena base)
+// **Preconditions**:
+//   - rbx = valueStackBase (set up by callJITSpec)
+//   - r15 = jitContext (set up by callJITSpec)
+//   - r14 = scratch (loads arena base at template entry)
 //
-// **deopt 路径**:Run 端 raxSpec==deoptCode 时调 host.GetTable(byte-equal
-// P1 解释器,经 IC + 哈希 + __index 元方法链)。
+// **deopt path**: when the Run side sees raxSpec==deoptCode it calls
+// host.GetTable (byte-equal to the P1 interpreter, via IC + hash + __index
+// metamethod chain).
 //
-// **严密 IsTable guard 实装**(承外部审查 increment-9/10 ICTable guard
-// 假阳建议):用 `shr rax, 48 + cmp eax, 0xFFFC + jne deopt` 精确验高 16 位
-// = TagTable(0xFFFC)。string(0xFFFB)/ function(0xFFFD)/ userdata
-// (0xFFFE)/ thread(0xFFFF)所有非 table NaN-box 都立即触发 deopt,不再
-// fall through 到 gen check(原简化版用 `rax < 0xFFFC<<48` 单边 jb,
-// 对 function/userdata/thread 高 tag 假阳,后续 gen check 几乎必触发 deopt
-// 但**多走一段 mmap 段指令**;严密版直接 IsTable 失败立即 deopt 省指令)。
+// **strict IsTable guard implementation** (following the external-review
+// increment-9/10 ICTable guard false-positive suggestion): uses
+// `shr rax, 48 + cmp eax, 0xFFFC + jne deopt` to precisely check the top 16
+// bits = TagTable (0xFFFC). string (0xFFFB) / function (0xFFFD) / userdata
+// (0xFFFE) / thread (0xFFFF) — every non-table NaN-box triggers deopt
+// immediately, instead of falling through to the gen check (the original
+// simplified version used a one-sided `rax < 0xFFFC<<48` jb, which is a false
+// positive for the high tags function/userdata/thread; the subsequent gen
+// check would almost certainly trigger deopt anyway but **runs an extra stretch
+// of mmap-segment instructions**; the strict version deopts right away on
+// IsTable failure and saves instructions).
 
 package amd64
 
-// qNanBoxTableTagShifted 是 table tag NaN-box 高位:0xFFFC << 48 = 0xFFFC_0000_0000_0000
+// qNanBoxTableTagShifted is the table tag NaN-box high bits: 0xFFFC << 48 = 0xFFFC_0000_0000_0000
 const qNanBoxTableTagShifted uint64 = 0xFFFC_0000_0000_0000
 
-// qNanBoxNilImm 是 Nil 的 NaN-box raw bits(value.Nil = 0xFFFE_0000_0000_0000)
-// 承 internal/value/value.go::Nil。
+// qNanBoxNilImm is the NaN-box raw bits of Nil (value.Nil = 0xFFFE_0000_0000_0000),
+// following internal/value/value.go::Nil.
 const qNanBoxNilImm uint64 = 0xFFFE_0000_0000_0000
 
-// qNanBoxTableTagHigh16 是 TagTable 在 NaN-box 高 16 位的纯值(0xFFFC),
-// 严密 IsTable guard 字节级 `cmp eax, 0xFFFC` 的立即数。
+// qNanBoxTableTagHigh16 is the bare value of TagTable in the NaN-box top 16 bits
+// (0xFFFC), the immediate for the strict IsTable guard byte-level `cmp eax, 0xFFFC`.
 const qNanBoxTableTagHigh16 int32 = 0xFFFC
 
-// EmitGetTableArrayHit 拼接 IC ArrayHit 直达槽模板字节级序列。
+// EmitGetTableArrayHit assembles the byte-level sequence of the IC ArrayHit
+// direct-hit slot template.
 //
-// 参数:
-//   - aReg:目标 R(A) 寄存器号
-//   - bReg:表 R(B) 寄存器号
-//   - stableShape:编译期固化的 table.gen 快照
-//   - stableIndex:编译期固化的 array slot 下标
-//   - arenaBaseOff:jitContext.arenaBase 字段偏移(int32 byte)
-//   - deoptCode:guard 失败时返 deoptCode
+// Parameters:
+//   - aReg: destination R(A) register number
+//   - bReg: table R(B) register number
+//   - stableShape: the table.gen snapshot frozen at compile time
+//   - stableIndex: the array slot index frozen at compile time
+//   - arenaBaseOff: offset of the jitContext.arenaBase field (int32 bytes)
+//   - deoptCode: returned as deoptCode when the guard fails
 //
-// 返回追加后的 buf。
+// Returns the appended buf.
 //
-// **字节布局**(严密 IsTable guard 版,~125 字节):
+// **Byte layout** (strict IsTable guard version, ~125 bytes):
 //
 //	[ 0] mov rax, [rbx + bReg*8]                     ; 7 (load R(B))
-//	[ 7] shr rax, 48                                 ; 4 (提取高 16 位 tag)
-//	[11] cmp eax, 0xFFFC                             ; 5 (TagTable 精确比较)
-//	[16] jne deopt                                   ; 6 (非 table → deopt)
-//	     ; shr 已破坏 rax,需重新 load R(B)
+//	[ 7] shr rax, 48                                 ; 4 (extract top 16-bit tag)
+//	[11] cmp eax, 0xFFFC                             ; 5 (exact TagTable compare)
+//	[16] jne deopt                                   ; 6 (non-table → deopt)
+//	     ; shr has clobbered rax, must re-load R(B)
 //	[22] mov rax, [rbx + bReg*8]                     ; 7 (re-load R(B))
 //	[29] mov rcx, 0x0000_FFFF_FFFF_FFFF              ; 10 (GCRef payload mask)
 //	[39] and rax, rcx                                ; 3 (extract GCRef)
 //	[42] mov rcx, rax                                ; 3 (rcx = GCRef offset)
 //	[45] mov r14, [r15+arenaBaseOff]                 ; 7 (load arena base)
 //	[52] mov rax, [r14+rcx+40]                       ; 8 (table.word5 → rax)
-//	[60] shr rax, 32                                 ; 4 (gen 在高 32 位)
-//	[64] cmp eax, stableShape                        ; 5 (gen 比较)
+//	[60] shr rax, 32                                 ; 4 (gen is in the top 32 bits)
+//	[64] cmp eax, stableShape                        ; 5 (gen compare)
 //	[69] jne deopt                                   ; 6
 //	[75] mov rax, [r14+rcx+16]                       ; 8 (table.arrayRef → rax)
 //	[83] mov rcx, rax                                ; 3 (rcx = arrayRef offset)
@@ -92,35 +98,36 @@ const qNanBoxTableTagHigh16 int32 = 0xFFFC
 //	[121] ; deopt block
 //	[121] mov rax, deoptCode imm64                   ; 10
 //	[131] ret                                        ; 1
-//	——— 总计 132 字节(原简化版 129 字节;严密版 +3 字节因 re-load R(B))———
+//	——— total 132 bytes (original simplified version 129 bytes; strict version +3 bytes for the re-load of R(B)) ———
 //
-// **严密 IsTable guard**:`shr rax,48 + cmp eax,0xFFFC + jne deopt`
-// (15 字节)精确验高 16 位 = TagTable(0xFFFC)。string(0xFFFB)/
-// function(0xFFFD)/ userdata(0xFFFE)/ thread(0xFFFF)所有非 table
-// NaN-box 立即触发 deopt——不再像简化版那样 fall through 到 gen check
-// (假阳后再 deopt,但多走一段 mmap 段指令)。
+// **strict IsTable guard**: `shr rax,48 + cmp eax,0xFFFC + jne deopt`
+// (15 bytes) precisely checks the top 16 bits = TagTable (0xFFFC). string
+// (0xFFFB) / function (0xFFFD) / userdata (0xFFFE) / thread (0xFFFF) — every
+// non-table NaN-box triggers deopt immediately, instead of falling through to
+// the gen check like the simplified version (false positive, then deopt, but
+// running an extra stretch of mmap-segment instructions).
 func EmitGetTableArrayHit(buf []byte, aReg, bReg uint8, stableShape, stableIndex uint32,
 	arenaBaseOff int32, deoptCode uint64) []byte {
 	// 1. load R(B) → rax
 	buf = EmitMovqRaxFromMemReg(buf, 3 /*rbx*/, int32(bReg)*8)
 
-	// 2. **严密 IsTable guard**:shr rax,48 + cmp eax,0xFFFC + jne deopt
-	//    (15 字节)精确验高 16 位 tag = TagTable,排除所有非 table NaN-box。
+	// 2. **strict IsTable guard**: shr rax,48 + cmp eax,0xFFFC + jne deopt
+	//    (15 bytes) precisely checks the top 16-bit tag = TagTable, excluding all non-table NaN-boxes.
 	buf = EmitShrRaxImm8(buf, 48)
 	buf = EmitCmpEaxImm32(buf, qNanBoxTableTagHigh16)
 	buf = EmitJneRel32(buf, 0) // placeholder rel32 → patch to deopt
 	jneTagOff := len(buf) - 4
 
-	// 3. shr 已破坏 rax,重新 load R(B) → rax
+	// 3. shr has clobbered rax, re-load R(B) → rax
 	buf = EmitMovqRaxFromMemReg(buf, 3 /*rbx*/, int32(bReg)*8)
 
-	// 4. GCRef extract:and rax, payload_mask(经 rcx)
+	// 4. GCRef extract: and rax, payload_mask (via rcx)
 	const payloadMask uint64 = 0x0000_FFFF_FFFF_FFFF
 	buf = EmitMovRcxImm64(buf, payloadMask)
-	// and rax, rcx:48 21 C8(REX.W + 21 + ModRM C8 = mod11 reg=001(rcx) rm=000(rax))
+	// and rax, rcx: 48 21 C8 (REX.W + 21 + ModRM C8 = mod11 reg=001(rcx) rm=000(rax))
 	buf = append(buf, 0x48, 0x21, 0xC8)
 
-	// 5. mov rcx, rax(rcx = GCRef byte offset)
+	// 5. mov rcx, rax (rcx = GCRef byte offset)
 	buf = EmitMovqRcxFromRax(buf)
 
 	// 6. load arena base → r14
@@ -129,12 +136,12 @@ func EmitGetTableArrayHit(buf []byte, aReg, bReg uint8, stableShape, stableIndex
 	// 7. load table.word5 = [r14+rcx+40] → rax
 	buf = EmitMovqRaxFromR14PlusRcxDisp(buf, 40)
 
-	// 8. shr rax, 32(gen 在高 32 位)
-	//    shr rax, imm8 = 48 C1 E8 imm8(/5 = SHR,rm=000=rax)
+	// 8. shr rax, 32 (gen is in the top 32 bits)
+	//    shr rax, imm8 = 48 C1 E8 imm8 (/5 = SHR, rm=000=rax)
 	buf = append(buf, 0x48, 0xC1, 0xE8, 32)
 
-	// 9. cmp eax, stableShape(32-bit cmp)
-	//    cmp eax, imm32 = 3D imm32(无 ModRM,5 字节,EAX 隐式)
+	// 9. cmp eax, stableShape (32-bit cmp)
+	//    cmp eax, imm32 = 3D imm32 (no ModRM, 5 bytes, EAX implicit)
 	buf = append(buf, 0x3D)
 	buf = append(buf,
 		byte(stableShape),
@@ -149,13 +156,13 @@ func EmitGetTableArrayHit(buf []byte, aReg, bReg uint8, stableShape, stableIndex
 	// 11. load table.arrayRef = [r14+rcx+16] → rax
 	buf = EmitMovqRaxFromR14PlusRcxDisp(buf, 16)
 
-	// 12. mov rcx, rax(rcx = arrayRef offset)
+	// 12. mov rcx, rax (rcx = arrayRef offset)
 	buf = EmitMovqRcxFromRax(buf)
 
 	// 13. load array[stableIndex] = [r14+rcx+stableIndex*8] → rax
 	buf = EmitMovqRaxFromR14PlusRcxDisp(buf, int32(stableIndex)*8)
 
-	// 14. nil check:cmp rax, qNanBoxNil + je deopt
+	// 14. nil check: cmp rax, qNanBoxNil + je deopt
 	buf = EmitMovRcxImm64(buf, qNanBoxNilImm)
 	buf = EmitCmpRaxRcx(buf)
 	buf = EmitJeRel32(buf, 0)
@@ -164,7 +171,7 @@ func EmitGetTableArrayHit(buf []byte, aReg, bReg uint8, stableShape, stableIndex
 	// 15. store R(A) = rax
 	buf = EmitMovqMemRegFromRax(buf, 3 /*rbx*/, int32(aReg)*8)
 
-	// 16. ret(normal exit)
+	// 16. ret (normal exit)
 	buf = EmitRet(buf)
 
 	// 17. deopt block
@@ -180,30 +187,31 @@ func EmitGetTableArrayHit(buf []byte, aReg, bReg uint8, stableShape, stableIndex
 	return buf
 }
 
-// EmitGetTableNodeHit 拼接 IC NodeHit 直达槽模板字节级序列(承
-// docs/design/p4-method-jit/03-speculation-ic.md §6 NodeHit)。
+// EmitGetTableNodeHit assembles the byte-level sequence of the IC NodeHit
+// direct-hit slot template (see
+// docs/design/p4-method-jit/03-speculation-ic.md §6 NodeHit).
 //
-// **形态**:`function(t) return t[K] end`(GETTABLE A B C 常量索引)
-// IC slot kind=NodeHit + stableShape/stableIndex 命中时,字节级 inline
-// 直达 node 段读跳过哈希。NodeHit 比 ArrayHit 多一次 key 比对(NodeKey
-// vs stableKey)。
+// **Shape**: `function(t) return t[K] end` (GETTABLE A B C with constant index).
+// When the IC slot kind=NodeHit + stableShape/stableIndex hits, byte-level
+// inline reads the node segment directly, skipping the hash lookup. NodeHit
+// has one more key comparison than ArrayHit (NodeKey vs stableKey).
 //
-// 参数:
-//   - aReg:目标 R(A) 寄存器号
-//   - bReg:表 R(B) 寄存器号
-//   - stableShape:编译期固化的 table.gen 快照
-//   - stableIndex:编译期固化的 node slot 下标
-//   - stableKey:编译期固化的 key NaN-box(string ref / number bits 等)
-//   - arenaBaseOff:jitContext.arenaBase 字段偏移(int32 byte)
-//   - deoptCode:guard 失败时返 deoptCode
+// Parameters:
+//   - aReg: destination R(A) register number
+//   - bReg: table R(B) register number
+//   - stableShape: the table.gen snapshot frozen at compile time
+//   - stableIndex: the node slot index frozen at compile time
+//   - stableKey: the key NaN-box frozen at compile time (string ref / number bits etc.)
+//   - arenaBaseOff: offset of the jitContext.arenaBase field (int32 bytes)
+//   - deoptCode: returned as deoptCode when the guard fails
 //
-// 返回追加后的 buf。
+// Returns the appended buf.
 //
-// **字节布局**(严密 IsTable guard + key 比对版,~159 字节):
+// **Byte layout** (strict IsTable guard + key comparison version, ~159 bytes):
 //
 //	[ 0-6 ] mov rax, [rbx + bReg*8]                ; 7 (load R(B))
 //	[ 7-10] shr rax, 48                            ; 4
-//	[11-15] cmp eax, 0xFFFC                        ; 5 (严密 IsTable)
+//	[11-15] cmp eax, 0xFFFC                        ; 5 (strict IsTable)
 //	[16-21] jne deopt                              ; 6
 //	[22-28] mov rax, [rbx + bReg*8]                ; 7 (re-load R(B))
 //	[29-38] mov rcx, payloadMask                   ; 10
@@ -211,7 +219,7 @@ func EmitGetTableArrayHit(buf []byte, aReg, bReg uint8, stableShape, stableIndex
 //	[42-44] mov rcx, rax                           ; 3 (rcx = GCRef offset)
 //	[45-51] mov r14, [r15+arenaBaseOff]            ; 7
 //	[52-59] mov rax, [r14+rcx+40]                  ; 8 (table.word5)
-//	[60-63] shr rax, 32                            ; 4 (gen 在高 32 位)
+//	[60-63] shr rax, 32                            ; 4 (gen is in the top 32 bits)
 //	[64-68] cmp eax, stableShape                   ; 5
 //	[69-74] jne deopt                              ; 6
 //	[75-82] mov rax, [r14+rcx+24]                  ; 8 (table.nodeRef → rax,
@@ -229,42 +237,46 @@ func EmitGetTableArrayHit(buf []byte, aReg, bReg uint8, stableShape, stableIndex
 //	[147] ret                                      ; 1
 //	[148-157] mov rax, deoptCode imm64             ; 10 (deopt block)
 //	[158] ret                                      ; 1
-//	——— 总计 ~159 字节(ArrayHit 132 字节 + key 比对 27 字节)———
+//	——— total ~159 bytes (ArrayHit 132 bytes + key comparison 27 bytes) ———
 //
-// **NodeHit vs ArrayHit 差异**:
-//   - 取 word3=nodeRef(offset 24)而非 word2=arrayRef(offset 16)
-//   - node[idx] 步长 24 字节(nodeWords=3)而非 array[idx] 8 字节
-//   - 多 key 比对(NodeKey == stableKey 验证防键退化 / __index 链)
-//   - 模板长度 +27 字节(key load + mov rdx + cmp + jne 共 27 字节)
+// **NodeHit vs ArrayHit differences**:
+//   - fetches word3=nodeRef (offset 24) instead of word2=arrayRef (offset 16)
+//   - node[idx] stride is 24 bytes (nodeWords=3) instead of array[idx]'s 8 bytes
+//   - one extra key comparison (NodeKey == stableKey, to guard against key
+//     degradation / __index chain)
+//   - template length +27 bytes (key load + mov rdx + cmp + jne, 27 bytes total)
 //
-// **stableKey 编译期固化**:
-//   - 数字键:value.NumberValue(K) raw bits(IEEE 754 NaN-box)
-//   - 字符串键:value.MakeGC(TagString, ref) NaN-box,ref 编译期已 intern 不变
-//   - 用 NaN-box 整体比较等价于 keyEqual(承 ic.go::keyEqual 同源)
+// **stableKey compile-time freeze**:
+//   - number key: value.NumberValue(K) raw bits (IEEE 754 NaN-box)
+//   - string key: value.MakeGC(TagString, ref) NaN-box, where ref is already
+//     interned at compile time and immutable
+//   - comparing the whole NaN-box is equivalent to keyEqual (same source as
+//     ic.go::keyEqual)
 //
-// **deopt 路径**:Run 端 raxSpec==deoptCode 时调 host.GetTable(byte-equal
-// P1 解释器,经 IC + 哈希 + __index 元方法链)。
+// **deopt path**: when the Run side sees raxSpec==deoptCode it calls
+// host.GetTable (byte-equal to the P1 interpreter, via IC + hash + __index
+// metamethod chain).
 func EmitGetTableNodeHit(buf []byte, aReg, bReg uint8,
 	stableShape, stableIndex uint32, stableKey uint64,
 	arenaBaseOff int32, deoptCode uint64) []byte {
 	// 1. load R(B) → rax
 	buf = EmitMovqRaxFromMemReg(buf, 3 /*rbx*/, int32(bReg)*8)
 
-	// 2. 严密 IsTable guard:shr rax,48 + cmp eax,0xFFFC + jne deopt
+	// 2. strict IsTable guard: shr rax,48 + cmp eax,0xFFFC + jne deopt
 	buf = EmitShrRaxImm8(buf, 48)
 	buf = EmitCmpEaxImm32(buf, qNanBoxTableTagHigh16)
 	buf = EmitJneRel32(buf, 0)
 	jneTagOff := len(buf) - 4
 
-	// 3. shr 已破坏 rax,重新 load R(B) → rax
+	// 3. shr has clobbered rax, re-load R(B) → rax
 	buf = EmitMovqRaxFromMemReg(buf, 3 /*rbx*/, int32(bReg)*8)
 
-	// 4. GCRef extract:and rax, payload_mask(经 rcx)
+	// 4. GCRef extract: and rax, payload_mask (via rcx)
 	const payloadMask uint64 = 0x0000_FFFF_FFFF_FFFF
 	buf = EmitMovRcxImm64(buf, payloadMask)
 	buf = append(buf, 0x48, 0x21, 0xC8) // and rax, rcx
 
-	// 5. mov rcx, rax(rcx = GCRef byte offset)
+	// 5. mov rcx, rax (rcx = GCRef byte offset)
 	buf = EmitMovqRcxFromRax(buf)
 
 	// 6. load arena base → r14
@@ -273,10 +285,10 @@ func EmitGetTableNodeHit(buf []byte, aReg, bReg uint8,
 	// 7. load table.word5 = [r14+rcx+40] → rax
 	buf = EmitMovqRaxFromR14PlusRcxDisp(buf, 40)
 
-	// 8. shr rax, 32(gen 在高 32 位)
+	// 8. shr rax, 32 (gen is in the top 32 bits)
 	buf = append(buf, 0x48, 0xC1, 0xE8, 32)
 
-	// 9. cmp eax, stableShape(32-bit cmp)
+	// 9. cmp eax, stableShape (32-bit cmp)
 	buf = append(buf, 0x3D)
 	buf = append(buf,
 		byte(stableShape),
@@ -288,21 +300,21 @@ func EmitGetTableNodeHit(buf []byte, aReg, bReg uint8,
 	buf = EmitJneRel32(buf, 0)
 	jneShapeOff := len(buf) - 4
 
-	// 11. **NodeHit 分流**:load table.nodeRef = [r14+rcx+24] → rax
-	//     (word3=tableNodeIdx=3,3*8=24 字节;ArrayHit 用 word2=16 即 arrayRef)
+	// 11. **NodeHit branch**: load table.nodeRef = [r14+rcx+24] → rax
+	//     (word3=tableNodeIdx=3, 3*8=24 bytes; ArrayHit uses word2=16, i.e. arrayRef)
 	buf = EmitMovqRaxFromR14PlusRcxDisp(buf, 24)
 
-	// 12. mov rcx, rax(rcx = nodeRef offset)
+	// 12. mov rcx, rax (rcx = nodeRef offset)
 	buf = EmitMovqRcxFromRax(buf)
 
 	// 13. load NodeKey = [r14+rcx+stableIndex*24] → rax
-	//     (node[idx] 步长 24 字节,nodeWords=3,word0=key/word1=val/word2=next)
+	//     (node[idx] stride is 24 bytes, nodeWords=3, word0=key/word1=val/word2=next)
 	buf = EmitMovqRaxFromR14PlusRcxDisp(buf, int32(stableIndex)*24)
 
-	// 14. mov rdx, stableKey(编译期固化 key NaN-box)
+	// 14. mov rdx, stableKey (key NaN-box frozen at compile time)
 	buf = EmitMovRdxImm64(buf, stableKey)
 
-	// 15. cmp rax, rdx + jne deopt(NodeKey != stableKey → deopt)
+	// 15. cmp rax, rdx + jne deopt (NodeKey != stableKey → deopt)
 	buf = EmitCmpRaxRdx(buf)
 	buf = EmitJneRel32(buf, 0)
 	jneKeyOff := len(buf) - 4
@@ -310,7 +322,7 @@ func EmitGetTableNodeHit(buf []byte, aReg, bReg uint8,
 	// 16. load NodeVal = [r14+rcx+stableIndex*24+8] → rax
 	buf = EmitMovqRaxFromR14PlusRcxDisp(buf, int32(stableIndex)*24+8)
 
-	// 17. nil check:cmp rax, qNanBoxNil + je deopt
+	// 17. nil check: cmp rax, qNanBoxNil + je deopt
 	buf = EmitMovRcxImm64(buf, qNanBoxNilImm)
 	buf = EmitCmpRaxRcx(buf)
 	buf = EmitJeRel32(buf, 0)
@@ -319,7 +331,7 @@ func EmitGetTableNodeHit(buf []byte, aReg, bReg uint8,
 	// 18. store R(A) = rax
 	buf = EmitMovqMemRegFromRax(buf, 3 /*rbx*/, int32(aReg)*8)
 
-	// 19. ret(normal exit)
+	// 19. ret (normal exit)
 	buf = EmitRet(buf)
 
 	// 20. deopt block
@@ -336,65 +348,72 @@ func EmitGetTableNodeHit(buf []byte, aReg, bReg uint8,
 	return buf
 }
 
-// EmitSetTableArrayHit 拼接 PJ4 SETTABLE IC ArrayHit 字节级 inline 反向写
-// 模板(承 docs/design/p4-method-jit/03-speculation-ic.md §6 SETTABLE)。
+// EmitSetTableArrayHit assembles the byte-level PJ4 SETTABLE IC ArrayHit inline
+// reverse-write template (see
+// docs/design/p4-method-jit/03-speculation-ic.md §6 SETTABLE).
 //
-// **形态**:`function(t, v) t[K] = v end` 中 K 是 array 段命中的数字常量
-// (luac 编 SETTABLE A B C 中 A=R(t) / B=K idx >=256 / C=R(v))。IC[0].Kind
-// = ArrayHit + Shape/Index 命中时,字节级 inline 反向写 array[stableIndex]。
+// **Shape**: in `function(t, v) t[K] = v end`, K is a numeric constant hitting
+// the array segment (luac compiles SETTABLE A B C with A=R(t) / B=K idx >=256 /
+// C=R(v)). When IC[0].Kind = ArrayHit + Shape/Index hits, byte-level inline
+// reverse-writes array[stableIndex].
 //
-// 参数:
-//   - aReg:表寄存器号 R(A)(SETTABLE 的 A,table NaN-box 在此寄存器)
-//   - cReg:value 寄存器号 R(C)(value 是 reg,C<256)
-//   - stableShape:编译期固化的 table.gen 快照
-//   - stableIndex:编译期固化的 array slot 下标
-//   - arenaBaseOff:jitContext.arenaBase 字段偏移(int32 byte)
-//   - deoptCode:guard 失败时返 deoptCode
+// Parameters:
+//   - aReg: table register number R(A) (SETTABLE's A, the table NaN-box is in this register)
+//   - cReg: value register number R(C) (value is a reg, C<256)
+//   - stableShape: the table.gen snapshot frozen at compile time
+//   - stableIndex: the array slot index frozen at compile time
+//   - arenaBaseOff: offset of the jitContext.arenaBase field (int32 bytes)
+//   - deoptCode: returned as deoptCode when the guard fails
 //
-// 返回追加后的 buf。
+// Returns the appended buf.
 //
-// **字节布局**(113 字节,getter ArrayHit 132 字节但 setter 省 nil mask/check
-// 段 19 字节,再扩 load R(C) value + 反向 store):
+// **Byte layout** (113 bytes; getter ArrayHit is 132 bytes, but the setter
+// drops the 19-byte nil mask/check segment, then adds load R(C) value + reverse
+// store):
 //
-//	[0-21]   load R(A) → rax + 严密 IsTable guard(22 字节,复用)
-//	[22-28]  re-load R(A) → rax(7 字节)
-//	[29-44]  GCRef extract + rcx = offset(16 字节)
-//	[45-51]  load arena base → r14(7 字节)
-//	[52-74]  gen check(load word5 + shr + cmp eax + jne,23 字节)
-//	[75-82]  load table.arrayRef = [r14+rcx+16] → rax(8 字节)
-//	[83-85]  mov rcx, rax(rcx = arrayRef offset,3 字节)
-//	[86-92]  load R(C) → rdx(7 字节,EmitMovqRdxFromMemRbx)
-//	[93-100] mov [r14+rcx+stableIndex*8], rdx(8 字节,反向 store)
-//	[101]    ret(1 字节)
-//	[102-112] deopt block(mov rax deoptCode + ret,11 字节)
-//	——— 总计 113 字节 ———
+//	[0-21]   load R(A) → rax + strict IsTable guard (22 bytes, reused)
+//	[22-28]  re-load R(A) → rax (7 bytes)
+//	[29-44]  GCRef extract + rcx = offset (16 bytes)
+//	[45-51]  load arena base → r14 (7 bytes)
+//	[52-74]  gen check (load word5 + shr + cmp eax + jne, 23 bytes)
+//	[75-82]  load table.arrayRef = [r14+rcx+16] → rax (8 bytes)
+//	[83-85]  mov rcx, rax (rcx = arrayRef offset, 3 bytes)
+//	[86-92]  load R(C) → rdx (7 bytes, EmitMovqRdxFromMemRbx)
+//	[93-100] mov [r14+rcx+stableIndex*8], rdx (8 bytes, reverse store)
+//	[101]    ret (1 byte)
+//	[102-112] deopt block (mov rax deoptCode + ret, 11 bytes)
+//	——— total 113 bytes ———
 //
-// **设计简化**(本批 SETTABLE 工程边界):
-//   - **不验现有 array[stableIndex] != nil**(防新键路径)— P1 解释器
-//     IC 命中协议本身要求该位非 nil,IC slot 校验(shape 一致 + slot 未
-//     失效)已保证;新键路径会让 IC 重新填,本帧若误投机依赖 P1 解释器
-//     在键退化场景 bump gen + RequestRefresh
-//   - **假设无 __newindex 元表**(meta freeze 假设)— 元方法场景应触发
-//     gen change 由 IC 失效路径处理
+// **Design simplifications** (this batch's SETTABLE engineering boundary):
+//   - **does not verify that the existing array[stableIndex] != nil** (new-key
+//     path) — the P1 interpreter's IC-hit protocol itself requires that slot to
+//     be non-nil; the IC slot validation (shape consistent + slot not
+//     invalidated) already guarantees it; the new-key path makes the IC refill,
+//     and if this frame speculates wrongly, the P1 interpreter bumps gen +
+//     RequestRefresh in the key-degradation scenario
+//   - **assumes no __newindex metatable** (meta freeze assumption) — metamethod
+//     scenarios should trigger a gen change handled by the IC invalidation path
 //
-// 严密版(再加 ~13 字节验现有 nil + 13 字节验 __newindex)留 PJ4+。
+// The strict version (adding ~13 bytes to verify existing nil + 13 bytes to
+// verify __newindex) is left for PJ4+.
 //
-// **deopt 路径**:Run 端 raxSpec==deoptCode 时调 host.SetTable(byte-equal
-// P1 解释器,经 IC + 哈希 + __newindex 元方法链)。setter 形态返 RETURN A 1
-// (无返回值),Run 端 retB=1 不读 R(A)。
+// **deopt path**: when the Run side sees raxSpec==deoptCode it calls
+// host.SetTable (byte-equal to the P1 interpreter, via IC + hash + __newindex
+// metamethod chain). The setter shape returns RETURN A 1 (no return value), and
+// the Run side with retB=1 does not read R(A).
 func EmitSetTableArrayHit(buf []byte, aReg, cReg uint8,
 	stableShape, stableIndex uint32,
 	arenaBaseOff int32, deoptCode uint64) []byte {
-	// 1. load R(A) → rax(SETTABLE A 是表 reg)
+	// 1. load R(A) → rax (SETTABLE A is the table reg)
 	buf = EmitMovqRaxFromMemReg(buf, 3 /*rbx*/, int32(aReg)*8)
 
-	// 2. 严密 IsTable guard
+	// 2. strict IsTable guard
 	buf = EmitShrRaxImm8(buf, 48)
 	buf = EmitCmpEaxImm32(buf, qNanBoxTableTagHigh16)
 	buf = EmitJneRel32(buf, 0)
 	jneTagOff := len(buf) - 4
 
-	// 3. shr 已破坏 rax,重新 load R(A)
+	// 3. shr has clobbered rax, re-load R(A)
 	buf = EmitMovqRaxFromMemReg(buf, 3 /*rbx*/, int32(aReg)*8)
 
 	// 4. GCRef extract
@@ -402,13 +421,13 @@ func EmitSetTableArrayHit(buf []byte, aReg, cReg uint8,
 	buf = EmitMovRcxImm64(buf, payloadMask)
 	buf = append(buf, 0x48, 0x21, 0xC8) // and rax, rcx
 
-	// 5. mov rcx, rax(rcx = GCRef byte offset)
+	// 5. mov rcx, rax (rcx = GCRef byte offset)
 	buf = EmitMovqRcxFromRax(buf)
 
 	// 6. load arena base → r14
 	buf = EmitMovqR14FromR15Disp(buf, arenaBaseOff)
 
-	// 7. load table.word5 = [r14+rcx+40] → rax(gen check)
+	// 7. load table.word5 = [r14+rcx+40] → rax (gen check)
 	buf = EmitMovqRaxFromR14PlusRcxDisp(buf, 40)
 
 	// 8. shr rax, 32
@@ -429,16 +448,16 @@ func EmitSetTableArrayHit(buf []byte, aReg, cReg uint8,
 	// 11. load table.arrayRef = [r14+rcx+16] → rax
 	buf = EmitMovqRaxFromR14PlusRcxDisp(buf, 16)
 
-	// 12. mov rcx, rax(rcx = arrayRef offset)
+	// 12. mov rcx, rax (rcx = arrayRef offset)
 	buf = EmitMovqRcxFromRax(buf)
 
-	// 13. load R(C) value → rdx(7 字节)
+	// 13. load R(C) value → rdx (7 bytes)
 	buf = EmitMovqRdxFromMemRbx(buf, int32(cReg)*8)
 
-	// 14. mov [r14+rcx+stableIndex*8], rdx(反向 store)
+	// 14. mov [r14+rcx+stableIndex*8], rdx (reverse store)
 	buf = EmitMovqMemR14PlusRcxFromRdx(buf, int32(stableIndex)*8)
 
-	// 15. ret(normal exit,SETTABLE 无返回值,retB=1 时 host.DoReturn 不读 R(A))
+	// 15. ret (normal exit; SETTABLE has no return value, host.DoReturn does not read R(A) when retB=1)
 	buf = EmitRet(buf)
 
 	// 16. deopt block
@@ -453,65 +472,71 @@ func EmitSetTableArrayHit(buf []byte, aReg, cReg uint8,
 	return buf
 }
 
-// EmitSelfArrayHit 拼接 PJ4 SELF IC ArrayHit 字节级 inline 模板(承
-// docs/design/p4-method-jit/03-speculation-ic.md §6 + SELF opcode 语义)。
+// EmitSelfArrayHit assembles the byte-level PJ4 SELF IC ArrayHit inline
+// template (see docs/design/p4-method-jit/03-speculation-ic.md §6 + the SELF
+// opcode semantics).
 //
-// **SELF opcode 语义**(承 bytecode/opcode.go::SELF):
+// **SELF opcode semantics** (see bytecode/opcode.go::SELF):
 //
 //	R(A+1) := R(B)
 //	R(A)   := R(B)[RK(C)]
 //
-// 即 `obj:method()` 形态:先把 obj 拷到 R(A+1)(self/this 实参),然后
-// R(A) = R(B).method 取 method 函数。后跟 CALL R(A) R(A+1) ... 调用。
+// i.e. the `obj:method()` shape: first copy obj into R(A+1) (the self/this
+// argument), then R(A) = R(B).method to fetch the method function. Followed by
+// CALL R(A) R(A+1) ... to invoke.
 //
-// IC ArrayHit 命中条件:method key 是数字常量 + array 段命中(罕见但
-// 形态有效);更常见是 NodeHit(字符串键 method name)— 本批先做
-// ArrayHit 作 SELF 工程基础,NodeHit SELF 留下一 commit。
+// IC ArrayHit hit condition: the method key is a numeric constant + hits the
+// array segment (rare but a valid shape); the more common case is NodeHit (a
+// string-key method name) — this batch does ArrayHit first as the engineering
+// base for SELF, leaving NodeHit SELF for the next commit.
 //
-// 参数:
-//   - aReg:R(A)(method 结果)寄存器号;R(A+1)=R(B) 由模板写入
-//   - bReg:R(B)(obj)寄存器号
-//   - stableShape / stableIndex / arenaBaseOff / deoptCode 同 GETTABLE
+// Parameters:
+//   - aReg: R(A) (method result) register number; R(A+1)=R(B) is written by the template
+//   - bReg: R(B) (obj) register number
+//   - stableShape / stableIndex / arenaBaseOff / deoptCode: same as GETTABLE
 //
-// **字节布局**(139 字节,ArrayHit 132 字节 + R(A+1) 拷段 7 字节):
+// **Byte layout** (139 bytes, ArrayHit 132 bytes + R(A+1) copy segment 7 bytes):
 //
-//	[0-6]    load R(B) → rax(7 字节,obj NaN-box)
-//	[7-13]   **额外**:store R(A+1) = rax(mov [rbx+(A+1)*8], rax)
-//	         (7 字节,EmitMovqMemRegFromRax with reg=rbx)
-//	[14-17]  shr rax, 48(4 字节)
-//	[18-22]  cmp eax, 0xFFFC(5 字节)
-//	[23-28]  jne deopt(6 字节)
-//	         **注**:索引接续 ArrayHit 模板,严密 IsTable guard 沿用
-//	... 同 ArrayHit getter:GCRef extract / gen check / arrayRef /
-//	    array[stableIndex] / nil check / 写 R(A) / ret / deopt
+//	[0-6]    load R(B) → rax (7 bytes, obj NaN-box)
+//	[7-13]   **extra**: store R(A+1) = rax (mov [rbx+(A+1)*8], rax)
+//	         (7 bytes, EmitMovqMemRegFromRax with reg=rbx)
+//	[14-17]  shr rax, 48 (4 bytes)
+//	[18-22]  cmp eax, 0xFFFC (5 bytes)
+//	[23-28]  jne deopt (6 bytes)
+//	         **note**: continues into the ArrayHit template, reusing the strict IsTable guard
+//	... same as ArrayHit getter: GCRef extract / gen check / arrayRef /
+//	    array[stableIndex] / nil check / write R(A) / ret / deopt
 //
-// 实测精确 139 字节(逐原语累加:7+7+4+5+6+7+10+3+3+7+8+4+5+6+8+3+8+10+3+
-// 6+7+1+10+1=139)。EmitMovqMemRegFromRax 用通用 disp32 编码(7 字节),
-// 不走 disp8 short form(避免模板 length 随 reg 编号波动)。
+// Measured exactly 139 bytes (summing primitives one by one:
+// 7+7+4+5+6+7+10+3+3+7+8+4+5+6+8+3+8+10+3+6+7+1+10+1=139). EmitMovqMemRegFromRax
+// uses the generic disp32 encoding (7 bytes), not the disp8 short form (so the
+// template length does not fluctuate with the register number).
 //
-// **deopt 路径**:Run 端 raxSpec==deoptCode 时调 host.GetTable byte-equal P1
-// (R(A+1)=R(B) 已 store 成功不需要回滚——R(A+1) 写入是 SELF 第一步,
-// deopt 路径走 host.GetTable 仍需 R(A+1) 已设;P1 解释器 SELF case 同源)。
-// **注**:SELF deopt 路径调 host.GetTable + R(A+1) 已设,与 P1 SELF 路径
-// byte-equal(P1 execute.go SELF case 同款步骤:setReg(A+1, B) → icGetTable
-// → setReg(A))。
+// **deopt path**: when the Run side sees raxSpec==deoptCode it calls
+// host.GetTable, byte-equal to P1 (R(A+1)=R(B) has already been stored and does
+// not need rollback — the R(A+1) write is SELF's first step, and the deopt path
+// through host.GetTable still needs R(A+1) already set; the P1 interpreter's
+// SELF case is the same source).
+// **note**: the SELF deopt path calls host.GetTable with R(A+1) already set,
+// byte-equal to the P1 SELF path (P1 execute.go SELF case does the same steps:
+// setReg(A+1, B) → icGetTable → setReg(A)).
 func EmitSelfArrayHit(buf []byte, aReg, bReg uint8,
 	stableShape, stableIndex uint32,
 	arenaBaseOff int32, deoptCode uint64) []byte {
-	// 1. load R(B) → rax(obj NaN-box)
+	// 1. load R(B) → rax (obj NaN-box)
 	buf = EmitMovqRaxFromMemReg(buf, 3 /*rbx*/, int32(bReg)*8)
 
-	// 2. **SELF 额外步骤**:store R(A+1) = rax(self/this 实参)
-	//    R(A+1) 槽偏移 = (aReg+1)*8
+	// 2. **SELF extra step**: store R(A+1) = rax (self/this argument)
+	//    R(A+1) slot offset = (aReg+1)*8
 	buf = EmitMovqMemRegFromRax(buf, 3 /*rbx*/, int32(aReg+1)*8)
 
-	// 3. 严密 IsTable guard
+	// 3. strict IsTable guard
 	buf = EmitShrRaxImm8(buf, 48)
 	buf = EmitCmpEaxImm32(buf, qNanBoxTableTagHigh16)
 	buf = EmitJneRel32(buf, 0)
 	jneTagOff := len(buf) - 4
 
-	// 4. shr 已破坏 rax,重新 load R(B)
+	// 4. shr has clobbered rax, re-load R(B)
 	buf = EmitMovqRaxFromMemReg(buf, 3 /*rbx*/, int32(bReg)*8)
 
 	// 5. GCRef extract
@@ -519,13 +544,13 @@ func EmitSelfArrayHit(buf []byte, aReg, bReg uint8,
 	buf = EmitMovRcxImm64(buf, payloadMask)
 	buf = append(buf, 0x48, 0x21, 0xC8) // and rax, rcx
 
-	// 6. mov rcx, rax(GCRef offset)
+	// 6. mov rcx, rax (GCRef offset)
 	buf = EmitMovqRcxFromRax(buf)
 
 	// 7. load arena base → r14
 	buf = EmitMovqR14FromR15Disp(buf, arenaBaseOff)
 
-	// 8. gen check:load word5 + shr + cmp eax + jne
+	// 8. gen check: load word5 + shr + cmp eax + jne
 	buf = EmitMovqRaxFromR14PlusRcxDisp(buf, 40)
 	buf = append(buf, 0x48, 0xC1, 0xE8, 32) // shr rax, 32
 	buf = append(buf, 0x3D)                 // cmp eax, imm32
@@ -550,10 +575,10 @@ func EmitSelfArrayHit(buf []byte, aReg, bReg uint8,
 	buf = EmitJeRel32(buf, 0)
 	jeNilOff := len(buf) - 4
 
-	// 12. store R(A) = rax(method 函数)
+	// 12. store R(A) = rax (method function)
 	buf = EmitMovqMemRegFromRax(buf, 3 /*rbx*/, int32(aReg)*8)
 
-	// 13. ret(normal exit)
+	// 13. ret (normal exit)
 	buf = EmitRet(buf)
 
 	// 14. deopt block
@@ -569,66 +594,68 @@ func EmitSelfArrayHit(buf []byte, aReg, bReg uint8,
 	return buf
 }
 
-// EmitSetTableNodeHit 拼接 PJ4 SETTABLE IC NodeHit 字节级 inline 反向写
-// 模板(承 03 §6 + GetTable NodeHit + SetTable ArrayHit 同款结构组合)。
+// EmitSetTableNodeHit assembles the byte-level PJ4 SETTABLE IC NodeHit inline
+// reverse-write template (see 03 §6 + GetTable NodeHit + SetTable ArrayHit,
+// combining the same structures).
 //
-// **形态**:`function(t, v) t[K] = v end` 中 K 是字符串/任意键 in hash 段
-// (luac 编 SETTABLE A B C 中 A=R(t) / B=K idx >=256 / C=R(v))。
-// IC[0].Kind=NodeHit + Shape/Index/Key 命中时,字节级 inline 反向写
-// node[stableIndex].val。
+// **Shape**: in `function(t, v) t[K] = v end`, K is a string / arbitrary key in
+// the hash segment (luac compiles SETTABLE A B C with A=R(t) / B=K idx >=256 /
+// C=R(v)). When IC[0].Kind=NodeHit + Shape/Index/Key hits, byte-level inline
+// reverse-writes node[stableIndex].val.
 //
-// 参数:
-//   - aReg:表寄存器号 R(A)(SETTABLE 的 A)
-//   - cReg:value 寄存器号 R(C)(value 是 reg,C<256)
-//   - stableShape:编译期固化的 table.gen 快照
-//   - stableIndex:编译期固化的 node slot 下标
-//   - stableKey:编译期固化的 key NaN-box(从 proto.Consts[KIdx])
-//   - arenaBaseOff / deoptCode 同 GetTable NodeHit
+// Parameters:
+//   - aReg: table register number R(A) (SETTABLE's A)
+//   - cReg: value register number R(C) (value is a reg, C<256)
+//   - stableShape: the table.gen snapshot frozen at compile time
+//   - stableIndex: the node slot index frozen at compile time
+//   - stableKey: the key NaN-box frozen at compile time (from proto.Consts[KIdx])
+//   - arenaBaseOff / deoptCode: same as GetTable NodeHit
 //
-// **字节布局**(140 字节,GetTable NodeHit 159 - NodeVal/nil/storeRA 34 + load R(C)/反向 store 15):
+// **Byte layout** (140 bytes; GetTable NodeHit 159 - NodeVal/nil/storeRA 34 + load R(C)/reverse store 15):
 //
-//	[0-6]    load R(A) → rax(7 字节)
-//	[7-21]   严密 IsTable guard(15 字节)
-//	[22-44]  re-load + GCRef extract + rcx = offset(23 字节)
-//	[45-51]  load arena base → r14(7 字节)
-//	[52-74]  gen check word5/shr/cmp eax/jne(23 字节)
-//	[75-82]  load table.nodeRef = [r14+rcx+24] → rax(8 字节)
-//	[83-85]  mov rcx, rax(rcx = nodeRef offset)(3 字节)
-//	[86-93]  load NodeKey = [r14+rcx+stableIndex*24] → rax(8 字节)
-//	[94-103] mov rdx, stableKey(10 字节)
-//	[104-106] cmp rax, rdx(3 字节)
-//	[107-112] jne deopt(6 字节,NodeKey != stableKey → deopt)
-//	[113-119] load R(C) → rdx(7 字节,setter 加载 value)
-//	[120-127] mov [r14+rcx+stableIndex*24+8], rdx(8 字节,反向 store NodeVal)
-//	[128]     ret(1 字节)
-//	[129-139] deopt block(mov rax, deoptCode + ret,11 字节)
-//	——— 总计 140 字节 ———
+//	[0-6]    load R(A) → rax (7 bytes)
+//	[7-21]   strict IsTable guard (15 bytes)
+//	[22-44]  re-load + GCRef extract + rcx = offset (23 bytes)
+//	[45-51]  load arena base → r14 (7 bytes)
+//	[52-74]  gen check word5/shr/cmp eax/jne (23 bytes)
+//	[75-82]  load table.nodeRef = [r14+rcx+24] → rax (8 bytes)
+//	[83-85]  mov rcx, rax (rcx = nodeRef offset) (3 bytes)
+//	[86-93]  load NodeKey = [r14+rcx+stableIndex*24] → rax (8 bytes)
+//	[94-103] mov rdx, stableKey (10 bytes)
+//	[104-106] cmp rax, rdx (3 bytes)
+//	[107-112] jne deopt (6 bytes, NodeKey != stableKey → deopt)
+//	[113-119] load R(C) → rdx (7 bytes, setter loads value)
+//	[120-127] mov [r14+rcx+stableIndex*24+8], rdx (8 bytes, reverse store NodeVal)
+//	[128]     ret (1 byte)
+//	[129-139] deopt block (mov rax, deoptCode + ret, 11 bytes)
+//	——— total 140 bytes ———
 //
-// **vs SetTable ArrayHit + GetTable NodeHit 复合差异**:
-//   - 比 GetTable NodeHit:删 NodeVal load(getter 用)+ nil check + 写 R(A)
-//   - 比 SetTable ArrayHit:取 word3=nodeRef + 24 步长 + 多 key 比对
-//   - rdx 复用:rdx 先装 stableKey(key 比对)→ 用完后被 R(C) value 覆盖
+// **Composite difference vs SetTable ArrayHit + GetTable NodeHit**:
+//   - vs GetTable NodeHit: drops the NodeVal load (used by getter) + nil check + write R(A)
+//   - vs SetTable ArrayHit: fetches word3=nodeRef + 24-byte stride + one extra key comparison
+//   - rdx reuse: rdx first holds stableKey (key comparison), then after use is overwritten by R(C) value
 //
-// **deopt 路径**:Run 端 raxSpec==deoptCode 时调 host.SetTable byte-equal
-// P1(经 icSetTable + __newindex 元方法链;P1 icSetTable 兼容 NodeHit)。
-// setter 形态 retB=1,Run 端 DoReturn 不读 R(A)。
+// **deopt path**: when the Run side sees raxSpec==deoptCode it calls
+// host.SetTable byte-equal to P1 (via icSetTable + __newindex metamethod chain;
+// P1 icSetTable is compatible with NodeHit). The setter shape has retB=1, and
+// the Run side's DoReturn does not read R(A).
 //
-// **设计简化**(承 SetTable ArrayHit 同款边界):
-//   - 不验现有 NodeVal != nil(防新键路径)
-//   - 假设无 __newindex 元表
+// **Design simplifications** (same boundary as SetTable ArrayHit):
+//   - does not verify that the existing NodeVal != nil (new-key path)
+//   - assumes no __newindex metatable
 func EmitSetTableNodeHit(buf []byte, aReg, cReg uint8,
 	stableShape, stableIndex uint32, stableKey uint64,
 	arenaBaseOff int32, deoptCode uint64) []byte {
 	// 1. load R(A) → rax
 	buf = EmitMovqRaxFromMemReg(buf, 3 /*rbx*/, int32(aReg)*8)
 
-	// 2. 严密 IsTable guard
+	// 2. strict IsTable guard
 	buf = EmitShrRaxImm8(buf, 48)
 	buf = EmitCmpEaxImm32(buf, qNanBoxTableTagHigh16)
 	buf = EmitJneRel32(buf, 0)
 	jneTagOff := len(buf) - 4
 
-	// 3. shr 已破坏 rax,重新 load R(A)
+	// 3. shr has clobbered rax, re-load R(A)
 	buf = EmitMovqRaxFromMemReg(buf, 3 /*rbx*/, int32(aReg)*8)
 
 	// 4. GCRef extract
@@ -636,7 +663,7 @@ func EmitSetTableNodeHit(buf []byte, aReg, cReg uint8,
 	buf = EmitMovRcxImm64(buf, payloadMask)
 	buf = append(buf, 0x48, 0x21, 0xC8) // and rax, rcx
 
-	// 5. mov rcx, rax(rcx = GCRef offset)
+	// 5. mov rcx, rax (rcx = GCRef offset)
 	buf = EmitMovqRcxFromRax(buf)
 
 	// 6. load arena base → r14
@@ -654,10 +681,10 @@ func EmitSetTableNodeHit(buf []byte, aReg, cReg uint8,
 	buf = EmitJneRel32(buf, 0)
 	jneShapeOff := len(buf) - 4
 
-	// 8. **NodeHit 分流**:load table.nodeRef = [r14+rcx+24] → rax
+	// 8. **NodeHit branch**: load table.nodeRef = [r14+rcx+24] → rax
 	buf = EmitMovqRaxFromR14PlusRcxDisp(buf, 24)
 
-	// 9. mov rcx, rax(rcx = nodeRef offset)
+	// 9. mov rcx, rax (rcx = nodeRef offset)
 	buf = EmitMovqRcxFromRax(buf)
 
 	// 10. load NodeKey = [r14+rcx+stableIndex*24] → rax
@@ -671,13 +698,13 @@ func EmitSetTableNodeHit(buf []byte, aReg, cReg uint8,
 	buf = EmitJneRel32(buf, 0)
 	jneKeyOff := len(buf) - 4
 
-	// 13. **setter 分流**:load R(C) value → rdx(覆盖 stableKey,rdx 复用)
+	// 13. **setter branch**: load R(C) value → rdx (overwrites stableKey, rdx reused)
 	buf = EmitMovqRdxFromMemRbx(buf, int32(cReg)*8)
 
-	// 14. 反向 store:mov [r14+rcx+stableIndex*24+8], rdx(写 NodeVal)
+	// 14. reverse store: mov [r14+rcx+stableIndex*24+8], rdx (write NodeVal)
 	buf = EmitMovqMemR14PlusRcxFromRdx(buf, int32(stableIndex)*24+8)
 
-	// 15. ret(setter 无 R(A) 写)
+	// 15. ret (setter has no R(A) write)
 	buf = EmitRet(buf)
 
 	// 16. deopt block
@@ -693,74 +720,77 @@ func EmitSetTableNodeHit(buf []byte, aReg, cReg uint8,
 	return buf
 }
 
-// EmitSelfNodeHit 拼接 PJ4 SELF IC NodeHit 字节级 inline 模板(承
-// 03 §6 + SELF ArrayHit + GetTable NodeHit 同款结构组合)。
+// EmitSelfNodeHit assembles the byte-level PJ4 SELF IC NodeHit inline template
+// (see 03 §6 + SELF ArrayHit + GetTable NodeHit, combining the same structures).
 //
-// **形态**:`function(obj) obj:method(args) end` 中 method 是字符串 ident
-// (luac 编 SELF A B C 中 A=R(m) / B=R(obj) / C=K(string method name))。
-// 这是 real-world `obj:method()` 调用的典型形态(几乎所有 OOP 风格 Lua
-// 代码都走此路径)。
+// **Shape**: in `function(obj) obj:method(args) end`, method is a string
+// identifier (luac compiles SELF A B C with A=R(m) / B=R(obj) /
+// C=K(string method name)). This is the typical shape of a real-world
+// `obj:method()` call (nearly all OOP-style Lua code goes through this path).
 //
-// IC[0].Kind=NodeHit + Shape/Index/Key 命中时,字节级 inline:
+// When IC[0].Kind=NodeHit + Shape/Index/Key hits, byte-level inline:
 //
-//	R(A+1) := R(B)  ; self/this 实参
-//	R(A)   := R(B)[K_string]  ; method 函数(经 hash 段 NodeHit 直达)
+//	R(A+1) := R(B)  ; self/this argument
+//	R(A)   := R(B)[K_string]  ; method function (direct hit via hash-segment NodeHit)
 //
-// **字节布局**(166 字节,SELF ArrayHit 139 + key 比对 27):
+// **Byte layout** (166 bytes, SELF ArrayHit 139 + key comparison 27):
 //
-//	[0-6]    load R(B) → rax(7 字节)
-//	[7-13]   store R(A+1) = rax(7 字节,SELF 第一步)
-//	[14-28]  严密 IsTable guard(15 字节)
-//	[29-35]  re-load R(B) → rax(7 字节)
-//	[36-51]  GCRef extract + rcx = offset(16 字节)
-//	[52-58]  load arena base → r14(7 字节)
-//	[59-81]  gen check(23 字节)
-//	[82-89]  load nodeRef = [r14+rcx+24] → rax(8 字节,word3)
-//	[90-92]  mov rcx, rax(rcx = nodeRef offset)(3 字节)
-//	[93-100] load NodeKey = [r14+rcx+stableIndex*24] → rax(8 字节)
-//	[101-110] mov rdx, stableKey(10 字节)
-//	[111-113] cmp rax, rdx(3 字节)
-//	[114-119] jne deopt(6 字节)
-//	[120-127] load NodeVal = [r14+rcx+stableIndex*24+8] → rax(8 字节)
-//	[128-137] mov rcx, qNanBoxNil(10 字节)
-//	[138-140] cmp rax, rcx(3 字节)
-//	[141-146] je deopt(6 字节,NodeVal == Nil)
-//	[147-153] store R(A) = rax(7 字节)
-//	[154]    ret(1 字节)
-//	[155-165] deopt block(11 字节)
-//	——— 总计 166 字节 ———
+//	[0-6]    load R(B) → rax (7 bytes)
+//	[7-13]   store R(A+1) = rax (7 bytes, SELF's first step)
+//	[14-28]  strict IsTable guard (15 bytes)
+//	[29-35]  re-load R(B) → rax (7 bytes)
+//	[36-51]  GCRef extract + rcx = offset (16 bytes)
+//	[52-58]  load arena base → r14 (7 bytes)
+//	[59-81]  gen check (23 bytes)
+//	[82-89]  load nodeRef = [r14+rcx+24] → rax (8 bytes, word3)
+//	[90-92]  mov rcx, rax (rcx = nodeRef offset) (3 bytes)
+//	[93-100] load NodeKey = [r14+rcx+stableIndex*24] → rax (8 bytes)
+//	[101-110] mov rdx, stableKey (10 bytes)
+//	[111-113] cmp rax, rdx (3 bytes)
+//	[114-119] jne deopt (6 bytes)
+//	[120-127] load NodeVal = [r14+rcx+stableIndex*24+8] → rax (8 bytes)
+//	[128-137] mov rcx, qNanBoxNil (10 bytes)
+//	[138-140] cmp rax, rcx (3 bytes)
+//	[141-146] je deopt (6 bytes, NodeVal == Nil)
+//	[147-153] store R(A) = rax (7 bytes)
+//	[154]    ret (1 byte)
+//	[155-165] deopt block (11 bytes)
+//	——— total 166 bytes ———
 //
-// vs SELF ArrayHit 关键差异:
-//   - 取 word3=nodeRef(offset 24)而非 word2=arrayRef(offset 16)
-//   - node 步长 24 字节
-//   - 多 key 比对段(mov rdx stableKey + cmp rax rdx + jne)
+// Key differences vs SELF ArrayHit:
+//   - fetches word3=nodeRef (offset 24) instead of word2=arrayRef (offset 16)
+//   - node stride is 24 bytes
+//   - one extra key comparison segment (mov rdx stableKey + cmp rax rdx + jne)
 //
-// **deopt 路径**:Run 端 raxSpec==deoptCode 时调 host.GetTable byte-equal P1
-// (R(A+1)=R(B) 已 store,P1 SELF case 同款步骤;P1 icGetTable 兼容 NodeHit)。
-// EmitSelfNodeHitNoRet 同 EmitSelfNodeHit,但**成功路径不 emit ret**——
-// fall-through 到调用方 emit 的后续段(承 §9.20.9 commit-5j 修通
-// useFrameInline 路径 Run 期触达)。
+// **deopt path**: when the Run side sees raxSpec==deoptCode it calls
+// host.GetTable byte-equal to P1 (R(A+1)=R(B) already stored, same steps as the
+// P1 SELF case; P1 icGetTable is compatible with NodeHit).
+// EmitSelfNodeHitNoRet is the same as EmitSelfNodeHit, but its success path
+// **does not emit ret** — it falls through into the caller-emitted following
+// segment (see §9.20.9 commit-5j fixing the useFrameInline path so it is
+// reached at Run time).
 //
-// **设计差异**:
-//   - EmitSelfNodeHit 成功路径段尾 ret(独立 spec template,Run 端 RAX=0 标
-//     正常出段)
-//   - 本函数:成功路径 fall-through(useFrameInline 形态后接 BuildVoid0Arg +
-//     ExitHelperRequest + PopVoid0Arg + ret;SELF 段 store R(A)=method 后
-//     BuildVoid0Arg LoadClosureGCRef(callA) 自动读到 method GCRef payload)
-//   - deopt 路径与 EmitSelfNodeHit 同款(写 RAX=deoptCode + ret)
+// **Design difference**:
+//   - EmitSelfNodeHit ends its success-path segment with ret (a standalone spec
+//     template; the Run side sees RAX=0 marking a normal segment exit)
+//   - this function: success path falls through (the useFrameInline shape is
+//     followed by BuildVoid0Arg + ExitHelperRequest + PopVoid0Arg + ret; after
+//     the SELF segment stores R(A)=method, BuildVoid0Arg's
+//     LoadClosureGCRef(callA) automatically reads the method GCRef payload)
+//   - the deopt path is the same as EmitSelfNodeHit (write RAX=deoptCode + ret)
 func EmitSelfNodeHitNoRet(buf []byte, aReg, bReg uint8,
 	stableShape, stableIndex uint32, stableKey uint64,
 	arenaBaseOff int32, deoptCode uint64) []byte {
-	// 1. load R(B) → rax(obj NaN-box)
+	// 1. load R(B) → rax (obj NaN-box)
 	buf = EmitMovqRaxFromMemReg(buf, 3 /*rbx*/, int32(bReg)*8)
-	// 2. store R(A+1) = rax(self/this 实参)
+	// 2. store R(A+1) = rax (self/this argument)
 	buf = EmitMovqMemRegFromRax(buf, 3 /*rbx*/, int32(aReg+1)*8)
-	// 3. 严密 IsTable guard
+	// 3. strict IsTable guard
 	buf = EmitShrRaxImm8(buf, 48)
 	buf = EmitCmpEaxImm32(buf, qNanBoxTableTagHigh16)
 	buf = EmitJneRel32(buf, 0)
 	jneTagOff := len(buf) - 4
-	// 4. shr 已破坏 rax,重新 load R(B)
+	// 4. shr has clobbered rax, re-load R(B)
 	buf = EmitMovqRaxFromMemReg(buf, 3 /*rbx*/, int32(bReg)*8)
 	// 5. GCRef extract
 	const payloadMask uint64 = 0x0000_FFFF_FFFF_FFFF
@@ -781,9 +811,9 @@ func EmitSelfNodeHitNoRet(buf []byte, aReg, bReg uint8,
 		byte(stableShape>>24))
 	buf = EmitJneRel32(buf, 0)
 	jneShapeOff := len(buf) - 4
-	// 9. NodeHit 分流:load nodeRef = [r14+rcx+24]
+	// 9. NodeHit branch: load nodeRef = [r14+rcx+24]
 	buf = EmitMovqRaxFromR14PlusRcxDisp(buf, 24)
-	// 10. mov rcx, rax(rcx = nodeRef offset)
+	// 10. mov rcx, rax (rcx = nodeRef offset)
 	buf = EmitMovqRcxFromRax(buf)
 	// 11. load NodeKey = [r14+rcx+stableIndex*24] → rax
 	buf = EmitMovqRaxFromR14PlusRcxDisp(buf, int32(stableIndex)*24)
@@ -800,43 +830,43 @@ func EmitSelfNodeHitNoRet(buf []byte, aReg, bReg uint8,
 	buf = EmitCmpRaxRcx(buf)
 	buf = EmitJeRel32(buf, 0)
 	jeNilOff := len(buf) - 4
-	// 16. store R(A) = rax(method 函数)
+	// 16. store R(A) = rax (method function)
 	buf = EmitMovqMemRegFromRax(buf, 3 /*rbx*/, int32(aReg)*8)
-	// 17. **NO RET** — fall-through 到调用方 emit 的 BuildVoid0Arg 段(承
-	//     §9.20.9 commit-5j 修 useFrameInline 路径 Run 期触达)
+	// 17. **NO RET** — fall through into the caller-emitted BuildVoid0Arg segment
+	//     (see §9.20.9 commit-5j fixing the useFrameInline path so it is reached at Run time)
 	jmpSuccessOff := len(buf)
-	buf = EmitJmpRel32(buf, 0) // 跳过 deopt block 到段尾(后续 BuildVoid0Arg)
+	buf = EmitJmpRel32(buf, 0) // jump over the deopt block to the segment tail (following BuildVoid0Arg)
 	// 18. deopt block
 	deoptStart := len(buf)
 	buf = EmitMovRaxImm64(buf, deoptCode)
 	buf = EmitRet(buf)
-	// 19. patch forward jcc 到 deopt start
+	// 19. patch forward jcc to deopt start
 	PatchRel32(buf, jneTagOff, int32(deoptStart)-int32(jneTagOff+4))
 	PatchRel32(buf, jneShapeOff, int32(deoptStart)-int32(jneShapeOff+4))
 	PatchRel32(buf, jneKeyOff, int32(deoptStart)-int32(jneKeyOff+4))
 	PatchRel32(buf, jeNilOff, int32(deoptStart)-int32(jeNilOff+4))
-	// 20. patch success jmp 跳到 deopt block 之后(后续 BuildVoid0Arg 起点)
+	// 20. patch the success jmp to jump past the deopt block (start of the following BuildVoid0Arg)
 	PatchRel32(buf, jmpSuccessOff+1, int32(len(buf))-int32(jmpSuccessOff+5))
 	return buf
 }
 
-// EmitSelfNodeHit ...(原函数,保持不变)
+// EmitSelfNodeHit ... (original function, kept unchanged)
 func EmitSelfNodeHit(buf []byte, aReg, bReg uint8,
 	stableShape, stableIndex uint32, stableKey uint64,
 	arenaBaseOff int32, deoptCode uint64) []byte {
-	// 1. load R(B) → rax(obj NaN-box)
+	// 1. load R(B) → rax (obj NaN-box)
 	buf = EmitMovqRaxFromMemReg(buf, 3 /*rbx*/, int32(bReg)*8)
 
-	// 2. **SELF 额外**:store R(A+1) = rax(self/this 实参)
+	// 2. **SELF extra**: store R(A+1) = rax (self/this argument)
 	buf = EmitMovqMemRegFromRax(buf, 3 /*rbx*/, int32(aReg+1)*8)
 
-	// 3. 严密 IsTable guard
+	// 3. strict IsTable guard
 	buf = EmitShrRaxImm8(buf, 48)
 	buf = EmitCmpEaxImm32(buf, qNanBoxTableTagHigh16)
 	buf = EmitJneRel32(buf, 0)
 	jneTagOff := len(buf) - 4
 
-	// 4. shr 已破坏 rax,重新 load R(B)
+	// 4. shr has clobbered rax, re-load R(B)
 	buf = EmitMovqRaxFromMemReg(buf, 3 /*rbx*/, int32(bReg)*8)
 
 	// 5. GCRef extract
@@ -862,10 +892,10 @@ func EmitSelfNodeHit(buf []byte, aReg, bReg uint8,
 	buf = EmitJneRel32(buf, 0)
 	jneShapeOff := len(buf) - 4
 
-	// 9. **NodeHit 分流**:load nodeRef = [r14+rcx+24]
+	// 9. **NodeHit branch**: load nodeRef = [r14+rcx+24]
 	buf = EmitMovqRaxFromR14PlusRcxDisp(buf, 24)
 
-	// 10. mov rcx, rax(rcx = nodeRef offset)
+	// 10. mov rcx, rax (rcx = nodeRef offset)
 	buf = EmitMovqRcxFromRax(buf)
 
 	// 11. load NodeKey = [r14+rcx+stableIndex*24] → rax
@@ -888,7 +918,7 @@ func EmitSelfNodeHit(buf []byte, aReg, bReg uint8,
 	buf = EmitJeRel32(buf, 0)
 	jeNilOff := len(buf) - 4
 
-	// 16. store R(A) = rax(method 函数)
+	// 16. store R(A) = rax (method function)
 	buf = EmitMovqMemRegFromRax(buf, 3 /*rbx*/, int32(aReg)*8)
 
 	// 17. ret
@@ -908,24 +938,25 @@ func EmitSelfNodeHit(buf []byte, aReg, bReg uint8,
 	return buf
 }
 
-// EmitSpecArgLoadK 写 R(dstReg) = K(NaN-box u64)— PJ5 SELF spec template
-// args 装载字节级 inline 用,代替 host.SetReg(dstReg, K)round-trip。
+// EmitSpecArgLoadK writes R(dstReg) = K (NaN-box u64) — used by the PJ5 SELF
+// spec template for byte-level inline arg loading, replacing the
+// host.SetReg(dstReg, K) round-trip.
 //
-// 字节序列(10+7 = 17 字节):
+// Byte sequence (10+7 = 17 bytes):
 //
-//	mov rax, K_imm64        ; 10 字节
-//	mov [rbx + dstReg*8], rax  ; 7 字节(disp32 模式)
+//	mov rax, K_imm64        ; 10 bytes
+//	mov [rbx + dstReg*8], rax  ; 7 bytes (disp32 mode)
 func EmitSpecArgLoadK(buf []byte, dstReg uint8, k uint64) []byte {
 	buf = EmitMovRaxImm64(buf, k)
 	buf = EmitMovqMemRegFromRax(buf, 3 /*rbx*/, int32(dstReg)*8)
 	return buf
 }
 
-// EmitSpecArgLoadReg 写 R(dstReg) = R(srcReg)— PJ5 SELF spec template
-// args 装载字节级 inline 用,代替 host.SetReg(dstReg, host.GetReg(srcReg))
-// 双 round-trip。
+// EmitSpecArgLoadReg writes R(dstReg) = R(srcReg) — used by the PJ5 SELF spec
+// template for byte-level inline arg loading, replacing the double round-trip
+// host.SetReg(dstReg, host.GetReg(srcReg)).
 //
-// 字节序列(7+7 = 14 字节):
+// Byte sequence (7+7 = 14 bytes):
 //
 //	mov rax, [rbx + srcReg*8]
 //	mov [rbx + dstReg*8], rax
@@ -935,118 +966,129 @@ func EmitSpecArgLoadReg(buf []byte, dstReg uint8, srcReg uint8) []byte {
 	return buf
 }
 
-// EmitFrameInlineCIDepthInc 发射字节级 ciDepth++ inline 模板(承
+// EmitFrameInlineCIDepthInc emits the byte-level ciDepth++ inline template (see
 // `docs/design/p4-method-jit/implementation-progress.md` §9.20 Option B
-// Spike 1 起手积木):mmap 段经 r15 → 解引 jitContext.ciDepthAddr 到 rax,
-// 然后字节级 inc qword ptr [rax],等价 enterLuaFrame 中 `th.setCIDepth(
-// th.ciDepth+1)` 的 ciDepth 字镜像写入(P3 PW10 Stage 1a 镜像字复用)。
+// Spike 1 opening building block): from the mmap segment, via r15 →
+// dereference jitContext.ciDepthAddr into rax, then byte-level
+// inc qword ptr [rax], equivalent to the ciDepth-word mirror write of
+// `th.setCIDepth(th.ciDepth+1)` in enterLuaFrame (reusing the P3 PW10 Stage 1a
+// mirror word).
 //
-// 字节序列(10 字节):
+// Byte sequence (10 bytes):
 //
-//	mov rax, [r15 + ciDepthAddrOffset]  ; 7 字节(承 EmitMovqRaxFromR15Disp,
-//	                                    ;        实际编码 49 8B 87 disp32:
-//	                                    ;        REX.W+B 让 rm 字段用 r15)
-//	inc qword ptr [rax]                  ; 3 字节(承 EmitIncQwordPtrAtRax:
+//	mov rax, [r15 + ciDepthAddrOffset]  ; 7 bytes (see EmitMovqRaxFromR15Disp,
+//	                                    ;        actual encoding 49 8B 87 disp32:
+//	                                    ;        REX.W+B makes the rm field use r15)
+//	inc qword ptr [rax]                  ; 3 bytes (see EmitIncQwordPtrAtRax:
 //	                                    ;        48 FF 00)
 //
-// **参数 ciDepthAddrOffset**:`JITContextCIDepthAddrOffset`(承 jitcontext.go
-// const)— 调用方必须传 jit.JITContextCIDepthAddrOffset 编译期常量,本函数
-// 不直接依赖 jit 包(避免循环依赖)。
+// **Parameter ciDepthAddrOffset**: `JITContextCIDepthAddrOffset` (see the
+// jitcontext.go const) — the caller must pass the jit.JITContextCIDepthAddrOffset
+// compile-time constant; this function does not depend on the jit package
+// directly (to avoid a circular dependency).
 //
-// **承 §9.20 Spike 1 守门**:本模板仅在 callee.NumParams=0 + !IsVararg +
-// !NeedsArg 形态下 emit;callee 帧建拆其余 4 个 word 写入 + popCallInfo
-// 同款手法(EmitFrameInlineCIDepthDec 即将加)。
+// **§9.20 Spike 1 gating**: this template is only emitted in the callee.NumParams=0
+// + !IsVararg + !NeedsArg shape; the callee frame build tears down the other 4
+// word writes + popCallInfo the same way (EmitFrameInlineCIDepthDec is coming).
 //
-// **arena grow 风险**:ciDepthAddr 由 jitContext.SetCIDepthAddr 在每次
-// Run 入口现算注入(承 code.go::Run line 268-271 起接入);arena grow 触发
-// 段重定位时下次 Run 重载,本字段不缓存指向 host 地址。
+// **arena grow risk**: ciDepthAddr is computed fresh and injected at each Run
+// entry by jitContext.SetCIDepthAddr (wired in at code.go::Run lines 268-271);
+// when arena grow triggers a segment relocation it is reloaded on the next Run,
+// so this field does not cache a pointer into a host address.
 func EmitFrameInlineCIDepthInc(buf []byte, ciDepthAddrOffset int32) []byte {
 	buf = EmitMovqRaxFromR15Disp(buf, ciDepthAddrOffset)
 	buf = EmitIncQwordPtrAtRax(buf)
 	return buf
 }
 
-// EmitFrameInlineCIDepthDec 发射字节级 ciDepth-- inline 模板(承 §9.20
-// Option B Spike 1 popCallInfo 反向)。
+// EmitFrameInlineCIDepthDec emits the byte-level ciDepth-- inline template (see
+// §9.20 Option B Spike 1 popCallInfo, the reverse).
 //
-// 字节序列(10 字节):同 Inc 但末 inc 改 dec(等价 popCallInfo 中
-// `th.setCIDepth(th.ciDepth-1)`)。
+// Byte sequence (10 bytes): same as Inc but the final inc becomes dec
+// (equivalent to `th.setCIDepth(th.ciDepth-1)` in popCallInfo).
 func EmitFrameInlineCIDepthDec(buf []byte, ciDepthAddrOffset int32) []byte {
 	buf = EmitMovqRaxFromR15Disp(buf, ciDepthAddrOffset)
 	buf = EmitDecQwordPtrAtRax(buf)
 	return buf
 }
 
-// EncodedFrameInlineCIDepthIncDecLen 是「ciDepth++/--」字节级 inline 模板
-// 字节数(7+3=10)。承 §9.20 Spike 1 caller 单测 + Compile 段长度预算。
+// EncodedFrameInlineCIDepthIncDecLen is the byte count of the "ciDepth++/--"
+// byte-level inline template (7+3=10). See §9.20 Spike 1 caller unit test +
+// Compile-segment length budget.
 const EncodedFrameInlineCIDepthIncDecLen = 10
 
-// EmitFrameInlineLoadCISlotAddr 发射字节级 CI 段第 depth 帧起点字节地址
-// 加载到 rax 模板(承 §9.20 Option B Spike 1 enterLuaFrame inline 第一段)。
+// EmitFrameInlineLoadCISlotAddr emits the byte-level template that loads the
+// byte address of the depth-th CI-segment frame start into rax (see §9.20
+// Option B Spike 1 enterLuaFrame inline first segment).
 //
-// 该模板把 ciSegBaseAddr + ciDepth * 40(每帧 ciWords=5 字 = 40 字节)算出
-// CallInfo[depth] 帧地址,准备后续 writeCIWordN 写各 word。
+// This template computes ciSegBaseAddr + ciDepth * 40 (each frame is
+// ciWords=5 words = 40 bytes) to get the CallInfo[depth] frame address, ready
+// for the subsequent writeCIWordN writes of each word.
 //
-// 字节序列(7+3+7+3+5+3 = 28 字节):
+// Byte sequence (7+3+7+3+5+3 = 28 bytes):
 //
-//	mov rcx, [r15 + ciDepthAddrOffset]    ; 7 字节 = mov rcx, [r15+disp32]
-//	                                        ;     实际 EmitMovqRcxFromR15Disp 不存在,
-//	                                        ;     用 EmitMovqRaxFromR15Disp + mov rcx, rax
-//	                                        ;     OR 改用 EmitMovqRaxFromR15Disp + EmitMovqRcxFromRax
-//	mov rcx, [rcx]                          ; 3 字节(48 8B 09 = mov rcx, [rcx])
-//	mov rax, [r15 + ciSegBaseAddrOffset]    ; 7 字节
-//	mov rax, [rax]                          ; 3 字节(48 8B 00 = mov rax, [rax])
-//	imul rcx, rcx, 40                       ; 4 字节(48 6B C9 28 = imul rcx, rcx, 40)
-//	add rax, rcx                            ; 3 字节(48 01 C8 = add rax, rcx)
+//	mov rcx, [r15 + ciDepthAddrOffset]    ; 7 bytes = mov rcx, [r15+disp32]
+//	                                        ;     actually EmitMovqRcxFromR15Disp does not exist,
+//	                                        ;     use EmitMovqRaxFromR15Disp + mov rcx, rax
+//	                                        ;     OR use EmitMovqRaxFromR15Disp + EmitMovqRcxFromRax
+//	mov rcx, [rcx]                          ; 3 bytes (48 8B 09 = mov rcx, [rcx])
+//	mov rax, [r15 + ciSegBaseAddrOffset]    ; 7 bytes
+//	mov rax, [rax]                          ; 3 bytes (48 8B 00 = mov rax, [rax])
+//	imul rcx, rcx, 40                       ; 4 bytes (48 6B C9 28 = imul rcx, rcx, 40)
+//	add rax, rcx                            ; 3 bytes (48 01 C8 = add rax, rcx)
 //
-// 模板结束后 rax = CallInfo[depth] 字节地址。后续 writeCIWordN(rax, word_idx, val)
-// 经 mov [rax + word_idx*8], rcx 写每 word。
+// After the template, rax = CallInfo[depth] byte address. The subsequent
+// writeCIWordN(rax, word_idx, val) writes each word via mov [rax + word_idx*8], rcx.
 //
-// **总长度 28 字节**(amd64 端 enterLuaFrame inline 第一段)。
+// **Total length 28 bytes** (amd64 enterLuaFrame inline first segment).
 //
-// **arena grow 注意**:ciDepthAddr / ciSegBaseAddr 每次 Run 入口现算,不缓存
-// (承 §9.20 + arena base 重载协议)。
+// **arena grow note**: ciDepthAddr / ciSegBaseAddr are computed fresh at each
+// Run entry, not cached (see §9.20 + the arena base reload protocol).
 func EmitFrameInlineLoadCISlotAddr(buf []byte, ciDepthAddrOffset, ciSegBaseAddrOffset int32) []byte {
-	// 1. rcx = ciDepth(深度值)
+	// 1. rcx = ciDepth (the depth value)
 	buf = EmitMovqRaxFromR15Disp(buf, ciDepthAddrOffset)
 	buf = EmitMovqRcxFromRax(buf)
-	// rcx 现是 ciDepthAddr。再解引一次:mov rcx, [rcx]
+	// rcx is now ciDepthAddr. Dereference once more: mov rcx, [rcx]
 	buf = append(buf, 0x48, 0x8B, 0x09) // mov rcx, [rcx]
-	// 2. rax = ciSegBase 字节偏移(ciBaseW*8 word offset 进 arena)
+	// 2. rax = ciSegBase byte offset (ciBaseW*8 word offset into arena)
 	buf = EmitMovqRaxFromR15Disp(buf, ciSegBaseAddrOffset)
-	// rax 现是 ciSegBaseAddr(host 字节地址,指向镜像字)。解引:mov rax, [rax]
+	// rax is now ciSegBaseAddr (host byte address pointing at the mirror word). Dereference: mov rax, [rax]
 	buf = append(buf, 0x48, 0x8B, 0x00) // mov rax, [rax]
 	// 3. imul rcx, rcx, 40 — depth * ciSlotBytes
 	buf = append(buf, 0x48, 0x6B, 0xC9, 40) // imul rcx, rcx, 40
-	// 4. add rax, rcx — rax = ciBaseW*8 + depth*40(byte offset 进 arena)
+	// 4. add rax, rcx — rax = ciBaseW*8 + depth*40 (byte offset into arena)
 	buf = append(buf, 0x48, 0x01, 0xC8) // add rax, rcx
 	return buf
 }
 
-// EncodedFrameInlineLoadCISlotAddrLen 是「CI 段第 depth 帧地址加载到 rax」
-// 模板字节数(7+3+3+7+3+4+3 = 30 — 实际,EmitMovqRaxFromR15Disp 是 7,
-// EmitMovqRcxFromRax 是 3,后续 mov rcx [rcx] 是 3,mov rax [r15+...] 是 7,
-// mov rax [rax] 是 3,imul 4,add 3,合计 30 字节,非 28)。
+// EncodedFrameInlineLoadCISlotAddrLen is the byte count of the "load the
+// depth-th CI-segment frame address into rax" template (7+3+3+7+3+4+3 = 30 —
+// actual; EmitMovqRaxFromR15Disp is 7, EmitMovqRcxFromRax is 3, the subsequent
+// mov rcx [rcx] is 3, mov rax [r15+...] is 7, mov rax [rax] is 3, imul 4, add 3,
+// totalling 30 bytes, not 28).
 const EncodedFrameInlineLoadCISlotAddrLen = 30
 
-// EmitFrameInlineLoadCISlotAddrAbsolute 同 EmitFrameInlineLoadCISlotAddr 但
-// 结果 rax 是 **arena 绝对地址**(承 §9.20.9 commit-5l 修 ciSegBase 镜像字
-// 语义bug):
+// EmitFrameInlineLoadCISlotAddrAbsolute is the same as
+// EmitFrameInlineLoadCISlotAddr but the result rax is an **arena absolute
+// address** (see §9.20.9 commit-5l fixing the ciSegBase mirror-word semantics
+// bug):
 //
-// **bug 起源**(P3 PW10 Stage 2 ciSegBase 镜像字协议):ciSegBaseRef 存的是
-// `ciBaseW * 8`(byte offset 进 arena),不是绝对地址。LoadCISlotAddr 算的
-// rax = ciBaseW*8 + depth*40 是 byte offset,不能直接 deref(SIGSEGV)。
+// **bug origin** (P3 PW10 Stage 2 ciSegBase mirror-word protocol): ciSegBaseRef
+// stores `ciBaseW * 8` (a byte offset into arena), not an absolute address.
+// The rax = ciBaseW*8 + depth*40 that LoadCISlotAddr computes is a byte offset
+// and cannot be dereferenced directly (SIGSEGV).
 //
-// **本函数**:在 LoadCISlotAddr 后追加 `add rax, r14`(arena base 加到 rax),
-// 让 rax 变绝对地址。**前置条件**:caller 已 setup r14 = arena base(承
-// SELF NodeHit / BuildVoid0Arg::LoadClosureGCRef 同款 r14 借用)。
+// **this function**: after LoadCISlotAddr, appends `add rax, r14` (adds the
+// arena base to rax) so rax becomes an absolute address. **Precondition**: the
+// caller has already set up r14 = arena base (same r14 borrow as SELF NodeHit /
+// BuildVoid0Arg::LoadClosureGCRef).
 //
-// **字节序列**:LoadCISlotAddr(30B)+ `mov r14, [r15+arenaBaseOff]`(7B)+
-// `add rax, r14`(3B)= 40B。
+// **Byte sequence**: LoadCISlotAddr (30B) + `mov r14, [r15+arenaBaseOff]` (7B) +
+// `add rax, r14` (3B) = 40B.
 //
-// **使用位置**(useFrameInline 路径):
-//  1. 调本函数:rax = CI[depth] 绝对地址(40B)
-//  2. 后续 WriteCIWord/CIDepthInc/LoadClosureGCRef + WriteCIWordFromRcx 同款使用
+// **Usage site** (useFrameInline path):
+//  1. call this function: rax = CI[depth] absolute address (40B)
+//  2. subsequent WriteCIWord/CIDepthInc/LoadClosureGCRef + WriteCIWordFromRcx use the same way
 func EmitFrameInlineLoadCISlotAddrAbsolute(buf []byte, ciDepthAddrOffset, ciSegBaseAddrOffset, arenaBaseOffset int32) []byte {
 	buf = EmitFrameInlineLoadCISlotAddr(buf, ciDepthAddrOffset, ciSegBaseAddrOffset)
 	// load r14 = arena base
@@ -1059,93 +1101,102 @@ func EmitFrameInlineLoadCISlotAddrAbsolute(buf []byte, ciDepthAddrOffset, ciSegB
 // EncodedFrameInlineLoadCISlotAddrAbsoluteLen = LoadCISlotAddr 30 + load r14 7 + add 3 = 40.
 const EncodedFrameInlineLoadCISlotAddrAbsoluteLen = EncodedFrameInlineLoadCISlotAddrLen + 7 + 3
 
-// EmitFrameInlineWriteCIWord 发射字节级 CI 帧 word_idx 写入 imm64 模板
-// (承 §9.20 Option B Spike 1 enterLuaFrame inline 第二段)。
+// EmitFrameInlineWriteCIWord emits the byte-level template that writes imm64
+// into CI frame word_idx (see §9.20 Option B Spike 1 enterLuaFrame inline
+// second segment).
 //
-// 调用契约:rax 必须已装 CallInfo[depth] 帧起点字节地址(承
-// EmitFrameInlineLoadCISlotAddr 已 setup);word_idx 范围 [0,4](承 ciWords=5)。
+// Call contract: rax must already hold the CallInfo[depth] frame start byte
+// address (already set up by EmitFrameInlineLoadCISlotAddr); word_idx range is
+// [0,4] (ciWords=5).
 //
-// 字节序列(10+4 = 14 字节):
+// Byte sequence (10+4 = 14 bytes):
 //
-//	mov rcx, imm64                      ; 10 字节(EmitMovRcxImm64)
-//	mov [rax + word_idx*8], rcx         ; 4 字节(48 89 48 disp8)
+//	mov rcx, imm64                      ; 10 bytes (EmitMovRcxImm64)
+//	mov [rax + word_idx*8], rcx         ; 4 bytes (48 89 48 disp8)
 //
-// **word layout**(承 state.go::writeCISeg / packCIWord2):
+// **word layout** (see state.go::writeCISeg / packCIWord2):
 //   - word0 = uint32(base) | uint32(funcIdx) << 32
 //   - word1 = uint32(top)  | uint32(pc)      << 32
 //   - word2 = uint32(protoID) | uint16(nresults) << 32 | flags<<48
 //     (tailcall<<48 / fresh<<49 / gibbous<<50)
-//   - word3 = uint64(cl)(arena.GCRef closure 镜像)
-//   - word4 = uint64(nVarargs)(其他位预留)
+//   - word3 = uint64(cl) (arena.GCRef closure mirror)
+//   - word4 = uint64(nVarargs) (other bits reserved)
 //
-// Spike 1 调用方按 word_idx=0..4 顺序调 5 次,完成 enterLuaFrame 的 CI 段写入。
+// The Spike 1 caller calls this 5 times in word_idx=0..4 order to complete the
+// CI-segment write of enterLuaFrame.
 func EmitFrameInlineWriteCIWord(buf []byte, wordIdx uint8, imm64 uint64) []byte {
 	if wordIdx > 4 {
-		wordIdx = 0 // 兜底防越界
+		wordIdx = 0 // fallback to guard against out-of-bounds
 	}
 	buf = EmitMovRcxImm64(buf, imm64)
 	// mov [rax + wordIdx*8], rcx — 48 89 48 disp8
-	// REX.W = 0x48 / opcode 0x89(MOV r/m64, r64)
-	// ModRM = mod 01(disp8)+ reg 001(rcx)+ rm 000(rax)= 0x48
+	// REX.W = 0x48 / opcode 0x89 (MOV r/m64, r64)
+	// ModRM = mod 01 (disp8) + reg 001 (rcx) + rm 000 (rax) = 0x48
 	// disp8 = wordIdx * 8
 	buf = append(buf, 0x48, 0x89, 0x48, byte(int8(wordIdx)*8))
 	return buf
 }
 
-// EncodedFrameInlineWriteCIWordLen 是「写 CI 帧 word_idx」字节级模板字节数
-// (10+4=14)。承 §9.20 Spike 1 caller 长度预算。
+// EncodedFrameInlineWriteCIWordLen is the byte count of the "write CI frame
+// word_idx" byte-level template (10+4=14). See §9.20 Spike 1 caller length budget.
 const EncodedFrameInlineWriteCIWordLen = 14
 
-// FrameInlineCISlotWords amd64 端 Spike 1 用的 CI 帧 5 word 入参组(承
-// state.go::writeCISeg + packCIWord2;各 word 由 caller 编译期烧 imm64)。
+// FrameInlineCISlotWords is the CI frame 5-word input group used by amd64 Spike 1
+// (see state.go::writeCISeg + packCIWord2; each word is burned in as an imm64 by
+// the caller at compile time).
 type FrameInlineCISlotWords struct {
 	Word0 uint64 // base | funcIdx << 32
 	Word1 uint64 // top | pc << 32
-	Word2 uint64 // protoID | nresults<<32 | flags<<48(tailcall<<48 / fresh<<49 / gibbous<<50)
-	Word3 uint64 // cl(arena.GCRef closure 镜像)
+	Word2 uint64 // protoID | nresults<<32 | flags<<48 (tailcall<<48 / fresh<<49 / gibbous<<50)
+	Word3 uint64 // cl (arena.GCRef closure mirror)
 	Word4 uint64 // nVarargs
 }
 
-// EmitFrameInlineBuildVoid0ArgSkeleton 发射 amd64 Spike 1 enterLuaFrame 字节级
-// inline 骨架 v2(承 §9.20 Option B Spike 1,word3 改用 runtime closure GCRef):
+// EmitFrameInlineBuildVoid0ArgSkeleton emits the amd64 Spike 1 enterLuaFrame
+// byte-level inline skeleton v2 (see §9.20 Option B Spike 1, with word3 switched
+// to the runtime closure GCRef):
 //
-//  1. LoadCISlotAddr:rax = CallInfo[depth] 帧起点字节地址(30 字节)
-//  2. WriteCIWord(0/1/2):写 word0/1/2 imm(14*3 = 42 字节)
-//  3. LoadClosureGCRef(callA):rcx = R(callA) 解 NaN-box 得 GCRef payload(20 字节)
-//  4. WriteCIWordFromRcx(3):CI[depth].word3 = rcx(4 字节)
-//  5. WriteCIWord(4):写 word4 imm(14 字节)
-//  6. CIDepthInc:ciDepth++(10 字节)
+//  1. LoadCISlotAddr: rax = CallInfo[depth] frame start byte address (30 bytes)
+//  2. WriteCIWord(0/1/2): write word0/1/2 imm (14*3 = 42 bytes)
+//  3. LoadClosureGCRef(callA): rcx = R(callA) unpacked NaN-box GCRef payload (20 bytes)
+//  4. WriteCIWordFromRcx(3): CI[depth].word3 = rcx (4 bytes)
+//  5. WriteCIWord(4): write word4 imm (14 bytes)
+//  6. CIDepthInc: ciDepth++ (10 bytes)
 //
-// **总长度**:30 + 42 + 20 + 4 + 14 + 10 = 120 字节(v1 = 110,word3 改运行期装载多 10 字节)
+// **Total length**: 30 + 42 + 20 + 4 + 14 + 10 = 120 bytes (v1 = 110, word3
+// switched to runtime loading adds 10 bytes)
 //
-// **入参 words.Word3 被忽略**(保留字段位置避免破坏调用方;v2 用 runtime cl
-// 装载,word3 由 callA 解 NaN-box 得 GCRef payload 现算)。
+// **The input words.Word3 is ignored** (the field position is kept so as not to
+// break callers; v2 uses runtime cl loading, word3 is computed fresh by
+// unpacking callA's NaN-box for the GCRef payload).
 //
-// **守门**(Spike 1 阶段 caller 必须保证):
+// **Gating** (the Spike 1 stage caller must guarantee):
 //   - callee.NumParams=0 + !IsVararg + !NeedsArg + MaxStack≤32
-//   - words.Word0/1/2/4 由 caller 编译期烧入(base / funcIdx / top / pc /
-//     protoID / nresults=0 / nVarargs=0;word3 cl 字段被忽略)
-//   - rax 在模板出口处为 CallInfo[depth] 帧地址(供后续 helper call / popCallInfo)
+//   - words.Word0/1/2/4 are burned in by the caller at compile time (base /
+//     funcIdx / top / pc / protoID / nresults=0 / nVarargs=0; the word3 cl field
+//     is ignored)
+//   - at the template exit rax is the CallInfo[depth] frame address (for the
+//     subsequent helper call / popCallInfo)
 //
-// **仍剩 Spike 1 后续工程**(本批不实装):
-//   - 跳 helper 入 callee 执行(executeFrom 或 callee P4 段)
-//   - popCallInfo 反向(LoadCISlotAddr + CIDepthDec)+ 多返值处理
-//   - Compile/Run 端接通 + e2e prove-the-path
+// **Still-remaining Spike 1 follow-up work** (not implemented in this batch):
+//   - jump to the helper to enter callee execution (executeFrom or callee P4 segment)
+//   - popCallInfo reverse (LoadCISlotAddr + CIDepthDec) + multi-return handling
+//   - Compile/Run side wiring + e2e prove-the-path
 func EmitFrameInlineBuildVoid0ArgSkeleton(buf []byte,
 	ciDepthAddrOffset, ciSegBaseAddrOffset int32,
-	callARecv uint8, // SELF 段 callee 装在 R(callARecv) 槽
+	callARecv uint8, // the SELF-segment callee is placed in the R(callARecv) slot
 	words FrameInlineCISlotWords) []byte {
-	// 1. rax = CallInfo[depth] 帧起点
+	// 1. rax = CallInfo[depth] frame start
 	buf = EmitFrameInlineLoadCISlotAddr(buf, ciDepthAddrOffset, ciSegBaseAddrOffset)
-	// 2. 写 word0/1/2
+	// 2. write word0/1/2
 	buf = EmitFrameInlineWriteCIWord(buf, 0, words.Word0)
 	buf = EmitFrameInlineWriteCIWord(buf, 1, words.Word1)
 	buf = EmitFrameInlineWriteCIWord(buf, 2, words.Word2)
-	// 3. rcx = R(callARecv) NaN-box payload(GCRef)
+	// 3. rcx = R(callARecv) NaN-box payload (GCRef)
 	buf = EmitFrameInlineLoadClosureGCRef(buf, callARecv)
 	// 4. CI[depth].word3 = rcx
 	buf = EmitFrameInlineWriteCIWordFromRcx(buf, 3)
-	// 5. 写 word4
+	// 5. write word4
 	buf = EmitFrameInlineWriteCIWord(buf, 4, words.Word4)
 	// 6. ciDepth++
 	buf = EmitFrameInlineCIDepthInc(buf, ciDepthAddrOffset)
@@ -1155,40 +1206,42 @@ func EmitFrameInlineBuildVoid0ArgSkeleton(buf []byte,
 // EncodedFrameInlineBuildVoid0ArgSkeletonLen = 30 + 14*3 + 20 + 4 + 14 + 10 = 120.
 const EncodedFrameInlineBuildVoid0ArgSkeletonLen = 120
 
-// EmitFrameInlineBuildVoid0ArgSkeletonAbsolute 同 EmitFrameInlineBuildVoid0ArgSkeleton
-// 但使用 LoadCISlotAddrAbsolute(rax = 绝对地址,承 §9.20.9 commit-5l bug 修)。
+// EmitFrameInlineBuildVoid0ArgSkeletonAbsolute is the same as
+// EmitFrameInlineBuildVoid0ArgSkeleton but uses LoadCISlotAddrAbsolute
+// (rax = absolute address, see §9.20.9 commit-5l bug fix).
 //
-// **设计差异**:原 BuildVoid0ArgSkeleton 的 LoadCISlotAddr 算 rax = ciBaseW*8
-// + depth*40 是 word offset 进 arena,不能直接 deref;本函数用 Absolute 版,
-// rax = absolute address,后续 WriteCIWord 直接写有效。
+// **Design difference**: the original BuildVoid0ArgSkeleton's LoadCISlotAddr
+// computes rax = ciBaseW*8 + depth*40, a word offset into arena that cannot be
+// dereferenced directly; this function uses the Absolute version, so
+// rax = absolute address and the subsequent WriteCIWord writes are directly valid.
 //
-// **字节序列**(总长度 130 字节):
-//  1. LoadCISlotAddrAbsolute(40B,30 + 7 mov r14 + 3 add rax,r14)
+// **Byte sequence** (total length 130 bytes):
+//  1. LoadCISlotAddrAbsolute (40B, 30 + 7 mov r14 + 3 add rax,r14)
 //  2. WriteCIWord(0/1/2) imm 3 * 14 = 42B
-//  3. LoadClosureGCRef(20B):rcx = R(callA) GCRef payload
-//  4. WriteCIWordFromRcx(3)(4B):CI[depth].word3 = rcx
-//  5. WriteCIWord(4) imm(14B)
-//  6. CIDepthInc(10B)
+//  3. LoadClosureGCRef (20B): rcx = R(callA) GCRef payload
+//  4. WriteCIWordFromRcx(3) (4B): CI[depth].word3 = rcx
+//  5. WriteCIWord(4) imm (14B)
+//  6. CIDepthInc (10B)
 //
-// **总**:40 + 42 + 20 + 4 + 14 + 10 = 130 字节(原 120 + 10 因 absolute load 多 10)。
+// **Total**: 40 + 42 + 20 + 4 + 14 + 10 = 130 bytes (original 120 + 10 because the absolute load adds 10).
 func EmitFrameInlineBuildVoid0ArgSkeletonAbsolute(buf []byte,
 	ciDepthAddrOffset, ciSegBaseAddrOffset, arenaBaseOffset int32,
 	callARecv uint8,
 	words FrameInlineCISlotWords) []byte {
-	// 1. rax = CI[depth] 绝对地址(Absolute 版)
+	// 1. rax = CI[depth] absolute address (Absolute version)
 	buf = EmitFrameInlineLoadCISlotAddrAbsolute(buf, ciDepthAddrOffset, ciSegBaseAddrOffset, arenaBaseOffset)
-	// 2. 写 word0/1/2
+	// 2. write word0/1/2
 	buf = EmitFrameInlineWriteCIWord(buf, 0, words.Word0)
 	buf = EmitFrameInlineWriteCIWord(buf, 1, words.Word1)
 	buf = EmitFrameInlineWriteCIWord(buf, 2, words.Word2)
-	// 3. rcx = R(callARecv) NaN-box payload(GCRef)— LoadClosureGCRef 内会重设 r14
-	//    用 payloadMask;但 step 1 已用 r14 = arena base,LoadClosureGCRef 内
-	//    用 rdx 作 payloadMask,不动 r14。**等等**:原 LoadClosureGCRef 实装
-	//    `EmitMovRdxImm64 + EmitAndRcxRdx`,r14 不被改。
+	// 3. rcx = R(callARecv) NaN-box payload (GCRef) — LoadClosureGCRef will reset r14 internally
+	//    with the payloadMask; but step 1 already used r14 = arena base, and inside
+	//    LoadClosureGCRef the payloadMask uses rdx, not r14. **Wait**: the original
+	//    LoadClosureGCRef implementation is `EmitMovRdxImm64 + EmitAndRcxRdx`, r14 is not touched.
 	buf = EmitFrameInlineLoadClosureGCRef(buf, callARecv)
 	// 4. CI[depth].word3 = rcx
 	buf = EmitFrameInlineWriteCIWordFromRcx(buf, 3)
-	// 5. 写 word4
+	// 5. write word4
 	buf = EmitFrameInlineWriteCIWord(buf, 4, words.Word4)
 	// 6. ciDepth++
 	buf = EmitFrameInlineCIDepthInc(buf, ciDepthAddrOffset)
@@ -1198,22 +1251,23 @@ func EmitFrameInlineBuildVoid0ArgSkeletonAbsolute(buf []byte,
 // EncodedFrameInlineBuildVoid0ArgSkeletonAbsoluteLen = 40 + 42 + 20 + 4 + 14 + 10 = 130.
 const EncodedFrameInlineBuildVoid0ArgSkeletonAbsoluteLen = EncodedFrameInlineBuildVoid0ArgSkeletonLen + 10
 
-// EmitFrameInlineLoadClosureGCRef 发射 amd64 字节级 R(srcReg) NaN-box →
-// rcx 48-bit GCRef 解析模板(承 §9.20 Option B Spike 1 enterLuaFrame inline
-// word3=cl 设置前置)。
+// EmitFrameInlineLoadClosureGCRef emits the amd64 byte-level template that
+// parses R(srcReg) NaN-box → rcx 48-bit GCRef (see §9.20 Option B Spike 1, the
+// prerequisite for setting enterLuaFrame inline word3=cl).
 //
-// 字节序列(7 + 10 + 3 = 20 字节):
+// Byte sequence (7 + 10 + 3 = 20 bytes):
 //
-//	mov rcx, [rbx + srcReg*8]    ; 7 字节 EmitMovqRcxFromMemRbx
-//	mov rdx, payloadMask         ; 10 字节(payloadMask=0x0000FFFFFFFFFFFF)
-//	and rcx, rdx                 ; 3 字节
+//	mov rcx, [rbx + srcReg*8]    ; 7 bytes EmitMovqRcxFromMemRbx
+//	mov rdx, payloadMask         ; 10 bytes (payloadMask=0x0000FFFFFFFFFFFF)
+//	and rcx, rdx                 ; 3 bytes
 //
-// 模板结束后 rcx = R(srcReg) 的 GCRef payload(承 value.GCRefOf 字节级
-// 等价)。caller 后续 mov [rax+word_idx*8], rcx 写入 CI 段 word3(无需
-// 经 EmitMovRcxImm64 装 imm)。
+// After the template, rcx = R(srcReg)'s GCRef payload (byte-level equivalent to
+// value.GCRefOf). The caller then does mov [rax+word_idx*8], rcx to write CI
+// segment word3 (no need to load an imm via EmitMovRcxImm64).
 //
-// **注意**:rdx 在 LoadCISlotAddr 段未被使用,可安全用作 mask 临时寄存器。
-// rax 在 LoadCISlotAddr 后装 CI 段地址,本模板不动 rax。
+// **Note**: rdx is unused in the LoadCISlotAddr segment, so it is safe to use as
+// the mask temp register. rax holds the CI-segment address after LoadCISlotAddr;
+// this template does not touch rax.
 func EmitFrameInlineLoadClosureGCRef(buf []byte, srcReg uint8) []byte {
 	buf = EmitMovqRcxFromMemRbx(buf, int32(srcReg)*8)
 	buf = EmitMovRdxImm64(buf, 0x0000_FFFF_FFFF_FFFF) // payloadMask
@@ -1224,14 +1278,14 @@ func EmitFrameInlineLoadClosureGCRef(buf []byte, srcReg uint8) []byte {
 // EncodedFrameInlineLoadClosureGCRefLen = 7+10+3 = 20.
 const EncodedFrameInlineLoadClosureGCRefLen = 20
 
-// EmitFrameInlineWriteCIWordFromRcx 发射「mov [rax + wordIdx*8], rcx」
-// 单条 4 字节(对位 EmitFrameInlineWriteCIWord 但 imm64 改 rcx,省 10 字节
-// imm 装载)。
+// EmitFrameInlineWriteCIWordFromRcx emits a single 4-byte "mov [rax + wordIdx*8],
+// rcx" (counterpart to EmitFrameInlineWriteCIWord but with imm64 replaced by
+// rcx, saving the 10-byte imm load).
 //
-// 编码:48 89 48 disp8(48 = REX.W / 89 = MOV r/m64 r64 / ModRM=01_001_000
-// 即 0x48 + disp8 = wordIdx * 8)。
+// Encoding: 48 89 48 disp8 (48 = REX.W / 89 = MOV r/m64 r64 / ModRM=01_001_000,
+// i.e. 0x48 + disp8 = wordIdx * 8).
 //
-// 用例:Spike 1 word3 = cl GCRef(承 EmitFrameInlineLoadClosureGCRef 装 rcx)。
+// Use case: Spike 1 word3 = cl GCRef (loaded into rcx by EmitFrameInlineLoadClosureGCRef).
 func EmitFrameInlineWriteCIWordFromRcx(buf []byte, wordIdx uint8) []byte {
 	if wordIdx > 4 {
 		wordIdx = 0
@@ -1242,98 +1296,107 @@ func EmitFrameInlineWriteCIWordFromRcx(buf []byte, wordIdx uint8) []byte {
 // EncodedFrameInlineWriteCIWordFromRcxLen = 4.
 const EncodedFrameInlineWriteCIWordFromRcxLen = 4
 
-// EmitFrameInlinePopVoid0ArgSkeleton 发射 amd64 Spike 1 popCallInfo 字节级
-// inline 骨架(承 §9.20 Option B Spike 1 BuildVoid0ArgSkeleton 反向)。
+// EmitFrameInlinePopVoid0ArgSkeleton emits the amd64 Spike 1 popCallInfo
+// byte-level inline skeleton (see §9.20 Option B Spike 1 BuildVoid0ArgSkeleton,
+// the reverse).
 //
-// **Spike 1 简化形态**:Run 端 helper 完成 callee Lua 体执行后,本模板字节级
-// dec ciDepth,**段尾 emit ret 出 mmap 段**(承 §9.20.9 commit-5l 修 missing
-// ret bug)。**剩余 popCallInfo Go 端工作**(readCISegInto 重载 caller th.cur)
-// 留 helper 兼容路径(不必字节级 inline,因 th.cur 字段是 Go 端冷字段,
-// mmap 段不读)。
+// **Spike 1 simplified shape**: after the Run-side helper finishes executing the
+// callee Lua body, this template byte-level decrements ciDepth and **emits ret
+// at the segment tail to exit the mmap segment** (see §9.20.9 commit-5l fixing
+// the missing ret bug). **The remaining Go-side popCallInfo work** (readCISegInto
+// reloading the caller th.cur) is left to the helper-compatible path (need not
+// be byte-level inline, because th.cur is a Go-side cold field that the mmap
+// segment does not read).
 //
-// 字节序列(11 字节):CIDepthDec 10 字节(`mov rax, [r15+ciDepthOff]; dec
-// qword ptr [rax]`)+ ret 1 字节(c3)。
+// Byte sequence (11 bytes): CIDepthDec 10 bytes (`mov rax, [r15+ciDepthOff]; dec
+// qword ptr [rax]`) + ret 1 byte (c3).
 //
-// **rax 段返值**:CIDepthDec 不显式设 rax,继承上次 mov 的值(ciDepthAddr
-// 字段值,即 ciDepth 字镜像字的 host addr,是个非 0 大整数)。但 trampoline
-// 检 raxResume==ExitInlineHelper(3)— rax 不会撞 3(因 ciDepthAddr 是大地址),
-// 故 trampoline 走常规弹栈出口,行为零变化。runFrameInlineDispatcher 检
-// raxResume!=0 时 fail,故 commit-5l 起 PopVoid0Arg 段尾 emit `xor eax, eax`
-// 显式清 rax = 0(ExitNormal)。
+// **rax segment return value**: CIDepthDec does not set rax explicitly; it
+// inherits the value of the last mov (the ciDepthAddr field value, i.e. the host
+// addr of the ciDepth mirror word, a nonzero large integer). But the trampoline
+// checks raxResume==ExitInlineHelper(3) — rax will not collide with 3 (because
+// ciDepthAddr is a large address), so the trampoline takes the regular
+// stack-unwind exit and its behavior is unchanged. runFrameInlineDispatcher
+// fails when raxResume!=0, so since commit-5l the PopVoid0Arg segment tail emits
+// `xor eax, eax` to explicitly clear rax = 0 (ExitNormal).
 func EmitFrameInlinePopVoid0ArgSkeleton(buf []byte, ciDepthAddrOffset int32) []byte {
 	buf = EmitFrameInlineCIDepthDec(buf, ciDepthAddrOffset)
-	// 段尾 emit xor eax, eax(2 byte:31 c0)= rax = 0 = ExitNormal,
-	// runFrameInlineDispatcher 检 raxResume!=0 时 fail,清 rax 兜底。
+	// segment tail emit xor eax, eax (2 bytes: 31 c0) = rax = 0 = ExitNormal,
+	// runFrameInlineDispatcher fails when raxResume!=0, this clears rax as a fallback.
 	buf = append(buf, 0x31, 0xC0)
-	// emit ret(1 byte:c3)— 段尾出 mmap 段(commit-5l 修 missing ret bug)
+	// emit ret (1 byte: c3) — exit the mmap segment at the tail (commit-5l fixes the missing ret bug)
 	buf = append(buf, 0xC3)
 	return buf
 }
 
-// EncodedFrameInlinePopVoid0ArgSkeletonLen 是 Spike 1 popCallInfo 骨架字节数
-// (13 byte:10 CIDepthDec + 2 xor eax,eax + 1 ret,承 §9.20.9 commit-5l 修)。
+// EncodedFrameInlinePopVoid0ArgSkeletonLen is the byte count of the Spike 1
+// popCallInfo skeleton (13 bytes: 10 CIDepthDec + 2 xor eax,eax + 1 ret, see
+// §9.20.9 commit-5l fix).
 const EncodedFrameInlinePopVoid0ArgSkeletonLen = EncodedFrameInlineCIDepthIncDecLen + 3
 
-// EmitFrameInlineExitHelperRequest 发射 amd64 Spike 1 trampoline exit-resume
-// 协议 exit-helper-request 段字节级 inline 模板(承
-// `docs/design/p4-method-jit/implementation-progress.md` §9.20.9 (4) trampoline
-// 改造 + (6) compileSpecSelfCall emit 改造)。
+// EmitFrameInlineExitHelperRequest emits the amd64 Spike 1 trampoline
+// exit-resume protocol exit-helper-request segment byte-level inline template
+// (see `docs/design/p4-method-jit/implementation-progress.md` §9.20.9 (4)
+// trampoline rework + (6) compileSpecSelfCall emit rework).
 //
-// **协议位置**:BuildVoid0Arg 后,PopVoid0Arg 前,出 mmap 段返 trampoline。
-// trampoline asm 检 RAX = ExitInlineHelper 路由 Go dispatcher,dispatcher
-// 经 jitCtx.exitArg0 = HelperRunCallee 路由 callee 跑帧逻辑,完成后返
-// resumeAddr = codePageAddr + resumeOff,trampoline 重 CALL 回 PopVoid0Arg。
+// **Protocol position**: after BuildVoid0Arg, before PopVoid0Arg, exit the mmap
+// segment and return to the trampoline. The trampoline asm checks
+// RAX = ExitInlineHelper and routes to the Go dispatcher, which via
+// jitCtx.exitArg0 = HelperRunCallee routes to the callee to run the frame
+// logic; on completion it returns resumeAddr = codePageAddr + resumeOff, and the
+// trampoline re-CALLs back into PopVoid0Arg.
 //
-// **字节序列**(amd64,总 27 字节):
+// **Byte sequence** (amd64, total 27 bytes):
 //
-//	; 写 jitCtx.exitReasonCode = ExitInlineHelper (3)
-//	mov rax, imm32        ; 5 字节(B8 imm32):rax = ExitInlineHelper
-//	mov [r15+exitReason], eax ; 4 字节(41 89 47 disp8):写 32-bit 字段
-//	; 写 jitCtx.exitArg0 = HelperRunCallee (1)
-//	mov rax, imm64        ; 10 字节(48 B8 imm64):rax = helperCode
-//	mov [r15+exitArg0], rax ; 4 字节(49 89 47 disp8):写 64-bit 字段
-//	; 最后 mov rax, ExitInlineHelper 设返值(trampoline 检 RAX)
-//	mov rax, imm32        ; 5 字节(B8 imm32):rax = ExitInlineHelper
-//	ret                    ; 1 字节(c3)
-//	; 总:5 + 4 + 10 + 4 + 5 + 1 = 29(但 mov rax 重复可优化为 27,见下)
+//	; write jitCtx.exitReasonCode = ExitInlineHelper (3)
+//	mov rax, imm32        ; 5 bytes (B8 imm32): rax = ExitInlineHelper
+//	mov [r15+exitReason], eax ; 4 bytes (41 89 47 disp8): write the 32-bit field
+//	; write jitCtx.exitArg0 = HelperRunCallee (1)
+//	mov rax, imm64        ; 10 bytes (48 B8 imm64): rax = helperCode
+//	mov [r15+exitArg0], rax ; 4 bytes (49 89 47 disp8): write the 64-bit field
+//	; finally mov rax, ExitInlineHelper to set the return value (trampoline checks RAX)
+//	mov rax, imm32        ; 5 bytes (B8 imm32): rax = ExitInlineHelper
+//	ret                    ; 1 byte (c3)
+//	; total: 5 + 4 + 10 + 4 + 5 + 1 = 29 (but the duplicate mov rax can be optimized to 27, see below)
 //
-// **优化**(本实装):exitReasonCode 与最终 rax 返值同 imm32 = ExitInlineHelper,
-// 改 reorder 为:
+// **Optimization** (this implementation): exitReasonCode and the final rax
+// return value are the same imm32 = ExitInlineHelper, so reorder to:
 //
-//	mov rax, helperCode  ; 10 字节(48 B8 imm64)
-//	mov [r15+exitArg0], rax ; 4 字节
-//	mov eax, ExitInlineHelper ; 5 字节(B8 imm32)
-//	mov [r15+exitReason], eax ; 4 字节
-//	; rax 现在是 ExitInlineHelper(3),作返值
-//	ret                  ; 1 字节
-//	; 总:10 + 4 + 5 + 4 + 1 = 24 字节
+//	mov rax, helperCode  ; 10 bytes (48 B8 imm64)
+//	mov [r15+exitArg0], rax ; 4 bytes
+//	mov eax, ExitInlineHelper ; 5 bytes (B8 imm32)
+//	mov [r15+exitReason], eax ; 4 bytes
+//	; rax is now ExitInlineHelper (3), used as the return value
+//	ret                  ; 1 byte
+//	; total: 10 + 4 + 5 + 4 + 1 = 24 bytes
 //
-// **入参**:
-//   - exitReasonOff:jitContext.exitReasonCode 字段偏移(uint32,4 字节)
-//   - exitArg0Off:jitContext.exitArg0 字段偏移(uint64,8 字节)
-//   - helperCode:helper request code(HelperRunCallee=1 等)
+// **Parameters**:
+//   - exitReasonOff: offset of the jitContext.exitReasonCode field (uint32, 4 bytes)
+//   - exitArg0Off: offset of the jitContext.exitArg0 field (uint64, 8 bytes)
+//   - helperCode: the helper request code (HelperRunCallee=1 etc.)
 //
-// **当前 Spike 1 阶段 archSupportsFrameInline=false 屏蔽真发出**,mmap 段
-// 实际不 emit 本模板;trampoline asm 检 RAX != 3 必跳 skipDispatch。本模板
-// 是工程基础锚点,commit-5 翻闸门时启用。
+// **In the current Spike 1 stage archSupportsFrameInline=false blocks the real
+// emission**, so the mmap segment does not actually emit this template; the
+// trampoline asm checks RAX != 3 and always jumps to skipDispatch. This template
+// is the engineering base anchor, enabled when commit-5 opens the switch.
 func EmitFrameInlineExitHelperRequest(buf []byte, exitReasonOff, exitArg0Off int32, helperCode uint64) []byte {
-	// 1. mov rax, helperCode(10 字节:48 B8 imm64)
+	// 1. mov rax, helperCode (10 bytes: 48 B8 imm64)
 	buf = append(buf, 0x48, 0xB8,
 		byte(helperCode), byte(helperCode>>8), byte(helperCode>>16), byte(helperCode>>24),
 		byte(helperCode>>32), byte(helperCode>>40), byte(helperCode>>48), byte(helperCode>>56))
-	// 2. mov [r15+exitArg0Off], rax(4 字节:49 89 47 disp8)
+	// 2. mov [r15+exitArg0Off], rax (4 bytes: 49 89 47 disp8)
 	//    49 = REX.WB / 89 = MOV r/m64 r64 / ModRM 01_000_111 = 0x47 + disp8
 	if exitArg0Off < -128 || exitArg0Off > 127 {
-		// 兜底:disp32(7 字节版),Spike 1 阶段 offset 8 位足够,这里写 disp8。
-		// future Spike 4 多帧多偏移时扩 disp32 形态。
+		// fallback: disp32 (7-byte version); in the Spike 1 stage an 8-bit offset is enough, so write disp8 here.
+		// future Spike 4 with multi-frame multi-offset will extend to the disp32 form.
 		buf = append(buf, 0x49, 0x89, 0x87, byte(exitArg0Off), byte(exitArg0Off>>8),
 			byte(exitArg0Off>>16), byte(exitArg0Off>>24))
 	} else {
 		buf = append(buf, 0x49, 0x89, 0x47, byte(int8(exitArg0Off)))
 	}
-	// 3. mov eax, ExitInlineHelper(5 字节:B8 imm32,32-bit 隐式清高位)
+	// 3. mov eax, ExitInlineHelper (5 bytes: B8 imm32, 32-bit implicitly clears the high bits)
 	buf = append(buf, 0xB8, 0x03, 0x00, 0x00, 0x00) // ExitInlineHelper=3
-	// 4. mov [r15+exitReasonOff], eax(5 字节:41 89 47 disp8,32-bit 字段)
+	// 4. mov [r15+exitReasonOff], eax (5 bytes: 41 89 47 disp8, 32-bit field)
 	//    41 = REX.B / 89 = MOV r/m32 r32 / ModRM 01_000_111 = 0x47 + disp8
 	if exitReasonOff < -128 || exitReasonOff > 127 {
 		buf = append(buf, 0x41, 0x89, 0x87, byte(exitReasonOff), byte(exitReasonOff>>8),
@@ -1341,11 +1404,11 @@ func EmitFrameInlineExitHelperRequest(buf []byte, exitReasonOff, exitArg0Off int
 	} else {
 		buf = append(buf, 0x41, 0x89, 0x47, byte(int8(exitReasonOff)))
 	}
-	// 5. ret(1 字节:c3)
+	// 5. ret (1 byte: c3)
 	buf = append(buf, 0xC3)
 	return buf
 }
 
 // EncodedFrameInlineExitHelperRequestLen = 10 + 4 + 5 + 4 + 1 = 24
-// (disp8 形态,jitContext offset ≤ 127)。disp32 兜底形态 +6 字节。
+// (disp8 form, jitContext offset ≤ 127). The disp32 fallback form is +6 bytes.
 const EncodedFrameInlineExitHelperRequestLen = 24

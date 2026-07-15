@@ -1,42 +1,52 @@
-// SizeOf — 六类头对象的字节尺寸单一事实源。
+// SizeOf — the single source of truth for the byte sizes of the six header
+// object kinds.
 //
-// gc 包的 Intern 计费 / objectBytes 统计 / freeObject 释放此前各持一份手写
-// 公式(共四处),freeObject 的尺寸错一个字 = freelist 错桶 = 复用时相邻
-// 对象内存重叠(UAF 级,生产模式无检测)。布局变更只改本文件。
+// The gc package previously held four separate hand-written formulas (Intern
+// accounting / objectBytes stats / freeObject release). A one-word size error
+// in freeObject = wrong freelist bucket = overlapping memory of adjacent
+// objects on reuse (UAF-level, with no detection in production mode). Layout
+// changes touch this file only.
 package object
 
 import "github.com/Liam0205/wangshu/internal/arena"
 
-// StringObjectBytes 返回 String 对象的总字节(头 2 字 + 内容 + NUL,8 对齐)。
+// StringObjectBytes returns the total bytes of a String object (2-word header +
+// content + NUL, 8-aligned).
 func StringObjectBytes(byteLen uint32) uint32 {
 	return stringWords(byteLen) * 8
 }
 
-// TableHeadBytes 返回 Table 头对象字节(6 字;array/node 附属块另计)。
+// TableHeadBytes returns the bytes of a Table header object (6 words; the
+// array/node sub-blocks are counted separately).
 func TableHeadBytes() uint32 { return tableHeadWords * 8 }
 
-// TableArrayBytes / TableNodeBytes 返回附属块字节。
+// TableArrayBytes / TableNodeBytes return the bytes of the sub-blocks.
 func TableArrayBytes(asize uint32) uint32 { return asize * 8 }
 func TableNodeBytes(hsize uint32) uint32  { return hsize * nodeWords * 8 }
 
-// ClosureBytes 返回 closure 对象字节(头 2 字 + nupvals 槽)。
+// ClosureBytes returns the bytes of a closure object (2-word header + nupvals
+// slots).
 func ClosureBytes(nupvals uint16) uint32 { return (2 + uint32(nupvals)) * 8 }
 
-// UserdataBytes 返回 userdata 对象字节(头 4 字 + payload,8 对齐)。
+// UserdataBytes returns the bytes of a userdata object (4-word header + payload,
+// 8-aligned).
 func UserdataBytes(payloadLen uint32) uint32 {
 	return userdataWords(payloadLen) * 8
 }
 
-// ThreadHeadBytes / ThreadStackBytes / ThreadCIBytes 返回 Thread 头与附属块字节。
+// ThreadHeadBytes / ThreadStackBytes / ThreadCIBytes return the bytes of the
+// Thread header and its sub-blocks.
 func ThreadHeadBytes() uint32                 { return threadHeadWords * 8 }
 func ThreadStackBytes(stackCap uint32) uint32 { return stackCap * 8 }
 func ThreadCIBytes(ciCap uint32) uint32       { return ciCap * 4 * 8 }
 
-// UpvalueBytes 返回 Upvalue 对象字节(3 字)。
+// UpvalueBytes returns the bytes of an Upvalue object (3 words).
 func UpvalueBytes() uint32 { return 3 * 8 }
 
-// SizeOf 返回头对象自身的字节数(不含 Table/Thread 的附属块——它们由
-// 调用方按需另查,因为统计口径(pacing 估算)与释放口径(逐块归还)不同)。
+// SizeOf returns the byte count of the header object itself (excluding the
+// sub-blocks of Table/Thread—those are queried separately by the caller as
+// needed, because the accounting view (pacing estimate) and the release view
+// (block-by-block return) differ).
 func SizeOf(a *arena.Arena, ref arena.GCRef, ot OBJType) uint32 {
 	switch ot {
 	case OBJ_STRING:

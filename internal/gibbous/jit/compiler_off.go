@@ -1,10 +1,12 @@
 //go:build !wangshu_p4
 
-// 默认 / wangshu_p3 / wangshu_profile build:P4 编译器空 stub(P4 完全 dead-code,
-// 不引入 unsafe / syscall / asm 等 P4 专用依赖)。
+// Default / wangshu_p3 / wangshu_profile build: an empty stub for the P4
+// compiler (P4 is entirely dead-code here, pulling in none of the P4-specific
+// dependencies such as unsafe / syscall / asm).
 //
-// `internal/crescent/arena_default.go` wireP4 据此 no-op,bridge.p3 由 P3
-// (若 wangshu_p3 build)注入或保持 nil(P1-only build)——与 P4 不互相干扰。
+// `internal/crescent/arena_default.go` wireP4 is a no-op accordingly; bridge.p3
+// is either injected by P3 (in a wangshu_p3 build) or left nil (P1-only build)
+// — neither interferes with P4.
 package jit
 
 import (
@@ -14,31 +16,37 @@ import (
 	"github.com/Liam0205/wangshu/internal/bytecode"
 )
 
-// Compiler 默认 build 空 stub(不实装 bridge.P3Compiler)。
+// Compiler is an empty stub in the default build (does not implement
+// bridge.P3Compiler).
 //
-// 接口实装由 wangshu_p4 build 提供(`compiler.go` 同名 struct);默认 build
-// 下本 type 仅为命名占位,**不能注入 bridge.SetP3Compiler**——wireP4 默认
-// build no-op,bridge.p3 由 P3 接管或保持 nil。
+// The interface implementation is provided by the wangshu_p4 build (the
+// same-named struct in `compiler.go`); in the default build this type is only a
+// named placeholder and **must not call bridge.SetP3Compiler** — wireP4 is a
+// no-op in the default build, and bridge.p3 is taken over by P3 or left nil.
 type Compiler struct{}
 
-// New 默认 build 占位——返回 nil(wireP4 据此跳过注入)。
+// New is a placeholder in the default build — returns nil (wireP4 skips
+// injection accordingly).
 func New() *Compiler { return nil }
 
-// SupportsAllOpcodes 默认 build 不应被调到(wireP4 不注入 bridge);
-// 防御性返 false——若误调返 false 与「P4 未启用」语义一致。
+// SupportsAllOpcodes should never be reached in the default build (wireP4 does
+// not inject bridge); defensively returns false — a spurious call returning
+// false matches the "P4 not enabled" semantics.
 func (c *Compiler) SupportsAllOpcodes(proto *bytecode.Proto) bool {
 	_ = proto
 	return false
 }
 
-// ErrCompileOff 默认 build 占位错误——P4 未启用。
+// ErrCompileOff is a placeholder error in the default build — P4 not enabled.
 var ErrCompileOff = errors.New("internal/gibbous/jit: P4 not enabled (build without wangshu_p4)")
 
-// Compile 默认 build 不应被调到(wireP4 not active);防御性返错让调用方
-// fallback 到 TierStuck(承 P3Compiler 接口契约 error != nil ⇒ TierStuck)。
+// Compile should never be reached in the default build (wireP4 not active);
+// defensively returns an error so the caller falls back to TierStuck (honoring
+// the P3Compiler interface contract: error != nil ⇒ TierStuck).
 //
-// 与 wangshu_p4 build 下的 ErrCompileUnsupportedShape 对位返错——确保
-// 「不应被调到却被调到」时违约场景显式可见。
+// This mirrors ErrCompileUnsupportedShape returned under the wangshu_p4 build —
+// ensuring the "should never be reached yet was reached" contract-violation
+// case is explicitly visible.
 func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback) (bridge.GibbousCode, error) {
 	_ = proto
 	_ = feedback

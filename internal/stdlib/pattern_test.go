@@ -1,4 +1,4 @@
-// Pattern matcher unit tests(lstrlib 引擎细节路径)。
+// Pattern matcher unit tests (lstrlib engine detail paths).
 package stdlib
 
 import (
@@ -30,7 +30,7 @@ func TestPattern_Classes(t *testing.T) {
 		{"abc123", "%a+", true, "abc"},
 		{"abc123", "%d+", true, "123"},
 		{"  x", "%s+", true, "  "},
-		{"a_1", "%w+", true, "a_"}, // %w = alnum;_ 不是 → "a" 实际
+		{"a_1", "%w+", true, "a_"}, // %w = alnum; _ is not, so "a" in practice
 		{"ff00", "%x+", true, "ff00"},
 		{"Hello", "%u%l+", true, "Hello"},
 		{"a,b", "%p", true, ","},
@@ -41,7 +41,7 @@ func TestPattern_Classes(t *testing.T) {
 			t.Errorf("%q ~ %q: found=%v want %v", c.src, c.pat, found, c.found)
 			continue
 		}
-		if found && c.pat != "%w+" { // %w 的特例见下
+		if found && c.pat != "%w+" { // %w special case handled below
 			if got := c.src[s:e]; got != c.match {
 				t.Errorf("%q ~ %q: match=%q want %q", c.src, c.pat, got, c.match)
 			}
@@ -65,7 +65,7 @@ func TestPattern_Sets(t *testing.T) {
 	if !found || "hello42"[s:e] != "hello" {
 		t.Errorf("[^0-9]+ got %q", "hello42"[s:e])
 	}
-	// 集合内类
+	// Classes inside a set
 	s, e, _, found = findOnce(t, "a1 b2", "[%a%d]+", 0)
 	if !found || "a1 b2"[s:e] != "a1" {
 		t.Errorf("[%%a%%d]+ got %q", "a1 b2"[s:e])
@@ -73,22 +73,22 @@ func TestPattern_Sets(t *testing.T) {
 }
 
 func TestPattern_Quantifiers(t *testing.T) {
-	// 贪婪 *
+	// Greedy *
 	s, e, _, found := findOnce(t, "<<aa>>", "<.*>", 0)
 	if !found || "<<aa>>"[s:e] != "<<aa>>" {
 		t.Errorf("greedy got %q", "<<aa>>"[s:e])
 	}
-	// 懒惰 -
+	// Lazy -
 	s, e, _, found = findOnce(t, "<<aa>>", "<.->", 0)
 	if !found || "<<aa>>"[s:e] != "<<aa>" || s != 0 {
 		t.Errorf("lazy got %q", "<<aa>>"[s:e])
 	}
-	// ? 可选
+	// ? optional
 	s, e, _, found = findOnce(t, "color", "colou?r", 0)
 	if !found || "color"[s:e] != "color" {
 		t.Errorf("optional got %q", "color"[s:e])
 	}
-	// + 至少一
+	// + at least one
 	_, _, _, found = findOnce(t, "xyz", "%d+", 0)
 	if found {
 		t.Errorf("%%d+ on xyz should not match")
@@ -168,7 +168,7 @@ func TestPattern_MalformedErrors(t *testing.T) {
 	for _, pat := range []string{"%", "[abc", "(open", "%b"} {
 		_, _, _, _, err := patternFind([]byte("test"), []byte(pat), 0)
 		if err == nil {
-			// '(' 未闭合在部分实现容忍;只要不 panic 即可
+			// An unclosed '(' is tolerated by some implementations; not panicking is enough
 			if pat == "(open" {
 				continue
 			}
@@ -178,12 +178,12 @@ func TestPattern_MalformedErrors(t *testing.T) {
 }
 
 func TestPattern_EmptyMatches(t *testing.T) {
-	// 空模式匹配空串(任何位置)
+	// An empty pattern matches the empty string (at any position)
 	s, e, _, found := findOnce(t, "ab", "", 0)
 	if !found || s != 0 || e != 0 {
 		t.Errorf("empty pattern: s=%d e=%d found=%v", s, e, found)
 	}
-	// x* 在不含 x 处匹配空
+	// x* matches empty where there is no x
 	s, e, _, found = findOnce(t, "yyy", "x*", 0)
 	if !found || s != 0 || e != 0 {
 		t.Errorf("x* empty: s=%d e=%d", s, e)
@@ -203,8 +203,8 @@ func TestClassMatch_Table(t *testing.T) {
 		{'!', 'p', true}, {'a', 'p', false},
 		{0x01, 'c', true}, {'a', 'c', false},
 		{'f', 'x', true}, {'g', 'x', false},
-		{'5', 'D', false}, {'x', 'D', true}, // 大写取反
-		{'q', 'q', true}, {'q', 'z', false}, // 字面量回退
+		{'5', 'D', false}, {'x', 'D', true}, // uppercase negation
+		{'q', 'q', true}, {'q', 'z', false}, // literal fallback
 	}
 	for _, c := range cases {
 		if got := classMatch(c.c, c.cl); got != c.want {

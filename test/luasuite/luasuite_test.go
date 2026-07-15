@@ -1,14 +1,18 @@
-// Package luasuite 跑官方 Lua 5.1.5 测试套(lua.org/tests)的可运行子集。
+// Package luasuite runs the runnable subset of the official Lua 5.1.5 test
+// suite (lua.org/tests).
 //
-// 官方测试套是语言作者写的语义断言,权威性高于自写 probe。testdata/ 内
-// 13 个文件原样拷自 lua-5.1-tests(README:"main goal is to try to crash
-// Lua"),不做任何修改;无法整文件通过的,在 stopAt 表登记**豁免线**
-// (该行起依赖豁免特性:setfenv/getfenv、debug.*、io.tmpfile、
-// os.setlocale、string.dump、require——均在 corners_test.go 豁免注册表),
-// 截断到豁免线前执行,前缀部分必须全过。
+// The official suite consists of semantic assertions written by the language
+// authors; it is more authoritative than hand-written probes. The 13 files in
+// testdata/ are copied verbatim from lua-5.1-tests (README: "main goal is to
+// try to crash Lua") with no modifications. Files that cannot pass in full
+// register an **exemption line** in the stopAt table (from that line on they
+// depend on exempted features: setfenv/getfenv, debug.*, io.tmpfile,
+// os.setlocale, string.dump, require -- all recorded in the exemption registry
+// in corners_test.go); execution is truncated before the exemption line, and
+// the prefix must pass entirely.
 //
-// 未列 stopAt 的文件必须整文件通过。豁免线只许前移(实现更多特性后),
-// 不许后退。
+// Files not listed in stopAt must pass in full. Exemption lines may only move
+// forward (as more features are implemented), never backward.
 package luasuite
 
 import (
@@ -21,37 +25,38 @@ import (
 	"github.com/Liam0205/wangshu"
 )
 
-// stopAt:文件 → 豁免线(1-based 行号,执行 [1, stopAt) 行)。
-// 0 = 整文件运行。理由必须指向豁免注册表中的条目。
+// stopAt: file -> exemption line (1-based line number, executes lines [1, stopAt)).
+// 0 = run the whole file. The reason must point to an entry in the exemption registry.
 var stopAt = map[string]int{
-	// 整文件通过
+	// Passes in full
 	"vararg.lua": 0,
 	"sort.lua":   0,
 	"pm.lua":     0,
 
-	// getmetatable(io.stdin):io 对象模型未实现(io 豁免面)
+	// getmetatable(io.stdin): io object model not implemented (io exemption)
 	"errors.lua": 110,
-	// debug.getinfo / string.dump / require(豁免:debug 高级面 / string.dump / require)
+	// debug.getinfo / string.dump / require (exempt: debug advanced surface / string.dump / require)
 	"calls.lua": 165,
-	// setfenv(events.lua:5 起全文件依赖;豁免:getfenv/setfenv)
+	// setfenv (events.lua:5 onward depends on it for the whole file; exempt: getfenv/setfenv)
 	"events.lua": 4,
-	// debug 库(constructs.lua:189)
+	// debug library (constructs.lua:189)
 	"constructs.lua": 187,
-	// 行尾测试段内嵌 prog 依赖 debug.getinfo(literals.lua:112;豁免:debug)
+	// end-of-line test section embeds a prog depending on debug.getinfo (literals.lua:112; exempt: debug)
 	"literals.lua": 98,
-	// getfenv/setfenv(locals.lua:58 起的 globals 测试段;豁免:getfenv/setfenv)
+	// getfenv/setfenv (globals test section from locals.lua:58; exempt: getfenv/setfenv)
 	"locals.lua": 54,
-	// io.tmpfile(math.lua:124)
+	// io.tmpfile (math.lua:124)
 	"math.lua": 122,
-	// setfenv(nextvar.lua:238 起;豁免:getfenv/setfenv)
+	// setfenv (nextvar.lua:238 onward; exempt: getfenv/setfenv)
 	"nextvar.lua": 233,
-	// os.setlocale(strings.lua:150)
+	// os.setlocale (strings.lua:150)
 	"strings.lua": 147,
-	// setfenv(closure.lua:165)
+	// setfenv (closure.lua:165)
 	"closure.lua": 163,
-	// 增量 step 真实步进语义(gc.lua:111 dosteps 断言多步完成;STW full GC
-	// 的 step 恒一步,10 §13 豁免:collectgarbage step/setstepmul)。
-	// 前 110 行(表/字符串/函数 churn、gcinfo 回落循环)必须全过。
+	// Real incremental step-stepping semantics (gc.lua:111 dosteps asserts
+	// completion over multiple steps; a STW full GC's step always completes in
+	// one step, 10 §13 exempt: collectgarbage step/setstepmul). The first 110
+	// lines (table/string/function churn, gcinfo settle loop) must pass entirely.
 	"gc.lua": 111,
 }
 

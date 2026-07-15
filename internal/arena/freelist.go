@@ -1,14 +1,18 @@
-// Freelist — size-class 定长桶 + LARGE 首次适配(06 §2)。
+// Freelist — size-class fixed-length buckets + LARGE first-fit (06 §2).
 //
-// 分配两级:freelist 命中(O(1) 弹出复用)→ bump 线性切分。
-// 回收(gc sweep / rehash 换段)经 Free 归还:
-//   - ≤64 字:按 size-class 入定长桶(分配时已向上取整到桶代表字数,桶内尺寸统一);
-//   - >64 字:入 LARGE 侵入式链(word0=next, word1=块字数),首次适配,
-//     仅在「精确命中」或「剩余 >64 字可独立成块」时取用(避免桶外碎片浪费)。
+// Allocation has two levels: freelist hit (O(1) pop reuse) → bump linear split.
+// Reclamation (gc sweep / rehash segment swap) returns via Free:
+//   - ≤64 words: enter the fixed-length bucket by size-class (allocation already
+//     rounds up to the bucket's representative word count, so sizes within a
+//     bucket are uniform);
+//   - >64 words: enter the LARGE intrusive chain (word0=next, word1=block words),
+//     first-fit, only taken on an "exact hit" or when "the remainder >64 words
+//     can form an independent block" (to avoid out-of-bucket fragmentation waste).
 //
-// 不做 coalescing、不做跨 class 切分(06 §2.2 P1 简化)。
-// 复用内存是脏的:构造函数必须显式初始化全部字段,不得依赖 fresh-zero
-// (AllocString 的 NUL 填充已改显式清零)。
+// No coalescing, no cross-class splitting (06 §2.2 P1 simplification).
+// Reused memory is dirty: the constructor must explicitly initialize all fields
+// and must not rely on fresh-zero (AllocString's NUL fill was changed to explicit
+// zeroing).
 package arena
 
 import (
@@ -16,23 +20,27 @@ import (
 	"runtime"
 )
 
-// size-class 划分(06 §2.2):20 small 桶 + LARGE 多桶(power-of-2 字数)。
+// size-class partition (06 §2.2): 20 small buckets + LARGE multi-bucket
+// (power-of-2 word counts).
 const (
 	numSizeClasses      = 20
 	largeThresholdWords = 64
-	// LARGE multi-bucket(issue #10 root fix):桶 i 对应 words ∈ ((1<<(6+i)),
-	// (1<<(7+i))],覆盖 65..maxAlloc。numLargeClasses=24 → 桶 23 = (1<<29)..(1<<30) 字
-	// = 4..8 GB,远超 MaxBytes=2 GiB(无溢出风险)。
+	// LARGE multi-bucket (issue #10 root fix): bucket i corresponds to words ∈
+	// ((1<<(6+i)), (1<<(7+i))], covering 65..maxAlloc. numLargeClasses=24 →
+	// bucket 23 = (1<<29)..(1<<30) words = 4..8 GB, far above MaxBytes=2 GiB (no
+	// overflow risk).
 	numLargeClasses = 24
 )
 
-// largeSizeClass 把 words > 64 映射到 power-of-2 桶号(0..23)。
-// 桶 0 = 65..128 字,桶 1 = 129..256,桶 2 = 257..512,...
-// 越界 clamp 到最后一桶(超 maxCap 已由 AllocBytes 拒绝)。
+// largeSizeClass maps words > 64 to a power-of-2 bucket number (0..23).
+// bucket 0 = 65..128 words, bucket 1 = 129..256, bucket 2 = 257..512, ...
+// out-of-range values clamp to the last bucket (over maxCap is already rejected
+// by AllocBytes).
 //
-// 实现:桶 = ceil(log2(words)) - 7 = bits.Len32(words-1) - 7。
-// (bits.Len32(x-1) == ceil(log2(x)) 对 x>=2 成立——含 x=2^n 时取该幂次)
-// 调用契约 words > 64 ⟹ words-1 ≥ 64 ⟹ Len32 ≥ 7 ⟹ c ≥ 0,无需下界守卫。
+// Implementation: bucket = ceil(log2(words)) - 7 = bits.Len32(words-1) - 7.
+// (bits.Len32(x-1) == ceil(log2(x)) holds for x>=2 — for x=2^n it takes that power)
+// The call contract words > 64 ⟹ words-1 ≥ 64 ⟹ Len32 ≥ 7 ⟹ c ≥ 0, so no lower
+// bound guard is needed.
 func largeSizeClass(words uint32) int {
 	c := int(bits.Len32(words-1)) - 7
 	if c >= numLargeClasses {
@@ -41,7 +49,7 @@ func largeSizeClass(words uint32) int {
 	return c
 }
 
-// sizeClass 把字数(1..64)映射到桶号。
+// sizeClass maps a word count (1..64) to a bucket number.
 func sizeClass(words uint32) int {
 	switch {
 	case words <= 8:
@@ -55,7 +63,8 @@ func sizeClass(words uint32) int {
 	}
 }
 
-// classWords 返回桶代表字数(桶内块统一按此尺寸分配)。
+// classWords returns the bucket's representative word count (blocks in a bucket
+// are all allocated at this size).
 func classWords(c int) uint32 {
 	switch {
 	case c < 8:
@@ -69,11 +78,12 @@ func classWords(c int) uint32 {
 	}
 }
 
-// debugFreelist 打开 Free/Alloc 配对断言与 use-after-free 检测(双重释放 /
-// 释放区间重叠 / 读写已释放字)。常关;排障时改 true 重编译。
+// debugFreelist turns on Free/Alloc pairing assertions and use-after-free
+// detection (double free / overlapping free interval / read-write of freed
+// words). Normally off; set to true and recompile when debugging.
 const debugFreelist = false
 
-// FreeSiteOf 返回 debug 模式下记录的释放点(排障用)。
+// FreeSiteOf returns the recorded free site in debug mode (for debugging).
 func (a *Arena) FreeSiteOf(ref GCRef) string {
 	if a.freeSite == nil {
 		return "?"
@@ -81,10 +91,12 @@ func (a *Arena) FreeSiteOf(ref GCRef) string {
 	return a.freeSite[ref]
 }
 
-// Free 把一个此前经 AllocBytes 分配的块归还 freelist。
+// Free returns a block previously allocated by AllocBytes to the freelist.
 //
-// nbytes 必须等于当时的请求字节数(Free 内部按相同规则取整到实际块尺寸)。
-// 调用方(gc sweep / rehash)保证不双重归还、归还后不再经旧 GCRef 访问。
+// nbytes must equal the request byte count at allocation time (Free internally
+// rounds up to the actual block size by the same rules). The caller (gc sweep /
+// rehash) guarantees no double return and no access via the old GCRef after
+// returning.
 func (a *Arena) Free(ref GCRef, nbytes uint32) {
 	if ref.IsNull() {
 		return
@@ -140,7 +152,7 @@ func itoa(v uint64) string {
 	return string(buf[i:])
 }
 
-// callerSite 返回 Free 的调用栈摘要(debug 用)。
+// callerSite returns a summary of Free's call stack (for debug).
 func callerSite() string {
 	var pcs [8]uintptr
 	n := runtime.Callers(3, pcs[:])
@@ -156,8 +168,9 @@ func callerSite() string {
 	return out
 }
 
-// pushLarge 把一个 >64 字块挂入对应 LARGE 桶头(word0=next, word1=words)。
-// 按 largeSizeClass(words) 分桶,典型 power-of-2 字 alloc 单桶命中 O(1)。
+// pushLarge hooks a >64-word block onto the head of its LARGE bucket
+// (word0=next, word1=words). Bucketed by largeSizeClass(words); a typical
+// power-of-2-word alloc hits a single bucket O(1).
 func (a *Arena) pushLarge(ref GCRef, words uint32) {
 	c := largeSizeClass(words)
 	a.words[ref>>3] = uint64(a.largeFreeHeads[c])
@@ -166,7 +179,8 @@ func (a *Arena) pushLarge(ref GCRef, words uint32) {
 	a.freeBytes += uint64(words) * 8
 }
 
-// popSizeClass 尝试从定长桶弹出一块(块尺寸 = classWords(c))。
+// popSizeClass tries to pop a block from a fixed-length bucket (block size =
+// classWords(c)).
 func (a *Arena) popSizeClass(c int) GCRef {
 	ref := a.freeHeads[c]
 	if ref.IsNull() {
@@ -182,15 +196,18 @@ func (a *Arena) popSizeClass(c int) GCRef {
 	return ref
 }
 
-// popLarge 多桶首次适配(issue #10 root fix)。流程:
+// popLarge does multi-bucket first-fit (issue #10 root fix). Flow:
 //
-//	① 计算需求桶 c0 = largeSizeClass(needWords)
-//	② 桶 c0 内 first-fit 扫描(bw ≥ needWords 即用)
-//	③ 不命中 → 升桶 c0+1, c0+2, ...
-//	④ 命中后切剩余:> 64 字进对应桶,≤ 64 字向下取整入 small 桶,尾巴 ≤7 字丢弃
+//	① compute the needed bucket c0 = largeSizeClass(needWords)
+//	② first-fit scan within bucket c0 (use if bw ≥ needWords)
+//	③ miss → climb buckets c0+1, c0+2, ...
+//	④ on hit, split the remainder: >64 words go to the matching bucket, ≤64 words
+//	   round down into a small bucket, and a tail ≤7 words is discarded
 //
-// 与旧单链 first-fit 相比:扫描范围限于桶内短链,典型 power-of-2 alloc 桶 c0
-// 头部精确命中 O(1)。N=1000 rehash 反复 doublings 不再爆 LARGE 链长。
+// Compared with the old single-chain first-fit: the scan range is limited to a
+// short chain within a bucket; a typical power-of-2 alloc hits bucket c0's head
+// exactly O(1). N=1000 rehash repeated doublings no longer blow up the LARGE
+// chain length.
 func (a *Arena) popLarge(needWords uint32) GCRef {
 	c0 := largeSizeClass(needWords)
 	for cc := c0; cc < numLargeClasses; cc++ {
@@ -235,8 +252,9 @@ func (a *Arena) popLarge(needWords uint32) GCRef {
 	return 0
 }
 
-// floorClass 返回桶代表字数 ≤ words 的最大 size-class(无则 -1)。
-// 入参 >64 字 clamp 到 64(sizeClass 的入参契约是 1..64,越界下标 panic)。
+// floorClass returns the largest size-class whose representative word count ≤
+// words (-1 if none). An argument >64 words clamps to 64 (sizeClass's argument
+// contract is 1..64; an out-of-range index panics).
 func floorClass(words uint32) int {
 	if words == 0 {
 		return -1
@@ -251,5 +269,6 @@ func floorClass(words uint32) int {
 	return c
 }
 
-// FreeBytes 返回当前 freelist 上的总空闲字节(测试/观测用)。
+// FreeBytes returns the total free bytes currently on the freelist (for
+// test/observation).
 func (a *Arena) FreeBytes() uint64 { return a.freeBytes }

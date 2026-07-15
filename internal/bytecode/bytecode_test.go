@@ -35,7 +35,7 @@ func TestEncodeAsBx(t *testing.T) {
 }
 
 func TestFieldBoundaryEncoding(t *testing.T) {
-	// 全字段最大值,不应跨字段污染。
+	// All fields at maximum, must not bleed across fields.
 	i := EncodeABC(VARARG, MaxA, MaxBC, MaxBC)
 	if A(i) != MaxA || B(i) != MaxBC || C(i) != MaxBC || Op(i) != VARARG {
 		t.Errorf("max ABC fields: op=%s A=%d B=%d C=%d", Op(i), A(i), B(i), C(i))
@@ -68,21 +68,21 @@ func TestOpcodeNames(t *testing.T) {
 			t.Errorf("opcode %d has no name", op)
 		}
 	}
-	// 38..63 预留:String() 应返回 "INVALID"(也允许实现期改为 "RESERVED" 之类)。
+	// 38..63 reserved: String() should return "INVALID" (also allowed to become "RESERVED" or similar during implementation).
 	if OpCode(38).String() != "INVALID" {
 		t.Logf("opcode 38 name = %q", OpCode(38).String())
 	}
 }
 
-// Float-byte 编码:对照 Lua 5.1 lobject.c 的具体取值(几个手工锚点)。
+// Float-byte encoding: checked against specific values from Lua 5.1 lobject.c (a few manual anchors).
 func TestInt2Fb(t *testing.T) {
 	cases := []struct {
 		in  uint32
 		out uint32
 	}{
-		{0, 0}, {1, 1}, {7, 7}, // <8 直透
-		{8, 8}, {9, 9}, {15, 15}, // exp=1,mantissa 0..7 → fb 8..15
-		{16, 16}, {17, 17}, // exp=2,mantissa 0
+		{0, 0}, {1, 1}, {7, 7}, // <8 pass-through
+		{8, 8}, {9, 9}, {15, 15}, // exp=1, mantissa 0..7 → fb 8..15
+		{16, 16}, {17, 17}, // exp=2, mantissa 0
 		{32, 24}, {64, 32},
 	}
 	for _, c := range cases {
@@ -93,15 +93,15 @@ func TestInt2Fb(t *testing.T) {
 }
 
 func TestFb2Int(t *testing.T) {
-	// fb2int 是 int2fb 的"近似还原"——大值会向上取整;但小于 8 的值是精确恢复。
+	// fb2int is the "approximate reconstruction" of int2fb — large values round up; but values below 8 recover exactly.
 	for x := uint32(0); x < 8; x++ {
 		if Fb2Int(Int2Fb(x)) != x {
 			t.Errorf("small round trip lost: %d", x)
 		}
 	}
-	// 对手工值核对:Fb2Int(8) = (8 | 0) << 0 = 8 — 但偏移要对。
+	// Cross-check against manual values: Fb2Int(8) = (8 | 0) << 0 = 8 — but the shift must be right.
 	// fb2int(fb): (8 | (fb & 7)) << ((fb >> 3) - 1)
-	// 注意 fb=8: (8|0) << 0 = 8 ✓
+	// note fb=8: (8|0) << 0 = 8 ✓
 	if Fb2Int(8) != 8 {
 		t.Errorf("Fb2Int(8) = %d, want 8", Fb2Int(8))
 	}
@@ -113,13 +113,15 @@ func TestFb2Int(t *testing.T) {
 	}
 }
 
-// TestProtoExample8: 02 §8 的 f(n) 求和示例,核对字节码序列与寄存器分配同构(P1 软承诺)。
+// TestProtoExample8: the f(n) summation example of 02 §8, checking the bytecode
+// sequence and register allocation are isomorphic (P1 soft promise).
 //
-// 这是 04 §10 黄金字节码测试的种子:M8 codegen 完成后从源码自动产出本序列;现在先用手工
-// 构造的 Proto 验证 02 §8 的字节码可被本包正确编解码。
+// This is the seed of the 04 §10 golden-bytecode test: after M8 codegen is done
+// this sequence will be produced automatically from source; for now a hand-built
+// Proto verifies the 02 §8 bytecode can be correctly encoded/decoded by this package.
 func TestProtoExample8_FByteCodeSequence(t *testing.T) {
-	// 与 02 §8 / 04 §10.3 字节码逐字节一致。
-	// R0=n 形参; R1=s; R2..R5=for 四槽(idx/limit/step/v); R6=临时
+	// Byte-for-byte consistent with 02 §8 / 04 §10.3 bytecode.
+	// R0=n param; R1=s; R2..R5=for four slots (idx/limit/step/v); R6=temp
 	code := []Instruction{
 		EncodeABx(LOADK, 1, 0),     // LOADK R1 K0(0)        ; s = 0
 		EncodeABx(LOADK, 2, 1),     // LOADK R2 K1(1)        ; init=1
@@ -128,11 +130,11 @@ func TestProtoExample8_FByteCodeSequence(t *testing.T) {
 		EncodeAsBx(FORPREP, 2, 2),  // FORPREP R2 -> L1
 		EncodeABC(MUL, 6, 5, 5),    // MUL   R6 R5 R5        ; tmp = i*i
 		EncodeABC(ADD, 1, 1, 6),    // ADD   R1 R1 R6        ; s = s + tmp
-		EncodeAsBx(FORLOOP, 2, -3), // FORLOOP R2 -> L0       (热点回边)
+		EncodeAsBx(FORLOOP, 2, -3), // FORLOOP R2 -> L0       (hot back-edge)
 		EncodeABC(RETURN, 1, 2, 0), // RETURN R1 2          ; return s
-		EncodeABC(RETURN, 0, 1, 0), // RETURN R0 1          ; 隐式 return
+		EncodeABC(RETURN, 0, 1, 0), // RETURN R0 1          ; implicit return
 	}
-	// 检查字段还原。
+	// Check field reconstruction.
 	if Op(code[0]) != LOADK || A(code[0]) != 1 || Bx(code[0]) != 0 {
 		t.Errorf("LOADK R1 K0 corrupted")
 	}
@@ -147,9 +149,11 @@ func TestProtoExample8_FByteCodeSequence(t *testing.T) {
 	}
 }
 
-// TestFb2Int_Full9BitDomain 对照官方 luaO_fb2int 在全部 9-bit 输入上等价。
-// 历史 bug:缺 &31 掩码时 [256,511] 区间分歧——fb=256 官方 256/旧实现 0,
-// fb=257 官方 257/旧实现移位 31 溢出。luac 同构软承诺下外部字节码可达此区间。
+// TestFb2Int_Full9BitDomain checks equivalence with the official luaO_fb2int over
+// all 9-bit inputs. Historical bug: without the &31 mask the [256,511] range
+// diverges — fb=256 official 256/old impl 0, fb=257 official 257/old impl shifts
+// by 31 and overflows. Under the luac isomorphism soft promise, external bytecode
+// can reach this range.
 func TestFb2Int_Full9BitDomain(t *testing.T) {
 	official := func(x uint32) uint32 {
 		e := (x >> 3) & 31
@@ -163,7 +167,7 @@ func TestFb2Int_Full9BitDomain(t *testing.T) {
 			t.Fatalf("Fb2Int(%d) = %d, want %d (luaO_fb2int)", fb, got, want)
 		}
 	}
-	// 关键分歧点显式钉住
+	// Pin the key divergence points explicitly
 	if Fb2Int(256) != 256 {
 		t.Errorf("Fb2Int(256) = %d, want 256", Fb2Int(256))
 	}

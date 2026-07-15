@@ -4,16 +4,18 @@ package amd64
 
 import "testing"
 
-// TestPJ3_EmitMovImm64ToReg 各寄存器 mov 编码 + mmap 执行(prove-the-path
-// 命中证据,承 06 §3.7 直线族扩展)。
+// TestPJ3_EmitMovImm64ToReg tests per-register mov encoding + mmap execution
+// (prove-the-path hit evidence, extends the straight-line family of 06 §3.7).
 //
-// 经 EmitMovImm64ToReg(reg=N) → mmap 段 → 段 ret → callJIT 拿 RAX 验证:
-// 当 reg=RAX 时,RAX = imm;当 reg ≠ RAX 时,RAX = 段 RET 时的当前 RAX 值
-// (= mov 之前的 RAX 值,本测试不依赖该值——仅测 mov 字节编码无 SEGV/SIGILL)。
+// Via EmitMovImm64ToReg(reg=N) → mmap segment → segment ret → callJIT reads RAX to verify:
+// when reg=RAX, RAX = imm; when reg ≠ RAX, RAX = the current RAX value at segment RET
+// (= the RAX value before the mov; this test does not depend on that value — it only
+// tests that the mov byte encoding produces no SEGV/SIGILL).
 //
-// **PJ3 简化形态边界**:本测试主验「mov regN, imm64 字节编码工作」,完整
-// MOVE 模板(R(A) := R(B))还需 jitContext.valueStackBase + load/store 序列
-// 留 PJ4+ 启用切栈时同批落地。
+// **PJ3 simplified-form boundary**: this test mainly verifies "mov regN, imm64 byte
+// encoding works"; the full MOVE template (R(A) := R(B)) also needs
+// jitContext.valueStackBase + a load/store sequence, which lands together when stack
+// switching is enabled in PJ4+.
 func TestPJ3_EmitMovImm64ToReg(t *testing.T) {
 	cases := []struct {
 		regNum uint8
@@ -28,9 +30,10 @@ func TestPJ3_EmitMovImm64ToReg(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run("", func(t *testing.T) {
-			// emit:mov regN, imm; mov rax, sentinel; ret
-			// (我们让 RAX 最后被加载为 sentinel 验证 trampoline 拿 RAX 工作;
-			// regN 的写入只验证字节编码无崩——若编码错段会 SIGILL/SEGV)
+			// emit: mov regN, imm; mov rax, sentinel; ret
+			// (we load RAX last with the sentinel to verify the trampoline reads RAX correctly;
+			// the write to regN only verifies the byte encoding does not crash — a bad encoding
+			// would SIGILL/SEGV)
 			sentinel := uint64(0xfeedfacecafebabe)
 			var buf []byte
 			buf = EmitMovImm64ToReg(buf, tc.regNum, tc.imm)
@@ -51,10 +54,10 @@ func TestPJ3_EmitMovImm64ToReg(t *testing.T) {
 	}
 }
 
-// TestPJ3_EmitNop nop 字节编码 + mmap 执行不崩(承 06 §3.7 padding 用例)。
+// TestPJ3_EmitNop tests nop byte encoding + mmap execution without crashing (extends the 06 §3.7 padding case).
 func TestPJ3_EmitNop(t *testing.T) {
 	imm := uint64(0xdeadbeef)
-	// emit:nop; nop; mov rax, imm; ret
+	// emit: nop; nop; mov rax, imm; ret
 	var buf []byte
 	for i := 0; i < 16; i++ {
 		buf = EmitNop(buf)
@@ -74,7 +77,7 @@ func TestPJ3_EmitNop(t *testing.T) {
 	}
 }
 
-// TestPJ3_EncodedLengths 编码长度常量与 emit 函数实际写入字节数一致(防漂移)。
+// TestPJ3_EncodedLengths verifies the encoded-length constants match the actual byte count written by the emit functions (guards against drift).
 func TestPJ3_EncodedLengths(t *testing.T) {
 	cases := []struct {
 		name     string

@@ -1,11 +1,11 @@
 //go:build lua_gopher
 
-// pineapple_gopher_test.go:pineapple 用 gopher-lua backend 时的 benchmark
-// (对照 baseline,wangshu 完全不参与)。
+// pineapple_gopher_test.go: benchmark for pineapple using the gopher-lua backend
+// (baseline reference; wangshu is not involved at all).
 //
-// 跑法:`go test -tags=lua_gopher -bench=. ./benchmarks/pineapple/`。
-// pineapple `transform_by_lua` 经 `lua_gopher` build tag 切到 gopher-lua,
-// wangshu 此时只是被 import 但不被路径触达。
+// How to run: `go test -tags=lua_gopher -bench=. ./benchmarks/pineapple/`.
+// pineapple's `transform_by_lua` switches to gopher-lua via the `lua_gopher` build
+// tag; wangshu is only imported here, never reached along the code path.
 package pineapple_bench
 
 import "testing"

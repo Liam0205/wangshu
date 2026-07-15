@@ -1,17 +1,23 @@
-// Feature probe corpus(按 Lua 5.1 Reference Manual 逐节列特性)。
+// Feature probe corpus (features listed section by section per the Lua 5.1
+// Reference Manual).
 //
-// 解决 diff-fuzz 的系统性盲区:随机生成器跟着"已实现子集"走,结构性测不出
-// "官方有而我们没有"的功能。本 corpus 按官方手册特性面(§2 语言 / §5 标准库)
-// 逐项探测,oracle 成功而 wangshu 失败/不一致 = 完整性缺口。
+// Closes a systematic blind spot of diff-fuzz: the random generator only
+// follows the "already implemented subset", so it structurally cannot exercise
+// features that "the official implementation has but we don't". This corpus
+// probes each feature area of the official manual (§2 language / §5 standard
+// library) item by item; oracle succeeds while wangshu fails/differs = a
+// completeness gap.
 //
-// 常驻对拍(TestDiff_FeatureProbes):任何缺口在此文件留存为 FAIL,补完转绿。
+// Standing diff test (TestDiff_FeatureProbes): any gap stays as a FAIL in this
+// file and turns green once implemented.
 package difftest
 
 import "testing"
 
-// featureProbes 按手册章节组织。每项必须是 oracle 可执行的合法 5.1 代码。
+// featureProbes is organized by manual section. Each entry must be valid 5.1
+// code that the oracle can run.
 var featureProbes = []diffCase{
-	// ===== §2.2 值与类型 =====
+	// ===== §2.2 Values and Types =====
 	{"probe_type_all", `return type(nil), type(true), type(1), type("s"), type({}), type(print)`},
 	{"probe_tostring_number_int", `return tostring(7), tostring(-0.5), tostring(2^53)`},
 	{"probe_number_hex_literal", `return 0xFF + 0x10`},
@@ -20,7 +26,7 @@ var featureProbes = []diffCase{
 	{"probe_long_string", `return [[line1
 line2]], [==[has ]] inside]==]`},
 
-	// ===== §2.4 语句 =====
+	// ===== §2.4 Statements =====
 	{"probe_multiple_assign_swap", `local a, b = 1, 2; a, b = b, a; return a, b`},
 	{"probe_chained_local_func", `local function f() return 1 end; local function g() return f() + 1 end; return g()`},
 	{"probe_nested_do_scope", `local x = 1; do local x = 2; do local x = 3 end end; return x`},
@@ -42,7 +48,7 @@ for i = 1, 3 do
 end
 return n`},
 
-	// ===== §2.5 表达式 =====
+	// ===== §2.5 Expressions =====
 	{"probe_concat_chain_numbers", `return 1 .. 2 .. 3`},
 	{"probe_pow_neg_base", `return (-2)^2, -2^2`}, // -2^2 = -(2^2) = -4
 	{"probe_compare_chain", `return 1 < 2, 2 <= 2, 3 > 2, 3 >= 3, 1 ~= 2, 1 == 1`},
@@ -51,20 +57,20 @@ return n`},
 	{"probe_len_string_table", `return #"hello", #{1,2,3}`},
 	{"probe_unary_minus_string", `return -"5"`}, // coercion: -5
 	{"probe_arith_string_coercion", `return "10" + 5, "2" * "3", "7" % "4"`},
-	{"probe_concat_precedence", `return "x" .. 1 + 2`}, // .. 优先级低于 +:x3
+	{"probe_concat_precedence", `return "x" .. 1 + 2`}, // .. has lower precedence than +: x3
 	{"probe_paren_truncate", `local function f() return 1, 2 end; return (f())`},
 	{"probe_vararg_expr", `local function f(...) return ... end; return f(1, 2, 3)`},
 	{"probe_vararg_len", `local function f(...) return select("#", ...) end; return f(nil, nil)`},
 	{"probe_func_expr_immediate", `return (function(x) return x * 2 end)(21)`},
 
-	// ===== §2.5.7 表构造 =====
+	// ===== §2.5.7 Table Constructors =====
 	{"probe_table_mixed_ctor", `local t = {1, 2, x = 3, [10] = 4, 5}; return t[1], t[2], t[3], t.x, t[10]`},
 	{"probe_table_trailing_sep", `local t = {1, 2, 3,}; return #t`},
 	{"probe_table_semicolon_sep", `local t = {1; 2; 3}; return #t`},
 	{"probe_table_call_expand", `local function f() return 2, 3 end; local t = {1, f()}; return #t`},
 	{"probe_table_call_truncate", `local function f() return 2, 3 end; local t = {f(), 4}; return #t, t[1], t[2]`},
 
-	// ===== §2.8 元表(全 17 个事件) =====
+	// ===== §2.8 Metatables (all 17 events) =====
 	{"probe_meta_index_table", `local t = setmetatable({}, {__index = {x = 1}}); return t.x`},
 	{"probe_meta_index_func", `local t = setmetatable({}, {__index = function(_, k) return k .. "!" end}); return t.hi`},
 	{"probe_meta_newindex_func", `
@@ -140,7 +146,7 @@ local t = setmetatable({}, {
 rawset(t, "k", "raw")
 return rawget(t, "k"), t.other`},
 
-	// ===== §3.8/§5.1 base 库 =====
+	// ===== §3.8/§5.1 base library =====
 	{"probe_assert_message", `
 local ok, e = pcall(function() assert(nil, "custom msg") end)
 return ok, (e:gsub("^[^:]+:%d+: ", ""))`},
@@ -171,7 +177,7 @@ return n`},
 	{"probe_rawequal_primitives", `return rawequal(1, 1), rawequal("a", "a"), rawequal({}, {})`},
 	{"probe_rawlen_via_len", `local t = setmetatable({1,2}, {}); return #t`},
 
-	// ===== §5.4 string 库 =====
+	// ===== §5.4 string library =====
 	{"probe_string_lib_full", `
 return string.len("abc"), string.sub("hello", 2, 3), string.upper("a"),
   string.lower("A"), string.rep("ab", 2), string.reverse("abc")`},
@@ -194,7 +200,7 @@ return ("abc"):find("%f[%a]"), ("hello world"):find("%f[%w]world"),
   ("THE (quick) fox"):gsub("%f[%a]%u+%f[%A]", "X")`},
 	{"probe_string_method_chain", `return ("a,b,c"):gsub(",", ";"):upper()`},
 
-	// ===== §5.5 table 库 =====
+	// ===== §5.5 table library =====
 	{"probe_table_lib_full", `
 local t = {3, 1, 2}
 table.sort(t)
@@ -205,14 +211,14 @@ return table.concat(t, ","), r`},
 	{"probe_table_sort_strings", `local t = {"b", "a", "c"}; table.sort(t); return table.concat(t)`},
 	{"probe_table_maxn", `return table.maxn({1, 2, [10] = 3})`},
 
-	// ===== §5.6 math 库 =====
+	// ===== §5.6 math library =====
 	{"probe_math_constants", `return math.pi > 3.14, math.huge > 1e308, -math.huge < -1e308`},
 	{"probe_math_minmax_multi", `return math.max(1, 2, 3, 4), math.min(4, 3, 2, 1)`},
 	{"probe_math_floor_ceil_neg", `return math.floor(-1.5), math.ceil(-1.5)`},
-	{"probe_math_fmod_neg", `return math.fmod(-6, 4), math.fmod(6, -4)`}, // C fmod 语义,≠ %
+	{"probe_math_fmod_neg", `return math.fmod(-6, 4), math.fmod(6, -4)`}, // C fmod semantics, ≠ %
 	{"probe_math_sqrt_abs", `return math.sqrt(2) > 1.41, math.abs(-0)`},
 
-	// ===== §2.6 / §5.2 协程 =====
+	// ===== §2.6 / §5.2 Coroutines =====
 	{"probe_coroutine_full_cycle", `
 local co = coroutine.create(function(a)
   local b = coroutine.yield(a + 1)
@@ -251,7 +257,7 @@ end)
 coroutine.resume(co1)
 return s1, s2, coroutine.status(co1), coroutine.status(co2)`},
 
-	// ===== 闭包/upvalue 语义 =====
+	// ===== Closure/upvalue semantics =====
 	{"probe_upvalue_shared", `
 local function make()
   local n = 0
@@ -268,13 +274,13 @@ return fns[1]() + fns[2]() + fns[3]()`},
 local function fact(n) if n <= 1 then return 1 end return n * fact(n - 1) end
 return fact(5)`},
 
-	// ===== 数字格式边角 =====
+	// ===== Number formatting corner cases =====
 	{"probe_number_formats", `return tostring(1/3), tostring(100), tostring(0.1), tostring(1e300)`},
 	{"probe_int_boundary", `return 2^31, -(2^31), 2^52 + 0.5`},
 }
 
-// TestDiff_FeatureProbes 常驻对拍特性探测面(oracle 成功而 wangshu 失败/不一致
-// = 完整性缺口)。
+// TestDiff_FeatureProbes is the standing diff test over the feature probe set
+// (oracle succeeds while wangshu fails/differs = a completeness gap).
 func TestDiff_FeatureProbes(t *testing.T) {
 	oracle := findOracle()
 	if oracle == "" {

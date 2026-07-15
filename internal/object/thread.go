@@ -1,12 +1,12 @@
-// Userdata 与 Thread 对象布局(01 §5.5 / §5.6)。
+// Userdata and Thread object layouts (01 §5.5 / §5.6).
 //
 // Userdata:
 //
-//	word0: GCHeader (otype=USERDATA; flags bit0 = 有 metatable)
+//	word0: GCHeader (otype=USERDATA; flags bit0 = has metatable)
 //	word1: [31:0] payloadLen | [63:32] reserved
 //	word2: metaRef
 //	word3: envRef
-//	word4..: payload 字节(payloadLen,8 字节对齐)
+//	word4..: payload bytes (payloadLen, 8-byte aligned)
 //
 // Thread:
 //
@@ -17,7 +17,7 @@
 //	word4: callInfoRef
 //	word5: ciTop | ciCap
 //	word6: openUpvalRef
-//	word7: errorJmp / 状态机字段
+//	word7: errorJmp / state-machine field
 //	word8: resumeFrom
 package object
 
@@ -41,7 +41,8 @@ func userdataWords(payloadLen uint32) uint32 {
 	return 4 + (payloadLen+7)/8
 }
 
-// maxUDPayload 是 userdata payload 上限(尺寸入口校验:防 payloadLen+7 回绕)。
+// maxUDPayload is the upper bound on userdata payload (size-entry check: guards
+// against payloadLen+7 wraparound).
 const maxUDPayload = uint32(1)<<31 - 64
 
 func AllocUserdata(a *arena.Arena, payloadLen uint32) arena.GCRef {
@@ -197,7 +198,7 @@ func SetThreadResumeFrom(a *arena.Arena, th arena.GCRef, caller arena.GCRef) {
 	setWordAt(a, th, threadResumeFromIdx, uint64(caller))
 }
 
-// ThreadValueStackAt / SetThreadValueStackAt: 读写值栈第 i 个槽。
+// ThreadValueStackAt / SetThreadValueStackAt: read/write the i-th slot of the value stack.
 func ThreadValueStackAt(a *arena.Arena, th arena.GCRef, i uint32) value.Value {
 	return value.Value(a.WordAt(ThreadValueStackRef(a, th) + arena.GCRef(i*8)))
 }

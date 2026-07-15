@@ -2,24 +2,29 @@
 
 package wasm
 
-// 闭包构造 + 作用域 upvalue 关闭(PW7,02-translation §3.7)。
+// Closure construction + scoped upvalue closing (PW7, 02-translation §3.7).
 //
-// CLOSURE/CLOSE 全经助手:CLOSURE 涉及 arena 分配 + 开放/关闭 upvalue 链管理
-// (gibbous 自身从不分配,00-overview §8);CLOSE 关闭开放 upvalue 是 Go 侧
-// 开放链操作。两者复用解释器 makeClosure/closeUpvals,byte-equal 天然成立。
+// CLOSURE/CLOSE both go through helpers: CLOSURE involves arena allocation +
+// open/close upvalue chain management (gibbous itself never allocates,
+// 00-overview §8); CLOSE closing open upvalues is a Go-side open-chain
+// operation. Both reuse the interpreter's makeClosure/closeUpvals, so
+// byte-equal holds naturally.
 //
-// CLOSURE 后随 SubNUps[Bx] 条伪指令(MOVE/GETUPVAL 描述 upvalue 捕获)由发射层
-// 跳过翻译(translate.go emitOpcode 返回 skip),助手内 makeClosure 读 ci.pc 消化。
+// CLOSURE is followed by SubNUps[Bx] pseudo-instructions (MOVE/GETUPVAL
+// describing upvalue capture) that the emit layer skips translating
+// (translate.go emitOpcode returns skip); makeClosure inside the helper reads
+// ci.pc to consume them.
 
 import "github.com/Liam0205/wangshu/internal/bytecode"
 
-// emitClosure CLOSURE A Bx —— R(A) := closure(Proto[Bx])(02 §3.7.1)。
+// emitClosure CLOSURE A Bx —— R(A) := closure(Proto[Bx]) (02 §3.7.1).
 //
-//	(local.set $st (call h_closure(base,pc,a,bx)))   ;; 助手内 makeClosure + setReg + safepoint
-//	(if (i32.eq $st 1) (then (return 1)))            ;; ERR 冒泡(理论上 CLOSURE 不报错,防御)
+//	(local.set $st (call h_closure(base,pc,a,bx)))   ;; helper: makeClosure + setReg + safepoint
+//	(if (i32.eq $st 1) (then (return 1)))            ;; ERR bubble-up (CLOSURE should not error in theory, defensive)
 //
-// 无需 base 刷新:makeClosure 不进嵌套 Lua 帧、不 growStack(分配触发 arena.grow64
-// 保持段偏移不变,形态 Y 安全)。
+// No base refresh needed: makeClosure does not enter a nested Lua frame and
+// does not growStack (allocation triggers arena.grow64, keeping the segment
+// offset unchanged, form Y safe).
 func (c *Compiler) emitClosure(em *emitter, ins bytecode.Instruction, pc int32) {
 	a := int32(bytecode.A(ins))
 	bx := int32(bytecode.Bx(ins))
@@ -37,16 +42,17 @@ func (c *Compiler) emitClosure(em *emitter, ins bytecode.Instruction, pc int32) 
 	em.end()
 }
 
-// emitClose CLOSE A —— 关闭所有 ≥ R(A) 的开放 upvalue(02 §3.7.2,纯状态操作)。
+// emitClose CLOSE A —— close all open upvalues ≥ R(A) (02 §3.7.2, pure state operation).
 //
-//	(call h_close(base,pc,a))   ;; 助手内 closeUpvals;返回 status 恒 0,丢弃
+//	(call h_close(base,pc,a))   ;; helper: closeUpvals; returns status always 0, discarded
 //
-// CLOSE 无错误无返回值;助手返回 i32 status(签名复用 typeForPrep),发射侧 drop。
+// CLOSE has no error and no return value; the helper returns i32 status
+// (signature reuses typeForPrep), and the emit side drops it.
 func (c *Compiler) emitClose(em *emitter, ins bytecode.Instruction, pc int32) {
 	a := int32(bytecode.A(ins))
 	em.localGet(localBase)
 	em.i32Const(pc)
 	em.i32Const(a)
 	em.call(helperClose)
-	em.drop() // status 恒 0,丢弃
+	em.drop() // status always 0, discarded
 }

@@ -1,4 +1,5 @@
-// Golden bytecode tests — 04 §10 端到端示例与 02 §8 逐字节一致(自洽承诺验收)。
+// Golden bytecode tests — 04 §10 end-to-end examples, byte-for-byte matching
+// 02 §8 (self-consistency promise acceptance).
 package compile
 
 import (
@@ -11,7 +12,8 @@ import (
 	"github.com/Liam0205/wangshu/internal/frontend/parse"
 )
 
-// compileSource 编译一段 Lua 源码,返回主 chunk Proto 与全部子 Proto 注册表。
+// compileSource compiles a snippet of Lua source, returning the main chunk
+// Proto and the registry of all child Protos.
 func compileSource(t *testing.T, src string) (*bytecode.Proto, []*bytecode.Proto) {
 	t.Helper()
 	lx := lex.New([]byte(src), "test")
@@ -26,7 +28,7 @@ func compileSource(t *testing.T, src string) (*bytecode.Proto, []*bytecode.Proto
 	return protos[mainID], protos
 }
 
-// disasm 反汇编一条指令为可读字符串。
+// disasm disassembles a single instruction into a readable string.
 func disasm(ins bytecode.Instruction) string {
 	op := bytecode.Op(ins)
 	switch bytecode.FormatOf(op) {
@@ -39,8 +41,9 @@ func disasm(ins bytecode.Instruction) string {
 	}
 }
 
-// dumpProto 把一个 Proto 渲染成"OPNAME A=.. B=.. C=.."序列(每行一条),
-// 便于黄金字节码用字符串切片做精确比较。
+// dumpProto renders a Proto into an "OPNAME A=.. B=.. C=.." sequence (one per
+// line), making it easy for golden bytecode tests to compare precisely via
+// string slices.
 func dumpProto(p *bytecode.Proto) []string {
 	out := make([]string, 0, len(p.Code))
 	for _, ins := range p.Code {
@@ -49,9 +52,10 @@ func dumpProto(p *bytecode.Proto) []string {
 	return out
 }
 
-// TestGolden_SumOfSquares 验证 04 §10 / 02 §8 的求和函数寄存器分配与字节码逐字节一致。
+// TestGolden_SumOfSquares verifies that the summation function's register
+// allocation and bytecode from 04 §10 / 02 §8 match byte for byte.
 //
-// 源:
+// Source:
 //
 //	local function f(n)
 //	  local s = 0
@@ -67,7 +71,7 @@ local function f(n)
 end
 `
 	_, protos := compileSource(t, src)
-	// 子 Proto f 是第一个被编译的(main 在末尾)。
+	// The child Proto f is compiled first (main comes last).
 	if len(protos) < 2 {
 		t.Fatalf("expected at least 2 protos (f + main), got %d", len(protos))
 	}
@@ -84,17 +88,17 @@ end
 		"MOVE A=3 B=0 C=0",
 		// LOADK     R4  K1          ; (for step) = 1
 		"LOADK A=4 Bx=1",
-		// FORPREP   R2  -> L1       ; sBx 跳到 FORLOOP
+		// FORPREP   R2  -> L1       ; sBx jumps to FORLOOP
 		"FORPREP A=2 sBx=2",
 		// MUL   R6  R5  R5
 		"MUL A=6 B=5 C=5",
 		// ADD   R1  R1  R6
 		"ADD A=1 B=1 C=6",
-		// FORLOOP R2  -> L0(回边)
+		// FORLOOP R2  -> L0 (back edge)
 		"FORLOOP A=2 sBx=-3",
-		// RETURN R1 2(返回 1 个值)
+		// RETURN R1 2 (returns 1 value)
 		"RETURN A=1 B=2 C=0",
-		// 隐式 RETURN A=0 B=1
+		// implicit RETURN A=0 B=1
 		"RETURN A=0 B=1 C=0",
 	}
 	got := dumpProto(f)
@@ -108,17 +112,17 @@ end
 			t.Errorf("instr[%d]: got %q want %q", i, got[i], want[i])
 		}
 	}
-	// 02 §8:MaxStack = 7(R0..R6)
+	// 02 §8: MaxStack = 7 (R0..R6)
 	if f.MaxStack != 7 {
 		t.Errorf("MaxStack=%d, want 7", f.MaxStack)
 	}
-	// 常量池:K0=0.0 K1=1.0
+	// Constant pool: K0=0.0 K1=1.0
 	if len(f.Consts) != 2 {
 		t.Fatalf("Consts len=%d, want 2", len(f.Consts))
 	}
 }
 
-// TestGolden_LocalAndArith 简单算术 + 局部变量 + 单 return。
+// TestGolden_LocalAndArith: simple arithmetic + locals + single return.
 func TestGolden_LocalAndArith(t *testing.T) {
 	src := `
 local function add(a, b)
@@ -147,11 +151,12 @@ end
 	}
 }
 
-// TestGolden_IfElse 验证 if/else 的跳转回填。
+// TestGolden_IfElse verifies jump backpatching for if/else.
 //
-// 比较语义见 02 §4:`if (RK(B)<RK(C)) ≠ bool(A) then pc++`。
-// codecomp 默认 cond=1(产 LT A=1 = "真则跳"),goIfTrue 通过 invertJmp 翻 A=0,
-// 即"假则跳"——配合紧跟的 JMP 跳过 then 体。
+// For comparison semantics see 02 §4: `if (RK(B)<RK(C)) ≠ bool(A) then pc++`.
+// codecomp defaults to cond=1 (emitting LT A=1 = "jump if true"); goIfTrue
+// flips A=0 via invertJmp, i.e. "jump if false" — which, together with the
+// immediately following JMP, skips the then body.
 func TestGolden_IfElse(t *testing.T) {
 	src := `
 local function pick(a, b)
@@ -175,7 +180,8 @@ end
 	}
 }
 
-// TestGolden_TailCall 验证尾调用识别(04 §9.4):return f(x) → TAILCALL + RETURN(B=0)。
+// TestGolden_TailCall verifies tail-call recognition (04 §9.4): return f(x) →
+// TAILCALL + RETURN(B=0).
 func TestGolden_TailCall(t *testing.T) {
 	src := `
 local function bounce(g, x)
@@ -185,7 +191,7 @@ end
 	_, protos := compileSource(t, src)
 	f := protos[0]
 	got := dumpProto(f)
-	// MOVE R2 R0; MOVE R3 R1; TAILCALL R2 B=2 C=0; RETURN R2 B=0; 隐式 RETURN
+	// MOVE R2 R0; MOVE R3 R1; TAILCALL R2 B=2 C=0; RETURN R2 B=0; implicit RETURN
 	want := []string{
 		"MOVE A=2 B=0 C=0",
 		"MOVE A=3 B=1 C=0",
@@ -199,10 +205,11 @@ end
 	}
 }
 
-// TestGolden_GlobalGetSet 验证 GETGLOBAL / SETGLOBAL。
+// TestGolden_GlobalGetSet verifies GETGLOBAL / SETGLOBAL.
 //
-// 单赋值快路径 storeVar 顺序:先 resolveName(LHS) intern "x" → K0,
-// 再 expr(RHS) intern "y" → K1。GETGLOBAL Bx=1 取 y;SETGLOBAL Bx=0 存 x。
+// Single-assignment fast-path storeVar order: first resolveName(LHS) interns
+// "x" → K0, then expr(RHS) interns "y" → K1. GETGLOBAL Bx=1 fetches y;
+// SETGLOBAL Bx=0 stores x.
 func TestGolden_GlobalGetSet(t *testing.T) {
 	src := `
 x = y
@@ -226,7 +233,7 @@ x = y
 	}
 }
 
-// TestGolden_TableConstructor 数组 + 哈希混合构造。
+// TestGolden_TableConstructor: mixed array + hash construction.
 func TestGolden_TableConstructor(t *testing.T) {
 	src := `
 local t = { 10, 20, x = 30 }
@@ -241,19 +248,21 @@ local t = { 10, 20, x = 30 }
 	if len(got) < 1 || !strings.HasPrefix(got[0], wantPrefix) {
 		t.Errorf("first instr = %q, want prefix %q", got[0], wantPrefix)
 	}
-	// 找 SETLIST + SETTABLE + RETURN
+	// Find SETLIST + SETTABLE + RETURN
 	if !sliceContains(got, "SETLIST A=0 B=2 C=1") {
 		t.Errorf("missing SETLIST: %v", got)
 	}
-	// SETTABLE 用 RK:键 = K2 ⇒ B=258(256+2)
+	// SETTABLE uses RK: key = K2 ⇒ B=258 (256+2)
 	if !sliceHasPrefix(got, "SETTABLE A=0") {
 		t.Errorf("missing SETTABLE: %v", got)
 	}
 }
 
-// TestGolden_WhileLoop 验证循环回边 sBx 与条件出口回填。
+// TestGolden_WhileLoop verifies the loop back-edge sBx and the conditional-exit
+// backpatch.
 //
-// 单赋值 storeVar 直接把 ADD 落到局部 i 的寄存器(R1),无中间 MOVE。
+// Single-assignment storeVar writes the ADD directly into the local i's
+// register (R1), with no intermediate MOVE.
 func TestGolden_WhileLoop(t *testing.T) {
 	src := `
 local function count(n)
@@ -267,10 +276,10 @@ end
 	got := dumpProto(f)
 	want := []string{
 		"LOADK A=1 Bx=0",    // i = 0
-		"LT A=0 B=1 C=0",    // i < n,A=0 ⇒ 假则跳
-		"JMP A=0 sBx=2",     // 跳出循环
+		"LT A=0 B=1 C=0",    // i < n, A=0 ⇒ jump if false
+		"JMP A=0 sBx=2",     // jump out of loop
 		"ADD A=1 B=1 C=257", // i = i + RK(K1=1)
-		"JMP A=0 sBx=-4",    // 回边
+		"JMP A=0 sBx=-4",    // back edge
 		"RETURN A=1 B=2 C=0",
 		"RETURN A=0 B=1 C=0",
 	}
@@ -280,14 +289,14 @@ end
 	}
 }
 
-// TestCompile_Errors 验证编译期错误目录(04 §9 主要项)。
+// TestCompile_Errors verifies the compile-time error catalog (04 §9 main items).
 func TestCompile_Errors(t *testing.T) {
 	cases := []struct {
 		src     string
 		wantSub string
 	}{
 		{src: `break`, wantSub: "no loop to break"},
-		{src: `function () end`, wantSub: ""}, // 这个是 syntax,parser 报
+		{src: `function () end`, wantSub: ""}, // this is a syntax error, reported by the parser
 	}
 	for _, c := range cases {
 		if c.wantSub == "" {
@@ -304,7 +313,8 @@ func TestCompile_Errors(t *testing.T) {
 	}
 }
 
-// TestCompile_VarargOutsideFunc 验证 `...` 在非 vararg 函数体内被禁用。
+// TestCompile_VarargOutsideFunc verifies that `...` is disallowed inside a
+// non-vararg function body.
 func TestCompile_VarargOutsideFunc(t *testing.T) {
 	src := `
 local function f()
@@ -320,7 +330,8 @@ end
 	}
 }
 
-// TestCompile_Closure 验证 CLOSURE + 后随伪指令(MOVE 表示捕获外层局部)。
+// TestCompile_Closure verifies CLOSURE + trailing pseudo-instructions (MOVE
+// indicating capture of an enclosing local).
 func TestCompile_Closure(t *testing.T) {
 	src := `
 local function outer()
@@ -330,7 +341,7 @@ local function outer()
 end
 `
 	_, protos := compileSource(t, src)
-	// inner 是先编译的 Proto(深度优先)
+	// inner is the Proto compiled first (depth-first)
 	inner := protos[0]
 	if len(inner.UpvalDescs) != 1 {
 		t.Fatalf("inner UpvalDescs len=%d want 1: %v", len(inner.UpvalDescs), inner.UpvalDescs)
@@ -338,11 +349,12 @@ end
 	if !inner.UpvalDescs[0].InStack || inner.UpvalDescs[0].Idx != 0 {
 		t.Errorf("inner upval = %+v, want InStack=true Idx=0 (capturing outer's x at R0)", inner.UpvalDescs[0])
 	}
-	// outer 的 CLOSURE 后应有一条 MOVE 伪指令 (B=0 表示捕获 R0)
+	// outer's CLOSURE should be followed by a MOVE pseudo-instruction (B=0
+	// indicates capture of R0)
 	outer := protos[1]
 	got := dumpProto(outer)
-	// LOADK R0 K0(1); CLOSURE R1 Bx=0; MOVE 0 0 0(伪指令); MOVE R2 R1; RETURN ...
-	// 找 CLOSURE 后第一条
+	// LOADK R0 K0(1); CLOSURE R1 Bx=0; MOVE 0 0 0 (pseudo-instr); MOVE R2 R1; RETURN ...
+	// Find the first instruction after CLOSURE
 	for i, ins := range outer.Code {
 		if bytecode.Op(ins) == bytecode.CLOSURE {
 			if i+1 >= len(outer.Code) {

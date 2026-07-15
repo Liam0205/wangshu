@@ -2,8 +2,9 @@
 
 package amd64
 
-// CallJITSpec 非 linux/amd64 占位(仅 cross-compile 通过——本平台 PJ2
-// 投机不实装,Compile 不调本函数)。
+// CallJITSpec is a non-linux/amd64 placeholder (only makes cross-compile pass —
+// PJ2 speculation is not implemented on this platform, and Compile does not
+// call this function).
 func CallJITSpec(codeAddr uintptr, jitCtx uintptr, vsBase uintptr) uint64 {
 	_ = codeAddr
 	_ = jitCtx

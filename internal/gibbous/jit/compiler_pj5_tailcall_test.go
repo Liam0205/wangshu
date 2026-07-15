@@ -9,19 +9,20 @@ import (
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
-// compiler_pj5_tailcall_test.go —— PJ5 TAILCALL 形态识别 + Run prelude 路径
-// 单测(承 docs/design/p4-method-jit/05-system-pipeline.md §4.3 + 09 §9.14
-// PJ5 TAILCALL 真接入主路径)。
+// compiler_pj5_tailcall_test.go —— PJ5 TAILCALL form recognition + Run prelude
+// path unit tests (following docs/design/p4-method-jit/05-system-pipeline.md §4.3
+// + 09 §9.14, the PJ5 TAILCALL wired-in main path).
 //
-// 形态(luac stmtReturn 单 CallExpr 快路径产物):
-//   - 长度 4(0 参):MOVE/GETUPVAL + TAILCALL B=1 C=0 + dead RETURN B=0 + 隐式 RETURN B=1
-//   - 长度 5(1 K 参):... + LOADK + TAILCALL B=2 C=0 + ...
-//   - 长度 5(1 reg 参):... + MOVE + TAILCALL B=2 C=0 + ...
-//   - 长度 6(2 K 参):... + LOADK + LOADK + TAILCALL B=3 C=0 + ...
+// Forms (products of the luac stmtReturn single-CallExpr fast path):
+//   - length 4 (0 args): MOVE/GETUPVAL + TAILCALL B=1 C=0 + dead RETURN B=0 + implicit RETURN B=1
+//   - length 5 (1 K arg): ... + LOADK + TAILCALL B=2 C=0 + ...
+//   - length 5 (1 reg arg): ... + MOVE + TAILCALL B=2 C=0 + ...
+//   - length 6 (2 K args): ... + LOADK + LOADK + TAILCALL B=3 C=0 + ...
 
-// TestPJ5_AnalyzeTailCallForm_Recognize 验形态 TA0(parameter callee,0 参)识别。
+// TestPJ5_AnalyzeTailCallForm_Recognize verifies recognition of form TA0
+// (parameter callee, 0 args).
 func TestPJ5_AnalyzeTailCallForm_Recognize(t *testing.T) {
-	// 形态 TA0:MOVE 1 0; TAILCALL 1 1 0; RETURN 1 0 0; RETURN 0 1 0
+	// Form TA0: MOVE 1 0; TAILCALL 1 1 0; RETURN 1 0 0; RETURN 0 1 0
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
 			bytecode.EncodeABC(bytecode.MOVE, 1, 0, 0),
@@ -43,7 +44,7 @@ func TestPJ5_AnalyzeTailCallForm_Recognize(t *testing.T) {
 	if info.callA != 1 || info.callB != 1 || info.callC != 0 {
 		t.Errorf("callA/B/C = %d/%d/%d, want 1/1/0", info.callA, info.callB, info.callC)
 	}
-	// retPC 指 dead RETURN(pc 2),retA=callA=1,retB=0(多值 to-top)
+	// retPC points at the dead RETURN (pc 2), retA=callA=1, retB=0 (multi-value to-top)
 	if info.retA != 1 || info.retB != 0 || info.retPC != 2 {
 		t.Errorf("retA/B/PC = %d/%d/%d, want 1/0/2", info.retA, info.retB, info.retPC)
 	}
@@ -55,9 +56,10 @@ func TestPJ5_AnalyzeTailCallForm_Recognize(t *testing.T) {
 	}
 }
 
-// TestPJ5_AnalyzeTailCallForm_RecognizeUpval 验形态 TB0(upvalue callee,0 参)识别。
+// TestPJ5_AnalyzeTailCallForm_RecognizeUpval verifies recognition of form TB0
+// (upvalue callee, 0 args).
 func TestPJ5_AnalyzeTailCallForm_RecognizeUpval(t *testing.T) {
-	// 形态 TB0:GETUPVAL 0 3; TAILCALL 0 1 0; RETURN 0 0 0; RETURN 0 1 0
+	// Form TB0: GETUPVAL 0 3; TAILCALL 0 1 0; RETURN 0 0 0; RETURN 0 1 0
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
 			bytecode.EncodeABC(bytecode.GETUPVAL, 0, 3, 0),
@@ -84,9 +86,10 @@ func TestPJ5_AnalyzeTailCallForm_RecognizeUpval(t *testing.T) {
 	}
 }
 
-// TestPJ5_AnalyzeTailCallForm_Recognize1ArgK 验形态 TB1K(1 K 参)识别。
+// TestPJ5_AnalyzeTailCallForm_Recognize1ArgK verifies recognition of form TB1K
+// (1 K arg).
 func TestPJ5_AnalyzeTailCallForm_Recognize1ArgK(t *testing.T) {
-	// 形态 TB1K:GETUPVAL 0 1; LOADK 1 0; TAILCALL 0 2 0; RETURN 0 0 0; RETURN 0 1 0
+	// Form TB1K: GETUPVAL 0 1; LOADK 1 0; TAILCALL 0 2 0; RETURN 0 0 0; RETURN 0 1 0
 	const kVal uint64 = 0x4040000000000000
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
@@ -119,9 +122,10 @@ func TestPJ5_AnalyzeTailCallForm_Recognize1ArgK(t *testing.T) {
 	}
 }
 
-// TestPJ5_AnalyzeTailCallForm_Recognize1ArgReg 验形态 TB1R(1 reg 参)识别。
+// TestPJ5_AnalyzeTailCallForm_Recognize1ArgReg verifies recognition of form TB1R
+// (1 reg arg).
 func TestPJ5_AnalyzeTailCallForm_Recognize1ArgReg(t *testing.T) {
-	// 形态 TB1R:GETUPVAL 1 0; MOVE 2 0; TAILCALL 1 2 0; RETURN 1 0 0; RETURN 0 1 0
+	// Form TB1R: GETUPVAL 1 0; MOVE 2 0; TAILCALL 1 2 0; RETURN 1 0 0; RETURN 0 1 0
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
 			bytecode.EncodeABC(bytecode.GETUPVAL, 1, 0, 0),
@@ -149,7 +153,8 @@ func TestPJ5_AnalyzeTailCallForm_Recognize1ArgReg(t *testing.T) {
 	}
 }
 
-// TestPJ5_AnalyzeTailCallForm_Recognize2ArgK 验形态 TB2K(2 K 参)识别。
+// TestPJ5_AnalyzeTailCallForm_Recognize2ArgK verifies recognition of form TB2K
+// (2 K args).
 func TestPJ5_AnalyzeTailCallForm_Recognize2ArgK(t *testing.T) {
 	const k1, k2 uint64 = 0x4014000000000000, 0x4022000000000000 // 5.0, 9.0
 	proto := &bytecode.Proto{
@@ -182,7 +187,8 @@ func TestPJ5_AnalyzeTailCallForm_Recognize2ArgK(t *testing.T) {
 	}
 }
 
-// TestPJ5_AnalyzeTailCallForm_Reject 验负向拒识(各类不匹配场景)。
+// TestPJ5_AnalyzeTailCallForm_Reject verifies negative rejection (various
+// non-matching scenarios).
 func TestPJ5_AnalyzeTailCallForm_Reject(t *testing.T) {
 	cases := []struct {
 		name string
@@ -279,8 +285,8 @@ func TestPJ5_AnalyzeTailCallForm_Reject(t *testing.T) {
 	}
 }
 
-// TestPJ5_RunTailCallPath 验形态 TB0 端到端 Run 路径:
-//   - 装载 R(callA)=upval + 调 host.TailCall(返 0=Lua 尾完成 → 跳过 DoReturn)
+// TestPJ5_RunTailCallPath verifies form TB0 end-to-end Run path:
+//   - loads R(callA)=upval + calls host.TailCall (returns 0 = Lua tail complete → skip DoReturn)
 func TestPJ5_RunTailCallPath(t *testing.T) {
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
@@ -295,7 +301,7 @@ func TestPJ5_RunTailCallPath(t *testing.T) {
 
 	const fakeFuncVal uint64 = 0xFFF9_BEEF_0001_0000
 	host.upvals[1] = fakeFuncVal
-	host.tailCallRetCode = 0 // Lua 尾完成
+	host.tailCallRetCode = 0 // Lua tail complete
 
 	stack := make([]uint64, 4)
 	status := gc.Run(stack, 0)
@@ -313,14 +319,14 @@ func TestPJ5_RunTailCallPath(t *testing.T) {
 		t.Errorf("TailCall(A,B,C) = (%d,%d,%d), want (0,1,0)",
 			host.lastTailCallA, host.lastTailCallB, host.lastTailCallC)
 	}
-	// Lua 尾完成路径不调 DoReturn(本帧已弹)
+	// Lua tail-complete path does not call DoReturn (this frame already popped)
 	if host.doReturnCalls != 0 {
 		t.Errorf("DoReturn called %d times (Lua 尾完成应跳过 DoReturn,want 0)", host.doReturnCalls)
 	}
 }
 
-// TestPJ5_RunTailCallHostPath 验三态 = 2(host 尾完成)路径:fall through 走
-// 末尾 DoReturn(retB=0 多值 to-top)。
+// TestPJ5_RunTailCallHostPath verifies the tri-state = 2 (host tail-complete) path:
+// falls through to the trailing DoReturn (retB=0 multi-value to-top).
 func TestPJ5_RunTailCallHostPath(t *testing.T) {
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
@@ -334,7 +340,7 @@ func TestPJ5_RunTailCallHostPath(t *testing.T) {
 	defer tryDispose(t, gc)
 
 	host.upvals[1] = 0xDEAD_BEEF_0000_0000
-	host.tailCallRetCode = 2 // host 尾完成
+	host.tailCallRetCode = 2 // host tail-complete
 
 	stack := make([]uint64, 4)
 	status := gc.Run(stack, 0)
@@ -344,13 +350,13 @@ func TestPJ5_RunTailCallHostPath(t *testing.T) {
 	if host.tailCallCalls != 1 {
 		t.Errorf("TailCall called %d times, want 1", host.tailCallCalls)
 	}
-	// host 尾完成路径走 DoReturn 弹本帧(retB=0 多值 to-top)
+	// host tail-complete path calls DoReturn to pop this frame (retB=0 multi-value to-top)
 	if host.doReturnCalls != 1 {
 		t.Errorf("DoReturn called %d times, want 1 (host 尾完成路径)", host.doReturnCalls)
 	}
 }
 
-// TestPJ5_RunTailCallErrPath 验三态 = 1(ERR)路径:Run 直接 return 1。
+// TestPJ5_RunTailCallErrPath verifies the tri-state = 1 (ERR) path: Run returns 1 directly.
 func TestPJ5_RunTailCallErrPath(t *testing.T) {
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
@@ -376,7 +382,7 @@ func TestPJ5_RunTailCallErrPath(t *testing.T) {
 	}
 }
 
-// TestPJ5_RunTailCall1ArgK 验形态 TB1K Run 路径:K 参装到 R(callA+1)。
+// TestPJ5_RunTailCall1ArgK verifies the form TB1K Run path: the K arg is loaded into R(callA+1).
 func TestPJ5_RunTailCall1ArgK(t *testing.T) {
 	const kVal uint64 = 0x4040000000000000
 	proto := &bytecode.Proto{
@@ -411,7 +417,7 @@ func TestPJ5_RunTailCall1ArgK(t *testing.T) {
 	}
 }
 
-// TestPJ5_SupportsAllOpcodesGate_AcceptsTailCall 验 F7 闸门承认 TAILCALL 形态。
+// TestPJ5_SupportsAllOpcodesGate_AcceptsTailCall verifies that the F7 gate accepts the TAILCALL form.
 func TestPJ5_SupportsAllOpcodesGate_AcceptsTailCall(t *testing.T) {
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
@@ -427,8 +433,9 @@ func TestPJ5_SupportsAllOpcodesGate_AcceptsTailCall(t *testing.T) {
 	}
 }
 
-// TestPJ5_SpecTailCallHits 验 Compile 命中 PJ5 TAILCALL 形态时 specTailCallHits
-// 探针 ++(白盒 prove-the-path 证据,承 llmdoc/guides/prove-the-path-under-test §4)。
+// TestPJ5_SpecTailCallHits verifies that when Compile hits the PJ5 TAILCALL form
+// the specTailCallHits probe ++ (white-box prove-the-path evidence, follows
+// llmdoc/guides/prove-the-path-under-test §4).
 func TestPJ5_SpecTailCallHits(t *testing.T) {
 	ResetSpecHits()
 	proto := &bytecode.Proto{
@@ -444,7 +451,7 @@ func TestPJ5_SpecTailCallHits(t *testing.T) {
 	if got := SpecTailCallHits(); got != 1 {
 		t.Errorf("SpecTailCallHits = %d, want 1 (Compile 应命中 PJ5 TAILCALL inline)", got)
 	}
-	// CallVoidHits 不应被本路径误增
+	// CallVoidHits should not be wrongly incremented by this path
 	if got := SpecCallVoidHits(); got != 0 {
 		t.Errorf("SpecCallVoidHits = %d, want 0 (TAILCALL 形态不应误命中 CallVoid)", got)
 	}

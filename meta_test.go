@@ -81,7 +81,7 @@ local ok, err = pcall(function() error("kaboom") end)
 if ok then return "no-error" end
 return err
 `)
-	// 5.1 语义:error(string) 自动加 chunkname:line: 前缀
+	// 5.1 semantics: error(string) automatically prepends a chunkname:line: prefix
 	if !got.IsString() || !strings.HasSuffix(got.Str(), ": kaboom") {
 		t.Errorf("got %v, want suffix ': kaboom'", got.Display())
 	}

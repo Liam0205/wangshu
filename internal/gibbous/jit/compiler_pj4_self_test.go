@@ -10,40 +10,48 @@ import (
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
-// compiler_pj4_self_test.go —— PJ4 SELF IC ArrayHit 主路径合成驱动测试。
+// compiler_pj4_self_test.go —— synthetic-driver test for the PJ4 SELF IC
+// ArrayHit main path.
 //
-// **背景**(承外部审查反馈):luac 5.1 中 SELF opcode 的 method key 必是
-// ident → 字符串常量 → 编译期 NodeHit（非 ArrayHit）。real-world 代码不会
-// 编出「SELF + RETURN + IC ArrayHit」形态,所以 crescent e2e 真升层测试
-// 无法触达 analyzeSelfArrayHit + compileIcSelfArrayHit 主路径。
+// **Background** (per external review feedback): in luac 5.1 the SELF opcode's
+// method key is always an ident → string constant → compile-time NodeHit (not
+// ArrayHit). Real-world code never emits the "SELF + RETURN + IC ArrayHit"
+// form, so the crescent e2e tier-up tests cannot reach the analyzeSelfArrayHit
+// + compileIcSelfArrayHit main path.
 //
-// 本文件构造**合成 proto + IC slot + feedback**,直接驱动 SELF 主路径,
-// 验证:
-//   1. analyzeSelfArrayHit 形态识别返 true(SELF + RETURN A 2 + IC ArrayHit
-//      + feedback FBTableMono + Confidence>=0.99 + stableShape/Index 一致)
-//   2. compileIcSelfArrayHit emit 139 字节模板 + incSpecTableHits()
-//   3. 返回的 GibbousCode.Proto() 指向输入 proto,Slot() 返 (0, false)
+// This file builds a **synthetic proto + IC slot + feedback** to drive the
+// SELF main path directly, verifying:
+//   1. analyzeSelfArrayHit form recognition returns true (SELF + RETURN A 2 +
+//      IC ArrayHit + feedback FBTableMono + Confidence>=0.99 + matching
+//      stableShape/Index)
+//   2. compileIcSelfArrayHit emits the 139-byte template + incSpecTableHits()
+//   3. the returned GibbousCode.Proto() points to the input proto, Slot()
+//      returns (0, false)
 //
-// **不真 Run**:Run 需要真 arena + table 寻址,本测用 mock host 不真执行
-// 段(用 host.ArenaBaseAddr=0 让 Run 走 fallback 而非 callJITSpec)——
-// 模板字节级 emit 正确性已由 jit/amd64 包字节级单测(TestPJ4_EmitSelfArrayHit_*)
-// 覆盖。本测验主路径 Compile 流程 + SpecTableHits 探针,补 bot 反馈的
-// 「SELF 主路径无执行级覆盖」缺口。
+// **No real Run**: Run needs a real arena + table addressing; this test uses a
+// mock host and does not actually execute the code (host.ArenaBaseAddr=0 makes
+// Run take the fallback rather than callJITSpec). Byte-level emit correctness
+// of the template is already covered by the jit/amd64 package byte-level unit
+// tests (TestPJ4_EmitSelfArrayHit_*). This test verifies the main-path Compile
+// flow + SpecTableHits probe, filling the "SELF main path has no
+// execution-level coverage" gap reported by the bot.
 
-// TestPJ4_SelfArrayHit_MainPath_Synthesized 合成 SELF proto + IC slot +
-// feedback,真驱动 analyzeSelfArrayHit → compileIcSelfArrayHit 链路。
+// TestPJ4_SelfArrayHit_MainPath_Synthesized synthesizes a SELF proto + IC slot
+// + feedback and really drives the analyzeSelfArrayHit → compileIcSelfArrayHit
+// chain.
 //
-// 形态:SELF A=2 B=0 C=257(K[1])+ RETURN A=2 B=2,符合 analyzeSelfArrayHit
-// 全部触发条件(A<=253 / B<=254 / C>=256 / RETURN.A=SELF.A / retB=2 / IC
-// kind=ArrayHit / feedback mono / shape/index 一致)。
+// Form: SELF A=2 B=0 C=257(K[1]) + RETURN A=2 B=2, satisfying all
+// analyzeSelfArrayHit trigger conditions (A<=253 / B<=254 / C>=256 /
+// RETURN.A=SELF.A / retB=2 / IC kind=ArrayHit / feedback mono / matching
+// shape/index).
 //
-// SELF semantics: R(A+1)=R(B); R(A)=R(B)[K] —— 即 R(3)=R(0); R(2)=R(0)[K[1]]。
-// 编译期需要 ArrayHit 信号:proto.IC[0].Kind=ArrayHit + feedback.Points[0].
-// Kind=FBTableMono 一致 shape/index。
+// SELF semantics: R(A+1)=R(B); R(A)=R(B)[K] —— i.e. R(3)=R(0); R(2)=R(0)[K[1]].
+// The compile-time path needs the ArrayHit signal: proto.IC[0].Kind=ArrayHit +
+// feedback.Points[0].Kind=FBTableMono with matching shape/index.
 func TestPJ4_SelfArrayHit_MainPath_Synthesized(t *testing.T) {
 	ResetSpecHits()
 
-	// 合成 proto:SELF + RETURN(2 op 形态)
+	// Synthetic proto: SELF + RETURN (2-op form)
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
 			bytecode.EncodeABC(bytecode.SELF, 2, 0, 257), // SELF A=2 B=0 C=K[1]
@@ -51,20 +59,20 @@ func TestPJ4_SelfArrayHit_MainPath_Synthesized(t *testing.T) {
 		},
 		IC: make([]bytecode.ICSlot, 2),
 		Consts: []value.Value{
-			0, // K[0] dummy(SELF.C=257 → KIdx=1)
-			0, // K[1] dummy method key NaN-box(任意值即可,SELF ArrayHit
-			//     不验 stableKey)
+			0, // K[0] dummy (SELF.C=257 → KIdx=1)
+			0, // K[1] dummy method key NaN-box (any value works; SELF ArrayHit
+			//     does not verify stableKey)
 		},
 	}
-	// 填 IC slot:Kind=ArrayHit + Shape=7 + Index=1(模拟 P1 解释器在
-	// pc=0 SELF 处填的命中状态)
+	// Fill IC slot: Kind=ArrayHit + Shape=7 + Index=1 (simulating the P1
+	// interpreter recording the hit state at pc=0 SELF)
 	proto.IC[0] = bytecode.ICSlot{
 		Kind:  bytecode.ICKindArrayHit,
 		Shape: 7,
 		Index: 1,
 	}
 
-	// 合成 feedback:FBTableMono + Confidence=1.0 + 同 shape/index
+	// Synthetic feedback: FBTableMono + Confidence=1.0 + matching shape/index
 	feedback := &bridge.TypeFeedback{
 		Points: []bridge.PointFeedback{
 			{
@@ -76,7 +84,7 @@ func TestPJ4_SelfArrayHit_MainPath_Synthesized(t *testing.T) {
 		},
 	}
 
-	// 验形态识别真返 true
+	// Verify form recognition really returns true
 	info, ok := analyzeSelfArrayHit(proto, feedback)
 	if !ok {
 		t.Fatal("analyzeSelfArrayHit 应返 true(SELF + RETURN A 2 + IC ArrayHit + feedback mono)")
@@ -95,11 +103,11 @@ func TestPJ4_SelfArrayHit_MainPath_Synthesized(t *testing.T) {
 		t.Errorf("preludeOp = %d, want SELF=%d", info.preludeOp, bytecode.SELF)
 	}
 
-	// 驱动 compileIcSelfArrayHit:构造 Compiler + 注入 mock host(arenaBase
-	// 非 0 启用 useSpec 路径)+ Compile
+	// Drive compileIcSelfArrayHit: build a Compiler + inject a mock host
+	// (non-zero arenaBase enables the useSpec path) + Compile
 	c := New()
 	host := newMockP4Host()
-	host.arenaBase = 0x1000 // 非 0 让 Compile 路径走 archSupportsSpec + ArenaBaseAddr check
+	host.arenaBase = 0x1000 // non-zero makes the Compile path take archSupportsSpec + ArenaBaseAddr check
 	c.SetHostState(host)
 
 	hitsBefore := SpecTableHits()
@@ -111,8 +119,8 @@ func TestPJ4_SelfArrayHit_MainPath_Synthesized(t *testing.T) {
 		t.Fatal("Compile 返 nil GibbousCode")
 	}
 
-	// 验 SpecTableHits 真增(SELF 模板真编译,经 archEmitSelfArrayHit emit
-	// 139 字节 + archMmapCode mmap+RX)
+	// Verify SpecTableHits really increments (SELF template really compiled,
+	// via archEmitSelfArrayHit emitting 139 bytes + archMmapCode mmap+RX)
 	hitsAfter := SpecTableHits()
 	if hitsAfter <= hitsBefore {
 		t.Errorf("SpecTableHits 未增长(%d → %d) → SELF compileIc 路径未真触达",
@@ -121,17 +129,18 @@ func TestPJ4_SelfArrayHit_MainPath_Synthesized(t *testing.T) {
 	t.Logf("SELF 主路径合成驱动:SpecTableHits %d → %d(增量 = %d)",
 		hitsBefore, hitsAfter, hitsAfter-hitsBefore)
 
-	// 验 GibbousCode.Proto() 指回输入 proto
+	// Verify GibbousCode.Proto() points back to the input proto
 	if gc.Proto() != proto {
 		t.Error("GibbousCode.Proto() 应指向输入 proto")
 	}
-	// 验 Slot() 返 (0, false)(P4 原生码无 wasm 表概念)
+	// Verify Slot() returns (0, false) (P4 native code has no wasm-table concept)
 	if idx, ok := gc.Slot(); idx != 0 || ok {
 		t.Errorf("Slot() = (%d, %v), want (0, false)", idx, ok)
 	}
 }
 
-// TestPJ4_SelfArrayHit_FormGuards 验 SELF 形态守卫——任一不满足返 false。
+// TestPJ4_SelfArrayHit_FormGuards verifies the SELF form guards —— any
+// unmet condition returns false.
 func TestPJ4_SelfArrayHit_FormGuards(t *testing.T) {
 	mkValid := func() (*bytecode.Proto, *bridge.TypeFeedback) {
 		p := &bytecode.Proto{
@@ -165,7 +174,7 @@ func TestPJ4_SelfArrayHit_FormGuards(t *testing.T) {
 		{
 			"C 非常量(<256)",
 			func(p *bytecode.Proto, _ *bridge.TypeFeedback) {
-				p.Code[0] = bytecode.EncodeABC(bytecode.SELF, 2, 0, 100) // C=100 是 reg
+				p.Code[0] = bytecode.EncodeABC(bytecode.SELF, 2, 0, 100) // C=100 is a reg
 			},
 		},
 		{
@@ -195,7 +204,7 @@ func TestPJ4_SelfArrayHit_FormGuards(t *testing.T) {
 		{
 			"stableShape 不一致(IC vs feedback race)",
 			func(_ *bytecode.Proto, f *bridge.TypeFeedback) {
-				f.Points[0].StableShape = 99 // 不同于 IC.Shape=7
+				f.Points[0].StableShape = 99 // differs from IC.Shape=7
 			},
 		},
 	}
@@ -211,22 +220,25 @@ func TestPJ4_SelfArrayHit_FormGuards(t *testing.T) {
 	}
 }
 
-// TestPJ4_SelfNodeHit_MainPath_Synthesized 合成 SELF NodeHit 形态 proto +
-// IC slot + feedback,真驱动 analyzeSelfNodeHit → compileIcSelfNodeHit 链路。
+// TestPJ4_SelfNodeHit_MainPath_Synthesized synthesizes a SELF NodeHit-form
+// proto + IC slot + feedback and really drives the analyzeSelfNodeHit →
+// compileIcSelfNodeHit chain.
 //
-// **luac 形态边界**(同 SELF ArrayHit):real-world `obj:method` 必须有
-// 括号 `()` 才是 Lua 合法语法,但 `obj:method()` 编 SELF + CALL + RETURN
-// (3+ op)而非 SELF + RETURN 2-op 形态。即 luac 不真编出此 IC 形态——
-// SELF NodeHit 主路径接入是工程基础,e2e 真升层需要 PJ5 CALL 接入后才能
-// 触达。本测试合成驱动是当前唯一覆盖手段。
+// **luac form boundary** (same as SELF ArrayHit): a real-world `obj:method`
+// must have parentheses `()` to be valid Lua syntax, but `obj:method()`
+// compiles to SELF + CALL + RETURN (3+ ops) rather than the SELF + RETURN
+// 2-op form. So luac never emits this IC form —— wiring up the SELF NodeHit
+// main path is engineering groundwork, and e2e tier-up can only reach it after
+// the PJ5 CALL wiring lands. This synthetic-driver test is currently the only
+// coverage means.
 //
-// 形态:SELF A=2 B=0 C=257(K[1] string)+ RETURN A=2 B=2,符合
-// analyzeSelfNodeHit 全部触发条件 + IC[0].Kind=NodeHit + stableKey 从
-// proto.Consts[1] 编译期固化。
+// Form: SELF A=2 B=0 C=257(K[1] string) + RETURN A=2 B=2, satisfying all
+// analyzeSelfNodeHit trigger conditions + IC[0].Kind=NodeHit + stableKey
+// fixed at compile time from proto.Consts[1].
 func TestPJ4_SelfNodeHit_MainPath_Synthesized(t *testing.T) {
 	ResetSpecHits()
 
-	// stableKey 用 string NaN-box 模拟(0xFFFB + GCRef offset)
+	// stableKey simulated with a string NaN-box (0xFFFB + GCRef offset)
 	const stableKey uint64 = 0xFFFB_0000_0000_0042
 
 	proto := &bytecode.Proto{
@@ -237,7 +249,7 @@ func TestPJ4_SelfNodeHit_MainPath_Synthesized(t *testing.T) {
 		IC: make([]bytecode.ICSlot, 2),
 		Consts: []value.Value{
 			0,                      // K[0] dummy
-			value.Value(stableKey), // K[1] 真 stableKey(string NaN-box)
+			value.Value(stableKey), // K[1] real stableKey (string NaN-box)
 		},
 	}
 	proto.IC[0] = bytecode.ICSlot{
@@ -257,7 +269,7 @@ func TestPJ4_SelfNodeHit_MainPath_Synthesized(t *testing.T) {
 		},
 	}
 
-	// 验形态识别
+	// Verify form recognition
 	info, ok := analyzeSelfNodeHit(proto, feedback)
 	if !ok {
 		t.Fatal("analyzeSelfNodeHit 应返 true(SELF + RETURN A 2 + IC NodeHit + feedback mono)")
@@ -275,7 +287,7 @@ func TestPJ4_SelfNodeHit_MainPath_Synthesized(t *testing.T) {
 		t.Errorf("preludeOp = %d, want SELF=%d", info.preludeOp, bytecode.SELF)
 	}
 
-	// 驱动 compileIcSelfNodeHit
+	// Drive compileIcSelfNodeHit
 	c := New()
 	host := newMockP4Host()
 	host.arenaBase = 0x1000
@@ -303,12 +315,14 @@ func TestPJ4_SelfNodeHit_MainPath_Synthesized(t *testing.T) {
 	}
 }
 
-// TestPJ4_SetTableNodeHit_MainPath_Synthesized 合成 SETTABLE NodeHit 形态
-// 真驱动主路径(对位 SELF NodeHit 同款形态)。
+// TestPJ4_SetTableNodeHit_MainPath_Synthesized synthesizes the SETTABLE
+// NodeHit form and really drives the main path (mirroring the SELF NodeHit
+// form).
 //
-// 与 SETTABLE ArrayHit 同款 e2e 真升层路径(`function(t,v) t["x"]=v end`
-// 是 SETTABLE NodeHit 真常见形态,e2e 已覆盖);但合成驱动单测确保
-// analyzer/compileIc 不被误改时仍能抓出。
+// Same e2e tier-up path as SETTABLE ArrayHit (`function(t,v) t["x"]=v end` is
+// a common SETTABLE NodeHit form and is already e2e-covered); the
+// synthetic-driver unit test ensures the analyzer/compileIc are still caught
+// when accidentally modified.
 func TestPJ4_SetTableNodeHit_MainPath_Synthesized(t *testing.T) {
 	ResetSpecHits()
 

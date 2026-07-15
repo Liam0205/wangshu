@@ -1,11 +1,13 @@
 //go:build !wangshu_p3 && !wangshu_p4
 
-// realworld_bench_test.go:`_Wangshu`(crescent)/`_Gopher` benchmark 拆出文件,
-// 加 `!wangshu_p3 && !wangshu_p4` build tag 避免 p3/p4 build 的 wangshu_profile
-// 采样钩污染新月数字 + 与 bench-p1 重复(issue #15 review)。
+// realworld_bench_test.go: file split out for the `_Wangshu` (crescent) /
+// `_Gopher` benchmarks, with the `!wangshu_p3 && !wangshu_p4` build tag added
+// to avoid the wangshu_profile sampling hooks of the p3/p4 build polluting the
+// crescent numbers + duplicating bench-p1 (issue #15 review).
 //
-// `_Gibbous` benchmark 在 `realworld_gibbous_test.go`(P3)与
-// `realworld_gibbous_jit_test.go`(P4)里独享各自 build tag,与本文件互斥。
+// The `_Gibbous` benchmarks live in `realworld_gibbous_test.go` (P3) and
+// `realworld_gibbous_jit_test.go` (P4), each under its own build tag, mutually
+// exclusive with this file.
 package realworld
 
 import (

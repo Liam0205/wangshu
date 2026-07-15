@@ -4,19 +4,20 @@ package wasm
 
 import "github.com/Liam0205/wangshu/internal/value"
 
-// imported helper 的 Wasm function index(02-translation §6.4)。
+// Wasm function indices for imported helpers (02-translation §6.4).
 //
-// gibbous module import 一组 Go 助手(env.h_*),import 的 func 占据 Wasm
-// function index 空间的前若干位(import 先于本地 func)。这些常量是各助手
-// 在 import 列表里的索引,与 module 组装(module.go)的 import 声明顺序
-// **严格一致**。
+// The gibbous module imports a set of Go helpers (env.h_*); imported funcs
+// occupy the leading slots of the Wasm function index space (imports precede
+// local funcs). These constants are each helper's index in the import list,
+// and must stay **strictly consistent** with the import declaration order in
+// module assembly (module.go).
 //
-// PW2 用到的助手(直线 opcode 的 GETUPVAL/SETUPVAL/RETURN):
+// Helpers used by PW2 (straight-line opcodes GETUPVAL/SETUPVAL/RETURN):
 const (
 	helperGetUpval  uint32 = iota // env.h_getupval (base i32, b i32) -> (i64)
 	helperSetUpval                // env.h_setupval (base i32, b i32, val i64) -> ()
 	helperReturn                  // env.h_return   (base i32, pc i32, a i32, b i32) -> (i32)
-	helperSafepoint               // env.h_safepoint(base i32, pc i32) -> ()  (PW4 回边用,先声明)
+	helperSafepoint               // env.h_safepoint(base i32, pc i32) -> ()  (for PW4 back edges; declared ahead)
 	helperArith                   // host.h_arith   (base,pc,op,b,c,a i32) -> (i32 status)  PW3
 	helperUnm                     // host.h_unm     (base,pc,b,a i32) -> (i32 status)        PW3
 	helperLen                     // host.h_len     (base,pc,b,a i32) -> (i32 status)        PW3
@@ -36,53 +37,55 @@ const (
 	helperClosure                 // host.h_closure  (base,pc,a,bx i32) -> (i32 status)       PW7
 	helperClose                   // host.h_close    (base,pc,a i32) -> (i32 status)          PW7
 	helperTForLoop                // host.h_tforloop (base,pc,a,c i32) -> (i64 newbase/-1/-2)  PW4b
-	helperCallErr                 // host.h_callerr  () -> ()  PW10 R3:call_indirect 直调失败补弹遗留 gibbous 帧
+	helperCallErr                 // host.h_callerr  () -> ()  PW10 R3: pop leftover gibbous frames after a failed call_indirect direct call
 	numHelpers
 )
 
-// NaN-box raw u64 工具:编译期烧立即数用(translate.go)。
+// NaN-box raw u64 helpers: for burning immediates at compile time (translate.go).
 func nilRawU64() uint64   { return uint64(value.Nil) }
 func trueRawU64() uint64  { return uint64(value.True) }
 func falseRawU64() uint64 { return uint64(value.False) }
 
-// tagShift / tag 常量:NOT/LEN 的 tag 提取(value.Tag = v>>48)。
+// tagShift / tag constants: tag extraction for NOT/LEN (value.Tag = v>>48).
 const (
 	tagShiftBits = 48
 	tagStringU64 = uint64(value.TagString) // 0xFFFB
 	tagTableU64  = uint64(value.TagTable)  // 0xFFFC
 )
 
-// qNanBoxBase 是 IsNumber 判定边界(value.IsNumber: v < 0xFFF8...)。
+// qNanBoxBase is the IsNumber decision boundary (value.IsNumber: v < 0xFFF8...).
 const qNanBoxBase uint64 = 0xFFF8_0000_0000_0000
 
-// canonNaNU64 是规范 NaN(value 包 canonicalize 目标,01 §3.4)。
+// canonNaNU64 is the canonical NaN (the value package's canonicalize target, 01 §3.4).
 const canonNaNU64 uint64 = 0x7FF8_0000_0000_0000
 
-// PW5 表 IC inline 用常量。
+// Constants for PW5 table IC inlining.
 const (
-	// payloadMaskU64 = GCRefOf 的低 48 位掩码(value.go payloadMask)——
-	// NaN-box value 的低 48 位即对象 arena 字节偏移(GCRef)。
+	// payloadMaskU64 = the low-48-bit mask of GCRefOf (value.go payloadMask) --
+	// the low 48 bits of a NaN-box value are the object's arena byte offset (GCRef).
 	payloadMaskU64 uint64 = 0x0000_FFFF_FFFF_FFFF
 
-	// 表对象字段字节偏移(object/table.go 布局:word_n offset=8*n)。
+	// Table object field byte offsets (object/table.go layout: word_n offset=8*n).
 	tblArrayOff = 16 // word2: arrayRef
 	tblNodeOff  = 24 // word3: nodeRef
-	tblGenOff   = 40 // word5: lastfree | gen(gen 在高 32 位)
-	// node 槽步长(3 字 = 24 字节);key=+0 val=+8 next=+16。
+	tblGenOff   = 40 // word5: lastfree | gen (gen in the high 32 bits)
+	// Node slot stride (3 words = 24 bytes); key=+0 val=+8 next=+16.
 	nodeStrideBytes = 24
 	nodeValOff      = 8
 )
 
-// CI 段帧布局常量(PW10 零跨界 ③b:Wasm 内 RETURN 拆帧动态读段帧)。与 crescent
-// state.go 的 ciWords / writeCISeg / packCIWord2 布局**严格一致**:VS0-e 子步 ②
-// 起每帧 5 word=40 字节(word4 = nVarargs 镜像);word0[31:0]=base|[63:32]=funcIdx;
-// word1[31:0]=top|[63:32]=pc;word2 低 32=protoID、[47:32]=nresults(int16)、
-// bit50=gibbous;word3=cl;word4[15:0]=nVarargs。帧字节地址 =
-// load(ciSegBaseAddr) + depth*ciFrameBytes + word*8。
+// CI segment frame layout constants (PW10 zero-crossing ③b: in-Wasm RETURN
+// frame teardown reading the segment frame dynamically). Kept **strictly
+// consistent** with crescent state.go's ciWords / writeCISeg / packCIWord2
+// layout: from VS0-e substep ②, each frame is 5 words = 40 bytes (word4 =
+// nVarargs mirror); word0[31:0]=base|[63:32]=funcIdx; word1[31:0]=top|[63:32]=pc;
+// word2 low 32=protoID, [47:32]=nresults(int16), bit50=gibbous; word3=cl;
+// word4[15:0]=nVarargs. Frame byte address =
+// load(ciSegBaseAddr) + depth*ciFrameBytes + word*8.
 const (
-	ciFrameBytes  = 40 // ciWords(5) * 8;VS0-e 子步 ②:4→5
+	ciFrameBytes  = 40 // ciWords(5) * 8; VS0-e substep ②: 4→5
 	ciWord1Off    = 8  // word1: top | pc
 	ciWord2Off    = 16 // word2: protoID | nresults | flags
 	ciGibbousBit  = uint64(1) << 50
-	maxReturnFast = 8 // ③b 快路径展开 moveResults 的 nret 上界(超出走 helperReturn)
+	maxReturnFast = 8 // ③b fast-path nret upper bound for unrolling moveResults (beyond it uses helperReturn)
 )

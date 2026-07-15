@@ -2,29 +2,36 @@
 
 package amd64
 
-// CallJITFull 完整版 trampoline(切寄存器 + 装 jitContext + 保存 callee-saved)。
+// CallJITFull — the full trampoline (switch registers + set up jitContext +
+// save callee-saved).
 //
-// **PJ2 状态:草稿(NOT WIRED)**——实装完整,但 GibbousCode.Run 当前**不调用**
-// 本函数(SupportsAllOpcodes 仍全 false)。落地此函数的目的是让 Go runtime
-// 兼容性问题(callee-saved 保存恢复 / r15 装 jitContext)在 PJ2 阶段就过编译
-// 期检查 + 单测;PJ3+ 启动时直接接入 GibbousCode.Run。
+// **PJ2 status: draft (NOT WIRED)** — fully implemented, but GibbousCode.Run
+// currently does **not** call this function (SupportsAllOpcodes is still all
+// false). The point of landing this function is to get the Go runtime
+// compatibility issues (callee-saved save/restore / loading jitContext into
+// r15) through compile-time checks + unit tests already in the PJ2 phase; PJ3+
+// wires it directly into GibbousCode.Run at startup.
 //
-// 入参:
-//   - codeAddr:mmap 段起点(MmapCode 返回的 *CodePage).Addr())
-//   - jitCtx:JITContext 对应的 uintptr(unsafe.Pointer(*JITContext))
+// Params:
+//   - codeAddr: mmap segment start ((*CodePage returned by MmapCode).Addr())
+//   - jitCtx: the uintptr for JITContext (unsafe.Pointer(*JITContext))
 //
-// 返回:mmap 段 RET 时 RAX 值。
+// Returns: the RAX value at the mmap segment's RET.
 //
-// 与 callJIT 的区别:
-//   - callJIT:简化形态,不保存 callee-saved 不装 r15;模板内只跑 mov+ret;
-//   - callJITFull:完整形态,保存 rbx/rbp/r12/r13/r15(r14 = Go G 寄存器不动)
-//   - 装 r15 = jitContext;模板可读 r15+offset 取 arenaBase / 值栈 base /
-//     preemptFlag / helper 表(留 PJ3+ 模板扩);
+// Differences from callJIT:
+//   - callJIT: simplified form, doesn't save callee-saved, doesn't load r15;
+//     the template only runs mov+ret;
+//   - callJITFull: full form, saves rbx/rbp/r12/r13/r15 (r14 = Go G register,
+//     left untouched)
+//   - loads r15 = jitContext; the template can read r15+offset to get
+//     arenaBase / value-stack base / preemptFlag / helper table (reserved for
+//     PJ3+ template extensions);
 //
 //go:noescape
 func callJITFull(codeAddr uintptr, jitCtx uintptr) uint64
 
-// CallJITFull 是 callJITFull 的可见包装(单测 + 调用方接入用)。
+// CallJITFull is the visible wrapper around callJITFull (for unit tests +
+// caller wiring).
 func CallJITFull(codeAddr uintptr, jitCtx uintptr) uint64 {
 	return callJITFull(codeAddr, jitCtx)
 }

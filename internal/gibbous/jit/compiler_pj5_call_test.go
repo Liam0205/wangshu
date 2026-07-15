@@ -9,13 +9,13 @@ import (
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
-// TestPJ5_AnalyzeCallVoidForm_Recognize 验 analyzeCallVoidForm 正向识别
-// MOVE+CALL+RETURN void 三 op 单 BB(`function(g) g() end` 类,形态 A)。
+// TestPJ5_AnalyzeCallVoidForm_Recognize verifies analyzeCallVoidForm positively recognizes
+// the MOVE+CALL+RETURN void three-op single-BB form (`function(g) g() end` kind, form A).
 func TestPJ5_AnalyzeCallVoidForm_Recognize(t *testing.T) {
-	// 形态 A:MOVE 1 0; CALL 1 1 1; RETURN 0 1
-	//  - MOVE.A=1 (被调位) MOVE.B=0 (参数源,即函数参数 g 槽)
-	//  - CALL.A=1 (被调位与 MOVE.A 一致) CALL.B=1 (0 参) CALL.C=1 (0 返)
-	//  - RETURN.A=0 RETURN.B=1 (0 返值)
+	// Form A: MOVE 1 0; CALL 1 1 1; RETURN 0 1
+	//  - MOVE.A=1 (callee slot) MOVE.B=0 (arg source, i.e. function param g slot)
+	//  - CALL.A=1 (callee slot matches MOVE.A) CALL.B=1 (0 args) CALL.C=1 (0 returns)
+	//  - RETURN.A=0 RETURN.B=1 (0 return values)
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
 			bytecode.EncodeABC(bytecode.MOVE, 1, 0, 0),
@@ -47,12 +47,12 @@ func TestPJ5_AnalyzeCallVoidForm_Recognize(t *testing.T) {
 	}
 }
 
-// TestPJ5_AnalyzeCallVoidForm_RecognizeUpval 验 analyzeCallVoidForm 正向识别
-// GETUPVAL+CALL+RETURN void(形态 B,`local function f()...end; function() f() end`)。
+// TestPJ5_AnalyzeCallVoidForm_RecognizeUpval verifies analyzeCallVoidForm positively recognizes
+// GETUPVAL+CALL+RETURN void (form B, `local function f()...end; function() f() end`).
 func TestPJ5_AnalyzeCallVoidForm_RecognizeUpval(t *testing.T) {
-	// 形态 B:GETUPVAL 0 3; CALL 0 1 1; RETURN 0 1
-	//  - GETUPVAL.A=0 (被调位) GETUPVAL.B=3 (upvalue 索引)
-	//  - CALL.A=0 (被调位与 GETUPVAL.A 一致) CALL.B=1 C=1
+	// Form B: GETUPVAL 0 3; CALL 0 1 1; RETURN 0 1
+	//  - GETUPVAL.A=0 (callee slot) GETUPVAL.B=3 (upvalue index)
+	//  - CALL.A=0 (callee slot matches GETUPVAL.A) CALL.B=1 C=1
 	//  - RETURN.A=0 B=1
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
@@ -79,7 +79,7 @@ func TestPJ5_AnalyzeCallVoidForm_RecognizeUpval(t *testing.T) {
 	}
 }
 
-// TestPJ5_AnalyzeCallVoidForm_Reject 验形态守卫拒非简化形态。
+// TestPJ5_AnalyzeCallVoidForm_Reject verifies the form guard rejects non-simplified forms.
 func TestPJ5_AnalyzeCallVoidForm_Reject(t *testing.T) {
 	cases := []struct {
 		name string
@@ -168,11 +168,11 @@ func TestPJ5_AnalyzeCallVoidForm_Reject(t *testing.T) {
 	}
 }
 
-// TestPJ5_RunCallVoidPath 验 Run prelude CALL case 端到端:
-//   - mmap 段执行(dummy mov rax,0;ret),Run 走 prelude switch CALL case
-//   - 预处理 MOVE:host.GetReg(0) + SetReg(1) 把被调函数从 R(0) 拷到 R(1)
-//   - host.CallBaseline 被调用,callA=1/callB=1/callC=1/pc=1(CALL 自身 pc)
-//   - host.DoReturn 调一次(retPC=2/retA=0/retB=1)
+// TestPJ5_RunCallVoidPath verifies the Run prelude CALL case end to end:
+//   - mmap segment executes (dummy mov rax,0;ret), Run takes the prelude switch CALL case
+//   - MOVE preprocess: host.GetReg(0) + SetReg(1) copies the callee from R(0) to R(1)
+//   - host.CallBaseline is invoked, callA=1/callB=1/callC=1/pc=1 (CALL's own pc)
+//   - host.DoReturn called once (retPC=2/retA=0/retB=1)
 func TestPJ5_RunCallVoidPath(t *testing.T) {
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
@@ -184,7 +184,7 @@ func TestPJ5_RunCallVoidPath(t *testing.T) {
 	gc, host := compileWithHost(t, proto)
 	defer tryDispose(t, gc)
 
-	// 预设 R(0) = fake function NaN-box,Run 应当把它 SetReg 到 R(1)。
+	// Preset R(0) = fake function NaN-box; Run should SetReg it into R(1).
 	const fakeFuncVal uint64 = 0xFFF9_DEAD_BEEF_0000
 	host.regs[0] = fakeFuncVal
 
@@ -193,7 +193,7 @@ func TestPJ5_RunCallVoidPath(t *testing.T) {
 	if status != 0 {
 		t.Errorf("Run status = %d, want 0 (OK)", status)
 	}
-	// MOVE 预处理:R(1) 应是 R(0) 的 fakeFuncVal
+	// MOVE preprocess: R(1) should be R(0)'s fakeFuncVal
 	got, ok := host.regs[1]
 	if !ok {
 		t.Fatal("SetReg(1, ...) not called by MOVE preprocess")
@@ -201,7 +201,7 @@ func TestPJ5_RunCallVoidPath(t *testing.T) {
 	if got != fakeFuncVal {
 		t.Errorf("R(1) = 0x%016x, want 0x%016x (fakeFunc)", got, fakeFuncVal)
 	}
-	// host.CallBaseline 路径
+	// host.CallBaseline path
 	if host.callCalls != 1 {
 		t.Errorf("CallBaseline called %d times, want 1", host.callCalls)
 	}
@@ -212,7 +212,7 @@ func TestPJ5_RunCallVoidPath(t *testing.T) {
 	if host.lastCallPC != 1 {
 		t.Errorf("CallBaseline pc = %d, want 1 (CALL pc)", host.lastCallPC)
 	}
-	// host.DoReturn 路径
+	// host.DoReturn path
 	if host.doReturnCalls != 1 {
 		t.Errorf("DoReturn called %d times, want 1", host.doReturnCalls)
 	}
@@ -222,8 +222,9 @@ func TestPJ5_RunCallVoidPath(t *testing.T) {
 	}
 }
 
-// TestPJ5_RunCallVoidErrPropagate 验 host.CallBaseline 返 ERR=1 时 Run 直接
-// 返 1 + 不调 DoReturn(ERR 路径不弹帧,由上层 raiseGibbous + enterGibbous 取走)。
+// TestPJ5_RunCallVoidErrPropagate verifies that when host.CallBaseline returns ERR=1, Run
+// returns 1 directly and does not call DoReturn (the ERR path does not pop the frame; the
+// upper layer's raiseGibbous + enterGibbous takes it over).
 func TestPJ5_RunCallVoidErrPropagate(t *testing.T) {
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
@@ -235,7 +236,7 @@ func TestPJ5_RunCallVoidErrPropagate(t *testing.T) {
 	gc, host := compileWithHost(t, proto)
 	defer tryDispose(t, gc)
 
-	host.callRetCode = 1 // 模拟 ERR
+	host.callRetCode = 1 // simulate ERR
 	stack := make([]uint64, 4)
 	status := gc.Run(stack, 0)
 	if status != 1 {
@@ -249,9 +250,9 @@ func TestPJ5_RunCallVoidErrPropagate(t *testing.T) {
 	}
 }
 
-// TestPJ5_RunCallVoidUpvalPath 验形态 B(GETUPVAL+CALL+RETURN void)Run
-// prelude 走 host.GetUpval(base, preludeArg) + SetReg(callA) + CallBaseline
-// 路径(对位形态 A 的 GetReg + SetReg)。
+// TestPJ5_RunCallVoidUpvalPath verifies form B (GETUPVAL+CALL+RETURN void): the Run
+// prelude takes the host.GetUpval(base, preludeArg) + SetReg(callA) + CallBaseline
+// path (mirroring form A's GetReg + SetReg).
 func TestPJ5_RunCallVoidUpvalPath(t *testing.T) {
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
@@ -263,7 +264,7 @@ func TestPJ5_RunCallVoidUpvalPath(t *testing.T) {
 	gc, host := compileWithHost(t, proto)
 	defer tryDispose(t, gc)
 
-	// 预设 upvalue[3] = fake function NaN-box,Run 应当 GetUpval 把它读到 R(0)。
+	// Preset upvalue[3] = fake function NaN-box; Run should GetUpval it into R(0).
 	const fakeFuncVal uint64 = 0xFFF9_CAFE_BABE_0001
 	host.upvals[3] = fakeFuncVal
 
@@ -272,7 +273,7 @@ func TestPJ5_RunCallVoidUpvalPath(t *testing.T) {
 	if status != 0 {
 		t.Errorf("Run status = %d, want 0", status)
 	}
-	// GETUPVAL 预处理:R(0) 应是 upvals[3] 的 fakeFuncVal
+	// GETUPVAL preprocess: R(0) should be upvals[3]'s fakeFuncVal
 	got, ok := host.regs[0]
 	if !ok {
 		t.Fatal("SetReg(0, ...) not called by GETUPVAL preprocess")
@@ -289,8 +290,8 @@ func TestPJ5_RunCallVoidUpvalPath(t *testing.T) {
 	}
 }
 
-// TestPJ5_SupportsAllOpcodesGate_AcceptsCallVoid 验 SupportsAllOpcodes 接受
-// MOVE+CALL+RETURN void 形态(F7 闸门承认本形态)。
+// TestPJ5_SupportsAllOpcodesGate_AcceptsCallVoid verifies SupportsAllOpcodes accepts
+// the MOVE+CALL+RETURN void form (the F7 gate recognizes this form).
 func TestPJ5_SupportsAllOpcodesGate_AcceptsCallVoid(t *testing.T) {
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
@@ -305,9 +306,9 @@ func TestPJ5_SupportsAllOpcodesGate_AcceptsCallVoid(t *testing.T) {
 	}
 }
 
-// TestPJ5_SpecCallVoidHits 验 Compile 命中 PJ5 CALL void 形态时
-// specCallVoidHits 探针 ++(白盒 prove-the-path 证据,承
-// llmdoc/guides/prove-the-path-under-test §4)。
+// TestPJ5_SpecCallVoidHits verifies that when Compile hits the PJ5 CALL void form,
+// the specCallVoidHits probe increments (white-box prove-the-path evidence, per
+// llmdoc/guides/prove-the-path-under-test §4).
 func TestPJ5_SpecCallVoidHits(t *testing.T) {
 	ResetSpecHits()
 	proto := &bytecode.Proto{
@@ -324,14 +325,14 @@ func TestPJ5_SpecCallVoidHits(t *testing.T) {
 	}
 }
 
-// TestPJ5_AnalyzeCallVoidForm_Recognize1ArgK 验形态 A1K(1 K 参)识别:
-// MOVE + LOADK + CALL B=2 C=1 + RETURN void。
+// TestPJ5_AnalyzeCallVoidForm_Recognize1ArgK verifies recognition of form A1K (1 K arg):
+// MOVE + LOADK + CALL B=2 C=1 + RETURN void.
 func TestPJ5_AnalyzeCallVoidForm_Recognize1ArgK(t *testing.T) {
-	// 形态 A1K:MOVE 1 0; LOADK 2 K0; CALL 1 2 1; RETURN 0 1
-	//   - MOVE.A=1 (被调位) MOVE.B=0 (参数源)
-	//   - LOADK.A=2 (被调位+1) LOADK.Bx=0 (K0 索引)
-	//   - CALL.A=1 CALL.B=2 (1 参) CALL.C=1 (0 返)
-	//   - RETURN.B=1 (0 返值)
+	// Form A1K: MOVE 1 0; LOADK 2 K0; CALL 1 2 1; RETURN 0 1
+	//   - MOVE.A=1 (callee slot) MOVE.B=0 (arg source)
+	//   - LOADK.A=2 (callee slot+1) LOADK.Bx=0 (K0 index)
+	//   - CALL.A=1 CALL.B=2 (1 arg) CALL.C=1 (0 returns)
+	//   - RETURN.B=1 (0 return values)
 	const kVal uint64 = 0x4040000000000000 // NumberValue(32.0) NaN-box raw
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
@@ -363,8 +364,8 @@ func TestPJ5_AnalyzeCallVoidForm_Recognize1ArgK(t *testing.T) {
 	}
 }
 
-// TestPJ5_RunCallVoid1ArgKPath 验形态 A1K 端到端:Run 装载 R(callA+1)=K
-// 后调 CallBaseline,callB=2 + callC=1。
+// TestPJ5_RunCallVoid1ArgKPath verifies form A1K end to end: Run loads R(callA+1)=K
+// then calls CallBaseline, callB=2 + callC=1.
 func TestPJ5_RunCallVoid1ArgKPath(t *testing.T) {
 	const kVal uint64 = 0x4040000000000000 // NumberValue(32.0)
 	proto := &bytecode.Proto{
@@ -405,14 +406,14 @@ func TestPJ5_RunCallVoid1ArgKPath(t *testing.T) {
 	}
 }
 
-// TestPJ5_AnalyzeCallVoidForm_Recognize1ArgReg 验形态 A1R(1 reg 参)识别:
-// MOVE + MOVE + CALL B=2 C=1 + RETURN void。
+// TestPJ5_AnalyzeCallVoidForm_Recognize1ArgReg verifies recognition of form A1R (1 reg arg):
+// MOVE + MOVE + CALL B=2 C=1 + RETURN void.
 func TestPJ5_AnalyzeCallVoidForm_Recognize1ArgReg(t *testing.T) {
-	// 形态 A1R:MOVE 2 0; MOVE 3 1; CALL 2 2 1; RETURN 0 1
-	//   - MOVE.A=2 (被调位) MOVE.B=0 (参数源,即函数参数 g 槽)
-	//   - 第二条 MOVE.A=3 (被调位+1) MOVE.B=1 (参数源,即函数参数 x 槽)
-	//   - CALL.A=2 CALL.B=2 (1 参) CALL.C=1
-	//   - RETURN.B=1 (0 返值)
+	// Form A1R: MOVE 2 0; MOVE 3 1; CALL 2 2 1; RETURN 0 1
+	//   - MOVE.A=2 (callee slot) MOVE.B=0 (arg source, i.e. function param g slot)
+	//   - second MOVE.A=3 (callee slot+1) MOVE.B=1 (arg source, i.e. function param x slot)
+	//   - CALL.A=2 CALL.B=2 (1 arg) CALL.C=1
+	//   - RETURN.B=1 (0 return values)
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
 			bytecode.EncodeABC(bytecode.MOVE, 2, 0, 0),
@@ -442,8 +443,8 @@ func TestPJ5_AnalyzeCallVoidForm_Recognize1ArgReg(t *testing.T) {
 	}
 }
 
-// TestPJ5_RunCallVoid1ArgRegPath 验形态 A1R 端到端:Run 经
-// host.GetReg(callArg1RegSrc) + SetReg(callA+1) 装到参数槽。
+// TestPJ5_RunCallVoid1ArgRegPath verifies form A1R end to end: Run loads into the arg
+// slot via host.GetReg(callArg1RegSrc) + SetReg(callA+1).
 func TestPJ5_RunCallVoid1ArgRegPath(t *testing.T) {
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
@@ -477,14 +478,14 @@ func TestPJ5_RunCallVoid1ArgRegPath(t *testing.T) {
 	}
 }
 
-// TestPJ5_AnalyzeCallVoidForm_RecognizeRetGetter 验形态 BR1(0 参 1 返,getter)
-// 识别:GETUPVAL + CALL B=1 C=2 + RETURN A=0 B=2 + dead RETURN。
+// TestPJ5_AnalyzeCallVoidForm_RecognizeRetGetter verifies recognition of form BR1
+// (0 args 1 return, getter): GETUPVAL + CALL B=1 C=2 + RETURN A=0 B=2 + dead RETURN.
 func TestPJ5_AnalyzeCallVoidForm_RecognizeRetGetter(t *testing.T) {
-	// 形态 BR1:GETUPVAL 0 0; CALL 0 1 2; RETURN 0 2; RETURN 0 1
-	//   - GETUPVAL.A=0 (被调位) GETUPVAL.B=0 (upvalue 索引)
-	//   - CALL.A=0 CALL.B=1 (0 参) CALL.C=2 (1 返值)
-	//   - RETURN.A=0 RETURN.B=2 (1 返值,返 R(0)=被调返回值)
-	//   - dead RETURN(luac 通常补,但 length=3 时无)
+	// Form BR1: GETUPVAL 0 0; CALL 0 1 2; RETURN 0 2; RETURN 0 1
+	//   - GETUPVAL.A=0 (callee slot) GETUPVAL.B=0 (upvalue index)
+	//   - CALL.A=0 CALL.B=1 (0 args) CALL.C=2 (1 return value)
+	//   - RETURN.A=0 RETURN.B=2 (1 return value, returns R(0)=callee's return value)
+	//   - dead RETURN (luac usually appends it, but not when length=3)
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
 			bytecode.EncodeABC(bytecode.GETUPVAL, 0, 0, 0),

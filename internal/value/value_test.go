@@ -59,7 +59,7 @@ func TestIsCollectable(t *testing.T) {
 		{True, false},
 		{LightUDValue(0xDEAD), false},
 		{NumberValue(42), false},
-		{NumberValue(math.NaN()), false}, // canonical NaN 仍是 number
+		{NumberValue(math.NaN()), false}, // canonical NaN is still a number
 		{MakeGC(TagString, arena.GCRef(8)), true},
 		{MakeGC(TagTable, arena.GCRef(16)), true},
 		{MakeGC(TagFunction, arena.GCRef(24)), true},
@@ -74,14 +74,14 @@ func TestIsCollectable(t *testing.T) {
 }
 
 func TestNaNCanonicalization(t *testing.T) {
-	// 任何 NaN(含负 NaN、quiet/signaling、非规范 mantissa)经 NumberValue 都得到 canonNaN。
+	// Any NaN (negative NaN, quiet/signaling, non-canonical mantissa) becomes canonNaN via NumberValue.
 	nans := []float64{
 		math.NaN(),
-		math.Float64frombits(0xFFF8_0000_0000_0001), // 负 quiet NaN(与 boxed tag 段重叠!)
-		math.Float64frombits(0x7FFF_FFFF_FFFF_FFFF), // 各种 NaN bits
+		math.Float64frombits(0xFFF8_0000_0000_0001), // negative quiet NaN (overlaps the boxed tag range!)
+		math.Float64frombits(0x7FFF_FFFF_FFFF_FFFF), // assorted NaN bits
 		math.Float64frombits(0xFFFF_FFFF_FFFF_FFFF),
-		runtimeNaN(),     // Inf - Inf,运行期产生
-		runtimeZeroDiv(), // 0/0,运行期产生(避开编译期常量折叠)
+		runtimeNaN(),     // Inf - Inf, produced at runtime
+		runtimeZeroDiv(), // 0/0, produced at runtime (avoids compile-time constant folding)
 	}
 	for i, f := range nans {
 		v := NumberValue(f)
@@ -104,7 +104,7 @@ func TestNumberRoundTrip(t *testing.T) {
 		}
 		got := AsNumber(v)
 		if got != f {
-			// 唯一例外是 NaN(此用例不含)。
+			// The sole exception is NaN (not covered by this case).
 			t.Errorf("round trip %v -> %v", f, got)
 		}
 	}
@@ -127,8 +127,8 @@ func TestTruthy(t *testing.T) {
 		{Nil, false},
 		{False, false},
 		{True, true},
-		{NumberValue(0), true},          // Lua: 0 真
-		{NumberValue(math.NaN()), true}, // Lua: NaN 真
+		{NumberValue(0), true},          // Lua: 0 is truthy
+		{NumberValue(math.NaN()), true}, // Lua: NaN is truthy
 		{LightUDValue(0), true},
 		{MakeGC(TagString, arena.GCRef(8)), true},
 	}
@@ -158,7 +158,7 @@ func TestGCRoundTrip(t *testing.T) {
 }
 
 func TestLightUDPayload(t *testing.T) {
-	// 48-bit payload 截断:高 16 bit 被丢弃(01 §3.5)。
+	// 48-bit payload truncation: the top 16 bits are dropped (01 §3.5).
 	v := LightUDValue(0xDEAD_DEAD_BEEF_CAFE)
 	if Tag(v) != TagLightUD {
 		t.Errorf("light ud tag = %#x", Tag(v))
@@ -169,7 +169,7 @@ func TestLightUDPayload(t *testing.T) {
 }
 
 func TestTagFullCoverage(t *testing.T) {
-	// 8 个非数字 tag 用满 0xFFF8..0xFFFF(01 §3.3 不变式)。
+	// The 8 non-number tags fill 0xFFF8..0xFFFF exactly (01 §3.3 invariant).
 	tags := []uint16{TagNil, TagBool, TagLightUD, TagString, TagTable, TagFunction, TagUserdata, TagThread}
 	for i, tag := range tags {
 		want := uint16(0xFFF8 + i)
@@ -179,7 +179,7 @@ func TestTagFullCoverage(t *testing.T) {
 	}
 }
 
-// 通过 noinline 函数让编译器不把表达式折成常量。
+// Use noinline functions so the compiler won't fold the expressions into constants.
 //
 //go:noinline
 func runtimeNaN() float64 {

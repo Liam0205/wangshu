@@ -3,19 +3,19 @@ package token
 
 import "fmt"
 
-// Kind 是 token 种类枚举。涵盖 Lua 5.1 全部 21 个关键字、全部符号/算符、字面量类、EOF。
+// Kind is the token-kind enumeration. Covers all 21 Lua 5.1 keywords, all symbols/operators, literal kinds, and EOF.
 //
-// 注意:无 KwGoto(那是 Lua 5.2+,roadmap §6 锁 5.1 已排除)。
+// Note: no KwGoto (that is Lua 5.2+, excluded since roadmap §6 pins 5.1).
 type Kind uint8
 
 const (
-	// 字面量与标识符。
+	// Literals and identifiers.
 	EOF Kind = iota
 	NUMBER
 	STRING
 	NAME
 
-	// 21 个关键字(Lua 5.1)。
+	// The 21 keywords (Lua 5.1).
 	KW_AND
 	KW_BREAK
 	KW_DO
@@ -38,7 +38,7 @@ const (
 	KW_UNTIL
 	KW_WHILE
 
-	// 单字符算符 / 标点。
+	// Single-character operators / punctuation.
 	PLUS    // +
 	MINUS   // -
 	STAR    // *
@@ -58,7 +58,7 @@ const (
 	COMMA   // ,
 	DOT     // .
 
-	// 多字符算符。
+	// Multi-character operators.
 	EQEQ     // ==
 	NEQ      // ~=
 	LT       // <
@@ -72,22 +72,22 @@ const (
 // Token is the unit consumed by the parser (03 §3.2).
 type Token struct {
 	Kind Kind
-	Line int32 // 1-based 源行号
+	Line int32 // 1-based source line number
 
-	// 字面量载荷:
+	// Literal payload:
 	//   NUMBER → Num
-	//   STRING / NAME → Str(已解码字符串内容,长字符串/转义已处理)
-	// 其它 token 不使用这两个字段。
+	//   STRING / NAME → Str (decoded string content, long strings/escapes already handled)
+	// Other tokens do not use these two fields.
 	Num float64
 	Str string
 
-	// Raw 是 NUMBER/STRING 的源文原样切片(官方 llex.c txtToken 语义:
-	// 错误消息 near '1.000' / near ''aa'' 用原文,不用解析后的值)。
+	// Raw is the verbatim source slice of a NUMBER/STRING (official llex.c txtToken
+	// semantics: error messages near '1.000' / near ''aa'' use the source text, not the parsed value).
 	Raw string
 }
 
-// String returns the official-5.1 "near" rendering(parser 错误消息直接
-// 拼本输出):NAME/NUMBER/STRING 用源文原样(txtToken),其余用 kind 名。
+// String returns the official-5.1 "near" rendering (parser error messages
+// splice this output directly): NAME/NUMBER/STRING use the verbatim source text (txtToken), the rest use the kind name.
 func (t Token) String() string {
 	switch t.Kind {
 	case NUMBER, STRING:
@@ -169,7 +169,7 @@ var kindNames = [...]string{
 	ELLIPSIS: "...",
 }
 
-// Keywords 提供识别用的快速查表(lexer 先识别 identifier 再查此表,03 §4)。
+// Keywords provides a fast lookup table for recognition (the lexer first recognizes an identifier, then consults this table, 03 §4).
 var Keywords = map[string]Kind{
 	"and":      KW_AND,
 	"break":    KW_BREAK,

@@ -8,10 +8,12 @@ import (
 
 // sweep walks the gcnext sweep chain, reclaiming dead-white objects (06 §8.1).
 //
-// 回收 = 从 sweep 链摘除 + 字节归还 arena freelist(06 §2:size-class 定长桶 /
-// LARGE 首次适配)。归还后块内容视为脏内存,复用时由 AllocBytes 清零。
+// Reclaim = unlink from the sweep chain + return the bytes to the arena
+// freelist (06 §2: fixed-size size-class buckets / first-fit for LARGE). Once
+// returned, the block's contents are treated as dirty memory and zeroed by
+// AllocBytes on reuse.
 //
-// 注意:本函数仍统计 liveBytesAfterSweep 以驱动 pacing(06 §8.3)。
+// Note: this function still accumulates liveBytesAfterSweep to drive pacing (06 §8.3).
 func (c *Collector) sweep() {
 	c.liveBytesAfterSweep = 0
 	dead := c.deadWhite()
@@ -23,11 +25,11 @@ func (c *Collector) sweep() {
 		h := object.HeaderOf(c.a, ref)
 		next := object.GCNextOf(h)
 		if object.ColorOf(h) == dead && !object.IsFixed(h) {
-			// 死对象:从链摘除 + 归还 freelist。
+			// Dead object: unlink from the chain + return to the freelist.
 			c.unlinkSweep(prev, ref, next)
 			c.freeObject(ref, object.OTypeOf(h))
 		} else {
-			// 存活对象:翻成 currentWhite,等待下轮判定。
+			// Live object: flip to currentWhite, pending the next round's decision.
 			h = object.SetColor(h, current)
 			object.SetHeader(c.a, ref, h)
 			c.liveBytesAfterSweep += uint64(c.objectBytes(ref, object.OTypeOf(h)))
@@ -47,17 +49,24 @@ func (c *Collector) unlinkSweep(prev, ref, next arena.GCRef) {
 	object.SetHeader(c.a, prev, object.SetGCNext(hp, next))
 }
 
-// freeObject 回收一个死对象:类型相关索引清理 + 字节归还 arena freelist。
+// freeObject reclaims a single dead object: type-specific index cleanup + returning
+// the bytes to the arena freelist.
 //
-// 尺寸一律走 object.SizeOf / 附属块 Bytes helper(单一事实源)——释放尺寸
-// 错一个字,freelist 就把块放错 size-class 桶,复用时相邻对象内存重叠。
+// Sizes always go through object.SizeOf / the attachment-block Bytes helpers (single
+// source of truth) — if the freed size is off by even one word, the freelist puts the
+// block in the wrong size-class bucket and adjacent objects overlap in memory on reuse.
 //
-//   - String:先从 intern 表摘除(读 hash 须在 Free 覆写 word0/word1 之前)。
-//   - Table:附属 array/node 块一并归还(附属块由头对象独占;rehash 换段时
-//     旧段已由 rawtable 显式归还,此处只剩当前段,无双重释放)。
-//   - Closure:host closure 通知注册表释放槽位引用。
-//   - Userdata:清 hasFinalizer 登记(防块复用后新 userdata 的 __gc 注册被旧记录挡掉)。
-//   - Thread:头 + 值栈/CallInfo 附属块(P1 运行期协程在 Go 侧,此类型仅测试触达)。
+//   - String: first unlink from the intern table (the hash must be read before Free
+//     overwrites word0/word1).
+//   - Table: the attached array/node blocks are returned along with it (attachment blocks
+//     are owned exclusively by the header object; when rehash swaps segments the old segment
+//     has already been explicitly returned by rawtable, so only the current segment remains
+//     here, with no double free).
+//   - Closure: a host closure notifies the registry to release its slot reference.
+//   - Userdata: clear the hasFinalizer entry (prevents a stale record from blocking the __gc
+//     registration of a new userdata after block reuse).
+//   - Thread: header + value-stack/CallInfo attachment blocks (P1 runtime coroutines live on
+//     the Go side, so this type is only reached by tests).
 func (c *Collector) freeObject(ref arena.GCRef, ot object.OBJType) {
 	switch ot {
 	case object.OBJ_STRING:
@@ -83,16 +92,20 @@ func (c *Collector) freeObject(ref arena.GCRef, ot object.OBJType) {
 			c.a.Free(cis, object.ThreadCIBytes(object.ThreadCICap(c.a, ref)))
 		}
 	}
-	// 头对象自身。SizeOf 读头部字段,必须在 Free 覆写 word0 之前完成上面的清理。
+	// The header object itself. SizeOf reads header fields, so the cleanup above must
+	// complete before Free overwrites word0.
 	c.a.Free(ref, object.SizeOf(c.a, ref, ot))
-	// Userdata 的 __gc 已在 separateFinalizers 中分流(06 §10),此处不再处理。
+	// Userdata's __gc has already been split out in separateFinalizers (06 §10); nothing to do here.
 }
 
-// objectBytes 返回头对象的存活字节数(pacing 统计),**含 Table/Thread 的
-// 附属块**:分配侧 AllocCharge 计全尺寸,统计侧只计头会让常驻大表的
-// liveBytesAfterSweep 低估几个数量级 → threshold = live×pause 过小 →
-// GC 频率远超设计意图(binary-trees 形态的主要拖累)。
-// 头对象自身走 object.SizeOf 单一事实源,附属块按布局另加。
+// objectBytes returns the live byte count of the header object (for pacing stats),
+// **including the attachment blocks of Table/Thread**: the allocation side (AllocCharge)
+// counts the full size, so counting only the header on the stats side would make
+// liveBytesAfterSweep underestimate resident large tables by orders of magnitude →
+// threshold = live×pause too small → GC frequency far exceeding the design intent
+// (the main drag in the binary-trees pattern).
+// The header object itself goes through object.SizeOf (single source of truth); attachment
+// blocks are added per their layout.
 func (c *Collector) objectBytes(ref arena.GCRef, ot object.OBJType) uint32 {
 	n := object.SizeOf(c.a, ref, ot)
 	switch ot {
@@ -114,11 +127,12 @@ func (c *Collector) objectBytes(ref arena.GCRef, ot object.OBJType) uint32 {
 	return n
 }
 
-// separateFinalizers (06 §10):把 finalizeList 中本轮死白的 userdata 分出,标记其可达图复活,
-// 移入 toRunFinalizers 队列。
+// separateFinalizers (06 §10): splits out the dead-white userdata in finalizeList this round,
+// marks their reachable graphs resurrected, and moves them into the toRunFinalizers queue.
 //
-// M5 阶段:userdata `__gc` 注册由 M11 元表落地后接入;P1 此函数为占位,逐 entry 将仍存活的
-// 留下、死白的移走(实际复活逻辑等元表落地后再补)。
+// M5 stage: userdata `__gc` registration is wired in once M11 metatables land; in P1 this
+// function is a placeholder — per entry it keeps the still-live ones and moves out the
+// dead-white ones (the actual resurrection logic will be filled in after metatables land).
 func (c *Collector) separateFinalizers() {
 	if len(c.finalizeList) == 0 {
 		return
@@ -131,7 +145,8 @@ func (c *Collector) separateFinalizers() {
 		}
 		h := object.HeaderOf(c.a, ud)
 		if object.ColorOf(h) == dead {
-			// "复活":置黑,并(M11 后)递归标其 __gc 函数与可达对象。
+			// "Resurrect": mark black, and (after M11) recursively mark its __gc function
+			// and reachable objects.
 			object.SetHeader(c.a, ud, object.SetColor(h, object.ColorBlack))
 			c.toRunFinalizers = append(c.toRunFinalizers, ud)
 		} else {
@@ -141,10 +156,11 @@ func (c *Collector) separateFinalizers() {
 	c.finalizeList = keep
 }
 
-// clearWeakTables (06 §8.4 + 07 §13):遍历 weakList,移除弱侧死白的 entry。
+// clearWeakTables (06 §8.4 + 07 §13): walks weakList, removing entries whose weak side is dead-white.
 //
-// M5 阶段:object.TableWeakMode 是 stub(永远返回 0),weakList 不会有元素,本函数无操作。
-// M11 元表接入后,scan 阶段会登记 weakList,本函数即生效。
+// M5 stage: object.TableWeakMode is a stub (always returns 0), so weakList never has elements and
+// this function is a no-op. Once M11 metatables are wired in, the scan phase will register weakList
+// and this function takes effect.
 func (c *Collector) clearWeakTables() {
 	if len(c.weakList) == 0 {
 		return
@@ -155,7 +171,7 @@ func (c *Collector) clearWeakTables() {
 		weakKey := mode == 'k' || mode == 'a'
 		weakVal := mode == 'v' || mode == 'a'
 
-		// 数组段。
+		// Array segment.
 		asize := object.TableASize(c.a, t)
 		for i := uint32(0); i < asize; i++ {
 			v := object.TableArrayAt(c.a, t, i)
@@ -163,10 +179,12 @@ func (c *Collector) clearWeakTables() {
 				object.SetTableArrayAt(c.a, t, i, value.Nil)
 			}
 		}
-		// 哈希段。
-		// 清条目时必须保留 next 链:节点可能位于冲突链中段,重置 next=-1 会
-		// 截断链,链上后续活条目从此查不到(物理还在,逻辑丢失)。死条目
-		// 保链直到 rehash 回收(与 rawSet 删除路径、Lua 5.1 一致)。
+		// Hash segment.
+		// When clearing entries the next chain must be preserved: a node may sit in the
+		// middle of a collision chain, and resetting next=-1 would truncate the chain,
+		// making later live entries on it unreachable (physically still there, logically
+		// lost). Dead entries keep their chain link until rehash reclaims them (consistent
+		// with the rawSet delete path and Lua 5.1).
 		hsize := object.TableHSize(c.a, t)
 		for i := uint32(0); i < hsize; i++ {
 			k := object.NodeKey(c.a, t, i)

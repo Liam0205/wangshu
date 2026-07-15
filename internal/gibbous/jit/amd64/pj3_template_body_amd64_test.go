@@ -9,14 +9,14 @@ import (
 	"unsafe"
 )
 
-// pj3_template_body_amd64_test.go —— PJ3 FORLOOP body 含 reg-K op
-// 字节级 + 真 mmap+RX round-trip 验证(`local s=K; for i=K1,K2 do s=s
-// op K3 end; return s` 形态)。
+// pj3_template_body_amd64_test.go —— byte-level + real mmap+RX round-trip
+// verification of a PJ3 FORLOOP body containing a reg-K op (the `local s=K;
+// for i=K1,K2 do s=s op K3 end; return s` form).
 
 // TestPJ3_ForLoopWithBody_ADD:s=0; for i=1,100 do s = s + 1 end → s=100.
 func TestPJ3_ForLoopWithBody_ADD(t *testing.T) {
 	// R(0) = s, R(1..4) = for slots
-	pj2TestStack[0] = 0 // s 槽留给 emit 写
+	pj2TestStack[0] = 0 // s slot left for emit to write
 	vsBase := uintptr(unsafe.Pointer(&pj2TestStack[0]))
 
 	var buf []byte
@@ -114,8 +114,8 @@ func TestPJ3_ForLoopWithBody_SUB(t *testing.T) {
 	}
 }
 
-// TestPJ3_ForLoopWithBody2_AddMul:s=0; for i=1,5 do s = s+1; s = s*2 end
-// → 每 iter 跑 (s+1)*2:
+// TestPJ3_ForLoopWithBody2_AddMul: s=0; for i=1,5 do s = s+1; s = s*2 end
+// → each iter runs (s+1)*2:
 //
 //	iter1: s=(0+1)*2=2
 //	iter2: s=(2+1)*2=6

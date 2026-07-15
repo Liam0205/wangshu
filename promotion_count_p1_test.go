@@ -1,9 +1,9 @@
 //go:build !wangshu_p3
 
-// promotion_count_p1_test.go:State.PromotionCount() 在 p1 build / 未注入
-// P3 时永远返 0 的验证(godoc 承诺 no-op 等价)。
+// promotion_count_p1_test.go: verifies State.PromotionCount() always returns 0
+// under the p1 build / when P3 is not injected (godoc promises a no-op equivalent).
 //
-// p3 build 见 promotion_count_p3_test.go。
+// For the p3 build, see promotion_count_p3_test.go.
 package wangshu_test
 
 import (
@@ -14,7 +14,7 @@ import (
 
 func TestPromotionCount_P1_AlwaysZero(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{})
-	st.SetForceAllPromote(true) // p1 下也是 no-op
+	st.SetForceAllPromote(true) // no-op under p1 as well
 
 	prog, err := wangshu.Compile([]byte(`return 1+2`), "test")
 	if err != nil {

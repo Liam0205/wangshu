@@ -3,71 +3,93 @@ package bridge
 
 import "github.com/Liam0205/wangshu/internal/bytecode"
 
-// 阈值常量(01 §5.1 建议值——不影响正确性,只影响何时编译,实测后定标)。
+// Threshold constants (01 §5.1 suggested values — they do not affect
+// correctness, only when compilation kicks in; calibrated after measurement).
 const (
-	// HotBackEdgeThreshold:单个回边 pc 的回跳计数累计达此值即候选升层。
-	// 1000 是「保守且足够快越」的折中(LuaJIT hotloop=56 / V8 OSR=256 都更低,
-	// 但它们有 OSR;望舒走 try-compile 可保守一档)。
+	// HotBackEdgeThreshold: a single back-edge pc becomes a promotion
+	// candidate once its back-jump count reaches this value.
+	// 1000 is a "conservative yet fast enough to cross" compromise (LuaJIT
+	// hotloop=56 / V8 OSR=256 are both lower, but they have OSR; wangshu
+	// uses try-compile and can afford to stay one notch more conservative).
 	HotBackEdgeThreshold uint32 = 1000
 
-	// HotEntryThreshold:函数入口累计调用数阈值。200 次足以判热——典型
-	// 形态:外层循环 1000 次每次调一个 helper,200 次时已确认 helper 是热点。
+	// HotEntryThreshold: the cumulative call-count threshold at a function
+	// entry. 200 is enough to judge it hot — the typical case: an outer loop
+	// of 1000 iterations each calling a helper, and by 200 the helper is
+	// already confirmed to be a hot spot.
 	HotEntryThreshold uint32 = 200
 
-	// MinPromotableCodeLen:Proto 升层候选的最小 opcode 数下限。Proto.Code 长度
-	// 严格小于此值时 OnEnter/OnBackEdge **仍累积 EntryCount/BackEdge counter**
-	// (profile 诊断完整),但在阈值越过后**跳过 considerPromotion 调用**——这类
-	// 「短工作量」proto 升层后 wasm dispatch + host↔wasm boundary 反噬大于解释器
-	// dispatch 收益(实测 pineapple 形态 4-opcode 算术 f 升层后比解释器慢 19%,
-	// 见 issue #21 profile 实证:cpu profile top 200 中 wasm 反噬主导,
-	// 钩税路径可忽略)。守卫位置选「阈值后但 considerPromotion 前」而非
-	// 「counter 累积前」,保留 profile_test 的诊断断言(EntryCount/MaxBackEdge
-	// 准确反映短 proto 调用次数)。
+	// MinPromotableCodeLen: the lower bound on opcode count for a Proto to be
+	// a promotion candidate. When Proto.Code length is strictly below this
+	// value, OnEnter/OnBackEdge **still accumulate the EntryCount/BackEdge
+	// counters** (profile diagnostics stay complete), but **skip the
+	// considerPromotion call** once the threshold is crossed — for such
+	// "short workload" protos, after promotion the wasm dispatch + host↔wasm
+	// boundary overhead outweighs the interpreter dispatch gain (measured:
+	// a pineapple-style 4-opcode arithmetic f ran 19% slower than the
+	// interpreter after promotion; see issue #21 profile evidence: in the
+	// cpu profile top 200, wasm overhead dominates and the hook path is
+	// negligible). The guard is placed "after the threshold but before
+	// considerPromotion" rather than "before counter accumulation", to keep
+	// the profile_test diagnostic assertions valid (EntryCount/MaxBackEdge
+	// accurately reflect the call count of short protos).
 	//
-	// **10 经验初值**:覆盖纯算术 4-6 opcodes(GETGLOBAL/MUL/ADD/RETURN 类)+ 一点
-	// 余量,不影响真正含循环 / 多步算术 / 表查找的 10+ opcodes 函数升层。后续可经
-	// micro-benchmark(P3_Kernels 标定形态)精确定值。**不影响正确性**——升层
-	// 决策是 perf 优化,short proto 留解释器路径与 P1-only build 行为等价。
+	// **10 is an empirical initial value**: it covers pure arithmetic of
+	// 4-6 opcodes (GETGLOBAL/MUL/ADD/RETURN kind) plus a little margin,
+	// without affecting promotion of functions with real loops / multi-step
+	// arithmetic / table lookups at 10+ opcodes. It can later be pinned down
+	// precisely via micro-benchmark (the P3_Kernels calibration shape).
+	// **It does not affect correctness** — the promotion decision is a perf
+	// optimization, and leaving a short proto on the interpreter path is
+	// equivalent to P1-only build behavior.
 	//
-	// **与 F1-F7 闸门的关系**:F1-F6 是「不可编译形状」(vararg/coroutine/oversize
-	// 等结构性排除),F7 是「后端能力查询」;MinPromotableCodeLen 是「可编译但不
-	// 值得编译」——独立于可编译性判定,不写 ReasonsBitmap,只是 sampler 入口的
-	// fast-path 守卫。
+	// **Relation to the F1-F7 gates**: F1-F6 are "non-compilable shapes"
+	// (structural exclusions like vararg/coroutine/oversize), F7 is a
+	// "backend capability query"; MinPromotableCodeLen is "compilable but
+	// not worth compiling" — independent of the compilability decision, it
+	// does not write ReasonsBitmap, and is merely a fast-path guard at the
+	// sampler entry.
 	MinPromotableCodeLen = 10
 )
 
-// ProfileData 是一个 Proto 在某 State 上的画像数据(01 §2.2)。
+// ProfileData is the profile data of a Proto on a given State (01 §2.2).
 //
-// 设计要点:
-//   - 物理存储位置是 State 私有 profileTable(01 §6.3 (B) 方案),而非 Proto
-//     旁字段——避免多 State 并发写计数器的 race,与 wangshu Program 跨 State
-//     只读共享的并发约定一致(11 §1.4 / §8)。
-//   - 不进 arena、不进 GC 根集合(01 §2.4):住 Go 堆,与 Proto 同生命期。
-//   - 计数累积语义:跨调用累积函数级聚合(non-CallInfo-frame-level)。
+// Design points:
+//   - Its physical storage is the State-private profileTable (01 §6.3 scheme
+//     (B)), not a field alongside Proto — this avoids the race of multiple
+//     States concurrently writing the counters, consistent with wangshu's
+//     concurrency convention that a Program is read-only shared across
+//     States (11 §1.4 / §8).
+//   - It does not enter the arena or the GC root set (01 §2.4): it lives on
+//     the Go heap with the same lifetime as Proto.
+//   - Counter accumulation semantics: cross-call function-level aggregation
+//     (non-CallInfo-frame-level).
 //
-// 字段所有权(单一事实源分工):
-//   - EntryCount / BackEdge: 01-profiling 主管(回边 / 入口采样)
-//   - Feedback              : 02-ic-feedback 主管(P2 写,P3/P4 读;P2 不消费)
-//   - Compilable / Reasons  : 03-compilability-analysis 主管(Compile 时一次写,后续只读)
-//   - TierState / CompileTried: 04-try-compile-fallback 主管(状态机字段)
+// Field ownership (single-source-of-truth division):
+//   - EntryCount / BackEdge:  owned by 01-profiling (back-edge / entry sampling)
+//   - Feedback:               owned by 02-ic-feedback (P2 writes, P3/P4 read; P2 does not consume)
+//   - Compilable / Reasons:   owned by 03-compilability-analysis (written once at Compile, read-only afterward)
+//   - TierState / CompileTried: owned by 04-try-compile-fallback (state-machine fields)
 type ProfileData struct {
-	// —— 计数器(01-profiling §2.2)——
-	EntryCount uint32   // 函数入口计数:每次 enterLuaFrame 自增
-	BackEdge   []uint32 // 按回边 pc 索引的回跳计数(稠密数组,延迟分配)
+	// —— Counters (01-profiling §2.2) ——
+	EntryCount uint32   // function entry count: incremented on each enterLuaFrame
+	BackEdge   []uint32 // back-jump counts indexed by back-edge pc (dense array, lazily allocated)
 
-	// —— IC 反馈(02-ic-feedback §4.5)——
-	// 一次性聚合(P2 初版只在首次升层时聚合一次,02 §4.5);P3/P4 只读消费。
+	// —— IC feedback (02-ic-feedback §4.5) ——
+	// One-shot aggregation (the P2 initial version aggregates only once, on
+	// first promotion, 02 §4.5); P3/P4 consume it read-only.
 	Feedback *TypeFeedback
 
-	// —— 可编译性(03-compilability-analysis §5.3)——
-	// Compile 时一次写,运行期只读;并发读由 Go memory model 自动保证可见性
-	// (write-once before any reader,03 §5.4)。
+	// —— Compilability (03-compilability-analysis §5.3) ——
+	// Written once at Compile, read-only at runtime; visibility of concurrent
+	// reads is guaranteed automatically by the Go memory model
+	// (write-once before any reader, 03 §5.4).
 	Compilable Compilability
-	Reasons    ReasonsBitmap // F1-F7 拒因位掩码(03 §5.3),用于诊断日志
+	Reasons    ReasonsBitmap // F1-F7 rejection-reason bitmask (03 §5.3), used for diagnostic logging
 
-	// —— 状态机(04-try-compile-fallback §3)——
+	// —— State machine (04-try-compile-fallback §3) ——
 	TierState    TierState // TierInterp / TierGibbous / TierStuck
-	CompileTried bool      // 是否已尝试编译(防 TierStuck 反复重试,04 §3.2)
+	CompileTried bool      // whether compilation has been attempted (prevents TierStuck from retrying repeatedly, 04 §3.2)
 
 	// recheckedAtEntry dedups recheckCompilabilityRuntime while the
 	// forceAll retry window holds a declined proto on TierInterp
@@ -99,11 +121,14 @@ const (
 	floorExemptNo                              // not exempt: floor blocks
 )
 
-// MaxBackEdge 返回该 ProfileData 中最大的单回边累计计数。
+// MaxBackEdge returns the largest single-back-edge cumulative count in this
+// ProfileData.
 //
-// 单回边越阈值近似「函数热」(01 §5.2):不必每次求和所有回边,只要某一个
-// 回边累计够热,就认为函数值得编译。本函数主要用于诊断日志显示「累计 N
-// 次回边」(04 §6.1 升层日志格式)。
+// A single back edge crossing the threshold approximates "the function is hot"
+// (01 §5.2): there is no need to sum all back edges every time — as long as
+// some one back edge has accumulated enough heat, the function is considered
+// worth compiling. This function is used mainly for diagnostic logging to
+// show "N cumulative back edges" (04 §6.1 promotion log format).
 func (pd *ProfileData) MaxBackEdge() uint32 {
 	var m uint32
 	for _, c := range pd.BackEdge {
@@ -114,12 +139,15 @@ func (pd *ProfileData) MaxBackEdge() uint32 {
 	return m
 }
 
-// resetCountersForReuse 仅清回边/入口计数,保留状态机字段(TierState /
-// Compilable / Reasons)。**当前未使用**——预留给 sync.Pool 短生命期 State
-// 形态下的 (C) 双表混合方案(01 §6.4)。本期接口预设占位,真聚合实装等
-// 实测发现 (B) 方案累积速度均分严重影响热阈值生效再启用。
+// resetCountersForReuse clears only the back-edge/entry counters, preserving
+// the state-machine fields (TierState / Compilable / Reasons). **Currently
+// unused** — reserved for scheme (C), the dual-table hybrid, under a
+// sync.Pool short-lived State shape (01 §6.4). This interface is a
+// placeholder for the current phase; the real aggregation lands once
+// measurement shows that scheme (B)'s uneven accumulation speed seriously
+// affects when the heat threshold takes effect, at which point it is enabled.
 //
-//nolint:unused // 接口预设占位,(C) 方案启用时使用。
+//nolint:unused // interface placeholder, used when scheme (C) is enabled.
 func (pd *ProfileData) resetCountersForReuse() {
 	pd.EntryCount = 0
 	for i := range pd.BackEdge {
@@ -128,10 +156,10 @@ func (pd *ProfileData) resetCountersForReuse() {
 	pd.recheckedAtEntry = 0
 }
 
-// allocBackEdge 在首次回边命中时按 Code 长度延迟分配 backEdge 数组(01 §2.3)。
+// allocBackEdge lazily allocates the backEdge array sized to the Code length on the first back-edge hit (01 §2.3).
 //
-// 避免「冷 Proto 永远没有回边、却为它预留了一个数组」的浪费。返回 ProfileData
-// 的方法链友好形态。
+// This avoids the waste of "a cold Proto that never has a back edge yet still has an array
+// reserved for it". Returns in a method-chaining-friendly form of ProfileData.
 func (pd *ProfileData) allocBackEdge(proto *bytecode.Proto) {
 	if pd.BackEdge == nil {
 		pd.BackEdge = make([]uint32, len(proto.Code))

@@ -2,186 +2,237 @@
 
 package jit
 
-// P4HostState 是 P4 简化形态需要从 host(crescent)调用的最小抽象接口。
+// P4HostState is the minimal abstract interface that the P4 simplified
+// form needs to call back into the host (crescent).
 //
-// **依赖解环**(承 docs/design/p4-method-jit/05-system-pipeline.md §4.3 +
-// gibbous/wasm/helpers.go::HostState 同款手法):p4Code.Run 需要调 host 的
-// DoReturn 弹帧(因为 P4 简化形态 mmap 段不内调 host helper),但 jit 包不能
-// import crescent(成环)。解法:本接口由 crescent.State 实装,wireP4 时注入。
+// **Dependency-cycle break** (per docs/design/p4-method-jit/05-system-pipeline.md
+// §4.3 + the same technique as gibbous/wasm/helpers.go::HostState):
+// p4Code.Run needs to call the host's DoReturn to pop the frame (because
+// the P4 simplified form's mmap segment does not call host helpers
+// internally), but the jit package cannot import crescent (that would
+// form a cycle). Solution: this interface is implemented by
+// crescent.State and injected during wireP4.
 //
-// **PJ7 真接入用**:p4Code 持本接口,Run 调用方完成「值已写回 R(A)」后,
-// 调本接口的 DoReturn 让 host 完成「按 nresults 移结果到 funcIdx + 弹帧 +
-// 恢复 caller top」(承 gibbous_host.go::DoReturn 同款语义)。
+// **Used by PJ7 wiring**: p4Code holds this interface; after the Run
+// caller has finished "the value is written back to R(A)", it calls this
+// interface's DoReturn to let the host finish "move results to funcIdx by
+// nresults + pop frame + restore caller top" (per the same semantics as
+// gibbous_host.go::DoReturn).
 //
-// **与 P3 HostState 的关系**:P3 HostState 是 wasm helper 集(GetUpval /
-// SetUpval / DoReturn / Safepoint / Arith / GetTable 等 ~25 个方法);P4 简化
-// 形态当前仅需 DoReturn / SetReg / GetUpval / Arith 四个(留 PJ8+ 算术族真
-// 接入 / 表 IC 真接入时扩)。
+// **Relation to P3 HostState**: P3 HostState is the wasm helper set
+// (GetUpval / SetUpval / DoReturn / Safepoint / Arith / GetTable, ~25
+// methods); the P4 simplified form currently needs only the four
+// DoReturn / SetReg / GetUpval / Arith (leaving room to extend when the
+// arithmetic family / table IC are actually wired in PJ8+).
 type P4HostState interface {
-	// DoReturn 处理 P4 帧 RETURN A B:返回值回填到调用者期望槽 + 弹帧。
+	// DoReturn handles P4 frame RETURN A B: return values are written
+	// back into the caller's expected slots + pop the frame.
 	DoReturn(base int32, pc int32, a int32, b int32) int32
 
-	// SetReg 直接写当前帧的 R(idx) 槽位为 val(NaN-box u64)。
+	// SetReg directly writes the current frame's R(idx) slot to val
+	// (NaN-boxed u64).
 	SetReg(idx int32, val uint64)
 
-	// GetUpval 读当前 closure 的 upvalue B(execute.go GETUPVAL 段同款语义)。
+	// GetUpval reads upvalue B of the current closure (same semantics as
+	// the execute.go GETUPVAL case).
 	//
-	// 用例:P4 GETUPVAL 形态 — Run 在 mmap 段执行后调本接口取 upvalue 值,
-	// 经 SetReg 写 R(retA)。
+	// Use case: P4 GETUPVAL form — after executing the mmap segment, Run
+	// calls this interface to fetch the upvalue value and writes it to
+	// R(retA) via SetReg.
 	GetUpval(base int32, b int32) uint64
 
-	// SetUpvalFromReg 写当前 closure 的 upvalue b 为 R(a)(execute.go SETUPVAL
-	// 段同款语义)。本接口把「读 R(a) + 写 upvalue」打成原子操作,避免引入
-	// GetReg 通用接口(同等覆盖 NOT/SETUPVAL 等需要读寄存器再写 host 的场景)。
+	// SetUpvalFromReg writes the current closure's upvalue b to R(a)
+	// (same semantics as the execute.go SETUPVAL case). This interface
+	// packs "read R(a) + write upvalue" into an atomic operation, avoiding
+	// the need to introduce a general GetReg interface (it equally covers
+	// scenarios like NOT/SETUPVAL that need to read a register then write
+	// to the host).
 	//
-	// 与 gibbous_host.go::State.SetUpval(base, b, val) 不同:那个签名要求
-	// caller 先有 val,但 jit/P4HostState 无 GetReg 接口读 R(a)——故包装
-	// 一层「带 reg 读」的对偶 helper。永不 raise。
+	// Differs from gibbous_host.go::State.SetUpval(base, b, val): that
+	// signature requires the caller to already hold val, but
+	// jit/P4HostState has no GetReg interface to read R(a) — hence this
+	// "read-reg-included" dual helper wraps a layer around it. Never raises.
 	//
-	// 用例:P4 SETUPVAL A B + RETURN A 1 形态(`function(v) upval = v end`)。
+	// Use case: the P4 SETUPVAL A B + RETURN A 1 form
+	// (`function(v) upval = v end`).
 	SetUpvalFromReg(base int32, a int32, b int32)
 
-	// GetReg 读取当前帧 R(idx) 槽位的 NaN-box u64(P4 PJ7 内 Run 完成 host
-	// 依赖运算需要读寄存器的场景)。与 SetReg 对偶。
+	// GetReg reads the NaN-boxed u64 in the current frame's R(idx) slot
+	// (for scenarios inside P4 PJ7 where Run needs to read a register to
+	// complete a host-dependent operation). Dual to SetReg.
 	//
-	// 用例:NOT A B + RETURN A 2(`function(x) return not x end`)——Run 需
-	// 读 R(B) 真假性 + SetReg(A, BoolValue(!Truthy(...)))。
+	// Use case: NOT A B + RETURN A 2 (`function(x) return not x end`) —
+	// Run needs to read the truthiness of R(B) + SetReg(A,
+	// BoolValue(!Truthy(...))).
 	GetReg(idx int32) uint64
 
-	// Arith 算术慢路径(ADD/SUB/MUL/DIV/MOD/POW)助手(gibbous_host.go::Arith
-	// 同款签名,与 P3 helper 复用,逐字节同构于解释器 doArith)。
+	// Arith is the arithmetic slow-path (ADD/SUB/MUL/DIV/MOD/POW) helper
+	// (same signature as gibbous_host.go::Arith, reused with the P3
+	// helper, byte-for-byte isomorphic to the interpreter's doArith).
 	//
-	// 参数:
-	//   - base/pc:当前帧 base 字节偏移 + 当前 pc(物化 ci.savedPC,与 P3 同款)
-	//   - op:bytecode.OpCode 值(ADD=12 / SUB=13 / MUL=14 / DIV=15 / MOD=16 /
-	//     POW=17 等)
-	//   - b/c:RK 寄存器 / 常量索引(B/C 字段直传)
-	//   - a:目标 R(A) 寄存器号(helper 内经 setReg 写)
+	// Params:
+	//   - base/pc: current frame base byte offset + current pc (materializes
+	//     ci.savedPC, same as P3)
+	//   - op: bytecode.OpCode value (ADD=12 / SUB=13 / MUL=14 / DIV=15 /
+	//     MOD=16 / POW=17 etc.)
+	//   - b/c: RK register / constant index (B/C fields passed through)
+	//   - a: target R(A) register number (helper writes it via setReg)
 	//
-	// 返回:0=OK / 1=ERR(raise pending,enterGibbous 取走冒泡)。
+	// Returns: 0=OK / 1=ERR (raise pending, picked up and bubbled by
+	// enterGibbous).
 	//
-	// 用例:P4 ADD/SUB/MUL/... 形态 — Run 在 mmap 段执行后调本接口完成算术 +
-	// 写 R(A),然后调 DoReturn 弹帧。
+	// Use case: P4 ADD/SUB/MUL/... form — after executing the mmap
+	// segment, Run calls this interface to complete the arithmetic +
+	// write R(A), then calls DoReturn to pop the frame.
 	Arith(base int32, pc int32, op int32, b int32, c int32, a int32) int32
 
-	// Unm 一元负号 UNM 慢路径助手(gibbous_host.go::Unm 同款签名,逐字节同构
-	// 于解释器 UNM 段慢路径:string coercion + __unm 元方法)。
+	// Unm is the unary-minus UNM slow-path helper (same signature as
+	// gibbous_host.go::Unm, byte-for-byte isomorphic to the interpreter's
+	// UNM slow path: string coercion + __unm metamethod).
 	//
-	// 参数:base/pc 同 Arith;b = 源寄存器号;a = 目标寄存器号(R(A))。
+	// Params: base/pc as in Arith; b = source register number; a = target
+	// register number (R(A)).
 	//
-	// 返回:0=OK / 1=ERR。用例:P4 UNM A B 形态。
+	// Returns: 0=OK / 1=ERR. Use case: the P4 UNM A B form.
 	Unm(base int32, pc int32, b int32, a int32) int32
 
-	// Len 长度运算 LEN 慢路径助手(gibbous_host.go::Len 同款签名,逐字节同构
-	// 于解释器 LEN 段:string 字节长 / table border / table __len / 异类报错)。
+	// Len is the length-operation LEN slow-path helper (same signature as
+	// gibbous_host.go::Len, byte-for-byte isomorphic to the interpreter's
+	// LEN case: string byte length / table border / table __len / error on
+	// other types).
 	//
-	// 参数:base/pc 同 Arith;b = 源寄存器号;a = 目标寄存器号(R(A))。
+	// Params: base/pc as in Arith; b = source register number; a = target
+	// register number (R(A)).
 	//
-	// 返回:0=OK / 1=ERR。用例:P4 LEN A B 形态。
+	// Returns: 0=OK / 1=ERR. Use case: the P4 LEN A B form.
 	Len(base int32, pc int32, b int32, a int32) int32
 
-	// Concat 字符串拼接 CONCAT A B C 慢路径助手(gibbous_host.go::Concat
-	// 同款签名,逐字节同构于解释器 CONCAT 段:R(A) := R(B) .. R(B+1) .. ..
-	// R(C),含 __concat 元方法 + 数字 / 字符串混拼;可 raise)。
+	// Concat is the string-concatenation CONCAT A B C slow-path helper
+	// (same signature as gibbous_host.go::Concat, byte-for-byte isomorphic
+	// to the interpreter's CONCAT case: R(A) := R(B) .. R(B+1) .. .. R(C),
+	// including the __concat metamethod + mixed number / string concat;
+	// may raise).
 	//
-	// 参数:base/pc 同 Arith;a = 目标寄存器号;b/c = CONCAT 范围首尾
-	// (R(B..C) 闭区间),helper 内经 doConcat 完成连接 + setReg。
+	// Params: base/pc as in Arith; a = target register number; b/c =
+	// CONCAT range endpoints (R(B..C) closed interval); the helper
+	// completes the concatenation + setReg via doConcat.
 	//
-	// 返回:0=OK / 1=ERR。用例:P4 CONCAT A B C 形态(`function(x, y)
-	// return x .. y end` 类)。
+	// Returns: 0=OK / 1=ERR. Use case: the P4 CONCAT A B C form
+	// (`function(x, y) return x .. y end` kind).
 	Concat(base int32, pc int32, a int32, b int32, c int32) int32
 
-	// Eq EQ 相等比较慢路径(gibbous_host.go::Eq 同款签名,经 doCompare EQ
-	// 分支:raw 等检查 + __eq 元方法;可 raise)。
+	// Eq is the EQ equality-comparison slow path (same signature as
+	// gibbous_host.go::Eq, via the doCompare EQ branch: raw-equality check
+	// + __eq metamethod; may raise).
 	//
-	// 参数:base/pc 同 Arith;b/c = 操作数(EQ B C,RK 编码取寄存器或常量)。
+	// Params: base/pc as in Arith; b/c = operands (EQ B C, RK encoding
+	// selects register or constant).
 	//
-	// 返回:packed,bit0 = 比较结果(0/1),bit1 = 错误标志(2)。
+	// Returns: packed, bit0 = comparison result (0/1), bit1 = error flag (2).
 	Eq(base int32, pc int32, b int32, c int32) int32
 
-	// SetList 处理 SETLIST A B C(gibbous_host.go::SetList 同款签名,逐字节
-	// 同构于解释器 SETLIST 段:把 R(A+1..A+B) 装到表 R(A) 的 array 段从
-	// (C-1)*FPF+1 起的位置;C=0 时 next instruction 是 batch 大号)。
+	// SetList handles SETLIST A B C (same signature as
+	// gibbous_host.go::SetList, byte-for-byte isomorphic to the
+	// interpreter's SETLIST case: place R(A+1..A+B) into the array segment
+	// of table R(A) starting at position (C-1)*FPF+1; when C=0 the next
+	// instruction is the batch number).
 	//
-	// 参数:base/pc 同 Arith;a = 表寄存器;b = 元素数;c = batch 号(0 means
-	// next pc is batch number)。
+	// Params: base/pc as in Arith; a = table register; b = element count;
+	// c = batch number (0 means next pc is batch number).
 	//
-	// 返回:0=OK / 1=ERR。用例:P4 `return {1, 2, 3, 4, ...}` 等数组字面量。
+	// Returns: 0=OK / 1=ERR. Use case: P4 `return {1, 2, 3, 4, ...}` and
+	// other array literals.
 	SetList(base int32, pc int32, a int32, b int32, c int32) int32
 
-	// NewTable 处理 NEWTABLE A B C 助手(gibbous_host.go::NewTable 同款签名,
-	// 分配 + safepoint 全 helper 内,永不 raise——只可能 Go 端 OOM)。
+	// NewTable handles the NEWTABLE A B C helper (same signature as
+	// gibbous_host.go::NewTable; allocation + safepoint entirely inside
+	// the helper, never raises — only a Go-side OOM is possible).
 	//
-	// 参数:base/pc 同 Arith;a = 目标寄存器号;b/c = 数组段/哈希段初始大小
-	// 的 Fb 编码(luac 提示)。
+	// Params: base/pc as in Arith; a = target register number; b/c = Fb
+	// encoding of the initial sizes of the array segment / hash segment
+	// (luac hints).
 	//
-	// 返回:0=OK / 1=ERR(理论不发生,签名保留与其它 helper 对齐)。
-	// 用例:P4 NEWTABLE A B C 形态(`function() return {} end` 类)。
+	// Returns: 0=OK / 1=ERR (does not happen in theory, the signature is
+	// kept aligned with the other helpers). Use case: the P4 NEWTABLE A B C
+	// form (`function() return {} end` kind).
 	NewTable(base int32, pc int32, a int32, b int32, c int32) int32
 
-	// GetTable 处理 GETTABLE A B C 慢路径助手(gibbous_host.go::GetTable
-	// 同款签名,逐字节同构于解释器 GETTABLE 段:经 icGetTable IC 缓存
-	// 命中 / 哈希查表 / __index 元方法链,可 raise:attempt to index nil
-	// 等)。
+	// GetTable is the GETTABLE A B C slow-path helper (same signature as
+	// gibbous_host.go::GetTable, byte-for-byte isomorphic to the
+	// interpreter's GETTABLE case: via the icGetTable IC cache hit / hash
+	// lookup / __index metamethod chain, may raise: attempt to index nil
+	// etc.).
 	//
-	// 参数:base/pc 同 Arith;a = 目标寄存器号;b = 表所在寄存器;c = RK
-	// 键(寄存器号或常量索引)。
+	// Params: base/pc as in Arith; a = target register number; b = register
+	// holding the table; c = RK key (register number or constant index).
 	//
-	// 返回:0=OK / 1=ERR。用例:P4 GETTABLE A B C 形态(`function(t, k)
-	// return t[k] end` / `function(t) return t.x end` 类)。
+	// Returns: 0=OK / 1=ERR. Use case: the P4 GETTABLE A B C form
+	// (`function(t, k) return t[k] end` / `function(t) return t.x end` kind).
 	GetTable(base int32, pc int32, a int32, b int32, c int32) int32
 
-	// SetTable 处理 SETTABLE A B C 慢路径助手(gibbous_host.go::SetTable
-	// 同款签名,经 icSetTable IC + 哈希 + __newindex 元方法链,可 raise)。
+	// SetTable is the SETTABLE A B C slow-path helper (same signature as
+	// gibbous_host.go::SetTable, via the icSetTable IC + hash +
+	// __newindex metamethod chain, may raise).
 	//
-	// 参数:base/pc 同 Arith;a = 表所在寄存器;b/c = RK 键 / 值(寄存器
-	// 号或常量索引)。
+	// Params: base/pc as in Arith; a = register holding the table; b/c =
+	// RK key / value (register number or constant index).
 	//
-	// 返回:0=OK / 1=ERR。用例:P4 SETTABLE A B C 形态(`function(t, k, v)
-	// t[k] = v end` / `function(t) t.x = 1 end` 类——setter 形态 retB=1)。
+	// Returns: 0=OK / 1=ERR. Use case: the P4 SETTABLE A B C form
+	// (`function(t, k, v) t[k] = v end` / `function(t) t.x = 1 end` kind —
+	// the setter form has retB=1).
 	SetTable(base int32, pc int32, a int32, b int32, c int32) int32
 
-	// DoGetGlobal 处理 GETGLOBAL A Bx 慢路径助手(gibbous_host.go::DoGetGlobal
-	// 同款签名,经 icGetTable 在 `_G` 表上查 Consts[bx],可 raise)。
+	// DoGetGlobal is the GETGLOBAL A Bx slow-path helper (same signature
+	// as gibbous_host.go::DoGetGlobal, looks up Consts[bx] on the `_G`
+	// table via icGetTable, may raise).
 	//
-	// 参数:base/pc 同 Arith;a = 目标寄存器号;bx = 常量索引(全局变量名)。
+	// Params: base/pc as in Arith; a = target register number; bx =
+	// constant index (global variable name).
 	//
-	// 返回:0=OK / 1=ERR。用例:P4 GETGLOBAL A Bx 形态(`function() return
-	// print end` 等)。
+	// Returns: 0=OK / 1=ERR. Use case: the P4 GETGLOBAL A Bx form
+	// (`function() return print end` etc.).
 	DoGetGlobal(base int32, pc int32, a int32, bx int32) int32
 
-	// DoSetGlobal 处理 SETGLOBAL A Bx 慢路径助手(gibbous_host.go::DoSetGlobal
-	// 同款签名,经 icSetTable 在 `_G` 表上写 Consts[bx] = R(a),可 raise)。
+	// DoSetGlobal is the SETGLOBAL A Bx slow-path helper (same signature
+	// as gibbous_host.go::DoSetGlobal, writes Consts[bx] = R(a) on the
+	// `_G` table via icSetTable, may raise).
 	//
-	// 参数:base/pc 同 Arith;a = 源寄存器号;bx = 常量索引(全局变量名)。
+	// Params: base/pc as in Arith; a = source register number; bx =
+	// constant index (global variable name).
 	//
-	// 返回:0=OK / 1=ERR。用例:P4 SETGLOBAL A Bx 形态(setter retB=1)。
+	// Returns: 0=OK / 1=ERR. Use case: the P4 SETGLOBAL A Bx form (setter
+	// retB=1).
 	DoSetGlobal(base int32, pc int32, a int32, bx int32) int32
 
-	// Compare 处理 EQ/LT/LE 比较助手(gibbous_host.go::Compare 同款签名,
-	// 经 doCompare 复刻解释器 EQ/LT/LE 段:string 比较 / __lt/__le 元方法)。
+	// Compare handles the EQ/LT/LE comparison helper (same signature as
+	// gibbous_host.go::Compare, replicates the interpreter's EQ/LT/LE
+	// cases via doCompare: string comparison / __lt/__le metamethods).
 	//
-	// 参数:base/pc 同 Arith;op = bytecode.OpCode(EQ=23/LT=24/LE=25);
-	// b/c = RK 寄存器 / 常量索引(B/C 字段直传)。
+	// Params: base/pc as in Arith; op = bytecode.OpCode (EQ=23/LT=24/LE=25);
+	// b/c = RK register / constant index (B/C fields passed through).
 	//
-	// 返回:packed - bit0=比较结果(0=false / 1=true), bit1=错误标志
-	// (2=ERR pending,enterGibbous 取走冒泡)。
+	// Returns: packed - bit0=comparison result (0=false / 1=true),
+	// bit1=error flag (2=ERR pending, picked up and bubbled by
+	// enterGibbous).
 	//
-	// 用例:P4 EQ/LT/LE + JMP + LOADBOOL×2 + RETURN 折叠形态
-	// (`function(x) return x == 1 end` 类——经 packed bit0 vs cmpA 折成
-	// BoolValue 直接写 R(A))。
+	// Use case: the P4 EQ/LT/LE + JMP + LOADBOOL×2 + RETURN folded form
+	// (`function(x) return x == 1 end` kind — folded into a BoolValue
+	// written directly to R(A) via packed bit0 vs cmpA).
 	Compare(base int32, pc int32, op int32, b int32, c int32) int32
 
-	// ForPrep 处理 FORPREP A sBx 助手(gibbous_host.go::ForPrep 同款签名,
-	// 三槽校验 + coercion + 预减,复用 P1 execute.go FORPREP 段)。
+	// ForPrep handles the FORPREP A sBx helper (same signature as
+	// gibbous_host.go::ForPrep, three-slot validation + coercion +
+	// pre-decrement, reusing the P1 execute.go FORPREP case).
 	//
-	// 用例:P4 PJ3 reg-limit FORLOOP 形态 — IsNumber guard 失败时降级调
-	// host.ForPrep + host.ForLoop(模板 deopt 路径,byte-equal 解释器)。
+	// Use case: the P4 PJ3 reg-limit FORLOOP form — when the IsNumber
+	// guard fails, fall back to host.ForPrep + host.ForLoop (the template
+	// deopt path, byte-equal with the interpreter).
 	//
-	// 参数:base/pc 同 Arith;a = FORPREP 的 A 字段(R(A)..R(A+2) = init/
-	// limit/step 三槽)。
+	// Params: base/pc as in Arith; a = the A field of FORPREP (R(A)..R(A+2)
+	// = init/limit/step three slots).
 	//
-	// 返回:0=OK / 1=ERR(raise pending,'for' init/limit/step must be a number)。
+	// Returns: 0=OK / 1=ERR (raise pending, 'for' init/limit/step must be
+	// a number).
 	ForPrep(base int32, pc int32, a int32) int32
 
 	// LoopPreempt is the HelperLoopFuel dispatcher target (issue #102):
@@ -198,95 +249,126 @@ type P4HostState interface {
 	// raised, pending on the host).
 	LoopPreempt(ctx *JITContext, base int32, pc int32) int32
 
-	// CallBaseline 处理 CALL A B C 的 baseline 同步路径(承
-	// docs/design/p4-method-jit/05-system-pipeline.md §4.3,**绕过 P3 R3 indirect
-	// 直调哨兵协议**——简化版只走 baseline doCall 分派 + 同步驱动被调帧到完
-	// 成,免引入段内 call_indirect 通道。
+	// CallBaseline handles the baseline synchronous path of CALL A B C
+	// (per docs/design/p4-method-jit/05-system-pipeline.md §4.3,
+	// **bypassing the P3 R3 indirect direct-call sentinel protocol** — the
+	// simplified version only goes through the baseline doCall dispatch +
+	// synchronously drives the callee frame to completion, avoiding the
+	// need to introduce an in-segment call_indirect channel.
 	//
-	// 参数 base/pc 同 Arith;a/b/c 是 CALL A B C 三字段:
-	//   - a = 被调函数寄存器号(R(A));参数从 R(A+1..A+B-1)
-	//   - b = 参数计数 + 1(B=0 表示「到 top」,B=1 表 0 参数,B=N 表 N-1 参数)
-	//   - c = 返回值计数 + 1(C=0 表「到 top」,C=1 表 0 返回值,C=N 表 N-1 返回值)
+	// Params base/pc as in Arith; a/b/c are the three CALL A B C fields:
+	//   - a = callee function register number (R(A)); arguments from
+	//     R(A+1..A+B-1)
+	//   - b = argument count + 1 (B=0 means "up to top", B=1 means 0
+	//     arguments, B=N means N-1 arguments)
+	//   - c = return value count + 1 (C=0 means "up to top", C=1 means 0
+	//     return values, C=N means N-1 return values)
 	//
-	// 返回:0=OK(被调帧已完成 + 结果已落 R(A..A+C-2),caller 帧仍活)/
-	//      1=ERR(pendingErr 已置 → 上层 ERR 冒泡)。
+	// Returns: 0=OK (callee frame completed + results landed in
+	// R(A..A+C-2), caller frame still alive) /
+	//      1=ERR (pendingErr set → ERR bubbles up to the caller).
 	//
-	// **与 P3 wasm 端 DoCall 的差异**:DoCall 返 i64 三态(<0/odd/even)用于
-	// wasm 端 call_indirect 直调分派;P4 PJ5 简化形态没有 wasm-level 段内
-	// indirect 通道,所以 host 端**必须**走 baseline doCall(host/crescent/__call/
-	// 全形态 gibbous 一律同步跑完),不进 tryIndirectCallee 快路径。
+	// **Difference from the P3 wasm-side DoCall**: DoCall returns a
+	// tri-state i64 (<0/odd/even) used for wasm-side call_indirect
+	// direct-call dispatch; the P4 PJ5 simplified form has no wasm-level
+	// in-segment indirect channel, so the host side **must** go through
+	// baseline doCall (host/crescent/__call/all-form gibbous run
+	// synchronously to completion), not entering the tryIndirectCallee
+	// fast path.
 	//
-	// **简化形态用例**(`function(g) g() end` 类):Run 端 prelude 路径调
-	// 本接口完成调用 + 后续 DoReturn 弹帧。byte-equal P1 解释器 doCall 路径。
+	// **Simplified-form use case** (`function(g) g() end` kind): the Run
+	// prelude path calls this interface to complete the call + a subsequent
+	// DoReturn to pop the frame. byte-equal with the P1 interpreter doCall
+	// path.
 	CallBaseline(base int32, pc int32, a int32, b int32, c int32) int32
 
-	// TailCall 处理 TAILCALL A B C 的 baseline 同步路径(承
-	// docs/design/p4-method-jit/05-system-pipeline.md §4.3 + p1-interpreter/
-	// 05-interpreter-loop.md §8.4 — 尾调用复用帧 + executeFrom 同步驱动 callee 链)。
+	// TailCall handles the baseline synchronous path of TAILCALL A B C
+	// (per docs/design/p4-method-jit/05-system-pipeline.md §4.3 +
+	// p1-interpreter/05-interpreter-loop.md §8.4 — tail call reuses the
+	// frame + executeFrom synchronously drives the callee chain).
 	//
-	// 参数 base/pc 同 CallBaseline;a/b/c 是 TAILCALL A B C 三字段(luac 编 C=0):
-	//   - a = 被调函数寄存器号(R(A));参数从 R(A+1..A+B-1)
-	//   - b = 参数计数 + 1(B=0 表「到 top」,B=1 表 0 参数,B=N 表 N-1 参数)
-	//   - c = 返回值计数 + 1(TAILCALL 永远 C=0,luac 编 stmtReturn 强制写 0
-	//     表「到 top」,与尾随 RETURN B=0 衔接)
+	// Params base/pc as in CallBaseline; a/b/c are the three TAILCALL A B C
+	// fields (luac emits C=0):
+	//   - a = callee function register number (R(A)); arguments from
+	//     R(A+1..A+B-1)
+	//   - b = argument count + 1 (B=0 means "up to top", B=1 means 0
+	//     arguments, B=N means N-1 arguments)
+	//   - c = return value count + 1 (TAILCALL is always C=0, luac forces
+	//     writing 0 in stmtReturn to mean "up to top", dovetailing with the
+	//     trailing RETURN B=0)
 	//
-	// 返回(三态分支,与 crescent.State.TailCall 同款):
-	//   - 0 = Lua 尾调用完成。caller 帧已被 callee 帧替换 + executeFrom 同步驱动
-	//     callee 链到完成 + nresults 写回上层 funcIdx。Run 端**跳过 DoReturn**
-	//     (本帧已弹),直接 return 0。
-	//   - 1 = ERR(raise pending → 上层 ERR 冒泡)。
-	//   - 2 = host 尾调用。结果已落 R(A..A+nrets-1),G 帧未弹。Run 端**正常调
-	//     DoReturn**(对位 luac 编的尾随 dead RETURN A B=0,nret 到 top)。
+	// Returns (tri-state branch, same as crescent.State.TailCall):
+	//   - 0 = Lua tail call completed. The caller frame has been replaced
+	//     by the callee frame + executeFrom synchronously drove the callee
+	//     chain to completion + nresults written back to the parent funcIdx.
+	//     The Run side **skips DoReturn** (this frame is already popped) and
+	//     returns 0 directly.
+	//   - 1 = ERR (raise pending → ERR bubbles up to the caller).
+	//   - 2 = host tail call. Results landed in R(A..A+nrets-1), the G frame
+	//     is not popped. The Run side **normally calls DoReturn** (matching
+	//     the trailing dead RETURN A B=0 emitted by luac, nret up to top).
 	//
-	// **简化形态用例**(`function(g) return g() end` / `function() return f() end`
-	// 等):Run 端 prelude 路径调本接口完成 + 三态分支(byte-equal P1 解释器
-	// doTailCall 路径)。
+	// **Simplified-form use case** (`function(g) return g() end` /
+	// `function() return f() end` etc.): the Run prelude path calls this
+	// interface to complete + tri-state branch (byte-equal with the P1
+	// interpreter doTailCall path).
 	TailCall(base int32, pc int32, a int32, b int32, c int32) int32
 
-	// Self 处理 SELF A B C 助手(gibbous_host.go::Self 同款签名,逐字节同构
-	// 解释器 SELF 段:R(A+1)=R(B) self + R(A)=R(B)[RK(C)] method,经
-	// icGetTable IC + 哈希 + __index 元方法链,可 raise:attempt to index nil 等)。
+	// Self handles the SELF A B C helper (same signature as
+	// gibbous_host.go::Self, byte-for-byte isomorphic to the interpreter's
+	// SELF case: R(A+1)=R(B) self + R(A)=R(B)[RK(C)] method, via the
+	// icGetTable IC + hash + __index metamethod chain, may raise: attempt
+	// to index nil etc.).
 	//
-	// 参数:
-	//   - base/pc:当前帧 base 字节偏移 + 当前 pc(物化 ci.savedPC,与解释器同款)
-	//   - a:SELF.A(目标寄存器:method 结果到 R(A),self 到 R(A+1))
-	//   - b:SELF.B(receiver 寄存器号 0-255)
-	//   - c:SELF.C(RK 编码 0-511,常量 256 偏移)
+	// Params:
+	//   - base/pc: current frame base byte offset + current pc (materializes
+	//     ci.savedPC, same as the interpreter)
+	//   - a: SELF.A (target registers: method result to R(A), self to R(A+1))
+	//   - b: SELF.B (receiver register number 0-255)
+	//   - c: SELF.C (RK encoding 0-511, constant offset by 256)
 	//
-	// 返回:0=OK / 1=ERR(raise pending,enterGibbous 取走冒泡)。
+	// Returns: 0=OK / 1=ERR (raise pending, picked up and bubbled by
+	// enterGibbous).
 	//
-	// 用例:P4 PJ5 SELF + CALL/TAILCALL inline 形态(`obj:method(args)` 类)。
-	// Run 端 prelude 路径调 host.Self 装 method/self,然后调 CallBaseline /
-	// TailCall 完成 byte-equal P1 doCall 分派。
+	// Use case: the P4 PJ5 SELF + CALL/TAILCALL inline form
+	// (`obj:method(args)` kind). The Run prelude path calls host.Self to
+	// load method/self, then calls CallBaseline / TailCall to complete the
+	// byte-equal P1 doCall dispatch.
 	Self(base int32, pc int32, a int32, b int32, c int32) int32
 
-	// Closure 处理 CLOSURE A Bx(gibbous_host.go::Closure 同款)。makeClosure
-	// 读后随伪指令(ci.pc 处的 MOVE/GETUPVAL)消化 upvalue 捕获,故 helper 内
-	// 先把 ci.pc 设到 CLOSURE 之后(pc+1)。
+	// Closure handles CLOSURE A Bx (same as gibbous_host.go::Closure).
+	// makeClosure consumes upvalue captures from the following pseudo-
+	// instructions (MOVE/GETUPVAL at ci.pc), so the helper first sets ci.pc
+	// to just after CLOSURE (pc+1).
 	//
-	// 参数:base/pc 同 Arith;a = 目标寄存器号;bx = inner Proto 索引。
+	// Params: base/pc as in Arith; a = target register number; bx = inner
+	// Proto index.
 	//
-	// 返回:0=OK / 1=ERR。用例:P4 `local f = function() ... end` 类。
+	// Returns: 0=OK / 1=ERR. Use case: P4 `local f = function() ... end`
+	// kind.
 	Closure(base int32, pc int32, a int32, bx int32) int32
 
-	// Close 处理 CLOSE A(gibbous_host.go::Close 同款):关闭所有 ≥ base+A 的
-	// 开放 upvalue。永不 raise。
+	// Close handles CLOSE A (same as gibbous_host.go::Close): closes all
+	// open upvalues ≥ base+A. Never raises.
 	//
-	// 参数:base/pc 同 Arith;a = 起始寄存器号。
+	// Params: base/pc as in Arith; a = starting register number.
 	//
-	// 返回:0=OK(规约保持,与 Arith 等签名对齐)。用例:`do local x = ... end`
-	// 出 block 时关闭 upvalue。
+	// Returns: 0=OK (invariant preserved, signature aligned with Arith
+	// etc.). Use case: closing upvalues when leaving a block in
+	// `do local x = ... end`.
 	Close(base int32, pc int32, a int32) int32
 
-	// TForLoop 处理 TFORLOOP A C(gibbous_host.go::TForLoop 同款)。调迭代器
-	// R(A)(R(A+1),R(A+2)) → 结果 R(A+3..A+2+C);首值非 nil 则继续,nil 则退出。
+	// TForLoop handles TFORLOOP A C (same as gibbous_host.go::TForLoop).
+	// Calls the iterator R(A)(R(A+1), R(A+2)) → results R(A+3..A+2+C);
+	// continues if the first value is non-nil, exits if nil.
 	//
-	// 参数:base/pc 同 Arith;a = 迭代器寄存器号;c = 返回值计数。
+	// Params: base/pc as in Arith; a = iterator register number; c =
+	// return value count.
 	//
-	// 返回(i64,三态):
-	//   - ≥0 = 刷新后的本帧 base 字节偏移(继续循环)
-	//   - -1 = ERR(raise pending)
-	//   - -2 = 退出(首值 nil)
+	// Returns (i64, tri-state):
+	//   - ≥0 = refreshed byte offset of this frame's base (continue loop)
+	//   - -1 = ERR (raise pending)
+	//   - -2 = exit (first value nil)
 	TForLoop(base int32, pc int32, a int32, c int32) int64
 
 	// GlobalsRaw returns the globals table as a NaN-boxed u64 (same
@@ -297,10 +379,13 @@ type P4HostState interface {
 	// SETGLOBAL NodeHit inline fast path bakes it as an imm64.
 	GlobalsRaw() uint64
 
-	// ArenaBaseAddr 返回 arena `[]byte` 起点的 uintptr(承 05 §3.3)。	//
-	// 用例:PJ2 完整投机模板——mmap 段经 r15+offset 读 arenaBase 字段后
-	// 经字节级 movsd 直接读/写值栈槽位,跳过 host 接口 round-trip。
-	// PJ7 简化形态不调用本接口(mmap 段是 dummy)。
+	// ArenaBaseAddr returns the uintptr of the start of the arena
+	// `[]byte` (per 05 §3.3).	//
+	// Use case: the PJ2 full speculative template — the mmap segment reads
+	// the arenaBase field via r15+offset, then reads/writes value-stack
+	// slots directly with byte-level movsd, skipping the host-interface
+	// round trip. The PJ7 simplified form does not call this interface (its
+	// mmap segment is a dummy).
 	ArenaBaseAddr() uintptr
 
 	// RefreshJitCtxAddrs is a batched setter that populates all five
@@ -318,86 +403,106 @@ type P4HostState interface {
 	// caller genuinely needs only one field (rare).
 	RefreshJitCtxAddrs(ctx *JITContext, base int32)
 
-	// ValueStackBaseAddr 返回当前帧 R0 的字节地址(承 05 §3.3 + 06 §4.1
-	// rbx = valueStackBase)。
+	// ValueStackBaseAddr returns the byte address of the current frame's
+	// R0 (per 05 §3.3 + 06 §4.1 rbx = valueStackBase).
 	//
-	// 参数 base 是当前帧 R0 字节偏移(承 enterGibbous 计算 baseByte =
-	// (stackBaseW + ci.base) * 8,与 DoReturn 传入的 base 同语义)。
+	// The base param is the current frame's R0 byte offset (per the
+	// baseByte = (stackBaseW + ci.base) * 8 computed in enterGibbous, same
+	// semantics as the base passed to DoReturn).
 	//
-	// 返回:arena.Words().bytePtr + base —— 这是 R0 在 Go 进程虚地址空间
-	// 中的真字节地址。mmap 段读 r15+offset 拿本字段后经 movsd
-	// [valueStackBase + reg*8] 寻址 R(reg)。
+	// Returns: arena.Words().bytePtr + base — this is the true byte address
+	// of R0 in the Go process's virtual address space. The mmap segment
+	// reads r15+offset to get this field, then addresses R(reg) via movsd
+	// [valueStackBase + reg*8].
 	//
-	// **arena 重定位风险**:arena grow 时 Words() 会重新分配,本字段会
-	// stale。承 05 §5 arena base 重载协议:grow 只在分配慢路径(出 JIT
-	// 世界)发生,JIT 内联 bump 越界即出去——回来后从 jitContext 重载
-	// base。PJ2 完整版接入此协议;PJ7 简化形态尚不调用本接口。
+	// **Arena relocation risk**: on an arena grow, Words() reallocates and
+	// this field goes stale. Per the 05 §5 arena-base reload protocol: a
+	// grow only happens on the allocation slow path (leaving the JIT
+	// world); the JIT-inline bump goes out on overflow — after returning,
+	// base is reloaded from jitContext. The PJ2 full version wires up this
+	// protocol; the PJ7 simplified form does not yet call this interface.
 	ValueStackBaseAddr(base int32) uintptr
 
-	// CIDepthHostAddr 返回 thread.ciDepth 镜像字的 host 字节地址(承 §9.20
-	// Option B Spike 1)。
+	// CIDepthHostAddr returns the host byte address of the thread.ciDepth
+	// mirror word (per §9.20 Option B Spike 1).
 	//
-	// **复用 P3 PW10 Stage 1a 镜像字**(crescent.State.ciDepthRef):同一镜像字
-	// crescent 端经 setCIDepth 写入,P4 mmap 段经 host addr (uintptr) 读 / inc / dec。
-	// 返回 = arena.Words().bytePtr + (st.ciDepthRef bytes)。
+	// **Reuses the P3 PW10 Stage 1a mirror word** (crescent.State.ciDepthRef):
+	// the same mirror word is written on the crescent side via setCIDepth,
+	// and read / inc / dec on the P4 mmap segment via the host addr
+	// (uintptr). Returns = arena.Words().bytePtr + (st.ciDepthRef bytes).
 	//
-	// **arena 重定位风险**:同 ArenaBaseAddr,arena grow 出 JIT 世界后回来从
-	// jitContext 重载;Spike 1 阶段每次 Run 入口注入。
+	// **Arena relocation risk**: same as ArenaBaseAddr — after an arena
+	// grow leaves the JIT world, base is reloaded from jitContext on
+	// return; in the Spike 1 stage it is injected at each Run entry.
 	CIDepthHostAddr() uintptr
 
-	// CISegBaseHostAddr 返回 CI 段当前字节基址镜像字的 host 字节地址(承 §9.20)。
+	// CISegBaseHostAddr returns the host byte address of the mirror word
+	// for the CI segment's current byte base (per §9.20).
 	//
-	// **复用 P3 PW10 Stage 2 镜像字**(crescent.State.ciSegBaseRef):CI 段可
-	// 重定位,mmap 段经此镜像字解引出当前 CI 段基址,然后算 CallInfo[depth]
-	// 帧地址(基址 + depth*40)。
+	// **Reuses the P3 PW10 Stage 2 mirror word** (crescent.State.ciSegBaseRef):
+	// the CI segment is relocatable; the mmap segment dereferences this
+	// mirror word to get the current CI segment base, then computes the
+	// CallInfo[depth] frame address (base + depth*40).
 	CISegBaseHostAddr() uintptr
 
-	// TopHostAddr 返回 thread.top 镜像字的 host 字节地址(承 §9.20)。
+	// TopHostAddr returns the host byte address of the thread.top mirror
+	// word (per §9.20).
 	//
-	// **复用 P3 PW10 Stage 1a 镜像字**(crescent.State.topRef):top 是栈槽索引,
-	// enterLuaFrame 设 callee 帧顶时 mmap 段写入(top = base + MaxStack)。
+	// **Reuses the P3 PW10 Stage 1a mirror word** (crescent.State.topRef):
+	// top is a stack-slot index, written by the mmap segment when
+	// enterLuaFrame sets the callee frame top (top = base + MaxStack).
 	TopHostAddr() uintptr
 
-	// ExecuteCalleeFromInlineFrame Spike 1 Step C-1 helper API(承 §9.20.7
-	// 真实装拆解 + §9.20.9 trampoline exit-resume 协议 commit-2 接口 +
-	// commit-5l 签名修正:callA 替代 retA,SELF + CALL 形态下 method 在
-	// R(callA),callA 是 callee 槽位识别的正确字段)。
+	// ExecuteCalleeFromInlineFrame is the Spike 1 Step C-1 helper API (per
+	// §9.20.7 real-wiring breakdown + §9.20.9 trampoline exit-resume
+	// protocol commit-2 interface + commit-5l signature fix: callA
+	// replaces retA, in the SELF + CALL form the method is at R(callA), and
+	// callA is the correct field for identifying the callee slot).
 	//
-	// **前置条件**(caller mmap 段必须保证):
-	//   - mmap 段 BuildVoid0ArgSkeleton 已写完 CallInfo[depth] 5 word 字段
-	//     (word0 编译期占位 0,helper 内忽略改取 calleeCI.cl word3 反查 callee
-	//     Proto;funcIdx 用 caller.base + callA 算)
-	//   - mmap 段 EmitFrameInlineCIDepthInc 已做 ciDepth++
-	//   - thread.cur 字段未被 mmap 段更新(Go 端冷字段)
+	// **Preconditions** (the caller mmap segment must guarantee):
+	//   - the mmap segment's BuildVoid0ArgSkeleton has finished writing the
+	//     CallInfo[depth] 5-word fields (word0 is a compile-time placeholder
+	//     0, ignored inside the helper which instead reads calleeCI.cl word3
+	//     to reverse-look-up the callee Proto; funcIdx is computed from
+	//     caller.base + callA)
+	//   - the mmap segment's EmitFrameInlineCIDepthInc has done ciDepth++
+	//   - the thread.cur field has not been updated by the mmap segment (a
+	//     Go-side cold field)
 	//
-	// **流程**(对应 crescent.State 实装):
-	//   1. read CI[ciDepth-1].cl(BuildVoid0Arg LoadClosureGCRef 装载的 callee
-	//      closure GCRef)
-	//   2. 反查 callee Proto:object.ClosureProtoID(cl) → st.protos[pid]
-	//   3. ciDepth-- 抵消 BuildVoid0Arg 副作用
-	//   4. funcIdx = th.cur.base + callA(caller frame R(callA) = method 槽位)
-	//   5. nargs=1 + nresults=0(Spike 1 SELF + CALL 0 user-arg setter 形态:
-	//      SELF 已写 R(callA+1)=self,caller CALL.B=2 = 1 nargs(self only),
-	//      enterLuaFrame 期望 nargs=1)
+	// **Flow** (corresponding to the crescent.State implementation):
+	//   1. read CI[ciDepth-1].cl (the callee closure GCRef loaded by
+	//      BuildVoid0Arg LoadClosureGCRef)
+	//   2. reverse-look-up the callee Proto: object.ClosureProtoID(cl) →
+	//      st.protos[pid]
+	//   3. ciDepth-- to cancel the BuildVoid0Arg side effect
+	//   4. funcIdx = th.cur.base + callA (caller frame R(callA) = method slot)
+	//   5. nargs=1 + nresults=0 (the Spike 1 SELF + CALL 0-user-arg setter
+	//      form: SELF already wrote R(callA+1)=self, caller CALL.B=2 = 1
+	//      nargs (self only), enterLuaFrame expects nargs=1)
 	//   6. nCcalls++/enterLuaFrame/executeFrom/popCallInfo
-	//   7. 出口 ciDepth++ 平衡 PopVoid0Arg(commit-5m 入口先从 mirror sync Go
-	//      field ciDepth,避免 mmap CIDepthInc 与 Go field 不同步)
+	//   7. on exit ciDepth++ to balance PopVoid0Arg (commit-5m syncs the Go
+	//      field ciDepth from the mirror at entry first, to avoid the mmap
+	//      CIDepthInc being out of sync with the Go field)
 	//
-	// **返**:0=OK(callee 完成 + 返值已落 R(callA..callA+nresults-1))/ 1=ERR
-	// (state.pendingErr 已置,Run 端 dispatcher 走错误路径)。
+	// **Returns**: 0=OK (callee completed + return values landed in
+	// R(callA..callA+nresults-1)) / 1=ERR (state.pendingErr set, the Run
+	// dispatcher takes the error path).
 	//
-	// **commit-5l 签名修正**(承 PR 评审 + 自检):原 retA 是 RETURN.A(setter
-	// 形态恒 0),无法正确算 funcIdx;改 callA 是 CALL.A(SELF + CALL 形态下
-	// method 槽位置),与 host.CallBaseline 同款语义对齐。
+	// **commit-5l signature fix** (per PR review + self-check): the
+	// original retA was RETURN.A (always 0 in the setter form), which
+	// cannot correctly compute funcIdx; changed to callA which is CALL.A
+	// (the method slot position in the SELF + CALL form), aligned with the
+	// same semantics as host.CallBaseline.
 	//
-	// **commit-5p Spike 2 签名扩**:加 callArgCount 参数,允许 N 参 SELF + CALL
-	// 形态(callArgCount=0..7;helper 内 enterLuaFrame nargs = 1+callArgCount =
-	// self + N user args)。
+	// **commit-5p Spike 2 signature extension**: adds the callArgCount
+	// param, allowing the N-arg SELF + CALL form (callArgCount=0..7; inside
+	// the helper enterLuaFrame nargs = 1+callArgCount = self + N user args).
 	//
-	// **commit-5q Spike 4 签名扩**:加 nresults 参数,允许多返值形态(
-	// callC=1 → 0返 setter / callC=2 → 1返 getter / callC=3..16 → N=2..15 返
-	// drop multi-ret;helper 内 enterLuaFrame nresults 设值 + callee RETURN
-	// doReturn 自动落 R(callA..callA+nresults-1))。
+	// **commit-5q Spike 4 signature extension**: adds the nresults param,
+	// allowing the multi-return form (callC=1 → 0-return setter / callC=2 →
+	// 1-return getter / callC=3..16 → N=2..15 return, dropping multi-ret;
+	// inside the helper enterLuaFrame sets nresults + the callee RETURN
+	// doReturn automatically lands R(callA..callA+nresults-1)).
 	ExecuteCalleeFromInlineFrame(base int32, callA int32, callArgCount int32, nresults int32) int32
 
 	// ExecutePlainCallInlineFrame is the PJ10 native CALL variant of
@@ -472,15 +577,19 @@ type P4HostState interface {
 	ObserveCallCallee(base int32, a int32) uint64
 }
 
-// SetHostState 把 host(crescent)抽象注入本 Compiler。
+// SetHostState injects the host (crescent) abstraction into this Compiler.
 //
-// **per-Compiler 单例**(承 wireP4 调用契约):每个 State 一份 *Compiler,本
-// 方法在 wireP4 单 goroutine 内调一次;后续 Compile 产出 p4Code 时把 Compiler
-// 的 hostState 复制到 p4Code 字段;p4Code.Run 用自己持有的 hostState(per-
-// p4Code 单 writer-then-reader,无并发 write)。
+// **per-Compiler singleton** (per the wireP4 call contract): one
+// *Compiler per State; this method is called once inside the single wireP4
+// goroutine; when a subsequent Compile produces a p4Code, the Compiler's
+// hostState is copied into the p4Code field; p4Code.Run uses the hostState
+// it holds itself (per-p4Code single writer-then-reader, no concurrent
+// write).
 //
-// 这避免了 package-level global hostState 的多 State 并发写 race(V18 -race
-// 友好,承 design-claims-vs-codebase-physics 纪律——每发现一次 race 修一次)。
+// This avoids the multi-State concurrent-write race of a package-level
+// global hostState (V18 -race friendly, per the
+// design-claims-vs-codebase-physics discipline — fix a race each time one
+// is found).
 func (c *Compiler) SetHostState(h P4HostState) {
 	c.hostState = h
 }

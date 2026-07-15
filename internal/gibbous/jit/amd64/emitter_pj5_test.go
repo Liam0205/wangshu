@@ -4,11 +4,14 @@ package amd64
 
 import "testing"
 
-// TestPJ5_PushPop_RoundTrip push/pop 同寄存器,值 round-trip 正确。
+// TestPJ5_PushPop_RoundTrip checks that push/pop on the same register round-trips
+// the value correctly.
 //
-// 经构造「mov rax, sent / push rax / mov rax, 0 / pop rax / ret」序列,验证
-// pop 出栈值确实是 push 入栈值——这是 callee-saved 保存恢复协议的物理基础
-// (06 §4.1 trampoline 进入时 push callee-saved,出口 pop 恢复)。
+// By constructing the sequence "mov rax, sent / push rax / mov rax, 0 / pop rax /
+// ret", it verifies that the value popped off the stack is exactly the value that
+// was pushed — this is the physical basis of the callee-saved save/restore protocol
+// (06 §4.1: the trampoline pushes callee-saved registers on entry and pops them to
+// restore on exit).
 func TestPJ5_PushPop_RoundTrip(t *testing.T) {
 	const sent = uint64(0xdeadbeefcafebabe)
 
@@ -32,28 +35,32 @@ func TestPJ5_PushPop_RoundTrip(t *testing.T) {
 	}
 }
 
-// TestPJ5_CallReg_BasicShape call regN 字节编码 + 段执行不崩(本测试不真
-// 跳进 Go 函数——那需要 helper 表 + jitContext 接入,留 PJ5+ 扩)。
+// TestPJ5_CallReg_BasicShape checks the "call regN" byte encoding + that the
+// segment executes without crashing (this test does not actually jump into a Go
+// function — that needs the helper table + jitContext wiring, deferred to PJ5+).
 //
-// 验证手段:构造「mov rax, segAddr+rel; call rax(跳到段后段;段内 mov rax,
-// good; ret)」——段后段也是同一 mmap 页内的另一处。
+// Approach: construct "mov rax, segAddr+rel; call rax (jump to a later part of the
+// segment; inside that segment mov rax, good; ret)" — the later segment is another
+// location within the same mmap page.
 func TestPJ5_CallReg_BasicShape(t *testing.T) {
 	const good = uint64(0xfeedface)
 
-	// 段布局:
-	//   [0]   mov rcx, dummy_call_target_addr  ; rcx = call 目标
-	//   [10]  jmp +rel(跳到 [post_call_label])
+	// Segment layout:
+	//   [0]   mov rcx, dummy_call_target_addr  ; rcx = call target
+	//   [10]  jmp +rel (jump to [post_call_label])
 	//   [15]  inline_call_target:
 	//   [15]  mov rax, good
-	//   [25]  ret  ← 从 inline call target 返回
+	//   [25]  ret  ← return from the inline call target
 	//   [26]  post_call_label:
-	//   [26]  mov rax, 0   ; 永不到达(因为 call 目标的 ret 直接返回 trampoline)
+	//   [26]  mov rax, 0   ; never reached (the call target's ret returns directly to the trampoline)
 	//   ...
 	//
-	// 简化为:直接 mov rax, good; ret(不实际跑 call 间接调用,因为它需要
-	// 完整 ret 协议;本测试只验 call rax 字节编码与位置无误)。
+	// Simplified to: mov rax, good; ret directly (no actual indirect call, since that
+	// needs the full ret protocol; this test only verifies that the "call rax" byte
+	// encoding and position are correct).
 	//
-	// 真正的 helper call 验证留 PJ6+ 启用 helper 表注入时同批做。
+	// The real helper call verification is deferred to PJ6+ and done together with
+	// enabling helper table injection.
 	var buf []byte
 	buf = EmitMovRaxImm64(buf, good)
 	buf = EmitRet(buf)
@@ -70,7 +77,7 @@ func TestPJ5_CallReg_BasicShape(t *testing.T) {
 	}
 }
 
-// TestPJ5_EncodedLengths PJ5 新增编码长度常量验证。
+// TestPJ5_EncodedLengths verifies the encoded-length constants added in PJ5.
 func TestPJ5_EncodedLengths(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -113,8 +120,9 @@ func TestPJ5_EncodedLengths(t *testing.T) {
 	}
 }
 
-// TestPJ5_EmitCallRel32_ByteEqual 验「call rel32」字节级 Intel SDM byte-equal:
-// E8 + imm32 LE(rel32 从下条指令起算的 32 位有符号偏移)。
+// TestPJ5_EmitCallRel32_ByteEqual verifies "call rel32" is byte-equal to the Intel
+// SDM encoding: E8 + imm32 LE (rel32 is the 32-bit signed offset from the next
+// instruction).
 func TestPJ5_EmitCallRel32_ByteEqual(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -136,8 +144,8 @@ func TestPJ5_EmitCallRel32_ByteEqual(t *testing.T) {
 	}
 }
 
-// TestPJ5_EmitCallReg_ByteEqual 验「call regN」字节级 byte-equal:
-// FF D0+regNum(reg=4 RSP 兜底 RAX,reg>7 兜底 RAX)。
+// TestPJ5_EmitCallReg_ByteEqual verifies "call regN" is byte-equal:
+// FF D0+regNum (reg=4 RSP falls back to RAX, reg>7 falls back to RAX).
 func TestPJ5_EmitCallReg_ByteEqual(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -148,12 +156,12 @@ func TestPJ5_EmitCallReg_ByteEqual(t *testing.T) {
 		{"call rcx (reg=1)", 1, []byte{0xFF, 0xD1}},
 		{"call rdx (reg=2)", 2, []byte{0xFF, 0xD2}},
 		{"call rbx (reg=3)", 3, []byte{0xFF, 0xD3}},
-		// reg=4 (RSP) 语义不可用 → 兜底 RAX
+		// reg=4 (RSP) semantically unusable → fall back to RAX
 		{"call rsp (reg=4) defensive→rax", 4, []byte{0xFF, 0xD0}},
 		{"call rbp (reg=5)", 5, []byte{0xFF, 0xD5}},
 		{"call rsi (reg=6)", 6, []byte{0xFF, 0xD6}},
 		{"call rdi (reg=7)", 7, []byte{0xFF, 0xD7}},
-		// reg>7 超界 → 兜底 RAX
+		// reg>7 out of range → fall back to RAX
 		{"call r8 (reg=8) defensive→rax", 8, []byte{0xFF, 0xD0}},
 	}
 	for _, tc := range cases {
@@ -166,20 +174,21 @@ func TestPJ5_EmitCallReg_ByteEqual(t *testing.T) {
 	}
 }
 
-// TestPJ5_EmitHelperCall_ByteEqual 验 PJ5 helper call 通用宏字节级:
-// `mov rax, helperAddr; call rax`(12 字节 = MOV 10 + CALL 2)。
+// TestPJ5_EmitHelperCall_ByteEqual verifies the PJ5 generic helper-call macro at
+// the byte level: `mov rax, helperAddr; call rax` (12 bytes = MOV 10 + CALL 2).
 //
-// **PJ5 用例**:jit→host helper 调用(host.DoCall/DoTailCall/Safepoint)。
-// helper 地址通常远超 ±2GB 范围,标准做法是装载 64-bit 绝对地址到 rax
-// 后 indirect call,本宏封装此固定字节序列。
+// **PJ5 use case**: jit→host helper calls (host.DoCall/DoTailCall/Safepoint).
+// The helper address is usually well beyond ±2GB range; the standard approach is to
+// load the 64-bit absolute address into rax and then indirect call. This macro wraps
+// that fixed byte sequence.
 //
-// 编码精确验:
+// Exact encoding verification:
 //
 //	[0]   0x48 = REX.W
 //	[1]   0xB8 = MOV rax, imm64
-//	[2-9] imm64 LE 8 字节
+//	[2-9] imm64 LE 8 bytes
 //	[10]  0xFF = CALL r/m64
-//	[11]  0xD0 = ModRM mod=11 reg=2 rm=0(rax)
+//	[11]  0xD0 = ModRM mod=11 reg=2 rm=0 (rax)
 func TestPJ5_EmitHelperCall_ByteEqual(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -227,8 +236,9 @@ func TestPJ5_EmitHelperCall_ByteEqual(t *testing.T) {
 	}
 }
 
-// TestPJ5_EmitHelperCall_LengthConst 验长度常量等于 12(MOV 10 + CALL 2)。
-// 锁死字节布局契约(承 SetTable/Self NodeHit length 精确断言同款纪律)。
+// TestPJ5_EmitHelperCall_LengthConst verifies the length constant equals 12
+// (MOV 10 + CALL 2). This locks down the byte-layout contract (following the same
+// discipline as the SetTable/Self NodeHit exact-length assertions).
 func TestPJ5_EmitHelperCall_LengthConst(t *testing.T) {
 	const wantLen = 12
 	if EncodedHelperCallLen != wantLen {

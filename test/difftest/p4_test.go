@@ -1,28 +1,33 @@
 //go:build wangshu_p4 && wangshu_profile
 
-// P4 层间差分套(docs/design/p4-method-jit/08-testing-strategy.md V1-V13 / V17-V18)。
+// P4 cross-tier difftest suite (docs/design/p4-method-jit/08-testing-strategy.md V1-V13 / V17-V18).
 //
-// **承外部 review 🔴 阻塞**:`make difftest-p4` 长期跑通用 `difftest_test.go`,
-// **既不调 `SetForceAllPromote(true)` 也不设计成"重复调用"**——P4 路径在 difftest
-// 全套层面**完全不被强制触达**。本文件对位 `p3_test.go` 同款形态,加 P4 build tag
-// 专属 harness 修复这条整套层级 prove-the-path 缺口。
+// **From external review 🔴 blocker**: `make difftest-p4` has long run the generic
+// `difftest_test.go`, which **neither calls `SetForceAllPromote(true)` nor is designed
+// to "call repeatedly"** — so the P4 path is **never forced to be exercised** anywhere
+// across the difftest suite. This file mirrors the shape of `p3_test.go` and adds a
+// P4-build-tag-specific harness to close this suite-wide prove-the-path gap.
 //
-// 三方对拍,**全部 byte-equal** 才算过:
-//   - oracle      = 官方 lua5.1(与 difftest_test.go 同源);
-//   - crescent    = wangshu force-all OFF(纯解释器,层间基线);
-//   - p4-jit      = wangshu force-all ON(所有可编译 Proto 升 P4 native 执行)。
+// Three-way diff — passes only when **everything is byte-equal**:
+//   - oracle      = official lua5.1 (same source as difftest_test.go);
+//   - crescent    = wangshu force-all OFF (pure interpreter, cross-tier baseline);
+//   - p4-jit      = wangshu force-all ON (every compilable Proto promoted to P4 native).
 //
-// 仅 `wangshu_p4 && wangshu_profile` build 跑。
+// Runs only under the `wangshu_p4 && wangshu_profile` build.
 //
-// **升层时序**(承 p3_test.go 同款):doCall 的 gibbous 分支(call.go §VS0-d)只在
-// Proto **已升层**时跳 P4;force-all 下 OnEnter 在帧入口触发升层,故一个 Proto
-// 的**首次**调用仍跑 crescent(升层发生在它入帧之后),**第二次起**才走 P4。
-// 每个核函数被重复调用确保 P4 路径真触达。
+// **Promotion timing** (same as p3_test.go): doCall's gibbous branch (call.go §VS0-d)
+// jumps to P4 only when the Proto is **already promoted**; under force-all, OnEnter
+// triggers promotion at frame entry, so a Proto's **first** call still runs crescent
+// (promotion happens after it enters the frame), and only the **second call onward**
+// takes the P4 path. Each kernel function is called repeatedly to ensure the P4 path
+// is actually exercised.
 //
-// **P4 vs P3 形态差异**:P4 当前 SupportsAllOpcodes 白名单约 25 类形态 + 4 IC inline 族
-// (PJ4 落地后扩到 IC 完整六路径),**但不支持复杂控制流 / 跨层递归 / TFORLOOP /
-// __index 元方法链 / TAILCALL 等**——所以 p4Corpus 用例形态比 p3Corpus 更窄:精选
-// P4 SupportsAllOpcodes 真接受的单 BB 单 RETURN 形态 + 表 IC 形态。
+// **P4 vs P3 shape differences**: P4's current SupportsAllOpcodes whitelist covers about
+// 25 shape classes + 4 IC inline families (extended to the full six IC paths after PJ4),
+// **but does not support complex control flow / cross-tier recursion / TFORLOOP /
+// __index metamethod chains / TAILCALL etc.** — so p4Corpus cases are narrower in shape
+// than p3Corpus: hand-picked single-BB single-RETURN shapes that P4 SupportsAllOpcodes
+// truly accepts, plus table IC shapes.
 
 package difftest
 
@@ -33,8 +38,9 @@ import (
 	"github.com/Liam0205/wangshu"
 )
 
-// runWangshuP4Tiered 用 wangshu 跑脚本,force 控制是否强制全升(true=P4 路径)。
-// 与 runWangshuTiered 同款(p3_test.go),复制以避免 P3/P4 build tag 互斥重命名。
+// runWangshuP4Tiered runs a script with wangshu; force controls whether to force full
+// promotion (true = P4 path). Same as runWangshuTiered (p3_test.go); duplicated to avoid
+// P3/P4 build-tag mutual-exclusion renaming.
 func runWangshuP4Tiered(t *testing.T, src string, force bool) string {
 	t.Helper()
 	prog, err := wangshu.Compile([]byte(src), "p4diff")
@@ -54,22 +60,25 @@ func runWangshuP4Tiered(t *testing.T, src string, force bool) string {
 	return strings.Join(parts, "\t") + "\n"
 }
 
-// p4Corpus 是 P4 SupportsAllOpcodes 真接受形态的层间用例集。每个核被重复调用,
-// 保证升层后 P4 分支真被走到(首调跑 crescent,二调起跑 P4 native)。
+// p4Corpus is the cross-tier case set for shapes that P4 SupportsAllOpcodes truly accepts.
+// Each kernel is called repeatedly to guarantee the P4 branch is actually taken after
+// promotion (first call runs crescent, second call onward runs P4 native).
 //
-// **形态选择策略**(承 P4 SupportsAllOpcodes 当前白名单):
-//   - 单 BB「值产生 + RETURN A 2 / RETURN A 1」单 op + RETURN 子集
-//   - 双 op chain(MUL+ADD / ADD+MUL)
-//   - 比较折叠(EQ/LT/LE + JMP + LOADBOOL×2 + RETURN)
-//   - FORLOOP 字节级 inline(空 body / reg-limit / body inline 各形态)
-//   - 表 IC 六路径(GetTable ArrayHit/NodeHit + SETTABLE ArrayHit/NodeHit
+// **Shape selection strategy** (per P4 SupportsAllOpcodes's current whitelist):
+//   - single-BB "value produce + RETURN A 2 / RETURN A 1" single-op + RETURN subset
+//   - two-op chain (MUL+ADD / ADD+MUL)
+//   - comparison folding (EQ/LT/LE + JMP + LOADBOOL×2 + RETURN)
+//   - byte-level FORLOOP inline (empty body / reg-limit / body inline shapes)
+//   - table IC six paths (GetTable ArrayHit/NodeHit + SETTABLE ArrayHit/NodeHit
 //   - SELF ArrayHit/NodeHit)
 //
-// **每个核外层 wrap**:用 outer 函数 + for loop 反复调内层 kernel,确保
-// (1) outer chunk 长度 >= MinPromotableCodeLen=10 让 outer 也升层
-// (2) inner kernel 被反复调让 P4 路径真触达(首调走 crescent,二调起走 P4)
+// **Each kernel wrapped in an outer function**: an outer function + for loop calls the
+// inner kernel repeatedly, ensuring
+// (1) the outer chunk length >= MinPromotableCodeLen=10 so the outer is promoted too
+// (2) the inner kernel is called repeatedly so the P4 path is actually exercised (first
+// call runs crescent, second call onward runs P4)
 var p4Corpus = []diffCase{
-	// —— 值返回单 BB 形态(LOADK / LOADBOOL / LOADNIL / MOVE) ——
+	// —— value-return single-BB shapes (LOADK / LOADBOOL / LOADNIL / MOVE) ——
 	{"p4_const_number", `
 local function f() return 42 end
 local s = 0
@@ -86,7 +95,7 @@ local count = 0
 for i = 1, 30 do if f() then count = count + 1 end end
 return count`},
 
-	// —— 算术单 op + RETURN ——
+	// —— single arithmetic op + RETURN ——
 	{"p4_arith_add", `
 local function f(x, y) return x + y end
 local s = 0
@@ -98,7 +107,7 @@ local s = 0
 for i = 1, 30 do s = s + f(i) end
 return s`},
 
-	// —— 比较折叠 ——
+	// —— comparison folding ——
 	{"p4_compare_eq", `
 local function f(x) return x == 5 end
 local count = 0
@@ -137,7 +146,7 @@ for i = 1, 30 do if f("match") then n = n + 1 end end
 for i = 1, 30 do if f("nope")  then n = n + 100 end end
 return n`},
 
-	// —— FORLOOP 字节级 inline(PJ3 形态) ——
+	// —— FORLOOP byte-level inline (PJ3 shape) ——
 	{"p4_for_empty", `
 local function f() for i = 1, 100 do end return 42 end
 local s = 0
@@ -174,7 +183,7 @@ local s = 0
 for i = 1, 30 do s = s + f(t) end
 return s`},
 
-	// —— 表 IC ArrayHit(GETTABLE 数字键 in array)——
+	// —— table IC ArrayHit (GETTABLE numeric key in array) ——
 	{"p4_table_array_get", `
 local function f(t) return t[1] end
 local t = {100, 200, 300}
@@ -187,7 +196,7 @@ local t = {0, 0, 0}
 for i = 1, 30 do setter(t, i) end
 return t[1]`},
 
-	// —— 表 IC NodeHit(GETTABLE 字符串键 in hash)——
+	// —— table IC NodeHit (GETTABLE string key in hash) ——
 	{"p4_table_node_get", `
 local function f(t) return t["x"] end
 local t = {x = 42, y = 99, z = 123}
@@ -200,21 +209,21 @@ local t = {x = 0, y = 0}
 for i = 1, 30 do setter(t, i) end
 return t.x`},
 
-	// —— NEWTABLE 单 BB ——
+	// —— NEWTABLE single BB ——
 	{"p4_newtable", `
 local function f() return {} end
 local count = 0
 for i = 1, 30 do local t = f(); if t then count = count + 1 end end
 return count`},
 
-	// —— SETUPVAL / GETUPVAL 形态 ——
+	// —— SETUPVAL / GETUPVAL shapes ——
 	{"p4_upval_set", `
 local upv = 0
 local function setter(v) upv = v end
 for i = 1, 30 do setter(i) end
 return upv`},
 
-	// —— PJ5 CALL void 形态:MOVE+CALL+RETURN void(`function(g) g() end`)——
+	// —— PJ5 CALL void shape: MOVE+CALL+RETURN void (`function(g) g() end`) ——
 	{"p4_call_void", `
 local count = 0
 local function noop() count = count + 1 end
@@ -222,10 +231,11 @@ local function invoker(g) g() end
 for i = 1, 30 do invoker(noop) end
 return count`},
 
-	// —— PJ5 CALL void 形态 B:GETUPVAL+CALL+RETURN void
-	// (`local function noop()...end; local function invoker() noop() end` 闭包调外层 known local fn)——
-	// 本形态触发 PJ5 真升层 + Compile 端 SpecCallVoidHits 真命中(承
-	// internal/crescent/gibbous_pj5_call_e2e_test.go::TestPJ5_CallVoid_E2E_FormB_Upval)。
+	// —— PJ5 CALL void shape B: GETUPVAL+CALL+RETURN void
+	// (`local function noop()...end; local function invoker() noop() end` — closure calls
+	// an outer known local fn) ——
+	// This shape triggers a real PJ5 promotion + a real Compile-side SpecCallVoidHits hit
+	// (see internal/crescent/gibbous_pj5_call_e2e_test.go::TestPJ5_CallVoid_E2E_FormB_Upval).
 	{"p4_call_void_upval", `
 local count = 0
 local function noop() count = count + 1 end
@@ -233,8 +243,8 @@ local function invoker() noop() end
 for i = 1, 30 do invoker() end
 return count`},
 
-	// —— PJ5 CALL void 形态 B1K:GETUPVAL+LOADK+CALL+RETURN void(1 K 常量参)
-	// (`local function take(x)...end; local function tick() take(K) end` 闭包调外层 + 1 K 常量参)——
+	// —— PJ5 CALL void shape B1K: GETUPVAL+LOADK+CALL+RETURN void (1 K constant arg)
+	// (`local function take(x)...end; local function tick() take(K) end` — closure calls an outer fn + 1 K constant arg) ——
 	{"p4_call_void_upval_1argk", `
 local sum = 0
 local function take(x) sum = sum + x end
@@ -242,8 +252,8 @@ local function tick() take(42) end
 for i = 1, 30 do tick() end
 return sum`},
 
-	// —— PJ5 CALL void 形态 B1R:GETUPVAL+MOVE+CALL+RETURN void(1 reg 参)
-	// (`local function take(x)...end; local function tick(v) take(v) end` 闭包调外层 + 1 reg 参)——
+	// —— PJ5 CALL void shape B1R: GETUPVAL+MOVE+CALL+RETURN void (1 reg arg)
+	// (`local function take(x)...end; local function tick(v) take(v) end` — closure calls an outer fn + 1 reg arg) ——
 	{"p4_call_void_upval_1argreg", `
 local sum = 0
 local function take(x) sum = sum + x end
@@ -251,9 +261,9 @@ local function tick(v) take(v) end
 for i = 1, 30 do tick(i) end
 return sum`},
 
-	// —— PJ5 CALL getter 形态 BR1:GETUPVAL+CALL+RETURN+dead RETURN(0 参 1 返)
+	// —— PJ5 CALL getter shape BR1: GETUPVAL+CALL+RETURN+dead RETURN (0 args 1 return)
 	// (`local function f()...end; local function get() local x = f(); return x end`
-	// 闭包调外层 + 0 参 1 返,getter)——
+	// — closure calls an outer fn + 0 args 1 return, getter) ——
 	{"p4_call_getter_upval", `
 local function f() return 42 end
 local function get() local x = f(); return x end
@@ -261,9 +271,9 @@ local s = 0
 for i = 1, 30 do s = s + get() end
 return s`},
 
-	// —— PJ5 CALL void 形态 B2K:GETUPVAL+LOADK+LOADK+CALL+RETURN void(2 K 参)
+	// —— PJ5 CALL void shape B2K: GETUPVAL+LOADK+LOADK+CALL+RETURN void (2 K args)
 	// (`local function take(a, b)...end; local function tick() take(10, 20) end`
-	// 闭包调外层 + 2 K 常量参)——
+	// — closure calls an outer fn + 2 K constant args) ——
 	{"p4_call_void_upval_2argk", `
 local sum = 0
 local function take(a, b) sum = sum + a * b end
@@ -271,11 +281,11 @@ local function tick() take(10, 20) end
 for i = 1, 30 do tick() end
 return sum`},
 
-	// —— PJ5 TAILCALL 形态 TB0:GETUPVAL+TAILCALL+RETURN B=0+RETURN B=1(0 参 1 返)
+	// —— PJ5 TAILCALL shape TB0: GETUPVAL+TAILCALL+RETURN B=0+RETURN B=1 (0 args 1 return)
 	// (`local function f()...end; local function bounce() return f() end`
-	// 闭包调外层 known local fn + 尾调用)。luac stmtReturn 单 CallExpr 快路径
-	// 产物。SpecTailCallHits=1 命中实证(承
-	// internal/crescent/gibbous_pj5_tailcall_e2e_test.go::TestPJ5_TailCall_E2E_FormTB0_Upval)。
+	// — closure calls an outer known local fn + tail call). Product of luac's stmtReturn
+	// single-CallExpr fast path. SpecTailCallHits=1 hit is verified (see
+	// internal/crescent/gibbous_pj5_tailcall_e2e_test.go::TestPJ5_TailCall_E2E_FormTB0_Upval).
 	{"p4_tailcall_upval", `
 local function f() return 42 end
 local function bounce() return f() end
@@ -319,7 +329,7 @@ local function f(n, probe)
 end
 return f(5)`},
 
-	// —— PJ5 TAILCALL 形态 TB1K:GETUPVAL+LOADK+TAILCALL+...(1 K 参 1 返)
+	// —— PJ5 TAILCALL shape TB1K: GETUPVAL+LOADK+TAILCALL+... (1 K arg 1 return)
 	// (`local function take(x) return x*2 end; local function bounce() return take(7) end`)
 	{"p4_tailcall_upval_1argk", `
 local function take(x) return x * 2 end
@@ -328,7 +338,7 @@ local s = 0
 for i = 1, 30 do s = s + bounce() end
 return s`},
 
-	// —— PJ5 TAILCALL 形态 TB1R:GETUPVAL+MOVE+TAILCALL+...(1 reg 参 1 返)
+	// —— PJ5 TAILCALL shape TB1R: GETUPVAL+MOVE+TAILCALL+... (1 reg arg 1 return)
 	// (`local function take(x) return x+1 end; local function bounce(v) return take(v) end`)
 	{"p4_tailcall_upval_1argreg", `
 local function take(x) return x + 1 end
@@ -337,7 +347,7 @@ local s = 0
 for i = 1, 30 do s = s + bounce(i) end
 return s`},
 
-	// —— PJ5 TAILCALL 形态 TB2K:GETUPVAL+LOADK+LOADK+TAILCALL+...(2 K 参 1 返)
+	// —— PJ5 TAILCALL shape TB2K: GETUPVAL+LOADK+LOADK+TAILCALL+... (2 K args 1 return)
 	// (`local function f(a,b) return a+b end; local function bounce() return f(10,20) end`)
 	{"p4_tailcall_upval_2argk", `
 local function f(a, b) return a + b end
@@ -346,7 +356,7 @@ local s = 0
 for i = 1, 30 do s = s + bounce() end
 return s`},
 
-	// —— PJ5 CALL void 2 参四组合 K+R/R+K/R+R(K+K 已由 _2argk 覆盖)——
+	// —— PJ5 CALL void 2-arg four combinations K+R/R+K/R+R (K+K already covered by _2argk) ——
 	{"p4_call_void_upval_1k1r", `
 local sum = 0
 local function take(a, b) sum = sum + a * b end
@@ -366,7 +376,7 @@ local function tick(u, v) take(u, v) end
 for i = 1, 10 do tick(i, i+1) end
 return sum`},
 
-	// —— PJ5 TAILCALL 2 参四组合 K+R/R+K/R+R(K+K 已由 _2argk 覆盖)——
+	// —— PJ5 TAILCALL 2-arg four combinations K+R/R+K/R+R (K+K already covered by _2argk) ——
 	{"p4_tailcall_upval_1k1r", `
 local function f(a, b) return a + b end
 local function bounce(v) return f(7, v) end
@@ -386,8 +396,8 @@ local s = 0
 for i = 1, 10 do s = s + bounce(i, i+1) end
 return s`},
 
-	// —— PJ5 CALL getter 1 K/reg 参 1 返 — `function() local y = take(K); return y end` 类
-	// (`function(v) local y = take(v); return y end` 类),长度 5 但 CALL.B=2 C=2 区分 setter 2 参
+	// —— PJ5 CALL getter 1 K/reg arg 1 return — `function() local y = take(K); return y end` kind
+	// (`function(v) local y = take(v); return y end` kind), length 5 but CALL.B=2 C=2 distinguishes the 2-arg setter
 	{"p4_call_getter_upval_1argk", `
 local function take(x) return x * 2 end
 local function get() local y = take(7); return y end
@@ -401,7 +411,7 @@ local s = 0
 for i = 1, 30 do s = s + get(i) end
 return s`},
 
-	// —— PJ5 CALL getter 2 参 1 返 — 长度 6,CALL.B=3 C=2 — 四组合 K+K/K+R/R+K/R+R
+	// —— PJ5 CALL getter 2 args 1 return — length 6, CALL.B=3 C=2 — four combinations K+K/K+R/R+K/R+R
 	{"p4_call_getter_upval_2argk", `
 local function take(a, b) return a + b end
 local function get() local y = take(7, 9); return y end
@@ -427,7 +437,7 @@ local s = 0
 for i = 1, 30 do s = s + get(i) end
 return s`},
 
-	// —— PJ5 3 参形态 —— CALL setter / getter / TAILCALL 各组合 ——
+	// —— PJ5 3-arg shapes —— CALL setter / getter / TAILCALL each combination ——
 	{"p4_call_void_upval_3argk", `
 local sum = 0
 local function take(a, b, c) sum = sum + a + b + c end
@@ -465,7 +475,7 @@ local s = 0
 for i = 1, 10 do s = s + bounce(i, i+1, i+2) end
 return s`},
 
-	// —— PJ5 N>=2 返值 getter 形态(0 参,长度 6/7)——
+	// —— PJ5 N>=2 returns getter shape (0 args, length 6/7) ——
 	{"p4_call_multiret_n2_upval", `
 local function take() return 10, 20 end
 local function get() local a, b = take(); return a, b end
@@ -485,7 +495,7 @@ for i = 1, 30 do
 end
 return s`},
 
-	// —— PJ5 4 参形态(setter / getter / tail)——
+	// —— PJ5 4-arg shapes (setter / getter / tail) ——
 	{"p4_call_void_upval_4argreg", `
 local sum = 0
 local function take(a, b, c, d) sum = sum + a + b + c + d end
@@ -505,7 +515,7 @@ local s = 0
 for i = 1, 10 do s = s + bounce(i, i+1, i+2, i+3) end
 return s`},
 
-	// —— PJ5 N>=2 返值含参 1 K/reg 参形态(长度 7,Code[2]=CALL B=2 C=3)——
+	// —— PJ5 N>=2 returns with 1 K/reg arg shape (length 7, Code[2]=CALL B=2 C=3) ——
 	{"p4_call_multiret_n2_upval_1argk", `
 local function take(k) return k, k*2 end
 local function get() local a, b = take(7); return a, b end
@@ -525,7 +535,7 @@ for i = 1, 30 do
 end
 return s`},
 
-	// —— PJ5 5 参 setter 形态(长度 8,Code[6]=CALL B=6 C=1)——
+	// —— PJ5 5-arg setter shape (length 8, Code[6]=CALL B=6 C=1) ——
 	{"p4_call_void_upval_5argk", `
 local sum = 0
 local function take(a, b, c, d, e) sum = sum + a + b + c + d + e end
@@ -539,7 +549,7 @@ local function tick(u, v, w, x, y) take(u, v, w, x, y) end
 for i = 1, 10 do tick(i, i+1, i+2, i+3, i+4) end
 return sum`},
 
-	// —— PJ5 5 参 getter / tail 形态(长度 9,Code[6]=CALL B=6 C=2 / Code[6]=TAILCALL)——
+	// —— PJ5 5-arg getter / tail shape (length 9, Code[6]=CALL B=6 C=2 / Code[6]=TAILCALL) ——
 	{"p4_call_getter_upval_5argreg", `
 local function take(a, b, c, d, e) return a + b + c + d + e end
 local function get(u, v, w, x, y) local z = take(u, v, w, x, y); return z end
@@ -553,7 +563,7 @@ local s = 0
 for i = 1, 10 do s = s + bounce(i, i+1, i+2, i+3, i+4) end
 return s`},
 
-	// —— PJ5 6 参形态(setter 长度 9,getter 长度 10)——
+	// —— PJ5 6-arg shapes (setter length 9, getter length 10) ——
 	{"p4_call_void_upval_6argk", `
 local sum = 0
 local function take(a, b, c, d, e, f) sum = sum + a + b + c + d + e + f end
@@ -567,7 +577,7 @@ local total = 0
 for i = 1, 10 do total = total + get(i, i+1, i+2, i+3, i+4, i+5) end
 return total`},
 
-	// —— PJ5 N=3 返值含 1 K/reg 参形态(长度 8,Code[2]=CALL B=2 C=4)——
+	// —— PJ5 N=3 returns with 1 K/reg arg shape (length 8, Code[2]=CALL B=2 C=4) ——
 	{"p4_call_multiret_n3_upval_1argk", `
 local function take(k) return k, k*2, k*3 end
 local function get() local a, b, c = take(7); return a, b, c end
@@ -587,7 +597,7 @@ for i = 1, 30 do
 end
 return s`},
 
-	// —— PJ5 7 参形态(setter 长度 10,getter 长度 11)——
+	// —— PJ5 7-arg shapes (setter length 10, getter length 11) ——
 	{"p4_call_void_upval_7argk", `
 local sum = 0
 local function take(a, b, c, d, e, f, g) sum = sum + a + b + c + d + e + f + g end
@@ -601,7 +611,7 @@ local total = 0
 for i = 1, 10 do total = total + get(i, i+1, i+2, i+3, i+4, i+5, i+6) end
 return total`},
 
-	// —— PJ5 TAILCALL 6/7 参形态(长度 10/11)——
+	// —— PJ5 TAILCALL 6/7-arg shapes (length 10/11) ——
 	{"p4_tailcall_upval_6argreg", `
 local function f(a, b, c, d, e, g) return a + b + c + d + e + g end
 local function bounce(u, v, w, x, y, z) return f(u, v, w, x, y, z) end
@@ -615,8 +625,8 @@ local s = 0
 for i = 1, 10 do s = s + bounce(i, i+1, i+2, i+3, i+4, i+5, i+6) end
 return s`},
 
-	// —— PJ5 SELF method call inline 形态(`obj:method(args)` 真接入,
-	// 承 P2 ReasonSelfCall 占位位拆分 + P4 端 analyzeSelfCallForm 守门)——
+	// —— PJ5 SELF method-call inline shape (`obj:method(args)` real support,
+	// building on the P2 ReasonSelfCall placeholder-bit split + P4-side analyzeSelfCallForm gating) ——
 	{"p4_self_void_m0", `
 local count = 0
 local o = { m = function(self) count = count + 1 end }
@@ -655,7 +665,7 @@ local s = 0
 for i = 1, 30 do s = s + caller(o) end
 return s`},
 
-	// —— PJ5 SELF 3..5 参形态扩(长度 7/8/9)——
+	// —— PJ5 SELF 3..5-arg shape extension (length 7/8/9) ——
 	{"p4_self_void_m3k", `
 local sum = 0
 local o = { m = function(self, a, b, c) sum = sum + a + b + c end }
@@ -705,7 +715,7 @@ local total = 0
 for i = 1, 30 do total = total + caller(o, i, i+1, i+2, i+3, i+4) end
 return total`},
 
-	// —— PJ5 SELF inline 嵌套形态(OOP wrapper / observer 业务真接入)——
+	// —— PJ5 SELF inline nested shapes (OOP wrapper / observer business logic, real support) ——
 	{"p4_self_nested_chain", `
 local total = 0
 local inner = { n = function(self, x) total = total + x end }
@@ -722,11 +732,11 @@ local function caller(t) t:m(); other() end
 for i = 1, 30 do caller(o) end
 return mCount, oCount`},
 
-	// —— PJ5 SELF + CALL spec template 形态(IC NodeHit 命中走字节级 EmitSelfNodeHit
-	// 模板,跳过 host.Self;CALL 段仍 host.CallBaseline)。warmup-then-force 通过
-	// p4Corpus 的 force-all 路径触发(IC slot 已在解释器 warmup 中填好)——
-	// difftest 通过让 caller 反复调单态 receiver,IC 稳定后 spec template 命中
-	// 编译,验三方 byte-equal(oracle / crescent / p4-jit)。
+	// —— PJ5 SELF + CALL spec template shape (IC NodeHit takes the byte-level EmitSelfNodeHit
+	// template, skipping host.Self; the CALL segment still uses host.CallBaseline). warmup-then-force
+	// is triggered by p4Corpus's force-all path (the IC slot has been filled during interpreter warmup) ——
+	// difftest has caller repeatedly call a monomorphic receiver; once the IC stabilizes the spec template
+	// hits during compilation, verifying three-way byte-equal (oracle / crescent / p4-jit).
 	{"p4_self_spec_void_0arg", `
 local count = 0
 local o = { m = function(self) count = count + 1 end }
@@ -776,9 +786,9 @@ local function tick() o:m() end
 for i = 1, 100 do tick() end
 tick()
 return count`},
-	// —— commit-5u zero-cross 优化形态(callee 也 P4 升层时跳 executeFrom)——
-	// callee 用 PJ4 GETTABLE NodeHit form,P4 支持 + force-all 升 P4 后 helper
-	// 走 enterGibbous 直接 zero-cross。byte-equal P1 vs crescent vs p4 三方。
+	// —— commit-5u zero-cross optimization shape (when the callee is also promoted to P4, executeFrom is skipped) ——
+	// The callee uses the PJ4 GETTABLE NodeHit form; with P4 support + force-all promotion, the helper
+	// goes through enterGibbous directly zero-cross. byte-equal across P1 vs crescent vs p4.
 	{"p4_self_spec_zerocross_getter", `
 local o = { x = 42, m = function(self) return self.x end }
 local function caller(t) local r = t:m(); return r end
@@ -800,11 +810,11 @@ local sum = 0
 for i = 1, 100 do sum = sum + caller(o, i) end
 sum = sum + caller(o, 1000)
 return sum`},
-	// —— PJ5 SELF + CALL spec template N=2 返 drop multi-ret 形态(承上批
-	// form4..N cC=3/4 retB=1 守门扩):caller `local a,b = t:m(K×N)` 形态,
-	// host.CallBaseline 按 callC 落 N 返值 R(callA..) 作 local 直接绑;
-	// 主调 RETURN B=1 经 host.DoReturn 弹 0 返值收尾(两层协议解耦)——
-	// 验三方 byte-equal。
+	// —— PJ5 SELF + CALL spec template N=2 returns drop multi-ret shape (building on the prior batch's
+	// form4..N cC=3/4 retB=1 gating extension): caller `local a,b = t:m(K×N)` shape,
+	// host.CallBaseline writes N returns to R(callA..) as locals bound directly;
+	// the caller's RETURN B=1 goes through host.DoReturn popping 0 returns to finish (the two protocol
+	// layers are decoupled) —— verify three-way byte-equal.
 	{"p4_self_spec_multiret_0arg", `
 local count = 0
 local mt = { m = function(self) count = count + 1; return 1, 2 end }
@@ -833,7 +843,7 @@ local function caller(_, t) local a, b = t:m(7, 8, 9, 10, 11) end
 for i = 1, 100 do caller(nil, mt) end
 caller(nil, mt)
 return count`},
-	// N>=4 返 drop multi-ret(承本批 isValidSpecCallRetCount cC∈{1,3..16} 扩):
+	// N>=4 returns drop multi-ret (building on this batch's isValidSpecCallRetCount cC∈{1,3..16} extension):
 	{"p4_self_spec_multiret_n4_0arg", `
 local count = 0
 local mt = { m = function(self) count = count + 1; return 1, 2, 3, 4 end }
@@ -869,7 +879,7 @@ local function caller(_, t) local a, b, c, d = t:m(7, 8, 9) end
 for i = 1, 100 do caller(nil, mt) end
 caller(nil, mt)
 return count`},
-	// N=8 / N=15 上界附近(cC=9 / cC=16,验 isValidSpecCallRetCount 严格上界):
+	// N=8 / N=15 near the upper bound (cC=9 / cC=16, verifying isValidSpecCallRetCount's strict upper bound):
 	{"p4_self_spec_multiret_n8_0arg", `
 local count = 0
 local mt = { m = function(self) count = count + 1; return 1, 2, 3, 4, 5, 6, 7, 8 end }
@@ -886,11 +896,11 @@ end
 for i = 1, 100 do caller(nil, mt) end
 caller(nil, mt)
 return count`},
-	// —— PJ5 SELF spec template 错误冒泡 difftest(承 d201a2f/d0893c9 e2e
-	// 实证 NilRecv + BadMethod;本批加 difftest 三方 byte-equal,验
-	// crescent vs P4 错误消息逐字节一致 + P4 OSR exit 路径不破坏错误冒泡)。
-	// pcall 把错误转 (false, errmsg) 返回,避免 runWangshuP4Tiered 在
-	// err != nil 时 fail-fast,保留错误消息进 byte-equal 对比。
+	// —— PJ5 SELF spec template error propagation difftest (building on d201a2f/d0893c9 e2e
+	// evidence for NilRecv + BadMethod; this batch adds a three-way byte-equal difftest, verifying
+	// crescent vs P4 error messages are byte-for-byte identical + the P4 OSR exit path does not break error propagation).
+	// pcall converts the error into a (false, errmsg) return, avoiding runWangshuP4Tiered
+	// failing fast on err != nil, preserving the error message for the byte-equal comparison.
 	{"p4_self_spec_err_nilrecv", `
 local function caller(t) return t:m() end
 local ok, err = pcall(caller, nil)
@@ -909,10 +919,10 @@ for i = 1, 100 do sum = sum + caller(m_good) end
 -- 然后用 nil receiver → spec NodeHit guard 失败 → deopt → host.Self → err
 local ok, err = pcall(caller, nil)
 return ok, tostring(err), sum`},
-	// —— PJ5 SELF inline 路径(非 spec template,走 host.Self → host.CallBaseline)
-	// 错误冒泡 difftest(承 cf8c24a SELF inline 错误冒泡 e2e 同款,但本批补 difftest
-	// 三方 byte-equal 覆盖)。inline 路径 NodeHit feedback 未触发(无 warmup),
-	// 走纯 host helper round-trip,但错误冒泡逻辑同款。
+	// —— PJ5 SELF inline path (not the spec template; goes through host.Self → host.CallBaseline)
+	// error propagation difftest (same as cf8c24a SELF inline error propagation e2e, but this batch adds
+	// three-way byte-equal difftest coverage). The inline path does not trigger NodeHit feedback (no warmup),
+	// taking a pure host helper round-trip, but the error propagation logic is the same.
 	{"p4_self_inline_err_nilrecv", `
 -- 不 warmup,直接调 nil receiver:inline 路径 host.Self raise
 local function caller(t) return t:m() end
@@ -923,9 +933,9 @@ local mt = { m = "string_not_callable" }
 local function caller(t) return t:m() end
 local ok, err = pcall(caller, mt)
 return ok, tostring(err)`},
-	// —— PJ4 表 IC 错误冒泡 difftest(承 §9.7-§9.10 PJ4 IC 六路径全覆盖):
-	// GETTABLE / SETTABLE 在 nil 表 / non-table 上 raise,验 IC inline 路径
-	// + host.GetTable/SetTable 降级路径错误冒泡 byte-equal P1。
+	// —— PJ4 table IC error propagation difftest (building on §9.7-§9.10 PJ4 IC six-path full coverage):
+	// GETTABLE / SETTABLE raise on a nil table / non-table, verifying the IC inline path
+	// + host.GetTable/SetTable fallback path error propagation is byte-equal to P1.
 	{"p4_get_err_niltable", `
 local function getter(t) return t[1] end
 local ok, err = pcall(getter, nil)
@@ -938,9 +948,9 @@ return ok, tostring(err)`},
 local function getter(t) return t[1] end
 local ok, err = pcall(getter, 42)
 return ok, tostring(err)`},
-	// —— PJ3 FORLOOP 错误冒泡 difftest(承 §8 PJ3 FORLOOP 字节级 inline):
-	// for 限制 / 步长非 number → ForPrep raise,验 PJ3 模板 deopt 路径错误
-	// 冒泡 byte-equal P1。
+	// —— PJ3 FORLOOP error propagation difftest (building on §8 PJ3 FORLOOP byte-level inline):
+	// for limit / step non-number → ForPrep raise, verifying the PJ3 template deopt path error
+	// propagation is byte-equal to P1.
 	{"p4_forloop_err_nonumlimit", `
 local function loop(n) for i = 1, n do end end
 local ok, err = pcall(loop, "not_a_number")
@@ -949,8 +959,8 @@ return ok, tostring(err)`},
 local function loop(s) for i = 1, 10, s do end end
 local ok, err = pcall(loop, "not_a_number")
 return ok, tostring(err)`},
-	// —— PJ7 算术错误冒泡 difftest(承 PJ7 ADD..POW 6 op):arith on
-	// non-number → host.Arith raise,验 P4 算术 inline 路径错误冒泡。
+	// —— PJ7 arithmetic error propagation difftest (building on PJ7 ADD..POW 6 ops): arith on
+	// a non-number → host.Arith raise, verifying the P4 arithmetic inline path error propagation.
 	{"p4_arith_err_addstring", `
 local function add(a, b) return a + b end
 local ok, err = pcall(add, "x", 1)
@@ -959,9 +969,9 @@ return ok, tostring(err)`},
 local function ln(t) return #t end
 local ok, err = pcall(ln, nil)
 return ok, tostring(err)`},
-	// —— R14 ABI 后验 difftest(承本会话 R14 ABI 修复 + 7 R14 后验测试矩阵):
-	// 这些用例**包含真实 PJ3/PJ4/PJ5 mmap 段路径** + 重复迭代,验 P4 vs
-	// crescent byte-equal 在 GC stress 类工作负载下不引入分歧。
+	// —— R14 ABI post-verification difftest (building on this session's R14 ABI fix + 7 R14 post-verification test matrix):
+	// these cases **include real PJ3/PJ4/PJ5 mmap segment paths** + repeated iteration, verifying P4 vs
+	// crescent byte-equal introduces no divergence under GC-stress workloads.
 	{"p4_r14_pj5_self_repeated", `
 local o = { m = function(self) return 42 end }
 local function caller(t) return t:m() end
@@ -1071,29 +1081,29 @@ for i = 1, 20 do s = s + A() end
 return s, type(A())`},
 }
 
-// TestP4_Tiered 三方对拍:oracle / crescent / p4-jit 全 byte-equal。
+// TestP4_Tiered three-way diff: oracle / crescent / p4-jit all byte-equal.
 //
-// **承外部 review 🔴 阻塞修复**:此前 difftest 全套 P4 路径不被强制触达,
-// 本测试明确 force-all 升 P4 + 重复调用核函数,确保 P4 native 路径在
-// difftest 整套层面真被走到。
+// **Fixing an external review 🔴 blocker**: previously the difftest suite's P4 path was never
+// forced to be reached; this test explicitly force-all-promotes to P4 + repeatedly calls the
+// kernel functions, ensuring the P4 native path is truly exercised across the whole difftest suite.
 func TestP4_Tiered(t *testing.T) {
 	oracle := findOracle()
 	for _, c := range p4Corpus {
 		t.Run(c.name, func(t *testing.T) {
 			crescent := runWangshuP4Tiered(t, c.src, false)
 			p4 := runWangshuP4Tiered(t, c.src, true)
-			// 层间硬门:crescent vs P4 必须逐字节一致
+			// Cross-tier hard gate: crescent vs P4 must be byte-for-byte identical
 			if crescent != p4 {
 				t.Errorf("层间分歧 (crescent vs P4-jit):\n  crescent: %q\n  p4:       %q",
 					crescent, p4)
 			}
-			// 跳过 oracle 对比:含 "_err_" 的用例(错误消息含 chunk name
-			// 差异,wangshu 用 "p4diff" / oracle 用 "stdin",非 P4 路径问题,
-			// 承 errmsg_test.go 同款归一化跳过策略)
+			// Skip the oracle comparison: cases containing "_err_" (their error messages contain a chunk
+			// name difference, wangshu uses "p4diff" / oracle uses "stdin", not a P4-path problem,
+			// following the same normalization-skip strategy as errmsg_test.go)
 			if strings.Contains(c.name, "_err_") {
 				return
 			}
-			// 锚定官方 lua5.1(可用时)
+			// Anchor against official lua5.1 (when available)
 			if oracle != "" {
 				want := runOracle(t, oracle, wrapForOracle(c.src))
 				if p4 != want {
@@ -1105,12 +1115,12 @@ func TestP4_Tiered(t *testing.T) {
 	}
 }
 
-// TestP4_ConcurrentForceAll V18(-race):多 State 并发 force-all P4。
+// TestP4_ConcurrentForceAll V18 (-race): multiple States concurrently force-all P4.
 //
-// 每个 goroutine 独立 State + 独立 force-all,跑同一脚本,验证并发升层无数据竞争。
-// `go test -race` 下任一竞争即报告。结果一致性顺带校验。
+// Each goroutine has an independent State + independent force-all, running the same script, verifying
+// concurrent promotion has no data races. `go test -race` reports any race. Result consistency is verified as a bonus.
 func TestP4_ConcurrentForceAll(t *testing.T) {
-	// 选 P4 SupportsAllOpcodes 真接受的形态(算术 + FORLOOP + 表 IC + SELF inline)
+	// Pick shapes that P4 SupportsAllOpcodes truly accepts (arithmetic + FORLOOP + table IC + SELF inline)
 	src := `
 local function arith(x) return x * 2 + 1 end
 local function loop() local s = 0; for i = 1, 50 do s = s + i end return s end
@@ -1131,7 +1141,7 @@ return s1, s2, s3, s4`
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	// 先单跑拿期望值
+	// Run once first to get the expected value
 	want := runWangshuP4Tiered(t, src, true)
 
 	results := make([]string, goroutines)
@@ -1164,11 +1174,11 @@ return s1, s2, s3, s4`
 	}
 }
 
-// TestP4_ConcurrentForceAll_MultiRet V18(-race):多 State 并发 force-all P4
-// 跑 PJ5 SELF spec template N=4 返 drop multi-ret 形态(承 84c7ed4 cC∈{1,3..16}
-// 扩 + 91dcf07 N=4 返多形态)。验:N>=2 返路径 host.CallBaseline 多个 SetReg
-// + DoReturn 0 返值收尾,在多 State 并发下无 race(arena GCRef 镜像字 atomic
-// 单 word + 各 State 独立 jitContext)。
+// TestP4_ConcurrentForceAll_MultiRet V18 (-race): multiple States concurrently force-all P4
+// running the PJ5 SELF spec template N=4 returns drop multi-ret shape (building on 84c7ed4 cC∈{1,3..16}
+// extension + 91dcf07 N=4 returns multi-shape). Verifies: on the N>=2 returns path host.CallBaseline's
+// multiple SetReg + DoReturn 0-returns finish has no race under multiple concurrent States (arena GCRef
+// mirror word is a single atomic word + each State has an independent jitContext).
 func TestP4_ConcurrentForceAll_MultiRet(t *testing.T) {
 	src := `
 local mt = { m = function(self, k) return k+1, k+2, k+3, k+4 end }
@@ -1217,15 +1227,15 @@ return s1, s2`
 	}
 }
 
-// TestP4_ConcurrentForceAll_SpecDeopt V18(-race):多 State 并发 force-all P4
-// 跑 PJ5 SELF spec template 路径下 NodeHit guard 失败 + deopt 路径。
+// TestP4_ConcurrentForceAll_SpecDeopt V18 (-race): multiple States concurrently force-all P4
+// running the NodeHit guard failure + deopt path on the PJ5 SELF spec template path.
 //
-// 验:spec template SELF NodeHit guard 失败 → onOSRExit + p4SpecState 累积
-// deopt + 降级 host.Self 路径在多 State 8 goroutine 并发下无 race。承
-// p4SpecState package-level 全局 map + p4SpecMu 守护(承 p4state.go godoc
-// 修正 730f253)。
+// Verifies: spec template SELF NodeHit guard failure → onOSRExit + p4SpecState accumulating
+// deopts + falling back to the host.Self path has no race under 8 concurrent goroutines across
+// multiple States. Building on the p4SpecState package-level global map + p4SpecMu guard (following
+// the p4state.go godoc correction 730f253).
 func TestP4_ConcurrentForceAll_SpecDeopt(t *testing.T) {
-	// 不同 receiver shape 触发 deopt(spec template NodeHit guard 失败)
+	// Different receiver shapes trigger deopt (spec template NodeHit guard failure)
 	src := `
 local m1 = { m = function(self) return 1 end }
 local m2 = { m = function(self) return 2 end, other = 99 }
@@ -1273,14 +1283,15 @@ return sum`
 	}
 }
 
-// TestP4_PromotionTriggered 强断言:跑 p4Corpus 后 PromotionCount > 0。
+// TestP4_PromotionTriggered strong assertion: after running p4Corpus, PromotionCount > 0.
 //
-// 承外部 review 「`make test-p4` 21 binary 全过的'绿色'在 conformance / difftest
-// 层面大面积是无证据空绿」缺口:即便 force-all 形式上调用,short proto + 复杂
-// opcode 可能让 P4 升层数 = 0(测试假绿)。本测试明确断言至少一个 Proto 真升层,
-// 否则 fail-stop(防 fall-through "P4 路径未触达"成静默空绿)。
+// Addresses the external review gap "the 'green' of `make test-p4`'s 21 binaries all passing is
+// largely evidence-free empty green at the conformance / difftest layer": even if force-all is
+// formally invoked, short protos + complex opcodes may keep the P4 promotion count = 0 (test false
+// green). This test explicitly asserts at least one Proto is truly promoted, otherwise fail-stop
+// (guarding against fall-through where "the P4 path was never reached" becomes silent empty green).
 func TestP4_PromotionTriggered(t *testing.T) {
-	// 选 p4Corpus 中明确符合 P4 SupportsAllOpcodes 的形态
+	// Pick a shape from p4Corpus that clearly matches P4 SupportsAllOpcodes
 	src := `
 local function f(x) return x * 2 + 1 end
 local s = 0

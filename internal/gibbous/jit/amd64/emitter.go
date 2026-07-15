@@ -1,38 +1,46 @@
 //go:build wangshu_p4 && amd64
 
-// emitter.go —— P4 amd64 后端直线模板发射器(PJ1 范围)。
+// emitter.go —— P4 amd64 backend straight-line template emitter (PJ1 scope).
 //
-// 承 docs/design/p4-method-jit/06-backends.md §2.4 emitter trait 接口 + §3.7
-// 直线族(MOVE/LOADK/LOADBOOL/LOADNIL,编号 0-3)+ §3.4 控制流族 JMP(编号 22)
-// + §3.5 调用族 RETURN(编号 30)。
+// Follows docs/design/p4-method-jit/06-backends.md §2.4 emitter trait interface
+// + §3.7 straight-line family (MOVE/LOADK/LOADBOOL/LOADNIL, opcodes 0-3)
+// + §3.4 control-flow family JMP (opcode 22)
+// + §3.5 call family RETURN (opcode 30).
 //
-// **PJ1 简化形态**(承 spike DECISION.md「极简形态的限制」+ spike 闸门绿后
-// 解锁的 emitter 接口):本 emitter 不引入 jitContext / 切 SP / 自管栈,直线
-// 模板的形态是「mov rax, imm; ret」一类极简序列(spike S1 同款)。这能让 PJ1
-// 真正可工作的最小子集落地——即「LOADK 烧 imm,RETURN 跳出」单 BB 直线 Proto
-// 经 mmap 段执行返回 RAX 给 trampoline → callJIT 拿到值。
+// **PJ1 minimal form** (following spike DECISION.md "limits of the minimal form"
+// + the emitter interface unlocked once the spike gate went green): this emitter
+// introduces no jitContext, does not switch SP, and manages no stack of its own;
+// straight-line templates take the shape of a minimal "mov rax, imm; ret"-style
+// sequence (same as spike S1). This lets the smallest genuinely working subset of
+// PJ1 land — a single-BB straight-line Proto of "LOADK bakes imm, RETURN exits"
+// executed through the mmap segment, returning RAX to the trampoline → callJIT
+// receives the value.
 //
-// **PJ1 范围内 supported = LOADK + RETURN**(单 BB 直线,无 jump)——这是 spike
-// 闸门四档 + 「最小可执行 P4 形态」的首个交集。MOVE / LOADBOOL / LOADNIL / JMP
-// 留 PJ2 起渐进扩(它们涉及多寄存器或前向 fixup,不在 PJ1 极简形态内)。
+// **Within PJ1 scope supported = LOADK + RETURN** (single-BB straight line, no
+// jump) — this is the first intersection of the spike gate's four tiers and the
+// "minimal executable P4 form". MOVE / LOADBOOL / LOADNIL / JMP are extended
+// incrementally starting from PJ2 (they involve multiple registers or forward
+// fixups, outside the PJ1 minimal form).
 //
-// 完整 Emitter trait + per-opcode 发射函数(承 06 §3.x 各族)留 PJ2-PJ7 渐进
-// 填实——本文件先建最小骨架,让 PJ1 的「end-to-end mmap 段 round-trip 工作」
-// 成立。
+// The full Emitter trait + per-opcode emit functions (following 06 §3.x families)
+// are filled in incrementally across PJ2-PJ7 — this file first builds the minimal
+// skeleton so that PJ1's "end-to-end mmap segment round-trip works" holds.
 package amd64
 
 import "encoding/binary"
 
-// EmitMovRaxImm64 发射「mov rax, imm64」9 字节序列(REX.W + B8+rd)。
+// EmitMovRaxImm64 emits the "mov rax, imm64" 9-byte sequence (REX.W + B8+rd).
 //
-// amd64 编码:48 b8 ii ii ii ii ii ii ii ii(10 字节)
-//   - 0x48:REX prefix,W=1 表 64-bit operand
-//   - 0xb8:B8+rd opcode,rd=0(RAX)
-//   - imm64:little-endian 8 字节立即数
+// amd64 encoding: 48 b8 ii ii ii ii ii ii ii ii (10 bytes)
+//   - 0x48: REX prefix, W=1 means 64-bit operand
+//   - 0xb8: B8+rd opcode, rd=0 (RAX)
+//   - imm64: little-endian 8-byte immediate
 //
-// 用于 LOADK 直线快速路径——把 Proto.Constants[Bx] 的 NaN-box u64 烧入。
-// PJ1 不实装常量池转 NaN-box(那是值表示模块的事);本 emitter 接口只
-// 暴露「写 u64 imm」原语,调用方决定怎么用。
+// Used by the LOADK straight-line fast path — bakes in the NaN-box u64 of
+// Proto.Constants[Bx]. PJ1 does not implement constant-pool-to-NaN-box
+// conversion (that belongs to the value-representation module); this emitter
+// interface only exposes the "write u64 imm" primitive, and the caller decides
+// how to use it.
 func EmitMovRaxImm64(buf []byte, imm uint64) []byte {
 	buf = append(buf, 0x48, 0xb8) // REX.W mov rax, imm64
 	var imm8 [8]byte
@@ -41,42 +49,50 @@ func EmitMovRaxImm64(buf []byte, imm uint64) []byte {
 	return buf
 }
 
-// EmitRet 发射「ret」单字节序列(0xc3)。
+// EmitRet emits the "ret" single-byte sequence (0xc3).
 //
-// 用于 RETURN 模板尾——把当前 RAX 值返回 trampoline。PJ1 简化形态下 RAX
-// = 模板烧入的最近一个 imm(LOADK 后的常量值),trampoline 经 callJIT 拿到。
+// Used at the tail of the RETURN template — returns the current RAX value to the
+// trampoline. Under the PJ1 minimal form, RAX = the most recent imm baked in by
+// the template (the constant after LOADK), which the trampoline receives via
+// callJIT.
 func EmitRet(buf []byte) []byte {
 	return append(buf, 0xc3)
 }
 
-// EncodedMovRaxImm64Len 是「mov rax, imm64」编码后的字节数(常量,固定 10)。
+// EncodedMovRaxImm64Len is the encoded byte length of "mov rax, imm64" (constant, fixed 10).
 const EncodedMovRaxImm64Len = 10
 
-// EncodedRetLen 是「ret」编码后的字节数(常量,固定 1)。
+// EncodedRetLen is the encoded byte length of "ret" (constant, fixed 1).
 const EncodedRetLen = 1
 
 // =============================================================================
-// PJ3+ Emitter 原语扩展(渐进白名单,承 06 §3.x 各族)
+// PJ3+ Emitter primitive extensions (incremental allowlist, following 06 §3.x families)
 // =============================================================================
 //
-// 本节扩 PJ1 的 EmitMovRaxImm64 + EmitRet 二原语,加入控制流 / 算术 / 表 IC
-// 各族的最小指令编码原语。这些原语本身不构成完整 opcode 模板(完整模板还需
-// jitContext 字段 inline 访问 + helper 调用 + guard 失败 OSR exit 等机制,留
-// 后续 PJ 扩),但作为 emitter 接口面建好让 PJ4+ 启动时直接用。
+// This section extends PJ1's two primitives EmitMovRaxImm64 + EmitRet, adding the
+// minimal instruction-encoding primitives for the control-flow / arithmetic /
+// table-IC families. These primitives do not themselves form complete opcode
+// templates (a complete template also needs jitContext field inline access +
+// helper calls + guard-failure OSR exit mechanisms, left for later PJ extensions),
+// but building out the emitter interface surface lets PJ4+ use them directly on
+// startup.
 //
-// **PJ3 范围内 SupportsAllOpcodes 仍全 false**——本节原语经单测 prove-the-path
-// 走到(每个 EmitXxx 的字节码序列经 mmap 段执行验证),但 bridge 主路径不
-// 触达。
+// **Within PJ3 scope SupportsAllOpcodes is still all-false** — this section's
+// primitives are prove-the-path tested by unit tests (each EmitXxx's bytecode
+// sequence is validated by execution through the mmap segment), but the bridge
+// main path does not reach them.
 
-// EmitMovImm64ToReg 发射「mov regNum, imm64」10 字节序列(承 06 §3.7 直线族,
-// regNum ∈ [0, 7] = RAX/RCX/RDX/RBX/RSP/RBP/RSI/RDI)。
+// EmitMovImm64ToReg emits the "mov regNum, imm64" 10-byte sequence (following 06
+// §3.7 straight-line family, regNum ∈ [0, 7] = RAX/RCX/RDX/RBX/RSP/RBP/RSI/RDI).
 //
-// **关键防御**(承审查 🟠 #1):reg=4(RSP)/ reg=5(RBP)是 amd64 合法编码,
-// 但语义上 mov rsp/rbp, imm64 会破坏 trampoline 栈协议(返回时 ret 跳无效
-// 地址 SEGV)。本函数对 4/5 兜底为 RAX(0)。reg 6/7(RSI/RDI)合法可用。
+// **Key defense** (following review 🟠 #1): reg=4 (RSP) / reg=5 (RBP) are legal
+// amd64 encodings, but semantically mov rsp/rbp, imm64 would corrupt the
+// trampoline stack protocol (on return, ret jumps to an invalid address → SEGV).
+// This function falls back to RAX (0) for 4/5. reg 6/7 (RSI/RDI) are legal and
+// usable.
 func EmitMovImm64ToReg(buf []byte, regNum uint8, imm uint64) []byte {
 	if regNum > 7 || regNum == 4 || regNum == 5 {
-		// RSP/RBP 不安全,防御性兜底为 RAX
+		// RSP/RBP unsafe, defensively fall back to RAX
 		regNum = 0
 	}
 	buf = append(buf, 0x48, 0xb8|regNum)
@@ -86,32 +102,36 @@ func EmitMovImm64ToReg(buf []byte, regNum uint8, imm uint64) []byte {
 	return buf
 }
 
-// EmitNop 发射「nop」单字节序列(0x90)——padding / 调试用。
+// EmitNop emits the "nop" single-byte sequence (0x90) — for padding / debugging.
 //
-// PJ4+ 用例:模板间对齐填充(amd64 fast path 偶有需要按 16 字节对齐启动循环
-// 入口,nop padding 是常用手法)。
+// PJ4+ use case: alignment padding between templates (the amd64 fast path
+// occasionally needs to align a loop entry to 16 bytes, and nop padding is the
+// common technique).
 func EmitNop(buf []byte) []byte {
 	return append(buf, 0x90)
 }
 
-// EncodedMovImm64ToRegLen 是「mov regN, imm64」编码后的字节数(常量,固定 10)。
+// EncodedMovImm64ToRegLen is the encoded byte length of "mov regN, imm64" (constant, fixed 10).
 const EncodedMovImm64ToRegLen = 10
 
-// EncodedNopLen 是「nop」编码后的字节数(常量,固定 1)。
+// EncodedNopLen is the encoded byte length of "nop" (constant, fixed 1).
 const EncodedNopLen = 1
 
 // =============================================================================
-// PJ4+ 比较族 + 跳转编码原语(承 06 §3.2 比较族 + §3.4 控制流 JMP)
+// PJ4+ compare family + jump encoding primitives (following 06 §3.2 compare family + §3.4 control-flow JMP)
 // =============================================================================
 
-// EmitCmpRaxImm32 发射「cmp rax, imm32」6 字节序列(承 06 §3.2 比较族基础)。
+// EmitCmpRaxImm32 emits the "cmp rax, imm32" 6-byte sequence (following 06 §3.2 compare-family basics).
 //
-// amd64 编码:48 3d ii ii ii ii(REX.W cmp rax, imm32)。imm32 是有符号扩展
-// 到 64 位的立即数;调用方负责确保 imm 在 [-2^31, 2^31) 内。
+// amd64 encoding: 48 3d ii ii ii ii (REX.W cmp rax, imm32). imm32 is a
+// sign-extended-to-64-bit immediate; the caller is responsible for ensuring imm
+// is within [-2^31, 2^31).
 //
-// PJ4+ 用例:IsNumber guard 的核心比较——「cmp rax, NaNBoxBase; jae .deopt」
-// 是 NaN-box 单 u64 比较模式(承 03 §2.2 + design-premises 前提四)。当前
-// imm32 实装够用 NaN-box 边界判定的高 32 位场景;扩 imm64 留 PJ4 实装。
+// PJ4+ use case: the core comparison of the IsNumber guard — "cmp rax, NaNBoxBase;
+// jae .deopt" is the NaN-box single-u64 comparison pattern (following 03 §2.2 +
+// design-premises premise four). The current imm32 implementation suffices for
+// the high-32-bit scenario of NaN-box boundary decisions; extending to imm64 is
+// left for the PJ4 implementation.
 func EmitCmpRaxImm32(buf []byte, imm int32) []byte {
 	buf = append(buf, 0x48, 0x3d)
 	for i := 0; i < 4; i++ {
@@ -120,13 +140,15 @@ func EmitCmpRaxImm32(buf []byte, imm int32) []byte {
 	return buf
 }
 
-// EmitJmpRel32 发射「jmp rel32」5 字节序列(承 06 §3.4 JMP 直跳)。
+// EmitJmpRel32 emits the "jmp rel32" 5-byte sequence (following 06 §3.4 JMP direct jump).
 //
-// amd64 编码:e9 ii ii ii ii(JMP rel32,32 位有符号偏移,从下条指令起算)。
+// amd64 encoding: e9 ii ii ii ii (JMP rel32, 32-bit signed offset, relative to
+// the next instruction).
 //
-// PJ4+ 用例:JMP 指令翻译——目标 PC 的机器地址在编译期算好(forwardJump
-// fixup 表,承 06 §2.2.1 PatchJump 协议)写入 rel32。调用方负责保证 imm
-// 是「目标地址 - (本指令地址 + 5)」。
+// PJ4+ use case: JMP instruction translation — the machine address of the target
+// PC is computed at compile time (the forwardJump fixup table, following 06
+// §2.2.1 PatchJump protocol) and written into rel32. The caller is responsible
+// for ensuring imm is "target address - (this instruction's address + 5)".
 func EmitJmpRel32(buf []byte, rel32 int32) []byte {
 	buf = append(buf, 0xe9)
 	for i := 0; i < 4; i++ {
@@ -135,13 +157,14 @@ func EmitJmpRel32(buf []byte, rel32 int32) []byte {
 	return buf
 }
 
-// EmitJaeRel32 发射「jae rel32」6 字节序列(承 06 §3.2 IsNumber guard 出口)。
+// EmitJaeRel32 emits the "jae rel32" 6-byte sequence (following 06 §3.2 IsNumber guard exit).
 //
-// amd64 编码:0f 83 ii ii ii ii(JAE rel32 = if CF=0 jump,即「>=」无符号
-// 比较跳)。
+// amd64 encoding: 0f 83 ii ii ii ii (JAE rel32 = if CF=0 jump, i.e. the unsigned
+// ">=" comparison jump).
 //
-// PJ4+ 用例:IsNumber guard 失败跳 OSR exit——「cmp rax, NaNBoxBase; jae
-// .deopt」(rax >= NaNBoxBase 表 rax 是 boxed 非数字 ⇒ 投机失败)。
+// PJ4+ use case: on IsNumber guard failure, jump to the OSR exit — "cmp rax,
+// NaNBoxBase; jae .deopt" (rax >= NaNBoxBase means rax is a boxed non-number ⇒
+// speculation failed).
 func EmitJaeRel32(buf []byte, rel32 int32) []byte {
 	buf = append(buf, 0x0f, 0x83)
 	for i := 0; i < 4; i++ {
@@ -150,28 +173,31 @@ func EmitJaeRel32(buf []byte, rel32 int32) []byte {
 	return buf
 }
 
-// EncodedCmpRaxImm32Len 是「cmp rax, imm32」编码后的字节数(常量,固定 6:
-// REX.W 1 字节 + opcode 1 字节 + imm32 4 字节)。
+// EncodedCmpRaxImm32Len is the encoded byte length of "cmp rax, imm32" (constant,
+// fixed 6: REX.W 1 byte + opcode 1 byte + imm32 4 bytes).
 const EncodedCmpRaxImm32Len = 6
 
-// EncodedJmpRel32Len 是「jmp rel32」编码后的字节数(常量,固定 5)。
+// EncodedJmpRel32Len is the encoded byte length of "jmp rel32" (constant, fixed 5).
 const EncodedJmpRel32Len = 5
 
-// EncodedJaeRel32Len 是「jae rel32」编码后的字节数(常量,固定 6)。
+// EncodedJaeRel32Len is the encoded byte length of "jae rel32" (constant, fixed 6).
 const EncodedJaeRel32Len = 6
 
 // =============================================================================
-// PJ5+ 调用族 emitter 原语(承 06 §3.5 CALL/TAILCALL/RETURN 调用族)
+// PJ5+ call-family emitter primitives (following 06 §3.5 CALL/TAILCALL/RETURN call family)
 // =============================================================================
 
-// EmitCallRel32 发射「call rel32」5 字节序列(承 06 §3.5 helper 调用基础)。
+// EmitCallRel32 emits the "call rel32" 5-byte sequence (following 06 §3.5 helper-call basics).
 //
-// amd64 编码:e8 ii ii ii ii(CALL rel32,32 位有符号偏移,从下条指令起算)。
+// amd64 encoding: e8 ii ii ii ii (CALL rel32, 32-bit signed offset, relative to
+// the next instruction).
 //
-// PJ5+ 用例:gibbous-jit→host helper 调用——helper 函数地址在 jitContext
-// helper 表(承 05 §4.3),编译期算好 rel32 = helperAddr - (本指令地址 + 5)。
-// 但 helper 通常远超 ±2GB 范围,实际实装是「mov rax, helperAddr; call rax」
-// (间接 CALL,留 PJ5+ 加 EmitCallReg)。本原语保留作 fallback。
+// PJ5+ use case: gibbous-jit→host helper calls — the helper function address
+// lives in the jitContext helper table (following 05 §4.3), and rel32 =
+// helperAddr - (this instruction's address + 5) is computed at compile time. But
+// helpers usually far exceed the ±2GB range, so the actual implementation is "mov
+// rax, helperAddr; call rax" (indirect CALL, with EmitCallReg added in PJ5+).
+// This primitive is kept as a fallback.
 func EmitCallRel32(buf []byte, rel32 int32) []byte {
 	buf = append(buf, 0xe8)
 	for i := 0; i < 4; i++ {
@@ -180,21 +206,23 @@ func EmitCallRel32(buf []byte, rel32 int32) []byte {
 	return buf
 }
 
-// EmitCallReg 发射「call regN」2 字节序列(承 06 §3.5 间接 CALL helper)。
+// EmitCallReg emits the "call regN" 2-byte sequence (following 06 §3.5 indirect CALL helper).
 //
-// amd64 编码:ff (d0 + regN)(CALL r/m64,FF /2,reg field encoded in modrm)。
-// 仅低 8 个寄存器(RAX-RDI);reg=4(RSP)语义不可用(承审查 🟢 #2)防御。
+// amd64 encoding: ff (d0 + regN) (CALL r/m64, FF /2, reg field encoded in modrm).
+// Low 8 registers only (RAX-RDI); reg=4 (RSP) is semantically unusable
+// (following review 🟢 #2) and defended against.
 func EmitCallReg(buf []byte, regNum uint8) []byte {
 	if regNum > 7 || regNum == 4 {
-		regNum = 0 // RSP/超界兜底为 RAX
+		regNum = 0 // RSP/out-of-range falls back to RAX
 	}
 	buf = append(buf, 0xff, 0xd0|regNum)
 	return buf
 }
 
-// EmitPushReg 发射「push regN」1 字节序列。reg=4(RSP)/ reg=5(RBP)语义
-// 危险——RBP 已被 trampoline 序言保存,业务码不该改;RSP push 无意义。本
-// 函数对 4/5 兜底为 RAX(0)。
+// EmitPushReg emits the "push regN" single-byte sequence. reg=4 (RSP) / reg=5
+// (RBP) are semantically dangerous — RBP is already saved by the trampoline
+// prolog and business code must not modify it; pushing RSP is meaningless. This
+// function falls back to RAX (0) for 4/5.
 func EmitPushReg(buf []byte, regNum uint8) []byte {
 	if regNum > 7 || regNum == 4 || regNum == 5 {
 		regNum = 0
@@ -203,8 +231,8 @@ func EmitPushReg(buf []byte, regNum uint8) []byte {
 	return buf
 }
 
-// EmitPopReg 发射「pop regN」1 字节序列(对位 EmitPushReg 出栈)。
-// reg=4/5 同 EmitPushReg 防御。
+// EmitPopReg emits the "pop regN" single-byte sequence (the pop counterpart of
+// EmitPushReg). reg=4/5 use the same defense as EmitPushReg.
 func EmitPopReg(buf []byte, regNum uint8) []byte {
 	if regNum > 7 || regNum == 4 || regNum == 5 {
 		regNum = 0
@@ -213,124 +241,132 @@ func EmitPopReg(buf []byte, regNum uint8) []byte {
 	return buf
 }
 
-// EncodedCallRel32Len 是「call rel32」编码后的字节数(常量,固定 5)。
+// EncodedCallRel32Len is the encoded byte length of "call rel32" (constant, fixed 5).
 const EncodedCallRel32Len = 5
 
-// EncodedCallRegLen 是「call regN」编码后的字节数(常量,固定 2)。
+// EncodedCallRegLen is the encoded byte length of "call regN" (constant, fixed 2).
 const EncodedCallRegLen = 2
 
-// EncodedPushRegLen 是「push regN」编码后的字节数(常量,固定 1,低 8 寄存器)。
+// EncodedPushRegLen is the encoded byte length of "push regN" (constant, fixed 1, low 8 registers).
 const EncodedPushRegLen = 1
 
-// EncodedPopRegLen 是「pop regN」编码后的字节数(常量,固定 1)。
+// EncodedPopRegLen is the encoded byte length of "pop regN" (constant, fixed 1).
 const EncodedPopRegLen = 1
 
-// EmitHelperCall 发射「mov rax, helperAddr; call rax」复合模板(12 字节)
-// 用于 PJ5 jit→host helper 间接调用。
+// EmitHelperCall emits the "mov rax, helperAddr; call rax" composite template
+// (12 bytes) for PJ5 jit→host helper indirect calls.
 //
-// **背景**:helper 函数地址通常远超 ±2GB 范围,直接 `call rel32` 不可用;
-// 标准做法是装载 64-bit 绝对地址到 rax 后 indirect call。本宏把 PJ5 helper
-// 调用的固定字节序列(`mov rax, imm64` 10 字节 + `call rax` 2 字节 = 12
-// 字节)封装,避免每处 helper 调用站点逐原语拼接。
+// **Background**: helper function addresses usually far exceed the ±2GB range,
+// so a direct `call rel32` is unusable; the standard approach loads the 64-bit
+// absolute address into rax and does an indirect call. This macro wraps the
+// fixed byte sequence of a PJ5 helper call (`mov rax, imm64` 10 bytes + `call
+// rax` 2 bytes = 12 bytes), avoiding primitive-by-primitive assembly at each
+// helper call site.
 //
-// **PJ5 用例**:
-//   - CALL helper inline:`mov rax, &host.DoCall; call rax`
-//   - TAILCALL helper inline:`mov rax, &host.DoTailCall; call rax`
-//   - safepoint helper:`mov rax, &host.Safepoint; call rax`
+// **PJ5 use cases**:
+//   - CALL helper inline: `mov rax, &host.DoCall; call rax`
+//   - TAILCALL helper inline: `mov rax, &host.DoTailCall; call rax`
+//   - safepoint helper: `mov rax, &host.Safepoint; call rax`
 //
-// **调用约定**(承 06 §3.5 + amd64 SysV ABI):
-//   - 参数经 rdi/rsi/rdx/rcx/r8/r9 传(P4 trampoline 中 r15=jitCtx,
-//     业务参数走 SysV ABI 寄存器)
-//   - 返回值在 rax
-//   - 调用前业务码需把当前寄存器状态保存(callee-clobbered),P4 trampoline
-//     的进入序言已 save r12-r15 + rbx/rbp,helper 内只保 SysV ABI callee-saved
+// **Calling convention** (following 06 §3.5 + amd64 SysV ABI):
+//   - arguments passed via rdi/rsi/rdx/rcx/r8/r9 (in the P4 trampoline r15=jitCtx,
+//     business arguments go through SysV ABI registers)
+//   - return value in rax
+//   - before the call, business code must save the current register state
+//     (callee-clobbered); the P4 trampoline entry prolog already saves
+//     r12-r15 + rbx/rbp, so the helper only preserves the SysV ABI callee-saved set
 //
-// 编码:
+// Encoding:
 //
-//	[0-9]  mov rax, imm64(0x48 0xB8 + imm64 LE × 8 字节 = 10 字节)
-//	[10-11] call rax(0xFF 0xD0 = 2 字节)
-//	——— 总计 12 字节(EmitMovRaxImm64Len=10 + EncodedCallRegLen=2)———
+//	[0-9]  mov rax, imm64 (0x48 0xB8 + imm64 LE × 8 bytes = 10 bytes)
+//	[10-11] call rax (0xFF 0xD0 = 2 bytes)
+//	——— 12 bytes total (EmitMovRaxImm64Len=10 + EncodedCallRegLen=2) ———
 //
-// 注:EmitCallReg(0)= 0xFF 0xD0 = 2 字节(reg=0=rax)。
+// Note: EmitCallReg(0) = 0xFF 0xD0 = 2 bytes (reg=0=rax).
 func EmitHelperCall(buf []byte, helperAddr uint64) []byte {
 	buf = EmitMovRaxImm64(buf, helperAddr)
-	buf = EmitCallReg(buf, 0) // call rax(reg=0)
+	buf = EmitCallReg(buf, 0) // call rax (reg=0)
 	return buf
 }
 
-// EncodedHelperCallLen 是「mov rax, helperAddr; call rax」编码后的字节数
-// (常量,固定 12 = 10 + 2)。
+// EncodedHelperCallLen is the encoded byte length of "mov rax, helperAddr; call
+// rax" (constant, fixed 12 = 10 + 2).
 const EncodedHelperCallLen = EncodedMovRaxImm64Len + EncodedCallRegLen
 
 // =============================================================================
-// PJ6+ 模板组合原语(承 06 §3.6 闭包族 + §3.7 直线族 + §3.5 RETURN)
+// PJ6+ template-composition primitives (following 06 §3.6 closure family + §3.7 straight-line family + §3.5 RETURN)
 // =============================================================================
 
-// EmitLoadKReturnTemplate 发射「LOADK A K(0); RETURN A 1」完整模板(11 字节)。
+// EmitLoadKReturnTemplate emits the complete "LOADK A K(0); RETURN A 1" template (11 bytes).
 //
-// 等价于 EmitMovRaxImm64(buf, konst) + EmitRet(buf),但作为命名模板暴露,
-// 调用方易读。
+// Equivalent to EmitMovRaxImm64(buf, konst) + EmitRet(buf), but exposed as a
+// named template for caller readability.
 //
-// PJ6+ 用例:Compile 路径核心模板——单 BB「return CONST」直接调用本函数,
-// 不必逐原语拼接。
+// PJ6+ use case: core Compile-path template — a single-BB "return CONST" calls
+// this function directly, without primitive-by-primitive assembly.
 func EmitLoadKReturnTemplate(buf []byte, konst uint64) []byte {
 	buf = EmitMovRaxImm64(buf, konst)
 	buf = EmitRet(buf)
 	return buf
 }
 
-// EncodedLoadKReturnTemplateLen 「LOADK + RETURN 单 BB」模板字节数(11)。
+// EncodedLoadKReturnTemplateLen is the byte length of the "LOADK + RETURN single-BB" template (11).
 const EncodedLoadKReturnTemplateLen = EncodedMovRaxImm64Len + EncodedRetLen
 
-// EmitProlog 发射 trampoline 进入序言简化版(push rbx + push rbp,2 字节)。
+// EmitProlog emits a simplified trampoline entry prolog (push rbx + push rbp, 2 bytes).
 //
-// **与 trampoline_full_amd64.s 的关系**:本 emitter 原语仅作 emit 接口对齐
-// (让 jit.Compile 在「需要保存 callee-saved 后跑模板」时按需经 emit 路径
-// 生成 trampoline 序言);**完整 5 寄存器序言**(push rbx/rbp/r12/r13/r15,
-// r14=Go G 不动)在 trampoline_full_amd64.s 直接实装。本简化版只覆盖低 8
-// 寄存器(rbx/rbp);r12-r15 需 REX.B 前缀,留 PJ7+ 加 EmitPushRegHi 扩。
+// **Relation to trampoline_full_amd64.s**: this emitter primitive only aligns
+// the emit interface (letting jit.Compile generate the trampoline prolog through
+// the emit path on demand, when it "needs to save callee-saved registers before
+// running a template"); the **full 5-register prolog** (push rbx/rbp/r12/r13/r15,
+// with r14=Go G untouched) is implemented directly in trampoline_full_amd64.s.
+// This simplified version only covers the low 8 registers (rbx/rbp); r12-r15
+// need a REX.B prefix, left for PJ7+ to add via EmitPushRegHi.
 //
-// **绕过 EmitPushReg/EmitPopReg 的 RBP 防御**:trampoline 序言保存 RBP 是
-// callee-saved 协议合法用法(出口 pop 恢复),与业务码改 RBP 不同。直接发
-// push 字节(0x55 = push rbp / 0x53 = push rbx)。
+// **Bypassing the RBP defense in EmitPushReg/EmitPopReg**: saving RBP in the
+// trampoline prolog is a legal use of the callee-saved protocol (restored by pop
+// at the exit), different from business code modifying RBP. It emits the push
+// bytes directly (0x55 = push rbp / 0x53 = push rbx).
 func EmitProlog(buf []byte) []byte {
 	buf = append(buf, 0x53) // push rbx
 	buf = append(buf, 0x55) // push rbp
 	return buf
 }
 
-// EmitEpilog 发射 trampoline 出口序言(对位 EmitProlog,逆序 pop)。
+// EmitEpilog emits the trampoline exit epilog (the counterpart of EmitProlog, popping in reverse order).
 func EmitEpilog(buf []byte) []byte {
 	buf = append(buf, 0x5d) // pop rbp
 	buf = append(buf, 0x5b) // pop rbx
 	return buf
 }
 
-// EncodedPrologLen 是 EmitProlog 字节数(2,简化版)。
+// EncodedPrologLen is the byte length of EmitProlog (2, simplified version).
 const EncodedPrologLen = 2
 
-// EncodedEpilogLen 是 EmitEpilog 字节数(2,简化版)。
+// EncodedEpilogLen is the byte length of EmitEpilog (2, simplified version).
 const EncodedEpilogLen = 2
 
-// --- PJ2 字节级算术发射原语 ---
+// --- PJ2 byte-level arithmetic emit primitives ---
 //
-// 承 docs/design/p4-method-jit/03-speculation-ic.md §2 IsNumber×2 投机模板
-// + 06-backends.md §3.2 amd64 算术族:双 number 快路径直发 SSE2 浮点指令
-// (movsd / addsd / subsd / mulsd / divsd),无需调 host helper。
+// Following docs/design/p4-method-jit/03-speculation-ic.md §2 IsNumber×2
+// speculation template + 06-backends.md §3.2 amd64 arithmetic family: the
+// double-number fast path emits SSE2 floating-point instructions directly
+// (movsd / addsd / subsd / mulsd / divsd), with no host helper call needed.
 //
-// **PJ2 物理基础**(本节原语本身可用,但完整投机模板需 jitContext 切 SP +
-// 寄存器分配 + IsNumber guard codegen,留 PJ2-PJ5 完整版接入)。
+// **PJ2 physical basis** (the primitives in this section are themselves usable,
+// but the full speculation template needs jitContext SP switching + register
+// allocation + IsNumber guard codegen, left for the full PJ2-PJ5 wiring).
 
-// EmitMovsdXmmFromMem 发射「movsd xmm0, [reg+disp32]」从内存加载 64-bit
-// double 到 xmm0。指令:F2 REX 0F 10 /0 modrm + disp32(8 字节)。
+// EmitMovsdXmmFromMem emits "movsd xmm0, [reg+disp32]", loading a 64-bit double
+// from memory into xmm0. Instruction: F2 REX 0F 10 /0 modrm + disp32 (8 bytes).
 //
-// 参数 baseReg 是基址寄存器号([0,7] 低 8 寄存器,高 8 需 REX.B 留 PJ3+)。
-// disp32 是有符号 32-bit 偏移。
+// The baseReg parameter is the base register number ([0,7] low 8 registers; the
+// high 8 need REX.B, left for PJ3+). disp32 is a signed 32-bit offset.
 //
-// 编码:F2 0F 10 80+baseReg disp32(若 baseReg<8 + 不需 REX.W;movsd 是
-// SSE2 指令,xmm 寄存器编码不需要 REX.W)。
+// Encoding: F2 0F 10 80+baseReg disp32 (when baseReg<8 + no REX.W needed; movsd
+// is an SSE2 instruction and xmm register encoding does not need REX.W).
 func EmitMovsdXmmFromMem(buf []byte, xmmDst uint8, baseReg uint8, disp32 int32) []byte {
-	// 防御性兜底:xmm 范围 [0,7],base 范围 [0,7](高 8 寄存器留 PJ3+)
+	// Defensive fallback: xmm range [0,7], base range [0,7] (high 8 registers left for PJ3+)
 	if xmmDst > 7 {
 		xmmDst = 0
 	}
@@ -351,9 +387,9 @@ func EmitMovsdXmmFromMem(buf []byte, xmmDst uint8, baseReg uint8, disp32 int32) 
 	return buf
 }
 
-// EmitMovsdMemFromXmm 发射「movsd [reg+disp32], xmm0」存 xmm0 到内存。
+// EmitMovsdMemFromXmm emits "movsd [reg+disp32], xmm0", storing xmm0 to memory.
 //
-// 指令:F2 0F 11 modrm + disp32(8 字节)。
+// Instruction: F2 0F 11 modrm + disp32 (8 bytes).
 func EmitMovsdMemFromXmm(buf []byte, xmmSrc uint8, baseReg uint8, disp32 int32) []byte {
 	if xmmSrc > 7 {
 		xmmSrc = 0
@@ -373,8 +409,8 @@ func EmitMovsdMemFromXmm(buf []byte, xmmSrc uint8, baseReg uint8, disp32 int32) 
 	return buf
 }
 
-// EmitAddsdXmmXmm 发射「addsd xmmDst, xmmSrc」(xmm 双 double 加,4 字节)。
-// 指令:F2 0F 58 modrm。
+// EmitAddsdXmmXmm emits "addsd xmmDst, xmmSrc" (xmm double-double add, 4 bytes).
+// Instruction: F2 0F 58 modrm.
 func EmitAddsdXmmXmm(buf []byte, xmmDst uint8, xmmSrc uint8) []byte {
 	if xmmDst > 7 {
 		xmmDst = 0
@@ -388,7 +424,7 @@ func EmitAddsdXmmXmm(buf []byte, xmmDst uint8, xmmSrc uint8) []byte {
 	return buf
 }
 
-// EmitSubsdXmmXmm 发射「subsd xmmDst, xmmSrc」(指令:F2 0F 5C modrm)。
+// EmitSubsdXmmXmm emits "subsd xmmDst, xmmSrc" (instruction: F2 0F 5C modrm).
 func EmitSubsdXmmXmm(buf []byte, xmmDst uint8, xmmSrc uint8) []byte {
 	if xmmDst > 7 {
 		xmmDst = 0
@@ -402,7 +438,7 @@ func EmitSubsdXmmXmm(buf []byte, xmmDst uint8, xmmSrc uint8) []byte {
 	return buf
 }
 
-// EmitMulsdXmmXmm 发射「mulsd xmmDst, xmmSrc」(指令:F2 0F 59 modrm)。
+// EmitMulsdXmmXmm emits "mulsd xmmDst, xmmSrc" (instruction: F2 0F 59 modrm).
 func EmitMulsdXmmXmm(buf []byte, xmmDst uint8, xmmSrc uint8) []byte {
 	if xmmDst > 7 {
 		xmmDst = 0
@@ -416,7 +452,7 @@ func EmitMulsdXmmXmm(buf []byte, xmmDst uint8, xmmSrc uint8) []byte {
 	return buf
 }
 
-// EmitDivsdXmmXmm 发射「divsd xmmDst, xmmSrc」(指令:F2 0F 5E modrm)。
+// EmitDivsdXmmXmm emits "divsd xmmDst, xmmSrc" (instruction: F2 0F 5E modrm).
 func EmitDivsdXmmXmm(buf []byte, xmmDst uint8, xmmSrc uint8) []byte {
 	if xmmDst > 7 {
 		xmmDst = 0
@@ -430,23 +466,23 @@ func EmitDivsdXmmXmm(buf []byte, xmmDst uint8, xmmSrc uint8) []byte {
 	return buf
 }
 
-// EncodedMovsdMemLen 是 MOVSD xmm <-> [base+disp32] 序列字节数(8)。
+// EncodedMovsdMemLen is the byte length of the MOVSD xmm <-> [base+disp32] sequence (8).
 const EncodedMovsdMemLen = 8
 
-// EncodedSseBinopLen 是 ADDSD/SUBSD/MULSD/DIVSD xmm,xmm 字节数(4)。
+// EncodedSseBinopLen is the byte length of ADDSD/SUBSD/MULSD/DIVSD xmm,xmm (4).
 const EncodedSseBinopLen = 4
 
-// EmitMovqRaxFromR15Disp 发射「mov rax, [r15+disp32]」从 r15+disp32 加载
-// 64-bit 到 rax(指令:4C 是 REX.WR 不对,我们用 REX.B=1 base=r15;
-// 实际编码 49 8B 87 disp32 = REX.W+B 8B /0 modrm)。
+// EmitMovqRaxFromR15Disp emits "mov rax, [r15+disp32]", loading 64 bits from
+// r15+disp32 into rax (instruction: 4C would be REX.WR, which is wrong; we use
+// REX.B=1 with base=r15; the actual encoding is 49 8B 87 disp32 = REX.W+B 8B /0 modrm).
 //
-// 用例:PJ2 完整投机模板——mmap 段经 r15 读 jitContext 字段
-// (arenaBase / valueStackBase / preemptFlag 等)。
+// Use case: PJ2 full speculation template — the mmap segment reads jitContext
+// fields via r15 (arenaBase / valueStackBase / preemptFlag etc.).
 //
-// 编码:49 8B 87 disp32(7 字节)。
-//   - 49 = REX prefix(W=1 64-bit + B=1 让 rm 字段用 r15 而非 r7)
+// Encoding: 49 8B 87 disp32 (7 bytes).
+//   - 49 = REX prefix (W=1 64-bit + B=1 makes the rm field use r15 instead of r7)
 //   - 8B = MOV r64, r/m64
-//   - 87 = ModR/M:mod=10(disp32) reg=000(rax) rm=111(r15 with REX.B)
+//   - 87 = ModR/M: mod=10 (disp32) reg=000 (rax) rm=111 (r15 with REX.B)
 func EmitMovqRaxFromR15Disp(buf []byte, disp32 int32) []byte {
 	// REX.W (0x48) | REX.B (0x01) = 0x49
 	buf = append(buf, 0x49, 0x8B, 0x87)
@@ -458,23 +494,24 @@ func EmitMovqRaxFromR15Disp(buf []byte, disp32 int32) []byte {
 	return buf
 }
 
-// EmitMovqRaxFromMemReg 发射「mov rax, [reg+disp32]」从指定基址寄存器
-// 加载到 rax(用于读 valueStackBase + reg*8 的值栈槽——但需要先把
-// valueStackBase 装到某 base 寄存器)。
+// EmitMovqRaxFromMemReg emits "mov rax, [reg+disp32]", loading into rax from a
+// given base register (used to read the value-stack slot at valueStackBase +
+// reg*8 — but valueStackBase must first be loaded into some base register).
 //
-// 编码示例:48 8B 80+rd disp32(REX.W=1 不需 REX.B,reg<8)。
-// 仅支持低 8 寄存器(rax-rdi,reg<8)——高 8 寄存器需 REX.B 留 PJ3+。
+// Encoding example: 48 8B 80+rd disp32 (REX.W=1, no REX.B needed, reg<8).
+// Low 8 registers only (rax-rdi, reg<8) — high 8 registers need REX.B, left for PJ3+.
 //
-// **注**:本原语单纯读寄存器+偏移,不做 SIB 寻址(无 [base+index*8]),
-// 故不能直接发「mov rax, [valueStackBase + reg_idx*8]」(那需要 SIB)。
-// PJ2 简化策略是把 reg_idx*8 计算放在 Go 端(emit 时算 disp32 = idx*8),
-// mmap 段只需 base+disp32 寻址。
+// **Note**: this primitive simply reads register+offset, with no SIB addressing
+// (no [base+index*8]), so it cannot directly emit "mov rax, [valueStackBase +
+// reg_idx*8]" (that would need SIB). The PJ2 simplification computes reg_idx*8 on
+// the Go side (computing disp32 = idx*8 at emit time), so the mmap segment only
+// needs base+disp32 addressing.
 func EmitMovqRaxFromMemReg(buf []byte, baseReg uint8, disp32 int32) []byte {
 	if baseReg > 7 {
 		baseReg = 0
 	}
 	buf = append(buf, 0x48, 0x8B)
-	modrm := byte(0x80) | (baseReg & 0x7) // mod=10 reg=000(rax) rm=baseReg
+	modrm := byte(0x80) | (baseReg & 0x7) // mod=10 reg=000 (rax) rm=baseReg
 	buf = append(buf, modrm)
 	buf = append(buf,
 		byte(uint32(disp32)),
@@ -484,14 +521,14 @@ func EmitMovqRaxFromMemReg(buf []byte, baseReg uint8, disp32 int32) []byte {
 	return buf
 }
 
-// EncodedMovqFromR15DispLen 是「mov rax, [r15+disp32]」字节数(7)。
+// EncodedMovqFromR15DispLen is the byte length of "mov rax, [r15+disp32]" (7).
 const EncodedMovqFromR15DispLen = 7
 
-// EncodedMovqFromMemRegLen 是「mov rax, [low_reg+disp32]」字节数(7)。
+// EncodedMovqFromMemRegLen is the byte length of "mov rax, [low_reg+disp32]" (7).
 const EncodedMovqFromMemRegLen = 7
 
-// EmitMovqMemRegFromRax 发射「mov [reg+disp32], rax」存 rax 到内存。
-// 编码:48 89 80+r disp32(7 字节)。
+// EmitMovqMemRegFromRax emits "mov [reg+disp32], rax", storing rax to memory.
+// Encoding: 48 89 80+r disp32 (7 bytes).
 func EmitMovqMemRegFromRax(buf []byte, baseReg uint8, disp32 int32) []byte {
 	if baseReg > 7 {
 		baseReg = 0
@@ -507,9 +544,9 @@ func EmitMovqMemRegFromRax(buf []byte, baseReg uint8, disp32 int32) []byte {
 	return buf
 }
 
-// EmitUcomisdXmmXmm 发射「ucomisd xmmDst, xmmSrc」(无序比较 SD,设置 ZF/PF/CF)。
-// 用于 IsNumber guard 的 NaN 检测后续 jcc。
-// 指令:66 0F 2E modrm(4 字节)。
+// EmitUcomisdXmmXmm emits "ucomisd xmmDst, xmmSrc" (unordered SD compare, sets ZF/PF/CF).
+// Used for the jcc following the IsNumber guard's NaN detection.
+// Instruction: 66 0F 2E modrm (4 bytes).
 func EmitUcomisdXmmXmm(buf []byte, xmmDst uint8, xmmSrc uint8) []byte {
 	if xmmDst > 7 {
 		xmmDst = 0
@@ -523,8 +560,9 @@ func EmitUcomisdXmmXmm(buf []byte, xmmDst uint8, xmmSrc uint8) []byte {
 	return buf
 }
 
-// EmitSqrtsdXmmFromMem 发射「sqrtsd xmmDst, [baseReg+disp32]」——从内存读
-// f64 开方(issue #77 math.sqrt intrinsic)。指令:F2 0F 51 modrm + disp32。
+// EmitSqrtsdXmmFromMem emits "sqrtsd xmmDst, [baseReg+disp32]" — reads an f64
+// from memory and takes its square root (issue #77 math.sqrt intrinsic).
+// Instruction: F2 0F 51 modrm + disp32.
 func EmitSqrtsdXmmFromMem(buf []byte, xmmDst uint8, baseReg uint8, disp32 int32) []byte {
 	if xmmDst > 7 {
 		xmmDst = 0
@@ -543,11 +581,11 @@ func EmitSqrtsdXmmFromMem(buf []byte, xmmDst uint8, baseReg uint8, disp32 int32)
 	return buf
 }
 
-// EmitRoundsdXmmFromMem 发射「roundsd xmmDst, [baseReg+disp32], imm8」——
-// SSE4.1 定向舍入(issue #77 math.floor/ceil intrinsic)。mode:1=floor
-// (round toward -inf),2=ceil(toward +inf),与 Go 的 math.Floor /
-// math.Ceil(amd64 asm 也是 ROUNDSD)逐字节一致。指令:66 0F 3A 0B modrm
-// + disp32 + imm8。
+// EmitRoundsdXmmFromMem emits "roundsd xmmDst, [baseReg+disp32], imm8" —
+// SSE4.1 directed rounding (issue #77 math.floor/ceil intrinsic). mode: 1=floor
+// (round toward -inf), 2=ceil (toward +inf), byte-for-byte consistent with Go's
+// math.Floor / math.Ceil (whose amd64 asm is also ROUNDSD). Instruction: 66 0F 3A 0B modrm
+// + disp32 + imm8.
 func EmitRoundsdXmmFromMem(buf []byte, xmmDst uint8, baseReg uint8, disp32 int32, mode uint8) []byte {
 	if xmmDst > 7 {
 		xmmDst = 0
@@ -567,8 +605,9 @@ func EmitRoundsdXmmFromMem(buf []byte, xmmDst uint8, baseReg uint8, disp32 int32
 	return buf
 }
 
-// EmitMovsdXmmXmm 发射「movsd xmmDst, xmmSrc」(reg-reg,4 字节)——用于
-// max/min 选择时把胜出操作数搬入结果寄存器。指令:F2 0F 10 modrm(mod=11)。
+// EmitMovsdXmmXmm emits "movsd xmmDst, xmmSrc" (reg-reg, 4 bytes) — used to move
+// the winning operand into the result register during max/min selection.
+// Instruction: F2 0F 10 modrm (mod=11).
 func EmitMovsdXmmXmm(buf []byte, xmmDst uint8, xmmSrc uint8) []byte {
 	if xmmDst > 7 {
 		xmmDst = 0
@@ -582,7 +621,7 @@ func EmitMovsdXmmXmm(buf []byte, xmmDst uint8, xmmSrc uint8) []byte {
 	return buf
 }
 
-// EmitJeRel32 发射「je rel32」(0F 84 rel32,6 字节)等条件跳转。
+// EmitJeRel32 emits "je rel32" (0F 84 rel32, 6 bytes) and similar conditional jumps.
 func EmitJeRel32(buf []byte, rel32 int32) []byte {
 	buf = append(buf, 0x0F, 0x84)
 	buf = append(buf,
@@ -593,7 +632,7 @@ func EmitJeRel32(buf []byte, rel32 int32) []byte {
 	return buf
 }
 
-// EmitJneRel32 发射「jne rel32」(0F 85 rel32)。
+// EmitJneRel32 emits "jne rel32" (0F 85 rel32).
 func EmitJneRel32(buf []byte, rel32 int32) []byte {
 	buf = append(buf, 0x0F, 0x85)
 	buf = append(buf,
@@ -604,7 +643,7 @@ func EmitJneRel32(buf []byte, rel32 int32) []byte {
 	return buf
 }
 
-// EmitJbRel32 发射「jb rel32」(0F 82 rel32,unsigned <)。
+// EmitJbRel32 emits "jb rel32" (0F 82 rel32, unsigned <).
 func EmitJbRel32(buf []byte, rel32 int32) []byte {
 	buf = append(buf, 0x0F, 0x82)
 	buf = append(buf,
@@ -615,7 +654,7 @@ func EmitJbRel32(buf []byte, rel32 int32) []byte {
 	return buf
 }
 
-// EmitJbeRel32 发射「jbe rel32」(0F 86 rel32,unsigned <=)。
+// EmitJbeRel32 emits "jbe rel32" (0F 86 rel32, unsigned <=).
 func EmitJbeRel32(buf []byte, rel32 int32) []byte {
 	buf = append(buf, 0x0F, 0x86)
 	buf = append(buf,
@@ -626,7 +665,7 @@ func EmitJbeRel32(buf []byte, rel32 int32) []byte {
 	return buf
 }
 
-// EmitJaRel32 发射「ja rel32」(0F 87 rel32,unsigned >)。
+// EmitJaRel32 emits "ja rel32" (0F 87 rel32, unsigned >).
 func EmitJaRel32(buf []byte, rel32 int32) []byte {
 	buf = append(buf, 0x0F, 0x87)
 	buf = append(buf,
@@ -637,17 +676,17 @@ func EmitJaRel32(buf []byte, rel32 int32) []byte {
 	return buf
 }
 
-// EncodedMovqMemFromRaxLen 是「mov [reg+disp32], rax」字节数(7)。
+// EncodedMovqMemFromRaxLen is the byte length of "mov [reg+disp32], rax" (7).
 const EncodedMovqMemFromRaxLen = 7
 
-// EncodedUcomisdLen 是「ucomisd xmm,xmm」字节数(4)。
+// EncodedUcomisdLen is the byte length of "ucomisd xmm,xmm" (4).
 const EncodedUcomisdLen = 4
 
-// EncodedJccRel32Len 是 0F 8x rel32 条件跳转字节数(6)。
+// EncodedJccRel32Len is the byte length of a 0F 8x rel32 conditional jump (6).
 const EncodedJccRel32Len = 6
 
-// EmitMovRcxImm64 发射「mov rcx, imm64」(REX.W + B9+rd imm64,10 字节)。
-// 用于装 NaN-box 阈值常量到 rcx 后做 cmp rax, rcx 比较。
+// EmitMovRcxImm64 emits "mov rcx, imm64" (REX.W + B9+rd imm64, 10 bytes).
+// Used to load a NaN-box threshold constant into rcx before doing a cmp rax, rcx comparison.
 func EmitMovRcxImm64(buf []byte, imm uint64) []byte {
 	buf = append(buf, 0x48, 0xB9) // REX.W mov rcx, imm64
 	buf = append(buf,
@@ -656,31 +695,32 @@ func EmitMovRcxImm64(buf []byte, imm uint64) []byte {
 	return buf
 }
 
-// EmitCmpRaxRcx 发射「cmp rax, rcx」(REX.W + 39 modrm,3 字节)。
-// 编码:48 39 C8(modrm:mod=11 reg=001=rcx rm=000=rax)。
+// EmitCmpRaxRcx emits "cmp rax, rcx" (REX.W + 39 modrm, 3 bytes).
+// Encoding: 48 39 C8 (modrm: mod=11 reg=001=rcx rm=000=rax).
 func EmitCmpRaxRcx(buf []byte) []byte {
 	return append(buf, 0x48, 0x39, 0xC8)
 }
 
-// EncodedMovRcxImm64Len 是「mov rcx, imm64」字节数(10)。
+// EncodedMovRcxImm64Len is the byte length of "mov rcx, imm64" (10).
 const EncodedMovRcxImm64Len = 10
 
-// EncodedCmpRaxRcxLen 是「cmp rax, rcx」字节数(3)。
+// EncodedCmpRaxRcxLen is the byte length of "cmp rax, rcx" (3).
 const EncodedCmpRaxRcxLen = 3
 
-// EmitMovqXmmFromRax 发射「movq xmmDst, rax」从 rax 拷贝 64-bit 到 xmm
-// (指令:MOVQ xmm, r/m64 = 66 REX.W 0F 6E /r,5 字节)。
+// EmitMovqXmmFromRax emits "movq xmmDst, rax", copying 64 bits from rax into xmm
+// (instruction: MOVQ xmm, r/m64 = 66 REX.W 0F 6E /r, 5 bytes).
 //
-// 用例:PJ2 reg-K 投机模板——把常量值(经 movabs rax, K_value 烧入 rax)
-// 搬到 xmm1 供 SSE binop 用,避免占用值栈槽。
+// Use case: PJ2 reg-K speculation template — moves a constant value (baked into
+// rax via movabs rax, K_value) into xmm1 for an SSE binop, avoiding occupying a
+// value-stack slot.
 //
-// 编码:66 48 0F 6E modrm
-//   - 66 = operand-size prefix(SSE)
-//   - 48 = REX.W(64-bit operand)
+// Encoding: 66 48 0F 6E modrm
+//   - 66 = operand-size prefix (SSE)
+//   - 48 = REX.W (64-bit operand)
 //   - 0F 6E = MOVD/MOVQ xmm, r/m32/64
-//   - modrm = 11_xxx_yyy(mod=11 register direct;reg=xmm 号 0-7;rm=GPR 号)
+//   - modrm = 11_xxx_yyy (mod=11 register direct; reg=xmm number 0-7; rm=GPR number)
 //
-// xmm0-7 only(高位寄存器需 REX.R 留 PJ3+);rm 字段恒为 rax(reg=0)。
+// xmm0-7 only (high registers need REX.R, left for PJ3+); the rm field is always rax (reg=0).
 func EmitMovqXmmFromRax(buf []byte, xmmDst uint8) []byte {
 	if xmmDst > 7 {
 		xmmDst = 0
@@ -689,22 +729,22 @@ func EmitMovqXmmFromRax(buf []byte, xmmDst uint8) []byte {
 	return append(buf, 0x66, 0x48, 0x0F, 0x6E, modrm)
 }
 
-// EncodedMovqXmmFromRaxLen 是「movq xmm, rax」字节数(5)。
+// EncodedMovqXmmFromRaxLen is the byte length of "movq xmm, rax" (5).
 const EncodedMovqXmmFromRaxLen = 5
 
-// EmitCmpByteR15DispImm8 发射「cmp byte ptr [r15+disp32], imm8」(指令:
-// 41 80 BF disp32 imm8,8 字节)。
+// EmitCmpByteR15DispImm8 emits "cmp byte ptr [r15+disp32], imm8" (instruction:
+// 41 80 BF disp32 imm8, 8 bytes).
 //
-// 用例:PJ3 safepoint check——JIT 模板回边经 r15 (=jitContext) 读
-// preemptFlag(jit.JITContextPreemptFlagOffset)然后 cmp 0,接 jne 到
-// exit stub。
+// Use case: PJ3 safepoint check — on a back edge, the JIT template reads
+// preemptFlag (jit.JITContextPreemptFlagOffset) via r15 (=jitContext), then cmp
+// 0, followed by jne to the exit stub.
 //
-// 编码:
-//   - 41 = REX.B(让 rm 字段 7 = r15)
-//   - 80 = CMP r/m8, imm8(opcode + /7 编入 ModRM reg 字段)
-//   - BF = ModRM:mod=10(disp32)reg=7(/7=CMP)rm=7(+REX.B=r15)
-//   - disp32 = 4 字节有符号偏移
-//   - imm8 = 1 字节立即数(通常 0)
+// Encoding:
+//   - 41 = REX.B (makes the rm field 7 = r15)
+//   - 80 = CMP r/m8, imm8 (opcode + /7 encoded into the ModRM reg field)
+//   - BF = ModRM: mod=10 (disp32) reg=7 (/7=CMP) rm=7 (+REX.B=r15)
+//   - disp32 = 4-byte signed offset
+//   - imm8 = 1-byte immediate (usually 0)
 func EmitCmpByteR15DispImm8(buf []byte, disp32 int32, imm8 byte) []byte {
 	buf = append(buf, 0x41, 0x80, 0xBF)
 	buf = append(buf,
@@ -716,20 +756,20 @@ func EmitCmpByteR15DispImm8(buf []byte, disp32 int32, imm8 byte) []byte {
 	return buf
 }
 
-// EncodedCmpByteR15DispImm8Len 是「cmp byte [r15+disp32], imm8」字节数(8):
-// REX(1) + opcode(1) + ModRM(1) + disp32(4) + imm8(1) = 8。
+// EncodedCmpByteR15DispImm8Len is the byte length of "cmp byte [r15+disp32], imm8" (8):
+// REX(1) + opcode(1) + ModRM(1) + disp32(4) + imm8(1) = 8.
 const EncodedCmpByteR15DispImm8Len = 8
 
-// EmitIncReg64 发射「inc r64」(指令:REX.W FF /0 modrm,3 字节)。
+// EmitIncReg64 emits "inc r64" (instruction: REX.W FF /0 modrm, 3 bytes).
 //
-// 用例:PJ3 字节级 inline 整数计数器累加(FORLOOP idx 累加)。
+// Use case: PJ3 byte-level inline integer counter accumulation (FORLOOP idx accumulation).
 //
-// 编码:48 FF C0+rd(REX.W + FF + ModRM=11_000_rd 即 0xC0|rd)
+// Encoding: 48 FF C0+rd (REX.W + FF + ModRM=11_000_rd i.e. 0xC0|rd)
 //   - 48 = REX.W
 //   - FF = opcode for INC/DEC r/m64
-//   - C0|rd = ModRM:mod=11(reg-direct),reg=0(/0 = INC),rm=rd
+//   - C0|rd = ModRM: mod=11 (reg-direct), reg=0 (/0 = INC), rm=rd
 //
-// reg 范围 [0,7](rax-rdi);高 8 寄存器需 REX.B 留 PJ3+。
+// reg range [0,7] (rax-rdi); high 8 registers need REX.B, left for PJ3+.
 func EmitIncReg64(buf []byte, reg uint8) []byte {
 	if reg > 7 {
 		reg = 0
@@ -737,9 +777,9 @@ func EmitIncReg64(buf []byte, reg uint8) []byte {
 	return append(buf, 0x48, 0xFF, 0xC0|(reg&0x7))
 }
 
-// EmitDecReg64 发射「dec r64」(指令:REX.W FF /1 modrm,3 字节)。
+// EmitDecReg64 emits "dec r64" (instruction: REX.W FF /1 modrm, 3 bytes).
 //
-// 编码:48 FF C8+rd(ModRM=11_001_rd 即 0xC8|rd,/1 = DEC)
+// Encoding: 48 FF C8+rd (ModRM=11_001_rd i.e. 0xC8|rd, /1 = DEC)
 func EmitDecReg64(buf []byte, reg uint8) []byte {
 	if reg > 7 {
 		reg = 0
@@ -747,40 +787,41 @@ func EmitDecReg64(buf []byte, reg uint8) []byte {
 	return append(buf, 0x48, 0xFF, 0xC8|(reg&0x7))
 }
 
-// EncodedIncDecReg64Len 是「inc/dec r64」字节数(3)。
+// EncodedIncDecReg64Len is the byte length of "inc/dec r64" (3).
 const EncodedIncDecReg64Len = 3
 
-// EmitIncQwordPtrAtRax 发射「inc qword ptr [rax]」(指令:REX.W FF /0 modrm,
-// 3 字节)。承 §9.20 Option B Spike 1:mmap 段经 r15 解引 ciDepthAddr 到
-// rax 后字节级 inc ciDepth(enterLuaFrame inline)。
+// EmitIncQwordPtrAtRax emits "inc qword ptr [rax]" (instruction: REX.W FF /0 modrm,
+// 3 bytes). Following §9.20 Option B Spike 1: the mmap segment dereferences
+// ciDepthAddr into rax via r15, then does a byte-level inc of ciDepth
+// (enterLuaFrame inline).
 //
-// 编码:48 FF 00(ModRM=00_000_000,mod=00 内存间接 + reg=/0 INC + rm=000 rax)
+// Encoding: 48 FF 00 (ModRM=00_000_000, mod=00 memory-indirect + reg=/0 INC + rm=000 rax)
 func EmitIncQwordPtrAtRax(buf []byte) []byte {
 	return append(buf, 0x48, 0xFF, 0x00)
 }
 
-// EmitDecQwordPtrAtRax 发射「dec qword ptr [rax]」(指令:REX.W FF /1 modrm,
-// 3 字节)。承 §9.20:popCallInfo inline。
+// EmitDecQwordPtrAtRax emits "dec qword ptr [rax]" (instruction: REX.W FF /1 modrm,
+// 3 bytes). Following §9.20: popCallInfo inline.
 //
-// 编码:48 FF 08(ModRM=00_001_000,mod=00 内存间接 + reg=/1 DEC + rm=000 rax)
+// Encoding: 48 FF 08 (ModRM=00_001_000, mod=00 memory-indirect + reg=/1 DEC + rm=000 rax)
 func EmitDecQwordPtrAtRax(buf []byte) []byte {
 	return append(buf, 0x48, 0xFF, 0x08)
 }
 
-// EncodedIncDecQwordPtrAtRaxLen 是「inc/dec qword ptr [rax]」字节数(3)。
+// EncodedIncDecQwordPtrAtRaxLen is the byte length of "inc/dec qword ptr [rax]" (3).
 const EncodedIncDecQwordPtrAtRaxLen = 3
 
-// EmitMovReg64Imm32SignExt 发射「mov r64, imm32-sign-extended」短形态
-// (REX.W C7 /0 modrm imm32,7 字节)——用于装较小 imm 到 r64,比
-// REX.W B8+rd imm64(10 字节)省 3 字节。
+// EmitMovReg64Imm32SignExt emits the "mov r64, imm32-sign-extended" short form
+// (REX.W C7 /0 modrm imm32, 7 bytes) — used to load a smaller imm into r64,
+// saving 3 bytes over REX.W B8+rd imm64 (10 bytes).
 //
-// 编码:48 C7 C0+rd imm32(ModRM=11_000_rd 即 0xC0|rd,/0 = MOV imm)
+// Encoding: 48 C7 C0+rd imm32 (ModRM=11_000_rd i.e. 0xC0|rd, /0 = MOV imm)
 //
-// 对负 imm 经符号扩展为 64-bit,对 [0, 2^31) 等价完整 imm64。
-// PJ3 字节级整数 imm(小循环计数等)用本原语省字节;>= 2^32 仍用
-// EmitMovRaxImm64(10 字节,imm64)。
+// A negative imm is sign-extended to 64-bit; for [0, 2^31) it is equivalent to a
+// full imm64. PJ3 byte-level integer imm (small loop counters etc.) uses this
+// primitive to save bytes; >= 2^32 still uses EmitMovRaxImm64 (10 bytes, imm64).
 //
-// reg 范围 [0,7];高 8 寄存器需 REX.B 留 PJ3+。
+// reg range [0,7]; high 8 registers need REX.B, left for PJ3+.
 func EmitMovReg64Imm32SignExt(buf []byte, reg uint8, imm32 int32) []byte {
 	if reg > 7 {
 		reg = 0
@@ -794,20 +835,22 @@ func EmitMovReg64Imm32SignExt(buf []byte, reg uint8, imm32 int32) []byte {
 	return buf
 }
 
-// EncodedMovReg64Imm32SignExtLen 是「mov r64, imm32-sign-extended」字节数(7)。
+// EncodedMovReg64Imm32SignExtLen is the byte length of "mov r64, imm32-sign-extended" (7).
 const EncodedMovReg64Imm32SignExtLen = 7
 
-// PatchRel32 把 buf 指定位置(rel32 起点)处的 4 字节用 newRel32 覆写。
-// 用例:PJ3 字节级 codegen 时 forward jmp 先发 placeholder rel32=0,然后
-// 跳目标 emit 完知道段内偏移后回填真实 rel32。
+// PatchRel32 overwrites the 4 bytes at the given position (the rel32 start) in
+// buf with newRel32. Use case: during PJ3 byte-level codegen, a forward jmp
+// first emits a placeholder rel32=0, then backfills the real rel32 once the jump
+// target has been emitted and the in-segment offset is known.
 //
-// 参数:
-//   - buf:正在 emit 的 byte slice;
-//   - rel32Off:rel32 起点字节偏移(jcc 形如 `0F 8x rel32` 时 rel32Off
-//     即 jcc 起点 + 2;无前缀 jmp `E9 rel32` 时 rel32Off = jmp 起点 + 1);
-//   - newRel32:回填值(目标地址相对 (rel32Off + 4) 的偏移)。
+// Parameters:
+//   - buf: the byte slice being emitted;
+//   - rel32Off: the byte offset of the rel32 start (for a jcc shaped like
+//     `0F 8x rel32`, rel32Off is the jcc start + 2; for a prefix-less jmp
+//     `E9 rel32`, rel32Off = the jmp start + 1);
+//   - newRel32: the backfill value (the target address relative to (rel32Off + 4)).
 //
-// 不做边界检查——caller 经 len(buf) 自查 rel32Off+4 ≤ len(buf)。
+// Does no bounds checking — the caller ensures rel32Off+4 ≤ len(buf) via len(buf).
 func PatchRel32(buf []byte, rel32Off int, newRel32 int32) {
 	buf[rel32Off+0] = byte(uint32(newRel32))
 	buf[rel32Off+1] = byte(uint32(newRel32) >> 8)

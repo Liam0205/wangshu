@@ -1,5 +1,6 @@
-// GC pressure test — 验证主循环在分配频繁时不会因 GC 误回收活跃对象产生
-// byte-different 结果(M10 验收)。
+// GC pressure test — verify that under frequent allocation the main loop does
+// not produce byte-different results due to the GC wrongly collecting live
+// objects (M10 acceptance).
 package crescent
 
 import (
@@ -13,7 +14,8 @@ import (
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
-// TestGC_StressClosure 在 closure 频繁分配下检查闭包仍能正确读取捕获的局部。
+// TestGC_StressClosure checks that under frequent closure allocation a closure
+// can still correctly read its captured locals.
 func TestGC_StressClosure(t *testing.T) {
 	src := `
 local function makeAdder(x)
@@ -36,7 +38,7 @@ result = sum + a(5)
 	}
 }
 
-// TestGC_StressTable 在表频繁创建下检查表数据正确。
+// TestGC_StressTable checks that table data stays correct under frequent table creation.
 func TestGC_StressTable(t *testing.T) {
 	var sb strings.Builder
 	sb.WriteString("local total = 0\n")
@@ -54,7 +56,7 @@ func TestGC_StressTable(t *testing.T) {
 	}
 }
 
-// TestGC_StressConcat 在 CONCAT 反复 intern 字符串下验证不误回收。
+// TestGC_StressConcat verifies no wrong collection when CONCAT repeatedly interns strings.
 func TestGC_StressConcat(t *testing.T) {
 	src := `
 local s = "x"
@@ -75,14 +77,14 @@ result = s
 	}
 }
 
-// TestGC_DirectCollect 显式触发一次 Collect,验证活跃栈不被错误回收。
+// TestGC_DirectCollect explicitly triggers one Collect and verifies the live stack is not wrongly collected.
 func TestGC_DirectCollect(t *testing.T) {
 	src := `
 local t = { 100, 200, 300 }
 result = t[1] + t[2] + t[3]
 `
 	st := runLua(t, src)
-	// 触发一次 Collect
+	// trigger one Collect
 	st.gc.Collect()
 	v, _ := st.tableGet(st.globals, st.makeStringValue("result"))
 	if !value.IsNumber(v) || value.AsNumber(v) != 600 {
@@ -90,9 +92,10 @@ result = t[1] + t[2] + t[3]
 	}
 }
 
-// TestGC_CollectMidExecution 在脚本执行中(通过 host fn)强制触发 Collect,
-// 验证活跃闭包/upvalue 经 mark(scanClosure 路径)后仍可用——这是
-// "GC 在解释器运行现场不误回收"的主防线测试(06 §6 / 05 §5.3)。
+// TestGC_CollectMidExecution forces a Collect during script execution (via a
+// host fn) and verifies that a live closure/upvalue remains usable after being
+// marked (the scanClosure path). This is the primary line-of-defense test for
+// "the GC does not wrongly collect while the interpreter is running" (06 §6 / 05 §5.3).
 func TestGC_CollectMidExecution(t *testing.T) {
 	src := `
 local function makeAdder(x)
@@ -104,7 +107,7 @@ result = add10(5)
 `
 	lxSrc := []byte(src)
 	st := New()
-	// 注册一个测试用 host fn:执行中强制 full GC
+	// register a test host fn that forces a full GC during execution
 	id := st.RegisterHostFn(func(s *State, _ []value.Value) ([]value.Value, *LuaError) {
 		s.gc.Collect()
 		return nil, nil
@@ -123,7 +126,7 @@ result = add10(5)
 	}
 }
 
-// TestGC_CollectWithOpenUpvalue 在 upvalue 仍开放(指向活跃栈槽)时触发 GC。
+// TestGC_CollectWithOpenUpvalue triggers a GC while an upvalue is still open (pointing at a live stack slot).
 func TestGC_CollectWithOpenUpvalue(t *testing.T) {
 	src := `
 local n = 0

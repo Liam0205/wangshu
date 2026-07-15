@@ -2,17 +2,18 @@
 
 package wasm
 
-// wasm function body 字节编码器(02-translation §6.3 emitter)。
+// wasm function body byte encoder (02-translation §6.3 emitter).
 //
-// 累积一个 Wasm 函数体的指令字节(不含 local decl 前缀与末尾 end,由
-// module 组装阶段包裹)。提供 P3 翻译需要的指令子集 + LEB128 编码 +
-// 基本块标签管理。
+// Accumulates the instruction bytes of a Wasm function body (excluding the
+// local decl prefix and trailing end, which the module assembly stage wraps).
+// Provides the instruction subset P3 translation needs + LEB128 encoding +
+// basic-block label management.
 //
-// Wasm 指令编码参考:https://webassembly.github.io/spec/core/binary/instructions.html
+// Wasm instruction encoding reference: https://webassembly.github.io/spec/core/binary/instructions.html
 
 import "math"
 
-// wasmOp 常用 Wasm 指令 opcode。
+// wasmOp: common Wasm instruction opcodes.
 const (
 	opBlock        byte = 0x02
 	opLoop         byte = 0x03
@@ -32,7 +33,7 @@ const (
 	opI32Const     byte = 0x41
 	opI64Const     byte = 0x42
 
-	// 比较 / 算术 / 类型转换(PW3)。
+	// Comparison / arithmetic / type conversion (PW3).
 	opI32Eqz byte = 0x45
 	opI32Eq  byte = 0x46
 	opI32Ne  byte = 0x47
@@ -61,29 +62,29 @@ const (
 	opI64ReintF64  byte = 0xbd // i64.reinterpret_f64
 	opI32WrapI64   byte = 0xa7
 	opI64ShrU      byte = 0x88
-	opI64ExtendI32 byte = 0xac // i64.extend_i32_s(不用 _u 因 status 是 i32)
+	opI64ExtendI32 byte = 0xac // i64.extend_i32_s (not _u, since status is i32)
 
-	// i32.store(PW10 零跨界 ③a:savedTop 写回 top mirror 字低 32 位)。
+	// i32.store (PW10 zero-crossing ③a: savedTop written back to the low 32 bits of the top mirror word).
 	opI32Store byte = 0x36
 
-	// i32 算术 / 比较 + i64.eqz(PW10 零跨界 ③b:段帧动态寻址 + RETURN 守卫)。
+	// i32 arithmetic / comparison + i64.eqz (PW10 zero-crossing ③b: segment-frame dynamic addressing + RETURN guard).
 	opI32Add byte = 0x6a
 	opI32Sub byte = 0x6b
 	opI32Mul byte = 0x6c
 	opI32LtS byte = 0x48
 	opI64Eqz byte = 0x50
 
-	// ④ emitCall 守卫快路径:i64.shl(帧字打包)+ i64.extend_i32_u(无符号扩展,
-	// 槽/funcIdx 等正整数 → i64)+ i32.gt_s(MaxStack 余量守卫)+ i32.ge_s(深度守卫)。
+	// ④ emitCall guard fast path: i64.shl (frame-word packing) + i64.extend_i32_u (unsigned extension,
+	// positive integers like slot/funcIdx → i64) + i32.gt_s (MaxStack headroom guard) + i32.ge_s (depth guard).
 	opI64Shl        byte = 0x86
-	opI64ExtendUI32 byte = 0xad // i64.extend_i32_u(无符号 i32→i64,高 32 位清零)
+	opI64ExtendUI32 byte = 0xad // i64.extend_i32_u (unsigned i32→i64, high 32 bits zeroed)
 	opI32GtS        byte = 0x4a
 )
 
-// blockType 编码:0x40 = 空(无返回值),或单值类型(i32=0x7f 等)。
+// blockType encoding: 0x40 = empty (no return value), or a single-value type (i32=0x7f, etc.).
 const btVoid byte = 0x40
 
-// emitter 累积一个 gibbous 函数体的 Wasm 字节码。
+// emitter accumulates the Wasm bytecode of a gibbous function body.
 type emitter struct {
 	buf []byte
 }
@@ -94,7 +95,7 @@ func (e *emitter) bytes() []byte { return e.buf }
 
 func (e *emitter) raw(b ...byte) { e.buf = append(e.buf, b...) }
 
-// uleb / sleb:LEB128 编码(Wasm 立即数格式)。
+// uleb / sleb: LEB128 encoding (Wasm immediate format).
 func (e *emitter) uleb(v uint32) {
 	for {
 		c := byte(v & 0x7f)
@@ -109,12 +110,12 @@ func (e *emitter) uleb(v uint32) {
 	}
 }
 
-// sleb64 有符号 LEB128(i64.const 用)。
+// sleb64 signed LEB128 (used by i64.const).
 func (e *emitter) sleb64(v int64) {
 	for {
 		c := byte(v & 0x7f)
-		v >>= 7 // 算术右移(Go int64 >> 是算术移位)
-		// 符号位与 continuation 判定
+		v >>= 7 // arithmetic shift right (Go int64 >> is an arithmetic shift)
+		// sign bit and continuation check
 		signBitSet := c&0x40 != 0
 		if (v == 0 && !signBitSet) || (v == -1 && signBitSet) {
 			e.buf = append(e.buf, c)
@@ -126,7 +127,7 @@ func (e *emitter) sleb64(v int64) {
 
 func (e *emitter) sleb32(v int32) { e.sleb64(int64(v)) }
 
-// --- 指令 emit ---
+// --- instruction emit ---
 
 // localGet $idx
 func (e *emitter) localGet(idx uint32) { e.raw(opLocalGet); e.uleb(idx) }
@@ -137,44 +138,44 @@ func (e *emitter) localSet(idx uint32) { e.raw(opLocalSet); e.uleb(idx) }
 // i32Const v
 func (e *emitter) i32Const(v int32) { e.raw(opI32Const); e.sleb32(v) }
 
-// i64Const v(NaN-box u64 立即数:作 int64 编码,sleb64 处理符号扩展)。
+// i64Const v (NaN-box u64 immediate: encoded as int64, sleb64 handles sign extension).
 func (e *emitter) i64Const(v uint64) { e.raw(opI64Const); e.sleb64(int64(v)) }
 
-// i64Load (align=3 自然对齐) offset:栈顶是地址。
+// i64Load (align=3 natural alignment) offset: top of stack is the address.
 func (e *emitter) i64Load(offset uint32) { e.raw(opI64Load, 0x03); e.uleb(offset) }
 
-// i32Load (align=2) offset:栈顶是地址。读 u64 标志字低 4 字节(小端,0/1 在低位)。
+// i32Load (align=2) offset: top of stack is the address. Reads the low 4 bytes of the u64 flag word (little-endian, 0/1 in the low bits).
 func (e *emitter) i32Load(offset uint32) { e.raw(0x28, 0x02); e.uleb(offset) }
 
-// i32Store (align=2) offset:栈上 [addr, value]。写 mirror 字低 32 位(top 字)。
+// i32Store (align=2) offset: stack holds [addr, value]. Writes the low 32 bits of the mirror word (top word).
 func (e *emitter) i32Store(offset uint32) { e.raw(opI32Store, 0x02); e.uleb(offset) }
 
-// i64Store (align=3) offset:栈上 [addr, value]。
+// i64Store (align=3) offset: stack holds [addr, value].
 func (e *emitter) i64Store(offset uint32) { e.raw(opI64Store, 0x03); e.uleb(offset) }
 
 // call $funcidx
 func (e *emitter) call(funcidx uint32) { e.raw(opCall); e.uleb(funcidx) }
 
-// callIndirect typeidx tableidx —— 经表间接调用(0x11 typeidx tableidx)。
-// 栈顶须先压完实参再压 funcref 表索引(i32);typeidx 给被调签名,tableidx=0
-// 是唯一 import 表。PW10 R3:gibbous→gibbous 经共享 env.table[slot] 直达。
+// callIndirect typeidx tableidx —— indirect call through the table (0x11 typeidx tableidx).
+// The stack must push all arguments first, then the funcref table index (i32); typeidx gives the
+// callee signature, tableidx=0 is the sole import table. PW10 R3: gibbous→gibbous reaches directly through the shared env.table[slot].
 func (e *emitter) callIndirect(typeidx, tableidx uint32) {
 	e.raw(opCallIndirect)
 	e.uleb(typeidx)
 	e.uleb(tableidx)
 }
 
-// ret(return 当前栈顶 i32 status)
+// ret (return the current top-of-stack i32 status)
 func (e *emitter) ret() { e.raw(opReturn) }
 
-// drop 丢弃栈顶一个值(0x1a)。
+// drop discards one value from the top of stack (0x1a).
 func (e *emitter) drop() { e.raw(0x1a) }
 
-// --- PW3 算术 / 比较 / 类型转换 / 结构化块 ---
+// --- PW3 arithmetic / comparison / type conversion / structured blocks ---
 
 func (e *emitter) localTee(idx uint32) { e.raw(opLocalTee); e.uleb(idx) }
 
-// 二元 / 一元数值与比较指令(操作数已在 Wasm 栈上)。
+// Binary / unary numeric and comparison instructions (operands already on the Wasm stack).
 func (e *emitter) f64Add()   { e.raw(opF64Add) }
 func (e *emitter) f64Sub()   { e.raw(opF64Sub) }
 func (e *emitter) f64Mul()   { e.raw(opF64Mul) }
@@ -188,7 +189,7 @@ func (e *emitter) f64Le()    { e.raw(opF64Le) }
 func (e *emitter) f64Ge()    { e.raw(opF64Ge) }
 func (e *emitter) f64Eq()    { e.raw(opF64Eq) }
 
-// f64Const 发 f64.const(8 字节小端 IEEE-754)。
+// f64Const emits f64.const (8-byte little-endian IEEE-754).
 func (e *emitter) f64Const(v float64) {
 	e.raw(opF64Const)
 	bits := math.Float64bits(v)
@@ -210,34 +211,34 @@ func (e *emitter) i32Ne()             { e.raw(opI32Ne) }
 func (e *emitter) i32Eq()             { e.raw(opI32Eq) }
 func (e *emitter) i32Eqz()            { e.raw(opI32Eqz) }
 
-// i32 算术 / 比较 + i64.eqz(PW10 零跨界 ③b:段帧寻址 + 守卫;操作数已在栈上)。
+// i32 arithmetic / comparison + i64.eqz (PW10 zero-crossing ③b: segment-frame addressing + guard; operands already on the stack).
 func (e *emitter) i32Add() { e.raw(opI32Add) }
 func (e *emitter) i32Sub() { e.raw(opI32Sub) }
 func (e *emitter) i32Mul() { e.raw(opI32Mul) }
 func (e *emitter) i32LtS() { e.raw(opI32LtS) }
 func (e *emitter) i64Eqz() { e.raw(opI64Eqz) }
 
-// PW10 零跨界 ④:i64 移位 + 无符号扩展 + i32 大于(帧字打包 + MaxStack 余量守卫)。
+// PW10 zero-crossing ④: i64 shift + unsigned extension + i32 greater-than (frame-word packing + MaxStack headroom guard).
 func (e *emitter) i64Shl()        { e.raw(opI64Shl) }
 func (e *emitter) i64ExtendUI32() { e.raw(opI64ExtendUI32) }
 func (e *emitter) i32GtS()        { e.raw(opI32GtS) }
 
-// PW10 零跨界 ④:i64 算术(段帧字打包 + 偏移加)/ 逻辑或(标志位合并)。
+// PW10 zero-crossing ④: i64 arithmetic (segment-frame-word packing + offset add) / logical or (flag-bit merge).
 func (e *emitter) i64Add() { e.raw(0x7c) }
 func (e *emitter) i64Or()  { e.raw(0x84) }
 
-// ifVoid 开一个无返回值的 if 块(条件 i32 已在栈顶)。配对 elseOp/end。
+// ifVoid opens an if block with no return value (condition i32 already on top of stack). Pairs with elseOp/end.
 func (e *emitter) ifVoid()       { e.raw(opIf, btVoid) }
 func (e *emitter) elseOp()       { e.raw(opElse) }
 func (e *emitter) end()          { e.raw(opEnd) }
 func (e *emitter) brIf(d uint32) { e.raw(opBrIf); e.uleb(d) }
 
-// block / loop:开一个无返回值的结构化块(PW4 relooper 嵌套)。配对 end。
-//   - block:br N 跳到其 end(前向跳/汇合)
-//   - loop :br N 跳到其起点(回边/continue)
+// block / loop: open a structured block with no return value (PW4 relooper nesting). Pairs with end.
+//   - block: br N jumps to its end (forward jump / join)
+//   - loop : br N jumps to its start (back edge / continue)
 func (e *emitter) block()      { e.raw(opBlock, btVoid) }
 func (e *emitter) loop()       { e.raw(opLoop, btVoid) }
 func (e *emitter) br(d uint32) { e.raw(opBr); e.uleb(d) }
 
-// 注:结构化控制流(loop/block 多 BB)留 PW4 relooper;本组 if/else 仅用于
-// 算术 opcode 的「快/慢路径」单 BB 内分支(不切 Lua pc)。
+// Note: structured control flow (multi-BB loop/block) is left to the PW4 relooper; this group's
+// if/else is only for "fast/slow path" branching within a single BB of an arithmetic opcode (does not split the Lua pc).

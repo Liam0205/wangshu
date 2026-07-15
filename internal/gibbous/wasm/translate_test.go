@@ -14,7 +14,7 @@ import (
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
-// mockHost 是 HostState 的测试替身,记录 helper 调用并提供可控行为。
+// mockHost is a test double for HostState; it records helper calls and provides controllable behavior.
 type mockHost struct {
 	returnCalls        []retCall
 	getUpvalFn         func(base, b int32) uint64
@@ -86,8 +86,8 @@ func (m *mockHost) ProtoCacheBaseAddr() uint32              { return m.protoCach
 func (m *mockHost) FastCallHitsAddr() uint32                { return m.fastCallHitsAddr }
 func (m *mockHost) PopErrFrame()                            {}
 
-// setupTranslator 建一个完整可执行的 P3 编译环境:wazero runtime + memadapter
-// holder(提供 env.memory)+ Compiler(mock host)。
+// setupTranslator builds a complete, runnable P3 compilation environment: wazero runtime + memadapter
+// holder (provides env.memory) + Compiler (mock host).
 func setupTranslator(t *testing.T) (*Compiler, *memadapter.MemoryHolder, func()) {
 	t.Helper()
 	ctx := context.Background()
@@ -100,11 +100,13 @@ func setupTranslator(t *testing.T) (*Compiler, *memadapter.MemoryHolder, func())
 	return c, holder, func() { _ = holder.Close(); _ = rt.Close(ctx) }
 }
 
-// TestPW10_SlotCapAligned 兑现 compiler.go maxTableSlots 注释承诺:它必须与
-// env 共享表实际容量 memadapter.TableSlots 一致。两值手工硬编码(wasm 包不反向
-// import memadapter 避免 import 环倒置),本测是防「只改一处」的安全网——若
-// maxTableSlots > TableSlots,Compile 会分配超出 env.table 容量的 slot,
-// elementSection active 写 table[slot] 在实例化时越界失败,且表满哨兵判定失效。
+// TestPW10_SlotCapAligned honors the promise in compiler.go's maxTableSlots comment: it must
+// match memadapter.TableSlots, the actual capacity of the shared env table. The two values are
+// hardcoded by hand (the wasm package does not import memadapter in reverse, to avoid inverting the
+// import cycle); this test is a safety net against "only one side got changed" — if
+// maxTableSlots > TableSlots, Compile allocates a slot beyond env.table's capacity, the
+// elementSection active write to table[slot] fails out of bounds at instantiation, and the
+// table-full sentinel check breaks.
 func TestPW10_SlotCapAligned(t *testing.T) {
 	if maxTableSlots != memadapter.TableSlots {
 		t.Fatalf("maxTableSlots(%d) != memadapter.TableSlots(%d):两值须一致,否则越界 slot 实例化失败",
@@ -112,15 +114,16 @@ func TestPW10_SlotCapAligned(t *testing.T) {
 	}
 }
 
-// TestPW10_SlotRegistration 验证 R1b:每个升层 Proto 编译时分配单调 slot,且其
-// run 经 element 段真注册进共享 env.table[slot]——另一 caller module 经 env.table
-// call_indirect 该 slot 能跨 module 调到这个 Proto 的 run(R3 直调的物理基础)。
+// TestPW10_SlotRegistration verifies R1b: each promoted Proto is allocated a monotonic slot at
+// compile time, and its run is really registered into the shared env.table[slot] via the element
+// section — another caller module can call_indirect that slot through env.table to reach this
+// Proto's run across modules (the physical basis for R3 direct calls).
 func TestPW10_SlotRegistration(t *testing.T) {
 	c, holder, cleanup := setupTranslator(t)
 	defer cleanup()
 	mem := holder.Memory()
 
-	// 两个直线 Proto:各把 R0 搬到 R1(MOVE)再 RETURN。编译后各占一个 slot。
+	// Two straight-line Protos: each moves R0 to R1 (MOVE) then RETURN. After compilation each occupies one slot.
 	mkProto := func() *bytecode.Proto {
 		return &bytecode.Proto{Code: []bytecode.Instruction{
 			bytecode.EncodeABC(bytecode.MOVE, 1, 0, 0),
@@ -139,20 +142,21 @@ func TestPW10_SlotRegistration(t *testing.T) {
 	}
 	defer func() { _ = gc1.(*p3Code).Dispose() }()
 
-	// 单调分配:p0=slot0, p1=slot1。
+	// Monotonic allocation: p0=slot0, p1=slot1.
 	s0, ok0 := c.SlotOf(p0)
 	s1, ok1 := c.SlotOf(p1)
 	if !ok0 || !ok1 || s0 != 0 || s1 != 1 {
 		t.Fatalf("slot allocation: p0=(%d,%v) p1=(%d,%v), want 0/1", s0, ok0, s1, ok1)
 	}
-	// 未编译的 Proto 无 slot。
+	// An uncompiled Proto has no slot.
 	if _, ok := c.SlotOf(mkProto()); ok {
 		t.Error("未编译 Proto 不应有 slot")
 	}
 
-	// 实测 element 注册生效:caller module 经 env.table call_indirect slot0,跨
-	// module 调到 p0 的 run(签名 (i32 base)->(i32 status))。p0 run 把 R0→R1。
-	// 在 base=0 处布 R0=0xABCD,call_indirect slot0 后 R1(offset 8)应得 R0 值。
+	// Verify element registration actually takes effect: the caller module call_indirects slot0
+	// through env.table, reaching p0's run across modules (signature (i32 base)->(i32 status)).
+	// p0 run does R0→R1. With R0=0xABCD laid out at base=0, after call_indirect slot0, R1 (offset 8)
+	// should hold R0's value.
 	const r0 = uint64(0xABCD_1234_5678_9EF0)
 	mem.WriteUint64Le(0, r0)
 	mem.WriteUint64Le(8, 0)
@@ -185,14 +189,14 @@ func TestPW10_SlotRegistration(t *testing.T) {
 	}
 }
 
-// TestPW2_TranslateMoveReturn 端到端:翻译 MOVE + RETURN 的 Proto,wazero
-// 编译执行,验证 ① 编译成功 ② 运行不报错 ③ MOVE 真的把 R(B) 搬到 R(A)
-// (经共见 memory 读回)。
+// TestPW2_TranslateMoveReturn end-to-end: translate a Proto of MOVE + RETURN, compile and run it
+// with wazero, verifying (1) compilation succeeds (2) execution reports no error (3) MOVE really
+// moves R(B) to R(A) (read back through shared memory).
 func TestPW2_TranslateMoveReturn(t *testing.T) {
 	c, holder, cleanup := setupTranslator(t)
 	defer cleanup()
 
-	// Proto: MOVE R1 R0; RETURN R1 2(返回 1 个值)
+	// Proto: MOVE R1 R0; RETURN R1 2 (return 1 value)
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
 			bytecode.EncodeABC(bytecode.MOVE, 1, 0, 0),
@@ -200,7 +204,7 @@ func TestPW2_TranslateMoveReturn(t *testing.T) {
 		},
 	}
 
-	// SupportsAllOpcodes 应放行(MOVE/RETURN 在白名单,单 BB,无字符串常量)
+	// SupportsAllOpcodes should let it through (MOVE/RETURN are on the whitelist, single BB, no string constants)
 	if !c.SupportsAllOpcodes(proto) {
 		t.Fatal("MOVE+RETURN proto should be supported")
 	}
@@ -211,27 +215,27 @@ func TestPW2_TranslateMoveReturn(t *testing.T) {
 	}
 	defer func() { _ = gc.(*p3Code).Dispose() }()
 
-	// 在共见 memory 里,模拟某帧 base=0:R0 = 0x12345678(在 offset 0)
+	// In shared memory, simulate some frame at base=0: R0 = 0x12345678 (at offset 0)
 	mem := holder.Memory()
 	const r0val = uint64(0x1234_5678_9ABC_DEF0)
 	mem.WriteUint64Le(0, r0val)  // R0 at base+0
-	mem.WriteUint64Le(8, 0xFFFF) // R1 旧值
+	mem.WriteUint64Le(8, 0xFFFF) // R1 old value
 
-	// 跑 gibbous run(base=0)
+	// Run gibbous run (base=0)
 	stack := make([]uint64, 1)
 	status := gc.(*p3Code).Run(stack, 0)
 	if status != 0 {
 		t.Fatalf("run status = %d, want 0 (pendingErr=%v)", status, gc.(*p3Code).PendingErr())
 	}
 
-	// MOVE R1 R0 应把 R0 的值搬到 R1(offset 8)
+	// MOVE R1 R0 should move R0's value into R1 (offset 8)
 	got, _ := mem.ReadUint64Le(8)
 	if got != r0val {
 		t.Errorf("MOVE failed: R1 = %#x, want %#x (R0)", got, r0val)
 	}
 }
 
-// TestPW2_TranslateLoadNil 翻译 LOADNIL R0 R2(R0..R2 := nil)+ RETURN。
+// TestPW2_TranslateLoadNil translates LOADNIL R0 R2 (R0..R2 := nil) + RETURN.
 func TestPW2_TranslateLoadNil(t *testing.T) {
 	c, holder, cleanup := setupTranslator(t)
 	defer cleanup()
@@ -252,7 +256,7 @@ func TestPW2_TranslateLoadNil(t *testing.T) {
 	defer func() { _ = gc.(*p3Code).Dispose() }()
 
 	mem := holder.Memory()
-	// 先填非 nil 值
+	// Prefill with non-nil values
 	for i := uint32(0); i <= 2; i++ {
 		mem.WriteUint64Le(i*8, 0xDEAD)
 	}
@@ -269,8 +273,9 @@ func TestPW2_TranslateLoadNil(t *testing.T) {
 	}
 }
 
-// TestPW2_ReturnHelperCalled 验证 RETURN 经 h_return 助手(pc 物化 + 返回值
-// 回填语义在助手内,这里验助手被以正确参数调用)。
+// TestPW2_ReturnHelperCalled verifies RETURN goes through the h_return helper (pc materialization +
+// return-value writeback semantics live inside the helper; here we verify the helper is called with
+// the correct arguments).
 func TestPW2_ReturnHelperCalled(t *testing.T) {
 	ctx := context.Background()
 	rt := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfigCompiler())
@@ -285,7 +290,7 @@ func TestPW2_ReturnHelperCalled(t *testing.T) {
 
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
-			bytecode.EncodeABC(bytecode.RETURN, 3, 2, 0), // RETURN R3, 2 (1 个返回值)
+			bytecode.EncodeABC(bytecode.RETURN, 3, 2, 0), // RETURN R3, 2 (1 return value)
 		},
 	}
 	gc, err := c.Compile(proto, nil)
@@ -306,13 +311,13 @@ func TestPW2_ReturnHelperCalled(t *testing.T) {
 	}
 }
 
-// TestPW4_AcceptMultiBB 含 JMP/TEST 的多 BB(if-then)Proto 现被支持
-// (PW4 relooper 解锁可约简多 BB)。
+// TestPW4_AcceptMultiBB verifies that a multi-BB (if-then) Proto containing
+// JMP/TEST is now supported (PW4 relooper unlocks reducible multi-BB).
 func TestPW4_AcceptMultiBB(t *testing.T) {
 	c, _, cleanup := setupTranslator(t)
 	defer cleanup()
 
-	// TEST + JMP + MOVE + RETURN(if cond then R1:=R0 end;多 BB,可约简)
+	// TEST + JMP + MOVE + RETURN (if cond then R1:=R0 end; multi-BB, reducible)
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
 			bytecode.EncodeABC(bytecode.TEST, 0, 0, 0),
@@ -326,7 +331,8 @@ func TestPW4_AcceptMultiBB(t *testing.T) {
 	}
 }
 
-// TestPW4_RejectUnsupportedOpcode 含未实装 opcode(VARARG 永不支持)的多 BB 被拒。
+// TestPW4_RejectUnsupportedOpcode verifies that a multi-BB Proto containing an
+// unimplemented opcode (VARARG is never supported) is rejected.
 func TestPW4_RejectUnsupportedOpcode(t *testing.T) {
 	c, _, cleanup := setupTranslator(t)
 	defer cleanup()
@@ -335,7 +341,7 @@ func TestPW4_RejectUnsupportedOpcode(t *testing.T) {
 		Code: []bytecode.Instruction{
 			bytecode.EncodeABC(bytecode.TEST, 0, 0, 0),
 			bytecode.EncodeAsBx(bytecode.JMP, 0, 1),
-			bytecode.EncodeABC(bytecode.VARARG, 0, 1, 0), // 永不支持(F1 排除 vararg)
+			bytecode.EncodeABC(bytecode.VARARG, 0, 1, 0), // never supported (F1 excludes vararg)
 			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
 		},
 	}
@@ -344,7 +350,8 @@ func TestPW4_RejectUnsupportedOpcode(t *testing.T) {
 	}
 }
 
-// TestPW2_RejectStringConst 含字符串常量的 LOADK 被拒(编译期烧不出 GCRef)。
+// TestPW2_RejectStringConst verifies that a LOADK with a string constant is
+// rejected (a GCRef cannot be baked in at compile time).
 func TestPW2_RejectStringConst(t *testing.T) {
 	c, _, cleanup := setupTranslator(t)
 	defer cleanup()
@@ -354,8 +361,8 @@ func TestPW2_RejectStringConst(t *testing.T) {
 			bytecode.EncodeABx(bytecode.LOADK, 0, 0),
 			bytecode.EncodeABC(bytecode.RETURN, 0, 1, 0),
 		},
-		Consts:       []value.Value{value.Nil}, // 占位
-		StringLitIdx: []int32{0},               // Consts[0] 是字符串占位
+		Consts:       []value.Value{value.Nil}, // placeholder
+		StringLitIdx: []int32{0},               // Consts[0] is a string placeholder
 		StringLits:   []string{"hello"},
 	}
 	if c.SupportsAllOpcodes(proto) {
@@ -363,8 +370,10 @@ func TestPW2_RejectStringConst(t *testing.T) {
 	}
 }
 
-// TestPW3_ArithFastPath 双 number 算术快路径(Wasm 内直发 f64,不调助手):
-// 验证 ADD/SUB/MUL/DIV/MOD 各 opcode 编译执行 + 结果 byte-equal value.NumberValue。
+// TestPW3_ArithFastPath exercises the two-number arithmetic fast path (f64
+// emitted directly inside Wasm, no helper call):
+// verifies ADD/SUB/MUL/DIV/MOD each compile and execute with results
+// byte-equal to value.NumberValue.
 func TestPW3_ArithFastPath(t *testing.T) {
 	cases := []struct {
 		name string
@@ -377,8 +386,8 @@ func TestPW3_ArithFastPath(t *testing.T) {
 		{"MUL", bytecode.MUL, 6, 7, 42},
 		{"DIV", bytecode.DIV, 20, 4, 5},
 		{"MOD", bytecode.MOD, 17, 5, 2},
-		{"MOD-neg", bytecode.MOD, -3, 5, 2}, // Lua 语义 a-floor(a/b)*b
-		{"DIV-zero", bytecode.DIV, 1, 0, 0}, // +Inf,下面特判
+		{"MOD-neg", bytecode.MOD, -3, 5, 2}, // Lua semantics a-floor(a/b)*b
+		{"DIV-zero", bytecode.DIV, 1, 0, 0}, // +Inf, special-cased below
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -408,7 +417,7 @@ func TestPW3_ArithFastPath(t *testing.T) {
 				t.Fatalf("run status=%d pendingErr=%v", status, gc.(*p3Code).PendingErr())
 			}
 			gotRaw, _ := mem.ReadUint64Le(16) // R2
-			// byte-equal:与解释器侧 value.NumberValue(want) 逐位一致
+			// byte-equal: bit-for-bit identical to interpreter-side value.NumberValue(want)
 			if tc.name == "DIV-zero" {
 				// 1/0 = +Inf
 				wantRaw := uint64(value.NumberValue(math.Inf(1)))
@@ -426,7 +435,7 @@ func TestPW3_ArithFastPath(t *testing.T) {
 	}
 }
 
-// TestPW3_UnmNotFastPath UNM/NOT 直线翻译(快路径,不调助手)。
+// TestPW3_UnmNotFastPath verifies straight-line translation of UNM/NOT (fast path, no helper call).
 func TestPW3_UnmNotFastPath(t *testing.T) {
 	c, holder, cleanup := setupTranslator(t)
 	defer cleanup()
@@ -458,17 +467,19 @@ func TestPW3_UnmNotFastPath(t *testing.T) {
 	if r1 != uint64(value.NumberValue(-5)) {
 		t.Errorf("UNM R1 = %v, want -5", value.AsNumber(value.Value(r1)))
 	}
-	// R2 = not(-5) = false(-5 是 truthy)
+	// R2 = not(-5) = false (-5 is truthy)
 	r2, _ := mem.ReadUint64Le(16)
 	if r2 != falseRawU64() {
 		t.Errorf("NOT R2 = %#x, want false %#x", r2, falseRawU64())
 	}
 }
 
-// TestPW5_GetGlobalInlineHit 证明 GETGLOBAL inline 快路径**真跳哈希**(不调助手)。
-// 手工在共见 memory 里布一张 globals 表(头 6 字 + 1 个 node 槽),IC 快照预填
-// NodeHit;poison 助手(调用即 return 1 失败)。若 Run 成功且 R(A) 得 node 值,
-// 证明 inline gen 校验 + node 槽直读路径执行,**助手零调用**(getGlobalCalls==0)。
+// TestPW5_GetGlobalInlineHit proves the GETGLOBAL inline fast path **really
+// walks the hash** (no helper call). It hand-lays a globals table in shared
+// memory (6-word header + 1 node slot), prefills the IC snapshot with NodeHit,
+// and poisons the helper (any call returns 1 = failure). If Run succeeds and
+// R(A) holds the node value, it proves the inline gen check + direct node-slot
+// read path executed with **zero helper calls** (getGlobalCalls==0).
 func TestPW5_GetGlobalInlineHit(t *testing.T) {
 	ctx := context.Background()
 	rt := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfigCompiler())
@@ -480,36 +491,36 @@ func TestPW5_GetGlobalInlineHit(t *testing.T) {
 	defer holder.Close()
 	mem := holder.Memory()
 
-	// 表头放 memory offset 256(避开值栈低区);node 段紧随其后。
+	// Place the table header at memory offset 256 (clear of the low value-stack region); the node segment follows it.
 	const tblOff = 256
-	const nodeOff = tblOff + 48 // 头 6 字 = 48 字节
+	const nodeOff = tblOff + 48 // 6-word header = 48 bytes
 	const gen = 42
-	const nodeVal = uint64(0x3FF0_0000_0000_0000) // f64 1.0 的 bits(合法 number value)
+	const nodeVal = uint64(0x3FF0_0000_0000_0000) // bits of f64 1.0 (a valid number value)
 
-	// word1: asize=0 | hmask=0(单 node);word3: nodeRef=nodeOff;word5: gen<<32
+	// word1: asize=0 | hmask=0 (single node); word3: nodeRef=nodeOff; word5: gen<<32
 	mem.WriteUint64Le(tblOff+8, 0)                // sizes
 	mem.WriteUint64Le(tblOff+16, 0)               // arrayRef
-	mem.WriteUint64Le(tblOff+24, uint64(nodeOff)) // nodeRef(word3)
+	mem.WriteUint64Le(tblOff+24, uint64(nodeOff)) // nodeRef (word3)
 	mem.WriteUint64Le(tblOff+40, uint64(gen)<<32) // word5 gen
-	// node 槽 0:key(任意)/val=nodeVal/next=-1
-	mem.WriteUint64Le(nodeOff+0, 0xFFFB_0000_0000_0001) // key(string-ish,inline 不校验)
+	// node slot 0: key (arbitrary) / val=nodeVal / next=-1
+	mem.WriteUint64Le(nodeOff+0, 0xFFFB_0000_0000_0001) // key (string-ish, inline does not check)
 	mem.WriteUint64Le(nodeOff+8, nodeVal)               // val
 	mem.WriteUint64Le(nodeOff+16, 0xFFFFFFFF)           // next=-1
 
 	globalsRaw := uint64(value.TagTable)<<48 | uint64(tblOff)
 	mh := &mockHost{
 		globalsRaw:  globalsRaw,
-		getGlobalFn: func(base, pc, a, bx int32) int32 { return 1 }, // poison:调即失败
+		getGlobalFn: func(base, pc, a, bx int32) int32 { return 1 }, // poison: any call fails
 	}
 	c := NewCompiler(ctx, rt, mh)
 
-	// Proto: GETGLOBAL R0 K0; RETURN R0 2。预填 IC[0] = NodeHit/gen=42/index=0。
+	// Proto: GETGLOBAL R0 K0; RETURN R0 2. Prefill IC[0] = NodeHit/gen=42/index=0.
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
 			bytecode.EncodeABx(bytecode.GETGLOBAL, 0, 0),
 			bytecode.EncodeABC(bytecode.RETURN, 0, 2, 0),
 		},
-		Consts: []value.Value{value.Nil}, // K0 占位(inline 不读 key)
+		Consts: []value.Value{value.Nil}, // K0 placeholder (inline does not read the key)
 		IC:     make([]bytecode.ICSlot, 2),
 	}
 	proto.IC[0] = bytecode.ICSlot{Kind: bytecode.ICKindNodeHit, Shape: gen, Index: 0, TableRef: uint32(tblOff)}
@@ -537,8 +548,8 @@ func TestPW5_GetGlobalInlineHit(t *testing.T) {
 	}
 }
 
-// TestPW5_GetTableInlineHit 证明 GETTABLE inline 快路径真跳哈希(不调助手)。
-// 手工布表(头 + array 段 + node 段),poison h_gettable;命中则零助手调用。
+// TestPW5_GetTableInlineHit proves the GETTABLE inline fast path really walks the hash (no helper call).
+// It hand-lays a table (header + array segment + node segment) and poisons h_gettable; a hit means zero helper calls.
 func TestPW5_GetTableInlineHit(t *testing.T) {
 	ctx := context.Background()
 	rt := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfigCompiler())
@@ -551,29 +562,30 @@ func TestPW5_GetTableInlineHit(t *testing.T) {
 	mem := holder.Memory()
 
 	const tblOff = 512
-	const arrOff = tblOff + 48 // 头 6 字
+	const arrOff = tblOff + 48 // 6-word header
 	const gen = 7
 	const arrVal = uint64(0x4010_0000_0000_0000) // f64 4.0
 
-	// 表头:asize=4 | hmask=0;arrayRef=arrOff;nodeRef=0;gen<<32
+	// table header: asize=4 | hmask=0; arrayRef=arrOff; nodeRef=0; gen<<32
 	mem.WriteUint64Le(tblOff+8, uint64(4))        // sizes: asize=4
-	mem.WriteUint64Le(tblOff+16, uint64(arrOff))  // arrayRef(word2)
+	mem.WriteUint64Le(tblOff+16, uint64(arrOff))  // arrayRef (word2)
 	mem.WriteUint64Le(tblOff+24, 0)               // nodeRef
 	mem.WriteUint64Le(tblOff+40, uint64(gen)<<32) // gen
-	// array 段:idx0 = arrVal
+	// array segment: idx0 = arrVal
 	mem.WriteUint64Le(arrOff+0, arrVal)
 
 	tblRaw := uint64(value.TagTable)<<48 | uint64(tblOff)
 	poison := 0
 	mh := &mockHost{}
 	c := NewCompiler(ctx, rt, mh)
-	// 用 GetTable poison:复用 mockHost.getGlobalFn 不行,加一个计数器闭包不便;
-	// 改为断言 R(A) 命中值即可(poison 通过让助手返回错值难做;这里靠 R(A) 正确性 +
-	// 助手返回 0 不写 R(A) 来区分:把 R0 预置成 sentinel,命中改成 arrVal,
-	// 助手 mock 返回 0 但不写 R(A) → R0 仍 sentinel → 区分 inline vs helper)。
+	// Poisoning GetTable: reusing mockHost.getGlobalFn does not work, and adding a counter closure is awkward;
+	// instead just assert on R(A)'s hit value (poisoning by making the helper return a wrong value is hard; here we
+	// rely on R(A) correctness plus the helper returning 0 without writing R(A) to distinguish: preset R0 to a
+	// sentinel, a hit changes it to arrVal, and the helper mock returns 0 without writing R(A) → R0 stays sentinel →
+	// distinguishes inline vs helper).
 	_ = poison
 
-	// Proto: GETTABLE R0 R1 R2(t=R1, key=R2);RETURN R0 2
+	// Proto: GETTABLE R0 R1 R2 (t=R1, key=R2); RETURN R0 2
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
 			bytecode.EncodeABC(bytecode.GETTABLE, 0, 1, 2),
@@ -581,7 +593,7 @@ func TestPW5_GetTableInlineHit(t *testing.T) {
 		},
 		IC: make([]bytecode.ICSlot, 2),
 	}
-	// ArrayHit:Index=0(键 1);gen=7
+	// ArrayHit: Index=0 (key 1); gen=7
 	proto.IC[0] = bytecode.ICSlot{Kind: bytecode.ICKindArrayHit, Shape: gen, Index: 0, TableRef: uint32(tblOff)}
 
 	if !c.SupportsAllOpcodes(proto) {
@@ -608,9 +620,10 @@ func TestPW5_GetTableInlineHit(t *testing.T) {
 	}
 }
 
-// TestPW5_SelfInlineHit 证明 SELF inline:R(A+1):=R(B) self 传递 + R(A) 经 IC
-// 直达方法槽(NodeHit const-key)。poison 靠 sentinel:mock 助手不写 R(A),命中
-// 得方法值即证 inline 执行。
+// TestPW5_SelfInlineHit proves SELF inline: R(A+1):=R(B) self passthrough plus
+// R(A) reaching the method slot directly via the IC (NodeHit const-key). Poisoning
+// relies on a sentinel: the mock helper does not write R(A), so obtaining the
+// method value on a hit proves inline execution.
 func TestPW5_SelfInlineHit(t *testing.T) {
 	ctx := context.Background()
 	rt := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfigCompiler())
@@ -625,27 +638,27 @@ func TestPW5_SelfInlineHit(t *testing.T) {
 	const tblOff = 768
 	const nodeOff = tblOff + 48
 	const gen = 3
-	const methodVal = uint64(0xFFFA_0000_0000_0042) // 假 closure value(tag=Function)
+	const methodVal = uint64(0xFFFA_0000_0000_0042) // fake closure value (tag=Function)
 
 	mem.WriteUint64Le(tblOff+8, 0)                      // sizes: asize=0|hmask=0
 	mem.WriteUint64Le(tblOff+16, 0)                     // arrayRef
 	mem.WriteUint64Le(tblOff+24, uint64(nodeOff))       // nodeRef
 	mem.WriteUint64Le(tblOff+40, uint64(gen)<<32)       // gen
-	mem.WriteUint64Le(nodeOff+0, 0xFFFB_0000_0000_0009) // key(string-ish)
-	mem.WriteUint64Le(nodeOff+8, methodVal)             // val(方法)
+	mem.WriteUint64Le(nodeOff+0, 0xFFFB_0000_0000_0009) // key (string-ish)
+	mem.WriteUint64Le(nodeOff+8, methodVal)             // val (method)
 	mem.WriteUint64Le(nodeOff+16, 0xFFFFFFFF)           // next=-1
 
 	tblRaw := uint64(value.TagTable)<<48 | uint64(tblOff)
 	mh := &mockHost{}
 	c := NewCompiler(ctx, rt, mh)
 
-	// Proto: SELF R0 R2 K0(obj=R2, method 名=K0);RETURN R0 3(返回 R0,R1)
+	// Proto: SELF R0 R2 K0 (obj=R2, method name=K0); RETURN R0 3 (returns R0, R1)
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
-			bytecode.EncodeABC(bytecode.SELF, 0, 2, bytecode.MaxK), // C=MaxK = K0(常量键)
+			bytecode.EncodeABC(bytecode.SELF, 0, 2, bytecode.MaxK), // C=MaxK = K0 (constant key)
 			bytecode.EncodeABC(bytecode.RETURN, 0, 3, 0),
 		},
-		Consts: []value.Value{value.Nil}, // K0 占位
+		Consts: []value.Value{value.Nil}, // K0 placeholder
 		IC:     make([]bytecode.ICSlot, 2),
 	}
 	proto.IC[0] = bytecode.ICSlot{Kind: bytecode.ICKindNodeHit, Shape: gen, Index: 0, TableRef: uint32(tblOff)}
@@ -660,8 +673,8 @@ func TestPW5_SelfInlineHit(t *testing.T) {
 	defer func() { _ = gc.(*p3Code).Dispose() }()
 
 	const sentinel = uint64(0xDEAD_BEEF_0000_0000)
-	mem.WriteUint64Le(0, sentinel) // R0 sentinel(方法槽)
-	mem.WriteUint64Le(8, sentinel) // R1 sentinel(self 槽 A+1)
+	mem.WriteUint64Le(0, sentinel) // R0 sentinel (method slot)
+	mem.WriteUint64Le(8, sentinel) // R1 sentinel (self slot A+1)
 	mem.WriteUint64Le(16, tblRaw)  // R2 = obj
 
 	stack := make([]uint64, 1)
@@ -678,13 +691,15 @@ func TestPW5_SelfInlineHit(t *testing.T) {
 	}
 }
 
-// TestPW7_VarargRejected PW7-b:含 VARARG 的 Proto 不升层(白名单不含 VARARG,
-// 02 §3.7.3「不可达路径不被走到」由白名单保证——vararg 函数 P2 F1 已排除,
-// 即便漏判到达 P3,SupportsAllOpcodes 也返 false fallback 解释器)。
+// TestPW7_VarargRejected PW7-b: a Proto containing VARARG is not promoted (the
+// whitelist excludes VARARG; 02 §3.7.3 "unreachable paths are never taken" is
+// guaranteed by the whitelist -- vararg functions are already excluded by P2 F1,
+// and even if a misclassification reached P3, SupportsAllOpcodes returns false to
+// fall back to the interpreter).
 func TestPW7_VarargRejected(t *testing.T) {
 	c, _, cleanup := setupTranslator(t)
 	defer cleanup()
-	// 单 BB:VARARG + RETURN。
+	// single BB: VARARG + RETURN.
 	proto := &bytecode.Proto{
 		Code: []bytecode.Instruction{
 			bytecode.EncodeABC(bytecode.VARARG, 0, 2, 0),

@@ -1,37 +1,41 @@
 package p3indirect
 
-// 手写/生成 Wasm module 二进制(PW10 spike)。三种 driver 形态共享同一 leaf
-// 体 + 同一循环骨架,**只差调用机制**,使 dispatch 成本可公平对比:
+// Hand-written / generated Wasm module binaries (PW10 spike). The three driver
+// variants share the same leaf body + the same loop skeleton, and **differ only
+// in the call mechanism**, so dispatch cost can be compared fairly:
 //
-//   - indirect:单 module 内 `call_indirect` 调 leaf(本方案的目标形态)
-//   - direct  :单 module 内 `call` 直调 leaf(地板基线,无表查)
-//   - host    :`call` 一个 imported Go 函数(= PW0 S3N 形态,~143ns 跨层税基线)
+//   - indirect: `call_indirect` to leaf within a single module (the target of this design)
+//   - direct  : `call` directly to leaf within a single module (floor baseline, no table lookup)
+//   - host    : `call` an imported Go function (= PW0 S3N variant, ~143ns cross-layer tax baseline)
 //
-// leaf 体统一:`leaf(x) = x*3 + 1`(纯算术,隔离 dispatch 成本——函数体成本
-// 在三形态下相同,差异全在调用机制)。driver 在紧循环里累加 leaf(n) N 次,
-// 摊掉外层 fn.Call 开销,ns/op ÷ N = 单次 dispatch 摊销成本。
+// The leaf body is uniform: `leaf(x) = x*3 + 1` (pure arithmetic, isolating
+// dispatch cost — the function body cost is identical across the three variants,
+// so all difference lies in the call mechanism). The driver accumulates leaf(n)
+// N times in a tight loop to amortize the outer fn.Call overhead; ns/op ÷ N =
+// the amortized cost of a single dispatch.
 //
-// Wasm binary 格式:https://webassembly.github.io/spec/core/binary/
+// Wasm binary format: https://webassembly.github.io/spec/core/binary/
 
-// callKind 区分 driver 的调用机制。
+// callKind distinguishes the driver's call mechanism.
 type callKind int
 
 const (
-	kindIndirect callKind = iota // call_indirect(本方案)
-	kindDirect                   // call(直调地板)
-	kindHost                     // call imported(跨层税基线)
+	kindIndirect callKind = iota // call_indirect (this design)
+	kindDirect                   // call (direct-call floor)
+	kindHost                     // call imported (cross-layer tax baseline)
 )
 
-// buildModule 生成一个 spike module 二进制。
+// buildModule generates one spike module binary.
 //
-//   - numLeaves:本地 leaf 函数数量(≥1)。indirect/direct 用;host 形态忽略
-//     (host 无本地 leaf,只 import 一个)。numLeaves>1 仅用于 S-B 给 module
-//     灌入更多函数测 CompileModule 随函数数的伸缩。
-//   - kind:driver 的调用机制。
+//   - numLeaves: number of local leaf functions (≥1). Used by indirect/direct;
+//     ignored by the host variant (host has no local leaf, only imports one).
+//     numLeaves>1 is used only by S-B to stuff the module with more functions
+//     and test how CompileModule scales with function count.
+//   - kind: the driver's call mechanism.
 //
-// 函数索引布局:
-//   - indirect/direct:func 0..numLeaves-1 = leaves;func numLeaves = driver。
-//   - host:func 0 = imported h_leaf;func 1 = driver。
+// Function index layout:
+//   - indirect/direct: func 0..numLeaves-1 = leaves; func numLeaves = driver.
+//   - host: func 0 = imported h_leaf; func 1 = driver.
 func buildModule(numLeaves int, kind callKind) []byte {
 	if numLeaves < 1 {
 		numLeaves = 1
@@ -39,25 +43,25 @@ func buildModule(numLeaves int, kind callKind) []byte {
 	var b []byte
 	b = append(b, 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00) // magic+version
 
-	// Type section:1 个类型 (i32)->(i32)。
+	// Type section: 1 type (i32)->(i32).
 	b = append(b, sec(0x01, concat(
 		uleb(1),                              // count = 1
 		[]byte{0x60, 0x01, 0x7f, 0x01, 0x7f}, // (i32)->(i32)
 	))...)
 
-	driverIdx := uint32(numLeaves) // indirect/direct:driver 在 leaves 之后
+	driverIdx := uint32(numLeaves) // indirect/direct: driver comes after the leaves
 
 	if kind == kindHost {
-		// Import section:env.h_leaf : type 0(占 func index 0)。
+		// Import section: env.h_leaf : type 0 (occupies func index 0).
 		b = append(b, sec(0x02, concat(
 			uleb(1),
 			importFuncEntry("env", "h_leaf", 0),
 		))...)
-		// Function section:1 个本地函数(driver)。
+		// Function section: 1 local function (driver).
 		b = append(b, sec(0x03, concat(uleb(1), uleb(0)))...)
-		driverIdx = 1 // import 占 0,driver 是 1
+		driverIdx = 1 // import occupies 0, driver is 1
 	} else {
-		// Function section:numLeaves 个 leaf + 1 个 driver,全 type 0。
+		// Function section: numLeaves leaves + 1 driver, all type 0.
 		fn := uleb(uint32(numLeaves + 1))
 		for i := 0; i <= numLeaves; i++ {
 			fn = append(fn, uleb(0)...)
@@ -65,18 +69,18 @@ func buildModule(numLeaves int, kind callKind) []byte {
 		b = append(b, sec(0x03, fn)...)
 	}
 
-	// Table + Element section:仅 indirect 需要(funcref 表 + 填表)。
+	// Table + Element section: only indirect needs them (funcref table + fill).
 	if kind == kindIndirect {
-		// Table section:1 张 funcref 表,min=numLeaves。
+		// Table section: 1 funcref table, min=numLeaves.
 		b = append(b, sec(0x04, concat(
 			uleb(1),                 // count = 1
 			[]byte{0x70},            // elemtype funcref
-			[]byte{0x00},            // limits flags=0(no max)
+			[]byte{0x00},            // limits flags=0 (no max)
 			uleb(uint32(numLeaves)), // min
 		))...)
 	}
 
-	// Export section:export "driver"。
+	// Export section: export "driver".
 	b = append(b, sec(0x07, concat(
 		uleb(1),
 		[]byte{0x06}, []byte("driver"),
@@ -84,10 +88,10 @@ func buildModule(numLeaves int, kind callKind) []byte {
 	))...)
 
 	if kind == kindIndirect {
-		// Element section:active segment 0,table[0..numLeaves-1] = leaf 0..numLeaves-1。
+		// Element section: active segment 0, table[0..numLeaves-1] = leaf 0..numLeaves-1.
 		el := concat(
-			uleb(1),                  // 1 个 segment
-			[]byte{0x00},             // flags=0(active, table 0, offset expr)
+			uleb(1),                  // 1 segment
+			[]byte{0x00},             // flags=0 (active, table 0, offset expr)
 			[]byte{0x41, 0x00, 0x0b}, // offset = (i32.const 0) end
 			uleb(uint32(numLeaves)),  // num funcs
 		)
@@ -97,7 +101,7 @@ func buildModule(numLeaves int, kind callKind) []byte {
 		b = append(b, sec(0x09, el)...)
 	}
 
-	// Code section:leaf 体 ×numLeaves(host 形态 0 个)+ driver 体 ×1。
+	// Code section: leaf body ×numLeaves (0 for the host variant) + driver body ×1.
 	var bodies [][]byte
 	if kind != kindHost {
 		for i := 0; i < numLeaves; i++ {
@@ -114,10 +118,10 @@ func buildModule(numLeaves int, kind callKind) []byte {
 	return b
 }
 
-// leafBody — leaf(x) = x*3 + 1。返回 code 段单函数体(localdecls + instrs + end)。
+// leafBody — leaf(x) = x*3 + 1. Returns a single code-section function body (localdecls + instrs + end).
 func leafBody() []byte {
 	return concat(
-		[]byte{0x00}, // 0 个 local 组
+		[]byte{0x00}, // 0 local groups
 		[]byte{
 			0x20, 0x00, // local.get 0 ($x)
 			0x41, 0x03, // i32.const 3
@@ -129,13 +133,13 @@ func leafBody() []byte {
 	)
 }
 
-// driverBody — driver(n) { acc=0; while n>0 { acc += <call> leaf(n); n-- } return acc }。
-// 调用机制按 kind 切换那一小段。
+// driverBody — driver(n) { acc=0; while n>0 { acc += <call> leaf(n); n-- } return acc }.
+// The call mechanism switches only that small snippet based on kind.
 func driverBody(kind callKind) []byte {
-	// locals:1 组 1 个 i32($acc = local 1;$n = param local 0)。
+	// locals: 1 group of 1 i32 ($acc = local 1; $n = param local 0).
 	locals := []byte{0x01, 0x01, 0x7f}
 
-	// 调用那一段(栈上已 [acc, n],下面把 leaf(n) 算出再 i32.add 回 acc)。
+	// The call snippet (stack already holds [acc, n]; below computes leaf(n) then i32.add back into acc).
 	var callSeq []byte
 	switch kind {
 	case kindIndirect:
@@ -159,7 +163,7 @@ func driverBody(kind callKind) []byte {
 			0x20, 0x01, // local.get 1 ($acc)
 			0x20, 0x00, // local.get 0 ($n) — arg to leaf
 		},
-		callSeq, // 算 leaf(n) 入栈
+		callSeq, // compute leaf(n) onto the stack
 		[]byte{
 			0x6a,       // i32.add (acc + leaf(n))
 			0x21, 0x01, // local.set 1 ($acc)
@@ -176,7 +180,7 @@ func driverBody(kind callKind) []byte {
 	return concat(locals, body, []byte{0x0b}) // + end func
 }
 
-// --- wasm binary 构造 helper(同 p3boundary modules.go)---
+// --- wasm binary construction helpers (same as p3boundary modules.go) ---
 
 func sec(id byte, payload []byte) []byte {
 	return concat([]byte{id}, uleb(uint32(len(payload))), payload)

@@ -1,45 +1,54 @@
-// TypeFeedback — IC 反馈聚合产物(`docs/design/p2-bridge/02-ic-feedback.md` §4)。
+// TypeFeedback — the aggregated product of IC feedback (`docs/design/p2-bridge/02-ic-feedback.md` §4).
 //
-// **设计核心**:P2 写 feedback 不消费(02 §7);P3/P4 读消费,P3 可选 / P4 核心。
+// **Design core**: P2 writes feedback but does not consume it (02 §7); P3/P4 read and
+// consume it, optional for P3 and central for P4.
 package bridge
 
-// FeedbackKind 描述某 pc 上 IC 观测的稳定形态(02 §4.3)。
+// FeedbackKind describes the stable shape observed by the IC at a given pc (02 §4.3).
 //
-// **不对称消费**(02 §1.4 + 05 §1):
-//   - P3 (try-compile):看 kind 决定「内联哪条快路径、固化哪份 IC 快照」,
-//     失败走慢路径仍正确。confidence 字段对 P3 是可忽略的提示。
-//   - P4 (投机 JIT):kind + confidence 都用,confidence ≥ 0.99 才发投机
-//     模板;guard 失败 ⇒ deopt 回解释器。
+// **Asymmetric consumption** (02 §1.4 + 05 §1):
+//   - P3 (try-compile): uses kind to decide "which fast path to inline, which IC
+//     snapshot to freeze"; on failure the slow path is still correct. The confidence
+//     field is a hint that P3 may ignore.
+//   - P4 (speculative JIT): uses both kind and confidence; only confidence ≥ 0.99
+//     emits a speculative template; a failed guard ⇒ deopt back to the interpreter.
 //
-// **零反馈不影响正确性**:某点 kind=FBUnstable / confidence=0 → P3/P4 都
-// 退化为通用翻译(失去加速但仍正确)。
+// **Zero feedback does not affect correctness**: a point with kind=FBUnstable /
+// confidence=0 → both P3/P4 fall back to generic translation (losing speedup but
+// still correct).
 type FeedbackKind uint8
 
 const (
-	// FBUnstable —— 「不投机」标识。三种来源合并:
-	//   1. 该点未被 IC 观测过(ICSlot.kind=0)
-	//   2. 算术点比例不达标(<0.99)或样本量不足(<minObservations)
-	//   3. 非 IC 点的默认填充(LOADK / MOVE / RETURN 等)
+	// FBUnstable — the "do not speculate" marker. Merges three sources:
+	//   1. The point was never observed by the IC (ICSlot.kind=0)
+	//   2. The arithmetic-point ratio is below threshold (<0.99) or the sample
+	//      count is insufficient (<minObservations)
+	//   3. Default fill for non-IC points (LOADK / MOVE / RETURN, etc.)
 	FBUnstable FeedbackKind = iota
 
-	// FBArithStableNumber —— 算术点恒为 number 操作数(≥99% numHits/total)。
-	// P4 据此发 f64 快路径 + guard;guard 失败 deopt(P4 §IC 投机)。
+	// FBArithStableNumber — arithmetic point with consistently number operands
+	// (≥99% numHits/total). P4 emits an f64 fast path + guard accordingly; a
+	// failed guard deopts (P4 §IC speculation).
 	FBArithStableNumber
 
-	// FBTableMono —— 表访问单态稳定(GETTABLE/SETTABLE,kind∈{1,2,3})。
-	// P4 据此投机直达槽:guard「目标表 gen == stableShape」+ 直接索引。
+	// FBTableMono — table access is monomorphic and stable (GETTABLE/SETTABLE,
+	// kind∈{1,2,3}). P4 speculates a direct slot access: guard "target table
+	// gen == stableShape" + direct index.
 	FBTableMono
 
-	// FBTableMega —— 表访问 megamorphic(02 §6.3 kind=4 防御性翻译)。
-	// 「别投机」明确标识——P4 见此点应当走通用查哈希路径。
+	// FBTableMega — table access is megamorphic (02 §6.3 kind=4 defensive translation).
+	// An explicit "do not speculate" marker — at this point P4 should take the
+	// generic hash lookup path.
 	FBTableMega
 
-	// FBGlobalStable —— 全局读恒定。GETGLOBAL/SETGLOBAL 的 globals 单一表,
-	// node hit 即稳定;P4/P3 可常量化 stableIndex 槽位。
+	// FBGlobalStable — global read is constant. For GETGLOBAL/SETGLOBAL the globals
+	// are a single table, so a node hit means stable; P4/P3 may constant-fold the
+	// stableIndex slot.
 	FBGlobalStable
 
-	// FBSelfMono —— 方法调用单态(SELF + 紧随 CALL 的方法分发点)。
-	// P4 据此内联方法查找:guard metatable gen + 直达方法槽。
+	// FBSelfMono — method call is monomorphic (SELF + the method dispatch point of
+	// the immediately following CALL). P4 inlines the method lookup accordingly:
+	// guard metatable gen + direct method slot.
 	FBSelfMono
 )
 
@@ -60,48 +69,55 @@ func (k FeedbackKind) String() string {
 	}
 }
 
-// PointFeedback 是单 pc 上的反馈快照(02 §4.2)。
+// PointFeedback is the feedback snapshot at a single pc (02 §4.2).
 type PointFeedback struct {
-	// PC 是该点在 Proto.Code 中的下标(冗余字段,等于 TypeFeedback.Points 索引)。
-	// 保留给单点传递时不丢位置信息。
+	// PC is the index of this point in Proto.Code (a redundant field, equal to the
+	// TypeFeedback.Points index). Kept so a standalone point does not lose its position.
 	PC int32
 
-	// Kind 是该点的反馈类型。
+	// Kind is the feedback type of this point.
 	Kind FeedbackKind
 
-	// Confidence ∈ [0.0, 1.0]。语义随 Kind 变化(02 §5.1):
-	//   - FBArithStableNumber: numHits/(numHits+metaHits)(真比例)
-	//   - FBTableMono / FBGlobalStable / FBSelfMono: 1.0(P1 mono IC 无降级)
-	//   - FBTableMega: 0.0(明确「别投机」标识)
-	//   - FBUnstable: 0.0 或诊断比例
+	// Confidence ∈ [0.0, 1.0]. Its meaning varies with Kind (02 §5.1):
+	//   - FBArithStableNumber: numHits/(numHits+metaHits) (the true ratio)
+	//   - FBTableMono / FBGlobalStable / FBSelfMono: 1.0 (P1 mono IC does not degrade)
+	//   - FBTableMega: 0.0 (explicit "do not speculate" marker)
+	//   - FBUnstable: 0.0 or a diagnostic ratio
 	Confidence float32
 
-	// StableShape:表/全局点的「稳定 shape」——ICSlot.shape(目标表 gen
-	// 代次)的快照值。P4 投机直达槽时 guard「当前表 gen == stableShape」,
-	// 失败则 deopt。算术点不填(0)。
+	// StableShape: the "stable shape" of a table/global point — a snapshot of
+	// ICSlot.shape (the target table's gen, i.e. generation number). When P4
+	// speculates a direct slot access it guards "current table gen == stableShape",
+	// deopting on failure. Not filled for arithmetic points (0).
 	StableShape uint32
 
-	// StableIndex:表/全局点的「稳定槽位下标」——ICSlot.index 快照。
-	// P4 命中时直接索引此槽,不查哈希。算术点不填(0)。
+	// StableIndex: the "stable slot index" of a table/global point — a snapshot of
+	// ICSlot.index. On a P4 hit this slot is indexed directly, without a hash lookup.
+	// Not filled for arithmetic points (0).
 	StableIndex uint32
 
-	// Observations:聚合时累计的观测次数(算术点 = numHits+metaHits;
-	// 表点 = 命中次数,P1 当前实装不单独计数,默认填占位 1)。
-	// 下游可设最低样本量阈值(如 P3 「<100 次的点不发紧凑翻译」)。
+	// Observations: the observation count accumulated during aggregation (arithmetic
+	// point = numHits+metaHits; table point = hit count, which the current P1
+	// implementation does not count separately, so a placeholder 1 is filled by
+	// default). Downstream may set a minimum sample-count threshold (e.g. P3 "does
+	// not emit a compact translation for points with <100 observations").
 	Observations uint32
 }
 
-// TypeFeedback 是一个 Proto 的全 IC 观测聚合产物(02 §4.1)。
+// TypeFeedback is the aggregated product of all IC observations for one Proto (02 §4.1).
 //
-// 按 pc 索引每个程序点的类型稳定性判断。**P2 产出但不自用**(02 §7)。
+// It indexes the type-stability judgment of each program point by pc. **P2 produces
+// but does not use it itself** (02 §7).
 type TypeFeedback struct {
-	// Points 按 pc 索引;长度 = len(Proto.Code);非 IC 点对应槽 Kind=FBUnstable,
-	// Confidence=0,P3/P4 应跳过。
+	// Points is indexed by pc; its length = len(Proto.Code). A slot for a non-IC
+	// point has Kind=FBUnstable, Confidence=0, and P3/P4 should skip it.
 	Points []PointFeedback
 
-	// Generation 是 feedback 快照的代次,每次 P2 重新聚合时递增;
-	// P3/P4 拿到的快照若 Generation 落后于当前,说明聚合期间 P1 又新写了
-	// 一批观测——但这不影响正确性(P3 通用翻译总能兜底,P4 guard 总会
-	// 兜住运行期实际偏差)。
+	// Generation is the generation number of the feedback snapshot, incremented each
+	// time P2 re-aggregates. If the snapshot P3/P4 receive has a Generation lagging
+	// behind the current one, it means P1 wrote another batch of observations during
+	// aggregation — but this does not affect correctness (P3 generic translation
+	// always provides a fallback, and a P4 guard always catches the actual runtime
+	// deviation).
 	Generation uint32
 }

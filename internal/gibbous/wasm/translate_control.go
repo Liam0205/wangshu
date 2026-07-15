@@ -2,13 +2,17 @@
 
 package wasm
 
-// PW4 控制流终结边发射:比较(EQ/LT/LE/TEST/TESTSET)、FORPREP、FORLOOP。
-// 这些是 BB 末终结指令,后继边由结构化生成层据作用域栈算 br depth(02 §3.3/§3.5)。
+// PW4 control-flow terminator emission: compares (EQ/LT/LE/TEST/TESTSET),
+// FORPREP, FORLOOP. These are BB-terminating instructions; the successor edges
+// are computed by the structured-generation layer from the scope stack as br
+// depths (02 §3.3/§3.5).
 //
-// 「比较 + JMP 合并」(02 §3.3.1):比较指令后必跟 JMP。CFG 把比较 BB 切成两
-// 后继:succExec(pc+1 = 紧邻 JMP 的 BB,落它则执行 JMP 跳到 JMP target)、
-// succSkip(pc+2 = 跳过 JMP 的 BB)。解释器语义 `if res != bool(A) then pc++`:
-// res != boolA → 跳过 JMP(succSkip);res == boolA → 执行 JMP(succExec)。
+// "compare + JMP merge" (02 §3.3.1): a compare instruction is always followed by
+// a JMP. The CFG splits the compare BB into two successors: succExec (pc+1 = the
+// BB holding the adjacent JMP; falling into it executes the JMP and jumps to the
+// JMP target), and succSkip (pc+2 = the BB that skips the JMP). Interpreter
+// semantics `if res != bool(A) then pc++`: res != boolA → skip the JMP
+// (succSkip); res == boolA → execute the JMP (succExec).
 
 import (
 	"fmt"
@@ -16,9 +20,9 @@ import (
 	"github.com/Liam0205/wangshu/internal/bytecode"
 )
 
-// compareSuccs 解析比较 BB 的两后继:返回 (succExec, succSkip)。
-//   - succExec:落到 lastPC+1(执行紧邻 JMP)
-//   - succSkip:落到 lastPC+2(pc++ 跳过 JMP)
+// compareSuccs resolves the two successors of a compare BB: returns (succExec, succSkip).
+//   - succExec: falls to lastPC+1 (executes the adjacent JMP)
+//   - succSkip: falls to lastPC+2 (pc++ skips the JMP)
 func (c *Compiler) compareSuccs(cfg *cfg, lastPC int32) (succExec, succSkip int, err error) {
 	idExec, ok1 := cfg.pcToBB[lastPC+1]
 	idSkip, ok2 := cfg.pcToBB[lastPC+2]
@@ -28,7 +32,8 @@ func (c *Compiler) compareSuccs(cfg *cfg, lastPC int32) (succExec, succSkip int,
 	return idExec, idSkip, nil
 }
 
-// emitCompareTerm 发射比较终结(EQ/LT/LE/TEST/TESTSET)+ 条件边(02 §3.3)。
+// emitCompareTerm emits a compare terminator (EQ/LT/LE/TEST/TESTSET) + the
+// conditional edges (02 §3.3).
 func (c *Compiler) emitCompareTerm(em *emitter, proto *bytecode.Proto, cfg *cfg, plan *structPlan, stack *[]scope, bb int, ins bytecode.Instruction, lastPC int32) error {
 	op := bytecode.Op(ins)
 	a := bytecode.A(ins)
@@ -41,7 +46,7 @@ func (c *Compiler) emitCompareTerm(em *emitter, proto *bytecode.Proto, cfg *cfg,
 		return c.emitTestSetTerm(em, cfg, ins, plan, stack, bb, succExec, succSkip)
 	}
 
-	// 算比较结果 → localI32(0/1)。
+	// Compute the compare result → localI32 (0/1).
 	// boolField is the byte that the result is compared against:
 	//   - EQ/LT/LE: A (Lua reference: `if (RK(B) <op> RK(C)) ~= A then pc++`)
 	//   - TEST:     C (Lua reference: `if not (R(A) <=> C) then pc++`)
@@ -58,7 +63,7 @@ func (c *Compiler) emitCompareTerm(em *emitter, proto *bytecode.Proto, cfg *cfg,
 		return fmt.Errorf("p4: unexpected compare op %s", op)
 	}
 
-	// if (vt != bool(boolField)) then 跳过 JMP(succSkip) else 执行 JMP(succExec)
+	// if (vt != bool(boolField)) then skip the JMP (succSkip) else execute the JMP (succExec)
 	em.localGet(localI32)
 	em.i32Const(boolToI32(boolField))
 	em.i32Ne()
@@ -76,8 +81,8 @@ func (c *Compiler) emitCompareTerm(em *emitter, proto *bytecode.Proto, cfg *cfg,
 	return nil
 }
 
-// emitTestSetTerm TESTSET A B C(02 §3.3.5):Truthy(R(B))==bool(C) → R(A):=R(B)
-// 落 succExec(执行 JMP);否则跳过 JMP(succSkip)。
+// emitTestSetTerm TESTSET A B C (02 §3.3.5): Truthy(R(B))==bool(C) → R(A):=R(B),
+// fall to succExec (execute the JMP); otherwise skip the JMP (succSkip).
 func (c *Compiler) emitTestSetTerm(em *emitter, cfg *cfg, ins bytecode.Instruction, plan *structPlan, stack *[]scope, bb, succExec, succSkip int) error {
 	a := uint32(bytecode.A(ins))
 	b := uint32(bytecode.B(ins))
@@ -87,7 +92,7 @@ func (c *Compiler) emitTestSetTerm(em *emitter, cfg *cfg, ins bytecode.Instructi
 	em.i64Load(8 * b)
 	em.localSet(localI64a)
 	c.emitTruthyOf(em, localI64a) // → localI32
-	// if (vt == bool(C)) then R(A):=R(B); 执行 JMP else 跳过 JMP
+	// if (vt == bool(C)) then R(A):=R(B); execute the JMP else skip the JMP
 	em.localGet(localI32)
 	em.i32Const(boolToI32(cc))
 	em.raw(0x46) // i32.eq
@@ -108,7 +113,7 @@ func (c *Compiler) emitTestSetTerm(em *emitter, cfg *cfg, ins bytecode.Instructi
 	return nil
 }
 
-// emitTruthy 算 Truthy(R(a)) → localI32(读寄存器版)。
+// emitTruthy computes Truthy(R(a)) → localI32 (register-reading variant).
 func (c *Compiler) emitTruthy(em *emitter, a int) {
 	em.localGet(localBase)
 	em.i64Load(8 * uint32(a))
@@ -116,7 +121,7 @@ func (c *Compiler) emitTruthy(em *emitter, a int) {
 	c.emitTruthyOf(em, localI64a)
 }
 
-// emitTruthyOf 算 Truthy(local) → localI32:v != Nil && v != False。
+// emitTruthyOf computes Truthy(local) → localI32: v != Nil && v != False.
 func (c *Compiler) emitTruthyOf(em *emitter, vlocal uint32) {
 	em.localGet(vlocal)
 	em.i64Const(nilRawU64())
@@ -128,8 +133,9 @@ func (c *Compiler) emitTruthyOf(em *emitter, vlocal uint32) {
 	em.localSet(localI32)
 }
 
-// emitNumCompareOrHelper LT/LE/EQ:双 number 快路径(f64 比较)+ 慢路径助手。
-// 结果(0/1)留 localI32;慢路径错误时 return 1(状态冒泡)。
+// emitNumCompareOrHelper LT/LE/EQ: two-number fast path (f64 compare) + slow-path
+// helper. The result (0/1) is left in localI32; on slow-path error, return 1
+// (status bubbles up).
 func (c *Compiler) emitNumCompareOrHelper(em *emitter, proto *bytecode.Proto, ins bytecode.Instruction, pc int32) error {
 	op := bytecode.Op(ins)
 	b := bytecode.B(ins)
@@ -147,7 +153,7 @@ func (c *Compiler) emitNumCompareOrHelper(em *emitter, proto *bytecode.Proto, in
 	em.i64LtU()
 	em.i32And()
 	em.ifVoid()
-	// 快路径:f64 比较 → localI32
+	// fast path: f64 compare → localI32
 	em.localGet(localI64a)
 	em.f64ReinterpretI64()
 	em.localGet(localI64b)
@@ -162,7 +168,7 @@ func (c *Compiler) emitNumCompareOrHelper(em *emitter, proto *bytecode.Proto, in
 	}
 	em.localSet(localI32)
 	em.elseOp()
-	// 慢路径:EQ 先 raw bit 相等再 h_eq;LT/LE 直接 h_compare。
+	// slow path: EQ first checks raw-bit equality then h_eq; LT/LE go straight to h_compare.
 	if op == bytecode.EQ {
 		c.emitEqSlow(em, b, cc, pc)
 	} else {
@@ -178,8 +184,9 @@ func (c *Compiler) emitNumCompareOrHelper(em *emitter, proto *bytecode.Proto, in
 	return nil
 }
 
-// emitEqSlow EQ 非双 number 慢路径:raw bit 相等(同 GCRef/bool/nil)直接 true,
-// 否则走 h_eq(__eq 元方法,仅两 table)。结果 → localI32。
+// emitEqSlow EQ slow path for non-two-number operands: raw-bit equality (same
+// GCRef/bool/nil) is directly true; otherwise go through h_eq (__eq metamethod,
+// only for two tables). Result → localI32.
 func (c *Compiler) emitEqSlow(em *emitter, b, cc int, pc int32) {
 	// if vb == vc (raw) then localI32 := 1 else h_eq
 	em.localGet(localI64a)
@@ -198,8 +205,8 @@ func (c *Compiler) emitEqSlow(em *emitter, b, cc int, pc int32) {
 	em.end()
 }
 
-// emitUnpackCompare 解 h_compare/h_eq 的 packed 返回(栈顶 i32):
-// bit1=错误 → return 1;bit0 → localI32。
+// emitUnpackCompare unpacks the packed return of h_compare/h_eq (i32 on top of
+// stack): bit1=error → return 1; bit0 → localI32.
 func (c *Compiler) emitUnpackCompare(em *emitter) {
 	em.localTee(localI32)
 	em.i32Const(2)
@@ -214,8 +221,8 @@ func (c *Compiler) emitUnpackCompare(em *emitter) {
 	em.localSet(localI32)
 }
 
-// emitForPrepTerm FORPREP:经 h_forprep 校验三槽 + 预减,然后跳到 FORLOOP
-// (唯一后继)。
+// emitForPrepTerm FORPREP: validate the three slots + pre-decrement via
+// h_forprep, then jump to FORLOOP (the only successor).
 func (c *Compiler) emitForPrepTerm(em *emitter, cfg *cfg, plan *structPlan, stack *[]scope, bb int, lastPC int32) error {
 	a := bytecode.A(cfg.proto.Code[lastPC])
 	em.localGet(localBase)
@@ -229,7 +236,7 @@ func (c *Compiler) emitForPrepTerm(em *emitter, cfg *cfg, plan *structPlan, stac
 	em.i32Const(1)
 	em.ret()
 	em.end()
-	// 跳到 FORLOOP(唯一后继)。
+	// Jump to FORLOOP (the only successor).
 	blk := cfg.blocks[bb]
 	if len(blk.succs) != 1 {
 		return fmt.Errorf("p4: FORPREP BB %d has %d succs", bb, len(blk.succs))
@@ -237,12 +244,13 @@ func (c *Compiler) emitForPrepTerm(em *emitter, cfg *cfg, plan *structPlan, stac
 	return c.emitEdge(em, cfg, plan, *stack, bb, blk.succs[0])
 }
 
-// emitForLoopTerm FORLOOP(02 §3.5.2):三槽已被 FORPREP 规范为 number,快路径
-// 全 f64。idx+=step;方向判界;continue 写回 idx/v + 回边 safepoint + br 回 loop;
-// 否则落出 loop(退出)。
+// emitForLoopTerm FORLOOP (02 §3.5.2): the three slots are already normalized to
+// numbers by FORPREP, so the fast path is all f64. idx+=step; check bounds by
+// direction; on continue, write back idx/v + back-edge safepoint + br back to
+// loop; otherwise fall out of the loop (exit).
 func (c *Compiler) emitForLoopTerm(em *emitter, proto *bytecode.Proto, cfg *cfg, plan *structPlan, stack *[]scope, bb int, ins bytecode.Instruction, lastPC int32) error {
 	a := uint32(bytecode.A(ins))
-	// 后继:回跳(jumpTarget)= 循环体;落出(lastPC+1)= 退出。
+	// Successors: back-jump (jumpTarget) = loop body; fall-out (lastPC+1) = exit.
 	idBody, ok1 := cfg.pcToBB[lastPC+1+int32(bytecode.SBx(ins))]
 	idOut, ok2 := cfg.pcToBB[lastPC+1]
 	if !ok1 || !ok2 {
@@ -263,7 +271,7 @@ func (c *Compiler) emitForLoopTerm(em *emitter, proto *bytecode.Proto, cfg *cfg,
 	em.localGet(localI32)
 	em.ifVoid()
 	*stack = append(*stack, scope{kind: scIf, target: -1})
-	// continue:写回 R(A)=idx, R(A+3)=idx
+	// continue: write back R(A)=idx, R(A+3)=idx
 	em.localGet(localBase)
 	em.localGet(localF64)
 	em.i64ReinterpretF64()
@@ -272,25 +280,29 @@ func (c *Compiler) emitForLoopTerm(em *emitter, proto *bytecode.Proto, cfg *cfg,
 	em.localGet(localF64)
 	em.i64ReinterpretF64()
 	em.i64Store(8 * (a + 3))
-	// br 回 loop header(回边)。回边 safepoint(GC + step-budget 计费)由
-	// emitEdge 在 scLoop 分支统一发(唯一 choke point,覆盖所有循环形态),此处
-	// 不再单独发,避免 FORLOOP 双发。
+	// br back to the loop header (back edge). The back-edge safepoint (GC +
+	// step-budget accounting) is emitted uniformly by emitEdge in the scLoop
+	// branch (the single choke point, covering all loop forms), so it is not
+	// emitted separately here, to avoid double emission for FORLOOP.
 	if e := c.emitEdge(em, cfg, plan, *stack, bb, idBody); e != nil {
 		return e
 	}
 	em.end()
 	*stack = (*stack)[:len(*stack)-1]
-	// 不 continue:落出 loop = 退出循环 → idOut。结构化下 FORLOOP 是 loop 末,
-	// 落出即出 loop;若 idOut 非 fallthrough 需 br(emitEdge 处理)。
+	// Do not continue: falling out of the loop = exiting → idOut. In structured
+	// form FORLOOP is the loop tail, so falling out means exiting the loop; if
+	// idOut is not the fallthrough, a br is needed (handled by emitEdge).
 	return c.emitEdge(em, cfg, plan, *stack, bb, idOut)
 }
 
-// emitForContinueTest 算数值 for 续行条件 → localI32:
-// (step>0) ? idx<=limit : idx>=limit。idx 在 localF64,step/limit 现读栈槽。
+// emitForContinueTest computes the numeric-for continue condition → localI32:
+// (step>0) ? idx<=limit : idx>=limit. idx is in localF64; step/limit are read
+// from the stack slots on the fly.
 //
-// step 分支必须是严格 `>`(PUC 5.1 lvm.c `luai_numlt(0, step)`):step==0
-// 走降序分支,`for i=0,1,0` 零迭代、`for i=1,0,0` 无限循环(issue #97 修正
-// 此处原 `>=` 与解释器同因倒置)。
+// The step branch must use a strict `>` (PUC 5.1 lvm.c `luai_numlt(0, step)`):
+// step==0 takes the descending branch, so `for i=0,1,0` iterates zero times and
+// `for i=1,0,0` loops forever (issue #97 fixed the original `>=` here that was
+// inverted relative to the interpreter).
 func (c *Compiler) emitForContinueTest(em *emitter, a uint32) {
 	// step = R(A+2)
 	em.localGet(localBase)
@@ -299,7 +311,7 @@ func (c *Compiler) emitForContinueTest(em *emitter, a uint32) {
 	em.f64Const(0)
 	em.f64Gt()
 	em.ifVoid()
-	// step>0:idx <= limit
+	// step>0: idx <= limit
 	em.localGet(localF64)
 	em.localGet(localBase)
 	em.i64Load(8 * (a + 1))
@@ -307,7 +319,7 @@ func (c *Compiler) emitForContinueTest(em *emitter, a uint32) {
 	em.f64Le()
 	em.localSet(localI32)
 	em.elseOp()
-	// step<=0:idx >= limit
+	// step<=0: idx >= limit
 	em.localGet(localF64)
 	em.localGet(localBase)
 	em.i64Load(8 * (a + 1))
@@ -317,7 +329,7 @@ func (c *Compiler) emitForContinueTest(em *emitter, a uint32) {
 	em.end()
 }
 
-// boolToI32 把 bytecode 的 A/C 标志(!=0)转 i32 0/1。
+// boolToI32 converts a bytecode A/C flag (!=0) to i32 0/1.
 func boolToI32(v int) int32 {
 	if v != 0 {
 		return 1
@@ -325,20 +337,23 @@ func boolToI32(v int) int32 {
 	return 0
 }
 
-// emitTForLoopTerm TFORLOOP A C(PW4b,02 §3.5.3):调迭代器 R(A)(R(A+1),R(A+2)),
-// 结果落 R(A+3..A+2+C);首值非 nil → 控制变量 R(A+2):=首值,落回边 JMP(继续);
-// 首值 nil → 跳过回边(退出)。全经 h_tforloop(跨层调迭代器,复用 callLuaFromHost)。
+// emitTForLoopTerm TFORLOOP A C (PW4b, 02 §3.5.3): call the iterator
+// R(A)(R(A+1),R(A+2)); results land in R(A+3..A+2+C); if the first value is
+// non-nil → control variable R(A+2):=first value, fall to the back-edge JMP
+// (continue); if the first value is nil → skip the back edge (exit). Everything
+// goes through h_tforloop (cross-layer iterator call, reusing callLuaFromHost).
 //
-// h_tforloop 返回 i64:≥0=刷新后 base(继续,迭代器调用可能 growStack 段重定位)/
-// -1=ERR / -2=退出。结构:
+// h_tforloop returns i64: ≥0 = refreshed base (continue; the iterator call may
+// growStack and relocate the segment) / -1 = ERR / -2 = exit. Structure:
 //
 //	(local.set $i64c (call h_tforloop(base,pc,a,c)))
-//	(if (i64.eq $i64c -1) (then (return 1)))            ;; ERR 冒泡
+//	(if (i64.eq $i64c -1) (then (return 1)))            ;; ERR bubbles
 //	(if (i64.eq $i64c -2)
-//	  (then <emitEdge succSkip 退出>)
-//	  (else (local.set $base (i32.wrap $i64c)) <emitEdge succExec 回边>))
+//	  (then <emitEdge succSkip exit>)
+//	  (else (local.set $base (i32.wrap $i64c)) <emitEdge succExec back edge>))
 //
-// succExec = lastPC+1(回边 JMP BB),succSkip = lastPC+2(退出 BB);同比较终结。
+// succExec = lastPC+1 (back-edge JMP BB), succSkip = lastPC+2 (exit BB); same as
+// the compare terminator.
 func (c *Compiler) emitTForLoopTerm(em *emitter, cfg *cfg, plan *structPlan, stack *[]scope, bb int, lastPC int32) error {
 	succExec, succSkip, err := c.compareSuccs(cfg, lastPC)
 	if err != nil {
@@ -354,17 +369,17 @@ func (c *Compiler) emitTForLoopTerm(em *emitter, cfg *cfg, plan *structPlan, sta
 	em.i32Const(int32(cc))
 	em.call(helperTForLoop)
 	em.localSet(localI64c)
-	// ERR(== -1)→ return 1
+	// ERR (== -1) → return 1
 	em.localGet(localI64c)
-	em.i64Const(^uint64(0)) // -1 的 i64 位模式
+	em.i64Const(^uint64(0)) // i64 bit pattern of -1
 	em.i64Eq()
 	em.ifVoid()
 	em.i32Const(1)
 	em.ret()
 	em.end()
-	// 退出(== -2)→ succSkip;否则刷新 base + 回边 succExec
+	// Exit (== -2) → succSkip; otherwise refresh base + back edge succExec
 	em.localGet(localI64c)
-	em.i64Const(^uint64(0) - 1) // -2 的 i64 位模式
+	em.i64Const(^uint64(0) - 1) // i64 bit pattern of -2
 	em.i64Eq()
 	em.ifVoid()
 	*stack = append(*stack, scope{kind: scIf, target: -1})
@@ -372,7 +387,8 @@ func (c *Compiler) emitTForLoopTerm(em *emitter, cfg *cfg, plan *structPlan, sta
 		return e
 	}
 	em.elseOp()
-	// 继续:刷新 base(迭代器调用可能 growStack 段重定位,见 PW6 / design-vs-physics §2)
+	// Continue: refresh base (the iterator call may growStack and relocate the
+	// segment; see PW6 / design-vs-physics §2)
 	em.localGet(localI64c)
 	em.i32WrapI64()
 	em.localSet(localBase)
@@ -384,29 +400,35 @@ func (c *Compiler) emitTForLoopTerm(em *emitter, cfg *cfg, plan *structPlan, sta
 	return nil
 }
 
-// emitBackEdgeSafepoint 发回边 safepoint 的 inline 检查(P3 PW9 GC + 循环
-// step-budget 计费,#102 的 P3 对偶):
+// emitBackEdgeSafepoint emits the inline check for a back-edge safepoint (P3 PW9
+// GC + loop step-budget accounting, the P3 dual of #102):
 //
-//	loopBudget := loopBudget - 1                       ;; i32,linear memory 字
+//	loopBudget := loopBudget - 1                       ;; i32, linear-memory word
 //	i32.store loopBudget
 //	(if (i32.or (i32.le_s loopBudget 0) (i32.load gcPending))
 //	  (then
 //	    (if (i32.eq (call h_safepoint base pc) 1)
-//	      (then (return 1)))))                          ;; budget 超额 → 冒泡
+//	      (then (return 1)))))                          ;; budget exceeded → bubble
 //
-// 热循环里 loopBudget 从重填额(无 budget 时约 10 亿)自减,几乎永不归零 ⟹
-// 每迭代只付「load/sub/store + 比较」几条纯段内指令,零跨层(镜像 P4 loopFuel
-// 的 dec+jz)。只有 budget/ctx armed(fuzz/脚本配额)才周期性(每 quantum 次)
-// 跨层 h_safepoint 计费;或 GC due 时(gcPending 置位)跨层收 GC。Safepoint 返
-// status,1 = raise(budget 超额 / ctx 取消),段 return 1 冒泡,与解释器 preempt
-// 在回边抛 "instruction budget exceeded" 逐字节一致。
+// In a hot loop, loopBudget counts down from a refill amount (about 1 billion
+// when no budget is set) and almost never reaches zero ⟹ each iteration pays
+// only a few pure in-segment instructions ("load/sub/store + compare"), with zero
+// cross-layer calls (mirroring the P4 loopFuel dec+jz). Only when budget/ctx is
+// armed (fuzz/script quota) does it periodically (every quantum) make a
+// cross-layer h_safepoint accounting call; or when GC is due (gcPending set) it
+// crosses over to collect GC. Safepoint returns status, 1 = raise (budget
+// exceeded / ctx cancelled), the segment returns 1 to bubble, byte-for-byte
+// consistent with the interpreter preempt raising "instruction budget exceeded"
+// at the back edge.
 //
-// 正确性:gcPending 语义不变(due 时 flag 必 1,见旧注释);新增的 budget 计费
-// 只在 stepBudget>0 或 ctx armed 时改变行为(否则 Safepoint 只重填大额、不 raise),
-// 稳态无 budget 负载零语义影响。
+// Correctness: gcPending semantics are unchanged (the flag is always 1 when due,
+// see the old comment); the newly added budget accounting only changes behavior
+// when stepBudget>0 or ctx is armed (otherwise Safepoint only refills a large
+// amount and never raises), so a steady state with no budget load has zero
+// semantic impact.
 func (c *Compiler) emitBackEdgeSafepoint(em *emitter, pc int32) {
 	lbAddr := c.host.LoopBudgetAddr()
-	// loopBudget -= 1(读-减-写)。
+	// loopBudget -= 1 (read-decrement-write).
 	em.i32Const(0)
 	em.i32Const(0)
 	em.i32Load(lbAddr)
@@ -422,7 +444,7 @@ func (c *Compiler) emitBackEdgeSafepoint(em *emitter, pc int32) {
 	em.i32Load(c.host.GCPendingAddr())
 	em.raw(0x72) // i32.or
 	em.ifVoid()
-	// status = h_safepoint(base, pc);status==1 → return 1(冒泡)。
+	// status = h_safepoint(base, pc); status==1 → return 1 (bubble).
 	em.localGet(localBase)
 	em.i32Const(pc)
 	em.call(helperSafepoint)

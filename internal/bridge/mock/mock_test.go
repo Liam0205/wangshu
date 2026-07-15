@@ -1,4 +1,5 @@
-// Mock 子包冒烟测试——验证三种 mock 行为变体确实驱动 Bridge 状态机走对应路径。
+// Mock subpackage smoke tests — verify the three mock behavior variants do
+// drive the Bridge state machine down the corresponding paths.
 package mock
 
 import (
@@ -9,9 +10,11 @@ import (
 )
 
 func makeProto() *bytecode.Proto {
-	// Code 长度 ≥ MinPromotableCodeLen=10(issue #21):mock 测试 driver 自然热度
-	// 路径,short proto 被守卫拦截。具体 opcode 值无关(mock P3 compiler 不解析
-	// proto.Code),只需要长度足够过 MinPromotableCodeLen。
+	// Code length ≥ MinPromotableCodeLen=10 (issue #21): the mock test drives
+	// the natural heat path, short protos are blocked by the guard. The
+	// specific opcode values are irrelevant (the mock P3 compiler does not
+	// parse proto.Code), only the length needs to be enough to pass
+	// MinPromotableCodeLen.
 	code := make([]bytecode.Instruction, bridge.MinPromotableCodeLen)
 	for i := range code {
 		code[i] = bytecode.Instruction(uint32(bytecode.ADD))
@@ -22,7 +25,7 @@ func makeProto() *bytecode.Proto {
 	}
 }
 
-// TestMock_DummyCompile_PromotesToGibbous DummyCompile + Compilable → Gibbous。
+// TestMock_DummyCompile_PromotesToGibbous DummyCompile + Compilable → Gibbous.
 func TestMock_DummyCompile_PromotesToGibbous(t *testing.T) {
 	b := bridge.NewBridge()
 	b.SetP3Compiler(DummyCompile{})
@@ -38,12 +41,13 @@ func TestMock_DummyCompile_PromotesToGibbous(t *testing.T) {
 	}
 }
 
-// TestMock_RejectAll_F7Stuck RejectAll + AnalyzeProto → F7 拦下,Stuck。
+// TestMock_RejectAll_F7Stuck RejectAll + AnalyzeProto → F7 blocks, Stuck.
 func TestMock_RejectAll_F7Stuck(t *testing.T) {
 	b := bridge.NewBridge()
 	b.SetP3Compiler(RejectAll{})
 	p := makeProto()
-	// 模拟 PB3 已分析(任何 Proto 即便 F1-F6 全过,也被 F7 拦下)
+	// Simulate PB3 already analyzed (any Proto, even if it passes F1-F6, is
+	// still blocked by F7)
 	b.SetCompilability(p, bridge.CompNotCompilable, bridge.ReasonBackendUnsupp)
 
 	pd := b.ProfileOf(p)
@@ -55,8 +59,8 @@ func TestMock_RejectAll_F7Stuck(t *testing.T) {
 	}
 }
 
-// TestMock_PanicOnce_RecoveredToStuck PanicOnce → defer recover 转 Stuck,
-// panic 不逃逸。
+// TestMock_PanicOnce_RecoveredToStuck PanicOnce → defer recover turns to Stuck,
+// panic does not escape.
 func TestMock_PanicOnce_RecoveredToStuck(t *testing.T) {
 	b := bridge.NewBridge()
 	b.SetP3Compiler(PanicOnce{})

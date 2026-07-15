@@ -1,4 +1,4 @@
-// Expression parsing — precedence climbing (04 §4.3) + prefix/primary chain (04 §4 / §7)。
+// Expression parsing — precedence climbing (04 §4.3) + prefix/primary chain (04 §4 / §7).
 package parse
 
 import (
@@ -6,19 +6,19 @@ import (
 	"github.com/Liam0205/wangshu/internal/frontend/token"
 )
 
-// 二元运算符的 (left, right) 优先级(04 §4.3,与 Lua 5.1 lparser.c 一致)。
-// 右结合 ⟺ right < left。
+// The (left, right) priorities of binary operators (04 §4.3, matching Lua 5.1
+// lparser.c). Right-associative ⟺ right < left.
 type binPrio struct{ left, right uint8 }
 
 var binPriorities = map[ast.BinOp]binPrio{
 	ast.OpOr:  {1, 1},
 	ast.OpAnd: {2, 2},
 	ast.OpLt:  {3, 3}, ast.OpGt: {3, 3}, ast.OpLe: {3, 3}, ast.OpGe: {3, 3}, ast.OpNe: {3, 3}, ast.OpEq: {3, 3},
-	ast.OpConcat: {5, 4}, // 右结合
+	ast.OpConcat: {5, 4}, // right-associative
 	ast.OpAdd:    {6, 6}, ast.OpSub: {6, 6},
 	ast.OpMul: {7, 7}, ast.OpDiv: {7, 7}, ast.OpMod: {7, 7},
 	// unary = 8
-	ast.OpPow: {10, 9}, // 右结合,高于一元
+	ast.OpPow: {10, 9}, // right-associative, higher than unary
 }
 
 const unaryPriority uint8 = 8
@@ -71,7 +71,7 @@ func tokenToUnOp(k token.Kind) (ast.UnOp, bool) {
 	return 0, false
 }
 
-// parseExpr is precedence-climbing subexpr (04 §4.3)。limit = 0 时解析完整表达式。
+// parseExpr is precedence-climbing subexpr (04 §4.3). limit = 0 parses a full expression.
 func (p *Parser) parseExpr(limit uint8) (ast.Expr, error) {
 	if err := p.enterDepth(); err != nil {
 		return nil, err
@@ -184,9 +184,12 @@ func (p *Parser) parsePrefixExpr() (ast.Expr, error) {
 		if err := p.expect(token.RPAREN); err != nil {
 			return nil, err
 		}
-		// 一律包 ParenExpr:① 多值源收敛单值;② 括号表达式是 rvalue,
-		// isAssignable 须能识别拒绝 `(a) = 5`(官方 syntax error;单值内核
-		// 解包会还原成 NameExpr 被错误接受)。codegen 对单值内核零开销。
+		// Always wrap in ParenExpr: ① collapse a multi-value source to a
+		// single value; ② a parenthesized expression is an rvalue, and
+		// isAssignable must be able to reject `(a) = 5` (official syntax
+		// error; unwrapping the single-value core would restore a NameExpr
+		// that gets wrongly accepted). Zero overhead in codegen for the
+		// single-value core.
 		e = &ast.ParenExpr{Line: line, E: inner}
 	default:
 		return nil, p.errorf("unexpected symbol near '%s'", p.tok.String())
@@ -251,10 +254,12 @@ func (p *Parser) parsePrefixExpr() (ast.Expr, error) {
 func (p *Parser) parseArgs() ([]ast.Expr, error) {
 	switch p.tok.Kind {
 	case token.LPAREN:
-		// 5.1 特设检查(lparser.c funcargs):'(' 与函数前缀末 token 不同行报
-		// ambiguous syntax——`f\n(3)` 既像调用又像新语句,官方编译期拒绝
-		// (5.2 移除;锁 5.1 保留)。STRING/LBRACE 实参形式不检查。
-		// 普通调用与 obj:m\n(3) 方法调用路径都经此处。
+		// 5.1 ad-hoc check (lparser.c funcargs): a '(' on a different line
+		// than the last token of the function prefix reports ambiguous syntax
+		// -- `f\n(3)` looks like both a call and a new statement, and the
+		// official compiler rejects it (removed in 5.2; kept since we lock to
+		// 5.1). The STRING/LBRACE argument forms are not checked. Both plain
+		// calls and obj:m\n(3) method calls go through here.
 		if p.tok.Line != p.lastLine {
 			return nil, p.errorf("ambiguous syntax (function call x new statement) near '('")
 		}
@@ -344,7 +349,7 @@ func (p *Parser) parseTableExpr() (ast.Expr, error) {
 			}
 			t.Items = append(t.Items, ast.TableItem{Key: k, Val: v})
 		case p.match(token.NAME):
-			// 可能是 Name = expr,也可能是 Name 作为值表达式起点。
+			// Could be Name = expr, or Name as the start of a value expression.
 			ahead, err := p.peek()
 			if err != nil {
 				return nil, err
@@ -395,7 +400,7 @@ func (p *Parser) parseTableExpr() (ast.Expr, error) {
 //
 //	parlist ::= namelist [',' '...'] | '...'
 //
-// 当 isMethod 为 true,在 Params 头部注入隐式 "self"。
+// When isMethod is true, an implicit "self" is injected at the head of Params.
 func (p *Parser) parseFuncBody(startLine int32, isMethod bool) (*ast.FuncExpr, error) {
 	if err := p.expect(token.LPAREN); err != nil {
 		return nil, err
@@ -432,7 +437,8 @@ func (p *Parser) parseFuncBody(startLine int32, isMethod bool) (*ast.FuncExpr, e
 	if err := p.expect(token.RPAREN); err != nil {
 		return nil, err
 	}
-	// 进入函数体:切换 insideVararg 上下文;loopDepth 重置(break 不跨函数边界)。
+	// Entering the function body: switch the insideVararg context; reset
+	// loopDepth (break does not cross function boundaries).
 	saved := p.insideVararg
 	savedLoop := p.loopDepth
 	p.insideVararg = isVararg

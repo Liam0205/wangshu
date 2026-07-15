@@ -1,11 +1,13 @@
 // Raw table operations on the arena-native array+hash layout (01 §5.2).
 //
-// 替换 M9-M14 期间的 Go map 旁路(tableSide):
-//   - 数组段:整数键 1..asize 直达 array[k-1];
-//   - 哈希段:主位置 = hash(key) & hmask,开放寻址 + 冲突链(next 索引);
-//   - rehash:数组与哈希按 Lua 5.1 luaH_resize 思路重算(装填率 > 50%),
-//     rehash / 数组↔哈希迁移 BumpGen(IC 失效,05 §6.5);
-//   - border:数组段二分(# 语义,01 §5.2)。
+// Replaces the Go map side table (tableSide) used during M9-M14:
+//   - array part: integer keys 1..asize map directly to array[k-1];
+//   - hash part: main position = hash(key) & hmask, open addressing +
+//     collision chain (next index);
+//   - rehash: array and hash sizes are recomputed following Lua 5.1's
+//     luaH_resize approach (load factor > 50%); rehash and array<->hash
+//     migration call BumpGen (IC invalidation, 05 §6.5);
+//   - border: binary search over the array part (# semantics, 01 §5.2).
 package crescent
 
 import (
@@ -16,14 +18,16 @@ import (
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
-// hashValue 把任意 Lua 键散列成 32-bit(对齐 5.1 的按类型散列思路)。
+// hashValue hashes an arbitrary Lua key into 32 bits (following 5.1's
+// per-type hashing approach).
 //
-// -0.0 归一 +0.0 后再散列(01 §5.2 键归类规则)。string 直接用对象头里缓存的
-// JSHash。其余 boxed 用 bits 折叠。
+// -0.0 is normalized to +0.0 before hashing (key classification rule,
+// 01 §5.2). Strings use the JSHash cached in the object header. Other boxed
+// values fold their bits.
 func (st *State) hashValue(key value.Value) uint32 {
 	if value.IsNumber(key) {
 		f := value.AsNumber(key)
-		if f == 0 { // 归一 -0.0
+		if f == 0 { // normalize -0.0
 			f = 0
 		}
 		bits := math.Float64bits(f)
@@ -36,7 +40,8 @@ func (st *State) hashValue(key value.Value) uint32 {
 	return uint32(bits) ^ uint32(bits>>32)
 }
 
-// normKey 把 -0.0 数字键归一为 +0.0(键比较与散列一致)。
+// normKey normalizes a -0.0 numeric key to +0.0 (keeps key comparison and
+// hashing consistent).
 func normKey(key value.Value) value.Value {
 	if value.IsNumber(key) && value.AsNumber(key) == 0 {
 		return value.NumberValue(0)
@@ -44,8 +49,9 @@ func normKey(key value.Value) value.Value {
 	return key
 }
 
-// keyEqual 判定两个键相等(rawequal 语义:数字浮点比较,其余 bits 比较;
-// string 已 intern 故 bits 等价内容)。
+// keyEqual reports whether two keys are equal (rawequal semantics: numbers use
+// float comparison, everything else compares bits; strings are interned so their
+// bits are equivalent to their content).
 func keyEqual(a, b value.Value) bool {
 	if value.IsNumber(a) && value.IsNumber(b) {
 		return value.AsNumber(a) == value.AsNumber(b)
@@ -53,8 +59,8 @@ func keyEqual(a, b value.Value) bool {
 	return a == b
 }
 
-// arrayIndex 判定 key 是否落数组段:k == floor(k) 且 1 <= k <= asize。
-// 返回 (idx0based, true) 或 (0, false)。
+// arrayIndex reports whether key falls into the array part: k == floor(k) and
+// 1 <= k <= asize. Returns (idx0based, true) or (0, false).
 func arrayIndex(key value.Value, asize uint32) (uint32, bool) {
 	if !value.IsNumber(key) {
 		return 0, false
@@ -67,7 +73,7 @@ func arrayIndex(key value.Value, asize uint32) (uint32, bool) {
 	return 0, false
 }
 
-// rawGet 在 arena 原生布局上查 key(不触发元方法)。
+// rawGet looks up key on the arena-native layout (no metamethods).
 func (st *State) rawGet(t arena.GCRef, key value.Value) value.Value {
 	if key == value.Nil {
 		return value.Nil
@@ -93,9 +99,10 @@ func (st *State) rawGet(t arena.GCRef, key value.Value) value.Value {
 	return value.Nil
 }
 
-// rawSet 在 arena 原生布局上写 key=val(不触发元方法)。
+// rawSet writes key=val on the arena-native layout (no metamethods).
 //
-// val==Nil 是删除(槽位保留 key=Nil 化,链不收缩——与 5.1 一致,等 rehash 清理)。
+// val==Nil means delete (the slot keeps key set to Nil, the chain does not
+// shrink — same as 5.1, cleaned up on the next rehash).
 func (st *State) rawSet(t arena.GCRef, key, val value.Value) *LuaError {
 	if key == value.Nil {
 		return errf("table index is nil")
@@ -112,7 +119,7 @@ func (st *State) rawSet(t arena.GCRef, key, val value.Value) *LuaError {
 		object.SetTableArrayAt(st.arena, t, idx, val)
 		return nil
 	}
-	// 哈希段查找已有槽
+	// Look up an existing slot in the hash part.
 	hsize := object.TableHSize(st.arena, t)
 	if hsize > 0 {
 		hmask := hsize - 1
@@ -120,7 +127,8 @@ func (st *State) rawSet(t arena.GCRef, key, val value.Value) *LuaError {
 		for i >= 0 {
 			k := object.NodeKey(st.arena, t, uint32(i))
 			if keyEqual(k, key) {
-				// 已存在:改值(val=Nil 即删,key 槽改 Nil 等 rehash 回收)
+				// Already present: update the value (val=Nil means delete;
+				// the key slot is set to Nil, to be reclaimed on rehash).
 				if val == value.Nil {
 					st.nodeSetKV(t, uint32(i), value.Nil, value.Nil)
 				} else {
@@ -132,27 +140,28 @@ func (st *State) rawSet(t arena.GCRef, key, val value.Value) *LuaError {
 		}
 	}
 	if val == value.Nil {
-		return nil // 删除不存在的键 = no-op
+		return nil // deleting a nonexistent key = no-op
 	}
-	// 新键插入
+	// Insert a new key.
 	return st.insertNewKey(t, key, val)
 }
 
-// nodeSetVal 改一个哈希槽的 val(保留 key/next)。
+// nodeSetVal updates the val of a hash slot (keeps key/next).
 func (st *State) nodeSetVal(t arena.GCRef, idx uint32, val value.Value) {
 	k := object.NodeKey(st.arena, t, idx)
 	next := object.NodeNext(st.arena, t, idx)
 	object.SetNode(st.arena, t, idx, k, val, next)
 }
 
-// nodeSetKV 改一个哈希槽的 key+val(保留 next)。
+// nodeSetKV updates the key+val of a hash slot (keeps next).
 func (st *State) nodeSetKV(t arena.GCRef, idx uint32, key, val value.Value) {
 	next := object.NodeNext(st.arena, t, idx)
 	object.SetNode(st.arena, t, idx, key, val, next)
 }
 
-// insertNewKey 插入一个新键(对齐 5.1 luaH_newkey 的链式策略,简化 Brent:
-// 主位置被占时找空槽,若占用者主位置不同则迁走占用者)。
+// insertNewKey inserts a new key (following 5.1 luaH_newkey's chaining strategy,
+// a simplified Brent: when the main position is occupied, find a free slot, and
+// if the occupant's main position differs, relocate the occupant).
 func (st *State) insertNewKey(t arena.GCRef, key, val value.Value) *LuaError {
 	hsize := object.TableHSize(st.arena, t)
 	if hsize == 0 {
@@ -164,35 +173,37 @@ func (st *State) insertNewKey(t arena.GCRef, key, val value.Value) *LuaError {
 	mk := object.NodeKey(st.arena, t, mainPos)
 	if mk == value.Nil && object.NodeVal(st.arena, t, mainPos) == value.Nil &&
 		object.NodeNext(st.arena, t, mainPos) < 0 {
-		// 主位置空:直接放
+		// Main position empty: place directly.
 		object.SetNode(st.arena, t, mainPos, key, val, -1)
 		return nil
 	}
-	// 主位置被占:找一个空槽
+	// Main position occupied: find a free slot.
 	free, ok := st.findFreeNode(t, hsize)
 	if !ok {
-		// 哈希满:rehash 后重插
+		// Hash full: rehash and reinsert.
 		st.rehash(t, key)
 		return st.rawSet(t, key, val)
 	}
 	occKey := object.NodeKey(st.arena, t, mainPos)
 	occMain := st.hashValue(occKey) & hmask
 	if occKey != value.Nil && occMain != mainPos {
-		// 占用者不在它自己的主位置:把占用者迁到 free,腾出主位置给新键
-		// 1) 找到占用者链上的前驱(从 occMain 沿链找指向 mainPos 的节点)
+		// Occupant is not in its own main position: relocate the occupant to
+		// free, freeing the main position for the new key.
+		// 1) Find the occupant's chain predecessor (walk from occMain along the
+		//    chain to the node pointing at mainPos).
 		prev := int32(occMain)
 		for object.NodeNext(st.arena, t, uint32(prev)) != int32(mainPos) {
 			prev = object.NodeNext(st.arena, t, uint32(prev))
 		}
-		// 2) 迁占用者
+		// 2) Relocate the occupant.
 		occVal := object.NodeVal(st.arena, t, mainPos)
 		occNext := object.NodeNext(st.arena, t, mainPos)
 		object.SetNode(st.arena, t, free, occKey, occVal, occNext)
-		// 3) 前驱指向新位置
+		// 3) Point the predecessor at the new position.
 		pk := object.NodeKey(st.arena, t, uint32(prev))
 		pv := object.NodeVal(st.arena, t, uint32(prev))
 		object.SetNode(st.arena, t, uint32(prev), pk, pv, int32(free))
-		// 4) 新键落主位置
+		// 4) Place the new key at the main position.
 		object.SetNode(st.arena, t, mainPos, key, val, -1)
 		// Relocating an existing key changes the key->slot mapping, which
 		// is exactly what gen guards: gen-only inline fast paths (P3 wasm
@@ -204,7 +215,8 @@ func (st *State) insertNewKey(t arena.GCRef, key, val value.Value) *LuaError {
 		object.BumpGen(st.arena, t)
 		return nil
 	}
-	// 占用者就在自己的主位置:新键放 free,链入主位置链
+	// Occupant is already in its own main position: place the new key at free,
+	// chaining it into the main position's chain.
 	mainNext := object.NodeNext(st.arena, t, mainPos)
 	object.SetNode(st.arena, t, free, key, val, mainNext)
 	mv := object.NodeVal(st.arena, t, mainPos)
@@ -212,7 +224,8 @@ func (st *State) insertNewKey(t arena.GCRef, key, val value.Value) *LuaError {
 	return nil
 }
 
-// findFreeNode 自 lastfree 起向前找空槽(key=Nil 且 val=Nil 且 next=-1)。
+// findFreeNode scans backward from lastfree for a free slot (key=Nil && val=Nil
+// && next=-1).
 func (st *State) findFreeNode(t arena.GCRef, hsize uint32) (uint32, bool) {
 	lf := object.TableLastFree(st.arena, t)
 	if lf >= hsize {
@@ -230,10 +243,11 @@ func (st *State) findFreeNode(t arena.GCRef, hsize uint32) (uint32, bool) {
 	return 0, false
 }
 
-// rehash 重算最优 asize/hsize 并把全部活键重插(extraKey 是即将插入的键,
-// 计入统计)。对齐 5.1 luaH_resize 思路:数组装填率 > 50%。
+// rehash recomputes the optimal asize/hsize and reinserts all live keys
+// (extraKey is the key about to be inserted, counted into the statistics).
+// Follows 5.1 luaH_resize's approach: array load factor > 50%.
 func (st *State) rehash(t arena.GCRef, extraKey value.Value) {
-	// 1) 收集全部活键值
+	// 1) Collect all live key-value pairs.
 	type kv struct{ k, v value.Value }
 	var all []kv
 	asize := object.TableASize(st.arena, t)
@@ -251,8 +265,9 @@ func (st *State) rehash(t arena.GCRef, extraKey value.Value) {
 			all = append(all, kv{k, v})
 		}
 	}
-	// 2) 统计整数键分布,选最优 asize(2 的幂桶:装填率 > 50%)
-	intCount := map[uint32]uint32{} // 桶 2^i 内的整数键数
+	// 2) Tally the distribution of integer keys and choose the optimal asize
+	//    (power-of-two buckets: load factor > 50%).
+	intCount := map[uint32]uint32{} // count of integer keys in bucket 2^i
 	totalInt := uint32(0)
 	maxKey := uint32(0)
 	countIntKey := func(k value.Value) {
@@ -268,12 +283,15 @@ func (st *State) rehash(t arena.GCRef, extraKey value.Value) {
 		if u > maxKey {
 			maxKey = u
 		}
-		// 落入桶 ceil(log2(u))。脚本控制的整数 key 可达 uint32 边界(2^32-1),
-		// 此时 `(1 << 32) = 0` 在 Go 也回卷为 0(uint32 移位语义),`< u` 恒真,
-		// 朴素 `for (1<<b) < u` 死循环——故加 b < 31 守卫:b 最大到 31 直接退出
-		// (size 1<<31 = 2^31 已超嵌入式 hardening 数组上限 maxArraySize,
-		// 后续 §2 选 asize 时被裁口)。fuzz corpus 5095a0fd13d76273
-		// (`t[3333170000]=""`)即此路径,触发死循环从而表面像 OOM(实为 CPU 死循环)。
+		// Fall into bucket ceil(log2(u)). Script-controlled integer keys can
+		// reach the uint32 boundary (2^32-1), where `(1 << 32) = 0` also wraps
+		// to 0 in Go (uint32 shift semantics), making `< u` always true and the
+		// naive `for (1<<b) < u` loop spin forever — hence the b < 31 guard: b
+		// tops out at 31 and exits directly (size 1<<31 = 2^31 already exceeds
+		// the embedded-hardening array cap maxArraySize, so it gets clamped when
+		// asize is chosen later in §2). fuzz corpus 5095a0fd13d76273
+		// (`t[3333170000]=""`) hits exactly this path, triggering the infinite
+		// loop that superficially looks like OOM (actually a CPU spin).
 		b := uint32(0)
 		for b < 31 && (uint32(1)<<b) < u {
 			b++
@@ -284,11 +302,14 @@ func (st *State) rehash(t arena.GCRef, extraKey value.Value) {
 		countIntKey(e.k)
 	}
 	countIntKey(extraKey)
-	// 选 asize = 最大的 2^b 使 [1..2^b] 内整数键 > 2^(b-1)
-	// 嵌入式 hardening:数组段大小封顶 maxArraySize(1<<24,~16M 槽位 = ~128 MiB)。
-	// 与 stdlib 主线 table.concat range / string.rep 等的循环类阈值口径一致
-	// (12 §4.9 嵌入式 hardening 阈值纪律:宿主进程不可崩 > 与对位字节一致)。
-	// 大于阈值的稀疏键数组化无意义——超出部分自然落 hash 段,行为正确无溢出风险。
+	// Choose asize = the largest 2^b such that integer keys in [1..2^b] > 2^(b-1).
+	// Embedded hardening: the array part size is capped at maxArraySize (1<<24,
+	// ~16M slots = ~128 MiB). Consistent with the loop-class thresholds of the
+	// stdlib mainline table.concat range / string.rep etc. (12 §4.9 embedded-
+	// hardening threshold discipline: the host process must not crash > byte-for-
+	// byte parity). Array-ifying sparse keys beyond the threshold is pointless —
+	// the excess naturally falls into the hash part, behavior is correct with no
+	// overflow risk.
 	const maxArraySize = uint32(1 << 24)
 	bestASize := uint32(0)
 	acc := uint32(0)
@@ -305,10 +326,11 @@ func (st *State) rehash(t arena.GCRef, extraKey value.Value) {
 			break
 		}
 	}
-	// 3) hsize = 容纳其余键的最小 2 的幂(留 1 空槽余量)
-	nHash := uint32(len(all)) + 1 // +1 给 extraKey
+	// 3) hsize = the smallest power of two holding the remaining keys (leave 1
+	//    free slot of headroom).
+	nHash := uint32(len(all)) + 1 // +1 for extraKey
 	if bestASize > 0 {
-		// 落数组的键不占哈希
+		// Keys landing in the array part do not occupy the hash part.
 		inArray := uint32(0)
 		for _, e := range all {
 			if _, ok := arrayIndex(normKey(e.k), bestASize); ok {
@@ -327,7 +349,9 @@ func (st *State) rehash(t arena.GCRef, extraKey value.Value) {
 	if nHash == 0 {
 		newHSize = 0
 	}
-	// 4) 分配新段并替换;旧段归还 freelist(附属块由头对象独占,无别名)
+	// 4) Allocate the new parts and swap them in; return the old parts to the
+	//    freelist (the attached blocks are exclusively owned by the head object,
+	//    no aliasing).
 	oldArr := object.TableArrayRef(st.arena, t)
 	oldASize := asize
 	oldNode := object.TableNodeRef(st.arena, t)
@@ -345,24 +369,25 @@ func (st *State) rehash(t arena.GCRef, extraKey value.Value) {
 	object.SetTableArray(st.arena, t, newArr, bestASize)
 	object.SetTableNode(st.arena, t, newNode, newHSize)
 	object.SetTableLastFree(st.arena, t, newHSize)
-	object.BumpGen(st.arena, t) // 形状变化 → IC 失效(05 §6.5)
+	object.BumpGen(st.arena, t) // shape change → IC invalidation (05 §6.5)
 	if !oldArr.IsNull() {
 		st.arena.Free(oldArr, oldASize*8)
 	}
 	if !oldNode.IsNull() {
 		st.arena.Free(oldNode, oldHSize*3*8)
 	}
-	// 5) 重插全部键值
+	// 5) Reinsert all key-value pairs.
 	for _, e := range all {
 		_ = st.rawSet(t, e.k, e.v)
 	}
 }
 
-// rawBorder 计算 #t:数组段二分(t[n]~=nil && t[n+1]==nil);数组满则探哈希。
+// rawBorder computes #t: binary search over the array part (t[n]~=nil &&
+// t[n+1]==nil); if the array is full, probe the hash part.
 func (st *State) rawBorder(t arena.GCRef) uint32 {
 	asize := object.TableASize(st.arena, t)
 	if asize > 0 && object.TableArrayAt(st.arena, t, asize-1) == value.Nil {
-		// 数组段内有 border:二分
+		// There is a border inside the array part: binary search.
 		lo, hi := uint32(0), asize
 		for hi-lo > 1 {
 			m := (lo + hi) / 2
@@ -374,7 +399,7 @@ func (st *State) rawBorder(t arena.GCRef) uint32 {
 		}
 		return lo
 	}
-	// 数组满(或无数组段):从 asize 起在哈希里线性探测
+	// Array full (or no array part): linearly probe the hash starting from asize.
 	n := asize
 	for {
 		if st.rawGet(t, value.NumberValue(float64(n+1))) == value.Nil {
@@ -384,23 +409,26 @@ func (st *State) rawBorder(t arena.GCRef) uint32 {
 	}
 }
 
-// rawNext 实现 next(t, key) 的迭代序:先数组段(索引序),后哈希段(槽序)。
+// rawNext implements next(t, key)'s iteration order: array part first (index
+// order), then hash part (slot order).
 //
-// key=Nil 从头开始。返回 (nextKey, nextVal, ok);ok=false 表示迭代结束。
-// 迭代序确定性:同一表同一形状下序稳定(12 pairs 序口径的"严格逐字节"前提)。
+// key=Nil starts from the beginning. Returns (nextKey, nextVal, ok); ok=false
+// means iteration is done. Iteration-order determinism: the order is stable for
+// the same table with the same shape (the "strictly byte-for-byte" premise of
+// the 12 pairs ordering rule).
 func (st *State) rawNext(t arena.GCRef, key value.Value) (value.Value, value.Value, bool, *LuaError) {
 	asize := object.TableASize(st.arena, t)
 	hsize := object.TableHSize(st.arena, t)
-	// 决定起始位置
-	startArr := uint32(0)  // 下一个要检查的数组下标
-	startNode := uint32(0) // 下一个要检查的哈希槽
+	// Decide the starting position.
+	startArr := uint32(0)  // next array index to check
+	startNode := uint32(0) // next hash slot to check
 	inHash := false
 	if key != value.Nil {
 		key = normKey(key)
 		if idx, ok := arrayIndex(key, asize); ok {
 			startArr = idx + 1
 		} else {
-			// 在哈希段找到 key 的槽位,从下一槽继续
+			// Found key's slot in the hash part; continue from the next slot.
 			found := false
 			if hsize > 0 {
 				hmask := hsize - 1

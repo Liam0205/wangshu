@@ -2,15 +2,17 @@
 
 package wasm
 
-// imported helper 的 Go 侧实装(02-translation §6.4 + 04-trampoline §3)。
+// Go-side implementation of the imported helpers (02-translation §6.4 + 04-trampoline §3).
 //
-// **依赖解环**:helper 需要操作执行期状态(CallInfo、值栈、upvalue、返回值
-// 回填),这些归 crescent.State。但 crescent 要 import gibbous/wasm 取
-// p3Code.Run(trampoline),若 gibbous/wasm 反 import crescent 则成环。
-// 解法(同 P2 bridge 不依赖 crescent 的接口注入手法):gibbous/wasm 定义
-// helper 需要的最小抽象接口 HostState,crescent 实现并在升层安装时注入。
+// **Dependency cycle break**: helpers need to operate on runtime state (CallInfo,
+// value stack, upvalues, return-value write-back), all owned by crescent.State. But
+// crescent must import gibbous/wasm to get p3Code.Run (trampoline); if gibbous/wasm
+// imports crescent back, that forms a cycle. Resolution (same interface-injection
+// technique the P2 bridge uses to avoid depending on crescent): gibbous/wasm defines
+// the minimal abstract interface HostState that the helpers need, and crescent
+// implements it and injects it during the tier-up install.
 //
-// PW2 helper 集:h_getupval / h_setupval / h_return / h_safepoint。
+// PW2 helper set: h_getupval / h_setupval / h_return / h_safepoint.
 
 import (
 	"context"
@@ -18,234 +20,253 @@ import (
 	"github.com/tetratelabs/wazero/api"
 )
 
-// HostState 是 gibbous helper 操作执行期状态的最小抽象(crescent.State 实现)。
+// HostState is the minimal abstraction the gibbous helpers use to operate on runtime
+// state (implemented by crescent.State).
 //
-// 所有方法以 base(当前帧 R0 的字节偏移)为坐标 —— gibbous 帧与解释器帧
-// 共享同一值栈(03-memory-model),base 唯一定位本帧。
+// All methods are coordinated by base (the byte offset of the current frame's R0) ——
+// gibbous frames and interpreter frames share the same value stack (03-memory-model),
+// and base uniquely locates the current frame.
 //
-// 方法语义直接复用解释器侧已有实装(execute.go 对应行),保证 byte-equal。
+// Method semantics directly reuse the existing interpreter-side implementation (the
+// corresponding execute.go lines), guaranteeing byte-equal behavior.
 type HostState interface {
-	// GetUpval 取当前 closure 的 upvalue B 的值(execute.go GETUPVAL 段)。
+	// GetUpval reads the value of upvalue B of the current closure (execute.go GETUPVAL section).
 	GetUpval(base int32, b int32) uint64
-	// SetUpval 写当前 closure 的 upvalue B(execute.go SETUPVAL 段)。
+	// SetUpval writes upvalue B of the current closure (execute.go SETUPVAL section).
 	SetUpval(base int32, b int32, val uint64)
-	// DoReturn 处理 RETURN A B:返回值回填到调用者期望槽 + 记 savedPC。
-	// 返回 status(0=OK / 1=ERR);gibbous 函数据此 return。
+	// DoReturn handles RETURN A B: writes return values back to the caller's expected
+	// slots + records savedPC. Returns status (0=OK / 1=ERR); the gibbous function
+	// returns accordingly.
 	DoReturn(base int32, pc int32, a int32, b int32) int32
-	// Safepoint 回边检查点(GC + 循环 step-budget 计费)。返回 status
-	// (0=OK / 1=raise:budget 超额或 ctx 取消),gibbous 段据此 return 1 冒泡。
+	// Safepoint is the back-edge checkpoint (GC + loop step-budget accounting). Returns
+	// status (0=OK / 1=raise: budget exceeded or ctx canceled); the gibbous section
+	// returns 1 to bubble up accordingly.
 	Safepoint(base int32, pc int32) int32
-	// LoopBudgetAddr 返回 loop-budget fuel 字的 linear memory 字节地址(P3
-	// 循环 step-budget 修复):回边 inline 自减它,归零才跨层 h_safepoint。
+	// LoopBudgetAddr returns the linear-memory byte address of the loop-budget fuel word
+	// (P3 loop step-budget fix): the back edge decrements it inline, only crossing the
+	// layer to h_safepoint once it hits zero.
 	LoopBudgetAddr() uint32
-	// SetSavedPC 写回 CallInfo.savedPC(pc 物化,02 §4.2)。
+	// SetSavedPC writes back CallInfo.savedPC (pc materialization, 02 §4.2).
 	SetSavedPC(base int32, pc int32)
 
-	// --- PW3 算术慢路径助手(快路径双 number 在 Wasm 内直发 f64,失败回 Go)---
+	// --- PW3 arithmetic slow-path helpers (the fast path emits f64 directly inside Wasm for two numbers, falling back to Go on failure) ---
 
-	// Arith 处理算术 opcode 慢路径(ADD/SUB/MUL/DIV/MOD/POW)的 coercion +
-	// 元方法链(复用 execute.go doArithSlow)。op 是 bytecode.OpCode 值。
-	// 返回 status(0=OK / 1=ERR)。
+	// Arith handles the arithmetic-opcode slow path (ADD/SUB/MUL/DIV/MOD/POW): coercion +
+	// metamethod chain (reuses execute.go doArithSlow). op is a bytecode.OpCode value.
+	// Returns status (0=OK / 1=ERR).
 	Arith(base, pc, op, b, c, a int32) int32
-	// Unm 处理 UNM 慢路径(string coercion + __unm)。
+	// Unm handles the UNM slow path (string coercion + __unm).
 	Unm(base, pc, b, a int32) int32
-	// Len 处理 LEN(string 长度 / table border / 异类报错;复用 execute.go LEN 段)。
+	// Len handles LEN (string length / table border / error on other types; reuses execute.go LEN section).
 	Len(base, pc, b, a int32) int32
-	// Concat 处理 CONCAT(复用 execute.go doConcat 全逻辑 + safepoint)。
+	// Concat handles CONCAT (reuses the full execute.go doConcat logic + safepoint).
 	Concat(base, pc, a, b, c int32) int32
 
-	// --- PW4 控制流慢路径助手 ---
+	// --- PW4 control-flow slow-path helpers ---
 
-	// Compare 处理 LT/LE 慢路径(string 比较 / __lt/__le 元方法)。op 是
-	// bytecode.OpCode。返回 packed:bit0=比较结果(0/1),bit1=错误标志。
+	// Compare handles the LT/LE slow path (string comparison / __lt/__le metamethods). op is
+	// a bytecode.OpCode. Returns packed: bit0=comparison result (0/1), bit1=error flag.
 	Compare(base, pc, op, b, c int32) int32
-	// Eq 处理 EQ 的 __eq 元方法路径(raw 不等时;复用 rawEqual + __eq)。
-	// 返回 packed:bit0=结果,bit1=错误。
+	// Eq handles the __eq metamethod path of EQ (when raw values are unequal; reuses rawEqual + __eq).
+	// Returns packed: bit0=result, bit1=error.
 	Eq(base, pc, b, c int32) int32
-	// ForPrep 处理 FORPREP:三槽校验 + coercion + 预减(复用 execute.go
-	// FORPREP 段,byte-equal 错误消息)。返回 status(0=OK / 1=ERR)。
+	// ForPrep handles FORPREP: three-slot validation + coercion + pre-decrement (reuses
+	// execute.go FORPREP section, byte-equal error messages). Returns status (0=OK / 1=ERR).
 	ForPrep(base, pc, a int32) int32
 
-	// --- PW5 表 IC 慢路径助手(快路径 inline 跳哈希,失效/复杂形态回 Go)---
+	// --- PW5 table IC slow-path helpers (the fast path inlines the hash probe, falling back to Go on miss/complex shapes) ---
 
-	// GetTable 处理 GETTABLE A B C 慢路径(icGetTable 完整查找 + __index)。
-	// 返回 status(0=OK / 1=ERR)。
+	// GetTable handles the GETTABLE A B C slow path (full icGetTable lookup + __index).
+	// Returns status (0=OK / 1=ERR).
 	GetTable(base, pc, a, b, c int32) int32
-	// SetTable 处理 SETTABLE A B C 慢路径(icSetTable 完整写 + __newindex + safepoint)。
+	// SetTable handles the SETTABLE A B C slow path (full icSetTable write + __newindex + safepoint).
 	SetTable(base, pc, a, b, c int32) int32
-	// GetGlobal 处理 GETGLOBAL A Bx 慢路径(globals 表 icGetTable)。
-	// 名带 Do 前缀避开 State 公有 API GetGlobal(name string) 冲突。
+	// GetGlobal handles the GETGLOBAL A Bx slow path (icGetTable on the globals table).
+	// The Do prefix avoids a clash with the State public API GetGlobal(name string).
 	DoGetGlobal(base, pc, a, bx int32) int32
-	// SetGlobal 处理 SETGLOBAL A Bx 慢路径(globals 表 icSetTable + safepoint)。
+	// SetGlobal handles the SETGLOBAL A Bx slow path (icSetTable on the globals table + safepoint).
 	DoSetGlobal(base, pc, a, bx int32) int32
-	// Self 处理 SELF A B C(R(A+1):=R(B) + icGetTable;助手内含 self 传递,幂等)。
+	// Self handles SELF A B C (R(A+1):=R(B) + icGetTable; self forwarding is contained inside the helper, idempotent).
 	Self(base, pc, a, b, c int32) int32
-	// NewTable 处理 NEWTABLE A B C(allocTable + setReg + safepoint,全助手内分配)。
+	// NewTable handles NEWTABLE A B C (allocTable + setReg + safepoint, all allocation inside the helper).
 	NewTable(base, pc, a, b, c int32) int32
-	// SetList 处理 SETLIST A B C(doSetList 批量写 + 可能 rehash + safepoint)。
+	// SetList handles SETLIST A B C (doSetList batch write + possible rehash + safepoint).
 	SetList(base, pc, a, b, c int32) int32
 
-	// Call 处理 CALL A B C 三向分派(crescent/gibbous/host,04-trampoline §3)。
-	// 跑被调帧到完成,返回值留 R(A..) 共见栈槽。
-	// 返回:成功 = **刷新后的本帧 base 字节偏移**(嵌套调用可能 growStack 段重定位,
-	// gibbous 须用此新 base 续算寻址,否则陈旧 $base 指向已 Free 旧段 = UAF);
-	// 错误 = 负哨兵 -1(pendingErr 已置,status 链冒泡)。
+	// Call handles the CALL A B C three-way dispatch (crescent/gibbous/host, 04-trampoline §3).
+	// Runs the callee frame to completion, leaving return values in the shared stack slots R(A..).
+	// Returns: success = **the refreshed byte offset of this frame's base** (a nested call may
+	// relocate the segment via growStack, and gibbous must use this new base to continue address
+	// computation, otherwise a stale $base points at an already-Freed old segment = UAF);
+	// error = negative sentinel -1 (pendingErr already set, status chain bubbles up).
 	DoCall(base, pc, a, b, c int32) int64
 
-	// TailCall 处理 TAILCALL A B C(尾调用复用帧,04-trampoline §2.5)。
-	// 复用 doTailCall 关 upvalue + 下移参数 + 改写当前 CallInfo,然后同步驱动
-	// 复用帧到完成(executeFrom,保持 proper tail call O(1) 栈)。返回值已落
-	// 调用者期望槽。返回 status(0=OK gibbous 函数应直接 return 0 / 1=ERR)。
+	// TailCall handles TAILCALL A B C (tail call reusing the frame, 04-trampoline §2.5).
+	// Reuses doTailCall to close upvalues + shift arguments down + rewrite the current
+	// CallInfo, then synchronously drives the reused frame to completion (executeFrom,
+	// preserving the proper-tail-call O(1) stack). Return values already land in the
+	// caller's expected slots. Returns status (0=OK, the gibbous function should return 0
+	// directly / 1=ERR).
 	TailCall(base, pc, a, b, c int32) int32
 
-	// Closure 处理 CLOSURE A Bx(makeClosure + setReg + safepoint,分配在助手内)。
-	// 后随伪指令由 makeClosure 读 ci.pc 消化(发射侧已跳过翻译)。返回 status(0/1)。
+	// Closure handles CLOSURE A Bx (makeClosure + setReg + safepoint, allocation inside the helper).
+	// The trailing pseudo-instructions are consumed by makeClosure reading ci.pc (the emit side already skipped their translation). Returns status (0/1).
 	Closure(base, pc, a, bx int32) int32
-	// Close 处理 CLOSE A(关闭 ≥ base+A 的开放 upvalue,纯状态操作)。返回 status(恒 0)。
+	// Close handles CLOSE A (closes the open upvalues ≥ base+A, a pure state operation). Returns status (always 0).
 	Close(base, pc, a int32) int32
-	// TForLoop 处理 TFORLOOP A C(调迭代器 R(A)(R(A+1),R(A+2)),结果落 R(A+3..))。
-	// 迭代器调用经 callLuaFromHost 可能 growStack 段重定位 → 返回刷新后的本帧 base:
-	//   ≥0 = 新 base 字节偏移(首值非 nil,继续循环);-1 = ERR;-2 = 退出(首值 nil)。
+	// TForLoop handles TFORLOOP A C (calls the iterator R(A)(R(A+1),R(A+2)), results land in R(A+3..)).
+	// The iterator call goes through callLuaFromHost and may relocate the segment via growStack → returns this frame's refreshed base:
+	//   ≥0 = new base byte offset (first value non-nil, keep looping); -1 = ERR; -2 = exit (first value nil).
 	TForLoop(base, pc, a, c int32) int64
 
-	// GlobalsRaw 返回 globals 表的 NaN-box u64(编译期烧立即数,GETGLOBAL/SETGLOBAL
-	// inline 用)。globals 在 State 生命期内身份恒定不移动。名带 Raw 避开 State
-	// 公有 API Globals() arena.GCRef 冲突。
+	// GlobalsRaw returns the NaN-boxed u64 of the globals table (baked as an immediate at
+	// compile time, used inline by GETGLOBAL/SETGLOBAL). The globals identity stays constant
+	// and does not move over the State's lifetime. The Raw suffix avoids a clash with the
+	// State public API Globals() arena.GCRef.
 	GlobalsRaw() uint64
 
-	// GCPendingAddr 返回 gcPending 标志字在 linear memory 的字节地址(arena GCRef,
-	// P3 PW9)。gibbous FORLOOP 回边 inline `i32.load(GCPendingAddr)`——非 0 才跨层调
-	// h_safepoint(否则热循环每迭代无条件跨层吞掉收益,05 §3)。State 生命期内恒定。
+	// GCPendingAddr returns the linear-memory byte address of the gcPending flag word (arena GCRef,
+	// P3 PW9). The gibbous FORLOOP back edge inlines `i32.load(GCPendingAddr)` —— only crossing the
+	// layer to h_safepoint when it is non-zero (otherwise a hot loop crosses the layer unconditionally
+	// every iteration and eats the gain, 05 §3). Constant over the State's lifetime.
 	GCPendingAddr() uint32
 
-	// CITransferAddr 返回 ci-transfer 中转字在 linear memory 的字节地址(arena GCRef,
-	// P3 PW10 R3)。gibbous→gibbous call_indirect 直调经此字传被调帧 base(DoCall 写,
-	// caller wasm 读作 call_indirect 实参)与刷新后 caller base(DoReturn 写,call_indirect
-	// 返回后 caller 读续算)。State 生命期内恒定。
+	// CITransferAddr returns the linear-memory byte address of the ci-transfer relay word (arena GCRef,
+	// P3 PW10 R3). A gibbous→gibbous call_indirect direct call passes the callee frame's base through
+	// this word (DoCall writes it, the caller wasm reads it as the call_indirect argument) and the
+	// refreshed caller base (DoReturn writes it, the caller reads it after call_indirect returns to
+	// continue). Constant over the State's lifetime.
 	CITransferAddr() uint32
 
-	// CIDepthAddr 返回 ci-depth 游标字在 linear memory 的字节地址(arena GCRef,
-	// P3 PW10 零跨界 Stage 1a)。Wasm 侧帧建拆(Stage 2/3)increment/decrement 此 i32
-	// 字免回 Go 改 th.ciDepth。State 生命期内恒定。
+	// CIDepthAddr returns the linear-memory byte address of the ci-depth cursor word (arena GCRef,
+	// P3 PW10 zero-crossing Stage 1a). The Wasm-side frame build/teardown (Stage 2/3) increments/decrements
+	// this i32 word without returning to Go to change th.ciDepth. Constant over the State's lifetime.
 	CIDepthAddr() uint32
 
-	// CISegBaseAddr 返回 ci-seg-base 字在 linear memory 的字节地址(arena GCRef,
-	// P3 PW10 零跨界 Stage 2)。此字内含 CI 段当前字节基址(growCISeg 可重定位);
-	// Wasm 侧帧建拆读它现算帧地址。**字地址恒定**,字内容(段基址)随段重定位变。
+	// CISegBaseAddr returns the linear-memory byte address of the ci-seg-base word (arena GCRef,
+	// P3 PW10 zero-crossing Stage 2). This word holds the current byte base of the CI segment (growCISeg
+	// may relocate it); the Wasm-side frame build/teardown reads it to compute frame addresses on the fly.
+	// **The word address is constant**, but the word content (segment base) changes as the segment relocates.
 	CISegBaseAddr() uint32
 
-	// OpenGuardAddr 返回 open-upvalue 守卫字在 linear memory 的字节地址(arena GCRef,
-	// P3 PW10 零跨界 Stage 2)。字值 = maxOpenIdx+1(有开放 upvalue)/ 0(无);Wasm
-	// RETURN 快路径守卫 frameBase ≥ 此值 ⟺ 本帧无须关闭的开放 upvalue。
+	// OpenGuardAddr returns the linear-memory byte address of the open-upvalue guard word (arena GCRef,
+	// P3 PW10 zero-crossing Stage 2). Word value = maxOpenIdx+1 (there are open upvalues) / 0 (none); the Wasm
+	// RETURN fast path guards frameBase ≥ this value ⟺ this frame has no open upvalues to close.
 	OpenGuardAddr() uint32
 
-	// TopAddr 返回 top 镜像字在 linear memory 的字节地址(arena GCRef,P3 PW10 零跨界
-	// ①)。字值 = th.top(槽索引);Wasm 建帧设 callee 帧顶 / caller 自恢复 top 时写它,
-	// Go 侧 GC 栈根扫描读它定 [0,top) 上界。槽索引坐标(grow 安全)。State 生命期内恒定。
+	// TopAddr returns the linear-memory byte address of the top mirror word (arena GCRef, P3 PW10 zero-crossing
+	// ①). Word value = th.top (slot index); the Wasm frame build sets the callee frame top / the caller writes
+	// it when restoring top itself, and the Go-side GC stack-root scan reads it to bound the upper limit of [0,top).
+	// Slot-index coordinate (grow-safe). Constant over the State's lifetime.
 	TopAddr() uint32
 
-	// ProtoCacheBaseAddr 返回 proto 字段缓存段基址镜像字的字节地址(arena GCRef,
-	// P3 PW10 零跨界基建-b)。Wasm ④ emitCall 守卫快路径现读此基址 + protoID*8 取
-	// callee Proto 的 MaxStack/NumParams/IsVararg/NeedsArg,免 Go map。
+	// ProtoCacheBaseAddr returns the byte address of the mirror word for the base of the proto-field cache segment
+	// (arena GCRef, P3 PW10 zero-crossing infra-b). The Wasm ④ emitCall guard fast path reads this base + protoID*8
+	// on the fly to fetch the callee Proto's MaxStack/NumParams/IsVararg/NeedsArg, avoiding the Go map.
 	ProtoCacheBaseAddr() uint32
 
-	// FastCallHitsAddr 返回 ④ emitCall 守卫快路径命中计数字的字节地址(PW10 零跨界
-	// ④ 验证用)。Wasm 命中后 i64 ++;Go 测试读字合 indirectCalls 一起断言。
+	// FastCallHitsAddr returns the byte address of the hit-count word for the ④ emitCall guard fast path (PW10
+	// zero-crossing ④ verification). The Wasm does i64 ++ on a hit; the Go test reads the word and asserts it
+	// together with indirectCalls.
 	FastCallHitsAddr() uint32
 
-	// PopErrFrame 在 call_indirect 直调失败时补弹遗留的 gibbous 被调帧(PW10 R3)。
-	// 被调出错自身 return 1 不弹帧,caller wasm 据 status≠0 调本助手补弹——精确复刻
-	// baseline enterGibbous ERR 路径的弹帧条件(currentCI 是 gibbous 帧才弹)。
+	// PopErrFrame pops the leftover gibbous callee frame when a call_indirect direct call fails (PW10 R3).
+	// A failing callee returns 1 without popping its own frame, and the caller wasm calls this helper to pop it
+	// based on status≠0 —— precisely replicating the frame-popping condition of the baseline enterGibbous ERR
+	// path (only pops when currentCI is a gibbous frame).
 	PopErrFrame()
 }
 
-// helperSet 持有注入的 HostState,提供给 wazero 注册的 Go callback。
+// helperSet holds the injected HostState and provides the Go callbacks registered with wazero.
 //
-// 每个 State 一份(arena/Runtime 单 State 私有)。wazero host module 的
-// callback 闭包捕获 helperSet,调用时转发到 HostState。
+// One per State (private to the single State of the arena/Runtime). The wazero host
+// module's callback closures capture helperSet and forward to HostState when invoked.
 type helperSet struct {
 	host HostState
 }
 
-// --- wazero host function callback(零分配 stack-based,PW10 R3.5)---
+// --- wazero host function callbacks (zero-allocation stack-based, PW10 R3.5) ---
 //
-// 用 wazero `api.GoFunc`(WithGoFunction 注册)而非 `WithFunc`(反射):反射路径
-// 每次跨层 callGoFunc 都 make([]reflect.Value) + 逐参 reflect.New 装箱(实测调用
-// 密集核 ~14 allocs/调,支配 call 核退化);stack-based 路径从 []uint64 直接解参/
-// 回写结果,零反射零分配。
+// Uses wazero `api.GoFunc` (registered via WithGoFunction) rather than `WithFunc`
+// (reflection): the reflection path does make([]reflect.Value) + a per-argument
+// reflect.New box on every cross-layer callGoFunc (measured ~14 allocs/call on a
+// call-heavy kernel, dominating and degrading the call kernel); the stack-based path
+// decodes arguments / writes back results directly from the []uint64, zero reflection
+// and zero allocation.
 //
-// 约定:stack[i] 是第 i 个入参的原始 u64(i32 经 api.DecodeI32 取低 32 位;i64 裸取);
-// 结果写回 stack[0](i32 经 api.EncodeI32;i64 裸写)。参数顺序 = module.go import
-// 声明的 type 形参顺序。
+// Convention: stack[i] is the raw u64 of the i-th argument (i32 taken via api.DecodeI32
+// as the low 32 bits; i64 taken raw); the result is written back to stack[0] (i32 via
+// api.EncodeI32; i64 written raw). Argument order = the type parameter order of the
+// import declaration in module.go.
 
-// goGetUpval: (base i32, b i32) -> (i64)  type 0 / h_getupval。
+// goGetUpval: (base i32, b i32) -> (i64)  type 0 / h_getupval.
 func (h *helperSet) goGetUpval(_ context.Context, stack []uint64) {
 	base := api.DecodeI32(stack[0])
 	b := api.DecodeI32(stack[1])
 	stack[0] = h.host.GetUpval(base, b)
 }
 
-// goSetUpval: (base i32, b i32, val i64) -> ()  type 1 / h_setupval。
+// goSetUpval: (base i32, b i32, val i64) -> ()  type 1 / h_setupval.
 func (h *helperSet) goSetUpval(_ context.Context, stack []uint64) {
 	h.host.SetUpval(api.DecodeI32(stack[0]), api.DecodeI32(stack[1]), stack[2])
 }
 
-// goReturn: (base i32, pc i32, a i32, b i32) -> (i32)  type 2 / h_return。
+// goReturn: (base i32, pc i32, a i32, b i32) -> (i32)  type 2 / h_return.
 func (h *helperSet) goReturn(_ context.Context, stack []uint64) {
 	st := h.host.DoReturn(api.DecodeI32(stack[0]), api.DecodeI32(stack[1]), api.DecodeI32(stack[2]), api.DecodeI32(stack[3]))
 	stack[0] = api.EncodeI32(st)
 }
 
-// goSafepoint: (base i32, pc i32) -> (i32)  type 4 / h_safepoint。
+// goSafepoint: (base i32, pc i32) -> (i32)  type 4 / h_safepoint.
 func (h *helperSet) goSafepoint(_ context.Context, stack []uint64) {
 	st := h.host.Safepoint(api.DecodeI32(stack[0]), api.DecodeI32(stack[1]))
 	stack[0] = api.EncodeI32(st)
 }
 
-// goArith: (base,pc,op,b,c,a i32) -> (i32)  type 5 / h_arith。
+// goArith: (base,pc,op,b,c,a i32) -> (i32)  type 5 / h_arith.
 func (h *helperSet) goArith(_ context.Context, stack []uint64) {
 	st := h.host.Arith(api.DecodeI32(stack[0]), api.DecodeI32(stack[1]), api.DecodeI32(stack[2]),
 		api.DecodeI32(stack[3]), api.DecodeI32(stack[4]), api.DecodeI32(stack[5]))
 	stack[0] = api.EncodeI32(st)
 }
 
-// goUnm: (base,pc,b,a i32) -> (i32)  type 6 / h_unm。
+// goUnm: (base,pc,b,a i32) -> (i32)  type 6 / h_unm.
 func (h *helperSet) goUnm(_ context.Context, stack []uint64) {
 	st := h.host.Unm(api.DecodeI32(stack[0]), api.DecodeI32(stack[1]), api.DecodeI32(stack[2]), api.DecodeI32(stack[3]))
 	stack[0] = api.EncodeI32(st)
 }
 
-// goLen: (base,pc,b,a i32) -> (i32)  type 7 / h_len。
+// goLen: (base,pc,b,a i32) -> (i32)  type 7 / h_len.
 func (h *helperSet) goLen(_ context.Context, stack []uint64) {
 	st := h.host.Len(api.DecodeI32(stack[0]), api.DecodeI32(stack[1]), api.DecodeI32(stack[2]), api.DecodeI32(stack[3]))
 	stack[0] = api.EncodeI32(st)
 }
 
-// goConcat: (base,pc,a,b,c i32) -> (i32)  type 8 / h_concat。
+// goConcat: (base,pc,a,b,c i32) -> (i32)  type 8 / h_concat.
 func (h *helperSet) goConcat(_ context.Context, stack []uint64) {
 	st := h.host.Concat(api.DecodeI32(stack[0]), api.DecodeI32(stack[1]), api.DecodeI32(stack[2]), api.DecodeI32(stack[3]), api.DecodeI32(stack[4]))
 	stack[0] = api.EncodeI32(st)
 }
 
-// goCompare: (base,pc,op,b,c i32) -> (i32 packed)  type 8 / h_compare。
+// goCompare: (base,pc,op,b,c i32) -> (i32 packed)  type 8 / h_compare.
 func (h *helperSet) goCompare(_ context.Context, stack []uint64) {
 	st := h.host.Compare(api.DecodeI32(stack[0]), api.DecodeI32(stack[1]), api.DecodeI32(stack[2]), api.DecodeI32(stack[3]), api.DecodeI32(stack[4]))
 	stack[0] = api.EncodeI32(st)
 }
 
-// goEq: (base,pc,b,c i32) -> (i32 packed)  type 6 / h_eq。
+// goEq: (base,pc,b,c i32) -> (i32 packed)  type 6 / h_eq.
 func (h *helperSet) goEq(_ context.Context, stack []uint64) {
 	st := h.host.Eq(api.DecodeI32(stack[0]), api.DecodeI32(stack[1]), api.DecodeI32(stack[2]), api.DecodeI32(stack[3]))
 	stack[0] = api.EncodeI32(st)
 }
 
-// goForPrep: (base,pc,a i32) -> (i32 status)  type 9 / h_forprep。
+// goForPrep: (base,pc,a i32) -> (i32 status)  type 9 / h_forprep.
 func (h *helperSet) goForPrep(_ context.Context, stack []uint64) {
 	st := h.host.ForPrep(api.DecodeI32(stack[0]), api.DecodeI32(stack[1]), api.DecodeI32(stack[2]))
 	stack[0] = api.EncodeI32(st)
 }
 
-// --- PW5 表 IC 助手 callback ---
+// --- PW5 table IC helper callbacks ---
 
 func (h *helperSet) goGetTable(_ context.Context, stack []uint64) {
 	st := h.host.GetTable(api.DecodeI32(stack[0]), api.DecodeI32(stack[1]), api.DecodeI32(stack[2]), api.DecodeI32(stack[3]), api.DecodeI32(stack[4]))
@@ -282,7 +303,7 @@ func (h *helperSet) goSetList(_ context.Context, stack []uint64) {
 	stack[0] = api.EncodeI32(st)
 }
 
-// goCall: (base,pc,a,b,c i32) -> (i64)  type 10 / h_call(返回 3 态哨兵,裸 i64)。
+// goCall: (base,pc,a,b,c i32) -> (i64)  type 10 / h_call (returns a 3-state sentinel, raw i64).
 func (h *helperSet) goCall(_ context.Context, stack []uint64) {
 	ret := h.host.DoCall(api.DecodeI32(stack[0]), api.DecodeI32(stack[1]), api.DecodeI32(stack[2]), api.DecodeI32(stack[3]), api.DecodeI32(stack[4]))
 	stack[0] = uint64(ret)
@@ -303,13 +324,13 @@ func (h *helperSet) goClose(_ context.Context, stack []uint64) {
 	stack[0] = api.EncodeI32(st)
 }
 
-// goTForLoop: (base,pc,a,c i32) -> (i64)  type 11 / h_tforloop(裸 i64 哨兵)。
+// goTForLoop: (base,pc,a,c i32) -> (i64)  type 11 / h_tforloop (raw i64 sentinel).
 func (h *helperSet) goTForLoop(_ context.Context, stack []uint64) {
 	ret := h.host.TForLoop(api.DecodeI32(stack[0]), api.DecodeI32(stack[1]), api.DecodeI32(stack[2]), api.DecodeI32(stack[3]))
 	stack[0] = uint64(ret)
 }
 
-// goCallErr: () -> ()  type 12 / h_callerr(PW10 R3:补弹遗留 gibbous 帧)。
+// goCallErr: () -> ()  type 12 / h_callerr (PW10 R3: pops the leftover gibbous frame).
 func (h *helperSet) goCallErr(_ context.Context, _ []uint64) {
 	h.host.PopErrFrame()
 }

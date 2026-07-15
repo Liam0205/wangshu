@@ -1,19 +1,21 @@
 //go:build wangshu_p3 && wangshu_profile
 
-// P3 层间差分套(docs/design/p3-wasm-tier/08-testing-strategy.md V1-V13 / V17-V18)。
+// P3 cross-tier differential suite (docs/design/p3-wasm-tier/08-testing-strategy.md V1-V13 / V17-V18).
 //
-// 三方对拍,**全部 byte-equal** 才算过:
-//   - oracle      = 官方 lua5.1(与 difftest_test.go 同源的语义基准);
-//   - crescent    = wangshu force-all OFF(纯解释器,层间基线);
-//   - gibbous     = wangshu force-all ON(所有可编译 Proto 升 wazero 执行)。
+// Three-way differential test; must be **fully byte-equal** to pass:
+//   - oracle      = official lua5.1 (the semantic baseline shared with difftest_test.go);
+//   - crescent    = wangshu with force-all OFF (pure interpreter, cross-tier baseline);
+//   - gibbous     = wangshu with force-all ON (every compilable Proto promoted to run on wazero).
 //
-// 仅 `wangshu_p3 && wangshu_profile` build 跑:p3 提供真 gibbous Compiler + 收养 wazero
-// memory;profile 启用 OnEnter/OnBackEdge 采样(force-all 经它触发 considerPromotion)。
+// Runs only under the `wangshu_p3 && wangshu_profile` build: p3 supplies the real gibbous Compiler
+// + adopts the wazero memory; profile enables OnEnter/OnBackEdge sampling (force-all triggers
+// considerPromotion through it).
 //
-// **升层时序**:doCall 的 gibbous 分支(call.go §VS0-d)只在 Proto **已升层**时跳
-// wazero;force-all 下 OnEnter 在帧入口触发升层,故一个 Proto 的**首次**调用仍跑
-// crescent(升层发生在它入帧之后),**第二次起**才走 gibbous。因此每个核函数都设计成
-// 被重复调用(循环/递归/多次 invoke),确保 gibbous 路径真被覆盖。
+// **Promotion timing**: doCall's gibbous branch (call.go §VS0-d) jumps to wazero only when a Proto
+// is **already promoted**; under force-all OnEnter triggers promotion at frame entry, so a Proto's
+// **first** call still runs crescent (promotion happens after it enters the frame) and only **from
+// the second call on** does it take gibbous. Each kernel is therefore designed to be called
+// repeatedly (loop/recursion/multiple invokes) to ensure the gibbous path is truly covered.
 
 package difftest
 
@@ -24,8 +26,8 @@ import (
 	"github.com/Liam0205/wangshu"
 )
 
-// runWangshuTiered 用 wangshu 跑脚本,force 控制是否强制全升(true=gibbous 路径)。
-// 复用 difftest 的 return-值 Display 对拍形态(同 runWangshu)。
+// runWangshuTiered runs the script with wangshu; force controls whether to force full promotion
+// (true = gibbous path). Reuses difftest's return-value Display comparison form (same as runWangshu).
 func runWangshuTiered(t *testing.T, src string, force bool) string {
 	t.Helper()
 	prog, err := wangshu.Compile([]byte(src), "p3diff")
@@ -45,13 +47,15 @@ func runWangshuTiered(t *testing.T, src string, force bool) string {
 	return strings.Join(parts, "\t") + "\n"
 }
 
-// p3Corpus 是 V1-V13 各形状的层间用例。每个核都被**重复调用**(循环体或多次 invoke),
-// 保证升层后 gibbous 分支真被走到(首调跑 crescent,二调起跑 gibbous)。
+// p3Corpus holds cross-tier cases for the V1-V13 shapes. Each kernel is **called repeatedly**
+// (a loop body or multiple invokes) to guarantee the gibbous branch is actually reached after
+// promotion (first call runs crescent, second call onward runs gibbous).
 //
-// 这些核都包成**非 vararg 内层函数**再多次调用——Lua 主 chunk 是 vararg(F1 排除),
-// 不会升层;真正升层的是被反复调的内层函数(其 Proto 经 force-all 重判 F7 放行)。
+// Each kernel is wrapped as a **non-vararg inner function** and then called multiple times — the
+// Lua main chunk is vararg (excluded by F1) and never promotes; what actually promotes is the
+// repeatedly-called inner function (whose Proto passes F7 on force-all recheck).
 var p3Corpus = []diffCase{
-	// —— V1 直线 / MOVE / LOADNIL —— (反复调,二调起走 gibbous)
+	// —— V1 straight-line / MOVE / LOADNIL —— (called repeatedly, gibbous from the second call)
 	{"p3_straight_move", `
 local function id(x) local y = x; return y end
 local s = 0
@@ -63,7 +67,7 @@ local s = 0
 for i = 1, 30 do s = s + f(i, i+1, i+2) end
 return s`},
 
-	// —— V2 算术快路径 + NaN 规范化 ——
+	// —— V2 arithmetic fast path + NaN canonicalization ——
 	{"p3_arith_chain", `
 local function calc(a, b) return a + b * 2 - b / 2 end
 local s = 0
@@ -89,7 +93,7 @@ local s
 for i = 1, 40 do s = f() end
 return s`},
 
-	// —— V3-V4 比较 + 控制流(if/while/for/relooper) ——
+	// —— V3-V4 comparison + control flow (if/while/for/relooper) ——
 	{"p3_compare_branch", `
 local function clamp(x) if x < 10 then return 10 elseif x > 90 then return 90 end return x end
 local s = 0
@@ -106,7 +110,7 @@ local s = 0
 for i = 1, 20 do s = s + grid(i) end
 return s`},
 
-	// —— V5 数值 for 累加(回边 safepoint 密集) ——
+	// —— V5 numeric-for accumulation (back-edge safepoint dense) ——
 	{"p3_for_accumulate", `
 local function sumto(n) local s = 0; for i = 1, n do s = s + i * 2 - 1 end return s end
 local total = 0
@@ -118,7 +122,7 @@ local s = 0
 for i = 1, 40 do s = s + f(i) end
 return s`},
 
-	// —— V6-V7 表 IC:GETTABLE/SETTABLE/GETGLOBAL/SETGLOBAL/SELF/NEWTABLE/SETLIST ——
+	// —— V6-V7 table IC: GETTABLE/SETTABLE/GETGLOBAL/SETGLOBAL/SELF/NEWTABLE/SETLIST ——
 	{"p3_table_array_ic", `
 local function f(n) local t = {}; for i = 1, n do t[i] = i * i end local s = 0; for i = 1, n do s = s + t[i] end return s end
 local s = 0
@@ -140,7 +144,7 @@ local s = 0
 for i = 1, 40 do s = s + f(i) end
 return s`},
 
-	// —— V8 CALL 三向 + base 刷新(嵌套调用 / 递归) ——
+	// —— V8 CALL three-way + base refresh (nested call / recursion) ——
 	{"p3_recursive_fib", `
 local function fib(n) if n < 2 then return n end return fib(n-1) + fib(n-2) end
 return fib(18)`},
@@ -158,7 +162,7 @@ local s = 0
 for i = 1, 30 do s = s + loop(i, 0) end
 return s`},
 
-	// —— V10 闭包 / upvalue(CLOSURE/CLOSE) ——
+	// —— V10 closure / upvalue (CLOSURE/CLOSE) ——
 	{"p3_closure_counter", `
 local function make() local n = 0; return function() n = n + 1; return n end end
 local s = 0
@@ -170,7 +174,7 @@ local s = 0
 for i = 1, 40 do s = s + f(i) end
 return s`},
 
-	// —— V11 TFORLOOP 泛型 for(自定义迭代器,避开 ipairs import) ——
+	// —— V11 TFORLOOP generic for (custom iterator, avoids the ipairs import) ——
 	{"p3_tforloop_custom", `
 local function iter(t, i) i = i + 1; if t[i] then return i, t[i] end end
 local function f(n) local t = {}; for k = 1, n do t[k] = k * 10 end local s = 0; for _, v in iter, t, 0 do s = s + v end return s end
@@ -178,7 +182,7 @@ local s = 0
 for i = 1, 25 do s = s + f(i) end
 return s`},
 
-	// —— V12 慢路径(string coercion / 元方法 / 比较) ——
+	// —— V12 slow path (string coercion / metamethod / comparison) ——
 	{"p3_string_coerce", `
 local function f(x) return ("" .. x) .. "!" end
 local out = ""
@@ -191,7 +195,7 @@ local s = 0
 for i = 1, 40 do s = s + f(i) end
 return s`},
 
-	// —— V13 混合核(算术 + 表 + 调用 + 控制流综合) ——
+	// —— V13 mixed kernel (arithmetic + table + call + control flow combined) ——
 	{"p3_mixed_kernel", `
 local function process(data, n)
   local sum, max = 0, 0
@@ -263,18 +267,20 @@ for i = 1, 12 do s = s + k(i) end
 return s`},
 }
 
-// TestP3_Tiered 三方对拍:oracle / crescent / gibbous 全 byte-equal(V1-V13)。
+// TestP3_Tiered three-way differential: oracle / crescent / gibbous all byte-equal (V1-V13).
 func TestP3_Tiered(t *testing.T) {
 	oracle := findOracle()
 	for _, c := range p3Corpus {
 		t.Run(c.name, func(t *testing.T) {
 			crescent := runWangshuTiered(t, c.src, false)
 			gibbous := runWangshuTiered(t, c.src, true)
-			// 层间硬门:crescent vs gibbous 必须逐字节一致(P3 正确性轴核心)。
+			// Cross-tier hard gate: crescent vs gibbous must be byte-for-byte identical
+			// (the core of the P3 correctness axis).
 			if crescent != gibbous {
 				t.Errorf("层间分歧 (crescent vs gibbous):\n  crescent: %q\n  gibbous:  %q", crescent, gibbous)
 			}
-			// 锚定官方 lua5.1(可用时)——确保两层都对、不是一起错。
+			// Anchor against official lua5.1 (when available) — ensures both tiers are
+			// correct, not wrong in lockstep.
 			if oracle != "" {
 				want := runOracle(t, oracle, wrapForOracle(c.src))
 				if gibbous != want {
@@ -329,10 +335,11 @@ return s`,
 	}
 }
 
-// TestP3_TieredSeedCorpus 复用 difftest 71 种子,crescent vs gibbous 层间对拍。
+// TestP3_TieredSeedCorpus reuses the 71 difftest seeds for a crescent vs gibbous cross-tier diff.
 //
-// 种子核多数是主 chunk 直接表达式(vararg,不升层),但内含的循环/递归/闭包子函数
-// 在 force-all 下会升层——本测覆盖「升层与不升层混合执行」的整体 byte-equal(V13)。
+// Most seed kernels are direct expressions in the main chunk (vararg, no promotion), but the
+// loops/recursion/closure subfunctions they contain do promote under force-all — this test covers
+// the overall byte-equality of "mixed promoted and non-promoted execution" (V13).
 func TestP3_TieredSeedCorpus(t *testing.T) {
 	oracle := findOracle()
 	for _, c := range seedCorpus {
@@ -352,11 +359,12 @@ func TestP3_TieredSeedCorpus(t *testing.T) {
 	}
 }
 
-// TestP3_GCStressTiered V5/V13:GC 压力模式下层间仍 byte-equal。
+// TestP3_GCStressTiered V5/V13: still byte-equal across tiers under GC stress mode.
 //
-// stressMode 下 gcPending 标志恒 1 → gibbous 回边每迭代仍跨层调 h_safepoint → 每个
-// safepoint 强制 full Collect。验证「升层 + 高频 GC」组合下 gibbous 与 crescent 逐字节
-// 一致(GC 透明性 × 层间一致性的交叉验证)。
+// Under stressMode the gcPending flag stays 1 → the gibbous back edge still cross-tier calls
+// h_safepoint every iteration → every safepoint forces a full Collect. Verifies that gibbous and
+// crescent are byte-for-byte identical under the "promotion + high-frequency GC" combination
+// (cross-validation of GC transparency × cross-tier consistency).
 func TestP3_GCStressTiered(t *testing.T) {
 	runStress := func(t *testing.T, src string, force bool) string {
 		t.Helper()
@@ -377,7 +385,7 @@ func TestP3_GCStressTiered(t *testing.T) {
 		}
 		return strings.Join(parts, "\t") + "\n"
 	}
-	// 分配密集核(NEWTABLE/SETLIST/闭包反复分配,触发 GC)。
+	// Allocation-heavy kernels (NEWTABLE/SETLIST/closures allocating repeatedly, triggering GC).
 	allocHeavy := []diffCase{
 		{"stress_table_alloc", `
 local function f(n) local t = {}; for i = 1, n do t[i] = { i, i * 2 } end local s = 0; for i = 1, n do s = s + t[i][1] + t[i][2] end return s end
@@ -406,11 +414,12 @@ return s`},
 	}
 }
 
-// TestP3_ConcurrentForceAll V18(-race):多 State 并发 force-all-gibbous。
+// TestP3_ConcurrentForceAll V18 (-race): multiple States concurrently force-all-gibbous.
 //
-// 每个 goroutine 独立 State + 独立 force-all,跑同一脚本,验证并发升层无数据竞争
-// (gibbousCodes map 经 compileMu 守护;profileTable State 私有)。`go test -race` 下
-// 任一竞争即报告。结果一致性顺带校验。
+// Each goroutine runs the same script with its own State + its own force-all, verifying that
+// concurrent promotion is data-race free (the gibbousCodes map is guarded by compileMu; the
+// profileTable is State-private). Under `go test -race` any race is reported. Result consistency
+// is checked as a byproduct.
 func TestP3_ConcurrentForceAll(t *testing.T) {
 	src := `
 local function fib(n) if n < 2 then return n end return fib(n-1) + fib(n-2) end
@@ -421,7 +430,7 @@ return fib(15) + sumto(100)`
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	// 先单跑拿期望值。
+	// Run once first to get the expected value.
 	want := runWangshuTiered(t, src, true)
 
 	results := make([]string, goroutines)

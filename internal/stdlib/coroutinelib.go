@@ -1,4 +1,4 @@
-// coroutine 子库(08 §4)。
+// coroutine sublibrary (08 §4).
 package stdlib
 
 import (
@@ -15,7 +15,7 @@ var coroutineFns = []entry{
 	{"running", coFnRunning},
 }
 
-// coFnCreate:coroutine.create(f) → thread 句柄(lightuserdata)。
+// coFnCreate: coroutine.create(f) → thread handle (lightuserdata).
 func coFnCreate(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	if len(args) == 0 {
 		return nil, crescent.NewArgError(1, "Lua function expected")
@@ -27,7 +27,7 @@ func coFnCreate(st *crescent.State, args []value.Value) ([]value.Value, *crescen
 	return []value.Value{value.LightUDValue(id)}, nil
 }
 
-// coFnResume:coroutine.resume(co, ...) → (true, ...) | (false, errmsg)。
+// coFnResume: coroutine.resume(co, ...) → (true, ...) | (false, errmsg).
 func coFnResume(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	if len(args) == 0 || !st.IsCoroutineHandle(args[0]) {
 		return nil, crescent.NewArgError(1, "coroutine expected")
@@ -50,15 +50,15 @@ func coFnResume(st *crescent.State, args []value.Value) ([]value.Value, *crescen
 	return out, nil
 }
 
-// coFnYield:coroutine.yield(...)。
+// coFnYield: coroutine.yield(...).
 //
-// 返回哨兵错误触发 execute 冒泡(08 §3.4 yield↔error 对称通道);resume 侧
-// 把 args 取走作为 resume 的返回值。
+// Returns a sentinel error to trigger the execute bubble-up (08 §3.4 yield↔error
+// symmetric channel); the resume side takes args as resume's return values.
 func coFnYield(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	return nil, st.Yield(args)
 }
 
-// coFnStatus:coroutine.status(co)。
+// coFnStatus: coroutine.status(co).
 func coFnStatus(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	if len(args) == 0 || !st.IsCoroutineHandle(args[0]) {
 		return nil, crescent.NewArgError(1, "coroutine expected")
@@ -66,7 +66,7 @@ func coFnStatus(st *crescent.State, args []value.Value) ([]value.Value, *crescen
 	return []value.Value{intern(st, st.CoStatusOf(value.AsLightUD(args[0])))}, nil
 }
 
-// coFnWrap:coroutine.wrap(f) → 函数;调用它 = resume,错误直接抛出。
+// coFnWrap: coroutine.wrap(f) → function; calling it = resume, errors are rethrown directly.
 func coFnWrap(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	if len(args) == 0 {
 		return nil, crescent.NewArgError(1, "Lua function expected")
@@ -90,7 +90,7 @@ func coFnWrap(st *crescent.State, args []value.Value) ([]value.Value, *crescent.
 	return []value.Value{value.MakeGC(value.TagFunction, cl)}, nil
 }
 
-// coFnRunning:coroutine.running() → co | nil(主线程返回 nil,5.1 语义)。
+// coFnRunning: coroutine.running() → co | nil (main thread returns nil, 5.1 semantics).
 func coFnRunning(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	id, ok := st.RunningCoID()
 	if !ok {

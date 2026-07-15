@@ -1,19 +1,21 @@
 //go:build wangshu_p4 && !arm64
 
-// 非 arm64 平台(amd64 等)的 arm64 子包占位——这里包仍存在但所有 API
-// panic,因 arm64 子包仅在 GOARCH=arm64 时才有意义。本文件让 wangshu_p4
-// build 在非 arm64 平台仍可编译(避免 internal/gibbous/jit 依赖图缺失)。
+// Placeholder for the arm64 subpackage on non-arm64 platforms (amd64, etc.) —
+// the package still exists here but all APIs panic, because the arm64 subpackage
+// only makes sense when GOARCH=arm64. This file lets the wangshu_p4 build still
+// compile on non-arm64 platforms (avoiding a missing node in internal/gibbous/jit's
+// dependency graph).
 package arm64
 
 import "errors"
 
-// CodePage 占位类型(非 arm64 平台)。
+// CodePage placeholder type (non-arm64 platforms).
 type CodePage struct {
 	mem    []byte
 	length int
 }
 
-// MmapCode 在非 arm64 平台返错。
+// MmapCode returns an error on non-arm64 platforms.
 func MmapCode(code []byte) (*CodePage, error) {
 	_ = code
 	return nil, errors.New("internal/gibbous/jit/arm64: only available on GOARCH=arm64")

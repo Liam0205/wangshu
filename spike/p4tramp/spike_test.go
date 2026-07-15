@@ -6,11 +6,13 @@ import (
 	"testing"
 )
 
-// TestSpike_S1_RoundTrip 闸门 ①②③:exec mmap + W^X 翻面 + Go → mmap → ret
-// 最小 round-trip,验证 mmap 段返回值 == EmitMovRaxImm64Ret 烧入的 imm64。
+// TestSpike_S1_RoundTrip gates ①②③: exec mmap + W^X flip + the minimal
+// Go → mmap → ret round-trip, verifying that the mmap segment's return value
+// == the imm64 burned in by EmitMovRaxImm64Ret.
 //
-// 这是 PJ1 spike 的根基测试——若失败,P4 amd64 后端的物理基础(JIT 段执行)
-// 不成立,emitter trait 不应落地(承 06 §1.7)。
+// This is the foundational test of the PJ1 spike — if it fails, the physical
+// basis of the P4 amd64 backend (executing JIT segments) does not hold and the
+// emitter trait should not land (per 06 §1.7).
 func TestSpike_S1_RoundTrip(t *testing.T) {
 	cases := []uint64{
 		0,
@@ -43,11 +45,15 @@ func TestSpike_S1_RoundTrip(t *testing.T) {
 	}
 }
 
-// TestSpike_S2_RepeatedCalls 闸门 ②对称性:同一 mmap 段多次 CALL 不污染状态。
+// TestSpike_S2_RepeatedCalls gates ② symmetry: repeatedly CALLing the same
+// mmap segment does not corrupt state.
 //
-// 模拟「同一 Proto 编译产物被多次调」场景——PJ1 完整 trampoline 要保证多次
-// 进出不踩 runtime / 不泄漏栈 / 不动 Go 调度。本 spike 极简版不切 SP,但仍
-// 需验证「多次 round-trip 返回值稳定」是 trampoline 设计无副作用的最低要求。
+// This simulates the "the same Proto's compiled output is called many times"
+// scenario — the full PJ1 trampoline must guarantee that many entries/exits do
+// not touch the runtime / leak the stack / disturb the Go scheduler. This
+// minimal spike does not switch SP, but it still needs to verify that "stable
+// return value across many round-trips" is the minimum requirement for a
+// side-effect-free trampoline design.
 func TestSpike_S2_RepeatedCalls(t *testing.T) {
 	imm := uint64(0xfeedface00c0ffee)
 	code := EmitMovRaxImm64Ret(imm)
@@ -66,14 +72,16 @@ func TestSpike_S2_RepeatedCalls(t *testing.T) {
 	}
 }
 
-// TestSpike_S3_MultiplePages 闸门 ②隔离性:同时持多段 mmap,各自独立返回值。
+// TestSpike_S3_MultiplePages gates ② isolation: holding multiple mmap segments
+// at once, each returns its own independent value.
 //
-// 模拟「多 Proto 各自编译产物」场景。
+// This simulates the "multiple Protos, each with its own compiled output"
+// scenario.
 func TestSpike_S3_MultiplePages(t *testing.T) {
 	pages := make([]*CodePage, 8)
 	imms := make([]uint64, 8)
 	for i := range pages {
-		imms[i] = uint64(0x10000+i) << 32 // 高位差异,易区分
+		imms[i] = uint64(0x10000+i) << 32 // high-bit difference for easy distinction
 		code := EmitMovRaxImm64Ret(imms[i])
 		var err error
 		pages[i], err = MmapCode(code)
@@ -87,7 +95,7 @@ func TestSpike_S3_MultiplePages(t *testing.T) {
 		}
 	}()
 
-	// 交叉调用:不顺序、不只调一次,验证段间无串扰
+	// Interleaved calls: out of order, more than once, to verify no cross-talk between segments
 	for round := 0; round < 100; round++ {
 		for i := range pages {
 			j := (i + round) % len(pages)
@@ -99,14 +107,18 @@ func TestSpike_S3_MultiplePages(t *testing.T) {
 	}
 }
 
-// BenchmarkSpike_CallJIT 闸门 ④:Go → mmap 段 → ret 单次成本测量(承 spike 范本)。
+// BenchmarkSpike_CallJIT gates ④: measures the per-call cost of Go → mmap
+// segment → ret (per the spike template).
 //
-// 对位 P3 spike S1 空往返 18.9ns(承 docs/design/p3-wasm-tier/implementation-progress.md
-// §0.1)——P4 mmap 段单 CALL 比 wazero 跨界更便宜的物理基础是「不经
-// wazero/Wasm 中介」。本 bench 给 PJ1 完整 trampoline 的成本基线。
+// It corresponds to the P3 spike S1 empty round-trip of 18.9ns (per
+// docs/design/p3-wasm-tier/implementation-progress.md §0.1) — the physical
+// basis for a P4 mmap-segment single CALL being cheaper than a wazero boundary
+// crossing is that it "does not go through the wazero/Wasm intermediary". This
+// bench provides the cost baseline for the full PJ1 trampoline.
 //
-// 形态:发射「mov rax, IMM; ret」9 字节段(直线;P4 真实 LOADK 模板形态),Go
-// 经 CallJIT 反复调,b.N 循环内均摊。
+// Form: emit a 9-byte "mov rax, IMM; ret" segment (straight-line; the real P4
+// LOADK template form), which Go calls repeatedly via CallJIT, amortized over
+// the b.N loop.
 func BenchmarkSpike_CallJIT(b *testing.B) {
 	imm := uint64(0xdeadbeef)
 	code := EmitMovRaxImm64Ret(imm)

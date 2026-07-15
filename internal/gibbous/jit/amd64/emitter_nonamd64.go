@@ -2,88 +2,93 @@
 
 package amd64
 
-// 非 amd64 平台占位 stub——让 wangshu_p4 build 在 arm64 等其它架构主机仍
-// 可编译。本平台启用 wangshu_p4 时实际不会经 jit.Compile 触达 amd64 emitter
-// (compiler.go 应按 arch dispatch,但当前 PJ8 简化形态共用——非 amd64 时
-// Compile 调本 stub,EmitMovRaxImm64/EmitRet 返空 byte slice ⇒ MmapCode 收到
-// 空段返错 ⇒ Compile 返错 ⇒ Proto 标 TierStuck 走 crescent)。
+// Placeholder stubs for non-amd64 platforms — keep the wangshu_p4 build
+// compilable on hosts of other architectures such as arm64. When wangshu_p4
+// is enabled on such a platform, jit.Compile does not actually reach the amd64
+// emitter (compiler.go is supposed to dispatch by arch, but the current PJ8
+// simplified form shares this path — on non-amd64, Compile calls these stubs,
+// EmitMovRaxImm64/EmitRet return an empty byte slice ⇒ MmapCode gets an empty
+// segment and errors ⇒ Compile errors ⇒ Proto is marked TierStuck and falls
+// back to crescent).
 
-// EmitMovRaxImm64 在非 amd64 平台返空(Compile 链下游会因空段返错 fallback)。
+// EmitMovRaxImm64 returns empty on non-amd64 platforms (downstream in the
+// Compile chain the empty segment triggers an error and fallback).
 func EmitMovRaxImm64(buf []byte, imm uint64) []byte {
 	_ = imm
 	return buf
 }
 
-// EmitRet 在非 amd64 平台返空。
+// EmitRet returns empty on non-amd64 platforms.
 func EmitRet(buf []byte) []byte {
 	return buf
 }
 
-// EmitMovImm64ToReg 占位。
+// EmitMovImm64ToReg placeholder.
 func EmitMovImm64ToReg(buf []byte, regNum uint8, imm uint64) []byte {
 	_ = regNum
 	_ = imm
 	return buf
 }
 
-// EmitNop 占位。
+// EmitNop placeholder.
 func EmitNop(buf []byte) []byte { return buf }
 
-// EmitCmpRaxImm32 占位。
+// EmitCmpRaxImm32 placeholder.
 func EmitCmpRaxImm32(buf []byte, imm int32) []byte {
 	_ = imm
 	return buf
 }
 
-// EmitJmpRel32 占位。
+// EmitJmpRel32 placeholder.
 func EmitJmpRel32(buf []byte, rel32 int32) []byte {
 	_ = rel32
 	return buf
 }
 
-// EmitJaeRel32 占位。
+// EmitJaeRel32 placeholder.
 func EmitJaeRel32(buf []byte, rel32 int32) []byte {
 	_ = rel32
 	return buf
 }
 
-// EmitCallRel32 占位。
+// EmitCallRel32 placeholder.
 func EmitCallRel32(buf []byte, rel32 int32) []byte {
 	_ = rel32
 	return buf
 }
 
-// EmitCallReg 占位。
+// EmitCallReg placeholder.
 func EmitCallReg(buf []byte, regNum uint8) []byte {
 	_ = regNum
 	return buf
 }
 
-// EmitPushReg 占位。
+// EmitPushReg placeholder.
 func EmitPushReg(buf []byte, regNum uint8) []byte {
 	_ = regNum
 	return buf
 }
 
-// EmitPopReg 占位。
+// EmitPopReg placeholder.
 func EmitPopReg(buf []byte, regNum uint8) []byte {
 	_ = regNum
 	return buf
 }
 
-// EmitLoadKReturnTemplate 占位。
+// EmitLoadKReturnTemplate placeholder.
 func EmitLoadKReturnTemplate(buf []byte, konst uint64) []byte {
 	_ = konst
 	return buf
 }
 
-// EmitProlog 占位。
+// EmitProlog placeholder.
 func EmitProlog(buf []byte) []byte { return buf }
 
-// EmitEpilog 占位。
+// EmitEpilog placeholder.
 func EmitEpilog(buf []byte) []byte { return buf }
 
-// 编码长度常量(让其它包能拿到这些常量,但占位 stub 实际不发射任何字节)。
+// Encoded length constants (so other packages can reference these, even though
+// the placeholder stubs do not actually emit any bytes).
 const (
 	EncodedMovRaxImm64Len         = 10
 	EncodedRetLen                 = 1

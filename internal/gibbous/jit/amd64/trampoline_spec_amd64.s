@@ -1,21 +1,24 @@
-// trampoline_spec_amd64.s —— P4 PJ2 投机模板 trampoline。
+// trampoline_spec_amd64.s — P4 PJ2 speculation-template trampoline.
 //
-// **与 trampoline_full_amd64.s 区别**:full 版只装 r15=jitContext;spec
-// 版同时装 rbx=valueStackBase(JIT 段经 rbx+disp32 直读/写值栈槽位,
-// 跳过 host helper round-trip)。
+// **Difference from trampoline_full_amd64.s**: the full version only loads
+// r15=jitContext; the spec version also loads rbx=valueStackBase (the JIT segment
+// reads/writes value-stack slots directly via rbx+disp32, skipping the host helper
+// round-trip).
 //
-// **寄存器约定**(承 06 §4.1):
-//   - r15 = jitContext(callee-saved,P4 全局保留)
-//   - rbx = valueStackBase(P4 PJ2+ 投机模板专用,callee-saved)
-//   - r14 = Go G(进入 mmap 段前 PUSH 保存,出段后 POP 恢复;**spec 段内
-//     可用 R14 作 scratch 装 arena base**——PJ4 IC 六路径 + PJ5 SELF
-//     spec template 同款手法,承 PR #26 外部审查 R14 ABI 违约修复:
-//     段内瞬时(~ns)覆写 R14 = arena base,段尾正常 RET 返 trampoline
-//     时 POP R14 救回 Go G,Go runtime 后续任何 morestack/抢占/同步取 g
-//     操作均见正确 g 值)
+// **Register convention** (per 06 §4.1):
+//   - r15 = jitContext (callee-saved, globally reserved in P4)
+//   - rbx = valueStackBase (dedicated to P4 PJ2+ speculation templates, callee-saved)
+//   - r14 = Go G (PUSHed to save before entering the mmap segment, POPped to restore
+//     after; **inside the spec segment R14 may be used as scratch to hold the arena
+//     base** — same technique as PJ4 IC's six paths + PJ5 SELF spec template, per the
+//     R14 ABI-violation fix from PR #26's external review: the segment transiently
+//     (~ns) overwrites R14 = arena base, and when the segment RETs normally back to
+//     the trampoline it POPs R14 to recover Go G, so any later Go runtime
+//     morestack/preemption/synchronization operation that reads g sees the correct g value)
 //
-// **PJ2 简化形态**(对位 trampoline_full PJ2):不切 SP——继续 Go 栈跑
-// mmap 段(段瞬时,~ns)。完整切 SP 留 PJ3+(算术调子 helper 时启用)。
+// **PJ2 simplified form** (matching trampoline_full PJ2): does not switch SP — keeps
+// running the mmap segment on the Go stack (the segment is transient, ~ns). Full SP
+// switching is deferred to PJ3+ (enabled when arithmetic calls a helper).
 
 //go:build wangshu_p4 && linux && amd64
 
@@ -31,24 +34,26 @@
 
 // func callJITSpec(codeAddr uintptr, jitCtx uintptr, vsBase uintptr) uint64
 //
-// 入参:
-//   codeAddr +0(FP)   uintptr  ← mmap 段起点
-//   jitCtx   +8(FP)   uintptr  ← *JITContext(r15 装载)
-//   vsBase   +16(FP)  uintptr  ← valueStackBase(rbx 装载)
-// 返回:
-//   ret      +24(FP)  uint64   ← 段执行后 RAX 值
+// Arguments:
+//   codeAddr +0(FP)   uintptr  ← mmap segment start
+//   jitCtx   +8(FP)   uintptr  ← *JITContext (loaded into r15)
+//   vsBase   +16(FP)  uintptr  ← valueStackBase (loaded into rbx)
+// Returns:
+//   ret      +24(FP)  uint64   ← RAX value after the segment executes
 
 TEXT ·callJITSpec(SB),NOSPLIT,$0-32
-	// 保存 callee-saved 寄存器(rbx/rbp/r12/r13/r14/r15)。
-	// **r14 = Go G**:本 trampoline NOSPLIT 段内不会触发 morestack/抢占
-	// (CALL AX 是直接 indirect call,跳进 PROT_RX mmap 段;段内无 Go 函数
-	// 调用,无栈分配,无回边检查点 = 不触发任何 Go runtime 取 g 操作)。
-	// 故段内可借用 R14 作 arena base scratch——段尾 RET 返本 trampoline 时
-	// POP R14 恢复 Go G,Go runtime 后续抢占/morestack/同步取 g 均见正确 G。
-	// 承 PR #26 外部审查 R14 ABI 违约修复(2026-06-28):上一版 trampoline
-	// 不 push/pop R14,段内 PJ4 IC 模板 mov r14, [r15+arenaBaseOff] 覆写
-	// R14 = arena base 后段尾 RET 直接污染 Go G,生产负载 morestack/抢占
-	// 取 g 时 SEGV;本批 PUSH/POP R14 救济保 Go G 正确性。
+	// Save callee-saved registers (rbx/rbp/r12/r13/r14/r15).
+	// **r14 = Go G**: this NOSPLIT trampoline segment never triggers morestack/preemption
+	// (CALL AX is a direct indirect call jumping into the PROT_RX mmap segment; inside the
+	// segment there is no Go function call, no stack allocation, no back-edge checkpoint =
+	// nothing triggers a Go runtime read of g). So inside the segment R14 can be borrowed
+	// as an arena-base scratch — when the segment RETs back to this trampoline, POP R14
+	// restores Go G, and any later Go runtime preemption/morestack/synchronization read of
+	// g sees the correct G. Per the R14 ABI-violation fix from PR #26's external review
+	// (2026-06-28): the previous trampoline did not push/pop R14, so after the in-segment
+	// PJ4 IC template did mov r14, [r15+arenaBaseOff] to overwrite R14 = arena base, the
+	// segment's RET directly polluted Go G, and under production load morestack/preemption
+	// reading g would SEGV; this batch's PUSH/POP R14 rescue preserves Go G correctness.
 	PUSHQ BX
 	PUSHQ BP
 	PUSHQ R12
@@ -56,7 +61,7 @@ TEXT ·callJITSpec(SB),NOSPLIT,$0-32
 	PUSHQ R14
 	PUSHQ R15
 
-	// 装 r15 = jitContext, rbx = valueStackBase
+	// Load r15 = jitContext, rbx = valueStackBase
 	MOVQ jitCtx+8(FP), R15
 	MOVQ vsBase+16(FP), BX
 
@@ -93,17 +98,19 @@ nospill:
 	// CALL the segment (codeAddr already in R13, read before the switch).
 	CALL R13
 
-	// 段返回:RAX 已是返回值。
+	// Segment returned: RAX already holds the return value.
 	//
-	// **§9.20.9 trampoline exit-resume 协议 Run-end dispatcher 实装**(commit-5a
-	// 修正 commit-3c):设计草案 (4) 假设 trampoline asm 内 CALL Go dispatcher,
-	// 但实际跨包 + Plan 9 ABI 复杂度高;改用 **Run 端 Go 函数做 dispatcher**:
-	// Run 检 raxSpec==ExitInlineHelper → 调 dispatchInlineHelper → 二次 callJITSpec
-	// 跳 resume entry(全在 Go 端做,trampoline asm 透传 RAX 不解读)。
+	// **§9.20.9 trampoline exit-resume protocol Run-end dispatcher implementation** (commit-5a
+	// corrects commit-3c): the design draft (4) assumed the trampoline asm would CALL a Go
+	// dispatcher, but in practice the cross-package + Plan 9 ABI complexity is high; switched
+	// to using a **Run-end Go function as the dispatcher**: Run checks raxSpec==ExitInlineHelper
+	// → calls dispatchInlineHelper → a second callJITSpec jumps to the resume entry (all done
+	// on the Go side; the trampoline asm passes RAX through without interpreting it).
 	//
-	// 故 trampoline asm 段返后直接走常规弹栈,不再 CMP RAX——Run 端读 RAX 后
-	// 路由。原 commit-3c 的 CMP + INT 3 段撤(若保留 INT 3 会在 commit-5
-	// archSupportsFrameInline=true + emit ExitInlineHelper 段后真触发 SIGTRAP)。
+	// So after the segment returns, the trampoline asm goes straight to the normal stack
+	// unwinding, no longer CMP RAX — the Run side reads RAX and routes. The original commit-3c
+	// CMP + INT 3 segment is removed (keeping INT 3 would really trigger SIGTRAP after the
+	// commit-5 archSupportsFrameInline=true + emit ExitInlineHelper segment).
 
 	// **issue #89 restore**: switch SP back to the goroutine stack before
 	// the POPs read callee-saved from it. If spillBase was 0 (no switch)
@@ -121,9 +128,9 @@ nospill:
 	MOVQ  JITCtxSavedGoSPOff(R15), SP // restore goroutine SP
 
 norestore:
-	// 段返回:RAX 已是返回值。恢复 callee-saved(逆序 pop)。
-	// **R14 恢复 Go G 救济**:POP R14 把 entry 时 Go runtime 装的 G 值
-	// 写回 R14,段内 mov r14, arenaBase 的覆写到此撤消。
+	// Segment returned: RAX already holds the return value. Restore callee-saved (pop in reverse order).
+	// **R14 Go G restore rescue**: POP R14 writes the G value that the Go runtime loaded at
+	// entry back into R14, undoing the in-segment mov r14, arenaBase overwrite.
 	POPQ R15
 	POPQ R14
 	POPQ R13
@@ -131,6 +138,6 @@ norestore:
 	POPQ BP
 	POPQ BX
 
-	// 写回返回值
+	// Write back the return value
 	MOVQ AX, ret+24(FP)
 	RET

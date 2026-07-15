@@ -1,5 +1,5 @@
 // Public API end-to-end tests — SetGlobal / GetGlobal / Call / Register
-// (per-item gopher-lua drop-in 形态;issue #1 / 11 §7.1+§9.1)。
+// (per-item gopher-lua drop-in form; issue #1 / 11 §7.1+§9.1).
 package wangshu_test
 
 import (
@@ -10,26 +10,30 @@ import (
 	"github.com/Liam0205/wangshu"
 )
 
-// floatNearlyEqual 允许 ≤ 1 ULP 容差比较浮点数。
+// floatNearlyEqual compares floats with a tolerance of ≤ 1 ULP.
 //
-// **为什么需要 ULP 容差**:Go 编译器在 arm64 (Apple Silicon / Linux arm64)
-// 可能把 `a*b + c` 表达式 lower 为单条 FMADD 指令(IEEE 754 fused
-// multiply-add,**一次舍入**);amd64 通常 lower 为 MUL + ADD 两条
-// (**两次舍入**)。两种 lowering 都符合 Go spec(§3.5 浮点运算允许 fused
-// 实现),但结果可能差 1 ULP。
+// **Why ULP tolerance is needed**: on arm64 (Apple Silicon / Linux arm64)
+// the Go compiler may lower the expression `a*b + c` into a single FMADD
+// instruction (IEEE 754 fused multiply-add, **one rounding**); on amd64 it
+// usually lowers to two instructions, MUL + ADD (**two roundings**). Both
+// lowerings conform to the Go spec (§3.5 allows fused floating-point
+// implementations), but the results may differ by 1 ULP.
 //
-// 测试侧 want = `Go 表达式直接算`,VM 侧 = Lua 字节码 MUL+ADD 两次舍入 +
-// crescent f64 路径不 fuse;两者在 arm64 上不字节相等,但都符合规范。
+// On the test side want = `computed directly by a Go expression`, on the VM
+// side = Lua bytecode MUL+ADD with two roundings + the crescent f64 path does
+// not fuse; the two are not byte-equal on arm64, yet both conform to the spec.
 //
-// 用例:TestCall_PerItemLoop / TestCallInto_PerItemReuseDst 比较公共 API
-// Call/CallInto 浮点返回值与 Go 期望值。承本会话 macos-latest CI 实证 arm64
-// FMADD vs amd64 MUL+ADD 行为差(非 P4 引入,既有 measurement 测试在
-// darwin/arm64 物理机上的脆弱点暴露)。
+// Use case: TestCall_PerItemLoop / TestCallInto_PerItemReuseDst compare the
+// public API Call/CallInto float return values against Go expected values.
+// This session's macos-latest CI empirically showed the arm64 FMADD vs amd64
+// MUL+ADD behavioral difference (not introduced by P4; it exposed a
+// fragility of the existing measurement tests on the darwin/arm64 physical
+// machine).
 func floatNearlyEqual(a, b float64) bool {
 	if a == b {
 		return true
 	}
-	// 1 ULP 容差:相邻可表示浮点数差为 1。math.Nextafter 给出下一个可表示值。
+	// 1 ULP tolerance: adjacent representable floats differ by 1. math.Nextafter gives the next representable value.
 	if math.Nextafter(a, b) == b || math.Nextafter(b, a) == a {
 		return true
 	}
@@ -114,7 +118,7 @@ function g(a, b) return a + b, a - b end
 }
 
 func TestCall_PerItemLoop(t *testing.T) {
-	// pineapple transform_by_lua 形态:取 fn 一次,循环里 SetGlobal+Call。
+	// pineapple transform_by_lua form: fetch fn once, SetGlobal+Call in the loop.
 	src := []byte(`function f() return item_x * 0.85 + 10.0 end`)
 	prog, err := wangshu.Compile(src, "rule")
 	if err != nil {
@@ -143,7 +147,7 @@ func TestCall_PerItemLoop(t *testing.T) {
 }
 
 func TestCallInto_Scalars(t *testing.T) {
-	// CallInto 多返回值写入调用方 dst(issue #8 零分配边界路径)。
+	// CallInto writes multiple return values into the caller's dst (issue #8 zero-alloc boundary path).
 	prog, _ := wangshu.Compile([]byte(`function f() return 1, 2.5, true, "hi" end`), "ci")
 	st := wangshu.NewState(wangshu.Options{})
 	if _, err := prog.Run(st); err != nil {
@@ -165,7 +169,7 @@ func TestCallInto_Scalars(t *testing.T) {
 }
 
 func TestCallInto_DstTruncates(t *testing.T) {
-	// dst 容量不足:只写 len(dst) 个,n 反映实写数。
+	// dst capacity insufficient: only len(dst) are written, n reflects the actual count.
 	prog, _ := wangshu.Compile([]byte(`function f() return 1, 2, 3 end`), "ci")
 	st := wangshu.NewState(wangshu.Options{})
 	if _, err := prog.Run(st); err != nil {
@@ -184,7 +188,7 @@ func TestCallInto_DstTruncates(t *testing.T) {
 }
 
 func TestCallInto_PerItemReuseDst(t *testing.T) {
-	// pineapple 形态:fn 一次取出,循环里复用同一 dst(零分配热路径)。
+	// pineapple form: fetch fn once, reuse the same dst in the loop (zero-alloc hot path).
 	prog, _ := wangshu.Compile([]byte(`function f() return item_x * 0.85 + 10.0 end`), "ci")
 	st := wangshu.NewState(wangshu.Options{})
 	if _, err := prog.Run(st); err != nil {
@@ -207,7 +211,7 @@ func TestCallInto_PerItemReuseDst(t *testing.T) {
 }
 
 func TestCallInto_GCStressStringNoUAF(t *testing.T) {
-	// string 返回值在 GC stress + 复用 dst 下必须仍可读(已拷出 arena 字节)。
+	// the string return value must still be readable under GC stress + reused dst (bytes already copied out of arena).
 	prog, _ := wangshu.Compile([]byte(`function mk(s) return s .. "-suffix" end`), "ci")
 	st := wangshu.NewState(wangshu.Options{})
 	st.SetGCStressMode(true)
@@ -229,7 +233,7 @@ func TestCallInto_GCStressStringNoUAF(t *testing.T) {
 }
 
 func TestCallInto_ZeroAlloc(t *testing.T) {
-	// 标量返回的边界路径必须真正零分配(issue #8 验收口径)。
+	// the scalar-return boundary path must be truly zero-alloc (issue #8 acceptance criterion).
 	prog, _ := wangshu.Compile([]byte(`function f() return x ~= nil end`), "ci")
 	st := wangshu.NewState(wangshu.Options{})
 	if _, err := prog.Run(st); err != nil {
@@ -249,7 +253,7 @@ func TestCallInto_ZeroAlloc(t *testing.T) {
 }
 
 func TestCallInto_RejectsForeignFn(t *testing.T) {
-	// 跨 State 的 fn 被拒(与 Call 同款防护)。
+	// a cross-State fn is rejected (same guard as Call).
 	prog, _ := wangshu.Compile([]byte(`function f() return 1 end`), "ci")
 	st1 := wangshu.NewState(wangshu.Options{})
 	st2 := wangshu.NewState(wangshu.Options{})
@@ -312,16 +316,16 @@ func TestCall_AfterRelease(t *testing.T) {
 	fn := st.GetGlobal("f")
 	fn.Release()
 	if _, err := st.Call(fn); err == nil || !strings.Contains(err.Error(), "not a function") {
-		// Release 后 fnState == nil → IsFunction() = false → "not a function" 路径
+		// after Release, fnState == nil → IsFunction() = false → "not a function" path
 		t.Errorf("after release err = %v", err)
 	}
-	// 重复 Release 无副作用
+	// repeated Release has no side effect
 	fn.Release()
 }
 
 func TestGetGlobal_PinSurvivesGlobalOverwrite(t *testing.T) {
-	// GetGlobal 取出后,SetGlobal 覆盖同名键 → 旧 fn Value 仍可调
-	// (pin 表把 ref 当根,GC 不回收;否则 freelist 复用 = UAF)。
+	// after GetGlobal fetches it, SetGlobal overwrites the same key → the old fn Value is still callable
+	// (the pin table treats the ref as a root, GC does not reclaim it; otherwise freelist reuse = UAF).
 	prog, _ := wangshu.Compile([]byte(`function f() return 7 end`), "x")
 	st := wangshu.NewState(wangshu.Options{})
 	if _, err := prog.Run(st); err != nil {
@@ -329,12 +333,12 @@ func TestGetGlobal_PinSurvivesGlobalOverwrite(t *testing.T) {
 	}
 	fn := st.GetGlobal("f")
 	defer fn.Release()
-	// 覆盖 globals f
+	// overwrite globals f
 	st.SetGlobal("f", wangshu.Nil())
-	// 触发 GC(压力模式下每个 safepoint 都 full collect)
+	// trigger GC (under stress mode every safepoint does a full collect)
 	st.SetGCStressMode(true)
 	defer st.SetGCStressMode(false)
-	// fn 仍指向原 closure
+	// fn still points to the original closure
 	r, err := st.Call(fn)
 	if err != nil {
 		t.Fatalf("Call after overwrite: %v", err)

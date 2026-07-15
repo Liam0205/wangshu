@@ -1,18 +1,25 @@
 //go:build wangshu_p3 && wangshu_profile
 
-// 凸月(gibbous)档:realworld 五脚本经 force-all 升 wazero 执行,与新月
-// (crescent,默认档 BenchmarkXxx_Wangshu)+ gopher 三方对比(PW10 R5 口径)。
+// Gibbous tier: the five realworld scripts run through force-all promotion to
+// wazero execution, compared three ways against crescent (the default tier,
+// BenchmarkXxx_Wangshu) and gopher (PW10 R5 convention).
 //
-// 仅 wangshu_p3 && wangshu_profile build 编译:p3 提供真 gibbous Compiler +
-// 收养 wazero memory;profile 启用 OnEnter/OnBackEdge 采样(force-all 经它触发
-// 升层)。默认 tag 下本文件不编译,不污染 gopher/新月两路 bench 列。
+// Compiled only under the wangshu_p3 && wangshu_profile build: p3 provides the
+// real gibbous Compiler plus adopted wazero memory; profile enables
+// OnEnter/OnBackEdge sampling (which force-all triggers promotion through).
+// Under the default tags this file is not compiled, so it does not pollute the
+// gopher/crescent bench lists.
 //
-// **非空保证(承 PW9 空测教训)**:五脚本均含热内层函数(fib 递归 / spectralnorm
-// 的 A/Av/Atv / nbody 的 advance 等),force-all 下这些 Proto 升 gibbous;预热一次
-// 驱动升层(首调跑 crescent,二调起经 call_indirect 直调 gibbous)。顶层 chunk 是
-// vararg(F1 排除)不升层,但脚本主体工作量在被反复调的内层函数 → 凸月路径真被走到。
+// **Non-empty guarantee (learned from PW9's empty-benchmark lesson)**: all five
+// scripts contain hot inner functions (fib recursion / spectralnorm's A/Av/Atv
+// / nbody's advance, etc.); under force-all these Protos are promoted to
+// gibbous. A single warmup drives the promotion (the first call runs crescent,
+// from the second call on it dispatches straight to gibbous via call_indirect).
+// The top-level chunk is a vararg (excluded by F1) and is not promoted, but the
+// bulk of each script's work lives in the repeatedly-called inner functions ⟹
+// the gibbous path is genuinely exercised.
 //
-// 运行:go test -tags "wangshu_p3 wangshu_profile" -bench 'Gibbous' ./benchmarks/realworld/
+// Run: go test -tags "wangshu_p3 wangshu_profile" -bench 'Gibbous' ./benchmarks/realworld/
 
 package realworld
 

@@ -8,18 +8,18 @@ import (
 	"github.com/tetratelabs/wazero/api"
 )
 
-// newCompilerRuntime 建编译模式 wazero runtime(P3 生产形态;解释模式数据无效)。
+// newCompilerRuntime builds a wazero runtime in compiler mode (P3 production form; interpreter-mode data is invalid).
 func newCompilerRuntime(ctx context.Context) wazero.Runtime {
 	return wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfigCompiler())
 }
 
-// hostLeaf 是 kindHost 形态 import 的 Go leaf:leaf(x)=x*3+1(与 wasm leafBody 同)。
+// hostLeaf is the Go leaf imported by the kindHost form: leaf(x)=x*3+1 (same as the wasm leafBody).
 func hostLeaf(_ context.Context, stack []uint64) {
 	x := api.DecodeI32(stack[0])
 	stack[0] = api.EncodeI32(x*3 + 1)
 }
 
-// wantDriver 计算 driver(n) = Σ_{k=1..n}(k*3+1) 的期望值(对拍 wasm 执行)。
+// wantDriver computes the expected value of driver(n) = Σ_{k=1..n}(k*3+1) (differential test against wasm execution).
 func wantDriver(n int32) int32 {
 	var acc int32
 	for k := n; k > 0; k-- {
@@ -28,7 +28,7 @@ func wantDriver(n int32) int32 {
 	return acc
 }
 
-// registerHost 注册 kindHost 形态需要的 env.h_leaf。
+// registerHost registers env.h_leaf required by the kindHost form.
 func registerHost(ctx context.Context, t testing.TB, rt wazero.Runtime) {
 	t.Helper()
 	_, err := rt.NewHostModuleBuilder("env").
@@ -41,8 +41,8 @@ func registerHost(ctx context.Context, t testing.TB, rt wazero.Runtime) {
 	}
 }
 
-// TestModulesSemantics 验证三形态 module 都能编译/实例化且 driver(n) 语义一致。
-// 这是 spike 前置:手写字节正确 + 三形态等价才能公平 benchmark dispatch 成本。
+// TestModulesSemantics verifies that all three module forms compile/instantiate and share the same driver(n) semantics.
+// This is a spike prerequisite: only with correct hand-written bytes plus equivalence across the three forms can dispatch cost be benchmarked fairly.
 func TestModulesSemantics(t *testing.T) {
 	const n = int32(20)
 	want := wantDriver(n)

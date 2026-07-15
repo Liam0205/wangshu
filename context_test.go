@@ -1,5 +1,5 @@
-// State.SetContext/RemoveContext 测试——context cancellation 钩子
-// (issue #4:pineapple 接入需要 timeout/cancel 穿透 VM)。
+// State.SetContext/RemoveContext tests — context cancellation hook
+// (issue #4: pineapple integration needs timeout/cancel to propagate through the VM).
 package wangshu_test
 
 import (
@@ -14,7 +14,7 @@ import (
 )
 
 func TestSetContext_TimeoutCancelsLoop(t *testing.T) {
-	// issue #4 验收用例:100ms WithTimeout + while-true 死循环 → 100ms 内返回。
+	// issue #4 acceptance case: 100ms WithTimeout + while-true infinite loop → returns within 100ms.
 	st := wangshu.NewState(wangshu.Options{})
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
@@ -32,7 +32,7 @@ func TestSetContext_TimeoutCancelsLoop(t *testing.T) {
 	if !strings.Contains(err.Error(), "context") {
 		t.Errorf("err = %q, want contain 'context'", err.Error())
 	}
-	// 容忍上限:CI 抖动留 1s 余量。下限 50ms 防止过早误杀。
+	// Upper bound tolerance: leave 1s of headroom for CI jitter. Lower bound 50ms guards against premature kills.
 	if elapsed < 50*time.Millisecond {
 		t.Errorf("elapsed=%v too short, expect ~100ms", elapsed)
 	}
@@ -42,8 +42,8 @@ func TestSetContext_TimeoutCancelsLoop(t *testing.T) {
 }
 
 func TestSetContext_CancelMidExecution(t *testing.T) {
-	// 跨 goroutine 取消:VM 在 G1 跑,G2 50ms 后 cancel,VM 应在
-	// ~50ms 内返回 ctx 错误。
+	// Cross-goroutine cancellation: VM runs on G1, G2 cancels after 50ms, VM should
+	// return a ctx error within ~50ms.
 	st := wangshu.NewState(wangshu.Options{})
 	ctx, cancel := context.WithCancel(context.Background())
 	st.SetContext(ctx)
@@ -68,7 +68,7 @@ func TestSetContext_CancelMidExecution(t *testing.T) {
 }
 
 func TestSetContext_NormalScriptUnaffected(t *testing.T) {
-	// SetContext 后跑正常脚本:无 ctx 触发应正常返回结果。
+	// Run a normal script after SetContext: with no ctx trigger it should return the result normally.
 	st := wangshu.NewState(wangshu.Options{})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -90,12 +90,12 @@ return s
 }
 
 func TestRemoveContext_TimeoutNoLongerTriggers(t *testing.T) {
-	// SetContext → RemoveContext → 即使 ctx 已过期也不应中断
+	// SetContext → RemoveContext → must not interrupt even if the ctx has already expired
 	st := wangshu.NewState(wangshu.Options{})
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 	st.SetContext(ctx)
-	time.Sleep(20 * time.Millisecond) // 确保 ctx 已过期
+	time.Sleep(20 * time.Millisecond) // make sure the ctx has expired
 	st.RemoveContext()
 
 	prog, _ := wangshu.Compile([]byte(`
@@ -113,8 +113,8 @@ return s
 }
 
 func TestSetContext_PcallCanCatch(t *testing.T) {
-	// ctx cancellation 作为 LuaError 抛出,pcall 能兜住——与 SetStepBudget
-	// 同款语义(行为细则 issue 未明确,按对位 gopher-lua 处理:pcall 可拦)。
+	// ctx cancellation is raised as a LuaError, so pcall can catch it — same semantics as
+	// SetStepBudget (the issue leaves the exact behavior unspecified; follow gopher-lua's counterpart: pcall may intercept).
 	st := wangshu.NewState(wangshu.Options{})
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer cancel()
@@ -138,7 +138,7 @@ return ok, err
 }
 
 func TestSetContext_ConcurrentStates(t *testing.T) {
-	// 同一进程多个 State 各持自己的 ctx,互不干扰。-race 同步验证。
+	// Multiple States in the same process each hold their own ctx, without interfering. Also verified in sync under -race.
 	const N = 4
 	var wg sync.WaitGroup
 	errs := make([]error, N)
@@ -163,7 +163,7 @@ func TestSetContext_ConcurrentStates(t *testing.T) {
 }
 
 func TestRemoveContext_NoopWithoutSet(t *testing.T) {
-	// 未 SetContext 直接 RemoveContext 应无副作用;反复 Remove 也无副作用。
+	// Calling RemoveContext directly without SetContext should have no side effect; repeated Remove is also side-effect-free.
 	st := wangshu.NewState(wangshu.Options{})
 	st.RemoveContext()
 	st.RemoveContext()
@@ -178,7 +178,7 @@ func TestRemoveContext_NoopWithoutSet(t *testing.T) {
 }
 
 func TestSetContext_ErrPropagatesUnderlying(t *testing.T) {
-	// 自定义 ctx 错误应可见(err.Error 包含原始错误文本)
+	// A custom ctx error should be visible (err.Error contains the original error text)
 	ctx, cancel := context.WithCancelCause(context.Background())
 	st := wangshu.NewState(wangshu.Options{})
 	st.SetContext(ctx)
@@ -193,8 +193,8 @@ func TestSetContext_ErrPropagatesUnderlying(t *testing.T) {
 	if err == nil {
 		t.Fatalf("want err")
 	}
-	// ctx.Err() 返回的是 context.Canceled(原始错误经 Cause(ctx) 取);
-	// 我们包装的是 ctx.Err() 而非 Cause,所以文本应含 "context canceled"。
+	// ctx.Err() returns context.Canceled (the original error is obtained via Cause(ctx));
+	// we wrap ctx.Err() rather than Cause, so the text should contain "context canceled".
 	if !strings.Contains(err.Error(), "context") {
 		t.Errorf("err = %q", err.Error())
 	}

@@ -27,7 +27,7 @@ func TestHeaderRoundTrip(t *testing.T) {
 	if GCNextOf(h) != arena.GCRef(0x1234567890) {
 		t.Errorf("gcnext: %#x", uint64(GCNextOf(h)))
 	}
-	// 字段更新。
+	// Field updates.
 	h2 := SetColor(h, ColorBlack)
 	if ColorOf(h2) != ColorBlack || OTypeOf(h2) != OBJ_TABLE || GCNextOf(h2) != GCNextOf(h) {
 		t.Errorf("SetColor mutated other fields")
@@ -54,18 +54,18 @@ func TestStringLayout(t *testing.T) {
 	if string(StringBytes(a, ref)) != string(hello) {
 		t.Errorf("content: %q", StringBytes(a, ref))
 	}
-	// 字数公式(06 §1.3)。
+	// Word-count formula (06 §1.3).
 	wantWords := stringWords(uint32(len(hello)))
 	if wantWords != 2+(uint32(len(hello))+1+7)/8 {
 		t.Errorf("formula mismatch: %d", wantWords)
 	}
-	// NUL 终止(便于 C 互操作,不计 len)。
+	// NUL terminator (for C interop, not counted in len).
 	off := uint32(ref) + strDataIdx*8 + uint32(len(hello))
 	if a.Bytes()[off] != 0 {
 		t.Errorf("missing NUL terminator at off %d", off)
 	}
 
-	// 比较两个内容相同的串(不同 GCRef,intern 之前的状态)
+	// Compare two strings with identical content (distinct GCRefs, the pre-intern state).
 	r2 := AllocString(a, hello, 0xCAFEBABE)
 	if r2 == ref {
 		t.Fatalf("two allocations should produce distinct refs (intern is M5's job)")
@@ -91,7 +91,7 @@ func TestTableLayout(t *testing.T) {
 	if TableHMask(a, tbl) != 7 {
 		t.Errorf("hmask: %d", TableHMask(a, tbl))
 	}
-	// 数组段初值全 Nil。
+	// Array part is initialized to all Nil.
 	for i := uint32(0); i < 4; i++ {
 		if TableArrayAt(a, tbl, i) != value.Nil {
 			t.Errorf("array[%d] not Nil", i)
@@ -101,7 +101,7 @@ func TestTableLayout(t *testing.T) {
 	if v := TableArrayAt(a, tbl, 0); !value.IsNumber(v) || value.AsNumber(v) != 42 {
 		t.Errorf("array round trip")
 	}
-	// 哈希节点初值。
+	// Hash node initial values.
 	for i := uint32(0); i < 8; i++ {
 		if NodeKey(a, tbl, i) != value.Nil || NodeVal(a, tbl, i) != value.Nil {
 			t.Errorf("node[%d] not Nil", i)
@@ -117,7 +117,7 @@ func TestTableLayout(t *testing.T) {
 	if NodeNext(a, tbl, 3) != 5 {
 		t.Errorf("node next")
 	}
-	// gen 与 metatable。
+	// gen and metatable.
 	if TableGen(a, tbl) != 0 {
 		t.Errorf("initial gen != 0")
 	}
@@ -168,10 +168,10 @@ func TestClosureLayout(t *testing.T) {
 
 func TestUpvalueOpenChain(t *testing.T) {
 	a := arena.New(arena.Options{})
-	th := arena.GCRef(0x1000) // 假 threadRef,不需真 thread
+	th := arena.GCRef(0x1000) // fake threadRef, no real thread needed
 	tail := AllocOpenUpvalue(a, th, 5, 0)
 	mid := AllocOpenUpvalue(a, th, 7, tail)
-	head := AllocOpenUpvalue(a, th, 9, mid) // 降序链:9 -> 7 -> 5
+	head := AllocOpenUpvalue(a, th, 9, mid) // descending chain: 9 -> 7 -> 5
 	if UpvalIsClosed(a, head) || UpvalIsClosed(a, mid) || UpvalIsClosed(a, tail) {
 		t.Fatalf("open upvals reported closed")
 	}
@@ -181,7 +181,7 @@ func TestUpvalueOpenChain(t *testing.T) {
 	if UpvalNextOpen(a, head) != mid || UpvalNextOpen(a, mid) != tail || UpvalNextOpen(a, tail) != 0 {
 		t.Errorf("nextOpen chain broken")
 	}
-	// 关闭 mid:把当前栈值拷入,翻 flag。
+	// Close mid: copy the current stack value in, flip the flag.
 	CloseUpvalue(a, mid, value.NumberValue(123))
 	if !UpvalIsClosed(a, mid) {
 		t.Fatalf("mid should be closed")
@@ -189,7 +189,7 @@ func TestUpvalueOpenChain(t *testing.T) {
 	if v := UpvalClosedValue(a, mid); !value.IsNumber(v) || value.AsNumber(v) != 123 {
 		t.Errorf("closed value lost")
 	}
-	// head 仍开放,nextOpen 链尚未由 caller 调整(本测试只验单元行为)。
+	// head remains open; the nextOpen chain has not yet been adjusted by the caller (this test only verifies unit behavior).
 	if UpvalIsClosed(a, head) {
 		t.Errorf("head should remain open")
 	}
@@ -256,7 +256,7 @@ func TestUserdataLayout(t *testing.T) {
 	}
 }
 
-// TestObjectSizeFormulas:对照 06 §1.3 的字数公式(最关键的工程契约)。
+// TestObjectSizeFormulas: cross-checks the word-count formulas in 06 §1.3 (the most critical engineering contract).
 func TestObjectSizeFormulas(t *testing.T) {
 	cases := []struct {
 		name string

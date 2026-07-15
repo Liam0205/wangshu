@@ -11,34 +11,35 @@ import (
 	"github.com/Liam0205/wangshu/internal/bytecode"
 )
 
-// 编译期断言:p3Code 实现 bridge.GibbousCode(Proto/Run/PendingErr)。
+// Compile-time assertion: p3Code implements bridge.GibbousCode (Proto/Run/PendingErr).
 var _ bridge.GibbousCode = (*p3Code)(nil)
 
-// p3Code 是 P3 的 bridge.GibbousCode 实现(02-translation §5.3)。
+// p3Code is P3's bridge.GibbousCode implementation (02-translation §5.3).
 type p3Code struct {
-	compiled api.Closer   // wazero CompiledModule(Close 释放)
-	module   api.Module   // 实例化的 module(Close 释放)
-	fn       api.Function // 入口 "run"(base i32) -> status i32
+	compiled api.Closer   // wazero CompiledModule (Close to release)
+	module   api.Module   // instantiated module (Close to release)
+	fn       api.Function // entry "run" (base i32) -> status i32
 	proto    *bytecode.Proto
 	ctx      context.Context
 
-	// slot 是本 module 的 run 在共享 env.table 的槽号(PW10 R3 Arch-2);hasSlot
-	// 为 false 表示表满哨兵(未入表)→ gibbous→它 回退同步 Run。
+	// slot is this module's run slot number in the shared env.table (PW10 R3 Arch-2);
+	// hasSlot false means the table-full sentinel (not registered) → gibbous→it falls
+	// back to synchronous Run.
 	slot    uint32
 	hasSlot bool
 
-	// pendingErr 记录 wazero 内部错误(罕见;run 返回非 nil err 时)。
+	// pendingErr records a wazero internal error (rare; when run returns a non-nil err).
 	pendingErr error
 }
 
-// Proto 实现 bridge.GibbousCode。
+// Proto implements bridge.GibbousCode.
 func (c *p3Code) Proto() *bytecode.Proto { return c.proto }
 
-// Run 是 crescent→gibbous 入口(04-trampoline §2):传 base i32,wazero 执行,
-// 返回 status(0=OK / 1=ERR)。一次跨层(PW0 spike 实测 36.7ns)。
+// Run is the crescent→gibbous entry (04-trampoline §2): passes base i32, wazero
+// executes, returns status (0=OK / 1=ERR). One cross-layer hop (PW0 spike measured 36.7ns).
 //
-// stack 复用(CallWithStack 零分配路径,PW0 spike 实测 14.8ns):调用方传
-// 一个 len≥1 的 []uint64,stack[0]=base 入参,返回后 stack[0]=status。
+// stack reuse (CallWithStack zero-alloc path, PW0 spike measured 14.8ns): the caller
+// passes a []uint64 of len≥1, stack[0]=base as input, and after return stack[0]=status.
 func (c *p3Code) Run(stack []uint64, base uint32) int32 {
 	stack[0] = uint64(base)
 	if err := c.fn.CallWithStack(c.ctx, stack); err != nil {
@@ -48,14 +49,15 @@ func (c *p3Code) Run(stack []uint64, base uint32) int32 {
 	return int32(stack[0])
 }
 
-// PendingErr 返回最近一次 Run 的 wazero 内部错误(trampoline 读)。
+// PendingErr returns the most recent wazero internal error from Run (read by the trampoline).
 func (c *p3Code) PendingErr() error { return c.pendingErr }
 
-// Slot 实现 bridge.GibbousCode(PW10 R3):返回 run 在共享 env.table 的槽号 +
-// 是否已登记。hasSlot=false(表满哨兵)⟹ gibbous→它 回退同步 Run。
+// Slot implements bridge.GibbousCode (PW10 R3): returns run's slot number in the shared
+// env.table + whether it is registered. hasSlot=false (table-full sentinel) ⟹ gibbous→it
+// falls back to synchronous Run.
 func (c *p3Code) Slot() (uint32, bool) { return c.slot, c.hasSlot }
 
-// Dispose 释放 wazero 资源(幂等)。
+// Dispose releases wazero resources (idempotent).
 func (c *p3Code) Dispose() error {
 	if c.module != nil {
 		_ = c.module.Close(c.ctx)

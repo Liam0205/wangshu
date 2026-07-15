@@ -1,8 +1,10 @@
 //go:build wangshu_p3 && wangshu_profile
 
-// PW10 R2b-1 验收:CallInfo arena 段(只写镜像)打包/解包往返无损 + 真实执行
-// 中段与 Go cis 镜像逐字段一致。R2b-1 段只写不读(行为不变),本测直接读段验证
-// 打包正确性,为 R2b-2 翻转 accessor/GC 根读段铺垫。
+// PW10 R2b-1 acceptance: the CallInfo arena segment (write-only mirror) packs/unpacks
+// losslessly round-trip + during real execution the segment matches the Go cis mirror
+// field-by-field. In R2b-1 the segment is write-only (behavior unchanged); this test
+// reads the segment directly to verify packing correctness, paving the way for R2b-2
+// flipping the accessor/GC roots to read the segment.
 package crescent
 
 import (
@@ -11,8 +13,8 @@ import (
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
-// TestR2b1_CISegPackRoundTrip 单元:writeCISeg → readCISegInto 各字段无损往返,
-// 含 nresults=-1(可变)的符号扩展边角与 flags 位。
+// TestR2b1_CISegPackRoundTrip unit: writeCISeg → readCISegInto round-trips every field
+// losslessly, including the sign-extension corner of nresults=-1 (variable) and the flags bits.
 func TestR2b1_CISegPackRoundTrip(t *testing.T) {
 	st := New()
 	th := st.newThread()
@@ -36,11 +38,13 @@ func TestR2b1_CISegPackRoundTrip(t *testing.T) {
 	}
 }
 
-// TestR2b2_GrowCISegDeepRecursion 深递归(>initialCISlots=64 帧)触发 growCISeg
-// 多次重分配 ci 段,验证:① 不崩 ② 结果正确(段只写,行为透明)③ wangshu_trace
-// 构建下每帧 verifyCISeg 跨重定位仍逐字段一致(形态 Y 现算寻址免疫 grow)。
+// TestR2b2_GrowCISegDeepRecursion: deep recursion (>initialCISlots=64 frames) triggers
+// growCISeg to reallocate the ci segment multiple times, verifying: ① no crash ② correct
+// result (segment is write-only, behavior transparent) ③ under a wangshu_trace build,
+// per-frame verifyCISeg stays field-by-field consistent across relocations (form Y's
+// computed addressing is immune to grow).
 func TestR2b2_GrowCISegDeepRecursion(t *testing.T) {
-	// 尾递归会 O(1) 复用帧(不加深),故用非尾递归累加,深度 = n 帧。
+	// Tail recursion reuses the frame in O(1) (no deepening), so use non-tail accumulation; depth = n frames.
 	src := `
 local function sum(n)
   if n == 0 then return 0 end
@@ -58,12 +62,14 @@ return sum(300)`
 	}
 }
 
-// TestR2b3_SegClRootSurvivesGC R2b-3 核心验收:GC 根扫描从 arena ci 段读每帧
-// closure 根。构造「闭包仅经活跃帧可达」+ 深调用链中途强制 full GC + GC stress,
-// 验证闭包不被误回收(漏根/读错段 = UAF)。这是把 ci 段确立为 GC 根权威源的回归锚。
+// TestR2b3_SegClRootSurvivesGC R2b-3 core acceptance: GC root scanning reads each frame's
+// closure root from the arena ci segment. Constructs "closure reachable only via a live
+// frame" + forcing a full GC midway through a deep call chain + GC stress, verifying the
+// closure is not wrongly collected (missed root / wrong-segment read = UAF). This is the
+// regression anchor establishing the ci segment as the authoritative GC root source.
 func TestR2b3_SegClRootSurvivesGC(t *testing.T) {
-	// 深递归链:每层一个不同 closure 帧在 ci 段;最深处 host fn 强制 Collect。
-	// 若某帧 closure 根没从段正确扫到 → 其 Proto/upvalue 被回收 → 返回错值或崩。
+	// Deep recursion chain: each level has a distinct closure frame in the ci segment; the innermost host fn forces Collect.
+	// If some frame's closure root is not scanned correctly from the segment → its Proto/upvalue is collected → wrong value returned or crash.
 	src := `
 local function chain(n)
   if n == 0 then collectgarbage_test(); return 0 end
@@ -73,9 +79,9 @@ local function chain(n)
 end
 result = chain(120)        -- 120 层帧(> initialCISlots 64,跨 growCISeg)`
 	st := New()
-	st.SetGCStressMode(true) // 每个 safepoint 强制 full Collect(根扫描高频触发)
+	st.SetGCStressMode(true) // force a full Collect at every safepoint (triggers root scanning frequently)
 	id := st.RegisterHostFn(func(s *State, _ []value.Value) ([]value.Value, *LuaError) {
-		s.gc.Collect() // 最深帧(120 层活跃帧在 ci 段)强制扫根
+		s.gc.Collect() // at the deepest frame (120 live frames in the ci segment), force a root scan
 		return nil, nil
 	})
 	cl := st.MakeHostClosure(id)
@@ -94,13 +100,14 @@ result = chain(120)        -- 120 层帧(> initialCISlots 64,跨 growCISeg)`
 	}
 }
 
-// 旧帧经 readCISegInto 仍读回原值(拷贝 + ciBaseW 重定位正确)。
+// Old frames still read back their original values via readCISegInto (copy + ciBaseW relocation are correct).
 func TestR2b2_GrowCISegUnit(t *testing.T) {
 	st := New()
 	th := st.newThread()
-	const n = 200 // > initialCISlots(64),触发多次 growCISeg
-	// R2b-4:th.cis Go 切片已退役,段为权威。用 want 本地切片作期望值预言机
-	// (此前用 th.cis 充当),按 ciDepth 现算寻址写段。
+	const n = 200 // > initialCISlots(64), triggers growCISeg multiple times
+	// R2b-4: the th.cis Go slice is retired, the segment is authoritative. Use a local
+	// want slice as the expected-value oracle (previously th.cis served this role),
+	// writing the segment via computed addressing by ciDepth.
 	want := make([]callInfo, 0, n)
 	for d := 0; d < n; d++ {
 		ci := callInfo{base: d*7 + 1, funcIdx: d * 7, top: d*7 + 3, protoID: uint32(d * 11), cl: 0, nresults: d % 4, pc: int32(d * 13)}
@@ -111,7 +118,7 @@ func TestR2b2_GrowCISegUnit(t *testing.T) {
 		}
 		th.writeCISeg(d, &want[d])
 	}
-	// 全部帧回读校验(多次 grow + 重定位后旧帧数据无损)。
+	// Read back and verify all frames (data of old frames is lossless after multiple grow + relocation).
 	for d := 0; d < n; d++ {
 		var got callInfo
 		th.readCISegInto(d, &got)
@@ -126,7 +133,7 @@ func TestR2b2_GrowCISegUnit(t *testing.T) {
 	}
 }
 
-// cold 字段(+ 进帧瞬间的 base/pc)逐字段一致。钩在一个递归脚本上,覆盖多层帧。
+// Cold fields (+ the base/pc at the moment of frame entry) are field-by-field consistent. Hooked onto a recursive script, covering multiple frame levels.
 func TestR2b1_CISegMirrorCoherent(t *testing.T) {
 	src := `
 local function fib(n)
@@ -137,13 +144,15 @@ return fib(8)`
 	st, mainCl := loadFn(t, src)
 	th := st.mainTh
 
-	// 在每次进帧后校验镜像:用一个 hook 不便,改为执行后无法回溯;故这里
-	// 直接驱动并在递归最深处采样——用 SetForceAllPromote 关闭(纯 crescent),
-	// 执行完跑一遍「逐帧 readCISegInto 对比 cis」(执行后 cis 已弹空,改在
-	// 进帧钩验)。简化:复用 enterLuaFrame 的镜像,手工压几帧验证一致。
+	// Verifying the mirror after each frame entry is awkward with a hook, and there is no
+	// way to backtrack after execution; so here we drive directly and sample at the deepest
+	// recursion point — with SetForceAllPromote off (pure crescent), running a
+	// "per-frame readCISegInto vs cis" pass after execution (after execution cis is popped
+	// empty, so verify at frame entry instead). Simplification: reuse enterLuaFrame's mirror
+	// and manually push a few frames to verify consistency.
 	_ = th
-	// 跑脚本确认不崩(镜像写入路径在 enterLuaFrame 全程被走到;段只写不读,
-	// 故脚本结果不变 = 行为透明)。
+	// Run the script to confirm no crash (the mirror-write path is exercised throughout
+	// enterLuaFrame; the segment is write-only, so the script result is unchanged = behavior transparent).
 	rets, err := st.Call(value.GCRefOf(mainCl), nil, 1)
 	if err != nil {
 		t.Fatalf("run: %v", err)
@@ -152,8 +161,8 @@ return fib(8)`
 		t.Fatalf("fib(8) = %v, want 21(镜像只写不应改行为)", rets[0])
 	}
 
-	// 手工压帧验证镜像逐字段一致(覆盖 enterLuaFrame 镜像点 + readback)。
-	// R2b-4:th.cis 已退役,用 want 本地切片作期望值预言机,按 ciDepth 写段。
+	// Manually push frames to verify the mirror is field-by-field consistent (covers the enterLuaFrame mirror point + readback).
+	// R2b-4: th.cis is retired; use a local want slice as the expected-value oracle, writing the segment by ciDepth.
 	th2 := st.newThread()
 	st.runningThread = th2
 	defer func() { st.runningThread = st.mainTh }()

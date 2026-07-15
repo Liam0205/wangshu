@@ -3,7 +3,7 @@
 // owns the freereg/nactvar water line, the local/upvalue tables, the jump
 // patch chains, and the constant dedup table.
 //
-// 设计:docs/design/p1-interpreter/04-frontend-parser-codegen.md §5-§9。
+// Design: docs/design/p1-interpreter/04-frontend-parser-codegen.md §5-§9.
 package compile
 
 import (
@@ -18,27 +18,29 @@ import (
 // NoJump is the sentinel value terminating a JMP patch chain (04 §5.4).
 const NoJump = -1
 
-// codegen 全局上下文:跨 funcState 共享的 Proto 注册表与错误收集。
+// codegen is the global context: the Proto registry and error collection
+// shared across funcStates.
 type codegen struct {
 	source string
-	protos []*bytecode.Proto // 顺序登记的所有子 Proto(主 chunk 在最后或最前由调用方决定)
+	protos []*bytecode.Proto // all child Protos registered in order (whether the main chunk is last or first is up to the caller)
 }
 
-// localVar 描述当前函数内一个局部变量(04 §5.1)。
+// localVar describes one local variable within the current function (04 §5.1).
 type localVar struct {
 	name    string
 	startPC int32
 	endPC   int32
 }
 
-// upvalDesc 是 codegen 期的 upvalue 描述(04 §8.3)。
+// upvalDesc is the codegen-time upvalue descriptor (04 §8.3).
 type upvalDesc struct {
 	name    string
 	inStack bool
 	idx     uint8
 }
 
-// blockCnt 跟踪当前语法块:break 链、作用域 nactvar 快照、是否捕获 upvalue。
+// blockCnt tracks the current syntactic block: the break chain, the scope's
+// nactvar snapshot, and whether it captures an upvalue.
 type blockCnt struct {
 	prev        *blockCnt
 	breakList   int
@@ -47,14 +49,14 @@ type blockCnt struct {
 	hasUpval    bool
 }
 
-// constKey 是 addConst 用的去重 key(数字/字符串字面量分别编码)。
+// constKey is the dedup key used by addConst (number and string literals are encoded separately).
 type constKey struct {
 	kind uint8 // 0=number, 1=string, 2=nil, 3=true, 4=false
 	bits uint64
 	str  string
 }
 
-// funcState 是单函数 codegen 上下文(04 §5.1)。
+// funcState is the per-function codegen context (04 §5.1).
 type funcState struct {
 	proto *bytecode.Proto
 	prev  *funcState
@@ -62,23 +64,25 @@ type funcState struct {
 
 	freereg    int
 	nactvar    int
-	actvar     []int      // 活跃局部 → locvars 索引
-	locvars    []localVar // 所有局部(含已退出的,留作调试)
+	actvar     []int      // active locals → locvars index
+	locvars    []localVar // all locals (including exited ones, kept for debugging)
 	upvals     []upvalDesc
 	bl         *blockCnt
-	jpc        int // 链头 = 待回填到下一指令的 JMP 链(04 §5.4)
-	lastTarget int // 最近的跳转目标 pc(用于安全合并指令优化,本 P1 暂仅作哨兵)
+	jpc        int // chain head = JMP chain pending patch onto the next instruction (04 §5.4)
+	lastTarget int // most recent jump target pc (for the safe instruction-merge optimization; in this P1 it is only a sentinel for now)
 
-	consts map[constKey]int // 常量去重(04 §11)
+	consts map[constKey]int // constant dedup (04 §11)
 
-	// localFnAsts 跟踪本 funcState 内 `local function X` 形态定义的 local
-	// 函数名 → AST(承 P4 PJ5 scope-aware analyzer 扩展,let inner Proto
-	// AnalyzeProto 知道 outer 已知 local 函数,识别 GETUPVAL+CALL+RETURN void
-	// 形态调用 outer local fn 为 known 而非 unknown call)。
+	// localFnAsts maps the local function name → AST for locals defined via
+	// the `local function X` form within this funcState (extended by the P4 PJ5
+	// scope-aware analyzer, so an inner Proto's AnalyzeProto knows the outer's
+	// known local functions and recognizes a GETUPVAL+CALL+RETURN void call to
+	// an outer local fn as a known rather than unknown call).
 	//
-	// **范围**:仅本 funcState 内 stmtLocalFunc 注册的 fn(LocalFuncStmt);
-	// `local f = function() end` AssignStmt+FuncExpr 复合形态当前不跟踪
-	// (留下一 commit 扩展);全局 / 表字段 fn 永远不跟踪(运行期可被覆盖)。
+	// **Scope**: only fns registered by stmtLocalFunc within this funcState
+	// (LocalFuncStmt); the composite `local f = function() end` AssignStmt+FuncExpr
+	// form is not tracked for now (left to the next commit to extend); global /
+	// table-field fns are never tracked (they can be overwritten at runtime).
 	localFnAsts map[string]*ast.FuncExpr
 
 	// localAliasAsts tracks `local sqrt = math.sqrt`-style bindings: local
@@ -94,7 +98,7 @@ type funcState struct {
 	isVararg bool
 }
 
-// newFuncState 创建一个新的函数级 codegen 状态。
+// newFuncState creates a new function-level codegen state.
 func newFuncState(cg *codegen, prev *funcState, source string, line int32) *funcState {
 	fs := &funcState{
 		proto: &bytecode.Proto{
@@ -113,7 +117,7 @@ func newFuncState(cg *codegen, prev *funcState, source string, line int32) *func
 }
 
 // emit appends a 32-bit instruction with the source line and an empty IC slot.
-// 每次 emit 之前先 dischargeJpc:把 jpc 链全部回填到当前 pc。
+// Before every emit, dischargeJpc first: patch the entire jpc chain onto the current pc.
 func (fs *funcState) emit(line int32, instr bytecode.Instruction) int {
 	fs.dischargeJpc()
 	pc := len(fs.proto.Code)
@@ -123,7 +127,7 @@ func (fs *funcState) emit(line int32, instr bytecode.Instruction) int {
 	return pc
 }
 
-// emitABC / emitABx / emitAsBx 是按格式发射的便捷封装。
+// emitABC / emitABx / emitAsBx are convenience wrappers that emit by format.
 func (fs *funcState) emitABC(line int32, op bytecode.OpCode, a, b, c int) int {
 	return fs.emit(line, bytecode.EncodeABC(op, a, b, c))
 }
@@ -134,10 +138,10 @@ func (fs *funcState) emitAsBx(line int32, op bytecode.OpCode, a, sbx int) int {
 	return fs.emit(line, bytecode.EncodeAsBx(op, a, sbx))
 }
 
-// pc 返回下一条将发射指令的位置。
+// pc returns the position of the next instruction to be emitted.
 func (fs *funcState) pc() int { return len(fs.proto.Code) }
 
-// reserveRegs 抬高水位线,并刷 MaxStack(04 §5.3)。
+// reserveRegs raises the water line and updates MaxStack (04 §5.3).
 func (fs *funcState) reserveRegs(line int32, n int) {
 	fs.checkStack(line, n)
 	fs.freereg += n
@@ -146,28 +150,28 @@ func (fs *funcState) reserveRegs(line int32, n int) {
 	}
 }
 
-// checkStack 在水位 + n 超 MaxStack(250)时报「function or expression too complex」(04 §9)。
+// checkStack raises "function or expression too complex" when the water line + n exceeds MaxStack (250) (04 §9).
 func (fs *funcState) checkStack(line int32, n int) {
 	if fs.freereg+n > bytecode.MaxStack {
 		raise(fs, line, "function or expression too complex")
 	}
 }
 
-// freeReg 释放一个临时寄存器(必须是 ≥ nactvar 且为栈顶,即"上一次 reserve 的那一个")。
+// freeReg frees one temporary register (must be ≥ nactvar and at the top of stack, i.e. "the one reserved last").
 func (fs *funcState) freeReg(r int) {
 	if r >= fs.nactvar && r == fs.freereg-1 {
 		fs.freereg--
 	}
 }
 
-// freeExp 若 e 是 ENonReloc 临时,归还其寄存器。
+// freeExp returns e's register if e is an ENonReloc temporary.
 func (fs *funcState) freeExp(e *expDesc) {
 	if e.k == eNonReloc {
 		fs.freeReg(e.info)
 	}
 }
 
-// addConst 去重并返回常量索引(04 §11)。字符串走惰性 intern 路径(Proto.StringLits)。
+// addConst dedups and returns the constant index (04 §11). Strings take the lazy intern path (Proto.StringLits).
 func (fs *funcState) addConst(line int32, key constKey, v value.Value, lit string) int {
 	if idx, ok := fs.consts[key]; ok {
 		return idx
@@ -177,7 +181,7 @@ func (fs *funcState) addConst(line int32, key constKey, v value.Value, lit strin
 		raise(fs, line, "constant table overflow")
 	}
 	fs.proto.Consts = append(fs.proto.Consts, v)
-	if key.kind == 1 { // string literal — lazy intern (Proto §字面量惰性 intern 注释)。
+	if key.kind == 1 { // string literal — lazy intern (see Proto's lazy-literal-intern comment).
 		litIdx := int32(len(fs.proto.StringLits))
 		fs.proto.StringLits = append(fs.proto.StringLits, lit)
 		fs.proto.StringLitIdx = append(fs.proto.StringLitIdx, litIdx)
@@ -189,14 +193,17 @@ func (fs *funcState) addConst(line int32, key constKey, v value.Value, lit strin
 }
 
 func numConstKey(f float64) constKey {
-	// canonicalize NaN to mirror runtime NumberValue (04 §5.5)。
+	// canonicalize NaN to mirror runtime NumberValue (04 §5.5).
 	if f != f {
 		return constKey{kind: 0, bits: value.CanonNaN()}
 	}
-	// 零归一:PUC addk 用数值相等(luaH_set 数字键)去重,+0.0 == -0.0
-	// 命中同槽,物理存先到的零(保留其符号)。Float64bits 区分 ±0 的符号位
-	// 会让两者分占常量槽,折叠出的 -0.0 不再复用先到的 +0.0 → tostring 错出
-	// "-0"(应 "0")。归一 ±0 共享键,addConst 先到先得自动保留首次符号。
+	// Zero normalization: PUC addk dedups by numeric equality (luaH_set number
+	// key), so +0.0 == -0.0 hits the same slot and physically stores whichever
+	// zero arrived first (keeping its sign). Float64bits distinguishes the sign
+	// bit of ±0, which would make the two occupy separate constant slots, so a
+	// folded -0.0 no longer reuses the earlier +0.0 → tostring wrongly yields
+	// "-0" (should be "0"). Normalizing ±0 to a shared key lets addConst's
+	// first-come-first-served automatically preserve the first sign.
 	if f == 0 {
 		return constKey{kind: 0, bits: 0}
 	}
@@ -211,7 +218,7 @@ func (fs *funcState) strK(line int32, s string) int {
 	return fs.addConst(line, strConstKey(s), value.Nil, s)
 }
 
-// findLocal 在当前函数活跃局部里逆序查找(后声明的覆盖先声明)。返回寄存器号或 -1。
+// findLocal searches the current function's active locals in reverse order (later declarations shadow earlier ones). Returns the register number or -1.
 func (fs *funcState) findLocal(name string) int {
 	for i := fs.nactvar - 1; i >= 0; i-- {
 		if fs.locvars[fs.actvar[i]].name == name {
@@ -221,7 +228,7 @@ func (fs *funcState) findLocal(name string) int {
 	return -1
 }
 
-// findUpval 在已登记的 upvalue 里查重名;返回索引或 -1。
+// findUpval looks up a duplicate name among the registered upvalues; returns the index or -1.
 func (fs *funcState) findUpval(name string) int {
 	for i, u := range fs.upvals {
 		if u.name == name {
@@ -231,7 +238,7 @@ func (fs *funcState) findUpval(name string) int {
 	return -1
 }
 
-// addUpval 登记一个新 upvalue,返回索引。
+// addUpval registers a new upvalue and returns its index.
 func (fs *funcState) addUpval(line int32, name string, inStack bool, idx uint8) int {
 	if len(fs.upvals) >= bytecode.MaxUpvalues {
 		raise(fs, line, "too many upvalues")
@@ -241,7 +248,7 @@ func (fs *funcState) addUpval(line int32, name string, inStack bool, idx uint8) 
 	return len(fs.upvals) - 1
 }
 
-// registerLocal 声明一个新局部变量(必须在 RHS 求值之后调用,04 §5.8)。
+// registerLocal declares a new local variable (must be called after the RHS is evaluated, 04 §5.8).
 func (fs *funcState) registerLocal(line int32, name string) int {
 	if fs.nactvar >= bytecode.MaxLocVars {
 		raise(fs, line, "too many local variables")
@@ -257,7 +264,7 @@ func (fs *funcState) registerLocal(line int32, name string) int {
 	return fs.nactvar - 1
 }
 
-// removeVars 退到 level 个活跃局部,关闭它们的活跃区间(04 §5.9)。
+// removeVars pops back to level active locals, closing their live ranges (04 §5.9).
 func (fs *funcState) removeVars(level int) {
 	for fs.nactvar > level {
 		fs.nactvar--
@@ -265,7 +272,7 @@ func (fs *funcState) removeVars(level int) {
 	}
 }
 
-// enterBlock 进块。
+// enterBlock enters a block.
 func (fs *funcState) enterBlock(isLoop bool) {
 	fs.bl = &blockCnt{
 		prev:        fs.bl,
@@ -274,14 +281,14 @@ func (fs *funcState) enterBlock(isLoop bool) {
 		isLoop:      isLoop,
 	}
 	if fs.freereg != fs.nactvar {
-		// 设计期不变式 (04 §5.1):进块不变式
-		// 出现违例属于 codegen bug,直接 panic 暴露(单测会捕获)。
+		// Design-time invariant (04 §5.1): the enter-block invariant.
+		// A violation is a codegen bug, so panic to expose it directly (unit tests will catch it).
 		panic(fmt.Sprintf("compile: enterBlock invariant violated: freereg=%d nactvar=%d",
 			fs.freereg, fs.nactvar))
 	}
 }
 
-// leaveBlock 出块:闭合活跃区间、释放临时、CLOSE 开放 upvalue(04 §6.1)。
+// leaveBlock leaves a block: close live ranges, free temporaries, CLOSE open upvalues (04 §6.1).
 func (fs *funcState) leaveBlock(line int32) {
 	bl := fs.bl
 	fs.removeVars(bl.nactvarSnap)
@@ -295,9 +302,9 @@ func (fs *funcState) leaveBlock(line int32) {
 	}
 }
 
-// ----- 跳转链 -----
+// ----- Jump chains -----
 
-// jump 发射一条 JMP,sBx 临时存 jpc 链入(链表嵌指令流,04 §5.4)。
+// jump emits a JMP; its sBx temporarily stores the jpc chain link (the linked list is embedded in the instruction stream, 04 §5.4).
 func (fs *funcState) jump(line int32) int {
 	jpc := fs.jpc
 	fs.jpc = NoJump
@@ -306,7 +313,7 @@ func (fs *funcState) jump(line int32) int {
 	return pc
 }
 
-// getJump 读 pc 处 JMP 的链接,返回链中下一 pc 或 NoJump。
+// getJump reads the link of the JMP at pc, returning the next pc in the chain or NoJump.
 func (fs *funcState) getJump(pc int) int {
 	off := bytecode.SBx(fs.proto.Code[pc])
 	if off == NoJump {
@@ -315,9 +322,9 @@ func (fs *funcState) getJump(pc int) int {
 	return pc + 1 + off
 }
 
-// fixJump 把 pc 处跳转(JMP/FORPREP/FORLOOP)的 sBx 改写为指向 dest 的相对偏移(04 §5.4)。
+// fixJump rewrites the sBx of the jump at pc (JMP/FORPREP/FORLOOP) into a relative offset pointing to dest (04 §5.4).
 //
-// 保留原 op/A 字段不变(使本 helper 也可用于 FORPREP/FORLOOP 这类带 sBx 的非 JMP 指令)。
+// The original op/A fields are left unchanged (so this helper also works for non-JMP instructions carrying an sBx, like FORPREP/FORLOOP).
 func (fs *funcState) fixJump(line int32, pc, dest int) {
 	if dest == NoJump {
 		fs.proto.Code[pc] = bytecode.SetSBx(fs.proto.Code[pc], NoJump)
@@ -330,7 +337,7 @@ func (fs *funcState) fixJump(line int32, pc, dest int) {
 	fs.proto.Code[pc] = bytecode.SetSBx(fs.proto.Code[pc], off)
 }
 
-// concat 把链 l2 接到 *l1 尾部(04 §5.4)。
+// concat appends chain l2 to the tail of *l1 (04 §5.4).
 func (fs *funcState) concat(l1 *int, l2 int) {
 	if l2 == NoJump {
 		return
@@ -350,7 +357,7 @@ func (fs *funcState) concat(l1 *int, l2 int) {
 	fs.proto.Code[cur] = bytecode.SetSBx(fs.proto.Code[cur], l2-(cur+1))
 }
 
-// patchList 把整条链 list 全部回填到 target(经 patchListAux 退化无主 TESTSET)。
+// patchList patches the entire chain list onto target (via patchListAux, degrading ownerless TESTSETs).
 func (fs *funcState) patchList(list, target int) {
 	if target == fs.pc() {
 		fs.patchToHere(list)
@@ -359,16 +366,17 @@ func (fs *funcState) patchList(list, target int) {
 	fs.patchListAux(list, target, bytecode.NoRegister, target)
 }
 
-// patchToHere 把 list 合并进 jpc(下一条指令时一起回填)。
+// patchToHere merges list into jpc (patched together on the next instruction).
 func (fs *funcState) patchToHere(list int) {
 	fs.lastTarget = fs.pc()
 	fs.concat(&fs.jpc, list)
 }
 
-// dischargeJpc 在每次发射前把 jpc 全部回填到当前 pc。
+// dischargeJpc patches the entire jpc onto the current pc before every emit.
 //
-// 对齐 Lua 5.1 dischargejpc:必须走 patchListAux(reg=NoRegister),让链上
-// 无主 TESTSET 退化为 TEST——否则 TESTSET 的 A=255 占位会写越界寄存器。
+// Aligned with Lua 5.1 dischargejpc: it must go through patchListAux(reg=NoRegister)
+// so that ownerless TESTSETs on the chain degrade to TEST — otherwise a TESTSET's
+// A=255 placeholder would write to an out-of-bounds register.
 func (fs *funcState) dischargeJpc() {
 	if fs.jpc == NoJump {
 		return
@@ -378,14 +386,14 @@ func (fs *funcState) dischargeJpc() {
 	fs.patchListAux(list, fs.pc(), bytecode.NoRegister, fs.pc())
 }
 
-// getLabel 返回当前 pc 并标记为跳转目标(刷新 lastTarget,顺带把待 jpc 回填)。
+// getLabel returns the current pc and marks it as a jump target (refreshing lastTarget and incidentally patching the pending jpc).
 func (fs *funcState) getLabel() int {
 	fs.lastTarget = fs.pc()
 	fs.dischargeJpc()
 	return fs.pc()
 }
 
-// ----- 错误辅助 -----
+// ----- Error helpers -----
 
 // CompileError carries source/line for compile-time diagnostics (04 §9).
 type CompileError struct {
@@ -398,7 +406,7 @@ func (e *CompileError) Error() string {
 	return fmt.Sprintf("%s:%d: %s", bytecode.ChunkID(e.Source), e.Line, e.Msg)
 }
 
-// raise 通过 panic(*CompileError) 抛出,顶层 Compile 用 recover 捕获。
+// raise throws via panic(*CompileError); the top-level Compile catches it with recover.
 func raise(fs *funcState, line int32, format string, args ...any) {
 	src := ""
 	if fs != nil && fs.proto != nil {

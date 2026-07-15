@@ -9,15 +9,17 @@ import (
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
-// gibbous_pj3_forloop_e2e_test.go —— PJ3 字节级 FORLOOP inline 真升层
-// e2e:`function() for i=1,K do end end`(全常量空 body)经 P4 升层后
-// mmap 段内自循环,完整 idx 累加 + ucomisd limit + backward jmp 跑通。
+// gibbous_pj3_forloop_e2e_test.go —— PJ3 byte-level FORLOOP inline real
+// tier-up e2e: `function() for i=1,K do end end` (all-constant empty body)
+// self-loops inside the mmap segment after P4 tier-up, running the full idx
+// accumulation + ucomisd limit + backward jmp.
 //
-// 这是 **PJ3 真接入主路径** 的物理证据(从 PJ2 单 op spec 模板跨进
-// PJ3 字节级控制流 inline)——P4 首次在 mmap 段内**字节级跑循环**,
-// 不经任何 host helper round-trip。
+// This is physical evidence of the **PJ3 real main path** (crossing from the
+// PJ2 single-op spec template into PJ3 byte-level control-flow inline) — the
+// first time P4 runs a **byte-level loop** inside the mmap segment without any
+// host-helper round-trip.
 
-// TestPJ3_ForLoopEmpty_E2E_FastPath:全常量空 for 循环真升层。
+// TestPJ3_ForLoopEmpty_E2E_FastPath: all-constant empty for loop, real tier-up.
 func TestPJ3_ForLoopEmpty_E2E_FastPath(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -44,8 +46,9 @@ return 42`
 		jit.SpecForLoopHits(), jit.SpecRegKHits(), jit.SpecRegRegHits(), jit.SpecChainHits())
 }
 
-// TestPJ3_ForLoopEmpty_E2E_SingleIter:`for i=1,1 do end`(单次迭代),
-// 验证 FORLOOP idx 累加 + ucomisd 边界正确(idx=1=limit 时 cont).
+// TestPJ3_ForLoopEmpty_E2E_SingleIter: `for i=1,1 do end` (single iteration),
+// verifying FORLOOP idx accumulation + ucomisd bound is correct (cont when
+// idx=1=limit).
 func TestPJ3_ForLoopEmpty_E2E_SingleIter(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -70,8 +73,8 @@ return 1`
 	}
 }
 
-// TestPJ3_ForLoopEmpty_E2E_LongLoop:`for i=1,1000 do end`(千次迭代),
-// 测试 backward jmp 跑长循环.
+// TestPJ3_ForLoopEmpty_E2E_LongLoop: `for i=1,1000 do end` (thousand
+// iterations), testing backward jmp over a long loop.
 func TestPJ3_ForLoopEmpty_E2E_LongLoop(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -96,8 +99,8 @@ return 1000`
 	}
 }
 
-// TestPJ3_ForLoopRegLimit_E2E_FastPath:`function(n) for i=1,n do end end`
-// + f(1000) — reg-limit 形态 hot path,IsNumber guard 通过 → 字节级 loop.
+// TestPJ3_ForLoopRegLimit_E2E_FastPath: `function(n) for i=1,n do end end`
+// + f(1000) — reg-limit form hot path, IsNumber guard passes → byte-level loop.
 func TestPJ3_ForLoopRegLimit_E2E_FastPath(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -123,8 +126,8 @@ return 1000`
 	t.Logf("reg-limit fast path:SpecForLoopHits=%d", jit.SpecForLoopHits())
 }
 
-// TestPJ3_ForLoopRegLimit_E2E_DeoptPath:`f(\"not_a_number\")` — limit 非
-// number → IsNumber guard 失败 → host.ForPrep raise.
+// TestPJ3_ForLoopRegLimit_E2E_DeoptPath: `f(\"not_a_number\")` — limit is not a
+// number → IsNumber guard fails → host.ForPrep raise.
 func TestPJ3_ForLoopRegLimit_E2E_DeoptPath(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -139,17 +142,17 @@ return f("not_a_number") -- guard fail → deopt → host.ForPrep raise`
 
 	_, err := st.Call(value.GCRefOf(mainCl), nil, 1)
 	if err == nil {
-		// Lua 5.1 对 "not_a_number" 尝试 tonumber coerce 失败 raise
+		// Lua 5.1 raises when tonumber coercion of "not_a_number" fails
 		t.Logf("没 raise(可能 tonumber('not_a_number') 成功了?)")
 	} else {
 		t.Logf("reg-limit deopt path raise: %v", err)
 	}
 }
 
-// TestPJ3_ForLoopUpvalLimit_E2E_FastPath:closure capture limit
-// (`local n=1000; local function f() for i=1,n do end end`)— upvalue-
-// limit 形态:Run 端先调 host.GetUpval 写 limit reg,然后走 reg-limit
-// 模板字节级 inline.
+// TestPJ3_ForLoopUpvalLimit_E2E_FastPath: closure capture limit
+// (`local n=1000; local function f() for i=1,n do end end`) — upvalue-limit
+// form: the Run side first calls host.GetUpval to write the limit reg, then
+// takes the reg-limit template for byte-level inline.
 func TestPJ3_ForLoopUpvalLimit_E2E_FastPath(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -176,8 +179,8 @@ return n`
 	t.Logf("upvalue-limit fast path:SpecForLoopHits=%d", jit.SpecForLoopHits())
 }
 
-// TestPJ3_ForLoopWithBody_E2E_ADD:`local s=0; for i=1,100 do s=s+1 end;
-// return s` 真升层走字节级 body inline → s=100.
+// TestPJ3_ForLoopWithBody_E2E_ADD: `local s=0; for i=1,100 do s=s+1 end;
+// return s` real tier-up takes byte-level body inline → s=100.
 func TestPJ3_ForLoopWithBody_E2E_ADD(t *testing.T) {
 	jit.ResetSpecHits()
 	src := `
@@ -206,7 +209,7 @@ return f()`
 	t.Logf("body inline:SpecForLoopHits=%d", jit.SpecForLoopHits())
 }
 
-// TestPJ3_ForLoopWithBody_E2E_MUL:`local s=1; for i=1,5 do s=s*2 end;
+// TestPJ3_ForLoopWithBody_E2E_MUL: `local s=1; for i=1,5 do s=s*2 end;
 // return s` → s = 2^5 = 32.
 func TestPJ3_ForLoopWithBody_E2E_MUL(t *testing.T) {
 	jit.ResetSpecHits()
@@ -235,7 +238,7 @@ return f()`
 	}
 }
 
-// TestPJ3_ForLoopWithBody2_E2E_AddMul:二段 body 形态
+// TestPJ3_ForLoopWithBody2_E2E_AddMul: two-statement body form
 // `local s=0; for i=1,5 do s=s+1; s=s*2 end; return s`:
 //
 //	iter1: s=(0+1)*2=2 / iter2: (2+1)*2=6 / iter3: (6+1)*2=14

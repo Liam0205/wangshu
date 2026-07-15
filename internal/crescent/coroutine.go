@@ -1,9 +1,10 @@
-// Coroutines — 路线 B(08 §3):单 goroutine,resume 新起一层 execute,
-// yield 信号经 yieldRequested 冒泡到 resume 边界。
+// Coroutines — route B (08 §3): single goroutine, resume starts a new layer of
+// execute, the yield signal bubbles up to the resume boundary via yieldRequested.
 //
-// P1 的 thread 仍是 Go struct(值栈 arena 化是独立工作);协程对象用
-// lightuserdata 句柄(coID)+ State 上的注册表表示,Lua 侧 type() 经
-// 注册表识别返回 "thread"。
+// In P1 the thread is still a Go struct (moving the value stack into an arena is
+// separate work); a coroutine object is represented by a lightuserdata handle
+// (coID) + a registry on State, and the Lua-side type() recognizes it via the
+// registry to return "thread".
 package crescent
 
 import (
@@ -11,13 +12,13 @@ import (
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
-// CoStatus 是协程状态机(08 §2.3)。
+// CoStatus is the coroutine state machine (08 §2.3).
 type CoStatus uint8
 
 const (
 	CoSuspended CoStatus = iota
 	CoRunning
-	CoNormal // resume 了别的协程,自己被挂在 resume 链上
+	CoNormal // resumed another coroutine; itself is suspended on the resume chain
 	CoDead
 )
 
@@ -35,22 +36,23 @@ func (s CoStatus) String() string {
 	return "?"
 }
 
-// coroutine 是一个协程实例:独立 thread(值栈 + CallInfo 链)+ 状态。
+// coroutine is one coroutine instance: an independent thread (value stack +
+// CallInfo chain) + status.
 type coroutine struct {
 	th      *thread
 	status  CoStatus
-	fn      value.Value // 主函数(首次 resume 时启动)
+	fn      value.Value // main function (started on the first resume)
 	started bool
-	// yield 传值区(yield 时 co→resumer;resume 时 resumer→co)
+	// yield transfer area (on yield: co→resumer; on resume: resumer→co)
 	xfer []value.Value
 }
 
-// coRegistry 在 State 上注册协程(coID → *coroutine)。
+// coRegistry registers coroutines on State (coID → *coroutine).
 type coRegistry struct {
 	cos []*coroutine
 }
 
-// NewCoroutine 创建一个 suspended 协程,返回其 coID(lightuserdata 句柄)。
+// NewCoroutine creates a suspended coroutine and returns its coID (lightuserdata handle).
 func (st *State) NewCoroutine(fn value.Value) (uint64, *LuaError) {
 	// PUC luaB_cocreate: lua_isfunction && !lua_iscfunction -- host
 	// closures (C functions) are rejected too, with "Lua function
@@ -68,7 +70,7 @@ func (st *State) NewCoroutine(fn value.Value) (uint64, *LuaError) {
 	return uint64(len(st.cos.cos) - 1), nil
 }
 
-// coByID 取协程(越界返回 nil)。
+// coByID fetches a coroutine (returns nil on out-of-range).
 func (st *State) coByID(id uint64) *coroutine {
 	if int(id) >= len(st.cos.cos) {
 		return nil
@@ -76,7 +78,7 @@ func (st *State) coByID(id uint64) *coroutine {
 	return st.cos.cos[id]
 }
 
-// IsCoroutineHandle 判定一个 Value 是否协程句柄(lightuserdata + 注册表内)。
+// IsCoroutineHandle reports whether a Value is a coroutine handle (lightuserdata + in registry).
 func (st *State) IsCoroutineHandle(v value.Value) bool {
 	if value.Tag(v) != value.TagLightUD {
 		return false
@@ -84,7 +86,7 @@ func (st *State) IsCoroutineHandle(v value.Value) bool {
 	return st.coByID(value.AsLightUD(v)) != nil
 }
 
-// CoStatusOf 返回协程状态名(coroutine.status)。
+// CoStatusOf returns the coroutine's status name (coroutine.status).
 func (st *State) CoStatusOf(id uint64) string {
 	co := st.coByID(id)
 	if co == nil {
@@ -93,10 +95,11 @@ func (st *State) CoStatusOf(id uint64) string {
 	return co.status.String()
 }
 
-// Resume 恢复(或启动)协程(08 §3.5 / §4.2)。
+// Resume resumes (or starts) a coroutine (08 §3.5 / §4.2).
 //
-// 返回 (results, ok, err):ok=false 时 results[0] 是错误值(resume 把错误转
-// (false, errval) 语义在 stdlib 侧组装,这里返回原始信息)。
+// Returns (results, ok, err): when ok=false, results[0] is the error value (the
+// "resume turns an error into (false, errval)" semantics are assembled on the
+// stdlib side; here we return the raw information).
 func (st *State) Resume(id uint64, args []value.Value) ([]value.Value, bool, *LuaError) {
 	co := st.coByID(id)
 	if co == nil {
@@ -111,8 +114,8 @@ func (st *State) Resume(id uint64, args []value.Value) ([]value.Value, bool, *Lu
 	resumerTh := st.runningThread
 	co.status = CoRunning
 
-	// resume 新起一层 execute(Go 栈 +1),嵌套 resume 链与 host→Lua 重入
-	// 共享同一上限(05 §7.4)。
+	// resume starts a new layer of execute (Go stack +1); the nested resume
+	// chain and host→Lua reentry share the same limit (05 §7.4).
 	if st.nCcalls >= maxCCallDepth {
 		co.status = CoSuspended
 		return nil, false, errf("C stack overflow")
@@ -120,14 +123,15 @@ func (st *State) Resume(id uint64, args []value.Value) ([]value.Value, bool, *Lu
 	st.nCcalls++
 	defer func() { st.nCcalls-- }()
 
-	// 嵌套 resume:调用者协程转 normal(5.1 状态机;coroutine.status 可见,
-	// findRunningCo 也依赖"只有一个 CoRunning"判 yield 归属)。
+	// Nested resume: the calling coroutine turns normal (5.1 state machine;
+	// visible to coroutine.status, and findRunningCo also relies on "only one
+	// CoRunning" to decide yield ownership).
 	if resumer := st.findRunningCo(); resumer != nil {
 		resumer.status = CoNormal
 		defer func() { resumer.status = CoRunning }()
 	}
 
-	// 挂起的调用者线程入 resume 链(GC 根;06 §5.1 R4)。
+	// The suspended calling thread enters the resume chain (GC root; 06 §5.1 R4).
 	if resumerTh != nil {
 		st.threadChain = append(st.threadChain, resumerTh)
 		defer func() { st.threadChain = st.threadChain[:len(st.threadChain)-1] }()
@@ -135,7 +139,7 @@ func (st *State) Resume(id uint64, args []value.Value) ([]value.Value, bool, *Lu
 
 	var sig *LuaError
 	if !co.started {
-		// 首次 resume:在 co 的 thread 上启动主函数
+		// First resume: start the main function on co's thread
 		co.started = true
 		st.runningThread = co.th
 		co.th.push(co.fn)
@@ -149,8 +153,8 @@ func (st *State) Resume(id uint64, args []value.Value) ([]value.Value, bool, *Lu
 		}
 		sig = st.execute(co.th)
 	} else {
-		// 从 yield 恢复:把 resume 参数作为 yield 的返回值传入。
-		// 拷贝:args 可能来自 callHost 的池化缓冲,不得越过调用保留。
+		// Resume from yield: pass the resume arguments as the return values of yield.
+		// Copy: args may come from callHost's pooled buffer, must not outlive the call.
 		co.xfer = append(co.xfer[:0], args...)
 		st.runningThread = co.th
 		sig = st.executeResume(co.th)
@@ -159,19 +163,20 @@ func (st *State) Resume(id uint64, args []value.Value) ([]value.Value, bool, *Lu
 
 	if sig != nil {
 		if sig == errYieldSentinel {
-			// yield:挂起,xfer 区是 yield 的值
+			// yield: suspend, the xfer area holds the yielded values
 			co.status = CoSuspended
 			out := co.xfer
 			co.xfer = nil
 			return out, true, nil
 		}
-		// 错误:协程死亡(xfer 残值随死协程驻留注册表——注册表不收缩,
-		// 清掉与池归还同一卫生标准)
+		// Error: the coroutine dies (leftover xfer values stay resident in the
+		// registry along with the dead coroutine — the registry does not shrink;
+		// clearing it follows the same hygiene standard as returning to the pool)
 		co.status = CoDead
 		co.xfer = nil
 		return nil, false, sig
 	}
-	// 正常结束:返回值在 co.th 栈上 [0, top)
+	// Normal completion: return values are on co.th's stack at [0, top)
 	co.status = CoDead
 	co.xfer = nil
 	out := make([]value.Value, co.th.top)
@@ -179,24 +184,26 @@ func (st *State) Resume(id uint64, args []value.Value) ([]value.Value, bool, *Lu
 	return out, true, nil
 }
 
-// errYieldSentinel 是 yield 信号哨兵(05 §9 错误冒泡通道的复用;08 §3.4
-// "yield ↔ error 对称机制"的 P1 落地:同一条显式返回通道,用哨兵区分)。
+// errYieldSentinel is the yield-signal sentinel (reuses the error-bubbling
+// channel of 05 §9; the P1 realization of 08 §3.4 "yield ↔ error symmetric
+// mechanism": one explicit return channel, distinguished by the sentinel).
 var errYieldSentinel = &LuaError{Msg: "<yield>"}
 
-// Yield 触发当前协程挂起(coroutine.yield 的 host 实现入口)。
+// Yield suspends the current coroutine (the host implementation entry of coroutine.yield).
 //
-// 把 yield 值放进当前协程的 xfer 区,返回哨兵错误让 execute 冒泡。
-// callHost 收到哨兵后直接向上传(不当普通错误处理)。
+// Puts the yielded values into the current coroutine's xfer area and returns
+// the sentinel error to let execute bubble up. On receiving the sentinel,
+// callHost passes it straight up (not treated as an ordinary error).
 func (st *State) Yield(args []value.Value) *LuaError {
 	co := st.findRunningCo()
 	if co == nil {
 		return errf("attempt to yield from outside a coroutine")
 	}
-	co.xfer = append(co.xfer[:0], args...) // 拷贝:args 是池化缓冲
+	co.xfer = append(co.xfer[:0], args...) // copy: args is a pooled buffer
 	return errYieldSentinel
 }
 
-// findRunningCo 找 runningThread 对应的协程(无则 nil = 主线程)。
+// findRunningCo finds the coroutine corresponding to runningThread (nil if none = main thread).
 func (st *State) findRunningCo() *coroutine {
 	for _, co := range st.cos.cos {
 		if co.th == st.runningThread && co.status == CoRunning {
@@ -206,7 +213,7 @@ func (st *State) findRunningCo() *coroutine {
 	return nil
 }
 
-// RunningCoID 返回当前正在运行的协程 ID(主线程返回 false)。
+// RunningCoID returns the ID of the currently running coroutine (returns false for the main thread).
 func (st *State) RunningCoID() (uint64, bool) {
 	for i, co := range st.cos.cos {
 		if co.th == st.runningThread && co.status == CoRunning {
@@ -216,36 +223,40 @@ func (st *State) RunningCoID() (uint64, bool) {
 	return 0, false
 }
 
-// executeResume 从 yield 点恢复执行(08 §3.3 表格"下次 resume 从存回的
-// CallInfo 重建 frame,从 yield 的下一条指令继续")。
+// executeResume resumes execution from the yield point (08 §3.3 table: "the next
+// resume rebuilds the frame from the saved-back CallInfo and continues from the
+// instruction after yield").
 //
-// P1 实现:yield 哨兵从 callHost 冒泡时,CALL 指令已执行了一半——host 帧
-// 的返回值还没写。恢复时把 resume 参数当作"yield 调用的返回值"写到
-// CALL 的目标寄存器,然后从 pc(已指向 CALL 的下一条)继续主循环。
+// P1 implementation: when the yield sentinel bubbles up from callHost, the CALL
+// instruction is half-executed — the host frame's return values are not written
+// yet. On resume, write the resume arguments as the "return values of the yield
+// call" into CALL's target registers, then continue the main loop from pc (which
+// already points to the instruction after CALL).
 //
-// yield 时保存的恢复信息在 co.th 的 pendingResume 上(yield 经 callHost
-// 冒泡时由 doCall 记录)。
+// The recovery information saved at yield lives on co.th's pendingResume (recorded
+// by doCall when yield bubbles through callHost).
 func (st *State) executeResume(th *thread) *LuaError {
 	pr := th.pendingResume
 	th.pendingResume = nil
 	if pr == nil {
 		return errf("cannot resume: no pending yield point")
 	}
-	// 把 resume 参数写到 yield CALL 的结果寄存器
+	// Write the resume arguments into the result registers of the yield CALL
 	co := st.findRunningCo()
 	var vals []value.Value
 	if co != nil {
 		vals = co.xfer
 		co.xfer = nil
 	}
-	// resume 路径:pr.ciIndex 是 yield CALL 所在帧(yield 经 callHost 同步冒泡,
-	// 不压新 Lua 帧也不弹帧)→ 它就是当前栈顶帧(pr.ciIndex == th.ciDepth-1),
-	// ciAt 对栈顶帧返回 th.cur 热镜像。此处只读 ci.base / protoOf(只读快照,
-	// 不经 ci 改帧)。
+	// resume path: pr.ciIndex is the frame holding the yield CALL (yield bubbles
+	// synchronously through callHost, pushing no new Lua frame and popping no
+	// frame) → it is the current top frame (pr.ciIndex == th.ciDepth-1), and ciAt
+	// returns th.cur's hot mirror for the top frame. Here we only read ci.base /
+	// protoOf (read-only snapshot, not modifying the frame through ci).
 	ci := th.ciAt(pr.ciIndex)
 	want := pr.nresults
 	if want < 0 {
-		// 可变:全部落下并设 top
+		// variadic: drop them all and set top
 		need := pr.dst + len(vals)
 		th.ensureStack(need)
 		th.copyIn(pr.dst, vals)
@@ -261,14 +272,14 @@ func (st *State) executeResume(th *thread) *LuaError {
 		}
 		th.setTop(ci.base + int(st.protoOf(&ci).MaxStack))
 	}
-	// 从 yield 的下一条指令继续(pc 已指向下一条;entryDepth 用 fresh 帧深度)
+	// Continue from the instruction after yield (pc already points to the next one; entryDepth uses the fresh frame depth)
 	return st.executeFrom(th, pr.entryDepth)
 }
 
-// pendingResumeInfo 记录 yield 点的恢复信息。
+// pendingResumeInfo records the recovery information of a yield point.
 type pendingResumeInfo struct {
-	ciIndex    int // yield 发生时的 ci 下标
-	dst        int // yield CALL 的结果寄存器(绝对栈位)
-	nresults   int // yield CALL 期望的返回数
-	entryDepth int // execute 的 entry 深度(恢复后冒泡边界不变)
+	ciIndex    int // ci index when yield occurred
+	dst        int // result register of the yield CALL (absolute stack slot)
+	nresults   int // expected number of results of the yield CALL
+	entryDepth int // execute's entry depth (the bubble boundary is unchanged after resume)
 }

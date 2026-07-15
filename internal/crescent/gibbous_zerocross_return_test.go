@@ -1,11 +1,13 @@
 //go:build wangshu_p3 && wangshu_profile
 
-// PW10 零跨界 ③b 端到端验收:gibbous→gibbous 定额 RETURN 经 Wasm 内守卫快路径
-// 拆帧(免 h_return 跨界),与解释器逐字节一致 + 快路径真命中(非全程 helperReturn
-// 回退的假绿)。
+// PW10 zero-cross ③b end-to-end acceptance: gibbous→gibbous fixed-count RETURN
+// unwinds the frame via the Wasm in-guard fast path (no h_return cross-boundary),
+// byte-identical to the interpreter + the fast path is genuinely hit (not a false
+// green from falling back to helperReturn throughout).
 //
-// 探针 = st.doReturnHits(DoReturn 入口 ++)。快路径命中时**不**经 DoReturn,故对
-// gibbous→gibbous 定额返回该计数停滞;断言其增量 < 总 gibbous 返回数 ⟹ 快路径生效。
+// Probe = st.doReturnHits (DoReturn entry ++). When the fast path hits it does **not**
+// go through DoReturn, so for gibbous→gibbous fixed-count returns this counter stalls;
+// asserting its increment < total gibbous returns ⟹ the fast path is in effect.
 package crescent
 
 import (
@@ -15,10 +17,11 @@ import (
 	"github.com/Liam0205/wangshu/internal/value"
 )
 
-// TestPW10ZeroCross_ReturnFastHit:g→f→helper 三级全升。f→helper 是真 gibbous→
-// gibbous(f 跑 gibbous,caller=f 是 gibbous、定额 C=2、无开放 upvalue)⟹ helper 的
-// RETURN 走 ③b 快路径,不经 DoReturn。验:① byte-equal(141)② 快路径命中(helper
-// 返回那次 doReturnHits 不增)。
+// TestPW10ZeroCross_ReturnFastHit: g→f→helper, all three promoted. f→helper is a true
+// gibbous→gibbous (f runs gibbous, caller=f is gibbous, fixed-count C=2, no open
+// upvalue) ⟹ helper's RETURN takes the ③b fast path, not going through DoReturn.
+// Checks: ① byte-equal (141) ② fast-path hit (helper's return does not bump
+// doReturnHits).
 func TestPW10ZeroCross_ReturnFastHit(t *testing.T) {
 	src := `
 local function helper(x) return x * 2 end
@@ -39,7 +42,7 @@ return g, f, helper`
 	}
 	args := []value.Value{value.NumberValue(20)}
 
-	// g(20)=f(20)+100=(helper(20)+1)+100=41+100=141。
+	// g(20)=f(20)+100=(helper(20)+1)+100=41+100=141.
 	beforeHits := st.doReturnHits
 	beforeInd := st.indirectCalls
 	got, e := st.Call(value.GCRefOf(gVal), args, 1)
@@ -52,16 +55,17 @@ return g, f, helper`
 	indHits := st.indirectCalls - beforeInd
 	drHits := st.doReturnHits - beforeHits
 
-	// f→helper 经 call_indirect(≥1 次直调)。
+	// f→helper goes through call_indirect (≥1 direct call).
 	if indHits < 1 {
 		t.Fatalf("call_indirect 未命中(indirectCalls 增 %d),③b 前提不成立", indHits)
 	}
-	// 关键断言:helper 的 RETURN(caller=f 是 gibbous、定额 nresults=nret=1、无开放
-	// upvalue)走 ③b 快路径**不经 DoReturn**。本链共 3 次 RETURN 须经「拆帧到 caller」:
-	//   - helper→f:caller f 是 gibbous ⟹ ③b 快路径(不计 DoReturn)
-	//   - f→g:caller g 跑解释器(顶层 Call 入口)⟹ G2 miss 走 DoReturn(计 1)
-	//   - g→trampoline:顶层 ⟹ 解释器 doReturn(非 host DoReturn,不计)
-	// 故 ③b 生效 ⟹ drHits==1(仅 f→g);若 ③b 失效(helper 也走 DoReturn)⟹ drHits==2。
+	// Key assertion: helper's RETURN (caller=f is gibbous, fixed-count nresults=nret=1,
+	// no open upvalue) takes the ③b fast path **without going through DoReturn**. This
+	// chain has 3 RETURNs total that must "unwind the frame to the caller":
+	//   - helper→f: caller f is gibbous ⟹ ③b fast path (not counted in DoReturn)
+	//   - f→g: caller g runs the interpreter (top-level Call entry) ⟹ G2 miss goes through DoReturn (counts 1)
+	//   - g→trampoline: top-level ⟹ interpreter doReturn (not host DoReturn, not counted)
+	// So ③b in effect ⟹ drHits==1 (only f→g); if ③b fails (helper also goes through DoReturn) ⟹ drHits==2.
 	if drHits != 1 {
 		t.Fatalf("③b 快路径命中数异常:DoReturn 增 %d,期望 1(helper→f 走快路径、仅 f→g 经 "+
 			"DoReturn)。增 2 = helper 也回退 DoReturn(快路径未命中);增 0 = f→g 误入快路径", drHits)

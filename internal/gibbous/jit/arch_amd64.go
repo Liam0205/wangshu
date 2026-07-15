@@ -1,12 +1,14 @@
 //go:build wangshu_p4 && amd64
 
-// arch_amd64.go —— P4 PJ8 arch 路由 amd64 实装(对位 arch_arm64.go)。
+// arch_amd64.go — P4 PJ8 arch-routing amd64 implementation (mirrors arch_arm64.go).
 //
-// 把 compiler.go / code.go 里硬编码的 jitamd64 依赖移到此 arch 适配层,
-// 让 jit 包主体不依赖具体 GOARCH,arm64 build 下自动切到 jitarm64。
+// Moves the jitamd64 dependency hardcoded in compiler.go / code.go into this
+// arch adapter layer, so the jit package body no longer depends on a concrete
+// GOARCH; under an arm64 build it automatically switches to jitarm64.
 //
-// 承 docs/design/p4-method-jit/06-backends.md §1「共享骨架 + per-arch 发射器」
-// 决议——per-arch 发射函数按 build tag 各一份,jit 主包 import 中性接口。
+// Follows the docs/design/p4-method-jit/06-backends.md §1 "shared skeleton +
+// per-arch emitter" decision: one per-arch emit function per build tag, while
+// the jit main package imports a neutral interface.
 package jit
 
 import (
@@ -14,45 +16,53 @@ import (
 	jitamd64 "github.com/Liam0205/wangshu/internal/gibbous/jit/amd64"
 )
 
-// archCodePage 是 arch 抽象的可执行段——本 build 下别名 jitamd64.CodePage。
+// archCodePage is the arch-abstracted executable segment; under this build it
+// aliases jitamd64.CodePage.
 type archCodePage = jitamd64.CodePage
 
-// archEmitLoadKReturn 发射「mov RAX, value; ret」直线模板(amd64 端 11 字节)。
-// 常量族(LOADK/LOADBOOL/LOADNIL)烧 NaN-box value;prelude/比较折叠族 RAX
-// 是 dummy(由 Run 端忽略),value 仍要写入(模板字节数固定)。
+// archEmitLoadKReturn emits the straight-line template "mov RAX, value; ret"
+// (11 bytes on amd64). The constant family (LOADK/LOADBOOL/LOADNIL) bakes in
+// the NaN-boxed value; for the prelude / comparison-folding family RAX is a
+// dummy (ignored by the Run side), but value must still be written (the
+// template byte count is fixed).
 func archEmitLoadKReturn(buf []byte, value uint64) []byte {
 	buf = jitamd64.EmitMovRaxImm64(buf, value)
 	buf = jitamd64.EmitRet(buf)
 	return buf
 }
 
-// archMmapCode 把 code 写入 W^X 段(PROT_RW alloc → copy → PROT_RX 翻面)。
+// archMmapCode writes code into a W^X segment (PROT_RW alloc → copy → flip to
+// PROT_RX).
 func archMmapCode(code []byte) (*archCodePage, error) {
 	return jitamd64.MmapCode(code)
 }
 
-// archCallJITFull 跳进 mmap 段(完整 trampoline:保存 callee-saved + 装
-// jitContext 到 r15 + CALL + 恢复)。返 RAX。
+// archCallJITFull jumps into the mmap segment (full trampoline: save
+// callee-saved registers + load jitContext into r15 + CALL + restore).
+// Returns RAX.
 func archCallJITFull(codeAddr uintptr, jitCtxAddr uintptr) uint64 {
 	return jitamd64.CallJITFull(codeAddr, jitCtxAddr)
 }
 
-// archCallJITSpec 跳进 PJ2 投机模板 mmap 段(callJITSpec trampoline 同时
-// 装 r15=jitContext + rbx=valueStackBase)。返 RAX(段最后一条 mov/movsd
-// 的值,或 deopt block 烧入的 deoptCode)。
+// archCallJITSpec jumps into a PJ2 speculative-template mmap segment (the
+// callJITSpec trampoline simultaneously loads r15=jitContext + rbx=
+// valueStackBase). Returns RAX (the value of the segment's last mov/movsd, or
+// the deoptCode baked into the deopt block).
 //
-// 用例:PJ2 投机模板真接入(ADD/SUB/MUL/DIV 双 number 快路径)。
+// Use case: real integration of PJ2 speculative templates (ADD/SUB/MUL/DIV
+// dual-number fast path).
 func archCallJITSpec(codeAddr uintptr, jitCtxAddr uintptr, vsBase uintptr) uint64 {
 	return jitamd64.CallJITSpec(codeAddr, jitCtxAddr, vsBase)
 }
 
-// archSseOpForArith 把 Lua 算术 opcode 映射到 SSE binop opcode 字节。
-// 不支持的 op(MOD/POW——MOD 用 floor-mod 不是单条 SSE,POW 用 pow() helper)
-// 返回 (0, false)。
+// archSseOpForArith maps a Lua arithmetic opcode to an SSE binop opcode byte.
+// Unsupported ops (MOD/POW — MOD uses floor-mod rather than a single SSE
+// instruction, POW uses a pow() helper) return (0, false).
 //
-// **承 03-speculation-ic.md §2 投机白名单**:f64 快路径投机仅对 ADD/SUB/
-// MUL/DIV(IEEE 754 单条 SSE 指令)成立,其它算术族走 host helper 慢路径
-// (与解释器 byte-equal,无加速但正确性兜底)。
+// **Per 03-speculation-ic.md §2 speculation whitelist**: the f64 fast-path
+// speculation only holds for ADD/SUB/MUL/DIV (single IEEE 754 SSE
+// instructions); other arithmetic ops take the host-helper slow path
+// (byte-equal with the interpreter, no speedup but correctness fallback).
 func archSseOpForArith(op uint8) (byte, bool) {
 	switch bytecode.OpCode(op) {
 	case bytecode.ADD:
@@ -68,77 +78,85 @@ func archSseOpForArith(op uint8) (byte, bool) {
 	}
 }
 
-// archEmitArithSpecBinopWithGuard 拼接 PJ2 BINOP 投机模板(IsNumber×2 guard
-// + 双 number 快路径 + deopt block)字节级序列,通用版本——sseOp 由 caller
-// 经 archSseOpForArith 选好。amd64 端代理到 jitamd64.EmitArithSpeculative
-// BinopWithGuard(92 字节,与 op 无关)。
+// archEmitArithSpecBinopWithGuard splices the byte-level sequence of the PJ2
+// BINOP speculative template (IsNumber×2 guard + dual-number fast path + deopt
+// block), a generic version — sseOp is chosen by the caller via
+// archSseOpForArith. On amd64 it delegates to
+// jitamd64.EmitArithSpeculativeBinopWithGuard (92 bytes, independent of op).
 func archEmitArithSpecBinopWithGuard(buf []byte, sseOp byte, a, b, c uint8, deoptCode uint64) []byte {
 	return jitamd64.EmitArithSpeculativeBinopWithGuard(buf, sseOp, a, b, c, deoptCode)
 }
 
-// archEmitArithSpecBinopRegKWithGuard 拼接 PJ2 reg-K 形态投机模板
-// (B 是 reg + K 编译期烧 imm64,单 guard reg 端)。amd64 端代理到
-// jitamd64.EmitArithSpeculativeBinopRegKWithGuard(73 字节)。
+// archEmitArithSpecBinopRegKWithGuard splices the PJ2 reg-K form speculative
+// template (B is a reg + K bakes in an imm64 at compile time, single guard on
+// the reg side). On amd64 it delegates to
+// jitamd64.EmitArithSpeculativeBinopRegKWithGuard (73 bytes).
 func archEmitArithSpecBinopRegKWithGuard(buf []byte, sseOp byte, a, b uint8, kvalue uint64, deoptCode uint64) []byte {
 	return jitamd64.EmitArithSpeculativeBinopRegKWithGuard(buf, sseOp, a, b, kvalue, deoptCode)
 }
 
-// archEmitArithSpecChainKKWithGuard 拼接 PJ2 二段链式 reg-K-K 投机模板
-// (`R(A) = R(B) op1 K1 op2 K2`)。amd64 端代理 92 字节 chain 模板。
+// archEmitArithSpecChainKKWithGuard splices the PJ2 two-stage chained reg-K-K
+// speculative template (`R(A) = R(B) op1 K1 op2 K2`). On amd64 it delegates to
+// the 92-byte chain template.
 func archEmitArithSpecChainKKWithGuard(buf []byte, sseOp1, sseOp2 byte, a, b uint8, k1value, k2value, deoptCode uint64) []byte {
 	return jitamd64.EmitArithSpeculativeChainKKWithGuard(buf, sseOp1, sseOp2, a, b, k1value, k2value, deoptCode)
 }
 
-// archEmitForLoopEmptyConst 拼接 PJ3 全常量 init/limit/step 空 body FORLOOP
-// 模板(无 safepoint 69 字节 / 含 safepoint 83 字节,浮点 idx 累加 +
-// ucomisd limit + backward jcc + 可选 r15+disp byte cmp safepoint check)。
-// amd64 端代理 jitamd64.EmitForLoopEmptyConst。
+// archEmitForLoopEmptyConst splices the PJ3 all-constant init/limit/step
+// empty-body FORLOOP template (69 bytes without safepoint / 83 bytes with
+// safepoint: float idx accumulation + ucomisd limit + backward jcc + optional
+// r15+disp byte-cmp safepoint check). On amd64 it delegates to
+// jitamd64.EmitForLoopEmptyConst.
 //
-// preemptFlagOff >= 0 时模板含 safepoint check(承 V18 -race 抢占纪律);
-// < 0 时省略(单测 / spike 用例)。
+// When preemptFlagOff >= 0 the template includes the safepoint check (per V18
+// -race preemption discipline); when < 0 it is omitted (unit-test / spike use
+// cases).
 func archEmitForLoopEmptyConst(buf []byte, kInit, kLimit, kStep uint64, preemptFlagOff int32) []byte {
 	return jitamd64.EmitForLoopEmptyConst(buf, kInit, kLimit, kStep, preemptFlagOff)
 }
 
-// archEmitForLoopRegLimit 拼接 PJ3 reg-limit 空 body FORLOOP 模板(hot path
-// 形态 `for i=1, n do end`):IsNumber guard + 浮点 loop + 可选 safepoint
-// + deopt block。amd64 端代理 jitamd64.EmitForLoopRegLimit。
+// archEmitForLoopRegLimit splices the PJ3 reg-limit empty-body FORLOOP
+// template (the hot-path form `for i=1, n do end`): IsNumber guard + float
+// loop + optional safepoint + deopt block. On amd64 it delegates to
+// jitamd64.EmitForLoopRegLimit.
 func archEmitForLoopRegLimit(buf []byte, kInit, kStep uint64, limitReg uint8, deoptCode uint64, preemptFlagOff int32) []byte {
 	return jitamd64.EmitForLoopRegLimit(buf, kInit, kStep, limitReg, deoptCode, preemptFlagOff)
 }
 
-// archEmitForLoopWithBody 拼接 PJ3 FORLOOP body 含 reg-K op 形态模板
-// (`local s=K_s; for i=K1,K2 do s = s op K3 end; return s`)。135 字节
-// 含 safepoint check。
+// archEmitForLoopWithBody splices the PJ3 FORLOOP template for a body
+// containing a reg-K op (`local s=K_s; for i=K1,K2 do s = s op K3 end; return
+// s`). 135 bytes including the safepoint check.
 func archEmitForLoopWithBody(buf []byte, kS, kInit, kLimit, kStep, kBody uint64,
 	aS uint8, sseOp byte, preemptFlagOff int32) []byte {
 	return jitamd64.EmitForLoopWithRegKBody(buf, kS, kInit, kLimit, kStep, kBody, aS, sseOp, preemptFlagOff)
 }
 
-// archEmitForLoopWithBody2 拼接 PJ3 FORLOOP 二段 body 模板
-// (`local s; for i=K1,K2 do s = s op1 K3; s = s op2 K4 end; return s`)。
-// 154 字节复用 xmm3 跨两段省一次 load/store。
+// archEmitForLoopWithBody2 splices the PJ3 FORLOOP two-stage body template
+// (`local s; for i=K1,K2 do s = s op1 K3; s = s op2 K4 end; return s`).
+// 154 bytes, reusing xmm3 across both stages to save one load/store.
 func archEmitForLoopWithBody2(buf []byte, kS, kInit, kLimit, kStep, kBody1, kBody2 uint64,
 	aS uint8, sseOp1, sseOp2 byte, preemptFlagOff int32) []byte {
 	return jitamd64.EmitForLoopWithRegKBody2(buf, kS, kInit, kLimit, kStep, kBody1, kBody2, aS, sseOp1, sseOp2, preemptFlagOff)
 }
 
-// archEmitGetTableArrayHit 拼接 PJ4 IC ArrayHit 字节级直达槽模板
-// (132 字节,IsTable guard + arena base load + gen check + array 直达 +
-// nil check + 写 R(A) + deopt block)。amd64 端代理 jitamd64.EmitGetTableArrayHit。
+// archEmitGetTableArrayHit splices the PJ4 IC ArrayHit byte-level direct-slot
+// template (132 bytes: IsTable guard + arena base load + gen check + array
+// direct hit + nil check + write R(A) + deopt block). On amd64 it delegates to
+// jitamd64.EmitGetTableArrayHit.
 func archEmitGetTableArrayHit(buf []byte, aReg, bReg uint8, stableShape, stableIndex uint32, arenaBaseOff int32, deoptCode uint64) []byte {
 	return jitamd64.EmitGetTableArrayHit(buf, aReg, bReg, stableShape, stableIndex, arenaBaseOff, deoptCode)
 }
 
-// archEmitGetTableNodeHit 拼接 PJ4 IC NodeHit 字节级直达槽模板
-// (159 字节,严密 IsTable guard + arena base + gen check + nodeRef +
-// node[stableIndex] + key 比对 + NodeVal load + nil check + 写 R(A) +
-// deopt block)。amd64 端代理 jitamd64.EmitGetTableNodeHit。
+// archEmitGetTableNodeHit splices the PJ4 IC NodeHit byte-level direct-slot
+// template (159 bytes: strict IsTable guard + arena base + gen check + nodeRef +
+// node[stableIndex] + key compare + NodeVal load + nil check + write R(A) +
+// deopt block). On amd64 it delegates to jitamd64.EmitGetTableNodeHit.
 //
-// 与 ArrayHit 关键差异:
-//   - 取 word3=nodeRef(offset 24)而非 word2=arrayRef(offset 16)
-//   - node 步长 24 字节(nodeWords=3)而非 array 8 字节
-//   - 多 key 比对(NodeKey == stableKey 防键退化 / __index 链)
+// Key differences from ArrayHit:
+//   - reads word3=nodeRef (offset 24) instead of word2=arrayRef (offset 16)
+//   - node stride is 24 bytes (nodeWords=3) instead of array's 8 bytes
+//   - adds a key compare (NodeKey == stableKey, guarding against key
+//     degradation / __index chains)
 func archEmitGetTableNodeHit(buf []byte, aReg, bReg uint8,
 	stableShape, stableIndex uint32, stableKey uint64,
 	arenaBaseOff int32, deoptCode uint64) []byte {
@@ -146,35 +164,38 @@ func archEmitGetTableNodeHit(buf []byte, aReg, bReg uint8,
 		stableShape, stableIndex, stableKey, arenaBaseOff, deoptCode)
 }
 
-// archEmitSetTableArrayHit 拼接 PJ4 SETTABLE IC ArrayHit 字节级反向写模板
-// (113 字节,严密 IsTable guard + arena base + gen check + arrayRef +
-// load R(C) value → rdx + 反向 store [r14+rcx+stableIndex*8] from rdx +
-// ret + deopt block)。amd64 端代理 jitamd64.EmitSetTableArrayHit。
+// archEmitSetTableArrayHit splices the PJ4 SETTABLE IC ArrayHit byte-level
+// reverse-write template (113 bytes: strict IsTable guard + arena base +
+// gen check + arrayRef + load R(C) value → rdx + reverse store
+// [r14+rcx+stableIndex*8] from rdx + ret + deopt block). On amd64 it delegates
+// to jitamd64.EmitSetTableArrayHit.
 //
-// **setter 形态**:retB=1(SETTABLE 0 返回值),Run 端不写 R(A)。
+// **setter form**: retB=1 (SETTABLE has 0 return values), the Run side does not
+// write R(A).
 func archEmitSetTableArrayHit(buf []byte, aReg, cReg uint8,
 	stableShape, stableIndex uint32, arenaBaseOff int32, deoptCode uint64) []byte {
 	return jitamd64.EmitSetTableArrayHit(buf, aReg, cReg,
 		stableShape, stableIndex, arenaBaseOff, deoptCode)
 }
 
-// archEmitSelfArrayHit 拼接 PJ4 SELF IC ArrayHit 字节级 inline 模板
-// (139 字节,GETTABLE ArrayHit 132 + R(A+1) 拷段 7 字节)。amd64 端代理
-// jitamd64.EmitSelfArrayHit。
+// archEmitSelfArrayHit splices the PJ4 SELF IC ArrayHit byte-level inline
+// template (139 bytes: GETTABLE ArrayHit 132 + a 7-byte R(A+1) copy segment).
+// On amd64 it delegates to jitamd64.EmitSelfArrayHit.
 //
-// **SELF 形态**:R(A+1) := R(B);R(A) := R(B)[K]。模板入口先 store
-// R(A+1) = R(B),然后走 GETTABLE ArrayHit 同款流程取 R(A)。
+// **SELF form**: R(A+1) := R(B); R(A) := R(B)[K]. The template first stores
+// R(A+1) = R(B) at entry, then runs the same GETTABLE ArrayHit flow to fetch
+// R(A).
 func archEmitSelfArrayHit(buf []byte, aReg, bReg uint8,
 	stableShape, stableIndex uint32, arenaBaseOff int32, deoptCode uint64) []byte {
 	return jitamd64.EmitSelfArrayHit(buf, aReg, bReg,
 		stableShape, stableIndex, arenaBaseOff, deoptCode)
 }
 
-// archEmitSetTableNodeHit 拼接 PJ4 SETTABLE IC NodeHit 字节级反向写模板
-// (140 字节,GetTable NodeHit 159 - getter 段 34 + setter 段 15)。amd64
-// 端代理 jitamd64.EmitSetTableNodeHit。
+// archEmitSetTableNodeHit splices the PJ4 SETTABLE IC NodeHit byte-level
+// reverse-write template (140 bytes: GetTable NodeHit 159 - getter segment 34 +
+// setter segment 15). On amd64 it delegates to jitamd64.EmitSetTableNodeHit.
 //
-// **setter NodeHit 形态**:hash 段 NodeKey 比对 + 反向写 NodeVal。
+// **setter NodeHit form**: hash-segment NodeKey compare + reverse-write NodeVal.
 func archEmitSetTableNodeHit(buf []byte, aReg, cReg uint8,
 	stableShape, stableIndex uint32, stableKey uint64,
 	arenaBaseOff int32, deoptCode uint64) []byte {
@@ -182,13 +203,13 @@ func archEmitSetTableNodeHit(buf []byte, aReg, cReg uint8,
 		stableShape, stableIndex, stableKey, arenaBaseOff, deoptCode)
 }
 
-// archEmitSelfNodeHit 拼接 PJ4 SELF IC NodeHit 字节级 inline 模板
-// (166 字节,SELF ArrayHit 139 + key 比对 27 字节)。amd64 端代理
-// jitamd64.EmitSelfNodeHit。
+// archEmitSelfNodeHit splices the PJ4 SELF IC NodeHit byte-level inline
+// template (166 bytes: SELF ArrayHit 139 + a 27-byte key compare). On amd64 it
+// delegates to jitamd64.EmitSelfNodeHit.
 //
-// **SELF NodeHit 形态**:R(A+1) := R(B);R(A) := R(B)[K_string]
-// (经 hash 段 NodeKey 比对 + NodeVal load)。这是 real-world
-// `obj:method()` 调用的典型 IC 形态(method 是字符串 ident)。
+// **SELF NodeHit form**: R(A+1) := R(B); R(A) := R(B)[K_string]
+// (via a hash-segment NodeKey compare + NodeVal load). This is the typical IC
+// form for real-world `obj:method()` calls (where method is a string ident).
 func archEmitSelfNodeHit(buf []byte, aReg, bReg uint8,
 	stableShape, stableIndex uint32, stableKey uint64,
 	arenaBaseOff int32, deoptCode uint64) []byte {
@@ -196,9 +217,9 @@ func archEmitSelfNodeHit(buf []byte, aReg, bReg uint8,
 		stableShape, stableIndex, stableKey, arenaBaseOff, deoptCode)
 }
 
-// archEmitSelfNodeHitNoRet 同 archEmitSelfNodeHit 但成功路径不 ret(承
-// §9.20.9 commit-5j useFrameInline 路径修通 — fall-through 到 BuildVoid0Arg
-// 段)。
+// archEmitSelfNodeHitNoRet is the same as archEmitSelfNodeHit but its success
+// path does not ret (per §9.20.9 commit-5j, which fixed the useFrameInline path
+// — it falls through to the BuildVoid0Arg segment).
 func archEmitSelfNodeHitNoRet(buf []byte, aReg, bReg uint8,
 	stableShape, stableIndex uint32, stableKey uint64,
 	arenaBaseOff int32, deoptCode uint64) []byte {
@@ -206,10 +227,11 @@ func archEmitSelfNodeHitNoRet(buf []byte, aReg, bReg uint8,
 		stableShape, stableIndex, stableKey, arenaBaseOff, deoptCode)
 }
 
-// archEmitSpecArgLoadK / archEmitSpecArgLoadReg arm-routed amd64 实装(承
-// PJ5 SELF + CALL spec template args 装载字节级 inline,跳过 host.GetReg/
-// SetReg round-trip)。arm64 端 stub(留 PJ8+ 物理 runner 启用前),其它
-// arch 同 amd64 fallback 走非 spec 路径。
+// archEmitSpecArgLoadK / archEmitSpecArgLoadReg are the arm-routed amd64
+// implementations (per PJ5, they byte-level inline the SELF + CALL spec template
+// arg loads, skipping the host.GetReg/SetReg round-trip). On arm64 these are
+// stubs (until the physical runner is enabled in PJ8+); other arches, like the
+// amd64 fallback, take the non-spec path.
 func archEmitSpecArgLoadK(buf []byte, dstReg uint8, k uint64) []byte {
 	return jitamd64.EmitSpecArgLoadK(buf, dstReg, k)
 }
@@ -217,31 +239,36 @@ func archEmitSpecArgLoadReg(buf []byte, dstReg uint8, srcReg uint8) []byte {
 	return jitamd64.EmitSpecArgLoadReg(buf, dstReg, srcReg)
 }
 
-// archSupportsSpec 返 true 当本 arch 支持 PJ2 投机模板真接入。
-// amd64 ✅;arm64/其它 ❌(留 PJ8+)。
+// archSupportsSpec returns true when this arch supports the live PJ2
+// speculative template path. amd64 ✅; arm64/others ❌ (deferred to PJ8+).
 func archSupportsSpec() bool { return true }
 
-// archSupportsForLoop 返 true 当本 arch 支持 PJ3 FORLOOP 模板真接入
-// (经 archCallJITFull 主路径,不经 spec trampoline)。amd64 ✅(本就经
-// archSupportsSpec 启用,本函数为新 arch 提供解耦闸门);arm64 ✅
-// (本会话 PJ8 arm64 PJ3 全四形态字节级模板真接入完整)。
+// archSupportsForLoop returns true when this arch supports the live PJ3 FORLOOP
+// template path (via the archCallJITFull main path, not the spec trampoline).
+// amd64 ✅ (already enabled via archSupportsSpec; this function provides a
+// decoupled switch for new arches); arm64 ✅ (this session completed the live
+// byte-level templates for all four PJ8 arm64 PJ3 forms).
 func archSupportsForLoop() bool { return true }
 
-// archEmitHelperCall 发射 helper call 通用宏(amd64 端:`mov rax, helperAddr
-// imm64 + call rax`,12 字节)。对位 arm64 EmitHelperCallArm64(20 字节)。
+// archEmitHelperCall emits the generic helper-call macro (on amd64: `mov rax,
+// helperAddr imm64 + call rax`, 12 bytes). It mirrors arm64's
+// EmitHelperCallArm64 (20 bytes).
 //
-// 用于 PJ5 CALL/TAILCALL 真接入 + PJ4 deopt 路径调 host helper(host.DoCall
-// / host.GetTable / host.Arith 等)。helperAddr 是 helper function 物理
-// 地址(经 jit Compile 时编译期求出,reflect.ValueOf(fn).Pointer())。
+// Used by the live PJ5 CALL/TAILCALL path + the PJ4 deopt path when calling host
+// helpers (host.DoCall / host.GetTable / host.Arith, etc.). helperAddr is the
+// helper function's physical address (resolved at jit Compile time via
+// reflect.ValueOf(fn).Pointer()).
 //
-// **接入路径**:本函数当前无 caller,留作 PJ5 真接入工程基础——下一步
-// archEmitHelperCall 嵌入 inline CALL 模板时调用本宏。
+// **Integration path**: this function currently has no caller; it is kept as
+// engineering groundwork for the live PJ5 path — the next step is to call this
+// macro when embedding archEmitHelperCall into the inline CALL template.
 func archEmitHelperCall(buf []byte, helperAddr uint64) []byte {
 	return jitamd64.EmitHelperCall(buf, helperAddr)
 }
 
-// archEncodedHelperCallLen 是 helper call 通用宏字节数(amd64 = 12,
-// arm64 = 20)。caller 用于 inline CALL 模板长度预算。
+// archEncodedHelperCallLen is the byte length of the generic helper-call macro
+// (amd64 = 12, arm64 = 20). Callers use it for inline CALL template length
+// budgeting.
 const archEncodedHelperCallLen = jitamd64.EncodedHelperCallLen
 
 // archEmitFrameInlineBuildVoid0ArgSkeleton splices the amd64 Spike 1
@@ -262,48 +289,52 @@ func archEmitFrameInlineBuildVoid0ArgSkeleton(buf []byte,
 		jitamd64.FrameInlineCISlotWords{Word0: w0, Word1: w1, Word2: w2, Word3: 0, Word4: w4})
 }
 
-// archEmitFrameInlinePopVoid0ArgSkeleton 拼接 amd64 Spike 1 popCallInfo
-// 字节级 inline 骨架(10 字节,承 §9.20 Option B Spike 1)。
+// archEmitFrameInlinePopVoid0ArgSkeleton splices the amd64 Spike 1 popCallInfo
+// byte-level inline skeleton (10 bytes, per §9.20 Option B Spike 1).
 func archEmitFrameInlinePopVoid0ArgSkeleton(buf []byte, ciDepthAddrOff int32) []byte {
 	return jitamd64.EmitFrameInlinePopVoid0ArgSkeleton(buf, ciDepthAddrOff)
 }
 
-// archEmitFrameInlineExitHelperRequest 拼接 amd64 Spike 1 trampoline
-// exit-resume 协议 exit-helper-request 段(24 字节,承 §9.20.9 (4))。
+// archEmitFrameInlineExitHelperRequest splices the amd64 Spike 1 trampoline
+// exit-resume protocol's exit-helper-request segment (24 bytes, per
+// §9.20.9 (4)).
 func archEmitFrameInlineExitHelperRequest(buf []byte,
 	exitReasonOff, exitArg0Off int32, helperCode uint64) []byte {
 	return jitamd64.EmitFrameInlineExitHelperRequest(buf,
 		exitReasonOff, exitArg0Off, helperCode)
 }
 
-// archEncodedFrameInlineBuildVoid0ArgSkeletonLen amd64 Spike 1 enterLuaFrame
-// 骨架字节数(120)。
+// archEncodedFrameInlineBuildVoid0ArgSkeletonLen is the byte length of the amd64
+// Spike 1 enterLuaFrame skeleton (120).
 const archEncodedFrameInlineBuildVoid0ArgSkeletonLen = jitamd64.EncodedFrameInlineBuildVoid0ArgSkeletonLen
 
-// archEncodedFrameInlinePopVoid0ArgSkeletonLen amd64 Spike 1 popCallInfo
-// 骨架字节数(10)。
+// archEncodedFrameInlinePopVoid0ArgSkeletonLen is the byte length of the amd64
+// Spike 1 popCallInfo skeleton (10).
 const archEncodedFrameInlinePopVoid0ArgSkeletonLen = jitamd64.EncodedFrameInlinePopVoid0ArgSkeletonLen
 
-// archEncodedFrameInlineExitHelperRequestLen amd64 Spike 1 exit-helper-request
-// 段字节数(24,承 §9.20.9 (4) optimized form)。
+// archEncodedFrameInlineExitHelperRequestLen is the byte length of the amd64
+// Spike 1 exit-helper-request segment (24, per §9.20.9 (4) optimized form).
 const archEncodedFrameInlineExitHelperRequestLen = jitamd64.EncodedFrameInlineExitHelperRequestLen
 
-// archSupportsFrameInline 返 true 当本 arch 支持 PJ5 Option B 帧建立内联
-// 真接入(承 §9.20 Spike 1)。
+// archSupportsFrameInline returns true when this arch supports the live PJ5
+// Option B frame-build inlining path (per §9.20 Spike 1).
 //
-// **2026-06-28 amd64 真接入翻 true**(承 §9.20.9 commit-5h):字节级 emit 模板
-// (BuildVoid0ArgSkeleton 120B + ExitHelperRequest 24B + PopVoid0ArgSkeleton
-// 10B + LoadClosureGCRef 20B + WriteCIWord 14B + CIDepth++/-- 10B)已完整字节级
-// 实装并字节级单测全过 + Compile 端 useFrameInline 分支 emit 接通 + Run 端
-// runFrameInlineDispatcher 路径接通 + crescent.ExecuteCalleeFromInlineFrame
-// 真实装(反查 closure GCRef → callee Proto → enterLuaFrame + executeFrom
-// 完整重做帧建,Spike 1 简化策略放弃零跨界但保证正确性)。
+// **2026-06-28 amd64 flipped to true for the live path** (per §9.20.9
+// commit-5h): the byte-level emit templates (BuildVoid0ArgSkeleton 120B +
+// ExitHelperRequest 24B + PopVoid0ArgSkeleton 10B + LoadClosureGCRef 20B +
+// WriteCIWord 14B + CIDepth++/-- 10B) are fully byte-level implemented with all
+// byte-level unit tests passing + the Compile-side useFrameInline branch emit is
+// wired up + the Run-side runFrameInlineDispatcher path is wired up +
+// crescent.ExecuteCalleeFromInlineFrame is implemented (it looks up the closure
+// GCRef → callee Proto → enterLuaFrame + executeFrom to fully rebuild the frame;
+// the Spike 1 simplification gives up zero-crossing but guarantees correctness).
 //
-// **启用条件**(承 §9.20.4 + analyzeSelfCallSpecForm 守门):
-//  1. 普通 spec form 通过(IC NodeHit + FBSelfMono + stableKey)
-//  2. callArgCount=0(0 参形态)
-//  3. isCallVoid=true(setter 形态)
-//  4. !isTailCall(非 TAILCALL)
+// **Enablement conditions** (per §9.20.4 + the analyzeSelfCallSpecForm guard):
+//  1. the ordinary spec form passes (IC NodeHit + FBSelfMono + stableKey)
+//  2. callArgCount=0 (0-arg form)
+//  3. isCallVoid=true (setter form)
+//  4. !isTailCall (not a TAILCALL)
 //
-// **arm64 仍 false**(物理 runner 端到端验证留 PJ8+,承下方 arch_arm64.go)。
+// **arm64 is still false** (end-to-end physical runner validation is deferred to
+// PJ8+, per arch_arm64.go below).
 func archSupportsFrameInline() bool { return true }

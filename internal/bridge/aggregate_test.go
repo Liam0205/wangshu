@@ -1,4 +1,4 @@
-// AggregateProfile 单测(P2+ #3 (C) sync.Pool 双表混合方案)。
+// AggregateProfile unit tests (P2+ #3 (C) sync.Pool dual-table hybrid scheme).
 package bridge
 
 import (
@@ -8,15 +8,16 @@ import (
 	"github.com/Liam0205/wangshu/internal/bytecode"
 )
 
-// TestAggregate_FlushAccumulates 单 State 跑后调 FlushToAggregate 把私有
-// 计数累积入全局聚合表。
+// TestAggregate_FlushAccumulates runs a single State, then calls
+// FlushToAggregate to accumulate the private counters into the global
+// aggregate table.
 func TestAggregate_FlushAccumulates(t *testing.T) {
-	defer ResetAggregate() // 防本测试污染全局表
+	defer ResetAggregate() // prevent this test from polluting the global table
 
 	b := NewBridge()
 	p := makeProtoWithCode(bytecode.ADD, bytecode.JMP)
 
-	// 模拟回边/入口累计
+	// Simulate back-edge/entry accumulation
 	pd := b.ProfileOf(p)
 	pd.EntryCount = 50
 	pd.BackEdge = []uint32{100, 200}
@@ -35,9 +36,10 @@ func TestAggregate_FlushAccumulates(t *testing.T) {
 	}
 }
 
-// TestAggregate_MultiStateAccumulation 多 State 并发 Flush 同一 Proto——
-// 全局聚合表应正确累加。这是 (C) 方案存在的本质:跨 State 累积让 sync.Pool
-// 形态下也能触发升层。
+// TestAggregate_MultiStateAccumulation flushes the same Proto concurrently from
+// multiple States — the global aggregate table should accumulate correctly.
+// This is the essence of scheme (C): cross-State accumulation lets promotion
+// trigger even under a sync.Pool setup.
 func TestAggregate_MultiStateAccumulation(t *testing.T) {
 	defer ResetAggregate()
 
@@ -65,8 +67,9 @@ func TestAggregate_MultiStateAccumulation(t *testing.T) {
 	}
 }
 
-// TestAggregate_LoadOrStoreIdempotent AggregateOf 多次调对同 Proto 返同一
-// 实例(惰性建 + sync.Map LoadOrStore 原子性)。
+// TestAggregate_LoadOrStoreIdempotent verifies AggregateOf returns the same
+// instance for the same Proto across repeated calls (lazy creation +
+// sync.Map LoadOrStore atomicity).
 func TestAggregate_LoadOrStoreIdempotent(t *testing.T) {
 	defer ResetAggregate()
 
@@ -78,10 +81,12 @@ func TestAggregate_LoadOrStoreIdempotent(t *testing.T) {
 	}
 }
 
-// TestAggregate_ConsiderPromotionWithAggregate (C) 模式入口:即便本 State
-// EntryCount 远低于阈值,全局聚合表已越阈值时 considerPromotionWithAggregate
-// 仍触发升层。这模拟 sync.Pool 短生命期 State 形态——本 State 刚 Reset
-// 完只跑了少量,但全局已积累很多。
+// TestAggregate_ConsiderPromotionWithAggregate exercises the (C) mode entry:
+// even when this State's EntryCount is far below the threshold,
+// considerPromotionWithAggregate still triggers promotion once the global
+// aggregate table has crossed the threshold. This simulates the short-lived
+// sync.Pool State setup — this State has just been Reset and ran only a little,
+// but the global table has already accumulated a lot.
 func TestAggregate_ConsiderPromotionWithAggregate(t *testing.T) {
 	defer ResetAggregate()
 
@@ -91,11 +96,12 @@ func TestAggregate_ConsiderPromotionWithAggregate(t *testing.T) {
 	pd := b.ProfileOf(p)
 	pd.Compilable = CompCompilable
 
-	// 模拟全局已累积越阈值(其它 State 此前的 Flush 留下)
+	// Simulate the global table having already crossed the threshold (left
+	// behind by earlier Flushes from other States)
 	agg := AggregateOf(p)
 	agg.EntryCount.Store(HotEntryThreshold + 1)
 
-	// 本 State 只跑了 5 次(远低 200 阈值)
+	// This State ran only 5 times (far below the 200 threshold)
 	pd.EntryCount = 5
 
 	b.considerPromotionWithAggregate(p, pd, true)

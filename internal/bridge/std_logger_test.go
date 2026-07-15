@@ -1,8 +1,8 @@
-// Logger 实装与升层日志格式断言(`docs/design/p2-bridge/04-try-compile-fallback.md`
-// §6.5 + 06-testing-strategy.md)。
+// Logger implementation and promotion log-format assertions
+// (`docs/design/p2-bridge/04-try-compile-fallback.md` §6.5 + 06-testing-strategy.md).
 //
-// 三类日志格式锁定:promoted / stays / compile failed —— 字符串包含断言
-// (允许字段值变化,不允许格式漂移)。
+// Three log formats locked down: promoted / stays / compile failed — string-contains
+// assertions (field values may change, format drift is not allowed).
 package bridge
 
 import (
@@ -14,7 +14,7 @@ import (
 	"github.com/Liam0205/wangshu/internal/bytecode"
 )
 
-// captureLogger 把所有 Log* 调用记下来供测试断言。
+// captureLogger records all Log* calls for test assertions.
 type captureLogger struct {
 	promoted    []string
 	stuck       []string
@@ -35,7 +35,7 @@ func (c *captureLogger) LogPanic(p *bytecode.Proto, _ interface{}) {
 	c.panicked = append(c.panicked, "panic:"+protoName(p))
 }
 
-// TestLogger_PromotedFormat 升层成功日志含「promoted to gibbous」关键短语。
+// TestLogger_PromotedFormat: the promotion-success log contains the key phrase "promoted to gibbous".
 func TestLogger_PromotedFormat(t *testing.T) {
 	var buf bytes.Buffer
 	b := NewBridge()
@@ -67,7 +67,7 @@ func TestLogger_PromotedFormat(t *testing.T) {
 	}
 }
 
-// TestLogger_StuckFormat 不可编译日志含「stays interpreted」关键短语 + F<n> 编号。
+// TestLogger_StuckFormat: the non-compilable log contains the key phrase "stays interpreted" + F<n> number.
 func TestLogger_StuckFormat(t *testing.T) {
 	var buf bytes.Buffer
 	b := NewBridge()
@@ -99,7 +99,7 @@ func TestLogger_StuckFormat(t *testing.T) {
 	}
 }
 
-// TestLogger_CompileFailFormat 编译失败日志带 WARN 级别 + err 详情。
+// TestLogger_CompileFailFormat: the compile-failure log carries the WARN level + err detail.
 func TestLogger_CompileFailFormat(t *testing.T) {
 	var buf bytes.Buffer
 	b := NewBridge()
@@ -127,7 +127,7 @@ func TestLogger_CompileFailFormat(t *testing.T) {
 	}
 }
 
-// TestLogger_PanicFormat P3 panic 日志带 ERROR 级别 + stack。
+// TestLogger_PanicFormat: the P3 panic log carries the ERROR level + stack.
 func TestLogger_PanicFormat(t *testing.T) {
 	var buf bytes.Buffer
 	b := NewBridge()
@@ -158,9 +158,9 @@ func TestLogger_PanicFormat(t *testing.T) {
 	}
 }
 
-// TestLogger_CaptureViaCustom 自定义 Logger 可捕获升层路径——验证状态机
-// 与 Logger 的接线正确(LogPromoted / LogStuck / LogCompileFail 各路径都被
-// 正确调用)。
+// TestLogger_CaptureViaCustom: a custom Logger can capture the promotion paths —
+// verifies the state machine is wired to the Logger correctly (LogPromoted /
+// LogStuck / LogCompileFail are each called on the right paths).
 func TestLogger_CaptureViaCustom(t *testing.T) {
 	cap := &captureLogger{}
 	b := NewBridge()
@@ -188,8 +188,9 @@ func TestLogger_CaptureViaCustom(t *testing.T) {
 	}
 }
 
-// TestLogger_FormatReasonsAllFlags 把 reasons 全部置 1 跑一次,验证所有
-// 形状名都能被正确翻译(防止某天加 reason 位忘补 formatReasons)。
+// TestLogger_FormatReasonsAllFlags sets every reasons bit to 1 and runs once,
+// verifying all shape names are translated correctly (guards against adding a
+// reason bit some day and forgetting to update formatReasons).
 func TestLogger_FormatReasonsAllFlags(t *testing.T) {
 	all := ReasonVararg | ReasonYield | ReasonResume | ReasonCoroutine |
 		ReasonUnknownCall | ReasonDebug | ReasonSetfenv |
@@ -209,7 +210,7 @@ func TestLogger_FormatReasonsAllFlags(t *testing.T) {
 	}
 }
 
-// TestLogger_FeedbackSummary feedback 字段格式化「arith=N mono=M mega=K」。
+// TestLogger_FeedbackSummary: the feedback field is formatted as "arith=N mono=M mega=K".
 func TestLogger_FeedbackSummary(t *testing.T) {
 	if got := feedbackSummary(nil); got != "nil" {
 		t.Errorf("nil feedback summary = %q, want 'nil'", got)
@@ -229,7 +230,7 @@ func TestLogger_FeedbackSummary(t *testing.T) {
 	}
 }
 
-// TestSilentLogger 无操作 Logger 不刷屏 + 不引起任何错误。
+// TestSilentLogger: the no-op Logger neither floods output nor causes any error.
 func TestSilentLogger(t *testing.T) {
 	b := NewBridge()
 	b.SetLogger(NewSilentLogger())
