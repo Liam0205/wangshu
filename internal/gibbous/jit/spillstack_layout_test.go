@@ -28,6 +28,17 @@ func TestSpillStackLayout(t *testing.T) {
 	if got := unsafe.Offsetof(JITContext{}.savedGoSP); got != wantSavedGoSP {
 		t.Errorf("savedGoSP offset = %d, trampoline #define expects %d — update the .s files", got, wantSavedGoSP)
 	}
+	// loopSpill0/1/2 contiguity: the PJ3 loopFuel templates address
+	// spill1 as spill0Off+8 and spill2 as spill0Off+16 (both amd64 and
+	// arm64). Go's adjacent-uint64 field layout with no padding guarantees
+	// this, but assert it explicitly so a future struct reorder would fail
+	// loudly rather than silently mis-addressing the spill slots.
+	s0 := JITContextLoopSpill0Offset
+	s1 := JITContextLoopSpill1Offset
+	s2 := JITContextLoopSpill2Offset
+	if s1 != s0+8 || s2 != s0+16 {
+		t.Errorf("loopSpill0/1/2 not contiguous at +8/+16: offsets %d/%d/%d", s0, s1, s2)
+	}
 }
 
 // TestAllocSpillStack checks the self-managed spill stack is allocated with
