@@ -27,6 +27,13 @@ func parseLuaNumberBytes(b []byte) (float64, bool) {
 
 // ParseLuaNumber parses a Lua number string (shared with stdlib's tonumber).
 func ParseLuaNumber(s string) (float64, bool) {
+	// PUC 5.1 luaO_str2d receives a C string, which is NUL-terminated.
+	// strtod stops at the first NUL byte (C string end), so embedded NUL
+	// characters effectively truncate the input: tonumber("0\0junk") == 0.
+	// Go strings can carry embedded NULs; truncate to mirror C semantics.
+	if idx := strings.IndexByte(s, 0); idx >= 0 {
+		s = s[:idx]
+	}
 	i := 0
 	for i < len(s) && isLuaSpace(s[i]) {
 		i++

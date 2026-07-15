@@ -97,6 +97,15 @@ return f() or (f())`},
 	{"corner_ret_notchain", `
 local function f() for A = 0, 0 do end end
 return (not f()) and f()`},
+
+	// —— Issue #147: tonumber with embedded NUL bytes.
+	// PUC luaO_str2d receives a C string (NUL-terminated); strtod stops
+	// at '\0', so embedded NUL truncates the input. wangshu's Go string
+	// can carry embedded NULs and must mirror C strlen semantics.
+	{"corner_tonumber_nul_zero", `return tonumber("0\0")`},
+	{"corner_tonumber_nul_trail", `return tonumber("42\0junk")`},
+	{"corner_tonumber_nul_ws", `return tonumber("  3.14\0extra")`},
+	{"corner_tonumber_nul_only", `return tonumber("\0")`},
 }
 
 // exemptions: the design-exemption list (10 §11 ❌ columns + prose
