@@ -161,7 +161,7 @@ func (c *Compiler) emitBlockBody(em *emitter, proto *bytecode.Proto, cfg *cfg, p
 			return err
 		}
 		if len(blk.succs) == 1 {
-			return c.emitEdge(em, plan, *stack, bb, blk.succs[0])
+			return c.emitEdge(em, cfg, plan, *stack, bb, blk.succs[0])
 		}
 		if len(blk.succs) == 0 {
 			return nil
@@ -176,7 +176,7 @@ func (c *Compiler) emitJmpTerm(em *emitter, cfg *cfg, plan *structPlan, stack *[
 	if len(blk.succs) != 1 {
 		return &translateError{reason: fmt.Sprintf("p4: JMP BB %d has %d succs", bb, len(blk.succs))}
 	}
-	return c.emitEdge(em, plan, *stack, bb, blk.succs[0])
+	return c.emitEdge(em, cfg, plan, *stack, bb, blk.succs[0])
 }
 
 // emitOpcode 翻译一条非终结直线指令。返回 (skip, err):skip = 本指令额外消耗的

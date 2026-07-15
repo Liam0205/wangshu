@@ -44,6 +44,69 @@ func TestP3LoopBudget_InfiniteLoopRaises(t *testing.T) {
 	}
 }
 
+// TestP3LoopBudget_InfiniteWhileRaises: the P3 back-edge safepoint must
+// cover while/repeat (negative-sBx JMP) back-edges too, not just numeric
+// FORLOOP — otherwise a promoted infinite while-loop hangs. The step
+// budget in P3 is charged ONLY at the back-edge safepoint (host helpers
+// don't charge it), so a while-loop whose body promotes to a bare `br`
+// back-edge would run forever. The crasher-shaped harness (top-level
+// calls `sum` twice → auto-promote, `X=0*i` SETGLOBAL keeps the body in
+// the segment) actually exercises the wasm segment's while back-edge.
+func TestP3LoopBudget_InfiniteWhileRaises(t *testing.T) {
+	src := `function sum(n)local s=0 local i=0 while i<=n do X=0*i i=i+1 end return s end return sum(12)%sum(5/0)`
+	prog, err := Compile([]byte(src), "wlb")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	st1 := NewState(Options{MaxArenaBytes: 64 << 20})
+	st1.SetStepBudget(1 << 20)
+	_, e1 := prog.Run(st1)
+	if e1 == nil {
+		t.Fatalf("interpreter did not raise on infinite while")
+	}
+	stA := NewState(Options{MaxArenaBytes: 64 << 20})
+	stA.SetStepBudget(1 << 20)
+	stA.SetHotThresholds(2, 4)
+	var eA error
+	for run := 1; run <= 2; run++ {
+		_, eA = prog.Run(stA)
+		if eA != nil {
+			break
+		}
+	}
+	if eA == nil {
+		t.Fatalf("P3 did not raise on infinite while (JMP back-edge not charging budget)")
+	}
+	if eA.Error() != e1.Error() {
+		t.Errorf("while budget error not byte-equal:\n  interp: %q\n  p3:     %q", e1.Error(), eA.Error())
+	}
+}
+
+// TestP3LoopBudget_WhileChargesSafepoint proves the while (JMP) back-edge
+// actually crosses to Safepoint in the segment (prove-the-path): a finite
+// 3M-iteration while-loop under a budget must cross ~3M/quantum times, not
+// zero. Zero would mean the back-edge runs a bare `br` with no accounting.
+func TestP3LoopBudget_WhileChargesSafepoint(t *testing.T) {
+	src := `function sum(n)local s=0 local i=0 while i<=n do X=0*i i=i+1 end return s end return sum(12)%sum(3000000)`
+	prog, err := Compile([]byte(src), "wsp")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	st := NewState(Options{MaxArenaBytes: 64 << 20})
+	st.SetStepBudget(1 << 28) // large enough to finish 3M iters
+	st.SetHotThresholds(2, 4)
+	before := st.SafepointCalls()
+	if _, err := prog.Run(st); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	crossings := st.SafepointCalls() - before
+	if crossings == 0 {
+		t.Fatalf("while back-edge crossed Safepoint 0 times over 3M iters — " +
+			"JMP back-edge not charging (budget leak)")
+	}
+	t.Logf("3M-iter budgeted while: %d Safepoint crossings (JMP back-edge charges)", crossings)
+}
+
 // TestP3LoopBudget_UnbudgetedHotLoopRarelyCrosses proves the fast path:
 // a hot finite loop with NO step budget armed must not cross to
 // host.Safepoint every iteration (unlimited fuel refill), or the

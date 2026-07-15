@@ -164,7 +164,7 @@ return tostring(ok)`},
 	{"neg_zero_fold_after_poszero", `local z = 0; return tostring(0.0 * -1)`},
 	{"neg_zero_first_poszero_reuses", `local a = -0.0; return tostring(a) .. "|" .. tostring(0.0)`},
 	// 比较运算符左操作数的常量登记顺序(nightly oracle fuzz seed
-	// 9e5e75e5c04112a2,issue #133 家族):PUC luaK_infix 在解析右子树之前
+	// 9e5e75e5c04112a2,issue #137):PUC luaK_infix 在解析右子树之前
 	// 就把比较的左操作数 exp2RK,使折叠出的 -0 先占共享零槽,后续字面 0
 	// 复用它 → 打印 "-0"。左操作数延迟到右子之后会让 0%0 的 +0 抢先登记。
 	{"cmp_left_negzero_registers_first", `return tostring(0*-0 ~= 0%0) .. "|" .. tostring(0)`},

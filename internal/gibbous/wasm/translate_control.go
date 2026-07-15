@@ -38,7 +38,7 @@ func (c *Compiler) emitCompareTerm(em *emitter, proto *bytecode.Proto, cfg *cfg,
 	}
 
 	if op == bytecode.TESTSET {
-		return c.emitTestSetTerm(em, ins, plan, stack, bb, succExec, succSkip)
+		return c.emitTestSetTerm(em, cfg, ins, plan, stack, bb, succExec, succSkip)
 	}
 
 	// 算比较结果 → localI32(0/1)。
@@ -64,11 +64,11 @@ func (c *Compiler) emitCompareTerm(em *emitter, proto *bytecode.Proto, cfg *cfg,
 	em.i32Ne()
 	em.ifVoid()
 	*stack = append(*stack, scope{kind: scIf, target: -1})
-	if e := c.emitEdge(em, plan, *stack, bb, succSkip); e != nil {
+	if e := c.emitEdge(em, cfg, plan, *stack, bb, succSkip); e != nil {
 		return e
 	}
 	em.elseOp()
-	if e := c.emitEdge(em, plan, *stack, bb, succExec); e != nil {
+	if e := c.emitEdge(em, cfg, plan, *stack, bb, succExec); e != nil {
 		return e
 	}
 	em.end()
@@ -78,7 +78,7 @@ func (c *Compiler) emitCompareTerm(em *emitter, proto *bytecode.Proto, cfg *cfg,
 
 // emitTestSetTerm TESTSET A B C(02 §3.3.5):Truthy(R(B))==bool(C) → R(A):=R(B)
 // 落 succExec(执行 JMP);否则跳过 JMP(succSkip)。
-func (c *Compiler) emitTestSetTerm(em *emitter, ins bytecode.Instruction, plan *structPlan, stack *[]scope, bb, succExec, succSkip int) error {
+func (c *Compiler) emitTestSetTerm(em *emitter, cfg *cfg, ins bytecode.Instruction, plan *structPlan, stack *[]scope, bb, succExec, succSkip int) error {
 	a := uint32(bytecode.A(ins))
 	b := uint32(bytecode.B(ins))
 	cc := bytecode.C(ins)
@@ -96,11 +96,11 @@ func (c *Compiler) emitTestSetTerm(em *emitter, ins bytecode.Instruction, plan *
 	em.localGet(localBase)
 	em.localGet(localI64a)
 	em.i64Store(8 * a)
-	if e := c.emitEdge(em, plan, *stack, bb, succExec); e != nil {
+	if e := c.emitEdge(em, cfg, plan, *stack, bb, succExec); e != nil {
 		return e
 	}
 	em.elseOp()
-	if e := c.emitEdge(em, plan, *stack, bb, succSkip); e != nil {
+	if e := c.emitEdge(em, cfg, plan, *stack, bb, succSkip); e != nil {
 		return e
 	}
 	em.end()
@@ -234,7 +234,7 @@ func (c *Compiler) emitForPrepTerm(em *emitter, cfg *cfg, plan *structPlan, stac
 	if len(blk.succs) != 1 {
 		return fmt.Errorf("p4: FORPREP BB %d has %d succs", bb, len(blk.succs))
 	}
-	return c.emitEdge(em, plan, *stack, bb, blk.succs[0])
+	return c.emitEdge(em, cfg, plan, *stack, bb, blk.succs[0])
 }
 
 // emitForLoopTerm FORLOOP(02 §3.5.2):三槽已被 FORPREP 规范为 number,快路径
@@ -272,19 +272,17 @@ func (c *Compiler) emitForLoopTerm(em *emitter, proto *bytecode.Proto, cfg *cfg,
 	em.localGet(localF64)
 	em.i64ReinterpretF64()
 	em.i64Store(8 * (a + 3))
-	// 回边 safepoint(P3 PW9 + 循环 step-budget 计费):inline 自减 loopBudget,
-	// 归零(或 gcPending 置位)才跨层 h_safepoint;超额 return 1 冒泡。热循环
-	// 每迭代只付几条纯段内指令,零跨层(05 §3 / 08 §5.1.2)。
-	c.emitBackEdgeSafepoint(em, lastPC)
-	// br 回 loop header(回边)。
-	if e := c.emitEdge(em, plan, *stack, bb, idBody); e != nil {
+	// br 回 loop header(回边)。回边 safepoint(GC + step-budget 计费)由
+	// emitEdge 在 scLoop 分支统一发(唯一 choke point,覆盖所有循环形态),此处
+	// 不再单独发,避免 FORLOOP 双发。
+	if e := c.emitEdge(em, cfg, plan, *stack, bb, idBody); e != nil {
 		return e
 	}
 	em.end()
 	*stack = (*stack)[:len(*stack)-1]
 	// 不 continue:落出 loop = 退出循环 → idOut。结构化下 FORLOOP 是 loop 末,
 	// 落出即出 loop;若 idOut 非 fallthrough 需 br(emitEdge 处理)。
-	return c.emitEdge(em, plan, *stack, bb, idOut)
+	return c.emitEdge(em, cfg, plan, *stack, bb, idOut)
 }
 
 // emitForContinueTest 算数值 for 续行条件 → localI32:
@@ -370,7 +368,7 @@ func (c *Compiler) emitTForLoopTerm(em *emitter, cfg *cfg, plan *structPlan, sta
 	em.i64Eq()
 	em.ifVoid()
 	*stack = append(*stack, scope{kind: scIf, target: -1})
-	if e := c.emitEdge(em, plan, *stack, bb, succSkip); e != nil {
+	if e := c.emitEdge(em, cfg, plan, *stack, bb, succSkip); e != nil {
 		return e
 	}
 	em.elseOp()
@@ -378,7 +376,7 @@ func (c *Compiler) emitTForLoopTerm(em *emitter, cfg *cfg, plan *structPlan, sta
 	em.localGet(localI64c)
 	em.i32WrapI64()
 	em.localSet(localBase)
-	if e := c.emitEdge(em, plan, *stack, bb, succExec); e != nil {
+	if e := c.emitEdge(em, cfg, plan, *stack, bb, succExec); e != nil {
 		return e
 	}
 	em.end()
