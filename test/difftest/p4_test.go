@@ -1055,6 +1055,20 @@ end
 local ok, e
 for i = 1, 20 do ok, e = pcall(kernel) end
 return tostring(ok), (e and e:match("iter%-boom")) or "?"`},
+	// #136: a call-void-shaped callee whose CALL result register is
+	// overwritten by a later LOADK before RETURN. The length-6 form
+	// `GETUPVAL; CALL 0 1 2; SETGLOBAL 0; LOADK 0; RETURN 0 2` was
+	// mis-accepted by analyzeCallVoidForm as a 1-return getter, dropping
+	// the SETGLOBAL + LOADK and returning the callee closure once the
+	// proto was entered a SECOND time. Repeated entry is essential — the
+	// first entry happened to look right. mk() must return a heap value
+	// (closure) so the stale register is observably wrong.
+	{"p4_callvoid_result_overwritten_by_loadk", `
+local function mk() return function() return 9 end end
+local function A() G = mk() return 0 end
+local s = 0
+for i = 1, 20 do s = s + A() end
+return s, type(A())`},
 }
 
 // TestP4_Tiered 三方对拍:oracle / crescent / p4-jit 全 byte-equal。
