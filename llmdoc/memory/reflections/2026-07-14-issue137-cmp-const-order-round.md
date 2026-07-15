@@ -73,9 +73,10 @@ rc := fs.exp2RK(e.Line, &r)
 - 全 default 套 + `internal/...` 全绿,cgo oracle 全绿;
 - difftest 新增 `cmp_left_negzero_registers_first` 精确复现该场景;
 - #137 corpus 重放通过;
-- 同轮 #135(p3 auto,`77a7d64e35ed414b`)本地重放干净(大 `sum(555555520)` 循环
-  = 资源耗尽型,headSha == HEAD),按 [[unreproducible-crasher-triage]] 判据 corpus
-  入库常驻回归,不硬修。
+- 同轮 #135(p3 auto,`77a7d64e35ed414b`,大 `sum(555555520)` 循环)一开始判为
+  「不可复现资源耗尽」(单 Run 解释器重放干净),corpus 入库;**后经本 PR 第 4 个
+  crasher 认清它其实是 P3 循环 step-budget 缺口的温和实例(有限 vs 无限),已由
+  [[2026-07-14-p3-loop-stepbudget-round]] 真修好,不是不可复现**。
 
 ## 教训
 
