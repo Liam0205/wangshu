@@ -378,15 +378,15 @@ func (fs *funcState) exprCompare(e *ast.BinExpr) expDesc {
 		swap = true
 	}
 	l := fs.expr(e.L)
-	lrk := -1
-	if !isNumeral(&l) {
-		lrk = fs.exp2RK(e.Line, &l)
-	}
+	// PUC luaK_infix materializes a comparison's left operand with
+	// luaK_exp2RK BEFORE the right subtree is parsed (the `default` arm,
+	// which — unlike the arith arm — has no `if (!isnumeral(v))` deferral).
+	// The order decides which literal registers a constant slot first, and
+	// ±0 dedup is first-come-wins: in `0*-0 ~= 0%0` the folded -0 left must
+	// claim the shared zero slot before `0%0`'s +0 literals, so a later
+	// literal 0 prints "-0" (oracle diff fuzz catch: print(0*-0~=0%0,0)).
+	rb := fs.exp2RK(e.Line, &l)
 	r := fs.expr(e.R)
-	rb := lrk
-	if rb < 0 {
-		rb = fs.exp2RK(e.Line, &l)
-	}
 	rc := fs.exp2RK(e.Line, &r)
 	if !bytecode.IsK(rc) {
 		fs.freeReg(rc)
