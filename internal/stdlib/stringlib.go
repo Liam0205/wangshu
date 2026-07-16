@@ -693,10 +693,14 @@ func stripZeroFlag(spec []byte) []byte {
 // cPadChar renders C sprintf's %c: one byte, space-padded to the spec
 // width ('-' left-aligns; '0' is numeric-only, spaces regardless),
 // then truncated at the first NUL like PUC's strlen-append.
+// C99: precision has no effect on %c, so everything after '.' is ignored.
 func cPadChar(spec []byte, c byte) []byte {
 	width := 0
 	left := false
 	for _, f := range spec[1:] { // skip '%'
+		if f == '.' {
+			break // precision follows; C99 ignores it for %c
+		}
 		switch {
 		case f == '-':
 			left = true
