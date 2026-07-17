@@ -170,6 +170,19 @@ func (c *nativeCode) NativeNeverExitsSegment() bool {
 	return c != nil && ProtoSeg2SegEligible(c.proto)
 }
 
+// NativeSeg2SegRetCount returns the callee's uniform RETURN value count,
+// or -1 when RETURN sites disagree (issue #155). Mirror of amd64. The
+// bridge.NativeSegAddrer interface is satisfied via runtime type
+// assertion, so omitting this mirror silently breaks the assertion and
+// disables ALL seg2seg dispatch on this arch (CalleeNeverExitsSegment
+// and CalleeSegAddr both resolve through the same assert).
+func (c *nativeCode) NativeSeg2SegRetCount() int32 {
+	if c == nil {
+		return -1
+	}
+	return ProtoSeg2SegRetCount(c.proto)
+}
+
 // Dispose releases the mmap'd code page. Safe under concurrent Run: the
 // refcount protocol defers the actual munmap until the last active Run's
 // Exit. See amd64 counterpart / internal/gibbous/jit/amd64/codepage_linux.go.
