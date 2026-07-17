@@ -54,6 +54,12 @@
    A 也有但没人看」(#103 的教训);反过来,在 B 上做的改良要问「要不要移植回 A」(#67 的教训);
    同名 op 在多个通道各有一份 emit 时,还要问「另一通道的 emit 是不是同族风险」(#117/#118 的教训)。
 
+## 运行时断言接口的扩面不对称:优化静默关闭型
+
+前面各实例都是「语义修复漏站点 → 产生错值」。issue #155(2026-07-18,PR #160)暴露了同一心理边界问题的更隐蔽变体:**给靠运行时类型断言满足的接口加方法,只补了一个架构的实现**。给 `bridge.NativeSegAddrer` 加 `NativeSeg2SegRetCount` 方法时只改了 amd64 的实现,漏掉 arm64 镜像——该接口靠 `code.(bridge.NativeSegAddrer)` 运行时断言满足,缺一个方法只是让断言返回 false(合法程序行为,编译器与 lint 都不报),于是 arm64 上共用该断言的全部调用点 ok==false,**seg2seg dispatch 整体静默失效**。失败形式与既有实例不同:不产生错值(结果经 exit-reason 回退仍正确),只是优化静默关闭,byte-equal 测试全绿;只有带命中数断言的白盒测试(prove-the-path 家族)在 arm64 CI leg 上以 hits=0 暴露(修复 commit 5f76472)。
+
+**检查项**:动运行时断言的接口时,grep 该接口的所有实现类型(按 build tag 分文件的类型如 `nativeCode` 有 amd64/arm64 两份 struct),每份都要补方法;补齐后以双架构 CI(尤其带白盒命中数断言的测试)全绿为完成判据——本地单架构全绿不构成任何证据。反思实例见 `memory/reflections/2026-07-18-issue155-158-nightly-crasher-round.md` 教训 1。
+
 ## 常见语义风险家族(已实证的)
 
 - **NaN 别名**:canonNaN(`0x7FF8...`)经 sign-flip(neg)恰好落在 `TagNil`(`0xFFF8...`);任何对
@@ -113,4 +119,5 @@
   重新验证(#107 的头注对了一半,结论错)。
 - 反思实例:`2026-07-08-issue67-amd64-nodehit-crossrun-round` /
   `2026-07-09-issue103-compare-ieee-round` / `2026-07-10-issue106-107-nightly-crashers-round` /
-  `2026-07-11-issue117-118-nan-forloop-round`。
+  `2026-07-11-issue117-118-nan-forloop-round` /
+  `2026-07-18-issue155-158-nightly-crasher-round`(运行时断言接口扩面不对称)。
