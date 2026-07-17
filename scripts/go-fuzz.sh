@@ -51,10 +51,12 @@ run_target() {
         # GOMEMLIMIT (issue #123 diagnostic hardening, tightened after
         # issues #144/#145/#150/#151/#152): the fuzz coordinator starts
         # -parallel=N worker child processes that each inherit this env
-        # var as a per-worker Go heap soft limit. When a worker's Go
-        # heap hits the limit, the Go runtime raises an explicit OOM
-        # fatal with a full goroutine stack instead of being killed
-        # silently by the OS OOM killer.
+        # var as a per-worker Go heap soft limit. When a worker's live
+        # heap exceeds the limit, the Go runtime first triggers more
+        # aggressive GC; only when the live heap cannot be reduced below
+        # the limit (e.g. concat-storm temporaries that are still
+        # reachable) does it raise an OOM fatal with a full goroutine
+        # stack — much better than a silent OS kill.
         #
         # The concat-storm family of unreproducible crashers (#144-#152)
         # showed that 6GiB was too generous: a single seed doing
