@@ -48,19 +48,26 @@ run_target() {
     log=$(mktemp)
     for attempt in 1 2; do
         set +e
-        # GOMEMLIMIT (issue #123 diagnostic hardening): a nightly p4
-        # worker died silently ("terminated unexpectedly: exit status 2",
-        # no panic output) after 35min / 51M execs, and the written-out
-        # input replays clean from every angle — the signature of
-        # process-level resource exhaustion, not an input-determined bug.
-        # A soft memory limit makes a memory-exhaustion death loud: the
-        # Go runtime fails with an explicit out-of-memory fatal + stack
-        # instead of being killed from outside. NOTE: the env var is
-        # inherited by each of the -parallel=4 worker processes, so
-        # 6GiB is a PER-WORKER cap, not a machine-wide one — effective
-        # for the single-worker-blowup case (the likely one), best-
-        # effort if all four grow evenly on a 7GB runner.
-        GOMEMLIMIT="${GOMEMLIMIT:-6GiB}" \
+        # GOMEMLIMIT (issue #123 diagnostic hardening, tightened after
+        # issues #144/#145/#150/#151/#152): the fuzz coordinator starts
+        # -parallel=N worker child processes that each inherit this env
+        # var as a per-worker Go heap soft limit. When a worker's Go
+        # heap hits the limit, the Go runtime raises an explicit OOM
+        # fatal with a full goroutine stack instead of being killed
+        # silently by the OS OOM killer.
+        #
+        # The concat-storm family of unreproducible crashers (#144-#152)
+        # showed that 6GiB was too generous: a single seed doing
+        # quadratic string concatenation (out = out .. cat(i)) can grow
+        # Go-heap temporary strings to several GiB before the step
+        # budget catches it — and under 4 parallel workers, four such
+        # seeds blow past any reasonable runner memory. 512MiB is tight
+        # enough to catch concat storms early (the arena is already
+        # capped at 64MiB inside each harness; 512MiB leaves ~448MiB
+        # for Go heap overhead, interpreter state, and temporary
+        # strings — ample for any budget-bounded fuzz input) yet loose
+        # enough to never false-positive on legitimate scripts.
+        GOMEMLIMIT="${GOMEMLIMIT:-512MiB}" \
         go test "${tags_arg[@]+"${tags_arg[@]}"}" "./$pkg" -run='^$' \
             -fuzz="^${func}\$" -fuzztime="$fuzztime" -timeout=120s -parallel=4 \
             2>&1 | tee "$log"
