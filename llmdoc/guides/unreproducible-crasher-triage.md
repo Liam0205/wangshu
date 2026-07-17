@@ -5,7 +5,7 @@
 fuzz / nightly / CI 报了一个 crasher,给出了一个落盘 input,但本地精确重放该 input 无论多少次都不
 复现。典型征象:
 
-- `go test -fuzz` 在 nightly / 长跑里 worker 死亡,报 `fuzzing process hung or terminated
+- `go test -fuzz` 在 nightly / 长时间运行里 worker 死亡,报 `fuzzing process hung or terminated
   unexpectedly: exit status 2`,artifact 里挂了一个 `testdata/fuzz/FuzzXxx/<hash>`;
 - 拿到该 input 精确重放,单次 / N 次都 PASS,harness 镜像跑 hammer 也 PASS;
 - 几千万到上亿 execs 之后才死一次,复现窗口远长于一次典型 fuzz smoke。
@@ -145,6 +145,13 @@ kill 前 dump 系统状态快照**。#123 轮的两条硬化:
 
 **Why**:低频罕见事件的调查成本大头不是「修」,是「等下一次复发」。等的时候免费,但复发时若信息不够
 又要再等,循环下去。投资应该投在「让复发时的信息一次性够用」,不是投在「这次尽力挖」。
+
+**硬化层级的最新状态(2026-07-18)**:`GOMEMLIMIT` 软限制已被观察到接不住这族死亡——2026-07-18
+轮的 #156/#157/#159 三个 run 都已带上 PR #154 的 `GOMEMLIMIT=512MiB`,p4 worker 仍在约 4150 万
+execs 处无声消失。软限制只影响 GC 节奏,防不住 RSS 之外的资源尽头或外部 kill。下一层升级方向是
+harness 按 seed 记 wall-clock,把「进程在哪个 seed 之后消失」变成 artifact 里可读的归因线索。
+每一层没接住都是新信息,不是浪费。反思实例见
+`memory/reflections/2026-07-18-issue155-158-nightly-crasher-round.md` 教训 4。
 
 **How to apply**:遇到「本地无法复现 + 生产 / CI 出现」类问题,除了调查根因之外,并行考虑:能不能加
 一个便宜的诊断改动,让下次复发时留下更多信息?能就先做诊断硬化,再看要不要继续挖这次。
