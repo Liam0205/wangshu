@@ -141,6 +141,7 @@ func (h *fakeHost) NativeCalleeSegAddr(protoID uint32) uint64 { return 0 }
 
 // CalleeNeverExitsSegment stub (issue #50 Spike 5): returns false.
 func (h *fakeHost) CalleeNeverExitsSegment(protoID uint32) bool { return false }
+func (h *fakeHost) CalleeSeg2SegRetCount(protoID uint32) int32  { return -1 }
 
 // hostToIfaceHeader converts a P4HostState value into a [2]uintptr
 // (itab + data) via unsafe.

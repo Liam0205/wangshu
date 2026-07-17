@@ -403,6 +403,7 @@ func (m *mockP4Host) NativeCalleeSegAddr(protoID uint32) uint64 { _ = protoID; r
 
 // CalleeNeverExitsSegment mock stub (issue #50 Spike 5): returns false.
 func (m *mockP4Host) CalleeNeverExitsSegment(protoID uint32) bool { _ = protoID; return false }
+func (m *mockP4Host) CalleeSeg2SegRetCount(protoID uint32) int32  { _ = protoID; return -1 }
 
 // ExecutePlainCallInlineFrame mock stub (issue #50 Spike 2): unit
 // tests don't emit the CALL EmitCallInline path (the segment guard is
