@@ -323,6 +323,61 @@ func ProtoSeg2SegEligible(proto *bytecode.Proto) bool {
 	return seg2segOpsEligible(proto)
 }
 
+// ProtoSeg2SegRetCount returns the uniform RETURN value count (B-1) of a
+// seg2seg-eligible callee, or -1 when RETURN sites disagree (issue #155).
+//
+// The seg2seg in-segment teardown (emitReturnDualSemantics) moves exactly
+// nret = B-1 values to the caller's R(A..) window and CANNOT nil-fill up
+// to the caller's expected C-1 — the interpreter's doReturn pads
+// nret..wanted with nils, but in-segment the caller has no way to learn
+// which RETURN site actually executed. The dispatch is only sound when
+// every reachable RETURN in the callee returns the SAME statically-known
+// count, so the caller-side populate can compare it against the CALL's
+// C-1 (fewer returned values than consumed → stale registers read as
+// results; fuzz crasher 0412a26ad22eaedf: `return end` vs
+// `return fib(n-1),(000)` in one proto left the caller reading the callee
+// closure out of R(A)).
+//
+// Only RETURNs in CFG-reachable blocks count: luac always appends a dead
+// trailing `RETURN 0 1` after an explicit return, which no execution can
+// reach — including it would reject every function ending in an explicit
+// non-empty return. Pseudo instruction words after CLOSURE are skipped
+// via nextRealPC (CLOSURE itself is seg2seg-ineligible, but this walk
+// must not decode data words as RETURN).
+func ProtoSeg2SegRetCount(proto *bytecode.Proto) int32 {
+	if proto == nil || len(proto.Code) == 0 {
+		return -1
+	}
+	c := buildCFG(proto)
+	reach := c.reachableBlocks()
+	ret := int32(-2) // unset
+	for id, bb := range c.blocks {
+		if !reach[id] {
+			continue
+		}
+		for pc := bb.startPC; pc < bb.endPC; pc = nextRealPC(proto, pc) {
+			ins := proto.Code[pc]
+			if bytecode.Op(ins) != bytecode.RETURN {
+				continue
+			}
+			b := int32(bytecode.B(ins))
+			if b == 0 {
+				return -1 // multret: no static count (also rejected by ops gate)
+			}
+			n := b - 1
+			if ret == -2 {
+				ret = n
+			} else if ret != n {
+				return -1 // sites disagree: no uniform count
+			}
+		}
+	}
+	if ret == -2 {
+		return -1 // no reachable RETURN (malformed): refuse
+	}
+	return ret
+}
+
 // seg2segOpsEligible is the op-set + no-param-write half of
 // ProtoSeg2SegEligible, WITHOUT the AnalyzeNative gate. AnalyzeNative's
 // own CALL density relaxation calls this (calling ProtoSeg2SegEligible

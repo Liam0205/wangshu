@@ -552,6 +552,16 @@ type P4HostState interface {
 	// disposed callees.
 	CalleeNeverExitsSegment(protoID uint32) bool
 
+	// CalleeSeg2SegRetCount returns the callee's uniform RETURN value
+	// count (every reachable RETURN carries the same B-1), or -1 when
+	// sites disagree / multret / non-native (issue #155). The seg2seg
+	// populate compares it against the CALL's C-1 before flagging the
+	// slot NeverExits: the in-segment teardown moves exactly B-1
+	// values with no nil-fill, so a callee that can return fewer
+	// values than the caller consumes must stay on the exit-reason
+	// path (host.DoReturn nil-fills like the interpreter).
+	CalleeSeg2SegRetCount(protoID uint32) int32
+
 	// ObserveCallCallee inspects R(A) at a CALL site and returns a
 	// packed observation of the callee's shape. Called by the exit-
 	// reason dispatcher just before host.CallBaseline to populate the

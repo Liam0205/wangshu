@@ -1015,6 +1015,24 @@ func (st *State) CalleeNeverExitsSegment(protoID uint32) bool {
 	return seg.NativeNeverExitsSegment()
 }
 
+// CalleeSeg2SegRetCount returns the callee's uniform RETURN value count
+// for seg2seg result-width gating, or -1 when unavailable (issue #155).
+// Mirrors CalleeNeverExitsSegment's resolution chain.
+func (st *State) CalleeSeg2SegRetCount(protoID uint32) int32 {
+	if int(protoID) >= len(st.protos) || st.protos[protoID] == nil {
+		return -1
+	}
+	code := st.bridge.GibbousCodeOf(st.protos[protoID])
+	if code == nil {
+		return -1
+	}
+	seg, ok := code.(bridge.NativeSegAddrer)
+	if !ok {
+		return -1
+	}
+	return seg.NativeSeg2SegRetCount()
+}
+
 // ObserveCallCallee snapshots the callee shape at R(A) for the issue
 // #50 Spike 1 per-CALL-site inline cache. Returns a packed uint64 the
 // PJ10 native dispatcher uses to populate the IC after

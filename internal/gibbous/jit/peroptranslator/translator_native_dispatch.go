@@ -418,11 +418,45 @@ func (c *nativeCode) populateCallIC(pc int32, observed uint64) {
 			// Only a never-exits native callee is eligible for
 			// segment-to-segment dispatch. OR the flag in (leaving the
 			// shape flags intact).
-			if c.host.CalleeNeverExitsSegment(protoID) {
+			//
+			// Result-width gate (issue #155): the in-segment RETURN
+			// teardown moves exactly the callee's static ret count and
+			// cannot nil-fill up to this CALL's expected C-1 the way
+			// host.DoReturn does. Require a uniform callee ret count
+			// >= the caller's consumption; otherwise the site stays on
+			// the exit-reason path (correct nil-fill, no perf cliff —
+			// the mixed-return shape was silently miscompiled before).
+			if c.host.CalleeNeverExitsSegment(protoID) &&
+				c.seg2SegRetWidthOK(pc, protoID) {
 				c.callICs[idx].Flags |= CallICFlagNeverExits
 			}
 		}
 	} else {
 		c.callICs[idx].CalleeSegAddr = 0
 	}
+}
+
+// seg2SegRetWidthOK reports whether the callee's uniform RETURN value
+// count covers this CALL site's expected result count (issue #155).
+// pc indexes the CALL instruction in c.proto.Code; its C field encodes
+// nresults+1 (C=0 multret is already rejected by AnalyzeNative for
+// native-compiled callers). A callee with divergent RETURN widths
+// (count -1) or one returning fewer values than consumed fails the
+// gate — the site keeps the exit-reason path whose host.DoReturn
+// nil-fills missing results exactly like the interpreter.
+func (c *nativeCode) seg2SegRetWidthOK(pc int32, protoID uint32) bool {
+	if c.proto == nil || pc < 0 || int(pc) >= len(c.proto.Code) {
+		return false
+	}
+	ins := c.proto.Code[pc]
+	if bytecode.Op(ins) != bytecode.CALL {
+		return false
+	}
+	cField := int32(bytecode.C(ins))
+	if cField == 0 {
+		return false // multret consumption: never seg2seg
+	}
+	wanted := cField - 1
+	ret := c.host.CalleeSeg2SegRetCount(protoID)
+	return ret >= 0 && ret >= wanted
 }

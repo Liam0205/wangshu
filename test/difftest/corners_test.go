@@ -106,6 +106,17 @@ return (not f()) and f()`},
 	{"corner_tonumber_nul_trail", `return tonumber("42\0junk")`},
 	{"corner_tonumber_nul_ws", `return tonumber("  3.14\0extra")`},
 	{"corner_tonumber_nul_only", `return tonumber("\0")`},
+
+	// —— Issue #158: string.format unsigned verbs with values >= 2^63.
+	// PUC casts through (unsigned long long)(double); on x86-64 gcc
+	// lowers that as cvttsd2si for f < 2^63 and (f - 2^63) + 2^63
+	// above. Go's uint64(int64(f)) saturates anything >= 2^63 to the
+	// int64-overflow indefinite. Out-of-range doubles (< 0 or >= 2^64)
+	// are C UB and stay exempt from probing (arch-divergent).
+	{"corner_format_X_2e19", `return string.format("%X", 10000000000000000000)`},
+	{"corner_format_x_1p63", `return string.format("%x", 2^63)`},
+	{"corner_format_u_big", `return string.format("%u", 12345678901234567890)`},
+	{"corner_format_o_big", `return string.format("%o", 1.8e19)`},
 }
 
 // exemptions: the design-exemption list (10 §11 ❌ columns + prose

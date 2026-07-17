@@ -226,6 +226,16 @@ func (c *nativeCode) NativeNeverExitsSegment() bool {
 	return c != nil && ProtoSeg2SegEligible(c.proto)
 }
 
+// NativeSeg2SegRetCount returns the callee's uniform RETURN value count,
+// or -1 when RETURN sites disagree (issue #155). Implements
+// bridge.NativeSegAddrer; see ProtoSeg2SegRetCount for the contract.
+func (c *nativeCode) NativeSeg2SegRetCount() int32 {
+	if c == nil {
+		return -1
+	}
+	return ProtoSeg2SegRetCount(c.proto)
+}
+
 // Dispose releases the mmap'd code page. Safe to call multiple times
 // and safe under concurrent Run in multi-State setups: CodePage.Dispose
 // flips a disposed flag (blocking further Enter) and the refcount

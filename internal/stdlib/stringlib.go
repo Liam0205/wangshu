@@ -439,7 +439,7 @@ func stringFnFormat(st *crescent.State, args []value.Value) ([]value.Value, *cre
 			// of 0 prints "" -- C forces one octal zero) and applies
 			// ' '/'+' to unsigned verbs that C ignores. Oracle diff
 			// fuzz catches: format("% 00X0", 0), format("%#X", 0).
-			out = append(out, cUnsignedFormat(spec, verb, uint64(int64(n)))...)
+			out = append(out, cUnsignedFormat(spec, verb, cUnsignedCast(n))...)
 			argn++
 		case 'c':
 			// PUC sprintf's the char with the full spec (width/flags
@@ -581,6 +581,22 @@ func stringFnChar(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 		out[i] = byte(n)
 	}
 	return []value.Value{intern(st, string(out))}, nil
+}
+
+// cUnsignedCast mirrors the x86-64 C `(unsigned long long)(double)`
+// conversion PUC's str_format performs for %u/%x/%X/%o (issue #158:
+// format("%X", 1e19) must print 8AC7230489E80000, but Go's
+// uint64(int64(f)) saturates any f >= 2^63 to the int64-overflow
+// indefinite 0x8000000000000000). gcc lowers the cast as: values below
+// 2^63 go through cvttsd2si directly (negatives wrap two's-complement;
+// NaN/overflow produce the 0x8000000000000000 indefinite), values at or
+// above 2^63 convert as (f - 2^63) + 2^63.
+func cUnsignedCast(f float64) uint64 {
+	const two63 = 9223372036854775808.0 // 2^63
+	if f < two63 {
+		return uint64(int64(f)) // Go int64(f) saturates like cvttsd2si's indefinite
+	}
+	return uint64(int64(f-two63)) + (1 << 63)
 }
 
 // cUnsignedFormat renders C sprintf's %u/%x/%X/%o. Go's fmt cannot be

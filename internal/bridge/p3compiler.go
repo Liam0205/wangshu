@@ -129,6 +129,16 @@ type NativeSegAddrer interface {
 	// 5). Only such callees are eligible for segment-to-segment
 	// dispatch. False keeps the caller on the exit-reason path.
 	NativeNeverExitsSegment() bool
+
+	// NativeSeg2SegRetCount returns the callee's uniform RETURN value
+	// count (every reachable RETURN carries the same B-1), or -1 when
+	// sites disagree / multret (issue #155). The seg2seg caller-side
+	// populate compares it against the CALL's C-1: the in-segment
+	// teardown moves exactly B-1 values and cannot nil-fill up to the
+	// caller's expectation, so a callee returning fewer values than the
+	// caller consumes must stay on the exit-reason path (whose
+	// host.DoReturn nil-fills like the interpreter).
+	NativeSeg2SegRetCount() int32
 }
 
 // CompileErrKind is the category of a compilation failure (05 §2.2.2 error-return
