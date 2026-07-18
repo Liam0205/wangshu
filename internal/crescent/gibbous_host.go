@@ -44,28 +44,49 @@ func (st *State) enterGibbous(th *thread, code bridge.GibbousCode, funcIdx, narg
 	ci.SetGibbous(true) // bit50 callStatus_gibbous (04 §1.2): this frame takes the Wasm path
 	th.reMirrorTop()    // PW10 R2b-1: re-mirror the ci segment after a cold field (gibbous) change
 
-	// Re-arm the loop fuel word when the budget/ctx CONFIGURATION changed
-	// since the last entry (mirror of P4's RefreshJitCtxAddrs loop-fuel
-	// handling). Safepoint refills loopFuelUnlimited (1<<30) while
-	// nothing is armed, and SetStepBudget/SetCancelHook only touch
-	// Go-side fields — so a State that ran promoted loops without a
-	// budget and THEN arms one would keep draining the stale unlimited
-	// refill for ~1e9 back-edges before the new budget is ever
-	// consulted. Detection is by GENERATION (budgetGen), not by an
-	// aggregate armed-boolean: "ctx already armed, budget added later"
-	// keeps the aggregate at armed=true, yet the quantum window drained
-	// under ctx-only must not bill the brand-new budget (code-review
-	// finding: a single post-arming back-edge tripped budget=10 because
-	// the next Safepoint billed the ctx-phase drain). On any config
-	// change, discard the partial drain WITHOUT billing — it accrued
-	// under a configuration the new budget does not own — and start a
-	// fresh window sized for the new armed state.
-	if gen := st.budgetGen.Load(); gen != st.loopFuelGen {
+	// Re-arm the loop fuel word when the budget/ctx configuration
+	// changed since the last entry (mirror of P4's RefreshJitCtxAddrs
+	// loop-fuel handling). Safepoint refills loopFuelUnlimited (1<<30)
+	// while nothing is armed, and SetStepBudget/SetCancelHook only
+	// touch Go-side fields — so a State that ran promoted loops without
+	// a budget and THEN arms one would keep draining the stale
+	// unlimited refill for ~1e9 back-edges before the new budget is
+	// ever consulted.
+	//
+	// Two distinct change kinds (code-review increments 3+4):
+	//  - budget OWNERSHIP changed (budgetGen, bumped only by
+	//    SetStepBudget): the previous window's drain belongs to the
+	//    previous budget configuration — discard it UNBILLED and start
+	//    a fresh window. An aggregate armed-boolean cannot see "ctx
+	//    already armed, budget added later" (both are armed=true),
+	//    which billed up to a full quantum of ctx-phase back-edges to
+	//    the brand-new budget.
+	//  - ctx changed while NO budget is armed: only the window SIZE
+	//    matters (quantum so cancellation is observed promptly,
+	//    unlimited so the fast path returns); the discarded drain has
+	//    no budget to bill.
+	// A ctx set/replace/remove while a budget stays armed must NOT
+	// touch the window: the drain still belongs to that same live
+	// budget, and resetting it handed out a fresh unbilled quantum per
+	// toggle — repeated SetContext/RemoveContext extended budget=100 to
+	// ~400 back-edges without a raise (code-review increment-4).
+	gen := st.budgetGen.Load()
+	refill := int64(loopFuelUnlimited)
+	if st.stepBudget > 0 || st.ctx.Load() != nil {
+		refill = loopFuelQuantum
+	}
+	switch {
+	case gen != st.loopFuelGen:
 		st.loopFuelGen = gen
-		refill := int64(loopFuelUnlimited)
-		if st.stepBudget > 0 || st.ctx.Load() != nil {
-			refill = loopFuelQuantum
-		}
+		st.loopFuelRefill = refill
+		st.arena.SetWordAt(st.loopBudgetRef, uint64(uint32(refill)))
+	case st.stepBudget <= 0 && refill != st.loopFuelRefill &&
+		(st.loopFuelRefill == loopFuelQuantum || st.loopFuelRefill == loopFuelUnlimited):
+		// No budget armed: only the window SIZE tracks the ctx state
+		// (quantum ↔ unlimited). The zero-value initial state is left
+		// for Safepoint's first crossing to initialize — eagerly
+		// writing it here would erase the SafepointCalls probe signal
+		// tests rely on, for no behavioral gain.
 		st.loopFuelRefill = refill
 		st.arena.SetWordAt(st.loopBudgetRef, uint64(uint32(refill)))
 	}

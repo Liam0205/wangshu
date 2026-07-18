@@ -221,3 +221,53 @@ func TestP4LoopBudget_CtxThenBudgetNoStaleBilling(t *testing.T) {
 		}
 	}
 }
+
+// TestP4LoopBudget_CtxToggleDoesNotExtendBudget is the P4 sibling of
+// the P3 test of the same name (code-review increment-4): ctx toggles
+// while a budget stays armed must not reset the loop/seg-call fuel
+// windows. Each round runs ~2500 back-edges under budget=6000; without
+// the fix every SetContext/RemoveContext handed out a fresh 4096
+// window and all 10 rounds (~25000 back-edges) completed.
+func TestP4LoopBudget_CtxToggleDoesNotExtendBudget(t *testing.T) {
+	src := `function sum(n)local s=0 for i=0,n do end return s end return sum(N)`
+	prog, err := wangshu.Compile([]byte(src), "tog4")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	st := wangshu.NewState(wangshu.Options{MaxArenaBytes: 64 << 20})
+	st.SetHotThresholds(2, 4)
+	st.SetGlobal("N", wangshu.Number(6000))
+	for run := 1; run <= 2; run++ {
+		if _, err := prog.Run(st); err != nil {
+			t.Fatalf("warm run %d: %v", run, err)
+		}
+	}
+	if st.PromotionCount() == 0 {
+		t.Fatal("harness broken: loop not promoted")
+	}
+	st.SetStepBudget(6000)
+	st.SetGlobal("N", wangshu.Number(2500))
+	var raised error
+	rounds := 0
+	for round := 1; round <= 10; round++ {
+		if round%2 == 1 {
+			st.SetContext(context.Background())
+		} else {
+			st.RemoveContext()
+		}
+		rounds = round
+		if _, err := prog.Run(st); err != nil {
+			raised = err
+			break
+		}
+	}
+	if raised == nil {
+		t.Fatalf("~25000 back-edges under budget=6000 never raised — ctx toggles keep resetting the fuel windows")
+	}
+	if !strings.Contains(raised.Error(), "instruction budget exceeded") {
+		t.Fatalf("wrong error: %v", raised)
+	}
+	if rounds > 5 {
+		t.Errorf("budget=6000 lasted %d rounds of ~2500 back-edges — ctx toggles partially extend the quota", rounds)
+	}
+}

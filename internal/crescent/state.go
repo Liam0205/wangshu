@@ -117,17 +117,25 @@ type State struct {
 	// gibbous segment does not read it).
 	loopFuelRefill int64
 
-	// budgetGen counts budget/ctx configuration changes: SetStepBudget and
-	// SetCancelHook each bump it. Fuel-window owners (P3's enterGibbous via
-	// loopFuelGen, P4's RefreshJitCtxAddrs via JITContext.SyncBudgetGen)
-	// compare against their cached generation and, on mismatch, discard the
-	// partial fuel drain WITHOUT billing — back edges that ran under a
-	// previous configuration must never bill a later-armed budget. An
-	// aggregate armed-boolean cannot see e.g. "ctx already armed, budget
-	// added later" (both states are armed=true), which billed up to a full
-	// quantum of ctx-phase back edges to the brand-new budget (code-review
-	// finding). Atomic because SetCancelHook is documented cross-goroutine
-	// safe.
+	// budgetGen counts budget OWNERSHIP changes: bumped ONLY by
+	// SetStepBudget (which also resets stepUsed). Fuel-window owners
+	// (P3's enterGibbous via loopFuelGen, P4's RefreshJitCtxAddrs via
+	// JITContext.SyncBudgetGen) compare against their cached generation
+	// and, on mismatch, discard the partial fuel drain WITHOUT billing —
+	// back edges that ran under a previous budget configuration must
+	// never bill a later-armed budget. An aggregate armed-boolean cannot
+	// see e.g. "ctx already armed, budget added later" (both states are
+	// armed=true), which billed up to a full quantum of ctx-phase back
+	// edges to the brand-new budget (code-review increment-3).
+	//
+	// Deliberately NOT bumped by SetCancelHook: a ctx set/replace/remove
+	// while a budget stays armed does not change who owns the drain —
+	// treating it as a change handed out a fresh unbilled quantum per
+	// toggle, letting repeated SetContext/RemoveContext extend the quota
+	// indefinitely (code-review increment-4). Ctx changes while NO
+	// budget is armed only affect the fuel WINDOW SIZE, which the
+	// consumers derive from the live armed state, not from this counter.
+	// Atomic for the same cross-goroutine reason as ctx itself.
 	budgetGen atomic.Uint32
 
 	// loopFuelGen is enterGibbous's cached budgetGen (VM-goroutine only).
@@ -777,10 +785,9 @@ func (st *State) preempt() *LuaError {
 func (st *State) SetCancelHook(fn func() error) {
 	if fn == nil {
 		st.ctx.Store(nil)
-	} else {
-		st.ctx.Store(&ctxHolder{err: fn})
+		return
 	}
-	st.budgetGen.Add(1)
+	st.ctx.Store(&ctxHolder{err: fn})
 }
 
 // CancelHookActive reports whether a cancellation callback is currently installed (diagnostics/tests).

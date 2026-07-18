@@ -347,3 +347,67 @@ func TestP3LoopBudget_ArmDoesNotBillPreArmDrain(t *testing.T) {
 		t.Fatalf("ample budget tripped after arming — pre-arm drain billed to new budget: %v", err)
 	}
 }
+
+// TestP3LoopBudget_CtxToggleDoesNotExtendBudget: a ctx set/replace/
+// remove while a budget stays armed must NOT reset the fuel window
+// (code-review increment-4: SetCancelHook bumped the shared budgetGen,
+// so every toggle handed the segment a fresh unbilled quantum —
+// budget=100 survived ~400 back-edges across 10 SetContext/
+// RemoveContext toggles). The drain accrued before and after the
+// toggle belongs to the same live budget and must accumulate into it.
+func TestP3LoopBudget_CtxToggleDoesNotExtendBudget(t *testing.T) {
+	src := `function sum(n)local s=0 local i=0 while i<=n do X=0*i i=i+1 end return s end return sum(12)%sum(N)`
+	prog, err := Compile([]byte(src), "tog")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	st := NewState(Options{MaxArenaBytes: 64 << 20})
+	st.SetHotThresholds(2, 4)
+	st.SetGlobal("N", Number(1000))
+	for run := 1; run <= 2; run++ {
+		if _, err := prog.Run(st); err != nil {
+			t.Fatalf("warm run %d: %v", run, err)
+		}
+	}
+	if st.PromotionCount() == 0 {
+		t.Fatal("harness broken: loop not promoted")
+	}
+	// budget=100; each round runs ~40 back-edges and toggles the ctx.
+	// Without toggles the budget trips inside round 3; with the
+	// increment-4 bug each toggle reset the window and all 10 rounds
+	// (~400 back-edges) completed.
+	st.SetStepBudget(100)
+	spBefore := st.SafepointCalls()
+	st.SetGlobal("N", Number(40))
+	var raised error
+	rounds := 0
+	for round := 1; round <= 10; round++ {
+		if round%2 == 1 {
+			st.SetContext(context.Background())
+		} else {
+			st.RemoveContext()
+		}
+		rounds = round
+		if _, err := prog.Run(st); err != nil {
+			raised = err
+			break
+		}
+	}
+	if raised == nil {
+		// With per-toggle window resets each ~40-back-edge round stays
+		// under the fresh 64 quantum, so Safepoint is never crossed and
+		// nothing is ever billed — the zero delta is the bug's
+		// signature, not a harness problem.
+		t.Fatalf("~400 back-edges under budget=100 never raised — ctx toggles keep resetting the fuel window (Safepoint delta=%d)",
+			st.SafepointCalls()-spBefore)
+	}
+	if st.SafepointCalls() == spBefore {
+		t.Fatal("harness broken: raised without ever crossing Safepoint")
+	}
+	if !strings.Contains(raised.Error(), "instruction budget exceeded") {
+		t.Fatalf("wrong error: %v", raised)
+	}
+	if rounds > 5 {
+		t.Errorf("budget=100 lasted %d rounds of ~40 back-edges — ctx toggles partially extend the quota", rounds)
+	}
+}
