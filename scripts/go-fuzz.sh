@@ -51,24 +51,29 @@ run_target() {
         # GOMEMLIMIT (issue #123 diagnostic hardening, tightened after
         # issues #144/#145/#150/#151/#152): the fuzz coordinator starts
         # -parallel=N worker child processes that each inherit this env
-        # var as a per-worker Go heap soft limit. When a worker's live
-        # heap exceeds the limit, the Go runtime first triggers more
-        # aggressive GC; only when the live heap cannot be reduced below
-        # the limit (e.g. concat-storm temporaries that are still
-        # reachable) does it raise an OOM fatal with a full goroutine
-        # stack — much better than a silent OS kill.
+        # var as a per-worker Go heap SOFT limit. It only makes GC run
+        # more aggressively and return memory to the OS sooner — the Go
+        # runtime never aborts on it (runtime/debug.SetMemoryLimit:
+        # "the application may still make progress"), so it lowers the
+        # RSS peak and buys headroom but CANNOT convert an OS OOM kill
+        # into an explicit Go OOM, nor guarantee a worker survives.
+        # (Issues #156/#157/#159 died silently WITH this limit set —
+        # allocation bursts can outrun GC, and SIGKILL leaves no trace.
+        # A hard cap would need process-level isolation, e.g. cgroups /
+        # ulimit -v; the next diagnostic layer is per-seed wall-clock
+        # tracking in the harness.)
         #
         # The concat-storm family of unreproducible crashers (#144-#152)
         # showed that 6GiB was too generous: a single seed doing
         # quadratic string concatenation (out = out .. cat(i)) can grow
         # Go-heap temporary strings to several GiB before the step
         # budget catches it — and under 4 parallel workers, four such
-        # seeds blow past any reasonable runner memory. 512MiB is tight
-        # enough to catch concat storms early (the arena is already
-        # capped at 64MiB inside each harness; 512MiB leaves ~448MiB
-        # for Go heap overhead, interpreter state, and temporary
+        # seeds blow past any reasonable runner memory. 512MiB keeps GC
+        # pressure high enough to bound concat storms early (the arena
+        # is already capped at 64MiB inside each harness; 512MiB leaves
+        # ~448MiB for Go heap overhead, interpreter state, and temporary
         # strings — ample for any budget-bounded fuzz input) yet loose
-        # enough to never false-positive on legitimate scripts.
+        # enough to never slow down legitimate scripts.
         GOMEMLIMIT="${GOMEMLIMIT:-512MiB}" \
         go test "${tags_arg[@]+"${tags_arg[@]}"}" "./$pkg" -run='^$' \
             -fuzz="^${func}\$" -fuzztime="$fuzztime" -timeout=120s -parallel=4 \
