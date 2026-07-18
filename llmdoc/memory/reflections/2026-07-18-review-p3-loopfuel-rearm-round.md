@@ -158,7 +158,12 @@ GOMEMLIMIT 的错误认知从 #123 轮(2026-07-11 反思)开始,先进了
   用代际计数,不要用从配置推导的聚合布尔——布尔看不到 armed 状态内部的
   变更);
 - 给触发条件对某个周期性窗口的相位敏感的 bug 写回归测试时(附记教训 E:
-  在整个窗口宽度上扫描,单点 warm 长度会静默错过坏相位)。
+  在整个窗口宽度上扫描,单点 warm 长度会静默错过坏相位);
+- 给「丢弃 vs 结算」类判定设计检测信号时(附记二教训 F:信号的编码
+  范围必须与被丢弃之物的所有权精确对齐——过窄漏检真变更,过宽把
+  非所有权变化也当变更,两个方向都出漏洞);
+- 修复配对状态机 bug 补回归测试时(附记二教训 G:状态转换矩阵的两个
+  方向都要测,只测触发本次 bug 的那条边会让反方向的矫枉过正无人发觉)。
 
 ## 关联
 
@@ -172,7 +177,8 @@ transition 处理的镜像来源)· [[2026-07-18-issue155-158-nightly-crasher-ro
 (教训 4 曾原样引用 GOMEMLIMIT 错误声称,本轮订正)·
 [[2026-07-11-issue123-unreproducible-crasher-round]](错误认知源头轮)·
 PR #161 · commit 2945b57 · commit bc29cd5 · commit 40979a1 ·
-commit 961f665 / 000e7fb / a171457(附记:第二轮增量 review 修复)
+commit 961f665 / 000e7fb / a171457(附记:第二轮增量 review 修复)·
+commit 16b88d6(附记二:第三轮增量 review 修复)
 
 ## 附记(合入前第二轮增量 review:第一轮修复自身的盲区与假绿测试)
 
@@ -251,3 +257,72 @@ fuel 窗口的哪个相位,单一 warm 长度可能静默错过坏相位(实测 
 - 缺陷 2 作为「guide 刚写完就被自己违反」的实例,值得在
   [[prove-the-path-under-test]] §7.1 下次修订时反引:新写的复现/回归
   测试本身也要过一遍 §7.1 的白盒探针检查,包括修复轮自己写的那些。
+
+## 附记二(合入前第三轮增量 review:increment-3 的代际方案矫枉过正)
+
+第三轮增量 review
+(`.code-review/from-6a55d1e/increment-4-to-4348a44.md`)在 increment-3
+修复自身找到一个真实的配额绕过漏洞,已修复(commit `16b88d6`)。
+
+### 缺陷:代际编码范围过宽,ctx 变化被误当成预算所有权变更
+
+increment-3 把 `SetStepBudget` 和 `SetCancelHook` 都接进同一个
+`budgetGen`,消费方把任何代际变化都解释为「预算所有权变更」,并无计费
+丢弃旧 fuel 窗口。但「budget 持续武装、只是 ctx 被设置/替换/移除」时,
+drain 前后属于同一个活跃预算,`SetContext` 也不会重置 `stepUsed`——
+每次 toggle 却白送一个未计费的 quantum 窗口。定向复现:budget=100 下
+交替 `SetContext`/`RemoveContext` 十轮、每轮约 40 次 back-edge,共约
+400 次 back-edge 从不报错(P3 上 `Safepoint` delta=0——每个新 64
+quantum 都大于单轮的 40,计费点永远不被穿越);修复后第 3 轮就正确报
+instruction budget exceeded。
+
+### 修复(commit `16b88d6`)
+
+- `budgetGen` 收窄为只由 `SetStepBudget` bump——语义就是「预算所有权
+  变更」,与它同时 reset `stepUsed` 对齐;
+- ctx 变化只影响 fuel 窗口大小,消费方从 live armed 状态推导:P3
+  `enterGibbous` 在「无 budget」时按 quantum↔unlimited 差异调整窗口
+  (zero-value 初态留给 `Safepoint` 首次穿越去初始化,避免抹掉
+  `SafepointCalls` 探针信号);P4 `RefreshJitCtxAddrs` 恢复
+  `!LoopFuelArmedBudgeted()` 的 arming-transition 分支,处理「无
+  budget 时 ctx 装上」(Unlimited 模式 `Spent` 返回 0,不会误计费);
+- budget 武装期间 ctx toggle 时,三个分支全都不触发——窗口保留、
+  drain 继续累积进同一预算。
+
+### 教训 F(本轮核心,教训 D 的修正):代际的编码范围必须与「谁拥有被丢弃的东西」精确对齐
+
+「用代际计数检测配置变更」的方向没错,但**代际编码什么必须精确**。
+fuel drain 的所有者是 step budget,不是「budget+ctx 的联合配置」——
+把 ctx 变化也编进同一代际,等于把「所有者没变」的场景也当成「所有者
+换了」处理,丢掉了本该结算的消耗。一般化:决定「丢弃 vs 结算」的检测
+信号,粒度必须恰好是所有权本身;过窄(聚合布尔,increment-3 抓到的
+教训 D)漏检真变更,过宽(联合代际,本轮)把非所有权变化也当成变更,
+两个方向都出漏洞。这是一对对偶失误:同一个机制连续两轮分别踩了两头。
+
+### 教训 G(测试盲区的对偶):状态转换矩阵要双向都测
+
+increment-3 补的测试只覆盖了「ctx 先武装、budget 后加」这一个方向;
+「budget 先武装、ctx 后变化」这个反方向没有测试,于是矫枉过正无人
+发觉。**判据**:修复配对状态机 bug 时,回归测试要把状态转换矩阵的
+两个方向都列出来测,不能只测触发本次 bug 的那一条边。
+
+### 新回归测试与验证
+
+- 双层新增 `TestP3LoopBudget_CtxToggleDoesNotExtendBudget` /
+  `TestP4LoopBudget_CtxToggleDoesNotExtendBudget`:10 轮 toggle,断言
+  必须 raise + P3 校验 `Safepoint` 真穿越 + rounds<=5 防部分延长;对
+  increment-3 版本的代码验证过失败(P3 零穿越、P4 十轮跑满)。
+- 全套 budget 测试(9 P3 + 7 P4)+ 三 build 全量 + race + arm64
+  交叉编译 + difftest + 60s FuzzAutoPromote 全绿。
+- bot 增量审查 APPROVE,静态核对确认 P3/P4 镜像一致、值域守卫穷尽;
+  它建议合入前本地跑 5 个 budget 测试——提交前已跑过(含 `-race`)。
+
+### 附记二的 promotion 候选
+
+- **教训 F**(检测信号粒度与所有权精确对齐)与附记教训 D 构成同一
+  机制上的一对对偶失误——「同一个检测信号两轮分别踩过窄与过宽两头」
+  已是完整模式;若后续再出现「丢弃 vs 结算」判定信号设计失误的实例,
+  建议 D 与 F 一起升 guide。
+- **教训 G**(状态转换矩阵双向测试)首次样本暂留 memory,可与附记
+  教训 E 相邻,同作 [[prove-the-path-under-test]] 测试设计侧的候补
+  维度。
