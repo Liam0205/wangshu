@@ -183,40 +183,110 @@ func TestP3LoopBudget_ArmAfterWarmRuns(t *testing.T) {
 }
 
 // TestP3LoopBudget_CancelHookAfterWarmRuns: same transition with a
-// cancel context instead of a budget — SetContext after warm runs must
-// preempt the promoted loop.
+// cancel context instead of a budget — a context canceled DURING a
+// promoted in-segment loop must preempt it. The warm and long runs
+// call the SAME loaded function (one Program, one State: `sum` is a
+// global closure over one promoted Proto), and the canceled Run must
+// itself cross the P3 back-edge safepoint (SafepointCalls delta > 0)
+// — the first version of this test warmed a different Program and its
+// canceled Run aborted at the interpreter's frame-entry preempt
+// without ever entering P3, so it passed even with the loop-fuel
+// re-arm logic deleted (code-review finding).
 func TestP3LoopBudget_CancelHookAfterWarmRuns(t *testing.T) {
-	src := `function sum(n)local s=0 local i=0 while i<=n do X=0*i i=i+1 end return s end return sum(12)%sum(1000000000)`
+	// One Program: warm calls sum(100000), the long run calls sum(1e18)
+	// via a global knob so both execute the SAME promoted Proto.
+	src := `function sum(n)local s=0 local i=0 while i<=n do X=0*i i=i+1 end return s end return sum(12)%sum(N)`
 	prog, err := Compile([]byte(src), "canc")
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	warm, err := Compile([]byte(`function sum(n)local s=0 local i=0 while i<=n do X=0*i i=i+1 end return s end return sum(12)%sum(100000)`), "canc")
-	if err != nil {
-		t.Fatalf("compile warm: %v", err)
-	}
 	st := NewState(Options{MaxArenaBytes: 64 << 20})
 	st.SetHotThresholds(2, 4)
+	st.SetGlobal("N", Number(100000))
 	for run := 1; run <= 2; run++ {
-		if _, err := warm.Run(st); err != nil {
+		if _, err := prog.Run(st); err != nil {
 			t.Fatalf("warm run %d: %v", run, err)
 		}
 	}
 	if st.PromotionCount() == 0 || st.SafepointCalls() == 0 {
 		t.Fatalf("harness broken: loop not promoted in-segment")
 	}
+	// Cancel mid-run: install a live context BEFORE the run, cancel it
+	// from another goroutine once the run is underway. Frame-entry
+	// preempt sees a live context at entry, so only the in-segment
+	// back-edge safepoint can observe the later cancellation.
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // already canceled: the 1e9-iteration run must abort promptly
 	st.SetContext(ctx)
+	st.SetGlobal("N", Number(1e18))
+	spBefore := st.SafepointCalls()
 	done := make(chan error, 1)
 	go func() { _, e := prog.Run(st); done <- e }()
+	time.Sleep(50 * time.Millisecond) // let the run enter the promoted loop
+	cancelAt := time.Now()
+	cancel()
 	select {
 	case e := <-done:
 		if e == nil || !strings.Contains(e.Error(), "context canceled") {
 			t.Fatalf("want context-canceled error, got %v", e)
 		}
+		// Promptness: with the quantum refill armed, the cancellation
+		// is observed within 64 back-edges (microseconds). Without the
+		// re-arm fix the run drains the stale unlimited refill first —
+		// ~1<<30 back-edges, empirically ~9s — before the safepoint
+		// looks at the context. 5s cleanly separates the two even on a
+		// slow CI runner.
+		if waited := time.Since(cancelAt); waited > 5*time.Second {
+			t.Fatalf("cancellation observed only after %v — the run drained a stale unlimited fuel window first", waited)
+		}
 	case <-time.After(30 * time.Second):
-		t.Fatal("canceled 1e9-iteration promoted loop still running after 30s — stale unlimited loop fuel")
+		t.Fatal("canceled in-segment loop still running after 30s — cancellation not observed at the back-edge safepoint")
+	}
+	if delta := st.SafepointCalls() - spBefore; delta == 0 {
+		t.Fatal("canceled run never crossed the P3 back-edge safepoint — the test did not exercise the in-segment path")
+	}
+}
+
+// TestP3LoopBudget_CtxThenBudgetNoStaleBilling: with a live (never
+// canceled) Context already armed — quantum refills in effect — arming
+// a budget afterwards is a configuration CHANGE the old aggregate
+// armed-boolean could not see. The partial drain accrued during the
+// ctx-only phase (up to 64 back-edges) must be discarded, NOT billed
+// to the brand-new budget: a follow-up call producing ~1 back-edge
+// under budget=10 must succeed (code-review increment-3 finding 1: it
+// raised "instruction budget exceeded" because the next Safepoint
+// billed the ctx-phase drain into the fresh budget).
+func TestP3LoopBudget_CtxThenBudgetNoStaleBilling(t *testing.T) {
+	// Whether the stale billing trips a given budget depends on where in
+	// the 64-back-edge quantum window the warm phase happens to stop, so
+	// a single warm length could silently miss the bad phase. Scan warm
+	// lengths across one full window width: with the drain correctly
+	// discarded every phase passes; with stale billing at least one
+	// phase in any 64-wide range bills a near-full window into the
+	// fresh budget and trips it.
+	src := `function sum(n)local s=0 local i=0 while i<=n do X=0*i i=i+1 end return s end return sum(12)%sum(N)`
+	for warmN := 980; warmN < 980+64; warmN++ {
+		prog, err := Compile([]byte(src), "cbst")
+		if err != nil {
+			t.Fatalf("compile: %v", err)
+		}
+		st := NewState(Options{MaxArenaBytes: 64 << 20})
+		st.SetHotThresholds(2, 4)
+		st.SetContext(context.Background()) // armed from the start: quantum refills
+		st.SetGlobal("N", Number(float64(warmN)))
+		for run := 1; run <= 2; run++ {
+			if _, err := prog.Run(st); err != nil {
+				t.Fatalf("warmN=%d ctx-armed warm run %d: %v", warmN, run, err)
+			}
+		}
+		if st.PromotionCount() == 0 || st.SafepointCalls() == 0 {
+			t.Fatalf("harness broken: loop not promoted in-segment")
+		}
+		// Arm a tiny budget; the next call runs ~1 back-edge of its own.
+		st.SetStepBudget(10)
+		st.SetGlobal("N", Number(1))
+		if _, err := prog.Run(st); err != nil {
+			t.Fatalf("warmN=%d: ~1 post-arming back-edge tripped budget=10 — ctx-phase drain billed to the new budget: %v", warmN, err)
+		}
 	}
 }
 

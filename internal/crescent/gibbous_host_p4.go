@@ -81,25 +81,39 @@ func (st *State) RefreshJitCtxAddrs(ctx *jit.JITContext, base int32) {
 	// so in-segment CALLs count like interpreter calls (each in-segment
 	// dispatch corresponds to one enterLuaFrame the interpreter would
 	// have billed via st.preempt()).
-	if st.stepBudget > 0 || st.ctx.Load() != nil {
-		st.stepUsed += int64(ctx.SegCallFuelSpent())
+	//
+	// genChanged: the budget/ctx CONFIGURATION changed since the last
+	// refresh (SetStepBudget/SetCancelHook bump st.budgetGen). Any
+	// partial fuel drain accrued under the previous configuration is
+	// discarded UNBILLED — an aggregate armed-boolean cannot see "ctx
+	// already armed, budget added later" (both are armed=true), which
+	// billed up to a full quantum of ctx-phase back-edges/dispatches to
+	// the brand-new budget (code-review finding on the P3 mirror;
+	// probe-confirmed here).
+	genChanged := ctx.SyncBudgetGen(st.budgetGen.Load())
+	armed := st.stepBudget > 0 || st.ctx.Load() != nil
+	if armed {
+		if !genChanged {
+			st.stepUsed += int64(ctx.SegCallFuelSpent())
+		}
 		ctx.SetSegCallFuel(jit.SegCallFuelBudgeted)
 	} else {
 		ctx.SetSegCallFuel(jit.SegCallFuelUnlimited)
 	}
-	// Loop back-edge fuel (issue #102): refill ONLY on an armed-state
-	// transition. This refresh runs after every dispatcher resume, and a
+	// Loop back-edge fuel (issue #102): refill ONLY on a configuration
+	// change. This refresh runs after every dispatcher resume, and a
 	// loop whose body round-trips through an exit-reason helper each
 	// iteration (cold CALL, GETTABLE...) would have its back-edge drain
 	// erased every iteration by an unconditional refill — the guard
 	// would never fire and nothing else checks the budget on that path
 	// (host-closure CALLs never reach st.preempt()). Between
-	// transitions, host.LoopPreempt is the only refiller — with one
+	// changes, host.LoopPreempt is the only refiller — with one
 	// exception below.
-	if st.stepBudget > 0 || st.ctx.Load() != nil {
-		if !ctx.LoopFuelArmedBudgeted() {
-			// Arming transition: the pre-arming drain reports 0 spent
-			// (Unlimited-mode rule), so nothing is billed here.
+	if armed {
+		if genChanged {
+			// Configuration change: drop the previous window's drain
+			// unbilled (it accrued under a configuration the new
+			// budget does not own) and start a fresh budgeted window.
 			ctx.SetLoopFuel(jit.SegCallFuelBudgeted)
 		} else if ctx.LoopFuel() == 0 {
 			// Deopt stranding repair (PR #105 review): a seg2seg
@@ -115,8 +129,9 @@ func (st *State) RefreshJitCtxAddrs(ctx *jit.JITContext, base int32) {
 			// st.preempt — billing the strand would double-charge.
 			ctx.SetLoopFuel(jit.SegCallFuelBudgeted)
 		}
-	} else if ctx.LoopFuelArmedBudgeted() {
-		// Disarming transition: drop the budgeted quantum, go
+	} else if genChanged || ctx.LoopFuelArmedBudgeted() {
+		// Disarming change (or a stale budgeted quantum from a
+		// pre-generation refill): drop the budgeted quantum, go
 		// unlimited (the partial drain has no budget to bill).
 		ctx.SetLoopFuel(jit.SegCallFuelUnlimited)
 	}
