@@ -148,8 +148,16 @@ func valueToStringMeta(st *crescent.State, v value.Value) (raw value.Value, hadM
 		// MetaFieldOf covers both table metatables and the shared
 		// string metatable (PUC: a __tostring installed on
 		// getmetatable("") applies to every string).
+		// ANY non-nil metafield is called, not just functions: PUC's
+		// luaL_callmeta pushes the field and lua_call's it, so a
+		// non-callable __tostring (number, string, table without
+		// __call) raises "attempt to call a X value" while a table
+		// WITH __call goes through — the call machinery decides, not
+		// a type filter here (nightly oracle fuzz c3a6ed137f361957:
+		// __tostring=0 must raise; wangshu silently fell back to the
+		// address form).
 		h := st.MetaFieldOf(v, "__tostring")
-		if value.Tag(h) == value.TagFunction {
+		if value.Tag(h) != value.TagNil {
 			results, e := st.ProtectedCallDirect(h, []value.Value{v})
 			if e != nil {
 				return value.Nil, true, e

@@ -117,6 +117,32 @@ return (not f()) and f()`},
 	{"corner_format_x_1p63", `return string.format("%x", 2^63)`},
 	{"corner_format_u_big", `return string.format("%u", 12345678901234567890)`},
 	{"corner_format_o_big", `return string.format("%o", 1.8e19)`},
+
+	// —— Issue #163: non-function __tostring metafields. PUC's
+	// luaL_callmeta calls whatever the field holds — a non-callable
+	// value (number/boolean/string) raises "attempt to call a X
+	// value"; a table with __call is invoked. wangshu's type filter
+	// silently fell back to the address form.
+	{"corner_tostring_meta_number", `
+local t = setmetatable({}, {__tostring = 0})
+local ok, e = pcall(tostring, t)
+return ok, (e:gsub("^[^:]+:%d+: ", ""))`},
+	{"corner_tostring_meta_bool", `
+local t = setmetatable({}, {__tostring = false})
+local ok, e = pcall(tostring, t)
+return ok, (e:gsub("^[^:]+:%d+: ", ""))`},
+	{"corner_tostring_meta_callable", `
+local t = setmetatable({}, {__tostring = setmetatable({}, {__call = function() return "CC" end})})
+return tostring(t)`},
+	{"corner_tostring_meta_string_shared", `
+getmetatable("").__tostring = 42
+local ok, e = pcall(tostring, "x")
+getmetatable("").__tostring = nil
+return ok, (e:gsub("^[^:]+:%d+: ", ""))`},
+	{"corner_print_meta_number", `
+local t = setmetatable({}, {__tostring = "s"})
+local ok, e = pcall(print, t)
+return ok, (e:gsub("^[^:]+:%d+: ", ""))`},
 }
 
 // exemptions: the design-exemption list (10 §11 ❌ columns + prose
