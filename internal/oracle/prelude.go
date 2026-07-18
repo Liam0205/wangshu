@@ -213,6 +213,31 @@ string.rep = function(s, n)
   return __rep(s, n)
 end
 
+-- string.format unsigned-verb UB guard: %u/%x/%X/%o cast the argument
+-- through C (unsigned long long)(double), which is UB outside
+-- (-1, 2^64) — x86-64 cvttsd2si (NaN/negative -> 0x8000000000000000
+-- indefinite) and arm64 FCVTZU (saturate to 0 / 0xFFFF...) genuinely
+-- disagree, so the two official PUC builds diverge from EACH OTHER by
+-- arch. wangshu pins the x86-64 behavior on all arches; comparison in
+-- the UB range is therefore meaningless against a non-x86 oracle.
+-- Reroute to the limit sentinel (skip, not divergence). The verb scan
+-- can false-positive on literal "%%x" — a lost input, never a false
+-- verdict.
+local __tonumber, __sformat = tonumber, string.format
+string.format = function(f, ...)
+  if __type(f) == "number" then f = __tostring(f) end
+  if __type(f) == "string" and __sfind(f, "%%[%-%+ #0-9%.]*[uxXo]") then
+    local n = __select("#", ...)
+    for i = 1, n do
+      local v = __tonumber((__select(i, ...)))
+      if v ~= nil and (v ~= v or v <= -1 or v >= 18446744073709551616) then
+        __error("` + LimitSentinel + `: unsigned-cast UB range", 0)
+      end
+    end
+  end
+  return __sformat(f, ...)
+end
+
 -- Pattern-function guards. PUC 5.1's matcher is unbounded C-side
 -- backtracking that the instruction hook cannot interrupt (and deep
 -- %b/quantifier recursion can overflow the C stack); wangshu bounds
