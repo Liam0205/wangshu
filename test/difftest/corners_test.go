@@ -139,7 +139,7 @@ getmetatable("").__tostring = 42
 local ok, e = pcall(tostring, "x")
 getmetatable("").__tostring = nil
 return ok, (e:gsub("^[^:]+:%d+: ", ""))`},
-	{"corner_print_meta_number", `
+	{"corner_print_meta_string", `
 local t = setmetatable({}, {__tostring = "s"})
 local ok, e = pcall(print, t)
 return ok, (e:gsub("^[^:]+:%d+: ", ""))`},
