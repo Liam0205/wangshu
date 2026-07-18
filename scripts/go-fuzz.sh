@@ -68,12 +68,14 @@ run_target() {
         # quadratic string concatenation (out = out .. cat(i)) can grow
         # Go-heap temporary strings to several GiB before the step
         # budget catches it — and under 4 parallel workers, four such
-        # seeds blow past any reasonable runner memory. 512MiB keeps GC
-        # pressure high enough to bound concat storms early (the arena
-        # is already capped at 64MiB inside each harness; 512MiB leaves
-        # ~448MiB for Go heap overhead, interpreter state, and temporary
-        # strings — ample for any budget-bounded fuzz input) yet loose
-        # enough to never slow down legitimate scripts.
+        # seeds blow past any reasonable runner memory. 512MiB raises GC
+        # pressure early and is EXPECTED to lower concat-storm peaks
+        # (the arena is already capped at 64MiB inside each harness;
+        # 512MiB leaves ~448MiB for Go heap overhead, interpreter
+        # state, and temporary strings), but it is probabilistic, not a
+        # bound: allocation can outrun collection, and near-limit GC
+        # may slow legitimate seeds. No memory or throughput guarantee
+        # — acceptable for the current fuzz workload.
         GOMEMLIMIT="${GOMEMLIMIT:-512MiB}" \
         go test "${tags_arg[@]+"${tags_arg[@]}"}" "./$pkg" -run='^$' \
             -fuzz="^${func}\$" -fuzztime="$fuzztime" -timeout=120s -parallel=4 \
