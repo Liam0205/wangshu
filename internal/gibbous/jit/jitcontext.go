@@ -675,6 +675,18 @@ type JITContext struct {
 	loopSpill0 uint64
 	loopSpill1 uint64
 	loopSpill2 uint64
+
+	// budgetGen caches the host State's budget/ctx configuration
+	// generation (crescent.State.budgetGen). RefreshJitCtxAddrs compares
+	// via SyncBudgetGen and, on mismatch, resets both fuel windows
+	// WITHOUT billing the partial drain — back-edges/dispatches that ran
+	// under a previous configuration must never bill a later-armed
+	// budget. An aggregate armed-boolean cannot detect "ctx already
+	// armed, budget added later" (code-review finding on the P3 mirror;
+	// probe-confirmed on P4 too). Placed at the struct tail so the
+	// trampoline-hardcoded offsets (spillBase 24 / savedGoSP 176) do not
+	// shift (see TestSpillStackLayout).
+	budgetGen uint32
 }
 
 // NewJITContext constructs a P4 JIT execution context.
@@ -962,6 +974,19 @@ func (c *JITContext) LoopFuelSpent() uint32 {
 		return 0
 	}
 	return c.loopFuelRefill - c.loopFuel
+}
+
+// SyncBudgetGen compares the cached budget/ctx configuration generation
+// against the host's current one and reports whether it CHANGED (also
+// updating the cache). A change means any partial fuel drain accrued
+// under the previous configuration and must be discarded unbilled; the
+// caller resets both fuel windows for the new armed state.
+func (c *JITContext) SyncBudgetGen(gen uint32) bool {
+	if c.budgetGen == gen {
+		return false
+	}
+	c.budgetGen = gen
+	return true
 }
 
 // LoopFuelTick decrements the loop back-edge fuel by one and reports

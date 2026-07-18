@@ -10,6 +10,7 @@
 package wangshu_test
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -176,5 +177,47 @@ func TestP4LoopBudget_FuelResumeCorrectness(t *testing.T) {
 	}
 	if r1[0].Display() != rA[0].Display() {
 		t.Errorf("P4 vs interp mismatch: P4=%s interp=%s", rA[0].Display(), r1[0].Display())
+	}
+}
+
+// TestP4LoopBudget_CtxThenBudgetNoStaleBilling is the P4 sibling of the
+// P3 test of the same name (code-review increment-3 finding 1,
+// probe-confirmed on P4 too): with a live Context already armed —
+// budgeted quantum (4096) refills in effect — arming a budget later is
+// a configuration change the old aggregate armed-boolean could not
+// see, and the partial drain accrued during the ctx-only phase was
+// billed by the next LoopPreempt/RefreshJitCtxAddrs into the fresh
+// budget. Scan warm lengths across a whole quantum window so at least
+// one phase exposes stale billing regardless of where the warm phase
+// stops in the window.
+func TestP4LoopBudget_CtxThenBudgetNoStaleBilling(t *testing.T) {
+	src := `function sum(n)local s=0 for i=0,n do end return s end return sum(N)`
+	// Budget 3000 fits the tiny run's ~2500 back-edges comfortably;
+	// only a stale ctx-phase drain (window of 4096) can trip it.
+	const budget = 3000
+	const tinyN = 2500
+	for warmN := 6000; warmN < 6000+4096; warmN += 256 {
+		prog, err := wangshu.Compile([]byte(src), "cb4")
+		if err != nil {
+			t.Fatalf("compile: %v", err)
+		}
+		st := wangshu.NewState(wangshu.Options{MaxArenaBytes: 64 << 20})
+		st.SetHotThresholds(2, 4)
+		st.SetContext(context.Background()) // armed from the start
+		st.SetGlobal("N", wangshu.Number(float64(warmN)))
+		for run := 1; run <= 2; run++ {
+			if _, err := prog.Run(st); err != nil {
+				t.Fatalf("warmN=%d ctx-armed warm run %d: %v", warmN, run, err)
+			}
+		}
+		if st.PromotionCount() == 0 {
+			t.Fatalf("harness broken: loop not promoted")
+		}
+		st.SetStepBudget(budget)
+		st.SetGlobal("N", wangshu.Number(tinyN))
+		if _, err := prog.Run(st); err != nil {
+			t.Fatalf("warmN=%d: ~%d post-arming back-edges tripped budget=%d — ctx-phase drain billed to the new budget: %v",
+				warmN, tinyN, budget, err)
+		}
 	}
 }

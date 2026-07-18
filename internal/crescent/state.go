@@ -117,6 +117,21 @@ type State struct {
 	// gibbous segment does not read it).
 	loopFuelRefill int64
 
+	// budgetGen counts budget/ctx configuration changes: SetStepBudget and
+	// SetCancelHook each bump it. Fuel-window owners (P3's enterGibbous via
+	// loopFuelGen, P4's RefreshJitCtxAddrs via JITContext.BudgetGen) compare
+	// against their cached generation and, on mismatch, discard the partial
+	// fuel drain WITHOUT billing — back edges that ran under a previous
+	// configuration must never bill a later-armed budget. An aggregate
+	// armed-boolean cannot see e.g. "ctx already armed, budget added later"
+	// (both states are armed=true), which billed up to a full quantum of
+	// ctx-phase back edges to the brand-new budget (code-review finding).
+	// Atomic because SetCancelHook is documented cross-goroutine safe.
+	budgetGen atomic.Uint32
+
+	// loopFuelGen is enterGibbous's cached budgetGen (VM-goroutine only).
+	loopFuelGen uint32
+
 	// safepointCalls counts how many times a gibbous back edge crosses tiers into
 	// host.Safepoint (white-box probe, proving that with no budget the unlimited
 	// loopFuel refill keeps a hot loop from crossing tiers almost entirely). Read only by tests.
@@ -710,6 +725,7 @@ func (st *State) SafepointCalls() int64 { return st.safepointCalls }
 func (st *State) SetStepBudget(n int64) {
 	st.stepBudget = n
 	st.stepUsed = 0
+	st.budgetGen.Add(1)
 }
 
 // SetAllowFileLoad toggles the filesystem-read capability of loadfile/dofile (default off).
@@ -760,9 +776,10 @@ func (st *State) preempt() *LuaError {
 func (st *State) SetCancelHook(fn func() error) {
 	if fn == nil {
 		st.ctx.Store(nil)
-		return
+	} else {
+		st.ctx.Store(&ctxHolder{err: fn})
 	}
-	st.ctx.Store(&ctxHolder{err: fn})
+	st.budgetGen.Add(1)
 }
 
 // CancelHookActive reports whether a cancellation callback is currently installed (diagnostics/tests).
