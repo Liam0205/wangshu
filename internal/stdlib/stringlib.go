@@ -588,15 +588,39 @@ func stringFnChar(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 // format("%X", 1e19) must print 8AC7230489E80000, but Go's
 // uint64(int64(f)) saturates any f >= 2^63 to the int64-overflow
 // indefinite 0x8000000000000000). gcc lowers the cast as: values below
-// 2^63 go through cvttsd2si directly (negatives wrap two's-complement;
-// NaN/overflow produce the 0x8000000000000000 indefinite), values at or
-// above 2^63 convert as (f - 2^63) + 2^63.
+// 2^63 go through cvttsd2si directly (NaN falls into this branch too —
+// comisd unordered sets CF; negatives wrap two's-complement; NaN and
+// underflow produce the 0x8000000000000000 indefinite), values at or
+// above 2^63 convert as (f - 2^63) + 2^63 (+inf and >= 2^64 overflow
+// cvttsd2si to the indefinite, which the +2^63 then wraps to 0).
+//
+// Outside [0, 2^64) the C cast is UB and PUC's output genuinely
+// differs by arch (arm64 FCVTZU saturates: NaN/negative -> 0,
+// >= 2^64 -> 0xFFFF...). Go's own out-of-range conversion is
+// arch-dependent for the same reason (amd64 CVTTSD2SI indefinite vs
+// arm64 FCVTZS saturation), so every UB corner below is spelled out
+// explicitly: wangshu pins the x86-64 gcc behavior (probe-verified)
+// on ALL arches rather than inheriting whichever instruction the Go
+// compiler picks. The oracle-diff prelude reroutes the UB range to a
+// skip — an arm64 PUC build is entitled to disagree there.
 func cUnsignedCast(f float64) uint64 {
-	const two63 = 9223372036854775808.0 // 2^63
-	if f < two63 {
-		return uint64(int64(f)) // Go int64(f) saturates like cvttsd2si's indefinite
+	const (
+		two63 = 9223372036854775808.0  // 2^63
+		two64 = 18446744073709551616.0 // 2^64
+	)
+	switch {
+	case f != f: // NaN: cvttsd2si indefinite
+		return 1 << 63
+	case f < two63:
+		if f <= -two63 { // -inf and below-int64 range: indefinite
+			return 1 << 63
+		}
+		return uint64(int64(f)) // int64 range: exact truncation, Go-defined
+	case f < two64:
+		return uint64(int64(f-two63)) + (1 << 63)
+	default: // +inf or >= 2^64: indefinite + 2^63 wraps to 0
+		return 0
 	}
-	return uint64(int64(f-two63)) + (1 << 63)
 }
 
 // cUnsignedFormat renders C sprintf's %u/%x/%X/%o. Go's fmt cannot be
