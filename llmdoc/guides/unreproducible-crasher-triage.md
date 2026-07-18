@@ -148,13 +148,21 @@ kill 前 dump 系统状态快照**。#123 轮的两条硬化:
 **Why**:低频罕见事件的调查成本大头不是「修」,是「等下一次复发」。等的时候免费,但复发时若信息不够
 又要再等,循环下去。投资应该投在「让复发时的信息一次性够用」,不是投在「这次尽力挖」。
 
-**硬化层级的最新状态(2026-07-18)**:`GOMEMLIMIT` 软限制已被观察到接不住这族死亡——2026-07-18
+**硬化层级的最新状态(2026-07-19)**:`GOMEMLIMIT` 软限制已被观察到接不住这族死亡——2026-07-18
 轮的 #156/#157/#159 三个 run 都已带上 PR #154 的 `GOMEMLIMIT=512MiB`,p4 worker 仍在约 4150 万
-execs 处无声消失。软限制只影响 GC 节奏,既不会主动 fatal,也防不住分配速率超过 GC 回收速度时
+execs 处无声消失;2026-07-19 轮的 #162(concat storm 家族第 10 例)同样在 `GOMEMLIMIT=512MiB`
+在场时于约 1240 万 execs 处静默死,本地重放 4.6 秒干净。软限制只影响 GC 节奏,既不会主动
+fatal,也防不住分配速率超过 GC 回收速度时
 RSS 冲过限制被 SIGKILL,更防不住非内存死因。下一层升级方向是
 harness 按 seed 记 wall-clock,把「进程在哪个 seed 之后消失」变成 artifact 里可读的归因线索。
 每一层没接住都是新信息,不是浪费。反思实例见
-`memory/reflections/2026-07-18-issue155-158-nightly-crasher-round.md` 教训 4。
+`memory/reflections/2026-07-18-issue155-158-nightly-crasher-round.md` 教训 4 与
+`memory/reflections/2026-07-19-issue163-tostring-meta-round.md`(#162 一节)。
+
+**观察:minimized 输入本身往往不是死因(2026-07-19,#162)**。concat storm 家族累计 10 例,
+本地精确重放全部干净——落盘的 minimized 输入更像「进程死亡时刻恰好在跑的那个」,真实压力更
+可能来自 4 个 parallel worker 的叠加峰值,或 minimization 之前某个更重的 mutation 变体。这
+也解释了为什么重放总是干净:重放只复现「单个 worker 跑单个 minimized 输入」这种最轻的情况。
 
 **How to apply**:遇到「本地无法复现 + 生产 / CI 出现」类问题,除了调查根因之外,并行考虑:能不能加
 一个便宜的诊断改动,让下次复发时留下更多信息?能就先做诊断硬化,再看要不要继续挖这次。
