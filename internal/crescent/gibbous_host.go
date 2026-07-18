@@ -44,6 +44,27 @@ func (st *State) enterGibbous(th *thread, code bridge.GibbousCode, funcIdx, narg
 	ci.SetGibbous(true) // bit50 callStatus_gibbous (04 §1.2): this frame takes the Wasm path
 	th.reMirrorTop()    // PW10 R2b-1: re-mirror the ci segment after a cold field (gibbous) change
 
+	// Re-arm the loop fuel word on a budget/ctx armed-state TRANSITION
+	// (mirror of P4's RefreshJitCtxAddrs loop-fuel handling). Safepoint
+	// refills loopFuelUnlimited (1<<30) while nothing is armed, and
+	// SetStepBudget/SetCancelHook only touch Go-side fields — so a State
+	// that ran promoted loops without a budget and THEN arms one would
+	// keep draining the stale unlimited refill for ~1e9 back-edges
+	// before the new budget is ever consulted. The pre-arming drain is
+	// deliberately NOT billed (there was no budget while it accrued);
+	// resetting refill+word here means the next Safepoint crossing
+	// charges only post-arming back-edges. The disarm direction is a
+	// performance nicety only (a stale small quantum self-heals at the
+	// next crossing), handled for symmetry.
+	armed := st.stepBudget > 0 || st.ctx.Load() != nil
+	if armed && st.loopFuelRefill == loopFuelUnlimited {
+		st.loopFuelRefill = loopFuelQuantum
+		st.arena.SetWordAt(st.loopBudgetRef, uint64(uint32(loopFuelQuantum)))
+	} else if !armed && st.loopFuelRefill == loopFuelQuantum {
+		st.loopFuelRefill = loopFuelUnlimited
+		st.arena.SetWordAt(st.loopBudgetRef, uint64(uint32(loopFuelUnlimited)))
+	}
+
 	// base byte offset: R0's byte address in the shared linear memory =
 	//   (value-stack segment word offset stackBaseW + frame base slot) * 8
 	//   (each slot is an 8-byte NaN-box u64).
