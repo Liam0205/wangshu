@@ -176,3 +176,22 @@ SegToSegHitCount 停摆抓死尾毒化 + arm64 hits=0 抓断言静默失败)·
 stringFnFormat 手写 C 语义路线的延续)· issue #155 · issue #156 · issue #157 ·
 issue #158 · issue #159 · PR #160 · PR #154(GOMEMLIMIT 硬化前序)· commit
 5f76472(arm64 镜像补齐)
+
+## 附记(合入前第三轮修复:Go 侧越界转换同样按架构分岔)
+
+llmdoc 进 PR 后,oracle-smoke 的 arm64 leg 又抓到一例:
+`print(string.format("%X", 0%0))`(NaN)。根因是教训 3 的第一版
+cUnsignedCast 自身还不够——`uint64(int64(f))` 这类混合表达式对越界输入
+走 Go 自己的架构相关转换(amd64 CVTTSD2SI indefinite,arm64 FCVTZS 饱
+和),产生了与两个 PUC 官方构建都不同的第三种行为。修复
+(commit 0d31290):把 NaN、<= -2^63、>= 2^64、±inf 每个 UB 角落都写成
+显式分支,让 wangshu 在所有架构上钉住 x86-64 gcc 参考行为;同时在
+oracle prelude 加守卫,把无符号 verb 的 UB 范围参数改道 LimitSentinel
+对称跳过(arm64 PUC oracle 在 UB 区有权与钉住的 x86 语义不一致)。
+
+教训 3 因此升级一档:模拟 C 实现定义行为时,**Go 这一侧的越界
+float→int 转换与 C 一样按架构分岔**——`uint64(f)`、`int64(f)` 对越界
+输入在 amd64/arm64 上结果不同。凡是「按参考平台钉行为」的模拟函数,
+输入域里每个越界角落都必须有显式分支,不能让任何一个角落漏进 Go 的
+原生转换;验证也必须双架构跑(本例 amd64 全绿,只有 arm64 oracle
+smoke 抓得到)。
