@@ -119,14 +119,15 @@ type State struct {
 
 	// budgetGen counts budget/ctx configuration changes: SetStepBudget and
 	// SetCancelHook each bump it. Fuel-window owners (P3's enterGibbous via
-	// loopFuelGen, P4's RefreshJitCtxAddrs via JITContext.BudgetGen) compare
-	// against their cached generation and, on mismatch, discard the partial
-	// fuel drain WITHOUT billing — back edges that ran under a previous
-	// configuration must never bill a later-armed budget. An aggregate
-	// armed-boolean cannot see e.g. "ctx already armed, budget added later"
-	// (both states are armed=true), which billed up to a full quantum of
-	// ctx-phase back edges to the brand-new budget (code-review finding).
-	// Atomic because SetCancelHook is documented cross-goroutine safe.
+	// loopFuelGen, P4's RefreshJitCtxAddrs via JITContext.SyncBudgetGen)
+	// compare against their cached generation and, on mismatch, discard the
+	// partial fuel drain WITHOUT billing — back edges that ran under a
+	// previous configuration must never bill a later-armed budget. An
+	// aggregate armed-boolean cannot see e.g. "ctx already armed, budget
+	// added later" (both states are armed=true), which billed up to a full
+	// quantum of ctx-phase back edges to the brand-new budget (code-review
+	// finding). Atomic because SetCancelHook is documented cross-goroutine
+	// safe.
 	budgetGen atomic.Uint32
 
 	// loopFuelGen is enterGibbous's cached budgetGen (VM-goroutine only).
