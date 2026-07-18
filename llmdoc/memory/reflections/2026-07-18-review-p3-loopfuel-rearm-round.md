@@ -153,7 +153,12 @@ GOMEMLIMIT 的错误认知从 #123 轮(2026-07-11 反思)开始,先进了
 - 给 State 级开关(budget / cancel-hook / tier 开关类)加运行期切换语义
   时(问题 1 的机制模式:凡是「加速层把某个 Go 侧配置镜像成段内/线性内存
   快照」的地方,配置变更点都必须有对应的镜像刷新,P4 RefreshJitCtxAddrs
-  与本轮 enterGibbous 是两个既有先例)。
+  与本轮 enterGibbous 是两个既有先例);
+- 给「多个独立配置项汇成一个观察量」的机制写配置变更检测时(附记教训 D:
+  用代际计数,不要用从配置推导的聚合布尔——布尔看不到 armed 状态内部的
+  变更);
+- 给触发条件对某个周期性窗口的相位敏感的 bug 写回归测试时(附记教训 E:
+  在整个窗口宽度上扫描,单点 warm 长度会静默错过坏相位)。
 
 ## 关联
 
@@ -166,4 +171,83 @@ GOMEMLIMIT 的错误认知从 #123 轮(2026-07-11 反思)开始,先进了
 transition 处理的镜像来源)· [[2026-07-18-issue155-158-nightly-crasher-round]]
 (教训 4 曾原样引用 GOMEMLIMIT 错误声称,本轮订正)·
 [[2026-07-11-issue123-unreproducible-crasher-round]](错误认知源头轮)·
-PR #161 · commit 2945b57 · commit bc29cd5 · commit 40979a1
+PR #161 · commit 2945b57 · commit bc29cd5 · commit 40979a1 ·
+commit 961f665 / 000e7fb / a171457(附记:第二轮增量 review 修复)
+
+## 附记(合入前第二轮增量 review:第一轮修复自身的盲区与假绿测试)
+
+llmdoc 进 PR 后,第二轮增量 review
+(`.code-review/from-6a55d1e/increment-3-to-40979a1.md`)在第一轮修复
+自身找到两个缺陷,均已修复(commits `961f665` / `000e7fb` / `a171457`)。
+
+### 缺陷 1:聚合布尔检测不到「已武装状态内部的配置变更」
+
+第一轮修复用 `stepBudget > 0 || ctx != nil` 这个聚合布尔检测武装状态
+转换,它只能看到聚合值的 false↔true 边沿。「ctx 已武装、随后再开
+budget」这条时序两头都是 armed=true,转换检测对这次变更失明:ctx-only
+阶段的 partial drain(最多一个完整 quantum)被下一个计费点算进全新
+预算。定向复现在两个 tier 都成立:P3 上武装后 1 次新 back-edge 就触发
+budget=10 报错;P4 探针确认同样存在(4096 宽度窗口的陈旧排空后,
+~2500 次新 back-edge 触发 budget=3000)。
+
+修复(commit `961f665`):`State.budgetGen` 代际计数——`SetStepBudget`
+/ `SetCancelHook` 各自 bump;P3 `enterGibbous` 与 P4
+`RefreshJitCtxAddrs`(经 `JITContext.SyncBudgetGen`)比对各自缓存的
+代际,任何变更都先丢弃旧窗口的 partial drain 且不计费(那段消耗发生在
+旧配置下,绝不计入后武装的预算),再按新武装状态开新窗口;P4 的
+seg-call fuel 在同一变更点跳过它的 `Spent()` 计费,理由相同。
+
+**教训 D**:「配置发生过变更」的检测要用代际/世代计数,不要用从配置
+推导出来的聚合布尔——布尔只能编码「当前状态是什么」,编码不了「中途
+发生过变化」。凡是多个独立配置项(此处 budget 与 ctx)汇成一个观察量
+的地方,都有这个盲区。
+
+### 缺陷 2:第一轮的 cancel 回归测试是假绿
+
+第一轮写的 cancel 回归测试,warm 用了一个 Program、被测 Run 用另一个
+独立编译的 Program;`PromotionCount()` 是 State 级累计值,harness 的
+「已升层」检查因此空过。被测 Run 在解释器 frame-entry preempt 处就
+返回 context canceled,从没进过 P3(`SafepointCalls` delta = 0)——
+把整个修复删掉,这个测试照样通过。这恰好违反了本反思正文教训 A 与
+guide §7.1 里自己刚写下的规则:写下教训与执行教训之间仍有距离,同一
+轮里前脚写进 guide 的判据,后脚就没套用到自己新写的测试上。
+
+重写后的测试:同一个 Program,循环长度经全局 knob 切换;mid-run 从
+另一 goroutine 触发 cancel;断言 `SafepointCalls` delta > 0(段内路径
+确实被走到)+ 及时性 < 5s(陈旧 unlimited 窗口实测要 ~9s 才排空,5s
+能把「及时中断」与「排空后才中断」干净分开)。三个新/改测试都分别对
+pre-fix 版本与聚合布尔版本验证过失败。
+
+### 教训 E:相位敏感的 bug 用全窗口扫描的回归测试
+
+stale billing 是否触发,取决于 warm 阶段停在 64(P3)/ 4096(P4)宽度
+fuel 窗口的哪个相位,单一 warm 长度可能静默错过坏相位(实测 10 个相位
+采样里只有 2 个触发)。测试改为在整个窗口宽度上扫描 warm 长度,任何
+相位分布下至少有一个采样点必然暴露问题。**判据**:触发条件对某个
+周期性窗口的相位敏感时,回归测试要扫过整个窗口宽度,不要赌单点。
+
+### 小项与流程
+
+- `go-fuzz.sh` GOMEMLIMIT 注释后半段的确定性口吻(bound / never slow
+  down)改为概率性表述(commit `000e7fb`)——延续正文问题 2 的同一条
+  纪律:机制性声称不许超出官方语义的担保范围;
+- `state.go` 注释里 `BudgetGen`→`SyncBudgetGen` 的方法名笔误由 bot
+  增量审查抓到,已订正(commit `a171457`);
+- gofmt hook 在 commit 时拦截了一个未格式化的测试文件(防线正常工作);
+- 一次 `git stash pop` 弹出了历史遗留的旧 stash 造成冲突:工作树里有
+  历史 stash 条目时,`git stash push` 指定文件之后要留意 pop 出来的是
+  哪一条,或改用临时文件复制来做 A/B 验证(本轮后来改用 /tmp 文件
+  复制法做删修复验证)。
+
+### 附记的 promotion 候选
+
+- **教训 D**(配置变更检测用代际计数而非聚合布尔):首次样本暂留
+  memory;它与正文「加速层把 Go 侧配置镜像成段内快照,变更点必须刷新
+  镜像」是同一机制的两层——正文管「有没有刷新点」,本条管「刷新点的
+  变更检测本身怎么写才不漏」。若后续再出现聚合观察量吞掉配置变更的
+  实例,可与正文条目一起升 guide。
+- **教训 E**(相位敏感用全窗口扫描):首次样本暂留 memory,可作
+  [[prove-the-path-under-test]] 的测试设计侧候补维度。
+- 缺陷 2 作为「guide 刚写完就被自己违反」的实例,值得在
+  [[prove-the-path-under-test]] §7.1 下次修订时反引:新写的复现/回归
+  测试本身也要过一遍 §7.1 的白盒探针检查,包括修复轮自己写的那些。
