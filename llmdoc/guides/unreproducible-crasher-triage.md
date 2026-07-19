@@ -179,13 +179,18 @@ RSS 冲过限制被 SIGKILL,更防不住非内存死因。
 - **机制 A(尸检)**:TestMain 检测到 `-test.fuzzworker` 时把 fd 2 dup 到
   `fuzz-forensics/worker-<pid>-stderr.log` 并加 `debug.SetTraceback("all")`,接住此前被
   /dev/null 丢弃的 Go fatal 完整栈迹(合成 fatal 探针已验证栈迹确实进日志);
-- **机制 B(飞行记录仪)**:每次 fuzz 回调把 seq / 时间戳 / target / 输入以单次 `WriteAt`
-  覆盖写进定长 8KiB 的 per-PID 记录文件。动机:不撞崩的 mutation 不会进任何 corpus,而
-  minimized 输入又屡次被证明不是真凶——飞行记录是恢复「进程死亡时刻真正在跑的输入」的唯一
-  手段;定长覆盖写,无 I/O 累积。
+- **机制 B(飞行记录仪)**:每次 fuzz 回调(在各 target 的长度/NUL 检查**之后**——被 skip
+  的输入不执行、不可能是真凶)把 seq / 时间戳 / target / 输入以单次 `WriteAt` 覆盖写进定长
+  20KiB 的 per-PID 记录文件(容量覆盖最大 gated 输入 16KiB + header,逐字节可恢复,有单元
+  测试钉住;热路径 0 alloc,`AllocsPerRun` 断言)。动机:不撞崩的 mutation 不会进任何
+  corpus,而 minimized 输入又屡次被证明不是真凶——飞行记录是恢复「进程死亡时刻真正在跑的
+  输入」的唯一手段;定长覆盖写,无 I/O 累积。
 
-配套:`scripts/go-fuzz.sh` 每个 target 先清 `fuzz-forensics/`、静默死亡失败时把栈迹日志与
-飞行记录 dump 进日志流;nightly 失败 artifact 上传 `**/fuzz-forensics/**`。下一次家族复发时
+配套:`scripts/go-fuzz.sh` 按 target 隔离目录 `fuzz-forensics/<FuzzTarget>/`(经
+`WANGSHU_FUZZ_FORENSICS_DIR` 传入,只清自己的目录——p1 job 先跑 native fuzz 再跑 oracle
+fuzz,共享目录会让后者删掉前者的证据)、静默死亡失败时把栈迹日志 dump 进日志流并指向随
+artifact 上传的原始飞行记录文件(不做文本过滤,防腐蚀 NUL/非 UTF-8 字节);nightly 失败
+artifact 上传 `**/fuzz-forensics/**`。下一次家族复发时
 artifact 里即有完整栈迹与在飞输入;若 stderr 日志仍只有 header(不是 Go fatal),则死因在
 Go runtime 之外(如 coordinator 侧 pipe 断裂),同样是决定性的排除信息。
 每一层没接住都是新信息,不是浪费。反思实例见
