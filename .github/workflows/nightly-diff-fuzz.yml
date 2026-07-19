@@ -178,6 +178,7 @@ jobs:
             gofuzz.log
             oraclefuzz.log
             **/testdata/fuzz/**
+            **/fuzz-forensics/**
           if-no-files-found: ignore
 
       - name: triage and file divergence issue

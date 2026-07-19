@@ -46,6 +46,11 @@ fi
 run_target() {
     local pkg="$1" func="$2" log rc
     log=$(mktemp)
+    # Worker forensics (fuzz_forensics_test.go, concat-storm family
+    # #123-#162): fresh directory per target so leftover logs from a
+    # previous target can't be misattributed. Root-package targets
+    # write per-PID worker stderr + flight-recorder files here.
+    rm -rf "$pkg/fuzz-forensics"
     for attempt in 1 2; do
         set +e
         # GOMEMLIMIT (issue #123 diagnostic hardening, tightened after
@@ -93,6 +98,28 @@ run_target() {
             echo "── silent-worker-death diagnostics (issue #123) ──" >&2
             free -m >&2 2>/dev/null || true
             echo "vm.max_map_count: $(cat /proc/sys/vm/max_map_count 2>/dev/null || echo n/a)" >&2
+            # Worker autopsy (concat-storm family): "exit status 2" is
+            # the Go runtime's own fatal exit — the dying worker printed
+            # a stack trace, but internal/fuzz wires worker stderr to
+            # /dev/null. fuzz_forensics_test.go redirects each worker's
+            # fd 2 to fuzz-forensics/worker-<pid>-stderr.log; dump any
+            # log that grew beyond its one-line header, plus every
+            # flight-recorder record (which worker ran which input).
+            if [ -d "$pkg/fuzz-forensics" ]; then
+                for wf in "$pkg"/fuzz-forensics/worker-*-stderr.log; do
+                    [ -f "$wf" ] || continue
+                    if [ "$(wc -l < "$wf")" -gt 1 ]; then
+                        echo "── worker autopsy: $wf ──" >&2
+                        cat "$wf" >&2
+                    fi
+                done
+                for rf in "$pkg"/fuzz-forensics/worker-*-input.log; do
+                    [ -f "$rf" ] || continue
+                    echo "── flight record: $rf ──" >&2
+                    # Strip the fixed-size record's space padding.
+                    sed -e 's/ *$//' "$rf" | grep -v '^$' >&2 || true
+                done
+            fi
         fi
         if [ "$attempt" -eq 1 ] \
            && grep -q 'context deadline exceeded' "$log" \
