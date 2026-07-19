@@ -42,6 +42,7 @@ return coroutine.resume(co)`,
 		f.Add(s)
 	}
 	f.Fuzz(func(t *testing.T, src string) {
+		recordFuzzExec("FuzzCompileRun", src)
 		if len(src) > 1<<14 {
 			t.Skip()
 		}

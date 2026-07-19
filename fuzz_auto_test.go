@@ -55,6 +55,7 @@ func FuzzAutoPromote(f *testing.F) {
 	}
 
 	f.Fuzz(func(t *testing.T, src string) {
+		recordFuzzExec("FuzzAutoPromote", src)
 		if raceEnabled {
 			// Same boundary as FuzzP4ForceAllPromote: P4 mmap-segment
 			// execution trips the race runtime's stack unwinder; the
