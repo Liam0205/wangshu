@@ -77,10 +77,28 @@ panic(input 决定),也可以是 worker 进程被 OS 因资源耗尽 kill(与 in
 **#125 实证**:corpus `function sum() for A=0,0 do end end return sum() or (sum())` P1 返 `0`、auto 返 `nil`、oracle 说 `nil`——表象是「层间分歧指向升层路径」,真相是共享前端 `stmtReturn` 的 codegen bug 让两个 tier 各自读到不同的栈垃圾:`base := fs.freereg` 在 `exp2NextReg` 之前捕获,而 `exp2NextReg` 内部先 `freeExp`(freereg 回落一格)再把值物化到低一格,`RETURN A = base` 因此指向值的后一格,读到栈上的未定义数据。反思
 [[2026-07-11-issue125-return-freereg-round]] 教训 1(层间分歧归因先问 oracle) + 教训 2(前端 codegen freereg capture-use 间距审计判据:`base := fs.freereg` 与 use 之间夹了任何会移动 freereg 的调用如 `freeExp` / `exp2NextReg` 就红旗,改用 `e.info` 消费物化后的权威位置或后移 capture)。
 
+## 静默死亡先做两步分类(排在复现矩阵之前)
+
+worker「无声消失 / hung or terminated unexpectedly」类失败,在撒七角度复现矩阵之前,先做两个
+几分钟量级的分类检查——与「版本核对先行」同一量级,都是先用最便宜的检查排除最便宜的解释:
+
+1. **先分类退出方式**:失败消息里是 exit code 还是 signal?`exit status 2` 是 Go runtime 自身
+   fatal(panic / fatal error)的退出码,worker 死时几乎必然打印了完整栈迹——死因不是「无声」,
+   是有一份完整的尸检报告没被看到;`signal: killed` 才是 OS 层的 SIGKILL(如 OOM killer),
+   那才是真的没有输出。这一步直接决定「有没有栈迹可找」。
+2. **再查子进程的 stdio 接线**:若第 1 步判定有输出,查它被父进程接到了哪里。internal/fuzz 的
+   coordinator 用 `exec.Command` 起 worker 时 `cmd.Stderr` 留 nil,os/exec 把它接到
+   /dev/null——尸检报告每次都写了,每次都被系统性丢弃。
+
+**教训来源**:concat storm 家族 10 例横跨 8 天,此前各轮全部在复现矩阵与内存限制上打转,没有
+一轮查过 `exit status 2` 的语义;这两步各花几分钟,合起来把问题性质从「查不到死因」翻译成
+「输出没接住」,一步解开僵局。反思
+`memory/reflections/2026-07-19-fuzz-worker-forensics-round.md` 教训 1。
+
 ## 复现矩阵检查单(七角度)
 
-版本核对已排除便宜解释、精确重放确认干净后,若还要继续调查,以下七角度是「crasher 落盘 input 无法
-复现时,还能穷举什么」的实用检查单。逐条对照,不用现场想角度。
+退出方式与 stdio 接线分类完毕、版本核对已排除便宜解释、精确重放确认干净后,若还要继续调查,
+以下七角度是「crasher 落盘 input 无法复现时,还能穷举什么」的实用检查单。逐条对照,不用现场想角度。
 
 1. **精确重放**:corpus 原样跑 N 次(N ≥ 10),观察是否真的 100% 干净;
 2. **harness 镜像 hammer**:阈值 / budget 参数与真实 fuzz worker 对齐后 hammer(N ≥ 300);形状对
@@ -153,11 +171,27 @@ kill 前 dump 系统状态快照**。#123 轮的两条硬化:
 execs 处无声消失;2026-07-19 轮的 #162(concat storm 家族第 10 例)同样在 `GOMEMLIMIT=512MiB`
 在场时于约 1240 万 execs 处静默死,本地重放 4.6 秒干净。软限制只影响 GC 节奏,既不会主动
 fatal,也防不住分配速率超过 GC 回收速度时
-RSS 冲过限制被 SIGKILL,更防不住非内存死因。下一层升级方向是
-harness 按 seed 记 wall-clock,把「进程在哪个 seed 之后消失」变成 artifact 里可读的归因线索。
+RSS 冲过限制被 SIGKILL,更防不住非内存死因。
+
+**第三层:worker 取证设施(PR #165,2026-07-19)**。原构想「harness 按 seed 记 wall-clock」
+已被超集机制取代,交付两个机制(`fuzz_forensics_test.go`):
+
+- **机制 A(尸检)**:TestMain 检测到 `-test.fuzzworker` 时把 fd 2 dup 到
+  `fuzz-forensics/worker-<pid>-stderr.log` 并加 `debug.SetTraceback("all")`,接住此前被
+  /dev/null 丢弃的 Go fatal 完整栈迹(合成 fatal 探针已验证栈迹确实进日志);
+- **机制 B(飞行记录仪)**:每次 fuzz 回调把 seq / 时间戳 / target / 输入以单次 `WriteAt`
+  覆盖写进定长 8KiB 的 per-PID 记录文件。动机:不撞崩的 mutation 不会进任何 corpus,而
+  minimized 输入又屡次被证明不是真凶——飞行记录是恢复「进程死亡时刻真正在跑的输入」的唯一
+  手段;定长覆盖写,无 I/O 累积。
+
+配套:`scripts/go-fuzz.sh` 每个 target 先清 `fuzz-forensics/`、静默死亡失败时把栈迹日志与
+飞行记录 dump 进日志流;nightly 失败 artifact 上传 `**/fuzz-forensics/**`。下一次家族复发时
+artifact 里即有完整栈迹与在飞输入;若 stderr 日志仍只有 header(不是 Go fatal),则死因在
+Go runtime 之外(如 coordinator 侧 pipe 断裂),同样是决定性的排除信息。
 每一层没接住都是新信息,不是浪费。反思实例见
-`memory/reflections/2026-07-18-issue155-158-nightly-crasher-round.md` 教训 4 与
-`memory/reflections/2026-07-19-issue163-tostring-meta-round.md`(#162 一节)。
+`memory/reflections/2026-07-18-issue155-158-nightly-crasher-round.md` 教训 4、
+`memory/reflections/2026-07-19-issue163-tostring-meta-round.md`(#162 一节)与
+`memory/reflections/2026-07-19-fuzz-worker-forensics-round.md`(机制 A/B 交付轮)。
 
 **观察:minimized 输入本身往往不是死因(2026-07-19,#162)**。concat storm 家族累计 10 例,
 本地精确重放全部干净——落盘的 minimized 输入更像「进程死亡时刻恰好在跑的那个」,真实压力更
