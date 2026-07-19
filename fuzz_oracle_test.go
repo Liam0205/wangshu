@@ -167,7 +167,6 @@ print(coroutine.resume(co, 10)) print(coroutine.resume(co, 20))`,
 	}
 
 	f.Fuzz(func(t *testing.T, src string) {
-		recordFuzzExec("FuzzOracleDiff", src)
 		if len(src) > 4<<10 {
 			// Small cap (vs FuzzCompileRun's 16 KiB): bounds PUC-side
 			// C-stack shapes the instruction hook cannot see.
@@ -180,6 +179,7 @@ print(coroutine.resume(co, 10)) print(coroutine.resume(co, 20))`,
 		if strings.ContainsRune(src, 0) {
 			t.Skip("NUL byte")
 		}
+		recordFuzzExec("FuzzOracleDiff", src)
 
 		or := oracle.Exec(src, prelude, oracle.Limits{})
 		if or.Verdict == oracle.VerdictLimit {

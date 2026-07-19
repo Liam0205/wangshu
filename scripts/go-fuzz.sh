@@ -44,13 +44,18 @@ fi
 #     judged a #75804 spurious failure and retried once; if the retry fails
 #     again (for any reason), fail honestly.
 run_target() {
-    local pkg="$1" func="$2" log rc
+    local pkg="$1" func="$2" log rc fdir
     log=$(mktemp)
     # Worker forensics (fuzz_forensics_test.go, concat-storm family
-    # #123-#162): fresh directory per target so leftover logs from a
-    # previous target can't be misattributed. Root-package targets
-    # write per-PID worker stderr + flight-recorder files here.
-    rm -rf "$pkg/fuzz-forensics"
+    # #123-#162): each TARGET gets its own directory, selected via
+    # WANGSHU_FUZZ_FORENSICS_DIR. A shared directory cleared per
+    # invocation loses evidence: the nightly p1 job runs native fuzz
+    # and THEN oracle fuzz (always()) before the artifact upload, so
+    # the oracle invocation's cleanup would delete the native
+    # failure's post-mortem files (review finding). Only this
+    # target's own directory is cleared.
+    fdir="fuzz-forensics/${func}"
+    rm -rf "${pkg:?}/${fdir}"
     for attempt in 1 2; do
         set +e
         # GOMEMLIMIT (issue #123 diagnostic hardening, tightened after
@@ -82,6 +87,7 @@ run_target() {
         # may slow legitimate seeds. No memory or throughput guarantee
         # — acceptable for the current fuzz workload.
         GOMEMLIMIT="${GOMEMLIMIT:-512MiB}" \
+        WANGSHU_FUZZ_FORENSICS_DIR="$fdir" \
         go test "${tags_arg[@]+"${tags_arg[@]}"}" "./$pkg" -run='^$' \
             -fuzz="^${func}\$" -fuzztime="$fuzztime" -timeout=120s -parallel=4 \
             2>&1 | tee "$log"
@@ -105,19 +111,23 @@ run_target() {
             # fd 2 to fuzz-forensics/worker-<pid>-stderr.log; dump any
             # log that grew beyond its one-line header, plus every
             # flight-recorder record (which worker ran which input).
-            if [ -d "$pkg/fuzz-forensics" ]; then
-                for wf in "$pkg"/fuzz-forensics/worker-*-stderr.log; do
+            if [ -d "$pkg/$fdir" ]; then
+                for wf in "$pkg/$fdir"/worker-*-stderr.log; do
                     [ -f "$wf" ] || continue
                     if [ "$(wc -l < "$wf")" -gt 1 ]; then
                         echo "── worker autopsy: $wf ──" >&2
                         cat "$wf" >&2
                     fi
                 done
-                for rf in "$pkg"/fuzz-forensics/worker-*-input.log; do
+                # Flight records hold arbitrary mutated bytes (NUL,
+                # non-UTF8); any text filtering here would corrupt the
+                # only copy of a potential killer input. Point at the
+                # raw files (they ride the artifact upload) and emit
+                # just the printable header line for the log stream.
+                for rf in "$pkg/$fdir"/worker-*-input.log; do
                     [ -f "$rf" ] || continue
-                    echo "── flight record: $rf ──" >&2
-                    # Strip the fixed-size record's space padding.
-                    sed -e 's/ *$//' "$rf" | grep -v '^$' >&2 || true
+                    echo "── flight record (raw file in artifact): $rf ──" >&2
+                    head -c 512 "$rf" | tr -d '\0' | head -n 1 >&2 || true
                 done
             fi
         fi

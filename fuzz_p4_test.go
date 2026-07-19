@@ -113,7 +113,6 @@ return f(o1, o2)`,
 	}
 
 	f.Fuzz(func(t *testing.T, src string) {
-		recordFuzzExec("FuzzP4ForceAllPromote", src)
 		if raceEnabled {
 			// P4 mmap-segment shim calls trip Go's stack unwinder
 			// under -race (mmap+morestack incompatibility, see
@@ -126,6 +125,7 @@ return f(o1, o2)`,
 		if len(src) > 1<<14 {
 			t.Skip()
 		}
+		recordFuzzExec("FuzzP4ForceAllPromote", src)
 		prog, err := wangshu.Compile([]byte(src), "fuzz-p4")
 		if err != nil {
 			return // a compile error is a legitimate outcome

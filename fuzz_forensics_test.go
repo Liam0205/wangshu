@@ -34,17 +34,31 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
 )
 
-const forensicsDir = "fuzz-forensics"
+// forensicsDir is where per-PID worker logs land. scripts/go-fuzz.sh
+// overrides it per target via WANGSHU_FUZZ_FORENSICS_DIR so a later
+// script invocation in the same job (the p1 leg runs native fuzz THEN
+// oracle fuzz) cannot delete an earlier target's post-mortem files
+// before the artifact upload (review finding 3).
+var forensicsDir = "fuzz-forensics"
 
 // flightRecordSize is the fixed on-disk size of the flight record: one
 // pwrite at offset 0 fully replaces the previous record, so a reader
-// never sees a longer stale tail behind a shorter new record.
-const flightRecordSize = 8 << 10
+// never sees a longer stale tail behind a shorter new record. Sized to
+// hold the LARGEST input any target accepts (16 KiB length gates in
+// FuzzCompileRun/FuzzAutoPromote/FuzzP4ForceAllPromote) plus header —
+// an 8 KiB record silently truncated 8-16 KiB killers, losing exactly
+// the bytes the recorder exists to recover (review finding 1).
+const flightRecordSize = 20 << 10
+
+// flightTruncMark flags a record whose input exceeded the (should-be-
+// unreachable, given the size math above) remaining room.
+const flightTruncMark = "\n<TRUNCATED>\n"
 
 var (
 	fuzzWorkerMode bool
@@ -76,6 +90,9 @@ func TestMain(m *testing.M) {
 // setupForensics is best-effort by design: forensics must never turn a
 // healthy fuzz run into a failing one, so every error is swallowed.
 func setupForensics() {
+	if d := os.Getenv("WANGSHU_FUZZ_FORENSICS_DIR"); d != "" {
+		forensicsDir = d
+	}
 	if err := os.MkdirAll(forensicsDir, 0o755); err != nil {
 		return
 	}
@@ -100,22 +117,40 @@ func setupForensics() {
 }
 
 // recordFuzzExec is called at the top of every root-package fuzz
-// target. One pwrite per exec (~1-2us against the page cache; the same
-// pages are rewritten, so there is no I/O accumulation) — measured in
-// the single-digit-percent range at nightly exec rates, an acceptable
-// price for recovering otherwise-unrecoverable mutated inputs.
+// target, AFTER its length gate (recorded inputs are therefore always
+// fully recoverable — over-long inputs are skipped unexecuted and
+// cannot be the killer). One pwrite per exec (~1-2us against the page
+// cache; the same pages are rewritten, so there is no I/O
+// accumulation), zero heap allocations (review finding 2: fmt +
+// time.Format allocated ~88 B/op — steady GC churn added to the exact
+// workload whose memory pressure is under investigation; asserted at
+// zero by TestFlightRecordZeroAllocs).
 func recordFuzzExec(target, src string) {
 	if flightFile == nil {
 		return
 	}
-	seq := flightSeq.Add(1)
-	buf := flightBuf[:0]
-	buf = fmt.Appendf(buf, "seq=%d target=%s started=%s len=%d\n",
-		seq, target, time.Now().Format(time.RFC3339Nano), len(src))
-	room := flightRecordSize - len(buf) - len("\n<TRUNCATED>\n")
+	flightBuf = appendFlightRecord(flightBuf[:0], flightSeq.Add(1),
+		target, time.Now(), src)
+	_, _ = flightFile.WriteAt(flightBuf, 0)
+}
+
+// appendFlightRecord formats one fixed-size flight record into buf
+// using only alloc-free append primitives (strconv.Append*,
+// Time.AppendFormat — no fmt, no intermediate strings).
+func appendFlightRecord(buf []byte, seq uint64, target string, now time.Time, src string) []byte {
+	buf = append(buf, "seq="...)
+	buf = strconv.AppendUint(buf, seq, 10)
+	buf = append(buf, " target="...)
+	buf = append(buf, target...)
+	buf = append(buf, " started="...)
+	buf = now.AppendFormat(buf, time.RFC3339Nano)
+	buf = append(buf, " len="...)
+	buf = strconv.AppendInt(buf, int64(len(src)), 10)
+	buf = append(buf, '\n')
+	room := flightRecordSize - len(buf) - len(flightTruncMark)
 	if len(src) > room {
 		buf = append(buf, src[:room]...)
-		buf = append(buf, "\n<TRUNCATED>\n"...)
+		buf = append(buf, flightTruncMark...)
 	} else {
 		buf = append(buf, src...)
 		buf = append(buf, '\n')
@@ -123,5 +158,5 @@ func recordFuzzExec(target, src string) {
 	for len(buf) < flightRecordSize {
 		buf = append(buf, ' ')
 	}
-	_, _ = flightFile.WriteAt(buf, 0)
+	return buf
 }

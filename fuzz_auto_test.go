@@ -55,7 +55,6 @@ func FuzzAutoPromote(f *testing.F) {
 	}
 
 	f.Fuzz(func(t *testing.T, src string) {
-		recordFuzzExec("FuzzAutoPromote", src)
 		if raceEnabled {
 			// Same boundary as FuzzP4ForceAllPromote: P4 mmap-segment
 			// execution trips the race runtime's stack unwinder; the
@@ -65,6 +64,7 @@ func FuzzAutoPromote(f *testing.F) {
 		if len(src) > 1<<14 {
 			t.Skip()
 		}
+		recordFuzzExec("FuzzAutoPromote", src)
 		prog, err := wangshu.Compile([]byte(src), "fuzz-auto")
 		if err != nil {
 			return // compile errors are a legal outcome
