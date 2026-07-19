@@ -13,3 +13,4 @@ luac.out
 # Python bytecode cache from scripts/ tooling.
 __pycache__/
 *.pyc
+fuzz-forensics/
