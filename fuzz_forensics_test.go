@@ -53,6 +53,11 @@ var (
 	stderrFile *os.File
 	flightFile *os.File
 	flightSeq  atomic.Uint64
+	// flightBuf is reused across execs (fuzz callbacks are serial
+	// within one worker process): a fresh 8 KiB allocation per exec
+	// would add steady GC churn to the exact workload whose memory
+	// pressure we are investigating (review finding).
+	flightBuf = make([]byte, 0, flightRecordSize)
 )
 
 func TestMain(m *testing.M) {
@@ -104,7 +109,7 @@ func recordFuzzExec(target, src string) {
 		return
 	}
 	seq := flightSeq.Add(1)
-	buf := make([]byte, 0, flightRecordSize)
+	buf := flightBuf[:0]
 	buf = fmt.Appendf(buf, "seq=%d target=%s started=%s len=%d\n",
 		seq, target, time.Now().Format(time.RFC3339Nano), len(src))
 	room := flightRecordSize - len(buf) - len("\n<TRUNCATED>\n")
