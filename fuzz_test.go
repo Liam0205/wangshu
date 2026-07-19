@@ -42,10 +42,10 @@ return coroutine.resume(co)`,
 		f.Add(s)
 	}
 	f.Fuzz(func(t *testing.T, src string) {
-		recordFuzzExec("FuzzCompileRun", src)
 		if len(src) > 1<<14 {
 			t.Skip()
 		}
+		recordFuzzExec("FuzzCompileRun", src)
 		prog, err := wangshu.Compile([]byte(src), "fuzz")
 		if err != nil {
 			return // a compile error is a legal outcome
