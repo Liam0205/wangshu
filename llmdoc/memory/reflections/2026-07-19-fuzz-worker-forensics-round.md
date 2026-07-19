@@ -181,3 +181,36 @@ churn)修掉(`6a189eb`)→ 增量 APPROVE。review 一轮过,无返工。
 [[2026-07-18-issue155-158-nightly-crasher-round]](GOMEMLIMIT 没接住
 的第一次观察)· PR #165 · commit 34fdeb5(机制 A + B)· commit
 5fe6af6(harness dump + CI artifact)· commit 6a189eb(buffer 复用)
+
+## 附记(合入前外部审查轮:取证设施自己丢证据的三种方式)
+
+外部增量审查(`.code-review/from-2fe2c37/`)对 PR #165 提出三条重要建议,
+全部属实并已修复(commit 007b1ab):
+
+1. **记录容量小于输入上限**:飞行记录定长 8KiB,但三个 target 的长度
+   门在 16KiB——8 到 16KiB 之间的合法 mutation 若是真凶,记录里只剩
+   前缀,尾部永久丢失,而这恰是「恢复不进 corpus 的在飞输入」这一核心
+   用途的破坏。修复:容量提到 20KiB(最大 gated 输入 + header),
+   recordFuzzExec 移到各 target 长度/NUL 门之后(被 skip 的输入不执行
+   、不可能是真凶),并加 TestFlightRecordMaxInputRecoverable 断言
+   16KiB 任意字节输入逐字节可恢复。
+2. **热路径分配污染被观测对象**:fmt + time.Format 路径每次执行分配
+   88 B——上一轮 review 已抓过一次 buffer 分配,这轮又在格式化路径
+   抓到残余。改用 strconv.Append* / Time.AppendFormat 全程写入复用
+   buffer,TestFlightRecordZeroAllocs 用 AllocsPerRun 钉在 0。
+3. **跨调用清理删证据**:nightly p1 job 先跑 native fuzz 再跑 oracle
+   fuzz(always()),artifact 上传在两者之后;共享目录每次调用无条件
+   rm -rf,oracle 调用会把 native 失败的尸检文件先删掉。修复:每个
+   target 独立目录 fuzz-forensics/<FuzzTarget>/(经
+   WANGSHU_FUZZ_FORENSICS_DIR 传入),只清自己的;顺带修掉 dump 路径
+   的 sed/grep 文本过滤(会腐蚀 NUL/非 UTF-8 字节——飞行记录里可能是
+   唯一一份真凶输入),改为只打印可打印的 header 行、指向随 artifact
+   上传的原始文件。
+
+**教训 H(三条的公共模式)**:取证设施的审查焦点应该是「它会不会自己
+丢证据」——容量边界(能装下最大的证据吗)、观测扰动(会不会改变被观
+测对象)、生命周期(证据活得过收集流程吗)。三条 finding 全是这三问
+的实例;设计取证/诊断类设施时按这三问自查,能在 review 前就消掉这类
+缺陷。另外「被 skip 的输入不可能是真凶,所以记录点放在门之后」这个
+论证方向值得记住:取证点的正确位置由「什么能杀死进程」决定,不是
+「越早越全」。
