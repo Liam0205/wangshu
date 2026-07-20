@@ -15,7 +15,7 @@
 
 //go:build wangshu_p4 && wangshu_profile
 
-package wangshu_test
+package regression
 
 import (
 	"strings"

@@ -7,7 +7,7 @@
 // back-edges so an infinite loop raises "instruction budget exceeded"
 // byte-equal to the interpreter, instead of hanging.
 
-package wangshu_test
+package regression
 
 import (
 	"context"

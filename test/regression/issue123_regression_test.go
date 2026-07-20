@@ -19,7 +19,7 @@
 // level) is intrinsically expensive; the fuzz worker still finds new
 // variants over long runs, and each new nightly crasher of the same
 // shape should be added HERE, not to testdata/fuzz/.
-package wangshu_test
+package regression
 
 import (
 	"strings"

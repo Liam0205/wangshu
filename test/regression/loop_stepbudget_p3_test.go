@@ -6,32 +6,34 @@
 // infinite loop raises "instruction budget exceeded" byte-equal to the
 // interpreter, instead of hanging. Nightly oracle fuzz corpus
 // bb525447c652d8d9: `for i=0,5/0 do X=0*i end` hung under P3.
-package wangshu
+package regression
 
 import (
 	"context"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Liam0205/wangshu"
 )
 
 // TestP3LoopBudget_InfiniteLoopRaises: a P3-promoted infinite for-loop
 // must raise the budget error, byte-equal to the interpreter.
 func TestP3LoopBudget_InfiniteLoopRaises(t *testing.T) {
 	src := `function sum(n)local s=0 for i=0,n do X=0*i end return s end return sum(12)%sum(5/0)`
-	prog, err := Compile([]byte(src), "lb")
+	prog, err := wangshu.Compile([]byte(src), "lb")
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
 	// interpreter baseline
-	st1 := NewState(Options{MaxArenaBytes: 64 << 20})
+	st1 := wangshu.NewState(wangshu.Options{MaxArenaBytes: 64 << 20})
 	st1.SetStepBudget(1 << 20)
 	_, e1 := prog.Run(st1)
 	if e1 == nil {
 		t.Fatalf("interpreter did not raise on infinite loop")
 	}
 	// P3 auto-promote (two runs so the loop is promoted mid-flight)
-	stA := NewState(Options{MaxArenaBytes: 64 << 20})
+	stA := wangshu.NewState(wangshu.Options{MaxArenaBytes: 64 << 20})
 	stA.SetStepBudget(1 << 20)
 	stA.SetHotThresholds(2, 4)
 	var eA error
@@ -59,17 +61,17 @@ func TestP3LoopBudget_InfiniteLoopRaises(t *testing.T) {
 // the segment) actually exercises the wasm segment's while back-edge.
 func TestP3LoopBudget_InfiniteWhileRaises(t *testing.T) {
 	src := `function sum(n)local s=0 local i=0 while i<=n do X=0*i i=i+1 end return s end return sum(12)%sum(5/0)`
-	prog, err := Compile([]byte(src), "wlb")
+	prog, err := wangshu.Compile([]byte(src), "wlb")
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	st1 := NewState(Options{MaxArenaBytes: 64 << 20})
+	st1 := wangshu.NewState(wangshu.Options{MaxArenaBytes: 64 << 20})
 	st1.SetStepBudget(1 << 20)
 	_, e1 := prog.Run(st1)
 	if e1 == nil {
 		t.Fatalf("interpreter did not raise on infinite while")
 	}
-	stA := NewState(Options{MaxArenaBytes: 64 << 20})
+	stA := wangshu.NewState(wangshu.Options{MaxArenaBytes: 64 << 20})
 	stA.SetStepBudget(1 << 20)
 	stA.SetHotThresholds(2, 4)
 	var eA error
@@ -93,11 +95,11 @@ func TestP3LoopBudget_InfiniteWhileRaises(t *testing.T) {
 // zero. Zero would mean the back-edge runs a bare `br` with no accounting.
 func TestP3LoopBudget_WhileChargesSafepoint(t *testing.T) {
 	src := `function sum(n)local s=0 local i=0 while i<=n do X=0*i i=i+1 end return s end return sum(12)%sum(3000000)`
-	prog, err := Compile([]byte(src), "wsp")
+	prog, err := wangshu.Compile([]byte(src), "wsp")
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	st := NewState(Options{MaxArenaBytes: 64 << 20})
+	st := wangshu.NewState(wangshu.Options{MaxArenaBytes: 64 << 20})
 	st.SetStepBudget(1 << 28) // large enough to finish 3M iters
 	st.SetHotThresholds(2, 4)
 	before := st.SafepointCalls()
@@ -120,11 +122,11 @@ func TestP3LoopBudget_WhileChargesSafepoint(t *testing.T) {
 // crossings (unlimited refill = ~1<<30 iters per crossing).
 func TestP3LoopBudget_UnbudgetedHotLoopRarelyCrosses(t *testing.T) {
 	src := `local function f() local s=0 for i=1,1000000 do s=s+i end return s end return f()`
-	prog, err := Compile([]byte(src), "hot")
+	prog, err := wangshu.Compile([]byte(src), "hot")
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	st := NewState(Options{})
+	st := wangshu.NewState(wangshu.Options{})
 	st.SetForceAllPromote(true) // force P3 so the loop runs in gibbous
 	// warm-up run to promote, then a measured run
 	if _, err := prog.Run(st); err != nil {
@@ -158,11 +160,11 @@ func TestP3LoopBudget_UnbudgetedHotLoopRarelyCrosses(t *testing.T) {
 // the armed-state transition).
 func TestP3LoopBudget_ArmAfterWarmRuns(t *testing.T) {
 	src := `function sum(n)local s=0 local i=0 while i<=n do X=0*i i=i+1 end return s end return sum(12)%sum(1000000)`
-	prog, err := Compile([]byte(src), "arm")
+	prog, err := wangshu.Compile([]byte(src), "arm")
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	st := NewState(Options{MaxArenaBytes: 64 << 20})
+	st := wangshu.NewState(wangshu.Options{MaxArenaBytes: 64 << 20})
 	st.SetHotThresholds(2, 4)
 	for run := 1; run <= 2; run++ {
 		if _, err := prog.Run(st); err != nil {
@@ -196,13 +198,13 @@ func TestP3LoopBudget_CancelHookAfterWarmRuns(t *testing.T) {
 	// One Program: warm calls sum(100000), the long run calls sum(1e18)
 	// via a global knob so both execute the SAME promoted Proto.
 	src := `function sum(n)local s=0 local i=0 while i<=n do X=0*i i=i+1 end return s end return sum(12)%sum(N)`
-	prog, err := Compile([]byte(src), "canc")
+	prog, err := wangshu.Compile([]byte(src), "canc")
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	st := NewState(Options{MaxArenaBytes: 64 << 20})
+	st := wangshu.NewState(wangshu.Options{MaxArenaBytes: 64 << 20})
 	st.SetHotThresholds(2, 4)
-	st.SetGlobal("N", Number(100000))
+	st.SetGlobal("N", wangshu.Number(100000))
 	for run := 1; run <= 2; run++ {
 		if _, err := prog.Run(st); err != nil {
 			t.Fatalf("warm run %d: %v", run, err)
@@ -217,7 +219,7 @@ func TestP3LoopBudget_CancelHookAfterWarmRuns(t *testing.T) {
 	// back-edge safepoint can observe the later cancellation.
 	ctx, cancel := context.WithCancel(context.Background())
 	st.SetContext(ctx)
-	st.SetGlobal("N", Number(1e18))
+	st.SetGlobal("N", wangshu.Number(1e18))
 	spBefore := st.SafepointCalls()
 	done := make(chan error, 1)
 	go func() { _, e := prog.Run(st); done <- e }()
@@ -265,14 +267,14 @@ func TestP3LoopBudget_CtxThenBudgetNoStaleBilling(t *testing.T) {
 	// fresh budget and trips it.
 	src := `function sum(n)local s=0 local i=0 while i<=n do X=0*i i=i+1 end return s end return sum(12)%sum(N)`
 	for warmN := 980; warmN < 980+64; warmN++ {
-		prog, err := Compile([]byte(src), "cbst")
+		prog, err := wangshu.Compile([]byte(src), "cbst")
 		if err != nil {
 			t.Fatalf("compile: %v", err)
 		}
-		st := NewState(Options{MaxArenaBytes: 64 << 20})
+		st := wangshu.NewState(wangshu.Options{MaxArenaBytes: 64 << 20})
 		st.SetHotThresholds(2, 4)
 		st.SetContext(context.Background()) // armed from the start: quantum refills
-		st.SetGlobal("N", Number(float64(warmN)))
+		st.SetGlobal("N", wangshu.Number(float64(warmN)))
 		for run := 1; run <= 2; run++ {
 			if _, err := prog.Run(st); err != nil {
 				t.Fatalf("warmN=%d ctx-armed warm run %d: %v", warmN, run, err)
@@ -283,7 +285,7 @@ func TestP3LoopBudget_CtxThenBudgetNoStaleBilling(t *testing.T) {
 		}
 		// Arm a tiny budget; the next call runs ~1 back-edge of its own.
 		st.SetStepBudget(10)
-		st.SetGlobal("N", Number(1))
+		st.SetGlobal("N", wangshu.Number(1))
 		if _, err := prog.Run(st); err != nil {
 			t.Fatalf("warmN=%d: ~1 post-arming back-edge tripped budget=10 — ctx-phase drain billed to the new budget: %v", warmN, err)
 		}
@@ -296,11 +298,11 @@ func TestP3LoopBudget_CtxThenBudgetNoStaleBilling(t *testing.T) {
 // a Safepoint crossing every 64 back-edges forever after.
 func TestP3LoopBudget_DisarmRestoresFastPath(t *testing.T) {
 	src := `function sum(n)local s=0 local i=0 while i<=n do X=0*i i=i+1 end return s end return sum(12)%sum(1000000)`
-	prog, err := Compile([]byte(src), "disarm")
+	prog, err := wangshu.Compile([]byte(src), "disarm")
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	st := NewState(Options{MaxArenaBytes: 64 << 20})
+	st := wangshu.NewState(wangshu.Options{MaxArenaBytes: 64 << 20})
 	st.SetHotThresholds(2, 4)
 	st.SetStepBudget(1 << 28)
 	for run := 1; run <= 2; run++ {
@@ -329,11 +331,11 @@ func TestP3LoopBudget_DisarmRestoresFastPath(t *testing.T) {
 // first post-arm Safepoint crossing.
 func TestP3LoopBudget_ArmDoesNotBillPreArmDrain(t *testing.T) {
 	src := `function sum(n)local s=0 local i=0 while i<=n do X=0*i i=i+1 end return s end return sum(12)%sum(1000000)`
-	prog, err := Compile([]byte(src), "nobill")
+	prog, err := wangshu.Compile([]byte(src), "nobill")
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	st := NewState(Options{MaxArenaBytes: 64 << 20})
+	st := wangshu.NewState(wangshu.Options{MaxArenaBytes: 64 << 20})
 	st.SetHotThresholds(2, 4)
 	for run := 1; run <= 2; run++ {
 		if _, err := prog.Run(st); err != nil {
@@ -357,13 +359,13 @@ func TestP3LoopBudget_ArmDoesNotBillPreArmDrain(t *testing.T) {
 // toggle belongs to the same live budget and must accumulate into it.
 func TestP3LoopBudget_CtxToggleDoesNotExtendBudget(t *testing.T) {
 	src := `function sum(n)local s=0 local i=0 while i<=n do X=0*i i=i+1 end return s end return sum(12)%sum(N)`
-	prog, err := Compile([]byte(src), "tog")
+	prog, err := wangshu.Compile([]byte(src), "tog")
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	st := NewState(Options{MaxArenaBytes: 64 << 20})
+	st := wangshu.NewState(wangshu.Options{MaxArenaBytes: 64 << 20})
 	st.SetHotThresholds(2, 4)
-	st.SetGlobal("N", Number(1000))
+	st.SetGlobal("N", wangshu.Number(1000))
 	for run := 1; run <= 2; run++ {
 		if _, err := prog.Run(st); err != nil {
 			t.Fatalf("warm run %d: %v", run, err)
@@ -378,7 +380,7 @@ func TestP3LoopBudget_CtxToggleDoesNotExtendBudget(t *testing.T) {
 	// (~400 back-edges) completed.
 	st.SetStepBudget(100)
 	spBefore := st.SafepointCalls()
-	st.SetGlobal("N", Number(40))
+	st.SetGlobal("N", wangshu.Number(40))
 	var raised error
 	rounds := 0
 	for round := 1; round <= 10; round++ {

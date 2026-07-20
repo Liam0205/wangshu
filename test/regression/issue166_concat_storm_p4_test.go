@@ -16,7 +16,7 @@
 // themselves were on the interpreter path (forensics stack: executeLoop ->
 // doConcat), which the untagged test covers directly.
 
-package wangshu_test
+package regression
 
 import (
 	"strings"

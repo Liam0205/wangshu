@@ -17,7 +17,7 @@
 // regression test rather than a `testdata/fuzz/` corpus entry. The
 // functional assertion is: under a 1<<20 step budget, the loop hits
 // "instruction budget exceeded" or an arena cap without hanging.
-package wangshu_test
+package regression
 
 import (
 	"strings"
