@@ -778,6 +778,37 @@ func (st *State) preempt() *LuaError {
 	return nil
 }
 
+// chargeBulkWork bills the byte volume of a bulk operation to the instruction
+// budget. preempt() counts one step per instruction boundary (loop back edge /
+// frame entry / TFORLOOP), but a single CONCAT can copy and intern megabytes
+// while costing only ~2 steps -- so a tight loop of large concats runs for
+// minutes of wall-clock INSIDE the budgeted iteration count. That is the
+// concat-storm family (issues #123-#167): a fuzz worker ran doConcat -> Intern
+// long enough that its 4x prog.Run per input blew past Go fuzz's 10s per-input
+// "deadlocked!" watchdog, which surfaced as "hung or terminated unexpectedly:
+// exit status 2" -- misread as a memory OOM for weeks until PR #165's worker
+// forensics captured the runnable doConcat stack.
+//
+// Charging len>>10 (one step per KiB) turns the budget into a work meter for
+// bulk string ops without disturbing ordinary code: a 1<<20 budget still allows
+// ~1 GiB of total concat, which no legitimate program approaches, but a storm
+// hits the budget after ~1 GiB copied (~100ms) instead of running unbounded.
+// Gated on stepBudget>0 exactly like preempt(); the budget is opt-in and its
+// documented purpose is to bound runaway execution, which byte-heavy concat is.
+//
+// All three tiers route CONCAT through doConcat (P1 executeLoop, P3 wasm
+// h_concat, P4 native host.Concat), so charging here alone covers every backend
+// uniformly and keeps the differential-fuzz comparison symmetric.
+func (st *State) chargeBulkWork(bytes int) *LuaError {
+	if st.stepBudget > 0 {
+		st.stepUsed += int64(bytes >> 10)
+		if st.stepUsed > st.stepBudget {
+			return errf("instruction budget exceeded")
+		}
+	}
+	return nil
+}
+
 // SetCancelHook injects a cancellation callback (the internal bridge of the
 // issue #4 public SetContext). When fn returns a non-nil error, the VM aborts the
 // current Call/Run at the next preempt point. Atomically replaced, cross-goroutine
