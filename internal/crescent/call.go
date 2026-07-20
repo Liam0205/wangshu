@@ -292,6 +292,11 @@ func (st *State) doConcat(th *thread, ci *callInfo, i bytecode.Instruction) *Lua
 			s, _ := st.toStringBytes(reg(th, ci, k))
 			parts = append(parts, s...)
 		}
+		// Bill byte work before the intern copy so a storm bails one
+		// iteration early (see chargeBulkWork: concat-storm family).
+		if e := st.chargeBulkWork(len(parts)); e != nil {
+			return e
+		}
 		ref := st.gc.Intern(parts)
 		setReg(th, ci, bytecode.A(i), value.MakeGC(value.TagString, ref))
 		return nil
@@ -305,6 +310,9 @@ func (st *State) doConcat(th *thread, ci *callInfo, i bytecode.Instruction) *Lua
 		if lOK && rOK {
 			lb, _ := st.toStringBytes(l)
 			rb, _ := st.toStringBytes(acc)
+			if e := st.chargeBulkWork(len(lb) + len(rb)); e != nil {
+				return e
+			}
 			ref := st.gc.Intern(append(append([]byte{}, lb...), rb...))
 			acc = value.MakeGC(value.TagString, ref)
 			continue

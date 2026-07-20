@@ -1,0 +1,2 @@
+go test fuzz v1
+string("local function cat(i) return \"x\x9e$\xe6\x14TTTTTTo\xb8\xb8\xb8\xb8\xb8\xb8\xb8\xb8n cn\a\xa7\xa4\xb8\x90SD^\x03\x813L\xf3\x14TTTTA\xfe/ظB|8v\xb3T\x8c\x19\x82\x10\x10\x10\" .. i end; local out = \"\"; for i = 1, 777777776 do qut = out .. cat(i) end; return out")
