@@ -20,10 +20,12 @@ description: >
   (P1 executeLoop / P3 wasm h_concat / P4 native host.Concat)全部路由同一 doConcat,
   单点记账覆盖所有 backend。比率调优曲折:初版 >>10(1 步/KiB)本地过但 CI 上
   TestIssue166_HarnessWatchdogMargin 跑到 13.5s(CI runner 比本地慢约 10×),收紧到
-  >>6(1 步/64B)后本地约 0.08s、CI 约 0.9s。六条教训:取证投资兑现且兑现方式正是
+  >>6(1 步/64B)后本地约 0.08s、CI 约 0.9s。七条教训:取证投资兑现且兑现方式正是
   设计意图 / 静默死亡两步分类直接给答案 / 指令预算必须度量工作量而非条数 / 家族级
   误分类可持续数周(真值来自第三方证据非表象反推)/ 限流比率按最慢目标环境定且 CI
-  实测 / in-test wall-clock 断言合法性看它守的是任意秒数还是真实固定阈值。
+  实测 / in-test wall-clock 断言合法性看它守的是任意秒数还是真实固定阈值 / prove-the-path
+  也适用于自己写的回归测试(断言共享结果无法证明特殊路径,须用只有目标通道会动的正交
+  探针;force-promote 行为按 tier 不对称,要用探针实测)。
 metadata:
   type: reflection
   date: 2026-07-20

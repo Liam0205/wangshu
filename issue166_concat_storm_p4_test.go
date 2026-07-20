@@ -61,9 +61,13 @@ func TestIssue166_P4PromotedConcatCharged(t *testing.T) {
 	}
 	// ConcatHelperHits is a process-global counter, so this delta is only
 	// exclusively ours while the profile tests run serially (none call
-	// t.Parallel()). The assertion direction keeps it safe regardless:
-	// concurrent runs could only ADD hits, never zero the delta, so a
-	// parallel future would weaken isolation but not produce a false pass.
+	// t.Parallel()). This test MUST stay serial: if it ran concurrently
+	// with another test that bumps the counter, a foreign increment between
+	// the two Loads could make the delta non-zero even if this test's own
+	// concat never reached the promoted helper -- a false pass. The
+	// authoritative per-State signal is PromotionCount() above; keep this
+	// probe serial (or make it State-local) if profile tests ever go
+	// parallel.
 	if delta := crescent.ConcatHelperHits.Load() - hitsBefore; delta == 0 {
 		t.Fatal("no CONCAT routed through the promoted (*State).Concat helper — byte bound proven only on the interpreter path")
 	}
