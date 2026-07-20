@@ -115,7 +115,7 @@
 
 **核心断言**:复现测试与被指控路径是两回事——若复现测试实际走的是另一条路径,「budget 生效了 / 没复现」产出的是**伪证据**,会直接把一个真 bug 关掉。验证「机制 X 没生效」之前,必须先用白盒探针(`SafepointCalls` / `PromotionCount` 等)证明复现测试的执行路径就是被指控的那条路径。这是 §2「路径真被走到」在**复现方向**的应用:测试侧走错路径产出假绿,复现侧走错路径产出假「无 bug」——后者更危险,因为它以「验证过了」的姿态终结调查。
 
-**实例(2026-07-18 review 修复轮,PR #161)**:外部 review 指控「P3 loop fuel 在预算开启后不重新武装」(`Safepoint` 无预算时把 fuel 字填成 `loopFuelUnlimited`,`SetStepBudget` 只改 Go 侧字段,先无预算跑热 P3 循环再开预算,新预算要等约十亿次 back-edge(回边)后才被查询)。第一版复现测试用 `local function spin()` + FORLOOP 循环 + `SetForceAllPromote`,结果 budget 居然生效报错——差点据此把真问题判为「不存在」。原因是那个循环写法的 back-edge 没有在段内跑,预算走的是解释器路径,测的根本不是被指控的路径。换成既有 `loop_stepbudget_p3_test.go` 已用 `SafepointCalls > 0` 证明「back-edge 在段内跑」的写法后,bug 稳定复现(warm 后 `SetStepBudget(10)`,100 万次段内循环照常跑完、err=nil、safepoints-delta=0)。反思 [[2026-07-18-review-p3-loopfuel-rearm-round]]。
+**实例(2026-07-18 review 修复轮,PR #161)**:外部 review 指控「P3 loop fuel 在预算开启后不重新武装」(`Safepoint` 无预算时把 fuel 字填成 `loopFuelUnlimited`,`SetStepBudget` 只改 Go 侧字段,先无预算跑热 P3 循环再开预算,新预算要等约十亿次 back-edge(回边)后才被查询)。第一版复现测试用 `local function spin()` + FORLOOP 循环 + `SetForceAllPromote`,结果 budget 居然生效报错——差点据此把真问题判为「不存在」。原因是那个循环写法的 back-edge 没有在段内跑,预算走的是解释器路径,测的根本不是被指控的路径。换成既有 `test/regression/loop_stepbudget_p3_test.go` 已用 `SafepointCalls > 0` 证明「back-edge 在段内跑」的写法后,bug 稳定复现(warm 后 `SetStepBudget(10)`,100 万次段内循环照常跑完、err=nil、safepoints-delta=0)。反思 [[2026-07-18-review-p3-loopfuel-rearm-round]]。
 
 **手法**:写「验证机制没生效」的复现测试时,第一条断言不是「机制是否生效」,而是「本测试的执行路径就是被指控路径」的白盒证据(段内路径用 `SafepointCalls`、升层用 `PromotionCount`、快路径用命中计数器);优先复用仓内已经证明过路径的既有测试写法,而不是新造一个未证明的载体。复现失败时,先怀疑复现路径走错,再考虑「问题不存在」。
 
