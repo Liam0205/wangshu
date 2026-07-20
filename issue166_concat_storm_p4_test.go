@@ -59,6 +59,11 @@ func TestIssue166_P4PromotedConcatCharged(t *testing.T) {
 	if pc := st.PromotionCount(); pc == 0 {
 		t.Fatalf("nothing promoted (PromotionCount=0) — concat ran interpreted, not native")
 	}
+	// ConcatHelperHits is a process-global counter, so this delta is only
+	// exclusively ours while the profile tests run serially (none call
+	// t.Parallel()). The assertion direction keeps it safe regardless:
+	// concurrent runs could only ADD hits, never zero the delta, so a
+	// parallel future would weaken isolation but not produce a false pass.
 	if delta := crescent.ConcatHelperHits.Load() - hitsBefore; delta == 0 {
 		t.Fatal("no CONCAT routed through the promoted (*State).Concat helper — byte bound proven only on the interpreter path")
 	}
