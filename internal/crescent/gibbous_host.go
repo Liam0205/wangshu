@@ -14,6 +14,7 @@
 package crescent
 
 import (
+	"sync/atomic"
 	"unsafe"
 
 	"github.com/Liam0205/wangshu/internal/bridge"
@@ -21,6 +22,15 @@ import (
 	"github.com/Liam0205/wangshu/internal/object"
 	"github.com/Liam0205/wangshu/internal/value"
 )
+
+// ConcatHelperHits counts how many times a promoted (P3 wasm / P4 native)
+// segment routed a CONCAT through the shared (*State).Concat helper this
+// process. The interpreter runs CONCAT via doConcat directly and never
+// touches this counter, so a non-zero delta is orthogonal proof that a
+// concat actually executed on the promoted path -- prove-the-path evidence
+// for the tiered concat-budget regression test (issue #166/#167). Diagnostic
+// only; one atomic add on the already-cross-tier concat slow path.
+var ConcatHelperHits atomic.Int64
 
 // enterGibbous is the crescent -> gibbous tier-up entry (04 §2.2).
 //
@@ -568,6 +578,7 @@ func (st *State) Len(base, pc, b, a int32) int32 {
 // Concat handles CONCAT (reuses the full execute.go doConcat logic +
 // safepoint).
 func (st *State) Concat(base, pc, a, b, c int32) int32 {
+	ConcatHelperHits.Add(1)
 	th := st.runningThread
 	ci := st.gibCI(th)
 	ci.pc = pc + 1 // R3c-fix

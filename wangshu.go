@@ -327,9 +327,21 @@ func (st *State) MaybeCollectNow() { st.core.MaybeCollectNow() }
 // cadence-control code.
 func (st *State) SetHostTriggeredCollect(on bool) { st.core.SetHostTriggeredCollect(on) }
 
-// SetStepBudget sets the back-edge instruction budget (<=0 disables): on
-// overrun the script terminates with the recoverable error "instruction budget
+// SetStepBudget sets the execution work budget (<=0 disables): on overrun
+// the script terminates with the recoverable error "instruction budget
 // exceeded". A host's execution quota for untrusted scripts.
+//
+// It is a WORK budget, not a pure instruction count. Each preempt point
+// (loop back edge, call/frame entry, TFORLOOP) charges one unit, and bulk
+// string ops additionally charge for the bytes they move: CONCAT bills
+// len(result)>>6 units (one per 64 bytes) so a byte-heavy concat cannot run
+// unbounded within a small budget (see internal/crescent chargeBulkWork,
+// issue #166/#167). A single ~1 MiB concat costs ~16K units; concats below
+// 64 bytes cost zero extra. Under P3/P4 the per-instruction charge is
+// approximated by fuel billed at back edges / calls; the CONCAT byte charge
+// applies uniformly across all tiers (they share doConcat). Budget values
+// are therefore approximate across tiers and workloads, not exact
+// instruction counts.
 func (st *State) SetStepBudget(n int64) { st.core.SetStepBudget(n) }
 
 // MarkGlobalsBaseline snapshots the current _G as a baseline (issue #6, the

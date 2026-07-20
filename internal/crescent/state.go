@@ -103,11 +103,13 @@ type State struct {
 	// another Program). Never cleared during the State's lifetime (11 §1.3 loaded is not evicted).
 	loadedCls []arena.GCRef
 
-	// When stepBudget > 0 the instruction budget is enabled: back edges
-	// (JMP/FORLOOP negative displacement) check once every stepQuantum
-	// instructions crossed, and raise "instruction budget exceeded" on overrun.
-	// The seed for a host-side script quota feature; fuzzing uses it instead of
-	// fragile source-substring filtering.
+	// When stepBudget > 0 the execution work budget is enabled: back edges
+	// (JMP/FORLOOP negative displacement), calls and TFORLOOP charge one
+	// unit at each preempt point, and bulk string ops additionally charge
+	// for the bytes they move (doConcat -> chargeBulkWork bills len>>6), and
+	// raise "instruction budget exceeded" on overrun. A WORK budget, not a
+	// pure instruction count. The seed for a host-side script quota feature;
+	// fuzzing uses it instead of fragile source-substring filtering.
 	stepBudget int64
 	stepUsed   int64
 
@@ -727,10 +729,14 @@ func (st *State) PromotionCount() int {
 // with no budget the unlimited loopFuel refill keeps a hot loop from crossing tiers almost entirely).
 func (st *State) SafepointCalls() int64 { return st.safepointCalls }
 
-// SetStepBudget sets the back-edge instruction budget (<=0 disables). On
-// overrun the script terminates with a recoverable "instruction budget
-// exceeded" error — a host-side script quota feature, used by fuzzing instead of
-// fragile source-substring filtering to catch infinite/overlong loops.
+// SetStepBudget sets the execution work budget (<=0 disables). On overrun
+// the script terminates with a recoverable "instruction budget exceeded"
+// error — a host-side script quota feature, used by fuzzing instead of
+// fragile source-substring filtering to catch infinite/overlong loops. It
+// is a WORK budget, not a pure instruction count: preempt points charge one
+// unit each and CONCAT additionally bills len(result)>>6 via chargeBulkWork
+// (issue #166/#167), so a single large concat can overrun even without a
+// back edge.
 func (st *State) SetStepBudget(n int64) {
 	st.stepBudget = n
 	st.stepUsed = 0
