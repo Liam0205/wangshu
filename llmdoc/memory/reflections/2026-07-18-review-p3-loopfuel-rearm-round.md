@@ -80,7 +80,7 @@ metadata:
 `SetForceAllPromote`,结果 budget 居然生效了(报错)——差点据此把真问题
 误判成「不存在」。原因是那个循环的写法没有在段内跑 back-edge,预算走的是
 解释器路径,测的根本不是被指控的那条路径。换成既有
-`loop_stepbudget_p3_test.go` 已证明「back-edge 在段内跑」的写法
+`test/regression/loop_stepbudget_p3_test.go` 已证明「back-edge 在段内跑」的写法
 (`function sum(n) ... while ... X=0*i ... end` + `SetHotThresholds(2,4)` +
 顶层 `sum(12)%sum(N)`)后才稳定复现。
 
