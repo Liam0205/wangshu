@@ -16,10 +16,12 @@ __pycache__/
 fuzz-forensics/
 
 # Scratch probe / reproduction test files created while debugging (e.g. a
-# repro copied from /tmp into the repo root to run under the build tags).
-# These are throwaway and must never be committed; real tests use semantic
+# repro copied from /tmp into the repo ROOT to run under the build tags).
+# Anchored with a leading slash so they only match at the repo root: an
+# unanchored pattern matches by basename at any depth and would swallow
+# real tests like test/difftest/probes_test.go. Real tests use semantic
 # names (wangshu_test.go, table_test.go, issueNNN_*_test.go, fuzz_*_test.go).
-probe*_test.go
-repro*_test.go
-scratch*_test.go
-tmp*_test.go
+/probe*_test.go
+/repro*_test.go
+/scratch*_test.go
+/tmp*_test.go
