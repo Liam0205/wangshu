@@ -30,7 +30,7 @@
 // Found by nightly go-fuzz (FuzzAutoPromote eb8fb93a433d40b2 hung the
 // worker; FuzzP4ForceAllPromote 5159747aad201f47 hung during
 // minimization of the same shape).
-package wangshu_test
+package regression
 
 import (
 	"testing"

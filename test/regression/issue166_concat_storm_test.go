@@ -12,7 +12,7 @@
 //   #167: for i=1,777777776 do ouX = cat(i)   end  (cat returns a
 //         ~1200B literal .. i) — the concat is INSIDE cat's return
 
-package wangshu_test
+package regression
 
 import (
 	"strings"

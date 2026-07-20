@@ -20,7 +20,7 @@
 // C-1 (ProtoSeg2SegRetCount). Mixed-width callees stay on the
 // exit-reason path whose host.DoReturn nil-fills like the interpreter.
 
-package wangshu_test
+package regression
 
 import (
 	"testing"

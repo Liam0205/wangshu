@@ -17,7 +17,7 @@
 
 //go:build (wangshu_p3 || wangshu_p4) && wangshu_profile
 
-package wangshu_test
+package regression
 
 import (
 	"fmt"
