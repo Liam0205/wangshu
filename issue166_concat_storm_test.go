@@ -1,16 +1,10 @@
 // issue166_concat_storm_test.go — issues #166/#167 (concat-storm family
-// #123-#167): the instruction budget counted preempt points (loop back
-// edge + frame entry) but NOT the byte volume of a CONCAT. A tight loop
-// calling a function that concatenates a large string literal therefore
-// ran for minutes of wall-clock INSIDE the budgeted iteration count:
-// ~500K iterations * ~15KiB each. The fuzz harness runs 4x prog.Run per
-// input, so that byte work blew past Go fuzz's 10s per-input
-// "deadlocked!" watchdog and surfaced as "hung or terminated
-// unexpectedly: exit status 2" — misread as a memory OOM for weeks until
-// PR #165's worker forensics captured the runnable doConcat -> Intern
-// stack. Fix: chargeBulkWork bills len(result)>>10 (1 step per KiB) to
-// the budget inside the shared doConcat, which every tier routes through
-// (P1 executeLoop, P3 wasm h_concat, P4 native host.Concat).
+// stack with `panic: deadlocked!` from Go fuzz's per-input watchdog. The
+// deaths were never memory OOMs; they were Go fuzz's 10s per-input watchdog
+// firing on CPU-bound concat work. Fix: chargeBulkWork bills len(result)>>6
+// (1 step per 64 bytes) to the budget inside the shared doConcat, which
+// every tier routes through (P1 executeLoop, P3 wasm h_concat, P4 native
+// host.Concat).
 //
 // Killer flight records (from the run artifacts' fuzz-forensics/):
 //   #166: for i=1,777777776 do qut = out .. cat(i) end  (cat returns a
@@ -34,12 +28,10 @@ func isBudgetErr(err error) bool {
 }
 
 // TestIssue166_ByteHeavyConcatHitsBudget: a loop calling a function that
-// concatenates a ~15KiB literal must trip the instruction budget in
-// bounded wall-clock, not run until the fuzz watchdog fires. Before the
-// fix a single run took ~2.7s (byte work uncounted); after, it hits the
-// budget in a few hundred ms. Guard at 5s: the pre-fix single run was
-// 2.7s and the harness's 4x amplification crossed the 10s watchdog, so
-// any per-run time near 2.7s means the byte charge is missing.
+// concatenates a ~15KiB literal must trip the instruction budget. The
+// discard form throws the result away (global glob), so the arena stays
+// bounded and the ONLY thing that can stop the loop is the byte-charged
+// step budget -- there is no arena-cap escape hatch.
 func TestIssue166_ByteHeavyConcatHitsBudget(t *testing.T) {
 	lit := strings.Repeat("A", 15000)
 	// Discard form: the result is thrown away (global glob), so the
@@ -55,22 +47,27 @@ func TestIssue166_ByteHeavyConcatHitsBudget(t *testing.T) {
 	st.SetStepBudget(1 << 20)
 	st.SetHotThresholds(^uint32(0), ^uint32(0)) // interpreter path
 
-	start := time.Now()
-	_, rerr := prog.Run(st)
-	elapsed := time.Since(start)
-
-	if !isBudgetErr(rerr) {
-		t.Fatalf("byte-heavy concat did not hit the instruction budget: err=%v (elapsed %v)", rerr, elapsed)
-	}
-	if elapsed > 5*time.Second {
-		t.Fatalf("byte-heavy concat ran %v before the budget fired — byte charge missing (pre-fix ~2.7s single run)", elapsed)
+	// Contract: the byte-charged budget stops the loop. Non-termination
+	// (charge removed) is caught by the package `go test -timeout`, not an
+	// in-test wall-clock bound -- see llmdoc unreproducible-crasher-triage:
+	// in-test deadlines bet against shared-runner speed. The wall-clock
+	// property is guarded by TestIssue166_HarnessWatchdogMargin against Go
+	// fuzz's real fixed 10s watchdog.
+	if _, rerr := prog.Run(st); !isBudgetErr(rerr) {
+		t.Fatalf("byte-heavy concat did not hit the instruction budget: err=%v", rerr)
 	}
 }
 
-// TestIssue166_HarnessWatchdogMargin mirrors the FuzzAutoPromote harness
-// (4x prog.Run per input) and asserts the total stays well under Go
-// fuzz's 10s per-input "deadlocked!" watchdog — the exact condition that
-// killed the workers.
+// TestIssue166_HarnessWatchdogMargin is the primary regression guard: it
+// mirrors the FuzzAutoPromote harness (4x prog.Run per input) and asserts
+// the total beats Go fuzz's 10s per-input "deadlocked!" watchdog -- the
+// exact fixed external threshold that killed the workers, a real
+// production deadline rather than an arbitrary in-test bound. Pre-fix the
+// 15KiB discard loop did ~2.7s of byte work per run (~13.5s for 4x on the
+// ~10x-slower CI runners, which is what failed PR #168's first CI); the
+// byte charge cuts each run to bounded work, so 4x completes in well under
+// a second locally and ~1s on CI. The 8s guard (under the 10s watchdog)
+// leaves ~10x margin post-fix while still failing on the pre-fix behavior.
 func TestIssue166_HarnessWatchdogMargin(t *testing.T) {
 	lit := strings.Repeat("A", 15000)
 	src := `local function cat(i) return "` + lit + `" .. i end
@@ -87,27 +84,28 @@ func TestIssue166_HarnessWatchdogMargin(t *testing.T) {
 		_, _ = prog.Run(st)
 	}
 	if elapsed := time.Since(start); elapsed > 8*time.Second {
-		t.Fatalf("4x prog.Run took %v — too close to Go fuzz's 10s watchdog", elapsed)
+		t.Fatalf("4x prog.Run took %v — past the safety margin under Go fuzz's 10s watchdog (pre-fix was ~13.5s on CI)", elapsed)
 	}
 }
 
 // TestIssue166_LegitConcatUnaffected proves the byte charge does not
-// over-reject ordinary code. The charge is len>>10, so concats below
-// 1KiB cost zero extra steps, and a single legitimate ~1MiB concat costs
-// only ~1024 steps against a 1<<20 budget.
+// over-reject ordinary code. The charge is len>>6, so concats below 64
+// bytes cost zero extra steps, and a single legitimate ~1MiB concat costs
+// only ~16K steps against a 1<<20 budget.
 func TestIssue166_LegitConcatUnaffected(t *testing.T) {
 	cases := []struct {
 		name string
 		src  string
 	}{
 		{
-			// 50K iterations of small (<1KiB) concats: byte charge is
-			// zero, only preempt steps count (~2/iter well under 1<<20).
+			// 50K iterations of small concats: byte charge is tiny (each
+			// result is a few dozen bytes), so only preempt steps
+			// dominate (~2/iter well under 1<<20).
 			name: "many-small-concats",
 			src:  `local n=0; for i=1,50000 do local x = "prefix-" .. i .. "-suffix"; n = n + #x end; return n`,
 		},
 		{
-			// One legitimate ~1MiB concat: ~1024 charged steps.
+			// One legitimate ~1MiB concat: ~16K charged steps.
 			name: "single-1mib-concat",
 			src:  `local a = string.rep("x", 1000000); local b = a .. "!"; return #b`,
 		},

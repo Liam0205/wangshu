@@ -789,19 +789,25 @@ func (st *State) preempt() *LuaError {
 // exit status 2" -- misread as a memory OOM for weeks until PR #165's worker
 // forensics captured the runnable doConcat stack.
 //
-// Charging len>>10 (one step per KiB) turns the budget into a work meter for
-// bulk string ops without disturbing ordinary code: a 1<<20 budget still allows
-// ~1 GiB of total concat, which no legitimate program approaches, but a storm
-// hits the budget after ~1 GiB copied (~100ms) instead of running unbounded.
-// Gated on stepBudget>0 exactly like preempt(); the budget is opt-in and its
-// documented purpose is to bound runaway execution, which byte-heavy concat is.
+// Charging len>>6 (one step per 64 bytes) turns the budget into a work meter
+// for bulk string ops without disturbing ordinary code: a 1<<20 budget still
+// allows ~64 MiB of total concat, which no legitimate program approaches, but a
+// storm hits the budget after ~64 MiB copied instead of running unbounded. The
+// ratio was tightened from an initial 1-step-per-KiB after PR #168 CI: at 1/KiB
+// a worst-case 16 KiB-literal loop still did ~1 GiB per run, and the harness's
+// 4x prog.Run took 13.5s on the (~10x slower than local) CI runners -- past the
+// 10s watchdog. 64 B/step keeps 4x prog.Run comfortably under 1s even on CI
+// while a single legitimate 1 MiB concat costs only ~16K steps (1.5% of a 1<<20
+// budget). Gated on stepBudget>0 exactly like preempt(); the budget is opt-in
+// and its documented purpose is to bound runaway execution, which byte-heavy
+// concat is.
 //
 // All three tiers route CONCAT through doConcat (P1 executeLoop, P3 wasm
 // h_concat, P4 native host.Concat), so charging here alone covers every backend
 // uniformly and keeps the differential-fuzz comparison symmetric.
 func (st *State) chargeBulkWork(bytes int) *LuaError {
 	if st.stepBudget > 0 {
-		st.stepUsed += int64(bytes >> 10)
+		st.stepUsed += int64(bytes >> 6)
 		if st.stepUsed > st.stepBudget {
 			return errf("instruction budget exceeded")
 		}
