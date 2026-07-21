@@ -5,6 +5,7 @@ package stdlib
 import (
 	"bytes"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -460,6 +461,19 @@ func stringFnFormat(st *crescent.State, args []value.Value) ([]value.Value, *cre
 			if !ok {
 				return nil, crescent.NewArgError(argn+1, "number expected, got "+st.TypeName(args[argn]))
 			}
+			// NaN/Inf: Go's fmt prints "NaN"/"+Inf"/"-Inf", but PUC
+			// routes through C sprintf, whose glibc output is
+			// verb-case dependent (lowercase verb -> nan/inf,
+			// uppercase -> NAN/INF) and treats the NaN sign quirkily
+			// (%f of 0/0 is "nan" but %E of 0/0 is "-NAN"). Render
+			// these specially, applying only width + left-justify from
+			// the spec (precision and +/space are meaningless for NaN,
+			// C ignores them). Oracle diff fuzz catch (#170/#171).
+			if math.IsNaN(n) || math.IsInf(n, 0) {
+				out = append(out, cFormatSpecialFloat(spec, verb, n)...)
+				argn++
+				continue
+			}
 			out = append(out, []byte(fmt.Sprintf(string(append(spec, verb)), n))...)
 			argn++
 		case 's':
@@ -505,6 +519,95 @@ func stringFnFormat(st *crescent.State, args []value.Value) ([]value.Value, *cre
 		}
 	}
 	return []value.Value{intern(st, string(out))}, nil
+}
+
+// cFormatSpecialFloat renders a NaN or Inf through the same conversion PUC's
+// C sprintf produces on glibc, since Go's fmt spells these differently
+// ("NaN"/"+Inf"/"-Inf" vs C's nan/inf/NAN/INF). Verified against the
+// embedded PUC 5.1.5 oracle (#170/#171):
+//
+//	verb        NaN (0/0)   +Inf (1/0)   -Inf (-1/0)
+//	%f %e %g    nan         inf          -inf
+//	%E %G       -NAN        INF          -INF
+//
+// glibc's NaN sign is a quirk: the lowercase conversion prints a bare "nan"
+// (no sign, and +/space flags are ignored), while the uppercase conversion
+// prints "-NAN" for the same 0/0 bit pattern. Inf follows the ordinary sign
+// and honors the +/space flags. Only width and the '-' (left-justify) flag
+// from spec are applied here; precision is meaningless for these values and
+// C ignores it.
+func cFormatSpecialFloat(spec []byte, verb byte, f float64) []byte {
+	upper := verb == 'E' || verb == 'G'
+
+	var core string
+	if math.IsNaN(f) {
+		if upper {
+			// glibc prints the 0/0 NaN as "-NAN" under an uppercase
+			// conversion; the lowercase form is a bare "nan".
+			core = "-NAN"
+		} else {
+			core = "nan"
+		}
+	} else {
+		// Inf: real sign, plus the +/space flag for a positive value.
+		neg := math.IsInf(f, -1)
+		word := "inf"
+		if upper {
+			word = "INF"
+		}
+		var sign string
+		switch {
+		case neg:
+			sign = "-"
+		case bytes.IndexByte(spec, '+') >= 0:
+			sign = "+"
+		case bytes.IndexByte(spec, ' ') >= 0:
+			sign = " "
+		}
+		core = sign + word
+	}
+
+	// Apply width + left-justify from spec via manual space padding.
+	// spec is "%" + flags + width + optional ".prec"; flags and precision
+	// are already accounted for above, so only the width digits matter.
+	//
+	// PUC 5.1.5 / glibc quirk: glibc always reserves one column for a NaN's
+	// sign. Under a lowercase verb the sign is invisible (core is a bare
+	// "nan"), so that reserved column shows up as an effective field width
+	// of declared-width MINUS ONE (%5f->" nan" [width 4], %10.3f->
+	// "      nan" [width 9], %8.2f->"    nan" [width 7]). Under an uppercase
+	// verb the sign is the visible '-' already in core ("-NAN"), so the
+	// column is spent and the field pads to the FULL declared width
+	// (%5E->" -NAN" [width 5]). Inf carries its own sign in core either way
+	// and also pads to the full width (%5f->"  inf"). Precision is ignored.
+	width := 0
+	left := bytes.IndexByte(spec, '-') >= 0
+	for i := 1; i < len(spec); i++ {
+		c := spec[i]
+		if c == '.' {
+			break // precision follows; ignored for NaN/Inf
+		}
+		if c >= '0' && c <= '9' {
+			// A leading '0' here is the zero-pad flag, not a width digit;
+			// C space-pads NaN/Inf regardless, so folding it into the
+			// width value is harmless.
+			width = width*10 + int(c-'0')
+		}
+	}
+	if math.IsNaN(f) && !upper && width > 0 {
+		width-- // lowercase NaN: glibc's reserved sign column, unshown
+	}
+	if width <= len(core) {
+		return []byte(core)
+	}
+	pad := make([]byte, width-len(core))
+	for i := range pad {
+		pad[i] = ' '
+	}
+	if left {
+		return append([]byte(core), pad...)
+	}
+	return append(pad, []byte(core)...)
 }
 
 // quoteLuaString implements %q (byte-for-byte aligned with PUC addquoted):
