@@ -536,6 +536,13 @@ func stringFnFormat(st *crescent.State, args []value.Value) ([]value.Value, *cre
 // and honors the +/space flags. Only width and the '-' (left-justify) flag
 // from spec are applied here; precision is meaningless for these values and
 // C ignores it.
+//
+// This deliberately hardcodes the NaN sign as negative rather than reading
+// f's sign bit: wangshu's arithmetic NaN carries the OPPOSITE sign bit from
+// PUC/x86 (wangshu 0/0 is +NaN, PUC is -NaN), so reading the real bit would
+// diverge from the oracle on exactly the 0%0 inputs #170/#171 reported.
+// Hardcoding matches the fuzz-hit negative case; fully sign-correct NaN
+// rendering needs the VM value layer aligned to x86 first — tracked in #173.
 func cFormatSpecialFloat(spec []byte, verb byte, f float64) []byte {
 	upper := verb == 'E' || verb == 'G'
 
