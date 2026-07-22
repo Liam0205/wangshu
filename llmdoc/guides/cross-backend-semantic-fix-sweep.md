@@ -107,6 +107,8 @@
 
 延伸:「改写输入再委托宿主标准库」是不收敛适配路径,第 N 次被打穿时换成手写。同一个 site(比如 `internal/stdlib/stringlib.go` 的 stringFnFormat unsigned 分支)如果曾经通过「改写 spec 后交给 Go `fmt.Sprintf` / `strconv.*` / 宿主 libc 类库」的方式适配 C 语义,而 `FuzzOracleDiff` 又反复在这个 site 上撞出新分歧(Go `fmt` 与 C `printf` 对 `%#X` 零值前缀 / `%#08X` 补零位置 / `%#.0o` 零值 / `%s` 的 `'0'` flag 是否 pad 等等就有多处分歧,ICU / RE2 / 宿主时区表也同样),这条路径就是不收敛的:两个实现各自演进,分歧集合是开放的,补丁式修复只能覆盖「已被撞到的那一处」。判据一旦成立(同一 site 第 2 次以上被打穿,且新分歧仍在同一语法维度上),就把这一段整段换成手写的 C 语义 renderer,把语义收敛为封闭规则(C99 printf 一页写完 / 官方 `_lua515/` 对应的 C 函数几十行写完)。实证:2026-07-13 nightly 巡检轮里 stringFnFormat 的 `%u/%x/%X/%o` 分支第三次被打穿(前两次 `%100X` 宽度与 `% 00X0` 忽略旗标,这次 `%#X` 零值),从 `bytes.ReplaceAll(spec, ...) + fmt.Sprintf` 换成手写 `cUnsignedFormat`,41 个覆盖前缀 / 宽度 / 精度 / 旗标交互的用例逐字节等于 PUC。触发场景:同一个「改写输入 + 委托宿主标准库」site 被 differential fuzz 打穿第 2 次时,不要再补一发 `ReplaceAll` 或 `strings.ReplaceAll`,直接换手写实现;写新 site 前也要看 Go 标准库对该语义有没有已知的多点分歧,有就直接手写。同族反思实例见 `memory/reflections/2026-07-13-nightly-concat-oom-and-format-hash-round.md`。
 
+延伸(stdlib 的跨 number/string 边界强制转换,复用 VM 侧权威实现别自写标准库简化版):stdlib 里凡是「字符串→数字」「数字→字符串」这类跨 number/string 边界的强制转换,必须复用 VM 侧对齐 PUC 的权威实现(`crescent.ParseLuaNumber` / `crescent.FormatLuaNumber`),不要用 Go 标准库的简化版。Go `strconv.ParseFloat` 不认 Lua 十六进制整数(`"0X0"` 类,它只接受 C99 hex float),接受面与 PUC `luaO_str2d` 不一致;两份实现并存会让 stdlib 侧的强制转换宽松度系统性低于 VM 侧,而且这个差异不会立刻暴露——要等某个恰好落在差异区的输入被 fuzz 撞出来。这与本节「跨后端扫要枚举实现」是同一原则在「同一进程内同一能力两份实现」维度的延伸:能力已有权威实现时经统一入口复用,别在别处另写一份。实证:issue #174(2026-07-23,PR #176)——`string.rep("...", "0X0")` 的次数参数是 Lua 十六进制整数字符串,PUC 用 `luaL_checknumber` 强制转成 0,wangshu 的 `toNumberStr`(`internal/stdlib/stdlib.go`,被 string/table/math 各库约 28 处调用)用裸 `strconv.ParseFloat` 不认 hex 整数而报错;仓库其实早有对齐 PUC `luaO_str2d` 的 `crescent.ParseLuaNumber` 却没被复用。修法把 `toNumberStr` 改走 `crescent.ParseLuaNumber`,一处对齐所有调用点。同轮 issue #175 是 `tonumber(x, base)` 的第一参数按 PUC `luaL_checkstring` 接受 number 强制转 string。触发场景:给某个「X → Y」语义敏感的基础转换加实现或改行为时,先 grep 全仓(尤其 crescent / VM 侧)看有没有已存在的权威实现可复用,别另写标准库简化版。反思实例见 `memory/reflections/2026-07-23-oracle-arg-coercion-round.md` 教训 1。
+
 ## 同族 harness 防护不对称
 
 跨后端 / 跨通道扫的心理边界是「同一段语义在系统里的全部实现站点」,同样的原则也适用于测试与防护本身的「同类 harness」。当给一个 fuzz harness / smoke 脚本 / CI 检查加防护(资源上限帽、豁免规则、异常路径断言、artifact upload、种子清单等)时,不能只加在触发本次修复的那一个,要立刻横向问一句「兄弟 harness 有没有同样的暴露面」,一起加。心理边界停在「当前 harness」而不是「全部同类站点」就是欠账,下一次同类问题在没被防护到的兄弟 harness 上炸出来。
@@ -123,4 +125,5 @@
   `2026-07-09-issue103-compare-ieee-round` / `2026-07-10-issue106-107-nightly-crashers-round` /
   `2026-07-11-issue117-118-nan-forloop-round` /
   `2026-07-18-issue155-158-nightly-crasher-round`(运行时断言接口扩面不对称) /
-  `2026-07-22-oracle-format-nan-inf-round`(PUC 语义由 libc 定义:`string.format` NaN/Inf 对齐 glibc)。
+  `2026-07-22-oracle-format-nan-inf-round`(PUC 语义由 libc 定义:`string.format` NaN/Inf 对齐 glibc) /
+  `2026-07-23-oracle-arg-coercion-round`(stdlib 强制转换复用 VM 侧权威实现:`toNumberStr` 走 `crescent.ParseLuaNumber`,#174/#175)。

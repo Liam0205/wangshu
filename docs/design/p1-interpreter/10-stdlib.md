@@ -624,6 +624,11 @@ func hostTonumber(vm *VM, th *Thread) int {
   coercion**(07 §5.2 已声明)。
 - **失败返回 nil(非报错)**:`tonumber("abc") == nil`,`tonumber("10x") == nil`。这与 `CheckNumber`(失败报错)
   不同——`tonumber` 是「尝试转换」,失败是正常结果(返回 nil)。
+- **实现落点(#174/#175,PR #176)**:string/table/math 各库的「字符串→数字」强制转换统一经
+  `crescent.ParseLuaNumber`(对齐 PUC `luaO_str2d`,含十六进制整数 fallback),不用 Go 标准库
+  `strconv.ParseFloat`(不认 Lua 十六进制整数 `"0X0"`,接受面与 PUC 不一致);`tonumber(x, base)`
+  的第一参数接受 number 强制转 string(对齐 PUC `luaL_checkstring`,`tonumber(0, "2")` → 0)。
+  两处修复把 stdlib 侧的强制转换宽松度对齐到与 VM 侧一致。
 
 ### 4.4 `pairs`/`next`/`ipairs`:遍历序口径(呼应 06,指向 12)
 
