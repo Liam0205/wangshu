@@ -9,7 +9,6 @@ package stdlib
 import (
 	"fmt"
 	"math"
-	"strconv"
 	"strings"
 
 	"github.com/Liam0205/wangshu/internal/arena"
@@ -178,11 +177,14 @@ func toNumberStr(st *crescent.State, v value.Value) (float64, bool) {
 		return value.AsNumber(v), true
 	}
 	if value.Tag(v) == value.TagString {
-		s := strings.TrimSpace(string(object.StringBytes(st.Arena(), value.GCRefOf(v))))
-		f, err := strconv.ParseFloat(s, 64)
-		if err == nil {
-			return f, true
-		}
+		// Use the VM's Lua-number parser (crescent.ParseLuaNumber, aligned
+		// with PUC luaO_str2d) rather than a bare strconv.ParseFloat: the
+		// latter rejects Lua hex integers like "0X0"/"0xff" (it only accepts
+		// C99 hex FLOATS, which need a mantissa/p-exponent). PUC's
+		// luaL_checknumber coerces such strings, so string.rep("x", "0X0")
+		// and friends must too (oracle diff fuzz #174).
+		s := string(object.StringBytes(st.Arena(), value.GCRefOf(v)))
+		return crescent.ParseLuaNumber(s)
 	}
 	return 0, false
 }
@@ -543,10 +545,20 @@ func baseFnToNumber(st *crescent.State, args []value.Value) ([]value.Value, *cre
 		if base < 2 || base > 36 {
 			return nil, crescent.NewArgError(2, "base out of range")
 		}
-		if value.Tag(args[0]) != value.TagString {
+		// PUC tonumber(x, base) reads arg 1 via luaL_checkstring, which
+		// coerces a number to its string form (tonumber(0, "2") sees "0").
+		// Accept string or number; only other types raise (oracle diff
+		// fuzz #175).
+		var s string
+		switch {
+		case value.Tag(args[0]) == value.TagString:
+			s = string(object.StringBytes(st.Arena(), value.GCRefOf(args[0])))
+		case value.IsNumber(args[0]):
+			s = crescent.FormatLuaNumber(value.AsNumber(args[0]))
+		default:
 			return nil, crescent.NewArgError(1, "string expected, got "+st.TypeName(args[0]))
 		}
-		s := strings.TrimSpace(string(object.StringBytes(st.Arena(), value.GCRefOf(args[0]))))
+		s = strings.TrimSpace(s)
 		if s == "" {
 			return []value.Value{value.Nil}, nil
 		}
