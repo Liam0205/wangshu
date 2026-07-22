@@ -24,6 +24,38 @@ func runOne(t *testing.T, src string) wangshu.Value {
 	return results[0]
 }
 
+// TestStdlib_NumericArgCoercion pins two PUC coercion behaviors that
+// FuzzOracleDiff caught wangshu being too strict about (#174/#175). PUC's
+// luaL_checknumber / luaL_checkstring coerce across the number<->string
+// boundary; wangshu's toNumberStr used a bare strconv.ParseFloat (rejecting
+// Lua hex integers) and tonumber(x, base) rejected a non-string x outright.
+func TestStdlib_NumericArgCoercion(t *testing.T) {
+	cases := []struct {
+		name, src, want string
+	}{
+		// #174: string.rep count arg is a Lua hex-integer STRING "0X0" (=0).
+		// luaL_checknumber coerces it; ParseLuaNumber accepts hex where
+		// strconv.ParseFloat did not. rep by 0 yields the empty string.
+		{"rep-hex-string-count", `return string.rep("ab", "0X0")`, ""},
+		{"rep-hex-string-count-nonzero", `return string.rep("a", "0x3")`, "aaa"},
+		// A plain decimal string still works (regression guard on the
+		// parser swap).
+		{"rep-decimal-string-count", `return string.rep("a", "2")`, "aa"},
+		// #175: tonumber(number, base) — arg 1 is a NUMBER; luaL_checkstring
+		// coerces 0 -> "0", parsed in base 2 -> 0.
+		{"tonumber-number-arg-base", `return tonumber(0, "2")`, "0"},
+		{"tonumber-number-arg-base16", `return tonumber(255, 16)`, "597"}, // "255" read as base-16 = 597
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := runOne(t, tc.src).Display()
+			if got != tc.want {
+				t.Errorf("%s: %s -> %q, want %q", tc.name, tc.src, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestStdlib_Type(t *testing.T) {
 	cases := map[string]string{
 		`return type(nil)`:     "nil",
