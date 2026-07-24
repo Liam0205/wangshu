@@ -46,24 +46,42 @@ func TestExec_OutputCapture(t *testing.T) {
 	}
 }
 
-func TestExec_NaNSignEvidence(t *testing.T) {
+func TestExec_NaNSpans(t *testing.T) {
 	tests := []struct {
-		src  string
-		want bool
+		src        string
+		wantSpans  int
+		wantSubstr string // substring the first span must cover
 	}{
-		{`print("BANANA")`, false},
-		{`print(0/0)`, true},
-		{`io.write(0/0)`, true},
-		{`print(string.format("%E0", -(0/0)))`, true},
-		{`print(string.format(0/0))`, true},
+		{`print("BANANA")`, 0, ""},
+		{`print(0/0)`, 1, "nan"},
+		{`io.write(0/0)`, 1, "nan"},
+		{`print(string.format("%E0", -(0/0)))`, 1, "NAN"},
+		// string.format with fmt=NaN goes through tostring(NaN) and
+		// records the resulting nan token exactly.
+		{`print(string.format(0/0))`, 1, "nan"},
+		// Reviewer-motivated coverage: same run mixes a real NaN with
+		// script-emitted plain-text NaN spellings. The plain-text ones
+		// must NOT be recorded, so downstream CompareOutput still fails
+		// on script-side literal-string differences.
+		{`print(0/0, "BANANA")`, 1, "nan"},
 	}
 	for _, tt := range tests {
 		r := execT(t, tt.src)
 		if r.Verdict != VerdictOK {
 			t.Fatalf("%q: verdict = %v, err = %q", tt.src, r.Verdict, r.Err)
 		}
-		if r.KnownNaNSign != tt.want {
-			t.Errorf("%q: KnownNaNSign = %v, want %v, output = %q", tt.src, r.KnownNaNSign, tt.want, r.Output)
+		if len(r.NaNSpans) != tt.wantSpans {
+			t.Errorf("%q: got %d spans (%v), want %d, output = %q",
+				tt.src, len(r.NaNSpans), r.NaNSpans, tt.wantSpans, r.Output)
+			continue
+		}
+		if tt.wantSpans == 0 {
+			continue
+		}
+		got := r.Output[r.NaNSpans[0].Start:r.NaNSpans[0].End]
+		if !strings.Contains(strings.ToLower(got), strings.ToLower(tt.wantSubstr)) {
+			t.Errorf("%q: first span = %q, want it to contain %q (output=%q)",
+				tt.src, got, tt.wantSubstr, r.Output)
 		}
 	}
 }

@@ -6,6 +6,7 @@ package oracle
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -21,26 +22,83 @@ var addrRe = regexp.MustCompile(`\b(table|function|thread|userdata): 0x[0-9a-fA-
 
 // NormalizeOutput rewrites engine-dependent reference-value addresses before
 // byte comparison. Accepted platform differences belong in CompareOutput so
-// callers can distinguish them from exact equality.
+// callers can distinguish them from exact equality. NaN sign spellings are
+// deliberately NOT normalized here (#173): the accept-known-diff path lives
+// in CompareOutput and is gated by per-span rendering evidence from prelude,
+// so a literal "NAN" written by the script cannot be silently folded.
 func NormalizeOutput(s string) string {
 	return addrRe.ReplaceAllString(s, "${1}: 0xADDR")
 }
 
-// DecodeOutput removes the private one-byte readout header emitted by Prelude.
-// The header proves that the executed output path observed a numeric NaN or a
-// successful string.format call that rendered a NaN spelling.
-func DecodeOutput(readout string) (output string, nanEvidence bool, ok bool) {
-	if len(readout) == 0 {
-		return "", false, false
+// NaNSpan records a byte range [Start, End) inside the accumulated
+// print/io.write output that was produced by a NaN rendering path
+// (print/io.write of a NaN number, or the nan/NAN tokens inside a
+// string.format output fed at least one NaN argument). Offsets are
+// 0-based byte offsets into the output body returned by DecodeOutput.
+// Prelude emits one span per rendering event; CompareOutput uses the
+// spans to allow NaN-sign spelling divergence ONLY within these ranges,
+// so a script's own literal "NAN"/"-NAN" output outside every span
+// stays under strict byte-equality.
+type NaNSpan struct {
+	Start int
+	End   int
+}
+
+// DecodeOutput removes the private readout header emitted by Prelude and
+// returns the raw output body plus the NaN-rendering byte spans within it.
+// Header format:
+//
+//	"<count>\n" +
+//	  <count> lines of "<off>-<end>\n" +
+//	  <body>
+//
+// The decoder is intentionally strict: a malformed header (non-numeric
+// count, malformed offset line, offsets out of range, non-monotonic
+// spans, or bytes still unread once <count> spans are consumed
+// arithmetically fine) returns ok=false so the caller can classify the
+// run as VerdictLimit rather than silently falling back to "no
+// evidence".
+func DecodeOutput(readout string) (output string, spans []NaNSpan, ok bool) {
+	nl := strings.IndexByte(readout, '\n')
+	if nl < 0 {
+		return "", nil, false
 	}
-	switch readout[0] {
-	case '0':
-		return readout[1:], false, true
-	case '1':
-		return readout[1:], true, true
-	default:
-		return "", false, false
+	count, err := strconv.Atoi(readout[:nl])
+	if err != nil || count < 0 {
+		return "", nil, false
 	}
+	rest := readout[nl+1:]
+	if count == 0 {
+		return rest, nil, true
+	}
+	spans = make([]NaNSpan, 0, count)
+	prevEnd := 0
+	for i := 0; i < count; i++ {
+		nl := strings.IndexByte(rest, '\n')
+		if nl < 0 {
+			return "", nil, false
+		}
+		line := rest[:nl]
+		dash := strings.IndexByte(line, '-')
+		if dash < 0 {
+			return "", nil, false
+		}
+		start, err := strconv.Atoi(line[:dash])
+		if err != nil || start < prevEnd {
+			return "", nil, false
+		}
+		end, err := strconv.Atoi(line[dash+1:])
+		if err != nil || end < start {
+			return "", nil, false
+		}
+		spans = append(spans, NaNSpan{Start: start, End: end})
+		prevEnd = end
+		rest = rest[nl+1:]
+	}
+	if len(spans) > 0 && spans[len(spans)-1].End > len(rest) {
+		return "", nil, false
+	}
+	return rest, spans, true
 }
 
 // OutputComparison classifies an oracle output comparison.
@@ -52,21 +110,72 @@ const (
 	OutputDifferent
 )
 
-// CompareOutput compares captured oracle output after deterministic address
-// normalization. A difference solely in the sign spelling of standalone NaN
-// fields is classified as OutputKnownNaNSign. IEEE 754 gives a NaN sign no
-// numerical meaning, while PUC's visible spelling depends on the host libc and
-// the NaN bit pattern produced by the host floating-point implementation.
-func CompareOutput(oracleOutput, wangshuOutput string, oracleNaN, wangshuNaN bool) OutputComparison {
-	oracleOutput = NormalizeOutput(oracleOutput)
-	wangshuOutput = NormalizeOutput(wangshuOutput)
+// CompareOutput compares captured oracle output after deterministic
+// address normalization. The comparison partitions each side into
+// interleaved segments driven by its NaN-rendering spans: bytes OUTSIDE
+// every span must match byte-for-byte between engines (a script's own
+// literal "NAN"/"-NAN" output ends up here, so genuine differences
+// there still fail); bytes INSIDE a matching span pair may additionally
+// differ by "known NaN sign spelling" per knownNaNSignDifference.
+// IEEE 754 assigns no numeric meaning to a NaN's sign, while PUC's
+// visible spelling depends on the host libc and the NaN bit pattern
+// produced by the host floating-point implementation; wangshu picks a
+// consistent negative rendering and the harness classifies the residual
+// per-rendering divergence here.
+//
+// A mismatched span shape (different count, non-matching gap bytes,
+// or intra-span content diverging beyond sign spelling) demotes the
+// verdict to OutputDifferent so the harness fails.
+func CompareOutput(oracleOutput, wangshuOutput string, oracleSpans, wangshuSpans []NaNSpan) OutputComparison {
+	// Fast path: raw byte equality before touching addresses or spans.
 	if oracleOutput == wangshuOutput {
 		return OutputEqual
 	}
-	if oracleNaN && wangshuNaN && knownNaNSignDifference(oracleOutput, wangshuOutput) {
+	// Slow path with address normalization; NaN spans stay off this path
+	// because addresses cannot appear inside a NaN token (spans are
+	// print/io.write of a numeric NaN or NaN tokens produced by
+	// string.format on NaN args, none of which produce reference-value
+	// spellings).
+	oNorm := NormalizeOutput(oracleOutput)
+	wNorm := NormalizeOutput(wangshuOutput)
+	if oNorm == wNorm {
+		return OutputEqual
+	}
+	if len(oracleSpans) == 0 || len(wangshuSpans) == 0 || len(oracleSpans) != len(wangshuSpans) {
+		return OutputDifferent
+	}
+	// Walk both raw outputs together, span by span. Gap bytes go through
+	// NormalizeOutput before comparison (addresses may live there);
+	// intra-span bytes compare raw so span offsets remain accurate.
+	oPos, wPos := 0, 0
+	signDiff := false
+	for i := range oracleSpans {
+		o, w := oracleSpans[i], wangshuSpans[i]
+		if o.Start < oPos || o.End > len(oracleOutput) || w.Start < wPos || w.End > len(wangshuOutput) {
+			return OutputDifferent
+		}
+		if NormalizeOutput(oracleOutput[oPos:o.Start]) != NormalizeOutput(wangshuOutput[wPos:w.Start]) {
+			return OutputDifferent
+		}
+		oTok := oracleOutput[o.Start:o.End]
+		wTok := wangshuOutput[w.Start:w.End]
+		if oTok == wTok {
+			oPos, wPos = o.End, w.End
+			continue
+		}
+		if !knownNaNSignDifference(oTok, wTok) {
+			return OutputDifferent
+		}
+		signDiff = true
+		oPos, wPos = o.End, w.End
+	}
+	if NormalizeOutput(oracleOutput[oPos:]) != NormalizeOutput(wangshuOutput[wPos:]) {
+		return OutputDifferent
+	}
+	if signDiff {
 		return OutputKnownNaNSign
 	}
-	return OutputDifferent
+	return OutputEqual
 }
 
 type nanOutputPart struct {
