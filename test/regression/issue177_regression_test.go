@@ -23,7 +23,10 @@
 package regression
 
 import (
+	"context"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/Liam0205/wangshu"
 	jit "github.com/Liam0205/wangshu/internal/gibbous/jit"
@@ -89,6 +92,99 @@ func TestIssue177_StringLimitAutoRun2(t *testing.T) {
 	}
 	if got := jit.SpecForLoopDeoptHits(); got == 0 {
 		t.Errorf("SpecForLoopDeoptHits = 0, want > 0 (reg-limit deopt branch did not fire)")
+	}
+}
+
+// TestIssue177_StringLimitStepBudgetExceeded pins the deopt path
+// still bills step budget per iteration (external review BLOCKER on
+// the initial fix: host.ForPrep was followed by an immediate
+// DoReturn, skipping the loop entirely — a large-limit coercible
+// string that P1 would burn budget on returned instantly under P4).
+func TestIssue177_StringLimitStepBudgetExceeded(t *testing.T) {
+	jit.ResetSpecHits()
+	// Empty-body loop with one million iterations against a 4096-
+	// step budget — the budget trips regardless of P1-vs-P4 pre-loop
+	// overhead accounting differences. The warm-up promotes sum
+	// before the terminal string-limit call enters the shape
+	// template deopt path.
+	src := `function sum(n) for i=1,n do end end
+for i=1,5 do sum(1) end
+sum "1000000"`
+	prog, err := wangshu.Compile([]byte(src), "i177budget")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	st1 := wangshu.NewState(wangshu.Options{MaxArenaBytes: 64 << 20})
+	st1.SetStepBudget(4096)
+	st1.SetHotThresholds(^uint32(0), ^uint32(0))
+	stA := wangshu.NewState(wangshu.Options{MaxArenaBytes: 64 << 20})
+	stA.SetStepBudget(4096)
+	stA.SetHotThresholds(2, 4)
+	promoBefore := stA.PromotionCount()
+	_, e1 := prog.Run(st1)
+	_, eA := prog.Run(stA)
+	if e1 == nil {
+		t.Fatalf("interpreter did not raise on 4096-step budget with 1e6 iterations")
+	}
+	if eA == nil {
+		t.Fatalf("auto path did not raise on 4096-step budget with 1e6 iterations (loop was skipped — regression to pre-fix behavior)")
+	}
+	if !strings.Contains(e1.Error(), "instruction budget exceeded") {
+		t.Fatalf("interpreter error unexpected: %v", e1)
+	}
+	if !strings.Contains(eA.Error(), "instruction budget exceeded") {
+		t.Errorf("auto path error is not the budget error (loop iterations may be skipped):\n  P1:   %q\n  auto: %q",
+			e1.Error(), eA.Error())
+	}
+	if got := stA.PromotionCount() - promoBefore; got == 0 {
+		t.Errorf("PromotionCount delta = 0, want > 0")
+	}
+	if got := jit.SpecForLoopDeoptHits(); got == 0 {
+		t.Errorf("SpecForLoopDeoptHits = 0, want > 0")
+	}
+}
+
+// TestIssue177_StringLimitContextCanceled pins the deopt path still
+// probes the cancel context per iteration (companion to the step-
+// budget case: preempt() checks both, so a skipped iteration
+// bypasses both).
+func TestIssue177_StringLimitContextCanceled(t *testing.T) {
+	jit.ResetSpecHits()
+	src := `function sum(n) for i=1,n do end end
+for i=1,5 do sum(1) end
+sum "1000000"`
+	prog, err := wangshu.Compile([]byte(src), "i177ctx")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	runOne := func(auto bool) error {
+		st := wangshu.NewState(wangshu.Options{MaxArenaBytes: 64 << 20})
+		st.SetStepBudget(1 << 30) // large budget so cancel wins the race
+		if auto {
+			st.SetHotThresholds(2, 4)
+		} else {
+			st.SetHotThresholds(^uint32(0), ^uint32(0))
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+		defer cancel()
+		st.SetContext(ctx)
+		_, err := prog.Run(st)
+		return err
+	}
+	e1 := runOne(false)
+	eA := runOne(true)
+	if e1 == nil {
+		t.Fatalf("interpreter did not raise before its 5ms context expired")
+	}
+	if eA == nil {
+		t.Fatalf("auto path did not raise before its 5ms context expired (loop skipped — regression to pre-fix behavior)")
+	}
+	if !strings.Contains(e1.Error(), "context canceled") {
+		t.Fatalf("interpreter error unexpected: %v", e1)
+	}
+	if !strings.Contains(eA.Error(), "context canceled") {
+		t.Errorf("auto path error is not the context cancel (loop iterations may be skipped):\n  P1:   %q\n  auto: %q",
+			e1.Error(), eA.Error())
 	}
 }
 

@@ -235,6 +235,25 @@ type P4HostState interface {
 	// a number).
 	ForPrep(base int32, pc int32, a int32) int32
 
+	// ForLoop runs the empty-body FORLOOP shape to completion (issue #177
+	// deopt path). ForPrep has already normalized R(A)/R(A+1)/R(A+2) and
+	// pre-decremented R(A); this helper then loops:
+	//   idx += step; if !(idx <= limit) break;
+	//   preempt(); R(A) = R(A+3) = idx;
+	// exactly as the interpreter's execute.go FORLOOP case does. It
+	// preserves the observable side effects of the loop iteration count
+	// — step budget billing and cancel-context probing — which a direct
+	// DoReturn after ForPrep would skip.
+	//
+	// pc is the FORLOOP opcode's pc (FORPREP pc + 1), used for error
+	// line anchoring when preempt raises. a is the FORLOOP A field.
+	//
+	// Returns: 0=OK / 1=ERR (instruction budget exceeded / context
+	// canceled, raised at pc). The shape is empty-body so no reg-K
+	// arithmetic runs here; the body-inline variant lives in the
+	// analyzeForLoopBodyForm path, not this one.
+	ForLoop(base int32, pc int32, a int32) int32
+
 	// LoopPreempt is the HelperLoopFuel dispatcher target (issue #102):
 	// an in-segment loop back-edge (FORLOOP / negative-sBx JMP) drained
 	// loopFuel to zero. The host bills the spent fuel to the step

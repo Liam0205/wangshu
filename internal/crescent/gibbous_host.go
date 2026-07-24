@@ -653,6 +653,56 @@ func (st *State) ForPrep(base, pc, a int32) int32 {
 	return 0
 }
 
+// ForLoop drives the empty-body FORLOOP shape (analyzeForLoopForm) to
+// completion on the deopt path (P4 issue #177). host.ForPrep normalizes
+// R(A)/R(A+1)/R(A+2) and pre-decrements; then this helper runs the
+// interpreter's FORLOOP loop byte-equal (idx += step / compare limit /
+// preempt on each iteration / write R(A) and R(A+3) / repeat) until
+// the loop exits normally. Returns 0=OK / 1=ERR when preempt raises
+// (instruction budget exceeded / context canceled).
+//
+// Why a helper (not just DoReturn after ForPrep): the shape's body is
+// empty at the Lua level, but the iteration count is a real observable
+// — each iteration burns one step against the budget and probes the
+// cancel context. Skipping the loop leaves both bypassed: a script
+// with a very large string limit that exhausts the budget under P1
+// would then return instantly under P4 (byte-inequal), and a
+// SetCancelHook mid-loop would fire under P1 but never under P4.
+//
+// pc is the FORLOOP opcode's pc (i.e. FORPREP pc + 1). raiseGibbousAtPC
+// anchors the budget-exceeded / context-canceled line to that pc,
+// matching the interpreter's execute.go FORLOOP path.
+func (st *State) ForLoop(base, pc, a int32) int32 {
+	th := st.runningThread
+	ci := st.gibCI(th)
+	ci.pc = pc + 1 // materialize FORLOOP pc for annotate/traceback
+	ra := int(a)
+	// After ForPrep: R(A) = init - step, R(A+1) = limit, R(A+2) = step
+	// (all numbers). Read once — the empty body cannot mutate them, and
+	// re-reading each iteration would re-check the NaN-box.
+	idx := value.AsNumber(reg(th, ci, ra))
+	limit := value.AsNumber(reg(th, ci, ra+1))
+	step := value.AsNumber(reg(th, ci, ra+2))
+	// Mirror execute.go FORLOOP: idx += step first, then compare. step
+	// > 0 is guaranteed by analyzeForLoopForm; NaN/step==0/negative
+	// were already filtered at Compile time so we do not need the
+	// descending branch here. The fast-path template's ucomisd + ja
+	// exit takes the same > semantics; on unordered ja does not jump,
+	// matching the interpreter (a NaN limit exits at zero iterations).
+	for {
+		idx += step
+		if !(idx <= limit) { // NaN limit: exit at zero iterations (#117/#118 parity)
+			break
+		}
+		if e := st.preempt(); e != nil {
+			return st.raiseGibbousAtPC(pc, e)
+		}
+		setReg(th, ci, ra, value.NumberValue(idx))
+		setReg(th, ci, ra+3, value.NumberValue(idx))
+	}
+	return 0
+}
+
 // --- PW5 table IC slow-path helpers (fast path inlines a hash probe; on
 // invalidation/complex forms it falls back to Go) ---
 //

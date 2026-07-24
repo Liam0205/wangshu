@@ -381,6 +381,10 @@ func (m *mockP4Host) ExecuteCalleeFromInlineFrame(base, callA, callArgCount, nre
 // ForPrep mock stub (for the PJ3 reg-limit deopt path; unit-test paths never reach it).
 func (m *mockP4Host) ForPrep(base, pc, a int32) int32 { _ = base; _ = pc; _ = a; return 0 }
 
+// ForLoop mock stub (issue #177 deopt path completes the empty-body loop;
+// unit-test paths never reach it, but the interface must be satisfied).
+func (m *mockP4Host) ForLoop(base, pc, a int32) int32 { _ = base; _ = pc; _ = a; return 0 }
+
 // LoopPreempt mock stub (issue #102 loop back-edge fuel): unit tests
 // never arm a budget, so refill unlimited and report OK.
 func (m *mockP4Host) LoopPreempt(ctx *JITContext, base, pc int32) int32 {

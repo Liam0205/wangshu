@@ -89,6 +89,7 @@ func (h *fakeHost) SetTable(base, pc, a, b, c int32) int32  { return 0 }
 func (h *fakeHost) DoGetGlobal(base, pc, a, bx int32) int32 { return 0 }
 func (h *fakeHost) DoSetGlobal(base, pc, a, bx int32) int32 { return 0 }
 func (h *fakeHost) ForPrep(base, pc, a int32) int32         { return 0 }
+func (h *fakeHost) ForLoop(base, pc, a int32) int32         { return 0 }
 
 // LoopPreempt stub (issue #102 loop back-edge fuel): shim tests never
 // arm a budget — refill unlimited so the loop keeps running.
