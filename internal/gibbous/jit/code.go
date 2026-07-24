@@ -475,21 +475,27 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 				limitVal := c.host.GetReg(int32(c.forLoopLimitReg))
 				c.host.SetReg(int32(c.forLoopA)+1, limitVal)
 				c.host.SetReg(int32(c.forLoopA)+2, c.forLoopStepK)
-				st := c.host.ForPrep(int32(base), int32(c.retPC)-2 /* FORPREP pc=3 */, int32(c.forLoopA))
+				// FORPREP pc = retPC - 2, FORLOOP pc = retPC - 1 (shape
+				// layout: ... FORPREP FORLOOP RETURN). ForPrep coerces
+				// R(A)/R(A+1)/R(A+2) to numbers and pre-decrements R(A);
+				// ForLoop then drives the empty-body iteration to
+				// completion, billing preempt/cancel context per
+				// iteration byte-equal with the interpreter (#177 review
+				// BLOCKER: directly DoReturn'ing after ForPrep skipped
+				// every iteration, defeating the step budget and cancel
+				// checks — a script the interpreter would raise
+				// "instruction budget exceeded" on would return silently
+				// under P4).
+				forprepPC := int32(c.retPC) - 2
+				forloopPC := int32(c.retPC) - 1
+				st := c.host.ForPrep(int32(base), forprepPC, int32(c.forLoopA))
 				if st != 0 {
 					return st
 				}
-				// host.ForPrep has set the three number slots + pre-decrement, but
-				// P4 does not wire host.ForLoop (it does not implement an in-segment
-				// iterator to run the remaining loop — that would need a full
-				// doForLoop helper).
-				// Simplification: after host.ForPrep succeeds, DoReturn directly
-				// (equivalent to the P4 frame running only FORPREP coercion, with
-				// the actual loop in the P1 interpreter — TODO full host.ForLoop).
-				// **This simplification makes reg-limit FORLOOP byte-equal but
-				// performance-equivalent to P1 on the deopt path** (no more
-				// speedup after deopt) — consistent with design 04 §5 deopt
-				// protocol (speculation failure falls back to the interpreter).
+				st = c.host.ForLoop(int32(base), forloopPC, int32(c.forLoopA))
+				if st != 0 {
+					return st
+				}
 				_ = stack
 				c.host.DoReturn(int32(base), int32(c.retPC), int32(c.retA), int32(c.retB))
 				return 0
