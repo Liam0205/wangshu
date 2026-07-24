@@ -26,6 +26,23 @@ func NormalizeOutput(s string) string {
 	return addrRe.ReplaceAllString(s, "${1}: 0xADDR")
 }
 
+// DecodeOutput removes the private one-byte readout header emitted by Prelude.
+// The header proves that the executed output path observed a numeric NaN or a
+// successful string.format call that rendered a NaN spelling.
+func DecodeOutput(readout string) (output string, nanEvidence bool, ok bool) {
+	if len(readout) == 0 {
+		return "", false, false
+	}
+	switch readout[0] {
+	case '0':
+		return readout[1:], false, true
+	case '1':
+		return readout[1:], true, true
+	default:
+		return "", false, false
+	}
+}
+
 // OutputComparison classifies an oracle output comparison.
 type OutputComparison uint8
 
@@ -40,13 +57,13 @@ const (
 // fields is classified as OutputKnownNaNSign. IEEE 754 gives a NaN sign no
 // numerical meaning, while PUC's visible spelling depends on the host libc and
 // the NaN bit pattern produced by the host floating-point implementation.
-func CompareOutput(oracleOutput, wangshuOutput string) OutputComparison {
+func CompareOutput(oracleOutput, wangshuOutput string, oracleNaN, wangshuNaN bool) OutputComparison {
 	oracleOutput = NormalizeOutput(oracleOutput)
 	wangshuOutput = NormalizeOutput(wangshuOutput)
 	if oracleOutput == wangshuOutput {
 		return OutputEqual
 	}
-	if knownNaNSignDifference(oracleOutput, wangshuOutput) {
+	if oracleNaN && wangshuNaN && knownNaNSignDifference(oracleOutput, wangshuOutput) {
 		return OutputKnownNaNSign
 	}
 	return OutputDifferent

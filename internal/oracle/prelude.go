@@ -77,8 +77,9 @@ func Prelude(keep GlobalSet) string {
 
 var preludeCapture = `
 local __acc, __n, __len = {}, 0, 0
+local __nan_output = false
 local __tostring, __type, __select = tostring, type, select
-local __concat, __error = table.concat, error
+local __concat, __error, __find = table.concat, error, string.find
 local function __emit(s)
   __len = __len + #s
   if __len > ` + strconv.Itoa(OutputCapBytes) + ` then
@@ -90,7 +91,9 @@ end
 function print(...)
   local n = __select("#", ...)
   for i = 1, n do
-    local s = __tostring((__select(i, ...)))
+    local v = (__select(i, ...))
+    if __type(v) == "number" and v ~= v then __nan_output = true end
+    local s = __tostring(v)
     if __type(s) ~= "string" then
       __error("'tostring' must return a string to 'print'")
     end
@@ -105,6 +108,7 @@ io.write = function(...)
     local v = (__select(i, ...))
     local tv = __type(v)
     if tv == "number" then
+      if v ~= v then __nan_output = true end
       -- tostring, not string.format("%.14g"): PUC renders numbers with
       -- LUA_NUMBER_FMT (= %.14g) for BOTH tostring and io.write, so
       -- tostring is faithful there; going through each engine's own
@@ -121,7 +125,7 @@ io.write = function(...)
   return true
 end
 function __oracle_readout()
-  return __concat(__acc)
+  return (__nan_output and "1" or "0") .. __concat(__acc)
 end
 `
 
@@ -225,17 +229,27 @@ end
 -- verdict.
 local __tonumber, __sformat = tonumber, string.format
 string.format = function(f, ...)
+  local has_nan = __type(f) == "number" and f ~= f
   if __type(f) == "number" then f = __tostring(f) end
-  if __type(f) == "string" and __sfind(f, "%%[%-%+ #0-9%.]*[uxXo]") then
-    local n = __select("#", ...)
-    for i = 1, n do
-      local v = __tonumber((__select(i, ...)))
+  local unsigned = __type(f) == "string" and __sfind(f, "%%[%-%+ #0-9%.]*[uxXo]")
+  local n = __select("#", ...)
+  for i = 1, n do
+    local arg = (__select(i, ...))
+    if __type(arg) == "number" and arg ~= arg then
+      has_nan = true
+    end
+    if unsigned then
+      local v = __tonumber(arg)
       if v ~= nil and (v ~= v or v <= -1 or v >= 18446744073709551616) then
         __error("` + LimitSentinel + `: unsigned-cast UB range", 0)
       end
     end
   end
-  return __sformat(f, ...)
+  local out = __sformat(f, ...)
+  if has_nan and (__find(out, "nan", 1, true) or __find(out, "NAN", 1, true)) then
+    __nan_output = true
+  end
+  return out
 end
 
 -- Pattern-function guards. PUC 5.1's matcher is unbounded C-side

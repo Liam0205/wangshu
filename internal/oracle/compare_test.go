@@ -28,32 +28,57 @@ func TestNormalizeOutput_AddressesOnly(t *testing.T) {
 	}
 }
 
+func TestDecodeOutput(t *testing.T) {
+	tests := []struct {
+		in       string
+		output   string
+		evidence bool
+		ok       bool
+	}{
+		{"0hello", "hello", false, true},
+		{"1-NAN", "-NAN", true, true},
+		{"", "", false, false},
+		{"xdata", "", false, false},
+	}
+	for _, tt := range tests {
+		output, evidence, ok := DecodeOutput(tt.in)
+		if output != tt.output || evidence != tt.evidence || ok != tt.ok {
+			t.Errorf("DecodeOutput(%q) = (%q, %v, %v), want (%q, %v, %v)",
+				tt.in, output, evidence, ok, tt.output, tt.evidence, tt.ok)
+		}
+	}
+}
+
 func TestCompareOutput(t *testing.T) {
 	tests := []struct {
 		name          string
 		oracleOutput  string
 		wangshuOutput string
+		oracleNaN     bool
+		wangshuNaN    bool
 		want          OutputComparison
 	}{
-		{"equal", "ok\n", "ok\n", OutputEqual},
-		{"addresses", "table: 0x1\n", "table: 0x2\n", OutputEqual},
-		{"lowercase", "-nan\n", "nan\n", OutputKnownNaNSign},
-		{"uppercase", "NAN\n", "-NAN\n", OutputKnownNaNSign},
-		{"right width", "value=[       NAN]\n", "value=[      -NAN]\n", OutputKnownNaNSign},
-		{"left width", "value=[NAN       ]\n", "value=[-NAN      ]\n", OutputKnownNaNSign},
-		{"multiple", "NAN\t      -nan\n", "-NAN\t       nan\n", OutputKnownNaNSign},
-		{"suffix literal", "NAN0\n", "-NAN0\n", OutputKnownNaNSign},
-		{"prefix literal", "0NAN\n", "0-NAN\n", OutputKnownNaNSign},
-		{"word-like format adjacency", "BANANA\n", "BA-NANA\n", OutputKnownNaNSign},
-		{"case differs", "NAN\n", "nan\n", OutputDifferent},
-		{"alignment differs", " NAN\n", "-NAN \n", OutputDifferent},
-		{"width differs", "  NAN\n", "-NAN\n", OutputDifferent},
-		{"other byte differs", "NAN ok\n", "-NAN no\n", OutputDifferent},
-		{"non-sign insertion", "BANANA\n", "BAXNANA\n", OutputDifferent},
+		{"equal", "ok\n", "ok\n", false, false, OutputEqual},
+		{"addresses", "table: 0x1\n", "table: 0x2\n", false, false, OutputEqual},
+		{"lowercase", "-nan\n", "nan\n", true, true, OutputKnownNaNSign},
+		{"uppercase", "NAN\n", "-NAN\n", true, true, OutputKnownNaNSign},
+		{"right width", "value=[       NAN]\n", "value=[      -NAN]\n", true, true, OutputKnownNaNSign},
+		{"left width", "value=[NAN       ]\n", "value=[-NAN      ]\n", true, true, OutputKnownNaNSign},
+		{"multiple", "NAN\t      -nan\n", "-NAN\t       nan\n", true, true, OutputKnownNaNSign},
+		{"suffix literal", "NAN0\n", "-NAN0\n", true, true, OutputKnownNaNSign},
+		{"prefix literal", "0NAN\n", "0-NAN\n", true, true, OutputKnownNaNSign},
+		{"format word adjacency", "BANANA\n", "BA-NANA\n", true, true, OutputKnownNaNSign},
+		{"plain text lacks evidence", "BANANA\n", "BA-NANA\n", false, false, OutputDifferent},
+		{"one-sided evidence", "NAN\n", "-NAN\n", true, false, OutputDifferent},
+		{"case differs", "NAN\n", "nan\n", true, true, OutputDifferent},
+		{"alignment differs", " NAN\n", "-NAN \n", true, true, OutputDifferent},
+		{"width differs", "  NAN\n", "-NAN\n", true, true, OutputDifferent},
+		{"other byte differs", "NAN ok\n", "-NAN no\n", true, true, OutputDifferent},
+		{"non-sign insertion", "BANANA\n", "BAXNANA\n", true, true, OutputDifferent},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := CompareOutput(tt.oracleOutput, tt.wangshuOutput); got != tt.want {
+			if got := CompareOutput(tt.oracleOutput, tt.wangshuOutput, tt.oracleNaN, tt.wangshuNaN); got != tt.want {
 				t.Fatalf("CompareOutput(%q, %q) = %v, want %v",
 					tt.oracleOutput, tt.wangshuOutput, got, tt.want)
 			}

@@ -46,6 +46,28 @@ func TestExec_OutputCapture(t *testing.T) {
 	}
 }
 
+func TestExec_NaNSignEvidence(t *testing.T) {
+	tests := []struct {
+		src  string
+		want bool
+	}{
+		{`print("BANANA")`, false},
+		{`print(0/0)`, true},
+		{`io.write(0/0)`, true},
+		{`print(string.format("%E0", -(0/0)))`, true},
+		{`print(string.format(0/0))`, true},
+	}
+	for _, tt := range tests {
+		r := execT(t, tt.src)
+		if r.Verdict != VerdictOK {
+			t.Fatalf("%q: verdict = %v, err = %q", tt.src, r.Verdict, r.Err)
+		}
+		if r.KnownNaNSign != tt.want {
+			t.Errorf("%q: KnownNaNSign = %v, want %v, output = %q", tt.src, r.KnownNaNSign, tt.want, r.Output)
+		}
+	}
+}
+
 func TestExec_ErrorVerdictKeepsPartialOutput(t *testing.T) {
 	r := execT(t, `print("before") error("boom")`)
 	if r.Verdict != VerdictError {
