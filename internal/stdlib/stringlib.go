@@ -541,8 +541,10 @@ func stringFnFormat(st *crescent.State, args []value.Value) ([]value.Value, *cre
 // f's sign bit: wangshu's arithmetic NaN carries the OPPOSITE sign bit from
 // PUC/x86 (wangshu 0/0 is +NaN, PUC is -NaN), so reading the real bit would
 // diverge from the oracle on exactly the 0%0 inputs #170/#171 reported.
-// Hardcoding matches the fuzz-hit negative case; fully sign-correct NaN
-// rendering needs the VM value layer aligned to x86 first — tracked in #173.
+// Hardcoding matches the common fuzz-hit negative case. The remaining NaN-sign
+// spellings are host-platform differences with no Lua numeric meaning; the
+// oracle fuzz harness classifies and skips them under #173 instead of changing
+// the VM value representation to imitate one CPU/libc combination.
 func cFormatSpecialFloat(spec []byte, verb byte, f float64) []byte {
 	upper := verb == 'E' || verb == 'G'
 

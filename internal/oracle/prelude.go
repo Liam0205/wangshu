@@ -77,9 +77,68 @@ func Prelude(keep GlobalSet) string {
 
 var preludeCapture = `
 local __acc, __n, __len = {}, 0, 0
+-- __nan_spans records the byte ranges in the concatenated output that were
+-- produced by a NaN rendering (a print/io.write of a NaN number, or the
+-- NaN token(s) inside a string.format output whose corresponding argument
+-- was NaN). Ranges are stored as inclusive-start/exclusive-end 0-based
+-- byte offsets over the readout accumulator. The Go side uses this to
+-- classify NaN-sign spelling divergence as a known platform difference
+-- ONLY within these spans; every byte outside a span must still match
+-- byte-for-byte between engines, so a script's own literal "NAN"/"-NAN"
+-- output cannot be silently swallowed just because a NaN was rendered
+-- elsewhere in the same run.
+local __nan_spans, __nan_span_n = {}, 0
+-- __nan_provenance maps a string.format result to a FIFO list of
+-- {rel_off, len} pairs describing where nan/NAN tokens live inside
+-- that string. Filled by the string.format wrapper (see preludeGuards)
+-- and consumed by __emit at real output time, so a formatted string
+-- stored to a local and printed later still records the correct
+-- absolute offsets. FIFO because two format() calls could produce the
+-- SAME string bytes (e.g. both "nan"); consuming in call order keeps
+-- them in the same order they hit the accumulator. Interned strings
+-- with no provenance simply skip the lookup.
+--
+-- KNOWN LIMIT (documented in TestExec_NaNSpansKnownLimit): Lua 5.1's
+-- interned strings have no identity primitive, so the FIFO cannot
+-- distinguish a genuine format() result from a same-value script
+-- literal. A script that emits a literal matching a pending format
+-- result's exact bytes AHEAD of the format's own emit consumes the
+-- provenance early, moving the span to the wrong output offset.
+-- Downstream CompareOutput then reports OutputDifferent for what
+-- would otherwise classify as OutputKnownNaNSign. Broadening the
+-- match rule to always accept value collisions would swallow real
+-- script literal divergence, violating issue #173's "everything
+-- outside the NaN spelling fragment stays byte-equal" contract, so
+-- the false-negative is the acknowledged trade-off. The window is
+-- narrow in practice (fuzz mutation almost never manufactures a
+-- script literal exactly equal to a specific format(NaN) output).
+local __nan_provenance = {}
 local __tostring, __type, __select = tostring, type, select
 local __concat, __error = table.concat, error
+local function __record_nan_span(off, len)
+  __nan_span_n = __nan_span_n + 1
+  __nan_spans[__nan_span_n] = off .. "-" .. (off + len)
+end
+local function __consume_provenance(s)
+  local q = __nan_provenance[s]
+  if q == nil then return end
+  local head = q[1]
+  if head == nil then return end
+  local base = __len
+  for i = 1, #head do
+    local p = head[i]
+    __record_nan_span(base + p[1], p[2])
+  end
+  -- Shift the queue (FIFO). Small lists in practice: one format() call
+  -- rarely emits many nan tokens, and duplicate identical results are
+  -- rare too. Table shifting keeps things simple over careful head/tail
+  -- pointers.
+  for i = 1, #q - 1 do q[i] = q[i + 1] end
+  q[#q] = nil
+  if #q == 0 then __nan_provenance[s] = nil end
+end
 local function __emit(s)
+  __consume_provenance(s)
   __len = __len + #s
   if __len > ` + strconv.Itoa(OutputCapBytes) + ` then
     __error("` + LimitSentinel + `: output cap", 0)
@@ -87,14 +146,31 @@ local function __emit(s)
   __n = __n + 1
   __acc[__n] = s
 end
+local function __record_provenance(s, pairs_list)
+  local q = __nan_provenance[s]
+  if q == nil then
+    q = {}
+    __nan_provenance[s] = q
+  end
+  q[#q + 1] = pairs_list
+end
 function print(...)
   local n = __select("#", ...)
   for i = 1, n do
-    local s = __tostring((__select(i, ...)))
+    local v = (__select(i, ...))
+    if i > 1 then __emit("\t") end
+    local is_nan = __type(v) == "number" and v ~= v
+    local s = __tostring(v)
     if __type(s) ~= "string" then
       __error("'tostring' must return a string to 'print'")
     end
-    if i > 1 then __emit("\t") end
+    -- Attach the NaN provenance to the tostring result rather than
+    -- recording an absolute span here: this delays the offset compute
+    -- to __emit(s) so it's correct even when the '\t' separator
+    -- between print args has already bumped __len. FIFO merges
+    -- correctly with any pre-existing string.format provenance for
+    -- the same interned string value.
+    if is_nan then __record_provenance(s, {{0, #s}}) end
     __emit(s)
   end
   __emit("\n")
@@ -111,7 +187,10 @@ io.write = function(...)
       -- tostring keeps nonfinite spellings (inf/nan) consistent with
       -- the engine's print output instead of forking on the format
       -- function's C-vs-Go %g behavior.
-      __emit(__tostring(v))
+      local is_nan = v ~= v
+      local s = __tostring(v)
+      if is_nan then __record_provenance(s, {{0, #s}}) end
+      __emit(s)
     elseif tv == "string" then
       __emit(v)
     else
@@ -121,7 +200,14 @@ io.write = function(...)
   return true
 end
 function __oracle_readout()
-  return __concat(__acc)
+  -- Header protocol (matches internal/oracle.DecodeOutput):
+  --   "<count>\n" + <count> lines of "<off>-<end>\n" + output-body.
+  -- <count> is decimal, no separators. Every offset is a byte position
+  -- in the immediately-following output body. count=0 collapses to just
+  -- "0\n" followed by the body.
+  local body = __concat(__acc)
+  if __nan_span_n == 0 then return "0\n" .. body end
+  return __nan_span_n .. "\n" .. __concat(__nan_spans, "\n") .. "\n" .. body
 end
 `
 
@@ -225,17 +311,117 @@ end
 -- verdict.
 local __tonumber, __sformat = tonumber, string.format
 string.format = function(f, ...)
+  -- has_nan_arg: any NaN value the wrapper can see. A NaN argument
+  -- alone is not sufficient evidence -- PUC's string.format silently
+  -- ignores extra args and never sends them to a conversion, so a
+  -- call like string.format("BANANA", 0/0) would otherwise falsely
+  -- authorise sign-spelling tolerance on the literal 'NANA'/'BANANA'
+  -- text in the output.
+  -- fmt_was_nan: string.format was invoked with a numeric-NaN fmt
+  -- argument (PUC/wangshu tostring the fmt to "-nan"/"nan" and
+  -- return it verbatim). This is functionally identical to a
+  -- print(tostring(NaN)) call and is one of the direct NaN
+  -- rendering paths #173 covers; span provenance is attached to
+  -- the raw output.
+  local fmt_was_nan = __type(f) == "number" and f ~= f
+  local has_nan_arg = fmt_was_nan
   if __type(f) == "number" then f = __tostring(f) end
-  if __type(f) == "string" and __sfind(f, "%%[%-%+ #0-9%.]*[uxXo]") then
-    local n = __select("#", ...)
-    for i = 1, n do
-      local v = __tonumber((__select(i, ...)))
+  local unsigned = __type(f) == "string" and __sfind(f, "%%[%-%+ #0-9%.]*[uxXo]")
+  -- float_conv: fmt contains at least one float conversion (%f/%e/%E
+  -- /%g/%G). Only these can produce a nan/NAN token from a NaN
+  -- argument; the '%s' path routes through tostring which the
+  -- separate print/io.write branch already covers if the value is
+  -- printed directly. Restricting span recording to formats with a
+  -- real float conversion prevents literal "NAN"/"-NAN" in a fmt
+  -- string (or via '%s' passthrough) from stealing evidence.
+  local float_conv = __type(f) == "string" and __sfind(f, "%%[%-%+ #0-9%.]*[fFeEgG]")
+  -- Refuse to attach span provenance when the fmt STRING (as
+  -- authored by the script) contains a nan/NAN literal: any nan/NAN
+  -- in the format output could then plausibly come from the fmt
+  -- literal rather than a float conversion, and we cannot
+  -- distinguish them from Lua without full printf-format parsing.
+  -- The tostring-of-a-numeric-NaN fmt (fmt_was_nan) is not a
+  -- "literal in a script-authored string" and is allowed through.
+  local fmt_has_nan_literal = (not fmt_was_nan) and __type(f) == "string" and __sfind(f, "[Nn][Aa][Nn]")
+  -- arg_has_nan_literal: any string argument that itself contains a
+  -- nan/NAN literal would be indistinguishable from a NaN rendering
+  -- once it hits the output (e.g. string.format("%s", "NAN")). Fail
+  -- closed and skip span recording on this shape too.
+  local arg_has_nan_literal = false
+  local n = __select("#", ...)
+  for i = 1, n do
+    local arg = (__select(i, ...))
+    if __type(arg) == "number" and arg ~= arg then
+      has_nan_arg = true
+    elseif __type(arg) == "string" and __sfind(arg, "[Nn][Aa][Nn]") then
+      arg_has_nan_literal = true
+    end
+    if unsigned then
+      local v = __tonumber(arg)
       if v ~= nil and (v ~= v or v <= -1 or v >= 18446744073709551616) then
         __error("` + LimitSentinel + `: unsigned-cast UB range", 0)
       end
     end
   end
-  return __sformat(f, ...)
+  local out = __sformat(f, ...)
+  -- Attach provenance describing every nan/NAN token in the output
+  -- when at least one NaN argument was consumed. Offsets are
+  -- RELATIVE to the format result; __emit converts them to absolute
+  -- accumulator offsets at real output time so a value stored to a
+  -- local and printed later still records the correct span
+  -- (Codex-review finding: the previous absolute-offset design broke
+  -- as soon as format() and its emit did not touch __len back-to-back;
+  -- worse, two format() calls sharing the same __len would record
+  -- overlapping spans and turn a valid input into VerdictLimit).
+  --
+  -- We can't distinguish which conversion produced which nan token
+  -- from Lua-side alone (PUC's lstrlib.c does not expose the mapping)
+  -- and format+tostring both forward numeric NaNs to the same libc
+  -- renderer, so any nan/NAN token in the output is by construction
+  -- produced by a NaN render path when has_nan_arg is true. Non-NaN
+  -- calls (no NaN in args) attach no provenance, so a literal "NAN"
+  -- written via string.format("%s", "NAN") stays outside every span
+  -- and remains byte-compared.
+  --
+  -- Each span greedily absorbs the '-' immediately preceding the
+  -- token AND the ASCII spaces on either side, so printf width
+  -- padding stays inside the span (the compareOutput accept-list
+  -- allows the sign column to migrate by one padding position within
+  -- a matched span). Two adjacent nan tokens share their overlapping
+  -- padding by advancing i past the last consumed byte.
+  if has_nan_arg and (float_conv or fmt_was_nan) and not fmt_has_nan_literal and not arg_has_nan_literal then
+    local pairs_list = {}
+    local i = 1
+    while true do
+      local s, e = __sfind(out, "[Nn][Aa][Nn]", i)
+      if not s then break end
+      local tokStart = s
+      -- Absorb any contiguous run of '-' / '+' immediately before the
+      -- nan token: the sign column belongs to the NaN rendering, but
+      -- an adjacent script literal '-'/'+' looks identical to it, and
+      -- the opposite engine may or may not emit its own sign
+      -- character. Bundling the whole run into the span lets
+      -- knownNaNSignDifference reason over the shape without the gap
+      -- comparison having to guess which byte is which.
+      while tokStart > i do
+        local prev = __ssub(out, tokStart - 1, tokStart - 1)
+        if prev ~= "-" and prev ~= "+" then break end
+        tokStart = tokStart - 1
+      end
+      local spanStart = tokStart
+      while spanStart > i and __ssub(out, spanStart - 1, spanStart - 1) == " " do
+        spanStart = spanStart - 1
+      end
+      local spanEnd = e + 1
+      while spanEnd <= #out and __ssub(out, spanEnd, spanEnd) == " " do
+        spanEnd = spanEnd + 1
+      end
+      pairs_list[#pairs_list + 1] = {spanStart - 1, spanEnd - spanStart}
+      i = spanEnd
+    end
+    if #pairs_list > 0 then __record_provenance(out, pairs_list) end
+  end
+  return out
 end
 
 -- Pattern-function guards. PUC 5.1's matcher is unbounded C-side

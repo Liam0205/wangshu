@@ -82,7 +82,7 @@ return table.concat(out, ";")
 // runWangshuSide executes prelude+src on a fresh wangshu State and
 // classifies the outcome with the same three-state verdict the shim
 // uses. Output is read back via the prelude's __oracle_readout.
-func runWangshuSide(t *testing.T, src, prelude string) (verdict oracle.Verdict, output, errMsg string) {
+func runWangshuSide(t *testing.T, src, prelude string) (verdict oracle.Verdict, output string, spans []oracle.NaNSpan, errMsg string) {
 	st := wangshu.NewState(wangshu.Options{
 		// Cap the arena well below the Go fuzz worker's GOMEMLIMIT:
 		// arena exhaustion must classify as a skip, not kill a worker.
@@ -121,13 +121,17 @@ func runWangshuSide(t *testing.T, src, prelude string) (verdict oracle.Verdict, 
 	if !ro.IsFunction() {
 		// The fuzz script clobbered the readout global; output is
 		// unrecoverable. Treat as limit (not comparable).
-		return oracle.VerdictLimit, "", "readout clobbered"
+		return oracle.VerdictLimit, "", nil, "readout clobbered"
 	}
 	res, roErr := st.Call(ro)
 	if roErr != nil || len(res) == 0 || !res[0].IsString() {
-		return oracle.VerdictLimit, "", "readout failed"
+		return oracle.VerdictLimit, "", nil, "readout failed"
 	}
-	return verdict, res[0].Str(), errMsg
+	output, nanSpans, ok := oracle.DecodeOutput(res[0].Str())
+	if !ok {
+		return oracle.VerdictLimit, "", nil, "invalid readout"
+	}
+	return verdict, output, nanSpans, errMsg
 }
 
 func FuzzOracleDiff(f *testing.F) {
@@ -161,6 +165,12 @@ print(coroutine.resume(co, 10)) print(coroutine.resume(co, 20))`,
 		`local t = {5, 2, 8, 1} table.sort(t) print(unpack(t))`,
 		`print(tonumber("0x10"), tonumber("  42  "), tonumber("z"), tonumber("10", 2))`,
 		`print(rawequal({}, {}), rawget({a=1}, "a"), type(next))`,
+		// PUC/x86/libc and wangshu intentionally retain different NaN sign
+		// spellings. This seed proves the known-difference path stays live.
+		`print(string.format("value=[%10E]", -(0/0)))`,
+		// Conversions may touch ordinary format text on either side.
+		`print(string.format("%E0", -(0/0)),
+		      string.format("0%E", -(0/0)))`,
 	}
 	for _, s := range seeds {
 		f.Add(s)
@@ -185,7 +195,7 @@ print(coroutine.resume(co, 10)) print(coroutine.resume(co, 20))`,
 		if or.Verdict == oracle.VerdictLimit {
 			t.Skip("oracle limit: " + or.Err)
 		}
-		wv, wout, werr := runWangshuSide(t, src, prelude)
+		wv, wout, wspans, werr := runWangshuSide(t, src, prelude)
 		if wv == oracle.VerdictLimit {
 			t.Skip("wangshu limit: " + werr)
 		}
@@ -201,11 +211,19 @@ print(coroutine.resume(co, 10)) print(coroutine.resume(co, 20))`,
 			t.Fatalf("verdict class diverged: oracle=%v (err=%q) wangshu=%v (err=%q)\n--- script ---\n%s",
 				or.Verdict, or.Err, wv, werr, src)
 		}
-		oOut := oracle.NormalizeOutput(or.Output)
-		wOut := oracle.NormalizeOutput(wout)
-		if oOut != wOut {
+
+		switch oracle.CompareOutput(or.Output, wout, or.NaNSpans, wspans) {
+		case oracle.OutputEqual:
+			return
+		case oracle.OutputKnownNaNSign:
+			t.Skip("known platform difference: NaN sign spelling (#173)")
+		case oracle.OutputDifferent:
+			oOut := oracle.NormalizeOutput(or.Output)
+			wOut := oracle.NormalizeOutput(wout)
 			t.Fatalf("output diverged:\n  oracle:  %q\n  wangshu: %q\n--- script ---\n%s",
 				oOut, wOut, src)
+		default:
+			t.Fatalf("unknown oracle output comparison")
 		}
 	})
 }
