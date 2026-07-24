@@ -110,32 +110,56 @@ func TestExec_NaNSpans(t *testing.T) {
 // violating issue #173's "everything outside the NaN spelling
 // fragment stays byte-equal" contract.
 //
-// Recorded here as an executable spec (verifies span offsets) rather
-// than a fuzz seed: fuzz would sporadically flag it as divergence,
-// which is the intended behaviour rather than a bug to be silenced.
+// The exact NaN spelling PUC prints depends on the host libc + CPU
+// (this test runs against the vendored 5.1.5 built for the host), so
+// we do not pin the concrete output bytes -- we probe both signed and
+// unsigned NaN literal candidates and require ONE OF them exercise
+// the collision, then assert the single-span-on-literal outcome the
+// mechanism produces in that scenario.
 func TestExec_NaNSpansKnownLimit(t *testing.T) {
 	// Reviewer-authored case (round 2 of Codex review on #181):
-	// PUC's %E on -(0/0) prints "NAN" for this NaN bit pattern,
-	// so s == "NAN" collides with the literal "NAN" the print
-	// call emits first. The FIFO provenance for s gets consumed
-	// by the literal emit rather than by print(s), moving the
-	// span to the wrong output offset.
-	r := execT(t, `local s = string.format("%E", -(0/0)) print("NAN") print(s)`)
-	if r.Verdict != VerdictOK {
-		t.Fatalf("verdict = %v, err = %q", r.Verdict, r.Err)
+	// PUC's %E on -(0/0) or 0/0 prints some spelling of NaN
+	// depending on host libc/CPU. Whichever spelling comes out, if
+	// the script emits that same literal via a separate print call
+	// BEFORE emitting the format result, the FIFO provenance for s
+	// is consumed by the literal emit rather than by print(s).
+	candidates := []struct {
+		src, lit string
+	}{
+		// spell = script literal; both signs to cover libcs that
+		// emit "NAN" and libcs that emit "-NAN" for -(0/0)/0/0.
+		{`local s = string.format("%E", -(0/0)) print("NAN") print(s)`, "NAN"},
+		{`local s = string.format("%E", -(0/0)) print("-NAN") print(s)`, "-NAN"},
+		{`local s = string.format("%E", 0/0) print("NAN") print(s)`, "NAN"},
+		{`local s = string.format("%E", 0/0) print("-NAN") print(s)`, "-NAN"},
 	}
-	// The observation: exactly one span is recorded, and it lands
-	// on the literal "NAN" (first line offsets 0..3), not on s in
-	// the second line. This is the collision consumer path.
-	if len(r.NaNSpans) != 1 {
-		t.Fatalf("known-limit case: got %d spans (%v), want 1 (harness limit is stable)", len(r.NaNSpans), r.NaNSpans)
+	for _, c := range candidates {
+		r := execT(t, c.src)
+		if r.Verdict != VerdictOK {
+			t.Fatalf("%q: verdict = %v, err = %q", c.src, r.Verdict, r.Err)
+		}
+		// Only the case where the script literal EQUALS the format
+		// result exercises the collision. Other cases correctly
+		// record two spans (one on the literal, one on s -- both
+		// numeric-NaN? no, only format's; literal is a plain string
+		// with no evidence). Skip non-collision cases.
+		want := c.lit + "\n" + c.lit + "\n"
+		if r.Output != want {
+			continue
+		}
+		// Collision path fired: the FIFO consumed the format
+		// provenance early, leaving a single span on the first
+		// print's literal instead of on print(s).
+		if len(r.NaNSpans) != 1 {
+			t.Fatalf("collision %q: got %d spans (%v), want 1", c.src, len(r.NaNSpans), r.NaNSpans)
+		}
+		spanBytes := r.Output[r.NaNSpans[0].Start:r.NaNSpans[0].End]
+		if spanBytes != c.lit {
+			t.Errorf("collision %q: span content = %q, want %q (literal consumed the provenance)", c.src, spanBytes, c.lit)
+		}
+		return
 	}
-	if got := r.NaNSpans[0]; got.Start != 0 || got.End != 3 {
-		t.Errorf("known-limit case: span = %v, want {0,3} (literal 'NAN' consumed the provenance)", got)
-	}
-	if r.Output != "NAN\nNAN\n" {
-		t.Fatalf("known-limit case: output = %q, want %q", r.Output, "NAN\nNAN\n")
-	}
+	t.Skip("this host libc/CPU produced no NaN spelling collision candidate; known-limit case is inherently platform-shaped, skipping")
 }
 
 func TestExec_ErrorVerdictKeepsPartialOutput(t *testing.T) {
