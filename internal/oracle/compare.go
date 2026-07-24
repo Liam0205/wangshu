@@ -10,6 +10,14 @@ import (
 	"strings"
 )
 
+// spanCountHardMax caps the number of NaN spans DecodeOutput will
+// accept from a readout header, regardless of body length. The output
+// cap is 1 MiB (OutputCapBytes), so a legitimate fuzz input has at
+// most ~O(output size / (min NaN token width)) spans -- 128k gives an
+// order of magnitude headroom over that while still bounding hostile
+// input allocations to a few MB rather than GB.
+const spanCountHardMax = 1 << 17
+
 // addrRe matches ONLY the reference-value spellings tostring emits
 // ("table: 0x...", "function: 0x...", "thread: 0x...",
 // "userdata: 0x..."): the two engines print real, necessarily
@@ -70,6 +78,18 @@ func DecodeOutput(readout string) (output string, spans []NaNSpan, ok bool) {
 	rest := readout[nl+1:]
 	if count == 0 {
 		return rest, nil, true
+	}
+	// Bound count by an upper limit derived from the remaining bytes
+	// so a hostile readout (a fuzz script CAN overwrite the
+	// __oracle_readout global) cannot request a giant allocation
+	// before offset-line validation runs. The minimum viable span
+	// header line is 3 bytes ("0-0\n"), so a valid encoding fits at
+	// most len(rest)/3 spans; anything larger is definitely
+	// malformed. Additionally hard-cap at spanCountHardMax to prevent
+	// pathological but valid-looking readouts from OOM-ing the
+	// worker even on a very long body.
+	if count > spanCountHardMax || count > len(rest)/3+1 {
+		return "", nil, false
 	}
 	spans = make([]NaNSpan, 0, count)
 	prevEnd := 0

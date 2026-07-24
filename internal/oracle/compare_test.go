@@ -2,7 +2,10 @@
 // compare.go is buildable in every configuration.
 package oracle
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestNormalizeOutput_AddressesOnly(t *testing.T) {
 	cases := []struct{ in, want string }{
@@ -47,6 +50,8 @@ func TestDecodeOutput(t *testing.T) {
 		{"span past body", "1\n0-100\nshort", "", nil, false},
 		{"non-monotonic spans", "2\n5-10\n0-4\nsome text here", "", nil, false},
 		{"start after end", "1\n5-3\nabc", "", nil, false},
+		{"count exceeds body-derived cap", "1000000000\nabc", "", nil, false},
+		{"count exceeds hard cap", "999999999\n" + strings.Repeat("0-0\n", 100), "", nil, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
