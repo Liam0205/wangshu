@@ -42,11 +42,14 @@ func TestCompareOutput(t *testing.T) {
 		{"right width", "value=[       NAN]\n", "value=[      -NAN]\n", OutputKnownNaNSign},
 		{"left width", "value=[NAN       ]\n", "value=[-NAN      ]\n", OutputKnownNaNSign},
 		{"multiple", "NAN\t      -nan\n", "-NAN\t       nan\n", OutputKnownNaNSign},
+		{"suffix literal", "NAN0\n", "-NAN0\n", OutputKnownNaNSign},
+		{"prefix literal", "0NAN\n", "0-NAN\n", OutputKnownNaNSign},
+		{"word-like format adjacency", "BANANA\n", "BA-NANA\n", OutputKnownNaNSign},
 		{"case differs", "NAN\n", "nan\n", OutputDifferent},
 		{"alignment differs", " NAN\n", "-NAN \n", OutputDifferent},
 		{"width differs", "  NAN\n", "-NAN\n", OutputDifferent},
 		{"other byte differs", "NAN ok\n", "-NAN no\n", OutputDifferent},
-		{"word substring", "BANANA\n", "BA-NANA\n", OutputDifferent},
+		{"non-sign insertion", "BANANA\n", "BAXNANA\n", OutputDifferent},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
