@@ -164,6 +164,9 @@ print(coroutine.resume(co, 10)) print(coroutine.resume(co, 20))`,
 		// PUC/x86/libc and wangshu intentionally retain different NaN sign
 		// spellings. This seed proves the known-difference path stays live.
 		`print(string.format("value=[%10E]", -(0/0)))`,
+		// Conversions may touch ordinary format text on either side.
+		`print(string.format("%E0", -(0/0)),
+		      string.format("0%E", -(0/0)))`,
 	}
 	for _, s := range seeds {
 		f.Add(s)

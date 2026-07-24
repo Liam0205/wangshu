@@ -60,10 +60,10 @@ type nanOutputPart struct {
 	trailing int
 }
 
-// knownNaNSignDifference accepts only token-aligned nan/NAN spellings. It also
-// accounts for the single sign column moving between the token and printf
-// width padding. Literal text, token case, field alignment, and every byte not
-// adjacent to a NaN token must remain identical.
+// knownNaNSignDifference accepts nan/NAN sign spellings even when a format
+// conversion is adjacent to ordinary format text. It also accounts for the
+// single sign column moving between the token and printf width padding. Literal
+// text, token case, field alignment, and every other byte must remain identical.
 func knownNaNSignDifference(a, b string) bool {
 	pa, sa := splitNaNOutput(a)
 	pb, sb := splitNaNOutput(b)
@@ -114,9 +114,11 @@ func nanTokenLen(p nanOutputPart) int {
 	return 3
 }
 
-// splitNaNOutput returns each standalone NaN token together with the literal
-// bytes before it and any adjacent ASCII-space padding. The final literal is
-// returned separately. Word boundaries keep strings such as BANANA distinct.
+// splitNaNOutput returns each NaN spelling together with the literal bytes
+// before it and any adjacent ASCII-space padding. It deliberately does not
+// require word boundaries: string.format("%E0", nan) and "0%E" render the
+// conversion directly beside ordinary text. Pairwise comparison still requires
+// every byte outside the optional sign and its width padding to match.
 func splitNaNOutput(s string) ([]nanOutputPart, string) {
 	var parts []nanOutputPart
 	literalStart := 0
@@ -133,12 +135,6 @@ func splitNaNOutput(s string) ([]nanOutputPart, string) {
 			continue
 		}
 		wordEnd := wordStart + 3
-		if (tokenStart > 0 && isOutputWordByte(s[tokenStart-1])) ||
-			(wordEnd < len(s) && isOutputWordByte(s[wordEnd])) {
-			i++
-			continue
-		}
-
 		spanStart := tokenStart
 		for spanStart > literalStart && s[spanStart-1] == ' ' {
 			spanStart--
@@ -158,10 +154,6 @@ func splitNaNOutput(s string) ([]nanOutputPart, string) {
 		i = spanEnd
 	}
 	return parts, s[literalStart:]
-}
-
-func isOutputWordByte(b byte) bool {
-	return b == '_' || b >= '0' && b <= '9' || b >= 'A' && b <= 'Z' || b >= 'a' && b <= 'z'
 }
 
 // WangshuLimitError reports whether a wangshu-side error message is a
