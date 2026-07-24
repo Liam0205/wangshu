@@ -179,9 +179,15 @@ func CompareOutput(oracleOutput, wangshuOutput string, oracleSpans, wangshuSpans
 }
 
 type nanOutputPart struct {
-	literal  string
-	upper    bool
-	negative bool
+	literal string
+	upper   bool
+	// sign is 0 (no sign column), '-', or '+'. Both '-' and '+'
+	// consume one column: '-' is the NaN sign the host libc chose to
+	// render, '+' is printf's '+' flag ("%+E" forces a leading sign
+	// character even for NaN). Sign spelling divergence lets '-' and
+	// '+' interchange when the two engines' host libc rendered
+	// different NaN sign bits for the same input.
+	sign     byte
 	leading  int
 	trailing int
 }
@@ -203,7 +209,7 @@ func knownNaNSignDifference(a, b string) bool {
 		if x.literal != y.literal || x.upper != y.upper {
 			return false
 		}
-		if x.negative == y.negative {
+		if x.sign == y.sign {
 			if x.leading != y.leading || x.trailing != y.trailing {
 				return false
 			}
@@ -245,7 +251,7 @@ func compatibleNaNPadding(a, b nanOutputPart) bool {
 }
 
 func nanTokenLen(p nanOutputPart) int {
-	if p.negative {
+	if p.sign != 0 {
 		return 4
 	}
 	return 3
@@ -260,10 +266,13 @@ func splitNaNOutput(s string) ([]nanOutputPart, string) {
 	var parts []nanOutputPart
 	literalStart := 0
 	for i := 0; i < len(s); {
-		negative := s[i] == '-'
+		var sign byte
+		if s[i] == '-' || s[i] == '+' {
+			sign = s[i]
+		}
 		tokenStart := i
 		wordStart := i
-		if negative {
+		if sign != 0 {
 			wordStart++
 		}
 		if wordStart+3 > len(s) ||
@@ -283,7 +292,7 @@ func splitNaNOutput(s string) ([]nanOutputPart, string) {
 		parts = append(parts, nanOutputPart{
 			literal:  s[literalStart:spanStart],
 			upper:    s[wordStart] == 'N',
-			negative: negative,
+			sign:     sign,
 			leading:  tokenStart - spanStart,
 			trailing: spanEnd - wordEnd,
 		})

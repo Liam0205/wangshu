@@ -360,7 +360,10 @@ string.format = function(f, ...)
       local s, e = __sfind(out, "[Nn][Aa][Nn]", i)
       if not s then break end
       local tokStart = s
-      if s > i and __ssub(out, s - 1, s - 1) == "-" then tokStart = s - 1 end
+      if s > i then
+        local prev = __ssub(out, s - 1, s - 1)
+        if prev == "-" or prev == "+" then tokStart = s - 1 end
+      end
       local spanStart = tokStart
       while spanStart > i and __ssub(out, spanStart - 1, spanStart - 1) == " " do
         spanStart = spanStart - 1
