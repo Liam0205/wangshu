@@ -109,16 +109,27 @@ func knownNaNSignDifference(a, b string) bool {
 }
 
 func compatibleNaNPadding(a, b nanOutputPart) bool {
-	// With no width padding, NAN and -NAN naturally differ by one byte.
-	if a.leading == 0 && a.trailing == 0 && b.leading == 0 && b.trailing == 0 {
+	// Case B (script-owned padding): both sides carry the same literal
+	// space padding around the NaN token, so the only residual byte
+	// difference is the sign column itself. Covers no padding at all
+	// (leading=trailing=0), symmetric script padding
+	// (io.write(" ", 0/0, " ")), and mixed printf+script padding whose
+	// width is preserved verbatim -- printf never emits padding on both
+	// sides of the same conversion, so equal leading AND equal trailing
+	// on both sides means neither side spent width on the sign.
+	if a.leading == b.leading && a.trailing == b.trailing {
 		return true
 	}
-	// A sign consumes one column. For a fixed width, printf compensates with
-	// one fewer leading or trailing space, preserving total field width.
-	if a.trailing == 0 && b.trailing == 0 {
+	// Case A (printf width padding): a sign consumes one column, so for
+	// a fixed field width printf compensates with one fewer space on the
+	// alignment side. The opposite side (padding-free OR carrying equal
+	// script padding on both engines) stays byte-identical, and the
+	// alignment side's padding + token length must sum to the same
+	// total width across engines.
+	if a.trailing == b.trailing {
 		return a.leading+nanTokenLen(a) == b.leading+nanTokenLen(b)
 	}
-	if a.leading == 0 && b.leading == 0 {
+	if a.leading == b.leading {
 		return a.trailing+nanTokenLen(a) == b.trailing+nanTokenLen(b)
 	}
 	return false
