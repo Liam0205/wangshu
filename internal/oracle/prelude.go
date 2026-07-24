@@ -311,14 +311,50 @@ end
 -- verdict.
 local __tonumber, __sformat = tonumber, string.format
 string.format = function(f, ...)
-  local has_nan_arg = __type(f) == "number" and f ~= f
+  -- has_nan_arg: any NaN value the wrapper can see. A NaN argument
+  -- alone is not sufficient evidence -- PUC's string.format silently
+  -- ignores extra args and never sends them to a conversion, so a
+  -- call like string.format("BANANA", 0/0) would otherwise falsely
+  -- authorise sign-spelling tolerance on the literal 'NANA'/'BANANA'
+  -- text in the output.
+  -- fmt_was_nan: string.format was invoked with a numeric-NaN fmt
+  -- argument (PUC/wangshu tostring the fmt to "-nan"/"nan" and
+  -- return it verbatim). This is functionally identical to a
+  -- print(tostring(NaN)) call and is one of the direct NaN
+  -- rendering paths #173 covers; span provenance is attached to
+  -- the raw output.
+  local fmt_was_nan = __type(f) == "number" and f ~= f
+  local has_nan_arg = fmt_was_nan
   if __type(f) == "number" then f = __tostring(f) end
   local unsigned = __type(f) == "string" and __sfind(f, "%%[%-%+ #0-9%.]*[uxXo]")
+  -- float_conv: fmt contains at least one float conversion (%f/%e/%E
+  -- /%g/%G). Only these can produce a nan/NAN token from a NaN
+  -- argument; the '%s' path routes through tostring which the
+  -- separate print/io.write branch already covers if the value is
+  -- printed directly. Restricting span recording to formats with a
+  -- real float conversion prevents literal "NAN"/"-NAN" in a fmt
+  -- string (or via '%s' passthrough) from stealing evidence.
+  local float_conv = __type(f) == "string" and __sfind(f, "%%[%-%+ #0-9%.]*[fFeEgG]")
+  -- Refuse to attach span provenance when the fmt STRING (as
+  -- authored by the script) contains a nan/NAN literal: any nan/NAN
+  -- in the format output could then plausibly come from the fmt
+  -- literal rather than a float conversion, and we cannot
+  -- distinguish them from Lua without full printf-format parsing.
+  -- The tostring-of-a-numeric-NaN fmt (fmt_was_nan) is not a
+  -- "literal in a script-authored string" and is allowed through.
+  local fmt_has_nan_literal = (not fmt_was_nan) and __type(f) == "string" and __sfind(f, "[Nn][Aa][Nn]")
+  -- arg_has_nan_literal: any string argument that itself contains a
+  -- nan/NAN literal would be indistinguishable from a NaN rendering
+  -- once it hits the output (e.g. string.format("%s", "NAN")). Fail
+  -- closed and skip span recording on this shape too.
+  local arg_has_nan_literal = false
   local n = __select("#", ...)
   for i = 1, n do
     local arg = (__select(i, ...))
     if __type(arg) == "number" and arg ~= arg then
       has_nan_arg = true
+    elseif __type(arg) == "string" and __sfind(arg, "[Nn][Aa][Nn]") then
+      arg_has_nan_literal = true
     end
     if unsigned then
       local v = __tonumber(arg)
@@ -353,7 +389,7 @@ string.format = function(f, ...)
   -- allows the sign column to migrate by one padding position within
   -- a matched span). Two adjacent nan tokens share their overlapping
   -- padding by advancing i past the last consumed byte.
-  if has_nan_arg then
+  if has_nan_arg and (float_conv or fmt_was_nan) and not fmt_has_nan_literal and not arg_has_nan_literal then
     local pairs_list = {}
     local i = 1
     while true do

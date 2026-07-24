@@ -58,6 +58,10 @@ func TestExec_NaNSpans(t *testing.T) {
 		{`print(string.format("%E0", -(0/0)))`, 1, "NAN"},
 		// string.format with fmt=NaN goes through tostring(NaN) and
 		// records the resulting nan token exactly.
+		// string.format with a numeric-NaN fmt (no explicit
+		// conversions) tostrings the fmt and returns "-nan"/"nan".
+		// The fmt_was_nan path attaches a span so this direct NaN
+		// rendering is classified as sign-spelling difference.
 		{`print(string.format(0/0))`, 1, "nan"},
 		// Reviewer-motivated coverage: same run mixes a real NaN with
 		// script-emitted plain-text NaN spellings. The plain-text ones
