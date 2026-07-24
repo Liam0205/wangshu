@@ -211,6 +211,23 @@ harness 机制化跳过，而非继续追」。首次以「退让侧」形式出
 边界严格重合**。**已跨 2 实例阈值**，建议在下一实例出现时把 §8 扩成
 「度量/证据粒度」通用条并把两轮反引进去，本轮暂留观察。
 
+**Known limit（Codex round-2 review 抓出）**：v3 provenance FIFO 以字符串
+**值**为 key（Lua 5.1 无 string identity primitive），当 script literal
+与 `string.format(NaN)` 结果**同值**时，先 emit 的 script literal 会误消费
+FIFO 首项、把 span 记到错误位置，导致同值 collision 场景下 sporadic
+`OutputDifferent`。扩宽 provenance 匹配判据（如"值不等也放行"）会反过来
+误吞脚本自出的字面差异——违反 issue #173 明文契约。这是 Lua 5.1 值层设计的
+硬边界：**要么区分 identity（脚本 semantics 允许，harness 无法做到）要么
+接受 sporadic collision（保护脚本 literal 差异）**。工程上取后者。
+`TestExec_NaNSpansKnownLimit` 明确固化 collision 场景 spans 落错行为，
+文档（README §5 第 5 层 / `docs/design/engineering.md` §3.2 / `docs/design/p1-interpreter/12-testing-difftest.md` §4.2 / prelude.go godoc）
+明记该限制存在。fuzz 撞到的概率极低——需要 script 精心构造 literal 与 format
+结果同值——但真的撞到就是 hard-failure，作为 harness 表达能力边界的**公开
+表达**留在那里。**推论式教训**：证据粒度不能与被允许差异边界严格重合的极
+限值即 identity（原子性能被外部区分）；当 host 语言无 identity primitive 时
+证据机制必然存在**语义歧义窗口**——工程决策要在"宽而误吞脚本层次差异"与
+"窄而漏过 host identity ambiguity"间做取舍，本轮取后者。
+
 ### 教训 4（过程）：WIP commit 不该混进 issue-tracking 分支
 
 WIP commit 80f7b09 title 就是 `WIP`，没有 issue 引用、没有说明性 message，
