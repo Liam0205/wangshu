@@ -210,10 +210,22 @@ func knownNaNSignDifference(a, b string) bool {
 			return false
 		}
 		if x.sign == y.sign {
-			if x.leading != y.leading || x.trailing != y.trailing {
-				return false
+			if x.leading == y.leading && x.trailing == y.trailing {
+				continue
 			}
-			continue
+			// Both sides carry no explicit sign column, but one side
+			// pads to a total width that includes a reserved-but-
+			// invisible sign column (glibc %<w>f/e/g on a lowercase
+			// NaN reserves one column for the sign the host libc
+			// suppressed) while the other pads to width MINUS ONE.
+			// The net effect is a padding column difference of 1 on
+			// exactly the alignment side. Accept it and count as a
+			// sign-column divergence for OutputKnownNaNSign.
+			if x.sign == 0 && compatibleReservedSignPadding(x, y) {
+				signDiff = true
+				continue
+			}
+			return false
 		}
 		signDiff = true
 		if !compatibleNaNPadding(x, y) {
@@ -255,6 +267,28 @@ func nanTokenLen(p nanOutputPart) int {
 		return 4
 	}
 	return 3
+}
+
+// compatibleReservedSignPadding accepts a padding delta of exactly 1
+// on either the leading or trailing side (and equal on the other),
+// modelling glibc's reserved-but-invisible sign column on lowercase
+// NaN vs an engine that spends no width on the missing sign. Both
+// sides must have sign == 0 (unsigned NaN token) for this to fire.
+func compatibleReservedSignPadding(a, b nanOutputPart) bool {
+	if a.trailing == b.trailing && absDiff(a.leading, b.leading) == 1 {
+		return true
+	}
+	if a.leading == b.leading && absDiff(a.trailing, b.trailing) == 1 {
+		return true
+	}
+	return false
+}
+
+func absDiff(a, b int) int {
+	if a >= b {
+		return a - b
+	}
+	return b - a
 }
 
 // splitNaNOutput returns each NaN spelling together with the literal bytes
