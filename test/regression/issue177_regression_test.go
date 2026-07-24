@@ -157,7 +157,16 @@ sum "1000000"`
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	runOne := func(auto bool) error {
+	// runOne returns (err, promotionDelta) so the auto call can be
+	// asserted to have actually taken the P4 path. Without this the
+	// "context canceled" text is a silent-substitute: if the
+	// promotion threshold, shape matcher, or timeout race changed
+	// such that auto stayed on the interpreter, the cancel error
+	// would come from the interpreter's preempt, not host.ForLoop,
+	// and the test would keep passing even after ForLoop's context
+	// probe was deleted (review comment on b00cb00: "prove-the-path-
+	// under-test.md explicitly forbids this silent-substitute path").
+	runOne := func(auto bool) (error, int) {
 		st := wangshu.NewState(wangshu.Options{MaxArenaBytes: 64 << 20})
 		st.SetStepBudget(1 << 30) // large budget so cancel wins the race
 		if auto {
@@ -168,11 +177,14 @@ sum "1000000"`
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
 		defer cancel()
 		st.SetContext(ctx)
+		before := st.PromotionCount()
 		_, err := prog.Run(st)
-		return err
+		return err, st.PromotionCount() - before
 	}
-	e1 := runOne(false)
-	eA := runOne(true)
+	e1, _ := runOne(false)
+	deoptBefore := jit.SpecForLoopDeoptHits()
+	eA, promoDelta := runOne(true)
+	deoptDelta := jit.SpecForLoopDeoptHits() - deoptBefore
 	if e1 == nil {
 		t.Fatalf("interpreter did not raise before its 5ms context expired")
 	}
@@ -185,6 +197,17 @@ sum "1000000"`
 	if !strings.Contains(eA.Error(), "context canceled") {
 		t.Errorf("auto path error is not the context cancel (loop iterations may be skipped):\n  P1:   %q\n  auto: %q",
 			e1.Error(), eA.Error())
+	}
+	// Prove-the-path: the cancel error must have come from the P4
+	// deopt path, not from the interpreter silently accepting the
+	// run. Both probes must move: promotion tells us the auto State
+	// entered P4 at all; deopt tells us specifically the reg-limit
+	// deopt branch — where host.ForLoop lives — actually fired.
+	if promoDelta == 0 {
+		t.Errorf("PromotionCount delta = 0, want > 0 (auto path never left the interpreter — the cancel error is a silent substitute, not proof host.ForLoop's ctx probe ran)")
+	}
+	if deoptDelta == 0 {
+		t.Errorf("SpecForLoopDeoptHits delta = 0, want > 0 (the reg-limit deopt branch never fired — the cancel error came from somewhere other than host.ForLoop)")
 	}
 }
 
