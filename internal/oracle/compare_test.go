@@ -148,6 +148,12 @@ func TestCompareOutput(t *testing.T) {
 		{"nan + plain-text NAN diff outside span", "nan\tBANANA\n", "-nan\tBA-NANA\n", []NaNSpan{{0, 3}}, []NaNSpan{{0, 4}}, OutputDifferent},
 		{"nan + plain-text NAN diff at tail", "nan foo NAN\n", "-nan foo -NAN\n", []NaNSpan{{0, 3}}, []NaNSpan{{0, 4}}, OutputDifferent},
 		{"nan gap byte differs", "-nan X\n", "nan Y\n", []NaNSpan{{0, 4}}, []NaNSpan{{0, 3}}, OutputDifferent},
+
+		// --- sign flags and reserved-sign-column padding
+		{"unsigned vs plus sign", "NAN\n", "+NAN\n", []NaNSpan{{0, 3}}, []NaNSpan{{0, 4}}, OutputKnownNaNSign},
+		{"plus vs minus sign", "+NAN0\n", "-NAN0\n", []NaNSpan{{0, 4}}, []NaNSpan{{0, 4}}, OutputKnownNaNSign},
+		{"reserved sign column leading", "       nan\n", "      nan\n", []NaNSpan{{0, 10}}, []NaNSpan{{0, 9}}, OutputKnownNaNSign},
+		{"reserved sign column trailing", "nan       \n", "nan      \n", []NaNSpan{{0, 10}}, []NaNSpan{{0, 9}}, OutputKnownNaNSign},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
