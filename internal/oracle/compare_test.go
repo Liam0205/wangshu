@@ -15,8 +15,8 @@ func TestNormalizeOutput_AddressesOnly(t *testing.T) {
 		{"0x1\n", "0x1\n"},
 		{"0x2\n", "0x2\n"},
 		{"value=0xff\n", "value=0xff\n"},
-		// NaN sign strip
-		{"-nan\tnan\n", "nan\tnan\n"},
+		// NaN sign is classified explicitly by CompareOutput, not hidden here.
+		{"-nan\tnan\n", "-nan\tnan\n"},
 	}
 	for _, c := range cases {
 		if got := NormalizeOutput(c.in); got != c.want {
@@ -25,5 +25,35 @@ func TestNormalizeOutput_AddressesOnly(t *testing.T) {
 	}
 	if NormalizeOutput("0x1") == NormalizeOutput("0x2") {
 		t.Fatal("plain hex tokens must not be normalized into the same value")
+	}
+}
+
+func TestCompareOutput(t *testing.T) {
+	tests := []struct {
+		name          string
+		oracleOutput  string
+		wangshuOutput string
+		want          OutputComparison
+	}{
+		{"equal", "ok\n", "ok\n", OutputEqual},
+		{"addresses", "table: 0x1\n", "table: 0x2\n", OutputEqual},
+		{"lowercase", "-nan\n", "nan\n", OutputKnownNaNSign},
+		{"uppercase", "NAN\n", "-NAN\n", OutputKnownNaNSign},
+		{"right width", "value=[       NAN]\n", "value=[      -NAN]\n", OutputKnownNaNSign},
+		{"left width", "value=[NAN       ]\n", "value=[-NAN      ]\n", OutputKnownNaNSign},
+		{"multiple", "NAN\t      -nan\n", "-NAN\t       nan\n", OutputKnownNaNSign},
+		{"case differs", "NAN\n", "nan\n", OutputDifferent},
+		{"alignment differs", " NAN\n", "-NAN \n", OutputDifferent},
+		{"width differs", "  NAN\n", "-NAN\n", OutputDifferent},
+		{"other byte differs", "NAN ok\n", "-NAN no\n", OutputDifferent},
+		{"word substring", "BANANA\n", "BA-NANA\n", OutputDifferent},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := CompareOutput(tt.oracleOutput, tt.wangshuOutput); got != tt.want {
+				t.Fatalf("CompareOutput(%q, %q) = %v, want %v",
+					tt.oracleOutput, tt.wangshuOutput, got, tt.want)
+			}
+		})
 	}
 }

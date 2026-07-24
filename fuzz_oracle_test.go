@@ -161,6 +161,9 @@ print(coroutine.resume(co, 10)) print(coroutine.resume(co, 20))`,
 		`local t = {5, 2, 8, 1} table.sort(t) print(unpack(t))`,
 		`print(tonumber("0x10"), tonumber("  42  "), tonumber("z"), tonumber("10", 2))`,
 		`print(rawequal({}, {}), rawget({a=1}, "a"), type(next))`,
+		// PUC/x86/libc and wangshu intentionally retain different NaN sign
+		// spellings. This seed proves the known-difference path stays live.
+		`print(string.format("value=[%10E]", -(0/0)))`,
 	}
 	for _, s := range seeds {
 		f.Add(s)
@@ -201,11 +204,19 @@ print(coroutine.resume(co, 10)) print(coroutine.resume(co, 20))`,
 			t.Fatalf("verdict class diverged: oracle=%v (err=%q) wangshu=%v (err=%q)\n--- script ---\n%s",
 				or.Verdict, or.Err, wv, werr, src)
 		}
-		oOut := oracle.NormalizeOutput(or.Output)
-		wOut := oracle.NormalizeOutput(wout)
-		if oOut != wOut {
+
+		switch oracle.CompareOutput(or.Output, wout) {
+		case oracle.OutputEqual:
+			return
+		case oracle.OutputKnownNaNSign:
+			t.Skip("known platform difference: NaN sign spelling (#173)")
+		case oracle.OutputDifferent:
+			oOut := oracle.NormalizeOutput(or.Output)
+			wOut := oracle.NormalizeOutput(wout)
 			t.Fatalf("output diverged:\n  oracle:  %q\n  wangshu: %q\n--- script ---\n%s",
 				oOut, wOut, src)
+		default:
+			t.Fatalf("unknown oracle output comparison")
 		}
 	})
 }
