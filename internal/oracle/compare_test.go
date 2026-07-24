@@ -76,6 +76,7 @@ func TestCompareOutput(t *testing.T) {
 		{"one-sided evidence", "NAN\n", "-NAN\n", true, false, OutputDifferent},
 		{"case differs", "NAN\n", "nan\n", true, true, OutputDifferent},
 		{"alignment differs", " NAN\n", "-NAN \n", true, true, OutputDifferent},
+		{"asymmetric non-zero padding", "  NAN \n", " -NAN  \n", true, true, OutputDifferent},
 		{"width differs", "  NAN\n", "-NAN\n", true, true, OutputDifferent},
 		{"other byte differs", "NAN ok\n", "-NAN no\n", true, true, OutputDifferent},
 		{"non-sign insertion", "BANANA\n", "BAXNANA\n", true, true, OutputDifferent},
