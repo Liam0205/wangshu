@@ -470,6 +470,7 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 				// its per-slot check + toNumberCoerce sees the real values
 				// (issue #177: string limit like `sum "7"` would otherwise
 				// hit Nil for R(A) and misreport "'for' initial value").
+				incSpecForLoopDeoptHits()
 				c.host.SetReg(int32(c.forLoopA), c.forLoopInitK)
 				limitVal := c.host.GetReg(int32(c.forLoopLimitReg))
 				c.host.SetReg(int32(c.forLoopA)+1, limitVal)

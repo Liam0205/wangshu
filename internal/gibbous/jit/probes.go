@@ -70,6 +70,15 @@ var specSelfCallSpecHits uint64
 // evidence.
 var specFrameInlineHits uint64
 
+// specForLoopDeoptHits is the Run-time reach count of the PJ3 reg-limit
+// FORLOOP shape's deopt branch (the `if c.forLoopDeopt` arm in code.go's
+// deopt-vector handler). Distinct from specForLoopHits (Compile-time
+// template emit) and from specP4DeoptHits (P4Speculative→P4Deoptimized
+// state-machine transition, one per proto): this counts every actual
+// invocation that takes the deopt slot-restoration + host.ForPrep path,
+// which is what issue #177's regression tests want to pin.
+var specForLoopDeoptHits uint64
+
 // specFrameInlineRunHits is the PJ5 Option B Spike 1 frame building inline
 // Run-time reach count (how many times runFrameInlineDispatcher is called, the
 // raxSpec==ExitInlineHelper path actually firing). Per §9.20.9 commit-5i,
@@ -119,6 +128,11 @@ func SpecSelfCallSpecHits() uint64 { return atomic.LoadUint64(&specSelfCallSpecH
 // (blocked by archSupportsFrameInline=false).
 func SpecFrameInlineHits() uint64 { return atomic.LoadUint64(&specFrameInlineHits) }
 
+// SpecForLoopDeoptHits returns the cumulative PJ3 reg-limit FORLOOP deopt
+// branch Run-time reach count. Test use only. See specForLoopDeoptHits
+// doc-comment for how it differs from SpecForLoopHits / SpecP4DeoptHits.
+func SpecForLoopDeoptHits() uint64 { return atomic.LoadUint64(&specForLoopDeoptHits) }
+
 // SpecFrameInlineRunHits returns the cumulative PJ5 Option B Spike 1 frame
 // building inline Run-time reach count (how many times runFrameInlineDispatcher
 // is called, the raxSpec==ExitInlineHelper path actually firing).
@@ -150,6 +164,7 @@ func ResetSpecHits() {
 	atomic.StoreUint64(&specSelfCallSpecHits, 0)
 	atomic.StoreUint64(&specFrameInlineHits, 0)
 	atomic.StoreUint64(&specFrameInlineRunHits, 0)
+	atomic.StoreUint64(&specForLoopDeoptHits, 0)
 	atomic.StoreUint64(&specP4DeoptHits, 0)
 	atomic.StoreUint64(&specP4StuckHits, 0)
 }
@@ -190,3 +205,9 @@ func incSpecFrameInlineHits() { atomic.AddUint64(&specFrameInlineHits, 1) }
 // incSpecFrameInlineRunHits Run-time ++ (on entering runFrameInlineDispatcher).
 // Per §9.20.9 commit-5i, distinguishes Compile vs Run-time.
 func incSpecFrameInlineRunHits() { atomic.AddUint64(&specFrameInlineRunHits, 1) }
+
+// incSpecForLoopDeoptHits Run-time ++ (on entering the PJ3 reg-limit FORLOOP
+// deopt branch in code.go). Called from the `if c.forLoopDeopt` arm inside
+// (*p4Code).Run before host.ForPrep, so a nonzero delta pins that the
+// slot-restoration path actually fired.
+func incSpecForLoopDeoptHits() { atomic.AddUint64(&specForLoopDeoptHits, 1) }

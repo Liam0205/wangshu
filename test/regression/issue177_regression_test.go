@@ -1,25 +1,24 @@
 //go:build wangshu_p4 && wangshu_profile
 
-// issue177_regression_test.go — issue #177: P4 shape-template FORLOOP
-// deopt reads stale slots when the reg-limit is a coercible non-number.
+// issue177_regression_test.go — issue #177: PJ3 reg-limit FORLOOP
+// shape-template deopt path used to read stale R(A)/R(A+1)/R(A+2)
+// slots via host.ForPrep. The fast-path template baked init/step
+// into imm64 and never spilled the slots, so on deopt ForPrep saw
+// Nil for R(A) and misreported "'for' initial value" for a script
+// like `for A=0,n do end` where n was the Lua-numeric string "7".
 //
-// Shape: `function sum(n) for A=0,n do end end sum "7"` — a MOVE-limit
-// empty-body FORLOOP whose limit at run time is a Lua-numeric STRING
-// ("7"). The fast-path template bakes init/step as imm64 into the machine
-// code and reads limit via `movsd xmm1, [rbx+limitReg*8]`; NONE of R(A),
-// R(A+1), R(A+2) is spilled by the template. On IsNumber-guard miss the
-// deopt path called host.ForPrep, which reads those three slots via ci.
-// base — they were Nil, so ForPrep reported "'for' initial value must be
-// a number" for a script where the interpreter would coerce "7" to 7 and
-// run cleanly. Auto run 2 tripped the divergence (P1=<nil>, P4=raise);
-// run 1 stayed on the interpreter and passed.
+// Fix (ae44621): p4Code carries the burnt-in initK/stepK, and the
+// forLoopDeopt branch restores R(A)/R(A+1)/R(A+2) to interpreter
+// shape before host.ForPrep, letting toNumberCoerce see live values.
 //
-// Fix: p4Code carries the burnt-in initK/stepK on the deopt path and
-// restores R(A)/R(A+1)/R(A+2) to interpreter shape (initK / GetReg(
-// limitReg) / stepK) before calling host.ForPrep. host.ForPrep then sees
-// live values and can toNumberCoerce the string limit as the interpreter
-// does. Corpus 8305a8ceb22b8f41 is retained in testdata/fuzz/
-// FuzzAutoPromote/ for continuous coverage.
+// The three prove-the-path probes below make the fix explicit:
+//   - PromotionCount() > 0            — sum promoted to P4
+//   - jit.SpecForLoopHits() > 0       — the PJ3 FORLOOP template was
+//                                       Compile-emitted
+//   - jit.SpecForLoopDeoptHits() > 0  — the reg-limit deopt branch in
+//                                       code.go actually fired at runtime
+//                                       (this is the counter the fix's
+//                                       restoration lives inside)
 
 package regression
 
@@ -27,15 +26,22 @@ import (
 	"testing"
 
 	"github.com/Liam0205/wangshu"
+	jit "github.com/Liam0205/wangshu/internal/gibbous/jit"
 )
 
-// TestIssue177_StringLimitAutoRun2 is the exact crasher shape: with
-// auto-promote (natural thresholds) run 2 lands on the shape-template
-// deopt path because the limit is the string "7". The interpreter run 1
-// must produce the same result as tiered run 2 (both empty tuple after
-// the for-loop exits at iteration limit).
+// TestIssue177_StringLimitAutoRun2 is the exact crasher shape from
+// corpus 8305a8ceb22b8f41. Run 1 promotes sum on the interpreter,
+// run 2 lands on the PJ3 reg-limit template, the IsNumber guard
+// misses on the string "7" and the code enters the forLoopDeopt
+// branch. The three probes together prove the path: PromotionCount
+// > 0 (proto reached P4), SpecForLoopHits > 0 (template emitted),
+// SpecForLoopDeoptHits > 0 (deopt branch actually ran).
 func TestIssue177_StringLimitAutoRun2(t *testing.T) {
-	src := `function sum(n) for A=0,n do end end return sum "7"`
+	jit.ResetSpecHits()
+	// Corpus 8305a8ceb22b8f41 verbatim (no `return`, no whitespace); adding
+	// `return` in front changes the top-level RETURN B and shifts pc's so
+	// analyzeForLoopForm no longer matches the expected shape.
+	src := `function sum(n)for A=0,n do end end sum"7"`
 	prog, err := wangshu.Compile([]byte(src), "i177")
 	if err != nil {
 		t.Fatalf("compile: %v", err)
@@ -44,12 +50,12 @@ func TestIssue177_StringLimitAutoRun2(t *testing.T) {
 	st1 := wangshu.NewState(wangshu.Options{MaxArenaBytes: 64 << 20})
 	st1.SetStepBudget(1 << 20)
 	st1.SetHotThresholds(^uint32(0), ^uint32(0))
-	// Auto path: lowered thresholds so run 1 promotes sum mid-flight and
-	// run 2 enters the tiered shape template (which then deopts on the
-	// string limit).
+	// Auto path: lowered thresholds so run 1 promotes sum mid-flight
+	// and run 2 enters the tiered shape template.
 	stA := wangshu.NewState(wangshu.Options{MaxArenaBytes: 64 << 20})
 	stA.SetStepBudget(1 << 20)
 	stA.SetHotThresholds(2, 4)
+	promoBefore := stA.PromotionCount()
 	for run := 1; run <= 2; run++ {
 		r1, e1 := prog.Run(st1)
 		rA, eA := prog.Run(stA)
@@ -69,17 +75,45 @@ func TestIssue177_StringLimitAutoRun2(t *testing.T) {
 			}
 		}
 	}
+	// Prove-the-path: sum's proto must have promoted to P4 and the
+	// PJ3 FORLOOP template must have been emitted. The reg-limit
+	// deopt branch specifically must have fired at least once — this
+	// is what pins the fix (without the SetReg restoration, ForPrep
+	// would raise on Nil slots and the divergence check above would
+	// have caught it, but the counter makes the path explicit).
+	if got := stA.PromotionCount() - promoBefore; got == 0 {
+		t.Errorf("PromotionCount delta = 0, want > 0 (sum did not promote to P4)")
+	}
+	if got := jit.SpecForLoopHits(); got == 0 {
+		t.Errorf("SpecForLoopHits = 0, want > 0 (PJ3 FORLOOP template not emitted)")
+	}
+	if got := jit.SpecForLoopDeoptHits(); got == 0 {
+		t.Errorf("SpecForLoopDeoptHits = 0, want > 0 (reg-limit deopt branch did not fire)")
+	}
 }
 
-// TestIssue177_TrueNonNumberLimitStillRaises pins that the deopt-side
-// restoration does NOT swallow the genuine "limit must be a number"
-// error: a limit that cannot be coerced (a table) must raise, byte-equal
-// to the interpreter. The fix restores R(A+1) with the raw NaN-box of
-// the limit slot, so host.ForPrep's toNumberCoerce sees the same non-
-// coercible value the interpreter would and picks the same slot's error
-// message ("limit", not "initial value").
+// TestIssue177_TrueNonNumberLimitStillRaises pins that the deopt-
+// side restoration does NOT swallow the genuine "limit must be a
+// number" error: a limit that cannot be coerced (a table) must
+// raise byte-equal to the interpreter. The fix restores R(A+1) with
+// the raw NaN-box of the limit slot, so host.ForPrep's
+// toNumberCoerce sees the same non-coercible value the interpreter
+// would and picks the same slot's error message ("limit", not
+// "initial value").
 func TestIssue177_TrueNonNumberLimitStillRaises(t *testing.T) {
-	src := `function sum(n) for A=0,n do end end return sum({})`
+	jit.ResetSpecHits()
+	// Warm-up + trigger shape: the first five sum(i) calls promote sum
+	// to P4 without erroring (numeric limit → IsNumber guard passes,
+	// empty body exits at once). The sixth call is sum({}) — sum has
+	// already been P4-compiled, so this call enters the shape template
+	// and takes the reg-limit deopt branch when the IsNumber guard
+	// misses on the table. host.ForPrep must then see the restored
+	// R(A+1)=table and pick the "limit" slot's error, byte-equal to
+	// the interpreter. Sending sum({}) on a cold proto would just
+	// raise on the interpreter path with no P4 involvement.
+	src := `function sum(n)for A=0,n do end end
+for i=1,5 do sum(i) end
+sum({})`
 	prog, err := wangshu.Compile([]byte(src), "i177raise")
 	if err != nil {
 		t.Fatalf("compile: %v", err)
@@ -90,6 +124,7 @@ func TestIssue177_TrueNonNumberLimitStillRaises(t *testing.T) {
 	stA := wangshu.NewState(wangshu.Options{MaxArenaBytes: 64 << 20})
 	stA.SetStepBudget(1 << 20)
 	stA.SetHotThresholds(2, 4)
+	promoBefore := stA.PromotionCount()
 	for run := 1; run <= 2; run++ {
 		_, e1 := prog.Run(st1)
 		_, eA := prog.Run(stA)
@@ -102,5 +137,19 @@ func TestIssue177_TrueNonNumberLimitStillRaises(t *testing.T) {
 		if e1.Error() != eA.Error() {
 			t.Errorf("run %d: error mismatch\n  P1:   %q\n  auto: %q", run, e1.Error(), eA.Error())
 		}
+	}
+	// Prove-the-path (mirrors the string-limit case): sum's proto
+	// must have promoted and the FORLOOP template must have been
+	// emitted, and the deopt branch must have taken the restoration
+	// path so host.ForPrep sees the table in R(A+1) and reports the
+	// "limit" slot's error rather than "initial value".
+	if got := stA.PromotionCount() - promoBefore; got == 0 {
+		t.Errorf("PromotionCount delta = 0, want > 0 (sum did not promote to P4)")
+	}
+	if got := jit.SpecForLoopHits(); got == 0 {
+		t.Errorf("SpecForLoopHits = 0, want > 0 (PJ3 FORLOOP template not emitted)")
+	}
+	if got := jit.SpecForLoopDeoptHits(); got == 0 {
+		t.Errorf("SpecForLoopDeoptHits = 0, want > 0 (reg-limit deopt branch did not fire)")
 	}
 }
