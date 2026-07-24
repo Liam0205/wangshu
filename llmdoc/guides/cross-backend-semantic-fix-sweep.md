@@ -109,7 +109,9 @@
 
 延伸(stdlib 的跨 number/string 边界强制转换,复用 VM 侧权威实现别自写标准库简化版):stdlib 里凡是「字符串→数字」「数字→字符串」这类跨 number/string 边界的强制转换,必须复用 VM 侧对齐 PUC 的权威实现(`crescent.ParseLuaNumber` / `crescent.FormatLuaNumber`),不要用 Go 标准库的简化版。Go `strconv.ParseFloat` 不认 Lua 十六进制整数(`"0X0"` 类,它只接受 C99 hex float),接受面与 PUC `luaO_str2d` 不一致;两份实现并存会让 stdlib 侧的强制转换宽松度系统性低于 VM 侧,而且这个差异不会立刻暴露——要等某个恰好落在差异区的输入被 fuzz 撞出来。这与本节「跨后端扫要枚举实现」是同一原则在「同一进程内同一能力两份实现」维度的延伸:能力已有权威实现时经统一入口复用,别在别处另写一份。实证:issue #174(2026-07-23,PR #176)——`string.rep("...", "0X0")` 的次数参数是 Lua 十六进制整数字符串,PUC 用 `luaL_checknumber` 强制转成 0,wangshu 的 `toNumberStr`(`internal/stdlib/stdlib.go`,被 string/table/math 各库约 28 处调用)用裸 `strconv.ParseFloat` 不认 hex 整数而报错;仓库其实早有对齐 PUC `luaO_str2d` 的 `crescent.ParseLuaNumber` 却没被复用。修法把 `toNumberStr` 改走 `crescent.ParseLuaNumber`,一处对齐所有调用点。同轮 issue #175 是 `tonumber(x, base)` 的第一参数按 PUC `luaL_checkstring` 接受 number 强制转 string。触发场景:给某个「X → Y」语义敏感的基础转换加实现或改行为时,先 grep 全仓(尤其 crescent / VM 侧)看有没有已存在的权威实现可复用,别另写标准库简化版。反思实例见 `memory/reflections/2026-07-23-oracle-arg-coercion-round.md` 教训 1。
 
-## fast-path template 与 host helper 的 slot-shape 契约
+## fast-path template 与 deopt helper 的两条契约
+
+### 契约一：恢复 host helper 所需的 slot shape
 
 优化后的 fast-path template(为了性能省略 spill、把值烧成 imm64 或只留寄存器)必须显式**在 deopt 路径上恢复省掉的 slot 到 interpreter-shape**,再调 host helper。host helper 是共享层实现,入参约定就是 interpreter-shape slot 有值——不是它去嗅探 XMM 或 imm 位模式。快路径省 spill 是本地优化,deopt 是通往共享层的出口,出口处必须把状态还回共享层约定的形式。
 
@@ -122,6 +124,14 @@
 **实证**(issue #177,2026-07-24,PR #178):p4Code shape-template 的 MOVE-limit FORLOOP fast-path 把 init/step 烧成 imm64、limit 只进 XMM 从不写回 slot,R(A)/R(A+1)/R(A+2) 从未被写。deopt 路径直接调 `host.ForPrep(base, pc, forLoopA)`,helper 读到全 Nil,第一个失败的 Nil-non-number 检查落在 init 上,报错位落在 init 而不该报的 limit(触发形状:`function sum(n) for A=0,n do end end sum "7"` —— string limit 触发 deopt,P1 解释器正确 coerce `"7"` 通过)。修法:p4Code 增 `forLoopInitK` / `forLoopStepK` 两个 uint64 NaN-box 字段(compiler.go 构造时从 `shapeInfo.forInitK` / `forStepK` 传入),deopt 前 `SetReg(A, forLoopInitK)` / `SetReg(A+1, GetReg(limitReg))` / `SetReg(A+2, forLoopStepK)`,helper 于是能正确 coerce string limit 或对真非 number limit 报正确的「limit」错误(byte-equal 于 P1)。反思 [[2026-07-24-p4-template-forprep-deopt-round]] 教训 2、教训 4(改深层 JIT 数据流前先读字段定义与全部消费点,确认编码/语义与新用途一致——本轮确认 `shapeInfo.forInitK` 就是 `uint64(kInit)` 直传的 NaN-box u64,与 `SetReg(idx, u64)` 入参编码对上,可直接透传)。
 
 **扩面动作**:审 p4Code 其他 shape-template 的 deopt 路径,同规则扫一遍——快路径为性能省略 spill 的 slot,deopt 路径都得显式 SetReg 补上;PJ10 native emit 侧 FORPREP / 其他 op 走 host helper 的 deopt 也按同一契约核对(本轮修 FORPREP 一条,其他 op 未系统检查,列入后续动作)。
+
+### 契约二：补齐被替代字节码的全部可观察副作用
+
+deopt helper 不能只修复触发失败的那一步；如果 deopt 分支随后直接 return，必须逐条核对它替代的整段字节码，并保留每条指令的可观察副作用。检查集合至少包括 register / upvalue / global 写入、`preempt()` 的 step budget 与 cancel context 探测、GC safepoint、IC 记账、Lua call 的 frame 变化、stack shape 和 traceback PC。helper 覆盖矩阵有缺口时，结果值 byte-equal 仍可能掩盖资源限制或控制流语义已经被跳过。
+
+**实证**(issue #177 合入前审查,2026-07-24):初版 slot-shape 修复在 `host.ForPrep` 成功后直接 `DoReturn`，省掉了原序列中的 FORLOOP。即使 Lua loop body 为空，每轮 FORLOOP 仍会执行 `preempt()`；因此 `sum "1000000"` 在 P1 会触发 instruction budget 或 context cancel，P4 却立即返回。最终新增 `host.ForLoop`，按解释器顺序执行 idx 更新、limit 比较、preempt、`R(A)` / `R(A+3)` 写回，再由 deopt 分支按 `ForPrep → ForLoop → DoReturn` 收尾。
+
+**检查与测试**:deopt 分支直接 return 前，先列「被替代字节码 → 可观察副作用 → 对应 helper」三列表。折叠 loop 时至少用长循环分别钉住 step budget 与 cancel context；同时断言 `PromotionCount` 与该 deopt 分支的专用 hit counter 都有增量，防止测试静默留在解释器、由解释器产生同样错误而假绿。详见 [[prove-the-path-under-test]] §7.1 与 [[2026-07-24-p4-template-forprep-deopt-round]] 教训 5。
 
 ## 同族 harness 防护不对称
 
