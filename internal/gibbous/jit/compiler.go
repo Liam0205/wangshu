@@ -4648,6 +4648,14 @@ func (c *Compiler) Compile(proto *bytecode.Proto, feedback *bridge.TypeFeedback)
 				forLoopA:          info.forA,
 				forLoopLimitReg:   info.forLimitReg,
 				forLoopUpvalIdx:   info.forLimitUpvalIdx,
+				// Baked init/step imm64 also carried on the deopt path so
+				// R(A)/R(A+2) can be reconstructed before host.ForPrep
+				// (issue #177: template never spills init/step so a
+				// deopt-triggering non-number limit made host.ForPrep read
+				// Nil for R(A) and misreport "'for' initial value must be
+				// a number").
+				forLoopInitK: info.forInitK,
+				forLoopStepK: info.forStepK,
 			}, nil
 		}
 

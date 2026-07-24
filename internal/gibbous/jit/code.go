@@ -150,6 +150,15 @@ type p4Code struct {
 	forLoopA        uint8
 	forLoopLimitReg uint8
 	forLoopUpvalIdx uint8
+	// forLoopInitK / forLoopStepK are the burnt-in init/step NaN-box bits
+	// from the fast-path template. On deopt (issue #177 with string limit),
+	// the template never writes R(A)/R(A+2) — init/step are imm64 baked
+	// into the machine code and never spilled — so host.ForPrep reads Nil
+	// and misreports the failure slot. Restore R(A)=initK, R(A+2)=stepK
+	// before host.ForPrep so it sees interpreter-shape slots and can
+	// coerce the string limit (or raise the correct slot's error).
+	forLoopInitK uint64
+	forLoopStepK uint64
 
 	// PJ4 IC ArrayHit path flags:
 	//   - icArrayHit = true: when Run detects raxSpec==deoptCode it calls
@@ -454,6 +463,17 @@ func (c *p4Code) Run(stack []uint64, base uint32) int32 {
 			// **PJ3 FORLOOP reg-limit deopt** path split: call host.ForPrep
 			// rather than host.Arith (byte-equal interpreter raising non-number error)
 			if c.forLoopDeopt {
+				// Fast-path template baked init/step as imm64 and never
+				// wrote R(A)/R(A+2); limit lives in R(forLoopLimitReg) and
+				// the template read it into xmm without writing R(A+1).
+				// Restore the interpreter-shape slots before host.ForPrep so
+				// its per-slot check + toNumberCoerce sees the real values
+				// (issue #177: string limit like `sum "7"` would otherwise
+				// hit Nil for R(A) and misreport "'for' initial value").
+				c.host.SetReg(int32(c.forLoopA), c.forLoopInitK)
+				limitVal := c.host.GetReg(int32(c.forLoopLimitReg))
+				c.host.SetReg(int32(c.forLoopA)+1, limitVal)
+				c.host.SetReg(int32(c.forLoopA)+2, c.forLoopStepK)
 				st := c.host.ForPrep(int32(base), int32(c.retPC)-2 /* FORPREP pc=3 */, int32(c.forLoopA))
 				if st != 0 {
 					return st
