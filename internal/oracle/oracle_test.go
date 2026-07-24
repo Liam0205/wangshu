@@ -95,6 +95,49 @@ func TestExec_NaNSpans(t *testing.T) {
 	}
 }
 
+// TestExec_NaNSpansKnownLimit documents the value-collision limit of
+// the string.format provenance mechanism: Lua 5.1 has no primitive
+// distinguishing a format() result from a same-value script literal
+// (interned strings share identity), so a FIFO keyed on value can be
+// consumed early by an earlier literal emit sharing the same bytes.
+// Downstream CompareOutput sees the spans in different positions and
+// reports OutputDifferent -- a false negative for the known-diff
+// classifier that only bites when a script both emits a literal
+// matching the format result's exact byte sequence AND does so before
+// the format result itself. The narrow-window failure mode is
+// intentional: expanding the provenance to always tolerate value
+// collisions would swallow genuine script-side literal divergence,
+// violating issue #173's "everything outside the NaN spelling
+// fragment stays byte-equal" contract.
+//
+// Recorded here as an executable spec (verifies span offsets) rather
+// than a fuzz seed: fuzz would sporadically flag it as divergence,
+// which is the intended behaviour rather than a bug to be silenced.
+func TestExec_NaNSpansKnownLimit(t *testing.T) {
+	// Reviewer-authored case (round 2 of Codex review on #181):
+	// PUC's %E on -(0/0) prints "NAN" for this NaN bit pattern,
+	// so s == "NAN" collides with the literal "NAN" the print
+	// call emits first. The FIFO provenance for s gets consumed
+	// by the literal emit rather than by print(s), moving the
+	// span to the wrong output offset.
+	r := execT(t, `local s = string.format("%E", -(0/0)) print("NAN") print(s)`)
+	if r.Verdict != VerdictOK {
+		t.Fatalf("verdict = %v, err = %q", r.Verdict, r.Err)
+	}
+	// The observation: exactly one span is recorded, and it lands
+	// on the literal "NAN" (first line offsets 0..3), not on s in
+	// the second line. This is the collision consumer path.
+	if len(r.NaNSpans) != 1 {
+		t.Fatalf("known-limit case: got %d spans (%v), want 1 (harness limit is stable)", len(r.NaNSpans), r.NaNSpans)
+	}
+	if got := r.NaNSpans[0]; got.Start != 0 || got.End != 3 {
+		t.Errorf("known-limit case: span = %v, want {0,3} (literal 'NAN' consumed the provenance)", got)
+	}
+	if r.Output != "NAN\nNAN\n" {
+		t.Fatalf("known-limit case: output = %q, want %q", r.Output, "NAN\nNAN\n")
+	}
+}
+
 func TestExec_ErrorVerdictKeepsPartialOutput(t *testing.T) {
 	r := execT(t, `print("before") error("boom")`)
 	if r.Verdict != VerdictError {

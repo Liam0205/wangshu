@@ -97,6 +97,21 @@ local __nan_spans, __nan_span_n = {}, 0
 -- SAME string bytes (e.g. both "nan"); consuming in call order keeps
 -- them in the same order they hit the accumulator. Interned strings
 -- with no provenance simply skip the lookup.
+--
+-- KNOWN LIMIT (documented in TestExec_NaNSpansKnownLimit): Lua 5.1's
+-- interned strings have no identity primitive, so the FIFO cannot
+-- distinguish a genuine format() result from a same-value script
+-- literal. A script that emits a literal matching a pending format
+-- result's exact bytes AHEAD of the format's own emit consumes the
+-- provenance early, moving the span to the wrong output offset.
+-- Downstream CompareOutput then reports OutputDifferent for what
+-- would otherwise classify as OutputKnownNaNSign. Broadening the
+-- match rule to always accept value collisions would swallow real
+-- script literal divergence, violating issue #173's "everything
+-- outside the NaN spelling fragment stays byte-equal" contract, so
+-- the false-negative is the acknowledged trade-off. The window is
+-- narrow in practice (fuzz mutation almost never manufactures a
+-- script literal exactly equal to a specific format(NaN) output).
 local __nan_provenance = {}
 local __tostring, __type, __select = tostring, type, select
 local __concat, __error = table.concat, error
