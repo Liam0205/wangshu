@@ -77,9 +77,19 @@ func Prelude(keep GlobalSet) string {
 
 var preludeCapture = `
 local __acc, __n, __len = {}, 0, 0
-local __nan_output = false
+-- __nan_spans records the byte ranges in the concatenated output that were
+-- produced by a NaN rendering (a print/io.write of a NaN number, or the
+-- NaN token(s) inside a string.format output whose corresponding argument
+-- was NaN). Ranges are stored as inclusive-start/exclusive-end 0-based
+-- byte offsets over the readout accumulator. The Go side uses this to
+-- classify NaN-sign spelling divergence as a known platform difference
+-- ONLY within these spans; every byte outside a span must still match
+-- byte-for-byte between engines, so a script's own literal "NAN"/"-NAN"
+-- output cannot be silently swallowed just because a NaN was rendered
+-- elsewhere in the same run.
+local __nan_spans, __nan_span_n = {}, 0
 local __tostring, __type, __select = tostring, type, select
-local __concat, __error, __find = table.concat, error, string.find
+local __concat, __error = table.concat, error
 local function __emit(s)
   __len = __len + #s
   if __len > ` + strconv.Itoa(OutputCapBytes) + ` then
@@ -88,16 +98,21 @@ local function __emit(s)
   __n = __n + 1
   __acc[__n] = s
 end
+local function __record_nan_span(off, len)
+  __nan_span_n = __nan_span_n + 1
+  __nan_spans[__nan_span_n] = off .. "-" .. (off + len)
+end
 function print(...)
   local n = __select("#", ...)
   for i = 1, n do
     local v = (__select(i, ...))
-    if __type(v) == "number" and v ~= v then __nan_output = true end
+    if i > 1 then __emit("\t") end
+    local is_nan = __type(v) == "number" and v ~= v
     local s = __tostring(v)
     if __type(s) ~= "string" then
       __error("'tostring' must return a string to 'print'")
     end
-    if i > 1 then __emit("\t") end
+    if is_nan then __record_nan_span(__len, #s) end
     __emit(s)
   end
   __emit("\n")
@@ -108,14 +123,16 @@ io.write = function(...)
     local v = (__select(i, ...))
     local tv = __type(v)
     if tv == "number" then
-      if v ~= v then __nan_output = true end
       -- tostring, not string.format("%.14g"): PUC renders numbers with
       -- LUA_NUMBER_FMT (= %.14g) for BOTH tostring and io.write, so
       -- tostring is faithful there; going through each engine's own
       -- tostring keeps nonfinite spellings (inf/nan) consistent with
       -- the engine's print output instead of forking on the format
       -- function's C-vs-Go %g behavior.
-      __emit(__tostring(v))
+      local is_nan = v ~= v
+      local s = __tostring(v)
+      if is_nan then __record_nan_span(__len, #s) end
+      __emit(s)
     elseif tv == "string" then
       __emit(v)
     else
@@ -125,7 +142,14 @@ io.write = function(...)
   return true
 end
 function __oracle_readout()
-  return (__nan_output and "1" or "0") .. __concat(__acc)
+  -- Header protocol (matches internal/oracle.DecodeOutput):
+  --   "<count>\n" + <count> lines of "<off>-<end>\n" + output-body.
+  -- <count> is decimal, no separators. Every offset is a byte position
+  -- in the immediately-following output body. count=0 collapses to just
+  -- "0\n" followed by the body.
+  local body = __concat(__acc)
+  if __nan_span_n == 0 then return "0\n" .. body end
+  return __nan_span_n .. "\n" .. __concat(__nan_spans, "\n") .. "\n" .. body
 end
 `
 
@@ -229,14 +253,14 @@ end
 -- verdict.
 local __tonumber, __sformat = tonumber, string.format
 string.format = function(f, ...)
-  local has_nan = __type(f) == "number" and f ~= f
+  local has_nan_arg = __type(f) == "number" and f ~= f
   if __type(f) == "number" then f = __tostring(f) end
   local unsigned = __type(f) == "string" and __sfind(f, "%%[%-%+ #0-9%.]*[uxXo]")
   local n = __select("#", ...)
   for i = 1, n do
     local arg = (__select(i, ...))
     if __type(arg) == "number" and arg ~= arg then
-      has_nan = true
+      has_nan_arg = true
     end
     if unsigned then
       local v = __tonumber(arg)
@@ -246,8 +270,42 @@ string.format = function(f, ...)
     end
   end
   local out = __sformat(f, ...)
-  if has_nan and (__find(out, "nan", 1, true) or __find(out, "NAN", 1, true)) then
-    __nan_output = true
+  -- Record spans for EVERY nan/NAN token in the format output when at
+  -- least one NaN argument was consumed. We can't distinguish which
+  -- conversion produced which token from Lua-side alone (PUC's
+  -- lstrlib.c does not expose the mapping) and format+tostring both
+  -- forward numeric NaNs to the same libc renderer, so any nan/NAN
+  -- token in the output is by construction produced by a NaN render
+  -- path when has_nan_arg is true. Non-NaN calls (no NaN in args)
+  -- record no spans, so a literal "NAN" written via
+  -- string.format("%s", "NAN") stays outside every span and remains
+  -- byte-compared.
+  --
+  -- Each span greedily absorbs the '-' immediately preceding the
+  -- token AND the ASCII spaces on either side, so printf width
+  -- padding stays inside the span (the compareOutput accept-list
+  -- allows the sign column to migrate by one padding position within
+  -- a matched span). Two adjacent nan tokens share their overlapping
+  -- padding by advancing i past the last consumed byte.
+  if has_nan_arg then
+    local base = __len
+    local i = 1
+    while true do
+      local s, e = __sfind(out, "[Nn][Aa][Nn]", i)
+      if not s then break end
+      local tokStart = s
+      if s > i and __ssub(out, s - 1, s - 1) == "-" then tokStart = s - 1 end
+      local spanStart = tokStart
+      while spanStart > i and __ssub(out, spanStart - 1, spanStart - 1) == " " do
+        spanStart = spanStart - 1
+      end
+      local spanEnd = e + 1
+      while spanEnd <= #out and __ssub(out, spanEnd, spanEnd) == " " do
+        spanEnd = spanEnd + 1
+      end
+      __record_nan_span(base + spanStart - 1, spanEnd - spanStart)
+      i = spanEnd
+    end
   end
   return out
 end
