@@ -360,9 +360,17 @@ string.format = function(f, ...)
       local s, e = __sfind(out, "[Nn][Aa][Nn]", i)
       if not s then break end
       local tokStart = s
-      if s > i then
-        local prev = __ssub(out, s - 1, s - 1)
-        if prev == "-" or prev == "+" then tokStart = s - 1 end
+      -- Absorb any contiguous run of '-' / '+' immediately before the
+      -- nan token: the sign column belongs to the NaN rendering, but
+      -- an adjacent script literal '-'/'+' looks identical to it, and
+      -- the opposite engine may or may not emit its own sign
+      -- character. Bundling the whole run into the span lets
+      -- knownNaNSignDifference reason over the shape without the gap
+      -- comparison having to guess which byte is which.
+      while tokStart > i do
+        local prev = __ssub(out, tokStart - 1, tokStart - 1)
+        if prev ~= "-" and prev ~= "+" then break end
+        tokStart = tokStart - 1
       end
       local spanStart = tokStart
       while spanStart > i and __ssub(out, spanStart - 1, spanStart - 1) == " " do
