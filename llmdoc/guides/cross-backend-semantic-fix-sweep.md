@@ -109,6 +109,20 @@
 
 延伸(stdlib 的跨 number/string 边界强制转换,复用 VM 侧权威实现别自写标准库简化版):stdlib 里凡是「字符串→数字」「数字→字符串」这类跨 number/string 边界的强制转换,必须复用 VM 侧对齐 PUC 的权威实现(`crescent.ParseLuaNumber` / `crescent.FormatLuaNumber`),不要用 Go 标准库的简化版。Go `strconv.ParseFloat` 不认 Lua 十六进制整数(`"0X0"` 类,它只接受 C99 hex float),接受面与 PUC `luaO_str2d` 不一致;两份实现并存会让 stdlib 侧的强制转换宽松度系统性低于 VM 侧,而且这个差异不会立刻暴露——要等某个恰好落在差异区的输入被 fuzz 撞出来。这与本节「跨后端扫要枚举实现」是同一原则在「同一进程内同一能力两份实现」维度的延伸:能力已有权威实现时经统一入口复用,别在别处另写一份。实证:issue #174(2026-07-23,PR #176)——`string.rep("...", "0X0")` 的次数参数是 Lua 十六进制整数字符串,PUC 用 `luaL_checknumber` 强制转成 0,wangshu 的 `toNumberStr`(`internal/stdlib/stdlib.go`,被 string/table/math 各库约 28 处调用)用裸 `strconv.ParseFloat` 不认 hex 整数而报错;仓库其实早有对齐 PUC `luaO_str2d` 的 `crescent.ParseLuaNumber` 却没被复用。修法把 `toNumberStr` 改走 `crescent.ParseLuaNumber`,一处对齐所有调用点。同轮 issue #175 是 `tonumber(x, base)` 的第一参数按 PUC `luaL_checkstring` 接受 number 强制转 string。触发场景:给某个「X → Y」语义敏感的基础转换加实现或改行为时,先 grep 全仓(尤其 crescent / VM 侧)看有没有已存在的权威实现可复用,别另写标准库简化版。反思实例见 `memory/reflections/2026-07-23-oracle-arg-coercion-round.md` 教训 1。
 
+## fast-path template 与 host helper 的 slot-shape 契约
+
+优化后的 fast-path template(为了性能省略 spill、把值烧成 imm64 或只留寄存器)必须显式**在 deopt 路径上恢复省掉的 slot 到 interpreter-shape**,再调 host helper。host helper 是共享层实现,入参约定就是 interpreter-shape slot 有值——不是它去嗅探 XMM 或 imm 位模式。快路径省 spill 是本地优化,deopt 是通往共享层的出口,出口处必须把状态还回共享层约定的形式。
+
+**心理边界**:与本 guide 已有条目「同一语义在多个后端 / 多条 emit 通道里各写一份 inline 快路径,修复要枚举所有站点」是同一条纪律的**跨层对偶**——那里是「同一语义在多个 emit 站点各绕过一次 host,修复要全枚举」,本条是「优化侧假设(哪些 slot 快路径不写)与 helper 侧约定(哪些 slot helper 期望有值)错配,deopt 路径必须显式恢复」。两者都是「快路径独立绕过共享层语义」的家族。
+
+**红旗信号**:碰到 host helper 报意料之外的错误信息(如 host.ForPrep 该报「limit must be a number」却报「initial value must be a number」),红旗指向 slot 被读到默认值(Nil / 0)而不是真值,不是 helper 有 bug。差分测试全绿的 fast-path template 不构成 deopt 路径正确性证据——差分覆盖 happy path,deopt 走一次要求 fast-path 拒收(如输入触发 non-number 类型错误)。
+
+**检查项**:审 fast-path template 时把「哪些 slot 在快路径里不写(imm 烧入 / 只进寄存器 / 编译期常量塞入)」与「哪些 slot 是对应 host helper 期望有值的」两个集合列出来,**交集就是 deopt 前必须显式 SetReg 恢复的 slot 集合**。fast-path template 里在 p4Code / nativeCode 结构上挂 imm 快照字段(如 `forLoopInitK` / `forLoopStepK` uint64 NaN-box),deopt 前透传给 host.SetReg。
+
+**实证**(issue #177,2026-07-24,PR #178):p4Code shape-template 的 MOVE-limit FORLOOP fast-path 把 init/step 烧成 imm64、limit 只进 XMM 从不写回 slot,R(A)/R(A+1)/R(A+2) 从未被写。deopt 路径直接调 `host.ForPrep(base, pc, forLoopA)`,helper 读到全 Nil,第一个失败的 Nil-non-number 检查落在 init 上,报错位落在 init 而不该报的 limit(触发形状:`function sum(n) for A=0,n do end end sum "7"` —— string limit 触发 deopt,P1 解释器正确 coerce `"7"` 通过)。修法:p4Code 增 `forLoopInitK` / `forLoopStepK` 两个 uint64 NaN-box 字段(compiler.go 构造时从 `shapeInfo.forInitK` / `forStepK` 传入),deopt 前 `SetReg(A, forLoopInitK)` / `SetReg(A+1, GetReg(limitReg))` / `SetReg(A+2, forLoopStepK)`,helper 于是能正确 coerce string limit 或对真非 number limit 报正确的「limit」错误(byte-equal 于 P1)。反思 [[2026-07-24-p4-template-forprep-deopt-round]] 教训 2、教训 4(改深层 JIT 数据流前先读字段定义与全部消费点,确认编码/语义与新用途一致——本轮确认 `shapeInfo.forInitK` 就是 `uint64(kInit)` 直传的 NaN-box u64,与 `SetReg(idx, u64)` 入参编码对上,可直接透传)。
+
+**扩面动作**:审 p4Code 其他 shape-template 的 deopt 路径,同规则扫一遍——快路径为性能省略 spill 的 slot,deopt 路径都得显式 SetReg 补上;PJ10 native emit 侧 FORPREP / 其他 op 走 host helper 的 deopt 也按同一契约核对(本轮修 FORPREP 一条,其他 op 未系统检查,列入后续动作)。
+
 ## 同族 harness 防护不对称
 
 跨后端 / 跨通道扫的心理边界是「同一段语义在系统里的全部实现站点」,同样的原则也适用于测试与防护本身的「同类 harness」。当给一个 fuzz harness / smoke 脚本 / CI 检查加防护(资源上限帽、豁免规则、异常路径断言、artifact upload、种子清单等)时,不能只加在触发本次修复的那一个,要立刻横向问一句「兄弟 harness 有没有同样的暴露面」,一起加。心理边界停在「当前 harness」而不是「全部同类站点」就是欠账,下一次同类问题在没被防护到的兄弟 harness 上炸出来。
@@ -126,4 +140,5 @@
   `2026-07-11-issue117-118-nan-forloop-round` /
   `2026-07-18-issue155-158-nightly-crasher-round`(运行时断言接口扩面不对称) /
   `2026-07-22-oracle-format-nan-inf-round`(PUC 语义由 libc 定义:`string.format` NaN/Inf 对齐 glibc) /
-  `2026-07-23-oracle-arg-coercion-round`(stdlib 强制转换复用 VM 侧权威实现:`toNumberStr` 走 `crescent.ParseLuaNumber`,#174/#175)。
+  `2026-07-23-oracle-arg-coercion-round`(stdlib 强制转换复用 VM 侧权威实现:`toNumberStr` 走 `crescent.ParseLuaNumber`,#174/#175) /
+  `2026-07-24-p4-template-forprep-deopt-round`(fast-path template deopt 路径必须显式 SetReg 恢复省略 spill 的 slot 到 interpreter-shape 再调 host helper,#177)。
