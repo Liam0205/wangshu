@@ -181,13 +181,15 @@ func CompareOutput(oracleOutput, wangshuOutput string, oracleSpans, wangshuSpans
 type nanOutputPart struct {
 	literal string
 	upper   bool
-	// sign is 0 (no sign column), '-', or '+'. Both '-' and '+'
-	// consume one column: '-' is the NaN sign the host libc chose to
-	// render, '+' is printf's '+' flag ("%+E" forces a leading sign
-	// character even for NaN). Sign spelling divergence lets '-' and
-	// '+' interchange when the two engines' host libc rendered
-	// different NaN sign bits for the same input.
-	sign     byte
+	// signRun is the byte sequence of '-'/'+' characters immediately
+	// preceding the nan/NAN token. Empty means no sign column at
+	// all. A single '-' is the common libc-emitted NaN sign; a
+	// single '+' is printf's forced-sign flag on a NaN result;
+	// multi-byte runs (e.g. "+-", "--") show up when a script
+	// literal '-'/'+' sits adjacent to a rendered sign column. Sign
+	// spelling divergence lets any signRun combination interchange
+	// as long as either side's tail literal and shape line up.
+	signRun  string
 	leading  int
 	trailing int
 }
@@ -209,19 +211,19 @@ func knownNaNSignDifference(a, b string) bool {
 		if x.literal != y.literal || x.upper != y.upper {
 			return false
 		}
-		if x.sign == y.sign {
+		if x.signRun == y.signRun {
 			if x.leading == y.leading && x.trailing == y.trailing {
 				continue
 			}
-			// Both sides carry no explicit sign column, but one side
-			// pads to a total width that includes a reserved-but-
-			// invisible sign column (glibc %<w>f/e/g on a lowercase
-			// NaN reserves one column for the sign the host libc
-			// suppressed) while the other pads to width MINUS ONE.
-			// The net effect is a padding column difference of 1 on
-			// exactly the alignment side. Accept it and count as a
-			// sign-column divergence for OutputKnownNaNSign.
-			if x.sign == 0 && compatibleReservedSignPadding(x, y) {
+			// Both sides emit the identical sign-column bytes but
+			// pad differently: one includes a reserved-but-invisible
+			// sign column (glibc %<w>f on a lowercase NaN reserves
+			// one column for the sign the host libc suppressed)
+			// while the other spends width on the actual bytes. The
+			// net effect is a padding column difference of exactly 1
+			// on one side. Accept it and count as a sign-column
+			// divergence for OutputKnownNaNSign.
+			if len(x.signRun) == 0 && compatibleReservedSignPadding(x, y) {
 				signDiff = true
 				continue
 			}
@@ -263,10 +265,7 @@ func compatibleNaNPadding(a, b nanOutputPart) bool {
 }
 
 func nanTokenLen(p nanOutputPart) int {
-	if p.sign != 0 {
-		return 4
-	}
-	return 3
+	return 3 + len(p.signRun)
 }
 
 // compatibleReservedSignPadding accepts a padding delta of exactly 1
@@ -300,20 +299,22 @@ func splitNaNOutput(s string) ([]nanOutputPart, string) {
 	var parts []nanOutputPart
 	literalStart := 0
 	for i := 0; i < len(s); {
-		var sign byte
-		if s[i] == '-' || s[i] == '+' {
-			sign = s[i]
+		// Absorb any contiguous run of '-' / '+' preceding a
+		// nan/NAN token as the sign column. This mirrors prelude's
+		// span recording, so a script literal '+' adjacent to a
+		// rendered '-' NaN sign ends up in the same span shape as
+		// a script literal '-' adjacent to an unsigned NaN.
+		signStart := i
+		for signStart < len(s) && (s[signStart] == '-' || s[signStart] == '+') {
+			signStart++
 		}
-		tokenStart := i
-		wordStart := i
-		if sign != 0 {
-			wordStart++
-		}
-		if wordStart+3 > len(s) ||
-			(s[wordStart:wordStart+3] != "nan" && s[wordStart:wordStart+3] != "NAN") {
+		if signStart+3 > len(s) ||
+			(s[signStart:signStart+3] != "nan" && s[signStart:signStart+3] != "NAN") {
 			i++
 			continue
 		}
+		tokenStart := i
+		wordStart := signStart
 		wordEnd := wordStart + 3
 		spanStart := tokenStart
 		for spanStart > literalStart && s[spanStart-1] == ' ' {
@@ -326,7 +327,7 @@ func splitNaNOutput(s string) ([]nanOutputPart, string) {
 		parts = append(parts, nanOutputPart{
 			literal:  s[literalStart:spanStart],
 			upper:    s[wordStart] == 'N',
-			sign:     sign,
+			signRun:  s[tokenStart:wordStart],
 			leading:  tokenStart - spanStart,
 			trailing: spanEnd - wordEnd,
 		})
