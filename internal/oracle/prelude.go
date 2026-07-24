@@ -88,9 +88,42 @@ local __acc, __n, __len = {}, 0, 0
 -- output cannot be silently swallowed just because a NaN was rendered
 -- elsewhere in the same run.
 local __nan_spans, __nan_span_n = {}, 0
+-- __nan_provenance maps a string.format result to a FIFO list of
+-- {rel_off, len} pairs describing where nan/NAN tokens live inside
+-- that string. Filled by the string.format wrapper (see preludeGuards)
+-- and consumed by __emit at real output time, so a formatted string
+-- stored to a local and printed later still records the correct
+-- absolute offsets. FIFO because two format() calls could produce the
+-- SAME string bytes (e.g. both "nan"); consuming in call order keeps
+-- them in the same order they hit the accumulator. Interned strings
+-- with no provenance simply skip the lookup.
+local __nan_provenance = {}
 local __tostring, __type, __select = tostring, type, select
 local __concat, __error = table.concat, error
+local function __record_nan_span(off, len)
+  __nan_span_n = __nan_span_n + 1
+  __nan_spans[__nan_span_n] = off .. "-" .. (off + len)
+end
+local function __consume_provenance(s)
+  local q = __nan_provenance[s]
+  if q == nil then return end
+  local head = q[1]
+  if head == nil then return end
+  local base = __len
+  for i = 1, #head do
+    local p = head[i]
+    __record_nan_span(base + p[1], p[2])
+  end
+  -- Shift the queue (FIFO). Small lists in practice: one format() call
+  -- rarely emits many nan tokens, and duplicate identical results are
+  -- rare too. Table shifting keeps things simple over careful head/tail
+  -- pointers.
+  for i = 1, #q - 1 do q[i] = q[i + 1] end
+  q[#q] = nil
+  if #q == 0 then __nan_provenance[s] = nil end
+end
 local function __emit(s)
+  __consume_provenance(s)
   __len = __len + #s
   if __len > ` + strconv.Itoa(OutputCapBytes) + ` then
     __error("` + LimitSentinel + `: output cap", 0)
@@ -98,9 +131,13 @@ local function __emit(s)
   __n = __n + 1
   __acc[__n] = s
 end
-local function __record_nan_span(off, len)
-  __nan_span_n = __nan_span_n + 1
-  __nan_spans[__nan_span_n] = off .. "-" .. (off + len)
+local function __record_provenance(s, pairs_list)
+  local q = __nan_provenance[s]
+  if q == nil then
+    q = {}
+    __nan_provenance[s] = q
+  end
+  q[#q + 1] = pairs_list
 end
 function print(...)
   local n = __select("#", ...)
@@ -112,7 +149,13 @@ function print(...)
     if __type(s) ~= "string" then
       __error("'tostring' must return a string to 'print'")
     end
-    if is_nan then __record_nan_span(__len, #s) end
+    -- Attach the NaN provenance to the tostring result rather than
+    -- recording an absolute span here: this delays the offset compute
+    -- to __emit(s) so it's correct even when the '\t' separator
+    -- between print args has already bumped __len. FIFO merges
+    -- correctly with any pre-existing string.format provenance for
+    -- the same interned string value.
+    if is_nan then __record_provenance(s, {{0, #s}}) end
     __emit(s)
   end
   __emit("\n")
@@ -131,7 +174,7 @@ io.write = function(...)
       -- function's C-vs-Go %g behavior.
       local is_nan = v ~= v
       local s = __tostring(v)
-      if is_nan then __record_nan_span(__len, #s) end
+      if is_nan then __record_provenance(s, {{0, #s}}) end
       __emit(s)
     elseif tv == "string" then
       __emit(v)
@@ -270,16 +313,24 @@ string.format = function(f, ...)
     end
   end
   local out = __sformat(f, ...)
-  -- Record spans for EVERY nan/NAN token in the format output when at
-  -- least one NaN argument was consumed. We can't distinguish which
-  -- conversion produced which token from Lua-side alone (PUC's
-  -- lstrlib.c does not expose the mapping) and format+tostring both
-  -- forward numeric NaNs to the same libc renderer, so any nan/NAN
-  -- token in the output is by construction produced by a NaN render
-  -- path when has_nan_arg is true. Non-NaN calls (no NaN in args)
-  -- record no spans, so a literal "NAN" written via
-  -- string.format("%s", "NAN") stays outside every span and remains
-  -- byte-compared.
+  -- Attach provenance describing every nan/NAN token in the output
+  -- when at least one NaN argument was consumed. Offsets are
+  -- RELATIVE to the format result; __emit converts them to absolute
+  -- accumulator offsets at real output time so a value stored to a
+  -- local and printed later still records the correct span
+  -- (Codex-review finding: the previous absolute-offset design broke
+  -- as soon as format() and its emit did not touch __len back-to-back;
+  -- worse, two format() calls sharing the same __len would record
+  -- overlapping spans and turn a valid input into VerdictLimit).
+  --
+  -- We can't distinguish which conversion produced which nan token
+  -- from Lua-side alone (PUC's lstrlib.c does not expose the mapping)
+  -- and format+tostring both forward numeric NaNs to the same libc
+  -- renderer, so any nan/NAN token in the output is by construction
+  -- produced by a NaN render path when has_nan_arg is true. Non-NaN
+  -- calls (no NaN in args) attach no provenance, so a literal "NAN"
+  -- written via string.format("%s", "NAN") stays outside every span
+  -- and remains byte-compared.
   --
   -- Each span greedily absorbs the '-' immediately preceding the
   -- token AND the ASCII spaces on either side, so printf width
@@ -288,7 +339,7 @@ string.format = function(f, ...)
   -- a matched span). Two adjacent nan tokens share their overlapping
   -- padding by advancing i past the last consumed byte.
   if has_nan_arg then
-    local base = __len
+    local pairs_list = {}
     local i = 1
     while true do
       local s, e = __sfind(out, "[Nn][Aa][Nn]", i)
@@ -303,9 +354,10 @@ string.format = function(f, ...)
       while spanEnd <= #out and __ssub(out, spanEnd, spanEnd) == " " do
         spanEnd = spanEnd + 1
       end
-      __record_nan_span(base + spanStart - 1, spanEnd - spanStart)
+      pairs_list[#pairs_list + 1] = {spanStart - 1, spanEnd - spanStart}
       i = spanEnd
     end
+    if #pairs_list > 0 then __record_provenance(out, pairs_list) end
   end
   return out
 end

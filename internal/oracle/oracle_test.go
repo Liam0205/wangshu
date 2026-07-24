@@ -64,6 +64,15 @@ func TestExec_NaNSpans(t *testing.T) {
 		// must NOT be recorded, so downstream CompareOutput still fails
 		// on script-side literal-string differences.
 		{`print(0/0, "BANANA")`, 1, "nan"},
+		// Reviewer-motivated (round 2): a formatted string that is
+		// stored to a local and emitted LATER must still record spans
+		// pointing at the final output, not at __len at format time.
+		{`local s = string.format("%E", 0/0) print("prefix", s)`, 1, "NAN"},
+		// Reviewer-motivated (round 2): two string.format calls
+		// evaluated back-to-back in the SAME print argument list must
+		// produce two disjoint spans in submission order (previous
+		// design put both at the same __len -> non-monotonic -> Limit).
+		{`print(string.format("%E0", -(0/0)), string.format("0%E", -(0/0)))`, 2, "NAN"},
 	}
 	for _, tt := range tests {
 		r := execT(t, tt.src)
