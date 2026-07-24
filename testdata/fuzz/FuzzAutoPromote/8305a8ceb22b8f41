@@ -1,0 +1,2 @@
+go test fuzz v1
+string("function sum(n)for A=0,n do end end sum\"7\"")
