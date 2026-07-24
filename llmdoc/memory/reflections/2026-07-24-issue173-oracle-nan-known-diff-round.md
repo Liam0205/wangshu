@@ -6,12 +6,25 @@ description: >
   （glibc 输出取决于 NaN 位模式 × verb 大小写），追那一个 CPU/libc 组合的具体
   显示需改 VM 值层 NaN-boxing 对齐 x86，收益低风险高。本轮把 #173 定性为 PUC/
   x86/libc 对 NaN 符号的已知平台差异（IEEE 754 不赋 NaN 符号数值语义），改为在
-  oracle diff harness 里窄口径识别并跳过：prelude 输出捕获层加 `__nan_output`
-  标志 + one-byte readout header 传给 Go 侧 `Result.KnownNaNSign`，`CompareOutput`
-  只在两端都有 NaN 输出证据时对单一 nan/NAN token 做符号 spelling 精细比对
-  （含 printf width 一列的对偶）。绝不在 `NormalizeOutput` 里全局替换 `nan`/
-  `NAN` —— 会误吞脚本自己输出的普通字符串。保留正负例回归测试。过程中先撞到一个
-  WIP commit（全局替换）直接违反 #173 明文约束，revert 回精细方案后重新走完。
+  oracle diff harness 里 span-anchored 窄口径识别并跳过：prelude 输出捕获层
+  按每次 NaN 渲染事件（print/io.write 的数值 NaN + `string.format` 有 NaN 参数
+  时输出中每个 nan/NAN token 及相邻的 `-`/`+` 符号列与两侧 ASCII 空格）
+  记录 `__nan_spans` FIFO，`__oracle_readout()` 用多行 header 
+  （`<count>\n<off-end>\n...body`）把 span 数组和输出 body 传给 Go 侧
+  `Result.NaNSpans`；`internal/oracle.CompareOutput` 三态归类（Equal / 
+  KnownNaNSign / Different）逐 span walk：span 外的字节两侧必须 byte-equal
+  （脚本自出字面 `NAN`/`-NAN` 差异一定被抓到），span 内允许
+  `knownNaNSignDifference` 判定的 sign spelling 差异（含 printf 宽度一列
+  偿还、对称 script padding、`-`/`+`/多符号 signRun 互换、reserved-sign-column
+  padding 差 1）。绝不在 `NormalizeOutput` 里全局替换 `nan`/`NAN` —— 会误吞
+  脚本自己输出的普通字符串。已知 harness 限制记录在
+  `TestExec_NaNSpansKnownLimit`：Lua 5.1 无法区分 `string.format` 返回值与
+  同值 script literal 的 identity，脚本先 emit 该 literal 会误消费
+  provenance FIFO 首项，狭窄 collision 是有意识的 trade-off。保留正负例
+  回归测试与 5 个 corpus seed（其中 3 个是 PR CI 上 fuzz 发现的边界形态：
+  `%+E0` 符号列冲突、`%10f` reserved-sign-column、`+%E00000` 相邻 signRun）。
+  过程中先撞到一个 WIP commit（全局替换）直接违反 #173 明文约束，revert 回
+  精细方案后重新走完；PR review 迭代两轮后 span-anchored 方案落地。
 metadata:
   type: reflection
   date: 2026-07-24
