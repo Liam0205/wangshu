@@ -22,6 +22,21 @@ jobs:
           go-version-file: go.mod
       - uses: golangci/golangci-lint-action@v9
 
+  # test-scripts (issue #179): self-tests for tooling scripts so a stale
+  # stub or a downstream go-fuzz.sh change (e.g. the added -list probe)
+  # cannot silently break the retry-path regression again. Kept as its
+  # own light job in parallel with lint/test so failure signal is clear
+  # and the gate can be rerun standalone.
+  test-scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: go-fuzz.sh retry-path regression
+        run: make test-scripts
+
   # **F3-#3c tri-platform matrix** (2026-06-30): following the user decision
   # that arm64 and amd64 have equal standing, all four big jobs
   # (test/difftest/conformance/fuzz-smoke) gained an os matrix dimension

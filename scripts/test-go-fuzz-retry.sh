@@ -22,6 +22,36 @@ trap 'rm -rf "$stub_dir"' EXIT
 
 cat > "$stub_dir/go" <<'STUB'
 #!/usr/bin/env bash
+# `go test` stub used by test-go-fuzz-retry.sh. Two invocation kinds
+# must be distinguished, mirroring what scripts/go-fuzz.sh actually
+# issues:
+#
+#   1. probe:  `go test [-tags ...] ./pkg -run=^$ -list ^FuzzX$`
+#              -> must succeed and print the target name so go-fuzz.sh
+#                 accepts the target as buildable and moves on to the
+#                 real fuzz call. Independent of $STATE_FILE.
+#   2. fuzz :  `go test [-tags ...] ./pkg -run=^$ -fuzz=^FuzzX$ ...`
+#              -> $STATE_FILE dictates the outcome (deadline / crash
+#                 / pass), driving go-fuzz.sh's #75804 retry logic.
+#
+# Discriminator: `-list` is a probe-only flag; `-fuzz` is a fuzz-only
+# flag. Everything else (compile errors, unknown flags, ...) exits
+# non-zero so a stub bug can't sneak past the harness.
+for arg in "$@"; do
+  case "$arg" in
+    -list|-list=*) echo "FuzzX"; exit 0;;
+  esac
+done
+saw_fuzz=0
+for arg in "$@"; do
+  case "$arg" in
+    -fuzz|-fuzz=*) saw_fuzz=1; break;;
+  esac
+done
+if [ "$saw_fuzz" -eq 0 ]; then
+  echo "stub go: unexpected invocation $*" >&2
+  exit 2
+fi
 case "$(cat "$STATE_FILE")" in
   spurious-then-pass)
     echo pass > "$STATE_FILE"
@@ -78,10 +108,19 @@ GO
     rm -rf "$tree" "$log"
 }
 
-# 1. Spurious deadline once, pass on retry -> success.
+# Each case's extra_check does prove-the-path: it asserts a byte that
+# ONLY appears when run_target really executed the intended branch.
+# "retrying once" is emitted from within run_target's spurious-deadline
+# adjudication; "Failing input written to" is the fuzz stub's own crash
+# signature and only surfaces when run_target actually ran the target
+# (not when the probe short-circuited). Without these positive markers
+# a bug in the probe path could turn the whole harness green while
+# skipping the retry logic entirely (issue #179).
+#
+# 1. Spurious deadline once, pass on retry -> success, retry emitted.
 run_case spurious-then-pass zero 'grep -q "retrying once" "$log"'
-# 2. Real crasher -> immediate failure, and NO retry attempt.
-run_case real-crash nonzero '! grep -q "retrying once" "$log"'
+# 2. Real crasher -> immediate failure, NO retry, crash line reached.
+run_case real-crash nonzero '! grep -q "retrying once" "$log" && grep -q "Failing input written to" "$log"'
 # 3. Spurious twice -> failure (second failure reported as-is), exactly
 #    one retry.
 run_case always-spurious nonzero '[ "$(grep -c "retrying once" "$log")" -eq 1 ]'

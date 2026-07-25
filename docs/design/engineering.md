@@ -28,15 +28,18 @@
 
 ```makefile
 # Makefile(仓库根)——唯一任务入口,CI 与本地共用。
-.PHONY: all fmt lint test bench-test race cover fuzz bench conformance difftest hooks tidy
+.PHONY: all fmt lint test-scripts test bench-test race cover fuzz bench conformance difftest hooks tidy
 
-all: fmt lint test fuzz conformance difftest bench-test      ## 默认:提交前本地全检(主模块 + benchmarks 子模块)
+all: fmt lint test-scripts test fuzz conformance difftest bench-test      ## 默认:提交前本地全检(主模块 + benchmarks 子模块)
 
 fmt:                                                ## 格式化(写回)
 	gofmt -w $(shell git ls-files '*.go')
 
 lint:                                               ## 全仓静态检查
 	golangci-lint run ./...
+
+test-scripts:                                       ## 工具脚本自测(issue #179:go-fuzz.sh retry-path 回归)
+	bash scripts/test-go-fuzz-retry.sh
 
 test:                                               ## 全部单测(含 race,见 §3.1)
 	go test -race ./...
@@ -66,6 +69,7 @@ tidy:
 ```
 
 - 借鉴 pineapple 的 `go-fuzz.sh`(grep 自动发现 `^func Fuzz` 目标逐个跑),但入口统一挂 Makefile。
+- **`test-scripts` 目标**(2026-07-25,issue #179 引入):tooling 类回归脚本(目前是 `scripts/test-go-fuzz-retry.sh`,验证 `go-fuzz.sh` 对 golang/go#75804 spurious deadline 的重试逻辑)必须至少挂一个门禁,否则一次 downstream 改动就能让它静默失效——issue #179 之前该脚本失效期至少半年没人发现。目标本身秒级,同时挂 `make all`(本地 pre-commit)与 `ci.yml` 独立 job(PR 门禁,失败信号清晰、可 rerun),两个门禁同步对它负责。
 - `make hooks` 替代 pineapple 的"README 一行指引"——新人 clone 后 `make hooks` 一步完成,README 与 [00-overview](./p1-interpreter/00-overview.md) 都指向它。
 - **`make all` 是「本地提交前全检」**——七件套含 `fuzz / conformance / difftest` 全部跑一遍(耗时 ~2-3 min),目的是把 nightly 才跑的强度拉到本地强制,与 CI 门禁口径对齐。日常小改动若不想每次等三分钟,用 `make test` 跑主模块 race + `make fmt lint` 即可;commit/push 前再过一次 `make all`。
 
@@ -180,6 +184,9 @@ concurrency:
 jobs:
   lint:            # golangci-lint(与 pre-push 同配置,双保险)
     - uses: golangci/golangci-lint-action@v9
+
+  test-scripts:    # 工具脚本自测(2026-07-25,issue #179;<5s;与 lint 并列独立 job 便于 rerun)
+    - run: make test-scripts
 
   test:            # 单测 + race + 覆盖率(12 §8 步骤 1)
     - run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
