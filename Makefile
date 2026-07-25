@@ -18,7 +18,7 @@
 #  stay on the native `go test` path -- the fuzz corpus depends on the source
 #  tree, difftest depends on the external lua5.1 oracle, and conformance is
 #  small and stable enough that binary mode is not worth it)
-.PHONY: all fmt lint \
+.PHONY: all fmt lint test-scripts \
         build build-all build-p1 build-p3 build-p4 build-clean \
         test test-all test-p1 test-p3 test-p4 test-trace \
         bench bench-all bench-p1 bench-p3 bench-p4 bench-test bench-pineapple bench-pineapple-fetch \
@@ -27,13 +27,16 @@
         conformance conformance-all conformance-p1 conformance-p3 conformance-p4 \
         cover hooks check-pr-ci tidy release
 
-all: fmt lint build-all test-all fuzz-all conformance difftest-all      ## Default: full local pre-commit check (main module + benchmarks submodule); build-all compiles the .test binaries for all variants once and later test/bench reuse them; the benchmarks submodule functional tests (realworld oracle parity) are already covered by test-all via precompiled binaries, so bench-test is not duplicated in all
+all: fmt lint test-scripts build-all test-all fuzz-all conformance difftest-all      ## Default: full local pre-commit check (main module + benchmarks submodule); build-all compiles the .test binaries for all variants once and later test/bench reuse them; the benchmarks submodule functional tests (realworld oracle parity) are already covered by test-all via precompiled binaries, so bench-test is not duplicated in all
 
 fmt:                                                ## Format (writes back)
 	@files=$$(git ls-files '*.go'); [ -z "$$files" ] || gofmt -w $$files
 
 lint:                                               ## Repo-wide static checks
 	golangci-lint run ./...
+
+test-scripts:                                       ## Self-tests for tooling scripts (currently: go-fuzz.sh retry-path regression, issue #179)
+	bash scripts/test-go-fuzz-retry.sh
 
 # --- build ------------------------------------------------------------------
 build: build-all                                    ## Alias: make build = build-all
