@@ -537,23 +537,23 @@ func stringFnFormat(st *crescent.State, args []value.Value) ([]value.Value, *cre
 // from spec are applied here; precision is meaningless for these values and
 // C ignores it.
 //
-// This deliberately hardcodes the NaN sign as negative rather than reading
-// f's sign bit: wangshu's arithmetic NaN carries the OPPOSITE sign bit from
-// PUC/x86 (wangshu 0/0 is +NaN, PUC is -NaN), so reading the real bit would
-// diverge from the oracle on exactly the 0%0 inputs #170/#171 reported.
-// Hardcoding matches the common fuzz-hit negative case. The remaining NaN-sign
-// spellings are host-platform differences with no Lua numeric meaning; the
-// oracle fuzz harness classifies and skips them under #173 instead of changing
-// the VM value representation to imitate one CPU/libc combination.
+// NaN renders WITHOUT a sign under every verb, upper or lower.
+//
+// This used to hardcode "-NAN" for the uppercase verbs, to imitate what glibc
+// prints so the differential oracle would agree. That was imitation of one
+// CPU/libc combination for the benefit of a test, and it was never right as
+// product behaviour: IEEE 754 gives a NaN's sign bit no numeric meaning, and
+// wangshu cannot honour it anyway because value.NumberValue canonicalizes every
+// NaN to one bit pattern. The oracle now normalizes its own NaN rendering
+// instead (internal/oracle/lua515.c), so nothing is gained by the imitation and
+// the inconsistency between %e and %E is gone.
 func cFormatSpecialFloat(spec []byte, verb byte, f float64) []byte {
 	upper := verb == 'E' || verb == 'G'
 
 	var core string
 	if math.IsNaN(f) {
 		if upper {
-			// glibc prints the 0/0 NaN as "-NAN" under an uppercase
-			// conversion; the lowercase form is a bare "nan".
-			core = "-NAN"
+			core = "NAN"
 		} else {
 			core = "nan"
 		}
@@ -580,15 +580,15 @@ func cFormatSpecialFloat(spec []byte, verb byte, f float64) []byte {
 	// spec is "%" + flags + width + optional ".prec"; flags and precision
 	// are already accounted for above, so only the width digits matter.
 	//
-	// PUC 5.1.5 / glibc quirk: glibc always reserves one column for a NaN's
-	// sign. Under a lowercase verb the sign is invisible (core is a bare
-	// "nan"), so that reserved column shows up as an effective field width
-	// of declared-width MINUS ONE (%5f->" nan" [width 4], %10.3f->
-	// "      nan" [width 9], %8.2f->"    nan" [width 7]). Under an uppercase
-	// verb the sign is the visible '-' already in core ("-NAN"), so the
-	// column is spent and the field pads to the FULL declared width
-	// (%5E->" -NAN" [width 5]). Inf carries its own sign in core either way
-	// and also pads to the full width (%5f->"  inf"). Precision is ignored.
+	// Every value pads to the FULL declared width, NaN and Inf alike.
+	//
+	// This used to subtract one column for a lowercase NaN, imitating glibc,
+	// which always reserves a column for a NaN's sign and so renders %5f as
+	// " nan" (four visible characters). That was imitation of one libc for the
+	// benefit of the differential oracle, and it made wangshu's own %5f and %5E
+	// pad inconsistently. The oracle now normalizes its NaN rendering, sign and
+	// reserved column together (internal/oracle/lua515.c), so the imitation buys
+	// nothing. Precision is ignored for these values, as in C.
 	width := 0
 	left := bytes.IndexByte(spec, '-') >= 0
 	for i := 1; i < len(spec); i++ {
@@ -602,9 +602,6 @@ func cFormatSpecialFloat(spec []byte, verb byte, f float64) []byte {
 			// width value is harmless.
 			width = width*10 + int(c-'0')
 		}
-	}
-	if math.IsNaN(f) && !upper && width > 0 {
-		width-- // lowercase NaN: glibc's reserved sign column, unshown
 	}
 	if width <= len(core) {
 		return []byte(core)
