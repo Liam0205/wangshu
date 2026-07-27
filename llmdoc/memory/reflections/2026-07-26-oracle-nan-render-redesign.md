@@ -66,6 +66,12 @@ metadata:
 > （`README.md`、`docs/design/engineering.md` §3.2、
 > `docs/design/p1-interpreter/10-stdlib.md` §5.2.1、
 > `docs/design/p1-interpreter/12-testing-difftest.md` §4.2）。
+>
+> 后续独立审计在 `7e3104f` 又找到两个实现边界：`lstrlib.c` 局部 shadow 的 `sprintf`
+> 也会接到 `%s` / `%c`，因此必须先按 conversion verb 限定为浮点 `%e/%E/%f/%g/%G`，
+> 否则脚本自己的 `"-nan"` 会被误改；左对齐宽字段的 scratch buffer 必须按去掉尾随
+> padding 后的 NaN run 定长，否则宽度超过 64 时会静默放弃归一。修正后用 14 个 verb、
+> 8 组 flag、8 个 width、4 个 precision、9 种参数值共 26160 个组合做了系统扫描。
 
 ## 1. 问题是一个字节
 
@@ -147,9 +153,16 @@ vendored 源码保持与 `_lua515/README` 记录的 sha256 逐字节一致 —�
 2. **剥任何符号字符，不只是 `-`**。符号去掉之后，glibc 的 `+` 与空格 flag 开始作用于
    NaN，产生 `+NAN` / ` NAN`。
 3. **Inf 保留符号**（那个符号有数值意义），脚本自己写的 `"-nan"` 字面量不动
-   （函数只在缓冲区里认出一个 NaN 渲染时才动手，且要求它前面只有 padding 或一个符号）。
+   （不能只靠 buffer 内容判断来源；`sprintf` shadow 会接到 `%s` / `%c`，必须先把
+   conversion verb 限定为会自行产生浮点 NaN 的 `%e/%E/%f/%g/%G`）。
+4. **scratch buffer 按实际 NaN run 定长**。左对齐格式的尾随 padding 可能很宽；若在剥掉
+   padding 前用整段长度检查 buffer，`%-65f` 及更宽字段会直接放弃归一并泄漏符号。
 
 真值表见 `internal/oracle/oracle_test.go` 的 `TestExec_NaNRenderedWithoutSign`。
+
+后续审计没有只补两个反例，而是扫过 26160 个格式组合（14 verb × 8 flag 组合 × 8 width ×
+4 precision × 9 参数值），并加入只含 `nan` 文本的负例。这个扫描还隔离出一个 master 已有的
+整数格式问题（`%+N.0d` 与零值），单独登记，没有借本轮顺手改动。
 
 ## 6. 顺带清掉产品侧的两处 glibc 模仿
 
@@ -196,7 +209,8 @@ vendored 源码保持与 `_lua515/README` 记录的 sha256 逐字节一致 —�
   旧机制下会连同**同一次运行里的真差异**一起被丢掉，所以覆盖面是**增加**的。
 - 16 个 corpus 文件入 `testdata/fuzz/FuzzOracleDiff/`（含 Inf 的对照与脚本自出
   `print("-nan","-NAN")` 的负例）。
-- 60 秒 `FuzzOracleDiff` 无 crash，全套测试绿。
+- 初版 60 秒 `FuzzOracleDiff` 与全套测试通过，但后续独立 fuzz 审计仍抓到 `%s` 误改用户
+  字符串和宽于 64 的左对齐字段漏归一两处缺口；`7e3104f` 修正后再用上述 26160 组合扫描。
 
 ## 9. 后续验证：#187–#190 四个 crasher 是同一根因的不同表现
 
