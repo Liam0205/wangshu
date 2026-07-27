@@ -23,8 +23,8 @@ var addrRe = regexp.MustCompile(`\b(table|function|thread|userdata): 0x[0-9a-fA-
 // byte comparison. Accepted platform differences belong in CompareOutput so
 // callers can distinguish them from exact equality. NaN sign spellings are
 // deliberately NOT normalized here (#173): the accept-known-diff path lives
-// in CompareOutput and is gated by per-span rendering evidence from prelude,
-// so a literal "NAN" written by the script cannot be silently folded.
+// NaN needs no handling here at all: the oracle normalizes its own NaN
+// rendering (lua515.c), so both engines emit the same bytes.
 func NormalizeOutput(s string) string {
 	return addrRe.ReplaceAllString(s, "${1}: 0xADDR")
 }

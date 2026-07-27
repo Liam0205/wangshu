@@ -17,7 +17,7 @@ func TestNormalizeOutput_AddressesOnly(t *testing.T) {
 		{"0x1\n", "0x1\n"},
 		{"0x2\n", "0x2\n"},
 		{"value=0xff\n", "value=0xff\n"},
-		// NaN sign is classified explicitly by CompareOutput via spans,
+		// NaN needs no handling here: the oracle normalizes its own rendering,
 		// never hidden here.
 		{"-nan\tnan\n", "-nan\tnan\n"},
 	}
