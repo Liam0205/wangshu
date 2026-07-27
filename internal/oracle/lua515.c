@@ -117,7 +117,12 @@ static void wangshu_fixnan_spec (char *s, const char *form) {
    * because the width, not the buffer, decides how much padding belongs. */
   {
     size_t wordlen = strlen(w);
-    char tmp[64];
+    /* MAX_ITEM in lstrlib.c is 512, and a width is at most two digits, so a
+     * padded run cannot approach this. Sized against the run INCLUDING its
+     * trailing padding: measuring the stripped word instead made every
+     * left-justified field wider than the buffer bail out early and keep its
+     * sign. */
+    char tmp[600];
     size_t i, pad;
     if (wordlen >= sizeof tmp) return;
     memcpy(tmp, w, wordlen + 1);
@@ -190,7 +195,24 @@ static int wangshu_sprintf (char *buf, const char *fmt, ...) {
   va_start(ap, fmt);
   r = vsprintf(buf, fmt, ap);
   va_end(ap);
-  wangshu_fixnan_spec(buf, fmt);
+  /* Normalize ONLY a float conversion's own output.
+   *
+   * The shadow covers every sprintf in lstrlib.c, including the %s and %c
+   * cases, and those render caller-supplied bytes. Rewriting them would corrupt
+   * a user string that merely begins with "nan" -- string.format("%s", "-nan")
+   * would come back as "nan", and its length as 3 against wangshu's 4. That is
+   * precisely the failure this change exists to remove, so the conversion
+   * character is checked first: only e/E/f/g/G renderings can produce a NaN
+   * word of their own. */
+  {
+    const char *q = fmt + strlen(fmt);
+    if (q > fmt) {
+      char verb = q[-1];
+      if (verb == 'e' || verb == 'E' || verb == 'f' ||
+          verb == 'g' || verb == 'G')
+        wangshu_fixnan_spec(buf, fmt);
+    }
+  }
   return r;
 }
 
