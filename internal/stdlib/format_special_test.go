@@ -25,8 +25,8 @@ func TestCFormatSpecialFloat(t *testing.T) {
 		{"%", 'f', nan, "nan"},
 		{"%", 'e', nan, "nan"},
 		{"%", 'g', nan, "nan"},
-		{"%", 'E', nan, "-NAN"},
-		{"%", 'G', nan, "-NAN"},
+		{"%", 'E', nan, "NAN"},
+		{"%", 'G', nan, "NAN"},
 		{"%", 'f', pinf, "inf"},
 		{"%", 'e', pinf, "inf"},
 		{"%", 'E', pinf, "INF"},
@@ -39,21 +39,21 @@ func TestCFormatSpecialFloat(t *testing.T) {
 		{"%+", 'f', pinf, "+inf"},
 		{"% ", 'f', pinf, " inf"},
 
-		// Width. Lowercase NaN pads to width-1 (glibc reserves an unshown
-		// sign column); Inf and uppercase NaN pad to the full width.
-		{"%5", 'f', nan, " nan"},         // width 5 -> effective 4
-		{"%10.3", 'f', nan, "      nan"}, // width 10 -> effective 9, prec ignored
-		{"%8.2", 'f', nan, "    nan"},    // width 8 -> effective 7
-		{"%4", 'f', nan, "nan"},          // width 4 -> effective 3 == len, no pad
-		{"%2", 'f', nan, "nan"},          // width < len, no pad
-		{"%5", 'f', pinf, "  inf"},       // Inf: full width 5
-		{"%10", 'f', pinf, "       inf"}, // Inf: full width 10
-		{"%5", 'E', nan, " -NAN"},        // uppercase NaN: full width 5 (sign shown)
-		{"%8", 'G', nan, "    -NAN"},     // uppercase NaN: full width 8
+		// Width. Everything pads to the FULL declared width; NaN no longer
+		// subtracts a column for glibc's unshown sign (see the function's doc).
+		{"%5", 'f', nan, "  nan"},         // full width 5
+		{"%10.3", 'f', nan, "       nan"}, // full width 10, precision ignored
+		{"%8.2", 'f', nan, "     nan"},    // full width 8
+		{"%3", 'f', nan, "nan"},           // width == len, no pad
+		{"%2", 'f', nan, "nan"},           // width < len, no pad
+		{"%5", 'f', pinf, "  inf"},        // Inf: full width 5
+		{"%10", 'f', pinf, "       inf"},  // Inf: full width 10
+		{"%5", 'E', nan, "  NAN"},         // uppercase NaN: full width 5
+		{"%8", 'G', nan, "     NAN"},      // uppercase NaN: full width 8
 
 		// Left-justify.
-		{"%-10", 'f', nan, "nan      "},   // width 10 -> effective 9, left
-		{"%-8", 'E', nan, "-NAN    "},     // uppercase: full width 8, left
+		{"%-10", 'f', nan, "nan       "},  // full width 10, left
+		{"%-8", 'E', nan, "NAN     "},     // full width 8, left
 		{"%-10", 'f', pinf, "inf       "}, // Inf: full width 10, left
 	}
 	for _, tc := range cases {
