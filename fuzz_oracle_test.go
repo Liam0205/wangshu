@@ -82,7 +82,7 @@ return table.concat(out, ";")
 // runWangshuSide executes prelude+src on a fresh wangshu State and
 // classifies the outcome with the same three-state verdict the shim
 // uses. Output is read back via the prelude's __oracle_readout.
-func runWangshuSide(t *testing.T, src, prelude string) (verdict oracle.Verdict, output string, spans []oracle.NaNSpan, errMsg string) {
+func runWangshuSide(t *testing.T, src, prelude string) (verdict oracle.Verdict, output string, errMsg string) {
 	st := wangshu.NewState(wangshu.Options{
 		// Cap the arena well below the Go fuzz worker's GOMEMLIMIT:
 		// arena exhaustion must classify as a skip, not kill a worker.
@@ -121,17 +121,13 @@ func runWangshuSide(t *testing.T, src, prelude string) (verdict oracle.Verdict, 
 	if !ro.IsFunction() {
 		// The fuzz script clobbered the readout global; output is
 		// unrecoverable. Treat as limit (not comparable).
-		return oracle.VerdictLimit, "", nil, "readout clobbered"
+		return oracle.VerdictLimit, "", "readout clobbered"
 	}
 	res, roErr := st.Call(ro)
 	if roErr != nil || len(res) == 0 || !res[0].IsString() {
-		return oracle.VerdictLimit, "", nil, "readout failed"
+		return oracle.VerdictLimit, "", "readout failed"
 	}
-	output, nanSpans, ok := oracle.DecodeOutput(res[0].Str())
-	if !ok {
-		return oracle.VerdictLimit, "", nil, "invalid readout"
-	}
-	return verdict, output, nanSpans, errMsg
+	return verdict, res[0].Str(), errMsg
 }
 
 func FuzzOracleDiff(f *testing.F) {
@@ -195,7 +191,7 @@ print(coroutine.resume(co, 10)) print(coroutine.resume(co, 20))`,
 		if or.Verdict == oracle.VerdictLimit {
 			t.Skip("oracle limit: " + or.Err)
 		}
-		wv, wout, wspans, werr := runWangshuSide(t, src, prelude)
+		wv, wout, werr := runWangshuSide(t, src, prelude)
 		if wv == oracle.VerdictLimit {
 			t.Skip("wangshu limit: " + werr)
 		}
@@ -212,11 +208,9 @@ print(coroutine.resume(co, 10)) print(coroutine.resume(co, 20))`,
 				or.Verdict, or.Err, wv, werr, src)
 		}
 
-		switch oracle.CompareOutput(or.Output, wout, or.NaNSpans, wspans) {
+		switch oracle.CompareOutput(or.Output, wout) {
 		case oracle.OutputEqual:
 			return
-		case oracle.OutputKnownNaNSign:
-			t.Skip("known platform difference: NaN sign spelling (#173)")
 		case oracle.OutputDifferent:
 			oOut := oracle.NormalizeOutput(or.Output)
 			wOut := oracle.NormalizeOutput(wout)

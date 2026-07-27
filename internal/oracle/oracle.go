@@ -53,11 +53,9 @@ const (
 
 // Result is the outcome of one Exec.
 type Result struct {
-	Verdict  Verdict
-	Output   string    // captured print/io.write bytes (via the prelude)
-	NaNSpans []NaNSpan // byte ranges in Output that were produced by NaN
-	// rendering (see prelude.go). Empty when no NaN was rendered.
-	Err string // error message (VerdictError / VerdictLimit)
+	Verdict Verdict
+	Output  string // captured print/io.write bytes (via the prelude)
+	Err     string // error message (VerdictError / VerdictLimit)
 }
 
 // Limits bounds one Exec against hostile fuzz inputs.
@@ -124,14 +122,8 @@ func Exec(src, prelude string, lim Limits) Result {
 
 	res := Result{Verdict: Verdict(v)}
 	if out != nil {
-		readout := C.GoStringN(out, C.int(outLen))
+		res.Output = C.GoStringN(out, C.int(outLen))
 		C.wangshu_oracle_free(out)
-		var ok bool
-		res.Output, res.NaNSpans, ok = DecodeOutput(readout)
-		if !ok {
-			res.Verdict = VerdictLimit
-			res.Err = "oracle-harness: invalid readout"
-		}
 	}
 	if errMsg != nil {
 		res.Err = C.GoStringN(errMsg, C.int(errLen))
