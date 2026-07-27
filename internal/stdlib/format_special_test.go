@@ -21,7 +21,8 @@ func TestCFormatSpecialFloat(t *testing.T) {
 		f    float64
 		want string
 	}{
-		// Bare verbs: lowercase -> nan/inf, uppercase -> -NAN/INF.
+		// Bare verbs: lowercase -> nan/inf, uppercase -> NAN/INF. NaN carries no
+		// sign under any verb; Inf keeps its own.
 		{"%", 'f', nan, "nan"},
 		{"%", 'e', nan, "nan"},
 		{"%", 'g', nan, "nan"},

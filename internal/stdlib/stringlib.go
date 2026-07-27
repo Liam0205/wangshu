@@ -464,8 +464,8 @@ func stringFnFormat(st *crescent.State, args []value.Value) ([]value.Value, *cre
 			// NaN/Inf: Go's fmt prints "NaN"/"+Inf"/"-Inf", but PUC
 			// routes through C sprintf, whose glibc output is
 			// verb-case dependent (lowercase verb -> nan/inf,
-			// uppercase -> NAN/INF) and treats the NaN sign quirkily
-			// (%f of 0/0 is "nan" but %E of 0/0 is "-NAN"). Render
+			// uppercase -> NAN/INF). wangshu renders NaN without a
+			// sign under every verb (see cFormatSpecialFloat). Render
 			// these specially, applying only width + left-justify from
 			// the spec (precision and +/space are meaningless for NaN,
 			// C ignores them). Oracle diff fuzz catch (#170/#171).
@@ -528,7 +528,7 @@ func stringFnFormat(st *crescent.State, args []value.Value) ([]value.Value, *cre
 //
 //	verb        NaN (0/0)   +Inf (1/0)   -Inf (-1/0)
 //	%f %e %g    nan         inf          -inf
-//	%E %G       -NAN        INF          -INF
+//	%E %G       NAN         INF          -INF
 //
 // glibc's NaN sign is a quirk: the lowercase conversion prints a bare "nan"
 // (no sign, and +/space flags are ignored), while the uppercase conversion
