@@ -46,124 +46,53 @@ func TestExec_OutputCapture(t *testing.T) {
 	}
 }
 
-func TestExec_NaNSpans(t *testing.T) {
-	tests := []struct {
-		src        string
-		wantSpans  int
-		wantSubstr string // substring the first span must cover
-	}{
-		{`print("BANANA")`, 0, ""},
-		{`print(0/0)`, 1, "nan"},
-		{`io.write(0/0)`, 1, "nan"},
-		{`print(string.format("%E0", -(0/0)))`, 1, "NAN"},
-		// string.format with fmt=NaN goes through tostring(NaN) and
-		// records the resulting nan token exactly.
-		// string.format with a numeric-NaN fmt (no explicit
-		// conversions) tostrings the fmt and returns "-nan"/"nan".
-		// The fmt_was_nan path attaches a span so this direct NaN
-		// rendering is classified as sign-spelling difference.
-		{`print(string.format(0/0))`, 1, "nan"},
-		// Reviewer-motivated coverage: same run mixes a real NaN with
-		// script-emitted plain-text NaN spellings. The plain-text ones
-		// must NOT be recorded, so downstream CompareOutput still fails
-		// on script-side literal-string differences.
-		{`print(0/0, "BANANA")`, 1, "nan"},
-		// Reviewer-motivated (round 2): a formatted string that is
-		// stored to a local and emitted LATER must still record spans
-		// pointing at the final output, not at __len at format time.
-		{`local s = string.format("%E", 0/0) print("prefix", s)`, 1, "NAN"},
-		// Reviewer-motivated (round 2): two string.format calls
-		// evaluated back-to-back in the SAME print argument list must
-		// produce two disjoint spans in submission order (previous
-		// design put both at the same __len -> non-monotonic -> Limit).
-		{`print(string.format("%E0", -(0/0)), string.format("0%E", -(0/0)))`, 2, "NAN"},
-	}
-	for _, tt := range tests {
-		r := execT(t, tt.src)
-		if r.Verdict != VerdictOK {
-			t.Fatalf("%q: verdict = %v, err = %q", tt.src, r.Verdict, r.Err)
-		}
-		if len(r.NaNSpans) != tt.wantSpans {
-			t.Errorf("%q: got %d spans (%v), want %d, output = %q",
-				tt.src, len(r.NaNSpans), r.NaNSpans, tt.wantSpans, r.Output)
-			continue
-		}
-		if tt.wantSpans == 0 {
-			continue
-		}
-		got := r.Output[r.NaNSpans[0].Start:r.NaNSpans[0].End]
-		if !strings.Contains(strings.ToLower(got), strings.ToLower(tt.wantSubstr)) {
-			t.Errorf("%q: first span = %q, want it to contain %q (output=%q)",
-				tt.src, got, tt.wantSubstr, r.Output)
-		}
-	}
-}
-
-// TestExec_NaNSpansKnownLimit documents the value-collision limit of
-// the string.format provenance mechanism: Lua 5.1 has no primitive
-// distinguishing a format() result from a same-value script literal
-// (interned strings share identity), so a FIFO keyed on value can be
-// consumed early by an earlier literal emit sharing the same bytes.
-// Downstream CompareOutput sees the spans in different positions and
-// reports OutputDifferent -- a false negative for the known-diff
-// classifier that only bites when a script both emits a literal
-// matching the format result's exact byte sequence AND does so before
-// the format result itself. The narrow-window failure mode is
-// intentional: expanding the provenance to always tolerate value
-// collisions would swallow genuine script-side literal divergence,
-// violating issue #173's "everything outside the NaN spelling
-// fragment stays byte-equal" contract.
+// TestExec_NaNRenderedWithoutSign pins the oracle's local NaN normalization.
 //
-// The exact NaN spelling PUC prints depends on the host libc + CPU
-// (this test runs against the vendored 5.1.5 built for the host), so
-// we do not pin the concrete output bytes -- we probe both signed and
-// unsigned NaN literal candidates and require ONE OF them exercise
-// the collision, then assert the single-span-on-literal outcome the
-// mechanism produces in that scenario.
-func TestExec_NaNSpansKnownLimit(t *testing.T) {
-	// Reviewer-authored case (round 2 of Codex review on #181):
-	// PUC's %E on -(0/0) or 0/0 prints some spelling of NaN
-	// depending on host libc/CPU. Whichever spelling comes out, if
-	// the script emits that same literal via a separate print call
-	// BEFORE emitting the format result, the FIFO provenance for s
-	// is consumed by the literal emit rather than by print(s).
-	candidates := []struct {
-		src, lit string
-	}{
-		// spell = script literal; both signs to cover libcs that
-		// emit "NAN" and libcs that emit "-NAN" for -(0/0)/0/0.
-		{`local s = string.format("%E", -(0/0)) print("NAN") print(s)`, "NAN"},
-		{`local s = string.format("%E", -(0/0)) print("-NAN") print(s)`, "-NAN"},
-		{`local s = string.format("%E", 0/0) print("NAN") print(s)`, "NAN"},
-		{`local s = string.format("%E", 0/0) print("-NAN") print(s)`, "-NAN"},
-	}
-	for _, c := range candidates {
-		r := execT(t, c.src)
+// glibc renders a NaN's sign bit, so an unpatched build prints "-nan" for 0/0.
+// This oracle drops that sign (internal/oracle/lua515.c) so the differential
+// comparison can stay exact: once the sign byte is inside a string it becomes
+// ordinary data that '#', '==', string.sub, '..' and arithmetic move anywhere,
+// leaving differences like string.len(0/0) = 4 vs 3 with no NaN token in the
+// output for any exemption to anchor to.
+//
+// Inf keeps its sign: that sign carries meaning.
+func TestExec_NaNRenderedWithoutSign(t *testing.T) {
+	for _, tc := range []struct{ src, want string }{
+		{`print(0/0)`, "nan\n"},
+		{`print(-(0/0))`, "nan\n"},
+		{`print(0%0)`, "nan\n"},
+		{`print(tostring(0/0))`, "nan\n"},
+		{`io.write(0/0, "\n")`, "nan\n"},
+		{`print("x" .. (0/0))`, "xnan\n"},
+		{`print(string.format("%e", 0/0))`, "nan\n"},
+		{`print(string.format("%E", -(0/0)))`, "NAN\n"},
+		{`print(string.format("%f", 0/0))`, "nan\n"},
+		{`print(string.format("%g", 0/0))`, "nan\n"},
+		{`print(string.format("%G", -(0/0)))`, "NAN\n"},
+		{`print(string.format("value=[%10E]", -(0/0)))`, "value=[       NAN]\n"},
+		// the forms that leak the difference out of the token entirely
+		{`print(string.len(0/0))`, "3\n"},
+		{`print(string.byte(0/0))`, "110\n"},
+		{`print(string.len(0/0) * 100)`, "300\n"},
+		{`print(#("" .. (0/0)))`, "3\n"},
+		{`print(("" .. (0/0)) == "nan")`, "true\n"},
+		// inf is untouched
+		{`print(1/0, -1/0)`, "inf\t-inf\n"},
+		{`print(string.format("%e", -1/0))`, "-inf\n"},
+		{`print(string.format("%E", -1/0))`, "-INF\n"},
+		// a script's own literal is never rewritten
+		{`print("-nan")`, "-nan\n"},
+		{`print("-NAN")`, "-NAN\n"},
+	} {
+		r := execT(t, tc.src)
 		if r.Verdict != VerdictOK {
-			t.Fatalf("%q: verdict = %v, err = %q", c.src, r.Verdict, r.Err)
-		}
-		// Only the case where the script literal EQUALS the format
-		// result exercises the collision. Other cases correctly
-		// record two spans (one on the literal, one on s -- both
-		// numeric-NaN? no, only format's; literal is a plain string
-		// with no evidence). Skip non-collision cases.
-		want := c.lit + "\n" + c.lit + "\n"
-		if r.Output != want {
+			t.Errorf("%s: verdict = %v (err = %q)", tc.src, r.Verdict, r.Err)
 			continue
 		}
-		// Collision path fired: the FIFO consumed the format
-		// provenance early, leaving a single span on the first
-		// print's literal instead of on print(s).
-		if len(r.NaNSpans) != 1 {
-			t.Fatalf("collision %q: got %d spans (%v), want 1", c.src, len(r.NaNSpans), r.NaNSpans)
+		if r.Output != tc.want {
+			t.Errorf("%s: output = %q, want %q", tc.src, r.Output, tc.want)
 		}
-		spanBytes := r.Output[r.NaNSpans[0].Start:r.NaNSpans[0].End]
-		if spanBytes != c.lit {
-			t.Errorf("collision %q: span content = %q, want %q (literal consumed the provenance)", c.src, spanBytes, c.lit)
-		}
-		return
 	}
-	t.Skip("this host libc/CPU produced no NaN spelling collision candidate; known-limit case is inherently platform-shaped, skipping")
 }
 
 func TestExec_ErrorVerdictKeepsPartialOutput(t *testing.T) {
