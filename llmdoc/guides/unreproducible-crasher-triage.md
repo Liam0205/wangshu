@@ -43,6 +43,65 @@ git merge-base --is-ancestor <fix-commit> <headSha>; echo $?
 GC 压力 → 最后才核 headSha,前六条都跑完再核版本。等排除掉「已修复代码」这条最平凡的解释后回头看,
 前六条至少有一半可以不撒。反思 [[2026-07-11-issue123-unreproducible-crasher-round]] 教训 1。
 
+## 一批 crasher 先问会不会被同一个改动一起解决(排在分头查根因之前)
+
+版本核对管的是「**一条** crasher 是不是撞的已修复代码」;当手上是**一批** crasher 时,还有一格更
+便宜的检查:**它们之间是不是同一件事**。
+
+**判据**:nightly 是按 run 自动开 issue 的,同一个根因会在不同日期、以不同的最小化输入、不同的
+标题与 hash 各开一个 issue,看起来是 N 件独立的事。所以**拿到一批 crasher 时,先在当前 HEAD 上
+把每一条重放一遍,通过的归成一组只做一次根因确认,再对剩下的逐条查**。顺序反了就会把一个根因
+查 N 遍。
+
+**手法**:
+
+```
+# 每条 reproducer 在当前 HEAD 上跑一遍,先分「已通过 / 仍失败」两组
+go test -run FuzzOracleDiff/<hash> ...
+# 已通过的那组:只确认一次它们共同的根因是什么、被哪个 PR 解决的
+# 仍失败的那组:才按本 guide 剩余各节逐条分诊
+```
+
+**#187–#190 实证(2026-07-26)**:四个 `FuzzOracleDiff` crasher 由 nightly 在四个不同日期自动开出,
+标题与 hash 各不相同 ——
+`print(string.format("%q",0%0))` / `print(string.format((0))<string.format((0%0)))` /
+`print(string.format("%q",(0%0)))` / `print(string.format("+% E",-(0%0)))`。四个全部是**同一个
+根因**(NaN 符号位渲染差异)的不同表现,而那个根因刚在 PR #191 里通过「在 oracle 的渲染处消除」
+解决,**一行代码没改就全修好了**。
+
+这一条与 [[prove-the-path-under-test]] §9.0 互为印证:**正是因为根因被在产生处消除了,四个表现
+才一起消失**;如果当初走的是「在比较侧识别并豁免」那条路,四个 issue 会各自需要一条新的判据分支。
+反过来读:**一批 crasher 能被同一个改动一起解决,本身就是「根因修在了正确位置」的一个事后确认
+信号**;如果修完之后同族 crasher 还在一条一条冒出来,那是选址错误的信号(§9.0)。
+
+**确认「修好了」的方式见 [[prove-the-path-under-test]] §9.6**:断**逐字节 equal** 不是断「测试
+绿了」(差分 harness 里 skip 也是绿的,含义却相反),并且**双向验证** —— 在修复前的 base commit
+上确实 FAIL、在修复后的 HEAD 上以 equal 通过。#187–#190 在 redesign 之前的 base `c982610` 上
+全部 FAIL、在当前 master 上全部以真正的 equal 通过。
+
+**已修好的 crasher 仍然值得入库,判据是它触到的写法是否为新**。这四条不用改代码,但覆盖了三个
+已有 seed 到不了的维度,而每一个都是那个符号字节逃逸的不同路径:`%q` 作用于 NaN(它引用渲染结果
+而不是做浮点格式化,不走 `%e`/`%f`/`%g` 那条 `sprintf` 通道)、比较两个 `string.format` 的**返回
+值**(差异变成一个 boolean,输出里根本没有 NaN 文本可锚定)、多个符号 flag 同时出现(`"+% E"`,
+负号去掉后 glibc 的 `+` 与空格 flag 开始作用于 NaN)。入库之后这三个方向才有回归保护。反过来,
+如果一条 crasher 的写法与既有 seed 等价,入库只是增加重放成本。**判据是写法是否为新,与有没有
+改代码无关。**
+
+## 修完一条 fuzz 输入之后,扫它所属的维度
+
+fuzz 给出的是一条具体输入,但它是一个家族的采样点。**「这一条不再有差异」不等于「这个家族已经
+收口」**。
+
+**判据**:确认一条 fuzz 输入零差异之后,从 reproducer 的结构里读出它所属的维度,把那些维度枚举
+扫一遍再收工。维度怎么读:哪个 verb、哪些 flag、哪个运算符、值从哪来、文本被谁消费。
+
+**#187–#190 实证**:四条输入自身零差异之后又扫了两批 —— **236 种写法**(`%q` × 宽度组合,
+6 个比较运算符 × format 结果与 tostring 结果,10 种 flag 组合 × 5 个浮点 verb)+ **140 种写法**
+(7 种产生 NaN 的方式,含 `math.huge-math.huge` 与 `tonumber("nan")`,× 20 种消费其文本的方式:
+concat、长度、byte、sub、reverse、gsub、find、match、upper、rep、`table.concat`、作为 table
+key)。零差异。多花几分钟,换来的是知道这个家族的边界在哪,而不是只知道那四条过了。反思
+[[2026-07-26-oracle-nan-render-redesign]] §9 与教训 6/7/8。
+
 ## 真假 crasher 分界(承 2026-07-03 分诊纪律)
 
 go-fuzz 的失败模型是「worker 挂掉时把当前 input 落盘」,但 worker 挂掉的原因可以是 input 触发
@@ -265,7 +324,10 @@ VM 行为侧的对账见 `docs/design/p1-interpreter/implementation-progress.md`
 
 - 与 [[prove-the-path-under-test]] 互补:那篇管**可复现问题的修复怎么修对**(证在测的路径真被
   走到、证被归因的路径真的存在、证收益来自稳态生效);本篇管**不可复现问题怎么止损**(判定为
-  不可复现后不硬编修复,corpus 入库 + 诊断硬化让下次复发自带信息)。
+  不可复现后不硬编修复,corpus 入库 + 诊断硬化让下次复发自带信息)。两篇在**验证一个 crasher
+  是否真的修好**这一点上接口:本篇的「一批 crasher 先问会不会被同一个改动一起解决」负责分组,
+  那篇 §9.6 负责给每一条定性(断逐字节 equal 不是断绿 + 在修复前的 base 上双向验证);差分
+  harness 里 skip 也是绿的,把它读成「修好了」等于把输入又藏了一次。
 - 与 [[cross-backend-semantic-fix-sweep]] 互补:那篇管**修同一语义类 bug 时枚举全部后端 × 通道**;
   本篇的判定前提是「input 决定的 VM bug 与进程级资源耗尽已经分开」,分开之后属于 VM bug 的那类才
   可能进入 cross-backend sweep 的范围。
