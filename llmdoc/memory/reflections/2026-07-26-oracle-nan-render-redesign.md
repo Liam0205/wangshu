@@ -69,9 +69,11 @@ metadata:
 >
 > 后续独立审计在 `7e3104f` 又找到两个实现边界：`lstrlib.c` 局部 shadow 的 `sprintf`
 > 也会接到 `%s` / `%c`，因此必须先按 conversion verb 限定为浮点 `%e/%E/%f/%g/%G`，
-> 否则脚本自己的 `"-nan"` 会被误改；左对齐宽字段的 scratch buffer 必须按去掉尾随
-> padding 后的 NaN run 定长，否则宽度超过 64 时会静默放弃归一。修正后用 14 个 verb、
-> 8 组 flag、8 个 width、4 个 precision、9 种参数值共 26160 个组合做了系统扫描。
+> 否则脚本自己的 `"-nan"` 会被误改；左对齐宽字段的 scratch buffer 必须按**含**尾随
+> padding 的整段 run 定长，原缺陷正是拿剥掉 padding 之后的长度去检查，于是宽度超过 64
+> 的左对齐字段直接提前退出、静默放弃归一。修正后按 14 个 verb ×
+> 8 组 flag × 8 个 width × 4 个 precision × 9 种参数值做笛卡尔扫描（上限 32256 种，其中
+> 26160 种两侧都跑完并逐字节比较，其余因任一侧报 limit 而 skip）。
 
 ## 1. 问题是一个字节
 
@@ -155,14 +157,18 @@ vendored 源码保持与 `_lua515/README` 记录的 sha256 逐字节一致 —�
 3. **Inf 保留符号**（那个符号有数值意义），脚本自己写的 `"-nan"` 字面量不动
    （不能只靠 buffer 内容判断来源；`sprintf` shadow 会接到 `%s` / `%c`，必须先把
    conversion verb 限定为会自行产生浮点 NaN 的 `%e/%E/%f/%g/%G`）。
-4. **scratch buffer 按实际 NaN run 定长**。左对齐格式的尾随 padding 可能很宽；若在剥掉
-   padding 前用整段长度检查 buffer，`%-65f` 及更宽字段会直接放弃归一并泄漏符号。
+4. **scratch buffer 按含尾随 padding 的整段 run 定长**。左对齐格式的尾随 padding 可能
+   很宽；原缺陷是拿**剥掉 padding 之后**的长度去检查 buffer，于是 `%-65f` 及更宽字段
+   提前退出、放弃归一并泄漏符号。现在按整段定长（`char tmp[600]`；`lstrlib.c` 的
+   `MAX_ITEM` 是 512、width 最多两位，所以够不到）。
 
 真值表见 `internal/oracle/oracle_test.go` 的 `TestExec_NaNRenderedWithoutSign`。
 
-后续审计没有只补两个反例，而是扫过 26160 个格式组合（14 verb × 8 flag 组合 × 8 width ×
-4 precision × 9 参数值），并加入只含 `nan` 文本的负例。这个扫描还隔离出一个 master 已有的
-整数格式问题（`%+N.0d` 与零值），单独登记，没有借本轮顺手改动。
+后续审计没有只补两个反例，而是按 14 verb × 8 flag 组合 × 8 width × 4 precision × 9 参数值
+做笛卡尔扫描（上限 32256 种，实际两侧都跑完并比较的是 26160 种），并加入只含 `nan` 文本的
+负例。这个扫描还隔离出一个 master 已有的
+整数格式问题（`%+N.0d` 配零值时符号被丢，根因是 Go 的 `fmt` 在 `.0` 精度产出空数字时连
+符号一起丢、C printf 不丢），已单独登记为 #196，没有借本轮顺手改动。
 
 ## 6. 顺带清掉产品侧的两处 glibc 模仿
 
