@@ -35,7 +35,7 @@ description: >
   commit `b9ac433`，一行代码没改）**：nightly 在四个不同日期自动开出的 crasher
   #187/#188/#189/#190 全部是这同一个根因的表现，已被本轮修复一起解决；双向验证确认它们在
   redesign 之前的 base `c982610` 上全部 FAIL、在当前 master 上全部以**真正的逐字节 equal**
-  通过而不是 skip；四条 reproducer 加 8 条延伸 seed 入库（`%q` 作用于 NaN、比较两个
+  通过而不是 skip；四条 reproducer 加 10 条延伸 seed 入库（`%q` 作用于 NaN、比较两个
   `string.format` 的返回值、多个符号 flag 同时出现，都是已有 seed 到不了的写法），并扫了
   236 + 140 种同族写法确认整个家族零差异。追加三条教训：**同一个根因可以生成任意多个
   「独立」的 crasher issue**（一批 crasher 先问会不会被同一个改动一起解决）、**「现在通过
@@ -202,7 +202,7 @@ vendored 源码保持与 `_lua515/README` 记录的 sha256 逐字节一致 —�
 
 > 范围：分支 `fix/187-190-nan-crasher-corpus`，1 个 commit `b9ac433`
 > （`test(oracle): land the #187-#190 crashers and the shapes they revealed`）。
-> 只加了 12 个 corpus 文件，**一行代码没改**。
+> 只加了 14 个 corpus 文件，**一行代码没改**。
 
 nightly-fuzz 在四个不同日期自动开出了四个 crasher issue，标题与 hash 各不相同：
 
@@ -243,7 +243,7 @@ nightly-fuzz 在四个不同日期自动开出了四个 crasher issue，标题�
 
 另外补了 8 条 seed 覆盖这三个维度的延伸：`%q` 带宽度与左对齐（`%10q` / `%-10q`）、渲染
 结果的字符串序比较（`tostring(0/0)<"o"`）、`%e` 与 `%E` 结果的相等比较、剩余的多 flag
-顺序（`[%+% E]` / `[%0+ e]` / `[%-+ E]`）。
+顺序（`[%+ E]` / `[% +e]` / `[%0+ E]` / `[%0+ e]` / `[%-+ E]`）。最初写的 `[%+% E]` 已删除：它根本不是合法转换，两侧都报 `invalid option '%%'`、输出都是空串，于是只比较了两个空串而没有触到它声称的多 flag 写法——独立审计抓出来的，绿灯但什么都没断言。
 
 ### 9.3 主动扫描：确认整个家族已经收口
 
