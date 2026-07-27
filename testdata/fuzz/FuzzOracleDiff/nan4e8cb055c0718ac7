@@ -1,0 +1,2 @@
+go test fuzz v1
+string("print(table.concat({0/0,0/0},\",\"))")
