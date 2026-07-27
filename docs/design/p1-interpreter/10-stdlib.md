@@ -797,12 +797,16 @@ string 库**操作字节**(Lua string 是字节串,01 §5.1),索引 1-based,负�
 - **关键差异点(实现须处理)**:① `%e`/`%g` 的指数至少 2 位(`1e+05` 非 `1e+5`,C 标准);② `%g` 去尾零但保留
   必要位;③ `%.14g`(默认 number→string 格式,05 §4.6)的精度;④ 负零、inf、nan 的输出(C 是 `inf`/`nan`,
   大小写依平台——**Lua 5.1 用 C 的,望舒定稿统一为 `inf`/`-inf`/`nan`,待 12 核对**)。
-- **NaN/Inf 已对齐 glibc(#170/#171,PR #172)**:`%f/%e/%g/%E/%G` 对非有限浮点转发给 C `sprintf`,真值最终由宿主
-  glibc 决定,不由 Go `fmt`(Go 拼 `NaN`/`+Inf`/`-Inf`)。规律:小写 verb → `nan`/`inf`,大写 verb → `NAN`/`INF`;
-  glibc 总为 NaN 保留 1 个符号列(小写 verb 那列变空格被 width 吸收 → 有效 width = 声明 width−1,大写 verb 那列是可见
-  `-` → 完整 width);Inf 符号一直在 core 里 → 完整 width;precision 对 NaN/Inf 忽略。实现见 `internal/stdlib/stringlib.go`
-  的 `cFormatSpecialFloat`,白盒真值表 `internal/stdlib/format_special_test.go`,经 93 组 oracle 覆盖矩阵(verb × 符号 ×
-  flag × width)差分验证;`string.format` 共享 stdlib,单点修复覆盖 P1/P3/P4。
+- **NaN/Inf 文本(#170/#171,PR #172 起;2026-07-26 修订)**:`%f/%e/%g/%E/%G` 对非有限浮点,PUC 转发给 C `sprintf`,
+  真值最终由宿主 glibc 决定,不由 Go `fmt`(Go 拼 `NaN`/`+Inf`/`-Inf`)。**大小写随 verb**:小写 verb → `nan`/`inf`,
+  大写 verb → `NAN`/`INF`。**NaN 不带符号,并按完整声明宽度补齐**(`%5f` → `"  nan"`,`%5E` → `"  NAN"`):
+  IEEE 754 不赋 NaN 符号位数值语义,而 `value.NumberValue` 又把每个 NaN 规范化到同一个位模式,所以望舒本来就
+  honour 不了那个位。**Inf 保留自己的符号**,同样按完整宽度补齐;precision 对 NaN/Inf 忽略。此前为了让差分 oracle
+  一致,这里曾模仿 glibc 的两处行为——大写 verb 硬编码 `-NAN`、小写 NaN 按「声明宽度减一」补齐以复现 glibc 保留
+  但不显示的符号列——两处都让望舒自身的 `%e` 与 `%E`、`%5f` 与 `%5E` 自相矛盾,而 arm64 的 glibc 与 x86 还不同,
+  模仿本来就不可移植;现在差异在 oracle 侧消除([12](./12-testing-difftest.md) §4.2),这里回到自身一致的规则。
+  实现见 `internal/stdlib/stringlib.go` 的 `cFormatSpecialFloat`,白盒真值表 `internal/stdlib/format_special_test.go`;
+  `string.format` 共享 stdlib,单点修复覆盖 P1/P3/P4。
 - **指向 [12](./12-testing-difftest.md)**:format 浮点的逐字节核对是差分套件的核心用例(各种 x + 各种 spec 的笛卡尔积)。
 
 #### 5.2.2 `%q` 转义规则(差分敏感)
