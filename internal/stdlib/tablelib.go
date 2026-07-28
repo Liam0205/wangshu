@@ -126,9 +126,12 @@ func tblArg(args []value.Value, n int, fname string) (value.Value, *crescent.Lua
 // Sized from measurement, not guessed: at 2^22 real lua5.1 completes the shift in
 // 56ms, at 2^24 in 0.21s, at 2^28 in 3.4s. 12 section 4.9's bar is an
 // uninterruptible hang, so a cap that rejects 56ms of work is too tight -- it
-// refuses inserts PUC finishes promptly. 2^26 keeps the worst case under about a
-// second while still cutting off the 2-billion-iteration shift that motivated it.
-const tableInsertShiftCap = 1 << 26
+// refuses inserts PUC finishes promptly. 2^22 and then 2^26 were both still too
+// tight: lua5.1 completes the 2^26 shift in 5.5s, which is slow but not a hang,
+// and the boundary case was being rejected. 2^27 keeps the accepted range to what
+// the reference actually finishes while still cutting off the 2-billion-iteration
+// shift that motivated the cap (INT32_MIN is 16x beyond it).
+const tableInsertShiftCap = 1 << 27
 
 // tableFnInsert: table.insert(t, [pos,] v).
 func tableFnInsert(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
@@ -306,11 +309,10 @@ func tableFnConcat(st *crescent.State, args []value.Value) ([]value.Value, *cres
 	// -- comparing raw floats, then requiring only that t[i] be concatenable --
 	// because neither bounded the WALK, which was already bounded by the data.
 	//
-	// The memory hazard is real, though: a table whose elements run contiguously
-	// for a long way lets parts grow with the walk, so the bound is kept -- but
-	// applied to how many elements are actually APPENDED, which is the quantity
-	// that costs memory. That fires only when the work is genuinely large, and
-	// never on a huge j the data cuts short.
+	// There is no bound here at all, and none is needed: parts grows only while
+	// elements are concatenable, so its length cannot exceed the table's own
+	// contiguous run. An earlier revision of this comment claimed a bound "is
+	// kept" -- it was removed with the cap, and the comment was left behind.
 	iN := int(cCharCastInt32(iF))
 	jN := int(cCharCastInt32(jF))
 	var parts []string

@@ -293,7 +293,7 @@ table.insert = function(t, ...)
         -- on the element count made this skip fire for ordinary inserts into
         -- large tables, which hid the fact that the product cap was rejecting
         -- them.
-        if i32 < 1 and 1 - i32 > 67108864 then
+        if i32 < 1 and 1 - i32 > 134217728 then
           __error("` + LimitSentinel + `: table.insert shift span", 0)
         end
       end
