@@ -163,8 +163,11 @@ func (st *State) doTailCall(th *thread, ci *callInfo, i bytecode.Instruction) (*
 	// from a host boundary keeps that boundary. Dropping it shifted every
 	// error(msg, level>=2) in such a function by one.
 	parentHostFrames := ci.hostFrames
+	// Each tail call in a chain replaces one more frame; carry the running count.
+	parentTailDepth := ci.tailDepth + 1
 	st.popCallInfo(th)
 	st.pendingHostFrames = parentHostFrames
+	st.pendingTailDepth = parentTailDepth
 	if e := st.enterLuaFrame(th, dst, nargs, parentNRes, parentFresh); e != nil {
 		return nil, e
 	}

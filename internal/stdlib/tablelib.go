@@ -691,6 +691,27 @@ func strftime(format string, t time.Time) string {
 			// for a value that has none. Same category as print's NUL truncation --
 			// an artifact of the C call rather than a semantic worth copying.
 			fmt.Fprintf(&b, "%d", t.Unix())
+		case 'g':
+			// ISO week-based year, two digits (pairs with %V, not with %y).
+			yr, _ := t.ISOWeek()
+			fmt.Fprintf(&b, "%02d", yr%100)
+		case 'G':
+			yr, _ := t.ISOWeek()
+			fmt.Fprintf(&b, "%d", yr)
+		case 'k':
+			fmt.Fprintf(&b, "%2d", t.Hour())
+		case 'l':
+			h := t.Hour() % 12
+			if h == 0 {
+				h = 12
+			}
+			fmt.Fprintf(&b, "%2d", h)
+		case 'P':
+			if t.Hour() < 12 {
+				b.WriteString("am")
+			} else {
+				b.WriteString("pm")
+			}
 		case 'V':
 			_, wk := t.ISOWeek()
 			fmt.Fprintf(&b, "%02d", wk)

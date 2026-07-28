@@ -62,9 +62,17 @@ func (st *State) annotateError(e *LuaError, ci *callInfo, th *thread) *LuaError 
 			// for it (luaL_where yields nothing for a tail-call frame), so the walk
 			// consumes one more step here and reports no prefix if it lands there.
 			if cur.Tailcall() {
-				steps--
+				// A chain of N tail calls collapsed N frames into this one, and PUC
+				// counts each vanished frame as a level with no position. tailDepth
+				// records how many, so N chained tail calls consume N levels rather
+				// than one.
+				for d := int(cur.tailDepth); d > 0 && steps > 0; d-- {
+					steps--
+					if steps == 0 {
+						onBoundary = true
+					}
+				}
 				if steps == 0 {
-					onBoundary = true
 					break
 				}
 			}
