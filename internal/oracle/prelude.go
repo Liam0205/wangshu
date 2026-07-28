@@ -246,6 +246,38 @@ string.format = function(f, ...)
   return __sformat(f, ...)
 end
 
+-- math two-arg argument-order guard.
+--
+-- PUC writes math.fmod/pow/ldexp as f(luaL_checknumber(L,1), luaL_checknumber(L,2)),
+-- and C leaves the evaluation order of those arguments UNSPECIFIED. gcc on x86-64
+-- evaluates right to left, so that oracle reports "bad argument #2" for a missing
+-- argument; the arm64 build reports #1. The two official builds disagree with each
+-- other, so which index is "correct" is not a Lua fact and there is nothing to
+-- align to -- wangshu reports the first missing argument and the comparison skips
+-- the shape.
+--
+-- Only the case where MORE THAN ONE argument is bad or missing is affected; a
+-- single bad argument names the same index either way and stays compared.
+local function __wrapArgOrder(tbl, name)
+  local orig = tbl[name]
+  if orig == nil then return end
+  tbl[name] = function(...)
+    local k = __select("#", ...)
+    local bad = 0
+    for i = 1, 2 do
+      local v = i <= k and (__select(i, ...)) or nil
+      if __tonumber(v) == nil then bad = bad + 1 end
+    end
+    if bad > 1 then
+      __error("` + LimitSentinel + `: unspecified C arg evaluation order", 0)
+    end
+    return orig(...)
+  end
+end
+__wrapArgOrder(math, "fmod")
+__wrapArgOrder(math, "pow")
+__wrapArgOrder(math, "ldexp")
+
 -- luaL_checkint UB guard, shared by every function that narrows an int argument.
 --
 -- PUC reads these arguments with (int)luaL_checkinteger, i.e. double -> int64 ->
