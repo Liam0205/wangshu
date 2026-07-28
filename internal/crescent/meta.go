@@ -62,6 +62,15 @@ func (st *State) metaFieldOfValue(v value.Value, name string) value.Value {
 		h, _ := st.tableGet(st.stringMeta, key)
 		return h
 	}
+	// Userdata carries its own metatable, like a table. Without this a userdata's
+	// __index is never consulted, so io.stdout:write(...) fails to resolve.
+	if value.Tag(v) == value.TagUserdata {
+		if mt := object.UserdataMetaRef(st.arena, value.GCRefOf(v)); mt != 0 {
+			key := value.MakeGC(value.TagString, st.gc.Intern([]byte(name)))
+			h, _ := st.tableGet(mt, key)
+			return h
+		}
+	}
 	return value.Nil
 }
 
@@ -88,6 +97,20 @@ func (st *State) indexWithMeta(th *thread, obj, key value.Value) (value.Value, *
 				return st.callMetaHandler(th, h, []value.Value{obj, key}, 1)
 			}
 			obj = h // __index is a table: keep looking up along the chain
+			continue
+		}
+		if value.Tag(obj) == value.TagUserdata {
+			// Userdata has no raw fields of its own, so indexing goes straight to
+			// __index -- this is the path io.stdout:write(...) takes. PUC raises
+			// "attempt to index a userdata value" when there is no metatable.
+			h := st.metaFieldOfValue(obj, "__index")
+			if h == value.Nil {
+				return value.Nil, errf("attempt to index a userdata value")
+			}
+			if value.Tag(h) == value.TagFunction {
+				return st.callMetaHandler(th, h, []value.Value{obj, key}, 1)
+			}
+			obj = h
 			continue
 		}
 		if value.Tag(obj) == value.TagString {

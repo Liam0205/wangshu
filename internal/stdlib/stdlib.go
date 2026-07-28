@@ -64,8 +64,10 @@ func OpenAll(st *crescent.State) {
 		st.SetTableField(tblTbl, "unpack", value.MakeGC(value.TagFunction, cl))
 	}
 	registerNamespaced(st, "os", osFns, nil)
-	registerNamespaced(st, "io", ioFns, nil)
+	ioTbl := registerNamespaced(st, "io", ioFns, nil)
+	registerStdStreams(st, ioTbl)
 	registerNamespaced(st, "coroutine", coroutineFns, nil)
+	registerNamespaced(st, "debug", debugFns, nil)
 	registerBaseEnv(st) // _G/_VERSION/collectgarbage/gcinfo/loadfile/dofile
 	// math constants
 	{
@@ -438,6 +440,18 @@ func baseFnGetMetatable(st *crescent.State, args []value.Value) ([]value.Value, 
 		// PUC: strings share one real metatable ({__index = string}).
 		if smt := st.StringMeta(); smt != 0 {
 			return []value.Value{value.MakeGC(value.TagTable, smt)}, nil
+		}
+		return []value.Value{value.Nil}, nil
+	}
+	if value.Tag(args[0]) == value.TagUserdata {
+		// Userdata carries its own metatable too; returning nil unconditionally hid
+		// io.stdout's, where PUC reports a table.
+		if mt := st.UserdataMeta(value.GCRefOf(args[0])); mt != 0 {
+			// __metatable, if present, is what getmetatable reports (5.1 protection).
+			if shield, e := st.RawGet(mt, intern(st, "__metatable")); e == nil && shield != value.Nil {
+				return []value.Value{shield}, nil
+			}
+			return []value.Value{value.MakeGC(value.TagTable, mt)}, nil
 		}
 		return []value.Value{value.Nil}, nil
 	}

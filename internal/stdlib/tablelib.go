@@ -3,7 +3,9 @@
 package stdlib
 
 import (
+	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -878,6 +880,8 @@ func osFnGetenv(st *crescent.State, args []value.Value) ([]value.Value, *crescen
 
 var ioFns = []entry{
 	{"write", ioFnWrite},
+	{"read", ioFnRead},
+	{"lines", ioFnLines},
 }
 
 func ioFnWrite(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
@@ -1106,4 +1110,305 @@ func baseFnXpcall(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 	out = append(out, value.False)
 	out = append(out, hres...)
 	return out, nil
+}
+
+// ----- io standard streams -----
+
+// Stream kinds, stored in the handle's one payload byte. Keying on the payload rather
+// than a Go-side map means the handle needs no registry that would have to survive
+// collection.
+const (
+	stdStreamOut byte = 1
+	stdStreamErr byte = 2
+	stdStreamIn  byte = 3
+)
+
+// registerStdStreams installs io.stdout / io.stderr / io.stdin as file-handle userdata
+// sharing one metatable that provides :write, :close, :read and :lines.
+//
+// 10 §11 lists these as required. PUC reports them as "userdata", so a table would be
+// visible through type() -- which is why this needs real userdata and therefore the
+// GC-registered allocator in crescent (see State.NewUserdata for what a first attempt
+// got wrong).
+func registerStdStreams(st *crescent.State, ioTbl arena.GCRef) {
+	mt := st.NewLibTable(6)
+	for _, e := range []entry{
+		{"write", fileFnWrite},
+		{"close", fileFnClose},
+		{"read", fileFnRead},
+		{"lines", fileFnLines},
+		{"flush", fileFnFlush},
+	} {
+		id := st.RegisterHostFn(e.fn)
+		st.SetTableField(mt, e.name, value.MakeGC(value.TagFunction, st.MakeHostClosure(id)))
+	}
+	// __index = the metatable itself, so h:write(...) resolves, as PUC does.
+	st.SetTableField(mt, "__index", value.MakeGC(value.TagTable, mt))
+	// PUC's file handles carry __tostring giving "file (0x...)".
+	st.SetTableField(mt, "__metatable", value.MakeGC(value.TagTable, mt))
+
+	for _, s := range []struct {
+		name string
+		kind byte
+	}{{"stdout", stdStreamOut}, {"stderr", stdStreamErr}, {"stdin", stdStreamIn}} {
+		ud := st.NewUserdata(1, mt)
+		st.UserdataPayload(ud)[0] = s.kind
+		st.SetTableField(ioTbl, s.name, value.MakeGC(value.TagUserdata, ud))
+	}
+}
+
+// streamKind reads the handle's kind byte, reporting false for a non-handle argument.
+func streamKind(st *crescent.State, args []value.Value) (byte, bool) {
+	if len(args) == 0 || value.Tag(args[0]) != value.TagUserdata {
+		return 0, false
+	}
+	pl := st.UserdataPayload(value.GCRefOf(args[0]))
+	if len(pl) == 0 {
+		return 0, false
+	}
+	return pl[0], true
+}
+
+// fileFnWrite is the :write method -- same argument rules and boolean return as io.write,
+// directed at the handle's own stream.
+func fileFnWrite(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
+	kind, ok := streamKind(st, args)
+	if !ok {
+		return nil, crescent.NewArgError(1, "FILE* expected, got "+argTypeName(args, 0))
+	}
+	w := os.Stdout
+	if kind == stdStreamErr {
+		w = os.Stderr
+	}
+	for i := 1; i < len(args); i++ {
+		b, e := strArg(st, args, i, "write")
+		if e != nil {
+			return nil, e
+		}
+		if _, werr := w.Write(b); werr != nil {
+			return []value.Value{value.False}, nil
+		}
+	}
+	// 5.1's f_write pushes a boolean status, like io.write; returning the handle is 5.2+.
+	return []value.Value{value.True}, nil
+}
+
+// fileFnClose refuses to close a standard stream. PUC RETURNS the failure as (nil, msg)
+// rather than raising, so a pcall around it succeeds.
+func fileFnClose(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
+	if _, ok := streamKind(st, args); !ok {
+		return nil, crescent.NewArgError(1, "FILE* expected, got "+argTypeName(args, 0))
+	}
+	return []value.Value{value.Nil, intern(st, "cannot close standard file")}, nil
+}
+
+// fileFnFlush is a no-op that returns the success flag: the streams are unbuffered here.
+func fileFnFlush(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
+	if _, ok := streamKind(st, args); !ok {
+		return nil, crescent.NewArgError(1, "FILE* expected, got "+argTypeName(args, 0))
+	}
+	return []value.Value{value.True}, nil
+}
+
+// fileFnRead is the :read method; ioFnRead shares the implementation.
+func fileFnRead(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
+	kind, ok := streamKind(st, args)
+	if !ok {
+		return nil, crescent.NewArgError(1, "FILE* expected, got "+argTypeName(args, 0))
+	}
+	if kind != stdStreamIn {
+		// PUC's fread on a write-only handle fails, and g_read reports the C errno
+		// triple: (nil, strerror(EBADF), EBADF). EBADF is 9 on Linux.
+		return []value.Value{value.Nil, intern(st, "Bad file descriptor"), value.NumberValue(9)}, nil
+	}
+	return readFormats(st, args[1:])
+}
+
+// fileFnLines is :lines -- an iterator yielding successive lines, nil at EOF.
+func fileFnLines(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
+	if _, ok := streamKind(st, args); !ok {
+		return nil, crescent.NewArgError(1, "FILE* expected, got "+argTypeName(args, 0))
+	}
+	id := st.RegisterHostFn(func(ist *crescent.State, _ []value.Value) ([]value.Value, *crescent.LuaError) {
+		return readFormats(ist, []value.Value{intern(ist, "*l")})
+	})
+	return []value.Value{value.MakeGC(value.TagFunction, st.MakeHostClosure(id))}, nil
+}
+
+// stdinReader buffers os.Stdin so "*l" does not have to read a byte at a time. One shared
+// reader, because the standard input position is global state: two readers would each hold
+// their own buffered lookahead and silently lose bytes.
+var stdinReader = bufio.NewReader(os.Stdin)
+
+// readFormats implements the read-format list shared by io.read and file:read.
+//
+// 10 §11 requires the minimum set: "*l" (line, default), "*n" (number), "*a" (all) and a
+// byte count. PUC returns nil at end of file, and nil for "*n" when the text does not parse
+// as a number.
+func readFormats(st *crescent.State, fmts []value.Value) ([]value.Value, *crescent.LuaError) {
+	if len(fmts) == 0 {
+		fmts = []value.Value{intern(st, "*l")}
+	}
+	out := make([]value.Value, 0, len(fmts))
+	for i, f := range fmts {
+		if value.IsNumber(f) {
+			n := int(value.AsNumber(f))
+			if n < 0 {
+				out = append(out, value.Nil)
+				continue
+			}
+			buf := make([]byte, n)
+			got, _ := io.ReadFull(stdinReader, buf)
+			if got == 0 && n > 0 {
+				out = append(out, value.Nil) // EOF
+				continue
+			}
+			out = append(out, intern(st, string(buf[:got])))
+			continue
+		}
+		spec := ""
+		if value.Tag(f) == value.TagString {
+			spec = string(object.StringBytes(st.Arena(), value.GCRefOf(f)))
+		} else {
+			return nil, crescent.NewArgError(i+1, "invalid format")
+		}
+		switch strings.TrimPrefix(spec, "*") {
+		case "l", "L":
+			line, err := stdinReader.ReadString('\n')
+			if line == "" && err != nil {
+				out = append(out, value.Nil) // EOF
+				continue
+			}
+			if spec != "*L" && strings.HasSuffix(line, "\n") {
+				line = line[:len(line)-1] // "*l" drops the newline, "*L" keeps it
+			}
+			out = append(out, intern(st, line))
+		case "a":
+			// "*a" returns "" at EOF rather than nil -- the one format that never fails.
+			b, _ := io.ReadAll(stdinReader)
+			out = append(out, intern(st, string(b)))
+		case "n":
+			tok, err := readNumberToken(stdinReader)
+			if err != nil || tok == "" {
+				out = append(out, value.Nil)
+				continue
+			}
+			// Reuse the same string->number conversion tonumber uses, so "*n"
+			// accepts exactly what tonumber does (hex, exponents, signs).
+			if v, ok := crescentToNumber(st, intern(st, tok)); ok {
+				out = append(out, value.NumberValue(v))
+			} else {
+				out = append(out, value.Nil)
+			}
+		default:
+			return nil, crescent.NewArgError(i+1, "invalid format")
+		}
+	}
+	return out, nil
+}
+
+// readNumberToken consumes leading space then the longest run that could be a Lua number.
+func readNumberToken(r *bufio.Reader) (string, error) {
+	var sb strings.Builder
+	for {
+		c, err := r.ReadByte()
+		if err != nil {
+			return sb.String(), err
+		}
+		if sb.Len() == 0 && (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+			continue
+		}
+		if (c >= '0' && c <= '9') || c == '+' || c == '-' || c == '.' ||
+			c == 'e' || c == 'E' || c == 'x' || c == 'X' ||
+			(c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') {
+			sb.WriteByte(c)
+			continue
+		}
+		_ = r.UnreadByte()
+		return sb.String(), nil
+	}
+}
+
+// ioFnRead is io.read: reads from the default input, i.e. stdin.
+func ioFnRead(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
+	return readFormats(st, args)
+}
+
+// ioFnLines is io.lines with no filename: iterate lines of the default input.
+func ioFnLines(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
+	if len(args) > 0 && args[0] != value.Nil {
+		// io.lines(filename) needs io.open, which P1 does not provide (10 §11 ❌).
+		return nil, crescent.NewError("io.lines with a filename is not supported")
+	}
+	id := st.RegisterHostFn(func(ist *crescent.State, _ []value.Value) ([]value.Value, *crescent.LuaError) {
+		return readFormats(ist, []value.Value{intern(ist, "*l")})
+	})
+	return []value.Value{value.MakeGC(value.TagFunction, st.MakeHostClosure(id))}, nil
+}
+
+// ----- debug sub-library -----
+
+// debugFns is the P1 subset: traceback and getinfo (09 §13). The rest of 5.1's debug
+// library (sethook, getlocal, setlocal, getupvalue, setupvalue, getregistry) stays out --
+// 10 §11 lists those in the ❌ column, and they need introspection hooks the interpreter
+// does not expose.
+var debugFns = []entry{
+	{"traceback", debugFnTraceback},
+	{"getinfo", debugFnGetInfo},
+}
+
+// debugFnTraceback: debug.traceback([message [, level]]).
+//
+// PUC returns the message unchanged when it is a non-string, non-nil value, and otherwise
+// prefixes it to "stack traceback:" separated by a newline.
+func debugFnTraceback(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
+	tb := st.Traceback()
+	if len(args) == 0 {
+		return []value.Value{intern(st, tb)}, nil
+	}
+	// An EXPLICIT nil is a value, not an absent argument: PUC returns it unchanged, so
+	// debug.traceback(nil) is nil rather than the bare traceback. Same for any other
+	// non-string, non-number message (5.1's db_errorfb returns arg 1 as-is).
+	if value.Tag(args[0]) != value.TagString && !value.IsNumber(args[0]) {
+		return []value.Value{args[0]}, nil
+	}
+	msg := valueToString(st, args[0])
+	return []value.Value{intern(st, msg+"\n"+tb)}, nil
+}
+
+// debugFnGetInfo: debug.getinfo(level | func [, what]) -> table | nil.
+//
+// The fields P1 can fill honestly are source/short_src/currentline/what/linedefined and
+// func. The hook-dependent ones (nups, activelines, namewhat) are omitted rather than
+// faked -- a wrong field is worse than an absent one for a caller that tests it.
+func debugFnGetInfo(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
+	if len(args) == 0 {
+		return nil, crescent.NewArgError(1, "function or level expected")
+	}
+	t := st.NewLibTable(8)
+	set := func(k string, v value.Value) { st.SetTableField(t, k, v) }
+
+	if value.Tag(args[0]) == value.TagFunction {
+		// Function form: no active frame, so there is no current line.
+		set("func", args[0])
+		set("currentline", value.NumberValue(-1))
+		set("what", intern(st, "Lua"))
+		set("source", intern(st, "=[C]"))
+		set("short_src", intern(st, "[C]"))
+		return []value.Value{value.MakeGC(value.TagTable, t)}, nil
+	}
+	lvl, ok := toNumberStr(st, args[0])
+	if !ok {
+		return nil, crescent.NewArgError(1, "function or level expected")
+	}
+	src, line, ok := st.FrameInfo(int(lvl))
+	if !ok {
+		// PUC returns nil for a level past the stack top.
+		return []value.Value{value.Nil}, nil
+	}
+	set("currentline", value.NumberValue(float64(line)))
+	set("source", intern(st, src))
+	set("short_src", intern(st, src))
+	set("what", intern(st, "Lua"))
+	return []value.Value{value.MakeGC(value.TagTable, t)}, nil
 }
