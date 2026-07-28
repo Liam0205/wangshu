@@ -139,12 +139,9 @@ func (st *State) enterLuaFrame(th *thread, funcIdx, nargs, nresults int, entry b
 	// a closure in this literal allocates, and this is the hot call path
 	// (TestCallInto_ZeroAlloc caught it).
 	hf := st.pendingHostFrames
-	if hf > 0xF {
-		hf = 0xF
-	}
 	td := st.pendingTailDepth
-	if td > 0xF {
-		td = 0xF
+	if td > 0x1F {
+		td = 0x1F
 	}
 	ci := callInfo{
 		base:       base,

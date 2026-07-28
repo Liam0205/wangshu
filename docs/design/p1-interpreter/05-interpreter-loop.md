@@ -51,9 +51,8 @@ CallInfo[i]  (arena 内,32 字节):
        | [48]    callStatus_tailcall (本帧是尾调用产生,RETURN 时特殊处理)
        | [49]    callStatus_fresh    (本帧是「reentry 边界」,见 §7.3)
        | [50]    callStatus_gibbous  (P3+:本帧在 gibbous 编译码中执行,承 [../p3-wasm-tier](../p3-wasm-tier/04-trampoline.md) §1;P1 恒 0)
-       | [54:51] hostFrames (紧贴本帧下方叠了几个 host 帧,饱和;error(msg,level) 走 level 用,见 [09](./09-errors-pcall.md) §3.2.1)
-       | [58:55] tailDepth (尾调用链把几个帧折叠进了本帧；error(msg,level) 走 level 时每个被折叠的帧算一级且没有位置)
-       | [63:59] reserved
+       | [58:51] hostFrames (紧贴本帧下方叠了几个 host 帧,饱和;error(msg,level) 走 level 用,见 [09](./09-errors-pcall.md) §3.2.1)
+       | [63:59] tailDepth (尾调用链把几个帧折叠进了本帧；error(msg,level) 走 level 时每个被折叠的帧算一级且没有位置)
   word3: errfuncBase / 保护点字段(pcall 设置的消息处理器栈位,见 §9.3;0=无)
 ```
 
