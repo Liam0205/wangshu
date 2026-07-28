@@ -159,7 +159,7 @@ var exemptions = []struct {
 	{"os.execute", "10 §11 os ❌ 列(安全:嵌入式 VM 不让脚本跑 shell)"},
 	{"io.popen/io.tmpfile", "10 §11 io ❌ 列"},
 	{"debug 库整个未注册", "10 §11 debug ❌ 列;`debug` 全表不存在(不只是 sethook/getlocal/setlocal/getupvalue/setupvalue/getregistry 这几个),所以 debug.traceback 的 [C] 帧之类的问题都无从谈起"},
-	{"os.time{isdst=} 在没有 DST 规则的时区被忽略", "有两个状态的时区(Europe/London、Australia/Sydney、Africa/Casablanca 等 9 个实测零差异)完全对齐;只有一个状态的时区(UTC、Asia/Shanghai、Asia/Kolkata、Europe/Istanbul、Antarctica/Palmer)glibc 仍按默认 1 小时响应 isdst=true,而它到底响应与否取决于 mktime 在 tzdata 历史里对附近 transition 的有界搜索(Africa/Windhoek 同样无规则却不响应)——Go 不暴露 transition 表,无法忠实复现,所以这些时区里该字段被忽略"},
+	{"os.time{isdst=} 在单一 DST 状态的时区被忽略", "判据是**请求的那个时刻前后**是否存在另一个 DST 状态(向外由近及远搜索,与 glibc mktime 的搜索方向一致),而不是这个时区历史上有没有 DST 规则——同一个时区在不同年份可以分属两类,例如 Africa/Casablanca 1997 年是单一状态而 2024 年是两个状态。两状态的年份完全对齐;单一状态的年份 glibc 仍按默认 1 小时响应 isdst=true,而它响应与否取决于 mktime 在 tzdata 历史里对附近 transition 的有界搜索(UTC / Asia/Shanghai / Asia/Kolkata 会响应,Africa/Windhoek / Asia/Damascus 不响应),Go 不暴露 transition 表、无法忠实复现,所以这些年份里该字段被忽略"},
 	{"io.read 与 io.stdout/io.stdin/io.stderr 未提供", "10 §11 把它们标为必做而目前只有 io.write;三个标准流需要 file-handle userdata,而运行时在 __gc finalizer 之外还没有创建 userdata 的先例——原型撤回原因见 #205"},
 	{"getfenv/setfenv", "不在 10 §11 提供面任何列;唯一设计出处是 P2 不升层形状 F4(p2-bridge §358)——按设计豁免"},
 	{"load(func) 渐进分块语义差", "已实现 reader 循环全量拼接;与 5.1 流式编译的差异仅在超大 chunk 内存峰值,语义等价"},

@@ -477,15 +477,21 @@ func osFnDifftime(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 func zoneDSTOffsets(t time.Time) (std, dst int, ok bool) {
 	_, base := t.Zone()
 	baseDST := t.IsDST()
-	start := time.Date(t.Year(), 1, 1, 12, 0, 0, 0, t.Location())
-	for d := 0; d < 366; d++ {
-		p := start.AddDate(0, 0, d)
-		if p.IsDST() != baseDST {
-			_, other := p.Zone()
-			if baseDST {
-				return other, base, true
+	// Probe OUTWARD from t, nearest first, because that is the direction glibc's
+	// mktime searches. Scanning forward from January 1 instead picked the wrong
+	// neighbour whenever the offsets changed within the year: America/Vancouver 2026
+	// switches to MST (-25200) on Nov 1, the same magnitude as PDT, so glibc's
+	// nearest non-DST neighbour is -25200 while a January-first scan found PST
+	// (-28800). A full-tzdata sweep put that class at 65 cases across 55 zones.
+	for d := 1; d <= 200; d++ {
+		for _, cand := range [2]time.Time{t.AddDate(0, 0, -d), t.AddDate(0, 0, d)} {
+			if cand.IsDST() != baseDST {
+				_, other := cand.Zone()
+				if baseDST {
+					return other, base, true
+				}
+				return base, other, true
 			}
-			return base, other, true
 		}
 	}
 	return base, base, false

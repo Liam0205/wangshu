@@ -73,3 +73,27 @@ func TestOSTimeIsDST_SingleStateZone(t *testing.T) {
 		t.Errorf("isdst changed the result in a single-state zone: %s vs %s", plain, dst)
 	}
 }
+
+// TestOSTimeIsDST_TwoStateNeighbourDirection pins that the two offsets come from
+// searching OUTWARD from the requested instant, which is glibc mktime's direction.
+//
+// Scanning forward from January 1 instead picks the wrong neighbour whenever the
+// offsets changed within the year: America/Vancouver 2026 switches to MST on Nov 1,
+// whose offset magnitude equals PDT's, so glibc's nearest non-DST neighbour is MST
+// while a January-first scan finds PST an hour further out. Nothing covered the
+// two-state class before -- the earlier cases were all Europe/London.
+func TestOSTimeIsDST_TwoStateNeighbourDirection(t *testing.T) {
+	loc, err := time.LoadLocation("America/Vancouver")
+	if err != nil {
+		t.Skip("tzdata unavailable")
+	}
+	origLocal := time.Local
+	t.Setenv("TZ", "America/Vancouver")
+	time.Local = loc
+	t.Cleanup(func() { time.Local = origLocal })
+
+	const src = `return tostring(os.time{year=2026,month=8,day=15,hour=12,min=0,sec=0,isdst=false})`
+	if got := runOne(t, src).Str(); got != "1786820400" {
+		t.Errorf("got %s, want 1786820400 (the MST neighbour, not PST)", got)
+	}
+}
