@@ -278,8 +278,18 @@ func tableFnConcat(st *crescent.State, args []value.Value) ([]value.Value, *cres
 		return nil, e
 	}
 	t := value.GCRefOf(tv)
-	iF, _ := numArg(st, args, 2, 1)
-	jF, _ := numArg(st, args, 3, float64(st.RawBorder(t)))
+	// The ok flags must be checked: a non-numeric i or j is an argument error in
+	// PUC (luaL_optint), not a silent fall back to the default. Discarding them
+	// made table.concat({1,2,3}, ",", {}) report a bogus index error, and a bad j
+	// succeed outright. The sibling callers in stringlib and unpack do check.
+	iF, iOK := numArg(st, args, 2, 1)
+	if !iOK {
+		return nil, crescent.NewArgError(3, "number expected, got "+st.TypeName(args[2]))
+	}
+	jF, jOK := numArg(st, args, 3, float64(st.RawBorder(t)))
+	if !jOK {
+		return nil, crescent.NewArgError(4, "number expected, got "+st.TypeName(args[3]))
+	}
 	// NaN normalization: NaN-X=NaN and NaN>x is always false would bypass
 	// the range check below; also Go int(NaN)=MIN_INT64 disagrees with PUC
 	// 5.1.5 int(NaN)=0 (a diff divergence). Uniformly treat NaN as 0 (match
@@ -610,13 +620,17 @@ func mathFn2(name string, f func(a, b float64) float64) crescent.HostFn {
 			// Reporting len(args)+1 named #1 for a no-argument call.
 			return nil, crescent.NewArgError(2, "number expected, got no value")
 		}
-		a, ok1 := toNumberStr(st, args[0])
-		if !ok1 {
-			return nil, crescent.NewArgError(1, fmt.Sprintf("number expected, got %s", st.TypeName(args[0])))
-		}
+		// Arg 2 is validated FIRST here too, not just in the arity branch above:
+		// C evaluates f(luaL_checknumber(L,1), luaL_checknumber(L,2)) right to
+		// left, so math.fmod({}, {}) reports #2. Fixing only the arity case left
+		// the per-argument checks left-to-right and still reporting #1.
 		b, ok2 := toNumberStr(st, args[1])
 		if !ok2 {
 			return nil, crescent.NewArgError(2, fmt.Sprintf("number expected, got %s", st.TypeName(args[1])))
+		}
+		a, ok1 := toNumberStr(st, args[0])
+		if !ok1 {
+			return nil, crescent.NewArgError(1, fmt.Sprintf("number expected, got %s", st.TypeName(args[0])))
 		}
 		return []value.Value{value.NumberValue(f(a, b))}, nil
 	}

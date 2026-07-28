@@ -398,8 +398,16 @@ func baseFnPcall(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 }
 
 func baseFnSetMetatable(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
-	if len(args) < 2 || value.Tag(args[0]) != value.TagTable {
+	// The two arguments are checked SEPARATELY. Folding a missing arg 2 into the
+	// arg-1 test produced the self-contradicting "bad argument #1 (table
+	// expected, got table)" for setmetatable({}); PUC does
+	// luaL_checktype(L, 1, LUA_TTABLE) then luaL_argcheck on arg 2, reporting
+	// "bad argument #2 (nil or table expected)".
+	if len(args) < 1 || value.Tag(args[0]) != value.TagTable {
 		return nil, crescent.NewArgError(1, "table expected, got "+argTypeName(args, 0))
+	}
+	if len(args) < 2 {
+		return nil, crescent.NewArgError(2, "nil or table expected")
 	}
 	t := value.GCRefOf(args[0])
 	// A protected metatable (the __metatable field) cannot be changed (5.1)
@@ -568,6 +576,12 @@ func baseFnToNumber(st *crescent.State, args []value.Value) ([]value.Value, *cre
 		// the change -- #192 was only the "nan(...)" instance of it.
 		if base == 10 {
 			return baseToNumberStandard(st, args)
+		}
+		// Arg 1 is read BEFORE the base range check: PUC's non-10 branch is
+		// `const char *s1 = luaL_checkstring(L, 1);` followed by luaL_argcheck on
+		// the base, so tonumber({}, 1) reports #1 (string expected), not #2.
+		if value.Tag(args[0]) != value.TagString && !value.IsNumber(args[0]) {
+			return nil, crescent.NewArgError(1, "string expected, got "+st.TypeName(args[0]))
 		}
 		if base < 2 || base > 36 {
 			return nil, crescent.NewArgError(2, "base out of range")
