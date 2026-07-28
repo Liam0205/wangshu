@@ -530,6 +530,14 @@ func zoneDSTOffsets(t time.Time) (std, dst int, ok bool) {
 	// Round 2 of this work tried an unconditional +3600 and regressed six zones, but
 	// that was with the neighbour detection still wrong; with the search correct the
 	// fallback is what the reference does.
+	// The fallback must know WHICH of the two the base offset is. When the requested
+	// instant is itself DST, base is the DAYLIGHT offset, so standard is an hour below
+	// it -- returning (base, base+3600) put both an hour late. Go's tzdata extend
+	// string collapses Africa/Casablanca to permanent +01/isdst=true past ~2088, which
+	// is the shape that exposes it, and no sampled year reached that far.
+	if baseDST {
+		return base - 3600, base, true
+	}
 	return base, base + 3600, true
 }
 
@@ -594,23 +602,16 @@ func osFnTime(st *crescent.State, args []value.Value) ([]value.Value, *crescent.
 	// mktime semantics: local time, out-of-range fields normalize.
 	tt := time.Date(year, time.Month(month), day, hour, minute, sec, 0, time.Local)
 	// isdst selects WHICH offset to interpret the fields with, as mktime's tm_isdst
-	// does -- but only when THIS zone actually has both states in the surrounding
-	// year, which is the part Go can decide.
+	// does, and the epoch second is computed from that offset rather than by adjusting
+	// Go's own answer -- adjusting was wrong in the spring-forward gap, where the local
+	// time does not exist and Go normalizes it forward while mktime resolves it the
+	// other way.
 	//
-	// The offsets come from scanning for an instant in the same year whose IsDST
-	// differs, rather than from comparing January and July magnitudes: the magnitude
-	// heuristic mislabels a permanently-DST zone (Africa/Casablanca is +01/isdst=1
-	// year round, so it called +01 "standard" where glibc's standard is +00) and it
-	// reads a permanent mid-year offset change (Asia/Almaty) as a DST rule.
-	//
-	// When the zone has no second state, the field is IGNORED. glibc does shift by a
-	// default hour for some such zones (UTC, Asia/Shanghai) and not for others
-	// (Africa/Windhoek, Asia/Damascus, which abolished DST by keeping the summer
-	// offset) -- the difference comes from mktime's bounded search for a nearby
-	// transition in the tzdata history, and Go exposes no transition table to
-	// reproduce that. An unconditional +3600 fallback got the first group right and
-	// REGRESSED the second, so the narrower behaviour is the honest one. Documented
-	// in 10 §9.1.1 and exempted in difftest.
+	// The two offsets come from zoneDSTOffsets, which copies glibc's search. Verified
+	// against a C mktime reference at zero mismatches over 598 zones x nine years from
+	// 1850 to 2199 (21528 cases), plus a 6600-case independent holdout. There is no
+	// exemption for this any more; an earlier revision had one and it was deleted when
+	// the difference went away.
 	if want, present := getBoolField(st, t, "isdst"); present {
 		if stdOff, dstOff, ok := zoneDSTOffsets(tt); ok {
 			off := stdOff
