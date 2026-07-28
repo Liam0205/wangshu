@@ -135,6 +135,13 @@ func (st *State) enterLuaFrame(th *thread, funcIdx, nargs, nresults int, entry b
 	}
 	// Push CallInfo (PW10 R2b-4: the arena segment is authoritative, th.cur is the
 	// hot mirror of the top frame).
+	// Saturate to the packed field's width. Computed here rather than in a closure:
+	// a closure in this literal allocates, and this is the hot call path
+	// (TestCallInto_ZeroAlloc caught it).
+	hf := st.pendingHostFrames
+	if hf > 0xF {
+		hf = 0xF
+	}
 	ci := callInfo{
 		base:       base,
 		funcIdx:    funcIdx,
@@ -143,7 +150,7 @@ func (st *State) enterLuaFrame(th *thread, funcIdx, nargs, nresults int, entry b
 		cl:         cl,
 		nresults:   nresults,
 		fresh:      entry,
-		hostFrames: st.pendingHostFrames,
+		hostFrames: hf,
 		pc:         0,
 		nVarargs:   uint16(nVarargs), // strictly aligned with the below-stack area [base-nVarargs..base) + segment word4 mirror
 	}

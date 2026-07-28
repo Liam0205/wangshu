@@ -89,6 +89,7 @@ type State struct {
 	// nCcalls is the host→Lua re-entry depth (real Go stack consumption;
 	// equivalent to 05 §7.4 LUAI_MAXCCALLS). callLuaFromHost does +1 on entry
 	// / -1 on return; exceeding maxCCallDepth raises "C stack overflow".
+	suppressHostFrame int   // >0 while dispatching a metamethod (adds no error level)
 	pendingHostFrames uint8 // host frames entered since the last Lua frame (error level walks)
 	nCcalls           int
 
@@ -1369,7 +1370,11 @@ func packCIWord2(ci *callInfo) uint64 {
 	// re-entry boundary can stand for several stacked host frames
 	// (pcall(pcall, f) is two). Four bits is ample -- the reentry depth cap is far
 	// below 15 and the value saturates.
-	w |= uint64(ci.hostFrames&0xF) << 51
+	hf := ci.hostFrames
+	if hf > 0xF {
+		hf = 0xF // saturate: the field is 4 bits and the comment promises clamping
+	}
+	w |= uint64(hf) << 51
 	return w
 }
 

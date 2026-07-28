@@ -57,6 +57,17 @@ func (st *State) annotateError(e *LuaError, ci *callInfo, th *thread) *LuaError 
 			if steps == 0 {
 				break
 			}
+			// A tail-called frame replaced its caller, so the caller is gone from
+			// the stack. PUC still counts that vanished level but has no position
+			// for it (luaL_where yields nothing for a tail-call frame), so the walk
+			// consumes one more step here and reports no prefix if it lands there.
+			if cur.Tailcall() {
+				steps--
+				if steps == 0 {
+					onBoundary = true
+					break
+				}
+			}
 			idx--
 			steps--
 		}

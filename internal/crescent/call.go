@@ -158,7 +158,13 @@ func (st *State) doTailCall(th *thread, ci *callInfo, i bytecode.Instruction) (*
 	}
 	parentNRes := ci.NResults()
 	parentFresh := ci.Fresh()
+	// The replaced frame's host-frame count belongs to the replacement: a tail call
+	// reuses the frame rather than stacking one, so a function tail-called straight
+	// from a host boundary keeps that boundary. Dropping it shifted every
+	// error(msg, level>=2) in such a function by one.
+	parentHostFrames := ci.hostFrames
 	st.popCallInfo(th)
+	st.pendingHostFrames = parentHostFrames
 	if e := st.enterLuaFrame(th, dst, nargs, parentNRes, parentFresh); e != nil {
 		return nil, e
 	}
