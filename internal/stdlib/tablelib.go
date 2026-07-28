@@ -483,8 +483,16 @@ func zoneDSTOffsets(t time.Time) (std, dst int, ok bool) {
 	// switches to MST (-25200) on Nov 1, the same magnitude as PDT, so glibc's
 	// nearest non-DST neighbour is -25200 while a January-first scan found PST
 	// (-28800). A full-tzdata sweep put that class at 65 cases across 55 zones.
-	for d := 1; d <= 200; d++ {
-		for _, cand := range [2]time.Time{t.AddDate(0, 0, -d), t.AddDate(0, 0, d)} {
+	// glibc's mktime searches in 601200-second strides (about 6.96 days), probing
+	// backward then forward at each stride, so it can step PAST a nearer transition
+	// and settle on a further zone entry. A one-day scan finds the nearest one
+	// instead, which is a different offset whenever a transition sits inside one
+	// stride: Asia/Anadyr 2010 was an hour off in a genuinely two-state year. The
+	// stride and probe order are copied rather than approximated.
+	const strideSec = 601200
+	for i := int64(1); i <= 30; i++ {
+		for _, off := range [2]int64{-i * strideSec, i * strideSec} {
+			cand := t.Add(time.Duration(off) * time.Second)
 			if cand.IsDST() != baseDST {
 				_, other := cand.Zone()
 				if baseDST {

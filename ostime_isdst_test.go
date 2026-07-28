@@ -97,3 +97,27 @@ func TestOSTimeIsDST_TwoStateNeighbourDirection(t *testing.T) {
 		t.Errorf("got %s, want 1786820400 (the MST neighbour, not PST)", got)
 	}
 }
+
+// TestOSTimeIsDST_StrideMatchesGlibc pins the SEARCH GRANULARITY, not just its
+// direction.
+//
+// glibc's mktime probes in 601200-second strides (about 6.96 days), backward then
+// forward at each stride, so it can step past a nearer transition and settle on a
+// further zone entry. A one-day scan finds the nearest instead, which differs whenever
+// a transition sits inside one stride -- Asia/Anadyr 2010 was an hour off in a
+// genuinely two-state year, so the registered single-state exemption did not cover it.
+func TestOSTimeIsDST_StrideMatchesGlibc(t *testing.T) {
+	loc, err := time.LoadLocation("Asia/Anadyr")
+	if err != nil {
+		t.Skip("tzdata unavailable")
+	}
+	origLocal := time.Local
+	t.Setenv("TZ", "Asia/Anadyr")
+	time.Local = loc
+	t.Cleanup(func() { time.Local = origLocal })
+
+	const src = `return tostring(os.time{year=2010,month=7,day=15,hour=12,min=0,sec=0,isdst=false})`
+	if got := runOne(t, src).Str(); got != "1279152000" {
+		t.Errorf("got %s, want 1279152000 (glibc's stride neighbour, not the nearest)", got)
+	}
+}
