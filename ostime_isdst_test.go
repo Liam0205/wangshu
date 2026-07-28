@@ -121,3 +121,41 @@ func TestOSTimeIsDST_StrideMatchesGlibc(t *testing.T) {
 		t.Errorf("got %s, want 1279152000 (glibc's stride neighbour, not the nearest)", got)
 	}
 }
+
+// TestOSTimeIsDST_SearchBound pins glibc's search BOUND, which the stride test does not:
+// Asia/Anadyr 2010 resolves within 30 strides, so a too-small cap passed it.
+//
+// glibc's __mktime_internal searches out to delta_bound = duration_max/2 + stride, i.e.
+// 447 strides (about 8.5 years). Capping at 30 (~208 days) silently ignored the field in
+// two-state years whose nearest opposite-DST instant lies further out -- 131 cases across
+// 80 zones, none of them covered by the single-state exemption.
+func TestOSTimeIsDST_SearchBound(t *testing.T) {
+	for _, tc := range []struct {
+		zone, src, want string
+	}{
+		{"Australia/Perth",
+			`return tostring(os.time{year=2006,month=1,day=15,hour=12,min=0,sec=0,isdst=true})`,
+			"1137294000"},
+		{"America/Havana",
+			`return tostring(os.time{year=2006,month=1,day=15,hour=12,min=0,sec=0,isdst=false})`,
+			"1137344400"},
+		// A 30-minute DST delta, far enough out to need the full bound.
+		{"Australia/Lord_Howe",
+			`return tostring(os.time{year=1981,month=1,day=15,hour=12,min=0,sec=0,isdst=true})`,
+			"348366600"},
+	} {
+		loc, err := time.LoadLocation(tc.zone)
+		if err != nil {
+			t.Skip("tzdata unavailable")
+		}
+		func() {
+			origLocal := time.Local
+			t.Setenv("TZ", tc.zone)
+			time.Local = loc
+			defer func() { time.Local = origLocal }()
+			if got := runOne(t, tc.src).Str(); got != tc.want {
+				t.Errorf("%s: got %s, want %s", tc.zone, got, tc.want)
+			}
+		}()
+	}
+}

@@ -489,8 +489,16 @@ func zoneDSTOffsets(t time.Time) (std, dst int, ok bool) {
 	// instead, which is a different offset whenever a transition sits inside one
 	// stride: Asia/Anadyr 2010 was an hour off in a genuinely two-state year. The
 	// stride and probe order are copied rather than approximated.
+	// The bound is glibc's, not a guess: __mktime_internal searches out to
+	// delta_bound = duration_max/2 + stride, i.e. 447 strides (about 8.5 years).
+	// Capping at 30 (~208 days) made the field silently ignored in two-state years
+	// whose nearest opposite-DST instant lies further out -- 131 cases across 80
+	// zones, including all of America/Argentina/*, Australia/Perth and
+	// Pacific/Auckland. Those are NOT the single-state exemption, so they were plain
+	// divergences.
 	const strideSec = 601200
-	for i := int64(1); i <= 30; i++ {
+	const maxStrides = 447
+	for i := int64(1); i <= maxStrides; i++ {
 		for _, off := range [2]int64{-i * strideSec, i * strideSec} {
 			cand := t.Add(time.Duration(off) * time.Second)
 			if cand.IsDST() != baseDST {
