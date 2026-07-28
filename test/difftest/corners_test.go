@@ -159,7 +159,7 @@ var exemptions = []struct {
 	{"os.execute", "10 §11 os ❌ 列(安全:嵌入式 VM 不让脚本跑 shell)"},
 	{"io.popen/io.tmpfile", "10 §11 io ❌ 列"},
 	{"debug 库整个未注册", "10 §11 debug ❌ 列;`debug` 全表不存在(不只是 sethook/getlocal/setlocal/getupvalue/setupvalue/getregistry 这几个),所以 debug.traceback 的 [C] 帧之类的问题都无从谈起"},
-	{"os.time{isdst=} 在单一 DST 状态的时区被忽略", "判据是**请求的那个时刻前后**是否存在另一个 DST 状态(向外由近及远搜索,与 glibc mktime 的搜索方向一致),而不是这个时区历史上有没有 DST 规则——同一个时区在不同年份可以分属两类,例如 Africa/Casablanca 1997 年是单一状态而 2024 年是两个状态。两状态的年份完全对齐;单一状态的年份 glibc 仍按默认 1 小时响应 isdst=true,而它响应与否取决于 mktime 在 tzdata 历史里对附近 transition 的有界搜索(UTC / Asia/Shanghai / Asia/Kolkata 会响应,Africa/Windhoek / Asia/Damascus 不响应),Go 不暴露 transition 表、无法忠实复现,所以这些年份里该字段被忽略"},
+	{"os.time{isdst=} 在搜不到第二个 DST 状态时被忽略", "判据照抄 glibc mktime：从请求时刻**向外**搜、步长 601200 秒(约 6.96 天)、每步先后再前、最多 447 步(即 delta_bound = duration_max/2 + stride，约 8.5 年)。搜到第二个状态的年份完全对齐——含 30 分钟增量的 Australia/Lord_Howe、南半球、常年 DST、年中永久偏移变更等,实测 79/81 一致。搜不到的年份 glibc 仍按默认 1 小时响应 isdst=true(UTC / Asia/Shanghai / Asia/Kolkata 会响应,Africa/Windhoek / Asia/Damascus 不响应),而它响应与否取决于 mktime 在 tzdata 历史里对 transition 的搜索结果,Go 不暴露 transition 表、无法忠实复现,所以这些年份里该字段被忽略。注意判据是「搜不到」而不是「这个时区没有 DST 规则」,同一时区不同年份可分属两类"},
 	{"io.read 与 io.stdout/io.stdin/io.stderr 未提供", "10 §11 把它们标为必做而目前只有 io.write;三个标准流需要 file-handle userdata,而运行时在 __gc finalizer 之外还没有创建 userdata 的先例——原型撤回原因见 #205"},
 	{"getfenv/setfenv", "不在 10 §11 提供面任何列;唯一设计出处是 P2 不升层形状 F4(p2-bridge §358)——按设计豁免"},
 	{"load(func) 渐进分块语义差", "已实现 reader 循环全量拼接;与 5.1 流式编译的差异仅在超大 chunk 内存峰值,语义等价"},
