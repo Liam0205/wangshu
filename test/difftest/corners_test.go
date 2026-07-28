@@ -159,6 +159,7 @@ var exemptions = []struct {
 	{"os.execute", "10 §11 os ❌ 列(安全:嵌入式 VM 不让脚本跑 shell)"},
 	{"io.popen/io.tmpfile", "10 §11 io ❌ 列"},
 	{"debug 库整个未注册", "10 §11 debug ❌ 列;`debug` 全表不存在(不只是 sethook/getlocal/setlocal/getupvalue/setupvalue/getregistry 这几个),所以 debug.traceback 的 [C] 帧之类的问题都无从谈起"},
+	{"os.time{isdst=} 采用 glibc 的 mktime 搜索规则(跨平台统一)", "该字段的解析需要在 tzdata transition 表里搜索,而各家 libc 的搜索步长与顺序不同。wangshu 在所有平台上都用 glibc 的规则(601200 秒步长、每步先后再前、上限 381 步、找不到邻居按默认 1 小时、邻居偏移相同则 delta 取 0),因此**同一脚本在各平台答案一致**;而 PUC 的答案随宿主 libc 变化,所以在非 glibc 宿主(macOS/BSD)上,少数贴着 transition 的输入会与本地编译的 PUC 不同。产品是纯 Go(cgo 只在 internal/oracle 的 build tag 后面),调不到宿主 mktime;逐平台重写各家 libc 的搜索会把一个可验证的答案换成几个无法验证的答案。glibc 上实测零差异:598 个时区 × 1850-2199 九个年份共 21528 例"},
 	{"io.read 与 io.stdout/io.stdin/io.stderr 未提供", "10 §11 把它们标为必做而目前只有 io.write;三个标准流需要 file-handle userdata,而运行时在 __gc finalizer 之外还没有创建 userdata 的先例——原型撤回原因见 #205"},
 	{"getfenv/setfenv", "不在 10 §11 提供面任何列;唯一设计出处是 P2 不升层形状 F4(p2-bridge §358)——按设计豁免"},
 	{"load(func) 渐进分块语义差", "已实现 reader 循环全量拼接;与 5.1 流式编译的差异仅在超大 chunk 内存峰值,语义等价"},
