@@ -309,7 +309,7 @@ for i := 0; i < 1000; i++ {
 
 ## 语言支持
 
-望舒实现的是 Lua 5.1 核心语言（与 LuaJIT 一致的语法层），覆盖 Lua 5.1 参考手册中定义的 38 个字节码 opcode 除 `VARARG` 外的全部（`VARARG` 在 P3/P4 编译层永不接入，走 P1 解释器路径），以及 stdlib 的 base / string / table / math / os / io / coroutine 全部必做面。
+望舒实现的是 Lua 5.1 核心语言（与 LuaJIT 一致的语法层），覆盖 Lua 5.1 参考手册中定义的 38 个字节码 opcode 除 `VARARG` 外的全部（`VARARG` 在 P3/P4 编译层永不接入，走 P1 解释器路径），以及 stdlib 的 base / string / table / math / os / coroutine 全部必做面。**io 库目前只有 `io.write`**：`io.read` 与 `io.stdout`/`io.stdin`/`io.stderr` 需要 file-handle userdata 基础设施，`debug` 库整个尚未注册，两者都记在 #205（缺口说明见 [10](docs/design/p1-interpreter/10-stdlib.md) §10.1.1）。`print` 与 `io.write` 直接写宿主 stdout、不经 file handle，所以「脚本能输出、测试能跑」这条已经满足。
 
 正确性验证五层：
 
@@ -341,6 +341,8 @@ for i := 0; i < 1000; i++ {
 **2026-07-28 变动（`tonumber` 负数回绕不再是豁免）**：`tonumber('-ff',16)` 原先被列为「C 未定义行为」豁免、有意取直觉语义返 `-255`。这个分类是错的：C `strtoul` 的无符号取反与溢出饱和是**有定义的** C，不是 UB，所以应该对齐而不是豁免——现在 `tonumber("-7",8)` 得 2^64-7、`("-ff",16)` 得 2^64-255、20 个 `f` 配 base 16 饱和到 2^64-1，与官方一致。更要紧的是那条豁免**从来没有任何代码实现它**（只是 `internal/stdlib/stdlib.go` 里的一句注释），所以分歧一直是活的，nightly 随时可能把它开成 crasher。`test/difftest/corners_test.go::exemptions` 里对应的那条已作废条目同轮摘掉了。判据（记在 [12](docs/design/p1-interpreter/12-testing-difftest.md) §4.9b）：**先分清那个 C 行为是有定义还是 UB，再决定对齐还是跳过**；并且「已豁免」的声明必须能指向执行它的代码或测试。
 
 **2026-07-28 变动（`error` level 的 skip 撤掉 + 刻意不对齐 `print` 的 NUL 截断）**：① 差分 harness 里为 #197（`error(msg, level)` 选帧错误）加的那条 skip 覆盖**任何提到 error 第二参数的输入**，#197 修好后同轮撤掉——24 种 error level 写法现在**零 skip** 参与比对，只剩「非有限 level」跳过（那是 `luaL_checkint` 窄化的真 UB）。纪律：**为某个 bug 加的 skip 必须随那个 bug 一起撤掉**，留着的 skip 会把一整类输入静默挡在比对之外，而且读起来像已经处理过了（记在 [12](docs/design/p1-interpreter/12-testing-difftest.md) §4.9c）。② `print` 对内嵌 NUL **不截断**，这是刻意偏离：PUC 的 `luaB_print` 用 `fputs` 停在第一个 NUL，而 PUC **自己的** `io.write` 用带长度的 `fwrite` 不截断——参照实现在同一件事上内部不一致，而 5.1 手册明确字符串是 8-bit clean 可含 NUL，所以那个截断是 C 调用的产物，对齐它等于故意丢用户数据（差分侧不表现为分歧：harness 用自己的累积器捕获输出，不经 C `FILE*`）。判据：**参照实现自相矛盾时按语言规范选，并把偏离记进代码注释**；这与「参数求值顺序在 C 里是未指定、两侧都不对齐」同属一类（四格判据见 [12](docs/design/p1-interpreter/12-testing-difftest.md) §4.9b）。
+
+**2026-07-28 变动（产品上限与 harness skip 拆成两个数）**：`table.insert` 的移位跨度上限此前产品侧与差分 harness 侧读**同一个数**（2^27）。这个写法被 nightly 开成**三个** crasher issue（#203 是第三个）：位置窄化成约 100M 的移位跨度、刚好落在 2^27 之下，三条都**正确且对称**——两侧引擎都做这个移位、结果一致——只是耗数秒，而 fuzz coordinator 启动时**并行重放整个 seed corpus**，这样的 seed 会把 worker 弄死。前两个都按「重 workload 走 `test/regression/`」挪走了，每一次单看都对；第三次说明该修的不是再挪一个 seed，而是**被接受的区间宽到 fuzzer 会持续探索它**。现在两个阈值故意不同，因为它们回答不同的问题：产品侧 `tableInsertShiftCap` 留在 2^27，那是**正确性**边界（在它之下望舒必须做这个移位，因为 lua5.1 会做；数值本身是实测参照实现代价定下来的）；harness 侧的 skip 降到 2^20，纯粹是「什么样的输入能待在并行 corpus 重放里」的资源问题。判据：**一个阈值的正确数值由它防的东西决定，两处读同一个常数而防的东西不同就该是两个常数**——与「skip 与产品规则必须逐字对应」不冲突，那条管判据的**形状**、这条管**数值**，形状一致、数值分开（记在 [12](docs/design/p1-interpreter/12-testing-difftest.md) §4.9d）。`test/regression` 仍然串行跑一次真实的 100M 元素移位，所以「这个工作确实被完成而不是被上限拒绝」没有丢覆盖。同轮另修两处 stdlib 语义（#201/#202）：`unpack` 的上限是 `LUAI_MAXCSTACK` **减去参数个数**而不是固定 8000（PUC 的 `lua_checkstack` 拒绝条件含 `L->top - L->base + size`，对 C 函数那就是参数个数；阈值随参数个数变化正是排除「硬编码 7997」的那条证据），以及 `error` 自己作为被调 host 函数抛错时位置前缀完全丢失（它经 `callHost` 直接返回、不进解释器循环，所以 #197 那套按帧计数在这条路径上从未被调用；改在边界标注，level 1 是 host raiser 的**调用者**，且只对显式 `level >= 2` 生效——给所有 host 错误标注会给 PUC 留裸的库错误加上前缀）。
 
 ## 文档导航
 

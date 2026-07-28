@@ -215,6 +215,34 @@ corpus** 作为 baseline coverage sweep;若 corpus 触发的 workload 本身很�
 
 自建 in-test deadline 只在这两种情况才有正当理由:(a) 测试**需要在超时后继续执行**(跑清理 / 对比结果 / 累积数据),或者 (b) 失败模式明确是「慢过某个具体阈值」而非「永不返回」。i123 两条都不属于,`test/regression/issue123_regression_test.go` 因此在 PR #129(commit 706ba26)整段删掉了自建的 `runWithDeadlineErr`。同理:全仓其它已存在的 `mustFinish` / `runWithDeadline` 类模式(例如 `test/regression/forloop_nan_limit_test.go` 的 10s deadline)按每处的误报余量分档处置——余量 < 10× 立刻换成包级 timeout,余量 10×~100× 作观察项,余量 > 100× 暂不动。反思 [[2026-07-12-i123-deadline-to-package-timeout-round]] 教训 1 + 教训 2。
 
+#### 同一写法第三次被开成 issue 时,该调的是被接受的区间(2026-07-28,#203)
+
+上面这条「重 workload 挪进 `test/regression/`」是**单条**输入的正确处置,但它对**同一写法反复
+出现**这件事无效。`table.insert` 的重移位跨度这一写法被 nightly 开了**三个** issue:位置窄化成
+约 100M 的移位跨度、刚好落在产品侧 2^27 上限之下,三个都**正确且对称**(两侧引擎都做这个移位、
+结果一致),只是耗数秒,而 coordinator 启动时并行重放整个 corpus 会被这样的 seed 弄死。前两个都
+按上面那条挪进了 `test/regression/insert_shift_cost_test.go`,每一次单看都对——三次之后它显然
+不是在解决问题。
+
+**判据**:**同一写法第 N 次(N >= 3)被 fuzzer 开成 issue 时,停下来问「为什么 fuzzer 还能生成
+它」,而不是继续处理单个实例。** 挪 seed 处理的是「这一条输入现在不在并行重放里了」,它不改变
+fuzzer 下一次还能生成一条同样的输入;成本是每次一轮人工分诊加一个 issue,收益只覆盖那一个采样
+点。这与 [[prove-the-path-under-test]] §4.1「一个 reported case 是接受面的一个采样,不是那个
+接受面本身」是同一判据在**处置侧**的形式:那条讲修完 reported case 要枚举整个接受面,本条讲
+反复分诊同一采样点时该动的是接受面。
+
+**#203 的答案**:产品上限与 harness skip 被绑成了**同一个数**,而它们回答的是不同的问题。产品侧
+`tableInsertShiftCap` 留在 2^27,那是**正确性**边界——在它之下 wangshu 必须做这个移位,因为
+lua5.1 会做(上一轮四轮审计都在反对拒绝参照实现能完成的工作,数值本身也是实测代价定下来的,见
+[[prove-the-path-under-test]] §4.5);harness 侧的 skip(`internal/oracle/prelude.go`)降到 2^20,
+那纯粹是「什么样的输入能待在并行 corpus 重放里」的资源问题。拆开之后 2^20-1 以下照旧比对、
+2^20 及以上两侧对称跳过,而 `test/regression` 仍然串行跑一次真实的 100M 元素移位,所以「这个
+工作确实被完成而不是被上限拒绝」这件事没有丢覆盖。两个阈值的**形状**仍然逐字对应(都按「低于
+index 1 的距离」算),只是数值分开——形状不一致会让 skip 遮住产品的错,见
+[[2026-07-28-four-diff-divergence-issues]] 教训 7;数值该不该分开见
+[[prove-the-path-under-test]] §4.5b。反思 [[2026-07-28-issue201-203-unpack-skip-thresholds]]
+教训 1/3。
+
 ### 2. 诊断硬化 —— 让下次复发自带诊断
 
 无声外部 kill 之所以难查,是因为它没留下任何 in-process 证据——Go runtime 什么都来不及打,artifact

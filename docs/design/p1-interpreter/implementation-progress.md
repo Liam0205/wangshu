@@ -167,6 +167,35 @@
   `tostring(nil)`、`io.write` 的副作用落到 stdout)。过程反思见
   `llmdoc/memory/reflections/2026-07-28-issue197-199-stdlib-semantics.md`。
 
+- **nightly crasher + 预存缺口对账(2026-07-28,#201/#202/#203 一轮)**:三个 issue 性质不同——#201 与 #203
+  是 nightly 自动开的 go-fuzz crasher,#202 是上一轮修 #197-#199 时**顺手记下的一组**预存缺口。
+
+  | 项 | 落点 | 结论与修法要点 |
+  |---|---|---|
+  | `unpack` 的上限是 `LUAI_MAXCSTACK` **减参数个数**(#201) | `internal/stdlib/tablelib.go` | 原先按固定 8000 比较,接受了 PUC 拒绝的 7998..8000 那一段。PUC 的 `luaB_unpack` 调 `lua_checkstack(L, n)`,拒绝条件含 `(L->top - L->base + size) > LUAI_MAXCSTACK`,对 C 函数 `L->top - L->base` 就是参数个数。**结论是量出来的**:阈值随参数个数变化正是排除「硬编码 7997」的证据(10 §4.5) |
+  | `error` 自己是被调 host 函数时位置前缀完全丢失(#202) | `internal/crescent/meta.go` + `errors.go` + `state.go` | host 抛错经 `callHost` 直接返回、不进解释器循环,`annotateError` 从来看不到它(#197 那套按帧计数在这条路径上一次都没被调用)。改在边界标注,另外两件要对:**level 1 是 host raiser 的调用者**(不占 Lua 帧,所以 level 1 该裸、level 2 该带前缀;第一版从 `Level-1` 消费使每个 level 偏一格)+ **只对显式 `level >= 2` 生效**(PUC 的库错误经 pcall 抛出时不带位置,`TestTableConcat_ErrorTextMatchesPUC` 立刻抓到)(09 §3.2.2) |
+  | `os.time` 忽略 `isdst` 字段(#202) | `internal/stdlib/tablelib.go` | PUC 把它填进 `struct tm` 的 `tm_isdst` 交给 `mktime`,用来确定 DST 相关本地时间的解释;只在与该日期在该时区的自然状态**不一致**时才有影响。要区分「字段不存在」与「显式 false」(新增 `getBoolField` 返回 `(value, present)`)。`TZ=Europe/London` 下双向实测(10 §9.1.1) |
+  | 移位区间的 skip 与产品上限拆成两个数(#203) | `internal/oracle/prelude.go` | 同一写法的**第三个** nightly crasher(约 100M 的移位跨度、刚好在 2^27 之下,三条都正确且对称、只是耗数秒,而 coordinator 并行重放整个 corpus)。第三次说明该改的是被接受的区间,不是再挪一个 seed:产品侧留 2^27(**正确性**——lua5.1 会做这个移位),harness skip 降到 2^20(**资源**——什么输入能待在并行重放里)(12 §4.9d) |
+  | **不成立的三项**(#202) | — | `coroutine.wrap` 缺前缀 / `%#g` 指数交界 / `math.deg` 差 1 ulp,**实测都与 `lua5.1` 一致**。那个 issue 是自己开的,七项里三项不成立 |
+  | **挪去 #205 的两项**(#202) | — | `io.stdout`/`io.read` 缺失(需要 file-handle userdata 基础设施,10 §10.1.1)、`debug.traceback` 缺 `[C]` 帧(`debug` 库整个不存在,在 `debug` 表出现之前无从谈起) |
+
+  **`io.stdout` 撤回的完整理由(10 §10.1.1)**:已经做出来了——三个标准流做成 file-handle userdata + 共享
+  metatable(`write`/`close`),为此补了三处 VM 缺口(`metaFieldOfValue` 不认 userdata、`indexWithMeta` 没有
+  userdata 分支、`getmetatable` 对 userdata 无条件返回 nil),补完之后 `io.stdout:write()`、`:close()`、
+  `getmetatable` 都对了。**但随后 `TestGCStress_RandomScripts` 失败,创建句柄之后一个
+  `collectgarbage("collect")` 就以 arena 索引越界 panic**:句柄在仍从 `io` 表可达的情况下被清扫,说明构造
+  方式没有正确进入 GC 的根 / 追踪路径(`internal/gc/mark.go` 确实会把 `OBJ_USERDATA` 追到它的 meta 与
+  env ref,所以问题在构造侧不在收集器)。这是运行时里**第一个在 `__gc` finalizer 之外创建的 userdata**,
+  分配与 rooting 的约定得先搞清楚,所以整段撤回、开 #205,而不是带着一个会破坏 arena 的改动继续。
+
+  **验证与扫描规模**:84 种 unpack 写法与 oracle 一致(覆盖 7995-8001 那一段、1e9 量级范围、空范围与倒置
+  范围、非有限边界);66 种 error level 写法与 `lua5.1` 一致(含 `pcall(error,...)` 与
+  `pcall(pcall,error,...)` across level 0-6);另主动生成 85 个探针直接与系统 `lua5.1` 比对(unpack 边界
+  × 12 值 × 4 写法、error level × 5 × 5 写法含 host raiser、`os.time` 的 isdst 六种组合、六种「host callee
+  抛的库错误必须保持裸」),**81 个可比对项零差异**(4 个是 lua 侧也抬错、在那种探针写法里无法捕获的,已由
+  84 种 oracle 比对覆盖);两条 seed 入 `testdata/fuzz/FuzzOracleDiff/`。过程反思见
+  `llmdoc/memory/reflections/2026-07-28-issue201-203-unpack-skip-thresholds.md`。
+
 ## 相关
 
 [00-overview](./00-overview.md) · [../engineering](../engineering.md) ·

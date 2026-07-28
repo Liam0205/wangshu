@@ -552,6 +552,34 @@ func DiffN(src string, runners ...Runner) DiffResult { /* N 方比对,§3.3 矩�
 
 **纪律**:修完一个 bug,`grep` 一遍为它加过的 skip / 豁免 / 已知边界条目,逐条撤或收窄,并**跑一遍确认相应用例现在零 skip 参与比对**(不是「测试绿了」——差分 harness 里 skip 也是绿的,§4.2 与 `llmdoc/guides/prove-the-path-under-test.md` §9.6)。一条还活着的 skip 与一句没有执行体的豁免声明在阅读上是一样的,区别只是前者真的在挡输入。方法论见该 guide §4.6。
 
+### 4.9d 产品上限与 harness skip 是两个数,因为它们回答不同的问题(#203,2026-07-28)
+
+§4.9c 讲一条 skip 什么时候该撤,本节讲**一条该留的 skip 用什么数值**。
+
+`table.insert` 的移位跨度上限此前**产品侧与 harness 侧读同一个数**(2^27)。这个写法被 nightly 开成
+**三个** crasher issue:位置窄化成约 100M 的移位跨度、刚好落在 2^27 之下,三条都**正确且对称**——两侧引擎
+都做这个移位、结果一致——只是耗数秒,而 fuzz coordinator 启动时**并行重放整个 seed corpus**,这样的 seed
+会把 worker 弄死(与 §4.9 那一类「宿主不可崩」不同,这里两侧行为都对,纯粹是 harness 自己付不起)。前两个
+都按 `llmdoc/guides/unreproducible-crasher-triage.md`「重 workload 走 `test/regression/`」挪进了
+`test/regression/insert_shift_cost_test.go`,每一次单看都对;**第三次说明该修的不是再挪一个 seed,而是被
+接受的区间宽到 fuzzer 会持续探索它**。
+
+所以两个阈值现在**故意不同**:
+
+| 位置 | 数值 | 它回答的问题 |
+|---|---|---|
+| 产品侧 `tableInsertShiftCap`(`internal/stdlib/tablelib.go`) | 2^27 | **正确性**边界:在它之下望舒必须做这个移位,因为 lua5.1 会做。数值由参照实现的代价实测定下来(§4.9b 那轮从 2^22 → 2^26 → 2^27 改了三次,方法论见 `prove-the-path-under-test.md` §4.5) |
+| harness 侧 skip(`internal/oracle/prelude.go` 的 sentinel) | 2^20 | **资源**:什么样的输入能待在并行 corpus 重放里。与参照实现的能力无关 |
+
+**判据**:一个阈值的正确数值由**它防的东西**决定;两个地方读同一个常数而防的东西不同,那就该是两个常数。
+这与 §4.9b「skip 与产品规则必须逐字对应」不冲突——那条管**判据的形状**(两边都按「低于 index 1 的距离」算,
+一边按元素个数就会让 skip 遮住产品拒绝合法插入这件事),本节管**数值**。**形状一致、数值分开。**
+
+实测确认拆分做的是它该做的事:2^20-1 以下照旧比对、2^20 及以上两侧对称跳过、普通位置不受影响,而
+`test/regression` 仍然**串行**跑一次真实的 100M 元素移位——所以「这个工作确实被完成而不是被上限拒绝」这件事
+没有丢覆盖。方法论见 `llmdoc/guides/prove-the-path-under-test.md` §4.5b 与
+`llmdoc/guides/unreproducible-crasher-triage.md`「同一写法第三次被开成 issue 时」。
+
 ---
 
 ## 5. GC 压力 fuzz(收口 06 §11/§6.3/§5.2、10 §13.3)

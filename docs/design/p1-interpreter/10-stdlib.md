@@ -707,8 +707,26 @@ func hostUnpack(vm *VM, th *Thread) int {
   `table.unpack` 不存在。
 - **返回可变个数**:`unpack` push j-i+1 个值,`return n`。调用点(`CALL C=0` 到 top)接收全部(05 §7.2)。
 - **大范围扩栈**:`unpack` 一个大表(`unpack(t)` t 有 1e6 元素)会压 1e6 个值上栈 → `ensureStack` 扩容(05 §1.4)。
-  Lua 5.1 有 `unpack` 上限保护(`MAXUPVAL`?实为栈检查):超过栈上限报 `"too many results to unpack"`。**P1 同样
-  在 ensureStack 撞上限时报错**(对齐 5.1)。**待 12 核对**措辞。
+  Lua 5.1 有 `unpack` 上限保护:超过栈上限报 `"too many results to unpack"`。**P1 对齐 5.1**,精确口径见下条。
+- **上限是 `LUAI_MAXCSTACK` 减去参数个数,不是固定 8000**(#201,2026-07-28 定稿)。PUC 的 `luaB_unpack` 调
+  `lua_checkstack(L, n)`,它的拒绝条件是
+
+  ```
+  size > LUAI_MAXCSTACK || (L->top - L->base + size) > LUAI_MAXCSTACK
+  ```
+
+  对一个 C 函数来说 `L->top - L->base` 就是**参数个数**,所以真实上限是 `8000 - nargs`:
+  `unpack({0},1,7997)` 成功、`7998` 抬错,而两参数调用比三参数调用多允许一个。原先按固定 8000 比较,于是把
+  PUC 拒绝的 7998..8000 那一段接受了(`unpack({0,"",1},1,7998)` 成功而 PUC 抬
+  `too many results to unpack`)。落点 `internal/stdlib/tablelib.go::baseFnUnpackImpl`,常数
+  `maxCStack = 8000` 镜像官方 `luaconf.h` 的 `LUAI_MAXCSTACK`。这个上限同时仍然防住「2^30 量级的范围分配一个
+  巨大 slice 把进程拖下去」。**这个结论是量出来的不是推出来的**:阈值随参数个数变化正是排除「硬编码 7997」
+  这个错误结论的那条证据(只测三参数一种写法时两者在数据上不可区分),四种调用环境(直接 pcall、包在 Lua
+  函数里、有额外活跃局部变量、经 select)阈值一致,84 种写法与 oracle 逐字节一致(覆盖 7995-8001 那一段、
+  1e9 量级范围、空范围与倒置范围、非有限边界)。方法论见
+  `llmdoc/guides/prove-the-path-under-test.md` §4.5 与
+  `llmdoc/guides/cross-backend-semantic-fix-sweep.md`「PUC 语义由 C 实现定义」节(C 侧的上限条件可能同时读
+  调用当时的栈状态,别只抄阈值常数)。
 
 ### 4.6 `collectgarbage` / `gcinfo`:GC 控制(指向 06)
 
@@ -1491,6 +1509,24 @@ os 库**纯 Go 实现**(roadmap §0 禁 cgo),用 Go `time`/`os` 包。跨平台�
 | `os.setlocale([loc [, cat]])` | 设 locale | (有限/缺) | **△/❌ 部分** | **纯 Go 无 C locale**(§9.4);P1 仅支持 `"C"`/缺 |
 | `os.getenv`/`os.time` 等只读项 | — | — | ✅ | 无副作用,默认启用 |
 
+#### 9.1.1 `os.time` 的表协议:`isdst` 参与解释,不能忽略(#202,2026-07-28)
+
+`os.time(t)` 读 `year`/`month`/`day`(必需)+ `hour`/`min`/`sec`(可选,默认 12/0/0)之后,还要读
+**`isdst`**——PUC 的 `os_time` 把它经 `getboolfield` 填进 `struct tm` 的 `tm_isdst` 再交给 `mktime`,用来确定
+一个 **DST 相关本地时间的解释**。原实现整个字段忽略,于是 `os.time{...,isdst=true}` 与不带这个字段的同一组
+字段返回**同一个瞬间**。
+
+两个实现要点:
+
+- **要区分「字段不存在」与「显式写了 false」**。PUC 的 `getboolfield` 把缺失字段当 false,但 `os.time` 需要
+  知道调用方有没有表态:没表态时让时区自己决定,表态时才可能移位。落点
+  `internal/stdlib/tablelib.go::getBoolField` 返回 `(value, present)` 两个值。
+- **只在它与该日期在该时区的自然状态不一致时才有影响**。一致时 mktime 本来就给出同一个瞬间;不一致时按标准
+  偏移与夏令时偏移之差移位(Go 的 `time.Date` 自己解析时区,所以要显式补这个差)。夏季日期加 `isdst=true` 在
+  epoch 上比不带它早一小时。
+- 在 `TZ=Europe/London` 下**双向**实测(夏季日期配 `isdst=false`、冬季日期配 `isdst=true`),两个方向的偏移
+  都与 `lua5.1` 一致。
+
 ### 9.2 `os.date` 格式串(strftime 子集)
 
 `os.date(fmt, t)` 把时间戳 `t`(默认当前)按 `fmt` 格式化:
@@ -1577,8 +1613,8 @@ io 库涉及**文件句柄**(full userdata + `__gc`,01 §5.5 / 06 §10),是 stdl
 | 函数 | 语义 | P1 | 备注 |
 |---|---|---|---|
 | `io.write(...)` | 写各参数到默认输出(stdout) | ✅ **必做** | 跑测试最小集;各参数 string/number(`CheckString`);**返回布尔成功标志**(5.1 `g_write`;返回 file 是 5.2+,§10.3) |
-| `io.read([fmt...])` | 从默认输入(stdin)读 | ✅ **必做** | 最小集;格式 `"*l"`(行)/`"*n"`(数)/`"*a"`(全)/数字(n 字节) |
-| `io.stdout`/`io.stdin`/`io.stderr` | 标准流(file handle) | ✅ **必做** | 预建的 file userdata(§10.2) |
+| `io.read([fmt...])` | 从默认输入(stdin)读 | **❌ 未提供**(设计上必做) | 格式 `"*l"`(行)/`"*n"`(数)/`"*a"`(全)/数字(n 字节);**当前仓库里 `io` 表只有 `write`**,缺口见 §10.1.1 与 #205 |
+| `io.stdout`/`io.stdin`/`io.stderr` | 标准流(file handle) | **❌ 未提供**(设计上必做) | 需要 file userdata(§10.2);曾做出来但因 GC rooting 问题整段撤回,缺口见 §10.1.1 与 #205 |
 | `io.open(filename [, mode])` | 打开文件,返回 file handle | △ **部分** | full userdata + `__gc`(§10.2);依赖文件系统 + 安全(§9.3) |
 | `io.close([file])` | 关闭文件(默认默认输出) | △ | file 方法 `file:close` 的全局形式 |
 | `io.lines([filename])` | 行迭代器 | △ | 迭代器(host closure);依赖 open |
@@ -1597,7 +1633,8 @@ io 库涉及**文件句柄**(full userdata + `__gc`,01 §5.5 / 06 §10),是 stdl
 > **P1 io 库分两档**:
 > - **必做(跑 conformance 测试所需)**:`io.write`、`io.read`、`io.stdout`/`io.stdin`/`io.stderr`、`print`(base,
 >   经 stdout)。这是「脚本能输出、能读输入、测试能跑」的最小集。**不依赖完整 file handle 机制**(stdout/stdin
->   是预建的固定 file,§10.2)。
+>   是预建的固定 file,§10.2)。**实际状态与这一档有差距**:只有 `io.write` 与 `print` 提供了(它们直接写宿主
+>   stdout、不经 file handle),`io.read` 与三个标准流仍是缺口——见 §10.1.1 与 #205。
 > - **部分实现(完整文件 IO)**:`io.open`/`file:read`/`file:write`/`file:close`/`file:seek`/`io.lines` 等完整
 >   文件句柄操作——**P1 可部分实现或记缺口**。file handle 的 full userdata + `__gc` 机制(§10.2)是设计要点,
 >   P1 至少把**机制骨架**搭好(让 stdout/stderr 走同一机制),完整文件操作按需补。
@@ -1606,6 +1643,28 @@ io 库涉及**文件句柄**(full userdata + `__gc`,01 §5.5 / 06 §10),是 stdl
 > **为什么这样裁**:① 测试套主要需要 `print`/`io.write` 输出(差分测试输出);② 嵌入式规则引擎(首个宿主)脚本极少
 > 做文件 IO(数据经 arena 喂入,11 §3,不从文件读);③ 完整文件 IO 的 `__gc` 终结器(关文件)依赖 06 §10 的
 > finalizer,P1 finalizer 是骨架(06 §10 P1 范围)。roadmap §5 原则 4:文件 IO 不是热路径核心,按需。
+
+#### 10.1.1 实际状态:`io` 表里只有 `write`,标准流与 `io.read` 是缺口(#205,2026-07-28)
+
+上面那份「必做」清单是**设计口径**,与当前实现有差距,这里如实记下来:`internal/stdlib/tablelib.go` 的
+`ioFns` 只注册了 `write` 一个函数,所以 `io.stdout`/`io.stdin`/`io.stderr` 与 `io.read` **目前都不存在**。
+`print` 与 `io.write` 直接写宿主的 stdout,不经 file handle 机制,所以「脚本能输出、测试能跑」这条已经满足;
+缺的是 file handle 那一层本身。
+
+**曾做出来又整段撤回(2026-07-28)**,理由值得记住:三个标准流做成 file-handle userdata + 共享 metatable
+(`write`/`close`),为此补了三处 VM 缺口——`metaFieldOfValue` 不认 userdata、`indexWithMeta` 没有 userdata
+分支、`getmetatable` 对 userdata 无条件返回 nil(都在 `internal/crescent/meta.go`)。补完之后
+`io.stdout:write()`、`:close()`(标准流返回 `(nil, msg)` 而不是抛错)、`getmetatable` 都对了,**但随后
+`TestGCStress_RandomScripts` 失败,而且创建句柄之后一个 `collectgarbage("collect")` 就以 arena 索引越界
+panic**:句柄在仍然从 `io` 表可达的情况下被清扫,说明那个对象的构造方式没有正确进入 GC 的根 / 追踪路径。
+`internal/gc/mark.go` 确实会把 `OBJ_USERDATA` 追到它的 meta 与 env ref,所以问题在**构造侧**不在收集器。
+
+**这是运行时里第一个在 `__gc` finalizer 之外创建的 userdata**,分配与 rooting 的约定得先搞清楚,所以整段
+撤回、开 #205,而不是带着一个会破坏 arena 的改动继续。#205 的范围因此是「file-handle userdata 基础设施 +
+三个标准流 + `io.read`」,而不只是补几个函数;`debug` 库整个不存在(`debug.traceback` 的 `[C]` 帧一并归入
+#205,在 `debug` 表出现之前那条无从谈起)。过程与判据见
+`llmdoc/memory/reflections/2026-07-28-issue201-203-unpack-skip-thresholds.md` 教训 4 与
+`llmdoc/guides/prove-the-path-under-test.md` §4.3b。
 
 ### 10.2 file handle 设计:full userdata + metatable(`__index` = 方法表,`__gc` = 关文件)
 
@@ -1816,6 +1875,11 @@ wangshu.NewState(wangshu.Options{Exclude: []string{"os.execute", "os.exit"}})
   有**(否则差分时它们在 5.1 是 nil)。
 - **存在性差分用例**:遍历 5.1 的全部标准库函数名,验证望舒**同名存在 + 5.2+ 函数不存在**。这是 stdlib 差分的
   基础项(指向 12)。**P1 缺口的库**(package/部分 io/部分 debug)在存在性差分上**标注豁免**(已知 P1 未实现)。
+- **实际状态(2026-07-28 核对)**:`test/difftest/corners_test.go::exemptions` 里目前**只有** `io.popen`/`io.tmpfile`
+  与 `debug` 的 ❌ 列那几条,**没有**覆盖「三个标准流 + `io.read` 不存在」与「`debug` 表整个未注册」这两件事
+  (§10.1.1),而遍历全部 5.1 函数名的那个存在性差分用例本身也还没写。所以这一条目前是**设计口径**而不是已有
+  执行体——按 `llmdoc/guides/prove-the-path-under-test.md` §4.2,一句没有执行体的豁免声明比一个已知缺口更糟,
+  这里如实记成缺口:#205 完成时应同时补上存在性差分用例,或者在 `exemptions` 里给这两条各写一行。
 
 ---
 
@@ -1880,9 +1944,9 @@ stdlib 的 shadow stack 纪律(§3)漏 Pin 是**最难调的 bug 类**(06 §6.3:
 | **table** | insert, remove, concat, sort, maxn | getn, setn(=`#t`/空操作) | table.unpack/pack/move(5.2+) |
 | **math** | abs, ceil, floor, sqrt, sin, cos, tan, asin, acos, atan, atan2, exp, log, log10, pow, fmod, modf, max, min, random, randomseed, huge, pi, rad, deg, frexp, ldexp, sinh, cosh, tanh | — | math.tointeger/type/maxinteger/mininteger(5.3 整数) |
 | **os** | time, clock, date, difftime, getenv | exit(默认不真退出), remove, rename, tmpname, setlocale(仅 "C") | os.execute(默认禁用,安全) |
-| **io** | **write, read, stdout, stdin, stderr**(最小集,跑测试) | open, close, lines, input, output, type, file:read/write/close/lines/seek/flush | io.popen, io.tmpfile |
+| **io** | **write**(已提供);**read, stdout, stdin, stderr 设计上必做但当前未提供**——见 §10.1.1 与 #205 | open, close, lines, input, output, type, file:read/write/close/lines/seek/flush | io.popen, io.tmpfile |
 | **coroutine** | create, resume, yield, status, wrap, running(**机制全在 08**) | — | — |
-| **debug**(09 §13) | traceback, setmetatable, getmetatable | getinfo(部分字段) | sethook, getlocal/setlocal, getupvalue/setupvalue, getregistry |
+| **debug**(09 §13) | traceback, setmetatable, getmetatable ——**整库当前不存在**,`debug` 表未注册(#205) | getinfo(部分字段) | sethook, getlocal/setlocal, getupvalue/setupvalue, getregistry |
 
 **P1 必做的判定标准**:① 跑 Lua 5.1 conformance 测试套必需(base 核心 + string/table/math 全集 + io 最小输出);
 ② 首个宿主(规则引擎)脚本所需(标量/表/字符串/数学操作)。**可延后的判定标准**:① 嵌入式场景罕用(文件 IO
@@ -1962,7 +2026,9 @@ stdlib 的 shadow stack 纪律(§3)漏 Pin 是**最难调的 bug 类**(06 §6.3:
 - **`CheckFunction` 严格度 / pcall 的 f 放宽**(§2.6):`CheckFunction` 严格要 function tag;`pcall`/`xpcall` 的 f
   是否接受有 `__call` 的对象由 09 定,记口径。
 - **`table.getn`/`setn` 是否提供**(§7.5):P1 默认不提供(5.1 已废);若 conformance 需要补为 `#t`/空操作。
-- **`unpack` 大表上限措辞**(§4.5):`unpack` 超栈上限报错(`"too many results to unpack"`?)待 12 核对。
+- ~~**`unpack` 大表上限措辞**(§4.5)~~:**已定稿(#201,2026-07-28)**——措辞是
+  `"too many results to unpack"`,上限是 `LUAI_MAXCSTACK`(8000)**减去参数个数**,84 种写法与 oracle 逐字节
+  一致,详见 §4.5。
 - **stdlib 与 08 的回调-yield 交互**(§11):stdlib 回调点(sort comparator / gsub repl / pcall f)被 yield 穿越
   时报错(08 §5),精确措辞与触发点待 08 定稿后校验。
 
