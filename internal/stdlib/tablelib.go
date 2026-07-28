@@ -95,7 +95,16 @@ func tableFnSetn(_ *crescent.State, _ []value.Value) ([]value.Value, *crescent.L
 
 func tblArg(args []value.Value, n int, fname string) (value.Value, *crescent.LuaError) {
 	if n >= len(args) || value.Tag(args[n]) != value.TagTable {
-		return value.Nil, crescent.NewArgError(n+1, "table expected")
+		// PUC's luaL_typerror is "%s expected, got %s" with luaL_typename of
+		// the argument, and lua_typename maps LUA_TNONE -- an argument that was
+		// not passed at all -- to the literal "no value". Omitting the ", got X"
+		// clause diverged from the oracle for every such call, and
+		// table.insert() with no arguments is one mutation away in fuzzing.
+		got := "no value"
+		if n < len(args) {
+			got = crescent.TypeNameOf(args[n])
+		}
+		return value.Nil, crescent.NewArgError(n+1, "table expected, got "+got)
 	}
 	return args[n], nil
 }
