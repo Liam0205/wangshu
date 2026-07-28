@@ -103,6 +103,20 @@
 
 **更细的一个刻度:读到源码还不够,源码里的隐式转换也要展开**。C 的多步转换链里每一步都可能改变结果,跳过中间一步得到的结论可以与真值完全相反。实证(2026-07-28,#193):`string.char(0/0)` wangshu 报错、PUC 得 byte 0。这**不是**一个范围检查——`luaL_checkint` 是 `(int)luaL_checkinteger`,所以 double 先变成 `lua_Integer`(`ptrdiff_t`,64 位)**再**窄化成 int;x86-64 的 `cvttsd2si` 把 NaN 与一切超出 int64 范围的 double 映射成 `INT64_MIN`,其低 32 位恰好是 0,于是 `c == 0`、`uchar(c) == c` 成立、PUC 接受。第一次探测时直接把 double 转成 int(漏了 `lua_Integer` 那一步)得出「PUC 应该拒绝」的**相反**结论。可复用判据:分歧涉及 C 语义时,把参照实现那条链上的**每一次类型转换**都写出来再判断,包括 `luaL_checkint` / `luaL_checkinteger` 这类宏背后的隐式两步;别按「这个参数应该是什么类型」推。反思实例见 `memory/reflections/2026-07-28-four-diff-divergence-issues.md` 教训 3。
 
+**再一个刻度:那个条件读的量可能不止「请求值」本身**。C 侧的检查常常同时读**调用当时的栈状态**,
+而 wangshu 侧只看到请求值,于是照抄出来的上限是个常数。实证(2026-07-28,#201):`unpack` 的上限
+不是固定的 `LUAI_MAXCSTACK`(8000),而是 8000 **减去参数个数**——PUC 的 `luaB_unpack` 调
+`lua_checkstack(L, n)`,它的拒绝条件是
+`size > LUAI_MAXCSTACK || (L->top - L->base + size) > LUAI_MAXCSTACK`,而对一个 C 函数来说
+`L->top - L->base` 就是参数个数,所以 `unpack({0,"",1},1,7998)` 在 PUC 抬
+`too many results to unpack` 而 wangshu 接受。可复用判据:抄一个 C 侧的上限时,把那个条件表达式
+里的**每一项**都问一遍「它在 wangshu 这边对应什么」,别只抄阈值常数;定数值的验证手法见
+[[prove-the-path-under-test]] §4.5(让决定它的那个量变化一格再测——阈值随参数个数变化才排除了
+「硬编码 7997」)。同轮另一处同类:`os.time` 的 `isdst` 字段 PUC 传给 `mktime` 的 `tm_isdst`,
+用来确定一个 DST 相关本地时间的解释,只在它与该日期在该时区的自然状态**不一致**时才有影响
+(原实现整个字段忽略,于是 `os.time{...,isdst=true}` 与不带它的同一组字段返回同一个瞬间)。反思
+实例 [[2026-07-28-issue201-203-unpack-skip-thresholds]]。
+
 反思实例见 `memory/reflections/2026-07-12-cgo-oracle-fuzz-round.md` 教训 2(一轮里 35 处分歧全部经此手法定位)。与本 guide 已有的「跨后端 / 跨通道枚举」纪律同域:跨后端扫要枚举实现,与 PUC 差分要枚举权威源码。
 
 延伸(真值最终落在宿主 libc 时,读 C 源码只是第一步):PUC 语义不只由 C 源码定义,**非有限值(NaN/Inf)的格式化还由宿主 libc(glibc)定义**。`string.format` 的 `%f/%e/%g/%E/%G` 对 NaN/Inf 转发给 C `sprintf`,输出的大小写拼写(小写 verb → `nan`/`inf`,大写 → `NAN`/`INF`)、符号规则、以及 glibc 为 NaN 保留符号列导致的 width−1 quirk(见下),grep `_lua515/` 只能看到「转发给 `sprintf`」,真正的真值在 libc 里。这类分歧必须以 oracle 实测字节为准,不能照 Go `fmt` 或凭直觉。glibc 的确切规律:glibc 总为 NaN 保留 1 个符号列;小写 verb 符号不显示(那一列变空格被 width 吸收 → 有效 width = 声明 width−1),大写 verb 符号是可见的 `-`(已在 core 里占了那一列 → 完整 width);Inf 符号一直在 core 里 → 完整 width;precision 对 NaN/Inf 忽略。方法论要点:**对付「宿主 libc 定义的格式化」这类外部真值,不要从一两个样本外推规则,直接构造覆盖矩阵(verb × 符号 × flag × width)扫 oracle,规律要能解释矩阵里每一格才算定准**——本轮(#170/#171,PR #172)正是从单点「小写 NaN width−1」外推「所有非有限值 width−1」,一步把 Inf 全改错,靠 93 组覆盖矩阵实测才把完整真值表逼出来。实现落点:`internal/stdlib/stringlib.go` 的 `cFormatSpecialFloat` 在 NaN/Inf 时特判;反思实例见 `memory/reflections/2026-07-22-oracle-format-nan-inf-round.md` 教训 1/2。**2026-07-26 修订:模仿 glibc 的那两处已经撤掉**——`cFormatSpecialFloat` 现在让 NaN 在所有 verb 下都不带符号、都按完整声明宽度补齐(大写 verb 不再硬编码 `-NAN`,小写 NaN 不再按声明宽度减一补齐),Inf 的符号与宽度规则不变。原因:那两处只为让差分 oracle 一致而存在,却让望舒自身的 `%e` 与 `%E`、`%5f` 与 `%5E` 自相矛盾,而 arm64 的 glibc 与 x86 还不同,模仿本来就不可移植;NaN 符号差异现在在 oracle 渲染处消除(`internal/oracle/lua515.c`,详见 `docs/design/p1-interpreter/12-testing-difftest.md` §4.2)。方法论那条(外部真值面要建覆盖矩阵、不从单点外推)仍然成立;附加一条:**在产品代码里逐字节模仿一个宿主 libc 之前,先问这个模仿是为谁服务的**——如果只为让测试基准一致,那它同时会把不可移植性写进产品行为,应该改在基准侧消除差异。
@@ -178,4 +192,5 @@ deopt helper 不能只修复触发失败的那一步；如果 deopt 分支随后
   `2026-07-23-oracle-arg-coercion-round`(stdlib 强制转换复用 VM 侧权威实现:`toNumberStr` 走 `crescent.ParseLuaNumber`,#174/#175) /
   `2026-07-24-p4-template-forprep-deopt-round`(fast-path template deopt 路径必须显式 SetReg 恢复省略 spill 的 slot 到 interpreter-shape 再调 host helper,#177) /
   `2026-07-28-four-diff-divergence-issues`(「PUC 语义由 C 实现定义」的更细刻度:`luaL_checkint` 的隐式两步转换 + 「有定义 vs UB:对齐还是跳过」新节,#192/#193/#194/#196 一轮修六个根因) /
-  `2026-07-28-issue197-199-stdlib-semantics`(该节第三、四格:C 未指定的实参求值顺序两侧都不对齐 + 参照实现自相矛盾时按语言规范选,`print` 截断 NUL 而 `io.write` 不截断,#197/#198/#199)。
+  `2026-07-28-issue197-199-stdlib-semantics`(该节第三、四格:C 未指定的实参求值顺序两侧都不对齐 + 参照实现自相矛盾时按语言规范选,`print` 截断 NUL 而 `io.write` 不截断,#197/#198/#199) /
+  `2026-07-28-issue201-203-unpack-skip-thresholds`(「PUC 语义由 C 实现定义」的又一刻度:C 侧的上限条件可能同时读调用当时的栈状态,`unpack` 的真实上限是 `LUAI_MAXCSTACK` 减参数个数而不是常数 8000;`os.time` 的 `isdst` 转发给 `mktime` 的 `tm_isdst`,#201/#202)。

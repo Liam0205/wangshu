@@ -256,6 +256,31 @@ host 帧」(见 [05](./05-interpreter-loop.md) §1.2 的 word2 布局),由 `Stat
 harness 侧原先为它加的 skip 已随修复撤掉,24 种 error level 写法现在零 skip 参与比对
 ([12](./12-testing-difftest.md) §4.9c)。
 
+#### 3.2.2 `error` 自己就是被调的 host 函数时(host raiser,#202,2026-07-28)
+
+§3.2.1 那套按帧计数只在**错误进入解释器循环**时被用到:标注发生在 `execute.go` 的
+`annotateError` 里。而 `pcall(error, "m", 2)` 这种写法里 `error` **自己就是被调者**,它抛错时经
+`callHost` 直接返回、**不再进入解释器循环**,所以那套机制在这条路径上一次都没被调用过——位置
+前缀于是完全丢失,`pcall(error,"m",2)` 得到裸的 `"m"`,而 PUC 命名的是 `pcall` 的调用者。
+
+修法是在那个边界上标注(`internal/crescent/meta.go::callLuaFromHostNamed`,`annotateError` 是
+幂等的,所以随后真的进了循环的错误不受影响)。除了「调用标注器」之外还要对两件事,**少任何一件
+都会让整条 level 轴偏掉**:
+
+- **level 映射不同,因为 host raiser 不占 Lua 帧。** level 1 是它的**调用者**,也就是第一个
+  pending host 边界,而不是最内层的 Lua 帧。这正是 `pcall(error,"m",1)` 应该**裸**(level 1 落在
+  `pcall` 的 C 帧上)、`pcall(error,"m",2)` 应该**带前缀**(level 2 走到主 chunk)的原因。第一版
+  从 `Level-1` 开始消费这些边界,结果每个 level 都偏一格:level 1 多了一个它不该有的前缀,
+  level 2 丢了它该有的那个。`LuaError.hostRaised`(`internal/crescent/state.go`)标记这条路径。
+- **标注只对显式 `level >= 2` 生效。** 给所有 host 错误标注是**错的**:PUC 的参数错误与库错误
+  (`luaL_error` / `luaL_argerror`)经 pcall 抛出时**不带位置**,它们已经有了最终文本。
+  `TestTableConcat_ErrorTextMatchesPUC` 立刻抓到了这一点——`table.concat({1},",",0)` 报的是裸的
+  `invalid value (nil) at index 0 ...`。
+
+验证:66 种 error level 写法与系统 `lua5.1` 比对(含 `pcall(error,...)` 与
+`pcall(pcall,error,...)` across level 0-6)全部一致,另加六种「host callee 抛的库错误必须保持
+裸」的探针。
+
 **回溯 level 层的伪码**(`luaL_where` 等价物):
 
 ```go

@@ -1,0 +1,275 @@
+---
+name: 2026-07-28-issue201-203-unpack-skip-thresholds
+description: >
+  三个 issue（#201 / #203 都是 nightly 自动开的 go-fuzz crasher，#202 是我自己上一轮开的一组
+  预存缺口）的处理轮，分支 `fix/201-203-unpack-and-skip`，3 个 commit。**#201**：`unpack` 的
+  上限是 `LUAI_MAXCSTACK` **减去参数个数**而不是固定 8000——PUC 的 `luaB_unpack` 调
+  `lua_checkstack(L, n)`，它的拒绝条件里有 `(L->top - L->base + size) > LUAI_MAXCSTACK`，而对
+  C 函数来说 `L->top - L->base` 就是参数个数；这个结论是**量出来的**，阈值随参数个数变化正是
+  排除「硬编码 7997」的那一条证据。**#203** 是同一写法的**第三个** nightly crasher：
+  `table.insert` 的位置窄化成约 100M 的移位跨度、刚好在产品侧 2^27 上限之下，三个都正确且
+  对称、只是耗数秒，而 fuzz coordinator 启动时并行重放整个 corpus 会被这样的 seed 弄死。第三次
+  出现说明该修的不是再挪一个 seed，而是**被接受的区间宽到 fuzzer 会持续探索它**——所以两个阈值
+  现在故意不同：产品侧 2^27 是**正确性**边界（参照实现能完成的工作不该被拒），harness 侧 skip
+  降到 2^20 纯粹是「什么输入能待在并行 corpus 重放里」的资源问题。**#202** 七项里只有两项是真
+  缺陷（`pcall(error,"m",2)` 缺前缀、`os.time{isdst=}` 被忽略），三项实测与 lua5.1 一致、根本
+  不成立，两项挪到 #205——**那个 issue 是我自己开的**。另外 `io.stdout` 我做出来了又整段撤回：
+  三个标准流做成 file-handle userdata 后 `TestGCStress_RandomScripts` 失败、创建句柄后一个
+  `collectgarbage("collect")` 就以 arena 索引越界 panic，说明我构造那个对象的方式没有正确进入
+  GC 的根/追踪路径，于是撤回并开 #205 而不是带着一个会破坏 arena 的改动继续。四条教训：同一
+  写法第三次被 fuzzer 开成 issue 说明该调区间不是再挪 seed / 集合式 issue 的错误率明显更高 /
+  一个上限必须区分它约束的是正确性还是资源 / 知道什么时候停下来开 issue 和知道怎么修一样重要。
+metadata:
+  type: reflection
+  date: 2026-07-28
+---
+
+# `unpack` 上限、移位区间的 skip、与一组自己开的 issue（2026-07-28，分支 `fix/201-203-unpack-and-skip`）
+
+> 范围：#201 / #202 / #203 三个 issue，3 个 commit。改动落在
+> `internal/stdlib/tablelib.go`（`unpack` 的上限、`os.time` 的 isdst）、
+> `internal/crescent/meta.go` + `errors.go` + `state.go`（host raiser 的 level 标注）、
+> `internal/oracle/prelude.go`（移位区间的 skip 降到 2^20）、
+> `testdata/fuzz/FuzzOracleDiff/`（两条 seed）。
+
+## 任务
+
+三个 issue 性质不同：#201 与 #203 是 nightly 自动开的 go-fuzz crasher，#202 是我自己在上一轮
+（`fix/197-199-stdlib-semantics`）顺手记下的一组预存缺口。
+
+## 本轮做了什么
+
+### 1. #201 `unpack` 的上限是 `LUAI_MAXCSTACK` 减去参数个数
+
+`unpack({0,"",1},1,7998)` 成功，而 PUC 抬 `too many results to unpack`。原来的判据是固定的
+`n > 8000`，但 PUC 的 `luaB_unpack` 调 `lua_checkstack(L, n)`，它的拒绝条件是
+
+```
+size > LUAI_MAXCSTACK || (L->top - L->base + size) > LUAI_MAXCSTACK
+```
+
+对一个 C 函数来说 `L->top - L->base` 就是参数个数，所以真实上限是 `8000 - nargs`；固定
+8000 的写法把 PUC 拒绝的 7998..8000 那一段接受了。
+
+**这个结论是量出来的不是推出来的**，而这一点是本条最要紧的地方：三参数调用接受 7997、拒绝
+7998，而且**阈值随参数个数变化**——正是后者排除了「硬编码 7997」这个错误结论。如果只测三
+参数那一种写法，7997 与 `8000 - nargs` 在数据上完全不可区分，我会写下一个在两参数调用上
+就错的常数。四种调用环境（直接 pcall、包在 Lua 函数里、有额外活跃局部变量、经 select）实测
+阈值都稳定，84 种 unpack 写法与 oracle 一致（覆盖 7995-8001 那一段、1e9 量级的范围、空范围
+与倒置范围、非有限的边界值）。
+
+### 2. #203 把「昂贵但正确」的 insert 移位区间在比较侧跳过
+
+#203 是同一写法的**第三个** nightly crasher：`table.insert` 的位置窄化成约 100M 的移位跨度、
+刚好在产品侧 2^27 上限之下。三个都是**正确且对称**的——两侧引擎都做这个移位、结果一致——只是
+耗数秒，而 fuzz coordinator 启动时并行重放整个 corpus，这样的 seed 会把 worker 弄死。前两个
+我都手工挪进了 `test/regression/insert_shift_cost_test.go`。**第三个说明该修的不是再挪一个
+seed**，而是被接受的区间宽到 fuzzer 会持续探索它。
+
+所以现在两个阈值**故意不同，因为它们回答不同的问题**：
+
+| | 数值 | 它回答的问题 |
+| --- | --- | --- |
+| 产品侧 `tableInsertShiftCap`（`internal/stdlib/tablelib.go`） | 2^27 | **正确性**边界：在它之下 wangshu 必须做这个移位，因为 lua5.1 会做 |
+| harness 侧 skip（`internal/oracle/prelude.go`） | 2^20 | **资源**：什么样的输入能待在并行 corpus 重放里 |
+
+产品侧留在 2^27 是有来历的：上一轮那个 PR 有四轮审计都在反对「拒绝参照实现能完成的工作」的
+上限，那个常数本身就是从 2^22 → 2^26 → 2^27 改了三次、最后靠实测代价定下来的
+（见 [[prove-the-path-under-test]] §4.5）。harness 侧的 skip 与它无关，只需要回答「并行重放
+时这条输入会不会拖死 worker」。
+
+实测确认这个拆分做的是它该做的事：2^20-1 以下照旧比对、2^20 及以上两侧对称跳过、普通位置
+不受影响，`test/regression` 仍然串行跑一次真实的 100M 元素移位（所以「这个工作确实被完成
+而不是被上限拒绝」这件事仍有覆盖）。
+
+### 3. #202 七项里只有两项是真缺陷
+
+| 项 | 结果 |
+| --- | --- |
+| `pcall(error,"m",2)` 缺前缀 | **真缺陷，已修** |
+| `os.time{isdst=}` 被忽略 | **真缺陷，已修** |
+| `coroutine.wrap` 缺前缀 | **不是缺陷**——与 lua5.1 一致，实测 |
+| `%#g` 指数交界 | **不是缺陷**——与 lua5.1 一致，实测 |
+| `math.deg` 差 1 ulp | **不是缺陷**——与 lua5.1 一致，实测 |
+| `io.stdout` 缺失 | 挪到 #205（需要 userdata 基础设施，见下节） |
+| `debug.traceback` 缺 `[C]` 帧 | 挪到 #205（`debug` 整个库都不存在，这条无从谈起） |
+
+**那个 issue 是我自己开的，而它七项里有三项根本不成立。**
+
+**`pcall(error,"m",2)` 的修法**：host 函数抛错会经 `callHost` 直接返回、不再进入解释器循环，
+所以 `execute.go` 的 `annotateError` 从来看不到它——上一轮给 #197 做的整套按帧 host 计数在
+这条路径上一次都没被调用过。改成在那个边界（`meta.go` 的 `callLuaFromHostNamed`）上标注。
+除了「调用标注器」之外还要对两件事：
+
+- **level 映射不同**，因为 host raiser 不占 Lua 帧——level 1 是它的**调用者**（即第一个
+  pending host 边界），这正是 level 1 应该裸、level 2 应该带前缀的原因。我第一版从 `Level-1`
+  开始消费这些边界，结果每个 level 都偏一格：`pcall(error,"m",1)` 多了一个它不该有的前缀，
+  而 level 2 丢了它该有的那个。
+- **标注只对显式 `level >= 2` 生效**——给所有 host 错误标注是错的。PUC 的库错误经 pcall
+  抛出时不带位置，`TestTableConcat_ErrorTextMatchesPUC` 立刻抓到了：
+  `table.concat({1},",",0)` 报的是裸的 `invalid value (nil) at index 0 ...`。那些错误已经
+  有了它们的最终文本，不该再被加工。
+
+66 种 error level 写法与 lua5.1 重新比对（含 `pcall(error,...)` 与 `pcall(pcall,error,...)`
+across level 0-6）全部一致。
+
+**`os.time{isdst=}`**：PUC 把它传给 `mktime` 的 `tm_isdst`，用来确定一个 DST 相关本地时间的
+解释。只有当它与该日期在该时区的自然状态**不一致**时才有影响——一致时 mktime 本来就会给出
+同一个瞬间。原来整个字段被忽略，于是 `os.time{...,isdst=true}` 与不带这个字段的同一组字段
+返回同一个值。在 `TZ=Europe/London` 下双向实测（夏季日期加 `isdst=false`、冬季日期加
+`isdst=true`，两个方向的偏移都对）。
+
+### 4. `io.stdout` 为什么退出本轮
+
+我把它做出来了：三个标准流做成 file-handle userdata + 共享 metatable（`write`/`close`），
+并为此补了三处 VM 缺口——
+
+- `metaFieldOfValue`（`internal/crescent/meta.go`）不认 userdata；
+- `indexWithMeta`（同文件）没有 userdata 分支；
+- `getmetatable` 对 userdata 无条件返回 nil。
+
+补完之后 `io.stdout:write()`、`:close()`（标准流返回 `(nil, msg)` 而不是抛错）、
+`getmetatable` 都对了。**但随后 `TestGCStress_RandomScripts` 失败，而且创建句柄之后一个
+`collectgarbage("collect")` 就以 arena 索引越界 panic**——句柄在仍然从 `io` 表可达的情况下
+被清扫了，说明我构造那个对象的方式没有正确进入 GC 的根/追踪路径。`internal/gc/mark.go`
+确实会把 `OBJ_USERDATA` 追到它的 meta 与 env ref，所以问题在我的构造而不在收集器。
+
+**我把它整段撤回并开了 #205，而不是带着一个会破坏 arena 的改动继续。** 这是运行时里第一个
+在 `__gc` finalizer 之外创建的 userdata，分配与 rooting 的约定得先搞清楚——这不是「再调
+半小时」的事，它是一份没写下来的契约。
+
+### 5. 主动清扫
+
+85 个探针直接与系统 `lua5.1` 比对：`unpack` 边界（12 个值 × 4 种写法）、error level
+（5 个 level × 5 种写法，含 host raiser）、`os.time` 的 isdst 六种组合、六种「host callee
+抛的库错误必须保持裸」。81 个可比对项**零差异**；4 个是 lua 侧也抬错、在那种探针写法里无法
+捕获的，已由 84 种 oracle 比对覆盖。
+
+## 期望与实际
+
+- 期望：三个 issue 都是小口径修复，#202 那七项按清单逐条修完。
+- 实际：#201 的关键不是那个公式而是**怎么量它**（阈值随参数个数变化那一条证据）；#203 该改的
+  根本不是被 issue 指着的那条 seed；#202 七项里三项不成立、两项要开新 issue，真正修的只有两项；
+  而 `io.stdout` 是本轮工作量最大的一块，最后整段撤回。
+
+## 教训
+
+### 教训 1（同一写法第三次被 fuzzer 开成 issue，说明该改的是「被接受的区间有多宽」）
+
+`table.insert` 的重移位跨度这一写法，nightly 已经开了三个 issue。前两次的处置都是把 seed 挪进
+`test/regression/`——每一次单看都是对的处置（[[unreproducible-crasher-triage]] 那节「重
+workload 走 test/regression」就是这么写的），但三次之后它显然不是在解决问题。
+
+**Why**：把 seed 挪走处理的是「这一条输入现在不在并行重放里了」，它不改变 fuzzer **下一次
+还能生成一条同样的输入**。区间宽到 fuzzer 会持续探索它时，挪 seed 的成本是每次一轮人工分诊
+加一个 issue，而收益只覆盖那一个采样点。这与 [[prove-the-path-under-test]] §4.1「一个
+reported case 是接受面的一个采样，不是那个接受面本身」是同一条判据在**处置侧**的形式：那条
+讲「修完 reported case 要枚举整个接受面」，这条讲「反复分诊同一采样点时，该动的是接受面」。
+
+本轮的答案是：产品上限与 harness skip 被绑成了同一个数，而它们回答的是**不同的问题**。
+**两个阈值服务不同目的时，把它们绑成同一个数迟早会在其中一边错。**
+
+**How to apply**：判据 = 同一写法第 N 次（N >= 3）被 fuzzer 开成 issue 时，停下来问「为什么
+fuzzer 还能生成它」，而不是继续处理单个实例。答案通常是某个被接受的区间比它需要的宽，或者
+某个判据的宽度是从别处借来的。
+
+### 教训 2（集合式 issue 的错误率明显更高，要逐项重新核对而不是逐项直接修）
+
+#202 是我自己开的，七项里三项不成立（`coroutine.wrap` 的前缀、`%#g` 的指数交界、`math.deg`
+的 1 ulp，实测都与 lua5.1 一致）。
+
+**Why**：这条判据上一轮已经写过（[[2026-07-28-issue197-199-stdlib-semantics]] 教训 5，已进
+[[prove-the-path-under-test]] §4.3 末尾：修 issue 时对它陈述的每一条参照行为都亲自跑一遍，
+**哪怕那个 issue 是自己开的**）。本轮是它的第二个样本，而且错的比例更高（3/7 对上一轮的
+1/7）。可以补充的是一条**区分**：**当一个 issue 是「顺手记下的一组」而不是「专门查证过的
+一条」时，它的错误率明显更高**。#197 那种单条 issue 是我当时**决定不硬凑**、把理由写清楚才
+开的，它的每一句都经过一次判断；#202 是修别的东西时顺手记下来的七行，每一行只经过「看起来
+不对」这一层。两者在 issue 列表里长得一样。
+
+**How to apply**：集合式 issue（一个 issue 里列 N 项、写的时候是顺手记的）应该**逐项重新
+核对**而不是逐项直接修；核对的产出包括「这项不成立」这个结论，它和「这项修好了」一样是完成。
+反过来，自己**开** issue 时如果是顺手记的一组，在 issue 里就写明「未逐项核实」，别让它读起来
+像已经查证过。
+
+### 教训 3（一个「够用的上限」必须区分它约束的是正确性还是资源）
+
+#203 那个上限被当成一个数用了三轮。产品侧要它**宽**：在它之下 wangshu 必须做这个移位，否则
+就是拒绝参照实现能完成的工作（上一轮四轮审计都在反对这件事）。harness 侧要它**窄**：并行
+corpus 重放里放不下一条耗数秒的 seed。两个方向是矛盾的，而它们读同一个常数。
+
+**Why**：一个阈值的数值是从它防的东西推出来的。防「与参照实现分歧」时，正确的数值由参照
+实现的能力决定（所以 [[prove-the-path-under-test]] §4.5 说定数值之前先测参照实现的代价）；
+防「harness 自己付不起」时，正确的数值由 harness 的运行方式决定（并行度、per-input 看门狗、
+arena 上限）。这两个量之间没有任何关系，让它们相等只是因为一开始只想到了一个用途。这也是
+[[prove-the-path-under-test]] §9.2「判据自身消耗的资源也是它的输入」的**对偶**：那条说资源
+是判据的一个输入，本条说资源与正确性是**两个**判据，不该共用一个常数。
+
+注意它与上一轮教训 7（「harness 侧的 skip 与产品侧的规则必须逐字对应」，
+[[2026-07-28-four-diff-divergence-issues]]）不冲突，两条管的是不同的东西：那条说**判据的
+形状**要一致（都按「低于 index 1 的距离」算，不能一边按元素个数），否则 skip 会遮住产品的
+错；本条说**阈值的数值**可以不同，因为它们防的东西不同。形状一致、数值分开。
+
+**How to apply**：为一个阈值命名时写清它防的是什么；如果两个地方读同一个常数而防的东西
+不同，那就该是两个常数，并且在两处注释里各写清自己那一侧的理由。
+
+### 教训 4（知道什么时候停下来开 issue，和知道怎么修一样重要）
+
+`io.stdout` 那部分我做到了功能正确——三个流、共享 metatable、三处 VM 缺口都补上，
+`io.stdout:write()` 与 `getmetatable` 都对了。但它引入了 arena 破坏：创建句柄后一次
+`collectgarbage("collect")` 就索引越界 panic，`TestGCStress_RandomScripts` 失败。
+
+**Why**：一个改动让**既有的**压力测试失败、且失败点在你不熟悉的子系统契约上时，「再调一会儿」
+的成本是不可估的——因为不知道要调什么。而撤回的成本是确定的：一份「我做到哪、卡在哪、下一步
+要先搞清什么」的说明。那份说明就是下一轮的起点，这一点上一轮已经有正向样本：#197 是上一轮
+被主动填成 issue 的，这一轮真去做，发现当时写下的那句「加个常数偏移只在中间恰好是 C 帧时才
+对」正是两层认识的入口（[[2026-07-28-issue197-199-stdlib-semantics]] 教训 1）。#205 的说明
+里已经写清了三处 VM 缺口做了什么、GC 那一处的证据指向哪边（`mark.go` 会追 `OBJ_USERDATA`
+的 meta 与 env ref，所以问题在构造侧），下一轮不用重新发现这些。
+
+这也与「不拿工作量当放弃理由」不矛盾：撤回的理由不是「太贵」，是**这个改动当前的形式会破坏
+arena，而破坏原因是一份还没搞清楚的分配/rooting 约定**。功能正确的代码带着这种缺陷合进去，
+比不合更贵。
+
+**How to apply**：判据 = 一个改动让既有的压力测试失败、且失败点在你不熟悉的子系统契约上时，
+撤回并写清「我做到哪、卡在哪、下一步要先搞清什么」比继续推进更省成本。写下的「卡在哪」要
+具体到**哪个约定没搞清**，不要只写「GC 有问题」。
+
+## Promotion 决策
+
+- **教训 1** 已补进 [[unreproducible-crasher-triage]]「重 workload 走 `test/regression/`」那节
+  之后，作为该节的升级（第 N 次出现说明该调区间，不是再挪一个 seed）。
+- **教训 3** 已补进 [[prove-the-path-under-test]] §4.5b（一个上限必须区分它约束的是正确性
+  还是资源），紧接 §4.5「给上限定数值之前先测参照实现的代价」——那条讲数值怎么定，这条讲
+  一个数值不该同时服务两个目的。
+- **教训 2** 已补进 [[prove-the-path-under-test]] §4.3 末尾，作为「issue 正文不是已核实的
+  事实」的第二个样本 + 一条区分（集合式 issue 的错误率更高，要逐项重新核对）。
+- **教训 4** 是 process-level 第二个样本（第一个是上一轮 #197 的正向结算），已在
+  [[prove-the-path-under-test]] §4.3b 成文——它与「填 issue 而不是硬凑」是同一条纪律的两个
+  时点：那条在**动手前**（这个修法只在恰好如此时成立），这条在**做完之后**（做出来了但它
+  破坏了别的东西）。
+
+## 触发场景
+
+- **同一写法第三次被 fuzzer 开成 issue 时**：停下来问「为什么 fuzzer 还能生成它」，改被接受的
+  区间，不是再挪一个 seed（教训 1）。
+- **修一个「顺手记下的一组」式 issue 时**：逐项重新核对而不是逐项直接修，「这项不成立」也是
+  完成；自己开这类 issue 时在正文里写明未逐项核实（教训 2）。
+- **给一个阈值定数值、或发现两处读同一个常数时**：先问它防的是正确性还是资源；防的东西不同
+  就该是两个常数，形状保持一致、数值分开（教训 3）。
+- **一个改动功能上做对了但让既有压力测试失败、失败点在不熟悉的子系统契约上时**：撤回并写清
+  做到哪、卡在哪、下一步要先搞清什么（教训 4）。
+- **量一个参照实现的边界时**：让**决定它的那个量**变化再测一遍——阈值随参数个数变化才排除
+  了「硬编码 7997」（#201）。
+
+## 关联
+
+[[prove-the-path-under-test]]（教训 2/3/4 的落点；§4.1 采样面、§4.3 先取事实、§4.5 上限的
+数值、§9.2 判据自身的资源消耗）· [[unreproducible-crasher-triage]]（教训 1 的落点；重
+workload 走 `test/regression/`）· [[2026-07-28-issue197-199-stdlib-semantics]]（上一轮：
+#202 就是修那三个 issue 时顺手记下的；教训 5「issue 正文不是事实」的第一个样本、教训 1
+「填 issue 而不是硬凑」的正向结算也在那一轮）·
+[[2026-07-28-four-diff-divergence-issues]]（`tableInsertShiftCap` 的三次改动与教训 7
+「skip 与产品规则的形状必须逐字对应」）· `internal/stdlib/tablelib.go`（`unpack` 上限、
+`os.time` 的 isdst）· `internal/crescent/meta.go`（host raiser 的标注点）·
+`internal/crescent/state.go`（`LuaError.hostRaised`）· `internal/oracle/prelude.go`
+（移位区间的 skip）· `test/regression/insert_shift_cost_test.go`（串行跑真实 100M 移位）
