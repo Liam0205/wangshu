@@ -39,6 +39,10 @@ type LuaError struct {
 	Traceback string // built when the error bubbles to the top level (09; errors caught by pcall carry none)
 	Level     int    // the level of error(msg, level) (09); 0 = no position prefix
 	annotated bool   // chunkname:line: prefix already added (added only once)
+	// hostRaised: the error came out of a host function that was itself the callee
+	// (pcall(error, ...)), so it occupies no Lua frame and error()'s level 1 means
+	// the host function's CALLER rather than the innermost Lua frame.
+	hostRaised bool
 	// PUC luaL_argerror mirror (issue #133): the function name in
 	// "bad argument #N to 'name'" comes from the CALLER's call site
 	// (getobjname on the CALL/TAILCALL/TFORLOOP operand), not from the

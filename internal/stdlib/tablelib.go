@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Liam0205/wangshu/internal/arena"
 	"github.com/Liam0205/wangshu/internal/crescent"
 	"github.com/Liam0205/wangshu/internal/object"
 	"github.com/Liam0205/wangshu/internal/value"
@@ -466,6 +467,17 @@ func osFnDifftime(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 	return []value.Value{value.NumberValue(t2 - t1)}, nil
 }
 
+// getBoolField reads a boolean field, reporting whether it was present at all --
+// PUC's getboolfield treats an absent field as false, but os.time needs to
+// distinguish "absent" from "explicitly false".
+func getBoolField(st *crescent.State, t arena.GCRef, key string) (bool, bool) {
+	v, _ := st.RawGet(t, intern(st, key))
+	if v == value.Nil {
+		return false, false
+	}
+	return value.Truthy(v), true
+}
+
 func osFnTime(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	// PUC os_time: no arg / nil -> current time; anything else must be
 	// a table (luaL_checktype) whose day/month/year fields are
@@ -515,6 +527,32 @@ func osFnTime(st *crescent.State, args []value.Value) ([]value.Value, *crescent.
 	}
 	// mktime semantics: local time, out-of-range fields normalize.
 	tt := time.Date(year, time.Month(month), day, hour, minute, sec, 0, time.Local)
+	// isdst forces the interpretation of an ambiguous or DST-relative local time,
+	// as mktime's tm_isdst does. Go resolves the zone itself, so when the caller
+	// asserts a DST state that disagrees with Go's choice, shift by the difference
+	// between the two offsets: os.time{...,isdst=true} on a summer date in a DST
+	// zone is an hour earlier in epoch terms than the same fields without it.
+	// Ignoring the field entirely made those two calls identical.
+	if want, present := getBoolField(st, t, "isdst"); present {
+		if want != tt.IsDST() {
+			_, off := tt.Zone()
+			janT := time.Date(year, 1, 1, 12, 0, 0, 0, time.Local)
+			julT := time.Date(year, 7, 1, 12, 0, 0, 0, time.Local)
+			_, offJan := janT.Zone()
+			_, offJul := julT.Zone()
+			std, dst := offJan, offJul
+			if offJul < offJan {
+				std, dst = offJul, offJan
+			}
+			if delta := dst - std; delta != 0 {
+				if want {
+					tt = tt.Add(time.Duration(off-std) * time.Second).Add(-time.Duration(delta) * time.Second)
+				} else {
+					tt = tt.Add(time.Duration(delta) * time.Second)
+				}
+			}
+		}
+	}
 	return []value.Value{value.NumberValue(float64(tt.Unix()))}, nil
 }
 

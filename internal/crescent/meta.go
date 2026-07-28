@@ -308,6 +308,22 @@ func (st *State) callLuaFromHostNamed(th *thread, fn value.Value, args []value.V
 	th.setTop(need)
 	if isHost := st.isHostClosure(cl); isHost {
 		if e := st.callHost(th, funcIdx, len(args), -1); e != nil {
+			// A host function raising goes straight back out without re-entering
+			// the interpreter loop, so execute.go's annotateError never sees it.
+			// pcall(error,"m",2) therefore lost its position prefix entirely, where
+			// PUC names pcall's caller. Annotate here instead; annotateError is
+			// idempotent, so an error that does reach the loop later is unaffected.
+			// Only an error() with an explicit level >= 2 needs annotating here.
+			//
+			// Annotating every host error was wrong: PUC's argument and library
+			// errors from a host callee (luaL_error, luaL_argerror) carry no
+			// position when raised through pcall -- table.concat({1},",",0) reports a
+			// bare "invalid value (nil) at index 0 ...". Those already have their
+			// final text, so leave them alone.
+			if e.Level >= 2 {
+				e.hostRaised = true
+				return nil, st.annotateError(e, currentCI(th), th)
+			}
 			return nil, e
 		}
 		n := th.top - funcIdx
