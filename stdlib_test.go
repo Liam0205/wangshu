@@ -117,6 +117,9 @@ func TestStdlib_ToNumberBase10IsStandardConversion(t *testing.T) {
 		{`return tonumber(" 12 ", 10)`, 12},
 		{`return tonumber("-7", 10)`, -7},
 		{`return tonumber(1.5, 10)`, 1.5},
+		// the base itself goes through luaL_checkint, so it narrows to int32:
+		// 2^32+10 is base 10, not an out-of-range error
+		{`return tonumber("10", 4294967306)`, 10},
 		// a non-10 base must still use the digit loop, where "1.5" is invalid
 		{`return tonumber("ff", 16)`, 255},
 		{`return tonumber("z", 36)`, 35},

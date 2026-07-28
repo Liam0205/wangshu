@@ -79,6 +79,12 @@ func TestTableInsert_ShiftSpanCapped(t *testing.T) {
 			t.Errorf("%s = %v, want a raised error rather than an unbounded shift", src, got.Display())
 		}
 	}
+	// An ordinary insert into a LARGE table must still work: the cap bounds the
+	// distance below index 1, not the number of elements. Measuring the element
+	// count rejected this, which both engines complete quickly.
+	if got := runOne(t, `local t={} for i=1,100000 do t[i]=1 end table.insert(t,1,"X") return #t..","..t[1]`); !got.IsString() || got.Str() != "100001,X" {
+		t.Errorf("insert at 1 into a 100k table should succeed, got %v", got.Display())
+	}
 	// a span just under the cap still works
 	if got := runOne(t, `local t={} table.insert(t,-1000,"X") return tostring(t[-1000])`); !got.IsString() || got.Str() != "X" {
 		t.Errorf("small negative position should still insert, got %v", got.Display())
