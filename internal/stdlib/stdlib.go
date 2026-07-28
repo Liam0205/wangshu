@@ -542,6 +542,21 @@ func baseFnToNumber(st *crescent.State, args []value.Value) ([]value.Value, *cre
 			return nil, crescent.NewArgError(2, "number expected, got "+st.TypeName(args[1]))
 		}
 		base := int(baseF)
+		// PUC checks base == 10 BEFORE validating the range and before
+		// touching arg 1, and routes it to the standard conversion --
+		// luaB_tonumber's `if (base == 10)` branch is the same code path as
+		// tonumber(x) with no base at all. Only a non-10 base reaches
+		// strtoul's digit-by-digit parse.
+		//
+		// Falling into the digit loop for base 10 rejected every form the
+		// digit loop cannot express: tonumber("1.5",10), ("0x10",10),
+		// ("1e3",10), ("inf",10), ("nan",10) and even tonumber(1.5,10) all
+		// returned nil where PUC returns the number. Found by sweeping which
+		// channels reach the number parser, not by the issue that prompted
+		// the change -- #192 was only the "nan(...)" instance of it.
+		if base == 10 {
+			return baseToNumberStandard(st, args)
+		}
 		if base < 2 || base > 36 {
 			return nil, crescent.NewArgError(2, "base out of range")
 		}
@@ -600,6 +615,13 @@ func baseFnToNumber(st *crescent.State, args []value.Value) ([]value.Value, *cre
 		}
 		return []value.Value{value.NumberValue(acc)}, nil
 	}
+	return baseToNumberStandard(st, args)
+}
+
+// baseToNumberStandard is tonumber's standard conversion, shared by the no-base
+// call and by an explicit base of 10 -- PUC's luaB_tonumber routes both through
+// the same branch, so they must not diverge.
+func baseToNumberStandard(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	f, ok := crescentToNumber(st, args[0])
 	if !ok {
 		return []value.Value{value.Nil}, nil
