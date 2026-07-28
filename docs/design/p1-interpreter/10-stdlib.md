@@ -1526,7 +1526,9 @@ os 库**纯 Go 实现**(roadmap §0 禁 cgo),用 Go `time`/`os` 包。跨平台�
   epoch 上比不带它早一小时。
 - 在 `TZ=Europe/London` 下**双向**实测(夏季日期配 `isdst=false`、冬季日期配 `isdst=true`),两个方向的偏移
 >
-> **补充（审计发现）**：只用 `TZ=Europe/London` 的普通日期作证据是不够的。真正暴露问题的是两类边界：① **春季跳变的缺口小时**（该本地时间不存在，Go 的 `time.Date` 向前归一并报 `IsDST()==true`，而 `mktime` 用相反的符号解析它）；② **完全没有 DST 规则的时区**（glibc 仍然按默认 1 小时响应 `isdst=true`，所以 `TZ=UTC` 与 `Asia/Shanghai` 也会偏移）。现在的实现是按请求的偏移直接算 epoch 秒，而不是去调整 Go 给出的答案；覆盖 6 个时区 × 165 个日期（含两个跳变周末）。
+> **补充（审计发现）**：只用 `TZ=Europe/London` 的普通日期作证据是不够的。真正暴露问题的是两类边界：① **春季跳变的缺口小时**（该本地时间不存在，Go 的 `time.Date` 向前归一并报 `IsDST()==true`，而 `mktime` 用相反的符号解析它）；② **完全没有 DST 规则的时区**（glibc 仍然按默认 1 小时响应 `isdst=true`，所以 `TZ=UTC` 与 `Asia/Shanghai` 也会偏移）。现在的实现是按请求的偏移直接算 epoch 秒，而不是去调整 Go 给出的答案，并且两个偏移是**扫描同年里 `IsDST()` 不同的时刻**得到的，而不是比较一月与七月的偏移大小——按大小判断会把常年 DST 的时区（`Africa/Casablanca` 全年 +01/isdst=1）标错，也会把年中一次性的永久偏移变更（`Asia/Almaty`）读成 DST 规则。
+
+> **只有一个状态的时区里该字段被忽略。** glibc 对其中一部分（`UTC`、`Asia/Shanghai`、`Asia/Kolkata`）仍按默认 1 小时响应 `isdst=true`，对另一部分（`Africa/Windhoek`、`Asia/Damascus`，它们是靠保留夏令偏移废除 DST 的）则不响应；区别来自 `mktime` 在 tzdata 历史里对附近 transition 的有界搜索，而 Go 不暴露 transition 表。先前那版无条件 `+3600` 的兜底让前一组对了、把后一组**弄坏了**，所以现在取更窄的行为并登记为豁免（`corners_test.go::exemptions`）。实测：9 个有 DST 的时区零差异，5 个无 DST 的时区在 `isdst=true` 上偏移 1 小时。
   都与 `lua5.1` 一致。
 
 ### 9.2 `os.date` 格式串(strftime 子集)
