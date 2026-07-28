@@ -133,6 +133,33 @@ func isLuaSpace(c byte) bool {
 }
 
 // strtodPrefix parses the longest C99 strtod prefix of s. Returns (value, bytes consumed, success).
+// scanNaNCharSeq consumes a C99 nan(n-char-sequence) starting at i, which must
+// index the '(' if present. Returns the index just past the ')' and whether a
+// complete, well-formed group was found. An unterminated or ill-formed group is
+// reported as absent so the caller keeps the bare "nan" prefix rather than
+// swallowing bytes that strtod would leave for the caller to reject.
+func scanNaNCharSeq(s string, i int) (int, bool) {
+	if i >= len(s) || s[i] != '(' {
+		return i, false
+	}
+	j := i + 1
+	for j < len(s) && isNaNCharSeqByte(s[j]) {
+		j++
+	}
+	if j < len(s) && s[j] == ')' {
+		return j + 1, true
+	}
+	return i, false
+}
+
+// isNaNCharSeqByte matches C99's n-char-sequence: digits, letters, underscore.
+func isNaNCharSeqByte(c byte) bool {
+	return c == '_' ||
+		(c >= '0' && c <= '9') ||
+		(c >= 'a' && c <= 'z') ||
+		(c >= 'A' && c <= 'Z')
+}
+
 func strtodPrefix(s string) (float64, int, bool) {
 	i := 0
 	if i < len(s) && (s[i] == '+' || s[i] == '-') {
@@ -142,6 +169,18 @@ func strtodPrefix(s string) (float64, int, bool) {
 	for _, w := range [...]string{"infinity", "inf", "nan"} {
 		if len(s[i:]) >= len(w) && strings.EqualFold(s[i:i+len(w)], w) {
 			end := i + len(w)
+			// C99 7.20.1.3 lets "nan" carry an optional
+			// nan(n-char-sequence): "nan(0)", "nan(quiet)", even the
+			// empty "nan()". The chars are [0-9A-Za-z_], and the whole
+			// group is consumed only when the ')' is actually present --
+			// an unterminated "nan(" leaves end at the bare word, so
+			// tonumber still rejects it for trailing garbage. Only 'nan'
+			// takes the suffix; "inf(0)" is not a C99 form.
+			if strings.EqualFold(w, "nan") {
+				if j, ok := scanNaNCharSeq(s, end); ok {
+					end = j
+				}
+			}
 			f, _ := strconv.ParseFloat(canonWord(s[:i], w), 64)
 			return f, end, true
 		}
