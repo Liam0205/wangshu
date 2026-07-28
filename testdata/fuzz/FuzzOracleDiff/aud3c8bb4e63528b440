@@ -1,0 +1,2 @@
+go test fuzz v1
+string("local t={\"a\"} table.insert(t,1/0,\"X\") print(#t,tostring(t[0]))")

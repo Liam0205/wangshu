@@ -1,0 +1,2 @@
+go test fuzz v1
+string("local t={\"a\"} print(pcall(table.insert,t,2147483648,\"X\"))")

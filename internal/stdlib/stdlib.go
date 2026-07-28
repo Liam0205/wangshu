@@ -622,7 +622,12 @@ func baseFnToNumber(st *crescent.State, args []value.Value) ([]value.Value, *cre
 			}
 		}
 		if ovf {
-			accU = ^uint64(0)
+			// strtoul returns ULONG_MAX on overflow and does NOT then negate it:
+			// the sign is consumed before the digits, and the saturated result is
+			// what the function returns. Negating it afterwards yielded 1 for
+			// every overflowing negative, e.g. tonumber("-1"..string.rep("0",16),
+			// 16). So return here rather than falling into the negation below.
+			return []value.Value{value.NumberValue(float64(^uint64(0)))}, nil
 		}
 		if neg {
 			// C strtoul negates in UNSIGNED arithmetic: "-7" at base 8 yields

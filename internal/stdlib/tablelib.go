@@ -109,6 +109,14 @@ func tblArg(args []value.Value, n int, fname string) (value.Value, *crescent.Lua
 	return args[n], nil
 }
 
+// tableInsertShiftCap bounds how many elements one table.insert may shift.
+//
+// 5.1 places no bound on it, so a far-negative position turns into a
+// multi-billion-iteration loop inside a builtin, where the step budget cannot
+// reach. See the comment at the shift for why raising is preferred to inheriting
+// that.
+const tableInsertShiftCap = 1 << 22
+
 // tableFnInsert: table.insert(t, [pos,] v).
 func tableFnInsert(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	tv, e := tblArg(args, 0, "insert")
@@ -128,7 +136,15 @@ func tableFnInsert(st *crescent.State, args []value.Value) ([]value.Value, *cres
 		if !ok {
 			return nil, crescent.NewArgError(2, "number expected, got "+st.TypeName(args[1]))
 		}
-		pos := int(posF)
+		// luaL_checkint is (int)luaL_checkinteger: double -> lua_Integer
+		// (ptrdiff_t, 64-bit) -> int, so the position is narrowed to 32 bits.
+		// Taking Go's 64-bit int instead had two consequences once the bounds
+		// check came off: a position of 1/0 became INT64_MIN and the shift loop
+		// ran ~2^63 iterations (PUC returns promptly; wangshu hung), and a large
+		// finite position landed on the un-narrowed key, so
+		// insert({1,2,3}, 2^32+2, "X") wrote t[4294967298] where PUC writes
+		// t[4]. Reuse the same helper string.char uses for that cast.
+		pos := int(cCharCast(posF))
 		// NO bounds check: PUC 5.1's tinsert has none. The
 		// "position out of bounds" error belongs to 5.2+, and rejecting
 		// out-of-range positions here diverged from the oracle on every one of
@@ -143,6 +159,24 @@ func tableFnInsert(st *crescent.State, args []value.Value) ([]value.Value, *cres
 		e2 := n + 1
 		if pos > e2 {
 			e2 = pos
+		}
+		// Fail fast rather than shifting an unbounded span.
+		//
+		// 5.1 shifts [pos, e-1] up one with no bound on the distance, so a
+		// position far below 1 makes the loop run |pos| times: pos = 2^31
+		// narrows to INT32_MIN and the shift is ~2.1 billion rawget/rawset
+		// pairs. The official build genuinely does this work -- measured at 2m21s
+		// -- and it is not a semantic divergence, both engines compute the same
+		// table. But it runs inside a builtin, so the VM's step budget cannot
+		// interrupt it, and an embedded host would simply hang on a one-line
+		// script. 12 section 4.9's hardening rule applies: cap the work and
+		// raise, rather than inherit an unbounded loop from the reference.
+		//
+		// The cap is well above any real use (a shift that large cannot produce
+		// a table anyone reads) and below the point where the loop stops being
+		// interruptible in practice.
+		if span := e2 - pos; span > tableInsertShiftCap {
+			return nil, crescent.NewArgError(2, "position out of bounds")
 		}
 		for i := e2; i > pos; i-- {
 			v, _ := st.RawGet(t, value.NumberValue(float64(i-1)))

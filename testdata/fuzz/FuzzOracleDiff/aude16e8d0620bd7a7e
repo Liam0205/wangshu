@@ -1,0 +1,2 @@
+go test fuzz v1
+string("print(tonumber(\"-1\"..string.rep(\"0\",16),16))")
