@@ -419,12 +419,24 @@ table.insert = function(t, ...)
           i32 = i64 % 4294967296
         end
         if i32 >= 2147483648 then i32 = i32 - 4294967296 end
-        -- Mirror the product rule exactly: only a position BELOW 1 is capped,
-        -- and by its distance below 1, not by the table's element count. Keying
-        -- on the element count made this skip fire for ordinary inserts into
-        -- large tables, which hid the fact that the product cap was rejecting
-        -- them.
-        if i32 < 1 and 1 - i32 > 134217728 then
+        -- Two thresholds, deliberately different, because they answer different
+        -- questions.
+        --
+        -- The PRODUCT cap (2^27) is a correctness boundary: below it wangshu must
+        -- perform the shift, because lua5.1 does and rejecting it would diverge.
+        -- Keyed on the distance below index 1, not the table's element count --
+        -- keying on the count made this skip fire for ordinary inserts into large
+        -- tables and hid the product rejecting them.
+        --
+        -- This SKIP is set far lower (2^20), and only for the differential
+        -- comparison. A span of ~100M is correct and symmetric on both engines but
+        -- costs seconds, and the fuzz coordinator replays the whole corpus in
+        -- parallel at startup, so such an input takes the worker down. Three
+        -- separate nightly crashers (#203 and two before it) were all this shape,
+        -- each hand-moved to test/regression/ afterwards. Skipping the expensive
+        -- band stops the fuzzer refiling it, while test/regression keeps serial
+        -- coverage of the work actually being done.
+        if i32 < 1 and 1 - i32 > 1048576 then
           __error("` + LimitSentinel + `: table.insert shift span", 0)
         end
       end
