@@ -197,19 +197,10 @@ print(coroutine.resume(co, 10)) print(coroutine.resume(co, 20))`,
 		if wv == oracle.VerdictLimit {
 			t.Skip("wangshu limit: " + werr)
 		}
-		// error(msg, level>=2) picks a different frame here than in PUC, because
-		// wangshu does not push host frames onto its call-info stack and so cannot
-		// count PUC's C frames (issue #197). It is a call-machinery gap, not
-		// something to bodge with a constant offset, and the fuzzer reaches it
-		// easily. Skip on the SOURCE rather than by wrapping error() in the
-		// prelude: any Lua wrapper is itself a frame and would shift level 1, the
-		// case scripts actually use.
-		//
-		// Deliberately coarse -- it skips any input mentioning a second argument
-		// to error at all. Levels 0 and 1 written without a literal >= 2 still
-		// compare.
-		if errorLevelAtLeastTwo(src) {
-			t.Skip("error() level >= 2 (#197)")
+		// A nonfinite error() level narrows differently per arch (UB); #197 itself
+		// is fixed and levels >= 2 now compare.
+		if errorLevelUBRange(src) {
+			t.Skip("error() level in luaL_checkint UB range")
 		}
 		// Depth/complexity guards trip at implementation-specific
 		// points near the shared nominal thresholds; when EITHER side
@@ -238,15 +229,15 @@ print(coroutine.resume(co, 10)) print(coroutine.resume(co, 20))`,
 	})
 }
 
-// errorLevelAtLeastTwo reports whether src passes a level of 2 or more to error().
+// errorLevelUBRange reports whether src passes error() a level whose narrowing is UB.
 // Textual and deliberately conservative: a false positive costs one skipped input,
 // while a false negative reports a divergence #197 already tracks.
-func errorLevelAtLeastTwo(src string) bool {
-	// A level of 2 or more hits #197. A NONFINITE or beyond-int64 level hits the
-	// luaL_checkint UB range instead, where x86 and arm64 narrow differently --
-	// error() cannot be wrapped in the prelude to catch that, because any Lua
-	// wrapper is itself a frame and would shift level 1, so both go through this
-	// textual check.
+func errorLevelUBRange(src string) bool {
+	// #197 is fixed, so a level of 2 or more is now compared. What still cannot be
+	// compared is a NONFINITE or beyond-int64 level: that hits the luaL_checkint
+	// UB range, where x86 and arm64 narrow differently. error() cannot be wrapped
+	// in the prelude to catch it (any Lua wrapper is itself a frame and would shift
+	// level 1), so it goes through this textual check.
 	re := regexp.MustCompile(`error\s*\([^()]*,\s*(-?[0-9]+(\.[0-9]*)?|-?\.[0-9]+|-?[0-9.]+[eE][-+]?[0-9]+|[^,()]*\b(?:1?/0|0/0)\b[^,()]*)`)
 	for _, m := range re.FindAllStringSubmatch(src, -1) {
 		lit := strings.TrimSpace(m[1])
@@ -254,7 +245,7 @@ func errorLevelAtLeastTwo(src string) bool {
 			return true // inf or nan level: UB narrowing range
 		}
 		if v, err := strconv.ParseFloat(lit, 64); err == nil {
-			if v >= 2 || v >= 9223372036854775808 || v < -9223372036854775808 {
+			if v >= 9223372036854775808 || v < -9223372036854775808 {
 				return true
 			}
 		}
