@@ -210,19 +210,26 @@ func stringFnGsub(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 		return nil, crescent.NewArgError(3, "string/function/table expected")
 	}
 	repl := args[2]
-	maxN := -1
+	// "unlimited" is tracked SEPARATELY from the count, not encoded as -1.
+	//
+	// Sharing the sign bit was wrong once the count started being narrowed: PUC's
+	// gsub loop runs while n < max_s, so a negative max_s means ZERO replacements,
+	// while -1 as a sentinel meant unlimited. gsub("aaaa","a","b",-1) is
+	// "aaaa", 0 on PUC and was "bbbb", 4 here -- and every count that NARROWS to
+	// a negative, such as 2^31, hit the same path.
+	maxN, unlimited := 0, true
 	if len(args) >= 4 && args[3] != value.Nil {
 		f, ok := toNumberStr(st, args[3])
 		if !ok {
 			return nil, crescent.NewArgError(4, "number expected, got "+st.TypeName(args[3]))
 		}
-		maxN = int(cCharCastInt32(f)) // luaL_optint narrowing
+		maxN, unlimited = int(cCharCastInt32(f)), false // luaL_optint narrowing
 	}
 	var out []byte
 	pos := 0
 	count := 0
 	anchored := len(pat) > 0 && pat[0] == '^'
-	for (maxN < 0 || count < maxN) && pos <= len(s) {
+	for (unlimited || count < maxN) && pos <= len(s) {
 		start, end, caps, found, err := patternFind(s, pat, pos)
 		if err != nil {
 			return nil, crescent.NewError(err.Error())

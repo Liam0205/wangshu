@@ -51,6 +51,15 @@ func baseFnCollectGarbage(st *crescent.State, args []value.Value) ([]value.Value
 		}
 		opt = string(object.StringBytes(st.Arena(), value.GCRefOf(args[0])))
 	}
+	// PUC's luaB_collectgarbage reads arg 2 with luaL_optint unconditionally, so a
+	// non-number there raises even though this implementation has no incremental
+	// knobs to apply it to. Ignoring the argument entirely meant
+	// collectgarbage("count", "x") succeeded where PUC raises.
+	if len(args) >= 2 && args[1] != value.Nil {
+		if _, ok := toNumberStr(st, args[1]); !ok {
+			return nil, crescent.NewArgError(2, "number expected, got "+st.TypeName(args[1]))
+		}
+	}
 	switch opt {
 	case "collect", "step":
 		st.GCCollect()

@@ -519,7 +519,7 @@ func DiffN(src string, runners ...Runner) DiffResult { /* N 方比对,§3.3 矩�
 - 阈值选择口径:取「实际工程使用的上限 × 一个数量级」并圆整到 2^N。
   - **`string.rep`**:`len(s) * n > 1<<30`(1 GiB)→ `"string length overflow"`
   - **`string.format`**:width / precision > `1<<30` → `"invalid format width/precision"`
-  - **`table.concat`**:`j - i > 1<<24`(~16M)→ `"table.concat range too large"`
+- `table.concat`:**上限已删除**(2026-07-28)——原先按 `j - i > 1<<24` 抬 `table.concat range too large`,但那个判据量错了东西:concat 的遍历停在第一个非字符串/数字元素上,而表在 border+1 处是 nil,所以代价是 `min(j, border+1) - i`、永远不是 `j - i`,**数据本身就是上限**。按 j 设的上限于是拒绝了 PUC 微秒级完成的写法(`concat({"a","b"}, ",", 1, 1e14)` 两侧都报 `invalid value (nil) at index 3`)。连续三轮独立审计都点出它拒绝了合法输入,详见 §4.9b。
 - 后续新增 hardening 阈值时统一沿用 1 GiB 量级(分配类)/ 1<<24 量级(循环类),除非有具体业务场景需求理由。
 
 **为什么不直接对位 PUC**:PUC Lua 是非嵌入式场景设计,`string.rep("k", 1e14)` 直接 OOM 是「设计行为」(脚本错让宿主死)。我们的承诺更高(嵌入式 VM,宿主进程一定不可崩),hardening 阈值是这个承诺的兑现。**首次踩坑**:fuzz corpus `testdata/fuzz/FuzzCompileRun/2abea9243c4e4b41`(`string.rep("k", 1e14)`)在 v0.1.3 区间外部审计阶段触发 Go runtime OOM fatal,fix 见对应 commit。
