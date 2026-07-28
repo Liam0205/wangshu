@@ -95,6 +95,49 @@ func TestStdlib_ToNumber(t *testing.T) {
 	}
 }
 
+// TestStdlib_ToNumberBase10IsStandardConversion pins that an explicit base of 10
+// takes the SAME path as no base at all.
+//
+// PUC's luaB_tonumber checks `base == 10` before validating the range and before
+// reading arg 1, routing it to the standard conversion; only a non-10 base
+// reaches strtoul's digit-by-digit parse. wangshu used to send base 10 into the
+// digit loop, which rejected every form that loop cannot express -- floats,
+// hex, exponents, inf/nan, and even a number argument.
+//
+// Found by sweeping which channels reach the number parser while fixing #192,
+// not by #192 itself, which was only the nan(...) instance.
+func TestStdlib_ToNumberBase10IsStandardConversion(t *testing.T) {
+	for _, tc := range []struct {
+		src  string
+		want float64
+	}{
+		{`return tonumber("1.5", 10)`, 1.5},
+		{`return tonumber("0x10", 10)`, 16},
+		{`return tonumber("1e3", 10)`, 1000},
+		{`return tonumber(" 12 ", 10)`, 12},
+		{`return tonumber("-7", 10)`, -7},
+		{`return tonumber(1.5, 10)`, 1.5},
+		// a non-10 base must still use the digit loop, where "1.5" is invalid
+		{`return tonumber("ff", 16)`, 255},
+		{`return tonumber("z", 36)`, 35},
+	} {
+		got := runOne(t, tc.src)
+		if !got.IsNumber() || got.Number() != tc.want {
+			t.Errorf("%s = %v, want %v", tc.src, got.Display(), tc.want)
+		}
+	}
+	// base 10 agrees with no base on the nonfinite words too
+	for _, src := range []string{`return tonumber("inf", 10)`, `return tonumber("nan", 10)`} {
+		if got := runOne(t, src); !got.IsNumber() {
+			t.Errorf("%s = %v, want a number", src, got.Display())
+		}
+	}
+	// forms the digit loop legitimately rejects at a non-10 base
+	if got := runOne(t, `return tonumber("1.5", 16)`); !got.IsNil() {
+		t.Errorf(`tonumber("1.5",16) = %v, want nil`, got.Display())
+	}
+}
+
 func TestStdlib_MathBasic(t *testing.T) {
 	got := runOne(t, `return math.abs(-3) + math.floor(3.7) + math.ceil(2.2)`)
 	if !got.IsNumber() || got.Number() != 3+3+3 {
