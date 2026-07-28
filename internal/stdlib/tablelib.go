@@ -561,10 +561,30 @@ func osFnDate(st *crescent.State, args []value.Value) ([]value.Value, *crescent.
 		// wday is 1-based with Sunday=1; yday is 1-based.
 		set("wday", value.NumberValue(float64(int(now.Weekday())+1)))
 		set("yday", value.NumberValue(float64(now.YearDay())))
-		set("isdst", value.False)
+		// isdst from the zone offset: a time whose local offset differs from its
+		// zone's standard offset is in DST. Hardcoding false was wrong in any zone
+		// that observes it.
+		if isDST(now) {
+			set("isdst", value.True)
+		} else {
+			set("isdst", value.False)
+		}
 		return []value.Value{value.MakeGC(value.TagTable, t)}, nil
 	}
 	return []value.Value{intern(st, strftime(format, now))}, nil
+}
+
+// isDST reports whether t's zone is observing daylight saving at that instant,
+// by comparing its offset with the offset six months away (the standard one).
+func isDST(t time.Time) bool {
+	_, off := t.Zone()
+	_, offJan := time.Date(t.Year(), 1, 1, 12, 0, 0, 0, t.Location()).Zone()
+	_, offJul := time.Date(t.Year(), 7, 1, 12, 0, 0, 0, t.Location()).Zone()
+	std := offJan
+	if offJul < std {
+		std = offJul
+	}
+	return off != std
 }
 
 // strftime renders the C strftime directives PUC's os.date forwards, matching
@@ -628,7 +648,59 @@ func strftime(format string, t time.Time) string {
 		case 'X':
 			b.WriteString(t.Format("15:04:05"))
 		case 'Z':
-			b.WriteString(t.Format("MST"))
+			// glibc names UTC "GMT" under a '!' format; Go's MST layout gives "UTC".
+			z := t.Format("MST")
+			if z == "UTC" {
+				z = "GMT"
+			}
+			b.WriteString(z)
+		case 'F':
+			fmt.Fprintf(&b, "%04d-%02d-%02d", t.Year(), int(t.Month()), t.Day())
+		case 'T':
+			fmt.Fprintf(&b, "%02d:%02d:%02d", t.Hour(), t.Minute(), t.Second())
+		case 'D':
+			b.WriteString(t.Format("01/02/06"))
+		case 'R':
+			fmt.Fprintf(&b, "%02d:%02d", t.Hour(), t.Minute())
+		case 'r':
+			h := t.Hour() % 12
+			if h == 0 {
+				h = 12
+			}
+			ap := "AM"
+			if t.Hour() >= 12 {
+				ap = "PM"
+			}
+			fmt.Fprintf(&b, "%02d:%02d:%02d %s", h, t.Minute(), t.Second(), ap)
+		case 'C':
+			fmt.Fprintf(&b, "%02d", t.Year()/100)
+		case 'u':
+			// ISO weekday, Monday=1..Sunday=7 (unlike %w's Sunday=0).
+			wd := int(t.Weekday())
+			if wd == 0 {
+				wd = 7
+			}
+			fmt.Fprintf(&b, "%d", wd)
+		case 'z':
+			b.WriteString(t.Format("-0700"))
+		case 's':
+			// The real epoch second, deliberately NOT glibc's value under a '!'
+			// format. glibc's %s calls mktime on the already-UTC-converted tm, so
+			// it re-reads those fields as LOCAL time: os.date("!%s", 0) is -28800
+			// under TZ=+8 and 0 under TZ=UTC, i.e. the answer depends on the zone
+			// for a value that has none. Same category as print's NUL truncation --
+			// an artifact of the C call rather than a semantic worth copying.
+			fmt.Fprintf(&b, "%d", t.Unix())
+		case 'V':
+			_, wk := t.ISOWeek()
+			fmt.Fprintf(&b, "%02d", wk)
+		case 'U':
+			// Week of year, Sunday as the first day.
+			fmt.Fprintf(&b, "%02d", (t.YearDay()+6-int(t.Weekday()))/7)
+		case 'W':
+			// Week of year, Monday as the first day.
+			wd := (int(t.Weekday()) + 6) % 7
+			fmt.Fprintf(&b, "%02d", (t.YearDay()+6-wd)/7)
 		case 'w':
 			fmt.Fprintf(&b, "%d", int(t.Weekday()))
 		case 'n':

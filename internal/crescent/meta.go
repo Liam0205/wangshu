@@ -185,7 +185,19 @@ func (st *State) arithMeta(th *thread, name string, b, c value.Value) (value.Val
 //
 // A Lua handler goes through host→Lua reentry (05 §7.3: a new execute layer, Go stack +1).
 func (st *State) callMetaHandler(th *thread, fn value.Value, args []value.Value, nWant int) (value.Value, *LuaError) {
+	// Metamethod dispatch adds NO level to error()'s frame walk.
+	//
+	// wangshu runs a Lua handler through the same host->Lua reentry as a host
+	// function call, but PUC interposes no C frame for a metamethod: the handler's
+	// caller is the Lua function that triggered it, which debug.getinfo confirms.
+	// Counting the reentry made every error(msg, level>=2) inside __index, __add,
+	// __concat, __eq, __lt, __unm, __newindex and the for-in iterator name a frame
+	// one step too shallow.
+	saved := st.pendingHostFrames
+	st.suppressHostFrame++
 	results, e := st.callLuaFromHost(th, fn, args)
+	st.suppressHostFrame--
+	st.pendingHostFrames = saved
 	if e != nil {
 		return value.Nil, e
 	}
@@ -232,7 +244,9 @@ func (st *State) callLuaFromHostNamed(th *thread, fn value.Value, args []value.V
 	// One more host frame stands between the caller and the Lua function about to
 	// run. It is consumed by the next Lua frame push, so consecutive host entries
 	// with no Lua frame in between accumulate: pcall(pcall, f) leaves 2.
-	st.pendingHostFrames++
+	if st.suppressHostFrame == 0 {
+		st.pendingHostFrames++
+	}
 	saved := st.pendingHostFrames
 	defer func() {
 		st.nCcalls--
