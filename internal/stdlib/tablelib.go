@@ -544,9 +544,11 @@ func osFnDate(st *crescent.State, args []value.Value) ([]value.Value, *crescent.
 		now = time.Unix(int64(f), 0)
 	}
 	// A leading '!' selects UTC (PUC checks for it before anything else).
+	utc := false
 	if strings.HasPrefix(format, "!") {
 		format = format[1:]
 		now = now.UTC()
+		utc = true
 	}
 	// "*t" (and "!*t") returns a TABLE rather than a formatted string.
 	if format == "*t" {
@@ -571,7 +573,7 @@ func osFnDate(st *crescent.State, args []value.Value) ([]value.Value, *crescent.
 		}
 		return []value.Value{value.MakeGC(value.TagTable, t)}, nil
 	}
-	return []value.Value{intern(st, strftime(format, now))}, nil
+	return []value.Value{intern(st, strftime(format, now, utc))}, nil
 }
 
 // isDST reports whether t's zone is observing daylight saving at that instant.
@@ -588,7 +590,7 @@ func isDST(t time.Time) bool { return t.IsDST() }
 // anything else passed through literally -- os.date("%j") returned "%j". These are
 // the directives a Lua script realistically uses; an unknown one is left as-is,
 // which is what glibc does for an undefined conversion.
-func strftime(format string, t time.Time) string {
+func strftime(format string, t time.Time, utc bool) string {
 	var b strings.Builder
 	for i := 0; i < len(format); i++ {
 		if format[i] != '%' || i+1 >= len(format) {
@@ -642,10 +644,15 @@ func strftime(format string, t time.Time) string {
 		case 'X':
 			b.WriteString(t.Format("15:04:05"))
 		case 'Z':
-			// glibc names the UTC zone "GMT" only when it was reached through a
-			// '!' format; under TZ=UTC the local zone is still "UTC". Rewriting
-			// unconditionally got the second case wrong.
-			b.WriteString(t.Format("MST"))
+			// glibc names the zone "GMT" only when it was reached through a '!'
+			// format; under TZ=UTC the LOCAL zone is still "UTC". Both an
+			// unconditional rewrite and no rewrite at all get one of the two cases
+			// wrong, so the '!' is threaded in rather than inferred from the zone.
+			if utc {
+				b.WriteString("GMT")
+			} else {
+				b.WriteString(t.Format("MST"))
+			}
 		case 'F':
 			fmt.Fprintf(&b, "%04d-%02d-%02d", t.Year(), int(t.Month()), t.Day())
 		case 'T':

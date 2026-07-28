@@ -283,6 +283,12 @@ func (vm *VM) where(th *Thread, level int) string {
 报错位置应是「发出调用的那条 CALL」本身,故取 `savedPC - 1`。对栈顶活跃帧(若 level 能指到它),用 frame
 的当前 `pc - 1`(pc 已自增,05 §2.3)。这套「savedPC-1 / pc-1」的偏移是 traceback 行号正确的命脉(§7.4)。
 
+**尾调用也消耗 level**。一串 N 个尾调用把 N 个帧折叠成了一个，被替换掉的调用者已经不在栈上，
+而 PUC 仍然把每个消失的帧算作一级、且 `luaL_where` 对尾调用帧给不出位置。所以 `callInfo`
+另存一个 `tailDepth`（word2 bit 55-58，与 `hostFrames` 同样饱和），走 level 时在这样的帧上
+消耗 `tailDepth` 步，落在其中任何一步上都不加前缀。
+
+
 ### 3.3 `raise` —— 从 host 把错误转入 execute 的冒泡路径
 
 `error` 是 host function,它不能直接 `return` 出 `execute`(host 在 Go 栈上,execute 在它下面)。所以
