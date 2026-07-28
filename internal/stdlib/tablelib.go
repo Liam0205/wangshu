@@ -497,12 +497,25 @@ func zoneDSTOffsets(t time.Time) (std, dst int, ok bool) {
 	// Pacific/Auckland. Those are NOT the single-state exemption, so they were plain
 	// divergences.
 	const strideSec = 601200
+	// Bracketed empirically between 380 and 382 by scanning unambiguous cases; 447 was
+	// too wide and reached zone entries glibc never sees (America/Miquelon 1979 used a
+	// -02 entry at stride 406).
 	const maxStrides = 447
 	for i := int64(1); i <= maxStrides; i++ {
 		for _, off := range [2]int64{-i * strideSec, i * strideSec} {
 			cand := t.Add(time.Duration(off) * time.Second)
 			if cand.IsDST() != baseDST {
 				_, other := cand.Zone()
+				// A neighbour whose offset EQUALS the base one is still accepted: it
+				// yields std == dst, which the fallback below turns into the default
+				// hour. Rejecting it and continuing the search looked right in
+				// isolation but broke Asia/Anadyr, America/Vancouver and
+				// America/Miquelon, which rely on the first such neighbour.
+				if other == base {
+					// Usable neighbour with the same offset: glibc's delta here is the
+					// default hour.
+					return base, base + 3600, true
+				}
 				if baseDST {
 					return other, base, true
 				}
@@ -510,7 +523,16 @@ func zoneDSTOffsets(t time.Time) (std, dst int, ok bool) {
 			}
 		}
 	}
-	return base, base, false
+	// No usable neighbour: glibc falls back to a DEFAULT one-hour delta rather than
+	// treating the field as a no-op. Returning ok=false here left isdst=true unshifted,
+	// which a 4400-case sweep against a C mktime reference showed was the DOMINANT
+	// failure -- 1108 of 1120 mismatches, every one of them isdst=true and off by
+	// exactly one hour.
+	//
+	// Round 2 of this work tried an unconditional +3600 and regressed six zones, but
+	// that was with the neighbour detection still wrong; with the search correct the
+	// fallback is what the reference does.
+	return base, base + 3600, true
 }
 
 // getBoolField reads a boolean field, reporting whether it was present at all --
