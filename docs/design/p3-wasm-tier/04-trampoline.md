@@ -97,7 +97,8 @@ CallInfo[i].word2  (arena 内):
   [48]    callStatus_tailcall (本帧是尾调用产生,RETURN 时特殊处理)
   [49]    callStatus_fresh    (本帧是「reentry 边界」,见 05 §7.3)
   [50]    callStatus_gibbous  (P3+:本帧在 gibbous 编译码中执行,承 [../p3-wasm-tier] §5.1;P1 恒 0)
-  [63:51] reserved
+  [54:51] hostFrames          (2026-07-28 起占用:紧贴本帧下方叠了几个 host 帧,error(msg,level) 走 level 用,见 [09](../p1-interpreter/09-errors-pcall.md) §3.2.1)
+  [63:55] reserved
 ```
 
 bit50 与 bit48/bit49 同属 `callStatus_*` 位族——它们都是「关于这一帧执行方式的元信息」,挤在 word2 的高位与 protoID/nresults 共用一个字。设计意图:**用一位标识此帧的执行引擎是 gibbous(Wasm)还是 crescent(解释器)**,供 trampoline 在跨层时判流向、供 traceback 在错误回溯时区分帧类型(虽然差分口径不为 gibbous 帧开任何显示豁免,[08-testing-strategy](./08-testing-strategy.md) §2)。

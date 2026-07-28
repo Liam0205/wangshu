@@ -142,6 +142,31 @@
   「正确的修复」和「什么都接受的修复」。过程反思见
   `llmdoc/memory/reflections/2026-07-28-four-diff-divergence-issues.md`。
 
+- **oracle 差分巡检的 stdlib 语义修偏(2026-07-28,#197/#198/#199 一轮)**:承上一条同日那轮
+  (#199 那组分歧本身就是上一轮第六次审计在别的子系统找到、开成 issue 的)。
+
+  | 根因 | 落点 | 修法要点 |
+  |---|---|---|
+  | `error(msg, level)` 解析了 level 却不用它选帧(#197) | `internal/crescent/errors.go` + `state.go` + `frame.go` + `meta.go` | 每个 level ≥ 2 都拿到最内层位置。两层认识:**host 边界是一个 level 不是终点**(PUC 对 `pcall(f)` 的栈是 `[f, pcall(C), caller]`,level 2 落 C 帧空前缀、level 3 到 caller 有前缀)+ **一个边界可代表多个叠起来的 host 帧**(`pcall(pcall,f)` 在 PUC 是两个 C 帧,而 `nCcalls` 是运行总数区分不了),所以**每帧的 host 帧计数进 `callInfo` word2 bit 51-54**(四位饱和,`pendingHostFrames` 递增 / 下次压帧消费,`verifyCISeg` 覆盖),常数偏移在 `pcall(pcall,f)` 上必然错(09 §3.2.1,05 §1.2 布局) |
+  | `%g` 用 Go 的最短往返而不是 C 的默认精度 6(#198) | `internal/stdlib/stringlib.go` | 显式精度本来就对,`%e`/`%f` 的默认也本来就对(Go 与 C 都是 6),**只有 `%g` 的默认不同**;没有显式精度时补 `.6`(10 §5.2.1a) |
+  | `gmatch` 的前导 `^` 被当成锚(#199) | `internal/stdlib/pattern.go` + `stringlib.go` | PUC 的 `gmatch_aux` 直接调 `match()`、没有 anchor 处理(不像 `str_find_aux`),所以 `^` 在 gmatch 里是**普通字符**;给顶层驱动加 allowAnchor 选项而不是写第二份 matcher,find/match/gsub 保持 anchor(10 §6.3) |
+  | `assert` 第二参数什么都收(#199) | `internal/stdlib/stdlib.go` | PUC 是 `luaL_error(L, "%s", luaL_optstring(L, 2, ...))`,`luaL_optstring` 只收 string 或 number,table/boolean 是**参数错误**而不是被 stringify;原来用 `valueToString` 并把 table 本身当错误值(09 §4.1) |
+  | `math.modf` / `frexp` / `rad` 三处 Go math 包与 C 的差(#199) | `internal/stdlib/mathx.go` | 无穷的小数部分 C 给**带符号的 0**、Go 给 NaN;`floor(log2)+1` 推指数在 DBL_MAX 处 off-by-one(改用 `math.Frexp`);`x*π/180` 的乘法先溢出(改乘单个常数 `π/180`,PUC 的 `RADIANS_PER_DEGREE`)(10 §8.5) |
+  | `io.write` 一个值都不返回(#199) | `internal/stdlib/tablelib.go` | 5.1 的 `g_write` 压的是**布尔**成功标志,写失败压 false 不抬错;**issue 里写的「返回文件句柄」是错的**,那是 5.2+。原先 `type(io.write(""))` 报 `value expected`(10 §10.3) |
+  | `os.date` 只认六个指令、`*t` 与 `!` 前缀压根不认(#199) | `internal/stdlib/tablelib.go` | `strings.Replacer` 写法让其余指令原样透出(`os.date("%j")` 返回 `"%j"`);改成指令循环覆盖 `Y y m d e H M S I p j a A b B c x X Z w n t %%`,未定义指令原样输出(glibc 就是这样),`*t`/`!*t` 返回九字段表(10 §9.2) |
+  | `print` 对内嵌 NUL 截断——**刻意不改** | `internal/stdlib/stdlib.go`(注释) | PUC 的 `luaB_print` 用 `fputs` 停在第一个 NUL,而 PUC 自己的 `io.write` 用带长度的 `fwrite` 不截断,**参照实现内部不一致**;5.1 手册明确字符串 8-bit clean,那个截断是 C 调用的产物,对齐它等于故意丢用户数据(10 §4.2,12 §4.9b 第四格) |
+
+  **harness 侧同轮撤 skip**:为 #197 加的那条 skip 覆盖任何提到 error 第二参数的输入,修好后
+  撤掉——24 种 error level 写法现在**零 skip** 参与比对,只剩非有限 level 跳过(`luaL_checkint`
+  窄化的真 UB),函数改名 `errorLevelUBRange`(12 §4.9c)。
+  **验证与扫描规模**:与系统 `lua5.1` 比对 error level 30 种写法(五种嵌套 × level 0-5,含
+  `pcall(pcall,f)`)、`%g` 13 种、gmatch/find/gsub 若干、assert 7 种、math 12 种、`os.date`
+  九种;另主动生成 296 个探针直接与 `lua5.1` 比对(`%g`/浮点 verb × 12 值 × 13 spec、
+  gmatch/find/gsub × 9 pattern、assert × 7 消息、math × 9 值 × 7 函数、os.date × 16 格式、
+  io.write),**289 个可比对项零真实分歧**(4 个差异是探针自身产物:地址文本、表里的
+  `tostring(nil)`、`io.write` 的副作用落到 stdout)。过程反思见
+  `llmdoc/memory/reflections/2026-07-28-issue197-199-stdlib-semantics.md`。
+
 ## 相关
 
 [00-overview](./00-overview.md) · [../engineering](../engineering.md) ·

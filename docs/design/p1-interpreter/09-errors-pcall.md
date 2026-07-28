@@ -230,6 +230,32 @@ error(message, level):           -- level 默认 1
 - **C 帧无位置前缀**:若 level 指向的是 host(C)帧,Lua 5.1 不加 `<source>:<line>:`(C 函数无行号)。
   此时前缀为空,message 原样(等价 level=0 的效果)。
 
+#### 3.2.1 wangshu 不压 host 帧,靠每帧的 host 帧计数走 level(#197,2026-07-28)
+
+上面那段伪码假设 host 帧也在 ci 链里、可以直接数格子。**wangshu 不把 host 帧压进 cis**,所以
+`error(msg, level)` 的走帧要另外记账。两条认识是这处实现的关键,少任何一条都会错:
+
+- **host 边界是一个 level,不是终点。** PUC 对 `pcall(f)` 的栈是 `[f, pcall(C), caller]`,所以
+  level 2 落在那个 C 帧上(空前缀)、**level 3 走到 caller 是有前缀的**。把跨越边界当成终止会让
+  level 3 及以上全错成裸消息。
+- **一个边界可能代表多个叠起来的 host 帧。** `pcall(pcall, f)` 在 PUC 里是两个 C 帧,在 wangshu
+  里只有一次 host re-entry;而 `State.nCcalls` 是个运行总数,区分不了它与
+  `pcall(function() return pcall(f) end)`(两者总数相同、答案不同)。
+
+所以计数必须**按帧**存:`callInfo` 的 word2 用 **bit 51-54(四位)**记「紧贴本帧下方叠了几个
+host 帧」(见 [05](./05-interpreter-loop.md) §1.2 的 word2 布局),由 `State.pendingHostFrames`
+在 host→Lua re-entry(`callLuaFromHostNamed`)时递增、下一次 Lua 帧压栈(`enterLuaFrame`)时
+消费并清零。四位够用的理由:re-entry 深度上限远低于 15,超出即饱和。段镜像的 round-trip 等值
+自检(`verifyCISeg`)覆盖这个字段。
+
+走 level 的算法因此是:从当前帧起,每往上一帧算一级,**同时**把该帧携带的 host 帧计数逐个算作
+一级;若 level 恰好停在某个 host 帧上、或者走出栈底,前缀为空(与 PUC 的 `luaL_where` 一致)。
+实现见 `internal/crescent/errors.go::annotateError`。**为什么不能用常数偏移**:偏移只在「中间
+那一帧恰好是 C」时才对,`pcall(pcall,f)` 上必然错——这也是本条最初被填成 issue 而不是就地凑
+一个偏移的原因。验证与系统 `lua5.1` 比对 30 种写法(五种嵌套 × level 0-5)全部一致;差分
+harness 侧原先为它加的 skip 已随修复撤掉,24 种 error level 写法现在零 skip 参与比对
+([12](./12-testing-difftest.md) §4.9c)。
+
 **回溯 level 层的伪码**(`luaL_where` 等价物):
 
 ```go
@@ -326,10 +352,15 @@ assert(v, message, ...):
   if truthy(v):                       -- [01] §6:仅 nil/false 为假
     return v, message, ...            -- 真值:【原样返回所有参数】(含 v 自身与后续)
   -- v 为假:报错
-  if message == nil:
+  -- PUC: luaL_error(L, "%s", luaL_optstring(L, 2, "assertion failed!"))
+  if message == nil (含【没传】):
     raise("assertion failed!")        -- 默认信息(注意感叹号,无位置前缀!)
-  else:
+  elseif message 是 string:
     raise(message)                    -- 用用户的 message【原样】,【不加位置前缀】
+  elseif message 是 number:
+    raise(tostring(message))          -- luaL_optstring 对 number 做强制转换
+  else:                               -- table / boolean / function / ...
+    argerror(2, "string expected, got X")  -- 【参数错误】,不是把 message 当错误值
 ```
 
 **关键 5.1 口径(易错)**:
@@ -341,7 +372,14 @@ assert(v, message, ...):
   `error("boom")` 抛 `"foo.lua:N: boom"`(带位置)。**这个差异必须实现对**:`assert` 与 `error` 走不同路径,
   `assert` 跳过 `where()` 前缀。
 - **默认 message 是 `"assertion failed!"`**(含感叹号,无位置前缀)。**待 12 差分核对**精确标点(感叹号、无尾随空格)。
-- **message 可为任意类型**:`assert(false, {code=1})` 抛 table(同 `error` 的非 string 处理,不加前缀本就因为非 string)。
+- **message 只能是 string 或 number**(2026-07-28 更正,#199):PUC 的 `luaB_assert` 是
+  `luaL_error(L, "%s", luaL_optstring(L, 2, "assertion failed!"))`,而 `luaL_optstring` 只接受
+  字符串或数字(数字被强制转换成串),所以 `assert(nil, {})` 报的是
+  `bad argument #2 (string expected, got table)`,**不是**把那张表当错误值抛出去。本文早先写
+  「message 可为任意类型」是错的——那是把 `error(v)` 的规则套到了 `assert` 上,两者恰恰在这里
+  分野:`error` 不动非 string 的值直接抛,`assert` 先过 `luaL_optstring` 的类型检查。实现见
+  `internal/stdlib/stdlib.go::baseFnAssert`。另外「没传第二参数」与「显式传 nil」都走默认信息
+  (`luaL_optstring` 对 `LUA_TNONE` 与 nil 同样返回默认值)。
 
 ### 4.2 `assert` 实现要点
 
@@ -353,8 +391,14 @@ func hostAssert(vm *VM, th *Thread) int {
         return th.returnAllArgs()          // 真值:返回全部参数(nargs 个),不裁剪
     }
     msg := th.arg(2)
-    if msg == value.Nil {
+    switch {                               // = luaL_optstring(L, 2, "assertion failed!")
+    case msg == value.Nil:                 // 含「没传」(LUA_TNONE)
         msg = vm.internString("assertion failed!")  // 默认,无位置前缀
+    case value.Tag(msg) == value.TagString: // 原样
+    case value.IsNumber(msg):
+        msg = vm.internString(formatLuaNumber(value.AsNumber(msg)))  // number 强制转串
+    default:
+        return vm.argError(2, "string expected, got "+vm.typeName(msg))  // §4.1
     }
     // 直接 raise(msg)【裸值,不经 where()】—— 这是 assert 与 error 的关键分野
     vm.raise(msg)                          // §3.3:转入 execute 冒泡

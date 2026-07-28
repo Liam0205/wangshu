@@ -481,6 +481,7 @@ func DiffN(src string, runners ...Runner) DiffResult { /* N 方比对,§3.3 矩�
 
 **12 定稿:**
 - **os.date locale 相关字段**(月名/星期名/`%c`):**部分豁免**——脱敏这些字段(N4),只严格比对**数值型字段**(`%Y/%m/%d/%H/%M/%S`,纯数字、locale 无关)。生成器对 `os.date` 偏向数值 spec。
+- **2026-07-28 收窄(#199)**:上面那条部分豁免的适用范围比原文小。`os.date` 的**指令输出本身不豁免**——九种格式已与系统 `lua5.1` 逐字节核对(含 `%c` 的 glibc 格式 `"%a %b %e %H:%M:%S %Y"`、午夜的 `%I`/`%p`、`%e` 的空格补齐、未定义指令原样输出、`*t` 的九个字段),真豁免的只有「月名/星期名在非 C locale 下会本地化」这一件事,而望舒锁英文([10](./10-stdlib.md) §9.4)。原来实现只认六个指令、其余原样透出(`os.date("%j")` 返回 `"%j"`),这个缺口一直被 §4.6 的宽口径豁免和 `internal/oracle/prelude.go` 里 `os.date` 的确定性 stub 一起挡在视野外——**差分 harness 结构上到不了被 stub 掉的函数**,所以它是靠直接与系统 `lua5.1` 比对的探针扫出来的(方法论见 `llmdoc/guides/prove-the-path-under-test.md` §4.4)。
 - **lexer 标识符 ASCII-only**([03](./03-frontend-lexer.md)):这不是豁免而是**口径锁定**——望舒标识符严格 `[A-Za-z0-9_]`,差分用例(生成器)只产 ASCII 标识符。若 gopher-lua 在高位字节标识符上与望舒不同,登记 gopher 偏差豁免(§4.7),以「ASCII-only 是望舒明确口径」为准。
 
 ### 4.7 错误信息:措辞 / 位置 / traceback(承 09 §9.3/§314/§673、03 措辞、07 §1127、08 §189、10 §13.1)
@@ -540,6 +541,16 @@ func DiffN(src string, runners ...Runner) DiffResult { /* N 方比对,§3.3 矩�
 **与 §4.2 判据的顺序**:先判**位置**(差异属于「同一个抽象值的不同书写方式」→ 在渲染处消除;属于「两侧本来就是不同的东西」→ 才在比较时归一或跳过),再判**有定义 / UB**。UB 区间属于后一类(两个官方 build 各给一个结果,没有「正确值」可对齐),所以在比较侧跳过是对的。
 
 **「已豁免」的声明必须能指向执行它的代码**:`internal/stdlib/stdlib.go` 里曾有一句注释说 `tonumber` 负数回绕「已登记为 diff 豁免」,但仓库里**没有任何代码实现那个豁免**,所以分歧一直是活的,nightly 随时可能把它开成 crasher。一个没有执行体的「已豁免」声明比一个已知 bug 更糟,因为它读起来像已经处理过了。本仓豁免的两个执行体是 `test/difftest/corners_test.go::exemptions`(conformance 侧)与 `internal/oracle/prelude.go` 的 sentinel(差分 harness 侧),注释应指向其中之一。方法论见 `llmdoc/guides/prove-the-path-under-test.md` §4.2 与 `llmdoc/guides/cross-backend-semantic-fix-sweep.md`「对齐 PUC 之前先分清有定义还是 UB」。
+
+同一节还有第三、四格,记在那篇 guide 里、这里只列结论:**C 未指定(unspecified)的两侧都不对齐**——函数实参求值顺序在 gcc 下 x86-64 从右往左、arm64 从左往右,两个官方 build 对同一个调用报不同的参数编号,所以望舒取「报第一个缺失 / 出错的参数」这个可辩护的行为,harness 只跳「多于一个坏参数」那种编号取决于顺序的写法(单个坏参数两边编号一致,照旧比对);**参照实现自相矛盾时按语言规范选**——`print` 的 `fputs` 截断内嵌 NUL 而 PUC 自己的 `io.write` 用带长度的 `fwrite` 不截断,5.1 手册明确字符串 8-bit clean,那个截断是 C 调用的产物,望舒两处都不截断(#199,[10](./10-stdlib.md) §4.2)。
+
+### 4.9c 为某个 bug 加的 skip 必须随那个 bug 一起撤掉(#197,2026-07-28)
+
+`fuzz_oracle_test.go` 曾为 `error(msg, level)` 选帧错误加过一条 skip,按源码文本判定、**故意写宽**:任何提到 error 第二参数的输入一律跳过(`errorLevelAtLeastTwo`)。这条 skip 在当时是对的——那个 bug 不是能就地凑一个偏移解决的(见 [09](./09-errors-pcall.md) §3.2.1),而 fuzz 很容易撞到它。
+
+#197 修好之后这条 skip 必须撤,否则整个 level ≥ 2 的区间会一直不参与比对,**而它读起来像「已处理」**。撤掉后 24 种 error level 写法**零 skip** 参与比对;剩下的只跳「非有限 / 超出 int64 的 level」,那是 `luaL_checkint` 窄化的真 UB(§4.9b 第二格),函数同轮改名 `errorLevelUBRange`——旧名字描述的是已经不存在的理由,留着会把下一个读它的人引回错的模型。
+
+**纪律**:修完一个 bug,`grep` 一遍为它加过的 skip / 豁免 / 已知边界条目,逐条撤或收窄,并**跑一遍确认相应用例现在零 skip 参与比对**(不是「测试绿了」——差分 harness 里 skip 也是绿的,§4.2 与 `llmdoc/guides/prove-the-path-under-test.md` §9.6)。一条还活着的 skip 与一句没有执行体的豁免声明在阅读上是一样的,区别只是前者真的在挡输入。方法论见该 guide §4.6。
 
 ---
 
