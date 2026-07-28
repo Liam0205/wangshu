@@ -356,7 +356,12 @@ func ipairsIter(st *crescent.State, args []value.Value) ([]value.Value, *crescen
 	if value.Tag(args[0]) != value.TagTable {
 		return nil, crescent.NewArgError(1, "table expected, got "+st.TypeName(args[0]))
 	}
-	i := value.AsNumber(args[1]) + 1
+	// PUC's ipairsaux reads the control value with luaL_checkint, so it narrows
+	// to int32 and truncates a fraction: __ipairs_iter(t, 2^32+2) continues from
+	// 2, and (t, 1.5) continues from 1. Taking the raw double skipped straight to
+	// nil for both. This site sat outside the earlier sweep, which enumerated
+	// public stdlib functions -- the iterator is installed as a private global.
+	i := float64(cCharCastInt32(value.AsNumber(args[1]))) + 1
 	v, e := st.RawGet(value.GCRefOf(args[0]), value.NumberValue(i))
 	if e != nil {
 		return nil, e
@@ -974,26 +979,19 @@ func stringFnRep(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 	if !ok {
 		return nil, crescent.NewArgError(2, "number expected, got "+st.TypeName(args[1]))
 	}
-	// The count goes through luaL_checkint like any int argument, so a negative
-	// that narrows to a POSITIVE int32 really does repeat:
-	// string.rep("x", -(2^32-3)) narrows to 3 and yields "xxx". Taking the raw
-	// value gave "" instead.
+	// Narrowed like any other luaL_checkint argument, positives included.
 	//
-	// But the narrowed value is only used when it does not shrink a huge positive
-	// request, because the OOM hardening below reads the true magnitude -- an
-	// earlier edit narrowed unconditionally and disarmed that guard, which
-	// TestHardening_StringRepOverflow caught. A positive request keeps its raw
-	// magnitude; anything else uses the narrowed one.
-	// Narrow ONLY negatives. A negative that narrows to a positive int32 really
-	// repeats -- string.rep("x", -(2^32-3)) is "xxx" on PUC -- so the raw value
-	// would wrongly yield "". Positives keep their raw magnitude, because the OOM
-	// hardening below reads it: narrowing a huge positive shrinks the request and
-	// disarms that guard, which TestHardening_StringRepOverflow catches. Twice
-	// now, in fact -- this is the second time the condition was too wide.
-	n := int(nF)
-	if nF < 0 {
-		n = int(cCharCastInt32(nF))
-	}
+	// Two earlier attempts got this wrong in opposite directions. Narrowing
+	// nothing made string.rep("x", -(2^32-3)) yield "" where PUC yields "xxx";
+	// narrowing only negatives made string.rep("x", 2^32+3) raise "string length
+	// overflow" where PUC yields "xxx" (checked against lua5.1 on this host).
+	//
+	// The worry that narrowing would disarm the OOM guard below was unfounded:
+	// after narrowing, n is at most 2^31-1, and a genuinely large request such as
+	// rep(1000-byte string, 2147483647) still exceeds the 1 GiB threshold. What
+	// narrowing removes is only the FALSE positives, where a huge raw count
+	// narrows to something small that PUC happily produces.
+	n := int(cCharCastInt32(nF))
 	if n < 0 {
 		n = 0
 	}
