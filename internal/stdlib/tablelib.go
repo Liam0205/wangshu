@@ -89,7 +89,14 @@ func tableFnForeachi(st *crescent.State, args []value.Value) ([]value.Value, *cr
 // tableFnSetn: table.setn -- 5.1.5 empirically raises "'setn' is obsolete"
 // directly (the 10 §11 △ column says "no-op", but oracle behavior takes
 // priority: match the error wording to preserve the diff).
-func tableFnSetn(_ *crescent.State, _ []value.Value) ([]value.Value, *crescent.LuaError) {
+func tableFnSetn(_ *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
+	// PUC's setn runs luaL_checktype(L, 1, LUA_TTABLE) BEFORE reaching the
+	// obsolete error, so a non-table first argument reports the type error
+	// instead. Raising the obsolete message unconditionally diverged for every
+	// such call, including table.setn() with no arguments at all.
+	if len(args) == 0 || value.Tag(args[0]) != value.TagTable {
+		return nil, crescent.NewArgError(1, "table expected, got "+argTypeName(args, 0))
+	}
 	return nil, crescent.NewError("'setn' is obsolete") // with position prefix (executeFrom annotation)
 }
 
@@ -216,7 +223,7 @@ func tableFnRemove(st *crescent.State, args []value.Value) ([]value.Value, *cres
 		if !ok {
 			return nil, crescent.NewArgError(2, "number expected, got "+st.TypeName(args[1]))
 		}
-		pos = int(posF)
+		pos = int(cCharCastInt32(posF)) // luaL_checkint narrowing, as in insert
 	}
 	// Out-of-range pos (including an empty table): return 0 values and leave
 	// the table untouched (official tremove `!(1 <= pos && pos <= e)
@@ -275,12 +282,32 @@ func tableFnConcat(st *crescent.State, args []value.Value) ([]value.Value, *cres
 	// 1<<24 (~16M) is the hardening cap -- anything beyond the table length
 	// is meaningless (indexes nil), so cut the loop off at the start while
 	// the actual work loop is still bounded by the number of table elements.
+	// Compare the NARROWED bounds, not the raw floats: PUC reads i/j with
+	// luaL_optint, so a j of 2^32+2 is 2 and the range is tiny. Checking the raw
+	// values rejected those as "too large" while PUC concatenated normally.
 	const maxConcatRange = 1 << 24
-	if jF-iF > maxConcatRange {
+	iN, jN := float64(cCharCastInt32(iF)), float64(cCharCastInt32(jF))
+	// The hardening cap must not preempt the error PUC raises on the FIRST
+	// element. concat walks from i and stops at the first non-string, so
+	// i = -2^31 on a 3-element table reports "invalid value (nil) at index
+	// -2147483648" immediately -- no expensive loop happens, and rejecting the
+	// range instead replaced a matching error with a different one. Only guard
+	// when the walk could actually run, i.e. when the first index holds a
+	// concatenable value.
+	firstOK := false
+	if jN >= iN {
+		if fv, _ := st.RawGet(t, value.NumberValue(iN)); value.IsNumber(fv) ||
+			value.Tag(fv) == value.TagString {
+			firstOK = true
+		}
+	}
+	if firstOK && jN-iN > maxConcatRange {
 		return nil, crescent.NewError("table.concat range too large")
 	}
 	var parts []string
-	for k := int(iF); k <= int(jF); k++ {
+	// luaL_checkint narrowing on both bounds: PUC reads them with
+	// luaL_optint, so 2^32+2 is 2, not an out-of-range index.
+	for k := int(cCharCastInt32(iF)); k <= int(cCharCastInt32(jF)); k++ {
 		v, _ := st.RawGet(t, value.NumberValue(float64(k)))
 		if value.IsNumber(v) {
 			parts = append(parts, crescent.FormatLuaNumber(value.AsNumber(v)))

@@ -1,0 +1,2 @@
+go test fuzz v1
+string("print(pcall(select,4294967298,1,2,3))")

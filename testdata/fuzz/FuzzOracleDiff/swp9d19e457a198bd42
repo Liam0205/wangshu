@@ -1,0 +1,2 @@
+go test fuzz v1
+string("print(pcall(table.concat,{1,2,3},\",\",1,4294967298))")
