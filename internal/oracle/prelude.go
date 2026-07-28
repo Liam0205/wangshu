@@ -502,9 +502,18 @@ string.gmatch = function(s, p)
   return function() return __patres(__pcall(it)) end
 end
 string.gfind = string.gmatch
-string.gsub = function(s, p, r, n)
+string.gsub = function(s, p, ...)
+  -- The replacement and count are forwarded as VARARGS, not as named parameters.
+  --
+  -- Naming them turned a missing third argument into an explicit nil, and an
+  -- explicit nil is a PASSED argument: gsub("", 0) reached the real gsub as
+  -- (s, p, nil), which satisfies its "was arg 3 supplied" test and returned
+  -- normally, while PUC raised "bad argument #3 (string/function/table
+  -- expected)". This wrapper predates the branch but only became reachable once
+  -- the gsub count handling changed which inputs get this far, and it showed up
+  -- as a verdict-class divergence on arm64 first purely by fuzz ordering.
   s, p = __patcheck(s, p)
-  return __patres(__pcall(__gsub2, s, p, r, n))
+  return __patres(__pcall(__gsub2, s, p, ...))
 end
 `
 
