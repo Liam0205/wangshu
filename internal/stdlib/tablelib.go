@@ -120,13 +120,24 @@ func tableFnInsert(st *crescent.State, args []value.Value) ([]value.Value, *cres
 			return nil, crescent.NewArgError(2, "number expected, got "+st.TypeName(args[1]))
 		}
 		pos := int(posF)
-		if pos < 1 || pos > n+1 {
-			return nil, crescent.NewArgError(2, "position out of bounds")
+		// NO bounds check: PUC 5.1's tinsert has none. The
+		// "position out of bounds" error belongs to 5.2+, and rejecting
+		// out-of-range positions here diverged from the oracle on every one of
+		// them -- position 0, negatives, and anything past the end.
+		//
+		// 5.1's ltablib.c tinsert computes e = #t + 1, raises e to pos when pos
+		// is larger ("grow the array if necessary"), shifts [pos, e-1] up by
+		// one, then writes at pos. A pos at or below 0 shifts nothing, because
+		// the loop runs from e down to pos+1 and e is already <= pos, so it just
+		// writes. Verified against the oracle: t={} with pos 0 yields
+		// t[0]=1 and #t==0; t={"a","b"} with pos 99 yields t[99]="z" and #t==2.
+		e2 := n + 1
+		if pos > e2 {
+			e2 = pos
 		}
-		// shift right [pos, n] → [pos+1, n+1]
-		for i := n; i >= pos; i-- {
-			v, _ := st.RawGet(t, value.NumberValue(float64(i)))
-			if e := st.RawSet(t, value.NumberValue(float64(i+1)), v); e != nil {
+		for i := e2; i > pos; i-- {
+			v, _ := st.RawGet(t, value.NumberValue(float64(i-1)))
+			if e := st.RawSet(t, value.NumberValue(float64(i)), v); e != nil {
 				return nil, e
 			}
 		}
@@ -224,7 +235,13 @@ func tableFnConcat(st *crescent.State, args []value.Value) ([]value.Value, *cres
 		} else if value.Tag(v) == value.TagString {
 			parts = append(parts, string(object.StringBytes(st.Arena(), value.GCRefOf(v))))
 		} else {
-			return nil, crescent.NewError(fmt.Sprintf("invalid value (at index %d) in table for 'concat'", k))
+			// PUC's addfield: "invalid value (%s) at index %d in table for
+			// 'concat'", where %s is luaL_typename of the offending element.
+			// wangshu had the parenthesis around the wrong span and omitted the
+			// type name entirely, so the message differed from the oracle's on
+			// every non-string element.
+			return nil, crescent.NewError(fmt.Sprintf(
+				"invalid value (%s) at index %d in table for 'concat'", st.TypeName(v), k))
 		}
 	}
 	return []value.Value{intern(st, strings.Join(parts, sep))}, nil
