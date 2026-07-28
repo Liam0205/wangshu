@@ -543,21 +543,107 @@ func osFnDate(st *crescent.State, args []value.Value) ([]value.Value, *crescent.
 		}
 		now = time.Unix(int64(f), 0)
 	}
-	// Minimal strftime subset (%Y %m %d %H %M %S %c)
-	r := strings.NewReplacer(
-		"%Y", fmt.Sprintf("%04d", now.Year()),
-		"%m", fmt.Sprintf("%02d", int(now.Month())),
-		"%d", fmt.Sprintf("%02d", now.Day()),
-		"%H", fmt.Sprintf("%02d", now.Hour()),
-		"%M", fmt.Sprintf("%02d", now.Minute()),
-		"%S", fmt.Sprintf("%02d", now.Second()),
-		// glibc's %c is "%a %b %e %H:%M:%S %Y", where %e is the day
-		// SPACE-padded to width 2 -- "Jul 28", not "Jul  28". Go's "Jan  2"
-		// layout inserts its own pad in addition, producing two spaces for
-		// two-digit days. "Jan _2" is Go's space-padded form and matches.
-		"%c", now.Format("Mon Jan _2 15:04:05 2006"),
-	)
-	return []value.Value{intern(st, r.Replace(format))}, nil
+	// A leading '!' selects UTC (PUC checks for it before anything else).
+	if strings.HasPrefix(format, "!") {
+		format = format[1:]
+		now = now.UTC()
+	}
+	// "*t" (and "!*t") returns a TABLE rather than a formatted string.
+	if format == "*t" {
+		t := st.NewLibTable(9)
+		set := func(k string, v value.Value) { st.SetTableField(t, k, v) }
+		set("year", value.NumberValue(float64(now.Year())))
+		set("month", value.NumberValue(float64(int(now.Month()))))
+		set("day", value.NumberValue(float64(now.Day())))
+		set("hour", value.NumberValue(float64(now.Hour())))
+		set("min", value.NumberValue(float64(now.Minute())))
+		set("sec", value.NumberValue(float64(now.Second())))
+		// wday is 1-based with Sunday=1; yday is 1-based.
+		set("wday", value.NumberValue(float64(int(now.Weekday())+1)))
+		set("yday", value.NumberValue(float64(now.YearDay())))
+		set("isdst", value.False)
+		return []value.Value{value.MakeGC(value.TagTable, t)}, nil
+	}
+	return []value.Value{intern(st, strftime(format, now))}, nil
+}
+
+// strftime renders the C strftime directives PUC's os.date forwards, matching
+// glibc's output for each.
+//
+// The set was previously six directives applied with a strings.Replacer, so
+// anything else passed through literally -- os.date("%j") returned "%j". These are
+// the directives a Lua script realistically uses; an unknown one is left as-is,
+// which is what glibc does for an undefined conversion.
+func strftime(format string, t time.Time) string {
+	var b strings.Builder
+	for i := 0; i < len(format); i++ {
+		if format[i] != '%' || i+1 >= len(format) {
+			b.WriteByte(format[i])
+			continue
+		}
+		i++
+		switch format[i] {
+		case 'Y':
+			fmt.Fprintf(&b, "%04d", t.Year())
+		case 'y':
+			fmt.Fprintf(&b, "%02d", t.Year()%100)
+		case 'm':
+			fmt.Fprintf(&b, "%02d", int(t.Month()))
+		case 'd':
+			fmt.Fprintf(&b, "%02d", t.Day())
+		case 'e':
+			fmt.Fprintf(&b, "%2d", t.Day())
+		case 'H':
+			fmt.Fprintf(&b, "%02d", t.Hour())
+		case 'M':
+			fmt.Fprintf(&b, "%02d", t.Minute())
+		case 'S':
+			fmt.Fprintf(&b, "%02d", t.Second())
+		case 'I':
+			h := t.Hour() % 12
+			if h == 0 {
+				h = 12
+			}
+			fmt.Fprintf(&b, "%02d", h)
+		case 'p':
+			if t.Hour() < 12 {
+				b.WriteString("AM")
+			} else {
+				b.WriteString("PM")
+			}
+		case 'j':
+			fmt.Fprintf(&b, "%03d", t.YearDay())
+		case 'a':
+			b.WriteString(t.Format("Mon"))
+		case 'A':
+			b.WriteString(t.Weekday().String())
+		case 'b', 'h':
+			b.WriteString(t.Format("Jan"))
+		case 'B':
+			b.WriteString(t.Month().String())
+		case 'c':
+			b.WriteString(t.Format("Mon Jan _2 15:04:05 2006"))
+		case 'x':
+			b.WriteString(t.Format("01/02/06"))
+		case 'X':
+			b.WriteString(t.Format("15:04:05"))
+		case 'Z':
+			b.WriteString(t.Format("MST"))
+		case 'w':
+			fmt.Fprintf(&b, "%d", int(t.Weekday()))
+		case 'n':
+			b.WriteByte('\n')
+		case 't':
+			b.WriteByte('\t')
+		case '%':
+			b.WriteByte('%')
+		default:
+			// Undefined conversion: emit it verbatim, as glibc does.
+			b.WriteByte('%')
+			b.WriteByte(format[i])
+		}
+	}
+	return b.String()
 }
 
 func osFnGetenv(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
