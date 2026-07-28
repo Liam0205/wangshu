@@ -423,7 +423,7 @@ func stringFnFormat(st *crescent.State, args []value.Value) ([]value.Value, *cre
 			if !ok {
 				return nil, crescent.NewArgError(argn+1, "number expected, got "+st.TypeName(args[argn]))
 			}
-			out = append(out, []byte(fmt.Sprintf(string(append(spec, 'd')), int64(n)))...)
+			out = append(out, cSignedFormat(spec, int64(n))...)
 			argn++
 		case 'u', 'x', 'X', 'o':
 			// PUC casts through unsigned LUA_INTFRM_T: %u/%x/%o of -1
@@ -738,6 +738,75 @@ func cUnsignedCast(f float64) uint64 {
 // zero-pad INSIDE the prefix; "%#o" forces a leading octal zero by
 // widening precision, and "%#.0o" of 0 prints "0" where Go prints ""),
 // and it honors ' '/'+' on unsigned verbs that C ignores.
+// cSignedFormat renders %d/%i the way C printf does, which Go's fmt does not in
+// one corner: when precision is 0 and the value is 0, C converts the value to NO
+// digits (C99 7.19.6.1) but still emits the sign that a '+' or ' ' flag asks
+// for, because that sign is not one of the converted digits. Go treats the whole
+// conversion as empty and drops the sign with it:
+//
+//	spec      C          Go
+//	%+.0d     "+"        ""
+//	%+5.0d    "    +"    "     "
+//	% .0d     " "        ""
+//	%.0d      ""         ""        (agree: no flag, nothing to keep)
+//
+// Everything else delegates to fmt, which matches. This mirrors the neighbouring
+// unsigned verbs, which are hand-rolled for the same family of Go-vs-C printf
+// disagreements (see cUnsignedFormat).
+func cSignedFormat(spec []byte, n int64) []byte {
+	prec, hasPrec := specPrecision(spec)
+	if !hasPrec || prec != 0 || n != 0 {
+		return []byte(fmt.Sprintf(string(append(spec, 'd')), n))
+	}
+	// Empty digit string. Build sign + width padding by hand.
+	sign := ""
+	switch {
+	case bytes.IndexByte(spec, '+') >= 0:
+		sign = "+"
+	case bytes.IndexByte(spec, ' ') >= 0:
+		sign = " "
+	}
+	width := specWidth(spec)
+	if width <= len(sign) {
+		return []byte(sign)
+	}
+	pad := bytes.Repeat([]byte{' '}, width-len(sign))
+	if bytes.IndexByte(spec, '-') >= 0 {
+		return append([]byte(sign), pad...)
+	}
+	return append(pad, sign...)
+}
+
+// specPrecision reports the precision in a "%"+flags+width[.prec] spec.
+func specPrecision(spec []byte) (int, bool) {
+	dot := bytes.IndexByte(spec, '.')
+	if dot < 0 {
+		return 0, false
+	}
+	prec := 0
+	for i := dot + 1; i < len(spec) && spec[i] >= '0' && spec[i] <= '9'; i++ {
+		prec = prec*10 + int(spec[i]-'0')
+	}
+	return prec, true
+}
+
+// specWidth reports the field width in a "%"+flags+width[.prec] spec. A leading
+// '0' is the zero-pad flag rather than a width digit; C space-pads an empty
+// conversion regardless, so treating it as width would be harmless but reading
+// it as a flag keeps the parse honest.
+func specWidth(spec []byte) int {
+	i := 1 // skip '%'
+	for i < len(spec) && (spec[i] == '-' || spec[i] == '+' || spec[i] == ' ' ||
+		spec[i] == '#' || spec[i] == '0') {
+		i++
+	}
+	width := 0
+	for ; i < len(spec) && spec[i] >= '0' && spec[i] <= '9'; i++ {
+		width = width*10 + int(spec[i]-'0')
+	}
+	return width
+}
+
 func cUnsignedFormat(spec []byte, verb byte, v uint64) []byte {
 	minus, zero, hash := false, false, false
 	i := 1 // skip '%'
