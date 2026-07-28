@@ -2,6 +2,7 @@ package wangshu_test
 
 import (
 	"runtime"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -13,10 +14,11 @@ import (
 // differs, so the "correct" epoch second for these edge cases is not the same there. The
 // cases below assert glibc's answers, verified against a C mktime reference on Linux.
 //
-// This is not a portability bug in the product. The differential oracle is the vendored PUC
-// 5.1.5 built against the HOST libc, so on a BSD host the oracle expects BSD behaviour and
-// the two agree for the same reason they agree here. Only these hardcoded expectations are
-// glibc's.
+// These cases pin glibc's exact epoch seconds, so they only run on Linux. They are NOT the
+// portability contract -- an earlier version of this comment claimed the product would agree
+// with a host-libc oracle on BSD, which is false: the product uses glibc's rules everywhere
+// and would disagree with a locally built PUC there. TestOSTimeIsDST_PortableContract below
+// asserts what actually holds on every platform, and runs everywhere.
 func requireGlibcMktime(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS != "linux" {
@@ -198,5 +200,59 @@ func TestOSTimeIsDST_SearchBound(t *testing.T) {
 				t.Errorf("%s: got %s, want %s", tc.zone, got, tc.want)
 			}
 		}()
+	}
+}
+
+// TestOSTimeIsDST_PortableContract asserts what holds on EVERY platform, and does not skip.
+//
+// The isdst search uses glibc's rules regardless of host libc, which is a deliberate choice
+// recorded in corners_test.go::exemptions: the same script gives the same answer everywhere,
+// at the cost of deviating from a locally built PUC on non-glibc hosts for a few
+// transition-adjacent inputs. The properties below follow from the rules themselves rather
+// than from any libc's arithmetic, so they must hold on Linux and macOS alike -- which is
+// what makes this the enforcer for the contract, rather than the Linux-only cases above.
+func TestOSTimeIsDST_PortableContract(t *testing.T) {
+	loc, err := time.LoadLocation("Europe/London")
+	if err != nil {
+		t.Skip("tzdata unavailable")
+	}
+	origLocal := time.Local
+	t.Setenv("TZ", "Europe/London")
+	time.Local = loc
+	t.Cleanup(func() { time.Local = origLocal })
+
+	// A two-state zone: the two isdst values must differ by exactly the zone's DST delta,
+	// and the summer/winter defaults must each agree with one of them.
+	sumT := runOne(t, `return tostring(os.time{year=2024,month=7,day=1,hour=12,isdst=true})`).Str()
+	sumF := runOne(t, `return tostring(os.time{year=2024,month=7,day=1,hour=12,isdst=false})`).Str()
+	sumD := runOne(t, `return tostring(os.time{year=2024,month=7,day=1,hour=12})`).Str()
+	winT := runOne(t, `return tostring(os.time{year=2024,month=1,day=1,hour=12,isdst=true})`).Str()
+	winF := runOne(t, `return tostring(os.time{year=2024,month=1,day=1,hour=12,isdst=false})`).Str()
+	winD := runOne(t, `return tostring(os.time{year=2024,month=1,day=1,hour=12})`).Str()
+
+	diff := func(a, b string) int64 {
+		x, errA := strconv.ParseInt(a, 10, 64)
+		y, errB := strconv.ParseInt(b, 10, 64)
+		if errA != nil || errB != nil {
+			t.Fatalf("os.time returned non-integers: %q, %q", a, b)
+		}
+		return y - x
+	}
+	if d := diff(sumT, sumF); d != 3600 {
+		t.Errorf("summer isdst true->false delta = %d, want 3600", d)
+	}
+	if d := diff(winT, winF); d != 3600 {
+		t.Errorf("winter isdst true->false delta = %d, want 3600", d)
+	}
+	// In summer the zone is in DST, so the default matches isdst=true; in winter, false.
+	if sumD != sumT {
+		t.Errorf("summer default %s should match isdst=true %s", sumD, sumT)
+	}
+	if winD != winF {
+		t.Errorf("winter default %s should match isdst=false %s", winD, winF)
+	}
+	// isdst must be idempotent: asking twice gives the same answer.
+	if again := runOne(t, `return tostring(os.time{year=2024,month=7,day=1,hour=12,isdst=true})`).Str(); again != sumT {
+		t.Errorf("not idempotent: %s then %s", sumT, again)
 	}
 }

@@ -483,12 +483,27 @@ func zoneDSTOffsets(t time.Time) (std, dst int, ok bool) {
 	// switches to MST (-25200) on Nov 1, the same magnitude as PDT, so glibc's
 	// nearest non-DST neighbour is -25200 while a January-first scan found PST
 	// (-28800). A full-tzdata sweep put that class at 65 cases across 55 zones.
+	// The search is glibc's, and that is a DELIBERATE PORTABLE CONTRACT rather than a
+	// claim about the host.
+	//
 	// glibc's mktime searches in 601200-second strides (about 6.96 days), probing
-	// backward then forward at each stride, so it can step PAST a nearer transition
-	// and settle on a further zone entry. A one-day scan finds the nearest one
-	// instead, which is a different offset whenever a transition sits inside one
-	// stride: Asia/Anadyr 2010 was an hour off in a genuinely two-state year. The
-	// stride and probe order are copied rather than approximated.
+	// backward then forward at each stride, so it can step PAST a nearer transition and
+	// settle on a further zone entry. A one-day scan finds the nearest one instead,
+	// which is a different offset whenever a transition sits inside one stride:
+	// Asia/Anadyr 2010 was an hour off in a genuinely two-state year.
+	//
+	// wangshu uses these rules on EVERY platform, including hosts whose libc searches
+	// differently (macOS/BSD). That means os.time{...,isdst=...} is portable -- the same
+	// script gives the same answer everywhere -- while PUC's own answer varies with the
+	// host libc, so on a non-glibc host this deviates from a locally built PUC for a
+	// handful of transition-adjacent inputs. A per-platform implementation was considered
+	// and rejected: the interpreter is pure Go by design (cgo appears only in
+	// internal/oracle behind a build tag), so it cannot call the host mktime, and
+	// reimplementing each libc's search would trade one portable answer for several
+	// unverifiable ones.
+	//
+	// Registered in corners_test.go::exemptions. Verified at zero mismatches against a C
+	// mktime reference on glibc (598 zones x nine years 1850-2199, 21528 cases).
 	const strideSec = 601200
 	// The bound is 381 strides, bracketed empirically against a C mktime reference.
 	//
