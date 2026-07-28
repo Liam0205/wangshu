@@ -169,7 +169,7 @@ func stringFnGmatch(st *crescent.State, args []value.Value) ([]value.Value, *cre
 		if pos > len(src) {
 			return []value.Value{value.Nil}, nil
 		}
-		start, end, caps, found, err := patternFind(src, p, pos)
+		start, end, caps, found, err := patternFindOpt(src, p, pos, false)
 		if err != nil {
 			return nil, crescent.NewError(err.Error())
 		}
@@ -487,7 +487,18 @@ func stringFnFormat(st *crescent.State, args []value.Value) ([]value.Value, *cre
 				argn++
 				continue
 			}
-			out = append(out, []byte(fmt.Sprintf(string(append(spec, verb)), n))...)
+			// %g/%G with NO explicit precision needs one supplied: C defaults to
+			// precision 6, while Go's %g defaults to the shortest representation
+			// that round-trips. string.format("%g", 1/3) is "0.333333" in C and
+			// was "0.3333333333333333" here. %e and %f already agree, because Go
+			// matches C's default of 6 for those.
+			es := spec
+			if verb == 'g' || verb == 'G' {
+				if _, hasPrec := specPrecision(spec); !hasPrec {
+					es = append(append([]byte{}, spec...), '.', '6')
+				}
+			}
+			out = append(out, []byte(fmt.Sprintf(string(append(es, verb)), n))...)
 			argn++
 		case 's':
 			// PUC 's' reads via luaL_checklstring: string/number only
