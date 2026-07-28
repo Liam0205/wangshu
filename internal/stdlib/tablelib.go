@@ -614,23 +614,29 @@ var mathExtraFns = []entry{
 func mathFn2(name string, f func(a, b float64) float64) crescent.HostFn {
 	return func(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 		if len(args) < 2 {
-			// PUC writes these as f(luaL_checknumber(L,1), luaL_checknumber(L,2))
-			// and C evaluates the arguments right to left here, so arg 2 is
-			// checked FIRST: math.fmod() reports "bad argument #2", not #1.
-			// Reporting len(args)+1 named #1 for a no-argument call.
-			return nil, crescent.NewArgError(2, "number expected, got no value")
+			// Left to right, i.e. the FIRST missing argument.
+			//
+			// This deliberately does NOT match the x86-64 oracle, which reports #2
+			// because PUC writes f(luaL_checknumber(L,1), luaL_checknumber(L,2))
+			// and gcc evaluates those arguments right to left there. C leaves that
+			// order unspecified, and the arm64 build reports #1 -- the two official
+			// builds disagree with each other, so there is nothing to align to.
+			// An earlier revision of this branch did align to x86 and the arm64
+			// oracle-smoke job rejected it.
+			//
+			// Reporting the first missing argument is the defensible choice, and the
+			// harness skips the shape (see the arg-order guard in prelude.go).
+			return nil, crescent.NewArgError(len(args)+1, "number expected, got no value")
 		}
-		// Arg 2 is validated FIRST here too, not just in the arity branch above:
-		// C evaluates f(luaL_checknumber(L,1), luaL_checknumber(L,2)) right to
-		// left, so math.fmod({}, {}) reports #2. Fixing only the arity case left
-		// the per-argument checks left-to-right and still reporting #1.
-		b, ok2 := toNumberStr(st, args[1])
-		if !ok2 {
-			return nil, crescent.NewArgError(2, fmt.Sprintf("number expected, got %s", st.TypeName(args[1])))
-		}
+		// Left to right, for the same reason as the arity check above: the
+		// order the oracle reports is its compiler's, not Lua's.
 		a, ok1 := toNumberStr(st, args[0])
 		if !ok1 {
 			return nil, crescent.NewArgError(1, fmt.Sprintf("number expected, got %s", st.TypeName(args[0])))
+		}
+		b, ok2 := toNumberStr(st, args[1])
+		if !ok2 {
+			return nil, crescent.NewArgError(2, fmt.Sprintf("number expected, got %s", st.TypeName(args[1])))
 		}
 		return []value.Value{value.NumberValue(f(a, b))}, nil
 	}
