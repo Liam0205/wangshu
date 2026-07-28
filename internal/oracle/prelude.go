@@ -289,10 +289,16 @@ __wrapUB(string, "gsub", 4)
 string.format = (function(orig)
   return function(f, ...)
     if __type(f) == "string" and __sfind(f, "%%[%-%+ #0-9%.]*c") then
+      -- %c uses (int)luaL_checkNUMBER, a DIRECT double -> int32, so its UB range
+      -- starts at int32 rather than int64: 2^40+65 is inside int64 (the two-step
+      -- cast keeps its low 32 bits) but outside int32, where x86 gives INT32_MIN
+      -- and arm64 saturates elsewhere. Guarding only nonfinite left that case
+      -- compared, which is what the arm64 job failed on next.
       local k = __select("#", ...)
       for i = 1, k do
-        if __nonfinite((__select(i, ...))) then
-          __error("` + LimitSentinel + `: luaL_checkint UB range", 0)
+        local n = __tonumber((__select(i, ...)))
+        if n ~= nil and (n ~= n or n >= 2147483648 or n < -2147483648) then
+          __error("` + LimitSentinel + `: luaL_checknumber int32 UB range", 0)
         end
       end
     end
