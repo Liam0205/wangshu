@@ -242,7 +242,7 @@ error(message, level):           -- level 默认 1
   里只有一次 host re-entry;而 `State.nCcalls` 是个运行总数,区分不了它与
   `pcall(function() return pcall(f) end)`(两者总数相同、答案不同)。
 
-所以计数必须**按帧**存:`callInfo` 的 word2 用 **bit 51-54(四位)**记「紧贴本帧下方叠了几个
+所以计数必须**按帧**存:`callInfo` 的 word2 用 **bit 51-58(四位)**记「紧贴本帧下方叠了几个
 host 帧」(见 [05](./05-interpreter-loop.md) §1.2 的 word2 布局),由 `State.pendingHostFrames`
 在 host→Lua re-entry(`callLuaFromHostNamed`)时递增、下一次 Lua 帧压栈(`enterLuaFrame`)时
 消费并清零。四位够用的理由:re-entry 深度上限远低于 15,超出即饱和。段镜像的 round-trip 等值
@@ -285,7 +285,7 @@ func (vm *VM) where(th *Thread, level int) string {
 
 **尾调用也消耗 level**。一串 N 个尾调用把 N 个帧折叠成了一个，被替换掉的调用者已经不在栈上，
 而 PUC 仍然把每个消失的帧算作一级、且 `luaL_where` 对尾调用帧给不出位置。所以 `callInfo`
-另存一个 `tailDepth`（word2 bit 55-58，与 `hostFrames` 同样饱和），走 level 时在这样的帧上
+另存一个 `tailDepth`（word2 bit 59-63，与 `hostFrames` 同样饱和），走 level 时在这样的帧上
 消耗 `tailDepth` 步，落在其中任何一步上都不加前缀。
 
 

@@ -1370,16 +1370,21 @@ func packCIWord2(ci *callInfo) uint64 {
 	// re-entry boundary can stand for several stacked host frames
 	// (pcall(pcall, f) is two). Four bits is ample -- the reentry depth cap is far
 	// below 15 and the value saturates.
-	hf := ci.hostFrames
-	if hf > 0xF {
-		hf = 0xF // saturate: the field is 4 bits and the comment promises clamping
-	}
-	w |= uint64(hf) << 51
+	// hostFrames gets 8 bits (51-58) and tailDepth the remaining 5 (59-63).
+	//
+	// Both were 4 bits, justified as "the reentry cap is far below 15" -- which was
+	// simply false: nothing stops a script nesting more than 15 host boundaries, and
+	// past the clamp the true count is lost, so error(msg, level) both drops prefixes
+	// PUC gives and adds ones PUC omits. Saturation cannot be made correct, so the
+	// field is widened until it is unreachable in practice instead.
+	// hostFrames is uint8 and the field is 8 bits, so no clamp is needed or
+	// possible; tailDepth's 5-bit field still needs one.
+	w |= uint64(ci.hostFrames) << 51
 	td := ci.tailDepth
-	if td > 0xF {
-		td = 0xF
+	if td > 0x1F {
+		td = 0x1F
 	}
-	w |= uint64(td) << 55
+	w |= uint64(td) << 59
 	return w
 }
 
@@ -1402,8 +1407,8 @@ func (th *thread) readCISegInto(depth int, out *callInfo) {
 	out.tailcall = w2&(1<<48) != 0
 	out.fresh = w2&(1<<49) != 0
 	out.gibbous = w2&(1<<50) != 0
-	out.hostFrames = uint8((w2 >> 51) & 0xF)
-	out.tailDepth = uint8((w2 >> 55) & 0xF)
+	out.hostFrames = uint8((w2 >> 51) & 0xFF)
+	out.tailDepth = uint8((w2 >> 59) & 0x1F)
 	out.cl = arena.GCRef(a.WordAt(wordRef(3)))
 	out.nVarargs = uint16(a.WordAt(wordRef(4))) // VS0-e substep ②: unpack nVarargs from word4
 }
