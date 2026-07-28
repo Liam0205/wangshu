@@ -467,16 +467,28 @@ func osFnDifftime(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 	return []value.Value{value.NumberValue(t2 - t1)}, nil
 }
 
-// zoneOffsets returns the local zone's standard and daylight offsets for a year,
-// by sampling January and July (one of which is always standard time in any zone
-// that observes DST, in either hemisphere).
-func zoneOffsets(year int) (std, dst int) {
-	_, jan := time.Date(year, 1, 1, 12, 0, 0, 0, time.Local).Zone()
-	_, jul := time.Date(year, 7, 1, 12, 0, 0, 0, time.Local).Zone()
-	if jul >= jan {
-		return jan, jul
+// zoneDSTOffsets reports the standard and daylight offsets in effect around t,
+// found by scanning the surrounding year for an instant whose DST state differs.
+//
+// ok is false when the zone has only one state there, in which case os.time leaves
+// isdst alone -- see the comment at the call site for why no default shift is
+// applied. Keyed on IsDST rather than on offset magnitude so that a permanently-DST
+// zone and a permanent offset change are both classified correctly.
+func zoneDSTOffsets(t time.Time) (std, dst int, ok bool) {
+	_, base := t.Zone()
+	baseDST := t.IsDST()
+	start := time.Date(t.Year(), 1, 1, 12, 0, 0, 0, t.Location())
+	for d := 0; d < 366; d++ {
+		p := start.AddDate(0, 0, d)
+		if p.IsDST() != baseDST {
+			_, other := p.Zone()
+			if baseDST {
+				return other, base, true
+			}
+			return base, other, true
+		}
 	}
-	return jul, jan
+	return base, base, false
 }
 
 // getBoolField reads a boolean field, reporting whether it was present at all --
@@ -540,34 +552,36 @@ func osFnTime(st *crescent.State, args []value.Value) ([]value.Value, *crescent.
 	// mktime semantics: local time, out-of-range fields normalize.
 	tt := time.Date(year, time.Month(month), day, hour, minute, sec, 0, time.Local)
 	// isdst selects WHICH offset to interpret the fields with, as mktime's tm_isdst
-	// does. Implemented by computing the epoch second directly from the requested
-	// offset rather than by adjusting Go's answer.
+	// does -- but only when THIS zone actually has both states in the surrounding
+	// year, which is the part Go can decide.
 	//
-	// Adjusting time.Date's result was wrong in the spring-forward GAP, where the
-	// local time does not exist: Go normalizes it forward and reports IsDST()==true,
-	// while mktime resolves it with the opposite sign, so both isdst values came out
-	// shifted (Europe/London 2024-03-31 01:30 was 1711852200 against 1711848600).
-	// Reading the offset the caller asked for avoids depending on how Go resolved a
-	// time that has no valid resolution.
+	// The offsets come from scanning for an instant in the same year whose IsDST
+	// differs, rather than from comparing January and July magnitudes: the magnitude
+	// heuristic mislabels a permanently-DST zone (Africa/Casablanca is +01/isdst=1
+	// year round, so it called +01 "standard" where glibc's standard is +00) and it
+	// reads a permanent mid-year offset change (Asia/Almaty) as a DST rule.
+	//
+	// When the zone has no second state, the field is IGNORED. glibc does shift by a
+	// default hour for some such zones (UTC, Asia/Shanghai) and not for others
+	// (Africa/Windhoek, Asia/Damascus, which abolished DST by keeping the summer
+	// offset) -- the difference comes from mktime's bounded search for a nearby
+	// transition in the tzdata history, and Go exposes no transition table to
+	// reproduce that. An unconditional +3600 fallback got the first group right and
+	// REGRESSED the second, so the narrower behaviour is the honest one. Documented
+	// in 10 §9.1.1 and exempted in difftest.
 	if want, present := getBoolField(st, t, "isdst"); present {
-		stdOff, dstOff := zoneOffsets(year)
-		if stdOff == dstOff {
-			// A zone with no DST rule still honours the assertion: glibc's mktime
-			// applies a DEFAULT one-hour shift, so isdst=true is an hour earlier
-			// even under TZ=UTC or Asia/Shanghai. Verified in three such zones.
-			// Skipping this case left them unchanged, which a full-year multi-zone
-			// sweep caught -- a single date per zone did not.
-			dstOff = stdOff + 3600
+		if stdOff, dstOff, ok := zoneDSTOffsets(tt); ok {
+			off := stdOff
+			if want {
+				off = dstOff
+			}
+			// The same field values interpreted at a FIXED offset: read them as UTC
+			// and subtract it. Adjusting time.Date's own answer instead depended on
+			// how Go resolved a local time that may not exist (the spring-forward
+			// gap, where Go normalizes forward and mktime resolves the other way).
+			utc := time.Date(year, time.Month(month), day, hour, minute, sec, 0, time.UTC)
+			tt = time.Unix(utc.Unix()-int64(off), 0)
 		}
-		off := stdOff
-		if want {
-			off = dstOff
-		}
-		// The same field values interpreted at a FIXED offset: read them as UTC and
-		// subtract the offset. Adjusting time.Date's own answer instead depended on
-		// how Go resolved a time that may not exist.
-		utc := time.Date(year, time.Month(month), day, hour, minute, sec, 0, time.UTC)
-		tt = time.Unix(utc.Unix()-int64(off), 0)
 	}
 	return []value.Value{value.NumberValue(float64(tt.Unix()))}, nil
 }
