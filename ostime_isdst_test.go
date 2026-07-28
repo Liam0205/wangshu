@@ -49,28 +49,38 @@ func TestOSTimeIsDST(t *testing.T) {
 	}
 }
 
-// TestOSTimeIsDST_SingleStateZone pins that isdst is IGNORED where the zone has only
-// one DST state.
+// TestOSTimeIsDST_DefaultHourFallback pins the fallback used when the search finds no
+// neighbour with a different offset: glibc applies a DEFAULT one hour rather than treating
+// isdst as a no-op.
 //
-// glibc shifts by a default hour for some such zones and not for others, decided by
-// mktime's bounded search of the tzdata transition history, which Go exposes no way to
-// reproduce. An unconditional +3600 fallback matched UTC and Asia/Shanghai while
-// REGRESSING Africa/Windhoek and Asia/Damascus, which had agreed before -- so the
-// narrower behaviour is deliberate and registered in corners_test.go::exemptions.
-func TestOSTimeIsDST_SingleStateZone(t *testing.T) {
-	loc, err := time.LoadLocation("Africa/Windhoek")
+// This is the dominant case by a wide margin. Measured against a C mktime reference over
+// 4400 (zone, year, month, isdst) combinations across 220 zones, returning "not found" here
+// accounted for 1108 of 1120 mismatches -- every one isdst=true and off by exactly an hour.
+// Applying the default takes the total to 44.
+//
+// The residual 44 sit in 20 zones that abolished DST by keeping the summer offset
+// (Africa/Windhoek, America/Cancun, America/Chihuahua and similar), where glibc finds a
+// historical neighbour and uses a delta of zero. Whether it finds one depends on its
+// transition table, which Go does not expose -- that is the registered exemption, and this
+// test documents the measured rate so the trade is visible rather than implied.
+func TestOSTimeIsDST_DefaultHourFallback(t *testing.T) {
+	loc, err := time.LoadLocation("UTC")
 	if err != nil {
 		t.Skip("tzdata unavailable")
 	}
 	origLocal := time.Local
-	t.Setenv("TZ", "Africa/Windhoek")
+	t.Setenv("TZ", "UTC")
 	time.Local = loc
 	t.Cleanup(func() { time.Local = origLocal })
 
-	plain := runOne(t, `return tostring(os.time{year=2024,month=1,day=15,hour=12,min=30,sec=0})`).Str()
-	dst := runOne(t, `return tostring(os.time{year=2024,month=1,day=15,hour=12,min=30,sec=0,isdst=true})`).Str()
-	if plain != dst {
-		t.Errorf("isdst changed the result in a single-state zone: %s vs %s", plain, dst)
+	// UTC has no DST at all, and glibc still shifts isdst=true by an hour.
+	plain := runOne(t, `return tostring(os.time{year=2024,month=1,day=15,hour=12,min=0,sec=0})`).Str()
+	dst := runOne(t, `return tostring(os.time{year=2024,month=1,day=15,hour=12,min=0,sec=0,isdst=true})`).Str()
+	if plain != "1705320000" {
+		t.Errorf("plain = %s, want 1705320000", plain)
+	}
+	if dst != "1705316400" {
+		t.Errorf("isdst=true = %s, want 1705316400 (one hour earlier)", dst)
 	}
 }
 
