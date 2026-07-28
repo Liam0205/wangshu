@@ -138,6 +138,43 @@ func TestStdlib_ToNumberBase10IsStandardConversion(t *testing.T) {
 	}
 }
 
+// TestStdlib_ToNumberBaseStrtoulSemantics pins C strtoul's two surprising
+// behaviours at a non-10 base, both of which PUC inherits by calling it directly.
+//
+// Negation happens in UNSIGNED arithmetic, so "-7" at base 8 is
+// (unsigned long)(-7) == 2^64-7, not -7. And overflow SATURATES at ULONG_MAX
+// rather than continuing to grow.
+//
+// Both must be computed in uint64 and converted to float64 once at the end:
+// 2^64-7 is not representable as a float64, so negating or accumulating in
+// floating point rounds at the wrong moment and gives a different answer.
+func TestStdlib_ToNumberBaseStrtoulSemantics(t *testing.T) {
+	const twoP64 = 18446744073709551616.0
+	for _, tc := range []struct {
+		src  string
+		want float64
+	}{
+		// unsigned negation
+		{`return tonumber("-7", 8)`, twoP64 - 7},
+		{`return tonumber("-ff", 16)`, twoP64 - 255},
+		{`return tonumber("-1", 2)`, twoP64 - 1},
+		// overflow saturates at ULONG_MAX
+		{`return tonumber(string.rep("f", 20), 16)`, twoP64 - 1},
+		{`return tonumber(string.rep("z", 13), 36)`, twoP64 - 1},
+		{`return tonumber(string.rep("f", 16), 16)`, twoP64 - 1},
+		// ordinary values unaffected
+		{`return tonumber("ff", 16)`, 255},
+		{`return tonumber("777", 8)`, 511},
+		{`return tonumber("z", 36)`, 35},
+		{`return tonumber("0", 16)`, 0},
+	} {
+		got := runOne(t, tc.src)
+		if !got.IsNumber() || got.Number() != tc.want {
+			t.Errorf("%s = %v, want %v", tc.src, got.Display(), tc.want)
+		}
+	}
+}
+
 func TestStdlib_MathBasic(t *testing.T) {
 	got := runOne(t, `return math.abs(-3) + math.floor(3.7) + math.ceil(2.2)`)
 	if !got.IsNumber() || got.Number() != 3+3+3 {

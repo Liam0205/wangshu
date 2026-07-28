@@ -533,10 +533,8 @@ func baseFnToNumber(st *crescent.State, args []value.Value) ([]value.Value, *cre
 	}
 	if len(args) >= 2 && args[1] != value.Nil {
 		// tonumber(s, base): base 2-36, parsed character by character in the
-		// given radix (5.1 strtoul semantics, except for negative-number
-		// wraparound -- the official '-ff' wraps to 2^64-255 via C strtoul,
-		// whereas this implementation takes the intuitive -255; already
-		// registered as a diff exemption)
+		// given radix, including C strtoul's unsigned negation: '-ff' at base
+		// 16 wraps to 2^64-255, matching the official build)
 		baseF, ok := toNumberStr(st, args[1])
 		if !ok {
 			return nil, crescent.NewArgError(2, "number expected, got "+st.TypeName(args[1]))
@@ -592,6 +590,8 @@ func baseFnToNumber(st *crescent.State, args []value.Value) ([]value.Value, *cre
 			return []value.Value{value.Nil}, nil
 		}
 		acc := 0.0
+		accU := uint64(0)
+		ovf := false
 		for i := 0; i < len(s); i++ {
 			c := s[i]
 			var d int
@@ -608,11 +608,41 @@ func baseFnToNumber(st *crescent.State, args []value.Value) ([]value.Value, *cre
 			if d >= base {
 				return []value.Value{value.Nil}, nil
 			}
-			acc = acc*float64(base) + float64(d)
+			// Accumulate in uint64 with strtoul's saturation, not in float64.
+			// C strtoul clamps to ULONG_MAX on overflow (and sets ERANGE, which
+			// PUC ignores), so 20 'f' digits at base 16 yield 2^64-1 -- whereas
+			// float64 accumulation keeps growing and produced 1.2e24.
+			if !ovf {
+				hi := accU > (^uint64(0)-uint64(d))/uint64(base)
+				if hi {
+					ovf = true
+				} else {
+					accU = accU*uint64(base) + uint64(d)
+				}
+			}
+		}
+		if ovf {
+			accU = ^uint64(0)
 		}
 		if neg {
-			acc = -acc
+			// C strtoul negates in UNSIGNED arithmetic: "-7" at base 8 yields
+			// (unsigned long)(-7) == 2^64-7, which PUC pushes as a lua_Number.
+			// Returning the intuitive -7 diverged from the oracle for every
+			// negative input at a non-10 base.
+			//
+			// Done here, on the uint64 accumulator, and converted to float64
+			// only afterwards: 2^64-7 is not representable as a float64, so
+			// negating the rounded float gives a different answer than negating
+			// the integer and rounding once. PUC wraps in unsigned long and only
+			// then converts, so the order matters.
+			//
+			// This is well-defined C, unlike the double->int casts elsewhere, so
+			// it is matched rather than skipped. A comment here used to call it a
+			// "registered diff exemption" -- nothing implemented that exemption,
+			// so the divergence was live and the fuzzer could have filed it.
+			accU = -accU
 		}
+		acc = float64(accU)
 		return []value.Value{value.NumberValue(acc)}, nil
 	}
 	return baseToNumberStandard(st, args)
