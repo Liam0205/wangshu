@@ -223,7 +223,10 @@ func tableFnRemove(st *crescent.State, args []value.Value) ([]value.Value, *cres
 	t := value.GCRefOf(tv)
 	n := int(st.RawBorder(t))
 	pos := n
-	if len(args) >= 2 {
+	// An explicit nil means "absent", because PUC reads the position with
+	// luaL_optint: table.remove(t, nil) removes the last element rather than
+	// raising. Treating a present nil as a bad argument diverged.
+	if len(args) >= 2 && args[1] != value.Nil {
 		posF, ok := toNumberStr(st, args[1])
 		if !ok {
 			return nil, crescent.NewArgError(2, "number expected, got "+st.TypeName(args[1]))
@@ -536,7 +539,11 @@ func osFnDate(st *crescent.State, args []value.Value) ([]value.Value, *crescent.
 		"%H", fmt.Sprintf("%02d", now.Hour()),
 		"%M", fmt.Sprintf("%02d", now.Minute()),
 		"%S", fmt.Sprintf("%02d", now.Second()),
-		"%c", now.Format("Mon Jan  2 15:04:05 2006"),
+		// glibc's %c is "%a %b %e %H:%M:%S %Y", where %e is the day
+		// SPACE-padded to width 2 -- "Jul 28", not "Jul  28". Go's "Jan  2"
+		// layout inserts its own pad in addition, producing two spaces for
+		// two-digit days. "Jan _2" is Go's space-padded form and matches.
+		"%c", now.Format("Mon Jan _2 15:04:05 2006"),
 	)
 	return []value.Value{intern(st, r.Replace(format))}, nil
 }
@@ -595,7 +602,11 @@ var mathExtraFns = []entry{
 func mathFn2(name string, f func(a, b float64) float64) crescent.HostFn {
 	return func(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 		if len(args) < 2 {
-			return nil, crescent.NewArgError(len(args)+1, "number expected, got no value")
+			// PUC writes these as f(luaL_checknumber(L,1), luaL_checknumber(L,2))
+			// and C evaluates the arguments right to left here, so arg 2 is
+			// checked FIRST: math.fmod() reports "bad argument #2", not #1.
+			// Reporting len(args)+1 named #1 for a no-argument call.
+			return nil, crescent.NewArgError(2, "number expected, got no value")
 		}
 		a, ok1 := toNumberStr(st, args[0])
 		if !ok1 {
