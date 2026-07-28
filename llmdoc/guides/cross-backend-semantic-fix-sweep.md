@@ -121,6 +121,10 @@
 |---|---|---|
 | **有定义的 C** | **对齐**(把 C 的规则写进 wangshu) | `strtoul` 的无符号取反与溢出饱和:`tonumber("-7",8)` 得 2^64-7、`("-ff",16)` 得 2^64-255、20 个 `f` 配 base 16 饱和到 2^64-1(2026-07-28) |
 | **UB 且跨 arch 不一致** | 产品侧**钉参照平台**(x86-64)+ harness 侧**跳过那个区间** | `%u/%x/%o` 的 `(unsigned long long)(double)`(#158,`cUnsignedCast`);`string.char` 的 `luaL_checkint` 越界 double→int(#193,`cCharCast`)——x86-64 `cvttsd2si` 给 `INT64_MIN`(低 32 位 0,PUC 接受),arm64 `FCVTZS` 把 `+inf` 饱和到 `INT64_MAX`(低 32 位 -1,PUC 报错) |
+| **C 未指定(unspecified)** | **两侧都不对齐**——取可辩护的行为,harness 只跳歧义写法 | 函数实参求值顺序:PUC 写成 `f(luaL_checknumber(L,1), luaL_checknumber(L,2))`,gcc 在 x86-64 上从右往左、在 arm64 上从左往右,于是两个官方 build 对同一个调用报**不同的参数编号**。改成报第一个缺失 / 出错的参数,harness 只跳「多于一个坏参数」那种编号取决于顺序的写法;单个坏参数两边编号一致,照旧比对(2026-07-28,`f9425ab`) |
+| **参照实现自相矛盾** | 查**语言规范**怎么说,按规范选,把偏离记进注释 | `print` 对内嵌 NUL 截断而 `io.write` 不截断:两者都在 PUC 里、处理的是同一种字符串,`luaB_print` 用 `fputs`(停在第一个 NUL)而 `g_write` 用带长度的 `fwrite`(不截断)。5.1 手册明确字符串是 8-bit clean 可含 NUL,所以那个截断是 C 调用的产物不是语义,对齐它等于故意丢用户数据;wangshu 选**不截断**,理由记在 `internal/stdlib/stdlib.go::baseFnPrint`(2026-07-28,#199) |
+
+**第三、四格与前两格的判断层次相同,证据来源不同**:前两格看 C 标准怎么规定,第三格看标准明确「不规定」,第四格看**参照实现自己是否自洽**——同族的两个函数对同一件事给出相反答案时,「对齐 PUC」同样没有唯一指称对象,照抄哪一个都是把某条 C 调用的副作用写成语义。第四格的判据可操作化:问「这两个函数处理的是不是同一种值、做的是不是同一件事」,是就去查规范;偏离规范的那一侧就是产物。选定之后注释里要写清三件事——哪个是产物、为什么不对齐、以及在差分侧为什么不表现为分歧(`print` 那处:差分 harness 用自己的累积器捕获输出,不经 C `FILE*`)。
 
 **只跳 UB 区间,不要顺手把周边一起跳掉**:`string.char(2^53)` 的输入大,但 int64 可表示,截断在 C 里有定义,所以照旧逐字节比对;跳过的只是 NaN 与超出 int64 范围那一段。同理 in-range 的小数、负数、`[0,255]` 边界全部保持比对。
 
@@ -128,7 +132,7 @@
 
 **执行体纪律**:决定跳过之后,那个跳过必须有代码实现,并且注释要指向它——本仓的两个执行体是 `internal/oracle/prelude.go` 的 sentinel(差分 harness 侧)与 `test/difftest/corners_test.go::exemptions`(conformance 侧)。写「已登记为豁免」却没有执行体的注释见 [[prove-the-path-under-test]] §4.2(`strtoul` 那处假豁免让分歧活了很久)。
 
-反思实例见 `memory/reflections/2026-07-28-four-diff-divergence-issues.md` 教训 4 与 `memory/reflections/2026-07-18-issue155-158-nightly-crasher-round.md` 教训 3。
+反思实例见 `memory/reflections/2026-07-28-four-diff-divergence-issues.md` 教训 4(有定义 vs UB)、`memory/reflections/2026-07-28-issue197-199-stdlib-semantics.md` 教训 4(参照实现自相矛盾)与 `memory/reflections/2026-07-18-issue155-158-nightly-crasher-round.md` 教训 3。
 
 ## fast-path template 与 deopt helper 的两条契约
 
@@ -173,4 +177,5 @@ deopt helper 不能只修复触发失败的那一步；如果 deopt 分支随后
   `2026-07-22-oracle-format-nan-inf-round`(PUC 语义由 libc 定义:`string.format` NaN/Inf 对齐 glibc) /
   `2026-07-23-oracle-arg-coercion-round`(stdlib 强制转换复用 VM 侧权威实现:`toNumberStr` 走 `crescent.ParseLuaNumber`,#174/#175) /
   `2026-07-24-p4-template-forprep-deopt-round`(fast-path template deopt 路径必须显式 SetReg 恢复省略 spill 的 slot 到 interpreter-shape 再调 host helper,#177) /
-  `2026-07-28-four-diff-divergence-issues`(「PUC 语义由 C 实现定义」的更细刻度:`luaL_checkint` 的隐式两步转换 + 「有定义 vs UB:对齐还是跳过」新节,#192/#193/#194/#196 一轮修六个根因)。
+  `2026-07-28-four-diff-divergence-issues`(「PUC 语义由 C 实现定义」的更细刻度:`luaL_checkint` 的隐式两步转换 + 「有定义 vs UB:对齐还是跳过」新节,#192/#193/#194/#196 一轮修六个根因) /
+  `2026-07-28-issue197-199-stdlib-semantics`(该节第三、四格:C 未指定的实参求值顺序两侧都不对齐 + 参照实现自相矛盾时按语言规范选,`print` 截断 NUL 而 `io.write` 不截断,#197/#198/#199)。

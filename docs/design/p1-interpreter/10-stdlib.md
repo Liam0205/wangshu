@@ -548,7 +548,7 @@ base 库的函数挂在 **globals 表**(直接全局可见,无需 `base.` 前缀
 | `rawlen(v)` | — | — | **❌ 5.2 排除** | **5.1 无 `rawlen`**(5.2 引入)。P1 不提供;`#` 直接用 LEN(05 §4.3) |
 | `setmetatable(t, mt)` | 设表 t 的元表(仅 table 首参) | `(t, mt)` → t | ✅ | 机制 07 §1.3(`__metatable` 保护 + bump gen);非 table 报错 |
 | `getmetatable(v)` | 取 v 的元表(经 `__metatable` 保护) | `(v)` → table or nil | ✅ | 机制 07 §1.3 |
-| `assert(v [, msg, ...])` | v 为假则抛 msg(默认 `"assertion failed!"`),否则返回所有参数 | `(v [,msg,...])` → ... | ✅ | **机制 → [09](./09-errors-pcall.md) §4**(裸 msg 不加位置,与 error 区别) |
+| `assert(v [, msg, ...])` | v 为假则抛 msg(默认 `"assertion failed!"`),否则返回所有参数 | `(v [,msg,...])` → ... | ✅ | **机制 → [09](./09-errors-pcall.md) §4**(裸 msg 不加位置,与 error 区别);msg 走 `luaL_optstring`,**只收 string 或 number**,table/boolean 是参数错误([09](./09-errors-pcall.md) §4.1) |
 | `error(msg [, level])` | 抛 msg 为错误,level 控制位置前缀 | `(msg [,level])` → 不返回 | ✅ | **机制 → [09](./09-errors-pcall.md) §3**(位置前缀仅 string+level≠0) |
 | `pcall(f, ...)` | 保护调用 f,捕获错误 | `(f, ...)` → (bool, ...) | ✅ | **机制 → [09](./09-errors-pcall.md) §5**(protected 边界) |
 | `xpcall(f, handler)` | 保护调用 f,出错时调 handler | `(f, handler)` → (bool, ...) | ✅ | **机制 → [09](./09-errors-pcall.md) §6**(5.1 不传 args 给 f) |
@@ -591,6 +591,14 @@ func hostPrint(vm *VM, th *Thread) int {
 - **默认格式的差分豁免**:`tostring({})`/`tostring(print)` 含对象地址(`table: 0x...`),与官方/gopher-lua 必然
   不同(arena 偏移 vs C 指针)——07 §11 已标「含地址的 tostring 输出差分需豁免」,本文 `print` 同此口径,指向
   [12](./12-testing-difftest.md) 定脱敏比较。
+- **内嵌 NUL 照写,不截断——刻意偏离 PUC**(2026-07-28,#199):PUC 的 `luaB_print` 用 `fputs`,停在第一个 NUL,
+  所以 `print("a\0b")` 只输出 `"a"`、后面静默丢掉。**这是 C 调用的产物而不是 Lua 语义**:5.1 手册明确字符串是
+  8-bit clean、可以含 NUL,而 PUC **自己的** `io.write` 用带长度的 `fwrite`、不截断——**参照实现在同一件事上
+  内部不一致**。对齐那个产物等于故意丢用户数据,所以望舒两处都不截断,理由记在
+  `internal/stdlib/stdlib.go::baseFnPrint`。差分侧不表现为分歧:harness 用自己的累积器捕获 print,不经 C
+  `FILE*`。判据(「参照实现自相矛盾时按语言规范选」)见
+  `llmdoc/guides/cross-backend-semantic-fix-sweep.md`「有定义 vs UB」节第四格,同族先例是上一轮的「参数求值
+  顺序未指定,两侧都不对齐」。
 
 ### 4.3 `tonumber`:无 base(共用 parseLuaNumber)/ 带 base(独立进制解析)
 
@@ -789,7 +797,7 @@ string 库**操作字节**(Lua string 是字节串,01 §5.1),索引 1-based,负�
 | `string.format(fmt, ...)` | 格式化(§5.2 指令表) | `(fmt, ...)` → string | ✅ | 新串(§3.3 范例);`%s` 查 `__tostring` 重入 |
 | `string.find(s, pat [, init [, plain]])` | 查找模式(返回位置 + 捕获) | `(s, pat [,init,plain])` → (start, end, caps...) or nil | ✅ | **Lua pattern**(§6);plain=true 走纯文本查找 |
 | `string.match(s, pat [, init])` | 匹配模式,返回捕获(或整体匹配) | `(s, pat [,init])` → caps... or whole or nil | ✅ | **Lua pattern**(§6);捕获子串分配 |
-| `string.gmatch(s, pat)` | 返回迭代器,逐个产出匹配 | `(s, pat)` → function(迭代器) | ✅ | **Lua pattern**(§6);迭代器是 host closure 持状态 |
+| `string.gmatch(s, pat)` | 返回迭代器,逐个产出匹配 | `(s, pat)` → function(迭代器) | ✅ | **Lua pattern**(§6);迭代器是 host closure 持状态;**前导 `^` 在 gmatch 里不锚定**(§6.3) |
 | `string.gsub(s, pat, repl [, n])` | 全局替换(repl 可为串/表/函数) | `(s, pat, repl [,n])` → (result, count) | ✅ | **Lua pattern**(§6);repl 函数重入 + Pin 捕获(§3.4) |
 | `string.dump(f)` | 序列化函数字节码 | `(f)` → string | **❌/△ 缺口** | P1 可缺(§5.6);依赖字节码序列化 |
 
@@ -826,7 +834,8 @@ string 库**操作字节**(Lua string 是字节串,01 §5.1),索引 1-based,负�
   `string.format("%g", x)` 直接转发给 C `lua_number2str`/`sprintf`,望舒要差分一致就必须复刻 C 行为。
 - **关键差异点(实现须处理)**:① `%e`/`%g` 的指数至少 2 位(`1e+05` 非 `1e+5`,C 标准);② `%g` 去尾零但保留
   必要位;③ `%.14g`(默认 number→string 格式,05 §4.6)的精度;④ 负零、inf、nan 的输出(C 是 `inf`/`nan`,
-  大小写依平台——**Lua 5.1 用 C 的,望舒定稿统一为 `inf`/`-inf`/`nan`,待 12 核对**)。
+  大小写依平台——**Lua 5.1 用 C 的,望舒定稿统一为 `inf`/`-inf`/`nan`,待 12 核对**);⑤ **`%g` 不带显式
+  精度时补 C 的默认精度 6**(见 §5.2.1a)。
 - **NaN/Inf 文本(#170/#171,PR #172 起;2026-07-26 修订)**:`%f/%e/%g/%E/%G` 对非有限浮点,PUC 转发给 C `sprintf`,
   真值最终由宿主 glibc 决定,不由 Go `fmt`(Go 拼 `NaN`/`+Inf`/`-Inf`)。**大小写随 verb**:小写 verb → `nan`/`inf`,
   大写 verb → `NAN`/`INF`。**NaN 不带符号,并按完整声明宽度补齐**(`%5f` → `"  nan"`,`%5E` → `"  NAN"`):
@@ -838,6 +847,23 @@ string 库**操作字节**(Lua string 是字节串,01 §5.1),索引 1-based,负�
   实现见 `internal/stdlib/stringlib.go` 的 `cFormatSpecialFloat`,白盒真值表 `internal/stdlib/format_special_test.go`;
   `string.format` 共享 stdlib,单点修复覆盖 P1/P3/P4。
 - **指向 [12](./12-testing-difftest.md)**:format 浮点的逐字节核对是差分套件的核心用例(各种 x + 各种 spec 的笛卡尔积)。
+
+#### 5.2.1a `%g` 的默认精度是 6(#198,2026-07-28)
+
+浮点 verb 里 `%e`/`%f`/`%g` 都委托 Go 的 `fmt`,三者中**只有 `%g` 的默认精度与 C 不同**:
+
+| 情况 | C | Go |
+|---|---|---|
+| `%e` / `%f` 不带精度 | 6 | 6(一致) |
+| **`%g` 不带精度** | **6** | **能往返的最短表示** |
+| `%.Ng`(显式精度) | N | N(一致) |
+
+所以 `string.format("%g", 1/3)` 在 C 是 `0.333333`、在 Go 是 `0.3333333333333333`。修法:没有
+显式精度时给 spec 补 `.6`,其余照旧委托 `fmt`(落点 `internal/stdlib/stringlib.go::stringFnFormat`
+的浮点分支)。**这类差异只在「不给可选参数」时暴露**——显式精度一直是对的,按精度值扫矩阵的
+用例全都看不见它;测格式化类接口时「省略可选参数」要当成一个独立维度(方法论见
+`llmdoc/guides/prove-the-path-under-test.md` §4.7)。13 种写法与 `lua5.1` 逐字节一致(含 1e6
+处转指数形式、`%.3g`、`%.0g`、`%G`、宽度、左对齐、补零、1e-5 边界、`%#g` 保留尾零)。
 
 #### 5.2.1b `%d`/`%i` 的精度 0 配值 0(#196,2026-07-28)
 
@@ -1100,7 +1126,12 @@ func (ms *matchState) doMatch(init int) (matchStart, matchEnd int, ok bool) {
 
 - **`^` 锚定**:模式以 `^` 开头时只在 `init` 位置试一次(不滑动)。这是 `find`/`match` 区分「锚定 vs 任意位置」
   的关键。
-- **逐位置滑动**:无 `^` 时,从 `init` 开始每个位置都试 `match`,首个成功即返回。
+- **⚠️ `gmatch` 没有这一段**(2026-07-28 更正,#199):PUC 的 `gmatch_aux` **直接调 `match()`**,不像
+  `str_find_aux` 那样做 anchor 处理,所以 **`^` 在 gmatch 里是普通字符**——`gmatch("ab","^a")` 一个匹配都不
+  产出(因为源串里没有字面的 `^a`),而 `gmatch("^ab","^a")` 匹配到字面的 `"^a"`。上面这段驱动逻辑只属于
+  `find`/`match`/`gsub`。实现上给顶层驱动加一个 allowAnchor 选项(`internal/stdlib/pattern.go::patternFindOpt`),
+  gmatch 传 false,**不要写第二份 matcher**。集合内的 `^`(`[^abc]` 的取反)不受影响,那是 §6.1.1 的另一件事。
+- **逐位置滑动**:无 `^` 时(或 gmatch 的任何模式),从 `init` 开始每个位置都试 `match`,首个成功即返回。
 - **空匹配**:模式可匹配空串(如 `a*` 匹配零个 a),`gmatch`/`gsub` 需处理空匹配的位置推进(避免死循环:空匹配
   后强制前进一字符),对齐 5.1。
 
@@ -1115,7 +1146,7 @@ func (ms *matchState) doMatch(init int) (matchStart, matchEnd int, ok bool) {
 |---|---|---|
 | `string.find(s,p,init,plain)` | `(start, end [, caps...])` 或 nil | 返回**位置** start/end(1-based);**有捕获**则追加捕获;`plain=true` 跳过 pattern 走 `bytes.Index`(纯文本) |
 | `string.match(s,p,init)` | `caps...` 或 整体匹配 或 nil | 有捕获返回捕获,无捕获返回整体匹配串 |
-| `string.gmatch(s,p)` | 迭代器函数 | 迭代器每次调返回下一个匹配的捕获(无则整体);**持状态**(下次搜索起点) |
+| `string.gmatch(s,p)` | 迭代器函数 | 迭代器每次调返回下一个匹配的捕获(无则整体);**持状态**(下次搜索起点);**前导 `^` 是普通字符不是锚**(§6.3) |
 | `string.gsub(s,p,repl,n)` | `(result, count)` | 每个匹配用 repl 替换(repl 是串/表/函数,§6.5);最多 n 次;返回结果串 + 替换次数 |
 
 - **捕获子串分配**:每个捕获子串从 `src` 切出并 **intern 进 arena**(成为真 String)。这是 string 库的分配点
@@ -1342,16 +1373,16 @@ floor 返回 double、random seed/范围、fmod vs Lua `%`):
 | `math.log10(x)` | 常用对数 | `math.Log10` | ✅ | **5.1 有 `log10`**(5.2+ deprecated——记口径) |
 | `math.pow(x, y)` | x^y | `math.Pow` | ✅ | **5.1 有 `math.pow`**(5.2 deprecated,用 `^`;5.1 保留) |
 | `math.fmod(x, y)` | C fmod(截断取余) | `math.Mod` | ✅ | **≠ Lua `%`**(§8.3):fmod 截断,`%` 是 floor 取模 |
-| `math.modf(x)` | 拆整数/小数部分 | `math.Modf` | ✅ | 返回两值(整数部分 double + 小数部分) |
+| `math.modf(x)` | 拆整数/小数部分 | `math.Modf` + 无穷特判 | ✅ | 返回两值(整数部分 double + 小数部分);**无穷的小数部分是带符号的 0**(C `modf` 语义),Go 的 `math.Modf` 在那里返回 NaN,须特判(§8.5) |
 | `math.max(...)` | 最大值 | 遍历 `>` | ✅ | 至少一参;用数值比较 |
 | `math.min(...)` | 最小值 | 遍历 `<` | ✅ | |
 | `math.random([m [, n]])` | 伪随机 | `math/rand` | ✅ | 范围语义(§8.4) |
 | `math.randomseed(x)` | 设种子 | `rand.Seed` | ✅ | (§8.4) |
 | `math.huge` | +∞ | `math.Inf(1)` | ✅ | 常量(`HUGE_VAL`) |
 | `math.pi` | π | `math.Pi` | ✅ | 常量 |
-| `math.rad(x)` | 度→弧度 | `x*π/180` | ✅ | |
+| `math.rad(x)` | 度→弧度 | `x * (π/180)` | ✅ | **乘单个常数**(PUC 的 `RADIANS_PER_DEGREE`),写成 `x*π/180` 会在 x 接近 DBL_MAX 时先溢出成 inf(§8.5) |
 | `math.deg(x)` | 弧度→度 | `x*180/π` | ✅ | |
-| `math.frexp(x)` | 拆尾数/指数 | `math.Frexp` | ✅ | 返回 (尾数, 指数) |
+| `math.frexp(x)` | 拆尾数/指数 | `math.Frexp` | ✅ | 返回 (尾数, 指数);**直接用 `math.Frexp`**,别用 `floor(log2)+1` 自己推指数(§8.5) |
 | `math.ldexp(m, e)` | `m * 2^e` | `math.Ldexp` | ✅ | |
 
 > **5.2+ 排除/口径**:`math.tointeger`/`math.type`/`math.maxinteger`/`math.mininteger`(5.3 整数子类型相关)——
@@ -1417,6 +1448,26 @@ func hostMathRandom(vm *VM, th *Thread) int {
 - **`randomseed(x)`**:设 RNG 种子(`rand.Seed(int64(x))`)。同 seed 在**同一 VM 实现内**可复现,但跨实现(vs 5.1)
   不可复现(算法不同)。
 
+### 8.5 三处「Go math 包与 C 不同」的边角(#199,2026-07-28)
+
+「直接映射 Go `math` 包」在三处不成立,都在退化输入或接近表示上界处:
+
+| 函数 | 输入 | C(PUC) | 直接映射 Go 的结果 | 修法 |
+|---|---|---|---|---|
+| `math.modf` | `1/0` | `inf  0`(小数部分是**带符号的 0**) | `inf  nan`(`math.Modf` 对无穷返回 NaN) | 无穷特判,返回 `(x, copysign(0, x))` |
+| `math.frexp` | DBL_MAX | 指数 `1024` | 指数 `1025` | 直接用 `math.Frexp`,别用 `floor(log2(|x|))+1` |
+| `math.rad` | DBL_MAX | `3.1375664143846e+306` | `inf` | 乘单个常数 `π/180`,不写 `x*π/180` |
+
+- **`frexp` 为什么会差一**:自己推指数时 `Log2` 在接近上界处向上取整,而后面用来做除数的
+  `Ldexp(1, 1025)` 本身已不可表示,两处误差叠成 off-by-one。`math.Frexp` 是精确的,而且它对
+  0 / inf / NaN 的约定(返回 x 本身、指数 0)与 C 一致,原来的手写版为此加的特判也可以一并去掉。
+- **`rad` 为什么会溢出**:`x*π/180` 先算 `x*π`,x 接近 DBL_MAX 时这一步就溢出成 inf,除以 180
+  救不回来;而真值 `3.14e306` 是可表示的。PUC 用的是一个预先算好的常数
+  (`RADIANS_PER_DEGREE`),一次乘法不经过中间的溢出。
+- 落点 `internal/stdlib/mathx.go`。这三处的共同点是**参照实现的边角由 C 库定义,不由「数学上
+  等价的写法」定义**——运算次序与中间值都是语义的一部分(同族纪律见
+  `llmdoc/guides/cross-backend-semantic-fix-sweep.md`「PUC 语义由 C 实现定义」)。
+
 ---
 
 ## 9. os 库
@@ -1429,7 +1480,7 @@ os 库**纯 Go 实现**(roadmap §0 禁 cgo),用 Go `time`/`os` 包。跨平台�
 |---|---|---|---|---|
 | `os.time([t])` | 当前时间戳(秒);给 table t 则按字段算 | `time.Now().Unix()` / `time.Date` | ✅ | t 是 `{year,month,day,hour,min,sec,...}`;返回 number(秒) |
 | `os.clock()` | 进程 CPU 时间(秒,浮点) | `time` 进程时间 | ✅ | 高精度浮点;用于计时 |
-| `os.date([fmt [, t]])` | 格式化时间(strftime 子集,§9.2) | `time.Format` + strftime 翻译 | ✅ | fmt 默认 `"%c"`;`*t`/`!*t` 前缀返回 table(§9.2) |
+| `os.date([fmt [, t]])` | 格式化时间(strftime 指令,§9.2) | 手写指令循环(`strftime`) | ✅ | fmt 默认 `"%c"`;`*t`/`!*t` 前缀返回 table;未定义指令原样输出(§9.2) |
 | `os.difftime(t2, t1)` | 时间差(秒) | `t2 - t1` | ✅ | 简单减法 |
 | `os.getenv(name)` | 环境变量 | `os.Getenv` | ✅ | 不存在返回 nil;**嵌入场景可禁用**(§9.3) |
 | `os.exit([code [, close]])` | 退出进程 | `os.Exit` | △ | **嵌入危险**(§9.3):宿主可禁用(退出宿主进程!) |
@@ -1444,23 +1495,36 @@ os 库**纯 Go 实现**(roadmap §0 禁 cgo),用 Go `time`/`os` 包。跨平台�
 
 `os.date(fmt, t)` 把时间戳 `t`(默认当前)按 `fmt` 格式化:
 
-- **`fmt` 前缀**:① 无前缀 → 返回格式化字符串;② `*t` 前缀(`os.date("*t")`)→ 返回 **table**(字段 `year`/`month`/
-  `day`/`hour`/`min`/`sec`/`wday`/`yday`/`isdst`);③ `!` 前缀(`!%c` / `!*t`)→ 用 **UTC**(否则本地时间)。
-- **strftime 指令子集**(对齐 5.1 用的 C `strftime`,P1 翻译成 Go `time.Format` 或手工实现):
+- **`fmt` 前缀**:① 无前缀 → 返回格式化字符串;② `*t` 前缀(`os.date("*t")`)→ 返回 **table**(九个字段
+  `year`/`month`/`day`/`hour`/`min`/`sec`/`wday`/`yday`/`isdst`,**`wday` 以周日为 1、`yday` 从 1 起**);
+  ③ `!` 前缀(`!%c` / `!*t`)→ 用 **UTC**(否则本地时间),PUC 在其它一切之前先看这个字符。
+- **strftime 指令覆盖面**(对齐 5.1 转发的 C `strftime`;2026-07-28 定稿实现,#199):
 
 | 指令 | 含义 | 指令 | 含义 |
 |---|---|---|---|
-| `%Y` | 4 位年 | `%m` | 月(01-12) |
-| `%d` | 日(01-31) | `%H` | 时(00-23) |
+| `%Y` | 4 位年 | `%y` | 2 位年(00-99) |
+| `%m` | 月(01-12) | `%d` | 日(01-31,零补齐) |
+| `%e` | 日(**空格**补齐宽 2) | `%H` | 时(00-23) |
+| `%I` | 12 小时制时(01-12) | `%p` | AM/PM |
 | `%M` | 分 | `%S` | 秒 |
-| `%p` | AM/PM | `%A`/`%a` | 星期全/简名 |
-| `%B`/`%b` | 月全/简名 | `%c` | 完整日期时间(默认) |
-| `%x`/`%X` | 日期/时间 | `%j` | 年内天数 |
-| `%w` | 星期(0-6) | `%%` | 字面 % |
+| `%j` | 年内天数(001-366) | `%w` | 星期(0-6,周日=0) |
+| `%a`/`%A` | 星期简/全名 | `%b`(=`%h`)/`%B` | 月简/全名 |
+| `%c` | 完整日期时间(默认) | `%x`/`%X` | 日期/时间 |
+| `%Z` | 时区缩写 | `%n`/`%t` | 换行 / 制表符 |
+| `%%` | 字面 % | 其它 | **原样输出**(见下) |
 
-- **实现策略**:Go `time.Format` 用的是 reference-time 布局(`2006-01-02`),**不是 strftime**。P1 需**把 strftime
-  指令翻译成 Go 布局**(或手工按指令拼)。**差分敏感**:`%c`/`%x`/`%X` 的具体格式、月/星期名(英文 locale)须与
-  5.1 C `strftime` 一致——**待 12 核对**。`%A`/`%B` 等 locale 相关项在纯 Go 下用**固定英文名**(§9.4 locale 缺)。
+- **实现策略**:Go `time.Format` 用的是 reference-time 布局(`2006-01-02`),**不是 strftime**,所以按指令逐个
+  手工拼(`internal/stdlib/tablelib.go::strftime` 的指令循环)。**不要用 `strings.Replacer`**:那种写法只能处理
+  列举到的指令,**其余原样透出**——`os.date("%j")` 会返回字面 `"%j"`,而 C 会返回天数;而且 `*t` 与前导 `!`
+  这两个前缀在 Replacer 下压根不会被识别(表形式与 UTC 都到不了)。**未定义指令原样输出**是刻意的:glibc 对
+  未定义的转换就是原样输出这两个字节,所以「原样输出」这一条本身是对齐而不是兜底。
+- **`%I`/`%p` 的午夜**:0 时的 12 小时制是 `12 AM` 不是 `00 AM`(`h % 12 == 0` 时取 12)。
+- **`%c` 的 glibc 格式**是 `"%a %b %e %H:%M:%S %Y"`,其中 `%e` 是**空格**补齐到宽 2 的日——所以是 `Jul 28` 而不是
+  `Jul  28`。Go 的 `"Jan  2"` 布局会在此之外再补一个自己的空格,两位数日就出两个空格;`"Jan _2"` 是 Go 的
+  空格补齐形式,与 glibc 一致。
+- **差分敏感**:`%c`/`%x`/`%X` 的具体格式、月/星期名(英文 locale)须与 5.1 C `strftime` 一致。九种格式已与系统
+  `lua5.1` 逐字节核对(含完整 `*t` 字段集、午夜的 `%I`/`%p`、`%e` 的补齐、一个未定义指令)。`%A`/`%B` 等
+  locale 相关项在纯 Go 下用**固定英文名**(§9.4 locale 缺)。
 - **跨平台一致性**:纯 Go `time` 跨平台一致(不像 C `strftime` 依赖系统 locale),这**反而比 C Lua 更可控**——但
   也意味着与某个特定平台的 C Lua `os.date` 输出可能有微差(locale/时区),指向 12 定豁免口径。
 
@@ -1512,7 +1576,7 @@ io 库涉及**文件句柄**(full userdata + `__gc`,01 §5.5 / 06 §10),是 stdl
 
 | 函数 | 语义 | P1 | 备注 |
 |---|---|---|---|
-| `io.write(...)` | 写各参数到默认输出(stdout) | ✅ **必做** | 跑测试最小集;各参数 string/number(`CheckString`) |
+| `io.write(...)` | 写各参数到默认输出(stdout) | ✅ **必做** | 跑测试最小集;各参数 string/number(`CheckString`);**返回布尔成功标志**(5.1 `g_write`;返回 file 是 5.2+,§10.3) |
 | `io.read([fmt...])` | 从默认输入(stdin)读 | ✅ **必做** | 最小集;格式 `"*l"`(行)/`"*n"`(数)/`"*a"`(全)/数字(n 字节) |
 | `io.stdout`/`io.stdin`/`io.stderr` | 标准流(file handle) | ✅ **必做** | 预建的 file userdata(§10.2) |
 | `io.open(filename [, mode])` | 打开文件,返回 file handle | △ **部分** | full userdata + `__gc`(§10.2);依赖文件系统 + 安全(§9.3) |
@@ -1585,22 +1649,32 @@ func hostIoWrite(vm *VM, th *Thread) int {
     for i := 1; i <= n; i++ {
         b := th.CheckString(i)                     // string 或 number(§2.5;number→%.14g)
         if err := out.Write(b); err != nil {
-            return vm.Errorf(th, "io error: %v", err)  // IO 错误转 Lua 错误
+            th.PushBoolean(false)                  // 5.1 g_write:写失败压 false,不抬错
+            return 1
         }
     }
-    th.PushValue(vm.defaultOutputHandle())          // 5.1:io.write 返回默认输出 file(便于链式)
+    th.PushBoolean(true)                            // 5.1:g_write 压【布尔】成功标志
     return 1
 }
 ```
 
-- **`io.write` 最小集**:写 stdout(P1 的默认输出)。各参数 `CheckString`(string 或 number)。**返回默认输出
-  file**(5.1:`io.write(...)` 返回 file 以便 `io.write("a"):write("b")` 链式)。
+- **`io.write` 最小集**:写 stdout(P1 的默认输出)。各参数 `CheckString`(string 或 number)。
+- **返回值是布尔,不是 file**(2026-07-28 更正,#199):5.1 的 `g_write` 是
+  `lua_pushboolean(L, status)`——**返回成功标志**;「返回 file 以便 `io.write("a"):write("b")` 链式」是
+  **Lua 5.2+** 的行为,本文早先写的是那一版。所以 `type(io.write(""))` 是 `"boolean"`;5.1 里链式写法
+  行不通。原实现一个值都不返回,于是 `type(io.write(""))` 报 `value expected`。落点
+  `internal/stdlib/tablelib.go::ioFnWrite`。
+- **写失败压 `false` 而不抬错**(同一个 `g_write`:`status` 为假时压 false),与下面「IO 错误转 Lua 错误」
+  的旧描述不同,以 `g_write` 为准。
+- **内嵌 NUL 不截断**:`g_write` 用带长度的 `fwrite`,NUL 照写。这与 `print` 的 `fputs`(停在第一个 NUL)
+  不同——**PUC 自己在这两个函数上不一致**,望舒两处都不截断,理由见 §4.2。
 - **`io.read` 最小集**:从 stdin 读。格式:`"*l"`(一行,默认,去换行)、`"*L"`(一行带换行,5.2;5.1 无 `*L`——
   **排除**)、`"*n"`(一个数,用 `parseLuaNumber`)、`"*a"`(全部)、数字 n(n 字节)。P1 至少 `"*l"`/`"*a"`/`"*n"`。
 - **stdout/stdin/stderr 是预建 file**(§10.2 机制):openlibs 时建三个 file userdata 包装 `os.Stdout`/`os.Stdin`/
   `os.Stderr`,存 `io.stdout`/`io.stdin`/`io.stderr`。`print`(base §4.2)也写 `io.stdout`(经 `vm.writeStdout`)。
-- **IO 错误转 Lua 错误**:写/读失败时,Lua 5.1 的 io 函数返回 `(nil, errmsg)` 或抛错(依函数)。`io.write` 失败
-  抛错;`file:read` EOF 返回 nil(非错)。**P1 对齐 5.1 的「失败返回 nil+msg vs 抛错」分工**,待 12 核对。
+- **IO 错误转 Lua 错误**:写/读失败时,Lua 5.1 的 io 函数返回 `(nil, errmsg)` 或抛错(依函数)。`file:read`
+  EOF 返回 nil(非错)。**P1 对齐 5.1 的「失败返回 nil+msg vs 抛错」分工**,待 12 核对。**例外 `io.write`**:
+  它的 `g_write` 压布尔、写失败压 `false`,不抛错(上面已更正)。
 
 ### 10.4 io 库与安全(承 §9.3)
 
@@ -1754,8 +1828,8 @@ wangshu.NewState(wangshu.Options{Exclude: []string{"os.execute", "os.exit"}})
 
 | 项 | 函数 | 敏感点 | 口径 | 指针 |
 |---|---|---|---|---|
-| **数字格式** | `string.format` `%f/%g/%e`、`tostring`(number)、`table.concat`、CONCAT | 浮点格式逐字节(指数位数、尾零、负零、inf/nan) | **严格逐字节**(复刻 C printf,§5.2.1) | 12 |
-| **pattern 匹配** | `find`/`match`/`gmatch`/`gsub` | 匹配结果、捕获、位置、贪婪回溯顺序、空匹配、`%f`/`%b`/反向引用 | **严格逐字节**(移植 5.1 lstrlib,§6.6) | 12 |
+| **数字格式** | `string.format` `%f/%g/%e`、`tostring`(number)、`table.concat`、CONCAT | 浮点格式逐字节(指数位数、尾零、负零、inf/nan、**`%g` 不带精度时的默认精度 6**) | **严格逐字节**(复刻 C printf,§5.2.1/§5.2.1a) | 12 |
+| **pattern 匹配** | `find`/`match`/`gmatch`/`gsub` | 匹配结果、捕获、位置、贪婪回溯顺序、空匹配、`%f`/`%b`/反向引用、**前导 `^` 在 gmatch 里不锚定**(§6.3) | **严格逐字节**(移植 5.1 lstrlib,§6.6) | 12 |
 | **`%q` 转义** | `string.format` `%q` | 每个特殊字符的转义形式 | **严格**(以 5.1 addquoted 为准,§5.2.2) | 12 |
 | **tostring 地址** | `tostring(table/function/thread/userdata)` | 含对象地址 `0x...` | **豁免**(arena 偏移 ≠ C 指针,脱敏比较,07 §11) | 12 |
 | **pairs 序** | `pairs`/`next` | 遍历顺序(哈希/rehash/Brent 决定) | **口径待定**(严格 vs 排序后比;哈希环已对齐 06 §9.3) | 12 |
@@ -1763,7 +1837,7 @@ wangshu.NewState(wangshu.Options{Exclude: []string{"os.execute", "os.exit"}})
 | **math.random** | `math.random` | 具体随机序列 | **豁免**(Go rand ≠ C rand,只验范围,§8.4) | 12 |
 | **fmod vs %** | `math.fmod`、`%` | 负数结果不同 | **严格各自一致**(§8.3) | 12 |
 | **错误措辞** | 所有 `argError`/`Errorf` | `bad argument #n to 'fn' (...)` 标点/冠词/got no value | **严格**(对齐 5.1,§2.4;09 §9.3) | 12 |
-| **os.date 格式** | `os.date` | `%c/%x/%X`、月/星期名、时区 | **部分豁免**(纯 Go vs C locale,§9.2/§9.4) | 12 |
+| **os.date 格式** | `os.date` | 各指令的输出、`%c/%x/%X`、月/星期名、时区、`*t` 字段集 | **指令输出严格**(2026-07-28 已与 `lua5.1` 逐字节核对,§9.2);**仅 locale 相关项部分豁免**(纯 Go 无 C locale,月名锁英文,§9.4) | 12 |
 | **collectgarbage count** | `collectgarbage("count")`、`gcinfo` | KB 数(arena ≠ C 堆) | **豁免**(数值脱敏,§4.6) | 12 |
 | **库存在性** | 全部 | 5.1 有的存在、5.2+ 的不存在 | **严格**(§12.3) | 12 |
 | **数字 coercion 边界** | `tonumber`、`CheckNumber` | `parseLuaNumber` 接受的串:十六进制整数、前后空白,以及 C99 `strtod` 的 hex float / `inf` / `nan` / `nan(n-char-sequence)`(接受面在 #128 那一轮改为对齐 C99 `strtod`,本行早期写的「不接受 0x1p4/inf/nan」已作废;`nan(...)` 是 #192 补的) | **严格**(与 07 §5.2 共用,12 钉死) | 12 |
@@ -1877,7 +1951,8 @@ stdlib 的 shadow stack 纪律(§3)漏 Pin 是**最难调的 bug 类**(06 §6.3:
 - **math.random 序列豁免**(§8.4):Go `math/rand` ≠ C `rand`,random 序列无法与 5.1 一致,差分豁免(只验范围)。
   是否复刻某 C rand 算法(无意义,C rand 平台相关)已否决。记口径。
 - **os.date / os.setlocale 的 locale 差异**(§9.2/§9.4):纯 Go 无 C locale,`string.upper`/`%a`/`os.date` 月名锁
-  ASCII/英文,与 C Lua 非 C locale 行为有差。`os.date` 的 `%c/%x/%X` 格式待 12 核对。已知 P1 限制。
+  ASCII/英文,与 C Lua 非 C locale 行为有差。已知 P1 限制。**`%c`/`%x`/`%X` 的格式已核对**(2026-07-28,#199:
+  九种格式与系统 `lua5.1` 逐字节一致,`%c` 是 glibc 的 `"%a %b %e %H:%M:%S %Y"`),此项从「待 12 核对」收口。
 - **io 完整度**(§10.1):io.open/file:read/write/seek/lines 等完整文件操作 P1 是部分实现还是缺口待定;
   io.popen/tmpfile P1 不做。默认输出可重定向(宿主捕获 print 输出)的配置接口待定(记缺口)。
 - **`os.exit` 嵌入语义**(§9.3):P1 默认不真退出(防杀宿主进程);具体语义(抛特殊错误 vs 标记请求退出 vs
