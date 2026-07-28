@@ -683,13 +683,44 @@ func stringFnChar(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 		// [0, 255] ("invalid value"): char(-1)/char(256) error,
 		// char(3.7) == char(3). Oracle diff fuzz caught the old
 		// silent byte() wraparound.
-		n := int64(f)
+		//
+		// Non-finite and out-of-int64-range values take PUC's two-step cast,
+		// which is NOT a plain range check. luaL_checkint is
+		// (int)luaL_checkinteger, so the double first becomes a lua_Integer
+		// (ptrdiff_t) and is THEN narrowed to int. On x86-64 cvttsd2si maps
+		// NaN and every out-of-range double to INT64_MIN, whose low 32 bits are
+		// zero, so c == 0, uchar(c) == c holds, and PUC emits byte 0 rather
+		// than erroring.
+		//
+		// This mirrors cUnsignedCast's choice for %u/%x/%o: the C cast is UB
+		// outside the representable range and the two official PUC builds
+		// genuinely disagree (arm64 FCVTZS saturates +inf to INT64_MAX, whose
+		// low 32 bits are -1, which fails the uchar check and errors). wangshu
+		// pins the x86-64 result on all arches, and the differential harness
+		// skips the UB range instead of comparing it -- see the
+		// "unsigned-cast UB range" sentinel in internal/oracle/prelude.go.
+		n := int64(cCharCast(f))
 		if n < 0 || n > 255 {
 			return nil, crescent.NewArgError(i+1, "invalid value")
 		}
 		out[i] = byte(n)
 	}
 	return []value.Value{intern(st, string(out))}, nil
+}
+
+// cCharCast mirrors PUC's luaL_checkint on x86-64 for string.char: the double
+// becomes a lua_Integer (ptrdiff_t, 64-bit) and is then narrowed to int.
+//
+// x86-64 cvttsd2si yields INT64_MIN ("integer indefinite") for NaN and for any
+// double outside int64 range; narrowing that to int32 gives 0. Go's own
+// float64->int64 conversion is undefined for those inputs, so the mapping is
+// written out rather than relied upon. Values inside range truncate toward zero,
+// which both agree on.
+func cCharCast(f float64) int32 {
+	if math.IsNaN(f) || f >= 9223372036854775808.0 || f < -9223372036854775808.0 {
+		return int32(math.MinInt64 & 0xFFFFFFFF) // low 32 bits of INT64_MIN == 0
+	}
+	return int32(int64(f))
 }
 
 // cUnsignedCast mirrors the x86-64 C `(unsigned long long)(double)`
