@@ -524,6 +524,18 @@ func baseFnPrint(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 		}
 		parts[i] = valueToString(st, raw)
 	}
+	// Embedded NULs are WRITTEN, not truncated -- a deliberate deviation.
+	//
+	// PUC's luaB_print uses fputs, which stops at the first NUL, so
+	// print("a\0b") emits just "a" and silently drops the rest. That is an
+	// artifact of the C string call, not a Lua semantic: 5.1 strings are
+	// explicitly 8-bit clean and may contain NULs, and PUC's own io.write uses
+	// fwrite WITH the length and does not truncate -- so the reference is
+	// internally inconsistent here. Matching the artifact would mean losing user
+	// data on purpose.
+	//
+	// The differential harness captures print through its own accumulator rather
+	// than a C FILE*, so this does not surface as a divergence there.
 	fmt.Println(strings.Join(parts, "\t"))
 	return nil, nil
 }
@@ -732,9 +744,21 @@ func baseFnAssert(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 		return nil, crescent.NewArgError(1, "value expected")
 	}
 	if !value.Truthy(args[0]) {
+		// PUC: luaL_error(L, "%s", luaL_optstring(L, 2, "assertion failed!")).
+		// luaL_optstring accepts only a string or a number (which it coerces), so
+		// a table or boolean message raises "bad argument #2 (string expected,
+		// got X)" rather than being stringified. Using valueToString accepted
+		// anything and returned the table itself as the error value.
 		msg := "assertion failed!"
-		if len(args) >= 2 {
-			msg = valueToString(st, args[1])
+		if len(args) >= 2 && args[1] != value.Nil {
+			switch {
+			case value.Tag(args[1]) == value.TagString:
+				msg = valueToString(st, args[1])
+			case value.IsNumber(args[1]):
+				msg = crescent.FormatLuaNumber(value.AsNumber(args[1]))
+			default:
+				return nil, crescent.NewArgError(2, "string expected, got "+st.TypeName(args[1]))
+			}
 		}
 		return nil, crescent.NewError(msg)
 	}
