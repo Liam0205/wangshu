@@ -142,6 +142,10 @@ func (st *State) enterLuaFrame(th *thread, funcIdx, nargs, nresults int, entry b
 	if hf > 0xF {
 		hf = 0xF
 	}
+	td := st.pendingTailDepth
+	if td > 0xF {
+		td = 0xF
+	}
 	ci := callInfo{
 		base:       base,
 		funcIdx:    funcIdx,
@@ -151,11 +155,13 @@ func (st *State) enterLuaFrame(th *thread, funcIdx, nargs, nresults int, entry b
 		nresults:   nresults,
 		fresh:      entry,
 		hostFrames: hf,
+		tailDepth:  td,
 		pc:         0,
 		nVarargs:   uint16(nVarargs), // strictly aligned with the below-stack area [base-nVarargs..base) + segment word4 mirror
 	}
 	// The pending host frames belong to this Lua frame now.
 	st.pendingHostFrames = 0
+	st.pendingTailDepth = 0
 	// Flush the current top frame (th.cur, whose pc/top may have advanced) back to
 	// the segment first, then load the new frame.
 	if th.ciDepth > 0 {

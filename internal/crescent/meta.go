@@ -193,10 +193,15 @@ func (st *State) callMetaHandler(th *thread, fn value.Value, args []value.Value,
 	// Counting the reentry made every error(msg, level>=2) inside __index, __add,
 	// __concat, __eq, __lt, __unm, __newindex and the for-in iterator name a frame
 	// one step too shallow.
+	// Undo exactly the ONE level callLuaFromHost adds, and only for this dispatch.
+	//
+	// PUC interposes no C frame for a metamethod, so the dispatch itself must add
+	// nothing -- but calls made INSIDE the handler (a pcall, a sort comparator) do
+	// have real C frames and must still count. A State-wide suppression flag held
+	// for the whole handler body swallowed those too; decrementing right after the
+	// wrapper's increment targets only the dispatch.
 	saved := st.pendingHostFrames
-	st.suppressHostFrame++
-	results, e := st.callLuaFromHost(th, fn, args)
-	st.suppressHostFrame--
+	results, e := st.callLuaFromHostNoLevel(th, fn, args)
 	st.pendingHostFrames = saved
 	if e != nil {
 		return value.Nil, e
@@ -221,7 +226,26 @@ func (st *State) callMetaHandler(th *thread, fn value.Value, args []value.Value,
 // to an outer Lua CALL site. The TFORLOOP interpreter/gibbous sites
 // are Lua callers (PUC names OP_TFORLOOP call sites) and use
 // callLuaFromHostNamed instead.
+// callLuaFromHostNoLevel is callLuaFromHost without the error-level host frame, for
+// metamethod dispatch: PUC interposes no C frame there, while calls made INSIDE the
+// handler still get theirs from callLuaFromHost.
+func (st *State) callLuaFromHostNoLevel(th *thread, fn value.Value, args []value.Value) ([]value.Value, *LuaError) {
+	out, e := st.callLuaFromHostNamed(th, fn, args)
+	if e != nil {
+		e.argNarg = 0
+	}
+	return out, e
+}
+
 func (st *State) callLuaFromHost(th *thread, fn value.Value, args []value.Value) ([]value.Value, *LuaError) {
+	// The host-frame count for error()'s level walk lives HERE, not in the Named
+	// variant, and the split matters. This wrapper is the ordinary host call
+	// boundary (pcall, sort's comparator, gsub's replacement) and PUC has a real C
+	// frame for each; the Named variant is TFORLOOP, where PUC dispatches the
+	// iterator with no interposed frame. Counting in the shared callee gave the
+	// iterator a level it should not have; counting in neither left pcall inside a
+	// metamethod handler short by one.
+	st.pendingHostFrames++
 	out, e := st.callLuaFromHostNamed(th, fn, args)
 	if e != nil {
 		e.argNarg = 0
@@ -244,13 +268,18 @@ func (st *State) callLuaFromHostNamed(th *thread, fn value.Value, args []value.V
 	// One more host frame stands between the caller and the Lua function about to
 	// run. It is consumed by the next Lua frame push, so consecutive host entries
 	// with no Lua frame in between accumulate: pcall(pcall, f) leaves 2.
-	if st.suppressHostFrame == 0 {
-		st.pendingHostFrames++
-	}
-	saved := st.pendingHostFrames
+	// This is the TFORLOOP entry point, and it adds NO level: PUC dispatches the
+	// for-in iterator without interposing a C frame, exactly like a metamethod, so
+	// counting it shifted every iterator's levels >= 2 by one.
+	//
+	// The counter is SAVED and RESTORED rather than decremented. Decrementing
+	// underflowed to 255 whenever a frame push had already consumed it, and the
+	// next frame then saturated to 15 phantom levels -- any pcall/sort/gsub inside
+	// a handler reached that.
+	outer := st.pendingHostFrames
 	defer func() {
 		st.nCcalls--
-		st.pendingHostFrames = saved - 1
+		st.pendingHostFrames = outer
 	}()
 	if value.Tag(fn) != value.TagFunction {
 		h := st.metaFieldOfValue(fn, "__call")

@@ -89,7 +89,7 @@ type State struct {
 	// nCcalls is the host→Lua re-entry depth (real Go stack consumption;
 	// equivalent to 05 §7.4 LUAI_MAXCCALLS). callLuaFromHost does +1 on entry
 	// / -1 on return; exceeding maxCCallDepth raises "C stack overflow".
-	suppressHostFrame int   // >0 while dispatching a metamethod (adds no error level)
+	pendingTailDepth  uint8 // tail-call chain length for the frame about to be pushed
 	pendingHostFrames uint8 // host frames entered since the last Lua frame (error level walks)
 	nCcalls           int
 
@@ -1375,6 +1375,11 @@ func packCIWord2(ci *callInfo) uint64 {
 		hf = 0xF // saturate: the field is 4 bits and the comment promises clamping
 	}
 	w |= uint64(hf) << 51
+	td := ci.tailDepth
+	if td > 0xF {
+		td = 0xF
+	}
+	w |= uint64(td) << 55
 	return w
 }
 
@@ -1398,6 +1403,7 @@ func (th *thread) readCISegInto(depth int, out *callInfo) {
 	out.fresh = w2&(1<<49) != 0
 	out.gibbous = w2&(1<<50) != 0
 	out.hostFrames = uint8((w2 >> 51) & 0xF)
+	out.tailDepth = uint8((w2 >> 55) & 0xF)
 	out.cl = arena.GCRef(a.WordAt(wordRef(3)))
 	out.nVarargs = uint16(a.WordAt(wordRef(4))) // VS0-e substep ②: unpack nVarargs from word4
 }
@@ -1644,7 +1650,7 @@ func (th *thread) verifyCISeg(depth int, want *callInfo) {
 	if got.base != want.base || got.funcIdx != want.funcIdx || got.top != want.top ||
 		got.protoID != want.protoID || got.cl != want.cl || got.nresults != want.nresults ||
 		got.tailcall != want.tailcall || got.fresh != want.fresh || got.gibbous != want.gibbous ||
-		got.hostFrames != want.hostFrames ||
+		got.hostFrames != want.hostFrames || got.tailDepth != want.tailDepth ||
 		got.pc != want.pc || got.nVarargs != want.nVarargs {
 		panic(fmt.Sprintf("crescent: ci 段镜像不一致 depth=%d\n got  %+v\n want %+v", depth, got, *want))
 	}
@@ -1773,6 +1779,7 @@ type callInfo struct {
 	nresults   int         // the number of returns the caller expects; -1 = variable
 	tailcall   bool
 	fresh      bool  // execute re-entry boundary
+	tailDepth  uint8 // how many frames a tail-call chain collapsed into this one
 	hostFrames uint8 // host frames stacked immediately below (for error level walks)
 	gibbous    bool  // this frame executes in gibbous (Wasm) compiled code (04 §1.2; always false in P1)
 
