@@ -245,6 +245,14 @@ func (st *State) callLuaFromHost(th *thread, fn value.Value, args []value.Value)
 	// iterator with no interposed frame. Counting in the shared callee gave the
 	// iterator a level it should not have; counting in neither left pcall inside a
 	// metamethod handler short by one.
+	// Save and restore HERE, around the increment. The inner
+	// callLuaFromHostNamed's save/restore reads the counter after this increment,
+	// so its defer restored the incremented value and every host boundary leaked a
+	// permanent +1 -- the first error(msg, level>=2) was right and each later one
+	// walked a step deeper. Repeating the same protected call is what exposes it,
+	// which no single-shot probe does.
+	outer := st.pendingHostFrames
+	defer func() { st.pendingHostFrames = outer }()
 	st.pendingHostFrames++
 	out, e := st.callLuaFromHostNamed(th, fn, args)
 	if e != nil {

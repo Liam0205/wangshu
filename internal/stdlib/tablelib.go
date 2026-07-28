@@ -574,18 +574,12 @@ func osFnDate(st *crescent.State, args []value.Value) ([]value.Value, *crescent.
 	return []value.Value{intern(st, strftime(format, now))}, nil
 }
 
-// isDST reports whether t's zone is observing daylight saving at that instant,
-// by comparing its offset with the offset six months away (the standard one).
-func isDST(t time.Time) bool {
-	_, off := t.Zone()
-	_, offJan := time.Date(t.Year(), 1, 1, 12, 0, 0, 0, t.Location()).Zone()
-	_, offJul := time.Date(t.Year(), 7, 1, 12, 0, 0, 0, t.Location()).Zone()
-	std := offJan
-	if offJul < std {
-		std = offJul
-	}
-	return off != std
-}
+// isDST reports whether t's zone is observing daylight saving at that instant.
+//
+// Delegates to time.Time.IsDST rather than comparing the January and July offsets:
+// that min-of-two heuristic reports false for a permanently-DST zone such as
+// Africa/Casablanca, where glibc reports true.
+func isDST(t time.Time) bool { return t.IsDST() }
 
 // strftime renders the C strftime directives PUC's os.date forwards, matching
 // glibc's output for each.
@@ -648,12 +642,10 @@ func strftime(format string, t time.Time) string {
 		case 'X':
 			b.WriteString(t.Format("15:04:05"))
 		case 'Z':
-			// glibc names UTC "GMT" under a '!' format; Go's MST layout gives "UTC".
-			z := t.Format("MST")
-			if z == "UTC" {
-				z = "GMT"
-			}
-			b.WriteString(z)
+			// glibc names the UTC zone "GMT" only when it was reached through a
+			// '!' format; under TZ=UTC the local zone is still "UTC". Rewriting
+			// unconditionally got the second case wrong.
+			b.WriteString(t.Format("MST"))
 		case 'F':
 			fmt.Fprintf(&b, "%04d-%02d-%02d", t.Year(), int(t.Month()), t.Day())
 		case 'T':
