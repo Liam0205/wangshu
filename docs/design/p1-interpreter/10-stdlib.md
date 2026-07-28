@@ -1525,6 +1525,8 @@ os 库**纯 Go 实现**(roadmap §0 禁 cgo),用 Go `time`/`os` 包。跨平台�
   偏移与夏令时偏移之差移位(Go 的 `time.Date` 自己解析时区,所以要显式补这个差)。夏季日期加 `isdst=true` 在
   epoch 上比不带它早一小时。
 - 在 `TZ=Europe/London` 下**双向**实测(夏季日期配 `isdst=false`、冬季日期配 `isdst=true`),两个方向的偏移
+>
+> **补充（审计发现）**：只用 `TZ=Europe/London` 的普通日期作证据是不够的。真正暴露问题的是两类边界：① **春季跳变的缺口小时**（该本地时间不存在，Go 的 `time.Date` 向前归一并报 `IsDST()==true`，而 `mktime` 用相反的符号解析它）；② **完全没有 DST 规则的时区**（glibc 仍然按默认 1 小时响应 `isdst=true`，所以 `TZ=UTC` 与 `Asia/Shanghai` 也会偏移）。现在的实现是按请求的偏移直接算 epoch 秒，而不是去调整 Go 给出的答案；覆盖 6 个时区 × 165 个日期（含两个跳变周末）。
   都与 `lua5.1` 一致。
 
 ### 9.2 `os.date` 格式串(strftime 子集)
