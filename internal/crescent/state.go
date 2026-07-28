@@ -89,7 +89,8 @@ type State struct {
 	// nCcalls is the host→Lua re-entry depth (real Go stack consumption;
 	// equivalent to 05 §7.4 LUAI_MAXCCALLS). callLuaFromHost does +1 on entry
 	// / -1 on return; exceeding maxCCallDepth raises "C stack overflow".
-	nCcalls int
+	pendingHostFrames uint8 // host frames entered since the last Lua frame (error level walks)
+	nCcalls           int
 
 	// threadChain is the suspended caller threads on the resume chain (06 §5.1
 	// R4/R5: runningThread only covers the current thread, but the stacks of the
@@ -1363,6 +1364,12 @@ func packCIWord2(ci *callInfo) uint64 {
 	if ci.gibbous {
 		w |= 1 << 50
 	}
+	// hostFrames: how many host (C-equivalent) frames sit immediately below this
+	// one. PUC counts each C frame as a level in luaL_where, and one wangshu
+	// re-entry boundary can stand for several stacked host frames
+	// (pcall(pcall, f) is two). Four bits is ample -- the reentry depth cap is far
+	// below 15 and the value saturates.
+	w |= uint64(ci.hostFrames&0xF) << 51
 	return w
 }
 
@@ -1385,6 +1392,7 @@ func (th *thread) readCISegInto(depth int, out *callInfo) {
 	out.tailcall = w2&(1<<48) != 0
 	out.fresh = w2&(1<<49) != 0
 	out.gibbous = w2&(1<<50) != 0
+	out.hostFrames = uint8((w2 >> 51) & 0xF)
 	out.cl = arena.GCRef(a.WordAt(wordRef(3)))
 	out.nVarargs = uint16(a.WordAt(wordRef(4))) // VS0-e substep ②: unpack nVarargs from word4
 }
@@ -1631,6 +1639,7 @@ func (th *thread) verifyCISeg(depth int, want *callInfo) {
 	if got.base != want.base || got.funcIdx != want.funcIdx || got.top != want.top ||
 		got.protoID != want.protoID || got.cl != want.cl || got.nresults != want.nresults ||
 		got.tailcall != want.tailcall || got.fresh != want.fresh || got.gibbous != want.gibbous ||
+		got.hostFrames != want.hostFrames ||
 		got.pc != want.pc || got.nVarargs != want.nVarargs {
 		panic(fmt.Sprintf("crescent: ci 段镜像不一致 depth=%d\n got  %+v\n want %+v", depth, got, *want))
 	}
@@ -1751,15 +1760,16 @@ func (th *thread) growStack(need int) {
 // it to decide the flow when cross-tier scheduling / error bubbling. The form-b
 // simplified version (bool, same as tailcall/fresh; the word-bit packing is deferred to VS0-e).
 type callInfo struct {
-	base     int         // the absolute index of R0 in stack
-	funcIdx  int         // the callee closure slot (funcIdx = base-1)
-	top      int         // this frame's logical top
-	protoID  uint32      // the current Proto's ID (st.protos[protoID]; VS0-b replaces *Proto)
-	cl       arena.GCRef // the current closure
-	nresults int         // the number of returns the caller expects; -1 = variable
-	tailcall bool
-	fresh    bool // execute re-entry boundary
-	gibbous  bool // this frame executes in gibbous (Wasm) compiled code (04 §1.2; always false in P1)
+	base       int         // the absolute index of R0 in stack
+	funcIdx    int         // the callee closure slot (funcIdx = base-1)
+	top        int         // this frame's logical top
+	protoID    uint32      // the current Proto's ID (st.protos[protoID]; VS0-b replaces *Proto)
+	cl         arena.GCRef // the current closure
+	nresults   int         // the number of returns the caller expects; -1 = variable
+	tailcall   bool
+	fresh      bool  // execute re-entry boundary
+	hostFrames uint8 // host frames stacked immediately below (for error level walks)
+	gibbous    bool  // this frame executes in gibbous (Wasm) compiled code (04 §1.2; always false in P1)
 
 	pc int32
 
