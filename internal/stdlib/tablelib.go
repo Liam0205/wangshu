@@ -896,6 +896,9 @@ func mathFnRandomSeed(st *crescent.State, args []value.Value) ([]value.Value, *c
 // ----- base completions: unpack / xpcall -----
 
 // baseFnUnpackImpl: unpack(t [, i [, j]]).
+// maxCStack mirrors official LUAI_MAXCSTACK (luaconf.h).
+const maxCStack = 8000
+
 func baseFnUnpackImpl(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	tv, e := tblArg(args, 0, "unpack")
 	if e != nil {
@@ -923,12 +926,19 @@ func baseFnUnpackImpl(st *crescent.State, args []value.Value) ([]value.Value, *c
 	if i > j {
 		return nil, nil // empty range
 	}
-	// The range upper bound matches official LUAI_MAXCSTACK (luaconf.h,
-	// rejected via lua_checkstack): unpack({},1,100000) raises officially;
-	// it also prevents a 2^30-scale range from allocating a giant slice and
-	// dragging the process down.
+	// The bound is LUAI_MAXCSTACK MINUS the arguments already on the stack, not a
+	// flat 8000.
+	//
+	// PUC's luaB_unpack asks lua_checkstack(L, n), which rejects when
+	// `size > LUAI_MAXCSTACK || (L->top - L->base + size) > LUAI_MAXCSTACK`. For a C
+	// function `L->top - L->base` is the argument count, so the real ceiling is
+	// 8000 - nargs: unpack({0},1,7997) succeeds and 7998 raises, while a two-argument
+	// call gets one more. Comparing against a flat 8000 accepted the 7998..8000 band
+	// that PUC rejects.
+	//
+	// It also still prevents a 2^30-scale range from allocating a giant slice.
 	n := j - i + 1
-	if n <= 0 || n > 8000 {
+	if n <= 0 || n > maxCStack-len(args) {
 		return nil, crescent.NewError("too many results to unpack")
 	}
 	out := make([]value.Value, 0, n)
