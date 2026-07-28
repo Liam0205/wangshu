@@ -271,13 +271,29 @@ table.insert = function(t, ...)
       -- this guard miss: pos = 2^31 looks huge and positive, so "span = #t+1-pos"
       -- came out negative and nothing fired -- while PUC had already turned it
       -- into INT32_MIN, giving a span of 2^31 and a two-minute shift.
-      if p >= -9007199254740992 and p <= 9007199254740992 then
-        local i64 = p >= 0 and __floor(p) or -__floor(-p)
-        local i32 = i64 % 4294967296
+      -- No 2^53 gate. Bounding the narrowing to the exactly-representable range
+      -- left everything above it neither narrowed nor skipped, which put the
+      -- original defect straight back one octave up: 2^54+2^31 still had the
+      -- oracle grinding while wangshu returned at once, and
+      -- 2^53+4286578688 was a live divergence being COMPARED rather than
+      -- skipped. Values beyond int64 all land on INT64_MIN under the C cast, so
+      -- they narrow to 0 and are ordinary; everything else goes through the same
+      -- modular reduction as the product.
+      do
+        local i32
+        if p >= 9223372036854775808 or p < -9223372036854775808 then
+          i32 = 0 -- C cast yields INT64_MIN; its low 32 bits are zero
+        else
+          local i64 = p >= 0 and __floor(p) or -__floor(-p)
+          i32 = i64 % 4294967296
+        end
         if i32 >= 2147483648 then i32 = i32 - 4294967296 end
-        local e = 1
-        if __type(t) == "table" then e = #t + 1 end
-        if e - i32 > 4194304 then
+        -- Mirror the product rule exactly: only a position BELOW 1 is capped,
+        -- and by its distance below 1, not by the table's element count. Keying
+        -- on the element count made this skip fire for ordinary inserts into
+        -- large tables, which hid the fact that the product cap was rejecting
+        -- them.
+        if i32 < 1 and 1 - i32 > 4194304 then
           __error("` + LimitSentinel + `: table.insert shift span", 0)
         end
       end

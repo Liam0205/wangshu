@@ -109,12 +109,13 @@ func tblArg(args []value.Value, n int, fname string) (value.Value, *crescent.Lua
 	return args[n], nil
 }
 
-// tableInsertShiftCap bounds how many elements one table.insert may shift.
+// tableInsertShiftCap bounds how far BELOW index 1 an insert position may sit.
 //
 // 5.1 places no bound on it, so a far-negative position turns into a
 // multi-billion-iteration loop inside a builtin, where the step budget cannot
-// reach. See the comment at the shift for why raising is preferred to inheriting
-// that.
+// reach. It deliberately does NOT bound the number of elements in the table:
+// shifting a large real array is ordinary work both engines do quickly, and
+// capping that rejected valid inserts.
 const tableInsertShiftCap = 1 << 22
 
 // tableFnInsert: table.insert(t, [pos,] v).
@@ -175,7 +176,15 @@ func tableFnInsert(st *crescent.State, args []value.Value) ([]value.Value, *cres
 		// The cap is well above any real use (a shift that large cannot produce
 		// a table anyone reads) and below the point where the loop stops being
 		// interruptible in practice.
-		if span := e2 - pos; span > tableInsertShiftCap {
+		// Bound only the part of the span that lies BELOW index 1.
+		//
+		// Measuring e2-pos, the whole element count, was wrong: it rejected
+		// ordinary inserts into large tables -- insert(t, 1, "X") on a 4.3M
+		// element table raised, where both PUC and wangshu complete the shift in
+		// well under a second. The hazard is not "many elements", it is a
+		// position far below the array, which 5.1 turns into |pos| iterations
+		// over keys that hold nothing.
+		if pos < 1 && 1-pos > tableInsertShiftCap {
 			return nil, crescent.NewArgError(2, "position out of bounds")
 		}
 		for i := e2; i > pos; i-- {

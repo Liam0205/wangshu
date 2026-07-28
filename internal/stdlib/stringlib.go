@@ -716,6 +716,10 @@ func stringFnChar(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 // float64->int64 conversion is undefined for those inputs, so the mapping is
 // written out rather than relied upon. Values inside range truncate toward zero,
 // which both agree on.
+// cCharCastInt32 is the luaL_checkint narrowing, named for reuse outside
+// string.char: double -> lua_Integer (64-bit) -> int.
+func cCharCastInt32(f float64) int32 { return cCharCast(f) }
+
 func cCharCast(f float64) int32 {
 	if math.IsNaN(f) || f >= 9223372036854775808.0 || f < -9223372036854775808.0 {
 		return int32(math.MinInt64 & 0xFFFFFFFF) // low 32 bits of INT64_MIN == 0

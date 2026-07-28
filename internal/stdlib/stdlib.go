@@ -308,7 +308,7 @@ func baseFnLoadstring(st *crescent.State, args []value.Value) ([]value.Value, *c
 // baseFnNext: next(t [, key]) -> (nextKey, nextVal) | nil.
 func baseFnNext(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	if len(args) == 0 || value.Tag(args[0]) != value.TagTable {
-		return nil, crescent.NewArgError(1, "table expected")
+		return nil, crescent.NewArgError(1, "table expected, got "+argTypeName(args, 0))
 	}
 	key := value.Nil
 	if len(args) >= 2 {
@@ -327,7 +327,7 @@ func baseFnNext(st *crescent.State, args []value.Value) ([]value.Value, *crescen
 // baseFnPairs: pairs(t) -> (next, t, nil).
 func baseFnPairs(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	if len(args) == 0 || value.Tag(args[0]) != value.TagTable {
-		return nil, crescent.NewArgError(1, "table expected")
+		return nil, crescent.NewArgError(1, "table expected, got "+argTypeName(args, 0))
 	}
 	nextFn, _ := st.RawGet(st.Globals(), intern(st, "next"))
 	return []value.Value{nextFn, args[0], value.Nil}, nil
@@ -336,7 +336,7 @@ func baseFnPairs(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 // baseFnIpairs: ipairs(t) -> (iter, t, 0); iter(t, i) -> (i+1, t[i+1]) | nil.
 func baseFnIpairs(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	if len(args) == 0 || value.Tag(args[0]) != value.TagTable {
-		return nil, crescent.NewArgError(1, "table expected")
+		return nil, crescent.NewArgError(1, "table expected, got "+argTypeName(args, 0))
 	}
 	iterFn, _ := st.RawGet(st.Globals(), intern(st, "__ipairs_iter"))
 	return []value.Value{iterFn, args[0], value.NumberValue(0)}, nil
@@ -388,7 +388,7 @@ func baseFnPcall(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 
 func baseFnSetMetatable(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	if len(args) < 2 || value.Tag(args[0]) != value.TagTable {
-		return nil, crescent.NewArgError(1, "table expected")
+		return nil, crescent.NewArgError(1, "table expected, got "+argTypeName(args, 0))
 	}
 	t := value.GCRefOf(args[0])
 	// A protected metatable (the __metatable field) cannot be changed (5.1)
@@ -539,7 +539,10 @@ func baseFnToNumber(st *crescent.State, args []value.Value) ([]value.Value, *cre
 		if !ok {
 			return nil, crescent.NewArgError(2, "number expected, got "+st.TypeName(args[1]))
 		}
-		base := int(baseF)
+		// Arg 2 goes through the same luaL_checkint as any int argument, so it is
+		// narrowed to int32 before the range check: tonumber("10", 2^32+10) has a
+		// base of 10 on PUC, not an out-of-range error.
+		base := int(cCharCastInt32(baseF))
 		// PUC checks base == 10 BEFORE validating the range and before
 		// touching arg 1, and routes it to the standard conversion --
 		// luaB_tonumber's `if (base == 10)` branch is the same code path as
@@ -651,6 +654,17 @@ func baseFnToNumber(st *crescent.State, args []value.Value) ([]value.Value, *cre
 		return []value.Value{value.NumberValue(acc)}, nil
 	}
 	return baseToNumberStandard(st, args)
+}
+
+// argTypeName is luaL_typename for an argument slot: the type name when the
+// argument was passed, and the literal "no value" when it was not. PUC's
+// lua_typename maps LUA_TNONE to "no value", and every "X expected, got Y"
+// message carries it, so omitting the clause diverges for a missing argument.
+func argTypeName(args []value.Value, n int) string {
+	if n >= len(args) {
+		return "no value"
+	}
+	return crescent.TypeNameOf(args[n])
 }
 
 // baseToNumberStandard is tonumber's standard conversion, shared by the no-base
