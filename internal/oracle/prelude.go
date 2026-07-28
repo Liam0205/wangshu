@@ -100,6 +100,35 @@ function print(...)
   end
   __emit("\n")
 end
+-- The file-handle :write methods route through the same accumulator as io.write.
+--
+-- Without this a script using io.stdout:write(...) leaks straight to the real stdout and
+-- the text is missing from BOTH captured outputs -- the two sides still agree, so no
+-- divergence is reported, but the comparison silently stops covering whatever was written.
+-- That is the same failure mode as a skip that hides a class: green for the wrong reason.
+--
+-- io.stderr's writes are dropped rather than accumulated, matching how the harness treats
+-- stderr elsewhere (only stdout is compared).
+local __wrapHandleWrite = function(h, capture)
+  if h == nil then return end
+  local mt = getmetatable(h)
+  if mt == nil or mt.write == nil then return end
+  local orig = mt.write
+  mt.write = function(self, ...)
+    if self ~= h then return orig(self, ...) end
+    local n = __select("#", ...)
+    for i = 1, n do
+      local v = (__select(i, ...))
+      local tv = __type(v)
+      if tv ~= "string" and tv ~= "number" then
+        return orig(self, ...) -- let the real method raise the argument error
+      end
+      if capture then __emit(__tostring(v)) end
+    end
+    return true
+  end
+end
+
 io.write = function(...)
   local n = __select("#", ...)
   for i = 1, n do
@@ -121,6 +150,8 @@ io.write = function(...)
   end
   return true
 end
+__wrapHandleWrite(io.stdout, true)
+__wrapHandleWrite(io.stderr, false)
 function __oracle_readout()
   return __concat(__acc)
 end
