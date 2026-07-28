@@ -246,6 +246,29 @@ string.format = function(f, ...)
   return __sformat(f, ...)
 end
 
+-- string.char UB guard, same reasoning as the unsigned verbs above.
+--
+-- PUC's str_char runs luaL_checkint, i.e. double -> lua_Integer -> int. Outside
+-- int64 range (and for NaN) that first cast is UB and the two official builds
+-- disagree: x86-64 cvttsd2si gives INT64_MIN, whose low 32 bits are 0, so PUC
+-- accepts and emits byte 0; arm64 FCVTZS saturates +inf to INT64_MAX, whose low
+-- 32 bits are -1, which fails the uchar(c) == c check and raises. wangshu pins
+-- the x86-64 result, so comparing this range against a non-x86 oracle is
+-- meaningless -- skip instead of reporting a divergence.
+--
+-- In-range values, including fractions and the [0,255] boundary, stay compared.
+local __schar = string.char
+string.char = function(...)
+  local n = __select("#", ...)
+  for i = 1, n do
+    local v = __tonumber((__select(i, ...)))
+    if v ~= nil and (v ~= v or v >= 9223372036854775808 or v < -9223372036854775808) then
+      __error("` + LimitSentinel + `: char-cast UB range", 0)
+    end
+  end
+  return __schar(...)
+end
+
 -- Pattern-function guards. PUC 5.1's matcher is unbounded C-side
 -- backtracking that the instruction hook cannot interrupt (and deep
 -- %b/quantifier recursion can overflow the C stack); wangshu bounds
