@@ -1,0 +1,2 @@
+go test fuzz v1
+string("print(#string.format(\"%c\",1099511627841))")

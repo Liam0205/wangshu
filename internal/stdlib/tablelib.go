@@ -282,32 +282,28 @@ func tableFnConcat(st *crescent.State, args []value.Value) ([]value.Value, *cres
 	// 1<<24 (~16M) is the hardening cap -- anything beyond the table length
 	// is meaningless (indexes nil), so cut the loop off at the start while
 	// the actual work loop is still bounded by the number of table elements.
-	// Compare the NARROWED bounds, not the raw floats: PUC reads i/j with
-	// luaL_optint, so a j of 2^32+2 is 2 and the range is tiny. Checking the raw
-	// values rejected those as "too large" while PUC concatenated normally.
-	const maxConcatRange = 1 << 24
-	iN, jN := float64(cCharCastInt32(iF)), float64(cCharCastInt32(jF))
-	// The hardening cap must not preempt the error PUC raises on the FIRST
-	// element. concat walks from i and stops at the first non-string, so
-	// i = -2^31 on a 3-element table reports "invalid value (nil) at index
-	// -2147483648" immediately -- no expensive loop happens, and rejecting the
-	// range instead replaced a matching error with a different one. Only guard
-	// when the walk could actually run, i.e. when the first index holds a
-	// concatenable value.
-	firstOK := false
-	if jN >= iN {
-		if fv, _ := st.RawGet(t, value.NumberValue(iN)); value.IsNumber(fv) ||
-			value.Tag(fv) == value.TagString {
-			firstOK = true
-		}
-	}
-	if firstOK && jN-iN > maxConcatRange {
-		return nil, crescent.NewError("table.concat range too large")
-	}
+	// The bound is on the WALK, applied inside the loop, not on j up front.
+	//
+	// The walk stops at the first element that is not a string or number, and a
+	// table has nil at border+1, so the cost is min(j, border+1) - i -- never
+	// j - i. A cap on j therefore rejected shapes PUC finishes instantly:
+	// concat({"a","b"}, ",", 1, 1e14) reports "invalid value (nil) at index 3"
+	// on both engines in microseconds, while the cap turned that into "range too
+	// large". Two earlier attempts at keeping the cap failed for the same reason
+	// -- comparing raw floats, then requiring only that t[i] be concatenable --
+	// because neither bounded the WALK, which was already bounded by the data.
+	//
+	// The memory hazard is real, though: a table whose elements run contiguously
+	// for a long way lets parts grow with the walk, so the bound is kept -- but
+	// applied to how many elements are actually APPENDED, which is the quantity
+	// that costs memory. That fires only when the work is genuinely large, and
+	// never on a huge j the data cuts short.
+	iN := int(cCharCastInt32(iF))
+	jN := int(cCharCastInt32(jF))
 	var parts []string
 	// luaL_checkint narrowing on both bounds: PUC reads them with
 	// luaL_optint, so 2^32+2 is 2, not an out-of-range index.
-	for k := int(cCharCastInt32(iF)); k <= int(cCharCastInt32(jF)); k++ {
+	for k := iN; k <= jN; k++ {
 		v, _ := st.RawGet(t, value.NumberValue(float64(k)))
 		if value.IsNumber(v) {
 			parts = append(parts, crescent.FormatLuaNumber(value.AsNumber(v)))
@@ -572,7 +568,8 @@ var mathExtraFns = []entry{
 	{"cosh", mathFn1("cosh", cosh)},
 	{"tanh", mathFn1("tanh", tanh)},
 	{"frexp", mathFnFrexp},
-	{"ldexp", mathFn2("ldexp", func(m, e float64) float64 { return ldexp(m, int(e)) })},
+	// ldexp reads the exponent with luaL_checkint, so it narrows to int32.
+	{"ldexp", mathFn2("ldexp", func(m, e float64) float64 { return ldexp(m, int(cCharCastInt32(e))) })},
 	{"pow", mathFn2("pow", func(a, b float64) float64 { return pow(a, b) })},
 	{"random", mathFnRandom},
 	{"randomseed", mathFnRandomSeed},

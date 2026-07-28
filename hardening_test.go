@@ -71,7 +71,17 @@ func TestHardening_StringFormatNormalWidth(t *testing.T) {
 
 func TestHardening_TableConcatRangeOverflow(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{})
-	// j = 1e14 makes the concat loop exhaust memory
+	// This test used to assert a "range too large" guard on j, with the premise
+	// that "j = 1e14 makes the concat loop exhaust memory". The premise was
+	// wrong: concat stops at the first element that is not a string or number,
+	// and a 3-element table has nil at index 4, so the walk ends there whatever
+	// j says. PUC reports "invalid value (nil) at index 4" in microseconds, and
+	// the guard was replacing that matching error with a different one -- three
+	// audit rounds in a row flagged shapes it rejected that PUC completes
+	// instantly.
+	//
+	// So the assertion is now the real behaviour: the DATA bounds the walk, and
+	// the error names the first non-concatenable index.
 	prog, _ := wangshu.Compile([]byte(`return pcall(table.concat, {1,2,3}, ",", 1, 100000000000000)`), "h")
 	r, err := prog.Run(st)
 	if err != nil {
@@ -80,8 +90,8 @@ func TestHardening_TableConcatRangeOverflow(t *testing.T) {
 	if r[0].Bool() != false {
 		t.Errorf("pcall ok=%s, want false", r[0].Display())
 	}
-	if !strings.Contains(r[1].Str(), "range too large") {
-		t.Errorf("err = %q, want 'range too large'", r[1].Str())
+	if !strings.Contains(r[1].Str(), "invalid value (nil) at index 4") {
+		t.Errorf("err = %q, want the first-nil-index error", r[1].Str())
 	}
 }
 

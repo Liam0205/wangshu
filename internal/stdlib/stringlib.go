@@ -216,7 +216,7 @@ func stringFnGsub(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 		if !ok {
 			return nil, crescent.NewArgError(4, "number expected, got "+st.TypeName(args[3]))
 		}
-		maxN = int(f)
+		maxN = int(cCharCastInt32(f)) // luaL_optint narrowing
 	}
 	var out []byte
 	pos := 0
@@ -454,7 +454,13 @@ func stringFnFormat(st *crescent.State, args []value.Value) ([]value.Value, *cre
 			if !ok {
 				return nil, crescent.NewArgError(argn+1, fmt.Sprintf("number expected, got %s", st.TypeName(args[argn])))
 			}
-			out = append(out, cPadChar(spec, byte(int64(n)))...)
+			// %c uses (int)luaL_checkNUMBER -- a DIRECT double->int cast, not
+			// the two-step double->lua_Integer->int that luaL_checkint does.
+			// The distinction matters: 2^40+1 has low-32 bits of 65, so the
+			// two-step gives byte 65, while the direct cast on x86-64 yields
+			// INT32_MIN ("integer indefinite") and hence byte 0, which is what
+			// the oracle produces. Verified against C on this host.
+			out = append(out, cPadChar(spec, byte(cDirectInt32(n)))...)
 			argn++
 		case 'f', 'e', 'E', 'g', 'G':
 			n, ok := toNumberStr(st, args[argn])
@@ -719,6 +725,17 @@ func stringFnChar(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 // cCharCastInt32 is the luaL_checkint narrowing, named for reuse outside
 // string.char: double -> lua_Integer (64-bit) -> int.
 func cCharCastInt32(f float64) int32 { return cCharCast(f) }
+
+// cDirectInt32 mirrors a DIRECT C (int)(double) cast, as used by string.format's
+// %c via (int)luaL_checknumber. x86-64 cvttsd2si yields INT32_MIN for NaN and for
+// anything outside int32 range -- unlike the two-step luaL_checkint path, which
+// truncates the low 32 bits of a 64-bit intermediate.
+func cDirectInt32(f float64) int32 {
+	if math.IsNaN(f) || f >= 2147483648.0 || f < -2147483648.0 {
+		return math.MinInt32
+	}
+	return int32(f)
+}
 
 func cCharCast(f float64) int32 {
 	if math.IsNaN(f) || f >= 9223372036854775808.0 || f < -9223372036854775808.0 {

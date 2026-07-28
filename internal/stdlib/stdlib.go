@@ -724,7 +724,7 @@ func baseFnError(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 	level := 1
 	if len(args) >= 2 {
 		if f, ok := toNumberStr(st, args[1]); ok {
-			level = int(f)
+			level = int(cCharCastInt32(f)) // luaL_optint narrowing
 		}
 	}
 	// Official luaB_error's prefixing condition is lua_isstring (true for
@@ -974,11 +974,26 @@ func stringFnRep(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 	if !ok {
 		return nil, crescent.NewArgError(2, "number expected, got "+st.TypeName(args[1]))
 	}
-	// NOT narrowed to int32: this is string.rep's count, and the OOM hardening
-	// below depends on seeing the real magnitude. An earlier edit narrowed it by
-	// mistake, which turned a huge count into a small one and disarmed the guard
-	// (TestHardening_StringRepOverflow caught it).
+	// The count goes through luaL_checkint like any int argument, so a negative
+	// that narrows to a POSITIVE int32 really does repeat:
+	// string.rep("x", -(2^32-3)) narrows to 3 and yields "xxx". Taking the raw
+	// value gave "" instead.
+	//
+	// But the narrowed value is only used when it does not shrink a huge positive
+	// request, because the OOM hardening below reads the true magnitude -- an
+	// earlier edit narrowed unconditionally and disarmed that guard, which
+	// TestHardening_StringRepOverflow caught. A positive request keeps its raw
+	// magnitude; anything else uses the narrowed one.
+	// Narrow ONLY negatives. A negative that narrows to a positive int32 really
+	// repeats -- string.rep("x", -(2^32-3)) is "xxx" on PUC -- so the raw value
+	// would wrongly yield "". Positives keep their raw magnitude, because the OOM
+	// hardening below reads it: narrowing a huge positive shrinks the request and
+	// disarms that guard, which TestHardening_StringRepOverflow catches. Twice
+	// now, in fact -- this is the second time the condition was too wide.
 	n := int(nF)
+	if nF < 0 {
+		n = int(cCharCastInt32(nF))
+	}
 	if n < 0 {
 		n = 0
 	}
