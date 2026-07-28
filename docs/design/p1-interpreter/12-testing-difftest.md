@@ -526,6 +526,21 @@ func DiffN(src string, runners ...Runner) DiffResult { /* N 方比对,§3.3 矩�
 
 **纪律**:hardening 阈值的引入是「破对位行为」,必须满足:① 不可恢复的 runtime 崩溃(OOM / stack overflow 等 Go 无法 recover 的)② fail-fast 返 Lua 错误③ commit message 与 godoc 写明背景。仅性能差异 / 内存效率差异**不**触发 hardening。
 
+### 4.9b C 语义分歧:先分清有定义还是 UB,再决定对齐还是跳过(2026-07-28)
+
+「与 PUC byte-equal」这个目标默认假设 PUC 有唯一确定的行为。落进 C 的**未定义行为**时这个假设不成立——两个官方 build 自己就不一致,此时「对齐 PUC」这句话没有指称对象,硬对齐等于把某台机器的偶然结果写成规范。反过来,落在**有定义**区时跳过比对是白白丢掉覆盖面。所以处理一处 C 语义分歧之前,先查那个操作在 C 标准里是有定义 / 未指定 / 未定义:
+
+| 分类 | 处理 | 本仓实例 |
+|---|---|---|
+| **有定义的 C** | **对齐**(把 C 的规则写进望舒) | `tonumber(s, base)` 非 10 进制走 C `strtoul`:负号在**无符号**算术里取反(`tonumber("-7",8)` 得 2^64-7、`("-ff",16)` 得 2^64-255)、溢出**饱和**到 `ULONG_MAX`(20 个 `f` 配 base 16 得 2^64-1)。落点 `internal/stdlib/stdlib.go`,在 uint64 里算完最后只转一次 float64(2^64-7 不是 float64 可表示的,先转 float 再取反会得到不同的值) |
+| **UB 且跨 arch 不一致** | 产品侧**钉参照平台**(x86-64)+ 差分侧**跳过那个区间** | ① `%u`/`%x`/`%o` 的 `(unsigned long long)(double)`(#158,`cUnsignedCast`);② `string.char` 的 `luaL_checkint` 越界 double→int(#193,`cCharCast`)——`luaL_checkint` 是 `(int)luaL_checkinteger`,double 先变 `lua_Integer` 再窄化成 int,x86-64 `cvttsd2si` 给 `INT64_MIN`(低 32 位 0,PUC 接受得 byte 0)、arm64 `FCVTZS` 把 `+inf` 饱和到 `INT64_MAX`(低 32 位 -1,PUC 报错)。skip 的执行体是 `internal/oracle/prelude.go` 的 sentinel |
+
+**只跳 UB 区间,不要顺手把周边一起跳掉**:`string.char(2^53)` 输入大,但 int64 可表示,截断在 C 里有定义,所以照旧逐字节比对;跳过的只是 NaN 与超出 int64 范围那一段。in-range 的小数、负数、`[0,255]` 边界全部保持比对。
+
+**与 §4.2 判据的顺序**:先判**位置**(差异属于「同一个抽象值的不同书写方式」→ 在渲染处消除;属于「两侧本来就是不同的东西」→ 才在比较时归一或跳过),再判**有定义 / UB**。UB 区间属于后一类(两个官方 build 各给一个结果,没有「正确值」可对齐),所以在比较侧跳过是对的。
+
+**「已豁免」的声明必须能指向执行它的代码**:`internal/stdlib/stdlib.go` 里曾有一句注释说 `tonumber` 负数回绕「已登记为 diff 豁免」,但仓库里**没有任何代码实现那个豁免**,所以分歧一直是活的,nightly 随时可能把它开成 crasher。一个没有执行体的「已豁免」声明比一个已知 bug 更糟,因为它读起来像已经处理过了。本仓豁免的两个执行体是 `test/difftest/corners_test.go::exemptions`(conformance 侧)与 `internal/oracle/prelude.go` 的 sentinel(差分 harness 侧),注释应指向其中之一。方法论见 `llmdoc/guides/prove-the-path-under-test.md` §4.2 与 `llmdoc/guides/cross-backend-semantic-fix-sweep.md`「对齐 PUC 之前先分清有定义还是 UB」。
+
 ---
 
 ## 5. GC 压力 fuzz(收口 06 §11/§6.3/§5.2、10 §13.3)

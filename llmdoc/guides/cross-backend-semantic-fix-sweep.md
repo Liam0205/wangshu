@@ -99,7 +99,11 @@
 
 与 PUC Lua 5.1.5 做逐字节差分测试时,分歧的权威依据是官方 `_lua515/` 里的 C 源码,不是 5.1 参考手册。手册对边界值经常写得比实现松、或干脆不写:`string.format` 的 flags 数量上限 / width 与 precision 的位数上限 / `%s` 忽略 `'0'` / 无符号 verb 忽略 `' '` 与 `'+'` / `tonumber` 走 C99 `strtod` 加 hex 整数 fallback 的 `strtoul` endptr 约定 / 常量折叠拒 div-by-zero 与 NaN 结果 / 算术 RK 物化顺序先 o2 后 o1——这些细节全在 `lstrlib.c` / `lobject.c` / `llex.c` 里明写,手册要么略过要么写得更宽。C 侧还有一层「宿主 libc 边界也是 PUC 语义的一部分」的隐含依赖:`sprintf` 与 `strtod` 走宿主 libc,`\'` 转义的接受面走底层字符类判断。差分对手是 C 实现本身,不是文档。
 
-工作流:任何「与 PUC byte-equal」的分歧,先在 `internal/oracle/_lua515/` 里 grep 对应实现,把 C 侧的接受面 / 拒绝面 / 边界值 / hard limit 写进 wangshu 侧,再用 `FuzzOracleDiff` 校验;不要在 wangshu 侧凭手册或探针试常数猜边界。反思实例见 `memory/reflections/2026-07-12-cgo-oracle-fuzz-round.md` 教训 2(一轮里 35 处分歧全部经此手法定位)。与本 guide 已有的「跨后端 / 跨通道枚举」纪律同域:跨后端扫要枚举实现,与 PUC 差分要枚举权威源码。
+工作流:任何「与 PUC byte-equal」的分歧,先在 `internal/oracle/_lua515/` 里 grep 对应实现,把 C 侧的接受面 / 拒绝面 / 边界值 / hard limit 写进 wangshu 侧,再用 `FuzzOracleDiff` 校验;不要在 wangshu 侧凭手册或探针试常数猜边界。
+
+**更细的一个刻度:读到源码还不够,源码里的隐式转换也要展开**。C 的多步转换链里每一步都可能改变结果,跳过中间一步得到的结论可以与真值完全相反。实证(2026-07-28,#193):`string.char(0/0)` wangshu 报错、PUC 得 byte 0。这**不是**一个范围检查——`luaL_checkint` 是 `(int)luaL_checkinteger`,所以 double 先变成 `lua_Integer`(`ptrdiff_t`,64 位)**再**窄化成 int;x86-64 的 `cvttsd2si` 把 NaN 与一切超出 int64 范围的 double 映射成 `INT64_MIN`,其低 32 位恰好是 0,于是 `c == 0`、`uchar(c) == c` 成立、PUC 接受。第一次探测时直接把 double 转成 int(漏了 `lua_Integer` 那一步)得出「PUC 应该拒绝」的**相反**结论。可复用判据:分歧涉及 C 语义时,把参照实现那条链上的**每一次类型转换**都写出来再判断,包括 `luaL_checkint` / `luaL_checkinteger` 这类宏背后的隐式两步;别按「这个参数应该是什么类型」推。反思实例见 `memory/reflections/2026-07-28-four-diff-divergence-issues.md` 教训 3。
+
+反思实例见 `memory/reflections/2026-07-12-cgo-oracle-fuzz-round.md` 教训 2(一轮里 35 处分歧全部经此手法定位)。与本 guide 已有的「跨后端 / 跨通道枚举」纪律同域:跨后端扫要枚举实现,与 PUC 差分要枚举权威源码。
 
 延伸(真值最终落在宿主 libc 时,读 C 源码只是第一步):PUC 语义不只由 C 源码定义,**非有限值(NaN/Inf)的格式化还由宿主 libc(glibc)定义**。`string.format` 的 `%f/%e/%g/%E/%G` 对 NaN/Inf 转发给 C `sprintf`,输出的大小写拼写(小写 verb → `nan`/`inf`,大写 → `NAN`/`INF`)、符号规则、以及 glibc 为 NaN 保留符号列导致的 width−1 quirk(见下),grep `_lua515/` 只能看到「转发给 `sprintf`」,真正的真值在 libc 里。这类分歧必须以 oracle 实测字节为准,不能照 Go `fmt` 或凭直觉。glibc 的确切规律:glibc 总为 NaN 保留 1 个符号列;小写 verb 符号不显示(那一列变空格被 width 吸收 → 有效 width = 声明 width−1),大写 verb 符号是可见的 `-`(已在 core 里占了那一列 → 完整 width);Inf 符号一直在 core 里 → 完整 width;precision 对 NaN/Inf 忽略。方法论要点:**对付「宿主 libc 定义的格式化」这类外部真值,不要从一两个样本外推规则,直接构造覆盖矩阵(verb × 符号 × flag × width)扫 oracle,规律要能解释矩阵里每一格才算定准**——本轮(#170/#171,PR #172)正是从单点「小写 NaN width−1」外推「所有非有限值 width−1」,一步把 Inf 全改错,靠 93 组覆盖矩阵实测才把完整真值表逼出来。实现落点:`internal/stdlib/stringlib.go` 的 `cFormatSpecialFloat` 在 NaN/Inf 时特判;反思实例见 `memory/reflections/2026-07-22-oracle-format-nan-inf-round.md` 教训 1/2。**2026-07-26 修订:模仿 glibc 的那两处已经撤掉**——`cFormatSpecialFloat` 现在让 NaN 在所有 verb 下都不带符号、都按完整声明宽度补齐(大写 verb 不再硬编码 `-NAN`,小写 NaN 不再按声明宽度减一补齐),Inf 的符号与宽度规则不变。原因:那两处只为让差分 oracle 一致而存在,却让望舒自身的 `%e` 与 `%E`、`%5f` 与 `%5E` 自相矛盾,而 arm64 的 glibc 与 x86 还不同,模仿本来就不可移植;NaN 符号差异现在在 oracle 渲染处消除(`internal/oracle/lua515.c`,详见 `docs/design/p1-interpreter/12-testing-difftest.md` §4.2)。方法论那条(外部真值面要建覆盖矩阵、不从单点外推)仍然成立;附加一条:**在产品代码里逐字节模仿一个宿主 libc 之前,先问这个模仿是为谁服务的**——如果只为让测试基准一致,那它同时会把不可移植性写进产品行为,应该改在基准侧消除差异。
 
@@ -108,6 +112,23 @@
 延伸:「改写输入再委托宿主标准库」是不收敛适配路径,第 N 次被打穿时换成手写。同一个 site(比如 `internal/stdlib/stringlib.go` 的 stringFnFormat unsigned 分支)如果曾经通过「改写 spec 后交给 Go `fmt.Sprintf` / `strconv.*` / 宿主 libc 类库」的方式适配 C 语义,而 `FuzzOracleDiff` 又反复在这个 site 上撞出新分歧(Go `fmt` 与 C `printf` 对 `%#X` 零值前缀 / `%#08X` 补零位置 / `%#.0o` 零值 / `%s` 的 `'0'` flag 是否 pad 等等就有多处分歧,ICU / RE2 / 宿主时区表也同样),这条路径就是不收敛的:两个实现各自演进,分歧集合是开放的,补丁式修复只能覆盖「已被撞到的那一处」。判据一旦成立(同一 site 第 2 次以上被打穿,且新分歧仍在同一语法维度上),就把这一段整段换成手写的 C 语义 renderer,把语义收敛为封闭规则(C99 printf 一页写完 / 官方 `_lua515/` 对应的 C 函数几十行写完)。实证:2026-07-13 nightly 巡检轮里 stringFnFormat 的 `%u/%x/%X/%o` 分支第三次被打穿(前两次 `%100X` 宽度与 `% 00X0` 忽略旗标,这次 `%#X` 零值),从 `bytes.ReplaceAll(spec, ...) + fmt.Sprintf` 换成手写 `cUnsignedFormat`,41 个覆盖前缀 / 宽度 / 精度 / 旗标交互的用例逐字节等于 PUC。触发场景:同一个「改写输入 + 委托宿主标准库」site 被 differential fuzz 打穿第 2 次时,不要再补一发 `ReplaceAll` 或 `strings.ReplaceAll`,直接换手写实现;写新 site 前也要看 Go 标准库对该语义有没有已知的多点分歧,有就直接手写。同族反思实例见 `memory/reflections/2026-07-13-nightly-concat-oom-and-format-hash-round.md`。
 
 延伸(stdlib 的跨 number/string 边界强制转换,复用 VM 侧权威实现别自写标准库简化版):stdlib 里凡是「字符串→数字」「数字→字符串」这类跨 number/string 边界的强制转换,必须复用 VM 侧对齐 PUC 的权威实现(`crescent.ParseLuaNumber` / `crescent.FormatLuaNumber`),不要用 Go 标准库的简化版。Go `strconv.ParseFloat` 不认 Lua 十六进制整数(`"0X0"` 类,它只接受 C99 hex float),接受面与 PUC `luaO_str2d` 不一致;两份实现并存会让 stdlib 侧的强制转换宽松度系统性低于 VM 侧,而且这个差异不会立刻暴露——要等某个恰好落在差异区的输入被 fuzz 撞出来。这与本节「跨后端扫要枚举实现」是同一原则在「同一进程内同一能力两份实现」维度的延伸:能力已有权威实现时经统一入口复用,别在别处另写一份。实证:issue #174(2026-07-23,PR #176)——`string.rep("...", "0X0")` 的次数参数是 Lua 十六进制整数字符串,PUC 用 `luaL_checknumber` 强制转成 0,wangshu 的 `toNumberStr`(`internal/stdlib/stdlib.go`,被 string/table/math 各库约 28 处调用)用裸 `strconv.ParseFloat` 不认 hex 整数而报错;仓库其实早有对齐 PUC `luaO_str2d` 的 `crescent.ParseLuaNumber` 却没被复用。修法把 `toNumberStr` 改走 `crescent.ParseLuaNumber`,一处对齐所有调用点。同轮 issue #175 是 `tonumber(x, base)` 的第一参数按 PUC `luaL_checkstring` 接受 number 强制转 string。触发场景:给某个「X → Y」语义敏感的基础转换加实现或改行为时,先 grep 全仓(尤其 crescent / VM 侧)看有没有已存在的权威实现可复用,别另写标准库简化版。反思实例见 `memory/reflections/2026-07-23-oracle-arg-coercion-round.md` 教训 1。
+
+## 「对齐 PUC」之前先分清那个行为是有定义的还是 UB
+
+「与 PUC byte-equal」这个目标默认假设 PUC 有唯一确定的行为。落进 C 的未定义行为时这个假设不成立——此时「对齐 PUC」这句话本身没有指称对象,两个官方 build 自己就不一致,硬对齐等于把某台机器的偶然结果写成规范。反过来,落在**有定义**区时跳过比对是白白丢掉覆盖面。所以处理一处 C 语义分歧之前,先查那个操作在 C 标准里是**有定义 / 未指定 / 未定义**,再决定对齐还是跳过。
+
+| 分类 | 处理 | 实证 |
+|---|---|---|
+| **有定义的 C** | **对齐**(把 C 的规则写进 wangshu) | `strtoul` 的无符号取反与溢出饱和:`tonumber("-7",8)` 得 2^64-7、`("-ff",16)` 得 2^64-255、20 个 `f` 配 base 16 饱和到 2^64-1(2026-07-28) |
+| **UB 且跨 arch 不一致** | 产品侧**钉参照平台**(x86-64)+ harness 侧**跳过那个区间** | `%u/%x/%o` 的 `(unsigned long long)(double)`(#158,`cUnsignedCast`);`string.char` 的 `luaL_checkint` 越界 double→int(#193,`cCharCast`)——x86-64 `cvttsd2si` 给 `INT64_MIN`(低 32 位 0,PUC 接受),arm64 `FCVTZS` 把 `+inf` 饱和到 `INT64_MAX`(低 32 位 -1,PUC 报错) |
+
+**只跳 UB 区间,不要顺手把周边一起跳掉**:`string.char(2^53)` 的输入大,但 int64 可表示,截断在 C 里有定义,所以照旧逐字节比对;跳过的只是 NaN 与超出 int64 范围那一段。同理 in-range 的小数、负数、`[0,255]` 边界全部保持比对。
+
+**顺序上还有一步在这之前**:UB 区间的跳过属于 [[prove-the-path-under-test]] §9.0 的「两侧本来就是不同的东西」那一类(两个官方 build 各给一个结果,没有「正确值」可对齐),所以在比较侧跳过是对的;而「同一个抽象值的不同书写方式」(NaN 符号位)必须在渲染处消除,不能设计判据。判位置在前,判有定义 / UB 在后。
+
+**执行体纪律**:决定跳过之后,那个跳过必须有代码实现,并且注释要指向它——本仓的两个执行体是 `internal/oracle/prelude.go` 的 sentinel(差分 harness 侧)与 `test/difftest/corners_test.go::exemptions`(conformance 侧)。写「已登记为豁免」却没有执行体的注释见 [[prove-the-path-under-test]] §4.2(`strtoul` 那处假豁免让分歧活了很久)。
+
+反思实例见 `memory/reflections/2026-07-28-four-diff-divergence-issues.md` 教训 4 与 `memory/reflections/2026-07-18-issue155-158-nightly-crasher-round.md` 教训 3。
 
 ## fast-path template 与 deopt helper 的两条契约
 
@@ -151,4 +172,5 @@ deopt helper 不能只修复触发失败的那一步；如果 deopt 分支随后
   `2026-07-18-issue155-158-nightly-crasher-round`(运行时断言接口扩面不对称) /
   `2026-07-22-oracle-format-nan-inf-round`(PUC 语义由 libc 定义:`string.format` NaN/Inf 对齐 glibc) /
   `2026-07-23-oracle-arg-coercion-round`(stdlib 强制转换复用 VM 侧权威实现:`toNumberStr` 走 `crescent.ParseLuaNumber`,#174/#175) /
-  `2026-07-24-p4-template-forprep-deopt-round`(fast-path template deopt 路径必须显式 SetReg 恢复省略 spill 的 slot 到 interpreter-shape 再调 host helper,#177)。
+  `2026-07-24-p4-template-forprep-deopt-round`(fast-path template deopt 路径必须显式 SetReg 恢复省略 spill 的 slot 到 interpreter-shape 再调 host helper,#177) /
+  `2026-07-28-four-diff-divergence-issues`(「PUC 语义由 C 实现定义」的更细刻度:`luaL_checkint` 的隐式两步转换 + 「有定义 vs UB:对齐还是跳过」新节,#192/#193/#194/#196 一轮修六个根因)。

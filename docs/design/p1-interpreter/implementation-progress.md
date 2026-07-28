@@ -121,6 +121,26 @@
   and/or 的 VCALL 单值收敛、VARARG 落点回填、ParenExpr 强制单值、return-vararg
   多值、break 双层块、多值 return 末位 eCall 的 A 覆盖。全部由 conformance/
   difftest 捕获后当步修复。
+- **oracle 差分巡检的 stdlib 语义修偏(2026-07-28,#192/#193/#194/#196 一轮六个根因)**:
+  四个 issue 报四处,实际修了六处,另有一处是本分支自己 45 秒 fuzz 冒烟撞出的。
+
+  | 根因 | 落点 | 修法要点 |
+  |---|---|---|
+  | C99 `nan(n-char-sequence)` 未被消费(#192) | `internal/crescent/number.go` | 只在 `)` 真的存在时才消费整组;未闭合的 `nan(` 保留裸词照旧被拒;`inf(...)` 无此形式仍拒 |
+  | `tonumber(x, 10)` 整条路由错(**无 issue,扫描发现**) | `internal/stdlib/stdlib.go` | PUC 在校验范围之前、读 arg 1 之前就判 `base == 10` 并走标准转换。一个原因造出六条分歧(`"1.5"`/`"0x10"`/`"1e3"`/`"inf"`/`"nan"`/number 实参),五条没有任何 issue 记录;现在无 base 与 base 10 共用一个 helper |
+  | `%d`/`%i` 精度 0 配值 0 丢符号(#196) | `internal/stdlib/stringlib.go` | C 转换出零个数字但仍输出 `+`/空格 flag 的符号,Go 连符号一起丢。新增 `cSignedFormat` 只在这个角落手写,与隔壁 `cUnsignedFormat` 同一手法(10 §5.2.1b) |
+  | `table.insert` 的 5.1 语义本来没有边界检查(#194) | `internal/stdlib/tablelib.go` | `position out of bounds` 属 5.2+;5.1 的 `tinsert` 无检查,`e = #t+1`、`pos > e` 时抬 e(10 §7.2 真值表) |
+  | `table.concat` 错误文本(#194) | `internal/stdlib/tablelib.go` | PUC 的 `addfield` 是 `"invalid value (%s) at index %d ..."`,`%s` 是元素的 `luaL_typename`;原先括号括错范围且丢了类型名 |
+  | `string.char` 的两步转换(#193) | `internal/stdlib/stringlib.go` + `internal/oracle/prelude.go` | `luaL_checkint` 是 `(int)luaL_checkinteger`;这是 C UB 且跨 arch 不一致,产品侧钉 x86-64、差分侧跳该区间(12 §4.9b,10 §5.4b) |
+  | `strtoul` 的无符号取反与溢出饱和(**无 issue,扫描发现**) | `internal/stdlib/stdlib.go` | 有定义的 C,所以对齐而非跳过。原有注释声称「已登记为 diff 豁免」但**没有任何代码实现它**,分歧一直是活的 |
+  | table 库缺 `, got no value` 从句(**无 issue,fuzz 冒烟发现**) | `internal/stdlib/tablelib.go` | `luaL_typerror` 是 `"%s expected, got %s"`,`lua_typename` 把 `LUA_TNONE` 映射成 `"no value"`;显式 `nil` 与「没传」是两种情况(10 §2.4) |
+
+  扫描规模:8640 种带符号 verb 写法(`d`/`i` × 12 flag 组合 × 6 宽度 × 6 精度 × 10 值)、
+  164 种 `tonumber`/`char`/`insert`/`concat` 组合、45 种负数 × base 组合,全部零差异;
+  60 秒 fuzz 无 crash;23 条 seed 入 `testdata/fuzz/FuzzOracleDiff/`,**故意包含负例**
+  (`nan(` 仍拒、`char(-1)` 仍报错、`inf(0)` 仍拒)——只钉住「修好的方向」的 seed 分不出
+  「正确的修复」和「什么都接受的修复」。过程反思见
+  `llmdoc/memory/reflections/2026-07-28-four-diff-divergence-issues.md`。
 
 ## 相关
 

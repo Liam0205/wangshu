@@ -285,7 +285,11 @@ func (vm *VM) TypeError(th *Thread, argn int, expected string) int {
 | 通用约束 | host 自构 | `bad argument #1 to 'format' (number expected, got string)` |
 
 - **`got no value`**:参数完全缺失(`i > nargs`)时,Lua 5.1 用 `got no value`(而非 `got nil`)。区分「传了 nil」
-  与「没传」:`f(nil)` 的 #1 是 `got nil`,`f()` 的 #1 是 `got no value`。**待 12 核对**此区分。
+  与「没传」:`f(nil)` 的 #1 是 `got nil`,`f()` 的 #1 是 `got no value`。机制:PUC 的 `luaL_typerror` 是
+  `"%s expected, got %s"`,`%s` 取参数的 `luaL_typename`,而 `lua_typename` 把 `LUA_TNONE`(压根没传的参数)
+  映射成字面量 `"no value"`。**2026-07-28 更正**:table 库的 `tblArg` 原先整个 `, got X` 从句都没有,于是
+  `table.insert()` / `concat()` / `remove()` / `sort()` 不带参数或传错类型时都与官方分歧(45 秒 fuzz 冒烟
+  撞出,已确认是既有问题)。现在带类型名,缺参数时是 `no value`,显式 `nil` 时是 `nil`。
 - **位置前缀归咎调用者**:`argError` 用 `where(th, 1)`——level=1 指向**调用 stdlib 函数的那个 Lua 帧**(因为
   错的是调用者传的参数)。这与 Lua 5.1 `luaL_argerror` 一致(它内部 `luaL_where(L, 1)`)。
 
@@ -390,7 +394,9 @@ func hostTableConcat(vm *VM, th *Thread) int {
         case value.IsNumber(v):
             buf.WriteString(formatLuaNumber(value.AsNumber(v)))  // %.14g
         default:
-            return vm.Errorf(th, "invalid value (at index %d) in table for 'concat'", k)
+            // PUC 的 addfield:"invalid value (%s) at index %d in table for 'concat'",
+            // %s 是该元素的 luaL_typename(#194,2026-07-28 更正:原来括号括错范围且丢了类型名)。
+            return vm.Errorf(th, "invalid value (%s) at index %d in table for 'concat'", typeName(v), k)
         }
         if k < j && sep != nil {
             buf.Write(sep)
@@ -531,7 +537,7 @@ base 库的函数挂在 **globals 表**(直接全局可见,无需 `base.` 前缀
 | `print(...)` | 各参数 `tostring` 后用 `\t` 分隔写 stdout,末尾 `\n` | `(...)` → 无 | ✅ | 经 `tostring`(查 `__tostring`,§4.2);写 stdout(io 库的 stdout,§8) |
 | `type(v)` | 返回 v 的类型名 | `(v)` → string | ✅ | `"nil"`/`"boolean"`/`"number"`/`"string"`/`"table"`/`"function"`/`"userdata"`/`"thread"`(01 §3.3);light+full ud 都 `"userdata"` |
 | `tostring(v)` | v 转字符串(查 `__tostring`) | `(v)` → string | ✅ | 机制 07 §11(`__tostring` + 默认格式);number 用 `%.14g`;table/function 地址格式差分豁免(§4.2) |
-| `tonumber(v [, base])` | v 转数字;带 base 时按进制解析整数 | `(v [,base])` → number or nil | ✅ | 无 base 走 `parseLuaNumber`(07 §5.2,与算术共用);带 base 走另一条(§4.3) |
+| `tonumber(v [, base])` | v 转数字;带 base 时按进制解析整数 | `(v [,base])` → number or nil | ✅ | 无 base **与 `base == 10`** 都走 `parseLuaNumber`(07 §5.2,与算术共用);**只有非 10 的 base** 走逐字符进制解析(§4.3) |
 | `pairs(t)` | 返回 `next, t, nil`(遍历全表迭代三元组) | `(t)` → (function, table, nil) | ✅ | 返回 `next` host fn + t + nil;**不查 `__pairs`**(5.2+,07 §2.3 排除);遍历序见 §4.4 |
 | `ipairs(t)` | 返回数组迭代三元组(从 1 连续到首个 nil) | `(t)` → (function, table, 0) | ✅ | 返回 ipairs 迭代器 host fn + t + 0;**不查 `__ipairs`**(5.2+ 引入 5.3 废,排除) |
 | `next(t [, k])` | 表的下一个键值对(`k=nil` 取第一个) | `(t [,k])` → (key, val) or nil | ✅ | 遍历序 = 内部 array 段后 node 段顺序(§4.4,呼应 06 §9.3/§11) |
@@ -604,9 +610,15 @@ func hostTonumber(vm *VM, th *Thread) int {
         }
         return 1
     }
-    // —— 带 base 形式(2..36 进制整数)——
-    s := th.CheckString(1)                        // 第一参必须能当串
+    // —— 带 base 形式 ——
+    // PUC 的 luaB_tonumber 在校验 base 范围之前、也在读 arg 1 之前就判 base == 10,
+    // 把它路由到与「无 base」完全同一条标准转换分支;只有非 10 的 base 才走
+    // strtoul 的逐字符解析(#192 那一轮扫描发现,2026-07-28)。
     base := th.CheckInt(2)
+    if base == 10 {
+        return standardConversion(vm, th)         // 与无 base 共用同一个 helper
+    }
+    s := th.CheckString(1)                        // 第一参必须能当串
     if base < 2 || base > 36 {
         return vm.ArgError(th, 2, "base out of range")
     }
@@ -622,6 +634,24 @@ func hostTonumber(vm *VM, th *Thread) int {
 - **带 base 是另一条**(2..36 进制**整数**):`tonumber("ff", 16) == 255`,`tonumber("z", 36) == 35`。**仅整数**
   (不接受小数/指数),前后空白,大小写字母都认(`a-z`/`A-Z` = 10..35)。这是 `tonumber` 专属,**不属于算术
   coercion**(07 §5.2 已声明)。
+- **`base == 10` 不走这条,走标准转换**(2026-07-28 更正):PUC 的 `luaB_tonumber` 在校验 base 范围
+  之前、也在读 arg 1 之前就判 `base == 10` 并路由到与「无 base」同一条分支,只有非 10 的 base 才走
+  `strtoul` 的逐字符解析。wangshu 原来把 base 10 送进逐字符循环,于是**凡是那个循环表达不了的写法
+  全部返回 nil**——`tonumber("1.5",10)` / `("0x10",10)` / `("1e3",10)` / `("inf",10)` / `("nan",10)` /
+  `tonumber(1.5,10)` 六条分歧出自这一个原因。现在无 base 与 base 10 共用一个 helper
+  (`baseToNumberStandard`),不会再各自漂移;回归在
+  `stdlib_test.go::TestStdlib_ToNumberBase10IsStandardConversion`。
+- **非 10 的 base 继承 C `strtoul` 的两个行为**(2026-07-28 更正,原先是有意取「直觉语义」但那个豁免
+  从未被任何代码实现,所以分歧一直是活的):① 负号在**无符号**算术里取反——`tonumber("-7",8)` 得
+  2^64-7、`tonumber("-ff",16)` 得 2^64-255;② 溢出**饱和**到 `ULONG_MAX`——20 个 `f` 配 base 16 得
+  2^64-1(原先按 float64 累加得 1.2e24)。这是**有定义的 C**(不同于别处 double→int 的 UB),所以对齐
+  而不是跳过。实现在 uint64 里累加与取反、最后只转一次 float64:2^64-7 不是 float64 可表示的,先转
+  float 再取反会得到不同的值。回归在 `stdlib_test.go::TestStdlib_ToNumberBaseStrtoulSemantics`。
+- **`nan(n-char-sequence)`**(#192,2026-07-28):无 base 分支走的 C99 `strtod` 接受面包括 `nan` 后
+  可选的 `nan(n-char-sequence)`(7.20.1.3),字符集是 `[0-9A-Za-z_]`,空组 `nan()` 也合法。只在 `)`
+  真的存在时才消费整组;未闭合的 `nan(` 保留裸词,照旧因尾随垃圾被拒(与 strtod 一致)。`inf(...)`
+  在 C99 里没有这个形式,保持拒绝。落点 `internal/crescent/number.go::strtodPrefix`,回归在
+  `internal/crescent/number_nan_suffix_test.go`。
 - **失败返回 nil(非报错)**:`tonumber("abc") == nil`,`tonumber("10x") == nil`。这与 `CheckNumber`(失败报错)
   不同——`tonumber` 是「尝试转换」,失败是正常结果(返回 nil)。
 - **实现落点(#174/#175,PR #176)**:string/table/math 各库的「字符串→数字」强制转换统一经
@@ -755,7 +785,7 @@ string 库**操作字节**(Lua string 是字节串,01 §5.1),索引 1-based,负�
 | `string.rep(s, n)` | s 重复 n 次 | `(s, n)` → string | ✅ | 新串(可能很大,§5.3);n≤0 返回空串 |
 | `string.reverse(s)` | 字节逆序 | `(s)` → string | ✅ | 新串 |
 | `string.byte(s [, i [, j]])` | 返回 `[i,j]` 各字节的数值码 | `(s [,i,j])` → number... | ✅ | 多返回值(j-i+1 个 number);不分配串 |
-| `string.char(...)` | 各数值码组成串 | `(...)` → string | ✅ | 新串;每参 `CheckInt` 且 0..255(否则报错) |
+| `string.char(...)` | 各数值码组成串 | `(...)` → string | ✅ | 新串;每参 `CheckInt` 且 0..255(否则报错)。**越界 double 走 PUC 的两步转换**(#193,§5.4b) |
 | `string.format(fmt, ...)` | 格式化(§5.2 指令表) | `(fmt, ...)` → string | ✅ | 新串(§3.3 范例);`%s` 查 `__tostring` 重入 |
 | `string.find(s, pat [, init [, plain]])` | 查找模式(返回位置 + 捕获) | `(s, pat [,init,plain])` → (start, end, caps...) or nil | ✅ | **Lua pattern**(§6);plain=true 走纯文本查找 |
 | `string.match(s, pat [, init])` | 匹配模式,返回捕获(或整体匹配) | `(s, pat [,init])` → caps... or whole or nil | ✅ | **Lua pattern**(§6);捕获子串分配 |
@@ -770,7 +800,7 @@ string 库**操作字节**(Lua string 是字节串,01 §5.1),索引 1-based,负�
 
 | conv | 含义 | 参数取法 | 备注/差分 |
 |---|---|---|---|
-| `d` / `i` | 十进制有符号整数 | `CheckInt`(§2.2 截断取整) | 标准整数格式;flags/width/prec 透传 C 风格 |
+| `d` / `i` | 十进制有符号整数 | `CheckInt`(§2.2 截断取整) | 标准整数格式;flags/width/prec 透传 C 风格。**精度 0 配值 0 时手写渲染**(#196,§5.2.3) |
 | `u` | 十进制无符号整数 | `CheckInt` → 当 unsigned | 5.1 有 `%u`;5.4 废(P1 保留) |
 | `o` | 八进制 | `CheckInt` | |
 | `x` / `X` | 十六进制(小/大写) | `CheckInt` | |
@@ -808,6 +838,23 @@ string 库**操作字节**(Lua string 是字节串,01 §5.1),索引 1-based,负�
   实现见 `internal/stdlib/stringlib.go` 的 `cFormatSpecialFloat`,白盒真值表 `internal/stdlib/format_special_test.go`;
   `string.format` 共享 stdlib,单点修复覆盖 P1/P3/P4。
 - **指向 [12](./12-testing-difftest.md)**:format 浮点的逐字节核对是差分套件的核心用例(各种 x + 各种 spec 的笛卡尔积)。
+
+#### 5.2.1b `%d`/`%i` 的精度 0 配值 0(#196,2026-07-28)
+
+`%d`/`%i` 其余情况仍委托 Go 的 `fmt`,但有一个角落 Go 与 C 不一致:**精度 0 配值 0 时,C 转换出零个
+数字**(C99 7.19.6.1),**但仍然输出 `+` 或空格 flag 要求的符号**——那个符号不属于「被转换的数字」,
+所以不随数字一起消失;Go 把整个转换当空的,连符号一起丢。实测对照:
+
+| spec | C | Go |
+|---|---|---|
+| `%+.0d` | `"+"` | `""` |
+| `%+5.0d` | `"    +"` | `"     "` |
+| `% .0d` | `" "` | `""` |
+| `%.0d` | `""` | `""`(一致:没有 flag,没有符号要保留) |
+
+落点 `internal/stdlib/stringlib.go::cSignedFormat`,只在这个角落手写(符号 + 宽度补齐),其余仍走
+`fmt`。这与隔壁 `%u`/`%x`/`%o` 为同一类 Go-vs-C printf 分歧手写 `cUnsignedFormat` 是一样的做法
+(见 [12](./12-testing-difftest.md) 与 `internal/stdlib/format_signed_test.go`)。
 
 #### 5.2.2 `%q` 转义规则(差分敏感)
 
@@ -852,6 +899,21 @@ func hostStringRep(vm *VM, th *Thread) int {
   arena 对象**,所以循环中**不触发 GC**,`s` 切片不会因 GC 搬迁失效。**安全**。
 - **`string.sub(s, i, j)`** 的索引规整(5.1 语义):负索引从尾(`-1` = 末字节);`i` 钳到 ≥1,`j` 钳到 ≤len;
   `i > j` 返回空串。规整后 `[i, j]` 切片 + intern。**待 12 核对**边界(`sub("abc", -100)` 等极端索引)。
+
+### 5.4b `string.char` 的越界 double:PUC 的两步转换(#193,2026-07-28)
+
+`string.char(0/0)` 原先报 `invalid value`,PUC 得 byte 0。这里的机制**不是**一个范围检查:PUC 的
+`luaL_checkint` 是 `(int)luaL_checkinteger`,所以 double 先变成 `lua_Integer`(`ptrdiff_t`,64 位)
+**再**窄化成 int;x86-64 的 `cvttsd2si` 把 NaN 与一切超出 int64 范围的 double 映射成 `INT64_MIN`,
+其低 32 位恰好是 0,于是 `c == 0`、`uchar(c) == c` 成立、PUC 接受并写出 byte 0。
+
+这个转换在 C 里是**未定义行为**,两个官方 build 自己就不一致:arm64 的 `FCVTZS` 把 `+inf` 饱和到
+`INT64_MAX`,低 32 位是 -1,`uchar` 检查失败而报错。按仓库既有先例处理(与 `%u`/`%x`/`%o` 的
+`cUnsignedCast` 一样):**产品侧钉住 x86-64 结果**(`internal/stdlib/stringlib.go::cCharCast`),
+**harness 侧把这段 UB 区间加进 skip**(`internal/oracle/prelude.go` 的 sentinel)——比对一段两个官方
+build 互相不一致的区间没有意义。**只跳 UB 区间**:in-range 的值照旧逐字节比对,包括 `2^53`(大但
+int64 可表示,截断有定义),以及小数、负数、`[0,255]` 边界。回归在
+`internal/stdlib/format_signed_test.go`(`TestCCharCast_X86Semantics`)。
 
 ---
 
@@ -1125,11 +1187,11 @@ func hostTableInsert(vm *VM, th *Thread) int {
         t.SetInt(n+1, th.Arg(2))                    // t[n+1] = v(可能 rehash → bump gen,05 §6.5)
     case 3:                                         // insert(t, pos, v):插入
         pos := int(th.CheckInt(2))
-        if pos < 1 || pos > n+1 {
-            return vm.ArgError(th, 2, "position out of bounds")  // 5.1 边界检查
-        }
-        for k := n; k >= pos; k-- {                 // [pos, n] 后移一位
-            t.SetInt(k+1, t.GetInt(k))
+        // 5.1 的 tinsert 没有任何边界检查(见下)。e = #t+1,pos 更大时把 e 抬到 pos。
+        e := n + 1
+        if pos > e { e = pos }
+        for k := e; k > pos; k-- {                  // [pos, e-1] 后移一位
+            t.SetInt(k, t.GetInt(k-1))
         }
         t.SetInt(pos, th.Arg(3))
     default:
@@ -1141,8 +1203,20 @@ func hostTableInsert(vm *VM, th *Thread) int {
 ```
 
 - **`insert` 两形式**:2 参 = 末尾追加;3 参 = 指定位置插入并后移。**参数个数区分**(`NArgs()`),5.1 语义。
-- **`insert` 的 pos 边界**:`pos ∈ [1, n+1]`(n = #t)。越界报 `"bad argument #2 to 'insert' (position out of bounds)"`
-  (**5.1 行为**;5.2 起 insert 的越界检查更严)。**待 12 核对**精确措辞。
+- **`insert` 的 pos 没有边界检查**(#194,2026-07-28 更正):早期版本按 `pos ∈ [1, n+1]` 校验并报
+  `"bad argument #2 to 'insert' (position out of bounds)"`,**那个错误属于 Lua 5.2+**;PUC **5.1 的
+  `ltablib.c::tinsert` 根本没有任何边界检查**,于是 wangshu 原来的校验对每一个越界位置都与官方分歧
+  (0、负数、超出末尾全都算)。5.1 的语义:`e = #t+1`,`pos > e` 时把 e 抬到 pos(源码注释
+  "grow the array if necessary"),把 `[pos, e-1]` 上移一格,再写 pos;`pos <= 0` 时循环从 e 递减到
+  `pos+1`、一次都不执行,所以只是写入。可观察结果(经 oracle 实测钉住,回归在
+  `table_puc51_test.go::TestTableInsert_NoBoundsCheck51`):
+
+  | 起始表 | 调用 | 结果 |
+  |---|---|---|
+  | `t={}` | `insert(t,0,1)` | `t[0]=1`,`#t==0` |
+  | `t={}` | `insert(t,5,1)` | `t[5]=1`,`#t==0` |
+  | `t={"a","b"}` | `insert(t,0,"z")` | `t[0]=z`、`t[1]=nil`、`t[2]=a`,`#t==0` |
+  | `t={"a","b"}` | `insert(t,99,"z")` | `t[99]=z`,`#t==2` |
 - **`remove(t, pos)`**:移除 `t[pos]`,`[pos+1, n]` 前移一位,返回被移除值。`pos` 默认 `#t`(移除末尾)。`remove`
   空表(`#t==0`)返回 nil(5.1)。边界细节(`remove(t, 0)`/越界)**待 12 核对**。
 - **不查元方法**:`insert`/`remove` 用 raw 访问(`GetInt`/`SetInt`,不经 `__index`/`__newindex`)——5.1 table 库
@@ -1692,7 +1766,7 @@ wangshu.NewState(wangshu.Options{Exclude: []string{"os.execute", "os.exit"}})
 | **os.date 格式** | `os.date` | `%c/%x/%X`、月/星期名、时区 | **部分豁免**(纯 Go vs C locale,§9.2/§9.4) | 12 |
 | **collectgarbage count** | `collectgarbage("count")`、`gcinfo` | KB 数(arena ≠ C 堆) | **豁免**(数值脱敏,§4.6) | 12 |
 | **库存在性** | 全部 | 5.1 有的存在、5.2+ 的不存在 | **严格**(§12.3) | 12 |
-| **数字 coercion 边界** | `tonumber`、`CheckNumber` | `parseLuaNumber` 接受的串(十六进制整数、空白、不接受 0x1p4/inf/nan) | **严格**(与 07 §5.2 共用,12 钉死) | 12 |
+| **数字 coercion 边界** | `tonumber`、`CheckNumber` | `parseLuaNumber` 接受的串:十六进制整数、前后空白,以及 C99 `strtod` 的 hex float / `inf` / `nan` / `nan(n-char-sequence)`(接受面在 #128 那一轮改为对齐 C99 `strtod`,本行早期写的「不接受 0x1p4/inf/nan」已作废;`nan(...)` 是 #192 补的) | **严格**(与 07 §5.2 共用,12 钉死) | 12 |
 
 ### 13.2 差分敏感的根因分类
 
