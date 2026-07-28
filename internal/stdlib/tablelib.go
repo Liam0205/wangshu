@@ -582,9 +582,15 @@ func ioFnWrite(st *crescent.State, args []value.Value) ([]value.Value, *crescent
 		if e != nil {
 			return nil, e
 		}
-		_, _ = os.Stdout.Write(b)
+		if _, werr := os.Stdout.Write(b); werr != nil {
+			// PUC's g_write pushes false on a write failure rather than raising.
+			return []value.Value{value.False}, nil
+		}
 	}
-	return nil, nil
+	// 5.1's g_write returns a BOOLEAN success flag -- `lua_pushboolean(L, status)`
+	// -- not the file handle (that is 5.2+). Returning nothing at all made
+	// type(io.write("")) raise "value expected".
+	return []value.Value{value.True}, nil
 }
 
 // ----- math completions -----
