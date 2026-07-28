@@ -1,0 +1,2 @@
+go test fuzz v1
+string("local t={0,0,0}table.insert(t,4194697298,\"\")print(t,(t))")

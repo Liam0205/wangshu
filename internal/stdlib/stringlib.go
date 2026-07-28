@@ -687,6 +687,19 @@ func stringFnByte(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 	if j > len(s) {
 		j = len(s)
 	}
+	// Same lua_checkstack ceiling as unpack, and the same off-by-nargs: PUC's str_byte
+	// calls luaL_checkstack(L, n, "string slice too long"), which rejects when
+	// (L->top - L->base) + n exceeds LUAI_MAXCSTACK -- and for a C function that first
+	// term is the argument count. So the bound is 8000 - nargs, not a flat 8000, and
+	// string.byte had no bound at all: a 9000-byte string sliced 1..8000 returned 8000
+	// values where PUC raises. Note the message differs from unpack's.
+	if n := j - i + 1; n > 0 && n > maxCStack-len(args) {
+		// luaL_checkstack WRAPS the caller's text: "stack overflow (%s)". The bare
+		// message is what luaL_error would give, and str_byte uses checkstack, so the
+		// wrapped form is the one PUC emits. Also note -1 and 1e6 reach here too --
+		// after normIdx they still exceed the ceiling.
+		return nil, crescent.NewError("stack overflow (string slice too long)")
+	}
 	var out []value.Value
 	for k := i; k <= j; k++ {
 		out = append(out, value.NumberValue(float64(s[k-1])))
