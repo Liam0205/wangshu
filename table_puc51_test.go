@@ -35,6 +35,56 @@ func TestTableInsert_NoBoundsCheck51(t *testing.T) {
 	}
 }
 
+// TestTableInsert_PositionNarrowedToInt32 pins that the position goes through
+// luaL_checkint's cast, double -> lua_Integer -> int, so it is narrowed to 32
+// bits. Taking Go's 64-bit int instead put a large finite position on the
+// un-narrowed key, and a nonfinite one made the shift loop run for billions of
+// iterations.
+//
+// These are the two-axis cases the first version of the table above missed: it
+// stopped at position 99, inside the range the old bounds check used to reject.
+func TestTableInsert_PositionNarrowedToInt32(t *testing.T) {
+	for _, tc := range []struct{ name, src, want string }{
+		// 2^32+2 narrows to 2, so it inserts at 2 like any in-range position
+		{"2^32+2 narrows to 2",
+			`local t={1,2,3} table.insert(t,4294967298,"X") return #t..","..tostring(t[4])..","..tostring(t[4294967298])`,
+			"4,3,nil"},
+		// nonfinite narrows to 0 and just writes, no shift
+		{"inf narrows to 0",
+			`local t={"a"} table.insert(t,1/0,"X") return #t..","..tostring(t[0])`, "0,X"},
+		{"nan narrows to 0",
+			`local t={"a"} table.insert(t,0/0,"X") return #t..","..tostring(t[0])`, "0,X"},
+	} {
+		got := runOne(t, tc.src)
+		if !got.IsString() || got.Str() != tc.want {
+			t.Errorf("%s: %s = %v, want %q", tc.name, tc.src, got.Display(), tc.want)
+		}
+	}
+}
+
+// TestTableInsert_ShiftSpanCapped pins the fail-fast bound on the shift.
+//
+// 5.1 places no bound on the distance, so a position that narrows far below 1
+// makes the loop run |pos| times -- 2^31 narrows to INT32_MIN and the official
+// build performs ~2.1 billion rawget/rawset pairs, measured at 2m21s. That runs
+// inside a builtin where the VM's step budget cannot interrupt it, so an embedded
+// host would hang on a one-line script. Capped and raised instead.
+func TestTableInsert_ShiftSpanCapped(t *testing.T) {
+	for _, src := range []string{
+		`local ok,e = pcall(table.insert,{"a"},2147483648,"X") return tostring(ok)..","..tostring(e)`,
+		`local ok,e = pcall(table.insert,{"a"},-2147483648,"X") return tostring(ok)..","..tostring(e)`,
+	} {
+		got := runOne(t, src)
+		if !got.IsString() || got.Str() == "true,nil" {
+			t.Errorf("%s = %v, want a raised error rather than an unbounded shift", src, got.Display())
+		}
+	}
+	// a span just under the cap still works
+	if got := runOne(t, `local t={} table.insert(t,-1000,"X") return tostring(t[-1000])`); !got.IsString() || got.Str() != "X" {
+		t.Errorf("small negative position should still insert, got %v", got.Display())
+	}
+}
+
 // TestTableConcat_ErrorTextMatchesPUC pins PUC addfield's exact message:
 // "invalid value (%s) at index %d in table for 'concat'", carrying
 // luaL_typename of the offending element. wangshu had the parenthesis around the

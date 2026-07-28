@@ -158,7 +158,12 @@ func TestStdlib_ToNumberBaseStrtoulSemantics(t *testing.T) {
 		{`return tonumber("-7", 8)`, twoP64 - 7},
 		{`return tonumber("-ff", 16)`, twoP64 - 255},
 		{`return tonumber("-1", 2)`, twoP64 - 1},
-		// overflow saturates at ULONG_MAX
+		// overflow saturates at ULONG_MAX -- and a NEGATIVE overflow saturates
+		// too, it is NOT negated afterwards. strtoul consumes the sign before
+		// the digits and returns ULONG_MAX; negating that gave 1.
+		{`return tonumber("-1"..string.rep("0",16), 16)`, twoP64 - 1},
+		{`return tonumber("-"..string.rep("f",20), 16)`, twoP64 - 1},
+		{`return tonumber("-"..string.rep("1",65), 2)`, twoP64 - 1},
 		{`return tonumber(string.rep("f", 20), 16)`, twoP64 - 1},
 		{`return tonumber(string.rep("z", 13), 36)`, twoP64 - 1},
 		{`return tonumber(string.rep("f", 16), 16)`, twoP64 - 1},

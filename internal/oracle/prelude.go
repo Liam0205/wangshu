@@ -246,6 +246,46 @@ string.format = function(f, ...)
   return __sformat(f, ...)
 end
 
+-- table.insert shift-span guard.
+--
+-- 5.1's tinsert shifts [pos, #t] up one with NO bound on the distance, so a
+-- position far below 1 makes the loop run |pos| times: pos = 2^31 narrows to
+-- INT32_MIN under luaL_checkint and the official build performs ~2.1 billion
+-- rawget/rawset pairs, measured here at 2m31s. That is not a semantic difference
+-- -- both engines would compute the same table -- but it runs inside a builtin
+-- where wangshu's step budget cannot interrupt it, so wangshu caps the span and
+-- raises instead of hanging an embedded host (12 section 4.9).
+--
+-- Comparing the capped range is therefore meaningless: one side raises, the other
+-- grinds. Skip it. The threshold is read from the ARGUMENTS, which both engines
+-- see identically, not from either engine's behaviour.
+local __floor = math.floor
+local __tinsert0 = table.insert
+table.insert = function(t, ...)
+  local n = __select("#", ...)
+  if n >= 2 then
+    local p = __tonumber((__select(1, ...)))
+    if p ~= nil and p == p then
+      -- Narrow to int32 exactly as luaL_checkint does before measuring the span.
+      -- Reasoning about the pre-narrowing value is what made the first version of
+      -- this guard miss: pos = 2^31 looks huge and positive, so "span = #t+1-pos"
+      -- came out negative and nothing fired -- while PUC had already turned it
+      -- into INT32_MIN, giving a span of 2^31 and a two-minute shift.
+      if p >= -9007199254740992 and p <= 9007199254740992 then
+        local i64 = p >= 0 and __floor(p) or -__floor(-p)
+        local i32 = i64 % 4294967296
+        if i32 >= 2147483648 then i32 = i32 - 4294967296 end
+        local e = 1
+        if __type(t) == "table" then e = #t + 1 end
+        if e - i32 > 4194304 then
+          __error("` + LimitSentinel + `: table.insert shift span", 0)
+        end
+      end
+    end
+  end
+  return __tinsert0(t, ...)
+end
+
 -- string.char UB guard, same reasoning as the unsigned verbs above.
 --
 -- PUC's str_char runs luaL_checkint, i.e. double -> lua_Integer -> int. Outside
