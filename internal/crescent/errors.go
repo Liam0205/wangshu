@@ -42,6 +42,29 @@ func (st *State) annotateError(e *LuaError, ci *callInfo, th *thread) *LuaError 
 		steps := e.Level - 1
 		idx := th.ciDepth - 1
 		onBoundary := false
+		// Host frames entered since the last Lua frame push sit BELOW the raising
+		// function and above the innermost Lua frame, so they are the first levels
+		// the walk crosses.
+		//
+		// This is what a host function raising directly needs: pcall(error,"m",2)
+		// has error called by pcall, so level 1 is pcall's C frame (bare, which
+		// already agreed) and level 2 is the main chunk, which PUC prefixes. Those
+		// boundaries are not attached to any pushed frame, so without this the walk
+		// started too deep and every level came out bare.
+		if e.hostRaised {
+			// A host raiser occupies no Lua frame, so level 1 is its CALLER: the
+			// first pending host boundary, not the innermost Lua frame. Consuming
+			// these from Level-1 instead shifted every level by one --
+			// pcall(error,"m",1) gained a prefix it should not have and level 2 lost
+			// the one it should.
+			for h := int(st.pendingHostFrames) + 1; h > 1 && steps >= 0; h-- {
+				if steps == 0 {
+					onBoundary = true
+					break
+				}
+				steps--
+			}
+		}
 		for steps > 0 && idx >= 0 {
 			cur := th.ciAt(idx)
 			// Each host frame below this one counts as its own level, exactly as
