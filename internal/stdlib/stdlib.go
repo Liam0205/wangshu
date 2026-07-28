@@ -361,13 +361,19 @@ func ipairsIter(st *crescent.State, args []value.Value) ([]value.Value, *crescen
 	// 2, and (t, 1.5) continues from 1. Taking the raw double skipped straight to
 	// nil for both. This site sat outside the earlier sweep, which enumerated
 	// public stdlib functions -- the iterator is installed as a private global.
-	i := float64(cCharCastInt32(value.AsNumber(args[1]))) + 1
+	// The increment happens in int32 too, so it WRAPS like PUC's C int does:
+	// from 2147483647 the next index is -2147483648, not 2147483648. Adding 1 to
+	// the narrowed value as a float64 never wraps and missed that key.
+	i32 := cCharCastInt32(value.AsNumber(args[1])) + 1
+	i := float64(i32)
 	v, e := st.RawGet(value.GCRefOf(args[0]), value.NumberValue(i))
 	if e != nil {
 		return nil, e
 	}
 	if v == value.Nil {
-		return []value.Value{value.Nil}, nil
+		// PUC's ipairsaux returns 0 values when the element is nil, not one
+		// explicit nil. Visible through select("#", ...).
+		return nil, nil
 	}
 	return []value.Value{value.NumberValue(i), v}, nil
 }
@@ -740,9 +746,11 @@ func baseFnError(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 	}
 	e := crescent.NewErrorVal(v, valueToString(st, v))
 	e.Level = level
-	if level == 0 || value.Tag(v) != value.TagString {
-		// level=0 or a non-string error value: no position prefix is added
-		// (5.1 semantics)
+	if level <= 0 || value.Tag(v) != value.TagString {
+		// PUC prefixes only when level > 0, so NEGATIVE levels get no prefix
+		// either -- error("b", -1) is a bare "b". Testing == 0 missed that, and
+		// narrowing widened the reach: error("b", 2^31) narrows to INT32_MIN,
+		// where PUC also drops the prefix.
 		e.Level = 0
 		e.MarkAnnotated()
 	}

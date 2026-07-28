@@ -123,7 +123,12 @@ func tblArg(args []value.Value, n int, fname string) (value.Value, *crescent.Lua
 // reach. It deliberately does NOT bound the number of elements in the table:
 // shifting a large real array is ordinary work both engines do quickly, and
 // capping that rejected valid inserts.
-const tableInsertShiftCap = 1 << 22
+// Sized from measurement, not guessed: at 2^22 real lua5.1 completes the shift in
+// 56ms, at 2^24 in 0.21s, at 2^28 in 3.4s. 12 section 4.9's bar is an
+// uninterruptible hang, so a cap that rejects 56ms of work is too tight -- it
+// refuses inserts PUC finishes promptly. 2^26 keeps the worst case under about a
+// second while still cutting off the 2-billion-iteration shift that motivated it.
+const tableInsertShiftCap = 1 << 26
 
 // tableFnInsert: table.insert(t, [pos,] v).
 func tableFnInsert(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
@@ -249,11 +254,11 @@ func tableFnRemove(st *crescent.State, args []value.Value) ([]value.Value, *cres
 
 // tableFnConcat: table.concat(t [, sep [, i [, j]]]).
 func tableFnConcat(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
-	tv, e := tblArg(args, 0, "concat")
-	if e != nil {
-		return nil, e
-	}
-	t := value.GCRefOf(tv)
+	// PUC's tconcat reads the separator with luaL_optlstring(L, 2, ...) BEFORE
+	// luaL_checktype(L, 1, LUA_TTABLE), so when both arguments are wrong the
+	// error names #2, not #1: table.concat("", {}) reports
+	// "bad argument #2 (string expected, got table)". Checking the table first
+	// reported #1 instead. A fuzz smoke found this on its own.
 	sep := ""
 	if len(args) >= 2 && args[1] != value.Nil {
 		sb, e := strArg(st, args, 1, "concat")
@@ -262,6 +267,11 @@ func tableFnConcat(st *crescent.State, args []value.Value) ([]value.Value, *cres
 		}
 		sep = string(sb)
 	}
+	tv, e := tblArg(args, 0, "concat")
+	if e != nil {
+		return nil, e
+	}
+	t := value.GCRefOf(tv)
 	iF, _ := numArg(st, args, 2, 1)
 	jF, _ := numArg(st, args, 3, float64(st.RawBorder(t)))
 	// NaN normalization: NaN-X=NaN and NaN>x is always false would bypass
@@ -456,7 +466,8 @@ func osFnTime(st *crescent.State, args []value.Value) ([]value.Value, *crescent.
 	getfield := func(key string, def int) (int, *crescent.LuaError) {
 		v, _ := st.RawGet(t, intern(st, key))
 		if value.IsNumber(v) {
-			return int(value.AsNumber(v)), nil
+			// os.time's getfield uses (int)lua_tointeger, same two-step narrowing.
+			return int(cCharCastInt32(value.AsNumber(v))), nil
 		}
 		if def < 0 {
 			return 0, crescent.NewError("field '" + key + "' missing in date table")
@@ -631,14 +642,19 @@ func mathFnRandom(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 	case 0:
 		return []value.Value{value.NumberValue(rngFloat())}, nil
 	case 1:
-		m, ok := toNumberStr(st, args[0])
+		mF, ok := toNumberStr(st, args[0])
+		// luaL_checkint narrowing: math.random(2^32) is an EMPTY interval on PUC,
+		// because the bound narrows to 0.
+		m := float64(cCharCastInt32(mF))
 		if !ok || m < 1 {
 			return nil, crescent.NewArgError(1, "interval is empty")
 		}
 		return []value.Value{value.NumberValue(float64(rngInt(1, int64(m))))}, nil
 	default:
-		lo, ok1 := toNumberStr(st, args[0])
-		hi, ok2 := toNumberStr(st, args[1])
+		loF, ok1 := toNumberStr(st, args[0])
+		hiF, ok2 := toNumberStr(st, args[1])
+		// Both bounds go through luaL_checkint.
+		lo, hi := float64(cCharCastInt32(loF)), float64(cCharCastInt32(hiF))
 		if !ok1 || !ok2 || lo > hi {
 			return nil, crescent.NewArgError(2, "interval is empty")
 		}
