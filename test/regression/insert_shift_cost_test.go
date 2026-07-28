@@ -22,7 +22,19 @@ import (
 // than being rejected by the cap, since the cap is sized to refuse only an
 // uninterruptible hang.
 func TestInsertShiftJustUnderCap(t *testing.T) {
-	const src = `t={0} table.insert(t,4194967278,"") return tostring(t[4])`
+	// Two positions, both just under the cap, both found by the fuzzer on separate
+	// days and both moved here for the same reason -- around 100M shifted elements
+	// costs seconds, and the coordinator replays the corpus in parallel.
+	for _, src := range []string{
+		`t={0} table.insert(t,4194967278,"") return tostring(t[4])`,
+		`t={0} table.insert(t,4194967288,(t)) return tostring(t[4])`,
+	} {
+		runInsertShift(t, src)
+	}
+}
+
+func runInsertShift(t *testing.T, src string) {
+	t.Helper()
 	st := wangshu.NewState(wangshu.Options{MaxArenaBytes: 512 << 20})
 	prog, err := wangshu.Compile([]byte(src), "r")
 	if err != nil {
