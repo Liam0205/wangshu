@@ -136,16 +136,19 @@ func (st *State) enterLuaFrame(th *thread, funcIdx, nargs, nresults int, entry b
 	// Push CallInfo (PW10 R2b-4: the arena segment is authoritative, th.cur is the
 	// hot mirror of the top frame).
 	ci := callInfo{
-		base:     base,
-		funcIdx:  funcIdx,
-		top:      base + numFixed,
-		protoID:  pid,
-		cl:       cl,
-		nresults: nresults,
-		fresh:    entry,
-		pc:       0,
-		nVarargs: uint16(nVarargs), // strictly aligned with the below-stack area [base-nVarargs..base) + segment word4 mirror
+		base:       base,
+		funcIdx:    funcIdx,
+		top:        base + numFixed,
+		protoID:    pid,
+		cl:         cl,
+		nresults:   nresults,
+		fresh:      entry,
+		hostFrames: st.pendingHostFrames,
+		pc:         0,
+		nVarargs:   uint16(nVarargs), // strictly aligned with the below-stack area [base-nVarargs..base) + segment word4 mirror
 	}
+	// The pending host frames belong to this Lua frame now.
+	st.pendingHostFrames = 0
 	// Flush the current top frame (th.cur, whose pc/top may have advanced) back to
 	// the segment first, then load the new frame.
 	if th.ciDepth > 0 {

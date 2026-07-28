@@ -30,7 +30,7 @@ func (st *State) execute(th *thread) *LuaError {
 func (st *State) executeFrom(th *thread, entryDepth int) *LuaError {
 	e := st.executeLoop(th, entryDepth)
 	if e != nil && e != errYieldSentinel && th.ciDepth > 0 {
-		e = st.annotateError(e, currentCI(th))
+		e = st.annotateError(e, currentCI(th), th)
 	}
 	return e
 }

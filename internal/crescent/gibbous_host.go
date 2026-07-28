@@ -399,7 +399,7 @@ func (st *State) DoReturn(base int32, pc int32, a int32, b int32) int32 {
 func (st *State) raiseGibbous(e *LuaError) int32 {
 	th := st.runningThread
 	if th.ciDepth > 0 {
-		e = st.annotateError(e, currentCI(th))
+		e = st.annotateError(e, currentCI(th), th)
 		if e != nil && e.Traceback == "" {
 			e.Traceback = st.buildTraceback(th)
 		}

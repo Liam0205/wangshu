@@ -229,7 +229,15 @@ func (st *State) callLuaFromHostNamed(th *thread, fn value.Value, args []value.V
 		return nil, errf("C stack overflow")
 	}
 	st.nCcalls++
-	defer func() { st.nCcalls-- }()
+	// One more host frame stands between the caller and the Lua function about to
+	// run. It is consumed by the next Lua frame push, so consecutive host entries
+	// with no Lua frame in between accumulate: pcall(pcall, f) leaves 2.
+	st.pendingHostFrames++
+	saved := st.pendingHostFrames
+	defer func() {
+		st.nCcalls--
+		st.pendingHostFrames = saved - 1
+	}()
 	if value.Tag(fn) != value.TagFunction {
 		h := st.metaFieldOfValue(fn, "__call")
 		if value.Tag(h) != value.TagFunction {
