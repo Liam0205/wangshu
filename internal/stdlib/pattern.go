@@ -436,7 +436,17 @@ func bytesEqual(a, b []byte) bool {
 // retrying from each start does not reset steps, guaranteeing a single find has
 // bounded total cost.
 func patternFind(src, pat []byte, init int) (int, int, []capResult, bool, error) {
-	anchored := len(pat) > 0 && pat[0] == '^'
+	return patternFindOpt(src, pat, init, true)
+}
+
+// patternFindOpt is patternFind with control over whether a leading '^' anchors.
+//
+// gmatch passes false: PUC's gmatch_aux calls match() directly with no anchor
+// handling, unlike str_find_aux, so '^' is an ordinary character there and
+// gmatch("ab", "^a") yields nothing. Honouring the anchor produced a match PUC
+// does not.
+func patternFindOpt(src, pat []byte, init int, allowAnchor bool) (int, int, []capResult, bool, error) {
+	anchored := allowAnchor && len(pat) > 0 && pat[0] == '^'
 	p := 0
 	if anchored {
 		p = 1
