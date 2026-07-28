@@ -1,0 +1,2 @@
+go test fuzz v1
+string("local t={} print(pcall(table.insert,t,0,1)) print(#t,t[0])")
