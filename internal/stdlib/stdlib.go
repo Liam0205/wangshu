@@ -702,7 +702,9 @@ func baseFnType(st *crescent.State, args []value.Value) ([]value.Value, *crescen
 
 func baseFnAssert(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	if len(args) == 0 {
-		return nil, crescent.NewError("assertion failed!")
+		// PUC runs luaL_checkany(L, 1) first, so a missing argument is an
+		// argument error, not an assertion failure.
+		return nil, crescent.NewArgError(1, "value expected")
 	}
 	if !value.Truthy(args[0]) {
 		msg := "assertion failed!"
@@ -760,7 +762,7 @@ func baseFnSelect(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 	if !ok {
 		return nil, crescent.NewArgError(1, "number expected, got "+st.TypeName(args[0]))
 	}
-	idx := int(f)
+	idx := int(cCharCastInt32(f)) // luaL_checkint narrowing
 	n := len(args) - 1
 	if idx < 0 {
 		// Negative index: count from the tail (5.1); out of range errors
@@ -972,6 +974,10 @@ func stringFnRep(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 	if !ok {
 		return nil, crescent.NewArgError(2, "number expected, got "+st.TypeName(args[1]))
 	}
+	// NOT narrowed to int32: this is string.rep's count, and the OOM hardening
+	// below depends on seeing the real magnitude. An earlier edit narrowed it by
+	// mistake, which turned a huge count into a small one and disarmed the guard
+	// (TestHardening_StringRepOverflow caught it).
 	n := int(nF)
 	if n < 0 {
 		n = 0
