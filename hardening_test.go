@@ -13,8 +13,17 @@ import (
 
 func TestHardening_StringRepOverflow(t *testing.T) {
 	st := wangshu.NewState(wangshu.Options{})
-	// string.rep("k", 1e14) would allocate 100T bytes on a byte-for-byte backend, OOM crash
-	prog, _ := wangshu.Compile([]byte(`return pcall(string.rep, "k", 100000000000000)`), "h")
+	// The case here used to be string.rep("k", 1e14), on the premise that it
+	// "would allocate 100T bytes". That premise was wrong: PUC reads the count
+	// with luaL_checkint, so 1e14 narrows to 276447232 and real lua5.1 returns a
+	// 276 MB string successfully -- the guard was firing on something PUC
+	// completes, which is a divergence rather than hardening.
+	//
+	// A request that survives narrowing is the real hazard: a 1000-byte string
+	// repeated 2^31-1 times is 2 TB, and lua5.1 does hang on it. That is what
+	// this now asserts.
+	prog, _ := wangshu.Compile([]byte(
+		`return pcall(string.rep, string.rep("k", 1000), 2147483647)`), "h")
 	r, err := prog.Run(st)
 	if err != nil {
 		t.Fatalf("run: %v", err)

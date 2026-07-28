@@ -1,0 +1,2 @@
+go test fuzz v1
+string("print(pcall(__ipairs_iter,{10,20,30,40},4294967298))")

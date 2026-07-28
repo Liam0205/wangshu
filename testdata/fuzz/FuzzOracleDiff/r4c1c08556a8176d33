@@ -1,0 +1,2 @@
+go test fuzz v1
+string("print(pcall(string.rep,\"x\",4294967299))")
