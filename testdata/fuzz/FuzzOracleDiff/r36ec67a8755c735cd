@@ -1,0 +1,2 @@
+go test fuzz v1
+string("print(math.ldexp(1,4294967298))")

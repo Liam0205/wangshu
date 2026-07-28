@@ -1,0 +1,2 @@
+go test fuzz v1
+string("print(pcall(table.concat,{\"a\",\"b\"},\",\",1,1e14))")

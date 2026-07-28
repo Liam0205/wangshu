@@ -1,0 +1,2 @@
+go test fuzz v1
+string("print(string.gsub(\"aaa\",\"a\",\"b\",4294967297))")
