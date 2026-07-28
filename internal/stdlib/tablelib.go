@@ -489,18 +489,15 @@ func zoneDSTOffsets(t time.Time) (std, dst int, ok bool) {
 	// instead, which is a different offset whenever a transition sits inside one
 	// stride: Asia/Anadyr 2010 was an hour off in a genuinely two-state year. The
 	// stride and probe order are copied rather than approximated.
-	// The bound is glibc's, not a guess: __mktime_internal searches out to
-	// delta_bound = duration_max/2 + stride, i.e. 447 strides (about 8.5 years).
-	// Capping at 30 (~208 days) made the field silently ignored in two-state years
-	// whose nearest opposite-DST instant lies further out -- 131 cases across 80
-	// zones, including all of America/Argentina/*, Australia/Perth and
-	// Pacific/Auckland. Those are NOT the single-state exemption, so they were plain
-	// divergences.
 	const strideSec = 601200
-	// Bracketed empirically between 380 and 382 by scanning unambiguous cases; 447 was
-	// too wide and reached zone entries glibc never sees (America/Miquelon 1979 used a
-	// -02 entry at stride 406).
-	const maxStrides = 447
+	// The bound is 381 strides, bracketed empirically against a C mktime reference.
+	//
+	// This constant and the equal-offset delta below are coupled, which is why earlier
+	// rounds could not settle either alone: with the delta wrong, narrowing the bound
+	// measured as neutral-to-worse and looked like a bad idea; with the delta right, it
+	// takes the last 4 mismatches to 0. Do not change one without re-measuring the full
+	// sweep.
+	const maxStrides = 381
 	for i := int64(1); i <= maxStrides; i++ {
 		for _, off := range [2]int64{-i * strideSec, i * strideSec} {
 			cand := t.Add(time.Duration(off) * time.Second)
@@ -512,9 +509,10 @@ func zoneDSTOffsets(t time.Time) (std, dst int, ok bool) {
 				// isolation but broke Asia/Anadyr, America/Vancouver and
 				// America/Miquelon, which rely on the first such neighbour.
 				if other == base {
-					// Usable neighbour with the same offset: glibc's delta here is the
-					// default hour.
-					return base, base + 3600, true
+					// Usable neighbour with the same offset: glibc's delta for it is
+					// ZERO, so isdst has no effect. Returning the default hour here was
+					// the sole cause of the 1% residual.
+					return base, base, true
 				}
 				if baseDST {
 					return other, base, true

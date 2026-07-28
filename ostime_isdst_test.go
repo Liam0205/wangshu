@@ -49,38 +49,45 @@ func TestOSTimeIsDST(t *testing.T) {
 	}
 }
 
-// TestOSTimeIsDST_DefaultHourFallback pins the fallback used when the search finds no
-// neighbour with a different offset: glibc applies a DEFAULT one hour rather than treating
-// isdst as a no-op.
+// TestOSTimeIsDST_DefaultHourFallback pins the two coupled decisions that took the isdst
+// implementation from a 1% residual to exact agreement.
 //
-// This is the dominant case by a wide margin. Measured against a C mktime reference over
-// 4400 (zone, year, month, isdst) combinations across 220 zones, returning "not found" here
-// accounted for 1108 of 1120 mismatches -- every one isdst=true and off by exactly an hour.
-// Applying the default takes the total to 44.
+// When the outward search finds NO neighbour at all, glibc falls back to a default one
+// hour -- that is the dominant term, worth 1085 of 1120 mismatches on its own. When it
+// finds a neighbour whose offset EQUALS the base, glibc's delta for it is ZERO, so isdst
+// has no effect; treating that as the default hour instead was the entire remaining
+// residual.
 //
-// The residual 44 sit in 20 zones that abolished DST by keeping the summer offset
-// (Africa/Windhoek, America/Cancun, America/Chihuahua and similar), where glibc finds a
-// historical neighbour and uses a delta of zero. Whether it finds one depends on its
-// transition table, which Go does not expose -- that is the registered exemption, and this
-// test documents the measured rate so the trade is visible rather than implied.
+// The two are coupled with maxStrides: with the equal-offset delta wrong, narrowing the
+// bound measured as neutral-to-worse, which is why several rounds could not settle either
+// alone. Measured against a C mktime reference: 0 of 4400 across 220 zones, and 0 of 6600
+// on an independent holdout of different zones, years and months.
 func TestOSTimeIsDST_DefaultHourFallback(t *testing.T) {
-	loc, err := time.LoadLocation("UTC")
-	if err != nil {
-		t.Skip("tzdata unavailable")
-	}
-	origLocal := time.Local
-	t.Setenv("TZ", "UTC")
-	time.Local = loc
-	t.Cleanup(func() { time.Local = origLocal })
-
-	// UTC has no DST at all, and glibc still shifts isdst=true by an hour.
-	plain := runOne(t, `return tostring(os.time{year=2024,month=1,day=15,hour=12,min=0,sec=0})`).Str()
-	dst := runOne(t, `return tostring(os.time{year=2024,month=1,day=15,hour=12,min=0,sec=0,isdst=true})`).Str()
-	if plain != "1705320000" {
-		t.Errorf("plain = %s, want 1705320000", plain)
-	}
-	if dst != "1705316400" {
-		t.Errorf("isdst=true = %s, want 1705316400 (one hour earlier)", dst)
+	for _, tc := range []struct {
+		zone, plainWant, dstWant, why string
+	}{
+		// No neighbour found anywhere: the default hour applies.
+		{"UTC", "1705320000", "1705316400", "no neighbour -> default hour"},
+		// A neighbour exists at the same offset (DST abolished by keeping the summer
+		// offset), so the delta is zero and isdst does nothing.
+		{"Africa/Windhoek", "1705312800", "1705312800", "equal-offset neighbour -> delta 0"},
+	} {
+		loc, err := time.LoadLocation(tc.zone)
+		if err != nil {
+			t.Skip("tzdata unavailable")
+		}
+		func() {
+			origLocal := time.Local
+			t.Setenv("TZ", tc.zone)
+			time.Local = loc
+			defer func() { time.Local = origLocal }()
+			plain := runOne(t, `return tostring(os.time{year=2024,month=1,day=15,hour=12,min=0,sec=0})`).Str()
+			dst := runOne(t, `return tostring(os.time{year=2024,month=1,day=15,hour=12,min=0,sec=0,isdst=true})`).Str()
+			if plain != tc.plainWant || dst != tc.dstWant {
+				t.Errorf("%s (%s): plain=%s want %s, isdst=true=%s want %s",
+					tc.zone, tc.why, plain, tc.plainWant, dst, tc.dstWant)
+			}
+		}()
 	}
 }
 
