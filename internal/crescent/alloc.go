@@ -103,3 +103,32 @@ func (st *State) NewArrayTableFromVals(vals []value.Value) arena.GCRef {
 	}
 	return t
 }
+
+// NewUserdata allocates a userdata with the given payload size and metatable, linking it
+// into the sweep chain and charging it like every other object.
+//
+// The LinkSweep is the whole point of routing through here. A first attempt at the io
+// standard streams called object.AllocUserdata directly and skipped it, so the object's
+// header carried no colour and no sweep link: the collector never saw it, and a
+// collectgarbage() after creating the handles panicked with an out-of-range arena index
+// while the handles were still reachable from the io table. Every allocator in this file
+// pairs AllocX with LinkSweep + AllocCharge, and userdata is no exception.
+func (st *State) NewUserdata(payloadLen uint32, meta arena.GCRef) arena.GCRef {
+	ref := object.AllocUserdata(st.arena, payloadLen)
+	st.gc.LinkSweep(ref)
+	st.gc.AllocCharge(uint32(4*8) + (payloadLen+7)/8*8)
+	if meta != 0 {
+		object.SetUserdataMeta(st.arena, ref, meta)
+	}
+	return ref
+}
+
+// UserdataPayload exposes a userdata's payload bytes to stdlib.
+func (st *State) UserdataPayload(ud arena.GCRef) []byte {
+	return object.UserdataPayload(st.arena, ud)
+}
+
+// UserdataMeta returns a userdata's metatable ref, or 0 when it has none.
+func (st *State) UserdataMeta(ud arena.GCRef) arena.GCRef {
+	return object.UserdataMetaRef(st.arena, ud)
+}

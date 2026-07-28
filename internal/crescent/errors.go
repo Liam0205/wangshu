@@ -168,3 +168,28 @@ func (st *State) Traceback() string {
 	}
 	return st.buildTraceback(st.runningThread)
 }
+
+// FrameInfo reports the chunk name and current line of the frame LEVEL steps up from the
+// caller, for debug.getinfo. ok is false when the level is past the stack.
+//
+// Level 1 is the function that called getinfo, matching PUC's convention. Since getinfo
+// is a host function and host frames are not pushed onto cis, level 1 is the INNERMOST
+// cis frame -- subtracting the level directly skipped one frame too many and returned nil
+// for the common getinfo(1).
+func (st *State) FrameInfo(level int) (string, int32, bool) {
+	th := st.runningThread
+	if th == nil || level < 1 {
+		return "", 0, false
+	}
+	idx := th.ciDepth - level
+	if idx < 0 || idx >= th.ciDepth {
+		return "", 0, false
+	}
+	ci := th.ciAt(idx)
+	proto := st.protoOf(&ci)
+	line := int32(0)
+	if pc := int(ci.pc) - 1; pc >= 0 && pc < len(proto.LineInfo) {
+		line = proto.LineInfo[pc]
+	}
+	return bytecode.ChunkID(proto.Source), line, true
+}
