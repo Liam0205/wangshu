@@ -246,6 +246,90 @@ string.format = function(f, ...)
   return __sformat(f, ...)
 end
 
+-- luaL_checkint UB guard, shared by every function that narrows an int argument.
+--
+-- PUC reads these arguments with (int)luaL_checkinteger, i.e. double -> int64 ->
+-- int32. Outside int64 range (and for NaN) that first cast is UB and the two
+-- official builds DISAGREE: x86-64 cvttsd2si yields INT64_MIN, whose low 32 bits
+-- are 0, while arm64 FCVTZS saturates +inf to INT64_MAX, whose low 32 bits are -1.
+-- wangshu pins the x86-64 result, so comparing this range against a non-x86 oracle
+-- is meaningless.
+--
+-- One guard rather than twelve near-identical ones: the arm64 oracle-smoke job
+-- caught a single table.insert seed, but probing found EVERY narrowing site
+-- exposed the same way -- %c, string.char, the ipairs iterator, tonumber's base,
+-- string.rep, table.remove, table.concat's bounds, select, math.ldexp,
+-- math.random, gsub's count and error's level. A per-site guard would have to be
+-- remembered at each new site; this one covers the class.
+local __nonfinite = function(v)
+  local n = __tonumber(v)
+  return n ~= nil and (n ~= n or n >= 9223372036854775808 or n < -9223372036854775808)
+end
+local function __wrapUB(tbl, name, from)
+  local orig = tbl[name]
+  if orig == nil then return end
+  tbl[name] = function(...)
+    local k = __select("#", ...)
+    for i = from, k do
+      if __nonfinite((__select(i, ...))) then
+        __error("` + LimitSentinel + `: luaL_checkint UB range", 0)
+      end
+    end
+    return orig(...)
+  end
+end
+-- Argument positions counted from the first one that is narrowed.
+__wrapUB(string, "char", 1)
+__wrapUB(string, "rep", 2)
+__wrapUB(string, "gsub", 4)
+-- string.format is NOT wrapped wholesale: only %c narrows its argument, while the
+-- float verbs take the value as a double and must stay comparable (a NaN there is
+-- the whole point of the rendering normalization). Guard on the fmt containing a
+-- %c conversion.
+string.format = (function(orig)
+  return function(f, ...)
+    if __type(f) == "string" and __sfind(f, "%%[%-%+ #0-9%.]*c") then
+      local k = __select("#", ...)
+      for i = 1, k do
+        if __nonfinite((__select(i, ...))) then
+          __error("` + LimitSentinel + `: luaL_checkint UB range", 0)
+        end
+      end
+    end
+    return orig(f, ...)
+  end
+end)(string.format)
+__wrapUB(table, "insert", 2)
+__wrapUB(table, "remove", 2)
+__wrapUB(table, "concat", 3)
+__wrapUB(math, "ldexp", 2)
+__wrapUB(math, "random", 1)
+_G.select = (function(orig)
+  return function(n, ...)
+    if __nonfinite(n) then
+      __error("` + LimitSentinel + `: luaL_checkint UB range", 0)
+    end
+    return orig(n, ...)
+  end
+end)(select)
+_G.tonumber = (function(orig)
+  return function(v, b, ...)
+    if b ~= nil and __nonfinite(b) then
+      __error("` + LimitSentinel + `: luaL_checkint UB range", 0)
+    end
+    return orig(v, b, ...)
+  end
+end)(tonumber)
+_G.__ipairs_iter = (function(orig)
+  if orig == nil then return nil end
+  return function(t, i, ...)
+    if __nonfinite(i) then
+      __error("` + LimitSentinel + `: luaL_checkint UB range", 0)
+    end
+    return orig(t, i, ...)
+  end
+end)(__ipairs_iter)
+
 -- table.insert shift-span guard.
 --
 -- 5.1's tinsert shifts [pos, #t] up one with NO bound on the distance, so a
@@ -265,6 +349,15 @@ table.insert = function(t, ...)
   local n = __select("#", ...)
   if n >= 2 then
     local p = __tonumber((__select(1, ...)))
+    -- Nonfinite or beyond-int64 positions are the SAME UB as string.char's cast,
+    -- so skip them outright rather than trying to compare the narrowed index.
+    -- x86-64 cvttsd2si sends them to INT64_MIN (low 32 bits 0, so t[0]); arm64
+    -- FCVTZS saturates +inf to INT64_MAX (low 32 bits -1, so t[-1]). The product
+    -- pins the x86 result, so a non-x86 oracle legitimately disagrees -- this is
+    -- what made the arm64 oracle-smoke job fail while x86 passed.
+    if p ~= nil and (p ~= p or p >= 9223372036854775808 or p < -9223372036854775808) then
+      __error("` + LimitSentinel + `: insert-position cast UB range", 0)
+    end
     if p ~= nil and p == p then
       -- Narrow to int32 exactly as luaL_checkint does before measuring the span.
       -- Reasoning about the pre-narrowing value is what made the first version of

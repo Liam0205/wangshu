@@ -242,10 +242,21 @@ print(coroutine.resume(co, 10)) print(coroutine.resume(co, 20))`,
 // Textual and deliberately conservative: a false positive costs one skipped input,
 // while a false negative reports a divergence #197 already tracks.
 func errorLevelAtLeastTwo(src string) bool {
-	re := regexp.MustCompile(`error\s*\([^()]*,\s*-?([0-9]+(\.[0-9]*)?|\.[0-9]+)`)
+	// A level of 2 or more hits #197. A NONFINITE or beyond-int64 level hits the
+	// luaL_checkint UB range instead, where x86 and arm64 narrow differently --
+	// error() cannot be wrapped in the prelude to catch that, because any Lua
+	// wrapper is itself a frame and would shift level 1, so both go through this
+	// textual check.
+	re := regexp.MustCompile(`error\s*\([^()]*,\s*(-?[0-9]+(\.[0-9]*)?|-?\.[0-9]+|-?[0-9.]+[eE][-+]?[0-9]+|[^,()]*\b(?:1?/0|0/0)\b[^,()]*)`)
 	for _, m := range re.FindAllStringSubmatch(src, -1) {
-		if v, err := strconv.ParseFloat(m[1], 64); err == nil && v >= 2 {
-			return true
+		lit := strings.TrimSpace(m[1])
+		if strings.Contains(lit, "/0") {
+			return true // inf or nan level: UB narrowing range
+		}
+		if v, err := strconv.ParseFloat(lit, 64); err == nil {
+			if v >= 2 || v >= 9223372036854775808 || v < -9223372036854775808 {
+				return true
+			}
 		}
 	}
 	return false
