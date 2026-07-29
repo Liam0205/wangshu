@@ -685,10 +685,17 @@ string.sub = function(sv, i, ...)
     -- round: s:sub(4294967297) narrows to index 1 in lua5.1, while the raw value made the charge
     -- compute an empty range and record 0 bytes.
     local n = #s2
-    local from = __ckint(i, 1)
+    -- Same rule as concat: an explicit but unconvertible index means the real call raises, so
+    -- charge nothing rather than inventing a range.
+    local from = 1
+    if i ~= nil then
+      from = __ckint(i, nil)
+      if from == nil then return __ssub0(sv, i, ...) end
+    end
     local to = n
     if __select("#", ...) >= 1 then
-      to = __ckint((__select(1, ...)), n)
+      to = __ckint((__select(1, ...)), nil)
+      if to == nil then return __ssub0(sv, i, ...) end
     end
     if from < 0 then from = n + from + 1 end
     if to < 0 then to = n + to + 1 end
@@ -736,8 +743,24 @@ table.concat = function(t, ...)
     -- table.concat({"x"}, "", 1, 4294967297) -- which lua5.1 narrows to 1 and answers instantly
     -- -- sent the scan below over ~4 billion indices until the instruction budget tripped, so a
     -- perfectly comparable input was recorded as a skip.
-    local i = __select("#", ...) >= 2 and __ckint((__select(2, ...)), 1) or 1
-    local j = __select("#", ...) >= 3 and __ckint((__select(3, ...)), #t) or #t
+    -- "absent" and "present but unconvertible" are different: the real call raises a bad-argument
+    -- error for the latter, immediately and cheaply. Treating an unconvertible bound as the default
+    -- made the scan charge a FABRICATED range -- table.concat(t, sep, {}, 100) with a 64 KiB
+    -- separator accumulated ~6.5 MiB and raised the sentinel, so an input that fails at once was
+    -- recorded as a skip. When a bound cannot convert, charge nothing and let the real call report.
+    local bad = false
+    local i, j = 1, #t
+    if __select("#", ...) >= 2 then
+      i = __ckint((__select(2, ...)), nil)
+      if i == nil then bad = true end
+    end
+    if __select("#", ...) >= 3 then
+      j = __ckint((__select(3, ...)), nil)
+      if j == nil then bad = true end
+    end
+    if bad then
+      return __tconcat0(t, ...)
+    end
     -- Charge only what the real call will actually touch, and STOP at the first element it
     -- would reject.
     --
