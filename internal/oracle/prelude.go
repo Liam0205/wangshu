@@ -78,9 +78,39 @@ func Prelude(keep GlobalSet) string {
 var preludeCapture = `
 local __acc, __n, __len = {}, 0, 0
 local __tostring, __type, __select = tostring, type, select
--- Cumulative shifted-element count for table.insert (see the shift budget below).
+local __ipairs = ipairs
+-- Cumulative BULK-WORK budget, shared by every shim that can move or build O(n) data inside
+-- one uninterruptible C call.
+--
+-- The unit is BYTES, not elements. Counting elements undercharged by orders of magnitude for
+-- anything holding large strings -- 64 concat pieces of 64 KiB each cost 9 seconds while
+-- charging 64 -- and the whole point of the accumulator is that the instruction-count hook
+-- cannot see inside these calls, so the charge has to track the actual work.
+--
+-- __bulkCap bounds a SINGLE call; __bulkTotal bounds the script. Four audit rounds found four
+-- members of this family one at a time, each because the previous predicate keyed on something
+-- correlated with cost rather than cost itself.
+local __bulkCap = 4194304
+local __bulkTotal = 0
+local __bulkBudget = 16777216
+local __chargeBulk
+
+-- Kept as a separate name because the shift shims charge elements moved, which for a table of
+-- small values is the honest cost unit there.
 local __shiftTotal = 0
 local __concat, __error = table.concat, error
+
+-- __chargeBulk raises the limit sentinel when one call, or the script in total, exceeds the
+-- bulk-work budget. Defined once so every shim charges the same accumulator with the same units.
+__chargeBulk = function(bytes, what)
+  if bytes > __bulkCap then
+    __error("` + LimitSentinel + `: " .. what .. " size", 0)
+  end
+  __bulkTotal = __bulkTotal + bytes
+  if __bulkTotal > __bulkBudget then
+    __error("` + LimitSentinel + `: " .. what .. " budget", 0)
+  end
+end
 local function __emit(s)
   __len = __len + #s
   if __len > ` + strconv.Itoa(OutputCapBytes) + ` then
@@ -543,17 +573,95 @@ end
 --
 -- The charge is the number of ELEMENTS joined, matching how the shift budget charges elements
 -- moved, so one accumulator bounds the whole family.
+-- The rest of the family, charged to the same budget in the same units.
+--
+-- Each of these builds or rearranges O(n) data inside one C call, so the instruction hook
+-- cannot interrupt it, and each was measured expensive ONLY in loop form -- a single call is
+-- milliseconds, which is why an earlier sweep that timed single calls concluded they were all
+-- cheap. Loop form is the shape that matters here: the fuzz coordinator replays a corpus, and
+-- a script may repeat one call thousands of times inside the instruction budget.
+local __srep0 = string.rep
+string.rep = function(sv, n, ...)
+  if __type(sv) == "string" and __type(n) == "number" and n > 0 then
+    __chargeBulk(#sv * n, "string.rep")
+  end
+  return __srep0(sv, n, ...)
+end
+
+for _, name in __ipairs({"upper", "lower", "reverse"}) do
+  local orig = string[name]
+  if orig ~= nil then
+    string[name] = function(sv, ...)
+      if __type(sv) == "string" then
+        __chargeBulk(#sv, "string." .. name)
+      end
+      return orig(sv, ...)
+    end
+  end
+end
+
+-- string.gsub deliberately gets NO bulk charge: __patcheck already caps pattern subjects at
+-- 256 bytes and patterns at 48, so gsub cannot reach a size where the bulk budget would matter.
+-- A shim here measured as dead code -- every loop form I tried was already excluded at 2ms by
+-- that guard, which is why the enforcer below does not list gsub.
+local __tsort0 = table.sort
+table.sort = function(t, ...)
+  if __type(t) == "table" then
+    -- Sorting compares about n*log2(n) times, so charging n undercharged by the log factor:
+    -- 100 sorts of 200000 elements still burned 4 seconds before the budget tripped. Charge
+    -- the comparison count instead, approximating log2(n) by the bit length of n.
+    local n = #t
+    local lg = 0
+    local m = n
+    while m > 1 do
+      m = __floor(m / 2)
+      lg = lg + 1
+    end
+    if lg < 1 then lg = 1 end
+    __chargeBulk(n * lg, "table.sort")
+  end
+  return __tsort0(t, ...)
+end
+
 local __tconcat0 = table.concat
 table.concat = function(t, ...)
   if __type(t) == "table" then
-    local n = #t
-    if n > 1048576 then
-      __error("` + LimitSentinel + `: table.concat size", 0)
+    -- Charge BYTES over the REQUESTED range, not elements over the whole table.
+    --
+    -- Two bugs came from getting either half wrong. Counting elements let 64 elements of
+    -- 64 KiB each cost 9 seconds while charging only 64 -- the cost of building a string is
+    -- its length, not how many pieces it came in. And reading #t rather than the [i,j]
+    -- arguments made table.concat(t, ",", 1, 3) on a 2M-element table skip, even though it
+    -- joins three elements in microseconds; that is the same mistake the insert shim's own
+    -- comment warns about, repeated here.
+    local i = __select("#", ...) >= 2 and (__select(2, ...)) or 1
+    local j = __select("#", ...) >= 3 and (__select(3, ...)) or #t
+    if __type(i) ~= "number" then i = 1 end
+    if __type(j) ~= "number" then j = #t end
+    local bytes = 0
+    if j >= i then
+      -- Separator bytes count too: an empty table with a 64 KiB separator repeated 4000
+      -- times cost over three minutes while charging nothing at all.
+      local sep = (__select(1, ...))
+      if __type(sep) == "string" then
+        bytes = #sep * (j - i)
+      elseif __type(sep) == "number" then
+        bytes = #__tostring(sep) * (j - i)
+      end
+      local k = i
+      while k <= j do
+        local v = t[k]
+        local tv = __type(v)
+        if tv == "string" then
+          bytes = bytes + #v
+        elseif tv == "number" then
+          bytes = bytes + 8
+        end
+        if bytes > __bulkCap then break end
+        k = k + 1
+      end
     end
-    __shiftTotal = __shiftTotal + n
-    if __shiftTotal > 4194304 then
-      __error("` + LimitSentinel + `: table.concat budget", 0)
-    end
+    __chargeBulk(bytes, "table.concat")
   end
   return __tconcat0(t, ...)
 end

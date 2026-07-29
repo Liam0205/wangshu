@@ -156,3 +156,58 @@ func TestConcatBudget(t *testing.T) {
 		}
 	}
 }
+
+// TestBulkBudgetCoversTheFamily pins the whole bulk-work family in one place, in BYTES.
+//
+// Four audit rounds and one self-sweep found members one at a time, and a fifth round found three
+// more: my sweep had timed SINGLE calls, where every one of these is milliseconds, so it concluded
+// they were cheap. Loop form is the shape that matters -- a script can repeat one C call thousands
+// of times inside the instruction budget, and the hook cannot interrupt any of them.
+//
+// The unit is bytes because counting elements undercharges anything holding large strings: 64
+// concat pieces of 64 KiB each cost 9 seconds while charging 64. table.sort is charged n*log2(n),
+// since charging n left 100 sorts of 200000 elements burning 4 seconds.
+//
+// string.gsub is deliberately absent: __patcheck already caps pattern subjects at 256 bytes, so
+// every loop form of it is excluded at 2ms by that guard and a bulk charge there would be dead
+// code. An audit reported gsub as a gap; measuring showed the existing guard already covers it.
+func TestBulkBudgetCoversTheFamily(t *testing.T) {
+	pre := Prelude(testKeep)
+	for _, tc := range []struct{ name, src string }{
+		{"string.rep in a loop",
+			`for i=1,1000 do local x=#string.rep("x",4194304) end print(1)`},
+		{"string.upper in a loop",
+			`local s=string.rep("a",4194304) for i=1,1000 do s:upper() end print(1)`},
+		{"table.sort in a loop",
+			`t={} for i=1,200000 do t[i]=i%7 end for k=1,100 do table.sort(t) end print(1)`},
+		{"concat of large pieces",
+			`t={} for i=1,64 do t[i]=string.rep("y",65536) end for k=1,2000 do table.concat(t) end print(1)`},
+		{"concat with a large separator",
+			`t={} for i=1,1000 do t[i]="" end local d=string.rep("z",65536) for k=1,4000 do table.concat(t,d) end print(1)`},
+	} {
+		r := Exec(tc.src, pre, Limits{})
+		if !strings.Contains(r.Err, LimitSentinel) {
+			t.Errorf("%s was COMPARED (err=%q)", tc.name, r.Err)
+		}
+	}
+	// A cheap range concat over a HUGE table must still be compared: the charge reads the
+	// requested [i,j], not #t. Reading #t made this skip, which is the same mistake the insert
+	// shim's own comment warns about.
+	huge := Exec(`t={} for i=1,2000000 do t[i]="a" end print(table.concat(t,",",1,3))`, pre, Limits{})
+	if strings.Contains(huge.Err, LimitSentinel) {
+		t.Errorf("a 3-element range concat over a large table was SKIPPED (err=%q)", huge.Err)
+	}
+	// And ordinary uses of every shimmed function must still be compared.
+	for _, src := range []string{
+		`print(string.rep("ab",3))`,
+		`print(("hello"):upper(),("X"):lower(),("abc"):reverse())`,
+		`print(("hello world"):gsub("o","0"))`,
+		`t={3,1,2} table.sort(t) print(table.concat(t,","))`,
+		`t={} for i=1,1000 do t[i]=i end table.sort(t) print(t[1],t[1000])`,
+	} {
+		r := Exec(src, pre, Limits{})
+		if strings.Contains(r.Err, LimitSentinel) {
+			t.Errorf("ordinary use was SKIPPED (err=%q) for %s", r.Err, src)
+		}
+	}
+}
