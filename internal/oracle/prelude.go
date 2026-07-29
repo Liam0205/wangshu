@@ -476,20 +476,62 @@ table.insert = function(t, ...)
         -- the same corpus hazard in the same family, merely split across calls. The
         -- instruction-count hook cannot interrupt it either, because each shift happens
         -- inside one C call.
+        -- The cost is the number of elements MOVED, and that does not depend on the sign
+        -- of the position. Both checks used to sit inside the negative-position branch, so
+        -- a positive position was neither span-checked nor charged: inserting at position 1
+        -- in a 40000-iteration loop shifts the whole array every call and cost 15 seconds
+        -- across the two engines while comparing normally. Removing at position 1 in a loop
+        -- is the same shape.
+        --
+        -- NOTE: no backticks in this comment -- the prelude is a Go raw string literal, and
+        -- a backtick here silently ends it, which produces a confusing syntax error far
+        -- from the real cause.
+        local span
         if i32 < 1 then
-          local span = 1 - i32
-          if span > 1048576 then
-            __error("` + LimitSentinel + `: table.insert shift span", 0)
-          end
-          __shiftTotal = __shiftTotal + span
-          if __shiftTotal > 4194304 then
-            __error("` + LimitSentinel + `: table.insert shift budget", 0)
-          end
+          span = 1 - i32
+        else
+          local n = #t
+          span = n + 1 - i32
+          if span < 0 then span = 0 end
+        end
+        if span > 1048576 then
+          __error("` + LimitSentinel + `: table.insert shift span", 0)
+        end
+        __shiftTotal = __shiftTotal + span
+        if __shiftTotal > 4194304 then
+          __error("` + LimitSentinel + `: table.insert shift budget", 0)
         end
       end
     end
   end
   return __tinsert0(t, ...)
+end
+
+-- table.remove is charged to the same budget: removing at a low position shifts every
+-- element above it down, so a loop of table.remove(t, 1) costs the same as a loop of
+-- table.insert(t, 1, v) and was equally unaccounted while the budget lived only in the
+-- insert shim.
+local __tremove0 = table.remove
+table.remove = function(t, ...)
+  if __type(t) == "table" and __select("#", ...) >= 1 then
+    local pos = (__select(1, ...))
+    if __type(pos) == "number" then
+      local i64 = pos >= 0 and __floor(pos) or -__floor(-pos)
+      local i32 = i64 % 4294967296
+      if i32 >= 2147483648 then i32 = i32 - 4294967296 end
+      local n = #t
+      local span = n - i32
+      if span < 0 then span = 0 end
+      if span > 1048576 then
+        __error("` + LimitSentinel + `: table.remove shift span", 0)
+      end
+      __shiftTotal = __shiftTotal + span
+      if __shiftTotal > 4194304 then
+        __error("` + LimitSentinel + `: table.remove shift budget", 0)
+      end
+    end
+  end
+  return __tremove0(t, ...)
 end
 
 -- string.char UB guard, same reasoning as the unsigned verbs above.

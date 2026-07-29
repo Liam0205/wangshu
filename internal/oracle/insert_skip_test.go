@@ -82,3 +82,43 @@ func TestInsertShiftCumulativeBudget(t *testing.T) {
 		}
 	}
 }
+
+// TestShiftBudgetCoversPositionSign pins that shift work is charged regardless of the position's
+// SIGN, and for table.remove as well as table.insert.
+//
+// Both checks originally sat inside the negative-position branch, so a positive position was
+// neither span-checked nor charged: inserting at position 1 in a 40000-iteration loop shifts the
+// whole array every call and cost 15 seconds across the two engines while comparing normally.
+// Removing at position 1 is the same shape and had no shim at all.
+//
+// This is the third gap of one family, each found by a separate audit round: the per-call span
+// missed accumulation, the cumulative budget missed positive positions, and the insert shim
+// missed remove. What they have in common is that the COST is the number of elements moved,
+// which is what the budget now keys on rather than any property of the position.
+func TestShiftBudgetCoversPositionSign(t *testing.T) {
+	pre := Prelude(testKeep)
+	for _, tc := range []struct{ name, src string }{
+		{"insert at a positive position in a loop",
+			`t={} for i=1,40000 do table.insert(t,1,0) end print(#t)`},
+		{"remove at a positive position in a loop",
+			`t={} for i=1,40000 do t[i]=i end for i=1,20000 do table.remove(t,1) end print(#t)`},
+	} {
+		r := Exec(tc.src, pre, Limits{})
+		if !strings.Contains(r.Err, LimitSentinel) {
+			t.Errorf("%s was COMPARED (err=%q); the budget must charge moved elements whatever "+
+				"the position's sign", tc.name, r.Err)
+		}
+	}
+	// Ordinary uses of both must still be compared, including the low-position forms -- the
+	// budget excludes the expensive band, not shifting as such.
+	for _, src := range []string{
+		`t={} for i=1,500 do table.insert(t,1,i) end print(#t,t[1])`,
+		`t={1,2,3,4,5} for i=1,3 do table.remove(t,2) end print(#t,t[2])`,
+		`t={1,2,3} print(table.remove(t,1),#t)`,
+	} {
+		r := Exec(src, pre, Limits{})
+		if strings.Contains(r.Err, LimitSentinel) {
+			t.Errorf("ordinary shifting was SKIPPED (err=%q) for %s", r.Err, src)
+		}
+	}
+}
