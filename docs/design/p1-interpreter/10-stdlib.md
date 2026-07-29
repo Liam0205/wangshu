@@ -810,7 +810,7 @@ string 库**操作字节**(Lua string 是字节串,01 §5.1),索引 1-based,负�
 | `string.lower(s)` | 转小写(仅 ASCII) | `(s)` → string | ✅ | 新串;仅 ASCII |
 | `string.rep(s, n)` | s 重复 n 次 | `(s, n)` → string | ✅ | 新串(可能很大,§5.3);n≤0 返回空串 |
 | `string.reverse(s)` | 字节逆序 | `(s)` → string | ✅ | 新串 |
-| `string.byte(s [, i [, j]])` | 返回 `[i,j]` 各字节的数值码 | `(s [,i,j])` → number... | ✅ | 多返回值(j-i+1 个 number);不分配串 |
+| `string.byte(s [, i [, j]])` | 返回 `[i,j]` 各字节的数值码 | `(s [,i,j])` → number... | ✅ | 多返回值(j-i+1 个 number);不分配串。**上限 `8000 - nargs`,消息被 `luaL_checkstack` 包一层**(#206,§5.4c) |
 | `string.char(...)` | 各数值码组成串 | `(...)` → string | ✅ | 新串;每参 `CheckInt` 且 0..255(否则报错)。**越界 double 走 PUC 的两步转换**(#193,§5.4b) |
 | `string.format(fmt, ...)` | 格式化(§5.2 指令表) | `(fmt, ...)` → string | ✅ | 新串(§3.3 范例);`%s` 查 `__tostring` 重入 |
 | `string.find(s, pat [, init [, plain]])` | 查找模式(返回位置 + 捕获) | `(s, pat [,init,plain])` → (start, end, caps...) or nil | ✅ | **Lua pattern**(§6);plain=true 走纯文本查找 |
@@ -958,6 +958,31 @@ func hostStringRep(vm *VM, th *Thread) int {
 build 互相不一致的区间没有意义。**只跳 UB 区间**:in-range 的值照旧逐字节比对,包括 `2^53`(大但
 int64 可表示,截断有定义),以及小数、负数、`[0,255]` 边界。回归在
 `internal/stdlib/format_signed_test.go`(`TestCCharCast_X86Semantics`)。
+
+### 5.4c `string.byte` 的 `lua_checkstack` 上限,以及被包了一层的消息(#206,2026-07-29)
+
+`string.byte` 原先**完全没有上限**:`string.byte(string.rep("a",9000),1,8000)` 返回 8000 个值,而 PUC
+抬错。PUC 的 `str_byte` 调 `luaL_checkstack(L, n, "string slice too long")`,所以上限**与 `unpack` 一样**
+是 `LUAI_MAXCSTACK` 减去参数个数(`8000 - nargs`,机制见 §4.5:对一个 C 函数来说
+`L->top - L->base` 就是参数个数)。落点 `internal/stdlib/stringlib.go::stringFnByte`,复用同一个
+`maxCStack` 常数。
+
+**但消息不一样,这是本条的要点**:`luaL_checkstack` 把调用者给的文本**包一层**成 `"stack overflow (%s)"`,
+所以 PUC 输出的是
+
+```
+stack overflow (string slice too long)
+```
+
+而不是裸的 `string slice too long`。`unpack` 那边不会暴露这件事,因为 `luaB_unpack` 用的是
+`luaL_error(L, "too many results to unpack")`——`luaL_error` **直出**,不套格式。两个函数的上限公式相同、
+消息一个直出一个包一层,所以照着 `unpack` 抄很容易只抄对一半:第一版上限判断完全正确、文本照抄了裸串,
+65 个 oracle 用例里仍有 12 个分歧。
+
+顺着 vendored 源码把其余 `lua_checkstack` 调用点都查过一遍:`string.find`/`string.match` 的
+`too many captures` 阈值已经正确,`coroutine.resume` 的参数路径也一致,没有别的要补。判据见
+`llmdoc/guides/cross-backend-semantic-fix-sweep.md`「PUC 语义由 C 实现定义」节第四刻度(抄一条 PUC 错误
+消息时先看它是经哪个 `luaL_*` 抬出来的)。
 
 ---
 
@@ -1617,19 +1642,19 @@ io 库涉及**文件句柄**(full userdata + `__gc`,01 §5.5 / 06 §10),是 stdl
 | 函数 | 语义 | P1 | 备注 |
 |---|---|---|---|
 | `io.write(...)` | 写各参数到默认输出(stdout) | ✅ **必做** | 跑测试最小集;各参数 string/number(`CheckString`);**返回布尔成功标志**(5.1 `g_write`;返回 file 是 5.2+,§10.3) |
-| `io.read([fmt...])` | 从默认输入(stdin)读 | **❌ 未提供**(设计上必做) | 格式 `"*l"`(行)/`"*n"`(数)/`"*a"`(全)/数字(n 字节);**当前仓库里 `io` 表只有 `write`**,缺口见 §10.1.1 与 #205 |
-| `io.stdout`/`io.stdin`/`io.stderr` | 标准流(file handle) | **❌ 未提供**(设计上必做) | 需要 file userdata(§10.2);曾做出来但因 GC rooting 问题整段撤回,缺口见 §10.1.1 与 #205 |
-| `io.open(filename [, mode])` | 打开文件,返回 file handle | △ **部分** | full userdata + `__gc`(§10.2);依赖文件系统 + 安全(§9.3) |
-| `io.close([file])` | 关闭文件(默认默认输出) | △ | file 方法 `file:close` 的全局形式 |
-| `io.lines([filename])` | 行迭代器 | △ | 迭代器(host closure);依赖 open |
-| `io.input([file])`/`io.output([file])` | 取/设默认输入/输出 | △ | 默认流管理 |
+| `io.read([fmt...])` | 从默认输入(stdin)读 | ✅ **必做** | 格式 `"*l"`(行,默认)/`"*L"`/`"*n"`(数)/`"*a"`(全)/数字(n 字节);与 `file:read` 共用一份实现(§10.3) |
+| `io.stdout`/`io.stdin`/`io.stderr` | 标准流(file handle) | ✅ **必做** | **真 file-handle userdata**(§10.2),`type()` 报 `userdata` 与 PUC 一致;分配走 `State.NewUserdata`(§10.2.1) |
+| `io.open(filename [, mode])` | 打开文件,返回 file handle | **❌ 缺口** | 需要文件系统访问控制 + `__gc` 关文件(§10.2 / §9.3);P1 不做 |
+| `io.close([file])` | 关闭文件(默认默认输出) | △ | 标准流的 `file:close` 已提供(返回 `(nil, msg)`);全局形式依赖 open |
+| `io.lines([filename])` | 行迭代器 | △ **部分** | 无参形式(默认输入)已提供;`io.lines(filename)` **抬错**而不是静默返回空迭代器(依赖 open) |
+| `io.input([file])`/`io.output([file])` | 取/设默认输入/输出 | △ | 默认流管理;当前默认输入/输出固定为进程的 stdin/stdout |
 | `io.type(obj)` | 判断是否 file handle(`"file"`/`"closed file"`/nil) | △ | 检查 userdata 的 metatable 身份 |
-| `file:read(...)` | 从 file 读(同 io.read 格式) | △ | file 方法(§10.3) |
-| `file:write(...)` | 写 file | △ | file 方法 |
-| `file:close()` | 关闭 file | △ | file 方法;调底层 `os.File.Close` |
-| `file:lines()` | 行迭代器 | △ | file 方法 |
-| `file:seek([whence [, off]])` | 文件定位 | △ | `set`/`cur`/`end` + 偏移 |
-| `file:flush()` | 刷新缓冲 | △ | |
+| `file:read(...)` | 从 file 读(同 io.read 格式) | ✅(标准流) | 与 `io.read` 共用实现;读一个**只写**句柄返回 PUC 的 errno 三元组(§10.3) |
+| `file:write(...)` | 写 file | ✅(标准流) | 返回**布尔**成功标志(与 `io.write` 同,5.1 口径);非句柄 receiver 报 `FILE* expected, got X` |
+| `file:close()` | 关闭 file | ✅(标准流) | 标准流**返回** `(nil, "cannot close standard file")` 而不是抬错 |
+| `file:lines()` | 行迭代器 | ✅(标准流) | 迭代器是 host closure,EOF 产出 nil |
+| `file:seek([whence [, off]])` | 文件定位 | **❌ 缺口** | 依赖真实文件句柄;P1 不做 |
+| `file:flush()` | 刷新缓冲 | ✅(标准流) | 标准流无缓冲,返回成功标志 |
 | `io.popen`/`io.tmpfile` | 管道/临时文件 | **❌ 缺口** | popen 涉进程(安全,§9.3);P1 不做 |
 
 **P1 范围定稿**(任务点名):
@@ -1637,36 +1662,57 @@ io 库涉及**文件句柄**(full userdata + `__gc`,01 §5.5 / 06 §10),是 stdl
 > **P1 io 库分两档**:
 > - **必做(跑 conformance 测试所需)**:`io.write`、`io.read`、`io.stdout`/`io.stdin`/`io.stderr`、`print`(base,
 >   经 stdout)。这是「脚本能输出、能读输入、测试能跑」的最小集。**不依赖完整 file handle 机制**(stdout/stdin
->   是预建的固定 file,§10.2)。**实际状态与这一档有差距**:只有 `io.write` 与 `print` 提供了(它们直接写宿主
->   stdout、不经 file handle),`io.read` 与三个标准流仍是缺口——见 §10.1.1 与 #205。
-> - **部分实现(完整文件 IO)**:`io.open`/`file:read`/`file:write`/`file:close`/`file:seek`/`io.lines` 等完整
->   文件句柄操作——**P1 可部分实现或记缺口**。file handle 的 full userdata + `__gc` 机制(§10.2)是设计要点,
->   P1 至少把**机制骨架**搭好(让 stdout/stderr 走同一机制),完整文件操作按需补。
+>   是预建的固定 file,§10.2)。**这一档已经交付**(#205,2026-07-29):`io.write`、`io.read`、三个标准流与
+>   `print` 都在,标准流是真 file-handle userdata,见 §10.1.1。
+> - **部分实现(完整文件 IO)**:`io.open`/`file:seek` 等**需要真实文件**的部分仍是缺口。file handle 的
+>   userdata + metatable 机制(§10.2)骨架已搭好并由三个标准流在用(`write`/`close`/`read`/`lines`/`flush`
+>   共享一张 metatable),`__gc` 关文件那一环要等 `io.open` 一起做。
 > - **缺口**:`io.popen`(进程管道,安全风险 §9.3)、`io.tmpfile`——**P1 不做**(记 §15.2 缺口)。
 >
 > **为什么这样裁**:① 测试套主要需要 `print`/`io.write` 输出(差分测试输出);② 嵌入式规则引擎(首个宿主)脚本极少
 > 做文件 IO(数据经 arena 喂入,11 §3,不从文件读);③ 完整文件 IO 的 `__gc` 终结器(关文件)依赖 06 §10 的
 > finalizer,P1 finalizer 是骨架(06 §10 P1 范围)。roadmap §5 原则 4:文件 IO 不是热路径核心,按需。
 
-#### 10.1.1 实际状态:`io` 表里只有 `write`,标准流与 `io.read` 是缺口(#205,2026-07-28)
+#### 10.1.1 实际状态:三个标准流 + `io.read` 已提供,仍缺需要真实文件的部分(#205,2026-07-29)
 
-上面那份「必做」清单是**设计口径**,与当前实现有差距,这里如实记下来:`internal/stdlib/tablelib.go` 的
-`ioFns` 只注册了 `write` 一个函数,所以 `io.stdout`/`io.stdin`/`io.stderr` 与 `io.read` **目前都不存在**。
-`print` 与 `io.write` 直接写宿主的 stdout,不经 file handle 机制,所以「脚本能输出、测试能跑」这条已经满足;
-缺的是 file handle 那一层本身。
+`internal/stdlib/tablelib.go` 的 `registerStdStreams` 把 `io.stdout`/`io.stderr`/`io.stdin` 装成**真
+file-handle userdata**,共享一张 metatable 提供 `write`/`close`/`read`/`lines`/`flush`;`io.read` 与
+`io.lines`(无参形式)也在。**为什么必须是真 userdata 而不是一张表**:PUC 报的是 `userdata`,一张表会
+被 `type()` 露出来。
 
-**曾做出来又整段撤回(2026-07-28)**,理由值得记住:三个标准流做成 file-handle userdata + 共享 metatable
-(`write`/`close`),为此补了三处 VM 缺口——`metaFieldOfValue` 不认 userdata、`indexWithMeta` 没有 userdata
-分支、`getmetatable` 对 userdata 无条件返回 nil(都在 `internal/crescent/meta.go`)。补完之后
-`io.stdout:write()`、`:close()`(标准流返回 `(nil, msg)` 而不是抛错)、`getmetatable` 都对了,**但随后
-`TestGCStress_RandomScripts` 失败,而且创建句柄之后一个 `collectgarbage("collect")` 就以 arena 索引越界
-panic**:句柄在仍然从 `io` 表可达的情况下被清扫,说明那个对象的构造方式没有正确进入 GC 的根 / 追踪路径。
-`internal/gc/mark.go` 确实会把 `OBJ_USERDATA` 追到它的 meta 与 env ref,所以问题在**构造侧**不在收集器。
+**仍然缺的是需要真实文件的那一档**:`io.open` / `io.popen` / `io.tmpfile` / `f:seek`(按 §11 的 ❌ 列)。
+所以 `io.lines(filename)` **抬错**而不是静默返回一个空迭代器——静默返回空迭代器会让「文件读不到」看起来
+像「文件是空的」。
 
-**这是运行时里第一个在 `__gc` finalizer 之外创建的 userdata**,分配与 rooting 的约定得先搞清楚,所以整段
-撤回、开 #205,而不是带着一个会破坏 arena 的改动继续。#205 的范围因此是「file-handle userdata 基础设施 +
-三个标准流 + `io.read`」,而不只是补几个函数;`debug` 库整个不存在(`debug.traceback` 的 `[C]` 帧一并归入
-#205,在 `debug` 表出现之前那条无从谈起)。过程与判据见
+**上一轮撤回的根因只有一行**(#205 的由来,2026-07-28):原型直接调 `object.AllocUserdata`,**跳过了
+collector 的 `LinkSweep`**,所以对象 header 里既没有颜色也没有 sweep 链,收集器根本看不见它;创建句柄
+之后一个 `collectgarbage("collect")` 就以 arena 索引越界 panic,而那些句柄仍然从 `io` 表可达。
+`internal/gc/mark.go` 一直会把 `OBJ_USERDATA` 追到它的 meta 与 env ref——问题在**构造侧**不在收集器。
+分配约定见 §10.2.1。
+
+**这一轮补的三处 VM 缺口**(都是「userdata 从来没被当成带 metatable 的值对待过」的表现):
+
+| 缺口 | 落点 | 后果 |
+|---|---|---|
+| `metaFieldOfValue` 不认 userdata | `internal/crescent/meta.go` | userdata 的 `__index` 从来没被查过,`io.stdout:write(...)` 解析不到方法 |
+| `indexWithMeta` 没有 userdata 分支 | 同上 | userdata 没有自己的裸字段,索引应当直接走 `__index`;没有 metatable 时报 `attempt to index a userdata value` |
+| `getmetatable` 对 userdata 无条件返回 nil | `internal/stdlib/stdlib.go` | PUC 报的是一张表;现在还会遵守 `__metatable`(07 §1.3 的保护) |
+
+**与 `lua5.1` 逐条核对出来的四个细节**(每一条第一版都写错了,靠 56 个探针纠正,54/56 一致,剩下 2 个是
+故意不提供的 `debug.sethook`/`getlocal`):
+
+- 非句柄 receiver 报的是 `bad argument #1 to '?' (FILE* expected, got table)`,不是通用的参数类型错误;
+- 读一个**只写**句柄返回 PUC 的 errno 三元组 `(nil, "Bad file descriptor", 9)`,不是单个 nil;
+- `debug.traceback` 传**显式 nil** 返回 nil——显式 nil 是一个值,不是「参数缺失」(09 §13.1);
+- `debug.getinfo` 无参时的消息是 `function or level expected`(这个词序)。
+
+**`io.read` 的验证只能用真实二进制**:`go test` 不把 stdin 转发给测试进程,所以在 `go test` 里写的探针
+全部返回 nil——那量到的是 harness 而不是代码。用一个真实 binary 喂真实 stdin 之后,八种写法(`*l`、`*n`、
+`*a`、字节数、EOF、默认、`io.stdin:read`、`io.lines`)全部与 `lua5.1` 一致。方法论见
+`llmdoc/guides/prove-the-path-under-test.md` §4.10。
+
+`debug` 库现在提供 `traceback` 与 `getinfo`(09 §13),其余仍不存在(§11 的 ❌ 列)。过程与判据见
+`llmdoc/memory/reflections/2026-07-29-issue205-206-208-io-userdata-debug.md`;上一轮的撤回决策见
 `llmdoc/memory/reflections/2026-07-28-issue201-203-unpack-skip-thresholds.md` 教训 4 与
 `llmdoc/guides/prove-the-path-under-test.md` §4.3b。
 
@@ -1702,6 +1748,24 @@ file handle 设计:
 - **closed 状态**:file close 后,句柄表项置 nil 或标记 closed;后续 `file:read` 报 `"attempt to use a closed file"`
   (5.1 措辞,待 12 核对)。`io.type` 据此返回 `"file"`/`"closed file"`/nil。
 
+#### 10.2.1 userdata 的分配必须经 `State.NewUserdata`(`LinkSweep` 约定,#205)
+
+**约定**:userdata 的分配走 `internal/crescent/alloc.go` 的 `State.NewUserdata`,它把
+`object.AllocUserdata` + `st.gc.LinkSweep` + `st.gc.AllocCharge` 三步**绑在一起**——这与该文件里
+`allocLuaClosure` / `allocOpenUpvalue` / `allocTable` 三个既有分配器的写法一致([06](./06-memory-gc.md) §2.1
+的 `Alloc` 就是「写头 + 挂 sweep 链」这一对)。**同族分配器里出现三次的动作是契约,不是那几个函数各自的
+选择。**
+
+**漏掉 `LinkSweep` 的症状离原因很远**:直接调 `object.AllocUserdata` 时对象 header 里既没有颜色也没有
+sweep 链,于是收集器**根本看不见这个对象**;症状是创建句柄之后一次 `collectgarbage("collect")` 以 arena
+索引越界 panic——**panic 出现在 GC 里,而错误在分配处**,而且句柄此时仍然从 `io` 表可达,所以第一眼像是
+收集器把可达对象清扫了。这也意味着「功能全对」与「会破坏 arena」可以同时成立:上一轮的原型
+`:write`/`:close`/`getmetatable` 都对,一次收集就炸(§10.1.1)。
+
+**回归防线**:`io_handles_test.go::TestIOHandles_SurviveGC`——收集之后 `type(io.stdout)` 仍是 `userdata`、
+两次收集之后 `:write("")` 仍返回 true、50 轮收集句柄仍在、一万个表的分配压力之后仍在。判据见
+`llmdoc/guides/design-claims-vs-codebase-physics.md` §4.1。
+
 ### 10.3 `io.write`/`io.read`(P1 必做,最小集)
 
 ```go
@@ -1731,13 +1795,24 @@ func hostIoWrite(vm *VM, th *Thread) int {
   的旧描述不同,以 `g_write` 为准。
 - **内嵌 NUL 不截断**:`g_write` 用带长度的 `fwrite`,NUL 照写。这与 `print` 的 `fputs`(停在第一个 NUL)
   不同——**PUC 自己在这两个函数上不一致**,望舒两处都不截断,理由见 §4.2。
-- **`io.read` 最小集**:从 stdin 读。格式:`"*l"`(一行,默认,去换行)、`"*L"`(一行带换行,5.2;5.1 无 `*L`——
-  **排除**)、`"*n"`(一个数,用 `parseLuaNumber`)、`"*a"`(全部)、数字 n(n 字节)。P1 至少 `"*l"`/`"*a"`/`"*n"`。
-- **stdout/stdin/stderr 是预建 file**(§10.2 机制):openlibs 时建三个 file userdata 包装 `os.Stdout`/`os.Stdin`/
-  `os.Stderr`,存 `io.stdout`/`io.stdin`/`io.stderr`。`print`(base §4.2)也写 `io.stdout`(经 `vm.writeStdout`)。
+- **`io.read` 已提供**(#205,2026-07-29):从 stdin 读,格式 `"*l"`(一行,默认,去换行)、`"*n"`(一个数,
+  走 `tonumber` 同一条字符串→数字转换,所以接受面与它逐字一致)、`"*a"`(全部,EOF 返回 `""` 而不是 nil——
+  它是唯一从不失败的格式)、数字 n(n 字节)。落点 `internal/stdlib/tablelib.go::readFormats`,`io.read` 与
+  `file:read` **共用这一份实现**;`stdinReader` 是**一个共享的** `bufio.Reader`,因为标准输入的位置是全局
+  状态,两个 reader 各自持有缓冲预读会静默丢字节。
+  **验证只能用真实二进制**:`go test` 不把 stdin 转发给测试进程,在 `go test` 里写的探针全部返回 nil,那量到
+  的是 harness 而不是代码(§10.1.1,方法论见 `llmdoc/guides/prove-the-path-under-test.md` §4.10)。
+- **stdout/stdin/stderr 是预建 file**(§10.2 机制,#205 已交付):openlibs 时建三个 file-handle userdata,
+  payload 里一个字节记流的种类(不用 Go 侧的 map,那会需要一张必须跟着 GC 活下来的登记表),共享一张
+  metatable;分配走 `State.NewUserdata`(§10.2.1)。`print`(base §4.2)与 `io.write` 仍直接写宿主 stdout。
 - **IO 错误转 Lua 错误**:写/读失败时,Lua 5.1 的 io 函数返回 `(nil, errmsg)` 或抛错(依函数)。`file:read`
-  EOF 返回 nil(非错)。**P1 对齐 5.1 的「失败返回 nil+msg vs 抛错」分工**,待 12 核对。**例外 `io.write`**:
-  它的 `g_write` 压布尔、写失败压 `false`,不抛错(上面已更正)。
+  EOF 返回 nil(非错)。**P1 对齐 5.1 的「失败返回 nil+msg vs 抛错」分工**,与 `lua5.1` 逐条核对过的三处
+  (#205,2026-07-29):① 非句柄 receiver 报 `bad argument #1 to '?' (FILE* expected, got X)`——不是通用的
+  参数类型错误;② 读一个**只写**句柄返回 PUC 的 errno 三元组 `(nil, "Bad file descriptor", 9)`(`fread` 在
+  只写 handle 上失败,`g_read` 报 `strerror(EBADF)` + `EBADF`,Linux 上是 9)——不是单个 nil;
+  ③ 关一个标准流**返回** `(nil, "cannot close standard file")` 而不是抬错,所以 pcall 包住它会成功。
+  **例外 `io.write`**:它的 `g_write` 压布尔、写失败压 `false`,不抛错(上面已更正);标准流的
+  `file:write` 同样返回布尔(返回句柄是 5.2+)。
 
 ### 10.4 io 库与安全(承 §9.3)
 
@@ -1860,9 +1935,9 @@ wangshu.NewState(wangshu.Options{Exclude: []string{"os.execute", "os.exit"}})
 | table | `table` 表 | `table.insert` 等 |
 | math | `math` 表 | `math.floor` 等;`math.pi`/`math.huge` 是表内常量 |
 | os | `os` 表 | `os.time` 等(危险函数受配置) |
-| io | `io` 表 + `io.stdout`/`stdin`/`stderr`(file userdata) | `io.write` + file 方法表(§10.2) |
+| io | `io` 表 + `io.stdout`/`stdin`/`stderr`(**真 file-handle userdata**,#205 已交付) | `io.write`/`io.read`/`io.lines` + 共享的 file 方法表(§10.2 / §10.2.1) |
 | coroutine | `coroutine` 表 | `coroutine.create` 等 |
-| debug | `debug` 表 | `debug.traceback`/`getinfo`(09 §13) |
+| debug | `debug` 表(#205 已注册) | `debug.traceback`/`getinfo`(09 §13);其余不提供 |
 
 - **base 恒开**(核心,无 base 无法跑任何脚本:`print`/`type`/`pairs` 是地基)。
 - **string 库的特殊布点**:不仅建 `string` 表,还**设 string 类型元表**(§5.0,07 §1.2)——这是 string 库与其它
@@ -1879,11 +1954,13 @@ wangshu.NewState(wangshu.Options{Exclude: []string{"os.execute", "os.exit"}})
   有**(否则差分时它们在 5.1 是 nil)。
 - **存在性差分用例**:遍历 5.1 的全部标准库函数名,验证望舒**同名存在 + 5.2+ 函数不存在**。这是 stdlib 差分的
   基础项(指向 12)。**P1 缺口的库**(package/部分 io/部分 debug)在存在性差分上**标注豁免**(已知 P1 未实现)。
-- **实际状态(2026-07-28 核对)**:`test/difftest/corners_test.go::exemptions` 里目前**只有** `io.popen`/`io.tmpfile`
-  与 `debug` 的 ❌ 列那几条,**没有**覆盖「三个标准流 + `io.read` 不存在」与「`debug` 表整个未注册」这两件事
-  (§10.1.1),而遍历全部 5.1 函数名的那个存在性差分用例本身也还没写。所以这一条目前是**设计口径**而不是已有
-  执行体——按 `llmdoc/guides/prove-the-path-under-test.md` §4.2,一句没有执行体的豁免声明比一个已知缺口更糟,
-  这里如实记成缺口:#205 完成时应同时补上存在性差分用例,或者在 `exemptions` 里给这两条各写一行。
+- **实际状态(2026-07-29 核对)**:`test/difftest/corners_test.go::exemptions` 里那三条已随 #205 改写——原来
+  写「三个标准流 + `io.read` 未提供」与「`debug` 库整个未注册」的两条,现在分别是「io 库不提供
+  open/popen/tmpfile/seek」与「debug 库只提供 traceback/getinfo」,如实描述**现在**缺什么。仍然欠的是
+  **遍历全部 5.1 函数名的那个存在性差分用例本身**——它还没写,所以「存在性必须一致」这一条至今只有
+  `exemptions` 这份手工清单当执行体。按 `llmdoc/guides/prove-the-path-under-test.md` §4.2 记成缺口:
+  一句没有执行体的声明比一个已知缺口更糟,这里明确它的执行体只覆盖到「已知缺什么」,不覆盖「有没有多出
+  5.2+ 的函数」。
 
 ---
 
@@ -1948,9 +2025,9 @@ stdlib 的 shadow stack 纪律(§3)漏 Pin 是**最难调的 bug 类**(06 §6.3:
 | **table** | insert, remove, concat, sort, maxn | getn, setn(=`#t`/空操作) | table.unpack/pack/move(5.2+) |
 | **math** | abs, ceil, floor, sqrt, sin, cos, tan, asin, acos, atan, atan2, exp, log, log10, pow, fmod, modf, max, min, random, randomseed, huge, pi, rad, deg, frexp, ldexp, sinh, cosh, tanh | — | math.tointeger/type/maxinteger/mininteger(5.3 整数) |
 | **os** | time, clock, date, difftime, getenv | exit(默认不真退出), remove, rename, tmpname, setlocale(仅 "C") | os.execute(默认禁用,安全) |
-| **io** | **write**(已提供);**read, stdout, stdin, stderr 设计上必做但当前未提供**——见 §10.1.1 与 #205 | open, close, lines, input, output, type, file:read/write/close/lines/seek/flush | io.popen, io.tmpfile |
+| **io** | write, read, stdout, stdin, stderr(#205 已交付;标准流是真 file-handle userdata,见 §10.1.1 / §10.2.1)+ 标准流的 file:write/close/read/lines/flush | lines(无参已提供、带文件名抬错), close, input, output, type | io.open, io.popen, io.tmpfile, file:seek(需要真实文件) |
 | **coroutine** | create, resume, yield, status, wrap, running(**机制全在 08**) | — | — |
-| **debug**(09 §13) | traceback, setmetatable, getmetatable ——**整库当前不存在**,`debug` 表未注册(#205) | getinfo(部分字段) | sethook, getlocal/setlocal, getupvalue/setupvalue, getregistry |
+| **debug**(09 §13) | traceback(#205 已交付,含「显式 nil 原样返回」) | getinfo(只填 P1 能诚实给出的字段:currentline / source / short_src / what / func;nups / activelines / namewhat **宁缺不假造**) | sethook, getlocal/setlocal, getupvalue/setupvalue, getregistry(需要解释器未暴露的内省钩子) |
 
 **P1 必做的判定标准**:① 跑 Lua 5.1 conformance 测试套必需(base 核心 + string/table/math 全集 + io 最小输出);
 ② 首个宿主(规则引擎)脚本所需(标量/表/字符串/数学操作)。**可延后的判定标准**:① 嵌入式场景罕用(文件 IO
@@ -2021,8 +2098,10 @@ stdlib 的 shadow stack 纪律(§3)漏 Pin 是**最难调的 bug 类**(06 §6.3:
 - **os.date / os.setlocale 的 locale 差异**(§9.2/§9.4):纯 Go 无 C locale,`string.upper`/`%a`/`os.date` 月名锁
   ASCII/英文,与 C Lua 非 C locale 行为有差。已知 P1 限制。**`%c`/`%x`/`%X` 的格式已核对**(2026-07-28,#199:
   九种格式与系统 `lua5.1` 逐字节一致,`%c` 是 glibc 的 `"%a %b %e %H:%M:%S %Y"`),此项从「待 12 核对」收口。
-- **io 完整度**(§10.1):io.open/file:read/write/seek/lines 等完整文件操作 P1 是部分实现还是缺口待定;
-  io.popen/tmpfile P1 不做。默认输出可重定向(宿主捕获 print 输出)的配置接口待定(记缺口)。
+- **io 完整度**(§10.1,2026-07-29 收窄):三个标准流、`io.read`、`io.lines`(无参)与标准流的
+  `:write`/`:close`/`:read`/`:lines`/`:flush` **已交付**(#205,§10.1.1);仍缺的是需要真实文件的
+  `io.open`/`io.popen`/`io.tmpfile`/`f:seek`,以及 `io.input`/`io.output`/`io.type`。`__gc` 关文件那一环
+  要等 `io.open` 一起做。默认输出可重定向(宿主捕获 print 输出)的配置接口仍待定(记缺口)。
 - **`os.exit` 嵌入语义**(§9.3):P1 默认不真退出(防杀宿主进程);具体语义(抛特殊错误 vs 标记请求退出 vs
   返回控制权)待定,记缺口。
 - **`CheckInt` 非整数 double 行为**(§2.2):P1 定「截断(向零),不报错」(对齐 5.1 `luaL_checkinteger`)。

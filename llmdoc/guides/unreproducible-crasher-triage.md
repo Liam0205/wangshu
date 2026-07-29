@@ -43,6 +43,14 @@ git merge-base --is-ancestor <fix-commit> <headSha>; echo $?
 GC 压力 → 最后才核 headSha,前六条都跑完再核版本。等排除掉「已修复代码」这条最平凡的解释后回头看,
 前六条至少有一半可以不撒。反思 [[2026-07-11-issue123-unreproducible-crasher-round]] 教训 1。
 
+**又一个第一档命中(2026-07-29,#208)**:它是 `table.insert` 移位那一类的又一个 nightly crasher,
+fuzz run 跑在 `cbd0512` 上,**早于**上一轮把 harness skip 降到 2^20 的 `c07ba58`;核一次版本就
+结束,**一行代码没改**,seed 现在 0.00 秒就跳过、作为回归防线留在 corpus 里。这同时是下面
+「同一写法第三次被开成 issue 时该改被接受的区间」那条的**正向结算**:区间改窄之后,同族的下一个
+crasher 不需要任何新动作就消失了——**「不需要新动作」本身就是那次改动改对了位置的事后确认**(与
+[[prove-the-path-under-test]] §9.6 推论同构:一批 crasher 被同一个改动一起解决,是根因修在正确
+位置的信号)。反思 [[2026-07-29-issue205-206-208-io-userdata-debug]]。
+
 ## 一批 crasher 先问会不会被同一个改动一起解决(排在分头查根因之前)
 
 版本核对管的是「**一条** crasher 是不是撞的已修复代码」;当手上是**一批** crasher 时,还有一格更
