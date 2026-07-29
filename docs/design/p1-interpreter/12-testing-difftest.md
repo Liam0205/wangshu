@@ -605,6 +605,25 @@ func DiffN(src string, runners ...Runner) DiffResult { /* N 方比对,§3.3 矩�
 没有丢覆盖。方法论见 `llmdoc/guides/prove-the-path-under-test.md` §4.5b 与
 `llmdoc/guides/unreproducible-crasher-triage.md`「同一写法第三次被开成 issue 时」。
 
+**这个拆分现在有执行体:`test/regression/insert_shift_cost_test.go::TestInsertShiftThresholdsStayDistinct`
+(#209,2026-07-29)**。拆分做完之后有一段时间**没有任何测试表达「这两个阈值是两个数」**:入 corpus 的
+seed 只能表达「这个输入不崩」,表达不了「那个决定还在」——两个数被合回一个之后现有 seed 全都照旧通过
+(合到 2^20 则产品开始拒绝一段 lua5.1 能完成的移位、而昂贵区的 seed 只是被 skip;合到 2^27 则昂贵那一段
+重新进入并行重放、而现有 seed 恰好都在跳过区,上面那两条 `test/regression` 用例又只覆盖 2^27 之下的位置)。
+
+那个测试**按行为断言而不是比对字面量**:两个常数一个在 `internal/stdlib`(`tableInsertShiftCap`)、一个在
+`internal/oracle/prelude.go`(prelude Lua 源码里的 `1048576`),都不导出、也不同包,在测试里写死
+`1<<20` / `1<<27` 只会与任一侧各自漂移而测试照旧是绿的。所以断的是**区间里一个输入的行为**:
+`table.insert(t,-2097151,"")` 的跨度约 2M,在 skip 之上、在产品上限之下,于是它 ① 必须由产品**执行**
+(`prog.Run` 不返错)② 必须**便宜**(耗时上界——skip 的取值本来就建立在「刚超过 skip 的这一段是便宜的」
+这个假设上)。**两个方向都要断**:只断 ① 时两个数合到 2^27 仍然全绿(那一段照旧被执行,只是重新进了
+并行重放),只断 ② 时合到 2^20 也全绿(那一段被产品拒绝、`Run` 立刻返错,当然便宜)。写法的方法论见
+`llmdoc/guides/prove-the-path-under-test.md` §4.5c。
+
+同轮另确认**昂贵的那一段只在「远低于索引 1」这一侧**:大的**正**位置、`table.remove` 位置远低于 1、
+`table.remove` 位置远高于 `#t`、中等跨度实测都是 1-2 ms 且两侧对称,所以 skip 覆盖的就是真实的那一类,
+没有同族的便宜写法被误跳过、也没有同族的昂贵写法漏在外面。
+
 ---
 
 ## 5. GC 压力 fuzz(收口 06 §11/§6.3/§5.2、10 §13.3)

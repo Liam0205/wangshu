@@ -217,6 +217,16 @@ corpus** 作为 baseline coverage sweep;若 corpus 触发的 workload 本身很�
 动 fuzz coordinator。#123 轮就是这样处理的:两个 corpus(`326b508e` / `8c132ff5`)从
 `testdata/fuzz/FuzzAutoPromote/` 撤回,改成 `test/regression/issue123_regression_test.go` 里的显式测试。
 
+**判断两个 seed 是否重复,要算它们实际走的分支,不能看文件名或源码模式(2026-07-29,#209)**。
+corpus 长期积累之后会出现一批**看起来同类**的 seed,合并掉多余的看着是划算的清理。但**seed 的
+等价性由它实际走到的分支定义,而源码文本与那个分支之间往往隔着一层变换**(窄化 / 归一化 / 常量
+折叠)。#209 那一轮:corpus 里四个 `table.insert(t,4...` 看起来是同一类,逐个算窄化之后的值才
+发现 `4294967298 = 2^32 + 2` 模 2^32 之后是 **+2**——一个普通的正位置插入,根本不走那条昂贵跨度
+的 skip,而其他三个都是约 -100M。按模式合并会删掉一个唯一的用例。判据:合并或删除 seed 之前,
+对**每一个**算出它最终落在哪个分支(跳过 / 比对 / 哪一侧的哪个区间),按分支去重而不是按文本
+去重;算不出来就先留着——corpus 重放的代价可以量(那一轮全量 0.62 秒),删错一个用例的代价量
+不出来。反思 [[2026-07-29-issue209-stale-crasher-threshold-pin]] 教训 3。
+
 **判据的首次正向消费**:#125 轮的 corpus `function sum() for A=0,0 do end end return sum() or (sum())` 是简单的 `function` + `for` 循环 + `return`,budget 天然有界,直接入 `testdata/fuzz/FuzzAutoPromote/b03a5a1dd9e56fbf` 常驻(fuzz worker 会把它当种子 mutation 探索周边形状),与 #123 的重 workload 走 `test/regression/` 形成对照。判据在这一轮首次被正向使用,证明可执行。反思 [[2026-07-11-issue125-return-freereg-round]] 教训 4。
 
 **重 workload regression 测试的裁判机制:交给 `go test -timeout` 不要自建 per-run deadline**。走 `test/regression/` 路线的显式测试(如 `test/regression/issue123_regression_test.go`)针对的失败模式是**永不返回**(#123 类段内无限循环),不是「合法路径慢过某阈值」。（2026-07-20 起 issueNNN 回归测试实际已迁入 `test/regression/`,与本节早先声明的规范一致。）此时**不要**在测试内部用 `time.AfterFunc` / channel 类手法自建 per-run wall-clock deadline——那是量纲错配:测试想抓的是「非终止」,任何有限秒数都在跟共享 runner 的可变速度对赌,5s→30s→120s 的常量演进史本身就证明这类失败对常量修改免疫。正解是让测试直接跑裸的 `ProgramCall`,「永不返回」的判定交给 harness 自带的包级 `go test -timeout`(默认 10min,CI 未覆写)——它触发时严格更优:整个 test binary 被拿下 + 全部 goroutine 栈 dump,信息量比一行 `t.Fatalf("did not terminate within Ns")` 高一个数量级,同时 10min 相对合法 run(`-race` build 约 21s)的误报余量约 28×,比 in-test deadline 做得到的量级高得多。
@@ -250,6 +260,33 @@ index 1 的距离」算),只是数值分开——形状不一致会让 skip 遮�
 [[2026-07-28-four-diff-divergence-issues]] 教训 7;数值该不该分开见
 [[prove-the-path-under-test]] §4.5b。反思 [[2026-07-28-issue201-203-unpack-skip-thresholds]]
 教训 1/3。
+
+#### 改完区间之后要问「有什么东西固定住这个改动吗」(2026-07-29,#209)
+
+上一小节是**改**被接受的区间,本节是它的**下一步**:那个改动本身也需要一个执行体。
+
+**判据**:**回归 seed 表达的是「这个输入不崩」,它表达不了「那个结构性决定还在」。** 修完一个
+反复出现的问题之后,写一个断言「这次的结构性决定仍然成立」的测试。自查办法:假设本次改动被整段
+revert,现有的测试会不会红?不会红就说明那个决定还没有执行体,只存在于代码与 commit message 里。
+这是 [[prove-the-path-under-test]] §4.2「已登记为豁免这类声明必须能指向执行它的代码」换了个
+时点——那条讲**声明**要有执行体,本条讲一个**已经做出的结构性决定**要有执行体。
+
+**#209 实证**:#203 的两个阈值拆分是对的,但拆完之后没有任何测试表达「这两个阈值是两个数」。
+把它们合回一个的话,现有 seed 全都照旧通过——合到低的那个(2^20),产品开始拒绝一段 lua5.1 能
+完成的移位,而昂贵区的 seed 只是被 skip;合到高的那个(2^27),昂贵的那一段重新进入并行重放,
+而现有 seed 恰好都在跳过区,`test/regression` 里原有的两条又只覆盖 2^27 之下的位置。所以这一轮
+加了 `test/regression/insert_shift_cost_test.go::TestInsertShiftThresholdsStayDistinct`,断两个
+阈值**之间**那一段的行为:必须由产品执行(不被上限拒绝)+ 必须便宜(skip 的取值就建立在这一段
+便宜这个假设上)。断言的写法见 [[prove-the-path-under-test]] §4.5c(两个常数不导出且跨包,按行为
+断言不复制字面量)。
+
+**过期 issue 也值得看它的分布**。#209 本身按上面「第一步永远是版本核对」核一次就关掉了(第一档:
+run 跑在 `cbd0512` 上、早于 `c07ba58`),但版本核对回答的是「**这一条** issue 还需不需要动作」,
+它不回答「**这一类** issue 为什么还在被开」。判据:处理一个已经被修掉的 issue 时,核完版本再问
+一次「为什么这类还在被开」,答案有三种——① 修法还没进 nightly 跑的那个 commit(等一轮就行)、
+② 修法修错了位置(回到上面「一批 crasher 先问会不会被同一个改动一起解决」)、③ 修法对但没有被
+固定住(本节)。第三种最容易被漏掉,因为它长得完全像第一种。反思
+[[2026-07-29-issue209-stale-crasher-threshold-pin]] 教训 1/4。
 
 ### 2. 诊断硬化 —— 让下次复发自带诊断
 
