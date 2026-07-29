@@ -975,3 +975,10 @@ P1 建立的三套机制(conformance / 差分 fuzz / 基准)如何复用到 P2-P
 > concat,两侧合计 28 秒且完全参与比对。它按**参与拼接的元素个数**计入同一个累加器(与移位按移动元素数计费
 > 同一量纲),执行体是 `TestConcatBudget`。同轮扫过并确认便宜的:`string.rep`/`gsub`/`upper`/`sub`、
 > `table.sort`、表构造器、协程创建与 resume。
+
+> **第五次审计:计量单位改成字节,整族收进一个 `__chargeBulk`**。前几版按元素计费,于是 64 个 64 KiB 的
+> concat 元素只记 64(实测 9 秒),分隔符不计(3 分 6 秒),单次上限还读 `#t` 而不是请求的 `[i,j]`(200 万元素
+> 表上拼 3 个元素被误跳过)。现在:`string.rep` 记 `#s*n`、`upper`/`lower`/`reverse` 记 `#s`、`table.sort`
+> 记 `n*log2(n)`、`table.concat` 按请求区间的字节数含分隔符,`table.insert`/`remove` 仍按移动元素数。
+> 执行体是 `TestBulkBudgetCoversTheFamily`。`string.gsub` **不在**其中:`__patcheck` 已把 subject 限在
+> 256 字节,加 charge 是死代码——这一条是实测之后从审计建议里剔除的。
