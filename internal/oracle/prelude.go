@@ -686,10 +686,21 @@ table.concat = function(t, ...)
     -- arguments made table.concat(t, ",", 1, 3) on a 2M-element table skip, even though it
     -- joins three elements in microseconds; that is the same mistake the insert shim's own
     -- comment warns about, repeated here.
-    local i = __select("#", ...) >= 2 and __asNum((__select(2, ...))) or 1
-    local j = __select("#", ...) >= 3 and __asNum((__select(3, ...))) or #t
-    if i == nil then i = 1 end
-    if j == nil then j = #t end
+    -- luaL_checkint, not just tonumber: truncate TOWARD ZERO then narrow to int32, the same
+    -- two-step the insert/remove shims above do. Skipping the narrowing meant
+    -- table.concat({"x"}, "", 1, 4294967297) -- which lua5.1 narrows to 1 and answers instantly
+    -- -- sent the scan below over ~4 billion indices until the instruction budget tripped, so a
+    -- perfectly comparable input was recorded as a skip.
+    local __ckint = function(v, dflt)
+      local n = __asNum(v)
+      if n == nil then return dflt end
+      local i64 = n >= 0 and __floor(n) or -__floor(-n)
+      local i32 = i64 % 4294967296
+      if i32 >= 2147483648 then i32 = i32 - 4294967296 end
+      return i32
+    end
+    local i = __select("#", ...) >= 2 and __ckint((__select(2, ...)), 1) or 1
+    local j = __select("#", ...) >= 3 and __ckint((__select(3, ...)), #t) or #t
     local bytes = 0
     if j >= i then
       -- Separator bytes count too: an empty table with a 64 KiB separator repeated 4000

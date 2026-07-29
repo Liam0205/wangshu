@@ -255,6 +255,12 @@ func TestBulkBudgetAppliesLuaCoercions(t *testing.T) {
 		`print(string.upper(123))`,
 		// A 3-element range over a 2M-element table, with the range given as strings.
 		`t={} for i=1,2000000 do t[i]="a" end print(table.concat(t,",","1","3"))`,
+		// luaL_checkint narrows to int32, so this end index becomes 1 and lua5.1 answers
+		// instantly. Without the narrowing the charge scanned ~4 billion indices until the
+		// instruction budget tripped, turning a comparable input into a skip.
+		`print(table.concat({"x"},"",1,4294967297))`,
+		// And it truncates toward zero rather than rounding.
+		`print(table.concat({"a","b","c"},"",1.9,2.9))`,
 	} {
 		r := Exec(src, pre, Limits{})
 		if strings.Contains(r.Err, LimitSentinel) {
