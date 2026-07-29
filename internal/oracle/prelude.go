@@ -113,12 +113,13 @@ local __concat, __error = table.concat, error
 -- wrongly skipped.
 local __tonum = tonumber
 local __rawget = rawget
-local __asNum = function(v)
+local __asNum0 = function(v)
   local tv = __type(v)
   if tv == "number" then return v end
   if tv == "string" then return __tonum(v) end
   return nil
 end
+local __asNum = __asNum0
 local __asStr = function(v)
   local tv = __type(v)
   if tv == "string" then return v end
@@ -292,10 +293,28 @@ load = function(f, c)
   end, c)
 end
 
+-- __ckint0 is luaL_checkint's chain, available this early in the prelude (math.floor is not
+-- localised until later). __ckint below is the same function under the name the budget shims use.
+local __ckint0 = function(v, dflt)
+  local tv = __type(v)
+  local x
+  if tv == "number" then x = v elseif tv == "string" then x = tonumber(v) end
+  if x == nil then return dflt end
+  local i64 = x >= 0 and math.floor(x) or -math.floor(-x)
+  local i32 = i64 % 4294967296
+  if i32 >= 2147483648 then i32 = i32 - 4294967296 end
+  return i32
+end
+
 local __rep = string.rep
 string.rep = function(s, n)
   if __type(s) == "number" then s = __tostring(s) end
-  if __type(s) == "string" and __type(n) == "number" and n > 0 and #s * n > 4194304 then
+  -- The count narrows through luaL_checkint before any work: string.rep("x", 4294967297) is one
+  -- repetition in lua5.1, not four billion. This pre-existing guard read the raw number, so it
+  -- fired on that input and excluded it from comparison -- the same narrowing gap the budget
+  -- shims had, in the guard that runs before them.
+  local nN = __ckint0(n, nil)
+  if __type(s) == "string" and nN ~= nil and nN > 0 and #s * nN > 4194304 then
     __error("oracle-harness: rep too large", 0)
   end
   return __rep(s, n)
@@ -469,6 +488,22 @@ end)(__ipairs_iter)
 -- grinds. Skip it. The threshold is read from the ARGUMENTS, which both engines
 -- see identically, not from either engine's behaviour.
 local __floor = math.floor
+
+-- __ckint is luaL_checkint's WHOLE chain: coerce, truncate toward zero, narrow to int32.
+--
+-- It exists as one helper because the chain drifted between shims twice. table.concat first had
+-- only the coercion, so a range end of 4294967297 sent the byte scan over ~4 billion indices; then
+-- string.rep still had only the coercion, so string.rep("x", 4294967297) -- which lua5.1 narrows to
+-- 1 and answers with "x" -- was charged 4 GiB and skipped. Same bug, same shape, two places.
+local __ckint = function(v, dflt)
+  local n = __asNum0(v)
+  if n == nil then return dflt end
+  local i64 = n >= 0 and __floor(n) or -__floor(-n)
+  local i32 = i64 % 4294967296
+  if i32 >= 2147483648 then i32 = i32 - 4294967296 end
+  return i32
+end
+
 local __tinsert0 = table.insert
 table.insert = function(t, ...)
   local n = __select("#", ...)
@@ -606,7 +641,9 @@ end
 -- a script may repeat one call thousands of times inside the instruction budget.
 local __srep0 = string.rep
 string.rep = function(sv, n, ...)
-  local s2, n2 = __asStr(sv), __asNum(n)
+  -- The count goes through luaL_checkint, so it narrows to int32 before any work happens.
+  local s2 = __asStr(sv)
+  local n2 = __ckint(n, nil)
   if s2 ~= nil and n2 ~= nil and n2 > 0 then
     __chargeBulk(#s2 * n2, "string.rep")
   end
@@ -692,14 +729,6 @@ table.concat = function(t, ...)
     -- table.concat({"x"}, "", 1, 4294967297) -- which lua5.1 narrows to 1 and answers instantly
     -- -- sent the scan below over ~4 billion indices until the instruction budget tripped, so a
     -- perfectly comparable input was recorded as a skip.
-    local __ckint = function(v, dflt)
-      local n = __asNum(v)
-      if n == nil then return dflt end
-      local i64 = n >= 0 and __floor(n) or -__floor(-n)
-      local i32 = i64 % 4294967296
-      if i32 >= 2147483648 then i32 = i32 - 4294967296 end
-      return i32
-    end
     local i = __select("#", ...) >= 2 and __ckint((__select(2, ...)), 1) or 1
     local j = __select("#", ...) >= 3 and __ckint((__select(3, ...)), #t) or #t
     -- Charge only what the real call will actually touch, and STOP at the first element it
