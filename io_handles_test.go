@@ -206,3 +206,46 @@ func TestDebugGetInfo_HostBoundaryLevel(t *testing.T) {
 		}
 	}
 }
+
+// TestDebugGetInfo_LevelsCountCAndTailFrames pins that a debug level names the same frame PUC
+// names, which means counting the frames wangshu does not push onto cis.
+//
+// Indexing cis directly by ciDepth-level skips them, and that reorders everything above the
+// first one: a Lua callback invoked from table.foreach gave "Lua,Lua,main,C" where PUC gives
+// "Lua,Lua,C,main", so what/func/source/currentline all named the wrong function from level 3 up.
+// callInfo.hostFrames and tailDepth already record both counts -- they were added for error()'s
+// level walk -- so this is a walk over existing bookkeeping rather than new state.
+func TestDebugGetInfo_LevelsCountCAndTailFrames(t *testing.T) {
+	const chain = `local function chain(n)
+  local r = {}
+  for i = 1, n do
+    local info = debug.getinfo(i)
+    r[i] = info and tostring(info.what) or "nil"
+  end
+  return table.concat(r, ",")
+end
+`
+	for _, tc := range []struct{ name, src, want string }{
+		// A C frame between two Lua frames must appear in its real position.
+		{"host callback", chain + `local out
+table.foreach({1}, function() out = chain(4) end)
+return out`, "Lua,Lua,C,main"},
+		{"sort comparator", chain + `local out
+table.sort({3, 1, 2}, function(a, b) if not out then out = chain(5) end return a < b end)
+return out`, "Lua,Lua,C,main,C"},
+		// A tail call leaves a pseudo-frame PUC reports as what="tail". The harness's own
+		// `return` is itself a tail call, so this chunk has two of them -- verified against
+		// lua5.1 with the same source shape rather than a similar-looking one.
+		{"tail pseudo-frame", chain + `local f = function() return chain(4) end
+local out = f()
+return out`, "Lua,tail,main,C"},
+		// A coroutine's stack ends at its own bottom: resume is on another thread, so there
+		// is no host frame to report.
+		{"coroutine stack ends", chain + `local co = coroutine.wrap(function() return chain(3) end)
+return co()`, "Lua,tail,nil"},
+	} {
+		if got := runOne(t, tc.src).Str(); got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
