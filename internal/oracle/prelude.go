@@ -498,8 +498,16 @@ local __floor = math.floor
 local __ckint = function(v, dflt)
   local n = __asNum0(v)
   if n == nil then return dflt end
-  local i64 = n >= 0 and __floor(n) or -__floor(-n)
-  local i32 = i64 % 4294967296
+  local i32
+  if n >= 9223372036854775808 or n < -9223372036854775808 then
+    -- Outside int64 range the C cast yields INT64_MIN, whose low 32 bits are zero. This case
+    -- was handled only in the insert shim's hand-rolled copy; folding it in here is what makes
+    -- one helper able to replace all of them.
+    i32 = 0
+  else
+    local i64 = n >= 0 and __floor(n) or -__floor(-n)
+    i32 = i64 % 4294967296
+  end
   if i32 >= 2147483648 then i32 = i32 - 4294967296 end
   return i32
 end
@@ -603,11 +611,8 @@ end
 local __tremove0 = table.remove
 table.remove = function(t, ...)
   if __type(t) == "table" and __select("#", ...) >= 1 then
-    local pos = __asNum((__select(1, ...)))
-    if pos ~= nil then
-      local i64 = pos >= 0 and __floor(pos) or -__floor(-pos)
-      local i32 = i64 % 4294967296
-      if i32 >= 2147483648 then i32 = i32 - 4294967296 end
+    local i32 = __ckint((__select(1, ...)), nil)
+    if i32 ~= nil then
       local n = #t
       local span = n - i32
       if span < 0 then span = 0 end
@@ -675,13 +680,15 @@ local __ssub0 = string.sub
 string.sub = function(sv, i, ...)
   local s2 = __asStr(sv)
   if s2 ~= nil then
+    -- Both indices go through the SHARED __ckint, so they narrow to int32 exactly as
+    -- luaL_checkint does. Using tonumber+floor here left the fourth instance of this gap in one
+    -- round: s:sub(4294967297) narrows to index 1 in lua5.1, while the raw value made the charge
+    -- compute an empty range and record 0 bytes.
     local n = #s2
-    local iN = __asNum(i)
-    local from = iN ~= nil and __floor(iN) or 1
+    local from = __ckint(i, 1)
     local to = n
     if __select("#", ...) >= 1 then
-      local jN = __asNum((__select(1, ...)))
-      if jN ~= nil then to = __floor(jN) end
+      to = __ckint((__select(1, ...)), n)
     end
     if from < 0 then from = n + from + 1 end
     if to < 0 then to = n + to + 1 end
