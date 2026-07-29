@@ -772,8 +772,17 @@ table.concat = function(t, ...)
     -- comparison. An empty separator with a large j walked the whole invalid range instead.
     local bytes = 0
     if j >= i then
-      local sep = __asStr((__select(1, ...)))
-      local seplen = sep ~= nil and #sep or 0
+      -- Same rule as the bounds: an EXPLICIT separator that cannot convert means the real call
+      -- raises bad argument #2 at once. Treating it as length 0 and scanning on charged ~65
+      -- elements of a large table before raising the sentinel, so that input left the comparison.
+      local seplen = 0
+      if __select("#", ...) >= 1 then
+        local sep = __asStr((__select(1, ...)))
+        if sep == nil then
+          return __tconcat0(t, ...)
+        end
+        seplen = #sep
+      end
       local k = i
       while k <= j do
         local v = __rawget(t, k)
