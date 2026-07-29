@@ -1622,7 +1622,23 @@ func debugFnGetInfo(st *crescent.State, args []value.Value) ([]value.Value, *cre
 	}
 	src, line, ok := st.FrameInfo(lvl)
 	if !ok {
-		// PUC returns nil for a level past the stack top.
+		// One level past the outermost Lua frame is the HOST that called the chunk, which is
+		// a real C frame even though wangshu does not push it onto cis -- lua5.1 reports
+		// what="C" there and nil only beyond it. This is not a fabricated field: the entry
+		// frame is marked, so "one past it" is a known host boundary.
+		if st.FrameIsHostBoundary(lvl) {
+			if wants('S') {
+				set("what", intern(st, "C"))
+				set("source", intern(st, "=[C]"))
+				set("short_src", intern(st, "[C]"))
+				set("linedefined", value.NumberValue(-1))
+			}
+			if wants('l') {
+				set("currentline", value.NumberValue(-1))
+			}
+			return []value.Value{value.MakeGC(value.TagTable, t)}, nil
+		}
+		// PUC returns nil for a level past that.
 		return []value.Value{value.Nil}, nil
 	}
 	if wants('l') {
