@@ -162,11 +162,27 @@ func (st *State) buildTraceback(th *thread) string {
 }
 
 // Traceback is exposed to stdlib (the P1 form of debug.traceback).
-func (st *State) Traceback() string {
-	if st.runningThread == nil {
+func (st *State) Traceback() string { return st.TracebackFrom(1) }
+
+// TracebackFrom builds a traceback that SKIPS the innermost level-1 frames, for
+// debug.traceback's optional level argument. Level 1 is the default and includes everything.
+func (st *State) TracebackFrom(level int) string {
+	th := st.runningThread
+	if th == nil {
 		return "stack traceback:"
 	}
-	return st.buildTraceback(st.runningThread)
+	if level <= 1 {
+		return st.buildTraceback(th)
+	}
+	skip := level - 1
+	if skip >= th.ciDepth {
+		return "stack traceback:"
+	}
+	saved := th.ciDepth
+	th.ciDepth -= skip
+	out := st.buildTraceback(th)
+	th.ciDepth = saved
+	return out
 }
 
 // FrameInfo reports the chunk name and current line of the frame LEVEL steps up from the

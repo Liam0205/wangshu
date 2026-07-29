@@ -1240,7 +1240,7 @@ func fileFnRead(st *crescent.State, args []value.Value) ([]value.Value, *crescen
 		// triple: (nil, strerror(EBADF), EBADF). EBADF is 9 on Linux.
 		return []value.Value{value.Nil, intern(st, "Bad file descriptor"), value.NumberValue(9)}, nil
 	}
-	return readFormats(st, args[1:])
+	return readFormats(st, args[1:], 2)
 }
 
 // fileFnLines is :lines -- an iterator yielding successive lines, nil at EOF.
@@ -1257,7 +1257,7 @@ func fileFnLines(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 		if !readable {
 			return nil, crescent.NewError("Bad file descriptor")
 		}
-		return readFormats(ist, []value.Value{intern(ist, "*l")})
+		return readFormats(ist, []value.Value{intern(ist, "*l")}, 1)
 	})
 	return []value.Value{value.MakeGC(value.TagFunction, st.MakeHostClosure(id))}, nil
 }
@@ -1277,7 +1277,14 @@ func fileFnLines(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 //   - a NEGATIVE count reads everything, because PUC casts it to size_t
 //   - the format list STOPS at the first failure, so read("*l","*l") on one line of input
 //     returns exactly one value, not one plus a nil
-func readFormats(st *crescent.State, fmts []value.Value) ([]value.Value, *crescent.LuaError) {
+//
+// argBase is the 1-based position of the first FORMAT argument, so error indices match PUC:
+// io.read's formats start at 1, while file:read's start at 2 because the handle is arg 1.
+func readFormats(st *crescent.State, fmts []value.Value, argBase int) ([]value.Value, *crescent.LuaError) {
+	// Hold the lock for the WHOLE format list, so a multi-format read cannot interleave
+	// with another goroutine's read partway through.
+	st.StdinLock()
+	defer st.StdinUnlock()
 	r := st.StdinReader()
 	if len(fmts) == 0 {
 		line, err := r.ReadString('\n')
@@ -1305,24 +1312,41 @@ func readFormats(st *crescent.State, fmts []value.Value) ([]value.Value, *cresce
 				out = append(out, intern(st, ""))
 				continue
 			}
-			buf := make([]byte, n)
-			got, _ := io.ReadFull(r, buf)
-			if got == 0 {
+			// Grow the buffer as bytes arrive instead of allocating n up front: n comes
+			// straight from the script, so io.read(1e10) would ask for 10 GB before
+			// reading a byte, and that allocation is outside MaxArenaBytes and outside
+			// Program.call's recover -- a Go fatal OOM takes the host process down.
+			// PUC reads incrementally and simply returns what it got.
+			const chunk = 64 << 10
+			var acc []byte
+			for len(acc) < n {
+				want := n - len(acc)
+				if want > chunk {
+					want = chunk
+				}
+				buf := make([]byte, want)
+				got, rerr := io.ReadFull(r, buf)
+				acc = append(acc, buf[:got]...)
+				if rerr != nil {
+					break
+				}
+			}
+			if len(acc) == 0 {
 				out = append(out, value.Nil)
 				break
 			}
-			out = append(out, intern(st, string(buf[:got])))
+			out = append(out, intern(st, string(acc)))
 			continue
 		}
 		if value.Tag(f) != value.TagString {
-			return nil, crescent.NewArgError(i+1, "invalid format")
+			return nil, crescent.NewArgError(i+argBase, "invalid format")
 		}
 		spec := string(object.StringBytes(st.Arena(), value.GCRefOf(f)))
 		if !strings.HasPrefix(spec, "*") {
-			return nil, crescent.NewArgError(i+1, "invalid option")
+			return nil, crescent.NewArgError(i+argBase, "invalid option")
 		}
 		if len(spec) < 2 {
-			return nil, crescent.NewArgError(i+1, "invalid format")
+			return nil, crescent.NewArgError(i+argBase, "invalid format")
 		}
 		switch spec[1] { // only the character after "*" is examined
 		case 'l':
@@ -1344,7 +1368,7 @@ func readFormats(st *crescent.State, fmts []value.Value) ([]value.Value, *cresce
 			}
 			out = append(out, value.NumberValue(v))
 		default:
-			return nil, crescent.NewArgError(i+1, "invalid format")
+			return nil, crescent.NewArgError(i+argBase, "invalid format")
 		}
 		if len(out) > 0 && out[len(out)-1] == value.Nil {
 			break // g_read stops at the first format that fails
@@ -1372,8 +1396,11 @@ func readNumber(st *crescent.State, r *bufio.Reader) (float64, bool) {
 		}
 		break
 	}
+	// The window has to cover a long literal: "1" followed by 80 zeros is a valid number
+	// and a 64-byte window truncated it to 1e+63. bufio's default buffer is 4096, which
+	// bounds the peek, and any real numeral is far shorter.
 	best, bestLen := 0.0, 0
-	for n := 1; n <= 64; n++ {
+	for n := 1; n <= 1024; n++ {
 		b, err := r.Peek(n)
 		if err != nil || len(b) < n {
 			break
@@ -1397,7 +1424,7 @@ func readNumber(st *crescent.State, r *bufio.Reader) (float64, bool) {
 
 // ioFnRead is io.read: reads from the default input, i.e. stdin.
 func ioFnRead(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
-	return readFormats(st, args)
+	return readFormats(st, args, 1)
 }
 
 // ioFnLines is io.lines with no filename: iterate lines of the default input.
@@ -1407,7 +1434,7 @@ func ioFnLines(st *crescent.State, args []value.Value) ([]value.Value, *crescent
 		return nil, crescent.NewError("io.lines with a filename is not supported")
 	}
 	id := st.RegisterHostFn(func(ist *crescent.State, _ []value.Value) ([]value.Value, *crescent.LuaError) {
-		return readFormats(ist, []value.Value{intern(ist, "*l")})
+		return readFormats(ist, []value.Value{intern(ist, "*l")}, 1)
 	})
 	return []value.Value{value.MakeGC(value.TagFunction, st.MakeHostClosure(id))}, nil
 }
@@ -1428,7 +1455,15 @@ var debugFns = []entry{
 // PUC returns the message unchanged when it is a non-string, non-nil value, and otherwise
 // prefixes it to "stack traceback:" separated by a newline.
 func debugFnTraceback(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
-	tb := st.Traceback()
+	// The optional level SKIPS that many leading frames, so traceback("m", 2) starts at the
+	// caller's caller. Ignoring it produced the level-1 traceback for every level.
+	level := 1
+	if len(args) >= 2 && args[1] != value.Nil {
+		if n, ok := toNumberStr(st, args[1]); ok {
+			level = int(n)
+		}
+	}
+	tb := st.TracebackFrom(level)
 	if len(args) == 0 {
 		return []value.Value{intern(st, tb)}, nil
 	}

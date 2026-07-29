@@ -17,7 +17,10 @@ import (
 // fully comparable -- an unanchored 0x[0-9a-f]+ rule would normalize
 // 0x1 and 0x2 to the same token and mask genuine value divergences
 // (PR review finding).
-var addrRe = regexp.MustCompile(`\b(table|function|thread|userdata): 0x[0-9a-fA-F]+`)
+// file (0x...) is included: PUC's file handles carry a __tostring rendering that form, and
+// leaving it out made print(io.stdout) a guaranteed divergence once the standard streams
+// existed.
+var addrRe = regexp.MustCompile(`\b(table|function|thread|userdata): 0x[0-9a-fA-F]+|\bfile \(0x[0-9a-fA-F]+\)`)
 
 // NormalizeOutput rewrites engine-dependent reference-value addresses before
 // byte comparison. Accepted platform differences belong in CompareOutput so
