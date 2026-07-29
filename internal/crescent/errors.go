@@ -218,20 +218,39 @@ func (st *State) FrameIsMain(level int) bool {
 		return false
 	}
 	idx := th.ciDepth - level
-	if idx != 0 {
+	if idx < 0 || idx >= th.ciDepth {
 		return false
 	}
-	// Index 0 is not sufficient: a TAIL CALL replaces the main chunk's frame, so the frame at
-	// index 0 can be an ordinary function. buildTraceback can use the index alone because it
-	// only labels the bottom of the stack, but getinfo has to name the function, and lua5.1
-	// reports "Lua" for a tail-called one. A main chunk is a vararg proto with no fixed
-	// parameters, which distinguishes it.
+	// A main chunk is the ENTRY frame of an execute layer: callInfo.fresh marks exactly that,
+	// and a loadstring chunk called as a function is itself an entry, which is why lua5.1
+	// reports "main" for it too.
+	//
+	// Three weaker tests were wrong. The frame index alone fails because a tail call replaces
+	// the caller's frame, putting an ordinary function at index 0. "IsVararg with no fixed
+	// parameters" fails in both directions -- it claims "main" for an ordinary function(...)
+	// at the bottom of a coroutine stack and misses a loadstring chunk. And LineDefined == 0
+	// is PUC's marker but not this compiler's: newFuncState records the line the chunk starts
+	// on, which is 1.
+	// LineDefined == 0 is the marker, set by the compiler for a chunk and never for a real
+	// function definition. It is what PUC uses, and unlike the alternatives it survives both
+	// a tail call putting a function at index 0 and a loadstring chunk being CALLED like a
+	// function -- which lua5.1 still reports as "main", so a frame-position test cannot work.
 	ci := th.ciAt(idx)
-	if ci.Tailcall() {
-		return false
+	return st.protoOf(&ci).LineDefined == 0
+}
+
+// FrameLineDefined returns the line the frame's function was defined on (0 for a main chunk).
+func (st *State) FrameLineDefined(level int) (int32, bool) {
+	th := st.runningThread
+	if th == nil || level < 1 {
+		return 0, false
 	}
-	proto := st.protoOf(&ci)
-	return proto.IsVararg && proto.NumParams == 0
+	idx := th.ciDepth - level
+	if idx < 0 || idx >= th.ciDepth {
+		return 0, false
+	}
+	ci := th.ciAt(idx)
+	return st.protoOf(&ci).LineDefined, true
 }
 
 // FrameSource returns the frame's raw source string, which carries PUC's leading marker

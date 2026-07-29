@@ -1560,8 +1560,26 @@ func debugFnGetInfo(st *crescent.State, args []value.Value) ([]value.Value, *cre
 	if len(args) == 0 {
 		return nil, crescent.NewArgError(1, "function or level expected")
 	}
+	// The optional "what" selector picks which fields to fill; PUC validates each letter and
+	// raises "invalid option" for an unknown one. Ignoring it returned every field for
+	// getinfo(1, "l"), where PUC returns just currentline.
+	want := "flnSu" // PUC's default is everything getinfo can answer
+	if len(args) >= 2 && args[1] != value.Nil {
+		wb, e := strArg(st, args, 1, "getinfo")
+		if e != nil {
+			return nil, e
+		}
+		want = string(wb)
+		for _, c := range want {
+			if !strings.ContainsRune("flnSuL>", c) {
+				return nil, crescent.NewArgError(2, "invalid option")
+			}
+		}
+	}
 	t := st.NewLibTable(8)
 	set := func(k string, v value.Value) { st.SetTableField(t, k, v) }
+	// "S" covers source/short_src/what/linedefined, "l" currentline, "f" func, "u" nups.
+	wants := func(c byte) bool { return strings.IndexByte(want, c) >= 0 }
 
 	if value.Tag(args[0]) == value.TagFunction {
 		// Function form: no active frame, so there is no current line. what/source are
@@ -1569,50 +1587,77 @@ func debugFnGetInfo(st *crescent.State, args []value.Value) ([]value.Value, *cre
 		// reported a C function as Lua and a Lua function as C. Per this library's own
 		// "omit rather than fabricate" rule they are left out until the interpreter can
 		// answer them.
-		set("func", args[0])
-		set("currentline", value.NumberValue(-1))
+		if wants('f') {
+			set("func", args[0])
+		}
+		if wants('l') {
+			set("currentline", value.NumberValue(-1))
+		}
 		return []value.Value{value.MakeGC(value.TagTable, t)}, nil
 	}
-	lvl, ok := toNumberStr(st, args[0])
+	lvlF, ok := toNumberStr(st, args[0])
 	if !ok {
 		return nil, crescent.NewArgError(1, "function or level expected")
+	}
+	// PUC reads the level with luaL_checkint, the same two-step narrowing as every other int
+	// argument in this library: getinfo(0.5) truncates to 0 and getinfo(1e18) wraps, both of
+	// which PUC answers rather than rejecting.
+	lvl := int(cCharCastInt32(lvlF))
+	if lvl < 0 {
+		return []value.Value{value.Nil}, nil
 	}
 	if lvl == 0 {
 		// Level 0 is getinfo ITSELF, which is a C function: PUC reports what="C" and
 		// currentline=-1. Returning nil for it was wrong -- 0 is a valid level.
-		set("what", intern(st, "C"))
-		set("currentline", value.NumberValue(-1))
-		set("source", intern(st, "=[C]"))
-		set("short_src", intern(st, "[C]"))
+		if wants('S') {
+			set("what", intern(st, "C"))
+			set("source", intern(st, "=[C]"))
+			set("short_src", intern(st, "[C]"))
+			set("linedefined", value.NumberValue(-1))
+		}
+		if wants('l') {
+			set("currentline", value.NumberValue(-1))
+		}
 		return []value.Value{value.MakeGC(value.TagTable, t)}, nil
 	}
-	src, line, ok := st.FrameInfo(int(lvl))
+	src, line, ok := st.FrameInfo(lvl)
 	if !ok {
 		// PUC returns nil for a level past the stack top.
 		return []value.Value{value.Nil}, nil
 	}
-	set("currentline", value.NumberValue(float64(line)))
-	// source carries PUC's origin marker while short_src is the display form, so the two
-	// differ; setting both to the stripped ChunkID made them identical. A chunk loaded from
-	// a string is "=name" ("@name" would mean a file), and short_src renders that as
-	// [string "name"].
-	if raw, ok := st.FrameSource(int(lvl)); ok && (strings.HasPrefix(raw, "=") || strings.HasPrefix(raw, "@")) {
-		set("source", intern(st, raw))
-	} else if ok {
-		set("source", intern(st, "="+raw))
-	} else {
-		set("source", intern(st, src))
+	if wants('l') {
+		set("currentline", value.NumberValue(float64(line)))
 	}
-	set("short_src", intern(st, src))
+	// source is the chunkname exactly as the loader stored it -- "@file" for a file,
+	// "=(command line)" for -e, and the bare name for loadstring(s, name). PUC does not
+	// synthesize a marker, so neither does this: prepending "=" turned chunkname "fuzz" into
+	// "=fuzz" and made print(debug.getinfo(1).source) a differential divergence.
+	if wants('S') {
+		if raw, ok := st.FrameSource(lvl); ok {
+			set("source", intern(st, raw))
+		} else {
+			set("source", intern(st, src))
+		}
+		set("short_src", intern(st, src))
+		// linedefined IS answerable -- Proto.LineDefined is populated -- so omitting it was
+		// abstention where the value was available, not principled restraint.
+		if ld, ok := st.FrameLineDefined(lvl); ok {
+			set("linedefined", value.NumberValue(float64(ld)))
+		}
+	}
 	// The main chunk is "main", not "Lua". A frame reached by level is otherwise always a
 	// Lua frame here, since host frames are not pushed onto cis.
-	if st.FrameIsMain(int(lvl)) {
-		set("what", intern(st, "main"))
-	} else {
-		set("what", intern(st, "Lua"))
+	if wants('S') {
+		if st.FrameIsMain(lvl) {
+			set("what", intern(st, "main"))
+		} else {
+			set("what", intern(st, "Lua"))
+		}
 	}
-	if fn, ok := st.FrameFunc(int(lvl)); ok {
-		set("func", fn)
+	if wants('f') {
+		if fn, ok := st.FrameFunc(lvl); ok {
+			set("func", fn)
+		}
 	}
 	return []value.Value{value.MakeGC(value.TagTable, t)}, nil
 }
