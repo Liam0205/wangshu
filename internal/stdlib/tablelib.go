@@ -1252,14 +1252,10 @@ func fileFnLines(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 	// The iterator must carry the stream kind. Checking only "is it a handle" meant
 	// io.stdout:lines() returned an iterator that happily read STDIN -- handing back
 	// someone else's input data, which is worse than raising.
-	readable := kind == stdStreamIn
-	id := st.RegisterHostFn(func(ist *crescent.State, _ []value.Value) ([]value.Value, *crescent.LuaError) {
-		if !readable {
-			return nil, crescent.NewError("Bad file descriptor")
-		}
-		return readFormats(ist, []value.Value{intern(ist, "*l")}, 1)
-	})
-	return []value.Value{value.MakeGC(value.TagFunction, st.MakeHostClosure(id))}, nil
+	// The iterator must carry the stream kind: checking only "is it a handle" meant
+	// io.stdout:lines() returned an iterator that happily read STDIN, handing back someone
+	// else's input, which is worse than raising.
+	return []value.Value{makeLineIterator(st, kind == stdStreamIn)}, nil
 }
 
 // readFormats implements the read-format list shared by io.read and file:read.
@@ -1283,6 +1279,19 @@ func fileFnLines(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 func readFormats(st *crescent.State, fmts []value.Value, argBase int) ([]value.Value, *crescent.LuaError) {
 	// Hold the lock for the WHOLE format list, so a multi-format read cannot interleave
 	// with another goroutine's read partway through.
+	// Same luaL_checkstack ceiling as string.byte and unpack: g_read pushes one result per
+	// format, so PUC rejects a long format list with "stack overflow (too many arguments)".
+	// This site was introduced by the same branch that fixed string.byte's, which is exactly
+	// the sibling-function check that should have caught it.
+	// PUC's g_read asks luaL_checkstack(L, nargs + LUA_MINSTACK), and the arguments are
+	// ALREADY on the stack, so the formats count twice: the limit is where
+	// 2*nargs + LUA_MINSTACK + 1 exceeds LUAI_MAXCSTACK, i.e. 3990 rejects and 3989
+	// succeeds. Measured against lua5.1, which is how the first guess of 8000-argBase was
+	// caught -- it accepted the whole band PUC refuses.
+	const luaMinStack = 20
+	if 2*len(fmts)+luaMinStack+argBase > maxCStack {
+		return nil, crescent.NewError("stack overflow (too many arguments)")
+	}
 	st.StdinLock()
 	defer st.StdinUnlock()
 	r := st.StdinReader()
@@ -1298,8 +1307,15 @@ func readFormats(st *crescent.State, fmts []value.Value, argBase int) ([]value.V
 		if value.IsNumber(f) {
 			n := int(value.AsNumber(f))
 			if n < 0 {
-				// PUC casts the count to size_t, so a negative reads to the end.
+				// PUC casts the count to size_t, so a negative reads to the end -- but at
+				// end of file it FAILS like any other count, giving nil. The `continue`
+				// here also skipped the stop-on-failure check below, so a nil from this
+				// branch did not end the format list.
 				b, _ := io.ReadAll(r)
+				if len(b) == 0 {
+					out = append(out, value.Nil)
+					break
+				}
 				out = append(out, intern(st, string(b)))
 				continue
 			}
@@ -1339,7 +1355,9 @@ func readFormats(st *crescent.State, fmts []value.Value, argBase int) ([]value.V
 			continue
 		}
 		if value.Tag(f) != value.TagString {
-			return nil, crescent.NewArgError(i+argBase, "invalid format")
+			// A non-string format is "invalid option" in PUC -- luaL_checkoption's wording,
+			// not the format-specific one.
+			return nil, crescent.NewArgError(i+argBase, "invalid option")
 		}
 		spec := string(object.StringBytes(st.Arena(), value.GCRefOf(f)))
 		if !strings.HasPrefix(spec, "*") {
@@ -1433,10 +1451,30 @@ func ioFnLines(st *crescent.State, args []value.Value) ([]value.Value, *crescent
 		// io.lines(filename) needs io.open, which P1 does not provide (10 §11 ❌).
 		return nil, crescent.NewError("io.lines with a filename is not supported")
 	}
+	return []value.Value{makeLineIterator(st, true)}, nil
+}
+
+// makeLineIterator builds the closure both io.lines and file:lines hand back.
+//
+// Shared deliberately: the "yield nothing at EOF" rule was first fixed in only one of two
+// copies, and a generic-for iterator that yields one nil instead of none is visible through
+// select("#", ...).
+func makeLineIterator(st *crescent.State, readable bool) value.Value {
 	id := st.RegisterHostFn(func(ist *crescent.State, _ []value.Value) ([]value.Value, *crescent.LuaError) {
-		return readFormats(ist, []value.Value{intern(ist, "*l")}, 1)
+		if !readable {
+			return nil, crescent.NewError("Bad file descriptor")
+		}
+		res, e := readFormats(ist, []value.Value{intern(ist, "*l")}, 1)
+		if e != nil {
+			return nil, e
+		}
+		// PUC's io_readline returns 0 values at end of file, not one nil.
+		if len(res) == 1 && res[0] == value.Nil {
+			return nil, nil
+		}
+		return res, nil
 	})
-	return []value.Value{value.MakeGC(value.TagFunction, st.MakeHostClosure(id))}, nil
+	return value.MakeGC(value.TagFunction, st.MakeHostClosure(id))
 }
 
 // ----- debug sub-library -----
