@@ -1,7 +1,7 @@
 # Guide:设计稿主张须对本码库 physics 重新验证
 
-> 适用:把设计稿热路径上的抽象记号(`(call $x)`)、固定 token(base/指针/句柄/视图)、或成本主张照搬到实现之前——尤其每指令必经的快路径、跨层/跨调用存活的值。**或处理「设计稿/task 描述/stub 注释承诺/外部依赖现状」类前序快照在事实变更后失效**(§5「时间维度」)。**或脚本/工具链/包依赖在跨 OS / shell / runtime 版本物理环境间静默挂**(§6「空间维度」)。P3 翻译全程复发,P2 编译层同理,P4 method-JIT 检查翻面期同理,CI 矩阵扩平台时同理。
-> 来源:`memory/reflections/2026-06-13-issue8-boundary-cost-round.md`(成本归类)+ `memory/reflections/2026-06-14-p3-pw5-table-ic-round.md`(边界成本预算)+ `memory/reflections/2026-06-14-p3-pw6-crosslayer-call-round.md`(段重定位 UAF,§2 第一实例)+ `2026-06-14-p3-pw7-pw4b-closure-tforloop-round.md`(难点过期)+ `2026-06-16-vs0e-varargs-stack-underflow-round.md`(调研先于实现)+ `2026-06-24-p4-doc-review-round.md`(外部依赖现状过期)+ `2026-06-30-pr27-f3-3b-darwin-arm64-execute-roundup.md`(sentinel 注释承诺与检查状态解耦)+ `2026-06-30-pr28-f3-3c-tri-platform-matrix-ci.md`(bash 3.2 vs 4+ / actions/cache symlink / homebrew 包政策 跨 OS 物理环境差异)+ `2026-07-08-pr83-forprep-stackgrow-fallout-round.md`(§2 第二实例:P4 native `base` 悬垂跨子系统复现)——独立实例聚合为一个判断框架。
+> 适用:把设计稿热路径上的抽象记号(`(call $x)`)、固定 token(base/指针/句柄/视图)、或成本主张照搬到实现之前——尤其每指令必经的快路径、跨层/跨调用存活的值。**或处理「设计稿/task 描述/stub 注释承诺/外部依赖现状」类前序快照在事实变更后失效**(§5「时间维度」)。**或脚本/工具链/包依赖在跨 OS / shell / runtime 版本物理环境间静默挂**(§6「空间维度」)。**或给一个新对象类型写分配路径时**(§4.1,同族分配器共有的每一步都是契约,漏一步的症状离原因很远)。P3 翻译全程复发,P2 编译层同理,P4 method-JIT 检查翻面期同理,CI 矩阵扩平台时同理。
+> 来源:`memory/reflections/2026-06-13-issue8-boundary-cost-round.md`(成本归类)+ `memory/reflections/2026-06-14-p3-pw5-table-ic-round.md`(边界成本预算)+ `memory/reflections/2026-06-14-p3-pw6-crosslayer-call-round.md`(段重定位 UAF,§2 第一实例)+ `2026-06-14-p3-pw7-pw4b-closure-tforloop-round.md`(难点过期)+ `2026-06-16-vs0e-varargs-stack-underflow-round.md`(调研先于实现)+ `2026-06-24-p4-doc-review-round.md`(外部依赖现状过期)+ `2026-06-30-pr27-f3-3b-darwin-arm64-execute-roundup.md`(sentinel 注释承诺与检查状态解耦)+ `2026-06-30-pr28-f3-3c-tri-platform-matrix-ci.md`(bash 3.2 vs 4+ / actions/cache symlink / homebrew 包政策 跨 OS 物理环境差异)+ `2026-07-08-pr83-forprep-stackgrow-fallout-round.md`(§2 第二实例:P4 native `base` 悬垂跨子系统复现)+ `2026-07-29-issue205-206-208-io-userdata-debug.md`(§4.1:file-handle userdata 漏 `LinkSweep`,收集器看不见对象,一次 `collectgarbage` 就以 arena 索引越界 panic)——独立实例聚合为一个判断框架。
 
 设计稿表达的是**语义意图**,用抽象记号写在纸上;它**不携带本码库的物理不变式**。三次了:把设计稿热路径上的一条主张/记号忠实誊写到加速层,本会产出一个 bug 或一处死优化——因为设计稿对某条 wangshu 专属的物理事实是盲的(边界成本、arena 段重定位、GC 根可达性……)。**热路径上的抽象记号在实现前,必须逐条对照本码库 physics 重新推导,而不是照抄伪码。** 这条横跨**性能**(誊写出死优化)与**正确性**(誊写出 UAF)两面,故单独成 guide,不并入 [[perf-optimization-workflow]]。
 
@@ -41,6 +41,18 @@
 **实例(issue8 教训 2)**:`CallInto` 零分配直切 `th.stack[:nret]`,用 `SetGCStressMode(true)`(每分配点触发 GC)+ 复用 dst 循环 + string 返回值(经 arena)500 轮读出仍正确 = 无 UAF;配套覆写契约(返回值下次进 VM 前被覆写,godoc ⚠️ 标注)。
 
 **判据**:任何「返回内部缓冲区切片以省分配」或「加速层持有共享 arena 值」的优化,GC stress 实测 + 覆写契约测试是上线前置,不是可选。与 `feedback_arena_view_aliasing` 同物理基础。
+
+### 4.1 新对象类型的分配路径必须照抄同族分配器的每一步
+
+§4 讲「已有对象在优化之后还可不可达」,本节讲**另一侧**:一个**新**对象类型有没有进入收集器的视野。
+
+**核心断言**:在本码库,一个对象类型的「分配」不是一个函数调用,是一组**必须一起做完**的登记动作——写头(颜色)、挂 sweep 链、记账。`internal/crescent/alloc.go` 里三个现成分配器(`allocLuaClosure` / `allocOpenUpvalue` / `allocTable`)每一个都写着 `AllocX` + `LinkSweep` + `AllocCharge` 这三步,**同族分配器里出现 N 次的动作就是契约,不是那几个函数各自的选择**。
+
+**实例(2026-07-29,#205)**:io 三个标准流做成 file-handle userdata 时,原型直接调 `object.AllocUserdata`、跳过了 `LinkSweep`,于是对象 header 里既没有颜色也没有 sweep 链,收集器根本看不见它;创建句柄之后一个 `collectgarbage()` 就以 arena 索引越界 panic,而那些句柄仍然从 `io` 表可达。上一轮为此整段撤回并开 #205(见 [[prove-the-path-under-test]] §4.3b),这一轮加 `State.NewUserdata` 把三件套固定成唯一入口,`TestIOHandles_SurviveGC` 在反复收集与分配压力下防住它。
+
+**为什么值得单列**:少任何一步的**症状离原因很远**——越界 panic 出现在 GC 里,而错误在分配处;而且它只在收集器真的跑起来时才暴露,所以「功能全对」与「会破坏 arena」可以同时成立(上一轮的原型就是这种情况:`:write` / `:close` / `getmetatable` 全对,一次 `collectgarbage` 就炸)。
+
+**判据**:给一个新对象类型加分配路径时,先读同一文件里已有的分配器,把它们**共有的每一步**都照做,并把新入口做成**唯一入口**,让下一个人无法再跳过。反思实例 [[2026-07-29-issue205-206-208-io-userdata-debug]] 教训 1。
 
 ## 5. 时间维度——设计稿/task/stub 注释承诺/外部依赖现状的前序快照在事实变更后失效
 

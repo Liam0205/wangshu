@@ -138,6 +138,24 @@ func (a *Arena) Alloc(otype value.OBJType, words uint32) value.GCRef {
 `initHeader` 把新对象 color 置为**当前分配白**(allocator white,§4.3),并清 `gcnext`;`linkSweep` 把对象挂到 sweep 全链头部
 (`obj.gcnext = sweepHead; sweepHead = ref; obj.hasGCNext=1`)。新生对象天然是白色(未标记),若本轮 GC 已过 mark 阶段(STW 下不会发生,见 §7),需特别处理——STW 模型里 mark 与 mutator 不交错,无此问题。
 
+#### 2.1.1 `AllocX` + `LinkSweep` + `AllocCharge` 是一组必须一起做完的动作(#205,2026-07-29)
+
+`internal/crescent/alloc.go` 里的每个分配器都把三件事绑在一起:`object.AllocX`(拿内存 + 写头)、
+`st.gc.LinkSweep`(挂 sweep 链)、`st.gc.AllocCharge`(记账给 pacing,§8.3)。`allocLuaClosure` /
+`allocOpenUpvalue` / `allocTable` 三个都是这个形状——**同族分配器里出现三次的动作是契约,不是那几个函数
+各自的选择**;给一个新对象类型加分配路径时照抄这三步,并把新入口做成唯一入口。
+
+**漏掉 `LinkSweep` 的症状离原因很远**,这是 #205 的实测教训:io 三个标准流做成 file-handle userdata 时,
+原型直接调 `object.AllocUserdata`,于是对象 header 里既没有颜色也没有 sweep 链——**收集器根本看不见这个
+对象**。症状是创建句柄之后一次 `collectgarbage("collect")` 以 **arena 索引越界 panic**:panic 出现在 GC
+里而错误在分配处,而且那些句柄此时仍然从 `io` 表可达,所以第一眼像是收集器把可达对象清扫了(`mark.go`
+一直会把 `OBJ_USERDATA` 追到它的 meta 与 env ref,问题在构造侧)。这也意味着「功能全对」与「会破坏
+arena」可以同时成立:那个原型的 `:write`/`:close`/`getmetatable` 全对,一次收集就炸,上一轮为此整段撤回。
+
+现在 userdata 的分配走 `State.NewUserdata`([10](./10-stdlib.md) §10.2.1),回归在
+`io_handles_test.go::TestIOHandles_SurviveGC`(反复收集 + 一万个表的分配压力下句柄仍在)。判据见
+`llmdoc/guides/design-claims-vs-codebase-physics.md` §4.1。
+
 ### 2.2 size-class 划分
 
 回收频繁的小对象(String、Node 组、小 Table 头、Upvalue)用 size-class freelist 复用,减少 bump 区碎片。
@@ -784,6 +802,11 @@ GC 主流程(§8.2)的两个终结相关步骤:
 > **P1 范围裁剪**:full userdata + `__gc` 是嵌入 API 的能力,P1 stdlib 本身极少用(主要给宿主)。
 > P1 可先实现「队列 + 逆序 + 停步 + 保护调用」骨架,**复活的可达图标记**(`separateFinalizers` 里标 ud 可达对象)
 > 是正确性关键(否则终结器访问已回收数据),必须实现。多次终结(终结器复活后再登记)P1 可不支持(记 §11 缺口)。
+
+> **stdlib 自己也开始建 userdata 了**(#205,2026-07-29):io 的三个标准流是**第一批在 `__gc` finalizer
+> 之外创建的 userdata**——它们不带 `__gc`(标准流不需要关),但它们和别的对象一样必须进 sweep 链、必须被
+> 记账。分配约定见 §2.1.1 与 [10](./10-stdlib.md) §10.2.1;它们没有登记进 `finalizeList`,所以本节这套
+> 终结机制对它们不适用。
 
 ---
 

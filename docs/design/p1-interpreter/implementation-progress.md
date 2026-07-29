@@ -33,7 +33,7 @@
 | generic for | TFORLOOP 完成 + next/pairs/ipairs | 05 §10.2 | `1ab4beb` |
 | IC 命中路径 | icGetTable/icSetTable 五类指令(同表+同代次+同键校验,mono IC,array/node 直达);LoadProgram 改 State 私有浅拷贝(IC/常量不跨 State 串台) | 05 §6 | `c04010e` |
 | string pattern | 完整 lstrlib 引擎(字符类/集合/量词/锚点/捕获/%b/%1-%9)+ find/match/gmatch/gsub/format/byte/char;string 库表挂 per-type __index(`("x"):upper()`) | 10 §7 / 07 §1.2 | `c167ad6` |
-| stdlib 必做列 | table(insert/remove/concat/sort/getn/unpack)、math 补全(fmod/modf/random/三角/deg/rad + pi/huge)、os(time/clock/date/getenv)、io.write、unpack/xpcall | 10 裁剪表 | `72a09d5` |
+| stdlib 必做列 | table(insert/remove/concat/sort/getn/unpack)、math 补全(fmod/modf/random/三角/deg/rad + pi/huge)、os(time/clock/date/getenv)、io.write、unpack/xpcall;**io 三个标准流 + io.read/io.lines 与 debug 的 traceback/getinfo 在 2026-07-29(#205)补上**(见下方对账条目) | 10 裁剪表 / 10 §10.1.1 / 09 §13.4 | `72a09d5` + #205 一轮 |
 | 协程 | 路线 B:yield 哨兵经显式错误通道冒泡(08 §3.4 对称机制),pendingResume 记录恢复点,resume 参数写回 yield CALL 结果寄存器;coroutine.create/resume/yield/status/wrap/running;跨 thread upvalue 经 uvOwner | 08 §3 | `c0f2ba9` |
 | 错误目录 | chunkname:line: 位置前缀(error level 语义,level=0 不加)+ traceback(顶层未捕获自动附)| 09 | `473e4dd` |
 | 弱表/finalizer | __mode 解析缓存进 GCHeader flags(setmetatable 唯一写入口),GC clear 弱分支激活;SetFinalizerRunner + __gc 创建逆序执行 | 06 §8.4/§10、07 §13 | `7078fcf` |
@@ -195,6 +195,35 @@
   抛的库错误必须保持裸」),**81 个可比对项零差异**(4 个是 lua 侧也抬错、在那种探针写法里无法捕获的,已由
   84 种 oracle 比对覆盖);两条 seed 入 `testdata/fuzz/FuzzOracleDiff/`。过程反思见
   `llmdoc/memory/reflections/2026-07-28-issue201-203-unpack-skip-thresholds.md`。
+
+- **file-handle userdata + `debug` 子集 + `string.byte` 的上限(2026-07-29,#205/#206/#208 一轮)**:
+  上一轮撤回的那一块交付,同时补一处 stdlib 上限、一处 harness 捕获缺口。
+
+  | 项 | 落点 | 结论与修法要点 |
+  |---|---|---|
+  | 三个标准流做成真 file-handle userdata(#205) | `internal/crescent/alloc.go` + `internal/stdlib/tablelib.go` | 上一轮撤回的**根因只有一行**:原型直接调 `object.AllocUserdata`、**跳过了 collector 的 `LinkSweep`**,对象 header 里既没有颜色也没有 sweep 链,收集器根本看不见它;创建句柄后一次 `collectgarbage("collect")` 就以 arena 索引越界 panic 而句柄仍从 `io` 表可达。`alloc.go` 里每个分配器都是 `AllocX` + `LinkSweep` + `AllocCharge` **三件一起**,现在 `State.NewUserdata` 把它固定成唯一入口(06 §2.1.1,10 §10.2.1)。必须是真 userdata 而不是表,因为 PUC 报的是 `userdata`、`type()` 会露馅 |
+  | 两处 VM 缺口 + `getmetatable`(#205) | `internal/crescent/meta.go` + `internal/stdlib/stdlib.go` | `metaFieldOfValue` 不认 userdata(所以 userdata 的 `__index` 从来没被查过)、`indexWithMeta` 压根没有 userdata 分支(userdata 没有裸字段,索引直接走 `__index`,无 metatable 时报 `attempt to index a userdata value`);`getmetatable` 对 userdata 原先无条件返回 nil,现在还会遵守 `__metatable`(07 §1.3) |
+  | `io.read` / `io.lines` / file 方法(#205) | `internal/stdlib/tablelib.go` | `readFormats` 一份实现同时供 `io.read` 与 `file:read`;`stdinReader` 是**一个共享的** `bufio.Reader`(标准输入的位置是全局状态,两个 reader 各自持缓冲预读会静默丢字节);`"*a"` 在 EOF 返回 `""` 而不是 nil。`io.lines(filename)` **抬错**而不是静默返回空迭代器(10 §10.3) |
+  | `debug` 表注册 traceback + getinfo(#205) | `internal/stdlib/tablelib.go` + `internal/crescent/errors.go` | `getinfo` 只填 P1 能诚实回答的字段(`currentline`/`source`/`short_src`/`what`/`func`),`nups`/`activelines`/`namewhat` **宁缺不假造**;`FrameInfo` 有一个 off-by-one——`getinfo` 是 host 函数、host 帧不进 `cis`,所以 level 1 是最内层 cis 帧,直接减 level 会让最常见的 `getinfo(1)` 返回 nil(09 §13.4) |
+  | `string.byte` 缺 `lua_checkstack` 上限,而且消息被包了一层(#206) | `internal/stdlib/stringlib.go` | 原先**完全没有上限**,`string.byte(string.rep("a",9000),1,8000)` 返回 8000 个值而 PUC 抬错;上限与 `unpack` 一样是 `8000 - nargs`,但 `luaL_checkstack` 把调用者的文本套成 `stack overflow (%s)`,所以 PUC 输出的是 `stack overflow (string slice too long)`。第一版上限对了、文本照抄了裸串,65 个 oracle 用例里仍有 12 个分歧(10 §5.4c) |
+  | 捕获累加器接上 file-handle 的 `:write` | `internal/oracle/prelude.go` | 加了 `io.stdout` 之后脚本可以经一条 harness **没有捕获**的路径输出,那段文本在**两侧**捕获里都不存在——两侧仍然一致、不报分歧,而比较已经不覆盖这条路径写出的任何东西。**这是「因为错误的原因而变绿」**(12 §3.1.1) |
+  | **#208 一行代码没改** | — | 它的 fuzz run 跑在 `cbd0512` 上,**早于**上一轮把 harness skip 降到 2^20 的 `c07ba58`;现在这个 seed 0.00 秒就跳过,作为回归防线留在 corpus 里。上一轮「该改的是被接受的区间,不是再挪一个 seed」的正向结算 |
+
+  **仍然缺的**:`io.open` / `io.popen` / `io.tmpfile` / `f:seek` / `io.input` / `io.output` / `io.type`
+  (需要真实文件,`__gc` 关文件那一环要跟 `io.open` 一起做);`debug` 的
+  `sethook`/`getlocal`/`setlocal`/`getupvalue`/`setupvalue`/`getregistry`(需要解释器没有暴露的内省钩子);
+  遍历全部 5.1 函数名的**存在性差分用例**本身仍然没写(10 §12.3)。`test/difftest/corners_test.go::exemptions`
+  里那三条已同轮改写成如实描述现在缺什么。
+
+  **验证与扫描规模**:56 个探针直接与系统 `lua5.1` 比对(句柄 type / 相等性 / `:write` 返回类型 /
+  `:close` 的 `(nil,msg)` / 非句柄 receiver 的措辞 / 只写句柄读出的 errno 三元组 / `debug.traceback`
+  的四种 message 类型 / `getinfo` 的 level 与无参错误),**54/56 一致**(剩下 2 个是故意不提供的
+  `debug.sethook`/`getlocal`);`io.read` 八种写法(`*l`/`*n`/`*a`/字节数/EOF/默认/`io.stdin:read`/
+  `io.lines`)用**真实二进制** + 真实 stdin 与 `lua5.1` 一致——`go test` 不转发 stdin,在 `go test` 里
+  写的探针全部返回 nil、量到的是 harness 而不是代码;65 个 `string.byte` 上限用例与 oracle 一致;
+  `io_handles_test.go` 三个测试(`TestIOHandles_SurviveGC` / `TestIOHandles_MatchPUC` /
+  `TestDebugLibrary_MatchPUC`)。过程反思见
+  `llmdoc/memory/reflections/2026-07-29-issue205-206-208-io-userdata-debug.md`。
 
 ## 相关
 

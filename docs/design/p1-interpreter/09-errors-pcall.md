@@ -1086,7 +1086,15 @@ debug.traceback(message, level):
   在出错栈上),把 `errval`(错误信息)作前缀 + 当前出错栈的回溯,返回带完整 traceback 的字符串。这是
   「为什么 xpcall 比 pcall 有用」的核心:`pcall` 只给错误信息,`xpcall(f, debug.traceback)` 给错误信息 + 栈回溯。
 - **`message` 非 string 原样返回**(5.1 行为):若传入的「错误」是 table(`error({})`),`debug.traceback`
-  **不**给它加栈回溯(无法拼字符串),直接返回该 table。**待 12 核对**此 5.1 行为。
+  **不**给它加栈回溯(无法拼字符串),直接返回该 table。**已与 `lua5.1` 核对**(#205,2026-07-29):
+  `debug.traceback(x)` 对 table `x` 返回的就是 `x` 本身(`==` 成立)。
+- **显式 `nil` 是一个值,不是「参数缺失」**(#205,2026-07-29 核对):`debug.traceback()` 返回 traceback,
+  而 `debug.traceback(nil)` 返回 **nil**——`db_errorfb` 走的是同一条「非 string 非 number 就原样返回 arg 1」
+  的分支,而它区分「有没有这个参数」而不是「参数是不是 nil」。第一版把两者当成一回事,于是
+  `debug.traceback(nil)` 错误地返回了裸 traceback。落点 `internal/stdlib/tablelib.go::debugFnTraceback`,
+  回归在 `io_handles_test.go::TestDebugLibrary_MatchPUC`。
+- **string / number 的 message 拼在 traceback 前,用一个换行分隔**:`debug.traceback("m")` 的第 2 个字节是
+  `\n`(byte 10)。
 - **`level` 参数**:从第几层开始回溯(跳过最内层若干帧,如跳过 traceback 自身)。P1 支持(§7.2 `startLevel`)。
 - **`thread` 参数**:可对**另一个协程** co 生成 traceback(`debug.traceback(co)`)——跨 Thread 读 co 的
   CallInfo 链(§12.2)。P1 可简化(只支持当前 thread,记缺口)。
@@ -1116,8 +1124,8 @@ debug.traceback(message, level):
 
 | 接口 | P1 | 说明 |
 |---|---|---|
-| `debug.traceback` | **✅ 必做** | xpcall 标准 handler;§13.1 |
-| `debug.getinfo` | **△ 部分** | 基本字段(source/line/what/nups);`linedefined`/完整 `name` 依赖调试信息回填,简化 |
+| `debug.traceback` | **✅ 已提供**(#205,2026-07-29) | xpcall 标准 handler;§13.1,含「显式 nil 原样返回」 |
+| `debug.getinfo` | **△ 部分,已提供**(#205) | 只填 P1 能诚实回答的字段(`currentline`/`source`/`short_src`/`what`/`func`);`nups`/`activelines`/`namewhat` **宁缺不假造**(见下) |
 | `debug.sethook`/`gethook` | **❌ 不做** | 调试钩子(行/调用 hook),P1 不实现(roadmap §5 原则 4:debug 形状走 fallback) |
 | `debug.getlocal`/`setlocal` | **❌ 不做** | 读写栈帧局部变量,依赖 LocVars 回填 + 完整符号执行 |
 | `debug.getupvalue`/`setupvalue` | **△ 可选** | 读写 upvalue,依赖 UpvalNames |
@@ -1128,6 +1136,24 @@ debug.traceback(message, level):
 > **P1 debug 库哲学**(roadmap §5 原则 4):debug 库是「不可升层、永远走解释」的典型形状。P1 只做
 > **错误处理必需的 `debug.traceback`** 与 **introspection 基本的 `debug.getinfo`**,其余(hook/getlocal/...)
 > **记缺口,P1 不做**。完整 debug 库是 P1 后(或永不,视宿主需求)的增量。**10 以此范围为准**。
+
+#### 13.4 实际状态:`debug` 表已注册,只有 traceback 与 getinfo(#205,2026-07-29)
+
+`internal/stdlib/tablelib.go` 的 `debugFns` 注册 `traceback` 与 `getinfo` 两个函数,`debug` 表本身在
+`OpenAll` 里建起来。`sethook`/`getlocal`/`setlocal`/`getupvalue`/`setupvalue`/`getregistry` 仍然**不存在**
+——它们需要解释器没有暴露的内省钩子。
+
+**`getinfo` 只填能诚实回答的字段**:`currentline` / `source` / `short_src` / `what` / `func`。
+`nups` / `activelines` / `namewhat` **宁缺不假造**——对一个会去测这些字段的调用方来说,错的字段比没有更糟
+(它会当成真值用,而缺失至少能被 `if info.nups then` 挡住)。
+
+**level 的 off-by-one 值得记**:`getinfo` 自己是 host 函数,而 host 帧**不进 `cis`**,所以 level 1 是
+**最内层**的 cis 帧;直接用 `ciDepth - level` 会多跳一帧,让最常见的 `getinfo(1)` 返回 nil。落点
+`internal/crescent/errors.go::FrameInfo`。level 超出栈顶时返回 nil(与 PUC 一致),无参时报
+`bad argument #1 to '?' (function or level expected)`(**这个词序**,与 `lua5.1` 核对过)。
+
+回归在 `io_handles_test.go::TestDebugLibrary_MatchPUC`;过程见
+`llmdoc/memory/reflections/2026-07-29-issue205-206-208-io-userdata-debug.md`。
 
 ---
 
