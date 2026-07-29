@@ -125,3 +125,30 @@ func TestDebugGetInfo_NoFabricatedFields(t *testing.T) {
 		}
 	}
 }
+
+// TestIOOmissions_HaveAnEnforcer pins what the io and debug libraries deliberately do NOT
+// provide, so the exemption entries are not prose alone.
+//
+// Without this the omissions live only as text in corners_test.go, and nothing stops them being
+// half-implemented later or refiled by the fuzzer as a divergence.
+func TestIOOmissions_HaveAnEnforcer(t *testing.T) {
+	for _, name := range []string{"open", "popen", "tmpfile", "close", "input", "output"} {
+		src := `return tostring(io.` + name + `)`
+		if got := runOne(t, src).Str(); got != "nil" {
+			t.Errorf("io.%s = %q, want nil (registered as a gap; provide it deliberately or update the exemption)", name, got)
+		}
+	}
+	// The file methods that need a real file are absent from the handle metatable too.
+	for _, name := range []string{"seek", "setvbuf"} {
+		src := `return tostring(io.stdout.` + name + `)`
+		if got := runOne(t, src).Str(); got != "nil" {
+			t.Errorf("file:%s = %q, want nil (registered as a gap)", name, got)
+		}
+	}
+	for _, name := range []string{"sethook", "gethook", "getlocal", "setlocal", "getupvalue", "setupvalue", "getregistry"} {
+		src := `return tostring(debug.` + name + `)`
+		if got := runOne(t, src).Str(); got != "nil" {
+			t.Errorf("debug.%s = %q, want nil (registered as a gap)", name, got)
+		}
+	}
+}
