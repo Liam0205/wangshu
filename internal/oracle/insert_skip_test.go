@@ -333,3 +333,30 @@ func TestConcatChargeStopsAtInvalidElement(t *testing.T) {
 		}
 	}
 }
+
+// TestBulkChargeSkipsUnconvertibleArguments pins that a present-but-unconvertible argument is not
+// charged at all.
+//
+// __ckint returns a DEFAULT when conversion fails, which is right for an absent argument and wrong
+// for an explicit bad one: the real call raises a bad-argument error immediately and cheaply, but the
+// charge scanned a fabricated range instead. table.concat(t, sep, {}, 100) with a 64 KiB separator
+// accumulated ~6.5 MiB and raised the sentinel, so an input that fails at once was recorded as a
+// skip -- coverage lost with no symptom, since a limit error reads as "not comparable".
+func TestBulkChargeSkipsUnconvertibleArguments(t *testing.T) {
+	pre := Prelude(testKeep)
+	for _, src := range []string{
+		`local t={} for i=1,100 do t[i]="x" end local sep=string.rep("s",65536) print(pcall(table.concat,t,sep,{},100))`,
+		`local t={} for i=1,100 do t[i]="x" end local sep=string.rep("s",65536) print(pcall(table.concat,t,sep,1,{}))`,
+		`print(pcall(string.sub,"hello",{}))`,
+		`print(pcall(string.sub,"hello",1,{}))`,
+		`print(pcall(string.rep,"x",{}))`,
+	} {
+		r := Exec(src, pre, Limits{})
+		if strings.Contains(r.Err, LimitSentinel) {
+			t.Errorf("an immediate argument error was SKIPPED (err=%q) for %s", r.Err, src)
+		}
+		if !strings.Contains(r.Output, "bad argument") {
+			t.Errorf("expected a bad-argument error, got %q for %s", r.Output, src)
+		}
+	}
+}
