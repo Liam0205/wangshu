@@ -268,3 +268,33 @@ func TestBulkBudgetAppliesLuaCoercions(t *testing.T) {
 		}
 	}
 }
+
+// TestConcatChargeDoesNotFireIndex pins that the byte-counting scan reads RAW, so wrapping
+// table.concat does not change the program being measured.
+//
+// PUC's table.concat uses lua_rawgeti, so scanning with t[k] fired __index: a table with a raising
+// __index reported that error instead of "invalid value (nil) at index 1", and the metamethod ran
+// three times when it should not have run at all.
+//
+// The reason that is worse than an ordinary bug: the prelude wraps BOTH engines, so they agreed on
+// the wrong answer and the differential comparison passed. A harness that changes the program
+// symmetrically does not report a divergence, it HIDES one -- the same failure mode as a capture gap
+// that both sides miss.
+func TestConcatChargeDoesNotFireIndex(t *testing.T) {
+	pre := Prelude(testKeep)
+
+	// The __index metamethod must not run at all.
+	r := Exec(`local n=0 local t=setmetatable({},{__index=function() n=n+1 return "x" end}) local ok=pcall(table.concat,t,",",1,3) print(n)`, pre, Limits{})
+	if !strings.Contains(r.Output, "0") {
+		t.Errorf("__index ran during the budget scan; output=%q err=%q", r.Output, r.Err)
+	}
+
+	// And the error must be concat's own, not one raised from inside a metamethod.
+	r2 := Exec(`local t=setmetatable({},{__index=function() error("BOOM") end}) local ok,e=pcall(table.concat,t,",",1,3) print(e)`, pre, Limits{})
+	if strings.Contains(r2.Output, "BOOM") {
+		t.Errorf("the scan raised through __index instead of reporting concat's error: %q", r2.Output)
+	}
+	if !strings.Contains(r2.Output, "invalid value") {
+		t.Errorf("expected concat's own invalid-value error, got %q", r2.Output)
+	}
+}

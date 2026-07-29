@@ -112,6 +112,7 @@ local __concat, __error = table.concat, error
 -- table.concat(t, ",", "1", "3") was charged the whole table, so cheap comparable inputs were
 -- wrongly skipped.
 local __tonum = tonumber
+local __rawget = rawget
 local __asNum = function(v)
   local tv = __type(v)
   if tv == "number" then return v end
@@ -709,9 +710,15 @@ table.concat = function(t, ...)
       if sep ~= nil then
         bytes = #sep * (j - i)
       end
+      -- rawget, NOT t[k]: PUC's table.concat uses lua_rawgeti, so indexing through __index
+      -- here changed the program's observable behaviour. A table with a raising __index
+      -- reported that error instead of "invalid value (nil) at index 1", and the metamethod
+      -- ran three times when it should not have run at all -- and because the prelude wraps
+      -- BOTH engines, they agreed on the wrong answer, which hides real divergence rather
+      -- than reporting it.
       local k = i
       while k <= j do
-        local v = t[k]
+        local v = __rawget(t, k)
         local tv = __type(v)
         if tv == "string" then
           bytes = bytes + #v
