@@ -217,8 +217,21 @@ func (st *State) FrameIsMain(level int) bool {
 	if th == nil || level < 1 {
 		return false
 	}
-	// buildTraceback already treats index 0 as the main chunk.
-	return th.ciDepth-level == 0
+	idx := th.ciDepth - level
+	if idx != 0 {
+		return false
+	}
+	// Index 0 is not sufficient: a TAIL CALL replaces the main chunk's frame, so the frame at
+	// index 0 can be an ordinary function. buildTraceback can use the index alone because it
+	// only labels the bottom of the stack, but getinfo has to name the function, and lua5.1
+	// reports "Lua" for a tail-called one. A main chunk is a vararg proto with no fixed
+	// parameters, which distinguishes it.
+	ci := th.ciAt(idx)
+	if ci.Tailcall() {
+		return false
+	}
+	proto := st.protoOf(&ci)
+	return proto.IsVararg && proto.NumParams == 0
 }
 
 // FrameSource returns the frame's raw source string, which carries PUC's leading marker
