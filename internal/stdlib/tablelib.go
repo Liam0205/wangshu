@@ -1144,8 +1144,11 @@ func registerStdStreams(st *crescent.State, ioTbl arena.GCRef) {
 	}
 	// __index = the metatable itself, so h:write(...) resolves, as PUC does.
 	st.SetTableField(mt, "__index", value.MakeGC(value.TagTable, mt))
-	// PUC's file handles carry __tostring giving "file (0x...)".
-	st.SetTableField(mt, "__metatable", value.MakeGC(value.TagTable, mt))
+	// PUC's file metatable has __tostring giving "file (0x...)" -- and NO __metatable, so
+	// setting one was visible through getmetatable(io.stdout).__metatable and would make
+	// the differential fuzzer report a divergence on print(io.stdout).
+	tsID := st.RegisterHostFn(fileFnToString)
+	st.SetTableField(mt, "__tostring", value.MakeGC(value.TagFunction, st.MakeHostClosure(tsID)))
 
 	for _, s := range []struct {
 		name string
@@ -1169,12 +1172,28 @@ func streamKind(st *crescent.State, args []value.Value) (byte, bool) {
 	return pl[0], true
 }
 
+// fileFnToString renders a handle as PUC does: "file (0xADDR)".
+func fileFnToString(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
+	if _, ok := streamKind(st, args); !ok {
+		return nil, crescent.NewArgError(1, "FILE* expected, got "+argTypeName(args, 0))
+	}
+	// The address is the GC ref, which is what tostring uses for other GC types too, so
+	// the oracle's address normalization collapses both sides the same way.
+	return []value.Value{intern(st, fmt.Sprintf("file (0x%08x)", uint64(value.GCRefOf(args[0]))))}, nil
+}
+
 // fileFnWrite is the :write method -- same argument rules and boolean return as io.write,
 // directed at the handle's own stream.
 func fileFnWrite(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	kind, ok := streamKind(st, args)
 	if !ok {
 		return nil, crescent.NewArgError(1, "FILE* expected, got "+argTypeName(args, 0))
+	}
+	// Writing an INPUT handle fails, with PUC's errno triple. Falling through to stdout
+	// both gave the wrong answer and bypassed the differential harness's capture wrapper,
+	// which only intercepts the stdout/stderr handles.
+	if kind == stdStreamIn {
+		return []value.Value{value.Nil, intern(st, "Bad file descriptor"), value.NumberValue(9)}, nil
 	}
 	w := os.Stdout
 	if kind == stdStreamErr {
@@ -1226,107 +1245,154 @@ func fileFnRead(st *crescent.State, args []value.Value) ([]value.Value, *crescen
 
 // fileFnLines is :lines -- an iterator yielding successive lines, nil at EOF.
 func fileFnLines(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
-	if _, ok := streamKind(st, args); !ok {
+	kind, ok := streamKind(st, args)
+	if !ok {
 		return nil, crescent.NewArgError(1, "FILE* expected, got "+argTypeName(args, 0))
 	}
+	// The iterator must carry the stream kind. Checking only "is it a handle" meant
+	// io.stdout:lines() returned an iterator that happily read STDIN -- handing back
+	// someone else's input data, which is worse than raising.
+	readable := kind == stdStreamIn
 	id := st.RegisterHostFn(func(ist *crescent.State, _ []value.Value) ([]value.Value, *crescent.LuaError) {
+		if !readable {
+			return nil, crescent.NewError("Bad file descriptor")
+		}
 		return readFormats(ist, []value.Value{intern(ist, "*l")})
 	})
 	return []value.Value{value.MakeGC(value.TagFunction, st.MakeHostClosure(id))}, nil
 }
 
-// stdinReader buffers os.Stdin so "*l" does not have to read a byte at a time. One shared
-// reader, because the standard input position is global state: two readers would each hold
-// their own buffered lookahead and silently lose bytes.
-var stdinReader = bufio.NewReader(os.Stdin)
-
 // readFormats implements the read-format list shared by io.read and file:read.
 //
-// 10 §11 requires the minimum set: "*l" (line, default), "*n" (number), "*a" (all) and a
-// byte count. PUC returns nil at end of file, and nil for "*n" when the text does not parse
-// as a number.
+// The reader comes from the State, not a package global: a package-level bufio.Reader is
+// shared by every State, which both races when States run in parallel goroutines (the
+// documented usage) and leaks the input position between them, since one State's buffered
+// lookahead swallows bytes the next one should see.
+//
+// Rules taken from PUC's g_read/read_chars/read_number/read_line rather than guessed:
+//   - the "*" is REQUIRED; without it the error is "invalid option", not "invalid format"
+//   - only the character AFTER "*" matters, so "*lzz" reads a line
+//   - "*L" does NOT exist in 5.1 (it is 5.2+) and is rejected
+//   - a count of 0 returns "" when not at end of file and nil at it (test_eof)
+//   - a NEGATIVE count reads everything, because PUC casts it to size_t
+//   - the format list STOPS at the first failure, so read("*l","*l") on one line of input
+//     returns exactly one value, not one plus a nil
 func readFormats(st *crescent.State, fmts []value.Value) ([]value.Value, *crescent.LuaError) {
+	r := st.StdinReader()
 	if len(fmts) == 0 {
-		fmts = []value.Value{intern(st, "*l")}
+		line, err := r.ReadString('\n')
+		if line == "" && err != nil {
+			return []value.Value{value.Nil}, nil
+		}
+		return []value.Value{intern(st, strings.TrimSuffix(line, "\n"))}, nil
 	}
 	out := make([]value.Value, 0, len(fmts))
 	for i, f := range fmts {
 		if value.IsNumber(f) {
 			n := int(value.AsNumber(f))
 			if n < 0 {
-				out = append(out, value.Nil)
+				// PUC casts the count to size_t, so a negative reads to the end.
+				b, _ := io.ReadAll(r)
+				out = append(out, intern(st, string(b)))
+				continue
+			}
+			if n == 0 {
+				// test_eof: "" when there is more input, nil at end of file.
+				if _, err := r.Peek(1); err != nil {
+					out = append(out, value.Nil)
+					break
+				}
+				out = append(out, intern(st, ""))
 				continue
 			}
 			buf := make([]byte, n)
-			got, _ := io.ReadFull(stdinReader, buf)
-			if got == 0 && n > 0 {
-				out = append(out, value.Nil) // EOF
-				continue
+			got, _ := io.ReadFull(r, buf)
+			if got == 0 {
+				out = append(out, value.Nil)
+				break
 			}
 			out = append(out, intern(st, string(buf[:got])))
 			continue
 		}
-		spec := ""
-		if value.Tag(f) == value.TagString {
-			spec = string(object.StringBytes(st.Arena(), value.GCRefOf(f)))
-		} else {
+		if value.Tag(f) != value.TagString {
 			return nil, crescent.NewArgError(i+1, "invalid format")
 		}
-		switch strings.TrimPrefix(spec, "*") {
-		case "l", "L":
-			line, err := stdinReader.ReadString('\n')
+		spec := string(object.StringBytes(st.Arena(), value.GCRefOf(f)))
+		if !strings.HasPrefix(spec, "*") {
+			return nil, crescent.NewArgError(i+1, "invalid option")
+		}
+		if len(spec) < 2 {
+			return nil, crescent.NewArgError(i+1, "invalid format")
+		}
+		switch spec[1] { // only the character after "*" is examined
+		case 'l':
+			line, err := r.ReadString('\n')
 			if line == "" && err != nil {
-				out = append(out, value.Nil) // EOF
-				continue
+				out = append(out, value.Nil)
+				break
 			}
-			if spec != "*L" && strings.HasSuffix(line, "\n") {
-				line = line[:len(line)-1] // "*l" drops the newline, "*L" keeps it
-			}
-			out = append(out, intern(st, line))
-		case "a":
-			// "*a" returns "" at EOF rather than nil -- the one format that never fails.
-			b, _ := io.ReadAll(stdinReader)
+			out = append(out, intern(st, strings.TrimSuffix(line, "\n")))
+		case 'a':
+			// "*a" never fails: it yields "" at end of file.
+			b, _ := io.ReadAll(r)
 			out = append(out, intern(st, string(b)))
-		case "n":
-			tok, err := readNumberToken(stdinReader)
-			if err != nil || tok == "" {
+		case 'n':
+			v, ok := readNumber(st, r)
+			if !ok {
 				out = append(out, value.Nil)
-				continue
+				break
 			}
-			// Reuse the same string->number conversion tonumber uses, so "*n"
-			// accepts exactly what tonumber does (hex, exponents, signs).
-			if v, ok := crescentToNumber(st, intern(st, tok)); ok {
-				out = append(out, value.NumberValue(v))
-			} else {
-				out = append(out, value.Nil)
-			}
+			out = append(out, value.NumberValue(v))
 		default:
 			return nil, crescent.NewArgError(i+1, "invalid format")
+		}
+		if len(out) > 0 && out[len(out)-1] == value.Nil {
+			break // g_read stops at the first format that fails
 		}
 	}
 	return out, nil
 }
 
-// readNumberToken consumes leading space then the longest run that could be a Lua number.
-func readNumberToken(r *bufio.Reader) (string, error) {
-	var sb strings.Builder
+// readNumber consumes a numeric prefix the way PUC's fscanf("%lf") does: it must NOT eat
+// bytes that cannot extend a number.
+//
+// A first version accepted every hex-ish byte (a-f, x, e) unconditionally and never gave
+// them back, so "12abc" read as nil AND destroyed "abc" -- PUC reads 12 and leaves "abc"
+// for the next read. Peeking and only consuming what still parses keeps the input intact.
+func readNumber(st *crescent.State, r *bufio.Reader) (float64, bool) {
+	// Skip leading whitespace, as scanf does.
 	for {
-		c, err := r.ReadByte()
+		b, err := r.Peek(1)
 		if err != nil {
-			return sb.String(), err
+			return 0, false
 		}
-		if sb.Len() == 0 && (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+		if b[0] == ' ' || b[0] == '\t' || b[0] == '\n' || b[0] == '\r' {
+			_, _ = r.Discard(1)
 			continue
 		}
-		if (c >= '0' && c <= '9') || c == '+' || c == '-' || c == '.' ||
-			c == 'e' || c == 'E' || c == 'x' || c == 'X' ||
-			(c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') {
-			sb.WriteByte(c)
-			continue
-		}
-		_ = r.UnreadByte()
-		return sb.String(), nil
+		break
 	}
+	best, bestLen := 0.0, 0
+	for n := 1; n <= 64; n++ {
+		b, err := r.Peek(n)
+		if err != nil || len(b) < n {
+			break
+		}
+		// Reject a candidate ending in whitespace: tonumber accepts trailing space, so
+		// the longest match would swallow the separator and "0x1f rest" would leave
+		// "rest" where PUC leaves " rest".
+		if c := b[n-1]; c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+			continue
+		}
+		if v, ok := crescentToNumber(st, intern(st, string(b))); ok {
+			best, bestLen = v, n
+		}
+	}
+	if bestLen == 0 {
+		return 0, false
+	}
+	_, _ = r.Discard(bestLen)
+	return best, true
 }
 
 // ioFnRead is io.read: reads from the default input, i.e. stdin.
@@ -1389,17 +1455,27 @@ func debugFnGetInfo(st *crescent.State, args []value.Value) ([]value.Value, *cre
 	set := func(k string, v value.Value) { st.SetTableField(t, k, v) }
 
 	if value.Tag(args[0]) == value.TagFunction {
-		// Function form: no active frame, so there is no current line.
+		// Function form: no active frame, so there is no current line. what/source are
+		// NOT set -- an earlier version hardcoded what="Lua" and source="=[C]", which
+		// reported a C function as Lua and a Lua function as C. Per this library's own
+		// "omit rather than fabricate" rule they are left out until the interpreter can
+		// answer them.
 		set("func", args[0])
 		set("currentline", value.NumberValue(-1))
-		set("what", intern(st, "Lua"))
-		set("source", intern(st, "=[C]"))
-		set("short_src", intern(st, "[C]"))
 		return []value.Value{value.MakeGC(value.TagTable, t)}, nil
 	}
 	lvl, ok := toNumberStr(st, args[0])
 	if !ok {
 		return nil, crescent.NewArgError(1, "function or level expected")
+	}
+	if lvl == 0 {
+		// Level 0 is getinfo ITSELF, which is a C function: PUC reports what="C" and
+		// currentline=-1. Returning nil for it was wrong -- 0 is a valid level.
+		set("what", intern(st, "C"))
+		set("currentline", value.NumberValue(-1))
+		set("source", intern(st, "=[C]"))
+		set("short_src", intern(st, "[C]"))
+		return []value.Value{value.MakeGC(value.TagTable, t)}, nil
 	}
 	src, line, ok := st.FrameInfo(int(lvl))
 	if !ok {
@@ -1409,6 +1485,11 @@ func debugFnGetInfo(st *crescent.State, args []value.Value) ([]value.Value, *cre
 	set("currentline", value.NumberValue(float64(line)))
 	set("source", intern(st, src))
 	set("short_src", intern(st, src))
+	// A frame reached by level is always a Lua frame here: host frames are not pushed onto
+	// cis, so there is no C frame to misreport.
 	set("what", intern(st, "Lua"))
+	if fn, ok := st.FrameFunc(int(lvl)); ok {
+		set("func", fn)
+	}
 	return []value.Value{value.MakeGC(value.TagTable, t)}, nil
 }

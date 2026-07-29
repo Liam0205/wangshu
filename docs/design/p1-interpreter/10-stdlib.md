@@ -1642,7 +1642,7 @@ io 库涉及**文件句柄**(full userdata + `__gc`,01 §5.5 / 06 §10),是 stdl
 | 函数 | 语义 | P1 | 备注 |
 |---|---|---|---|
 | `io.write(...)` | 写各参数到默认输出(stdout) | ✅ **必做** | 跑测试最小集;各参数 string/number(`CheckString`);**返回布尔成功标志**(5.1 `g_write`;返回 file 是 5.2+,§10.3) |
-| `io.read([fmt...])` | 从默认输入(stdin)读 | ✅ **必做** | 格式 `"*l"`(行,默认)/`"*L"`/`"*n"`(数)/`"*a"`(全)/数字(n 字节);与 `file:read` 共用一份实现(§10.3) |
+| `io.read([fmt...])` | 从默认输入(stdin)读 | ✅ **必做** | 格式 `"*l"`(行,默认)/`"*L"（**5.2+，5.1 拒绝**）`/`"*n"`(数)/`"*a"`(全)/数字(n 字节);与 `file:read` 共用一份实现(§10.3) |
 | `io.stdout`/`io.stdin`/`io.stderr` | 标准流(file handle) | ✅ **必做** | **真 file-handle userdata**(§10.2),`type()` 报 `userdata` 与 PUC 一致;分配走 `State.NewUserdata`(§10.2.1) |
 | `io.open(filename [, mode])` | 打开文件,返回 file handle | **❌ 缺口** | 需要文件系统访问控制 + `__gc` 关文件(§10.2 / §9.3);P1 不做 |
 | `io.close([file])` | 关闭文件(默认默认输出) | △ | 标准流的 `file:close` 已提供(返回 `(nil, msg)`);全局形式依赖 open |

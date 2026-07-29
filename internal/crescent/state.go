@@ -8,7 +8,9 @@
 package crescent
 
 import (
+	"bufio"
 	"fmt"
+	"os"
 	"sync/atomic"
 	"unsafe"
 
@@ -93,8 +95,9 @@ type State struct {
 	// nCcalls is the host→Lua re-entry depth (real Go stack consumption;
 	// equivalent to 05 §7.4 LUAI_MAXCCALLS). callLuaFromHost does +1 on entry
 	// / -1 on return; exceeding maxCCallDepth raises "C stack overflow".
-	pendingTailDepth  uint8 // tail-call chain length for the frame about to be pushed
-	pendingHostFrames uint8 // host frames entered since the last Lua frame (error level walks)
+	stdin             *bufio.Reader // lazily created per State; see StdinReader
+	pendingTailDepth  uint8         // tail-call chain length for the frame about to be pushed
+	pendingHostFrames uint8         // host frames entered since the last Lua frame (error level walks)
 	nCcalls           int
 
 	// threadChain is the suspended caller threads on the resume chain (06 §5.1
@@ -959,6 +962,18 @@ func NewErrorVal(v value.Value, msg string) *LuaError {
 func (e *LuaError) MarkAnnotated() { e.annotated = true }
 
 // TypeNameOf exposes the internal typeName for stdlib to implement the type() builtin.
+// StdinReader returns this State's buffered stdin reader, creating it on first use.
+//
+// Per-State rather than a package global: States are documented as one-per-goroutine, and a
+// shared bufio.Reader both races under that usage and leaks the read position between States,
+// because one State's buffered lookahead consumes bytes the next one should see.
+func (st *State) StdinReader() *bufio.Reader {
+	if st.stdin == nil {
+		st.stdin = bufio.NewReader(os.Stdin)
+	}
+	return st.stdin
+}
+
 func TypeNameOf(v value.Value) string { return typeName(v) }
 
 // TypeName is the State-aware type name: unlike package-level
