@@ -680,22 +680,27 @@ local __ssub0 = string.sub
 string.sub = function(sv, i, ...)
   local s2 = __asStr(sv)
   if s2 ~= nil then
-    -- Both indices go through the SHARED __ckint, so they narrow to int32 exactly as
-    -- luaL_checkint does. Using tonumber+floor here left the fourth instance of this gap in one
-    -- round: s:sub(4294967297) narrows to index 1 in lua5.1, while the raw value made the charge
-    -- compute an empty range and record 0 bytes.
+    -- str_sub uses luaL_checkINTEGER, not luaL_checkint: lua_Integer is 64-bit here, so the
+    -- indices are NOT narrowed to int32. Narrowing them made s:sub(4294967297) look like index 1
+    -- and charged a full copy of the subject, so 17 iterations over a 1 MiB string tripped the
+    -- cumulative budget -- while lua5.1 clamps the start past the end and returns "" instantly.
+    --
+    -- Which luaL_check* a function uses has to be read per function; the same argument position in
+    -- a sibling function is not evidence.
+    --
+    -- An explicit but unconvertible index still means the real call raises, so charge nothing.
     local n = #s2
-    -- Same rule as concat: an explicit but unconvertible index means the real call raises, so
-    -- charge nothing rather than inventing a range.
     local from = 1
     if i ~= nil then
-      from = __ckint(i, nil)
+      from = __asNum0(i)
       if from == nil then return __ssub0(sv, i, ...) end
+      from = from >= 0 and __floor(from) or -__floor(-from)
     end
-    local to = n
+    local to = -1
     if __select("#", ...) >= 1 then
-      to = __ckint((__select(1, ...)), nil)
+      to = __asNum0((__select(1, ...)))
       if to == nil then return __ssub0(sv, i, ...) end
+      to = to >= 0 and __floor(to) or -__floor(-to)
     end
     if from < 0 then from = n + from + 1 end
     if to < 0 then to = n + to + 1 end
@@ -710,6 +715,15 @@ end
 
 local __tsort0 = table.sort
 table.sort = function(t, ...)
+  -- Mirror sort's own comparator check BEFORE charging: lua5.1 validates that argument 2 is a
+  -- function (or absent/nil) and raises at once otherwise, so table.sort(bigTable, {}) must report
+  -- that error rather than being charged n*log2(n) and skipped.
+  if __select("#", ...) >= 1 then
+    local cmp = (__select(1, ...))
+    if cmp ~= nil and __type(cmp) ~= "function" then
+      return __tsort0(t, ...)
+    end
+  end
   if __type(t) == "table" then
     -- Sorting compares about n*log2(n) times, so charging n undercharged by the log factor:
     -- 100 sorts of 200000 elements still burned 4 seconds before the budget tripped. Charge

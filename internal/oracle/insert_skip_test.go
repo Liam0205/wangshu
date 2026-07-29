@@ -182,8 +182,6 @@ func TestBulkBudgetCoversTheFamily(t *testing.T) {
 			`t={} for i=1,200000 do t[i]=i%7 end for k=1,100 do table.sort(t) end print(1)`},
 		{"concat of large pieces",
 			`t={} for i=1,64 do t[i]=string.rep("y",65536) end for k=1,2000 do table.concat(t) end print(1)`},
-		{"string.sub with a wrapped index in a loop",
-			`local s=string.rep("a",1048576) for k=1,20000 do s:sub(4294967297) end print(1)`},
 		{"string.sub extracting a large slice in a loop",
 			`local s=string.rep("a",1048576) for k=1,20000 do s:sub(1,1048576) end print(1)`},
 		{"concat with a large separator",
@@ -205,8 +203,11 @@ func TestBulkBudgetCoversTheFamily(t *testing.T) {
 	for _, src := range []string{
 		`print(string.rep("ab",3))`,
 		`print(("hello"):sub(2),("hello"):sub(-3,-2),("hello"):sub(3,1))`,
-		// Both sub indices narrow to int32: sub(4294967297) is index 1 in lua5.1, giving "".
+		// str_sub uses luaL_checkINTEGER, so its indices are 64-bit and do NOT narrow to int32:
+		// sub(4294967297) clamps past the end and returns "" instead of copying from index 1.
+		// A loop of it must therefore stay COMPARED, since the real call does no work.
 		`print(#("hello"):sub(4294967297),#("hello"):sub(1,4294967297))`,
+		`local s=string.rep("a",1048576) for k=1,20000 do s:sub(4294967297) end print(#s:sub(4294967297))`,
 		`print(("hello"):sub("2"),("hello"):sub(2.9))`,
 		`local s="abcdef" for i=1,#s do io.write(s:sub(i,i)) end print("")`,
 		`print(("hello"):upper(),("X"):lower(),("abc"):reverse())`,
@@ -382,6 +383,10 @@ func TestBulkChargeInvalidArgsAcrossAllShims(t *testing.T) {
 		`print(pcall(string.rep,"x",{}))`,
 		`local t={} for i=1,100000 do t[i]=i end print(pcall(table.remove,t,{}))`,
 		`local t={} for i=1,100000 do t[i]=i end print(pcall(table.insert,t,{},"v"))`,
+		// sort validates its comparator before doing any work, so a bad one must report rather
+		// than being charged n*log2(n) over a large table.
+		`local t={} for i=1,100000 do t[i]=i end print(pcall(table.sort,t,{}))`,
+		`local t={} for i=1,100000 do t[i]=i end print(pcall(table.sort,t,"x"))`,
 	} {
 		r := Exec(src, pre, Limits{})
 		if strings.Contains(r.Err, LimitSentinel) {
