@@ -1531,11 +1531,19 @@ var debugFns = []entry{
 func debugFnTraceback(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	// The optional level SKIPS that many leading frames, so traceback("m", 2) starts at the
 	// caller's caller. Ignoring it produced the level-1 traceback for every level.
+	// PUC uses lua_isnumber here, NOT luaL_optint: a non-number level is silently ignored and
+	// the default applies. debug.traceback("m", {}) does fail in lua5.1, but with "attempt to
+	// concatenate a table value" from further down -- the level argument itself raises nothing.
+	// Reporting an argument error for it was the wrong reading of the same symptom.
+	//
+	// Not reproduced: lua5.1's db_errorfb pops the level argument ONLY when it is a number, so
+	// a non-number one stays on the stack and ends up in the concatenation, which is where the
+	// "attempt to concatenate a table value" comes from. That is a C stack-layout artifact
+	// rather than a semantic -- the same category as print's NUL truncation -- so
+	// debug.traceback("m", {}) returns the traceback here instead of failing.
 	level := 1
-	if len(args) >= 2 && args[1] != value.Nil {
-		if n, ok := toNumberStr(st, args[1]); ok {
-			level = int(n)
-		}
+	if len(args) >= 2 && value.IsNumber(args[1]) {
+		level = int(cCharCastInt32(value.AsNumber(args[1])))
 	}
 	tb := st.TracebackFrom(level)
 	if len(args) == 0 {
