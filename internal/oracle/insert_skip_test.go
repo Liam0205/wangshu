@@ -261,6 +261,11 @@ func TestBulkBudgetAppliesLuaCoercions(t *testing.T) {
 		`print(table.concat({"x"},"",1,4294967297))`,
 		// And it truncates toward zero rather than rounding.
 		`print(table.concat({"a","b","c"},"",1.9,2.9))`,
+		// string.rep's count narrows the same way: 4294967297 repetitions is ONE in lua5.1.
+		// Both the budget shim and the pre-existing "rep too large" guard needed it.
+		`print(string.rep("x",4294967297))`,
+		`print(#string.rep("ab",2.9))`,
+		`print(string.rep("x",-4294967295))`,
 	} {
 		r := Exec(src, pre, Limits{})
 		if strings.Contains(r.Err, LimitSentinel) {
