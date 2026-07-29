@@ -268,3 +268,49 @@ API 就是新增一条绕过捕获的通道,而它的失效表现是**最安静�
 `internal/oracle/prelude.go`(file-handle `:write` 接进捕获累加器) ·
 `io_handles_test.go`(`TestIOHandles_SurviveGC` / `TestIOHandles_MatchPUC` /
 `TestDebugLibrary_MatchPUC`)
+
+## 收尾：六轮审计，36 处缺陷，全部集中在 io.read 与 debug.getinfo
+
+三个 issue，12 个 commit。六轮独立审计共 36 处缺陷，而分布很清楚：
+**userdata / GC / arena 那部分六轮全清**（漏 `LinkSweep` 那一条修对之后就再没出过问题），
+`string.byte` 的上限一次就对，而 `io.read` 的格式解析与 `debug.getinfo` 的字段占了几乎全部。
+
+原因不难看：这两处我都是**先按印象实现、再靠审计逐条纠正**，而不是先把参照实现的规则量出来。
+`io.read` 的每一条规则（`*` 必需、只看 `*` 后一个字符、`*L` 不存在、count 0 与负数、
+列表在首次失败处停下、`*n` 的 scanf 提交策略）都是被审计指出来之后我去量才确定的；
+`debug.getinfo` 的 `what` / `source` / `linedefined` / `what` 选择器 / level 窄化同理。
+
+### 两次「修法本身走反方向」
+
+- stdin reader 从**包级全局**（跨 State 竞争）改成**每 State 一个**，结果换来**静默丢输入**：
+  一个进程里两个 State 顺序各读一行得到 `line1` / `nil`，因为第一个 State 的缓冲预读吞掉了后面
+  的内容并随它一起消失。`os.Stdin` 是一个 fd、一个 offset，两个 reader 不可能各自拥有它——
+  共享是对的，只有竞争需要修，所以最终是共享 + 锁。
+- `debug.getinfo` 判定 main chunk 试了**四次**：帧下标（尾调用会把普通函数放到 0）、
+  「vararg 且无固定参数」（两个方向都错：把协程栈底的 `function(...)` 说成 main，又漏掉
+  loadstring chunk）、`callInfo.fresh`（漏掉从 Lua 里调用的 loadstring chunk），
+  最后用 PUC 的判据 `LineDefined == 0`——为此让编译器给 chunk 记 0 而不是它起始的那一行。
+
+### 我自己写的回归测试挂住了构建
+
+第三轮最重的一条发现在**我自己的测试里**：它依赖环境里的 stdin，于是编译出的二进制在终端下
+**永久阻塞**、在管道下**断言失败**——而且断言的正好与它声称要固定的性质相反。它在 `go test`
+下通过，只因为 `go test` 恰好把 `/dev/null` 接了上去，而 `make test` 是直接跑二进制的。
+
+追加四条教训：
+
+10. **两处相同的规则就是一处太多。** 「EOF 时迭代器不产出任何值」这条我先只改了两份拷贝中的一份
+    （`io.lines` 与 `file:lines` 各有一个闭包）。判据：同一条语义出现在两个地方时，先合并再修，
+    否则修完的那一份会让人以为整条规则都对了。
+11. **测试自己不能依赖环境里的 stdin / tty / 工作目录。** 判据：写一个会读进程级输入的测试时，
+    自己把它重定向掉（`os.Stdin = devnull` 并在 cleanup 里还原），并且**用编译出的二进制在有
+    真实 stdin 的情况下跑一遍**——`go test` 提供的环境与 `make test` 直接跑二进制不同，只在前者
+    下验证会漏掉阻塞与断言反向这两种失效。
+12. **从别处搬来的判据要重新验证它在新位置成立。** 「下标 0 就是 main chunk」在 `buildTraceback`
+    里是对的（它只给栈底贴标签），搬到 `getinfo` 就错了（它要指名函数，而尾调用会把普通函数放到
+    下标 0）。判据：复用一个条件时，问「原来的调用方问的是同一个问题吗」；两个调用方对同一份数据
+    问不同的问题时，判据不能共用。
+13. **给一个函数加了兄弟函数的检查之后，要回头检查自己同时新增的那个函数。** 这一轮我给
+    `string.byte` 补了 `lua_checkstack` 上限、还顺着源码扫了其余调用点，却漏了**同一个 commit 里
+    我自己新写的** `io.read`——它有完全一样的缺口。判据：做「同族缺陷扫描」时，把本次改动**新增**
+    的函数也算进同族，它们不在旧代码里、grep 不到，但同样属于那一族。
