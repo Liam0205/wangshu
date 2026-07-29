@@ -983,7 +983,10 @@ P1 建立的三套机制(conformance / 差分 fuzz / 基准)如何复用到 P2-P
 > 执行体是 `TestBulkBudgetCoversTheFamily`。`string.gsub` **不在**其中:`__patcheck` 已把 subject 限在
 > 256 字节,加 charge 是死代码——这一条是实测之后从审计建议里剔除的。
 
-> ** 是自查枚举(循环形式)找出的最后一个**:在 1 MiB 主串上反复取整段,20000 次 12.5 秒。
-> 按**提取长度**计入 。同轮以循环形式量过并确认便宜的:`string.format`(含 %9999d)、
+> **`string.sub` 是自查枚举(循环形式)找出的最后一个**:在 1 MiB 主串上反复取整段,20000 次 12.5 秒。
+> 按**提取长度**(不是主串长度)计入 `__chargeBulk`。同轮以循环形式量过并确认便宜的:`string.format`(含 %9999d)、
 > `tostring`(大表与深嵌套)、`unpack` 近上限、`select`、`string.char`/`byte`/`find`、`os.date`,
 > 以及已被既有判据覆盖的 `..` 拼接。
+>
+> 这一轮真正的收获是**枚举做对了**:同一份判据,量单次调用时漏了三个成员;写成循环形式一次就扫完整族,
+> 只剩 `string.sub` 一个。
