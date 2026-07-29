@@ -239,6 +239,16 @@ func (st *State) FrameIsMain(level int) bool {
 	return st.protoOf(&ci).LineDefined == 0
 }
 
+// FrameIsHostBoundary reports whether LEVEL is exactly one step past the outermost Lua frame,
+// i.e. the host call that entered the interpreter. debug.getinfo reports what="C" there.
+func (st *State) FrameIsHostBoundary(level int) bool {
+	th := st.runningThread
+	if th == nil {
+		return false
+	}
+	return th.ciDepth-level == -1
+}
+
 // FrameLineDefined returns the line the frame's function was defined on (0 for a main chunk).
 func (st *State) FrameLineDefined(level int) (int32, bool) {
 	th := st.runningThread

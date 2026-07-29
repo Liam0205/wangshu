@@ -188,3 +188,21 @@ func TestDebugGetInfo_FieldsMatchPUC(t *testing.T) {
 		}
 	}
 }
+
+// TestDebugGetInfo_HostBoundaryLevel pins that the level one past the outermost Lua frame
+// reports what="C", and that anything beyond it is nil.
+//
+// wangshu does not push host frames onto cis, so that level had no frame and returned nil where
+// lua5.1 reports the C function that called the chunk. Reporting it is not a fabricated field:
+// the entry frame is marked, so "one past it" is a known host boundary.
+func TestDebugGetInfo_HostBoundaryLevel(t *testing.T) {
+	for _, tc := range []struct{ name, src, want string }{
+		{"host boundary is a table", `return type(debug.getinfo(2))`, "table"},
+		{"host boundary is C", `return debug.getinfo(2).what`, "C"},
+		{"beyond it is nil", `return tostring(debug.getinfo(3))`, "nil"},
+	} {
+		if got := runOne(t, tc.src).Str(); got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
