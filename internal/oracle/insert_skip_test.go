@@ -215,3 +215,50 @@ func TestBulkBudgetCoversTheFamily(t *testing.T) {
 		}
 	}
 }
+
+// TestBulkBudgetAppliesLuaCoercions pins that the budget normalises arguments the way the C
+// functions do before charging.
+//
+// The shims first checked raw Lua types, which leaked in BOTH directions. Undercharged:
+// string.rep(1, 4194304) builds 4 MiB per call and was charged nothing because the subject was a
+// number, so a loop of it cost 4m45s while comparing normally; table.remove(t, "1") bypassed the
+// shift budget for the same reason. Overcharged: string.sub(s, "1048576") was charged from index 1,
+// and table.concat(t, ",", "1", "3") was charged the whole table, so cheap comparable inputs were
+// silently excluded.
+//
+// luaL_checkinteger accepts a numeric string and luaL_checklstring accepts a number, so the charge
+// has to apply the same coercions or it is measuring a different call than the one that runs.
+func TestBulkBudgetAppliesLuaCoercions(t *testing.T) {
+	pre := Prelude(testKeep)
+
+	// Coerced arguments must still be CHARGED.
+	for _, tc := range []struct{ name, src string }{
+		{"numeric subject to string.rep",
+			`for k=1,20000 do local x=#string.rep(1,4194304) end print(1)`},
+		{"string position to table.remove",
+			`t={} for i=1,40000 do t[i]=i end for k=1,20000 do table.remove(t,"1") end print(#t)`},
+	} {
+		r := Exec(tc.src, pre, Limits{})
+		if !strings.Contains(r.Err, LimitSentinel) {
+			t.Errorf("%s was COMPARED (err=%q)", tc.name, r.Err)
+		}
+	}
+
+	// And coerced arguments must not cause a FALSE skip of cheap work.
+	for _, src := range []string{
+		`print(string.rep(1,3))`,
+		`print(string.rep("a","3"))`,
+		`print(("hello"):sub("2"),("hello"):sub("2","3"))`,
+		`t={1,2,3} print(table.remove(t,"1"),#t)`,
+		`print(table.concat({1,2,3},",","1","2"))`,
+		`print(table.concat({1,2,3},2))`,
+		`print(string.upper(123))`,
+		// A 3-element range over a 2M-element table, with the range given as strings.
+		`t={} for i=1,2000000 do t[i]="a" end print(table.concat(t,",","1","3"))`,
+	} {
+		r := Exec(src, pre, Limits{})
+		if strings.Contains(r.Err, LimitSentinel) {
+			t.Errorf("a coerced-argument form was SKIPPED (err=%q) for %s", r.Err, src)
+		}
+	}
+}

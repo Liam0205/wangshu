@@ -102,6 +102,29 @@ local __concat, __error = table.concat, error
 
 -- __chargeBulk raises the limit sentinel when one call, or the script in total, exceeds the
 -- bulk-work budget. Defined once so every shim charges the same accumulator with the same units.
+-- __asNum and __asStr mirror luaL_checkinteger/luaL_checklstring's COERCION, which every one of
+-- these C functions applies before doing any work.
+--
+-- Charging on the raw Lua type instead leaked both ways: string.rep(1, 4194304) built 4 MiB per
+-- call and was charged nothing, because the subject was a number rather than a string (a loop of
+-- it cost 4m45s while comparing normally), and table.remove(t, "1") bypassed the shift budget
+-- entirely. In the other direction string.sub(s, "1048576") was charged from index 1 and
+-- table.concat(t, ",", "1", "3") was charged the whole table, so cheap comparable inputs were
+-- wrongly skipped.
+local __tonum = tonumber
+local __asNum = function(v)
+  local tv = __type(v)
+  if tv == "number" then return v end
+  if tv == "string" then return __tonum(v) end
+  return nil
+end
+local __asStr = function(v)
+  local tv = __type(v)
+  if tv == "string" then return v end
+  if tv == "number" then return __tostring(v) end
+  return nil
+end
+
 __chargeBulk = function(bytes, what)
   if bytes > __bulkCap then
     __error("` + LimitSentinel + `: " .. what .. " size", 0)
@@ -544,8 +567,8 @@ end
 local __tremove0 = table.remove
 table.remove = function(t, ...)
   if __type(t) == "table" and __select("#", ...) >= 1 then
-    local pos = (__select(1, ...))
-    if __type(pos) == "number" then
+    local pos = __asNum((__select(1, ...)))
+    if pos ~= nil then
       local i64 = pos >= 0 and __floor(pos) or -__floor(-pos)
       local i32 = i64 % 4294967296
       if i32 >= 2147483648 then i32 = i32 - 4294967296 end
@@ -582,8 +605,9 @@ end
 -- a script may repeat one call thousands of times inside the instruction budget.
 local __srep0 = string.rep
 string.rep = function(sv, n, ...)
-  if __type(sv) == "string" and __type(n) == "number" and n > 0 then
-    __chargeBulk(#sv * n, "string.rep")
+  local s2, n2 = __asStr(sv), __asNum(n)
+  if s2 ~= nil and n2 ~= nil and n2 > 0 then
+    __chargeBulk(#s2 * n2, "string.rep")
   end
   return __srep0(sv, n, ...)
 end
@@ -592,8 +616,9 @@ for _, name in __ipairs({"upper", "lower", "reverse"}) do
   local orig = string[name]
   if orig ~= nil then
     string[name] = function(sv, ...)
-      if __type(sv) == "string" then
-        __chargeBulk(#sv, "string." .. name)
+      local s2 = __asStr(sv)
+      if s2 ~= nil then
+        __chargeBulk(#s2, "string." .. name)
       end
       return orig(sv, ...)
     end
@@ -610,13 +635,15 @@ end
 -- single calls, where every member of this family is milliseconds.
 local __ssub0 = string.sub
 string.sub = function(sv, i, ...)
-  if __type(sv) == "string" then
-    local n = #sv
-    local from = __type(i) == "number" and __floor(i) or 1
+  local s2 = __asStr(sv)
+  if s2 ~= nil then
+    local n = #s2
+    local iN = __asNum(i)
+    local from = iN ~= nil and __floor(iN) or 1
     local to = n
     if __select("#", ...) >= 1 then
-      local j = (__select(1, ...))
-      if __type(j) == "number" then to = __floor(j) end
+      local jN = __asNum((__select(1, ...)))
+      if jN ~= nil then to = __floor(jN) end
     end
     if from < 0 then from = n + from + 1 end
     if to < 0 then to = n + to + 1 end
@@ -659,19 +686,17 @@ table.concat = function(t, ...)
     -- arguments made table.concat(t, ",", 1, 3) on a 2M-element table skip, even though it
     -- joins three elements in microseconds; that is the same mistake the insert shim's own
     -- comment warns about, repeated here.
-    local i = __select("#", ...) >= 2 and (__select(2, ...)) or 1
-    local j = __select("#", ...) >= 3 and (__select(3, ...)) or #t
-    if __type(i) ~= "number" then i = 1 end
-    if __type(j) ~= "number" then j = #t end
+    local i = __select("#", ...) >= 2 and __asNum((__select(2, ...))) or 1
+    local j = __select("#", ...) >= 3 and __asNum((__select(3, ...))) or #t
+    if i == nil then i = 1 end
+    if j == nil then j = #t end
     local bytes = 0
     if j >= i then
       -- Separator bytes count too: an empty table with a 64 KiB separator repeated 4000
       -- times cost over three minutes while charging nothing at all.
-      local sep = (__select(1, ...))
-      if __type(sep) == "string" then
+      local sep = __asStr((__select(1, ...)))
+      if sep ~= nil then
         bytes = #sep * (j - i)
-      elseif __type(sep) == "number" then
-        bytes = #__tostring(sep) * (j - i)
       end
       local k = i
       while k <= j do
