@@ -210,6 +210,33 @@ func (st *State) FrameInfo(level int) (string, int32, bool) {
 	return bytecode.ChunkID(proto.Source), line, true
 }
 
+// FrameIsMain reports whether the frame LEVEL steps up is the main chunk, which
+// debug.getinfo renders as what="main" rather than "Lua".
+func (st *State) FrameIsMain(level int) bool {
+	th := st.runningThread
+	if th == nil || level < 1 {
+		return false
+	}
+	// buildTraceback already treats index 0 as the main chunk.
+	return th.ciDepth-level == 0
+}
+
+// FrameSource returns the frame's raw source string, which carries PUC's leading marker
+// ("=name" or "@file") that ChunkID strips for display. getinfo reports the raw form in
+// "source" and the stripped one in "short_src", so they must not be the same value.
+func (st *State) FrameSource(level int) (string, bool) {
+	th := st.runningThread
+	if th == nil || level < 1 {
+		return "", false
+	}
+	idx := th.ciDepth - level
+	if idx < 0 || idx >= th.ciDepth {
+		return "", false
+	}
+	ci := th.ciAt(idx)
+	return st.protoOf(&ci).Source, true
+}
+
 // FrameFunc returns the closure running in the frame LEVEL steps up, for debug.getinfo's
 // "func" field. ok is false when the level is past the stack.
 func (st *State) FrameFunc(level int) (value.Value, bool) {

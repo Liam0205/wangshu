@@ -1414,11 +1414,13 @@ func readNumber(st *crescent.State, r *bufio.Reader) (float64, bool) {
 		}
 		break
 	}
-	// The window has to cover a long literal: "1" followed by 80 zeros is a valid number
-	// and a 64-byte window truncated it to 1e+63. bufio's default buffer is 4096, which
-	// bounds the peek, and any real numeral is far shorter.
+	// The window has to cover a long literal: "1" followed by 80 zeros is a valid number and
+	// a 64-byte window truncated it to 1e+63, while 1024 still truncated a longer one and
+	// silently left the rest for the next read. bufio's default buffer is 4096, so peeking
+	// past that cannot succeed anyway -- this bounds the scan at the buffer rather than at an
+	// arbitrary number.
 	best, bestLen := 0.0, 0
-	for n := 1; n <= 1024; n++ {
+	for n := 1; n <= 4096; n++ {
 		b, err := r.Peek(n)
 		if err != nil || len(b) < n {
 			break
@@ -1431,12 +1433,46 @@ func readNumber(st *crescent.State, r *bufio.Reader) (float64, bool) {
 		}
 		if v, ok := crescentToNumber(st, intern(st, string(b))); ok {
 			best, bestLen = v, n
+			continue
+		}
+		// Only a HEX introducer is special. Measured against scanf:
+		//   "0x"   -> nil, and the "0x" is consumed  (hex needs at least one digit)
+		//   "0xg"  -> nil, leaving "g"
+		//   "1e"   -> 1                              (decimal commits to what it has)
+		//   "1e+"  -> 1
+		// So "0" followed by x/X with no hex digit rejects the whole token, while a
+		// dangling exponent just ends the numeral. A first attempt rejected on e/E/+/- too
+		// and broke "1e", "0x1f " and "3.14 ".
+		if bestLen == 1 && (b[0] == '0') && n == 2 && (b[1] == 'x' || b[1] == 'X') {
+			hex := false
+			if more, err := r.Peek(3); err == nil && len(more) == 3 {
+				c := more[2]
+				hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+			}
+			if !hex {
+				_, _ = r.Discard(2) // scanf consumes the rejected "0x"
+				return 0, false
+			}
 		}
 	}
 	if bestLen == 0 {
 		return 0, false
 	}
-	_, _ = r.Discard(bestLen)
+	// scanf consumes the whole token it ATTEMPTED, not just the part that parsed: "1e"
+	// yields 1 and leaves nothing, because the trailing exponent introducer was read while
+	// trying to extend the number. Discard the dangling e/E and an optional sign after it.
+	eat := bestLen
+	if more, err := r.Peek(eat + 1); err == nil && len(more) > eat {
+		if c := more[eat]; c == 'e' || c == 'E' {
+			eat++
+			if more2, err2 := r.Peek(eat + 1); err2 == nil && len(more2) > eat {
+				if c2 := more2[eat]; c2 == '+' || c2 == '-' {
+					eat++
+				}
+			}
+		}
+	}
+	_, _ = r.Discard(eat)
 	return best, true
 }
 
@@ -1556,11 +1592,25 @@ func debugFnGetInfo(st *crescent.State, args []value.Value) ([]value.Value, *cre
 		return []value.Value{value.Nil}, nil
 	}
 	set("currentline", value.NumberValue(float64(line)))
-	set("source", intern(st, src))
+	// source carries PUC's origin marker while short_src is the display form, so the two
+	// differ; setting both to the stripped ChunkID made them identical. A chunk loaded from
+	// a string is "=name" ("@name" would mean a file), and short_src renders that as
+	// [string "name"].
+	if raw, ok := st.FrameSource(int(lvl)); ok && (strings.HasPrefix(raw, "=") || strings.HasPrefix(raw, "@")) {
+		set("source", intern(st, raw))
+	} else if ok {
+		set("source", intern(st, "="+raw))
+	} else {
+		set("source", intern(st, src))
+	}
 	set("short_src", intern(st, src))
-	// A frame reached by level is always a Lua frame here: host frames are not pushed onto
-	// cis, so there is no C frame to misreport.
-	set("what", intern(st, "Lua"))
+	// The main chunk is "main", not "Lua". A frame reached by level is otherwise always a
+	// Lua frame here, since host frames are not pushed onto cis.
+	if st.FrameIsMain(int(lvl)) {
+		set("what", intern(st, "main"))
+	} else {
+		set("what", intern(st, "Lua"))
+	}
 	if fn, ok := st.FrameFunc(int(lvl)); ok {
 		set("func", fn)
 	}

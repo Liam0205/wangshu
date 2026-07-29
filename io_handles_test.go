@@ -152,3 +152,25 @@ func TestIOOmissions_HaveAnEnforcer(t *testing.T) {
 		}
 	}
 }
+
+// TestDebugGetInfo_FieldsMatchPUC pins the fields that a differential comparison can see.
+//
+// getinfo entered the compared surface as soon as it existed, because the fuzz target
+// enumerates its whitelist from wangshu's live globals -- so a field nobody had checked against
+// lua5.1 was being diffed. what and source were both wrong and neither had a test.
+func TestDebugGetInfo_FieldsMatchPUC(t *testing.T) {
+	for _, tc := range []struct{ name, src, want string }{
+		// The main chunk is "main", not "Lua".
+		{"main chunk what", `return debug.getinfo(1).what`, "main"},
+		{"function what", `local f = function() return debug.getinfo(1).what end return f()`, "Lua"},
+		// source carries PUC's origin marker; short_src is the display form, so they differ.
+		{"source has marker", `return debug.getinfo(1).source:sub(1, 1)`, "="},
+		{"source differs from short_src",
+			`local i = debug.getinfo(1) return tostring(i.source ~= i.short_src)`, "true"},
+		{"short_src is display form", `return debug.getinfo(1).short_src`, `[string "test"]`},
+	} {
+		if got := runOne(t, tc.src).Str(); got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
