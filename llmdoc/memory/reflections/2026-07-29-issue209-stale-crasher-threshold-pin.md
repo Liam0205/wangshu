@@ -221,3 +221,24 @@ corpus 里四个 `table.insert(t,4...` 看起来同类，其中 `4294967298` 窄
 `internal/oracle/prelude.go`（harness skip = 2^20）·
 `docs/design/p1-interpreter/12-testing-difftest.md` §4.9d（两个阈值的区别）
 
+## 审计发现：我那个测试只覆盖了一个方向
+
+我在 commit message 里写「两个方向都验证过」，实际只验证了一个：把产品上限 `tableInsertShiftCap`
+降到 2^20 会让 `TestInsertShiftThresholdsStayDistinct` 变红——这一条是真的。但**把 harness skip
+从 2^20 提到 2^27，那个测试仍然全绿**，而 corpus 里三个 seed 各自从 0.00 秒回到 3 秒、全量重放从
+0.45 秒回到 9.58 秒,正是 #203 / #208 / #209 被开出来的那个状态。
+
+原因是结构性的而不是尺寸没调好：`test/regression` **不 import `internal/oracle`**，它的「便宜」那条
+断言测的是**产品**做 2M 移位的耗时，所以它根本看不见 skip 在哪里。把 5 秒那个上界调松调紧都没用。
+
+补的办法是在 skip 所在的包里再写一个：`internal/oracle` 的 `TestInsertShiftSkipThreshold`——
+skip 上方必须抬 `LimitSentinel`（被排除在比对之外），下方必须仍然参与比对且便宜。实测把 skip 往上提
+或往下压都会让它变红。
+
+追加一条教训：
+
+5. **一个断言只能看见它 import 的那一侧；先问「这个断言能不能看见它要保护的那个量」。** 我以为「在
+   一个测试里断两个方向」就把这个拆分固定住了，但两个阈值在两个包里，而那个测试只能观察到产品侧的行为。
+   判据：为一个跨包的关系写执行体时，逐个检查每一端——那一端的值改了，这个测试会不会红？看不见的那一端
+   要在它自己的包里再写一个。这也是上一轮「两处相同的规则就是一处太多」的对偶：那条讲同一条规则不要有
+   两份实现，这条讲同一个关系可能确实需要两个执行体。
