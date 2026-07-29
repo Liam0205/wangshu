@@ -122,3 +122,37 @@ func TestShiftBudgetCoversPositionSign(t *testing.T) {
 		}
 	}
 }
+
+// TestConcatBudget pins that table.concat is charged to the same budget.
+//
+// It is the fourth member of this family, and the one I found by sweeping rather than by waiting
+// for an audit: every stdlib call that can move or build O(n) data inside one uninterruptible C
+// call is a candidate, since the instruction hook cannot interrupt any of them. 2000 concats over
+// a 200000-element table cost 28 seconds across the two engines and compared normally.
+//
+// Also swept and found cheap at scale: string.rep, string.gsub, string.upper, string.sub,
+// table.sort, table constructors and coroutine churn -- all under 300ms at sizes where concat
+// took tens of seconds, because they either allocate once or the instruction hook does see them.
+func TestConcatBudget(t *testing.T) {
+	pre := Prelude(testKeep)
+
+	loop := Exec(`t={} for i=1,200000 do t[i]="xxxxxxxx" end for k=1,2000 do table.concat(t) end print(1)`, pre, Limits{})
+	if !strings.Contains(loop.Err, LimitSentinel) {
+		t.Errorf("a loop of large concats was COMPARED (err=%q)", loop.Err)
+	}
+
+	// Ordinary concats must still be compared, including the empty table, an explicit range and
+	// the error case for a non-string element.
+	for _, src := range []string{
+		`print(table.concat({1,2,3},","))`,
+		`print(table.concat({},","))`,
+		`print(table.concat({1,2,3},",",2,3))`,
+		`local ok,e=pcall(table.concat,{1,{},3},",") print(ok,e)`,
+		`t={} for i=1,1000 do t[i]="x" end for k=1,100 do table.concat(t) end print(1)`,
+	} {
+		r := Exec(src, pre, Limits{})
+		if strings.Contains(r.Err, LimitSentinel) {
+			t.Errorf("an ordinary concat was SKIPPED (err=%q) for %s", r.Err, src)
+		}
+	}
+}

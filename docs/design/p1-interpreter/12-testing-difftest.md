@@ -969,3 +969,9 @@ P1 建立的三套机制(conformance / 差分 fuzz / 基准)如何复用到 P2-P
 > `#t + 1 - pos`，`table.remove` 记 `#t - pos`），执行体是 `TestShiftBudgetCoversPositionSign`。
 > 三个缺口的共同点：成本是"移动了多少元素"的函数，而前两版判据挂在位置的某个性质上，所以总有一类输入
 > 让两者脱钩。
+
+> **第四个:`table.concat`(自查而非审计发现)**。三轮审计各找出一个缺口之后,把「能在一次不可中断的 C 调用里
+> 移动或构造 O(n) 数据」写成判据、照着扫了一遍 stdlib,`table.concat` 命中:对 200000 元素的表做 2000 次
+> concat,两侧合计 28 秒且完全参与比对。它按**参与拼接的元素个数**计入同一个累加器(与移位按移动元素数计费
+> 同一量纲),执行体是 `TestConcatBudget`。同轮扫过并确认便宜的:`string.rep`/`gsub`/`upper`/`sub`、
+> `table.sort`、表构造器、协程创建与 resume。
