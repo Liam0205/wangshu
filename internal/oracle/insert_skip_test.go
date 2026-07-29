@@ -182,6 +182,8 @@ func TestBulkBudgetCoversTheFamily(t *testing.T) {
 			`t={} for i=1,200000 do t[i]=i%7 end for k=1,100 do table.sort(t) end print(1)`},
 		{"concat of large pieces",
 			`t={} for i=1,64 do t[i]=string.rep("y",65536) end for k=1,2000 do table.concat(t) end print(1)`},
+		{"string.sub extracting a large slice in a loop",
+			`local s=string.rep("a",1048576) for k=1,20000 do s:sub(1,1048576) end print(1)`},
 		{"concat with a large separator",
 			`t={} for i=1,1000 do t[i]="" end local d=string.rep("z",65536) for k=1,4000 do table.concat(t,d) end print(1)`},
 	} {
@@ -200,6 +202,8 @@ func TestBulkBudgetCoversTheFamily(t *testing.T) {
 	// And ordinary uses of every shimmed function must still be compared.
 	for _, src := range []string{
 		`print(string.rep("ab",3))`,
+		`print(("hello"):sub(2),("hello"):sub(-3,-2),("hello"):sub(3,1))`,
+		`local s="abcdef" for i=1,#s do io.write(s:sub(i,i)) end print("")`,
 		`print(("hello"):upper(),("X"):lower(),("abc"):reverse())`,
 		`print(("hello world"):gsub("o","0"))`,
 		`t={3,1,2} table.sort(t) print(table.concat(t,","))`,

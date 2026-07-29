@@ -982,3 +982,8 @@ P1 建立的三套机制(conformance / 差分 fuzz / 基准)如何复用到 P2-P
 > 记 `n*log2(n)`、`table.concat` 按请求区间的字节数含分隔符,`table.insert`/`remove` 仍按移动元素数。
 > 执行体是 `TestBulkBudgetCoversTheFamily`。`string.gsub` **不在**其中:`__patcheck` 已把 subject 限在
 > 256 字节,加 charge 是死代码——这一条是实测之后从审计建议里剔除的。
+
+> ** 是自查枚举(循环形式)找出的最后一个**:在 1 MiB 主串上反复取整段,20000 次 12.5 秒。
+> 按**提取长度**计入 。同轮以循环形式量过并确认便宜的:`string.format`(含 %9999d)、
+> `tostring`(大表与深嵌套)、`unpack` 近上限、`select`、`string.char`/`byte`/`find`、`os.date`,
+> 以及已被既有判据覆盖的 `..` 拼接。
