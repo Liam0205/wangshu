@@ -80,3 +80,48 @@ func TestDebugLibrary_MatchPUC(t *testing.T) {
 		}
 	}
 }
+
+// TestIOHandles_StreamKindRespected pins that the methods check WHICH stream they are on.
+//
+// Checking only "is this a handle" let io.stdin:write fall through to stdout -- which both
+// gave the wrong answer and escaped the differential harness's capture wrapper, since that
+// only intercepts the stdout/stderr handles. io.stdout:lines() was worse: it returned an
+// iterator that read STDIN, handing back someone else's input rather than failing.
+func TestIOHandles_StreamKindRespected(t *testing.T) {
+	for _, tc := range []struct{ name, src, want string }{
+		{"write to stdin fails",
+			`local a, b, c = io.stdin:write("W") return tostring(a) .. "," .. tostring(b) .. "," .. tostring(c)`,
+			"nil,Bad file descriptor,9"},
+		{"lines on stdout fails",
+			`local ok, e = pcall(io.stdout:lines()) return tostring(ok) .. "," .. tostring(e)`,
+			"false,Bad file descriptor"},
+		// PUC's file metatable has __tostring and NO __metatable.
+		{"tostring form", `return tostring(io.stdout):sub(1, 6)`, "file ("},
+		{"no __metatable", `return tostring(getmetatable(io.stdout).__metatable)`, "nil"},
+	} {
+		if got := runOne(t, tc.src).Str(); got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestDebugGetInfo_NoFabricatedFields pins that getinfo omits what it cannot answer.
+//
+// An earlier version hardcoded what="Lua" and source="=[C]" for the function form, which
+// reported a C function as Lua and a Lua function as C -- the opposite of this library's
+// stated "omit rather than fabricate" rule.
+func TestDebugGetInfo_NoFabricatedFields(t *testing.T) {
+	for _, tc := range []struct{ name, src, want string }{
+		{"function form omits what", `return tostring(debug.getinfo(print).what)`, "nil"},
+		{"function form omits source", `return tostring(debug.getinfo(print).source)`, "nil"},
+		{"function form has func", `return type(debug.getinfo(print).func)`, "function"},
+		{"level form has func", `return type(debug.getinfo(1).func)`, "function"},
+		// Level 0 is getinfo itself, a C function -- 0 is a valid level, not past the top.
+		{"level zero is a table", `return type(debug.getinfo(0))`, "table"},
+		{"level zero is C", `return tostring(debug.getinfo(0).what)`, "C"},
+	} {
+		if got := runOne(t, tc.src).Str(); got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}

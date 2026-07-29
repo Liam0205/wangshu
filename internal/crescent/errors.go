@@ -193,3 +193,21 @@ func (st *State) FrameInfo(level int) (string, int32, bool) {
 	}
 	return bytecode.ChunkID(proto.Source), line, true
 }
+
+// FrameFunc returns the closure running in the frame LEVEL steps up, for debug.getinfo's
+// "func" field. ok is false when the level is past the stack.
+func (st *State) FrameFunc(level int) (value.Value, bool) {
+	th := st.runningThread
+	if th == nil || level < 1 {
+		return value.Nil, false
+	}
+	idx := th.ciDepth - level
+	if idx < 0 || idx >= th.ciDepth {
+		return value.Nil, false
+	}
+	ci := th.ciAt(idx)
+	if ci.cl == 0 {
+		return value.Nil, false
+	}
+	return value.MakeGC(value.TagFunction, ci.cl), true
+}
