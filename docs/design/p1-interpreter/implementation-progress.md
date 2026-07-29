@@ -225,6 +225,24 @@
   `TestDebugLibrary_MatchPUC`)。过程反思见
   `llmdoc/memory/reflections/2026-07-29-issue205-206-208-io-userdata-debug.md`。
 
+- **把两个阈值的拆分固定下来(2026-07-29,#209 一轮,零产品代码改动)**:#209 是 insert 移位那一写法的
+  **第三个** nightly crasher(#203 / #208 / #209 三个不同夜晚),而它本身也是过期的——fuzz run 跑在
+  `cbd0512` 上、**早于**把 harness skip 降到 2^20 的 `c07ba58`,现在这个 seed 0.00 秒就跳过,seed 入
+  `testdata/fuzz/FuzzOracleDiff/` 作回归防线(第一档命中的第二个实例,第一个是 #208)。
+
+  | 项 | 落点 | 结论与要点 |
+  |---|---|---|
+  | 拆分本身缺一个执行体 | `test/regression/insert_shift_cost_test.go` | 上一轮把产品上限(2^27,正确性)与 harness skip(2^20,资源)拆成两个数是对的,但**修完之后没有任何东西固定住「这两个阈值是两个数」**:入 corpus 的 seed 只能表达「这个输入不崩」,表达不了「那个决定还在」——合到 2^20 则产品开始拒绝一段 lua5.1 能完成的移位而昂贵区 seed 只是被 skip,合到 2^27 则昂贵那一段重新进并行重放而现有 seed 恰好都在跳过区(12 §4.9d) |
+  | `TestInsertShiftThresholdsStayDistinct` | 同上 | **按行为断言而不是比对字面量**:两个常数一个在 `internal/stdlib` 一个在 `internal/oracle/prelude.go`、都不导出也不同包,写死 `1<<20`/`1<<27` 只会与任一侧各自漂移。断的是区间里一个输入的行为——跨度约 2M 落在两个阈值**之间**,①必须由产品执行(`Run` 不返错)②必须便宜(耗时上界)。**两个方向都要断**:只断①时合到 2^27 仍然全绿,只断②时合到 2^20 也全绿 |
+  | 昂贵的那一段只在「远低于索引 1」这一侧 | — | 五个 seed 同一写法,没有只确认 #209 那一个:大的**正**位置、`table.remove` 位置远低于 1、`table.remove` 位置远高于 `#t`、中等跨度实测都是 1-2 ms 且两侧对称,所以 skip 覆盖的就是真实的那一类 |
+  | corpus 没有按文件名模式清理 | `testdata/fuzz/FuzzOracleDiff/` | 四个 `table.insert(t,4...` 看起来同类,逐个算窄化值才发现 `4294967298 = 2^32 + 2` 模 2^32 之后是 **+2**——普通的正位置插入、根本不走 skip,其余三个都是约 -100M。按模式合并会删掉唯一的用例,最后全部保留(全量重放 0.62 秒) |
+
+  **验证规模**:120 秒引导式 fuzz(17.7 万次执行)干净;corpus 全量重放 **0.62 秒**(此前单个这类 seed
+  就要数秒,正是压垮 worker 的原因);全套测试、`test/`、oracle 单测、corpus 全绿。另记:两次跑在修复
+  之后的 nightly run(`921d3ec` 与 `5383aec`)当时**仍在 in_progress**,所以「修法已在 nightly 里被
+  验证过」这句话当时不能说,支撑结论的是本地那 120 秒 fuzz 与 corpus 重放。过程反思见
+  `llmdoc/memory/reflections/2026-07-29-issue209-stale-crasher-threshold-pin.md`。
+
 ## 相关
 
 [00-overview](./00-overview.md) · [../engineering](../engineering.md) ·
