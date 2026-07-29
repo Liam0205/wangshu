@@ -69,9 +69,13 @@ func TestInsertShiftThresholdsStayDistinct(t *testing.T) {
 	// behaviourally rather than comparing literals that could drift out of sync with either.
 	//
 	// A span inside the band -- above the harness skip (2^20), below the product cap (2^27) --
-	// must be PERFORMED by the product. If the two thresholds were ever collapsed back into
-	// one, this span would either be refused by the product (run returns an error) or would
-	// never have been the interesting case; either way this test notices.
+	// must be PERFORMED by the product. That catches the CAP being lowered onto the skip.
+	//
+	// It does NOT catch the skip being raised onto the cap: this package never touches
+	// internal/oracle, so it cannot observe where the skip sits, and an audit confirmed the
+	// test stays green while the corpus goes back to 3s per seed. That direction is pinned by
+	// TestInsertShiftSkipThreshold in internal/oracle, which is where it can be seen. Two
+	// thresholds in two packages need two enforcers.
 	src := `t={0} table.insert(t,-2097151,"") return tostring(t[4])`
 	st := wangshu.NewState(wangshu.Options{MaxArenaBytes: 512 << 20})
 	prog, err := wangshu.Compile([]byte(src), "r")

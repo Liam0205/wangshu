@@ -605,7 +605,7 @@ func DiffN(src string, runners ...Runner) DiffResult { /* N 方比对,§3.3 矩�
 没有丢覆盖。方法论见 `llmdoc/guides/prove-the-path-under-test.md` §4.5b 与
 `llmdoc/guides/unreproducible-crasher-triage.md`「同一写法第三次被开成 issue 时」。
 
-**这个拆分现在有执行体:`test/regression/insert_shift_cost_test.go::TestInsertShiftThresholdsStayDistinct`
+**这个拆分现在有执行体:`test/regression/insert_shift_cost_test.go::TestInsertShiftThresholdsStayDistinct（产品侧：区间里的跨度必须被执行，抓“上限被降到 skip”）与 `internal/oracle` 的 TestInsertShiftSkipThreshold（harness 侧：skip 上方必须抬 sentinel、下方必须仍被比对，抓“skip 被升到上限”）`
 (#209,2026-07-29)**。拆分做完之后有一段时间**没有任何测试表达「这两个阈值是两个数」**:入 corpus 的
 seed 只能表达「这个输入不崩」,表达不了「那个决定还在」——两个数被合回一个之后现有 seed 全都照旧通过
 (合到 2^20 则产品开始拒绝一段 lua5.1 能完成的移位、而昂贵区的 seed 只是被 skip;合到 2^27 则昂贵那一段
@@ -957,3 +957,8 @@ P1 建立的三套机制(conformance / 差分 fuzz / 基准)如何复用到 P2-P
 [architecture](../architecture.md)(§4 不变式 2:层间差分 CI 必过门禁) ·
 [design-premises](../../../llmdoc/must/design-premises.md)(前提一列内核负载形状 / 前提三原则 2 差分主防线) ·
 `docs/design/roadmap.md` (§1 校准测量 / §4 P1 验收 / §5 原则 2)
+
+> **两个阈值在两个包里，需要两个执行体。** 只写产品侧那一个是不够的：`test/regression` 不 import
+> `internal/oracle`，所以它看不见 skip 在哪里——审计实测把 skip 从 2^20 提到 2^27 之后，那个测试仍然
+> 全绿，而 corpus 里三个 seed 各自从 0.00 秒回到 3 秒，正是 #203 / #208 / #209 被开出来的状态。
+> 现在两个方向各有一个测试，任一阈值往对方靠都会变红。
