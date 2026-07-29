@@ -350,6 +350,10 @@ func TestBulkChargeSkipsUnconvertibleArguments(t *testing.T) {
 		`print(pcall(string.sub,"hello",{}))`,
 		`print(pcall(string.sub,"hello",1,{}))`,
 		`print(pcall(string.rep,"x",{}))`,
+		// The SEPARATOR follows the same rule as the bounds. Treating an unconvertible one as
+		// length 0 and scanning on charged ~65 elements of a large table before the sentinel.
+		`local t={} for i=1,100 do t[i]=string.rep("x",65536) end print(pcall(table.concat,t,{}))`,
+		`print(pcall(table.concat,{1,2,3},{}))`,
 	} {
 		r := Exec(src, pre, Limits{})
 		if strings.Contains(r.Err, LimitSentinel) {
@@ -357,6 +361,31 @@ func TestBulkChargeSkipsUnconvertibleArguments(t *testing.T) {
 		}
 		if !strings.Contains(r.Output, "bad argument") {
 			t.Errorf("expected a bad-argument error, got %q for %s", r.Output, src)
+		}
+	}
+}
+
+// TestBulkChargeInvalidArgsAcrossAllShims checks the "explicit but unconvertible means charge nothing"
+// rule across EVERY shimmed function, not just the one a review happened to name.
+//
+// The rule was reported twice on this branch -- once for concat's bounds and string.sub's indices,
+// then again for concat's separator, which I had missed while fixing the bounds beside it. Enumerating
+// the shims is cheaper than being told a third time.
+func TestBulkChargeInvalidArgsAcrossAllShims(t *testing.T) {
+	pre := Prelude(testKeep)
+	for _, src := range []string{
+		`local t={} for i=1,100 do t[i]=string.rep("x",65536) end print(pcall(table.concat,t,{}))`,
+		`local t={} for i=1,100 do t[i]=string.rep("x",65536) end print(pcall(table.concat,t,"-",{}))`,
+		`local t={} for i=1,100 do t[i]=string.rep("x",65536) end print(pcall(table.concat,t,"-",1,{}))`,
+		`local s=string.rep("a",1048576) print(pcall(string.sub,s,{}))`,
+		`local s=string.rep("a",1048576) print(pcall(string.sub,s,1,{}))`,
+		`print(pcall(string.rep,"x",{}))`,
+		`local t={} for i=1,100000 do t[i]=i end print(pcall(table.remove,t,{}))`,
+		`local t={} for i=1,100000 do t[i]=i end print(pcall(table.insert,t,{},"v"))`,
+	} {
+		r := Exec(src, pre, Limits{})
+		if strings.Contains(r.Err, LimitSentinel) {
+			t.Errorf("an immediate argument error was SKIPPED (err=%q) for %s", r.Err, src)
 		}
 	}
 }
