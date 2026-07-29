@@ -78,6 +78,8 @@ func Prelude(keep GlobalSet) string {
 var preludeCapture = `
 local __acc, __n, __len = {}, 0, 0
 local __tostring, __type, __select = tostring, type, select
+-- Cumulative shifted-element count for table.insert (see the shift budget below).
+local __shiftTotal = 0
 local __concat, __error = table.concat, error
 local function __emit(s)
   __len = __len + #s
@@ -467,8 +469,22 @@ table.insert = function(t, ...)
         -- each hand-moved to test/regression/ afterwards. Skipping the expensive
         -- band stops the fuzzer refiling it, while test/regression keeps serial
         -- coverage of the work actually being done.
-        if i32 < 1 and 1 - i32 > 1048576 then
-          __error("` + LimitSentinel + `: table.insert shift span", 0)
+        --
+        -- The budget is CUMULATIVE as well as per-call. Keying only on a single call's
+        -- span left a loop of just-below-threshold inserts fully compared: 99 iterations
+        -- at 2^20-6 elements each costs about 11 seconds across the two engines, which is
+        -- the same corpus hazard in the same family, merely split across calls. The
+        -- instruction-count hook cannot interrupt it either, because each shift happens
+        -- inside one C call.
+        if i32 < 1 then
+          local span = 1 - i32
+          if span > 1048576 then
+            __error("` + LimitSentinel + `: table.insert shift span", 0)
+          end
+          __shiftTotal = __shiftTotal + span
+          if __shiftTotal > 4194304 then
+            __error("` + LimitSentinel + `: table.insert shift budget", 0)
+          end
         end
       end
     end
