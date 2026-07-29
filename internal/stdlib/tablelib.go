@@ -1626,6 +1626,20 @@ func debugFnGetInfo(st *crescent.State, args []value.Value) ([]value.Value, *cre
 		// a real C frame even though wangshu does not push it onto cis -- lua5.1 reports
 		// what="C" there and nil only beyond it. This is not a fabricated field: the entry
 		// frame is marked, so "one past it" is a known host boundary.
+		if st.FrameIsTail(lvl) {
+			// PUC keeps a tail call's vanished caller visible as what="tail" with no
+			// position: source is "=(tail call)" and currentline is -1.
+			if wants('S') {
+				set("what", intern(st, "tail"))
+				set("source", intern(st, "=(tail call)"))
+				set("short_src", intern(st, "(tail call)"))
+				set("linedefined", value.NumberValue(-1))
+			}
+			if wants('l') {
+				set("currentline", value.NumberValue(-1))
+			}
+			return []value.Value{value.MakeGC(value.TagTable, t)}, nil
+		}
 		if st.FrameIsHostBoundary(lvl) {
 			if wants('S') {
 				set("what", intern(st, "C"))

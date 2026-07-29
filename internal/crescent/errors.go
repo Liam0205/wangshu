@@ -197,8 +197,8 @@ func (st *State) FrameInfo(level int) (string, int32, bool) {
 	if th == nil || level < 1 {
 		return "", 0, false
 	}
-	idx := th.ciDepth - level
-	if idx < 0 || idx >= th.ciDepth {
+	idx, kind, ok := st.resolveLevel(level)
+	if !ok || kind != frameLua {
 		return "", 0, false
 	}
 	ci := th.ciAt(idx)
@@ -217,8 +217,8 @@ func (st *State) FrameIsMain(level int) bool {
 	if th == nil || level < 1 {
 		return false
 	}
-	idx := th.ciDepth - level
-	if idx < 0 || idx >= th.ciDepth {
+	idx, kind, ok := st.resolveLevel(level)
+	if !ok || kind != frameLua {
 		return false
 	}
 	// A main chunk is the ENTRY frame of an execute layer: callInfo.fresh marks exactly that,
@@ -239,14 +239,79 @@ func (st *State) FrameIsMain(level int) bool {
 	return st.protoOf(&ci).LineDefined == 0
 }
 
+// resolveLevel maps a getinfo/traceback LEVEL onto a cis index, counting the host (C) frames
+// that sit between Lua frames.
+//
+// Indexing cis directly by ciDepth-level SKIPS those, which reorders everything above the first
+// one: with a Lua callback invoked from table.foreach, PUC's chain is
+// [inner, callback, foreach(C), main] and a direct index reported [inner, callback, main, C] --
+// so what/func/source/currentline all named the wrong function from level 3 up.
+//
+// callInfo.hostFrames already records how many host frames sit immediately below each frame (it
+// was added for error()'s level walk), so the mapping is a walk rather than new bookkeeping.
+// A tail call also inserts a pseudo-frame: PUC keeps the vanished caller visible as what="tail",
+// and callInfo.tailDepth records how many frames a chain collapsed (added for error()'s walk).
+//
+// Returns (index, kind, ok) where kind is frameLua, frameHost (a C frame, no cis entry,
+// what="C") or frameTail (the pseudo-frame of a tail-called chain, what="tail").
+func (st *State) resolveLevel(level int) (int, frameKind, bool) {
+	th := st.runningThread
+	if th == nil || level < 1 {
+		return 0, frameLua, false
+	}
+	remaining := level
+	for idx := th.ciDepth - 1; idx >= 0; idx-- {
+		remaining--
+		if remaining == 0 {
+			return idx, frameLua, true
+		}
+		ci := th.ciAt(idx)
+		// Each frame a tail-call chain replaced is one visible level with no position.
+		for d := int(ci.tailDepth); d > 0; d-- {
+			remaining--
+			if remaining == 0 {
+				return idx, frameTail, true
+			}
+		}
+		// Host frames below this Lua frame each consume one level.
+		for h := int(ci.hostFrames); h > 0; h-- {
+			remaining--
+			if remaining == 0 {
+				return idx, frameHost, true
+			}
+		}
+	}
+	// One past the bottom is the host that entered the interpreter -- but only on the main
+	// thread. A coroutine has its own stack whose bottom was reached by resume from ANOTHER
+	// thread, and PUC's getinfo stops there rather than reporting a C frame: inside
+	// coroutine.wrap, level 2 is already nil.
+	if remaining == 1 && len(st.threadChain) == 0 {
+		return -1, frameHost, true
+	}
+	return 0, frameLua, false
+}
+
+// frameKind distinguishes the three things a debug level can name.
+type frameKind uint8
+
+const (
+	frameLua  frameKind = iota // a real cis frame
+	frameHost                  // a C frame, which wangshu does not push onto cis
+	frameTail                  // the pseudo-frame PUC keeps for a tail call's vanished caller
+)
+
 // FrameIsHostBoundary reports whether LEVEL is exactly one step past the outermost Lua frame,
 // i.e. the host call that entered the interpreter. debug.getinfo reports what="C" there.
 func (st *State) FrameIsHostBoundary(level int) bool {
-	th := st.runningThread
-	if th == nil {
-		return false
-	}
-	return th.ciDepth-level == -1
+	_, kind, ok := st.resolveLevel(level)
+	return ok && kind == frameHost
+}
+
+// FrameIsTail reports whether LEVEL names a tail call's vanished caller, which getinfo
+// describes as what="tail".
+func (st *State) FrameIsTail(level int) bool {
+	_, kind, ok := st.resolveLevel(level)
+	return ok && kind == frameTail
 }
 
 // FrameLineDefined returns the line the frame's function was defined on (0 for a main chunk).
@@ -255,8 +320,8 @@ func (st *State) FrameLineDefined(level int) (int32, bool) {
 	if th == nil || level < 1 {
 		return 0, false
 	}
-	idx := th.ciDepth - level
-	if idx < 0 || idx >= th.ciDepth {
+	idx, kind, ok := st.resolveLevel(level)
+	if !ok || kind != frameLua {
 		return 0, false
 	}
 	ci := th.ciAt(idx)
@@ -271,8 +336,8 @@ func (st *State) FrameSource(level int) (string, bool) {
 	if th == nil || level < 1 {
 		return "", false
 	}
-	idx := th.ciDepth - level
-	if idx < 0 || idx >= th.ciDepth {
+	idx, kind, ok := st.resolveLevel(level)
+	if !ok || kind != frameLua {
 		return "", false
 	}
 	ci := th.ciAt(idx)
@@ -286,8 +351,8 @@ func (st *State) FrameFunc(level int) (value.Value, bool) {
 	if th == nil || level < 1 {
 		return value.Nil, false
 	}
-	idx := th.ciDepth - level
-	if idx < 0 || idx >= th.ciDepth {
+	idx, kind, ok := st.resolveLevel(level)
+	if !ok || kind != frameLua {
 		return value.Nil, false
 	}
 	ci := th.ciAt(idx)
