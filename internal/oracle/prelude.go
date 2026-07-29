@@ -702,20 +702,19 @@ table.concat = function(t, ...)
     end
     local i = __select("#", ...) >= 2 and __ckint((__select(2, ...)), 1) or 1
     local j = __select("#", ...) >= 3 and __ckint((__select(3, ...)), #t) or #t
+    -- Charge only what the real call will actually touch, and STOP at the first element it
+    -- would reject.
+    --
+    -- Charging the whole requested range's separators up front, then scanning past an invalid
+    -- element, excluded inputs that lua5.1 answers immediately:
+    -- table.concat({}, string.rep("x",65536), 1, 100) reports "invalid value (nil) at index 1"
+    -- in microseconds, but the shim first charged ~6.5 MiB of separators and raised the limit
+    -- sentinel -- and a limit error is read as a skip, so the input silently left the
+    -- comparison. An empty separator with a large j walked the whole invalid range instead.
     local bytes = 0
     if j >= i then
-      -- Separator bytes count too: an empty table with a 64 KiB separator repeated 4000
-      -- times cost over three minutes while charging nothing at all.
       local sep = __asStr((__select(1, ...)))
-      if sep ~= nil then
-        bytes = #sep * (j - i)
-      end
-      -- rawget, NOT t[k]: PUC's table.concat uses lua_rawgeti, so indexing through __index
-      -- here changed the program's observable behaviour. A table with a raising __index
-      -- reported that error instead of "invalid value (nil) at index 1", and the metamethod
-      -- ran three times when it should not have run at all -- and because the prelude wraps
-      -- BOTH engines, they agreed on the wrong answer, which hides real divergence rather
-      -- than reporting it.
+      local seplen = sep ~= nil and #sep or 0
       local k = i
       while k <= j do
         local v = __rawget(t, k)
@@ -724,6 +723,11 @@ table.concat = function(t, ...)
           bytes = bytes + #v
         elseif tv == "number" then
           bytes = bytes + 8
+        else
+          break -- the real call raises here, so nothing beyond this is ever touched
+        end
+        if k > i then
+          bytes = bytes + seplen
         end
         if bytes > __bulkCap then break end
         k = k + 1

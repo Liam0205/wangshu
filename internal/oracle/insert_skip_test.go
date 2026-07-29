@@ -298,3 +298,28 @@ func TestConcatChargeDoesNotFireIndex(t *testing.T) {
 		t.Errorf("expected concat's own invalid-value error, got %q", r2.Output)
 	}
 }
+
+// TestConcatChargeStopsAtInvalidElement pins that the charge covers only what the real call touches.
+//
+// Charging the whole requested range's separators up front, and scanning past an element the real
+// call would reject, excluded inputs lua5.1 answers immediately:
+// table.concat({}, string.rep("x",65536), 1, 100) reports "invalid value (nil) at index 1" in
+// microseconds, but the shim charged ~6.5 MiB of separators first and raised the limit sentinel --
+// and a limit error reads as a skip, so the input left the comparison silently. An empty separator
+// with a large j walked the whole invalid range until the instruction budget stopped it.
+func TestConcatChargeStopsAtInvalidElement(t *testing.T) {
+	pre := Prelude(testKeep)
+	for _, src := range []string{
+		`print(pcall(table.concat,{},string.rep("x",65536),1,100))`,
+		`print(pcall(table.concat,{},"",1,3000000))`,
+		`print(pcall(table.concat,{"a"},"",1,100))`,
+	} {
+		r := Exec(src, pre, Limits{})
+		if strings.Contains(r.Err, LimitSentinel) {
+			t.Errorf("an input the real call rejects at once was SKIPPED (err=%q) for %s", r.Err, src)
+		}
+		if !strings.Contains(r.Output, "invalid value") {
+			t.Errorf("expected concat's invalid-value error, got %q for %s", r.Output, src)
+		}
+	}
+}
