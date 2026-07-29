@@ -1,6 +1,9 @@
 package wangshu_test
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestIOHandles_SurviveGC is the regression this feature needs most.
 //
@@ -247,5 +250,34 @@ return co()`, "Lua,tail,nil"},
 		if got := runOne(t, tc.src).Str(); got != tc.want {
 			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
 		}
+	}
+}
+
+// TestDebugTraceback_LevelAndHostFrames pins that traceback uses the SAME frame model as getinfo.
+//
+// The two were fixed separately: getinfo went through resolveLevel while traceback still
+// subtracted from ciDepth, so a level taken from inside table.foreach or a sort comparator landed
+// on the wrong frame, and buildTraceback omitted the C frame entirely. Three readers of this stack
+// now share one model -- error()'s level walk, resolveLevel, and buildTraceback.
+func TestDebugTraceback_LevelAndHostFrames(t *testing.T) {
+	// A traceback taken inside a host callback must SHOW the C frame, in position.
+	src := `local function inner() return (debug.traceback("M", 1):gsub("\n", " | ")) end
+local out
+table.foreach({1}, function() out = inner() end)
+return out`
+	got := runOne(t, src).Str()
+	for _, want := range []string{"stack traceback:", "[C]: in ?", "in main chunk"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("traceback missing %q; got %q", want, got)
+		}
+	}
+	// The C frame must sit BETWEEN the Lua frames and the main chunk, as PUC has it.
+	ci, mi := strings.Index(got, "[C]: in ?"), strings.Index(got, "in main chunk")
+	if ci < 0 || mi < 0 || ci > mi {
+		t.Errorf("C frame is not above the main chunk: %q", got)
+	}
+	// A non-number level is IGNORED, matching lua_isnumber rather than luaL_optint.
+	if r := runOne(t, `local ok = pcall(debug.traceback, "m", {}) return tostring(ok)`).Str(); r != "true" {
+		t.Errorf("non-number level should be ignored, got pcall=%s", r)
 	}
 }

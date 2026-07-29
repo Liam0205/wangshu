@@ -157,6 +157,13 @@ func (st *State) buildTraceback(th *thread) string {
 			sb.WriteString("(...tail calls...)\n\t")
 		}
 		fmt.Fprintf(&sb, "%s:%d: in %s", bytecode.ChunkID(proto.Source), line, what)
+		// Host frames below this one are real stack entries PUC shows as "[C]: in ?" -- a
+		// traceback taken from inside table.foreach or a sort comparator omitted the C frame
+		// entirely. This is the third reader of this stack to need the hostFrames count; the
+		// other two are error()'s level walk and resolveLevel.
+		for h := int(ci.hostFrames); h > 0; h-- {
+			sb.WriteString("\n\t[C]: in ?")
+		}
 	}
 	return sb.String()
 }
@@ -174,12 +181,25 @@ func (st *State) TracebackFrom(level int) string {
 	if level <= 1 {
 		return st.buildTraceback(th)
 	}
-	skip := level - 1
-	if skip >= th.ciDepth {
+	// Resolve through the SAME frame model getinfo uses, so a level counts the C and tail
+	// pseudo-frames rather than just Lua frames. Subtracting from ciDepth directly landed on
+	// the wrong frame whenever a host frame sat in between -- a traceback taken at a level
+	// from inside table.foreach or a sort comparator skipped past the C frame PUC shows.
+	idx, kind, ok := st.resolveLevel(level)
+	if !ok {
+		return "stack traceback:"
+	}
+	// Landing ON a pseudo-frame means the visible stack starts at the Lua frame below it,
+	// which is the one resolveLevel returned.
+	keep := idx + 1
+	if kind == frameLua {
+		keep = idx + 1
+	}
+	if keep <= 0 || keep > th.ciDepth {
 		return "stack traceback:"
 	}
 	saved := th.ciDepth
-	th.ciDepth -= skip
+	th.ciDepth = keep
 	out := st.buildTraceback(th)
 	th.ciDepth = saved
 	return out
