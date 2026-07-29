@@ -534,6 +534,30 @@ table.remove = function(t, ...)
   return __tremove0(t, ...)
 end
 
+-- table.concat is charged to the same budget, for the same reason: it builds an O(n) string
+-- inside one uninterruptible C call, so a loop of concats over a large table is expensive and
+-- the instruction hook cannot see it. Found by sweeping every stdlib call that can move or
+-- build O(n) data in one call, after three audit rounds had each found one more member of this
+-- family: 2000 concats over a 200000-element table cost 28 seconds across the two engines and
+-- compared normally.
+--
+-- The charge is the number of ELEMENTS joined, matching how the shift budget charges elements
+-- moved, so one accumulator bounds the whole family.
+local __tconcat0 = table.concat
+table.concat = function(t, ...)
+  if __type(t) == "table" then
+    local n = #t
+    if n > 1048576 then
+      __error("` + LimitSentinel + `: table.concat size", 0)
+    end
+    __shiftTotal = __shiftTotal + n
+    if __shiftTotal > 4194304 then
+      __error("` + LimitSentinel + `: table.concat budget", 0)
+    end
+  end
+  return __tconcat0(t, ...)
+end
+
 -- string.char UB guard, same reasoning as the unsigned verbs above.
 --
 -- PUC's str_char runs luaL_checkint, i.e. double -> lua_Integer -> int. Outside
