@@ -604,6 +604,31 @@ end
 -- 256 bytes and patterns at 48, so gsub cannot reach a size where the bulk budget would matter.
 -- A shim here measured as dead code -- every loop form I tried was already excluded at 2ms by
 -- that guard, which is why the enforcer below does not list gsub.
+-- string.sub charges the EXTRACTED length, not the subject's: s:sub(2) on a 1 MiB string copies
+-- ~1 MiB every call, and 20000 such calls cost 12.5 seconds while comparing normally. Found by
+-- enumerating the family in LOOP form, which is the step my earlier sweep skipped -- it timed
+-- single calls, where every member of this family is milliseconds.
+local __ssub0 = string.sub
+string.sub = function(sv, i, ...)
+  if __type(sv) == "string" then
+    local n = #sv
+    local from = __type(i) == "number" and __floor(i) or 1
+    local to = n
+    if __select("#", ...) >= 1 then
+      local j = (__select(1, ...))
+      if __type(j) == "number" then to = __floor(j) end
+    end
+    if from < 0 then from = n + from + 1 end
+    if to < 0 then to = n + to + 1 end
+    if from < 1 then from = 1 end
+    if to > n then to = n end
+    if to >= from then
+      __chargeBulk(to - from + 1, "string.sub")
+    end
+  end
+  return __ssub0(sv, i, ...)
+end
+
 local __tsort0 = table.sort
 table.sort = function(t, ...)
   if __type(t) == "table" then
