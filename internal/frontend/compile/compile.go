@@ -46,7 +46,15 @@ func Compile(block *ast.Block, source string) (mainID uint32, protos []*bytecode
 // outerFS == nil means the main chunk (no enclosing function); otherwise it is used
 // for resolving upvalues along the chain.
 func (cg *codegen) compileFunc(outerFS *funcState, fe *ast.FuncExpr) *bytecode.Proto {
-	fs := newFuncState(cg, outerFS, cg.source, fe.Line)
+	// A main chunk records LineDefined 0, as PUC does: only a real function definition has a
+	// line for its "function" keyword. debug.getinfo distinguishes what="main" from "Lua" by
+	// this, and it holds for a loadstring chunk too -- which is a main chunk in its own right
+	// even though it is called like a function, so a frame-position test cannot see it.
+	line := fe.Line
+	if outerFS == nil {
+		line = 0
+	}
+	fs := newFuncState(cg, outerFS, cg.source, line)
 	fs.proto.NumParams = uint8(len(fe.Params))
 	fs.proto.IsVararg = fe.IsVararg
 	fs.proto.NeedsArg = fe.IsVararg && !fe.NoArgTable // LUA_COMPAT_VARARG implicit arg table

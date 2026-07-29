@@ -163,10 +163,24 @@ func TestDebugGetInfo_FieldsMatchPUC(t *testing.T) {
 		// The main chunk is "main", not "Lua".
 		{"main chunk what", `return debug.getinfo(1).what`, "main"},
 		{"function what", `local f = function() return debug.getinfo(1).what end return f()`, "Lua"},
-		// source carries PUC's origin marker; short_src is the display form, so they differ.
-		{"source has marker", `return debug.getinfo(1).source:sub(1, 1)`, "="},
+		// source is the chunkname exactly as the loader stored it -- PUC does NOT synthesize a
+		// marker, so a bare name stays bare. short_src is the display form, so they differ.
+		{"source is the raw chunkname", `return debug.getinfo(1).source`, "test"},
 		{"source differs from short_src",
 			`local i = debug.getinfo(1) return tostring(i.source ~= i.short_src)`, "true"},
+		// linedefined is 0 for a chunk, including a loadstring chunk called as a function.
+		{"main chunk linedefined", `return tostring(debug.getinfo(1).linedefined)`, "0"},
+		{"loadstring chunk is main",
+			`local f = loadstring("return debug.getinfo(1).what") return f()`, "main"},
+		{"function linedefined is its line",
+			`local g = function() return debug.getinfo(1).linedefined end local r = g() return tostring(r)`, "1"},
+		// The what selector filters the fields, and an unknown letter raises.
+		{"selector filters", `local i = debug.getinfo(1, "l") local n = 0 for _ in pairs(i) do n = n + 1 end return tostring(n)`, "1"},
+		{"bad selector raises",
+			`local ok, e = pcall(debug.getinfo, 1, "Z") return tostring(e)`,
+			"bad argument #2 to '?' (invalid option)"},
+		// The level goes through luaL_checkint narrowing, so a fraction truncates.
+		{"fractional level", `return type(debug.getinfo(0.5))`, "table"},
 		{"short_src is display form", `return debug.getinfo(1).short_src`, `[string "test"]`},
 	} {
 		if got := runOne(t, tc.src).Str(); got != tc.want {
