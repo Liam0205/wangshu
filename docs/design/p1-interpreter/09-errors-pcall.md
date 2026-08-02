@@ -413,7 +413,7 @@ lua5.1 报第 **2** 行(`()` 所在的那一行),而 `internal/frontend/parse/ex
 的 `Line` 字段)。
 
 **只有跨行的被调用表达式才有差别**,单行时两者相同——这解释了为什么这个偏差活了很久、而且只能靠 fuzz
-撞出来:手写代码几乎不会把被调用表达式跨行写。方法调用(`MethodCallExpr`)本来就用**方法名**那一行,
+撞出来:手写代码几乎不会把被调用表达式跨行写。方法调用(`MethodCallExpr`)**也有同一个问题、而且早于本分支就有**:SELF 与 CALL 共用一行,于是 `t:nope\n{}` 报第 2 行而 lua5.1 报第 3 行。现在两个节点各带两个行号——`Line` 给取值(callee 物化 / SELF),`ArgsLine` 只给 CALL,与 PUC 的 `primaryexp` + `funcargs` 里那次 `luaK_fixline` 一致。注意 `CallExpr.Line` 同时喂三个 codegen 点(callee 物化、参数物化、CALL),所以只改一个行号会把 callee 的 GETTABLE 一起挪走——审计实测 `t.x\n{1}` 因此把「索引 nil」报到了第 4 行。方法名那一行,
 与 PUC 一致,一并钉住防回退(`fuzz_212_219_test.go::TestCallLineIsTheArgumentList`)。
 
 **判据**:一个 AST 节点的 `Line` 该取哪个 token,要按参照实现在**哪一步**记录行号来定,不能默认取
@@ -1244,7 +1244,7 @@ debug.traceback(message, level):
 6. **xpcall 5.1 不传 args 给 f**(§6.1):`xpcall(f, h, ...)` 的额外参数被忽略(5.2+ 才传)。锁 5.1。
 7. **pc→line 含 -1 偏移**(§3.5/§7.4):栈顶帧 `pc-1`,非栈顶帧 `savedPC-1`。traceback/error 行号正确性的命脉。
 7a. **CALL 记的是参数列表那一行**(§3.5.1):`CallExpr.Line` 取 `(`/字符串/`{` 那个 token 的行,不取被调用
-    表达式的起始行;`MethodCallExpr` 取方法名那一行。只有跨行的被调用表达式能区分两者(#214)。
+    表达式的起始行;`MethodCallExpr` 的 SELF 取方法名那一行。两个节点的 CALL 都取 `ArgsLine`。只有跨行的被调用表达式能区分两者,而且 `(` 形式免疫(歧义语法规则不允许它前面有换行),所以要用 `{}` 或字符串参数形式才能测到(#214)。
 7b. **`error` 的 level 走 `luaL_optint` 的两条规则**(§3.1a):缺省 / 显式 nil 取默认值 1,显式传了转不动的
     值要抬 `bad argument #2 (number expected, got X)`,数字字符串照旧强制转换(#212/#213/#215)。
 8. **位置前缀格式 `<source>:<line>: `**(§3.2):source 经 `chunkID`(§3.4),冒号后一空格。C 帧无前缀(`[C]`)。
