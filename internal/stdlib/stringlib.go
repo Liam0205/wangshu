@@ -210,6 +210,19 @@ func stringFnGsub(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 		return nil, crescent.NewArgError(3, "string/function/table expected")
 	}
 	repl := args[2]
+	// PUC validates the replacement's TYPE up front (luaL_argcheck on tr, before the loop),
+	// so an invalid one raises even when zero replacements would be performed. Checking it
+	// lazily inside the loop meant gsub("", "", nil, 0) succeeded -- the loop never ran, so
+	// the bad argument was never seen -- while lua5.1 reports
+	// "bad argument #3 (string/function/table expected)".
+	switch value.Tag(repl) {
+	case value.TagString, value.TagTable, value.TagFunction:
+		// ok
+	default:
+		if !value.IsNumber(repl) { // a number is accepted, like a string
+			return nil, crescent.NewArgError(3, "string/function/table expected")
+		}
+	}
 	// "unlimited" is tracked SEPARATELY from the count, not encoded as -1.
 	//
 	// Sharing the sign bit was wrong once the count started being narrowed: PUC's

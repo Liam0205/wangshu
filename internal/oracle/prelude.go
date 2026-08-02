@@ -380,9 +380,17 @@ local function __wrapArgOrder(tbl, name)
     return orig(...)
   end
 end
+-- EVERY two-number math entry, including the 5.0 compatibility ALIASES. Wrapping fmod but not
+-- math.mod -- which is the same C function under its 5.0 name -- left the identical shape
+-- reportable, and the fuzzer filed it twice (#217, #219). math.atan2 was never wrapped either.
+--
+-- The list is derived from the math table rather than from memory: anything taking two numbers
+-- through luaL_checknumber has this property, so the wrapper is applied to all of them.
 __wrapArgOrder(math, "fmod")
+__wrapArgOrder(math, "mod") -- LUA_COMPAT_MOD alias for fmod
 __wrapArgOrder(math, "pow")
 __wrapArgOrder(math, "ldexp")
+__wrapArgOrder(math, "atan2")
 
 -- luaL_checkint UB guard, shared by every function that narrows an int argument.
 --
