@@ -51,6 +51,20 @@ crasher 不需要任何新动作就消失了——**「不需要新动作」本�
 [[prove-the-path-under-test]] §9.6 推论同构:一批 crasher 被同一个改动一起解决,是根因修在正确
 位置的信号)。反思 [[2026-07-29-issue205-206-208-io-userdata-debug]]。
 
+**三档是关于「要不要复现一遍」的分类,它不回答「有没有缺陷」(2026-08-02,#212–#219)**。上面这三档
+排除的是「撞的是已修复代码」这条最便宜的**解释**,分的是成本档,**不是**缺陷档——分完档之后仍然必须
+在当前 HEAD 上实际重放一遍才知道有没有缺陷。这一条要单独写出来,是因为两轮的字面事实几乎一样而结论
+相反:#209 那一轮八个字面事实指向第一档(run 跑在旧 commit 上、修法已在仓库里、一行代码没改),
+#212–#219 八个 run 同样全落在一个旧 commit(`5383aec`)上,而实际重放之后**五个如实复现、三个是真
+产品缺陷**(`error()` 的 level 没做类型检查 / 调用行号取了被调用表达式那一行 / `string.gsub` 的 repl
+惰性校验)。
+
+**判据**:nightly 每晚跑的就是当时的 master,所以「全落在一个旧 commit 上」是**常态而不是线索**,
+它本身不含信息量。所以:**无论 headSha 落在哪一档,都要在当前 HEAD 上把每一条 seed 实际重放一遍再
+分缺陷档**;「与上一轮同一个 commit」「与上一轮同一类写法」「上一轮是过期的」都不是可以省掉重放的
+理由。自查办法:说「这一批是过期的」之前,先看有没有**一条命令的输出**支持这句话——如果支持它的只是
+上一轮的结论,那就还没有分档。反思 [[2026-08-02-issue212-219-fuzz-crasher-batch]] 教训 1。
+
 ## 一批 crasher 先问会不会被同一个改动一起解决(排在分头查根因之前)
 
 版本核对管的是「**一条** crasher 是不是撞的已修复代码」;当手上是**一批** crasher 时,还有一格更
@@ -81,6 +95,13 @@ go test -run FuzzOracleDiff/<hash> ...
 才一起消失**;如果当初走的是「在比较侧识别并豁免」那条路,四个 issue 会各自需要一条新的判据分支。
 反过来读:**一批 crasher 能被同一个改动一起解决,本身就是「根因修在了正确位置」的一个事后确认
 信号**;如果修完之后同族 crasher 还在一条一条冒出来,那是选址错误的信号(§9.0)。
+
+**在这之前还有一格更便宜的:先算 seed hash 去重(2026-08-02,#212–#219)**。nightly 是按 run 开
+issue 的,**同一个输入在两个夜晚各被最小化到同一个 hash,就会开出两个 issue**——#212 与 #215 是同一个
+hash `1d42242f157c9754`,#217 与 #219 是同一个 `0150a245c776b8ed`,八个 issue 其实只有**六个不同的
+seed**。这一步比重放更便宜(比一下 artifact 文件名就够),而且它与上面那条按行为分组是两个维度:hash
+相同是**同一个输入**,行为分组是**不同输入同一个根因**。反思
+[[2026-08-02-issue212-219-fuzz-crasher-batch]]。
 
 **确认「修好了」的方式见 [[prove-the-path-under-test]] §9.6**:断**逐字节 equal** 不是断「测试
 绿了」(差分 harness 里 skip 也是绿的,含义却相反),并且**双向验证** —— 在修复前的 base commit
@@ -216,6 +237,21 @@ corpus** 作为 baseline coverage sweep;若 corpus 触发的 workload 本身很�
 显式测试(串行、单进程、逐 seed 跑一遍)覆盖同一形状,而不是入 `testdata/fuzz/`。功能等价,不搅
 动 fuzz coordinator。#123 轮就是这样处理的:两个 corpus(`326b508e` / `8c132ff5`)从
 `testdata/fuzz/FuzzAutoPromote/` 撤回,改成 `test/regression/issue123_regression_test.go` 里的显式测试。
+
+**挪过去的时候要连 harness 的边界条件一起抄,不只抄那段脚本(2026-08-02,#218)**。一个 fuzz seed 的
+**代价**由「脚本 + 该 fuzz target 设置的全部限制」共同决定,而 seed 文件里只有前一半。#218 那一轮:
+seed 是 `for B=0,100001000 do ... end`(一亿次迭代),在 `FuzzP4ForceAllPromote` 里跑 1.8 秒——而那
+1.8 秒**不是一亿次迭代的代价,是 `SetStepBudget(1 << 20)` 一百万步预算的代价**。第一版回归测试只抄了
+源码、没抄 budget,于是跑到循环结束、耗时 **87 秒**,是它要替代的那个 seed 的 50 倍。动机在这里正好
+反过来:这个 seed 被搬出 corpus 的理由就是它太重,而不抄限制等于把它原封不动搬进常规测试套件,
+**而常规套件每次 `make` 都跑,比 corpus 重放更频繁**。
+
+判据:把一个 fuzz seed 转成显式回归测试时,打开那个 fuzz target,把它设置的**每一个** limit 一起抄
+过来——step budget、arena cap、force-promote 开关、输入长度检查,而不只抄脚本。自查办法:新写的回归
+测试跑完之后量一次耗时,与那个 seed 在 harness 里的耗时对一下,**量级不同就说明漏抄了某个限制**,
+那时测的是另一件事。镜像 budget 之后 #218 那条是 1.82 秒,与 harness 一致
+(`test/regression/p4_hot_loop_promote_test.go`)。反思
+[[2026-08-02-issue212-219-fuzz-crasher-batch]] 教训 4。
 
 **判断两个 seed 是否重复,要算它们实际走的分支,不能看文件名或源码模式(2026-07-29,#209)**。
 corpus 长期积累之后会出现一批**看起来同类**的 seed,合并掉多余的看着是划算的清理。但**seed 的
@@ -406,4 +442,7 @@ VM 行为侧的对账见 `docs/design/p1-interpreter/implementation-progress.md`
   可能进入 cross-backend sweep 的范围。
 - 反思实例:`2026-07-11-issue123-unreproducible-crasher-round`(七角度复现矩阵 + 分诊 + corpus
   入库 + `GOMEMLIMIT` 诊断硬化) · `2026-07-03-issue40-arm64-stopbleed-round` §「其它(较小)」
-  fuzz 失败形式分诊纪律(deadline vs failing-input 判据的来源)。
+  fuzz 失败形式分诊纪律(deadline vs failing-input 判据的来源) ·
+  `2026-08-02-issue212-219-fuzz-crasher-batch`(版本核对的三档是成本档不是缺陷档:八个 run 与 #209
+  一样全落在旧 commit 上,实际重放后五个如实复现、三个真缺陷;八个 issue 只有六个不同 seed hash;
+  重 workload 挪进 `test/regression/` 时要连 harness 的 step budget 一起抄,漏抄让 1.8 秒变 87 秒)。

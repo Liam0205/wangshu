@@ -214,6 +214,31 @@ error(message, level):           -- level 默认 1
 > `error` 无破坏性改动。所以本节无需版本分叉标注——这是错误模型里少数跨版本一致的部分。**唯一要锁 5.1 的是
 > 位置前缀格式**(`"<source>:<line>: "`,见 §3.2)与「非 string 不加前缀」,这两条 5.1/5.4 也一致,放心实现。
 
+#### 3.1a level 是 `luaL_optint` 取的:缺省取默认值,传了转不动的值要抬错(#212/#213/#215,2026-08-02)
+
+上面伪码里的「level 默认 1」要拆成**两条**规则,写成一条就会静默吞掉参数错误:
+
+| 第 2 个参数 | PUC(`luaL_optint(L, 2, 1)`)的行为 |
+|---|---|
+| **缺省**(只传了一个参数) | 取默认值 1 |
+| **显式 `nil`** | 取默认值 1(`luaL_opt*` 把「不存在」与「是 nil」一视同仁,[10](./10-stdlib.md) §2.3) |
+| **数字,或可转成数字的字符串**(`"2"`) | 强制转换后使用(`luaL_optint` 内部走 `luaL_checkinteger`) |
+| **其它任何转不动的值**(boolean / table / function / 非数字串) | **抬** `bad argument #2 to 'error' (number expected, got X)` |
+
+`internal/stdlib/stdlib.go::baseFnError` 原先写成「转换成功才用,失败静默保留默认值 1」,于是第四行整个
+丢了:`error("", 0>0)` 报的是**空消息**,而 lua5.1 报
+`bad argument #2 to 'error' (number expected, got boolean)`。这个写法由 nightly 开成三个 crasher
+(#212/#213/#215,其中 #212 与 #215 是同一个 seed)。
+
+**判据**:实现任何 `luaL_opt*` 语义时,「缺省 / 显式 nil 取默认值」与「显式传了一个转不动的值就抬错」
+是**两条独立的规则**;`if v, ok := convert(...); ok { use(v) }` 这种写法把后者静默吞掉,而它在正常输入
+上与正确实现完全等价——只有非法参数才暴露。
+
+**差分侧的一个细节**:同一个参数错误在 Lua 函数**内部**抬出时带位置前缀
+(`[string "test"]:1: bad argument #2 to 'error' (...)`),经 `pcall(error, "m", {})` 直接调用时
+**不带**、函数名也退化成 `'?'`(§3.2.2:host raiser 那条路径)。两种写法各有一个用例钉住
+(`fuzz_212_219_test.go::TestErrorLevelMustBeANumber`)。
+
 ### 3.2 位置前缀格式与从 CallInfo 链回溯 level 层
 
 **位置前缀格式(Lua 5.1,定稿)**:
@@ -369,6 +394,30 @@ Lua 5.1 把 `Proto.Source`(原始 chunk 名)转成 traceback/错误里显示的�
 > **这个 -1 偏移是 traceback 与 error 位置正确性的命脉**。漏掉它,所有非顶层帧的行号会偏到「下一条指令的行」
 > (常常是错误的行,甚至下一个语句)。Lua 5.1 `lua_getinfo`/`currentline` 内部就是 `pc - 1`(`savedpc - 1`)。
 > **由 [12](./12-testing-difftest.md) 用多行脚本的 traceback 钉死行号逐字节一致**。
+
+#### 3.5.1 CALL 指令记的是参数列表那一行,不是被调用表达式那一行(#214,2026-08-02)
+
+§3.5 讲的是**运行期怎么从 pc 找到行号**,本节讲**编译期给 CALL 记哪一行**——`LineInfo` 里那个数从哪来。
+`-1` 偏移全对,而这个数错了,报出来的行号照样是错的。
+
+PUC 把一次调用记在**它的参数列表开始的那一行**,不是被调用表达式起始的那一行:
+
+```lua
+(0
+)()
+```
+
+lua5.1 报第 **2** 行(`()` 所在的那一行),而 `internal/frontend/parse/expr.go::parsePrefixExpr` 原先写
+`ast.CallExpr{Line: e.Pos()}`——用被调用表达式的起始行,于是报第 1 行。改成在 `parseArgs` 之前取
+`p.tok.Line`(那正是 `(` / 字符串 / `{` 所在的行,见 [04](./04-frontend-parser-codegen.md) §2 `CallExpr`
+的 `Line` 字段)。
+
+**只有跨行的被调用表达式才有差别**,单行时两者相同——这解释了为什么这个偏差活了很久、而且只能靠 fuzz
+撞出来:手写代码几乎不会把被调用表达式跨行写。方法调用(`MethodCallExpr`)本来就用**方法名**那一行,
+与 PUC 一致,一并钉住防回退(`fuzz_212_219_test.go::TestCallLineIsTheArgumentList`)。
+
+**判据**:一个 AST 节点的 `Line` 该取哪个 token,要按参照实现在**哪一步**记录行号来定,不能默认取
+「这个节点从哪里开始」;跨行写法是唯一能区分两者的输入,所以行号类用例必须含跨行形式。
 
 ---
 
@@ -1194,6 +1243,10 @@ debug.traceback(message, level):
    调 handler——这是 `debug.traceback` 能拿到完整栈的充要条件。**P1 关键决策**。
 6. **xpcall 5.1 不传 args 给 f**(§6.1):`xpcall(f, h, ...)` 的额外参数被忽略(5.2+ 才传)。锁 5.1。
 7. **pc→line 含 -1 偏移**(§3.5/§7.4):栈顶帧 `pc-1`,非栈顶帧 `savedPC-1`。traceback/error 行号正确性的命脉。
+7a. **CALL 记的是参数列表那一行**(§3.5.1):`CallExpr.Line` 取 `(`/字符串/`{` 那个 token 的行,不取被调用
+    表达式的起始行;`MethodCallExpr` 取方法名那一行。只有跨行的被调用表达式能区分两者(#214)。
+7b. **`error` 的 level 走 `luaL_optint` 的两条规则**(§3.1a):缺省 / 显式 nil 取默认值 1,显式传了转不动的
+    值要抬 `bad argument #2 (number expected, got X)`,数字字符串照旧强制转换(#212/#213/#215)。
 8. **位置前缀格式 `<source>:<line>: `**(§3.2):source 经 `chunkID`(§3.4),冒号后一空格。C 帧无前缀(`[C]`)。
 9. **变量名后缀由 09 定,类型名层由 07 定**(§8.2):完整错误 = `<src>:<line>: attempt to X a <type> value (<kind> '<name>')`。
 10. **函数名推断 P1 简化**(§8.3):必做 global/field/method(从常量池取名);应做 local(需 LocVars 回填);

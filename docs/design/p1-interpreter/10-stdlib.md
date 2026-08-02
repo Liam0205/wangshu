@@ -1216,6 +1216,29 @@ func (ms *matchState) doMatch(init int) (matchStart, matchEnd int, ok bool) {
   返回 nil」)。返回非 string/number 报错。
 - **count 返回值**:`gsub` 第二返回值是**替换次数**(实际匹配数,受 n 限);`n` 缺省则替换所有。
 
+#### 6.5.1 repl 的类型在**循环之前**校验(#216,2026-08-02)
+
+上表那三种类型的判断**不能写在替换循环里面**。PUC 的 `str_gsub` 在进入循环之前就用
+`luaL_argcheck(tr)` 校验了 repl 的类型(接受 string / number / table / function),所以**即使一次替换
+都不会发生,非法的 repl 也要抬错**:
+
+```lua
+gsub("", "", nil, .0)   -- lua5.1: bad argument #3 (string/function/table expected)
+```
+
+`internal/stdlib/stringlib.go::stringFnGsub` 原先把类型判断放在循环内部(每次要替换时才决定怎么用
+repl),而**第 4 个参数把循环次数压成 0**,于是循环一次都没跑、那个非法参数从来没有被看到,上面这句
+在望舒里**成功返回**。是那第 4 个参数让这条路径可达的:没有它,`gsub("", "", nil)` 会走进循环、在第一
+次替换时报错,行为碰巧正确。
+
+**判据**(方法论见 `llmdoc/guides/cross-backend-semantic-fix-sweep.md`「PUC 语义由 C 实现定义」第五个
+刻度):**一个校验在控制流里的位置也是要照抄的东西**。「循环之前校验一次」与「每次迭代校验」只在
+「参数非法 + 循环执行零次」这一种输入上分岔,而 fuzzer 只要找到另一个参数能把次数压到 0 就能构造它。
+所以搬校验时要记下它在 C 源码里的位置;对每个懒校验问一句「有没有输入能让这段循环执行零次」。
+
+四种合法 repl(串 / 函数 / 表 / 数字)也一并有用例,防止提前校验把某一种合法写法挡在外面
+(`fuzz_212_219_test.go::TestGsubValidatesReplTypeUpFront`)。
+
 ### 6.6 pattern matcher 的 P1 范围与差分
 
 **P1 全做 Lua 5.1 pattern 全集**(字符类、量词、锚、捕获、位置捕获、`%b`、`%f`、`%1`-`%9`)——**因为 pattern
@@ -1510,6 +1533,29 @@ func hostMathRandom(vm *VM, th *Thread) int {
 - 落点 `internal/stdlib/mathx.go`。这三处的共同点是**参照实现的边角由 C 库定义,不由「数学上
   等价的写法」定义**——运算次序与中间值都是语义的一部分(同族纪律见
   `llmdoc/guides/cross-backend-semantic-fix-sweep.md`「PUC 语义由 C 实现定义」)。
+
+### 8.6 取两个数的 math 入口:参数编号不对齐,而豁免要含**别名**(#217/#219,2026-08-02)
+
+`math` 里取两个数的入口(`fmod` / `mod` / `pow` / `ldexp` / `atan2`)都是
+`f(luaL_checknumber(L,1), luaL_checknumber(L,2))` 这个写法,而 **C 不规定两个实参的求值顺序**:gcc 在
+x86-64 上从右往左、在 arm64 上从左往右,于是**两个官方构建对同一个调用报不同的参数编号**(x86-64 说
+`#2`、arm64 说 `#1`)。两个参照实现自己都不一致,「对齐 PUC」就没有指称对象,所以望舒的 `mathFn2`
+(`internal/stdlib/tablelib.go`)取「报第一个缺失 / 出错的参数」这个可辩护的行为,差分 harness 侧只跳
+「多于一个坏参数」那种编号取决于顺序的写法(单个坏参数两边编号一致,照旧比对)。这一格属于
+[12](./12-testing-difftest.md) §4.9b「C 未指定(unspecified)」那一类。
+
+**这个决定本身是对的,漏的是它的覆盖面**:harness 侧那个执行体(`internal/oracle/prelude.go` 的
+`__wrapArgOrder`)只包了 `math.fmod`,而 **`math.mod` 是 `LUA_COMPAT_MOD` 下同一个 C 函数的 5.0 别名**
+(官方 5.1.5 默认带这个兼容名,本仓 `mathExtraFns` 里 `fmod` 与 `mod` 也指向同一个实现)。那条性质对它
+逐字成立,而按名字写的判据看不见它——于是完全相同的写法仍然可报,被 fuzzer 开成**两个** issue
+(#217、#219,同一个 seed hash);`math.atan2` 也从来没被包过。现在按「math 表里所有取两个数的入口」
+全部包上。
+
+**判据**:豁免的正确边界是「具备被豁免那条性质的**全部入口**」,不是「我记得的那几个名字」;加豁免前
+先查有没有别名或 `LUA_COMPAT_*` 兼容名(本仓已有的同族:`string.gfind` 与 `gmatch` 是同一个函数对象,见
+`internal/stdlib/stdlib.go` 里 `LUA_COMPAT_GFIND` 那处注释;`table.getn`/`setn` 见 §7.5)。方法论
+见 `llmdoc/guides/cross-backend-semantic-fix-sweep.md`「对齐 PUC 之前先分清有定义还是 UB」的**执行体
+纪律**段。
 
 ---
 
