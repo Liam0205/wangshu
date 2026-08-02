@@ -132,6 +132,23 @@
 修一个与已修函数「公式相同」的兄弟函数时,公式可以照抄,消息、默认值、参数校验各自独立核对
 一遍。反思实例 [[2026-07-29-issue205-206-208-io-userdata-debug]] 教训 5。
 
+**第五个刻度:校验在控制流里的位置也是要照抄的东西**。前四个刻度分别讲**值**要顺着 C 的转换链推、
+**上限**的条件项可能读调用当时的栈状态、**消息**可能被 `luaL_*` 包一层——都是「读到源码那一行之后
+还要看一层」;本条讲**那一行在哪**。一个校验位于函数入口 / 循环之前 / 循环之内 / 分支之内,是语义的
+一部分,不只是实现细节。实证(2026-08-02,#216):`string.gsub` 的 repl 类型检查被写在替换循环
+**里面**,而 PUC 的 `str_gsub` 是在循环**之前**用 `luaL_argcheck(tr)` 校验的;后果是
+`gsub("", "", nil, .0)` 在望舒里**成功返回**而 lua5.1 抬
+`bad argument #3 (string/function/table expected)`——第 4 个参数把循环次数压成 0,循环一次都没跑,
+那个非法参数从来没有被看到。**是那第 4 个参数让这条路径可达的**:没有它,`gsub("", "", nil)` 会走进
+循环、在第一次替换时报错,行为碰巧正确。
+
+可复用判据:「进入循环前校验一次」与「每次迭代校验」在参数合法时等价、在参数非法且循环体执行 ≥ 1 次时
+也等价,两者**只在参数非法且循环零次这一种输入上分岔**——而这正是 fuzzer 擅长构造的,它只要找到另一个
+参数能把次数压到 0。所以:搬参照实现的校验时记下它在 C 源码里的控制流位置并保持一致;对每一个懒校验
+问一句「有没有一个输入能让这段循环 / 分支执行零次」——`n = 0`、空串、空表、空区间、提前 return 都是
+候选,有的话就为那个输入写一个用例。反思实例
+[[2026-08-02-issue212-219-fuzz-crasher-batch]] 教训 3。
+
 反思实例见 `memory/reflections/2026-07-12-cgo-oracle-fuzz-round.md` 教训 2(一轮里 35 处分歧全部经此手法定位)。与本 guide 已有的「跨后端 / 跨通道枚举」纪律同域:跨后端扫要枚举实现,与 PUC 差分要枚举权威源码。
 
 延伸(真值最终落在宿主 libc 时,读 C 源码只是第一步):PUC 语义不只由 C 源码定义,**非有限值(NaN/Inf)的格式化还由宿主 libc(glibc)定义**。`string.format` 的 `%f/%e/%g/%E/%G` 对 NaN/Inf 转发给 C `sprintf`,输出的大小写拼写(小写 verb → `nan`/`inf`,大写 → `NAN`/`INF`)、符号规则、以及 glibc 为 NaN 保留符号列导致的 width−1 quirk(见下),grep `_lua515/` 只能看到「转发给 `sprintf`」,真正的真值在 libc 里。这类分歧必须以 oracle 实测字节为准,不能照 Go `fmt` 或凭直觉。glibc 的确切规律:glibc 总为 NaN 保留 1 个符号列;小写 verb 符号不显示(那一列变空格被 width 吸收 → 有效 width = 声明 width−1),大写 verb 符号是可见的 `-`(已在 core 里占了那一列 → 完整 width);Inf 符号一直在 core 里 → 完整 width;precision 对 NaN/Inf 忽略。方法论要点:**对付「宿主 libc 定义的格式化」这类外部真值,不要从一两个样本外推规则,直接构造覆盖矩阵(verb × 符号 × flag × width)扫 oracle,规律要能解释矩阵里每一格才算定准**——本轮(#170/#171,PR #172)正是从单点「小写 NaN width−1」外推「所有非有限值 width−1」,一步把 Inf 全改错,靠 93 组覆盖矩阵实测才把完整真值表逼出来。实现落点:`internal/stdlib/stringlib.go` 的 `cFormatSpecialFloat` 在 NaN/Inf 时特判;反思实例见 `memory/reflections/2026-07-22-oracle-format-nan-inf-round.md` 教训 1/2。**2026-07-26 修订:模仿 glibc 的那两处已经撤掉**——`cFormatSpecialFloat` 现在让 NaN 在所有 verb 下都不带符号、都按完整声明宽度补齐(大写 verb 不再硬编码 `-NAN`,小写 NaN 不再按声明宽度减一补齐),Inf 的符号与宽度规则不变。原因:那两处只为让差分 oracle 一致而存在,却让望舒自身的 `%e` 与 `%E`、`%5f` 与 `%5E` 自相矛盾,而 arm64 的 glibc 与 x86 还不同,模仿本来就不可移植;NaN 符号差异现在在 oracle 渲染处消除(`internal/oracle/lua515.c`,详见 `docs/design/p1-interpreter/12-testing-difftest.md` §4.2)。方法论那条(外部真值面要建覆盖矩阵、不从单点外推)仍然成立;附加一条:**在产品代码里逐字节模仿一个宿主 libc 之前,先问这个模仿是为谁服务的**——如果只为让测试基准一致,那它同时会把不可移植性写进产品行为,应该改在基准侧消除差异。
@@ -160,6 +177,21 @@
 **顺序上还有一步在这之前**:UB 区间的跳过属于 [[prove-the-path-under-test]] §9.0 的「两侧本来就是不同的东西」那一类(两个官方 build 各给一个结果,没有「正确值」可对齐),所以在比较侧跳过是对的;而「同一个抽象值的不同书写方式」(NaN 符号位)必须在渲染处消除,不能设计判据。判位置在前,判有定义 / UB 在后。
 
 **执行体纪律**:决定跳过之后,那个跳过必须有代码实现,并且注释要指向它——本仓的两个执行体是 `internal/oracle/prelude.go` 的 sentinel(差分 harness 侧)与 `test/difftest/corners_test.go::exemptions`(conformance 侧)。写「已登记为豁免」却没有执行体的注释见 [[prove-the-path-under-test]] §4.2(`strtoul` 那处假豁免让分歧活了很久)。
+
+**执行体的覆盖面必须含被豁免函数的全部别名与兼容名(2026-08-02,#217/#219)**。上一段讲豁免要**有**
+执行体,本段讲那个执行体**盖到哪里**。`__wrapArgOrder`(第三格「C 未指定的实参求值顺序」那条豁免的
+执行体)只包了 `math.fmod`,而 `math.mod` 是 `LUA_COMPAT_MOD` 下**同一个 C 函数**的 5.0 别名——那条
+性质(两个官方构建对求值顺序不一致)对它逐字成立,而按名字写的判据看不见它。于是完全相同的写法仍然
+可报,被 fuzzer 开成**两个** issue(#217、#219,同一个 seed hash);`math.atan2` 也从来没被包过。
+
+**判据**:豁免的正确边界是「**具备被豁免那条性质的全部入口**」,而人写清单时枚举的是「我记得的那几个
+名字」。所以加豁免 / skip / 包装时:① 先查有没有别名或兼容名——Lua 5.1 里就是 `LUA_COMPAT_*` 那一族
+(`math.mod` = `fmod`、`string.gfind` = `gmatch`、`table.getn` / `setn`);② 用一句**可以拿去枚举的
+性质**来写清单,而不是往清单里再补一行(本轮的写法是「math 表里所有取两个数经 `luaL_checknumber` 的
+入口」,现在覆盖 `fmod` / `mod` / `pow` / `ldexp` / `atan2`)。自查办法:同一个豁免被 fuzzer 报了第二次
+而产品并没有缺陷时,先怀疑判据的**覆盖面**,不要怀疑判据本身。这与本 guide 开篇「枚举全部后端 × 通道,
+不凭记忆」是同一条纪律换了对象——那条枚举**实现站点**,本条枚举**入口名**。反思
+[[2026-08-02-issue212-219-fuzz-crasher-batch]] 教训 2。
 
 反思实例见 `memory/reflections/2026-07-28-four-diff-divergence-issues.md` 教训 4(有定义 vs UB)、`memory/reflections/2026-07-28-issue197-199-stdlib-semantics.md` 教训 4(参照实现自相矛盾)与 `memory/reflections/2026-07-18-issue155-158-nightly-crasher-round.md` 教训 3。
 
@@ -209,4 +241,5 @@ deopt helper 不能只修复触发失败的那一步；如果 deopt 分支随后
   `2026-07-28-four-diff-divergence-issues`(「PUC 语义由 C 实现定义」的更细刻度:`luaL_checkint` 的隐式两步转换 + 「有定义 vs UB:对齐还是跳过」新节,#192/#193/#194/#196 一轮修六个根因) /
   `2026-07-28-issue197-199-stdlib-semantics`(该节第三、四格:C 未指定的实参求值顺序两侧都不对齐 + 参照实现自相矛盾时按语言规范选,`print` 截断 NUL 而 `io.write` 不截断,#197/#198/#199) /
   `2026-07-28-issue201-203-unpack-skip-thresholds`(「PUC 语义由 C 实现定义」的又一刻度:C 侧的上限条件可能同时读调用当时的栈状态,`unpack` 的真实上限是 `LUAI_MAXCSTACK` 减参数个数而不是常数 8000;`os.time` 的 `isdst` 转发给 `mktime` 的 `tm_isdst`,#201/#202) /
-  `2026-07-29-issue205-206-208-io-userdata-debug`(该节第四刻度:错误消息也有一条包装链——`luaL_checkstack` 把调用者的文本套成 `stack overflow (%s)`,`string.byte` 的上限公式与 `unpack` 一样但消息不一样,#206)。
+  `2026-07-29-issue205-206-208-io-userdata-debug`(该节第四刻度:错误消息也有一条包装链——`luaL_checkstack` 把调用者的文本套成 `stack overflow (%s)`,`string.byte` 的上限公式与 `unpack` 一样但消息不一样,#206) /
+  `2026-08-02-issue212-219-fuzz-crasher-batch`(该节第五刻度:校验在控制流里的位置也要照抄——`string.gsub` 的 repl 类型检查从循环之前挪进循环内部,一个把次数压成 0 的参数就让它整个失效,#216;另有「豁免执行体的覆盖面必须含别名」——`__wrapArgOrder` 包了 `math.fmod` 没包它的 `LUA_COMPAT_MOD` 别名 `math.mod`,同一写法被开成两个 issue,#217/#219)。

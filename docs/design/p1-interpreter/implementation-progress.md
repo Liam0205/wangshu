@@ -243,6 +243,25 @@
   验证过」这句话当时不能说,支撑结论的是本地那 120 秒 fuzz 与 corpus 重放。过程反思见
   `llmdoc/memory/reflections/2026-07-29-issue209-stale-crasher-threshold-pin.md`。
 
+- **八个 nightly crasher、六个 seed、三个真缺陷(2026-08-02,#212–#219 一轮)**:八个 run 的 headSha 全是
+  `5383aec`,与 #209 那一轮字面事实几乎一样,但**结论相反**——实际重放之后五个如实复现,三个是真产品缺陷。
+  八个 issue 只有**六个不同的 seed**(#212/#215 是同一个 hash `1d42242f157c9754`,#217/#219 是同一个
+  `0150a245c776b8ed`)。
+
+  | 项 | 落点 | 结论与要点 |
+  |---|---|---|
+  | `error()` 的 level 参数没做类型检查(#212/#213/#215) | `internal/stdlib/stdlib.go` | 原先写成「转换成功才用,失败静默保留默认值 1」,而 PUC 的 `luaL_optint` 对**显式传了一个转不动的值**是**抬错**的:`error("", 0>0)` 报空消息而 lua5.1 报 `bad argument #2 to 'error' (number expected, got boolean)`。`luaL_opt*` 是**两条**规则——缺省 / 显式 nil 取默认值,显式非法值抬错,而数字字符串仍然强制转换。差分细节:同一个错误在 Lua 函数**内部**抬出时带位置前缀,经 `pcall(error, ...)` 直接调用时不带、函数名退化成 `'?'`(09 §3.1a) |
+  | 调用的行号取了被调用表达式那一行(#214) | `internal/frontend/parse/expr.go` | `ast.CallExpr{Line: e.Pos()}` 用被调用表达式的起始行,而 PUC 记的是**参数列表**开始那一行:`(0\n)()` lua5.1 报第 2 行、望舒报第 1 行。改成在 `parseArgs` 之前取 `p.tok.Line`。**只有跨行的被调用表达式才有差别**,单行时两者相同,所以只能靠 fuzz 撞出来;`MethodCallExpr` 本来就用方法名那一行、一并钉住(09 §3.5.1) |
+  | `string.gsub` 的 repl 类型是惰性校验的(#216) | `internal/stdlib/stringlib.go` | 不是少了一个检查,是**检查放错了位置**:类型判断写在替换循环**里面**,而第 4 个参数把循环次数压成 0,于是循环一次都没跑、非法参数从来没被看到,`gsub("", "", nil, .0)` 成功返回而 lua5.1 抬 `bad argument #3`。PUC 是在循环**之前**用 `luaL_argcheck(tr)` 校验的。**是第 4 个参数让这条路径可达的**(10 §6.5.1) |
+  | `math.mod` 不是产品缺陷,是 harness 的**别名漏网**(#217/#219) | `internal/oracle/prelude.go` | `mathFn2` 报第一个缺失参数是**刻意决定**:两个官方构建互相不一致(x86-64 报 #2、arm64 报 #1,C 不规定实参求值顺序),没有可对齐的对象。但 `__wrapArgOrder` 只包了 `math.fmod`,没包它的 `LUA_COMPAT_MOD` 别名 `math.mod`(同一个 C 函数),于是同一写法被开成**两个** issue;`math.atan2` 也从来没被包过。现在按「math 表里所有取两个数的入口」全部包上(12 §4.9e,10 §8.6) |
+  | #218 不是缺陷,是**重 workload 进了 corpus** | `test/regression/p4_hot_loop_promote_test.go` | 一亿次迭代、既不崩也不分歧,只是 p4 corpus 里最重的一个 seed(1.8 秒,其余都在 0.3 秒以内,约 6 倍),而 coordinator 并行重放整个 corpus。按 triage guide 走显式回归测试。**第一版做错了**:只抄了脚本、没抄 harness 的 `SetStepBudget(1 << 20)`,跑到循环结束耗 **87 秒**(harness 的 50 倍)——那 1.8 秒不是一亿次迭代的代价,是一百万步预算的代价。镜像 budget 与 arena cap 之后是 1.82 秒。按 guide 规定没有自建 in-test deadline(失败模式是「永不返回」,交给包级 `go test -timeout`) |
+
+  **验证规模**:全套测试 + `-race`、`test/`、p3 / p4 两个 build tag 全部 0 失败;oracle 单测与 corpus 全量
+  重放全绿;45 秒引导式 fuzz 干净;**五个 seed 全部从 FAIL 变 PASS**。过程反思见
+  `llmdoc/memory/reflections/2026-08-02-issue212-219-fuzz-crasher-batch.md`(四条教训:版本核对的三档是
+  成本档不是缺陷档 / 豁免判据必须覆盖别名 / 参照实现在循环之前做的校验不能挪进循环 / 把 seed 转成回归
+  测试时要连 harness 的限制一起抄)。
+
 ## 相关
 
 [00-overview](./00-overview.md) · [../engineering](../engineering.md) ·
