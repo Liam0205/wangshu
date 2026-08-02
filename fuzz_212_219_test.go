@@ -93,3 +93,33 @@ func TestGsubValidatesReplTypeUpFront(t *testing.T) {
 		}
 	}
 }
+
+// TestMathRandomTypeErrorBeforeInterval covers a sibling of #212's shape that I found by sweeping
+// for the same pattern rather than waiting for the fuzzer.
+//
+// PUC's math_random runs luaL_checkint BEFORE luaL_argcheck, so a non-number bound is a TYPE error
+// at its own argument index -- not an empty interval. Folding the two conditions into one
+// `if !ok || m < 1` reported "interval is empty" for math.random({}), where lua5.1 reports
+// "number expected, got table".
+//
+// This is the same defect shape as error()'s level: a failed conversion being absorbed into an
+// unrelated outcome instead of raising.
+func TestMathRandomTypeErrorBeforeInterval(t *testing.T) {
+	for _, tc := range []struct{ name, src, want string }{
+		{"one bad bound", `local ok, e = pcall(math.random, {}) return tostring(e)`,
+			"bad argument #1 to '?' (number expected, got table)"},
+		{"bad lower bound", `local ok, e = pcall(math.random, {}, 1) return tostring(e)`,
+			"bad argument #1 to '?' (number expected, got table)"},
+		{"bad upper bound", `local ok, e = pcall(math.random, 1, {}) return tostring(e)`,
+			"bad argument #2 to '?' (number expected, got table)"},
+		// A NUMERIC bound that is out of range is still an interval error, at PUC's indices.
+		{"empty interval one arg", `local ok, e = pcall(math.random, 0) return tostring(e)`,
+			"bad argument #1 to '?' (interval is empty)"},
+		{"empty interval two args", `local ok, e = pcall(math.random, 5, 1) return tostring(e)`,
+			"bad argument #2 to '?' (interval is empty)"},
+	} {
+		if got := runOne(t, tc.src).Str(); got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}

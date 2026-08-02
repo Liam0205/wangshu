@@ -989,20 +989,33 @@ func mathFnRandom(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 	case 0:
 		return []value.Value{value.NumberValue(rngFloat())}, nil
 	case 1:
+		// luaL_checkint runs BEFORE luaL_argcheck, so a non-number bound is a TYPE error,
+		// not an empty interval: math.random({}) reports "number expected, got table" on PUC
+		// while folding the two conditions together reported "interval is empty".
 		mF, ok := toNumberStr(st, args[0])
+		if !ok {
+			return nil, crescent.NewArgError(1, "number expected, got "+st.TypeName(args[0]))
+		}
 		// luaL_checkint narrowing: math.random(2^32) is an EMPTY interval on PUC,
 		// because the bound narrows to 0.
 		m := float64(cCharCastInt32(mF))
-		if !ok || m < 1 {
+		if m < 1 {
 			return nil, crescent.NewArgError(1, "interval is empty")
 		}
 		return []value.Value{value.NumberValue(float64(rngInt(1, int64(m))))}, nil
 	default:
+		// Both bounds go through luaL_checkint, each raising a type error at its own index
+		// before the interval is examined.
 		loF, ok1 := toNumberStr(st, args[0])
+		if !ok1 {
+			return nil, crescent.NewArgError(1, "number expected, got "+st.TypeName(args[0]))
+		}
 		hiF, ok2 := toNumberStr(st, args[1])
-		// Both bounds go through luaL_checkint.
+		if !ok2 {
+			return nil, crescent.NewArgError(2, "number expected, got "+st.TypeName(args[1]))
+		}
 		lo, hi := float64(cCharCastInt32(loF)), float64(cCharCastInt32(hiF))
-		if !ok1 || !ok2 || lo > hi {
+		if lo > hi {
 			return nil, crescent.NewArgError(2, "interval is empty")
 		}
 		return []value.Value{value.NumberValue(float64(rngInt(int64(lo), int64(hi))))}, nil
