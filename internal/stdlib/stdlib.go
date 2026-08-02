@@ -788,10 +788,16 @@ func baseFnError(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 	}
 	v := args[0]
 	level := 1
-	if len(args) >= 2 {
-		if f, ok := toNumberStr(st, args[1]); ok {
-			level = int(cCharCastInt32(f)) // luaL_optint narrowing
+	if len(args) >= 2 && args[1] != value.Nil {
+		// luaL_optint RAISES for a present non-number level; silently ignoring it made
+		// error("", 0>0) report an empty message where PUC reports
+		// "bad argument #2 to 'error' (number expected, got boolean)". Only an absent or nil
+		// level takes the default.
+		f, ok := toNumberStr(st, args[1])
+		if !ok {
+			return nil, crescent.NewArgError(2, "number expected, got "+st.TypeName(args[1]))
 		}
+		level = int(cCharCastInt32(f)) // luaL_optint narrowing
 	}
 	// Official luaB_error's prefixing condition is lua_isstring (true for
 	// numbers too, since lua_concat converts them to strings):

@@ -1,0 +1,2 @@
+go test fuzz v1
+string("co=coroutine.create(function()(0\n)()end)print(coroutine.resume(co))")

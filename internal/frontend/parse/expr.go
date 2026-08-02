@@ -239,11 +239,20 @@ func (p *Parser) parsePrefixExpr() (ast.Expr, error) {
 			}
 			e = &ast.MethodCallExpr{Line: line, Recv: e, Method: method, Args: args}
 		case token.LPAREN, token.STRING, token.LBRACE:
+			// The line of the ARGUMENT LIST, not of the callee expression.
+			//
+			// PUC records the call at the line where its arguments begin, so
+			//   (0
+			//   )()
+			// reports line 2 -- the line of the "()" -- while using the callee's own line
+			// reported 1. Only multi-line callee expressions differ, which is why this went
+			// unnoticed: on one line the two are the same.
+			callLine := p.tok.Line
 			args, err := p.parseArgs()
 			if err != nil {
 				return nil, err
 			}
-			e = &ast.CallExpr{Line: e.Pos(), Fn: e, Args: args}
+			e = &ast.CallExpr{Line: callLine, Fn: e, Args: args}
 		default:
 			return e, nil
 		}
