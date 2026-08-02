@@ -210,19 +210,6 @@ func stringFnGsub(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 		return nil, crescent.NewArgError(3, "string/function/table expected")
 	}
 	repl := args[2]
-	// PUC validates the replacement's TYPE up front (luaL_argcheck on tr, before the loop),
-	// so an invalid one raises even when zero replacements would be performed. Checking it
-	// lazily inside the loop meant gsub("", "", nil, 0) succeeded -- the loop never ran, so
-	// the bad argument was never seen -- while lua5.1 reports
-	// "bad argument #3 (string/function/table expected)".
-	switch value.Tag(repl) {
-	case value.TagString, value.TagTable, value.TagFunction:
-		// ok
-	default:
-		if !value.IsNumber(repl) { // a number is accepted, like a string
-			return nil, crescent.NewArgError(3, "string/function/table expected")
-		}
-	}
 	// "unlimited" is tracked SEPARATELY from the count, not encoded as -1.
 	//
 	// Sharing the sign bit was wrong once the count started being narrowed: PUC's
@@ -237,6 +224,23 @@ func stringFnGsub(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 			return nil, crescent.NewArgError(4, "number expected, got "+st.TypeName(args[3]))
 		}
 		maxN, unlimited = int(cCharCastInt32(f)), false // luaL_optint narrowing
+	}
+	// PUC validates the replacement's TYPE here -- AFTER reading argument 4, not before.
+	//
+	// str_gsub runs luaL_optint(L, 4, ...) and only then luaL_argcheck on tr, so when BOTH are
+	// bad the count's error wins: gsub("", "", nil, {}) reports bad argument #4, not #3.
+	// Hoisting this check above the count read got #216 right and broke that ordering.
+	//
+	// It still has to run BEFORE the substitution loop: checking lazily inside it meant
+	// gsub("", "", nil, 0) succeeded, because a zero count left the loop unentered and the bad
+	// argument unseen.
+	switch value.Tag(repl) {
+	case value.TagString, value.TagTable, value.TagFunction:
+		// ok
+	default:
+		if !value.IsNumber(repl) { // a number is accepted, like a string
+			return nil, crescent.NewArgError(3, "string/function/table expected")
+		}
 	}
 	var out []byte
 	pos := 0

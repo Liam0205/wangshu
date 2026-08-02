@@ -1243,7 +1243,7 @@ debug.traceback(message, level):
    调 handler——这是 `debug.traceback` 能拿到完整栈的充要条件。**P1 关键决策**。
 6. **xpcall 5.1 不传 args 给 f**(§6.1):`xpcall(f, h, ...)` 的额外参数被忽略(5.2+ 才传)。锁 5.1。
 7. **pc→line 含 -1 偏移**(§3.5/§7.4):栈顶帧 `pc-1`,非栈顶帧 `savedPC-1`。traceback/error 行号正确性的命脉。
-7a. **CALL 记的是参数列表那一行**(§3.5.1):`CallExpr.Line` 取 `(`/字符串/`{` 那个 token 的行,不取被调用
+7a. **CALL 记的是参数列表那一行**(§3.5.1):`CallExpr.ArgsLine` 取 `(`/字符串/`{` 那个 token 的行,不取被调用
     表达式的起始行;`MethodCallExpr` 的 SELF 取方法名那一行。两个节点的 CALL 都取 `ArgsLine`。只有跨行的被调用表达式能区分两者,而且 `(` 形式免疫(歧义语法规则不允许它前面有换行),所以要用 `{}` 或字符串参数形式才能测到(#214)。
 7b. **`error` 的 level 走 `luaL_optint` 的两条规则**(§3.1a):缺省 / 显式 nil 取默认值 1,显式传了转不动的
     值要抬 `bad argument #2 (number expected, got X)`,数字字符串照旧强制转换(#212/#213/#215)。

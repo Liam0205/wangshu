@@ -229,6 +229,17 @@ func (l *Lexer) readLongString(level int) (string, error) {
 
 // Next emits the next token (or returns an error).
 func (l *Lexer) Next() (token.Token, error) {
+	tok, err := l.next()
+	if err != nil {
+		return tok, err
+	}
+	// Stamp the line the token ENDED on, which is what PUC's ls->linenumber holds after a scan.
+	// Done once here rather than in each scanner so a new token kind cannot forget it.
+	tok.EndLine = l.line
+	return tok, nil
+}
+
+func (l *Lexer) next() (token.Token, error) {
 	if err := l.skipWhitespaceAndComments(); err != nil {
 		return token.Token{}, err
 	}

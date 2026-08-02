@@ -233,7 +233,7 @@ func (p *Parser) parsePrefixExpr() (ast.Expr, error) {
 			if err := p.next(); err != nil {
 				return nil, err
 			}
-			argsLine := p.tok.Line
+			argsLine := p.tokEndLine()
 			args, err := p.parseArgs()
 			if err != nil {
 				return nil, err
@@ -248,7 +248,11 @@ func (p *Parser) parsePrefixExpr() (ast.Expr, error) {
 			// reports line 2 -- the line of the "()" -- while using the callee's own line
 			// reported 1. Only multi-line callee expressions differ, which is why this went
 			// unnoticed: on one line the two are the same.
-			argsLine := p.tok.Line
+			// The END line of the argument token, matching PUC: funcargs reads ls->linenumber
+			// AFTER the token is scanned, so a long string spanning newlines puts the CALL on
+			// its LAST line. Using the start line reported A[[\n]] at line 1 where lua5.1
+			// says 2.
+			argsLine := p.tokEndLine()
 			args, err := p.parseArgs()
 			if err != nil {
 				return nil, err

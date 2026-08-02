@@ -121,15 +121,17 @@ type IndexExpr struct {                               // prefix[key] 或 prefix.
 
 // —— 调用 ——
 type CallExpr struct {                                // f(args...)
-    Line int32
-    Fn   Expr
-    Args []Expr                                       // 末位可为多值表达式(Call/Vararg)
+    Line     int32                                    // 被调用表达式起始行:callee/参数物化用
+    ArgsLine int32                                    // 参数列表那一行:只给 CALL(09 §3.5.1)
+    Fn       Expr
+    Args     []Expr                                   // 末位可为多值表达式(Call/Vararg)
 }
 type MethodCallExpr struct {                          // obj:m(args...) → SELF
-    Line   int32
-    Recv   Expr
-    Method string                                     // 方法名(进常量池)
-    Args   []Expr
+    Line     int32                                    // 方法名那一行:SELF 用
+    ArgsLine int32                                    // 参数列表那一行:只给 CALL
+    Recv     Expr
+    Method   string                                   // 方法名(进常量池)
+    Args     []Expr
 }
 
 // —— 运算 ——
