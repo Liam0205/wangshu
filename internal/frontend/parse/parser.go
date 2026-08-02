@@ -92,7 +92,14 @@ func Parse(lx *lex.Lexer, source string) (*ast.Block, error) {
 
 // next advances to the next token: from ahead if buffered, else pull from lexer.
 func (p *Parser) next() error {
-	p.lastLine = p.tok.Line
+	// The END line of the consumed token, matching PUC's ls->linenumber, which is read after the
+	// token is scanned. Using the start line rejected a call whose argument is a long string
+	// containing a newline as ambiguous syntax.
+	if p.tok.EndLine != 0 {
+		p.lastLine = p.tok.EndLine
+	} else {
+		p.lastLine = p.tok.Line
+	}
 	if p.hasAhead {
 		p.tok = p.ahead
 		p.hasAhead = false
@@ -209,4 +216,14 @@ func (p *Parser) parseBlock() (*ast.Block, error) {
 func isBlockEnd(k token.Kind) bool {
 	return k == token.EOF || k == token.KW_END || k == token.KW_ELSE ||
 		k == token.KW_ELSEIF || k == token.KW_UNTIL
+}
+
+// tokEndLine is the line the current token ends on, falling back to its start line. See
+// token.Token.EndLine: PUC reads ls->linenumber after a scan, so a multi-line token's consumer
+// sees its LAST line.
+func (p *Parser) tokEndLine() int32 {
+	if p.tok.EndLine != 0 {
+		return p.tok.EndLine
+	}
+	return p.tok.Line
 }

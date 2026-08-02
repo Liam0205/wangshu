@@ -137,3 +137,38 @@ func TestMathRandomTypeErrorBeforeInterval(t *testing.T) {
 		}
 	}
 }
+
+// TestMultiLineArgumentTokenLines covers a pre-existing defect an audit surfaced while checking the
+// #214 fix: a token's END line, not its start, is what the parser must use.
+//
+// PUC reads ls->linenumber AFTER scanning a token, so a long string spanning newlines puts the CALL
+// on its LAST line; using the start line reported a long-string argument one line early. The same
+// start-vs-end mistake in the ambiguous-syntax check REJECTED a call whose argument is a long string
+// containing a newline, which lua5.1 accepts -- a parse error on a valid program, worse than a wrong
+// line number.
+//
+// Every expectation here was read off lua5.1 5.1.5 rather than reasoned about; the audit's own
+// numbers for two of these were off by one, which is why.
+func TestMultiLineArgumentTokenLines(t *testing.T) {
+	for _, tc := range []struct{ name, src, wantLine string }{
+		{"long string argument",
+			"local ok, e = pcall(function() return A[[\n]] end) return tostring(e)", "2"},
+		{"method with a long string argument",
+			"local t = {}\nlocal ok, e = pcall(function() return t:m[[\n]] end) return tostring(e)", "3"},
+		{"short string with an escaped newline",
+			"local ok, e = pcall(function() return A\"a\\\nb\" end) return tostring(e)", "2"},
+	} {
+		full := runOne(t, tc.src).Str()
+		want := "[string \"test\"]:" + tc.wantLine + ":"
+		if !strings.HasPrefix(full, want) {
+			t.Errorf("%s: got %q, want prefix %q", tc.name, full, want)
+		}
+	}
+	// A call whose argument is a long string containing a newline is VALID: the ambiguous-syntax rule
+	// compares against the previous token's END line, so there is no line break before the call as
+	// far as the rule is concerned.
+	src := "local f = function() return function() return 1 end end\nreturn tostring(f[[\n]](3))"
+	if got := runOne(t, src).Str(); got != "1" {
+		t.Errorf("a long-string argument call = %q, want \"1\" -- lua5.1 accepts it", got)
+	}
+}

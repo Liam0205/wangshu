@@ -72,7 +72,14 @@ const (
 // Token is the unit consumed by the parser (03 §3.2).
 type Token struct {
 	Kind Kind
-	Line int32 // 1-based source line number
+	Line int32 // 1-based source line number (where the token STARTS)
+
+	// EndLine is the line the token ENDS on, which differs from Line only for a long string or
+	// long comment spanning newlines. PUC's ls->linenumber is read AFTER a token is scanned, so
+	// it is this value the parser must compare against. Without it, a call whose argument is a
+	// long string containing a newline was rejected as ambiguous syntax (lua5.1 accepts it) and
+	// reported the wrong line. Zero means "same as Line".
+	EndLine int32
 
 	// Literal payload:
 	//   NUMBER → Num
