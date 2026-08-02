@@ -52,8 +52,22 @@ func TestCallLineIsTheArgumentList(t *testing.T) {
 		{"newline before the call", "local ok, e = pcall(function() return (0\n)() end) return tostring(e)", "2"},
 		{"single line", "local ok, e = pcall(function() return (0)() end) return tostring(e)", "1"},
 		{"several newlines", "local ok, e = pcall(function() return (\n\n0\n)() end) return tostring(e)", "4"},
-		// Method calls already used the method-name line, which matches; pinned so it stays that way.
 		{"method call", "local t = {} local ok, e = pcall(function() return t\n:nope() end) return tostring(e)", "2"},
+		// The CALLEE keeps its own line; only the CALL moves. An audit caught the first version of
+		// this fix moving both, which put the callee's GETTABLE on the argument line -- so indexing
+		// a nil in `t.x\n{1}` blamed line 4 instead of 3. PUC materializes the callee in
+		// primaryexp and only funcargs' luaK_fixline moves the CALL.
+		//
+		// The {} and string argument forms are the ones that expose it: `(` is immune because the
+		// ambiguous-syntax rule forbids a newline before it.
+		{"callee line with a table arg",
+			"local ok, e = pcall(function()\nlocal t = nil\nreturn t.x\n{1} end) return tostring(e)", "3"},
+		{"callee line with a string arg",
+			"local ok, e = pcall(function()\nlocal t = nil\nreturn t.x\n\"s\" end) return tostring(e)", "3"},
+		// Method calls needed the same split: SELF keeps the method-name line, CALL takes the
+		// argument list's. The single-line case above cannot see this, since the two coincide there.
+		{"method callee line with a table arg",
+			"local t = {}\nlocal ok, e = pcall(function() return t:nope\n{} end) return tostring(e)", "3"},
 	} {
 		full := runOne(t, tc.src).Str()
 		want := `[string "test"]:` + tc.wantLine + ":"

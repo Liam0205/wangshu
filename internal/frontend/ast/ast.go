@@ -77,15 +77,25 @@ func (*ParenExpr) exprNode()    {}
 // ----- Calls -----
 
 type CallExpr struct {
-	Line int32
-	Fn   Expr
-	Args []Expr
+	// Line is where the CALLEE expression starts; ArgsLine is where the argument list does.
+	//
+	// They differ only for a multi-line call, and PUC keeps them separate: primaryexp
+	// materializes the callee at its own line, then funcargs' luaK_fixline moves only the CALL
+	// instruction to the argument list's line. Using one line for both put the callee's
+	// GETTABLE on the argument line too, so `t.x\n{1}` blamed the wrong line for indexing nil.
+	Line     int32
+	ArgsLine int32
+	Fn       Expr
+	Args     []Expr
 }
 type MethodCallExpr struct {
-	Line   int32
-	Recv   Expr
-	Method string
-	Args   []Expr
+	// Line is the method-name line (used for SELF, as PUC's luaK_self does); ArgsLine is the
+	// argument list's line, which only the CALL uses.
+	Line     int32
+	ArgsLine int32
+	Recv     Expr
+	Method   string
+	Args     []Expr
 }
 
 func (e *CallExpr) Pos() int32       { return e.Line }
