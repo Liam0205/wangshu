@@ -233,11 +233,12 @@ func (p *Parser) parsePrefixExpr() (ast.Expr, error) {
 			if err := p.next(); err != nil {
 				return nil, err
 			}
+			argsLine := p.tok.Line
 			args, err := p.parseArgs()
 			if err != nil {
 				return nil, err
 			}
-			e = &ast.MethodCallExpr{Line: line, Recv: e, Method: method, Args: args}
+			e = &ast.MethodCallExpr{Line: line, ArgsLine: argsLine, Recv: e, Method: method, Args: args}
 		case token.LPAREN, token.STRING, token.LBRACE:
 			// The line of the ARGUMENT LIST, not of the callee expression.
 			//
@@ -247,12 +248,13 @@ func (p *Parser) parsePrefixExpr() (ast.Expr, error) {
 			// reports line 2 -- the line of the "()" -- while using the callee's own line
 			// reported 1. Only multi-line callee expressions differ, which is why this went
 			// unnoticed: on one line the two are the same.
-			callLine := p.tok.Line
+			argsLine := p.tok.Line
 			args, err := p.parseArgs()
 			if err != nil {
 				return nil, err
 			}
-			e = &ast.CallExpr{Line: callLine, Fn: e, Args: args}
+			// The callee keeps its OWN line; only the CALL uses the argument list's.
+			e = &ast.CallExpr{Line: e.Pos(), ArgsLine: argsLine, Fn: e, Args: args}
 		default:
 			return e, nil
 		}

@@ -135,8 +135,11 @@ func (fs *funcState) exprCall(e *ast.CallExpr) expDesc {
 	if nargs < 0 { // last arg is multi-value
 		b = 0
 	}
-	pc := fs.emitABC(e.Line, bytecode.CALL, fnReg, b, 2) // C=2 default single value, may be changed later
-	fs.freereg = fnReg + 1                               // the call result occupies R(fnReg), 1 slot by default
+	// Only the CALL takes the argument list's line, matching funcargs' luaK_fixline; the callee's
+	// own materialization above keeps e.Line. Using one line for both moved the callee's GETTABLE
+	// onto the argument line, so `t.x\n{1}` reported the wrong line for indexing a nil.
+	pc := fs.emitABC(e.ArgsLine, bytecode.CALL, fnReg, b, 2) // C=2 default single value, may be changed later
+	fs.freereg = fnReg + 1                                   // the call result occupies R(fnReg), 1 slot by default
 	if fs.calleeIsMathIntrinsic(e.Fn) {
 		fs.proto.IntrinsicCallPCs = append(fs.proto.IntrinsicCallPCs, int32(pc))
 	}
@@ -195,7 +198,8 @@ func (fs *funcState) exprMethodCall(e *ast.MethodCallExpr) expDesc {
 	if nargs < 0 {
 		b = 0
 	}
-	pc := fs.emitABC(e.Line, bytecode.CALL, baseReg, b, 2)
+	// SELF above keeps the method-name line (luaK_self); only the CALL moves (luaK_fixline).
+	pc := fs.emitABC(e.ArgsLine, bytecode.CALL, baseReg, b, 2)
 	fs.freereg = baseReg + 1
 	return expDesc{k: eCall, info: pc, tJmp: NoJump, fJmp: NoJump}
 }
