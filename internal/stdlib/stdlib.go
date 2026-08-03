@@ -188,8 +188,16 @@ func toNumberStr(st *crescent.State, v value.Value) (float64, bool) {
 		// C99 hex FLOATS, which need a mantissa/p-exponent). PUC's
 		// luaL_checknumber coerces such strings, so string.rep("x", "0X0")
 		// and friends must too (oracle diff fuzz #174).
-		s := string(object.StringBytes(st.Arena(), value.GCRefOf(v)))
-		return crescent.ParseLuaNumber(s)
+		//
+		// Charged on the shared byte meter: this is the THIRD parser of the same numerals, after
+		// tonumber's two paths and the VM's toNumberCoerce, and it backs about thirty call sites
+		// (math.floor/abs/max, string.format's %d/%x, string.sub's indices, gsub's count,
+		// table.insert's position). math.floor on a 100000-digit string ran 19.8 seconds
+		// untripped while the two charged siblings tripped in 222ms on the same shape. One charge
+		// here covers every caller -- which is why the helper, not each caller, is the right place.
+		sb := object.StringBytes(st.Arena(), value.GCRefOf(v))
+		_ = st.ChargeBulkWork(len(sb))
+		return crescent.ParseLuaNumber(string(sb))
 	}
 	return 0, false
 }
