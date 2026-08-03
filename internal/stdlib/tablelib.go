@@ -347,7 +347,24 @@ func tableFnConcat(st *crescent.State, args []value.Value) ([]value.Value, *cres
 				"invalid value (%s) at index %d in table for 'concat'", st.TypeName(v), k))
 		}
 	}
+	// Charge the joined bytes on the same meter as CONCAT and string.rep. Element count is not
+	// the cost here -- 256 pieces of 2 KiB each ran 53 seconds inside a 1<<20 budget without
+	// tripping it, because the walk is bounded by the table while the BYTES are not.
+	total := len(sep) * maxInt(0, len(parts)-1)
+	for _, ps := range parts {
+		total += len(ps)
+	}
+	if e := st.ChargeBulkWork(total); e != nil {
+		return nil, e
+	}
 	return []value.Value{intern(st, strings.Join(parts, sep))}, nil
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // tableFnSort: table.sort(t [, comp]). comp is a Lua function (called back via ProtectedCallDirect).

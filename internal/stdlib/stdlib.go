@@ -1074,6 +1074,15 @@ func stringFnRep(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 	if len(s) > 0 && n > 0 && len(s) > maxRepBytes/n {
 		return nil, crescent.NewError("string length overflow")
 	}
+	// Charge the produced bytes to the step budget, like CONCAT does.
+	//
+	// Without this a tight rep loop ran 21 seconds inside a 1<<20 budget WITHOUT tripping it, so
+	// one prog.Run already passed Go fuzz's 10s per-input watchdog and the worker died as
+	// "hung or terminated unexpectedly" -- the concat-storm family's exact signature, at the
+	// operator the #166 guide had named as the next candidate.
+	if e := st.ChargeBulkWork(len(s) * n); e != nil {
+		return nil, e
+	}
 	return []value.Value{intern(st, strings.Repeat(s, n))}, nil
 }
 
