@@ -7,6 +7,7 @@
 package crescent
 
 import (
+	"bytes"
 	"math"
 	"strconv"
 
@@ -149,15 +150,19 @@ func formatLuaNumber(f float64) string {
 
 // stringCompare compares byte-by-byte in lexicographic order (05 §4.4). Returns -1/0/+1.
 func stringCompare(st *State, a, b arena.GCRef) int {
+	// Interned strings share a ref when equal, so identical refs compare equal without touching
+	// bytes at all -- the common case for `s < s` and for comparing against a cached key.
+	if a == b {
+		return 0
+	}
 	ab := object.StringBytes(st.arena, a)
 	bb := object.StringBytes(st.arena, b)
-	for i := 0; i < len(ab) && i < len(bb); i++ {
-		if ab[i] < bb[i] {
-			return -1
-		}
-		if ab[i] > bb[i] {
-			return +1
-		}
+	// bytes.Compare is SIMD-accelerated; the hand-written byte loop it replaces made 20000
+	// comparisons of 1 MiB strings take over 12 seconds where lua5.1 takes 0.5. Found by
+	// scale-controlling every string operator: cost tracked the SUBJECT length, which for a
+	// comparison that can stop at the first differing byte meant the loop, not the semantics.
+	if c := bytes.Compare(ab, bb); c != 0 {
+		return c
 	}
 	if len(ab) < len(bb) {
 		return -1
