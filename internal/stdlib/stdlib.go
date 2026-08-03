@@ -639,6 +639,13 @@ func baseFnToNumber(st *crescent.State, args []value.Value) ([]value.Value, *cre
 		default:
 			return nil, crescent.NewArgError(1, "string expected, got "+st.TypeName(args[0]))
 		}
+		// The explicit-base path has its own digit loop, so it needs its own charge: the previous
+		// round put one in baseToNumberStandard and left this sibling running 21 seconds on a
+		// 100000-digit input. Fixing one of two paths through a function is the same omission as
+		// fixing one of two lists.
+		if ce := st.ChargeBulkWork(len(s)); ce != nil {
+			return nil, ce
+		}
 		s = strings.TrimSpace(s)
 		if s == "" {
 			return []value.Value{value.Nil}, nil
