@@ -570,6 +570,17 @@ func baseFnToString(st *crescent.State, args []value.Value) ([]value.Value, *cre
 		// (nil/table/... are not folded into strings).
 		return []value.Value{raw}, nil
 	}
+	// tostring on a string copies and re-interns the whole thing, so it belongs on the same byte
+	// meter as upper/lower/reverse -- the sweep that added those missed it because tostring reads
+	// as a conversion rather than a builder. A 1 MiB string tostring'd 100000 times ran 60 seconds
+	// with the budget untouched, where lua5.1 treats it as the identity in 13ms.
+	//
+	// Charged from the INPUT length: that is what gets copied, and it is known before the copy.
+	if value.Tag(raw) == value.TagString {
+		if ce := st.ChargeBulkWork(len(object.StringBytes(st.Arena(), value.GCRefOf(raw)))); ce != nil {
+			return nil, ce
+		}
+	}
 	return []value.Value{intern(st, valueToString(st, raw))}, nil
 }
 
