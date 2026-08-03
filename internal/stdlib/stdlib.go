@@ -853,6 +853,16 @@ func baseFnError(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 }
 
 func baseFnSelect(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
+	// Charged by the number of values it moves: this does O(n) work per call while the caller's
+	// back edge bills one step, so a loop of it was unbounded in wall-clock terms even at a
+	// budget chosen from the billed operators (#224/#225 second audit round). Found by sweeping
+	// for work that BYPASSES ChargeBulkWork, which is the blind spot of enumerating along it.
+	if n := len(args); n > 1 {
+		if ce := st.ChargeBulkWork(n * 8); ce != nil {
+			return nil, ce
+		}
+	}
+
 	if len(args) == 0 {
 		return nil, crescent.NewArgError(1, "number expected, got no value")
 	}
