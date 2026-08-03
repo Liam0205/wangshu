@@ -111,9 +111,13 @@ func TestBulkBuildersChargeTheStepBudget(t *testing.T) {
 				"be bounded by it", tc.name)
 		}
 		// The point is the budget trips EARLY. Before charging, these took 20-53 seconds; the
-		// bound here is loose enough for a slow shared runner and still an order of magnitude
-		// below the 10-second watchdog that kills a fuzz worker.
-		if elapsed > 5*time.Second {
+		// bound is loose enough for a slow shared runner and still well under the 10-second
+		// watchdog that kills a fuzz worker.
+		//
+		// Scaled for -race, which instruments every memory access and ran these at about 2x:
+		// a fixed constant made the race build fail while the ordinary build passed in 3.3s,
+		// so the constant was measuring the build rather than the charge.
+		if elapsed > bulkChargeBound {
 			t.Errorf("%s: took %v inside the budget; four of these per fuzz input would pass the "+
 				"10s watchdog", tc.name, elapsed.Round(time.Millisecond))
 		}
@@ -220,3 +224,14 @@ func TestBulkBuildersLeaveOrdinaryCodeAlone(t *testing.T) {
 		}
 	}
 }
+
+// bulkChargeBound is the wall-clock ceiling for a charged bulk loop, relaxed under -race.
+//
+// The check exists to prove the budget trips EARLY rather than to measure throughput, so the bound
+// only has to sit clearly below go-fuzz's 10-second watchdog while tolerating the slowest build.
+var bulkChargeBound = func() time.Duration {
+	if raceEnabled {
+		return 20 * time.Second
+	}
+	return 5 * time.Second
+}()
