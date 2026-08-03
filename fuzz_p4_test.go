@@ -137,12 +137,12 @@ return f(o1, o2)`,
 		// parallel workers crush the fuzz process outright); both States use
 		// the same cap to keep the comparison symmetric.
 		st1 := wangshu.NewState(wangshu.Options{MaxArenaBytes: 64 << 20})
-		st1.SetStepBudget(1 << 20)
+		st1.SetStepBudget(fuzzStepBudget)
 		resP1, errP1 := prog.Run(st1)
 
 		// Run the P4 force-all path
 		st4 := wangshu.NewState(wangshu.Options{MaxArenaBytes: 64 << 20})
-		st4.SetStepBudget(1 << 20)
+		st4.SetStepBudget(fuzzStepBudget)
 		st4.SetForceAllPromote(true)
 		resP4, errP4 := prog.Run(st4)
 
