@@ -35,6 +35,13 @@ func runCharged(t *testing.T, src string) (time.Duration, bool, bool) {
 //
 // A failure here names which direction broke, which is the information that took a full audit round
 // to recover each time.
+//
+// SENSITIVITY, measured rather than assumed: mutating chargeBulkWork globally, this catches a 64x
+// error in either direction (64x undercharge fails gsub/find/tonumber/coerce/toNumberStr; 64x
+// overcharge fails rep/upper) but NOT an 8x one. That band is inherent to a trip-or-not oracle --
+// the pass/fail signal only reports which side of the budget a workload landed on, not by how much.
+// So this test guards against a charge being removed, misplaced, or wrong in KIND; the documented
+// per-operator rates in 10 section 3.1a, measured by budget bisection, are what pin the magnitudes.
 func TestEveryChargePairedBothDirections(t *testing.T) {
 	pairs := []struct{ name, legit, abuse string }{
 		{"rep", `local o for i=1,2000 do o=string.rep("ab",512) end return 1`,
