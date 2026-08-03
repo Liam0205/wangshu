@@ -242,6 +242,15 @@ func stringFnGsub(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 			return nil, crescent.NewArgError(3, "string/function/table expected")
 		}
 	}
+	// gsub's output can be much larger than its subject when the replacement is long, so charge
+	// the subject plus the worst-case expansion before the loop rather than after it.
+	if rl := replBytes(st, repl); rl >= 0 {
+		if e := st.ChargeBulkWork(len(s) + rl*(len(s)+1)); e != nil {
+			return nil, e
+		}
+	} else if e := st.ChargeBulkWork(len(s)); e != nil {
+		return nil, e
+	}
 	var out []byte
 	pos := 0
 	count := 0
@@ -1064,3 +1073,15 @@ func cPadChar(spec []byte, c byte) []byte {
 
 // Keep the strconv reference alive (for future extensions like strInitPos).
 var _ = strconv.Itoa
+
+// replBytes is the byte length of a string/number replacement, or -1 when the replacement is a
+// function or table whose output length cannot be known up front.
+func replBytes(st *crescent.State, repl value.Value) int {
+	switch {
+	case value.Tag(repl) == value.TagString:
+		return len(object.StringBytes(st.Arena(), value.GCRefOf(repl)))
+	case value.IsNumber(repl):
+		return len(crescent.FormatLuaNumber(value.AsNumber(repl)))
+	}
+	return -1
+}

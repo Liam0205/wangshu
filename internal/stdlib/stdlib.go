@@ -969,12 +969,26 @@ func stringFnUpper(st *crescent.State, args []value.Value) ([]value.Value, *cres
 	if e != nil {
 		return nil, e
 	}
+	// Same byte meter as CONCAT and string.rep: this copies its whole subject, so a tight loop
+	// over a large string runs for tens of seconds inside a step budget without touching it.
+	// The oracle prelude already charged this operator, so leaving the engine unbudgeted also
+	// made the two sides asymmetric.
+	if e := st.ChargeBulkWork(len(s)); e != nil {
+		return nil, e
+	}
 	return []value.Value{intern(st, asciiMapCase(s, 'a', 'z', -32))}, nil
 }
 
 func stringFnLower(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	s, e := strArg(st, args, 0, "lower")
 	if e != nil {
+		return nil, e
+	}
+	// Same byte meter as CONCAT and string.rep: this copies its whole subject, so a tight loop
+	// over a large string runs for tens of seconds inside a step budget without touching it.
+	// The oracle prelude already charged this operator, so leaving the engine unbudgeted also
+	// made the two sides asymmetric.
+	if e := st.ChargeBulkWork(len(s)); e != nil {
 		return nil, e
 	}
 	return []value.Value{intern(st, asciiMapCase(s, 'A', 'Z', 32))}, nil
@@ -1031,6 +1045,11 @@ func stringFnSub(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 	}
 	if start > end {
 		return []value.Value{intern(st, "")}, nil
+	}
+	// Charge the EXTRACTED length, not the subject's: sub copies only the slice it returns, and
+	// 20000 full-subject slices of a 1 MiB string cost 12 seconds inside an untouched budget.
+	if e := st.ChargeBulkWork(end - start + 1); e != nil {
+		return nil, e
 	}
 	return []value.Value{intern(st, s[start-1:end])}, nil
 }
@@ -1089,6 +1108,13 @@ func stringFnRep(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 func stringFnReverse(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	s, e := strArg(st, args, 0, "reverse")
 	if e != nil {
+		return nil, e
+	}
+	// Same byte meter as CONCAT and string.rep: this copies its whole subject, so a tight loop
+	// over a large string runs for tens of seconds inside a step budget without touching it.
+	// The oracle prelude already charged this operator, so leaving the engine unbudgeted also
+	// made the two sides asymmetric.
+	if e := st.ChargeBulkWork(len(s)); e != nil {
 		return nil, e
 	}
 	out := make([]byte, len(s))

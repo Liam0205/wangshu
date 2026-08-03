@@ -29,6 +29,15 @@ func TestBulkBuildersChargeTheStepBudget(t *testing.T) {
 		{"string.rep", `local out for i=1,1000000 do out=string.rep("abcdefgh",4096) end return 1`},
 		{"string.format", `local s=string.rep("x",4096) for i=1,1000000 do local o=string.format("%s%s%s%s",s,s,s,s) end return 1`},
 		{"table.concat", `local t={} for i=1,256 do t[i]=string.rep("y",2048) end for i=1,100000 do local o=table.concat(t) end return 1`},
+		// The remaining five, found by an audit pointing at the repo's OWN evidence: the oracle
+		// prelude already charged upper/lower/reverse/sub, so leaving the engine unbudgeted was
+		// both a hole and an asymmetry between the two differential sides. Measured at
+		// 23s/12s/12s/12s/11s before charging, each without touching the budget.
+		{"string.upper", `local s=string.rep("a",1048576) for i=1,20000 do s:upper() end return 1`},
+		{"string.lower", `local s=string.rep("A",1048576) for i=1,20000 do s:lower() end return 1`},
+		{"string.reverse", `local s=string.rep("a",1048576) for i=1,20000 do s:reverse() end return 1`},
+		{"string.sub", `local s=string.rep("a",1048576) for i=1,20000 do s:sub(1,1048576) end return 1`},
+		{"string.gsub", `local s=string.rep("a",200) local r=string.rep("b",4096) for i=1,200000 do s:gsub("a",r) end return 1`},
 	} {
 		prog, err := wangshu.Compile([]byte(tc.src), "r")
 		if err != nil {
@@ -66,6 +75,16 @@ func TestBulkBuildersLeaveOrdinaryCodeAlone(t *testing.T) {
 		{"concat", `return table.concat({1,2,3},",")`, "1,2,3"},
 		{"1000-element concat", `local t={} for i=1,1000 do t[i]="x" end return tostring(#table.concat(t,","))`, "1999"},
 		{"10000-element concat", `local t={} for i=1,10000 do t[i]=i end return tostring(#table.concat(t,"-"))`, "48893"},
+		{"upper", `return ("hello"):upper()`, "HELLO"},
+		{"lower", `return ("HeLLo"):lower()`, "hello"},
+		{"reverse", `return ("abc"):reverse()`, "cba"},
+		{"sub", `return ("hello"):sub(2,4)`, "ell"},
+		{"gsub", `return ("aaa"):gsub("a","b")`, "bbb"},
+		{"64 KiB upper", `local s=string.rep("q",65536) return tostring(#s:upper())`, "65536"},
+		// A realistic serialization workload: 2000 formatted fields joined together.
+		{"format then concat",
+			`local p={} for i=1,2000 do p[i]=string.format("%d:%s",i,"v") end return tostring(#table.concat(p,","))`,
+			"12892"},
 	} {
 		st := wangshu.NewState(wangshu.Options{MaxArenaBytes: 64 << 20})
 		st.SetStepBudget(1 << 20)

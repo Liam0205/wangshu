@@ -856,6 +856,8 @@ string 库**操作字节**(Lua string 是字节串,01 §5.1),索引 1-based,负�
 | `string.gsub(s, pat, repl [, n])` | 全局替换(repl 可为串/表/函数) | `(s, pat, repl [,n])` → (result, count) | ✅ | **Lua pattern**(§6);repl 函数重入 + Pin 捕获(§3.4) |
 | `string.dump(f)` | 序列化函数字节码 | `(f)` → string | **❌/△ 缺口** | P1 可缺(§5.6);依赖字节码序列化 |
 
+> **补记(同轮审计)**:最初只记了 `string.rep` / `string.format` / `table.concat` 三个。审计指出仓库**自己**已有反证:`internal/oracle/prelude.go` 早就给 `string.upper` / `lower` / `reverse` / `sub` 记了 `__chargeBulk`,所以引擎侧不记既是漏洞、也让差分两侧不对称——oracle 抬 sentinel 跳过而引擎跑满整个循环。实测这五个(含 `string.gsub`)单次 `prog.Run` 分别 23 / 12 / 12 / 12 / 11 秒且预算完全没触发,现已一并按产出字节记账。`string.sub` 记**提取长度**而非主串长度,`string.gsub` 记主串加最坏扩张(替换是函数或表时长度未知,只记主串)。
+
 ### 5.2 `string.format` 指令集(差分敏感,指向 12)
 
 `string.format(fmt, ...)` 的格式指令 `%[flags][width][.precision]<conv>`,转换字符 `conv` 集(Lua 5.1

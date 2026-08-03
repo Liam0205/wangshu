@@ -231,3 +231,24 @@ stdlib 函数各自按**产出的字节数**记账：
 `docs/design/p1-interpreter/10-stdlib.md` §3.1a（三个批量构造函数的字节记账）·
 `docs/design/p1-interpreter/12-testing-difftest.md` §4.9a（hardening 上限与 step budget 记账是两件事）·
 `docs/embedding-tiers.md` §5（step budget 的语义现在含三个 stdlib 构造函数）
+
+## 审计发现:我只补了三个,而仓库自己已经知道有八个
+
+审计指出 `string.upper` / `lower` / `reverse` / `sub` / `gsub` 同样是无界的字节搬运,而**最有力的
+证据来自仓库自己**:`internal/oracle/prelude.go` 早就给 upper / lower / reverse / sub 记了
+`__chargeBulk`,注释里还写着「20000 次 `string.sub` 在 1 MiB 串上花 12.5 秒」。
+
+所以我这一轮的疏漏有两层:一是漏洞本身(实测这五个单次 `prog.Run` 分别 23 / 12 / 12 / 12 / 11 秒、
+预算完全没触发),二是**差分两侧不对称**——oracle 那边抬 sentinel 跳过、引擎这边跑满整个循环,
+而不对称正好出现在 oracle 早已点名的算子上。
+
+我为什么漏了:我照 triage guide「范围」那节点名的三个候选去补,补完就认为收口了。而 guide 那句话
+写的是「已知的下一批」,并没有承诺穷举;真正的清单在另一个文件里、而且是我自己两轮前写的。
+
+追加一条教训:
+
+5. **补一族缺口时,除了读那一族的结论,还要看仓库里有没有**别处**已经维护着更完整的清单。**
+   这一轮 triage guide 点了三个,而 oracle prelude 里已经按同一性质挡了四个——两份清单不一致,
+   长的那份才是真相。判据:给一类操作补判据前,grep 全仓有没有同类的既有判据(这里是
+   `__chargeBulk` / `chargeBulkWork`),把两边的清单**对齐**再动手;差分测试的 harness 尤其值得看,
+   因为它常常比产品先一步遇到并挡掉这些写法。
