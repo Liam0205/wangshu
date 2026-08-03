@@ -2,4 +2,4 @@
 
 package regression
 
-const raceEnabled = false
+const bulkRaceBuild = false

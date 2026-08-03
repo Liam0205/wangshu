@@ -230,7 +230,7 @@ func TestBulkBuildersLeaveOrdinaryCodeAlone(t *testing.T) {
 // The check exists to prove the budget trips EARLY rather than to measure throughput, so the bound
 // only has to sit clearly below go-fuzz's 10-second watchdog while tolerating the slowest build.
 var bulkChargeBound = func() time.Duration {
-	if raceEnabled {
+	if bulkRaceBuild {
 		return 20 * time.Second
 	}
 	return 5 * time.Second
