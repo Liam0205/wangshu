@@ -159,6 +159,11 @@ func TestChargesDoNotRejectOrdinaryWork(t *testing.T) {
 		// and delivers three, and charging the unclamped span had it rejected even at the oracle
 		// harness's larger budget, so FuzzOracleDiff skipped the input as a wangshu limit.
 		{"byte with an out-of-range end", `return tostring(("abc"):byte(1,1000000))`, "97"},
+		// A wrapped end index narrows to 1 in lua5.1 and reads one value. Charging the RAW float
+		// billed about 4 billion elements and rejected it -- the charge stood before the narrowing
+		// while the read stands after, so they described different calls.
+		{"unpack with a wrapped end index",
+			`return tostring(select("#",unpack({42},1,4294967297)))`, "1"},
 		{"unpack an explicit small range",
 			`local a={} for i=1,4000 do a[i]=i end return tostring(select("#",unpack(a,1,1)))`, "1"},
 		{"loadstring a small chunk", `local f=loadstring("return 7") return tostring(f())`, "7"},

@@ -1168,17 +1168,6 @@ func baseFnUnpackImpl(st *crescent.State, args []value.Value) ([]value.Value, *c
 		return nil, crescent.NewArgError(3, fmt.Sprintf("number expected, got %s", st.TypeName(args[2])))
 	}
 
-	// Charge the REQUESTED span, not the table's border.
-	//
-	// Keying on RawBorder was wrong in both directions, and it is the same size-versus-work
-	// substitution that maxn had in the very commit that added this charge: a hash-only table has
-	// border 0, so unpack(t, 1, 7990) over one billed nothing and ran 19s, while unpack(a, 1, 1) on
-	// a 4000-element array billed 500 steps to read a single value.
-	if n := int(jF) - int(iF) + 1; n > 0 {
-		if ce := st.ChargeBulkWork(n * 8); ce != nil {
-			return nil, ce
-		}
-	}
 	// PUC luaL_checkint is (int)luaL_checkinteger: a 64-bit hardware
 	// float->int conversion truncated to 32 bits. NaN converts to
 	// INT64_MIN on x86 (cvttsd2si), whose low 32 bits are 0 -- so
@@ -1186,6 +1175,20 @@ func baseFnUnpackImpl(st *crescent.State, args []value.Value) ([]value.Value, *c
 	// empty range. Mirror the exact double-narrowing (oracle diff
 	// fuzz catch: unpack({}, 0, 7%00)).
 	i, j := int(int32(int64(iF))), int(int32(int64(jF)))
+	// Charge the span the read will ACTUALLY cover -- from the narrowed i and j, on the line after
+	// they are narrowed.
+	//
+	// Three versions were wrong here. Keying on RawBorder billed zero for a hash-only table (a
+	// 7990-index unpack ran 19s) and 500 steps for unpack(a, 1, 1) on a 4000-element array. Then
+	// charging the raw floats billed about 4 billion elements for unpack({42}, 1, 4294967297),
+	// whose end index narrows to 1 and reads exactly one value -- lua5.1 answers 1 while this
+	// rejected it. The charge has to read the same variables the loop does, which here means
+	// standing after the narrowing rather than before it.
+	if n := j - i + 1; n > 0 {
+		if ce := st.ChargeBulkWork(n * 8); ce != nil {
+			return nil, ce
+		}
+	}
 	if i > j {
 		return nil, nil // empty range
 	}
