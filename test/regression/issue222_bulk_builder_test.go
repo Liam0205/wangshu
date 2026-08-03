@@ -71,6 +71,13 @@ func TestBulkBuildersChargeTheStepBudget(t *testing.T) {
 			`local f=string.rep("%%",524288) for i=1,20000 do string.format(f) end return 1`},
 		// The VM-side twins of charges added above. Charging tonumber but not the coercion the VM
 		// does for `s+1` left the identical parse free -- an asymmetry this branch created.
+		// find/match scan the subject and return a couple of integers, so no produced-bytes charge
+		// can see them. Round 5 removed find's needless copy but never added a charge, leaving only
+		// the surrounding loop as a bound -- which a few iterations over a huge subject evade.
+		{"plain find over a huge subject",
+			`local s=string.rep("a",4194304) for i=1,500 do s:find("b",1,true) end return 1`},
+		{"pattern match over a large subject",
+			`local s=string.rep("a",1048576) for i=1,20000 do s:match("a*b") end return 1`},
 		{"VM numeric coercion of a long numeral",
 			`local s=string.rep("9",100000) local x for i=1,50000 do x=s+1 end return 1`},
 		{"error's position prefix copy",
@@ -143,6 +150,11 @@ func TestBulkBuildersLeaveOrdinaryCodeAlone(t *testing.T) {
 		// full-length extraction still charges its bytes.
 		{"one byte from a large string",
 			`local s=string.rep("a",1048576) local r for i=1,2000 do r=s:sub(1,1) end return r`, "a"},
+		{"find", `return tostring(("hello"):find("l"))`, "3"},
+		{"find plain", `return tostring(("hello"):find("l",1,true))`, "3"},
+		{"find misses", `return tostring(("hello"):find("z"))`, "nil"},
+		{"match", `return tostring(("hello"):match("l+"))`, "ll"},
+		{"match misses", `return tostring(("hello"):match("z"))`, "nil"},
 		{"string arithmetic", `return tostring("10"+5)`, "15"},
 		{"string arithmetic hex", `return tostring("0x10"+0)`, "16"},
 		{"numeric for over strings", `for i="1","3" do end return "ok"`, "ok"},

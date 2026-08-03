@@ -78,6 +78,14 @@ func stringFnFind(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 	if e != nil {
 		return nil, e
 	}
+
+	// Scanning is proportional to the subject, and the result is a couple of integers or a
+	// short capture, so a produced-bytes charge cannot see it. Charged like every other
+	// path that walks a large string: round 5 removed this function's needless copy but
+	// never added the charge, so only the surrounding loop bounded it.
+	if ce := st.ChargeBulkWork(len(s) + len(pat)); ce != nil {
+		return nil, ce
+	}
 	initF, ok := numArg(st, args, 2, 1)
 	if !ok {
 		return nil, crescent.NewArgError(3, "number expected, got "+st.TypeName(args[2]))
@@ -133,6 +141,14 @@ func stringFnMatch(st *crescent.State, args []value.Value) ([]value.Value, *cres
 	pat, e := strArg(st, args, 1, "match")
 	if e != nil {
 		return nil, e
+	}
+
+	// Scanning is proportional to the subject, and the result is a couple of integers or a
+	// short capture, so a produced-bytes charge cannot see it. Charged like every other
+	// path that walks a large string: round 5 removed this function's needless copy but
+	// never added the charge, so only the surrounding loop bounded it.
+	if ce := st.ChargeBulkWork(len(s) + len(pat)); ce != nil {
+		return nil, ce
 	}
 	initF, ok := numArg(st, args, 2, 1)
 	if !ok {
