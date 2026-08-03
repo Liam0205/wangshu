@@ -242,13 +242,21 @@ func stringFnGsub(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 			return nil, crescent.NewArgError(3, "string/function/table expected")
 		}
 	}
-	// gsub's output can be much larger than its subject when the replacement is long, so charge
-	// the subject plus the worst-case expansion before the loop rather than after it.
-	if rl := replBytes(st, repl); rl >= 0 {
-		if e := st.ChargeBulkWork(len(s) + rl*(len(s)+1)); e != nil {
-			return nil, e
-		}
-	} else if e := st.ChargeBulkWork(len(s)); e != nil {
+	// Charge the SUBJECT up front, then each replacement as it is produced (below).
+	//
+	// An earlier version guessed the total as len(s) + replLen*(len(s)+1) -- the worst case where
+	// every byte position matches -- and that was wrong in both directions. It over-charged
+	// ordinary work: a 16 KiB template with one %BODY% token and a 4 KiB replacement was billed
+	// ~67 MB and rejected outright, where lua5.1 just returns the 20 KiB result. The formula
+	// ignored maxN, the anchored early break, and the pattern's own length, so a one-match gsub
+	// paid for a million. And it UNDER-charged the case it could not see: for a function or table
+	// replacement the length is unknowable up front, so the fallback billed only the subject and a
+	// closure returning 200 KB per match ran 15 seconds without touching the budget.
+	//
+	// Charging inside the loop needs no estimate at all: at each match the replacement's real
+	// length is in hand. Guessing a size when the exact one is available a few lines later was the
+	// mistake.
+	if e := st.ChargeBulkWork(len(s)); e != nil {
 		return nil, e
 	}
 	var out []byte
@@ -269,6 +277,11 @@ func stringFnGsub(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 		rep, le := st2gsubRepl(st, s, start, end, caps, repl)
 		if le != nil {
 			return nil, le
+		}
+		// The replacement's real length is known here, whatever its kind -- so charge it now
+		// rather than estimating a worst case before the loop.
+		if ce := st.ChargeBulkWork(len(rep)); ce != nil {
+			return nil, ce
 		}
 		out = append(out, rep...)
 		count++
@@ -1073,15 +1086,3 @@ func cPadChar(spec []byte, c byte) []byte {
 
 // Keep the strconv reference alive (for future extensions like strInitPos).
 var _ = strconv.Itoa
-
-// replBytes is the byte length of a string/number replacement, or -1 when the replacement is a
-// function or table whose output length cannot be known up front.
-func replBytes(st *crescent.State, repl value.Value) int {
-	switch {
-	case value.Tag(repl) == value.TagString:
-		return len(object.StringBytes(st.Arena(), value.GCRefOf(repl)))
-	case value.IsNumber(repl):
-		return len(crescent.FormatLuaNumber(value.AsNumber(repl)))
-	}
-	return -1
-}
