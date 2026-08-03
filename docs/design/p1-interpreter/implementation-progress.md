@@ -284,6 +284,29 @@
   要复用既有的计量器不要自建第二个阈值 / 「本地重放干净」对这个家族天然无效,落盘的必然是最小化后的
   轻输入)。
 
+- **同一族的下半句:预算界住了,但余量不够(2026-08-04,#224 / #225 一轮,产品代码零改动)**:这一族的
+  第七、第八个 nightly crasher,两个 seed 都是「约 90 字节的字面量在 `for i=1,777777776` 循环里拼接」
+  且赋值目标被 fuzzer 写错(`qut` 而不是 `out`,所以累加器根本不增长——最小化后的 seed 天然是轻的)。
+  两个都**既不崩也不分歧**,字节记账正常把它们界住,本地重放各约 1 秒就正确抬「instruction budget
+  exceeded」。
+
+  | 项 | 落点 | 结论与要点 |
+  |---|---|---|
+  | 「已被上一轮修好」这个归因是错的 | — | 两个 run 的 headSha 都是 `093f7d1`、早于 #222 那一轮的合并,按前几轮的流程就该判第一档结案。这一轮多做了一步:**把 seed 也拿到 `093f7d1` 上跑**,结果它们在**那里也已经被界住**——所以 #222 那一轮不是修好它们的原因,「过期、已修复」这个结论不成立;run 时间确实早于合并,但那个事实与这两个 issue 为什么被开出来无关 |
+  | 真正的问题是 harness 的**余量** | `fuzz_budget_test.go` / `fuzz_auto_test.go` / `fuzz_p4_test.go` | `1<<20` 在 1 步 / 64 字节下允许约 **64 MiB** 的 concat,本地每个 fuzz 子测试 **0.7–1.3 秒**;而 **CI 运行器比本地慢约 10 倍**——这个倍率 `internal/crescent/state.go` 的 `chargeBulkWork` 注释里早就写着(`>>6` 那个比率本身就是按最慢的 CI runner 收紧出来的)。最慢的家族 seed 投射到 CI 是 **12–13 秒**对 **10 秒**看门狗:六个 seed **两个已经超过**、四个余量不到 **1.4 倍**。机制是日志印证的而非推断:nightly 日志里就是 `panic: deadlocked` |
+  | 修法:四处 `SetStepBudget` 共用一个常量,减半到 `1<<19` | `fuzz_budget_test.go::fuzzStepBudget` | build tag 与消费方一致(`(wangshu_p3 || wangshu_p4) && wangshu_profile`)——第一版没加 tag 被 golangci-lint 判 unused,因为消费方都在 tag 之后、默认构建看不见。最慢子测试 1.34 秒 → **0.56 秒**,六个 seed 全部 **≥1.8 倍**余量,corpus 全量重放 5.5 秒 → **2.9 秒** |
+  | 覆盖不损失,而且验证过 | — | 这一族**每种写法在两个预算下都会触发**,fuzzer 走同样的路径、只是更早停下;缩小的是「单个输入能消耗多少 wall-clock」,而那正是看门狗量的东西。**注入一个真实的 P1-vs-P4 分歧**(把升层侧的返回值截断)确认新预算下 harness 仍然 FAIL、撤掉注入后通过;另外 60 秒引导式 fuzz 干净 |
+  | 执行体在 harness 自己的预算设定下量代价 | `test/regression/issue224_watchdog_margin_test.go` | 覆盖两种写法(累加器不增长的那一版就是两个 seed 的写法 + 累加器真的二次增长的那一版);量的是「在 fuzz 预算下单次 Run 的耗时」而不是 corpus 的耗时,实测把预算调回 8 倍会让它变红 |
+
+  **验证规模**:两个 seed 入 `testdata/fuzz/FuzzAutoPromote/6ed94d7f9fe6248a` 与 `841bbefecf338b0d`;
+  五种构建组合 vet 干净。判据落点 [12](./12-testing-difftest.md) §4.9a2(一个预算「界住」还不够,
+  它允许的量必须与外部看门狗差一个数量级)与
+  [../p4-method-jit/08-testing-strategy.md](../p4-method-jit/08-testing-strategy.md) §3.4(P4 fuzz
+  harness 的 step budget 设定)。过程反思见
+  `llmdoc/memory/reflections/2026-08-04-issue224-225-watchdog-margin.md`(四条教训:版本核对之后还要把
+  seed 拿到那个旧 commit 上跑一遍以验证归因 / 一个上限只要界住还不够,它允许的量必须与外部看门狗差一个
+  数量级 / 降低 fuzz 预算不等于降低覆盖,但要用注入缺陷证明 / 常量要与它的消费方共享 build tag)。
+
 ## 相关
 
 [00-overview](./00-overview.md) · [../engineering](../engineering.md) ·
