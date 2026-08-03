@@ -272,7 +272,7 @@ seed 是 `for B=0,100001000 do ... end`(一亿次迭代),在 `FuzzP4ForceAllProm
 [[2026-08-02-issue212-219-fuzz-crasher-batch]] 教训 4。
 
 > **数值补记(2026-08-04)**:上面那个 `1 << 20` 是 #218 当时的 harness 取值。p4 的两个 fuzz target
-> 现在共用常量 `fuzzStepBudget`(`fuzz_budget_test.go`,值 `1<<16`,理由见下面「上限的余量」一节),
+> 现在共用常量 `fuzzbudget.Steps`(`internal/fuzzbudget`,值 `1<<16`,理由见下面「上限的余量」一节),
 > 所以抄限制的时候要去读**那个常量当下的值**,不要照抄本节的字面量。`test/regression` 里的镜像测试是
 > 两个包(常量不导出),按行为写死数值时要在注释里说清它镜像的是谁,写法参见
 > [[prove-the-path-under-test]] §4.5c。
@@ -516,8 +516,8 @@ Why:一个跨越数周、累计十几例的家族,它的既有结论是**已经�
 | go-fuzz 的 per-input 看门狗 | **10 秒** |
 | 六个家族 seed 的余量 | **两个已经超过**,另外四个不到 **1.4 倍** |
 
-修法是把 harness 的 step budget 从 `1<<20` 减到 **`1<<16`**(`fuzz_budget_test.go` 的
-`fuzzStepBudget`,`fuzz_auto_test.go` 与 `fuzz_p4_test.go` 四处 `SetStepBudget` 共用它)。**产品代码
+修法是把 harness 的 step budget 从 `1<<20` 减到 **`1<<16`**(`internal/fuzzbudget` 的
+`fuzzbudget.Steps`,`fuzz_auto_test.go` 与 `fuzz_p4_test.go` 四处 `SetStepBudget` 共用它)。**产品代码
 一行没改**——这是 harness 的余量问题,不是 VM 的缺陷。corpus 全量重放 5.5 秒 → **0.85 秒**。
 
 **判据**:定一个资源上限时,把「这个上限允许的最坏耗时」乘上目标机器的慢速倍率,再与那台机器上所有

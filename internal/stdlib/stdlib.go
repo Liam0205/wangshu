@@ -297,6 +297,14 @@ func baseFnLoad(st *crescent.State, args []value.Value) ([]value.Value, *crescen
 
 // baseFnLoadstring: loadstring(s [, chunkname]) -> function | (nil, errmsg).
 func baseFnLoadstring(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
+	// Compiling is proportional to the source's length, and the compiler path reaches no billing
+	// point of its own: a loop of loadstring over a 200 KB source never terminated inside the fuzz
+	// budget. Charged here, at the one place every loadstring call passes through.
+	if len(args) > 0 && value.Tag(args[0]) == value.TagString {
+		if ce := st.ChargeBulkWork(len(object.StringBytes(st.Arena(), value.GCRefOf(args[0])))); ce != nil {
+			return nil, ce
+		}
+	}
 	// strArg (not a raw tag check): PUC's luaL_checklstring coerces
 	// numbers, so loadstring(0) compiles the chunk "0" (a syntax
 	// error returned as (nil, errmsg), not a raised type error).

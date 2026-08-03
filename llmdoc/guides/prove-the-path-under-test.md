@@ -568,7 +568,7 @@ skip,覆盖**任何提到 error 第二参数的输入**(`errorLevelAtLeastTwo`,�
 
 ### 4.10d 一个标识符「有没有被用到」是按构建组合判定的（2026-08-04）
 
-把 fuzz harness 里重复四次的 `SetStepBudget(1 << 20)` 提成常量 `fuzzStepBudget` 时，第一版写在一个
+把 fuzz harness 里重复四次的 `SetStepBudget(1 << 20)` 提成常量 `fuzzbudget.Steps` 时，第一版写在一个
 **没有 build tag** 的文件里，golangci-lint 报 unused——因为消费它的两个文件都在
 `(wangshu_p3 || wangshu_p4) && wangshu_profile` 之后，**默认构建看不见它们**，于是默认构建里这个常量
 确实没有任何使用者。

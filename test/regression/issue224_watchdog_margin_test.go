@@ -78,6 +78,15 @@ func TestConcatStormKeepsWatchdogMargin(t *testing.T) {
 			`local s=string.rep("a",4000) for k=1,777777776 do s:byte(1,4000) end return 1`},
 		{"table.maxn",
 			`local t={} for i=1,4000 do t[i]=i end for k=1,777777776 do table.maxn(t) end return 1`},
+		// maxn over PURE HASH keys: charging RawBorder missed exactly the tables that make it
+		// expensive, since their border is 0. A charge keyed on a size metric cannot see input where
+		// that metric reads zero while the work does not.
+		{"maxn over hash keys",
+			`local t={} for i=1,4000 do t[i+0.5]=i end for k=1,777777776 do table.maxn(t) end return 1`},
+		{"loadstring over a large source",
+			`local src=string.rep("local x=1 ",20000) for k=1,777777776 do loadstring(src) end return 1`},
+		{"collectgarbage over a live heap",
+			`local keep={} for i=1,20000 do keep[i]={i} end for k=1,777777776 do collectgarbage() end return 1`},
 	} {
 		prog, err := wangshu.Compile([]byte(tc.src), "r")
 		if err != nil {
@@ -119,3 +128,45 @@ var watchdogMarginBound = func() time.Duration {
 	}
 	return 250 * time.Millisecond
 }()
+
+// TestChargesDoNotRejectOrdinaryWork is the other half of the pair: every charge added for #224/#225
+// must leave programs lua5.1 finishes in milliseconds alone.
+//
+// Three of the eight charges I added first were wrong in this direction, all by substituting a
+// container's size for the work actually done: string.byte billed the whole subject rather than the
+// requested range, so a per-character scan paid for the string on every call; insert/remove billed the
+// whole table whenever a position was passed, including an append that shifts nothing; and sort billed
+// n*log2(n)*8, treating each comparison as a word copy, which made one 500000-element sort cost
+// seventeen times the entire budget.
+func TestChargesDoNotRejectOrdinaryWork(t *testing.T) {
+	for _, tc := range []struct{ name, src, want string }{
+		{"per-character byte scan",
+			`local s=string.rep("a",4200) local n=0 for i=1,#s do n=n+s:byte(i) end return tostring(n)`, "407400"},
+		{"append via insert with a position",
+			`local t={} for i=1,4000 do table.insert(t,#t+1,i) end return tostring(#t)`, "4000"},
+		{"remove the last element repeatedly",
+			`local t={} for i=1,4000 do t[i]=i end for i=1,3999 do table.remove(t,#t) end return tostring(#t)`, "1"},
+		{"unpack a single value from a wide table",
+			`local a={} for i=1,4000 do a[i]=i end return tostring(select("#",unpack(a,1,1)))`, "1"},
+		{"maxn on a sparse table", `local t={1,2,3} t[10]=1 return tostring(table.maxn(t))`, "10"},
+		{"loadstring a small chunk", `local f=loadstring("return 7") return tostring(f())`, "7"},
+		{"collectgarbage once", `collectgarbage() return "ok"`, "ok"},
+	} {
+		prog, err := wangshu.Compile([]byte(tc.src), "r")
+		if err != nil {
+			t.Fatalf("%s: compile: %v", tc.name, err)
+		}
+		st := wangshu.NewState(wangshu.Options{MaxArenaBytes: 256 << 20})
+		st.SetStepBudget(fuzzbudget.Steps)
+		res, rerr := prog.Run(st)
+		if rerr != nil {
+			t.Errorf("%s: REJECTED at the fuzz budget (%v); lua5.1 runs this in milliseconds, and in a "+
+				"differential harness a limit error reads as skip, so over-charging silently drops coverage",
+				tc.name, rerr)
+			continue
+		}
+		if len(res) == 0 || res[0].Str() != tc.want {
+			t.Errorf("%s: got %v, want %q", tc.name, res, tc.want)
+		}
+	}
+}
