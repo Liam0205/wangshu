@@ -486,7 +486,16 @@ func (st *State) toNumberCoerce(v value.Value) (float64, bool) {
 		return value.AsNumber(v), true
 	}
 	if value.Tag(v) == value.TagString {
-		return parseLuaNumberBytes(object.StringBytes(st.arena, value.GCRefOf(v)))
+		// Parsing a numeral is proportional to its length, so it belongs on the same byte meter
+		// as tonumber -- which this branch charged, leaving its VM-side twin free. `s+1` on a
+		// 100000-digit string ran 16.4 seconds untripped while tonumber(s) tripped in 221ms.
+		//
+		// The error is dropped rather than propagated: this helper reports only "is it a number",
+		// and every caller reaches a preempt point that observes the exhausted budget on the next
+		// instruction boundary. Charging is what matters; where it surfaces does not.
+		sb := object.StringBytes(st.arena, value.GCRefOf(v))
+		_ = st.chargeBulkWork(len(sb))
+		return parseLuaNumberBytes(sb)
 	}
 	return 0, false
 }
