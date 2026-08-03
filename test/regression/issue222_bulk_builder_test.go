@@ -38,6 +38,13 @@ func TestBulkBuildersChargeTheStepBudget(t *testing.T) {
 		{"string.reverse", `local s=string.rep("a",1048576) for i=1,20000 do s:reverse() end return 1`},
 		{"string.sub", `local s=string.rep("a",1048576) for i=1,20000 do s:sub(1,1048576) end return 1`},
 		{"string.gsub", `local s=string.rep("a",200) local r=string.rep("b",4096) for i=1,200000 do s:gsub("a",r) end return 1`},
+		// A FUNCTION or TABLE replacement's length cannot be known before the loop, which is why
+		// gsub charges per match rather than estimating: a closure returning 200 KB per match ran
+		// 15 seconds untripped when the pre-loop estimate fell back to charging only the subject.
+		{"gsub with a function replacement",
+			`local s=string.rep("a",200) local big=string.rep("z",204800) for i=1,400 do s:gsub("a",function() return big end) end return 1`},
+		{"gsub with a table replacement",
+			`local s=string.rep("a",200) local big=string.rep("z",204800) local m={a=big} for i=1,400 do s:gsub("a",m) end return 1`},
 	} {
 		prog, err := wangshu.Compile([]byte(tc.src), "r")
 		if err != nil {
@@ -80,6 +87,13 @@ func TestBulkBuildersLeaveOrdinaryCodeAlone(t *testing.T) {
 		{"reverse", `return ("abc"):reverse()`, "cba"},
 		{"sub", `return ("hello"):sub(2,4)`, "ell"},
 		{"gsub", `return ("aaa"):gsub("a","b")`, "bbb"},
+		// A realistic template substitution. The pre-loop worst-case estimate billed this ~67 MB
+		// and rejected it outright, where lua5.1 simply returns the 20 KiB result.
+		{"template gsub",
+			`local t=string.rep("x",16384).."%BODY%" local r=string.rep("y",4096) return tostring(#(t:gsub("%%BODY%%",r)))`,
+			"20480"},
+		{"gsub with a function replacement",
+			`return ("aaa"):gsub("a",function(c) return c:upper() end)`, "AAA"},
 		{"64 KiB upper", `local s=string.rep("q",65536) return tostring(#s:upper())`, "65536"},
 		// A realistic serialization workload: 2000 formatted fields joined together.
 		{"format then concat",
