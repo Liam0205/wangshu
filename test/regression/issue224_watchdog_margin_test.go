@@ -89,6 +89,13 @@ func TestConcatStormKeepsWatchdogMargin(t *testing.T) {
 		// int, so the two disagreed about which call they were describing.
 		{"insert below the start",
 			`local t={} for i=1,4000 do t[i]=i end for k=1,777777776 do table.insert(t,-100,0) table.remove(t) end return 1`},
+		// A SINGLE insert just under the shift cap. Clamping the charged position to 1 discarded the
+		// span below index 1 -- exactly what makes a negative position expensive -- and gating the
+		// charge on the table being non-empty hid it completely, since the loop's span depends on
+		// pos and not on the table's length. One call walked ~134 million iterations in 2.4s with
+		// the budget untouched.
+		{"single insert just under the shift cap",
+			`local t={} table.insert(t,-134217726,0) return 1`},
 		{"insert at a wrapped position",
 			`local t={} for i=1,4000 do t[i]=i end for k=1,777777776 do table.insert(t,4294967297,0) end return 1`},
 		{"collectgarbage over a live heap",
