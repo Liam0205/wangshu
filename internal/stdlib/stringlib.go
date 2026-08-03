@@ -79,18 +79,22 @@ func stringFnFind(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 		return nil, e
 	}
 
-	// Scanning is proportional to the subject, and the result is a couple of integers or a
-	// short capture, so a produced-bytes charge cannot see it. Charged like every other
-	// path that walks a large string: round 5 removed this function's needless copy but
-	// never added the charge, so only the surrounding loop bounded it.
-	if ce := st.ChargeBulkWork(len(s) + len(pat)); ce != nil {
-		return nil, ce
-	}
 	initF, ok := numArg(st, args, 2, 1)
 	if !ok {
 		return nil, crescent.NewArgError(3, "number expected, got "+st.TypeName(args[2]))
 	}
 	init := strInitPos(initF, len(s))
+	// The charge happens AFTER the search, from the bytes actually examined -- see the
+	// chargeScan calls below.
+	//
+	// Two wrong versions came first. Billing len(s) per call made the idiomatic advancing loop
+	// `s:find(pat, pos)` pay for the whole subject on every step, and billing len(s)-init still
+	// assumed the scan runs to the end. It does not: the search stops at the FIRST match, so a
+	// loop over "abab..." examines about two bytes per call and the real total is O(n), which is
+	// why lua5.1 finishes 256 KiB in 2ms. Only the result reveals how far the scan went.
+	chargeScan := func(examined int) *crescent.LuaError {
+		return st.ChargeBulkWork(examined + len(pat))
+	}
 	if init > len(s) {
 		return []value.Value{value.Nil}, nil
 	}
@@ -107,7 +111,14 @@ func stringFnFind(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 		// ran 43 seconds while producing two integers. lua5.1 does it in 10ms.
 		idx := bytes.Index(s[init:], pat)
 		if idx < 0 {
+			// A miss examined the whole remainder.
+			if ce := chargeScan(len(s) - init); ce != nil {
+				return nil, ce
+			}
 			return []value.Value{value.Nil}, nil
+		}
+		if ce := chargeScan(idx); ce != nil {
+			return nil, ce
 		}
 		start := init + idx
 		return []value.Value{
@@ -116,6 +127,15 @@ func stringFnFind(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 		}, nil
 	}
 	start, end, caps, found, err := patternFind(s, pat, init)
+	if err == nil {
+		examined := len(s) - init
+		if found && start >= init {
+			examined = start - init
+		}
+		if ce := chargeScan(examined); ce != nil {
+			return nil, ce
+		}
+	}
 	if err != nil {
 		return nil, crescent.NewError(err.Error())
 	}
@@ -143,22 +163,35 @@ func stringFnMatch(st *crescent.State, args []value.Value) ([]value.Value, *cres
 		return nil, e
 	}
 
-	// Scanning is proportional to the subject, and the result is a couple of integers or a
-	// short capture, so a produced-bytes charge cannot see it. Charged like every other
-	// path that walks a large string: round 5 removed this function's needless copy but
-	// never added the charge, so only the surrounding loop bounded it.
-	if ce := st.ChargeBulkWork(len(s) + len(pat)); ce != nil {
-		return nil, ce
-	}
 	initF, ok := numArg(st, args, 2, 1)
 	if !ok {
 		return nil, crescent.NewArgError(3, "number expected, got "+st.TypeName(args[2]))
 	}
 	init := strInitPos(initF, len(s))
+	// The charge happens AFTER the search, from the bytes actually examined -- see the
+	// chargeScan calls below.
+	//
+	// Two wrong versions came first. Billing len(s) per call made the idiomatic advancing loop
+	// `s:find(pat, pos)` pay for the whole subject on every step, and billing len(s)-init still
+	// assumed the scan runs to the end. It does not: the search stops at the FIRST match, so a
+	// loop over "abab..." examines about two bytes per call and the real total is O(n), which is
+	// why lua5.1 finishes 256 KiB in 2ms. Only the result reveals how far the scan went.
+	chargeScan := func(examined int) *crescent.LuaError {
+		return st.ChargeBulkWork(examined + len(pat))
+	}
 	if init > len(s) {
 		return []value.Value{value.Nil}, nil
 	}
 	start, end, caps, found, err := patternFind(s, pat, init)
+	if err == nil {
+		examined := len(s) - init
+		if found && start >= init {
+			examined = start - init
+		}
+		if ce := chargeScan(examined); ce != nil {
+			return nil, ce
+		}
+	}
 	if err != nil {
 		return nil, crescent.NewError(err.Error())
 	}
