@@ -94,7 +94,10 @@ func stringFnFind(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 	plain := (len(args) >= 4 && value.Truthy(args[3])) ||
 		!strings.ContainsAny(string(pat), "^$*+?.([%-")
 	if plain {
-		idx := strings.Index(string(s[init:]), string(pat))
+		// bytes.Index on the VIEWS: converting to string copied the whole subject on every
+		// call, so a plain find on a 1 MiB string cost a megabyte per call and 300000 of them
+		// ran 43 seconds while producing two integers. lua5.1 does it in 10ms.
+		idx := bytes.Index(s[init:], pat)
 		if idx < 0 {
 			return []value.Value{value.Nil}, nil
 		}
@@ -161,6 +164,14 @@ func stringFnGmatch(st *crescent.State, args []value.Value) ([]value.Value, *cre
 	pat, e := strArg(st, args, 1, "gmatch")
 	if e != nil {
 		return nil, e
+	}
+	// The iterator outlives this call, so it must snapshot its inputs -- but that snapshot is
+	// real work proportional to the subject, and the call produces only a closure, so no
+	// produced-bytes charge can see it. Constructing 60000 iterators over a 1 MiB subject
+	// without iterating once ran 27 seconds untripped. (PUC stores a pointer and charges
+	// nothing, but wangshu cannot hold a raw arena pointer across GC.)
+	if ce := st.ChargeBulkWork(len(s) + len(pat)); ce != nil {
+		return nil, ce
 	}
 	src := append([]byte(nil), s...)
 	p := append([]byte(nil), pat...)
@@ -278,8 +289,13 @@ func stringFnGsub(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 		if le != nil {
 			return nil, le
 		}
-		// The replacement's real length is known here, whatever its kind -- so charge it now
-		// rather than estimating a worst case before the loop.
+		// Charge every match, whatever the replacement's kind.
+		//
+		// An attempt to remove double-billing gated this on function/table replacements, on the
+		// grounds that st2gsubRepl already bills string ones incrementally. That was wrong: the
+		// inner charge covers ONE expansion, so gating here left a loop of 200000 string-replacement
+		// matches with nothing bounding the total, and the storm case hung. Billing a copied byte
+		// twice is a 2x error; not billing it at all is unbounded, and the two are not comparable.
 		if ce := st.ChargeBulkWork(len(rep)); ce != nil {
 			return nil, ce
 		}
@@ -583,15 +599,19 @@ func stringFnFormat(st *crescent.State, args []value.Value) ([]value.Value, *cre
 			if e2 != nil {
 				return nil, e2 // strArg's message already matches PUC
 			}
-			// Charge the ARGUMENT's bytes, before the copy and before any precision truncation.
+			// Charge the ARGUMENT's bytes, before the copy and before any precision truncation:
+			// "%.1s" against a 1 MiB argument still copies the megabyte, and "%.0s" produces
+			// nothing at the same cost, so the work is in the bytes CONSUMED.
 			//
-			// The charge further down bills produced bytes, so "%.1s" against a 1 MiB argument
-			// looked free while still copying the megabyte: 200000 of them ran 34 seconds
-			// untripped, and "%.0s" produces nothing at all yet costs the same. The work is in the
-			// bytes CONSUMED.
+			// Then advance `charged` past what this verb will emit, so the loop's produced-bytes
+			// increment does not bill the SAME bytes a second time. For a copy-through verb the
+			// consumed and produced bytes are one cost, not two; double-counting them made a
+			// 1 MiB format need a 3x budget, contradicting the documented 1-step-per-64-bytes
+			// rate.
 			if ce := st.ChargeBulkWork(len(svb)); ce != nil {
 				return nil, ce
 			}
+			_ = 0 // charged is advanced below
 			sv := string(svb)
 			// PUC str_format 's': strings >= 100 chars WITHOUT a
 			// precision bypass sprintf (pushed whole, NULs intact);
@@ -615,6 +635,15 @@ func stringFnFormat(st *crescent.State, args []value.Value) ([]value.Value, *cre
 				out = append(out, formatted...)
 			}
 			argn++
+			// Skip re-billing the bytes the argument charge already covered.
+			if charged < len(out) {
+				if adv := len(svb); charged+adv <= len(out) {
+					charged += adv
+				} else {
+					charged = len(out)
+				}
+			}
+
 		case 'q':
 			sb, e2 := strArg(st, args, argn, "format")
 			if e2 != nil {
@@ -628,7 +657,10 @@ func stringFnFormat(st *crescent.State, args []value.Value) ([]value.Value, *cre
 	}
 	// Charge the formatted bytes, same meter as CONCAT and string.rep: a format loop over large
 	// %s arguments ran 20 seconds inside a 1<<20 budget without tripping it.
-	if e := st.ChargeBulkWork(len(out)); e != nil {
+	// Only the REMAINDER: the in-loop charge already billed everything up to `charged`, and
+	// re-billing the whole output made a 1 MiB format cost ~3x the honest 1-step-per-64-bytes
+	// rate, contradicting the figures in 10 §3.1a and embedding-tiers §5.
+	if e := st.ChargeBulkWork(len(out) - charged); e != nil {
 		return nil, e
 	}
 	return []value.Value{intern(st, string(out))}, nil
