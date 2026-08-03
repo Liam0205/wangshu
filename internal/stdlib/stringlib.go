@@ -887,22 +887,24 @@ func stringFnByte(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 	}
 	i := normIdx(int(iF), len(s))
 	j := normIdx(int(jF), len(s))
-	// Charge the REQUESTED range, not the whole subject.
-	//
-	// Billing len(s) made a per-character scan -- `for k=1,#s do n=n+s:byte(k) end` -- pay for the
-	// entire string on every call, so a 4200-byte scan was rejected at both the old and the new
-	// budget while lua5.1 finishes it in milliseconds. Over-charging is not the safe direction: it
-	// rejects legitimate programs, and in a fuzz harness a limit error reads as "skip".
-	if n := j - i + 1; n > 0 {
-		if ce := st.ChargeBulkWork(n * 8); ce != nil {
-			return nil, ce
-		}
-	}
 	if i < 1 {
 		i = 1
 	}
 	if j > len(s) {
 		j = len(s)
+	}
+	// Charge the CLAMPED range: what the call will actually read.
+	//
+	// Two earlier versions were wrong in opposite directions. Billing len(s) made a per-character
+	// scan pay for the whole string every call (a 4200-byte scan was rejected where lua5.1 is
+	// instant); then billing the requested range BEFORE the clamps made ("abc"):byte(1,1000000)
+	// cost a million reads for three, and it stayed rejected even at the oracle harness's larger
+	// budget, so FuzzOracleDiff skipped the input as a wangshu limit. The charge has to read the
+	// same span the loop does.
+	if n := j - i + 1; n > 0 {
+		if ce := st.ChargeBulkWork(n * 8); ce != nil {
+			return nil, ce
+		}
 	}
 	// Same lua_checkstack ceiling as unpack, and the same off-by-nargs: PUC's str_byte
 	// calls luaL_checkstack(L, n, "string slice too long"), which rejects when

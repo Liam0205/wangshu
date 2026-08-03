@@ -154,7 +154,20 @@ func tableFnInsert(st *crescent.State, args []value.Value) ([]value.Value, *cres
 	if len(args) >= 3 {
 		if n := int(st.RawBorder(value.GCRefOf(tv))); n > 0 {
 			if pos, ok := toNumberStr(st, args[1]); ok {
-				if p := int(pos); p >= 1 && p <= n {
+				// The NARROWED position, matching the shift loop below, and clamped rather than
+				// range-gated.
+				//
+				// Gating on 1 <= p <= n excluded the two most expensive cases: pos < 1 shifts the
+				// whole table (35s at 2000 iterations) and a position that narrows into range from
+				// something huge (2^32+1) skipped the charge while the shift ran anyway. Reading the
+				// raw float where the shift reads the narrowed int is the same class of mistake as
+				// charging a container's size instead of the work: the charge and the work
+				// must read the SAME quantity.
+				p := int(cCharCastInt32(pos))
+				if p < 1 {
+					p = 1
+				}
+				if p <= n {
 					if ce := st.ChargeBulkWork((n - p + 1) * 8); ce != nil {
 						return nil, ce
 					}
@@ -250,7 +263,12 @@ func tableFnRemove(st *crescent.State, args []value.Value) ([]value.Value, *cres
 		if tv, e := tblArg(args, 0, "remove"); e == nil {
 			if n := int(st.RawBorder(value.GCRefOf(tv))); n > 0 {
 				if pos, ok := toNumberStr(st, args[1]); ok {
-					if p := int(pos); p >= 1 && p <= n {
+					// Narrowed and clamped, for the same reason as insert above.
+					p := int(cCharCastInt32(pos))
+					if p < 1 {
+						p = 1
+					}
+					if p <= n {
 						if ce := st.ChargeBulkWork((n - p) * 8); ce != nil {
 							return nil, ce
 						}
@@ -1132,16 +1150,6 @@ func mathFnRandomSeed(st *crescent.State, args []value.Value) ([]value.Value, *c
 const maxCStack = 8000
 
 func baseFnUnpackImpl(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
-	// Charged by the values it moves: O(n) work per call billed as one step on the caller back
-	// edge, so a loop of it stayed unbounded in wall-clock terms even after the budget was
-	// chosen from the BILLED operators. Found by sweeping for work that bypasses ChargeBulkWork.
-	if len(args) > 0 && value.Tag(args[0]) == value.TagTable {
-		if n := int(st.RawBorder(value.GCRefOf(args[0]))); n > 0 {
-			if ce := st.ChargeBulkWork(n * 8); ce != nil {
-				return nil, ce
-			}
-		}
-	}
 
 	tv, e := tblArg(args, 0, "unpack")
 	if e != nil {
@@ -1158,6 +1166,18 @@ func baseFnUnpackImpl(st *crescent.State, args []value.Value) ([]value.Value, *c
 	jF, ok := numArg(st, args, 2, float64(st.RawBorder(t)))
 	if !ok {
 		return nil, crescent.NewArgError(3, fmt.Sprintf("number expected, got %s", st.TypeName(args[2])))
+	}
+
+	// Charge the REQUESTED span, not the table's border.
+	//
+	// Keying on RawBorder was wrong in both directions, and it is the same size-versus-work
+	// substitution that maxn had in the very commit that added this charge: a hash-only table has
+	// border 0, so unpack(t, 1, 7990) over one billed nothing and ran 19s, while unpack(a, 1, 1) on
+	// a 4000-element array billed 500 steps to read a single value.
+	if n := int(jF) - int(iF) + 1; n > 0 {
+		if ce := st.ChargeBulkWork(n * 8); ce != nil {
+			return nil, ce
+		}
 	}
 	// PUC luaL_checkint is (int)luaL_checkinteger: a 64-bit hardware
 	// float->int conversion truncated to 32 bits. NaN converts to

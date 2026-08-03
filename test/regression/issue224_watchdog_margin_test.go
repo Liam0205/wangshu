@@ -85,6 +85,16 @@ func TestConcatStormKeepsWatchdogMargin(t *testing.T) {
 			`local t={} for i=1,4000 do t[i+0.5]=i end for k=1,777777776 do table.maxn(t) end return 1`},
 		{"loadstring over a large source",
 			`local src=string.rep("local x=1 ",20000) for k=1,777777776 do loadstring(src) end return 1`},
+		// Positions the charge originally excluded. pos<1 shifts the WHOLE table (5.1's most
+		// expensive insert), and a position that narrows into range from 2^32+1 skipped the charge
+		// while the shift ran -- the charge read the raw float where the shift reads the narrowed
+		// int, so the two disagreed about which call they were describing.
+		{"insert below the start",
+			`local t={} for i=1,4000 do t[i]=i end for k=1,777777776 do table.insert(t,-100,0) table.remove(t) end return 1`},
+		{"insert at a wrapped position",
+			`local t={} for i=1,4000 do t[i]=i end for k=1,777777776 do table.insert(t,4294967297,0) end return 1`},
+		{"unpack a range from a hash-only table",
+			`local t={} for i=1,7990 do t[i+0.5]=i end for k=1,777777776 do local _=select("#",unpack(t,1,7990)) end return 1`},
 		{"collectgarbage over a live heap",
 			`local keep={} for i=1,20000 do keep[i]={i} end for k=1,777777776 do collectgarbage() end return 1`},
 	} {
@@ -149,6 +159,12 @@ func TestChargesDoNotRejectOrdinaryWork(t *testing.T) {
 		{"unpack a single value from a wide table",
 			`local a={} for i=1,4000 do a[i]=i end return tostring(select("#",unpack(a,1,1)))`, "1"},
 		{"maxn on a sparse table", `local t={1,2,3} t[10]=1 return tostring(table.maxn(t))`, "10"},
+		// byte's range must be CLAMPED before charging: an out-of-range j asks for a million reads
+		// and delivers three, and charging the unclamped span had it rejected even at the oracle
+		// harness's larger budget, so FuzzOracleDiff skipped the input as a wangshu limit.
+		{"byte with an out-of-range end", `return tostring(("abc"):byte(1,1000000))`, "97"},
+		{"unpack an explicit small range",
+			`local a={} for i=1,4000 do a[i]=i end return tostring(select("#",unpack(a,1,1)))`, "1"},
 		{"loadstring a small chunk", `local f=loadstring("return 7") return tostring(f())`, "7"},
 		{"collectgarbage once", `collectgarbage() return "ok"`, "ok"},
 	} {
