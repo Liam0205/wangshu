@@ -152,23 +152,26 @@ func tableFnInsert(st *crescent.State, args []value.Value) ([]value.Value, *cres
 	// same work cost differently depending on whether the caller passed a position, and rejected
 	// `table.insert(t, #t+1, v)` loops that lua5.1 runs in milliseconds.
 	if len(args) >= 3 {
-		if n := int(st.RawBorder(value.GCRefOf(tv))); n > 0 {
+		// NOT gated on n > 0: the loop's span is n+1 down to pos, so a negative position walks a
+		// long way even on an EMPTY table -- which is precisely the case the gate hid.
+		{
+			n := int(st.RawBorder(value.GCRefOf(tv)))
 			if pos, ok := toNumberStr(st, args[1]); ok {
-				// The NARROWED position, matching the shift loop below, and clamped rather than
-				// range-gated.
+				// The NARROWED position, and the FULL span the shift loop walks -- including the part
+				// below index 1.
 				//
-				// Gating on 1 <= p <= n excluded the two most expensive cases: pos < 1 shifts the
-				// whole table (35s at 2000 iterations) and a position that narrows into range from
-				// something huge (2^32+1) skipped the charge while the shift ran anyway. Reading the
-				// raw float where the shift reads the narrowed int is the same class of mistake as
-				// charging a container's size instead of the work: the charge and the work
-				// must read the SAME quantity.
+				// Three versions were wrong here. Gating on 1 <= p <= n excluded pos < 1, which is 5.1's
+				// most expensive insert. Reading the raw float let a position narrowing from 2^32+1 skip
+				// the charge while the shift ran. And then CLAMPING p to 1 discarded exactly the span that
+				// makes a negative position expensive: the loop runs from n+1 down to pos, so one
+				// table.insert(t, -(1<<27)+2, v) walked about 134 million iterations in 2.4s with the
+				// budget untouched -- an uninterruptible path of the kind this branch exists to remove.
+				//
+				// The rule restated: the charge must read the same span the loop does, and a clamp is a
+				// transformation, so charging after one describes a different loop.
 				p := int(cCharCastInt32(pos))
-				if p < 1 {
-					p = 1
-				}
-				if p <= n {
-					if ce := st.ChargeBulkWork((n - p + 1) * 8); ce != nil {
+				if span := n - p + 1; span > 0 {
+					if ce := st.ChargeBulkWork(span * 8); ce != nil {
 						return nil, ce
 					}
 				}
@@ -261,15 +264,13 @@ func tableFnRemove(st *crescent.State, args []value.Value) ([]value.Value, *cres
 	// nothing.
 	if len(args) >= 2 {
 		if tv, e := tblArg(args, 0, "remove"); e == nil {
-			if n := int(st.RawBorder(value.GCRefOf(tv))); n > 0 {
+			{
+				n := int(st.RawBorder(value.GCRefOf(tv)))
 				if pos, ok := toNumberStr(st, args[1]); ok {
-					// Narrowed and clamped, for the same reason as insert above.
+					// Narrowed, and the full walked span, for the same reason as insert above.
 					p := int(cCharCastInt32(pos))
-					if p < 1 {
-						p = 1
-					}
-					if p <= n {
-						if ce := st.ChargeBulkWork((n - p) * 8); ce != nil {
+					if span := n - p; span > 0 {
+						if ce := st.ChargeBulkWork(span * 8); ce != nil {
 							return nil, ce
 						}
 					}
