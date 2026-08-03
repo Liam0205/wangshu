@@ -128,9 +128,27 @@ func stringFnFind(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 	}
 	start, end, caps, found, err := patternFind(s, pat, init)
 	if err == nil {
-		examined := len(s) - init
-		if found && start >= init {
-			examined = start - init
+		// Bytes examined = what the scan SKIPPED plus what the match CONSUMED.
+		//
+		// Charging only start-init measured the skip alone, so a pattern matching AT init and
+		// consuming the whole subject was billed zero: s:match("a*") over 1 MiB ran 19 seconds
+		// untripped. And defaulting a miss to the whole remainder over-charged the standard
+		// anchored lexer, which never scans past init, rejecting a 24 KB source that lua5.1
+		// tokenizes in milliseconds.
+		examined := 0
+		switch {
+		case found:
+			examined = end - init
+			if start > init {
+				examined = end - init // start-init skipped, then end-start consumed
+			}
+			if examined < 1 {
+				examined = 1 // a zero-width match still costs a probe
+			}
+		case len(pat) > 0 && pat[0] == '^':
+			examined = 1 // an anchored miss probes at init only
+		default:
+			examined = len(s) - init
 		}
 		if ce := chargeScan(examined); ce != nil {
 			return nil, ce
@@ -184,9 +202,27 @@ func stringFnMatch(st *crescent.State, args []value.Value) ([]value.Value, *cres
 	}
 	start, end, caps, found, err := patternFind(s, pat, init)
 	if err == nil {
-		examined := len(s) - init
-		if found && start >= init {
-			examined = start - init
+		// Bytes examined = what the scan SKIPPED plus what the match CONSUMED.
+		//
+		// Charging only start-init measured the skip alone, so a pattern matching AT init and
+		// consuming the whole subject was billed zero: s:match("a*") over 1 MiB ran 19 seconds
+		// untripped. And defaulting a miss to the whole remainder over-charged the standard
+		// anchored lexer, which never scans past init, rejecting a 24 KB source that lua5.1
+		// tokenizes in milliseconds.
+		examined := 0
+		switch {
+		case found:
+			examined = end - init
+			if start > init {
+				examined = end - init // start-init skipped, then end-start consumed
+			}
+			if examined < 1 {
+				examined = 1 // a zero-width match still costs a probe
+			}
+		case len(pat) > 0 && pat[0] == '^':
+			examined = 1 // an anchored miss probes at init only
+		default:
+			examined = len(s) - init
 		}
 		if ce := chargeScan(examined); ce != nil {
 			return nil, ce

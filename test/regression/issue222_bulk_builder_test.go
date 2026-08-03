@@ -76,6 +76,10 @@ func TestBulkBuildersChargeTheStepBudget(t *testing.T) {
 		// the surrounding loop as a bound -- which a few iterations over a huge subject evade.
 		{"plain find over a huge subject",
 			`local s=string.rep("a",4194304) for i=1,500 do s:find("b",1,true) end return 1`},
+		// A pattern that matches AT init and CONSUMES the subject: charging only the skipped
+		// prefix billed zero, so this ran 19 seconds untripped.
+		{"match consuming the whole subject",
+			`local s=string.rep("a",1048576) for i=1,8000 do s:match("a*") end return 1`},
 		{"pattern match over a large subject",
 			`local s=string.rep("a",1048576) for i=1,20000 do s:match("a*b") end return 1`},
 		// toNumberStr is the THIRD parser of the same numerals, behind ~30 call sites.
@@ -162,6 +166,14 @@ func TestBulkBuildersLeaveOrdinaryCodeAlone(t *testing.T) {
 		{"advancing scan loop",
 			`local s=string.rep("ab",131072) local n,pos=0,1 while true do local a,b=s:find("b",pos,true) if not a then break end n=n+1 pos=b+1 end return tostring(n)`,
 			"131072"},
+		// The standard anchored lexer: an anchored miss probes one byte, so billing the whole
+		// remainder made it O(n^2) and rejected a 24 KB source lua5.1 tokenizes in milliseconds.
+		{"anchored lexer loop",
+			`local src=string.rep("ab ",8000) local pos,n=1,0 while pos<=#src do local a,b=src:find("^%a+",pos) if not a then pos=pos+1 else pos=b+1 n=n+1 end end return tostring(n)`,
+			"8000"},
+		{"word frequency via gmatch",
+			`local t={} for w in string.rep("aa bb ",2000):gmatch("%a+") do t[w]=(t[w] or 0)+1 end return tostring(t.aa)`,
+			"2000"},
 		{"coerced find index", `return tostring(("hello"):find("l","3"))`, "3"},
 		{"coerced sub indices", `return ("hello"):sub("2","3")`, "el"},
 		{"coerced math", `return tostring(math.floor("3.7"))`, "3"},
