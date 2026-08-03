@@ -571,6 +571,39 @@ Lua 错误。它们**答不了**另一个问题:一个紧循环里的批量构�
 类资源的多个入口该共用一个计量器,方法论见 `llmdoc/guides/prove-the-path-under-test.md` §4.5d。落点与
 实测见 [10](./10-stdlib.md) §3.1a,回归 `test/regression/issue222_bulk_builder_test.go`。
 
+#### 4.9a2 一个预算「界住」还不够:它允许的量必须与外部看门狗差一个数量级(#224/#225,2026-08-04)
+
+§4.9a 讲**有没有界**,本节讲**界住之后余量够不够**。这一族的第七、第八个 crasher(#224/#225)既不崩
+也不分歧,字节记账正常把它们界住,产品代码一行没改——问题在 harness 的**余量**。
+
+一个资源预算不是孤立生效的,它上面还叠着若干外部超时(go-fuzz 的 **10 秒 per-input 看门狗**、CI job
+timeout、`go test -timeout`),而这些超时量的是 **wall-clock**、不是步数。两者之间有一个隐含的换算:
+`预算允许的量 × 单位量的本地耗时 × 目标机器的慢速倍率 = 投射 wall-clock`,而这三个因子里只有第一个
+写在代码里。**余量不够时,输入从「无界」变成「只是太慢」,而看门狗分不出这两者**——症状与真正的无界
+完全一样(`panic: deadlocked`),于是同一族会被反复开成 crasher issue,而每一次单看都找不到产品缺陷。
+
+实测:`1<<20` 的 step budget 在 1 步 / 64 字节下允许约 **64 MiB** 的 concat,本地每个 fuzz 子测试
+**0.7–1.3 秒**;**CI 运行器比本地慢约 10 倍**(这个数字 `internal/crescent/state.go` 的
+`chargeBulkWork` 注释里早就写着——`>>6` 这个比率本身就是按最慢的 CI runner 收紧出来的)。乘一下:
+最慢的家族 seed 投射到 CI 是 **12–13 秒**对 **10 秒**看门狗,六个 seed 里**两个已经超过**、另外四个
+余量不到 **1.4 倍**。
+
+修法是把 p4 fuzz harness 的 step budget 减半到 `1<<19`(`fuzz_budget_test.go` 的 `fuzzStepBudget`,
+`fuzz_auto_test.go` 与 `fuzz_p4_test.go` 四处 `SetStepBudget` 共用它):最慢子测试 1.34 秒 → 0.56 秒,
+六个 seed 全部 ≥1.8 倍余量,corpus 全量重放 5.5 秒 → 2.9 秒。回归
+`test/regression/issue224_watchdog_margin_test.go` 在 **harness 自己的预算设定下**量代价(不是量
+corpus 的耗时),实测把预算调回 8 倍会让它变红。
+
+**判据**:定一个资源上限时,把「这个上限允许的最坏耗时」乘上目标机器的慢速倍率,再与那台机器上所有
+外部超时比一遍;**余量小于一个数量级就等于没有余量**。**并且**:调紧一个 harness 的资源限制之后,要用
+「注入一个必须被发现的缺陷」证明检测能力未受影响——本轮注入了一个真实的 P1-vs-P4 分歧(把升层侧的
+返回值截断),确认新预算下仍然 FAIL、撤掉注入之后通过;只看「现有用例仍然通过」是一个恒真的观测。
+这一族每种写法在两个预算下都会触发,fuzzer 走同样的路径、只是更早停下,所以覆盖没有损失——但这句话
+本身也是待检验的断言,不能只靠推理。方法论见
+`llmdoc/guides/unreproducible-crasher-triage.md`「上限的余量」与
+`llmdoc/guides/prove-the-path-under-test.md` §9.2;P4 harness 的预算设定见
+[../p4-method-jit/08-testing-strategy.md](../p4-method-jit/08-testing-strategy.md) §3.4。
+
 ### 4.9b C 语义分歧:先分清有定义还是 UB,再决定对齐还是跳过(2026-07-28)
 
 「与 PUC byte-equal」这个目标默认假设 PUC 有唯一确定的行为。落进 C 的**未定义行为**时这个假设不成立——两个官方 build 自己就不一致,此时「对齐 PUC」这句话没有指称对象,硬对齐等于把某台机器的偶然结果写成规范。反过来,落在**有定义**区时跳过比对是白白丢掉覆盖面。所以处理一处 C 语义分歧之前,先查那个操作在 C 标准里是有定义 / 未指定 / 未定义:
