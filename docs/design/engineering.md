@@ -85,7 +85,7 @@ tidy:
 
 **首次踩坑**:v0.1.0 时 `fuzz_test.go` 有 `while true do end` + `for i=1,1e9 do end` 两 seed,CI 偶发 fail(`gh run 27414570482` v0.1.0 tag push 的失败);本地与 master push 无复现。修复见对应 commit。
 
-**补记(2026-08-04,#224/#225)**:本节两处 `SetStepBudget(1<<20)` 是**当年**的数值,写在这里是为了保留那次校准的推理。**p4 的两个 fuzz target 现在用 `1<<19`**(`fuzz_budget_test.go` 的 `fuzzStepBudget`,`fuzz_auto_test.go` 与 `fuzz_p4_test.go` 四处共用),理由与本节同源、只是量的对象不同:本节讲的是**单个 seed** 的循环上限要低于 budget 兜住的 wall-clock 量级,#224/#225 讲的是 **budget 自己**允许的字节工作量投射到 CI 之后要低于 go-fuzz 的 10 秒 per-input 看门狗——`1<<20` 允许约 64 MiB concat、本地每子测试 0.7–1.3 秒、CI 慢约 10 倍 ⟹ 12–13 秒 > 10 秒,六个 concat storm 家族 seed 里两个已超、四个余量不到 1.4 倍。判据与算法见 [p1-interpreter/12-testing-difftest.md](./p1-interpreter/12-testing-difftest.md) §4.9a2;引这一节的 `1<<20` 时注明它是历史数值。
+**补记(2026-08-04,#224/#225)**:本节两处 `SetStepBudget(1<<20)` 是**当年**的数值,写在这里是为了保留那次校准的推理。**p4 的两个 fuzz target 现在用 `1<<16`**(`fuzz_budget_test.go` 的 `fuzzStepBudget`,`fuzz_auto_test.go` 与 `fuzz_p4_test.go` 四处共用),理由与本节同源、只是量的对象不同:本节讲的是**单个 seed** 的循环上限要低于 budget 兜住的 wall-clock 量级,#224/#225 讲的是 **budget 自己**允许的字节工作量投射到 CI 之后要低于 go-fuzz 的 10 秒 per-input 看门狗——`1<<20` 允许约 64 MiB concat、本地每子测试 0.7–1.3 秒、CI 慢约 10 倍 ⟹ 12–13 秒 > 10 秒,六个 concat storm 家族 seed 里两个已超、四个余量不到 1.4 倍。**为什么终值是 `1<<16` 而不是减半的 `1<<19`**:`1<<19` 只修好了那六个 seed,而同一预算下最贵的可达写法(`s:gsub("%a","x")` 紧循环)投射到 41 秒、是看门狗的四倍——`gsub` 每次调用按大约两倍主串计费但实际工作远多于等额计费的 concat,**等额计费不等于等额 wall-clock**,所以上限要按「计费相同时最贵的写法」定;`1<<16` 让最坏那条降到 5.2 秒、余量 1.93 倍。判据与算法见 [p1-interpreter/12-testing-difftest.md](./p1-interpreter/12-testing-difftest.md) §4.9a2;引这一节的 `1<<20` 时注明它是历史数值。
 
 ---
 
