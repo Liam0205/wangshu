@@ -830,6 +830,19 @@ func (st *State) chargeBulkWork(bytes int) *LuaError {
 	return nil
 }
 
+// ChargeBulkWork is chargeBulkWork for the stdlib, whose bulk string builders are the other
+// half of this family.
+//
+// The concat-storm work (#123-#167) routed CONCAT through chargeBulkWork and the guide named the
+// remaining candidates outright: string.rep, string.format and table.concat "尚未按工作量记账,
+// 是同类风险的候选". They were, and measurably so -- each ran 21-53 seconds inside a 1<<20 step
+// budget WITHOUT tripping it, so a single prog.Run already exceeded Go fuzz's 10s per-input
+// watchdog, let alone the harness's four.
+//
+// Charging them on the same meter keeps one definition of "bulk work" for the budget rather than
+// a second threshold that could drift away from it.
+func (st *State) ChargeBulkWork(bytes int) *LuaError { return st.chargeBulkWork(bytes) }
+
 // SetCancelHook injects a cancellation callback (the internal bridge of the
 // issue #4 public SetContext). When fn returns a non-nil error, the VM aborts the
 // current Call/Run at the next preempt point. Atomically replaced, cross-goroutine

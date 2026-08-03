@@ -559,6 +559,11 @@ func stringFnFormat(st *crescent.State, args []value.Value) ([]value.Value, *cre
 			return nil, crescent.NewError(fmt.Sprintf("invalid option '%%%c' to 'format'", verb))
 		}
 	}
+	// Charge the formatted bytes, same meter as CONCAT and string.rep: a format loop over large
+	// %s arguments ran 20 seconds inside a 1<<20 budget without tripping it.
+	if e := st.ChargeBulkWork(len(out)); e != nil {
+		return nil, e
+	}
 	return []value.Value{intern(st, string(out))}, nil
 }
 
