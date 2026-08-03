@@ -62,6 +62,13 @@ func TestBulkBuildersChargeTheStepBudget(t *testing.T) {
 		{"format with zero precision",
 			`local s=string.rep("a",1048576) for i=1,200000 do string.format("%.0s",s) end return 1`},
 		// tonumber parses proportionally to input length while producing a number.
+		// LITERAL format text, no verbs. The per-iteration increment advances one byte here, and
+		// chargeBulkWork floored bytes>>6 to zero, so a 1 MiB literal format string ran 25 seconds
+		// with the budget untouched. The meter now carries the sub-64-byte remainder.
+		{"format of a large literal",
+			`local f=string.rep("x",1048576) for i=1,4000 do string.format(f) end return 1`},
+		{"format of many percent escapes",
+			`local f=string.rep("%%",524288) for i=1,20000 do string.format(f) end return 1`},
 		{"tonumber of a long numeral",
 			`local s=string.rep("9",100000) for i=1,50000 do tonumber(s) end return 1`},
 		{"gsub with a table replacement",
@@ -119,6 +126,8 @@ func TestBulkBuildersLeaveOrdinaryCodeAlone(t *testing.T) {
 		{"gsub with a percent escape", `return ("abc"):gsub("b","%%")`, "a%c"},
 		{"gsub empty match", `return ("abc"):gsub("","-")`, "-a-b-c-"},
 		{"gsub anchored", `return ("abc"):gsub("^a","X")`, "Xbc"},
+		{"literal format", `return string.format("hello")`, "hello"},
+		{"percent escape", `return string.format("100%%")`, "100%"},
 		{"format several verbs", `return string.format("%s-%d-%5.2f","a",7,3.14159)`, "a-7- 3.14"},
 		{"truncating precision", `return string.format("%.1s","hello")`, "h"},
 		{"zero precision", `return string.format("%.0s","hello").."|"`, "|"},

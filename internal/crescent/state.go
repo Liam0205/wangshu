@@ -121,6 +121,8 @@ type State struct {
 	// fuzzing uses it instead of fragile source-substring filtering.
 	stepBudget int64
 	stepUsed   int64
+	// bulkRemainder carries bulk bytes not yet worth a whole step (see chargeBulkWork).
+	bulkRemainder int
 
 	// loopFuelRefill records the last refill amount written to the loopBudget
 	// word, so Safepoint can bill this batch of back edges precisely with
@@ -749,6 +751,7 @@ func (st *State) SafepointCalls() int64 { return st.safepointCalls }
 func (st *State) SetStepBudget(n int64) {
 	st.stepBudget = n
 	st.stepUsed = 0
+	st.bulkRemainder = 0
 	st.budgetGen.Add(1)
 }
 
@@ -822,7 +825,17 @@ func (st *State) preempt() *LuaError {
 // uniformly and keeps the differential-fuzz comparison symmetric.
 func (st *State) chargeBulkWork(bytes int) *LuaError {
 	if st.stepBudget > 0 {
-		st.stepUsed += int64(bytes >> 6)
+		// Accumulate the sub-64-byte REMAINDER instead of discarding it.
+		//
+		// bytes>>6 floors, so a caller charging one byte at a time was billed nothing at all:
+		// string.format's per-iteration increment advances one byte for literal text, and
+		// 1>>6 == 0, so a 1 MiB literal format string ran 25 seconds with the budget untouched.
+		// Fixing it here rather than in each caller means no charge site can lose bytes by
+		// calling in small pieces -- which is exactly what "charge inside the emitting loop"
+		// asks them to do.
+		st.bulkRemainder += bytes
+		st.stepUsed += int64(st.bulkRemainder >> 6)
+		st.bulkRemainder &= 63
 		if st.stepUsed > st.stepBudget {
 			return errf("instruction budget exceeded")
 		}
