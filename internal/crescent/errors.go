@@ -130,6 +130,11 @@ func (st *State) annotateError(e *LuaError, ci *callInfo, th *thread) *LuaError 
 		e.HasValue = true
 	} else if value.Tag(e.Value) == value.TagString && e.Level != 0 {
 		raw := object.StringBytes(st.arena, value.GCRefOf(e.Value))
+		// Prefixing copies and re-interns the whole message, so a loop raising a 1 MiB error
+		// copied a megabyte per raise: 20000 of them ran 16 seconds untripped, while the same
+		// loop with error(s, 0) -- no prefix, no copy -- took 2.9s. Charged on the shared byte
+		// meter like every other bulk copy.
+		_ = st.chargeBulkWork(len(prefix) + len(raw))
 		e.Value = value.MakeGC(value.TagString, st.gc.Intern(append([]byte(prefix), raw...)))
 	}
 	return e

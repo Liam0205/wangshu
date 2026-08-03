@@ -611,7 +611,6 @@ func stringFnFormat(st *crescent.State, args []value.Value) ([]value.Value, *cre
 			if ce := st.ChargeBulkWork(len(svb)); ce != nil {
 				return nil, ce
 			}
-			_ = 0 // charged is advanced below
 			sv := string(svb)
 			// PUC str_format 's': strings >= 100 chars WITHOUT a
 			// precision bypass sprintf (pushed whole, NULs intact);
