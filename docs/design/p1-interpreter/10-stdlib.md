@@ -369,6 +369,43 @@ func (th *Thread) CheckString(i int) []byte {
 **非分配库函数**(`type`/`rawget`/`rawequal`/`math.floor`/`select`/`next`/...)**不涉及 shadow stack 纪律**——
 它们读参数、算、push 标量或已存在的对象引用,不新建 arena 对象,无中间持有窗口。
 
+### 3.1a 批量构造函数还要把产出字节数记进 step budget(#222,2026-08-03)
+
+上表按「会不会分配 arena 对象」分类,那是 GC 纪律。**同一批函数还有第二条纪律**:它们里有三个能在
+一次调用里做与字节数成正比的**无界**工作,而 step budget 原本只在 preempt 点(循环回跳 / 调用 / 帧
+入口 / TFORLOOP)每次加 1,所以一个紧循环里的它们**每次迭代只扣常数步、却搬运任意多字节**。
+
+这是 concat 风暴 crasher 家族(#123–#167)的根因,CONCAT 已在 PR #168 里经共享 `doConcat` 调
+`chargeBulkWork(len)` 修好(按 `len>>6`,1 步 / 64 字节);当时点名的三个候选算子在 #222 结算:
+
+| 函数 | 记账的量 | 未记账时的实测(1<<20 预算内、**且完全没有触发预算**) |
+|---|---|---|
+| `string.rep` | `len(s) * n` | 紧循环 **21 秒** |
+| `string.format` | `len(out)`(格式化完成、intern 之前) | 4 个 4 KiB 的 `%s`,紧循环 **20 秒** |
+| `table.concat` | 分隔符字节 + 各元素字节之和 | 256 个 2 KiB 元素的表拼十万次,**53 秒** |
+
+单次 `prog.Run` 就已经超过 Go fuzz 的 10 秒 per-input 看门狗,而 `FuzzAutoPromote` 每个输入要跑
+**四次** Run。三者现在各自调 `crescent.State.ChargeBulkWork`(`internal/crescent/state.go` 把既有的
+`chargeBulkWork` 导出),21/20/53 秒变 **46/90/70 毫秒**且预算正确触发。
+
+**三条纪律**:
+
+1. **走同一个计量器,不要各自定阈值。** 三个函数都读 `ChargeBulkWork`,于是「批量工作」在 step
+   budget 里只有一个定义;各自定阈值会互相漂移,而预算本身是**可加**的量,多个阈值表达不了「几种
+   批量操作叠加起来超了」这件事。
+2. **`table.concat` 按字节而不是元素个数。** 它的遍历本来就被表的长度界住,所以按个数看永远便宜——
+   **256 个元素**听起来微不足道,而每个元素 2 KiB 时实际要 53 秒。代价是拼出来的字节数。
+3. **这与 §5.3 / [12](./12-testing-difftest.md) §4.9 的 hardening 上限是两件事。** 那些上限
+   (`string.rep` 的 1 GiB、`string.format` 的 width/precision 1<<30)是「宿主进程不可崩」的 fail-fast
+   门,答的是「这次调用会不会把进程搞死」;记账答的是「这次调用花掉多少预算」。一次调用完全可以既在
+   上限之内、又把预算耗尽,两者都要有。
+
+普通写法不受影响:1 步 / 64 字节的比率下 1 MiB 产出约记 16K 步、占 1<<20 预算约 1.5%,八种常规写法
+(含 1 MiB 的 `string.rep`、10000 元素的 `table.concat`)与 lua5.1 逐字节一致。回归在
+`test/regression/issue222_bulk_builder_test.go`。**给 stdlib 新增任何字符串构造函数时,它的产出字节数
+都要经 `ChargeBulkWork` 记账**,否则它就是这个家族的下一个候选。分层执行下的语义见
+`docs/embedding-tiers.md` §5。
+
 ### 3.2 范例一:`table.concat`(循环拼接,逐步累积)
 
 `table.concat(t, sep, i, j)` 把 `t[i]..sep..t[i+1]..sep..…..t[j]` 拼成一个串。它在循环里**逐步累积结果**,
@@ -808,11 +845,11 @@ string 库**操作字节**(Lua string 是字节串,01 §5.1),索引 1-based,负�
 | `string.sub(s, i [, j])` | 子串 `[i, j]`(1-based,负从尾) | `(s, i [,j])` → string | ✅ | 新串(§3 纪律:单分配,紧接 push) |
 | `string.upper(s)` | 转大写(仅 ASCII A-Z) | `(s)` → string | ✅ | 新串;**仅 ASCII**(locale 见 §5.5) |
 | `string.lower(s)` | 转小写(仅 ASCII) | `(s)` → string | ✅ | 新串;仅 ASCII |
-| `string.rep(s, n)` | s 重复 n 次 | `(s, n)` → string | ✅ | 新串(可能很大,§5.3);n≤0 返回空串 |
+| `string.rep(s, n)` | s 重复 n 次 | `(s, n)` → string | ✅ | 新串(可能很大,§5.3);n≤0 返回空串;**产出字节数记进 step budget**(§3.1a) |
 | `string.reverse(s)` | 字节逆序 | `(s)` → string | ✅ | 新串 |
 | `string.byte(s [, i [, j]])` | 返回 `[i,j]` 各字节的数值码 | `(s [,i,j])` → number... | ✅ | 多返回值(j-i+1 个 number);不分配串。**上限 `8000 - nargs`,消息被 `luaL_checkstack` 包一层**(#206,§5.4c) |
 | `string.char(...)` | 各数值码组成串 | `(...)` → string | ✅ | 新串;每参 `CheckInt` 且 0..255(否则报错)。**越界 double 走 PUC 的两步转换**(#193,§5.4b) |
-| `string.format(fmt, ...)` | 格式化(§5.2 指令表) | `(fmt, ...)` → string | ✅ | 新串(§3.3 范例);`%s` 查 `__tostring` 重入 |
+| `string.format(fmt, ...)` | 格式化(§5.2 指令表) | `(fmt, ...)` → string | ✅ | 新串(§3.3 范例);`%s` 查 `__tostring` 重入;**产出字节数记进 step budget**(§3.1a) |
 | `string.find(s, pat [, init [, plain]])` | 查找模式(返回位置 + 捕获) | `(s, pat [,init,plain])` → (start, end, caps...) or nil | ✅ | **Lua pattern**(§6);plain=true 走纯文本查找 |
 | `string.match(s, pat [, init])` | 匹配模式,返回捕获(或整体匹配) | `(s, pat [,init])` → caps... or whole or nil | ✅ | **Lua pattern**(§6);捕获子串分配 |
 | `string.gmatch(s, pat)` | 返回迭代器,逐个产出匹配 | `(s, pat)` → function(迭代器) | ✅ | **Lua pattern**(§6);迭代器是 host closure 持状态;**前导 `^` 在 gmatch 里不锚定**(§6.3) |
@@ -943,6 +980,10 @@ func hostStringRep(vm *VM, th *Thread) int {
   arena 对象**,所以循环中**不触发 GC**,`s` 切片不会因 GC 搬迁失效。**安全**。
 - **`string.sub(s, i, j)`** 的索引规整(5.1 语义):负索引从尾(`-1` = 末字节);`i` 钳到 ≥1,`j` 钳到 ≤len;
   `i > j` 返回空串。规整后 `[i, j]` 切片 + intern。**待 12 核对**边界(`sub("abc", -100)` 等极端索引)。
+- **`string.rep` 的产出字节数要记进 step budget**(§3.1a,#222):在 1 GiB 的 hardening 上限检查**之后**调
+  `st.ChargeBulkWork(len(s) * n)`。那个上限与这个记账是两件事——上限防「宿主进程不可崩」,记账防「一个紧
+  循环在小预算内搬运无界字节」;未记账时一个 `string.rep("abcdefgh",4096)` 的百万次循环在 1<<20 预算内跑
+  **21 秒**且完全没有触发预算。
 
 ### 5.4b `string.char` 的越界 double:PUC 的两步转换(#193,2026-07-28)
 
@@ -1261,7 +1302,7 @@ repl),而**第 4 个参数把循环次数压成 0**,于是循环一次都没跑�
 |---|---|---|---|---|
 | `table.insert(t, [pos,] v)` | 插入 v(默认末尾,或指定 pos 处后移) | `(t, [pos,] v)` → 无 | ✅ | 两形式:`insert(t,v)` 末尾;`insert(t,pos,v)` 插入并后移(§7.2) |
 | `table.remove(t [, pos])` | 移除并返回(默认末尾,或指定 pos 处前移) | `(t [,pos])` → removed value | ✅ | 边界语义(§7.2);返回被移除值 |
-| `table.concat(t [, sep [, i [, j]]])` | 拼接数组段(§3.2 范例) | `(t [,sep,i,j])` → string | ✅ | Go 缓冲累积(§3.2);元素须 string/number |
+| `table.concat(t [, sep [, i [, j]]])` | 拼接数组段(§3.2 范例) | `(t [,sep,i,j])` → string | ✅ | Go 缓冲累积(§3.2);元素须 string/number;**产出字节数记进 step budget,按字节不按元素个数**(§3.1a) |
 | `table.sort(t [, comp])` | 原地排序数组段(§7.3/§7.4) | `(t [,comp])` → 无 | ✅ | comp 比较器重入(§7.4);默认用 `<`(`__lt`) |
 | `table.maxn(t)` | 返回最大正数字键(可非连续) | `(t)` → number | ✅ | **5.1 有 `table.maxn`**(5.2+ 移除——记口径,§7.5) |
 | `table.getn(t)` / `table.setn(t, n)` | 取/设序列长度(5.0 遗留) | — | **❌ 5.1 已废** | 5.0 遗留;**5.1 已 deprecated**(`getn` = `#t`,`setn` 空操作)——P1 可缺(§7.5) |

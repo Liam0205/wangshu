@@ -552,6 +552,25 @@ func DiffN(src string, runners ...Runner) DiffResult { /* N 方比对,§3.3 矩�
 
 **纪律**:hardening 阈值的引入是「破对位行为」,必须满足:① 不可恢复的 runtime 崩溃(OOM / stack overflow 等 Go 无法 recover 的)② fail-fast 返 Lua 错误③ commit message 与 godoc 写明背景。仅性能差异 / 内存效率差异**不**触发 hardening。
 
+#### 4.9a hardening 上限与 step budget 记账是两件事,一个函数可能两个都要(#222,2026-08-03)
+
+上面这些上限答的是「**这次调用会不会把宿主进程搞死**」,数值取「工程使用上限 × 一个数量级」,触发时抬
+Lua 错误。它们**答不了**另一个问题:一个紧循环里的批量构造函数,每次调用都远在上限之内、而循环整体
+搬运的字节数无界。step budget 原本只在 preempt 点每次加 1,所以那种循环每次迭代只扣常数步。
+
+`string.rep` 就同时需要两者:1 GiB 的 hardening 上限没变,而 `string.rep("abcdefgh",4096)` 的百万次
+循环在 `SetStepBudget(1 << 20)` 下跑 **21 秒**、**完全没有触发预算**——单次 `prog.Run` 就超过 Go fuzz
+的 10 秒 per-input 看门狗,而 `FuzzAutoPromote` 每输入跑四次 Run(concat 风暴 crasher 家族
+#123–#167 的一样的机制)。`string.format`(20 秒)与 `table.concat`(53 秒)同理。
+
+所以三者现在各自按**产出字节数**调 `crescent.State.ChargeBulkWork`,与 CONCAT 共用一个计量器
+(1 步 / 64 字节),21/20/53 秒变 46/90/70 毫秒且预算正确触发。**判据**:给一个能做与字节数成正比工作
+的库函数加限制时,分开问两件事——「单次调用会不会搞死进程」(hardening 上限)与「一个循环能不能在预算
+内搬无界字节」(记账),两个问题各有自己的答案,写了一个不等于另一个也有了。**这与 §4.9d 是两个维度**:
+那条讲两个**目的不同**的阈值该是两个数(正确性 vs 资源),本条讲两个**问题不同**的机制该都在场;而同一
+类资源的多个入口该共用一个计量器,方法论见 `llmdoc/guides/prove-the-path-under-test.md` §4.5d。落点与
+实测见 [10](./10-stdlib.md) §3.1a,回归 `test/regression/issue222_bulk_builder_test.go`。
+
 ### 4.9b C 语义分歧:先分清有定义还是 UB,再决定对齐还是跳过(2026-07-28)
 
 「与 PUC byte-equal」这个目标默认假设 PUC 有唯一确定的行为。落进 C 的**未定义行为**时这个假设不成立——两个官方 build 自己就不一致,此时「对齐 PUC」这句话没有指称对象,硬对齐等于把某台机器的偶然结果写成规范。反过来,落在**有定义**区时跳过比对是白白丢掉覆盖面。所以处理一处 C 语义分歧之前,先查那个操作在 C 标准里是有定义 / 未指定 / 未定义:
