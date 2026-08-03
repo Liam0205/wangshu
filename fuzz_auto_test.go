@@ -83,13 +83,13 @@ func FuzzAutoPromote(f *testing.F) {
 		// exec and killed nightly workers; 64 MiB bounds it. Both
 		// States get the SAME cap so the comparison stays symmetric.
 		st1 := wangshu.NewState(wangshu.Options{MaxArenaBytes: 64 << 20})
-		st1.SetStepBudget(1 << 20)
+		st1.SetStepBudget(fuzzStepBudget)
 		st1.SetHotThresholds(^uint32(0), ^uint32(0))
 
 		// Auto path: lowered thresholds, two runs on one State. Run 1
 		// promotes mid-run; run 2 is tier-mixed from the first call.
 		stA := wangshu.NewState(wangshu.Options{MaxArenaBytes: 64 << 20})
-		stA.SetStepBudget(1 << 20)
+		stA.SetStepBudget(fuzzStepBudget)
 		stA.SetHotThresholds(2, 4)
 		for run := 1; run <= 2; run++ {
 			resP1, errP1 := prog.Run(st1)
