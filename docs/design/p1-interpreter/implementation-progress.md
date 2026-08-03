@@ -46,7 +46,8 @@
 | Table.ForEach 任意 key 迭代 | `func (t *Table) ForEach(fn func(key, val Value) bool) error`:转发 internal `RawNext` 循环(raw 迭代,与 stdlib next/pairs 同源,迭代序确定性);fn 返 false 提前终止;key/val 走 `fromInnerWithPin` 自动登记 pin 槽。issue #2 SetIndex 写入的对称读出能力,完整读写闭环 | 11 §4.5 (issue #5) | `4f855d2` |
 | globals baseline 状态隔离 | `State.MarkGlobalsBaseline` 拍当前 _G 字符串 key 快照、`ResetGlobalsToBaseline` 非 baseline key 清空 + baseline key 复原;baseline 复合值经 `visitExtraValues` 入 GC 根(与 pin 表是 GCRef-bearing value 契约级不变式两面:pin 管「公共 API 暴露的长持 GCRef」、baseline 管「内部状态恢复需要的长持 GCRef」);对位 gopher-lua statePool snapshotBaselineValues + resetToBaseline 模式 | 10 §12.1 hardening (issue #6) | `3d34839` |
 | CallInto 零分配边界路径 | `State.CallInto(dst []Value, fn, args...) (n int, err)`:返回值写进调用方拥有的 `dst`,标量(bool/number)整条 round-trip 0 alloc。消除旧 `Call` 的双拷贝地板成本(VM 栈→inner slice→public slice,72 B / 2 allocs/call,与脚本复杂度无关)——内部 `callOnStack` 零拷贝切 `th.stack` 活动区(runningThread 复位后 mainTh 仍是常驻根 → GC 下可达),门面层复用 `innerArgsBuf` + 写调用方 dst。`Call` 保留为独立拷贝便捷形(返回值跨下次 Call 仍可读),内部走 callOnStack 后 append 一次。⚠️ 契约:CallInto 返回值底层是复用栈,下次进入 VM 前消费完;string 仍拷 arena 字节、复合值仍经 pin 表 | boundary-dominated 嵌入优化 (issue #8) | `CallInto` |
-| step budget 按字节工作量记账 | 共享 `doConcat`(`internal/crescent/call.go`,fast path + slow-path plain fold)调 `chargeBulkWork(len)`(`internal/crescent/state.go` 新增),按 `len >> 6`(1 步 / 64 字节)把 CONCAT 拷贝 + intern 的字节工作量折算进 step budget,使预算成为**字节工作量的度量**而非仅指令条数。动机:`preempt()` 原本每指令边界只把 stepUsed 加 1,单条 CONCAT 能做与字符串长度成正比的无界工作 ⟹ `for i=1,N do glob=cat(i) end`(cat 内 `return "<~15KB 字面量>"..i`)每次迭代只扣约 2 步却拷贝约 15KB,1<<20 预算允许约 50 万次迭代、单次 prog.Run 约 2.7s wall-clock,4×run 撞 Go fuzz 10s per-input 看门狗(concat 风暴 crasher 家族 #166/#167 根因)。三层(P1 executeLoop / P3 wasm h_concat / P4 native host.Concat)全部路由同一 doConcat,单点记账覆盖所有 backend,差分对称性不破;<64B 记 0 步、1MiB concat 记约 16K 步(约 1.5% 预算),正常程序不受影响。比率 `>>6` 是按最慢的 CI runner(比本地慢约 10×)实测收紧后的值。**已知下一批候选无界单指令算子**:string.rep / string.format / table.concat(尚未按工作量记账) | concat 风暴家族根因 (#166/#167,PR #168) | `88e724f` + `ab27936` |
+| step budget 按字节工作量记账 | 共享 `doConcat`(`internal/crescent/call.go`,fast path + slow-path plain fold)调 `chargeBulkWork(len)`(`internal/crescent/state.go` 新增),按 `len >> 6`(1 步 / 64 字节)把 CONCAT 拷贝 + intern 的字节工作量折算进 step budget,使预算成为**字节工作量的度量**而非仅指令条数。动机:`preempt()` 原本每指令边界只把 stepUsed 加 1,单条 CONCAT 能做与字符串长度成正比的无界工作 ⟹ `for i=1,N do glob=cat(i) end`(cat 内 `return "<~15KB 字面量>"..i`)每次迭代只扣约 2 步却拷贝约 15KB,1<<20 预算允许约 50 万次迭代、单次 prog.Run 约 2.7s wall-clock,4×run 撞 Go fuzz 10s per-input 看门狗(concat 风暴 crasher 家族 #166/#167 根因)。三层(P1 executeLoop / P3 wasm h_concat / P4 native host.Concat)全部路由同一 doConcat,单点记账覆盖所有 backend,差分对称性不破;<64B 记 0 步、1MiB concat 记约 16K 步(约 1.5% 预算),正常程序不受影响。比率 `>>6` 是按最慢的 CI runner(比本地慢约 10×)实测收紧后的值。**当时点名的下一批候选无界单指令算子(string.rep / string.format / table.concat)已于 2026-08-03 结算**,见下一行 | concat 风暴家族根因 (#166/#167,PR #168) | `88e724f` + `ab27936` |
+| 三个批量字符串构造函数按字节记账 | `internal/crescent/state.go` 把 `chargeBulkWork` 导出成 `ChargeBulkWork`,`string.rep`(`stdlib.go::stringFnRep`,`len(s)*n`)/ `string.format`(`stringlib.go::stringFnFormat`,`len(out)`)/ `table.concat`(`tablelib.go::tableFnConcat`,分隔符字节 + 各元素字节之和)各自按**产出字节数**走**同一个**计量器,于是「批量工作」在 step budget 里只有一个定义、而不是三个会互相漂移的阈值。动机:上一行点名的三个候选确实是同类风险——实测在 1<<20 step budget 内、且**完全没有触发预算**的情况下,三者各自的紧循环分别跑 **21 秒 / 20 秒 / 53 秒**,单次 `prog.Run` 就已超过 Go fuzz 的 10 秒 per-input 看门狗,而 `FuzzAutoPromote` 每个输入要跑**四次** Run(concat 风暴家族的一样的机制)。记账后 21/20/53 秒变 **46/90/70 毫秒**且预算正确触发;八种普通写法(含 1 MiB 的 `string.rep`、10000 元素的 `table.concat`)与 lua5.1 逐字节一致——1 步 / 64 字节的比率下 1 MiB 产出约记 16K 步、占 1<<20 预算约 1.5%。**`table.concat` 必须按字节而不是元素个数记账**:它的遍历本来就被表的长度界住,所以按个数看永远便宜——256 个元素听起来微不足道,而每个元素 2 KiB 时实际要 53 秒。这与 §4.9 那一类 hardening 上限(`string.rep` 的 1 GiB、`string.format` 的 width/precision)是**两件事**:那些是「宿主进程不可崩」的 fail-fast 上限,本行是预算记账,一次调用可以既在上限之内又把预算耗尽 | concat 风暴家族的下一批 (#222,commit `7119391`) | `7119391` |
 
 ## P1 总验收结果(roadmap §4 / 12 §10)
 
@@ -261,6 +262,27 @@
   `llmdoc/memory/reflections/2026-08-02-issue212-219-fuzz-crasher-batch.md`(四条教训:版本核对的三档是
   成本档不是缺陷档 / 豁免判据必须覆盖别名 / 参照实现在循环之前做的校验不能挪进循环 / 把 seed 转成回归
   测试时要连 harness 的限制一起抄)。
+
+- **concat 风暴家族点名的三个候选算子结算(2026-08-03,#221 / #222 一轮)**:#221 **过期**——seed 是
+  `print(pcall(math.mod))`,正是上一轮给 `__wrapArgOrder` 补上 `math.mod` 别名之后修掉的那个,它的 run
+  跑在 `947fbda` 上、早于 `ac21b91`;但仍按上一轮的教训在当前 HEAD 上实际重放确认 PASS,一行代码没改。
+  #222 是真的,而且是这个家族(#123–#167)的下一批:seed 是一个 777777776 次迭代的拼接循环,target
+  `FuzzAutoPromote`,run 跑在上一轮的合并提交 `093f7d1` 上。
+
+  | 项 | 落点 | 结论与要点 |
+  |---|---|---|
+  | 死因不是「seed 太重」也不是内存 | — | 两条都被实测否掉:seed 本地重放只要 **0.77 秒**、在自己 corpus 里只是**第三重**的(1.22s / 1.21s / 0.77s),两个更重的早该先死;单 seed 峰值 RSS 只有 **106 MB**,而 CI 用的是 `GOMEMLIMIT=512MiB`(纯软限制),整个 corpus 并行重放峰值 525 MB。**定性靠的是读 `llmdoc/guides/unreproducible-crasher-triage.md` 里这个家族自己的结论**:#166 那轮已经查清死因是 **CPU wall-clock 撞 Go fuzz 的 10 秒 per-input 看门狗**、不是内存,而那一节还把剩下的候选按名字列了出来 |
+  | 三个候选算子确实是同类风险 | `internal/stdlib/{stdlib,stringlib,tablelib}.go` | 在 1<<20 step budget 内、**并且完全没有触发预算**的情况下,`string.rep` / `string.format` / `table.concat` 各自的紧循环分别跑 **21 秒 / 20 秒 / 53 秒**——单次 `prog.Run` 就已超过看门狗,而 `FuzzAutoPromote` 每个输入要跑**四次** Run |
+  | 三者走**同一个**计量器 | `internal/crescent/state.go::ChargeBulkWork` | `chargeBulkWork` 导出后三个函数各自按**产出字节数**记账,于是「批量工作」在预算里只有一个定义;各自定一个阈值的话它们迟早互相漂移,而**哪个先触发**会变得难以预测,并且预算本身是可加的量、多个阈值表达不了「几种批量操作叠加起来超了」。21/20/53 秒变 **46/90/70 毫秒**且预算正确触发 |
+  | `table.concat` 按**字节**而不是元素个数 | `tablelib.go::tableFnConcat` | 它的遍历本来就被表的长度界住,所以按元素个数看永远便宜——**256 个元素**听起来微不足道,而每个元素 2 KiB 时实际要 **53 秒**。代价是拼出来的字节数,记账就要读那个量 |
+  | 普通写法不受影响 | `test/regression/issue222_bulk_builder_test.go` | 八种常规写法(`string.rep("ab",3)`、**1 MiB 的 `string.rep`**、`string.format("%s-%d",…)`、`table.concat({1,2,3},",")`、1000 与 **10000** 元素的 `table.concat` 等)与 lua5.1 逐字节一致;1 步 / 64 字节的比率下 1 MiB 产出约记 16K 步、占 1<<20 预算约 1.5%。按 triage guide 的规定**没有自建 in-test deadline** |
+
+  **验证规模**:两个回归测试全绿(0.20 秒 / 0.00 秒);#222 的 seed 入
+  `testdata/fuzz/FuzzAutoPromote/ad96f441153507ff`。过程反思见
+  `llmdoc/memory/reflections/2026-08-03-issue221-222-bulk-builder-budget.md`(四条教训:一个家族的第 N
+  次复发先读那个家族自己的结论而不是从现象重新推 / 记账的计量单位要与真实成本同量纲 / 新增的资源判据
+  要复用既有的计量器不要自建第二个阈值 / 「本地重放干净」对这个家族天然无效,落盘的必然是最小化后的
+  轻输入)。
 
 ## 相关
 
