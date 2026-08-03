@@ -43,6 +43,15 @@ func TestBulkBuildersChargeTheStepBudget(t *testing.T) {
 		// 15 seconds untripped when the pre-loop estimate fell back to charging only the subject.
 		{"gsub with a function replacement",
 			`local s=string.rep("a",200) local big=string.rep("z",204800) for i=1,400 do s:gsub("a",function() return big end) end return 1`},
+		// SINGLE-match amplification. The audit noted the cases above all use many small matches,
+		// where a per-match charge fires often enough to bound things -- so they could not catch a
+		// charge placed AFTER the replacement is built. One match expanding 20000 back-references
+		// ran 46 seconds that way; the charge is now incremental inside the %n expansion.
+		{"gsub one match, many back-references",
+			`local s=string.rep("a",1048576) local r=string.rep("%1",20000) local o=s:gsub("(a+)",r) return 1`},
+		// Same shape for format: one call, thousands of verbs, charged inside the verb loop.
+		{"format one call, many verbs",
+			`local s=string.rep("x",1048576) local f=string.rep("%s",7000) local a={} for i=1,7000 do a[i]=s end local o=string.format(f,unpack(a)) return 1`},
 		{"gsub with a table replacement",
 			`local s=string.rep("a",200) local big=string.rep("z",204800) local m={a=big} for i=1,400 do s:gsub("a",m) end return 1`},
 	} {
@@ -94,6 +103,11 @@ func TestBulkBuildersLeaveOrdinaryCodeAlone(t *testing.T) {
 			"20480"},
 		{"gsub with a function replacement",
 			`return ("aaa"):gsub("a",function(c) return c:upper() end)`, "AAA"},
+		{"gsub with captures", `return ("abc"):gsub("(%a)","[%1]")`, "[a][b][c]"},
+		{"gsub with a percent escape", `return ("abc"):gsub("b","%%")`, "a%c"},
+		{"gsub empty match", `return ("abc"):gsub("","-")`, "-a-b-c-"},
+		{"gsub anchored", `return ("abc"):gsub("^a","X")`, "Xbc"},
+		{"format several verbs", `return string.format("%s-%d-%5.2f","a",7,3.14159)`, "a-7- 3.14"},
 		{"64 KiB upper", `local s=string.rep("q",65536) return tostring(#s:upper())`, "65536"},
 		// A realistic serialization workload: 2000 formatted fields joined together.
 		{"format then concat",
