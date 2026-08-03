@@ -52,6 +52,15 @@ func TestBulkBuildersChargeTheStepBudget(t *testing.T) {
 		// Same shape for format: one call, thousands of verbs, charged inside the verb loop.
 		{"format one call, many verbs",
 			`local s=string.rep("x",1048576) local f=string.rep("%s",7000) local a={} for i=1,7000 do a[i]=s end local o=string.format(f,unpack(a)) return 1`},
+		// Cost in bytes CONSUMED rather than produced -- the fourth audit round's shape. Each of
+		// these copies a megabyte per call while producing little or nothing, so a charge based on
+		// output cannot see them.
+		{"tostring of a large string",
+			`local s=string.rep("a",1048576) for i=1,100000 do tostring(s) end return 1`},
+		{"format with a truncating precision",
+			`local s=string.rep("a",1048576) for i=1,200000 do string.format("%.1s",s) end return 1`},
+		{"format with zero precision",
+			`local s=string.rep("a",1048576) for i=1,200000 do string.format("%.0s",s) end return 1`},
 		{"gsub with a table replacement",
 			`local s=string.rep("a",200) local big=string.rep("z",204800) local m={a=big} for i=1,400 do s:gsub("a",m) end return 1`},
 	} {
@@ -108,6 +117,16 @@ func TestBulkBuildersLeaveOrdinaryCodeAlone(t *testing.T) {
 		{"gsub empty match", `return ("abc"):gsub("","-")`, "-a-b-c-"},
 		{"gsub anchored", `return ("abc"):gsub("^a","X")`, "Xbc"},
 		{"format several verbs", `return string.format("%s-%d-%5.2f","a",7,3.14159)`, "a-7- 3.14"},
+		{"truncating precision", `return string.format("%.1s","hello")`, "h"},
+		{"zero precision", `return string.format("%.0s","hello").."|"`, "|"},
+		{"tostring passthrough", `return tostring("s")`, "s"},
+		{"tostring number", `return tostring(1.5)`, "1.5"},
+		{"tostring metamethod",
+			`local t=setmetatable({},{__tostring=function() return "M" end}) return tostring(t)`, "M"},
+		{"64 KiB tostring", `local s=string.rep("q",65536) return tostring(#tostring(s))`, "65536"},
+		// Several references to one capture must not re-intern it per reference.
+		{"repeated capture references", `return ("abc"):gsub("(a)(b)","%0/%1/%2")`, "ab/a/bc"},
+		{"swapped captures", `return ("aXbXc"):gsub("(%a)X(%a)","%2-%1")`, "b-aXc"},
 		{"64 KiB upper", `local s=string.rep("q",65536) return tostring(#s:upper())`, "65536"},
 		// A realistic serialization workload: 2000 formatted fields joined together.
 		{"format then concat",

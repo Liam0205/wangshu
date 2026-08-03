@@ -306,10 +306,21 @@ func stringFnGsub(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 // st2gsubRepl computes the replacement text for one match.
 func st2gsubRepl(st *crescent.State, src []byte, s, e int, caps []capResult, repl value.Value) ([]byte, *crescent.LuaError) {
 	whole := src[s:e]
+	// Materialize the captures ONCE, lazily.
+	//
+	// This used to call capsToValues on every %n, re-interning every capture each time: a
+	// replacement with 20000 back-references to a 1 MiB capture interned 20 GiB and ran 11.5
+	// seconds. The charge below bills produced bytes, which cannot see that -- the cost was in
+	// bytes CONSUMED per reference, not produced.
+	var capVals []value.Value
+	capsDone := false
 	capVal := func(i int) value.Value {
-		vals := capsToValues(st, src, s, e, caps)
-		if i < len(vals) {
-			return vals[i]
+		if !capsDone {
+			capVals = capsToValues(st, src, s, e, caps)
+			capsDone = true
+		}
+		if i < len(capVals) {
+			return capVals[i]
 		}
 		return value.Nil
 	}
@@ -357,6 +368,11 @@ func st2gsubRepl(st *crescent.State, src []byte, s, e int, caps []capResult, rep
 						}
 						v := capVal(idx)
 						b, _ := valueToBytesForGsub(st, v)
+						// Charge the capture's bytes on each reference: copying it is the work,
+						// whether or not the result is kept.
+						if ce := st.ChargeBulkWork(len(b)); ce != nil {
+							return nil, ce
+						}
 						out = append(out, b...)
 					}
 				} else {
@@ -566,6 +582,15 @@ func stringFnFormat(st *crescent.State, args []value.Value) ([]value.Value, *cre
 			svb, e2 := strArg(st, args, argn, "format")
 			if e2 != nil {
 				return nil, e2 // strArg's message already matches PUC
+			}
+			// Charge the ARGUMENT's bytes, before the copy and before any precision truncation.
+			//
+			// The charge further down bills produced bytes, so "%.1s" against a 1 MiB argument
+			// looked free while still copying the megabyte: 200000 of them ran 34 seconds
+			// untripped, and "%.0s" produces nothing at all yet costs the same. The work is in the
+			// bytes CONSUMED.
+			if ce := st.ChargeBulkWork(len(svb)); ce != nil {
+				return nil, ce
 			}
 			sv := string(svb)
 			// PUC str_format 's': strings >= 100 chars WITHOUT a
