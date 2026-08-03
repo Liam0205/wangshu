@@ -21,7 +21,7 @@ description: >
   实际做的工作远多于等额计费的 concat——**等额计费不等于等额 wall-clock**，所以预算要由「计费相同时
   最贵的写法」定，而不是由「恰好被开成 issue 的那个写法」定。最终取 `1<<16`：上面最坏那条降到
   **5.2 秒**、余量 **1.93 倍**，是第一个满足「与看门狗差一个数量级」这个我自己文档里写下的判据的值；
-  corpus 全量重放 5.5 秒 → **0.85 秒**。新增 `fuzz_budget_test.go` 里的 `fuzzStepBudget` 常量（带与
+  corpus 全量重放 5.5 秒 → **0.85 秒**。新增 `internal/fuzzbudget` 包的 `Steps` 常量（带与
   消费方相同的 build tag），`fuzz_auto_test.go` 与 `fuzz_p4_test.go` 四处 `SetStepBudget` 改用它。
   **「不损失覆盖」这次是实测的而不是断言的**：harness 自己的 seed corpus 在 `1<<20` / `1<<19` /
   `1<<16` 三个预算下 `PromotionCount` **完全相同**，那些写法在几次调用之后就升层、从不接近任何一个
@@ -43,7 +43,7 @@ metadata:
 # 两个既不崩也不分歧的 crasher，与一个被审计推翻的余量数值（2026-08-04，分支 `fix/224-225-fuzz-crashers`）
 
 > 范围：#224、#225 两个 issue，3 个 commit（`4c89799` 第一版减半、`f844bf1` 文档、`d3928f5` 审计之后
-> 改按最贵写法定值）。**产品代码零改动**。改动落在 `fuzz_budget_test.go`（新增 `fuzzStepBudget`
+> 改按最贵写法定值）。**产品代码零改动**。改动落在 `internal/fuzzbudget`（新增 `fuzzbudget.Steps`
 > 常量，终值 `1<<16`）、`fuzz_auto_test.go` 与 `fuzz_p4_test.go`（四处 `SetStepBudget` 改用它）；
 > 回归 `test/regression/issue224_watchdog_margin_test.go`；
 > 两个 seed 入 `testdata/fuzz/FuzzAutoPromote/6ed94d7f9fe6248a` 与 `841bbefecf338b0d`。
@@ -113,7 +113,7 @@ commit 上就已经不是「无界」了。
 
 ### 4. 第一版修法（减半到 `1<<19`）被审计推翻
 
-我第一版把预算减半，`fuzz_budget_test.go` 新增常量 `fuzzStepBudget = 1 << 19`，`fuzz_auto_test.go`
+我第一版把预算减半，`internal/fuzzbudget` 新增常量 `fuzzbudget.Steps = 1 << 19`，`fuzz_auto_test.go`
 （两处，`st1` 与 `stA`）与 `fuzz_p4_test.go`（两处，`st1` 与 `st4`）四处 `SetStepBudget(1 << 20)`
 改用它。判据是「六个 corpus seed 都拿到 ≥1.8 倍余量」。
 
@@ -132,12 +132,12 @@ commit 上就已经不是「无界」了。
 
 ### 4b. 终值 `1<<16`：按最贵的那条写法定
 
-`fuzz_budget_test.go` 的常量最终是：
+`internal/fuzzbudget` 的常量最终是：
 
 ```go
 //go:build (wangshu_p3 || wangshu_p4) && wangshu_profile
 
-const fuzzStepBudget = 1 << 16
+const fuzzbudget.Steps = 1 << 16
 ```
 
 | 量 | `1<<20` | `1<<19`（被推翻） | `1<<16`（终值） |
@@ -180,7 +180,7 @@ harness 仍然 FAIL；把注入撤掉之后通过。90 秒引导式 fuzz 干净�
 
 ### 6. 一个过程细节：常量的 build tag
 
-我第一版把 `fuzzStepBudget` 写成一个**没有 build tag** 的文件，golangci-lint 报 unused。原因是消费
+我第一版把 `fuzzbudget.Steps` 写成一个**没有 build tag** 的文件，golangci-lint 报 unused。原因是消费
 它的两个文件都在 `(wangshu_p3 || wangshu_p4) && wangshu_profile` 之后，**默认构建看不见它们**，于是
 默认构建里这个常量确实没有任何使用者。加上相同的 tag 之后，五种构建组合都干净。
 
@@ -302,7 +302,7 @@ cap，而且两个预算下 step budget 都先于 arena cap 触发，这条路�
 
 ### 教训 6（常量要与它的消费方共享 build tag）
 
-`fuzzStepBudget` 第一版写在一个没有 build tag 的文件里，而消费它的两个文件都在
+`fuzzbudget.Steps` 第一版写在一个没有 build tag 的文件里，而消费它的两个文件都在
 `(wangshu_p3 || wangshu_p4) && wangshu_profile` 之后，于是默认构建里它没有任何使用者，golangci-lint
 判它 unused。
 
@@ -366,7 +366,7 @@ cap，而且两个预算下 step budget 都先于 arena cap 触发，这条路�
 看门狗、`chargeBulkWork` 的 1 步 / 64 字节比率与「CI 比本地慢约 10 倍」这个数字的出处）·
 [[2026-08-02-issue212-219-fuzz-crasher-batch]]（版本核对三档是成本档不是缺陷档——本轮教训 1 是它的
 延伸）·
-`fuzz_budget_test.go::fuzzStepBudget`（终值 `1<<16`，注释里记了 `1<<19` 为什么不够）·
+`internal/fuzzbudget.Steps`（终值 `1<<16`，注释里记了 `1<<19` 为什么不够）·
 `fuzz_auto_test.go` · `fuzz_p4_test.go` ·
 `test/regression/issue224_watchdog_margin_test.go`（五个用例，后三个是真正约束预算的写法）·
 `test/regression/issue144_regression_test.go`（arena cap 的直接覆盖，本轮 arena 变窄那一条靠它兜）·
@@ -374,3 +374,40 @@ cap，而且两个预算下 step budget 都先于 arena cap 触发，这条路�
 `docs/design/p1-interpreter/12-testing-difftest.md` §4.9a2 ·
 `docs/design/p4-method-jit/08-testing-strategy.md` §3.4 ·
 `docs/design/engineering.md` §1.1（那两处 `1<<20` 是历史数值，已加补记）
+
+## 第三次审计:我新加的计费把 lua 毫秒级完成的程序拒了,而且盲点扫得不彻底
+
+八条发现,分三类。
+
+**一、三处计费数量错(过度计费,拒掉了合法程序)。** 这是我第二次在同一个方向犯错:
+- `string.byte` 按 `len(s)` 而不是请求区间计费,于是 `for k=1,#s do n=n+s:byte(k) end` 这种逐字符扫描
+  每次都为整个主串付费——4200 字节就被拒,而 lua5.1 是毫秒级。
+- `table.insert`/`remove` 只要带位置参数就按整表计费,包括 `#t+1` 追加(完全不移位)和越界直接返回。
+  同一份工作因为「有没有传位置参数」被区别对待。
+- `table.sort` 按 `n*log2(n)*8` 计费——那个 `*8` 把每次**比较**当成一次机器字拷贝,于是单次 50 万元素
+  排序要花掉预算的 17 倍,而 lua5.1 0.15 秒完成。**比较不是字节拷贝**,计量器的单位是字节,
+  所以每种操作都要按**它自己的换算率**折算,而不是按 memcpy 的率。
+
+**二、三处仍在看门狗之上,而且都在我上一轮声称扫过的范围里。**
+- `table.maxn` 对**纯 hash 键**的表:我上一轮按 `RawBorder`(数组部分长度)计费,而那类表 border 是 0——
+  **计费恰好漏掉了让它变贵的那类输入**。改成在 `RawNext` 遍历**里面**按访问到的键计费,
+  并且按 64 字节等价(一次哈希探测不是一次字拷贝)而不是 8。368 毫秒 → 61 毫秒。
+- `loadstring` 大源码:编译器路径完全不经过任何计费口。按源码长度计费,26 秒 → 149 毫秒。
+- `collectgarbage`:全量回收要遍历活堆,代价随堆增长而调用只记一步。按 `GCCountKB()` 计费,
+  30 秒以上不终止 → 10 毫秒。(lua5.1 在这里也慢——2 万次 6.3 秒——但它会终止,而我这边不会。)
+
+**三、文档指向已删除的文件。** 我把常量搬进 `internal/fuzzbudget` 之后,九个文件二十一处仍写着
+`fuzz_budget_test.go::fuzzStepBudget`。
+
+追加三条教训:
+
+7. **计费要按「这次调用实际处理的那一部分」,而不是按「它能看到的那个容器有多大」。** `string.byte` 按主串、
+   `insert`/`remove` 按整表——三处都是拿容器规模代替了实际工作量。判据:计费表达式里出现「整个 x 的长度」时
+   问一句「这次调用真的碰了整个 x 吗」;答案是否,就把表达式换成实际区间。
+8. **计量器的单位是字节,所以每种操作都要按它自己的换算率折算。** 我把「一次比较」和「一次哈希探测」都
+   按 8 字节算,前者高了(排序被拒)、后者低了(maxn 仍超时)。判据:给一种新操作定换算率时,
+   量一次「N 次这个操作耗时多少」,再除以「N 字节拷贝耗时多少」,用比值定;不要默认它等于一个机器字。
+9. **一个「按容器规模计费」的判据,天然漏掉「容器规模看起来是 0 但工作量很大」的输入。**
+   `table.maxn` 按 `RawBorder` 计费,而纯 hash 键表的 border 是 0——计费漏掉的正好是最贵的那类。
+   判据:写完一个按规模计费的判据,构造一个「那个规模指标为 0 或很小、而实际工作量很大」的输入;
+   构造得出来就说明计费口选错了位置,应该挪到真正做工作的那个循环里面。

@@ -62,6 +62,13 @@ func baseFnCollectGarbage(st *crescent.State, args []value.Value) ([]value.Value
 	}
 	switch opt {
 	case "collect", "step":
+		// A full collection scans the live heap, so its cost grows with the heap while the caller's
+		// back edge bills one step: a loop of collectgarbage() over a 20000-table heap never
+		// terminated inside the fuzz budget. Charged by the live bytes it must trace. (lua5.1 is also
+		// slow here -- 6.3s for 20000 calls -- but it does terminate, and this made wangshu worse.)
+		if ce := st.ChargeBulkWork(int(st.GCCountKB()) * 1024); ce != nil {
+			return nil, ce
+		}
 		st.GCCollect()
 		if opt == "step" {
 			return []value.Value{value.True}, nil // step completes one round → true (5.1)

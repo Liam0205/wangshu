@@ -147,10 +147,18 @@ func tableFnInsert(st *crescent.State, args []value.Value) ([]value.Value, *cres
 	// projected to over two minutes against go-fuzz's 10-second watchdog (#224/#225 round). Charged
 	// on the same meter as the bulk string builders; the oracle prelude already charged this shape
 	// via __shiftTotal, so the engine being free was also an asymmetry.
+	// Only charge when the position actually SHIFTS elements. Appending at #t+1 moves nothing, and
+	// an out-of-range position returns without moving anything either -- billing those made the
+	// same work cost differently depending on whether the caller passed a position, and rejected
+	// `table.insert(t, #t+1, v)` loops that lua5.1 runs in milliseconds.
 	if len(args) >= 3 {
 		if n := int(st.RawBorder(value.GCRefOf(tv))); n > 0 {
-			if ce := st.ChargeBulkWork(n * 8); ce != nil {
-				return nil, ce
+			if pos, ok := toNumberStr(st, args[1]); ok {
+				if p := int(pos); p >= 1 && p <= n {
+					if ce := st.ChargeBulkWork((n - p + 1) * 8); ce != nil {
+						return nil, ce
+					}
+				}
 			}
 		}
 	}
@@ -236,11 +244,17 @@ func tableFnInsert(st *crescent.State, args []value.Value) ([]value.Value, *cres
 func tableFnRemove(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
 	// Removing below the end shifts every element above the position down: same O(n)-per-call,
 	// one-step-billed shape as insert above.
+	// Only the SHIFTED span, for the same reason as insert above: removing the last element moves
+	// nothing.
 	if len(args) >= 2 {
 		if tv, e := tblArg(args, 0, "remove"); e == nil {
 			if n := int(st.RawBorder(value.GCRefOf(tv))); n > 0 {
-				if ce := st.ChargeBulkWork(n * 8); ce != nil {
-					return nil, ce
+				if pos, ok := toNumberStr(st, args[1]); ok {
+					if p := int(pos); p >= 1 && p <= n {
+						if ce := st.ChargeBulkWork((n - p) * 8); ce != nil {
+							return nil, ce
+						}
+					}
 				}
 			}
 		}
@@ -414,7 +428,14 @@ func tableFnSort(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 		for m := n; m > 1; m >>= 1 {
 			lg++
 		}
-		if ce := st.ChargeBulkWork(n * lg * 8); ce != nil {
+		// n*log2(n) COMPARISONS, charged at one byte-equivalent each rather than eight.
+		//
+		// The first version multiplied by 8, as if every comparison copied a machine word. That
+		// made a single 500000-element sort cost 17x the whole fuzz budget, rejecting a program
+		// lua5.1 finishes in 0.15s. A comparison is not a byte copy: the meter's unit is bytes
+		// moved, so an operation whose cost is comparisons has to be converted at its own rate,
+		// not at the rate of a memcpy.
+		if ce := st.ChargeBulkWork(n * lg); ce != nil {
 			return nil, ce
 		}
 	}
@@ -468,16 +489,6 @@ func tableFnGetn(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 
 // tableFnMaxn: table.maxn(t) = the largest positive numeric key (scans the whole table, 5.1).
 func tableFnMaxn(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
-	// Charged by the values it moves: O(n) work per call billed as one step on the caller back
-	// edge, so a loop of it stayed unbounded in wall-clock terms even after the budget was
-	// chosen from the BILLED operators. Found by sweeping for work that bypasses ChargeBulkWork.
-	if len(args) > 0 && value.Tag(args[0]) == value.TagTable {
-		if n := int(st.RawBorder(value.GCRefOf(args[0]))); n > 0 {
-			if ce := st.ChargeBulkWork(n * 8); ce != nil {
-				return nil, ce
-			}
-		}
-	}
 
 	tv, e := tblArg(args, 0, "maxn")
 	if e != nil {
@@ -487,6 +498,19 @@ func tableFnMaxn(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 	maxn := 0.0
 	key := value.Nil
 	for {
+		// Charge per key VISITED, inside the walk.
+		//
+		// Charging the array border instead missed exactly the tables that make this expensive: a
+		// table with 4000 non-integer keys has border 0, so it was billed nothing and a loop of
+		// maxn over it never terminated. The cost is the walk, and only the walk knows its length --
+		// which is the same "charge where the work happens" rule the string builders needed.
+		//
+		// Charged at 64 byte-equivalents (one full step) per key rather than 8: a RawNext step is a
+		// hash probe over arena memory, not a word copy, and measuring showed 8 left a maxn loop at
+		// 368ms -- the meter's unit is bytes, so each operation has to be converted at its own rate.
+		if ce := st.ChargeBulkWork(64); ce != nil {
+			return nil, ce
+		}
 		k, _, ok, err := st.RawNext(t, key)
 		if err != nil {
 			return nil, err

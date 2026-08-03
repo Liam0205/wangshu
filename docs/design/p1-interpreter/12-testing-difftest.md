@@ -588,7 +588,7 @@ timeout、`go test -timeout`),而这些超时量的是 **wall-clock**、不是�
 最慢的家族 seed 投射到 CI 是 **12–13 秒**对 **10 秒**看门狗,六个 seed 里**两个已经超过**、另外四个
 余量不到 **1.4 倍**。
 
-修法是把 p4 fuzz harness 的 step budget 减到 **`1<<16`**(`fuzz_budget_test.go` 的 `fuzzStepBudget`,
+修法是把 p4 fuzz harness 的 step budget 减到 **`1<<16`**(`internal/fuzzbudget` 的 `fuzzbudget.Steps`,
 `fuzz_auto_test.go` 与 `fuzz_p4_test.go` 四处 `SetStepBudget` 共用它),corpus 全量重放
 5.5 秒 → **0.85 秒**。
 

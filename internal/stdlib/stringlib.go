@@ -875,14 +875,6 @@ func stringFnByte(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 		return nil, e
 	}
 
-	// Charged by the values it moves: O(n) work per call billed as one step on the caller back
-	// edge, so a loop of it stayed unbounded in wall-clock terms even after the budget was
-	// chosen from the BILLED operators. Found by sweeping for work that bypasses ChargeBulkWork.
-	if n := len(s); n > 0 {
-		if ce := st.ChargeBulkWork(n * 8); ce != nil {
-			return nil, ce
-		}
-	}
 	// PUC luaL_optinteger: nil defaults, but a present non-number
 	// argument raises (string.byte("abc", "y") errors; "2" coerces).
 	iF, ok := numArg(st, args, 1, 1)
@@ -895,6 +887,17 @@ func stringFnByte(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 	}
 	i := normIdx(int(iF), len(s))
 	j := normIdx(int(jF), len(s))
+	// Charge the REQUESTED range, not the whole subject.
+	//
+	// Billing len(s) made a per-character scan -- `for k=1,#s do n=n+s:byte(k) end` -- pay for the
+	// entire string on every call, so a 4200-byte scan was rejected at both the old and the new
+	// budget while lua5.1 finishes it in milliseconds. Over-charging is not the safe direction: it
+	// rejects legitimate programs, and in a fuzz harness a limit error reads as "skip".
+	if n := j - i + 1; n > 0 {
+		if ce := st.ChargeBulkWork(n * 8); ce != nil {
+			return nil, ce
+		}
+	}
 	if i < 1 {
 		i = 1
 	}
