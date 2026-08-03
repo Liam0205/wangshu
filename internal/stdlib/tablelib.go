@@ -142,6 +142,18 @@ func tableFnInsert(st *crescent.State, args []value.Value) ([]value.Value, *cres
 	if e != nil {
 		return nil, e
 	}
+	// Inserting below the end shifts every element above the position, which is O(n) work billed as
+	// one step on the loop's back edge. A loop of table.insert(t, 1, ·) over a 4000-element table
+	// projected to over two minutes against go-fuzz's 10-second watchdog (#224/#225 round). Charged
+	// on the same meter as the bulk string builders; the oracle prelude already charged this shape
+	// via __shiftTotal, so the engine being free was also an asymmetry.
+	if len(args) >= 3 {
+		if n := int(st.RawBorder(value.GCRefOf(tv))); n > 0 {
+			if ce := st.ChargeBulkWork(n * 8); ce != nil {
+				return nil, ce
+			}
+		}
+	}
 	t := value.GCRefOf(tv)
 	n := int(st.RawBorder(t))
 	switch len(args) {
@@ -222,6 +234,17 @@ func tableFnInsert(st *crescent.State, args []value.Value) ([]value.Value, *cres
 
 // tableFnRemove: table.remove(t [, pos]) → the removed value.
 func tableFnRemove(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
+	// Removing below the end shifts every element above the position down: same O(n)-per-call,
+	// one-step-billed shape as insert above.
+	if len(args) >= 2 {
+		if tv, e := tblArg(args, 0, "remove"); e == nil {
+			if n := int(st.RawBorder(value.GCRefOf(tv))); n > 0 {
+				if ce := st.ChargeBulkWork(n * 8); ce != nil {
+					return nil, ce
+				}
+			}
+		}
+	}
 	tv, e := tblArg(args, 0, "remove")
 	if e != nil {
 		return nil, e
@@ -381,6 +404,20 @@ func tableFnSort(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 		return nil, crescent.NewArgError(2, fmt.Sprintf("function expected, got %s", st.TypeName(args[1])))
 	}
 	n := int(st.RawBorder(t))
+	// Sorting compares about n*log2(n) times, all of it inside one call billed as a single step on
+	// the caller's back edge: a loop sorting a 999-element reversed table projected to 56 seconds
+	// against the 10-second watchdog. Charged by the comparison count, approximating log2(n) with
+	// n's bit length. The oracle prelude already charged this shape, so leaving the engine free was
+	// also an asymmetry between the two differential sides.
+	if n > 1 {
+		lg := 0
+		for m := n; m > 1; m >>= 1 {
+			lg++
+		}
+		if ce := st.ChargeBulkWork(n * lg * 8); ce != nil {
+			return nil, ce
+		}
+	}
 	vals := make([]value.Value, n)
 	for i := 0; i < n; i++ {
 		vals[i], _ = st.RawGet(t, value.NumberValue(float64(i+1)))

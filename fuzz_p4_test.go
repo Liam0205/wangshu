@@ -20,6 +20,7 @@
 package wangshu_test
 
 import (
+	"github.com/Liam0205/wangshu/internal/fuzzbudget"
 	"testing"
 
 	"github.com/Liam0205/wangshu"
@@ -137,12 +138,12 @@ return f(o1, o2)`,
 		// parallel workers crush the fuzz process outright); both States use
 		// the same cap to keep the comparison symmetric.
 		st1 := wangshu.NewState(wangshu.Options{MaxArenaBytes: 64 << 20})
-		st1.SetStepBudget(fuzzStepBudget)
+		st1.SetStepBudget(fuzzbudget.Steps)
 		resP1, errP1 := prog.Run(st1)
 
 		// Run the P4 force-all path
 		st4 := wangshu.NewState(wangshu.Options{MaxArenaBytes: 64 << 20})
-		st4.SetStepBudget(fuzzStepBudget)
+		st4.SetStepBudget(fuzzbudget.Steps)
 		st4.SetForceAllPromote(true)
 		resP4, errP4 := prog.Run(st4)
 
