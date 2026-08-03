@@ -322,7 +322,19 @@ func st2gsubRepl(st *crescent.State, src []byte, s, e int, caps []capResult, rep
 			rb = object.StringBytes(st.Arena(), value.GCRefOf(repl))
 		}
 		var out []byte
+		charged := 0
 		for i := 0; i < len(rb); i++ {
+			// Charge INSIDE the expansion, not after it returns.
+			//
+			// A single match can amplify without bound: gsub("(a+)", string.rep("%1", 20000)) on a
+			// 1 MiB subject expands 20000 back-references before the caller's per-match charge is
+			// ever consulted, which ran 46 seconds -- past go-fuzz's 10s watchdog, the very
+			// signature this budget exists to stop. Billing each appended chunk as it is produced
+			// bounds one match as well as many, and still needs no estimate.
+			if e := st.ChargeBulkWork(len(out) - charged); e != nil {
+				return nil, e
+			}
+			charged = len(out)
 			if rb[i] == '%' && i+1 < len(rb) {
 				i++
 				c := rb[i]
@@ -406,9 +418,17 @@ func stringFnFormat(st *crescent.State, args []value.Value) ([]value.Value, *cre
 		return nil, e
 	}
 	var out []byte
+	charged := 0
 	argn := 1
 	i := 0
 	for i < len(f) {
+		// Charge as the output grows, not once at the end: 7000 %s verbs with 1 MiB arguments each
+		// produced 7 GiB and ran 11 seconds before a single trailing charge was consulted, which is
+		// past go-fuzz's 10s watchdog. Same defect shape as gsub's, in the same round.
+		if e := st.ChargeBulkWork(len(out) - charged); e != nil {
+			return nil, e
+		}
+		charged = len(out)
 		if f[i] != '%' {
 			out = append(out, f[i])
 			i++

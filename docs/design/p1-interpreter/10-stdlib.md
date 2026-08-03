@@ -856,7 +856,7 @@ string 库**操作字节**(Lua string 是字节串,01 §5.1),索引 1-based,负�
 | `string.gsub(s, pat, repl [, n])` | 全局替换(repl 可为串/表/函数) | `(s, pat, repl [,n])` → (result, count) | ✅ | **Lua pattern**(§6);repl 函数重入 + Pin 捕获(§3.4) |
 | `string.dump(f)` | 序列化函数字节码 | `(f)` → string | **❌/△ 缺口** | P1 可缺(§5.6);依赖字节码序列化 |
 
-> **补记(同轮审计)**:最初只记了 `string.rep` / `string.format` / `table.concat` 三个。审计指出仓库**自己**已有反证:`internal/oracle/prelude.go` 早就给 `string.upper` / `lower` / `reverse` / `sub` 记了 `__chargeBulk`,所以引擎侧不记既是漏洞、也让差分两侧不对称——oracle 抬 sentinel 跳过而引擎跑满整个循环。实测这五个(含 `string.gsub`)单次 `prog.Run` 分别 23 / 12 / 12 / 12 / 11 秒且预算完全没触发,现已一并按产出字节记账。`string.sub` 记**提取长度**而非主串长度,`string.gsub` 记主串加最坏扩张(替换是函数或表时长度未知,只记主串)。
+> **补记(同轮审计)**:最初只记了 `string.rep` / `string.format` / `table.concat` 三个。审计指出仓库**自己**已有反证:`internal/oracle/prelude.go` 早就给 `string.upper` / `lower` / `reverse` / `sub` 记了 `__chargeBulk`,所以引擎侧不记既是漏洞、也让差分两侧不对称——oracle 抬 sentinel 跳过而引擎跑满整个循环。实测这五个(含 `string.gsub`)单次 `prog.Run` 分别 23 / 12 / 12 / 12 / 11 秒且预算完全没触发,现已一并按产出字节记账。`string.sub` 记**提取长度**而非主串长度,`string.gsub` 先记主串,随后**在展开过程中**逐段记账——最初那版在循环外按「每个字节位置都匹配」估上界,两个方向都错(普通模板替换被记成约 67 MB 而拒掉、函数/表替换只记主串于是 15 秒不触发);改成按匹配记之后仍不够,因为**单次匹配**也能放大(`gsub("(a+)", string.rep("%1",20000))` 46 秒),所以最终是在 `%n` 展开与 format 的 verb 循环内部按已产出字节增量记账。
 
 ### 5.2 `string.format` 指令集(差分敏感,指向 12)
 
