@@ -736,6 +736,14 @@ func argTypeName(args []value.Value, n int) string {
 // call and by an explicit base of 10 -- PUC's luaB_tonumber routes both through
 // the same branch, so they must not diverge.
 func baseToNumberStandard(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
+	// Parsing a numeral is proportional to its length, so charge the INPUT: a 100000-digit string
+	// tonumber'd 50000 times ran 16.6 seconds with the budget untouched. Same unit lesson as
+	// tostring and format's precision -- the cost is bytes consumed, and nothing is produced.
+	if len(args) > 0 && value.Tag(args[0]) == value.TagString {
+		if ce := st.ChargeBulkWork(len(object.StringBytes(st.Arena(), value.GCRefOf(args[0])))); ce != nil {
+			return nil, ce
+		}
+	}
 	f, ok := crescentToNumber(st, args[0])
 	if !ok {
 		return []value.Value{value.Nil}, nil
@@ -1029,7 +1037,13 @@ func stringFnSub(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 	if len(args) < 2 {
 		return nil, crescent.NewArgError(2, "number expected, got no value")
 	}
-	s := string(sb)
+	// Work on the byte view, NOT a copy of the whole subject.
+	//
+	// `s := string(sb)` copied the entire string just to slice a piece out of it, so
+	// s:sub(1,1) on a 1 MiB subject copied a megabyte per call: 300000 of them ran 43 seconds,
+	// where lua5.1 finishes instantly because str_sub only pushes the slice. The byte charge
+	// could not see it either, since it bills the EXTRACTED length -- one byte here. The
+	// defect was the copy, not the accounting.
 	startF, ok := toNumberStr(st, args[1])
 	if !ok {
 		return nil, crescent.NewArgError(2, "number expected, got "+st.TypeName(args[1]))
@@ -1046,13 +1060,13 @@ func stringFnSub(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 		}
 		endF = f
 	}
-	start := normIdx(int(startF), len(s))
-	end := normIdx(int(endF), len(s))
+	start := normIdx(int(startF), len(sb))
+	end := normIdx(int(endF), len(sb))
 	if start < 1 {
 		start = 1
 	}
-	if end > len(s) {
-		end = len(s)
+	if end > len(sb) {
+		end = len(sb)
 	}
 	if start > end {
 		return []value.Value{intern(st, "")}, nil
@@ -1062,7 +1076,7 @@ func stringFnSub(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 	if e := st.ChargeBulkWork(end - start + 1); e != nil {
 		return nil, e
 	}
-	return []value.Value{intern(st, s[start-1:end])}, nil
+	return []value.Value{intern(st, string(sb[start-1:end]))}, nil
 }
 
 func stringFnRep(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {

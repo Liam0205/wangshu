@@ -61,6 +61,9 @@ func TestBulkBuildersChargeTheStepBudget(t *testing.T) {
 			`local s=string.rep("a",1048576) for i=1,200000 do string.format("%.1s",s) end return 1`},
 		{"format with zero precision",
 			`local s=string.rep("a",1048576) for i=1,200000 do string.format("%.0s",s) end return 1`},
+		// tonumber parses proportionally to input length while producing a number.
+		{"tonumber of a long numeral",
+			`local s=string.rep("9",100000) for i=1,50000 do tonumber(s) end return 1`},
 		{"gsub with a table replacement",
 			`local s=string.rep("a",200) local big=string.rep("z",204800) local m={a=big} for i=1,400 do s:gsub("a",m) end return 1`},
 	} {
@@ -120,6 +123,15 @@ func TestBulkBuildersLeaveOrdinaryCodeAlone(t *testing.T) {
 		{"truncating precision", `return string.format("%.1s","hello")`, "h"},
 		{"zero precision", `return string.format("%.0s","hello").."|"`, "|"},
 		{"tostring passthrough", `return tostring("s")`, "s"},
+		// sub used to copy the WHOLE subject before slicing, so one byte out of 1 MiB cost a
+		// megabyte per call (43s over 300000 calls). It works on the byte view now, and a genuine
+		// full-length extraction still charges its bytes.
+		{"one byte from a large string",
+			`local s=string.rep("a",1048576) local r for i=1,2000 do r=s:sub(1,1) end return r`, "a"},
+		{"tonumber decimal", `return tostring(tonumber("42"))`, "42"},
+		{"tonumber hex literal", `return tostring(tonumber("0x1f"))`, "31"},
+		{"tonumber with a base", `return tostring(tonumber("ff",16))`, "255"},
+		{"tonumber rejects", `return tostring(tonumber("zz"))`, "nil"},
 		{"tostring number", `return tostring(1.5)`, "1.5"},
 		{"tostring metamethod",
 			`local t=setmetatable({},{__tostring=function() return "M" end}) return tostring(t)`, "M"},
