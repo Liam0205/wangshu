@@ -65,6 +65,19 @@ func TestConcatStormKeepsWatchdogMargin(t *testing.T) {
 			`local t={} for i=1,4000 do t[i]=i end for k=1,777777776 do table.remove(t,1) t[#t+1]=1 end return 1`},
 		{"sort loop",
 			`local t={} for i=1,999 do t[i]=1000-i end for k=1,777777776 do table.sort(t) end return 1`},
+		// Five more found by sweeping for the same blind spot myself, rather than waiting for a third
+		// audit round: everything that moves O(n) values per call without reaching ChargeBulkWork.
+		// They projected to 73-129s at the chosen budget.
+		{"unpack a wide table",
+			`local a={} for i=1,4000 do a[i]=i end for k=1,777777776 do local _=select("#",unpack(a)) end return 1`},
+		{"select at a high index",
+			`local a={} for i=1,4000 do a[i]=i end for k=1,777777776 do local _=select(3999,unpack(a)) end return 1`},
+		{"string.char with many args",
+			`local a={} for i=1,4000 do a[i]=65 end for k=1,777777776 do string.char(unpack(a)) end return 1`},
+		{"string.byte over a range",
+			`local s=string.rep("a",4000) for k=1,777777776 do s:byte(1,4000) end return 1`},
+		{"table.maxn",
+			`local t={} for i=1,4000 do t[i]=i end for k=1,777777776 do table.maxn(t) end return 1`},
 	} {
 		prog, err := wangshu.Compile([]byte(tc.src), "r")
 		if err != nil {

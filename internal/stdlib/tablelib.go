@@ -468,6 +468,17 @@ func tableFnGetn(st *crescent.State, args []value.Value) ([]value.Value, *cresce
 
 // tableFnMaxn: table.maxn(t) = the largest positive numeric key (scans the whole table, 5.1).
 func tableFnMaxn(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
+	// Charged by the values it moves: O(n) work per call billed as one step on the caller back
+	// edge, so a loop of it stayed unbounded in wall-clock terms even after the budget was
+	// chosen from the BILLED operators. Found by sweeping for work that bypasses ChargeBulkWork.
+	if len(args) > 0 && value.Tag(args[0]) == value.TagTable {
+		if n := int(st.RawBorder(value.GCRefOf(args[0]))); n > 0 {
+			if ce := st.ChargeBulkWork(n * 8); ce != nil {
+				return nil, ce
+			}
+		}
+	}
+
 	tv, e := tblArg(args, 0, "maxn")
 	if e != nil {
 		return nil, e
@@ -1097,6 +1108,17 @@ func mathFnRandomSeed(st *crescent.State, args []value.Value) ([]value.Value, *c
 const maxCStack = 8000
 
 func baseFnUnpackImpl(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
+	// Charged by the values it moves: O(n) work per call billed as one step on the caller back
+	// edge, so a loop of it stayed unbounded in wall-clock terms even after the budget was
+	// chosen from the BILLED operators. Found by sweeping for work that bypasses ChargeBulkWork.
+	if len(args) > 0 && value.Tag(args[0]) == value.TagTable {
+		if n := int(st.RawBorder(value.GCRefOf(args[0]))); n > 0 {
+			if ce := st.ChargeBulkWork(n * 8); ce != nil {
+				return nil, ce
+			}
+		}
+	}
+
 	tv, e := tblArg(args, 0, "unpack")
 	if e != nil {
 		return nil, e

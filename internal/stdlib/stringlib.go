@@ -874,6 +874,15 @@ func stringFnByte(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 	if e != nil {
 		return nil, e
 	}
+
+	// Charged by the values it moves: O(n) work per call billed as one step on the caller back
+	// edge, so a loop of it stayed unbounded in wall-clock terms even after the budget was
+	// chosen from the BILLED operators. Found by sweeping for work that bypasses ChargeBulkWork.
+	if n := len(s); n > 0 {
+		if ce := st.ChargeBulkWork(n * 8); ce != nil {
+			return nil, ce
+		}
+	}
 	// PUC luaL_optinteger: nil defaults, but a present non-number
 	// argument raises (string.byte("abc", "y") errors; "2" coerces).
 	iF, ok := numArg(st, args, 1, 1)
@@ -914,6 +923,16 @@ func stringFnByte(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 
 // stringFnChar: string.char(...).
 func stringFnChar(st *crescent.State, args []value.Value) ([]value.Value, *crescent.LuaError) {
+	// Charged by the number of values it moves: this does O(n) work per call while the caller's
+	// back edge bills one step, so a loop of it was unbounded in wall-clock terms even at a
+	// budget chosen from the billed operators (#224/#225 second audit round). Found by sweeping
+	// for work that BYPASSES ChargeBulkWork, which is the blind spot of enumerating along it.
+	if n := len(args); n > 0 {
+		if ce := st.ChargeBulkWork(n * 8); ce != nil {
+			return nil, ce
+		}
+	}
+
 	out := make([]byte, len(args))
 	for i, a := range args {
 		f, ok := toNumberStr(st, a)
