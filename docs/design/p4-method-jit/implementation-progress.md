@@ -2770,7 +2770,7 @@ o2={n=function() return 0 end} function f(b) return b:n() end for A=0,70 do f(o2
 ```
 
 P1 成功、P4 抬 `SETLIST: not a table`。**根因不在 JIT 里**,而在共享调用层
-(`internal/crescent/call.go::doReturn`);P4 只是唯一会走到那条路径的层。
+(`internal/crescent/call.go::doReturn`)。**这一条不是 P4 独有**——审计实测 P3 的 gibbous helper 同样会走到那条嵌套 `executeFrom` 路径、同样复现,所以修复位置在共享层是对的;这里记在 P4 只是因为 nightly 是从 `FuzzP4ForceAllPromote` 报出来的。
 
 - **三步链**:① gibbous 的 `TailCall` helper(`internal/crescent/gibbous_host.go`,§9.20 的
   trampoline 家族之一;`DoCall` / `CallBaseline` / `ExecutePlainCallInlineFrame` 同形)为了同步
