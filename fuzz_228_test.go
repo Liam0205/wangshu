@@ -61,3 +61,40 @@ func TestUnfinishedCaptureIsReportedLazily(t *testing.T) {
 		}
 	}
 }
+
+// TestGsubRaisesAtTheFirstOffendingReference pins WHICH error a multi-%n template reports.
+//
+// PUC's add_s scans the replacement left to right and raises on the first offending reference, so
+// gsub("ab", "(", "%1%2") is "unfinished capture" -- %1 is reached first -- and not the
+// "invalid capture index %2" that the later reference would give. Recording capsErr and testing it only
+// after the whole template was scanned inverted that, and no suite caught it: none compares gsub error
+// CLASSES across multi-%n templates, so the check has to be here.
+func TestGsubRaisesAtTheFirstOffendingReference(t *testing.T) {
+	for _, tc := range []struct{ name, src, want string }{
+		{"unfinished before out-of-range",
+			`local ok,e=pcall(string.gsub,"ab","(","%1%2") return tostring(e)`, "unfinished capture"},
+		{"unfinished before out-of-range, mixed pattern",
+			`local ok,e=pcall(string.gsub,"ab","(.)(","%2%3") return tostring(e)`, "unfinished capture"},
+		// The reverse order must still report the index error, so this is not just "always report
+		// unfinished".
+		{"out-of-range alone",
+			`local ok,e=pcall(string.gsub,"ab","(.)","%2") return tostring(e)`, "invalid capture index %2"},
+		{"out-of-range with no captures",
+			`local ok,e=pcall(string.gsub,"ab","%a","%2") return tostring(e)`, "invalid capture index %2"},
+	} {
+		if got := runOne(t, tc.src).Str(); got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
+	// Whole-match capture 1 is memoized like any other index: many references must intern once and
+	// still produce the right text.
+	for _, tc := range []struct{ name, src, want string }{
+		{"repeated whole-match reference", `return tostring(string.gsub("ab","%a","%1%1%1"))`, "aaabbb"},
+		{"repeated explicit capture", `return tostring(string.gsub("ab","(%a)","%1%1"))`, "aabb"},
+		{"percent-0 twice", `return tostring(string.gsub("ab","%a","%0%0"))`, "aabb"},
+	} {
+		if got := runOne(t, tc.src).Str(); got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
