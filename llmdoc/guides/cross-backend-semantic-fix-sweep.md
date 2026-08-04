@@ -210,6 +210,20 @@ top 之上,GC 的栈根扫描(`visitThreadValues`)把 `[top, size)` 当陈旧残
 oracle 再决定是否补语料」是同一件事的另一个入口:那条讲补语料前先看仓里有没有,本条讲改边界后必须去跑
 那个已有的。反思 [[2026-08-04-issue228-229-lazy-capture-and-nested-tailcall-top]] 教训 1/2。
 
+**判据三:懒抬检查还要保持参照实现的粒度与求值顺序。** 找对 materialize 点仍不够:参照函数一次读取
+单个元素,望舒就不能先检查整个集合;参照循环从左到右在首个失败处立即返回,望舒就不能把错误暂存到循环
+结束后再抬。#228 的后续审计先发现整列表检查让未被读取的 unfinished capture 也报错,再发现
+`gsub("ab", "(", "%1%2")` 被延迟检查错误地报成后一个 `%2` 的 `invalid capture index`,而 PUC 在
+读 `%1` 时已经报 `unfinished capture`;反转模板顺序后又应以 index error 为先,所以规则不是错误优先级,
+而是**首个被求值的失败优先**。自查时把参照函数的参数粒度、循环方向、每个 early return 一起抄成
+执行顺序表,并用能同时触发两种错误的输入验证谁先抬。
+
+这类审计不能只比较成功 / 失败。官方套可能覆盖边界两侧,却不比较同一次调用会抬哪一种错误;应补一张
+`输入形状 × 消费方式 / 替换模板` 的 oracle 矩阵,逐字节比较返回值或错误类别。矩阵还应顺手扫同一错误的
+所有兄弟站点:#228 的 14 种 pattern × 10 种 replacement 扫描发现三个 `invalid capture index` 站点中
+两个多带了 `%n` 后缀,代码库内部已经不对称。**同族实现有一个站点与 PUC 一致时,它是核对其余站点的
+便宜样板,不是只修当前 reproducer 的理由。**
+
 反思实例见 `memory/reflections/2026-07-12-cgo-oracle-fuzz-round.md` 教训 2(一轮里 35 处分歧全部经此手法定位)。与本 guide 已有的「跨后端 / 跨通道枚举」纪律同域:跨后端扫要枚举实现,与 PUC 差分要枚举权威源码。
 
 延伸(真值最终落在宿主 libc 时,读 C 源码只是第一步):PUC 语义不只由 C 源码定义,**非有限值(NaN/Inf)的格式化还由宿主 libc(glibc)定义**。`string.format` 的 `%f/%e/%g/%E/%G` 对 NaN/Inf 转发给 C `sprintf`,输出的大小写拼写(小写 verb → `nan`/`inf`,大写 → `NAN`/`INF`)、符号规则、以及 glibc 为 NaN 保留符号列导致的 width−1 quirk(见下),grep `_lua515/` 只能看到「转发给 `sprintf`」,真正的真值在 libc 里。这类分歧必须以 oracle 实测字节为准,不能照 Go `fmt` 或凭直觉。glibc 的确切规律:glibc 总为 NaN 保留 1 个符号列;小写 verb 符号不显示(那一列变空格被 width 吸收 → 有效 width = 声明 width−1),大写 verb 符号是可见的 `-`(已在 core 里占了那一列 → 完整 width);Inf 符号一直在 core 里 → 完整 width;precision 对 NaN/Inf 忽略。方法论要点:**对付「宿主 libc 定义的格式化」这类外部真值,不要从一两个样本外推规则,直接构造覆盖矩阵(verb × 符号 × flag × width)扫 oracle,规律要能解释矩阵里每一格才算定准**——本轮(#170/#171,PR #172)正是从单点「小写 NaN width−1」外推「所有非有限值 width−1」,一步把 Inf 全改错,靠 93 组覆盖矩阵实测才把完整真值表逼出来。实现落点:`internal/stdlib/stringlib.go` 的 `cFormatSpecialFloat` 在 NaN/Inf 时特判;反思实例见 `memory/reflections/2026-07-22-oracle-format-nan-inf-round.md` 教训 1/2。**2026-07-26 修订:模仿 glibc 的那两处已经撤掉**——`cFormatSpecialFloat` 现在让 NaN 在所有 verb 下都不带符号、都按完整声明宽度补齐(大写 verb 不再硬编码 `-NAN`,小写 NaN 不再按声明宽度减一补齐),Inf 的符号与宽度规则不变。原因:那两处只为让差分 oracle 一致而存在,却让望舒自身的 `%e` 与 `%E`、`%5f` 与 `%5E` 自相矛盾,而 arm64 的 glibc 与 x86 还不同,模仿本来就不可移植;NaN 符号差异现在在 oracle 渲染处消除(`internal/oracle/lua515.c`,详见 `docs/design/p1-interpreter/12-testing-difftest.md` §4.2)。方法论那条(外部真值面要建覆盖矩阵、不从单点外推)仍然成立;附加一条:**在产品代码里逐字节模仿一个宿主 libc 之前,先问这个模仿是为谁服务的**——如果只为让测试基准一致,那它同时会把不可移植性写进产品行为,应该改在基准侧消除差异。
