@@ -471,8 +471,15 @@ func st2gsubRepl(st *crescent.State, src []byte, s, e int, caps []capResult, rep
 	// references to one large capture would otherwise re-intern it per reference.
 	capVal := func(i int) value.Value {
 		if !capsDone {
-			capVals = make([]value.Value, len(caps))
-			capsSeen = make([]bool, len(caps))
+			// One slot even when there are no explicit captures: capture 1 is then the whole match,
+			// and a template with many %1 references must intern it once rather than per reference
+			// (the reason memoization was added here in the first place).
+			n := len(caps)
+			if n == 0 {
+				n = 1
+			}
+			capVals = make([]value.Value, n)
+			capsSeen = make([]bool, n)
 			capsDone = true
 		}
 		if i >= 0 && i < len(capVals) {
@@ -537,6 +544,16 @@ func st2gsubRepl(st *crescent.State, src []byte, s, e int, caps []capResult, rep
 							return nil, crescent.NewError(fmt.Sprintf("invalid capture index %%%c", c))
 						}
 						v := capVal(idx)
+						// Raise at the FIRST offending %n, where PUC's add_s does.
+						//
+						// Deferring this to the end of the template let a later %n report first:
+						// gsub("ab", "(", "%1%2") answered "invalid capture index %2" where lua5.1
+						// says "unfinished capture", because add_s scans left to right and raises on
+						// the reference it reaches first. An audit caught it -- the suites do not
+						// compare gsub error classes for multi-%n templates.
+						if capsErr != nil {
+							return nil, crescent.NewError(capsErr.Error())
+						}
 						b, _ := valueToBytesForGsub(st, v)
 						// Charge the capture's bytes on each reference: copying it is the work,
 						// whether or not the result is kept.
