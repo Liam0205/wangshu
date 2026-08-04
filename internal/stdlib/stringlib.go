@@ -53,19 +53,28 @@ func strInitPos(init float64, slen int) int {
 
 // capsToValues materializes captures into Lua values; with no explicit
 // captures it returns the whole matched string.
-func capsToValues(st *crescent.State, src []byte, s, e int, caps []capResult) []value.Value {
+// capsToValues materializes captures, and is this file's analogue of PUC's push_onecapture --
+// including where the "unfinished capture" error is raised.
+//
+// Returning the error from here rather than from collectCaptures is what lets gsub with a plain
+// string replacement succeed on a pattern like "(", as PUC does: add_value routes a string or number
+// replacement to add_s, which expands only %n and never materializes a capture.
+func capsToValues(st *crescent.State, src []byte, s, e int, caps []capResult) ([]value.Value, error) {
 	if len(caps) == 0 {
-		return []value.Value{intern(st, string(src[s:e]))}
+		return []value.Value{intern(st, string(src[s:e]))}, nil
 	}
 	out := make([]value.Value, len(caps))
 	for i, c := range caps {
-		if c.pos {
+		switch {
+		case c.unfinished:
+			return nil, fmt.Errorf("unfinished capture")
+		case c.pos:
 			out[i] = value.NumberValue(float64(c.start + 1))
-		} else {
+		default:
 			out[i] = intern(st, string(src[c.start:c.start+c.len]))
 		}
 	}
-	return out
+	return out, nil
 }
 
 // stringFnFind: string.find(s, pat [, init [, plain]]).
@@ -165,7 +174,11 @@ func stringFnFind(st *crescent.State, args []value.Value) ([]value.Value, *cresc
 		value.NumberValue(float64(end)),
 	}
 	if len(caps) > 0 {
-		out = append(out, capsToValues(st, s, start, end, caps)...)
+		cv, cerr := capsToValues(st, s, start, end, caps)
+		if cerr != nil {
+			return nil, crescent.NewError(cerr.Error())
+		}
+		out = append(out, cv...)
 	}
 	return out, nil
 }
@@ -234,7 +247,11 @@ func stringFnMatch(st *crescent.State, args []value.Value) ([]value.Value, *cres
 	if !found {
 		return []value.Value{value.Nil}, nil
 	}
-	return capsToValues(st, s, start, end, caps), nil
+	cv, cerr := capsToValues(st, s, start, end, caps)
+	if cerr != nil {
+		return nil, crescent.NewError(cerr.Error())
+	}
+	return cv, nil
 }
 
 // stringFnGmatch: string.gmatch(s, pat) → iterator closure.
@@ -284,7 +301,11 @@ func stringFnGmatch(st *crescent.State, args []value.Value) ([]value.Value, *cre
 		} else {
 			pos = end
 		}
-		return capsToValues(ist, src, start, end, caps), nil
+		cv, cerr := capsToValues(ist, src, start, end, caps)
+		if cerr != nil {
+			return nil, crescent.NewError(cerr.Error())
+		}
+		return cv, nil
 	}
 	id := st.RegisterHostFn(iter)
 	cl := st.MakeHostClosure(id)
@@ -414,10 +435,18 @@ func st2gsubRepl(st *crescent.State, src []byte, s, e int, caps []capResult, rep
 	// seconds. The charge below bills produced bytes, which cannot see that -- the cost was in
 	// bytes CONSUMED per reference, not produced.
 	var capVals []value.Value
+	// capsErr defers an "unfinished capture" to the point where a %n reference actually reads a
+	// capture, which is where PUC's push_onecapture reports it. A string replacement with no %n
+	// never triggers it, so gsub("abc", "(", "r") succeeds as it does on PUC.
+	var capsErr error
 	capsDone := false
 	capVal := func(i int) value.Value {
 		if !capsDone {
-			capVals = capsToValues(st, src, s, e, caps)
+			var cerr error
+			capVals, cerr = capsToValues(st, src, s, e, caps)
+			if cerr != nil {
+				capsErr = cerr
+			}
 			capsDone = true
 		}
 		if i < len(capVals) {
@@ -483,9 +512,17 @@ func st2gsubRepl(st *crescent.State, src []byte, s, e int, caps []capResult, rep
 				out = append(out, rb[i])
 			}
 		}
+		// A %n reference that read an unfinished capture surfaces here, not in collectCaptures: a
+		// replacement with no %n never reads one.
+		if capsErr != nil {
+			return nil, crescent.NewError(capsErr.Error())
+		}
 		return out, nil
 	case value.Tag(repl) == value.TagFunction:
-		vals := capsToValues(st, src, s, e, caps)
+		vals, cerr := capsToValues(st, src, s, e, caps)
+		if cerr != nil {
+			return nil, crescent.NewError(cerr.Error())
+		}
 		results, le := st.ProtectedCallDirect(repl, vals)
 		if le != nil {
 			return nil, le
@@ -499,7 +536,14 @@ func st2gsubRepl(st *crescent.State, src []byte, s, e int, caps []capResult, rep
 		}
 		return b, nil
 	case value.Tag(repl) == value.TagTable:
+		// A table replacement DOES materialize capture 1 (PUC's add_value calls push_onecapture
+		// before lua_gettable), so an unfinished capture must raise here -- pm.lua:193 asserts
+		// exactly this for gsub("alo", "(.", {}). The %n path checks capsErr at its own return;
+		// this branch reads a capture unconditionally, so it checks immediately.
 		key := capVal(0)
+		if capsErr != nil {
+			return nil, crescent.NewError(capsErr.Error())
+		}
 		// Through the __index chain (PUC gsub uses lua_gettable, so
 		// metamethods are visible).
 		v, le := st.IndexWithMeta(repl, key)

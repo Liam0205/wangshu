@@ -475,9 +475,13 @@ func patternFindOpt(src, pat []byte, init int, allowAnchor bool) (int, int, []ca
 
 // capResult is the materialized result of one capture.
 type capResult struct {
-	pos   bool // position capture (value = init+1, Lua 1-based)
-	start int
-	len   int
+	pos bool // position capture (value = init+1, Lua 1-based)
+	// unfinished marks a capture left open by a pattern like "(". PUC reports this from
+	// push_onecapture, i.e. only when the capture is materialized, so consumers raise on read
+	// rather than collectCaptures raising for everyone.
+	unfinished bool
+	start      int
+	len        int
 }
 
 func collectCaptures(ms *matchState, s, e int) ([]capResult, error) {
@@ -492,10 +496,17 @@ func collectCaptures(ms *matchState, s, e int) ([]capResult, error) {
 		case capPosition:
 			out[i] = capResult{pos: true, start: c.init}
 		case capUnfinished:
-			// `"(."`: match succeeded but the capture is unclosed (official
-			// push_onecapture reports this error; materializing a slice with
-			// len=-1 would panic on out-of-range)
-			return nil, fmt.Errorf("unfinished capture")
+			// `"("`: the match succeeded but the capture is unclosed.
+			//
+			// PUC reports this from push_onecapture, which runs only when a capture is actually
+			// MATERIALIZED -- so string.gsub with a plain string or number replacement never sees
+			// it (add_value routes LUA_TSTRING/LUA_TNUMBER to add_s, which only expands %n), and
+			// gsub("abc", "(", "r") returns "rarbrcr", 4 rather than raising. Raising here instead
+			// made every consumer eager, so that call diverged from the oracle.
+			//
+			// Marked rather than raised: the capResult carries the condition and each consumer
+			// raises when it reads one, matching push_onecapture's placement.
+			out[i] = capResult{unfinished: true, start: c.init}
 		default:
 			out[i] = capResult{start: c.init, len: c.len}
 		}
