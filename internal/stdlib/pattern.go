@@ -407,7 +407,7 @@ func (ms *matchState) matchBalance(s, p int) (int, error) {
 // A position capture (len=capPosition) cannot be back-referenced (5.1 reports invalid capture).
 func (ms *matchState) matchCapture(s, p, l int) (int, error) {
 	if l >= ms.level || ms.captures[l].len < 0 {
-		return -1, fmt.Errorf("invalid capture index %%%d", l+1)
+		return -1, fmt.Errorf("invalid capture index")
 	}
 	clen := ms.captures[l].len
 	if len(ms.src)-s >= clen &&

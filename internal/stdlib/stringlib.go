@@ -541,7 +541,7 @@ func st2gsubRepl(st *crescent.State, src []byte, s, e int, caps []capResult, rep
 							nCaps = 1 // no explicit captures: capture 1 = whole match
 						}
 						if idx >= nCaps {
-							return nil, crescent.NewError(fmt.Sprintf("invalid capture index %%%c", c))
+							return nil, crescent.NewError("invalid capture index")
 						}
 						v := capVal(idx)
 						// Raise at the FIRST offending %n, where PUC's add_s does.
