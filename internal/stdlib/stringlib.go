@@ -48,6 +48,16 @@ func strInitPos(init float64, slen int) int {
 	if i < 1 {
 		i = 1
 	}
+	// Clamp the UPPER bound too, as str_find_aux does:
+	//   if (init < 0) init = 0; else if ((size_t)(init) > l1) init = (ptrdiff_t)l1;
+	//
+	// Without it an init past the end returned no match, while lua5.1 clamps to the end and still
+	// finds the zero-width match there: string.match("abc", "(", 10) raises "unfinished capture" on
+	// lua5.1 and returned nil here. Found while auditing the capture work -- the same clamp governs
+	// find, match and gmatch.
+	if i > slen+1 {
+		i = slen + 1
+	}
 	return i - 1
 }
 

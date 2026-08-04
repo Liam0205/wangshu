@@ -100,3 +100,27 @@ func TestGsubRaisesAtTheFirstOffendingReference(t *testing.T) {
 		}
 	}
 }
+
+// TestInitPastEndClampsToTheEnd covers a pre-existing gap the #228 audit surfaced: str_find_aux clamps
+// init at BOTH ends, and we only clamped the lower one.
+//
+//	if (init < 0) init = 0; else if ((size_t)(init) > l1) init = (ptrdiff_t)l1;
+//
+// So an init past the end still finds the zero-width match at the end on lua5.1 -- match("abc","(",10)
+// raises "unfinished capture" there and returned nil here. One clamp governs find, match and gmatch.
+func TestInitPastEndClampsToTheEnd(t *testing.T) {
+	for _, tc := range []struct{ name, src, want string }{
+		{"unfinished capture past end",
+			`local ok,e=pcall(string.match,"abc","(",10) return tostring(e)`, "unfinished capture"},
+		{"empty pattern past end", `return tostring(string.find("abc","",10))`, "4"},
+		{"empty pattern at end plus one", `return tostring(string.find("abc","",4))`, "4"},
+		{"real pattern past end", `return tostring(string.find("abc","c",10))`, "nil"},
+		// The lower clamp and ordinary offsets must be unchanged.
+		{"negative init clamps to start", `return tostring(string.find("abc","a",-10))`, "1"},
+		{"ordinary init", `return tostring(string.find("abc","b",2))`, "2"},
+	} {
+		if got := runOne(t, tc.src).Str(); got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}

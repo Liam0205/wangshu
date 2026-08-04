@@ -1258,7 +1258,7 @@ func (ms *matchState) doMatch(init int) (matchStart, matchEnd int, ok bool) {
 
 ```lua
 string.gsub("abc", "(", "r")   -- → "rarbrcr", 4   (字符串替换不读捕获)
-string.gsub("", "(", 0)        -- → "", 0          (数字替换,而且零次替换)
+string.gsub("", "(", 0)        -- → "0", 1         (数字替换;空主串仍有一次零宽匹配)
 string.gsub("alo", "(.", {})   -- 抬错:表替换无条件读捕获 1
 string.gsub("abc", "(", "%1")  -- 抬错:%n 展开读捕获
 string.match("abc", "(")       -- 抬错
