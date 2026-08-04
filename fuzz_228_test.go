@@ -26,6 +26,23 @@ func TestUnfinishedCaptureIsReportedLazily(t *testing.T) {
 			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
 		}
 	}
+	// MIXED patterns: a closed capture followed by an unclosed one. PUC's push_onecapture is
+	// per-INDEX, so a %n or table-key reference to a closed capture must not see the unfinished one.
+	// An audit caught this: the first fix moved the raise into the right function but kept
+	// collectCaptures' whole-list granularity, so all five of these wrongly raised.
+	for _, tc := range []struct{ name, src, want string }{
+		{"percent-1 with trailing open", `return tostring(string.gsub("alo","(.)(","<%1>"))`, "<a><l><o>"},
+		{"percent-2 with leading open", `return tostring(string.gsub("alo","((.)","<%2>"))`, "<a><l><o>"},
+		{"two closed then open", `return tostring(string.gsub("ab","(.)(.)(","<%1%2>"))`, "<ab>"},
+		{"table key with trailing open",
+			`return tostring(string.gsub("alo","(.)(",{a="A",l="L",o="O"}))`, "ALO"},
+		{"position capture then open",
+			`return tostring(string.gsub("ab","()(",{[1]="X",[2]="Y",[3]="Z"}))`, "XaYbZ"},
+	} {
+		if got := runOne(t, tc.src).Str(); got != tc.want {
+			t.Errorf("%s: got %q, want %q -- push_onecapture is per-index", tc.name, got, tc.want)
+		}
+	}
 	// Raises: each of these materializes a capture.
 	for _, tc := range []struct{ name, src string }{
 		{"function replacement", `local ok=pcall(string.gsub,"alo","(.",print) return tostring(ok)`},
@@ -34,6 +51,10 @@ func TestUnfinishedCaptureIsReportedLazily(t *testing.T) {
 		{"match", `local ok=pcall(string.match,"abc","(") return tostring(ok)`},
 		{"find", `local ok=pcall(string.find,"abc","(") return tostring(ok)`},
 		{"gmatch", `local ok=pcall(function() for _ in ("abc"):gmatch("(") do end end) return tostring(ok)`},
+		// A function replacement reads ALL captures, so a mixed pattern DOES raise for it -- the
+		// per-index rule applies to the paths that read one index, not to every path.
+		{"function replacement, mixed", `local ok=pcall(string.gsub,"alo","(.)(",print) return tostring(ok)`},
+		{"out-of-range index", `local ok=pcall(string.gsub,"alo","(.)","%2") return tostring(ok)`},
 	} {
 		if got := runOne(t, tc.src).Str(); got != "false" {
 			t.Errorf("%s: got %q, want \"false\" -- materializing a capture must raise", tc.name, got)
