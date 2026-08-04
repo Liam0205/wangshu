@@ -210,7 +210,31 @@ func (st *State) doReturn(th *thread, ci *callInfo, i bytecode.Instruction, entr
 	}
 	if th.ciDepth <= entryDepth {
 		if wantedN >= 0 {
-			th.setTop(dst + wantedN)
+			// Leaving this loop's entry frame does NOT imply leaving the last
+			// Lua frame: the gibbous helpers (TailCall / DoCall / CallBaseline /
+			// ExecutePlainCallInlineFrame) start a NESTED executeFrom at
+			// entryDepth = ciDepth-1 to drive a plain Lua-to-Lua call, so a live
+			// caller frame remains below and keeps interpreting after we return.
+			// For it, top must be the caller's logical frame top (lvm.c OP_RETURN
+			// `if (b) L->top = L->ci->top` on the `goto reentry` path — PUC never
+			// re-enters luaV_execute for a Lua callee, so the restore is owed
+			// here). Narrowing to dst+wantedN instead leaves the caller's live
+			// registers above top, where the GC stack scan (visitThreadValues)
+			// nil-clears [top, size) as stale residue: a NEWTABLE result sitting
+			// in a register above the narrowed top came back nil and the
+			// following SETLIST reported "not a table".
+			//
+			// Only a fixed nresults reaches here. A real host→Lua boundary
+			// (callLuaFromHostNamed / execute / coroutine resume, all
+			// enterLuaFrame(entry=true)) always passes nresults=-1 and takes the
+			// wantedN<0 branch above, so its `n := th.top - funcIdx` result
+			// window is untouched.
+			if th.ciDepth > 0 {
+				caller := currentCI(th)
+				th.setTop(caller.base + int(st.protoOf(caller).MaxStack))
+			} else {
+				th.setTop(dst + wantedN)
+			}
 		}
 		return nil, true
 	}

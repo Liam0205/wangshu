@@ -1,0 +1,42 @@
+package wangshu_test
+
+import "testing"
+
+// TestUnfinishedCaptureIsReportedLazily covers #228: an unclosed capture like "(" is reported when a
+// capture is MATERIALIZED, not when the match succeeds.
+//
+// PUC raises this from push_onecapture, and add_value only reaches it for a table replacement, a
+// function replacement, or a %n expansion -- a plain string or number replacement goes to add_s,
+// which copies the replacement and expands only %n. So gsub("abc", "(", "r") returns "rarbrcr", 4 on
+// lua5.1 while match/find on the same pattern raise. Collecting captures eagerly made every consumer
+// raise, and the fuzzer found it through gsub("", "(", 0).
+//
+// The table branch is separated out deliberately: it reads capture 1 unconditionally, so it must
+// raise even though no %n appears. pm.lua:193 asserts exactly that, and the first version of this fix
+// deferred the error past it -- the official suite caught what the oracle seed did not.
+func TestUnfinishedCaptureIsReportedLazily(t *testing.T) {
+	// Succeeds: no capture is ever materialized.
+	for _, tc := range []struct{ name, src, want string }{
+		{"count zero", `return tostring(string.gsub("","(",0))`, "0"},
+		{"string replacement", `return tostring(string.gsub("abc","(","r"))`, "rarbrcr"},
+		{"number replacement", `return tostring(string.gsub("ab","(",7))`, "7a7b7"},
+		{"empty subject", `return tostring(string.gsub("","(","r"))`, "r"},
+	} {
+		if got := runOne(t, tc.src).Str(); got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
+	// Raises: each of these materializes a capture.
+	for _, tc := range []struct{ name, src string }{
+		{"function replacement", `local ok=pcall(string.gsub,"alo","(.",print) return tostring(ok)`},
+		{"table replacement", `local ok=pcall(string.gsub,"alo","(.",{}) return tostring(ok)`},
+		{"percent-n expansion", `local ok=pcall(string.gsub,"abc","(","%1") return tostring(ok)`},
+		{"match", `local ok=pcall(string.match,"abc","(") return tostring(ok)`},
+		{"find", `local ok=pcall(string.find,"abc","(") return tostring(ok)`},
+		{"gmatch", `local ok=pcall(function() for _ in ("abc"):gmatch("(") do end end) return tostring(ok)`},
+	} {
+		if got := runOne(t, tc.src).Str(); got != "false" {
+			t.Errorf("%s: got %q, want \"false\" -- materializing a capture must raise", tc.name, got)
+		}
+	}
+}

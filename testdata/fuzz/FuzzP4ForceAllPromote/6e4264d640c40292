@@ -1,0 +1,2 @@
+go test fuzz v1
+string("loca,A00={A,function(A)return 0 end},A000 o2={n=function(A)return 0 end},A000 function f(A,b)return b:n()end for A=0,70 do f(00,o2)A={0}end")
