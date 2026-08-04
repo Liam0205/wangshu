@@ -621,6 +621,46 @@ func (vm *VM) doReturn(f *frame, i Instruction) returnResult {
 - **多返回值多退少补**:`moveResults` 按调用者 CallInfo 记录的 `nresults`(C-1)裁剪/补 nil;`nresults=0xFFFF`(C=0)则把**全部** nret 个值落下并更新调用者 `top`,供后续 `CALL B=0`/`RETURN B=0`/`SETLIST B=0` 消费(多值传播链,[02](./02-bytecode-isa.md) §9-4)。
 - **upvalue 必须在搬返回值前关闭**(§8.3):因为返回后这些栈槽会被复用,开放 upvalue 若还指着它们就会读到垃圾。
 - **退到入口帧即终止**:`execute` 被调用时记下 `entryCi`(§7.3);RETURN 退到它之下就 return 出 Go 函数。
+- **定长 nresults 的返回路径必须把 top 恢复到帧逻辑顶**(对齐 5.1 `L->top = L->ci->top`):这一条在**终止分支上也成立**,见 §7.2.1。
+
+#### 7.2.1 top 恢复纪律在终止分支上也成立(嵌套 `executeFrom` 的契约,#229,2026-08-04)
+
+「退到入口帧即终止」这句话有一个前提:入口帧之下**没有还在解释执行的 Lua 帧**。顶层 `Program.Call`、
+host→Lua 重入(`callLuaFromHostNamed`)、协程 resume 三个真正的边界都满足它,而且它们一律传
+`nresults = -1`(`enterLuaFrame(entry=true)`),走的是「按实际 nret 定 top」那一支。
+
+**但 P3/P4 的 gibbous helper 会打破这个前提**:`TailCall` / `DoCall` / `CallBaseline` /
+`ExecutePlainCallInlineFrame`(`internal/crescent/gibbous_host.go`)为了同步驱动一次普通的 Lua→Lua
+调用,会以 `entryDepth = th.ciDepth - 1` 开一层**嵌套** `executeFrom`。于是「离开这一层的 entry 帧」
+**不等于**「离开最后一个 Lua 帧」——下面还压着一个活着的 caller 帧,它马上要继续解释执行。这条路径上
+`nresults` 是定长的,所以会走进终止分支里「按 `dst + wantedN` 收窄 top」那一支。
+
+**漏做恢复的后果**(#229 实证):caller 的活寄存器留在 top **之上**,而 GC 的栈根扫描
+(`internal/crescent/state.go::visitThreadValues`)把 `[top, size)` 当陈旧残留**清成 nil**(这一步本身
+对齐官方 `lgc.c` 的 `traversestack`,防的是死引用被后来升高的 top 覆盖后又被当活根扫描)。于是
+`for A=0,70 do f(o2) A={0} end` 里 `A={0}` 的 NEWTABLE 结果被清成 nil,紧随其后的 SETLIST 报
+`SETLIST: not a table`——P1 成功、P4 抬错。诊断线索是坏值本身:`tag=65528` 就是 `value.TagNil`,
+而 nil 是**清理动作**的值、不是任何一条指令的自然产物。
+
+**修法**:终止分支里区分「真的没有 caller 了」(`th.ciDepth == 0`,保持 `dst + wantedN`)与「还有
+caller 在下面」(恢复成 `caller.base + MaxStack`)。对照 PUC `lvm.c` 的 `OP_RETURN`
+「`if (b) L->top = L->ci->top`」——PUC 从不为 Lua callee 重进一层 `luaV_execute`(Lua→Lua 是
+`goto reentry`),所以这笔恢复天然归 RETURN 自己做;望舒因为嵌套了 `executeFrom`,这笔在终止分支上
+漏了。落点 `internal/crescent/call.go::doReturn`;回归 `fuzz_229_test.go`。
+
+**这是同一条纪律的第四处**。前三处早就在做一样的恢复:
+
+| 站点 | 文件 | 场景 |
+|---|---|---|
+| `doReturn` 的非终止分支 | `internal/crescent/call.go` | 定长 nresults,退到 caller 继续解释 |
+| gibbous `DoReturn` | `internal/crescent/gibbous_host.go` | 段内 RETURN 走 host helper |
+| `callHost` | `internal/crescent/host.go` | 定长结果的 host 返回路径(§7.6 的同一条款,2026-06-12 测试加固轮实证:多值 CALL 留下低 top → `callLuaFromHost` 脚手架覆写 TFORLOOP 三槽 → `pairs` 收到 number) |
+| **`doReturn` 的终止分支** | `internal/crescent/call.go` | **本轮补上** |
+
+**判据**(方法论见 `llmdoc/guides/cross-backend-semantic-fix-sweep.md`「共享层恢复动作的兄弟路径
+不对称」):改共享调用层时,grep 同一个恢复 / 清理动作的所有出现处,数一数是不是所有该做的路径都做了
+——**数量不齐就是信号**。本轮的特征表达式是
+`th.setTop(... .base + int(st.protoOf(...).MaxStack))`。
 
 ### 7.3 reentry 边界:execute 的入口帧与 host→Lua 重入
 
@@ -635,7 +675,14 @@ host function 调 Lua(如 pcall(f)):
             → f 返回时 RETURN 退到 fresh 帧 → execute 返回 → 回到 host 代码
 ```
 
-**纪律**:Lua→Lua 永远 reentry(不加 Go 栈);**只有 host→Lua 才新起一个 `execute`(加一层 Go 栈)**。所以 Go 栈深度 = host→Lua 重入的层数,而非 Lua 调用深度。`pcall`/`coroutine` 这些必然 host→Lua 重入的点,Go 栈会增长,但它们的层数远小于 Lua 递归深度,可控(且 §7.4 有上限)。
+**纪律**:Lua→Lua 永远 reentry(不加 Go 栈);**只有 host→Lua 才新起一个 `execute`(加一层 Go 栈)**。
+
+> **P3/P4 的例外**:gibbous 的 helper(`TailCall` / `DoCall` / `CallBaseline` /
+> `ExecutePlainCallInlineFrame`)会为一次**普通的 Lua→Lua 调用**开一层嵌套 `executeFrom`
+> (`entryDepth = ciDepth-1`),用来同步驱动未升层的 callee。所以「入口帧」在这些路径上**不是**
+> host→Lua 边界:它之下还有活着的 Lua 帧。带来的 top 恢复义务见 §7.2.1(#229)。
+
+所以 Go 栈深度 = host→Lua 重入的层数,而非 Lua 调用深度。`pcall`/`coroutine` 这些必然 host→Lua 重入的点,Go 栈会增长,但它们的层数远小于 Lua 递归深度,可控(且 §7.4 有上限)。
 
 ### 7.4 调用深度上限(防爆栈)
 
@@ -705,6 +752,11 @@ func (vm *VM) callHost(f *frame, a, nargs, nresults int) callResult {
 要点:
 
 - **host 调用是同步 Go 调用**,执行完返回值已就位,主循环**不切 code、不 reentry**(`callReturnedHost`)。
+- **定长结果路径必须把 top 恢复到当前帧的逻辑顶**(`ci.base + MaxStack`,对齐 5.1 `L->top = ci->top`)。
+  这不是「清理性」语句而是调用约定的一部分:漏做时前一条多值 CALL(C=0)留下的低 top 会让后续
+  `callLuaFromHost` 脚手架覆写活跃寄存器,TFORLOOP 的迭代器三槽被毁、`pairs` 收到 number——症状离根因
+  极远(2026-06-12 测试加固轮由生成器二期撞出,修复见 `internal/crescent/host.go::callHost`)。同一条
+  纪律在 RETURN 侧的四个站点见 §7.2.1,那里记的是第四处(`doReturn` 终止分支,#229)。
 - host **内部若回调 Lua**(`vm.callLuaFromHost`),才触发 §7.3 的 Go 栈重入。
 - host 可能**抛 Lua 错误**(`vm.raise`):它走 §9 的错误返回路径,被最近 protected 边界捕获。host 不该 Go `panic`(§9.4)。
 - host 帧也有 CallInfo(带 host 哨兵 protoID),让 `error`/traceback 能显示 `[C]: in function 'xxx'`([09](./09-errors-pcall.md))。
