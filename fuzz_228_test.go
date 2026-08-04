@@ -66,7 +66,7 @@ func TestUnfinishedCaptureIsReportedLazily(t *testing.T) {
 //
 // PUC's add_s scans the replacement left to right and raises on the first offending reference, so
 // gsub("ab", "(", "%1%2") is "unfinished capture" -- %1 is reached first -- and not the
-// "invalid capture index %2" that the later reference would give. Recording capsErr and testing it only
+// "invalid capture index" that the later reference would give. Recording capsErr and testing it only
 // after the whole template was scanned inverted that, and no suite caught it: none compares gsub error
 // CLASSES across multi-%n templates, so the check has to be here.
 func TestGsubRaisesAtTheFirstOffendingReference(t *testing.T) {
@@ -77,10 +77,12 @@ func TestGsubRaisesAtTheFirstOffendingReference(t *testing.T) {
 			`local ok,e=pcall(string.gsub,"ab","(.)(","%2%3") return tostring(e)`, "unfinished capture"},
 		// The reverse order must still report the index error, so this is not just "always report
 		// unfinished".
+		// lua5.1's message carries NO index suffix (lstrlib.c: luaL_error(ms->L, "invalid capture
+		// index")). Two of our three sites appended one; that was pre-existing and is fixed here.
 		{"out-of-range alone",
-			`local ok,e=pcall(string.gsub,"ab","(.)","%2") return tostring(e)`, "invalid capture index %2"},
+			`local ok,e=pcall(string.gsub,"ab","(.)","%2") return tostring(e)`, "invalid capture index"},
 		{"out-of-range with no captures",
-			`local ok,e=pcall(string.gsub,"ab","%a","%2") return tostring(e)`, "invalid capture index %2"},
+			`local ok,e=pcall(string.gsub,"ab","%a","%2") return tostring(e)`, "invalid capture index"},
 	} {
 		if got := runOne(t, tc.src).Str(); got != tc.want {
 			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
