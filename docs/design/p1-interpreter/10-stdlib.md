@@ -1242,6 +1242,44 @@ func (ms *matchState) doMatch(init int) (matchStart, matchEnd int, ok bool) {
   upvalue 持 `(s, p, 当前搜索位置)`。每次调用推进位置、返回下一匹配。位置存在 host closure 的 upvalue(Value),
   随状态更新。
 
+#### 6.4.1 未闭合捕获的错误在**读取时**抬,不在收集时抬(#228,2026-08-04)
+
+`"("` 这类未闭合的捕获(matcher 侧记 `capUnfinished`)在匹配**成功**之后仍然存在,而它抬不抬错
+**取决于消费者要不要真的读那个捕获**。PUC 把 `unfinished capture` 放在 `push_onecapture` 里,也就是
+一个捕获**被物化**的时候;`str_gsub` 的 `add_value` 只有三条路径会走到那里:
+
+| repl 的类型 | PUC 走哪条 | 读捕获吗 |
+|---|---|---|
+| **表** | `add_value` → `push_onecapture(ms, 0, ...)` → `lua_gettable` | **读**,而且是**无条件**的 |
+| **函数** | `add_value` → `push_captures` → `lua_call` | **读**,全部捕获 |
+| **字符串 / 数字** | `add_value` → `add_s` | 只在遇到 `%n` 时才读 |
+
+所以 lua5.1 里:
+
+```lua
+string.gsub("abc", "(", "r")   -- → "rarbrcr", 4   (字符串替换不读捕获)
+string.gsub("", "(", 0)        -- → "", 0          (数字替换,而且零次替换)
+string.gsub("alo", "(.", {})   -- 抬错:表替换无条件读捕获 1
+string.gsub("abc", "(", "%1")  -- 抬错:%n 展开读捕获
+string.match("abc", "(")       -- 抬错
+string.find("abc", "(")        -- 抬错
+```
+
+`internal/stdlib/pattern.go::collectCaptures` 原先在**收集**阶段就 `return nil, err`,于是所有消费者
+都变成早抬,`gsub` 那三种写法与 PUC 分歧(fuzz 从 `gsub("","(",0)` 撞出)。现在 `capResult` 带一个
+`unfinished` 标记,`collectCaptures` 只打标记;`internal/stdlib/stringlib.go::capsToValues`(这个文件里
+对应 PUC `push_onecapture` 的函数)在**读取时**返回错误,`find` / `match` / `gmatch` 与 gsub 的三条
+repl 路径各自把它转成 Lua 错误。**表替换那条路径要单独判一次**——它在 `lua_gettable` 之前无条件读
+捕获 1,不能跟着 `%n` 那条路径一起延后。
+
+**判据**(方法论见 `llmdoc/guides/cross-backend-semantic-fix-sweep.md`「PUC 语义由 C 实现定义」第六个
+刻度):**错误从哪个函数抬出来也是要照抄的东西**;而把一个错误从「早抬」改成「懒抬」时,要在**每个**
+物化点各加一次检查,参照实现里「谁调 `push_onecapture`」就是那份清单。配套的验证纪律:改动语义边界
+之后必须跑官方测试套——fuzz seed 是**单向**的(只报「望舒抬了而 lua5.1 没抬」这一侧),官方套是
+**双向**的,`test/luasuite/testdata/pm.lua:193` 的
+`assert(not pcall(string.gsub, "alo", "(.", {}))` 正是抓住第一版修法漏掉表替换的那条断言。
+两侧用例见 `fuzz_228_test.go::TestUnfinishedCaptureIsReportedLazily`(四条不该抬错 + 六条必须抬错)。
+
 ### 6.5 `string.gsub` 的 repl 三态(串/表/函数)
 
 `gsub(s, pat, repl, n)` 的 `repl` 决定每个匹配如何被替换(对齐 5.1 `str_gsub`):

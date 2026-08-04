@@ -2758,3 +2758,56 @@ nightly `FuzzAutoPromote` 稳定 crasher:`function sum(n) for A=0,n do end end s
 - **测试**:`test/regression/issue177_regression_test.go` 四个场景钉住 — crasher 本体(string limit 通过)、真非 number limit(table)错误信息 byte-equal、`sum "1000000"` + 小 step budget(P1/P4 都必须 raise「instruction budget exceeded」)、5ms context 超时 + 长 limit(P1/P4 都必须 raise「context canceled」);后两个 BLOCKER 附记新增的场景用 `PromotionCount` + `SpecForLoopDeoptHits` 双探针防静默替身(避免促升门 / shape 匹配变化让 auto 静默留在 P1 也拿到同样错误信息通过);`testdata/fuzz/FuzzAutoPromote/8305a8ceb22b8f41` 入库常驻;三 build(default/oracle/p3/p4)全绿。
 - **后续动作**:审计 p4Code 里所有其他 shape-template 的 deopt 路径,同规则扫是否也有「快路径省 spill + deopt 直调 helper」错配、或者「deopt 直接 DoReturn 跳过原来还有的字节码语义」(本轮同时踩到两条,只修 FORPREP + FORLOOP 这一对);追 PJ10 native emit 侧 FORPREP 路径,核对它的 deopt slot 恢复约定是否已就位(本轮已排除它不是 #177 通道,语义一致性值得单独核对)。
 - **教训**(详反思 [[../../../llmdoc/memory/reflections/2026-07-24-p4-template-forprep-deopt-round]]):① P4 build 有 PerOpCode / nativeCode / p4Code 三大类 code kind,分诊必须先用探针确认走哪条;② fast-path template 省略 spill 的 slot,deopt 路径必须显式 SetReg 恢复到 interpreter-shape 再调 host helper;③「A 场景通过 + B 场景失败」只定位触发前提,不能推「bug 在哪条代码路径」— tier 分诊里两个场景的通过/失败结果由「促升条件 × 促升到的 code kind × 该 code kind 的 fast-path 是否走通」三个变量共同决定;④ 改深层 JIT 数据流前,先读所选字段的定义 + 全部消费点,确认语义/编码与新用途一致;⑤ deopt 分支替原字节码语义 return 时,必须逐条列出被替代字节码的可观察副作用(preempt / cancel ctx / body 写 / stack 变化)并在 helper 里补齐,回归测试至少覆盖 budget + ctx 两条通用副作用而非只测结果。
+
+---
+
+## 27. issue #229 嵌套 `executeFrom` 返回后未恢复 caller 的 top(2026-08-04,`a11334b`)
+
+nightly `FuzzP4ForceAllPromote` crasher(seed `6e4264d640c40292`),最小化到:
+
+```lua
+o2={n=function() return 0 end} function f(b) return b:n() end for A=0,70 do f(o2) A={0} end
+```
+
+P1 成功、P4 抬 `SETLIST: not a table`。**根因不在 JIT 里**,而在共享调用层
+(`internal/crescent/call.go::doReturn`);P4 只是唯一会走到那条路径的层。
+
+- **三步链**:① gibbous 的 `TailCall` helper(`internal/crescent/gibbous_host.go`,§9.20 的
+  trampoline 家族之一;`DoCall` / `CallBaseline` / `ExecutePlainCallInlineFrame` 同形)为了同步
+  跑完 Lua 尾调用链,以 `entryDepth = th.ciDepth - 1` 开一层**嵌套** `executeFrom`。于是
+  「离开这一层的 entry 帧」**不等于**「离开最后一个 Lua 帧」——下面还压着一个活着的 caller 帧,
+  它马上要继续解释执行。② `doReturn` 在终止分支(`th.ciDepth <= entryDepth`)对定长 nresults
+  仍然把 top 收窄到 `dst + wantedN`,把 caller 的活寄存器留在 top **之上**。③ GC 的栈根扫描
+  `visitThreadValues`(`internal/crescent/state.go`)把 `[top, size)` 当陈旧残留**清成 nil**
+  (这一步本身对齐官方 `lgc.c` 的 `traversestack`),于是 `A={0}` 的 NEWTABLE 结果被清掉、紧随的
+  SETLIST 报「not a table」。
+- **分诊过程**(三次走错方向,详见反思):① 先怀疑 peroptranslator 的 `lastReplayPC` 降级机制——
+  那段注释逐字写着 `NEWTABLE head + SETLIST → "SETLIST: not a table"`,**而探针一行没打出来**,
+  那条路径根本没走到;② 再怀疑 stale base / 地址失效,每个副作用后都调 `RefreshJitCtxAddrs`,
+  **不解决**;③ 在 `doSetList` 抬错点打栈迹拿到 `executeLoop -> doSetList`、**没有任何 JIT 帧**,
+  才定位到「抬错的是普通解释器,破坏在更早的已升层调用里」。关键坏值线索 `tag=65528` 就是
+  `value.TagNil`,而 nil 是**清理动作**的值、不是任何指令的自然产物,直接指向 GC 清理。
+- **修法**:终止分支区分「真的没有 caller 了」(`th.ciDepth == 0`,保持 `dst + wantedN`)与
+  「还有 caller 在下面」(恢复成 `caller.base + MaxStack`)。对照 PUC `lvm.c` `OP_RETURN` 的
+  `if (b) L->top = L->ci->top`:PUC 从不为 Lua callee 重进一层 `luaV_execute`,所以这笔恢复天然
+  归 RETURN 自己做;望舒因为嵌套了 `executeFrom`,这笔在终止分支上漏了。**只有定长 nresults 会
+  走到那里**——真正的 host→Lua 边界(`callLuaFromHostNamed` / `execute` / 协程 resume,一律
+  `enterLuaFrame(entry=true)`)都传 `nresults=-1`,走上面 `wantedN < 0` 那一支,其
+  `n := th.top - funcIdx` 结果窗口不受影响。
+- **契约**:这是同一条纪律的**第四处**,前三处早就在做一样的恢复——`doReturn` 自己的非终止分支、
+  gibbous 的 `DoReturn`、`callHost`(`callHost` 那一处的注释里还写着它 2026-06-12 的症状:多值
+  CALL 留下低 top → `callLuaFromHost` 脚手架覆写 TFORLOOP 三槽 → `pairs` 收到 number)。判据:
+  **改共享调用层时 grep 同一个恢复 / 清理动作的所有出现处,数量不齐就是信号**;本轮的特征表达式是
+  `th.setTop(... .base + int(st.protoOf(...).MaxStack))`。承
+  [[../../../llmdoc/guides/cross-backend-semantic-fix-sweep]]「共享层恢复动作的兄弟路径不对称」节,
+  落点 [../p1-interpreter/05-interpreter-loop.md](../p1-interpreter/05-interpreter-loop.md) §7.2.1。
+- **测试**:`fuzz_229_test.go::TestCallerTopSurvivesNestedTailCallReturn` 比 P1 与 P4 forceAll 两路
+  结果;注释里写清三个都不能省的形状要素——多返回值的尾调用(`return b:n()` = SELF + TAILCALL +
+  RETURN B=0,才会走 `TailCall` 的嵌套 `executeFrom`)、caller 要热到会升层、循环体要构造**带元素**
+  的表(才有 NEWTABLE 结果落在收窄后的 top 之上、后面才有 SETLIST 去读它)。**已用「把修复还原掉」
+  实测确认会变红**;seed 入 `testdata/fuzz/FuzzP4ForceAllPromote/6e4264d640c40292`。
+- **教训**(详反思
+  [[../../../llmdoc/memory/reflections/2026-08-04-issue228-229-lazy-capture-and-nested-tailcall-top]]):
+  ① 「有一段既有注释正好描述了这个症状」是最容易走错的线索,先用探针证明那条路径真的被执行;
+  ② 抬错的位置不是缺陷的位置,栈迹里**缺少**哪一层本身就是关键信息,对「X 报错」类缺陷先问
+  「X 读到的坏数据是谁写的」;③ 一个共享层的恢复动作已有 N 处兄弟路径在做时,第 N+1 处漏做就是缺陷。

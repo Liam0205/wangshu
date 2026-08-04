@@ -312,6 +312,28 @@
   **一个「防住某个数值」的回归测试必须用变异实测确认它真的会因为那个数值变化而变红** / 降低 fuzz 预算
   不等于降低覆盖,但要用注入缺陷加白盒计数器证明 / 常量要与它的消费方共享 build tag)。
 
+- **两个真缺陷、互不相关(2026-08-04,#228 / #229 一轮,`a11334b`)**:两个 nightly crasher 分别来自
+  p1 腿的 `FuzzOracleDiff`(#228)与 p4 腿的 `FuzzP4ForceAllPromote`(#229),run 都在 `efa9aa6` 上,
+  但版本核对这一轮不是关键——**两个都在当前 master 上如实复现、都是真缺陷,而且互不相关**(seed hash
+  不同、子系统不同,「会不会被同一个改动一起解决」这一格给出的是否)。
+
+  | 项 | 落点 | 结论与要点 |
+  |---|---|---|
+  | `unfinished capture` 抬得太早(#228) | `internal/stdlib/pattern.go` + `stringlib.go` | 不是少了检查,是**抬错的位置**错了:PUC 从 `push_onecapture` 抬,也就是一个捕获**真的被读出来**的时候,而 `add_value` 只有表替换 / 函数替换 / `%n` 展开三条路径走到那里——纯字符串或数字替换走 `add_s`,只展开 `%n`、从不读捕获。所以 lua5.1 里 `gsub("abc","(","r")` 返回 `"rarbrcr", 4` 而 `match`/`find` 抬错。望舒在 `collectCaptures`(生产侧)就抬了,于是所有消费者都早抬。修法:`capResult` 加 `unfinished` 标记,`capsToValues`(本文件对应 `push_onecapture` 的函数)在**读取时**抬(10 §6.4.1) |
+  | 第一版修法漏了表替换那条路径 | `internal/stdlib/stringlib.go` | 我只在 `%n` 展开那条路径加了检查,而**表替换会无条件读捕获 1**(PUC 的 `add_value` 在 `lua_gettable` 之前就调 `push_onecapture`),于是 `gsub("alo","(.",{})` 本该抬错却成功。**抓到它的是官方测试套 `test/luasuite/testdata/pm.lua:193`,不是 oracle seed**——那个 seed 只覆盖「不该抬错」这一侧。判据:懒抬错要在**每个**物化点各加一次检查;改语义边界之后必须跑官方套(seed 单向、官方套双向) |
+  | 嵌套 `executeFrom` 返回后没恢复 caller 的 top(#229) | `internal/crescent/call.go::doReturn` | gibbous 的 `TailCall` helper 以 `entryDepth = ciDepth-1` 开一层**嵌套** `executeFrom`,于是「离开这一层的 entry 帧」**不等于**「离开最后一个 Lua 帧」;`doReturn` 在终止分支仍按 `dst + wantedN` 收窄 top,caller 的活寄存器留在 top 之上,GC 的 `visitThreadValues` 把 `[top, size)` 清成 nil,`A={0}` 的 NEWTABLE 结果被清掉、SETLIST 报「not a table」。**是既有缺陷**(把 #228 的改动 stash 掉同样复现,从 `origin/master` 就在)。对照 `lvm.c` `OP_RETURN` 的 `if (b) L->top = L->ci->top`;**同一条纪律的第四处**,前三处(`doReturn` 非终止分支 / gibbous `DoReturn` / `callHost`)早就在做(05 §7.2.1,P4 [implementation-progress](../p4-method-jit/implementation-progress.md) §27) |
+  | 分诊三次走错方向 | — | ① peroptranslator 里那段注释逐字写着 `NEWTABLE head + SETLIST → "SETLIST: not a table"`,**探针一行没打出来**,那条路径根本没走到;② stale base,每个副作用后都 `RefreshJitCtxAddrs`,不解决;③ 在 `doSetList` 抬错点打栈迹拿到 `executeLoop -> doSetList`、**没有任何 JIT 帧**,才定位到破坏在更早的已升层调用里。坏值 `tag=65528` 就是 `value.TagNil`,而 nil 是**清理动作**的值、不是任何指令的自然产物 |
+
+  **验证规模**:两个回归测试(`fuzz_228_test.go` 十条用例 —— 四条不该抬错 + 六条必须抬错;
+  `fuzz_229_test.go` 比 P1 与 P4 forceAll 两路结果)**都用「把修复还原掉」实测确认会变红**;
+  官方测试套含 `pm.lua` 整文件全绿;两个 seed 入 `testdata/fuzz/FuzzOracleDiff/b38e375dae54ee4b` 与
+  `testdata/fuzz/FuzzP4ForceAllPromote/6e4264d640c40292`。过程反思见
+  `llmdoc/memory/reflections/2026-08-04-issue228-229-lazy-capture-and-nested-tailcall-top.md`
+  (五条教训:懒抬错要在每个物化点各加检查、两侧都要有用例 / fuzz seed 单向、改语义边界后必须跑官方套 /
+  「有一段既有注释正好描述了这个症状」是最容易走错的线索,先用探针证明那条路径真的被执行 / 抬错的位置
+  不是缺陷的位置,栈迹里缺少哪一层本身就是信息 / 一个共享层的恢复动作已有 N 处兄弟路径在做时,第 N+1 处
+  漏做就是缺陷)。
+
 ## 相关
 
 [00-overview](./00-overview.md) · [../engineering](../engineering.md) ·
