@@ -53,6 +53,31 @@ func strInitPos(init float64, slen int) int {
 
 // capsToValues materializes captures into Lua values; with no explicit
 // captures it returns the whole matched string.
+// capOneValue materializes ONE capture, for the two paths that read a single index: %n expansion and a
+// table replacement's key.
+//
+// PUC's push_onecapture is per-index, so an unclosed capture later in the pattern does not affect a
+// reference to an earlier one: gsub("alo", "(.)(", "<%1>") answers "<a><l><o>", 3 on lua5.1 because %1
+// reads capture 1 and never touches the unfinished capture 2. Checking the whole list here -- which the
+// first version of this fix did, having moved the raise into the right function but kept
+// collectCaptures' granularity -- rejected those mixed patterns.
+func capOneValue(st *crescent.State, src []byte, s, e, i int, caps []capResult) (value.Value, error) {
+	if i < 0 || i >= len(caps) {
+		if i == 0 && len(caps) == 0 {
+			return intern(st, string(src[s:e])), nil
+		}
+		return value.Nil, nil
+	}
+	c := caps[i]
+	switch {
+	case c.unfinished:
+		return value.Nil, fmt.Errorf("unfinished capture")
+	case c.pos:
+		return value.NumberValue(float64(c.start + 1)), nil
+	}
+	return intern(st, string(src[c.start:c.start+c.len])), nil
+}
+
 // capsToValues materializes captures, and is this file's analogue of PUC's push_onecapture --
 // including where the "unfinished capture" error is raised.
 //
@@ -439,20 +464,35 @@ func st2gsubRepl(st *crescent.State, src []byte, s, e int, caps []capResult, rep
 	// capture, which is where PUC's push_onecapture reports it. A string replacement with no %n
 	// never triggers it, so gsub("abc", "(", "r") succeeds as it does on PUC.
 	var capsErr error
+	var capsSeen []bool
 	capsDone := false
+	// Per-index, matching push_onecapture: an unclosed capture elsewhere in the pattern must not
+	// affect a reference to a closed one. Still memoized, because a replacement with many %n
+	// references to one large capture would otherwise re-intern it per reference.
 	capVal := func(i int) value.Value {
 		if !capsDone {
-			var cerr error
-			capVals, cerr = capsToValues(st, src, s, e, caps)
-			if cerr != nil {
-				capsErr = cerr
-			}
+			capVals = make([]value.Value, len(caps))
+			capsSeen = make([]bool, len(caps))
 			capsDone = true
 		}
-		if i < len(capVals) {
+		if i >= 0 && i < len(capVals) {
+			if !capsSeen[i] {
+				v, cerr := capOneValue(st, src, s, e, i, caps)
+				if cerr != nil {
+					capsErr = cerr
+					return value.Nil
+				}
+				capVals[i] = v
+				capsSeen[i] = true
+			}
 			return capVals[i]
 		}
-		return value.Nil
+		v, cerr := capOneValue(st, src, s, e, i, caps)
+		if cerr != nil {
+			capsErr = cerr
+			return value.Nil
+		}
+		return v
 	}
 	switch {
 	case value.Tag(repl) == value.TagString || value.IsNumber(repl):
