@@ -981,6 +981,8 @@ tostring(v):                                  // base 库 host function
 
 **地址格式的差分问题**:`tostring({})` 含对象地址,**与官方/gopher-lua 必然不同**(arena 偏移 vs C 指针)。[12](./12-testing-difftest.md) 必须对「含 `0x...` 地址的 tostring 输出」做豁免(脱敏后比较,或排除此类用例)。本文标注此为**可观察但不可逐字节比的项**(类似 06 §11 的 `pairs` 序口径问题)。
 
+> **上表那个 `0x%08x` 的宽度是一份差分契约,不是自由选择(#233,2026-08-05)**:脱敏只能救**被打印出来**的地址,救不了**被测量**的地址——`#tostring({})` 的长度在脱敏之前就已经定了(PUC 的 `%p` 在 x86-64 Linux 给 12 个十六进制位、`#tostring(t)` 是 21;望舒这个 `0x%08x` 给 8 位、是 17)。差异因此在 cgo oracle 的 prelude 渲染处消除(把 PUC 自己的地址渲染成 8 位),而**望舒这一侧的 8 位宽度成了那份对齐的另一半**:改宽度会让 `fuzz_234_test.go::TestAddressLengthIsComparable` 变红。判据与实现见 [12](./12-testing-difftest.md) §4.3a。
+
 > **`__tostring` 返回非 string**:5.1 报错(`tostring` 要求元方法返回字符串)。5.4 放宽(允许返回任意值再转)。P1 按 5.1 严格(返回非 string 报错)。**待 12 差分核对**。
 
 ---
