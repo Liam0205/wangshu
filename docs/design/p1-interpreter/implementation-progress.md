@@ -351,7 +351,7 @@
   分组时不要按症状把它们分成两件事。
 
   **验证规模**:三处修复各自用「把该修复还原掉」实测确认会变红——
-  `internal/oracle/normalize_addr_test.go::TestNormalizeAddrIsNotWordAnchored`(六条必须归一 + 四条必须
+  `internal/oracle/normalize_addr_test.go::TestNormalizeAddrPrefixValidation`(六条必须归一 + 四条必须
   原样,**两侧都要有**:只写前半时「把锚点整个删掉」也会通过)、
   `fuzz_234_test.go::TestGsubReplacementEscapeMatchesPUC`(四条改了行为 + 三条必须不变:`%%`、`%1`、越界
   下标仍抬错)、`fuzz_234_test.go::TestAddressLengthIsComparable`(望舒侧的宽度契约:`#tostring({})` 是

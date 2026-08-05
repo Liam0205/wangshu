@@ -474,47 +474,13 @@ func DiffN(src string, runners ...Runner) DiffResult { /* N 方比对,§3.3 矩�
 
 **12 定稿:必须逐字节一致,核对方法 = 对官方 lua5.1 输出。**
 
-- **`tostring`/CONCAT 的数字格式 = Lua 5.1 `LUAI_NUMFMT` = `"%.14g"`**。望舒用 Go 实现 `%.14g` 时**必须复刻 C `printf("%.14g")` 的精确行为**(尾零处理、指数位数 `e+NN` 两位、负零 `-0`、`inf`/`nan` 拼写)。Go 的 `strconv.FormatFloat(f, 'g', 14, 64)` 与 C `%.14g` **有微差**(指数位数、`+` 号、`inf`/`nan` 文本),不能直接用——需校准(见下)。
-- **`string.format` 的 `%f/%g/%e/%d/%x/...`**:同样复刻 C printf 语义([10](./10-stdlib.md) §5.2.1)。
-- **校对方法**:`benchmarks`/conformance 里建一组**数字格式笛卡尔积用例**(各种代表浮点 × 各种 spec),golden = 官方 lua5.1 输出,望舒逐字节差分测试。代表浮点必含:`0.0`、`-0.0`、`0.1`、`1/3`、`1e300`、`1e-300`、`2^53`、`2^53+1`、`math.huge`、`-math.huge`、`0/0`(NaN)、整数值 `42.0`(应输出 `42` 不是 `42.0`,这是 `%.14g` 的整数化行为)。
-- **NaN/Inf 文本**:Lua 5.1 在多数平台输出 `inf`/`-inf`/`nan`(或 `-nan`,平台相关)。这是**平台相关项**——官方 5.1 的 NaN/Inf 文本依赖底层 libc。望舒固定输出与**锁定的官方 5.1.5 参照平台**一致(§2.6 锁版本同时锁参照平台的 libc 行为);若 gopher-lua 输出不同(它用 Go 的 inf/nan 文本),落 §3.3 gopher 偏差行,以官方为准。
-- **NaN 符号在 oracle 侧消除,不在比较侧豁免**:`0/0` 转文本时 glibc 的 printf 按符号位打 `-nan`,wangshu 打 `nan`,差一个字节;IEEE 754 不赋 NaN 符号位数值语义,两种输出都合规,所以这是渲染写法的选择而不是语义分歧。cgo 内嵌 oracle(`internal/oracle`,engineering §3.2)是仓库自己 vendor 并编译、只为做差分基准而存在的,且已经为确定性 stub 掉 `os.time`/`math.random`/`pairs` 顺序,所以差异在**产生它的地方**被消除:`internal/oracle/lua515.c` 覆盖 `lua_number2str`(覆盖 `tostring`/`..`/`io.write` 的数字渲染)、并对 `lstrlib.c` 的 include 局部 shadow `sprintf`(`string.format` 的 `%e`/`%f`/`%g` 族直接调 `sprintf` 不走 `lua_number2str`),把 NaN 渲染的符号去掉;vendored 源码保持与记录的 sha256 逐字节一致(配置只在 `lua515.c` 与 CFLAGS 里做)。三个实现要点:① 保持**字段宽度**——`sprintf` 已经补过 padding,直接删符号会让字段短一位,而 buffer 本身分不清前导空格是 padding(`%5E`)还是空格 flag 的符号(`% E`),所以把 format spec 传进去、按声明宽度重新补齐;② 符号去掉后 glibc 的 `+`/空格 flag 开始作用于 NaN,产生 `+NAN`/` NAN`,所以剥的是任何符号字符不只是 `-`;③ Inf 保留符号(那个符号有意义),脚本自己写的 `"-nan"` 字面量不改。真值表见 `internal/oracle/oracle_test.go` 的 `TestExec_NaNRenderedWithoutSign`;`internal/oracle.CompareOutput` 因此回到「归一化地址后逐字节比较」,**没有任何接受差异的路径**,其测试明确断言 NaN 符号差异**不被豁免**——真出现就是真差异。
-- **产品侧同时清掉两处 glibc 模仿**:`internal/stdlib/stringlib.go` 的 `cFormatSpecialFloat` 原本对大写 verb 硬编码 `-NAN`(导致 `%e` 与 `%E` 自相矛盾),小写 NaN 原本按「声明宽度减一」补齐以复现 glibc 保留但不显示的符号列(导致 `%5f` 与 `%5E` 补齐方式不一致);两处都只为让 oracle 一致而存在,而 arm64 的 glibc 与 x86 还不同,模仿本来就不可移植。现在 NaN 在所有 verb 下都不带符号、都按完整声明宽度补齐(`%5f` → `"  nan"`,`%5E` → `"  NAN"`),wangshu 自身也一致了;白盒真值表见 `internal/stdlib/format_special_test.go`,Inf 的符号与宽度规则不变。
-- **曾经的设计与它为何失败(有长期价值,记在这里)**:#173 引入、#184/#185 延伸的旧设计把这个差异当作「不可比的类」,在 harness 侧识别并豁免——prelude 按每次 NaN 渲染事件记录 `__nan_spans` 区间 FIFO + `__oracle_readout()` 多行 header + `CompareOutput` 的 span-anchored 分类(`knownNaNSignDifference`)+ 一整层 `tostring`/`string.len`/`sub`/`byte`/`upper`/`lower`/`reverse`/`rep`/`find`/`match`/`gmatch`/`gsub`/`table.concat`/`%s`/`%q` 的入口拦截。这条路不可能收敛:那个符号字节一旦进入字符串就是普通数据,`#`、`==`、`string.sub`、`..`、算术能把它搬到任何地方——`string.len(0/0)` 是 4 对 3,`string.len(0/0)*100` 是 400 对 300,输出里连一个 nan 字节都不剩,没有任何可锚定的东西;任何下游识别规则都必须读一个两侧不相等的量,所以都做不到对称。新设计相对旧设计约少 550 行,而且两个 crasher 与整个「泄漏成数字」的家族现在是普通的 equal 而不是 skip,覆盖面是**增加**的(那些输入以前会连同同一次运行里的真差异一起被丢掉),corpus 见 `testdata/fuzz/FuzzOracleDiff/`。
-- **后续验证:#187–#190 是同一根因的四种表现,一行代码没改就修好了**。nightly 在四个不同日期自动开出的四个 crasher —— `print(string.format("%q",0%0))`(#187)、`print(string.format((0))<string.format((0%0)))`(#188)、`print(string.format("%q",(0%0)))`(#189)、`print(string.format("+% E",-(0%0)))`(#190)—— 全部是本节这个 NaN 符号字节的表现,被上面的渲染处消除一起解决。**双向验证**:四条在 redesign 之前的 base 上全部 FAIL,在现在的实现上全部以**真正的逐字节 equal** 通过而不是 skip(这个区别是要紧的:skip 会把这些输入连同同一次运行里的真差异一起丢掉,等于把它们又藏了一次)。四条 reproducer 加 10 条延伸 seed 入 `testdata/fuzz/FuzzOracleDiff/`,理由是它们触到三个已有 seed 到不了的写法,而每一个都是符号字节逃逸的不同路径:`%q` 作用于 NaN(它引用渲染结果而不做浮点格式化,不走 `%e`/`%f`/`%g` 那条 `sprintf` 通道)、比较两个 `string.format` 的**返回值**(差异变成一个 boolean,输出里根本没有 NaN 文本可锚定)、多个符号 flag 同时出现(`"+% E"`,负号去掉后 glibc 的 `+` 与空格 flag 开始作用于 NaN,即上面实现要点 ② 的输入)。另扫了 236 种写法(`%q` × 宽度、6 个比较运算符 × format 结果与 tostring 结果、10 种 flag 组合 × 5 个浮点 verb)+ 140 种(7 种产生 NaN 的方式 × 20 种消费其文本的方式:concat、长度、byte、sub、reverse、gsub、find、match、upper、rep、`table.concat`、作为 table key)确认整个家族零差异。
-- **判据(区分两类豁免)**:差异如果来自「同一个抽象值的不同书写方式」,在**渲染处**消除(本节的 NaN 符号);如果来自「两侧本来就是不同的东西」,在**比较时**归一或跳过——§4.3 的地址归一是两个引擎堆布局本来不同、没有「正确值」可对齐;实现常数类护栏(`stack overflow`、`too many syntax levels`、200 local variables 等,engineering §3.2)是两侧独立选定的实现限制,触发点差几个输入,改 oracle 的常数去凑 wangshu 会让它不再是独立基准。**这条判据要读细一格(#233,2026-08-05)**:判去「比较时归一」的那一类里,仍然可能有一个**子量**必须在渲染侧对齐——地址的**值**只能归一,而地址的**宽度**是一个渲染选择,它会被 `#tostring(t)` 测量成一个普通数字、在归一化之前就分歧。归一化管值、渲染处管宽度,两件事都要做,详见 §4.3a。
-
-> **关键纪律**:折叠口径与运行期一致由「同一 `value.NumberValue` + 同一格式化函数」保证([03](./03-frontend-lexer.md) §11、[04](./04-frontend-parser-codegen.md) §13 已承诺 codegen 折叠走与解释器同一 `NumberValue`)。所以「编译期 `1/0` 折叠 vs 运行期 `1/0`」天然同结果——format 函数只此一份,折叠与运行期都调它。
-
-### 4.3 table 地址 / tostring(table) 等(承 07 §11/§982、10 §13.1)
-
-**问题来源**:`tostring({})` / `print({})` 输出 `table: 0x...`(含对象地址)。[07](./07-metatables-metamethods.md) §11 / [10](./10-stdlib.md) §13.1 明确:arena 偏移 ≠ C 指针 ≠ gopher-lua 的 Go 指针,**必然不同,不可能逐字节一致**,12 必须豁免。同理 `function: 0x...`、`thread: 0x...`、`userdata: 0x...`(无 `__tostring` 时的默认格式)。
-
-**12 定稿:正则脱敏地址为占位符 `0xADDR`(normalize N1),三方都脱敏后比对结构。**
-
-```
-正则:^(table|function|thread|userdata): 0x[0-9a-fA-F]+$   →   ${1}: 0xADDR
-```
-
-- 脱敏**只抹地址数字,保留类型前缀**——这样「`tostring(t)` 返回的是 table 而非 function」这一**类型信息仍被差分**(类型错了仍能抓),只放过不可比的地址值。
-- **有 `__tostring` 元方法**时,`tostring` 走元方法返回自定义串([07](./07-metatables-metamethods.md)),那是确定性输出,**不脱敏、严格比**——�crubbing 只针对「默认地址格式」。
-- 生成器对「裸 print table」可选择性减少(降低脱敏依赖),但不禁止(豁免管线已处理)。
-
-#### 4.3a 地址归一有两条能力边界(#232 / #233,2026-08-05)
-
-上面那条「正则脱敏」是**归一化管地址的值**,而它有两个边界:一个是锚点的写法,一个是归一化根本到不了
-的地方。两个 nightly crasher 各撞一个,而它们是**同一个根因的两种可见度**——都是引用值地址,一个表现为
-原始输出不同、一个表现为长度不同。
-
-**边界一:锚点的字符类(#232)**。`internal/oracle/compare.go` 的 `addrRe` 原先用 `\b` 锚定类型名,锚点
-本身有正当理由——不加它会把脚本自己打印的 hex(`0x1`、`myfunction: 0x1`)一起归一掉,而那是脚本自己的
-文本、必须逐字节可比。问题在**具体写法**:`\b` 的语义是 word 字符边界,而 word 字符**包含数字和下划线**。
-`io.write` 不带换行,于是 `io.write(0)print(print)` 的捕获输出是 `0function: 0x...`,`0` 与 `function` 之间
-没有 `\b`,**整个地址逃过归一化**——凡是这种写法都必然分歧。现在锚点是「不是字母」
-(`(^|[^A-Za-z])`):数字或下划线可以紧贴前缀,只有另一个**字母**才说明这是某个更长单词的尾部。因为锚点
-吃掉了前导那一个字符,替换也从 `ReplaceAllString` 改成 `ReplaceAllStringFunc` + 一个只重写匹配内部
-`0x...` 的 `addrBody`,把前导字符原样放回去。用例见
-`internal/oracle/normalize_addr_test.go::TestNormalizeAddrIsNotWordAnchored`——六条必须归一(含紧贴数字的
+- **`tostring`/CONCAT 的数字格式 = Lua 5.1 `LUAI_NUMFMT` = `"%.14g"`**。望舒用 Go 实现 `%.14g` 时**必须复刻 C `printf("%.14g")` 的精确行为**(尾零处理、指数位数 `e+NN` 两位、负零 `-0`、`inf`/`nan` 拼写)。Go 的 `strconv.FormatFloat(f, 'g', 14, 64)` 与 C `%.14g` **有微差**(指数位数、`+` 号、`inf`/`nan` 文本),不能直接用——需校准(按最终实现:`addrRe` 只匹配地址**本体**,前缀由 `NormalizeOutput` 在 Go 侧用 `FindAllStringIndex`
+的真实偏移逐个校验 —— RE2 没有 lookbehind,前缀无法零宽断言;Go 侧校验不消耗字符,相邻地址各自独立判定。
+中间错过两版:`\b` 漏掉「数字紧贴前缀」,改成消耗一个 `[^A-Za-z]` 之后字母仍然拦住、且相邻地址共用锚点。
+「字母紧贴前缀」与脚本自己打印的 `myfunction: 0x1` 形状完全相同、无法区分,取「一律归一」:
+脚本自己的 hex 两侧算出来一样、坍缩到同一个 token 无害,而拒绝归一会让每个
+`io.write` 后接打印引用值的脚本必然分歧。用例见
+`internal/oracle/normalize_addr_test.go::TestNormalizeAddrPrefixValidation`
 三种)+ 四条必须原样,**两侧都要有**,只写前半时「把锚点整个删掉」也会通过。
 
 **边界二:归一化只能救「被打印出来」的差异,救不了「被测量」的差异(#233)**。`t={0}print(#tostring(t))`
