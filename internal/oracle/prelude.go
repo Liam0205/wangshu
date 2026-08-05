@@ -85,16 +85,29 @@ local __tostring, __type, __select = tostring, type, select
 -- and 17 on wangshu (0x%08x gives 8), so the LENGTH diverges before any normalization runs. Rewriting
 -- the oracle's own rendering to wangshu's 8-digit form makes the two lengths agree, which is the same
 -- "eliminate the difference at the rendering site" choice the NaN sign handling already makes.
-local __sformat, __sgsub_raw = string.format, string.gsub
+local __sformat, __sgsub_raw, __ssub = string.format, string.gsub, string.sub
+-- Renders one address at wangshu's 0x%08x width. Uses only the locals captured above: reaching
+-- string.sub/string.gsub through method syntax (hex:sub(...)) would read the LIVE globals, so a fuzz
+-- script could set string.sub = nil and break the oracle's own rendering, or return a value of its
+-- choosing and steer it (audit finding).
+local function __narrow(pre, hex)
+  local lo = hex
+  if #hex > 8 then lo = __ssub(hex, -8) end
+  while #lo < 8 do lo = "0" .. lo end
+  return pre .. "0x" .. lo
+end
 local __rawtostring = __tostring
 __tostring = function(v)
   local s = __rawtostring(v)
   if __type(s) == "string" then
-    local body, n = __sgsub_raw(s, "^(%a+: )0x(%x+)$", function(pre, hex)
-      -- Keep the low 32 bits, zero-padded to 8, matching wangshu's 0x%08x.
-      local lo = #hex > 8 and hex:sub(-8) or hex
-      return pre .. "0x" .. __sformat("%08s", lo):gsub(" ", "0")
-    end)
+    -- Both reference spellings, including "file (0x...)": that one is in addrRe's list, so leaving it
+    -- out here left #233's exact shape (#tostring(io.stdout)) still diverging by length.
+    local body, n = __sgsub_raw(s, "^(%a+: )0x(%x+)$", __narrow)
+    if not n or n == 0 then
+      body, n = __sgsub_raw(s, "^(file %()0x(%x+)%)$", function(pre, hex)
+        return __narrow(pre, hex) .. ")"
+      end)
+    end
     if n and n > 0 then return body end
   end
   return s
