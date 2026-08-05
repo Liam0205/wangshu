@@ -128,8 +128,6 @@ __tostring = function(...)
   return s
 end
 tostring = __tostring
--- Published for preludeSortedIter, a later chunk that would otherwise only see the wrapper.
-__ORACLE_RAW_TOSTRING = __rawtostring
 local __ipairs = ipairs
 -- Cumulative BULK-WORK budget, shared by every shim that can move or build O(n) data inside
 -- one uninterruptible C call.
@@ -971,15 +969,17 @@ end
 // fuzz target's address normalizer handles the printed form.
 const preludeSortedIter = `
 local __rawnext, __sort = next, table.sort
--- The PRE-WRAP tostring, taken from the wrapper's own upvalue table rather than from a global.
+-- No local declaration here: preludeGuards' own local __rawtostring is STILL IN SCOPE, because Prelude()
+-- concatenates every section into one Lua chunk.
 --
--- Two earlier attempts failed. Reading the global tostring here finds the width-normalizing WRAPPER,
--- and truncating to 8 hex digits makes more keys tie, changing the very order this function exists to
--- stabilize. Publishing it as a global instead was worse: the whitelist trim (step 4) runs BEFORE this
--- chunk (step 5) and erased it, so every comparator call raised "attempt to call a nil value" -- and
--- because both engines raised identically, the harness reported PASS while masking everything after it.
---
-local __rawtostring = __ORACLE_RAW_TOSTRING
+-- Two earlier attempts failed for want of noticing that. Reading the global tostring here finds the
+-- width-normalizing wrapper, and truncating to 8 hex digits makes more keys tie, changing the very order
+-- this function exists to stabilize. Publishing the raw function as a GLOBAL instead was worse twice
+-- over: the whitelist trim (step 4) runs before this section (step 5) and erased it, so every comparator
+-- call raised "attempt to call a nil value" identically on both engines and the harness reported PASS
+-- while masking everything after it; and once kept past the trim, the global handed scripts an
+-- un-normalized PUC renderer, so taking the length of its io.stdout rendering was 21 against 17 -- reopening
+-- exactly the divergence #233 exists to close, reachable by nothing more than walking the globals.
 local __rank = { number = 1, string = 2, boolean = 3, table = 4,
                  ["function"] = 5, userdata = 6, thread = 7 }
 local __keyorder = function(a, b)
@@ -1058,13 +1058,7 @@ end
 func writeTrim(b *strings.Builder, keep GlobalSet) {
 	top := make([]string, 0, len(keep.Top)+1)
 	top = append(top, keep.Top...)
-	// __ORACLE_RAW_TOSTRING carries the PRE-WRAP tostring from preludeGuards to preludeSortedIter.
-	//
-	// It must survive the trim: the trim (step 4) runs BEFORE sorted iteration is installed (step 5),
-	// and erasing it left the comparator calling a nil value on every reference-keyed table. Both
-	// engines raised identically, so the harness reported PASS while masking every later comparison --
-	// the same shape of masking an earlier round had already found once in this area.
-	top = append(top, "__oracle_readout", "__ORACLE_RAW_TOSTRING")
+	top = append(top, "__oracle_readout")
 	sort.Strings(top)
 
 	b.WriteString("do\n  local __next, __rawget, __rawset = next, rawget, rawset\n")

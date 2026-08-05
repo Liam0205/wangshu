@@ -509,10 +509,12 @@ func DiffN(src string, runners ...Runner) DiffResult { /* N 方比对,§3.3 矩�
 两侧一致地损坏正是掩盖差异的方式。没有 `__tostring` 守卫:PUC 的文件句柄是带 `__tostring` 的 userdata、
 渲染成 `file (0x...)`,那正是本条要修的东西。
 
-`preludeSortedIter` 用的是**包装前**的 `tostring`(经 `__ORACLE_RAW_TOSTRING` 跨 chunk 传递,
-并且**必须进白名单保留列表**):用包装后的会让更多键取值相同、改变它本该稳定的顺序;
-而漏进保留列表则更隐蔽 —— 裁剪(第 4 层)在排序装好(第 5 层)之前跑,比较器每次调用都抬
-「attempt to call a nil value」,两侧对称抬错、harness 判 PASS,把它后面的一切比较都掩盖掉了。
+`preludeSortedIter` 用的是**包装前**的 `tostring`(直接用 `preludeGuards` 里那个 local —— `Prelude()` 把各段拼成**同一个 Lua chunk**,那个 local 本来就还在作用域内):用包装后的会让更多键取值相同、改变它本该稳定的顺序;
+而**改用全局**两次都更糟:漏进保留列表时,裁剪(第 4 层)在排序装好(第 5 层)之前跑,
+比较器每次调用都抬「attempt to call a nil value」,两侧对称抬错、harness 判 PASS,
+把它后面的一切比较都掩盖掉;补进保留列表之后,那个全局又把**未归一的 PUC 渲染器**交到脚本手里 ——
+`#__ORACLE_RAW_TOSTRING(io.stdout)` 是 21 对 17,恰好把 #233 要关的那条分歧重新打开,
+而脚本只要遍历一遍全局就能撞到。最终答案是**不需要任何跨 chunk 机制**。
 
 **边界二:前缀锚点无法用局部上下文区分「引擎渲染」与「脚本自己写的同形文本」。**
 `addrRe` 只匹配地址**本体**,前缀由 `NormalizeOutput` 在 Go 侧按 `FindAllStringIndex` 的真实偏移

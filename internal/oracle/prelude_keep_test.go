@@ -1,35 +1,40 @@
 package oracle
 
-import "strings"
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
-// TestSortedIterHelperSurvivesTrim pins the whitelist-trim interaction that made a broken oracle look
-// like a passing test.
+// TestSortedIterUsesThePreWrapTostring pins how preludeSortedIter reaches the un-normalized tostring.
 //
-// preludeSortedIter needs the PRE-WRAP tostring, which preludeGuards publishes as a global. The trim
-// (step 4) runs BEFORE sorted iteration is installed (step 5), so a global missing from the keep list is
-// erased and the comparator calls a nil value on every reference-keyed table. Both engines raise
-// identically, so the harness reports PASS -- while masking every comparison after it. That is the same
-// shape of masking an earlier round had already found in this area, which is why it is pinned rather than
-// left to the suites.
-func TestSortedIterHelperSurvivesTrim(t *testing.T) {
+// Three mechanisms were tried. Reading the global finds the width-normalizing WRAPPER, and truncating to
+// 8 hex digits makes more keys tie, changing the order this comparator exists to stabilize. Publishing the
+// raw function as a GLOBAL failed twice over: the whitelist trim runs before this section and erased it,
+// so the comparator called a nil value identically on both engines and the harness reported PASS while
+// masking everything after it; and once kept past the trim, the global handed scripts an un-normalized PUC
+// renderer, reopening the very divergence #233 closes.
+//
+// The answer needed no mechanism at all: Prelude() concatenates every section into ONE Lua chunk, so
+// preludeGuards' local is still in scope. This test pins that, because the property is invisible at the
+// call site -- someone splitting Prelude() into separate chunks would break sorting silently.
+func TestSortedIterUsesThePreWrapTostring(t *testing.T) {
 	p := Prelude(GlobalSet{})
-	if !strings.Contains(p, "__ORACLE_RAW_TOSTRING = ") {
-		t.Fatal("preludeGuards no longer publishes the pre-wrap tostring")
+
+	guards := strings.Index(p, "local __rawtostring = __tostring")
+	if guards < 0 {
+		t.Fatal("preludeGuards no longer captures the pre-wrap tostring as a local")
 	}
-	if !strings.Contains(p, "local __rawtostring = __ORACLE_RAW_TOSTRING") {
-		t.Fatal("preludeSortedIter no longer reads the pre-wrap tostring")
+	sorted := strings.Index(p, "return __rawtostring(a) < __rawtostring(b)")
+	if sorted < 0 {
+		t.Fatal("the key comparator no longer uses the pre-wrap tostring")
 	}
-	// The trim must keep it. Its keep list is emitted into the prelude text, so look for it there.
-	trimIdx := strings.Index(p, "__oracle_readout")
-	if trimIdx < 0 {
-		t.Fatal("keep list not found in prelude")
+	if sorted < guards {
+		t.Error("the comparator appears before the local that defines it: sections were reordered, and " +
+			"the local would be nil at the comparator")
 	}
-	if !strings.Contains(p, `"__ORACLE_RAW_TOSTRING"`) &&
-		!strings.Contains(p, "__ORACLE_RAW_TOSTRING']=true") &&
-		!strings.Contains(p, "__ORACLE_RAW_TOSTRING\"]=true") {
-		t.Error("__ORACLE_RAW_TOSTRING is not in the trim's keep list: sorted iteration will call a " +
-			"nil value on every reference-keyed table, symmetrically on both engines, so the harness " +
-			"reports PASS while masking everything after it")
+	// No global may carry it: a script could then call PUC's un-normalized renderer directly.
+	if strings.Contains(p, "__ORACLE_RAW_TOSTRING") {
+		t.Error("the raw tostring is published as a global again; a script reaching it (walking the " +
+			"globals suffices) gets PUC's un-normalized address rendering, reopening #233")
 	}
 }
