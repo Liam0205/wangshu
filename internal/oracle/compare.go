@@ -20,7 +20,18 @@ import (
 // file (0x...) is included: PUC's file handles carry a __tostring rendering that form, and
 // leaving it out made print(io.stdout) a guaranteed divergence once the standard streams
 // existed.
-var addrRe = regexp.MustCompile(`\b(table|function|thread|userdata): 0x[0-9a-fA-F]+|\bfile \(0x[0-9a-fA-F]+\)`)
+// The type name is anchored on its LEFT by "not a letter" rather than by \b (#232): io.write emits
+// without a newline, so `io.write(0) print(print)` produces "0function: 0x...", where the char before
+// "function" is the word char "0", \b does not match there, and the address escaped normalization --
+// making every such script a guaranteed divergence. A digit or underscore may abut the prefix; only
+// another letter would mean this is the tail of a longer word ("myfunction: 0x1"), which is a script's
+// own text and must stay comparable.
+//
+// Group 1 keeps whatever that leading character was so the replacement can put it back.
+var addrRe = regexp.MustCompile(`(^|[^A-Za-z])((?:table|function|thread|userdata): 0x[0-9a-fA-F]+|file \(0x[0-9a-fA-F]+\))`)
+
+// addrBody rewrites just the address inside an already-matched reference spelling.
+var addrBody = regexp.MustCompile(`0x[0-9a-fA-F]+`)
 
 // NormalizeOutput rewrites engine-dependent reference-value addresses before
 // byte comparison. Accepted platform differences belong in CompareOutput so
@@ -29,7 +40,9 @@ var addrRe = regexp.MustCompile(`\b(table|function|thread|userdata): 0x[0-9a-fA-
 // NaN needs no handling here at all: the oracle normalizes its own NaN
 // rendering (lua515.c), so both engines emit the same bytes.
 func NormalizeOutput(s string) string {
-	return addrRe.ReplaceAllString(s, "${1}: 0xADDR")
+	return addrRe.ReplaceAllStringFunc(s, func(m string) string {
+		return addrBody.ReplaceAllString(m, "0xADDR")
+	})
 }
 
 // OutputComparison classifies a captured-output comparison.

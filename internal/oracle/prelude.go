@@ -78,6 +78,28 @@ func Prelude(keep GlobalSet) string {
 var preludeCapture = `
 local __acc, __n, __len = {}, 0, 0
 local __tostring, __type, __select = tostring, type, select
+-- Render reference addresses at a FIXED WIDTH on the oracle side (#233).
+--
+-- NormalizeOutput rewrites "table: 0x..." to a token, which makes the printed forms comparable -- but
+-- it cannot help a script that measures one: #tostring({}) is 21 on PUC (%p gives 12 hex digits here)
+-- and 17 on wangshu (0x%08x gives 8), so the LENGTH diverges before any normalization runs. Rewriting
+-- the oracle's own rendering to wangshu's 8-digit form makes the two lengths agree, which is the same
+-- "eliminate the difference at the rendering site" choice the NaN sign handling already makes.
+local __sformat, __sgsub_raw = string.format, string.gsub
+local __rawtostring = __tostring
+__tostring = function(v)
+  local s = __rawtostring(v)
+  if __type(s) == "string" then
+    local body, n = __sgsub_raw(s, "^(%a+: )0x(%x+)$", function(pre, hex)
+      -- Keep the low 32 bits, zero-padded to 8, matching wangshu's 0x%08x.
+      local lo = #hex > 8 and hex:sub(-8) or hex
+      return pre .. "0x" .. __sformat("%08s", lo):gsub(" ", "0")
+    end)
+    if n and n > 0 then return body end
+  end
+  return s
+end
+tostring = __tostring
 local __ipairs = ipairs
 -- Cumulative BULK-WORK budget, shared by every shim that can move or build O(n) data inside
 -- one uninterruptible C call.

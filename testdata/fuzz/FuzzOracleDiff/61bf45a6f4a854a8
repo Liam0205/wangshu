@@ -1,0 +1,2 @@
+go test fuzz v1
+string("io.write(0)print(print)")
