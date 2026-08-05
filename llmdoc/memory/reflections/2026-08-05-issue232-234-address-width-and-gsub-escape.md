@@ -75,16 +75,28 @@ seed 是 `io.write(0)print(print)`。`io.write` 不带换行，于是捕获输�
 `\b` 是「word 字符与非 word 字符之间的边界」，而 `0` 与 `function` **都是 word 字符**，中间没有边界，
 于是整个地址逃过归一化——**凡是这种写法都必然分歧**，两个引擎的地址值本来就不同。
 
-改成用「不是字母」锚定左边：
+这一处**改了三版才对**,三版的失败方式都值得记下来。
+
+**第一版**改成用「不是字母」锚定左边:
 
 ```
 (^|[^A-Za-z])((?:table|function|thread|userdata): 0x[0-9a-fA-F]+|file \(0x[0-9a-fA-F]+\))
 ```
 
-数字或下划线可以紧贴前缀（那不构成一个更长的单词）；只有**另一个字母**才说明这是某个更长单词的尾部
-（`myfunction: 0x1`），那是脚本自己的文本。因为锚点现在捕获了前导那一个字符，替换也从
-`ReplaceAllString` 改成 `ReplaceAllStringFunc` + 一个只重写匹配内部 `0x...` 的 `addrBody`，把那个
-前导字符原样放回去。
+它只修好了 seed 里那个「数字紧贴前缀」的情形。审计指出两个问题:**字母仍然拦住**
+(`io.write("x")` 后接打印引用值,与 `io.write(0)` 一模一样地分歧);而且这个锚点**消耗**了前导那一个字符,
+于是两个相邻地址共用一个锚点、第二个逃掉 —— 那是相对 base 的回归。
+
+**最终版**放弃在正则里锚定:`addrRe` 只匹配地址**本体**(`0x[0-9a-fA-F]+`),
+前缀由 `NormalizeOutput` 在 Go 侧按 `FindAllStringIndex` 的真实偏移逐个校验。
+RE2 没有 lookbehind,前缀无法零宽断言;而 Go 侧校验不消耗字符(相邻与重复地址各自独立判定),
+判据也正好是「这是不是 tostring 的四种引用拼写之一」,而不是 `\b` 对它的近似。
+
+还有一个**无法用局部上下文判定**的情形,是明确取舍而非疏漏:`xfunction: 0x...`(`io.write` 拼出来的)
+与 `myfunction: 0x1`(脚本自己的文本)形状完全相同,信息不在字符串里。两种失败并不对称:
+拒绝归一会让每个「`io.write` 后接打印引用值」的脚本**必然**分歧,而归一化一个同形文本是无害的 ——
+脚本自己的 hex 两侧算出来一样、坍缩到同一个 token;真要被掩盖,得是两个引擎对同一个表达式算出**不同**的
+hex,而那种分歧我们希望它以自己的值暴露、而不是以渲染形式暴露。取「一律归一」。
 
 ### 2. #233：脚本**测量**地址的长度，`NormalizeOutput` 到不了（`internal/oracle/prelude.go`）
 
@@ -148,7 +160,7 @@ else {
 
 三处修复各自用「把该修复还原掉」实测确认过会变红：
 
-- `internal/oracle/normalize_addr_test.go::TestNormalizeAddrIsNotWordAnchored` —— 六条必须归一
+- `internal/oracle/normalize_addr_test.go::TestNormalizeAddrPrefixValidation` —— 六条必须归一
   （含紧贴数字的 `0function:` / `0table:` / `0file (`）+ 四条必须保持原样（`0x1`、`myfunction: 0x1`、
   `tostring gives 0xff`）。**两侧都有用例**是这一条的关键：只写前半会让「把锚点整个删掉」也通过。
 - `fuzz_234_test.go::TestGsubReplacementEscapeMatchesPUC` —— 四条改了行为的（末尾 `%`、文本后的末尾
