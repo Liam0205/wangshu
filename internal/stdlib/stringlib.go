@@ -533,9 +533,21 @@ func st2gsubRepl(st *crescent.State, src []byte, s, e int, caps []capResult, rep
 				return nil, e
 			}
 			charged = len(out)
-			if rb[i] == '%' && i+1 < len(rb) {
+			if rb[i] == '%' {
+				// No bounds guard on i+1, deliberately: PUC's add_s does `i++` and then reads
+				// news[i] with no length check, so a replacement ending in a bare '%' reads the
+				// NUL terminator lua_tolstring guarantees and emits a NUL byte per match.
+				// gsub("aaa", "a", "%", 1) is "\0aa" on lua5.1, and gsub("aaa","a","x%") is
+				// "x\0x\0x\0" -- verified by hexdump. Requiring i+1 < len(rb) made the trailing
+				// '%' a literal instead, which #234 caught.
+				//
+				// This mirrors a quirk rather than a documented rule, but the oracle compares bytes:
+				// matching it is what keeps every replacement ending in '%' comparable.
 				i++
-				c := rb[i]
+				var c byte // the NUL that PUC would read past the end
+				if i < len(rb) {
+					c = rb[i]
+				}
 				if c == '%' {
 					out = append(out, '%')
 				} else if c >= '0' && c <= '9' {
@@ -573,7 +585,12 @@ func st2gsubRepl(st *crescent.State, src []byte, s, e int, caps []capResult, rep
 						out = append(out, b...)
 					}
 				} else {
-					return nil, crescent.NewError("invalid use of '%' in replacement string")
+					// PUC's add_s emits ANY non-digit after '%' raw:
+					//   if (!isdigit(uchar(news[i]))) luaL_addchar(b, news[i]);
+					// so gsub("a","a","%z") is "z" on lua5.1, not an error, and a trailing '%'
+					// emits the NUL that add_s reads past the end. Rejecting here diverged on both
+					// (the %z case was pre-existing; #234 filed the trailing-'%' one).
+					out = append(out, c)
 				}
 			} else {
 				out = append(out, rb[i])
