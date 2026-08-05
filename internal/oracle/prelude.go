@@ -97,22 +97,39 @@ local function __narrow(pre, hex)
   return pre .. "0x" .. lo
 end
 local __rawtostring = __tostring
-__tostring = function(v)
-  local s = __rawtostring(v)
-  if __type(s) == "string" then
-    -- Both reference spellings, including "file (0x...)": that one is in addrRe's list, so leaving it
-    -- out here left #233's exact shape (#tostring(io.stdout)) still diverging by length.
-    local body, n = __sgsub_raw(s, "^(%a+: )0x(%x+)$", __narrow)
-    if not n or n == 0 then
-      body, n = __sgsub_raw(s, "^(file %()0x(%x+)%)$", function(pre, hex)
-        return __narrow(pre, hex) .. ")"
-      end)
-    end
-    if n and n > 0 then return body end
+-- Gate on the VALUE'S TYPE, not on the rendered text.
+--
+-- An earlier version matched "^(%a+: )0x(%x+)$" against every tostring result, which corrupted a
+-- script's own strings: print("n: 0x1") became "n: 0x00000001" and #tostring("n: 0xff") became 13
+-- instead of 7. Worse, a script printing a genuinely engine-dependent hex quantity had it funnelled
+-- through the same 32-bit truncation on BOTH sides, collapsing a real divergence into equality --
+-- corrupting both sides identically is exactly what hides a difference (audit finding).
+--
+-- No __tostring guard: PUC's file handles are userdata WITH a __tostring rendering "file (0x...)",
+-- which is the #233 case itself, so excluding metamethod renderings would exclude the thing this
+-- exists for. The type gate keeps script strings out; the patterns below only fire on tostring's own
+-- spellings.
+local __refkind = {table = true, ["function"] = true, thread = true, userdata = true}
+__tostring = function(...)
+  -- Forwarded verbatim so the arity error survives: PUC raises "bad argument #1 to 'tostring'
+  -- (value expected)" with no argument, and an optional parameter silently dropped that error path
+  -- from comparison on both engines.
+  local v = ...
+  local s = __rawtostring(...)
+  if __type(s) ~= "string" or not __refkind[__type(v)] then return s end
+  local body, n = __sgsub_raw(s, "^(%a+: )0x(%x+)$", __narrow)
+  if not n or n == 0 then
+    -- "file (0x...)" is in addrRe's list too; omitting it left #tostring(io.stdout) diverging.
+    body, n = __sgsub_raw(s, "^(file %()0x(%x+)%)$", function(pre, hex)
+      return __narrow(pre, hex) .. ")"
+    end)
   end
+  if n and n > 0 then return body end
   return s
 end
 tostring = __tostring
+-- Published for preludeSortedIter, a later chunk that would otherwise only see the wrapper.
+__ORACLE_RAW_TOSTRING = __rawtostring
 local __ipairs = ipairs
 -- Cumulative BULK-WORK budget, shared by every shim that can move or build O(n) data inside
 -- one uninterruptible C call.
@@ -954,6 +971,11 @@ end
 // fuzz target's address normalizer handles the printed form.
 const preludeSortedIter = `
 local __rawnext, __sort = next, table.sort
+-- The PRE-WRAP tostring. This chunk runs after the width-normalizing wrapper is installed, so a plain
+-- reference to the global would find the wrapper -- and truncating to 8 hex digits makes more keys tie,
+-- changing the very order this function exists to stabilize. Display width and sort order are separate
+-- concerns.
+local __rawtostring = __ORACLE_RAW_TOSTRING
 local __rank = { number = 1, string = 2, boolean = 3, table = 4,
                  ["function"] = 5, userdata = 6, thread = 7 }
 local __keyorder = function(a, b)
@@ -961,7 +983,7 @@ local __keyorder = function(a, b)
   if ta ~= tb then return ta < tb end
   if ta <= 2 then return a < b end
   if ta == 3 then return (a and 1 or 0) < (b and 1 or 0) end
-  return __tostring(a) < __tostring(b)
+  return __rawtostring(a) < __rawtostring(b)
 end
 local function __sortedkeys(t)
   local ks, n = {}, 0
