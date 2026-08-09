@@ -1019,6 +1019,14 @@ P1 建立的三套机制(conformance / 差分 fuzz / 基准)如何复用到 P2-P
 **门禁分级**:
 - **硬门禁(必过,阻塞合并)**:单元、conformance、差分 fuzz(零未豁免差异 + 零崩溃)、基准 ≥2x。差分 fuzz 是 [architecture](../architecture.md) §4 点名的**必过门禁**。
 - **每 PR 的 fuzz 是「固定时长一轮」**(`-fuzztime`,如几十秒到几分钟),保证 PR 反馈速度;**持续 fuzz**(roadmap §5「持续 fuzz」)由**独立长跑任务**(nightly / 专用 fuzz 机)承担——长时间随机撞角落,撞到的失败用例最小化后回流成 conformance(§3.6)。两者分工:PR 门禁防回归,长跑 fuzz 拓新。
+
+### 8.1 读 nightly 的失败:红色不一定意味着「测过了」(#236-#241,2026-08-09)
+
+nightly 的三个 tier 腿各自是「装 oracle → 跑差分 fuzz → triage → 开 issue」的串行步骤链,而**准备类步骤失败会让产生结论的步骤被 skip**。2026-08-07 的两轮就是这样:oracle 源码构建里那个裸 `curl` 撞上上游可达性抖动(exit 28 是 curl 的 `CURLE_OPERATION_TIMEDOUT`,不是磁盘写满;取包的修法见 [engineering](../engineering.md) §4.1),于是三个差分 fuzz 步骤全部 `skipped`,那一轮**报 failure 而实际什么都没测**,那一晚的探索预算是零。
+
+这对本文的验收口径有一条直接后果:**§8 的「差分 fuzz 必过」是关于「跑了并且零未豁免差异」的,而一个红色的 nightly 既可能是「跑了并且发现分歧」,也可能是「一步都没跑」**,两者在 Actions 页面上是同一个红叉。读 nightly 失败时的第一步因此不是去找分歧,而是**确认那三个 fuzz 步骤真的执行过**——与 §3.1 那条「差分比较的对象是 harness 捕获到的东西」是同一族的机制:绿灯不携带「测了什么」的信息,红灯也不携带。
+
+triage 侧配套的两条口径(机制载体在 [engineering](../engineering.md) §3.2):① **infra 失败与真分歧分流**,前者标签 `ci`、后者带 seed 与本地复现命令;② **infra issue 按 `run_id` 去重而不按 tier**——infra 失败天然横跨所有 tier(装不上依赖与被测的是 p1 还是 p4 无关),而 divergence 失败天然属于某一个 tier,标题里嵌 `matrix.variant` 曾让两次抖动开出六个 issue(#236-#241)。方法论见 `llmdoc/guides/unreproducible-crasher-triage.md`「CI 自动化本身的失败信号」。
 - **golden / 豁免清单改动高亮**(§4.8):golden 文件、`exemptions.go` 的 diff 在 PR review 里显眼,防「改 golden / 加豁免来掩盖真 bug」。
 
 > **为什么差分 fuzz 必须是硬门禁**(而非「跑跑看」):roadmap §5 原则 2 把它定为「主防线」,[architecture](../architecture.md) §4 把它定为「必过」。若差分只是 advisory(可失败可合并),则「投机错误静默错果」会随 PR 渗入主干而无人察觉(它不崩溃、不报错,只是结果悄悄错)。把它设为**阻塞合并的硬门禁**,是把「逐字节一致」从口号变成机制。这也是 P1 验收(roadmap §4「与 gopher-lua 差分 fuzz 输出逐字节一致」)的 CI 兑现。
