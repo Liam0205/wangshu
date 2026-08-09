@@ -70,8 +70,11 @@ jobs:
       - name: install lua 5.1.5 oracle (source build)
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq libreadline-dev
-          curl -sLO https://www.lua.org/ftp/lua-5.1.5.tar.gz
-          tar xzf lua-5.1.5.tar.gz
+          # Bounded + retried + checksum-verified (#236-#241): a bare curl with no --max-time sat
+          # ~2m15s on an unreachable lua.org and exited 28 (curl's TIMEDOUT), which failed this step
+          # and left the differential fuzz steps skipped -- a run reporting failure while testing
+          # nothing, and six issues filed for one upstream blip.
+          ./scripts/fetch-lua-tarball.sh
           make -C lua-5.1.5 posix -j2
           sudo cp lua-5.1.5/src/lua /usr/local/bin/lua5.1
           ./scripts/check-oracle.sh
@@ -261,14 +264,19 @@ jobs:
           EOF
           )
           else
-            TITLE="nightly-fuzz infra failure (${{ matrix.variant }}, $(date -u +%F))"
+            # NO matrix.variant in the title, deliberately (#236-#241): an environment failure hits
+            # all three tiers at once, and including the variant made three distinct titles, so the
+            # title dedupe below could not see them as one event. Two upstream blips on 2026-08-07
+            # filed six issues. The run id is shared by all three jobs, so keying on it collapses
+            # them -- the second and third jobs comment instead of filing.
+            TITLE="nightly-fuzz infra failure (run ${{ github.run_id }})"
             LABEL="ci"
-            BODY="nightly fuzz 失败但无 DIVERGENCE 标记 / 无 go-fuzz crash(环境/基础设施类:oracle 不可用、超时、依赖装不上等)。日志见 run artifacts:${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            BODY="nightly fuzz 失败但无 DIVERGENCE 标记 / 无 go-fuzz crash(环境/基础设施类:oracle 不可用、超时、依赖装不上等)。首个报告的 tier:${{ matrix.variant }}。日志见 run artifacts:${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           fi
           # Dedupe by title: comment on an existing open issue instead of filing a new one
           EXISTING=$(gh issue list --state open --search "in:title \"$TITLE\"" --json number --jq '.[0].number' || true)
           if [ -n "$EXISTING" ] && [ "$EXISTING" != "null" ]; then
-            gh issue comment "$EXISTING" --body "再次触发:run ${{ github.run_id }}"
+            gh issue comment "$EXISTING" --body "再次触发:run ${{ github.run_id }}(tier ${{ matrix.variant }})"
           else
             gh issue create --title "$TITLE" --label "$LABEL" --body "$BODY"
           fi

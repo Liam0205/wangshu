@@ -55,7 +55,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y lua5.1
       - if: startsWith(matrix.os, 'macos') && steps.cache-lua51-bench.outputs.cache-hit != 'true'
         run: |
-          curl -fsSL https://www.lua.org/ftp/lua-5.1.5.tar.gz | tar xz
+          ./scripts/fetch-lua-tarball.sh
           cd lua-5.1.5
           make macosx CC=cc
       - if: startsWith(matrix.os, 'macos')

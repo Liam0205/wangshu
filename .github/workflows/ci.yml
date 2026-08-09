@@ -116,7 +116,7 @@ jobs:
       - if: startsWith(matrix.os, 'macos') && steps.cache-lua51-test.outputs.cache-hit != 'true'
         # cache miss: download + build
         run: |
-          curl -fsSL https://www.lua.org/ftp/lua-5.1.5.tar.gz | tar xz
+          ./scripts/fetch-lua-tarball.sh
           cd lua-5.1.5
           make macosx CC=cc
       - if: startsWith(matrix.os, 'macos')
@@ -282,7 +282,7 @@ jobs:
       - if: startsWith(matrix.os, 'macos') && steps.cache-lua51-difftest.outputs.cache-hit != 'true'
         # cache miss: download + build (macOS homebrew deprecated lua@5.1 in 2024)
         run: |
-          curl -fsSL https://www.lua.org/ftp/lua-5.1.5.tar.gz | tar xz
+          ./scripts/fetch-lua-tarball.sh
           cd lua-5.1.5
           make macosx CC=cc
       - if: startsWith(matrix.os, 'macos')
