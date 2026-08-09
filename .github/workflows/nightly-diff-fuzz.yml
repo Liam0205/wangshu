@@ -264,12 +264,15 @@ jobs:
           EOF
           )
           else
-            # NO matrix.variant in the title, deliberately (#236-#241): an environment failure hits
-            # all three tiers at once, and including the variant made three distinct titles, so the
-            # title dedupe below could not see them as one event. Two upstream blips on 2026-08-07
-            # filed six issues. The run id is shared by all three jobs, so keying on it collapses
-            # them -- the second and third jobs comment instead of filing.
-            TITLE="nightly-fuzz infra failure (run ${{ github.run_id }})"
+            # Keyed on the DATE alone -- neither the variant nor the run id (#236-#241).
+            #
+            # An environment failure hits all three tiers at once, so a variant in the title made
+            # three distinct titles that the dedupe below could not see as one event: two blips on
+            # 2026-08-07 filed six issues. Keying on the run id fixes that but is worse in the other
+            # direction, because the schedule runs six times a day -- a day-long outage would then
+            # file six issues where variant+date capped at three. The date collapses BOTH axes, and
+            # every extra tier or run adds a comment instead.
+            TITLE="nightly-fuzz infra failure ($(date -u +%F))"
             LABEL="ci"
             # State plainly whether the differential steps RAN. A failing setup step leaves them
             # skipped, so the run reports red while having tested nothing -- and red's default
