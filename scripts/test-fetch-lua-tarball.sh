@@ -60,10 +60,13 @@ else ok checksum-mismatch; fi
 d="$WORK/c2"; mkdir -p "$d"; mkfake "$d"
 sum=$(sha256_of "$d/lua-5.1.5.tar.gz")
 variant "$d/f.sh" "file://$d/lua-5.1.5.tar.gz" "$sum"
-cp "$d/lua-5.1.5.tar.gz" "$d/upstream.tar.gz"
-if ( cd "$d" && rm -f lua-5.1.5.tar.gz && rm -rf lua-5.1.5 \
-     && sed -i "s|file://$d/lua-5.1.5.tar.gz|file://$d/upstream.tar.gz|" f.sh \
-     && ./f.sh >/dev/null 2>&1 ) && [ -f "$d/lua-5.1.5/src/lua.c" ]; then
+# The origin is passed to variant() directly. An earlier version generated the variant against one URL
+# and then rewrote it with `sed -i`, which is not portable: BSD sed (macOS) requires an explicit suffix
+# argument for -i, so the chain broke and this case failed there. Third time a change in this file
+# repeated the portability class it exists to guard, so: no in-place edits, pass the value once.
+mv "$d/lua-5.1.5.tar.gz" "$d/upstream.tar.gz"
+variant "$d/f.sh" "file://$d/upstream.tar.gz" "$sum"
+if ( cd "$d" && rm -rf lua-5.1.5 && ./f.sh >/dev/null 2>&1 ) && [ -f "$d/lua-5.1.5/src/lua.c" ]; then
   ok good-checksum
 else
   bad good-checksum "a valid tarball did not unpack"
@@ -99,16 +102,37 @@ fi
 # Inspect the curl INVOCATION, not the whole file: a first version of this check grepped the file and
 # passed even with the flag deleted, because the word survived in a comment. A test that a comment can
 # satisfy is not testing the code.
-curl_cmd=$(sed -n '/curl -fsSL/,/"https:/p' "$SCRIPT" | tr -d '\\\n')
+# Extract from the code, with comment lines stripped FIRST. The anchor itself was satisfiable by a
+# comment: writing a line mentioning `curl -fsSL ... "https://` in the header and deleting all three real
+# flags left this green. Stripping comments before matching removes that whole avenue -- the third
+# distinct way this one check has been vacuous, which is why it is now belt and braces (comments removed,
+# invocation isolated, values required positive).
+curl_cmd=$(grep -v '^[[:space:]]*#' "$SCRIPT" | sed -n '/curl -fsSL/,/"https:/p' | tr -d '\\\n')
+if [ -z "$curl_cmd" ]; then
+  bad bounded-and-retried "could not locate the curl invocation in the script"
+  curl_cmd="(missing)"
+fi
 missing=""
+# Check the VALUES, not just presence: --max-time 0 means "no limit" and --retry 0 is curl's default,
+# i.e. exactly the pre-#236 state, and a presence-only test passed with all three set to 0. Require a
+# positive integer after each.
 for flag in --connect-timeout --max-time; do
-  case "$curl_cmd" in *"$flag"*) ;; *) missing="$missing $flag";; esac
+  ok_val=0
+  for n in $(printf '%s\n' "$curl_cmd" | grep -o -- "$flag [0-9][0-9]*" | grep -o '[0-9][0-9]*$' || true); do
+    [ "$n" -gt 0 ] && ok_val=1
+  done
+  [ "$ok_val" -eq 1 ] || missing="$missing $flag<positive>"
 done
 # --retry needs its own pattern: a bare substring test is satisfied by --retry-delay and
 # --retry-all-errors, so deleting the real `--retry 4` left this green. curl's default retry count is 0
 # and --retry-all-errors does nothing without --retry, so that deletion removed retrying entirely --
 # the half of the fix this case exists for. Require --retry followed by a digit.
-case "$curl_cmd" in *"--retry "[0-9]*) ;; *) missing="$missing --retry<N>";; esac
+# `|| true`: grep exits 1 when the flag is absent, and under `set -e` that aborted the whole test before
+# the verdict printed -- a mutation was correctly DETECTED but silently, which reads as a pass.
+retry_n=$(printf '%s\n' "$curl_cmd" | grep -o -- '--retry [0-9][0-9]*' | grep -o '[0-9][0-9]*$' | head -1 || true)
+if [ -z "$retry_n" ] || [ "$retry_n" -lt 1 ]; then
+  missing="$missing --retry<positive>"
+fi
 if [ -z "$missing" ]; then
   ok bounded-and-retried
 else

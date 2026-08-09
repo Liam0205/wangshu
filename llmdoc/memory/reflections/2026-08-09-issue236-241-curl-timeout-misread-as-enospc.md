@@ -18,8 +18,8 @@ description: >
   新的 `scripts/fetch-lua-tarball.sh`——限时 + 重试(必须带 `--retry-all-errors`,不加它 curl 不重试超时)
   + 下载后校验官方 SHA-256 再解包 + 复用已校验的 tarball(cache 命中完全跳过网络);**不做镜像**
   (`github.com/lua/lua` 没有 5.1.5 tag,重新打包的副本过不了官方 checksum,而 checksum 这个性质比
-  「多一个源」更值钱);infra issue 标题改成按 `run_id` 去重,第二、三个 job 改为评论。新增
-  `scripts/test-fetch-lua-tarball.sh` 四个用例**全部离线**(`file://` origin),所以这个测试自己不会变成
+  「多一个源」更值钱);infra issue 标题改成按**日期**去重(`run_id` 更差:一天六轮就是六个 issue),第二、三个 job 改为评论。新增
+  `scripts/test-fetch-lua-tarball.sh` 五个用例**全部离线**(`file://` origin),所以这个测试自己不会变成
   一个会抖的 CI 步骤——而这正是本轮改动的用意。**五条教训**:① 同一个数字在不同的退出码表里含义不同,
   先确认这个退出码是**谁**产生的;② **时间形式是区分故障类别的免费证据**(「apt 成功之后沉默 2 分 15 秒」
   直接排除磁盘写满,资源耗尽立刻失败、超时才会先卡);③ 一个失败步骤让后续步骤 skip,会造出「报红但
@@ -138,14 +138,14 @@ TITLE="nightly-fuzz infra failure (${{ matrix.variant }}, $(date -u +%F))"
 ### 4.3 一个不会自己变成抖动源的自测
 
 新增 `scripts/test-fetch-lua-tarball.sh`,挂进 `Makefile` 的 `test-scripts` 目标(该目标同时在
-`make all` 与 `ci.yml` 的独立 job 里跑,纪律来自 #179)。四个用例:
+`make all` 与 `ci.yml` 的独立 job 里跑,纪律来自 #179)。五个用例:
 
 1. checksum 不符 → 必须拒绝、删掉文件、非零退出、**不解包**;
 2. checksum 正确 → 必须解包;
 3. 已有一个校验通过的 tarball,而 URL 指向一个不存在的文件 → 仍然成功,证明走了缓存而不是网络;
 4. 真脚本的 curl 调用必须带 `--connect-timeout` / `--max-time` / `--retry`。
 
-**四个用例全部离线**(用 `file://` origin),于是这个测试自己不会变成一个会抖的 CI 步骤 ——
+**五个用例全部离线**(用 `file://` origin),于是这个测试自己不会变成一个会抖的 CI 步骤 ——
 而这正是本轮改动的用意。一个「防住上游抖动」的测试如果自己依赖上游,它加的是噪声不是防线。
 
 每个用例都用变异实测过。其中第 4 条**第一版写错了**:我 grep 整个文件,于是把 `--max-time` 从
@@ -226,7 +226,7 @@ nightly 的 step 5/7/9 是 `skipped`,而整个 run 报 failure。
 凡是准备类步骤失败会 skip 掉结论类步骤的,那条失败路径就需要一句显式的「本轮未测」。
 
 本轮做到的与没做到的,如实记下:去重键那半改好了(现在六个 issue 会是一个,而它的 body 明确写
-「环境/基础设施类」),而**「本轮什么都没测」这句话仍然没有出现在任何地方** —— infra issue 的
+「环境/基础设施类」),而**「本轮什么都没测」这句话已经补上(infra issue 的 body 用 `steps.difffuzz.outcome` 写明本轮差分是否执行)** —— infra issue 的
 body 说的是失败原因的类别,不是「这一轮的探索预算是零」。这是一个已知缺口,不是本轮解决了的
 问题。
 

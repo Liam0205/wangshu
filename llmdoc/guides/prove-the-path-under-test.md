@@ -707,7 +707,7 @@ skip,覆盖**任何提到 error 第二参数的输入**(`errorLevelAtLeastTwo`,�
 同一族的相邻一格,载体是 **shell 自测脚本**:一个检查「某个标志存在」的用例,如果搜索范围是整个文件,
 那么**一段注释就能满足它**,而那个测试对代码零约束。
 
-**实例(#236–#241)**:`scripts/test-fetch-lua-tarball.sh` 的第 4 个用例要钉住
+**实例(#236–#241)**:`scripts/test-fetch-lua-tarball.sh` 的第 5 个用例要钉住
 `scripts/fetch-lua-tarball.sh` 的 curl 调用带 `--connect-timeout` / `--max-time` / `--retry`
 (它们的缺席正是 #236–#241 的直接原因)。第一版 grep 整个文件,于是把 `--max-time` **从 curl 调用里
 删掉之后它照旧通过** —— 因为那个词在文件顶部的注释里还在(注释正好在解释「bounded:

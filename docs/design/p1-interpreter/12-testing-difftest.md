@@ -1026,7 +1026,7 @@ nightly 的三个 tier 腿各自是「装 oracle → 跑差分 fuzz → triage �
 
 这对本文的验收口径有一条直接后果:**§8 的「差分 fuzz 必过」是关于「跑了并且零未豁免差异」的,而一个红色的 nightly 既可能是「跑了并且发现分歧」,也可能是「一步都没跑」**,两者在 Actions 页面上是同一个红叉。读 nightly 失败时的第一步因此不是去找分歧,而是**确认那三个 fuzz 步骤真的执行过**——与 §3.1 那条「差分比较的对象是 harness 捕获到的东西」是同一族的机制:绿灯不携带「测了什么」的信息,红灯也不携带。
 
-triage 侧配套的两条口径(机制载体在 [engineering](../engineering.md) §3.2):① **infra 失败与真分歧分流**,前者标签 `ci`、后者带 seed 与本地复现命令;② **infra issue 按 `run_id` 去重而不按 tier**——infra 失败天然横跨所有 tier(装不上依赖与被测的是 p1 还是 p4 无关),而 divergence 失败天然属于某一个 tier,标题里嵌 `matrix.variant` 曾让两次抖动开出六个 issue(#236-#241)。方法论见 `llmdoc/guides/unreproducible-crasher-triage.md`「CI 自动化本身的失败信号」。
+triage 侧配套的两条口径(机制载体在 [engineering](../engineering.md) §3.2):① **infra 失败与真分歧分流**,前者标签 `ci`、后者带 seed 与本地复现命令;② **infra issue 按**日期**去重(`run_id` 更差:一天六轮就是六个 issue)而不按 tier**——infra 失败天然横跨所有 tier(装不上依赖与被测的是 p1 还是 p4 无关),而 divergence 失败天然属于某一个 tier,标题里嵌 `matrix.variant` 曾让两次抖动开出六个 issue(#236-#241)。方法论见 `llmdoc/guides/unreproducible-crasher-triage.md`「CI 自动化本身的失败信号」。
 - **golden / 豁免清单改动高亮**(§4.8):golden 文件、`exemptions.go` 的 diff 在 PR review 里显眼,防「改 golden / 加豁免来掩盖真 bug」。
 
 > **为什么差分 fuzz 必须是硬门禁**(而非「跑跑看」):roadmap §5 原则 2 把它定为「主防线」,[architecture](../architecture.md) §4 把它定为「必过」。若差分只是 advisory(可失败可合并),则「投机错误静默错果」会随 PR 渗入主干而无人察觉(它不崩溃、不报错,只是结果悄悄错)。把它设为**阻塞合并的硬门禁**,是把「逐字节一致」从口号变成机制。这也是 P1 验收(roadmap §4「与 gopher-lua 差分 fuzz 输出逐字节一致」)的 CI 兑现。
