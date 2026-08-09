@@ -15,7 +15,7 @@ description: >
   **实际什么都没测**。**而且一次抖动开了六个 issue**:infra issue 标题里嵌了 `${{ matrix.variant }}`,
   p1/p3/p4 生成三个不同标题,现有的按标题去重看不出它们是同一件事,两次抖动 × 三个 tier = 六个 issue。
   **修法**:四处 call site(`ci.yml` ×2、`bench-acceptance.yml` ×1、`nightly-diff-fuzz.yml` ×1)统一改用
-  新的 `scripts/fetch-lua-tarball.sh`——限时 + 重试(必须带 `--retry-all-errors`,不加它 curl 不重试超时)
+  新的 `scripts/fetch-lua-tarball.sh`——限时 + 重试(`--retry` 已覆盖超时,`--retry-all-errors` 额外放宽)
   + 下载后校验官方 SHA-256 再解包 + 复用已校验的 tarball(cache 命中完全跳过网络);**不做镜像**
   (`github.com/lua/lua` 没有 5.1.5 tag,重新打包的副本过不了官方 checksum,而 checksum 这个性质比
   「多一个源」更值钱);infra issue 标题改成按**日期**去重(`run_id` 更差:一天六轮就是六个 issue),第二、三个 job 改为评论。新增
@@ -108,8 +108,9 @@ TITLE="nightly-fuzz infra failure (${{ matrix.variant }}, $(date -u +%F))"
 被测的是 p1 还是 p4 毫无关系;而 divergence 失败恰恰相反,它天然属于某一个 tier。同一个标题
 模板服务了这两类性质不同的事件,而 tier 这一维只对其中一类有意义。
 
-修法是把标题的键换成 `${{ github.run_id }}` —— 三个 job 共享同一个 run id,于是第一个报的 job
-开 issue,第二、三个评论(评论里带上自己的 tier),`BODY` 里记下「首个报告的 tier」。
+修法最终把标题的键换成**日期** —— 三个 tier 与一天六次 schedule 都收拢到一个 issue;第一个报的
+job 开 issue,其余评论(评论里带上自己的 tier),`BODY` 里记下「首个报告的 tier」。`run_id` 只能合并
+同一次 run 的三个 tier,一天上游持续故障仍会开六个 issue,因此不是最终键。
 
 ## 4. 修法
 
@@ -130,7 +131,7 @@ TITLE="nightly-fuzz infra failure (${{ matrix.variant }}, $(date -u +%F))"
 官方 checksum,而 checksum 这个性质比「多一个源」更值钱 —— 多一个源降低的是取包失败率(重试已经在
 降它),而 checksum 防的是「取到了错的东西并且编译了它」,后者的失败是无声的。
 
-### 4.2 去重键换成 run id
+### 4.2 去重键换成日期
 
 见上面第 3 节。注释里写清了「标题里**故意不放** `matrix.variant`」以及为什么,因为下一个读它的人
 最自然的改动方向就是把 tier 加回去(标题里没有 tier 看起来像信息丢失)。
@@ -160,7 +161,7 @@ curl 调用里删掉之后它**照旧通过** —— 因为那个词在文件顶
 | exit 28 是 ENOSPC,该去腾磁盘空间 | 是 curl 的超时;整个 run 里没有任何磁盘证据,而且时间形式一开始就排除了磁盘 |
 | 这一晚 nightly 报红是因为撞到了什么 | 这一晚**什么都没测**,三条差分 fuzz 腿全被 skip |
 | 六个 issue 是六次事件 | 两次事件,被标题里的 tier 拆成了六份 |
-| 修法核心是加 `--max-time` | 限时只是四个性质里的一个;`--retry` 不加 `--retry-all-errors` 对超时无效,而 checksum 防的是另一类(无声的)失败 |
+| 修法核心是加 `--max-time` | 限时只是四个性质里的一个;`--retry` 本身已覆盖超时,`--retry-all-errors` 只是额外放宽,而 checksum 防的是另一类(无声的)失败 |
 | 加个镜像源更稳 | 镜像过不了官方 checksum,取舍反了 |
 | 「flag 存在」这种检查一 grep 就完了 | grep 整个文件时注释满足了它,测试对代码零约束 |
 
@@ -225,10 +226,8 @@ nightly 的 step 5/7/9 是 `skipped`,而整个 run 报 failure。
 列成两栏 —— 一栏是「准备类」(装依赖、取包、建缓存),一栏是「产生结论类」(测试、fuzz、比对);
 凡是准备类步骤失败会 skip 掉结论类步骤的,那条失败路径就需要一句显式的「本轮未测」。
 
-本轮做到的与没做到的,如实记下:去重键那半改好了(现在六个 issue 会是一个,而它的 body 明确写
-「环境/基础设施类」),而**「本轮什么都没测」这句话已经补上(infra issue 的 body 用 `steps.difffuzz.outcome` 写明本轮差分是否执行)** —— infra issue 的
-body 说的是失败原因的类别,不是「这一轮的探索预算是零」。这是一个已知缺口,不是本轮解决了的
-问题。
+本轮两半都已补上:去重键按日期收拢同一天所有 run 与 tier;infra issue 的 body 读取
+`steps.difffuzz.outcome`,差分步骤被 skip 时明确写出「本轮未执行任何差分 fuzz」。
 
 ### 教训 4(自动开 issue 的去重键,必须与「一次事件」的粒度对齐)
 
@@ -325,4 +324,3 @@ tooling 脚本接门禁那条纪律让本轮的新测试有地方挂)·
 `.github/workflows/bench-acceptance.yml` · `Makefile`(`test-scripts`)·
 `docs/design/engineering.md` §3.2 / §4(nightly 机制与 oracle 的 CI 供给)·
 `docs/design/p1-interpreter/12-testing-difftest.md` §8(CI 门禁)
-
