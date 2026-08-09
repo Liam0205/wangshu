@@ -362,6 +362,31 @@
   注释 / 修参照实现的语义时「只修被报的那一半」会留下已知的洞,一个分支的**所有出口**都要对 / 照抄
   参照实现的越界读怪癖是可以的,前提是判据来自「**比较的是什么**」)。
 
+- **六个 issue、一个根因、而且第一次判错了(2026-08-09,#236–#241 一轮,`81acb57`,产品代码与测试零
+  改动)**:六个 nightly 自动开的 issue,标签 `ci` **不是 `bug`** —— 这一轮不涉及任何语义,全部落在
+  工程侧,记在这里是因为它改变了**怎么读 nightly 的失败**这一条口径(12 §8.1)。
+
+  | 项 | 落点 | 结论与要点 |
+  |---|---|---|
+  | **诊断先判错了**(头条) | — | 失败步骤报 `exit code 28`,当天早上的巡检把它读成 **ENOSPC**(磁盘写满,errno 28)并据此提了「在 oracle 源码构建前腾空间或缓存构建产物」的建议。**28 是 `curl` 的 `CURLE_OPERATION_TIMEDOUT`**:那一步是 curl,shell 报的退出码来自 **curl 自己的退出码表**、不是 errno 表,两张表恰好在 28 这个数字上都有条目而且都在讲一种资源类失败(空间 / 时间),所以错的解释读起来完全自然。判据:**看到一个数字退出码,先定位是哪个命令退出的,再查那个命令自己的表** |
+  | 两条免费的反证一开始就在日志里 | — | ① `apt` 在 16:55:03 成功结束,然后**沉默 2 分 15 秒**才报 exit 28——磁盘写满是**立刻**失败的,会先卡的只有等待类失败;② `no space left` / `ENOSPC` / `disk full` 在两个 run 的日志里出现次数都是 **0**。判据:**分类一个 CI 失败时先把时间戳减一遍**,时间形式往往比错误码更能定类,而且它在日志里免费 |
+  | 真根因 | `.github/workflows/nightly-diff-fuzz.yml` 等四处 | 裸的 `curl -sLO https://www.lua.org/ftp/lua-5.1.5.tar.gz`,**没有 `--max-time`、没有 `--connect-timeout`、没有 retry**,上游一次可达性抖动就挂到 shell 放弃 |
+  | **后果比「一次红」更糟** | 同上 | 这一步失败让后面三个差分 fuzz 步骤被 **skip**(step 5/7/9 是 `skipped`),那一轮报 failure 而**实际什么都没测**、探索预算为零——而红色的默认含义是「跑了并且发现了问题」,两者在 Actions 页面上是同一个红叉(12 §8.1) |
+  | 一次抖动开了六个 issue | 同上,triage 段 | infra issue 标题嵌了 `${{ matrix.variant }}`,而 **infra 失败天然横跨所有 tier**(divergence 失败才天然属于某个 tier),p1/p3/p4 三个标题让按标题去重看不出它们是同一件事:**两次抖动 × 三个 tier = 六个**。改成按 `${{ github.run_id }}`(三个 job 共享)去重,第二三个 job 改为评论,tier 挪进正文——**去重键与信息量是两件事**([engineering](../engineering.md) §3.2) |
+  | 取包收口 | `scripts/fetch-lua-tarball.sh`(新增) | 四处 call site(`ci.yml` ×2、`bench-acceptance.yml` ×1、`nightly-diff-fuzz.yml` ×1)统一改用它。四个性质:限时 / 重试(**`--retry-all-errors` 是必须的**,不加它 curl 不重试超时,而这一轮的失败方式恰好是裸 `--retry` 救不了的那一种)/ **解包之前校验官方 SHA-256**(截断或被替换的下载不能被静默编译进差分 oracle,那种失效是无声的)/ 复用已校验的 tarball(cache 命中完全跳过网络)。**不做镜像**:`github.com/lua/lua` 没有 5.1.5 tag,重新打包的副本过不了官方 checksum,而多一个源降低的是取包失败率(重试已在降它)、checksum 防的是「取到了错的东西并且编译了它」([engineering](../engineering.md) §4.1) |
+  | 自测本身不能是新的抖动源 | `scripts/test-fetch-lua-tarball.sh`(新增) | 挂进 `make test-scripts`(#179 定下的门禁纪律),四个用例**全部离线**(用 `file://` origin 冒充上游)——一个「防住外部抖动」的测试如果自己依赖上游,它加的是噪声不是防线。每个用例都用变异实测过 |
+  | 那个自测第一版假绿 | 同上 | 「curl 调用带限时标志」这一条**第一版 grep 整个文件**:把 `--max-time` 从调用里删掉后照旧通过,因为那个词在脚本顶部的注释里还在(注释正好在解释「bounded: `--connect-timeout` and `--max-time`」)。现在只截取那条 curl 调用再检查。判据:**检查代码属性的测试要作用在代码本身上,一个注释就能满足的测试没有在测代码** |
+
+  **已知缺口(如实记)**:取包这一环收口了,去重也修好了,但**「本轮未执行任何差分」这句话仍然没有
+  出现在任何地方** —— infra issue 的 body 说的是失败原因的类别,不是「这一轮的探索预算为零」。
+  记入 [engineering](../engineering.md) §7 文档缺口。
+
+  过程反思见
+  `llmdoc/memory/reflections/2026-08-09-issue236-241-curl-timeout-misread-as-enospc.md`
+  (五条教训:同一个数字在不同的退出码表里含义不同、先确认这个退出码是**谁的** / 时间形式是区分故障
+  类别的**免费**证据 / 一个失败步骤让后续步骤 skip 会造出「报红但什么都没测」 / 自动开 issue 的
+  去重键必须与「一次事件」的粒度对齐 / 检查「某个标志存在」的测试不能 grep 整个文件)。
+
 ## 相关
 
 [00-overview](./00-overview.md) · [../engineering](../engineering.md) ·

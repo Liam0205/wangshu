@@ -38,8 +38,9 @@ fmt:                                                ## 格式化(写回)
 lint:                                               ## 全仓静态检查
 	golangci-lint run ./...
 
-test-scripts:                                       ## 工具脚本自测(issue #179:go-fuzz.sh retry-path 回归)
+test-scripts:                                       ## 工具脚本自测(#179 go-fuzz.sh retry-path;#236-#241 lua tarball 取包)
 	bash scripts/test-go-fuzz-retry.sh
+	bash scripts/test-fetch-lua-tarball.sh
 
 test:                                               ## 全部单测(含 race,见 §3.1)
 	go test -race ./...
@@ -69,7 +70,7 @@ tidy:
 ```
 
 - 借鉴 pineapple 的 `go-fuzz.sh`(grep 自动发现 `^func Fuzz` 目标逐个跑),但入口统一挂 Makefile。
-- **`test-scripts` 目标**(2026-07-25,issue #179 引入):tooling 类回归脚本(目前是 `scripts/test-go-fuzz-retry.sh`,验证 `go-fuzz.sh` 对 golang/go#75804 spurious deadline 的重试逻辑)必须至少挂一个门禁,否则一次 downstream 改动就能让它静默失效——issue #179 之前该脚本失效期至少半年没人发现。目标本身秒级,同时挂 `make all`(本地 pre-commit)与 `ci.yml` 独立 job(PR 门禁,失败信号清晰、可 rerun),两个门禁同步对它负责。
+- **`test-scripts` 目标**(2026-07-25,issue #179 引入):tooling 类回归脚本必须至少挂一个门禁,否则一次 downstream 改动就能让它静默失效——issue #179 之前 `scripts/test-go-fuzz-retry.sh` 失效期至少半年没人发现。目标本身秒级,同时挂 `make all`(本地 pre-commit)与 `ci.yml` 独立 job(PR 门禁,失败信号清晰、可 rerun),两个门禁同步对它负责。目前两个脚本:`scripts/test-go-fuzz-retry.sh`(验证 `go-fuzz.sh` 对 golang/go#75804 spurious deadline 的重试逻辑)与 **`scripts/test-fetch-lua-tarball.sh`**(2026-08-09,#236-#241 引入,四个用例钉住 `scripts/fetch-lua-tarball.sh` 的取包行为,见 §4)。后者的四个用例**全部离线**(用 `file://` origin 冒充上游),因为它防的正是上游抖动——一个「防住外部抖动」的测试如果自己依赖上游,它加的是噪声不是防线。其中「curl 调用带限时标志」这一条第一版**grep 整个文件、假绿**:把 `--max-time` 从调用里删掉后照旧通过,因为那个词在脚本顶部的注释里还在;现在只截取那条 curl 调用再检查。判据:**检查代码属性的测试要作用在代码本身上,一个注释就能满足的测试没有在测代码**(方法论见 `llmdoc/guides/prove-the-path-under-test.md` §9.1b)。
 - `make hooks` 替代 pineapple 的"README 一行指引"——新人 clone 后 `make hooks` 一步完成,README 与 [00-overview](./p1-interpreter/00-overview.md) 都指向它。
 - **`make all` 是「本地提交前全检」**——七件套含 `fuzz / conformance / difftest` 全部跑一遍(耗时 ~2-3 min),目的是把 nightly 才跑的强度拉到本地强制,与 CI 门禁口径对齐。日常小改动若不想每次等三分钟,用 `make test` 跑主模块 race + `make fmt lint` 即可;commit/push 前再过一次 `make all`。
 
@@ -263,6 +264,8 @@ jobs:
 - **PR 门禁防回归,nightly 长跑拓新**(12 §8 已定分工);nightly 撞出的分歧经最小化回流为 conformance 用例(12 §3.6),回归不依赖再次随机撞中。
 - **调度频率与种子滚动**(2026-07-10 加密):每 4 小时一轮(6 轮/天),滚动种子从天级 epoch 改为**小时级 epoch**(`date +%s / 3600 * 1e7`)——加频的前提,否则同日各轮重复探索同一种子段。单轮墙钟 ~3h40m,极端慢跑与下一轮短暂重叠无害(并发 run 落在不同小时桶、issue 按标题去重),间隔是预算选择而非防重叠约束。加密动因:2026-07 上旬 10 晚中 4 晚撞出真 bug(#97 家族 / #103 / #106 / #107),种子空间远未探干,且 P3/P4 接受面扩张快(#52/#77/#99/#102),每次扩面都是新的探索维度。
 - **自动开 issue 含本地复现步骤**——分歧不靠人盯 Actions 页面;与本仓库已导入的 `patrol`/`bug-analyze` agent skills 衔接(issue 即工单)。
+- **infra issue 的去重键按 `run_id`,标题里故意不放 `matrix.variant`**(2026-08-09,#236-#241):divergence 与 infra 是两类性质不同的事件,而原先共用一个含 tier 的标题模板。divergence 失败天然属于**某一个 tier**(tier 是它身份的一部分),而 **infra 失败天然横跨所有 tier**(装不上依赖、上游不可达,与被测的是 p1 还是 p4 无关)。标题里嵌 `${{ matrix.variant }}` 让 p1/p3/p4 生成三个不同标题,下面那段按标题去重的逻辑看不出它们是同一件事:**两次上游抖动 × 三个 tier = 六个 issue**。现在 infra 标题键在 `${{ github.run_id }}`(三个 job 共享同一个 run id),第一个报的 job 开 issue、第二三个改为评论;tier 从标题挪进 body 的「首个报告的 tier」与后续评论里——**去重键与信息量是两件事**。判据:给自动化加去重时先问「这类事件的**天然单位**是什么」,再对每一维问「这一维变化时是同一件事还是两件事」,答「同一件事」的维度不能进键;**多加一维只会让分组更细、永远不会报错**,所以这类错误没有任何自动信号,全部代价落在读 issue 的人身上。
+- **依赖步骤失败会让后续步骤 skip,于是「报红但什么都没测」**(2026-08-09,#236-#241,**已知缺口**):oracle 安装步骤失败让后面三个差分 fuzz 步骤全部 `skipped`,那一轮报 failure 而实际什么都没跑,那一晚的探索预算是零。这比真失败更坏,因为红色的默认含义是「跑了并且发现了问题」,而两者在 Actions 页面上是同一个红叉。取包已经加了限时与重试(§4.1),但**「本轮未执行任何差分」这句话仍然没有出现在任何地方**——infra issue 的 body 说的是失败原因的类别,不是「这一轮的探索预算为零」。记 §7 缺口。判据:给 CI 加依赖步骤时问一句「这一步挂了之后,后面被 skip 的步骤里有没有本来该产生结论的」,有的话失败信息里要写清「未执行」而不只是「失败」。
 - **cgo 内嵌 oracle 差分 go-fuzz**(2026-07-12,p1 腿专属步骤):`internal/oracle` 把官方 5.1.5 库源码 vendor 进仓(`_lua515/` 下划线目录,Go 工具链忽略;来源 + sha256 记录在该目录 README)并经 cgo 单编译单元(官方 `etc/all.c` 手法)嵌进测试二进制,build tag `wangshu_oracle_cgo && cgo` 隔离——默认 build 与全部既有 variant 保持零 cgo(与 jitcgo 一样的隔离纪律)。价值:滚动种子腿喂的是 generator 的**规整**脚本,`FuzzOracleDiff` 让 go-fuzz 变异**任意不规则源码**在进程内做差分比对(fork 子进程模式撑不起 go-fuzz 的 exec 频率)。比对协议:两侧先跑同一段 Lua prelude(print/io.write 捕获 + os.time/math.random 等确定性 stub + pairs/next 排序迭代 + 从活 wangshu State 枚举生成的 globals 白名单裁剪 oracle 能力面),资源限制(shim 侧 alloc 帽/指令 hook/输出帽,wangshu 侧 step budget/arena 帽)任一触发即 skip(两侧预算机制不同构),实现常数类护栏(语法深度/栈溢出/复杂度上限)任一触发也 skip(阈值名义同为 200 级但触发点差几个输入),其余要求结局 class 一致 + 捕获输出**经地址归一后逐字节相等**(引擎相关的 `table: 0x…`/`function: 0x…`/`thread: 0x…`/`userdata: 0x…` 归一为 `0xADDR`,类型前缀锚定保脚本自己的 `0x1` 字面输出仍逐字节比对——**锚点最终改为「只匹配地址本体 + Go 侧校验前缀」(`\b` 与「消耗一个非字母」两版都失败)**,`\b` 的 word 字符包含数字,`io.write(0)print(print)` 产生的 `0function: 0x...` 会整段逃过归一化,#232;而**地址的宽度**归一化到不了,`#tostring(t)` 在 PUC 是 21、望舒是 17,长度在归一化之前就分歧,所以宽度另在 oracle 的 prelude 渲染处对齐,#233,判据同下文 NaN 一条:归一化管值、渲染处管宽度);`CompareOutput` 就是「归一化地址后逐字节比较」,**没有任何接受差异的路径**。唯一曾经需要这样一条路径的平台差异是 **NaN 符号渲染**:glibc 的 printf 按符号位打 `-nan`,wangshu 打 `nan`,差一个字节,而 IEEE 754 不赋 NaN 符号位数值语义,两种输出都合规。**现在在产生差异的地方消除它**:oracle 是我们自己 vendor 并用 cgo 编译、只为做差分基准而存在的(且已经为确定性 stub 掉 `os.time`/`math.random`/`pairs` 顺序),所以在 `internal/oracle/lua515.c` 里覆盖 `lua_number2str`(覆盖 `tostring`/`..`/`io.write` 的数字渲染)、并对 `lstrlib.c` 的 include 局部 shadow `sprintf`(`string.format` 的 `%e`/`%f`/`%g` 族直接调 `sprintf` 不走 `lua_number2str`),把 NaN 渲染的符号去掉;vendored 源码保持与记录的 sha256 逐字节一致(配置只在 `lua515.c` 与 CFLAGS 里做,这是仓库既有纪律)。三个实现要点:① 保持**字段宽度**——`sprintf` 已经补过 padding,直接删符号会让字段短一位,而 buffer 本身分不清前导空格是 padding(`%5E`)还是空格 flag 的符号(`% E`),所以把 format spec 传进去、按声明宽度决定;② 符号去掉后 glibc 的 `+`/空格 flag 开始作用于 NaN,产生 `+NAN`/` NAN`,所以剥的是任何符号字符而不只是 `-`;③ Inf 保留符号(那个符号有意义),脚本自己写的 `"-nan"` 字面量不改。**曾经的设计与它为何失败**(#173 引入、#184/#185 延伸,已全部删除):旧设计把这个差异当作「不可比的类」,在 harness 侧识别并豁免——prelude 按每次 NaN 渲染事件记录 `__nan_spans` 区间 FIFO + `__oracle_readout()` 多行 header + `CompareOutput` 的 span-anchored 分类(`knownNaNSignDifference`)+ 一整层入口拦截。这条路不可能收敛:那个符号字节一旦进入字符串就是普通数据,`#`、`==`、`string.sub`、`..`、算术能把它搬到任何地方——`string.len(0/0)` 是 4 对 3,`string.len(0/0)*100` 是 400 对 300,输出里连一个 nan 字节都不剩,没有任何可锚定的东西;任何下游识别规则都必须读一个两侧不相等的量,所以都做不到对称。新设计相对旧设计约少 550 行,而且两个 crasher 与整个「泄漏成数字」的家族现在是普通的 equal 而不是 skip,覆盖面是**增加**的(那些输入以前会连同同一次运行里的真差异一起被丢掉)。**保留的两类豁免性质不同**:地址归一(上面的 `0xADDR`)是两个引擎堆布局本来不同、没有「正确值」可对齐,只能在比较时归一;实现常数类护栏(`stack overflow`、`too many syntax levels`、200 local variables 等)是两侧独立选定的实现限制,改 oracle 的常数去凑 wangshu 会让它不再是独立基准,只能 skip。判据:差异如果来自「同一个抽象值的不同书写方式」,在渲染处消除;如果来自「两侧本来就是不同的东西」,在比较时归一或跳过。错误消息文本不比(errmsg 语料的职责)。PR 门禁 `oracle-smoke` job(linux amd64+arm64,shim 单测 + 60s 冒烟);上线首日 fuzz 长时间运行 + 配套 argsweep 系统性扫描(全 stdlib 函数 × 退化参数形状,fork 子进程 oracle 一次性比对)共抓出 **32 处** P1 语义分歧并全部修复(清单见 README 正确性五层第 5 层;其中 gcstress 还顺带抓出 string 元表未接 GC 根的 use-after-free,代码审查轮又收紧了 go-fuzz.sh 探测吞编译错误与 0x 归一化过宽两处 harness 缺陷)。**上线后持续巡检 + 修复分歧**:PR #172(#170/#171,`string.format` 非有限浮点 verb 渲染对齐 glibc)/ PR #176(#174/#175,`toNumberStr` 走 `crescent.ParseLuaNumber` + `tonumber(number, base)` 强制转 string)/ PR #178(#177,P4 shape-template FORLOOP deopt 补 preempt 与 body 副作用)/ **#192/#193/#194/#196 那一轮**(2026-07-28,四个 issue 修出**六个根因**:C99 `nan(n-char-sequence)` 前缀 / `tonumber(x, 10)` 被错误送进逐字符解析循环——一个结构性原因造出六条分歧,其中五条没有任何 issue 记录 / `%d`/`%i` 精度 0 配值 0 丢符号 / `table.insert` 在 5.1 里本来没有边界检查加 `table.concat` 错误文本 / `string.char` 的 `luaL_checkint` 两步转换 / `strtoul` 的无符号取反与溢出饱和;`strtoul` 那处原有一句注释声称「已登记为 diff 豁免」但**没有任何代码实现它**,分歧一直是活的。另有一处 table 库缺 `, got no value` 从句是本分支自己 45 秒 fuzz 冒烟撞出的。判据见 `docs/design/p1-interpreter/12-testing-difftest.md` §4.9b:先分清那个 C 行为是有定义还是 UB,再决定对齐还是跳过;并且「已豁免」的声明必须能指向执行它的代码)/ **NaN 符号渲染在 oracle 侧归一**(承 #170/#171 的一半差异,#173 与 #184/#185 的 harness 侧分类方案已被替换,见上文);同轮把产品侧两处 glibc 模仿也清掉(`internal/stdlib/stringlib.go`:`string.format` 原本对大写 verb 硬编码 `-NAN`,导致 `%e` 与 `%E` 自相矛盾;小写 NaN 原本按「声明宽度减一」补齐以复现 glibc 保留但不显示的符号列,导致 `%5f` 与 `%5E` 补齐方式不一致)——两处都只为让 oracle 一致而存在,而 arm64 的 glibc 与 x86 还不同,模仿本来就不可移植;现在 NaN 在所有 verb 下都不带符号、都按完整声明宽度补齐,wangshu 自身也一致了。nightly-diff-fuzz 对 NaN 符号差异不再有任何豁免:真出现就是真差异。**后续验证**:nightly 在四个不同日期自动开出的 crasher #187/#188/#189/#190(`string.format("%q",0%0)`、`string.format((0))<string.format((0%0))`、`string.format("%q",(0%0))`、`string.format("+% E",-(0%0))`)全部是这同一个根因的表现,被上面的渲染处消除一起解决,一行代码没改;双向验证确认它们在 redesign 之前的 base 上全部 FAIL、在现在的实现上全部以**真正的逐字节 equal** 通过而不是 skip(区别要紧:skip 会把这些输入连同同一次运行里的真差异一起丢掉)。四条 reproducer 加 10 条延伸 seed 入 `testdata/fuzz/FuzzOracleDiff/`(共 73 个),入库理由是它们触到三个已有 seed 到不了的写法:`%q` 作用于 NaN(引用渲染结果而不做浮点格式化,不走 `%e`/`%f`/`%g` 那条 `sprintf` 通道)、比较两个 `string.format` 的**返回值**(差异变成一个 boolean,输出里根本没有 NaN 文本可锚定)、多个符号 flag 同时出现。另扫了 236 + 140 种同族写法(`%q` × 宽度、比较运算符 × format 与 tostring 结果、flag 组合 × 浮点 verb;7 种产生 NaN 的方式 × 20 种消费其文本的方式)确认整个家族零差异。**渲染处消除这个手法在 2026-08-05 第二次被用上(#233)**:`#tostring(t)` 量的是地址的**宽度**(PUC `%p` 12 位给 21、望舒 `0x%08x` 8 位给 17),长度在归一化之前就分歧——与 `string.len(0/0)` 4 对 3 完全一样的机制,所以 prelude 包一层 `tostring` 把 PUC 自己的地址渲染成望舒的 8 位,望舒侧的宽度成为一份契约由 `fuzz_234_test.go::TestAddressLengthIsComparable` 钉住。同一轮的 #232 是归一化的另一条能力边界(`addrRe` 的 `\b` 锚点漏掉「数字紧贴类型名」),#234 是引擎侧 gsub 替换串的 `%` 转义(`add_s` 的分支有三个出口加一个越界读,望舒只对了两个,其中「非数字原样吐出」那一半是既有缺陷);详见 `docs/design/p1-interpreter/12-testing-difftest.md` §4.3a 与 `10-stdlib.md` §6.5.2。
 
 ### 3.3 `nightly-benchmark.yml`:基准漂移监控
@@ -303,6 +306,21 @@ case "$v" in *"5.1.5"*) echo "oracle ok: $v" ;;
 
 - 优先 `apt-get install lua5.1`(快、缓存友好);版本串校验防发行版漂移,不符则 fail(**不静默降级**——oracle 版本错会让差分结论失效)。
 - 兜底(apt 不可用/非 Ubuntu runner):源码编译 5.1.5 并以 actions cache 缓存产物,记 §7 缺口待 M14 完成时实测。
+
+### 4.1 源码构建那条腿的取包:`scripts/fetch-lua-tarball.sh`(2026-08-09,#236-#241)
+
+源码构建腿原先在四处 call site 各写一遍**裸 curl**(`ci.yml` 的 test 与 difftest 两个 job 的 macOS cache-miss 分支、`bench-acceptance.yml` 的 macOS 分支、`nightly-diff-fuzz.yml` 的 oracle 安装步骤),没有限时、没有重试、没有校验。2026-08-07 上游一次可达性抖动因此让 nightly 连红两轮,自动开出六个 issue(#236-#241)。四处现在统一走 `scripts/fetch-lua-tarball.sh`,四个性质:
+
+| 性质 | 写法 | 为什么 |
+|---|---|---|
+| **限时** | `--connect-timeout 15 --max-time 120` | 挂住的取包应该快速失败,而不是把整个步骤耗掉(那两次各耗了约 2 分 15 秒才被 shell 放弃) |
+| **重试** | `--retry 4 --retry-delay 5 --retry-all-errors` | 观察到的失败是瞬时的。**`--retry-all-errors` 是必须的**——不加它 curl 只重试它认为「瞬时」的那几个 HTTP 码,**超时不在其中**,而这一轮的失败方式恰好是裸 `--retry` 重试不了的那一种 |
+| **校验** | 解包**之前**核对官方 SHA-256(`2640fc56…5333`) | 截断或被替换的下载不能被静默编译进差分 oracle——那会让整轮差分结论失效**而且无声** |
+| **复用** | 已存在且校验通过的 tarball 直接用 | 于是 actions cache 命中可以完全跳过网络 |
+
+**不做镜像**是明确取舍:`github.com/lua/lua` 没有 5.1.5 tag,任何重新打包的副本都过不了官方 checksum;多一个源降低的是**取包失败率**(重试已经在降它),checksum 防的是「取到了错的东西并且编译了它」,后者的失效是无声的,所以 checksum 这个性质比「多一个源」更值钱。
+
+**这一轮的诊断本身有一条判据值得记**:失败步骤报的是 `exit code 28`,当时被读成 **ENOSPC**(磁盘写满,errno 28)并据此提了「腾磁盘空间 / 缓存构建产物」的建议,而 **28 是 `curl` 的 `CURLE_OPERATION_TIMEDOUT`**——那一步是 curl,shell 报的退出码来自 curl 自己的退出码表、不是 errno 表,两张表恰好在 28 这个数字上都有条目。日志里有两条免费的反证:`apt` 成功结束之后**沉默 2 分 15 秒**才失败(磁盘写满是**立刻**失败的,会先卡的只有等待类失败),以及 `no space left` / `ENOSPC` / `disk full` 在两个 run 的日志里出现次数都是 **0**。判据:**看到一个数字退出码,先定位是哪个命令退出的,再查那个命令自己的退出码表**;并且**分类一个 CI 失败时先把时间戳减一遍**,时间形式往往比错误码更能定类,而且它在日志里是免费的(方法论见 `llmdoc/guides/unreproducible-crasher-triage.md`「静默死亡先做两步分类」)。
 - gopher-lua 是 `go.mod` 依赖,版本天然锁定(12 §2.6"锁 commit/tag")。
 - 本地 `make difftest` 同样经 `check-oracle.sh`,无 lua5.1 时给出安装指引并跳过(本地可跳,CI 必过)。
 
@@ -348,14 +366,15 @@ linters:
 1. **CI 与本地同入口**:所有 CI job 的核心命令是 `make <target>`,本地可完整复现。
 2. **hook 快、CI 全**:pre-commit 秒级(staged-only)、pre-push 十秒级(lint)、测试/差分/基准只在 CI。
 3. **`-race` 恒开**(test/cover target 与 CI test job)。
-4. **oracle 版本校验 fail-fast**:lua5.1 非 5.1.5 即失败,绝不静默降级。
+4. **oracle 版本校验 fail-fast**:lua5.1 非 5.1.5 即失败,绝不静默降级。源码构建腿的取包**必须限时 + 重试 + 校验 SHA-256 之后才解包**(§4.1),四处 call site 共用 `scripts/fetch-lua-tarball.sh`,不允许再出现裸 curl。
 5. **release tag 不可移动**;golden/豁免清单改动必须显式过 review(12 §8)。
 6. **commit message 强制 `type(scope):`**(commit-msg hook + 既有提交史一致)。
 
 **文档缺口(记入 [doc-gaps](../../llmdoc/memory/doc-gaps.md)):**
 
 - nightly-diff-fuzz 的 `fuzz-triage.sh` 解析协议(FAIL/INFRA 分类的精确判据)待 difftest harness(M14)定稿后完成。
-- 非 Ubuntu runner 的 oracle 源码编译 + 缓存方案待实测。
+- 非 Ubuntu runner 的 oracle 源码编译 + 缓存方案待实测(取包这一环已收口,见 §4.1)。
+- **nightly 报 failure 但差分步骤被 skip 时,没有任何地方写明「本轮未执行任何差分」**(§3.2,#236-#241 留下):infra issue 的 body 只说失败原因的类别。缺一句显式的「本轮探索预算为零」,否则那一轮的红色读起来与「跑了并且发现了问题」一样。
 - bench-gate 的回退阈值(±N%)与基线 artifact 的存储/对比协议待 M14 校准。
 - agentic workflows 的接入时机与模板源(§3.5)。
 - 覆盖率是否设硬门槛(当前仅 artifact 存档,pineapple 一样的;若 P1 后期需要再议)。

@@ -271,7 +271,17 @@ jobs:
             # them -- the second and third jobs comment instead of filing.
             TITLE="nightly-fuzz infra failure (run ${{ github.run_id }})"
             LABEL="ci"
-            BODY="nightly fuzz 失败但无 DIVERGENCE 标记 / 无 go-fuzz crash(环境/基础设施类:oracle 不可用、超时、依赖装不上等)。首个报告的 tier:${{ matrix.variant }}。日志见 run artifacts:${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            # State plainly whether the differential steps RAN. A failing setup step leaves them
+            # skipped, so the run reports red while having tested nothing -- and red's default
+            # reading is "we tested and found a problem", which is the optimistic direction. The
+            # step outcome is available here, so the body says which it was instead of leaving the
+            # reader to infer it from the log.
+            DIFF_RAN="${{ steps.difffuzz.outcome }}"
+            case "$DIFF_RAN" in
+              skipped|"") RAN_NOTE="**本轮未执行任何差分 fuzz**(差分步骤被 skip,通常是前置的 oracle 安装步骤失败)。红色不代表测过了。" ;;
+              *)          RAN_NOTE="差分 fuzz 步骤状态:${DIFF_RAN}。" ;;
+            esac
+            BODY="nightly fuzz 失败但无 DIVERGENCE 标记 / 无 go-fuzz crash(环境/基础设施类:oracle 不可用、超时、依赖装不上等)。${RAN_NOTE} 首个报告的 tier:${{ matrix.variant }}。日志见 run artifacts:${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           fi
           # Dedupe by title: comment on an existing open issue instead of filing a new one
           EXISTING=$(gh issue list --state open --search "in:title \"$TITLE\"" --json number --jq '.[0].number' || true)
