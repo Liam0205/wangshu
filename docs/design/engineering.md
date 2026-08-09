@@ -314,7 +314,7 @@ case "$v" in *"5.1.5"*) echo "oracle ok: $v" ;;
 | 性质 | 写法 | 为什么 |
 |---|---|---|
 | **限时** | `--connect-timeout 15 --max-time 120` | 挂住的取包应该快速失败,而不是把整个步骤耗掉(那两次各耗了约 2 分 15 秒才被 shell 放弃) |
-| **重试** | `--retry 4 --retry-delay 5 --retry-all-errors` | 观察到的失败是瞬时的。**`--retry-all-errors` 是必须的**——不加它 curl 只重试它认为「瞬时」的那几个 HTTP 码,**超时不在其中**,而这一轮的失败方式恰好是裸 `--retry` 重试不了的那一种 |
+| **重试** | `--retry 4 --retry-delay 5 --retry-all-errors` | 观察到的失败是瞬时的。`--retry` 才是关键 —— 它的默认值是 0,所以旧的裸 curl 根本不重试。`--retry-all-errors` 只是额外放宽,**不是**超时重试的前提:curl 手册写的是「transient error means **either: a timeout**, an FTP 4xx ... 」,所以单靠 `--retry` 就能覆盖 #236–#241 那次失败。此前把它写成前提是错的,记在这里因为那曾是保留这个 flag 的唯一理由。|
 | **校验** | 解包**之前**核对官方 SHA-256(`2640fc56…5333`) | 截断或被替换的下载不能被静默编译进差分 oracle——那会让整轮差分结论失效**而且无声** |
 | **复用** | 已存在且校验通过的 tarball 直接用 | 于是 actions cache 命中可以完全跳过网络 |
 
@@ -374,7 +374,7 @@ linters:
 
 - nightly-diff-fuzz 的 `fuzz-triage.sh` 解析协议(FAIL/INFRA 分类的精确判据)待 difftest harness(M14)定稿后完成。
 - 非 Ubuntu runner 的 oracle 源码编译 + 缓存方案待实测(取包这一环已收口,见 §4.1)。
-- **nightly 报 failure 但差分步骤被 skip 时,没有任何地方写明「本轮未执行任何差分」**(§3.2,#236-#241 留下):infra issue 的 body 只说失败原因的类别。缺一句显式的「本轮探索预算为零」,否则那一轮的红色读起来与「跑了并且发现了问题」一样。
+- ~~**nightly 报 failure 但差分步骤被 skip 时,没有任何地方写明「本轮未执行任何差分 fuzz」**~~ (2026-08-09 已收口:infra issue 的 body 读 `steps.difffuzz.outcome`,被 skip 时明确写出该句)
 - bench-gate 的回退阈值(±N%)与基线 artifact 的存储/对比协议待 M14 校准。
 - agentic workflows 的接入时机与模板源(§3.5)。
 - 覆盖率是否设硬门槛(当前仅 artifact 存档,pineapple 一样的;若 P1 后期需要再议)。

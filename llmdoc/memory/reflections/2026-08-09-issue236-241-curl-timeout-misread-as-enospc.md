@@ -122,7 +122,7 @@ TITLE="nightly-fuzz infra failure (${{ matrix.variant }}, $(date -u +%F))"
 | 性质 | 写法 | 为什么 |
 |---|---|---|
 | **限时** | `--connect-timeout 15 --max-time 120` | 挂住的取包应该快速失败,而不是把整个步骤耗掉 |
-| **重试** | `--retry 4 --retry-delay 5 --retry-all-errors` | 观察到的失败是瞬时的。**`--retry-all-errors` 是必须的** —— 不加它,curl 只重试它认为「瞬时」的那几个 HTTP 码,**超时不在其中**,于是这一轮的失败方式恰好是裸 `--retry` 重试不了的那一种 |
+| **重试** | `--retry 4 --retry-delay 5 --retry-all-errors` | 观察到的失败是瞬时的。`--retry` 才是关键 —— 它的默认值是 0,所以旧的裸 curl 根本不重试。`--retry-all-errors` 只是额外放宽,**不是**超时重试的前提:curl 手册写的是「transient error means **either: a timeout**, an FTP 4xx ... 」,所以单靠 `--retry` 就能覆盖 #236–#241 那次失败。此前把它写成前提是错的,记在这里因为那曾是保留这个 flag 的唯一理由。|
 | **校验** | 解包**之前**核对官方 SHA-256 | 截断或被替换的下载不能被静默编译进差分 oracle —— 那会让整轮差分结论失效而且无声 |
 | **复用** | 已存在且校验通过的 tarball 直接用 | 于是 actions cache 命中可以完全跳过网络 |
 
@@ -148,7 +148,7 @@ TITLE="nightly-fuzz infra failure (${{ matrix.variant }}, $(date -u +%F))"
 **五个用例全部离线**(用 `file://` origin),于是这个测试自己不会变成一个会抖的 CI 步骤 ——
 而这正是本轮改动的用意。一个「防住上游抖动」的测试如果自己依赖上游,它加的是噪声不是防线。
 
-每个用例都用变异实测过。其中第 4 条**第一版写错了**:我 grep 整个文件,于是把 `--max-time` 从
+每个用例都用变异实测过。其中第 5 条**第一版写错了**:我 grep 整个文件,于是把 `--max-time` 从
 curl 调用里删掉之后它**照旧通过** —— 因为那个词在文件顶部的注释里还在(注释里正好写着
 「bounded: `--connect-timeout` and `--max-time`」)。改成只截取 curl 那条调用再检查。
 

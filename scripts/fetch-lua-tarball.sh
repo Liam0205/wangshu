@@ -55,7 +55,13 @@ if [ -f "$TARBALL" ] && verify; then
 else
   rm -f "$TARBALL"
   log "downloading lua ${VERSION}"
-  # --retry-all-errors so a timeout retries too; without it curl retries only "transient" HTTP codes.
+  # --retry is the flag that matters: its default is 0, so the old bare curl never retried at all.
+  #
+  # --retry-all-errors is kept as a belt-and-braces widening, NOT because a timeout needs it. An earlier
+  # comment here claimed a timeout would not be retried without it; curl's man page says the opposite --
+  # "Transient error means either: a timeout, an FTP 4xx response code or an HTTP 408, 429, ..." -- so
+  # --retry alone would have covered the failure that produced #236-#241. Recording the correction
+  # because the wrong reason was the only reason given for the flag.
   if ! curl -fsSL --connect-timeout 15 --max-time 120 \
             --retry 4 --retry-delay 5 --retry-all-errors \
             -o "$TARBALL" "https://www.lua.org/ftp/${TARBALL}"; then
