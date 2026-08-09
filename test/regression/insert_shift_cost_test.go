@@ -92,11 +92,16 @@ func TestInsertShiftThresholdsStayDistinct(t *testing.T) {
 	}
 	elapsed := time.Since(start)
 	t.Logf("span ~2M (between skip and cap) shifted in %v", elapsed.Round(time.Millisecond))
-	// And it must stay CHEAP: the reason the skip exists is that a corpus seed costing seconds
-	// kills the fuzz worker, so a span just above the skip has to be affordable. A regression
-	// that made this band slow would put the skip back in the position that caused #203/#208/#209.
-	if elapsed > 5*time.Second {
-		t.Errorf("a span just above the harness skip took %v; the skip is sized on the assumption "+
-			"that this band is cheap", elapsed.Round(time.Millisecond))
-	}
+	// The band must stay CHEAP -- the skip exists because a corpus seed costing seconds kills a fuzz
+	// worker -- but that is NOT asserted as a wall-clock bound any more.
+	//
+	// It measured 3.63s here against a 5s ceiling, a 1.38x margin, while a sibling test in this package
+	// was observed at 16x local time on a loaded CI runner: this bound projects to about 58s there. It
+	// had simply not been unlucky yet. A wall-clock assertion is only meaningful where
+	// machine-to-machine variance is smaller than the margin asserted (same conclusion as
+	// issue222_bulk_builder_test.go and issue224_watchdog_margin_test.go).
+	//
+	// What the band's cheapness really rests on is the SHIFT SPAN staying between the harness skip and
+	// the product cap, and TestInsertShiftThresholdsStayDistinct already pins those two thresholds
+	// apart. The timing is logged above so a dramatic regression stays visible to a reader.
 }
