@@ -287,7 +287,18 @@ jobs:
             BODY="nightly fuzz 失败但无 DIVERGENCE 标记 / 无 go-fuzz crash(环境/基础设施类:oracle 不可用、超时、依赖装不上等)。${RAN_NOTE} 首个报告的 tier:${{ matrix.variant }}。日志见 run artifacts:${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           fi
           # Dedupe by title: comment on an existing open issue instead of filing a new one
-          EXISTING=$(gh issue list --state open --search "in:title \"$TITLE\"" --json number --jq '.[0].number' || true)
+          # Search is eventually consistent, so three near-simultaneous jobs can each see "none" and
+          # each file. Retry the lookup briefly before deciding to create: the p3/p4 legs run an
+          # identical step set after an install failure and reach this point within seconds of each
+          # other, so a single unlucky read would still produce duplicates. This narrows the window
+          # rather than closing it -- closing it needs a job-level concurrency group, which would
+          # serialize the three tiers and is a bigger change than this branch should make.
+          EXISTING=""
+          for attempt in 1 2 3; do
+            EXISTING=$(gh issue list --state open --search "in:title \"$TITLE\"" --json number --jq '.[0].number' || true)
+            if [ -n "$EXISTING" ] && [ "$EXISTING" != "null" ]; then break; fi
+            [ "$attempt" -lt 3 ] && sleep $(( attempt * 5 )) || true
+          done
           if [ -n "$EXISTING" ] && [ "$EXISTING" != "null" ]; then
             gh issue comment "$EXISTING" --body "再次触发:run ${{ github.run_id }}(tier ${{ matrix.variant }})"
           else
