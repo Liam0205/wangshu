@@ -31,8 +31,13 @@ variant() {
 }
 
 # 1. checksum mismatch must refuse, remove the file, and exit non-zero.
+# The origin MUST be a separate path from the download destination: an earlier version pointed both at
+# lua-5.1.5.tar.gz, so the script's own `rm -f "$TARBALL"` deleted the origin, curl failed with (37),
+# and the run took the download-failed branch -- never reaching the checksum check this case exists to
+# test. Deleting the whole verify block left all four cases green, which is how that was found.
 d="$WORK/c1"; mkdir -p "$d"; mkfake "$d"
-variant "$d/f.sh" "file://$d/lua-5.1.5.tar.gz" "$(printf '0%.0s' {1..64})"
+mv "$d/lua-5.1.5.tar.gz" "$d/origin.tar.gz"
+variant "$d/f.sh" "file://$d/origin.tar.gz" "$(printf '0%.0s' {1..64})"
 rc=0
 ( cd "$d" && rm -rf lua-5.1.5 && ./f.sh >/dev/null 2>&1 ) || rc=$?
 if [ "$rc" -eq 0 ]; then bad checksum-mismatch "exited 0 on a bad checksum"

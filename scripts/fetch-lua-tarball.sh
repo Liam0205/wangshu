@@ -25,7 +25,26 @@ SHA256=2640fc56a795f29d28ef15e13c34a47e223960b0240e8cb0a82d9b0738695333
 
 log() { printf '[fetch-lua] %s\n' "$*" >&2; }
 
-verify() { echo "${SHA256}  ${TARBALL}" | sha256sum -c - >/dev/null 2>&1; }
+# Portable digest: macOS ships `shasum -a 256`, Linux ships `sha256sum`. Three of the four call sites
+# are macOS, and an earlier version of this script called sha256sum unconditionally -- which on macOS
+# exits 127 (command not found), reads as a checksum failure, and DELETES a perfectly good tarball
+# before exiting 1. The sites it replaced used `curl | tar xz` and worked, so that was a regression.
+#
+# A missing digest tool is fatal rather than skipped: the checksum is the property that keeps a
+# truncated or substituted download from being compiled into the differential oracle, so silently
+# proceeding without it would defeat the point.
+digest() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | cut -d' ' -f1
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | cut -d' ' -f1
+  else
+    log "neither sha256sum nor shasum is available; cannot verify the download"
+    exit 1
+  fi
+}
+
+verify() { [ -f "$TARBALL" ] && [ "$(digest "$TARBALL")" = "$SHA256" ]; }
 
 if [ -f "$TARBALL" ] && verify; then
   log "reusing the cached tarball (checksum ok)"
