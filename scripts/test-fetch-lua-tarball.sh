@@ -11,6 +11,18 @@ SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fetch-lua-tarball.sh"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 fail=0
+# The test needs a digest too, and an earlier version called sha256sum directly -- repeating the exact
+# portability defect it exists to guard. CI's test-scripts job is ubuntu so CI could not see it, but
+# `make all` includes test-scripts and macOS is a documented dev environment.
+if command -v sha256sum >/dev/null 2>&1; then
+  sha256_of() { sha256sum "$1" | cut -d' ' -f1; }
+elif command -v shasum >/dev/null 2>&1; then
+  sha256_of() { shasum -a 256 "$1" | cut -d' ' -f1; }
+else
+  echo "neither sha256sum nor shasum available; cannot run this test" >&2
+  exit 1
+fi
+
 ok()   { printf 'CASE %-28s OK\n' "$1"; }
 bad()  { printf 'CASE %-28s FAILED: %s\n' "$1" "$2"; fail=1; }
 
@@ -46,7 +58,7 @@ else ok checksum-mismatch; fi
 
 # 2. a good checksum must unpack.
 d="$WORK/c2"; mkdir -p "$d"; mkfake "$d"
-sum=$(sha256sum "$d/lua-5.1.5.tar.gz" | cut -d' ' -f1)
+sum=$(sha256_of "$d/lua-5.1.5.tar.gz")
 variant "$d/f.sh" "file://$d/lua-5.1.5.tar.gz" "$sum"
 cp "$d/lua-5.1.5.tar.gz" "$d/upstream.tar.gz"
 if ( cd "$d" && rm -f lua-5.1.5.tar.gz && rm -rf lua-5.1.5 \
@@ -60,7 +72,7 @@ fi
 # 3. an already-present verified tarball must be reused, not re-fetched. Point the URL at a
 #    non-existent file: if the script still succeeds, it used the cache.
 d="$WORK/c3"; mkdir -p "$d"; mkfake "$d"
-sum=$(sha256sum "$d/lua-5.1.5.tar.gz" | cut -d' ' -f1)
+sum=$(sha256_of "$d/lua-5.1.5.tar.gz")
 variant "$d/f.sh" "file://$d/does-not-exist.tar.gz" "$sum"
 if ( cd "$d" && rm -rf lua-5.1.5 && ./f.sh >/dev/null 2>&1 ) && [ -d "$d/lua-5.1.5" ]; then
   ok cached-reuse
@@ -68,15 +80,35 @@ else
   bad cached-reuse "did not reuse a verified cached tarball"
 fi
 
-# 4. the real script must carry a transfer bound. Its absence is what turned one blip into six issues.
+# 4. a cached tarball must be VERIFIED, not merely reused. Plant a corrupt tarball and point the URL at
+#    a missing file: if the script trusts the cache blindly it "succeeds" with garbage.
+# A VALID gzip tarball whose checksum is wrong -- not garbage bytes. Garbage cannot distinguish the
+# cases, because tar rejects it anyway and the script fails for that reason instead: a first version
+# planted "not a tarball" and the blind-trust mutation still failed, so the case proved nothing.
+d="$WORK/c3b"; mkdir -p "$d"; mkfake "$d" "wrong-content"
+variant "$d/f.sh" "file://$d/absent.tar.gz" "$(printf '0%.0s' {1..64})"
+rc=0
+( cd "$d" && rm -rf lua-5.1.5 && ./f.sh >/dev/null 2>&1 ) || rc=$?
+if [ "$rc" -eq 0 ] || [ -d "$d/lua-5.1.5" ]; then
+  bad cached-is-verified "trusted a corrupt cached tarball"
+else
+  ok cached-is-verified
+fi
+
+# 5. the real script must carry a transfer bound. Its absence is what turned one blip into six issues.
 # Inspect the curl INVOCATION, not the whole file: a first version of this check grepped the file and
 # passed even with the flag deleted, because the word survived in a comment. A test that a comment can
 # satisfy is not testing the code.
 curl_cmd=$(sed -n '/curl -fsSL/,/"https:/p' "$SCRIPT" | tr -d '\\\n')
 missing=""
-for flag in --connect-timeout --max-time --retry; do
+for flag in --connect-timeout --max-time; do
   case "$curl_cmd" in *"$flag"*) ;; *) missing="$missing $flag";; esac
 done
+# --retry needs its own pattern: a bare substring test is satisfied by --retry-delay and
+# --retry-all-errors, so deleting the real `--retry 4` left this green. curl's default retry count is 0
+# and --retry-all-errors does nothing without --retry, so that deletion removed retrying entirely --
+# the half of the fix this case exists for. Require --retry followed by a digit.
+case "$curl_cmd" in *"--retry "[0-9]*) ;; *) missing="$missing --retry<N>";; esac
 if [ -z "$missing" ]; then
   ok bounded-and-retried
 else

@@ -33,16 +33,20 @@ log() { printf '[fetch-lua] %s\n' "$*" >&2; }
 # A missing digest tool is fatal rather than skipped: the checksum is the property that keeps a
 # truncated or substituted download from being compiled into the differential oracle, so silently
 # proceeding without it would defeat the point.
-digest() {
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$1" | cut -d' ' -f1
-  elif command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 "$1" | cut -d' ' -f1
-  else
-    log "neither sha256sum nor shasum is available; cannot verify the download"
-    exit 1
-  fi
-}
+# Resolved ONCE, before any verification, so a missing tool is reported as a missing tool.
+#
+# An earlier version put the `exit 1` inside digest(), which runs in a command substitution -- that only
+# ends the subshell, so the script carried on and reported "checksum mismatch" for what was really
+# "no digest tool installed". Misattributing a failure is precisely the mistake that produced #236-#241
+# in the first place, so it is worth not repeating it inside the fix.
+if command -v sha256sum >/dev/null 2>&1; then
+  digest() { sha256sum "$1" | cut -d' ' -f1; }
+elif command -v shasum >/dev/null 2>&1; then
+  digest() { shasum -a 256 "$1" | cut -d' ' -f1; }
+else
+  log "neither sha256sum nor shasum is available; cannot verify the download"
+  exit 1
+fi
 
 verify() { [ -f "$TARBALL" ] && [ "$(digest "$TARBALL")" = "$SHA256" ]; }
 
