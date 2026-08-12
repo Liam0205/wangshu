@@ -43,6 +43,16 @@ func TestUnpackGuardWidth(t *testing.T) {
 		`A(unpack({},-1/0,2147483647))`,  // and the negative one
 		`A(unpack({},"-2147483648"))`,    // luaL_optint coerces numeric strings
 		`A(unpack({},1e20,2147483647))`,  // beyond int64: the UB cast yields 0
+		// A script must not be able to STEER the narrowing. __ckint0 read math.floor and tonumber as LIVE
+		// globals, both whitelisted, so reassigning either made the guard compute 0 and let the oracle
+		// segfault -- the guard was defeatable by the very input it guards. These five are the regression
+		// coverage the fix shipped WITHOUT: an audit reverted the captures and this test still passed,
+		// which is how the omission surfaced. A claim in a commit message is not coverage.
+		`math.floor=function() return 0 end A(unpack({},-2147483647))`,
+		`tonumber=function() return 0 end A(unpack({},"-2147483647"))`,
+		`math.floor=nil A(unpack({},-2147483647))`,
+		`math={} A(unpack({},-2147483647))`,
+		`tonumber=nil A(unpack({},"-2147483647"))`,
 	} {
 		r := Exec(src, Prelude(keep), Limits{})
 		if !strings.Contains(r.Err, sentinel) {
@@ -61,6 +71,11 @@ func TestUnpackGuardWidth(t *testing.T) {
 		`print(select("#",unpack({1,2,3},4294967297)))`,  // wraps into range: answers 3
 		`print(select("#",unpack({1,2,3},1e20)))`,        // narrows to 0: answers 4
 		`print(select("#",unpack({},-2147483646.5)))`,    // truncates toward zero to INT_MAX
+		// A non-table first argument raises from luaL_checktype before any index is read, so both
+		// engines agree and it must not be skipped (this was too wide until the third audit round).
+		`print(pcall(unpack,42,-1,2147483647))`,
+		`print(pcall(unpack,"s",-1,2147483647))`,
+		`print(pcall(unpack,nil,-1,2147483647))`,
 	} {
 		r := Exec(src, Prelude(keep), Limits{})
 		if strings.Contains(r.Err, sentinel) {
