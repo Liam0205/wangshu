@@ -517,22 +517,39 @@ __wrapUB(table, "insert", 2)
 -- shape, and measurement then confirms it. Predicted against measured on 10 shapes, all agreeing.
 --
 -- Skipped rather than compared, like the other PUC UB ranges: an oracle that dies is not a reference.
-local __i32 = function(v)
-  -- Two's-complement narrowing to int32, matching luaL_checkint's cast.
-  if v ~= v or v == 1/0 or v == -1/0 then return nil end
-  local m = v % 4294967296
-  if m >= 2147483648 then m = m - 4294967296 end
-  return m
+-- Narrowing goes through __ckint0, luaL_checkint's own chain, NOT a hand-rolled modulo.
+--
+-- A first version wrote its own __i32 doing only the modulo step, and three of the four steps it skipped
+-- were each a live crash: a nonfinite index returned nil and disabled the guard (PUC narrows inf/NaN to
+-- 0, and unpack({}, 1/0, 2147483647) crashes); a NUMERIC STRING was rejected by a __type check although
+-- luaL_optint coerces it (unpack({}, "-2147483648") crashes); and a beyond-int64 finite value took the
+-- wrong branch of the UB cast (1e20 gave 1661992960 instead of PUC's 0, so unpack({}, 1e20, 2147483647)
+-- crashed). It was also too WIDE without truncation toward zero: unpack({}, -2147483646.5) got skipped
+-- where PUC truncates to exactly INT_MAX and raises cleanly, which both engines agree on.
+--
+-- __ckint0's own comment already says this chain "drifted between shims twice ... same bug, same shape,
+-- two places". This was the third. When a file already contains the reference implementation of a
+-- conversion, re-deriving it is the mistake -- reuse is not merely tidier, it is the only way to inherit
+-- the corrections the original absorbed.
+local __unpackIdx = function(v, dflt)
+  if v == nil then return dflt end
+  local x = v
+  if __type(x) == "string" then x = tonumber(x) end
+  if __type(x) ~= "number" then return nil end   -- not coercible: PUC raises, so let it compare
+  -- Beyond int64, or nonfinite: the double->int64 cast is UB and x86-64's cvttsd2si yields INT64_MIN,
+  -- whose low 32 bits are 0. Verified against the binary: unpack({1,2,3}, 1e20) answers 4, i.e. PUC
+  -- used index 0 -- NOT __ckint0's modulo, which would give 1661992960. __ckint0 is right for values
+  -- inside int64 and this is the one case it cannot express, so the branch lives here rather than
+  -- changing a helper the other shims depend on.
+  if x ~= x or x >= 9223372036854775808 or x <= -9223372036854775808 then return 0 end
+  return __ckint0(x, nil)
 end
 _G.unpack = (function(orig)
   return function(t, i, j, ...)
-    local iv = 1
-    if i ~= nil then
-      if __type(i) ~= "number" then iv = nil else iv = __i32(i) end
-    end
+    local iv = __unpackIdx(i, 1)
     local ev
     if j ~= nil then
-      if __type(j) ~= "number" then ev = nil else ev = __i32(j) end
+      ev = __unpackIdx(j, nil)
     elseif __type(t) == "table" then
       ev = #t
     end
