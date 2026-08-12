@@ -766,6 +766,20 @@ func hostUnpack(vm *VM, th *Thread) int {
   `llmdoc/guides/prove-the-path-under-test.md` §4.5 与
   `llmdoc/guides/cross-backend-semantic-fix-sweep.md`「PUC 语义由 C 实现定义」节(C 侧的上限条件可能同时读
   调用当时的栈状态,别只抄阈值常数)。
+- **索引在 int32 边界时 PUC 会段错误,而望舒抬干净的错(#244,2026-08-11)**。PUC 的 `luaB_unpack` 把 `i`
+  与 `e` 都经 `luaL_optint` / `luaL_checkint` **窄化成 int**,`n = e - i + 1` 因此是 int 运算、可以上溢;
+  那句 `if (n <= 0 || !lua_checkstack(L, n))` 的注释说 `n <= 0` 是为了拦 arith. overflow,但它只拦到
+  **回绕成非正**的那一半,回绕成**正的巨大值**时 `n > 0` 成立、走进 `lua_checkstack(L, n)`,而
+  `lua_checkstack` 的 `size` 也是 int(`lapi.c`:
+  `size > LUAI_MAXCSTACK || (L->top - L->base + size) > LUAI_MAXCSTACK`),条件再上溢一次双双为假 →
+  按巨大值扩栈 → **段错误**(内嵌 oracle 拿到 SIGSEGV、真的 `lua5.1` 二进制 dumped core)。崩溃条件实测
+  与推导一致:**`i32 <= e32 且 (e32 - i32 + 1) > INT_MAX`**,所以窗口随 `e`(默认 `#t`)平移 ——
+  `unpack({},-2147483647)` 崩,而同一个 `i` 配 `{1,2,3}` 时崩到 `-2147483644`。**望舒不复制这个行为**:
+  它对整段抬 `too many results to unpack`(`internal/stdlib/tablelib.go::baseFnUnpackImpl` 在 int64 上算,
+  不存在这个回绕),**行为正确且从不崩**,契约由 `fuzz_244_test.go::TestUnpackAtInt32BoundaryDoesNotCrash`
+  钉住(边界两侧 + 显式区间 + 整表 unpack)。差分侧只能**跳过**这一段(会死的 oracle 不能当参照),执行体
+  与区间口径见 [12](./12-testing-difftest.md) §4.9b 第三格与 **§4.9f**(现行守卫区间两个方向都不对,已知
+  缺口)。
 
 ### 4.6 `collectgarbage` / `gcinfo`:GC 控制(指向 06)
 
