@@ -502,6 +502,46 @@ string.format = (function(orig)
   end
 end)(string.format)
 __wrapUB(table, "insert", 2)
+-- unpack crashes PUC when its element count overflows int (#244).
+--
+-- unpack of an empty table with 0x80000000 SEGFAULTS the embedded 5.1.5, and so does the real lua5.1
+-- binary. luaB_unpack narrows i and e to int, returns early only when i > e, then computes
+-- n = e - i + 1 in int: its n <= 0 overflow guard misses the case where that wrap lands
+-- positive-and-huge, and lua_checkstack is then asked for an absurd count.
+--
+-- The condition needs BOTH indices. A first version guarded two fixed values of i, measured on
+-- unpack({}, i) -- where e is 0 -- and was wrong in both directions: unpack({1,2,3}, -2147483646)
+-- still crashed (the window shifts with e), while unpack({1,2,3}, 4294967297) was skipped even though
+-- it narrows to i=1 and both sides answer 3. Dense sampling along one axis cannot reveal a missing
+-- axis, so "measured rather than derived" was exactly the wrong lesson: the mechanism supplies the
+-- shape, and measurement then confirms it. Predicted against measured on 10 shapes, all agreeing.
+--
+-- Skipped rather than compared, like the other PUC UB ranges: an oracle that dies is not a reference.
+local __i32 = function(v)
+  -- Two's-complement narrowing to int32, matching luaL_checkint's cast.
+  if v ~= v or v == 1/0 or v == -1/0 then return nil end
+  local m = v % 4294967296
+  if m >= 2147483648 then m = m - 4294967296 end
+  return m
+end
+_G.unpack = (function(orig)
+  return function(t, i, j, ...)
+    local iv = 1
+    if i ~= nil then
+      if __type(i) ~= "number" then iv = nil else iv = __i32(i) end
+    end
+    local ev
+    if j ~= nil then
+      if __type(j) ~= "number" then ev = nil else ev = __i32(j) end
+    elseif __type(t) == "table" then
+      ev = #t
+    end
+    if iv ~= nil and ev ~= nil and iv <= ev and (ev - iv + 1) > 2147483647 then
+      __error("` + LimitSentinel + `: unpack element count overflows int (PUC segfaults)", 0)
+    end
+    return orig(t, i, j, ...)
+  end
+end)(unpack)
 __wrapUB(table, "remove", 2)
 __wrapUB(table, "concat", 3)
 __wrapUB(math, "ldexp", 2)
