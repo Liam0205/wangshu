@@ -204,8 +204,7 @@ lua5.1 -e "<seed 里的那段>"        # dumped core?
 **#244 实证**:seed 是 `A(unpack({},0X80000000))`。栈迹在 `_Cfunc_wangshu_oracle_exec` 里、真的 `lua5.1`
 二进制对同一输入 `dumped core`,而望舒抬 `too many results to unpack`、**行为正确、从不崩**——所以修的是
 harness 而不是引擎。机制在 `luaB_unpack`:`n = e - i + 1` 是 int 运算,`i` 窄化之后那个 `n <= 0` 的溢出
-检查只拦到「回绕成非正」的一半,回绕成**正的巨大值**时 `n > 0` 成立、走进 `lua_checkstack(L, n)`,而
-`lua_checkstack` 的 `size` 也是 int、条件再上溢一次,于是按一个巨大值扩栈 → 段错误。处置是在 oracle
+这个减法本身是有符号溢出 UB,gcc -O2 把 `n <= 0` 检查当不可达删掉,`lua_checkstack` 随后接受一个负的 `size`(拒绝条件对负值两个都为假)→ 段错误;同一份源码在 -O0 下干净抬错,**崩溃依赖优化等级**。处置是在 oracle
 prelude 里跳过这一段(**会死的 oracle 不能当参照**,判据见
 [[cross-backend-semantic-fix-sweep]]「对齐 PUC 之前先分清有定义还是 UB」)。
 

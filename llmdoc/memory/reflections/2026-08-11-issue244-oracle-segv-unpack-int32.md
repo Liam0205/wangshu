@@ -70,30 +70,24 @@ HEAD 上重放确实复现。
 `unpack({1,2,3},-2147483645)`、`unpack({},-2,2147483645)`、`unpack({},-1000,2147483000)`),所以望舒侧
 没有任何东西要修。
 
-### 2. 机制:`luaB_unpack` 的溢出检查覆盖不到「回绕成正的巨大值」
+### 2. 机制:签名溢出 UB 让编译器删掉了那个检查
 
-`internal/oracle/_lua515/src/lbaselib.c`:
+`i` 与 `e` 都经 `luaL_optint` / `luaL_checkint` 窄化成 int,`n = e - i + 1` 在 int 上算,
+后面用 `n <= 0` 拦「arith. overflow」。
 
-```c
-static int luaB_unpack (lua_State *L) {
-  int i, e, n;
-  luaL_checktype(L, 1, LUA_TTABLE);
-  i = luaL_optint(L, 2, 1);
-  e = luaL_opt(L, luaL_checkint, 3, luaL_getn(L, 1));
-  if (i > e) return 0;              /* empty range */
-  n = e - i + 1;                    /* int 运算,可以上溢 */
-  if (n <= 0 || !lua_checkstack(L, n))
-    return luaL_error(L, "too many results to unpack");
-  ...
-}
-```
+**这里我第一版写的机制是错的,而且错得很自然,值得记下来。** 我写的是「`n <= 0` 只拦到回绕成非正的
+那一半,回绕成正的巨大值时会溜过去」。这在算术上**不可能**:只要 `i <= e`(否则前面 `i > e` 已经
+提前返回了),`e - i + 1` 在 int32 上的回绕结果**恒 `<= 0`**,那个检查本该拦住所有情形。穷举验证过。
 
-`i` 与 `e` 都经 `luaL_optint` / `luaL_checkint` 窄化成 int。`n = e - i + 1` 在 int 上算,`i` 很负时这个减法
-上溢;`n <= 0` 那个检查按注释是为了拦「arith. overflow」,但它只拦到**回绕成非正**的那一半 —— 回绕成
-**正的巨大值**时 `n > 0` 成立,于是走进 `lua_checkstack(L, n)`,而 `lua_checkstack` 的拒绝条件
-(`lapi.c`)是 `size > LUAI_MAXCSTACK || (L->top - L->base + size) > LUAI_MAXCSTACK`,`size` 是
-**int** 参数,一个上溢之后的巨大正值配上 `L->top - L->base` 又能第二次上溢成负数,两个条件双双为假 →
-`luaD_checkstack` 按那个值扩栈 → 段错误。
+**真实机制**:这个减法本身是**有符号溢出 UB**,所以 gcc `-O2` 把 `n <= 0` 当不可达**整段删掉**
+(反汇编确认:`-O0` 下有 `cmpl $0x0,-0x4(%rbp); jle`,`-O2` 下这条不存在、直接调 `lua_checkstack`);
+随后 `lua_checkstack` 收到一个**负的** `size`,而它的拒绝条件
+(`lapi.c`:`size > LUAI_MAXCSTACK || (L->top - L->base + size) > LUAI_MAXCSTACK`)对负值**两个都为假**,
+于是照单接受、按那个值走下去 → 段错误。同一份源码在 `-O0` 下干净抬 `too many results to unpack`,
+**也就是说这个崩溃依赖优化等级**,而 cgo shim 用的是 `-O2`。
+
+守卫条件不受这次更正影响 —— 它测的是「溢出在什么条件下发生」,两种解释下都是同一个条件。
+但错的机制会让读者以为这与优化无关,从而在将来误判这个 skip 还需不需要。
 
 ### 3. 修法:在 oracle prelude 里跳过,而不是在望舒侧对齐
 
