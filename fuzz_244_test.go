@@ -11,7 +11,7 @@ import (
 // the real lua5.1 binary dump core. luaB_unpack computes n = e - i + 1 in int, and its n<=0 overflow guard
 // does not cover the case where the wrap lands positive-and-huge. -2147483646 and below give a clean
 // "too many results to unpack" instead, so the crash window is exactly those two values; that boundary is
-// measured rather than derived, because modelling when the huge n survives lua_checkstack proved
+// derived from the mechanism and then confirmed by measurement, because modelling when the huge n survives lua_checkstack proved
 // unreliable.
 //
 // wangshu's job is only to stay sane across the whole range, which this pins: a clean raise where the
