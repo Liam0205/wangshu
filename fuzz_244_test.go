@@ -7,17 +7,16 @@ import (
 
 // TestUnpackAtInt32BoundaryDoesNotCrash covers #244, where the CRASH is in the oracle, not in wangshu.
 //
-// unpack({}, -2147483648) and unpack({}, -2147483647) segfault PUC 5.1.5 -- both the embedded oracle and
-// the real lua5.1 binary dump core. luaB_unpack computes n = e - i + 1 in int, and its n<=0 overflow guard
-// does not cover the case where the wrap lands positive-and-huge. -2147483646 and below give a clean
-// "too many results to unpack" instead, so the crash window is exactly those two values; that boundary is
-// derived from the mechanism and then confirmed by measurement, because modelling when the huge n survives lua_checkstack proved
-// unreliable.
+// unpack({}, -2147483648) segfaults PUC 5.1.5 -- both the embedded oracle and the real lua5.1 binary dump
+// core. luaB_unpack computes n = e - i + 1 in int and guards with n <= 0, but the subtraction is
+// signed-overflow UB: gcc -O2 deletes that check as unreachable and lua_checkstack is then called with a
+// NEGATIVE size, which it accepts because both of its comparisons are false. The same source at -O0
+// raises cleanly, so the crash is optimization-dependent, and the shim builds at -O2.
 //
-// wangshu's job is only to stay sane across the whole range, which this pins: a clean raise where the
-// count cannot be represented, correct answers either side, and never a crash. The oracle side is skipped
-// via the prelude's limit sentinel, like the other PUC UB ranges -- an oracle that dies cannot serve as a
-// reference.
+// The window is NOT a fixed pair of values -- it shifts with e, which defaults to #t and is overridden by
+// the third argument: crash iff i32 <= e32 and (e32 - i32 + 1) > INT_MAX. The oracle-side skip guard and
+// its own two-directional cases live in internal/oracle/unpack_guard_test.go; this test covers only
+// wangshu's side, which must stay sane across the whole range and never crash.
 func TestUnpackAtInt32BoundaryDoesNotCrash(t *testing.T) {
 	for _, tc := range []struct{ name, src, want string }{
 		{"INT_MIN raises cleanly",

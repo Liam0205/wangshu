@@ -768,11 +768,12 @@ func hostUnpack(vm *VM, th *Thread) int {
   调用当时的栈状态,别只抄阈值常数)。
 - **索引在 int32 边界时 PUC 会段错误,而望舒抬干净的错(#244,2026-08-11)**。PUC 的 `luaB_unpack` 把 `i`
   与 `e` 都经 `luaL_optint` / `luaL_checkint` **窄化成 int**,`n = e - i + 1` 因此是 int 运算、可以上溢;
-  那句 `if (n <= 0 || !lua_checkstack(L, n))` 的注释说 `n <= 0` 是为了拦 arith. overflow,但它只拦到
-  **回绕成非正**的那一半,回绕成**正的巨大值**时 `n > 0` 成立、走进 `lua_checkstack(L, n)`,而
-  `lua_checkstack` 的 `size` 也是 int(`lapi.c`:
-  `size > LUAI_MAXCSTACK || (L->top - L->base + size) > LUAI_MAXCSTACK`),条件再上溢一次双双为假 →
-  按巨大值扩栈 → **段错误**(内嵌 oracle 拿到 SIGSEGV、真的 `lua5.1` 二进制 dumped core)。崩溃条件实测
+  那句 `if (n <= 0 || !lua_checkstack(L, n))` 的注释说 `n <= 0` 是为了拦 arith. overflow —— 但**这个减法
+  本身是有符号溢出 UB**,gcc `-O2` 因此把 `n <= 0` 当不可达**整段删掉**(反汇编确认:`-O0` 下有
+  `cmpl $0x0,-0x4(%rbp); jle`,`-O2` 下没有),`lua_checkstack` 随后收到一个**负的** `size`,而它的拒绝条件
+  (`lapi.c`:`size > LUAI_MAXCSTACK || (L->top - L->base + size) > LUAI_MAXCSTACK`)对负值**两个都为假** →
+  照单接受 → 段错误。**同一份源码在 -O0 下干净抬错,所以这个崩溃依赖优化等级**,而 cgo shim 用 `-O2`。
+  (此前这里写「回绕成正的巨大值时 `n > 0` 成立」是错的:只要 `i <= e`,int32 回绕结果恒 `<= 0`。)
   与推导一致:**`i32 <= e32 且 (e32 - i32 + 1) > INT_MAX`**,所以窗口随 `e`(默认 `#t`)平移 ——
   `unpack({},-2147483647)` 崩,而同一个 `i` 配 `{1,2,3}` 时崩到 `-2147483644`。**望舒不复制这个行为**:
   它对整段抬 `too many results to unpack`(`internal/stdlib/tablelib.go::baseFnUnpackImpl` 在 int64 上算,
