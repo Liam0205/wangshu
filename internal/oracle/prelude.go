@@ -345,12 +345,18 @@ end
 
 -- __ckint0 is luaL_checkint's chain, available this early in the prelude (math.floor is not
 -- localised until later). __ckint below is the same function under the name the budget shims use.
+-- Captured BEFORE any fuzz script runs. Reading them live was exploitable once this helper started
+-- gating a segfault (#244): assigning a fake math.floor then made the narrowing return 0, the
+-- unpack guard did not fire, and the oracle took a SIGSEGV that killed the test binary. Harmless while
+-- __ckint0 only fed budget shims, load-bearing now. The file already records this hazard twice, at
+-- __narrow and at preludeSortedIter -- reusing __ckint0 inherited its corrections and also this gap.
+local __floor0, __tonum0 = math.floor, tonumber
 local __ckint0 = function(v, dflt)
   local tv = __type(v)
   local x
-  if tv == "number" then x = v elseif tv == "string" then x = tonumber(v) end
+  if tv == "number" then x = v elseif tv == "string" then x = __tonum0(v) end
   if x == nil then return dflt end
-  local i64 = x >= 0 and math.floor(x) or -math.floor(-x)
+  local i64 = x >= 0 and __floor0(x) or -__floor0(-x)
   local i32 = i64 % 4294967296
   if i32 >= 2147483648 then i32 = i32 - 4294967296 end
   return i32
@@ -534,7 +540,9 @@ __wrapUB(table, "insert", 2)
 local __unpackIdx = function(v, dflt)
   if v == nil then return dflt end
   local x = v
-  if __type(x) == "string" then x = tonumber(x) end
+  -- __tonum0, not the live global: a script reassigning tonumber could otherwise steer this and defeat
+  -- the guard, which is the same hole __ckint0 had one round earlier.
+  if __type(x) == "string" then x = __tonum0(x) end
   if __type(x) ~= "number" then return nil end   -- not coercible: PUC raises, so let it compare
   -- Beyond int64, or nonfinite: the double->int64 cast is UB and x86-64's cvttsd2si yields INT64_MIN,
   -- whose low 32 bits are 0. Verified against the binary: unpack({1,2,3}, 1e20) answers 4, i.e. PUC
