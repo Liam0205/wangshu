@@ -375,7 +375,7 @@ linters:
 - nightly-diff-fuzz 的 `fuzz-triage.sh` 解析协议(FAIL/INFRA 分类的精确判据)待 difftest harness(M14)定稿后完成。
 - 非 Ubuntu runner 的 oracle 源码编译 + 缓存方案待实测(取包这一环已收口,见 §4.1)。
 - ~~**nightly 报 failure 但差分步骤被 skip 时,没有任何地方写明「本轮未执行任何差分 fuzz」**~~ (2026-08-09 已收口:infra issue 的 body 读 `steps.difffuzz.outcome`,被 skip 时明确写出该句)
-- **`unpack` 的 int32 崩溃窗口那条 skip 区间两个方向都不对(#244,2026-08-11,待修)**:守卫只读 `i` 而机制读 `i` 与 `e`,所以 `e > 0` 时窗口整段挪出守卫范围(`A(unpack({1,2,3},-2147483646))` 实测让整个测试二进制 SIGSEGV),而 `i >= 2147483648` 又被一律跳过(`unpack({1,2,3},4294967297)` 两侧都返回 3 却被 skip)。按机制应判 `i32 <= e32 且 (e32 - i32 + 1) > INT_MAX`;口径见 `p1-interpreter/12-testing-difftest.md` §4.9f。
+- ~~`unpack` 的 int32 skip 区间~~ 守卫经六轮审计收口:区间读 `i` 与 `e`、窄化走 `__ckint0`、助手在脚本前捕获、非表首参不跳;用例见 `internal/oracle/unpack_guard_test.go`(13 skip / 12 compare,两向变异确认)。按机制应判 `i32 <= e32 且 (e32 - i32 + 1) > INT_MAX`;口径见 `p1-interpreter/12-testing-difftest.md` §4.9f。
 - bench-gate 的回退阈值(±N%)与基线 artifact 的存储/对比协议待 M14 校准。
 - agentic workflows 的接入时机与模板源(§3.5)。
 - 覆盖率是否设硬门槛(当前仅 artifact 存档,pineapple 一样的;若 P1 后期需要再议)。

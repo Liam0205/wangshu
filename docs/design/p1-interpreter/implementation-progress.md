@@ -397,7 +397,7 @@
     | 机制 | `internal/oracle/_lua515/src/lbaselib.c`(`luaB_unpack`)+ `lapi.c`(`lua_checkstack`) | `i`/`e` 经 `luaL_optint`/`luaL_checkint` 窄化成 **int**,`n = e - i + 1` 的减法是**有符号溢出 UB**;gcc `-O2` 把 `n <= 0` 检查当不可达删掉,`lua_checkstack` 收到负 `size` 而拒绝条件对负值两个都为假 → 段错误。**-O0 下同一份源码干净抬错,崩溃依赖优化等级**(此前记的「回绕成正的巨大值绕过检查」是错的:`i <= e` 时回绕恒 `<= 0`) |
   | 修法:差分侧跳过 | `internal/oracle/prelude.go` | prelude 包一层 `unpack`,索引落在崩溃窗口时抬 `LimitSentinel`,与其余 PUC UB range 一致(**会死的 oracle 不能当参照**,12 §4.9b 第三格)。望舒侧**零改动**——它本来就正确 |
   | 望舒侧的行为契约 | `fuzz_244_test.go::TestUnpackAtInt32BoundaryDoesNotCrash` | 边界两侧 + `INT_MAX` 起点 + 小负起点 + 显式区间 + 整表 unpack:该抬干净错的抬、该给正确答案的给,从不崩(10 §4.5) |
-  | **已知缺口:那条 skip 的区间两个方向都不对** | 同上 prelude | 注释与 commit message 写「窗口是**实测**出来的,只有 `-2147483648` 与 `-2147483647` 会崩」——那些测量都是真的,**但全部取自 `unpack({}, i)` 即 `e = #t = 0` 一格**;崩溃条件带着 `e`,所以窗口随 `e` 平移(`{1,2,3}` 上崩到 `-2147483644`、`unpack({}, i, 2147483647)` 崩到 `i = 0`)。补上 `e` 后规则完全可推导:**`i32 <= e32 且 (e32 - i32 + 1) > INT_MAX`**,20 组「先预测再实测」全部吻合。**太窄**:`A(unpack({1,2,3},-2147483646))` 经真实 `FuzzOracleDiff` 实测让**整个测试二进制 SIGSEGV**(家族还活着);**太宽**:`unpack({1,2,3},4294967297)` 窄化成 `i32 = 1`、两侧都返回 3,却拿到 sentinel 被 **SKIP**。口径见 12 **§4.9f**,待修 |
+  | **守卫经六轮审计收口:区间读 `i` 与 `e`、窄化走 `__ckint0`、助手在脚本前捕获、非表首参不跳;用例见 `internal/oracle/unpack_guard_test.go`(13 skip / 12 compare,两向变异确认)。**补上 `e` 后规则完全可推导:**`i32 <= e32 且 (e32 - i32 + 1) > INT_MAX`**,10 组「先预测再实测」全部吻合。**太窄**:`A(unpack({1,2,3},-2147483646))` 经真实 `FuzzOracleDiff` 实测让**整个测试二进制 SIGSEGV**(家族还活着);**太宽**:`unpack({1,2,3},4294967297)` 窄化成 `i32 = 1`、两侧都返回 3,却拿到 sentinel 被 **SKIP**。口径见 12 **§4.9f**,待修 |
 
   **2026-08-11 那一轮本身是文档轮 + 复核轮,没有改任何代码或测试**;上面「已知缺口」那一行是复核的产出。
   判据落点 [12](./12-testing-difftest.md) §4.9b 第三格(UB 且参照实现直接崩)与 §4.9f(一条 skip 的
