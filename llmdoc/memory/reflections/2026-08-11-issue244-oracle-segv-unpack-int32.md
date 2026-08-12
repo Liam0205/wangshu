@@ -7,7 +7,7 @@ description: >
   望舒**:重放拿到 SIGSEGV 且栈迹在 cgo 里(`_Cfunc_wangshu_oracle_exec`),拿真的 `lua5.1` 二进制直接试同样
   dumped core,而望舒对同一输入抬 `too many results to unpack`、行为正确、从不崩。机制在
   `luaB_unpack`(`internal/oracle/_lua515/src/lbaselib.c`):`n = e - i + 1` 是 int 运算,`i` 窄化之后那个
-  `n <= 0` 的溢出检查覆盖不到「回绕成正的巨大值」这一种。修法是在 oracle prelude 里包一层 `unpack`,索引落在
+  `luaB_unpack` 在 int 上算 `n = e - i + 1` 并用 `n <= 0` 检查。那个检查不可靠,但**不是**因为「回绕成正的巨大值」—— `i <= e` 时 int32 回绕结果恒 `<= 0`,那个检查本该拦住所有情形。真实机制是:这个减法本身是有符号溢出 UB,gcc -O2 因此把 `n <= 0` 当不可达**整段删掉**,随后 `lua_checkstack` 收到一个负的 size 而照单接受(`lapi.c` 里两个比较都为假)。同一份源码在 -O0 下会干净抬错 —— 也就是说这个崩溃是**依赖优化等级的**。修法是在 oracle prelude 里包一层 `unpack`,索引落在
   崩溃窗口时抬 `LimitSentinel`,让差分跳过这一类输入 —— 与仓库既有的几个 PUC UB range 处理方式一致。
   **但本轮复核推翻了那个窗口的口径,而且两个方向都不对**:注释与 commit message 都写「窗口是实测出来的,
   只有 -2147483648 与 -2147483647 会崩」,而实测证明窗口不是一对固定值,它由 `e - i + 1` 在 int32 上是否

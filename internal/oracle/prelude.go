@@ -512,8 +512,19 @@ __wrapUB(table, "insert", 2)
 --
 -- unpack of an empty table with 0x80000000 SEGFAULTS the embedded 5.1.5, and so does the real lua5.1
 -- binary. luaB_unpack narrows i and e to int, returns early only when i > e, then computes
--- n = e - i + 1 in int: its n <= 0 overflow guard misses the case where that wrap lands
--- positive-and-huge, and lua_checkstack is then asked for an absurd count.
+-- n = e - i + 1 in int and guards with n <= 0.
+--
+-- That guard is UNRELIABLE, and not for the reason an earlier version of this comment gave. It claimed
+-- the wrap "lands positive-and-huge" and so slips past n <= 0 -- arithmetically impossible: with
+-- i <= e in int32 the wrap is always <= 0, so the check would catch every case. What actually happens
+-- is that the subtraction itself is signed-overflow UB, gcc -O2 therefore DELETES the n <= 0 check as
+-- unreachable, and lua_checkstack is then called with a negative size, which it accepts because both
+-- of its comparisons are false (lapi.c: size > LUAI_MAXCSTACK and top-base+size > LUAI_MAXCSTACK).
+-- The same source at -O0 raises cleanly; the crash is optimization-dependent, which the old wording
+-- implied it was not.
+--
+-- The guard below is unchanged by this correction: the CONDITION under which the overflow occurs is
+-- what it tests, and that is the same either way.
 --
 -- The condition needs BOTH indices. A first version guarded two fixed values of i, measured on
 -- unpack({}, i) -- where e is 0 -- and was wrong in both directions: unpack({1,2,3}, -2147483646)
