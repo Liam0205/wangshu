@@ -554,6 +554,11 @@ local __unpackIdx = function(v, dflt)
 end
 _G.unpack = (function(orig)
   return function(t, i, j, ...)
+    -- A non-table first argument never reaches the index arithmetic: luaL_checktype(L, 1, LUA_TTABLE)
+    -- runs first, so PUC raises cleanly and both engines agree byte for byte. Guarding it was too wide
+    -- -- unpack(42, -1, 2147483647) was skipped for a crash that cannot happen. The old __type check
+    -- covered only the #t default branch, not the explicit-j one.
+    if __type(t) ~= "table" then return orig(t, i, j, ...) end
     local iv = __unpackIdx(i, 1)
     local ev
     if j ~= nil then
