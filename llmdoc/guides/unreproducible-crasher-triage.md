@@ -181,6 +181,40 @@ hash 与最小化后的 seed,三者都描述表现。两条表现差得越远,�
 本篇只负责把入口分对。反思
 [[2026-08-04-issue228-229-lazy-capture-and-nested-tailcall-top]]。
 
+#### 分入口之前还有半步:先判「谁崩了」(2026-08-11,#244)
+
+上面那张表按**失败形式**分入口,而它默认崩的是望舒。差分 harness 把参照实现也拉进了同一个进程,所以
+**「谁崩了」这件事要先定下来**,再谈失败形式。
+
+**判据**:看到 SIGSEGV / panic 先读**栈迹属于哪一侧**,再决定往哪边查。「fuzz 报了 crash」不等于「被测
+实现有 bug」——参照实现也会崩,而且它崩的时候更容易被误判成我们的问题,因为失败信号长得一模一样(一个
+crasher issue、一个落盘 seed)。自查办法:说「这个 seed 触发了一个缺陷」之前,先说出「崩的是**哪个**
+实现」。
+
+**手法**(三条证据,都便宜,拿真二进制那条单独就能定性):
+
+```
+# ① 栈迹在哪一侧:cgo 帧(_Cfunc_wangshu_oracle_exec)= 参照实现
+go test -tags wangshu_oracle_cgo . -run 'FuzzOracleDiff/<hash>'
+# ② 拿真的参照实现二进制直接试同一个输入
+lua5.1 -e "<seed 里的那段>"        # dumped core?
+# ③ 望舒单独跑一遍,确认它给的是干净结果或干净错误
+```
+
+**#244 实证**:seed 是 `A(unpack({},0X80000000))`。栈迹在 `_Cfunc_wangshu_oracle_exec` 里、真的 `lua5.1`
+二进制对同一输入 `dumped core`,而望舒抬 `too many results to unpack`、**行为正确、从不崩**——所以修的是
+harness 而不是引擎。机制在 `luaB_unpack`:`n = e - i + 1` 是 int 运算,`i` 窄化之后那个 `n <= 0` 的溢出
+检查只拦到「回绕成非正」的一半,回绕成**正的巨大值**时 `n > 0` 成立、走进 `lua_checkstack(L, n)`,而
+`lua_checkstack` 的 `size` 也是 int、条件再上溢一次,于是按一个巨大值扩栈 → 段错误。处置是在 oracle
+prelude 里跳过这一段(**会死的 oracle 不能当参照**,判据见
+[[cross-backend-semantic-fix-sweep]]「对齐 PUC 之前先分清有定义还是 UB」)。
+
+**与上文「先问 oracle 拿第三方真值」是同一族的镜像格**:那条讲两层分歧时去问参照实现拿真值(参照实现是
+**裁判**),本条讲参照实现自己可能就是**被告**。合起来是——差分 harness 里出现失败信号时,先把「谁是
+裁判、谁是被告」定下来。**这一格与版本核对同一层级**(都是几条命令量级的最便宜检查),而它排在那张失败
+形式表之前:表里两行的第一个动作都假定要查望舒。反思
+[[2026-08-11-issue244-oracle-segv-unpack-int32]] 教训 1。
+
 ## 修完一条 fuzz 输入之后,扫它所属的维度
 
 fuzz 给出的是一条具体输入,但它是一个家族的采样点。**「这一条不再有差异」不等于「这个家族已经
@@ -756,7 +790,9 @@ divergence 类事件上是对的(它天然属于某个 tier)。同一个标题�
   harness 里 skip 也是绿的,把它读成「修好了」等于把输入又藏了一次。
 - 与 [[cross-backend-semantic-fix-sweep]] 互补:那篇管**修同一语义类 bug 时枚举全部后端 × 通道**;
   本篇的判定前提是「input 决定的 VM bug 与进程级资源耗尽已经分开」,分开之后属于 VM bug 的那类才
-  可能进入 cross-backend sweep 的范围。
+  可能进入 cross-backend sweep 的范围。**还有第三类**:崩的是**参照实现**(#244),此时两篇都不进——
+  处置是在 harness 侧跳过那一段(判据见那篇「对齐 PUC 之前先分清有定义还是 UB」),而划那一段的边界
+  仍要按那篇第八个刻度先写出机制的表达式。
 - 反思实例:`2026-07-11-issue123-unreproducible-crasher-round`(七角度复现矩阵 + 分诊 + corpus
   入库 + `GOMEMLIMIT` 诊断硬化) · `2026-07-03-issue40-arm64-stopbleed-round` §「其它(较小)」
   fuzz 失败形式分诊纪律(deadline vs failing-input 判据的来源) ·
@@ -781,4 +817,11 @@ divergence 类事件上是对的(它天然属于某个 tier)。同一个标题�
   ENOSPC(errno 28),实际是 curl 的 `CURLE_OPERATION_TIMEDOUT` —— 那一步是 curl,退出码来自 curl 自己的
   表;而「apt 成功之后沉默 2 分 15 秒才失败」这条免费证据一开始就排除了磁盘写满,资源耗尽立刻失败、
   超时才会先卡。真根因是裸 `curl -sLO` 没有限时没有重试;它失败让三个差分 fuzz 步骤被 skip,于是 nightly
-  报红而什么都没测;标题里嵌 `matrix.variant` 让一次抖动开了六个 issue)。
+  报红而什么都没测;标题里嵌 `matrix.variant` 让一次抖动开了六个 issue) ·
+  `2026-08-11-issue244-oracle-segv-unpack-int32`(**崩的是参照实现那一轮**:版本核对干净——失败 run 的
+  headSha 就是当时的 master,而重放拿到的 SIGSEGV 栈迹在 cgo 里、真的 `lua5.1` 二进制对同一输入也
+  dumped core,望舒抬 `too many results to unpack` 行为正确。机制是 `luaB_unpack` 的 `n = e - i + 1` 在
+  int 上溢、`n <= 0` 只拦到回绕成非正的那一半。处置是 prelude 跳过;**而那个「实测出来的」窗口口径后来
+  被推翻,两个方向都错**——测量全部取自 `unpack({}, i)` 即 `e = 0` 一格,而崩溃条件带着 `e`,所以
+  `unpack({1,2,3},-2147483646)` 同样让整个测试二进制 SIGSEGV,同时 `i >= 2147483648` 一律跳过又把两侧都
+  返回 3 的输入 skip 掉)。
