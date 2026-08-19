@@ -118,6 +118,10 @@ jobs:
           path: lua-5.1.5
           key: lua-5.1.5-build-${{ runner.os }}-${{ runner.arch }}
       - if: startsWith(matrix.os, 'ubuntu')
+        # 8-minute step bound: this exact command hung ~28 min on three jobs at once while this change was
+        # in review, and ~45 min on another. The job bound would eventually cut it, but a step bound names
+        # the culprit in the log instead of leaving a job that merely ran out of time.
+        timeout-minutes: 8
         run: sudo apt-get update && sudo apt-get install -y lua5.1
       - if: startsWith(matrix.os, 'macos') && steps.cache-lua51-test.outputs.cache-hit != 'true'
         # cache miss: download + build
@@ -288,6 +292,10 @@ jobs:
           path: lua-5.1.5
           key: lua-5.1.5-build-${{ runner.os }}-${{ runner.arch }}
       - if: startsWith(matrix.os, 'ubuntu')
+        # 8-minute step bound: this exact command hung ~28 min on three jobs at once while this change was
+        # in review, and ~45 min on another. The job bound would eventually cut it, but a step bound names
+        # the culprit in the log instead of leaving a job that merely ran out of time.
+        timeout-minutes: 8
         run: sudo apt-get update && sudo apt-get install -y lua5.1
       - if: startsWith(matrix.os, 'macos') && steps.cache-lua51-difftest.outputs.cache-hit != 'true'
         # cache miss: download + build (macOS homebrew deprecated lua@5.1 in 2024)
