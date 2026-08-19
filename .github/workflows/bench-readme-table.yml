@@ -46,6 +46,8 @@ jobs:
   # inputs can't express "list of runners" directly, so a tiny setup job
   # emits the JSON matrix.
   plan:
+    # Hang guard (2026-08-19): a planning job is cheap, but "cheap" is not "bounded".
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     outputs:
       runners: ${{ steps.pick.outputs.runners }}

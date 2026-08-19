@@ -20,6 +20,10 @@ permissions:
 
 jobs:
   prepare-llmdoc:
+    # Hang guard (2026-08-19): this workflow had no timeout anywhere, and a CI run hung ~45 min on
+    # `apt-get` while the nightly fix for that same unbounded-step failure was under review. Sized
+    # well above observed cost, so it only fires on a wedge.
+    timeout-minutes: 60
     runs-on: ubuntu-latest
     outputs:
       since_period: ${{ steps.check.outputs.since_period }}
@@ -47,6 +51,7 @@ jobs:
           fi
 
   update-llmdoc:
+    timeout-minutes: 60
     needs: prepare-llmdoc
     uses: Lightspeed-Intelligence/agentic-workflow-template/.github/workflows/update-llmdoc.yml@main
     secrets:
