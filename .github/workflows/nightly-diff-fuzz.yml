@@ -103,6 +103,10 @@ jobs:
           ./scripts/check-oracle.sh
 
       - name: rolling-seed differential fuzz (${{ matrix.variant }})
+        # Step-level bound as well as the inner `go test -timeout 150m`: -timeout only watches the
+        # go test process, so a command added to this step later would be unguarded except by the
+        # job cap -- which is exactly how the oracle-install step came to sit 5h50m.
+        timeout-minutes: 170
         id: difffuzz
         run: |
           # Hour epoch as rolling seed base (2026-07-10, was day epoch —
@@ -129,6 +133,10 @@ jobs:
 
       - name: GC-stress transparency fuzz (${{ matrix.variant }})
         if: always()
+        # Step-level bound as well as the inner `go test -timeout 60m`: -timeout only watches the
+        # go test process, so a command added to this step later would be unguarded except by the
+        # job cap -- which is exactly how the oracle-install step came to sit 5h50m.
+        timeout-minutes: 75
         run: |
           set -o pipefail
           TAGS_ARG=""
@@ -146,6 +154,10 @@ jobs:
       # diffs every run against the same-build interpreter baseline.
       - name: auto-mode rolling-seed diff (${{ matrix.variant }})
         if: always() && matrix.tags != ''
+        # Step-level bound as well as the inner `go test -timeout 150m`: -timeout only watches the
+        # go test process, so a command added to this step later would be unguarded except by the
+        # job cap -- which is exactly how the oracle-install step came to sit 5h50m.
+        timeout-minutes: 170
         run: |
           set -o pipefail
           # Hour epoch, same formula as the main leg. This step starts
@@ -178,13 +190,16 @@ jobs:
         # cannot silently consume it. Sizing every step to sum under 350 would force cuts far deeper than
         # the observed cost justifies.
         #
-        # 280 = the worst measured leg plus one retry, plus slack. Target counts differ per tier
-        # (measured: p1 4, p3 5, p4 6 target-runs), so at 35m the legs cost about 140 / 175 / 210 min, and
-        # a single golang/go#75804 spurious-deadline retry -- which go-fuzz.sh handles by re-running that
-        # target once -- adds one more fuzztime, i.e. 245 min worst case on p4. An audit found a real run
-        # at 315 min under the old 45m value, so a bound must clear the retry case rather than the median:
-        # 300 would have been inside the range that actually occurs.
-        timeout-minutes: 280
+        # 320 = worst measured leg + TWO retries + slack. Target counts differ per tier (measured: p1 4,
+        # p3 5, p4 6 target-runs), so at 35m the legs cost about 140 / 175 / 210 min.
+        #
+        # The retry term is per TARGET, not per leg: go-fuzz.sh calls run_target once per discovered target
+        # and each gets its own two attempts for golang/go#75804's spurious deadline, with nothing capping
+        # retries across the leg. So two different targets in the p4 leg can each retry, giving
+        # 210 + 35 + 35 = 280 -- which an earlier value of 280 consumed exactly, leaving zero room on a
+        # HEALTHY run. Sizing off one retry was the same mistake as sizing off the median, one step out.
+        # An audit found a real 315-min run under the old 45m value, so retries do occur in practice.
+        timeout-minutes: 320
         run: |
           set -o pipefail
           ./scripts/go-fuzz.sh "${{ github.event.inputs.gofuzztime || '35m' }}" "${{ matrix.tags }}" 2>&1 | tee gofuzz.log
