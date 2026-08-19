@@ -1071,6 +1071,34 @@ nightly 的三个 tier 腿各自是「装 oracle → 跑差分 fuzz → triage �
 这对本文的验收口径有一条直接后果:**§8 的「差分 fuzz 必过」是关于「跑了并且零未豁免差异」的,而一个红色的 nightly 既可能是「跑了并且发现分歧」,也可能是「一步都没跑」**,两者在 Actions 页面上是同一个红叉。读 nightly 失败时的第一步因此不是去找分歧,而是**确认那三个 fuzz 步骤真的执行过**——与 §3.1 那条「差分比较的对象是 harness 捕获到的东西」是同一族的机制:绿灯不携带「测了什么」的信息,红灯也不携带。
 
 triage 侧配套的两条口径(机制载体在 [engineering](../engineering.md) §3.2):① **infra 失败与真分歧分流**,前者标签 `ci`、后者带 seed 与本地复现命令;② **infra issue 按**日期**去重(`run_id` 更差:一天六轮就是六个 issue)而不按 tier**——infra 失败天然横跨所有 tier(装不上依赖与被测的是 p1 还是 p4 无关),而 divergence 失败天然属于某一个 tier,标题里嵌 `matrix.variant` 曾让两次抖动开出六个 issue(#236-#241)。方法论见 `llmdoc/guides/unreproducible-crasher-triage.md`「CI 自动化本身的失败信号」。
+
+### 8.2 job 超时被真的掐掉三次:step 级超时的作用域纠正 + gofuzztime 预算重配(2026-08-19,commit `9b61079`)
+
+上一节记的是「一步失败导致后面 skip」;本节记的是**一步本身跑到 job 超时**——性质不同,处置也不同。
+
+2026-08-12/08-15/08-18 一周内 nightly job 被 job 超时(350 分钟)掐掉三次(p4/p4/p1),其中两次真丢了
+覆盖。**#236-#241 那轮给取包脚本的 curl 加了限时,但装 oracle 那一步里 `apt-get`/`make`/
+`check-oracle.sh` 三条命令仍然无界**——只框住了当时报错的那一条命令,不是那一整步。08-18 那轮 p1
+腿就在这一步卡了 5h50m,rolling-seed 与 auto-mode 被 skip、两个 go-fuzz 步骤根本没启动。普查后发现
+无界的步骤是**三个不是一个**(装 oracle、upload logs、triage),三步现在都带 step 级
+`timeout-minutes`(12/15/10)——选 step 级机制的理由是它对**以后新加的命令同样生效**,命令级
+timeout 只覆盖被点名的那一条。
+
+同轮纠正了预算分配:workflow input description 长期写「per target(4 targets)」,而 `go-fuzz.sh`
+按源码扫描发现的无 tag 目标实际是**6 个**(root 包的 `FuzzCompileRun`/`FuzzAutoPromote`/
+`FuzzP4ForceAllPromote` + `internal/frontend/lex`/`internal/frontend/parse`/`internal/stdlib` 各
+一个;`FuzzOracleDiff` 被 `wangshu_oracle_cgo` gate、在自己的步骤里跑,不算在这 6 个里)。
+6×45m=270 分钟,与 native go-fuzz 步骤实测吻合,这一步占 312 分钟 job 的 87%——而先前连续五轮建议
+「压缩 auto-mode(150m→90m)」全部落空,因为 auto-mode 实测只跑 2 分钟。`gofuzztime` 45m→35m 把这一步
+降到约 210 分钟、job 约 250 分钟,余量从约 38 分钟升到约 98 分钟,是真实的约 22% 探索量削减。
+
+**两条自我纠正记在这里**:① 曾建议把 job `timeout-minutes` 抬到 420,不可能——GitHub 托管 runner
+单 job 硬上限 360 分钟;② 曾按「所有 step 上限之和必须低于 job 上限」的框架算出某 leg 最坏 548 分钟、
+判「只能大幅压缩」——这个框架本身是错的,job 超时才是总预算,step 上限只是防一条命令悄悄吃掉这个
+预算,不需要求和。判据见
+`llmdoc/guides/unreproducible-crasher-triage.md`「给一条报错的命令加超时」与「job 超时与 step
+超时」两节;反思 [[2026-08-19-nightly-step-timeouts-and-budget]]。
+
 - **golden / 豁免清单改动高亮**(§4.8):golden 文件、`exemptions.go` 的 diff 在 PR review 里显眼,防「改 golden / 加豁免来掩盖真 bug」。
 
 > **为什么差分 fuzz 必须是硬门禁**(而非「跑跑看」):roadmap §5 原则 2 把它定为「主防线」,[architecture](../architecture.md) §4 把它定为「必过」。若差分只是 advisory(可失败可合并),则「投机错误静默错果」会随 PR 渗入主干而无人察觉(它不崩溃、不报错,只是结果悄悄错)。把它设为**阻塞合并的硬门禁**,是把「逐字节一致」从口号变成机制。这也是 P1 验收(roadmap §4「与 gopher-lua 差分 fuzz 输出逐字节一致」)的 CI 兑现。

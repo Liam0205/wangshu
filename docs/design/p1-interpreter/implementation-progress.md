@@ -409,6 +409,26 @@
   沿**机制**的每个维度取,不能只沿被报的那个写法取,两种失效反馈还不对称——太宽表现为测试通过、太窄表现
   为下一次 nightly 再开一个 issue)。
 
+- **两个问题都先诊断错了(2026-08-19,commit `9b61079`,产品代码零改动)**:nightly job 一周内被 job
+  超时(350 分钟)掐掉三次(08-12 p4、08-15 p4、08-18 p1),其中两次真丢了覆盖。这一轮不涉及任何语义,
+  只改 `.github/workflows/nightly-diff-fuzz.yml`,记在这里是因为它纠正了**步骤级超时的作用域**与
+  **fuzz 预算的分配依据**这两条口径(12 §8.2)。
+
+  | 项 | 落点 | 结论与要点 |
+  |---|---|---|
+  | **问题一:作用域错**(头条 A) | 装 oracle 步骤 | #236–#241 那轮给取包脚本的 curl 加了限时,但同一步里 `apt-get`/`make`/`check-oracle.sh` 三条命令仍然无界——**只框住了当时报错的那一条命令,不是那一整步**。08-18 那轮 p1 腿在这一步卡了 **5 小时 50 分**被 job 超时掐掉,rolling-seed 与 auto-mode 被 skip、两个 go-fuzz 步骤根本没启动。普查后发现无界的步骤是**三个不是一个**(装 oracle、upload logs、triage) |
+  | 修法 | 三个步骤各加 step 级 `timeout-minutes`(12/15/10) | 选 step 级而不是逐条包 timeout,是因为它对**以后新加的命令同样生效**——这正是这次栽的地方 |
+  | **问题二:量错了成本中心**(头条 B) | native go-fuzz 步骤 | 连续五轮建议把 auto-mode 从 150m 压到 90m,**实测这个建议省不下任何时间**——auto-mode 只跑 2 分钟,150m 是从没接近过的挂死上限。真正的成本中心是 native go-fuzz 步骤,**312 分钟的 job 里它占 270 分钟(87%)**,而这一步从没被量过 |
+  | 270 分钟的原因 | `scripts/go-fuzz.sh` + workflow input description | `go-fuzz.sh` 按**源码扫描**发现目标、每个目标跑满 fuzztime;无 tag 可见目标是 **6 个**不是 description 里写着的「4 targets」——root 包 `FuzzCompileRun`/`FuzzAutoPromote`/`FuzzP4ForceAllPromote` + `internal/frontend/lex`/`internal/frontend/parse`/`internal/stdlib` 各一个(`FuzzOracleDiff` 被 `wangshu_oracle_cgo` gate、在自己的步骤里跑,不算在内)。`6 × 45m = 270`,与实测吻合——这个过时的「4」正是这一步成本被长期低估的原因 |
+  | 修法 | `gofuzztime` 45m→35m | `6 × 35m = 210` 分钟,job 约 250 分钟,余量从约 38 分钟升到约 98 分钟。**真实减少约 22% 的每轮探索量**,选它而不是砍差分步骤是因为差分步骤实际便宜(rolling-seed 36 分钟、auto-mode 2 分钟)而这一步占 87%;description 里的「4 targets」改成「6 untagged targets」 |
+  | 自我纠正 ①:抬到 420 不可能 | — | 连提四轮把 job `timeout-minutes` 抬到 420,而 GitHub 托管 runner 单 job 硬上限是 **360 分钟**,推荐了四轮却从没查过这个平台限制 |
+  | 自我纠正 ②:求和框架本身是错的 | — | 曾按「所有 step 上限之和必须低于 job 上限」算出某 leg 最坏 548 分钟、判「只能大幅压缩」;**这个框架本身是错的**——job 超时才是总预算,step 上限只是防一条卡死的命令悄悄吃掉这个预算,两者不是同一件事,不该按求和去配 |
+
+  五条判据落 `llmdoc/guides/unreproducible-crasher-triage.md`「给一条报错的命令加超时」与「job 超时
+  与 step 超时」两节、`llmdoc/guides/design-claims-vs-codebase-physics.md` §3.1(优化建议先量成本
+  分布)与 §5(陈旧计数);过程反思见
+  `llmdoc/memory/reflections/2026-08-19-nightly-step-timeouts-and-budget.md`。
+
 ## 相关
 
 [00-overview](./00-overview.md) · [../engineering](../engineering.md) ·
