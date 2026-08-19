@@ -118,11 +118,24 @@ jobs:
           path: lua-5.1.5
           key: lua-5.1.5-build-${{ runner.os }}-${{ runner.arch }}
       - if: startsWith(matrix.os, 'ubuntu')
-        # 8-minute step bound: this exact command hung ~28 min on three jobs at once while this change was
-        # in review, and ~45 min on another. The job bound would eventually cut it, but a step bound names
-        # the culprit in the log instead of leaving a job that merely ran out of time.
-        timeout-minutes: 8
-        run: sudo apt-get update && sudo apt-get install -y lua5.1
+        # Bounded AND retried. This exact command hung ~28 min on three jobs at once while this change was
+        # in review and ~45 min on another, then the bound below fired twice in a row -- so the apt mirrors
+        # this runner image uses are genuinely flaky, and a bound alone converts a hang into a red build.
+        #
+        # Each attempt is bounded separately with coreutils `timeout`, so one slow mirror cannot consume the
+        # whole allowance; the step bound stays as a backstop and still names this command in the log.
+        timeout-minutes: 12
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if timeout 180 sudo apt-get update && timeout 120 sudo apt-get install -y lua5.1; then
+              exit 0
+            fi
+            echo "apt attempt ${attempt} failed or timed out; retrying" >&2
+            sleep $(( attempt * 10 ))
+          done
+          echo "::error::apt-get could not install lua5.1 after 3 bounded attempts (runner mirror trouble)"
+          exit 1
       - if: startsWith(matrix.os, 'macos') && steps.cache-lua51-test.outputs.cache-hit != 'true'
         # cache miss: download + build
         run: |
@@ -292,11 +305,24 @@ jobs:
           path: lua-5.1.5
           key: lua-5.1.5-build-${{ runner.os }}-${{ runner.arch }}
       - if: startsWith(matrix.os, 'ubuntu')
-        # 8-minute step bound: this exact command hung ~28 min on three jobs at once while this change was
-        # in review, and ~45 min on another. The job bound would eventually cut it, but a step bound names
-        # the culprit in the log instead of leaving a job that merely ran out of time.
-        timeout-minutes: 8
-        run: sudo apt-get update && sudo apt-get install -y lua5.1
+        # Bounded AND retried. This exact command hung ~28 min on three jobs at once while this change was
+        # in review and ~45 min on another, then the bound below fired twice in a row -- so the apt mirrors
+        # this runner image uses are genuinely flaky, and a bound alone converts a hang into a red build.
+        #
+        # Each attempt is bounded separately with coreutils `timeout`, so one slow mirror cannot consume the
+        # whole allowance; the step bound stays as a backstop and still names this command in the log.
+        timeout-minutes: 12
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if timeout 180 sudo apt-get update && timeout 120 sudo apt-get install -y lua5.1; then
+              exit 0
+            fi
+            echo "apt attempt ${attempt} failed or timed out; retrying" >&2
+            sleep $(( attempt * 10 ))
+          done
+          echo "::error::apt-get could not install lua5.1 after 3 bounded attempts (runner mirror trouble)"
+          exit 1
       - if: startsWith(matrix.os, 'macos') && steps.cache-lua51-difftest.outputs.cache-hit != 'true'
         # cache miss: download + build (macOS homebrew deprecated lua@5.1 in 2024)
         run: |
