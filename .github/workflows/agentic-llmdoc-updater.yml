@@ -51,7 +51,10 @@ jobs:
           fi
 
   update-llmdoc:
-    timeout-minutes: 60
+    # NOTE: no timeout-minutes here -- GitHub rejects it on a job that calls a reusable
+    # workflow with `uses:`. Adding one broke this workflow for four commits: the run failed
+    # before starting any job, so the PR review silently stopped running while I read the
+    # older APPROVE as still current. The called workflow owns its own limits.
     needs: prepare-llmdoc
     uses: Lightspeed-Intelligence/agentic-workflow-template/.github/workflows/update-llmdoc.yml@main
     secrets:
