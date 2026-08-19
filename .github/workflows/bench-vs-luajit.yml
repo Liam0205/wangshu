@@ -35,6 +35,8 @@ jobs:
   # Same plan-job pattern as bench-readme-table.yml: resolve the os
   # choice into a runner matrix.
   plan:
+    # Hang guard (2026-08-19): a planning job is cheap, but "cheap" is not "bounded".
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     outputs:
       runners: ${{ steps.pick.outputs.runners }}
