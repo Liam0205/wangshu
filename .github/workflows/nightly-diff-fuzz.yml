@@ -199,7 +199,15 @@ jobs:
         # 210 + 35 + 35 = 280 -- which an earlier value of 280 consumed exactly, leaving zero room on a
         # HEALTHY run. Sizing off one retry was the same mistake as sizing off the median, one step out.
         # An audit found a real 315-min run under the old 45m value, so retries do occur in practice.
-        timeout-minutes: 320
+        #
+        # The constraint is TWO-SIDED, which took three rounds to state properly. A step bound must
+        #   (lower) exceed the worst legitimate cost -- 280 here, and 280 exactly was too tight; and
+        #   (upper) fire BEFORE the job cap, i.e. be under 350 minus whatever earlier steps consumed.
+        # About 40 min elapses before this step (install 1, rolling-seed 36, GC-stress 1, auto-mode 2), so
+        # 320 would trip at ~360 -- after the 350 job cap, making it unreachable and leaving a hang here to
+        # produce the same "cancelled, triage skipped, silent loss" outcome this whole change exists to
+        # prevent. The window is 280..310; 300 sits inside it.
+        timeout-minutes: 300
         run: |
           set -o pipefail
           ./scripts/go-fuzz.sh "${{ github.event.inputs.gofuzztime || '35m' }}" "${{ matrix.tags }}" 2>&1 | tee gofuzz.log
