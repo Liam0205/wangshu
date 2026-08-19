@@ -66,12 +66,28 @@ jobs:
       fail-fast: false # a build hitting divergence does not stop others from continuing
       matrix:
         include:
+          # native_fuzz_cap: the native go-fuzz step's bound, PER TIER, because two things differ.
+          #
+          # The legitimate worst case scales with the tier's target count (measured 4 / 5 / 6 target-runs,
+          # so 140 / 175 / 210 min at 35m, plus up to two per-target golang/go#75804 retries). And the room
+          # differs: every later step runs `if: always()`, so what must fit under the 350-minute job cap is
+          # prior + this bound + every later always() bound -- and p1 alone carries the oracle-diff step in
+          # that tail (80 + 15 + 10 = 105, against p3/p4's 25). A PR review caught that bounding this step
+          # alone still let the job cap fire first on p1, losing the triage that files the issue.
+          #
+          # p1: 38 + 195 + 105 = 338 < 350. 195 is under p1's 210 two-retry worst case, so a p1 run that
+          #     retries twice is indistinguishable from a hang -- accepted, because retries measured 9 in
+          #     ~450 jobs and never twice in one job, and the trade buys a guaranteed triage.
+          # p3/p4: 40 + 280 + 25 = 345 < 350, and 280 covers p4's 280 exactly.
           - variant: p1
             tags: ''
+            native_fuzz_cap: 195
           - variant: p3
             tags: 'wangshu_p3 wangshu_profile'
+            native_fuzz_cap: 280
           - variant: p4
             tags: 'wangshu_p4 wangshu_profile'
+            native_fuzz_cap: 280
     name: diff-fuzz (${{ matrix.variant }})
     runs-on: ubuntu-latest
     timeout-minutes: 350
@@ -213,7 +229,7 @@ jobs:
         # 320 would trip at ~360 -- after the 350 job cap, making it unreachable and leaving a hang here to
         # produce the same "cancelled, triage skipped, silent loss" outcome this whole change exists to
         # prevent. The window is 280..310; 300 sits inside it.
-        timeout-minutes: 300
+        timeout-minutes: ${{ matrix.native_fuzz_cap }}
         run: |
           set -o pipefail
           ./scripts/go-fuzz.sh "${{ github.event.inputs.gofuzztime || '35m' }}" "${{ matrix.tags }}" 2>&1 | tee gofuzz.log
@@ -232,8 +248,10 @@ jobs:
       # 350m job timeout and the p1 leg got cancelled silently).
       - name: oracle-diff go-fuzz long run (p1 vs embedded 5.1.5)
         if: always() && matrix.variant == 'p1'
-        # Single target (FuzzOracleDiff); bounded for the same reason as the step above.
-        timeout-minutes: 120
+        # 80, not 120: a single target (FuzzOracleDiff) at 35m with one retry is 70 minutes, so 120 was
+        # 50 minutes of slack -- and slack HERE is subtracted from what the native step before it may
+        # spend, because this step runs `if: always()` after it. See the chain note on that step.
+        timeout-minutes: 80
         run: |
           set -o pipefail
           CGO_ENABLED=1 ./scripts/go-fuzz.sh \
