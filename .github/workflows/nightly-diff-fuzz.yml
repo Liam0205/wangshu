@@ -30,8 +30,22 @@ on:
         description: 'random scripts (GC stress dual-mode)'
         default: '200000'
       gofuzztime:
-        description: 'go-fuzz time per target (4 targets)'
-        default: '45m'
+        # "per target", and there are SIX source-visible untagged targets, not four: the root package's
+        # FuzzCompileRun / FuzzAutoPromote / FuzzP4ForceAllPromote plus one each in internal/frontend/lex,
+        # internal/frontend/parse and internal/stdlib. FuzzOracleDiff is gated behind wangshu_oracle_cgo
+        # and runs in its own step. The stale "4" is why the step's cost was consistently underestimated.
+        description: 'go-fuzz time per target (6 untagged targets; FuzzOracleDiff is separate)'
+        # 35m, not 45m (2026-08-19). go-fuzz.sh runs EVERY source-visible target for the full
+        # fuzztime, so this value is multiplied by the target count: 45m measured 270 min on the p4
+        # leg, leaving the 350m job with ~38 min of margin, and three runs were killed by the job
+        # timeout in a week (2026-08-12 p4, 08-15 p4, 08-18 p1). 35m brings the leg to roughly 250 min
+        # and the margin to ~98 min.
+        #
+        # This is a real reduction in exploration -- about 22% less fuzzing per run -- chosen over
+        # trimming the differential steps because those are cheap in practice (rolling-seed 36 min,
+        # auto-mode 2 min) while this step is 87% of the job. An earlier plan to trim auto-mode from
+        # 150m to 90m would have saved nothing: its cap is a hang guard, and it has never come near it.
+        default: '35m'
 
 permissions:
   contents: read
@@ -68,6 +82,15 @@ jobs:
           go-version-file: go.mod
 
       - name: install lua 5.1.5 oracle (source build)
+        # Step-level bound, covering EVERY command here rather than one of them.
+        #
+        # The #236-#241 round bounded the curl inside fetch-lua-tarball.sh and left apt-get, make and
+        # check-oracle.sh unbounded in the same step -- scoped to the symptom instead of to the step. On
+        # 2026-08-18 the p1 leg sat 5h50m in this step and was killed by the JOB timeout, losing almost
+        # the whole run: rolling-seed and auto-mode were skipped and both go-fuzz steps never started.
+        # A step-level timeout turns that into a 12-minute failure, and it keeps holding when a command
+        # is added later, which a per-command wrapper would not.
+        timeout-minutes: 12
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq libreadline-dev
           # Bounded + retried + checksum-verified (#236-#241): a bare curl with no --max-time sat
@@ -145,9 +168,19 @@ jobs:
 
       - name: native go-fuzz long run (${{ matrix.variant }})
         if: always()
+        # This step is the job's real cost centre: go-fuzz.sh discovers targets by SOURCE SCAN and runs
+        # each for the full fuzztime, so 45m per target becomes ~270 min observed here, not 45 -- the
+        # script's own header already recorded this shape once ("the nightly p1 leg once blew past the
+        # 350m job timeout at 5x45m").
+        #
+        # The bound is sized to stop a HANG, not to make the step caps sum under the job cap. Those are
+        # different jobs: the JOB timeout is the budget, and a step bound exists so one wedged command
+        # cannot silently consume it. Sizing every step to sum under 350 would force cuts far deeper than
+        # the observed cost justifies.
+        timeout-minutes: 300
         run: |
           set -o pipefail
-          ./scripts/go-fuzz.sh "${{ github.event.inputs.gofuzztime || '45m' }}" "${{ matrix.tags }}" 2>&1 | tee gofuzz.log
+          ./scripts/go-fuzz.sh "${{ github.event.inputs.gofuzztime || '35m' }}" "${{ matrix.tags }}" 2>&1 | tee gofuzz.log
 
       # cgo oracle differential go-fuzz (p1 leg only): the embedded
       # official 5.1.5 diffs against the interpreter tier -- P1 is the
@@ -163,14 +196,17 @@ jobs:
       # 350m job timeout and the p1 leg got cancelled silently).
       - name: oracle-diff go-fuzz long run (p1 vs embedded 5.1.5)
         if: always() && matrix.variant == 'p1'
+        # Single target (FuzzOracleDiff); bounded for the same reason as the step above.
+        timeout-minutes: 120
         run: |
           set -o pipefail
           CGO_ENABLED=1 ./scripts/go-fuzz.sh \
-            "${{ github.event.inputs.gofuzztime || '45m' }}" \
+            "${{ github.event.inputs.gofuzztime || '35m' }}" \
             "wangshu_oracle_cgo" FuzzOracleDiff 2>&1 | tee oraclefuzz.log
 
       - name: upload logs and crash corpus
         if: always()
+        timeout-minutes: 15
         uses: actions/upload-artifact@v7
         with:
           name: nightly-fuzz-${{ matrix.variant }}-${{ github.run_id }}
@@ -186,6 +222,7 @@ jobs:
 
       - name: triage and file divergence issue
         if: failure()
+        timeout-minutes: 10
         env:
           GH_TOKEN: ${{ github.token }}
           SEED_BASE: ${{ steps.difffuzz.outputs.seed_base }}
