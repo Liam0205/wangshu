@@ -1,23 +1,11 @@
 ---
+description: 'nightly fuzz job 一周内被自己的 timeout-minutes 掐掉三次,两次真丢差分覆盖。两个问题我都先诊断错了,是量出来才纠正的。问题一:#236-#241
+  那轮我只给报错的那条 curl 加了限时,同一步里 apt-get / make / check-oracle.sh 三条邻居留在无界状态,08-18 p1 就在这一步卡了 5 小时 50 分;普查后发现无界步骤是三个不是一个,现在每个带
+  run: 的步骤都有 step 级 timeout-minutes,而不是逐条包 timeout —— 后者对以后新加的命令无效。问题二:我连推荐五轮的「auto-mode 150m 压到 90m」省不下任何时间(它只跑
+  2 分钟),真正的成本中心是 native go-fuzz(312 分钟里占 270、87%),而我从没量过它;270 = 6 个无 tag 目标 × 45m,而 workflow input 的 description
+  一直写着「4 targets」—— 这个过时计数就是成本被长期低估的原因。修法是 gofuzztime 45m 降到 35m,真的少约 22% 探索量。另外两条自我纠正:我连提四轮的「抬到 420」不可能(GitHub
+  单 job 硬上限 360),而「step 上限之和低于 360」这个框架本身是错的 —— job 超时才是预算,step 上限只是让一条卡死的命令不能吃掉它。四轮审计里前三轮各找出一个我的定值错误,而每次我都只修上一个反例指出的那一侧。'
 name: 2026-08-19-nightly-step-timeouts-and-budget
-description: >
-  nightly fuzz job 一周内被 job 超时掐掉三次(2026-08-12 p4、08-15 p4、08-18 p1),其中两次真丢了
-  覆盖。分支 `fix/nightly-step-timeouts-and-budget`,1 个 commit `9b61079`,只改了
-  `.github/workflows/nightly-diff-fuzz.yml`。**两个独立问题,而两个我都先诊断错了,是量出来才纠正
-  的**。问题一(作用域错):#236–#241 那轮我给取包脚本的 curl 加了超时,但装 oracle 那一步里还有
-  `apt-get`、`make`、`check-oracle.sh` 三条命令留在原地——我只框住了当时报错的那一条,不是那一整步;
-  08-18 那轮 p1 就在这一步卡了 5h50m 被掐掉,rolling-seed 与 auto-mode 被 skip、两个 go-fuzz 步骤
-  根本没启动。普查之后发现无界的步骤是三个不是一个(装 oracle、upload logs、triage)。问题二(量错了
-  成本中心):我连续五轮建议把 auto-mode 从 150m 压到 90m,实测这个建议省不下任何时间——auto-mode
-  只跑 2 分钟,150m 是从没接近过的挂死上限;真正的成本中心是 native go-fuzz 那一步,312 分钟的 job
-  里它占 270 分钟(87%),而我一直没量过它。270 分钟的原因是 `go-fuzz.sh` 按源码扫描发现目标、每个
-  目标跑满 fuzztime,无 tag 可见目标是 6 个不是 workflow input description 里写着的「4 targets」——
-  6 × 45m = 270(
-
-
-
-
-
 ---
 
 # 两个问题我都先诊断错了(2026-08-19,commit `9b61079`)
