@@ -82,12 +82,15 @@ jobs:
           - variant: p1
             tags: ''
             native_fuzz_cap: 195
+            native_fuzz_targets: 4
           - variant: p3
             tags: 'wangshu_p3 wangshu_profile'
             native_fuzz_cap: 280
+            native_fuzz_targets: 5
           - variant: p4
             tags: 'wangshu_p4 wangshu_profile'
             native_fuzz_cap: 280
+            native_fuzz_targets: 6
     name: diff-fuzz (${{ matrix.variant }})
     runs-on: ubuntu-latest
     timeout-minutes: 350
@@ -199,6 +202,54 @@ jobs:
           # matrix.tags != '' so a plain invocation is correct.
           WANGSHU_FUZZ_SEED_BASE=$SEED_BASE WANGSHU_FUZZ_N=$AUTO_ROUNDS \
             go test -tags "${{ matrix.tags }}" ./test/difftest/ -run 'TestAuto_RandomScripts' -timeout 150m 2>&1 | tee autodiff.log
+
+      # Fail LOUDLY when a manual gofuzztime cannot fit the step bound, instead of letting the bound
+      # truncate the sweep and lose coverage silently (review finding). The bound is fixed per tier while
+      # gofuzztime is a free-form input, so the two can disagree: dispatching 45m puts p4's six targets at
+      # 270 min base, and one #75804 retry then exceeds the 280 bound. A silent truncation here looks
+      # exactly like a healthy run that simply found nothing, which is the failure mode this whole branch
+      # is about.
+      - name: check the fuzz budget fits the step bound (${{ matrix.variant }})
+        if: always()
+        timeout-minutes: 5
+        env:
+          FUZZTIME: ${{ github.event.inputs.gofuzztime || '35m' }}
+          CAP: ${{ matrix.native_fuzz_cap }}
+          TARGETS: ${{ matrix.native_fuzz_targets }}
+        run: |
+          set -euo pipefail
+          # Accept only Nm / Nh / Ns so the arithmetic below cannot silently misread a unit.
+          case "$FUZZTIME" in
+            *m) mins="${FUZZTIME%m}" ;;
+            *h) mins=$(( ${FUZZTIME%h} * 60 )) ;;
+            *s) mins=$(( (${FUZZTIME%s} + 59) / 60 )) ;;
+            *)  echo "gofuzztime '$FUZZTIME' must end in s, m or h" >&2; exit 1 ;;
+          esac
+          # Two thresholds, because two different things can be wrong.
+          #
+          # FAIL threshold = one pass plus ONE retry. A retry is an observed, ordinary event (9 in ~450
+          # sampled jobs), so a budget that cannot absorb a single one is simply misconfigured: at 45m the
+          # p4 leg needs 315m against a 280 bound, and the truncation would look like a healthy run that
+          # found nothing.
+          #
+          # WORST = base plus two golang/go#75804 retries. p1's cap is deliberately BELOW its worst
+          # (140 base, 210 worst, 195 cap) because the p1 chain has to leave room for the oracle-diff,
+          # upload and triage steps that follow it under `if: always()`; a p1 run that retries twice is
+          # accepted as indistinguishable from a hang, since retries measured 9 in ~450 jobs and never
+          # twice in one job. So a short retry allowance is a WARNING, not a failure -- and a check that
+          # failed the default configuration would be worse than the truncation it replaces.
+          base=$(( mins * TARGETS ))
+          one=$(( base + mins ))
+          worst=$(( base + 2 * mins ))
+          echo "fuzztime=${FUZZTIME} (${mins}m) x ${TARGETS} targets: base ${base}m, worst ${worst}m, cap ${CAP}m"
+          if [ "$one" -gt "$CAP" ]; then
+            echo "::error::gofuzztime=${FUZZTIME} needs ${one}m for one pass over ${TARGETS} targets plus a single retry, above the ${CAP}m step bound."
+            echo "::error::A retry is a normal event here (measured 9 in ~450 jobs), so the sweep would be truncated and coverage lost silently. Use about $(( CAP / (TARGETS + 1) ))m, or raise native_fuzz_cap in the matrix and re-check the chain against the job cap."
+            exit 1
+          fi
+          if [ "$worst" -gt "$CAP" ]; then
+            echo "::warning::gofuzztime=${FUZZTIME} fits one pass (${base}m) but not two retries (${worst}m) within ${CAP}m; a double retry would be cut short. Accepted for this tier."
+          fi
 
       - name: native go-fuzz long run (${{ matrix.variant }})
         if: always()

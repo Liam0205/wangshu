@@ -8,7 +8,7 @@
 > 主要借鉴 [Liam0205/pineapple](https://github.com/Liam0205/pineapple) 的实践(同作者多语言
 > monorepo,hooks/CI/nightly-fuzz 体系成熟),并补强其四处已知缺口(经评审定稿):
 
-**每一个**步骤都有 step 级 `timeout-minutes`(含两个 `uses:` 步骤:checkout / setup-go 各 10):装 oracle 12、rolling-seed 170、GC-stress 75、auto-mode 170、native go-fuzz 按层 **195/280/280**、oracle-diff go-fuzz 120、upload 15、triage 10;job 上限 350、`gofuzztime` 35m。native go-fuzz 的上限**按层取值**(p1 195、p3/p4 280):后面的步骤都是 `if: always()`,所以要满足的是「前置 + 本步上限 + 后面每一步的上限 < job 上限」,而 p1 的尾巴含 oracle-diff(105)、p3/p4 只有 25。实测三层分别在 340 / 347 / 347 分钟,都在 350 以内。step 上限是**两侧**约束:既要盖过合法最坏情形(p4 是 6 × 35m 再加两次 #75804 重试 = 280),又要**在 job 上限之前触发**(这一步之前约 40 分钟已消耗,所以必须小于 310)—— 窗口是 280 到 310。
+**每一个**步骤都有 step 级 `timeout-minutes`(含两个 `uses:` 步骤:checkout / setup-go 各 10):装 oracle 12、rolling-seed 170、GC-stress 75、auto-mode 170、native go-fuzz 按层 **195/280/280**、oracle-diff go-fuzz 80、upload 15、triage 10;job 上限 350、`gofuzztime` 35m。native go-fuzz 的上限**按层取值**(p1 195、p3/p4 280):后面的步骤都是 `if: always()`,所以要满足的是「前置 + 本步上限 + 后面每一步的上限 < job 上限」,而 p1 的尾巴含 oracle-diff(105)、p3/p4 只有 25。实测三层分别在 340 / 347 / 347 分钟,都在 350 以内。step 上限是**两侧**约束:既要盖过合法最坏情形(p4 是 6 × 35m 再加两次 #75804 重试 = 280),又要**在 job 上限之前触发**(这一步之前约 40 分钟已消耗,所以必须小于 310)—— 窗口是 280 到 310。
 
 > **`-race` 进硬门禁、commit-msg 强制校验、Makefile 任务入口、nightly fuzz 自动开 issue**。
 > 完成时机:**M0(工程地基,先于 M1 arena)**——见 [00-overview](./p1-interpreter/00-overview.md) §2。
