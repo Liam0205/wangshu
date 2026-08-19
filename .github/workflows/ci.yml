@@ -134,8 +134,18 @@ jobs:
             echo "apt attempt ${attempt} failed or timed out; retrying" >&2
             sleep $(( attempt * 10 ))
           done
-          echo "::error::apt-get could not install lua5.1 after 3 bounded attempts (runner mirror trouble)"
-          exit 1
+          # Fall back to the source build rather than failing the run. The apt mirrors this image uses went
+          # down for over an hour while this change was in review, failing every bounded attempt on many
+          # jobs -- and lua5.1 here is a PREREQUISITE for the tests, not the thing under test, so an
+          # outage in it should not read as a product failure. scripts/fetch-lua-tarball.sh is already
+          # bounded, retried and checksum-verified (#236-#241), and the macOS legs have always built from
+          # source, so this path is exercised on every run rather than being untested emergency code.
+          echo "apt-get failed after 3 bounded attempts; falling back to the source build" >&2
+          sudo apt-get install -y -qq libreadline-dev || true
+          ./scripts/fetch-lua-tarball.sh
+          make -C lua-5.1.5 posix -j2
+          sudo cp lua-5.1.5/src/lua /usr/local/bin/lua5.1
+          lua5.1 -v
       - if: startsWith(matrix.os, 'macos') && steps.cache-lua51-test.outputs.cache-hit != 'true'
         # cache miss: download + build
         run: |
@@ -321,8 +331,18 @@ jobs:
             echo "apt attempt ${attempt} failed or timed out; retrying" >&2
             sleep $(( attempt * 10 ))
           done
-          echo "::error::apt-get could not install lua5.1 after 3 bounded attempts (runner mirror trouble)"
-          exit 1
+          # Fall back to the source build rather than failing the run. The apt mirrors this image uses went
+          # down for over an hour while this change was in review, failing every bounded attempt on many
+          # jobs -- and lua5.1 here is a PREREQUISITE for the tests, not the thing under test, so an
+          # outage in it should not read as a product failure. scripts/fetch-lua-tarball.sh is already
+          # bounded, retried and checksum-verified (#236-#241), and the macOS legs have always built from
+          # source, so this path is exercised on every run rather than being untested emergency code.
+          echo "apt-get failed after 3 bounded attempts; falling back to the source build" >&2
+          sudo apt-get install -y -qq libreadline-dev || true
+          ./scripts/fetch-lua-tarball.sh
+          make -C lua-5.1.5 posix -j2
+          sudo cp lua-5.1.5/src/lua /usr/local/bin/lua5.1
+          lua5.1 -v
       - if: startsWith(matrix.os, 'macos') && steps.cache-lua51-difftest.outputs.cache-hit != 'true'
         # cache miss: download + build (macOS homebrew deprecated lua@5.1 in 2024)
         run: |
