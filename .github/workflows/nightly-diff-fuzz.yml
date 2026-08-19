@@ -210,6 +210,7 @@ jobs:
       # exactly like a healthy run that simply found nothing, which is the failure mode this whole branch
       # is about.
       - name: check the fuzz budget fits the step bound (${{ matrix.variant }})
+        id: budgetcheck
         if: always()
         timeout-minutes: 5
         env:
@@ -252,7 +253,11 @@ jobs:
           fi
 
       - name: native go-fuzz long run (${{ matrix.variant }})
-        if: always()
+        # Gated on the budget check, not a bare always() (review finding). With always() the check could
+        # fail and this step would start regardless, so the check changed nothing: an over-budget dispatch
+        # still burned hours and still got truncated. A precheck that does not gate the thing it checks is
+        # decoration.
+        if: always() && steps.budgetcheck.outcome == 'success'
         # This step is the job's real cost centre: go-fuzz.sh discovers targets by SOURCE SCAN and runs
         # each for the full fuzztime, so 45m per target becomes ~270 min observed here, not 45 -- the
         # script's own header already recorded this shape once ("the nightly p1 leg once blew past the
@@ -298,7 +303,9 @@ jobs:
       # an unfiltered sweep re-runs all of them (5 x 45m blew past the
       # 350m job timeout and the p1 leg got cancelled silently).
       - name: oracle-diff go-fuzz long run (p1 vs embedded 5.1.5)
-        if: always() && matrix.variant == 'p1'
+        # Gated on the budget check too: this step runs the same go-fuzz.sh sweep, so an over-budget
+        # dispatch would be truncated here in exactly the same way.
+        if: always() && matrix.variant == 'p1' && steps.budgetcheck.outcome == 'success'
         # 80, not 120: a single target (FuzzOracleDiff) at 35m with one retry is 70 minutes, so 120 was
         # 50 minutes of slack -- and slack HERE is subtracted from what the native step before it may
         # spend, because this step runs `if: always()` after it. See the chain note on that step.
