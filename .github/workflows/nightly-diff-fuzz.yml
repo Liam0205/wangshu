@@ -76,8 +76,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 350
     steps:
+      # The `uses:` steps need bounds too. A hang in either still consumes the whole 350-minute job and
+      # takes the triage step with it -- the same outcome as an unbounded `run:`, and the reason the PR's
+      # claim of "every step" was not yet true (review finding). Checkout and toolchain setup take well
+      # under a minute normally; 10 leaves ample room for a slow cache or a registry hiccup.
       - uses: actions/checkout@v6
+        timeout-minutes: 10
       - uses: actions/setup-go@v6
+        timeout-minutes: 10
         with:
           go-version-file: go.mod
 
