@@ -177,7 +177,14 @@ jobs:
         # different jobs: the JOB timeout is the budget, and a step bound exists so one wedged command
         # cannot silently consume it. Sizing every step to sum under 350 would force cuts far deeper than
         # the observed cost justifies.
-        timeout-minutes: 300
+        #
+        # 280 = the worst measured leg plus one retry, plus slack. Target counts differ per tier
+        # (measured: p1 4, p3 5, p4 6 target-runs), so at 35m the legs cost about 140 / 175 / 210 min, and
+        # a single golang/go#75804 spurious-deadline retry -- which go-fuzz.sh handles by re-running that
+        # target once -- adds one more fuzztime, i.e. 245 min worst case on p4. An audit found a real run
+        # at 315 min under the old 45m value, so a bound must clear the retry case rather than the median:
+        # 300 would have been inside the range that actually occurs.
+        timeout-minutes: 280
         run: |
           set -o pipefail
           ./scripts/go-fuzz.sh "${{ github.event.inputs.gofuzztime || '35m' }}" "${{ matrix.tags }}" 2>&1 | tee gofuzz.log
