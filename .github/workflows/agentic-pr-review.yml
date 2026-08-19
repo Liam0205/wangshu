@@ -21,10 +21,10 @@ permissions:
 
 jobs:
   pr-review:
-    # Hang guard (2026-08-19): this workflow had no timeout anywhere, and a CI run hung ~45 min on
-    # `apt-get` while the nightly fix for that same unbounded-step failure was under review. Sized
-    # well above observed cost, so it only fires on a wedge.
-    timeout-minutes: 60
+    # NOTE: no timeout-minutes here -- GitHub rejects it on a job that calls a reusable
+    # workflow with `uses:`. Adding one broke this workflow for four commits: the run failed
+    # before starting any job, so the PR review silently stopped running while I read the
+    # older APPROVE as still current. The called workflow owns its own limits.
     uses: Lightspeed-Intelligence/agentic-workflow-template/.github/workflows/pr-review.yml@main
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
