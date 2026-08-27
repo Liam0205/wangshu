@@ -82,6 +82,10 @@ func TestIndexStoreLineOnEveryPath(t *testing.T) {
 		// FIRST is the case that catches per-target lines: PUC puts both stores on 2 here.
 		{"multi-target", "A\n.x, b = 1, 2", bytecode.SETTABLE, 2},
 		{"multi-target, unsplit first", "local t={} B.y, t\n.x = 1, 2", bytecode.SETTABLE, 2},
+		// A multi-line RHS extends the statement, so the stores move with it. max(Pos()) over the
+		// sub-expressions cannot see this -- Pos() is a call's START line -- so the line comes from the
+		// parser's lastLine (review finding). luac5.1 puts the SETTABLE on 4 here.
+		{"multi-line RHS", "A\n.x, b = 1, f(\n2\n)", bytecode.SETTABLE, 4},
 		// stmtFunc: refixed to the `function` keyword's line, as PUC's luaK_fixline does.
 		{"function sugar", "function\nA\n.b() end", bytecode.SETTABLE, 1},
 		// storeVar's single-target path, for completeness on the same assertion style.

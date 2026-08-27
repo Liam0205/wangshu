@@ -160,18 +160,15 @@ func (fs *funcState) stmtAssign(s *ast.AssignStmt) {
 		tableReg  int
 		keyRK     int
 	}
-	// storeLine mirrors PUC's ls->lastline at the point the stores are emitted: the last line the whole
-	// statement extends to, shared by every store rather than taken per target (see the SETTABLE below).
+	// storeLine is PUC's ls->lastline at the point the stores are emitted: the last line the statement extends
+	// to, shared by every store rather than taken per target (see the SETTABLE below).
+	//
+	// It comes from the parser's own lastLine, not from max(Pos()) over the sub-expressions: Pos() gives a
+	// call's START line, so `A<nl>.x, b = 1, f(<nl>2<nl>)` extends to line 4 while max(Pos()) saw only 2, and
+	// PUC reports 4 (review finding).
 	storeLine := s.Line
-	for _, e := range s.Targets {
-		if p := e.Pos(); p > storeLine {
-			storeLine = p
-		}
-	}
-	for _, e := range s.Exprs {
-		if p := e.Pos(); p > storeLine {
-			storeLine = p
-		}
+	if s.EndLine > storeLine {
+		storeLine = s.EndLine
 	}
 	tgts := make([]target, len(s.Targets))
 	for i, t := range s.Targets {

@@ -203,7 +203,12 @@ type LocalFuncStmt struct {
 	Fn   *FuncExpr
 }
 type AssignStmt struct {
-	Line    int32
+	Line int32
+	// EndLine is the line of the last token the statement consumed, mirroring PUC's ls->lastline at the point
+	// the stores are emitted (#248). Needed because a multi-line RHS moves every store's line, and Pos() on
+	// the sub-expressions only gives their START lines -- `A<nl>.x, b = 1, f(<nl>2<nl>)` extends to line 4
+	// while max(Pos()) sees only 2. Zero means "unset"; callers fall back to Line.
+	EndLine int32
 	Targets []Expr // each item must be a NameExpr or IndexExpr (parser-validated)
 	Exprs   []Expr
 }
