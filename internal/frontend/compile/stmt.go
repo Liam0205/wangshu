@@ -222,9 +222,13 @@ func (fs *funcState) stmtAssign(s *ast.AssignStmt) {
 			// lines put B.y's on 1 and misreported an error raised on it. Verified with `luac5.1 -p -l`.
 			fs.emitABC(storeLine, bytecode.SETTABLE, t.tableReg, t.keyRK, src)
 		case t.isGlobal:
-			fs.emitABx(s.Line, bytecode.SETGLOBAL, src, t.regOrK)
+			// storeLine here too: PUC's lastline applies to EVERY store in the statement, not just SETTABLE.
+			// `b, d = f(1,<nl>2), 3` puts both SETGLOBAL on line 2. These instructions cannot raise on their
+			// own, so the difference is not visible in an error message today -- it is fixed for consistency,
+			// because leaving one branch on a different rule is how the next reader reintroduces the bug.
+			fs.emitABx(storeLine, bytecode.SETGLOBAL, src, t.regOrK)
 		case t.isUpval:
-			fs.emitABC(s.Line, bytecode.SETUPVAL, src, t.regOrK, 0)
+			fs.emitABC(storeLine, bytecode.SETUPVAL, src, t.regOrK, 0)
 		}
 	}
 	fs.freereg = fs.nactvar
@@ -232,6 +236,15 @@ func (fs *funcState) stmtAssign(s *ast.AssignStmt) {
 
 // storeVar stores the rhs value "directly" into the lhs variable (single-assignment fast path).
 func (fs *funcState) storeVar(line int32, lhs, rhs ast.Expr) {
+	// KNOWN GAP, deliberately not papered over: PUC emits this store at ls->lastline, which its LEXER advances
+	// token by token, so a multi-line RHS moves the store's line -- `b = f(1,<nl>2)` puts SETGLOBAL on line 2
+	// while we put it on 1. Our AST has no END position for a call, so max(Pos()) over lhs/rhs cannot see the
+	// closing paren; matching this faithfully needs an end-line on the AST, which is wider than #248.
+	//
+	// It is unobservable today: SETGLOBAL/SETUPVAL/MOVE cannot raise, so no error message or traceback line
+	// depends on it -- verified including a __newindex store, which CAN raise and does match. An earlier
+	// version of this function computed a storeLine from Pos() and claimed to fix this; it did not, because
+	// Pos() returns a call's start. Recording the gap beats shipping a change whose comment overstates it.
 	switch tn := lhs.(type) {
 	case *ast.NameExpr:
 		ne := fs.resolveName(tn.Line, tn.Name)
