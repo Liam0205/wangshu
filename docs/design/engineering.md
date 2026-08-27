@@ -83,6 +83,8 @@ tidy:
 
 **升级到 1.27.0 之后这个条件重试仍然保留**(#180 只做「升 go.mod + 改本节描述」这一步)。理由:它是目前**唯一**区分「真 crasher」与「工具链竞态」的判据,删掉之后一旦判错,代价是**真 bug 被当成噪声重试掉**;而它的触发频率本来就很低(约 450 个 job 里 9 次),所以**本轮那次 30 秒级 fuzz smoke 报 0 次重试并不构成证据** —— 在原来那个频率下,一次这么短的 smoke 本来也极可能是 0 次,这个观察在「修复生效」与「修复没生效」两个假设下给出的是同一个结果。修复真的生效之后,这个数字应当在 nightly 上自然归零 —— **等实测归零再删,就有数据背书而不是靠推断**,这也是 #180 那条「评估并删除」的正确执行顺序(评估的结论是证据还不够,于是这一轮只做升级与文档同步)。方法论见 `llmdoc/guides/prove-the-path-under-test.md` §4.6a;核实上游是否真的修了那一步见 `llmdoc/guides/design-claims-vs-codebase-physics.md` §5.1。
 
+**补一条审计指出、而我原先的理由里漏掉的**:这个重试的判据钉在**症状**上(输出含 deadline 字样且无 crasher 落盘),而不是钉在 #75804 这个具体成因上。所以它同时覆盖**任何**「产生无 crasher 的 deadline 失败」的机制,并不是 #75804 修好之后就纯属多余。这也削弱了「nightly 归零即可删」这个触发条件 —— 归零只说明 #75804 那一条路没再触发,不等于这类症状不会从别处来。删它之前还要多问一句:还有没有别的机制会产生同样的症状。
+
 另一类 wall-clock 相关 false alarm 来自 seed 本身:
 
 **纪律**:fuzz seed 不应包含「靠 `SetStepBudget` 兜底的近无限循环」(如 `while true do end` / `for i = 1, 1e9 do end`)——`SetStepBudget` 的 budget 计费按指令数,跟 fuzz 框架的 wall-clock 不同步。当解释器跑完 budget 的 wall-clock 量级接近 `-fuzztime`(秒级到十秒级)时,CI runner 慢一点就触发 false alarm。
