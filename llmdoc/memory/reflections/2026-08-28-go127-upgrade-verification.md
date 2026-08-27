@@ -2,7 +2,7 @@
 name: 2026-08-28-go127-upgrade-verification
 description: >
   issue #180 是一个「等上游修复发布后再升级」的 chore，阻塞条件写得很具体：Go 1.27 正式发布，
-  且确认包含 golang/go#75804 修复。分支 `chore/180-go127-upgrade`，1 个 commit `d9c3cf6`，
+  且确认包含 golang/go#75804 修复。分支 `chore/180-go127-upgrade`，多个 commit(数目不在这里写死 —— 这个数字已经被改过四次,每次修正它本身又多一个 commit,是个自我推翻的写法;要准确数目用 `git log --oneline origin/master..HEAD | wc -l`) `d9c3cf6`，
   实际改了 `go.mod`（1.26.2 → 1.27.0）与 `docs/design/engineering.md` §1.1，产品代码零改动。
   **本轮的重点是怎么确认「包含」这件事**：不看发布说明，改读被安装的那份工具链源码 ——
   `$GOROOT/src/internal/fuzz/fuzz.go` 的抑制检查现在是
@@ -29,11 +29,11 @@ metadata:
 
 > 范围：issue #180（chore，Go 1.27 正式升级与 fuzz deadline 文档同步），分支
 > `chore/180-go127-upgrade`。**这段范围说明在写下时就是错的,保留并更正,因为它本身是一个实例**:
-> 它说「1 个 commit、`scripts/go-fuzz.sh` 全部零改动」,而添加这篇反思的那个 commit(`ab17328`)
+> 它说「多个 commit(数目不在这里写死 —— 这个数字已经被改过四次,每次修正它本身又多一个 commit,是个自我推翻的写法;要准确数目用 `git log --oneline origin/master..HEAD | wc -l`)、`scripts/go-fuzz.sh` 全部零改动」,而添加这篇反思的那个 commit(`ab17328`)
 > 同时就改了 `go-fuzz.sh` 里那段「上游修复未合入」的注释。写范围说明的时候我照的是**打算改什么**,
 > 不是**实际改了什么** —— 而一个来查「那句过期的 CL 774140 到底修没修」的人,会被这句话告知没修。
 >
-> 实际范围(共 4 个 commit):`go.mod` 1.26.2 → 1.27.0;`benchmarks/` 与 `benchmarks/pineapple/`
+> 实际范围(共 多个 commit(数目不在这里写死 —— 这个数字已经被改过四次,每次修正它本身又多一个 commit,是个自我推翻的写法;要准确数目用 `git log --oneline origin/master..HEAD | wc -l`)):`go.mod` 1.26.2 → 1.27.0;`benchmarks/` 与 `benchmarks/pineapple/`
 > 两个 `replace` 根模块的子模块一并跟上(审计发现漏了会让 CI 挂);
 > `docs/design/engineering.md` §1.1、`scripts/go-fuzz.sh` 的上游状态注释、两个 README 的
 > 「Go 1.25+」、`06-backends.md` 的 go.mod 引用与那个从未实现的版本矩阵,全部按实际状态更正。
@@ -142,7 +142,7 @@ if err == ctx.Err() || err == fuzzCtx.Err() || isInterruptError(err) {
   坏的那一侧：**真 bug 被当成噪声重试掉**；
 - 它的触发频率本来就低 —— 约 450 个 job 里 9 次。一次 30 秒 smoke 跑出 0 次重试，**不足以
   证明**修复生效，因为在原来那个频率下，一次这么短的 smoke 本来就极可能是 0 次；
-- 修复真的生效之后，这个数字应当在 nightly 上自然归零(归零只是**必要条件之一**:判据钉在症状上,归零只说明那一条成因停了;还要确认没有别的机制会产生同样症状)(归零只是**必要条件之一**:判据钉在症状上,归零只说明那一条成因停了;还要确认没有别的机制会产生同样症状)。**等实测归零再删，就有数据背书而不是
+- 修复真的生效之后，这个数字应当在 nightly 上自然归零(归零只是**必要条件之一**:判据钉在症状上,归零只说明那一条成因停了;还要确认没有别的机制会产生同样症状)。**等实测归零再删，就有数据背书而不是
   靠推断** —— 这也是 #180 那条「评估并删除」的正确执行顺序：先评估，评估结论是证据还不够，
   于是这一轮只做「升 go.mod + 改文档描述」。
 
