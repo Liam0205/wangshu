@@ -159,6 +159,7 @@ func (fs *funcState) stmtAssign(s *ast.AssignStmt) {
 		regOrK    int
 		tableReg  int
 		keyRK     int
+		opLine    int32 // the indexing operator's line, for the SETTABLE (#248)
 	}
 	tgts := make([]target, len(s.Targets))
 	for i, t := range s.Targets {
@@ -174,11 +175,15 @@ func (fs *funcState) stmtAssign(s *ast.AssignStmt) {
 				tgts[i] = target{isGlobal: true, regOrK: ne.info}
 			}
 		case *ast.IndexExpr:
+			// Object and key at their OWN lines, and the SETTABLE at the operator's line (#248). This is the
+			// assignment-target twin of exprIndex: `A<newline>.x = 1` reported the line A is on, while PUC
+			// reports the operator's line, because that is where the faulting SETTABLE is. The #248 fix only
+			// touched exprIndex, so this path kept the bug -- an audit found it.
 			obj := fs.expr(tn.Obj)
-			tableReg := fs.exp2AnyReg(tn.Line, &obj)
+			tableReg := fs.exp2AnyReg(tn.Obj.Pos(), &obj)
 			key := fs.expr(tn.Key)
-			rk := fs.exp2RK(tn.Line, &key)
-			tgts[i] = target{isIndexed: true, tableReg: tableReg, keyRK: rk}
+			rk := fs.exp2RK(tn.Key.Pos(), &key)
+			tgts[i] = target{isIndexed: true, tableReg: tableReg, keyRK: rk, opLine: tn.Line}
 		default:
 			raise(fs, s.Line, "syntax error")
 		}
@@ -196,7 +201,9 @@ func (fs *funcState) stmtAssign(s *ast.AssignStmt) {
 				fs.emitABC(s.Line, bytecode.MOVE, t.regOrK, src, 0)
 			}
 		case t.isIndexed:
-			fs.emitABC(s.Line, bytecode.SETTABLE, t.tableReg, t.keyRK, src)
+			// The operator's line, not the statement's (#248): for `A<newline>.x = 1` the statement starts on
+			// line 1 while the faulting SETTABLE belongs to line 2.
+			fs.emitABC(t.opLine, bytecode.SETTABLE, t.tableReg, t.keyRK, src)
 		case t.isGlobal:
 			fs.emitABx(s.Line, bytecode.SETGLOBAL, src, t.regOrK)
 		case t.isUpval:
@@ -223,13 +230,15 @@ func (fs *funcState) storeVar(line int32, lhs, rhs ast.Expr) {
 			fs.emitABx(line, bytecode.SETGLOBAL, r, ne.info)
 		}
 	case *ast.IndexExpr:
+		// Same as the multi-target path above (#248): object and key at their own lines, SETTABLE at the
+		// indexing operator's line rather than at the statement's line.
 		obj := fs.expr(tn.Obj)
-		tableReg := fs.exp2AnyReg(tn.Line, &obj)
+		tableReg := fs.exp2AnyReg(tn.Obj.Pos(), &obj)
 		key := fs.expr(tn.Key)
-		rkK := fs.exp2RK(tn.Line, &key)
+		rkK := fs.exp2RK(tn.Key.Pos(), &key)
 		re := fs.expr(rhs)
 		rkV := fs.exp2RK(line, &re)
-		fs.emitABC(line, bytecode.SETTABLE, tableReg, rkK, rkV)
+		fs.emitABC(tn.Line, bytecode.SETTABLE, tableReg, rkK, rkV)
 	default:
 		raise(fs, line, "syntax error")
 	}
