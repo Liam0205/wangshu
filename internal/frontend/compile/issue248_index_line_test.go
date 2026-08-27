@@ -3,6 +3,8 @@ package compile
 import (
 	"testing"
 
+	"github.com/Liam0205/wangshu/internal/bytecode"
+
 	"github.com/Liam0205/wangshu/internal/frontend/lex"
 	"github.com/Liam0205/wangshu/internal/frontend/parse"
 )
@@ -54,6 +56,56 @@ func TestIndexLinesAcrossNewline(t *testing.T) {
 			if got[i] != tc.want[i] {
 				t.Errorf("%s: pc=%d line=%d, want %d (full: %v)", tc.name, i, got[i], tc.want[i], got)
 			}
+		}
+	}
+}
+
+// TestIndexStoreLineOnEveryPath pins the line of the STORE instruction on the paths the table-based test
+// above cannot cover, because their surrounding instruction order differs from PUC's for reasons unrelated
+// to #248 (PUC emits SETGLOBAL before SETTABLE in a multi-assignment, and puts CLOSURE on its own line).
+//
+// Asserting the whole table there would encode those incidental differences as if they were the property
+// under test. What actually governs the error message is the line of the instruction that faults, so that is
+// what is checked here -- one case per code path, since the first version of this test used only
+// single-target assignments and stayed green when the multi-target half was reverted.
+//
+// Expected values were taken from `luac5.1 -p -l` on the same sources.
+func TestIndexStoreLineOnEveryPath(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		src      string
+		op       bytecode.OpCode
+		wantLine int32
+	}{
+		// stmtAssign's multi-target loop: SETTABLE on the indexing operator's line.
+		{"multi-target", "A\n.x, b = 1, 2", bytecode.SETTABLE, 2},
+		// stmtFunc: refixed to the `function` keyword's line, as PUC's luaK_fixline does.
+		{"function sugar", "function\nA\n.b() end", bytecode.SETTABLE, 1},
+		// storeVar's single-target path, for completeness on the same assertion style.
+		{"single target", "A\n.x = 1", bytecode.SETTABLE, 2},
+	} {
+		block, err := parse.Parse(lex.New([]byte(tc.src), "z"), "z")
+		if err != nil {
+			t.Fatalf("%s: parse: %v", tc.name, err)
+		}
+		mainID, protos, err := Compile(block, "z")
+		if err != nil {
+			t.Fatalf("%s: compile: %v", tc.name, err)
+		}
+		p := protos[mainID]
+		found := false
+		for pc, ins := range p.Code {
+			if bytecode.Op(ins) != tc.op {
+				continue
+			}
+			found = true
+			if p.LineInfo[pc] != tc.wantLine {
+				t.Errorf("%s: %v at pc=%d has line %d, want %d (lines %v)",
+					tc.name, tc.op, pc, p.LineInfo[pc], tc.wantLine, p.LineInfo)
+			}
+		}
+		if !found {
+			t.Errorf("%s: no %v emitted (lines %v)", tc.name, tc.op, p.LineInfo)
 		}
 	}
 }
