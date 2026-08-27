@@ -1,6 +1,6 @@
 module github.com/Liam0205/wangshu/benchmarks
 
-go 1.26.2
+go 1.27.0
 
 require (
 	github.com/Liam0205/wangshu v0.0.0
