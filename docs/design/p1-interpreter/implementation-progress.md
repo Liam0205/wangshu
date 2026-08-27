@@ -432,6 +432,28 @@
 
 - 五条判据落 `llmdoc/guides/unreproducible-crasher-triage.md`「给一条报错的命令加超时」与「job 超时  与 step 超时」两节、`llmdoc/guides/design-claims-vs-codebase-physics.md` §3.1(优化建议先量成本  分布)与 §5(陈旧计数);过程反思见  `llmdoc/memory/reflections/2026-08-19-nightly-step-timeouts-and-budget.md`。
 
+- **索引表达式跨行时报错行号钉错,两处独立错误各修一处(2026-08-27,#248 一轮,`1693a69`)**:nightly
+  开出的 p1 `FuzzOracleDiff` crasher,seed 带协程但**最小化之后协程是噪声**——剥掉协程与 `pcall` 之后
+  `print(pcall(function() return A\n.A end))` 一样分歧,关键写法是**索引运算符与对象/键之间隔着换行**
+  (`A\n.x`)。版本核对干净,失败 run 的 headSha 正好就是当时的 master,当前 HEAD 重放确实复现。
+
+  | 项 | 落点 | 结论与要点 |
+  |---|---|---|
+  | 分歧是行号,不是消息 | — | oracle 报 `:2:`、望舒报 `:1:`,消息本体一致(`attempt to index global 'A' (a nil value)`);真 `lua5.1` 二进制同样报 `:2:` |
+  | 根因一:对象被盖上运算符的行 | `internal/frontend/compile/codegen.go::exprIndex` | 把对象交给 `exp2AnyReg(e.Line, &obj)`,而 `e.Line` 是索引运算符的行,延迟加载的对象(GETGLOBAL/GETTABLE)因此被盖上运算符的行。改用 `e.Obj.Pos()`(键用 `e.Key.Pos()`) |
+  | 根因二:GETTABLE 没有自己的行 | `internal/frontend/compile/expdesc.go` | `EIndexed` 这个 `expDesc` 不带行号,它的 GETTABLE 在后续任意一次 `dischargeVars` 才真正发射,取的是「discharge 那一刻调用方传入的行」——对 `local v = A\n.x` 就是 `LocalStmt` 所在行(行 1)而不是运算符自己的行(行 2)。加 `opLine int32` 字段,GETTABLE 优先取它 |
+  | 两处任一单独修复都不够 | — | 修前 dump 出的 `LineInfo` 是 `pc0 GETGLOBAL line=2、pc1 GETTABLE line=1`——两条指令行号都不对且方向相反;只修一处会让另一条指令继续错 |
+  | 既有测试为什么长期假绿 | `internal/frontend/parse/parser_test.go::TestIndexExprLineIsOperatorLine` | 用局部变量做对象——局部变量已经在寄存器里,`exprIndex` 不发射任何指令、GETTABLE 立即 discharge,两处错误在这条路径上都不可能出现。新测试 `issue248_index_line_test.go::TestIndexLinesAcrossNewline` 改用全局(触发延迟加载)并核对整张 `LineInfo` 表 |
+
+  三条判据:①**位置/行号类测试的载体必须触发延迟加载**——判据是「这个写法会不会让编译器发射我关心
+  的那条指令」,不发射就测不到([[prove-the-path-under-test]] §2.1);②**一处最终症状可能由两处独立
+  错误叠加**——改完先核对整张中间数据结构(本例是 `LineInfo`),不能只看错误消息变没变
+  ([[cross-backend-semantic-fix-sweep]]「一个症状可能是同一子系统内两处独立错误叠加」节);③**最小化
+  要先剥掉「看起来相关」的外壳**——seed 里的协程是噪声,逐个删外层构造、每删一次重跑,别对着 seed 的
+  原始形式找因果([[unreproducible-crasher-triage]])。落点 [09](./09-errors-pcall.md) §3.5.2、
+  [04](./04-frontend-parser-codegen.md) §5.2.1。过程反思见
+  `llmdoc/memory/reflections/2026-08-27-issue248-index-line-across-newline.md`。
+
 ## 相关
 
 [00-overview](./00-overview.md) · [../engineering](../engineering.md) ·

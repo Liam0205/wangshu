@@ -419,6 +419,35 @@ lua5.1 报第 **2** 行(`()` 所在的那一行),而 `internal/frontend/parse/ex
 **判据**:一个 AST 节点的 `Line` 该取哪个 token,要按参照实现在**哪一步**记录行号来定,不能默认取
 「这个节点从哪里开始」;跨行写法是唯一能区分两者的输入,所以行号类用例必须含跨行形式。
 
+#### 3.5.2 索引表达式的 GETTABLE 记的是索引运算符那一行,不是表达式起始那一行(#248,2026-08-27)
+
+与 §3.5.1 同一族问题(编译期给哪条指令记哪一行),换了一个节点:`t[k]`/`t.field`。
+
+`A\n.x` 里 lua5.1 报第 **2** 行(`.x` 所在的那一行,GETTABLE 出错的那一行),而望舒原先报第 1 行——
+`internal/frontend/compile/codegen.go::exprIndex` 把对象的物化行(`exp2AnyReg`)与 GETTABLE 的行都
+错误地取成了同一个来源。**这次是两处独立错误**,而不是像 §3.5.1 那样一处错误喂了多个 codegen 点:
+
+1. `exprIndex` 把**对象**交给 `exp2AnyReg(e.Line, &obj)` 时传了索引运算符的行(`e.Line`),而
+   `e.Line` 该给的是 GETTABLE,不是对象自己的加载指令。延迟加载的对象(全局的 GETGLOBAL、另一层
+   索引的 GETTABLE)因此被盖上了运算符的行,应改用 `e.Obj.Pos()`(键用 `e.Key.Pos()`)。
+2. `EIndexed` 这个 `expdesc` 本身**不带行号**,它对应的 GETTABLE 要等到后续某次 `dischargeVars`
+   才真正发射,取的是「discharge 那一刻调用方传入的行」——对 `local v = A\n.x`,discharge 由
+   `LocalStmt` 触发,取到的是行 1,而 GETTABLE 该记的是运算符自己的行(行 2)。`expdesc` 因此增加
+   `opLine int32` 字段(§4 `expdesc` 定义同步增补),`dischargeVars` 发射 GETTABLE 时优先取
+   `e.opLine`。
+
+**只有对象需要延迟加载时才有差别**:局部变量做对象时 `exprIndex` 不发射任何指令、GETTABLE 立即
+discharge,两处错误都不可能出现在这条路径上——这正是既有测试 `TestIndexExprLineIsOperatorLine`
+(用局部变量,`internal/frontend/parse/parser_test.go`)在两个 bug 都存在期间一直是绿的原因。新测试
+`internal/frontend/compile/issue248_index_line_test.go::TestIndexLinesAcrossNewline` 改用全局做
+对象、并核对整张 `LineInfo` 表(而不是单条),因为两处错误分别体现在两条不同的指令上、方向相反,
+只看最终报错的那一行看不出「反了」这件事。
+
+**判据**:一个「行号/位置」类测试必须用会触发**延迟加载**的被测对象;判据是「这个写法会不会让编译器
+发射我关心的那条指令」,不发射就测不到,见 [[prove-the-path-under-test]] §2.1。一处最终症状可能由
+两处独立错误叠加,少修一处仍然不对,判据是改完先核对整张 `LineInfo` 表,不是只看错误消息变没变,见
+[[cross-backend-semantic-fix-sweep]]「一个症状可能是同一子系统内两处独立错误叠加」节。
+
 ---
 
 ## 4. `assert(v, message, ...)` —— 裸 message,不加位置
