@@ -482,6 +482,17 @@ GETTABLE 要等到这个 `expdesc` 被后续某个 `dischargeVars` 调用时才�
 `opLine` 字段,在 `exprIndex` 里存运算符的行,`dischargeVars` 发射 GETTABLE 时优先取 `e.opLine`
 (为 0 则退回调用方传入的行,兼容不涉及索引的其他 `expdesc` kind)。
 
+**四处代码路径,而我是一轮审计发现一处的** —— 这一点比结论更值得记:
+
+| 路径 | 位置 | 修法 |
+|---|---|---|
+| rvalue 读取 | `codegen.go` `exprIndex` | 对象/键用 `.Pos()`,GETTABLE 用运算符行(expDesc 新增 `opLine`) |
+| 单目标赋值 | `stmt.go` `storeVar` | 同上,SETTABLE 用 `tn.Line` |
+| 多目标赋值 | `stmt.go` `stmtAssign` | **所有** store 共用一个行号 = 语句延伸到的最后一行(PUC 的 `ls->lastline`),**不是**各目标自己的运算符行 |
+| `function a.b() end` | `stmt.go` `stmtFunc` | 补上 PUC `funcstat` 末尾的 `luaK_fixline`,把最后一条指令改回 `function` 关键字那一行 |
+
+多目标那一条我第一版写成「各目标用自己的运算符行」,而 `luac5.1 -p -l` 证明 PUC 是所有 store 共用一行:`B.y, t<换行>.x = 1, 2` 里两条 SETTABLE 都在第 2 行,包括运算符在第 1 行的 `B.y`。判据:改行号归属这类事情,以 `luac5.1 -p -l` 的实际输出为准,而且要构造**两种规则会给出不同答案**的写法(这里是把未跨行的目标放在前面)—— 否则两种规则在你试的例子上恰好一致,测试也就证明不了什么。
+
 **一个局部变量做对象时,这两条规则都不会被触发**:局部变量已经在寄存器里,`exprIndex` 对它**不发射
 任何指令**、GETTABLE 立即以调用方给的行发射(discharge 与 emit 是同一步)。这正是为什么直接用局部
 变量写的行号测试测不出这两处的问题——被测的两条指令(GETGLOBAL 的延迟加载 / GETTABLE 的延迟
