@@ -381,7 +381,8 @@ func (p *Parser) parseExprStmt() (ast.Stmt, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &ast.AssignStmt{Line: line, Targets: targets, Exprs: exprs}, nil
+		// p.lastLine IS the reference ls->lastline (see its declaration), which is what PUC uses here.
+		return &ast.AssignStmt{Line: line, EndLine: p.lastLine, Targets: targets, Exprs: exprs}, nil
 	}
 	// call statement: first must be a Call/MethodCall.
 	switch first.(type) {
