@@ -386,7 +386,7 @@ for i := 0; i < 1000; i++ {
 
 Issue 与 PR 都欢迎。基本步骤：
 
-**开发环境**：Go 1.25+，Linux/amd64、Linux/arm64 或 macOS/arm64（其他 GOOS/GOARCH 组合按纯 Go stub 编译过但未真跑测试）。可选依赖：`lua5.1`（官方 oracle，差分测试用；`apt install lua5.1` 或源码编译 5.1.5）、`golangci-lint`（lint）。
+**开发环境**：Go 1.27+（`go.mod` 的 `go` 指令是 `1.27.0`，更早的工具链会直接拒绝构建；升到 1.27.0 的原因见 [engineering.md §1.1](docs/design/engineering.md)），Linux/amd64、Linux/arm64 或 macOS/arm64（其他 GOOS/GOARCH 组合按纯 Go stub 编译过但未真跑测试）。可选依赖：`lua5.1`（官方 oracle，差分测试用；`apt install lua5.1` 或源码编译 5.1.5）、`golangci-lint`（lint）。
 
 **常用 make 目标**：
 

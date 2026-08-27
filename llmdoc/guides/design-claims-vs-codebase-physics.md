@@ -1,7 +1,7 @@
 # Guide:设计稿主张须对本码库 physics 重新验证
 
-> 适用:把设计稿热路径上的抽象记号(`(call $x)`)、固定 token(base/指针/句柄/视图)、或成本主张照搬到实现之前——尤其每指令必经的快路径、跨层/跨调用存活的值。**或处理「设计稿/task 描述/stub 注释承诺/外部依赖现状」类前序快照在事实变更后失效**(§5「时间维度」)。**或脚本/工具链/包依赖在跨 OS / shell / runtime 版本物理环境间静默挂**(§6「空间维度」)。**或给一个新对象类型写分配路径时**(§4.1,同族分配器共有的每一步都是契约,漏一步的症状离原因很远)。P3 翻译全程复发,P2 编译层同理,P4 method-JIT 检查翻面期同理,CI 矩阵扩平台时同理。
-> 来源:`memory/reflections/2026-06-13-issue8-boundary-cost-round.md`(成本归类)+ `memory/reflections/2026-06-14-p3-pw5-table-ic-round.md`(边界成本预算)+ `memory/reflections/2026-06-14-p3-pw6-crosslayer-call-round.md`(段重定位 UAF,§2 第一实例)+ `2026-06-14-p3-pw7-pw4b-closure-tforloop-round.md`(难点过期)+ `2026-06-16-vs0e-varargs-stack-underflow-round.md`(调研先于实现)+ `2026-06-24-p4-doc-review-round.md`(外部依赖现状过期)+ `2026-06-30-pr27-f3-3b-darwin-arm64-execute-roundup.md`(sentinel 注释承诺与检查状态解耦)+ `2026-06-30-pr28-f3-3c-tri-platform-matrix-ci.md`(bash 3.2 vs 4+ / actions/cache symlink / homebrew 包政策 跨 OS 物理环境差异)+ `2026-07-08-pr83-forprep-stackgrow-fallout-round.md`(§2 第二实例:P4 native `base` 悬垂跨子系统复现)+ `2026-07-29-issue205-206-208-io-userdata-debug.md`(§4.1:file-handle userdata 漏 `LinkSweep`,收集器看不见对象,一次 `collectgarbage` 就以 arena 索引越界 panic)——独立实例聚合为一个判断框架。
+> 适用:把设计稿热路径上的抽象记号(`(call $x)`)、固定 token(base/指针/句柄/视图)、或成本主张照搬到实现之前——尤其每指令必经的快路径、跨层/跨调用存活的值。**或处理「设计稿/task 描述/stub 注释承诺/外部依赖现状」类前序快照在事实变更后失效**(§5「时间维度」),**或主动去核一次外部依赖现状 / 判断某个上游修复是否随某版本发布**(§5.1)。**或脚本/工具链/包依赖在跨 OS / shell / runtime 版本物理环境间静默挂**(§6「空间维度」)。**或给一个新对象类型写分配路径时**(§4.1,同族分配器共有的每一步都是契约,漏一步的症状离原因很远)。P3 翻译全程复发,P2 编译层同理,P4 method-JIT 检查翻面期同理,CI 矩阵扩平台时同理。
+> 来源:`memory/reflections/2026-06-13-issue8-boundary-cost-round.md`(成本归类)+ `memory/reflections/2026-06-14-p3-pw5-table-ic-round.md`(边界成本预算)+ `memory/reflections/2026-06-14-p3-pw6-crosslayer-call-round.md`(段重定位 UAF,§2 第一实例)+ `2026-06-14-p3-pw7-pw4b-closure-tforloop-round.md`(难点过期)+ `2026-06-16-vs0e-varargs-stack-underflow-round.md`(调研先于实现)+ `2026-06-24-p4-doc-review-round.md`(外部依赖现状过期)+ `2026-06-30-pr27-f3-3b-darwin-arm64-execute-roundup.md`(sentinel 注释承诺与检查状态解耦)+ `2026-06-30-pr28-f3-3c-tri-platform-matrix-ci.md`(bash 3.2 vs 4+ / actions/cache symlink / homebrew 包政策 跨 OS 物理环境差异)+ `2026-07-08-pr83-forprep-stackgrow-fallout-round.md`(§2 第二实例:P4 native `base` 悬垂跨子系统复现)+ `2026-07-29-issue205-206-208-io-userdata-debug.md`(§4.1:file-handle userdata 漏 `LinkSweep`,收集器看不见对象,一次 `collectgarbage` 就以 arena 索引越界 panic)+ `2026-08-28-go127-upgrade-verification.md`(§5.1:确认 Go 1.27 是否含 golang/go#75804 修复,判据取工具链源码而非发布说明,并与 `go1.26.2` 对照区分「存在」与「引入」)——独立实例聚合为一个判断框架。
 
 设计稿表达的是**语义意图**,用抽象记号写在纸上;它**不携带本码库的物理不变式**。三次了:把设计稿热路径上的一条主张/记号忠实誊写到加速层,本会产出一个 bug 或一处死优化——因为设计稿对某条 wangshu 专属的物理事实是盲的(边界成本、arena 段重定位、GC 根可达性……)。**热路径上的抽象记号在实现前,必须逐条对照本码库 physics 重新推导,而不是照抄伪码。** 这条横跨**性能**(誊写出死优化)与**正确性**(誊写出 UAF)两面,故单独成 guide,不并入 [[perf-optimization-workflow]]。
 
@@ -114,8 +114,50 @@ job 87% 时长的是另一个从没被怀疑过的步骤,因为它的表面参�
 - **接延后 ≥6 个月的 task 前必先重核每一项现状**(task 描述可能失实);**大文档发布/审查前对外部依赖现状做事实层 checklist**(外部依赖现状过期);**开始任何标注「难点」的里程碑前先核实难点是否仍在**(前序里程碑可能已解);
 - **给 IC / inline 快路径写「把编译期运行期对象身份快照烤进段」的 guard 前,先问「这个身份会不会被跨 Run 重建打穿」**——若被测对象每 Run 在新 arena 偏移重建(promotion 只烤一次快照),身份 guard 会跨 Run 100% 落空、快路径从没真生效,优先换成与对象地址无关的 key/shape 内容 guard(issue #67 换 hmask 边界 + `nodeRef != 0`);这条的度量侧对偶见 [[prove-the-path-under-test]] §8(读收益要按跨 Run 稳态 dispatch,别信单 Run 命中数)。
 - **凡是「per X」的配置项,写下或读到它时都要核一遍 X 的实际数量**——这类数字不会因数量变化而报错,唯一能抓住它的动作是主动去数一遍(nightly `gofuzztime` description 的「4 targets」实际是 6 个,3 分之 1 的预算低估长期无人发觉)。
+- **主动核一次外部依赖现状时,判据取那份源码而不是关于它的陈述,并且「存在」要配一次旧版本「不存在」的观察**——详见 §5.1(#180 确认 Go 1.27 是否含 golang/go#75804 修复:读 `$GOROOT` 里的 `internal/fuzz/fuzz.go` 看表达式变化 + 注释引用的 issue 号,再拿 `go1.26.2` 对照得 0 次 vs 1 次)。
 
 这六个形式共享同一物理基础:**前序事实变更(或运行期对象跨 Run 重建,或配置描述与代码演进的距离)后,快照不会自更新,须显式审计**。§1-§4「四空间内部维度」+ §5「时间维度」+ §6「空间维度」(见下)构成六维判据。
+
+### 5.1 判断外部依赖现状时,判据是那份源码,不是关于它的陈述(2026-08-27,#180)
+
+§5 表里「外部依赖现状过期」讲的是**文档里写的**外部依赖现状会过期(P4 设计稿写 wazero 用
+`internal/engine/compiler` 而它已切 wazevo)。本节讲**同一件事的另一侧**:当你主动去核一次外部
+依赖现状时,该拿什么当判据。
+
+**核心断言**:发布说明、issue 状态标记、CL 的 merge 状态,全都是**关于**某个修复的二手陈述,而且
+各自在不同时点、以不同粒度滞后 —— 主线合入不等于回移,回移 CL 合入不等于进了哪个 tag,发布说明
+只挑值得写的条目写,一个内部包的竞态修复完全可以不出现在里面。唯一能直接回答「我手上这份依赖有
+没有这个修复」的东西,是**我手上这份依赖的源码**。
+
+**实例(#180,Go 1.27 升级)**:阻塞条件是「Go 1.27 正式发布,**且确认包含** golang/go#75804
+修复」。第一个条件查 tag 就完了,第二个条件的判据取自 `$GOROOT/src/internal/fuzz/fuzz.go` ——
+抑制检查从 `err == fuzzCtx.Err()` 变成
+`err == ctx.Err() || err == fuzzCtx.Err() || isInterruptError(err)`,**表达式变了**,而且**紧邻
+注释逐字引用 `go.dev/issue/75804`** 并描述了竞态窗口(ctx 的 deadline 到期后 `ctx.Err()` 已置位
+而子 context `fuzzCtx` 尚未被 cancel)。顺带确认了一件事:上游这段注释描述的窗口与本仓
+`scripts/go-fuzz.sh` 注释里当年从症状反推的假设一致。
+
+**「存在」不等于「引入」——必须配一次旧版本的观察**。只在新版本里看到那段代码,逻辑上只支持
+「存在」;要支持「这一版引入了它」,需要的是一对观察:X 在版本 N 里存在,**且** X 在 N-1 里不
+存在。少了后一半,「一直都在」这个解释没被排除 —— 而它一旦成立,整条推理就反过来:那段代码
+如果一直都在,它显然没能防住本仓遇到的假失败,「升上去就好了」也就不成立。#180 这一轮拉 upstream
+同一文件的两个 tag 数字符串出现次数:`go1.26.2` **0** 次、`go1.27.0` **1** 次,这才排除掉。
+对照项选 `go1.26.2` 不是随便选的 —— 它正是本仓升级前 `go.mod` 里的版本,于是这次对照回答的是
+「相对我们原来在用的东西,这是不是新增的」,恰好是决策需要的那个问题。
+
+**判据**:
+
+- 凡「某修复是否已发布 / 是否在我用的这个版本里」类问题,去被安装的那份源码里找**那个修复本身**
+  的痕迹,不要去找关于它的陈述。手法三层按成本递增:① grep issue 号(Go 这类项目惯例是修 bug
+  时在注释里留链接,常常一步定位)② 读那段逻辑,看被修的表达式 / 分支有没有变 ③ 写一个能触发
+  原症状的最小程序实测。前两层通常够用;第三层只在症状**可稳定触发**时划算,低频竞态类修复上它
+  反而是三层里最弱的证据(一次没触发什么都不能说明,见 [[prove-the-path-under-test]]「什么时候
+  可以撤掉一个兜底机制」)。
+- 任何「X 在版本 N 里存在」的观察,都要配一次「X 在版本 N-1 里不存在」的观察,否则证明的是
+  「存在」而不是「引入」。对照项优先选**自己原来在用的那个版本**;计数式对照(同一字符串在两个
+  tag 里各出现几次)比读 diff 便宜,作为第一刀足够。
+
+反思实例 [[2026-08-28-go127-upgrade-verification]] 教训 1 与教训 2。
 
 ## 6. 空间维度——跨 OS / shell / runtime 版本物理环境差异
 
@@ -163,10 +205,11 @@ job 87% 时长的是另一个从没被怀疑过的步骤,因为它的表面参�
 
 - **设计稿记号是语义契约,不是物理承诺**:`(call $x)`、`$base`、「成本=架构给定」都只声明「这里要什么语义」,从不声明本码库 physics(边界成本/段重定位/根可达性)。实现前逐条过 §1-§4。
 - **快照不会自更新,事实变更须显式审计**(§5):设计稿/task 描述/stub 注释承诺/外部依赖现状在写下当时为真,前序事实变更后必须显式重核——尤其检查翻 true 的同一 commit、延后 ≥6 个月的 task 接续前、大文档发布前。
+- **核外部依赖现状时判据是源码,不是关于它的陈述**(§5.1):发布说明 / issue 状态 / CL merge 状态各自以不同粒度滞后,只有被安装的那份源码能回答「我这份里有没有」;而且「在新版本里看到」只证明存在,要证明「这一版引入」必须配一次旧版本不存在的观察。
 - **跨部署环境差异不会自暴露,矩阵扩面前须预审**(§6):同一份脚本/工具链/依赖在不同 OS / shell 版本 / runtime / runner 之间静默挂。CI 矩阵扩平台、加 `actions/cache` 缓特殊文件、cross-arch 真机 runner 首次接入前,逐维度过 §6.1-§6.3。
 - **解释器「能跑」≠ 加速层「能跑」**:二者刷新地址/管理生命周期的能力不同——解释器每访问经 `th.slot()` 现算,gibbous 的 `$base` 入口锁定中途无法自刷新。设计稿往往因解释器碰巧免疫而对危险盲视,加速层照搬就触雷。先问「谁有能力刷新、在什么时机」。
 - **逐条对照,而非整体信任**:边界成本预算(§1)、段重定位(§2)、成本归类(§3)、根可达性(§4)、时间维度(§5)、空间维度(§6)是六个独立维度;一条主张可能同时踩多个。
 
 ## 关联
 
-[[issue8-boundary-cost-round]](家族奠基:实现浪费 vs 架构成本 + 零拷贝根可达性)· [[p3-pw5-table-ic-round]](边界成本维度:`$helper` 须按 ~143ns 预算重判)· [[p3-pw6-crosslayer-call-round]](内存物理维度:`$base` 须按 arena 段重定位重核,§2 第一实例)· [[pr83-forprep-stackgrow-fallout-round]](§2 第二实例:P4 native `base` 悬垂,同物理事实跨子系统复现)· [[p3-pw7-pw4b-closure-tforloop-round]](§5 时间维度:难点过期)· [[vs0e-varargs-stack-underflow-round]](§5 时间维度:调研先于实现)· [[p4-doc-review-round]](§5 时间维度:外部依赖现状过期)· [[pr27-f3-3b-darwin-arm64-execute-roundup]](§5 时间维度:sentinel 注释承诺与检查状态解耦)· [[pr28-f3-3c-tri-platform-matrix-ci]](§6 空间维度:bash 3.2 vs 4+ / actions/cache symlink / homebrew 包政策)· [[2026-08-19-nightly-step-timeouts-and-budget]](§3.1 优化建议先量成本分布 + §5 陈旧计数:「4 targets」实为 6 个,3.1 提优化建议前 auto-mode 只占 job 2% 时长却被建议压五轮)· `feedback_arena_view_aliasing`(arena=linear memory 段可重定位 / 偏移现算寻址,§2/§4 物理基础)· [[design-premises]](前提一边界成本论证 / 前提二四项税,§1/§3 成本根据)· `docs/design/p3-wasm-tier/02-translation.md` §3.4 · `04-trampoline.md` §2-§4
+[[issue8-boundary-cost-round]](家族奠基:实现浪费 vs 架构成本 + 零拷贝根可达性)· [[p3-pw5-table-ic-round]](边界成本维度:`$helper` 须按 ~143ns 预算重判)· [[p3-pw6-crosslayer-call-round]](内存物理维度:`$base` 须按 arena 段重定位重核,§2 第一实例)· [[pr83-forprep-stackgrow-fallout-round]](§2 第二实例:P4 native `base` 悬垂,同物理事实跨子系统复现)· [[p3-pw7-pw4b-closure-tforloop-round]](§5 时间维度:难点过期)· [[vs0e-varargs-stack-underflow-round]](§5 时间维度:调研先于实现)· [[p4-doc-review-round]](§5 时间维度:外部依赖现状过期)· [[pr27-f3-3b-darwin-arm64-execute-roundup]](§5 时间维度:sentinel 注释承诺与检查状态解耦)· [[pr28-f3-3c-tri-platform-matrix-ci]](§6 空间维度:bash 3.2 vs 4+ / actions/cache symlink / homebrew 包政策)· [[2026-08-28-go127-upgrade-verification]](§5.1:上游发布说明 vs 工具链源码,以及「存在」vs「引入」的版本对照)· [[2026-08-19-nightly-step-timeouts-and-budget]](§3.1 优化建议先量成本分布 + §5 陈旧计数:「4 targets」实为 6 个,3.1 提优化建议前 auto-mode 只占 job 2% 时长却被建议压五轮)· `feedback_arena_view_aliasing`(arena=linear memory 段可重定位 / 偏移现算寻址,§2/§4 物理基础)· [[design-premises]](前提一边界成本论证 / 前提二四项税,§1/§3 成本根据)· `docs/design/p3-wasm-tier/02-translation.md` §3.4 · `04-trampoline.md` §2-§4

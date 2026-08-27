@@ -33,8 +33,19 @@ fi
 # window where ctx.Err() is set while fuzzCtx.Err() is still nil; the
 # suppression misses and the deadline escapes as a test failure of the form
 # `--- FAIL: FuzzX ... context deadline exceeded`. No crash, no new
-# counterexample corpus -- a pure toolchain race (upstream fix CL 774140
-# not yet merged).
+# counterexample corpus -- a pure toolchain race.
+#
+# UPSTREAM STATUS (2026-08-28, #180): FIXED, and the fix ships in Go 1.27.0, which this repo now requires.
+# $GOROOT/src/internal/fuzz/fuzz.go's suppression check reads
+# `err == ctx.Err() || err == fuzzCtx.Err() || isInterruptError(err)`; the `ctx.Err()` term is the fix and its
+# comment cites go.dev/issue/75804. Confirmed new in 1.27 by comparing upstream tags: `issue/75804` appears 0
+# times in go1.26.2's copy of that file and once in go1.27.0's.
+#
+# The retry below is KEPT anyway. It is the only signal separating a real crasher from the race, so removing it
+# on a wrong call means retrying a real bug away as noise -- and that failure mode leaves CI green, so it would
+# not announce itself. Historical trigger rate was ~9 in 450 jobs, and one clean fuzz smoke is far too small a
+# sample to contradict that. Delete it once nightly shows the rate at zero over a comparable number of runs;
+# see docs/design/engineering.md 1.1.
 #
 # Adjudication discipline (never mask real failures):
 #   - a real crasher always comes with "Failing input written to

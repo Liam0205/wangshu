@@ -356,7 +356,7 @@ By role:
 
 Issues and PRs are welcome. Basic steps:
 
-**Dev environment**: Go 1.25+, Linux/amd64, Linux/arm64, or macOS/arm64 (other GOOS/GOARCH combinations compile via pure-Go stubs but are not exercised). Optional deps: `lua5.1` (the official oracle, used by differential tests; `apt install lua5.1` or build 5.1.5 from source), `golangci-lint` (lint).
+**Dev environment**: Go 1.27+ (the `go` directive in `go.mod` is `1.27.0`, so older toolchains refuse to build; see [engineering.md §1.1](docs/design/engineering.md) for why 1.27.0), Linux/amd64, Linux/arm64, or macOS/arm64 (other GOOS/GOARCH combinations compile via pure-Go stubs but are not exercised). Optional deps: `lua5.1` (the official oracle, used by differential tests; `apt install lua5.1` or build 5.1.5 from source), `golangci-lint` (lint).
 
 **Common make targets**:
 

@@ -933,7 +933,7 @@ arm64 启动(PJ8)时,既有 amd64 实现是「镜子」——所有泄漏成本�
 - **locals 寄存器跨指令缓存的具体清单**(§4.4):FORLOOP 三槽是首选,其它循环局部热槽是否扩展、扩展到哪些——PJ7 性能调优期实测后定。
 - **literal pool 策略**(§2.1 末 / §4.2.4 注):arm64 大立即数(NumTagMask 等)经 `adrp+ldr` 还是 `movz+movk` 序列——实测后定。
 - **per-arch 模板的人工调优窗口**(§4.4 注):是否允许 per-arch 模板在保持差分一致下做架构特异性优化(如 amd64 用 LEA 复合寻址 / arm64 用 csel 条件选择)——PJ7 / PJ8 后评估。
-- **Go 版本演进的影响**:Go ABI0 / G 寄存器协议 / 抢占机制随版本演进,callee-saved 集合可能变——CI 跑 Go 1.25 + 1.26 + tip(N-1 + N + tip,承本仓 `go.mod` 已 `go 1.26.2`,Go 官方支持窗口仅最新两个 minor;Go 版本演进时矩阵同步顺移),变化时立即修。
+- **Go 版本演进的影响**:Go ABI0 / G 寄存器协议 / 抢占机制随版本演进,callee-saved 集合可能变——CI 跑 N-1 + N + tip(Go 官方支持窗口仅最新两个 minor;Go 版本演进时矩阵同步顺移),变化时立即修。**本仓 `go.mod` 现为 `go 1.27.0`**(2026-08-27,#180 升级,理由见 [engineering.md §1.1](../engineering.md)),按上面的规则当期取值是 Go 1.26 + 1.27 + tip。**这个多版本矩阵至今没有实现**:所有 workflow 都用 `go-version-file: go.mod` 取单一版本,本条仍是开放问题而不是现状描述。
 
 ---
 
