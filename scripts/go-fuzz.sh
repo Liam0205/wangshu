@@ -44,8 +44,12 @@ fi
 # The retry below is KEPT anyway. It is the only signal separating a real crasher from the race, so removing it
 # on a wrong call means retrying a real bug away as noise -- and that failure mode leaves CI green, so it would
 # not announce itself. Historical trigger rate was ~9 in 450 jobs, and one clean fuzz smoke is far too small a
-# sample to contradict that. Delete it once nightly shows the rate at zero over a comparable number of runs;
-# see docs/design/engineering.md 1.1.
+# sample to contradict that.
+#
+# TWO conditions before deleting, not one. (a) nightly shows the rate at zero over a comparable number of runs
+# -- but that alone is NOT enough, because this predicate keys on the SYMPTOM (deadline text, no crasher) and
+# not on #75804, so zero only proves that one cause stopped firing. (b) no other mechanism can produce a
+# crasher-less deadline failure. See docs/design/engineering.md 1.1.
 #
 # Adjudication discipline (never mask real failures):
 #   - a real crasher always comes with "Failing input written to

@@ -28,9 +28,16 @@ metadata:
 # 确认一个上游修复是否随某版本发布，判据在源码里而不在发布说明里（#180，commit `d9c3cf6`）
 
 > 范围：issue #180（chore，Go 1.27 正式升级与 fuzz deadline 文档同步），分支
-> `chore/180-go127-upgrade`，1 个 commit `d9c3cf6`。改动只有两处：`go.mod` 的 `go` 指令
-> 1.26.2 → 1.27.0，以及 `docs/design/engineering.md` §1.1 里「上游修复未合入」那句按实际
-> 发布状态改写。产品代码、测试、`scripts/go-fuzz.sh` 全部零改动。
+> `chore/180-go127-upgrade`。**这段范围说明在写下时就是错的,保留并更正,因为它本身是一个实例**:
+> 它说「1 个 commit、`scripts/go-fuzz.sh` 全部零改动」,而添加这篇反思的那个 commit(`ab17328`)
+> 同时就改了 `go-fuzz.sh` 里那段「上游修复未合入」的注释。写范围说明的时候我照的是**打算改什么**,
+> 不是**实际改了什么** —— 而一个来查「那句过期的 CL 774140 到底修没修」的人,会被这句话告知没修。
+>
+> 实际范围(共 4 个 commit):`go.mod` 1.26.2 → 1.27.0;`benchmarks/` 与 `benchmarks/pineapple/`
+> 两个 `replace` 根模块的子模块一并跟上(审计发现漏了会让 CI 挂);
+> `docs/design/engineering.md` §1.1、`scripts/go-fuzz.sh` 的上游状态注释、两个 README 的
+> 「Go 1.25+」、`06-backends.md` 的 go.mod 引用与那个从未实现的版本矩阵,全部按实际状态更正。
+> 产品代码与测试零改动。
 
 ## 任务
 
