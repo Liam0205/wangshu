@@ -199,7 +199,8 @@ func isMathIntrinsicIndex(idx *ast.IndexExpr) bool {
 func (fs *funcState) exprMethodCall(e *ast.MethodCallExpr) expDesc {
 	baseReg := fs.freereg
 	recv := fs.expr(e.Recv)
-	fs.exp2NextReg(e.Line, &recv) // R(baseReg) = obj
+	// The receiver is discharged at ITS own line, not the method name's (#248, same shape as exprIndex).
+	fs.exp2NextReg(e.Recv.Pos(), &recv) // R(baseReg) = obj
 	// method name goes through an RK constant
 	method := newExp(eK, fs.strK(e.Line, e.Method))
 	rk := fs.exp2RK(e.Line, &method)
