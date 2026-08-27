@@ -32,6 +32,10 @@ func TestIndexLinesAcrossNewline(t *testing.T) {
 		// A local needs no load, so only the GETTABLE appears, on the operator's line.
 		{"local object", "local t={}\nlocal v = t\n.x", []int32{1, 3, 0}}, // .x is on line 3 here
 		{"bracket index", "local v = A\n[1]", []int32{1, 2, 0}},
+		// Assignment TARGETS take the same rule, on two separate code paths that an audit found the first
+		// fix had missed: storeVar for a single target, and the multi-target path for `a, b = ...`.
+		{"assign target, dot", "A\n.x = 1", []int32{1, 2, 0}},
+		{"assign target, bracket", "A\n[1] = 1", []int32{1, 2, 0}},
 	} {
 		block, err := parse.Parse(lex.New([]byte(tc.src), "z"), "z")
 		if err != nil {
