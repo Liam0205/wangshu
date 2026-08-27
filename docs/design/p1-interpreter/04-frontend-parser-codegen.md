@@ -455,6 +455,7 @@ type expDesc struct {
     info     int       // 含义随 k(见上)
     aux      int       // EIndexed 的键 RK
     nval     float64   // EKNum 的数字
+    opLine   int32     // EIndexed 的 GETTABLE 该用哪一行(索引运算符的行,#248,见 §5.2.1)
     tJmp     int       // "为真则跳"的回填链(逻辑表达式;NoJump=空)
     fJmp     int       // "为假则跳"的回填链
 }
@@ -462,6 +463,30 @@ type expDesc struct {
 
 `expdesc` 的 `t`/`f`(true/false patch list)只在逻辑表达式(`and`/`or`/比较)里非空,承载
 短路跳转的回填链(§5.6)。
+
+#### 5.2.1 索引表达式的两个行号:对象自己的行,与运算符的行(#248,2026-08-27)
+
+`t[k]`/`t.field` 涉及两个独立的行号,而这两个行号此前都被错误地取成了同一个值——**索引运算符的行**
+(`e.Line`,即 `[`/`.` 所在的行)。
+
+编译 `IndexExpr` 时先 `codegen(e.Obj)` 得 `obj`,再 `exp2AnyReg` 把它物化到寄存器。若 `obj` 是**延迟
+加载**的(全局、另一层索引——需要 codegen 发射一条新指令才能取到值),那条指令(GETGLOBAL/GETTABLE)
+必须用**对象自己的起始行**(`e.Obj.Pos()`),不是索引运算符的行——`A\n.x` 里 `A` 在行 1、`.x` 在行 2,
+取 `A` 这条 GETGLOBAL 该记行 1。键的物化同理用 `e.Key.Pos()`。
+
+物化完对象和键之后,`exprIndex` 产出的 `expdesc` 是 `EIndexed`,而它自己**还没有发射 GETTABLE**——
+GETTABLE 要等到这个 `expdesc` 被后续某个 `dischargeVars` 调用时才真正发射,发射点可能是任意后面的
+一条语句。GETTABLE 必须记的是**索引运算符自己的行**(`.x` 那一行),不是「碰巧调 dischargeVars 那条
+语句所在的行」——`local v = A\n.x` 里 `dischargeVars` 被 `LocalStmt` 触发,若 GETTABLE 沿用调用方
+传入的行就会记成行 1(LocalStmt 所在行),而 PUC 报的是行 2(`.x` 所在行)。所以 `expdesc` 增加
+`opLine` 字段,在 `exprIndex` 里存运算符的行,`dischargeVars` 发射 GETTABLE 时优先取 `e.opLine`
+(为 0 则退回调用方传入的行,兼容不涉及索引的其他 `expdesc` kind)。
+
+**一个局部变量做对象时,这两条规则都不会被触发**:局部变量已经在寄存器里,`exprIndex` 对它**不发射
+任何指令**、GETTABLE 立即以调用方给的行发射(discharge 与 emit 是同一步)。这正是为什么直接用局部
+变量写的行号测试测不出这两处的问题——被测的两条指令(GETGLOBAL 的延迟加载 / GETTABLE 的延迟
+discharge)在这条路径上都没有机会出现。测这一类性质要用全局或另一层索引做对象,见
+[[prove-the-path-under-test]] §2.1。
 
 ### 5.3 寄存器分配原语
 
