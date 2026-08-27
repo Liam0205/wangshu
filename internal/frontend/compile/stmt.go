@@ -385,7 +385,17 @@ func (fs *funcState) stmtFunc(s *ast.FuncStmt) {
 		Targets: []ast.Expr{s.Target},
 		Exprs:   []ast.Expr{s.Fn},
 	}
+	first := len(fs.proto.Code)
 	fs.stmtAssign(assign)
+	// PUC's funcstat ends with luaK_fixline(fs, line) -- "definition `happens' in the first line" -- which
+	// stamps the STORE back to the `function` keyword's line while leaving the object load and the CLOSURE on
+	// their own lines. Our desugaring to AssignStmt loses that, so `function<nl>A<nl>.b() end` blamed the
+	// operator's line (3) where PUC blames 1 (#248, found by audit after two earlier sites were fixed).
+	//
+	// Only the LAST instruction is refixed, matching luaK_fixline, which rewrites just fs->f->lineinfo[pc-1].
+	if n := len(fs.proto.Code); n > first {
+		fs.proto.LineInfo[n-1] = s.Line
+	}
 }
 
 // stmtReturn: tail-call recognition (04 §9.4).
