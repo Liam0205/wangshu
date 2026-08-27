@@ -159,7 +159,19 @@ func (fs *funcState) stmtAssign(s *ast.AssignStmt) {
 		regOrK    int
 		tableReg  int
 		keyRK     int
-		opLine    int32 // the indexing operator's line, for the SETTABLE (#248)
+	}
+	// storeLine mirrors PUC's ls->lastline at the point the stores are emitted: the last line the whole
+	// statement extends to, shared by every store rather than taken per target (see the SETTABLE below).
+	storeLine := s.Line
+	for _, e := range s.Targets {
+		if p := e.Pos(); p > storeLine {
+			storeLine = p
+		}
+	}
+	for _, e := range s.Exprs {
+		if p := e.Pos(); p > storeLine {
+			storeLine = p
+		}
 	}
 	tgts := make([]target, len(s.Targets))
 	for i, t := range s.Targets {
@@ -183,7 +195,7 @@ func (fs *funcState) stmtAssign(s *ast.AssignStmt) {
 			tableReg := fs.exp2AnyReg(tn.Obj.Pos(), &obj)
 			key := fs.expr(tn.Key)
 			rk := fs.exp2RK(tn.Key.Pos(), &key)
-			tgts[i] = target{isIndexed: true, tableReg: tableReg, keyRK: rk, opLine: tn.Line}
+			tgts[i] = target{isIndexed: true, tableReg: tableReg, keyRK: rk}
 		default:
 			raise(fs, s.Line, "syntax error")
 		}
@@ -201,9 +213,14 @@ func (fs *funcState) stmtAssign(s *ast.AssignStmt) {
 				fs.emitABC(s.Line, bytecode.MOVE, t.regOrK, src, 0)
 			}
 		case t.isIndexed:
-			// The operator's line, not the statement's (#248): for `A<newline>.x = 1` the statement starts on
-			// line 1 while the faulting SETTABLE belongs to line 2.
-			fs.emitABC(t.opLine, bytecode.SETTABLE, t.tableReg, t.keyRK, src)
+			// storeLine, not s.Line and NOT each target's own operator line (#248).
+			//
+			// PUC emits every store in a multi-assignment at ls->lastline -- the line the STATEMENT last
+			// extended to -- so all of them share one line. An earlier version of this fix stamped each
+			// SETTABLE with its own target's operator line, which is wrong whenever the targets sit on
+			// different lines: for `B.y, t<nl>.x = 1, 2` PUC puts BOTH stores on line 2, while per-target
+			// lines put B.y's on 1 and misreported an error raised on it. Verified with `luac5.1 -p -l`.
+			fs.emitABC(storeLine, bytecode.SETTABLE, t.tableReg, t.keyRK, src)
 		case t.isGlobal:
 			fs.emitABx(s.Line, bytecode.SETGLOBAL, src, t.regOrK)
 		case t.isUpval:
