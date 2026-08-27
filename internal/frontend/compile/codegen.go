@@ -115,12 +115,24 @@ func (fs *funcState) expr(node ast.Expr) expDesc {
 
 // exprIndex compiles t[k] / t.field.
 func (fs *funcState) exprIndex(e *ast.IndexExpr) expDesc {
+	// The OBJECT is discharged at the object's own line, not at e.Line (#248).
+	//
+	// e.Line is the indexing operator's line, which is what the faulting GETTABLE must carry. Passing it
+	// here instead stamped it onto the object's own instruction: for a global indexed across a newline,
+	// GETGLOBAL took the operator line (2) and the GETTABLE was left to be discharged later at the
+	// enclosing statement's line (1), so the raise reported 1 where PUC reports 2.
+	//
+	// It only shows when an index expression spans a newline AND the object's load is deferred (a global,
+	// or another index). A local is already in a register, so nothing is emitted here and the inversion
+	// cannot appear -- which is why the existing TestIndexExprLineIsOperatorLine, written with a local,
+	// passed throughout.
 	obj := fs.expr(e.Obj)
-	tableReg := fs.exp2AnyReg(e.Line, &obj)
+	tableReg := fs.exp2AnyReg(e.Obj.Pos(), &obj)
 	key := fs.expr(e.Key)
-	rk := fs.exp2RK(e.Line, &key)
+	rk := fs.exp2RK(e.Key.Pos(), &key)
 	exp := newExp(eIndexed, tableReg)
 	exp.aux = rk
+	exp.opLine = e.Line
 	return exp
 }
 

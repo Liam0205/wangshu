@@ -38,8 +38,11 @@ type expDesc struct {
 	info int     // meaning follows k (see above)
 	aux  int     // key RK of eIndexed
 	nval float64 // number of eKNum
-	tJmp int     // patch chain to jump when true (NoJump=empty)
-	fJmp int     // patch chain to jump when false
+	// opLine is the line the eIndexed's GETTABLE must be stamped with: the indexing operator's line,
+	// not the line of whatever later discharges it (#248). Zero means "use the caller's line".
+	opLine int32
+	tJmp   int // patch chain to jump when true (NoJump=empty)
+	fJmp   int // patch chain to jump when false
 }
 
 func newExp(k expKind, info int) expDesc {
@@ -70,7 +73,14 @@ func (fs *funcState) dischargeVars(line int32, e *expDesc) {
 			fs.freeReg(e.aux)
 		}
 		fs.freeReg(e.info)
-		pc := fs.emitABC(line, bytecode.GETTABLE, 0, e.info, e.aux)
+		// The operator's line wins when the eIndexed carries one. Discharge happens at an arbitrary later
+		// point -- for `local v = A<nl>.x` that is the LocalStmt, whose line is 1 -- so taking the caller's
+		// line put the faulting GETTABLE on the wrong line and the error message reported it.
+		tabLine := line
+		if e.opLine != 0 {
+			tabLine = e.opLine
+		}
+		pc := fs.emitABC(tabLine, bytecode.GETTABLE, 0, e.info, e.aux)
 		e.k = eRelocable
 		e.info = pc
 	case eVararg, eCall:
