@@ -367,6 +367,51 @@ fuzz 预算(承 P1 [12 §11](../p1-interpreter/12-testing-difftest.md) 「PR 门
 - **nightly**:P1/P2 已建的独立长跑任务(`.github/workflows/nightly-diff-fuzz.yml`,承 [12 §11](../p1-interpreter/12-testing-difftest.md) 「持续 fuzz 由 nightly / 专用 fuzz 机承担」)在 P3 扩到层间轴(本文 §4.2)。
 - **生成器复用**:P1 [12 §3.7](../p1-interpreter/12-testing-difftest.md) 的语法制导生成器(`test/difftest/gen/grammar.go`)产出的脚本对两层通用——**但生成器需偏向「产生 Compilable Proto」**(避开 P2 F1-F7 排除的 vararg / coroutine / debug 等,否则强制全升下该 Proto 走不到 gibbous,差分退化为 crescent vs crescent 无意义)。这是 P3 对生成器的回填请求(本文 §7.2)。
 
+### 2.5a 新增第三条轴:gibbous 直接对 PUC(2026-08-29,`FuzzOracleDiffTiered`)
+
+§2.5 那个「crescent 是 oracle」的设计**在当时是对的,而它有一个后果当时没写下来**:
+gibbous 与官方 PUC 的一致性变成**传递**得来的 —— `gibbous == crescent`(层间轴)加上
+`crescent == 官方`(P1 三方轴)推出 `gibbous == 官方`。
+
+传递性本身没错。两条代价:
+
+1. **它继承 `crescent == 官方` 那次比较的所有盲区。** crescent 侧的比较跳过了什么
+   (资源上限、实现常数护栏、UB 区间),传递之后仍然跳过,而 gibbous 不会因为
+   「crescent 在这里被跳过」就在这里没有 bug。
+2. **它对「crescent 与官方一致、而两个 tier 各自也一致地错」这类情况没有直接观察能力。**
+   `gibbous == crescent` 这个断言在这种情况下会失败,所以理论上抓得到;
+   但 P3 与 P4 两个 tier 互相之间的一致性不由这条链保证。
+
+`test/difftest` 里按 tier 对真 `lua5.1` 二进制跑的那条路确实存在(§2.6 的骨架),
+但它喂的是手写 generator 的脚本(几百行,`vararg` / `goto` / `pcall` / `error` 的生成计数
+都是 0),覆盖的写法远窄于 go-fuzz 变异 —— 这与 §2.5 末尾那条「生成器要偏向产生
+Compilable Proto」的回填请求是同一个张力的两面:让生成器更容易命中 gibbous,
+同时也让它离「任意不规则源码」更远。
+
+**补上的直接轴**是根包的 `FuzzOracleDiffTiered`(build 约束
+`wangshu_oracle_cgo && cgo && (wangshu_p3 || wangshu_p4)`):go-fuzz 变异出的任意源码在
+**强制全升**的 State 上跑,与**进程内嵌的官方 5.1.5** 比对。它与 §2.5 那两条轴的关系是
+**并列而不是替代** —— 层间轴仍然是主防线(同一份 Proto 走两层,任何差异必是执行层 bug、
+没有「实现本来就不同」的噪声),这条新轴补的是「参照实现本身」这一格。
+
+两条设计约束(与 P4 08 §3 那一节共享,写在 P1
+[12 §3.8a](../p1-interpreter/12-testing-difftest.md) 的目标清单表里):
+
+- **跳过集合与 p1 目标完全相同**,不为 tier 开新的跳过。这与 §2.4「P1 12 §10 验收口径
+  总表原样适用,不为 gibbous 开新豁免」是同一条纪律在 fuzz harness 上的形式:
+  加一个 tier 专属跳过是让这个目标变绿最容易的办法,也是让它变得毫无价值的办法。
+- **升层必须被断言,不能假设**。P1 那个 `FuzzOracleDiff` **本来就能在 `wangshu_p3` tag 下
+  编译并通过** —— 它构造普通 `State`、从不升层,gibbous 的代码被链接进来但从未进入。
+  所以一个忘记升层的分层 harness 与一个通过的测试在输出上**完全一样**,连一条 skip 都不留;
+  这正是 §2.2「强制全量升层模式」存在的理由在 fuzz 侧的对应物。配套守护测试断言升层计数
+  增长并做过变异实测,而它自己的两个已知弱点(那条「整轮至少升层一次」的标志没有读取点;
+  守护测试读的是**编译侧**的计数,force-all 会升 main chunk 自己所以空 payload 也满足)
+  如实记在反思里,判据见 `llmdoc/guides/prove-the-path-under-test.md` §2.2/§2.3。
+
+**首轮结果**:两个 tier 都观察到升层,短时引导式 fuzz 未发现分歧 ——
+**第一个结果,不是一张清白证明**。反思
+[[2026-08-29-conformance-coverage-and-tiered-oracle-diff]]。
+
 ### 2.6 实现骨架:test/difftest/p3_test.go
 
 仿 P2 [06 §3.X](../p2-bridge/06-testing-strategy.md) 的实现形式,给出 `test/difftest/p3_test.go` 骨架:
