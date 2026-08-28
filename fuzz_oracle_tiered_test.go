@@ -160,6 +160,11 @@ local t = setmetatable({}, mt) print(t.x, #t)`,
 //
 // The test therefore requires `after > before+1`, and it checks the discrimination itself: an empty payload
 // must NOT satisfy the same bound. Without that second half the threshold is just a number I chose.
+//
+// The bound is also execution-side rather than compile-side, which is the question worth asking of any counter
+// used this way. Measured: `local function never() return 1 end` -- a nested function that compiles but is
+// never called -- stays at 9 -> 10, while calling it reaches 11. So passing this bound does require the
+// payload to have RUN tiered code, not merely to have had it compiled.
 func TestTieredOracleDiffActuallyPromotes(t *testing.T) {
 	prelude := oracle.Prelude(tieredKeepSet())
 
