@@ -256,6 +256,24 @@ jobs:
         # the default-build targets already get their smoke in the
         # fuzz-smoke matrix above.
         run: CGO_ENABLED=1 ./scripts/go-fuzz.sh 60s "wangshu_oracle_cgo" FuzzOracleDiff
+      - name: FuzzOracleDiffTiered required-target assertion (p4)
+        # Same reasoning as the assertion above, and it matters more here: this target's build constraint is
+        # `wangshu_oracle_cgo && cgo && (wangshu_p3 || wangshu_p4)`, so a tag typo makes it vanish silently
+        # while every other target keeps the job green.
+        run: |
+          CGO_ENABLED=1 go test -tags "wangshu_oracle_cgo wangshu_p4 wangshu_profile" . -run='^$' \
+            -list '^FuzzOracleDiffTiered$' | grep -q '^FuzzOracleDiffTiered$' \
+            || { echo "FuzzOracleDiffTiered missing under oracle+p4 tags (build tag broken?)" >&2; exit 1; }
+      - name: tiered promotion assertion (p3 and p4)
+        # Proves the tiered harness reaches the TIER. Without this the target would pass while comparing the
+        # interpreter against PUC a second time -- FuzzOracleDiff's job, not this one's.
+        run: |
+          for tags in "wangshu_oracle_cgo wangshu_p3 wangshu_profile" "wangshu_oracle_cgo wangshu_p4 wangshu_profile"; do
+            CGO_ENABLED=1 go test -tags "$tags" . -run '^TestTieredOracleDiffActuallyPromotes$' -count=1 \
+              || { echo "tiered promotion assertion failed under: $tags" >&2; exit 1; }
+          done
+      - name: tiered-oracle diff fuzz smoke (p4)
+        run: CGO_ENABLED=1 ./scripts/go-fuzz.sh 60s "wangshu_oracle_cgo wangshu_p4 wangshu_profile" FuzzOracleDiffTiered
       - if: failure()
         uses: actions/upload-artifact@v7
         with:

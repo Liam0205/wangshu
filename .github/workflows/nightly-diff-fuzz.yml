@@ -81,16 +81,25 @@ jobs:
           # p3/p4: 40 + 280 + 25 = 345 < 350, and 280 covers p4's 280 exactly.
           - variant: p1
             tags: ''
-            native_fuzz_cap: 195
+            native_fuzz_cap: 202
             native_fuzz_targets: 4
+            # fuzztime is PER TIER now, because the chain constraint differs per tier: p3/p4 carry a second
+            # fuzz step (tiered-oracle) that p1 does not, so a single value either overpays on p1 or
+            # overruns on p4. Derived from prior(40) + native_cap + tiered_cap + oracle/upload/triage < 350.
+            fuzztime: 32m
+            tiered_fuzz_cap: 0
           - variant: p3
             tags: 'wangshu_p3 wangshu_profile'
-            native_fuzz_cap: 280
+            native_fuzz_cap: 206
             native_fuzz_targets: 5
+            fuzztime: 28m
+            tiered_fuzz_cap: 66
           - variant: p4
             tags: 'wangshu_p4 wangshu_profile'
-            native_fuzz_cap: 280
+            native_fuzz_cap: 218
             native_fuzz_targets: 6
+            fuzztime: 26m
+            tiered_fuzz_cap: 62
     name: diff-fuzz (${{ matrix.variant }})
     runs-on: ubuntu-latest
     timeout-minutes: 350
@@ -214,7 +223,7 @@ jobs:
         if: always()
         timeout-minutes: 5
         env:
-          FUZZTIME: ${{ github.event.inputs.gofuzztime || '35m' }}
+          FUZZTIME: ${{ github.event.inputs.gofuzztime || matrix.fuzztime }}
           CAP: ${{ matrix.native_fuzz_cap }}
           TARGETS: ${{ matrix.native_fuzz_targets }}
         run: |
@@ -288,7 +297,7 @@ jobs:
         timeout-minutes: ${{ matrix.native_fuzz_cap }}
         run: |
           set -o pipefail
-          ./scripts/go-fuzz.sh "${{ github.event.inputs.gofuzztime || '35m' }}" "${{ matrix.tags }}" 2>&1 | tee gofuzz.log
+          ./scripts/go-fuzz.sh "${{ github.event.inputs.gofuzztime || matrix.fuzztime }}" "${{ matrix.tags }}" 2>&1 | tee gofuzz.log
 
       # cgo oracle differential go-fuzz (p1 leg only): the embedded
       # official 5.1.5 diffs against the interpreter tier -- P1 is the
@@ -313,8 +322,25 @@ jobs:
         run: |
           set -o pipefail
           CGO_ENABLED=1 ./scripts/go-fuzz.sh \
-            "${{ github.event.inputs.gofuzztime || '35m' }}" \
+            "${{ github.event.inputs.gofuzztime || matrix.fuzztime }}" \
             "wangshu_oracle_cgo" FuzzOracleDiff 2>&1 | tee oraclefuzz.log
+
+      # The TIERED counterpart of the step above, on p3/p4 instead of p1. Before this existed the tiers'
+      # only fuzz evidence against PUC was transitive (tiered == P1 via FuzzAutoPromote/FuzzP4ForceAllPromote,
+      # P1 == PUC via FuzzOracleDiff), which inherits P1's blind spots and cannot see a divergence where P1
+      # agrees with PUC but both tiers agree with each other on something else.
+      #
+      # Budget: one target at the same fuzztime as the p1 oracle step, so the chain arithmetic in the native
+      # step's note holds unchanged -- p3/p4 do not run the p1 oracle step, so this slots into the same slot
+      # rather than adding to it.
+      - name: tiered-oracle go-fuzz long run (${{ matrix.variant }} vs embedded 5.1.5)
+        if: always() && matrix.variant != 'p1' && steps.budgetcheck.outcome == 'success'
+        timeout-minutes: ${{ matrix.tiered_fuzz_cap }}
+        run: |
+          set -o pipefail
+          CGO_ENABLED=1 ./scripts/go-fuzz.sh \
+            "${{ github.event.inputs.gofuzztime || matrix.fuzztime }}" \
+            "wangshu_oracle_cgo ${{ matrix.tags }}" FuzzOracleDiffTiered 2>&1 | tee tieredfuzz.log
 
       - name: upload logs and crash corpus
         if: always()
@@ -324,6 +350,7 @@ jobs:
           name: nightly-fuzz-${{ matrix.variant }}-${{ github.run_id }}
           path: |
             difffuzz.log
+            tieredfuzz.log
             gcstress.log
             autodiff.log
             gofuzz.log

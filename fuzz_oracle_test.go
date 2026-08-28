@@ -99,6 +99,16 @@ func runWangshuSide(t *testing.T, src, prelude string) (verdict oracle.Verdict, 
 		t.Fatalf("prelude must run on wangshu: %v", err)
 	}
 
+	return runFuzzInputOn(t, st, src)
+}
+
+// runFuzzInputOn arms the budget, runs one fuzz input on an already-prelude'd State, and reads the output
+// accumulator back. Split out of runWangshuSide so the TIERED harness
+// (fuzz_oracle_tiered_test.go) shares this half verbatim: the comparison contract -- budget value, limit
+// classification, readout-clobber handling -- must be ONE implementation, or the two targets can drift into
+// comparing different things while both looking green.
+func runFuzzInputOn(t *testing.T, st *wangshu.State, src string) (verdict oracle.Verdict, output, errMsg string) {
+	t.Helper()
 	// Budget arms AFTER the prelude, mirroring the shim's hook order.
 	// 1<<22 back-edges is comparable coverage to the oracle's 50M
 	// instruction default at wangshu's back-edge counting granularity.
