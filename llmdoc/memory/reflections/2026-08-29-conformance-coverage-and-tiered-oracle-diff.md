@@ -37,7 +37,7 @@ metadata:
 # 「官方套件通过」到底通过了多少,以及给 p3/p4 补一条直接对 PUC 的差分轴(2026-08-29)
 
 > 范围:分支 `feat/conformance-suite-and-tiered-oracle-diff`。改动集中在
-> `test/luasuite/`(新增四个上游套件文件 + `stopAt` 表登记)、根包新增
+> `test/luasuite/`(**四个上游套件文件已在同分支 revert**,只留 `stopAt` 表注释里的计数方法说明)、根包新增
 > `fuzz_oracle_tiered_test.go`、`fuzz_oracle_test.go` 抽出 `runFuzzInputOn`,
 > 以及 `.github/workflows/ci.yml` 与 `.github/workflows/nightly-diff-fuzz.yml`。
 > 产品代码零改动。commit 数目与改动文件数不在文中写死,取数命令见末节。
@@ -323,6 +323,17 @@ dispatch 计数、覆盖率工具的实测行),它对「一行代码存在但那
    `__oracle_print`(不存在,应为 prelude 提供的名字),而且那条断言对 payload 不敏感。
 4. `test/luasuite/luasuite_test.go` 的包注释写「The 13 files in testdata/」,与实际文件数
    不一致(这类会变的量本来就不该写死在注释里)。
+
+## 写完这篇之后又发生的两件事(补记)
+
+本篇写在两个 commit 之前,补上以免它描述的是中间状态:
+
+**一、四个套件文件已 revert。** 既然实测只贡献 1 次断言,留着就是「覆盖率数字变好而实际什么都没多测」,正是本篇教训 4 说的那件事。计数方法(把 `assert` 包一层计数器、按 `stopAt` 截断后跑)写进了 `luasuite_test.go` 的 `stopAt` 表注释,连同各文件的实测数值,免得下一个人重复。
+
+**二、`db.lua` 的截断藏了一个真分歧,已修。** 它第 26 行断言 `debug.getinfo(print).what == "C"`,而 wangshu 那张表里连 `what` 都没有。原因是早期版本硬编码 `what="Lua"`、`source="=[C]"`(两种函数都标错),当时的修法是按「宁缺勿造」把字段整个省掉 —— 方向对,但**用错了对象**:这些字段是**可以推导的**(host closure 在值层面就与 Lua closure 可区分,Lua 函数带着自己 proto 的 source 与 linedefined)。**省掉一个可推导的字段不是诚实,是缺口**,而截断恰好把断言切在它上面一行。新增 `State.FunctionIsHost` / `State.FunctionInfo`,逐字段与真 `lua5.1` 比对一致。
+
+**三、tiered harness 的提升断言被审计判定过弱,已加强。** `PromotionCount()` 在 force-all 下对**任何**输入都 +1(输入自己的 main chunk 就是可编译 Proto)—— 实测空字符串、空白、`local x = 1` 全是 9 → 10。所以我原先写的 `after > before` 只证明了「force-all 开着」。现在界是 `after > before+1`,并且**测试自己检查空 payload 落在界下**,否则那个界只是我挑的一个数。另外实测确认这个界是**执行侧**而不是编译侧:一个编译了但从未被调用的嵌套函数只有 +1。
+判据补一条:**一个守卫要在两侧都做变异** —— 既要在「被保护的东西」上(删掉修复,守卫必须红),也要在「它声称在量的东西」上(换成空 payload,守卫也必须红)。我当时只做了前者。
 
 ## 8. 取数命令
 
