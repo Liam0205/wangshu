@@ -332,6 +332,41 @@ func (st *State) FrameIsHostBoundary(level int) bool {
 	return ok && kind == frameHost
 }
 
+// FunctionIsHost reports whether a function VALUE is a host (C-equivalent) closure rather than a Lua one.
+//
+// The frame-based FrameIsHostBoundary above answers the same question for an active level; this answers it
+// for a function passed by value, which is what debug.getinfo(f) needs. PUC distinguishes these with
+// `isLua(ci)` on a frame and `cl->c.isC` on a value, and it has both because the two forms are asked
+// independently. Returns false for a non-function.
+func (st *State) FunctionIsHost(v value.Value) bool {
+	if value.Tag(v) != value.TagFunction {
+		return false
+	}
+	return object.IsHostClosure(st.arena, value.GCRefOf(v))
+}
+
+// FunctionInfo returns a Lua function's raw source, its display form (as ChunkID renders it, which is what
+// short_src holds) and its linedefined. ok is false for a host function or a non-function.
+//
+// Returned as one call rather than three accessors so the three values cannot be fetched from different
+// protos, and so short_src goes through bytecode.ChunkID here -- the same helper the frame-based path uses,
+// rather than a second copy of the "=name"/"@file" stripping rules in the stdlib package.
+func (st *State) FunctionInfo(v value.Value) (source, shortSrc string, lineDefined int32, ok bool) {
+	if value.Tag(v) != value.TagFunction {
+		return "", "", 0, false
+	}
+	ref := value.GCRefOf(v)
+	if object.IsHostClosure(st.arena, ref) {
+		return "", "", 0, false
+	}
+	pid := object.ClosureProtoID(st.arena, ref)
+	if int(pid) >= len(st.protos) {
+		return "", "", 0, false
+	}
+	proto := st.protos[pid]
+	return proto.Source, bytecode.ChunkID(proto.Source), proto.LineDefined, true
+}
+
 // FrameIsTail reports whether LEVEL names a tail call's vanished caller, which getinfo
 // describes as what="tail".
 func (st *State) FrameIsTail(level int) bool {

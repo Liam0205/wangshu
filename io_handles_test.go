@@ -108,15 +108,24 @@ func TestIOHandles_StreamKindRespected(t *testing.T) {
 	}
 }
 
-// TestDebugGetInfo_NoFabricatedFields pins that getinfo omits what it cannot answer.
+// TestDebugGetInfo_NoFabricatedFields pins that getinfo never FABRICATES a field.
 //
-// An earlier version hardcoded what="Lua" and source="=[C]" for the function form, which
-// reported a C function as Lua and a Lua function as C -- the opposite of this library's
-// stated "omit rather than fabricate" rule.
+// It used to also pin that the function form OMITS what/source, which was the fix for an early version
+// that hardcoded what="Lua" with source="=[C]" -- mislabelling both kinds. Omitting was the right response
+// to fabricating, but it overshot: those fields are DERIVABLE (a host closure is distinguishable from a Lua
+// one at the value level, and a Lua function carries its proto's source), and PUC answers them. The official
+// db.lua asserts exactly that.
+//
+// So the rule this test guards is "derive or omit, never invent", and the derived cases now live in
+// TestGetInfoFunctionForm. What remains here is that the values are CORRECT per kind, which is what the
+// original defect got wrong.
 func TestDebugGetInfo_NoFabricatedFields(t *testing.T) {
 	for _, tc := range []struct{ name, src, want string }{
-		{"function form omits what", `return tostring(debug.getinfo(print).what)`, "nil"},
-		{"function form omits source", `return tostring(debug.getinfo(print).source)`, "nil"},
+		// A host function must not be labelled Lua, which is the mislabelling that started this.
+		{"function form labels C correctly", `return tostring(debug.getinfo(print).what)`, "C"},
+		{"function form sources C correctly", `return tostring(debug.getinfo(print).source)`, "=[C]"},
+		{"function form labels Lua correctly",
+			"local function f() end return tostring(debug.getinfo(f).what)", "Lua"},
 		{"function form has func", `return type(debug.getinfo(print).func)`, "function"},
 		{"level form has func", `return type(debug.getinfo(1).func)`, "function"},
 		// Level 0 is getinfo itself, a C function -- 0 is a valid level, not past the top.

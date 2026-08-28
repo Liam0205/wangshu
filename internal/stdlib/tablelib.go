@@ -1727,16 +1727,43 @@ func debugFnGetInfo(st *crescent.State, args []value.Value) ([]value.Value, *cre
 	wants := func(c byte) bool { return strings.IndexByte(want, c) >= 0 }
 
 	if value.Tag(args[0]) == value.TagFunction {
-		// Function form: no active frame, so there is no current line. what/source are
-		// NOT set -- an earlier version hardcoded what="Lua" and source="=[C]", which
-		// reported a C function as Lua and a Lua function as C. Per this library's own
-		// "omit rather than fabricate" rule they are left out until the interpreter can
-		// answer them.
+		// Function form: no active frame, so there is no current line.
+		//
+		// what/source/short_src/linedefined ARE answered now. An early version hardcoded what="Lua" with
+		// source="=[C]", which mislabelled both kinds, and the fix at the time was to omit the fields under
+		// this library's "omit rather than fabricate" rule -- correct as far as it went, but it left
+		// debug.getinfo(print) returning a table with no `what`, where PUC gives what="C", short_src="[C]".
+		// The official db.lua asserts exactly that on its first line of real work, and truncating the suite
+		// file at that point is what hid it.
+		//
+		// The interpreter CAN answer it: a host closure is distinguishable from a Lua one at the value level
+		// (State.FunctionIsHost), and a Lua function carries its proto's Source/LineDefined. So the fields
+		// are derived, not fabricated -- which is what the omit rule actually asks for.
 		if wants('f') {
 			set("func", args[0])
 		}
 		if wants('l') {
 			set("currentline", value.NumberValue(-1))
+		}
+		if wants('S') {
+			if st.FunctionIsHost(args[0]) {
+				set("what", intern(st, "C"))
+				set("source", intern(st, "=[C]"))
+				set("short_src", intern(st, "[C]"))
+				set("linedefined", value.NumberValue(-1))
+			} else {
+				src, short, ld, ok := st.FunctionInfo(args[0])
+				// PUC: a main chunk has linedefined 0 and what="main"; any other Lua function has
+				// linedefined > 0 and what="Lua".
+				if ok && ld == 0 {
+					set("what", intern(st, "main"))
+				} else {
+					set("what", intern(st, "Lua"))
+				}
+				set("source", intern(st, src))
+				set("short_src", intern(st, short))
+				set("linedefined", value.NumberValue(float64(ld)))
+			}
 		}
 		return []value.Value{value.MakeGC(value.TagTable, t)}, nil
 	}
