@@ -1745,6 +1745,18 @@ func debugFnGetInfo(st *crescent.State, args []value.Value) ([]value.Value, *cre
 		if wants('l') {
 			set("currentline", value.NumberValue(-1))
 		}
+		if wants('L') {
+			// PUC returns activelines only when "L" is asked for, and nil for a C function.
+			if al, ok := st.FunctionActiveLines(args[0]); ok {
+				lt := st.NewLibTable(uint32(len(al)))
+				for ln := range al {
+					if e := st.RawSet(lt, value.NumberValue(float64(ln)), value.BoolValue(true)); e != nil {
+						return nil, e
+					}
+				}
+				set("activelines", value.MakeGC(value.TagTable, lt))
+			}
+		}
 		if wants('S') {
 			if st.FunctionIsHost(args[0]) {
 				set("what", intern(st, "C"))
@@ -1752,7 +1764,7 @@ func debugFnGetInfo(st *crescent.State, args []value.Value) ([]value.Value, *cre
 				set("short_src", intern(st, "[C]"))
 				set("linedefined", value.NumberValue(-1))
 			} else {
-				src, short, ld, ok := st.FunctionInfo(args[0])
+				src, short, ld, lastLD, ok := st.FunctionInfo(args[0])
 				// PUC: a main chunk has linedefined 0 and what="main"; any other Lua function has
 				// linedefined > 0 and what="Lua".
 				if ok && ld == 0 {
@@ -1763,6 +1775,7 @@ func debugFnGetInfo(st *crescent.State, args []value.Value) ([]value.Value, *cre
 				set("source", intern(st, src))
 				set("short_src", intern(st, short))
 				set("linedefined", value.NumberValue(float64(ld)))
+				set("lastlinedefined", value.NumberValue(float64(lastLD)))
 			}
 		}
 		return []value.Value{value.MakeGC(value.TagTable, t)}, nil

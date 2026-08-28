@@ -67,6 +67,12 @@ var stopAt = map[string]int{
 	// one step, 10 §13 exempt: collectgarbage step/setstepmul). The first 110
 	// lines (table/string/function churn, gcinfo settle loop) must pass entirely.
 	"gc.lua": 111,
+	// short_src truncation formatting for a long/multiline chunkname (db.lua:44 asserts the
+	// '[string "..."]' elision form). The 4 assertions before it exercise debug.getinfo's
+	// what/source/short_src/linedefined/lastlinedefined/activelines against the official
+	// expectations rather than our own probes -- which is what pulled lastlinedefined and
+	// activelines out of the "hook-dependent, omit" bucket they had been filed under.
+	"db.lua": 40,
 }
 
 func TestOfficialSuite(t *testing.T) {
