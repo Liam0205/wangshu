@@ -2,7 +2,7 @@
 // suite (lua.org/tests).
 //
 // The official suite consists of semantic assertions written by the language
-// authors; it is more authoritative than hand-written probes. The 13 files in
+// authors; it is more authoritative than hand-written probes. The files in
 // testdata/ are copied verbatim from lua-5.1-tests (README: "main goal is to
 // try to crash Lua") with no modifications. Files that cannot pass in full
 // register an **exemption line** in the stopAt table (from that line on they
@@ -26,6 +26,15 @@ import (
 )
 
 // stopAt: file -> exemption line (1-based line number, executes lines [1, stopAt)).
+//
+// COUNT LINES WITH CARE. "Lines below stopAt" is not a coverage figure: it cannot tell a file that runs 143
+// lines of assertions from one that runs 143 lines and returns at the top. Four upstream files were added to
+// this directory and reverted in the same branch for exactly that reason -- code.lua and checktable.lua open
+// with `if T == nil then ... return end` (T is the official testC library, which this repo does not provide),
+// so they execute 0 and 1 assertions respectively while looking like 220 lines of new coverage.
+//
+// The measurement that settles it is to wrap `assert` in a counter and run the file as this runner does. For
+// scale, on the files below: sort 150030, nextvar 59262, gc 5005, pm 147, vararg 83.
 // 0 = run the whole file. The reason must point to an entry in the exemption registry.
 var stopAt = map[string]int{
 	// Passes in full

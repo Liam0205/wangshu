@@ -129,6 +129,60 @@ Lua 5.1 官方发行带一套测试脚本(`test/` 目录:`attrib.lua`/`calls.lua
 
 > `code.lua`/`api.lua` 的 SKIP 是**结构性**的:望舒**自定义 opcode 编号且无 C API**([02](./02-bytecode-isa.md) §0「不二进制兼容官方 `.luc`」、[11](./11-embedding-arena-abi.md) 用 arena ABI 替代 C API)。它们测的是「官方字节码格式 / C 栈机」,望舒在这两点上**有意不同**,差分测试无意义。等价的内省/嵌入正确性由**自写用例 + 嵌入 API 差分**(§3.5、[11](./11-embedding-arena-abi.md))覆盖。
 
+### 2.1a 官方套件的实际覆盖口径(2026-08-29 实测,纠正「套件通过」这个说法)
+
+上面 §2.1 是**策略预判**,写在实现之前。这一节记**实测的现状**,因为「官方 Lua 测试套件通过」
+这句话在本仓文档与 README 里长期不带覆盖率,而它传达的信心远超它的证据。
+
+实现落在 `test/luasuite/`,不是 §2.3 那个 `test/conformance/` 目录结构(那份是设计稿的组织方案)。
+判据表是 `test/luasuite/luasuite_test.go` 的 `stopAt`:值 0 表示整文件跑,正数表示只执行
+`[1, stopAt)` 这些行,截断理由逐条写在表里的注释上,每条指向豁免登记
+(`test/difftest/corners_test.go::exemptions`)。
+
+**三个数,以及为什么只给「通过」是不够的**:
+
+- 套件里的文件数**少于上游** `lua5.1-tests`(现有文件与上游**逐字节相同**,这一条是真的)。
+- 按行号算的已跑行数约**一半**。
+- **只有少数文件从头跑到尾**;最极端的 `events.lua` 只跑 3 行(第 5 行就用 `setfenv`)。
+
+截断都是**刻意不实现的功能**(`setfenv`/`getfenv`、`debug` 高级面、io 对象模型、
+`string.dump`、`require`、真正的增量 GC),不是藏起来的语义分歧。所以这里没有隐瞒,
+问题纯粹在于「套件通过」与「套件约一半通过、只有少数文件完整跑完」给人的信心完全不同。
+
+**更要紧的一格:「在套件里」不等于「在跑」。** 按行号算的量(占比、已跑行数)**不携带执行信息**。
+2026-08-29 那轮加了四个上游文件之后按行号算的已跑行数明显上涨,而换一个**执行侧**的量去测
+(把 `assert` 换成一个自增再转发的版本、按 `stopAt` 截断后读实际执行次数),四个文件合计执行了
+**1 次**断言。三种机制各占一格:
+
+- **开头就判空返回**:`code.lua` 与 `checktable.lua` 第一段就是 `if T == nil then ... return end`。
+  `T` 是官方发行里的 testC 调试库(`T.listcode` / `T.querytab`),本仓不提供,所以 `code.lua`
+  打印 `>>> testC not active: skipping opcode tests <<<` 之后直接返回。这也说明 §2.1 那张表把
+  `code.lua` 预判成「结构性 SKIP」的**结论方向是对的**,只是真实原因不是 opcode 编号不同,
+  而是它依赖的内省库不存在。
+- **断言在被切掉的那一段里**:`verybig.lua` 的断言全部写在一个长括号字符串模板里,
+  要等文件末尾的 `dofile` 才执行,而截断切在那之前(它需要 `os.tmpname` + `io.output` + `dofile`)。
+- **截断切在第一条断言之前**:`db.lua` 的 `debug.getinfo` 断言从第 25 行起,而它的 `stopAt` 是 24。
+  实测把它往上抬:25–34 之间都编译失败(切在 `do` / `function` 块中间),抬到 40 时第一条断言执行
+  并且**失败**——所以这个文件不是「调一下 `stopAt` 就有收益」,它真正需要的是
+  `debug.sethook` / `getlocal`,也就是它被截断的原因本身。
+
+对照组说明这个手法是灵敏的:`sort.lua` / `nextvar.lua` / `gc.lua` / `pm.lua` / `vararg.lua`
+执行的断言次数都在几十到十几万这个量级。
+
+**引用口径(本节最有用的产出)**:
+
+- 拿套件当覆盖度证据前,先读一遍 `stopAt` 表;`grep -l <feature> test/luasuite/testdata/`
+  命中之后**还要确认那一行在 `stopAt` 之前** —— 落在截断之后的等于没被覆盖。
+- 报覆盖率时给「跑了多少 / 总共多少 / 有多少被截断及为什么」,并且用**执行侧的量**
+  (实际执行的断言次数)核一次,不要只给按行号算的占比或已跑行数;
+  这两个写法是同一个量的两种形式,都读不出「这些行有没有做事」。
+- 自查办法:构造一个「数字明显变好而实际什么都没多测」的输入 ——
+  加一个开头就 `if T == nil then return end` 的文件,按行号算的已跑行数会立刻涨一整个文件。
+
+判据见 `llmdoc/guides/design-claims-vs-codebase-physics.md` §7 与
+`llmdoc/guides/prove-the-path-under-test.md` §1/§4;反思
+[[2026-08-29-conformance-coverage-and-tiered-oracle-diff]]。
+
 ### 2.2 自写针对性用例:补官方覆盖不到的角落
 
 官方套覆盖语义主体,但**望舒特有的实现决策**需要自写用例钉死(官方套不会测这些,因为它们是望舒的实现选择):
@@ -435,6 +489,40 @@ type OfficialLua struct{}      // oracle:exec lua5.1 子进程(或 golden 文件
 
 func DiffN(src string, runners ...Runner) DiffResult { /* N 方比对,§3.3 矩阵推广 */ }
 ```
+
+#### 3.8a fuzz 目标清单与「哪一层对哪个参照」(2026-08-29 补,新增直接对 PUC 的分层轴)
+
+上面讲的是 `test/difftest` 这条 runner 抽象的路。**go-fuzz 那条路的参照关系是另一张图**,
+而它长期有一处只能靠传递得来:
+
+| 目标 | 被测层 | 参照 | build 约束 |
+|---|---|---|---|
+| `FuzzOracleDiff` | p1 解释器 | **内嵌 PUC 5.1.5**(`internal/oracle`) | `wangshu_oracle_cgo && cgo` |
+| `FuzzAutoPromote` | p3/p4(自然升层) | **p1** | 默认 build |
+| `FuzzP4ForceAllPromote` | p4(强制提升) | **p1** | 默认 build |
+| `FuzzOracleDiffTiered` | p3/p4(强制提升) | **内嵌 PUC 5.1.5** | `wangshu_oracle_cgo && cgo && (wangshu_p3 \|\| wangshu_p4)` |
+
+前三行的意思是:**在 `FuzzOracleDiffTiered` 之前,p3/p4 的 fuzz 证据全部是传递来的** ——
+`分层 == p1`(第 2/3 行)加上 `p1 == PUC`(第 1 行)推出 `分层 == PUC`。传递性本身没错,
+但它**继承 p1 那次比较的所有盲区**,而且两个 tier 互相之间的一致性不由这条链保证。
+`test/difftest` 确实按 tier 对真 `lua5.1` 二进制跑,但它走的是 `generator.go` 那个手写生成器
+(几百行,`vararg` / `goto` / `pcall` / `error` 的生成计数都是 0),覆盖的写法远窄于 go-fuzz 变异。
+
+第 4 行是补上的直接轴。两条设计约束值得记住:
+
+- **跳过集合与 p1 目标完全相同**(两侧资源上限、NUL 字节、非有限的 `error()` level、
+  实现常数类护栏)。加一个 tier 专属的跳过是让这个目标变绿最容易的办法,也是让它变得
+  毫无价值的办法 —— 「tier 与 PUC 分歧而 p1 不分歧」正是它存在的理由,不能可跳过。
+- **提升必须被断言,不能假设**。`FuzzOracleDiff` **本来就能在 tier tag 下编译并通过**:
+  它构造的是普通 `State`,tier 代码被链接进来但从未进入。所以一个忘记提升的分层 harness
+  与一个通过的测试在输出上完全一样,连一条 skip 都不留。配套断言与它自己的两个已知弱点
+  (那条「整轮至少提升一次」的标志没有读取点;守护测试的断言读的是**编译侧**的
+  `PromotionCount` 而 force-all 会提升 main chunk 自己,所以换成空 payload 也满足)
+  记在反思 [[2026-08-29-conformance-coverage-and-tiered-oracle-diff]] §5.2 与
+  `llmdoc/guides/prove-the-path-under-test.md` §2.2/§2.3。
+
+**首轮结果**:两个 tier 都观察到提升,短时引导式 fuzz 未发现分歧。**这是第一个结果,
+不是一张清白证明** —— 它说明这条轴是活的、显然的情形一致。
 
 **P3+ 接入的关键差异**:P1 的三方是「**不同实现各跑各的字节码**,只比最终输出」;P3+ 的「望舒解释器 vs 望舒 gibbous」是「**同一份 Proto** 走不同执行层」——后者是更强的差分(同输入字节码,任何输出差异必是执行层 bug,不存在「实现本来就不同」的噪声)。这正是 roadmap §5 把它当**JIT 投机错误主防线**的原因:trace JIT 的去优化(deopt)若漏了某个 guard,投机路径会**静默产出错误结果**,只有「同 Proto 走解释器 vs 走 JIT 输出对比」能逐字节抓住(§7 前瞻详述)。**P4 已兑现该主防线**(承 [P4 08 §4 V1-V13 + §5 V17-V22](../p4-method-jit/08-testing-strategy.md)):58 difftest 三方 byte-equal(oracle / crescent / p4-jit force-all)+ 26 e2e prove-the-path + V22 fuzz harness。P1 把这套框架建好,是给 P3+ 的「主防线」提前铺好轨道(roadmap §3 原则:每阶段独立交付,P1 的差分框架本身就是交付物)。
 

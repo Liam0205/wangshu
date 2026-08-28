@@ -407,6 +407,50 @@ jobs:
 - **fuzz 的 30 天累积覆盖仅在 non-race 走**——V22 spec 的核心断言(guard 漏判 → byte-equal 破)由 non-race fuzz 累积承担,`-race` 不重复;
 - **原描述「`-race` + fuzz 30s」**(旧稿 §3.5 表 PR check 行)应理解为:`-race` job 与 fuzz-smoke job **并列覆盖**,而非「一个 job 内既开 `-race` 也跑 P4 fuzz」——后者会被 `raceEnabled` 常量 skip,达不到覆盖。
 
+### 3.4a 新增一条 P4 直接对 PUC 的 fuzz 轴(2026-08-29,`FuzzOracleDiffTiered`)
+
+上面 §3.1–§3.4 那条主防线的参照是 **crescent**:`gibbous-jit == crescent` byte-equal,
+理由是 crescent 已被 P1 三方差分验证过(承 [../p3-wasm-tier/08-testing-strategy.md](../p3-wasm-tier/08-testing-strategy.md) §2.5
+「crescent 是 oracle」)。这个设计对**层间**主防线是对的,而它有一个后果先前没写下来:
+**P4 与官方 PUC 的一致性是传递得来的** —— `p4 == crescent` 加上 `crescent == 官方`
+推出 `p4 == 官方`。
+
+两条代价,与 P3 那一侧完全同类(详见 P3 08 §2.5a):
+① 它**继承 `crescent == 官方` 那次比较的每一个盲区**;
+② 它对「crescent 与官方一致、而 P3 与 P4 两个 tier 各自也一致地错」这类情况没有直接观察能力。
+而 §3.4 列的三个 nightly 步骤里,go-fuzz 那一步在 P4 腿上跑的是**默认 build 的目标**
+(`FuzzAutoPromote` / `FuzzP4ForceAllPromote` 等),它们的参照也是 crescent;
+`test/difftest` 那条按 tier 对真 `lua5.1` 的路喂的是手写 generator 的脚本
+(几百行,`vararg` / `goto` / `pcall` / `error` 的生成计数都是 0)。
+
+**补上的直接轴**是根包的 `FuzzOracleDiffTiered`,build 约束
+`wangshu_oracle_cgo && cgo && (wangshu_p3 || wangshu_p4)`:go-fuzz 变异出的任意源码在
+**force-all** 的 State 上跑,与进程内嵌的官方 5.1.5 比对。它与主防线**并列而不是替代** ——
+`p4 == crescent` 仍然是最强的那条(同一份 Proto 走两层、没有「实现本来就不同」的噪声,
+这正是「P4 是望舒第一个会说谎的层」这个定位所要求的),新轴补的是「参照实现本身」这一格。
+
+**两条设计约束**:
+
+- **跳过集合与 p1 目标完全相同**,不为 tier 开新跳过 —— 与 §2.1 / P3 08 §2.4
+  「P1 12 §10 验收口径原样适用,不为加速层开新豁免」同一条纪律。
+- **升层必须被断言,不能假设**。P1 的 `FuzzOracleDiff` **本来就能在 `wangshu_p4` tag 下
+  编译并通过**(构造普通 `State`、从不升层,P4 的 code 被链接进来但从未进入),
+  所以一个忘记升层的分层 harness 与一个通过的测试在输出上完全一样、连 skip 都不留。
+  这与 §3.2 那条「force-all 消除热度时序不确定性」的理由同源。CI 里另加一条
+  **required-target 存在性断言**:这个目标的 build 约束比其他目标复杂,tag 打错它会
+  **静默消失**而其余目标照旧让 job 变绿(与 §3.4 那条「go-fuzz 目标计数陈旧」是同一族风险)。
+
+**首轮结果**:p3 与 p4 都观察到升层,短时引导式 fuzz 未发现分歧 ——
+**第一个结果,不是一张清白证明**。**两个已知弱点如实记下**(只记录不改):
+那条「整轮至少升层一次」的标志**没有读取点**;守护测试读的是**编译侧**的升层计数,
+而 force-all 会升 main chunk 自己,所以把 payload 换成空的那条断言照旧成立 ——
+要断言执行得读执行侧的计数器(`peroptranslator.NativeRunCount`,§3.1 那条
+prove-the-path 纪律用的就是它)。判据见
+`llmdoc/guides/prove-the-path-under-test.md` §2.2/§2.3,目标清单与参照关系表见
+[../p1-interpreter/12-testing-difftest.md](../p1-interpreter/12-testing-difftest.md) §3.8a,
+nightly 步骤与按层预算见 [../engineering.md](../engineering.md) §3.2,
+反思 [[2026-08-29-conformance-coverage-and-tiered-oracle-diff]]。
+
 ### 3.5 CI 硬门禁(architecture §4 不变式 2)
 
 承 [../architecture.md](../architecture.md) §4 不变式 2(层间逐字节差分 CI 必过)+ [../p3-wasm-tier/08-testing-strategy.md](../p3-wasm-tier/08-testing-strategy.md) §4.1。P4 上线后 CI 硬门禁:
