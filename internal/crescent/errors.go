@@ -345,26 +345,61 @@ func (st *State) FunctionIsHost(v value.Value) bool {
 	return object.IsHostClosure(st.arena, value.GCRefOf(v))
 }
 
+// FunctionActiveLines returns the set of lines a Lua function has code on, as PUC's `activelines` table does:
+// keys are line numbers with value true. ok is false for a host function or a non-function.
+//
+// This is derived, not fabricated: LineInfo already maps every instruction to its line, and PUC builds the same
+// table the same way (currentline is exactly a lookup into it). The official db.lua asserts that a function's
+// first and last lines are both present, which is what made the gap visible -- it had been grouped with
+// nups/namewhat as "hook-dependent and therefore omitted", but unlike those it needs nothing beyond the proto.
+func (st *State) FunctionActiveLines(v value.Value) (map[int32]bool, bool) {
+	if value.Tag(v) != value.TagFunction {
+		return nil, false
+	}
+	ref := value.GCRefOf(v)
+	if object.IsHostClosure(st.arena, ref) {
+		return nil, false
+	}
+	pid := object.ClosureProtoID(st.arena, ref)
+	if int(pid) >= len(st.protos) {
+		return nil, false
+	}
+	proto := st.protos[pid]
+	lines := make(map[int32]bool, len(proto.LineInfo))
+	for _, ln := range proto.LineInfo {
+		if ln > 0 {
+			lines[ln] = true
+		}
+	}
+	return lines, true
+}
+
 // FunctionInfo returns a Lua function's raw source, its display form (as ChunkID renders it, which is what
 // short_src holds) and its linedefined. ok is false for a host function or a non-function.
 //
 // Returned as one call rather than three accessors so the three values cannot be fetched from different
 // protos, and so short_src goes through bytecode.ChunkID here -- the same helper the frame-based path uses,
 // rather than a second copy of the "=name"/"@file" stripping rules in the stdlib package.
-func (st *State) FunctionInfo(v value.Value) (source, shortSrc string, lineDefined int32, ok bool) {
+func (st *State) FunctionInfo(v value.Value) (source, shortSrc string, lineDefined, lastLineDefined int32, ok bool) {
 	if value.Tag(v) != value.TagFunction {
-		return "", "", 0, false
+		return "", "", 0, 0, false
 	}
 	ref := value.GCRefOf(v)
 	if object.IsHostClosure(st.arena, ref) {
-		return "", "", 0, false
+		return "", "", 0, 0, false
 	}
 	pid := object.ClosureProtoID(st.arena, ref)
 	if int(pid) >= len(st.protos) {
-		return "", "", 0, false
+		return "", "", 0, 0, false
 	}
 	proto := st.protos[pid]
-	return proto.Source, bytecode.ChunkID(proto.Source), proto.LineDefined, true
+	// LineEnd is the `end` line, already tracked for every Proto: PUC's lastlinedefined. A main chunk carries
+	// 0 for both, which is what PUC reports and what distinguishes what="main".
+	last := proto.LineEnd
+	if proto.LineDefined == 0 {
+		last = 0
+	}
+	return proto.Source, bytecode.ChunkID(proto.Source), proto.LineDefined, last, true
 }
 
 // FrameIsTail reports whether LEVEL names a tail call's vanished caller, which getinfo
