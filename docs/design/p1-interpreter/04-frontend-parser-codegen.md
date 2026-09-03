@@ -455,7 +455,6 @@ type expDesc struct {
     info     int       // 含义随 k(见上)
     aux      int       // EIndexed 的键 RK
     nval     float64   // EKNum 的数字
-    opLine   int32     // EIndexed 的 GETTABLE 该用哪一行(索引运算符的行,#248,见 §5.2.1)
     tJmp     int       // "为真则跳"的回填链(逻辑表达式;NoJump=空)
     fJmp     int       // "为假则跳"的回填链
 }
@@ -464,7 +463,7 @@ type expDesc struct {
 `expdesc` 的 `t`/`f`(true/false patch list)只在逻辑表达式(`and`/`or`/比较)里非空,承载
 短路跳转的回填链(§5.6)。
 
-#### 5.2.1 索引表达式的两个行号:对象自己的行,与运算符的行(#248,2026-08-27)
+#### 5.2.1 索引表达式的两个行号:对象自己的行,与 GETTABLE 的行(#248,2026-08-27;后者的口径经 #252 订正,见 §5.2.2)
 
 `t[k]`/`t.field` 涉及两个独立的行号,而这两个行号此前都被错误地取成了同一个值——**索引运算符的行**
 (`e.Line`,即 `[`/`.` 所在的行)。
@@ -476,17 +475,20 @@ type expDesc struct {
 
 物化完对象和键之后,`exprIndex` 产出的 `expdesc` 是 `EIndexed`,而它自己**还没有发射 GETTABLE**——
 GETTABLE 要等到这个 `expdesc` 被后续某个 `dischargeVars` 调用时才真正发射,发射点可能是任意后面的
-一条语句。GETTABLE 必须记的是**索引运算符自己的行**(`.x` 那一行),不是「碰巧调 dischargeVars 那条
-语句所在的行」——`local v = A\n.x` 里 `dischargeVars` 被 `LocalStmt` 触发,若 GETTABLE 沿用调用方
-传入的行就会记成行 1(LocalStmt 所在行),而 PUC 报的是行 2(`.x` 所在行)。所以 `expdesc` 增加
-`opLine` 字段,在 `exprIndex` 里存运算符的行,`dischargeVars` 发射 GETTABLE 时优先取 `e.opLine`
-(为 0 则退回调用方传入的行,兼容不涉及索引的其他 `expdesc` kind)。
+一条语句。
+
+> **口径订正(#252,2026-09-03)**:#248 当时的结论是「GETTABLE 必须记索引运算符自己的行」,并为此给
+> `expdesc` 加了 `opLine` 字段。**那个口径是错的,该字段已删除**。PUC 的 `luaK_codeABC`/`luaK_codeABx`
+> **不接收行号参数**,一律用发射那一刻的 `fs->ls->lastline`;所以 GETTABLE 记的是**它被 discharge 那一刻
+> 的 lastline**,「运算符的行」只是「索引写完就地被消费」时的近似。把该近似排除掉的判别输入**完全没有
+> 括号**:`local v = A.x\n\n+1` 运算符在行 1,而 `luac5.1` 把 GETTABLE 记在行 **3**(`+` 才是 discharge
+> 点)。详见 §5.2.2。
 
 **四处代码路径,而我是一轮审计发现一处的** —— 这一点比结论更值得记:
 
 | 路径 | 位置 | 修法 |
 |---|---|---|
-| rvalue 读取 | `codegen.go` `exprIndex` | 对象/键用 `.Pos()`,GETTABLE 用运算符行(expDesc 新增 `opLine`) |
+| rvalue 读取 | `codegen.go` `exprIndex` | 对象/键用 `.Pos()`;GETTABLE 的行**已按 #252 改为 discharge 点的 lastline**(`opLine` 已删,见上方订正与 §5.2.2) |
 | 单目标赋值 | `stmt.go` `storeVar` | 同上,SETTABLE 用 `tn.Line` |
 | 多目标赋值 | `stmt.go` `stmtAssign` | **所有** store 共用一个行号 = 语句延伸到的最后一行(PUC 的 `ls->lastline`),**不是**各目标自己的运算符行 |
 | `function a.b() end` | `stmt.go` `stmtFunc` | 补上 PUC `funcstat` 末尾的 `luaK_fixline`,把最后一条指令改回 `function` 关键字那一行 |
@@ -498,6 +500,58 @@ GETTABLE 要等到这个 `expdesc` 被后续某个 `dischargeVars` 调用时才�
 变量写的行号测试测不出这两处的问题——被测的两条指令(GETGLOBAL 的延迟加载 / GETTABLE 的延迟
 discharge)在这条路径上都没有机会出现。测这一类性质要用全局或另一层索引做对象,见
 [[prove-the-path-under-test]] §2.1。
+
+#### 5.2.2 真正的规则:指令的行 = 它被发射那一刻的 lastline(#252,2026-09-03)
+
+§5.2.1 把 GETTABLE 的行定为「索引运算符的行」,那是**近似**。真规则来自 PUC 的
+`lcode.c`——`luaK_codeABC`/`luaK_codeABx` **根本不接收行号参数**:
+
+```c
+int luaK_codeABC (FuncState *fs, OpCode o, int a, int b, int c) {
+  return luaK_code(fs, CREATE_ABC(o, a, b, c), fs->ls->lastline);
+}
+```
+
+**每条指令一律用 `fs->ls->lastline`**,即词法器逐 token 推进的「最后消费的 token 所在行」;只有
+`luaK_fixline` 会事后改写个别指令(函数糖、CALL)。所以一条延迟发射的 GETTABLE 记的是「**谁在哪一行
+discharge 它**」;运算符的行只在「索引写完就地被消费」时与之相等。
+
+**两套记账模型不同构,这是本节最需要记住的事**:PUC 是「发射时读一个全局 lastline」,本仓是「每个
+emit 点显式传一个行参数、行号从 AST 节点上就近取」(`funcstate.go` 的 `emit` 系列,约 60 处调用点)。
+于是 PUC 那边「这条指令是几行」这个问题,在本仓侧变成「哪个 AST 节点该提供这个行、谁传下来」,两者
+没有结构对应关系,只能逐点比对——`opLine`(#248)、`ArgsLine`、`AssignStmt.EndLine` 都是在这套模型下
+对 PUC 逐点打的补丁。
+
+**因此调用方必须传 lastline 语义的行**,这要求 AST 携带结束位置(#248 的 `e598660` 记下过这个缺口、
+判定为超出当时范围而撤回;判断它「当时不可见」的依据是 SETGLOBAL/SETUPVAL/MOVE 不会 raise——那没错,
+但 GETTABLE 会)。现在的形式:
+
+| 消费点 | 提供行的字段 | 末元素的行来自 |
+|---|---|---|
+| 括号 `( ... )` | `ParenExpr.EndLine` | **右**括号(嵌套时各自推进:`((A.A\n)\n)()` 的 GETTABLE 在 2 而 CALL 在 3) |
+| 调用/方法调用参数 | `CallExpr/MethodCallExpr.ArgEndLines` | `)`,逐参数各取其后的分隔符 |
+| `local` 初始化 | `LocalStmt.ExprEndLines` | 语句最后一个 token |
+| 赋值右侧 | `AssignStmt.ExprEndLines` | 语句最后一个 token(与 `EndLine` 是**两个不同的量**:后者是 store 的行) |
+| `return` | `ReturnStmt.ExprEndLines` | 语句最后一个 token(没有闭合 token) |
+| 泛型 for 迭代器 | `GenForStmt.ExprEndLines` | **`check_match(DO)` 之前**的 lastline(节点在循环体解析完才构造,那时 `p.lastLine` 已指向 `end`) |
+| 被括号包住的被调用者 | `calleeEndLine`(仅 `ParenExpr`) | 右括号(`(0\n)(A.A)` 的 LOADK 记 2) |
+
+**表达式列表按元素各取其后的分隔符**,不是整列共用一行:`f(A.A\n,1\n)` 里第一个参数在 `,`(行 2)
+被 discharge、第二个在 `)`(行 3)。`parseExprListEnds` 因此按元素返回行,末元素留给调用方按闭合它
+的那个 token 填。
+
+**仍未对齐的残留**(实测与 `luac5.1 -p -l` 不同,但都是**不会 raise** 的指令,故当前不可见,已登记
+`llmdoc/memory/doc-gaps.md`):`storeVar` 的 store 行(`x = A\n.x` 的 SETGLOBAL 我们 1 / luac 2,已用
+能 raise 的 `__newindex` store 验证过不产生用户可见差分)、`f{...}` / `f"..."` 糖式调用的单参数物化行
+(`t.x\n{1}` 的 NEWTABLE 我们 2 / luac 1)、数值 for 的 FORPREP/LOADK 行。
+
+**判据**(比结论更值得记):同族缺陷至今在**四个**语法位置各出现一次,而 §5.2.1 末尾自己写着「要构造
+两种规则会给出不同答案的写法」——#248 对多目标赋值那一格做到了,却没有对「运算符行 vs lastline」这条
+规则本身做到。改行号归属时,除了以 `luac5.1 -p -l` 输出为准,还要:① 问「参照实现内部是怎么算这个量
+的,我的口径与它同式吗」(能读源码就去读);② 给共用 helper 加「缺失时回退」的参数后,`grep` 出全部
+调用点、逐个实测仍传缺省值的那些偏不偏;③ 跑 `make fuzz-oracle`(重放 `testdata/fuzz/` 常驻语料),
+`difftest` 不覆盖同族旧语料。详见 [[2026-09-03-issue252-discharge-line-is-lastline]] 与
+[[prove-the-path-under-test]] §2.1a/§4.7a/§9.6b。
 
 ### 5.3 寄存器分配原语
 

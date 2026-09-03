@@ -419,7 +419,7 @@ lua5.1 报第 **2** 行(`()` 所在的那一行),而 `internal/frontend/parse/ex
 **判据**:一个 AST 节点的 `Line` 该取哪个 token,要按参照实现在**哪一步**记录行号来定,不能默认取
 「这个节点从哪里开始」;跨行写法是唯一能区分两者的输入,所以行号类用例必须含跨行形式。
 
-#### 3.5.2 索引表达式的 GETTABLE 记的是索引运算符那一行,不是表达式起始那一行(#248,2026-08-27)
+#### 3.5.2 索引表达式的 GETTABLE 记的不是表达式起始那一行(#248,2026-08-27;口径经 #252 订正为 discharge 点的 lastline)
 
 与 §3.5.1 同一族问题(编译期给哪条指令记哪一行),换了一个节点:`t[k]`/`t.field`。
 
@@ -435,6 +435,14 @@ lua5.1 报第 **2** 行(`()` 所在的那一行),而 `internal/frontend/parse/ex
    `LocalStmt` 触发,取到的是行 1,而 GETTABLE 该记的是运算符自己的行(行 2)。`expdesc` 因此增加
    `opLine int32` 字段(§4 `expdesc` 定义同步增补),`dischargeVars` 发射 GETTABLE 时优先取
    `e.opLine`。
+
+> **口径订正(#252,2026-09-03)**:上面第 2 点的结论「GETTABLE 该记运算符自己的行」**是错的**,
+> `opLine` 字段已删除。PUC 的 `luaK_codeABC`/`luaK_codeABx` 不接收行号参数,一律用发射那一刻的
+> `ls->lastline`,所以 GETTABLE 记的是**它被 discharge 那一刻**的行;「运算符的行」只是「索引就地被
+> 消费」时的近似。判别输入 `local v = A.x\n\n+1` 完全没有括号、运算符在行 1,而 `luac5.1` 记在行 3
+> (`+` 才是 discharge 点)。**本节其余内容不受影响**(两处独立错误、局部变量做对象测不出来、要核对
+> 整张 `LineInfo` 表),失效的只是这一个口径。最终模型与全部消费点见
+> `04-frontend-parser-codegen.md` §5.2.2。
 
 **只有对象需要延迟加载时才有差别**:局部变量做对象时 `exprIndex` 不发射任何指令、GETTABLE 立即
 discharge,两处错误都不可能出现在这条路径上——这正是既有测试 `TestIndexExprLineIsOperatorLine`
