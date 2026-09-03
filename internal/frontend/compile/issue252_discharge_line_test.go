@@ -42,6 +42,35 @@ func TestDischargeLineIsLastLine(t *testing.T) {
 		// No parens at all: the arithmetic operator is the discharge point. This is the case that proves
 		// the rule is about lastline and not about parens.
 		{"arithmetic defers discharge", "local v = A.x\n\n+1", []int32{1, 3, 3, 0}},
+
+		// Each element of an expression list is materialized at the separator that FOLLOWS it, so one
+		// list can span lines: the comma discharges the first, the statement's end the second.
+		{"local init, per-element lines", "local a,b = A.x\n, 1", []int32{1, 2, 2, 0}},
+
+		// Call arguments take the same rule, and here the two elements really do land on different
+		// lines: GETTABLE on the comma's line (2), LOADK on the closing paren's (3).
+		{"call args, per-argument lines", "f(A.A\n,1\n)", []int32{1, 1, 2, 3, 1, 0}},
+		{"call arg closed later", "f(A.A\n)", []int32{1, 1, 2, 1, 0}},
+		// Method calls share the argument path (SELF keeps the method-name line).
+		{"method call args", "o:m(A.A\n,1\n)", []int32{1, 1, 1, 2, 3, 1, 0}},
+
+		// A parenthesized CALLEE ends on its closing paren, so it materializes there. This is the shape
+		// of #248's own corpus, which a first version of this fix regressed to line 1.
+		{"parenthesized callee", "(0\n)(A.A)", []int32{2, 2, 2, 2, 0}},
+		// Everything inside parens materializes at the closing paren, whatever its kind.
+		{"paren constant", "local v=(0\n)", []int32{2, 0}},
+		{"paren global", "local v=(A\n)", []int32{2, 0}},
+		{"paren local", "local t=1 local v=(t\n)", []int32{1, 2, 0}},
+
+		// A callee NOT ending in a consumed token keeps its own line: the `{` has not been scanned when
+		// the index is discharged, so the GETTABLE stays on 1. Pinned here because calleeEndLine must
+		// NOT fire for this shape.
+		//
+		// The NEWTABLE at pc=2 is 2 where luac5.1 says 1: the `f{...}` / `f"..."` sugar materializes its
+		// single argument one line late. That predates #252 (master produces the same table) and lives in
+		// parseArgs' LBRACE branch, which returns no end lines at all; it is asserted as-is rather than
+		// silently rounded to luac's value so this table stays a record of what we emit.
+		{"table-constructor sugar", "t.x\n{1}", []int32{1, 1, 2, 2, 2, 2, 0}},
 	} {
 		block, err := parse.Parse(lex.New([]byte(tc.src), "z"), "z")
 		if err != nil {
