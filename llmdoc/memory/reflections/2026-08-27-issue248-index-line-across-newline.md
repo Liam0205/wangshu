@@ -147,6 +147,23 @@ seed 本身不保证「每一层外壳都是必要的」——它只保证「删
 的另一面:那条讲**多个** issue 之间要先判断是不是同一件事;本条讲**单个** issue 内部的 seed 结构里,
 哪些部分是那个根因的必要条件、哪些只是偶然裹在外面的壳,同样需要逐一验证而不能从字面结构直接读出。
 
+## 后续订正(2026-09-03,issue #252)
+
+本轮定的口径「PUC 把错误归到**索引运算符所在行**」**不成立**,它只是真实规则的一个近似。#252
+(`(A.A\n)()`)证明了这一点,详见 [[2026-09-03-issue252-discharge-line-is-lastline]]。
+
+真实规则是:PUC 的 `luaK_codeABC`/`luaK_codeABx` **根本不接收行号参数**,一律用发射那一刻的
+`fs->ls->lastline`。所以 GETTABLE 的行是「**谁 discharge 它、在哪一行 discharge**」,而不是运算符
+写在哪。两者只在「索引写完就地被消费」时相等,而 `A.x\n\n+1`(**没有括号**)就已经分叉:运算符在
+第 1 行,PUC 报第 3 行(`+` 才是 discharge 点)。
+
+因此本轮加的 `expDesc.opLine` 字段在 #252 中被删除,改由调用方传入 lastline 语义的行
+(`ParenExpr.EndLine`、`LocalStmt.EndLine`)。本轮那句「`e.Line` 是运算符的行,这才是 faulting
+GETTABLE 必须带的行」是错的,已在代码注释中改正。
+
+本轮**正确且保留**的部分:对象与键各自按 `e.Obj.Pos()` / `e.Key.Pos()` discharge(GETGLOBAL 归对象
+自己的行),以及「位置类测试必须用会触发延迟加载的对象」这条教训——它在 #252 里再次生效。
+
 ## Promotion 决策
 
 - **教训 1 → [[prove-the-path-under-test]]**:「测试没走到被测路径」那一族的新一格——被测对象的写法
