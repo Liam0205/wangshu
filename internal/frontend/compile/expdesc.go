@@ -38,11 +38,8 @@ type expDesc struct {
 	info int     // meaning follows k (see above)
 	aux  int     // key RK of eIndexed
 	nval float64 // number of eKNum
-	// opLine is the line the eIndexed's GETTABLE must be stamped with: the indexing operator's line,
-	// not the line of whatever later discharges it (#248). Zero means "use the caller's line".
-	opLine int32
-	tJmp   int // patch chain to jump when true (NoJump=empty)
-	fJmp   int // patch chain to jump when false
+	tJmp int     // patch chain to jump when true (NoJump=empty)
+	fJmp int     // patch chain to jump when false
 }
 
 func newExp(k expKind, info int) expDesc {
@@ -73,14 +70,15 @@ func (fs *funcState) dischargeVars(line int32, e *expDesc) {
 			fs.freeReg(e.aux)
 		}
 		fs.freeReg(e.info)
-		// The operator's line wins when the eIndexed carries one. Discharge happens at an arbitrary later
-		// point -- for `local v = A<nl>.x` that is the LocalStmt, whose line is 1 -- so taking the caller's
-		// line put the faulting GETTABLE on the wrong line and the error message reported it.
-		tabLine := line
-		if e.opLine != 0 {
-			tabLine = e.opLine
-		}
-		pc := fs.emitABC(tabLine, bytecode.GETTABLE, 0, e.info, e.aux)
+		// The GETTABLE takes the DISCHARGE point's line, because PUC's luaK_codeABC stamps every
+		// instruction with ls->lastline -- the line of the last token consumed when it is emitted -- and
+		// discharge is what emits this one. #248 instead pinned it to the indexing operator's line, which
+		// is only an approximation: the two coincide when the index is consumed right where it is written,
+		// and diverge whenever consumption is deferred past a newline. `local v = A.x<nl><nl>+1` has no
+		// parens at all and still diverges (PUC 3, operator line 1), which is what ruled the operator-line
+		// model out. Callers must therefore pass a lastline-equivalent, which is why ParenExpr and
+		// LocalStmt now carry EndLine (#252).
+		pc := fs.emitABC(line, bytecode.GETTABLE, 0, e.info, e.aux)
 		e.k = eRelocable
 		e.info = pc
 	case eVararg, eCall:

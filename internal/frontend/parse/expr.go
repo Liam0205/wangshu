@@ -190,7 +190,9 @@ func (p *Parser) parsePrefixExpr() (ast.Expr, error) {
 		// error; unwrapping the single-value core would restore a NameExpr
 		// that gets wrongly accepted). Zero overhead in codegen for the
 		// single-value core.
-		e = &ast.ParenExpr{Line: line, E: inner}
+		// After expect(RPAREN) consumed it, p.lastLine IS the closing paren's line, and IS the reference
+		// ls->lastline at the point primaryexp discharges the inner expression (#252).
+		e = &ast.ParenExpr{Line: line, EndLine: p.lastLine, E: inner}
 	default:
 		return nil, p.errorf("unexpected symbol near '%s'", p.tok.String())
 	}
@@ -234,11 +236,11 @@ func (p *Parser) parsePrefixExpr() (ast.Expr, error) {
 				return nil, err
 			}
 			argsLine := p.tokEndLine()
-			args, err := p.parseArgs()
+			args, argEnds, err := p.parseArgs()
 			if err != nil {
 				return nil, err
 			}
-			e = &ast.MethodCallExpr{Line: line, ArgsLine: argsLine, Recv: e, Method: method, Args: args}
+			e = &ast.MethodCallExpr{Line: line, ArgsLine: argsLine, ArgEndLines: argEnds, Recv: e, Method: method, Args: args}
 		case token.LPAREN, token.STRING, token.LBRACE:
 			// The line of the ARGUMENT LIST, not of the callee expression.
 			//
@@ -253,12 +255,12 @@ func (p *Parser) parsePrefixExpr() (ast.Expr, error) {
 			// its LAST line. Using the start line reported A[[\n]] at line 1 where lua5.1
 			// says 2.
 			argsLine := p.tokEndLine()
-			args, err := p.parseArgs()
+			args, argEnds, err := p.parseArgs()
 			if err != nil {
 				return nil, err
 			}
 			// The callee keeps its OWN line; only the CALL uses the argument list's.
-			e = &ast.CallExpr{Line: e.Pos(), ArgsLine: argsLine, Fn: e, Args: args}
+			e = &ast.CallExpr{Line: e.Pos(), ArgsLine: argsLine, ArgEndLines: argEnds, Fn: e, Args: args}
 		default:
 			return e, nil
 		}
@@ -266,7 +268,11 @@ func (p *Parser) parsePrefixExpr() (ast.Expr, error) {
 }
 
 // args ::= '(' [explist] ')' | tableexpr | STRING
-func (p *Parser) parseArgs() ([]ast.Expr, error) {
+//
+// The second result is the per-argument end line (ls->lastline at the point PUC materializes each one); see
+// parseExprListEnds. It is nil for the `f{...}` and `f"..."` sugar, whose single argument is materialized
+// where it is written.
+func (p *Parser) parseArgs() ([]ast.Expr, []int32, error) {
 	switch p.tok.Kind {
 	case token.LPAREN:
 		// 5.1 ad-hoc check (lparser.c funcargs): a '(' on a different line
@@ -276,60 +282,85 @@ func (p *Parser) parseArgs() ([]ast.Expr, error) {
 		// 5.1). The STRING/LBRACE argument forms are not checked. Both plain
 		// calls and obj:m\n(3) method calls go through here.
 		if p.tok.Line != p.lastLine {
-			return nil, p.errorf("ambiguous syntax (function call x new statement) near '('")
+			return nil, nil, p.errorf("ambiguous syntax (function call x new statement) near '('")
 		}
 		if err := p.next(); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if p.match(token.RPAREN) {
 			if err := p.next(); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
-			return nil, nil
+			return nil, nil, nil
 		}
-		exprs, err := p.parseExprList()
+		exprs, ends, err := p.parseExprListEnds()
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if err := p.expect(token.RPAREN); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		return exprs, nil
+		// The ')' is what discharges the LAST argument, so it takes the closing paren's line.
+		if n := len(ends); n > 0 {
+			ends[n-1] = p.lastLine
+		}
+		return exprs, ends, nil
 	case token.LBRACE:
 		t, err := p.parseTableExpr()
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		return []ast.Expr{t}, nil
+		return []ast.Expr{t}, nil, nil
 	case token.STRING:
 		line := p.tok.Line
 		s := p.tok.Str
 		if err := p.next(); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		return []ast.Expr{&ast.StringExpr{Line: line, Val: s}}, nil
+		return []ast.Expr{&ast.StringExpr{Line: line, Val: s}}, nil, nil
 	}
-	return nil, p.errorf("function arguments expected near '%s'", p.tok.String())
+	return nil, nil, p.errorf("function arguments expected near '%s'", p.tok.String())
 }
 
 // explist ::= expr {',' expr}
 func (p *Parser) parseExprList() ([]ast.Expr, error) {
+	out, _, err := p.parseExprListEnds()
+	return out, err
+}
+
+// parseExprListEnds parses an explist and additionally reports, per expression, the line of the last token
+// consumed BEFORE the next one starts -- that is, ls->lastline at the moment PUC materializes it.
+//
+// PUC discharges each list element when it reaches the separator that follows it, and stamps the resulting
+// instruction with lastline. So in `f(A.A<nl>,1<nl>)` the first element's GETTABLE lands on 2 (where the
+// comma is) and the second's LOADK on 3 (where the ')' is) -- one shared end line for the whole list cannot
+// express that (#252).
+//
+// The end line of the LAST element is not known here: it depends on the token that closes the construct,
+// which only the caller consumes (a ')' for call args, `do` for a generic for, nothing at all for a return).
+// It is left 0 and the caller fills it in.
+func (p *Parser) parseExprListEnds() ([]ast.Expr, []int32, error) {
 	first, err := p.parseExpr(0)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	out := []ast.Expr{first}
+	ends := []int32{0}
 	for p.match(token.COMMA) {
+		// p.lastLine is the line of the token just before this comma; the comma is what discharges the
+		// element preceding it, and PUC reads lastline after consuming it.
 		if err := p.next(); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
+		ends[len(ends)-1] = p.lastLine
 		e, err := p.parseExpr(0)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		out = append(out, e)
+		ends = append(ends, 0)
 	}
-	return out, nil
+	return out, ends, nil
 }
 
 // tableconstructor ::= '{' [field {fieldsep field} [fieldsep]] '}'

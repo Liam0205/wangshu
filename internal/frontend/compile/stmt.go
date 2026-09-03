@@ -52,7 +52,10 @@ func (fs *funcState) stmt(node ast.Stmt) {
 // stmtLocal: local a, b = e1, e2 (04 §5.8)
 func (fs *funcState) stmtLocal(s *ast.LocalStmt) {
 	nWant := len(s.Names)
-	fs.adjustExprList(s.Line, s.Exprs, nWant)
+	// Each initializer takes ITS OWN materialization line, as PUC stamps instructions with ls->lastline:
+	// `local v = A<nl>.x` discharges the GETTABLE on 2, not on the `local` keyword's line (#252).
+	// registerLocal below keeps s.Line -- that is a scope boundary, not an instruction line.
+	fs.adjustExprList(s.Line, s.Exprs, nWant, s.ExprEndLines)
 	for i, n := range s.Names {
 		fs.registerLocal(s.Line, n)
 		// Track `local sqrt = math.sqrt`-style bindings (RHS is a bare
@@ -88,8 +91,19 @@ func (fs *funcState) stmtLocalFunc(s *ast.LocalFuncStmt) {
 // When the last element is a multi-value source (Call/Vararg), it takes nWant - (number of fixed values before it)
 // values; otherwise a shortfall is padded with LOADNIL and the excess is discarded (side effects of the discarded
 // expressions still run).
-func (fs *funcState) adjustExprList(line int32, exprs []ast.Expr, nWant int) {
+//
+// ends, when supplied, gives the line each element is MATERIALIZED at -- ls->lastline at that point, which is the
+// line of the separator following it. PUC stamps instructions with lastline, so the elements of one list can land
+// on different lines: `local a,b = A.x<nl>, 1` puts both on 2, and `f(A.A<nl>,1<nl>)` puts them on 2 and 3
+// (#252). A nil or short ends falls back to line.
+func (fs *funcState) adjustExprList(line int32, exprs []ast.Expr, nWant int, ends []int32) {
 	n := len(exprs)
+	endAt := func(i int) int32 {
+		if i < len(ends) && ends[i] != 0 {
+			return ends[i]
+		}
+		return line
+	}
 	if n == 0 {
 		if nWant > 0 {
 			fs.emitABC(line, bytecode.LOADNIL, fs.freereg, fs.freereg+nWant-1, 0)
@@ -99,7 +113,7 @@ func (fs *funcState) adjustExprList(line int32, exprs []ast.Expr, nWant int) {
 	}
 	for i := 0; i < n-1; i++ {
 		ei := fs.expr(exprs[i])
-		fs.exp2NextReg(line, &ei)
+		fs.exp2NextReg(endAt(i), &ei)
 	}
 	last := fs.expr(exprs[n-1])
 	if nWant < n {
@@ -108,11 +122,11 @@ func (fs *funcState) adjustExprList(line int32, exprs []ast.Expr, nWant int) {
 		switch {
 		case nWant == n-1:
 			// discard the last element (its evaluation side effects still run)
-			fs.exp2NextReg(line, &last)
+			fs.exp2NextReg(endAt(n-1), &last)
 			fs.freereg-- // discard immediately
 		case nWant < n-1:
 			// The design did not pin down the "excess expressions not executed vs. evaluated then discarded" detail; Lua 5.1 is "evaluate then discard".
-			fs.exp2NextReg(line, &last)
+			fs.exp2NextReg(endAt(n-1), &last)
 			over := n - nWant
 			fs.freereg -= over
 		}
@@ -132,7 +146,7 @@ func (fs *funcState) adjustExprList(line int32, exprs []ast.Expr, nWant int) {
 		}
 		return
 	}
-	fs.exp2NextReg(line, &last)
+	fs.exp2NextReg(endAt(n-1), &last)
 	if nWant > n {
 		fs.emitABC(line, bytecode.LOADNIL, fs.freereg, fs.freereg+(nWant-n)-1, 0)
 		fs.reserveRegs(line, nWant-n)
@@ -198,7 +212,7 @@ func (fs *funcState) stmtAssign(s *ast.AssignStmt) {
 		}
 	}
 	// evaluate RHS: land in consecutive registers starting at freereg, count = len(s.Targets)
-	fs.adjustExprList(s.Line, s.Exprs, len(s.Targets))
+	fs.adjustExprList(s.Line, s.Exprs, len(s.Targets), nil)
 	rhsTop := fs.freereg - 1
 	for i := len(s.Targets) - 1; i >= 0; i-- {
 		src := rhsTop
@@ -384,7 +398,7 @@ func (fs *funcState) stmtNumFor(s *ast.NumForStmt) {
 func (fs *funcState) stmtGenFor(s *ast.GenForStmt) {
 	fs.enterBlock(true)
 	base := fs.freereg
-	fs.adjustExprList(s.Line, s.Exprs, 3)
+	fs.adjustExprList(s.Line, s.Exprs, 3, nil)
 	fs.registerLocal(s.Line, "(for generator)")
 	fs.registerLocal(s.Line, "(for state)")
 	fs.registerLocal(s.Line, "(for control)")
