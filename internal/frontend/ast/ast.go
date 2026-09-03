@@ -229,8 +229,13 @@ type AssignStmt struct {
 	// the sub-expressions only gives their START lines -- `A<nl>.x, b = 1, f(<nl>2<nl>)` extends to line 4
 	// while max(Pos()) sees only 2. Zero means "unset"; callers fall back to Line.
 	EndLine int32
-	Targets []Expr // each item must be a NameExpr or IndexExpr (parser-validated)
-	Exprs   []Expr
+	// ExprEndLines[i] is ls->lastline at the point PUC materializes Exprs[i] -- the RHS elements, which
+	// is a different question from EndLine above: that one is where the STORES go. `x, y = A.x<nl>, 1`
+	// puts the RHS GETTABLE on 2 (the comma), and `x = A.x<nl>` puts it on 1, since nothing follows
+	// (#252). Nil or short means "unknown", falling back to Line.
+	ExprEndLines []int32
+	Targets      []Expr // each item must be a NameExpr or IndexExpr (parser-validated)
+	Exprs        []Expr
 }
 type CallStmt struct {
 	Line int32
@@ -272,8 +277,12 @@ type NumForStmt struct {
 type GenForStmt struct {
 	Line  int32
 	Names []string
-	Exprs []Expr // source of the iterator triple
-	Body  *Block
+	// ExprEndLines[i] is ls->lastline at the point PUC materializes Exprs[i]. The last element's line is
+	// taken BEFORE `do` is consumed, so `for k in A.x<nl> do end` keeps the GETTABLE on 1 while
+	// `for k in A.x<nl>, 1 do end` moves it to 2 (#252).
+	ExprEndLines []int32
+	Exprs        []Expr // source of the iterator triple
+	Body         *Block
 }
 type FuncStmt struct {
 	Line     int32
@@ -282,8 +291,12 @@ type FuncStmt struct {
 	Fn       *FuncExpr
 }
 type ReturnStmt struct {
-	Line  int32
-	Exprs []Expr
+	Line int32
+	// ExprEndLines[i] is ls->lastline at the point PUC materializes Exprs[i]: the following comma's line,
+	// or -- for the last one -- the line of the statement's last token, since nothing closes a return.
+	// `return A.x<nl>, 1` puts the GETTABLE on 2; `return A.x<nl>` puts it on 1 (#252).
+	ExprEndLines []int32
+	Exprs        []Expr
 }
 type BreakStmt struct{ Line int32 }
 
