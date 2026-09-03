@@ -91,8 +91,11 @@ func (fs *funcState) expr(node ast.Expr) expDesc {
 	case *ast.ParenExpr:
 		// Parentheses force a single value: collapse an inner Call/Vararg
 		// into single-value form (04 §9.4).
+		//
+		// Discharge at the CLOSING paren's line: PUC's primaryexp runs luaK_dischargevars only after
+		// check_match(')'), by which point ls->lastline has advanced there (#252).
 		inner := fs.expr(e.E)
-		fs.dischargeVars(e.Line, &inner)
+		fs.dischargeVars(e.EndLine, &inner)
 		return inner
 	case *ast.IndexExpr:
 		return fs.exprIndex(e)
@@ -117,23 +120,35 @@ func (fs *funcState) expr(node ast.Expr) expDesc {
 func (fs *funcState) exprIndex(e *ast.IndexExpr) expDesc {
 	// The OBJECT is discharged at the object's own line, not at e.Line (#248).
 	//
-	// e.Line is the indexing operator's line, which is what the faulting GETTABLE must carry. Passing it
-	// here instead stamped it onto the object's own instruction: for a global indexed across a newline,
-	// GETGLOBAL took the operator line (2) and the GETTABLE was left to be discharged later at the
-	// enclosing statement's line (1), so the raise reported 1 where PUC reports 2.
+	// Passing e.Line -- the indexing operator's line -- stamped it onto the object's own instruction: for
+	// a global indexed across a newline, GETGLOBAL took the operator's line (2) instead of its own (1).
 	//
 	// It only shows when an index expression spans a newline AND the object's load is deferred (a global,
 	// or another index). A local is already in a register, so nothing is emitted here and the inversion
 	// cannot appear -- which is why the existing TestIndexExprLineIsOperatorLine, written with a local,
 	// passed throughout.
+	//
+	// No line is recorded for the GETTABLE itself: it is emitted by whoever discharges this eIndexed, and
+	// takes that point's line, as PUC's lastline does (#252 -- see dischargeVars).
 	obj := fs.expr(e.Obj)
 	tableReg := fs.exp2AnyReg(e.Obj.Pos(), &obj)
 	key := fs.expr(e.Key)
 	rk := fs.exp2RK(e.Key.Pos(), &key)
 	exp := newExp(eIndexed, tableReg)
 	exp.aux = rk
-	exp.opLine = e.Line
 	return exp
+}
+
+// calleeEndLine reports the line of the callee expression's last consumed token, falling back to dflt.
+//
+// Only a parenthesized callee is handled: the ')' is a token that advances ls->lastline before the argument
+// list is scanned, so `(0<nl>)(...)` materializes the callee on the closing paren's line. Every other callee
+// shape ends on the line its own last component starts on, which is what dflt already is (#252).
+func calleeEndLine(fn ast.Expr, dflt int32) int32 {
+	if p, ok := fn.(*ast.ParenExpr); ok && p.EndLine != 0 {
+		return p.EndLine
+	}
+	return dflt
 }
 
 // exprCall compiles f(args...); when the last arg is multi-value, sets B=0
@@ -141,8 +156,13 @@ func (fs *funcState) exprIndex(e *ast.IndexExpr) expDesc {
 func (fs *funcState) exprCall(e *ast.CallExpr) expDesc {
 	fnReg := fs.freereg
 	fnExp := fs.expr(e.Fn)
-	fs.exp2NextReg(e.Line, &fnExp)
-	nargs := fs.compileArgList(e.Args, e.Line)
+	// The callee materializes at the line of ITS OWN last token, which is where ls->lastline stands before
+	// the argument list is scanned. It differs from e.Line only when the callee itself spans lines: the
+	// `(0<nl>)` in `(0<nl>)(A.A)` ends on 2, so its LOADK is stamped 2, not 1. A callee that does NOT end
+	// in a consumed token keeps its start line -- `t.x<nl>{1}` puts GETTABLE on 1, because the `{` that
+	// follows has not been scanned when the index is discharged (#252).
+	fs.exp2NextReg(calleeEndLine(e.Fn, e.Line), &fnExp)
+	nargs := fs.compileArgList(e.Args, e.Line, e.ArgEndLines)
 	b := nargs + 1
 	if nargs < 0 { // last arg is multi-value
 		b = 0
@@ -206,7 +226,7 @@ func (fs *funcState) exprMethodCall(e *ast.MethodCallExpr) expDesc {
 	rk := fs.exp2RK(e.Line, &method)
 	fs.emitABC(e.Line, bytecode.SELF, baseReg, baseReg, rk)
 	fs.reserveRegs(e.Line, 1) // SELF additionally occupies R(baseReg+1) (self)
-	nargs := fs.compileArgList(e.Args, e.Line)
+	nargs := fs.compileArgList(e.Args, e.Line, e.ArgEndLines)
 	b := nargs + 1 + 1 // self + nargs
 	if nargs < 0 {
 		b = 0
@@ -219,20 +239,29 @@ func (fs *funcState) exprMethodCall(e *ast.MethodCallExpr) expDesc {
 
 // compileArgList lays args into consecutive registers; returns -1 when the
 // last arg is multi-value, otherwise the fixed count.
-func (fs *funcState) compileArgList(args []ast.Expr, line int32) int {
+// ends, when supplied, gives the line each argument is MATERIALIZED at (see adjustExprList): the line of the
+// separator that follows it, which is what PUC's lastline holds by then. `f(A.A<nl>,1<nl>)` therefore puts
+// the first argument's GETTABLE on 2 and the second's LOADK on 3 (#252).
+func (fs *funcState) compileArgList(args []ast.Expr, line int32, ends []int32) int {
 	n := len(args)
 	if n == 0 {
 		return 0
 	}
+	endAt := func(i int) int32 {
+		if i < len(ends) && ends[i] != 0 {
+			return ends[i]
+		}
+		return line
+	}
 	for i := 0; i < n-1; i++ {
 		ai := fs.expr(args[i])
-		fs.exp2NextReg(line, &ai)
+		fs.exp2NextReg(endAt(i), &ai)
 	}
 	last := fs.expr(args[n-1])
 	if fs.openMultiRet(&last, -1) {
 		return -1
 	}
-	fs.exp2NextReg(line, &last)
+	fs.exp2NextReg(endAt(n-1), &last)
 	return n
 }
 

@@ -64,7 +64,14 @@ type IndexExpr struct {
 // ParenExpr wraps a parenthesized expression: `(f())` forces a single value (04 §9.4 / Lua 5.1 semantics).
 type ParenExpr struct {
 	Line int32
-	E    Expr
+	// EndLine is the line of the CLOSING paren, mirroring ls->lastline at the point PUC's primaryexp
+	// discharges the inner expression: it calls luaK_dischargevars only AFTER check_match(')'), so a
+	// deferred GETTABLE inside the parens is stamped with the closing paren's line, not the opening
+	// one. Nested parens each advance it, so `((A.A<nl>)<nl>)()` puts GETTABLE on the INNER paren's
+	// line (2) and CALL on the outer's (3) -- which is why this is per-node and not a whole-expression
+	// end line (#252).
+	EndLine int32
+	E       Expr
 }
 
 func (e *NameExpr) Pos() int32  { return e.Line }
@@ -85,17 +92,24 @@ type CallExpr struct {
 	// GETTABLE on the argument line too, so `t.x\n{1}` blamed the wrong line for indexing nil.
 	Line     int32
 	ArgsLine int32
-	Fn       Expr
-	Args     []Expr
+	// ArgEndLines[i] is ls->lastline at the point PUC materializes Args[i]: the line of the separator
+	// that follows it (a ',' for every argument but the last, the ')' for the last one). Each argument
+	// gets its own, because `f(A.A<nl>,1<nl>)` discharges the first on 2 and the second on 3 (#252).
+	// Nil or short means "no end line known", and the argument falls back to ArgsLine.
+	ArgEndLines []int32
+	Fn          Expr
+	Args        []Expr
 }
 type MethodCallExpr struct {
 	// Line is the method-name line (used for SELF, as PUC's luaK_self does); ArgsLine is the
 	// argument list's line, which only the CALL uses.
 	Line     int32
 	ArgsLine int32
-	Recv     Expr
-	Method   string
-	Args     []Expr
+	// ArgEndLines mirrors CallExpr.ArgEndLines (#252).
+	ArgEndLines []int32
+	Recv        Expr
+	Method      string
+	Args        []Expr
 }
 
 func (e *CallExpr) Pos() int32       { return e.Line }
@@ -193,9 +207,15 @@ type Block struct {
 }
 
 type LocalStmt struct {
-	Line  int32
-	Names []string
-	Exprs []Expr
+	Line int32
+	// ExprEndLines[i] is ls->lastline at the point PUC materializes Exprs[i]: the line of the separator
+	// that follows it, or of the statement's last token for the final one. PUC stamps instructions with
+	// lastline rather than the statement's own line, so `local v = A<nl>.x` discharges the GETTABLE on
+	// line 2, and `local a,b = A.x<nl>, 1` puts both on 2. Using Line put them on 1, which #248 papered
+	// over with expDesc.opLine (#252). Nil or short means "unknown", falling back to Line.
+	ExprEndLines []int32
+	Names        []string
+	Exprs        []Expr
 }
 type LocalFuncStmt struct {
 	Line int32

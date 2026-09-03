@@ -69,17 +69,23 @@ func (p *Parser) parseLocal() (ast.Stmt, error) {
 		}
 	}
 	var exprs []ast.Expr
+	var ends []int32
 	if p.match(token.EQ) {
 		if err := p.next(); err != nil {
 			return nil, err
 		}
 		var err error
-		exprs, err = p.parseExprList()
+		exprs, ends, err = p.parseExprListEnds()
 		if err != nil {
 			return nil, err
 		}
+		// Nothing follows the last initializer, so it is materialized at the statement's last token.
+		// p.lastLine IS the reference ls->lastline (see its declaration) (#252).
+		if n := len(ends); n > 0 {
+			ends[n-1] = p.lastLine
+		}
 	}
-	return &ast.LocalStmt{Line: line, Names: names, Exprs: exprs}, nil
+	return &ast.LocalStmt{Line: line, ExprEndLines: ends, Names: names, Exprs: exprs}, nil
 }
 
 // if cond then block {elseif cond then block} [else block] end
