@@ -68,6 +68,15 @@ func TestDischargeLineIsLastLine(t *testing.T) {
 		// LOADNIL/JMP/TFORLOOP/FORPREP lines have their own pre-existing offsets, unrelated to #252.
 		{"assign RHS, per-element", "x, y = A.x\n, 1", []int32{1, 2, 2, 2, 2, 0}},
 		{"assign RHS, nothing follows", "x = A.x\n", []int32{1, 1, 1, 0}},
+		// The single-target/single-value assignment takes a separate fast path (storeVar, no freereg
+		// temporary), so it needs the RHS line threaded independently. `x = A.x<nl>` above cannot catch a
+		// miss there because luac puts that GETTABLE on 1 anyway; the operator must cross the newline for
+		// the two models to disagree. Found by review on PR #253, where this path was still passing s.Line.
+		//
+		// The trailing SETGLOBAL is 1 where luac says 2: that is the store-line gap storeVar documents,
+		// which predates this work and is unobservable (verified against a raising __newindex store).
+		{"single-target fast path", "x = A\n.x", []int32{1, 2, 1, 0}},
+		{"single-target, bracket", "x = A\n[1]", []int32{1, 2, 1, 0}},
 		{"return, per-element", "return A.x\n, 1", []int32{1, 2, 2, 1, 0}},
 		// Nothing closes a return, so a single returned index stays where it is written.
 		{"return, nothing follows", "return A.x\n", []int32{1, 1, 1, 0}},
