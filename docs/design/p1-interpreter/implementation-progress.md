@@ -462,6 +462,31 @@
   [04](./04-frontend-parser-codegen.md) §5.2.1。过程反思见
   `llmdoc/memory/reflections/2026-08-27-issue248-index-line-across-newline.md`。
 
+- **issue #252 —— 上面那条「根因二」的口径被推翻:GETTABLE 的行是 discharge 点的 lastline(2026-09-03,
+  分支 `fix/252-paren-discharge-line`,PR #253,7 commits)**。nightly 又开出一个同族 `FuzzOracleDiff`
+  issue,seed `co=coroutine.create(function()(A.A\n)()end)print(coroutine.resume(co))`(标题写「crash」但
+  不是崩溃,是错误消息里的行号差分:PUC `:2:` / 望舒 `:1:`)。**版本核对干净**,失败 run 的 headSha 就是
+  当前 HEAD。
+
+  | 项 | 落点 | 结论与要点 |
+  |---|---|---|
+  | #248 的「运算符行」口径是近似 | `internal/oracle/_lua515/src/lcode.c` | `luaK_codeABC`/`luaK_codeABx` **不接收行号参数**,一律用 `fs->ls->lastline`;GETTABLE 记的是**它被 discharge 那一刻**的行。判别输入 `local v = A.x\n\n+1` **完全没有括号**、运算符在行 1,luac 记行 3(`+` 才是 discharge 点)——这排除了「括号特例」与「运算符行」两种模型 |
+  | 修法 | `expdesc.go` / `codegen.go` / `stmt.go` / `parse/expr.go` / `parse/stmt.go` / `ast/ast.go` | 删 `expDesc.opLine`,改由调用方传 lastline 语义的行;`parseExprListEnds` 按元素返回物化行(表达式列表每个元素在**它后面那个分隔符**被消费后 discharge:`f(A.A\n,1\n)` 给出 2 和 3),末元素由调用方按闭合 token 填。新增 `ParenExpr.EndLine` / `{Local,Assign,Return,GenFor}Stmt.ExprEndLines` / `{Call,MethodCall}Expr.ArgEndLines` / `calleeEndLine` |
+  | 同族缺陷共四格 | — | ① 括号与调用参数(主 case)② 赋值右侧 + `return` + 泛型 for(`ends` 参数接线时传了 `nil`,靠自查清单查出;三处**全都**偏且偏在会 raise 的 GETTABLE 上)③ 单目标赋值快速路径(`storeVar` 用**同一个** `line` 参数同时干「物化 RHS」与「发射 store」两件事,靠 PR #253 远端评审查出,已拆成 `rhsLine` + `line`) |
+  | 泛型 for 的时机陷阱 | `parse/stmt.go` | 末元素的行必须在 `check_match(DO)` **之前**取:`GenForStmt` 节点是循环体解析完才构造的,那时 `p.lastLine` 已指向 `end`,直接用会把迭代器的 GETTABLE 推到循环之外。`for k in A.x\n do end`(GETTABLE 归 1)与 `for k in A.x\n, 1 do end`(归 2)这一对钉住它 |
+  | 第一版修法把 #248 自己的语料改红 | `testdata/fuzz/FuzzOracleDiff/8dff36b8bd115962` | `test-all`/`conformance-all`/`difftest-all` 全绿,只有 `make fuzz-oracle`(重放常驻语料)逮到——`difftest` **不重放** `testdata/fuzz/`,而同族回归最可能正落在那里 |
+  | 仍未对齐的残留(不可见) | — | `storeVar` 的 store 行(`x = A\n.x` 的 SETGLOBAL 我们 1 / luac 2,已用能 raise 的 `__newindex` store 验证不产生用户可见差分)、`f{...}`/`f"..."` 糖式调用的单参数物化行(`t.x\n{1}` 的 NEWTABLE 我们 2 / luac 1)、数值 for 的 FORPREP/LOADK 行。已登记 `llmdoc/memory/doc-gaps.md` |
+
+  四条判据:①**自己从参照实现行为归纳出的口径,与别人对源码的陈述一样需要回到源码验证**——能读源码就
+  去读(`luac5.1` 五行给出答案),否则构造让两个候选模型给出不同答案的输入
+  ([[design-claims-vs-codebase-physics]] §5.1a);②**用例要能区分两个候选模型**——为单目标赋值那一格
+  写的 `x = A.x\n` 在两个模型下期望值相同、零区分力,难点不在知道要构造判别输入而在**每加一格都重新
+  问一次**([[prove-the-path-under-test]] §2.1a);③**给共用 helper 加「缺失时回退」的可选参数时,每个
+  仍传缺省值的调用点都要实测**——回退默认值让漏接线与不需要接线在测试结果上完全同形(同上 §4.7a);
+  ④**同族旧语料要和新语料一起当验收门**(同上 §9.6b)。落点
+  [04](./04-frontend-parser-codegen.md) §5.2.2、[09](./09-errors-pcall.md) §3.5.2 订正块。过程反思见
+  `llmdoc/memory/reflections/2026-09-03-issue252-discharge-line-is-lastline.md`。
+
 ## 相关
 
 [00-overview](./00-overview.md) · [../engineering](../engineering.md) ·
