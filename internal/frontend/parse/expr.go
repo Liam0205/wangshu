@@ -323,11 +323,7 @@ func (p *Parser) parseArgs() ([]ast.Expr, []int32, error) {
 }
 
 // explist ::= expr {',' expr}
-func (p *Parser) parseExprList() ([]ast.Expr, error) {
-	out, _, err := p.parseExprListEnds()
-	return out, err
-}
-
+//
 // parseExprListEnds parses an explist and additionally reports, per expression, the line of the last token
 // consumed BEFORE the next one starts -- that is, ls->lastline at the moment PUC materializes it.
 //

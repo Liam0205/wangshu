@@ -267,9 +267,15 @@ func (p *Parser) parseFor() (ast.Stmt, error) {
 		if err := p.expect(token.KW_IN); err != nil {
 			return nil, err
 		}
-		exprs, err := p.parseExprList()
+		exprs, ends, err := p.parseExprListEnds()
 		if err != nil {
 			return nil, err
+		}
+		// Take the last element's line BEFORE `do` is consumed: PUC materializes the iterator triple
+		// while lastline still points at the explist's end, so `for k in A.x<nl> do end` keeps its
+		// GETTABLE on 1 (#252).
+		if n := len(ends); n > 0 {
+			ends[n-1] = p.lastLine
 		}
 		if err := p.expect(token.KW_DO); err != nil {
 			return nil, err
@@ -283,7 +289,7 @@ func (p *Parser) parseFor() (ast.Stmt, error) {
 		if err := p.expect(token.KW_END); err != nil {
 			return nil, err
 		}
-		return &ast.GenForStmt{Line: line, Names: names, Exprs: exprs, Body: body}, nil
+		return &ast.GenForStmt{Line: line, Names: names, ExprEndLines: ends, Exprs: exprs, Body: body}, nil
 	default:
 		return nil, p.errorf("'=' or 'in' expected near '%s'", p.tok.String())
 	}
@@ -346,11 +352,15 @@ func (p *Parser) parseReturn() (ast.Stmt, error) {
 	if isBlockEnd(p.tok.Kind) || p.match(token.SEMI) {
 		return &ast.ReturnStmt{Line: line}, nil
 	}
-	exprs, err := p.parseExprList()
+	exprs, ends, err := p.parseExprListEnds()
 	if err != nil {
 		return nil, err
 	}
-	return &ast.ReturnStmt{Line: line, Exprs: exprs}, nil
+	// Nothing closes a return, so the last element is materialized at the statement's last token (#252).
+	if n := len(ends); n > 0 {
+		ends[n-1] = p.lastLine
+	}
+	return &ast.ReturnStmt{Line: line, ExprEndLines: ends, Exprs: exprs}, nil
 }
 
 // expression-statement: starts with a prefixexp; if followed by '='/',' it's an
@@ -383,12 +393,16 @@ func (p *Parser) parseExprStmt() (ast.Stmt, error) {
 		if err := p.expect(token.EQ); err != nil {
 			return nil, err
 		}
-		exprs, err := p.parseExprList()
+		exprs, ends, err := p.parseExprListEnds()
 		if err != nil {
 			return nil, err
 		}
+		// Nothing follows the RHS list, so its last element takes the statement's last token (#252).
+		if n := len(ends); n > 0 {
+			ends[n-1] = p.lastLine
+		}
 		// p.lastLine IS the reference ls->lastline (see its declaration), which is what PUC uses here.
-		return &ast.AssignStmt{Line: line, EndLine: p.lastLine, Targets: targets, Exprs: exprs}, nil
+		return &ast.AssignStmt{Line: line, EndLine: p.lastLine, ExprEndLines: ends, Targets: targets, Exprs: exprs}, nil
 	}
 	// call statement: first must be a Call/MethodCall.
 	switch first.(type) {

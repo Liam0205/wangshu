@@ -212,7 +212,9 @@ func (fs *funcState) stmtAssign(s *ast.AssignStmt) {
 		}
 	}
 	// evaluate RHS: land in consecutive registers starting at freereg, count = len(s.Targets)
-	fs.adjustExprList(s.Line, s.Exprs, len(s.Targets), nil)
+	// The RHS elements take their own materialization lines; the STORES separately take storeLine below
+	// (#248 vs #252 are different questions about the same statement).
+	fs.adjustExprList(s.Line, s.Exprs, len(s.Targets), s.ExprEndLines)
 	rhsTop := fs.freereg - 1
 	for i := len(s.Targets) - 1; i >= 0; i-- {
 		src := rhsTop
@@ -398,7 +400,7 @@ func (fs *funcState) stmtNumFor(s *ast.NumForStmt) {
 func (fs *funcState) stmtGenFor(s *ast.GenForStmt) {
 	fs.enterBlock(true)
 	base := fs.freereg
-	fs.adjustExprList(s.Line, s.Exprs, 3, nil)
+	fs.adjustExprList(s.Line, s.Exprs, 3, s.ExprEndLines)
 	fs.registerLocal(s.Line, "(for generator)")
 	fs.registerLocal(s.Line, "(for state)")
 	fs.registerLocal(s.Line, "(for control)")
@@ -496,16 +498,24 @@ func (fs *funcState) stmtReturn(s *ast.ReturnStmt) {
 	// ordinary return: multi-value, the last element goes to top via B=0
 	base := fs.freereg
 	n := len(s.Exprs)
+	// Each returned expression materializes at its own line (the following comma's), as PUC's lastline
+	// does; only the RETURN itself keeps the statement's line (#252).
+	endAt := func(i int) int32 {
+		if i < len(s.ExprEndLines) && s.ExprEndLines[i] != 0 {
+			return s.ExprEndLines[i]
+		}
+		return s.Line
+	}
 	for i := 0; i < n-1; i++ {
 		ei := fs.expr(s.Exprs[i])
-		fs.exp2NextReg(s.Line, &ei)
+		fs.exp2NextReg(endAt(i), &ei)
 	}
 	last := fs.expr(s.Exprs[n-1])
 	if fs.openMultiRet(&last, -1) {
 		fs.emitABC(s.Line, bytecode.RETURN, base, 0, 0)
 		return
 	}
-	fs.exp2NextReg(s.Line, &last)
+	fs.exp2NextReg(endAt(n-1), &last)
 	fs.emitABC(s.Line, bytecode.RETURN, base, n+1, 0)
 	fs.freereg = base
 }
