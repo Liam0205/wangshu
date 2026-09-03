@@ -161,7 +161,12 @@ func (fs *funcState) adjustExprList(line int32, exprs []ast.Expr, nWant int, end
 // VLOCAL path, which avoids a pointless MOVE/RETURN).
 func (fs *funcState) stmtAssign(s *ast.AssignStmt) {
 	if len(s.Targets) == 1 && len(s.Exprs) == 1 {
-		fs.storeVar(s.Line, s.Targets[0], s.Exprs[0])
+		// The RHS materializes at its own recorded line (#252); the store keeps s.Line (#248).
+		var rhsLine int32
+		if len(s.ExprEndLines) > 0 {
+			rhsLine = s.ExprEndLines[0]
+		}
+		fs.storeVar(s.Line, rhsLine, s.Targets[0], s.Exprs[0])
 		fs.freereg = fs.nactvar
 		return
 	}
@@ -248,7 +253,14 @@ func (fs *funcState) stmtAssign(s *ast.AssignStmt) {
 }
 
 // storeVar stores the rhs value "directly" into the lhs variable (single-assignment fast path).
-func (fs *funcState) storeVar(line int32, lhs, rhs ast.Expr) {
+// rhsLine is where the RHS expression MATERIALIZES (ls->lastline at that point, #252); line is where the
+// STORE goes (#248). They are different questions about the same statement and must not be merged: for
+// `x = A<nl>.x` the RHS GETTABLE belongs on 2 while a store that cannot raise stays governed by the gap
+// recorded below. A zero rhsLine falls back to line.
+func (fs *funcState) storeVar(line, rhsLine int32, lhs, rhs ast.Expr) {
+	if rhsLine == 0 {
+		rhsLine = line
+	}
 	// KNOWN GAP, deliberately not papered over: PUC emits this store at ls->lastline, which its LEXER advances
 	// token by token, so a multi-line RHS moves the store's line -- `b = f(1,<nl>2)` puts SETGLOBAL on line 2
 	// while we put it on 1. Our AST has no END position for a call, so max(Pos()) over lhs/rhs cannot see the
@@ -264,12 +276,12 @@ func (fs *funcState) storeVar(line int32, lhs, rhs ast.Expr) {
 		re := fs.expr(rhs)
 		switch ne.k {
 		case eLocal:
-			fs.exp2reg(line, &re, ne.info)
+			fs.exp2reg(rhsLine, &re, ne.info)
 		case eUpval:
-			r := fs.exp2AnyReg(line, &re)
+			r := fs.exp2AnyReg(rhsLine, &re)
 			fs.emitABC(line, bytecode.SETUPVAL, r, ne.info, 0)
 		case eGlobal:
-			r := fs.exp2AnyReg(line, &re)
+			r := fs.exp2AnyReg(rhsLine, &re)
 			fs.emitABx(line, bytecode.SETGLOBAL, r, ne.info)
 		}
 	case *ast.IndexExpr:
@@ -280,7 +292,7 @@ func (fs *funcState) storeVar(line int32, lhs, rhs ast.Expr) {
 		key := fs.expr(tn.Key)
 		rkK := fs.exp2RK(tn.Key.Pos(), &key)
 		re := fs.expr(rhs)
-		rkV := fs.exp2RK(line, &re)
+		rkV := fs.exp2RK(rhsLine, &re)
 		fs.emitABC(tn.Line, bytecode.SETTABLE, tableReg, rkK, rkV)
 	default:
 		raise(fs, line, "syntax error")
