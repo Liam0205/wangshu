@@ -62,6 +62,16 @@ func TestDischargeLineIsLastLine(t *testing.T) {
 		{"paren global", "local v=(A\n)", []int32{2, 0}},
 		{"paren local", "local t=1 local v=(t\n)", []int32{1, 2, 0}},
 
+		// The other three explist consumers take the same rule. Each of these produced a user-visible
+		// `:1:` vs PUC's `:2:` error line before they were wired up, i.e. the same defect as #252 in
+		// three more places. Only the GETTABLE column is asserted against luac here; the surrounding
+		// LOADNIL/JMP/TFORLOOP/FORPREP lines have their own pre-existing offsets, unrelated to #252.
+		{"assign RHS, per-element", "x, y = A.x\n, 1", []int32{1, 2, 2, 2, 2, 0}},
+		{"assign RHS, nothing follows", "x = A.x\n", []int32{1, 1, 1, 0}},
+		{"return, per-element", "return A.x\n, 1", []int32{1, 2, 2, 1, 0}},
+		// Nothing closes a return, so a single returned index stays where it is written.
+		{"return, nothing follows", "return A.x\n", []int32{1, 1, 1, 0}},
+
 		// A callee NOT ending in a consumed token keeps its own line: the `{` has not been scanned when
 		// the index is discharged, so the GETTABLE stays on 1. Pinned here because calleeEndLine must
 		// NOT fire for this shape.
@@ -89,6 +99,51 @@ func TestDischargeLineIsLastLine(t *testing.T) {
 			if got[i] != tc.want[i] {
 				t.Errorf("%s: pc=%d line=%d, want %d (full: %v)", tc.name, i, got[i], tc.want[i], got)
 			}
+		}
+	}
+}
+
+// TestGenForDischargeLineStopsBeforeDo pins that a generic for's iterator expressions take their line from
+// the explist, NOT from the `do` / body / `end` that follow (#252).
+//
+// The GenForStmt node is built after the whole body is parsed, so by then p.lastLine points at `end`. Taking
+// the end line there would push the iterator's GETTABLE past the loop entirely. The line must be captured
+// right after the explist and before check_match(DO), which is what PUC's lastline holds when it materializes
+// the iterator triple.
+//
+// The two cases differ only in whether a comma follows the index, and that alone moves the line: luac5.1 puts
+// GETTABLE on 1 without the comma and on 2 with it.
+func TestGenForDischargeLineStopsBeforeDo(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		src      string
+		wantLine int32
+	}{
+		{"no comma, index stays put", "for k in A.x\n do end", 1},
+		{"comma advances the line", "for k in A.x\n, 1 do end", 2},
+	} {
+		block, err := parse.Parse(lex.New([]byte(tc.src), "z"), "z")
+		if err != nil {
+			t.Fatalf("%s: parse: %v", tc.name, err)
+		}
+		mainID, protos, err := Compile(block, "z")
+		if err != nil {
+			t.Fatalf("%s: compile: %v", tc.name, err)
+		}
+		p := protos[mainID]
+		found := false
+		for pc, ins := range p.Code {
+			if bytecode.Op(ins) != bytecode.GETTABLE {
+				continue
+			}
+			found = true
+			if p.LineInfo[pc] != tc.wantLine {
+				t.Errorf("%s: GETTABLE at pc=%d has line %d, want %d (lines %v)",
+					tc.name, pc, p.LineInfo[pc], tc.wantLine, p.LineInfo)
+			}
+		}
+		if !found {
+			t.Errorf("%s: no GETTABLE emitted (lines %v)", tc.name, p.LineInfo)
 		}
 	}
 }
