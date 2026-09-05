@@ -1,1 +1,1 @@
-Please read `CLAUDE.md` in the same folder.
+请先阅读同目录的 `CLAUDE.md`，并遵循其中的语言和工作流约定。
