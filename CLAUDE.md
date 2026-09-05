@@ -1,4 +1,4 @@
-Always answer in 简体中文, and always write document in English. When interacting with the user or writing documents, use 简体中文（普通话）; otherwise always use English --- writing commit messages, writing GitHub issues or pull requests, and writing comments in source code, etc.
+Always answer in 简体中文。用户沟通和项目文档使用简体中文；代码注释、commit message，以及其他非文档工程文本使用 English。
 
 ## 语言约定
 
