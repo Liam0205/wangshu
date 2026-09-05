@@ -24,7 +24,7 @@ Always answer in 简体中文。用户沟通和项目文档使用简体中文；
 
 Load the `llmdoc` skill before broad code exploration, planning, document updates, or non-trivial code edits.
 
-The main assistant should align with the user before non-trivial plans or edits.
+The main assistant should state the scope and intended approach before non-trivial plans or edits, then wait for user alignment unless the user has already explicitly authorized the requested change.
 
 Use available `llmdoc` subagents when they fit the task. Prefer `investigator` for context exploration, current-state research, unfamiliar subsystems, and reusable scratch reports; use `recorder` for stable doc updates, `worker` for scoped implementation, and `reflector` for process lessons.
 
