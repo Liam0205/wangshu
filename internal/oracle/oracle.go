@@ -107,9 +107,9 @@ func Exec(src, prelude string, lim Limits) Result {
 	if wallTime == 0 {
 		wallTime = DefaultWallTime
 	}
-	wallTimeMs := int64(wallTime / time.Millisecond)
+	wallTimeNs := int64(wallTime)
 	if wallTime < 0 {
-		wallTimeMs = 0 // shim: <=0 disables the hook
+		wallTimeNs = 0 // shim: <=0 disables the wall-clock guard
 	}
 
 	// C.CBytes-free zero-copy view: pass Go string pointers directly;
@@ -133,7 +133,7 @@ func Exec(src, prelude string, lim Limits) Result {
 	v := C.wangshu_oracle_exec(
 		cSrc, C.size_t(len(src)),
 		cPrelude, C.size_t(len(prelude)),
-		C.size_t(maxAlloc), C.int(budget), C.int64_t(wallTimeMs),
+		C.size_t(maxAlloc), C.int(budget), C.int64_t(wallTimeNs),
 		&out, &outLen, &errMsg, &errLen,
 	)
 

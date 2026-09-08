@@ -15,7 +15,7 @@
  * wangshu_oracle_exec runs `prelude` then `src` on a fresh Lua 5.1.5
  * state with a byte-capped allocator (max_alloc) and an instruction-
  * count budget (budget VM instructions; <=0 disables) and a monotonic
- * wall-time budget (wall_time_ms milliseconds; <=0 disables).
+ * wall-time budget (wall_time_ns nanoseconds; <=0 disables).
  *
  * Returns a verdict code. On OK/ERROR, *out receives the captured
  * output bytes (malloc'd, caller frees via wangshu_oracle_free);
@@ -24,7 +24,7 @@
 int wangshu_oracle_exec(const char *src, size_t src_len,
                         const char *prelude, size_t prelude_len,
                         size_t max_alloc, int budget,
-                        int64_t wall_time_ms,
+                        int64_t wall_time_ns,
                         char **out, size_t *out_len,
                         char **err, size_t *err_len);
 

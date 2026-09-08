@@ -45,15 +45,30 @@ typedef struct {
 } alloc_state;
 
 typedef struct {
-    int64_t deadline_ns;
-    int timed_out;
-    int budget;
-} wall_time_state;
+    int64_t started_ns;
+    int64_t wall_time_ns;
+    int remaining;
+    int hook_interval;
+    const char *limit_reason;
+} limit_state;
 
 static int64_t monotonic_ns(void) {
     struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+        return -1;
+    }
     return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
+}
+
+static void check_wall_time(limit_state *ls) {
+    if (ls->wall_time_ns > 0 && ls->limit_reason == NULL) {
+        int64_t now = monotonic_ns();
+        if (now < 0) {
+            ls->limit_reason = ORACLE_LIMIT_SENTINEL ": monotonic clock unavailable";
+        } else if (now - ls->started_ns >= ls->wall_time_ns) {
+            ls->limit_reason = ORACLE_LIMIT_SENTINEL ": wall time budget";
+        }
+    }
 }
 
 static void *capped_alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
@@ -74,11 +89,7 @@ static void *capped_alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
     return np;
 }
 
-/* count hook: fires every `count` VM instructions; raises the limit
- * sentinel. lua_sethook from inside a hook is allowed; we leave the
- * hook installed so nested pcall cannot outrun the budget -- each
- * re-arm grants another window but keeps erroring, and pcall depth
- * is itself bounded by LUAI_MAXCCALLS. */
+/* The registry is shared with coroutines, but not with other Exec calls. */
 static void budget_hook(lua_State *L, lua_Debug *ar) {
     (void)ar;
     luaL_error(L, ORACLE_LIMIT_SENTINEL ": instruction budget");
@@ -86,18 +97,26 @@ static void budget_hook(lua_State *L, lua_Debug *ar) {
 
 static void limit_hook(lua_State *L, lua_Debug *ar) {
     (void)ar;
-    wall_time_state *ws;
-    lua_getfield(L, LUA_REGISTRYINDEX, "WANGSHU_ORACLE_WALL_TIME");
-    ws = (wall_time_state *)lua_touserdata(L, -1);
+    limit_state *ls;
+    lua_getfield(L, LUA_REGISTRYINDEX, "WANGSHU_ORACLE_LIMIT");
+    ls = (limit_state *)lua_touserdata(L, -1);
     lua_pop(L, 1);
-    if (ws != NULL && ws->deadline_ns > 0 && monotonic_ns() >= ws->deadline_ns) {
-        ws->timed_out = 1;
-        luaL_error(L, ORACLE_LIMIT_SENTINEL ": wall time budget");
+    if (ls == NULL) {
+        luaL_error(L, ORACLE_LIMIT_SENTINEL ": limit state missing");
     }
-    if (ws != NULL && ws->budget > 0) {
-        ws->budget -= 1000;
-        if (ws->budget <= 0) {
-            luaL_error(L, ORACLE_LIMIT_SENTINEL ": instruction budget");
+    check_wall_time(ls);
+    if (ls->limit_reason != NULL) {
+        luaL_error(L, "%s", ls->limit_reason);
+    }
+    if (ls->remaining > 0) {
+        ls->remaining -= lua_gethookcount(L);
+        if (ls->remaining <= 0) {
+            ls->limit_reason = ORACLE_LIMIT_SENTINEL ": instruction budget";
+            luaL_error(L, "%s", ls->limit_reason);
+        }
+        if (ls->remaining < lua_gethookcount(L)) {
+            lua_sethook(L, limit_hook, LUA_MASKCOUNT, ls->remaining);
+            ls->hook_interval = ls->remaining;
         }
     }
 }
@@ -125,7 +144,7 @@ static int contains(const char *hay, size_t hay_len,
 int wangshu_oracle_exec(const char *src, size_t src_len,
                         const char *prelude, size_t prelude_len,
                         size_t max_alloc, int budget,
-                        int64_t wall_time_ms,
+                        int64_t wall_time_ns,
                         char **out, size_t *out_len,
                         char **err, size_t *err_len) {
     *out = NULL;
@@ -143,10 +162,12 @@ int wangshu_oracle_exec(const char *src, size_t src_len,
     }
 
     int verdict = WANGSHU_ORACLE_OK;
-    wall_time_state ws;
-    ws.deadline_ns = 0;
-    ws.timed_out = 0;
-    ws.budget = budget;
+    limit_state ls;
+    ls.started_ns = 0;
+    ls.wall_time_ns = wall_time_ns;
+    ls.remaining = budget;
+    ls.hook_interval = budget > 0 && budget < 1000 ? budget : 1000;
+    ls.limit_reason = NULL;
 
     luaL_openlibs(L);
 
@@ -168,11 +189,14 @@ int wangshu_oracle_exec(const char *src, size_t src_len,
 
     /* install the budget AFTER the prelude: the prelude is trusted
      * harness code of trivial cost; the budget bounds fuzz input. */
-    if (wall_time_ms > 0) {
-        ws.deadline_ns = monotonic_ns() + wall_time_ms * 1000000LL;
-        lua_pushlightuserdata(L, &ws);
-        lua_setfield(L, LUA_REGISTRYINDEX, "WANGSHU_ORACLE_WALL_TIME");
-        lua_sethook(L, limit_hook, LUA_MASKCOUNT, 1000);
+    if (wall_time_ns > 0) {
+        ls.started_ns = monotonic_ns();
+        if (ls.started_ns < 0) {
+            ls.limit_reason = ORACLE_LIMIT_SENTINEL ": monotonic clock unavailable";
+        }
+        lua_pushlightuserdata(L, &ls);
+        lua_setfield(L, LUA_REGISTRYINDEX, "WANGSHU_ORACLE_LIMIT");
+        lua_sethook(L, limit_hook, LUA_MASKCOUNT, budget > 0 && budget < 1000 ? budget : 1000);
     } else if (budget > 0) {
         lua_sethook(L, budget_hook, LUA_MASKCOUNT, budget);
     }
