@@ -367,11 +367,14 @@ jobs:
           SEED_BASE: ${{ steps.difffuzz.outputs.seed_base }}
           ROUNDS: ${{ steps.difffuzz.outputs.rounds }}
         run: |
-          # Three-way triage (machine-readable marker API, agreed with the test side):
-          #   1. DIVERGENCE seed=<n> kind=<bytediff|gcstress|oracle-error> (diff / GC transparency) -> bug
-          #   2. go-fuzz crash: gofuzz.log contains "Failing input written to <path>" -> bug + crash corpus path
-          #   3. any other unmarked failure (oracle install failure, environment issues) -> ci
-          # Priority: DIVERGENCE > go-fuzz crash > INFRA (only 1 issue is filed when several hit at once, DIVERGENCE wins)
+          # Triage by failure evidence, not merely by the failed step:
+          #   1. DIVERGENCE seed=<n> kind=<bytediff|gcstress|oracle-error> -> bug
+          #   2. go-fuzz "Failing input written to <path>" -> bug + crash corpus path
+          #   3. worker watchdog/fatal without a corpus -> bug, needs investigation
+          #   4. unmarked failure (oracle install, environment, step timeout) -> ci
+          # Priority: DIVERGENCE > corpus crash > worker failure > INFRA; file only one issue.
+          # All go-fuzz producers must be included (#255: tieredfuzz.log was uploaded but never scanned).
+          FUZZ_LOGS=(gofuzz.log oraclefuzz.log tieredfuzz.log)
           if grep -q "DIVERGENCE" difffuzz.log gcstress.log autodiff.log 2>/dev/null; then
             FIRST_SEED=$(grep -ohP 'DIVERGENCE seed=\K\d+' difffuzz.log gcstress.log autodiff.log 2>/dev/null | head -1 || true)
             FIRST_KIND=$(grep -ohP 'DIVERGENCE seed=\d+ kind=\K\S+' difffuzz.log gcstress.log autodiff.log 2>/dev/null | head -1 || true)
@@ -394,8 +397,8 @@ jobs:
           日志与 crash corpus 见 run artifacts:${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           EOF
           )
-          elif grep -q "Failing input written to" gofuzz.log oraclefuzz.log 2>/dev/null; then
-            CRASH_PATH=$(grep -ohP 'Failing input written to \K\S+' gofuzz.log oraclefuzz.log 2>/dev/null | head -1 || true)
+          elif grep -q "Failing input written to" "${FUZZ_LOGS[@]}" 2>/dev/null; then
+            CRASH_PATH=$(grep -ohP 'Failing input written to \K\S+' "${FUZZ_LOGS[@]}" 2>/dev/null | head -1 || true)
             CRASH_NAME=$(basename "$CRASH_PATH")
             # Fuzz target = the path segment above the corpus hash
             # (testdata/fuzz/<FuzzTarget>/<hash>) — needed for an exact
@@ -407,6 +410,7 @@ jobs:
               # oracle-diff crashers replay under the cgo oracle build,
               # regardless of the matrix leg that caught them.
               FuzzOracleDiff) REPLAY_TAGS='wangshu_oracle_cgo' ;;
+              FuzzOracleDiffTiered) REPLAY_TAGS="wangshu_oracle_cgo ${{ matrix.tags }}" ;;
               *) case "${{ matrix.variant }}" in
                    p3) REPLAY_TAGS='wangshu_p3 wangshu_profile' ;;
                    p4) REPLAY_TAGS='wangshu_p4 wangshu_profile' ;;
@@ -439,8 +443,11 @@ jobs:
           日志与 crash corpus 见 run artifacts:${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           EOF
           )
+          elif grep -Eq "hung or terminated unexpectedly|panic: deadlocked" "${FUZZ_LOGS[@]}" 2>/dev/null; then
+            TITLE="go-fuzz worker failure (${{ matrix.variant }}): $(date -u +%F)"
+            LABEL="bug"
+            BODY="nightly go-fuzz worker 异常退出或触发看门狗，属于被测 fuzz 路径的 bug 信号，不是基础设施失败。日志中的 failing input、worker 栈迹和取证文件见 run artifacts:${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}。"
           else
-            # Keyed on the DATE alone -- neither the variant nor the run id (#236-#241).
             #
             # An environment failure hits all three tiers at once, so a variant in the title made
             # three distinct titles that the dedupe below could not see as one event: two blips on
