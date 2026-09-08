@@ -417,6 +417,11 @@ jobs:
                    *)  REPLAY_TAGS='' ;;
                  esac ;;
             esac
+            if [ -n "$REPLAY_TAGS" ]; then
+              REPLAY_CMD="go test -tags '$REPLAY_TAGS' ."
+            else
+              REPLAY_CMD="go test ."
+            fi
             TITLE="go-fuzz crash (${{ matrix.variant }}): ${CRASH_NAME:-unknown} ($(date -u +%F))"
             LABEL="bug"
             BODY=$(cat <<EOF
@@ -432,7 +437,7 @@ jobs:
           # 复制到对应路径
           cp nightly-fuzz-${{ matrix.variant }}-${{ github.run_id }}/$CRASH_PATH $CRASH_PATH
           # replay (tags match the crashed target; FuzzOracleDiff needs CGO_ENABLED=1)
-          go test${REPLAY_TAGS:+ -tags "$REPLAY_TAGS"} . \\
+          $REPLAY_CMD \\
             -run="^${CRASH_TARGET}/${CRASH_NAME}\$" -count=1 -timeout 60s -v
           \`\`\`
 
