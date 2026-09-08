@@ -745,7 +745,14 @@ P1-vs-P4 分歧**(把升层侧的返回值截断),确认 `1<<16` 下 harness 仍
 
 反思 [[2026-08-04-issue224-225-watchdog-margin]] 教训 2 / 3 / 4 / 5。
 
-## CI 自动化本身的失败信号(2026-08-09,#236–#241)
+## Oracle 参照执行必须同时受指令和墙上时间限制(2026-09-08,#255)
+
+`LUA_MASKCOUNT` 只限制 Lua VM 指令条数,不能代表每条指令的实际工作量。字符串反复拼接、模式匹配和表操作可能让单条指令的成本随数据规模增长;因此 oracle 的执行边界必须同时保留确定性的 allocator / instruction budget,并在 fuzz 输入开始执行后用单调时钟 deadline 做最后一道防线。deadline 通过 Lua hook 以受控的 `ORACLE_LIMIT` 错误返回 `VerdictLimit`,不能从 Go 侧另起 goroutine 强行终止 cgo 调用。
+
+本次 #255 的触发输入是 `s="00"for A=0,577777770 do s=s..0 end A()`: wangshu 侧的工作量预算很快将它判为不可比,但 PUC 侧的 50M 指令预算看不见 concat 的复制成本,会把 worker 拖到 watchdog 的 `panic: deadlocked!`。修复后该输入只能产生 `VerdictLimit`,不应作为普通 fuzz corpus 入仓,因为 corpus 重放会把每次测试拖到 deadline;应在 oracle 单元测试中用短 deadline 固定「受控跳过」行为。
+
+判定 watchdog 失败时,先看 worker stderr 和 cgo 栈迹确定谁卡住:参照实现自己的 hang 不是 Wangshu 语义分歧,但也不是无条件的 CI 基础设施故障。nightly triage 必须扫描所有实际上传的 fuzz 日志,将带 corpus / worker watchdog 证据的失败标成 `bug`;只有没有被测 worker 证据的依赖安装、runner 或环境失败才标成 `ci`。
+
 
 前面各节管的是「nightly 报上来的 crasher 怎么分诊」,本节管**产生那些 issue 的那套机制**自己的
 缺陷。它排在分诊之前:分诊的第一步是读 issue,而这两条决定那批 issue 是不是可信的输入。
