@@ -33,7 +33,10 @@ package oracle
 */
 import "C"
 
-import "unsafe"
+import (
+	"time"
+	"unsafe"
+)
 
 // Verdict classifies one oracle execution. Values mirror the
 // WANGSHU_ORACLE_* codes in shim.h.
@@ -66,15 +69,21 @@ type Limits struct {
 	// Budget caps executed VM instructions (LUA_MASKCOUNT hook).
 	// Zero means DefaultBudget; negative disables (tests only).
 	Budget int
+	// WallTime limits elapsed time after the prelude. Checks run in the Lua
+	// instruction hook; a single C operation cannot be interrupted. Zero means
+	// DefaultWallTime; negative disables the wall-clock guard in tests only.
+	WallTime time.Duration
 }
 
 const (
 	// DefaultMaxAllocBytes (64 MiB) is far above what a 4 KiB fuzz
 	// script legitimately needs, far below what stalls a CI runner.
 	DefaultMaxAllocBytes = 64 << 20
-	// DefaultBudget (50M instructions) bounds runaway loops at
-	// roughly tens of milliseconds of native PUC execution.
+	// DefaultBudget bounds runaway loops at a deterministic instruction count.
 	DefaultBudget = 50_000_000
+	// DefaultWallTime bounds operations whose cost grows faster than their
+	// instruction count, such as repeated string concatenation.
+	DefaultWallTime = 2 * time.Second
 )
 
 // Exec runs prelude then src on a fresh official-Lua state.
@@ -93,6 +102,14 @@ func Exec(src, prelude string, lim Limits) Result {
 	}
 	if budget < 0 {
 		budget = 0 // shim: <=0 disables the hook
+	}
+	wallTime := lim.WallTime
+	if wallTime == 0 {
+		wallTime = DefaultWallTime
+	}
+	wallTimeMs := int64(wallTime / time.Millisecond)
+	if wallTime < 0 {
+		wallTimeMs = 0 // shim: <=0 disables the hook
 	}
 
 	// C.CBytes-free zero-copy view: pass Go string pointers directly;
@@ -116,7 +133,7 @@ func Exec(src, prelude string, lim Limits) Result {
 	v := C.wangshu_oracle_exec(
 		cSrc, C.size_t(len(src)),
 		cPrelude, C.size_t(len(prelude)),
-		C.size_t(maxAlloc), C.int(budget),
+		C.size_t(maxAlloc), C.int(budget), C.int64_t(wallTimeMs),
 		&out, &outLen, &errMsg, &errLen,
 	)
 
