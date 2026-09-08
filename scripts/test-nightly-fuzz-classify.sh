@@ -53,9 +53,17 @@ with tempfile.TemporaryDirectory() as tmp:
         path.write_text('#!/usr/bin/env bash\n' + body + '\n')
         path.chmod(0o755)
 
+    go = bin_dir / 'go'
+    go.write_text('#!' + sys.executable + '\n' + textwrap.dedent('''\
+        import json, os, sys
+        from pathlib import Path
+        Path(os.environ['GO_ARGS']).write_text(json.dumps(sys.argv[1:]))
+        '''))
+    go.chmod(0o755)
+
     count = 0
     def run(name, logs, label, title, variant='p4', outcome='success',
-            contains=(), existing_after=99, run_id='34103646451'):
+            contains=(), existing_after=99, run_id='34103646451', replay=None):
         global count
         count += 1
         tree = root / str(count)
@@ -72,7 +80,7 @@ with tempfile.TemporaryDirectory() as tmp:
         }
         script = re.sub(r'\$\{\{\s*(.*?)\s*\}\}', lambda m: replacements[m[1]], block)
         env = dict(os.environ, PATH=str(bin_dir) + os.pathsep + os.environ['PATH'],
-                   GH_CALLS=str(tree / 'calls.json'), EXISTING_AFTER=str(existing_after),
+                   GH_CALLS=str(tree / 'calls.json'), GO_ARGS=str(tree / 'go-args.json'), EXISTING_AFTER=str(existing_after),
                    SEED_BASE='700', ROUNDS='2000000')
         result = subprocess.run(['bash', '--noprofile', '--norc', '-e', '-o', 'pipefail', '-c', script],
                                 cwd=tree, env=env, capture_output=True, text=True)
@@ -94,6 +102,16 @@ with tempfile.TemporaryDirectory() as tmp:
             body = write[write.index('--body') + 1]
             for expected in contains:
                 assert expected in body, (name, expected, body)
+            if replay is not None:
+                tags, target, seed = replay
+                command = body.split('# replay ', 1)[1].split('\n', 1)[1].split('```', 1)[0]
+                executed = subprocess.run(['bash', '--noprofile', '--norc', '-e', '-c', command],
+                                          cwd=tree, env=env, capture_output=True, text=True)
+                assert executed.returncode == 0, (name, executed.stderr)
+                actual = json.loads((tree / 'go-args.json').read_text())
+                expected = ['test'] + (['-tags', tags] if tags else []) + [
+                    '.', f'-run=^{target}/{seed}$', '-count=1', '-timeout', '60s', '-v']
+                assert actual == expected, (name, actual, expected)
         print(f'CASE {name}: OK')
 
     crash_path = 'testdata/fuzz/FuzzOracleDiffTiered/aadaecf9807d9dc9'
@@ -104,10 +122,11 @@ with tempfile.TemporaryDirectory() as tmp:
     crash_title = 'go-fuzz crash (p4): aadaecf9807d9dc9 (2026-09-07)'
     run('issue-255-tiered-only', {'tieredfuzz.log': incident}, 'bug', crash_title,
         contains=(crash_path, '-run="^FuzzOracleDiffTiered/aadaecf9807d9dc9$"',
-                  'go test -tags wangshu_oracle_cgo wangshu_p4 wangshu_profile .'))
+                  'go test -tags \'wangshu_oracle_cgo wangshu_p4 wangshu_profile\' .'), replay=('wangshu_oracle_cgo wangshu_p4 wangshu_profile', 'FuzzOracleDiffTiered', 'aadaecf9807d9dc9'))
     run('tiered-p3-replay', {'tieredfuzz.log': f'Failing input written to {crash_path}'}, 'bug',
         crash_title.replace('(p4)', '(p3)'), variant='p3',
-        contains=('wangshu_oracle_cgo wangshu_p3 wangshu_profile',))
+        contains=('wangshu_oracle_cgo wangshu_p3 wangshu_profile',),
+        replay=('wangshu_oracle_cgo wangshu_p3 wangshu_profile', 'FuzzOracleDiffTiered', 'aadaecf9807d9dc9'))
     for log, target, variant, tags in [
         ('gofuzz.log', 'FuzzCompileRun', 'p1', ''),
         ('gofuzz.log', 'FuzzAutoPromote', 'p3', 'wangshu_p3 wangshu_profile'),
@@ -116,7 +135,7 @@ with tempfile.TemporaryDirectory() as tmp:
     ]:
         run(target, {log: f'Failing input written to testdata/fuzz/{target}/abc123'}, 'bug',
             f'go-fuzz crash ({variant}): abc123 (2026-09-07)', variant=variant,
-            contains=(f'-run="^{target}/abc123$"', f'go test -tags {tags} .' if tags else 'go test .'))
+            contains=(f'-run="^{target}/abc123$"', f"go test -tags \'{tags}\' ." if tags else 'go test .'))
 
     for log in ('gofuzz.log', 'oraclefuzz.log', 'tieredfuzz.log'):
         for marker in ('fuzzing process hung or terminated unexpectedly: exit status 2', 'panic: deadlocked!'):
