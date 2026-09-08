@@ -21,6 +21,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "_lua515/src/lua.h"
 #include "_lua515/src/lauxlib.h"
@@ -42,6 +43,18 @@ typedef struct {
     size_t used;
     size_t cap;
 } alloc_state;
+
+typedef struct {
+    int64_t deadline_ns;
+    int timed_out;
+    int budget;
+} wall_time_state;
+
+static int64_t monotonic_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
+}
 
 static void *capped_alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
     alloc_state *as = (alloc_state *)ud;
@@ -71,6 +84,24 @@ static void budget_hook(lua_State *L, lua_Debug *ar) {
     luaL_error(L, ORACLE_LIMIT_SENTINEL ": instruction budget");
 }
 
+static void limit_hook(lua_State *L, lua_Debug *ar) {
+    (void)ar;
+    wall_time_state *ws;
+    lua_getfield(L, LUA_REGISTRYINDEX, "WANGSHU_ORACLE_WALL_TIME");
+    ws = (wall_time_state *)lua_touserdata(L, -1);
+    lua_pop(L, 1);
+    if (ws != NULL && ws->deadline_ns > 0 && monotonic_ns() >= ws->deadline_ns) {
+        ws->timed_out = 1;
+        luaL_error(L, ORACLE_LIMIT_SENTINEL ": wall time budget");
+    }
+    if (ws != NULL && ws->budget > 0) {
+        ws->budget -= 1000;
+        if (ws->budget <= 0) {
+            luaL_error(L, ORACLE_LIMIT_SENTINEL ": instruction budget");
+        }
+    }
+}
+
 /* run one chunk already on the stack (compiled function at -1);
  * returns 0 on success, else leaves error message on stack. */
 static int run_top(lua_State *L) {
@@ -94,6 +125,7 @@ static int contains(const char *hay, size_t hay_len,
 int wangshu_oracle_exec(const char *src, size_t src_len,
                         const char *prelude, size_t prelude_len,
                         size_t max_alloc, int budget,
+                        int64_t wall_time_ms,
                         char **out, size_t *out_len,
                         char **err, size_t *err_len) {
     *out = NULL;
@@ -111,6 +143,10 @@ int wangshu_oracle_exec(const char *src, size_t src_len,
     }
 
     int verdict = WANGSHU_ORACLE_OK;
+    wall_time_state ws;
+    ws.deadline_ns = 0;
+    ws.timed_out = 0;
+    ws.budget = budget;
 
     luaL_openlibs(L);
 
@@ -132,7 +168,12 @@ int wangshu_oracle_exec(const char *src, size_t src_len,
 
     /* install the budget AFTER the prelude: the prelude is trusted
      * harness code of trivial cost; the budget bounds fuzz input. */
-    if (budget > 0) {
+    if (wall_time_ms > 0) {
+        ws.deadline_ns = monotonic_ns() + wall_time_ms * 1000000LL;
+        lua_pushlightuserdata(L, &ws);
+        lua_setfield(L, LUA_REGISTRYINDEX, "WANGSHU_ORACLE_WALL_TIME");
+        lua_sethook(L, limit_hook, LUA_MASKCOUNT, 1000);
+    } else if (budget > 0) {
         lua_sethook(L, budget_hook, LUA_MASKCOUNT, budget);
     }
 

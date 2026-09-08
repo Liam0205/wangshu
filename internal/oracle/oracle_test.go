@@ -5,6 +5,7 @@ package oracle
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // testKeep is a minimal whitelist for shim-level tests (the real
@@ -120,6 +121,17 @@ func TestExec_CompileErrorVerdict(t *testing.T) {
 
 func TestExec_InstructionBudget(t *testing.T) {
 	r := Exec(`while true do end`, Prelude(testKeep), Limits{Budget: 100000})
+	if r.Verdict != VerdictLimit {
+		t.Fatalf("verdict = %v, err = %q", r.Verdict, r.Err)
+	}
+	if !strings.Contains(r.Err, LimitSentinel) {
+		t.Fatalf("err = %q", r.Err)
+	}
+}
+
+func TestExec_WallTimeBudget(t *testing.T) {
+	r := Exec(`local s = "00" for i = 1, 577777770 do s = s .. 0 end`,
+		Prelude(testKeep), Limits{WallTime: 10 * time.Millisecond, Budget: -1})
 	if r.Verdict != VerdictLimit {
 		t.Fatalf("verdict = %v, err = %q", r.Verdict, r.Err)
 	}
