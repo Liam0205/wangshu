@@ -35,12 +35,15 @@ with tempfile.TemporaryDirectory() as tmp:
         elif args[0] == 'list':
             tags = args[args.index('-tags') + 1] if '-tags' in args else ''
             if '-f' in args:
-                # the {{if .GoFiles}} template over ./test/...: only test/x
-                # ships non-test sources; test/y is a pure external test pkg
-                assert args[-1] == './test/...' and 'GoFiles' in args[args.index('-f') + 1], args
+                # template over ./test/...: test/x ships sources AND tests,
+                # test/y is a pure external test pkg, test/z has sources but
+                # no tests (a helper package). Only test/x may qualify, and
+                # the template must ask for tests, not just GoFiles.
+                tmpl = args[args.index('-f') + 1]
+                assert args[-1] == './test/...' and 'GoFiles' in tmpl and 'TestGoFiles' in tmpl, args
                 print(ROOT + '/test/x')
                 sys.exit(0)
-            pkgs = [ROOT, ROOT + '/internal/a', ROOT + '/test/x', ROOT + '/test/y']
+            pkgs = [ROOT, ROOT + '/internal/a', ROOT + '/test/x', ROOT + '/test/y', ROOT + '/test/z']
             if 'special' in tags.split():
                 pkgs.append(ROOT + '/internal/tagonly')
             print('\\n'.join(pkgs))
@@ -66,15 +69,20 @@ with tempfile.TemporaryDirectory() as tmp:
         assert len(lists) == 1 and len(gofile_lists) == 1 and len(tests) == 2, (name, calls)
         unit, behav = tests
         assert not any(a.startswith('-coverpkg=') for a in unit), (name, unit)
-        # root plus every test/ package with its own sources, nothing else
+        # root plus every test/ package with its own sources and tests; the
+        # source-only helper package test/z must not be instrumented
         assert '-coverpkg=' + ROOT + ',' + ROOT + '/test/x' in behav, (name, behav)
-        assert ROOT not in unit and ROOT + '/test/x' not in unit and ROOT + '/test/y' not in unit, (name, unit)
+        assert not any('/test/z' in a for a in behav), (name, behav)
+        assert ROOT not in unit and not any(a.startswith(ROOT + '/test/') for a in unit), (name, unit)
         assert '.' in behav and './test/...' in behav, (name, behav)
         for f in flags:
             assert f in unit and f in behav, (name, f, tests)
         # both go list calls must see the same tags as go test
         for l in (lists[0], gofile_lists[0]):
-            assert ('-tags' in l) == ('-tags' in lists[0]), (name, l)
+            if '-tags' in lists[0]:
+                assert l[l.index('-tags') + 1] == lists[0][lists[0].index('-tags') + 1], (name, l)
+            else:
+                assert '-tags' not in l, (name, l)
         merged = out.read_text().splitlines()
         assert merged[0] == 'mode: atomic' and merged.count('mode: atomic') == 1, merged
         assert any('/unit.go' in l for l in merged) and any('/behav.go' in l for l in merged), merged
