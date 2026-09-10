@@ -120,8 +120,14 @@ with tempfile.TemporaryDirectory() as tmp:
                 f'    Failing input written to {crash_path}\n'
                 'panic: deadlocked!\n')
     crash_title = 'go-fuzz crash (p4): aadaecf9807d9dc9 (2026-09-07)'
+    # go test prints the corpus path relative to the fuzz package (test/fuzz);
+    # the issue body must carry the repo-relative form everywhere a human
+    # copies it: the prose, the corpus path line, and both cp operands.
+    repo_path = 'test/fuzz/' + crash_path
     run('issue-255-tiered-only', {'tieredfuzz.log': incident}, 'bug', crash_title,
-        contains=(crash_path, '-run="^FuzzOracleDiffTiered/aadaecf9807d9dc9$"',
+        contains=(f'**crash corpus 路径**:`{repo_path}`', '`test/fuzz/testdata/fuzz/` 路径',
+                  f'cp nightly-fuzz-p4-34103646451/{repo_path} {repo_path}',
+                  '-run="^FuzzOracleDiffTiered/aadaecf9807d9dc9$"',
                   'go test -tags \'wangshu_oracle_cgo wangshu_p4 wangshu_profile\' ./test/fuzz'), replay=('wangshu_oracle_cgo wangshu_p4 wangshu_profile', 'FuzzOracleDiffTiered', 'aadaecf9807d9dc9'))
     run('tiered-p3-replay', {'tieredfuzz.log': f'Failing input written to {crash_path}'}, 'bug',
         crash_title.replace('(p4)', '(p3)'), variant='p3',
@@ -135,7 +141,8 @@ with tempfile.TemporaryDirectory() as tmp:
     ]:
         run(target, {log: f'Failing input written to testdata/fuzz/{target}/abc123'}, 'bug',
             f'go-fuzz crash ({variant}): abc123 (2026-09-07)', variant=variant,
-            contains=(f'-run="^{target}/abc123$"', f"go test -tags \'{tags}\' ./test/fuzz" if tags else 'go test ./test/fuzz'))
+            contains=(f'-run="^{target}/abc123$"', f"go test -tags \'{tags}\' ./test/fuzz" if tags else 'go test ./test/fuzz',
+                      f'cp nightly-fuzz-{variant}-34103646451/test/fuzz/testdata/fuzz/{target}/abc123 test/fuzz/testdata/fuzz/{target}/abc123'))
 
     for log in ('gofuzz.log', 'oraclefuzz.log', 'tieredfuzz.log'):
         for marker in ('fuzzing process hung or terminated unexpectedly: exit status 2', 'panic: deadlocked!'):
