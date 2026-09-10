@@ -69,8 +69,14 @@ race_on/off_test.go         race / !race,只定义 raceEnabled,供 fuzz_auto / f
 ## 覆盖率归属
 
 外部测试包自己没有语句,普通 `go test -cover ./...` 会把 `test/` 各包报成 `[no statements]`,它们执行到的根包代
-码一行都不记。`scripts/cover.sh`(`make cover` 与 CI 的 test job 都走它)分两次跑:`internal/` + 根包用各包自身
-`-cover`;`test/...` 用 `-coverpkg=<根包>`;两份 profile 拼成一份。
+码一行都不记。`scripts/cover.sh`(`make cover` 与 CI 的 test job 都走它)分两次跑:`internal/` 各包用自身 `-cover`;
+根包 + `test/...` 用 `-coverpkg=<根包>`;两份 profile 拼成一份(`go tool cover` 对同位置的 block 按计数求和,这也是多包
+`-coverpkg` profile 的常规语义)。
+
+**build tag 必须同时传给 `go list` 和 `go test`**。只在 tag 下存在的包(`internal/gibbous/wasm` 之于 p3、
+`internal/gibbous/jit/{amd64,arm64,peroptranslator}` 之于 p4)对不带 tag 的 `go list ./...` 不可见,漏传 tag 的后果是
+这些包的单元测试在 CI 里静默不再运行、任务照样绿。`scripts/test-cover.sh`(`make test-scripts` 的一部分)用 stub `go`
+钉住这条:`-tags` 出现在 `go test` 参数里时必须原样出现在 `go list` 里。
 
 **不要**改成单次 `-coverpkg=./...`:那会给 `internal/crescent` 的解释器热循环也插桩,实测 `test/regression`
 从 12 秒变 400 秒(单个测试 3.9 秒 → 195 秒),叠加 `-race` 后 CI 45 分钟必超时。
