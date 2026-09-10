@@ -1,7 +1,7 @@
 // globals baseline tests -- MarkGlobalsBaseline + ResetGlobalsToBaseline
 // (issue #6: script-level state isolation when reusing State via sync.Pool,
 // matching gopher-lua statePool).
-package wangshu_test
+package language_test
 
 import (
 	"testing"

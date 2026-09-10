@@ -1,5 +1,5 @@
 // Coroutine end-to-end tests (08 route B acceptance).
-package wangshu_test
+package language_test
 
 import (
 	"strings"

@@ -1,6 +1,6 @@
 // Public API end-to-end tests — SetGlobal / GetGlobal / Call / Register
 // (per-item gopher-lua drop-in form; issue #1 / 11 §7.1+§9.1).
-package wangshu_test
+package language_test
 
 import (
 	"math"

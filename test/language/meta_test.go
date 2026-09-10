@@ -1,5 +1,5 @@
 // M11 metatable + pcall end-to-end tests.
-package wangshu_test
+package language_test
 
 import (
 	"strings"

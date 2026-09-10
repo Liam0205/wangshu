@@ -1,7 +1,7 @@
 // Public-facing Table API tests — issue #2: feeding in pineapple common-mode
 // mixed-type lists, GetGlobal/SetGlobal/State.Call compound-value round-trip,
 // nested tables and functions, Len semantics, cross-State and use-after-Release.
-package wangshu_test
+package language_test
 
 import (
 	"strings"
