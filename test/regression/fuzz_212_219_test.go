@@ -1,4 +1,4 @@
-package wangshu_test
+package regression
 
 import (
 	"strings"
