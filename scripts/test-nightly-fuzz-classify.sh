@@ -150,9 +150,15 @@ with tempfile.TemporaryDirectory() as tmp:
         ('gofuzz.log', 'FuzzLexer', 'p4', 'wangshu_p4 wangshu_profile', './internal/frontend/lex'),
         ('gofuzz.log', 'FuzzParse', 'p3', 'wangshu_p3 wangshu_profile', './internal/frontend/parse'),
     ]:
-        # an earlier target's banner in the same log must not be picked up
+        # Decoys that the banner match must skip: another target's run banner,
+        # a LONGER target whose name starts with this one (FuzzOracleDiff vs
+        # FuzzOracleDiffTiered), and this target's own non-run banners
+        # (not buildable / retrying) that go-fuzz.sh prints with the same prefix.
         log_text = (f'fuzz: ./somewhere/else :: FuzzOther (35m) tags=x\n'
+                    f'fuzz: ./decoy/longer :: {target}Tiered (35m) tags=x\n'
+                    f'fuzz: ./decoy/skipped :: {target} not buildable under tags=default,skip\n'
                     f'fuzz: {pkg} :: {target} (35m) tags={tags or "default"}\n'
+                    f'fuzz: ./decoy/retry :: {target} hit golang/go#75804 (spurious deadline at fuzztime wrap-up, no crasher written) — retrying once\n'
                     f'Failing input written to testdata/fuzz/{target}/abc123')
         rp = f'{pkg[2:]}/testdata/fuzz/{target}/abc123'
         run(target, {log: log_text}, 'bug',

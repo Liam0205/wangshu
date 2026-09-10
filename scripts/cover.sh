@@ -17,10 +17,13 @@
 #     attributes those runs to the root package, whose behavioural suites
 #     live under test/ since the root-test migration. The root package
 #     itself rides along so any unit test it grows later is instrumented
-#     the same way. test/ packages that DO ship non-test Go files
-#     (test/difftest's generator.go today) are added to -coverpkg as
-#     well, so their own statements keep the coverage they had under a
-#     plain `go test -cover ./...`.
+#     the same way. test/ packages that ship non-test Go files AND
+#     their own tests (test/difftest's generator.go today) are added to
+#     -coverpkg as well, so their own statements keep the coverage they
+#     had under a plain `go test -cover ./...`. A test/ package with
+#     sources but no tests (test/testutil, helpers formerly living in
+#     _test.go files) stays out: plain -cover never credits it, and
+#     master never counted that helper code at all.
 #
 # Why not -coverpkg=./... in a single call: that would also instrument
 # internal/crescent (the interpreter hot loop) for the heavy behavioural
@@ -66,9 +69,11 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
 unit_pkgs=$(go list "${list_args[@]+"${list_args[@]}"}" ./... | grep -v -e "^$root/test/" -e "^$root\$")
-# test/ packages with non-test Go files of their own join the -coverpkg
-# set, so a plain -cover run and this script credit them identically.
-behav_pkgs=$(go list "${list_args[@]+"${list_args[@]}"}" -f '{{if .GoFiles}}{{.ImportPath}}{{end}}' ./test/... | paste -sd, -)
+# test/ packages with non-test Go files AND tests of their own join the
+# -coverpkg set, so a plain -cover run and this script credit them
+# identically; source-only helper packages are excluded on purpose.
+behav_pkgs=$(go list "${list_args[@]+"${list_args[@]}"}" \
+    -f '{{if and .GoFiles (or .TestGoFiles .XTestGoFiles)}}{{.ImportPath}}{{end}}' ./test/... | paste -sd, -)
 coverpkg=$root${behav_pkgs:+,$behav_pkgs}
 
 # shellcheck disable=SC2086 # unit_pkgs is one import path per line, no spaces

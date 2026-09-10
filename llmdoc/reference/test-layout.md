@@ -39,8 +39,8 @@ race_on/off_test.go         race / !race,只定义 raceEnabled,供 fuzz_auto / f
 
 ## 语料与重放
 
-- 语料只在 **`test/fuzz/testdata/fuzz/<FuzzTarget>/<hash>`**。Go 的 corpus 查找是相对 harness 所在包目录的,
-  语料跟 harness 必须同包;根目录没有兼容位置。
+- `test/fuzz` 五个靶点的语料在 **`test/fuzz/testdata/fuzz/<FuzzTarget>/<hash>`**;其他包的靶点语料在各自包目录下(见下文)。
+  Go 的 corpus 查找是相对 harness 所在包目录的,语料跟 harness 必须同包;根目录没有兼容位置。
 - 从仓库根重放一个 seed(包路径换成靶点所在的包):
   ```bash
   go test ./test/fuzz -run '^FuzzCompileRun/<hash>$' -count=1 -v
@@ -51,8 +51,9 @@ race_on/off_test.go         race / !race,只定义 raceEnabled,供 fuzz_auto / f
   nightly issue 模板生成的重放命令就是这个形式,包路径取自 `scripts/go-fuzz.sh` 打印的
   `fuzz: <pkg> :: <func>` 横幅;2026-09-09 之前的 issue 里写的 `go test .` 已失效,把 `.` 换成靶点所在的包即可。
 - **`Fuzz*` 靶点不只在 `test/fuzz`**:`internal/stdlib`(`FuzzPattern`)、`internal/frontend/lex`(`FuzzLexer`)、
-  `internal/frontend/parse`(`FuzzParse`)各有自己的靶点和 `testdata/fuzz/`,`go-fuzz.sh` 按源码扫描全部跑到。写涉及
-  语料路径的脚本时不要假定前缀是 `test/fuzz/`。
+  `internal/frontend/parse`(`FuzzParse`)各有自己的靶点,`go-fuzz.sh` 按源码扫描全部跑到。它们的语料(如有)在各自包目录
+  的 `testdata/fuzz/` 下——今天只有 `internal/stdlib/testdata/fuzz/FuzzPattern` 存在,lex / parse 目录会在第一个 crasher
+  落盘时由 `go test` 创建。写涉及语料路径的脚本时不要假定前缀是 `test/fuzz/`。
 - 重 workload 的 crasher(深递归 / 长循环 / 大分配)**不入语料**,走 `test/regression/` 的显式测试;判据与原因见
   [[unreproducible-crasher-triage]]「入库位置的取舍」。
 - `scripts/go-fuzz.sh` 靶点发现靠源码扫描 `func Fuzz*`,语料与取证目录都相对包目录寻址,目录挪动不需要改它。
@@ -74,9 +75,11 @@ race_on/off_test.go         race / !race,只定义 raceEnabled,供 fuzz_auto / f
 
 外部测试包自己没有语句,普通 `go test -cover ./...` 会把 `test/` 各包报成 `[no statements]`,它们执行到的根包代
 码一行都不记。`scripts/cover.sh`(`make cover` 与 CI 的 test job 都走它)分两次跑:`internal/` 各包用自身 `-cover`;
-根包 + `test/...` 用 `-coverpkg=<根包>,<自带非测试源文件的 test/ 包>`(今天是 `test/difftest` 的 `generator.go`、
-`test/testutil`、`test/conformance/doc.go`,列表由 `go list -f '{{if .GoFiles}}…'` 动态得出,新包不必手加);两份 profile
-拼成一份(`go tool cover` 对同位置的 block 按计数求和,这也是多包 `-coverpkg` profile 的常规语义)。
+根包 + `test/...` 用 `-coverpkg=<根包>,<既有非测试源文件又有自己测试的 test/ 包>`(今天是 `test/difftest` 的
+`generator.go` 和 `test/conformance/doc.go`,p4 下再加 `test/regression`;列表由
+`go list -f '{{if and .GoFiles (or .TestGoFiles .XTestGoFiles)}}…'` 动态得出,新包不必手加)。`test/testutil` 这种只有源文件
+没有测试的辅助包**故意不计**:普通 `-cover` 不会给它记分,master 上这段代码是 `_test.go` 里的辅助函数、从不进分母;两份
+profile 拼成一份(`go tool cover` 对同位置的 block 按计数求和,这也是多包 `-coverpkg` profile 的常规语义)。
 
 **build tag 必须同时传给 `go list` 和 `go test`**。只在 tag 下存在的包(`internal/gibbous/wasm` 之于 p3、
 `internal/gibbous/jit/{amd64,arm64,peroptranslator}` 之于 p4)对不带 tag 的 `go list ./...` 不可见,漏传 tag 的后果是
