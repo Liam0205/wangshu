@@ -7,7 +7,7 @@
 //   - p3/p4 builds: the switch really routes execution back to the
 //     interpreter and stats reflect the promotion state (see
 //     tier_admin_p4_test.go for the prove-the-path half).
-package wangshu_test
+package tiering_test
 
 import (
 	"testing"

@@ -15,7 +15,7 @@
 //
 // Only runs under the wangshu_profile build; under the default build the hook points are
 // eliminated at compile time, so this test group is meaningless.
-package wangshu_test
+package tiering_test
 
 import (
 	"bytes"
