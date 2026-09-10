@@ -63,13 +63,16 @@ with tempfile.TemporaryDirectory() as tmp:
 
     count = 0
     def run(name, logs, label, title, variant='p4', outcome='success',
-            contains=(), existing_after=99, run_id='34103646451', replay=None):
+            contains=(), existing_after=99, run_id='34103646451', replay=None, files=()):
         global count
         count += 1
         tree = root / str(count)
         tree.mkdir()
         for filename, content in logs.items():
             (tree / filename).write_text(content)
+        for rel in files:
+            (tree / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tree / rel).write_text('go test fuzz v1\n')
         replacements = {
             'matrix.variant': variant,
             'matrix.tags': '' if variant == 'p1' else f'wangshu_{variant} wangshu_profile',
@@ -103,46 +106,71 @@ with tempfile.TemporaryDirectory() as tmp:
             for expected in contains:
                 assert expected in body, (name, expected, body)
             if replay is not None:
-                tags, target, seed = replay
+                tags, target, seed, pkg = replay
                 command = body.split('# replay ', 1)[1].split('\n', 1)[1].split('```', 1)[0]
                 executed = subprocess.run(['bash', '--noprofile', '--norc', '-e', '-c', command],
                                           cwd=tree, env=env, capture_output=True, text=True)
                 assert executed.returncode == 0, (name, executed.stderr)
                 actual = json.loads((tree / 'go-args.json').read_text())
                 expected = ['test'] + (['-tags', tags] if tags else []) + [
-                    './test/fuzz', f'-run=^{target}/{seed}$', '-count=1', '-timeout', '60s', '-v']
+                    pkg, f'-run=^{target}/{seed}$', '-count=1', '-timeout', '60s', '-v']
                 assert actual == expected, (name, actual, expected)
         print(f'CASE {name}: OK')
 
     crash_path = 'testdata/fuzz/FuzzOracleDiffTiered/aadaecf9807d9dc9'
-    incident = ('--- FAIL: FuzzOracleDiffTiered (1318.95s)\n'
+    # go-fuzz.sh prints "fuzz: <pkg> :: <func> (<fuzztime>) tags=<tags>" before each
+    # target, and go test prints the corpus path relative to that package. The
+    # issue body must carry the repo-relative form everywhere a human copies it
+    # (prose, corpus path line, both cp operands) and replay inside that package.
+    banner = 'fuzz: ./test/fuzz :: FuzzOracleDiffTiered (35m) tags=wangshu_oracle_cgo wangshu_p4 wangshu_profile\n'
+    incident = (banner +
+                '--- FAIL: FuzzOracleDiffTiered (1318.95s)\n'
                 '    fuzzing process hung or terminated unexpectedly: exit status 2\n'
                 f'    Failing input written to {crash_path}\n'
                 'panic: deadlocked!\n')
     crash_title = 'go-fuzz crash (p4): aadaecf9807d9dc9 (2026-09-07)'
-    # go test prints the corpus path relative to the fuzz package (test/fuzz);
-    # the issue body must carry the repo-relative form everywhere a human
-    # copies it: the prose, the corpus path line, and both cp operands.
     repo_path = 'test/fuzz/' + crash_path
     run('issue-255-tiered-only', {'tieredfuzz.log': incident}, 'bug', crash_title,
-        contains=(f'**crash corpus 路径**:`{repo_path}`', '`test/fuzz/testdata/fuzz/` 路径',
+        contains=(f'**crash corpus 路径**:`{repo_path}`', 'corpus 已写入靶点所在包\n(`./test/fuzz`)的 `testdata/fuzz/` 下',
                   f'cp nightly-fuzz-p4-34103646451/{repo_path} {repo_path}',
                   '-run="^FuzzOracleDiffTiered/aadaecf9807d9dc9$"',
-                  'go test -tags \'wangshu_oracle_cgo wangshu_p4 wangshu_profile\' ./test/fuzz'), replay=('wangshu_oracle_cgo wangshu_p4 wangshu_profile', 'FuzzOracleDiffTiered', 'aadaecf9807d9dc9'))
-    run('tiered-p3-replay', {'tieredfuzz.log': f'Failing input written to {crash_path}'}, 'bug',
+                  'go test -tags \'wangshu_oracle_cgo wangshu_p4 wangshu_profile\' ./test/fuzz'),
+        replay=('wangshu_oracle_cgo wangshu_p4 wangshu_profile', 'FuzzOracleDiffTiered', 'aadaecf9807d9dc9', './test/fuzz'))
+    run('tiered-p3-replay', {'tieredfuzz.log': banner + f'Failing input written to {crash_path}'}, 'bug',
         crash_title.replace('(p4)', '(p3)'), variant='p3',
         contains=('wangshu_oracle_cgo wangshu_p3 wangshu_profile',),
-        replay=('wangshu_oracle_cgo wangshu_p3 wangshu_profile', 'FuzzOracleDiffTiered', 'aadaecf9807d9dc9'))
-    for log, target, variant, tags in [
-        ('gofuzz.log', 'FuzzCompileRun', 'p1', ''),
-        ('gofuzz.log', 'FuzzAutoPromote', 'p3', 'wangshu_p3 wangshu_profile'),
-        ('gofuzz.log', 'FuzzP4ForceAllPromote', 'p4', 'wangshu_p4 wangshu_profile'),
-        ('oraclefuzz.log', 'FuzzOracleDiff', 'p1', 'wangshu_oracle_cgo'),
+        replay=('wangshu_oracle_cgo wangshu_p3 wangshu_profile', 'FuzzOracleDiffTiered', 'aadaecf9807d9dc9', './test/fuzz'))
+    for log, target, variant, tags, pkg in [
+        ('gofuzz.log', 'FuzzCompileRun', 'p1', '', './test/fuzz'),
+        ('gofuzz.log', 'FuzzAutoPromote', 'p3', 'wangshu_p3 wangshu_profile', './test/fuzz'),
+        ('gofuzz.log', 'FuzzP4ForceAllPromote', 'p4', 'wangshu_p4 wangshu_profile', './test/fuzz'),
+        ('oraclefuzz.log', 'FuzzOracleDiff', 'p1', 'wangshu_oracle_cgo', './test/fuzz'),
+        # targets outside test/fuzz: the package must come from the banner, never a fixed prefix
+        ('gofuzz.log', 'FuzzPattern', 'p1', '', './internal/stdlib'),
+        ('gofuzz.log', 'FuzzLexer', 'p4', 'wangshu_p4 wangshu_profile', './internal/frontend/lex'),
+        ('gofuzz.log', 'FuzzParse', 'p3', 'wangshu_p3 wangshu_profile', './internal/frontend/parse'),
     ]:
-        run(target, {log: f'Failing input written to testdata/fuzz/{target}/abc123'}, 'bug',
+        # an earlier target's banner in the same log must not be picked up
+        log_text = (f'fuzz: ./somewhere/else :: FuzzOther (35m) tags=x\n'
+                    f'fuzz: {pkg} :: {target} (35m) tags={tags or "default"}\n'
+                    f'Failing input written to testdata/fuzz/{target}/abc123')
+        rp = f'{pkg[2:]}/testdata/fuzz/{target}/abc123'
+        run(target, {log: log_text}, 'bug',
             f'go-fuzz crash ({variant}): abc123 (2026-09-07)', variant=variant,
-            contains=(f'-run="^{target}/abc123$"', f"go test -tags \'{tags}\' ./test/fuzz" if tags else 'go test ./test/fuzz',
-                      f'cp nightly-fuzz-{variant}-34103646451/test/fuzz/testdata/fuzz/{target}/abc123 test/fuzz/testdata/fuzz/{target}/abc123'))
+            contains=(f'-run="^{target}/abc123$"', f"go test -tags \'{tags}\' {pkg}" if tags else f'go test {pkg}',
+                      f'**crash corpus 路径**:`{rp}`',
+                      f'cp nightly-fuzz-{variant}-34103646451/{rp} {rp}'),
+            replay=(tags, target, 'abc123', pkg))
+    # no banner in the log (e.g. a hand-trimmed log): fall back to finding the corpus file on disk
+    run('no-banner-disk-fallback', {'gofuzz.log': 'Failing input written to testdata/fuzz/FuzzPattern/deadbeef'}, 'bug',
+        'go-fuzz crash (p1): deadbeef (2026-09-07)', variant='p1',
+        files=('internal/stdlib/testdata/fuzz/FuzzPattern/deadbeef',),
+        contains=('go test ./internal/stdlib', '**crash corpus 路径**:`internal/stdlib/testdata/fuzz/FuzzPattern/deadbeef`'),
+        replay=('', 'FuzzPattern', 'deadbeef', './internal/stdlib'))
+    # neither banner nor file: the body must be visibly broken rather than silently wrong
+    run('no-banner-no-file', {'gofuzz.log': 'Failing input written to testdata/fuzz/FuzzPattern/cafe'}, 'bug',
+        'go-fuzz crash (p1): cafe (2026-09-07)', variant='p1',
+        contains=('go test ./PACKAGE-NOT-FOUND', '`PACKAGE-NOT-FOUND/testdata/fuzz/FuzzPattern/cafe`'))
 
     for log in ('gofuzz.log', 'oraclefuzz.log', 'tieredfuzz.log'):
         for marker in ('fuzzing process hung or terminated unexpectedly: exit status 2', 'panic: deadlocked!'):
