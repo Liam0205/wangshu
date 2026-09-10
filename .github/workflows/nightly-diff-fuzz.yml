@@ -400,6 +400,11 @@ jobs:
           elif grep -q "Failing input written to" "${FUZZ_LOGS[@]}" 2>/dev/null; then
             CRASH_PATH=$(grep -ohP 'Failing input written to \K\S+' "${FUZZ_LOGS[@]}" 2>/dev/null | head -1 || true)
             CRASH_NAME=$(basename "$CRASH_PATH")
+            # go test prints the corpus path relative to the fuzz PACKAGE
+            # directory (testdata/fuzz/<T>/<hash>); since the harnesses
+            # live in test/fuzz, the repo-relative path -- which is also
+            # the path inside the uploaded artifact -- carries that prefix.
+            CRASH_REPO_PATH="test/fuzz/$CRASH_PATH"
             # Fuzz target = the path segment above the corpus hash
             # (testdata/fuzz/<FuzzTarget>/<hash>) — needed for an exact
             # -run pattern. The old template ran the bare hash with no
@@ -426,16 +431,16 @@ jobs:
             LABEL="bug"
             BODY=$(cat <<EOF
           nightly go-fuzz 长跑撞出 crash(子进程异常退出/死循环/panic)。corpus 已写入仓库
-          \`testdata/fuzz/\` 路径,可本地精确重放定位根因。
+          \`test/fuzz/testdata/fuzz/\` 路径,可本地精确重放定位根因。
 
-          **crash corpus 路径**:\`$CRASH_PATH\`
+          **crash corpus 路径**:\`$CRASH_REPO_PATH\`
 
           **本地复现**:
           \`\`\`bash
           # 从 run artifact 下载 corpus(若仓库还没入库)
           gh run download ${{ github.run_id }} --repo ${{ github.repository }}
           # 复制到对应路径
-          cp nightly-fuzz-${{ matrix.variant }}-${{ github.run_id }}/$CRASH_PATH $CRASH_PATH
+          cp nightly-fuzz-${{ matrix.variant }}-${{ github.run_id }}/$CRASH_REPO_PATH $CRASH_REPO_PATH
           # replay (tags match the crashed target; FuzzOracleDiff needs CGO_ENABLED=1)
           $REPLAY_CMD \\
             -run="^${CRASH_TARGET}/${CRASH_NAME}\$" -count=1 -timeout 60s -v
