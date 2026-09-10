@@ -20,7 +20,7 @@ fuzz-forensics/
 # Anchored with a leading slash so they only match at the repo root: an
 # unanchored pattern matches by basename at any depth and would swallow
 # real tests like test/difftest/probes_test.go. Real tests use semantic
-# names (wangshu_test.go, table_test.go, issueNNN_*_test.go, fuzz_*_test.go).
+# names (test/api/wangshu_test.go, test/regression/issueNNN_*_test.go, test/fuzz/fuzz_*_test.go).
 /probe*_test.go
 /repro*_test.go
 /scratch*_test.go
