@@ -1,5 +1,5 @@
 // Arena ABI end-to-end tests (11 §3-§5).
-package wangshu_test
+package api_test
 
 import (
 	"testing"

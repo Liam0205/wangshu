@@ -1,7 +1,7 @@
 // GlobalsSlot pre-resolved handle tests (issue #13 item B). Verify that
 // SetBySlot/GetBySlot are semantically equivalent to SetGlobal/GetGlobal,
 // that cross-State misuse panics, and that Release is well-behaved.
-package wangshu_test
+package api_test
 
 import (
 	"strings"

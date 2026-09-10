@@ -7,7 +7,7 @@
 // only grows, never shrinks) — the "Compact really shrinks cap" semantics that
 // this file tests only hold on the default build. For the corresponding P3-build
 // behavior, see embedding_admin_p3_test.go TestP3_Compact_NoOpInP3Mode.
-package wangshu_test
+package api_test
 
 import (
 	"testing"

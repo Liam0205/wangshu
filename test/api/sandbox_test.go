@@ -1,7 +1,7 @@
 // Options.HideFileLoaders tests — strict sandbox mode matched against
 // gopher-lua (issue #3: the loader trio + load stripped from globals, script
 // calls fatal).
-package wangshu_test
+package api_test
 
 import (
 	"strings"

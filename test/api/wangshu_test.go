@@ -1,5 +1,5 @@
 // Public API end-to-end tests — verify Compile / Program.Run / Value bridging (M13).
-package wangshu_test
+package api_test
 
 import (
 	"strings"

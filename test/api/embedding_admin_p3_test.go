@@ -15,7 +15,7 @@
 //	   gibbous build
 //	④ Under ForceAllPromote, with gibbous actually promoted at runtime, the
 //	   public-facing API still works
-package wangshu_test
+package api_test
 
 import (
 	"testing"

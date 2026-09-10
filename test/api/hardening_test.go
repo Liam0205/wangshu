@@ -2,7 +2,7 @@
 // via stdlib (12 §4.9: keeping the host process alive takes priority over byte identity).
 // These inputs OOM-crash the process under PUC 5.1.5 / gopher-lua; wangshu proactively
 // fail-fasts and returns a Lua error.
-package wangshu_test
+package api_test
 
 import (
 	"strings"
