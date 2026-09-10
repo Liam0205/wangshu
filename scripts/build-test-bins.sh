@@ -121,7 +121,11 @@ build_pkg() {
 
 # Stage 1: main module
 echo "===== build $variant test binaries → test-bin/$variant/ ====="
-rm -f "$outdir/manifest.txt"
+# Clear stale binaries along with the manifest: run-test-bins.sh runs
+# every *.test it finds, so a binary whose package no longer exists (or
+# no longer has tests) would keep executing an old test set and report
+# it green. First seen when the root package's tests moved under test/.
+rm -f "$outdir/manifest.txt" "$outdir"/*.test
 echo "[1/2] main module"
 # Replacement for bash 4 `mapfile`: while read with process substitution
 # (bash 3.2 compatible)
