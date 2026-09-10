@@ -17,7 +17,7 @@
 //     compared here -- that is difftest/errmsg's job at generator
 //     granularity; at fuzz granularity it would drown in wording
 //     deltas.
-package wangshu_test
+package fuzz_test
 
 import (
 	"regexp"
@@ -27,6 +27,7 @@ import (
 	"testing"
 
 	"github.com/Liam0205/wangshu"
+	"github.com/Liam0205/wangshu/internal/fuzzforensics"
 	"github.com/Liam0205/wangshu/internal/oracle"
 )
 
@@ -197,7 +198,7 @@ print(coroutine.resume(co, 10)) print(coroutine.resume(co, 20))`,
 		if strings.ContainsRune(src, 0) {
 			t.Skip("NUL byte")
 		}
-		recordFuzzExec("FuzzOracleDiff", src)
+		fuzzforensics.RecordExec("FuzzOracleDiff", src)
 
 		or := oracle.Exec(src, prelude, oracle.Limits{})
 		if or.Verdict == oracle.VerdictLimit {

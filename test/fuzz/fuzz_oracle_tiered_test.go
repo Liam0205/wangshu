@@ -19,13 +19,14 @@
 // A tiered harness that forgot to promote would look exactly like a passing test while testing the
 // interpreter twice. TestTieredOracleDiffActuallyPromotes below asserts promotion directly; see its own
 // comment for why the obvious form of that assertion is too weak to be worth anything.
-package wangshu_test
+package fuzz_test
 
 import (
 	"strings"
 	"testing"
 
 	"github.com/Liam0205/wangshu"
+	"github.com/Liam0205/wangshu/internal/fuzzforensics"
 	"github.com/Liam0205/wangshu/internal/oracle"
 )
 
@@ -116,7 +117,7 @@ local t = setmetatable({}, mt) print(t.x, #t)`,
 		if strings.ContainsRune(src, 0) {
 			t.Skip("NUL byte")
 		}
-		recordFuzzExec("FuzzOracleDiffTiered", src)
+		fuzzforensics.RecordExec("FuzzOracleDiffTiered", src)
 
 		or := oracle.Exec(src, prelude, oracle.Limits{})
 		if or.Verdict == oracle.VerdictLimit {

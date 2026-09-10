@@ -212,14 +212,14 @@ jobs:
           go-version-file: go.mod
       - run: make fuzz-${{ matrix.variant }}
       # **F3-#3c PR #28**: on fuzz failure, upload the failing inputs under
-      # testdata/fuzz/ (go test writes there by default, both after the
+      # test/fuzz/testdata/fuzz/ (go test writes next to the fuzz package, both after the
       # minimizer finishes and on hang) so later reproduction + fixing has
       # the concrete input. retention-days 30 matches difftest.
       - if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: fuzz-failure-${{ matrix.variant }}-${{ matrix.os }}
-          path: testdata/fuzz/
+          path: test/fuzz/testdata/fuzz/
           if-no-files-found: ignore
           retention-days: 30
 
@@ -249,10 +249,10 @@ jobs:
         run: CGO_ENABLED=1 go test -tags wangshu_oracle_cgo ./internal/oracle/ -count=1
       - name: FuzzOracleDiff required-target assertion
         # The smoke must fail loudly if the target stops compiling into
-        # the root package under the oracle tags (PR review: go-fuzz.sh
+        # test/fuzz under the oracle tags (PR review: go-fuzz.sh
         # would otherwise skip it while other targets keep the job green).
         run: |
-          CGO_ENABLED=1 go test -tags wangshu_oracle_cgo . -run='^$' -list '^FuzzOracleDiff$' | grep -q '^FuzzOracleDiff$' \
+          CGO_ENABLED=1 go test -tags wangshu_oracle_cgo ./test/fuzz -run='^$' -list '^FuzzOracleDiff$' | grep -q '^FuzzOracleDiff$' \
             || { echo "FuzzOracleDiff missing under wangshu_oracle_cgo (build tag broken?)" >&2; exit 1; }
       - name: oracle diff fuzz smoke
         # FuzzOracleDiff filter: build tags are additive, so without it
@@ -265,7 +265,7 @@ jobs:
         # `wangshu_oracle_cgo && cgo && (wangshu_p3 || wangshu_p4)`, so a tag typo makes it vanish silently
         # while every other target keeps the job green.
         run: |
-          CGO_ENABLED=1 go test -tags "wangshu_oracle_cgo wangshu_p4 wangshu_profile" . -run='^$' \
+          CGO_ENABLED=1 go test -tags "wangshu_oracle_cgo wangshu_p4 wangshu_profile" ./test/fuzz -run='^$' \
             -list '^FuzzOracleDiffTiered$' | grep -q '^FuzzOracleDiffTiered$' \
             || { echo "FuzzOracleDiffTiered missing under oracle+p4 tags (build tag broken?)" >&2; exit 1; }
       - name: tiered promotion assertion (p3 and p4)
@@ -273,7 +273,7 @@ jobs:
         # interpreter against PUC a second time -- FuzzOracleDiff's job, not this one's.
         run: |
           for tags in "wangshu_oracle_cgo wangshu_p3 wangshu_profile" "wangshu_oracle_cgo wangshu_p4 wangshu_profile"; do
-            CGO_ENABLED=1 go test -tags "$tags" . -run '^TestTieredOracleDiffActuallyPromotes$' -count=1 \
+            CGO_ENABLED=1 go test -tags "$tags" ./test/fuzz -run '^TestTieredOracleDiffActuallyPromotes$' -count=1 \
               || { echo "tiered promotion assertion failed under: $tags" >&2; exit 1; }
           done
       - name: tiered-oracle diff fuzz smoke (p4)
@@ -282,7 +282,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: oracle-fuzz-failure-${{ matrix.os }}
-          path: testdata/fuzz/
+          path: test/fuzz/testdata/fuzz/
           if-no-files-found: ignore
           retention-days: 30
 

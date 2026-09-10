@@ -110,7 +110,7 @@ with tempfile.TemporaryDirectory() as tmp:
                 assert executed.returncode == 0, (name, executed.stderr)
                 actual = json.loads((tree / 'go-args.json').read_text())
                 expected = ['test'] + (['-tags', tags] if tags else []) + [
-                    '.', f'-run=^{target}/{seed}$', '-count=1', '-timeout', '60s', '-v']
+                    './test/fuzz', f'-run=^{target}/{seed}$', '-count=1', '-timeout', '60s', '-v']
                 assert actual == expected, (name, actual, expected)
         print(f'CASE {name}: OK')
 
@@ -122,7 +122,7 @@ with tempfile.TemporaryDirectory() as tmp:
     crash_title = 'go-fuzz crash (p4): aadaecf9807d9dc9 (2026-09-07)'
     run('issue-255-tiered-only', {'tieredfuzz.log': incident}, 'bug', crash_title,
         contains=(crash_path, '-run="^FuzzOracleDiffTiered/aadaecf9807d9dc9$"',
-                  'go test -tags \'wangshu_oracle_cgo wangshu_p4 wangshu_profile\' .'), replay=('wangshu_oracle_cgo wangshu_p4 wangshu_profile', 'FuzzOracleDiffTiered', 'aadaecf9807d9dc9'))
+                  'go test -tags \'wangshu_oracle_cgo wangshu_p4 wangshu_profile\' ./test/fuzz'), replay=('wangshu_oracle_cgo wangshu_p4 wangshu_profile', 'FuzzOracleDiffTiered', 'aadaecf9807d9dc9'))
     run('tiered-p3-replay', {'tieredfuzz.log': f'Failing input written to {crash_path}'}, 'bug',
         crash_title.replace('(p4)', '(p3)'), variant='p3',
         contains=('wangshu_oracle_cgo wangshu_p3 wangshu_profile',),
@@ -135,7 +135,7 @@ with tempfile.TemporaryDirectory() as tmp:
     ]:
         run(target, {log: f'Failing input written to testdata/fuzz/{target}/abc123'}, 'bug',
             f'go-fuzz crash ({variant}): abc123 (2026-09-07)', variant=variant,
-            contains=(f'-run="^{target}/abc123$"', f"go test -tags \'{tags}\' ." if tags else 'go test .'))
+            contains=(f'-run="^{target}/abc123$"', f"go test -tags \'{tags}\' ./test/fuzz" if tags else 'go test ./test/fuzz'))
 
     for log in ('gofuzz.log', 'oraclefuzz.log', 'tieredfuzz.log'):
         for marker in ('fuzzing process hung or terminated unexpectedly: exit status 2', 'panic: deadlocked!'):

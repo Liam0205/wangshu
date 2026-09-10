@@ -17,13 +17,14 @@
 
 //go:build wangshu_p4 && wangshu_profile
 
-package wangshu_test
+package fuzz_test
 
 import (
 	"github.com/Liam0205/wangshu/internal/fuzzbudget"
 	"testing"
 
 	"github.com/Liam0205/wangshu"
+	"github.com/Liam0205/wangshu/internal/fuzzforensics"
 )
 
 // FuzzP4ForceAllPromote: under P4 force-all-promote mode, the fuzz seeds +
@@ -126,7 +127,7 @@ return f(o1, o2)`,
 		if len(src) > 1<<14 {
 			t.Skip()
 		}
-		recordFuzzExec("FuzzP4ForceAllPromote", src)
+		fuzzforensics.RecordExec("FuzzP4ForceAllPromote", src)
 		prog, err := wangshu.Compile([]byte(src), "fuzz-p4")
 		if err != nil {
 			return // a compile error is a legitimate outcome

@@ -61,7 +61,7 @@ fi
 run_target() {
     local pkg="$1" func="$2" log rc fdir
     log=$(mktemp)
-    # Worker forensics (fuzz_forensics_test.go, concat-storm family
+    # Worker forensics (internal/fuzzforensics, concat-storm family
     # #123-#162): each TARGET gets its own directory, selected via
     # WANGSHU_FUZZ_FORENSICS_DIR. A shared directory cleared per
     # invocation loses evidence: the nightly p1 job runs native fuzz
@@ -122,7 +122,7 @@ run_target() {
             # Worker autopsy (concat-storm family): "exit status 2" is
             # the Go runtime's own fatal exit — the dying worker printed
             # a stack trace, but internal/fuzz wires worker stderr to
-            # /dev/null. fuzz_forensics_test.go redirects each worker's
+            # /dev/null. internal/fuzzforensics redirects each worker's
             # fd 2 to fuzz-forensics/worker-<pid>-stderr.log; dump any
             # log that grew beyond its one-line header, plus every
             # flight-recorder record (which worker ran which input).
