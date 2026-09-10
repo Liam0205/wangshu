@@ -5,7 +5,7 @@
 // entry-frame branch narrowed th.top below the still-live caller frame's
 // logical top, and the GC's above-top residue clear then nil'd the caller's
 // live registers.
-package wangshu_test
+package regression
 
 import (
 	"testing"
