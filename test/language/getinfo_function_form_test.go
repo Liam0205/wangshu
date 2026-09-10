@@ -1,4 +1,4 @@
-package wangshu_test
+package language_test
 
 import (
 	"strings"

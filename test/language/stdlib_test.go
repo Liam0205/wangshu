@@ -1,5 +1,5 @@
 // stdlib end-to-end tests via public Run path (M12).
-package wangshu_test
+package language_test
 
 import (
 	"testing"

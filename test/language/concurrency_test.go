@@ -5,7 +5,7 @@
 // Proto (Consts interned into the private arena, IC private, Protos relocated); only the
 // read-only backing (Code/StringLits/LineInfo) is shared and read concurrently.
 // Every case in this file must pass under `go test -race` (the engineering.md -race hard gate).
-package wangshu_test
+package language_test
 
 import (
 	"fmt"

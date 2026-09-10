@@ -1,5 +1,5 @@
 // Register / RegisterModule tests — Go functions registered into Lua globals / module tables (11 §10).
-package wangshu_test
+package language_test
 
 import (
 	"strings"

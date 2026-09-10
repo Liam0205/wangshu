@@ -8,7 +8,7 @@
 //  2. Deep Lua recursion reports "stack overflow" (catchable by pcall) without
 //     blowing the Go stack.
 //  3. Alternating host→Lua re-entry reports "C stack overflow", also recoverable.
-package wangshu_test
+package language_test
 
 import (
 	"strings"
