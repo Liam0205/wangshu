@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/Liam0205/wangshu/test/testutil"
 )
 
 // requireGlibcMktime skips a test whose expectations were derived from glibc's mktime.
@@ -65,7 +67,7 @@ func TestOSTimeIsDST(t *testing.T) {
 		{"gap isdst=false", `return tostring(os.time{year=2024,month=3,day=31,hour=1,min=30,sec=0,isdst=false})`, "1711848600"},
 		{"gap isdst=true", `return tostring(os.time{year=2024,month=3,day=31,hour=1,min=30,sec=0,isdst=true})`, "1711845000"},
 	} {
-		if got := runOne(t, tc.src); got.Str() != tc.want {
+		if got := testutil.RunOne(t, tc.src); got.Str() != tc.want {
 			t.Errorf("%s: got %v, want %s", tc.name, got.Display(), tc.want)
 		}
 	}
@@ -104,8 +106,8 @@ func TestOSTimeIsDST_DefaultHourFallback(t *testing.T) {
 			t.Setenv("TZ", tc.zone)
 			time.Local = loc
 			defer func() { time.Local = origLocal }()
-			plain := runOne(t, `return tostring(os.time{year=2024,month=1,day=15,hour=12,min=0,sec=0})`).Str()
-			dst := runOne(t, `return tostring(os.time{year=2024,month=1,day=15,hour=12,min=0,sec=0,isdst=true})`).Str()
+			plain := testutil.RunOne(t, `return tostring(os.time{year=2024,month=1,day=15,hour=12,min=0,sec=0})`).Str()
+			dst := testutil.RunOne(t, `return tostring(os.time{year=2024,month=1,day=15,hour=12,min=0,sec=0,isdst=true})`).Str()
 			if plain != tc.plainWant || dst != tc.dstWant {
 				t.Errorf("%s (%s): plain=%s want %s, isdst=true=%s want %s",
 					tc.zone, tc.why, plain, tc.plainWant, dst, tc.dstWant)
@@ -134,7 +136,7 @@ func TestOSTimeIsDST_TwoStateNeighbourDirection(t *testing.T) {
 	t.Cleanup(func() { time.Local = origLocal })
 
 	const src = `return tostring(os.time{year=2026,month=8,day=15,hour=12,min=0,sec=0,isdst=false})`
-	if got := runOne(t, src).Str(); got != "1786820400" {
+	if got := testutil.RunOne(t, src).Str(); got != "1786820400" {
 		t.Errorf("got %s, want 1786820400 (the MST neighbour, not PST)", got)
 	}
 }
@@ -159,7 +161,7 @@ func TestOSTimeIsDST_StrideMatchesGlibc(t *testing.T) {
 	t.Cleanup(func() { time.Local = origLocal })
 
 	const src = `return tostring(os.time{year=2010,month=7,day=15,hour=12,min=0,sec=0,isdst=false})`
-	if got := runOne(t, src).Str(); got != "1279152000" {
+	if got := testutil.RunOne(t, src).Str(); got != "1279152000" {
 		t.Errorf("got %s, want 1279152000 (glibc's stride neighbour, not the nearest)", got)
 	}
 }
@@ -196,7 +198,7 @@ func TestOSTimeIsDST_SearchBound(t *testing.T) {
 			t.Setenv("TZ", tc.zone)
 			time.Local = loc
 			defer func() { time.Local = origLocal }()
-			if got := runOne(t, tc.src).Str(); got != tc.want {
+			if got := testutil.RunOne(t, tc.src).Str(); got != tc.want {
 				t.Errorf("%s: got %s, want %s", tc.zone, got, tc.want)
 			}
 		}()
@@ -223,12 +225,12 @@ func TestOSTimeIsDST_PortableContract(t *testing.T) {
 
 	// A two-state zone: the two isdst values must differ by exactly the zone's DST delta,
 	// and the summer/winter defaults must each agree with one of them.
-	sumT := runOne(t, `return tostring(os.time{year=2024,month=7,day=1,hour=12,isdst=true})`).Str()
-	sumF := runOne(t, `return tostring(os.time{year=2024,month=7,day=1,hour=12,isdst=false})`).Str()
-	sumD := runOne(t, `return tostring(os.time{year=2024,month=7,day=1,hour=12})`).Str()
-	winT := runOne(t, `return tostring(os.time{year=2024,month=1,day=1,hour=12,isdst=true})`).Str()
-	winF := runOne(t, `return tostring(os.time{year=2024,month=1,day=1,hour=12,isdst=false})`).Str()
-	winD := runOne(t, `return tostring(os.time{year=2024,month=1,day=1,hour=12})`).Str()
+	sumT := testutil.RunOne(t, `return tostring(os.time{year=2024,month=7,day=1,hour=12,isdst=true})`).Str()
+	sumF := testutil.RunOne(t, `return tostring(os.time{year=2024,month=7,day=1,hour=12,isdst=false})`).Str()
+	sumD := testutil.RunOne(t, `return tostring(os.time{year=2024,month=7,day=1,hour=12})`).Str()
+	winT := testutil.RunOne(t, `return tostring(os.time{year=2024,month=1,day=1,hour=12,isdst=true})`).Str()
+	winF := testutil.RunOne(t, `return tostring(os.time{year=2024,month=1,day=1,hour=12,isdst=false})`).Str()
+	winD := testutil.RunOne(t, `return tostring(os.time{year=2024,month=1,day=1,hour=12})`).Str()
 
 	diff := func(a, b string) int64 {
 		x, errA := strconv.ParseInt(a, 10, 64)
@@ -252,7 +254,7 @@ func TestOSTimeIsDST_PortableContract(t *testing.T) {
 		t.Errorf("winter default %s should match isdst=false %s", winD, winF)
 	}
 	// isdst must be idempotent: asking twice gives the same answer.
-	if again := runOne(t, `return tostring(os.time{year=2024,month=7,day=1,hour=12,isdst=true})`).Str(); again != sumT {
+	if again := testutil.RunOne(t, `return tostring(os.time{year=2024,month=7,day=1,hour=12,isdst=true})`).Str(); again != sumT {
 		t.Errorf("not idempotent: %s then %s", sumT, again)
 	}
 }

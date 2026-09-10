@@ -1,6 +1,10 @@
 package wangshu_test
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/Liam0205/wangshu/test/testutil"
+)
 
 // TestGsubReplacementEscapeMatchesPUC covers #234 and a pre-existing sibling.
 //
@@ -41,7 +45,7 @@ func TestGsubReplacementEscapeMatchesPUC(t *testing.T) {
 		{"out-of-range index still raises",
 			`local ok,e=pcall(string.gsub,"a","a","%2") return tostring(e)`, "invalid capture index"},
 	} {
-		if got := runOne(t, tc.src).Str(); got != tc.want {
+		if got := testutil.RunOne(t, tc.src).Str(); got != tc.want {
 			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
 		}
 	}
@@ -62,7 +66,7 @@ func TestAddressLengthIsComparable(t *testing.T) {
 		{"table address width", `return tostring(#tostring({}))`, "17"},
 		{"function address width", `return tostring(#tostring(print))`, "20"},
 	} {
-		if got := runOne(t, tc.src).Str(); got != tc.want {
+		if got := testutil.RunOne(t, tc.src).Str(); got != tc.want {
 			t.Errorf("%s: got %q, want %q -- prelude renders the oracle side at this width", tc.name, got, tc.want)
 		}
 	}

@@ -3,6 +3,8 @@ package wangshu_test
 import (
 	"strings"
 	"testing"
+
+	"github.com/Liam0205/wangshu/test/testutil"
 )
 
 // TestUnpackAtInt32BoundaryDoesNotCrash covers #244, where the CRASH is in the oracle, not in wangshu.
@@ -53,7 +55,7 @@ func TestUnpackAtInt32BoundaryDoesNotCrash(t *testing.T) {
 			`return tostring(select("#",unpack({1,2,3},4294967297)))`, "3"},
 	} {
 		// Suffix match: a raised message carries a chunkname:line prefix that is not the point here.
-		if got := runOne(t, tc.src).Str(); !strings.HasSuffix(got, tc.want) {
+		if got := testutil.RunOne(t, tc.src).Str(); !strings.HasSuffix(got, tc.want) {
 			t.Errorf("%s: got %q, want it to end with %q", tc.name, got, tc.want)
 		}
 	}

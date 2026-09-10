@@ -3,6 +3,8 @@ package wangshu_test
 import (
 	"strings"
 	"testing"
+
+	"github.com/Liam0205/wangshu/test/testutil"
 )
 
 // TestErrorLevelMustBeANumber covers #212 and #215: error()'s level argument goes through
@@ -32,7 +34,7 @@ func TestErrorLevelMustBeANumber(t *testing.T) {
 		{"numeric string level accepted",
 			`local ok, e = pcall(function() error("m", "2") end) return tostring(e)`, "m"},
 	} {
-		if got := runOne(t, tc.src).Str(); got != tc.want {
+		if got := testutil.RunOne(t, tc.src).Str(); got != tc.want {
 			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
 		}
 	}
@@ -69,7 +71,7 @@ func TestCallLineIsTheArgumentList(t *testing.T) {
 		{"method callee line with a table arg",
 			"local t = {}\nlocal ok, e = pcall(function() return t:nope\n{} end) return tostring(e)", "3"},
 	} {
-		full := runOne(t, tc.src).Str()
+		full := testutil.RunOne(t, tc.src).Str()
 		want := `[string "test"]:` + tc.wantLine + ":"
 		if !strings.HasPrefix(full, want) {
 			t.Errorf("%s: got %q, want prefix %q", tc.name, full, want)
@@ -91,7 +93,7 @@ func TestGsubValidatesReplTypeUpFront(t *testing.T) {
 		{"nil repl without a count", `local ok, e = pcall(string.gsub, "", "", nil) return tostring(e)`},
 		{"boolean repl", `local ok, e = pcall(string.gsub, "", "", true) return tostring(e)`},
 	} {
-		if got := runOne(t, tc.src).Str(); got != want {
+		if got := testutil.RunOne(t, tc.src).Str(); got != want {
 			t.Errorf("%s: got %q, want %q", tc.name, got, want)
 		}
 	}
@@ -102,7 +104,7 @@ func TestGsubValidatesReplTypeUpFront(t *testing.T) {
 		{"table repl", `return ("aaa"):gsub("a", {a = "Z"})`, "ZZZ"},
 		{"number repl", `return ("aaa"):gsub("a", 7)`, "777"},
 	} {
-		if got := runOne(t, tc.src).Str(); got != tc.want {
+		if got := testutil.RunOne(t, tc.src).Str(); got != tc.want {
 			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
 		}
 	}
@@ -132,7 +134,7 @@ func TestMathRandomTypeErrorBeforeInterval(t *testing.T) {
 		{"empty interval two args", `local ok, e = pcall(math.random, 5, 1) return tostring(e)`,
 			"bad argument #2 to '?' (interval is empty)"},
 	} {
-		if got := runOne(t, tc.src).Str(); got != tc.want {
+		if got := testutil.RunOne(t, tc.src).Str(); got != tc.want {
 			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
 		}
 	}
@@ -158,7 +160,7 @@ func TestMultiLineArgumentTokenLines(t *testing.T) {
 		{"short string with an escaped newline",
 			"local ok, e = pcall(function() return A\"a\\\nb\" end) return tostring(e)", "2"},
 	} {
-		full := runOne(t, tc.src).Str()
+		full := testutil.RunOne(t, tc.src).Str()
 		want := "[string \"test\"]:" + tc.wantLine + ":"
 		if !strings.HasPrefix(full, want) {
 			t.Errorf("%s: got %q, want prefix %q", tc.name, full, want)
@@ -168,7 +170,7 @@ func TestMultiLineArgumentTokenLines(t *testing.T) {
 	// compares against the previous token's END line, so there is no line break before the call as
 	// far as the rule is concerned.
 	src := "local f = function() return function() return 1 end end\nreturn tostring(f[[\n]](3))"
-	if got := runOne(t, src).Str(); got != "1" {
+	if got := testutil.RunOne(t, src).Str(); got != "1" {
 		t.Errorf("a long-string argument call = %q, want \"1\" -- lua5.1 accepts it", got)
 	}
 }

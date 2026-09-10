@@ -1,6 +1,10 @@
 package wangshu_test
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/Liam0205/wangshu/test/testutil"
+)
 
 // TestTableInsert_NoBoundsCheck51 pins that table.insert accepts ANY position,
 // which is what PUC 5.1's ltablib.c tinsert does -- it has no bounds check at
@@ -28,7 +32,7 @@ func TestTableInsert_NoBoundsCheck51(t *testing.T) {
 		{"pos 1 on empty",
 			`local t={} table.insert(t,1,"x") return #t..","..t[1]`, "1,x"},
 	} {
-		got := runOne(t, tc.src)
+		got := testutil.RunOne(t, tc.src)
 		if !got.IsString() || got.Str() != tc.want {
 			t.Errorf("%s: %s = %v, want %q", tc.name, tc.src, got.Display(), tc.want)
 		}
@@ -55,7 +59,7 @@ func TestTableInsert_PositionNarrowedToInt32(t *testing.T) {
 		{"nan narrows to 0",
 			`local t={"a"} table.insert(t,0/0,"X") return #t..","..tostring(t[0])`, "0,X"},
 	} {
-		got := runOne(t, tc.src)
+		got := testutil.RunOne(t, tc.src)
 		if !got.IsString() || got.Str() != tc.want {
 			t.Errorf("%s: %s = %v, want %q", tc.name, tc.src, got.Display(), tc.want)
 		}
@@ -74,7 +78,7 @@ func TestTableInsert_ShiftSpanCapped(t *testing.T) {
 		`local ok,e = pcall(table.insert,{"a"},2147483648,"X") return tostring(ok)..","..tostring(e)`,
 		`local ok,e = pcall(table.insert,{"a"},-2147483648,"X") return tostring(ok)..","..tostring(e)`,
 	} {
-		got := runOne(t, src)
+		got := testutil.RunOne(t, src)
 		if !got.IsString() || got.Str() == "true,nil" {
 			t.Errorf("%s = %v, want a raised error rather than an unbounded shift", src, got.Display())
 		}
@@ -82,11 +86,11 @@ func TestTableInsert_ShiftSpanCapped(t *testing.T) {
 	// An ordinary insert into a LARGE table must still work: the cap bounds the
 	// distance below index 1, not the number of elements. Measuring the element
 	// count rejected this, which both engines complete quickly.
-	if got := runOne(t, `local t={} for i=1,100000 do t[i]=1 end table.insert(t,1,"X") return #t..","..t[1]`); !got.IsString() || got.Str() != "100001,X" {
+	if got := testutil.RunOne(t, `local t={} for i=1,100000 do t[i]=1 end table.insert(t,1,"X") return #t..","..t[1]`); !got.IsString() || got.Str() != "100001,X" {
 		t.Errorf("insert at 1 into a 100k table should succeed, got %v", got.Display())
 	}
 	// a span just under the cap still works
-	if got := runOne(t, `local t={} table.insert(t,-1000,"X") return tostring(t[-1000])`); !got.IsString() || got.Str() != "X" {
+	if got := testutil.RunOne(t, `local t={} table.insert(t,-1000,"X") return tostring(t[-1000])`); !got.IsString() || got.Str() != "X" {
 		t.Errorf("small negative position should still insert, got %v", got.Display())
 	}
 }
@@ -105,7 +109,7 @@ func TestTableConcat_ErrorTextMatchesPUC(t *testing.T) {
 		{`local ok,e = pcall(table.concat,{1,true},",") return e`,
 			"invalid value (boolean) at index 2 in table for 'concat'"},
 	} {
-		got := runOne(t, tc.src)
+		got := testutil.RunOne(t, tc.src)
 		if !got.IsString() || got.Str() != tc.want {
 			t.Errorf("%s\n  got  %v\n  want %q", tc.src, got.Display(), tc.want)
 		}

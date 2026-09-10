@@ -5,24 +5,8 @@ import (
 	"testing"
 
 	"github.com/Liam0205/wangshu"
+	"github.com/Liam0205/wangshu/test/testutil"
 )
-
-func runOne(t *testing.T, src string) wangshu.Value {
-	t.Helper()
-	prog, err := wangshu.Compile([]byte(src), "test")
-	if err != nil {
-		t.Fatalf("compile: %v", err)
-	}
-	st := wangshu.NewState(wangshu.Options{})
-	results, err := prog.Run(st)
-	if err != nil {
-		t.Fatalf("run: %v", err)
-	}
-	if len(results) == 0 {
-		return wangshu.Nil()
-	}
-	return results[0]
-}
 
 // TestStdlib_NumericArgCoercion pins two PUC coercion behaviors that
 // FuzzOracleDiff caught wangshu being too strict about (#174/#175). PUC's
@@ -48,7 +32,7 @@ func TestStdlib_NumericArgCoercion(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := runOne(t, tc.src).Display()
+			got := testutil.RunOne(t, tc.src).Display()
 			if got != tc.want {
 				t.Errorf("%s: %s -> %q, want %q", tc.name, tc.src, got, tc.want)
 			}
@@ -66,7 +50,7 @@ func TestStdlib_Type(t *testing.T) {
 		`return type({1,2,3})`: "table",
 	}
 	for src, want := range cases {
-		got := runOne(t, src)
+		got := testutil.RunOne(t, src)
 		if !got.IsString() || got.Str() != want {
 			t.Errorf("%s -> %v, want %q", src, got.Display(), want)
 		}
@@ -74,22 +58,22 @@ func TestStdlib_Type(t *testing.T) {
 }
 
 func TestStdlib_ToString(t *testing.T) {
-	got := runOne(t, `return tostring(123)`)
+	got := testutil.RunOne(t, `return tostring(123)`)
 	if !got.IsString() || got.Str() != "123" {
 		t.Errorf("tostring(123) = %v", got.Display())
 	}
-	got2 := runOne(t, `return tostring(nil)`)
+	got2 := testutil.RunOne(t, `return tostring(nil)`)
 	if !got2.IsString() || got2.Str() != "nil" {
 		t.Errorf("tostring(nil) = %v", got2.Display())
 	}
 }
 
 func TestStdlib_ToNumber(t *testing.T) {
-	got := runOne(t, `return tonumber("42")`)
+	got := testutil.RunOne(t, `return tonumber("42")`)
 	if !got.IsNumber() || got.Number() != 42 {
 		t.Errorf("tonumber('42') = %v", got.Display())
 	}
-	got2 := runOne(t, `return tonumber("zzz")`)
+	got2 := testutil.RunOne(t, `return tonumber("zzz")`)
 	if !got2.IsNil() {
 		t.Errorf("tonumber('zzz') = %v, want nil", got2.Display())
 	}
@@ -124,19 +108,19 @@ func TestStdlib_ToNumberBase10IsStandardConversion(t *testing.T) {
 		{`return tonumber("ff", 16)`, 255},
 		{`return tonumber("z", 36)`, 35},
 	} {
-		got := runOne(t, tc.src)
+		got := testutil.RunOne(t, tc.src)
 		if !got.IsNumber() || got.Number() != tc.want {
 			t.Errorf("%s = %v, want %v", tc.src, got.Display(), tc.want)
 		}
 	}
 	// base 10 agrees with no base on the nonfinite words too
 	for _, src := range []string{`return tonumber("inf", 10)`, `return tonumber("nan", 10)`} {
-		if got := runOne(t, src); !got.IsNumber() {
+		if got := testutil.RunOne(t, src); !got.IsNumber() {
 			t.Errorf("%s = %v, want a number", src, got.Display())
 		}
 	}
 	// forms the digit loop legitimately rejects at a non-10 base
-	if got := runOne(t, `return tonumber("1.5", 16)`); !got.IsNil() {
+	if got := testutil.RunOne(t, `return tonumber("1.5", 16)`); !got.IsNil() {
 		t.Errorf(`tonumber("1.5",16) = %v, want nil`, got.Display())
 	}
 }
@@ -176,7 +160,7 @@ func TestStdlib_ToNumberBaseStrtoulSemantics(t *testing.T) {
 		{`return tonumber("z", 36)`, 35},
 		{`return tonumber("0", 16)`, 0},
 	} {
-		got := runOne(t, tc.src)
+		got := testutil.RunOne(t, tc.src)
 		if !got.IsNumber() || got.Number() != tc.want {
 			t.Errorf("%s = %v, want %v", tc.src, got.Display(), tc.want)
 		}
@@ -184,39 +168,39 @@ func TestStdlib_ToNumberBaseStrtoulSemantics(t *testing.T) {
 }
 
 func TestStdlib_MathBasic(t *testing.T) {
-	got := runOne(t, `return math.abs(-3) + math.floor(3.7) + math.ceil(2.2)`)
+	got := testutil.RunOne(t, `return math.abs(-3) + math.floor(3.7) + math.ceil(2.2)`)
 	if !got.IsNumber() || got.Number() != 3+3+3 {
 		t.Errorf("got %v, want 9", got.Display())
 	}
 }
 
 func TestStdlib_MathMaxMin(t *testing.T) {
-	got := runOne(t, `return math.max(1,5,3) - math.min(1,5,3)`)
+	got := testutil.RunOne(t, `return math.max(1,5,3) - math.min(1,5,3)`)
 	if !got.IsNumber() || got.Number() != 4 {
 		t.Errorf("got %v, want 4", got.Display())
 	}
 }
 
 func TestStdlib_StringOps(t *testing.T) {
-	got := runOne(t, `return string.upper("abc") .. "/" .. string.rep("x", 3)`)
+	got := testutil.RunOne(t, `return string.upper("abc") .. "/" .. string.rep("x", 3)`)
 	if !got.IsString() || got.Str() != "ABC/xxx" {
 		t.Errorf("got %v, want 'ABC/xxx'", got.Display())
 	}
 }
 
 func TestStdlib_StringSub(t *testing.T) {
-	got := runOne(t, `return string.sub("hello", 2, 4)`)
+	got := testutil.RunOne(t, `return string.sub("hello", 2, 4)`)
 	if !got.IsString() || got.Str() != "ell" {
 		t.Errorf("got %v, want 'ell'", got.Display())
 	}
-	got2 := runOne(t, `return string.sub("hello", -3)`)
+	got2 := testutil.RunOne(t, `return string.sub("hello", -3)`)
 	if !got2.IsString() || got2.Str() != "llo" {
 		t.Errorf("got %v, want 'llo'", got2.Display())
 	}
 }
 
 func TestStdlib_AssertSuccess(t *testing.T) {
-	got := runOne(t, `return assert(42, "should not error")`)
+	got := testutil.RunOne(t, `return assert(42, "should not error")`)
 	if !got.IsNumber() || got.Number() != 42 {
 		t.Errorf("got %v, want 42", got.Display())
 	}
@@ -235,25 +219,25 @@ func TestStdlib_AssertFail(t *testing.T) {
 }
 
 func TestStdlib_StringLowerReverseLen(t *testing.T) {
-	got := runOne(t, `return string.lower("AbC") .. string.reverse("xyz") .. tostring(string.len("hello"))`)
+	got := testutil.RunOne(t, `return string.lower("AbC") .. string.reverse("xyz") .. tostring(string.len("hello"))`)
 	if !got.IsString() || got.Str() != "abczyx5" {
 		t.Errorf("got %v, want 'abczyx5'", got.Display())
 	}
 }
 
 func TestStdlib_SelectVariants(t *testing.T) {
-	got := runOne(t, `return select("#", "a", "b")`)
+	got := testutil.RunOne(t, `return select("#", "a", "b")`)
 	if !got.IsNumber() || got.Number() != 2 {
 		t.Errorf("select('#') = %v, want 2", got.Display())
 	}
-	got2 := runOne(t, `return select(2, "a", "b", "c")`)
+	got2 := testutil.RunOne(t, `return select(2, "a", "b", "c")`)
 	if !got2.IsString() || got2.Str() != "b" {
 		t.Errorf("select(2,...) first = %v, want 'b'", got2.Display())
 	}
 }
 
 func TestStdlib_RawEqual(t *testing.T) {
-	got := runOne(t, `
+	got := testutil.RunOne(t, `
 local t = {}
 return tostring(rawequal(t, t)) .. tostring(rawequal({}, {}))`)
 	if !got.IsString() || got.Str() != "truefalse" {
@@ -274,7 +258,7 @@ func TestStdlib_Print(t *testing.T) {
 }
 
 func TestStdlib_ToStringAllTypes(t *testing.T) {
-	got := runOne(t, `return tostring(nil) .. tostring(true) .. tostring(false)`)
+	got := testutil.RunOne(t, `return tostring(nil) .. tostring(true) .. tostring(false)`)
 	if !got.IsString() || got.Str() != "niltruefalse" {
 		t.Errorf("got %v", got.Display())
 	}
@@ -297,7 +281,7 @@ func TestStdlib_MathExtended(t *testing.T) {
 		`return math.tan(0) + math.log(1)`:   0,
 	}
 	for src, want := range cases {
-		got := runOne(t, src)
+		got := testutil.RunOne(t, src)
 		if !got.IsNumber() || got.Number() != want {
 			t.Errorf("%s = %v, want %v", src, got.Display(), want)
 		}
@@ -306,7 +290,7 @@ func TestStdlib_MathExtended(t *testing.T) {
 
 func TestStdlib_MathRandomDeterministic(t *testing.T) {
 	// after randomseed the sequence is deterministic; in the range forms every value stays within bounds
-	got := runOne(t, `
+	got := testutil.RunOne(t, `
 math.randomseed(7)
 local a = math.random()
 local b = math.random(10)
@@ -318,29 +302,29 @@ return tostring(a >= 0 and a < 1) .. tostring(b >= 1 and b <= 10) .. tostring(c 
 }
 
 func TestStdlib_GsubTableRepl(t *testing.T) {
-	got := runOne(t, `return (string.gsub("a b c", "%a", { a = "X", c = "Z" }))`)
+	got := testutil.RunOne(t, `return (string.gsub("a b c", "%a", { a = "X", c = "Z" }))`)
 	if !got.IsString() || got.Str() != "X b Z" {
 		t.Errorf("got %v, want 'X b Z'", got.Display())
 	}
 }
 
 func TestStdlib_OsDateGetenv(t *testing.T) {
-	got := runOne(t, `return #os.date("%Y") == 4`)
+	got := testutil.RunOne(t, `return #os.date("%Y") == 4`)
 	if !got.IsBool() || !got.Bool() {
 		t.Errorf("os.date('%%Y') length: got %v", got.Display())
 	}
-	got2 := runOne(t, `return tostring(os.getenv("__WANGSHU_NOT_SET_ENV__"))`)
+	got2 := testutil.RunOne(t, `return tostring(os.getenv("__WANGSHU_NOT_SET_ENV__"))`)
 	if got2.Str() != "nil" {
 		t.Errorf("unset env should be nil, got %v", got2.Display())
 	}
-	got3 := runOne(t, `return os.clock() >= 0 and os.time() > 0`)
+	got3 := testutil.RunOne(t, `return os.clock() >= 0 and os.time() > 0`)
 	if !got3.IsBool() || !got3.Bool() {
 		t.Errorf("os.clock/time: got %v", got3.Display())
 	}
 }
 
 func TestStdlib_CoroutineRunningInside(t *testing.T) {
-	got := runOne(t, `
+	got := testutil.RunOne(t, `
 local co = coroutine.create(function()
   return coroutine.running() ~= nil
 end)
@@ -352,14 +336,14 @@ return tostring(inside) .. tostring(coroutine.running() == nil)`)
 }
 
 func TestStdlib_StringFormatEdge(t *testing.T) {
-	got := runOne(t, `return string.format("%c%c", 65, 66) .. string.format("%5.1f", 3.14)`)
+	got := testutil.RunOne(t, `return string.format("%c%c", 65, 66) .. string.format("%5.1f", 3.14)`)
 	if !got.IsString() || got.Str() != "AB  3.1" {
 		t.Errorf("got %q", got.Str())
 	}
 }
 
 func TestStdlib_TonumberEdge(t *testing.T) {
-	got := runOne(t, `return tostring(tonumber("  42  ")) .. tostring(tonumber(true))`)
+	got := testutil.RunOne(t, `return tostring(tonumber("  42  ")) .. tostring(tonumber(true))`)
 	if got.Str() != "42nil" {
 		t.Errorf("got %v", got.Display())
 	}

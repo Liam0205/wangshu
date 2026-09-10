@@ -1,6 +1,10 @@
 package wangshu_test
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/Liam0205/wangshu/test/testutil"
+)
 
 // TestUnfinishedCaptureIsReportedLazily covers #228: an unclosed capture like "(" is reported when a
 // capture is MATERIALIZED, not when the match succeeds.
@@ -22,7 +26,7 @@ func TestUnfinishedCaptureIsReportedLazily(t *testing.T) {
 		{"number replacement", `return tostring(string.gsub("ab","(",7))`, "7a7b7"},
 		{"empty subject", `return tostring(string.gsub("","(","r"))`, "r"},
 	} {
-		if got := runOne(t, tc.src).Str(); got != tc.want {
+		if got := testutil.RunOne(t, tc.src).Str(); got != tc.want {
 			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
 		}
 	}
@@ -39,7 +43,7 @@ func TestUnfinishedCaptureIsReportedLazily(t *testing.T) {
 		{"position capture then open",
 			`return tostring(string.gsub("ab","()(",{[1]="X",[2]="Y",[3]="Z"}))`, "XaYbZ"},
 	} {
-		if got := runOne(t, tc.src).Str(); got != tc.want {
+		if got := testutil.RunOne(t, tc.src).Str(); got != tc.want {
 			t.Errorf("%s: got %q, want %q -- push_onecapture is per-index", tc.name, got, tc.want)
 		}
 	}
@@ -56,7 +60,7 @@ func TestUnfinishedCaptureIsReportedLazily(t *testing.T) {
 		{"function replacement, mixed", `local ok=pcall(string.gsub,"alo","(.)(",print) return tostring(ok)`},
 		{"out-of-range index", `local ok=pcall(string.gsub,"alo","(.)","%2") return tostring(ok)`},
 	} {
-		if got := runOne(t, tc.src).Str(); got != "false" {
+		if got := testutil.RunOne(t, tc.src).Str(); got != "false" {
 			t.Errorf("%s: got %q, want \"false\" -- materializing a capture must raise", tc.name, got)
 		}
 	}
@@ -84,7 +88,7 @@ func TestGsubRaisesAtTheFirstOffendingReference(t *testing.T) {
 		{"out-of-range with no captures",
 			`local ok,e=pcall(string.gsub,"ab","%a","%2") return tostring(e)`, "invalid capture index"},
 	} {
-		if got := runOne(t, tc.src).Str(); got != tc.want {
+		if got := testutil.RunOne(t, tc.src).Str(); got != tc.want {
 			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
 		}
 	}
@@ -95,7 +99,7 @@ func TestGsubRaisesAtTheFirstOffendingReference(t *testing.T) {
 		{"repeated explicit capture", `return tostring(string.gsub("ab","(%a)","%1%1"))`, "aabb"},
 		{"percent-0 twice", `return tostring(string.gsub("ab","%a","%0%0"))`, "aabb"},
 	} {
-		if got := runOne(t, tc.src).Str(); got != tc.want {
+		if got := testutil.RunOne(t, tc.src).Str(); got != tc.want {
 			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
 		}
 	}
@@ -119,7 +123,7 @@ func TestInitPastEndClampsToTheEnd(t *testing.T) {
 		{"negative init clamps to start", `return tostring(string.find("abc","a",-10))`, "1"},
 		{"ordinary init", `return tostring(string.find("abc","b",2))`, "2"},
 	} {
-		if got := runOne(t, tc.src).Str(); got != tc.want {
+		if got := testutil.RunOne(t, tc.src).Str(); got != tc.want {
 			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
 		}
 	}
