@@ -1,6 +1,6 @@
 //go:build !race && (wangshu_p3 || wangshu_p4) && wangshu_profile
 
-package wangshu_test
+package fuzz_test
 
 // raceEnabled is false when the test binary was built without -race.
 // P4 mmap-segment shim calls to Go helpers are known to be incompatible

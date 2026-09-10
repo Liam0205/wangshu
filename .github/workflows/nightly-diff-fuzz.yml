@@ -418,9 +418,9 @@ jobs:
                  esac ;;
             esac
             if [ -n "$REPLAY_TAGS" ]; then
-              REPLAY_CMD="go test -tags '$REPLAY_TAGS' ."
+              REPLAY_CMD="go test -tags '$REPLAY_TAGS' ./test/fuzz"
             else
-              REPLAY_CMD="go test ."
+              REPLAY_CMD="go test ./test/fuzz"
             fi
             TITLE="go-fuzz crash (${{ matrix.variant }}): ${CRASH_NAME:-unknown} ($(date -u +%F))"
             LABEL="bug"

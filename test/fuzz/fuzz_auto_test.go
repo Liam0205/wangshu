@@ -19,7 +19,7 @@
 
 //go:build (wangshu_p3 || wangshu_p4) && wangshu_profile
 
-package wangshu_test
+package fuzz_test
 
 import (
 	"github.com/Liam0205/wangshu/internal/fuzzbudget"
@@ -27,6 +27,7 @@ import (
 	"testing"
 
 	"github.com/Liam0205/wangshu"
+	"github.com/Liam0205/wangshu/internal/fuzzforensics"
 )
 
 // FuzzAutoPromote: arbitrary sources must not panic and must stay
@@ -65,7 +66,7 @@ func FuzzAutoPromote(f *testing.F) {
 		if len(src) > 1<<14 {
 			t.Skip()
 		}
-		recordFuzzExec("FuzzAutoPromote", src)
+		fuzzforensics.RecordExec("FuzzAutoPromote", src)
 		prog, err := wangshu.Compile([]byte(src), "fuzz-auto")
 		if err != nil {
 			return // compile errors are a legal outcome

@@ -99,10 +99,10 @@ fuzz-p4:                                            ## One smoke round of every 
 fuzz-oracle:                                        ## In-process differential fuzz against the cgo-embedded official 5.1.5 (needs a local gcc; not part of all; shim unit tests + FuzzOracleDiff smoke)
 	CGO_ENABLED=1 go test -tags wangshu_oracle_cgo ./internal/oracle/ -count=1
 	@# Required-target assertion (PR review): the smoke must fail loudly
-	@# if FuzzOracleDiff stops compiling into the root package under the
+	@# if FuzzOracleDiff stops compiling into test/fuzz under the
 	@# oracle tags, instead of go-fuzz.sh skipping it while other
 	@# targets keep the run green.
-	CGO_ENABLED=1 go test -tags wangshu_oracle_cgo . -run='^$$' -list '^FuzzOracleDiff$$' | grep -q '^FuzzOracleDiff$$' \
+	CGO_ENABLED=1 go test -tags wangshu_oracle_cgo ./test/fuzz -run='^$$' -list '^FuzzOracleDiff$$' | grep -q '^FuzzOracleDiff$$' \
 		|| { echo "fuzz-oracle: FuzzOracleDiff missing under wangshu_oracle_cgo (build tag broken?)" >&2; exit 1; }
 	CGO_ENABLED=1 ./scripts/go-fuzz.sh 30s "wangshu_oracle_cgo"
 

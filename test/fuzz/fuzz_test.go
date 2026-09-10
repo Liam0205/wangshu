@@ -1,12 +1,13 @@
 // End-to-end fuzz: arbitrary source through Compile + Run must not panic
 // (compile errors / runtime errors are returned as error; infinite/overlong
 // loops are bounded by the back-edge instruction budget).
-package wangshu_test
+package fuzz_test
 
 import (
 	"testing"
 
 	"github.com/Liam0205/wangshu"
+	"github.com/Liam0205/wangshu/internal/fuzzforensics"
 )
 
 func FuzzCompileRun(f *testing.F) {
@@ -45,7 +46,7 @@ return coroutine.resume(co)`,
 		if len(src) > 1<<14 {
 			t.Skip()
 		}
-		recordFuzzExec("FuzzCompileRun", src)
+		fuzzforensics.RecordExec("FuzzCompileRun", src)
 		prog, err := wangshu.Compile([]byte(src), "fuzz")
 		if err != nil {
 			return // a compile error is a legal outcome
