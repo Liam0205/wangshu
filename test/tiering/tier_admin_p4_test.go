@@ -8,7 +8,7 @@
 // pin the switch's routing effect with the NativeRunCount white-box
 // probe: tier off → the promoted proto's next run adds ZERO native
 // entries; tier back on → native entries resume without recompiling.
-package wangshu_test
+package tiering_test
 
 import (
 	"testing"

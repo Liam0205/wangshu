@@ -3,7 +3,7 @@
 // promotion_count_p3_test.go: State.PromotionCount() increments as promotions
 // occur under p3 build + force-all, and stays 0 under p3 build + non-force-all
 // with no hotness.
-package wangshu_test
+package tiering_test
 
 import (
 	"testing"

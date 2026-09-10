@@ -12,7 +12,7 @@
 // cannot be determined here. The goal of this test is to back up the
 // "design-time thresholds" with empirical plausibility, serving as a baseline
 // to recalibrate once P3 is truly implemented.
-package wangshu_test
+package tiering_test
 
 import (
 	"strings"

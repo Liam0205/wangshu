@@ -4,7 +4,7 @@
 // under the p1 build / when P3 is not injected (godoc promises a no-op equivalent).
 //
 // For the p3 build, see promotion_count_p3_test.go.
-package wangshu_test
+package tiering_test
 
 import (
 	"testing"
