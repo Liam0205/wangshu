@@ -82,8 +82,8 @@ jobs:
       # scripts/cover.sh, not a bare `go test -cover ./...`: the
       # behavioural suites are external test packages under test/ with
       # no statements of their own, so plain -cover discards everything
-      # they execute in the root package. The script runs internal/ +
-      # root with per-package -cover and test/ with -coverpkg=<root>,
+      # they execute in the root package. The script runs internal/ with
+      # per-package -cover and root + test/ with -coverpkg=<root,...>,
       # then merges the two profiles (rationale in the script header).
       - name: go test (${{ matrix.variant }} / ${{ matrix.os }})
         run: |
