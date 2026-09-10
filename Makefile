@@ -79,7 +79,7 @@ test-trace:                                         ## Main-module unit tests (w
 bench-test:                                         ## Functional tests of the benchmarks submodule (realworld oracle parity), native go test path -- no longer part of make all (test-all covers it via precompiled binaries), kept as a standalone target
 	cd benchmarks && go test -race ./...
 
-cover:                                              ## Coverage (coverage.out + terminal summary) via scripts/cover.sh: internal/ + root with per-package -cover, test/ with -coverpkg=<root>, merged into one profile (rationale in the script header)
+cover:                                              ## Coverage (coverage.out + terminal summary) via scripts/cover.sh: internal/ with per-package -cover, root + test/ with -coverpkg=<root,test pkgs with own sources>, merged into one profile (rationale in the script header)
 	./scripts/cover.sh coverage.out -race
 	go tool cover -func=coverage.out | tail -1
 

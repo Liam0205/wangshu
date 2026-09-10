@@ -34,13 +34,19 @@ with tempfile.TemporaryDirectory() as tmp:
             print(ROOT)
         elif args[0] == 'list':
             tags = args[args.index('-tags') + 1] if '-tags' in args else ''
-            pkgs = [ROOT, ROOT + '/internal/a', ROOT + '/test/x']
+            if '-f' in args:
+                # the {{if .GoFiles}} template over ./test/...: only test/x
+                # ships non-test sources; test/y is a pure external test pkg
+                assert args[-1] == './test/...' and 'GoFiles' in args[args.index('-f') + 1], args
+                print(ROOT + '/test/x')
+                sys.exit(0)
+            pkgs = [ROOT, ROOT + '/internal/a', ROOT + '/test/x', ROOT + '/test/y']
             if 'special' in tags.split():
                 pkgs.append(ROOT + '/internal/tagonly')
             print('\\n'.join(pkgs))
         elif args[0] == 'test':
             prof = [a for a in args if a.startswith('-coverprofile=')][0].split('=', 1)[1]
-            name = 'unit' if '-coverpkg=' + ROOT not in args else 'behav'
+            name = 'behav' if any(a.startswith('-coverpkg=') for a in args) else 'unit'
             Path(prof).write_text('mode: atomic\\n' + ROOT + '/' + name + '.go:1.1,2.2 1 1\\n')
         else:
             raise AssertionError(args)
@@ -54,15 +60,21 @@ with tempfile.TemporaryDirectory() as tmp:
         r = subprocess.run(['bash', str(cover), str(out), *flags], env=env, capture_output=True, text=True)
         assert r.returncode == 0, (name, r.stdout, r.stderr)
         calls = json.loads(calls_path.read_text())
-        lists = [c for c in calls if c[0] == 'list' and c[1:2] != ['-m']]
+        lists = [c for c in calls if c[0] == 'list' and c[1:2] != ['-m'] and '-f' not in c]
+        gofile_lists = [c for c in calls if c[0] == 'list' and '-f' in c]
         tests = [c for c in calls if c[0] == 'test']
-        assert len(lists) == 1 and len(tests) == 2, (name, calls)
+        assert len(lists) == 1 and len(gofile_lists) == 1 and len(tests) == 2, (name, calls)
         unit, behav = tests
-        assert '-coverpkg=' + ROOT not in unit and '-coverpkg=' + ROOT in behav, (name, tests)
-        assert ROOT not in unit and ROOT + '/test/x' not in unit, (name, unit)
+        assert not any(a.startswith('-coverpkg=') for a in unit), (name, unit)
+        # root plus every test/ package with its own sources, nothing else
+        assert '-coverpkg=' + ROOT + ',' + ROOT + '/test/x' in behav, (name, behav)
+        assert ROOT not in unit and ROOT + '/test/x' not in unit and ROOT + '/test/y' not in unit, (name, unit)
         assert '.' in behav and './test/...' in behav, (name, behav)
         for f in flags:
             assert f in unit and f in behav, (name, f, tests)
+        # both go list calls must see the same tags as go test
+        for l in (lists[0], gofile_lists[0]):
+            assert ('-tags' in l) == ('-tags' in lists[0]), (name, l)
         merged = out.read_text().splitlines()
         assert merged[0] == 'mode: atomic' and merged.count('mode: atomic') == 1, merged
         assert any('/unit.go' in l for l in merged) and any('/behav.go' in l for l in merged), merged
@@ -74,7 +86,9 @@ with tempfile.TemporaryDirectory() as tmp:
     print('CASE untagged: OK')
 
     for name, flags in [('tags-separate', ['-race', '-tags', 'special other']),
-                        ('tags-equals', ['-tags=special other', '-count=1'])]:
+                        ('tags-equals', ['-tags=special other', '-count=1']),
+                        ('dashdash-tags-separate', ['--tags', 'special other']),
+                        ('dashdash-tags-equals', ['-race', '--tags=special other'])]:
         lst, unit = run(name, *flags)
         assert lst[lst.index('-tags') + 1] == 'special other', (name, lst)
         assert ROOT + '/internal/tagonly' in unit, (name, unit)
