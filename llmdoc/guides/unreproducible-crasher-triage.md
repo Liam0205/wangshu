@@ -6,7 +6,7 @@ fuzz / nightly / CI 报了一个 crasher,给出了一个落盘 input,但本地�
 复现。典型征象:
 
 - `go test -fuzz` 在 nightly / 长时间运行里 worker 死亡,报 `fuzzing process hung or terminated
-  unexpectedly: exit status 2`,artifact 里挂了一个 `testdata/fuzz/FuzzXxx/<hash>`;
+  unexpectedly: exit status 2`,artifact 里挂了一个 `test/fuzz/testdata/fuzz/FuzzXxx/<hash>`;
 - 拿到该 input 精确重放,单次 / N 次都 PASS,harness 镜像跑 hammer 也 PASS;
 - 几千万到上亿 execs 之后才死一次,复现窗口远长于一次典型 fuzz smoke。
 
@@ -220,7 +220,7 @@ crasher issue、一个落盘 seed)。自查办法:说「这个 seed 触发了一
 
 ```
 # ① 栈迹在哪一侧:cgo 帧(_Cfunc_wangshu_oracle_exec)= 参照实现
-go test -tags wangshu_oracle_cgo . -run 'FuzzOracleDiff/<hash>'
+go test -tags wangshu_oracle_cgo ./test/fuzz -run 'FuzzOracleDiff/<hash>'
 # ② 拿真的参照实现二进制直接试同一个输入
 lua5.1 -e "<seed 里的那段>"        # dumped core?
 # ③ 望舒单独跑一遍,确认它给的是干净结果或干净错误
@@ -400,7 +400,8 @@ bug」不匹配,更像 fuzz worker 进程级资源耗尽(内存 / mmap 数 / OS 
 - 站岗有价值——若这段代码将来因某处改动真的变成 VM bug 触发点,这个种子会立刻抓到;
 - 常驻回归是「已经付过一次调查代价」的最便宜产出。
 
-**入库位置的取舍**(#123 轮踩过一次):默认把 corpus 放进 `testdata/fuzz/FuzzXxx/<hash>`,但要先
+**入库位置的取舍**(#123 轮踩过一次):默认把 corpus 放进 `test/fuzz/testdata/fuzz/FuzzXxx/<hash>`(fuzz
+harness 所在包的 `testdata/`,见 [[test-layout]]),但要先
 判断 workload 本身的资源密度。fuzz coordinator 启动时在 `-parallel=N` 下**并行重放全部 seed
 corpus** 作为 baseline coverage sweep;若 corpus 触发的 workload 本身很重(深递归 / 长循环 / 高
 分配),并行重放瞬间放大资源压力,恰恰命中「不可复现 crasher」判定为进程级资源耗尽时怀疑的根因。
@@ -408,7 +409,7 @@ corpus** 作为 baseline coverage sweep;若 corpus 触发的 workload 本身很�
 连挂——不是 corpus 有语义 bug,是 fuzz coordinator 的并发放大导致 worker 死。
 
 判据:input 单独跑消耗几百 ms 以上 CPU、或触发深递归 / 大分配的,**改走 Go 回归测试**——写一个
-显式测试(串行、单进程、逐 seed 跑一遍)覆盖同一形状,而不是入 `testdata/fuzz/`。功能等价,不搅
+显式测试(串行、单进程、逐 seed 跑一遍)覆盖同一形状,而不是入 `test/fuzz/testdata/fuzz/`。功能等价,不搅
 动 fuzz coordinator。#123 轮就是这样处理的:两个 corpus(`326b508e` / `8c132ff5`)从
 `testdata/fuzz/FuzzAutoPromote/` 撤回,改成 `test/regression/issue123_regression_test.go` 里的显式测试。
 
@@ -528,9 +529,10 @@ fatal,也防不住分配速率超过 GC 回收速度时
 RSS 冲过限制被 SIGKILL,更防不住非内存死因。
 
 **第三层:worker 取证设施(PR #165,2026-07-19)**。原构想「harness 按 seed 记 wall-clock」
-已被超集机制取代,交付两个机制(`fuzz_forensics_test.go`):
+已被超集机制取代,交付两个机制(实现在 `internal/fuzzforensics`,由 `test/fuzz/main_test.go` 的
+`TestMain` 调 `SetupWorker()` 接上;2026-09-09 之前它们以 `fuzz_forensics_test.go` 的形式住在根包):
 
-- **机制 A(尸检)**:TestMain 检测到 `-test.fuzzworker` 时把 fd 2 dup 到
+- **机制 A(尸检)**:`SetupWorker` 检测到 `-test.fuzzworker` 时把 fd 2 dup 到
   `fuzz-forensics/worker-<pid>-stderr.log` 并加 `debug.SetTraceback("all")`,接住此前被
   /dev/null 丢弃的 Go fatal 完整栈迹(合成 fatal 探针已验证栈迹确实进日志);
 - **机制 B(飞行记录仪)**:每次 fuzz 回调(在各 target 的长度/NUL 检查**之后**——被 skip

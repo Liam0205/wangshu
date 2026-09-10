@@ -29,6 +29,7 @@
 ### reference/
 - [[embedding-contract]] — 宿主嵌入契约:`Compile→Program`、`Program.Call(state, arena, args)`(收尾轮已完成,差异标注见该篇)、arena ABI(类型化扁平列 + 字符串区 + presence bitmap,零拷贝读)、per-item 简易 API 子集已完成(含 Table 读写全闭环 + ForEach + globals baseline 状态隔离 + `CallInto` 零分配边界路径 + issue #13 parity-friendly 快路径 typed-array table 族 / `GlobalsSlot` + issue #10 批量 array table 构造 `NewArrayTable`/`Preallocate`)、State 生命周期 admin API(issue #9/#11:`Options.{Initial,Max}ArenaBytes` + `ArenaCapKB`/`GCCountKB` 观测 + `Collect`/`MaybeCollectNow` GC 节奏显式驱动 + `SetHostTriggeredCollect` experimental)、分层执行运行期管理 admin API(PR #115:`SetTierEnabled` kill switch + `TierEnabled` + `TierStatsSnapshot`/`TierStats` 观测,生产灰度 P3/P4 一键退回解释器,完整部署指南 `docs/embedding-tiers.md`)、drop-in 定位。字段级 spec 在 `docs/design/p1-interpreter/11-embedding-arena-abi.md`。**问宿主怎么嵌入、API 形状、边界成本/CallInto、GC 节奏/arena 容量管理、分层执行 kill switch/观测看这篇。**
 - [[glossary]] — 术语表 + prior art 借鉴点。**遇到 NaN-boxing/arena/tier/月相/deopt/列内核等术语,或问参照项目看这篇。**
+- [[test-layout]] — 测试目录布局:根目录不放 `_test.go`;`test/api` / `test/language` / `test/tiering` / `test/regression` / `test/fuzz` / `test/testutil` 各放什么、fuzz 语料只在 `test/fuzz/testdata/fuzz/`、取证设施 `internal/fuzzforensics` 与 `TestMain` 为何必须同包、`scripts/cover.sh` 两次跑合并覆盖率的原因。**新增测试不知往哪放、要重放一个 seed、或想改覆盖率参数,先看这篇。**
 
 ### guides/
 - [[multi-doc-drafting]] — 多文档并行起草工作流:回填请求节协议、单点收口、验收口径收口点指定、子代理失败恢复纪律、收尾主动盘点不确定决策、向用户提问自包含契约。**要一次起草多篇互引文档、或大型设计任务收尾时看这篇。**

@@ -113,7 +113,7 @@ GETTABLE 用「之后由谁 discharge 就取谁的行」。仓库里早就有 `T
 
 **同一轮暴露出这条解药还差两格**,两格都在「断言本身」上:
 
-**(a) 那条断言要有执行体(§4.2 的形式)。** `fuzz_oracle_tiered_test.go` 的文件头注写着
+**(a) 那条断言要有执行体(§4.2 的形式)。** `test/fuzz/fuzz_oracle_tiered_test.go` 的文件头注写着
 「整轮若没有任何输入提升,这个目标会失败而不是报绿」,而承载它的 `promotedAtLeastOnce`
 这个 `atomic.Bool` 只被 `Store`、**没有任何地方 `Load`** —— fuzz 目标本身对提升没有断言,
 注释描述的机制没有实现。这一处比一般的空豁免更容易骗过读者,因为那个变量真的存在、
@@ -512,7 +512,7 @@ width、precision、参数类别作为独立维度做笛卡尔扫描,并放入�
 拿到的字节流里只有 `21` 和 `17`。这与 [[2026-07-26-oracle-nan-render-redesign]] 那一轮的
 `string.len(0/0)`(4 对 3)是**完全一样的机制**。修法因此回到渲染处:`internal/oracle/prelude.go` 的
 prelude 包一层 `tostring`,把 PUC 自己的地址渲染成望舒的 8 位宽度,与 NaN 符号位是同一个选择;望舒这一
-侧的宽度于是成为一份契约,由 `fuzz_234_test.go::TestAddressLengthIsComparable` 钉住(`#tostring({})`
+侧的宽度于是成为一份契约,由 `test/regression/fuzz_234_test.go::TestAddressLengthIsComparable` 钉住(`#tostring({})`
 是 17、`#tostring(print)` 是 20)。**归一化管值、渲染处管宽度,两件事都要做。**
 
 **判据**:给差分 harness 加归一化时,问一句「脚本能不能**不打印它、而是测量它**」——能的话(`#`、
@@ -720,7 +720,7 @@ skip 的取值本来就建立在「刚超过 skip 的这一段是便宜的」这
 「这里不用看了」,区别只是前者真的在运行,把一整类输入静默挡在比对之外。这是 §4.2 的**时间
 对偶**:§4.2 讲「声明要有执行体」,本节讲「执行体要随 bug 撤」。
 
-**实例(2026-07-28,#197)**:`fuzz_oracle_test.go` 为 `error(msg, level)` 选帧错误加过一条
+**实例(2026-07-28,#197)**:`test/fuzz/fuzz_oracle_test.go` 为 `error(msg, level)` 选帧错误加过一条
 skip,覆盖**任何提到 error 第二参数的输入**(`errorLevelAtLeastTwo`,按源码文本判定、故意
 写宽)。#197 修好后如果不撤,整个 level ≥ 2 的区间就一直不参与比对;撤掉后 24 种 error level
 写法**零 skip** 参与比对,只剩「非有限 / 超出 int64 的 level」跳过(那是 `luaL_checkint`
@@ -1014,12 +1014,12 @@ grep 逻辑读起来完全正常。反思
 
 **推论**:一批 crasher 能被同一个改动一起解决,本身就是「根因修在了正确位置」的一个事后确认信号。这批 crasher 的分组纪律见 [[unreproducible-crasher-triage]]「一批 crasher 先问会不会被同一个改动一起解决」。
 
-#### 9.6b 同族**旧**语料要和新语料一起当验收门 —— `difftest` 不重放 `testdata/fuzz/`(2026-09-03,#252)
+#### 9.6b 同族**旧**语料要和新语料一起当验收门 —— `difftest` 不重放 `test/fuzz/testdata/fuzz/`(2026-09-03,#252)
 
 **适用场景**:修一个由语料驱动的 crasher / 差分 issue,而它触及的机制**以前被别的 issue 修过**。
 
 **核心断言**:`make difftest-all` 与 `make fuzz-oracle` 覆盖的输入集合**不同**:前者跑自己生成的形状,后者
-还会重放 `testdata/fuzz/` 里那一百多个**历史上真实撞出来过**的常驻 seed。而「历史上撞出来过的形状」恰恰是
+还会重放 `test/fuzz/testdata/fuzz/` 里那一百多个**历史上真实撞出来过**的常驻 seed。而「历史上撞出来过的形状」恰恰是
 同族回归最可能落在的地方——它们是同一段代码上已经付过代价的断言。只跑前者,会得到「四道门全绿」的假信号。
 
 **实例(#252)**:第一版修法让 #252 的语料通过,`test-all`(p1/p3/p4)、`conformance-all`、`difftest-all`
@@ -1028,7 +1028,7 @@ grep 逻辑读起来完全正常。反思
 逮到。发现得晚不只是浪费时间:当时已经准备提交,差一步就把一个同族回归当成完成品交出去。
 
 **判据**:动手前先 `grep` 出同族的旧语料——判据通常很直接:同族 issue 的反思文档在
-`llmdoc/memory/reflections/` 里,语料哈希写在 issue 正文与 `testdata/fuzz/` 目录里。把它们和新语料**一起**
+`llmdoc/memory/reflections/` 里,语料哈希写在 issue 正文与 `test/fuzz/testdata/fuzz/` 目录里。把它们和新语料**一起**
 作为改动前后都要跑的那一组,而不是等全量验证的最后一步顺带发现。自查一句话:「我这次改的是谁当年修的
 东西,他留下的输入我跑了吗」。与 §9.6 的区别:那条讲**单个** crasher 的因果验证(HEAD equal + base FAIL),
 本条讲**同族语料集合**的覆盖——单个验证得再严,也不会告诉你隔壁那个语料被你改红了。反思

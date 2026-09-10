@@ -424,7 +424,7 @@ deopt helper 不能只修复触发失败的那一步；如果 deopt 分支随后
 
 跨后端 / 跨通道扫的心理边界是「同一段语义在系统里的全部实现站点」,同样的原则也适用于测试与防护本身的「同类 harness」。当给一个 fuzz harness / smoke 脚本 / CI 检查加防护(资源上限帽、豁免规则、异常路径断言、artifact upload、种子清单等)时,不能只加在触发本次修复的那一个,要立刻横向问一句「兄弟 harness 有没有同样的暴露面」,一起加。心理边界停在「当前 harness」而不是「全部同类站点」就是欠账,下一次同类问题在没被防护到的兄弟 harness 上炸出来。
 
-实证:2026-07-13 处置的 issue #127(p3)/ #130(p4)两个 nightly crasher 是同根因 quadratic concat 风暴打爆默认 2 GiB arena 触发进程级 kill。上周 PR #128 给 FuzzOracleDiff 上线时明确考虑了资源问题、加了 `MaxArenaBytes: 64 << 20`,但没横向扫 fuzz_test.go / fuzz_auto_test.go / fuzz_p4_test.go 三个更老的 fuzz harness——它们全都没帽。两个 crasher 本质就是这次不对称欠下的债。修法把三个老 harness 一起补上帽,与 FuzzOracleDiff 对齐。触发场景:任何时候给一个 fuzz / smoke / CI 检查加防护时(资源上限、豁免规则、异常路径、artifact upload、种子清单),立刻 grep 同仓所有兄弟 harness,同一轮补齐;新 harness 上线时也要横向扫兄弟 harness 有没有该同步过来的既有防护。同族反思实例见 `memory/reflections/2026-07-13-nightly-concat-oom-and-format-hash-round.md` 教训 2。
+实证:2026-07-13 处置的 issue #127(p3)/ #130(p4)两个 nightly crasher 是同根因 quadratic concat 风暴打爆默认 2 GiB arena 触发进程级 kill。上周 PR #128 给 FuzzOracleDiff 上线时明确考虑了资源问题、加了 `MaxArenaBytes: 64 << 20`,但没横向扫 `test/fuzz/` 下 fuzz_test.go / fuzz_auto_test.go / fuzz_p4_test.go 三个更老的 fuzz harness——它们全都没帽。两个 crasher 本质就是这次不对称欠下的债。修法把三个老 harness 一起补上帽,与 FuzzOracleDiff 对齐。触发场景:任何时候给一个 fuzz / smoke / CI 检查加防护时(资源上限、豁免规则、异常路径、artifact upload、种子清单),立刻 grep 同仓所有兄弟 harness,同一轮补齐;新 harness 上线时也要横向扫兄弟 harness 有没有该同步过来的既有防护。同族反思实例见 `memory/reflections/2026-07-13-nightly-concat-oom-and-format-hash-round.md` 教训 2。
 
 ## 相关
 
