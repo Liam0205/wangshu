@@ -2,7 +2,9 @@
 # Self-test for scripts/cover.sh with a stub `go`: pins that build tags
 # reach `go list` (tag-only packages must not silently drop out of the
 # unit half), that the root package sits in the -coverpkg half and not in
-# the unit half, and that the two profiles merge under one mode header.
+# the unit half, that only test/ packages with BOTH non-test sources and
+# tests of their own join -coverpkg (a source-only helper package must
+# not), and that the two profiles merge under one mode header.
 set -euo pipefail
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 python3 - "$script_dir/cover.sh" <<'PY'
@@ -22,7 +24,7 @@ with tempfile.TemporaryDirectory() as tmp:
     # (writes a tiny profile to the -coverprofile= path), and records
     # every argv.
     go.write_text('#!' + sys.executable + '\n' + textwrap.dedent('''\
-        import json, os, sys
+        import json, os, re, sys
         from pathlib import Path
         args = sys.argv[1:]
         log = Path(os.environ['GO_CALLS'])
@@ -35,13 +37,36 @@ with tempfile.TemporaryDirectory() as tmp:
         elif args[0] == 'list':
             tags = args[args.index('-tags') + 1] if '-tags' in args else ''
             if '-f' in args:
-                # template over ./test/...: test/x ships sources AND tests,
-                # test/y is a pure external test pkg, test/z has sources but
-                # no tests (a helper package). Only test/x may qualify, and
-                # the template must ask for tests, not just GoFiles.
+                # Evaluate the {{if <cond>}}{{.ImportPath}}{{end}} template
+                # over four virtual test/ packages instead of pattern-matching
+                # its text, so the assertions below hold for the RULE, not for
+                # a substring: x = sources + internal tests, y = pure external
+                # test package (no sources), z = sources only (a helper
+                # package), w = sources + external tests only.
                 tmpl = args[args.index('-f') + 1]
-                assert args[-1] == './test/...' and 'GoFiles' in tmpl and 'TestGoFiles' in tmpl, args
-                print(ROOT + '/test/x')
+                assert args[-1] == './test/...', args
+                m = re.fullmatch(r'\\{\\{if (.*)\\}\\}\\{\\{\\.ImportPath\\}\\}\\{\\{end\\}\\}', tmpl)
+                assert m, tmpl
+                pkgs = {'x': dict(GoFiles=True, TestGoFiles=True, XTestGoFiles=False),
+                        'y': dict(GoFiles=False, TestGoFiles=False, XTestGoFiles=True),
+                        'z': dict(GoFiles=True, TestGoFiles=False, XTestGoFiles=False),
+                        'w': dict(GoFiles=True, TestGoFiles=False, XTestGoFiles=True)}
+                def ev(tokens, fields):
+                    t = tokens.pop(0)
+                    if t == '(':
+                        v = ev(tokens, fields); assert tokens.pop(0) == ')'; return v
+                    if t in ('and', 'or'):
+                        vals = []
+                        while tokens and tokens[0] != ')':
+                            vals.append(ev(tokens, fields))
+                        return all(vals) if t == 'and' else any(vals)
+                    assert t.startswith('.') and t[1:] in fields, t
+                    return fields[t[1:]]
+                for name, fields in pkgs.items():
+                    toks = re.findall(r'\\(|\\)|[^\\s()]+', m.group(1))
+                    if ev(toks, fields):
+                        assert not toks, toks
+                        print(ROOT + '/test/' + name)
                 sys.exit(0)
             pkgs = [ROOT, ROOT + '/internal/a', ROOT + '/test/x', ROOT + '/test/y', ROOT + '/test/z']
             if 'special' in tags.split():
@@ -69,10 +94,10 @@ with tempfile.TemporaryDirectory() as tmp:
         assert len(lists) == 1 and len(gofile_lists) == 1 and len(tests) == 2, (name, calls)
         unit, behav = tests
         assert not any(a.startswith('-coverpkg=') for a in unit), (name, unit)
-        # root plus every test/ package with its own sources and tests; the
-        # source-only helper package test/z must not be instrumented
-        assert '-coverpkg=' + ROOT + ',' + ROOT + '/test/x' in behav, (name, behav)
-        assert not any('/test/z' in a for a in behav), (name, behav)
+        # root plus exactly the test/ packages with their own sources AND
+        # tests (internal or external): x and w. The source-only helper z
+        # and the sourceless external test package y must not be there.
+        assert '-coverpkg=' + ROOT + ',' + ROOT + '/test/x,' + ROOT + '/test/w' in behav, (name, behav)
         assert ROOT not in unit and not any(a.startswith(ROOT + '/test/') for a in unit), (name, unit)
         assert '.' in behav and './test/...' in behav, (name, behav)
         for f in flags:
