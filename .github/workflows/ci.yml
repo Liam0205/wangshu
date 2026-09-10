@@ -79,16 +79,20 @@ jobs:
       # the trampoline LR-slot bug fixed in that PR is the prototype of a
       # concurrency-shaped issue; arm64 -race may catch a future bug of the
       # same kind)
+      # scripts/cover.sh, not a bare `go test -cover ./...`: the
+      # behavioural suites are external test packages under test/ with
+      # no statements of their own, so plain -cover discards everything
+      # they execute in the root package. The script runs internal/ +
+      # root with per-package -cover and test/ with -coverpkg=<root>,
+      # then merges the two profiles (rationale in the script header).
       - name: go test (${{ matrix.variant }} / ${{ matrix.os }})
         run: |
           if [ -n "${{ matrix.tags }}" ]; then
-            go test -race -tags "${{ matrix.tags }}" \
-              -coverprofile=${{ matrix.cov_prefix }}-${{ matrix.os }}.out \
-              -covermode=atomic ./...
+            ./scripts/cover.sh ${{ matrix.cov_prefix }}-${{ matrix.os }}.out \
+              -race -tags "${{ matrix.tags }}"
           else
-            go test -race \
-              -coverprofile=${{ matrix.cov_prefix }}-${{ matrix.os }}.out \
-              -covermode=atomic ./...
+            ./scripts/cover.sh ${{ matrix.cov_prefix }}-${{ matrix.os }}.out \
+              -race
           fi
       # The benchmarks submodule used to run functional tests (realworld
       # oracle parity) only under the p1 build; gibbous benchmarks are
