@@ -35,10 +35,11 @@ fmt:                                                ## Format (writes back)
 lint:                                               ## Repo-wide static checks
 	golangci-lint run ./...
 
-test-scripts:                                       ## Self-tests for tooling scripts (go-fuzz retry path #179; nightly triage #255; lua tarball fetch #236-#241)
+test-scripts:                                       ## Self-tests for tooling scripts (go-fuzz retry path #179; nightly triage #255; lua tarball fetch #236-#241; cover.sh tag propagation)
 	bash scripts/test-go-fuzz-retry.sh
 	bash scripts/test-nightly-fuzz-classify.sh
 	bash scripts/test-fetch-lua-tarball.sh
+	bash scripts/test-cover.sh
 
 # --- build ------------------------------------------------------------------
 build: build-all                                    ## Alias: make build = build-all
