@@ -3,6 +3,8 @@ package wangshu_test
 import (
 	"strings"
 	"testing"
+
+	"github.com/Liam0205/wangshu/test/testutil"
 )
 
 // TestGetInfoFunctionForm pins debug.getinfo(f)'s "S" fields against PUC.
@@ -41,7 +43,7 @@ func TestGetInfoFunctionForm(t *testing.T) {
 			"nil|-1",
 		},
 	} {
-		if got := runOne(t, tc.src).Str(); got != tc.want {
+		if got := testutil.RunOne(t, tc.src).Str(); got != tc.want {
 			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
 		}
 	}
@@ -49,26 +51,26 @@ func TestGetInfoFunctionForm(t *testing.T) {
 	// alongside nups/namewhat, but unlike those they need nothing beyond the proto -- LineEnd is already
 	// tracked for every function, and LineInfo already maps each instruction to its line. The official
 	// db.lua asserts on both, which is what surfaced the misfiling.
-	if got := runOne(t, "local function f()\n  local a = 1\n  return a\nend\n"+
+	if got := testutil.RunOne(t, "local function f()\n  local a = 1\n  return a\nend\n"+
 		`local i = debug.getinfo(f, "S") return i.linedefined .. "|" .. i.lastlinedefined`).Str(); got != "1|4" {
 		t.Errorf("linedefined|lastlinedefined: got %q, want %q", got, "1|4")
 	}
-	if got := runOne(t, "local function f()\n  local a = 1\n  return a\nend\n"+
+	if got := testutil.RunOne(t, "local function f()\n  local a = 1\n  return a\nend\n"+
 		`local i = debug.getinfo(f, "L")
 return type(i.activelines) .. "|" .. tostring(i.activelines[2] ~= nil)`).Str(); got != "table|true" {
 		t.Errorf("activelines: got %q, want %q", got, "table|true")
 	}
 	// "L" is selectable: without it activelines must be absent, as PUC does.
-	if got := runOne(t, `local function f() end local i = debug.getinfo(f, "S") return tostring(i.activelines)`).Str(); got != "nil" {
+	if got := testutil.RunOne(t, `local function f() end local i = debug.getinfo(f, "S") return tostring(i.activelines)`).Str(); got != "nil" {
 		t.Errorf("activelines leaked without the L selector: %q", got)
 	}
 	// A C function has no activelines even when "L" is asked for.
-	if got := runOne(t, `local i = debug.getinfo(print, "L") return tostring(i.activelines)`).Str(); got != "nil" {
+	if got := testutil.RunOne(t, `local i = debug.getinfo(print, "L") return tostring(i.activelines)`).Str(); got != "nil" {
 		t.Errorf("activelines set for a C function: %q", got)
 	}
 
 	// short_src must be the chunk name as ChunkID renders it, not the raw "=..."/"@..." form.
-	if s := runOne(t, `local function f() end local a = debug.getinfo(f) return a.short_src`).Str(); strings.HasPrefix(s, "=") || strings.HasPrefix(s, "@") {
+	if s := testutil.RunOne(t, `local function f() end local a = debug.getinfo(f) return a.short_src`).Str(); strings.HasPrefix(s, "=") || strings.HasPrefix(s, "@") {
 		t.Errorf("short_src kept the raw chunkname prefix: %q", s)
 	}
 }

@@ -3,6 +3,8 @@ package wangshu_test
 import (
 	"strings"
 	"testing"
+
+	"github.com/Liam0205/wangshu/test/testutil"
 )
 
 // TestIOHandles_SurviveGC is the regression this feature needs most.
@@ -25,7 +27,7 @@ func TestIOHandles_SurviveGC(t *testing.T) {
 		{"survives allocation pressure",
 			`local t={} for i=1,10000 do t[i]={i} end collectgarbage("collect") return type(io.stdout)`, "userdata"},
 	} {
-		if got := runOne(t, tc.src).Str(); got != tc.want {
+		if got := testutil.RunOne(t, tc.src).Str(); got != tc.want {
 			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
 		}
 	}
@@ -54,7 +56,7 @@ func TestIOHandles_MatchPUC(t *testing.T) {
 			"nil,Bad file descriptor,9"},
 		{"lines is a function", `return type(io.stdin:lines())`, "function"},
 	} {
-		if got := runOne(t, tc.src).Str(); got != tc.want {
+		if got := testutil.RunOne(t, tc.src).Str(); got != tc.want {
 			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
 		}
 	}
@@ -78,7 +80,7 @@ func TestDebugLibrary_MatchPUC(t *testing.T) {
 		// Deliberately absent: they need introspection hooks the interpreter lacks.
 		{"sethook absent", `return type(debug.sethook)`, "nil"},
 	} {
-		if got := runOne(t, tc.src).Str(); got != tc.want {
+		if got := testutil.RunOne(t, tc.src).Str(); got != tc.want {
 			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
 		}
 	}
@@ -102,7 +104,7 @@ func TestIOHandles_StreamKindRespected(t *testing.T) {
 		{"tostring form", `return tostring(io.stdout):sub(1, 6)`, "file ("},
 		{"no __metatable", `return tostring(getmetatable(io.stdout).__metatable)`, "nil"},
 	} {
-		if got := runOne(t, tc.src).Str(); got != tc.want {
+		if got := testutil.RunOne(t, tc.src).Str(); got != tc.want {
 			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
 		}
 	}
@@ -132,7 +134,7 @@ func TestDebugGetInfo_NoFabricatedFields(t *testing.T) {
 		{"level zero is a table", `return type(debug.getinfo(0))`, "table"},
 		{"level zero is C", `return tostring(debug.getinfo(0).what)`, "C"},
 	} {
-		if got := runOne(t, tc.src).Str(); got != tc.want {
+		if got := testutil.RunOne(t, tc.src).Str(); got != tc.want {
 			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
 		}
 	}
@@ -146,20 +148,20 @@ func TestDebugGetInfo_NoFabricatedFields(t *testing.T) {
 func TestIOOmissions_HaveAnEnforcer(t *testing.T) {
 	for _, name := range []string{"open", "popen", "tmpfile", "close", "input", "output"} {
 		src := `return tostring(io.` + name + `)`
-		if got := runOne(t, src).Str(); got != "nil" {
+		if got := testutil.RunOne(t, src).Str(); got != "nil" {
 			t.Errorf("io.%s = %q, want nil (registered as a gap; provide it deliberately or update the exemption)", name, got)
 		}
 	}
 	// The file methods that need a real file are absent from the handle metatable too.
 	for _, name := range []string{"seek", "setvbuf"} {
 		src := `return tostring(io.stdout.` + name + `)`
-		if got := runOne(t, src).Str(); got != "nil" {
+		if got := testutil.RunOne(t, src).Str(); got != "nil" {
 			t.Errorf("file:%s = %q, want nil (registered as a gap)", name, got)
 		}
 	}
 	for _, name := range []string{"sethook", "gethook", "getlocal", "setlocal", "getupvalue", "setupvalue", "getregistry"} {
 		src := `return tostring(debug.` + name + `)`
-		if got := runOne(t, src).Str(); got != "nil" {
+		if got := testutil.RunOne(t, src).Str(); got != "nil" {
 			t.Errorf("debug.%s = %q, want nil (registered as a gap)", name, got)
 		}
 	}
@@ -195,7 +197,7 @@ func TestDebugGetInfo_FieldsMatchPUC(t *testing.T) {
 		{"fractional level", `return type(debug.getinfo(0.5))`, "table"},
 		{"short_src is display form", `return debug.getinfo(1).short_src`, `[string "test"]`},
 	} {
-		if got := runOne(t, tc.src).Str(); got != tc.want {
+		if got := testutil.RunOne(t, tc.src).Str(); got != tc.want {
 			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
 		}
 	}
@@ -213,7 +215,7 @@ func TestDebugGetInfo_HostBoundaryLevel(t *testing.T) {
 		{"host boundary is C", `return debug.getinfo(2).what`, "C"},
 		{"beyond it is nil", `return tostring(debug.getinfo(3))`, "nil"},
 	} {
-		if got := runOne(t, tc.src).Str(); got != tc.want {
+		if got := testutil.RunOne(t, tc.src).Str(); got != tc.want {
 			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
 		}
 	}
@@ -256,7 +258,7 @@ return out`, "Lua,tail,main,C"},
 		{"coroutine stack ends", chain + `local co = coroutine.wrap(function() return chain(3) end)
 return co()`, "Lua,tail,nil"},
 	} {
-		if got := runOne(t, tc.src).Str(); got != tc.want {
+		if got := testutil.RunOne(t, tc.src).Str(); got != tc.want {
 			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
 		}
 	}
@@ -274,7 +276,7 @@ func TestDebugTraceback_LevelAndHostFrames(t *testing.T) {
 local out
 table.foreach({1}, function() out = inner() end)
 return out`
-	got := runOne(t, src).Str()
+	got := testutil.RunOne(t, src).Str()
 	for _, want := range []string{"stack traceback:", "[C]: in ?", "in main chunk"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("traceback missing %q; got %q", want, got)
@@ -286,7 +288,7 @@ return out`
 		t.Errorf("C frame is not above the main chunk: %q", got)
 	}
 	// A non-number level is IGNORED, matching lua_isnumber rather than luaL_optint.
-	if r := runOne(t, `local ok = pcall(debug.traceback, "m", {}) return tostring(ok)`).Str(); r != "true" {
+	if r := testutil.RunOne(t, `local ok = pcall(debug.traceback, "m", {}) return tostring(ok)`).Str(); r != "true" {
 		t.Errorf("non-number level should be ignored, got pcall=%s", r)
 	}
 }

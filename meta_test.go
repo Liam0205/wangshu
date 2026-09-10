@@ -6,10 +6,11 @@ import (
 	"testing"
 
 	"github.com/Liam0205/wangshu"
+	"github.com/Liam0205/wangshu/test/testutil"
 )
 
 func TestMeta_IndexTable(t *testing.T) {
-	got := runOne(t, `
+	got := testutil.RunOne(t, `
 local base = { greeting = "hello" }
 local derived = setmetatable({}, { __index = base })
 return derived.greeting
@@ -20,7 +21,7 @@ return derived.greeting
 }
 
 func TestMeta_IndexFunction(t *testing.T) {
-	got := runOne(t, `
+	got := testutil.RunOne(t, `
 local t = setmetatable({}, { __index = function(tbl, key) return key .. "!" end })
 return t.boom
 `)
@@ -30,7 +31,7 @@ return t.boom
 }
 
 func TestMeta_NewIndex(t *testing.T) {
-	got := runOne(t, `
+	got := testutil.RunOne(t, `
 local log = {}
 local t = setmetatable({}, { __newindex = function(tbl, k, v) rawset(log, k, v) end })
 t.x = 42
@@ -42,7 +43,7 @@ return rawget(log, "x")
 }
 
 func TestMeta_Add(t *testing.T) {
-	got := runOne(t, `
+	got := testutil.RunOne(t, `
 local mt = { __add = function(a, b) return a.v + b.v end }
 local x = setmetatable({ v = 3 }, mt)
 local y = setmetatable({ v = 4 }, mt)
@@ -54,7 +55,7 @@ return x + y
 }
 
 func TestMeta_GetMetatable(t *testing.T) {
-	got := runOne(t, `
+	got := testutil.RunOne(t, `
 local mt = {}
 local t = setmetatable({}, mt)
 return getmetatable(t) == mt
@@ -65,7 +66,7 @@ return getmetatable(t) == mt
 }
 
 func TestPcall_Success(t *testing.T) {
-	got := runOne(t, `
+	got := testutil.RunOne(t, `
 local ok, v = pcall(function() return 99 end)
 if ok then return v end
 return -1
@@ -76,7 +77,7 @@ return -1
 }
 
 func TestPcall_CatchError(t *testing.T) {
-	got := runOne(t, `
+	got := testutil.RunOne(t, `
 local ok, err = pcall(function() error("kaboom") end)
 if ok then return "no-error" end
 return err
@@ -88,7 +89,7 @@ return err
 }
 
 func TestPcall_CatchRuntimeError(t *testing.T) {
-	got := runOne(t, `
+	got := testutil.RunOne(t, `
 local ok, err = pcall(function()
   local x
   return x + 1
