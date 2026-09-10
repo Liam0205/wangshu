@@ -1,7 +1,7 @@
 // Typed array-table constructor tests (issue #13) —
 // NewFloatArrayTable / NewInt64ArrayTable / NewBoolArrayTable / NewStringArrayTable.
 // Verify round-trip, script-visible shape, empty/nil slice, int64 precision bounds.
-package wangshu_test
+package api_test
 
 import (
 	"strings"

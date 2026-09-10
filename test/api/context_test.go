@@ -1,6 +1,6 @@
 // State.SetContext/RemoveContext tests — context cancellation hook
 // (issue #4: pineapple integration needs timeout/cancel to propagate through the VM).
-package wangshu_test
+package api_test
 
 import (
 	"context"
