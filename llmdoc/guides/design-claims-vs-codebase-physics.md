@@ -53,17 +53,17 @@
 不 bump——注意「所有」:不只是 P4 GETGLOBAL/SETGLOBAL NodeHit,还有 P3 wasm GETGLOBAL/SETGLOBAL
 NodeHit 和 P3 wasm 常量键 GETTABLE/SETTABLE/SELF NodeHit(`translate_table.go` 的 `tableInlineable`
 对常量键 NodeHit 只做 IsTable + TableRef + gen 三道守卫,注释明写「skipping the key match, same as
-GETGLOBAL」);P4 amd64 的 GETTABLE/SETTABLE NodeHit 有 Guard 5 NodeKey 比对,是消费者里的少数。漏掉
+GETGLOBAL」);P4 amd64/arm64 的 GETTABLE/SETTABLE NodeHit 有 NodeKey 比对(amd64 Guard 5 / arm64 Guard 4),是消费者里的少数。漏掉
 任何一个就把 #260 的别名缺陷重新引进那个后端。本轮取正确性优先;若 IC 抖动成为问题,先看这里。
 
 **gen-only consumer 清单**(与上面 producer 表配对,改任何一侧都要对照另一侧):
 
 | consumer | 守卫 | 位置 |
 |---|---|---|
-| P4 native GETGLOBAL / SETGLOBAL NodeHit | gen + slot != Nil | `peroptranslator/emit_ops_amd64.go` `emitInlineGetGlobalNodeHit` / `emitInlineSetGlobalNodeHit`;arm64 同名 |
-| P4 native GETTABLE / SETTABLE NodeHit | gen + **NodeKey** + slot != Nil | `emit_ops_amd64.go` Guard 5 |
+| P4 native GETGLOBAL / SETGLOBAL NodeHit | gen + slot != Nil(SET 另守卫新值 != Nil) | `peroptranslator/emit_ops_amd64.go` `emitInlineGetGlobalNodeHit` / `emitInlineSetGlobalNodeHit`;arm64 见 `emit_arm64.go` `emitInlineGetGlobalNodeHitArm64` / `emitInlineSetGlobalNodeHitArm64` |
+| P4 native GETTABLE / SETTABLE NodeHit | gen + **NodeKey** + slot != Nil | `emit_ops_amd64.go` Guard 5;`emit_arm64.go` `emitInlineGetTableNodeHitArm64` / `emitInlineSetTableNodeHitArm64`(那里编号 Guard 4) |
 | P3 wasm GETGLOBAL / SETGLOBAL NodeHit | gen + slot != Nil | `wasm/translate_table.go` `emitGetGlobal` / `emitSetGlobal` |
-| P3 wasm 常量键 GETTABLE / SETTABLE / SELF NodeHit | IsTable + TableRef + gen | `wasm/translate_table.go` `tableInlineable` → `emitTableGuard` + `emitSlotBase` |
+| P3 wasm 常量键 GETTABLE / SETTABLE / SELF NodeHit | IsTable + TableRef + gen + slot != Nil | `wasm/translate_table.go` `tableInlineable` → `emitTableGuard` + `emitSlotBase` |
 | 解释器 `icGetTable` / `icSetTable` | gen + NodeKey 复验 | `crescent/ic.go`(不是 gen-only,gen 只是快速否决) |
 
 **判据**:契约成文那一刻就把 producer 列成表并逐条标「已 bump / 补 / 不需要(为什么)」,再写一个**直接
