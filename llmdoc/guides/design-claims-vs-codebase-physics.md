@@ -56,11 +56,12 @@ NodeHit 和 P3 wasm 常量键 GETTABLE/SETTABLE/SELF NodeHit(`translate_table.go
 GETGLOBAL」);P4 amd64/arm64 的 GETTABLE/SETTABLE NodeHit 有 NodeKey 比对(amd64 Guard 5 / arm64 Guard 4),是消费者里的少数。漏掉
 任何一个就把 #260 的别名缺陷重新引进那个后端。本轮取正确性优先;若 IC 抖动成为问题,先看这里。
 
-**gen-only consumer 清单**(与上面 producer 表配对,改任何一侧都要对照另一侧):
+**gen-only consumer 清单**(与上面 producer 表配对,改任何一侧都要对照另一侧;所有 SET 类消费者还会检查
+要写入的新值 != Nil,那只与删除语义有关、与 gen 别名无关,表中一律省略):
 
 | consumer | 守卫 | 位置 |
 |---|---|---|
-| P4 native GETGLOBAL / SETGLOBAL NodeHit | gen + slot != Nil(SET 另守卫新值 != Nil) | `peroptranslator/emit_ops_amd64.go` `emitInlineGetGlobalNodeHit` / `emitInlineSetGlobalNodeHit`;arm64 见 `emit_arm64.go` `emitInlineGetGlobalNodeHitArm64` / `emitInlineSetGlobalNodeHitArm64` |
+| P4 native GETGLOBAL / SETGLOBAL NodeHit | gen + slot != Nil | `peroptranslator/emit_ops_amd64.go` `emitInlineGetGlobalNodeHit` / `emitInlineSetGlobalNodeHit`;arm64 见 `emit_arm64.go` `emitInlineGetGlobalNodeHitArm64` / `emitInlineSetGlobalNodeHitArm64` |
 | P4 native GETTABLE / SETTABLE NodeHit | gen + **NodeKey** + slot != Nil | `emit_ops_amd64.go` Guard 5;`emit_arm64.go` `emitInlineGetTableNodeHitArm64` / `emitInlineSetTableNodeHitArm64`(那里编号 Guard 4) |
 | P3 wasm GETGLOBAL / SETGLOBAL NodeHit | gen + slot != Nil | `wasm/translate_table.go` `emitGetGlobal` / `emitSetGlobal` |
 | P3 wasm 常量键 GETTABLE / SETTABLE / SELF NodeHit | IsTable + TableRef + gen + slot != Nil | `wasm/translate_table.go` `tableInlineable` → `emitTableGuard` + `emitSlotBase` |
