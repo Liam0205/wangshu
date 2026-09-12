@@ -192,6 +192,10 @@ func (c *Collector) clearWeakTables() {
 			if (weakKey && c.refIsDead(k, dead)) || (weakVal && c.refIsDead(v, dead)) {
 				next := object.NodeNext(c.a, t, i)
 				object.SetNode(c.a, t, i, value.Nil, value.Nil, next)
+				// Clearing a weak entry is a key deletion: the slot can be
+				// reused by another key, so gen-only IC consumers must be
+				// invalidated (same contract as rawSet's delete path).
+				object.BumpGen(c.a, t)
 			}
 		}
 	}
