@@ -37,16 +37,25 @@
 | `rehash`(含 array↔hash 迁移) | 是 | 有(原有) | |
 | `insertNewKey` Brent 重定位 | 是 | 有(2026-07-02,seed `4b3d10ff`) | 第一实例 |
 | `rawSet` 删键(val=Nil) | 是:槽位 `next>=0` 留链上,同键再插落别处、别键可落进来 | **补**(2026-09-13,seed `96aaf5cc`) | 第二实例 |
-| `gc/sweep.go` weak 表清项 | 是,同上 | **补**(2026-09-13) | 同形状 |
+| `gc/sweep.go` weak 表清项 | 是,同上 | **补**(2026-09-13) | 同形状;`TestWeak_SweepClearBumpsGen` 直接断言(首轮盲审指出这一格原本没有测试盯着) |
+| `insertNewKey` 新键放入空槽(main position 空 / `findFreeNode` 给的空槽) | Nil→key | 不需要 | IC 只在 `val != Nil` 时回填(`ic.go`),空槽不可能被快照;而让槽位变空的路径(删键 / weak 清项 / rehash)都 bump |
 | `nodeSetVal` 改值 / `SetTableArrayAt` | 否 | 不需要 | IC「改值不 bump」正是靠它 |
+| P3 wasm `emitSetGlobal` 命中时写 Nil(不像 P4 那样守卫新值 != Nil) | 否:键保留、值为 Nil,是 5.1 意义上的 dead key | 不需要 | `findFreeNode`/`insertNewKey` 不把它当空槽,`rehash` 会丢弃它;与 P4 的守卫不对称,范围外,见 [[2026-09-13-issue260-nil-immediate-and-delete-gen]] 审查记录 |
 
 **为什么两个月才收口**:2026-07-02 修第一实例时反思已经写「已修一处不代表全表安全」、doc-gaps 记了
 「producer 清单未落」,但排到了「P4 arm64 port / P5 前」这种里程碑之后,而实际工作量是一格 grep 加三处
 判断。fuzz 撞到的正是清单上下一格。
 
+**代价与备选**:删键 bump 让该表所有 IC 一起失效——解释器侧同表每个 pc 重新回填并累加 `Refill`
+(会影响 P2 megamorphic 判定),native 侧烧进机器码的 gen 一旦落后就永久退回 helper(本轮没有重快照
+机制)。审查时的 P1 微基准(`t.a=nil t.a=i` 交替 20 万次,`-cpu=1`)慢约 5%~6%。另一条同样满足契约
+的路线是让 GETGLOBAL/SETGLOBAL NodeHit 像 GETTABLE NodeHit 那样加一条 NodeKey 比对(键是常量,一条
+`cmp`),那样删键与 Brent 重定位都不必 bump。本轮取正确性优先;若 IC 抖动成为问题,先看这里。
+
 **判据**:契约成文那一刻就把 producer 列成表并逐条标「已 bump / 补 / 不需要(为什么)」,再写一个**直接
-断言契约本身**的单元测试(`TestRawTable_SlotReuseAfterDeleteBumpsGen`:槽位换主必伴随 gen 变化,不依赖
-任何 consumer)。清单不完整时,缺的每一格都是一个待发的 fuzz issue。反思
+断言契约本身**的单元测试(`TestRawTable_SlotReuseAfterDeleteBumpsGen`:槽位换主必伴随 gen 变化;
+`TestWeak_SweepClearBumpsGen`:weak 清项同样 bump;都不依赖任何 consumer)——**每个 producer 一条**,
+不是有一条就算。清单不完整时,缺的每一格都是一个待发的 fuzz issue。反思
 [[2026-09-13-issue260-nil-immediate-and-delete-gen]] 教训 3。
 
 ## 3. 成本归类:架构成本 vs 实现浪费——援引前提判否优化前先分类

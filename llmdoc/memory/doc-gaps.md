@@ -5,7 +5,7 @@
 
 ## 当前缺口
 
-- **【已收口 2026-09-13,#260】table gen invariant 契约** — 原缺口(2026-07-02 记)要求 (a) 契约成文 (b) producer 全表审计 (c) 设计稿 consumer 分类条款。(a)(b) 已由 #260 轮完成:契约写进 `internal/crescent/rawtable.go` 头注,producer 表见 [[design-claims-vs-codebase-physics]] §2.1,`rawSet` 删键与 weak sweep 清项两处补 BumpGen,`TestRawTable_*BumpsGen` 直接断言契约。(c) `docs/design/p1-interpreter/05-interpreter-loop.md` §6.3 的 consumer 分类条款仍未回填,保留为设计稿回填项。反思 [[2026-09-13-issue260-nil-immediate-and-delete-gen]]。
+- **【已收口 2026-09-13,#260】table gen invariant 契约** — 原缺口(2026-07-02 记)要求 (a) 契约成文 (b) producer 全表审计 (c) 设计稿 consumer 分类条款。(a)(b) 已由 #260 轮完成:契约写进 `internal/crescent/rawtable.go` 头注,producer 表见 [[design-claims-vs-codebase-physics]] §2.1,`rawSet` 删键与 weak sweep 清项两处补 BumpGen,`TestRawTable_*BumpsGen`(rawSet 删键 / 重插换槽)与 `TestWeak_SweepClearBumpsGen`(weak 清项)分别直接断言契约。(c) `docs/design/p1-interpreter/05-interpreter-loop.md` §6.3 的 consumer 分类条款仍未回填,保留为设计稿回填项。反思 [[2026-09-13-issue260-nil-immediate-and-delete-gen]]。
 - **设计文档回填待办(P2 开工前,recorder 执行,十项合一轮)** — 六轮反思的 promotion 候选合并清单,均为 `docs/design/` 回填(非 llmdoc):
   - 源自 `reflections/2026-06-12-p1-implementation-sprint.md`:
     1. `04-frontend-parser-codegen.md` 补「lcode.c 同构必须到 helper 层」纪律 + 五个实例坑(goIfTrue 对 eJmp 须 invertJmp、luaK_infix 时机的左操作数提前物化、patchListAux 让无主 TESTSET 退化为 TEST、fixJump 不得硬编码 JMP opcode;加固轮追加:「末位多值源 A 处理」即 luaK_setreturns 对应物在 stmtReturn/compileArgList/exprTable 三调用点同族踩坑——eCall 不动 A、eVararg 回填 A,须单点收口为 helper)。官方套轮追加第三维度「**快路径家族审计**」:同形式快路径在代码库多处分布,修一处时 grep 全家族——eNonReloc 直用快路径漏 `hasJumps()` 检查,exp2AnyReg 有正确写法而 stmtReturn 漏,悬空 JMP 非确定性挂死(`cbaae3f` 反例);与 helper 层(本项)、时序层(第 9 项)并列为同构纪律三维度;
