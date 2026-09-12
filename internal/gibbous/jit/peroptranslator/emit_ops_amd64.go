@@ -1574,10 +1574,10 @@ func emitInlineGetTableArrayHit(cb *codeBuf, pc int32, a, b uint8, c int) bool {
 	cb.emit([]byte{0x48, 0x8B, 0x54, 0xD0, 0xF8})
 
 	// -----------------------------------------------------------------
-	// Guard 6: slot != Nil (0xFFFE_0000_0000_0000).
+	// Guard 6: slot != Nil (value.Nil bits).
 	// -----------------------------------------------------------------
 	// mov rax, NilBits  (10B)
-	cb.emit(jitamd64.EmitMovRaxImm64(nil, 0xFFFE_0000_0000_0000))
+	cb.emit(jitamd64.EmitMovRaxImm64(nil, uint64(value.Nil)))
 	// cmp rdx, rax  (3B: 48 39 C2)
 	cb.emit([]byte{0x48, 0x39, 0xC2})
 	// je shim  (slot is Nil → helper handles __index / miss path)
@@ -1760,8 +1760,8 @@ func emitInlineGetTableNodeHit(cb *codeBuf, pc int32, a, b uint8, c int) bool {
 	cb.emit([]byte{0x48, 0x8B, 0x81,
 		byte(uint32(valOff)), byte(uint32(valOff) >> 8),
 		byte(uint32(valOff) >> 16), byte(uint32(valOff) >> 24)}) // mov rax, [rcx+valOff]
-	cb.emit(jitamd64.EmitMovRdxImm64(nil, 0xFFFE_0000_0000_0000)) // NilBits
-	cb.emit([]byte{0x48, 0x39, 0xD0})                             // cmp rax, rdx
+	cb.emit(jitamd64.EmitMovRdxImm64(nil, uint64(value.Nil))) // NilBits
+	cb.emit([]byte{0x48, 0x39, 0xD0})                         // cmp rax, rdx
 	cb.emit(jitamd64.EmitJeRel32(nil, 0))
 	guardFixups = append(guardFixups, int(cb.pos())-4)
 
@@ -1833,8 +1833,8 @@ func emitInlineSetTableNodeHit(cb *codeBuf, pc int32, a uint8, b, c int) bool {
 	cb.emit([]byte{0x48, 0x8B, 0x81,
 		byte(uint32(valOff)), byte(uint32(valOff) >> 8),
 		byte(uint32(valOff) >> 16), byte(uint32(valOff) >> 24)}) // mov rax, [rcx+valOff]
-	cb.emit(jitamd64.EmitMovRdxImm64(nil, 0xFFFE_0000_0000_0000)) // NilBits
-	cb.emit([]byte{0x48, 0x39, 0xD0})                             // cmp rax, rdx
+	cb.emit(jitamd64.EmitMovRdxImm64(nil, uint64(value.Nil))) // NilBits
+	cb.emit([]byte{0x48, 0x39, 0xD0})                         // cmp rax, rdx
 	cb.emit(jitamd64.EmitJeRel32(nil, 0))
 	guardFixups = append(guardFixups, int(cb.pos())-4)
 
@@ -1994,8 +1994,8 @@ func emitInlineSetTableArrayHit(cb *codeBuf, pc int32, a uint8, b, c int) bool {
 	cb.emit([]byte{0x48, 0x8B, 0x44, 0xD1, 0xF8})
 
 	// --- Guard 6: existing slot != Nil (avoid gen-bump insert path) ---
-	cb.emit(jitamd64.EmitMovRdxImm64(nil, 0xFFFE_0000_0000_0000)) // rdx = NilBits (clobbers our idx)
-	cb.emit([]byte{0x48, 0x39, 0xD0})                             // cmp rax, rdx
+	cb.emit(jitamd64.EmitMovRdxImm64(nil, uint64(value.Nil))) // rdx = NilBits (clobbers our idx)
+	cb.emit([]byte{0x48, 0x39, 0xD0})                         // cmp rax, rdx
 	cb.emit(jitamd64.EmitJeRel32(nil, 0))
 	recordFixup()
 
@@ -2126,7 +2126,7 @@ func emitInlineGetGlobalNodeHit(cb *codeBuf, pc int32, a uint8, bx uint16) bool 
 	}
 
 	// Guard: val != Nil
-	cb.emit(jitamd64.EmitMovRdxImm64(nil, 0xFFFE_0000_0000_0000))
+	cb.emit(jitamd64.EmitMovRdxImm64(nil, uint64(value.Nil)))
 	cb.emit([]byte{0x48, 0x39, 0xD0}) // cmp rax, rdx
 	cb.emit(jitamd64.EmitJeRel32(nil, 0))
 	recordFixup()
@@ -2216,7 +2216,7 @@ func emitInlineSetGlobalNodeHit(cb *codeBuf, pc int32, a uint8, bx uint16) bool 
 	cb.emit([]byte{0x48, 0x8B, 0x81,
 		byte(uint32(valOff)), byte(uint32(valOff) >> 8),
 		byte(uint32(valOff) >> 16), byte(uint32(valOff) >> 24)}) // mov rax, [rcx+valOff]
-	cb.emit(jitamd64.EmitMovRdxImm64(nil, 0xFFFE_0000_0000_0000))
+	cb.emit(jitamd64.EmitMovRdxImm64(nil, uint64(value.Nil)))
 	cb.emit([]byte{0x48, 0x39, 0xD0}) // cmp rax, rdx
 	cb.emit(jitamd64.EmitJeRel32(nil, 0))
 	recordFixup()
