@@ -12,9 +12,11 @@
 //     rawSet and the weak-table sweep) must BumpGen. Placing a new key into
 //     an empty slot needs no bump: ICs only snapshot slots whose val is
 //     non-Nil, and every path that empties a slot bumps. The interpreter's
-//     icGetTable re-verifies NodeKey on every hit, but the P3 wasm and P4
-//     native GETGLOBAL/SETGLOBAL NodeHit fast paths bake the slot index and
-//     trust gen alone, so a missing bump there reads another key's value;
+//     icGetTable re-verifies NodeKey on every hit, but the gen-only inline
+//     consumers bake the slot index and trust gen alone: P4 native
+//     GETGLOBAL/SETGLOBAL NodeHit, P3 wasm GETGLOBAL/SETGLOBAL NodeHit, and
+//     P3 wasm constant-key GETTABLE/SETTABLE/SELF NodeHit (wasm
+//     tableInlineable). A missing bump there reads another key's value;
 //   - border: binary search over the array part (# semantics, 01 §5.2).
 package crescent
 

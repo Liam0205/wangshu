@@ -49,8 +49,22 @@
 **代价与备选**:删键 bump 让该表所有 IC 一起失效——解释器侧同表每个 pc 重新回填并累加 `Refill`
 (会影响 P2 megamorphic 判定),native 侧烧进机器码的 gen 一旦落后就永久退回 helper(本轮没有重快照
 机制)。审查时的 P1 微基准(`t.a=nil t.a=i` 交替 20 万次,`-cpu=1`)慢约 5%~6%。另一条同样满足契约
-的路线是让 GETGLOBAL/SETGLOBAL NodeHit 像 GETTABLE NodeHit 那样加一条 NodeKey 比对(键是常量,一条
-`cmp`),那样删键与 Brent 重定位都不必 bump。本轮取正确性优先;若 IC 抖动成为问题,先看这里。
+的路线是给**所有** gen-only 消费者补 NodeKey 比对(键是常量,一条 `cmp`)之后再让删键与 Brent 重定位
+不 bump——注意「所有」:不只是 P4 GETGLOBAL/SETGLOBAL NodeHit,还有 P3 wasm GETGLOBAL/SETGLOBAL
+NodeHit 和 P3 wasm 常量键 GETTABLE/SETTABLE/SELF NodeHit(`translate_table.go` 的 `tableInlineable`
+对常量键 NodeHit 只做 IsTable + TableRef + gen 三道守卫,注释明写「skipping the key match, same as
+GETGLOBAL」);P4 amd64 的 GETTABLE/SETTABLE NodeHit 有 Guard 5 NodeKey 比对,是消费者里的少数。漏掉
+任何一个就把 #260 的别名缺陷重新引进那个后端。本轮取正确性优先;若 IC 抖动成为问题,先看这里。
+
+**gen-only consumer 清单**(与上面 producer 表配对,改任何一侧都要对照另一侧):
+
+| consumer | 守卫 | 位置 |
+|---|---|---|
+| P4 native GETGLOBAL / SETGLOBAL NodeHit | gen + slot != Nil | `peroptranslator/emit_ops_amd64.go` `emitInlineGetGlobalNodeHit` / `emitInlineSetGlobalNodeHit`;arm64 同名 |
+| P4 native GETTABLE / SETTABLE NodeHit | gen + **NodeKey** + slot != Nil | `emit_ops_amd64.go` Guard 5 |
+| P3 wasm GETGLOBAL / SETGLOBAL NodeHit | gen + slot != Nil | `wasm/translate_table.go` `emitGetGlobal` / `emitSetGlobal` |
+| P3 wasm 常量键 GETTABLE / SETTABLE / SELF NodeHit | IsTable + TableRef + gen | `wasm/translate_table.go` `tableInlineable` → `emitTableGuard` + `emitSlotBase` |
+| 解释器 `icGetTable` / `icSetTable` | gen + NodeKey 复验 | `crescent/ic.go`(不是 gen-only,gen 只是快速否决) |
 
 **判据**:契约成文那一刻就把 producer 列成表并逐条标「已 bump / 补 / 不需要(为什么)」,再写一个**直接
 断言契约本身**的单元测试(`TestRawTable_SlotReuseAfterDeleteBumpsGen`:槽位换主必伴随 gen 变化;
