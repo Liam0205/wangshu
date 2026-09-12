@@ -16,13 +16,13 @@ description: >
   都不 BumpGen,而删掉的槽位 `next>=0` 仍留在链上,同键再插会落到**另一个**槽位、别的键也可能落进
   原槽位——key→slot 映射变了而 gen 不变,gen-only 的 inline 消费者继续读旧槽。这是
   [[2026-07-02-p4-beat-p3-opset-round]] 教训 2 预告的「已修一处不代表全表安全」的第二实例,
-  doc-gaps 里挂了两个月的「BumpGen 路径清单未落」缺口由本轮收口:契约写进 `rawtable.go` 头注,
+  doc-gaps 里挂了两个月的「BumpGen 路径清单未落」缺口由本轮收口:约定写进 `rawtable.go` 头注,
   删键两处补 bump,单元测试直接断言「槽位换主必伴随 gen 变化」。孤立缺陷一的 e2e 用数组部
   (`t[2]=nil` 后 `__index`,数组部没有 key→slot 间接所以 gen 从不变,只剩 Nil 守卫);孤立缺陷二的
   e2e 靠脚本枚举 5000 个全局名找到 `v4927` 删掉后 `k2621` 恰好落进同一槽位(只依赖字符串哈希,确定)。
   三条教训:手写常量必须有编译期或测试期的锚(→ [[prove-the-path-under-test]]);一个症状两处缺陷时
   每处都要有自己的判别输入(→ [[cross-backend-semantic-fix-sweep]]);invariant 的 producer 清单要
-  在契约写下时一并盘点,不能只修 fuzz 撞到的那一格(→ [[design-claims-vs-codebase-physics]])。
+  在约定写下时一并盘点,不能只修 fuzz 撞到的那一格(→ [[design-claims-vs-codebase-physics]])。
 metadata:
   type: reflection
   date: 2026-09-13
@@ -33,7 +33,7 @@ metadata:
 > 范围:issue #260(nightly `FuzzP4ForceAllPromote` 开出),分支 `fix/issue260-p4-nil-guard`。改动落在
 > `internal/gibbous/jit/amd64/pj4_template.go` 与 `internal/gibbous/jit/arm64/pj4_template.go`
 > (Nil 常量改为 `0xFFF8<<48`)、`internal/gibbous/jit/peroptranslator/emit_ops_amd64.go`(六处字面量
-> 改用 `uint64(value.Nil)`)、`internal/crescent/rawtable.go`(删键 BumpGen + 头注写 gen 契约)、
+> 改用 `uint64(value.Nil)`)、`internal/crescent/rawtable.go`(删键 BumpGen + 头注写 gen 约定)、
 > `internal/gc/sweep.go`(weak 表清项 BumpGen);新测试 `jit/{amd64,arm64}/nanbox_consts_test.go`、
 > `internal/crescent/rawtable_gen_test.go`、`test/regression/fuzz_260_test.go`;crasher 语料入
 > `test/fuzz/testdata/fuzz/FuzzP4ForceAllPromote/96aaf5cc29cb7f3c`。
@@ -114,15 +114,15 @@ harness 判定 `error 存在性真分叉(疑似 P4 误编译)`:P1 无错,P4 报
 同族,但形状相反:那里是**析取**(任一处错就错,修一处症状不消),这里是**合取**(要都错才错,修一
 处症状就消),合取更危险,因为症状消失会被读成「修好了」。
 
-### 教训 3:写下一条 invariant 契约时,要同时盘点它的全部 producer,而不是只修 fuzz 撞到的那一格
+### 教训 3:写下一条 不变量约定时,要同时盘点它的全部 producer,而不是只修 fuzz 撞到的那一格
 
 **核心断言**:2026-07-02 `insertNewKey` Brent 重定位漏 bump 被修时,反思已经写了「已修一处不代表全表
 安全」,doc-gaps 也记了「producer 侧 BumpGen 路径清单未落」;两个月后 fuzz 撞到的正是同一清单上
 的另一格(删键)。缺口被准确预告却没有被执行,因为它当时被排在「P4 arm64 port / P5 前」这种远期
 里程碑之后,而一格 grep + 三处判断只要半小时。
 
-**判据**:契约成文的那一刻就把 producer 列成表(本轮:rehash / Brent 重定位 / rawSet 删键 / weak
-sweep 清项),逐条标「已 bump / 补 bump / 不需要(为什么)」,并写一个直接断言契约的单元测试
+**判据**:约定成文的那一刻就把 producer 列成表(本轮:rehash / Brent 重定位 / rawSet 删键 / weak
+sweep 清项),逐条标「已 bump / 补 bump / 不需要(为什么)」,并写一个直接断言约定的单元测试
 (本轮 `TestRawTable_SlotReuseAfterDeleteBumpsGen` 断言「槽位换主必伴随 gen 变化」,不依赖任何
 consumer)。而且要**每个 producer 一条**:首轮盲审发现 weak sweep 那一格补了 bump 却没有测试盯着,
 单独撤掉它全部测试仍绿——正是本条教训在同一轮里被自己违反了一次,`TestWeak_SweepClearBumpsGen` 补上。**invariant 强度由最严 consumer 定义**这句话的操作含义就是:consumer 一旦选了 gen-only,
@@ -134,5 +134,5 @@ producer 清单就必须完整,清单不完整时缺的每一格都是一个待�
   inline 快路径条目后追加本例(第四个「inline 省校验 → fuzz 才抓到」实例,但这次省掉的不是校验而是
   校验用的真值)。
 - **教训 2 → [[cross-backend-semantic-fix-sweep]]**:补「合取型叠加」这一格与撤回矩阵手法。
-- **教训 3 → [[design-claims-vs-codebase-physics]]**:§2 arena 重定位一节旁新增 §2.1「gen 契约的
+- **教训 3 → [[design-claims-vs-codebase-physics]]**:§2 arena 重定位一节旁新增 §2.1「gen 约定的
   producer 清单」,把 rawtable 的四个 producer 写成表;同时关闭 `memory/doc-gaps.md` 里的对应缺口。

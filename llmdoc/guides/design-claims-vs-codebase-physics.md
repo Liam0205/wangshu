@@ -23,14 +23,14 @@
 
 **第二实例(PR #83,P4 native 层,跨子系统复现同一物理事实)**:`nativeCode.Run`(`internal/crescent/gibbous_host_p4.go`)在入口捕获 `base`(arena 绝对字节偏移),把它当固定 token 传给每次 `RefreshJitCtxAddrs`;但一次会 grow 值栈的 host 调用(`enterLuaFrame` → `growStack`)同样把值栈段在 arena 重定位并释放旧段,入口 `base` 变悬垂(issue #80)。**与 PW6 是同一条物理事实(arena 段可被 grow 重定位)在两个独立加速层(P3 wasm trampoline / P4 native codegen dispatcher)里各自被撞中**——判据「谁有能力刷新它、在什么时机」在新子系统里必须重新逐条核对,不能假设「P3 已经修过,P4 就自动免疫」。解法同构:`RefreshJitCtxAddrs` 改为从活的线程状态重算 `vsBase`(`(stackBaseW + cur.base)*8`),不再信任入口捕获的参数。
 
-### 2.1 table gen 契约——写下 invariant 的同时盘点全部 producer,不能只修 fuzz 撞到的那一格(2026-09-13,#260)
+### 2.1 table gen 约定——写下 invariant 的同时盘点全部 producer,不能只修 fuzz 撞到的那一格(2026-09-13,#260)
 
 与 §2 同一类物理事实:一个被加速层烧成编译期立即数的量(这里是 IC 快照里的 **node slot index**),它的
 有效性靠另一个字(`gen`)担保;解释器 `icGetTable` 每次命中都复验 `NodeKey`,gen 只是快速否决,而 P3 wasm
 `emitGetGlobal` 与 P4 native GETGLOBAL/SETGLOBAL NodeHit 是 **gen-only**——**invariant 强度由最严 consumer
 定义**,所以任何改变「哪个 key 占哪个 slot」的 producer 都必须 BumpGen。
 
-`internal/crescent/rawtable.go` 的 producer 清单(契约已写进该文件头注):
+`internal/crescent/rawtable.go` 的 producer 清单(约定已写进该文件头注):
 
 | producer | 改变 key→slot 吗 | BumpGen | 备注 |
 |---|---|---|---|
@@ -48,7 +48,7 @@
 
 **代价与备选**:删键 bump 让该表所有 IC 一起失效——解释器侧同表每个 pc 重新回填并累加 `Refill`
 (会影响 P2 megamorphic 判定),native 侧烧进机器码的 gen 一旦落后就永久退回 helper(本轮没有重快照
-机制)。审查时的 P1 微基准(`t.a=nil t.a=i` 交替 20 万次,`-cpu=1`)慢约 5%~6%。另一条同样满足契约
+机制)。审查时的 P1 微基准(`t.a=nil t.a=i` 交替 20 万次,`-cpu=1`)慢约 5%~6%。另一条同样满足约定
 的路线是给**所有** gen-only 消费者补 NodeKey 比对(键是常量,一条 `cmp`)之后再让删键与 Brent 重定位
 不 bump——注意「所有」:不只是 P4 GETGLOBAL/SETGLOBAL NodeHit,还有 P3 wasm GETGLOBAL/SETGLOBAL
 NodeHit 和 P3 wasm 常量键 GETTABLE/SETTABLE/SELF NodeHit(`translate_table.go` 的 `tableInlineable`
@@ -69,8 +69,8 @@ SETGLOBAL / SETTABLE NodeHit 和 P3 wasm 常量键 SETTABLE NodeHit 还会检查
 | P3 wasm 常量键 GETTABLE / SETTABLE / SELF NodeHit | IsTable + TableRef + gen + slot != Nil | `wasm/translate_table.go` `tableInlineable` → `emitTableGuard` + `emitSlotBase` |
 | 解释器 `icGetTable` / `icSetTable` | gen + NodeKey 复验 | `crescent/ic.go`(不是 gen-only,gen 只是快速否决) |
 
-**判据**:契约成文那一刻就把 producer 列成表并逐条标「已 bump / 补 / 不需要(为什么)」,再写一个**直接
-断言契约本身**的单元测试(`TestRawTable_SlotReuseAfterDeleteBumpsGen`:槽位换主必伴随 gen 变化;
+**判据**:约定成文那一刻就把 producer 列成表并逐条标「已 bump / 补 / 不需要(为什么)」,再写一个**直接
+断言约定本身**的单元测试(`TestRawTable_SlotReuseAfterDeleteBumpsGen`:槽位换主必伴随 gen 变化;
 `TestWeak_SweepClearBumpsGen`:weak 清项同样 bump;都不依赖任何 consumer)——**每个 producer 一条**,
 不是有一条就算。清单不完整时,缺的每一格都是一个待发的 fuzz issue。反思
 [[2026-09-13-issue260-nil-immediate-and-delete-gen]] 教训 3。
