@@ -80,10 +80,13 @@ func TestNilArraySlotRoutesToIndexMetamethod(t *testing.T) {
 
 // TestReusedGlobalSlotDoesNotAliasDeletedKey isolates the gen defect: g is
 // natively compiled with a NodeHit snapshot for v4927, then v4927 is deleted
-// and k2621 happens to be inserted into the very slot v4927 occupied (the
-// two names were found by search; the placement depends only on the string
-// hashes, so it is deterministic). Without the gen bump on deletion the
-// inline GETGLOBAL returned k2621's 7, and g computed 10 where P1 returns -1.
+// and k2621 happens to be inserted into the very slot v4927 occupied. The
+// two names were found by search; whether they share a slot depends on the
+// string hashes AND on the globals table's hsize (how many globals the stdlib
+// registers), so internal/stdlib's TestIssue260SlotReusePairStillHolds
+// asserts the placement on a stdlib-loaded State and fails loudly if it ever
+// stops holding. Without the gen bump on deletion the inline GETGLOBAL
+// returned k2621's 7, and g computed 10 where P1 returns -1.
 func TestReusedGlobalSlotDoesNotAliasDeletedKey(t *testing.T) {
 	assertP1P4Equal(t, "fuzz-260-reuse",
 		`v4927=1 `+
