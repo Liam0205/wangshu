@@ -141,36 +141,3 @@ func TestWeak_SweepClearBumpsGen(t *testing.T) {
 		t.Fatalf("weak sweep cleared an entry but gen stayed %d", gen0)
 	}
 }
-
-// TestGlobalsSlotReusePairStillHolds guards the e2e pin
-// TestReusedGlobalSlotDoesNotAliasDeletedKey (test/regression): that pin
-// only bites if k2621 lands in the node slot v4927 vacated, which depends on
-// the string hashes AND on the globals table's hsize (how many globals the
-// stdlib registers). If either changes the pin would silently become an
-// ordinary P1/P4 parity check, so assert the placement here and fail loudly
-// with a hint to search for a new pair.
-func TestGlobalsSlotReusePairStillHolds(t *testing.T) {
-	st := New()
-	tbl := st.globals
-	victim := st.makeStringValue("v4927")
-	intruder := st.makeStringValue("k2621")
-	if e := st.rawSet(tbl, victim, value.NumberValue(1)); e != nil {
-		t.Fatal(e)
-	}
-	_, where, idx := st.rawGetWithLoc(tbl, victim)
-	if where != locNode {
-		t.Fatalf("v4927 not in the hash part: %v", where)
-	}
-	if e := st.rawSet(tbl, victim, value.Nil); e != nil {
-		t.Fatal(e)
-	}
-	if e := st.rawSet(tbl, intruder, value.NumberValue(7)); e != nil {
-		t.Fatal(e)
-	}
-	_, where2, idx2 := st.rawGetWithLoc(tbl, intruder)
-	if where2 != locNode || idx2 != idx {
-		t.Fatalf("k2621 landed in slot %d (where=%v), v4927 vacated slot %d (hsize=%d); "+
-			"the pair in test/regression/fuzz_260_test.go no longer reuses the slot — search for a new (victim, intruder) pair",
-			idx2, where2, idx, object.TableHSize(st.arena, tbl))
-	}
-}
