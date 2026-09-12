@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/Liam0205/wangshu/internal/arena"
 	"github.com/Liam0205/wangshu/internal/object"
 	"github.com/Liam0205/wangshu/internal/value"
 )
@@ -61,10 +62,13 @@ func TestRawTable_SlotReuseAfterDeleteBumpsGen(t *testing.T) {
 // dead slot (Nil) for a key that is present again.
 func TestRawTable_DeleteReinsertMovesSlotBumpsGen(t *testing.T) {
 	st := New()
-	tbl := st.allocTable(0, 4)
 	key := st.makeStringValue("s")
 	// Fill so that "s" ends up chained behind another key at its main
-	// position; try several fillers since placement depends on hashes.
+	// position; placement depends on string hashes, so try growing filler
+	// sets until one produces the shape. Not finding one is a failure, not
+	// a skip: this is the direct unit pin for the #260 mechanism and must
+	// not silently degrade if hashing or placement changes.
+	var tbl arena.GCRef
 	var idx0 uint32
 	var placed bool
 	for i := 0; i < 32 && !placed; i++ {
@@ -81,7 +85,7 @@ func TestRawTable_DeleteReinsertMovesSlotBumpsGen(t *testing.T) {
 		}
 	}
 	if !placed {
-		t.Skip("could not construct a chained slot for the key")
+		t.Fatal("could not construct a chained slot for the key; rebuild the filler set for the current hash/placement")
 	}
 	gen0 := object.TableGen(st.arena, tbl)
 	if e := st.rawSet(tbl, key, value.Nil); e != nil {
