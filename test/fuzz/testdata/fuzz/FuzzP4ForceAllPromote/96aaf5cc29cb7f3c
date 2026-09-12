@@ -1,0 +1,2 @@
+go test fuzz v1
+string("function add(x)s=A s=0 local function add()B=s%0 end add()add()end add(0)add(0) ")
