@@ -101,3 +101,39 @@ func TestRawTable_DeleteReinsertMovesSlotBumpsGen(t *testing.T) {
 		t.Fatalf("delete + re-insert left gen at %d", gen0)
 	}
 }
+
+// TestWeak_SweepClearBumpsGen: the weak-table sweep clearing a dead entry is
+// a key deletion by another producer, so it must bump gen for the same
+// reason rawSet's delete path does (a gen-only inline consumer would keep
+// reading the cleared slot, or whatever key later reuses it).
+func TestWeak_SweepClearBumpsGen(t *testing.T) {
+	st := New()
+	th := st.newThread()
+	st.runningThread = th
+	defer func() { st.runningThread = nil }()
+
+	weak := st.allocTable(0, 8)
+	meta := st.allocTable(0, 8)
+	modeKey := value.MakeGC(value.TagString, st.gc.Intern([]byte("__mode")))
+	modeVal := value.MakeGC(value.TagString, st.gc.Intern([]byte("k")))
+	if e := st.tableSet(meta, modeKey, modeVal); e != nil {
+		t.Fatal(e)
+	}
+	st.SetMeta(weak, meta)
+
+	deadKey := st.allocTable(0, 8)
+	if e := st.tableSet(weak, value.MakeGC(value.TagTable, deadKey), value.NumberValue(42)); e != nil {
+		t.Fatal(e)
+	}
+	th.push(value.MakeGC(value.TagTable, weak))
+	gen0 := object.TableGen(st.arena, weak)
+
+	st.gc.Collect()
+
+	if _, _, ok, _ := st.rawNext(weak, value.Nil); ok {
+		t.Fatalf("dead-key entry should have been cleared by the sweep")
+	}
+	if object.TableGen(st.arena, weak) == gen0 {
+		t.Fatalf("weak sweep cleared an entry but gen stayed %d", gen0)
+	}
+}
