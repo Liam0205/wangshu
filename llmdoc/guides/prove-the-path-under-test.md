@@ -332,6 +332,24 @@ userdata 的分配与 rooting 约定**上」正好把下一轮的第一个动作
 [[design-claims-vs-codebase-physics]] §4.1,反思实例
 [[2026-07-29-issue205-206-208-io-userdata-debug]] 教训 1。
 
+### 4.11 emitter 里手写的编码常量必须有一个锚,注释里的「following X」不算(2026-09-13,#260)
+
+**核心断言**:`internal/gibbous/jit/amd64/pj4_template.go` 的 `qNanBoxNilImm` 注释写「following
+internal/value/value.go::Nil」,值却是 `0xFFFE<<48`(TagUserdata);`value.Nil` 是 `0xFFF8<<48`。这个
+数字从 2026-06-26 起在 amd64 / arm64 模板包与 `peroptranslator/emit_ops_amd64.go` 里复制了十处,
+两个多月全部 `-race` / difftest / conformance 都绿——因为一个永不触发的 Nil 守卫让所有正常路径**更
+快且结果正确**,只有「IC 快照命中的槽位后来真变成 Nil」这一刻才错。
+
+**判据**:以字面量写进 emitter 的编码常量(tag 位、Nil/True/False 位、掩码、结构体字段偏移)要么直接
+引用定义它的包,要么在 test 里与定义包比对。叶子 byte-emitter 包不能 import `internal/value` 时,
+就写一个只做 `const == uint64(value.Nil)` 的测试(#260 的 `TestNilImmMatchesValueNil`,在旧常量上
+确认会红)。自查办法:`grep -n '0x[0-9A-F_]\{8,\}' internal/gibbous/jit/**/*.go`,对每个字面量问
+「真值在哪个包定义、有什么在盯着两者一致」;答案是「注释」就不算。
+
+这是 §5「inline 快路径省校验 → fuzz 才抓到」那族的第四个实例,形状略有不同:前三个省掉的是**校验
+本身**(NaN 别名 / BumpGen / IsNumber),这个省掉的是校验用的**真值**——校验指令都在,只是永远比不中。
+反思 [[2026-09-13-issue260-nil-immediate-and-delete-gen]] 教训 1。
+
 ## 5. 正向侧解药 — fuzz 探索空间维度动了就重探
 
 **核心断言**：fuzz 的覆盖度不由语料和时长单独决定。**接受面（哪些形式能进被测路径）、硬件/OS、运行参数**都是探索空间的维度；任何一维变化 = 新一轮独立探索，「已跑过 N 分钟没抓到 → 就是安全」这个直觉在维度变动后立即作废。**任一维度变动后立刻跑一轮 60~120s 的相关 fuzz smoke，是廉价高产的默认动作**，不要归到「专门的 fuzz 里程碑」延后。
@@ -347,6 +365,7 @@ userdata 的分配与 rooting 约定**上」正好把下一轮的第一个动作
 **三个独立实例（已跨提升阈值）**：
 
 - **[[2026-07-02-p4-beat-p3-opset-round]] 教训 4**：`opSupported` 扩面时三个 fuzz seed（`f7f0bb1a` arith NaN 别名 / `4b3d10ff` `insertNewKey` Brent relocate 无 BumpGen / `d9bce2e` LT/LE 缺 IsNumber guard）接连抓到 inline 快路径 bug，共同结构「inline 快路径省完整校验 → 常规 test 覆盖不到 → fuzz shape 混合扫出」；
+- **[[2026-09-13-issue260-nil-immediate-and-delete-gen]] 教训 1**:P4 inline GETGLOBAL/GETTABLE 的 Nil 守卫常量写成 TagUserdata 位,两个多月里所有确定性套件全绿,`FuzzP4ForceAllPromote` 撞到「删键后 IC 槽位变 Nil」才暴露;同一 seed 底下还叠着 `rawSet` 删键不 BumpGen(见 §4.11 与 [[cross-backend-semantic-fix-sweep]] 合取型叠加);
 - **[[2026-07-03-issue40-arm64-stopbleed-round]] 教训 5**：同一 fuzz corpus 在 Apple M5 Pro 上 9~80s 抓到 fatal stack overflow，同 corpus 在 amd64 侧多轮 120s/150s 跑过都没抓到；换硬件本身就是新一轮探索；
 - **[[2026-07-03-issue45-issue39-round]] 教训 1**：LEN/MOD/POW 三个 op 进 `opSupported` 后 90s fuzz 立刻抓到 master 上潜伏的 PerOpCode 回放乱序 bug（seed `21c645c46a1268c6`，最小形式 `function f()return{0}end f(f())` → P4 报 `SETLIST: not a table` 而 P1 正常）；该 bug 在旧接受面下也存在，但之前多轮长时间 fuzz 都没抓到——不是 fuzz 不够长，是 LEN/MOD/POW 之前不在接受面里，fuzz 引擎的探索预算从没走到会带出这三个 op 的语料上。
 

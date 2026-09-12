@@ -23,6 +23,32 @@
 
 **第二实例(PR #83,P4 native 层,跨子系统复现同一物理事实)**:`nativeCode.Run`(`internal/crescent/gibbous_host_p4.go`)在入口捕获 `base`(arena 绝对字节偏移),把它当固定 token 传给每次 `RefreshJitCtxAddrs`;但一次会 grow 值栈的 host 调用(`enterLuaFrame` → `growStack`)同样把值栈段在 arena 重定位并释放旧段,入口 `base` 变悬垂(issue #80)。**与 PW6 是同一条物理事实(arena 段可被 grow 重定位)在两个独立加速层(P3 wasm trampoline / P4 native codegen dispatcher)里各自被撞中**——判据「谁有能力刷新它、在什么时机」在新子系统里必须重新逐条核对,不能假设「P3 已经修过,P4 就自动免疫」。解法同构:`RefreshJitCtxAddrs` 改为从活的线程状态重算 `vsBase`(`(stackBaseW + cur.base)*8`),不再信任入口捕获的参数。
 
+### 2.1 table gen 契约——写下 invariant 的同时盘点全部 producer,不能只修 fuzz 撞到的那一格(2026-09-13,#260)
+
+与 §2 同一类物理事实:一个被加速层烧成编译期立即数的量(这里是 IC 快照里的 **node slot index**),它的
+有效性靠另一个字(`gen`)担保;解释器 `icGetTable` 每次命中都复验 `NodeKey`,gen 只是快速否决,而 P3 wasm
+`emitGetGlobal` 与 P4 native GETGLOBAL/SETGLOBAL NodeHit 是 **gen-only**——**invariant 强度由最严 consumer
+定义**,所以任何改变「哪个 key 占哪个 slot」的 producer 都必须 BumpGen。
+
+`internal/crescent/rawtable.go` 的 producer 清单(契约已写进该文件头注):
+
+| producer | 改变 key→slot 吗 | BumpGen | 备注 |
+|---|---|---|---|
+| `rehash`(含 array↔hash 迁移) | 是 | 有(原有) | |
+| `insertNewKey` Brent 重定位 | 是 | 有(2026-07-02,seed `4b3d10ff`) | 第一实例 |
+| `rawSet` 删键(val=Nil) | 是:槽位 `next>=0` 留链上,同键再插落别处、别键可落进来 | **补**(2026-09-13,seed `96aaf5cc`) | 第二实例 |
+| `gc/sweep.go` weak 表清项 | 是,同上 | **补**(2026-09-13) | 同形状 |
+| `nodeSetVal` 改值 / `SetTableArrayAt` | 否 | 不需要 | IC「改值不 bump」正是靠它 |
+
+**为什么两个月才收口**:2026-07-02 修第一实例时反思已经写「已修一处不代表全表安全」、doc-gaps 记了
+「producer 清单未落」,但排到了「P4 arm64 port / P5 前」这种里程碑之后,而实际工作量是一格 grep 加三处
+判断。fuzz 撞到的正是清单上下一格。
+
+**判据**:契约成文那一刻就把 producer 列成表并逐条标「已 bump / 补 / 不需要(为什么)」,再写一个**直接
+断言契约本身**的单元测试(`TestRawTable_SlotReuseAfterDeleteBumpsGen`:槽位换主必伴随 gen 变化,不依赖
+任何 consumer)。清单不完整时,缺的每一格都是一个待发的 fuzz issue。反思
+[[2026-09-13-issue260-nil-immediate-and-delete-gen]] 教训 3。
+
 ## 3. 成本归类:架构成本 vs 实现浪费——援引前提判否优化前先分类
 
 [[design-premises]] 前提一明写「per-item 跨界被边界成本吃光收益」是设计预期。最危险的反应是直接援引前提把一个性能 issue 判为「已知限制、无需修」。**前提能判否一个优化提案,但不能拿来掩护实现浪费。** 先 profile 定位成本来源,再把成本拆成两类:
