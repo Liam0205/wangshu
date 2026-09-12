@@ -7,6 +7,12 @@
 //   - rehash: array and hash sizes are recomputed following Lua 5.1's
 //     luaH_resize approach (load factor > 50%); rehash and array<->hash
 //     migration call BumpGen (IC invalidation, 05 §6.5);
+//   - gen contract: every path that changes which key a node slot holds
+//     (rehash, Brent relocation in insertNewKey, key deletion in rawSet and
+//     the weak-table sweep) must BumpGen. The interpreter's icGetTable
+//     re-verifies NodeKey on every hit, but the P3 wasm and P4 native
+//     GETGLOBAL/SETGLOBAL NodeHit fast paths bake the slot index and trust
+//     gen alone, so a missing bump there reads another key's value;
 //   - border: binary search over the array part (# semantics, 01 §5.2).
 package crescent
 
@@ -131,6 +137,15 @@ func (st *State) rawSet(t arena.GCRef, key, val value.Value) *LuaError {
 				// the key slot is set to Nil, to be reclaimed on rehash).
 				if val == value.Nil {
 					st.nodeSetKV(t, uint32(i), value.Nil, value.Nil)
+					// The freed slot may be handed to a different key by a
+					// later insertNewKey without any further shape change,
+					// so the key->slot mapping changes here, not there.
+					// Gen-only inline consumers (P3 wasm emitGetGlobal, P4
+					// native GETGLOBAL/SETGLOBAL NodeHit) bake the slot
+					// index and never re-check NodeKey; without this bump
+					// they would read the new occupant's value as the
+					// deleted key's (TestRawTable_SlotReuseAfterDeleteBumpsGen).
+					object.BumpGen(st.arena, t)
 				} else {
 					st.nodeSetVal(t, uint32(i), val)
 				}
