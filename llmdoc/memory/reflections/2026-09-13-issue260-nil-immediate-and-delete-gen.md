@@ -10,7 +10,7 @@ description: >
   各造一个只有它能让变红的输入。缺陷一:P4 native 手写的 NaN-box Nil 立即数写成 `0xFFFE<<48`
   (那是 `TagUserdata`),`value.Nil` 实际是 `0xFFF8<<48`;inline GETGLOBAL / SETGLOBAL / GETTABLE /
   SETTABLE 的「slot != Nil」守卫因此**从不**对真 Nil 触发,Nil 槽位直接被当值返回。这个常量从
-  2026-06-26 PJ4 模板起就错,十处复制(`jit/amd64`、`jit/arm64` 模板包各一个 const,
+  2026-06-26 PJ4 模板起就错,八处复制(`jit/amd64`、`jit/arm64` 模板包各一个 const,
   `peroptranslator/emit_ops_amd64.go` 六处字面量),所有 `-race` / difftest / conformance 都没抓到,因为
   它只在「IC 快照命中的槽位后来变成 Nil」时可见。缺陷二:`rawSet` 删键(val=Nil)与 weak 表 sweep 清项
   都不 BumpGen,而删掉的槽位 `next>=0` 仍留在链上,同键再插会落到**另一个**槽位、别的键也可能落进
@@ -75,7 +75,11 @@ harness 判定 `error 存在性真分叉(疑似 P4 误编译)`:P1 无错,P4 报
    - 缺陷二:要让别的键落进被删键的槽位。全局表哈希只依赖字符串,写脚本枚举 `v<i>=1 ... v<i>=nil
      k<j>=7` 5000 对名字,`v4927` / `k2621` 命中:只撤 gen 修复时 P4 读到 `k2621` 的 7 算出 10,P1 得 -1。
    三条 pin 加上两处修复的 2×2 撤回矩阵全部按预期变红/变绿。
-6. **fuzz 重探**:修后 `FuzzP4ForceAllPromote` 跑 60 秒无新发现;全套 p1/p3/p4 测试、lint、
+6. **P3 侧只是推断**:P3 wasm `emitGetGlobal` 与 P4 一样是 gen-only,但本轮三条 pin 在 p3 tag 下、撤掉
+   gen 修复也全绿——force-all 在首次执行就升层,那时 IC 还没回填,wasm 走的是纯 helper 分支,inline
+   路径没被触达。「P3 也有这个缺陷」是从代码结构读出来的,没有实测复现;要证实需要一个先把 IC 烤热再
+   升层(按热度阈值而非 force-all)的输入。
+7. **fuzz 重探**:修后 `FuzzP4ForceAllPromote` 跑 60 秒无新发现;全套 p1/p3/p4 测试、lint、
    `GOARCH=arm64 go vet`、conformance-p4、difftest-p4 通过。
 
 ## 期望与实际
@@ -90,7 +94,7 @@ harness 判定 `error 存在性真分叉(疑似 P4 误编译)`:P1 无错,P4 报
 
 **核心断言**:`qNanBoxNilImm` 的注释写「following internal/value/value.go::Nil」,值却是另一个 tag。
 注释不会被编译器检查,而 `jit/amd64` 是叶子 byte emitter、不能 import `internal/value`,于是这个数字
-两个月里被复制了十次、没有任何东西能发现它错。Nil 守卫失效的效果是「守卫永不触发」,而不是「守卫
+两个月里被复制了八次、没有任何东西能发现它错。Nil 守卫失效的效果是「守卫永不触发」,而不是「守卫
 乱触发」——所有正常路径都更快、结果都对,只有槽位真变 Nil 那一刻才错,常规测试自然全绿。
 
 **判据**:任何以字面量形式写进 emitter 的编码常量(tag 位、Nil/True/False 位、掩码、结构体偏移),
@@ -120,7 +124,8 @@ harness 判定 `error 存在性真分叉(疑似 P4 误编译)`:P1 无错,P4 报
 **判据**:契约成文的那一刻就把 producer 列成表(本轮:rehash / Brent 重定位 / rawSet 删键 / weak
 sweep 清项),逐条标「已 bump / 补 bump / 不需要(为什么)」,并写一个直接断言契约的单元测试
 (本轮 `TestRawTable_SlotReuseAfterDeleteBumpsGen` 断言「槽位换主必伴随 gen 变化」,不依赖任何
-consumer)。**invariant 强度由最严 consumer 定义**这句话的操作含义就是:consumer 一旦选了 gen-only,
+consumer)。而且要**每个 producer 一条**:首轮盲审发现 weak sweep 那一格补了 bump 却没有测试盯着,
+单独撤掉它全部测试仍绿——正是本条教训在同一轮里被自己违反了一次,`TestWeak_SweepClearBumpsGen` 补上。**invariant 强度由最严 consumer 定义**这句话的操作含义就是:consumer 一旦选了 gen-only,
 producer 清单就必须完整,清单不完整时缺的每一格都是一个待发的 fuzz issue。
 
 ## Promotion 决策

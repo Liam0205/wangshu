@@ -336,7 +336,7 @@ userdata 的分配与 rooting 约定**上」正好把下一轮的第一个动作
 
 **核心断言**:`internal/gibbous/jit/amd64/pj4_template.go` 的 `qNanBoxNilImm` 注释写「following
 internal/value/value.go::Nil」,值却是 `0xFFFE<<48`(TagUserdata);`value.Nil` 是 `0xFFF8<<48`。这个
-数字从 2026-06-26 起在 amd64 / arm64 模板包与 `peroptranslator/emit_ops_amd64.go` 里复制了十处,
+数字从 2026-06-26 起在 amd64 / arm64 模板包与 `peroptranslator/emit_ops_amd64.go` 里复制了八处,
 两个多月全部 `-race` / difftest / conformance 都绿——因为一个永不触发的 Nil 守卫让所有正常路径**更
 快且结果正确**,只有「IC 快照命中的槽位后来真变成 Nil」这一刻才错。
 
