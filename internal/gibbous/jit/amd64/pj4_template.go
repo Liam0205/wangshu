@@ -50,9 +50,12 @@ package amd64
 // qNanBoxTableTagShifted is the table tag NaN-box high bits: 0xFFFC << 48 = 0xFFFC_0000_0000_0000
 const qNanBoxTableTagShifted uint64 = 0xFFFC_0000_0000_0000
 
-// qNanBoxNilImm is the NaN-box raw bits of Nil (value.Nil = 0xFFFE_0000_0000_0000),
-// following internal/value/value.go::Nil.
-const qNanBoxNilImm uint64 = 0xFFFE_0000_0000_0000
+// qNanBoxNilImm is the NaN-box raw bits of Nil, following
+// internal/value/value.go::Nil (TagNil 0xFFF8 << 48). This package cannot
+// import internal/value (leaf byte emitter), so the literal is pinned by
+// TestNilImmMatchesValueNil; 0xFFFE<<48 is TagUserdata, and a guard that
+// compares against it never fires on a real Nil slot (issue #260).
+const qNanBoxNilImm uint64 = 0xFFF8_0000_0000_0000
 
 // qNanBoxTableTagHigh16 is the bare value of TagTable in the NaN-box top 16 bits
 // (0xFFFC), the immediate for the strict IsTable guard byte-level `cmp eax, 0xFFFC`.

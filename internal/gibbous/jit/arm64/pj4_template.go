@@ -34,8 +34,9 @@ package arm64
 const qNanBoxTableTagShiftedArm64 uint64 = 0xFFFC
 
 // qNanBoxNilImmArm64 is the arm64 full NaN-box Nil value (mirrors amd64
-// qNanBoxNilImm).
-const qNanBoxNilImmArm64 uint64 = 0xFFFE_0000_0000_0000
+// qNanBoxNilImm; value.Nil = TagNil 0xFFF8 << 48, pinned by
+// TestNilImmMatchesValueNil since this package cannot import internal/value).
+const qNanBoxNilImmArm64 uint64 = 0xFFF8_0000_0000_0000
 
 // payloadMaskArm64 is the GCRef payload extraction mask (clears the high
 // 16-bit NaN-box tag).
