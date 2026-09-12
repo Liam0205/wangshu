@@ -56,8 +56,10 @@ NodeHit 和 P3 wasm 常量键 GETTABLE/SETTABLE/SELF NodeHit(`translate_table.go
 GETGLOBAL」);P4 amd64/arm64 的 GETTABLE/SETTABLE NodeHit 有 NodeKey 比对(amd64 Guard 5 / arm64 Guard 4),是消费者里的少数。漏掉
 任何一个就把 #260 的别名缺陷重新引进那个后端。本轮取正确性优先;若 IC 抖动成为问题,先看这里。
 
-**gen-only consumer 清单**(与上面 producer 表配对,改任何一侧都要对照另一侧;所有 SET 类消费者还会检查
-要写入的新值 != Nil,那只与删除语义有关、与 gen 别名无关,表中一律省略):
+**gen-only consumer 清单**(与上面 producer 表配对,改任何一侧都要对照另一侧。SET 类消费者里,P4 的
+SETGLOBAL / SETTABLE NodeHit 和 P3 wasm 常量键 SETTABLE NodeHit 还会检查要写入的新值 != Nil,P3 wasm
+`emitSetGlobal` **没有**这道检查——就是上表最后一行记的那个不对称;新值检查只与删除语义有关、与 gen 别名
+无关,所以守卫列一律不列它):
 
 | consumer | 守卫 | 位置 |
 |---|---|---|
