@@ -186,17 +186,22 @@ func (c *Collector) clearWeakTables() {
 		// lost). Dead entries keep their chain link until rehash reclaims them (consistent
 		// with the rawSet delete path and Lua 5.1).
 		hsize := object.TableHSize(c.a, t)
+		cleared := false
 		for i := uint32(0); i < hsize; i++ {
 			k := object.NodeKey(c.a, t, i)
 			v := object.NodeVal(c.a, t, i)
 			if (weakKey && c.refIsDead(k, dead)) || (weakVal && c.refIsDead(v, dead)) {
 				next := object.NodeNext(c.a, t, i)
 				object.SetNode(c.a, t, i, value.Nil, value.Nil, next)
-				// Clearing a weak entry is a key deletion: the slot can be
-				// reused by another key, so gen-only IC consumers must be
-				// invalidated (same contract as rawSet's delete path).
-				object.BumpGen(c.a, t)
+				cleared = true
 			}
+		}
+		if cleared {
+			// Clearing a weak entry is a key deletion: the slot can be reused
+			// by another key, so gen-only IC consumers must be invalidated
+			// (same rule as rawSet's delete path). One bump per table is
+			// enough; consumers only compare gen for equality.
+			object.BumpGen(c.a, t)
 		}
 	}
 	c.weakList = c.weakList[:0]
