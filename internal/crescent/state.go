@@ -654,6 +654,18 @@ func (st *State) Arena() *arena.Arena { return st.arena }
 // Globals returns the GCRef of the globals table.
 func (st *State) Globals() arena.GCRef { return st.globals }
 
+// GlobalNodeSlot reports the hash-part node index currently holding the
+// global `name`, or ok=false when the key is absent or lives in the array
+// part. Test accessor next to Globals(): internal/stdlib pins the slot
+// placement of the issue #260 regression pair against a State whose globals
+// table has its real size.
+func (st *State) GlobalNodeSlot(name string) (idx uint32, ok bool) {
+	ref := st.gc.Intern([]byte(name))
+	key := value.MakeGC(value.TagString, ref)
+	_, where, i := st.rawGetWithLoc(st.globals, key)
+	return i, where == locNode
+}
+
 // InternForEmbed exposes the collector's string intern path for the embedding
 // API (11 §1.3 lazy interning of string constants; needed for Value bridging).
 func (st *State) InternForEmbed(b []byte) arena.GCRef {

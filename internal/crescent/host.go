@@ -366,14 +366,3 @@ func (st *State) callHost(th *thread, funcIdx, nargs, nresults int) *LuaError {
 	}
 	return nil
 }
-
-// GlobalNodeSlot reports the hash-part node index currently holding the
-// global `name`, or ok=false when the key is absent or lives in the array
-// part. It exists for tests that pin slot-placement assumptions (issue #260
-// regression pair) against a State whose globals table has its real size.
-func (st *State) GlobalNodeSlot(name string) (idx uint32, ok bool) {
-	ref := st.gc.Intern([]byte(name))
-	key := value.MakeGC(value.TagString, ref)
-	_, where, i := st.rawGetWithLoc(st.globals, key)
-	return i, where == locNode
-}

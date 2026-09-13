@@ -98,11 +98,15 @@ func TestRawTable_DeleteReinsertMovesSlotBumpsGen(t *testing.T) {
 	if where != locNode {
 		t.Fatalf("key not in hash part after re-insert: %v", where)
 	}
-	if idx1 != idx0 && object.TableGen(st.arena, tbl) == gen0 {
-		t.Fatalf("key moved from slot %d to %d but gen stayed %d", idx0, idx1, gen0)
+	// The whole point of building a chained slot: the deleted slot keeps
+	// next>=0, so insertNewKey must not treat the main position as empty and
+	// the key must come back in a different slot. If insertNewKey ever starts
+	// reusing the original slot this pin no longer exercises the #260 shape.
+	if idx1 == idx0 {
+		t.Fatalf("re-inserted key came back in the same slot %d; the chained-slot shape no longer moves the key", idx0)
 	}
 	if object.TableGen(st.arena, tbl) == gen0 {
-		t.Fatalf("delete + re-insert left gen at %d", gen0)
+		t.Fatalf("key moved from slot %d to %d but gen stayed %d", idx0, idx1, gen0)
 	}
 }
 
