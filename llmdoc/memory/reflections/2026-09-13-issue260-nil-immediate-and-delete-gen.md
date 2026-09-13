@@ -19,7 +19,8 @@ description: >
   doc-gaps 里挂了两个月的「BumpGen 路径清单未落」缺口由本轮收口:约定写进 `rawtable.go` 头注,
   删键两处补 bump,单元测试直接断言「槽位换主必伴随 gen 变化」。孤立缺陷一的 e2e 用数组部
   (`t[2]=nil` 后 `__index`,数组部没有 key→slot 间接所以 gen 从不变,只剩 Nil 守卫);孤立缺陷二的
-  e2e 靠脚本枚举 5000 个全局名找到 `v4927` 删掉后 `k2621` 恰好落进同一槽位(只依赖字符串哈希,确定)。
+  e2e 靠脚本枚举 5000 个全局名找到 `v4927` 删掉后 `k2621` 恰好落进同一槽位(是否同槽取决于字符串哈希**和**
+  全局表的 hsize,即 stdlib 注册了多少全局;`internal/stdlib` 里的守护测试在同样形状的表上断言这一点)。
   三条教训:手写常量必须有编译期或测试期的锚(→ [[prove-the-path-under-test]]);一个症状两处缺陷时
   每处都要有自己的判别输入(→ [[cross-backend-semantic-fix-sweep]]);invariant 的 producer 清单要
   在约定写下时一并盘点,不能只修 fuzz 撞到的那一格(→ [[design-claims-vs-codebase-physics]])。
@@ -72,8 +73,10 @@ harness 判定 `error 存在性真分叉(疑似 P4 误编译)`:P1 无错,P4 报
    - 缺陷一:数组部没有 key→slot 间接,`t[2]=nil` 不会改 gen,只有 Nil 守卫挡着。
      `local t=setmetatable({1,2,3},{__index=function() return 9 end}) ... t[2]=nil return g()`
      在只撤 Nil 修复时 P4 返回 `-1`(把 Nil 槽当值)而 P1 走 `__index` 得 12。
-   - 缺陷二:要让别的键落进被删键的槽位。全局表哈希只依赖字符串,写脚本枚举 `v<i>=1 ... v<i>=nil
-     k<j>=7` 5000 对名字,`v4927` / `k2621` 命中:只撤 gen 修复时 P4 读到 `k2621` 的 7 算出 10,P1 得 -1。
+   - 缺陷二:要让别的键落进被删键的槽位。写脚本枚举 `v<i>=1 ... v<i>=nil k<j>=7` 5000 对名字,
+     `v4927` / `k2621` 命中:只撤 gen 修复时 P4 读到 `k2621` 的 7 算出 10,P1 得 -1。两个名字是否同槽取决于
+     字符串哈希和全局表 hsize(hsize 8~64 同槽、128 不同槽),所以 `internal/stdlib` 加了一条在 stdlib 加载后
+     的表上断言该放置的守护测试,防止 pin 在全局数量变化后静默退化。
    三条 pin 加上两处修复的 2×2 撤回矩阵全部按预期变红/变绿。
 6. **P3 侧只是推断**:P3 wasm `emitGetGlobal` 与 P4 一样是 gen-only,但本轮三条 pin 在 p3 tag 下、撤掉
    gen 修复也全绿——force-all 在首次执行就升层,那时 IC 还没回填,wasm 走的是纯 helper 分支,inline
