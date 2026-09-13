@@ -70,7 +70,11 @@ func TestDeletedGlobalMissesInlineNodeHit(t *testing.T) {
 // is set to nil, and only the inline GETTABLE ArrayHit "slot != Nil" guard
 // stands between the native code and a wrong answer. With the guard
 // comparing against TagUserdata bits it accepted the Nil slot and returned
-// -1 where P1 consults __index and returns 12.
+// -1 where P1 consults __index and returns 12. Precondition: the first two
+// g() calls run on P1 and back-fill the GETTABLE IC as ArrayHit; the native
+// compile that force-all triggers on a later frame entry bakes that
+// snapshot, which is what makes the inline path (and its Nil guard) the
+// one under test.
 func TestNilArraySlotRoutesToIndexMetamethod(t *testing.T) {
 	assertP1P4Equal(t, "fuzz-260-nil-array",
 		`local t=setmetatable({1,2,3},{__index=function() return 9 end}) `+
