@@ -40,7 +40,7 @@
 | `gc/sweep.go` weak 表清项 | 是,同上 | **补**(2026-09-13) | 同形状;`TestWeak_SweepClearBumpsGen` 直接断言(首轮盲审指出这一格原本没有测试盯着) |
 | `insertNewKey` 新键放入空槽(main position 空 / `findFreeNode` 给的空槽) | Nil→key | 不需要 | IC 只在 `val != Nil` 时回填(`ic.go`),空槽不可能被快照;而让槽位变空的路径(删键 / weak 清项 / rehash)都 bump |
 | `nodeSetVal` 改值 / `SetTableArrayAt` | 否 | 不需要 | IC「改值不 bump」正是靠它 |
-| P3 wasm `emitSetGlobal` 命中时写 Nil(不像 P4 那样守卫新值 != Nil) | 否:键保留、值为 Nil,是 5.1 意义上的 dead key | 不需要 | `findFreeNode`/`insertNewKey` 不把它当空槽,`rehash` 会丢弃它;与 P4 的守卫不对称,范围外,见 [[2026-09-13-issue260-nil-immediate-and-delete-gen]] 审查记录 |
+| P3 wasm `emitSetGlobal` 命中时写 Nil(不像 P4 那样检查新值 != Nil) | 否:键保留、值为 Nil,是 5.1 意义上的 dead key | 不需要 | `findFreeNode`/`insertNewKey` 不把它当空槽,`rehash` 会丢弃它;与 P4 的守卫不对称,范围外,见 [[2026-09-13-issue260-nil-immediate-and-delete-gen]] 审查记录 |
 
 **为什么两个月才收口**:2026-07-02 修第一实例时反思已经写「已修一处不代表全表安全」、doc-gaps 记了
 「producer 清单未落」,但排到了「P4 arm64 port / P5 前」这种里程碑之后,而实际工作量是一格 grep 加三处
