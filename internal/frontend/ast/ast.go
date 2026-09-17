@@ -148,14 +148,25 @@ const (
 )
 
 type BinExpr struct {
+	// Line is the operator's line: where PUC's luaK_infix runs, i.e. where the LEFT operand is
+	// materialized (and TEST/JMP for and/or are emitted).
 	Line int32
-	Op   BinOp
-	L, R Expr
+	// EndLine is ls->lastline when PUC's luaK_posfix runs: the line of the last token of the RIGHT
+	// operand. The right operand's materialization, the arithmetic/comparison instruction itself, the
+	// comparison's JMP, and CONCAT are all stamped with it, so `error("boom"%<nl>0)` reports line 2, the
+	// line of `0`, not the line of `%` (#262).
+	EndLine int32
+	Op      BinOp
+	L, R    Expr
 }
 type UnExpr struct {
+	// Line is the operator's line.
 	Line int32
-	Op   UnOp
-	E    Expr
+	// EndLine is ls->lastline when PUC's luaK_prefix runs: the line of the operand's last token. The
+	// operand's materialization and the UNM/NOT/LEN instruction take it (#262).
+	EndLine int32
+	Op      UnOp
+	E       Expr
 }
 
 func (e *BinExpr) Pos() int32 { return e.Line }
