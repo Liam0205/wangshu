@@ -136,11 +136,23 @@ func (fs *funcState) exprIndex(e *ast.IndexExpr) expDesc {
 	// takes that point's line, as PUC's lastline does (#252 -- see dischargeVars).
 	obj := fs.expr(e.Obj)
 	tableReg := fs.exp2AnyReg(indexObjLine(e), &obj)
-	key := fs.expr(e.Key)
-	rk := fs.exp2RK(e.Key.Pos(), &key)
+	rk := fs.indexKeyRK(e)
 	exp := newExp(eIndexed, tableReg)
 	exp.aux = rk
 	return exp
+}
+
+// indexKeyRK materializes an IndexExpr's key to an RK operand at PUC's two emission points (#262): yindex
+// runs luaK_exp2val on a bracket key before `]` is consumed (a deferred GETTABLE in the key lands on the
+// key's last line), and luaK_indexed's exp2RK runs after it (a comparison key's LOADBOOL pair lands on the
+// `]` line). A name key has neither line recorded and uses its own position.
+func (fs *funcState) indexKeyRK(e *ast.IndexExpr) int {
+	key := fs.expr(e.Key)
+	if e.KeyEndLine != 0 {
+		fs.dischargeVars(e.KeyEndLine, &key)
+		return fs.exp2RK(orLine(e.CloseLine, e.KeyEndLine), &key)
+	}
+	return fs.exp2RK(e.Key.Pos(), &key)
 }
 
 // indexObjLine is the line an IndexExpr's object is discharged at: its recorded ObjEndLine (PUC's
@@ -577,13 +589,19 @@ func (fs *funcState) exprFunc(e *ast.FuncExpr) expDesc {
 	fs.proto.Protos = append(fs.proto.Protos, idx)
 	fs.proto.SubNUps = append(fs.proto.SubNUps, uint8(len(proto.UpvalDescs)))
 	closureIdx := len(fs.proto.Protos) - 1
-	pc := fs.emitABx(e.Line, bytecode.CLOSURE, 0, closureIdx)
+	// PUC's body() runs pushclosure after check_match(TK_END), so the CLOSURE and its upvalue
+	// pseudo-instructions carry the `end` line (#262). A zero EndLine (hand-built AST) keeps Line.
+	closeLine := e.EndLine
+	if closeLine == 0 {
+		closeLine = e.Line
+	}
+	pc := fs.emitABx(closeLine, bytecode.CLOSURE, 0, closureIdx)
 	// followed by nupvals pseudo-instructions
 	for _, u := range proto.UpvalDescs {
 		if u.InStack {
-			fs.emitABC(e.Line, bytecode.MOVE, 0, int(u.Idx), 0)
+			fs.emitABC(closeLine, bytecode.MOVE, 0, int(u.Idx), 0)
 		} else {
-			fs.emitABC(e.Line, bytecode.GETUPVAL, 0, int(u.Idx), 0)
+			fs.emitABC(closeLine, bytecode.GETUPVAL, 0, int(u.Idx), 0)
 		}
 	}
 	return expDesc{k: eRelocable, info: pc, tJmp: NoJump, fJmp: NoJump}
@@ -643,22 +661,25 @@ func (fs *funcState) exprTable(e *ast.TableExpr) expDesc {
 
 	// Lines follow PUC's lastline at each emission point (#262): a key-value field's key is discharged
 	// before `]`, its value and SETTABLE at the value's last token (recfield); a positional item is
-	// pushed at the separator that follows it, or at `}` for the last one, and a SETLIST carries the
-	// line of the item that flushed it. `{<nl>[nil]<nl>=<nl>1}` therefore reports "table index is nil"
-	// on line 4, as PUC does. Zero item lines (a hand-built AST) fall back to the constructor's line.
+	// pushed at the separator that follows it, or at `}` when it is the last field; a mid-constructor
+	// SETLIST flush carries the line of the item that filled the batch and the final one the `}` line
+	// (lastlistfield). `{<nl>[nil]<nl>=<nl>1}` therefore reports "table index is nil" on line 4, as PUC
+	// does. Zero item lines (a hand-built AST) fall back to the constructor's line.
 	at := func(l int32) int32 {
 		if l != 0 {
 			return l
 		}
 		return e.Line
 	}
-	setListLine := e.Line
 	for i, it := range e.Items {
 		if it.Key != nil {
 			// key-value field: SETTABLE inline (this is where the order
 			// semantics live).
+			// The key is discharged before `]` (yindex) and turned into an RK after `=` (recfield's
+			// exp2RK), so a comparison key's LOADBOOL pair lands on the `=` line.
 			ke := fs.expr(it.Key)
-			rkK := fs.exp2RK(at(it.KeyEndLine), &ke)
+			fs.dischargeVars(at(it.KeyEndLine), &ke)
+			rkK := fs.exp2RK(at(it.EqLine), &ke)
 			ve := fs.expr(it.Val)
 			rkV := fs.exp2RK(at(it.EndLine), &ve)
 			fs.emitABC(at(it.EndLine), bytecode.SETTABLE, tReg, rkK, rkV)
@@ -672,25 +693,27 @@ func (fs *funcState) exprTable(e *ast.TableExpr) expDesc {
 			continue
 		}
 		nArr++
-		setListLine = at(it.EndLine)
+		itemLine := at(it.EndLine)
 		ve := fs.expr(it.Val)
 		if i == lastPositional && lastIsMulti && fs.openMultiRet(&ve, -1) {
-			fs.emitSetList(setListLine, tReg, 0, batchNo)
+			fs.emitSetList(at(e.CloseLine), tReg, 0, batchNo)
 			fs.freereg = tReg + 1
 			pending = 0
 			continue
 		}
-		fs.exp2NextReg(setListLine, &ve)
+		fs.exp2NextReg(itemLine, &ve)
 		pending++
 		if pending == flush {
-			fs.emitSetList(setListLine, tReg, flush, batchNo)
+			fs.emitSetList(itemLine, tReg, flush, batchNo)
 			fs.freereg = tReg + 1
 			pending = 0
 			batchNo++
 		}
 	}
 	if pending > 0 {
-		fs.emitSetList(setListLine, tReg, pending, batchNo)
+		// lastlistfield flushes the final batch after check_match('}'), so it takes the `}` line even when
+		// the last positional item was pushed earlier (k=v fields followed it).
+		fs.emitSetList(at(e.CloseLine), tReg, pending, batchNo)
 		fs.freereg = tReg + 1
 	}
 

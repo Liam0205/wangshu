@@ -104,7 +104,9 @@ func (p *Parser) next() error {
 		// PUC's luaX_next copies ls->linenumber, and a pending lookahead has already moved the scanner
 		// past the consumed token, so lastline is where the LOOKAHEAD token ends. Only the table
 		// constructor's NAME/`=` disambiguation peeks (as in PUC), so `{<nl>A<nl>.x}` discharges A's
-		// GETGLOBAL on the `.x` line, as luac5.1 does (#262).
+		// GETGLOBAL on the `.x` line, as luac5.1 does. It also means `{ f<nl>(3) }` is NOT ambiguous
+		// syntax -- the `(` was scanned before `f` was consumed, so funcargs sees equal lines -- which
+		// matches luac5.1 and is pinned by TestAmbiguousSyntaxCrossLineCall (#262).
 		if p.ahead.EndLine != 0 {
 			p.lastLine = p.ahead.EndLine
 		} else {
@@ -219,6 +221,8 @@ func (p *Parser) parseBlock() (*ast.Block, error) {
 			return nil, err
 		}
 	}
+	// The closing keyword is the current token, not yet consumed: this is where PUC's leaveblock runs.
+	block.EndLine = p.lastLine
 	return block, nil
 }
 

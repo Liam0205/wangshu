@@ -78,6 +78,42 @@ func TestOperatorErrorLineIsOperandEnd(t *testing.T) {
 		{"return, index split",
 			"local _, e = pcall(function() return\nA\n.x end) return e",
 			`[string "test"]:3: attempt to index global 'A' (a nil value)`},
+		// Found by the second independent review: a positional item followed by k=v fields is pushed at
+		// its own separator, and a bracket key is discharged before `]`.
+		{"constructor, positional item followed by k=v",
+			"local _, e = pcall(function() local t = {A.x\n,\ny=2\n} end) return e",
+			`[string "test"]:2: attempt to index global 'A' (a nil value)`},
+		{"constructor, positional item followed by [k]=v with semicolons",
+			"local _, e = pcall(function() local t = {A.x\n;\n[B]=2\n;\n} end) return e",
+			`[string "test"]:2: attempt to index global 'A' (a nil value)`},
+		{"index, bracket key spanning lines",
+			"local _, e = pcall(function() x = A[B\n.\nc] end) return e",
+			`[string "test"]:3: attempt to index global 'B' (a nil value)`},
+	} {
+		if got := testutil.RunOne(t, tc.src).Str(); got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestWhileBodyClosesUpvaluesEveryIteration covers a semantic bug the #262 line dump exposed: luac5.1
+// emits a while body's CLOSE before the back-edge JMP (the body is its own scope block), wangshu emitted it
+// after, so it never ran and every closure created in the loop shared one open upvalue over a dead stack
+// slot. Each iteration must capture its own copy, as in PUC and as the numeric for already did.
+func TestWhileBodyClosesUpvaluesEveryIteration(t *testing.T) {
+	for _, tc := range []struct{ name, src, want string }{
+		{"while",
+			"local fs = {} local i = 0 while i < 3 do local x = i fs[#fs+1] = function() return x end i = i + 1 end " +
+				"return fs[1]() .. ',' .. fs[2]() .. ',' .. fs[3]()",
+			"0,1,2"},
+		{"while with break",
+			"local fs = {} local i = 0 while true do local x = i fs[#fs+1] = function() return x end i = i + 1 if i == 3 then break end end " +
+				"return fs[1]() .. ',' .. fs[2]() .. ',' .. fs[3]()",
+			"0,1,2"},
+		{"numeric for (already correct)",
+			"local fs = {} for i = 0, 2 do local x = i fs[#fs+1] = function() return x end end " +
+				"return fs[1]() .. ',' .. fs[2]() .. ',' .. fs[3]()",
+			"0,1,2"},
 	} {
 		if got := testutil.RunOne(t, tc.src).Str(); got != tc.want {
 			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)

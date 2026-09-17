@@ -85,7 +85,7 @@ func (p *Parser) parseLocal() (ast.Stmt, error) {
 			ends[n-1] = p.lastLine
 		}
 	}
-	return &ast.LocalStmt{Line: line, ExprEndLines: ends, Names: names, Exprs: exprs}, nil
+	return &ast.LocalStmt{Line: line, EndLine: p.lastLine, ExprEndLines: ends, Names: names, Exprs: exprs}, nil
 }
 
 // if cond then block {elseif cond then block} [else block] end

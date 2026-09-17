@@ -157,9 +157,9 @@ func TestStatementEmissionPointLines(t *testing.T) {
 		src  string
 		want []int32
 	}{
-		// LOADNIL x2 is our nil-key materialization (luac folds the key into the RK); the SETTABLE is what
-		// raises, and it is on 4.
-		{"constructor, nil key on its own line", "local t = {\n[nil]\n=\n1}", []int32{1, 2, 4, 0}},
+		// LOADNIL is our nil-key materialization (luac folds the key into the RK); it lands on the `=`
+		// line, where recfield's exp2RK runs. The SETTABLE is what raises, and it is on 4.
+		{"constructor, nil key on its own line", "local t = {\n[nil]\n=\n1}", []int32{1, 3, 4, 0}},
 		{"constructor, name key, trailing comma", "local t = {\nx\n=\n1\n,\n}", []int32{1, 4, 0}},
 		{"constructor, bracket key index", "local t = {\n[A\n.x]\n=\n1}", []int32{1, 2, 3, 5, 0}},
 		{"constructor, positional index, lookahead", "local t = {\nA\n.x\n,\n1\n}", []int32{1, 3, 4, 6, 6, 0}},
@@ -180,6 +180,27 @@ func TestStatementEmissionPointLines(t *testing.T) {
 		{"if, not folded into TEST", "if not A\n.x then end", []int32{1, 2, 2, 2, 0}},
 		{"sugar call, constructor", "local v = f\n{\n}", []int32{1, 1, 2, 0}},
 		{"sugar call, string", "local v = f\n\"s\"", []int32{1, 2, 2, 0}},
+
+		// Found by the second independent review. A positional item followed by k=v fields is pushed at
+		// its own separator (closelistfield), not at `}`; only the final SETLIST takes the `}` line.
+		{"constructor, positional then k=v", "local t = {A.x\n,\ny=2\n}", []int32{1, 1, 2, 3, 4, 0}},
+		{"constructor, positional then [k]=v, semicolons", "local t = {A.x\n;\n[B]=2\n;\n}", []int32{1, 1, 2, 3, 3, 5, 0}},
+		{"constructor, k=v between positionals", "local t = {A.x\n,\ny=2\n,\nB.z\n}", []int32{1, 1, 2, 3, 5, 6, 6, 0}},
+		// A bracket key is discharged before `]` (yindex's exp2val) and made an RK after it: a deferred
+		// GETTABLE in the key lands on the key's last line, a comparison key's LOADBOOLs on the `]` line.
+		{"index, bracket key index split", "x = A[B\n.\nc]", []int32{1, 1, 3, 3, 3, 0}},
+		{"index, comparison key", "x = A[B ==\nC\n]", []int32{1, 1, 2, 2, 2, 3, 3, 3, 3, 0}},
+		{"index target, bracket key split", "A[B\n.c] = 1", []int32{1, 1, 2, 2, 0}},
+		{"constructor, comparison key LOADBOOL at =", "local t = {[A == B\n]\n= 1}", []int32{1, 1, 1, 1, 1, 3, 3, 3, 0}},
+		// CLOSURE and its upvalue pseudo-instructions are emitted by pushclosure after `end`.
+		{"closure at end", "x = function (\na , b )\nreturn a\nend", []int32{4, 4, 0}},
+		{"local function closure at end", "local function f()\nend", []int32{2, 0}},
+		// Block CLOSE is emitted by leaveblock before the closing keyword; a while body is its own scope
+		// so its CLOSE precedes the back edge (and runs every iteration).
+		{"do block close", "do\nlocal x = 1 local function f() return x end\nend", []int32{2, 2, 2, 2, 0}},
+		{"while body close before back edge", "while a do\nlocal x = 1 f = function() return x end\nend", []int32{1, 1, 1, 2, 2, 2, 2, 2, 2, 0}},
+		{"while break close", "while a do local x = 1 f = function() return x end\nbreak\nend", []int32{1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 0}},
+		{"repeat with upvalue", "repeat local x = 1 f = function() return x end\nuntil\na", []int32{1, 1, 1, 1, 3, 3, 3, 3, 3, 3, 3, 0}},
 	} {
 		block, err := parse.Parse(lex.New([]byte(tc.src), "z"), "z")
 		if err != nil {

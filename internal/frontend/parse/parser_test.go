@@ -335,6 +335,9 @@ func TestAmbiguousSyntaxCrossLineCall(t *testing.T) {
 		"local f = print\nf \"x\"",
 		"local f = print\nf {1}",
 		"local f = print\nf(\n3)", // the cross-line part is an argument, not a '('
+		// Inside a constructor the NAME/`=` lookahead has already scanned the `(`, and PUC's lastline
+		// follows the scanner, so luac5.1 accepts this; the parser's lastLine does the same (#262).
+		"local f = print\nlocal t = { f\n(3) }",
 	} {
 		if err := parseErr(t, src); err != nil {
 			t.Errorf("%q: should parse, got %v", src, err)
