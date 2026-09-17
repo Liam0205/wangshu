@@ -27,7 +27,7 @@ func (fs *funcState) stmt(node ast.Stmt) {
 	case *ast.DoStmt:
 		fs.enterBlock(false)
 		fs.block(s.Body)
-		fs.leaveBlock(s.Line)
+		fs.leaveBlock(orLine(s.Body.EndLine, s.Line)) // CLOSE before `end` is consumed (#262)
 	case *ast.IfStmt:
 		fs.stmtIf(s)
 	case *ast.WhileStmt:
@@ -55,7 +55,9 @@ func (fs *funcState) stmtLocal(s *ast.LocalStmt) {
 	// Each initializer takes ITS OWN materialization line, as PUC stamps instructions with ls->lastline:
 	// `local v = A<nl>.x` discharges the GETTABLE on 2, not on the `local` keyword's line (#252).
 	// registerLocal below keeps s.Line -- that is a scope boundary, not an instruction line.
-	fs.adjustExprList(s.Line, s.Exprs, nWant, s.ExprEndLines)
+	// With no initializers adjustExprList only emits the LOADNIL padding, which PUC stamps after the
+	// name list (the statement's last token), not at the `local` keyword (#262).
+	fs.adjustExprList(orLine(s.EndLine, s.Line), s.Exprs, nWant, s.ExprEndLines)
 	for i, n := range s.Names {
 		fs.registerLocal(s.Line, n)
 		// Track `local sqrt = math.sqrt`-style bindings (RHS is a bare
@@ -217,8 +219,7 @@ func (fs *funcState) stmtAssign(s *ast.AssignStmt) {
 			// touched exprIndex, so this path kept the bug -- an audit found it.
 			obj := fs.expr(tn.Obj)
 			tableReg := fs.exp2AnyReg(indexObjLine(tn), &obj)
-			key := fs.expr(tn.Key)
-			rk := fs.exp2RK(tn.Key.Pos(), &key)
+			rk := fs.indexKeyRK(tn)
 			tgts[i] = target{isIndexed: true, tableReg: tableReg, keyRK: rk}
 		default:
 			raise(fs, s.Line, "syntax error")
@@ -294,8 +295,7 @@ func (fs *funcState) storeVar(line, rhsLine int32, lhs, rhs ast.Expr) {
 		// the operator's line; `A<nl>.x = 1` still gives 2 because the statement also ENDS on 2.
 		obj := fs.expr(tn.Obj)
 		tableReg := fs.exp2AnyReg(indexObjLine(tn), &obj)
-		key := fs.expr(tn.Key)
-		rkK := fs.exp2RK(tn.Key.Pos(), &key)
+		rkK := fs.indexKeyRK(tn)
 		re := fs.expr(rhs)
 		rkV := fs.exp2RK(rhsLine, &re)
 		fs.emitABC(line, bytecode.SETTABLE, tableReg, rkK, rkV)
@@ -333,7 +333,7 @@ func (fs *funcState) stmtIf(s *ast.IfStmt) {
 		falseList := ce.fJmp
 		fs.enterBlock(false)
 		fs.block(cl.Body)
-		fs.leaveBlock(s.Line)
+		fs.leaveBlock(orLine(cl.Body.EndLine, s.Line))
 		// not the last clause (there is an else or more elseif) needs to jump to the end
 		hasElse := s.Else != nil
 		isLast := i == len(s.Clauses)-1
@@ -346,22 +346,32 @@ func (fs *funcState) stmtIf(s *ast.IfStmt) {
 	if s.Else != nil {
 		fs.enterBlock(false)
 		fs.block(s.Else)
-		fs.leaveBlock(s.Line)
+		fs.leaveBlock(orLine(s.Else.EndLine, s.Line))
 	}
 	fs.patchToHere(endList)
 }
 
+// stmtWhile mirrors PUC's whilestat + block(): an outer breakable loop block and an INNER scope block for
+// the body. The inner block's leaveblock emits the body's CLOSE before the back-edge JMP, so locals
+// captured inside the body are closed on every iteration and each closure gets its own copy. With a single
+// block the CLOSE landed after the JMP and was never executed: `while i<3 do local x=i fs[#fs+1]=function()
+// return x end i=i+1 end` left all three closures on one open upvalue over a dead stack slot (found by the
+// #262 line dump, where the CLOSE/JMP order differed from luac5.1). The for/repeat forms already had the
+// two-level shape.
 func (fs *funcState) stmtWhile(s *ast.WhileStmt) {
 	loopStart := fs.getLabel()
 	ce := fs.expr(s.Cond)
 	fs.goIfTrue(orLine(s.CondEndLine, s.Cond.Pos()), &ce)
 	exitList := ce.fJmp
-	fs.enterBlock(true)
+	fs.enterBlock(true)  // loop block (break target)
+	fs.enterBlock(false) // body scope: its CLOSE must precede the back edge
 	fs.block(s.Body)
+	bodyEnd := orLine(s.BodyEndLine, s.Line)
+	fs.leaveBlock(bodyEnd)
 	// back edge
-	back := fs.jump(orLine(s.BodyEndLine, s.Line))
+	back := fs.jump(bodyEnd)
 	fs.patchList(back, loopStart)
-	fs.leaveBlock(s.Line)
+	fs.leaveBlock(bodyEnd)
 	fs.patchToHere(exitList)
 }
 
@@ -378,17 +388,20 @@ func (fs *funcState) stmtRepeat(s *ast.RepeatStmt) {
 	fs.block(s.Body)
 	ce := fs.expr(s.Cond)
 	fs.goIfTrue(orLine(s.CondEndLine, s.Cond.Pos()), &ce)
+	// Everything after the condition is emitted by repeatstat after cond(), at the condition's last
+	// line (#262).
+	condLine := orLine(s.CondEndLine, s.Line)
 	if !fs.bl.hasUpval {
-		fs.leaveBlock(s.Line)            // finish scope (no CLOSE)
+		fs.leaveBlock(condLine)          // finish scope (no CLOSE)
 		fs.patchList(ce.fJmp, loopStart) // cond false ⇒ jump back
 	} else {
 		// cond true ⇒ break path (stmtBreak emits CLOSE and joins breakList)
-		fs.stmtBreak(&ast.BreakStmt{Line: s.Line})
-		fs.patchToHere(ce.fJmp)                  // cond false lands here
-		fs.leaveBlock(s.Line)                    // finish scope (emit CLOSE)
-		fs.patchList(fs.jump(s.Line), loopStart) // jump back again
+		fs.stmtBreak(&ast.BreakStmt{Line: condLine})
+		fs.patchToHere(ce.fJmp)                    // cond false lands here
+		fs.leaveBlock(condLine)                    // finish scope (emit CLOSE)
+		fs.patchList(fs.jump(condLine), loopStart) // jump back again
 	}
-	fs.leaveBlock(s.Line) // finish loop (break landing point)
+	fs.leaveBlock(condLine) // finish loop (break landing point)
 }
 
 // stmtNumFor: numeric for (04 §6.5). Occupies 4 slots R(base..base+3).
@@ -431,7 +444,7 @@ func (fs *funcState) stmtNumFor(s *ast.NumForStmt) {
 	fs.registerLocal(s.Line, s.Var)
 	fs.reserveRegs(s.Line, 1)
 	fs.block(s.Body)
-	fs.leaveBlock(s.Line) // close v's scope (before FORLOOP)
+	fs.leaveBlock(orLine(s.Body.EndLine, s.Line)) // close v's scope (before FORLOOP)
 	loopPC := fs.pc()
 	fs.fixJump(s.Line, prep, loopPC)
 	fs.emitAsBx(s.Line, bytecode.FORLOOP, base, prep+1-(loopPC+1))
@@ -454,7 +467,7 @@ func (fs *funcState) stmtGenFor(s *ast.GenForStmt) {
 		fs.reserveRegs(s.Line, 1)
 	}
 	fs.block(s.Body)
-	fs.leaveBlock(s.Line)
+	fs.leaveBlock(orLine(s.Body.EndLine, s.Line))
 	fs.patchToHere(prep)
 	// forbody's luaK_fixline stamps TFORLOOP with forlist's `line`, read right after `in` -- the
 	// iterator list's first token -- so a non-callable generator is reported there (#262).

@@ -227,10 +227,11 @@ func (p *Parser) parsePrefixExpr() (ast.Expr, error) {
 			if err != nil {
 				return nil, err
 			}
+			keyEnd := p.lastLine // yindex's exp2val runs before `]` is consumed
 			if err := p.expect(token.RBRACK); err != nil {
 				return nil, err
 			}
-			e = &ast.IndexExpr{Line: opLine, ObjEndLine: objEnd, Obj: e, Key: key}
+			e = &ast.IndexExpr{Line: opLine, ObjEndLine: objEnd, KeyEndLine: keyEnd, CloseLine: p.lastLine, Obj: e, Key: key}
 		case token.COLON:
 			if err := p.next(); err != nil {
 				return nil, err
@@ -384,8 +385,8 @@ func (p *Parser) parseTableExpr() (ast.Expr, error) {
 	// Item lines follow PUC's lastline at each emission point (#262). A key-value field is stored as
 	// soon as its value is parsed, so it ends at the value's last token; a positional item is only
 	// discharged by closelistfield after the following separator was consumed, or by lastlistfield
-	// after the closing brace, so its line is set below, after the separator -- and the last positional
-	// item's is overwritten once `}` is consumed, whether or not a trailing separator preceded it.
+	// after the closing brace, so its line is set below, after the separator -- and, when it is the
+	// constructor's last field, overwritten once `}` is consumed.
 	lastPositional := -1
 	for !p.match(token.RBRACE) {
 		switch {
@@ -404,11 +405,12 @@ func (p *Parser) parseTableExpr() (ast.Expr, error) {
 			if err := p.expect(token.EQ); err != nil {
 				return nil, err
 			}
+			eqLine := p.lastLine // recfield's exp2RK of the key runs after checknext('=')
 			v, err := p.parseExpr(0)
 			if err != nil {
 				return nil, err
 			}
-			t.Items = append(t.Items, ast.TableItem{Key: k, Val: v, KeyEndLine: keyEnd, EndLine: p.lastLine})
+			t.Items = append(t.Items, ast.TableItem{Key: k, Val: v, KeyEndLine: keyEnd, EqLine: eqLine, EndLine: p.lastLine})
 		case p.match(token.NAME):
 			// Could be Name = expr, or Name as the start of a value expression.
 			ahead, err := p.peek()
@@ -424,12 +426,13 @@ func (p *Parser) parseTableExpr() (ast.Expr, error) {
 				if err := p.expect(token.EQ); err != nil {
 					return nil, err
 				}
+				eqLine := p.lastLine
 				v, err := p.parseExpr(0)
 				if err != nil {
 					return nil, err
 				}
 				t.Items = append(t.Items, ast.TableItem{Key: &ast.StringExpr{Line: keyLine, Val: name}, Val: v,
-					KeyEndLine: keyLine, EndLine: p.lastLine})
+					KeyEndLine: keyLine, EqLine: eqLine, EndLine: p.lastLine})
 			} else {
 				v, err := p.parseExpr(0)
 				if err != nil {
@@ -460,7 +463,10 @@ func (p *Parser) parseTableExpr() (ast.Expr, error) {
 	if err := p.expect(token.RBRACE); err != nil {
 		return nil, err
 	}
-	if lastPositional >= 0 {
+	t.CloseLine = p.lastLine
+	// Only when the last positional item is the constructor's LAST field is it pushed by lastlistfield at
+	// the `}`; with `k=v` fields after it, closelistfield already pushed it at its own separator.
+	if lastPositional >= 0 && lastPositional == len(t.Items)-1 {
 		t.Items[lastPositional].EndLine = p.lastLine
 	}
 	return t, nil

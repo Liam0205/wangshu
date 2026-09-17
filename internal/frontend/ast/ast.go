@@ -70,6 +70,12 @@ type IndexExpr struct {
 	// operator, and PUC's lastline follows the scanner: `{<nl>A<nl>.x}` puts A's GETGLOBAL on 3, the
 	// `.x` line. Zero falls back to Obj.Pos() (#262).
 	ObjEndLine int32
+	// KeyEndLine is ls->lastline when PUC's yindex runs luaK_exp2val on a bracket key: the key's last
+	// token, before `]` is consumed. A deferred GETTABLE inside the key is discharged there
+	// (`A[B<nl>.c]` indexes B on 2). CloseLine is the `]` line, where luaK_indexed's exp2RK then turns a
+	// comparison key into its LOADBOOL pair. Both zero for a name key (#262).
+	KeyEndLine int32
+	CloseLine  int32
 	Obj        Expr
 	Key        Expr
 }
@@ -202,7 +208,9 @@ type FuncExpr struct {
 	// VARARG_ISVARARG, without HASARG (no implicit arg table; LUA_COMPAT_VARARG).
 	NoArgTable bool
 	Body       *Block
-	EndLine    int32
+	// EndLine is the `end` keyword's line. PUC's body() emits the CLOSURE (and its MOVE/GETUPVAL
+	// pseudo-instructions) from pushclosure after check_match(TK_END), so they carry it too (#262).
+	EndLine int32
 }
 
 func (e *FuncExpr) Pos() int32 { return e.Line }
@@ -216,6 +224,9 @@ type TableExpr struct {
 	// preceding the brace -- `f<nl>{}` puts NEWTABLE on 1. Zero falls back to Line (#262).
 	Line         int32
 	NewTableLine int32
+	// CloseLine is the `}` line: lastlistfield flushes the final SETLIST there, whatever line the last
+	// positional item was pushed on (#262).
+	CloseLine int32
 	// Items holds all fields in **source appearance order**: PUC's constructor code
 	// emits, in order and interleaved, SETTABLE (key-value fields, immediately) and
 	// SETLIST (positional fields, batched), where later writes overwrite earlier ones
@@ -229,12 +240,15 @@ type TableItem struct {
 	Key Expr // nil = positional item; non-nil = [k]=v or name=v
 	Val Expr
 	// KeyEndLine is ls->lastline when PUC's yindex discharges a bracket key (the key's last token,
-	// before `]`); unused for a name key. EndLine is where the item is materialized: for a key-value
-	// field, the value's last token (recfield emits SETTABLE right after the value); for a positional
-	// item, the separator that follows it (closelistfield runs after testnext consumed it), or the
-	// closing brace for the last item (lastlistfield runs after check_match). SETLIST takes the line of
-	// the item that flushed it. Zero means unknown and falls back to the constructor's line (#262).
+	// before `]`); the name's line for a name key. EqLine is the `=` line, where recfield's exp2RK turns
+	// a comparison key into its LOADBOOL pair. EndLine is where the item is materialized: for a
+	// key-value field, the value's last token (recfield emits SETTABLE right after the value); for a
+	// positional item, the separator that follows it (closelistfield runs after testnext consumed it),
+	// or -- only when it is the constructor's LAST field -- the closing brace (lastlistfield). A
+	// mid-constructor SETLIST flush takes the line of the item that filled the batch; the final one
+	// takes TableExpr.CloseLine. Zero means unknown and falls back to the constructor's line (#262).
 	KeyEndLine int32
+	EqLine     int32
 	EndLine    int32
 }
 
@@ -245,6 +259,10 @@ func (*TableExpr) exprNode()    {}
 
 type Block struct {
 	Stmts []Stmt
+	// EndLine is ls->lastline after the block's last token, before the closing keyword (`end`, `else`,
+	// `elseif`, `until`) is consumed: PUC's leaveblock emits the block's CLOSE there, and a `break`'s
+	// CLOSE+JMP carry the `break` token itself. Zero falls back to the enclosing statement's line (#262).
+	EndLine int32
 }
 
 type LocalStmt struct {
@@ -255,8 +273,11 @@ type LocalStmt struct {
 	// line 2, and `local a,b = A.x<nl>, 1` puts both on 2. Using Line put them on 1, which #248 papered
 	// over with expDesc.opLine (#252). Nil or short means "unknown", falling back to Line.
 	ExprEndLines []int32
-	Names        []string
-	Exprs        []Expr
+	// EndLine is the statement's last token: with no initializer PUC's adjust_assign emits the LOADNIL
+	// after the name list, so `local<nl>a` puts it on 2 (#262). Zero falls back to Line.
+	EndLine int32
+	Names   []string
+	Exprs   []Expr
 }
 type LocalFuncStmt struct {
 	Line int32
