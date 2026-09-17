@@ -143,13 +143,15 @@ func (fs *funcState) exprIndex(e *ast.IndexExpr) expDesc {
 }
 
 // indexKeyRK materializes an IndexExpr's key to an RK operand at PUC's two emission points (#262): yindex
-// runs luaK_exp2val on a bracket key before `]` is consumed (a deferred GETTABLE in the key lands on the
-// key's last line), and luaK_indexed's exp2RK runs after it (a comparison key's LOADBOOL pair lands on the
-// `]` line). A name key has neither line recorded and uses its own position.
+// runs luaK_exp2val on a bracket key before `]` is consumed, and luaK_indexed's exp2RK runs after it. The
+// first step is exp2Val, not dischargeVars: a key with a pending t/f chain (`B or true`, `B and 1`) is put
+// in a register there, so its LOADBOOL/LOADK land on the key's last line, while a bare comparison key
+// (empty chain) is only discharged and gets its LOADBOOL pair from the second step, on the `]` line. A name
+// key has neither line recorded and uses its own position.
 func (fs *funcState) indexKeyRK(e *ast.IndexExpr) int {
 	key := fs.expr(e.Key)
 	if e.KeyEndLine != 0 {
-		fs.dischargeVars(e.KeyEndLine, &key)
+		fs.exp2Val(e.KeyEndLine, &key)
 		return fs.exp2RK(orLine(e.CloseLine, e.KeyEndLine), &key)
 	}
 	return fs.exp2RK(e.Key.Pos(), &key)
@@ -675,10 +677,11 @@ func (fs *funcState) exprTable(e *ast.TableExpr) expDesc {
 		if it.Key != nil {
 			// key-value field: SETTABLE inline (this is where the order
 			// semantics live).
-			// The key is discharged before `]` (yindex) and turned into an RK after `=` (recfield's
-			// exp2RK), so a comparison key's LOADBOOL pair lands on the `=` line.
+			// The key goes through exp2val before `]` (yindex) and exp2RK after `=` (recfield), so a
+			// short-circuit key is put in a register on the key's last line while a bare comparison
+			// key's LOADBOOL pair lands on the `=` line (see indexKeyRK).
 			ke := fs.expr(it.Key)
-			fs.dischargeVars(at(it.KeyEndLine), &ke)
+			fs.exp2Val(at(it.KeyEndLine), &ke)
 			rkK := fs.exp2RK(at(it.EqLine), &ke)
 			ve := fs.expr(it.Val)
 			rkV := fs.exp2RK(at(it.EndLine), &ve)
