@@ -73,10 +73,10 @@ func TestDischargeLineIsLastLine(t *testing.T) {
 		// miss there because luac puts that GETTABLE on 1 anyway; the operator must cross the newline for
 		// the two models to disagree. Found by review on PR #253, where this path was still passing s.Line.
 		//
-		// The trailing SETGLOBAL is 1 where luac says 2: that is the store-line gap storeVar documents,
-		// which predates this work and is unobservable (verified against a raising __newindex store).
-		{"single-target fast path", "x = A\n.x", []int32{1, 2, 1, 0}},
-		{"single-target, bracket", "x = A\n[1]", []int32{1, 2, 1, 0}},
+		// The trailing SETGLOBAL is on 2, the statement's last line, as luac has it: the store line was a
+		// recorded gap (1) until #262 showed it is observable through SETTABLE (see storeVar).
+		{"single-target fast path", "x = A\n.x", []int32{1, 2, 2, 0}},
+		{"single-target, bracket", "x = A\n[1]", []int32{1, 2, 2, 0}},
 		{"return, per-element", "return A.x\n, 1", []int32{1, 2, 2, 1, 0}},
 		// Nothing closes a return, so a single returned index stays where it is written.
 		{"return, nothing follows", "return A.x\n", []int32{1, 1, 1, 0}},
