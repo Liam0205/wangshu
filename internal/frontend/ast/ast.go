@@ -310,11 +310,10 @@ type DoStmt struct {
 type WhileStmt struct {
 	Line int32
 	// CondEndLine is ls->lastline when PUC's cond() runs luaK_goiftrue: the condition's last token,
-	// where the TEST/JMP land (`while not A<nl>.x do` puts TEST on 2). BodyEndLine is lastline after
-	// the body's last token and before `end`: the back-edge JMP is emitted there (`while a<nl>do<nl>end`
-	// puts it on 2, the `do`). Zero falls back to Cond.Pos() / Line (#262).
+	// where the TEST/JMP land (`while not A<nl>.x do` puts TEST on 2). The back-edge JMP and the body's
+	// CLOSE are emitted after the body, at Body.EndLine (`while a<nl>do<nl>end` puts the JMP on 2, the
+	// `do`). Zero falls back to Cond.Pos() (#262).
 	CondEndLine int32
-	BodyEndLine int32
 	Cond        Expr
 	Body        *Block
 }
@@ -329,11 +328,10 @@ type RepeatStmt struct {
 type IfClause struct {
 	Cond Expr
 	Body *Block
-	// CondEndLine mirrors WhileStmt.CondEndLine. BodyEndLine is lastline after the clause body and
-	// before the following `elseif`/`else`/`end`: the escape JMP that skips the remaining clauses is
-	// emitted there, so `if a then<nl>f()<nl>else<nl>end` puts it on 2 (#262).
+	// CondEndLine mirrors WhileStmt.CondEndLine. The escape JMP that skips the remaining clauses is
+	// emitted after the clause body, at Body.EndLine, so `if a then<nl>f()<nl>else<nl>end` puts it on
+	// 2 (#262).
 	CondEndLine int32
-	BodyEndLine int32
 }
 type IfStmt struct {
 	Line    int32
@@ -365,10 +363,9 @@ type GenForStmt struct {
 	// cannot be called is reported there -- `for k in<nl>nil do end` says line 2 (#262). Zero falls
 	// back to Line.
 	IterLine int32
-	// DoLine and BodyEndLine mirror NumForStmt.DoLine and WhileStmt.BodyEndLine: forbody emits the
-	// forward JMP after checknext(TK_DO) and the back-edge JMP after the block (#262).
-	DoLine      int32
-	BodyEndLine int32
+	// DoLine mirrors NumForStmt.DoLine: forbody emits the forward JMP after checknext(TK_DO); the
+	// back-edge JMP is emitted after the block, at Body.EndLine (#262).
+	DoLine int32
 	// ExprEndLines[i] is ls->lastline at the point PUC materializes Exprs[i]. The last element's line is
 	// taken BEFORE `do` is consumed, so `for k in A.x<nl> do end` keeps the GETTABLE on 1 while
 	// `for k in A.x<nl>, 1 do end` moves it to 2 (#252).

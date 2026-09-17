@@ -338,7 +338,7 @@ func (fs *funcState) stmtIf(s *ast.IfStmt) {
 		hasElse := s.Else != nil
 		isLast := i == len(s.Clauses)-1
 		if !isLast || hasElse {
-			j := fs.jump(orLine(cl.BodyEndLine, s.Line))
+			j := fs.jump(orLine(cl.Body.EndLine, s.Line))
 			fs.concat(&endList, j)
 		}
 		fs.patchToHere(falseList)
@@ -366,7 +366,7 @@ func (fs *funcState) stmtWhile(s *ast.WhileStmt) {
 	fs.enterBlock(true)  // loop block (break target)
 	fs.enterBlock(false) // body scope: its CLOSE must precede the back edge
 	fs.block(s.Body)
-	bodyEnd := orLine(s.BodyEndLine, s.Line)
+	bodyEnd := orLine(s.Body.EndLine, s.Line)
 	fs.leaveBlock(bodyEnd)
 	// back edge
 	back := fs.jump(bodyEnd)
@@ -476,7 +476,7 @@ func (fs *funcState) stmtGenFor(s *ast.GenForStmt) {
 		iterLine = s.Line
 	}
 	fs.emitABC(iterLine, bytecode.TFORLOOP, base, 0, len(s.Names))
-	back := fs.jump(orLine(s.BodyEndLine, s.Line))
+	back := fs.jump(orLine(s.Body.EndLine, s.Line))
 	fs.patchList(back, bodyPC)
 	fs.leaveBlock(s.Line)
 }

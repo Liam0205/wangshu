@@ -192,6 +192,13 @@ func TestStatementEmissionPointLines(t *testing.T) {
 		{"index, comparison key", "x = A[B ==\nC\n]", []int32{1, 1, 2, 2, 2, 3, 3, 3, 3, 0}},
 		{"index target, bracket key split", "A[B\n.c] = 1", []int32{1, 1, 2, 2, 0}},
 		{"constructor, comparison key LOADBOOL at =", "local t = {[A == B\n]\n= 1}", []int32{1, 1, 1, 1, 1, 3, 3, 3, 0}},
+		// A key with a pending short-circuit chain is put in a register by yindex's exp2val, on the key's
+		// last line; only a bare comparison defers its LOADBOOL pair to `]` / `=` (found by the third
+		// independent review; a dischargeVars there left the chain to the later exp2RK).
+		{"index, short-circuit key", "x = A[B or true\n]", []int32{1, 1, 1, 1, 1, 2, 2, 0}},
+		{"index, short-circuit key with constant", "x = A[B and 1\n]", []int32{1, 1, 1, 1, 1, 2, 2, 0}},
+		{"index target, chain ending in comparison", "A[B and C == D\n] = 1", []int32{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 0}},
+		{"constructor, short-circuit key", "local t = {[B or true\n]\n= 1}", []int32{1, 1, 1, 1, 1, 3, 0}},
 		// CLOSURE and its upvalue pseudo-instructions are emitted by pushclosure after `end`.
 		{"closure at end", "x = function (\na , b )\nreturn a\nend", []int32{4, 4, 0}},
 		{"local function closure at end", "local function f()\nend", []int32{2, 0}},

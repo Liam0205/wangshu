@@ -108,8 +108,7 @@ func (p *Parser) parseIf() (ast.Stmt, error) {
 		if err != nil {
 			return nil, err
 		}
-		// The escape JMP is emitted after the block, before elseif/else/end is consumed (#262).
-		clauses = append(clauses, ast.IfClause{Cond: cond, Body: body, CondEndLine: condEnd, BodyEndLine: p.lastLine})
+		clauses = append(clauses, ast.IfClause{Cond: cond, Body: body, CondEndLine: condEnd})
 		if !p.match(token.KW_ELSEIF) {
 			break
 		}
@@ -154,11 +153,10 @@ func (p *Parser) parseWhile() (ast.Stmt, error) {
 	if err != nil {
 		return nil, err
 	}
-	bodyEnd := p.lastLine // the back-edge JMP is emitted before check_match(END)
 	if err := p.expect(token.KW_END); err != nil {
 		return nil, err
 	}
-	return &ast.WhileStmt{Line: line, CondEndLine: condEnd, BodyEndLine: bodyEnd, Cond: cond, Body: body}, nil
+	return &ast.WhileStmt{Line: line, CondEndLine: condEnd, Cond: cond, Body: body}, nil
 }
 
 // do block end
@@ -303,11 +301,10 @@ func (p *Parser) parseFor() (ast.Stmt, error) {
 		if err != nil {
 			return nil, err
 		}
-		bodyEnd := p.lastLine
 		if err := p.expect(token.KW_END); err != nil {
 			return nil, err
 		}
-		return &ast.GenForStmt{Line: line, Names: names, IterLine: iterLine, DoLine: doLine, BodyEndLine: bodyEnd,
+		return &ast.GenForStmt{Line: line, Names: names, IterLine: iterLine, DoLine: doLine,
 			ExprEndLines: ends, Exprs: exprs, Body: body}, nil
 	default:
 		return nil, p.errorf("'=' or 'in' expected near '%s'", p.tok.String())
