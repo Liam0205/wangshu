@@ -17,10 +17,11 @@ description: >
   同族残留,都是 doc-gaps 里挂着的「不会 raise 所以不可见」项:① `storeVar` 的 store 行——SETTABLE
   **会** raise(对 nil 对象索引、或 `__newindex` 里 `error(msg, 2)`),`x.y = 1\n+\n1` PUC 报 3 我们报 1;
   ② 数值 for 的表头——FORPREP 在 `do` 之后发射,`'for' initial value must be a number` 在 `do` 那行报,
-  `for i = "x", 2\ndo end` PUC 报 2 我们报 1。两格一并修掉。仍未对齐但确认不可见的:`{}` 作右操作数时
-  NEWTABLE 行(PUC 在 `checknext('{')` **之前**发射,我们晚一行;与 #252 记的 `t.x\n{1}` 同一个来源)、
-  `while`/`if`/泛型 for 的 JMP 行、`local a, b\n= 1` 的 LOADNIL 行——这些只有 `debug.getinfo(f,"L").activelines`
-  能看见,fuzz 语料里没有这种写法。三条教训:「同一条口径」在每个语法位置都要问一遍「PUC 在哪一刻发射」
+  `for i = "x", 2\ndo end` PUC 报 2 我们报 1。两格一并修掉。**独立审阅用 1875 个组合枚举形状又扫出两处我判为
+  「不可见」其实会 raise 的**:泛型 for 的 TFORLOOP(`for k in\nnil` PUC 2 / 我们 1)与构造器 `[k]=v` 的
+  SETTABLE(`{\n[nil]\n=\n1}` PUC 4 / 我们 1);于是把剩余 DIFF 全部修掉(构造器各字段行、泛型 for 三条
+  跳转、方法调用接收者、RETURN、VARARG、条件 TEST/JMP、`if`/`while` 跳转、LOADNIL 补位、糖式参数、构造器
+  lookahead 时的 lastline),最终 1875 形状逐指令行号 0 差异。三条教训:「同一条口径」在每个语法位置都要问一遍「PUC 在哪一刻发射」
   (→ [[prove-the-path-under-test]] §2.1b)/ 「不会 raise 所以不可见」这个判断要按指令逐条核,SETTABLE
   与 FORPREP 都会 raise(→ [[prove-the-path-under-test]] §4.2a)/ 有参照实现的行为对齐,用 dump 表
   批量扫全部语法位置比按 issue 逐格补便宜得多(→ [[cross-backend-semantic-fix-sweep]])。
@@ -120,16 +121,31 @@ number` 三连),而它在 `checknext(TK_DO)` **之后**发射,所以报 `do` 那
 `ExprEndLines[3]`(每个表达式解析完立刻取 lastline,`exp1` 就地物化)与 `DoLine`;默认 step 的 LOADK
 跟 limit 同行;FORLOOP 保留 `for` 行(`luaK_fixline`)。
 
-**③ 确认不可见的**:`{}` 作右操作数时 NEWTABLE 的行(PUC 的 `constructor` 在 `checknext('{')` 之前
-发射 NEWTABLE,所以带的是 `{` **前面**那个 token 的行;与 #252 记的 `t.x\n{1}` 同源)、`while`/`if`/
-泛型 for 的 JMP 行、`local a, b\n= 1` 的 LOADNIL 行。这些指令不会 raise;唯一能看见它们的是
-`debug.getinfo(f, "L").activelines`,探针里确认 PUC 与我们的集合确实不同,但 fuzz 语料里没有这种
-写法,本轮不动,已在 §4.2a 的判据里写明「activelines 是第二个可见通道」。
+**③ 我第一版判为「确认不可见」的那一堆,被独立审阅推翻了两处**:第一版把剩下的 DIFF(`{}` 的
+NEWTABLE、`while`/`if`/泛型 for 的 JMP、`local a, b\n= 1` 的 LOADNIL)一并归为「不会 raise、只有
+activelines 能看见」,就收工了。blind reviewer 用同一套 dump 比对法自己扫了 31 个模板 × 最多两处换行
+共 1875 个形状,在**我没扫到的模板**上找到两处会 raise 的:泛型 for 的 **TFORLOOP**(`forlist` 在
+`checknext(TK_IN)` 之后读 `line`,`forbody` 用 `luaK_fixline` 盖上去;生成器不可调用时在它上报错——
+`for k in\nnil do end` PUC 2 / 我们 1)和表构造器 `[k]=v` 字段的 **SETTABLE**(`recfield` 在值解析完
+之后发射;键为 nil/NaN 时在它上报 `table index is nil`——`{\n[nil]\n=\n1}` PUC 4 / 我们 1)。也就是
+说我自己的「扫过了」是假的:我的清单只有 60 多个手挑形状,漏掉了泛型 for 生成器和构造器键这两个位置。
+
+于是这一轮把剩下的 DIFF **全部**修掉而不是分类:表构造器每个字段的行(`TableItem` 加 `KeyEndLine`/
+`EndLine`,NEWTABLE 用 `{` 前一个 token 的行 `NewTableLine`)、泛型 for 的 TFORLOOP / 前向 JMP / 回边
+JMP(`IterLine`/`DoLine`/`BodyEndLine`)、方法调用接收者在方法名行 discharge(PUC 的 `:` 分支先读名字
+再 `luaK_self`,与 `.` 分支先 discharge 再读名字**相反**,#248 当年把两者写成同形是错的)、`return` 的
+RETURN 取列表末行、VARARG 在 `...` 被消费**之前**发射、`if`/`while`/`repeat` 条件的 TEST+JMP 取条件末行、
+`if` 逃逸 JMP 与 `while` 回边取 block 末行、`local` 的 LOADNIL 补位取末初始化式行、`f{...}`/`f"..."` 糖式
+参数取参数末行,以及一处解析器层面的差异:构造器里 NAME/`=` 的 lookahead 已经扫过下一个 token 时,PUC 的
+lastline 跟着扫描器走(`{\nA\n.x}` 里 A 的 GETGLOBAL 落在 `.x` 那一行),`Parser.next` 在消费 lookahead
+时也照此推进。修完再用审阅者那 1875 个形状扫一遍:**逐指令行号 0 差异**,只剩 235 个 opcode 序列不同的
+形状(我们对 `not (a<b)` 多发一条 NOT、对 `local a` 多发 LOADNIL,与本轮无关的既有差异)。
 
 ### 6. 验证
 
-- 三张编译期 LineInfo 表 47 条断言 + 12 条 e2e 消息全部在 master 上失败、在分支上通过(对照用
-  `git worktree` 建的 master 检出,不用 stash);12 条 e2e 期望值逐条与 `lua5.1` 二进制输出比对过。
+- 四张编译期 LineInfo 表(运算符 / store / 数值 for 表头 / 其余语句发射点,共 48 行)与 18 条 e2e 消息
+  全部在 master 上失败、在分支上通过(对照用 `git worktree` 建的 master 检出,不用 stash);e2e 期望值
+  逐条与 `lua5.1` 二进制输出比对过。审阅者的 1875 形状 dump 比对在最终树上逐指令行号 0 差异。
 - 171 条常驻 oracle 语料(含 #248 `8dff36b8bd115962`、#252 `612767150dcb06d5`)全绿;
   `FuzzOracleDiffTiered` 60 秒 smoke 无新发现。
 - gofmt / vet / lint / p1 p3 p4 全量测试 / conformance-all / difftest-all / 官方 Lua 套件 p1 p3 p4 全绿。
@@ -154,7 +170,10 @@ number` 三连),而它在 `checknext(TK_DO)` **之后**发射,所以报 `do` 那
 **核心断言**:#248 与 #252 两轮都把 store 行记为不可见缺口,依据是「SETGLOBAL/SETUPVAL/MOVE 不会
 raise」。这句话对那三条指令成立,但 `storeVar` 还发 SETTABLE,它会;doc-gaps 里的「数值 for 表头」
 一项则连「为什么不可见」都没写,而 FORPREP 会 raise 三种错。一个「不可见」判断的作用域是**指令**,
-不是代码路径——同一个函数发的几条指令,能不能 raise 各不相同。
+不是代码路径——同一个函数发的几条指令,能不能 raise 各不相同。**而且本轮我自己又犯了一次**:第一版把
+泛型 for 的「JMP」判为不可见时,没有把同一语句的 TFORLOOP 单独拿出来问(它会 raise),把构造器的
+SETLIST 判为不可见时也没有把 `[k]=v` 的 SETTABLE 单独拿出来问——独立审阅用更大的扫描面把这两条抓了
+出来。判据在下面,但真正的教训是:「不可见」清单要按**指令**列,不是按语句列。
 
 **判据**:写「行号偏了但不可见」之前,列出这条路径发射的**每一种**指令,逐条回答「它能不能 raise」
 (`lvm.c` 里对它有没有 `luaG_*error` 调用),再问第二个可见通道:`debug.getinfo(f, "L").activelines`
@@ -167,14 +186,18 @@ raise」。这句话对那三条指令成立,但 `storeVar` 还发 SETTABLE,它�
 
 **核心断言**:#248、#252、#262 三轮各修一到四格,每轮都由 nightly 撞出一个 seed 才开始,每轮的独立
 审计或远端评审又各补一到两格。本轮花十几分钟写了一个「`luac5.1 -p -l` 与望舒 LineInfo 并排逐指令
-比对」的脚本,喂 90 多个形状,一次扫出运算符全家 + store 行 + 数值 for 三族,而且顺手把「确认不可见」
-的几格也一并归类——这三族如果等 nightly,至少还要三个 issue。
+比对」的脚本,喂 90 多个手挑形状,一次扫出运算符全家 + store 行 + 数值 for 三族。但手挑就是手挑:
+独立审阅用**模板 × 换行位置组合**生成 1875 个形状,又扫出泛型 for 生成器与构造器键两个我没挑到的
+位置。扫描面要用组合枚举而不是手挑,判据见下。
 
 **判据**:对齐工作的对象是一张**表**(所有语法位置 × 所有发射点)而不是一个 seed。当参照实现能被本地
-调用(`luac5.1`、`lua5.1`、cgo oracle)时,先写 dump 比对脚本、枚举语法位置批量扫,再按 DIFF 分类修;
-seed 只是告诉你「这张表里有红格」。自查办法:修完一个 seed 后问「同一条口径还作用于哪些语法位置,我
-扫过了吗」——答案是列表而不是「应该没了」。这是 [[cross-backend-semantic-fix-sweep]] 同族扫描纪律在
-「参照实现可本地调用」这个条件下的加强版:能批量比对时就不要逐格猜。
+调用(`luac5.1`、`lua5.1`、cgo oracle)时,先写 dump 比对脚本、**用「每种语句/表达式一个模板 × 在每个
+token 间隙插换行(取到两处)」的组合枚举**生成形状(1875 个只要几秒),再按 DIFF 分类修;seed 只是告诉
+你「这张表里有红格」。模板集合按 `lparser.c` 的非终结符列(statement / simpleexp / primaryexp / 
+constructor / funcargs 各一个),不按「我想到了哪些」列。自查办法:修完一个 seed 后问「同一条口径还
+作用于哪些语法位置,我扫过了吗」——答案是一份枚举生成的清单加每格红绿,而不是「应该没了」。这是
+[[cross-backend-semantic-fix-sweep]] 同族扫描纪律在「参照实现可本地调用」这个条件下的加强版:能批量
+比对时就不要逐格猜,能枚举时就不要手挑。
 
 ## Promotion 决策
 
@@ -184,5 +207,5 @@ seed 只是告诉你「这张表里有红格」。自查办法:修完一个 seed
   是第二个可见通道。
 - **教训 3 → [[cross-backend-semantic-fix-sweep]]**:参照实现可本地调用时,用 dump 比对表批量扫全部
   语法位置,seed 只是入口。
-- doc-gaps 里「前端行号记账模型」那条的三项残留:store 行与数值 for 本轮修掉;`f{...}` 糖式调用的
-  NEWTABLE 行仍在,连同本轮确认的 JMP / LOADNIL 行一起改写为「已核实不可见」并写明可见通道。
+- doc-gaps 里「前端行号记账模型」那条:三项残留全部修掉,1875 形状 dump 比对逐指令 0 差异;条目改写
+  为「已对齐」,并把 dump 比对脚本的做法写进去,供下次前端行号改动当验收门。
