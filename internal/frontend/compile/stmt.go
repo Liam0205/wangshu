@@ -382,25 +382,38 @@ func (fs *funcState) stmtRepeat(s *ast.RepeatStmt) {
 //
 // Aligns with Lua 5.1 forstat/forbody's two-level blocks: the outer breakable block contains FORLOOP
 // (break jumps to after FORLOOP), the inner non-breakable block is just the loop-body variable scope.
+//
+// Lines follow PUC's lastline at each emission point (#262): every header expression materializes at its
+// own last token (exp1 runs luaK_exp2nextreg right after parsing it), the default step's LOADK at the
+// limit's, and FORPREP at the `do` -- that is where "'for' initial value must be a number" is reported.
+// Only FORLOOP is pinned back to the `for` line, by forbody's luaK_fixline. Zero end lines (a hand-built
+// AST) fall back to s.Line.
 func (fs *funcState) stmtNumFor(s *ast.NumForStmt) {
+	at := func(l int32) int32 {
+		if l != 0 {
+			return l
+		}
+		return s.Line
+	}
 	fs.enterBlock(true) // outer breakable (holds three internal control slots)
 	base := fs.freereg
 	initE := fs.expr(s.Init)
-	fs.exp2NextReg(s.Line, &initE) // R(base)
+	fs.exp2NextReg(at(s.ExprEndLines[0]), &initE) // R(base)
 	limitE := fs.expr(s.Limit)
-	fs.exp2NextReg(s.Line, &limitE) // R(base+1)
+	fs.exp2NextReg(at(s.ExprEndLines[1]), &limitE) // R(base+1)
 	if s.Step != nil {
 		stepE := fs.expr(s.Step)
-		fs.exp2NextReg(s.Line, &stepE) // R(base+2)
+		fs.exp2NextReg(at(s.ExprEndLines[2]), &stepE) // R(base+2)
 	} else {
-		k := fs.numK(s.Line, 1)
-		fs.emitABx(s.Line, bytecode.LOADK, base+2, k)
-		fs.reserveRegs(s.Line, 1)
+		stepLine := at(s.ExprEndLines[2])
+		k := fs.numK(stepLine, 1)
+		fs.emitABx(stepLine, bytecode.LOADK, base+2, k)
+		fs.reserveRegs(stepLine, 1)
 	}
 	fs.registerLocal(s.Line, "(for index)")
 	fs.registerLocal(s.Line, "(for limit)")
 	fs.registerLocal(s.Line, "(for step)")
-	prep := fs.emitAsBx(s.Line, bytecode.FORPREP, base, NoJump)
+	prep := fs.emitAsBx(at(s.DoLine), bytecode.FORPREP, base, NoJump)
 	fs.enterBlock(false) // inner: loop-body variable scope
 	fs.registerLocal(s.Line, s.Var)
 	fs.reserveRegs(s.Line, 1)
