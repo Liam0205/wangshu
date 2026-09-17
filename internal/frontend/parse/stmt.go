@@ -215,10 +215,14 @@ func (p *Parser) parseFor() (ast.Stmt, error) {
 		if err := p.next(); err != nil {
 			return nil, err
 		}
+		// Each header expression is materialized by exp1 as soon as it is parsed, so its line is
+		// p.lastLine right there -- before the `,` or `do` that follows is consumed (#262).
+		var ends [3]int32
 		init, err := p.parseExpr(0)
 		if err != nil {
 			return nil, err
 		}
+		ends[0] = p.lastLine
 		if err := p.expect(token.COMMA); err != nil {
 			return nil, err
 		}
@@ -226,6 +230,8 @@ func (p *Parser) parseFor() (ast.Stmt, error) {
 		if err != nil {
 			return nil, err
 		}
+		ends[1] = p.lastLine
+		ends[2] = p.lastLine // the default step's LOADK, if no step follows
 		var step ast.Expr
 		if p.match(token.COMMA) {
 			if err := p.next(); err != nil {
@@ -235,10 +241,12 @@ func (p *Parser) parseFor() (ast.Stmt, error) {
 			if err != nil {
 				return nil, err
 			}
+			ends[2] = p.lastLine
 		}
 		if err := p.expect(token.KW_DO); err != nil {
 			return nil, err
 		}
+		doLine := p.lastLine
 		p.loopDepth++
 		body, err := p.parseBlock()
 		p.loopDepth--
@@ -248,7 +256,8 @@ func (p *Parser) parseFor() (ast.Stmt, error) {
 		if err := p.expect(token.KW_END); err != nil {
 			return nil, err
 		}
-		return &ast.NumForStmt{Line: line, Var: first, Init: init, Limit: limit, Step: step, Body: body}, nil
+		return &ast.NumForStmt{Line: line, Var: first, ExprEndLines: ends, DoLine: doLine,
+			Init: init, Limit: limit, Step: step, Body: body}, nil
 	case token.COMMA, token.KW_IN:
 		// generic for
 		names := []string{first}

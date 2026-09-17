@@ -278,12 +278,20 @@ type IfStmt struct {
 }
 
 type NumForStmt struct {
-	Line  int32
-	Var   string
-	Init  Expr
-	Limit Expr
-	Step  Expr // nullable → defaults to 1
-	Body  *Block
+	Line int32
+	Var  string
+	// ExprEndLines[i] is ls->lastline when PUC's exp1 materializes Init/Limit/Step: the line of that
+	// expression's own last token. ExprEndLines[2] is set even without a Step, because the default
+	// LOADK 1 is emitted right after the limit, at the same lastline (#262).
+	ExprEndLines [3]int32
+	// DoLine is the line of the `do` keyword: forbody emits FORPREP after checknext(TK_DO), so
+	// "'for' initial value must be a number" is reported there -- `for i = "x", 2<nl>do end` says line 2
+	// (#262). FORLOOP keeps Line (luaK_fixline "pretend that OP_FOR starts the loop").
+	DoLine int32
+	Init   Expr
+	Limit  Expr
+	Step   Expr // nullable → defaults to 1
+	Body   *Block
 }
 type GenForStmt struct {
 	Line  int32
