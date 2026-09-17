@@ -288,12 +288,15 @@ SETUPVAL/MOVE 不会 raise」——但 `storeVar` 还发 SETTABLE,对 nil 对象
 里 `error(msg, 2)` 也把行号指到 store 那条指令;`x.y = 1<nl>+<nl>1` PUC 报 3、我们报 1。doc-gaps 里
 「数值 for 的 FORPREP/LOADK 行」一项则连依据都没写,而 FORPREP 会 raise 三种 `'for' … must be a number`,
 `for i = "x", 2<nl>do end` PUC 报 2(`do` 的行)、我们报 1。两格都是用户可见差分,等 nightly 撞就是两个
-issue。同一批里**真正**不可见的(`{}` 作右操作数时的 NEWTABLE、`while`/`if`/泛型 for 的 JMP、
-`local a, b<nl>= 1` 的 LOADNIL)在 activelines 探针里能看到差异,但 fuzz 语料没有这种写法,故只记录。
+issue。**而且同一轮我自己又判错两次**:把剩下的 DIFF 按**语句**归为「泛型 for 的 JMP 不可见」「构造器的
+SETLIST 不可见」时,没有把同一语句里的 TFORLOOP(生成器不可调用时在它上报错)和 `[k]=v` 的 SETTABLE
+(键为 nil/NaN 时在它上报错)单独拿出来问——独立审阅抓了出来,`for k in<nl>nil` PUC 2 / 我们 1,
+`{<nl>[nil]<nl>=<nl>1}` PUC 4 / 我们 1。最终那一轮把剩余 DIFF 全部修掉,不再维护「不可见」清单。
 
-**判据**:写「行号偏了但不可见」之前,列出该路径发射的**每一种**指令,逐条回答「`lvm.c` 里它有没有
-`luaG_*error` 调用」;再回答「activelines 为什么没覆盖」(通常是语料里没有那种写法——那就写下这句,
-它就是触发条件)。三项缺一,判定就还没完成。这是 §4.2「豁免声明要有执行体」与 #252 教训 5「缺口要写
+**判据**:写「行号偏了但不可见」之前,列出该路径发射的**每一种**指令(按指令列,不按语句列),逐条
+回答「`lvm.c` 里它有没有 `luaG_*error` 调用」;再回答「activelines 为什么没覆盖」(通常是语料里没有那种
+写法——那就写下这句,它就是触发条件)。三项缺一,判定就还没完成。更省事的做法是根本不维护这张清单:
+参照实现能本地调用时把 DIFF 全修掉(见 [[cross-backend-semantic-fix-sweep]] 的 dump 比对一节)。这是 §4.2「豁免声明要有执行体」与 #252 教训 5「缺口要写
 触发条件」的下一格:前两条讲记录的**形式**,本条讲「不可见」这个**前提**本身要按指令逐条证。反思
 [[2026-09-18-issue262-operator-line-is-posfix-lastline]] 教训 2。
 
