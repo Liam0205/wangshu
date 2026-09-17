@@ -153,10 +153,11 @@ func (p *Parser) parseSimpleExpr() (ast.Expr, error) {
 		if !p.insideVararg {
 			return nil, p.errorf("cannot use '...' outside a vararg function")
 		}
+		emitLine := p.lastLine // PUC emits VARARG before consuming `...`
 		if err := p.next(); err != nil {
 			return nil, err
 		}
-		return &ast.VarargExpr{Line: line}, nil
+		return &ast.VarargExpr{Line: line, EmitLine: emitLine}, nil
 	case token.LBRACE:
 		return p.parseTableExpr()
 	case token.KW_FUNCTION:
@@ -205,18 +206,20 @@ func (p *Parser) parsePrefixExpr() (ast.Expr, error) {
 		switch p.tok.Kind {
 		case token.DOT:
 			opLine := p.tok.Line
+			objEnd := p.lastLine // PUC's field discharges the object before skipping the dot
 			if err := p.next(); err != nil {
 				return nil, err
 			}
 			if !p.match(token.NAME) {
 				return nil, p.errorf("<name> expected near '%s'", p.tok.String())
 			}
-			e = &ast.IndexExpr{Line: opLine, Obj: e, Key: &ast.StringExpr{Line: p.tok.Line, Val: p.tok.Str}}
+			e = &ast.IndexExpr{Line: opLine, ObjEndLine: objEnd, Obj: e, Key: &ast.StringExpr{Line: p.tok.Line, Val: p.tok.Str}}
 			if err := p.next(); err != nil {
 				return nil, err
 			}
 		case token.LBRACK:
 			opLine := p.tok.Line
+			objEnd := p.lastLine // PUC's primaryexp discharges the object before yindex
 			if err := p.next(); err != nil {
 				return nil, err
 			}
@@ -227,7 +230,7 @@ func (p *Parser) parsePrefixExpr() (ast.Expr, error) {
 			if err := p.expect(token.RBRACK); err != nil {
 				return nil, err
 			}
-			e = &ast.IndexExpr{Line: opLine, Obj: e, Key: key}
+			e = &ast.IndexExpr{Line: opLine, ObjEndLine: objEnd, Obj: e, Key: key}
 		case token.COLON:
 			if err := p.next(); err != nil {
 				return nil, err
@@ -260,12 +263,13 @@ func (p *Parser) parsePrefixExpr() (ast.Expr, error) {
 			// its LAST line. Using the start line reported A[[\n]] at line 1 where lua5.1
 			// says 2.
 			argsLine := p.tokEndLine()
+			fnEnd := p.lastLine // funcargs pushes the callee before touching the argument list
 			args, argEnds, err := p.parseArgs()
 			if err != nil {
 				return nil, err
 			}
 			// The callee keeps its OWN line; only the CALL uses the argument list's.
-			e = &ast.CallExpr{Line: e.Pos(), ArgsLine: argsLine, ArgEndLines: argEnds, Fn: e, Args: args}
+			e = &ast.CallExpr{Line: e.Pos(), ArgsLine: argsLine, FnEndLine: fnEnd, ArgEndLines: argEnds, Fn: e, Args: args}
 		default:
 			return e, nil
 		}
@@ -275,8 +279,7 @@ func (p *Parser) parsePrefixExpr() (ast.Expr, error) {
 // args ::= '(' [explist] ')' | tableexpr | STRING
 //
 // The second result is the per-argument end line (ls->lastline at the point PUC materializes each one); see
-// parseExprListEnds. It is nil for the `f{...}` and `f"..."` sugar, whose single argument is materialized
-// where it is written.
+// parseExprListEnds. The `f{...}` and `f"..."` sugar report their single argument's last token (#262).
 func (p *Parser) parseArgs() ([]ast.Expr, []int32, error) {
 	switch p.tok.Kind {
 	case token.LPAREN:
@@ -311,18 +314,21 @@ func (p *Parser) parseArgs() ([]ast.Expr, []int32, error) {
 		}
 		return exprs, ends, nil
 	case token.LBRACE:
+		// The sugar argument is pushed by funcargs' luaK_exp2nextreg after the whole constructor (or
+		// string) has been consumed, so it materializes at its own last token: `f<nl>{<nl>}` puts the
+		// constructor's relocation on the `}` line and `f<nl>"s"` the LOADK on the string's (#262).
 		t, err := p.parseTableExpr()
 		if err != nil {
 			return nil, nil, err
 		}
-		return []ast.Expr{t}, nil, nil
+		return []ast.Expr{t}, []int32{p.lastLine}, nil
 	case token.STRING:
 		line := p.tok.Line
 		s := p.tok.Str
 		if err := p.next(); err != nil {
 			return nil, nil, err
 		}
-		return []ast.Expr{&ast.StringExpr{Line: line, Val: s}}, nil, nil
+		return []ast.Expr{&ast.StringExpr{Line: line, Val: s}}, []int32{p.lastLine}, nil
 	}
 	return nil, nil, p.errorf("function arguments expected near '%s'", p.tok.String())
 }
@@ -370,10 +376,17 @@ func (p *Parser) parseExprListEnds() ([]ast.Expr, []int32, error) {
 //	fieldsep ::= ',' | ';'
 func (p *Parser) parseTableExpr() (ast.Expr, error) {
 	line := p.tok.Line
+	newTableLine := p.lastLine // PUC emits NEWTABLE before consuming `{`
 	if err := p.expect(token.LBRACE); err != nil {
 		return nil, err
 	}
-	t := &ast.TableExpr{Line: line}
+	t := &ast.TableExpr{Line: line, NewTableLine: newTableLine}
+	// Item lines follow PUC's lastline at each emission point (#262). A key-value field is stored as
+	// soon as its value is parsed, so it ends at the value's last token; a positional item is only
+	// discharged by closelistfield after the following separator was consumed, or by lastlistfield
+	// after the closing brace, so its line is set below, after the separator -- and the last positional
+	// item's is overwritten once `}` is consumed, whether or not a trailing separator preceded it.
+	lastPositional := -1
 	for !p.match(token.RBRACE) {
 		switch {
 		case p.match(token.LBRACK):
@@ -384,6 +397,7 @@ func (p *Parser) parseTableExpr() (ast.Expr, error) {
 			if err != nil {
 				return nil, err
 			}
+			keyEnd := p.lastLine // yindex discharges the key before `]` is consumed
 			if err := p.expect(token.RBRACK); err != nil {
 				return nil, err
 			}
@@ -394,7 +408,7 @@ func (p *Parser) parseTableExpr() (ast.Expr, error) {
 			if err != nil {
 				return nil, err
 			}
-			t.Items = append(t.Items, ast.TableItem{Key: k, Val: v})
+			t.Items = append(t.Items, ast.TableItem{Key: k, Val: v, KeyEndLine: keyEnd, EndLine: p.lastLine})
 		case p.match(token.NAME):
 			// Could be Name = expr, or Name as the start of a value expression.
 			ahead, err := p.peek()
@@ -414,13 +428,15 @@ func (p *Parser) parseTableExpr() (ast.Expr, error) {
 				if err != nil {
 					return nil, err
 				}
-				t.Items = append(t.Items, ast.TableItem{Key: &ast.StringExpr{Line: keyLine, Val: name}, Val: v})
+				t.Items = append(t.Items, ast.TableItem{Key: &ast.StringExpr{Line: keyLine, Val: name}, Val: v,
+					KeyEndLine: keyLine, EndLine: p.lastLine})
 			} else {
 				v, err := p.parseExpr(0)
 				if err != nil {
 					return nil, err
 				}
 				t.Items = append(t.Items, ast.TableItem{Val: v})
+				lastPositional = len(t.Items) - 1
 			}
 		default:
 			v, err := p.parseExpr(0)
@@ -428,6 +444,7 @@ func (p *Parser) parseTableExpr() (ast.Expr, error) {
 				return nil, err
 			}
 			t.Items = append(t.Items, ast.TableItem{Val: v})
+			lastPositional = len(t.Items) - 1
 		}
 		// fieldsep
 		if !p.match(token.COMMA) && !p.match(token.SEMI) {
@@ -436,9 +453,15 @@ func (p *Parser) parseTableExpr() (ast.Expr, error) {
 		if err := p.next(); err != nil {
 			return nil, err
 		}
+		if lastPositional == len(t.Items)-1 {
+			t.Items[lastPositional].EndLine = p.lastLine
+		}
 	}
 	if err := p.expect(token.RBRACE); err != nil {
 		return nil, err
+	}
+	if lastPositional >= 0 {
+		t.Items[lastPositional].EndLine = p.lastLine
 	}
 	return t, nil
 }

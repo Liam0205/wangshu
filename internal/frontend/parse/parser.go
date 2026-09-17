@@ -101,6 +101,15 @@ func (p *Parser) next() error {
 		p.lastLine = p.tok.Line
 	}
 	if p.hasAhead {
+		// PUC's luaX_next copies ls->linenumber, and a pending lookahead has already moved the scanner
+		// past the consumed token, so lastline is where the LOOKAHEAD token ends. Only the table
+		// constructor's NAME/`=` disambiguation peeks (as in PUC), so `{<nl>A<nl>.x}` discharges A's
+		// GETGLOBAL on the `.x` line, as luac5.1 does (#262).
+		if p.ahead.EndLine != 0 {
+			p.lastLine = p.ahead.EndLine
+		} else {
+			p.lastLine = p.ahead.Line
+		}
 		p.tok = p.ahead
 		p.hasAhead = false
 		return nil

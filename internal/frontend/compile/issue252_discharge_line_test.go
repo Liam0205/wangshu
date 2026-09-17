@@ -77,7 +77,8 @@ func TestDischargeLineIsLastLine(t *testing.T) {
 		// recorded gap (1) until #262 showed it is observable through SETTABLE (see storeVar).
 		{"single-target fast path", "x = A\n.x", []int32{1, 2, 2, 0}},
 		{"single-target, bracket", "x = A\n[1]", []int32{1, 2, 2, 0}},
-		{"return, per-element", "return A.x\n, 1", []int32{1, 2, 2, 1, 0}},
+		// The RETURN itself is on 2 as well: luaK_ret runs right after the list (#262).
+		{"return, per-element", "return A.x\n, 1", []int32{1, 2, 2, 2, 0}},
 		// Nothing closes a return, so a single returned index stays where it is written.
 		{"return, nothing follows", "return A.x\n", []int32{1, 1, 1, 0}},
 
@@ -85,11 +86,10 @@ func TestDischargeLineIsLastLine(t *testing.T) {
 		// the index is discharged, so the GETTABLE stays on 1. Pinned here because calleeEndLine must
 		// NOT fire for this shape.
 		//
-		// The NEWTABLE at pc=2 is 2 where luac5.1 says 1: the `f{...}` / `f"..."` sugar materializes its
-		// single argument one line late. That predates #252 (master produces the same table) and lives in
-		// parseArgs' LBRACE branch, which returns no end lines at all; it is asserted as-is rather than
-		// silently rounded to luac's value so this table stays a record of what we emit.
-		{"table-constructor sugar", "t.x\n{1}", []int32{1, 1, 2, 2, 2, 2, 0}},
+		// The NEWTABLE at pc=2 is on 1, as luac5.1 has it: PUC's constructor emits it BEFORE
+		// checknext('{'), so it carries the preceding token's line (TableExpr.NewTableLine, #262). It
+		// used to be 2 here and was recorded as a pre-existing quirk.
+		{"table-constructor sugar", "t.x\n{1}", []int32{1, 1, 1, 2, 2, 2, 0}},
 	} {
 		block, err := parse.Parse(lex.New([]byte(tc.src), "z"), "z")
 		if err != nil {

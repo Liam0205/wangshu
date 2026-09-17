@@ -15,7 +15,7 @@ import (
 // PUC stamps the operation with ls->lastline at luaK_posfix time (the right operand's end), the store with
 // lastline at luaK_storevar time (the statement's end), and FORPREP with lastline after `do`. Each case here
 // asserts the full pcall message, line included, against `lua5.1` output on the same source. Every case in
-// this table fails on the parent commit with the line one or two lower.
+// this table fails on the base commit with a lower line.
 func TestOperatorErrorLineIsOperandEnd(t *testing.T) {
 	for _, tc := range []struct{ name, src, want string }{
 		{"#262 seed, arith right operand on next line",
@@ -58,6 +58,26 @@ func TestOperatorErrorLineIsOperandEnd(t *testing.T) {
 		{"for limit, blank lines before do",
 			"local _, e = pcall(function() for i = 1, \"x\"\n\ndo end end) return e",
 			`[string "test"]:3: 'for' limit must be a number`},
+		// Found by the first independent review: TFORLOOP carries the iterator list's first line, and a
+		// constructor field's SETTABLE the value's last line.
+		{"generic for, non-callable generator on the next line",
+			"local _, e = pcall(function() for k in\nnil do end end) return e",
+			`[string "test"]:2: attempt to call a nil value`},
+		{"constructor, nil key spanning lines",
+			"local _, e = pcall(function() local t = {\n[nil]\n=\n1} end) return e",
+			`[string "test"]:4: table index is nil`},
+		{"constructor, NaN key spanning lines",
+			"local _, e = pcall(function() local t = {\n[0/0]\n=\n1} end) return e",
+			`[string "test"]:4: table index is NaN`},
+		{"constructor, positional index after lookahead",
+			"local _, e = pcall(function() local t = {\nA\n.x\n} end) return e",
+			`[string "test"]:4: attempt to index global 'A' (a nil value)`},
+		{"method call, receiver index split",
+			"local _, e = pcall(function() A.b\n:m() end) return e",
+			`[string "test"]:2: attempt to index global 'A' (a nil value)`},
+		{"return, index split",
+			"local _, e = pcall(function() return\nA\n.x end) return e",
+			`[string "test"]:3: attempt to index global 'A' (a nil value)`},
 	} {
 		if got := testutil.RunOne(t, tc.src).Str(); got != tc.want {
 			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)

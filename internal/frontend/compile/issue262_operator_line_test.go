@@ -41,11 +41,9 @@ func TestOperatorLinesAreLastLine(t *testing.T) {
 		{"arith chain", "local v = a % 1\n+ 2\n* 3", []int32{1, 1, 3, 0}},
 		// Right-associative: the whole `2 ^ 3` folds, then the outer POW lands on the last line.
 		{"pow chain", "local v = A.x ^\n2 ^\n3", []int32{1, 1, 3, 0}},
-		// The MOD is on 3 (`}`). The NEWTABLE is 3 where luac5.1 says 2: PUC's constructor emits it
-		// BEFORE checknext('{'), so it carries the line of the token preceding the brace. That is the
-		// same pre-existing quirk the #252 table records for `t.x<nl>{1}`; NEWTABLE cannot raise, and it
-		// is asserted as-is so this table stays a record of what we emit.
-		{"table right operand", "local v = a\n%\n{}", []int32{2, 3, 3, 0}},
+		// The MOD is on 3 (`}`); the NEWTABLE on 2, because PUC's constructor emits it BEFORE
+		// checknext('{') and so stamps it with the preceding token's line (the `%`).
+		{"table right operand", "local v = a\n%\n{}", []int32{2, 2, 3, 0}},
 
 		// Comparisons: the right operand, the compare and its JMP all take the right operand's line;
 		// only the LOADBOOL pair after them already did (they are emitted by exp2reg at the statement).
@@ -111,6 +109,77 @@ func TestStoreLineIsStatementEnd(t *testing.T) {
 		{"settable, #248 shape", "A\n.x = 1", []int32{1, 2, 0}},
 		// SETGLOBAL takes the same rule even though it cannot raise, so the two store kinds do not drift.
 		{"setglobal, call rhs", "x = f(1,\n2)", []int32{1, 1, 2, 1, 2, 0}},
+	} {
+		block, err := parse.Parse(lex.New([]byte(tc.src), "z"), "z")
+		if err != nil {
+			t.Fatalf("%s: parse: %v", tc.name, err)
+		}
+		mainID, protos, err := Compile(block, "z")
+		if err != nil {
+			t.Fatalf("%s: compile: %v", tc.name, err)
+		}
+		got := protos[mainID].LineInfo
+		if len(got) != len(tc.want) {
+			t.Errorf("%s: %d instructions, want %d (lines %v)", tc.name, len(got), len(tc.want), got)
+			continue
+		}
+		for i := range tc.want {
+			if got[i] != tc.want[i] {
+				t.Errorf("%s: pc=%d line=%d, want %d (full: %v)", tc.name, i, got[i], tc.want[i], got)
+			}
+		}
+	}
+}
+
+// TestStatementEmissionPointLines pins the remaining emission points that a luac5.1 line dump over ~1900
+// multi-line shapes still disagreed on after the operator/store/for-header fixes, found by the first
+// independent review of #262. Each row names the PUC function whose lastline the instruction carries:
+//   - table constructor: recfield emits SETTABLE right after the value (`{<nl>[nil]<nl>=<nl>1}` reports
+//     "table index is nil" on 4); a positional item is pushed by closelistfield after the following
+//     separator, or by lastlistfield after `}`; NEWTABLE is emitted BEFORE checknext('{');
+//   - generic for: forbody stamps TFORLOOP with forlist's line, read right after `in` (a non-callable
+//     generator in `for k in<nl>nil` is reported on 2), the forward JMP after `do`, the back-edge after
+//     the body;
+//   - method call: primaryexp reads the method NAME before luaK_self discharges the receiver, so
+//     `A.b<nl>:m()` indexes A on 2;
+//   - return: luaK_ret runs after the list; the single-value path discharges there too;
+//   - vararg: simpleexp emits VARARG before consuming `...`;
+//   - conditions: cond() runs goiftrue at the condition's last token; if/while emit their escape and
+//     back-edge JMPs after the block, before the closing keyword;
+//   - local: adjust_assign pads LOADNIL right after the last initializer;
+//   - inside a constructor the NAME/`=` lookahead has already scanned the next token, and PUC's lastline
+//     follows the scanner (`{<nl>A<nl>.x}` loads A on 3).
+//
+// Expected values are `luac5.1 -p -l` minus the trailing RETURN.
+func TestStatementEmissionPointLines(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		src  string
+		want []int32
+	}{
+		// LOADNIL x2 is our nil-key materialization (luac folds the key into the RK); the SETTABLE is what
+		// raises, and it is on 4.
+		{"constructor, nil key on its own line", "local t = {\n[nil]\n=\n1}", []int32{1, 2, 4, 0}},
+		{"constructor, name key, trailing comma", "local t = {\nx\n=\n1\n,\n}", []int32{1, 4, 0}},
+		{"constructor, bracket key index", "local t = {\n[A\n.x]\n=\n1}", []int32{1, 2, 3, 5, 0}},
+		{"constructor, positional index, lookahead", "local t = {\nA\n.x\n,\n1\n}", []int32{1, 3, 4, 6, 6, 0}},
+		{"constructor, positional call", "local t = {\nf(\n)\n}", []int32{1, 2, 2, 4, 0}},
+		{"constructor, semicolons", "local t = {1;\n2;\n}", []int32{1, 1, 3, 3, 0}},
+		{"constructor, positional call with lookahead", "local t = {\nA\n(\n)\n}", []int32{1, 3, 3, 5, 0}},
+		// The two LOADNIL are our iterator padding (luac elides the constant); TFORLOOP is on 2.
+		{"generic for, nil generator", "for k in\nnil do end", []int32{2, 2, 2, 2, 2, 0}},
+		{"generic for, iterator list split", "for k in\nx\n,\ny do end", []int32{3, 4, 4, 4, 2, 4, 0}},
+		{"generic for, do and body lines", "for k in x\ndo\nf()\nend", []int32{1, 1, 2, 3, 3, 1, 3, 0}},
+		{"method call, receiver index split", "A.b\n:m()", []int32{1, 2, 2, 2, 0}},
+		{"return, index split", "return\nA\n.x", []int32{2, 3, 3, 0}},
+		{"return, list", "return a\n,\nb", []int32{2, 3, 3, 0}},
+		{"return, vararg", "return\n...", []int32{1, 2, 0}},
+		{"local, nil padding", "local a, b\n= 1", []int32{2, 2, 0}},
+		{"while, back edge", "while a\ndo\nf()\nend", []int32{1, 1, 1, 3, 3, 3, 0}},
+		{"if, escape jumps", "if a then\nf()\nelseif b\nthen\nelse\nend", []int32{1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 0}},
+		{"if, not folded into TEST", "if not A\n.x then end", []int32{1, 2, 2, 2, 0}},
+		{"sugar call, constructor", "local v = f\n{\n}", []int32{1, 1, 2, 0}},
+		{"sugar call, string", "local v = f\n\"s\"", []int32{1, 2, 2, 0}},
 	} {
 		block, err := parse.Parse(lex.New([]byte(tc.src), "z"), "z")
 		if err != nil {
