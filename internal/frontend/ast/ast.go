@@ -34,7 +34,14 @@ type StringExpr struct {
 	Line int32
 	Val  string
 }
-type VarargExpr struct{ Line int32 }
+
+// VarargExpr's Line is the `...` token's line; EmitLine is ls->lastline when PUC's simpleexp emits
+// VARARG, i.e. BEFORE `...` is consumed, so it is the preceding token's end line -- `return<nl>...` puts
+// VARARG on 1. Zero falls back to Line (#262).
+type VarargExpr struct {
+	Line     int32
+	EmitLine int32
+}
 
 func (e *NilExpr) Pos() int32    { return e.Line }
 func (e *TrueExpr) Pos() int32   { return e.Line }
@@ -57,8 +64,14 @@ type NameExpr struct {
 }
 type IndexExpr struct {
 	Line int32
-	Obj  Expr
-	Key  Expr
+	// ObjEndLine is ls->lastline when PUC's field/yindex discharges the OBJECT: the `.`/`[` is the
+	// current token, so this is the end line of the last consumed token -- normally the object's own
+	// last token, but inside a table constructor the NAME/`=` lookahead has already scanned the
+	// operator, and PUC's lastline follows the scanner: `{<nl>A<nl>.x}` puts A's GETGLOBAL on 3, the
+	// `.x` line. Zero falls back to Obj.Pos() (#262).
+	ObjEndLine int32
+	Obj        Expr
+	Key        Expr
 }
 
 // ParenExpr wraps a parenthesized expression: `(f())` forces a single value (04 §9.4 / Lua 5.1 semantics).
@@ -92,6 +105,11 @@ type CallExpr struct {
 	// GETTABLE on the argument line too, so `t.x\n{1}` blamed the wrong line for indexing nil.
 	Line     int32
 	ArgsLine int32
+	// FnEndLine is ls->lastline when PUC's funcargs pushes the CALLEE (luaK_exp2nextreg at its start):
+	// the end line of the last consumed token before the argument list, i.e. the callee's own last
+	// token -- a closing paren for `(0<nl>)(...)`, the lookahead's line inside a table constructor.
+	// Zero falls back to Line (#252 calleeEndLine, generalized in #262).
+	FnEndLine int32
 	// ArgEndLines[i] is ls->lastline at the point PUC materializes Args[i]: the line of the separator
 	// that follows it (a ',' for every argument but the last, the ')' for the last one). Each argument
 	// gets its own, because `f(A.A<nl>,1<nl>)` discharges the first on 2 and the second on 3 (#252).
@@ -193,7 +211,11 @@ func (*FuncExpr) exprNode()    {}
 // ----- Table constructor -----
 
 type TableExpr struct {
-	Line int32
+	// Line is the `{` token's line. NewTableLine is ls->lastline when PUC's constructor emits
+	// NEWTABLE: it does so BEFORE checknext('{'), so the instruction carries the line of the token
+	// preceding the brace -- `f<nl>{}` puts NEWTABLE on 1. Zero falls back to Line (#262).
+	Line         int32
+	NewTableLine int32
 	// Items holds all fields in **source appearance order**: PUC's constructor code
 	// emits, in order and interleaved, SETTABLE (key-value fields, immediately) and
 	// SETLIST (positional fields, batched), where later writes overwrite earlier ones
@@ -206,6 +228,14 @@ type TableExpr struct {
 type TableItem struct {
 	Key Expr // nil = positional item; non-nil = [k]=v or name=v
 	Val Expr
+	// KeyEndLine is ls->lastline when PUC's yindex discharges a bracket key (the key's last token,
+	// before `]`); unused for a name key. EndLine is where the item is materialized: for a key-value
+	// field, the value's last token (recfield emits SETTABLE right after the value); for a positional
+	// item, the separator that follows it (closelistfield runs after testnext consumed it), or the
+	// closing brace for the last item (lastlistfield runs after check_match). SETLIST takes the line of
+	// the item that flushed it. Zero means unknown and falls back to the constructor's line (#262).
+	KeyEndLine int32
+	EndLine    int32
 }
 
 func (e *TableExpr) Pos() int32 { return e.Line }
@@ -258,18 +288,31 @@ type DoStmt struct {
 }
 type WhileStmt struct {
 	Line int32
-	Cond Expr
-	Body *Block
+	// CondEndLine is ls->lastline when PUC's cond() runs luaK_goiftrue: the condition's last token,
+	// where the TEST/JMP land (`while not A<nl>.x do` puts TEST on 2). BodyEndLine is lastline after
+	// the body's last token and before `end`: the back-edge JMP is emitted there (`while a<nl>do<nl>end`
+	// puts it on 2, the `do`). Zero falls back to Cond.Pos() / Line (#262).
+	CondEndLine int32
+	BodyEndLine int32
+	Cond        Expr
+	Body        *Block
 }
 type RepeatStmt struct {
 	Line int32
 	Body *Block
 	Cond Expr // until can see locals within the Body scope
+	// CondEndLine mirrors WhileStmt.CondEndLine (#262).
+	CondEndLine int32
 }
 
 type IfClause struct {
 	Cond Expr
 	Body *Block
+	// CondEndLine mirrors WhileStmt.CondEndLine. BodyEndLine is lastline after the clause body and
+	// before the following `elseif`/`else`/`end`: the escape JMP that skips the remaining clauses is
+	// emitted there, so `if a then<nl>f()<nl>else<nl>end` puts it on 2 (#262).
+	CondEndLine int32
+	BodyEndLine int32
 }
 type IfStmt struct {
 	Line    int32
@@ -296,6 +339,15 @@ type NumForStmt struct {
 type GenForStmt struct {
 	Line  int32
 	Names []string
+	// IterLine is ls->linenumber right after PUC's forlist consumed `in`: the end line of the first
+	// token of the iterator list. forbody's luaK_fixline stamps TFORLOOP with it, so a generator that
+	// cannot be called is reported there -- `for k in<nl>nil do end` says line 2 (#262). Zero falls
+	// back to Line.
+	IterLine int32
+	// DoLine and BodyEndLine mirror NumForStmt.DoLine and WhileStmt.BodyEndLine: forbody emits the
+	// forward JMP after checknext(TK_DO) and the back-edge JMP after the block (#262).
+	DoLine      int32
+	BodyEndLine int32
 	// ExprEndLines[i] is ls->lastline at the point PUC materializes Exprs[i]. The last element's line is
 	// taken BEFORE `do` is consumed, so `for k in A.x<nl> do end` keeps the GETTABLE on 1 while
 	// `for k in A.x<nl>, 1 do end` moves it to 2 (#252).
@@ -313,7 +365,8 @@ type ReturnStmt struct {
 	Line int32
 	// ExprEndLines[i] is ls->lastline at the point PUC materializes Exprs[i]: the following comma's line,
 	// or -- for the last one -- the line of the statement's last token, since nothing closes a return.
-	// `return A.x<nl>, 1` puts the GETTABLE on 2; `return A.x<nl>` puts it on 1 (#252).
+	// `return A.x<nl>, 1` puts the GETTABLE on 2; `return A.x<nl>` puts it on 1 (#252). The RETURN
+	// itself is emitted by luaK_ret right after the list, so it takes the last one too (#262).
 	ExprEndLines []int32
 	Exprs        []Expr
 }

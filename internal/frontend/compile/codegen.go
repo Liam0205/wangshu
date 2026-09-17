@@ -84,7 +84,11 @@ func (fs *funcState) expr(node ast.Expr) expDesc {
 		// ~VARARG_NEEDSARG; the "arg" local still occupies a register, its
 		// value left nil).
 		fs.proto.NeedsArg = false
-		pc := fs.emitABC(e.Line, bytecode.VARARG, 0, 1, 0)
+		emitLine := e.EmitLine
+		if emitLine == 0 {
+			emitLine = e.Line
+		}
+		pc := fs.emitABC(emitLine, bytecode.VARARG, 0, 1, 0)
 		return newExp(eVararg, pc)
 	case *ast.NameExpr:
 		return fs.resolveName(e.Line, e.Name)
@@ -131,7 +135,7 @@ func (fs *funcState) exprIndex(e *ast.IndexExpr) expDesc {
 	// No line is recorded for the GETTABLE itself: it is emitted by whoever discharges this eIndexed, and
 	// takes that point's line, as PUC's lastline does (#252 -- see dischargeVars).
 	obj := fs.expr(e.Obj)
-	tableReg := fs.exp2AnyReg(e.Obj.Pos(), &obj)
+	tableReg := fs.exp2AnyReg(indexObjLine(e), &obj)
 	key := fs.expr(e.Key)
 	rk := fs.exp2RK(e.Key.Pos(), &key)
 	exp := newExp(eIndexed, tableReg)
@@ -139,13 +143,24 @@ func (fs *funcState) exprIndex(e *ast.IndexExpr) expDesc {
 	return exp
 }
 
-// calleeEndLine reports the line of the callee expression's last consumed token, falling back to dflt.
-//
-// Only a parenthesized callee is handled: the ')' is a token that advances ls->lastline before the argument
-// list is scanned, so `(0<nl>)(...)` materializes the callee on the closing paren's line. Every other callee
-// shape ends on the line its own last component starts on, which is what dflt already is (#252).
-func calleeEndLine(fn ast.Expr, dflt int32) int32 {
-	if p, ok := fn.(*ast.ParenExpr); ok && p.EndLine != 0 {
+// indexObjLine is the line an IndexExpr's object is discharged at: its recorded ObjEndLine (PUC's
+// lastline with the indexing operator as the current token), falling back to the object's start line
+// for a hand-built AST (#262).
+func indexObjLine(e *ast.IndexExpr) int32 {
+	if e.ObjEndLine != 0 {
+		return e.ObjEndLine
+	}
+	return e.Obj.Pos()
+}
+
+// calleeEndLine reports the line the callee is pushed at: the parser's recorded FnEndLine (PUC's lastline
+// when funcargs starts, #262), else -- for a hand-built AST -- a parenthesized callee's closing paren
+// (#252), else dflt.
+func calleeEndLine(e *ast.CallExpr, dflt int32) int32 {
+	if e.FnEndLine != 0 {
+		return e.FnEndLine
+	}
+	if p, ok := e.Fn.(*ast.ParenExpr); ok && p.EndLine != 0 {
 		return p.EndLine
 	}
 	return dflt
@@ -161,7 +176,7 @@ func (fs *funcState) exprCall(e *ast.CallExpr) expDesc {
 	// `(0<nl>)` in `(0<nl>)(A.A)` ends on 2, so its LOADK is stamped 2, not 1. A callee that does NOT end
 	// in a consumed token keeps its start line -- `t.x<nl>{1}` puts GETTABLE on 1, because the `{` that
 	// follows has not been scanned when the index is discharged (#252).
-	fs.exp2NextReg(calleeEndLine(e.Fn, e.Line), &fnExp)
+	fs.exp2NextReg(calleeEndLine(e, e.Line), &fnExp)
 	nargs := fs.compileArgList(e.Args, e.Line, e.ArgEndLines)
 	b := nargs + 1
 	if nargs < 0 { // last arg is multi-value
@@ -219,8 +234,12 @@ func isMathIntrinsicIndex(idx *ast.IndexExpr) bool {
 func (fs *funcState) exprMethodCall(e *ast.MethodCallExpr) expDesc {
 	baseReg := fs.freereg
 	recv := fs.expr(e.Recv)
-	// The receiver is discharged at ITS own line, not the method name's (#248, same shape as exprIndex).
-	fs.exp2NextReg(e.Recv.Pos(), &recv) // R(baseReg) = obj
+	// The receiver is discharged at the METHOD NAME's line, unlike an indexed object (#248 assumed the
+	// exprIndex shape here, which is wrong for `:`). PUC's `field` calls luaK_exp2anyreg before skipping
+	// the `.`, so an indexed object keeps its own line; primaryexp's `:` arm skips the colon and reads the
+	// name FIRST and only then calls luaK_self, whose exp2anyreg sees lastline at the name. `A.b<nl>:m()`
+	// therefore reports "attempt to index global 'A'" on 2 (#262).
+	fs.exp2NextReg(e.Line, &recv) // R(baseReg) = obj
 	// method name goes through an RK constant
 	method := newExp(eK, fs.strK(e.Line, e.Method))
 	rk := fs.exp2RK(e.Line, &method)
@@ -597,8 +616,12 @@ func (fs *funcState) emitSetList(line int32, tReg, b, batchNo int) {
 // (caught by cgo oracle diff fuzz).
 func (fs *funcState) exprTable(e *ast.TableExpr) expDesc {
 	tReg := fs.freereg
-	pc := fs.emitABC(e.Line, bytecode.NEWTABLE, tReg, 0, 0) // B/C patched later
-	fs.reserveRegs(e.Line, 1)
+	ntLine := e.NewTableLine
+	if ntLine == 0 {
+		ntLine = e.Line
+	}
+	pc := fs.emitABC(ntLine, bytecode.NEWTABLE, tReg, 0, 0) // B/C patched later
+	fs.reserveRegs(ntLine, 1)
 
 	flush := bytecode.FieldsPerFlush
 	pending := 0 // items landed in R(tReg+1+pending) for the current batch
@@ -618,15 +641,27 @@ func (fs *funcState) exprTable(e *ast.TableExpr) expDesc {
 	}
 	lastIsMulti := lastPositional == len(e.Items)-1
 
+	// Lines follow PUC's lastline at each emission point (#262): a key-value field's key is discharged
+	// before `]`, its value and SETTABLE at the value's last token (recfield); a positional item is
+	// pushed at the separator that follows it, or at `}` for the last one, and a SETLIST carries the
+	// line of the item that flushed it. `{<nl>[nil]<nl>=<nl>1}` therefore reports "table index is nil"
+	// on line 4, as PUC does. Zero item lines (a hand-built AST) fall back to the constructor's line.
+	at := func(l int32) int32 {
+		if l != 0 {
+			return l
+		}
+		return e.Line
+	}
+	setListLine := e.Line
 	for i, it := range e.Items {
 		if it.Key != nil {
 			// key-value field: SETTABLE inline (this is where the order
 			// semantics live).
 			ke := fs.expr(it.Key)
-			rkK := fs.exp2RK(e.Line, &ke)
+			rkK := fs.exp2RK(at(it.KeyEndLine), &ke)
 			ve := fs.expr(it.Val)
-			rkV := fs.exp2RK(e.Line, &ve)
-			fs.emitABC(e.Line, bytecode.SETTABLE, tReg, rkK, rkV)
+			rkV := fs.exp2RK(at(it.EndLine), &ve)
+			fs.emitABC(at(it.EndLine), bytecode.SETTABLE, tReg, rkK, rkV)
 			if !bytecode.IsK(rkV) {
 				fs.freeReg(rkV)
 			}
@@ -637,24 +672,25 @@ func (fs *funcState) exprTable(e *ast.TableExpr) expDesc {
 			continue
 		}
 		nArr++
+		setListLine = at(it.EndLine)
 		ve := fs.expr(it.Val)
 		if i == lastPositional && lastIsMulti && fs.openMultiRet(&ve, -1) {
-			fs.emitSetList(e.Line, tReg, 0, batchNo)
+			fs.emitSetList(setListLine, tReg, 0, batchNo)
 			fs.freereg = tReg + 1
 			pending = 0
 			continue
 		}
-		fs.exp2NextReg(e.Line, &ve)
+		fs.exp2NextReg(setListLine, &ve)
 		pending++
 		if pending == flush {
-			fs.emitSetList(e.Line, tReg, flush, batchNo)
+			fs.emitSetList(setListLine, tReg, flush, batchNo)
 			fs.freereg = tReg + 1
 			pending = 0
 			batchNo++
 		}
 	}
 	if pending > 0 {
-		fs.emitSetList(e.Line, tReg, pending, batchNo)
+		fs.emitSetList(setListLine, tReg, pending, batchNo)
 		fs.freereg = tReg + 1
 	}
 

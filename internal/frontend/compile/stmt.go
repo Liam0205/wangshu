@@ -148,8 +148,9 @@ func (fs *funcState) adjustExprList(line int32, exprs []ast.Expr, nWant int, end
 	}
 	fs.exp2NextReg(endAt(n-1), &last)
 	if nWant > n {
-		fs.emitABC(line, bytecode.LOADNIL, fs.freereg, fs.freereg+(nWant-n)-1, 0)
-		fs.reserveRegs(line, nWant-n)
+		// adjust_assign pads right after the last expression, at the same lastline (#262).
+		fs.emitABC(endAt(n-1), bytecode.LOADNIL, fs.freereg, fs.freereg+(nWant-n)-1, 0)
+		fs.reserveRegs(endAt(n-1), nWant-n)
 	}
 }
 
@@ -215,7 +216,7 @@ func (fs *funcState) stmtAssign(s *ast.AssignStmt) {
 			// reports the operator's line, because that is where the faulting SETTABLE is. The #248 fix only
 			// touched exprIndex, so this path kept the bug -- an audit found it.
 			obj := fs.expr(tn.Obj)
-			tableReg := fs.exp2AnyReg(tn.Obj.Pos(), &obj)
+			tableReg := fs.exp2AnyReg(indexObjLine(tn), &obj)
 			key := fs.expr(tn.Key)
 			rk := fs.exp2RK(tn.Key.Pos(), &key)
 			tgts[i] = target{isIndexed: true, tableReg: tableReg, keyRK: rk}
@@ -292,7 +293,7 @@ func (fs *funcState) storeVar(line, rhsLine int32, lhs, rhs ast.Expr) {
 		// store line (#262). The operator's line used here before was right only while the RHS stayed on
 		// the operator's line; `A<nl>.x = 1` still gives 2 because the statement also ENDS on 2.
 		obj := fs.expr(tn.Obj)
-		tableReg := fs.exp2AnyReg(tn.Obj.Pos(), &obj)
+		tableReg := fs.exp2AnyReg(indexObjLine(tn), &obj)
 		key := fs.expr(tn.Key)
 		rkK := fs.exp2RK(tn.Key.Pos(), &key)
 		re := fs.expr(rhs)
@@ -312,11 +313,23 @@ func (fs *funcState) stmtCall(s *ast.CallStmt) {
 	fs.proto.Code[e.info] = bytecode.SetC(fs.proto.Code[e.info], 1)
 }
 
+// orLine returns l unless it is zero (a hand-built AST), in which case dflt.
+func orLine(l, dflt int32) int32 {
+	if l != 0 {
+		return l
+	}
+	return dflt
+}
+
+// stmtIf / stmtWhile / stmtRepeat: a condition's TEST+JMP take the condition's LAST token (PUC's cond()
+// runs luaK_goiftrue right after expr, so `if not A<nl>.x then` tests on 2); a while's back-edge JMP and an
+// if-clause's escape JMP take the body's last token, because PUC emits them right after block() and before
+// consuming the closing keyword (#262).
 func (fs *funcState) stmtIf(s *ast.IfStmt) {
 	endList := NoJump
 	for i, cl := range s.Clauses {
 		ce := fs.expr(cl.Cond)
-		fs.goIfTrue(cl.Cond.Pos(), &ce)
+		fs.goIfTrue(orLine(cl.CondEndLine, cl.Cond.Pos()), &ce)
 		falseList := ce.fJmp
 		fs.enterBlock(false)
 		fs.block(cl.Body)
@@ -325,7 +338,7 @@ func (fs *funcState) stmtIf(s *ast.IfStmt) {
 		hasElse := s.Else != nil
 		isLast := i == len(s.Clauses)-1
 		if !isLast || hasElse {
-			j := fs.jump(s.Line)
+			j := fs.jump(orLine(cl.BodyEndLine, s.Line))
 			fs.concat(&endList, j)
 		}
 		fs.patchToHere(falseList)
@@ -341,12 +354,12 @@ func (fs *funcState) stmtIf(s *ast.IfStmt) {
 func (fs *funcState) stmtWhile(s *ast.WhileStmt) {
 	loopStart := fs.getLabel()
 	ce := fs.expr(s.Cond)
-	fs.goIfTrue(s.Cond.Pos(), &ce)
+	fs.goIfTrue(orLine(s.CondEndLine, s.Cond.Pos()), &ce)
 	exitList := ce.fJmp
 	fs.enterBlock(true)
 	fs.block(s.Body)
 	// back edge
-	back := fs.jump(s.Line)
+	back := fs.jump(orLine(s.BodyEndLine, s.Line))
 	fs.patchList(back, loopStart)
 	fs.leaveBlock(s.Line)
 	fs.patchToHere(exitList)
@@ -364,7 +377,7 @@ func (fs *funcState) stmtRepeat(s *ast.RepeatStmt) {
 	fs.enterBlock(false) // scope block
 	fs.block(s.Body)
 	ce := fs.expr(s.Cond)
-	fs.goIfTrue(s.Cond.Pos(), &ce)
+	fs.goIfTrue(orLine(s.CondEndLine, s.Cond.Pos()), &ce)
 	if !fs.bl.hasUpval {
 		fs.leaveBlock(s.Line)            // finish scope (no CLOSE)
 		fs.patchList(ce.fJmp, loopStart) // cond false ⇒ jump back
@@ -433,7 +446,7 @@ func (fs *funcState) stmtGenFor(s *ast.GenForStmt) {
 	fs.registerLocal(s.Line, "(for generator)")
 	fs.registerLocal(s.Line, "(for state)")
 	fs.registerLocal(s.Line, "(for control)")
-	prep := fs.jump(s.Line) // jump to TFORLOOP
+	prep := fs.jump(orLine(s.DoLine, s.Line)) // jump to TFORLOOP; emitted after `do` (#262)
 	bodyPC := fs.pc()
 	fs.enterBlock(false)
 	for _, n := range s.Names {
@@ -443,8 +456,14 @@ func (fs *funcState) stmtGenFor(s *ast.GenForStmt) {
 	fs.block(s.Body)
 	fs.leaveBlock(s.Line)
 	fs.patchToHere(prep)
-	fs.emitABC(s.Line, bytecode.TFORLOOP, base, 0, len(s.Names))
-	back := fs.jump(s.Line)
+	// forbody's luaK_fixline stamps TFORLOOP with forlist's `line`, read right after `in` -- the
+	// iterator list's first token -- so a non-callable generator is reported there (#262).
+	iterLine := s.IterLine
+	if iterLine == 0 {
+		iterLine = s.Line
+	}
+	fs.emitABC(iterLine, bytecode.TFORLOOP, base, 0, len(s.Names))
+	back := fs.jump(orLine(s.BodyEndLine, s.Line))
 	fs.patchList(back, bodyPC)
 	fs.leaveBlock(s.Line)
 }
@@ -471,10 +490,19 @@ func (fs *funcState) stmtFunc(s *ast.FuncStmt) {
 }
 
 // stmtReturn: tail-call recognition (04 §9.4).
+//
+// PUC's retstat emits the RETURN (luaK_ret) right after explist1, so it carries the list's last line,
+// not the `return` keyword's: `return<nl>A.x` puts RETURN on 2. Only a bare `return` keeps its own
+// line. The single-value path below discharges the value at that same line, which is what moves a
+// deferred GETTABLE there too (#262).
 func (fs *funcState) stmtReturn(s *ast.ReturnStmt) {
 	if len(s.Exprs) == 0 {
 		fs.emitABC(s.Line, bytecode.RETURN, 0, 1, 0)
 		return
+	}
+	retLine := s.Line
+	if n := len(s.ExprEndLines); n > 0 && s.ExprEndLines[n-1] != 0 {
+		retLine = s.ExprEndLines[n-1]
 	}
 	if len(s.Exprs) == 1 {
 		switch ce := s.Exprs[0].(type) {
@@ -484,21 +512,21 @@ func (fs *funcState) stmtReturn(s *ast.ReturnStmt) {
 			ins := fs.proto.Code[e.info]
 			fs.proto.Code[e.info] = bytecode.EncodeABC(bytecode.TAILCALL,
 				bytecode.A(ins), bytecode.B(ins), 0)
-			fs.emitABC(s.Line, bytecode.RETURN, bytecode.A(ins), 0, 0)
+			fs.emitABC(retLine, bytecode.RETURN, bytecode.A(ins), 0, 0)
 			return
 		case *ast.MethodCallExpr:
 			e := fs.exprMethodCall(ce)
 			ins := fs.proto.Code[e.info]
 			fs.proto.Code[e.info] = bytecode.EncodeABC(bytecode.TAILCALL,
 				bytecode.A(ins), bytecode.B(ins), 0)
-			fs.emitABC(s.Line, bytecode.RETURN, bytecode.A(ins), 0, 0)
+			fs.emitABC(retLine, bytecode.RETURN, bytecode.A(ins), 0, 0)
 			return
 		case *ast.VarargExpr:
 			// return ... returns all varargs (multi-value to top), cannot be collapsed to a single value
 			base := fs.freereg
 			ve := fs.expr(ce)
 			fs.openMultiRet(&ve, -1)
-			fs.emitABC(s.Line, bytecode.RETURN, base, 0, 0)
+			fs.emitABC(retLine, bytecode.RETURN, base, 0, 0)
 			return
 		}
 		// Single non-Call value: if it is ELocal/ENonReloc, use its register directly (avoids a pointless MOVE).
@@ -506,9 +534,9 @@ func (fs *funcState) stmtReturn(s *ast.ReturnStmt) {
 		// the fast path — a direct RETURN skips exp2reg's chain backfill, leaving the chain's JMP landing point dangling
 		// (sBx self-loop, an infinite loop that hangs at runtime).
 		single := fs.expr(s.Exprs[0])
-		fs.dischargeVars(s.Line, &single)
+		fs.dischargeVars(retLine, &single)
 		if single.k == eNonReloc && !single.hasJumps() {
-			fs.emitABC(s.Line, bytecode.RETURN, single.info, 2, 0)
+			fs.emitABC(retLine, bytecode.RETURN, single.info, 2, 0)
 			return
 		}
 		// RETURN must read the register exp2reg actually materialized
@@ -519,8 +547,8 @@ func (fs *funcState) stmtReturn(s *ast.ReturnStmt) {
 		// `return f()or(f())` landed its result in R(1) but emitted
 		// RETURN A=2, returning stale stack garbage (issue #125; PUC
 		// luac emits RETURN 1 2 here).
-		fs.exp2NextReg(s.Line, &single)
-		fs.emitABC(s.Line, bytecode.RETURN, single.info, 2, 0)
+		fs.exp2NextReg(retLine, &single)
+		fs.emitABC(retLine, bytecode.RETURN, single.info, 2, 0)
 		fs.freereg = single.info
 		return
 	}
@@ -528,7 +556,7 @@ func (fs *funcState) stmtReturn(s *ast.ReturnStmt) {
 	base := fs.freereg
 	n := len(s.Exprs)
 	// Each returned expression materializes at its own line (the following comma's), as PUC's lastline
-	// does; only the RETURN itself keeps the statement's line (#252).
+	// does (#252); the RETURN takes the last one (#262).
 	endAt := func(i int) int32 {
 		if i < len(s.ExprEndLines) && s.ExprEndLines[i] != 0 {
 			return s.ExprEndLines[i]
@@ -541,11 +569,11 @@ func (fs *funcState) stmtReturn(s *ast.ReturnStmt) {
 	}
 	last := fs.expr(s.Exprs[n-1])
 	if fs.openMultiRet(&last, -1) {
-		fs.emitABC(s.Line, bytecode.RETURN, base, 0, 0)
+		fs.emitABC(retLine, bytecode.RETURN, base, 0, 0)
 		return
 	}
 	fs.exp2NextReg(endAt(n-1), &last)
-	fs.emitABC(s.Line, bytecode.RETURN, base, n+1, 0)
+	fs.emitABC(retLine, bytecode.RETURN, base, n+1, 0)
 	fs.freereg = base
 }
 

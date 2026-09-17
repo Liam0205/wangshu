@@ -100,6 +100,7 @@ func (p *Parser) parseIf() (ast.Stmt, error) {
 		if err != nil {
 			return nil, err
 		}
+		condEnd := p.lastLine // cond() runs goiftrue before `then` is consumed
 		if err := p.expect(token.KW_THEN); err != nil {
 			return nil, err
 		}
@@ -107,7 +108,8 @@ func (p *Parser) parseIf() (ast.Stmt, error) {
 		if err != nil {
 			return nil, err
 		}
-		clauses = append(clauses, ast.IfClause{Cond: cond, Body: body})
+		// The escape JMP is emitted after the block, before elseif/else/end is consumed (#262).
+		clauses = append(clauses, ast.IfClause{Cond: cond, Body: body, CondEndLine: condEnd, BodyEndLine: p.lastLine})
 		if !p.match(token.KW_ELSEIF) {
 			break
 		}
@@ -142,6 +144,7 @@ func (p *Parser) parseWhile() (ast.Stmt, error) {
 	if err != nil {
 		return nil, err
 	}
+	condEnd := p.lastLine // cond() runs goiftrue before `do` is consumed
 	if err := p.expect(token.KW_DO); err != nil {
 		return nil, err
 	}
@@ -151,10 +154,11 @@ func (p *Parser) parseWhile() (ast.Stmt, error) {
 	if err != nil {
 		return nil, err
 	}
+	bodyEnd := p.lastLine // the back-edge JMP is emitted before check_match(END)
 	if err := p.expect(token.KW_END); err != nil {
 		return nil, err
 	}
-	return &ast.WhileStmt{Line: line, Cond: cond, Body: body}, nil
+	return &ast.WhileStmt{Line: line, CondEndLine: condEnd, BodyEndLine: bodyEnd, Cond: cond, Body: body}, nil
 }
 
 // do block end
@@ -192,7 +196,7 @@ func (p *Parser) parseRepeat() (ast.Stmt, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &ast.RepeatStmt{Line: line, Body: body, Cond: cond}, nil
+	return &ast.RepeatStmt{Line: line, Body: body, Cond: cond, CondEndLine: p.lastLine}, nil
 }
 
 // for Name '=' init ',' limit [',' step] do block end       (numeric)
@@ -276,6 +280,9 @@ func (p *Parser) parseFor() (ast.Stmt, error) {
 		if err := p.expect(token.KW_IN); err != nil {
 			return nil, err
 		}
+		// forlist reads ls->linenumber right after `in`: the scanner has just read the first token of
+		// the iterator list, so this is that token's end line; TFORLOOP is stamped with it (#262).
+		iterLine := p.tokEndLine()
 		exprs, ends, err := p.parseExprListEnds()
 		if err != nil {
 			return nil, err
@@ -289,16 +296,19 @@ func (p *Parser) parseFor() (ast.Stmt, error) {
 		if err := p.expect(token.KW_DO); err != nil {
 			return nil, err
 		}
+		doLine := p.lastLine
 		p.loopDepth++
 		body, err := p.parseBlock()
 		p.loopDepth--
 		if err != nil {
 			return nil, err
 		}
+		bodyEnd := p.lastLine
 		if err := p.expect(token.KW_END); err != nil {
 			return nil, err
 		}
-		return &ast.GenForStmt{Line: line, Names: names, ExprEndLines: ends, Exprs: exprs, Body: body}, nil
+		return &ast.GenForStmt{Line: line, Names: names, IterLine: iterLine, DoLine: doLine, BodyEndLine: bodyEnd,
+			ExprEndLines: ends, Exprs: exprs, Body: body}, nil
 	default:
 		return nil, p.errorf("'=' or 'in' expected near '%s'", p.tok.String())
 	}
