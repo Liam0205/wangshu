@@ -87,7 +87,9 @@ func (p *Parser) parseExpr(limit uint8) (ast.Expr, error) {
 		if err != nil {
 			return nil, err
 		}
-		e = &ast.UnExpr{Line: line, Op: uop, E: sub}
+		// p.lastLine IS the reference ls->lastline at luaK_prefix time: the operand has just been parsed
+		// and nothing after it has been consumed (#262).
+		e = &ast.UnExpr{Line: line, EndLine: p.lastLine, Op: uop, E: sub}
 	} else {
 		var err error
 		e, err = p.parseSimpleExpr()
@@ -108,7 +110,10 @@ func (p *Parser) parseExpr(limit uint8) (ast.Expr, error) {
 		if err != nil {
 			return nil, err
 		}
-		e = &ast.BinExpr{Line: line, Op: bop, L: e, R: rhs}
+		// p.lastLine IS the reference ls->lastline at luaK_posfix time: the right operand's last token,
+		// which is where PUC stamps the operation (#262). The lookahead token that ended the operand has
+		// been scanned but not consumed, so it has not advanced lastline -- same as luaX_next's order.
+		e = &ast.BinExpr{Line: line, EndLine: p.lastLine, Op: bop, L: e, R: rhs}
 	}
 	return e, nil
 }
