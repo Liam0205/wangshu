@@ -161,12 +161,19 @@ func (fs *funcState) adjustExprList(line int32, exprs []ast.Expr, nWant int, end
 // VLOCAL path, which avoids a pointless MOVE/RETURN).
 func (fs *funcState) stmtAssign(s *ast.AssignStmt) {
 	if len(s.Targets) == 1 && len(s.Exprs) == 1 {
-		// The RHS materializes at its own recorded line (#252); the store keeps s.Line (#248).
+		// The RHS materializes at its own recorded line (#252); the store goes at the statement's last
+		// token, which is where PUC's lastline stands when luaK_storevar runs (#262). It differs from s.Line
+		// whenever the RHS spans lines, and a SETTABLE on a nil object raises there: `x.y = 1<nl>+<nl>1`
+		// reports line 3, not 1. The multi-target path below already used storeLine for this.
 		var rhsLine int32
 		if len(s.ExprEndLines) > 0 {
 			rhsLine = s.ExprEndLines[0]
 		}
-		fs.storeVar(s.Line, rhsLine, s.Targets[0], s.Exprs[0])
+		storeLine := s.Line
+		if s.EndLine > storeLine {
+			storeLine = s.EndLine
+		}
+		fs.storeVar(storeLine, rhsLine, s.Targets[0], s.Exprs[0])
 		fs.freereg = fs.nactvar
 		return
 	}
@@ -254,22 +261,18 @@ func (fs *funcState) stmtAssign(s *ast.AssignStmt) {
 
 // storeVar stores the rhs value "directly" into the lhs variable (single-assignment fast path).
 // rhsLine is where the RHS expression MATERIALIZES (ls->lastline at that point, #252); line is where the
-// STORE goes (#248). They are different questions about the same statement and must not be merged: for
-// `x = A<nl>.x` the RHS GETTABLE belongs on 2 while a store that cannot raise stays governed by the gap
-// recorded below. A zero rhsLine falls back to line.
+// STORE goes: ls->lastline when PUC's luaK_storevar runs, i.e. the statement's last token (#262). They are
+// different questions about the same statement and must not be merged: for `x = A<nl>.x` the RHS GETTABLE
+// belongs on 2 (the `.x`) and so does the store, but for `x.y = 1<nl>+<nl>1` the RHS folds to a constant
+// while the SETTABLE still belongs on 3. A zero rhsLine falls back to line.
+//
+// The store line used to be the statement's first line, recorded as a gap on the grounds that
+// SETGLOBAL/SETUPVAL/MOVE cannot raise. SETTABLE can -- on a nil object, or through a __newindex that calls
+// error(msg, 2) -- and PUC reports the statement's LAST line there, so the gap was visible after all.
 func (fs *funcState) storeVar(line, rhsLine int32, lhs, rhs ast.Expr) {
 	if rhsLine == 0 {
 		rhsLine = line
 	}
-	// KNOWN GAP, deliberately not papered over: PUC emits this store at ls->lastline, which its LEXER advances
-	// token by token, so a multi-line RHS moves the store's line -- `b = f(1,<nl>2)` puts SETGLOBAL on line 2
-	// while we put it on 1. Our AST has no END position for a call, so max(Pos()) over lhs/rhs cannot see the
-	// closing paren; matching this faithfully needs an end-line on the AST, which is wider than #248.
-	//
-	// It is unobservable today: SETGLOBAL/SETUPVAL/MOVE cannot raise, so no error message or traceback line
-	// depends on it -- verified including a __newindex store, which CAN raise and does match. An earlier
-	// version of this function computed a storeLine from Pos() and claimed to fix this; it did not, because
-	// Pos() returns a call's start. Recording the gap beats shipping a change whose comment overstates it.
 	switch tn := lhs.(type) {
 	case *ast.NameExpr:
 		ne := fs.resolveName(tn.Line, tn.Name)
@@ -285,15 +288,16 @@ func (fs *funcState) storeVar(line, rhsLine int32, lhs, rhs ast.Expr) {
 			fs.emitABx(line, bytecode.SETGLOBAL, r, ne.info)
 		}
 	case *ast.IndexExpr:
-		// Same as the multi-target path above (#248): object and key at their own lines, SETTABLE at the
-		// indexing operator's line rather than at the statement's line.
+		// Same as the multi-target path above: object and key at their own lines (#248), SETTABLE at the
+		// store line (#262). The operator's line used here before was right only while the RHS stayed on
+		// the operator's line; `A<nl>.x = 1` still gives 2 because the statement also ENDS on 2.
 		obj := fs.expr(tn.Obj)
 		tableReg := fs.exp2AnyReg(tn.Obj.Pos(), &obj)
 		key := fs.expr(tn.Key)
 		rkK := fs.exp2RK(tn.Key.Pos(), &key)
 		re := fs.expr(rhs)
 		rkV := fs.exp2RK(rhsLine, &re)
-		fs.emitABC(tn.Line, bytecode.SETTABLE, tableReg, rkK, rkV)
+		fs.emitABC(line, bytecode.SETTABLE, tableReg, rkK, rkV)
 	default:
 		raise(fs, line, "syntax error")
 	}
