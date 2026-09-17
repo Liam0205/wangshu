@@ -21,7 +21,12 @@ description: >
   「不可见」其实会 raise 的**:泛型 for 的 TFORLOOP(`for k in\nnil` PUC 2 / 我们 1)与构造器 `[k]=v` 的
   SETTABLE(`{\n[nil]\n=\n1}` PUC 4 / 我们 1);于是把剩余 DIFF 全部修掉(构造器各字段行、泛型 for 三条
   跳转、方法调用接收者、RETURN、VARARG、条件 TEST/JMP、`if`/`while` 跳转、LOADNIL 补位、糖式参数、构造器
-  lookahead 时的 lastline),最终 1875 形状逐指令行号 0 差异。三条教训:「同一条口径」在每个语法位置都要问一遍「PUC 在哪一刻发射」
+  lookahead 时的 lastline)。**第二轮独立审阅用 170 个按 `lparser.c` 非终结符列的模板、19538 个形状、
+  连同嵌套 proto 一起比对,又推翻一次**:我的构造器修法在「位置项后跟 `k=v`」时把物化行覆盖成 `}` 行
+  (引入的新缺陷),方括号键 `A[B\n.\nc]` 的 discharge 行仍偏(会 raise),CLOSURE / 块退出 CLOSE /
+  repeat CLOSE+JMP 三族不可见残留;全部修掉,并在对齐 while 体的 CLOSE 时**发现并修了一个语义 bug**:
+  while 只有一层 block、CLOSE 发在回边之后从未执行,循环体内每次迭代建的闭包共享同一个 upvalue。最终
+  19538 形状行号 0 差异。三条教训:「同一条口径」在每个语法位置都要问一遍「PUC 在哪一刻发射」
   (→ [[prove-the-path-under-test]] §2.1b)/ 「不会 raise 所以不可见」这个判断要按指令逐条核,SETTABLE
   与 FORPREP 都会 raise(→ [[prove-the-path-under-test]] §4.2a)/ 有参照实现的行为对齐,用 dump 表
   批量扫全部语法位置比按 issue 逐格补便宜得多(→ [[cross-backend-semantic-fix-sweep]])。
@@ -138,14 +143,36 @@ RETURN 取列表末行、VARARG 在 `...` 被消费**之前**发射、`if`/`whil
 `if` 逃逸 JMP 与 `while` 回边取 block 末行、`local` 的 LOADNIL 补位取末初始化式行、`f{...}`/`f"..."` 糖式
 参数取参数末行,以及一处解析器层面的差异:构造器里 NAME/`=` 的 lookahead 已经扫过下一个 token 时,PUC 的
 lastline 跟着扫描器走(`{\nA\n.x}` 里 A 的 GETGLOBAL 落在 `.x` 那一行),`Parser.next` 在消费 lookahead
-时也照此推进。修完再用审阅者那 1875 个形状扫一遍:**逐指令行号 0 差异**,只剩 235 个 opcode 序列不同的
+时也照此推进。修完再用审阅者那 1875 个形状扫一遍:逐指令行号 0 差异,只剩 235 个 opcode 序列不同的
 形状(我们对 `not (a<b)` 多发一条 NOT、对 `local a` 多发 LOADNIL,与本轮无关的既有差异)。
+
+**④ 第二轮独立审阅又把 0 差异推翻了**:它用**约 170 个模板、按 `lparser.c` 非终结符列**(含函数体、
+块退出、方括号键、repeat 带 upvalue……)、间隙插换行或注释,共 19538 个形状,而且**连同嵌套 proto 一起**
+比对(我和第一轮审阅者的脚本都只看主 proto)。结果:一处阻塞——我给 R1-I1 写的 `TableItem.EndLine`
+在「最后一个位置项后面还跟着 `k=v` 字段」时被无条件覆盖成 `}` 行,`{A.x\n,\ny=2\n}` PUC 报 2、我
+报 4(基线报 1),是修复**引入**的新缺陷;一处会 raise 的残留——方括号键 `A[B\n.\nc]` 里键的 discharge
+行(`yindex` 在 `]` 之前 `exp2val`,PUC 3 / 我 2),六个语法位置都复现;三族不会 raise 的残留——CLOSURE
+及其 MOVE/GETUPVAL 伪指令(`pushclosure` 在 `end` 之后)、块退出 CLOSE(`leaveblock` 在闭合关键字之前)、
+repeat 带 upvalue 的 CLOSE/JMP(在 `until` 条件之后)。这一轮把它们**全部**修掉,顺手修了 `local\na`
+的 LOADNIL 行,并且在对齐 while 循环体 CLOSE 的位置时发现了一个**语义 bug**:望舒的 while 只有一层
+block,CLOSE 发在回边 JMP **之后**、永远执行不到,循环体里每次迭代建的闭包共享同一个 open upvalue,
+`while i<3 do local x=i fs[#fs+1]=function() return x end i=i+1 end` 三个闭包都返回同一个值——luac
+是两层 block(外层可 break、内层作用域),CLOSE 在回边之前。改成两层后行为与 PUC 一致(0,1,2)。
+修完用审阅者的 19538 形状(含嵌套 proto)重扫:**行号差异 0**,opcode 序列差异 513 个全部是基线上就有
+的(与基线的差异集合逐条比对,HEAD 没有新增一个),另有 71 个形状基线判 ambiguous syntax、HEAD 与
+luac 一致地接受(构造器里 lookahead 之后的 `f\n(...)`)。
+
+这里最值得记的不是又修了几格,而是**扫描面的定义**:第一轮我手挑 90 个,第一轮审阅者 31 个模板 1875
+个形状,第二轮审阅者 170 个模板 19538 个形状 + 嵌套 proto——每放大一次都有新发现,而且第二轮发现的
+包括一个真实的运行时语义 bug。「按非终结符列模板」这句话在我自己写反思时已经写下,却没有在自己的扫描里
+做到;审阅者做到了。
 
 ### 6. 验证
 
-- 四张编译期 LineInfo 表(运算符 / store / 数值 for 表头 / 其余语句发射点,共 48 行)与 18 条 e2e 消息
-  全部在 master 上失败、在分支上通过(对照用 `git worktree` 建的 master 检出,不用 stash);e2e 期望值
-  逐条与 `lua5.1` 二进制输出比对过。审阅者的 1875 形状 dump 比对在最终树上逐指令行号 0 差异。
+- 四张编译期 LineInfo 表(运算符 / store / 数值 for 表头 / 其余语句发射点,共 61 行)与 21 条 e2e 消息
+  + 3 条 while 闭包语义用例,全部在 master 上失败、在分支上通过(对照用 `git worktree` 建的 master
+  检出,不用 stash);e2e 期望值逐条与 `lua5.1` 二进制输出比对过。第二轮审阅者的 19538 形状 dump 比对
+  (含嵌套 proto)在最终树上逐指令行号 0 差异,opcode 序列差异集合与基线相同。
 - 171 条常驻 oracle 语料(含 #248 `8dff36b8bd115962`、#252 `612767150dcb06d5`)全绿;
   `FuzzOracleDiffTiered` 60 秒 smoke 无新发现。
 - gofmt / vet / lint / p1 p3 p4 全量测试 / conformance-all / difftest-all / 官方 Lua 套件 p1 p3 p4 全绿。
@@ -187,17 +214,21 @@ SETLIST 判为不可见时也没有把 `[k]=v` 的 SETTABLE 单独拿出来问�
 **核心断言**:#248、#252、#262 三轮各修一到四格,每轮都由 nightly 撞出一个 seed 才开始,每轮的独立
 审计或远端评审又各补一到两格。本轮花十几分钟写了一个「`luac5.1 -p -l` 与望舒 LineInfo 并排逐指令
 比对」的脚本,喂 90 多个手挑形状,一次扫出运算符全家 + store 行 + 数值 for 三族。但手挑就是手挑:
-独立审阅用**模板 × 换行位置组合**生成 1875 个形状,又扫出泛型 for 生成器与构造器键两个我没挑到的
-位置。扫描面要用组合枚举而不是手挑,判据见下。
+第一轮独立审阅用**模板 × 换行位置组合**生成 1875 个形状,又扫出泛型 for 生成器与构造器键两个我没挑到的
+位置;第二轮独立审阅把模板按 `lparser.c` 非终结符补到 170 个、**连嵌套 proto 一起比**,19538 个形状,
+又扫出我修复引入的一处、一处会 raise 的残留、三族不可见残留,以及一个 while 闭包捕获的运行时语义 bug。
+扫描面每放大一次都有新发现,直到按语法覆盖为止。判据见下。
 
 **判据**:对齐工作的对象是一张**表**(所有语法位置 × 所有发射点)而不是一个 seed。当参照实现能被本地
-调用(`luac5.1`、`lua5.1`、cgo oracle)时,先写 dump 比对脚本、**用「每种语句/表达式一个模板 × 在每个
-token 间隙插换行(取到两处)」的组合枚举**生成形状(1875 个只要几秒),再按 DIFF 分类修;seed 只是告诉
-你「这张表里有红格」。模板集合按 `lparser.c` 的非终结符列(statement / simpleexp / primaryexp / 
-constructor / funcargs 各一个),不按「我想到了哪些」列。自查办法:修完一个 seed 后问「同一条口径还
-作用于哪些语法位置,我扫过了吗」——答案是一份枚举生成的清单加每格红绿,而不是「应该没了」。这是
-[[cross-backend-semantic-fix-sweep]] 同族扫描纪律在「参照实现可本地调用」这个条件下的加强版:能批量
-比对时就不要逐格猜,能枚举时就不要手挑。
+调用(`luac5.1`、`lua5.1`、cgo oracle)时,先写 dump 比对脚本、**用「每个非终结符一个模板 × 在每个 token
+间隙插换行或注释(取到两处)」的组合枚举**生成形状(两万个也只要几分钟),**嵌套 proto 一起比**,再按
+DIFF 分类修;seed 只是告诉你「这张表里有红格」。模板集合按 `lparser.c` 的非终结符逐个列(statement 各
+种、`body`、`simpleexp` 各分支、`primaryexp` 各后缀、`constructor` 各字段形式、`funcargs` 三种、带 upvalue
+的块退出),不按「我想到了哪些」列——本轮我写下这条判据的同时自己没做到,第二轮审阅者做到了,差距是
+1875 对 19538、以及一个运行时语义 bug。自查办法:修完一个 seed 后问「同一条口径还作用于哪些语法位置,我
+扫过了吗」——答案是一份枚举生成的清单加每格红绿,而不是「应该没了」;清单如果是手写的,再问「有哪个
+非终结符没有模板」。这是 [[cross-backend-semantic-fix-sweep]] 同族扫描纪律在「参照实现可本地调用」这个
+条件下的加强版:能批量比对时就不要逐格猜,能枚举时就不要手挑,能比嵌套 proto 就不要只看主 proto。
 
 ## Promotion 决策
 
@@ -207,5 +238,6 @@ constructor / funcargs 各一个),不按「我想到了哪些」列。自查办�
   是第二个可见通道。
 - **教训 3 → [[cross-backend-semantic-fix-sweep]]**:参照实现可本地调用时,用 dump 比对表批量扫全部
   语法位置,seed 只是入口。
-- doc-gaps 里「前端行号记账模型」那条:三项残留全部修掉,1875 形状 dump 比对逐指令 0 差异;条目改写
-  为「已对齐」,并把 dump 比对脚本的做法写进去,供下次前端行号改动当验收门。
+- doc-gaps 里「前端行号记账模型」那条:全部残留修掉,第二轮审阅者的 19538 形状(含嵌套 proto)dump
+  比对逐指令 0 差异;条目改写为「已对齐」,并写明扫描面的定义(模板按非终结符列、含嵌套 proto),供
+  下次前端行号改动当验收门。

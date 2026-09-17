@@ -291,7 +291,9 @@ SETUPVAL/MOVE 不会 raise」——但 `storeVar` 还发 SETTABLE,对 nil 对象
 issue。**而且同一轮我自己又判错两次**:把剩下的 DIFF 按**语句**归为「泛型 for 的 JMP 不可见」「构造器的
 SETLIST 不可见」时,没有把同一语句里的 TFORLOOP(生成器不可调用时在它上报错)和 `[k]=v` 的 SETTABLE
 (键为 nil/NaN 时在它上报错)单独拿出来问——独立审阅抓了出来,`for k in<nl>nil` PUC 2 / 我们 1,
-`{<nl>[nil]<nl>=<nl>1}` PUC 4 / 我们 1。最终那一轮把剩余 DIFF 全部修掉,不再维护「不可见」清单。
+`{<nl>[nil]<nl>=<nl>1}` PUC 4 / 我们 1。第二轮独立审阅用更大的扫描面又抓出方括号键 `A[B<nl>.c]`(会
+raise)与 CLOSURE / 块退出 CLOSE / repeat CLOSE+JMP 三族(不会 raise),并在其中发现 while 体的 CLOSE
+发在回边之后从未执行——一个真实的闭包捕获 bug。最终那一轮把剩余 DIFF 全部修掉,不再维护「不可见」清单。
 
 **判据**:写「行号偏了但不可见」之前,列出该路径发射的**每一种**指令(按指令列,不按语句列),逐条
 回答「`lvm.c` 里它有没有 `luaG_*error` 调用」;再回答「activelines 为什么没覆盖」(通常是语料里没有那种
