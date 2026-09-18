@@ -5,7 +5,6 @@
 
 ## 当前缺口
 
-- **【运行时语义,待开 issue】多目标赋值缺 PUC 的 `check_conflict`** — 2026-09-18 #262 全范围终审用行号 dump 顺带发现(与 #262 无关、基线同样如此):`stmtAssign` 的多目标路径对局部变量对象 / 键直接取寄存器不拷贝,而 store 又从后往前做,后面的 `a = 2` 先把 R(a) 覆盖,前面的 `a.x = 1` 再对已被覆盖的寄存器做 SETTABLE。`local t = {} local a = t a.x, a = 1, 2` PUC 得 `t.x == 1`,我们报 `attempt to index local 'a' (a number value)`;`local t = {} local a, b = t, "k" a[b], b = 1, "z"` PUC 得 `t.k == 1`,我们得 nil。PUC `lparser.c` 的 `check_conflict` 在解析到后续目标是局部变量、且前面某个索引目标用了同一个局部作为表或键时,先把那个局部 MOVE 到一个临时寄存器再让索引目标改用临时寄存器——luac 为此多发的 `MOVE` 就是 #262 行号扫描里 OPSEQ 桶的一部分。修法照抄 `check_conflict`,加 e2e 与 `lua5.1` 比对;这不是行号问题,归 `stmtAssign` 寄存器分配。
 
 - **【已收口 2026-09-13,#260】table gen 不变量约定** — 原缺口(2026-07-02 记)要求 (a) 约定成文 (b) producer 全表审计 (c) 设计稿 consumer 分类条款。(a)(b) 已由 #260 轮完成:约定写进 `internal/crescent/rawtable.go` 头注,producer 表见 [[design-claims-vs-codebase-physics]] §2.1,`rawSet` 删键与 weak sweep 清项两处补 BumpGen,`TestRawTable_*BumpsGen`(rawSet 删键 / 重插换槽)与 `TestWeak_SweepClearBumpsGen`(weak 清项)分别直接断言约定。(c) `docs/design/p1-interpreter/05-interpreter-loop.md` §6.3 的 consumer 分类条款仍未回填,保留为设计稿回填项。反思 [[2026-09-13-issue260-nil-immediate-and-delete-gen]]。
 - **设计文档回填待办(P2 开工前,recorder 执行,十项合一轮)** — 六轮反思的 promotion 候选合并清单,均为 `docs/design/` 回填(非 llmdoc):
@@ -69,6 +68,7 @@
 
 ## 已收口(留作审计)
 
+- ~~多目标赋值缺 PUC 的 `check_conflict`~~ — 2026-09-18 #262 终审顺带发现、开 #264,2026-09-19 修掉(PR 见 #264):`stmtAssign` 解析到局部变量目标时回头检查此前索引目标的表 / 键寄存器,命中就发一条 `MOVE` 拷进新寄存器并让那些目标改用拷贝,与 `lparser.c` `check_conflict` 逐字对应;编译期 pin(`internal/frontend/compile/issue264_check_conflict_test.go`,一条拷贝、SETTABLE 读拷贝、局部目标在前不拷贝)+ 10 条 e2e 与 `lua5.1` 比对(`test/regression/issue264_check_conflict_test.go`)。#262 的 dump 比对脚本加了六条冲突模板,剩余 opcode 序列差异只有基线就有的「末常量多一条 LOADK+MOVE」。反思见 [[2026-09-19-issue264-check-conflict]]。
 - ~~CI runner Node 20→24 迁移期~~ — 原计划 2026-09 前升 action 主版本,完整性补全轮顺手提前完成(`1379319`):ci.yml 与 nightly-diff-fuzz.yml 全部升至 Node 24 线(`actions/checkout@v6` / `actions/setup-go@v6` / `actions/upload-artifact@v7`),弃用警告消除(2026-06-12)。
 - ~~差分 fuzz 随机生成器跟实现走的结构性盲区~~ — 用户指出「官方有而我们没有的功能,diff-fuzz 测不出来;若不修,diff-fuzz 是假的」。完整性补全轮完成特性探测 corpus(`test/difftest/probes_test.go`,按官方 5.1 手册逐节,100 项全绿常驻差分测试),上线即在 570+ 随机脚本全绿状态下扫出 25 个完整性缺口(元方法面/loadstring/select 负索引等),全部修复;新特性同步编入生成器文法(三期 15→19 类)形成「probe 转绿 → 进文法」护栏闭环。两轴正交模型的设计文档回填见当前缺口第 8 项(2026-06-12)。
 
