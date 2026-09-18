@@ -36,8 +36,9 @@ local t = {} local a, b = t, "k"   a[b], b = 1, "z"   -- lua5.1: t.k == 1;望舒
 
 ## 过程
 
-版本核对没有 nightly run 可比;在当前 master(`f680863`)上用 e2e 表直接重放,10 条里 4 条失败(其余是「不该拷贝」
-的对照组),现象与 issue 一致。
+版本核对没有 nightly run 可比;在当前 master(`f680863`)上直接重放两组测试:编译期 pin 六条里四条冲突用例失败、
+两条「不该拷贝」的对照通过;e2e 十条在第一条冲突用例就以 `attempt to index local 'a' (a number value)` 中止
+(`testutil.RunOne` 遇运行错误即 `t.Fatalf`),现象与 issue 一致。
 
 根因一句话:多目标赋值的 store 从右往左做(PUC 递归 `assignment` 的返回路径也是),所以**后面的局部变量目标先被写**;
 前面的索引目标如果把这个局部当表或键,存的时候读到的已经是新值。PUC 的解法是 `check_conflict`:每解析到一个
