@@ -203,6 +203,28 @@ func (fs *funcState) stmtAssign(s *ast.AssignStmt) {
 			switch ne.k {
 			case eLocal:
 				tgts[i] = target{isLocal: true, regOrK: ne.info}
+				// PUC's check_conflict (lparser.c): stores run right to left, so a local assigned by THIS
+				// target is overwritten before an EARLIER indexed target that used it as table or key is
+				// stored -- `a.x, a = 1, 2` would index the number 2. Copy the local into a fresh register
+				// now, at the point the target is parsed, and point those earlier targets at the copy (#264).
+				conflict := false
+				for j := 0; j < i; j++ {
+					if !tgts[j].isIndexed {
+						continue
+					}
+					if tgts[j].tableReg == ne.info {
+						tgts[j].tableReg = fs.freereg
+						conflict = true
+					}
+					if tgts[j].keyRK == ne.info {
+						tgts[j].keyRK = fs.freereg
+						conflict = true
+					}
+				}
+				if conflict {
+					fs.emitABC(tn.Line, bytecode.MOVE, fs.freereg, ne.info, 0)
+					fs.reserveRegs(tn.Line, 1)
+				}
 			case eUpval:
 				tgts[i] = target{isUpval: true, regOrK: ne.info}
 			case eGlobal:
