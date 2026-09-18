@@ -84,11 +84,7 @@ func (fs *funcState) expr(node ast.Expr) expDesc {
 		// ~VARARG_NEEDSARG; the "arg" local still occupies a register, its
 		// value left nil).
 		fs.proto.NeedsArg = false
-		emitLine := e.EmitLine
-		if emitLine == 0 {
-			emitLine = e.Line
-		}
-		pc := fs.emitABC(emitLine, bytecode.VARARG, 0, 1, 0)
+		pc := fs.emitABC(orLine(e.EmitLine, e.Line), bytecode.VARARG, 0, 1, 0)
 		return newExp(eVararg, pc)
 	case *ast.NameExpr:
 		return fs.resolveName(e.Line, e.Name)
@@ -604,10 +600,7 @@ func (fs *funcState) exprFunc(e *ast.FuncExpr) expDesc {
 	closureIdx := len(fs.proto.Protos) - 1
 	// PUC's body() runs pushclosure after check_match(TK_END), so the CLOSURE and its upvalue
 	// pseudo-instructions carry the `end` line (#262). A zero EndLine (hand-built AST) keeps Line.
-	closeLine := e.EndLine
-	if closeLine == 0 {
-		closeLine = e.Line
-	}
+	closeLine := orLine(e.EndLine, e.Line)
 	pc := fs.emitABx(closeLine, bytecode.CLOSURE, 0, closureIdx)
 	// followed by nupvals pseudo-instructions
 	for _, u := range proto.UpvalDescs {
@@ -647,10 +640,7 @@ func (fs *funcState) emitSetList(line int32, tReg, b, batchNo int) {
 // (caught by cgo oracle diff fuzz).
 func (fs *funcState) exprTable(e *ast.TableExpr) expDesc {
 	tReg := fs.freereg
-	ntLine := e.NewTableLine
-	if ntLine == 0 {
-		ntLine = e.Line
-	}
+	ntLine := orLine(e.NewTableLine, e.Line)
 	pc := fs.emitABC(ntLine, bytecode.NEWTABLE, tReg, 0, 0) // B/C patched later
 	fs.reserveRegs(ntLine, 1)
 
@@ -678,12 +668,7 @@ func (fs *funcState) exprTable(e *ast.TableExpr) expDesc {
 	// SETLIST flush carries the line of the item that filled the batch and the final one the `}` line
 	// (lastlistfield). `{<nl>[nil]<nl>=<nl>1}` therefore reports "table index is nil" on line 4, as PUC
 	// does. Zero item lines (a hand-built AST) fall back to the constructor's line.
-	at := func(l int32) int32 {
-		if l != 0 {
-			return l
-		}
-		return e.Line
-	}
+	at := func(l int32) int32 { return orLine(l, e.Line) }
 	for i, it := range e.Items {
 		if it.Key != nil {
 			// key-value field: SETTABLE inline (this is where the order

@@ -163,6 +163,16 @@ func (fs *funcState) adjustExprList(line int32, exprs []ast.Expr, nWant int, end
 // A single LHS = single RHS takes the "direct storeVar" fast path, skipping the freereg temporary (aligns with Lua 5.1 luaK_storevar's
 // VLOCAL path, which avoids a pointless MOVE/RETURN).
 func (fs *funcState) stmtAssign(s *ast.AssignStmt) {
+	// storeLine is PUC's ls->lastline at the point the stores are emitted: the last line the statement extends
+	// to, shared by every store rather than taken per target (see the SETTABLE below).
+	//
+	// It comes from the parser's own lastLine, not from max(Pos()) over the sub-expressions: Pos() gives a
+	// call's START line, so `A<nl>.x, b = 1, f(<nl>2<nl>)` extends to line 4 while max(Pos()) saw only 2, and
+	// PUC reports 4 (review finding).
+	storeLine := s.Line
+	if s.EndLine > storeLine {
+		storeLine = s.EndLine
+	}
 	if len(s.Targets) == 1 && len(s.Exprs) == 1 {
 		// The RHS materializes at its own recorded line (#252); the store goes at the statement's last
 		// token, which is where PUC's lastline stands when luaK_storevar runs (#262). It differs from s.Line
@@ -171,10 +181,6 @@ func (fs *funcState) stmtAssign(s *ast.AssignStmt) {
 		var rhsLine int32
 		if len(s.ExprEndLines) > 0 {
 			rhsLine = s.ExprEndLines[0]
-		}
-		storeLine := s.Line
-		if s.EndLine > storeLine {
-			storeLine = s.EndLine
 		}
 		fs.storeVar(storeLine, rhsLine, s.Targets[0], s.Exprs[0])
 		fs.freereg = fs.nactvar
@@ -188,16 +194,6 @@ func (fs *funcState) stmtAssign(s *ast.AssignStmt) {
 		regOrK    int
 		tableReg  int
 		keyRK     int
-	}
-	// storeLine is PUC's ls->lastline at the point the stores are emitted: the last line the statement extends
-	// to, shared by every store rather than taken per target (see the SETTABLE below).
-	//
-	// It comes from the parser's own lastLine, not from max(Pos()) over the sub-expressions: Pos() gives a
-	// call's START line, so `A<nl>.x, b = 1, f(<nl>2<nl>)` extends to line 4 while max(Pos()) saw only 2, and
-	// PUC reports 4 (review finding).
-	storeLine := s.Line
-	if s.EndLine > storeLine {
-		storeLine = s.EndLine
 	}
 	tgts := make([]target, len(s.Targets))
 	for i, t := range s.Targets {
@@ -418,12 +414,7 @@ func (fs *funcState) stmtRepeat(s *ast.RepeatStmt) {
 // Only FORLOOP is pinned back to the `for` line, by forbody's luaK_fixline. Zero end lines (a hand-built
 // AST) fall back to s.Line.
 func (fs *funcState) stmtNumFor(s *ast.NumForStmt) {
-	at := func(l int32) int32 {
-		if l != 0 {
-			return l
-		}
-		return s.Line
-	}
+	at := func(l int32) int32 { return orLine(l, s.Line) }
 	fs.enterBlock(true) // outer breakable (holds three internal control slots)
 	base := fs.freereg
 	initE := fs.expr(s.Init)
@@ -474,11 +465,7 @@ func (fs *funcState) stmtGenFor(s *ast.GenForStmt) {
 	fs.patchToHere(prep)
 	// forbody's luaK_fixline stamps TFORLOOP with forlist's `line`, read right after `in` -- the
 	// iterator list's first token -- so a non-callable generator is reported there (#262).
-	iterLine := s.IterLine
-	if iterLine == 0 {
-		iterLine = s.Line
-	}
-	fs.emitABC(iterLine, bytecode.TFORLOOP, base, 0, len(s.Names))
+	fs.emitABC(orLine(s.IterLine, s.Line), bytecode.TFORLOOP, base, 0, len(s.Names))
 	back := fs.jump(orLine(s.Body.EndLine, s.Line))
 	fs.patchList(back, bodyPC)
 	fs.leaveBlock(s.Line)
