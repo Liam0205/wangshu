@@ -236,8 +236,11 @@ func (fs *funcState) stmtAssign(s *ast.AssignStmt) {
 		t := tgts[i]
 		switch {
 		case t.isLocal:
+			// storeLine as well: luaK_storevar's VLOCAL path is an exp2reg at the same lastline as the other
+			// stores. MOVE cannot raise, but debug.getinfo(f, "L").activelines exposes the line (final
+			// independent review of #262).
 			if t.regOrK != src {
-				fs.emitABC(s.Line, bytecode.MOVE, t.regOrK, src, 0)
+				fs.emitABC(storeLine, bytecode.MOVE, t.regOrK, src, 0)
 			}
 		case t.isIndexed:
 			// storeLine, not s.Line and NOT each target's own operator line (#248).

@@ -96,6 +96,26 @@ func TestOperatorErrorLineIsOperandEnd(t *testing.T) {
 	}
 }
 
+// TestMultiTargetLocalStoreLineIsVisibleThroughActivelines covers the last store kind the #262 alignment
+// missed: the MOVE into a local target of a multi-target assignment was stamped with the statement's first
+// line while every other store took its last. MOVE cannot raise, but `debug.getinfo(f, "L").activelines`
+// exposes every instruction line, so the difference was user-visible: lua5.1 reports {2,4,5} here and we
+// reported {2,3,4,5}. Line 2 is the `local a, b = 1, 2`; line 3 (the `a, b =` line) must NOT appear, since
+// PUC has no instruction on it -- both MOVEs land on 4 with the call.
+func TestMultiTargetLocalStoreLineIsVisibleThroughActivelines(t *testing.T) {
+	src := "local function g()\n" +
+		"  local a, b = 1, 2\n" +
+		"  a, b =\n" +
+		"  f()\n" +
+		"end\n" +
+		"local ls = {}\n" +
+		"for l in pairs(debug.getinfo(g, \"L\").activelines) do ls[#ls+1] = l end\n" +
+		"table.sort(ls) return table.concat(ls, \",\")"
+	if got, want := testutil.RunOne(t, src).Str(), "2,4,5"; got != want {
+		t.Errorf("activelines: got %q, want %q", got, want)
+	}
+}
+
 // TestWhileBodyClosesUpvaluesEveryIteration covers a semantic bug the #262 line dump exposed: luac5.1
 // emits a while body's CLOSE before the back-edge JMP (the body is its own scope block), wangshu emitted it
 // after, so it never ran and every closure created in the loop shared one open upvalue over a dead stack

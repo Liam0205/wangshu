@@ -82,9 +82,9 @@ func TestDischargeLineIsLastLine(t *testing.T) {
 		// Nothing closes a return, so a single returned index stays where it is written.
 		{"return, nothing follows", "return A.x\n", []int32{1, 1, 1, 0}},
 
-		// A callee NOT ending in a consumed token keeps its own line: the `{` has not been scanned when
-		// the index is discharged, so the GETTABLE stays on 1. Pinned here because calleeEndLine must
-		// NOT fire for this shape.
+		// The callee is pushed at FnEndLine, the parser's lastline when funcargs starts; here that is 1,
+		// because the `{` has not been consumed when the callee is discharged, so the GETTABLE stays on 1.
+		// Pinned because a FnEndLine that followed the argument token instead would move it to 2.
 		//
 		// The NEWTABLE at pc=2 is on 1, as luac5.1 has it: PUC's constructor emits it BEFORE
 		// checknext('{'), so it carries the preceding token's line (TableExpr.NewTableLine, #262). It

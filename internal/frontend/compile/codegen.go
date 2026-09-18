@@ -197,8 +197,9 @@ func (fs *funcState) exprCall(e *ast.CallExpr) expDesc {
 		b = 0
 	}
 	// Only the CALL takes the argument list's line, matching funcargs' luaK_fixline; the callee's
-	// own materialization above keeps e.Line. Using one line for both moved the callee's GETTABLE
-	// onto the argument line, so `t.x\n{1}` reported the wrong line for indexing a nil.
+	// own materialization above takes FnEndLine, which is distinct from the argument line whenever the
+	// argument list starts on a later line. Using one line for both moved the callee's GETTABLE onto
+	// the argument line, so `t.x\n{1}` reported the wrong line for indexing a nil.
 	pc := fs.emitABC(e.ArgsLine, bytecode.CALL, fnReg, b, 2) // C=2 default single value, may be changed later
 	fs.freereg = fnReg + 1                                   // the call result occupies R(fnReg), 1 slot by default
 	if fs.calleeIsMathIntrinsic(e.Fn) {
