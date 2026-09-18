@@ -68,7 +68,7 @@
 
 ## 已收口(留作审计)
 
-- ~~多目标赋值缺 PUC 的 `check_conflict`~~ — 2026-09-18 #262 终审顺带发现、开 #264,2026-09-19 修掉(修复 PR 关联 issue #264):`stmtAssign` 解析到局部变量目标时回头检查此前索引目标的表 / 键寄存器,命中就发一条 `MOVE` 拷进新寄存器并让那些目标改用拷贝,与 `lparser.c` `check_conflict` 逐字对应;编译期 pin(`internal/frontend/compile/issue264_check_conflict_test.go`,一条拷贝、SETTABLE 读拷贝、局部目标在前不拷贝)+ 10 条 e2e 与 `lua5.1` 比对(`test/regression/issue264_check_conflict_test.go`)。#262 的 dump 比对脚本加了六条冲突模板,剩余 opcode 序列差异只有基线就有的「末常量多一条 LOADK+MOVE」。反思见 [[2026-09-19-issue264-check-conflict]]。
+- ~~多目标赋值缺 PUC 的 `check_conflict`~~ — 2026-09-18 #262 终审顺带发现、开 #264,2026-09-19 修掉(修复 PR 关联 issue #264):`stmtAssign` 解析到局部变量目标时回头检查此前索引目标的表 / 键寄存器,命中就发一条 `MOVE` 拷进新寄存器并让那些目标改用拷贝,与 `lparser.c` `check_conflict` 逐字对应;编译期 pin(`internal/frontend/compile/issue264_check_conflict_test.go`,一条拷贝、SETTABLE 读拷贝、局部目标在前不拷贝)+ 10 条 e2e 与 `lua5.1` 比对(`test/regression/issue264_check_conflict_test.go`)。#262 的 dump 比对脚本加了六条冲突模板,剩余 opcode 序列差异只有基线就有的末常量处理差异(局部目标收尾多一条 MOVE、索引目标收尾多一条 LOADK;分类见反思)。反思见 [[2026-09-19-issue264-check-conflict]]。
 - ~~CI runner Node 20→24 迁移期~~ — 原计划 2026-09 前升 action 主版本,完整性补全轮顺手提前完成(`1379319`):ci.yml 与 nightly-diff-fuzz.yml 全部升至 Node 24 线(`actions/checkout@v6` / `actions/setup-go@v6` / `actions/upload-artifact@v7`),弃用警告消除(2026-06-12)。
 - ~~差分 fuzz 随机生成器跟实现走的结构性盲区~~ — 用户指出「官方有而我们没有的功能,diff-fuzz 测不出来;若不修,diff-fuzz 是假的」。完整性补全轮完成特性探测 corpus(`test/difftest/probes_test.go`,按官方 5.1 手册逐节,100 项全绿常驻差分测试),上线即在 570+ 随机脚本全绿状态下扫出 25 个完整性缺口(元方法面/loadstring/select 负索引等),全部修复;新特性同步编入生成器文法(三期 15→19 类)形成「probe 转绿 → 进文法」护栏闭环。两轴正交模型的设计文档回填见当前缺口第 8 项(2026-06-12)。
 
