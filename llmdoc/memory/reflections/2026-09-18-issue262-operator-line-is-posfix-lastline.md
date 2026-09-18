@@ -137,7 +137,7 @@ activelines 能看见」,就收工了。blind reviewer 用同一套 dump 比对�
 
 于是这一轮把剩下的 DIFF **全部**修掉而不是分类:表构造器每个字段的行(`TableItem` 加 `KeyEndLine`/
 `EndLine`,NEWTABLE 用 `{` 前一个 token 的行 `NewTableLine`)、泛型 for 的 TFORLOOP / 前向 JMP / 回边
-JMP(`IterLine`/`DoLine`/`BodyEndLine`)、方法调用接收者在方法名行 discharge(PUC 的 `:` 分支先读名字
+JMP(`IterLine`/`DoLine`/`Body.EndLine`,第三轮把各语句上重复的 `BodyEndLine` 并进了 `Block.EndLine`)、方法调用接收者在方法名行 discharge(PUC 的 `:` 分支先读名字
 再 `luaK_self`,与 `.` 分支先 discharge 再读名字**相反**,#248 当年把两者写成同形是错的)、`return` 的
 RETURN 取列表末行、VARARG 在 `...` 被消费**之前**发射、`if`/`while`/`repeat` 条件的 TEST+JMP 取条件末行、
 `if` 逃逸 JMP 与 `while` 回边取 block 末行、`local` 的 LOADNIL 补位取末初始化式行、`f{...}`/`f"..."` 糖式
