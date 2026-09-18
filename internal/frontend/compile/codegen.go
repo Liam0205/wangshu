@@ -299,6 +299,13 @@ func (fs *funcState) compileArgList(args []ast.Expr, line int32, ends []int32) i
 	return n
 }
 
+// binEndLine is the posfix-time line of a binary expression: the parser's EndLine, falling back to the
+// operator's line for a hand-built AST that left it zero (same convention as the other #262 end-line
+// fields).
+func binEndLine(e *ast.BinExpr) int32 {
+	return orLine(e.EndLine, e.Line)
+}
+
 // exprBin compiles a binary expression; arithmetic folds, comparisons go
 // through EQ/LT/LE, logicals go through short-circuit.
 //
@@ -318,14 +325,14 @@ func (fs *funcState) exprBin(e *ast.BinExpr) expDesc {
 		// eCall carrying a jump chain would be misrouted through
 		// adjustExprList's multi-value branch and the jump chain would
 		// never be patched (JMP sBx=-1 infinite loop).
-		fs.dischargeVars(e.EndLine, &r)
+		fs.dischargeVars(binEndLine(e), &r)
 		fs.concat(&r.fJmp, l.fJmp)
 		return r
 	case ast.OpOr:
 		l := fs.expr(e.L)
 		fs.goIfFalse(e.Line, &l)
 		r := fs.expr(e.R)
-		fs.dischargeVars(e.EndLine, &r)
+		fs.dischargeVars(binEndLine(e), &r)
 		fs.concat(&r.tJmp, l.tJmp)
 		return r
 	case ast.OpEq, ast.OpNe, ast.OpLt, ast.OpLe, ast.OpGt, ast.OpGe:
@@ -363,13 +370,14 @@ func (fs *funcState) exprBin(e *ast.BinExpr) expDesc {
 	// Both happen inside codearith, i.e. at posfix time, so they take e.EndLine (#262). A numeral left
 	// deferred past infix is materialized here too, hence EndLine for it as well -- `1 %<nl>0` puts the
 	// MOD (and its operands, if any needed a register) on line 2.
+	end := binEndLine(e)
 	rb := lrk
 	var rc int
 	if rb < 0 {
-		rc = fs.exp2RK(e.EndLine, &r)
-		rb = fs.exp2RK(e.EndLine, &l)
+		rc = fs.exp2RK(end, &r)
+		rb = fs.exp2RK(end, &l)
 	} else {
-		rc = fs.exp2RK(e.EndLine, &r)
+		rc = fs.exp2RK(end, &r)
 	}
 	// Order: free the higher-numbered temp first, then the lower one
 	// (keeps the stack discipline).
@@ -389,7 +397,7 @@ func (fs *funcState) exprBin(e *ast.BinExpr) expDesc {
 		}
 	}
 	op := arithOpcode(e.Op)
-	pc := fs.emitABC(e.EndLine, op, 0, rb, rc)
+	pc := fs.emitABC(end, op, 0, rb, rc)
 	return expDesc{k: eRelocable, info: pc, tJmp: NoJump, fJmp: NoJump}
 }
 
@@ -496,7 +504,8 @@ func (fs *funcState) exprCompare(e *ast.BinExpr) expDesc {
 	rb := fs.exp2RK(e.Line, &l)
 	r := fs.expr(e.R)
 	// The right operand, the comparison and its JMP are all codecomp, i.e. posfix time: e.EndLine (#262).
-	rc := fs.exp2RK(e.EndLine, &r)
+	end := binEndLine(e)
+	rc := fs.exp2RK(end, &r)
 	if !bytecode.IsK(rc) {
 		fs.freeReg(rc)
 	}
@@ -506,8 +515,8 @@ func (fs *funcState) exprCompare(e *ast.BinExpr) expDesc {
 	if swap {
 		rb, rc = rc, rb
 	}
-	fs.emitABC(e.EndLine, ic, want, rb, rc)
-	pc := fs.jump(e.EndLine)
+	fs.emitABC(end, ic, want, rb, rc)
+	pc := fs.jump(end)
 	return expDesc{k: eJmp, info: pc, tJmp: NoJump, fJmp: NoJump}
 }
 
@@ -531,7 +540,7 @@ func (fs *funcState) exprConcat(e *ast.BinExpr) expDesc {
 			continue
 		}
 		parts = append(parts, cur)
-		lines = append(lines, e.EndLine)
+		lines = append(lines, binEndLine(e))
 		break
 	}
 	base := fs.freereg
@@ -540,7 +549,7 @@ func (fs *funcState) exprConcat(e *ast.BinExpr) expDesc {
 		fs.exp2NextReg(lines[i], &pe)
 	}
 	last := fs.freereg - 1
-	pc := fs.emitABC(e.EndLine, bytecode.CONCAT, 0, base, last)
+	pc := fs.emitABC(binEndLine(e), bytecode.CONCAT, 0, base, last)
 	// free base..last (A is patched later at exp2reg time; the register
 	// watermark first drops back below base)
 	for fs.freereg > base {
@@ -556,6 +565,7 @@ func (fs *funcState) exprConcat(e *ast.BinExpr) expDesc {
 // line: `-A<nl>.x` puts GETTABLE and UNM on 2 (#262).
 func (fs *funcState) exprUn(e *ast.UnExpr) expDesc {
 	sub := fs.expr(e.E)
+	end := orLine(e.EndLine, e.Line)
 	switch e.Op {
 	case ast.OpUnm:
 		// constant folding: -numeric-literal (isnumeral: a jump-chained
@@ -565,21 +575,21 @@ func (fs *funcState) exprUn(e *ast.UnExpr) expDesc {
 			out.nval = -sub.nval
 			return out
 		}
-		fs.exp2AnyReg(e.EndLine, &sub)
+		fs.exp2AnyReg(end, &sub)
 		fs.freeExp(&sub)
-		pc := fs.emitABC(e.EndLine, bytecode.UNM, 0, sub.info, 0)
+		pc := fs.emitABC(end, bytecode.UNM, 0, sub.info, 0)
 		return expDesc{k: eRelocable, info: pc, tJmp: NoJump, fJmp: NoJump}
 	case ast.OpNot:
 		// short-circuit: for a jump-chained expression just swap t/f
-		fs.exp2AnyReg(e.EndLine, &sub)
+		fs.exp2AnyReg(end, &sub)
 		fs.freeExp(&sub)
-		pc := fs.emitABC(e.EndLine, bytecode.NOT, 0, sub.info, 0)
+		pc := fs.emitABC(end, bytecode.NOT, 0, sub.info, 0)
 		out := expDesc{k: eRelocable, info: pc, tJmp: sub.fJmp, fJmp: sub.tJmp}
 		return out
 	case ast.OpLen:
-		fs.exp2AnyReg(e.EndLine, &sub)
+		fs.exp2AnyReg(end, &sub)
 		fs.freeExp(&sub)
-		pc := fs.emitABC(e.EndLine, bytecode.LEN, 0, sub.info, 0)
+		pc := fs.emitABC(end, bytecode.LEN, 0, sub.info, 0)
 		return expDesc{k: eRelocable, info: pc, tJmp: NoJump, fJmp: NoJump}
 	}
 	return expDesc{}

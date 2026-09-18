@@ -43,9 +43,10 @@ metadata:
 > `internal/frontend/parse/expr.go` 与 `stmt.go`(填 `p.lastLine`)、
 > `internal/frontend/compile/codegen.go`(`exprBin`/`exprCompare`/`exprConcat`/`exprUn` 改用 `EndLine`)、
 > `internal/frontend/compile/stmt.go`(`storeVar` 的 store 行改为语句末行;`stmtNumFor` 表头逐项取行)。
-> 新测试 `internal/frontend/compile/issue262_operator_line_test.go`(三张 LineInfo 表,期望值取自
-> `luac5.1 -p -l`)、`test/regression/fuzz_262_test.go`(12 条 pcall 消息含行号,逐条与 `lua5.1` 二进制
-> 比对过),语料入 `test/fuzz/testdata/fuzz/FuzzOracleDiffTiered/6508df401c98220d`。
+> 新测试 `internal/frontend/compile/issue262_operator_line_test.go`(四张 LineInfo 表共 68 行,期望值取自
+> `luac5.1 -p -l`)、`test/regression/fuzz_262_test.go`(21 条 pcall 消息含行号,逐条与 `lua5.1` 二进制
+> 比对过,另有 1 条 activelines 用例与 3 条 while 闭包语义用例),语料入
+> `test/fuzz/testdata/fuzz/FuzzOracleDiffTiered/6508df401c98220d`。
 
 ## 任务
 
@@ -193,7 +194,7 @@ RK 时会错位,所以按 opcode 分桶比多重集),模板补七条局部目标
 
 ### 6. 验证
 
-- 四张编译期 LineInfo 表(运算符 / store / 数值 for 表头 / 其余语句发射点,共 64 行)与 21 条 e2e 消息
+- 四张编译期 LineInfo 表(运算符 / store / 数值 for 表头 / 其余语句发射点,共 68 行)与 21 条 e2e 消息
   + 1 条 activelines 用例 + 3 条 while 闭包语义用例,全部在 master 上失败、在分支上通过(对照用
   `git worktree` 建的 master 检出,不用 stash);e2e 期望值逐条与 `lua5.1` 二进制输出比对过。第二轮
   审阅者的模板加上短路键与局部目标赋值共 21019 个形状(含嵌套 proto)在最终树上逐指令行号 0 差异,
