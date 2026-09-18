@@ -109,6 +109,12 @@ func TestStoreLineIsStatementEnd(t *testing.T) {
 		{"settable, #248 shape", "A\n.x = 1", []int32{1, 2, 0}},
 		// SETGLOBAL takes the same rule even though it cannot raise, so the two store kinds do not drift.
 		{"setglobal, call rhs", "x = f(1,\n2)", []int32{1, 1, 2, 1, 2, 0}},
+		// Multi-target: a local target's MOVE is luaK_storevar's exp2reg at the same lastline as the other
+		// stores (found by the final independent review; it was the statement's first line). The leading 1 is
+		// our LOADNIL for `local a, b`, which luac elides.
+		{"multi-target, local moves", "local a, b\na, b = 1,\n2", []int32{1, 2, 3, 3, 3, 0}},
+		{"multi-target, local and global", "local a\na, x = 1,\n2", []int32{1, 2, 3, 3, 3, 0}},
+		{"multi-target, local from call", "local a, b\na, b = f(\n)", []int32{1, 2, 2, 3, 3, 0}},
 	} {
 		block, err := parse.Parse(lex.New([]byte(tc.src), "z"), "z")
 		if err != nil {
