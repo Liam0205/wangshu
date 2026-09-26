@@ -475,7 +475,7 @@
   | 同族缺陷共四格 | — | ① 括号与调用参数(主 case)② 赋值右侧 + `return` + 泛型 for(`ends` 参数接线时传了 `nil`,靠自查清单查出;三处**全都**偏且偏在会 raise 的 GETTABLE 上)③ 单目标赋值快速路径(`storeVar` 用**同一个** `line` 参数同时干「物化 RHS」与「发射 store」两件事,靠 PR #253 远端评审查出,已拆成 `rhsLine` + `line`) |
   | 泛型 for 的时机陷阱 | `parse/stmt.go` | 末元素的行必须在 `check_match(DO)` **之前**取:`GenForStmt` 节点是循环体解析完才构造的,那时 `p.lastLine` 已指向 `end`,直接用会把迭代器的 GETTABLE 推到循环之外。`for k in A.x\n do end`(GETTABLE 归 1)与 `for k in A.x\n, 1 do end`(归 2)这一对用例锁定它 |
   | 第一版修法把 #248 自己的语料改红 | `testdata/fuzz/FuzzOracleDiff/8dff36b8bd115962` | `test-all`/`conformance-all`/`difftest-all` 全绿,只有 `make fuzz-oracle`(重放常驻语料)逮到——`difftest` **不重放** `testdata/fuzz/`,而同族回归最可能正落在那里 |
-  | 仍未对齐的残留(不可见) | — | `storeVar` 的 store 行(`x = A\n.x` 的 SETGLOBAL 我们 1 / luac 2,已用能 raise 的 `__newindex` store 验证不产生用户可见差分)、`f{...}`/`f"..."` 糖式调用的单参数物化行(`t.x\n{1}` 的 NEWTABLE 我们 2 / luac 1)、数值 for 的 FORPREP/LOADK 行。已登记 `llmdoc/memory/doc-gaps.md` |
+  | 仍未对齐的残留(不可见) | — | `storeVar` 的 store 行(`x = A\n.x` 的 SETGLOBAL 我们 1 / luac 2,已用能 raise 的 `__newindex` store 验证不产生用户可见差分)、`f{...}`/`f"..."` 糖式调用的单参数物化行(`t.x\n{1}` 的 NEWTABLE 我们 2 / luac 1)、数值 for 的 FORPREP/LOADK 行。已登记 `llmdoc/memory/doc-gaps.md`。**2026-09-18 订正(#262)**:这份清单已作废,其中 `storeVar` 的 store(表目标上是 SETTABLE)和数值 for 的 FORPREP 其实都会 raise;#262 把它们连同其余同族位置全部对齐,21019 个形状逐指令行号 0 差异,见 [04](04-frontend-parser-codegen.md) §5.2.2 订正块与 `internal/frontend/compile/issue262_operator_line_test.go` |
 
   四条判据:①**自己从参照实现行为归纳出的口径,与别人对源码的陈述一样需要回到源码验证**——能读源码就
   去读(`luac5.1` 五行给出答案),否则构造让两个候选模型给出不同答案的输入

@@ -545,6 +545,15 @@ emit 点显式传一个行参数、行号从 AST 节点上就近取」(`funcstat
 能 raise 的 `__newindex` store 验证过不产生用户可见差分)、`f{...}` / `f"..."` 糖式调用的单参数物化行
 (`t.x\n{1}` 的 NEWTABLE 我们 2 / luac 1)、数值 for 的 FORPREP/LOADK 行。
 
+> **订正(2026-09-18,#262)**:上面这段残留清单**已作废**。三项里有两项当时判错了——`storeVar` 的 store
+> 在表目标上是 SETTABLE,**会** raise;数值 for 表头的 FORPREP 也**会** raise。#262 按 `lparser.c` 的非终结符
+> 列模板,用 `luac5.1 -p -l` 与望舒 `LineInfo` 逐指令比对,把这三项连同运算符的 posfix 行、泛型 for 的
+> TFORLOOP、构造器字段、方括号键、CLOSURE / CLOSE、局部变量作多目标赋值目标的 MOVE 等全部对齐,最终
+> 21019 个形状(含嵌套 proto)逐指令行号 0 差异。可执行的行号规范是
+> `internal/frontend/compile/issue262_operator_line_test.go`;经过与判据见 `llmdoc/memory/doc-gaps.md` 里
+> 「前端行号记账模型与 PUC 不同构」那一条(已完成),以及
+> `llmdoc/memory/reflections/2026-09-18-issue262-operator-line-is-posfix-lastline.md`。
+
 **判据**(比结论更值得记):同族缺陷至今在**四个**语法位置各出现一次,而 §5.2.1 末尾自己写着「要构造
 两种规则会给出不同答案的写法」——#248 对多目标赋值那一格做到了,却没有对「运算符行 vs lastline」这条
 规则本身做到。改行号归属时,除了以 `luac5.1 -p -l` 输出为准,还要:① 问「参照实现内部是怎么算这个量
