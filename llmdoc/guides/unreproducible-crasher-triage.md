@@ -264,7 +264,7 @@ panic(input 决定),也可以是 worker 进程被 OS 因资源耗尽 kill(与 in
 
 | 征象 | 判定 | 处置方向 |
 |---|---|---|
-| `context deadline exceeded` + **无** failing input 文件 | fuzz 引擎 30s 窗口收尾时的工具链 flake(golang/go#75804 一类) | 单独复跑即过,不入 corpus,不开 issue(反复出现再入 doc-gaps) |
+| `context deadline exceeded` + **无** failing input 文件 | Go 1.27 之前是 fuzz 引擎收尾时的工具链 flake(golang/go#75804);1.27.0 已修复,`go-fuzz.sh` 的对应重试也已删除(#180) | **不再按 flake 处理**:升级后 2199 次目标运行里一次都没出现过,而且读源码没找到别的来源,所以再出现就说明有新的机制,按真失败定位 |
 | `Failing input written to testdata/...` + input **可精确重放** | 真 crasher,input 决定的 VM bug | 走常规调查,定位 VM 侧根因 |
 | `Failing input written to testdata/...` + input 精确重放**多次干净** + 几千万 execs 后才死一次 | 进程级资源耗尽嫌疑(内存 / mmap 数 / OS OOM killer / **CPU wall-clock 触发 fuzz 10 秒 per-input 看门狗**) | **本 guide 剩余各节** |
 

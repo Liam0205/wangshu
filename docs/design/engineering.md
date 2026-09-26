@@ -8,7 +8,7 @@
 > 主要借鉴 [Liam0205/pineapple](https://github.com/Liam0205/pineapple) 的实践(同作者多语言
 > monorepo,hooks/CI/nightly-fuzz 体系成熟),并补强其四处已知缺口(经评审定稿):
 
-**每个 workflow 的每个 job 都有 job 级 `timeout-minutes`**,nightly 那个 job 里**每一个**步骤还额外有 step 级 `timeout-minutes`(含两个 `uses:` 步骤:checkout / setup-go 各 10):装 oracle 12、rolling-seed 170、GC-stress 75、auto-mode 170、native go-fuzz 按层取值、oracle-diff go-fuzz 80(p1 腿专属)、tiered-oracle go-fuzz 按层取值(p3/p4 专属)、upload 15、triage 10;job 上限 350。native go-fuzz 的上限**按层取值**:后面的步骤都是 `if: always()`,所以要满足的是「前置 + 本步上限 + 后面每一步的上限 < job 上限」,而 p1 的尾巴含 oracle-diff、p3/p4 的尾巴含 tiered-oracle。step 上限是**两侧**约束:既要盖过合法最坏情形(该层的 target 数 × `gofuzztime` 再加两次 #75804 重试),又要**在 job 上限之前触发**(这一步之前约 40 分钟已消耗)。三层各自的链长实测都在 350 以内,`budgetcheck` 那一步在每层上各校验一次。
+**每个 workflow 的每个 job 都有 job 级 `timeout-minutes`**,nightly 那个 job 里**每一个**步骤还额外有 step 级 `timeout-minutes`(含两个 `uses:` 步骤:checkout / setup-go 各 10):装 oracle 12、rolling-seed 170、GC-stress 75、auto-mode 170、native go-fuzz 按层取值、oracle-diff go-fuzz 80(p1 腿专属)、tiered-oracle go-fuzz 按层取值(p3/p4 专属)、upload 15、triage 10;job 上限 350。native go-fuzz 的上限**按层取值**:后面的步骤都是 `if: always()`,所以要满足的是「前置 + 本步上限 + 后面每一步的上限 < job 上限」,而 p1 的尾巴含 oracle-diff、p3/p4 的尾巴含 tiered-oracle。step 上限是**两侧**约束:既要盖过合法最坏情形(该层的 target 数 × `gofuzztime`,再加两个 `gofuzztime` 的余量;这份余量原本是给两次 #75804 重试留的,重试已删除,余量保留),又要**在 job 上限之前触发**(这一步之前约 40 分钟已消耗)。三层各自的链长实测都在 350 以内,`budgetcheck` 那一步在每层上各校验一次。
 
 **`gofuzztime` 也按层取值(2026-08-29,承下面 §3.2 新增的 tiered-oracle 步骤)**:p3/p4 现在带**两个**
 oracle 类 fuzz 步骤(p1 的 `FuzzOracleDiff` 那一步之外多一个 `FuzzOracleDiffTiered`),而 p1 只有一个,
@@ -52,9 +52,10 @@ fmt:                                                ## 格式化(写回)
 lint:                                               ## 全仓静态检查
 	golangci-lint run ./...
 
-test-scripts:                                       ## 工具脚本自测(#179 go-fuzz.sh retry-path;#236-#241 lua tarball 取包)
-	bash scripts/test-go-fuzz-retry.sh
+test-scripts:                                       ## 工具脚本自测(#255 nightly triage;#236-#241 lua tarball 取包;cover.sh tag 传递)
+	bash scripts/test-nightly-fuzz-classify.sh
 	bash scripts/test-fetch-lua-tarball.sh
+	bash scripts/test-cover.sh
 
 test:                                               ## 全部单测(含 race,见 §3.1)
 	go test -race ./...
@@ -84,17 +85,22 @@ tidy:
 ```
 
 - 借鉴 pineapple 的 `go-fuzz.sh`(grep 自动发现 `^func Fuzz` 目标逐个跑),但入口统一挂 Makefile。
-- **`test-scripts` 目标**(2026-07-25,issue #179 引入):tooling 类回归脚本必须至少挂在一处检查上,否则一次 downstream 改动就能让它静默失效——issue #179 之前 `scripts/test-go-fuzz-retry.sh` 失效期至少半年没人发现。目标本身秒级,同时挂 `make all`(本地 pre-commit)与 `ci.yml` 独立 job(PR 必过检查,失败信号清晰、可 rerun),两处检查同时对它负责。目前两个脚本:`scripts/test-go-fuzz-retry.sh`(验证 `go-fuzz.sh` 对 golang/go#75804 spurious deadline 的重试逻辑)与 **`scripts/test-fetch-lua-tarball.sh`**(2026-08-09,#236-#241 引入,五个用例钉住 `scripts/fetch-lua-tarball.sh` 的取包行为,见 §4)。后者的五个用例**全部离线**(用 `file://` origin 冒充上游),因为它防的正是上游抖动——一个「防住外部抖动」的测试如果自己依赖上游,它加的是噪声不是防线。其中「curl 调用带限时标志」这一条第一版**grep 整个文件、假绿**:把 `--max-time` 从调用里删掉后照旧通过,因为那个词在脚本顶部的注释里还在;现在只截取那条 curl 调用再检查。判据:**检查代码属性的测试要作用在代码本身上,一个注释就能满足的测试没有在测代码**(方法论见 `llmdoc/guides/prove-the-path-under-test.md` §9.1b)。
+- **`test-scripts` 目标**(2026-07-25,issue #179 引入):tooling 类回归脚本必须至少挂在一处检查上,否则一次 downstream 改动就能让它静默失效——issue #179 之前 `scripts/test-go-fuzz-retry.sh` 失效期至少半年没人发现。目标本身秒级,同时挂 `make all`(本地 pre-commit)与 `ci.yml` 独立 job(PR 必过检查,失败信号清晰、可 rerun),两处检查同时对它负责。`scripts/test-go-fuzz-retry.sh`(验证 `go-fuzz.sh` 对 golang/go#75804 假失败的重试逻辑)随那次重试一起在 2026-09-26 删除(#180,见 §1.1)。目前的脚本有 `scripts/test-nightly-fuzz-classify.sh`(nightly 自动开 issue 的分类逻辑)、`scripts/test-cover.sh`(`cover.sh` 的 tag 传递),以及 **`scripts/test-fetch-lua-tarball.sh`**(2026-08-09,#236-#241 引入,五个用例钉住 `scripts/fetch-lua-tarball.sh` 的取包行为,见 §4)。后者的五个用例**全部离线**(用 `file://` origin 冒充上游),因为它防的正是上游抖动——一个「防住外部抖动」的测试如果自己依赖上游,它加的是噪声不是防线。其中「curl 调用带限时标志」这一条第一版**grep 整个文件、假绿**:把 `--max-time` 从调用里删掉后照旧通过,因为那个词在脚本顶部的注释里还在;现在只截取那条 curl 调用再检查。判据:**检查代码属性的测试要作用在代码本身上,一个注释就能满足的测试没有在测代码**(方法论见 `llmdoc/guides/prove-the-path-under-test.md` §9.1b)。
 - `make hooks` 替代 pineapple 的"README 一行指引"——新人 clone 后 `make hooks` 一步完成,README 与 [00-overview](./p1-interpreter/00-overview.md) 都指向它。
 - **`make all` 是「本地提交前全检」**——七件套含 `fuzz / conformance / difftest` 全部跑一遍(耗时 ~2-3 min),目的是把 nightly 才跑的强度拉到本地强制,与 CI 必过检查的口径对齐。日常小改动若不想每次等三分钟,用 `make test` 跑主模块 race + `make fmt lint` 即可;commit/push 前再过一次 `make all`。
 
 ### 1.1 fuzz seed 纪律(`make fuzz` 兜底机制)
 
-`scripts/go-fuzz.sh <fuzztime>` 给每个 fuzz target 一个 `-fuzztime` wall-clock 上限,**Go fuzz 框架内部用 `context.WithTimeout` 实现**。到点后的 deadline 错误正常应被框架抑制(`internal/fuzz` 的 `err == fuzzCtx.Err()` 检查),但 context 取消传播是「先关父 done channel、后 cancel 子 context」,存在一个竞态窗口:coordinator 在窗口内观察到 done 时,抑制检查失败,deadline 逃逸成 `--- FAIL: FuzzX: context deadline exceeded` 假失败(golang/go#75804;本仓 issue #63,机制级复现见该 issue)。**上游修复已随 Go 1.27.0 发布**(2026-08-27 核实,#180):`$GOROOT/src/internal/fuzz/fuzz.go` 的抑制检查现在是 `err == ctx.Err() || err == fuzzCtx.Err() || isInterruptError(err)`(升级前只有后两项),紧邻注释逐字引用 `go.dev/issue/75804`,说明「ctx 的 deadline 到期后存在一个窗口:`ctx.Err()` 已置位而子 context `fuzzCtx` 尚未被 cancel」——与本节推断的竞态窗口一致。对照 upstream 同一文件:`go1.26.2` 里 `issue/75804` 出现 **0** 次、`go1.27.0` 出现 **1** 次,所以这是 1.27 新增的修复,而不是 1.27 里本来就有的代码。`go-fuzz.sh` 对此做条件重试:失败输出含 deadline 字样**且无 `Failing input written to` crasher 落盘**才判为假失败重试一次;真 crasher(必伴随 crasher 落盘行)立即如实失败,重试后再挂也如实失败——不掩盖真反例。
+`scripts/go-fuzz.sh <fuzztime>` 给每个 fuzz target 一个 `-fuzztime` wall-clock 上限,**Go fuzz 框架内部用 `context.WithTimeout` 实现**。到点后的 deadline 错误正常应被框架抑制(`internal/fuzz` 的 `err == fuzzCtx.Err()` 检查),但 context 取消传播是「先关父 done channel、后 cancel 子 context」,存在一个竞态窗口:coordinator 在窗口内观察到 done 时,抑制检查失败,deadline 逃逸成 `--- FAIL: FuzzX: context deadline exceeded` 假失败(golang/go#75804;本仓 issue #63,机制级复现见该 issue)。**上游修复已随 Go 1.27.0 发布**(2026-08-27 核实,#180):`$GOROOT/src/internal/fuzz/fuzz.go` 的抑制检查现在是 `err == ctx.Err() || err == fuzzCtx.Err() || isInterruptError(err)`(升级前只有后两项),紧邻注释逐字引用 `go.dev/issue/75804`,说明「ctx 的 deadline 到期后存在一个窗口:`ctx.Err()` 已置位而子 context `fuzzCtx` 尚未被 cancel」——与本节推断的竞态窗口一致。对照 upstream 同一文件:`go1.26.2` 里 `issue/75804` 出现 **0** 次、`go1.27.0` 出现 **1** 次,所以这是 1.27 新增的修复,而不是 1.27 里本来就有的代码。`go-fuzz.sh` 曾对此做条件重试:失败输出含 deadline 字样**且没有 `Failing input written to` 这一行(即没有写出 crasher)**时,判为假失败并重试一次;真 crasher 立即如实失败。**这次重试已在 2026-09-26 删除**(#180),现在任何失败都会让这一轮 nightly 失败。
 
-**升级到 1.27.0 之后这个条件重试仍然保留**(#180 只做「升 go.mod + 改本节描述」这一步)。理由:它是目前**唯一**区分「真 crasher」与「工具链竞态」的判据,删掉之后一旦判错,代价是**真 bug 被当成噪声重试掉**;而它的触发频率本来就很低(约 450 个 job 里 9 次),所以**本轮那次 30 秒级 fuzz smoke 报 0 次重试并不构成证据** —— 在原来那个频率下,一次这么短的 smoke 本来也极可能是 0 次,这个观察在「修复生效」与「修复没生效」两个假设下给出的是同一个结果。修复真的生效之后,这个数字应当在 nightly 上自然归零 —— **等实测归零再删,就有数据背书而不是靠推断**,这也是 #180 那条「评估并删除」的正确执行顺序(评估的结论是证据还不够,于是这一轮只做升级与文档同步)。方法论见 `llmdoc/guides/prove-the-path-under-test.md` §4.6a;核实上游是否真的修了那一步见 `llmdoc/guides/design-claims-vs-codebase-physics.md` §5.1。
+**删除的依据**。升级时(2026-08-27)这次重试没有删,定下了两条删除条件,这次两条都已满足:
 
-**补一条审计指出、而我原先的理由里漏掉的**:这个重试的判据建立在**症状**上(输出含 deadline 字样且无 crasher 落盘),而不是建立在 #75804 这个具体成因上。所以它同时覆盖**任何**「产生无 crasher 的 deadline 失败」的机制,并不是 #75804 修好之后就纯属多余。这也削弱了「nightly 归零即可删」这个触发条件 —— 归零只说明 #75804 那一条路没再触发,不等于这类症状不会从别处来。删它之前还要多问一句:还有没有别的机制会产生同样的症状。
+- **(a) nightly 在与历史频率同量级的运行次数内归零**。统计的是 `go-fuzz.sh` 打出的重试标记 `hit golang/go#75804`。升级前 120 次 nightly(2026-08-07 至 08-27)共 1851 次 fuzz 目标运行,触发 14 次重试(分布在 13 个 run 里);升级后 123 次 nightly(2026-08-28 至 09-25)共 2199 次目标运行,**0 次**,日志里连 `context deadline exceeded` 都没有出现。按升级前约 0.76% 的触发率,2199 次一次都不触发的概率约为 5.6×10⁻⁸。升级前的数据同时是对照组:它说明这个统计方法确实能数到重试,升级后的 0 不是 grep 写错了。
+- **(b) 没有别的机制会产生「不带 crasher 的 deadline 失败」**。这次重试的判据建立在**症状**上,而不是建立在 #75804 这个具体成因上,所以只看 (a) 不够。读了 Go 1.27 工具链源码:能把 deadline 报成测试失败的只有 `-fuzztime` 那一个 `context.WithTimeout`(`internal/fuzz/fuzz.go`),1.27 的 `stop()` 已同时检查 `ctx.Err()` 与 `fuzzCtx.Err()`;其余几个 `WithTimeout` 都在 worker 内部,分别管单个输入和最小化,超时时要么安静结束、要么原样返回 crasher。本仓的 fuzz 测试都不调用 `SetContext`,也没有自己的 `WithTimeout`。CI 按 `go.mod` 安装 1.27.x,1.27.0 到 1.27.1 之间 `internal/fuzz` 与 `testing` 没有改动。
+
+删除之后,失败的方向也变了。保留重试时,最担心的是它把真 crasher 当噪声重试掉,那种失效 CI 仍然是绿的,不会有人发现。删除之后,如果还有没想到的机制产生这种症状,nightly 会变红并自动开 bug issue,是多报一次,而不是把真 bug 藏起来。所以删除这一步本身就是自我检查的。
+
+nightly 各 step 的超时上限当初按「每个目标最多两次 #75804 重试」留了余量。这部分余量这次**没有收回**,数值不变,只把 workflow 注释改成「余量」的说法;要不要把它还给 fuzz 时长,另行决定。方法论见 `llmdoc/guides/prove-the-path-under-test.md` §4.6a;核实上游是否真的修了那一步见 `llmdoc/guides/design-claims-vs-codebase-physics.md` §5.1。
 
 另一类 wall-clock 相关 false alarm 来自 seed 本身:
 
