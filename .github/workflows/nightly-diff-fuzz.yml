@@ -215,8 +215,8 @@ jobs:
             go test -tags "${{ matrix.tags }}" ./test/difftest/ -run 'TestAuto_RandomScripts' -timeout 150m 2>&1 | tee autodiff.log
 
       # The wall-clock half of test/regression TestConcatStormKeepsWatchdogMargin, measured where it applies.
-      # That test guards go-fuzz's 10s per-input watchdog: FuzzP4ForceAllPromote runs each input four
-      # times, so one Run must stay under 2.5s at fuzzbudget.Steps. PR CI runs it only under -race, where
+      # That test guards go-fuzz's 10s per-input watchdog: FuzzAutoPromote runs each input four times
+      # (FuzzP4ForceAllPromote twice), so one Run must stay under 2.5s at fuzzbudget.Steps. PR CI runs it only under -race, where
       # the time measures the race detector and the runner's load, so the test logs the time there and
       # asserts only that the budget trips. This step is the one place the bound is enforced: same
       # runner class and same non-race build as the fuzz steps below, with WANGSHU_ON_FUZZ_RUNNER=1
@@ -492,7 +492,7 @@ jobs:
           elif grep -q -- "--- FAIL: TestConcatStormKeepsWatchdogMargin" watchdog-margin.log 2>/dev/null; then
             TITLE="watchdog margin regression (${{ matrix.variant }}): $(date -u +%F)"
             LABEL="bug"
-            BODY="nightly 的 watchdog-margin 检查失败:在 fuzz 用的 step budget 下,有写法的一次 Run 超过了 2.5 秒(go-fuzz 每个输入跑 4 次 Run,看门狗是 10 秒)。这通常说明 \`fuzzbudget.Steps\` 被调大了,或者某个计费比率变松了,不是基础设施失败。本地复现:\`go test -tags '${{ matrix.tags }}' ./test/regression/ -run '^TestConcatStormKeepsWatchdogMargin\$' -count=1 -v\`(本地上限是 250 毫秒)。日志 watchdog-margin.log 见 run artifacts:${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}。"
+            BODY="nightly 的 watchdog-margin 检查失败:在 fuzz 用的 step budget 下,有写法的一次 Run 超过了 2.5 秒(\`FuzzAutoPromote\` 每个输入跑 4 次 Run,go-fuzz 的看门狗是 10 秒)。这通常说明 \`fuzzbudget.Steps\` 被调大了,或者某个计费比率变松了,不是基础设施失败。本地复现:\`go test -tags '${{ matrix.tags }}' ./test/regression/ -run '^TestConcatStormKeepsWatchdogMargin\$' -count=1 -v\`(本地上限是 250 毫秒)。日志 watchdog-margin.log 见 run artifacts:${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}。"
           elif grep -Eq "hung or terminated unexpectedly|panic: deadlocked" "${FUZZ_LOGS[@]}" 2>/dev/null; then
             TITLE="go-fuzz worker failure (${{ matrix.variant }}): $(date -u +%F)"
             LABEL="bug"

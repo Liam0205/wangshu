@@ -137,8 +137,10 @@ func TestConcatStormKeepsWatchdogMargin(t *testing.T) {
 
 // watchdogMarginBound returns the ceiling for one Run and whether it is asserted at all.
 //
-// The quantity being protected is go-fuzz's 10s per-input watchdog on the nightly fuzz runner, where
-// FuzzP4ForceAllPromote runs each input four times: 10s / 4 = 2.5s per Run. Three builds, three answers:
+// The quantity being protected is go-fuzz's 10s per-input watchdog on the nightly fuzz runner. Both
+// P4-leg harnesses share fuzzbudget.Steps; FuzzAutoPromote runs each input four times (two rounds, one
+// Run on each of two States) and FuzzP4ForceAllPromote twice, so the four-Run harness binds:
+// 10s / 4 = 2.5s per Run. Three builds, three answers:
 //
 //   - On the fuzz runner (WANGSHU_ON_FUZZ_RUNNER=1, set only by the nightly step that runs this test
 //     without -race): 2.5s. This measures the constraint directly on the machine it applies to, so no
