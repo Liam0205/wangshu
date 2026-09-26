@@ -23,41 +23,18 @@ if [ -n "$tags" ]; then
     tags_arg=(-tags "$tags")
 fi
 
-# run_target <pkg> <func>: run one fuzz target, swallowing a known Go
-# toolchain spurious failure.
+# run_target <pkg> <func>: run one fuzz target and report its exit status
+# as-is.
 #
-# golang/go#75804 (wangshu issue #63): when -fuzztime expires, the
-# internal/fuzz coordinator suppresses the deadline error via
-# `err == fuzzCtx.Err()`, but context cancellation propagates as "close the
-# parent done channel first, cancel the child context later", leaving a
-# window where ctx.Err() is set while fuzzCtx.Err() is still nil; the
-# suppression misses and the deadline escapes as a test failure of the form
-# `--- FAIL: FuzzX ... context deadline exceeded`. No crash, no new
-# counterexample corpus -- a pure toolchain race.
-#
-# UPSTREAM STATUS (2026-08-28, #180): FIXED, and the fix ships in Go 1.27.0, which this repo now requires.
-# $GOROOT/src/internal/fuzz/fuzz.go's suppression check reads
-# `err == ctx.Err() || err == fuzzCtx.Err() || isInterruptError(err)`; the `ctx.Err()` term is the fix and its
-# comment cites go.dev/issue/75804. Confirmed new in 1.27 by comparing upstream tags: `issue/75804` appears 0
-# times in go1.26.2's copy of that file and once in go1.27.0's.
-#
-# The retry below is KEPT anyway. It is the only signal separating a real crasher from the race, so removing it
-# on a wrong call means retrying a real bug away as noise -- and that failure mode leaves CI green, so it would
-# not announce itself. Historical trigger rate was ~9 in 450 jobs, and one clean fuzz smoke is far too small a
-# sample to contradict that.
-#
-# TWO conditions before deleting, not one. (a) nightly shows the rate at zero over a comparable number of runs
-# -- but that alone is NOT enough, because this predicate keys on the SYMPTOM (deadline text, no crasher) and
-# not on #75804, so zero only proves that one cause stopped firing. (b) no other mechanism can produce a
-# crasher-less deadline failure. See docs/design/engineering.md 1.1.
-#
-# Adjudication discipline (never mask real failures):
-#   - a real crasher always comes with "Failing input written to
-#     testdata/fuzz/..." (testing/fuzz.go's fixed output for
-#     fuzzCrashError) -- if present, it is a real failure, report at once;
-#   - only "failure output mentions deadline AND no crasher was written" is
-#     judged a #75804 spurious failure and retried once; if the retry fails
-#     again (for any reason), fail honestly.
+# There is no retry. Until 2026-09 a deadline failure without a written
+# crasher was retried once as golang/go#75804 (wangshu #63), a toolchain
+# race where the -fuzztime deadline escaped the coordinator's suppression
+# check. Go 1.27.0 fixed it (internal/fuzz/fuzz.go now also checks
+# ctx.Err()), and 2199 post-upgrade nightly target runs logged zero
+# retries against 14 in 1851 before; nothing else in the toolchain or the
+# harnesses turns a deadline into a crasher-less failure (#180). Any
+# failure now fails the run, so a recurrence shows up red instead of
+# being retried away. See docs/design/engineering.md 1.1.
 run_target() {
     local pkg="$1" func="$2" log rc fdir
     log=$(mktemp)
@@ -71,90 +48,82 @@ run_target() {
     # target's own directory is cleared.
     fdir="fuzz-forensics/${func}"
     rm -rf "${pkg:?}/${fdir}"
-    for attempt in 1 2; do
-        set +e
-        # GOMEMLIMIT (issue #123 diagnostic hardening, tightened after
-        # issues #144/#145/#150/#151/#152): the fuzz coordinator starts
-        # -parallel=N worker child processes that each inherit this env
-        # var as a per-worker Go heap SOFT limit. It only makes GC run
-        # more aggressively and return memory to the OS sooner — the Go
-        # runtime never aborts on it (runtime/debug.SetMemoryLimit:
-        # "the application may still make progress"), so it lowers the
-        # RSS peak and buys headroom but CANNOT convert an OS OOM kill
-        # into an explicit Go OOM, nor guarantee a worker survives.
-        # (Issues #156/#157/#159 died silently WITH this limit set —
-        # allocation bursts can outrun GC, and SIGKILL leaves no trace.
-        # A hard cap would need process-level isolation, e.g. cgroups /
-        # ulimit -v; the next diagnostic layer is per-seed wall-clock
-        # tracking in the harness.)
-        #
-        # The concat-storm family of unreproducible crashers (#144-#152)
-        # showed that 6GiB was too generous: a single seed doing
-        # quadratic string concatenation (out = out .. cat(i)) can grow
-        # Go-heap temporary strings to several GiB before the step
-        # budget catches it — and under 4 parallel workers, four such
-        # seeds blow past any reasonable runner memory. 512MiB raises GC
-        # pressure early and is EXPECTED to lower concat-storm peaks
-        # (the arena is already capped at 64MiB inside each harness;
-        # 512MiB leaves ~448MiB for Go heap overhead, interpreter
-        # state, and temporary strings), but it is probabilistic, not a
-        # bound: allocation can outrun collection, and near-limit GC
-        # may slow legitimate seeds. No memory or throughput guarantee
-        # — acceptable for the current fuzz workload.
-        GOMEMLIMIT="${GOMEMLIMIT:-512MiB}" \
-        WANGSHU_FUZZ_FORENSICS_DIR="$fdir" \
-        go test "${tags_arg[@]+"${tags_arg[@]}"}" "./$pkg" -run='^$' \
-            -fuzz="^${func}\$" -fuzztime="$fuzztime" -timeout=120s -parallel=4 \
-            2>&1 | tee "$log"
-        rc=${PIPESTATUS[0]}
-        set -e
-        if [ "$rc" -eq 0 ]; then
-            rm -f "$log"
-            return 0
-        fi
-        # Diagnostic breadcrumbs for silent worker deaths (issue #123):
-        # capture memory/map-count state at failure time into the log
-        # stream so the uploaded artifact carries it.
-        if grep -q 'hung or terminated unexpectedly' "$log"; then
-            echo "── silent-worker-death diagnostics (issue #123) ──" >&2
-            free -m >&2 2>/dev/null || true
-            echo "vm.max_map_count: $(cat /proc/sys/vm/max_map_count 2>/dev/null || echo n/a)" >&2
-            # Worker autopsy (concat-storm family): "exit status 2" is
-            # the Go runtime's own fatal exit — the dying worker printed
-            # a stack trace, but internal/fuzz wires worker stderr to
-            # /dev/null. internal/fuzzforensics redirects each worker's
-            # fd 2 to fuzz-forensics/worker-<pid>-stderr.log; dump any
-            # log that grew beyond its one-line header, plus every
-            # flight-recorder record (which worker ran which input).
-            if [ -d "$pkg/$fdir" ]; then
-                for wf in "$pkg/$fdir"/worker-*-stderr.log; do
-                    [ -f "$wf" ] || continue
-                    if [ "$(wc -l < "$wf")" -gt 1 ]; then
-                        echo "── worker autopsy: $wf ──" >&2
-                        cat "$wf" >&2
-                    fi
-                done
-                # Flight records hold arbitrary mutated bytes (NUL,
-                # non-UTF8); any text filtering here would corrupt the
-                # only copy of a potential killer input. Point at the
-                # raw files (they ride the artifact upload) and emit
-                # just the printable header line for the log stream.
-                for rf in "$pkg/$fdir"/worker-*-input.log; do
-                    [ -f "$rf" ] || continue
-                    echo "── flight record (raw file in artifact): $rf ──" >&2
-                    head -c 512 "$rf" | tr -d '\0' | head -n 1 >&2 || true
-                done
-            fi
-        fi
-        if [ "$attempt" -eq 1 ] \
-           && grep -q 'context deadline exceeded' "$log" \
-           && ! grep -q 'Failing input written to' "$log"; then
-            echo "fuzz: $pkg :: $func hit golang/go#75804 (spurious deadline at fuzztime wrap-up, no crasher written) — retrying once" >&2
-            continue
-        fi
+    set +e
+    # GOMEMLIMIT (issue #123 diagnostic hardening, tightened after
+    # issues #144/#145/#150/#151/#152): the fuzz coordinator starts
+    # -parallel=N worker child processes that each inherit this env
+    # var as a per-worker Go heap SOFT limit. It only makes GC run
+    # more aggressively and return memory to the OS sooner — the Go
+    # runtime never aborts on it (runtime/debug.SetMemoryLimit:
+    # "the application may still make progress"), so it lowers the
+    # RSS peak and buys headroom but CANNOT convert an OS OOM kill
+    # into an explicit Go OOM, nor guarantee a worker survives.
+    # (Issues #156/#157/#159 died silently WITH this limit set —
+    # allocation bursts can outrun GC, and SIGKILL leaves no trace.
+    # A hard cap would need process-level isolation, e.g. cgroups /
+    # ulimit -v; the next diagnostic layer is per-seed wall-clock
+    # tracking in the harness.)
+    #
+    # The concat-storm family of unreproducible crashers (#144-#152)
+    # showed that 6GiB was too generous: a single seed doing
+    # quadratic string concatenation (out = out .. cat(i)) can grow
+    # Go-heap temporary strings to several GiB before the step
+    # budget catches it — and under 4 parallel workers, four such
+    # seeds blow past any reasonable runner memory. 512MiB raises GC
+    # pressure early and is EXPECTED to lower concat-storm peaks
+    # (the arena is already capped at 64MiB inside each harness;
+    # 512MiB leaves ~448MiB for Go heap overhead, interpreter
+    # state, and temporary strings), but it is probabilistic, not a
+    # bound: allocation can outrun collection, and near-limit GC
+    # may slow legitimate seeds. No memory or throughput guarantee
+    # — acceptable for the current fuzz workload.
+    GOMEMLIMIT="${GOMEMLIMIT:-512MiB}" \
+    WANGSHU_FUZZ_FORENSICS_DIR="$fdir" \
+    go test "${tags_arg[@]+"${tags_arg[@]}"}" "./$pkg" -run='^$' \
+        -fuzz="^${func}\$" -fuzztime="$fuzztime" -timeout=120s -parallel=4 \
+        2>&1 | tee "$log"
+    rc=${PIPESTATUS[0]}
+    set -e
+    if [ "$rc" -eq 0 ]; then
         rm -f "$log"
-        return "$rc"
-    done
+        return 0
+    fi
+    # Diagnostic breadcrumbs for silent worker deaths (issue #123):
+    # capture memory/map-count state at failure time into the log
+    # stream so the uploaded artifact carries it.
+    if grep -q 'hung or terminated unexpectedly' "$log"; then
+        echo "── silent-worker-death diagnostics (issue #123) ──" >&2
+        free -m >&2 2>/dev/null || true
+        echo "vm.max_map_count: $(cat /proc/sys/vm/max_map_count 2>/dev/null || echo n/a)" >&2
+        # Worker autopsy (concat-storm family): "exit status 2" is
+        # the Go runtime's own fatal exit — the dying worker printed
+        # a stack trace, but internal/fuzz wires worker stderr to
+        # /dev/null. internal/fuzzforensics redirects each worker's
+        # fd 2 to fuzz-forensics/worker-<pid>-stderr.log; dump any
+        # log that grew beyond its one-line header, plus every
+        # flight-recorder record (which worker ran which input).
+        if [ -d "$pkg/$fdir" ]; then
+            for wf in "$pkg/$fdir"/worker-*-stderr.log; do
+                [ -f "$wf" ] || continue
+                if [ "$(wc -l < "$wf")" -gt 1 ]; then
+                    echo "── worker autopsy: $wf ──" >&2
+                    cat "$wf" >&2
+                fi
+            done
+            # Flight records hold arbitrary mutated bytes (NUL,
+            # non-UTF8); any text filtering here would corrupt the
+            # only copy of a potential killer input. Point at the
+            # raw files (they ride the artifact upload) and emit
+            # just the printable header line for the log stream.
+            for rf in "$pkg/$fdir"/worker-*-input.log; do
+                [ -f "$rf" ] || continue
+                echo "── flight record (raw file in artifact): $rf ──" >&2
+                head -c 512 "$rf" | tr -d '\0' | head -n 1 >&2 || true
+            done
+        fi
+    fi
+    rm -f "$log"
+    return "$rc"
 }
 
 while IFS=: read -r file line decl; do

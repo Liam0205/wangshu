@@ -69,15 +69,16 @@ jobs:
           # native_fuzz_cap: the native go-fuzz step's bound, PER TIER, because two things differ.
           #
           # The legitimate worst case scales with the tier's target count (measured 4 / 5 / 6 target-runs,
-          # so 140 / 175 / 210 min at 35m, plus up to two per-target golang/go#75804 retries). And the room
+          # so 140 / 175 / 210 min at 35m, plus up to two fuzztimes of slack -- sized when go-fuzz.sh still
+          # retried golang/go#75804 once per target; the retry is gone (#180) and the slack is kept). And the room
           # differs: every later step runs `if: always()`, so what must fit under the 350-minute job cap is
           # prior + this bound + every later always() bound -- and p1 alone carries the oracle-diff step in
           # that tail (80 + 15 + 10 = 105, against p3/p4's 25). A PR review caught that bounding this step
           # alone still let the job cap fire first on p1, losing the triage that files the issue.
           #
-          # p1: 38 + 195 + 105 = 338 < 350. 195 is under p1's 210 two-retry worst case, so a p1 run that
-          #     retries twice is indistinguishable from a hang -- accepted, because retries measured 9 in
-          #     ~450 jobs and never twice in one job, and the trade buys a guaranteed triage.
+          # p1: 38 + 195 + 105 = 338 < 350. 195 is under p1's 210 base-plus-two-slack figure; that was
+          #     accepted when a double #75804 retry was the only way to use it (9 in ~450 jobs, never
+          #     twice in one job), and the trade buys a guaranteed triage.
           # p3/p4: 40 + 280 + 25 = 345 < 350, and 280 covers p4's 280 exactly.
           - variant: p1
             tags: ''
@@ -215,7 +216,7 @@ jobs:
       # Fail LOUDLY when a manual gofuzztime cannot fit the step bound, instead of letting the bound
       # truncate the sweep and lose coverage silently (review finding). The bound is fixed per tier while
       # gofuzztime is a free-form input, so the two can disagree: dispatching 45m puts p4's six targets at
-      # 270 min base, and one #75804 retry then exceeds the 280 bound. A silent truncation here looks
+      # 270 min base, and one fuzztime of slack then exceeds the 280 bound. A silent truncation here looks
       # exactly like a healthy run that simply found nothing, which is the failure mode this whole branch
       # is about.
       - name: check the fuzz budget fits the step bound (${{ matrix.variant }})
@@ -237,28 +238,27 @@ jobs:
           esac
           # Two thresholds, because two different things can be wrong.
           #
-          # FAIL threshold = one pass plus ONE retry. A retry is an observed, ordinary event (9 in ~450
-          # sampled jobs), so a budget that cannot absorb a single one is simply misconfigured: at 45m the
-          # p4 leg needs 315m against a 280 bound, and the truncation would look like a healthy run that
-          # found nothing.
+          # FAIL threshold = one pass plus ONE fuzztime of slack. The slack was sized for a golang/go#75804
+          # retry (9 in ~450 sampled jobs); go-fuzz.sh no longer retries (#180), but the thresholds are kept
+          # unchanged so the budget is not re-tuned in the same change. At 45m the p4 leg needs 315m against
+          # a 280 bound, and the truncation would look like a healthy run that found nothing.
           #
-          # WORST = base plus two golang/go#75804 retries. p1's cap is deliberately BELOW its worst
+          # WORST = base plus two fuzztimes of slack. p1's cap is deliberately BELOW its worst
           # (140 base, 210 worst, 195 cap) because the p1 chain has to leave room for the oracle-diff,
-          # upload and triage steps that follow it under `if: always()`; a p1 run that retries twice is
-          # accepted as indistinguishable from a hang, since retries measured 9 in ~450 jobs and never
-          # twice in one job. So a short retry allowance is a WARNING, not a failure -- and a check that
-          # failed the default configuration would be worse than the truncation it replaces.
+          # upload and triage steps that follow it under `if: always()`. So short slack is a WARNING, not a
+          # failure -- and a check that failed the default configuration would be worse than the
+          # truncation it replaces.
           base=$(( mins * TARGETS ))
           one=$(( base + mins ))
           worst=$(( base + 2 * mins ))
           echo "fuzztime=${FUZZTIME} (${mins}m) x ${TARGETS} targets: base ${base}m, worst ${worst}m, cap ${CAP}m"
           if [ "$one" -gt "$CAP" ]; then
-            echo "::error::gofuzztime=${FUZZTIME} needs ${one}m for one pass over ${TARGETS} targets plus a single retry, above the ${CAP}m step bound."
-            echo "::error::A retry is a normal event here (measured 9 in ~450 jobs), so the sweep would be truncated and coverage lost silently. Use about $(( CAP / (TARGETS + 1) ))m, or raise native_fuzz_cap in the matrix and re-check the chain against the job cap."
+            echo "::error::gofuzztime=${FUZZTIME} needs ${one}m for one pass over ${TARGETS} targets plus one fuzztime of slack, above the ${CAP}m step bound."
+            echo "::error::Without that slack a slow runner would truncate the sweep and lose coverage silently. Use about $(( CAP / (TARGETS + 1) ))m, or raise native_fuzz_cap in the matrix and re-check the chain against the job cap."
             exit 1
           fi
           if [ "$worst" -gt "$CAP" ]; then
-            echo "::warning::gofuzztime=${FUZZTIME} fits one pass (${base}m) but not two retries (${worst}m) within ${CAP}m; a double retry would be cut short. Accepted for this tier."
+            echo "::warning::gofuzztime=${FUZZTIME} fits one pass (${base}m) but not two fuzztimes of slack (${worst}m) within ${CAP}m. Accepted for this tier."
           fi
 
       - name: native go-fuzz long run (${{ matrix.variant }})
@@ -277,15 +277,14 @@ jobs:
         # cannot silently consume it. Sizing every step to sum under 350 would force cuts far deeper than
         # the observed cost justifies.
         #
-        # 320 = worst measured leg + TWO retries + slack. Target counts differ per tier (measured: p1 4,
+        # 320 = worst measured leg + TWO fuzztimes + slack. Target counts differ per tier (measured: p1 4,
         # p3 5, p4 6 target-runs), so at 35m the legs cost about 140 / 175 / 210 min.
         #
-        # The retry term is per TARGET, not per leg: go-fuzz.sh calls run_target once per discovered target
-        # and each gets its own two attempts for golang/go#75804's spurious deadline, with nothing capping
-        # retries across the leg. So two different targets in the p4 leg can each retry, giving
-        # 210 + 35 + 35 = 280 -- which an earlier value of 280 consumed exactly, leaving zero room on a
-        # HEALTHY run. Sizing off one retry was the same mistake as sizing off the median, one step out.
-        # An audit found a real 315-min run under the old 45m value, so retries do occur in practice.
+        # The two-fuzztime term was sized for golang/go#75804 retries, which were per TARGET: two targets
+        # in the p4 leg could each retry, giving 210 + 35 + 35 = 280 -- which an earlier value of 280
+        # consumed exactly, leaving zero room on a HEALTHY run. go-fuzz.sh no longer retries (#180); the
+        # term is kept as slack so the budget is not re-tuned in the same change. An audit found a real
+        # 315-min run under the old 45m value.
         #
         # The constraint is TWO-SIDED, which took three rounds to state properly. A step bound must
         #   (lower) exceed the worst legitimate cost -- 280 here, and 280 exactly was too tight; and
@@ -315,7 +314,8 @@ jobs:
         # Gated on the budget check too: this step runs the same go-fuzz.sh sweep, so an over-budget
         # dispatch would be truncated here in exactly the same way.
         if: always() && matrix.variant == 'p1' && steps.budgetcheck.outcome == 'success'
-        # 80, not 120: a single target (FuzzOracleDiff) at 35m with one retry is 70 minutes, so 120 was
+        # 80, not 120: a single target (FuzzOracleDiff) at 35m plus one fuzztime of slack (sized for a
+        # #75804 retry, which go-fuzz.sh no longer does) is 70 minutes, so 120 was
         # 50 minutes of slack -- and slack HERE is subtracted from what the native step before it may
         # spend, because this step runs `if: always()` after it. See the chain note on that step.
         timeout-minutes: 80

@@ -27,10 +27,10 @@ jobs:
       - uses: golangci/golangci-lint-action@v9
 
   # test-scripts (issue #179): self-tests for tooling scripts so a stale
-  # stub or a downstream go-fuzz.sh change (e.g. the added -list probe)
-  # cannot silently break the retry-path regression again. Kept as its
-  # own light job in parallel with lint/test so failure signal is clear
-  # and the gate can be rerun standalone.
+  # stub or a downstream script change cannot silently break a tooling
+  # regression again. Kept as its own light job in parallel with
+  # lint/test so failure signal is clear and the gate can be rerun
+  # standalone.
   test-scripts:
     timeout-minutes: 20
     runs-on: ubuntu-latest
@@ -39,7 +39,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - name: go-fuzz.sh retry-path regression
+      - name: tooling script self-tests
         run: make test-scripts
 
   # **F3-#3c tri-platform matrix** (2026-06-30): following the user decision
