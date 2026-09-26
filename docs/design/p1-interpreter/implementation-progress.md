@@ -380,14 +380,14 @@
   | 两条免费的反证一开始就在日志里 | — | ① `apt` 在 16:55:03 成功结束,然后**沉默 2 分 15 秒**才报 exit 28——磁盘写满是**立刻**失败的,会先卡的只有等待类失败;② `no space left` / `ENOSPC` / `disk full` 在两个 run 的日志里出现次数都是 **0**。判据:**分类一个 CI 失败时先把时间戳减一遍**,时间形式往往比错误码更能定类,而且它在日志里免费 |
   | 真根因 | `.github/workflows/nightly-diff-fuzz.yml` 等四处 | 裸的 `curl -sLO https://www.lua.org/ftp/lua-5.1.5.tar.gz`,**没有 `--max-time`、没有 `--connect-timeout`、没有 retry**,上游一次可达性抖动就一直卡到 shell 放弃 |
   | **后果比「一次红」更糟** | 同上 | 这一步失败让后面三个差分 fuzz 步骤被 **skip**(step 5/7/9 是 `skipped`),那一轮报 failure 而**实际什么都没测**、探索预算为零——而红色的默认含义是「跑了并且发现了问题」,两者在 Actions 页面上是同一个红叉(12 §8.1) |
-  | 一次抖动开了六个 issue | 同上,triage 段 | infra issue 标题嵌了 `${{ matrix.variant }}`,而 **infra 失败天然横跨所有 tier**(divergence 失败才天然属于某个 tier),p1/p3/p4 三个标题让按标题去重看不出它们是同一件事:**两次抖动 × 三个 tier = 六个**。改成按 `${{ github.run_id }}`(三个 job 共享)去重,第二三个 job 改为评论,tier 挪进正文——**去重键与信息量是两件事**([engineering](../engineering.md) §3.2) |
+  | 一次抖动开了六个 issue | 同上,triage 段 | infra issue 标题嵌了 `${{ matrix.variant }}`,而 **infra 失败天然横跨所有 tier**(divergence 失败才天然属于某个 tier),p1/p3/p4 三个标题让按标题去重看不出它们是同一件事:**两次抖动 × 三个 tier = 六个**。起初改成按 `${{ github.run_id }}`(三个 job 共享)去重,后来又改成**按日期**去重(一天六轮,按 run id 仍会一次抖动开多个),同一天之后报的 job 改为评论,tier 挪进正文——**去重键与信息量是两件事**([engineering](../engineering.md) §3.2) |
   | 取包统一处理 | `scripts/fetch-lua-tarball.sh`(新增) | 四处 call site(`ci.yml` ×2、`bench-acceptance.yml` ×1、`nightly-diff-fuzz.yml` ×1)统一改用它。四个性质:限时 / 重试(`--retry` 才是关键 —— 它的默认值是 0,所以旧的裸 curl 根本不重试。`--retry-all-errors` 只是额外放宽,**不是**超时重试的前提:curl 手册写的是「transient error means **either: a timeout**, an FTP 4xx ... 」,所以单靠 `--retry` 就能覆盖 #236–#241 那次失败。此前把它写成前提是错的,记在这里因为那曾是保留这个 flag 的唯一理由。|
   | 自测本身不能是新的抖动源 | `scripts/test-fetch-lua-tarball.sh`(新增) | 挂进 `make test-scripts`(#179 定下的检查纪律),五个用例**全部离线**(用 `file://` origin 冒充上游)——一个「防住外部抖动」的测试如果自己依赖上游,它加的是噪声不是防线。每个用例都用变异实测过 |
   | 那个自测第一版假绿 | 同上 | 「curl 调用带限时标志」这一条**第一版 grep 整个文件**:把 `--max-time` 从调用里删掉后照旧通过,因为那个词在脚本顶部的注释里还在(注释正好在解释「bounded: `--connect-timeout` and `--max-time`」)。现在只截取那条 curl 调用再检查。判据:**检查代码属性的测试要作用在代码本身上,一个注释就能满足的测试没有在测代码** |
 
-  **已知缺口(如实记)**:取包这一环已统一处理好,去重也修好了,但**「本轮未执行任何差分」这句话仍然没有
-  出现在任何地方** —— infra issue 的 body 说的是失败原因的类别,不是「这一轮的探索预算为零」。
-  记入 [engineering](../engineering.md) §7 文档缺口。
+  **当时的已知缺口(已补上)**:这一轮结束时,取包和去重都修好了,但「本轮未执行任何差分」这句话还没有
+  出现在任何地方,infra issue 的 body 只说失败原因的类别。后来 infra issue 的 body 改为读
+  `steps.difffuzz.outcome`,写明本轮差分是否执行,[engineering](../engineering.md) §7 对应条目已划掉。
 
   过程反思见
   `llmdoc/memory/reflections/2026-08-09-issue236-241-curl-timeout-misread-as-enospc.md`
