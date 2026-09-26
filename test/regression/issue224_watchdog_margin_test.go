@@ -3,11 +3,12 @@
 package regression
 
 import (
-	"github.com/Liam0205/wangshu/internal/fuzzbudget"
+	"os"
 	"testing"
 	"time"
 
 	wangshu "github.com/Liam0205/wangshu"
+	"github.com/Liam0205/wangshu/internal/fuzzbudget"
 )
 
 // TestConcatStormKeepsWatchdogMargin covers #224 and #225, the seventh and eighth filings of the
@@ -115,32 +116,53 @@ func TestConcatStormKeepsWatchdogMargin(t *testing.T) {
 			t.Errorf("%s: ran to completion; a 777-million-iteration concat loop must trip the budget",
 				tc.name)
 		}
-		// One Run must stay under 10s / 10x / 4 Runs = 250ms.
+		// The wall-clock half. See watchdogMarginBound for which bound applies where.
 		//
 		// The first version of this test used a 1-second bound and an audit showed it passed with
 		// the budget restored to 1<<20 -- the exact regression it claimed to guard. Its own comment
 		// derived 250ms and then used four times that, and it compared a four-Run projection
 		// against a one-Run measurement. The bound is now the derived number.
-		if elapsed > watchdogMarginBound {
-			t.Errorf("%s: one Run took %v at the fuzz budget; four of these on a 10x-slower CI "+
-				"runner would pass go-fuzz's 10s per-input watchdog, which is how #224/#225 were "+
-				"filed", tc.name, elapsed.Round(time.Millisecond))
+		bound, enforced := watchdogMarginBound()
+		if !enforced {
+			t.Logf("%s: one Run took %v (not asserted in this build)", tc.name, elapsed.Round(time.Millisecond))
+			continue
+		}
+		if elapsed > bound {
+			t.Errorf("%s: one Run took %v at the fuzz budget, above the %v bound; four of these "+
+				"would pass go-fuzz's 10s per-input watchdog on the fuzz runner, which is how "+
+				"#224/#225 were filed", tc.name, elapsed.Round(time.Millisecond), bound)
 		}
 	}
 }
 
-// watchdogMarginBound is the ceiling for one Run: 10s watchdog / 10x CI slowdown / 4 Runs per input.
+// watchdogMarginBound returns the ceiling for one Run and whether it is asserted at all.
 //
-// Relaxed under -race, which instruments every memory access and ran these shapes 3-9x slower -- CI's
-// p4 job runs `go test -race ... ./...`, so a fixed bound failed there while passing without it. Same
-// mechanism as bulkChargeBound in issue222_bulk_builder_test.go, and the same lesson as that one: a
-// wall-clock bound has to be expressed relative to the build it runs in.
-var watchdogMarginBound = func() time.Duration {
+// The quantity being protected is go-fuzz's 10s per-input watchdog on the nightly fuzz runner, where
+// FuzzP4ForceAllPromote runs each input four times: 10s / 4 = 2.5s per Run. Three builds, three answers:
+//
+//   - On the fuzz runner (WANGSHU_ON_FUZZ_RUNNER=1, set only by the nightly step that runs this test
+//     without -race): 2.5s. This measures the constraint directly on the machine it applies to, so no
+//     slowdown factor is assumed. It catches the regression the test exists for because at 1<<20 the
+//     fuzz runner itself took 12-13s for four Runs of the filed seeds (#224), over 3s per Run, and
+//     the gsub and loadstring shapes here cost more than those seeds. Only set it on that runner: a
+//     fast local machine runs the 1<<20 shapes at 2.2-2.7s, too close to 2.5s to tell apart.
+//   - Locally without -race: 250ms, i.e. 2.5s scaled by the ~10x CI slowdown assumed when the budget
+//     was chosen (see fuzzbudget.Steps).
+//   - Under -race: not asserted, only logged. -race instruments every memory access and ran these
+//     shapes about 10x slower, and the fuzz harness never runs with it, so the time measures the race
+//     detector and the runner's load rather than the budget. A 2.5s -race bound failed on macos-latest
+//     at 2.538s with no code change (2026-09-26), about 1.8x the local -race time, against the 16x
+//     runner-to-runner spread already observed on shared CI (llmdoc 2026-08-09 wall-clock audit). The
+//     budget must still trip in every build; only the timing half is dropped here.
+func watchdogMarginBound() (bound time.Duration, enforced bool) {
 	if bulkRaceBuild {
-		return 2500 * time.Millisecond
+		return 0, false
 	}
-	return 250 * time.Millisecond
-}()
+	if os.Getenv("WANGSHU_ON_FUZZ_RUNNER") == "1" {
+		return 2500 * time.Millisecond, true
+	}
+	return 250 * time.Millisecond, true
+}
 
 // TestChargesDoNotRejectOrdinaryWork is the other half of the pair: every charge added for #224/#225
 // must leave programs lua5.1 finishes in milliseconds alone.

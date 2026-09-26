@@ -188,6 +188,19 @@ with tempfile.TemporaryDirectory() as tmp:
             contains=('WANGSHU_FUZZ_SEED_BASE=71',))
     run('corpus-before-worker', {'gofuzz.log': 'panic: deadlocked!', 'tieredfuzz.log': incident},
         'bug', crash_title)
+    # The watchdog-margin step (p4, non-race) files its own bug: a loosened budget or charge is a
+    # regression, not infra. It ranks below a corpus crash and above a worker failure.
+    margin_fail = ('--- FAIL: TestConcatStormKeepsWatchdogMargin (8.18s)\n'
+                   '    issue224_watchdog_margin_test.go:127: gsub loop: one Run took 3.1s at the fuzz budget, above the 2.5s bound\n')
+    margin_title = 'watchdog margin regression (p4): 2026-09-07'
+    run('watchdog-margin', {'watchdog-margin.log': margin_fail}, 'bug', margin_title,
+        contains=('fuzzbudget.Steps', "-run '^TestConcatStormKeepsWatchdogMargin$'", '不是基础设施失败'))
+    run('watchdog-margin-before-worker', {'watchdog-margin.log': margin_fail, 'gofuzz.log': 'panic: deadlocked!'},
+        'bug', margin_title)
+    run('corpus-before-watchdog-margin', {'watchdog-margin.log': margin_fail, 'tieredfuzz.log': incident},
+        'bug', crash_title)
+    run('watchdog-margin-pass-is-not-a-bug', {'watchdog-margin.log': '--- PASS: TestConcatStormKeepsWatchdogMargin (0.53s)\nok\n'},
+        'ci', 'nightly-fuzz infra failure (2026-09-07)')
     infra_title = 'nightly-fuzz infra failure (2026-09-07)'
     for variant in ('p1', 'p3', 'p4'):
         run(f'install-skipped-{variant}', {}, 'ci', infra_title, variant=variant, outcome='skipped',

@@ -80,6 +80,7 @@ jobs:
           #     accepted when a double #75804 retry was the only way to use it (9 in ~450 jobs, never
           #     twice in one job), and the trade buys a guaranteed triage.
           # p3/p4: 40 + 280 + 25 = 345 < 350, and 280 covers p4's 280 exactly.
+          # p4 also runs the watchdog-margin check before the fuzz steps; see the chain note there.
           - variant: p1
             tags: ''
             native_fuzz_cap: 202
@@ -212,6 +213,28 @@ jobs:
           # matrix.tags != '' so a plain invocation is correct.
           WANGSHU_FUZZ_SEED_BASE=$SEED_BASE WANGSHU_FUZZ_N=$AUTO_ROUNDS \
             go test -tags "${{ matrix.tags }}" ./test/difftest/ -run 'TestAuto_RandomScripts' -timeout 150m 2>&1 | tee autodiff.log
+
+      # The wall-clock half of test/regression TestConcatStormKeepsWatchdogMargin, measured where it applies.
+      # That test guards go-fuzz's 10s per-input watchdog: FuzzP4ForceAllPromote runs each input four
+      # times, so one Run must stay under 2.5s at fuzzbudget.Steps. PR CI runs it only under -race, where
+      # the time measures the race detector and the runner's load, so the test logs the time there and
+      # asserts only that the budget trips. This step is the one place the bound is enforced: same
+      # runner class and same non-race build as the fuzz steps below, with WANGSHU_ON_FUZZ_RUNNER=1
+      # selecting the 2.5s bound instead of the 250ms local one.
+      #
+      # p4 only: the test is behind wangshu_p4. Its cap counts against the p4 chain like every other
+      # always() step: prior(40) + 3 + native(218) + tiered(62) + upload/triage(25) = 348 < 350, so 3 is
+      # as far as it can go. The test itself takes under a minute including the build.
+      #
+      # Not continue-on-error: a failure here is a real regression (the budget or a per-byte rate was
+      # loosened), so it fails the job and the triage step files it as a bug from watchdog-margin.log.
+      - name: watchdog-margin check at the fuzz budget (p4, non-race)
+        if: always() && matrix.variant == 'p4'
+        timeout-minutes: 3
+        run: |
+          set -o pipefail
+          WANGSHU_ON_FUZZ_RUNNER=1 go test -tags "${{ matrix.tags }}" ./test/regression/ \
+            -run '^TestConcatStormKeepsWatchdogMargin$' -count=1 -v -timeout 2m 2>&1 | tee watchdog-margin.log
 
       # Fail LOUDLY when a manual gofuzztime cannot fit the step bound, instead of letting the bound
       # truncate the sweep and lose coverage silently (review finding). The bound is fixed per tier while
@@ -350,6 +373,7 @@ jobs:
           name: nightly-fuzz-${{ matrix.variant }}-${{ github.run_id }}
           path: |
             difffuzz.log
+            watchdog-margin.log
             tieredfuzz.log
             gcstress.log
             autodiff.log
@@ -370,9 +394,10 @@ jobs:
           # Triage by failure evidence, not merely by the failed step:
           #   1. DIVERGENCE seed=<n> kind=<bytediff|gcstress|oracle-error> -> bug
           #   2. go-fuzz "Failing input written to <path>" -> bug + crash corpus path
-          #   3. worker watchdog/fatal without a corpus -> bug, needs investigation
-          #   4. unmarked failure (oracle install, environment, step timeout) -> ci
-          # Priority: DIVERGENCE > corpus crash > worker failure > INFRA; file only one issue.
+          #   3. watchdog-margin check failed (watchdog-margin.log) -> bug, budget or charge loosened
+          #   4. worker watchdog/fatal without a corpus -> bug, needs investigation
+          #   5. unmarked failure (oracle install, environment, step timeout) -> ci
+          # Priority: DIVERGENCE > corpus crash > watchdog margin > worker failure > INFRA; file only one issue.
           # All go-fuzz producers must be included (#255: tieredfuzz.log was uploaded but never scanned).
           FUZZ_LOGS=(gofuzz.log oraclefuzz.log tieredfuzz.log)
           if grep -q "DIVERGENCE" difffuzz.log gcstress.log autodiff.log 2>/dev/null; then
@@ -464,6 +489,10 @@ jobs:
           日志与 crash corpus 见 run artifacts:${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           EOF
           )
+          elif grep -q -- "--- FAIL: TestConcatStormKeepsWatchdogMargin" watchdog-margin.log 2>/dev/null; then
+            TITLE="watchdog margin regression (${{ matrix.variant }}): $(date -u +%F)"
+            LABEL="bug"
+            BODY="nightly 的 watchdog-margin 检查失败:在 fuzz 用的 step budget 下,有写法的一次 Run 超过了 2.5 秒(go-fuzz 每个输入跑 4 次 Run,看门狗是 10 秒)。这通常说明 \`fuzzbudget.Steps\` 被调大了,或者某个计费比率变松了,不是基础设施失败。本地复现:\`go test -tags '${{ matrix.tags }}' ./test/regression/ -run '^TestConcatStormKeepsWatchdogMargin\$' -count=1 -v\`(本地上限是 250 毫秒)。日志 watchdog-margin.log 见 run artifacts:${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}。"
           elif grep -Eq "hung or terminated unexpectedly|panic: deadlocked" "${FUZZ_LOGS[@]}" 2>/dev/null; then
             TITLE="go-fuzz worker failure (${{ matrix.variant }}): $(date -u +%F)"
             LABEL="bug"
