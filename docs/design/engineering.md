@@ -52,7 +52,8 @@ fmt:                                                ## 格式化(写回)
 lint:                                               ## 全仓静态检查
 	golangci-lint run ./...
 
-test-scripts:                                       ## 工具脚本自测(#255 nightly triage;#236-#241 lua tarball 取包;cover.sh tag 传递)
+test-scripts:                                       ## 工具脚本自测(#180 go-fuzz.sh 端到端;#255 nightly triage;#236-#241 lua tarball 取包;cover.sh tag 传递)
+	bash scripts/test-go-fuzz.sh
 	bash scripts/test-nightly-fuzz-classify.sh
 	bash scripts/test-fetch-lua-tarball.sh
 	bash scripts/test-cover.sh
@@ -85,7 +86,7 @@ tidy:
 ```
 
 - 借鉴 pineapple 的 `go-fuzz.sh`(grep 自动发现 `^func Fuzz` 目标逐个跑),但入口统一挂 Makefile。
-- **`test-scripts` 目标**(2026-07-25,issue #179 引入):tooling 类回归脚本必须至少挂在一处检查上,否则一次 downstream 改动就能让它静默失效——issue #179 之前 `scripts/test-go-fuzz-retry.sh` 失效期至少半年没人发现。目标本身秒级,同时挂 `make all`(本地 pre-commit)与 `ci.yml` 独立 job(PR 必过检查,失败信号清晰、可 rerun),两处检查同时对它负责。`scripts/test-go-fuzz-retry.sh`(验证 `go-fuzz.sh` 对 golang/go#75804 假失败的重试逻辑)随那次重试一起在 2026-09-26 删除(#180,见 §1.1)。目前的脚本有 `scripts/test-nightly-fuzz-classify.sh`(nightly 自动开 issue 的分类逻辑)、`scripts/test-cover.sh`(`cover.sh` 的 tag 传递),以及 **`scripts/test-fetch-lua-tarball.sh`**(2026-08-09,#236-#241 引入,五个用例钉住 `scripts/fetch-lua-tarball.sh` 的取包行为,见 §4)。后者的五个用例**全部离线**(用 `file://` origin 冒充上游),因为它防的正是上游抖动——一个「防住外部抖动」的测试如果自己依赖上游,它加的是噪声不是防线。其中「curl 调用带限时标志」这一条第一版**grep 整个文件、假绿**:把 `--max-time` 从调用里删掉后照旧通过,因为那个词在脚本顶部的注释里还在;现在只截取那条 curl 调用再检查。判据:**检查代码属性的测试要作用在代码本身上,一个注释就能满足的测试没有在测代码**(方法论见 `llmdoc/guides/prove-the-path-under-test.md` §9.1b)。
+- **`test-scripts` 目标**(2026-07-25,issue #179 引入):tooling 类回归脚本必须至少挂在一处检查上,否则一次 downstream 改动就能让它静默失效——issue #179 之前 `scripts/test-go-fuzz-retry.sh` 失效期至少半年没人发现。目标本身秒级,同时挂 `make all`(本地 pre-commit)与 `ci.yml` 独立 job(PR 必过检查,失败信号清晰、可 rerun),两处检查同时对它负责。`scripts/test-go-fuzz-retry.sh`(验证 `go-fuzz.sh` 对 golang/go#75804 假失败的重试逻辑)随那次重试一起在 2026-09-26 删除(#180,见 §1.1),同时新增 `scripts/test-go-fuzz.sh` 接替它对 `go-fuzz.sh` 的端到端覆盖:用 stub `go` 驱动四种情况,每种都同时断言退出码和 stub 被调用 fuzz 的次数。只断言退出码不够——删除那次改写曾把目标发现循环整段截掉,脚本对所有输入都「成功」返回 0 却一次都没调用 go test,当时 `bash -n` 和其余自测全是绿的。目前的脚本还有 `scripts/test-nightly-fuzz-classify.sh`(nightly 自动开 issue 的分类逻辑)、`scripts/test-cover.sh`(`cover.sh` 的 tag 传递),以及 **`scripts/test-fetch-lua-tarball.sh`**(2026-08-09,#236-#241 引入,五个用例钉住 `scripts/fetch-lua-tarball.sh` 的取包行为,见 §4)。后者的五个用例**全部离线**(用 `file://` origin 冒充上游),因为它防的正是上游抖动——一个「防住外部抖动」的测试如果自己依赖上游,它加的是噪声不是防线。其中「curl 调用带限时标志」这一条第一版**grep 整个文件、假绿**:把 `--max-time` 从调用里删掉后照旧通过,因为那个词在脚本顶部的注释里还在;现在只截取那条 curl 调用再检查。判据:**检查代码属性的测试要作用在代码本身上,一个注释就能满足的测试没有在测代码**(方法论见 `llmdoc/guides/prove-the-path-under-test.md` §9.1b)。
 - `make hooks` 替代 pineapple 的"README 一行指引"——新人 clone 后 `make hooks` 一步完成,README 与 [00-overview](./p1-interpreter/00-overview.md) 都指向它。
 - **`make all` 是「本地提交前全检」**——七件套含 `fuzz / conformance / difftest` 全部跑一遍(耗时 ~2-3 min),目的是把 nightly 才跑的强度拉到本地强制,与 CI 必过检查的口径对齐。日常小改动若不想每次等三分钟,用 `make test` 跑主模块 race + `make fmt lint` 即可;commit/push 前再过一次 `make all`。
 
