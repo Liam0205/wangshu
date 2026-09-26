@@ -35,11 +35,16 @@ on:
         # internal/frontend/parse and internal/stdlib. FuzzOracleDiff is gated behind wangshu_oracle_cgo
         # and runs in its own step. The stale "4" is why the step's cost was consistently underestimated.
         description: 'go-fuzz time per target (6 untagged targets; FuzzOracleDiff is separate)'
-        # 35m, not 45m (2026-08-19). go-fuzz.sh runs EVERY source-visible target for the full
-        # fuzztime, so this value is multiplied by the target count: 45m measured 270 min on the p4
-        # leg, leaving the 350m job with ~38 min of margin, and three runs were killed by the job
-        # timeout in a week (2026-08-12 p4, 08-15 p4, 08-18 p1). 35m brings the leg to roughly 250 min
-        # and the margin to ~98 min.
+        # Scheduled runs do not read this default: they use the per-tier matrix.fuzztime (32m / 28m /
+        # 26m since 2026-08-29, see the matrix). It only applies to a manual dispatch, where it
+        # overrides all three tiers -- and at 35m the budget check rejects the p3 and p4 legs (one pass
+        # plus one fuzztime of slack is 210 / 245 min against caps of 206 / 218), so pass a smaller
+        # value there; the check's error message names one.
+        #
+        # 35m is the last shared value, set on 2026-08-19 (down from 45m). go-fuzz.sh runs EVERY
+        # source-visible target for the full fuzztime, so this value is multiplied by the target
+        # count: 45m measured 270 min on the p4 leg, leaving the 350m job with ~38 min of margin, and
+        # three runs were killed by the job timeout in a week (2026-08-12 p4, 08-15 p4, 08-18 p1).
         #
         # This is a real reduction in exploration -- about 22% less fuzzing per run -- chosen over
         # trimming the differential steps because those are cheap in practice (rolling-seed 36 min,
@@ -68,19 +73,20 @@ jobs:
         include:
           # native_fuzz_cap: the native go-fuzz step's bound, PER TIER, because two things differ.
           #
-          # The legitimate worst case scales with the tier's target count (measured 4 / 5 / 6 target-runs,
-          # so 140 / 175 / 210 min at 35m, plus up to two fuzztimes of slack -- sized when go-fuzz.sh still
-          # retried golang/go#75804 once per target; the retry is gone (#180) and the slack is kept). And the room
-          # differs: every later step runs `if: always()`, so what must fit under the 350-minute job cap is
-          # prior + this bound + every later always() bound -- and p1 alone carries the oracle-diff step in
-          # that tail (80 + 15 + 10 = 105, against p3/p4's 25). A PR review caught that bounding this step
-          # alone still let the job cap fire first on p1, losing the triage that files the issue.
+          # The legitimate worst case is the tier's target-runs (measured 4 / 5 / 6) times its fuzztime,
+          # plus up to two fuzztimes of slack -- sized when go-fuzz.sh still retried golang/go#75804 once
+          # per target; the retry is gone (#180) and the slack is kept. At the values below that is
+          # 4x32+64 = 192 / 5x28+56 = 196 / 6x26+52 = 208 min. And the room differs: every later step runs
+          # `if: always()`, so what must fit under the 350-minute job cap is prior + this bound + every
+          # later always() bound. p1's tail is oracle-diff + upload + triage (80 + 15 + 10 = 105); p3/p4's
+          # is tiered-oracle + upload + triage (66 / 62, plus 25). A PR review caught that bounding this
+          # step alone still let the job cap fire first on p1, losing the triage that files the issue.
           #
-          # p1: 38 + 195 + 105 = 338 < 350. 195 is under p1's 210 base-plus-two-slack figure; that was
-          #     accepted when a double #75804 retry was the only way to use it (9 in ~450 jobs, never
-          #     twice in one job), and the trade buys a guaranteed triage.
-          # p3/p4: 40 + 280 + 25 = 345 < 350, and 280 covers p4's 280 exactly.
-          # p4 also runs the watchdog-margin check before the fuzz steps; see the chain note there.
+          # With ~40 min elapsed before the fuzz steps:
+          # p1: 40 + 202 + 105 = 347 < 350, and 202 covers p1's worst of 192.
+          # p3: 40 + 206 + 66 + 25 = 337 < 350, and 206 covers p3's worst of 196.
+          # p4: 40 + 3 + 218 + 62 + 25 = 348 < 350, and 218 covers p4's worst of 208. The 3 is the
+          #     watchdog-margin check that p4 runs before the fuzz steps; see the chain note there.
           - variant: p1
             tags: ''
             native_fuzz_cap: 202
@@ -243,10 +249,10 @@ jobs:
 
       # Fail LOUDLY when a manual gofuzztime cannot fit the step bound, instead of letting the bound
       # truncate the sweep and lose coverage silently (review finding). The bound is fixed per tier while
-      # gofuzztime is a free-form input, so the two can disagree: dispatching 45m puts p4's six targets at
-      # 270 min base, and one fuzztime of slack then exceeds the 280 bound. A silent truncation here looks
-      # exactly like a healthy run that simply found nothing, which is the failure mode this whole branch
-      # is about.
+      # gofuzztime is a free-form input, so the two can disagree: dispatching the input's 35m default puts
+      # p4's six targets at 210 min base, and one fuzztime of slack (245) then exceeds the 218 bound. A
+      # silent truncation here looks exactly like a healthy run that simply found nothing, which is the
+      # failure mode this whole branch is about.
       - name: check the fuzz budget fits the step bound (${{ matrix.variant }})
         id: budgetcheck
         if: always()
@@ -268,14 +274,15 @@ jobs:
           #
           # FAIL threshold = one pass plus ONE fuzztime of slack. The slack was sized for a golang/go#75804
           # retry (9 in ~450 sampled jobs); go-fuzz.sh no longer retries (#180), but the thresholds are kept
-          # unchanged so the budget is not re-tuned in the same change. At 45m the p4 leg needs 315m against
-          # a 280 bound, and the truncation would look like a healthy run that found nothing.
+          # unchanged so the budget is not re-tuned in the same change. At 35m the p4 leg needs 245m against
+          # a 218 bound, and the truncation would look like a healthy run that found nothing.
           #
-          # WORST = base plus two fuzztimes of slack. p1's cap is deliberately BELOW its worst
-          # (140 base, 210 worst, 195 cap) because the p1 chain has to leave room for the oracle-diff,
-          # upload and triage steps that follow it under `if: always()`. So short slack is a WARNING, not a
-          # failure -- and a check that failed the default configuration would be worse than the
-          # truncation it replaces.
+          # WORST = base plus two fuzztimes of slack. At the matrix values every tier's cap covers its
+          # worst, but a dispatch can land between the two (35m on p1: 175 for one pass plus slack, 210
+          # worst, 202 cap), and p1's cap cannot grow because its chain has to leave room for the
+          # oracle-diff, upload and triage steps that follow it under `if: always()`. So short slack is a
+          # WARNING, not a failure -- a check that failed such a run would be worse than the truncation it
+          # replaces.
           base=$(( mins * TARGETS ))
           one=$(( base + mins ))
           worst=$(( base + 2 * mins ))
@@ -305,22 +312,27 @@ jobs:
         # cannot silently consume it. Sizing every step to sum under 350 would force cuts far deeper than
         # the observed cost justifies.
         #
-        # 320 = worst measured leg + TWO fuzztimes + slack. Target counts differ per tier (measured: p1 4,
-        # p3 5, p4 6 target-runs), so at 35m the legs cost about 140 / 175 / 210 min.
+        # The bound = the tier's leg (target-runs x fuzztime) + TWO fuzztimes + a little slack. Target
+        # counts differ per tier (measured: p1 4, p3 5, p4 6 target-runs), which is why both fuzztime and
+        # this cap are matrix values.
         #
         # The two-fuzztime term was sized for golang/go#75804 retries, which were per TARGET: two targets
-        # in the p4 leg could each retry, giving 210 + 35 + 35 = 280 -- which an earlier value of 280
-        # consumed exactly, leaving zero room on a HEALTHY run. go-fuzz.sh no longer retries (#180); the
-        # term is kept as slack so the budget is not re-tuned in the same change. An audit found a real
-        # 315-min run under the old 45m value.
+        # in a leg could each retry. Under the old shared 35m that gave p4 210 + 35 + 35 = 280 -- which an
+        # earlier cap of 280 consumed exactly, leaving zero room on a HEALTHY run. go-fuzz.sh no longer
+        # retries (#180); the term is kept as slack so the budget is not re-tuned in the same change. An
+        # audit found a real 315-min run under the old 45m value.
         #
         # The constraint is TWO-SIDED, which took three rounds to state properly. A step bound must
-        #   (lower) exceed the worst legitimate cost -- 280 here, and 280 exactly was too tight; and
-        #   (upper) fire BEFORE the job cap, i.e. be under 350 minus whatever earlier steps consumed.
+        #   (lower) exceed the worst legitimate cost, with room to spare -- a bound equal to it was too
+        #           tight; and
+        #   (upper) fire BEFORE the job cap, i.e. be under 350 minus what earlier steps consumed and
+        #           every later always() bound.
         # About 40 min elapses before this step (install 1, rolling-seed 36, GC-stress 1, auto-mode 2), so
-        # 320 would trip at ~360 -- after the 350 job cap, making it unreachable and leaving a hang here to
-        # produce the same "cancelled, triage skipped, silent loss" outcome this whole change exists to
-        # prevent. The window is 280..310; 300 sits inside it.
+        # an early proposal of 320 would have tripped at ~360 -- after the 350 job cap, making it
+        # unreachable and leaving a hang here to produce the same "cancelled, triage skipped, silent loss"
+        # outcome this whole change exists to prevent. At the current matrix values the windows are
+        # p1 192..205, p3 196..219, p4 208..220 (worst leg .. 350 - 40 - rest of the chain), and
+        # 202 / 206 / 218 sit inside them.
         timeout-minutes: ${{ matrix.native_fuzz_cap }}
         run: |
           set -o pipefail
@@ -342,9 +354,9 @@ jobs:
         # Gated on the budget check too: this step runs the same go-fuzz.sh sweep, so an over-budget
         # dispatch would be truncated here in exactly the same way.
         if: always() && matrix.variant == 'p1' && steps.budgetcheck.outcome == 'success'
-        # 80, not 120: a single target (FuzzOracleDiff) at 35m plus one fuzztime of slack (sized for a
-        # #75804 retry, which go-fuzz.sh no longer does) is 70 minutes, so 120 was
-        # 50 minutes of slack -- and slack HERE is subtracted from what the native step before it may
+        # 80, not 120: a single target (FuzzOracleDiff) plus one fuzztime of slack (sized for a #75804
+        # retry, which go-fuzz.sh no longer does) is 70 minutes at the old shared 35m and 64 at p1's
+        # 32m, so 120 was 50 minutes of slack -- and slack HERE is subtracted from what the native step before it may
         # spend, because this step runs `if: always()` after it. See the chain note on that step.
         timeout-minutes: 80
         run: |
@@ -358,9 +370,9 @@ jobs:
       # P1 == PUC via FuzzOracleDiff), which inherits P1's blind spots and cannot see a divergence where P1
       # agrees with PUC but both tiers agree with each other on something else.
       #
-      # Budget: one target at the same fuzztime as the p1 oracle step, so the chain arithmetic in the native
-      # step's note holds unchanged -- p3/p4 do not run the p1 oracle step, so this slots into the same slot
-      # rather than adding to it.
+      # Budget: one target at the tier's fuzztime, bounded by tiered_fuzz_cap = one pass plus one fuzztime
+      # of slack plus 10 (28 + 28 + 10 = 66 on p3, 26 + 26 + 10 = 62 on p4). p3/p4 do not run the p1 oracle
+      # step, so this takes that step's place in the chain arithmetic noted at the matrix.
       - name: tiered-oracle go-fuzz long run (${{ matrix.variant }} vs embedded 5.1.5)
         if: always() && matrix.variant != 'p1' && steps.budgetcheck.outcome == 'success'
         timeout-minutes: ${{ matrix.tiered_fuzz_cap }}
