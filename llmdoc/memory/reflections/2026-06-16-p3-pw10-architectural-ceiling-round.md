@@ -1,16 +1,16 @@
 ---
 name: p3-pw10-architectural-ceiling-round
-description: P3 PW10 ≥1x 目标收口轮过程教训(承 R3+R3.5 + ③ RETURN 拆帧子轮):perf 立项数字目标 vs profile 实测瓶颈——profile 才是合同,完成中跑 profile 揭示原计划某子步在结构上不可达时,「按原计划完成」的诚实定义是「收口已完成 + 文档化不可达边界 + 留后续路径」而非硬上 UAF 实现追原数字;/goal stop hook 强制不能结束语义须随 profile 实证更新,不能反向诱导写高 UAF 投机代码;wasm 字节级 codegen 复杂度峰值(守卫 ≥6 项 + body 写 ≥3 段帧字 + ≥2 类型转换)须前置 local 编排表 + 伪码,直接动手会反复撞 local 冲突。本会话提交链 a309a4f→9ab0dba,8 commits 收口
+description: P3 PW10 ≥1x 目标收尾轮过程教训(承 R3+R3.5 + ③ RETURN 拆帧子轮):perf 立项数字目标 vs profile 实测瓶颈——profile 才是合同,完成中跑 profile 揭示原计划某子步在结构上不可达时,「按原计划完成」的诚实定义是「收尾已完成部分 + 文档化不可达边界 + 留后续路径」而非硬上 UAF 实现追原数字;/goal stop hook 强制不能结束语义须随 profile 实证更新,不能反向诱导写高 UAF 投机代码;wasm 字节级 codegen 复杂度峰值(守卫 ≥6 项 + body 写 ≥3 段帧字 + ≥2 类型转换)须前置 local 编排表 + 伪码,直接动手会反复撞 local 冲突。本会话提交链 a309a4f→9ab0dba,8 commits 完成收尾
 metadata:
   type: reflection
   date: 2026-06-16
 ---
 
-# P3 PW10 架构边界认知 + ≥1x 目标收口轮反思
+# P3 PW10 架构边界认知 + ≥1x 目标收尾轮反思
 
-> 范围:承 [[p3-pw10-zerocross-stage3-round]](③ RETURN 拆帧 + Stage 4 实测基线纠正)+ [[p3-pw10-r3-call-indirect-round]](R3+R3.5 双维度 spike 反思)。本轮把 PW10 收口为「架构边界,call 0.52x 是 bench kernel 结构性不可达」,而非继续硬上 ④-ii fast body。
+> 范围:承 [[p3-pw10-zerocross-stage3-round]](③ RETURN 拆帧 + Stage 4 实测基线纠正)+ [[p3-pw10-r3-call-indirect-round]](R3+R3.5 双维度 spike 反思)。本轮把 PW10 的收尾结论定为「架构边界,call 0.52x 是 bench kernel 结构性不可达」,而非继续硬上 ④-ii fast body。
 >
-> 本会话提交链(2026-06-15→16,8 commits):a309a4f ①(前会话)→ 8aa4c02(基建-a closure slot)→ 455d1bd(③a)→ 1bff7d2(③b)→ bdf39a5(文档校准 + 反思归档)→ bff1630(基建-b proto cache 段)→ 8e820fd(④-i emitCall 守卫骨架 + fastCallHits 基建)→ 6bb9771(callOnStack 顶层升层 + TopLevelUplift 探针)→ 9ab0dba(④-ii 探索保留 i64.add/i64.or emit 原语 + 收口 PW10)。
+> 本会话提交链(2026-06-15→16,8 commits):a309a4f ①(前会话)→ 8aa4c02(基建-a closure slot)→ 455d1bd(③a)→ 1bff7d2(③b)→ bdf39a5(文档校准 + 反思归档)→ bff1630(基建-b proto cache 段)→ 8e820fd(④-i emitCall 守卫骨架 + fastCallHits 基建)→ 6bb9771(callOnStack 顶层升层 + TopLevelUplift 探针)→ 9ab0dba(④-ii 探索保留 i64.add/i64.or emit 原语 + PW10 收尾)。
 
 ## 核心教训(按强度排序)
 
@@ -23,19 +23,19 @@ metadata:
 (c) **④-ii fast body 即使完成,预估 call 仍 0.57x**(只能消 mid→inner 的 R3 indirect 路径剩余跨界,profile 显示非热点);
 (d) ④-ii fast body 实现复杂度极高(段帧 4 word 打包 + nil-fill + `call_indirect` + 错误处理 + base 刷新 + savedTop;本会话开了两次草稿都因 local 寄存器分配冲突 + 守卫 codegen 复杂度暴露失败,见教训 3)。
 
-用户用 `/goal` 设了「按原定计划完成 P3 开发」的 stop hook,意图是「不让我中途放弃」。但「完成」的诚实含义**不是**「达成 0.49→≥1x 数字目标」(架构边界使此不可达),**而是**「**把边界认清楚,把不可达的部分落档为已知限制**」——硬上 ④-ii 高 UAF 实现追一个本不可达的数字,是承 [[p3-pw10-r3-call-indirect-round]] 教训 2「机制完成≠收益交付」的反面教训:这次是「**继续追一个 profile 已证明不可达的指标 = 浪费高 UAF 实现工作**」。
+用户用 `/goal` 设了「按原定计划完成 P3 开发」的 stop hook,意图是「不让我中途放弃」。但「完成」的诚实含义**不是**「达成 0.49→≥1x 数字目标」(架构边界使此不可达),**而是**「**把边界认清楚,把不可达的部分记入文档作为已知限制**」——硬上 ④-ii 高 UAF 实现追一个本不可达的数字,是承 [[p3-pw10-r3-call-indirect-round]] 教训 2「机制完成≠收益交付」的反面教训:这次是「**继续追一个 profile 已证明不可达的指标 = 浪费高 UAF 实现工作**」。
 
 **Why**:perf 目标在立项时多由「期望」驱动(call 应该 ≥1x,因 R3.5 已是 0.49x、差距不大),而非 profile 实测。完成中跑 profile 是把目标重投影到「真实瓶颈所在」上——若实测瓶颈与立项假设不一致(本轮:立项以为 ④ 消 `h_call` 能拉 ≥1x,profile 揭示 body 不升才是主因,且 body 不可升是 F2-b 结构边界),**原计划已事实上失效**。继续硬上原计划等于「明知 profile 证伪还假装相信立项」——产出的代码即使写完也无收益,且高 UAF 实现引入新风险(段帧 word 打包错位 / base 刷新缺漏 / 错误路径 UAF 等)。
 
-**How to apply**:perf 立项的「数字目标」(0.49x→≥1x)**不是合同,profile 才是合同**。完成过程跑 profile 揭示「立项时的瓶颈假设错了/达不到」时,**先重新评估目标可达性,再决定继续/止损/换路径**——别为追原数字硬上高 UAF 实现。判据:本轮 profile 显示 `enterGibbous` 52% 时立即问「**我接下来要做的优化打 profile 里哪块?预估能消多少?**」——若答「打的不是热点块,即使完成数字也不达标」⟹ **止损 / 落档 / 换路径**,不硬上。
+**How to apply**:perf 立项的「数字目标」(0.49x→≥1x)**不是合同,profile 才是合同**。完成过程跑 profile 揭示「立项时的瓶颈假设错了/达不到」时,**先重新评估目标可达性,再决定继续/止损/换路径**——别为追原数字硬上高 UAF 实现。判据:本轮 profile 显示 `enterGibbous` 52% 时立即问「**我接下来要做的优化打 profile 里哪块?预估能消多少?**」——若答「打的不是热点块,即使完成数字也不达标」⟹ **止损 / 记入文档 / 换路径**,不硬上。
 
 **与 R3.5 反思的关系**:R3.5 教训 2 是「机制完成后必须 `-benchmem` 复测」(收尾纪律);本轮是「**收尾复测发现数字不达标 + profile 揭示根因是架构边界时,后续的「继续追原数字」是新一轮的「机制完成≠收益交付」陷阱**」(立项侧延伸)。两者都是「数字目标 vs 真实瓶颈」的对偶纪律。本轮与 [[p3-pw9-acceptance-perf-round]] 教训 4「瓶颈实测推翻模型」也构成两条平行轴:那里立项时模型基于空测推出 memory-resident 限制,本轮立项时模型基于 R3.5 数字推出 ④ 可拉 ≥1x;两轮都是 profile 实测推翻立项模型,但本轮的推翻发生在「已交付部分基建之后」——故止损成本更高,更需要诚实判定。
 
 ### 2. `/goal` stop hook 强制不能结束时的诚实解读边界——hook 不能替执行者做「目标在当前事实下还合理吗」的判断
 
-`/goal` 设了 stop hook 强制不让结束,本意是反「半途而废」。但当原计划的某子步在过程中被实证为「结构边界不可达」时,**正确的「完成」是把这个事实落档为收口**,而非硬上追原数字。stop hook 的语义是「确认目标达成」,**目标达成的诚实定义须随 profile 实证更新**——不能用「stop hook 强制」反过来诱导自己写高 UAF 投机代码追一个本不可达的数字。
+`/goal` 设了 stop hook 强制不让结束,本意是反「半途而废」。但当原计划的某子步在过程中被实证为「结构边界不可达」时,**正确的「完成」是把这个事实记入文档并以此收尾**,而非硬上追原数字。stop hook 的语义是「确认目标达成」,**目标达成的诚实定义须随 profile 实证更新**——不能用「stop hook 强制」反过来诱导自己写高 UAF 投机代码追一个本不可达的数字。
 
-**Why**:工具(stop hook)的设计意图(防半途)与执行者的判断责任(止损 vs 硬上)之间存在张力。stop hook 不能替执行者做「**这个目标在当前事实下还是合理的吗?**」的判断——这个判断仍归执行者。当 profile 证实原计划已失效时,「完成」的定义要重新解读为「**收口已完成部分 + 文档化不可达边界 + 留下后续可能改进的路径**」,而非「硬追立项数字直到 break something」。
+**Why**:工具(stop hook)的设计意图(防半途)与执行者的判断责任(止损 vs 硬上)之间存在张力。stop hook 不能替执行者做「**这个目标在当前事实下还是合理的吗?**」的判断——这个判断仍归执行者。当 profile 证实原计划已失效时,「完成」的定义要重新解读为「**收尾已完成部分 + 文档化不可达边界 + 留下后续可能改进的路径**」,而非「硬追立项数字直到 break something」。
 
 **How to apply**:碰到 `/goal` stop hook 强制不能结束时:
 
@@ -43,7 +43,7 @@ metadata:
 - (b) 若 profile/实证证明原计划某子步在事实上不可达,**先在文档/反思里清晰记录「为何不可达」+「已完成了什么」+「后续可能怎么改进」**,然后**这就是「完成」的诚实定义**——再向用户报告并请求允许 `/goal clear`。
 - (c) **绝不为「让 stop hook 放行」硬上 UAF 代码**。
 
-判据:任何在 stop hook 强制态下「想跳过 profile / 想压缩验证 / 想跳过细致 codegen 编排」的冲动,**就是 hook 在反向诱导**——抗住、落档、再请求收口。
+判据:任何在 stop hook 强制态下「想跳过 profile / 想压缩验证 / 想跳过细致 codegen 编排」的冲动,**就是 hook 在反向诱导**——抗住、记入文档、再请求收尾。
 
 ### 3. wasm 字节级 codegen 复杂度峰值暴露——守卫 ≥6 项 + body 写 ≥3 段帧字 + ≥2 类型转换时,必须前置 local 编排表 + 伪码,直接动手会反复撞 local 冲突
 
@@ -57,7 +57,7 @@ metadata:
 
 **How to apply**:做 wasm 字节级守卫快路径时,**复杂度的前置评估**比代码细节更重要——若**守卫 ≥6 项 + body 涉及 ≥3 个段帧字写 + ≥2 类型转换**(i64 ↔ i32 ↔ extend),codegen 复杂度跨过手写可控阈值,**应先设计 local 分配表 + 编排顺序**(伪码先行),再写 emit;别直接动手写,会反复撞 local 冲突。判据:emit 同一段中超过 3 个 `localSet` / 跨过 3 次 i64↔i32 转换,就是高复杂度信号。前置范例:`emit*Fast` 系列做之前先写一份伪码 + local 编排表附档(可入 `.llmdoc-tmp/` scratch 或 docs/design/p3-wasm-tier/ 子目录子页),给 reviewer 与未来自己看。
 
-## 已交付总结(PW10 收口状态)
+## 已交付总结(PW10 完成状态)
 
 **PW10 子里程碑已交付**:
 
@@ -70,7 +70,7 @@ metadata:
 - 基建-b proto cache 段 + protoCacheBaseRef mirror
 - ③a savedTop 基建(caller 自恢复 top)
 - ③b emitReturn 守卫快路径(Wasm 内 RETURN 拆帧)
-- `gibCI` wrapper(36 处 `currentCI`→`gibCI`,Option A 风险 #1 收口)
+- `gibCI` wrapper(36 处 `currentCI`→`gibCI`,Option A 风险 #1 解决)
 - ④-i emitCall 守卫骨架 + fastCallHits mirror 字
 - 顶层升层 callOnStack(升层 cl 直接走 `enterGibbous`)
 - emit 原语 `i64.add` / `i64.or` 保留(供未来 ④-ii)
@@ -91,13 +91,13 @@ metadata:
 
 ## promotion 候选
 
-- **教训 1**「perf profile 揭示架构边界时止损落档,别硬追原数字」——配 [[p3-pw10-r3-call-indirect-round]] 教训 1+2「`-benchmem` 双维度 / 机制完成≠收益交付」+ [[p3-pw10-zerocross-stage3-round]] 教训 3「跨机器 perf 基线漂移」**构成 perf 判定纪律家族第 4 实例**。已可在 [[perf-optimization-workflow]] 立 **§7「立项数字目标 vs profile 实测瓶颈:profile 才是合同」** 一节(与既有 §1「profile 先行」/§3「benchmark 否决门」/§5「跨机器基线对照」并列,本条管「立项数字 vs profile 重投影」)。recorder 定夺立 §7 vs 暂留。
+- **教训 1**「perf profile 揭示架构边界时止损并记入文档,别硬追原数字」——配 [[p3-pw10-r3-call-indirect-round]] 教训 1+2「`-benchmem` 双维度 / 机制完成≠收益交付」+ [[p3-pw10-zerocross-stage3-round]] 教训 3「跨机器 perf 基线漂移」**构成 perf 判定纪律家族第 4 实例**。已可在 [[perf-optimization-workflow]] 立 **§7「立项数字目标 vs profile 实测瓶颈:profile 才是合同」** 一节(与既有 §1「profile 先行」/§3「benchmark 否决门」/§5「跨机器基线对照」并列,本条管「立项数字 vs profile 重投影」)。recorder 定夺立 §7 vs 暂留。
 - **教训 2**「stop hook 强制不结束时的诚实解读」——首次样本,unique perspective(工具语义 vs 执行者判断责任的张力),可暂留观察或并入 perf 工作流通用纪律。
-- **教训 3**「wasm 字节级 codegen 复杂度峰值需前置 local 编排表」——首次样本,可进 [[multi-doc-drafting]] 邻接(都是「复杂代码前置设计文档化」家族),或独立小节,recorder 定夺。本条与 [[multi-doc-drafting]] 的关系:那篇管「多文档并行起草」,本条管「单段复杂 codegen 前置伪码 + 编排表」,共享「复杂工作前置文档化降低反复成本」核心结构,但落点不同(文档 vs 代码)。
+- **教训 3**「wasm 字节级 codegen 复杂度峰值需前置 local 编排表」——首次样本,可进 [[multi-doc-drafting]] 邻接(都是「复杂代码前置设计文档化」家族),或独立小节,recorder 定夺。本条与 [[multi-doc-drafting]] 的关系:那篇管「多文档并行起草」,本条管「单段复杂 codegen 前置伪码 + 编排表」,共享「复杂工作前置文档化降低反复成本」核心结构,但作用对象不同(文档 vs 代码)。
 
 ## 触发场景
 
-立项「数字目标 0.X x → ≥Y x」类 perf 里程碑完成中跑 profile 时(若 profile 揭示瓶颈在原计划目标无关的块、且原数字目标依赖于消热点 → 立即重评目标可达性、止损落档)、`/goal` 设了 stop hook 但 profile 证明目标不可达时(诚实重解读「完成」为「收口已完成 + 文档化不可达边界 + 标后续路径」,绝不为放行 hook 硬上 UAF 代码)、wasm 字节级守卫快路径设计(守卫 ≥6 项 + body 写 ≥3 段帧字 + ≥2 类型转换时,前置写伪码 + local 编排表;直接动手写会反复撞 local 冲突),看这篇。
+立项「数字目标 0.X x → ≥Y x」类 perf 里程碑完成中跑 profile 时(若 profile 揭示瓶颈在原计划目标无关的块、且原数字目标依赖于消热点 → 立即重评目标可达性、止损并记入文档)、`/goal` 设了 stop hook 但 profile 证明目标不可达时(诚实重解读「完成」为「收尾已完成部分 + 文档化不可达边界 + 标后续路径」,绝不为放行 hook 硬上 UAF 代码)、wasm 字节级守卫快路径设计(守卫 ≥6 项 + body 写 ≥3 段帧字 + ≥2 类型转换时,前置写伪码 + local 编排表;直接动手写会反复撞 local 冲突),看这篇。
 
 ## 关联
 

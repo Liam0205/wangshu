@@ -1,9 +1,9 @@
 ---
 name: 2026-07-09-issue52-close-round
-description: issue #52 收口轮(PR #99):四 op 双架构 exit-reason 接入 + P4 验收测试抓到共享三层的 doTailCall multret 既有 bug
+description: issue #52 收尾轮(PR #99):四 op 双架构 exit-reason 接入 + P4 验收测试抓到共享三层的 doTailCall multret 既有 bug
 ---
 
-# issue #52 收口轮(2026-07-09,PR #99,分支 `feat/issue52-remaining-ops`)
+# issue #52 收尾轮(2026-07-09,PR #99,分支 `feat/issue52-remaining-ops`)
 
 ## 一句话
 
@@ -11,7 +11,7 @@ description: issue #52 收口轮(PR #99):四 op 双架构 exit-reason 接入 + P
 
 ## 过程要点
 
-- 四个 op 的协议形态各镜像一个既有先例(TAILCALL→HelperReturn 终止 run / TFORLOOP→HelperCompareSlow verdict 回段 / CLOSURE→P3 伪指令 skip / CLOSE→普通往返),没有发明新协议——**先例复用使 review 三轮全 APPROVE 零阻塞**。
+- 四个 op 的协议形式各镜像一个既有先例(TAILCALL→HelperReturn 终止 run / TFORLOOP→HelperCompareSlow verdict 回段 / CLOSURE→P3 伪指令 skip / CLOSE→普通往返),没有发明新协议——**先例复用使 review 三轮全 APPROVE 零阻塞**。
 - CLOSURE 伪指令(数据非 op)要求所有翻译器 pc 走查统一步进:与其在四处走查各自加 skip,抽一个共享 `nextRealPC` 让漏改成为编译期显式行为(走查处样板一致,grep `pc++` 可审计)。
 - **e2e 期望值先跑 oracle 再写**:TestPJ10_Closure_Close_Promotes 的手算期望(12)错了,oracle 说 27——凡断言具体输出的用例,期望值一律先经 `~/bin/lua5.1` 验证,不信手算。
 

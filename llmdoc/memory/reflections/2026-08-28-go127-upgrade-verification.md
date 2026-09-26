@@ -16,7 +16,7 @@ description: >
   差分与 corpus 回放、官方 Lua 套件、difftest、`make test-scripts`，以及七个 target 的 fuzz
   smoke —— #75804 重试 0 次。**一个明确的取舍：`scripts/go-fuzz.sh` 里那次条件重试不删**，
   因为它是目前唯一区分「真 crasher」与「工具链竞态」的判据，而一次 30 秒 smoke 的 0 次重试与
-  历史触发频率（约 450 个 job 里 9 次）根本不在一个量级，等 nightly 上实测归零再删才有数据背书 —— 而归零只是**必要条件之一**:判据钉在症状上,还要确认没有别的机制会产生同样的症状(审计补上的)。
+  历史触发频率（约 450 个 job 里 9 次）根本不在一个量级，等 nightly 上实测归零再删才有数据背书 —— 而归零只是**必要条件之一**:判据针对的是症状,还要确认没有别的机制会产生同样的症状(审计补上的)。
   三条教训：确认某个上游修复是否随某版本发布要读那个版本的源码而不是读发布说明或 issue 状态 /
   「在新版本里看到了修复代码」不等于「这是新版本引入的」，必须配一次旧版本不存在的观察 /
   一次通过不足以撤掉一层保护，尤其当那层保护正是用来区分真假失败的。
@@ -34,7 +34,7 @@ metadata:
 > 不是**实际改了什么** —— 而一个来查「那句过期的 CL 774140 到底修没修」的人,会被这句话告知没修。
 >
 > 实际范围(共 多个 commit(数目不在这里写死 —— 这个数字已经被改过四次,每次修正它本身又多一个 commit,是个自我推翻的写法;要准确数目用 `git log --oneline origin/master..HEAD | wc -l`)):`go.mod` 1.26.2 → 1.27.0;`benchmarks/` 与 `benchmarks/pineapple/`
-> 两个 `replace` 根模块的子模块一并跟上(审计发现漏了会让 CI 挂);
+> 两个 `replace` 根模块的子模块一并跟上(审计发现漏了会让 CI 失败);
 > `docs/design/engineering.md` §1.1、`scripts/go-fuzz.sh` 的上游状态注释、两个 README 的
 > 「Go 1.25+」、`06-backends.md` 的 go.mod 引用与那个从未实现的版本矩阵,全部按实际状态更正。
 > 产品代码与测试零改动。
@@ -142,7 +142,7 @@ if err == ctx.Err() || err == fuzzCtx.Err() || isInterruptError(err) {
   坏的那一侧：**真 bug 被当成噪声重试掉**；
 - 它的触发频率本来就低 —— 约 450 个 job 里 9 次。一次 30 秒 smoke 跑出 0 次重试，**不足以
   证明**修复生效，因为在原来那个频率下，一次这么短的 smoke 本来就极可能是 0 次；
-- 修复真的生效之后，这个数字应当在 nightly 上自然归零(归零只是**必要条件之一**:判据钉在症状上,归零只说明那一条成因停了;还要确认没有别的机制会产生同样症状)。**等实测归零再删，就有数据背书而不是
+- 修复真的生效之后，这个数字应当在 nightly 上自然归零(归零只是**必要条件之一**:判据针对的是症状,归零只说明那一条成因停了;还要确认没有别的机制会产生同样症状)。**等实测归零再删，就有数据背书而不是
   靠推断** —— 这也是 #180 那条「评估并删除」的正确执行顺序：先评估，评估结论是证据还不够，
   于是这一轮只做「升 go.mod + 改文档描述」。
 
@@ -231,12 +231,12 @@ tag，`go1.26.2` 里 `issue/75804` 出现 **0** 次、`go1.27.0` 出现 **1** �
 
 ## 关联
 
-[[design-claims-vs-codebase-physics]]（§5 时间维度：外部依赖现状，本轮两条教训的落点）·
+[[design-claims-vs-codebase-physics]]（§5 时间维度：外部依赖现状，本轮两条教训写进的位置）·
 [[prove-the-path-under-test]]（新节：撤掉兜底机制的证据门槛）·
 [[unreproducible-crasher-triage]]（`deadline` 字样 + 无落盘 = 工具链 flake 这条分诊判据，
 正是本轮讨论要不要撤的那层保护在分诊侧的表述）·
 [[2026-07-25-issue179-test-go-fuzz-retry-revive-round]]（那次条件重试的回归 harness
-`scripts/test-go-fuzz-retry.sh`，重试逻辑还在，这个 harness 也就还在守着它）·
-`docs/design/engineering.md` §1.1（本轮技术对账落点）· issue #180 / #63 / #169 ·
+`scripts/test-go-fuzz-retry.sh`，重试逻辑还在，这个 harness 也就还在覆盖它）·
+`docs/design/engineering.md` §1.1（本轮技术对账写进的位置）· issue #180 / #63 / #169 ·
 golang/go#75804 / Go CL 804900
 

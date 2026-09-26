@@ -2,12 +2,12 @@
 name: 2026-07-10-issue106-107-nightly-crashers-round
 description: >
   issue #106/#107 修复轮(2026-07-10,PR #108):nightly-diff-fuzz run 29053951054(跑在 PR #105 合入前的
-  1ac8aa4)p3/p4 各撞一个 crasher。#106(p4 seed bdb2e91ab3c4b224,3.3e23 次迭代 intrinsic 循环)重放证实
+  1ac8aa4)p3/p4 各触发一个 crasher。#106(p4 seed bdb2e91ab3c4b224,3.3e23 次迭代 intrinsic 循环)重放证实
   已被 #105 的 loopFuel 修复,seed 入 corpus 作常驻回归;#107(p3 seed 3c6a28fa1b2a41f0)是真 bug——P3 wasm
   emitUnm 快路径裸 f64.neg 把 canonNaN(0x7FF8...)的符号位翻成 0xFFF8_0000_0000_0000,恰好是 value.Nil 的
   位模式,`-(0%0)` 把 NaN 写成 Nil,升层后第 2 次 Run 起误报 arithmetic-on-nil。修法镜像 P4 emitUNM 在
   issue #37 端口轮的 result guard。核心教训:「双后端修复不对称」第 3 实例(#67 → #103 → 本轮),按 #103
-  反思的预告升 guide;canonNaN 双刃剑的第二家族(位运算 sign-flip,补比较类位相等之外);nightly 失败先查
+  反思里预先说明的做法升级为 guide;canonNaN 双刃剑的第二家族(位运算 sign-flip,补比较类位相等之外);nightly 失败先查
   run headSha 的 commit 归属已固化为处置动作。
 metadata:
   type: reflection
@@ -21,7 +21,7 @@ metadata:
 
 ## 任务
 
-处置 nightly 长跑撞出的两个 crasher:定位根因、修复或归属、seed 入 corpus、补回归防线。
+处置 nightly 长时间运行触发的两个 crasher:定位根因、修复或归属、seed 入 corpus、补回归防线。
 
 ## 期望与实际
 
@@ -61,7 +61,7 @@ negged,快路径条件收紧为 `IsNumber(vb) && negged < qNanBoxBase`,翻转结
 「所有绕过 host 语义的 inline 站点」。本轮的教训比前两轮更尖锐:#37 的修复注释明确写了 "both arches",
 说明当时**以为**扫全了——「后端」的枚举本身漏了 P3。
 
-可操作纪律(已按 #103 反思的预告升 guide,见 [[cross-backend-semantic-fix-sweep]]):在任一后端修语义类
+可操作纪律(已按 #103 反思里预先说明的做法升级为 guide,见 [[cross-backend-semantic-fix-sweep]]):在任一后端修语义类
 bug 时,grep **所有**后端的同名 op emit——P3 `translate.go emitXxx` / P4 `emit_ops_amd64.go emitXXX` /
 P4 `translator_native_arm64.go emitXxxArm64`——逐一确认同类风险;「后端清单」以 bridge 注册的 Compiler
 实现为准,不凭记忆枚举。
@@ -69,10 +69,10 @@ P4 `translator_native_arm64.go emitXxxArm64`——逐一确认同类风险;「�
 ### 教训 2(canonNaN 双刃剑的第二家族——位运算 sign-flip)
 
 连 #103 教训 2(「谁的正确性恰好依赖不变式不成立」):canonNaN 规范化使「sign-flip 后恰好落在 TagNil」
-100% 确定性复现——若 NaN 位模式随机,这个 bug 几乎撞不上,但也不会静默存在。#103 时识别的受害站点是
+100% 确定性复现——若 NaN 位模式随机,这个 bug 几乎触发不了,但也不会静默存在。#103 时识别的受害站点是
 **比较类**(EQ 位相等);本轮补上第二家族:**直接位运算类**——neg 的 sign flip、abs 的 mask,任何对
 NaN-box 位模式做位级变换的 inline 都可能把 canonNaN 移进/移出 tag 空间。P4 #37 的 result-guard 手法
-(变换后重查 tag 边界)是这一家族的通用解药,本轮再次验证。
+(变换后重查 tag 边界)是这一家族的通用解法,本轮再次验证。
 
 ### 教训 3(nightly 失败先查 commit 归属——处置动作已固化)
 
@@ -89,7 +89,7 @@ run 的 headSha 是 `1ac8aa4`,PR #105 在 run 触发后 4.5 小时才合入—�
 
 ## 过程记录
 
-- 最小化:手工收缩 seed 经约 8 个变体(每变体一个单行探针测试),钉住三个复现条件:(a) 错误只在第 2 次
+- 最小化:手工收缩 seed 经约 8 个变体(每变体一个单行探针测试),确定了三个复现条件:(a) 错误只在第 2 次
   Run 起出现(升层后);(b) 需要 `A=0%0` → `-A` → 对结果再做算术,三步缺一不可;(c) 每次 Run 换新 State
   会掩盖问题(升层计数被重置)。
 - difftest 载体 `p3_unm_nan_alias` 循环 40 次调用,保证升层后的函数体真被执行(prove-the-path:首次调用

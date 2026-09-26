@@ -30,7 +30,7 @@ metadata:
 
 ## 任务
 
-nightly 长时间运行的 FuzzAutoPromote（P4 tier 促升差分测试）撞出稳定可复现
+nightly 长时间运行的 FuzzAutoPromote（P4 tier 促升差分测试）跑出稳定可复现
 的 crasher #177：
 
 ```lua
@@ -88,7 +88,7 @@ coerce 为 7 后循环通过。要定位 P4 路径上 for-loop 的 init/limit/st
    在 DoReturn 前 bubble。回归测试新增 budget-exceeded + context-canceled
    两个场景（`sum "1000000"` + 4096 步 budget、5ms ctx 超时），两个都以
    `PromotionCount` + `SpecForLoopDeoptHits` 双探针防止静默替身路径——
-   促升门 / shape 匹配 / 超时先后关系变化让 auto 静默留在 P1 时同样能拿到
+   促升门槛 / shape 匹配 / 超时先后关系变化让 auto 静默留在 P1 时同样能拿到
    期望错误信息通过。
 
 ## 期望与实际
@@ -162,7 +162,7 @@ imm 位模式」，但需要确认它是不是 NaN-box（直接 SetReg 用）还
 上，可以直接透传。
 
 **Why**：JIT 数据流里字段编码不一致（NaN-box vs 原始 f64 位模式 vs
-mov-immediate 位模式）非常容易撞车，猜错了引入沉默的 tag 错乱远比编译错误
+mov-immediate 位模式）非常容易出错，猜错了引入静默的 tag 错乱远比编译错误
 难查。花几分钟读定义 + 全部消费点，是把「猜」换成「读」的低成本手段。
 
 **How to apply**：改深层 JIT 数据流时，先花几分钟读所选字段的定义 + 全部
@@ -182,8 +182,8 @@ budget，divergence 才浮出来（P1 raise，P4 返回）。
 
 **Why**：deopt 路径本质是「用 helper 补齐 fast-path 没做完的字节码语义」；
 只补 slot 而不补 iteration 循环，等于把 FORLOOP 的语义丢了。P1 与 P4 的
-byte-equal 契约不只是 result byte-equal，还包括 side-effect byte-equal——
-preempt / cancel ctx / body write / stack shape 都在契约里。审查侧一句
+byte-equal 约定不只是 result byte-equal，还包括 side-effect byte-equal——
+preempt / cancel ctx / body write / stack shape 都在约定里。审查侧一句
 「iteration 观测不到就无法证明 iteration 真的跑了」直接把这条盲区照出来。
 
 **How to apply**：deopt 分支写 DoReturn 前，逐条列出「被替代的字节码序列
@@ -196,11 +196,11 @@ preempt / cancel ctx / body write / stack shape 都在契约里。审查侧一�
 
 回归测试至少覆盖 preempt 两条通用副作用（step budget + cancel context），
 它们不需要脚本副作用可观察，只要 loop 足够长就能触发——这两个 case 天生对
-「iteration 被跳过」类 bug 敏感，是 deopt-fold-a-loop 家族的通用守门。
+「iteration 被跳过」类 bug 敏感，是 deopt-fold-a-loop 家族的通用检查。
 
 **测试用双探针防静默替身**：`PromotionCount` + `SpecForLoopDeoptHits`。前者
 证明 auto 真进了 P4，后者证明 P4 里真走了对应 deopt 分支——没这两个探针，
-促升门 / shape 匹配 / ctx timeout 先后关系变化让 auto 静默留在 P1 时，同样
+促升门槛 / shape 匹配 / ctx timeout 先后关系变化让 auto 静默留在 P1 时，同样
 的错误信息（interpreter 自己 raise 的 budget/ctx 错）会让 test 假绿。承
 [[prove-the-path-under-test]] §7.1 复现侧纪律。
 
@@ -211,7 +211,7 @@ preempt / cancel ctx / body write / stack shape 都在契约里。审查侧一�
   纪律，教训 5 的双探针防静默替身与之直接对应。
 - [[cross-backend-semantic-fix-sweep]]：快路径与 helper 语义对齐，本轮
   fast-path 省 spill + deopt 直调 helper 是同一族错配；BLOCKER 附记补的
-  「语义完整性契约」是同族第二例（不只 slot shape，还有被替代字节码
+  「语义完整性约定」是同族第二例（不只 slot shape，还有被替代字节码
   副作用清单）。
 - [[2026-07-11-issue125-return-freereg-round]]：共享层 codegen 假设与 emit
   状态错配的老实例，本轮 deopt 路径读到 Nil slot 属于同族「优化侧假设 vs
@@ -224,11 +224,11 @@ preempt / cancel ctx / body write / stack shape 都在契约里。审查侧一�
   [[cross-backend-semantic-fix-sweep]] 里显式登记，可考虑升到 guides 里补一
   条「P4 template deopt 前 slot 恢复清单」子节。
 - 教训 5（deopt 分支替字节码 return 前列可观察副作用清单）是 [[cross-backend-semantic-fix-sweep]]
-  「fast-path template 与 host helper 契约」的第二层：本轮附记已在 guide
-  写「slot 契约」，教训 5 加的「副作用完整性契约」值得升到该 guide 一起
-  作为「优化后 fast-path template 与 deopt 直调 helper 的两条契约」并列
+  「fast-path template 与 host helper 约定」的第二层：本轮附记已在 guide
+  写「slot 约定」，教训 5 加的「副作用完整性约定」值得升到该 guide 一起
+  作为「优化后 fast-path template 与 deopt 直调 helper 的两条约定」并列
   段落。回归测试的 budget + ctx 双 case 也可以在 [[prove-the-path-under-test]]
-  里作 deopt-fold-a-loop 家族的通用守门推荐。
+  里作 deopt-fold-a-loop 家族的通用检查推荐。
 - 教训 3、教训 4 目前留在本反思即可，属于本轮具体经验。
 
 ## 后续动作

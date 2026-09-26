@@ -6,7 +6,7 @@ description: >
   「go-fuzz crash」但不是崩溃**:两边都正确抛 `attempt to perform arithmetic on a string value`,只有
   行号不同(PUC `:2:` / 望舒 `:1:`)。seed 里的换行是**裸 `\r`**,先怀疑词法器,探针一跑发现 `\n`
   同样复现——词法器四种换行都算对了,缺陷在 codegen。**版本核对干净**:失败 run 的 headSha 就是当前
-  master `6e1ce70`。根因是 #252 那套「行号 = 发射那一刻的 lastline」的口径在**运算符**这一格没有落
+  master `6e1ce70`。根因是 #252 那套「行号 = 发射那一刻的 lastline」的口径在**运算符**这一格没有做
   到位:PUC 对一个二元运算有**两个**发射点——`luaK_infix` 在运算符 token 刚被消费时跑(左操作数在
   运算符行物化),`luaK_posfix` 在右操作数解析完之后跑(右操作数物化、运算指令本身、比较的 JMP、
   CONCAT 全部落在**右操作数最后一个 token 的行**);一元运算只有 `luaK_prefix` 这一个点,同样在操作数
@@ -25,7 +25,7 @@ description: >
   连同嵌套 proto 一起比对,又推翻一次**:我的构造器修法在「位置项后跟 `k=v`」时把物化行覆盖成 `}` 行
   (引入的新缺陷),方括号键 `A[B\n.\nc]` 的 discharge 行仍偏(会 raise),CLOSURE / 块退出 CLOSE /
   repeat CLOSE+JMP 三族不可见残留;全部修掉,并在对齐 while 体的 CLOSE 时**发现并修了一个语义 bug**:
-  while 只有一层 block、CLOSE 发在回边之后从未执行,循环体内每次迭代建的闭包共享同一个 upvalue。全范围
+  while 只有一层 block、CLOSE 发在循环回跳(back edge)之后从未执行,循环体内每次迭代建的闭包共享同一个 upvalue。全范围
   终审又抓出多目标赋值局部目标的 MOVE 一格——藏在比对脚本「opcode 序列不同就不比行」的桶里,经 activelines
   可见;最终 21019 形状行号 0 差异。三条教训:「同一条口径」在每个语法位置都要问一遍「PUC 在哪一刻发射」
   (→ [[prove-the-path-under-test]] §2.1b)/ 「不会 raise 所以不可见」这个判断要按指令逐条核,SETTABLE
@@ -38,7 +38,7 @@ metadata:
 
 # 运算指令的行是 posfix 那一刻的 lastline,不是运算符的行(2026-09-18,issue #262)
 
-> 范围:issue #262(nightly `FuzzOracleDiffTiered` 开出),分支 `fix/issue262-operator-lastline`。改动落在
+> 范围:issue #262(nightly `FuzzOracleDiffTiered` 开出),分支 `fix/issue262-operator-lastline`。改动集中在
 > `internal/frontend/ast/ast.go`(`BinExpr`/`UnExpr` 加 `EndLine`,`NumForStmt` 加 `ExprEndLines`/`DoLine`)、
 > `internal/frontend/parse/expr.go` 与 `stmt.go`(填 `p.lastLine`)、
 > `internal/frontend/compile/codegen.go`(`exprBin`/`exprCompare`/`exprConcat`/`exprUn` 改用 `EndLine`)、
@@ -138,11 +138,11 @@ activelines 能看见」,就收工了。blind reviewer 用同一套 dump 比对�
 说我自己的「扫过了」是假的:我的清单只有 60 多个手挑形状,漏掉了泛型 for 生成器和构造器键这两个位置。
 
 于是这一轮把剩下的 DIFF **全部**修掉而不是分类:表构造器每个字段的行(`TableItem` 加 `KeyEndLine`/
-`EndLine`,NEWTABLE 用 `{` 前一个 token 的行 `NewTableLine`)、泛型 for 的 TFORLOOP / 前向 JMP / 回边
+`EndLine`,NEWTABLE 用 `{` 前一个 token 的行 `NewTableLine`)、泛型 for 的 TFORLOOP / 前向 JMP / 循环回跳(back edge)
 JMP(`IterLine`/`DoLine`/`Body.EndLine`,第三轮把各语句上重复的 `BodyEndLine` 并进了 `Block.EndLine`)、方法调用接收者在方法名行 discharge(PUC 的 `:` 分支先读名字
 再 `luaK_self`,与 `.` 分支先 discharge 再读名字**相反**,#248 当年把两者写成同形是错的)、`return` 的
 RETURN 取列表末行、VARARG 在 `...` 被消费**之前**发射、`if`/`while`/`repeat` 条件的 TEST+JMP 取条件末行、
-`if` 逃逸 JMP 与 `while` 回边取 block 末行、`local` 的 LOADNIL 补位取末初始化式行、`f{...}`/`f"..."` 糖式
+`if` 逃逸 JMP 与 `while` back edge 取 block 末行、`local` 的 LOADNIL 补位取末初始化式行、`f{...}`/`f"..."` 糖式
 参数取参数末行,以及一处解析器层面的差异:构造器里 NAME/`=` 的 lookahead 已经扫过下一个 token 时,PUC 的
 lastline 跟着扫描器走(`{\nA\n.x}` 里 A 的 GETGLOBAL 落在 `.x` 那一行),`Parser.next` 在消费 lookahead
 时也照此推进。修完再用审阅者那 1875 个形状扫一遍:逐指令行号 0 差异,只剩 235 个 opcode 序列不同的
@@ -157,9 +157,9 @@ lastline 跟着扫描器走(`{\nA\n.x}` 里 A 的 GETGLOBAL 落在 `.x` 那一�
 及其 MOVE/GETUPVAL 伪指令(`pushclosure` 在 `end` 之后)、块退出 CLOSE(`leaveblock` 在闭合关键字之前)、
 repeat 带 upvalue 的 CLOSE/JMP(在 `until` 条件之后)。这一轮把它们**全部**修掉,顺手修了 `local\na`
 的 LOADNIL 行,并且在对齐 while 循环体 CLOSE 的位置时发现了一个**语义 bug**:望舒的 while 只有一层
-block,CLOSE 发在回边 JMP **之后**、永远执行不到,循环体里每次迭代建的闭包共享同一个 open upvalue,
+block,CLOSE 发在 back edge JMP **之后**、永远执行不到,循环体里每次迭代建的闭包共享同一个 open upvalue,
 `while i<3 do local x=i fs[#fs+1]=function() return x end i=i+1 end` 三个闭包都返回同一个值——luac
-是两层 block(外层可 break、内层作用域),CLOSE 在回边之前。改成两层后行为与 PUC 一致(0,1,2)。
+是两层 block(外层可 break、内层作用域),CLOSE 在 back edge 之前。改成两层后行为与 PUC 一致(0,1,2)。
 修完用审阅者的 19538 形状(含嵌套 proto)重扫:**行号差异 0**,opcode 序列差异 513 个全部是基线上就有
 的(与基线的差异集合逐条比对,HEAD 没有新增一个),另有 71 个形状基线判 ambiguous syntax、HEAD 与
 luac 一致地接受(构造器里 lookahead 之后的 `f\n(...)`)。
@@ -210,7 +210,7 @@ RK 时会错位,所以按 opcode 分桶比多重集),模板补七条局部目标
 
 **核心断言**:#252 把口径定为「行号 = 发射那一刻的 lastline」是对的,但「那一刻」在不同语法位置对应
 不同的 token。一个二元运算有**两个**发射点(infix / posfix),左右操作数分属不同时刻;`local` 初始化
-在分隔符;store 在语句末;FORPREP 在 `do`。口径正确不等于每一格都落到位——#252 那张表用的形状恰好
+在分隔符;store 在语句末;FORPREP 在 `do`。口径正确不等于每一格都做到位——#252 那张表用的形状恰好
 让「运算符行」与「posfix 行」重合,于是运算符这一格看起来已经对了。
 
 **判据**:对齐参照实现的行号时,对每个 AST 节点类型逐个回到 `lparser.c`/`lcode.c`,找出它发射的
@@ -238,7 +238,7 @@ SETLIST 判为不可见时也没有把 `[k]=v` 的 SETTABLE 单独拿出来问�
 
 ### 教训 3:有参照实现的行为对齐,批量 dump 比对比按 issue 逐格补便宜一个量级
 
-**核心断言**:#248、#252、#262 三轮各修一到四格,每轮都由 nightly 撞出一个 seed 才开始,每轮的独立
+**核心断言**:#248、#252、#262 三轮各修一到四格,每轮都由 nightly 跑出一个 seed 才开始,每轮的独立
 审计或远端评审又各补一到两格。本轮花十几分钟写了一个「`luac5.1 -p -l` 与望舒 LineInfo 并排逐指令
 比对」的脚本,喂 90 多个手挑形状,一次扫出运算符全家 + store 行 + 数值 for 三族。但手挑就是手挑:
 第一轮独立审阅用**模板 × 换行位置组合**生成 1875 个形状,又扫出泛型 for 生成器与构造器键两个我没挑到的
@@ -268,4 +268,4 @@ SETLIST 判为不可见时也没有把 `[k]=v` 的 SETTABLE 单独拿出来问�
   语法位置,seed 只是入口。
 - doc-gaps 里「前端行号记账模型」那条:全部残留修掉,21019 形状(含嵌套 proto、含局部目标赋值模板)dump
   比对逐指令 0 差异、OPSEQ 桶按 opcode 比行也 0 差异;条目改写为「已对齐」,并写明扫描面的定义(模板按
-  非终结符列、含嵌套 proto、OPSEQ 桶也比行),供下次前端行号改动当验收门。
+  非终结符列、含嵌套 proto、OPSEQ 桶也比行),供下次前端行号改动当验收标准。

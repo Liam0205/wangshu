@@ -16,7 +16,7 @@ description: >
   都不 BumpGen,而删掉的槽位 `next>=0` 仍留在链上,同键再插会落到**另一个**槽位、别的键也可能落进
   原槽位——key→slot 映射变了而 gen 不变,gen-only 的 inline 消费者继续读旧槽。这是
   [[2026-07-02-p4-beat-p3-opset-round]] 教训 2 预告的「已修一处不代表全表安全」的第二实例,
-  doc-gaps 里挂了两个月的「BumpGen 路径清单未落」缺口由本轮收口:约定写进 `rawtable.go` 头注,
+  doc-gaps 里挂了两个月的「BumpGen 路径清单未落」缺口在本轮补上:约定写进 `rawtable.go` 头注,
   删键两处补 bump,单元测试直接断言「槽位换主必伴随 gen 变化」。孤立缺陷一的 e2e 用数组部
   (`t[2]=nil` 后 `__index`,数组部没有 key→slot 间接所以 gen 从不变,只剩 Nil 守卫);孤立缺陷二的
   e2e 靠脚本枚举 5000 个全局名找到 `v4927` 删掉后 `k2621` 恰好落进同一槽位(是否同槽取决于字符串哈希**和**
@@ -80,14 +80,14 @@ harness 判定 `error 存在性真分叉(疑似 P4 误编译)`:P1 无错,P4 报
    三条 pin 加上两处修复的 2×2 撤回矩阵全部按预期变红/变绿。
 6. **P3 侧只是推断**:P3 wasm `emitGetGlobal` 与 P4 一样是 gen-only,但本轮三条 pin 在 p3 tag 下、撤掉
    gen 修复也全绿——force-all 在首次执行就升层,那时 IC 还没回填,wasm 走的是纯 helper 分支,inline
-   路径没被触达。「P3 也有这个缺陷」是从代码结构读出来的,没有实测复现;要证实需要一个先把 IC 烤热再
+   路径没被触达。「P3 也有这个缺陷」是从代码结构读出来的,没有实测复现;要证实需要一个先把 IC 预热再
    升层(按热度阈值而非 force-all)的输入。
 7. **fuzz 重探**:修后 `FuzzP4ForceAllPromote` 跑 60 秒无新发现;全套 p1/p3/p4 测试、lint、
    `GOARCH=arm64 go vet`、conformance-p4、difftest-p4 通过。
 
 ## 期望与实际
 
-- 期望:一个 fuzz seed 对应一个根因,修好后 seed 变绿即闭环。
+- 期望:一个 fuzz seed 对应一个根因,修好后 seed 变绿就算解决。
 - 实际:seed 变绿是两处缺陷的**合取**被打破,任何一处修复都能做到;若只修先看到的那处(Nil 常量),
   删键不 bump gen 会继续潜伏,等下一个恰好让别的键落进旧槽位的 seed。
 

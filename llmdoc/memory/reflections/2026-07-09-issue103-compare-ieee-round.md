@@ -15,7 +15,7 @@ metadata:
 
 # issue #103 修复轮反思(2026-07-09,PR #104)
 
-> 范围:master 合入 PR #101 后的 push CI 上,`FuzzAutoPromote` seed `765ba4598e721c69` 撞出 P1/P4 tier
+> 范围:master 合入 PR #101 后的 push CI 上,`FuzzAutoPromote` seed `765ba4598e721c69` 触发了 P1/P4 tier
 > divergence(P1 stack overflow / P4 正常返回)。定位 → issue #103 → 修复 amd64 LT/LE unordered +
 > 两 arch EQ 的 NaN/±0 → PR #104(CI 全绿,review 一轮 APPROVE 零问题)。
 
@@ -36,7 +36,7 @@ fuzz seed `local function fib(n)if n<0 then return end fib(n)end fib(0%0)`:`0%0`
      `NaN == NaN` 误判 true(PUC:false);
    - **±0**:`-0.0` 与 `+0.0` 位不同 → `-0.0 == 0.0` 误判 false(PUC:true)。
    修法:位相等且值为 canonNaN → 条件 false 侧;位不等但两操作数 OR 后幅值为零(至多符号位)→ 条件
-   true 侧。**成本用 K 操作数门控**:K ≠ canonNaN 钉死相等位值(跳过 NaN 检查)、K 幅值非零不可能配
+   true 侧。**成本用 K 操作数门控**:K ≠ canonNaN 时相等的位值已被锁定(跳过 NaN 检查)、K 幅值非零不可能配
    ±0(跳过零检查),`x == 1` / `x == "key"` 常见形状保持原两分支形式零开销。
 
 ## 核心教训
@@ -59,14 +59,14 @@ canonNaN 规范化(值世界所有 NaN 唯一位模式)本是 NaN-boxing 的守�
 bug 反而藏不住;规范化让它 100% 复现却 100% 静默(比较"成功"了,只是语义错)。审计一条不变式时,除了问
 「谁依赖它成立」,还要问「**谁的正确性恰好依赖它不成立**」——位相等 ≠ 语义相等的所有站点(EQ inline、
 IC key 比较、常量表去重)都值得在 canonNaN 语境下重审。常量表去重(negzero_fold 系列 conformance 用例)
-早就撞过 ±0 的同款问题,是本轮 ±0 检查的先例。
+早就遇到过 ±0 的同样问题,是本轮 ±0 检查的先例。
 
 ### 教训 3(一个 fuzz 失败顺手扫全 family——LT/LE 查完顺手查 EQ,多挖两个)
 
-fuzz 只撞出 LT 的 NaN 反转,但根因调查写探针时顺手把 EQ/NEQ/±0 一起扫了(9 个形状一次跑完),多挖出
+fuzz 只触发了 LT 的 NaN 反转,但根因调查写探针时顺手把 EQ/NEQ/±0 一起扫了(9 个形状一次跑完),多挖出
 EQ 的两个潜伏 bug(NaN==NaN、-0.0==0.0,两 arch 都中)。**inline 快路径的 bug 从不孤立——同一 family
 (比较/算术/加载)共享同一套「绕过 host 语义」的风险面,一个站点出 IEEE 边值问题,兄弟站点大概率也有**。
-成本极低(探针多写 6 个 case),收益是把三个 bug 合进一个 PR 一次修完,而不是等 fuzz 再撞两次。
+成本极低(探针多写 6 个 case),收益是把三个 bug 合进一个 PR 一次修完,而不是等 fuzz 再触发两次。
 
 ## 其它
 
@@ -79,5 +79,5 @@ EQ 的两个潜伏 bug(NaN==NaN、-0.0==0.0,两 arch 都中)。**inline 快路�
 
 [[2026-07-09-pr101-session-side-findings]](同日前序:#102 的发现路径)· [[2026-07-08-issue67-amd64-nodehit-crossrun-round]]
 (教训 1 的反向实例:arm64 guard 改良未移植回 amd64)· [[prove-the-path-under-test]](tier-divergence
-fuzz harness 正是该 guide 的活体现)· issue #103 · PR #104 · `internal/gibbous/jit/peroptranslator`
+fuzz harness 正是该 guide 的实际例子)· issue #103 · PR #104 · `internal/gibbous/jit/peroptranslator`
 (`inlineNumericCompare` / `inlineRawEq` / `inlineRawEqArm64`)· `internal/value`(canonNaN)

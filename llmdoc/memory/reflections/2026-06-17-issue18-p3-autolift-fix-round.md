@@ -1,14 +1,14 @@
 # issue #18 P3 自然热度升层路径修复轮(运行期 `recheckCompilabilityRuntime` 接通)
 
 - **日期**:2026-06-17
-- **任务类型**:wangshu 自家 issue 修复 → 编译期 F7 占位 + 运行期 P3 注入后重判 → 闭环 p3 自然热度升层路径
+- **任务类型**:wangshu 自家 issue 修复 → 编译期 F7 占位 + 运行期 P3 注入后重判 → 接通 p3 自然热度升层路径
 - **branch**:`fix/issue-18-p3-autolift`(本会话切出,3 commits 在 master 上:bridge 守卫扩展 + analyze_on godoc 同步 + 新增白盒测试)
-- **issue**:#18(本会话开,本轮收口)
+- **issue**:#18(本会话开,本轮关闭)
 - **来源链**:[[2026-06-17-pineapple-bench-batch-wrapper-spike]] 教训 1 → issue #18 → 本反思
 
 ## 任务
 
-[[2026-06-17-pineapple-bench-batch-wrapper-spike]] 教训 1 衍生发现:wangshu p3 build 自然热度升层路径**根本不工作**——`internal/frontend/compile/analyze_on.go::analyzeCompilability` 用临时 `bridge.NewBridge()`(无 P3)跑 `AnalyzeProto`,F7 永远触发,所有 Proto 在编译期被烧成 `CompNotCompilable + ReasonBackendUnsupp`。运行期 `considerPromotion` 看 `comp != CompCompilable && !forceAll` → 直接 `TierStuck`,**热度过 `HotEntryThreshold=200` 也不升层**。`analyze_on.go:31` 注释自承"留 P3 PR 收口"。
+[[2026-06-17-pineapple-bench-batch-wrapper-spike]] 教训 1 衍生发现:wangshu p3 build 自然热度升层路径**根本不工作**——`internal/frontend/compile/analyze_on.go::analyzeCompilability` 用临时 `bridge.NewBridge()`(无 P3)跑 `AnalyzeProto`,F7 永远触发,所有 Proto 在编译期被标成 `CompNotCompilable + ReasonBackendUnsupp`。运行期 `considerPromotion` 看 `comp != CompCompilable && !forceAll` → 直接 `TierStuck`,**热度过 `HotEntryThreshold=200` 也不升层**。`analyze_on.go:31` 注释自承"留 P3 PR 收口"。
 
 用户 promotion 反思立即 actionable —— 1000 次 inner-function call PromotionCount 实测 0(白盒探针证实),且**影响所有 wangshu p3 build 外部 embedding**(不止 pineapple)。开 issue #18 提了三方案 A/B/C,用户选 B(轻量):**改 `considerPromotion` 守卫,允许"编译期 ReasonBackendUnsupp 占位 + 运行期 P3 已注入"的子集调 `recheckCompilabilityRuntime` 重判**。已有 `recheckCompilabilityForce`(原 forceAll 专用)已实现"清 F7 占位 + 对真实后端重判 + F1-F6 保守保留"逻辑,只需把守卫从 `forceAll only` 扩展到 `forceAll || (有占位 && P3已注入)`,并把函数 rename 反映新通用语义。
 
@@ -22,10 +22,10 @@
 
 ## 预期 vs 实际
 
-- **预期**:方案 B 改动小、语义清晰,仅放开守卫 + rename。改完后 p3 自然热度路径打通,白盒 `PromotionCount() > 0`。pineapple 形式期望"p3 终于稳定快于 p1"(spike 期间 p3 与 p1 几乎相等,假设升层后会有 5-10% 收益)。
+- **预期**:方案 B 改动小、语义清晰,仅放开守卫 + rename。改完后 p3 自然热度路径接通,白盒 `PromotionCount() > 0`。pineapple 形式期望"p3 终于稳定快于 p1"(spike 期间 p3 与 p1 几乎相等,假设升层后会有 5-10% 收益)。
 - **实际**:守卫 + rename 改动确实小(bridge.go 9 行 + godoc 重写 + 4 处测试注释 rename)。白盒**修复确认有效**——`TestPromotionCount_P3_NoForce_HotEntry_Lifts` 跑 1000 次 inner-function call 后 PromotionCount > 0,reflection [[2026-06-17-pineapple-bench-batch-wrapper-spike]] 教训 1 的反向断言转正。**但 pineapple 形式 p3 反而慢 20%**(p1 ~563 µs vs p3 ~679 µs)——升层后每次 `eng.CallInto("f")` 路径 host→crescent→**gibbous wasm**,wasm boundary(linear memory 数据拆解 + module call_indirect)成本超过解释器 4-opcode dispatch。这跟 [[2026-06-17-pineapple-bench-batch-wrapper-spike]] 教训 3「短工作量翻 VM 反噬」是同一类问题,但根因不同:那是 wrapper opcode 净增,本轮是 gibbous→wasm 边界 cost。
 
-**关键判断**(用户中途明确):**先把事情做对,再优化**。issue #18 修复**正确性意义重大**(p3 自然热度升层路径接通,影响所有外部 embedding 的 p3 perf benchmark 解读),pineapple 形式下 boundary 反噬是 perf 优化后续——不阻塞本 PR,留 follow-up。本 PR 收口范围:打通正确性 + 白盒证伪原 reflection 教训 1 反向断言。
+**关键判断**(用户中途明确):**先把事情做对,再优化**。issue #18 修复**正确性意义重大**(p3 自然热度升层路径接通,影响所有外部 embedding 的 p3 perf benchmark 解读),pineapple 形式下 boundary 反噬是 perf 优化后续——不阻塞本 PR,留 follow-up。本 PR 的范围:修好正确性 + 白盒证伪原 reflection 教训 1 反向断言。
 
 ## 教训(每条首句为「下次什么场景会触发」)
 
@@ -36,19 +36,19 @@
 本期事实链:
 
 - `analyze_on.go::analyzeCompilability` Compile 期跑 `AnalyzeProto`,得益:AST 用完即弃(03 §2.4 决策方案 ① 简化),Proto 字段一次写入跨 State 共享只读
-- 代价:Compile 期临时 `bridge.NewBridge()` 没注入 P3 → F7(`checkF7BackendSupport` 看 `b.p3==nil` 返 true)恒触发 → 所有 Proto 都被烧 `ReasonBackendUnsupp` 占位
+- 代价:Compile 期临时 `bridge.NewBridge()` 没注入 P3 → F7(`checkF7BackendSupport` 看 `b.p3==nil` 返 true)恒触发 → 所有 Proto 都被标上 `ReasonBackendUnsupp` 占位
 - 这不是 bug,是**有意的占位**:`ReasonBackendUnsupp` 字面意思就是"后端不支持",但实际语义是"编译期还不知道运行期注入谁,保守标'不支持',等运行期重判"
 - 运行期 `considerPromotion` 必须区分:(a) F1-F6 结构性排除(真不可编译,vararg/coroutine/debug 等)— 永久解释;(b) F7 ReasonBackendUnsupp 占位 + 已注入 P3 — 调真实后端 `SupportsAllOpcodes` 重判
 - `recheckCompilabilityRuntime` 实现(b),保守保留 (a):`structural := ReasonsBitmap(proto.CompReasons) &^ ReasonBackendUnsupp; if structural.HasAny() return CompNotCompilable; if b.checkF7BackendSupport(proto) return CompNotCompilable; return CompCompilable`
 
-**抽象成一个 pattern**:**"编译期保守占位 + 运行期实判清洗"**。Compile 期不知道完整信息时,**用一个具命名占位位**(不是"未判定" CompUnknown,因为那语义会被其他路径误读),运行期注入真实信息后**专门清这一位**再补判。守卫条件必须明确两路:`forceAll || (placeholder_bit && actual_backend_available)`。
+**抽象成一个 pattern**:**"编译期保守占位 + 运行期实判清洗"**。Compile 期不知道完整信息时,**用一个具名的占位值**(不是"未判定" CompUnknown,因为那语义会被其他路径误读),运行期注入真实信息后**专门清这一位**再补判。守卫条件必须明确两路:`forceAll || (placeholder_bit && actual_backend_available)`。
 
 **修正纪律**:
-- **占位位的命名要表达"为什么是这位"**——`ReasonBackendUnsupp` 字面意思是"不支持",但实际是"编译期无法判断"。godoc 必须说清两层语义(本轮在 `recheckCompilabilityRuntime` godoc 第二段实现)
+- **占位值的命名要表达"为什么是这位"**——`ReasonBackendUnsupp` 字面意思是"不支持",但实际是"编译期无法判断"。godoc 必须说清两层语义(本轮在 `recheckCompilabilityRuntime` godoc 第二段实现)
 - **运行期重判函数名不能带 "Force"** —— `recheckCompilabilityForce` 原名暗示"强制全升"专用,但实际逻辑是"对真实后端重判",改名 `recheckCompilabilityRuntime` 与编译期 `analyzeCompilability` 对称
 - **守卫条件双路要可读**:`b.forceAll || (b.p3 != nil && bitmap & placeholder != 0)`,在 considerPromotion 内 inline 解释两路的语义(本轮在 line 244 段 inline 5 行 godoc)
 
-**首次样本暂留观察**——本轮第一次把"编译期占位 + 运行期实判"模式提到 pattern 级。下次接 P3 多后端 / P4 后端开发期(SupportsAllOpcodes 不断扩面)/ JIT 类后端 lazy compile 类场景时验证。复发后可促成 [[p2-bridge-compilability-protocol]] 单独立 reference 收口此 pattern。
+**首次样本暂留观察**——本轮第一次把"编译期占位 + 运行期实判"模式提到 pattern 级。下次接 P3 多后端 / P4 后端开发期(SupportsAllOpcodes 不断扩面)/ JIT 类后端 lazy compile 类场景时验证。复发后可促成 [[p2-bridge-compilability-protocol]] 单独立 reference 整理此 pattern。
 
 ### 2. "白盒接通正确性"≠"宿主形式性能加速"——pineapple boundary-dominated + 短工作量是 gibbous 升层的不利形式
 
@@ -68,7 +68,7 @@
 - 升层后:host→crescent→**gibbous wasm**(linear memory 装/拆数据 + module `call_indirect`)→ 返回
 - 短工作量(4 opcodes)下,**wasm boundary cost > interpreter dispatch cost**
 
-这跟 [[2026-06-17-pineapple-bench-batch-wrapper-spike]] 教训 3「短工作量翻 VM 反噬」是同家族问题:**任何把"再多一层运行时机制"的优化对短工作量都可能反噬**——wrapper Lua 翻进 VM 反噬 wrapper opcode 净增,gibbous 升层反噬 wasm boundary cost。
+这跟 [[2026-06-17-pineapple-bench-batch-wrapper-spike]] 教训 3「短工作量翻 VM 反噬」是同家族问题:**任何把"再多一层运行时机制"的优化对短工作量都可能反噬**——wrapper Lua 移进 VM 反噬 wrapper opcode 净增,gibbous 升层反噬 wasm boundary cost。
 
 但这**不否定本轮修复价值**——issue #18 是把"事情做对",p3 自然热度升层路径接通是正确性闭环(影响所有外部 embedding 的 p3 perf 解读),pineapple 形式下的 boundary 反噬是后续 perf 优化的事。**纪律:把正确性补丁和性能加速补丁分开评估**,正确性补丁不应该被"宿主形式性能未提升"反向否决,反之亦然。
 
@@ -88,14 +88,14 @@
 这种 godoc 承诺**比 TODO 更隐蔽**:
 - TODO 是项目 grep 常态扫的(`grep -rn 'TODO' --include='*.go'`),review 工作流会逐个清
 - "留 X PR 收口"是行文承诺,**没有约定的 grep 关键字**,review 工作流不会主动扫
-- 完成的 PR(本期 PB7-1 `analyze_on.go`)已经合,reviewer 当时认为"等 P3 PR 收口"是合理 deferred,但**实际 P3 PR(PW0-PW10)收口时没有人回看哪些 PR 留了承诺**——形成"承诺孤儿"
+- 完成的 PR(本期 PB7-1 `analyze_on.go`)已经合,reviewer 当时认为"等 P3 PR 收口"是合理 deferred,但**实际 P3 PR(PW0-PW10)完成时没有人回看哪些 PR 留了承诺**——形成"承诺孤儿"
 
 **修正纪律**:
 - **每次完成"留 X 收口"的 godoc 承诺时,**同时**开个 issue 锚定**(本期回顾:PB7-1 完成时应该开 issue 锚定"运行期 reanalyze 待 P3 完成后补",但实际没开,直到 7 天后由 pineapple bench spike 反向触发)
-- **grep 关键字纪律**:本仓约定"留 X PR/issue 收口"类承诺统一用 `留 X 收口` 词组(grep 正则 `留 \S+ 收口`),每个 milestone 收口时强制 grep 一遍,确认是否有遗留承诺没转 issue
+- **grep 关键字纪律**:本仓约定"留 X PR/issue 收口"类承诺统一用 `留 X 收口` 词组(grep 正则 `留 \S+ 收口`),每个 milestone 完成时强制 grep 一遍,确认是否有遗留承诺没转 issue
 - **本轮 retroactively 兑现**:本反思 commit 同时清掉 `analyze_on.go:31` 那段"留 P3 PR 收口"的承诺(已实现,改成"已实现,见 bridge.recheckCompilabilityRuntime")
 
-**首次样本暂留观察**——本轮第一次发现"godoc 承诺孤儿"现象。下次 milestone 收口前 grep `留 \S+ 收口` 看是否有遗留。复发后可促成 [[milestone-closeout-checklist]] 加"承诺孤儿扫描"项。
+**首次样本暂留观察**——本轮第一次发现"godoc 承诺孤儿"现象。下次 milestone 完成前 grep `留 \S+ 收口` 看是否有遗留。复发后可促成 [[milestone-closeout-checklist]] 加"承诺孤儿扫描"项。
 
 ### 4. (与教训 3 同根)reflection 教训直接转 actionable issue 的工作流模式有效
 

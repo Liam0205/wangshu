@@ -1,20 +1,20 @@
 ---
 name: issue45-issue39-round
-description: issue #45(P4 amd64 exit-reason 收尾)+ issue #39(P3 helper 密度收益检查)双收口教训:PR #53 把 amd64 emit_ops_amd64.go 里最后的段内 mmap→Go shim 调用(EQ 直调 / LT/LE 非数字回退 / arith 慢路径 / LEN / CONCAT / SELF / TAILCALL / CLOSURE / CLOSE / TFORLOOP 遗留 emitter)全部迁到 exit-reason 协议(EQ 复用 HelperCompareSlow),删掉 nativeCode.Run 的 defer recover() 兜底(**删除本身就是验证**:shim 面若真的清零,兜底移除后全量测试 + fuzz 保持绿才成立);LEN/MOD/POW 进 opSupported 后 90s fuzz **立刻**抓到 master 上就有的老 bug(seed 21c645c46a1268c6,`function f()return{0}end f(f())` → P4 报 SETLIST: not a table 而 P1 正常)——PerOpCode.Run 的「副作用先跑、head-op 后物化」回放模型隐含「head 写与副作用读互不依赖」假设,NEWTABLE 一进 head-op 集合假设就破了,三种破坏形式(NEWTABLE head + SETLIST 副作用报错 / LOADK head + SETGLOBAL 或 SETTABLE 副作用静默存旧值);先用最小 Lua 探针家族(A-setlist/setglob/settable/setupval/call 与 B-scratch/arith)扫全 hazard 面(A 类三处中招,B 类因 head 在副作用之前分类天然安全),AnalyzeShape 预计算 lastReplayPC,任何 pc < lastReplayPC 的 head op 降级为有序副作用 + slotKindReg 读回(第一版 sawDeferredHead 全拒误杀 TestPJ10_SetList,降级才保住既有接受面);回归测试 TestPJ10_DeferredHeadOrdering 断言实际观测值,git stash 验证在未修复 analyzer 上真的失败(prove-the-path 正向验证);PR #55 给 P3 加 PromotionGater 可选接口(WorthPromoting(proto) bool),在可编译性检查之后 try-compile 之前咨询,仅 auto 模式生效 forceAll 绕过保差分测试覆盖,拒绝 → TierStuck 吸收;wasm Compiler 实现 op 构成密度地板 total/helperBound ≥ 7,阈值靠白盒 op 构成统计先行 + 实测迭代(先试 5 fib 密度 6 仍升层输 2.3 倍,调 7 后全部回归内核被拒);实测 nbody auto 89.7→43.2ms(与解释器同等)、fib 24.9→10.9、binary-trees 104→38.4、spectral-norm 40→20.7、heavy 三本 P3 赢面不变;两 PR 均 39/39 CI 全绿 + review bot APPROVE 后 rebase 合并;核心教训家族:接受面/硬件/参数任一维度变化都等于新一轮 fuzz 探索(第三个实例)+ 后端能力与收益按分层接口拆(SupportsAllOpcodes capability + WorthPromoting profitability + MinPromotableLen 尺寸地板,forceAll 绕过收益类保覆盖)+ 推迟执行模型必须审计执行顺序 hazard(先用最小探针家族扫全再选拒绝 vs 降级档位)+ 删兜底本身是主张的测试 + 收益阈值靠实测迭代不要一次定死。
+description: issue #45(P4 amd64 exit-reason 收尾)+ issue #39(P3 helper 密度收益检查)双收尾教训:PR #53 把 amd64 emit_ops_amd64.go 里最后的段内 mmap→Go shim 调用(EQ 直调 / LT/LE 非数字回退 / arith 慢路径 / LEN / CONCAT / SELF / TAILCALL / CLOSURE / CLOSE / TFORLOOP 遗留 emitter)全部迁到 exit-reason 协议(EQ 复用 HelperCompareSlow),删掉 nativeCode.Run 的 defer recover() 兜底(**删除本身就是验证**:shim 面若真的清零,兜底移除后全量测试 + fuzz 保持绿才成立);LEN/MOD/POW 进 opSupported 后 90s fuzz **立刻**抓到 master 上就有的老 bug(seed 21c645c46a1268c6,`function f()return{0}end f(f())` → P4 报 SETLIST: not a table 而 P1 正常)——PerOpCode.Run 的「副作用先跑、head-op 后物化」回放模型隐含「head 写与副作用读互不依赖」假设,NEWTABLE 一进 head-op 集合假设就破了,三种破坏形式(NEWTABLE head + SETLIST 副作用报错 / LOADK head + SETGLOBAL 或 SETTABLE 副作用静默存旧值);先用最小 Lua 探针家族(A-setlist/setglob/settable/setupval/call 与 B-scratch/arith)扫全 hazard 面(A 类三处中招,B 类因 head 在副作用之前分类天然安全),AnalyzeShape 预计算 lastReplayPC,任何 pc < lastReplayPC 的 head op 降级为有序副作用 + slotKindReg 读回(第一版 sawDeferredHead 全拒误杀 TestPJ10_SetList,降级才保住既有接受面);回归测试 TestPJ10_DeferredHeadOrdering 断言实际观测值,git stash 验证在未修复 analyzer 上真的失败(prove-the-path 正向验证);PR #55 给 P3 加 PromotionGater 可选接口(WorthPromoting(proto) bool),在可编译性检查之后 try-compile 之前咨询,仅 auto 模式生效 forceAll 绕过保差分测试覆盖,拒绝 → TierStuck 吸收;wasm Compiler 实现 op 构成密度地板 total/helperBound ≥ 7,阈值靠白盒 op 构成统计先行 + 实测迭代(先试 5 fib 密度 6 仍升层输 2.3 倍,调 7 后全部回归内核被拒);实测 nbody auto 89.7→43.2ms(与解释器同等)、fib 24.9→10.9、binary-trees 104→38.4、spectral-norm 40→20.7、heavy 三本 P3 赢面不变;两 PR 均 39/39 CI 全绿 + review bot APPROVE 后 rebase 合并;核心教训家族:接受面/硬件/参数任一维度变化都等于新一轮 fuzz 探索(第三个实例)+ 后端能力与收益按分层接口拆(SupportsAllOpcodes capability + WorthPromoting profitability + MinPromotableLen 尺寸地板,forceAll 绕过收益类保覆盖)+ 推迟执行模型必须审计执行顺序 hazard(先用最小探针家族扫全再选拒绝 vs 降级档位)+ 删兜底本身是主张的测试 + 收益阈值靠实测迭代不要一次定死。
 metadata:
   type: reflection
   date: 2026-07-03
 ---
 
-# issue #45 + issue #39 双收口反思(2026-07-03,P4 amd64 exit-reason 收尾 + P3 helper 密度收益检查)
+# issue #45 + issue #39 双收尾反思(2026-07-03,P4 amd64 exit-reason 收尾 + P3 helper 密度收益检查)
 
-> 范围:单会话双 PR。PR #53 收 issue #45(P4 amd64 段内 shim 面清零 + exit-reason 协议一统 + LEN/MOD/POW 扩接受面),四个 commit `dad0115`(EQ / LT-LE / arith / LEN / CONCAT / SELF 迁移 + 遗留 emitter 删除)/`3508a6c`(删 nativeCode.Run 的 defer recover 兜底)/`c31261b`(扩面 fuzz 抓到的 PerOpCode 回放乱序 bug 修复)/`6ab9f2e`(LEN/MOD/POW 进 opSupported)。PR #55 收 issue #39(P3 nbody 升层反而慢约 2 倍),给 bridge 加 `PromotionGater` 可选接口 + wasm Compiler 实现 op 构成密度地板(阈值 7)。两 PR 均 39/39 CI checks 全绿 + review bot APPROVE 后 rebase 合并进 master。前情:issue #45 是 [[2026-07-03-issue37-arm64-exit-reason-port-round]] 之后 amd64 侧的对称收尾;issue #39 由 [[p4-beat-p3-opset-round]] 的 45b8b53(safe stdlib alias 追踪)让 nbody 通过 F2-b 检查后暴露——能力(capability)说可以编,收益(profitability)从来没人问。
+> 范围:单会话双 PR。PR #53 解决 issue #45(P4 amd64 段内 shim 面清零 + exit-reason 协议一统 + LEN/MOD/POW 扩接受面),四个 commit `dad0115`(EQ / LT-LE / arith / LEN / CONCAT / SELF 迁移 + 遗留 emitter 删除)/`3508a6c`(删 nativeCode.Run 的 defer recover 兜底)/`c31261b`(扩面 fuzz 抓到的 PerOpCode 回放乱序 bug 修复)/`6ab9f2e`(LEN/MOD/POW 进 opSupported)。PR #55 解决 issue #39(P3 nbody 升层反而慢约 2 倍),给 bridge 加 `PromotionGater` 可选接口 + wasm Compiler 实现 op 构成密度地板(阈值 7)。两 PR 均 39/39 CI checks 全绿 + review bot APPROVE 后 rebase 合并进 master。前情:issue #45 是 [[2026-07-03-issue37-arm64-exit-reason-port-round]] 之后 amd64 侧的对称收尾;issue #39 由 [[p4-beat-p3-opset-round]] 的 45b8b53(safe stdlib alias 追踪)让 nbody 通过 F2-b 检查后暴露——能力(capability)说可以编,收益(profitability)从来没人问。
 
 ## 核心教训(按强度排序)
 
 ### 1. 接受面/硬件/参数任一维度变化 = 新一轮独立的 fuzz 探索
 
-LEN/MOD/POW 三个 op 进 opSupported 后 90s fuzz **立刻**抓到潜伏的 PerOpCode 回放乱序 bug(seed `21c645c46a1268c6`,最小形式 `function f()return{0}end f(f())` → P4 报 `SETLIST: not a table` 而 P1 正常)。该 bug 在旧接受面下也存在(用 `git stash` 换回旧 opSupported 表在 master 可复现),但之前多轮 120s+ fuzz 都没抓到——不是 fuzz 不够长,是 LEN/MOD/POW 之前不在接受面里,fuzz 引擎从来没有理由把探索预算花在会带出这三个 op 的语料上,回放乱序的头部 op 场景也就一直不被点亮。
+LEN/MOD/POW 三个 op 进 opSupported 后 90s fuzz **立刻**抓到潜伏的 PerOpCode 回放乱序 bug(seed `21c645c46a1268c6`,最小形式 `function f()return{0}end f(f())` → P4 报 `SETLIST: not a table` 而 P1 正常)。该 bug 在旧接受面下也存在(用 `git stash` 换回旧 opSupported 表在 master 可复现),但之前多轮 120s+ fuzz 都没抓到——不是 fuzz 不够长,是 LEN/MOD/POW 之前不在接受面里,fuzz 引擎从来没有理由把探索预算花在会带出这三个 op 的语料上,回放乱序的头部 op 场景也就一直没被触发。
 
 这与 [[p4-beat-p3-opset-round]] 教训 4「fuzz 语料保留纪律」中三个 seed 都在扩面时抓到、[[2026-07-03-issue40-arm64-stopbleed-round]] 教训 5「同一 corpus 换 M5 Pro 硬件抓到 amd64 侧 120s/150s 多轮没抓到的 fatal stack overflow」共同构成同一家族的**第三个实例**。
 
@@ -40,7 +40,7 @@ issue #39 的表面症状是 nbody auto 升层后比解释器慢约 2 倍(43.5ms
 - **拒绝 → TierStuck 吸收**——判断是静态 op 构成密度,重复问答案不会改变,进入 Stuck 后不再重问;
 - **状态机不动**——入口检查层扩展,无新状态、无反向边。
 
-与 [[p4-beat-p3-opset-round]] 教训 3「验收门与 emit 质量对性能贡献相当」的 CALL 密度门(totalOps/callCount ≥ 16)、issue #21 的短 proto 地板(MinPromotableLener,固定 Run 成本 ~111ns > 解释器 78ns 时 tiny proto 拒收)构成**第三个实例**——共同家族名:**接受面收益分层**。每个后端有自己的性能物理特性(mmap+morestack 冲突、跨界成本、固定 Run 开销、per-op helper 密度),bridge 不该把这些内化到自己的状态机里,应该以 per-backend 可选接口族的形式让后端各自回答「我这类形状要不要接」。
+与 [[p4-beat-p3-opset-round]] 教训 3「验收门与 emit 质量对性能贡献相当」的 CALL 密度门(totalOps/callCount ≥ 16)、issue #21 的短 proto 地板(MinPromotableLener,固定 Run 成本 ~111ns > 解释器 78ns 时 tiny proto 拒收)构成**第三个实例**——共同家族名:**接受面收益分层**。每个后端有自己的底层性能特性(mmap+morestack 冲突、跨界成本、固定 Run 开销、per-op helper 密度),bridge 不该把这些内化到自己的状态机里,应该以 per-backend 可选接口族的形式让后端各自回答「我这类形状要不要接」。
 
 三个实例 + 明确的接口族收敛(SupportsAllOpcodes / WorthPromoting / MinPromotableLener 三条同结构 hook),建议 recorder 评估**升 guide**(候选:在 [[perf-optimization-workflow]] 或新写一篇 `backend-capability-vs-profitability.md` 中固化「per-backend 可选接口族 + forceAll 只绕收益类不绕能力类」这条设计约束)。
 
@@ -62,8 +62,8 @@ PerOpCode 的执行模型是「有序回放阶段先跑全部副作用、最后�
 
 修法(两版迭代):
 
-- **第一版(错):** 加 `sawDeferredHead` 标志,任何 pc < lastReplayPC 的 head op 直接拒绝该 shape。回归测试跑挂:`TestPJ10_SetList`(NEWTABLE+SETLIST,常见的表构造模式)误杀,既有接受面倒退。
-- **第二版(对):** `AnalyzeShape` 预计算 `lastReplayPC`(有序回放阶段最后一个 pc),任何 `pc < lastReplayPC` 的 head op **降级**为有序副作用 + `slotKindReg` 读回。这个降级机制与 CALL / SELF / CLOSURE 结果的既有处理方式一致——它们本来就是「先执行、结果落 reg、后续读 reg」,把 NEWTABLE / LOADK / 等 head op 走同一条降级路径就行。无副作用形式的 head(比较 diamond / and-or diamond)因为没有物化步骤,继续走拒绝路径。
+- **第一版(错):** 加 `sawDeferredHead` 标志,任何 pc < lastReplayPC 的 head op 直接拒绝该 shape。回归测试失败:`TestPJ10_SetList`(NEWTABLE+SETLIST,常见的表构造模式)误杀,既有接受面倒退。
+- **第二版(对):** `AnalyzeShape` 预计算 `lastReplayPC`(有序回放阶段最后一个 pc),任何 `pc < lastReplayPC` 的 head op **降级**为有序副作用 + `slotKindReg` 读回。这个降级机制与 CALL / SELF / CLOSURE 结果的既有处理方式一致——它们本来就是「先执行、结果写入 reg、后续读 reg」,把 NEWTABLE / LOADK / 等 head op 走同一条降级路径就行。无副作用形式的 head(比较 diamond / and-or diamond)因为没有物化步骤,继续走拒绝路径。
 
 回归测试 `TestPJ10_DeferredHeadOrdering` 断言**实际观测值**(不只是「无错」——静默存旧值就是无错;必须断言存进去的值确实是新写入的那个),并用 `git stash` 换回未修复的 analyzer 验证测试在旧代码上**真的失败**(prove-the-path 正向验证)。seed 入 corpus,新一轮 120s fuzz 绿。
 
@@ -75,17 +75,17 @@ PerOpCode 的执行模型是「有序回放阶段先跑全部副作用、最后�
 - 谁读(head op 源) × 谁写(副作用阶段写的位置) → 若交集非空,是 write-after-read hazard 候选;
 - 谁写 × 谁写 → write-after-write hazard 候选。
 
-用最小 Lua/输入探针家族**先扫全**每个候选的实际是否命中(而不是一个个理论推导),再决定拒绝(整类不接)还是降级(走既有的「先执行落 reg」通道)——**第一版全拒会误杀既有接受面,降级才是对的**(现网既有 shape 数量大于新 hazard 面数量,拒绝的成本远高于降级的实现成本)。
+用最小 Lua/输入探针家族**先扫全**每个候选的实际是否命中(而不是一个个理论推导),再决定拒绝(整类不接)还是降级(走既有的「先执行、写入 reg」通道)——**第一版全拒会误杀既有接受面,降级才是对的**(现网既有 shape 数量大于新 hazard 面数量,拒绝的成本远高于降级的实现成本)。
 
 ### 4. 删兜底代码本身是主张的测试
 
-`3508a6c` 删掉 `nativeCode.Run` 的 `defer recover()` 兜底,判断依据不是「代码整洁性」,是**「段内 shim 调用面清零」这个主张的测试**——历史 recover 的价值是接住段内 mmap 调 Go 时 stack unwinder 撞死等崩溃(见 [[p4-pj10-native-round]] 教训 1),shim 面清零后这类崩溃的触发点全没了;但只要 recover 还在,「shim 面真的清零了」这个主张就没被验证过——保留 recover 会把未来任何真 bug 吞成静默 error,与差分测试的初衷相反。
+`3508a6c` 删掉 `nativeCode.Run` 的 `defer recover()` 兜底,判断依据不是「代码整洁性」,是**「段内 shim 调用面清零」这个主张的测试**——历史 recover 的价值是接住段内 mmap 调 Go 时 stack unwinder 出错等崩溃(见 [[p4-pj10-native-round]] 教训 1),shim 面清零后这类崩溃的触发点全没了;但只要 recover 还在,「shim 面真的清零了」这个主张就没被验证过——保留 recover 会把未来任何真 bug 吞成静默 error,与差分测试的初衷相反。
 
 删掉后全量测试 + fuzz 在无兜底状态下保持绿,才是主张成立的证据。arm64 的 recover 保留——其遗留 shim emitter 还在,留 issue #37 followup 一起清。
 
 **Why**:兜底代码有两种角色——(a)真的防护(某类崩溃在生产上会真的发生,兜底是有效的最后一道防线),(b)历史遗迹(触发条件已经在上游被消除,兜底再也不会真的接住任何东西)。两种角色**代码上看不出差别**,只有把兜底删掉、跑测试和 fuzz 观察是否有东西真的被接住过,才能区分。删除是低成本的确认动作;保留则永远保留「主张未验证」的不确定性。
 
-**How to apply**:任何 `defer recover()` / try-catch / fallback path,只要上游的触发条件被认为已消除,就把它作为「主张验证」候选清单登记;每收敛一类上游触发条件,就删一次对应的兜底,跑完整测试 + fuzz 观察。如果绿灯,主张成立、代码整洁;如果爆了,说明主张不成立、需要重新定位触发点(比删掉之前藏着更好——爆点会给你堆栈)。这是一次性的低成本主张验证,不是持续维护成本。
+**How to apply**:任何 `defer recover()` / try-catch / fallback path,只要上游的触发条件被认为已消除,就把它作为「主张验证」候选清单登记;每收敛一类上游触发条件,就删一次对应的兜底,跑完整测试 + fuzz 观察。如果绿灯,主张成立、代码整洁;如果失败了,说明主张不成立、需要重新定位触发点(比删掉之前藏着更好——失败点会给出堆栈)。这是一次性的低成本主张验证,不是持续维护成本。
 
 ### 5. 收益阈值靠白盒统计先行 + 实测迭代,不要一次定死
 
@@ -137,4 +137,4 @@ PerOpCode 的执行模型是「有序回放阶段先跑全部副作用、最后�
 
 ## 关联
 
-[[p4-beat-p3-opset-round]](**直接前序**:45b8b53 引入的 safe stdlib alias 追踪让 nbody 通过 F2-b 检查后暴露 issue #39;教训 3「验收门与 emit 质量对性能贡献相当」是本轮教训 2 的第二个实例;教训 4 fuzz corpus 保留纪律与本轮教训 1 同族)· [[2026-07-03-issue37-arm64-exit-reason-port-round]](**对称前序**:arm64 exit-reason 移植轮,本轮 PR #53 是 amd64 侧的对称收尾——两平台 exit-reason 协议统一后 shim 面清零)· [[2026-07-03-issue40-arm64-stopbleed-round]](教训 5 fuzz 硬件多样性是本轮教训 1 的第二个实例;两者共同支撑升 guide)· [[p4-pj10-native-round]] 教训 1「mmap+morestack 物理不兼容」(本轮删 recover 兜底的物理前提就是这条约束的段内触发点被清零)· [[prove-the-path-under-test]] §4(教训 1 候选升 guide 位置)、§6(诊断侧对偶,与本轮各教训方向一致——都是「用独立证据证明主张」)· [[perf-optimization-workflow]](教训 2 与教训 5 候选升 guide 位置)· [[design-claims-vs-codebase-physics]] §2(空间维度,与本轮教训 3 时间维度对偶但结构不同)· issue #45 / issue #39 auto-close · PR #53 / PR #55 · master commits `dad0115` / `3508a6c` / `c31261b` / `6ab9f2e`(PR #53)+ PR #55 收益门 commits + `5cf4b8e` 注释修正 · `internal/gibbous/jit/peroptranslator/emit_ops_amd64.go`(EQ / LT-LE / arith / LEN / CONCAT / SELF exit-reason 迁移)· `internal/gibbous/jit/peroptranslator/analyzer.go`(AnalyzeShape 加 lastReplayPC + head op 降级)· `internal/bridge/bridge.go`(PromotionGater 接口 + considerPromotion 咨询点)· `internal/gibbous/wasm/compiler.go`(WorthPromoting op 密度地板 = 7)
+[[p4-beat-p3-opset-round]](**直接前序**:45b8b53 引入的 safe stdlib alias 追踪让 nbody 通过 F2-b 检查后暴露 issue #39;教训 3「验收门与 emit 质量对性能贡献相当」是本轮教训 2 的第二个实例;教训 4 fuzz corpus 保留纪律与本轮教训 1 同族)· [[2026-07-03-issue37-arm64-exit-reason-port-round]](**对称前序**:arm64 exit-reason 移植轮,本轮 PR #53 是 amd64 侧的对称收尾——两平台 exit-reason 协议统一后 shim 面清零)· [[2026-07-03-issue40-arm64-stopbleed-round]](教训 5 fuzz 硬件多样性是本轮教训 1 的第二个实例;两者共同支撑升 guide)· [[p4-pj10-native-round]] 教训 1「mmap+morestack 物理不兼容」(本轮删 recover 兜底的底层前提就是这条约束的段内触发点被清零)· [[prove-the-path-under-test]] §4(教训 1 候选升 guide 位置)、§6(诊断侧对偶,与本轮各教训方向一致——都是「用独立证据证明主张」)· [[perf-optimization-workflow]](教训 2 与教训 5 候选升 guide 位置)· [[design-claims-vs-codebase-physics]] §2(空间维度,与本轮教训 3 时间维度对偶但结构不同)· issue #45 / issue #39 auto-close · PR #53 / PR #55 · master commits `dad0115` / `3508a6c` / `c31261b` / `6ab9f2e`(PR #53)+ PR #55 收益门 commits + `5cf4b8e` 注释修正 · `internal/gibbous/jit/peroptranslator/emit_ops_amd64.go`(EQ / LT-LE / arith / LEN / CONCAT / SELF exit-reason 迁移)· `internal/gibbous/jit/peroptranslator/analyzer.go`(AnalyzeShape 加 lastReplayPC + head op 降级)· `internal/bridge/bridge.go`(PromotionGater 接口 + considerPromotion 咨询点)· `internal/gibbous/wasm/compiler.go`(WorthPromoting op 密度地板 = 7)

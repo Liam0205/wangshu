@@ -9,9 +9,9 @@ description: >
   goroutine 卡在 gc.(*Collector).stringMatches -> Intern -> crescent doConcat ->
   executeLoop。关键定性:panic: deadlocked! 是 Go fuzz 的 per-input 看门狗
   (internal/fuzz/worker.go 的 time.AfterFunc(10*time.Second, panic))——单个 fuzz
-  输入跑过 10 秒就被打死。此前所有轮次误判为内存 OOM,GOMEMLIMIT 从未奏效、最小化
-  corpus 本地重放永远干净,都因为死因根本不是内存而是 CPU wall-clock 撞 10 秒看门狗。
-  飞行记录拿到真凶输入:for i=1,777777776 do glob = cat(i) end,cat 内
+  输入跑过 10 秒就被强制终止。此前所有轮次误判为内存 OOM,GOMEMLIMIT 从未奏效、最小化
+  corpus 本地重放永远干净,都因为死因根本不是内存而是 CPU wall-clock 触发 10 秒看门狗。
+  飞行记录拿到真正出问题的输入:for i=1,777777776 do glob = cat(i) end,cat 内
   return "<~15KB 字面量>"..i。根因链:preempt() 每指令边界只把 stepUsed 加 1,不计
   CONCAT/Intern 的字节工作量;1<<20 步预算允许约 50 万次迭代,单次 prog.Run 约 2.7s
   字节工作,FuzzAutoPromote harness 每输入跑 4 次 Run(2 State × 2 轮),4×2.7s≈11s
@@ -49,7 +49,7 @@ concat storm 家族此前累计 11+ 例,横跨数周,每次都是「minimized �
 
 ## 期望与实际
 
-- 期望:延续历轮经验,大概率又是一次「不可复现 + corpus 入库站岗」的
+- 期望:延续历轮经验,大概率又是一次「不可复现 + corpus 入库留作回归种子」的
   止损轮。
 - 实际:PR #165 上线的 worker 取证设施在这一轮第一次复发时一步给出死因,
   把横跨数周的家族从「查不出死因」变成「根因清晰」——死因不是内存,是
@@ -66,10 +66,10 @@ concat storm 家族此前累计 11+ 例,横跨数周,每次都是「minimized �
    crescent.(*State).doConcat -> crescent.(*State).executeLoop`。
 3. 关键定性:`panic: deadlocked!` 来自 Go fuzz 的 per-input 看门狗——
    `internal/fuzz/worker.go` 里 `time.AfterFunc(10*time.Second, func(){
-   panic("deadlocked!") })`,即**单个 fuzz 输入跑过 10 秒**就被打死。此前
+   panic("deadlocked!") })`,即**单个 fuzz 输入跑过 10 秒**就被强制终止。此前
    所有轮次误判为内存 OOM——GOMEMLIMIT 从未奏效、最小化 corpus 本地重放
-   永远干净,都因为死因根本不是内存,是 CPU wall-clock 撞上 10 秒看门狗。
-4. 飞行记录(`worker-<pid>-input.log`)拿到真凶输入:
+   永远干净,都因为死因根本不是内存,是 CPU wall-clock 触发 10 秒看门狗。
+4. 飞行记录(`worker-<pid>-input.log`)拿到真正出问题的输入:
    `local function cat(i) return "<大字面量>"..i end; local out=""; for
    i=1,777777776 do glob = cat(i) end`。cat 内部 `return "<字面量>"..i`
    就是 doConcat 的来源。
@@ -121,7 +121,7 @@ concat storm 家族此前累计 11+ 例,横跨数周,每次都是「minimized �
 
 ### 教训 1:取证设施在这一轮兑现,且兑现方式正是当初的设计意图
 
-PR #165 的赌注是「让复发时信息一次性够用」,这一轮第一次复发就凭 worker
+PR #165 的出发点是「让复发时信息一次性够用」,这一轮第一次复发就凭 worker
 stderr 栈迹一步定性,把横跨数周的家族从「查不出死因」变成「根因清晰」。
 
 **Why**:低频罕见事件的调查成本大头不是「修」,是「等下一次复发」;等的
@@ -131,17 +131,17 @@ stderr 栈迹一步定性,把横跨数周的家族从「查不出死因」变成
 
 **How to apply**:对本地无法复现的低频事件,除了调查根因,并行投一个便宜
 的诊断改动让下次复发信息够用;不要把资源全投在「这次尽力挖」。这轮是该
-纪律的正面结算样本。
+纪律见效的正面样本。
 
 ### 教训 2:静默死亡的两步分类这次直接给出答案
 
 `exit status 2` = Go runtime fatal,worker 打了完整栈迹,只是此前被
 /dev/null 丢弃;取证设施接住 fd 2 后,`panic: deadlocked!` 一行就把死因
-从「疑似内存 OOM」翻成「fuzz 10 秒看门狗」。
+从「疑似内存 OOM」改判为「fuzz 10 秒看门狗」。
 
 **Why**:[[2026-07-19-fuzz-worker-forensics-round]] 沉淀的两步分类
 (退出码语义 + 子进程 stdio 接线)本轮直接消费:exit status 2 语义说明
-「有一份完整尸检报告」,取证设施保证「这份报告不再被扔进 /dev/null」,
+「有一份完整的崩溃栈迹」,取证设施保证「这份栈迹不再被扔进 /dev/null」,
 两者合起来使这一轮的定性从数周缩到一行日志。
 
 **How to apply**:fuzz / CI 报「进程静默死亡」时,先看退出方式语义再看
@@ -181,7 +181,7 @@ intern)、minimized 输入确实重放干净(轻输入单次 Run < 10 秒)——
 
 ### 教训 5:限流比率要按最慢的目标环境定,且 CI 上验证不能只看本地
 
-CI runner 比本地慢约 10×,本地通过的 wall-clock 余量在 CI 上可能翻车
+CI runner 比本地慢约 10×,本地通过的 wall-clock 余量在 CI 上可能不够用
 ——初版 `>>10` 本地 4×run 1.33s 通过,CI 上
 `TestIssue166_HarnessWatchdogMargin` 跑到 13.5s > 10 秒看门狗。
 
@@ -198,20 +198,20 @@ CI runner 比本地慢约 10×,本地通过的 wall-clock 余量在 CI 上可能
 ### 教训 6:in-test wall-clock 断言的合法性,看它守的是任意选的秒数还是真实固定的外部阈值
 
 承 [[unreproducible-crasher-triage]] 的「量纲错配」教训——针对「永不返回」
-的回归测试不要自建 in-test deadline(与共享 runner 速度对赌),交给包级
+的回归测试不要自建 in-test deadline(结果取决于共享 runner 的速度),交给包级
 `go test -timeout`;但本轮 `TestIssue166_HarnessWatchdogMargin` 的 8s
 guard 守的是 Go fuzz **真实固定的 10 秒外部看门狗**(而非任意 in-test 界),
 这是合法的——它测的正是决定 worker 存活的生产条件。
 
 **Why**:in-test wall-clock 断言被诟病是因为它常常在断言一个「任意选的
-秒数」,那个秒数与共享 runner 的速度对赌,在慢机器上会假阳性。但当断言
+秒数」,那个秒数能否满足取决于共享 runner 的速度,在慢机器上会假阳性。但当断言
 守的是一个**真实存在的固定阈值**(这里是 Go fuzz 硬编在 worker.go 里的
 10 秒)时,断言测的就是生产条件本身,不是主观选的界——它的合法性来自
 被守的阈值是客观固定的。
 
 **How to apply**:判断一个 wall-clock 断言是否合法,看它守的是「任意选
 的秒数」还是「真实存在的固定阈值」。守固定外部阈值(且留足余量)合法;
-守任意选的秒数(与 runner 速度对赌)不合法,交给包级 timeout。
+守任意选的秒数(结果取决于 runner 速度)不合法,交给包级 timeout。
 
 ### 教训 7:prove-the-path 也适用于自己写的回归测试——断言「共享错误」是升层路径的 fake-green
 
@@ -240,7 +240,7 @@ P3 对这些 concat 形状**根本不升层**(`PromotionCount` 恒为 0),那个 
 ## 流程
 
 取证 artifact 拿栈迹 → `panic: deadlocked!` 定位 per-input 看门狗 →
-internal/fuzz/worker.go 源码核对 `time.AfterFunc(10s)` → 飞行记录取真凶
+internal/fuzz/worker.go 源码核对 `time.AfterFunc(10s)` → 飞行记录取出问题的
 输入 → 根因链推导(每指令 1 步 vs CONCAT 字节工作)→ `chargeBulkWork`
 单点记账(doConcat)→ 初版 `>>10` → PR #168 首次 CI 失败
 (`TestIssue166_HarnessWatchdogMargin` 13.5s)→ 收紧 `>>6` → CI 绿 →
@@ -251,10 +251,10 @@ rebase merge 前写反思。
 - **教训 1 + 教训 2 + 教训 4**(取证兑现 + 两步分类给答案 + 家族误分类
   数周):建议并入 [[unreproducible-crasher-triage]] 作为 concat storm 家族
   的**结案数据点**——该 guide 此前记录了 #123 起的止损流程与 PR #165 的
-  诊断硬化设施,本轮是这条投资的正面结算,应补一句「取证设施上线后家族
+  诊断硬化设施,本轮是这条投资的正面回报,应补一句「取证设施上线后家族
   第一次复发即定性,死因是 fuzz 10 秒 per-input 看门狗而非内存 OOM,
   历轮 GOMEMLIMIT / arena cap 都因假说整体错误而无效」。由 recorder 决定
-  措辞与落点。
+  措辞与写进哪一节。
 - **教训 3**(指令预算须度量工作量而非条数):建议提升——它是一条与
   crasher 家族无关的、可复用的限流机制设计原则,适合进
   [[design-claims-vs-codebase-physics]](budget/fuel 类机制的物理不变式)
@@ -284,15 +284,15 @@ rebase merge 前写反思。
 ## 关联
 
 [[2026-07-19-fuzz-worker-forensics-round]](本轮是该轮取证设施投资的正面
-结算:机制 A 的 worker stderr 栈迹 + 机制 B 的飞行记录合起来一步定性,
+回报:机制 A 的 worker stderr 栈迹 + 机制 B 的飞行记录合起来一步定性,
 证明该轮教训 1「两步分类」+ 机制 A/B 的设计意图完全兑现)·
 [[2026-07-18-issue155-158-nightly-crasher-round]](该轮教训 4 观察到
 GOMEMLIMIT 软限制没接住 41.5M execs 的静默死亡,本轮解释了原因——死因
-不是 Go 堆压力而是 CPU wall-clock 撞看门狗,内存类硬化本就接不住)·
+不是 Go 堆压力而是 CPU wall-clock 触发看门狗,内存类硬化本就接不住)·
 [[2026-07-11-issue123-unreproducible-crasher-round]](家族起点,首次把
 concat storm 判为进程级资源耗尽 + corpus 入库,本轮修正了「资源耗尽」
 的具体性质:不是内存 / mmap,是单输入 CPU 时间)·
 [[unreproducible-crasher-triage]](本轮是该 guide 的家族结案数据点)·
-[[design-claims-vs-codebase-physics]](教训 3/5 的提升候选落点)·
+[[design-claims-vs-codebase-physics]](教训 3/5 的提升候选写入位置)·
 PR #168 · issue #166 · issue #167 · commit 88e724f(CONCAT 字节记账)·
 commit ab27936(收紧 64B/step + 测试守卫)· PR #165(取证设施前序)

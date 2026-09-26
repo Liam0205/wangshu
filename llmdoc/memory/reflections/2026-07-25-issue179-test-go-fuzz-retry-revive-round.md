@@ -6,9 +6,9 @@ description: >
   deadline-fail 输出，probe 阶段就退出，spurious-then-pass / always-spurious 两个
   case 从来没走到重试逻辑；third case real-crash 表面 OK 其实也是 probe 阶段假绿
   （probe 失败 rc=1 + 无「retrying once」字样，凑巧匹配「rc nonzero + 无重试」的判据）。
-  且该脚本没接入 Makefile / CI 门禁，失效一年半没人发现。本轮修 stub 加 `-list` 分支
+  且该脚本没接入 Makefile / CI 检查，失效一年半没人发现。本轮修 stub 加 `-list` 分支
   返回 `FuzzX` 并 exit 0；顺手给 real-crash 加 `grep -q "Failing input written to"` 的
-  positive prove-the-path 断言把假绿治死；`test-scripts` 目标接入 Makefile `all` 与
+  positive prove-the-path 断言彻底消除假绿；`test-scripts` 目标接入 Makefile `all` 与
   `ci.yml` 独立 job。四教训中最强的一条：**回归测试判据只用 rc + 反向 grep 会假绿**，
   必须配 positive marker（本轮 `Failing input written to`）证明被测通道真正被执行。
 metadata:
@@ -48,7 +48,7 @@ state file 返回 deadline-fail 输出，被 go-fuzz.sh 判为「probe FAILED（
 
 - 参数里出现 `-list` 或 `-list=*` → 直接 `echo FuzzX; exit 0`（probe 短路）；
 - 参数里未出现 `-fuzz` → 未预期调用，`exit 2` 让 stub bug 一定浮出（防未来
-  go-fuzz.sh 再加个 probe 之类的调用把 stub 又打瞎）；
+  go-fuzz.sh 再加个 probe 之类的调用让 stub 再次失效）；
 - 只有见到 `-fuzz` 才进入原来的状态字派发（deadline / crash / pass）。
 
 Fail-closed 的第二条判据是关键 — 只加正向的 `-list` 分支还行，把「意外
@@ -71,7 +71,7 @@ stub 后再加这条断言 — 三 case 全绿。
 用 `sed -i '/-list|-list=\*) echo "FuzzX"; exit 0;;/d'` 临时把新加的分支
 删掉重跑，三 case 全部 FAILED（**包括** real-crash，因为 positive marker
 断言现在正确地区分「probe 阶段短路」和「run_target 真的跑了」）；恢复
-补丁后三 case 全绿。反向验证证明 prove-the-path 断言真的在把守。
+补丁后三 case 全绿。反向验证证明 prove-the-path 断言真的在起作用。
 
 ### 4. Makefile 与 CI 接入
 
@@ -95,7 +95,7 @@ three-case harness 里 real-crash 是唯一「表面 OK」的 —— 它的判�
 那句 `echo "... retrying once" >&2`）。三分支里唯一没被察觉是**因为负
 断言/rc 断言的判据集恰好被 probe-fail 的输出形式满足了**。
 
-解药：**每个 case 的判据里必须至少含一个 positive marker，证明目标
+解决办法：**每个 case 的判据里必须至少含一个 positive marker，证明目标
 路径的字节串真的出现在了 log 里**。real-crash 加 `Failing input
 written to`，spurious-then-pass 与 always-spurious 的 `retrying once`
 正是这个形式 —— 只是 real-crash 那条本来是负断言（`! grep`），当时看
@@ -109,7 +109,7 @@ written to`，spurious-then-pass 与 always-spurious 的 `retrying once`
 实例）；建议下一次 promotion 时把 shell 集成测试维度加进正文 —— 现有
 条目基本围绕 Go 测试 harness / 白盒计数器 / 探针，shell 层的 stub +
 grep 判据是尚未显式覆盖的载体。**首次样本暂留观察**，若下一次 shell
-层再撞类似问题即升 guide。
+层再遇到类似问题就升入 guide。
 
 ### 教训 2：stub 内含双通道时，未匹配的调用必须 fail-closed
 
@@ -118,7 +118,7 @@ grep 判据是尚未显式覆盖的载体。**首次样本暂留观察**，若�
 按状态字 dispatch 意味着**每加一种新 go 调用，stub 就要跟着 patch**，
 不 patch 就悄悄退化 —— 这次的直接教训。
 
-解药：**stub 里加一条 unmatched-case fail-closed 分支**（本轮 `exit 2`
+解决办法：**stub 里加一条 unmatched-case fail-closed 分支**（本轮 `exit 2`
 + stderr 提示），让未来 stub 与 go-fuzz.sh 不同步时**第一时间**出现红
 灯而不是假绿。这是 [[cross-backend-semantic-fix-sweep]] 的「新通道加
 入现有 harness 时同步防护」纪律在 stub 侧的对偶 —— 那里说改一个 emit
@@ -132,18 +132,18 @@ grep 判据是尚未显式覆盖的载体。**首次样本暂留观察**，若�
 Makefile 或 CI —— 失效期至少半年（`go-fuzz.sh` 加 `-list` probe 的
 commit 之后就崩，但没人跑过它）。
 
-解药：**tooling 类回归脚本必须接入至少一个门禁**（Makefile `all` 目标 /
+解决办法：**tooling 类回归脚本必须接入至少一个检查**（Makefile `all` 目标 /
 CI job / pre-push hook），否则一次 downstream 改动就能让它静默失效，
 且失效期正比于「没人手工跑」的时间。本轮把它挂到 `Makefile all` +
-`ci.yml` 独立 job 上，两个门禁同时对它负责：本地 `make all` 抓一次，
+`ci.yml` 独立 job 上，两个检查同时覆盖它：本地 `make all` 抓一次，
 PR CI 再抓一次。
 
 家族归属：与既有 [[cgo-oracle-fuzz-round]] 教训 4「测试 harness 静默
-skip / 静默 pipe 关闭是持续雷区」是**同族对偶** —— 那里说 shell 探针
+skip / 静默 pipe 关闭是持续存在的隐患」是**同族对偶** —— 那里说 shell 探针
 在 `| grep -q` / 循环内不加 `</dev/null` 会静默 skip；本轮说
-tooling harness 不接门禁会静默失效。**首次以「不接门禁」形式出现，
-暂留观察**；如果再撞一次 tooling 脚本静默失效，可以把两条合并成小 guide
-「tooling 脚本失效模式与配套门禁纪律」。
+tooling harness 不接检查会静默失效。**首次以「不接检查」形式出现，
+暂留观察**；如果再遇到一次 tooling 脚本静默失效，可以把两条合并成小 guide
+「tooling 脚本失效模式与配套检查纪律」。
 
 ### 教训 4（过程）：issue body 里的清单是判据但不总完整
 
@@ -152,7 +152,7 @@ issue #179 body 列的四条完成条件，前三条判据都能 mechanical 判�
 的**（本身 issue 记录时就是弱证据 — 通过不代表判据 1-3 真的到位）。
 本轮如果只按第 4 条判定完成，会漏 real-crash 的假绿问题。
 
-解药：**issue clist 里的「测试通过」条目要用作** *充分* **前提证明**其他
+解决办法：**issue clist 里的「测试通过」条目要用作** *充分* **前提证明**其他
 判据到位，不能反过来把「通过」当成其他判据的证据。跟 [[prove-the-path-under-test]]
 的核心命题一致（测试通过 ≠ 在测的路径被走到），但本轮不同的是**清
 单编写者本身**也可能落入这个陷阱 —— 需要在编写 issue clist 时把
@@ -163,13 +163,13 @@ issue #179 body 列的四条完成条件，前三条判据都能 mechanical 判�
 
 - **教训 1**（rc + 反向 grep 判据在有 probe 短路时假绿；positive marker
   必要）：跨过 [[prove-the-path-under-test]] guide 的实例阈值但**载体
-  是新的**（shell 集成测试 + stub），建议下次 shell 层再撞时把这个
+  是新的**（shell 集成测试 + stub），建议下次 shell 层再遇到时把这个
   维度加进 guide 正文。本轮暂留观察。
 - **教训 2**（stub fail-closed for unmatched invocation）：与
   [[cross-backend-semantic-fix-sweep]] 的「新通道加入现有 harness 时
-  同步防护」对偶，暂留观察；若下次是「上游 caller 新形式打瞎下游
+  同步防护」对偶，暂留观察；若下次是「上游 caller 新形式弄坏下游
   stub」再现即升 guide。
-- **教训 3**（tooling 脚本不接门禁会静默失效）：与 [[cgo-oracle-fuzz-round]]
+- **教训 3**（tooling 脚本不接检查会静默失效）：与 [[cgo-oracle-fuzz-round]]
   教训 4 是同族，暂留观察；下一实例出现时合并成小 guide。
 - **教训 4**（issue clist「测试通过」是弱证据）：暂留观察。
 
@@ -180,7 +180,7 @@ issue #179 body 列的四条完成条件，前三条判据都能 mechanical 判�
   现在 log 里）；
 - 写测试 stub / mock 时（教训 2：unmatched-case fail-closed，别按状态
   字兜底通配）；
-- 引入 tooling 类回归脚本 / 一次性验证脚本时（教训 3：接门禁，Makefile
+- 引入 tooling 类回归脚本 / 一次性验证脚本时（教训 3：接检查，Makefile
   `all` / CI job 至少挂一个）；
 - 写 issue completion checklist 时（教训 4：「测试通过」是弱证据，
   clist 项应对齐具体断言而非笼统脚本 exit code）。

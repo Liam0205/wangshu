@@ -1,6 +1,6 @@
 ---
 name: issue50-emit-call-inline-round
-description: issue #50 Spike 5(PJ10 native CALL,让 call 密集内核 fib/fannkuch/binary-trees 反超 gopher-lua)amd64 收口教训:分支 feat/issue50-emit-call-inline。核心做四件事——段内 GETUPVAL inline(emitGETUPVALInline,fib 经 OPEN upvalue 自引用,原先每次递归都 exit 段)+ 把双语义 RETURN 扩展到 MULTI-return proto(emitReturnDualSemantics,这是关键 bug:fib/pick 有 >1 个 RETURN 站点 ⟹ MultiReturn ⟹ 每个降级成 HelperReturn exit-reason,seg2seg 调用方误读成 plain return 把结果算错成「对函数值做算术」)+ ProtoSeg2SegEligible 把 seg2seg 被调方接受面从 never-exits 扩到 arith/compare(deopt 守卫)+ GETUPVAL(inline)+ 嵌套 CALL(门控在 dest A >= NumParams 不写参数寄存器,使 deopt 重跑读到完整实参)+ CALL 密度门对 seg2seg 合格 proto 放宽。实测 fib 10.5x / fannkuch 6.9x / binary-trees 1.35x over gopher(同机 -benchtime=2s -count=3 中位数),amd64 全部正确性门全绿(difftest-p4 / crescent / conformance-p4 / peroptranslator / -race / 20k 随机差分脚本)。arm64 因开发机是 amd64(无 qemu-aarch64)且 CI arm64 矩阵仅 master-push/PR 触发、用户说不建 PR,机器码本地无法验证,推迟到 issue #61（走 CI arm64 矩阵）。五条教训：多 RETURN proto 静默破坏 seg2seg（seg2seg 测试必须含 multi-BB/多 RETURN/递归被调方）/ eligibility predicate 调 analyzer 又被 analyzer 回调导致无限递归（拆纯 op-check 与合成 predicate）/ open-upvalue owner 解析不能通用 inline（owner 在 Go 侧 st.uvOwner map，upval 对象内 threadRef 为 0，仅单线程无协程可 inline，其余退 exit-reason/deopt）/ deopt 重跑幂等要求被调方不写参数寄存器 + 无副作用 / arm64 验证是物理/用户决策阻塞而非工作量。
+description: issue #50 Spike 5(PJ10 native CALL,让 call 密集内核 fib/fannkuch/binary-trees 反超 gopher-lua)amd64 完成后的教训:分支 feat/issue50-emit-call-inline。核心做四件事——段内 GETUPVAL inline(emitGETUPVALInline,fib 经 OPEN upvalue 自引用,原先每次递归都 exit 段)+ 把双语义 RETURN 扩展到 MULTI-return proto(emitReturnDualSemantics,这是关键 bug:fib/pick 有 >1 个 RETURN 站点 ⟹ MultiReturn ⟹ 每个降级成 HelperReturn exit-reason,seg2seg 调用方误读成 plain return 把结果算错成「对函数值做算术」)+ ProtoSeg2SegEligible 把 seg2seg 被调方接受面从 never-exits 扩到 arith/compare(deopt 守卫)+ GETUPVAL(inline)+ 嵌套 CALL(门控在 dest A >= NumParams 不写参数寄存器,使 deopt 重跑读到完整实参)+ CALL 密度门对 seg2seg 合格 proto 放宽。实测 fib 10.5x / fannkuch 6.9x / binary-trees 1.35x over gopher(同机 -benchtime=2s -count=3 中位数),amd64 全部正确性检查全绿(difftest-p4 / crescent / conformance-p4 / peroptranslator / -race / 20k 随机差分脚本)。arm64 因开发机是 amd64(无 qemu-aarch64)且 CI arm64 矩阵仅 master-push/PR 触发、用户说不建 PR,机器码本地无法验证,推迟到 issue #61（走 CI arm64 矩阵）。五条教训：多 RETURN proto 静默破坏 seg2seg（seg2seg 测试必须含 multi-BB/多 RETURN/递归被调方）/ eligibility predicate 调 analyzer 又被 analyzer 回调导致无限递归（拆纯 op-check 与合成 predicate）/ open-upvalue owner 解析不能通用 inline（owner 在 Go 侧 st.uvOwner map，upval 对象内 threadRef 为 0，仅单线程无协程可 inline，其余退 exit-reason/deopt）/ deopt 重跑幂等要求被调方不写参数寄存器 + 无副作用 / arm64 验证是物理/用户决策阻塞而非工作量。
 metadata:
   type: reflection
   date: 2026-07-06
@@ -21,8 +21,8 @@ metadata:
 
 ## 期望与实际
 
-- 期望：call 密集内核反超 gopher-lua，amd64 全套正确性门保持全绿。
-- 实际：**达成**。fib 10.5x / fannkuch 6.9x / binary-trees 1.35x over gopher（同机 `-benchtime=2s -count=3` 中位数）；amd64 所有正确性门全绿（difftest-p4 / crescent / conformance-p4 / peroptranslator / `-race` / 20k 随机差分脚本）。arm64 机器码本地无法验证，推迟到 issue #61。
+- 期望：call 密集内核反超 gopher-lua，amd64 全套正确性检查保持全绿。
+- 实际：**达成**。fib 10.5x / fannkuch 6.9x / binary-trees 1.35x over gopher（同机 `-benchtime=2s -count=3` 中位数）；amd64 所有正确性检查全绿（difftest-p4 / crescent / conformance-p4 / peroptranslator / `-race` / 20k 随机差分脚本）。arm64 机器码本地无法验证，推迟到 issue #61。
 
 ## 核心教训（按强度排序）
 
@@ -32,10 +32,10 @@ metadata:
 
 修法：`emitReturnDualSemantics` 让 seg2seg 被调方对**单 RETURN 和多 RETURN 都在段内拆帧**，不再让多 RETURN 走 exit-reason 出段被调用方误读。
 
-- **症状是错的值不是崩溃**：bug 表现为 `attempt to perform arithmetic on a function value`——被调方把 seg2seg exit RET 误当成一个函数值参与算术，是一个**语义错误值**，不是段错误。这类 bug 常规 e2e 抓不到，只有真跑一个递归/分支的被调方才暴露；之前的 seg2seg 测试用的是单 BB never-exits 叶子，结构上碰不到多 RETURN。
+- **症状是错的值不是崩溃**：bug 表现为 `attempt to perform arithmetic on a function value`——被调方把 seg2seg exit RET 误当成一个函数值参与算术，是一个**语义错误值**，不是段错误。这类 bug 常规 e2e 抓不到，只有真正运行一个递归/分支的被调方才暴露；之前的 seg2seg 测试用的是单 BB never-exits 叶子，结构上碰不到多 RETURN。
 - **纪律**：seg2seg 测试语料必须包含 **multi-BB、多 RETURN、递归**的被调方；单 BB never-exits 叶子对多 RETURN 拆帧路径是结构盲区。
 
-**Why**：seg2seg 调用方与被调方之间有一个隐含约定——「被调方退出时段栈上留的是返回值，不是 exit RET」。这个约定只在段内拆帧（单/多 RETURN 都拆）时成立；一旦某条 RETURN 走 exit-reason 出段，约定在这条路径上被破坏，而破坏的表现是把 exit RET 当返回值继续算，产出一个「看起来对」的错值。是 [[prove-the-path-under-test]] 家族「绿色 ≠ 在测你以为在测的」的又一情形：用错的载体（单 RETURN 叶子）证明的正确性，对真载体（多 RETURN 递归体）不成立。
+**Why**：seg2seg 调用方与被调方之间有一个隐含约定——「被调方退出时段栈上留的是返回值，不是 exit RET」。这个约定只在段内拆帧（单/多 RETURN 都拆）时成立；一旦某条 RETURN 走 exit-reason 出段，约定在这条路径上被破坏，而破坏的表现是把 exit RET 当返回值继续算，产出一个「看起来对」的错值。是 [[prove-the-path-under-test]] 家族「绿色 ≠ 在测你以为在测的」的又一情形：用错的载体（单 RETURN 叶子）证明的正确性，对真实载体（多 RETURN 递归体）不成立。
 
 ### 2. eligibility predicate 调 analyzer、analyzer 又回调 predicate = 无限递归
 
@@ -88,7 +88,7 @@ arm64 本轮未交付，原因是**物理 + 用户决策**而非工作量：
 ## 验证
 
 - fib 10.5x / fannkuch 6.9x / binary-trees 1.35x over gopher-lua（同机 `-benchtime=2s -count=3` 中位数）；
-- amd64 全部正确性门全绿：difftest-p4 / crescent / conformance-p4 / peroptranslator / `-race` / 20k 随机差分脚本；
+- amd64 全部正确性检查全绿：difftest-p4 / crescent / conformance-p4 / peroptranslator / `-race` / 20k 随机差分脚本；
 - arm64 本地无法验证（无 qemu-aarch64 + CI arm64 矩阵未触发），推迟 issue #61。
 
 ## promotion 候选
@@ -109,4 +109,4 @@ arm64 本轮未交付，原因是**物理 + 用户决策**而非工作量：
 
 ## 关联
 
-[[2026-07-01-p4-pj10-native-round]]（**直接前序**：PJ10 native emit 骨架 + inline 18 op mmap-safe 子集 + PreferNative 收窄门，本轮在其上加 seg2seg CALL）· [[2026-07-02-p4-beat-p3-opset-round]] 教训 1「exit-reason 协议解 mmap+morestack 物理不兼容的第三态」（本轮 seg2seg 是消掉这趟 exit-reason 往返的正交优化——不是不用 exit-reason，是让 gibbous→gibbous 的常见形状不必走它）· [[2026-07-03-issue45-issue39-round.md]] 教训 3「推迟执行模型审计执行顺序 hazard」（本轮教训 4 deopt-redo 幂等是「重放正确性」同族的另一维度：那条管回放阶段读写乱序，本条管整段重放的输入/副作用幂等）· [[prove-the-path-under-test]]（教训 1 候选落点：载体形状须覆盖被测约定的所有分支）· [[design-claims-vs-codebase-physics]] §2（教训 3/4 邻接但轴不同）· [[backend-capability-vs-profitability]]（CALL 密度门放宽是收益门的对偶）· issue #50 · issue #61（arm64 移植 followup）· 分支 `feat/issue50-emit-call-inline` · `internal/gibbous/jit/peroptranslator/emit_ops_amd64.go`（emitGETUPVALInline + emitReturnDualSemantics + seg2seg 调用方块）· `internal/gibbous/jit/peroptranslator/call_ic.go`（ProtoSeg2SegEligible + seg2segOpsEligible + CALL 密度门放宽）· `internal/gibbous/jit/peroptranslator/translator_native_dispatch.go` · `internal/gibbous/jit/peroptranslator/e2e_test.go`
+[[2026-07-01-p4-pj10-native-round]]（**直接前序**：PJ10 native emit 骨架 + inline 18 op mmap-safe 子集 + PreferNative 收窄门，本轮在其上加 seg2seg CALL）· [[2026-07-02-p4-beat-p3-opset-round]] 教训 1「exit-reason 协议解 mmap+morestack 物理不兼容的第三态」（本轮 seg2seg 是消掉这趟 exit-reason 往返的正交优化——不是不用 exit-reason，是让 gibbous→gibbous 的常见形状不必走它）· [[2026-07-03-issue45-issue39-round.md]] 教训 3「推迟执行模型审计执行顺序 hazard」（本轮教训 4 deopt-redo 幂等是「重放正确性」同族的另一维度：那条管回放阶段读写乱序，本条管整段重放的输入/副作用幂等）· [[prove-the-path-under-test]]（教训 1 候选去处：载体形状须覆盖被测约定的所有分支）· [[design-claims-vs-codebase-physics]] §2（教训 3/4 邻接但轴不同）· [[backend-capability-vs-profitability]]（CALL 密度门放宽是收益门的对偶）· issue #50 · issue #61（arm64 移植 followup）· 分支 `feat/issue50-emit-call-inline` · `internal/gibbous/jit/peroptranslator/emit_ops_amd64.go`（emitGETUPVALInline + emitReturnDualSemantics + seg2seg 调用方块）· `internal/gibbous/jit/peroptranslator/call_ic.go`（ProtoSeg2SegEligible + seg2segOpsEligible + CALL 密度门放宽）· `internal/gibbous/jit/peroptranslator/translator_native_dispatch.go` · `internal/gibbous/jit/peroptranslator/e2e_test.go`

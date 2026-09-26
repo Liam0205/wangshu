@@ -2,7 +2,7 @@
 name: 2026-07-15-issue143-pj3-loopfuel-round
 description: >
   issue #143 / #144 修复轮(2026-07-15)。PJ3 spec FORLOOP 模板保 idx/limit/step 在
-  xmm/d 寄存器里全段内跑,只有 preemptFlag safepoint 出口——而 step budget 无 async
+  xmm/d 寄存器里、全程在段内运行,只有 preemptFlag safepoint 出口——而 step budget 无 async
   producer,故 `for i=0,inf` 在 P4 上永远挂住。这是「段内无抢占点 → step-budget 计费
   缺口」不变式家族的第 3 个独立实例(#102 P4 native emit → #135/#140 P3 wasm →
   #143 P4 PJ3 spec template)。修法新增 loopSpill 字段 + loopFuel 段内自减 +
@@ -60,7 +60,7 @@ headSha = 当前 master HEAD(已含 #135/#140 P3 loop-budget 修复),精确 repl
 
 家族:
 1. **#102** — P4 native per-op emit 路径(FORLOOP / 负 sBx JMP)
-2. **#135/#140** — P3 wasm 回边(FORLOOP / while JMP / repeat JMP)
+2. **#135/#140** — P3 wasm 循环回跳(back edge)(FORLOOP / while JMP / repeat JMP)
 3. **#143** — P4 PJ3 spec template 路径(FORLOOP 模板)
 
 #102 修了 P4 per-op native emit 的计费缺口,但 PJ3 spec template 是 P4 内部的另
@@ -100,7 +100,7 @@ callJITFull 是因为它不需要这些——加了 fuel 就必须切。这种�
   点**。如果该 guide 下次修订,可以把计费缺口作为「后端 × 通道」维度的第 2 类适用
   对象(第 1 类是语义修复)写进去。
 - **教训 2(xmm spill/reload for resume)**:首次样本暂留观察。如果 PJ10 寄存器分配
-  或 P5 trace JIT 再撞,可升为 guide 条目。
+  或 P5 trace JIT 再遇到,可升为 guide 条目。
 - **教训 3(trampoline 协议升级)**:首次样本暂留。属 [[design-claims-vs-codebase-
   physics]] §2 家族(基础设施假设随功能增长失效)的又一形式。
 

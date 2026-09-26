@@ -8,12 +8,12 @@ description: >
   input 决定的 VM bug——七角度复现矩阵全干净(精确重放 ×10 / 阈值镜像 hammer ×300 /
   bare+pcall+coroutine 三种恢复路径 / mmap 泄漏探针 300 层升层 / 6 分钟定向 fuzz 1600 万
   execs / GOGC=1 + SetGCStressMode / 版本核对失败 run headSha=d6e05bd 已含 #117/#118
-  修复,同代码 p1 腿 45 分钟 / 9100 万 execs 干净),特征(几千万 execs 后死 + 无声 + input
+  修复,同代码 p1 那一路 45 分钟 / 9100 万 execs 干净),特征(几千万 execs 后死 + 无声 + input
   干净)指向 fuzz worker 进程级资源耗尽。处置不硬编修复也不无限挖:corpus 入库常驻回归
   (它本身是合法通过用例)+ scripts/go-fuzz.sh 诊断硬化(GOMEMLIMIT=6GiB 把无声外部 kill
   转成带栈的 runtime OOM fatal;worker 无声死时 dump `free -m` 与 `vm.max_map_count`
   进上传 artifact)。核心教训:① 用户提示「先看 run 开始时的代码版本」——版本核对该是无法
-  复现时的第一步,不是第七步,先排除「撞的是已修复代码」这个最便宜的解释再撒复现矩阵;
+  复现时的第一步,不是第七步,先排除「撞的是已修复代码」这个最便宜的解释再铺开复现矩阵;
   ② 分诊纪律真的把资源耗尽和 VM bug 分开来了,避免了硬修一个不存在的 VM bug;③ 「让下次
   复发自带诊断」是不可复现问题的正确投资方向——GOMEMLIMIT 把外部 kill 转成带栈的 fatal,
   等于把复现成本转嫁给下一次自然发生;④ 七角度复现矩阵(重放 / 镜像 / 错误恢复 / 资源
@@ -41,7 +41,7 @@ stack trace 输出。落盘 corpus `326b508ea720a654` 是一段合法的无界�
 
 - 期望:按分诊纪律(2026-07-03 沉淀),落盘 input 若真是 crasher 触发点,精确重放应
   立即复现,进而定位 VM 侧根因。
-- 实际:精确重放 + 六种旁路探测(共七角度)全部干净,同 headSha 的 p1 腿 45 分钟 / 9100
+- 实际:精确重放 + 六种旁路探测(共七角度)全部干净,同 headSha 的 p1 那一路 45 分钟 / 9100
   万 execs 也没崩。特征(几千万 execs 后死 + 无声 + input 干净)与「input 决定的 VM
   bug」画像不匹配,更像 fuzz worker 进程级资源耗尽(内存 / mmap 数 / OS OOM killer)。
   处置转向 corpus 入库常驻回归 + go-fuzz.sh 诊断硬化,不硬编修复。
@@ -55,33 +55,33 @@ stack trace 输出。落盘 corpus `326b508ea720a654` 是一段合法的无界�
 4. mmap 泄漏探针(300 个升层 State,`/proc/self/maps` 稳定 44 条);
 5. 以 corpus 为种子的 6 分钟定向 fuzz(1600 万 execs);
 6. `GOGC=1` + `SetGCStressMode` hammer;
-7. 版本核对:失败 run 的 `headSha=d6e05bd` 已含 #117/#118 修复,同代码 p1 腿 45 分钟 /
+7. 版本核对:失败 run 的 `headSha=d6e05bd` 已含 #117/#118 修复,同代码 p1 那一路 45 分钟 /
    9100 万 execs 干净。
 
 ## 处置
 
 - corpus `testdata/fuzz/FuzzAutoPromote/326b508ea720a654` 入库常驻回归(它本身就是合法
-  通过用例,入库无成本但站岗有价值);
+  通过用例,入库无成本但留作回归检查有价值);
 - `scripts/go-fuzz.sh` 诊断硬化两条:
   - 加 `GOMEMLIMIT=6GiB`,把「内存悄悄涨到系统 OOM killer 边界然后被无声 kill」转成
     带完整 goroutine 栈的 runtime OOM fatal;
   - worker 无声死时 dump `free -m` 与 `vm.max_map_count` 进上传 artifact,下次复发直接
     看得到当时的系统状态。
 
-意图明确:不复现则 corpus 站岗,复发则自带诊断。
+意图明确:不复现则 corpus 留作回归检查,复发则自带诊断。
 
 ## 核心教训
 
 ### 教训 1(无法复现 crasher 时,版本核对该是第一步不是第七步)
 
-用户的关键提示:「看看 run 开始时的代码版本」。我这轮走的顺序是先撒精确重放 → 镜像
+用户的关键提示:「看看 run 开始时的代码版本」。我这轮走的顺序是先做精确重放 → 镜像
 hammer → 恢复路径 → 资源泄漏探针 → 定向 fuzz → GC 压力 → 最后才去核 headSha。等把前六
 条都跑完再核版本,顺序是反的。
 
 正确顺序:**看到「落盘 input 无法复现」这个信号后,第一件事是核对失败 run 使用的 SHA
 是否已经包含了近期修复**。这是最便宜的解释——「撞的是已修复代码,当时的 head 还没含
 修复」——一条 `gh api` 或者翻 CI 日志就能排除。若失败 SHA 早于最近相关修复,直接判「已
-在 master 修好,corpus 入库常驻回归」即可,复现矩阵都不用撒。若失败 SHA 已含修复(本
+在 master 修好,corpus 入库常驻回归」即可,复现矩阵都不用铺开。若失败 SHA 已含修复(本
 轮情况),再走复现矩阵才有意义,而且此时「没复现」也已经排除掉了最平凡的一种原因,
 后续假设空间更干净。
 
@@ -95,7 +95,7 @@ hammer → 恢复路径 → 资源泄漏探针 → 定向 fuzz → GC 压力 →
 
 ### 教训 2(分诊纪律真的把资源耗尽和 VM bug 分开来了)
 
-2026-07-03 反思沉淀的「真 crasher 判据 = 落盘 input 能否复现」这一条,这轮直接消费。
+2026-07-03 反思沉淀的「真 crasher 判据 = 落盘 input 能否复现」这一条,这轮直接用上了。
 若没有这条纪律,面对「fuzz worker 死了 + 落盘一个 input」的组合,自然反应是把 input
 当作 VM bug 触发点去追,可能会围绕这个 corpus 硬编一个「防御性修复」——但这个修复其实
 什么也没修,因为 VM 侧根本没 bug。分诊纪律的价值就是把「进程级资源耗尽」和「input
@@ -151,11 +151,11 @@ dump 让即便还是被外部 kill,artifact 里也有当时的系统状态快照
 
 - **教训 1 + 教训 2 + 教训 3 + 教训 4 合起来**:构成一份「不可复现 crasher 的处置模式」
   完整流程——版本核对先行 → 复现矩阵七角度 → 分诊(input 决定 vs 进程级) → corpus 入库
-  + 诊断硬化。目前的形式已经足够沉一篇 guide(暂名 `unreproducible-crasher-triage`),
+  + 诊断硬化。目前的形式已经足够写成一篇 guide(暂名 `unreproducible-crasher-triage`),
   或者并入 [[2026-07-03-issue40-arm64-stopbleed-round]] 提到的分诊纪律所在文档
   (那份分诊纪律目前只在「其它(较小)」小节里一段话,升格与本轮教训合起来足够独立成
   篇)。是否升格与升格形式由 recorder 判断;两个方向我倾向新开一篇,因为本轮除了分诊
-  判据之外还沉了「版本核对先行」「诊断硬化投资方向」「七角度矩阵检查单」三条 07-03
+  判据之外还总结出了「版本核对先行」「诊断硬化投资方向」「七角度矩阵检查单」三条 07-03
   轮没有的内容,合进原文可能盖过原纪律的主线。
 - 教训 3「不可复现问题投资诊断硬化而不是硬挖这次」这一条,和 [[perf-optimization-workflow]]
   §1「profile 先行」是同族的「先建立可观测性,再判断动作」思路,但方向不同(那条是性能
@@ -173,7 +173,7 @@ dump 让即便还是被外部 kill,artifact 里也有当时的系统状态快照
 
 ## 验证
 
-- corpus `testdata/fuzz/FuzzAutoPromote/326b508ea720a654` 入库,作为合法通过用例站岗;
+- corpus `testdata/fuzz/FuzzAutoPromote/326b508ea720a654` 入库,作为合法通过用例常驻回归;
 - `scripts/go-fuzz.sh` 加 `GOMEMLIMIT=6GiB` + worker 无声死时 dump `free -m` /
   `vm.max_map_count`,PR #124 closes #123。
 

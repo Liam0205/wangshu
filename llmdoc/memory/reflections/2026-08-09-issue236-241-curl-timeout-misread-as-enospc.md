@@ -10,7 +10,7 @@ description: >
   而磁盘写满是**立刻**失败的、不会先卡两分钟;另外两个 run 的日志里 `no space left` / `ENOSPC` /
   `disk full` 出现次数都是 **0**。**真根因**:失败步骤 `install lua 5.1.5 oracle (source build)` 里是
   裸的 `curl -sLO https://www.lua.org/ftp/lua-5.1.5.tar.gz`,**没有 `--max-time`、没有
-  `--connect-timeout`、没有 retry**,上游一次可达性抖动就让它挂到 shell 放弃。**后果比「一次红」更糟**:
+  `--connect-timeout`、没有 retry**,上游一次可达性抖动就让它卡到 shell 放弃。**后果比「一次红」更糟**:
   这一步失败让后面三个差分 fuzz 步骤被 **skip**(step 5/7/9 是 `skipped`),于是 nightly 报 failure 而
   **实际什么都没测**。**而且一次抖动开了六个 issue**:infra issue 标题里嵌了 `${{ matrix.variant }}`,
   p1/p3/p4 生成三个不同标题,现有的按标题去重看不出它们是同一件事,两次抖动 × 三个 tier = 六个 issue。
@@ -65,7 +65,7 @@ metadata:
 而**证据一直在日志里**,两条:
 
 1. **时间形式**:`apt` 在 16:55:03 成功结束,然后**沉默 2 分 15 秒**才报 exit 28。磁盘写满是**立刻**
-   失败的 —— 写入撞上没有空间就当次返回错误,不会先卡两分钟。会先卡的只有等待类失败。
+   失败的 —— 写入时遇到没有空间就当次返回错误,不会先卡两分钟。会先卡的只有等待类失败。
 2. **反向搜索为零**:另外两个 run 的日志里 `no space left` / `ENOSPC` / `disk full` 的出现次数都是
    **0**。如果真是磁盘写满,`apt`、`tar`、`make` 里总有一个会把这句话打出来。
 
@@ -80,7 +80,7 @@ metadata:
 curl -sLO https://www.lua.org/ftp/lua-5.1.5.tar.gz
 ```
 
-**没有 `--max-time`、没有 `--connect-timeout`、没有 retry。** 上游一次可达性抖动就让它挂到 shell
+**没有 `--max-time`、没有 `--connect-timeout`、没有 retry。** 上游一次可达性抖动就让它卡到 shell
 放弃 —— 那 2 分 15 秒就是它在等,而 exit 28 就是它等到自己放弃。
 
 ## 2. 后果比「一次红」更糟:报红,而且什么都没测
@@ -90,7 +90,7 @@ curl -sLO https://www.lua.org/ftp/lua-5.1.5.tar.gz
 
 这比「跑了并且发现问题」更坏,因为**红色看起来像后者**。一次真分歧和一次「装依赖没装上」在
 Actions 页面上是同一个红叉,而前者要人立刻去读,后者只要重跑。更糟的是反过来的情形:这一晚
-本来该跑的三条差分 fuzz 腿一条都没跑,那一晚的探索预算是零,而没有任何东西说出这件事。
+本来该跑的三个差分 fuzz 任务一个都没跑,那一晚的探索预算是零,而没有任何东西说出这件事。
 
 ## 3. 一次抖动开了六个 issue:去重键选错了粒度
 
@@ -159,7 +159,7 @@ curl 调用里删掉之后它**照旧通过** —— 因为那个词在文件顶
 |---|---|
 | 六个 issue,至少几个不同的原因 | 一个根因,一次上游抖动 |
 | exit 28 是 ENOSPC,该去腾磁盘空间 | 是 curl 的超时;整个 run 里没有任何磁盘证据,而且时间形式一开始就排除了磁盘 |
-| 这一晚 nightly 报红是因为撞到了什么 | 这一晚**什么都没测**,三条差分 fuzz 腿全被 skip |
+| 这一晚 nightly 报红是因为遇到了什么 | 这一晚**什么都没测**,三个差分 fuzz 任务全被 skip |
 | 六个 issue 是六次事件 | 两次事件,被标题里的 tier 拆成了六份 |
 | 修法核心是加 `--max-time` | 限时只是四个性质里的一个;`--retry` 本身已覆盖超时,`--retry-all-errors` 只是额外放宽,而 checksum 防的是另一类(无声的)失败 |
 | 加个镜像源更稳 | 镜像过不了官方 checksum,取舍反了 |
@@ -306,14 +306,14 @@ divergence 类事件上是对的(它天然属于某个 tier,tier 是它身份的
 
 ## 关联
 
-[[unreproducible-crasher-triage]](「静默死亡先做两步分类」是教训 1/2 的落点,同族的上一格:
+[[unreproducible-crasher-triage]](「静默死亡先做两步分类」是教训 1/2 写入的地方,同族的上一格:
 先确认退出方式的归属再解释含义;「上限的余量」那一节用时间做**前瞻**判据,本轮教训 2 是同一个量的
-**回溯**用法;新节「CI 自动化本身的失败信号」是教训 3/4 的落点)·
-[[prove-the-path-under-test]](教训 5 的落点,§2 反模式家族的 shell 载体;§4.9x 与 §9.1a 是最近的
+**回溯**用法;新节「CI 自动化本身的失败信号」是教训 3/4 写入的地方)·
+[[prove-the-path-under-test]](教训 5 写入的地方,§2 反模式家族的 shell 载体;§4.9x 与 §9.1a 是最近的
 邻居 —— 都是「判据恰好落在成立的那一侧」)·
-[[2026-07-25-issue179-test-go-fuzz-retry-revive-round]](同一个 `test-scripts` 门禁、同样是 shell
+[[2026-07-25-issue179-test-go-fuzz-retry-revive-round]](同一个 `test-scripts` 检查、同样是 shell
 自测脚本的假绿;那轮定下「必须配 positive marker」,本轮补「marker 的作用域也要证明」,并且
-tooling 脚本接门禁那条纪律让本轮的新测试有地方挂)·
+tooling 脚本接检查那条纪律让本轮的新测试有地方挂)·
 [[2026-08-04-issue224-225-watchdog-margin]](同样是「产品代码零改动,价值全在诊断上」的一轮;
 那轮的 `panic: deadlocked` 也是靠把时间量出来才判对故障类别)·
 [[2026-07-19-fuzz-worker-forensics-round]](`exit status 2` 的语义是那一轮的头条,教训 1 与它是

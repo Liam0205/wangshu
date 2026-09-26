@@ -1,14 +1,14 @@
 ---
 name: 2026-07-09-issue91-94-p3-audit-round
 description: >
-  P3 摸底四连修复轮(2026-07-09,PR #100/#101)。一场 P3 生产路径 probe 一次产 4 个带实证的 issue,同类根因是
+  P3 摸底四连修复轮(2026-07-09,PR #100/#101)。一场 P3 生产路径 probe 一次产出 4 个带实测证据的 issue,同类根因是
   P4 上线后注意力集中在 P4、P3 auto 模式生产路径长期缺 probe。#91:relooper computeScopes 只处理单向部分
   交叠,漏对称方向,顶层 if/else diamond 永远升不了 P3(连 force-all 也不行),normalizeScopes 定点迭代修复
   + 白盒 PromotionCount>0 用例(byte-equal 分不清升层与静默 CFAIL 回退)。#92:WorthPromoting 缺 back edge
   维度,直线小体升层每次付 wasm 边界往返却无循环摊薄,加 straightLineMinCodeLen=32 拒(仅 auto)。#93:README
   P3 列分母错配(kernel×50 vs 裸顶层×1)低估 ~50 倍,加 _GopherKernel 同形状分母 + 缺分母渲染 —。#94:
   Bridge.OnEnter 每帧查 map,加 OnEnterID/OnBackEdgeID 走 ProtoID 索引 slice。核心教训:能力修复≠收益改变
-  (fannkuch 能编但不赚,反引 backend-capability-vs-profitability);互补 PR 合入顺序(收益门先于能力修复,
+  (fannkuch 能编但不赚,反向引用 backend-capability-vs-profitability);互补 PR 合入顺序(收益门先于能力修复,
   防回归窗口);fixture 随升层判据多维化演进(第 2 实例连 issue #21);跨机器 bench 接力用 PR 评论当交接文档
   (第 2 实例连 issue #89)。
 metadata:
@@ -19,7 +19,7 @@ metadata:
 # P3 摸底四连修复轮反思(2026-07-09,PR #100 / #101)
 
 > 范围:一场 P3 auto 模式生产路径 probe(挂 bridge Logger 逐 proto 看升层决策 + cpuprofile + 控制变量
-> kernel 扫描)一次产出 issue #91/#92/#93/#94,两个 PR 两天内全闭环。#92/#94 归 PR #100(已合入,
+> kernel 扫描)一次产出 issue #91/#92/#93/#94,两个 PR 两天内全部解决。#92/#94 归 PR #100(已合入,
 > CI 39/39 绿 + bot 两轮 APPROVE 零问题),#91/#93 归 PR #101(rebase + README 刷新已 push,CI 因 GitHub
 > Actions 服务中断未跑完)。
 
@@ -36,7 +36,7 @@ metadata:
 - **#93**:README baseline 三行的 P3 列工作负载错配。P3 列测 kernel×50(顶层 vararg 不升层,必须包 kernel),
   其它列测裸顶层×1,formatter 直接相除把 P3 低估 ~50 倍。
 - **#94**:`Bridge.OnEnter` 每次进帧跑,被拒升层的调用密集负载上 ~94% 调用只做「查 map → 已决策 → return」,
-  map 查找吃 ~6% 总时间。
+  map 查找占 ~6% 总时间。
 
 ## 期望与实际
 
@@ -79,7 +79,7 @@ Simple 这类顶层 diamond 一旦能过 relooper,若此时收益门还没上,�
 
 **可复用判据**:两个 PR 一个「放开某类形式的可达性」、一个「给这类形式加收益/安全过滤」时,过滤门(收益/安全
 兜底)必须先合。合入顺序不是随意的——**能力放开在前而过滤在后,中间那段 master 上存在一个「能达但没兜底」的
-回归窗口**,任何人在窗口期 rebase 或跑基准都会撞见反噬。这与 [[backend-capability-vs-profitability]] 的分层
+回归窗口**,任何人在窗口期 rebase 或跑基准都会遇到反噬。这与 [[backend-capability-vs-profitability]] 的分层
 是一体两面:能力层放开时,对应的收益层过滤要么已在、要么同批先行。
 
 ### 教训 3(fixture 随升层判据多维化而演进 —— 第 2 实例,连 issue #21)
@@ -104,14 +104,14 @@ amd64 数字必须同机重测才符合口径),PR 评论里留了完整的 amd64
 #89 的 arm64 接力,见 [[2026-07-08-pr95-spill-stack-fuel-round]] 教训 3)。
 
 可复用要点:一台机器只能出本架构的诚实数字,另一架构的格先标 `—` 占位(不留错数字),把接力清单写进 PR 评论
-——查 load、精确步骤、预期量级、回贴位置四要素齐全,接力方照做即可。两个实例都验证了:交接信息落在 PR 评论
-里比落在临时文件里可靠(评论随 PR 走、reviewer 也能看)。
+——查 load、精确步骤、预期量级、回贴位置四要素齐全,接力方照做即可。两个实例都验证了:交接信息写在 PR 评论
+里比写在临时文件里可靠(评论随 PR 走、reviewer 也能看)。
 
 ### 教训 5(一场集中 probe 摸底产一批带实证的 issue —— process 观察)
 
-这 4 个 issue 出自同一场 P3 摸底,每个都带 probe 实证数字(具体 ns/op、CPU 占比、倍率)和明确的修复方向,所以
-修起来快——4 个 issue 两个 PR 两天内全闭环。**集中一次 probe(挂 Logger 看逐 proto 决策 + cpuprofile + 控制
-变量扫描),比零散撞一个修一个高效得多**:probe 一次性把决策链摸清,产出的 issue 自带定位和量化,后续实现阶段
+这 4 个 issue 出自同一场 P3 摸底,每个都带 probe 实测数字(具体 ns/op、CPU 占比、倍率)和明确的修复方向,所以
+修起来快——4 个 issue 两个 PR 两天内全部解决。**集中一次 probe(挂 Logger 看逐 proto 决策 + cpuprofile + 控制
+变量扫描),比零散地遇到一个修一个高效得多**:probe 一次性把决策链摸清,产出的 issue 自带定位和量化,后续实现阶段
 不用重复搭观测。触发场景:某条生产路径长期没人看(本轮是 P4 上线后被冷落的 P3 auto),值得专门排一场 probe 而
 非等它出问题——「没有观察就没有发现」在这里得到反证。
 
@@ -123,7 +123,7 @@ amd64 数字必须同机重测才符合口径),PR 评论里留了完整的 amd64
 
 ## Promotion 判断
 
-- **教训 1(能力≠收益,fannkuch)** → **guide 反引即可,暂不改正文**。理由:
+- **教训 1(能力≠收益,fannkuch)** → **在 guide 中反向引用即可,暂不改正文**。理由:
   [[backend-capability-vs-profitability]] 已收四个实例并总结出接口族,本轮是断言的又一正面确认(能力放行
   diamond ≠ 承诺 auto 升),没有引入新接口或新维度,补一句「#91 relooper 放行 vs fannkuch 收益门拒」到 guide
   的实例列表即可,不改分层模型。
@@ -135,9 +135,9 @@ amd64 数字必须同机重测才符合口径),PR 评论里留了完整的 amd64
   地板),两个实例同结构且纪律明确(改门后热度类 fixture 连锁失败是正信号、修 fixture 不放门),对齐项目「第二
   实例接近/达阈值即升」惯例。建议并入 [[backend-capability-vs-profitability]] 或 prove-the-path 家族的一个小
   节,而非新开 guide。
-- **教训 4(跨机器 bench 接力用 PR 评论)** → **memory 反引(第 2 实例,接近阈值,暂留观察)**。理由:两个实例
+- **教训 4(跨机器 bench 接力用 PR 评论)** → **memory 内反向引用(第 2 实例,接近阈值,暂留观察)**。理由:两个实例
   (issue #89 arm64、本轮 amd64)已成模式,但两次都是同一人接力、场景仍窄(bench 表刷新),再攒一个跨人或跨场景
-  实例更稳。暂在本篇与 [[2026-07-08-pr95-spill-stack-fuel-round]] 互相反引,下次再遇升 guide。
+  实例更稳。暂在本篇与 [[2026-07-08-pr95-spill-stack-fuel-round]] 互相引用,下次再遇升 guide。
 - **教训 5(集中 probe 产批量 issue)** → **暂留观察(process 观察)**。理由:单次样本,是好的工作方式但还不到
   可复用纪律的密度,记在 memory 供日后对照。
 - **教训 6(缺数据渲染 `—`)** → **不升,memory 留档即可**。小教训,formatter 局部惯例,复用面窄。
@@ -149,7 +149,7 @@ amd64 数字必须同机重测才符合口径),PR 评论里留了完整的 amd64
 - **guide 修订**:下次触碰 [[backend-capability-vs-profitability]] 时,把教训 2(合入顺序/回归窗口)与教训 3
   (fixture 多维化,连 issue #21)各作一小节并入,并在实例列表补 #91/#92。
 - **P3 probe 常态化**:考虑把这场 probe 的观测手法(bridge Logger 逐 proto 决策 + cpuprofile + 控制变量
-  kernel 扫描)写成一个可复跑的 P3 体检脚本,避免下次又靠零散撞见。
+  kernel 扫描)写成一个可复跑的 P3 体检脚本,避免下次又靠零散碰到。
 
 ## 关联
 

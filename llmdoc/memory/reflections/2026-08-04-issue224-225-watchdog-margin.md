@@ -70,7 +70,7 @@ return out
 **最小化之后的 seed 天然是轻的**那个机制：真正把 worker 弄死的输入更重，落盘的这一个是最小化过程
 自己活得下来的那个。
 
-两个都**既不崩也不分歧**，本地重放各约 1 秒，字节记账正常把它们界住、正确抬「instruction budget
+两个都**既不崩也不分歧**，本地重放各约 1 秒，字节记账正常把它们界住、正确报出「instruction budget
 exceeded」。
 
 ### 2.「重放干净」这次不是全部答案
@@ -357,8 +357,8 @@ cap，而且两个预算下 step budget 都先于 arena cap 触发，这条路�
 「concat storm 家族已根因定性并修复」与「那三个候选算子已结算」是本轮的上文，本轮是那一族的下半句）·
 [[prove-the-path-under-test]]（§9.2 判据自身消耗的资源本轮补记教训 5；§9.6 双向验证是教训 1 的同族；
 §4.5c 写法是教训 4 的上文——那条讲一个结构性决定要有执行体，本条讲那个执行体自己也要被变异确认；
-§5「探索空间任一维动一格就是新一轮探索」是教训 3 的同族；新增 §4.10d 是教训 6 的落点；§4.5d 是上一轮
-的落点，本轮不动）·
+§5「探索空间任一维动一格就是新一轮探索」是教训 3 的同族；新增 §4.10d 是教训 6 的写入位置；§4.5d 是上一轮
+的写入位置，本轮不动）·
 [[2026-08-03-issue221-222-bulk-builder-budget]]（上一轮：三个批量算子按字节记账，教训 4「本地重放
 干净对这个家族天然无效」是本轮没有用重放结案的直接理由；本轮补上它的下半句——重放干净之后还要问
 「是什么让它干净的」）·
@@ -369,7 +369,7 @@ cap，而且两个预算下 step budget 都先于 arena cap 触发，这条路�
 `internal/fuzzbudget.Steps`（终值 `1<<16`，注释里记了 `1<<19` 为什么不够）·
 `fuzz_auto_test.go` · `fuzz_p4_test.go` ·
 `test/regression/issue224_watchdog_margin_test.go`（五个用例，后三个是真正约束预算的写法）·
-`test/regression/issue144_regression_test.go`（arena cap 的直接覆盖，本轮 arena 变窄那一条靠它兜）·
+`test/regression/issue144_regression_test.go`（arena cap 的直接覆盖，本轮 arena 变窄那一条靠它兜底）·
 `internal/crescent/state.go::chargeBulkWork`（CI 慢 10 倍这件事记在它的注释里）·
 `docs/design/p1-interpreter/12-testing-difftest.md` §4.9a2 ·
 `docs/design/p4-method-jit/08-testing-strategy.md` §3.4 ·

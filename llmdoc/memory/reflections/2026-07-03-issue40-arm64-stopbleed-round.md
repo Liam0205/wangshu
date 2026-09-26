@@ -1,6 +1,6 @@
 ---
 name: issue40-arm64-stopbleed-round
-description: issue #40 arm64 P4 调试轮阶段 1 止血过程教训:issue 把 HeavyArith 慢 ~20x / Fannkuch 慢 3.5-7.4x 归因于「PerOpCode head-op replay」跨界路径,但该路径在 arm64 二进制里根本不存在(build tag 排除)——原止血计划「收紧 arm64 升层接受面」若直接实施会是无效操作,因为接受面本来就在拒收;darwin/arm64 M5 Pro 基线 + force/auto 探针矩阵在 1 小时内定位真实根因:forceAll retry window(前轮 fd055e9 引入,让拒收 proto 停留在 TierInterp 不转 Stuck 以等 IC 预热)组合 forceAll 绕过 HotBackEdgeThreshold 使每条回边都触发 considerPromotion,而拒收结果 pd.Compilable 不写回,导致窗口期内每条回边都重跑 SupportsAllOpcodes→analyzeShape→AnalyzeNative(含 buildCFG 全量分配)——HeavyArith 单次进入 + 2M 回边形状触发 2M 次全量后端分析,实测 1.5 GB/op / 44M allocs/op,cpuprofile 证 recheckCompilabilityRuntime 占 22.38% CPU;修法(f921626)按「重试结果真正可能改变的粒度」去重(每次 entry 一次,IC 预热里程碑 count==1 与 count==HotBackEdgeThreshold 再武装),force 与 auto 对齐(HeavyArith 1125ms→49-51ms,Fannkuch 314ms→3.55-3.97ms);同一 make all 的 fuzz-p4 30s 内顺手抓到第二个既有 bug(bf65839)——walkFuncExpr 建 sub-visitor 隔离信号时把递归展开 guard 也隔离了(应拷贝继承而非留空),导致递归闭包字面量在 known-local 展开路径下无限展开触发 Go 1GB 栈上限 fatal(不可 recover,master 上可复现,arch 无关纯 AST 分析,影响所有 wangshu_profile build);M5 Pro 上 9-80s 抓到该 bug,amd64 上此前 120s/150s fuzz 多轮未抓到,新硬件先跑 fuzz smoke 是廉价高产动作。
+description: issue #40 arm64 P4 调试轮阶段 1 止血过程教训:issue 把 HeavyArith 慢 ~20x / Fannkuch 慢 3.5-7.4x 归因于「PerOpCode head-op replay」跨界路径,但该路径在 arm64 二进制里根本不存在(build tag 排除)——原止血计划「收紧 arm64 升层接受面」若直接实施会是无效操作,因为接受面本来就在拒收;darwin/arm64 M5 Pro 基线 + force/auto 探针矩阵在 1 小时内定位真实根因:forceAll retry window(前轮 fd055e9 引入,让拒收 proto 停留在 TierInterp 不转 Stuck 以等 IC 预热)组合 forceAll 绕过 HotBackEdgeThreshold 使每条循环回跳(back edge)都触发 considerPromotion,而拒收结果 pd.Compilable 不写回,导致窗口期内每条 back edge 都重跑 SupportsAllOpcodes→analyzeShape→AnalyzeNative(含 buildCFG 全量分配)——HeavyArith 单次进入 + 2M back edge 的形状触发 2M 次全量后端分析,实测 1.5 GB/op / 44M allocs/op,cpuprofile 证 recheckCompilabilityRuntime 占 22.38% CPU;修法(f921626)按「重试结果真正可能改变的粒度」去重(每次 entry 一次,IC 预热里程碑 count==1 与 count==HotBackEdgeThreshold 重新启用),force 与 auto 对齐(HeavyArith 1125ms→49-51ms,Fannkuch 314ms→3.55-3.97ms);同一 make all 的 fuzz-p4 30s 内顺手抓到第二个既有 bug(bf65839)——walkFuncExpr 建 sub-visitor 隔离信号时把递归展开 guard 也隔离了(应拷贝继承而非留空),导致递归闭包字面量在 known-local 展开路径下无限展开触发 Go 1GB 栈上限 fatal(不可 recover,master 上可复现,arch 无关纯 AST 分析,影响所有 wangshu_profile build);M5 Pro 上 9-80s 抓到该 bug,amd64 上此前 120s/150s fuzz 多轮未抓到,新硬件先跑 fuzz smoke 是廉价高产动作。
 metadata:
   type: reflection
   date: 2026-07-03
@@ -18,7 +18,7 @@ issue #40 把 20x 退化归因于「PerOpCode head-op replay」,但该路径在 
 
 profile-first + force/auto 差分在 1 小时内定位了真实路径:探针矩阵立即暴露 force/auto 不对称(HeavyArith force 1083ms vs auto 49ms vs P1 53.6ms),auto 正常直接排除「arm64 emit 慢」「接受面放坏形状」两类假设(这两类机制会同时影响 force 和 auto),把嫌疑指向 force 专属机制,代码追踪很快锁定 forceAll retry window + considerPromotion 组合(见教训 3)。
 
-**Why**:这是 [[prove-the-path-under-test]] 家族的**诊断侧对偶**。该 guide 现有全部实例都在测试侧——「绿色 ≠ 在测你以为在测的」,证明的是「测试真的在测某条路径」。本条方向相反:issue 描述的数字异常,先要证明「你以为它慢在的那条路径」真的存在且被执行,再动手修。两者共享同一物理基础:**输出(测试绿 / 性能慢)本身不携带路径信息,必须用独立证据(build tag 追踪 / 静态代码追踪 / force-vs-auto 差分)反推路径**。也是 [[perf-optimization-workflow]] §1「profile 先行」的又一确认——不是"先假设瓶颈再优化",是"先证明瓶颈在哪再优化"。
+**Why**:这是 [[prove-the-path-under-test]] 家族的**诊断侧对偶**。该 guide 现有全部实例都在测试侧——「绿色 ≠ 在测你以为在测的」,证明的是「测试真的在测某条路径」。本条方向相反:issue 描述的数字异常,先要证明「你以为它慢在的那条路径」真的存在且被执行,再动手修。两者共享同一个底层原理:**输出(测试绿 / 性能慢)本身不携带路径信息,必须用独立证据(build tag 追踪 / 静态代码追踪 / force-vs-auto 差分)反推路径**。也是 [[perf-optimization-workflow]] §1「profile 先行」的又一确认——不是"先假设瓶颈再优化",是"先证明瓶颈在哪再优化"。
 
 **How to apply**:收到「某条路径导致 N 倍退化」类归因(不管来自 issue、用户描述,还是自己的第一直觉)后,动手修复前先用一个廉价动作验证该路径确实存在且会被执行——grep build tag / 读函数头注 / 跑一次白盒探针。若验证失败(路径不存在,或存在但静态分析显示不该被触发),不要顺着错误归因去修,先重新定位。
 
@@ -32,13 +32,13 @@ emit 质量、接受面这类机制会影响两种运行模式(force 和 auto �
 
 ### 3. 「停留重试」状态 × 高频触发点 = 意外的每事件全量重算
 
-retry window(前轮 `fd055e9` 引入)让被拒收的 proto 停留在 TierInterp 且不写回任何「已拒收」标记(设计意图是给 IC-gated 后端一个机会等 IC 预热后重判);forceAll 让每条回边都成为重入触发点(绕过正常需要攒够 HotBackEdgeThreshold=1000 次的门槛)。两者组合成 O(回边数) 次全量后端分析:`OnBackEdge` 每条回边调 `considerPromotion`,拒收后 `pd.Compilable` 不写回,窗口内每条回边都重跑 `recheckCompilabilityRuntime`→`SupportsAllOpcodes`→`analyzeShape`+`AnalyzeNative`(含 buildCFG 全量内存分配)。HeavyArith 是单次进入 + 2M 回边形状,窗口期内触发 2M 次全量分析,实测 1.5 GB/op / 44M allocs/op;cpuprofile `pprof -peek` 证 `OnBackEdge→considerPromotion→recheckCompilabilityRuntime` 占 22.38% CPU(1.45s/6.48s),`buildCFG` cum 17.44%,`kevent`/`madvise` 38%/16%(分配风暴引发的 GC/调度损耗)。Fannkuch 的 13.7 MB/op 异常分配同根因。
+retry window(前轮 `fd055e9` 引入)让被拒收的 proto 停留在 TierInterp 且不写回任何「已拒收」标记(设计意图是给 IC-gated 后端一个机会等 IC 预热后重判);forceAll 让每条循环回跳(back edge)都成为重入触发点(绕过正常需要攒够 HotBackEdgeThreshold=1000 次的门槛)。两者组合成 O(back edge 数) 次全量后端分析:`OnBackEdge` 每条 back edge 调 `considerPromotion`,拒收后 `pd.Compilable` 不写回,窗口内每条 back edge 都重跑 `recheckCompilabilityRuntime`→`SupportsAllOpcodes`→`analyzeShape`+`AnalyzeNative`(含 buildCFG 全量内存分配)。HeavyArith 是单次进入 + 2M back edge 的形状,窗口期内触发 2M 次全量分析,实测 1.5 GB/op / 44M allocs/op;cpuprofile `pprof -peek` 证 `OnBackEdge→considerPromotion→recheckCompilabilityRuntime` 占 22.38% CPU(1.45s/6.48s),`buildCFG` cum 17.44%,`kevent`/`madvise` 38%/16%(分配风暴引发的 GC/调度损耗)。Fannkuch 的 13.7 MB/op 异常分配同根因。
 
-修法(`f921626`):`ProfileData.recheckedAtEntry` 存 `EntryCount+1`(0=从未跑过哨兵),同一进入内的后续回边直接 return;`OnBackEdge` 在每 pc 的 `count==1`(循环体首轮跑完、IC 已被观测——IC-gated 后端最早可能改判的点)与 `count==HotBackEdgeThreshold`(auto 模式自身触发点,IC 到顶)两个升温里程碑清零重新武装。升层时机与修复前完全一致,只去掉窗口内每回边重复分析。修复位置 `internal/bridge/bridge.go`(OnBackEdge 再武装 + considerPromotion dedup)、`internal/bridge/profile.go`(字段 + `resetCountersForReuse` 清零)。3 个新测试(`internal/bridge/state_machine_test.go`):dedup 上限(10k 回边内 SupportsAllOpcodes ≤5 次)/ warm-IC 首回边升层不变(flippingP3 mock)/ entry-4 吸收 Stuck 不变(decliningP3 mock)。
+修法(`f921626`):`ProfileData.recheckedAtEntry` 存 `EntryCount+1`(0=从未跑过哨兵),同一进入内的后续 back edge 直接 return;`OnBackEdge` 在每 pc 的 `count==1`(循环体首轮跑完、IC 已被观测——IC-gated 后端最早可能改判的点)与 `count==HotBackEdgeThreshold`(auto 模式自身触发点,IC 到顶)两个升温里程碑清零并重新启用。升层时机与修复前完全一致,只去掉窗口内每条 back edge 的重复分析。修复位置 `internal/bridge/bridge.go`(OnBackEdge 重新启用 + considerPromotion dedup)、`internal/bridge/profile.go`(字段 + `resetCountersForReuse` 清零)。3 个新测试(`internal/bridge/state_machine_test.go`):dedup 上限(10k back edge 内 SupportsAllOpcodes ≤5 次)/ warm-IC 首条 back edge 升层不变(flippingP3 mock)/ entry-4 吸收 Stuck 不变(decliningP3 mock)。
 
-**Why**:retry window 设计时只考虑了「多给几次机会」的语义,没考虑「机会」的触发频率上限——它默认「重试」是低频事件,但组合了 forceAll(绕阈值)之后,「重试」的触发频率跟回边频率一样高。这是一类通用陷阱:给状态机加「停留重试」语义时,重试触发点的频率取决于**触发它的外部信号**(本例是回边),不取决于「重试」这个概念本身看起来应该多低频。
+**Why**:retry window 设计时只考虑了「多给几次机会」的语义,没考虑「机会」的触发频率上限——它默认「重试」是低频事件,但组合了 forceAll(绕阈值)之后,「重试」的触发频率跟 back edge 频率一样高。这是一类通用陷阱:给状态机加「停留重试」语义时,重试触发点的频率取决于**触发它的外部信号**(本例是 back edge),不取决于「重试」这个概念本身看起来应该多低频。
 
-**How to apply**:给状态机加 stay-and-retry 语义时,枚举所有能重新触发这个 retry 的调用点、以及每个调用点的实际触发频率(不是设计意图里假设的频率)、以及每次重试的计算成本,三者相乘就是最坏情况总成本。若某个调用点频率可以被外部开关(本例 forceAll)推到极高,dedup key 必须绑定「结果真正可能变化所必需的最小状态变化」(本例是「同一次 entry」,不是「同一条回边」)。
+**How to apply**:给状态机加 stay-and-retry 语义时,枚举所有能重新触发这个 retry 的调用点、以及每个调用点的实际触发频率(不是设计意图里假设的频率)、以及每次重试的计算成本,三者相乘就是最坏情况总成本。若某个调用点频率可以被外部开关(本例 forceAll)推到极高,dedup key 必须绑定「结果真正可能变化所必需的最小状态变化」(本例是「同一次 entry」,不是「同一条 back edge」)。
 
 ### 4. 树遍历器的递归 guard 必须沿递归链(动态范围)传递,不能绑在 walker 实例上
 
@@ -60,7 +60,7 @@ retry window(前轮 `fd055e9` 引入)让被拒收的 proto 停留在 TierInterp 
 
 ## 其它(较小)
 
-- fuzz 失败形式分诊:`context deadline exceeded` + 无 failing input 文件 = fuzz 引擎 30s 窗口收尾时的 flake(单独复跑即过);`Failing input written to testdata/...` + `fuzzing process hung or terminated unexpectedly` = 真 crasher。本轮两种都遇到,前者 FuzzLexer/FuzzCompileRun 各一次,判断标准是看有没有 failing-input 文件被写出来。
+- fuzz 失败形式分诊:`context deadline exceeded` + 无 failing input 文件 = fuzz 引擎 30s 窗口收尾时的 flake(单独复跑即过);`Failing input written to testdata/...` + `fuzzing process hung or terminated unexpectedly` = 真正的 crasher。本轮两种都遇到,前者 FuzzLexer/FuzzCompileRun 各一次,判断标准是看有没有 failing-input 文件被写出来。
 - macOS 本机跑 difftest 的 oracle 供给:`check-oracle.sh` 只提示 apt 安装(Linux 向)。macOS 下从源码 `make macosx` 编 lua-5.1.5 + PATH override 即可,CI 的 macos job 里已有一样的做法,但本机开发流程没有文档记录这一步——是一个 doc-gap 候选(不是本轮教训主线,记在这里供后续 recorder 判断是否要补进某篇 guide 或 README)。
 - 用户过程反馈(已入用户级 memory,不重复入 llmdoc):提交更频繁 + 单域;开 PR 后立即 `make check-pr-ci`。
 
@@ -72,7 +72,7 @@ retry window(前轮 `fd055e9` 引入)让被拒收的 proto 停留在 TierInterp 
 - HeavyArith force 1125ms→49-51ms(124 B/op / 3 allocs)、Fannkuch force 5.18ms→3.55-3.97ms(382 B/op),force 与 auto 对齐,amd64 行为不变(其 proto 首次 recheck 即被接受,dedup 不改变 amd64 行为);
 - issue #40 评论已记录:根因假设证伪 + 止血项勾选 + 数字表 + 「不差于 P3」缺口显式留阶段 2;
 - issue #37 评论已记录移植落点清单 + 7 步实施顺序 + 两套 exit-reason 协议并存警告(见下)。
-- 文档更新:`docs/design/p2-bridge/04-try-compile-fallback.md` addendum 第 3 条加 dedup 子弹 + `implementation-progress.md` 表 #6 行(7168648)。
+- 文档更新:`docs/design/p2-bridge/04-try-compile-fallback.md` addendum 第 3 条加 dedup 条目 + `implementation-progress.md` 表 #6 行(7168648)。
 
 ## promotion 候选
 
@@ -93,4 +93,4 @@ retry window(前轮 `fd055e9` 引入)让被拒收的 proto 停留在 TierInterp 
 
 ## 关联
 
-[[p4-beat-p3-opset-round]](直接前序:`fd055e9` 引入 retry window;`45b8b53` 引入 alias 追踪;本轮两个真 bug 都在那轮埋下)· [[prove-the-path-under-test]](教训 1 的诊断侧对偶候选)· [[perf-optimization-workflow]] §1「profile 先行」/ §5「跨机器基线对照」· [[design-claims-vs-codebase-physics]] §5「时间维度」(issue 描述失实与时间维度家族邻接,但本轮教训 1 是「归因错误路径」而非「快照过期」,判断上不属于 §5 现有四种形式,不建议塞进去)· [[pr28-f3-3c-tri-platform-matrix-ci]](跨平台/硬件多样性,教训 5 邻接)· issue #40 评论 https://github.com/Liam0205/wangshu/issues/40#issuecomment-4872673328 · issue #37 评论 https://github.com/Liam0205/wangshu/issues/37#issuecomment-4872674196 · PR #44 / PR #47 · master commits 483deaf / f921626 / 7168648 / bf65839 · `.llmdoc-tmp/2026-07-02-arm64-exit-reason-port-survey.md`(临时调查报告,移植轮开工时验证后可复用)
+[[p4-beat-p3-opset-round]](直接前序:`fd055e9` 引入 retry window;`45b8b53` 引入 alias 追踪;本轮两个真实 bug 都在那轮埋下)· [[prove-the-path-under-test]](教训 1 的诊断侧对偶候选)· [[perf-optimization-workflow]] §1「profile 先行」/ §5「跨机器基线对照」· [[design-claims-vs-codebase-physics]] §5「时间维度」(issue 描述失实与时间维度家族邻接,但本轮教训 1 是「归因错误路径」而非「快照过期」,判断上不属于 §5 现有四种形式,不建议塞进去)· [[pr28-f3-3c-tri-platform-matrix-ci]](跨平台/硬件多样性,教训 5 邻接)· issue #40 评论 https://github.com/Liam0205/wangshu/issues/40#issuecomment-4872673328 · issue #37 评论 https://github.com/Liam0205/wangshu/issues/37#issuecomment-4872674196 · PR #44 / PR #47 · master commits 483deaf / f921626 / 7168648 / bf65839 · `.llmdoc-tmp/2026-07-02-arm64-exit-reason-port-survey.md`(临时调查报告,移植轮开工时验证后可复用)

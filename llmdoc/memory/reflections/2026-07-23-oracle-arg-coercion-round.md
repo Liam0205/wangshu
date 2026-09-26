@@ -13,7 +13,7 @@ description: >
   `toNumberStr` 改走 `crescent.ParseLuaNumber`（一处对齐 string/table/math
   各库全部数字强制转换）+ `tonumber(x, base)` 第一参数接受 string 或 number。
   最值得记的是：仓库里已有权威实现却在别处另写了个简化版，两份实现宽松度
-  分叉直到 fuzz 撞出；且回归测试的期望值全部先跑 oracle 差分核对（如
+  分叉直到被 fuzz 发现；且回归测试的期望值全部先跑 oracle 差分核对（如
   `tonumber(255,16)==597` 反直觉）再固化，不凭直觉写。
 metadata:
   type: reflection
@@ -31,7 +31,7 @@ metadata:
 ## 任务
 
 nightly 长时间运行的 FuzzOracleDiff（P1 vs 内嵌 PUC 5.1.5 oracle 差分测试）
-撞出两处稳定可复现的分歧，都是 wangshu 的参数强制转换比 PUC 严：
+发现了两处稳定可复现的分歧，都是 wangshu 的参数强制转换比 PUC 严：
 
 - #174：`string.rep("0000000000000000", "0X0")` —— 次数参数是 Lua 十六进制
   整数字符串 `"0X0"`。PUC 用 `luaL_checknumber` 强制转（`"0X0"` → 0），
@@ -66,11 +66,11 @@ nightly 长时间运行的 FuzzOracleDiff（P1 vs 内嵌 PUC 5.1.5 oracle 差分
 
 ## 期望与实际
 
-- 期望：以为是两个独立的小口径修复，各改一处判断即可。
+- 期望：以为是两个独立的小范围修复，各改一处判断即可。
 - 实际：#174 挖下去才发现根因不是「少判了一种字符串」，而是仓库里同一个
   能力（Lua 字符串→数字）存在两份实现——VM 侧权威的
   `crescent.ParseLuaNumber` 与 stdlib 侧简化的裸 `strconv.ParseFloat`，两者
-  宽松度长期分叉，stdlib 的所有数字强制转换都偏严直到 fuzz 撞出。修复不是
+  宽松度长期分叉，stdlib 的所有数字强制转换都偏严，直到被 fuzz 发现。修复不是
   补一种字符串，而是让 stdlib 复用权威实现、消掉这份分叉。
 
 ## 教训
@@ -80,12 +80,12 @@ nightly 长时间运行的 FuzzOracleDiff（P1 vs 内嵌 PUC 5.1.5 oracle 差分
 `crescent.ParseLuaNumber` 是 VM 侧对齐 PUC `luaO_str2d` 的字符串→数字权威
 实现，但 stdlib 的 `toNumberStr` 自己用裸 `strconv.ParseFloat` 又实现了一遍，
 少了 hex 整数支持，于是 stdlib 的所有数字强制转换都比 VM 侧宽松度低一截，
-直到 fuzz 撞出来。
+直到被 fuzz 发现。
 
 **Why**：语义敏感的基础转换（字符串→数字这类）里，标准库（如 Go
 `strconv`）的接受面往往与 Lua/PUC 语义不一致——hex 整数、前后空白、特殊
 值都可能不同。图省事用标准库简化版，就等于在仓库里埋了第二套语义，它与
-权威实现的差异不会立刻暴露，要等某个恰好落在差异区的输入被 fuzz 撞到。
+权威实现的差异不会立刻暴露，要等某个恰好落在差异区的输入被 fuzz 触发。
 
 **How to apply**：遇到「X → Y」这类语义敏感的基础转换操作，先 grep 全仓有
 没有已存在的权威实现（尤其 VM 侧 / crescent 包），有就复用，不要另写标准库
@@ -108,7 +108,7 @@ PUC）是好事，但也意味着任何一个调用点若曾无意依赖旧的�
 
 ### 教训 3（回归测试的期望值要用 oracle 核对，不能凭直觉写）
 
-`tonumber(255,16)` = `597`（把 `"255"` 按 16 进制读）这种反直觉结果，靠脑补
+`tonumber(255,16)` = `597`（把 `"255"` 按 16 进制读）这种反直觉结果，凭想象
 容易写错；本轮所有期望值都先构造 corpus 跑真正的 FuzzOracleDiff 确认
 wangshu == PUC，再写进单测。
 
@@ -119,13 +119,13 @@ wangshu == PUC，再写进单测。
 **How to apply**：写差分类修复的回归测试，期望值以 oracle 实测为准——先跑
 一遍 oracle 差分（全过 = wangshu 与 PUC 一致）再把那个值固化进断言。承
 [[2026-07-22-oracle-format-nan-inf-round]] 教训「读 oracle 确切输出走真正
-harness」——那轮是 NaN/Inf 渲染真值靠 harness 逼出来，本轮是强制转换的期望值
+harness」——那轮是 NaN/Inf 渲染的真实结果靠 harness 实测得出，本轮是强制转换的期望值
 靠 harness 核对，同一条纪律的两个实例。
 
 ## 缺失的文档或信号
 
 - 「仓库里已有权威实现却在别处另写简化版」这类隐患没有现成信号能提前提醒；
-  教训 1 落 memory 即可。若后续再撞几处「stdlib / 某子系统自写简化转换与
+  教训 1 记在 memory 即可。若后续再遇到几处「stdlib / 某子系统自写简化转换与
   VM 侧权威实现分叉」，可考虑在 [[cross-backend-semantic-fix-sweep]] 里补一条
   「同一能力单点权威实现、别处复用别另写」的条款。
 - 「差分类回归测试期望值以 oracle 实测为准」目前散落在几轮反思里

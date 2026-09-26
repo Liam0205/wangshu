@@ -34,10 +34,10 @@ metadata:
 # 一个地址的两种可见度，与一段替换串里没跟上的怪癖（2026-08-05，commit `2b1aeb4`）
 
 > 范围：#232、#233、#234 三个 issue，1 个 commit `2b1aeb4`。**这是定时巡检任务的第一次实际处理轮**
-> （每天 03:07，前一天刚建，辅助脚本见 `.claude/patrol/`）。改动落在 `internal/oracle/compare.go`
+> （每天 03:07，前一天刚建，辅助脚本见 `.claude/patrol/`）。改动在 `internal/oracle/compare.go`
 > （`addrRe` 换锚点 + 归一化改成只重写匹配内部的地址）、`internal/oracle/prelude.go`（包一层
 > `tostring` 把 oracle 侧的地址渲染成 8 位）与 `internal/stdlib/stringlib.go`（`st2gsubRepl` 的
-> `%` 转义对齐 `add_s`）；测试落在 `internal/oracle/normalize_addr_test.go` 与 `fuzz_234_test.go`；
+> `%` 转义对齐 `add_s`）；测试写在 `internal/oracle/normalize_addr_test.go` 与 `fuzz_234_test.go`；
 > 三个 seed 入 `testdata/fuzz/FuzzOracleDiff/`（`61bf45a6f4a854a8` / `65ba4c0a7202462d` /
 > `3150cd52d760dc8a`）。
 >
@@ -117,7 +117,7 @@ seed 是 `t={0}print(#tostring(t))`。它不打印地址，它**量**地址：
 自己 vendor 并用 cgo 编译、只为做差分基准而存在的（且已经为确定性 stub 掉 `os.time`/`math.random`/
 `pairs` 顺序），供给链可控这一条也满足。
 
-望舒这一侧的宽度于是变成了一份**契约**：`fuzz_234_test.go::TestAddressLengthIsComparable` 断
+望舒这一侧的宽度于是变成了一份**约定**：`fuzz_234_test.go::TestAddressLengthIsComparable` 断
 `#tostring({})` 是 17、`#tostring(print)` 是 20，宽度一改这个测试就红。
 
 **#233 为什么看起来是间歇的**，到这里也有了答案：#232 那种「原始形式」是否分歧，取决于真实地址恰好
@@ -143,13 +143,13 @@ else {
 | 后果 | PUC 的行为 | 望舒原先 |
 |---|---|---|
 | **末尾的 `%`** | `i++` 之后**越过长度读 `news[i]`**，读到 `lua_tolstring` 保证的 NUL 终止符，于是**每次匹配吐一个 NUL 字节**——`gsub("aaa","a","x%")` 是 `x\0x\0x\0`（hexdump 实测确认） | 要求 `i+1 < len(rb)`，于是把末尾的 `%` 当成了字面量 |
-| **`%` 后面任何非数字** | 原样吐出，`gsub("a","a","%z")` 是 `"z"` | 抬 `invalid use of '%' in replacement string` |
+| **`%` 后面任何非数字** | 原样吐出，`gsub("a","a","%z")` 是 `"z"` | 报 `invalid use of '%' in replacement string` |
 
 第二半是**既有缺陷**：在 base 上同样分歧（实测确认过），只是没有 issue 记它。#234 报的只有第一半，
 但两半是同一段 `add_s` 逻辑的两个出口，只修被报的那一个会留一个已知的洞（见教训 4）。
 
 修法：`%` 分支不再要求 `i+1 < len(rb)`，越界时 `c` 取零值（那正是 PUC 会读到的 NUL）；`else` 分支
-从抬错改成 `out = append(out, c)`。`%%`、`%0`–`%9`、越界的捕获下标仍报 `invalid capture index`——这三条
+从报错改成 `out = append(out, c)`。`%%`、`%0`–`%9`、越界的捕获下标仍报 `invalid capture index`——这三条
 都不变，有用例钉住。
 
 **「照抄一个越界读」这件事的判据**：这不是可以引以为据的设计，PUC 那一行确实读了一个超出长度的字节。
@@ -164,8 +164,8 @@ else {
   （含紧贴数字的 `0function:` / `0table:` / `0file (`）+ 四条必须保持原样（`0x1`、`myfunction: 0x1`、
   `tostring gives 0xff`）。**两侧都有用例**是这一条的关键：只写前半会让「把锚点整个删掉」也通过。
 - `fuzz_234_test.go::TestGsubReplacementEscapeMatchesPUC` —— 四条改了行为的（末尾 `%`、文本后的末尾
-  `%`、捕获后的 `%`、`%z`）+ 三条必须不变的（`%%`、`%1`、越界下标仍抬错）。
-- `fuzz_234_test.go::TestAddressLengthIsComparable` —— 望舒侧的宽度契约。
+  `%`、捕获后的 `%`、`%z`）+ 三条必须不变的（`%%`、`%1`、越界下标仍报错）。
+- `fuzz_234_test.go::TestAddressLengthIsComparable` —— 望舒侧的宽度约定。
 - 三个 seed 入 `testdata/fuzz/FuzzOracleDiff/`。
 
 ## 期望与实际
@@ -175,7 +175,7 @@ else {
 | 三个 crasher 里大概有一个是过期的 | 三个都在当前 HEAD 上如实复现 |
 | 三个互不相关，分头查 | #232 与 #233 是同一个根因（地址宽度）的两种可见度，只有 #234 独立 |
 | #233 是间歇的，先看能不能稳定复现 | 它稳定复现；「间歇」的是 #232 那种原始形式，取决于真实地址恰好几位 |
-| #233 也在 `NormalizeOutput` 里修 | 归一化在长度分歧之后才跑，物理上到不了；必须回到渲染处 |
+| #233 也在 `NormalizeOutput` 里修 | 归一化在长度分歧之后才跑，从机制上就到不了；必须回到渲染处 |
 | `addrRe` 的 `\b` 有清楚的注释解释它为什么在，应该是对的 | 意图对、写法漏了「数字紧贴类型名」这一类 |
 | #234 修末尾 `%` 就收工 | 同一段 `add_s` 还有「非数字原样吐出」这一半在 base 上就是错的 |
 
@@ -214,7 +214,7 @@ else {
 
 这是 [[prove-the-path-under-test]] §9.0 那张表的**延伸**：那一节把「同一个抽象值的不同书写方式」
 判去渲染侧、把「两侧本来就是不同的东西」判去比较侧，而引用值地址一直被列在**后者**（"没有正确值可
-对齐 → 归一为 `0xADDR`"）。这一轮说明那个分类还要再切一刀：地址的**值**确实两侧不同、只能归一，
+对齐 → 归一为 `0xADDR`"）。这一轮说明那个分类还要再细分一层：地址的**值**确实两侧不同、只能归一，
 但地址的**宽度**是一个渲染选择，而它会被 `#` 变成一个普通数字流走。所以归一化管值、渲染处管宽度，
 两件事都要做。#233 就是「判在比较侧的那一类里，仍然有一个子量必须在渲染侧对齐」。
 
@@ -298,7 +298,7 @@ PUC 读了一个超出长度的字节；这不是可以引以为据的设计，�
 
 ## 关联
 
-[[unreproducible-crasher-triage]]（第一步永远是版本核对——这一轮三个都真复现；「一批 crasher 先问
+[[unreproducible-crasher-triage]]（第一步永远是版本核对——这一轮三个都确实复现；「一批 crasher 先问
 会不会被同一个改动一起解决」这次给出的是一半，教训 1 的落点）·
 [[prove-the-path-under-test]]（§9.0 选址是 #233 的判据来源，教训 2 的落点；§9.1 判据输入是教训 3 的
 落点；§9.6 断 equal 不断绿 + 双向验证是三处修复的验证口径）·
@@ -307,7 +307,7 @@ PUC 读了一个超出长度的字节；这不是可以引以为据的设计，�
 引擎相关的量被 `#` 变成数字，输出里没有可锚定的 token；那一轮定下的「在渲染处消除」在本轮第二次被
 正向使用）·
 [[2026-08-04-issue228-229-lazy-capture-and-nested-tailcall-top]]（也是 gsub、也是「参照实现的哪一段
-没照全」——那次是抬错点的位置与粒度，这次是一个分支的出口没对齐）·
+没照全」——那次是报错点的位置与粒度，这次是一个分支的出口没对齐）·
 [[2026-08-02-issue212-219-fuzz-crasher-batch]]（#216 同样是 gsub 的 repl，那次是校验在控制流里的位置）·
 `internal/oracle/compare.go`（`addrRe` / `addrBody` / `NormalizeOutput`）·
 `internal/oracle/prelude.go`（`preludeCapture` 里的 `tostring` 包装）·

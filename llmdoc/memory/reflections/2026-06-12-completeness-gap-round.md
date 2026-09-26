@@ -12,7 +12,7 @@
 `509a2f5`(生成器三期 15→19 类语句)→ `1379319`(actions 升 Node 24 线 + 三 fuzz
 目标输入尺寸上限)。
 
-corpus 落点 `test/difftest/probes_test.go`(`featureProbes` / `TestDiff_FeatureProbes`),
+corpus 位于 `test/difftest/probes_test.go`(`featureProbes` / `TestDiff_FeatureProbes`),
 按官方 5.1 手册逐节组织(§2.2 值/§2.4 语句/§2.5 表达式/§2.8 元表全 17 事件/§5 各库/
 协程/闭包),实测 100 项(`590d8b3` 提交说明口径 93,为撰写时点数字;以文件实测为准),
 现全绿常驻差分测试。
@@ -35,7 +35,7 @@ corpus 落点 `test/difftest/probes_test.go`(`featureProbes` / `TestDiff_Feature
    不能是自身实现**。
 2. **probe 上线后的护栏闭环**:新特性补完 → probe 转绿 → 生成器三期把新特性编入
    随机文法(`test/difftest/generator.go` 新增 metaOperators/metaCallable/
-   loadstringStmt/tostringMeta,15→19 类)→ 滚动种子持续压行为正确性。probe 管
+   loadstringStmt/tostringMeta,15→19 类)→ 滚动种子持续检验行为正确性。probe 管
    「有没有」,生成器管「对不对」,缺口修复后立即让两轴都覆盖到新特性。
 3. **SetCompileFn 回调注入解依赖**:loadstring/load 需要在 stdlib 里调编译器,但
    crescent 不能反向依赖 frontend——`wangshu.go` 装配层注入编译回调
@@ -48,13 +48,13 @@ corpus 落点 `test/difftest/probes_test.go`(`featureProbes` / `TestDiff_Feature
 ## 什么出了问题 / 根因
 
 1. **生成器结构性盲区(本轮动因)**:收尾轮起生成器文法就是「按我们实现了什么写」,
-   每期扩文法也只把**已实现**特性编进去——参照系錯了,570+ 脚本全绿只证明
+   每期扩文法也只把**已实现**特性编进去——参照系错了,570+ 脚本全绿只证明
    「已实现子集内正确」,对特性面完整性零覆盖。根因:把「差分 fuzz 全绿」误读为
    「与官方一致」,漏掉了「输入分布本身偏向自家实现」这层。
 2. **codegen goIfTrue 把 VNIL 特判「恒跳」丢原值(probe_and_or_values 捕获)**:
    `nil and 2` 错产 false 应为 nil;goIfFalse 对 VK/VKNUM 同样错产 true 应保留原值。
    根因:把「常量真值已知」当成「可走 LOADBOOL 恒跳」,但 and/or 是**取值**运算——
-   只有短路值恰为布尔的 VFALSE/VTRUE 可恒跳,其余必须落 TESTSET 保值
+   只有短路值恰为布尔的 VFALSE/VTRUE 可恒跳,其余必须生成 TESTSET 保留原值
    (对齐 luaK_goiftrue/goiffalse;修复见 `internal/frontend/compile/expdesc.go`
    `goIfTrue`/`goIfFalse`)。又一例「lcode.c 同构必须到 helper 层」级别的语义细节。
 3. **probe 笔误两例——probe 必须先过 oracle 再当判据**:probe_assert_message 直接
@@ -62,15 +62,15 @@ corpus 落点 `test/difftest/probes_test.go`(`featureProbes` / `TestDiff_Feature
    probe_string_format_misc 写了 `format("%s", nil)`,5.1 本就报错,不是合法探测。
    教训:**corpus 的每一项先在 oracle 单跑确认是合法且确定性的 5.1 程序,才有资格
    当完整性判据**——否则 probe 红色会被误读成实现缺口。
-4. **FuzzPattern 灾难性回溯挂死 CI(`98b6805`)**:`.*.+%A*` 类 pattern 指数回溯,
+4. **FuzzPattern 灾难性回溯卡死 CI(`98b6805`)**:`.*.+%A*` 类 pattern 指数回溯,
    CI fuzz-smoke 直接 hang。裁量:纯 Go 实现选择**回溯预算有界失败**
    (`internal/stdlib/pattern.go` `maxMatchSteps` = 2^20,超限报 "pattern too
-   complex"),而非 C 官方的「真跑很久」——嵌入式 VM 的 fuzz/宿主不可挂起,偏离
+   complex"),而非 C 官方的「实际运行很久」——嵌入式 VM 的 fuzz/宿主不可挂起,偏离
    官方行为是有意裁量,已在源码注释记录(预算横跨全部起点共享,逐起点重试不重置)。
 5. **fuzz 超大输入在 fuzztime 截止边缘超时 flake(`1379319`)**:fuzz 引擎变异出的
    超大输入恰在 -fuzztime 截止前开跑 → 单用例超时报失败,非真 bug。修复:lex/parse/
    端到端三目标加输入尺寸上限(超限 t.Skip)。CI fuzz 目标要同时设「时间预算」与
-   「单输入尺寸预算」两道闸。
+   「单输入尺寸预算」两道限制。
 
 ## 缺失的文档或信号
 

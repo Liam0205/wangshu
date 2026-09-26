@@ -12,8 +12,8 @@ description: >
   另外四处 `base := freereg` 捕获(num-for / gen-for / vararg-return / multi-
   return),都在表达式求值之前捕获、中间不夹 `freeExp` 移动,安全。验证:corpus
   入 `testdata/fuzz/FuzzAutoPromote/b03a5a1dd9e56fbf` 常驻(轻量、budget-bounded,
-  符合 unreproducible-crasher-triage guide 位置判据——本轮是该判据的第一次正向
-  消费)+ `test/difftest/corners_test.go` 加 5 个 `corner_ret_*` probes(or / and /
+  符合 unreproducible-crasher-triage guide 位置判据——本轮是该判据的第一次实际
+  应用)+ `test/difftest/corners_test.go` 加 5 个 `corner_ret_*` probes(or / and /
   not 变体、带返回值的 or、寄存器基移位)+ 三 build 全绿。核心教训:①「层间分歧
   归因先问 PUC oracle」——差分 fuzz 的 P1 参照系本身可能是错的,层间分歧若两 tier
   都错,bug 在共享前端 / stdlib,不在 tier;② 前端 codegen 的「捕获寄存器水位再用」
@@ -87,7 +87,7 @@ fs.freereg = single.info
 
 - corpus 入 `testdata/fuzz/FuzzAutoPromote/b03a5a1dd9e56fbf` 常驻回归(轻量 +
   budget-bounded,符合 unreproducible-crasher-triage guide 的位置判据——本轮
-  是该判据首次正向消费,与 #123 的重 workload 走 `test/regression/` 形成对照);
+  是该判据首次实际应用,与 #123 的重 workload 走 `test/regression/` 形成对照);
 - `test/difftest/corners_test.go` 加 5 个 `corner_ret_*` probes:or-chain 无返回值
   (局部函数)、or-chain 无返回值(全局函数,原 corpus)、and-chain、寄存器基
   移位变体、or-chain 有返回值(值传递路径旁证正常);
@@ -104,7 +104,7 @@ fs.freereg = single.info
    `A` 差 1;
 5. 顺着 `RETURN` 发射点回溯到 `stmtReturn` 单值带跳转链分支,一眼看出 `base :=
    freereg` 在 `exp2NextReg` 之前捕获;
-6. 一行语义修复 + 横向审计四处 sibling 无踩雷 + 5 个 probe 兜住形状。
+6. 一行语义修复 + 横向审计四处 sibling 未发现问题 + 5 个 probe 覆盖这些形状。
 
 ## 核心教训
 
@@ -144,7 +144,7 @@ PUC luac 或已知正确的第三方看真值;真值和「参照那一层」一�
 - 把 `base := freereg` 挪到 `exp2NextReg` **之后**再捕获(等价,但读者更容易
   忽略中间那次 `freeExp` 隐含的水位移动)。
 
-第一种更好,因为它直接消费 `exp2reg` 返回的权威位置,不依赖读者去脑补中间步骤。
+第一种更好,因为它直接使用 `exp2reg` 返回的权威位置,不依赖读者去脑补中间步骤。
 
 横向审计判据:凡是 `base := fs.freereg`(或等价的水位缓存)与 use 之间夹了任何
 可能移动 `freereg` 的操作,红旗;要么改用物化后的 `e.info`,要么把 capture 挪
@@ -153,7 +153,7 @@ PUC luac 或已知正确的第三方看真值;真值和「参照那一层」一�
 
 **Why**:寄存器水位是隐式状态,`freeExp` 之类的调用副作用不显眼(名字看着像
 「释放某个 exp」,读者不一定意识到它同时把 `freereg` 减了);预捕获一个隐式状态,
-后面若中间状态被动过,预捕获值就是陈旧的。用 `e.info` 消费返回值等于把隐式状态
+后面若中间状态被动过,预捕获值就是陈旧的。用 `e.info` 读取返回值等于把隐式状态
 显式化。
 
 **How to apply**:review / 写前端 codegen 时,凡见 `base := fs.freereg` 模式,
@@ -179,7 +179,7 @@ grep 一个 opcode。
 ### 教训 4(unreproducible-crasher-triage guide 位置判据首次正向消费)
 
 #123 沉淀的 guide 里区分「轻量 budget-bounded 形状 → `testdata/fuzz/`」vs
-「重 workload / 无界递归 → `test/regression/`」,本轮是判据的第一次正向消费:
+「重 workload / 无界递归 → `test/regression/`」,本轮是判据的第一次实际应用:
 corpus 是简单的 `function` + `for` 循环 + `return`,budget 天然有界,`testdata/
 fuzz/FuzzAutoPromote/b03a5a1dd9e56fbf` 是自然选择,fuzz worker 会把它当种子
 mutation 探索周边形状;与 #123 的重 workload corpus 放在 `test/regression/`
@@ -197,8 +197,8 @@ mutation 探索周边形状;与 #123 的重 workload corpus 放在 `test/regress
   倾向后两者之一;第一条(prove-the-path)侧重「路径已知,证明它跑到」,和
   「路径未知,先定位是哪层」的场景不完全同族。由 recorder 判断。
 - **教训 2「前端 codegen freereg capture-use 间距审计判据」** 偏前端 codegen
-  专属,频次存疑(本轮 stmt.go 只中一处、其余四处 sibling 都安全)。先留反思,
-  等再中一到两次同族 bug 再考虑升格。若升格,归 `internal/frontend/compile/`
+  专属,频次存疑(本轮 stmt.go 只命中一处、其余四处 sibling 都安全)。先留反思,
+  等再出现一到两次同族 bug 再考虑升格。若升格,归 `internal/frontend/compile/`
   局部 guide 或 codegen 审阅 checklist 里一条。
 - **教训 3「luac -l 对照法」** 通用性强、成本低,可以进「前端 codegen 调试手法」
   guide 或 recipes;若无合适 guide,单独留反思也够用。
@@ -213,7 +213,7 @@ mutation 探索周边形状;与 #123 的重 workload corpus 放在 `test/regress
 - 前端 codegen review / 写新分支时,见 `base := fs.freereg` 或等价水位缓存
   模式(教训 2:capture 与 use 之间任何 `freeExp` / `exp2NextReg` 都是红旗,
   改用 `e.info` 或后移 capture);
-- 怀疑前端 codegen bug 但不知落哪个 pass(教训 3:`luac -l` 对同源代码出参考
+- 怀疑前端 codegen bug 但不知在哪个 pass(教训 3:`luac -l` 对同源代码出参考
   字节码,与自家 dump 逐指令 diff,操作数字段级 diff 直接锁定发射分支);
 - fuzz corpus 入库位置抉择(教训 4:轻量 + budget-bounded 走 `testdata/fuzz/`,
   重 workload / 无界递归走 `test/regression/`,详见
@@ -223,7 +223,7 @@ mutation 探索周边形状;与 #123 的重 workload corpus 放在 `test/regress
 
 [[2026-07-11-issue123-unreproducible-crasher-round]](本轮消费该轮 guide 的
 「corpus 位置判据」——轻量 budget-bounded 形状走 `testdata/fuzz/`,#125 corpus
-是判据首次正向消费的例子)· [[cross-backend-semantic-fix-sweep]](教训 2 横向
+是判据首次实际应用的例子)· [[cross-backend-semantic-fix-sweep]](教训 2 横向
 审计四处 sibling 的做法是该 guide「一处修好后立刻 sweep 同族」纪律在前端 codegen
 内的对应物;教训 1 归因纪律可能升格并入该 guide 的分诊前置)· PR #126 ·
 issue #125 · `internal/frontend/compile/stmt.go` · `test/difftest/corners_test.go` ·

@@ -45,7 +45,7 @@
 - **parity-breaking**:需要 consumer 改 `lua_script` syntax 才能用——例如 arena 列轨的 `arena.xs[i]` proxy。跨引擎 consumer **不能 unilaterally 采纳**,即使 perf 收益再大。
 - **parity-friendly**:consumer 只改宿主端 Go 代码、`lua_script` 一字不动——例如 typed-array `NewXxxArrayTable`(脚本看到普通 array table `xs[i]`)、`GlobalsSlot`(脚本看到普通 `_G.k`)。跨引擎 consumer **可以 unilaterally 采纳**。
 
-这是 [[issue8-boundary-cost-round]] 「实现浪费 vs 架构成本」框架的**消费侧对偶面**:那一轮区分的是 wangshu **自己**愿不愿优化(架构成本不优、实现浪费要优);本轮区分的是 **consumer** 在跨引擎约束下能不能采纳(parity-breaking 跨引擎拿不到、parity-friendly 跨引擎可白嫖)。两轴正交——`CallInto` 是「实现浪费消除 + parity-friendly」(consumer 改 Go 代码即可)、arena 列轨是「架构选择 + parity-breaking」(consumer 须改脚本)。
+这是 [[issue8-boundary-cost-round]] 「实现浪费 vs 架构成本」框架的**消费侧对偶面**:那一轮区分的是 wangshu **自己**愿不愿优化(架构成本不优、实现浪费要优);本轮区分的是 **consumer** 在跨引擎约束下能不能采纳(parity-breaking 跨引擎拿不到、parity-friendly 跨引擎可直接受益)。两轴正交——`CallInto` 是「实现浪费消除 + parity-friendly」(consumer 改 Go 代码即可)、arena 列轨是「架构选择 + parity-breaking」(consumer 须改脚本)。
 
 **完成形式**:embedding-contract `§不强制 arena 的简易 API` 已把 issue #13 段显式标注「parity-friendly,不破跨引擎 `lua_script` 字节对等」(`0d93486`)。
 
@@ -71,9 +71,9 @@ B 件的机制可抽象成一个小 pattern:
 
 pineapple 的 `wangshu-borrow-optimization-survey.md` 是一篇模范——它**测了** arena 列轨的边界成本(-46%)、**列了** parity-cost、**说清** 为什么 defer。任何下一个评估「pineapple 要不要上 arena 列轨」的人,5 分钟就能拿到「数字 / 理由 / 当前阻塞 / 还开的备选路径」全部上下文,不用从零跑 benchmark。
 
-wangshu 端类似机制是 `memory/doc-gaps.md`「**已收口(留作审计)**」节(已彻底解决的旧缺口)+ 「【...审计的四项负债】」类「评估了不收口」条目。本轮 issue #13 也属此族——arena 列轨被 consumer 评估且 deferred 是事实,wangshu 应在 embedding-contract / doc-gaps 加一条「arena 列轨方案的 consumer-side 采纳现状」备查项,而非散落在 issue/PR comments 里。
+wangshu 端类似机制是 `memory/doc-gaps.md`「**已完成(留作审计)**」节(已彻底解决的旧缺口)+ 「【...审计的四项负债】」类「评估了但不处理」条目。本轮 issue #13 也属此族——arena 列轨被 consumer 评估且 deferred 是事实,wangshu 应在 embedding-contract / doc-gaps 加一条「arena 列轨方案的 consumer-side 采纳现状」备查项,而非散落在 issue/PR comments 里。
 
-**首次样本暂留观察**——已完成形式见 embedding-contract issue #13 段对 parity-friendly 的标注 + 本反思,但 doc-gaps 侧的「arena 列轨 consumer 采纳现状」专项条目尚未入档;若 P2+/P3+ 再撞到「已评估 + 已 deferred」类决策可批量入档。
+**首次样本暂留观察**——已完成形式见 embedding-contract issue #13 段对 parity-friendly 的标注 + 本反思,但 doc-gaps 侧的「arena 列轨 consumer 采纳现状」专项条目尚未入档;若 P2+/P3+ 再遇到「已评估 + 已 deferred」类决策可批量入档。
 
 ## 缺失的文档或信号
 
@@ -88,11 +88,11 @@ wangshu 端类似机制是 `memory/doc-gaps.md`「**已收口(留作审计)**」
 - **教训 1**:「跨 consumer perf 调研先读 consumer 反思」——首次样本,工作流类纪律;若下一轮跨 consumer 调研复发,候选促成 [[public-api-incremental-delivery]] 第 10 条「consumer-driven 优化先读 consumer 工程档」或独立小 guide「cross-project workflow」。
 - **教训 2**:「parity-friendly 作为 API 分类轴」——首次以 first-class 分类轴入档(顺便在 embedding-contract issue #13 段已就地标注);若 P2+/P3+ 再接跨引擎 consumer 类 issue 可促成 [[embedding-contract]] 加「parity-friendly vs parity-breaking」总览节,或独立 reference「API parity classification」。
 - **教训 3**:「ByRef internal + opaque public handle」pattern——单实例,远未到立 pattern 阈值;P2+/P3+ 若 Table.GetSlot / Path.Resolve 类机制再次套用可促成 pattern 入 [[public-api-incremental-delivery]]。
-- **教训 4**:wangshu 端「已评估 + 已 deferred」类条目机制——本轮局部入了 embedding-contract,doc-gaps 侧专项尚未入;P2+/P3+ 再撞同形式可批量入档。
+- **教训 4**:wangshu 端「已评估 + 已 deferred」类条目机制——本轮局部入了 embedding-contract,doc-gaps 侧专项尚未入;P2+/P3+ 再遇到同样的情况可批量入档。
 
 ### 不升入既有 guide
 
-- [[public-api-incremental-delivery]] 9 条纪律全部按既有形式机械复用过线,本轮**不新增 guide 条目**(三轮验证已稳定为肌肉记忆,见 issue56 教训 4)。
+- [[public-api-incremental-delivery]] 9 条纪律全部按既有形式机械复用并通过,本轮**不新增 guide 条目**(三轮验证已稳定为肌肉记忆,见 issue56 教训 4)。
 
 ## 关联
 

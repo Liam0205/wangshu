@@ -2,15 +2,15 @@
 
 - **日期**:2026-06-17
 - **任务类型**:跨 consumer perf 优化提案验证(spike)→ 三 backend × 三模式 × count=10 实测 → 方案否决 + 衍生 wangshu 自身 issue
-- **branch**:`perf/pineapple-bench`(`4c905e6 ↔ c2bf705`,7 commits,2D benchmark 矩阵已落、§6 spike 改动 revert / 删,调查报告 `.code-review/pineapple-perf/2026-06-17-profile-investigation.md` 不进 git)
+- **branch**:`perf/pineapple-bench`(`4c905e6 ↔ c2bf705`,7 commits,2D benchmark 矩阵已完成、§6 spike 改动 revert / 删,调查报告 `.code-review/pineapple-perf/2026-06-17-profile-investigation.md` 不进 git)
 
 ## 任务
 
-用户起手「考虑一下,怎么提升在 pineapple 上的性能」——此时 v0.2.0-rc4 已完成(typed-array + GlobalsSlot,见 [[2026-06-16-issue13-parity-friendly-fastpath-round]]),pineapple #112/115/116 也接入,boundary 已被压到 ~100µs/1000-iter 量级。三路稳定数字:WangshuP1 593µs / WangshuP3Auto 605µs / Gopher 624µs,差距 ~5%,**落在噪声带内**。
+用户一开始提出「考虑一下,怎么提升在 pineapple 上的性能」——此时 v0.2.0-rc4 已完成(typed-array + GlobalsSlot,见 [[2026-06-16-issue13-parity-friendly-fastpath-round]]),pineapple #112/115/116 也接入,boundary 已被压到 ~100µs/1000-iter 量级。三路稳定数字:WangshuP1 593µs / WangshuP3Auto 605µs / Gopher 624µs,差距 ~5%,**落在噪声带内**。
 
 §1-§5 调查结论:wangshu 在 pineapple 形式下**没有显著优化空间**——pineapple framework 占 87% allocs / 23% cpu,wangshu 自己只占 10% allocs / 27% cpu,任何 wangshu 内核优化反映到 pineapple ns/op 都淹在 3% 噪声里。
 
-§6 是用户调查后期的二次提议:「如果 pineapple DF 加 GetColumn + LuaOp 加 batch-wrapped item-mode,会怎样?」**user lua_script 不变**(契约保留),adapter 在 SetMetadata 期自动生成 wrapper:
+§6 是用户调查后期的二次提议:「如果 pineapple DF 加 GetColumn + LuaOp 加 batch-wrapped item-mode,会怎样?」**user lua_script 不变**(接口约定不变),adapter 在 SetMetadata 期自动生成 wrapper:
 
 ```lua
 function __batch_f()
@@ -43,7 +43,7 @@ end
   - **根因 1(wangshu 自家 issue)**:wangshu p3 当前 build 下 auto-lift 路径**根本不工作**。`analyze_on.go::analyzeCompilability` 用临时 Bridge(`b.p3 == nil`)→ F7 永远触发 → 所有 Proto 编译期被打 `CompNotCompilable + ReasonBackendUnsupp`。运行期 P3 注入后没有重跑 AnalyzeProto 的实现(注释自承"留 P3 PR 收口")。白盒 `PromotionCount() == 0` 证实:1000 次 inner-function call 不触发升层,即使热度远超 `HotEntryThreshold=200`。**预估的 -34% 凸月收益 = 0**。
   - **根因 2(perf 物理事实)**:boundary 已被 #112/115/116 压到 ~100µs 的形式下,把 host loop 翻进 VM 让 wrapper 内层每 iter 增加 ~7 opcodes(GETTABLE + SETGLOBAL + CALL + SETTABLE + FORLOOP),× 1000 = 净增 ~7000 opcodes,wangshu opcode dispatch ~80ns 算下来 **~560µs 反噬**——远超 boundary 节省的 ~100µs,净 +200µs。三 backend 实测都吻合此估算。
 
-两根因合并后,**§6 三方案(列存储 / common mode / batch wrapper)全部失败**:列存储与 per-item 架构 mismatch;common mode 输出契约不能写 item field;batch wrapper 反向。**§4 客观判断(路 #1 写 reflection 不写代码)是正确的**。
+两根因合并后,**§6 三方案(列存储 / common mode / batch wrapper)全部失败**:列存储与 per-item 架构 mismatch;common mode 输出约定不能写 item field;batch wrapper 反向。**§4 客观判断(路 #1 写 reflection 不写代码)是正确的**。
 
 ## 教训(每条首句为「下次什么场景会触发」)
 
@@ -66,7 +66,7 @@ end
 - 这是 [[project_pw10_zerocross_milestone]] 凸月升层故事的隐藏漏洞——VS0-d/PW10 R3 等架构机制已就绪,但**升层触发的判定链**还没接通运行期 P3 注入后 reanalyze。
 
 **修正纪律**:
-- **wangshu 这边**:给自己提 issue 收口运行期 AnalyzeProto 重跑(`considerPromotion` 在 P3 注入后看 `pd.Compilable == CompNotCompilable + ReasonBackendUnsupp` 时调 `b.AnalyzeProto(fn, proto)` 重判,或直接调 `recheckCompilabilityForce` 而不需要 forceAll 守卫)。这是 wangshu p3 故事完整闭环的最后一步,**不止影响 pineapple,影响所有 boundary-dominated 外部 embedding**。
+- **wangshu 这边**:给自己提 issue 解决运行期 AnalyzeProto 重跑(`considerPromotion` 在 P3 注入后看 `pd.Compilable == CompNotCompilable + ReasonBackendUnsupp` 时调 `b.AnalyzeProto(fn, proto)` 重判,或直接调 `recheckCompilabilityForce` 而不需要 forceAll 守卫)。这是 wangshu p3 故事完整闭环的最后一步,**不止影响 pineapple,影响所有 boundary-dominated 外部 embedding**。
 - **embedding 端纪律**:任何"wangshu p3 升层会带来 XX% 收益"类假设,在跑 perf 数字前必须用 `PromotionCount()` 白盒验:跑完后 > 0 才是真升层路径,== 0 是纯解释器路径(对 boundary-dominated 形式会偷偷劣化、对 compute-dominated 形式等同 p1)。
 - **历史 reflection 回看**:本轮发现否定了 [[2026-06-12-official-suite-perf-round]] 等历史轮次中默认"p3 build = 升层路径"的隐含前提——所有相关数字解读都该带上"是否调过 SetForceAllPromote"的口径标注。
 
@@ -89,7 +89,7 @@ end
 - **prove-the-path-under-test**:即便 spike 工程量大(本轮跨 pineapple + wangshu 两仓 + bench 端总改 ~300 行),做完才能真知道。**估算反向不可耻,可耻的是用估算 motivate cross-repo 工程**(本轮幸而 wangshu 这边只 PR 了 2D bench 矩阵,没把 cross-repo 推进出去,否则一旦真改了 pineapple 四引擎再回滚就尴尬了)。
 - **"spike 工程量大但收益数字 30% 量级足以 motivate"是错的论断**——§6.6 当时写的这句话回头看就是没 spike 前的 motivated reasoning。**任何 cross-repo perf 提案在 spike 验证前都不应说"足以 motivate"**,只能说"值得 spike 验证"。
 
-**首次样本暂留观察**——本轮第一次用完整 spike 否决一个看似自洽的复合估算;下次再遇到"三机制叠加估到 30%"类提案时直接套这条复盘。复发后可促成 [[perf-investigation-playbook]] 单独立 guide 收口"估算 → spike → 实测"的工作流检查。
+**首次样本暂留观察**——本轮第一次用完整 spike 否决一个看似自洽的复合估算;下次再遇到"三机制叠加估到 30%"类提案时直接套这条复盘。复发后可促成 [[perf-investigation-playbook]] 单独立 guide 统一整理"估算 → spike → 实测"的工作流检查。
 
 ### 3. boundary 已压死的形式下,把 host loop 翻进 VM 是反向优化的物理事实
 
@@ -107,6 +107,6 @@ end
 **修正纪律**:
 - **boundary-dominated 形式下,boundary 优化的天花板由 host 侧 cost 上限定**——pineapple 形式 host 侧 #112/115/116 已经把 boundary 单次 cost 压到 ~100ns 量级,**整体 boundary 上限 100µs**,任何方案预期收益超过 100µs 都该警惕。
 - **VM dispatch cost 不是免费的**——wangshu 解释器 opcode dispatch ~50-100ns 量级,wrapper 自己跑 1000 次内层意味着 ~5000-10000 opcodes,**至少 250-1000µs**。boundary 收益要打过这个数才赚。
-- **唯一可能赚的形式**:boundary 单次 cost 极高(cross-process / RPC / JNI 形式,boundary 1ms+ 量级),那时 boundary 跨界 N→1 省 1000×1ms = 1s,VM 内 wrapper 多 7000 opcodes 才 0.5ms,赚翻;但 in-process Go embedding 形式(wangshu / gopher 都是)根本不在这区间。
+- **唯一可能赚的形式**:boundary 单次 cost 极高(cross-process / RPC / JNI 形式,boundary 1ms+ 量级),那时 boundary 跨界 N→1 省 1000×1ms = 1s,VM 内 wrapper 多 7000 opcodes 才 0.5ms,收益很大;但 in-process Go embedding 形式(wangshu / gopher 都是)根本不在这区间。
 
 **首次样本暂留观察**——本轮第一次有 boundary 压死 + spike 实测的"反向优化"数据点。下次接到类似提案时直接套这表估算可行域。复发后可促成 [[perf-investigation-playbook]] 加显式"VM dispatch cost lower bound"段。

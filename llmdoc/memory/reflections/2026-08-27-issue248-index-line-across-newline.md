@@ -5,7 +5,7 @@ description: >
   `co=coroutine.create(function()(0\n)(A.A)end)print(coroutine.resume(co))`，分支
   `fix/248-index-error-line`，1 个 commit `1693a69`。**版本核对干净**：失败 run 的 headSha 正好就是当时的
   master（`13a9311`），当前 HEAD 重放确实复现。**分歧是错误消息里的行号**：oracle 报 `:2:`，望舒报
-  `:1:`，消息本体一致（`attempt to index global 'A' (a nil value)`），真 `lua5.1` 二进制同样报 `:2:`。
+  `:1:`，消息本体一致（`attempt to index global 'A' (a nil value)`），真正的 `lua5.1` 二进制同样报 `:2:`。
   **最小化剥掉协程之后**问题不变：`print(pcall(function() return A\n.A end))` 一样分歧，协程只是噪声，
   关键是**索引表达式跨了换行**——PUC 把错误归到**索引运算符所在行**（那条 GETTABLE 出错），望舒归到
   表达式起始行。**根因是两处独立错误，缺任一处修复行号仍然不对**：① `exprIndex`
@@ -90,7 +90,7 @@ discharge 点走;第二处修好只是让 GETTABLE 落到对的行,GETGLOBAL 仍
 
 新测试(`TestIndexLinesAcrossNewline`)因此特意用**全局**做对象(会延迟加载,走 GETGLOBAL),并且核对
 **整张** `LineInfo` 表(逐条 pc→line)而不是单个字段——只看最终报错的那一行看不出「反了」这件事,只有
-把每条指令的行号都摆出来才能看出 GETGLOBAL 和 GETTABLE 互相戴错了对方的帽子。
+把每条指令的行号都摆出来才能看出 GETGLOBAL 和 GETTABLE 互相拿了对方的行号。
 
 ## 期望与实际
 
@@ -105,7 +105,7 @@ discharge 点走;第二处修好只是让 GETTABLE 落到对的行,GETGLOBAL 仍
 ### 教训 1:测「位置/行号」类的性质,必须用会触发延迟加载的被测对象
 
 **核心断言**:位置信息类的 bug 往往只在「值被延迟物化」的路径上出现——已经在寄存器里的值不需要
-`exprIndex`/`dischargeVars` 发射任何新指令,所以无论行号参数传得对不对,都没有一条指令可以被钉错。
+`exprIndex`/`dischargeVars` 发射任何新指令,所以无论行号参数传得对不对,都没有一条指令可以被标错行。
 局部变量恰好是最省事、最容易被拿来写测试的对象,而它恰好是这条路径上**不会触发**延迟加载的那一种。
 
 **判据**:写位置/行号类的测试之前,先问「这个写法会让编译器**发射**我关心的那条指令吗」——发射了
@@ -149,7 +149,7 @@ seed 本身不保证「每一层外壳都是必要的」——它只保证「删
 
 ## 后续订正(2026-09-03,issue #252)
 
-本轮定的口径「PUC 把错误归到**索引运算符所在行**」**不成立**,它只是真实规则的一个近似。#252
+本轮定的结论「PUC 把错误归到**索引运算符所在行**」**不成立**,它只是真实规则的一个近似。#252
 (`(A.A\n)()`)证明了这一点,详见 [[2026-09-03-issue252-discharge-line-is-lastline]]。
 
 真实规则是:PUC 的 `luaK_codeABC`/`luaK_codeABx` **根本不接收行号参数**,一律用发射那一刻的

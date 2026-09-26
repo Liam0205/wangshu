@@ -76,7 +76,7 @@ rc := fs.exp2RK(e.Line, &r)
 - 同轮 #135(p3 auto,`77a7d64e35ed414b`,大 `sum(555555520)` 循环)一开始判为
   「不可复现资源耗尽」(单 Run 解释器重放干净),corpus 入库;**后经本 PR 第 4 个
   crasher 认清它其实是 P3 循环 step-budget 缺口的温和实例(有限 vs 无限),已由
-  [[2026-07-14-p3-loop-stepbudget-round]] 真修好,不是不可复现**。
+  [[2026-07-14-p3-loop-stepbudget-round]] 真正修好,不是不可复现**。
 
 ## 教训
 
@@ -99,14 +99,14 @@ arith 分支为了留给 `constfolding` 而对 numeral 延迟 `exp2RK`,compariso
 故无条件急切 `exp2RK`。想当然把两者统一(wangshu 之前对 comparison 也套用了 arith
 的 numeral 延迟)正是这个 bug 的来源。这与 [[cross-backend-semantic-fix-sweep]]
 的「PUC 语义由 C 实现定义,分歧先 grep `_lua515/` 源码」同域,本轮是该原则在**前端
-codegen 求值顺序**维度的应用(以往实例多在 stdlib / 值语义)。memory 内反引,不新增
+codegen 求值顺序**维度的应用(以往实例多在 stdlib / 值语义)。memory 内反向引用,不新增
 guide 正文(guide 已有该原则的总述)。
 
 ## promotion 决策
 
 - 教训 1(顺序敏感 × 有副作用去重)首次以此维度出现,暂留观察;
 - 教训 2 是 [[cross-backend-semantic-fix-sweep]]「PUC 语义源码定义」原则的又一
-  维度实证,memory 内反引不新增正文。
+  维度实证,memory 内反向引用,不新增正文。
 
 ## 触发场景
 

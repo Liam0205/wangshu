@@ -24,7 +24,7 @@ description: >
   `promotedAtLeastOnce` 变量只被 `Store`、没有任何地方 `Load`，fuzz 目标本身没有提升断言；配套的
   `TestTieredOracleDiffActuallyPromotes` 确实防住了「整个 harness 忘记提升」（把 `SetForceAllPromote`
   删掉实测变红），但它比注释声称的弱一格 —— 它的脚本调的 `__oracle_print` 在全仓只出现在那一行、
-  并不存在，脚本第 2 行就抬错（能过是靠 Lua 先算实参再报 nil 调用这个巧合），而更要紧的是
+  并不存在，脚本第 2 行就报错（能过是靠 Lua 先算实参再报 nil 调用这个巧合），而更要紧的是
   **把 payload 换成空字符串那条断言照旧成立**（实测 `PromotionCount` 9 → 10，因为 force-all 会提升
   main chunk 自己），所以它证明的是「force-all 开着」而不是「被测代码进了 tier」。四条教训：引用外部权威套件当信心来源必须同时给覆盖率 / 传递性证明继承中间项的盲区
   并且看不见两端各自一致地错 / 一个「测新路径」的测试必须断言它真的进了那条路径而不是能编译 /
@@ -102,7 +102,7 @@ State 上跑,与内嵌 5.1.5 比对。
 
 **跳过集合与 p1 目标完全相同**,这一条是刻意的:加一个 tier 专属的跳过是让这个目标变绿
 最容易的办法,也是让它变得毫无价值的办法 —— 「tier 与 PUC 分歧而 p1 不分歧」正是这个
-目标存在的理由,不能可跳过。
+目标存在的理由,不能被跳过。
 
 最需要小心的一点写在文件头注里,而且它是对的:`FuzzOracleDiff` **本来就能在 tier tag 下
 编译并通过** —— 它构造的是普通 State,tier 代码被链接进来但从未进入。一个忘记提升的
@@ -112,7 +112,7 @@ tiered harness **看起来与一个通过的测试一模一样**,而实际把解
 (预算值、limit 分类、readout 覆盖处理必须是同一份实现)。
 
 实测:两个 tier 都能观察到提升(p4 上 9 → 11),25 秒引导式 fuzz 5522 execs,**没有发现分歧**。
-这是**第一个结果,不是一张清白证明** —— 它说明这条轴是活的、显然的情形一致。
+这是**第一个结果,不是一张清白证明** —— 它说明这条轴确实在工作、显然的情形一致。
 
 ### 4.3 nightly 预算重新推导
 
@@ -194,7 +194,7 @@ vararg 语料,结论是「不写冗余,因为 `luasuite/closure.lua` 已含
 比一个已知缺口更糟,因为它读起来像已经处理过了**。而且这一处更容易骗过读者,因为那个变量
 真的存在、真的被写、类型也真的是 `atomic.Bool`,看起来完全像在工作。
 
-**其二,守护测试 `TestTieredOracleDiffActuallyPromotes` 的脚本第 2 行就抬错。**
+**其二,守护测试 `TestTieredOracleDiffActuallyPromotes` 的脚本第 2 行就报错。**
 它跑的是:
 
 ```lua
@@ -249,7 +249,7 @@ CI 里那两条断言(required-target 存在性检查、p3 与 p4 两个 tag 下
 **判据**:凡引用一个**外部权威套件**作为信心来源,要同时给出「跑了多少 / 总共多少 /
 有多少被截断以及为什么」。只说「通过」就是在暗示全跑了。
 
-落点:[[design-claims-vs-codebase-physics]](主张 vs 实际那一族)。
+归入:[[design-claims-vs-codebase-physics]](主张 vs 实际那一族)。
 
 ### 教训 2:传递性证明继承中间项的所有盲区,并且看不见「两端各自一致地错」
 
@@ -259,7 +259,7 @@ CI 里那两条断言(required-target 存在性检查、p3 与 p4 两个 tag 下
 **判据**:当 A 与 C 的一致性是通过 B 传递得来的,要问「有没有一条**直接**比 A 与 C 的路」。
 没有的话,那个盲区要如实写进文档,而不是让传递结论看起来与直接结论等价。
 
-落点:[[prove-the-path-under-test]](差分参照链那一族)。
+归入:[[prove-the-path-under-test]](差分参照链那一族)。
 
 ### 教训 3:一个「测新路径」的测试,必须断言它真的进了那条路径,而不是能编译
 
@@ -278,7 +278,7 @@ tiered harness 与它**从输出上无从区分**。
   自己;要断言执行就得读执行侧的计数器(如 `peroptranslator.NativeRunCount`)。
   自查办法很便宜:**把 payload 换成空的,断言必须变红**。
 
-落点:[[prove-the-path-under-test]] 新的一格 —— **能编译不等于进了那条路径**,
+归入:[[prove-the-path-under-test]] 新的一格 —— **能编译不等于进了那条路径**,
 以及它的两个下一格:断言要有执行体、变异实测要作用在 payload 上。
 
 ### 教训 4:按行号算出来的覆盖量不是执行证据,换成绝对量也修不好它
@@ -304,7 +304,7 @@ dispatch 计数、覆盖率工具的实测行),它对「一行代码存在但那
 实际收益也接近零,所以那不是指标失真,是指标在**如实反映**一件收益很小的事,
 只不过它反映得太粗、看不出到底是「加了很多跑不到的尾巴」还是「加的东西整体没跑」。
 
-落点:[[design-claims-vs-codebase-physics]](主张 vs 实际那一族),与教训 1 同族。
+归入:[[design-claims-vs-codebase-physics]](主张 vs 实际那一族),与教训 1 同族。
 
 ## 7. 遗留
 
@@ -341,9 +341,9 @@ dispatch 计数、覆盖率工具的实测行),它对「一行代码存在但那
 
 它卡在 `stopAt=24`,是因为第 28 行要 `lastlinedefined` 与 `activelines`。这两个字段此前和 `nups`/`namewhat` 一起被归进「依赖 hook,宁缺勿造」—— **而这个归类是错的**:两者都不需要 hook。`LineEnd` 每个 Proto 本来就在记,`LineInfo` 本来就把每条指令映到行号,PUC 的 `activelines` 就是照这张表建的。所以它们是**可推导**的,而「宁缺勿造」从来不该盖住可推导的字段。
 
-补上之后 `db.lua` 跑到 `stopAt=40`、**执行 4 条断言(此前 0 条)**,校的是 getinfo 的 what/source/short_src/linedefined/lastlinedefined/activelines,而且校的是**官方的期望值**而不是我自己写的 probe —— 这正是想要上游文件的全部理由。两个方向都验了牙:去掉 `lastlinedefined`,单元测试与 `db.lua` 本身都会红。
+补上之后 `db.lua` 跑到 `stopAt=40`、**执行 4 条断言(此前 0 条)**,校的是 getinfo 的 what/source/short_src/linedefined/lastlinedefined/activelines,而且校的是**官方的期望值**而不是我自己写的 probe —— 这正是想要上游文件的全部理由。两个方向都验证过:去掉 `lastlinedefined`,单元测试与 `db.lua` 本身都会红。
 
-另外三个留在外面,现在是**有明确理由**而不是「实测为空」:`verybig.lua` 要 `os.tmpname`/`io.output`/`io.close`/`os.remove` 才能到它的 >64k 载荷 —— 四个都在 io 对象模型豁免里,即它卡在一个**刻意的不实现**上;`code.lua` 与 `checktable.lua` 要官方的 `T`(testC),那是 C 侧调试外挂,不是 Lua 可见特性。
+另外三个留在外面,现在是**有明确理由**而不是「实测为空」:`verybig.lua` 要 `os.tmpname`/`io.output`/`io.close`/`os.remove` 才能到它的 >64k 载荷 —— 四个都在 io 对象模型豁免里,即它卡在一个**刻意的不实现**上;`code.lua` 与 `checktable.lua` 要官方的 `T`(testC),那是 C 侧的调试扩展,不是 Lua 可见特性。
 
 **教训 4 要补一句**:我把「这个测试有没有在做事」的测量结果,当成了**文件的属性**,而它其实是**(文件,我们实现了什么)这一对**的属性。「这个测试有没有在做事」与「要让它做事需要什么」是两个问题,我只答了第一个。
 
