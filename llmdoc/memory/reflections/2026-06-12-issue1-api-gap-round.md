@@ -20,7 +20,7 @@ pin 表把宿主长持的 GCRef 接入 GC 根;③ `cb6e1ae` feat——`Register/
 
 - 预期:issue 字面已框定「不暴露表/函数/userdata」,补四类型标量即可关闭。
 - 实际:**字面承诺无法关闭 issue 描述的真实场景**——pineapple 用法需要
-  `GetGlobal` 取出 function 与 `Call(fn)`,标量四类型 + 不暴露函数 = drop-in 闭环断。
+  `GetGlobal` 取出 function 与 `Call(fn)`,标量四类型 + 不暴露函数 = drop-in 闭环就断了。
   从 issue 字面回溯到 `docs/design/p1-interpreter/11-embedding-arena-abi.md` §7.1/§9.1
   + `embedding-contract.md` 设计承诺源,发现完整 per-item 子集 + drop-in 形式对标
   早已承诺,issue 边界与设计承诺、与 issue 自己描述的业务场景三者**互相不自洽**。
@@ -50,9 +50,9 @@ pin 表把宿主长持的 GCRef 接入 GC 根;③ `cb6e1ae` feat——`Register/
 **触发场景**:接到一个「看起来很小」的 issue,issue 自己框定了某些「不做」的边界
 (尤其是「为节制范围」型 issue:补几个标量、不暴露复杂类型、只补单点 API)时。
 
-issue #1 字面补 SetGlobal/GetGlobal 解锁不了 pineapple 真用法:
+issue #1 字面补 SetGlobal/GetGlobal 解锁不了 pineapple 真实用法:
 `L.GetGlobal("f")` 拿不到 function → `L.CallByParam(fn)` 无等价物 → 整个 drop-in
-闭环断。issue 提交者**只是没想清整个调用链**——这是 issue 字面边界与 issue 自己
+闭环就断了。issue 提交者**只是没想清整个调用链**——这是 issue 字面边界与 issue 自己
 描述的业务场景不自洽的常见根因。
 
 处理动作三步:① 从 issue 字面 → 回到设计承诺源(本例 §7.1/§9.1 与
@@ -73,7 +73,7 @@ issue #1 字面补 SetGlobal/GetGlobal 解锁不了 pineapple 真用法:
 当公共面暴露 first-class function value 给宿主 Go 端持有时,GCRef 必须当 GC 根
 遍历,否则 UAF 链条:用户 `GetGlobal("f")` 取出 fn → SetGlobal("f", nil) 覆盖
 globals → 下一次 GC 回收槽位 → freelist 复用槽位 → 用户用旧 fn Value 调用 = UAF
-或串台。
+或误用到别的对象。
 
 解法:State 加 `pinnedRefs []GCRef` + `freePins []uint32`(复用空闲槽,与
 `hostFnRegistry` 同形式),经 `visitExtraRefs` 接 GC 根(已有 `ExtraRefs` 扩展点,
@@ -122,7 +122,7 @@ instead」——既自解释也跟实现状态解耦,实现演进时不影响消
 
 **与官方套轮 errors.lua 负断言的关系**:官方套轮反思讲的是「错误消息**该有什么
 不该有什么**由官方测试套用负断言锁定」,本条讲的是「错误消息**不该带什么内部
-信息**」——两者都是「消息内容质量」维度,但前者由测试套门禁,后者目前只能靠
+信息**」——两者都是「消息内容质量」维度,但前者由测试套强制检查,后者目前只能靠
 评审/review 抓。
 
 ## 附带短评:公共主库零外部依赖纪律(`d1ff096`)
@@ -145,8 +145,8 @@ instead」——既自解释也跟实现状态解耦,实现演进时不影响消
   ② 公共面暴露 first-class GCRef 必备 GC 根机制;③ 单域提交的物理重组手法;
   ④ 错误消息稳定语义纪律——四条同属「公共 API 增量交付」一个工作流,样本已够。
 - `reference/embedding-contract.md` 已同步 per-item drop-in 子集状态,但「宿主长持
-  GCRef 必须接根」的设计契约(11 §6 句柄表)未在该篇显式陈述,只在实现里有 pin 表;
-  使用者(尤其后续 P2+ 扩展 API 表面者)难以从契约文档看到这条不变式。
+  GCRef 必须接根」的设计约定(11 §6 句柄表)未在该篇显式陈述,只在实现里有 pin 表;
+  使用者(尤其后续 P2+ 扩展 API 表面者)难以从约定文档看到这条不变式。
 - engineering.md 工程纪律未涵盖「公共主库零外部 require」承诺——benchmarks 子
   模块拆分是现成实例,但承诺本身无挂靠点。
 
@@ -158,21 +158,21 @@ instead」——既自解释也跟实现状态解耦,实现演进时不影响消
   补 stdlib 时都会反复走同一流程,立项收益高。可与官方套轮 Promotion 候选的
   「性能优化工作流」guide 平行立项。
 - **回填设计文档(并入 doc-gaps 既有清单,recorder 执行)**:`embedding-contract`
-  增补「宿主长持 GCRef 接根契约」条款(教训 2),与既有「内存复用配套清单」
+  增补「宿主长持 GCRef 接根约定」条款(教训 2),与既有「内存复用配套清单」
   (长稳轮)的对偶面,引 pin 表实现为反例参照——这条是 API 表面扩展时的不变式,
   须文档显式承诺,不应留在实现注释里。
 - **`reference/` 候选(暂留 memory 观察)**:公共面错误消息的「稳定语义」措辞规范
   (不带 M 编号 / commit hash / 模块名 / 时态承诺)——一句话级,先在 memory 观察
   是否复发后再决定升 reference。
 - **engineering.md 增补(可选)**:公共主库「零外部 require」承诺与 benchmark/
-  test-only 依赖拆子模块手法——一句一例,与既有「-race 硬门禁」「oracle 供给」等
+  test-only 依赖拆子模块手法——一句一例,与既有「-race 强制检查」「oracle 供给」等
   工程承诺并列。
 
 ## 后续行动
 
 - 评估「公共 API 增量交付工作流」guide 立项(教训 1+3+4 聚合),与官方套轮的
   「性能优化工作流」guide 同批考虑。
-- recorder 把「宿主长持 GCRef 接根契约」登记进 doc-gaps 回填待办,落入
+- recorder 把「宿主长持 GCRef 接根约定」登记进 doc-gaps 回填待办,写进
   `embedding-contract.md` 或 `11-embedding-arena-abi.md` §6 增补。
 - 后续 P2+ 任何扩展宿主 ABI 表面 / 新增公共 API 的提交,先过教训 1 的三角验证
   (issue 字面 / 设计承诺源 / 真实驱动场景),三者不自洽时 AskUserQuestion 定下来;

@@ -6,8 +6,8 @@ description: >
   家族 10 例的死亡签名全是 "exit status 2"——这是 Go runtime 自身 fatal 的
   退出码(OS OOM killer 的 SIGKILL 会报 "signal: killed"),worker 死时几乎
   一定打印了完整栈迹;而 internal/fuzz 起 worker 时 cmd.Stderr 留 nil,
-  os/exec 把它接到 /dev/null——尸检报告每次都写了,每次都被扔掉。问题性质
-  从「查不到死因」变成「输出没接住」。交付两个机制:A 尸检(TestMain 检测
+  os/exec 把它接到 /dev/null——崩溃栈迹每次都写了,每次都被扔掉。问题性质
+  从「查不到死因」变成「输出没接住」。交付两个机制:A 崩溃栈迹(TestMain 检测
   -test.fuzzworker,把 fd 2 dup 到 fuzz-forensics/worker-<pid>-stderr.log,
   合成 fatal 探针验证栈迹确实进了日志)+ B 飞行记录仪(每次 fuzz 回调把
   seq+时间戳+target+输入以单次 WriteAt 覆盖写进定长 8KiB per-PID 记录,恢复
@@ -53,18 +53,18 @@ concat storm 家族的 nightly fuzz worker 静默死亡已累计 10 例,横跨 8
    terminated unexpectedly: exit status 2`。exit status 2 是 Go runtime
    自身 fatal(panic / fatal error)的退出码;若是 OS OOM killer 的
    SIGKILL,coordinator 会报 `signal: killed`。也就是说 worker 死的时候
-   几乎一定打印了完整栈迹——死因不是「无声」,是有一份完整的尸检报告。
+   几乎一定打印了完整栈迹——死因不是「无声」,是有一份完整的崩溃栈迹。
 2. **子进程的 stdio 接线**:查 internal/fuzz 源码,coordinator 用
    `exec.Command` 起 worker 时 `cmd.Stderr` 留 nil,os/exec 把它接到
-   /dev/null——**尸检报告每次都写了,每次都被扔掉**。
+   /dev/null——**崩溃栈迹每次都写了,每次都被扔掉**。
 
 这两步(exit 方式分类 + stdio 接线检查)各只要几分钟,却解开了 8 天
 10 例的僵局。此前多轮都在「七角度复现矩阵」「GOMEMLIMIT 内存限制」上
 打转,没有一轮查过 exit status 2 的语义——最便宜的检查被排在了最后,
 与 [[unreproducible-crasher-triage]] 「第一步永远是版本核对」教训的
-结构一样:先做几分钟量级的分类检查,再撒几十分钟量级的矩阵。
+结构一样:先做几分钟量级的分类检查,再跑几十分钟量级的矩阵。
 
-### 机制 A(尸检):接住 worker 的 stderr
+### 机制 A(崩溃栈迹):接住 worker 的 stderr
 
 根包新增 `fuzz_forensics_test.go` 的 TestMain,检测 `os.Args` 里的
 `-test.fuzzworker`;worker 模式下把 fd 2 dup 到
@@ -81,7 +81,7 @@ darwin 用 `Dup2`,其它平台静默降级。
 ### 机制 B(飞行记录仪):恢复真正在飞的输入
 
 每次 fuzz 回调开头,把 seq + 时间戳 + target + 输入用单次 `WriteAt`
-覆盖写进定长 8KiB 的 per-PID 记录文件。关键动机:不撞崩的 mutation
+覆盖写进定长 8KiB 的 per-PID 记录文件。关键动机:没有导致崩溃的 mutation
 永远不会写进任何 corpus,而 minimized 输入又屡次被证明不是真凶
 (guide 已记录:重放干净更可能因为真实压力来自 parallel worker 叠加
 峰值或 minimization 之前的变体)——飞行记录是恢复「进程死亡时刻真正
@@ -90,7 +90,7 @@ darwin 用 `Dup2`,其它平台静默降级。
 ### 配套
 
 - `scripts/go-fuzz.sh` 每个 target 先清 `fuzz-forensics/`(防跨 target
-  误归因);静默死亡失败时,把长出 header 的 worker stderr 日志 + 全部
+  误归因);静默死亡失败时,把内容多于 header 的 worker stderr 日志 + 全部
   飞行记录 dump 进日志流;
 - nightly workflow 的失败 artifact 加 `**/fuzz-forensics/**`;
 - `.gitignore` 加该目录。
@@ -104,7 +104,7 @@ darwin 用 `Dup2`,其它平台静默降级。
 
 1. **退出方式分类**:exit code 还是 signal?exit status 2 = Go runtime
    自身 fatal(有栈迹);`signal: killed` = 外部 kill(真的无声)。
-   这一步直接决定「有没有尸检报告可找」;
+   这一步直接决定「有没有崩溃栈迹可找」;
 2. **子进程 stdio 接线**:如果判定有输出,查它被接到了哪里——本例
    internal/fuzz 的 `cmd.Stderr` 是 nil,输出进了 /dev/null。
 
@@ -113,7 +113,7 @@ darwin 用 `Dup2`,其它平台静默降级。
 每次都产生了,只是没被接住——问题类别判断错了,后续投资全部错位。
 
 **How to apply**:fuzz / CI / 生产报「进程无声消失」时,第一反应不是
-撒复现矩阵,而是:① 死亡消息里的退出方式是什么语义;② 若有输出,
+跑复现矩阵,而是:① 死亡消息里的退出方式是什么语义;② 若有输出,
 子进程的 stdout/stderr 被父进程接到了哪里。两步做完再决定要不要复现。
 
 ### 教训 2:取证设施必须 best-effort,且不能给被诊断的问题添加压力
@@ -148,7 +148,7 @@ churn)修掉(`6a189eb`)→ 增量 APPROVE。review 一轮过,无返工。
   的处置流程——它直接改变了该 guide「七角度复现矩阵」的优先级排序,
   exit-code 语义检查应该排在最前(与既有「第一步永远是版本核对」同
   量级,都是几分钟排除最便宜解释)。样本虽是首次,但它一步解开了
-  10 例僵局,信号强度足够,建议本轮就提升,由 recorder 决定措辞与落点。
+  10 例僵局,信号强度足够,建议本轮就提升,由 recorder 决定措辞与写在哪里。
 - **机制 A / B 的存在**:应写进该 guide 的诊断硬化层级(第三层),
   取代此前「harness 按 seed 记 wall-clock」的构想——飞行记录仪是它的
   超集(不止记「跑到了哪个 seed」,还记完整输入与时间戳)。guide 当前
@@ -160,8 +160,8 @@ churn)修掉(`6a189eb`)→ 增量 APPROVE。review 一轮过,无返工。
 
 - fuzz / CI / 生产报「进程无声消失 / hung or terminated unexpectedly」
   时(教训 1:先分类退出方式——exit code 语义 vs signal,再查子进程
-  stdio 接线,最后才撒复现矩阵);
-- 给低频复发问题设计诊断硬化时(机制 B 的动机:不撞崩的输入不进
+  stdio 接线,最后才跑复现矩阵);
+- 给低频复发问题设计诊断硬化时(机制 B 的动机:没导致崩溃的输入不进
   corpus,minimized 输入未必是真凶,「在飞输入」只能靠飞行记录恢复;
   定长覆盖写避免 I/O 累积);
 - 给 fuzz / 测试基础设施加任何常驻观测代码时(教训 2:错误全吞、
@@ -188,22 +188,22 @@ churn)修掉(`6a189eb`)→ 增量 APPROVE。review 一轮过,无返工。
 全部属实并已修复(commit 007b1ab):
 
 1. **记录容量小于输入上限**:飞行记录定长 8KiB,但三个 target 的长度
-   门在 16KiB——8 到 16KiB 之间的合法 mutation 若是真凶,记录里只剩
+   检查在 16KiB——8 到 16KiB 之间的合法 mutation 若是真凶,记录里只剩
    前缀,尾部永久丢失,而这恰是「恢复不进 corpus 的在飞输入」这一核心
    用途的破坏。修复:容量提到 20KiB(最大 gated 输入 + header),
-   recordFuzzExec 移到各 target 长度/NUL 门之后(被 skip 的输入不执行
+   recordFuzzExec 移到各 target 长度/NUL 检查之后(被 skip 的输入不执行
    、不可能是真凶),并加 TestFlightRecordMaxInputRecoverable 断言
    16KiB 任意字节输入逐字节可恢复。
 2. **热路径分配污染被观测对象**:fmt + time.Format 路径每次执行分配
    88 B——上一轮 review 已抓过一次 buffer 分配,这轮又在格式化路径
    抓到残余。改用 strconv.Append* / Time.AppendFormat 全程写入复用
-   buffer,TestFlightRecordZeroAllocs 用 AllocsPerRun 钉在 0。
+   buffer,TestFlightRecordZeroAllocs 用 AllocsPerRun 固定为 0。
 3. **跨调用清理删证据**:nightly p1 job 先跑 native fuzz 再跑 oracle
    fuzz(always()),artifact 上传在两者之后;共享目录每次调用无条件
-   rm -rf,oracle 调用会把 native 失败的尸检文件先删掉。修复:每个
+   rm -rf,oracle 调用会把 native 失败的栈迹文件先删掉。修复:每个
    target 独立目录 fuzz-forensics/<FuzzTarget>/(经
    WANGSHU_FUZZ_FORENSICS_DIR 传入),只清自己的;顺带修掉 dump 路径
-   的 sed/grep 文本过滤(会腐蚀 NUL/非 UTF-8 字节——飞行记录里可能是
+   的 sed/grep 文本过滤(会损坏 NUL/非 UTF-8 字节——飞行记录里可能是
    唯一一份真凶输入),改为只打印可打印的 header 行、指向随 artifact
    上传的原始文件。
 
@@ -211,6 +211,6 @@ churn)修掉(`6a189eb`)→ 增量 APPROVE。review 一轮过,无返工。
 丢证据」——容量边界(能装下最大的证据吗)、观测扰动(会不会改变被观
 测对象)、生命周期(证据活得过收集流程吗)。三条 finding 全是这三问
 的实例;设计取证/诊断类设施时按这三问自查,能在 review 前就消掉这类
-缺陷。另外「被 skip 的输入不可能是真凶,所以记录点放在门之后」这个
+缺陷。另外「被 skip 的输入不可能是真凶,所以记录点放在检查之后」这个
 论证方向值得记住:取证点的正确位置由「什么能杀死进程」决定,不是
 「越早越全」。

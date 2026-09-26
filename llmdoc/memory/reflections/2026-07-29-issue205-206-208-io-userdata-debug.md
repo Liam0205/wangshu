@@ -3,7 +3,7 @@ name: 2026-07-29-issue205-206-208-io-userdata-debug
 description: >
   三个 issue(#205 / #206 / #208)的处理轮,分支 `fix/205-206-208-io-stack`,3 个 commit。
   **#206**:`string.byte` 完全没有 `lua_checkstack` 上限,`string.byte(string.rep("a",9000),1,8000)`
-  返回 8000 个值而 PUC 抬错;上限与 `unpack` 一样是 `8000 - nargs`,但**消息要包一层**——
+  返回 8000 个值而 PUC 报错;上限与 `unpack` 一样是 `8000 - nargs`,但**消息要包一层**——
   `luaL_checkstack` 把调用者给的文本套成 `stack overflow (%s)`,所以 PUC 输出的是
   `stack overflow (string slice too long)` 而不是裸字符串,我第一版上限对了、文本错了,65 个
   oracle 用例里仍有 12 个分歧。**#208** 已经被上一轮修掉了:它的 fuzz run 跑在 `cbd0512` 上,
@@ -50,9 +50,9 @@ nightly 自动开的 go-fuzz crasher,#205 是上一轮(`fix/201-203-unpack-and-s
 
 ### 1. #206 `string.byte` 缺 `lua_checkstack` 上限,而且消息被包了一层
 
-`string.byte(string.rep("a",9000),1,8000)` 返回了 8000 个值,而 PUC 抬错。PUC 的 `str_byte` 调
+`string.byte(string.rep("a",9000),1,8000)` 返回了 8000 个值,而 PUC 报错。PUC 的 `str_byte` 调
 `luaL_checkstack(L, n, "string slice too long")`,所以上限与 `unpack` 一样是 `8000 - nargs`
-(三参数调用 7997 成功、7998 抬错)——这一条是上一轮 #201 已经量清楚的机制在另一个函数上的复用。
+(三参数调用 7997 成功、7998 报错)——这一条是上一轮 #201 已经量清楚的机制在另一个函数上的复用。
 
 **新东西在消息上**:`luaL_checkstack` 会把调用者给的文本**包一层**成 `"stack overflow (%s)"`,
 所以 PUC 输出的是 `stack overflow (string slice too long)`,不是裸的 `string slice too long`。
@@ -72,7 +72,7 @@ nightly 自动开的 go-fuzz crasher,#205 是上一轮(`fix/201-203-unpack-and-s
 防线留在 corpus 里。
 
 这是上一轮教训 1(同一写法第 N 次被 fuzzer 开成 issue 时该改的是被接受的区间,不是再挪一个
-seed)的一个**正向结算**:区间改窄之后,同族的下一个 crasher 不需要任何新动作就消失了。
+seed)的一个**正面例证**:区间改窄之后,同族的下一个 crasher 不需要任何新动作就消失了。
 
 ### 3. #205 三个标准流 + `io.read` + `debug` 子集
 
@@ -114,7 +114,7 @@ userdata 也不例外。现在加了 `State.NewUserdata` 把这一步固定下�
 所以 level 1 是**最内层** cis 帧,直接减 level 会多跳一帧、让最常见的 `getinfo(1)` 返回 nil。
 
 仍然缺的是需要真实文件的部分:`io.open` / `io.popen` / `io.tmpfile` / `f:seek`。`io.lines(filename)`
-因此会抬错而不是静默返回一个空迭代器。
+因此会报错而不是静默返回一个空迭代器。
 
 ### 4. harness 侧:新增的写路径必须接进捕获累加器
 
@@ -123,7 +123,7 @@ userdata 也不例外。现在加了 `State.NewUserdata` 把这一步固定下�
 但比较实际上已经不覆盖这条路径写出的任何东西了。**这是「因为错误的原因而变绿」,与一条掩盖了
 整类输入的 skip 是同一种失效方式。** 修法是在 `internal/oracle/prelude.go` 里把 file-handle 的
 `:write` 也接到 `io.write` 用的那个累加器上(`io.stderr` 的写入丢弃而不累积,与 harness 别处
-只比 stdout 的口径一致)。
+只比 stdout 的做法一致)。
 
 我第一版这个 wrapper 里调了一个 prelude 中**并不存在**的 helper `__ts`,于是每个碰到 wrapper
 的脚本都死在 `attempt to call global '__ts'`、捕获输出变成**空**——而比较报的是「一致」,因为
@@ -132,7 +132,7 @@ verdict 与实际输出、而不是看 diff 是否为空才发现的。
 
 ## 期望与实际
 
-- 期望:#206 是一条小口径上限修复;#208 要分诊;#205 是上一轮撤回后接着做。
+- 期望:#206 是一条小范围的上限修复;#208 要分诊;#205 是上一轮撤回后接着做。
 - 实际:#206 的上限公式一次就对,**卡住的是消息文本**(参照实现把它包了一层);#208 一行代码
   没改——它已经被上一轮的区间改动一起解决了;#205 的根因只有一行(漏了 `LinkSweep`),真正
   花时间的是 56 个探针逐条纠正我凭印象写下的四个细节,以及发现 `go test` 根本不给测试进程 stdin。
@@ -153,7 +153,7 @@ GC 里,而错误在分配处;而且它只在收集器真的跑起来时才暴露
 
 **How to apply**:给一个新对象类型加分配路径时,先读同一文件里已有的分配器,把它们**共有的
 每一步**都照做,并把新入口做成唯一入口(本轮 `State.NewUserdata`),让下一个人无法再跳过。
-判据:同族分配器里出现 N 次的动作就是契约,不是那几个函数各自的选择。
+判据:同族分配器里出现 N 次的动作就是约定,不是那几个函数各自的选择。
 
 ### 教训 2(`go test` 不转发 stdin,凡是读标准输入的功能都得用真实二进制验证)
 
@@ -205,13 +205,13 @@ API 就是新增一条绕过捕获的通道,而它的失效表现是**最安静�
 `luaL_checkstack` 把调用者给的文本包成 `stack overflow (%s)`。我照抄了裸文本,上限判断完全
 正确,12 个用例还在分歧。
 
-**Why**:C 侧抬错有两类入口:`luaL_error` 把给它的文本**直出**,而 `luaL_checkstack` /
+**Why**:C 侧报错有两类入口:`luaL_error` 把给它的文本**直出**,而 `luaL_checkstack` /
 `luaL_argerror` / `luaL_typerror` 这类会**再套一层格式**。源码里那一行看起来都是「一个字符串
-字面量」,差别在被谁消费。这是 [[cross-backend-semantic-fix-sweep]]「PUC 语义由 C 实现定义」
+字面量」,差别在于交给谁处理。这是 [[cross-backend-semantic-fix-sweep]]「PUC 语义由 C 实现定义」
 的又一个刻度:前面几个刻度讲**值**要顺着 C 的转换链推(`luaL_checkint` 的隐式两步)、讲**上限**
 的条件项可能读栈状态(`unpack` 减参数个数),本条讲**消息文本**也有一条包装链。
 
-**How to apply**:抄一条 PUC 错误消息时,去看它是经哪个 `luaL_*` 抬出来的,把那一层的格式串
+**How to apply**:抄一条 PUC 错误消息时,去看它是经哪个 `luaL_*` 抛出来的,把那一层的格式串
 一起抄;同族函数的公式一样不代表消息一样(`unpack` 与 `string.byte` 的上限公式相同、消息一个
 直出一个包一层)。
 
@@ -229,13 +229,13 @@ API 就是新增一条绕过捕获的通道,而它的失效表现是**最安静�
   「看 verdict 与实际输出,空输出与错误文本是红旗」这个可执行动作。
 - **教训 5** 已补进 [[cross-backend-semantic-fix-sweep]]「PUC 语义由 C 实现定义」节,作为
   该节第四个刻度(值的转换链 → 上限的条件项 → **消息的包装链**)。
-- 另外两处**正向结算**已就地补进对应 guide,不算新教训:① #208 是
+- 另外两处**正面例证**已就地补进对应 guide,不算新教训:① #208 是
   [[unreproducible-crasher-triage]]「第一步永远是版本核对」第一档的又一次命中,并且是上一轮
   「该改的是被接受的区间」的事后确认(区间改窄后同族的下一个 crasher 不需要任何新动作就消失,
   这本身就是那次改动改对了位置的信号);② #205 的根因只有一行,验证了
   [[prove-the-path-under-test]] §4.3b「卡在哪要具体到哪个约定」是可执行的——撤回时写下的那句
   「非 finalizer 路径创建 userdata 的分配与 rooting 约定」正好把下一轮的第一个动作指向了同族
-  分配器,已在该节补一段正向结算。
+  分配器,已在该节补一段正面例证。
 
 ## 触发场景
 
@@ -246,17 +246,17 @@ API 就是新增一条绕过捕获的通道,而它的失效表现是**最安静�
 - **给运行时加任何写外部世界的 API 之后**:同一轮把它接进差分 harness 的捕获,并用一个
   「新路径 + 老路径各写一段」的用例确认两段都在捕获结果里(教训 3)。
 - **差分比较报一致、而输出是空的或是错误文本时**:确认那不是两侧同样地坏掉(教训 4)。
-- **抄一条参照实现的错误消息时**:先看它是经哪个 `luaL_*` 抬出来的,`luaL_checkstack` /
+- **抄一条参照实现的错误消息时**:先看它是经哪个 `luaL_*` 抛出来的,`luaL_checkstack` /
   `luaL_argerror` 这类会再套一层格式(教训 5)。
 - **修一个与已修函数「公式相同」的兄弟函数时**:公式可以照抄,消息、默认值、参数校验各自
   独立核对一遍(#206 相对 #201 的关系)。
 
 ## 关联
 
-[[prove-the-path-under-test]](教训 2 落 §4.10、教训 3 落 §9.7、教训 4 落 §9.8;§3 harness
+[[prove-the-path-under-test]](教训 2 写进 §4.10、教训 3 写进 §9.7、教训 4 写进 §9.8;§3 harness
 自身失效的假绿、§4.2 无执行体的豁免、§4.6 skip 随 bug 撤、§4.5 量参照实现的边界) ·
-[[design-claims-vs-codebase-physics]](教训 1 落 §4;GC 根可达性那一节的另一侧) ·
-[[cross-backend-semantic-fix-sweep]](教训 5 落「PUC 语义由 C 实现定义」节第四刻度) ·
+[[design-claims-vs-codebase-physics]](教训 1 写进 §4;GC 根可达性那一节的另一侧) ·
+[[cross-backend-semantic-fix-sweep]](教训 5 写进「PUC 语义由 C 实现定义」节第四刻度) ·
 [[2026-07-28-issue201-203-unpack-skip-thresholds]](上一轮:`io.stdout` 在那里被撤回并开成
 #205、`unpack` 的 `8000 - nargs` 上限、移位区间的 skip 降到 2^20 使 #208 不需新动作) ·
 [[unreproducible-crasher-triage]](#208 的分诊:先核对 fuzz run 的 commit 与当前 HEAD) ·

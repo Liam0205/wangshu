@@ -18,9 +18,9 @@ metadata:
 
 解释器对此免疫,因为它每次访问都经 `th.slot(i)`(形式 Y)现算地址;但 gibbous 的 `$base` 是个 **wazero local,函数中途无法自刷新**——这正是 VS0「形式 Y 别名」发现的 gibbous 帧维度对偶(见 `feedback_arena_view_aliasing` / `implementation-progress` §VS0-c)。设计稿假设值栈不重定位,从未触及这点。
 
-**解法**:`h_call`/`h_tailcall` 返回**当前重算的新 base**(i64;负哨兵表错误)而非 status;CALL 翻译做 `local.tee` → 若负则 `return 1`(错误冒泡)→ 否则 `local.set $base` 刷新。用插桩测试证实雷区真实:`helper(100)` 深递归把 stackCap 从 64 撑到 256(段确实搬了家),GC 压力 + 深递归 e2e 会暴露任何漏刷新。
+**解法**:`h_call`/`h_tailcall` 返回**当前重算的新 base**(i64;负哨兵表错误)而非 status;CALL 翻译做 `local.tee` → 若负则 `return 1`(错误冒泡)→ 否则 `local.set $base` 刷新。用插桩测试证实这个隐患真实存在:`helper(100)` 深递归把 stackCap 从 64 撑到 256(段确实搬了家),GC 压力 + 深递归 e2e 会暴露任何漏刷新。
 
-**Why**:抽象调用协议(「传 base、回 status」)是**语义契约**,不携带**物理不变式**。本码库的物理事实是「值栈与对象世界共享自管 arena,任意分配触发的 grow 会搬动段」——这条不变式不在设计稿的视野里,却让设计稿画的「固定 token」在完成时变成悬垂指针。解释器恰好因「每次现算」碰巧免疫,反而掩盖了危险:照搬解释器「能跑」不等于 gibbous「能跑」,因为二者刷新地址的能力不同(一个每访问现算,一个入口锁定)。
+**Why**:抽象调用协议(「传 base、回 status」)是**语义约定**,不携带**物理不变式**。本码库的物理事实是「值栈与对象世界共享自管 arena,任意分配触发的 grow 会搬动段」——这条不变式不在设计稿的视野里,却让设计稿画的「固定 token」在完成时变成悬垂指针。解释器恰好因「每次现算」碰巧免疫,反而掩盖了危险:照搬解释器「能跑」不等于 gibbous「能跑」,因为二者刷新地址的能力不同(一个每访问现算,一个入口锁定)。
 
 **How to apply**:当设计稿把一个**热路径值跨层画成固定 token**(base/指针/句柄/视图)时,实现前别照搬——先把它对照**本码库的内存物理**(这里:自管 arena + 可重定位段)逐条过:这个 token 在它存活的窗口内,底层存储会不会被搬动/失效?谁有能力刷新它、在什么时机?gibbous 这类「入口锁定、中途不能自刷新」的载体,任何「跨层调用后恢复」的点都是潜在失效点,必须由被调侧返回时回传刷新后的值。与 [[p3-pw5-table-ic-round]] 教训 1、[[issue8-boundary-cost-round]] 教训 1 同家族(详见末尾 promotion 节)。
 
@@ -66,7 +66,7 @@ P3 不在编译期注入,故 `AnalyzeProto` 把每个 proto 标 `NotCompilable`�
 
 ## 促成的稳定文档更新
 
-- `docs/design/p3-wasm-tier/implementation-progress.md`:PW6 行 ✅ + §8 PW6 对账(base 刷新解 growStack 段重定位 UAF,记 `$base` 是可写 wasm param 中途无法自刷新、`h_call` 返回 i64 新 base/负哨兵的论证)+ RW-1/RW-8 回填 + VS0-c 形式 Y 雷区 gibbous 帧对偶条目。
+- `docs/design/p3-wasm-tier/implementation-progress.md`:PW6 行 ✅ + §8 PW6 对账(base 刷新解 growStack 段重定位 UAF,记 `$base` 是可写 wasm param 中途无法自刷新、`h_call` 返回 i64 新 base/负哨兵的论证)+ RW-1/RW-8 回填 + VS0-c 形式 Y 隐患的 gibbous 帧对偶条目。
 
 ## promotion 候选
 

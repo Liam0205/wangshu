@@ -33,7 +33,7 @@ issue #67 auto-mode 覆盖轮(PR #75,详见 [[2026-07-07-issue67-auto-mode-cover
 
 ### 3. #81 — nightly workflow eval 引号剥离(纯 CI 配置 bug,PR #75 自己引入)
 
-nightly auto-mode leg 用 `eval` 包一条内联加引号的 `-tags` 命令;`eval` 会重新解析命令行,剥掉引号——`"wangshu_p3 wangshu_profile"` 被拆成 `-tags` 值 `wangshu_p3` + 一个多余的位置参数 `wangshu_profile`,`go test` 报 `package wangshu_profile is not in std`。修复:去掉 `eval`(该 step 已由 `matrix.tags != ''` 门控,直接内联环境变量赋值即可,与 PR-gate `ci.yml` 调用带 tag `go test` 的写法字节一致)。p1 逃过一劫是因为它的空 tags 从未触达这个 step 的 matrix 守卫。
+nightly auto-mode leg 用 `eval` 包一条内联加引号的 `-tags` 命令;`eval` 会重新解析命令行,剥掉引号——`"wangshu_p3 wangshu_profile"` 被拆成 `-tags` 值 `wangshu_p3` + 一个多余的位置参数 `wangshu_profile`,`go test` 报 `package wangshu_profile is not in std`。修复:去掉 `eval`(该 step 已由 `matrix.tags != ''` 条件控制,直接内联环境变量赋值即可,与 PR-gate `ci.yml` 调用带 tag `go test` 的写法字节一致)。p1 逃过一劫是因为它的空 tags 从未触达这个 step 的 matrix 守卫。
 
 ## 核心教训
 
@@ -43,12 +43,12 @@ nightly auto-mode leg 用 `eval` 包一条内联加引号的 `-tags` 命令;`eva
 
 ### 教训 2(design-claims-vs-codebase-physics §2 新实例):固定 token 跨调用边界存活,不同子系统各自撞同一颗雷
 
-#80(a)与 P3 PW6 的 `$base` UAF 是**同一条物理事实**在两个独立子系统里各自被撞中的第二个实例:
+#80(a)与 P3 PW6 的 `$base` UAF 是**同一条物理事实**在两个独立子系统里各自引发问题的第二个实例:
 
 - **PW6(P3 wasm 层,2026-06-14)**:`04-trampoline.md` 把 `$base`(wazero linear memory 字节偏移)画成 gibbous wasm 函数入口锁定、全程不变;`h_call` 深入更深 Lua 帧触发 `growStack` 重定位值栈段,返回后陈旧 `$base` 变悬垂指针。
 - **PR #83(P4 native 层,2026-07-08)**:`nativeCode.Run` 把入口捕获的 `base`(arena 字节偏移)当固定 token 传给每次 `RefreshJitCtxAddrs`;`enterLuaFrame → growStack` 同样重定位值栈段,入口 `base` 同样变悬垂。
 
-两次踩雷的物理基础完全相同(arena 段可被 grow 重定位,任何跨调用边界存活的固定偏移/token 都会失效),但发生在两个不同的加速层实现(wasm trampoline vs native codegen dispatcher)——**guide §2 判据「这个 token 在它存活的窗口内,底层存储会不会被搬动/失效?谁有能力刷新它?」在新子系统里必须重新逐条核对,不能因为 P3 已经踩过、P4 就自动免疫**。两个子系统的解法同构:被调侧/后续刷新点返回或重算一个新值(PW6 是 `h_call` 返回新 base;#80(a) 是 `RefreshJitCtxAddrs` 从活的线程状态重算),而不是信任入口一次性捕获的值。
+两次出问题的物理基础完全相同(arena 段可被 grow 重定位,任何跨调用边界存活的固定偏移/token 都会失效),但发生在两个不同的加速层实现(wasm trampoline vs native codegen dispatcher)——**guide §2 判据「这个 token 在它存活的窗口内,底层存储会不会被搬动/失效?谁有能力刷新它?」在新子系统里必须重新逐条核对,不能因为 P3 已经踩过、P4 就自动免疫**。两个子系统的解法同构:被调侧/后续刷新点返回或重算一个新值(PW6 是 `h_call` 返回新 base;#80(a) 是 `RefreshJitCtxAddrs` 从活的线程状态重算),而不是信任入口一次性捕获的值。
 
 **判据强化**:任何新增的加速层(下一个可能是 arm64 native tier 的类似入口捕获模式,或 P5 trace JIT)若存在「入口捕获一个 arena/栈偏移当 token 供整个执行期使用」的模式,必须在设计/实现阶段显式对照 §2 判据重核,不能假设「已有子系统修过所以这里没事」。
 
@@ -58,7 +58,7 @@ nightly auto-mode leg 用 `eval` 包一条内联加引号的 `-tags` 命令;`eva
 
 这与 [[backend-capability-vs-profitability]] 描述的「host 通道 vs 段内直调通道」二分(`FloorExempter` 那条:固定 Run 成本假设只对 host 通道成立,seg2seg 通道走另一套物理)是**同一个二分轴的另一个面**——那里是「host 通道的固定成本假设不适用于段内通道」(方向:host 假设 → 段内通道不能用),这里是「host 通道隐式提供的安全网(ensureStack)不适用于段内通道」(方向:host 提供的保障 → 段内通道必须自己补上)。两者共同指向一条更普遍的判据:**任何新增的"绕过 host 通道"的快路径(段内直调、inline 快路径、mmap 段内执行……),都必须显式列出 host 通道隐式提供的全部不变式/副作用/安全网,逐条判断段内快路径是否需要自己重新实现它们**——本轮 `valueStackEnd` 守卫正是这条判据的产物。
 
-首次样本暂留观察;若 P4 后续 op 扩面(如 #77 sqrt intrinsic)或 P5 trace JIT 再撞到「段内快路径漏了 host 路径的隐式保障」同族问题,建议并入 [[backend-capability-vs-profitability]] 作为该 guide 的「通道二分」新增一面,或独立立项。
+首次样本暂留观察;若 P4 后续 op 扩面(如 #77 sqrt intrinsic)或 P5 trace JIT 再遇到「段内快路径漏了 host 路径的隐式保障」同族问题,建议并入 [[backend-capability-vs-profitability]] 作为该 guide 的「通道二分」新增一面,或独立立项。
 
 ## 验证
 
@@ -72,7 +72,7 @@ nightly auto-mode leg 用 `eval` 包一条内联加引号的 `-tags` 命令;`eva
 ## promotion 决策
 
 - 教训 1:确认 [[prove-the-path-under-test]] §5 既有断言(第四次验证),**不新增分支**,本反思记录即可。
-- 教训 2:[[design-claims-vs-codebase-physics]] §2 第二独立实例(跨子系统复现同一物理雷区),**本轮直接 promote**——已在该 guide 补一条实例引用(见下)。
+- 教训 2:[[design-claims-vs-codebase-physics]] §2 第二独立实例(跨子系统复现同一物理隐患),**本轮直接 promote**——已在该 guide 补一条实例引用(见下)。
 - 教训 3:首次样本,暂留观察;若再现候选并入 [[backend-capability-vs-profitability]] 或独立立项。
 
 ## 触发场景
@@ -83,4 +83,4 @@ nightly auto-mode leg 用 `eval` 包一条内联加引号的 `-tags` 命令;`eva
 
 ## 关联
 
-[[design-claims-vs-codebase-physics]](§2 新实例)· [[backend-capability-vs-profitability]](通道二分对偶面,教训 3 候选落点)· [[prove-the-path-under-test]](§5 第四次验证)· [[2026-07-07-issue67-auto-mode-coverage-round]](本轮的直接前序:PR #75 auto-mode 覆盖轮)· [[2026-06-14-p3-pw6-crosslayer-call-round]](教训 2 的第一实例来源:P3 `$base` UAF)· issue #78 · issue #80 · issue #81 · `internal/crescent/gibbous_host_p4.go` · `internal/gibbous/jit/jitcontext.go` · `internal/gibbous/jit/peroptranslator/emit_ops_amd64.go` · `internal/gibbous/jit/peroptranslator/translator_native_arm64.go`
+[[design-claims-vs-codebase-physics]](§2 新实例)· [[backend-capability-vs-profitability]](通道二分对偶面,教训 3 候选写入位置)· [[prove-the-path-under-test]](§5 第四次验证)· [[2026-07-07-issue67-auto-mode-coverage-round]](本轮的直接前序:PR #75 auto-mode 覆盖轮)· [[2026-06-14-p3-pw6-crosslayer-call-round]](教训 2 的第一实例来源:P3 `$base` UAF)· issue #78 · issue #80 · issue #81 · `internal/crescent/gibbous_host_p4.go` · `internal/gibbous/jit/jitcontext.go` · `internal/gibbous/jit/peroptranslator/emit_ops_amd64.go` · `internal/gibbous/jit/peroptranslator/translator_native_arm64.go`

@@ -1,6 +1,6 @@
 ---
 name: issue37-arm64-exit-reason-port-round
-description: issue #37 / #40 阶段 2,把 P4 native 的 exit-reason 协议从 amd64 移植到 arm64,在 darwin/arm64 真机(Apple M5 Pro)单会话完成,分支 `feat/p4-arm64-exit-reason` 8 commits(677ceb2..a4993cc)。承接上一轮 stopbleed 收尾时预写在 issue #37 评论里的 7 步实施顺序,本轮开工时 `.llmdoc-tmp` 调查报告已丢失但 issue 评论落点清单完整存活,按其执行零返工——重要移植前调查结论应写进持久渠道(issue 评论)而非只留临时缓存。核心技术教训:移植不是复制,三个实例证明硬件语义差异要求逐 op 重判——(a) arm64 UNM 加的 -NaN e2e 探针抓出 canonNaN sign-flip 变 value.Nil 位模式的静默错果,回查发现 amd64 emitUNM 有一样的既有 bug(移植轮给旧 arch 挖 bug);(b) 沿用旧 arm64 scaffold 的有符号整数比较条件码在 FCMPE unordered(NaN)时错判,换 FP 安全族 MI/PL/LS/HI 后正确,旧 scaffold 从未被 NaN 输入测过;(c) arm64 不需要 arith 结果 NaN guard(AArch64 default NaN 是正的且传播保留输入)而 amd64 SSE 需要,同一 guard 两 arch 一必需一多余不能机械镜像。另有 arch 差异带来简化机会(FCMPE unordered 单跳替代双跳、表槽地址寄存器复用免重算)、e2e 探针载体须避开无关 op 噪声(GETUPVAL 往返污染 inline 命中计数)、调试代码清理误用 `git checkout` 整文件回退未提交工作(教训:精确反向编辑或先 stash)、每步独立 commit + 每步 fuzz 的节奏在移植轮工作良好、HelperCompareSlow 首次出现 dispatcher 向段内回传数据的双向通道形式。
+description: issue #37 / #40 阶段 2,把 P4 native 的 exit-reason 协议从 amd64 移植到 arm64,在 darwin/arm64 真机(Apple M5 Pro)单会话完成,分支 `feat/p4-arm64-exit-reason` 8 commits(677ceb2..a4993cc)。承接上一轮 stopbleed 收尾时预写在 issue #37 评论里的 7 步实施顺序,本轮开工时 `.llmdoc-tmp` 调查报告已丢失但 issue 评论落点清单完整存活,按其执行零返工——重要移植前调查结论应写进持久渠道(issue 评论)而非只留临时缓存。核心技术教训:移植不是复制,三个实例证明硬件语义差异要求逐 op 重判——(a) arm64 UNM 加的 -NaN e2e 探针抓出 canonNaN sign-flip 变 value.Nil 位模式的静默错误结果,回查发现 amd64 emitUNM 有一样的既有 bug(移植轮给旧 arch 挖 bug);(b) 沿用旧 arm64 scaffold 的有符号整数比较条件码在 FCMPE unordered(NaN)时错判,换 FP 安全族 MI/PL/LS/HI 后正确,旧 scaffold 从未被 NaN 输入测过;(c) arm64 不需要 arith 结果 NaN guard(AArch64 default NaN 是正的且传播保留输入)而 amd64 SSE 需要,同一 guard 两 arch 一必需一多余不能机械镜像。另有 arch 差异带来简化机会(FCMPE unordered 单跳替代双跳、表槽地址寄存器复用免重算)、e2e 探针载体须避开无关 op 噪声(GETUPVAL 往返污染 inline 命中计数)、调试代码清理误用 `git checkout` 整文件回退未提交工作(教训:精确反向编辑或先 stash)、每步独立 commit + 每步 fuzz 的节奏在移植轮工作良好、HelperCompareSlow 首次出现 dispatcher 向段内回传数据的双向通道形式。
 metadata:
   type: reflection
   date: 2026-07-03
@@ -81,7 +81,7 @@ metadata:
 
 ## 验证
 
-- 8 commits 在 `feat/p4-arm64-exit-reason` 分支(`677ceb2` dispatcher 骨架 + GETUPVAL/SETUPVAL → `aad27bd` CALL 密度门 → `c83db6b` GETGLOBAL/SETGLOBAL → `634b1a3` GETTABLE/SETTABLE/NEWTABLE → `5751ffa` UNM → `f7d117d` 多值 RETURN → `508028a` UNM NaN bug 双 arch 修复 → `f8dcc41` arith/LT/LE 恢复 → `a4993cc` README + progress doc 收口)。
+- 8 commits 在 `feat/p4-arm64-exit-reason` 分支(`677ceb2` dispatcher 骨架 + GETUPVAL/SETUPVAL → `aad27bd` CALL 密度门 → `c83db6b` GETGLOBAL/SETGLOBAL → `634b1a3` GETTABLE/SETTABLE/NEWTABLE → `5751ffa` UNM → `f7d117d` 多值 RETURN → `508028a` UNM NaN bug 双 arch 修复 → `f8dcc41` arith/LT/LE 恢复 → `a4993cc` README + progress doc 收尾)。
 - 全测试套 + 每步 fuzz(`FuzzP4ForceAllPromote -parallel=4`,60-150s)+ difftest / conformance / luasuite 全绿,对照官方 5.1.5 oracle(darwin/arm64;oracle 从源码编 lua-5.1.5 到 `/tmp` + PATH override)。
 - bench(Apple M5 Pro,go1.26.4,`-benchtime=2s -count=3` median,2026-07-03):HeavyArith 25.3ms vs P3 51.3ms(2.03×)/ HeavyFloatloop 25.3ms vs P3 62.4ms(2.47×)/ realworld 五本(fib/binary-trees/spectral-norm/n-body/fannkuch)全部 ≥ P3(fannkuch 与 HeavyRecursion 打平在噪声内)。
 - README 中英双语 darwin/arm64 perf 表已更新;`docs/design/p4-method-jit/implementation-progress.md` §14.6 已写入本轮技术对账。

@@ -49,8 +49,8 @@ metadata:
 
 ## 任务
 
-nightly 在两个不同的 target 上自动开了两个 crasher issue：#228 来自 p1 腿的 `FuzzOracleDiff`，
-#229 来自 p4 腿的 `FuzzP4ForceAllPromote`。
+nightly 在两个不同的 target 上自动开了两个 crasher issue：#228 来自 p1 任务的 `FuzzOracleDiff`，
+#229 来自 p4 任务的 `FuzzP4ForceAllPromote`。
 
 ## 本轮做了什么
 
@@ -280,8 +280,8 @@ peroptranslator 里那段 `NEWTABLE head + SETLIST → SETLIST: not a table` 的
 
 这是 [[design-claims-vs-codebase-physics]] §4.1「新对象类型的分配路径必须照抄同族分配器的每一步」
 的**恢复侧对偶**：那一条讲同族分配器里出现三次的动作（`AllocX` + `LinkSweep` + `AllocCharge`）
-是契约，本条讲同族返回路径里出现三次的恢复动作也是契约。两条共享同一条元纪律——**同族里重复出现
-的动作是契约，不是那几个函数各自的选择**，而且两者的症状都离原因很远（那边 panic 在 GC 里、错误在
+是必须遵守的约定，本条讲同族返回路径里出现三次的恢复动作也是必须遵守的约定。两条共享同一条元纪律——**同族里重复出现
+的动作是必须遵守的约定，不是那几个函数各自的选择**，而且两者的症状都离原因很远（那边 panic 在 GC 里、错误在
 分配处；这边报错在 SETLIST、错误在 RETURN）。
 
 ## Promotion 决策
@@ -329,7 +329,7 @@ peroptranslator 里那段 `NEWTABLE head + SETLIST → SETLIST: not a table` 的
 `internal/crescent/call.go::doReturn` · `internal/crescent/gibbous_host.go::TailCall` ·
 `internal/crescent/state.go::visitThreadValues` · `test/luasuite/testdata/pm.lua` ·
 `docs/design/p1-interpreter/10-stdlib.md` §6.4.1（捕获的懒抬错）·
-`docs/design/p1-interpreter/05-interpreter-loop.md` §7.2.1（嵌套 executeFrom 的 top 恢复契约）·
+`docs/design/p1-interpreter/05-interpreter-loop.md` §7.2.1（嵌套 executeFrom 的 top 恢复约定）·
 `docs/design/p4-method-jit/implementation-progress.md` §27
 
 ## 审计发现:位置对了,粒度错了

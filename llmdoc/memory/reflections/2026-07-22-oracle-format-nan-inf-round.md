@@ -27,7 +27,7 @@ metadata:
 ## 任务
 
 nightly 长时间运行的 FuzzOracleDiff（P1 vs 内嵌 PUC 5.1.5 oracle 差分测试）
-撞出两个稳定可复现的 crasher，且 #170 多次复发：
+跑出两个稳定可复现的 crasher，且 #170 多次复发：
 
 - #170：`print(string.format("%E", 0%0))` → oracle `-NAN`，wangshu `NaN`
 - #171：`print(string.format("%f", 0%0))` → oracle `nan`，wangshu `NaN`
@@ -99,17 +99,17 @@ width）互相耦合，任意一两个样本都不足以约束出正确规律，
 ### 教训 3（读外部 oracle 的确切输出时，走真正的 harness 路径，别手搓简化探针）
 
 手写 `oracle.Exec` 探针因 prelude 拼接方式错（误把 prelude 拼进 src 参数）+
-用空 GlobalSet（prelude 自身崩，table 被白名单刮掉）连续两次拿到空/崩溃输出，
+用空 GlobalSet（prelude 自身崩，table 被白名单过滤掉）连续两次拿到空/崩溃输出，
 浪费了几轮；而构造 corpus 文件跑真正的 `FuzzOracleDiff -run` 一次就对——harness
 已经把 prelude / 白名单 / readout 都配好了。
 
 **Why**：oracle 的正确输出依赖一整套环境（完整 prelude、globals 白名单、输出
-捕获），这套环境是 harness 内部搭好的；手搓简化调用最容易在环境搭建上出错，
+捕获），这套环境是 harness 内部搭好的；手写简化调用最容易在环境搭建上出错，
 反而更慢，还会产出「空/崩溃」这种看似是被测输入问题、实则是探针自己没搭对的
 伪信号。
 
 **How to apply**：要读 oracle 对某输入的真值，优先复用既有 harness 的入口
-（构造它吃的输入格式，比如往 `testdata/fuzz/FuzzOracleDiff/` 放 corpus 文件跑
+（构造它接受的输入格式，比如往 `testdata/fuzz/FuzzOracleDiff/` 放 corpus 文件跑
 `-run`），而不是重新拼一个简化调用。这是 [[prove-the-path-under-test]] 家族
 在「读外部真值」侧的对应物——简化探针走的不是真正被测的那条路径。
 
@@ -130,21 +130,21 @@ width）互相耦合，任意一两个样本都不足以约束出正确规律，
 
 - 「PUC 语义由 libc 定义」这一子类在 [[cross-backend-semantic-fix-sweep]] 的
   「PUC 语义由 C 实现定义」节里已有雏形（那里已提到 `sprintf`/`strtod` 走宿主
-  libc），本轮是它的又一具体实例；教训 1 落 memory + 反引即可，暂不单独扩节。
-- 「读外部 oracle 真值优先复用 harness 入口、别手搓简化探针」是
+  libc），本轮是它的又一具体实例；教训 1 写进 memory 并反向引用即可，暂不单独扩节。
+- 「读外部 oracle 真值优先复用 harness 入口、别手写简化探针」是
   [[prove-the-path-under-test]] 家族在读真值侧的对偶，目前散落，教训 3 首次以
   这个角度出现，暂留观察。
 
 ## Promotion 候选
 
 - **教训 1**（PUC 语义由 libc 定义）：是 [[cross-backend-semantic-fix-sweep]]
-  既有「PUC 语义由 C 实现定义」纪律的子类实例，不升 guide，memory 内反引即可；
-  若后续再撞几处「真值最终落在 libc」的分歧，可在该 guide 那一节里补一句
+  既有「PUC 语义由 C 实现定义」纪律的子类实例，不升 guide，在 memory 内反向引用即可；
+  若后续再遇到几处「真值最终落在 libc」的分歧，可在该 guide 那一节里补一句
   「转发给 libc 的函数以 oracle 实测为准，别在 C 源码止步」。
 - **教训 2**（覆盖矩阵实测、不从单点外推）：首次以独立教训形式出现，**暂留
-  观察**；若下一轮再撞「宿主 libc / 外部真值面从单点外推翻车」，可作
+  观察**；若下一轮再遇到「宿主 libc / 外部真值面从单点外推翻车」，可作
   [[cross-backend-semantic-fix-sweep]] 的「外部真值面须建覆盖矩阵」新条款。
-- **教训 3**（读外部真值走真正 harness、别手搓探针）：首次样本，**暂留观察**，
+- **教训 3**（读外部真值走真正 harness、别手写探针）：首次样本，**暂留观察**，
   是 [[prove-the-path-under-test]] 家族在读真值侧的候选对偶。
 - **教训 4**（机器精确数字节，别肉眼数空格）：首次样本，**暂留观察**，与教训 3
   同属「读外部真值的操作纪律」，若再现可与教训 3 合并成一条小 guide。
@@ -152,11 +152,11 @@ width）互相耦合，任意一两个样本都不足以约束出正确规律，
 ## 触发场景
 
 - 与 PUC 5.1.5 byte-equal 的分歧涉及格式化 / 数值转换时——先 grep `_lua515/`
-  看转发给哪个 libc 函数，真值落 libc 就以 oracle 实测字节为准（教训 1）；
+  看转发给哪个 libc 函数，真值由 libc 决定就以 oracle 实测字节为准（教训 1）；
 - 对付「宿主 libc / 外部真值面」猜规则时——别从一两个样本外推，构造覆盖矩阵
   让 oracle 交出完整真值表，规律要能解释每一格（教训 2）；
-- 要读某个外部 oracle 对某输入的确切输出时——复用既有 harness 入口（构造它吃
-  的输入格式跑），别手搓简化调用（教训 3）；
+- 要读某个外部 oracle 对某输入的确切输出时——复用既有 harness 入口（构造它接受
+  的输入格式跑），别手写简化调用（教训 3）；
 - 比对带空白的字节串差异时——用 `[...]` 包裹 + 程序数长度，别肉眼数空格；
   corpus 里 Go 语法字符串用 python goquote 而非 shell `printf %q`（教训 4）。
 

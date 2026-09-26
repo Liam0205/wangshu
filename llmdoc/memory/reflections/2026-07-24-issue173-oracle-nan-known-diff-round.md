@@ -2,7 +2,7 @@
 name: 2026-07-24-issue173-oracle-nan-known-diff-round
 description: >
   issue #173：#170/#171 修复（PR #172 `cFormatSpecialFloat` 硬编码 -NAN/nan/INF）
-  只覆盖了 fuzz 当时撞到的负号路径，但 PUC 自身对 NaN 符号有正负两种可见路径
+  只覆盖了 fuzz 当时碰到的负号路径，但 PUC 自身对 NaN 符号有正负两种可见路径
   （glibc 输出取决于 NaN 位模式 × verb 大小写），追那一个 CPU/libc 组合的具体
   显示需改 VM 值层 NaN-boxing 对齐 x86，收益低风险高。本轮把 #173 定性为 PUC/
   x86/libc 对 NaN 符号的已知平台差异（IEEE 754 不赋 NaN 符号数值语义），改为在
@@ -21,10 +21,10 @@ description: >
   `TestExec_NaNSpansKnownLimit`：Lua 5.1 无法区分 `string.format` 返回值与
   同值 script literal 的 identity，脚本先 emit 该 literal 会误消费
   provenance FIFO 首项，狭窄 collision 是有意识的 trade-off。保留正负例
-  回归测试与 5 个 corpus seed（其中 3 个是 PR CI 上 fuzz 发现的边界形态：
+  回归测试与 5 个 corpus seed（其中 3 个是 PR CI 上 fuzz 发现的边界形式：
   `%+E0` 符号列冲突、`%10f` reserved-sign-column、`+%E00000` 相邻 signRun）。
-  过程中先撞到一个 WIP commit（全局替换）直接违反 #173 明文约束，revert 回
-  精细方案后重新走完；PR review 迭代两轮后 span-anchored 方案落地。
+  过程中先遇到一个 WIP commit（全局替换）直接违反 #173 明文约束，revert 回
+  精细方案后重新走完；PR review 迭代两轮后 span-anchored 方案完成。
 metadata:
   type: reflection
   date: 2026-07-24
@@ -44,7 +44,7 @@ metadata:
 ## 任务
 
 issue #173（承 #170/#171 → PR #172 上一轮）：PR #172 在 `cFormatSpecialFloat`
-里把大写 NaN 固定渲染为 `-NAN`，只覆盖了 fuzz 当时撞到的负号路径，但本机 PUC
+里把大写 NaN 固定渲染为 `-NAN`，只覆盖了 fuzz 当时碰到的负号路径，但本机 PUC
 Lua 5.1.5 与 wangshu 的实际差异是**双向**的——
 
 | 表达式 | PUC/x86 | 当前 wangshu |
@@ -55,9 +55,9 @@ Lua 5.1.5 与 wangshu 的实际差异是**双向**的——
 | `string.format("%E", tonumber("-nan"))` | `-NAN` | `-NAN` |
 | `string.format("%E", tonumber("nan"))` | `NAN` | `-NAN` |
 
-要真正吃掉后两行差异得把 wangshu 的算术 NaN 位模式与 x86/glibc 对齐——改
+要真正消除后两行差异得把 wangshu 的算术 NaN 位模式与 x86/glibc 对齐——改
 NaN-boxing 值表示 + P1/P3/P4 全套浮点路径，为一颗 CPU/一个 libc 的显示细节
-掀值层地板，收益低风险高。用户拍板：**接受为已知平台差异**，机制化让
+改动最底层的值表示，收益低风险高。用户决定：**接受为已知平台差异**，机制化让
 `nightly-diff-fuzz` 继续跑但不再报此类问题，同时确保其他输出差异仍正常失败。
 
 ## 本轮做了什么
@@ -71,7 +71,7 @@ NaN-sign spellings are host-platform differences with no Lua numeric meaning;
 the oracle fuzz harness classifies and skips them under #173 instead of
 changing the VM value representation to imitate one CPU/libc combination」——
 把「有一天要修 VM 值表示」的软承诺改成「已知平台差异 + harness 侧机制化跳过」
-的稳定契约。
+的稳定约定。
 
 ### 2. Harness 侧机制化：`__nan_spans` 逐渲染证据
 
@@ -84,7 +84,7 @@ NaN 渲染事件对应的字节区间**（span），对称跑在 shim 与 wangsh
 - `string.format(fmt, ...)`：任一 NaN 参数被消费，用 `string.find` 逐个定位
   输出里的 `nan`/`NAN` token，**贪婪包含相邻的 `-` 前缀和两侧 ASCII 空格**（
   这样 printf width padding 落在 span 内），把区间记下；无 NaN 参数的调用
-  一格都不记，脚本自拼 `"NAN"` 走这条路的完全在 span 之外；
+  一个区间都不记，脚本自拼 `"NAN"` 走这条路的完全在 span 之外；
 - `__oracle_readout()` 用 `"<count>\n" + count 行 "off-end\n" + body` 的
   header 把 span 数组和 output body 一起返回。
 
@@ -133,7 +133,7 @@ script padding（`io.write(" ", 0/0, " ")` 家族 4 例，本地审计 B1 补上
 differs」/ 「other byte differs」/ 「non-sign insertion」——保证字面量
 `"NAN"` / `"-NAN"` 或普通字符串对齐的真实差异仍然失败。
 
-`fuzz_oracle_test.go` seed 加两条 NaN 输出形态实证 harness 走通：
+`fuzz_oracle_test.go` seed 加两条 NaN 输出形式，证明 harness 走通：
 `print(string.format("value=[%10E]", -(0/0)))` + `print(string.format("%E0", -(0/0)), string.format("0%E", -(0/0)))`。
 
 ### 5. 验证
@@ -154,21 +154,21 @@ differs」/ 「other byte differs」/ 「non-sign insertion」——保证字面
 组合 / 修 VM 值层 ROI 过低），把它机制化跳过的最小系统由三件套构成：
 
 - **定性**：文档改口，把「暂时对齐」的软承诺换成「已知差异 + harness 跳过」
-  的稳定契约（本轮 `cFormatSpecialFloat` godoc）。软承诺留着会不断反复
-  争夺 VM 层的注意力，稳定契约允许下游放心不修；
+  的稳定约定（本轮 `cFormatSpecialFloat` godoc）。软承诺留着会不断反复
+  争夺 VM 层的注意力，稳定约定允许下游放心不修；
 - **证据链**：harness 侧加一个「差异来自被识别的语义路径」的开关，且开关
   由 print/write/format 等**具体渲染出口**置位——不是从**输入侧** 猜
   「这个脚本会不会算 NaN」；证据缺失就判 skip/limit，不静默走 known-diff
   路径；
-- **窄口径归类**：只在两端都有证据 + 差异形态限于「单一 token sign
+- **窄口径归类**：只在两端都有证据 + 差异形式限于「单一 token sign
   spelling ± printf width 一列偿还」时归 known-diff；case / literal / alignment
-  / 其他字节的差异一律回到「正常失败」。差异形态判据须能被负例回归钉住，
+  / 其他字节的差异一律回到「正常失败」。差异形式的判据须能被负例回归钉住，
   绝不能是「全局 `-nan` → `nan` 替换」这种会误吞脚本字面量的粗暴规则。
 
 家族继承：这是 [[cross-backend-semantic-fix-sweep]]「PUC 语义由 C 实现定义」
 +「PUC 语义由 libc 定义」（承 [[2026-07-22-oracle-format-nan-inf-round]]）的
 **退让侧**——上一轮那两处教训说「与 PUC 分歧先 grep `_lua515/` 源码 / 追到
-libc 层实测」，本轮说「追到 IEEE 无语义或 x86 值层地板时，正解是文档化 +
+libc 层实测」，本轮说「追到 IEEE 无语义或 x86 值层这一最底层时，正解是文档化 +
 harness 机制化跳过，而非继续追」。首次以「退让侧」形式出现，**暂留观察**，
 若再现可作那 guide 一节的对偶补充。
 
@@ -222,20 +222,20 @@ harness 机制化跳过，而非继续追」。首次以「退让侧」形式出
 对偶**——那里说「命中数要跨 Run 稳态计数而非单 Run」，本轮说「证据要
 按渲染事件粒度而非执行级」，两者本质都是**度量/证据的时空粒度与验证
 边界严格重合**。**已跨 2 实例阈值**，建议在下一实例出现时把 §8 扩成
-「度量/证据粒度」通用条并把两轮反引进去，本轮暂留观察。
+「度量/证据粒度」通用条并把两轮反思引用进去，本轮暂留观察。
 
 **Known limit（Codex round-2 review 抓出）**：v3 provenance FIFO 以字符串
 **值**为 key（Lua 5.1 无 string identity primitive），当 script literal
 与 `string.format(NaN)` 结果**同值**时，先 emit 的 script literal 会误消费
 FIFO 首项、把 span 记到错误位置，导致同值 collision 场景下 sporadic
 `OutputDifferent`。扩宽 provenance 匹配判据（如"值不等也放行"）会反过来
-误吞脚本自出的字面差异——违反 issue #173 明文契约。这是 Lua 5.1 值层设计的
+误吞脚本自出的字面差异——违反 issue #173 明文约定。这是 Lua 5.1 值层设计的
 硬边界：**要么区分 identity（脚本 semantics 允许，harness 无法做到）要么
 接受 sporadic collision（保护脚本 literal 差异）**。工程上取后者。
 `TestExec_NaNSpansKnownLimit` 明确固化 collision 场景 spans 落错行为，
 文档（README §5 第 5 层 / `docs/design/engineering.md` §3.2 / `docs/design/p1-interpreter/12-testing-difftest.md` §4.2 / prelude.go godoc）
-明记该限制存在。fuzz 撞到的概率极低——需要 script 精心构造 literal 与 format
-结果同值——但真的撞到就是 hard-failure，作为 harness 表达能力边界的**公开
+明记该限制存在。fuzz 碰到的概率极低——需要 script 精心构造 literal 与 format
+结果同值——但真的碰到就是 hard-failure，作为 harness 表达能力边界的**公开
 表达**留在那里。**推论式教训**：证据粒度不能与被允许差异边界严格重合的极
 限值即 identity（原子性能被外部区分）；当 host 语言无 identity primitive 时
 证据机制必然存在**语义歧义窗口**——工程决策要在"宽而误吞脚本层次差异"与
@@ -256,9 +256,9 @@ show 80f7b09 --stat` 与前后 commit 的方向对比才认出它是「回退成
 
 - **教训 1**（接受已知平台差异 = 定性 + 证据链 + 窄口径归类）：首次以完整
   三件套形式出现，是 [[cross-backend-semantic-fix-sweep]] guide 的**退让侧**
-  候选；**暂留观察**，若下轮再撞「追到值层地板 / IEEE 无语义 / 只能追一个
+  候选；**暂留观察**，若下轮再遇到「追到值层最底层 / IEEE 无语义 / 只能追一个
   CPU-libc 组合」类分歧，可在该 guide 里新增一节「退让侧：定性 + 证据链 +
-  窄口径归类」并把两轮反引进去。
+  窄口径归类」并把两轮反思引用进去。
 - **教训 2**（`NormalizeOutput` 是无损归一，跳过判定分层）：首次样本暂留
   观察，是 [[design-claims-vs-codebase-physics]] §2 邻接维度（视图归一层 vs
   语义比较层），若再现可作独立小 guide「测试比对的分层：归一化 / 判等 /
@@ -285,7 +285,7 @@ show 80f7b09 --stat` 与前后 commit 的方向对比才认出它是「回退成
 ## 关联
 
 - [[cross-backend-semantic-fix-sweep]]（教训 1 的退让侧候选；本轮承其
-  「PUC 语义由 C 实现定义 / libc 定义」纪律，追到值层地板则退让）
+  「PUC 语义由 C 实现定义 / libc 定义」纪律，追到值层最底层则退让）
 - [[2026-07-22-oracle-format-nan-inf-round]]（PR #172，上一轮把 NaN 硬编码
   成 `-NAN`；本轮把它未覆盖的「PUC 正号路径」定性为已知差异 + 机制化跳过）
 - [[2026-07-23-oracle-arg-coercion-round]]（本仓最近一轮 oracle diff 分歧

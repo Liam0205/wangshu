@@ -33,7 +33,7 @@ metadata:
 ## 任务
 
 给 wangshu 加一个能与 P1 crescent 解释器同进程做 byte-equal 差分测试的
-PUC 5.1.5 oracle,并用一轮 fuzz 把当时能扫到的语义分歧一次收干净。
+PUC 5.1.5 oracle,并用一轮 fuzz 把当时能扫到的语义分歧一次清理干净。
 
 ## 本轮做了什么
 
@@ -77,7 +77,7 @@ PUC 5.1.5 oracle,并用一轮 fuzz 把当时能扫到的语义分歧一次收干
    - 算术 RK 物化顺序:先 o2 后 o1(与 PUC 一致);
    - `tonumber` 重写走 C99 `strtod` 接受面(hex float `0x.8`/`0X.0`/`0x1p4`、
      `inf`/`infinity`/`nan` 词、溢出饱和到 ±inf、hex 整数 fallback 走
-     `strtoul` 的 endptr 契约保留 `'x'` 停位);
+     `strtoul` 的 endptr 约定保留 `'x'` 停位);
    - 表构造器字段**按源码顺序**赋值(重构 `TableExpr.Items`——旧的两遍
      codegen 会把覆盖顺序反过来);
    - 字符串真的走**共享 metatable**(`{__index=string}`),`getmetatable("")`
@@ -91,12 +91,12 @@ PUC 5.1.5 oracle,并用一轮 fuzz 把当时能扫到的语义分歧一次收干
    a. **stringMeta 的 GC 根**——新加的 stringMeta 表只被 Go 侧的 State 字段
       持有,`TestGCStress_AllocHeavy` 立刻抓到 use-after-free。任何 State
       级长期持有的 GCRef 都必须加入 `visitExtraRefs`——这条前已存在(承
-      公共 API 增量交付的 GCRef 接根契约条款),本轮是又一实证。
+      公共 API 增量交付的 GCRef 接根约定条款),本轮是又一实证。
    b. **Bash 陷阱**:`go test ... | grep -q` 在 pipefail 下会因 grep 命中
       即退出让上游收到 SIGPIPE 死掉——每一轮探针的第二次及以后循环迭代
       全都因此挂掉。解药是**先落盘再 grep**;并对循环里的探针加
       `</dev/null` 使其不吞外层 `while read` 的 stdin。
-   c. **Fuzz 轮节奏**:后台跑 45~240 分钟一轮,每次落一个分歧就当场修 +
+   c. **Fuzz 轮节奏**:后台跑 45~240 分钟一轮,每次抓到一个分歧就立刻修 +
       重放 corpus + 再开新一轮。corpus 逐步长成常驻回归集。CI 上的
       arm64 oracle-smoke 抓到过一个本机多轮没抓到的变体(`"% 00X0"`
       这类格式)——不同平台探索的 mutation 路径不一样。
@@ -112,7 +112,7 @@ PUC 5.1.5 oracle,并用一轮 fuzz 把当时能扫到的语义分歧一次收干
       4. `0x` 前缀的地址规范化没有锚定,盖住了真正的 hex 输出分歧——
          改成按类型前缀锚定。
    e. **「invariant 强度由最严 consumer 定义」再次出现**——PUC 的语义由
-      C 实现的精确行为定义(`strtod`、`sprintf`、`strtoul` endptr 契约),
+      C 实现的精确行为定义(`strtod`、`sprintf`、`strtoul` endptr 约定),
       不由手册文字定义。直接读 `lstrlib.c` / `lobject.c` / `llex.c` 比
       用探针试出来更快也更准。
    f. **用户口径提醒**:代码注释统一英文(本轮批量转过一次);pre-push
@@ -126,7 +126,7 @@ PUC 5.1.5 oracle,并用一轮 fuzz 把当时能扫到的语义分歧一次收干
 
 ## 期望与实际
 
-- 期望:cgo oracle 装上后先跑几分钟 smoke,预计有个位数分歧,一天内收干净。
+- 期望:cgo oracle 装上后先跑几分钟 smoke,预计有个位数分歧,一天内清理干净。
 - 实际:第一轮就跑出 3 处;之后 fuzz + 系统性 argsweep 累计扫出 35 处
   语义分歧(P1 与 PUC 5.1.5 之间),分布在 stdlib、词法、前端 codegen、
   值语义(string metatable / 常量折叠)各处;两天内每一条都定位到 C
@@ -154,7 +154,7 @@ in-process byte-equal 校验;cgo oracle 上线后同一轮 fuzz + argsweep 就
 
 `string.format` 的 flags 数量上限、width / precision 位数上限、`%s` 忽略
 `'0'`、无符号 verb 忽略 `' '`/`'+'`、`tonumber` 走 `strtod` + `strtoul`
-endptr 契约、常量折叠拒 div/mod-0 与 NaN 结果——这些细节全在 C 源码
+endptr 约定、常量折叠拒 div/mod-0 与 NaN 结果——这些细节全在 C 源码
 里明确写着,手册要么没写要么写得比实现松。本轮反复出现的模式是:
 用探针猜半小时找不到边界,回头读 `lstrlib.c` / `lobject.c` / `llex.c`
 五分钟就写清楚。
@@ -171,11 +171,11 @@ libc、`strtod` 走宿主 libc,连宿主 libc 的边界都是 PUC 语义的一�
 
 新加的 `stringMeta` 表被 State 字段持有——`TestGCStress_AllocHeavy`
 立刻 UAF。修法是把它加进 `visitExtraRefs`。这条不是新纪律,是公共
-API 增量交付纪律里 GCRef 接根契约的又一实证——**这次值得记的是
+API 增量交付纪律里 GCRef 接根约定的又一实证——**这次值得记的是
 GC stress 测试能在合并前就抓到**,不必等公共 API 露出。任何在
 State 上加长持字段的改动,`TestGCStress_*` 就是最便宜的兜底。
 
-### 教训 4(测试 harness 里的静默 skip / 静默 pipe 关闭是持续雷区)
+### 教训 4(测试 harness 里的静默 skip / 静默 pipe 关闭是持续存在的隐患)
 
 `go-fuzz.sh` 探针把编译失败静默 skip 掉,使 oracle-smoke 长期拿绿灯
 而不做事;`| grep -q` 因 SIGPIPE 提早关 pipe 使循环里第二次及以后
@@ -224,18 +224,18 @@ NaN、极大整数、格式串带奇怪 flag);argsweep 按 stdlib 每个函数
   段。
 - **教训 2**(PUC 语义由 C 代码定义):**首次以独立教训形式出现,
   建议留反思**——它是 wangshu 与 PUC 差分场景的具体手法,通用性
-  没到 guide 级。反引 [[design-claims-vs-codebase-physics]] 的「设计
+  没到 guide 级。反向引用 [[design-claims-vs-codebase-physics]] 的「设计
   稿主张须对本码库 physics 重新验证」作对偶(那边讲设计稿主张 vs
   本码库 physics,这边讲 PUC 手册文字 vs PUC C 源码)。
 - **教训 3**(State 级长持 GCRef):已是 [[public-api-incremental-delivery]]
   guide 第 2 条与 [[embedding-contract]] 不变式段的既定条款,本轮
   是 GC stress 测试**在合并前**兜住的又一实证,不升 guide,memory
-  内反引即可。
+  内反向引用即可。
 - **教训 4**(shell 探针静默 skip / pipefail + grep -q):**接近阈值**
   ——已有多轮反思(GHA `eval` 剥引号、`pgrep` 轮询、本轮)提到
   shell 探针的默认写法。建议开一篇独立小 guide「shell 探针默认
   写法 checklist」,或作为 [[prove-the-path-under-test]] §6/§7 的
-  shell 层对偶补一节;本轮先落 memory + 反引。
+  shell 层对偶补一节;本轮先写进 memory + 反向引用。
 - **教训 5**(review 抓到的四类):首次样本,暂留观察。若下一轮
   review 再抓到同族,可作 [[prove-the-path-under-test]] 的「新加
   快路径时,列出被绕过的既有慢路径义务」条款。

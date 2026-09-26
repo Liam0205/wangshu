@@ -16,18 +16,18 @@ metadata:
 
 `02-translation.md` §3.4 的 WAT 伪码把 `$is_table`/`$table_gen`/`$ic_slot_load`/`$ic_key_match` 写成了助手调用形式。但 PW0 spike 实测一次 gibbous→host imported 调用约 **143ns**——若快路径上调一次助手,「跳过哈希」省下的几个 ns 立刻被边界成本吞光,整个 IC inline 的收益归零。
 
-正确做法是**全 inline Wasm load**:让这些「助手」退化成几条 `i64.load`。物理基础与 VS0 值栈「形式 Y」同一条 arena=linear memory 对偶——table 活在 arena = wazero linear memory,`value.GCRefOf(v)`(低 48 位)**就是**字节偏移,所以 table 字段直接 `i64.load offset=...` 可寻址:gen 在 offset 40 高 32 位、nodeRef 在 24、arrayRef 在 16、node stride 24B,而 `SNAP_INDEX` 是编译期立即数 → 所有槽 offset 都是常量。这与 VS0 的「arena backing 即 linear memory,偏移现算寻址」是同一条物理洞察的复用(见 `feedback_arena_view_aliasing` / `implementation-progress` §VS0-c)。
+正确做法是**全 inline Wasm load**:让这些「助手」退化成几条 `i64.load`。底层依据与 VS0 值栈「形式 Y」同一条 arena=linear memory 对偶——table 活在 arena = wazero linear memory,`value.GCRefOf(v)`(低 48 位)**就是**字节偏移,所以 table 字段直接 `i64.load offset=...` 可寻址:gen 在 offset 40 高 32 位、nodeRef 在 24、arrayRef 在 16、node stride 24B,而 `SNAP_INDEX` 是编译期立即数 → 所有槽 offset 都是常量。这与 VS0 的「arena backing 即 linear memory,偏移现算寻址」是同一条底层洞察的复用(见 `feedback_arena_view_aliasing` / `implementation-progress` §VS0-c)。
 
-**How to apply**:设计稿热路径上的 `(call $xxx ...)` WAT 伪码是**记法**不是**承诺**——`$helper` 这种抽象记号只表达「这里要做 X 语义」,不等于「这里要发一次真实跨层调用」。任何标在热路径(尤其每指令必经的 IC 快路径)的助手记号,实现前都要拿 PW0 的边界成本预算(~143ns/次)重新过一遍:它能不能塌成几条 inline load?能,就必须 inline,否则该 opcode 的整个加速立项失去意义。与 [[issue8-boundary-cost-round]] 教训 1「实现浪费 vs 架构成本」同家族——这里是「设计记法的边界成本未被预算」,同样要在实现侧主动算账,不能照抄伪码。
+**How to apply**:设计稿热路径上的 `(call $xxx ...)` WAT 伪码是**记法**不是**承诺**——`$helper` 这种抽象记号只表达「这里要做 X 语义」,不等于「这里要发一次真实跨层调用」。任何标在热路径(尤其每指令必经的 IC 快路径)的助手记号,实现前都要拿 PW0 的边界成本预算(~143ns/次)重新过一遍:它能不能简化成几条 inline load?能,就必须 inline,否则该 opcode 的整个加速立项失去意义。与 [[issue8-boundary-cost-round]] 教训 1「实现浪费 vs 架构成本」同家族——这里是「设计记法的边界成本未被预算」,同样要在实现侧主动算账,不能照抄伪码。
 
 ### 2. inline 覆盖按「逐字节可证性」分级,而非「能不能做」
 
 我没有把设计展示的每种情形都 inline。只 inline 了**可证与解释器逐字节一致**的形式:
 
-- **常量键访问**(同表 + 同代次 ⟹ 缓存的 `Index` 仍映射同一个键,故键匹配可**整段跳过**)——这优雅地顺手解决了「字符串常量键的值烧不进 Wasm」的难题:键根本不需要被比较;
+- **常量键访问**(同表 + 同代次 ⟹ 缓存的 `Index` 仍映射同一个键,故键匹配可**整段跳过**)——这优雅地顺手解决了「字符串常量键的值写不进 Wasm」的难题:键根本不需要被比较;
 - **寄存器键 ArrayHit**(数值匹配走 `f64(key) == Index+1`,绕开了朴素 `i32.wrap` 会引入的 uint32 截断陷阱)。
 
-我**刻意路由到助手**的情形:寄存器键 NodeHit(inline `normKey`/`keyEqual`/字符串 intern 语义对逐字节一致太脆)、MonoMeta(`__index` 元方法)、带字符串常量值的 SETTABLE(GCRef 烧不进)。安全原则与 PW4 relooper 同:**凡不可证正确 → 退助手**,助手里逐字节一致天然成立。
+我**刻意路由到助手**的情形:寄存器键 NodeHit(inline `normKey`/`keyEqual`/字符串 intern 语义对逐字节一致太脆)、MonoMeta(`__index` 元方法)、带字符串常量值的 SETTABLE(GCRef 写不进)。安全原则与 PW4 relooper 同:**凡不可证正确 → 退助手**,助手里逐字节一致天然成立。
 
 「不打折扣」(no-compromise)目标的真实含义是**对主导情形交付验收口径**(单态访问跳哈希),而**不是**强行 inline 每一种情形——把脆弱情形硬 inline 反而违背逐字节一致这条更高优先级的底线。
 
@@ -65,7 +65,7 @@ block $done {
 
 - **SETLIST C=0**(下一条指令字是批量计数 DATA 而非 opcode)与 **B=0**(填到 top,需 gibbous 帧 top 维护,PW7 才接)在 `SupportsAllOpcodes` 被拒,保守回退。
 - **命名冲突**:HostState 的 `GetGlobal`/`SetGlobal`/`Globals` 撞了既有 State 公共 API,改名 `DoGetGlobal`/`DoSetGlobal`/`GlobalsRaw`。
-- **pre-commit lint 容忍 gibbous 包未用符号**:整包被 build-tag(`wangshu_p3`)排除在默认 lint 之外,命中 hook 已知的「build constraints exclude all」误报放行路径(承 `c33f599`),故 PW5-a 期预埋的 PW5-b 机件不挡提交。
+- **pre-commit lint 容忍 gibbous 包未用符号**:整包被 build-tag(`wangshu_p3`)排除在默认 lint 之外,命中 hook 已知的「build constraints exclude all」误报放行路径(承 `c33f599`),故 PW5-a 期预先写入的 PW5-b 代码不挡提交。
 
 ## 验证(每子里程碑)
 
@@ -86,4 +86,4 @@ block $done {
 
 ## 关联
 
-[[issue8-boundary-cost-round]](边界成本预算 / 实现浪费辨析,教训 1 对偶)· [[test-hardening-round]](绿色≠在测你以为在测的,教训 4 同源)· [[p1-closeout-round]](IC 命中必须验同键——本轮常量键「同表同代次跳键匹配」是其 P3 形式)· `feedback_arena_view_aliasing`(arena=linear memory 偏移寻址,inline load 的物理基础)· `docs/design/p3-wasm-tier/02-translation.md` §3.4 · `06-ic-feedback-consume.md`(失效降级运行期机制)
+[[issue8-boundary-cost-round]](边界成本预算 / 实现浪费辨析,教训 1 对偶)· [[test-hardening-round]](绿色≠在测你以为在测的,教训 4 同源)· [[p1-closeout-round]](IC 命中必须验同键——本轮常量键「同表同代次跳键匹配」是其 P3 形式)· `feedback_arena_view_aliasing`(arena=linear memory 偏移寻址,inline load 的底层依据)· `docs/design/p3-wasm-tier/02-translation.md` §3.4 · `06-ic-feedback-consume.md`(失效降级运行期机制)

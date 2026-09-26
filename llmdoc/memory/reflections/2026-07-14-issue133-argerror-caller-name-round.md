@@ -31,7 +31,7 @@ metadata:
 
 nightly-diff-fuzz 报 p1 腿 crasher,种子是
 `co=coroutine.create(coroutine.resume)print(coroutine.resume(co))`。本地重放确认
-是当前 master 上的真实分歧(不是已修复代码上的旧撞点),牵出两个独立根因,一次
+是当前 master 上的真实分歧(不是已修复代码上的旧问题),牵出两个独立根因,一次
 修复 + 语料入库 + 回归测试。
 
 ## 根因与修法
@@ -40,7 +40,7 @@ nightly-diff-fuzz 报 p1 腿 crasher,种子是
 
 PUC 5.1.5 的 `bad argument #N to 'name'` 中,`name` 来自**调用方的调用点**而不是
 被调函数身份:ldebug.c `getfuncname` → `getobjname` 对调用帧的 CALL/TAILCALL/
-TFORLOOP 指令的 A 操作数做 symbexec。推论(全部经探针实证):
+TFORLOOP 指令的 A 操作数做 symbexec。推论(全部经探针验证):
 
 - `local r = string.rep; r(nil)` 报 `'r'` 不报 `'rep'`(别名命名);
 - method 调用 self 不计入 #N(namewhat=="method" 时 narg--),narg 减到 0 时消息
@@ -61,8 +61,8 @@ wangshu 之前在每个 stdlib 站点硬编码被调函数名,以上四类写法
   (getobjname 镜像)取名并处理 method 减一与 bad-self 分支;
 - `callLuaFromHost`(`meta.go`)拆成 wrapper:在宿主调用边界把 argNarg 归零
   (冻结 `'?'`),TFORLOOP 边界改走 `callLuaFromHostNamed` 保留解析权。
-- pc 口径注意:解释器主循环已 `ci.pc++`,解析时用 `ci.pc-1`;gibbous helper 收到
-  的是原始 pc,直接用。两处口径不同,是历史文档已记录过的差异,本轮再次命中。
+- pc 取值注意:解释器主循环已 `ci.pc++`,解析时用 `ci.pc-1`;gibbous helper 收到
+  的是原始 pc,直接用。两处取值方式不同,是历史文档已记录过的差异,本轮再次命中。
 
 ### 根因 2:coroutine.create 必须拒绝 C 函数
 
@@ -83,7 +83,7 @@ NewArgError。
   string/table/math/os/coroutine 库)与 PUC 5.1.5 逐字节一致;gibbous force-all
   与解释器对称;
 - 三个 build 变体(default / p3+profile / p4+profile)测试全绿;lint 0 issue;
-- FuzzOracleDiff 90s + FuzzCompileRun 60s + FuzzAutoPromote 60s 冒烟干净;
+- FuzzOracleDiff 90s + FuzzCompileRun 60s + FuzzAutoPromote 60s 冒烟测试通过;
 - difftest errmsg 语料新增 7 条 `argerr_*` 用例(`test/difftest/errmsg_test.go`);
 - crasher corpus 入库 `testdata/fuzz/FuzzOracleDiff/e8534c580042ec44` 常驻回归。
 
@@ -94,7 +94,7 @@ NewArgError。
 一个 fuzz 种子表面上只是一条错误消息不同,实际牵出的是 PUC 一整个命名派生子系统
 (别名命名 / `'?'` 回退 / method 计数 / bad self / for generator / C 函数拒绝)。
 动手改实现前先写 ~70 条探针把整个行为面测绘成对照表,再一次性实现,避免了「修一
-条、fuzz 再打穿一条」的逐点返工。这与 [[cross-backend-semantic-fix-sweep]] 的
+条、fuzz 又报出一条」的逐点返工。这与 [[cross-backend-semantic-fix-sweep]] 的
 「PUC 语义由 C 实现定义,分歧先 grep `_lua515/` 源码」一节同源,但本轮是**面级
 规则**不是点级分歧——判断信号是:分歧涉及「派生逻辑」(名字从哪来、计数怎么减)
 而不是「输出格式」时,默认背后是一个子系统,值得先探针测绘再动手。

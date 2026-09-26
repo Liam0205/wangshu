@@ -6,7 +6,7 @@ description: >
   指出两个问题,均先写定向验证确认属实、再经用户 /goal 指令修复。① P3 loop fuel
   在预算开启后不重新武装:Safepoint 在无预算时把 wasm 线性内存的 fuel 字填成
   loopFuelUnlimited(1<<30),SetStepBudget/SetCancelHook 只改 Go 侧字段,
-  「先无预算跑热 P3 循环、再开预算」的顺序下新预算要等约十亿次 back-edge(回边)
+  「先无预算跑热 P3 循环、再开预算」的顺序下新预算要等约十亿次循环回跳(back-edge)
   后才被查询;修法在 enterGibbous 镜像 P4 RefreshJitCtxAddrs 的 armed-state
   transition 处理。② scripts/go-fuzz.sh 与 triage guide 声称 GOMEMLIMIT 会触发
   带栈的 Go OOM fatal——核对官方文档为纯软限制,运行时任何情况下不会因它主动
@@ -47,7 +47,7 @@ metadata:
   `loopFuelUnlimited`(1<<30),而 `SetStepBudget` / `SetCancelHook` 只改
   Go 侧字段、不碰 fuel 字。全仓只有 State 初始化和 `Safepoint` 两处写这个
   字,所以「先无预算跑热 P3 循环、再开预算」的顺序下,新预算要等约十亿次
-  back-edge(回边)之后才会被查询。定向测试复现:warm 两轮
+  循环回跳(back-edge)之后才会被查询。定向测试复现:warm 两轮
   (promotions=1,safepoints=1)后 `SetStepBudget(10)`,100 万次段内 while
   循环照常跑完、err=nil、safepoints-delta=0。
 - 修法(commit `2945b57`):在 `enterGibbous` 镜像 P4
@@ -190,7 +190,7 @@ llmdoc 进 PR 后,第二轮增量 review
 
 第一轮修复用 `stepBudget > 0 || ctx != nil` 这个聚合布尔检测武装状态
 转换,它只能看到聚合值的 false↔true 边沿。「ctx 已武装、随后再开
-budget」这条时序两头都是 armed=true,转换检测对这次变更失明:ctx-only
+budget」这条时序两头都是 armed=true,转换检测看不到这次变更:ctx-only
 阶段的 partial drain(最多一个完整 quantum)被下一个计费点算进全新
 预算。定向复现在两个 tier 都成立:P3 上武装后 1 次新 back-edge 就触发
 budget=10 报错;P4 探针确认同样存在(4096 宽度窗口的陈旧排空后,
@@ -212,7 +212,7 @@ seg-call fuel 在同一变更点跳过它的 `Spent()` 计费,理由相同。
 
 第一轮写的 cancel 回归测试,warm 用了一个 Program、被测 Run 用另一个
 独立编译的 Program;`PromotionCount()` 是 State 级累计值,harness 的
-「已升层」检查因此空过。被测 Run 在解释器 frame-entry preempt 处就
+「已升层」检查因此直接通过。被测 Run 在解释器 frame-entry preempt 处就
 返回 context canceled,从没进过 P3(`SafepointCalls` delta = 0)——
 把整个修复删掉,这个测试照样通过。这恰好违反了本反思正文教训 A 与
 guide §7.1 里自己刚写下的规则:写下教训与执行教训之间仍有距离,同一
@@ -255,7 +255,7 @@ fuel 窗口的哪个相位,单一 warm 长度可能静默错过坏相位(实测 
 - **教训 E**(相位敏感用全窗口扫描):首次样本暂留 memory,可作
   [[prove-the-path-under-test]] 的测试设计侧候补维度。
 - 缺陷 2 作为「guide 刚写完就被自己违反」的实例,值得在
-  [[prove-the-path-under-test]] §7.1 下次修订时反引:新写的复现/回归
+  [[prove-the-path-under-test]] §7.1 下次修订时反向引用:新写的复现/回归
   测试本身也要过一遍 §7.1 的白盒探针检查,包括修复轮自己写的那些。
 
 ## 附记二(合入前第三轮增量 review:increment-3 的代际方案矫枉过正)

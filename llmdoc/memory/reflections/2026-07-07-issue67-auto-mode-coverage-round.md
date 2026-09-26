@@ -1,6 +1,6 @@
 ---
 name: issue67-auto-mode-coverage-round
-description: PR #75 auto-mode coverage round(2026-07-07):production 跑 auto promotion,但 CI 每套 P3/P4 测试都靠 SetForceAllPromote(true) 驱动,自然热度半边(阈值中途越线、recheckCompilabilityRuntime 自然路径、PromotionGater、地板+FloorExempter,均 auto-only)长期无网(issue #67 正是此类 auto-only bug)。未强制的测试也测不到——它们的脚本永远够不到生产阈值(entry 200 / back edge 1000),auto 退化成纯解释器。新增 Bridge.SetHotThresholds(entry, backEdge)(0=保持不变),与 SetForceAllPromote 同纪律的 testing-only 入口:只改「何时」触发决策不改「决策什么」。四类新覆盖(difftest/conformance/fuzz/nightly)全部 build-tag (wangshu_p3||wangshu_p4)&&wangshu_profile。两条教训:①「未强制的测试 ≠ auto 模式测试」——PromotionCount>0 兜底断言是解药,且在开发中现场应验(P3 首版语料因 WorthPromoting 密度门拒收全部短核而挂,逼语料换成长纯算术核);② 有状态差分 harness 的 run-for-run 基线——FuzzAutoPromote 上线首次 CI 跑就抓到 harness bug(seed 861f54880d2009d5,留作回归种子):脚本改写全局变量时,同一 State 后续 Run 合法产生不同行为,但 harness 只跑一次基线却跑两次 auto State,把跨 run 状态漂移误判成 tier 分歧;修法基线与被测同步逐 run 对比。
+description: PR #75 auto-mode coverage round(2026-07-07):production 跑 auto promotion,但 CI 每套 P3/P4 测试都靠 SetForceAllPromote(true) 驱动,自然热度半边(阈值中途越线、recheckCompilabilityRuntime 自然路径、PromotionGater、地板+FloorExempter,均 auto-only)长期没有测试覆盖(issue #67 正是此类 auto-only bug)。未强制的测试也测不到——它们的脚本永远够不到生产阈值(entry 200 / back edge 1000),auto 退化成纯解释器。新增 Bridge.SetHotThresholds(entry, backEdge)(0=保持不变),与 SetForceAllPromote 同纪律的 testing-only 入口:只改「何时」触发决策不改「决策什么」。四类新覆盖(difftest/conformance/fuzz/nightly)全部 build-tag (wangshu_p3||wangshu_p4)&&wangshu_profile。两条教训:①「未强制的测试 ≠ auto 模式测试」——PromotionCount>0 兜底断言是解药,且在开发中现场应验(P3 首版语料因 WorthPromoting 密度检查拒收全部短核而失败,逼语料换成长纯算术核);② 有状态差分 harness 的 run-for-run 基线——FuzzAutoPromote 上线首次 CI 跑就抓到 harness bug(seed 861f54880d2009d5,留作回归种子):脚本改写全局变量时,同一 State 后续 Run 合法产生不同行为,但 harness 只跑一次基线却跑两次 auto State,把跨 run 状态漂移误判成 tier 分歧;修法基线与被测同步逐 run 对比。
 metadata:
   type: reflection
   date: 2026-07-07
@@ -12,7 +12,7 @@ metadata:
 
 ## 任务
 
-生产环境跑 auto promotion(脚本自然越过入口/回边阈值才升层),但仓库里每一套 P3/P4 测试(difftest、conformance、`FuzzP4ForceAllPromote`、nightly legs)都用 `SetForceAllPromote(true)` 强制升层驱动。这意味着:
+生产环境跑 auto promotion(脚本自然越过入口/循环回跳(back edge)阈值才升层),但仓库里每一套 P3/P4 测试(difftest、conformance、`FuzzP4ForceAllPromote`、nightly legs)都用 `SetForceAllPromote(true)` 强制升层驱动。这意味着:
 
 - **auto-only 决策链完全没有测试网**——阈值中途越线时机、`recheckCompilabilityRuntime` 在自然路径上的行为、`PromotionGater`(auto-only 可选接口)、短 proto 地板 + `FloorExempter`(同为 auto-only)。issue #67 本身就是一个 auto-only bug,只在这条链上才会触发。
 - **未强制的测试也不构成 auto 覆盖**——它们的脚本从没长到能在生产阈值(entry 200 / back edge 1000)下自然越线,auto 在这些测试里退化成纯解释器,和真正测「auto 决策链」是两回事。
@@ -36,11 +36,11 @@ metadata:
 
 不带 `SetForceAllPromote` 的测试**看起来**是 auto 覆盖,实则悄悄退化成解释器专属测试——因为生产阈值对短脚本永远不可达。解药是 **`PromotionCount>0` 兜底断言**:任何声称在测 auto 决策链的测试套必须显式断言至少发生过一次真实升层,否则绿色只证明「跑完了」不证明「auto 决策链被走到」。
 
-这条纪律在开发过程中**当场应验**:第一版语料草稿在 P3 上就挂在 `PromotionCount>0` 断言上——`WorthPromoting` 收益密度门拒绝了语料里每一个短核,逼着把语料换成长纯算术核才通过。断言不是摆设,它在写语料的当下就抓住了一次「看似覆盖、实则没升层」的语料设计错误。
+这条纪律在开发过程中**立刻应验**:第一版语料草稿在 P3 上就卡在 `PromotionCount>0` 断言上——`WorthPromoting` 收益密度检查拒绝了语料里每一个短核,逼着把语料换成长纯算术核才通过。断言不是摆设,它在写语料的当下就抓住了一次「看似覆盖、实则没升层」的语料设计错误。
 
 **Why**:是 [[prove-the-path-under-test]] 家族「绿色 ≠ 在测你以为在测的」的又一实例——具体形式是「同一套测试代码在不同后端/参数下静默滑向另一条路径(auto 退化成纯解释器)」,家族已跨过 12 实例阈值,本条作**第 13 个独立实例**收录进该 guide。
 
-**How to apply**:任何测试套自称覆盖 auto/natural 升层路径,必须配一个白盒计数器(`PromotionCount` 或等价物)兜底断言「确实升层过」;没有这个断言,过线的短用例语料在下一次收益门调整时可能悄悄滑回纯解释器而没人发现。
+**How to apply**:任何测试套自称覆盖 auto/natural 升层路径,必须配一个白盒计数器(`PromotionCount` 或等价物)兜底断言「确实升层过」;没有这个断言,达标的短用例语料在下一次收益检查调整时可能悄悄滑回纯解释器而没人发现。
 
 ### 2. 有状态差分 harness 的 run-for-run 基线——同一 State 多次 Run 时,基线必须逐 run 同步对比
 
@@ -54,12 +54,12 @@ metadata:
 
 ## 验证
 
-- amd64/arm64 全部正确性门(difftest-p3/p4、conformance、`-race`)绿;`FuzzAutoPromote` 60s p4 + 30s p3 smoke 干净;CI crasher 种子 `861f54880d2009d5` 作为回归种子通过。
+- amd64/arm64 全部正确性检查(difftest-p3/p4、conformance、`-race`)绿;`FuzzAutoPromote` 60s p4 + 30s p3 smoke 干净;CI crasher 种子 `861f54880d2009d5` 作为回归种子通过。
 
 ## promotion 决策
 
 - **教训 1**:是 [[prove-the-path-under-test]] 家族第 13 个独立实例,**本轮直接 promote** 进该 guide(§1 反模式三档表追加一行 + 触发场景速查追加一条),因为家族早已跨过阈值、且贡献了明确的解药形式(`PromotionCount>0` 兜底断言),不需要再等第二次样本验证。
-- **教训 2**(run-for-run 基线):**首次样本,暂留观察**。是一条通用的「有状态差分 harness 设计」纪律,若后续再有一个独立的有状态差分/差分测试 harness(不限于 tier 升层)撞上同族「基线与被测运行次数不对称」问题,再考虑并入 [[prove-the-path-under-test]] 或独立立一条「有状态差分 harness 设计」guide 条目。
+- **教训 2**(run-for-run 基线):**首次样本,暂留观察**。是一条通用的「有状态差分 harness 设计」纪律,若后续再有一个独立的有状态差分/差分测试 harness(不限于 tier 升层)遇到同族「基线与被测运行次数不对称」问题,再考虑并入 [[prove-the-path-under-test]] 或独立立一条「有状态差分 harness 设计」guide 条目。
 
 ## 触发场景
 
@@ -68,4 +68,4 @@ metadata:
 
 ## 关联
 
-[[prove-the-path-under-test]](教训 1 落点,第 13 实例)· [[backend-capability-vs-profitability]](`PromotionGater`/`FloorExempter`/地板同属该 guide 描述的 auto-only 可选接口家族,本轮补的正是它们的测试网)· issue #67 · `internal/bridge/bridge.go`(`SetHotThresholds`)· `internal/crescent/state.go` · `wangshu.go` · `docs/design/p2-bridge/01-profiling.md` §5.3.1 · `test/difftest/auto_test.go` · `test/conformance/conformance_auto_test.go` · `fuzz_auto_test.go` · `.github/workflows/nightly-diff-fuzz.yml`
+[[prove-the-path-under-test]](教训 1 去处,第 13 实例)· [[backend-capability-vs-profitability]](`PromotionGater`/`FloorExempter`/地板同属该 guide 描述的 auto-only 可选接口家族,本轮补的正是它们的测试网)· issue #67 · `internal/bridge/bridge.go`(`SetHotThresholds`)· `internal/crescent/state.go` · `wangshu.go` · `docs/design/p2-bridge/01-profiling.md` §5.3.1 · `test/difftest/auto_test.go` · `test/conformance/conformance_auto_test.go` · `fuzz_auto_test.go` · `.github/workflows/nightly-diff-fuzz.yml`

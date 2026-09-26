@@ -12,13 +12,13 @@ issue #5/#6 来自 pineapple wangshu backend 深度接入,两件 gap:
   动机:issue #2 只交付了 SetIndex/GetIndex/Len,缺「脚本返回 string-key map 后
   宿主端读出」的对称面——「宿主构造投喂」已有,「脚本返回后宿主遍历」缺失。
 - **#6** `State.MarkGlobalsBaseline / ResetGlobalsToBaseline`:pineapple sync.Pool
-  复用 State 时脚本级状态隔离。Mark 拍当前 `_G` 字符串 key 快照为基线,Reset
-  把非 baseline key 清空 + baseline key 复原。对位 gopher-lua statePool
+  复用 State 时脚本级状态隔离。Mark 把当前 `_G` 字符串 key 的快照记为基线,Reset
+  把非 baseline key 清空 + baseline key 复原。对应 gopher-lua statePool
   `snapshotBaselineValues + resetToBaseline`。baseline 复合值经 `visitExtraValues`
   入 GC 根。
 
 提交区间:`bb1e9a8..755d5ce`(3 个 commit):`4f855d2` ForEach / `3d34839`
-MarkGlobalsBaseline+ResetGlobalsToBaseline / `755d5ce` doc 对账。
+MarkGlobalsBaseline+ResetGlobalsToBaseline / `755d5ce` doc 核对。
 
 ## 预期 vs 实际
 
@@ -87,8 +87,8 @@ pin 表管「公共 API 暴露的长持 GCRef」,走 `visitExtraRefs`(GCRef 级�
 
 本轮代码审查零阻塞问题。[[public-api-incremental-delivery]] 的 8 条纪律(设计承诺
 源回看 / GCRef 接根 / 单域物理隔离 / 错误消息稳定 / 行为变更显式 / 范围扩张
-顺手收口 / 对位测试先 grep oracle / internal 签名避免反向依赖)在第三轮已无须
-逐条检查——稳定的 guide 最终消融为习惯。这验证了 guide 立项的判断正确:两轮
+顺手补齐缺口 / 对位测试先 grep oracle / internal 签名避免反向依赖)在第三轮已无须
+逐条检查——稳定的 guide 最终会变成习惯。这验证了 guide 立项的判断正确:两轮
 样本足以立项,三轮样本证明稳定。
 
 ### 5. baseline 与 pin 表的释放纪律差异——文档未显式说明
@@ -104,7 +104,7 @@ baseline 没有 `Release` 等价物,覆盖旧 baseline(再次调 `MarkGlobalsBas
 ## 缺失的文档或信号
 
 - [[embedding-contract]] 不变式条款只提 pin 表(`visitExtraRefs`),未提 baseline
-  (`visitExtraValues`)——同一「任何长持引用必须接根」不变式的后半面缺失。
+  (`visitExtraValues`)——同一「任何长持引用必须接根」不变式的另一面缺失。
 - [[public-api-incremental-delivery]] guide 缺第 9 条「对称面检查」——关闭写入类
   issue 时应同步检查读出面是否充分(反之亦然)。
 - `MarkGlobalsBaseline` godoc 未解释 baseline 为什么没有 `Release` 等价物

@@ -3,9 +3,9 @@
 - **日期**:2026-06-29
 - **任务类型**:P4 PJ8+ 真机 arm64 端到端验证方案 A(macos-latest CI 接 darwin/arm64,无前期硬件投入)
 - **PR 范围**:PR #27 `feat/p4-reworded`,本批 14 commits `278cf12..bfc0ab1`(over master 已 79 commits)
-- **目标三件**:① darwin/arm64 codepage W^X 真实现(MAP_JIT + pthread_jit_write_protect_np + sys_icache_invalidate)② 翻 archSupportsSpec / archSupportsFrameInline arm64 → true ③ macos-latest CI job 接入
+- **目标三件**:① darwin/arm64 codepage W^X 真正实现(MAP_JIT + pthread_jit_write_protect_np + sys_icache_invalidate)② 翻 archSupportsSpec / archSupportsFrameInline arm64 → true ③ macos-latest CI job 接入
 - **结果**:① ② 完成 + 字节级单测全过 / ③ CI job 已接入跑「不真 execute 安全子集」绿;darwin/arm64 真机 macos-latest M1 上 `trampoline_arm64.s` 跳进 mmap 段后 **SIGSEGV at PC=0x2000** 未修通,留 followup 需本地 Mac 物理机调试
-- **本批 14 commits**:C1+C2 `278cf12`(codepage_darwin.go cgo 真实现)/ C3 `69a3458`(字节级 round-trip)/ C4 `509d5af`(trampoline build tag 跨 OS 复用)/ C5 `36044ef`(arm64 SelfNodeHit 200B 真实现)/ C6 `b13e0be`(arm64 FrameInlineExit 36B 真实现)/ C7 `edf1792`(翻 arch 检查)/ C8 `b4d58b4`(ci.yml macos-latest job)/ C9 `b3ad84e`(implementation-progress.md 进档)/ F1 `196745d`(同包 cgo+asm 互斥实证 → 子包 forward)/ F2 `a937588`(QEMU SIGSEGV → 加 wangshu_qemu tag)/ F3-1+2 `579012b`(浮点 ULP 容差 + 性能阈值放宽)/ F3-3a-1 `e43a505`(archSupports* 加 GOOS=="darwin" guard)/ F3-3a-2 `bfc0ab1`(ci.yml macos-latest job re-scope 不真 execute 安全子集)
+- **本批 14 commits**:C1+C2 `278cf12`(codepage_darwin.go cgo 真正实现)/ C3 `69a3458`(字节级 round-trip)/ C4 `509d5af`(trampoline build tag 跨 OS 复用)/ C5 `36044ef`(arm64 SelfNodeHit 200B 真正实现)/ C6 `b13e0be`(arm64 FrameInlineExit 36B 真正实现)/ C7 `edf1792`(翻 arch 检查)/ C8 `b4d58b4`(ci.yml macos-latest job)/ C9 `b3ad84e`(更新 implementation-progress.md)/ F1 `196745d`(同包 cgo+asm 互斥实证 → 子包 forward)/ F2 `a937588`(QEMU SIGSEGV → 加 wangshu_qemu tag)/ F3-1+2 `579012b`(浮点 ULP 容差 + 性能阈值放宽)/ F3-3a-1 `e43a505`(archSupports* 加 GOOS=="darwin" guard)/ F3-3a-2 `bfc0ab1`(ci.yml macos-latest job re-scope 不真 execute 安全子集)
 
 ## 任务
 
@@ -13,7 +13,7 @@
 
 ## 预期 vs 实际
 
-- **预期**:codepage_darwin.go 加 cgo + import "C" 直接调三个 darwin 原语,trampoline_arm64.s 跨 OS 复用,开关 + ci.yml 加 macos-latest job 即可;Mac CI 一次过线。
+- **预期**:codepage_darwin.go 加 cgo + import "C" 直接调三个 darwin 原语,trampoline_arm64.s 跨 OS 复用,开关 + ci.yml 加 macos-latest job 即可;Mac CI 一次通过。
 - **实际**:**Go 工具链「同包 cgo + Plan 9 .s 互斥」物理边界**强制改成子包 forward 模式(F1)、**QEMU user-mode 不模拟 i-cache flush / PROT_EXEC** 须给 trampoline_test.go 加 wangshu_qemu build tag(F2)、**arm64 vs amd64 FMA 一次舍入 vs MUL+ADD 两次舍入**导致跨 arch 浮点测试不字节相等须 ULP 容差(F3-1)、**Apple Silicon 性能阈值脆弱点**(F3-2)、**真机 darwin/arm64 trampoline execute SIGSEGV 0x2000** 不可在 CI 上彻底排查(F3-3a 改为只跑安全子集 + 留 followup)。**14 commits 里 5 个修复 commits 全由 CI 反馈驱动**,前期本机 amd64 vet + cross-build 全绿不足以保证 macos-latest M1 真机通过。
 
 ## 教训(每条首句为「下次什么场景会触发」)
@@ -22,7 +22,7 @@
 
 **触发场景**:既有包内含 Plan 9 `.s` 汇编文件,设计稿要求该包内加 cgo / `import "C"`(扩 darwin/Apple Silicon/Linux ARM 等平台原生 API)时。
 
-**实例**:`tmp/wangshu-p4-todo.md` §三 darwin/arm64 真实现方案设计层写「`codepage_darwin.go` 加 cgo + `import "C"` 直接调 `pthread_jit_write_protect_np`」,但**父包 `internal/gibbous/jit/arm64` 含 `trampoline_arm64.s` / `flushcache_arm64.s` 两个 Plan 9 .s 文件**;Go 工具链规则:**同一 package 启用 cgo 时不能含 Plan 9 .s 文件**。CI macos-latest 实证报错(F1 commit `196745d`):
+**实例**:`tmp/wangshu-p4-todo.md` §三 darwin/arm64 真实现方案设计层写「`codepage_darwin.go` 加 cgo + `import "C"` 直接调 `pthread_jit_write_protect_np`」,但**父包 `internal/gibbous/jit/arm64` 含 `trampoline_arm64.s` / `flushcache_arm64.s` 两个 Plan 9 .s 文件**;Go 工具链规则:**同一 package 启用 cgo 时不能含 Plan 9 .s 文件**。CI macos-latest 上实际报错(F1 commit `196745d`):
 
 ```
 package using cgo has Go assembly file trampoline_arm64.s
@@ -55,7 +55,7 @@ f[37] = 41.45, want 41.449999999999996    (Go 少 1 ULP)
 
 **家族关系**:与 [[2026-06-15-p3-pw10-r1-r2-callinfo-migration-round]] 教训 5「基准公平性」+ [[prove-the-path-under-test]] 同家族但维度不同——前者是「测的路径」错配,本条是**「测的等式」在多 arch 下规范允许不字节相等**;与 [[2026-06-12-test-hardening-round]]「fuzz 目标空转」同属测试盲区家族但根因在浮点规范层。
 
-**Promotion 候选**:**首次样本**,建议作 [[perf-optimization-workflow]] guide「跨 arch 浮点测试纪律」补充候选,**暂留 memory** 不入 guide(单次跨 arch 首次接入,Apple Silicon CI 接入是 wangshu 第一次接非 linux/amd64)。若 P5 或未来再加新 arch(arm64 linux、riscv 等)出现一样的,候选升 guide §「跨 arch 测试纪律」节。
+**Promotion 候选**:**首次样本**,建议作 [[perf-optimization-workflow]] guide「跨 arch 浮点测试纪律」补充候选,**暂留 memory** 不入 guide(单次跨 arch 首次接入,Apple Silicon CI 接入是 wangshu 第一次接非 linux/amd64)。若 P5 或未来再加新 arch(arm64 linux、riscv 等)出现一样的情况,可作为候选升入 guide §「跨 arch 测试纪律」节。
 
 ### 3. 真机新增 arch CI 接入时先跑「不真 execute 安全子集」,避免散布的 t.Skip
 
@@ -81,7 +81,7 @@ f[37] = 41.45, want 41.449999999999996    (Go 少 1 ULP)
 
 **家族关系**:首次样本,与 [[design-premises]] 零 cgo / 零反射 / 零外部依赖类「构造性消除」纪律家族同源——「构造性消除」让 broken 状态根本无法表达,这里是「编译期 DCE」让多平台分流的运行期开销根本无法产生。
 
-**Promotion 候选**:**首次样本**,Go 跨平台分流的「单文件 + runtime.GOOS DCE」vs「多文件 build tag 拆分」选型纪律,可作 reference 类条目。**暂留 memory**,若后续再加新平台分流(linux/arm64 / windows / 其他 OS guard)再现,候选升 reference / guide。
+**Promotion 候选**:**首次样本**,Go 跨平台分流的「单文件 + runtime.GOOS DCE」vs「多文件 build tag 拆分」选型纪律,可作 reference 类条目。**暂留 memory**,若后续再加新平台分流(linux/arm64 / windows / 其他 OS guard)再现,候选升入 reference / guide。
 
 ### 5. PR review bot APPROVE 后立刻 STOP,识别「真 push 成功 + bot APPROVE 但 hook 末行报错」的混合信号
 
@@ -99,19 +99,19 @@ f[37] = 41.45, want 41.449999999999996    (Go 少 1 ULP)
 
 **触发场景**:新 arch / 新平台真机 execute path SIGSEGV,可能根因散布在 codepage(mmap + W^X)/ trampoline(callJITFull/Spec 跳 mmap 段)/ 模板代码(EmitXxx 字节)三层,如何快速 isolate。
 
-**实例**:darwin/arm64 真机 macos-latest M1 上 SIGSEGV at PC=0x2000,本批 F3-3 加 `TestDarwinMmapCode_ExecSanityProbe`——**只验 codepage 路径不经 trampoline**(addr 合法 + 字节写入 + 不在低保护区 + 直接经 codepage execute 一段不带 trampoline 调用的字节序列),isolate 根因。**该探针在 macos-latest 跑通**(本批 CI 实证),证明 codepage 路径(mmap + MAP_JIT + W^X 切换 + icache flush)正确,**根因 isolate 到 trampoline ABI**(darwin ABI 下 framesize/LR 处理可能与 linux 不一致 / Apple Silicon PAC 兼容 / sys_icache_invalidate silent fail entitlement 等),留 followup PR Mac 物理机调试。
+**实例**:darwin/arm64 真机 macos-latest M1 上 SIGSEGV at PC=0x2000,本批 F3-3 加 `TestDarwinMmapCode_ExecSanityProbe`——**只验 codepage 路径不经 trampoline**(addr 合法 + 字节写入 + 不在低保护区 + 直接经 codepage execute 一段不带 trampoline 调用的字节序列),isolate 根因。**该探针在 macos-latest 跑通**(本批 CI 已验证),证明 codepage 路径(mmap + MAP_JIT + W^X 切换 + icache flush)正确,**根因 isolate 到 trampoline ABI**(darwin ABI 下 framesize/LR 处理可能与 linux 不一致 / Apple Silicon PAC 兼容 / sys_icache_invalidate silent fail entitlement 等),留 followup PR Mac 物理机调试。
 
-**解法**:不只用 `t.Fatalf` 标失败,**加单独白盒探针验证「这条路径单独走 work 不 work」**,可以快速 isolate 根因到具体层。
+**解法**:不只用 `t.Fatalf` 标失败,**加单独白盒探针验证「这条路径单独走时是 work 还是不 work」**,可以快速 isolate 根因到具体层。
 
 **家族关系**:与 [[prove-the-path-under-test]] guide「证明在测的路径」**一样的手法**——guide 既有六实例都是「绿色不等于走到」反向侧或 VS0-e 「覆盖度正向先验证」对偶面,**本条是 isolate-by-positive-probe 的新维度**:不在已失败用例上做事后归因,而是**主动加一条 narrower-scope 探针证明「上游路径 work」**,反向证明「失败发生在下游」。
 
-**Promotion 候选**:**首次样本**,但与 [[prove-the-path-under-test]] 同家族——「真 execute path 失败时先加 codepage-only sanity probe」可作 guide §「正向侧解药」节补充。**暂留 memory**,若 P5 trace JIT 或未来新 arch 接入再现「分层 isolate 探针」手法,候选升 guide 补充节(与 VS0-e ④ 覆盖度先验证形成「正向侧两实例」)。
+**Promotion 候选**:**首次样本**,但与 [[prove-the-path-under-test]] 同家族——「真 execute path 失败时先加 codepage-only sanity probe」可作 guide §「正向侧解药」节补充。**暂留 memory**,若 P5 trace JIT 或未来新 arch 接入再现「分层 isolate 探针」手法,候选升入 guide 补充节(与 VS0-e ④ 覆盖度先验证形成「正向侧两实例」)。
 
 ## 关联前序反思
 
 - **同家族「设计稿主张须对本码库 physics 重新验证」**:[[2026-06-14-p3-pw5-table-ic-round]] 教训 1 + [[2026-06-14-p3-pw6-crosslayer-call-round]] 教训 1 + [[2026-06-16-vs0e-varargs-stack-underflow-round]] 教训 1(「调研先于实现」)+ 本轮教训 1(工具链 physics 新维度)——构成 [[design-claims-vs-codebase-physics]] guide 跨多轮实例族,本轮贡献 **⑤ Go 工具链同包 cgo + asm 互斥**新维度;
 - **同家族「跨 arch / 跨机器纪律」**:[[2026-06-15-p3-pw10-zerocross-stage3-round]] 教训 3「perf 数字必标硬件/参数/日期」+ [[perf-optimization-workflow]] §5「跨机器基线对照」+ 本轮教训 2(跨 arch 浮点 ULP)——前两者是同 arch 跨机器/跨参数,本轮是跨 arch 浮点规范层;
-- **同家族「prove-the-path-under-test」对偶面**:[[prove-the-path-under-test]] 既有六反实例 + VS0-e ④ 覆盖度正向先验证 + 本轮教训 6 isolate-by-positive-probe——构成正向侧解药家族第二实例;
+- **同家族「prove-the-path-under-test」对偶面**:[[prove-the-path-under-test]] 既有六个反向实例 + VS0-e ④ 覆盖度正向先验证 + 本轮教训 6 isolate-by-positive-probe——构成正向侧解药家族第二实例;
 - **同家族「self-wrapper hook 信号识别」**:[[feedback_push_hook_self_report]] + [[feedback_self_wrapper_upstream_bug]] + 本轮教训 5。
 
 ## 触发场景

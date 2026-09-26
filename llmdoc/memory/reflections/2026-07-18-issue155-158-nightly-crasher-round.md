@@ -66,7 +66,7 @@ metadata:
 
 ### #156/#157/#159(不可复现 concat storm 家族)
 
-与 #123/#144/#145/#150/#151/#152 同族:worker 静默死亡、落盘 input 本地重放
+与 #123/#144/#145/#150/#151/#152 同族:worker 静默死亡、写入磁盘的 input 本地重放
 干净(1.2-2.5 秒)。按 [[unreproducible-crasher-triage]] 处置,语料不入
 `testdata/fuzz/`。值得记录的新信号:这几轮 run 已经带上 PR #154 的
 `GOMEMLIMIT=512MiB`,worker 仍在 41.5M execs 处静默死亡——软限制没接住,说明
@@ -104,7 +104,7 @@ nativeCode struct;补齐后确认双架构 CI(尤其带白盒命中数断言的�
 
 第一版 `ProtoSeg2SegRetCount` 遍历完整 code 数组,被 luac 在每个显式 return 后
 追加的死尾 `RETURN 0 1` 毒化——所有函数看起来都是混合宽度,新加的 gate 全拒,
-seg2seg 完全失效(`seg2seg_deopt_redo_test` 的 SegToSegHitCount 停摆抓到)。
+seg2seg 完全失效(`seg2seg_deopt_redo_test` 的 SegToSegHitCount 不再增长而抓到)。
 改为只遍历 `buildCFG` + `reachableBlocks` 的可达块后恢复正常。
 
 **How to apply**:任何按 RETURN(或其它终结指令)宽度/形状做的 proto 级静态
@@ -115,14 +115,14 @@ return 之后必有一条死尾 RETURN 0 1),直接扫 code 数组的分析对它
 
 ### 教训 3:C cast 的 UB 区语义按「PUC 在参考平台上的实际行为」实现,并显式豁免架构分歧
 
-#158 的根子是 C 的 `(unsigned long long)(double)` 对 >= 2^63 的值属于实现定义/
+#158 的根源是 C 的 `(unsigned long long)(double)` 对 >= 2^63 的值属于实现定义/
 UB 区:x86-64 gcc 有一套降级序列,arm64 FCVTZU 是另一套饱和行为,PUC 自己跨
 架构都不一致。这延续 [[cross-backend-semantic-fix-sweep]]「PUC 语义由 C 实现
 定义」一节的判据,并加一个细化:当 C 侧行为本身按架构分岔时,wangshu 以参考
 平台(x86-64 gcc)的行为为准手写模拟(`cUnsignedCast`),同时把分岔区的值从
 difftest corners 里豁免并在注释写明理由——不要试图在一份 Go 代码里同时逐字节
 等于两个互不一致的 C 行为。验证手法也值得复用:直接写 gcc -O2 探针程序拿
-真值,逐点对照 10 个用例,而不是凭规范推。
+真实值,逐点对照 10 个用例,而不是凭规范推。
 
 ### 教训 4:GOMEMLIMIT 软限制接不住的静默死亡,下一层硬化是按 seed 记 wall-clock
 
@@ -131,7 +131,7 @@ execs 处无声消失——说明这族死亡未必是 Go 堆压力(软限制只
 RSS 之外的资源尽头或外部 kill)。诊断硬化按层推进:arena 帽(PR #131)→
 GOMEMLIMIT(PR #154)→ 下一层是 harness 按 seed 记 wall-clock,把「进程在哪个
 seed 之后消失」变成 artifact 里可读的归因线索。每一层没接住都是新信息,不是
-浪费——但也说明该族问题仍未闭环,巡检时要继续观察。
+浪费——但也说明该族问题仍未解决,巡检时要继续观察。
 
 ## 流程
 
@@ -145,7 +145,7 @@ seed 之后消失」变成 artifact 里可读的归因线索。每一层没接�
   的实例谱:此前四个实例都是「语义修复漏站点 → 产生错值」,本例是「接口扩面漏
   镜像 → 优化静默关闭、结果仍正确」,失败形式更隐蔽(只有白盒命中数 + 双架构
   CI 能抓),且给出可操作判据「断言接口加方法时 grep 全部按 build tag 分文件的
-  实现 struct」。由 recorder 决定是否写入及落点。
+  实现 struct」。由 recorder 决定是否写入及写到哪里。
 - **教训 2**(luac 死尾 RETURN 毒化静态分析):首次样本暂留 memory。若后续再有
   按字节码形状做 proto 级静态分析被死代码毒化的实例,可考虑升
   [[design-claims-vs-codebase-physics]] 或独立条目。
@@ -168,9 +168,9 @@ seed 之后消失」变成 artifact 里可读的归因线索。每一层没接�
 
 ## 关联
 
-[[cross-backend-semantic-fix-sweep]](教训 1 的落点候选 + 教训 3 承「PUC 语义
+[[cross-backend-semantic-fix-sweep]](教训 1 的写入位置候选 + 教训 3 承「PUC 语义
 由 C 实现定义」节)· [[prove-the-path-under-test]](白盒命中数断言两次立功:
-SegToSegHitCount 停摆抓死尾毒化 + arm64 hits=0 抓断言静默失败)·
+SegToSegHitCount 不再增长抓到死尾毒化 + arm64 hits=0 抓断言静默失败)·
 [[unreproducible-crasher-triage]](#156/#157/#159 分诊依据 + 教训 4 硬化层级)·
 [[2026-07-13-nightly-concat-oom-and-format-hash-round]](concat storm 家族前序 +
 stringFnFormat 手写 C 语义路线的延续)· issue #155 · issue #156 · issue #157 ·
@@ -185,13 +185,13 @@ cUnsignedCast 自身还不够——`uint64(int64(f))` 这类混合表达式对�
 走 Go 自己的架构相关转换(amd64 CVTTSD2SI indefinite,arm64 FCVTZS 饱
 和),产生了与两个 PUC 官方构建都不同的第三种行为。修复
 (commit 0d31290):把 NaN、<= -2^63、>= 2^64、±inf 每个 UB 角落都写成
-显式分支,让 wangshu 在所有架构上钉住 x86-64 gcc 参考行为;同时在
+显式分支,让 wangshu 在所有架构上固定为 x86-64 gcc 参考行为;同时在
 oracle prelude 加守卫,把无符号 verb 的 UB 范围参数改道 LimitSentinel
-对称跳过(arm64 PUC oracle 在 UB 区有权与钉住的 x86 语义不一致)。
+对称跳过(arm64 PUC oracle 在 UB 区有权与固定下来的 x86 语义不一致)。
 
 教训 3 因此升级一档:模拟 C 实现定义行为时,**Go 这一侧的越界
 float→int 转换与 C 一样按架构分岔**——`uint64(f)`、`int64(f)` 对越界
-输入在 amd64/arm64 上结果不同。凡是「按参考平台钉行为」的模拟函数,
+输入在 amd64/arm64 上结果不同。凡是「按参考平台固定行为」的模拟函数,
 输入域里每个越界角落都必须有显式分支,不能让任何一个角落漏进 Go 的
 原生转换;验证也必须双架构跑(本例 amd64 全绿,只有 arm64 oracle
 smoke 抓得到)。

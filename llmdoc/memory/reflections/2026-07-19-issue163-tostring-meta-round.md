@@ -13,7 +13,7 @@ description: >
   误杀 __call 表路径。教训 2:写共享 string metatable 的 difftest corner 必须
   探完恢复(`__tostring = nil`),否则污染后续 corner 的 harness 自身 tostring。
   ② issue #162 为不可复现 concat storm 家族第 10 例(本地重放 4.6s 干净,
-  worker 12.4M execs 处静默死,GOMEMLIMIT=512MiB 在场仍没接住);per-seed
+  worker 12.4M execs 处静默死,设了 GOMEMLIMIT=512MiB 仍没接住);per-seed
   wall-clock 检测的优先级在上升,本轮未实施,待用户决定是否立项。
 metadata:
   type: reflection
@@ -31,8 +31,8 @@ metadata:
 处置 2026-07-19 nightly-fuzz 巡检报出的两个 crasher:
 
 - **#163**:`setmetatable({},{__tostring=0})print(t)` 在 oracle diff fuzz
-  撞出 verdict class 分歧——PUC 报 "attempt to call a number value",
-  wangshu 静默完成并打印地址(真 stdlib 语义 bug);
+  触发 verdict class 分歧——PUC 报 "attempt to call a number value",
+  wangshu 静默完成并打印地址(真正的 stdlib 语义 bug);
 - **#162**:concat storm 输入本地重放干净、worker 静默死亡(不可复现,
   分诊处置)。
 
@@ -57,7 +57,7 @@ metadata:
 - 输入:`function cat(i)return"<大量高位字节>"..i end out=""for i=1,700066 do
   dut=out..cat(i)end`。本地重放 4.6 秒干净;worker 在 12.4M execs 处
   "hung or terminated unexpectedly"(exit status 2),日志无 panic/OOM 栈,
-  `GOMEMLIMIT=512MiB` 在场仍静默死。
+  设了 `GOMEMLIMIT=512MiB` 仍静默死。
 - 与 #123/#144/#145/#150-#152/#156/#157/#159 同族,按
   [[unreproducible-crasher-triage]] 处置,corpus 不入库。
 - 值得记录的观察:这个输入的写法里 `dut=out..cat(i)` 其实每次都从空 `out`
@@ -89,7 +89,7 @@ __call 路由和非可调用值报错)。
 
 第一版 corner 写了 `getmetatable("").__tostring = 42` 探共享 string
 metatable 的路径,探完没有恢复——共享 string metatable 被污染,后续
-corner 的 harness 自己对 string 调 tostring 时就炸了,在 oracle 一侧以
+corner 的 harness 自己对 string 调 tostring 时就崩溃了,在 oracle 一侧以
 harness 崩溃的方式暴露(比静默污染好,但仍是本轮唯一一次返工点)。修成
 探完 `__tostring = nil` 恢复。
 
@@ -116,7 +116,7 @@ APPROVE。本轮顺利,除教训 2 的 corner 恢复外无返工。
   [[cross-backend-semantic-fix-sweep]](它已有「PUC 语义由 C 实现定义」
   一节,与 PUC 分歧先 grep `_lua515/` 源码的纪律直接适用本例)或作为独立
   小节。但它属 stdlib 语义类,首次样本可暂留 memory,由 recorder 决定
-  是否写入及落点。
+  是否写入及写进哪篇文档。
 - **教训 2**(difftest corner 共享状态清理):首次成文,暂留 memory。
   若后续再有 corner 污染共享状态的实例,可考虑在 difftest 相关文档里立
   明文规则。
@@ -138,7 +138,7 @@ APPROVE。本轮顺利,除教训 2 的 corner 恢复外无返工。
 
 ## 关联
 
-[[cross-backend-semantic-fix-sweep]](教训 1 的落点候选,「PUC 语义由 C
+[[cross-backend-semantic-fix-sweep]](教训 1 的候选写入位置,「PUC 语义由 C
 实现定义」节的邻接实例)· [[unreproducible-crasher-triage]](#162 分诊
 依据 + 家族计数)· [[2026-07-18-issue155-158-nightly-crasher-round]]
 (concat storm 家族前序 + GOMEMLIMIT 没接住的第一次观察)· issue #163 ·

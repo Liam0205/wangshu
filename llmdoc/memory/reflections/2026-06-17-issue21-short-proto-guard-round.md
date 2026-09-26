@@ -10,9 +10,9 @@
 
 [[2026-06-17-issue18-p3-autolift-fix-round]] 教训 2 写「pineapple 形式 p3 vs p1 慢 20% 是后续 perf 优化的事,留 follow-up」。用户接着追问「先前的 pineapple 实验是否需要更新?能否继续找 lua 算子优化方法?」三步走:
 
-1. **更新 12 项 2D 矩阵 + p3/p1 CPU profile 实证**:发现 spike 教训 2「采样钩税占 13%、wasm 反噬 6%」**估反了**——profile 实证 p3 build 中 `OnEnter` / `OnBackEdge` / `bridge.*` 不在 top 200,**采样钩税可忽略**;**wasm 路径**(`enterGibbous` + `callWithStack` + `p3Code.Run`)cum ~10% net 才是真主导
+1. **更新 12 项 2D 矩阵 + p3/p1 CPU profile 实证**:发现 spike 教训 2「采样钩税占 13%、wasm 反噬 6%」**估反了**——profile 实证 p3 build 中 `OnEnter` / `OnBackEdge` / `bridge.*` 不在 top 200,**采样钩税可忽略**;**wasm 路径**(`enterGibbous` + `callWithStack` + `p3Code.Run`)cum ~10% net 才是真正的主导项
 2. **立项 + 完成 issue #21**:加 `MinPromotableCodeLen = 10` 阈值,OnEnter/OnBackEdge 在 considerPromotion 调用前 short-proto fast-path return
-3. **数字闭环**:p3 _Row 从 660 → 588 µs(-11%),vs 同时段 p1 575 µs 差 +2.3%(噪声内,**完全消除反噬**),issue #18 真升层路径仍工作(long proto white-box PromotionCount > 0)
+3. **数字验证**:p3 _Row 从 660 → 588 µs(-11%),vs 同时段 p1 575 µs 差 +2.3%(噪声内,**完全消除反噬**),issue #18 的实际升层路径仍然有效(long proto white-box PromotionCount > 0)
 
 本轮 3 commits 单分支:
 - `bb304d0` doc(pineapple-bench):同步 wangshu_p3 doc.go(issue #18 修复后行为)
@@ -26,7 +26,7 @@
 
 **反思教训 2 估错的具体源头**(本轮发现):
 - spike 期 CommonRow 形式 p3 vs p1 慢 13%,我以为 CommonRow 形式 f 入口只 1 次「不升层」→ 差距全是钩税 → 推算钩税占 13%
-- **实际**:CommonRow 形式 f 内有 `for i = 1, n` 用户写的 1000 次回跳,`OnBackEdge` 累计 b.N × 999 ≈ 千万次 ≫ `HotBackEdgeThreshold=1000`,**f 真升层**;CommonRow 13% 慢同样是 wasm 反噬
+- **实际**:CommonRow 形式 f 内有 `for i = 1, n` 用户写的 1000 次回跳,`OnBackEdge` 累计 b.N × 999 ≈ 千万次 ≫ `HotBackEdgeThreshold=1000`,**f 实际上升层了**;CommonRow 13% 慢同样是 wasm 反噬
 - 没考虑用户脚本的循环触发 OnBackEdge 升层这条路径
 
 ## 教训(每条首句为「下次什么场景会触发」)
@@ -62,7 +62,7 @@
 wangshu p3 升层有**两条独立触发路径**:
 
 - **OnEnter**:每次 `enterLuaFrame` 累计 `pd.EntryCount`,达 `HotEntryThreshold=200` 触发
-- **OnBackEdge**:每次 FORLOOP/JMP 回跳累计 `pd.BackEdge[pc]`,达 `HotBackEdgeThreshold=1000` 触发(单回边 pc 计数)
+- **OnBackEdge**:每次 FORLOOP/JMP 回跳累计 `pd.BackEdge[pc]`,达 `HotBackEdgeThreshold=1000` 触发(按单个循环回跳(back edge)的 pc 计数)
 
 **关键不变式**:**两条独立**——只要任一过阈值就升层。host 端 N 次调函数 ⟹ OnEnter 路径触发;函数内 N 次 for 循环回跳 ⟹ OnBackEdge 路径触发。
 
@@ -72,7 +72,7 @@ wangshu p3 升层有**两条独立触发路径**:
 - **两个形式都升层只是触发路径不同**
 
 **修正纪律**:
-- **写"某形式升不升层"的论断前列**,列出 `OnEnter` 和 `OnBackEdge` 两条路径分别评估,**两条都不过阈值才能下「不升层」结论**
+- **写"某形式升不升层"的论断之前**,列出 `OnEnter` 和 `OnBackEdge` 两条路径分别评估,**两条都不过阈值才能下「不升层」结论**
 - **教训 2 估错的根因就是漏算 OnBackEdge 这条路径**:我以为 CommonRow 形式 f 入口 1 次 → 不升层,实际 f 内部 user 写的 `for` 循环触发 OnBackEdge 升层
 - **profile.go 守卫位置也受这个影响**:本轮我把 `MinPromotableCodeLen` 守卫放在 OnEnter + OnBackEdge **两处**(不止 OnEnter 一处),避免漏路径
 
@@ -132,6 +132,6 @@ if pd.EntryCount >= HotEntryThreshold || b.forceAll {
 - **新 sampling 守卫前先 grep 所有 testing fixture 看依赖**:`grep -rn "func makeProto\|func makeProtoWithCode" --include="*_test.go"` 找所有 fixture 工厂,evaluate 哪些需要 padding / 哪些 forceAll 绕过 / 哪些直接改测试用例
 - **不要 retroactively 改测试断言** —— 测试断言原本是对的(测短 proto 路径仍要工作),改的是 fixture 而不是断言
 - **forceAll 是合法的 testing escape hatch**:任何 sampling 守卫都该让 forceAll 绕过(它本身就是"覆盖 perf 优化的测试入口"),这是干净的 contract
-- **fixture padding 是另一种解法**:对于 mock 测试 P3 compiler 不解析 proto.Code 的场景,padding 比 forceAll 更对偶语义(直接造个长度合规的 fixture,而不是绕守卫)
+- **fixture padding 是另一种解法**:对于 mock 测试 P3 compiler 不解析 proto.Code 的场景,padding 比 forceAll 更符合语义(直接造个长度合规的 fixture,而不是绕守卫)
 
 **首次样本暂留观察**——本轮第一次加 proto 形式依赖的 sampling 守卫,处理了 fixture 耦合。下次类似改动时复用「fixture padding vs forceAll 绕过」框架。

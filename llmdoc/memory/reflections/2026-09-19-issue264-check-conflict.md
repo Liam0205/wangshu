@@ -101,4 +101,4 @@ HEAD 上为 0)。所以「dump 比对对这一格是盲的」不成立,准确的
 
 - 教训 → [[cross-backend-semantic-fix-sweep]] dump 比对一节:模板要让参照实现(含 helper 内部、跨目标关系)的每个 `if`
   各为真一次;opcode 序列差异桶逐类构造可观察输入判语义(条数相同、只差顺序也可能是语义)。
-- doc-gaps「多目标赋值缺 check_conflict」条目移入已收口。
+- doc-gaps「多目标赋值缺 check_conflict」条目移入「已完成」一节。

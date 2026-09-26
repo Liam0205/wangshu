@@ -11,7 +11,7 @@ description: >
   return),载体只调 20 次不吸收;③ kill switch 语义测试三段式(promote→prove native /
   off→NativeRunCount delta==0 + byte-equal / on→resume + Promoted 不变)——最后一条
   额外把「重开不重编译」保住;④ 跨引擎 checksum(每 kernel 结果累进 + 末行输出,任
-  一档分歧即退出非零)同时防两件事:静默错果 + 引擎 DCE 掉计时体;⑤ 生产 admin API
+  一档分歧即退出非零)同时防两件事:静默算错 + 引擎 DCE 掉计时体;⑤ 生产 admin API
   与 testing-only API 的 godoc 标注纪律(SetTierEnabled 明标生产、SetForceAllPromote
   明标 testing-only)。另外踩了一次心算预期值坑(50500 vs 5050,10 次循环最后一次
   赋值不是累加)——build-neutral 测试的预期值要先跑一遍 P1 拿真值,别心算。
@@ -47,17 +47,17 @@ metadata:
 
 - 期望:三件套 + 四件套按图施工,SetTierEnabled 只是 Bridge 上加一个 bool + 三
   个入口 short-circuit,TierStats 遍历现有 profileTable 分类计数即可。
-- 实际:观测半件套的分类办法一开始想错了(见教训 1);Stuck 分类测试的载体第
+- 实际:观测这一部分的分类办法一开始想错了(见教训 1);Stuck 分类测试的载体第
   一版调用次数不够(见教训 2);build-neutral 测试的预期值心算错了(见教训 3
   末尾)。核心结构一次通过。
 
 ## 教训 1:吸收态转移点分因计数,不要事后遍历反推
 
 `considerPromotion` 里有三条通往 `TierStuck` 的路径:F1-F6 结构性排除(vararg /
-coroutine / unknown call ...)、`PromotionGater` 收益门拒收(auto 模式)、
+coroutine / unknown call ...)、`PromotionGater` 收益检查拒收(auto 模式)、
 try-compile 抛错。三条路径都会置位 `pd.CompileTried = true`——第一版想「先
 搭好数据结构,分类逻辑事后遍历 profileTable 推出来」,但 `CompileTried` 无法
-区分这三类,`Compilable` 字段在收益门拒收时又是 `CompCompilable`(能编,只是
+区分这三类,`Compilable` 字段在收益检查拒收时又是 `CompCompilable`(能编,只是
 不划算),分类事实在转移点之后就丢了。
 
 改法是在 `Bridge` 上加三个 int 计数器 `stuckNotCompilable` /
@@ -100,7 +100,7 @@ if b.forceAll && pd.EntryCount < 64 {
 这是 issue #40 留下的 force-all 专属 warm-up retry window——IC-gated 后端
 (binary-trees 的 `check` 第三个 GETTABLE 只有 depth-12 子树跑完才第一次执
 行,大约 entry 14)需要给几十次机会让 IC 热起来才做升层决策,不能第一次
-就把 not-compilable 判死。所以 vararg proto 在 force-all 下调用不到 64 次
+就判定为 not-compilable。所以 vararg proto 在 force-all 下调用不到 64 次
 根本进不了吸收态,永远停在 `TierInterp`。
 
 改法是把外层循环调到 100 次,注释里把这个约束写清楚:
@@ -121,7 +121,7 @@ for _ = 1, 100 do t = kernel(100) + vk(1, 2) end
 
 `TestTierAdmin_KillSwitchRoutesToInterpreter` 结构:
 
-1. **promote → prove native**:force-all 一次 warmup + 一次真跑,断言
+1. **promote → prove native**:force-all 一次 warmup + 一次实际运行,断言
    `NativeRunCount` 相对 warmup 后有增长(否则载体没走 native,测试 vacuous);
 2. **off → prove zero native delta + byte-equal**:`SetTierEnabled(false)`
    之后同一 State 同一 proto 再跑,断言 `NativeRunCount` delta 严格 == 0 且
@@ -136,7 +136,7 @@ for _ = 1, 100 do t = kernel(100) + vk(1, 2) end
 on` 三点各做一次 delta 断言才能证「off 时真的没跑 native,on 时又真的跑了」。
 
 第三段的「Promoted 不变」是这次比较满意的设计——它把一个不在 issue 描述里
-的隐性契约(重开不重编译,`gibbousCodes` map 不清)钉死;这类隐性契约在没
+的隐性约定(重开不重编译,`gibbousCodes` map 不清)固定下来;这类隐性约定在没
 有断言时是「注释里说了但实现没保证」的高风险区。
 
 ## 教训 4:跨引擎 checksum 是廉价的双重防线
@@ -147,8 +147,8 @@ on` 三点各做一次 delta 断言才能证「off 时真的没跑 native,on 时
 
 它同时防两件事:
 
-1. **静默错果**:某档结果算错但没抛错(比如某个 IEEE 边值路径挑了错分支,类似
-   #103 那种)——checksum 一致性直接抓到,不需要靠对齐 stdout 数字或人肉
+1. **静默算错**:某档结果算错但没抛错(比如某个 IEEE 边值路径挑了错分支,类似
+   #103 那种)——checksum 一致性直接抓到,不需要靠对齐 stdout 数字或人工
    diff 表格。
 2. **引擎 DCE 掉计时体**:LuaJIT 的 trace 优化理论上可以把「返回值只累进到本
    地变量、外部不可见」的 kernel 整个消掉;checksum 是 module-level 的读写,
@@ -157,7 +157,7 @@ on` 三点各做一次 delta 断言才能证「off 时真的没跑 native,on 时
 
 代价是每次 kernel 调用多一次浮点加 + 一次乘 `1e-9`(warmup 段)或直接加
 (timed 段外累加),对 timed 段的每 iter cost 影响可以忽略(数量级差三到六
-个数量级)。这是廉价高产的默认动作,值得沉淀。
+个数量级)。这是代价低、收益高的默认做法,值得记录下来。
 
 ## 教训 5(过程):build-neutral 测试的预期值要先跑一遍 P1 拿真值,别心算
 
@@ -174,7 +174,7 @@ return t
 不是累加,10 次循环最后一次的赋值才生效,答案是 5050。测试挂了才看出来。
 
 通用判据:自计时 / 自校验脚本的预期值先跑一遍 P1(或其他任意已知正确的引擎)
-拿真值,再回填断言;心算 lua 表达式很容易在 `=` vs `+=` 这类地方翻车,收益
+拿真值,再回填断言;心算 lua 表达式很容易在 `=` vs `+=` 这类地方出错,收益
 太低,风险太高。
 
 同源的做法在 `benchmarks/vsluajit/bench.lua` 的 checksum 上已经用了——所有引
@@ -198,8 +198,8 @@ return t
 ## Promotion 候选
 
 - **教训 1(吸收态转移点分因计数 vs 事后分类)**:首次样本,暂留观察。若 P5
-  trace JIT / 或其他状态机再撞同样的问题(多路径进同一吸收态、事后无法区分)
-  可升 guide,聚合到 `backend-capability-vs-profitability` 或独立立
+  trace JIT / 或其他状态机再遇到同样的问题(多路径进同一吸收态、事后无法区分)
+  可升级为 guide,聚合到 `backend-capability-vs-profitability` 或独立立
   「absorbing-state classification 」guide。
 - **教训 3(kill switch 三段式 + Promoted 不变作重开不重编译断言)**:首次样
   本,暂留观察。若后续加其他生产 admin 开关(比如「暂停编译但保留已编译产
@@ -209,7 +209,7 @@ return t
 - **另议:生产 admin API vs testing-only API 的 godoc 标注纪律**——本轮
   `SetTierEnabled` godoc 明写「production admin API」,`SetForceAllPromote` 沿
   用旧的「testing-only」标注,`SetHotThresholds` 沿用「testing-only」。这个纪
-  律目前只在 tier 相关三个入口上,是否值得沉为 guide 由主线程判断,不强求。
+  律目前只在 tier 相关三个入口上,是否值得整理为 guide 由主线程判断,不强求。
 
 ## 过程记录
 

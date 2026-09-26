@@ -1,12 +1,12 @@
 ---
 name: 2026-07-10-issue102-loop-fuel-round
 description: >
-  issue #102 修复轮(2026-07-10,PR #105,分支 fix/issue102-forloop-fuel):P4 native FORLOOP 回边不计
+  issue #102 修复轮(2026-07-10,PR #105,分支 fix/issue102-forloop-fuel):P4 native FORLOOP 循环回跳(back edge)不计
   step budget,一个 277M 次迭代循环 + SetStepBudget(1<<20) 在 P4 force-all 上 9s 跑完,解释器 40ms 就报
-  "instruction budget exceeded"。根因:st.preempt() 只在解释器 call/回边点执行,内联到段内的循环体(算术或
+  "instruction budget exceeded"。根因:st.preempt() 只在解释器 call/back edge 点执行,内联到段内的循环体(算术或
   #77 math intrinsic)一次也回不到 Go 侧计费点。修法镜像 #89 segCallFuel 模式,新增 jitCtx.loopFuel 计数器
   + HelperLoopFuel exit-reason + host.LoopPreempt 计费/重灌/触发 st.preempt() 等价检查。核心教训:第一版
-  复用 segCallFuel 表面像行(build 绿、测试路径存在),但白盒 probe 揭穿其实一次未触发——每次 Run resume
+  复用 segCallFuel 表面上看着可行(build 绿、测试路径存在),但白盒 probe 揭穿其实一次未触发——每次 Run resume
   重灌抹平了段内递减;更深的是这条路径没有检查点,billing 与 checking 是两件独立的事,没检查点的计费点仍是
   漏洞。review bot 抓出遗漏的 seg2seg deopt stranding bug——RefreshJitCtxAddrs 需按 armed && loopFuel==0
   的滞留特征识别并重灌但不计费(重放会经 baseline st.preempt() 重计,重复计费会双记)。
@@ -17,13 +17,13 @@ metadata:
 
 # issue #102 loop fuel 修复轮反思(2026-07-10,PR #105)
 
-> 范围:分支 `fix/issue102-forloop-fuel`。P4 native FORLOOP 回边(以及负向 sBx JMP 组成的回边)绕过 step
+> 范围:分支 `fix/issue102-forloop-fuel`。P4 native FORLOOP 循环回跳(back edge)(以及负向 sBx JMP 组成的 back edge)绕过 step
 > budget 计费点,把一个耗尽预算的循环从「40ms 报错」拖成「9s 跑完」。修法新增 loopFuel 计数器 + LoopPreempt
 > host 通道,双架构一致。
 
 ## 任务
 
-给 P4 native FORLOOP 段内回边接上 step budget 计费与检查,让 `SetStepBudget(1<<20)` 下的死循环/深循环能像
+给 P4 native FORLOOP 段内 back edge 接上 step budget 计费与检查,让 `SetStepBudget(1<<20)` 下的死循环/深循环能像
 解释器一样及时报 "instruction budget exceeded",而不是把整段循环体在段内跑到硬件极限。触发形式:循环体完全
 inline(纯算术或 issue #77 引入的 math intrinsic)后,段内不再有任何 CALL 回到 Go 端,`st.preempt()` 一次
 也执行不到。
@@ -37,7 +37,7 @@ inline(纯算术或 issue #77 引入的 math intrinsic)后,段内不再有任何
   预算触发。根因两条叠加:(a) dispatcher 每次 Run resume 都重灌 `segCallFuel`,而这个循环体每次迭代经冷
   CALL 走 exit-reason 出段一次,重灌把段内递减全抹平;(b) 更根本的是段内派发路径从头到尾没有一个「检查
   stepUsed 是否超预算」的点——host CALL 分支只 bill 不 check,而 st.preempt() 只在 baseline 解释器的 call
-  和回边点跑。**「计费点」和「检查点」是两件独立的事,只做前者留下的仍是漏洞**。
+  和 back edge 点跑。**「计费点」和「检查点」是两件独立的事,只做前者留下的仍是漏洞**。
 
 ## 修复要点
 
@@ -57,7 +57,7 @@ inline(纯算术或 issue #77 引入的 math intrinsic)后,段内不再有任何
 
 第一版把 loop back edge dec 挂到 `segCallFuel` 上,build 绿、既有测试全绿、277M 迭代跑到底也没崩——一切
 看着都对。白盒 probe 才揭穿:该循环体每次迭代经一次冷 CALL 走 exit-reason 出段(dispatcher 往返 7.7M 次),
-dispatcher 的 resume 路径**无条件重灌** `segCallFuel`,段内的 dec 每次都被抹回满值。更微妙的问题即使解决
+dispatcher 的 resume 路径**无条件重灌** `segCallFuel`,段内的 dec 每次都被抹回满值。更微妙的是,即使解决
 了重灌(比如把重灌挪到入口而非每次 resume),仍然不够:段内派发路径本就没有一个「读 stepUsed 与 budget 比
 较」的地方,只有 `st.preempt()`(baseline 解释器专属)才做这个比较——**没有检查点的计费点等于没记账**。
 
@@ -69,7 +69,7 @@ dispatcher 的 resume 路径**无条件重灌** `segCallFuel`,段内的 dec 每�
 
 **判据**:给绕过 host 的段内快路径接抢占/计费时,不只要问「这条路径上有计费吗」,还要问「这条路径上或它
 必然汇入的下游点上有检查吗」;两者缺一则是漏洞。写下这一版的 fuel counter 时,先列一张三列表:**谁 bill /
-谁 check / drain 到 0 时能不能出段**。这是 [[design-claims-vs-codebase-physics]] 的做法在设计时刻落到 fuel
+谁 check / drain 到 0 时能不能出段**。这是 [[design-claims-vs-codebase-physics]] 的做法在设计阶段用到 fuel
 counter 家族上——白盒探针(LoopFuelExitCount / DispatchHelperCount)在会话中几分钟就能把 build 绿隐藏的
 问题看穿,是 [[prove-the-path-under-test]] 的直接应用。
 
@@ -98,7 +98,7 @@ Review bot 指出一个我没设想到的路径:seg2seg 被调方在 `segCallDep
 到本轮为止 fuel counter 已有两个成员:`segCallFuel`(#89)重灌自每次 Run resume,host CALL 路径 bill 且
 check(host 的 enterLuaFrame 会走 st.preempt);`loopFuel`(本轮)只由 LoopPreempt 与 armed 状态转变重灌,
 LoopPreempt 自己 bill 与 check。两者的重灌规则**必须**不同——它们段内 drain 完时能出段的路径不一样:CALL
-派发本就要出段,循环回边只有溢出 exit-reason 一条路。
+派发本就要出段,循环 back edge 只有溢出 exit-reason 一条路。
 
 **规则**:新增任何 fuel counter 时,先把三个问题写下来再动 emit:
 
@@ -113,7 +113,7 @@ LoopPreempt 自己 bill 与 check。两者的重灌规则**必须**不同——�
 
 A/B 对比 master(共享机器,先 `uptime` 看 load,`-benchtime=2s -count=3+ -cpu=1` 严格串行,在两个 worktree
 之间交替跑控机器漂移):HeavyArith 15.0→15.4ms(+2.9%),HeavyFloatloop 26.0→26.5ms(+2.0%),n-body / fib
-基本不动。这 +2~3% 是每次回边多一条 sub 在 jitCtx 槽上的必付成本,issue 分析里也说过不能编译期 gate
+基本不动。这 +2~3% 是每次 back edge 多一条 sub 在 jitCtx 槽上的必付成本,issue 分析里也说过不能编译期 gate
 掉(promotion 早于 SetStepBudget)。中间尝试过一版把 dec 放共享块用 jmp 跳过去,多一条静态 jmp 每次迭代
 反而更慢;把 dec+jnz 直接内联到 FORLOOP 的 condTrue 分支就消掉了这一条。数字在两个 worktree 交叉复测。
 
@@ -130,9 +130,9 @@ A/B 对比 master(共享机器,先 `uptime` 看 load,`-benchtime=2s -count=3+ -c
 - **教训 1(计费点 vs 检查点是两件事,fuel counter 设计三问表)** → **强建议升入
   [[backend-capability-vs-profitability]] 或新开一节**:与该 guide 「host 通道固定成本假设不适用段内通道」
   是同一二分轴(段内 vs host 的隐式保障差异)的另一具体面。首个明确样本但推论清晰,fuel counter 家族已两
-  个成员,规则可提前定死避免第三个再撞。若下次触碰 P4 native emit 相关 guide 修订时,把三问表落进去。
+  个成员,规则可以提前定下来,避免第三个成员再出同样的问题。若下次触碰 P4 native emit 相关 guide 修订时,把三问表写进去。
 - **教训 2(review bot 抓到 deopt stranding + 测试语料结构盲区)** → **memory 反引**:是 [[prove-the-path-
-  under-test]] 家族的又一具体形式(测试语料的循环体大小决定了它是否真触发 seg2seg 路径),但轴较窄,首次
+  under-test]] 家族的又一具体形式(测试语料的循环体大小决定了它是否真的触发 seg2seg 路径),但轴较窄,首次
   样本暂留观察。
 - **教训 3(fuel counter 家族三问表)** → **候选并入教训 1 的 guide 章节**,不单独立项。两成员 + 明确规则
   已足,但作为教训 1 的操作面推论更自然。
