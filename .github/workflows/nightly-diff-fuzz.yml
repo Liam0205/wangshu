@@ -229,8 +229,9 @@ jobs:
       # always() step: prior(40) + 3 + native(218) + tiered(62) + upload/triage(25) = 348 < 350, so 3 is
       # as far as it can go. The test itself takes under a minute including the build.
       #
-      # Not continue-on-error: a failure here is a real regression, so it fails the job and the triage
-      # step files it as a bug (keyed on this step's outcome, see there).
+      # Not continue-on-error: a test failure here is a real regression, so it fails the job and the
+      # triage step files it as a bug -- but only once the log shows the test started, so an
+      # environment failure on this step still goes to the infra branch (see there).
       - name: watchdog-margin check at the fuzz budget (p4, non-race)
         id: watchdogmargin
         if: always() && matrix.variant == 'p4'
@@ -493,12 +494,16 @@ jobs:
           日志与 crash corpus 见 run artifacts:${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           EOF
           )
-          # Keyed on the step outcome, not only on the FAIL line: a budget loosened far enough makes the
-          # test run past its -timeout (log says "panic: test timed out", no FAIL line) or the step cap
-          # (step cancelled, log truncated), and either would otherwise fall through to the infra branch --
-          # the worst regression filed as the mildest kind of failure.
-          elif [ "${{ steps.watchdogmargin.outcome }}" = "failure" ] || [ "${{ steps.watchdogmargin.outcome }}" = "cancelled" ] \
-               || grep -Eq -- "--- FAIL: TestConcatStormKeepsWatchdogMargin|panic: test timed out" watchdog-margin.log 2>/dev/null; then
+          # Two ways in. (1) The log shows the test failing or timing out. (2) The test STARTED (its
+          # `=== RUN` line is in the log) and the step then failed or was cancelled: a budget loosened far
+          # enough runs past the step cap, the step is cancelled and the log is cut off before any FAIL
+          # line, and that would otherwise fall through to the infra branch -- the worst regression filed
+          # as the mildest kind of failure. The `=== RUN` requirement is what keeps real infra out: this
+          # step runs under always(), so a failed checkout or setup-go, or `go test` failing to download
+          # a module, also leaves its outcome at failure, and none of those ever start the test.
+          elif grep -Eq -- "--- FAIL: TestConcatStormKeepsWatchdogMargin|panic: test timed out" watchdog-margin.log 2>/dev/null \
+               || { grep -q -- "=== RUN   TestConcatStormKeepsWatchdogMargin" watchdog-margin.log 2>/dev/null \
+                    && { [ "${{ steps.watchdogmargin.outcome }}" = "failure" ] || [ "${{ steps.watchdogmargin.outcome }}" = "cancelled" ]; }; }; then
             TITLE="watchdog margin regression (${{ matrix.variant }}): $(date -u +%F)"
             LABEL="bug"
             BODY="nightly 的 watchdog-margin 检查失败(步骤结果:${{ steps.watchdogmargin.outcome }})。在 fuzz 用的 step budget 下,要么预算停下时的循环次数超过了记录值(说明 \`fuzzbudget.Steps\` 被调大了,或者某个计费比率变松了),要么一次 Run 超过了 800 毫秒(计费没变但某个操作变慢了;\`FuzzAutoPromote\` 每个输入跑 4 次 Run,go-fuzz 的看门狗是 10 秒)。这不是基础设施失败。本地复现:\`go test -tags '${{ matrix.tags }}' ./test/regression/ -run '^TestConcatStormKeepsWatchdogMargin\$' -count=1 -v\`(本地上限是 250 毫秒)。日志 watchdog-margin.log 见 run artifacts:${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}。"
