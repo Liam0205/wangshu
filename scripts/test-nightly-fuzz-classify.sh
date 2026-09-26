@@ -63,7 +63,8 @@ with tempfile.TemporaryDirectory() as tmp:
 
     count = 0
     def run(name, logs, label, title, variant='p4', outcome='success',
-            contains=(), existing_after=99, run_id='34103646451', replay=None, files=()):
+            contains=(), existing_after=99, run_id='34103646451', replay=None, files=(),
+            margin_outcome='success'):
         global count
         count += 1
         tree = root / str(count)
@@ -80,6 +81,7 @@ with tempfile.TemporaryDirectory() as tmp:
             'github.repository': 'Liam0205/wangshu',
             'github.run_id': run_id,
             'steps.difffuzz.outcome': outcome,
+            'steps.watchdogmargin.outcome': margin_outcome,
         }
         script = re.sub(r'\$\{\{\s*(.*?)\s*\}\}', lambda m: replacements[m[1]], block)
         env = dict(os.environ, PATH=str(bin_dir) + os.pathsep + os.environ['PATH'],
@@ -191,16 +193,27 @@ with tempfile.TemporaryDirectory() as tmp:
     # The watchdog-margin step (p4, non-race) files its own bug: a loosened budget or charge is a
     # regression, not infra. It ranks below a corpus crash and above a worker failure.
     margin_fail = ('--- FAIL: TestConcatStormKeepsWatchdogMargin (8.18s)\n'
-                   '    issue224_watchdog_margin_test.go:127: gsub loop: one Run took 3.1s at the fuzz budget, above the 2.5s bound\n')
+                   '    issue224_watchdog_margin_test.go:140: gsub loop: the budget allowed 8127 iterations, above the recorded 508 (+25%)\n')
     margin_title = 'watchdog margin regression (p4): 2026-09-07'
-    run('watchdog-margin', {'watchdog-margin.log': margin_fail}, 'bug', margin_title,
-        contains=('fuzzbudget.Steps', "-run '^TestConcatStormKeepsWatchdogMargin$'", '不是基础设施失败'))
+    run('watchdog-margin', {'watchdog-margin.log': margin_fail}, 'bug', margin_title, margin_outcome='failure',
+        contains=('fuzzbudget.Steps', "-run '^TestConcatStormKeepsWatchdogMargin$'", '不是基础设施失败',
+                  '步骤结果:failure'))
     run('watchdog-margin-before-worker', {'watchdog-margin.log': margin_fail, 'gofuzz.log': 'panic: deadlocked!'},
-        'bug', margin_title)
+        'bug', margin_title, margin_outcome='failure')
     run('corpus-before-watchdog-margin', {'watchdog-margin.log': margin_fail, 'tieredfuzz.log': incident},
-        'bug', crash_title)
+        'bug', crash_title, margin_outcome='failure')
     run('watchdog-margin-pass-is-not-a-bug', {'watchdog-margin.log': '--- PASS: TestConcatStormKeepsWatchdogMargin (0.53s)\nok\n'},
         'ci', 'nightly-fuzz infra failure (2026-09-07)')
+    # A budget loosened far enough runs past -timeout (no FAIL line, only the panic) or past the step
+    # cap (step cancelled, log cut off mid-run). Both must still be filed as this bug, not as infra.
+    run('watchdog-margin-test-timeout', {'watchdog-margin.log': 'panic: test timed out after 2m0s\n'},
+        'bug', margin_title, margin_outcome='failure')
+    run('watchdog-margin-step-cancelled', {'watchdog-margin.log': '=== RUN   TestConcatStormKeepsWatchdogMargin\n'},
+        'bug', margin_title, margin_outcome='cancelled', contains=('步骤结果:cancelled',))
+    run('watchdog-margin-step-failed-empty-log', {}, 'bug', margin_title, margin_outcome='failure')
+    # p1/p3 never run the step, so its outcome is empty there; that must not trigger the branch.
+    run('watchdog-margin-skipped-on-p1', {}, 'ci', 'nightly-fuzz infra failure (2026-09-07)',
+        variant='p1', margin_outcome='')
     infra_title = 'nightly-fuzz infra failure (2026-09-07)'
     for variant in ('p1', 'p3', 'p4'):
         run(f'install-skipped-{variant}', {}, 'ci', infra_title, variant=variant, outcome='skipped',

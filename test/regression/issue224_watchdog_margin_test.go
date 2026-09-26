@@ -26,19 +26,27 @@ import (
 // fuzzbudget.Steps (1<<16), which costs no promotion coverage -- these shapes trip either way, the fuzzer walks
 // the same paths and stops sooner -- and restores about 1.8x margin at CI speed.
 //
-// This test measures the budget's cost at the harness's own setting rather than the corpus timing,
-// so it fails if the budget is raised back or if the per-byte rate is loosened.
+// This test measures the budget's cost at the harness's own setting rather than the corpus timing, in
+// two ways. The iteration count at which the budget trips is deterministic, so it is asserted in every
+// build and catches a raised budget or a loosened charge on any machine. The wall-clock bound catches
+// what the count cannot -- an operation that got slower at the same billing -- and is only asserted
+// where timing means something (see watchdogMarginBound).
 func TestConcatStormKeepsWatchdogMargin(t *testing.T) {
 	// The family's shape: a ~90-byte literal concatenated in a very long loop. Both #224 and #225
 	// are this, with the target of the assignment misspelled so the accumulator never grows -- which
 	// is why the minimized seeds are light and replay clean. Both forms are covered.
-	for _, tc := range []struct{ name, src string }{
+	for _, tc := range []struct {
+		name, src string
+		// maxIter is the loop count at which the budget trips, measured at fuzzbudget.Steps; -1 for a shape
+		// with no loop to count. See the assertion below.
+		maxIter int
+	}{
 		{"accumulator never grows",
 			`local function cat(i) return string.rep("x",90) .. i end
-			 local out="" for i=1,777777776 do qut = out .. cat(i) end return out`},
+			 local out="" for i=1,777777776 do ITER=i qut = out .. cat(i) end return out`, 10335},
 		{"accumulator grows quadratically",
 			`local function cat(i) return string.rep("x",90) .. i end
-			 local out="" for i=1,777777776 do out = out .. cat(i) end return out`},
+			 local out="" for i=1,777777776 do ITER=i out = out .. cat(i) end return out`, 298},
 		// The shapes that actually BIND the budget. The two above are the filed seeds, but they are
 		// cheap enough to pass at 1<<19 too, so a test using only them could not tell 1<<16 from
 		// 1<<19 -- which an audit demonstrated. These three are the most expensive reachable
@@ -49,11 +57,11 @@ func TestConcatStormKeepsWatchdogMargin(t *testing.T) {
 		// wall-clock, which is why the budget has to be set by the worst BILLED-EQUAL shape rather
 		// than by the shape that happened to be filed.
 		{"plain concat loop",
-			`local out="" for i=1,777777776 do out=out.."x" end return out`},
+			`local out="" for i=1,777777776 do ITER=i out=out.."x" end return out`, 2833},
 		{"table with string keys",
-			`local t={} for i=1,777777776 do t[tostring(i)]=i end return 1`},
+			`local t={} for i=1,777777776 do ITER=i t[tostring(i)]=i end return 1`, 65535},
 		{"gsub loop",
-			`local s=string.rep("a",4096) for i=1,777777776 do s:gsub("%a","x") end return 1`},
+			`local s=string.rep("a",4096) for i=1,777777776 do ITER=i s:gsub("%a","x") end return 1`, 508},
 		// Shapes that did NOT go through ChargeBulkWork at all, found because the audit asked for
 		// expensive operators OUTSIDE the billing entry point -- the blind spot of enumerating along
 		// that entry point, which is what this round's own method recommends. Each does O(n) work per
@@ -61,46 +69,46 @@ func TestConcatStormKeepsWatchdogMargin(t *testing.T) {
 		// count and not the per-iteration cost: head insert/remove projected to over two minutes and
 		// a sort loop to 56s, at the budget that had just been chosen.
 		{"insert at the head",
-			`local t={} for i=1,4000 do t[i]=i end for k=1,777777776 do table.insert(t,1,0) table.remove(t) end return 1`},
+			`local t={} for i=1,4000 do t[i]=i end for k=1,777777776 do ITER=k table.insert(t,1,0) table.remove(t) end return 1`, 123},
 		{"remove at the head",
-			`local t={} for i=1,4000 do t[i]=i end for k=1,777777776 do table.remove(t,1) t[#t+1]=1 end return 1`},
+			`local t={} for i=1,4000 do t[i]=i end for k=1,777777776 do ITER=k table.remove(t,1) t[#t+1]=1 end return 1`, 123},
 		{"sort loop",
-			`local t={} for i=1,999 do t[i]=1000-i end for k=1,777777776 do table.sort(t) end return 1`},
+			`local t={} for i=1,999 do t[i]=1000-i end for k=1,777777776 do ITER=k table.sort(t) end return 1`, 457},
 		// Five more found by sweeping for the same blind spot myself, rather than waiting for a third
 		// audit round: everything that moves O(n) values per call without reaching ChargeBulkWork.
 		// They projected to 73-129s at the chosen budget.
 		{"unpack a wide table",
-			`local a={} for i=1,4000 do a[i]=i end for k=1,777777776 do local _=select("#",unpack(a)) end return 1`},
+			`local a={} for i=1,4000 do a[i]=i end for k=1,777777776 do ITER=k local _=select("#",unpack(a)) end return 1`, 62},
 		{"select at a high index",
-			`local a={} for i=1,4000 do a[i]=i end for k=1,777777776 do local _=select(3999,unpack(a)) end return 1`},
+			`local a={} for i=1,4000 do a[i]=i end for k=1,777777776 do ITER=k local _=select(3999,unpack(a)) end return 1`, 62},
 		{"string.char with many args",
-			`local a={} for i=1,4000 do a[i]=65 end for k=1,777777776 do string.char(unpack(a)) end return 1`},
+			`local a={} for i=1,4000 do a[i]=65 end for k=1,777777776 do ITER=k string.char(unpack(a)) end return 1`, 62},
 		{"string.byte over a range",
-			`local s=string.rep("a",4000) for k=1,777777776 do s:byte(1,4000) end return 1`},
+			`local s=string.rep("a",4000) for k=1,777777776 do ITER=k s:byte(1,4000) end return 1`, 131},
 		{"table.maxn",
-			`local t={} for i=1,4000 do t[i]=i end for k=1,777777776 do table.maxn(t) end return 1`},
+			`local t={} for i=1,4000 do t[i]=i end for k=1,777777776 do ITER=k table.maxn(t) end return 1`, 16},
 		// The two hash-probe shapes (maxn and unpack over non-integer keys) are asserted for
 		// boundedness only, in TestChargeBoundsHashProbeShapes -- their machine-to-machine variance
 		// exceeds the margin being asserted here.
 		{"loadstring over a large source",
-			`local src=string.rep("local x=1 ",20000) for k=1,777777776 do loadstring(src) end return 1`},
+			`local src=string.rep("local x=1 ",20000) for k=1,777777776 do ITER=k loadstring(src) end return 1`, 20},
 		// Positions the charge originally excluded. pos<1 shifts the WHOLE table (5.1's most
 		// expensive insert), and a position that narrows into range from 2^32+1 skipped the charge
 		// while the shift ran -- the charge read the raw float where the shift reads the narrowed
 		// int, so the two disagreed about which call they were describing.
 		{"insert below the start",
-			`local t={} for i=1,4000 do t[i]=i end for k=1,777777776 do table.insert(t,-100,0) table.remove(t) end return 1`},
+			`local t={} for i=1,4000 do t[i]=i end for k=1,777777776 do ITER=k table.insert(t,-100,0) table.remove(t) end return 1`, 120},
 		// A SINGLE insert just under the shift cap. Clamping the charged position to 1 discarded the
 		// span below index 1 -- exactly what makes a negative position expensive -- and gating the
 		// charge on the table being non-empty hid it completely, since the loop's span depends on
 		// pos and not on the table's length. One call walked ~134 million iterations in 2.4s with
 		// the budget untouched.
 		{"single insert just under the shift cap",
-			`local t={} table.insert(t,-134217726,0) return 1`},
+			`local t={} table.insert(t,-134217726,0) return 1`, -1},
 		{"insert at a wrapped position",
-			`local t={} for i=1,4000 do t[i]=i end for k=1,777777776 do table.insert(t,4294967297,0) end return 1`},
+			`local t={} for i=1,4000 do t[i]=i end for k=1,777777776 do ITER=k table.insert(t,4294967297,0) end return 1`, 122},
 		{"collectgarbage over a live heap",
-			`local keep={} for i=1,20000 do keep[i]={i} end for k=1,777777776 do collectgarbage() end return 1`},
+			`local keep={} for i=1,20000 do keep[i]={i} end for k=1,777777776 do ITER=k collectgarbage() end return 1`, 3},
 	} {
 		prog, err := wangshu.Compile([]byte(tc.src), "r")
 		if err != nil {
@@ -116,6 +124,23 @@ func TestConcatStormKeepsWatchdogMargin(t *testing.T) {
 			t.Errorf("%s: ran to completion; a 777-million-iteration concat loop must trip the budget",
 				tc.name)
 		}
+		// The machine-independent half, asserted in every build including -race. Each loop body
+		// stores its counter in ITER, so after the budget trips ITER is how many iterations it
+		// allowed. That count is fixed by the budget and the charges alone: it came out identical in
+		// the default, wangshu_profile and -race builds, and doubles when the budget doubles (gsub:
+		// 507 at 1<<16, 1015 at 1<<17, 8127 at 1<<20). So a raised budget or a loosened charge shows
+		// up here as a larger count on any machine, with none of the runner noise that the wall-clock
+		// bound below has to live with. Only the upper side is asserted: a stricter charge lowers the
+		// count and is not a regression. The 25% headroom absorbs small shifts in where the budget
+		// check lands; doubling the budget is far outside it.
+		if tc.maxIter >= 0 {
+			got := st.GetGlobal("ITER").Number()
+			if limit := float64(tc.maxIter) * 1.25; got > limit {
+				t.Errorf("%s: the budget allowed %v iterations, above the recorded %d (+25%%); the step "+
+					"budget or a charge was loosened -- if that is intended, re-measure the whole table",
+					tc.name, got, tc.maxIter)
+			}
+		}
 		// The wall-clock half. See watchdogMarginBound for which bound applies where.
 		//
 		// The first version of this test used a 1-second bound and an audit showed it passed with
@@ -127,41 +152,46 @@ func TestConcatStormKeepsWatchdogMargin(t *testing.T) {
 			t.Logf("%s: one Run took %v (not asserted in this build)", tc.name, elapsed.Round(time.Millisecond))
 			continue
 		}
+		t.Logf("%s: one Run took %v (bound %v)", tc.name, elapsed.Round(time.Millisecond), bound)
 		if elapsed > bound {
-			t.Errorf("%s: one Run took %v at the fuzz budget, above the %v bound; four of these "+
-				"would pass go-fuzz's 10s per-input watchdog on the fuzz runner, which is how "+
-				"#224/#225 were filed", tc.name, elapsed.Round(time.Millisecond), bound)
+			t.Errorf("%s: one Run took %v at the fuzz budget, above the %v bound; if the iteration "+
+				"count above passed, this operation got slower at the same billing, and four such Runs "+
+				"eat into go-fuzz's 10s per-input watchdog, which is how #224/#225 were filed",
+				tc.name, elapsed.Round(time.Millisecond), bound)
 		}
 	}
 }
 
 // watchdogMarginBound returns the ceiling for one Run and whether it is asserted at all.
 //
-// The quantity being protected is go-fuzz's 10s per-input watchdog on the nightly fuzz runner. Both
-// P4-leg harnesses share fuzzbudget.Steps; FuzzAutoPromote runs each input four times (two rounds, one
-// Run on each of two States) and FuzzP4ForceAllPromote twice, so the four-Run harness binds:
-// 10s / 4 = 2.5s per Run. Three builds, three answers:
+// This is the wall-clock half of the test. A raised budget or a loosened charge is caught by the
+// iteration count above in every build; what only a clock can catch is an operation that got slower
+// while billing the same. The quantity being protected is go-fuzz's 10s per-input watchdog on the
+// nightly fuzz runner. Both P4-leg harnesses share fuzzbudget.Steps; FuzzAutoPromote runs each input
+// four times (two rounds, one Run on each of two States) and FuzzP4ForceAllPromote twice, so the
+// four-Run harness binds: 10s / 4 = 2.5s is the most one Run may cost. Three builds, three answers:
 //
-//   - On the fuzz runner (WANGSHU_ON_FUZZ_RUNNER=1, set only by the nightly step that runs this test
-//     without -race): 2.5s. This measures the constraint directly on the machine it applies to, so no
-//     slowdown factor is assumed. It catches the regression the test exists for because at 1<<20 the
-//     fuzz runner itself took 12-13s for four Runs of the filed seeds (#224), over 3s per Run, and
-//     the gsub and loadstring shapes here cost more than those seeds. Only set it on that runner: a
-//     fast local machine runs the 1<<20 shapes at 2.2-2.7s, too close to 2.5s to tell apart.
+//   - On the fuzz runner (WANGSHU_ON_FUZZ_RUNNER=1, set only by the nightly p4 step that runs this test
+//     without -race): 800ms, about a third of that 2.5s. A bound AT 2.5s leaves no margin, which is
+//     what the "a limit must sit an order of magnitude from the watchdog" rule in 12 §4.9a2 forbids,
+//     and a PR review showed it passing with the budget raised to 1<<19. The expected cost there is a
+//     PROJECTION, not a measurement: the review measured 2.9-3.4s for gsub and loadstring at 1<<20 on
+//     a GitHub Linux runner, and cost scales with the budget (the local times do: gsub 135ms at 1<<16,
+//     2.13s at 1<<20), so about 0.2s at 1<<16. 800ms then flags roughly a 4x slowdown. The nightly
+//     step's log prints every shape's time, which is where the projection gets checked.
 //   - Locally without -race: 250ms, i.e. 2.5s scaled by the ~10x CI slowdown assumed when the budget
-//     was chosen (see fuzzbudget.Steps).
+//     was chosen (see fuzzbudget.Steps). The slowest shapes take about 140ms here.
 //   - Under -race: not asserted, only logged. -race instruments every memory access and ran these
 //     shapes about 10x slower, and the fuzz harness never runs with it, so the time measures the race
 //     detector and the runner's load rather than the budget. A 2.5s -race bound failed on macos-latest
 //     at 2.538s with no code change (2026-09-26), about 1.8x the local -race time, against the 16x
-//     runner-to-runner spread already observed on shared CI (llmdoc 2026-08-09 wall-clock audit). The
-//     budget must still trip in every build; only the timing half is dropped here.
+//     runner-to-runner spread already observed on shared CI (llmdoc 2026-08-09 wall-clock audit).
 func watchdogMarginBound() (bound time.Duration, enforced bool) {
 	if bulkRaceBuild {
 		return 0, false
 	}
 	if os.Getenv("WANGSHU_ON_FUZZ_RUNNER") == "1" {
-		return 2500 * time.Millisecond, true
+		return 800 * time.Millisecond, true
 	}
 	return 250 * time.Millisecond, true
 }
