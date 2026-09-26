@@ -1,15 +1,15 @@
 # P1:conformance 测试 + 层间差分 fuzz + 基准
 
-> 状态:**设计阶段,可实现深度**。本文是**全 P1 文档集的「验收口径收口点」**:几乎每一篇 P1 文档
+> 状态:**设计阶段,可实现深度**。本文是**全 P1 文档集的「验收口径汇总点」**:几乎每一篇 P1 文档
 > 都把某些「这条行为差分时算不算一致 / 该不该逐字节比 / 措辞以谁为准」的口径问题**指向了 12**,
-> 本文逐条收口(见 §10 验收口径总表——**本文存在的核心理由**)。它同时定义三套测试机制:
+> 本文逐条定稿(见 §10 验收口径总表——**本文存在的核心理由**)。它同时定义三套测试机制:
 > conformance 套(对官方 Lua 5.1 语义)、层间逐字节差分 fuzz(roadmap §5 原则 2 的**主防线**)、
 > 基准(性能验收 ≥2x over gopher-lua)。
 >
-> 上游契约:`docs/design/roadmap.md` (§1 校准测量 / §4 P1 验收「三档脚本 ≥2x、与 gopher-lua 差分
+> 上游约定:`docs/design/roadmap.md` (§1 校准测量 / §4 P1 验收「三档脚本 ≥2x、与 gopher-lua 差分
 > 输出逐字节一致」/ §5 原则 2「层间逐字节差分是防投机错误静默错果的主防线,持续 fuzz」)、
-> [architecture](../architecture.md) §4 不变式 2(**层间逐字节差分是 CI 必过门禁**)。
-> 被收口的下游:[01](./01-value-object-model.md) §8、[02](./02-bytecode-isa.md) §10、
+> [architecture](../architecture.md) §4 不变式 2(**层间逐字节差分是 CI 必过检查**)。
+> 由本文定稿其待定项的下游:[01](./01-value-object-model.md) §8、[02](./02-bytecode-isa.md) §10、
 > [03](./03-frontend-lexer.md) §13、[04](./04-frontend-parser-codegen.md) §13、
 > [05](./05-interpreter-loop.md) §2.2/§4.6/§13、[06](./06-memory-gc.md) §9.3/§11/§13、
 > [07](./07-metatables-metamethods.md) §11、[09](./09-errors-pcall.md) §9.3、[10](./10-stdlib.md) §13。
@@ -24,8 +24,8 @@
 
 P1 的每篇文档都有一条共同的话术:**「语义对齐 Lua 5.1,任何疑义以参考实现为准,由差分测试钉死」**。
 这把「正确性的最终判据」从「文档作者的判断」外移到「**一台官方 Lua 5.1 与一份 gopher-lua,跑同一脚本,
-比对输出**」。本文就是这套外移判据的工程化:把「钉死」二字落成可运行的 harness、可入库的 golden、
-可纳入 CI 的门禁。
+比对输出**」。本文就是这套外移判据的工程化:把「钉死」二字做成可运行的 harness、可入库的 golden、
+可纳入 CI 的必过检查。
 
 三套机制的分工(金字塔自下而上,§1 给图):
 
@@ -33,12 +33,12 @@ P1 的每篇文档都有一条共同的话术:**「语义对齐 Lua 5.1,任何�
 |---|---|---|---|---|
 | **单元测试** | 各 `internal/*` 包内 `*_test.go` | 包内不变式(round-trip、边界) | 单元逻辑错误 | 构建顺序每步「单测通过」([architecture](../architecture.md) §5) |
 | **conformance** | `test/conformance` | 脚本输出 == 官方 Lua 5.1 输出 | **语义错误**(与官方行为分叉) | §4「Lua 5.1 conformance 测试套」 |
-| **差分 fuzz** | `test/difftest` | 望舒输出 == gopher-lua 输出 == 官方输出(逐字节,**随机脚本**) | **投机错误静默错果**(JIT 最危险 bug 类、GC 漏根、IC 失效漏) | §5 原则 2「层间逐字节差分主防线,持续 fuzz」 |
+| **差分 fuzz** | `test/difftest` | 望舒输出 == gopher-lua 输出 == 官方输出(逐字节,**随机脚本**) | **投机出错导致结果静默错误**(JIT 最危险 bug 类、GC 漏根、IC 失效漏) | §5 原则 2「层间逐字节差分主防线,持续 fuzz」 |
 | **基准** | `benchmarks/baseline` | 三档脚本 ns/op ≤ gopher-lua / 2 | **性能不达标**(白做) | §4「三档脚本全部 ≥2x over gopher-lua」 |
 
 **为什么 conformance 与差分 fuzz 是两件事**(常被混为一谈):
 - conformance 是**固定的、人写的、有意覆盖语义角落**的用例集(像官方 `attrib.lua` 那样精心构造),用例数有限但**针对性强**,断言往往是「这段脚本应输出这几行」。它测「**我们知道该测什么**」。
-- 差分 fuzz 是**随机生成海量脚本**,自己不知道正确答案,**靠第三方(官方/gopher-lua)当 oracle**判对错。它测「**我们没想到要测什么**」——投机错误、GC 时机依赖的偶发崩溃、IC 在某种罕见访问序下的失效,都是人写不出针对用例、只能靠随机量撞出来的。roadmap §5 原则 2 点名「**持续 fuzz**」正是因为这类 bug 无法用有限用例穷尽。
+- 差分 fuzz 是**随机生成海量脚本**,自己不知道正确答案,**靠第三方(官方/gopher-lua)当 oracle**判对错。它测「**我们没想到要测什么**」——投机错误、GC 时机依赖的偶发崩溃、IC 在某种罕见访问序下的失效,都是人写不出针对用例、只能靠大量随机输入碰出来的。roadmap §5 原则 2 点名「**持续 fuzz**」正是因为这类 bug 无法用有限用例穷尽。
 
 两者互补,缺一不可:conformance 给「已知语义」兜底,差分 fuzz 给「未知错误」撒网。
 
@@ -75,17 +75,17 @@ P1 的每篇文档都有一条共同的话术:**「语义对齐 Lua 5.1,任何�
 - **差分 fuzz 是异常宽的腰**:它不是金字塔尖的「少量 e2e」,而是**持续运行、海量随机**的主防线(roadmap §5 把它列为五条贯穿原则之一)。它的「宽」体现在**运行时长 × 随机种子数**,而非用例文件数。
 - **基准在顶**:数量最少(三档脚本),但**验收权重最高**(不达 2x 则 P1 不成立)。
 
-> **职责不重叠纪律**:同一个 bug 应优先被**更低层、更快、更可定位**的测试抓住。差分 fuzz 撞出 bug 后,应回写一条**确定性 conformance 用例**(把触发它的随机脚本最小化后入库),让回归不依赖再次随机撞中(§3.6 最小化)。这是「fuzz 撒网 → conformance 固化」的闭环。
+> **职责不重叠纪律**:同一个 bug 应优先被**更低层、更快、更可定位**的测试抓住。差分 fuzz 发现 bug 后,应回写一条**确定性 conformance 用例**(把触发它的随机脚本最小化后入库),让回归不依赖再次随机命中(§3.6 最小化)。这是「fuzz 撒网 → conformance 固化」的闭环。
 
 > **方向性纪律:fuzz seed 是单向的,官方测试套是双向的**(#228,2026-08-04)。差分 fuzz 报的是
-> 「望舒抬了而 lua5.1 没抬」(或反过来)的某**一个**具体输入,而一次语义边界的移动**同时改变边界两侧的
+> 「望舒报错了而 lua5.1 没报」(或反过来)的某**一个**具体输入,而一次语义边界的移动**同时改变边界两侧的
 > 行为**;官方套(§2.1 的 `pm.lua` 等)同时断言哪些必须成功、哪些必须失败,因为它就是为「这个边界在哪」
-> 写的。实证:把 `unfinished capture` 从收集时抬改成读取时抬,第一版漏了「表替换无条件读捕获 1」这一侧,
-> `gsub("alo","(.",{})` 本该抬错却成功——抓到它的是 `test/luasuite/testdata/pm.lua:193` 的
-> `assert(not pcall(string.gsub, "alo", "(.", {}))`,oracle 的那个 seed 只覆盖「不该抬错」这一侧。
-> **判据**:改动一个语义边界(接受面 / 抬错时机 / 默认值 / 上限)之后,除了 seed 与差分测试,必须跑
+> 写的。实例:把 `unfinished capture` 从收集时报错改成读取时报错,第一版漏了「表替换无条件读捕获 1」这一侧,
+> `gsub("alo","(.",{})` 本该报错却成功——抓到它的是 `test/luasuite/testdata/pm.lua:193` 的
+> `assert(not pcall(string.gsub, "alo", "(.", {}))`,oracle 的那个 seed 只覆盖「不该报错」这一侧。
+> **判据**:改动一个语义边界(接受面 / 报错时机 / 默认值 / 上限)之后,除了 seed 与差分测试,必须跑
 > `test/luasuite`;自查办法是问「新边界那一侧的用例来自哪里」——全部来自 fuzz seed 就说明只测了一侧
-> (语义落点 [10](./10-stdlib.md) §6.4.1,方法论落点
+> (语义部分写在 [10](./10-stdlib.md) §6.4.1,方法论部分写在
 > `llmdoc/guides/cross-backend-semantic-fix-sweep.md`「PUC 语义由 C 实现定义」第六个刻度)。
 
 ---
@@ -134,7 +134,7 @@ Lua 5.1 官方发行带一套测试脚本(`test/` 目录:`attrib.lua`/`calls.lua
 上面 §2.1 是**策略预判**,写在实现之前。这一节记**实测的现状**,因为「官方 Lua 测试套件通过」
 这句话在本仓文档与 README 里长期不带覆盖率,而它传达的信心远超它的证据。
 
-实现落在 `test/luasuite/`,不是 §2.3 那个 `test/conformance/` 目录结构(那份是设计稿的组织方案)。
+实现放在 `test/luasuite/`,不是 §2.3 那个 `test/conformance/` 目录结构(那份是设计稿的组织方案)。
 判据表是 `test/luasuite/luasuite_test.go` 的 `stopAt`:值 0 表示整文件跑,正数表示只执行
 `[1, stopAt)` 这些行,截断理由逐条写在表里的注释上,每条指向豁免登记
 (`test/difftest/corners_test.go::exemptions`)。
@@ -169,7 +169,7 @@ Lua 5.1 官方发行带一套测试脚本(`test/` 目录:`attrib.lua`/`calls.lua
 对照组说明这个手法是灵敏的:`sort.lua` / `nextvar.lua` / `gc.lua` / `pm.lua` / `vararg.lua`
 执行的断言次数都在几十到十几万这个量级。
 
-**引用口径(本节最有用的产出)**:
+**引用规则(本节最有用的产出)**:
 
 - 拿套件当覆盖度证据前,先读一遍 `stopAt` 表;`grep -l <feature> test/luasuite/testdata/`
   命中之后**还要确认那一行在 `stopAt` 之前** —— 落在截断之后的等于没被覆盖。
@@ -185,9 +185,9 @@ Lua 5.1 官方发行带一套测试脚本(`test/` 目录:`attrib.lua`/`calls.lua
 
 ### 2.2 自写针对性用例:补官方覆盖不到的角落
 
-官方套覆盖语义主体,但**望舒特有的实现决策**需要自写用例钉死(官方套不会测这些,因为它们是望舒的实现选择):
+官方套覆盖语义主体,但**望舒特有的实现决策**需要自写用例固定下来(官方套不会测这些,因为它们是望舒的实现选择):
 
-| 自写用例组 | 钉死什么 | 来源文档 |
+| 自写用例组 | 固定什么 | 来源文档 |
 |---|---|---|
 | `arith_boundary` | `%.14g` 边界(`0.1`/`1e300`/`-0.0`/`1/0`/`0/0`)、`MOD`=`a-floor(a/b)*b`、整数循环 `2^53` 精度 | [05](./05-interpreter-loop.md) §4.1/§4.6 |
 | `table_order_stable` | 「键集确定」用例的 `pairs` 序(严格口径,§4.1) | [06](./06-memory-gc.md) §9.3 |
@@ -256,7 +256,7 @@ func runWangshu(t *testing.T, script string) capture {
 
 ### 2.5 单元层的「黄金字节码」差分测试(承 04 §1.1)
 
-[04](./04-frontend-parser-codegen.md) §1.1 选 AST 双遍路线的**首要理由就是「差分测试要稳定可预测的寄存器分配」**,并在 §10 给了与 [02](./02-bytecode-isa.md) §8 逐字节一致的端到端示例。这条**寄存器分配同构**承诺在 `internal/frontend/compile` 的单元层用**黄金字节码测试**钉死(不进 conformance,属包内单测,但口径由本文统一):
+[04](./04-frontend-parser-codegen.md) §1.1 选 AST 双遍路线的**首要理由就是「差分测试要稳定可预测的寄存器分配」**,并在 §10 给了与 [02](./02-bytecode-isa.md) §8 逐字节一致的端到端示例。这条**寄存器分配同构**承诺在 `internal/frontend/compile` 的单元层用**黄金字节码测试**锁定(不进 conformance,属包内单测,但口径由本文统一):
 
 ```go
 // internal/frontend/compile/codegen_golden_test.go
@@ -269,7 +269,7 @@ func TestCodegenGolden(t *testing.T) {
 }
 ```
 
-**为什么寄存器分配同构是差分的前提**(收口 04 §1.1/§10):层间差分(P3+)要求「同一 Proto 在不同 tier 输出 byte-equal」,而 Proto 是 codegen 产物;若望舒 codegen 与官方 luac 的**寄存器分配不同构**,虽然「望舒解释器 vs gopher-lua」差分仍可成立(两者各跑各的 Proto,只比最终输出),但**「望舒 Proto dump vs 官方 luac dump」这一更强的早期差分测试**就失效。P1 用黄金字节码把 codegen 锁成与 [02](./02-bytecode-isa.md) §8 / [04](./04-frontend-parser-codegen.md) §10.3 一致,使「字节码层差分」可在单元层提前暴露 codegen 偏差,而不必等到运行期输出才发现。**注意**:与 gopher-lua 的运行期差分**不要求** Proto 逐字节相同(gopher-lua opcode 不同),只要求最终可观察输出相同;Proto 差分测试是对**官方 luac**(同一寄存器式 5.1 ISA 家族)的更强约束,且仅用于自检 codegen,不是 CI 硬门禁。
+**为什么寄存器分配同构是差分的前提**(回应 04 §1.1/§10):层间差分(P3+)要求「同一 Proto 在不同 tier 输出 byte-equal」,而 Proto 是 codegen 产物;若望舒 codegen 与官方 luac 的**寄存器分配不同构**,虽然「望舒解释器 vs gopher-lua」差分仍可成立(两者各跑各的 Proto,只比最终输出),但**「望舒 Proto dump vs 官方 luac dump」这一更强的早期差分测试**就失效。P1 用黄金字节码把 codegen 锁成与 [02](./02-bytecode-isa.md) §8 / [04](./04-frontend-parser-codegen.md) §10.3 一致,使「字节码层差分」可在单元层提前暴露 codegen 偏差,而不必等到运行期输出才发现。**注意**:与 gopher-lua 的运行期差分**不要求** Proto 逐字节相同(gopher-lua opcode 不同),只要求最终可观察输出相同;Proto 差分测试是对**官方 luac**(同一寄存器式 5.1 ISA 家族)的更强约束,且仅用于自检 codegen,不是 CI 强制检查。
 
 ### 2.6 官方 oracle 版本锁定
 
@@ -283,9 +283,9 @@ func TestCodegenGolden(t *testing.T) {
 
 > roadmap §5 原则 2:**「每个执行层的输出与解释器 byte-equal,持续 fuzz;这是防『投机错误静默错果』
 > (JIT 最危险 bug 类别)的主防线」**。[architecture](../architecture.md) §4 不变式 2:**「层间逐字节
-> 差分是 CI 必过门禁」**。本节是这两条的工程化。
+> 差分是 CI 必过检查」**。本节是这两条的工程化。
 
-### 3.1 可观察输出的精确定义(关键收口)
+### 3.1 可观察输出的精确定义(关键定稿)
 
 差分的全部意义在于「比对**可观察输出**」。但「输出」不是只有 print——必须精确定义比对面,否则要么漏掉差异(比对面太窄),要么把本质不可比的东西纳入(比对面太宽,假阳性淹没真 bug)。**定稿:可观察输出 = 下列五项的有序合并**:
 
@@ -310,7 +310,7 @@ func TestCodegenGolden(t *testing.T) {
 东西。**这是「因为错误的原因而变绿」,与一条掩盖了整类输入的 skip(§4.9c)是同一种失效方式**,而且更
 安静:skip 至少丢掉了具体的输入,这个洞是「这类输出在所有输入上都不再被比较」且不留任何迹象。修法是
 在 prelude 里把 file-handle 的 `:write` 也接到 `io.write` 用的那个累加器上(`io.stderr` 的写入丢弃而不
-累积,与 harness 别处只比 stdout 的口径一致)。
+累积,与 harness 别处只比 stdout 的做法一致)。
 
 **纪律**:给运行时加任何写外部世界的 API 之后,同一轮把它接进 prelude 的累加器,并写一个「经新路径输出 +
 经老路径输出」的用例确认捕获结果里**两段都在**。判据不是「测试绿了」,是能在捕获输出里逐字节看到新路径
@@ -394,7 +394,7 @@ func normalize(out string, opts normOpts) string {
 
 ### 3.6 失败用例最小化(fuzz → conformance 固化)
 
-fuzz 撞出差异后,随机脚本通常很大、含无关噪声。harness 自带**最小化(delta-debugging / shrinking)**:对失败脚本反复「删一段/简化一个字面量 → 是否仍触发差异」,收敛到最小复现。最小化后的脚本:① 写进失败报告(便于人读);② **固化为一条确定性 conformance 用例**(§1 末尾「fuzz 撒网 → conformance 固化」闭环)入 `own/`,golden = 官方输出。这样同一 bug 的回归不再依赖随机种子撞中。
+fuzz 发现差异后,随机脚本通常很大、含无关噪声。harness 自带**最小化(delta-debugging / shrinking)**:对失败脚本反复「删一段/简化一个字面量 → 是否仍触发差异」,收敛到最小复现。最小化后的脚本:① 写进失败报告(便于人读);② **固化为一条确定性 conformance 用例**(§1 末尾「fuzz 撒网 → conformance 固化」闭环)入 `own/`,golden = 官方输出。这样同一 bug 的回归不再依赖随机种子碰巧命中。
 
 ```go
 // test/difftest/shrink.go
@@ -457,7 +457,7 @@ func (g *Gen) genExpr(prec int) string {
 - **语义约束内建**:`break` 仅 `inLoop`、`...` 仅 `vararg`、深度上限——让生成的脚本**大概率执行成功**(而非编译失败),把 fuzz 算力投到执行差异上。
 - **偏向「分配密集」**(table 构造、字符串 concat、闭包)以同时喂 GC 压力 fuzz(§6)。
 
-**(b)种子变异(mutation-based,补充)**——以 conformance 套和真实脚本(首个宿主的规则脚本)为**种子**,做小变异(改常量、换运算符、删/复制语句、调换顺序)。变异保留大部分结构,容易生成「接近真实但有微妙差异」的脚本,擅长撞「真实负载边界」的 bug。变异后**校验语法合法**(过 parser),非法则丢弃或回退。
+**(b)种子变异(mutation-based,补充)**——以 conformance 套和真实脚本(首个宿主的规则脚本)为**种子**,做小变异(改常量、换运算符、删/复制语句、调换顺序)。变异保留大部分结构,容易生成「接近真实但有微妙差异」的脚本,擅长触发「真实负载边界」的 bug。变异后**校验语法合法**(过 parser),非法则丢弃或回退。
 
 > P1 优先 (a)(覆盖语言子集系统、有效率高),(b) 作为「真实负载导向」补充。两者共用 §3.3 的三方比对与 §3.6 最小化。生成器**自身的语言子集约束**随 stdlib 实现推进而放宽(P1 早期只生成核心语言,stdlib 就绪后加入库调用)。
 
@@ -512,7 +512,7 @@ func DiffN(src string, runners ...Runner) DiffResult { /* N 方比对,§3.3 矩�
 
 - **跳过集合与 p1 目标完全相同**(两侧资源上限、NUL 字节、非有限的 `error()` level、
   实现常数类护栏)。加一个 tier 专属的跳过是让这个目标变绿最容易的办法,也是让它变得
-  毫无价值的办法 —— 「tier 与 PUC 分歧而 p1 不分歧」正是它存在的理由,不能可跳过。
+  毫无价值的办法 —— 「tier 与 PUC 分歧而 p1 不分歧」正是它存在的理由,不能被跳过。
 - **提升必须被断言,不能假设**。`FuzzOracleDiff` **本来就能在 tier tag 下编译并通过**:
   它构造的是普通 `State`,tier 代码被链接进来但从未进入。所以一个忘记提升的分层 harness
   与一个通过的测试在输出上完全一样,连一条 skip 都不留。配套断言与它自己的两个已知弱点
@@ -528,11 +528,11 @@ func DiffN(src string, runners ...Runner) DiffResult { /* N 方比对,§3.3 矩�
 
 ---
 
-## 4. 不确定性源的处理(逐条收口各文档指向 12 的口径)
+## 4. 不确定性源的处理(逐条定稿各文档指向 12 的口径)
 
 这是 §10 总表的展开论证。每一项都明确:**哪个文档哪节提出 → 12 的最终决策 → 理由 + 机制**。
 
-### 4.1 pairs / next 遍历序(最重要的收口,承 06 §9.3/§11、01 §8、02 §10、07 §11、10 §13.1)
+### 4.1 pairs / next 遍历序(最重要的定稿项,承 06 §9.3/§11、01 §8、02 §10、07 §11、10 §13.1)
 
 **问题来源**:`pairs`/`next` 的遍历顺序由表的 node 段布局决定,而布局取决于①字符串键的哈希值②`hmask`(node 段大小)③rehash 算法④Brent 冲突链让位⑤数组段与哈希段拼接顺序。Lua 语义**允许** `pairs` 序未定义。多篇文档把「`pairs` 序是否要求逐字节一致」明确标为「验收口径问题,由 12 定」:[01](./01-value-object-model.md) §8、[02](./02-bytecode-isa.md) §10、[06](./06-memory-gc.md) §9.3/§11/§13、[07](./07-metatables-metamethods.md) §11、[10](./10-stdlib.md) §13.1。
 
@@ -549,7 +549,7 @@ func DiffN(src string, runners ...Runner) DiffResult { /* N 方比对,§3.3 矩�
 
 **「键集确定」的自动判定**(生成器侧):语法制导生成器(§3.7)在生成涉及 `pairs` 的脚本时,**标注**该 `pairs` 的目标表是否「键集确定」(生成器知道自己有没有插入依赖时机的增删)。确定 → 严格;不确定 → 生成时就给该 `pairs` 输出包一层 `sort`(脚本层排序)或在 normalize 标记排序。conformance 自写用例(`table_order_stable`)显式构造「键集确定」场景走严格口径。
 
-> **收口结论一句话**:`pairs` 序**默认严格逐字节**(用满哈希一致性探针),**仅对「遍历序本质未定义」的用例排序豁免**。这把 [06](./06-memory-gc.md) §9.3 锁死的哈希环价值最大化,同时挡住假阳性。`cleartable`(弱表清死键,[07](./07-metatables-metamethods.md) §1165)影响 `pairs` 序的项归入「本质未定义」(键的存活依赖 GC 时机)→ 排序豁免。
+> **定稿结论一句话**:`pairs` 序**默认严格逐字节**(用满哈希一致性探针),**仅对「遍历序本质未定义」的用例排序豁免**。这把 [06](./06-memory-gc.md) §9.3 锁死的哈希环价值最大化,同时挡住假阳性。`cleartable`(弱表清死键,[07](./07-metatables-metamethods.md) §1165)影响 `pairs` 序的项归入「本质未定义」(键的存活依赖 GC 时机)→ 排序豁免。
 
 ### 4.2 数字 → 字符串格式(承 05 §4.6/§13、03 §11.x、07 §730、10 §13.1)
 
@@ -580,7 +580,7 @@ func DiffN(src string, runners ...Runner) DiffResult { /* N 方比对,§3.3 矩�
 ```
 
 - 脱敏**只抹地址数字,保留类型前缀**——这样「`tostring(t)` 返回的是 table 而非 function」这一**类型信息仍被差分**(类型错了仍能抓),只放过不可比的地址值。
-- **有 `__tostring` 元方法**时,`tostring` 走元方法返回自定义串([07](./07-metatables-metamethods.md)),那是确定性输出,**不脱敏、严格比**——�crubbing 只针对「默认地址格式」。
+- **有 `__tostring` 元方法**时,`tostring` 走元方法返回自定义串([07](./07-metatables-metamethods.md)),那是确定性输出,**不脱敏、严格比**——脱敏只针对「默认地址格式」。
 - 生成器对「裸 print table」可选择性减少(降低脱敏依赖),但不禁止(豁免管线已处理)。
 
 ### 4.3a 地址归一化的两条能力边界(#232 / #233,2026-08-05)
@@ -599,10 +599,10 @@ func DiffN(src string, runners ...Runner) DiffResult { /* N 方比对,§3.3 矩�
 
 `preludeSortedIter` 用的是**包装前**的 `tostring`(直接用 `preludeGuards` 里那个 local —— `Prelude()` 把各段拼成**同一个 Lua chunk**,那个 local 本来就还在作用域内):用包装后的会让更多键取值相同、改变它本该稳定的顺序;
 而**改用全局**两次都更糟:漏进保留列表时,裁剪(第 4 层)在排序装好(第 5 层)之前跑,
-比较器每次调用都抬「attempt to call a nil value」,两侧对称抬错、harness 判 PASS,
+比较器每次调用都报「attempt to call a nil value」,两侧对称报错、harness 判 PASS,
 把它后面的一切比较都掩盖掉;补进保留列表之后,那个全局又把**未归一的 PUC 渲染器**交到脚本手里 ——
 `#__ORACLE_RAW_TOSTRING(io.stdout)` 是 21 对 17,恰好把 #233 要关的那条分歧重新打开,
-而脚本只要遍历一遍全局就能撞到。最终答案是**不需要任何跨 chunk 机制**。
+而脚本只要遍历一遍全局就能碰到。最终答案是**不需要任何跨 chunk 机制**。
 
 **边界二:前缀锚点无法用局部上下文区分「引擎渲染」与「脚本自己写的同形文本」。**
 `addrRe` 只匹配地址**本体**,前缀由 `NormalizeOutput` 在 Go 侧按 `FindAllStringIndex` 的真实偏移
@@ -651,10 +651,10 @@ func DiffN(src string, runners ...Runner) DiffResult { /* N 方比对,§3.3 矩�
 | 层级 | 口径 | 理由 |
 |---|---|---|
 | **错误类型**(算术错 / 索引错 / 调用错 / 语法错 / stack overflow) | **严格一致** | 类型是语义,差分必须抓「该报错却不报 / 报错类型不对」 |
-| **错误位置**(`chunk:line:` 前缀、`[C]:`、traceback 每行行号) | **严格逐字节** | 位置是 5.1 明确行为,行号错是真 bug([09](./09-errors-pcall.md) §314 用多行脚本钉死);traceback 的 `(...tail calls...)`/`[C]: in function 'x'` 结构严格 |
+| **错误位置**(`chunk:line:` 前缀、`[C]:`、traceback 每行行号) | **严格逐字节** | 位置是 5.1 明确行为,行号错是真 bug([09](./09-errors-pcall.md) §314 用多行脚本锁定);traceback 的 `(...tail calls...)`/`[C]: in function 'x'` 结构严格 |
 | **精确措辞**(冠词 `a`/`an`、单复数、标点、`got no value` 等) | **P1 目标逐字节对齐官方**;**已知不可对齐项进豁免清单** | 措辞 95% 可对齐(移植 5.1 消息模板);少数平台/版本相关措辞(libc errno 文本、`os` 错误)进豁免 |
 
-**措辞对齐的实现路径**:望舒的错误消息模板**逐字移植 Lua 5.1 源码**的格式串(`lvm.c`/`ldebug.c`/`lauxlib.c` 的 `luaG_*`/`luaL_*` 消息)。差分套件用**错误措辞笛卡尔积用例**(每种错误 × 各种触发上下文)差分测试官方,撞出的措辞差异**逐条修正模板**直到对齐。**无法对齐的(豁免清单,§4.8 维护)**:
+**措辞对齐的实现路径**:望舒的错误消息模板**逐字移植 Lua 5.1 源码**的格式串(`lvm.c`/`ldebug.c`/`lauxlib.c` 的 `luaG_*`/`luaL_*` 消息)。差分套件用**错误措辞笛卡尔积用例**(每种错误 × 各种触发上下文)差分测试官方,发现的措辞差异**逐条修正模板**直到对齐。**无法对齐的(豁免清单,§4.8 维护)**:
 - libc 相关错误文本(`io.open` 失败的 errno 描述,纯 Go 与 C 不同)→ 脱敏错误细节,只比错误类型 + 「io 操作失败」结构。
 - gopher-lua 自身措辞偏差(它的消息可能与官方 5.1 不完全一致)→ 以官方为准,gopher 在该措辞点豁免。
 
@@ -678,7 +678,7 @@ func DiffN(src string, runners ...Runner) DiffResult { /* N 方比对,§3.3 矩�
 - 阈值选择口径:取「实际工程使用的上限 × 一个数量级」并圆整到 2^N。
   - **`string.rep`**:`len(s) * n > 1<<30`(1 GiB)→ `"string length overflow"`
   - **`string.format`**:width / precision > `1<<30` → `"invalid format width/precision"`
-- `table.concat`:**上限已删除**(2026-07-28)——原先按 `j - i > 1<<24` 抬 `table.concat range too large`,但那个判据量错了东西:concat 的遍历停在第一个非字符串/数字元素上,而表在 border+1 处是 nil,所以代价是 `min(j, border+1) - i`、永远不是 `j - i`,**数据本身就是上限**。按 j 设的上限于是拒绝了 PUC 微秒级完成的写法(`concat({"a","b"}, ",", 1, 1e14)` 两侧都报 `invalid value (nil) at index 3`)。连续三轮独立审计都点出它拒绝了合法输入,详见 §4.9b。
+- `table.concat`:**上限已删除**(2026-07-28)——原先按 `j - i > 1<<24` 报 `table.concat range too large`,但那个判据量错了东西:concat 的遍历停在第一个非字符串/数字元素上,而表在 border+1 处是 nil,所以代价是 `min(j, border+1) - i`、永远不是 `j - i`,**数据本身就是上限**。按 j 设的上限于是拒绝了 PUC 微秒级完成的写法(`concat({"a","b"}, ",", 1, 1e14)` 两侧都报 `invalid value (nil) at index 3`)。连续三轮独立审计都点出它拒绝了合法输入,详见 §4.9b。
 - 后续新增 hardening 阈值时统一沿用 1 GiB 量级(分配类)/ 1<<24 量级(循环类),除非有具体业务场景需求理由。
 
 **为什么不直接对位 PUC**:PUC Lua 是非嵌入式场景设计,`string.rep("k", 1e14)` 直接 OOM 是「设计行为」(脚本错让宿主死)。我们的承诺更高(嵌入式 VM,宿主进程一定不可崩),hardening 阈值是这个承诺的兑现。**首次踩坑**:fuzz corpus `testdata/fuzz/FuzzCompileRun/2abea9243c4e4b41`(`string.rep("k", 1e14)`)在 v0.1.3 区间外部审计阶段触发 Go runtime OOM fatal,fix 见对应 commit。
@@ -687,21 +687,21 @@ func DiffN(src string, runners ...Runner) DiffResult { /* N 方比对,§3.3 矩�
 
 #### 4.9a hardening 上限与 step budget 记账是两件事,一个函数可能两个都要(#222,2026-08-03)
 
-上面这些上限答的是「**这次调用会不会把宿主进程搞死**」,数值取「工程使用上限 × 一个数量级」,触发时抬
+上面这些上限答的是「**这次调用会不会把宿主进程搞死**」,数值取「工程使用上限 × 一个数量级」,触发时报
 Lua 错误。它们**答不了**另一个问题:一个紧循环里的批量构造函数,每次调用都远在上限之内、而循环整体
 搬运的字节数无界。step budget 原本只在 preempt 点每次加 1,所以那种循环每次迭代只扣常数步。
 
 `string.rep` 就同时需要两者:1 GiB 的 hardening 上限没变,而 `string.rep("abcdefgh",4096)` 的百万次
 循环在 `SetStepBudget(1 << 20)` 下跑 **21 秒**、**完全没有触发预算**——单次 `prog.Run` 就超过 Go fuzz
 的 10 秒 per-input 看门狗,而 `FuzzAutoPromote` 每输入跑四次 Run(concat 风暴 crasher 家族
-#123–#167 的一样的机制)。`string.format`(20 秒)与 `table.concat`(53 秒)同理。
+#123–#167 是同一种机制)。`string.format`(20 秒)与 `table.concat`(53 秒)同理。
 
 所以三者现在各自按**产出字节数**调 `crescent.State.ChargeBulkWork`,与 CONCAT 共用一个计量器
 (1 步 / 64 字节),21/20/53 秒变 46/90/70 毫秒且预算正确触发。**判据**:给一个能做与字节数成正比工作
 的库函数加限制时,分开问两件事——「单次调用会不会搞死进程」(hardening 上限)与「一个循环能不能在预算
 内搬无界字节」(记账),两个问题各有自己的答案,写了一个不等于另一个也有了。**这与 §4.9d 是两个维度**:
 那条讲两个**目的不同**的阈值该是两个数(正确性 vs 资源),本条讲两个**问题不同**的机制该都在场;而同一
-类资源的多个入口该共用一个计量器,方法论见 `llmdoc/guides/prove-the-path-under-test.md` §4.5d。落点与
+类资源的多个入口该共用一个计量器,方法论见 `llmdoc/guides/prove-the-path-under-test.md` §4.5d。实现位置与
 实测见 [10](./10-stdlib.md) §3.1a,回归 `test/regression/issue222_bulk_builder_test.go`。
 
 #### 4.9a2 一个预算「界住」还不够:它允许的量必须与外部看门狗差一个数量级(#224/#225,2026-08-04)
@@ -738,7 +738,7 @@ timeout、`go test -timeout`),而这些超时量的是 **wall-clock**、不是�
 最后那条是看门狗的**四倍**,比被修的 seed 还糟。根因是**等额计费不等于等额 wall-clock**:`gsub` 每次
 调用按大约两倍主串计费,可它要跑模式匹配、按匹配次数改写、再拼结果,实际工作远多于等额计费的一次
 concat。所以**预算要由「计费相同时最贵的写法」定,而不是由「恰好被开成 issue 的那个写法」定**;找候选
-沿着**计费口**枚举——凡是走同一个 `ChargeBulkWork` 的算子都写一个紧循环量一遍。`1<<16` 让上面最坏那条
+沿着**计费入口**枚举——凡是走同一个 `ChargeBulkWork` 的算子都写一个紧循环量一遍。`1<<16` 让上面最坏那条
 降到 **5.2 秒**、余量 **1.93 倍**,是第一个满足本节数量级判据的值。
 
 **判据**:定一个资源上限时,把「这个上限之下**可达**的最坏耗时」乘上目标机器的慢速倍率,再与那台机器上
@@ -771,9 +771,9 @@ arena 推到上限、`1<<16` 时没有,所以那条 arena-cap 错误分支在这
 
 | 分类 | 处理 | 本仓实例 |
 |---|---|---|
-| **有定义的 C** | **对齐**(把 C 的规则写进望舒) | `tonumber(s, base)` 非 10 进制走 C `strtoul`:负号在**无符号**算术里取反(`tonumber("-7",8)` 得 2^64-7、`("-ff",16)` 得 2^64-255)、溢出**饱和**到 `ULONG_MAX`(20 个 `f` 配 base 16 得 2^64-1)。落点 `internal/stdlib/stdlib.go`,在 uint64 里算完最后只转一次 float64(2^64-7 不是 float64 可表示的,先转 float 再取反会得到不同的值) |
-| **UB 且跨 arch 不一致** | 产品侧**钉参照平台**(x86-64)+ 差分侧**跳过那个区间** | ① `%u`/`%x`/`%o` 的 `(unsigned long long)(double)`(#158,`cUnsignedCast`);② `string.char` 的 `luaL_checkint` 越界 double→int(#193,`cCharCast`)——`luaL_checkint` 是 `(int)luaL_checkinteger`,double 先变 `lua_Integer` 再窄化成 int,x86-64 `cvttsd2si` 给 `INT64_MIN`(低 32 位 0,PUC 接受得 byte 0)、arm64 `FCVTZS` 把 `+inf` 饱和到 `INT64_MAX`(低 32 位 -1,PUC 报错)。skip 的执行体是 `internal/oracle/prelude.go` 的 sentinel |
-| **UB 且参照实现直接崩** | 差分侧**跳过那个区间**(产品侧无事可做) | `unpack` 的索引让 PUC **段错误**(#244):`luaB_unpack` 在 int 上算 `n = e - i + 1` 并用 `n <= 0` 检查,而这个减法本身是有符号溢出 UB —— gcc -O2 把该检查当不可达**删掉**,`lua_checkstack` 随后收到负的 `size` 并照单接受(`lapi.c` 两个比较都为假),于是崩掉;**同一份源码在 -O0 下干净抬错,所以这个崩溃依赖优化等级**。(此前这里写「回绕成正的巨大值绕过检查」是错的:`i <= e` 时 int32 回绕恒 `<= 0`。)内嵌 oracle 拿到 SIGSEGV(栈迹在 cgo 里)、真 `lua5.1` 二进制同样 dumped core,而望舒对整段抬 `too many results to unpack`、从不崩。**边界口径见 §4.9f** |
+| **有定义的 C** | **对齐**(把 C 的规则写进望舒) | `tonumber(s, base)` 非 10 进制走 C `strtoul`:负号在**无符号**算术里取反(`tonumber("-7",8)` 得 2^64-7、`("-ff",16)` 得 2^64-255)、溢出**饱和**到 `ULONG_MAX`(20 个 `f` 配 base 16 得 2^64-1)。实现位置 `internal/stdlib/stdlib.go`,在 uint64 里算完最后只转一次 float64(2^64-7 不是 float64 可表示的,先转 float 再取反会得到不同的值) |
+| **UB 且跨 arch 不一致** | 产品侧**固定参照平台**(x86-64)+ 差分侧**跳过那个区间** | ① `%u`/`%x`/`%o` 的 `(unsigned long long)(double)`(#158,`cUnsignedCast`);② `string.char` 的 `luaL_checkint` 越界 double→int(#193,`cCharCast`)——`luaL_checkint` 是 `(int)luaL_checkinteger`,double 先变 `lua_Integer` 再窄化成 int,x86-64 `cvttsd2si` 给 `INT64_MIN`(低 32 位 0,PUC 接受得 byte 0)、arm64 `FCVTZS` 把 `+inf` 饱和到 `INT64_MAX`(低 32 位 -1,PUC 报错)。skip 的执行体是 `internal/oracle/prelude.go` 的 sentinel |
+| **UB 且参照实现直接崩** | 差分侧**跳过那个区间**(产品侧无事可做) | `unpack` 的索引让 PUC **段错误**(#244):`luaB_unpack` 在 int 上算 `n = e - i + 1` 并用 `n <= 0` 检查,而这个减法本身是有符号溢出 UB —— gcc -O2 把该检查当不可达**删掉**,`lua_checkstack` 随后收到负的 `size` 并照单接受(`lapi.c` 两个比较都为假),于是崩掉;**同一份源码在 -O0 下干净地报错,所以这个崩溃依赖优化等级**。(此前这里写「回绕成正的巨大值绕过检查」是错的:`i <= e` 时 int32 回绕恒 `<= 0`。)内嵌 oracle 拿到 SIGSEGV(栈迹在 cgo 里)、真 `lua5.1` 二进制同样 dumped core,而望舒对整段报 `too many results to unpack`、从不崩。**边界的判定见 §4.9f** |
 
 **只跳 UB 区间,不要顺手把周边一起跳掉**:`string.char(2^53)` 输入大,但 int64 可表示,截断在 C 里有定义,所以照旧逐字节比对;跳过的只是 NaN 与超出 int64 范围那一段。in-range 的小数、负数、`[0,255]` 边界全部保持比对。
 
@@ -785,7 +785,7 @@ arena 推到上限、`1<<16` 时没有,所以那条 arena-cap 错误分支在这
 
 ### 4.9c 为某个 bug 加的 skip 必须随那个 bug 一起撤掉(#197,2026-07-28)
 
-`fuzz_oracle_test.go` 曾为 `error(msg, level)` 选帧错误加过一条 skip,按源码文本判定、**故意写宽**:任何提到 error 第二参数的输入一律跳过(`errorLevelAtLeastTwo`)。这条 skip 在当时是对的——那个 bug 不是能就地凑一个偏移解决的(见 [09](./09-errors-pcall.md) §3.2.1),而 fuzz 很容易撞到它。
+`fuzz_oracle_test.go` 曾为 `error(msg, level)` 选帧错误加过一条 skip,按源码文本判定、**故意写宽**:任何提到 error 第二参数的输入一律跳过(`errorLevelAtLeastTwo`)。这条 skip 在当时是对的——那个 bug 不是能就地凑一个偏移解决的(见 [09](./09-errors-pcall.md) §3.2.1),而 fuzz 很容易触发它。
 
 #197 修好之后这条 skip 必须撤,否则整个 level ≥ 2 的区间会一直不参与比对,**而它读起来像「已处理」**。撤掉后 24 种 error level 写法**零 skip** 参与比对;剩下的只跳「非有限 / 超出 int64 的 level」,那是 `luaL_checkint` 窄化的真 UB(§4.9b 第二格),函数同轮改名 `errorLevelUBRange`——旧名字描述的是已经不存在的理由,留着会把下一个读它的人引回错的模型。
 
@@ -865,7 +865,7 @@ seed 只能表达「这个输入不崩」,表达不了「那个决定还在」�
 §4.9c/§4.9d/§4.9e 分别讲一条 skip 什么时候该撤、用什么**数值**、盖到哪些**入口**;本节讲它的**区间形状**。
 
 `unpack` 的索引落在 int32 边界时 PUC 直接段错误(§4.9b 第三格),所以 prelude 包一层 `unpack`、落在崩溃
-窗口时抬 sentinel。现行守卫是 `i32 <= e32 且 (e32 - i32 + 1) > INT_MAX(e 默认 #t、可由第三参数覆盖)`,注释写明这个窗口是**实测**出来的
+窗口时抛出 sentinel。现行守卫是 `i32 <= e32 且 (e32 - i32 + 1) > INT_MAX(e 默认 #t、可由第三参数覆盖)`,注释写明这个窗口是**实测**出来的
 (只有 `-2147483648` 与 `-2147483647` 会崩)。**那些测量本身都是真的,但它们全部取自 `unpack({}, i)` 这
 一种写法,而 `{}` 让 `e = #t = 0`。** 崩溃条件里带着 `e`,所以窗口是一条**随 `e` 平移的界线**:
 
@@ -883,11 +883,11 @@ seed 只能表达「这个输入不崩」,表达不了「那个决定还在」�
 
 | 方向 | 实例 | 实测后果 |
 |---|---|---|
-| **太窄**(漏崩,已修) | `A(unpack({1,2,3},-2147483646))` / `A(unpack({},-1,2147483647))` | 经真实 `FuzzOracleDiff` 确认**整个测试二进制被 SIGSEGV 拿下**;真 `lua5.1` 二进制同样 dumped core。#244 的 crash 家族**还活着** |
+| **太窄**(漏崩,已修) | `A(unpack({1,2,3},-2147483646))` / `A(unpack({},-1,2147483647))` | 经真实 `FuzzOracleDiff` 确认**整个测试二进制因 SIGSEGV 崩溃**;真 `lua5.1` 二进制同样 dumped core。#244 的 crash 家族**还活着** |
 | **太宽**(漏比对,已修) | `unpack({1,2,3},4294967297)` 窄化成 `i32 = 1`、两侧都返回 3 | 经真实 `FuzzOracleDiff` 确认现在拿到 sentinel → **SKIP**,静默削掉覆盖面(§4.2 那类失效) |
 
 现行守卫读 `i` 与 `e` 两个量,窄化走 `__ckint0`(`luaL_checkint` 自己那条链),
-且 `math.floor` / `tonumber` 都在脚本运行前捕获成 local —— 第三轮审计发现读活全局时,
+且 `math.floor` / `tonumber` 都在脚本运行前捕获成 local —— 第三轮审计发现守卫读取运行时的全局变量时,
 一个 `math.floor = function() return 0 end` 的输入就能把守卫算成 0、让 oracle 段错误,
 **即守卫可以被它所守卫的输入绕开**。用例见 `internal/oracle/unpack_guard_test.go`
 (13 条必须 skip(含 5 条「脚本试图改写窄化助手」的绕过尝试)、12 条必须仍比较,两个方向都用变异确认过)。
@@ -905,7 +905,7 @@ issue**,都不指着守卫说话。并且注意**窄化之后的值才是判据�
 
 ---
 
-## 5. GC 压力 fuzz(收口 06 §11/§6.3/§5.2、10 §13.3)
+## 5. GC 压力 fuzz(回应 06 §11/§6.3/§5.2、10 §13.3)
 
 > [06](./06-memory-gc.md) §11 把 GC 压力 fuzz 列为「§6.3 shadow stack 纪律、§5.2 mark 完整性的**主要自动化防线**」,
 > 并明确「对 12 的接口要求(本文提出,12 定稿)」。[10](./10-stdlib.md) §13.3 把它列为「捕获 stdlib shadow
@@ -922,7 +922,7 @@ GC 压力 fuzz = **把 GCPAUSE 设到极小(每次 / 每几次分配就 full GC)
 
 ### 5.2 为什么高频 GC 是这类 bug 的「必现」手段
 
-[06](./06-memory-gc.md) §6.3 点破:漏 push shadow stack / mark 漏扫**在正常 pacing 下偶发**——GC 恰好在「对象被持有但未上根」的窗口触发的概率很低,bug 偶现、极难复现、是「最难调的 bug 类」。**高频 GC 把概率拉到 1**:若每次分配都 full GC,那么「分配 B 时 A 还在 Go 局部未上根」的窗口**必然撞上一次 GC**——漏 push 的 A 必被回收,后续用 A 必崩(或脏读)。同理 mark 漏扫的字段,每轮 GC 都重新标记,漏扫的对象**每次**都成死白被回收。**把偶发 bug 变成确定 bug**,这是 GC 压力 fuzz 的全部价值。
+[06](./06-memory-gc.md) §6.3 点破:漏 push shadow stack / mark 漏扫**在正常 pacing 下偶发**——GC 恰好在「对象被持有但未上根」的窗口触发的概率很低,bug 偶现、极难复现、是「最难调的 bug 类」。**高频 GC 把概率拉到 1**:若每次分配都 full GC,那么「分配 B 时 A 还在 Go 局部未上根」的窗口**必然遇上一次 GC**——漏 push 的 A 必被回收,后续用 A 必崩(或脏读)。同理 mark 漏扫的字段,每轮 GC 都重新标记,漏扫的对象**每次**都成死白被回收。**把偶发 bug 变成确定 bug**,这是 GC 压力 fuzz 的全部价值。
 
 ### 5.3 机制
 
@@ -956,7 +956,7 @@ func TestGCStress(t *testing.T) {
 - **GCPAUSE 调小是测试钩子**:[06](./06-memory-gc.md) §8.3 的 `threshold = live * GCPAUSE / 100`,把 GCPAUSE 设 1 即「存活量 1% 增量就 GC」≈ 每次分配 GC。这需要 collector 暴露**测试可调的 GCPAUSE**(`testOpts` 注入)。
 - **基线对照是关键**:不是「高频 GC 跑通就行」,而是「高频 GC 输出 == 正常 pacing 输出」。透明性(目标①)比不崩溃(目标②)更强——不崩溃只证明没 use-after-free,透明性还证明没「悄悄回收了不该回收的、导致输出错」。
 - **与三方差分叠加**:GC 压力 fuzz 主要是**望舒内部**的「高频 vs 正常 GC」对照(gopher-lua/官方的 GC 不可比)。但若高频 GC 下望舒输出变了,它同时也会偏离官方 → 三方差分也会抓到。GC 压力 fuzz 是「更早、更针对」的捕获。
-- **stdlib 分配类重点**([10](./10-stdlib.md) §13.3):`string.format`/`concat`/`rep`/`gsub`/`match` 这些 host function 内分配中间对象的([06](./06-memory-gc.md) §6.3 纪律对象),是 GC 压力 fuzz 的主要轰炸目标——它们的 shadow stack 漏 Pin 在高频 GC 下必现。
+- **stdlib 分配类重点**([10](./10-stdlib.md) §13.3):`string.format`/`concat`/`rep`/`gsub`/`match` 这些 host function 内分配中间对象的([06](./06-memory-gc.md) §6.3 纪律对象),是 GC 压力 fuzz 的主要测试目标——它们的 shadow stack 漏 Pin 在高频 GC 下必现。
 
 ### 5.4 finalizer 顺序(承 06 §10/§11)
 
@@ -964,18 +964,18 @@ func TestGCStress(t *testing.T) {
 
 ---
 
-## 6. 基准测试(`benchmarks/baseline`,收口 05 §3/§2.2、roadmap §1/§4)
+## 6. 基准测试(`benchmarks/baseline`,回应 05 §3/§2.2、roadmap §1/§4)
 
 > roadmap §4 P1 验收:**「简单 / 算术 / 循环三档脚本全部 ≥2x over gopher-lua」**。
 > [05](./05-interpreter-loop.md) §3 给了 ≥2x 的可达性论证与三档定义;§2.2 给了 dispatch spike 的 A/B 口径。
 > 前提一([design-premises](../../../llmdoc/must/design-premises.md) 前提一 / roadmap §1):**基准必须用「列内核」形状,否则边界成本主导,
 > 测不出 VM 加速**。本节定稿三档脚本、对照组、测量方法、A/B 口径,并把 roadmap 校准数据入库。
 
-### 6.1 列内核形状是基准的硬约束(收口前提一)
+### 6.1 列内核形状是基准的硬约束(落实前提一)
 
-roadmap §1 / 前提一钉死:项目收益**只在列内核形状下兑现**——**循环写在 Lua 内,一次调用进一次 VM,整批数据在 VM 内迭代**。基准**必须**用这个形状,否则:若按 per-item(Go for 循环里反复调一个单行 Lua 函数),**边界跨越 + 值装箱的几十~百 ns 固定成本主导**(前提二),VM 本体加速被稀释到测不出(roadmap §1 校准测量 2:端到端落 ±5-7% 噪声带)。
+roadmap §1 / 前提一已明确:项目收益**只在列内核形状下兑现**——**循环写在 Lua 内,一次调用进一次 VM,整批数据在 VM 内迭代**。基准**必须**用这个形状,否则:若按 per-item(Go for 循环里反复调一个单行 Lua 函数),**边界跨越 + 值装箱的几十~百 ns 固定成本主导**(前提二),VM 本体加速被稀释到测不出(roadmap §1 校准测量 2:端到端落 ±5-7% 噪声带)。
 
-**落到 benchmark 代码**:被测的「一次调用」里,Lua 侧是一个**完整循环**(整批迭代),而非单次运算:
+**写成 benchmark 代码**:被测的「一次调用」里,Lua 侧是一个**完整循环**(整批迭代),而非单次运算:
 
 ```go
 // benchmarks/baseline/horner_test.go —— 列内核形状(正确)
@@ -1007,17 +1007,17 @@ func BenchmarkHornerWangshu(b *testing.B) {
 
 > **这条约束直接来自校准测量**(roadmap §1):真 LuaJIT 只比 luajc 快 6%(154 vs 164μs)——因为 per-item 下边界主导。望舒在列内核形状下才有 ≥2x 空间。**基准不用列内核形状 = 测错了东西**,会得出「望舒没加速」的假结论(实际是被边界税淹没)。所以基准代码 review 的第一条:**确认「一次 CallFn 进 VM 后整批迭代」,而非 Go 侧循环反复跨界**。
 
-### 6.2 三档脚本(收口 05 §3 的三档定义)
+### 6.2 三档脚本(回应 05 §3 的三档定义)
 
-[05](./05-interpreter-loop.md) §3.4 定义三档,各档吃不同的加速来源。每档给代表脚本:
+[05](./05-interpreter-loop.md) §3.4 定义三档,各档依赖不同的加速来源。每档给代表脚本:
 
-| 档 | 主要 opcode | 吃的加速来源(05 §3.4) | 代表脚本 |
+| 档 | 主要 opcode | 依赖的加速来源(05 §3.4) | 代表脚本 |
 |---|---|---|---|
 | **简单** | MOVE / LOADK / 比较 / 跳转 | 去装箱 + 跳转表 dispatch | 紧循环里做赋值/比较/分支(无算术无表),如「计数 + 条件累加」 |
-| **算术** | ADD/SUB/MUL + FORLOOP | f64 直算零分配 + 算术 IC | **Horner 5 次多项式**(roadmap §1 一样的,§6.1 示例) |
-| **循环** | FORLOOP 密集 + 表/全局 IC | FORLOOP 回边零开销 + 循环内 IC 复用 | 嵌套循环 + 表读写(`for i do for j do t[k]=t[k]+1 end end`),吃全局/表 IC |
+| **算术** | ADD/SUB/MUL + FORLOOP | f64 直算零分配 + 算术 IC | **Horner 5 次多项式**(与 roadmap §1 相同,§6.1 示例) |
+| **循环** | FORLOOP 密集 + 表/全局 IC | FORLOOP 循环回跳(back edge)零开销 + 循环内 IC 复用 | 嵌套循环 + 表读写(`for i do for j do t[k]=t[k]+1 end end`),考察全局/表 IC |
 
-**代表脚本设计原则**:每档**突出该档的加速来源、压制其它噪声**——简单档不放算术(否则测的是算术档),算术档用纯数值列(Horner 是经典,roadmap §1 校准就用它),循环档放表访问(吃 IC,这是列内核典型)。三档都用列内核形状(§6.1)。
+**代表脚本设计原则**:每档**突出该档的加速来源、压制其它噪声**——简单档不放算术(否则测的是算术档),算术档用纯数值列(Horner 是经典,roadmap §1 校准就用它),循环档放表访问(用上 IC,这是列内核典型)。三档都用列内核形状(§6.1)。
 
 ```lua
 -- benchmarks/baseline/scripts/simple.lua —— 简单档(MOVE/LOADK/比较/跳转)
@@ -1057,8 +1057,8 @@ end
 | **LuaJ-luac / LuaJ-luajc**(可选) | 校准数据复现(Java,需 JVM) | §1 校准测量 1 的中间档 |
 | **LuaJIT**(可选) | 终局参照(C,trace JIT) | §1 校准测量 1 的顶档 |
 
-- **gopher-lua 是硬对照**(同为纯 Go,同机同测,≥2x 是 P1 验收门)。望舒与 gopher-lua 在**同一 Go benchmark 进程**里跑同一脚本(一样的列内核形状),直接比 ns/op。
-- LuaJ/LuaJIT 是**可选复现**(需 JVM/C 工具链,不进 Go benchmark 主流程)——它们的价值是**复现 roadmap §1 的校准测量**(验证「真 LuaJIT 只比 luajc 快 6%」「per-item 下边界主导」这两个立项论据在当前硬件上仍成立),入库为独立脚本 + 数据(§6.5),不是 P1 CI 门禁。
+- **gopher-lua 是硬对照**(同为纯 Go,同机同测,≥2x 是 P1 验收标准)。望舒与 gopher-lua 在**同一 Go benchmark 进程**里跑同一脚本(列内核形状相同),直接比 ns/op。
+- LuaJ/LuaJIT 是**可选复现**(需 JVM/C 工具链,不进 Go benchmark 主流程)——它们的价值是**复现 roadmap §1 的校准测量**(验证「真 LuaJIT 只比 luajc 快 6%」「per-item 下边界主导」这两个立项论据在当前硬件上仍成立),入库为独立脚本 + 数据(§6.5),不是 P1 CI 必过检查。
 
 ### 6.4 测量方法:Go benchmark 框架 + ns/op
 
@@ -1087,7 +1087,7 @@ benchmarks/baseline/
 - **calibration/ 入库的是「立项论据的可复现证据」**——把 roadmap §1 表格里的 729/259/164/154μs 等**原始数据 + 复现方法**固化,任何人可重跑验证「真 LuaJIT 只比 luajc 快 6%」「端到端被稀释到噪声」这两个**整个项目方向所依赖**的测量。这呼应 [架构缺口](../../../llmdoc/memory/doc-gaps.md) 的「校准测量原始数据未入库」。
 - **results/ 是性能回归基线**:CI 的基准回归检查(§9)对照 results/ 历史,望舒三档 ns/op 不应回退超阈值。
 
-### 6.6 dispatch spike 的 A/B 口径(收口 05 §2.2)
+### 6.6 dispatch spike 的 A/B 口径(回应 05 §2.2)
 
 [05](./05-interpreter-loop.md) §2.2 定:P1 基线用 (a) 大 switch;(b) closure-threading / (c) 预解码是**提速 spike**,采纳口径写进 12。**12 定稿口径(承 05 §2.2):(b)/(c) 必须 ① byte-equal 于 (a) ② 三档脚本不更慢于 (a),两条同时满足才采纳。**
 
@@ -1123,16 +1123,16 @@ P1 建立的三套机制(conformance / 差分 fuzz / 基准)如何复用到 P2-P
 |---|---|---|---|
 | **P2 分层桥** | conformance + 差分 fuzz 全套 | **IC 反馈正确性**:IC 记录的类型 feedback([05](./05-interpreter-loop.md) §6.4)是否真实反映运行期类型(feedback 错会误导 P4 投机) | IC 反馈是「旁路记录」,不改输出 → 差分仍是「望舒 vs gopher/官方」;新增「IC 记录 vs 实际类型」的白盒断言 |
 | **P3 Wasm 层** | 差分 harness 的 Runner 抽象(§3.8) | **同一 Proto 走 crescent vs gibbous-wasm 输出 byte-equal**([architecture](../architecture.md) §4 不变式 2 最终形式) | **首次出现「同 Proto 不同层」差分**——比 P1「不同实现」差分更强(无实现差异噪声);Wasm 编译器 bug 靠它逐字节抓 |
-| **P4 method JIT** | P3 的同-Proto 差分 + GC 压力 fuzz | **deopt 正确性**:IC 投机失败时 OSR exit 回解释器,exit 后状态必须与「一路解释」一致 | deopt 是 JIT 最危险点——投机的 f64 快路径若 guard 漏判,会**静默产错果**;「投机路径 vs 解释器」逐字节差分是**唯一**能抓住它的手段(roadmap §5 原则 2 点名) |
-| **P5 trace JIT** | 全套 + 同-Proto 差分 | **trace 投机 + snapshot/deopt 正确性**:trace 录制的假设(循环不变量、类型稳定)若被运行期打破,snapshot 恢复必须 byte-equal | trace JIT 的护城河也是其最危险处——CSE/循环不变量外提/分配下沉等优化任一错误都静默错果;**持续 fuzz「trace vs 解释器」是主防线**(roadmap §5);P1 建的 harness 此时价值最大化 |
+| **P4 method JIT** | P3 的同-Proto 差分 + GC 压力 fuzz | **deopt 正确性**:IC 投机失败时 OSR exit 回解释器,exit 后状态必须与「一路解释」一致 | deopt 是 JIT 最危险点——投机的 f64 快路径若 guard 漏判,会**静默产出错误结果**;「投机路径 vs 解释器」逐字节差分是**唯一**能抓住它的手段(roadmap §5 原则 2 点名) |
+| **P5 trace JIT** | 全套 + 同-Proto 差分 | **trace 投机 + snapshot/deopt 正确性**:trace 录制的假设(循环不变量、类型稳定)若被运行期打破,snapshot 恢复必须 byte-equal | trace JIT 的护城河也是其最危险处——CSE/循环不变量外提/分配下沉等优化任一错误都会静默产出错误结果;**持续 fuzz「trace vs 解释器」是主防线**(roadmap §5);P1 建的 harness 此时价值最大化 |
 
-> **核心前瞻论断**(roadmap §5 原则 1+2 的合流):**解释器(crescent)永不退役,因为它是所有上层的语义 oracle**——P3/P4/P5 的每个编译层,其正确性判据都是「同一 Proto 走编译层 vs 走解释器,输出 byte-equal」。P1 建的差分 harness(§3.8 的 Runner 抽象)是这条主防线的**物理载体**:P1 时它跑「望舒 vs gopher/官方」,P3+ 时它跑「望舒解释器 vs 望舒编译层」。**JIT 最危险的 bug(投机错误静默错果)无法用有限用例覆盖,只能靠『编译层 vs 解释器』持续逐字节差分撞出**——这就是为什么 roadmap 把它列为五条贯穿原则之一,也是为什么 P1 现在就要把 harness 建对(而非等 P3 再补)。
+> **核心前瞻论断**(roadmap §5 原则 1+2 的合流):**解释器(crescent)永不退役,因为它是所有上层的语义 oracle**——P3/P4/P5 的每个编译层,其正确性判据都是「同一 Proto 走编译层 vs 走解释器,输出 byte-equal」。P1 建的差分 harness(§3.8 的 Runner 抽象)是这条主防线的**实际载体**:P1 时它跑「望舒 vs gopher/官方」,P3+ 时它跑「望舒解释器 vs 望舒编译层」。**JIT 最危险的 bug(投机出错导致结果静默错误)无法用有限用例覆盖,只能靠『编译层 vs 解释器』持续逐字节差分发现**——这就是为什么 roadmap 把它列为五条贯穿原则之一,也是为什么 P1 现在就要把 harness 建对(而非等 P3 再补)。
 
 ---
 
-## 8. CI 门禁(收口 architecture §4 不变式 2)
+## 8. CI 必过检查(回应 architecture §4 不变式 2)
 
-[architecture](../architecture.md) §4 不变式 2:**「层间逐字节差分是 CI 必过门禁」**。本节定**门禁逻辑**(测什么、什么必过);workflow/job/hooks 等**机制载体**在 [engineering](../engineering.md)(其 §3.1 的 ci.yml 与本节五步一一对应)。P1 的 CI 流程:
+[architecture](../architecture.md) §4 不变式 2:**「层间逐字节差分是 CI 必过检查」**。本节定**检查逻辑**(测什么、什么必过);workflow/job/hooks 等**机制载体**在 [engineering](../engineering.md)(其 §3.1 的 ci.yml 与本节五步一一对应)。P1 的 CI 流程:
 
 ```
 每个 PR 触发:
@@ -1148,17 +1148,17 @@ P1 建立的三套机制(conformance / 差分 fuzz / 基准)如何复用到 P2-P
   5. dispatch A/B(若改了 dispatch) byte-equal + 不更慢(§6.6)
 ```
 
-**门禁分级**:
-- **硬门禁(必过,阻塞合并)**:单元、conformance、差分 fuzz(零未豁免差异 + 零崩溃)、基准 ≥2x。差分 fuzz 是 [architecture](../architecture.md) §4 点名的**必过门禁**。
-- **每 PR 的 fuzz 是「固定时长一轮」**(`-fuzztime`,如几十秒到几分钟),保证 PR 反馈速度;**持续 fuzz**(roadmap §5「持续 fuzz」)由**独立长跑任务**(nightly / 专用 fuzz 机)承担——长时间随机撞角落,撞到的失败用例最小化后回流成 conformance(§3.6)。两者分工:PR 门禁防回归,长跑 fuzz 拓新。
+**检查分级**:
+- **强制检查(必过,阻塞合并)**:单元、conformance、差分 fuzz(零未豁免差异 + 零崩溃)、基准 ≥2x。差分 fuzz 是 [architecture](../architecture.md) §4 点名的**必过检查**。
+- **每 PR 的 fuzz 是「固定时长一轮」**(`-fuzztime`,如几十秒到几分钟),保证 PR 反馈速度;**持续 fuzz**(roadmap §5「持续 fuzz」)由**独立的长时间运行任务**(nightly / 专用 fuzz 机)承担——长时间随机探索角落,发现的失败用例最小化后回流成 conformance(§3.6)。两者分工:PR 检查防回归,长时间运行的 fuzz 探索新问题。
 
 ### 8.1 读 nightly 的失败:红色不一定意味着「测过了」(#236-#241,2026-08-09)
 
-nightly 的三个 tier 腿各自是「装 oracle → 跑差分 fuzz → triage → 开 issue」的串行步骤链,而**准备类步骤失败会让产生结论的步骤被 skip**。2026-08-07 的两轮就是这样:oracle 源码构建里那个裸 `curl` 撞上上游可达性抖动(exit 28 是 curl 的 `CURLE_OPERATION_TIMEDOUT`,不是磁盘写满;取包的修法见 [engineering](../engineering.md) §4.1),于是三个差分 fuzz 步骤全部 `skipped`,那一轮**报 failure 而实际什么都没测**,那一晚的探索预算是零。
+nightly 的三个 tier 腿各自是「装 oracle → 跑差分 fuzz → triage → 开 issue」的串行步骤链,而**准备类步骤失败会让产生结论的步骤被 skip**。2026-08-07 的两轮就是这样:oracle 源码构建里那个裸 `curl` 遇上上游可达性抖动(exit 28 是 curl 的 `CURLE_OPERATION_TIMEDOUT`,不是磁盘写满;取包的修法见 [engineering](../engineering.md) §4.1),于是三个差分 fuzz 步骤全部 `skipped`,那一轮**报 failure 而实际什么都没测**,那一晚的探索预算是零。
 
 这对本文的验收口径有一条直接后果:**§8 的「差分 fuzz 必过」是关于「跑了并且零未豁免差异」的,而一个红色的 nightly 既可能是「跑了并且发现分歧」,也可能是「一步都没跑」**,两者在 Actions 页面上是同一个红叉。读 nightly 失败时的第一步因此不是去找分歧,而是**确认那三个 fuzz 步骤真的执行过**——与 §3.1 那条「差分比较的对象是 harness 捕获到的东西」是同一族的机制:绿灯不携带「测了什么」的信息,红灯也不携带。
 
-triage 侧配套的两条口径(机制载体在 [engineering](../engineering.md) §3.2):① **infra 失败与真分歧分流**,前者标签 `ci`、后者带 seed 与本地复现命令;② **infra issue 按**日期**去重(`run_id` 更差:一天六轮就是六个 issue)而不按 tier**——infra 失败天然横跨所有 tier(装不上依赖与被测的是 p1 还是 p4 无关),而 divergence 失败天然属于某一个 tier,标题里嵌 `matrix.variant` 曾让两次抖动开出六个 issue(#236-#241)。方法论见 `llmdoc/guides/unreproducible-crasher-triage.md`「CI 自动化本身的失败信号」。
+triage 侧配套的两条规则(机制载体在 [engineering](../engineering.md) §3.2):① **infra 失败与真分歧分流**,前者标签 `ci`、后者带 seed 与本地复现命令;② **infra issue 按**日期**去重(`run_id` 更差:一天六轮就是六个 issue)而不按 tier**——infra 失败天然横跨所有 tier(装不上依赖与被测的是 p1 还是 p4 无关),而 divergence 失败天然属于某一个 tier,标题里嵌 `matrix.variant` 曾让两次抖动开出六个 issue(#236-#241)。方法论见 `llmdoc/guides/unreproducible-crasher-triage.md`「CI 自动化本身的失败信号」。
 
 ### 8.2 job 超时被真的掐掉三次:step 级超时的作用域纠正 + gofuzztime 预算重配(2026-08-19,commit `9b61079`)
 
@@ -1189,7 +1189,7 @@ timeout 只覆盖被点名的那一条。
 
 - **golden / 豁免清单改动高亮**(§4.8):golden 文件、`exemptions.go` 的 diff 在 PR review 里显眼,防「改 golden / 加豁免来掩盖真 bug」。
 
-> **为什么差分 fuzz 必须是硬门禁**(而非「跑跑看」):roadmap §5 原则 2 把它定为「主防线」,[architecture](../architecture.md) §4 把它定为「必过」。若差分只是 advisory(可失败可合并),则「投机错误静默错果」会随 PR 渗入主干而无人察觉(它不崩溃、不报错,只是结果悄悄错)。把它设为**阻塞合并的硬门禁**,是把「逐字节一致」从口号变成机制。这也是 P1 验收(roadmap §4「与 gopher-lua 差分 fuzz 输出逐字节一致」)的 CI 兑现。
+> **为什么差分 fuzz 必须是强制检查**(而非「跑跑看」):roadmap §5 原则 2 把它定为「主防线」,[architecture](../architecture.md) §4 把它定为「必过」。若差分只是 advisory(可失败可合并),则「投机错误静默错果」会随 PR 渗入主干而无人察觉(它不崩溃、不报错,只是结果悄悄错)。把它设为**阻塞合并的强制检查**,是把「逐字节一致」从口号变成机制。这也是 P1 验收(roadmap §4「与 gopher-lua 差分 fuzz 输出逐字节一致」)的 CI 兑现。
 
 ---
 
@@ -1197,20 +1197,20 @@ timeout 只覆盖被点名的那一条。
 
 1. **官方 Lua 5.1.5 是最终 oracle**:任何语义疑义,官方输出为准;gopher-lua 是同生态参照 + 性能基准,gopher 偏离官方处以官方为准并豁免 gopher(§3.3/§4.7)。
 2. **可观察输出 = O1..O5**(§3.1):print/io.write 字节流、返回值、错误(值+位置+traceback)、副作用序、退出态。其余是 VM 内部状态,差分不比。
-3. **差分逐字节一致是 CI 必过门禁**([architecture](../architecture.md) §4 不变式 2、roadmap §4 验收)——硬门禁,阻塞合并。
+3. **差分逐字节一致是 CI 必过检查**([architecture](../architecture.md) §4 不变式 2、roadmap §4 验收)——强制检查,阻塞合并。
 4. **严格口径项绝不豁免**:`pairs` 严格用例(键集确定)、`%.14g`/format、错误措辞(非本质不可控项)、寄存器分配同构(§2.5)、GC 透明性(§5)。豁免只给本质不可比项(地址/random/GC 数值/locale/libc 文本)且集中审计(§4.8)。
 5. **基准必须用列内核形状**(§6.1,前提一):一次 CallFn 进 VM 后整批迭代,非 Go 侧 per-item 反复跨界——否则边界成本主导,测不出 VM 加速。
 6. **三档全部 ≥2x over gopher-lua**(roadmap §4):simple/arith/loop 任一档不达标则 P1 验收不成立。
-7. **dispatch 优化采纳口径**:(b)/(c) 必须 byte-equal 于 (a) 且三档不更慢(§6.6,收口 05 §2.2)。
-8. **GC 压力 fuzz 双目标**:高频 GC 下①输出与正常 pacing byte-equal(透明性)②不崩溃(§5,收口 06 §11)。
-9. **fuzz 失败固化为 conformance**:撞出的差异最小化后入库为确定性用例(§3.6),回归不依赖再次随机撞中。
+7. **dispatch 优化采纳口径**:(b)/(c) 必须 byte-equal 于 (a) 且三档不更慢(§6.6,回应 05 §2.2)。
+8. **GC 压力 fuzz 双目标**:高频 GC 下①输出与正常 pacing byte-equal(透明性)②不崩溃(§5,回应 06 §11)。
+9. **fuzz 失败固化为 conformance**:发现的差异最小化后入库为确定性用例(§3.6),回归不依赖再次随机命中。
 10. **JIT 主防线复用 P1 harness**:P3+ 的「同 Proto 走编译层 vs 解释器 byte-equal」复用 §3.8 的 Runner 抽象——解释器永不退役,是所有上层的 oracle(roadmap §5 原则 1+2)。
 
 ---
 
-## 10. 验收口径总表(本文最有价值的产出 —— 逐条收口)
+## 10. 验收口径总表(本文最有价值的产出 —— 逐条定稿)
 
-下表是**每个被各 P1 文档指向 12 的口径问题 → 12 的最终决策**。这张表是 12 存在的核心理由:它把散落在各文档的「待 12 定」一次性收口。
+下表是**每个被各 P1 文档指向 12 的口径问题 → 12 的最终决策**。这张表是 12 存在的核心理由:它把散落在各文档的「待 12 定」一次性定稿。
 
 | # | 口径问题 | 提出文档(节) | **12 的最终决策** | 理由 / 机制 |
 |---|---|---|---|---|
@@ -1221,12 +1221,12 @@ timeout 只覆盖被点名的那一条。
 | 5 | **math.random 序列** | 10 §13.1/§8.4 | **豁免**:生成器禁产 random;conformance 只验范围 | Go rand ≠ C rand,确定 seed 序列也不同(§4.4) |
 | 6 | **collectgarbage("count")/gcinfo 数值** | 10 §13.1/§4.6 | **豁免**:数值脱敏,只验类型 | arena 内存模型 ≠ C 堆(§4.5) |
 | 7 | **os.date locale 字段** | 10 §13.1/§9.2 | **部分豁免**:月/星期名脱敏,数值字段严格 | 纯 Go 无 setlocale ≠ C locale(§4.6) |
-| 8 | **错误措辞**(冠词/单复数/标点/got no value) | 09 §9.3/§862、03 §11、04 §9、07 §1127、08 §189、10 §13.1 | **P1 目标逐字节对齐官方**(移植 5.1 消息模板);本质不可控项(libc 文本/gopher 偏差)进豁免清单 | 措辞对齐是「真移植 5.1 语义」的强信号 + 真实脚本用 match 错误做控制流(§4.7) |
-| 9 | **错误类型 / 位置 / traceback 行号** | 09 §314/§673、08 §894 | **严格一致**(类型) + **严格逐字节**(位置/行号/`[C]:`/`(...tail calls...)`) | 类型是语义、位置是 5.1 明确行为;多行脚本钉死行号(§4.7) |
+| 8 | **错误措辞**(冠词/单复数/标点/got no value) | 09 §9.3/§862、03 §11、04 §9、07 §1127、08 §189、10 §13.1 | **P1 目标逐字节对齐官方**(移植 5.1 消息模板);本质不可控项(libc 文本/gopher 偏差)进豁免清单 | 措辞对齐是「真正移植了 5.1 语义」的强信号 + 真实脚本用 match 错误做控制流(§4.7) |
+| 9 | **错误类型 / 位置 / traceback 行号** | 09 §314/§673、08 §894 | **严格一致**(类型) + **严格逐字节**(位置/行号/`[C]:`/`(...tail calls...)`) | 类型是语义、位置是 5.1 明确行为;多行脚本锁定行号(§4.7) |
 | 10 | **GC 透明性**(GC 改不改可观察行为) | 06 §11 | **必须 byte-equal**:同脚本「正常 pacing vs 高频 GC」输出一致 | GC 是内部状态,不得泄漏可观察面;GC 压力 fuzz 验证(§5) |
-| 11 | **GC 压力 fuzz**(漏 push shadow stack / mark 漏扫) | 06 §11/§6.3/§5.2、10 §13.3 | **定稿机制**:GCPAUSE 设极小(每分配即 GC)反复跑,验①透明②不崩 | 把偶发 bug 变确定 bug(高频 GC 必撞持有窗口);stdlib 分配类重点轰炸(§5) |
+| 11 | **GC 压力 fuzz**(漏 push shadow stack / mark 漏扫) | 06 §11/§6.3/§5.2、10 §13.3 | **定稿机制**:GCPAUSE 设极小(每分配即 GC)反复跑,验①透明②不崩 | 把偶发 bug 变确定 bug(高频 GC 必然碰上持有窗口);stdlib 分配类重点测试(§5) |
 | 12 | **finalizer 顺序** | 06 §10/§11 | **严格**(创建逆序)差分测试官方;多次终结依赖项标 P1 限制豁免 | 确定性用例 print 标识断言顺序(§5.4) |
-| 13 | **寄存器分配是否与官方 luac 同构** | 04 §1.1/§10、02 §8 | **黄金字节码单元测试**钉死(对官方 luac);与 gopher 运行期差分**不要求** Proto 同 | codegen 偏差在单元层提前暴露;gopher opcode 不同只比最终输出(§2.5) |
+| 13 | **寄存器分配是否与官方 luac 同构** | 04 §1.1/§10、02 §8 | **黄金字节码单元测试**锁定(对官方 luac);与 gopher 运行期差分**不要求** Proto 同 | codegen 偏差在单元层提前暴露;gopher opcode 不同只比最终输出(§2.5) |
 | 14 | **常量折叠边界**(`1/0`/`0/0`/`2^63` 折叠 vs 运行期) | 03 §11、04 §13 | **逐字节同结果**:折叠走与解释器同一 `value.NumberValue`(含 canonicalize) | 同一函数只此一份,折叠与运行期都调它,天然一致(§4.2) |
 | 15 | **dispatch A/B 采纳口径** | 05 §2.2/§13 | **(b)closure-threading/(c)预解码必须 byte-equal 于 (a) 且三档不更慢**才采纳 | byte-equal 保正确(语义 oracle 唯一)+ 不更慢保收益(§6.6) |
 | 16 | **pattern 匹配**(find/match/gsub/gmatch) | 10 §13.1/§6.6 | **严格逐字节**(移植 5.1 lstrlib) | 算法可复刻无外部因素;(s,pattern) 笛卡尔积差分测试(§4 总表、§2) |
@@ -1239,17 +1239,17 @@ timeout 只覆盖被点名的那一条。
 | 23 | **lexer 标识符 locale 字节** | 03 §11/§13 | **ASCII-only 口径锁定**:生成器只产 ASCII 标识符;gopher 高位字节偏差豁免 | locale 无法稳定差分测试,ASCII-only 是可复现最小公约(03 §11);非豁免而是口径(§4.6) |
 | 24 | **opcode 特化变体**(GETTABLE_N/_S 等) | 02 §10 | **P1 不做**(保持 5.1 最小集);若做须 byte-equal 于基线 opcode | 特化是提速 spike,采纳口径同 dispatch A/B(byte-equal + 不更慢,§6.6) |
 | 25 | **weak table / ephemeron 语义** | 07 §1081 | **P1 简化(键活则值无条件标活)**;触及精确 ephemeron 的用例标 P1 限制豁免 | P1 范围裁剪;真实嵌入负载罕用 ephemeron(§4.1 cleartable 归本质未定义) |
-| 26 | **ColInt64 超界报错**(`\|v\| > 2^53` 抛错,望舒扩展) | 11 §3.3.2(经评审定稿) | **登记为望舒扩展行为**:官方/gopher 无 arena ABI 故无对应;错误措辞 `int64 column value out of exact range` 由本表锁定,差分豁免(arena 路径不参与三方差分) | 宁报错不错果(原则 2 精神):静默丢精度对 ID 类数据 = 静默错果且差分测不出 |
+| 26 | **ColInt64 超界报错**(`\|v\| > 2^53` 抛错,望舒扩展) | 11 §3.3.2(经评审定稿) | **登记为望舒扩展行为**:官方/gopher 无 arena ABI 故无对应;错误措辞 `int64 column value out of exact range` 由本表锁定,差分豁免(arena 路径不参与三方差分) | 宁可报错也不给错误结果(原则 2 精神):静默丢精度对 ID 类数据 = 静默给出错误结果且差分测不出 |
 
-**收口统计**:本表收口 **26 条**口径问题(25 条来自各文档「待 12 定」标注 + 1 条评审新增),覆盖 01/02/03/04/05/06/07/08/09/10/11 全部 P1 文档。其中**严格逐字节**类 11 条(pairs严格部分/format/pattern/sort/措辞/位置/coercion/库存在性/折叠/fmod/finalizer)、**豁免/部分豁免**类 7 条(地址/random/GC数值/date/ephemeron/libc文本/gopher偏差)、**口径锁定 + 机制定稿**类 7 条(pairs混合/GC透明性+压力fuzz/dispatch A-B/寄存器同构/mono IC/step0/ASCII)。
+**定稿统计**:本表定稿 **26 条**口径问题(25 条来自各文档「待 12 定」标注 + 1 条评审新增),覆盖 01/02/03/04/05/06/07/08/09/10/11 全部 P1 文档。其中**严格逐字节**类 11 条(pairs严格部分/format/pattern/sort/措辞/位置/coercion/库存在性/折叠/fmod/finalizer)、**豁免/部分豁免**类 7 条(地址/random/GC数值/date/ephemeron/libc文本/gopher偏差)、**口径锁定 + 机制定稿**类 7 条(pairs混合/GC透明性+压力fuzz/dispatch A-B/寄存器同构/mono IC/step0/ASCII)。
 
 ---
 
 ## 11. 文档缺口 / 待决(仍未定的口径,记入 memory/doc-gaps)
 
 - **gopher-lua 已知偏差的完整清单**:§3.3/§4.7 说「gopher 偏离官方处以官方为准并豁免」,但**gopher-lua 与官方 5.1 的全部已知差异**需实现期实测建立(它是独立实现,差异点未穷举)。当前缺口:首次跑三方差分时会暴露这些点,逐条入豁免表 + 注明是 gopher 偏差。
-- **官方 5.1.5 参照平台的 libc 依赖项**(其中 NaN 符号一项已收口:§4.2 定为在 oracle 渲染处消除,望舒侧不模仿任何 libc;余下 Inf 与 errno 文本仍依赖参照平台):§4.2 的 NaN/Inf 文本、§4.7 的 libc errno 文本依赖官方编译时的 libc。**未定**:golden 锁的是哪个平台/libc 的官方 5.1.5 输出(Linux glibc?)——需固定一个「金标准官方二进制」并记录,否则不同平台的官方输出本身就不一致。
-- **fuzz 有效脚本率与覆盖度量**:§3.7 生成器追求「高有效脚本率」,但**未定**如何度量 fuzz 的覆盖(opcode 覆盖?语法产生式覆盖?)——P1 可先不量化(纯随机时长驱动),P2+ 引入覆盖引导(coverage-guided,如 go-fuzz 风格)提升撞角落效率。记缺口。
+- **官方 5.1.5 参照平台的 libc 依赖项**(其中 NaN 符号一项已定稿:§4.2 定为在 oracle 渲染处消除,望舒侧不模仿任何 libc;余下 Inf 与 errno 文本仍依赖参照平台):§4.2 的 NaN/Inf 文本、§4.7 的 libc errno 文本依赖官方编译时的 libc。**未定**:golden 锁的是哪个平台/libc 的官方 5.1.5 输出(Linux glibc?)——需固定一个「金标准官方二进制」并记录,否则不同平台的官方输出本身就不一致。
+- **fuzz 有效脚本率与覆盖度量**:§3.7 生成器追求「高有效脚本率」,但**未定**如何度量 fuzz 的覆盖(opcode 覆盖?语法产生式覆盖?)——P1 可先不量化(纯随机时长驱动),P2+ 引入覆盖引导(coverage-guided,如 go-fuzz 风格)提升探索角落的效率。记缺口。
 - **最小化(shrinking)的语义保持**:§3.6 的 reductions 删语句/简化常量后需「仍触发差异」,但删改可能**改变脚本是否合法 / 是否仍在 P1 子集**——`isValidP1` 校验已挡非法,但「最小化后触发的是同一个 bug 还是新差异」无保证。P1 接受「最小化到能复现即可」,精确「同根因」判定留缺口。
 - **基准的跨硬件可比性**:§6.4 记录硬件,但 ≥2x 验收在不同 CPU 上**倍率可能波动**(cache/分支预测差异)。**未定**:验收基准锁定在某参照机型,还是「任意机型上 gopher 与望舒同机比 ≥2x」(后者更鲁棒,因同机对照抵消硬件差异)——倾向后者(同机对照),记决策待确认。
 - **LuaJ/LuaJIT 复现的工具链依赖**:§6.3/§6.5 的 calibration 复现需 JVM(LuaJ)与 C 工具链(LuaJIT),**非纯 Go**,不进 CI。**未定**:这些复现是「立项时跑一次入库数据」还是「周期性重跑验证论据仍成立」——P1 倾向前者(一次性固化原始数据),记缺口。
@@ -1269,7 +1269,7 @@ timeout 只覆盖被点名的那一条。
 [09-errors-pcall](./09-errors-pcall.md)(错误措辞 / traceback 行号逐字节 §9.3) ·
 [10-stdlib](./10-stdlib.md)(format/pattern/tostring/sort/措辞/库存在性差分敏感总表 §13) ·
 [11-embedding-arena-abi](./11-embedding-arena-abi.md)(gopher-lua 差分基准 / drop-in 行为兼容 §9) ·
-[architecture](../architecture.md)(§4 不变式 2:层间差分 CI 必过门禁) ·
+[architecture](../architecture.md)(§4 不变式 2:层间差分 CI 必过检查) ·
 [design-premises](../../../llmdoc/must/design-premises.md)(前提一列内核负载形状 / 前提三原则 2 差分主防线) ·
 `docs/design/roadmap.md` (§1 校准测量 / §4 P1 验收 / §5 原则 2)
 

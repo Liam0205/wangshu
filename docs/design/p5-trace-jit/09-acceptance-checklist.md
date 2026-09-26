@@ -21,18 +21,18 @@
 **列内核负载 10-30x over gopher-lua**([../roadmap.md](../roadmap.md) §4 P5 验收行),基准标准依据 [../p1-interpreter/12-testing-difftest.md](../p1-interpreter/12-testing-difftest.md) §6.1 列内核硬约束(一次 Call 进 VM 整批迭代;N ≥ 1000)。
 
 - **下沿 10x**——P5 v1 最低验收线,承接 [./00-overview.md](./00-overview.md) §5.1 风险 3「纯 Go 全部显式 guard 对 trace 收益的折损」,使得 10x 可能是实际上沿而不是下沿;
-- **上沿 30x**——按 [../roadmap.md](../roadmap.md) §4 的目标,只有分配下沉 / 逃逸分析 + side trace 树全套(v2 + v3)交付之后才有物理可能达到。
+- **上沿 30x**——按 [../roadmap.md](../roadmap.md) §4 的目标,只有分配下沉 / 逃逸分析 + side trace 树全套(v2 + v3)交付之后才真正有可能达到。
 
 10-30x 是**宽带区间,不是精确锚**(见 [./01-launch-judgment.md](./01-launch-judgment.md) §8.3 不变式)——判定「验收 pass」的下沿是 10x,并不是「必须到 30x 上沿」。
 
 ### 1.2 内部锚:实现立项理由(见 [./01-launch-judgment.md](./01-launch-judgment.md) §2)
 
-P5 立项判定 §2.1 列出了 P4 结构上吃不下的四类负载,P5 立项 = 承诺实现这些负载上的显著加速。所以 P5 除了外部锚之外,**必须**在这四类负载上**显著**优于 P4,否则 P5 就失败了自己的立项理由,即使 10-30x 达标也不能视为验收 pass:
+P5 立项判定 §2.1 列出了 P4 结构上吃不下的四类负载,P5 立项 = 承诺实现这些负载上的显著加速。所以 P5 除了外部锚之外,**必须**在这四类负载上**显著**优于 P4,否则 P5 就没有实现自己的立项理由,即使 10-30x 达标也不能视为验收 pass:
 
 | P5 目标负载类别 | 内部验收要求 |
 |---|---|
 | **跨函数热循环** | P5/P4 加速比 **≥ 2x** 在选定的宿主真实负载子集上——trace 内联跨函数边界的核心收益 |
-| **循环内的冗余** | P5/P4 加速比 **≥ 1.5x**——CSE / LICM 应该能吃下 P4 每轮重算的冗余 |
+| **循环内的冗余** | P5/P4 加速比 **≥ 1.5x**——CSE / LICM 应该能消除 P4 每轮重算的冗余 |
 | **分配密集的循环** | P5/P4 加速比 **≥ 2x**(只在 v2 阶段内计算)——分配下沉是 v2 的实现载体 |
 | **megamorphic 稳定子集** | P5/P4 加速比 **≥ 1.5x**——trace 按实际路径特化,把 P2 判为「多态不投机」的调用点拆成多条单态 trace |
 
@@ -82,7 +82,7 @@ P5 立项判定 §2.1 列出了 P4 结构上吃不下的四类负载,P5 立项 =
 
 **v3 阶段验收项**(v2 达标之后独立判定启动):
 
-- [ ] **v3-A**:PT8 side trace 树交付(见 [./implementation-progress.md](./implementation-progress.md) §1 PT8),side trace 独立热度追踪 + 从 side exit 起点继续录闭环;
+- [ ] **v3-A**:PT8 side trace 树交付(见 [./implementation-progress.md](./implementation-progress.md) §1 PT8),side trace 独立热度追踪 + 从 side exit 起点继续录制直到闭合;
 - [ ] **v3-B**:§1.1 外部锚上沿逼近——列内核基准 P5 加速比逼近 30x(或达到 v3 独立预登记的上沿目标);
 - [ ] **v3-C**:trace 树回收正确性(黑名单 + 冷 trace 释放 mmap 页)fuzz 无内存泄漏;
 - [ ] **v3-D**:v1 + v2 各项无回归;
@@ -92,7 +92,7 @@ P5 立项判定 §2.1 列出了 P4 结构上吃不下的四类负载,P5 立项 =
 
 原则 3 的字面实现——每档停下不亏,需要给出:
 
-- 停止时点的**归档报告**(落到 [../../../llmdoc/memory/decisions/](../../../llmdoc/memory/decisions/));
+- 停止时点的**归档报告**(写进 [../../../llmdoc/memory/decisions/](../../../llmdoc/memory/decisions/));
 - 已交付子档的**永久保留**——v1 停在 v1 意味着 P5 v1 就是 wangshu 的当前形式(仍然是 P4 之上的加速层,只是不含 sink 和 side trace);
 - 剩余档位的**再启动判定条件**(什么条件下重新评估 v2 / v3 立项)。
 
@@ -239,13 +239,13 @@ P5 build 下 P1 / P2 / P3 / P4 各自 V-编号全套 test 不豁免——按照 
 2. **CI 全绿**——T1-T11 在 CI 三平台矩阵全过,证据自动填入 §4.2 T-项证据表;
 3. **perf 基准运行**——bench-acceptance workflow 跑 v1 完整套(§1.1 外部 + §1.1 内部),数字填入 §4.2 表;
 4. **判定会**——主助理 + 用户对 §2.2 v1-A..v1-G 逐项勾选;有未勾的项按原则 3 决定「继续调优 v1」or「v1 停止」or「回补数据再判」;
-5. **归档**——v1 阶段通过或停止,决策报告落到 [../../../llmdoc/memory/decisions/](../../../llmdoc/memory/decisions/),证据表冻结版本。
+5. **归档**——v1 阶段通过或停止,决策报告写进 [../../../llmdoc/memory/decisions/](../../../llmdoc/memory/decisions/),证据表冻结版本。
 
 v1 通过之后 v2 立项启动判定重新走一次(v2 是「续期方案」,不因 v1 通过而自动启动);v1 停止则 P5 进入「v1-only」形式永久保留。
 
 ### 5.2 v2 / v3 阶段流程
 
-v2 / v3 分别镜像 §5.1 的流程,每档独立判定。**v3 达标即 P5 全套完成**,项目终局目标实现,可以考虑对外发布「wangshu v1.0」型号(具体版本策略立项时决定)。
+v2 / v3 分别镜像 §5.1 的流程,每档独立判定。**v3 达标即 P5 全套完成**,项目终局目标实现,可以考虑对外发布「wangshu v1.0」版本(具体版本策略立项时决定)。
 
 ---
 
@@ -253,8 +253,8 @@ v2 / v3 分别镜像 §5.1 的流程,每档独立判定。**v3 达标即 P5 全�
 
 见 [./01-launch-judgment.md](./01-launch-judgment.md) §6.1,P4 验收数据是 P5 立项的 baseline;本节说明 P5 验收数据出台之后如何与 P4 数据兼容对读:
 
-- **P5 数字不撤 P4 数字**——项目 README perf table 应该展示 P4 与 P5 并列(见 [../p4-method-jit/09-acceptance-checklist.md](../p4-method-jit/09-acceptance-checklist.md) §3.7 addendum「权威现值 vs 验收时点快照」同样的纪律);
-- **P4 已知损失(§6.2 issue #39/#40)在 P5 上是否复现**——如果 P5 v1 阶段运行时 issue #40 arm64 P4 回归还没闭合,P5 arm64 数据与 P4 arm64 数据的对比读法需要显式声明基线;
+- **P5 数字不取代 P4 数字**——项目 README perf table 应该展示 P4 与 P5 并列(见 [../p4-method-jit/09-acceptance-checklist.md](../p4-method-jit/09-acceptance-checklist.md) §3.7 addendum「权威现值 vs 验收时点快照」同样的纪律);
+- **P4 已知损失(§6.2 issue #39/#40)在 P5 上是否复现**——如果 P5 v1 阶段运行时 issue #40 arm64 P4 回归还没解决,P5 arm64 数据与 P4 arm64 数据的对比读法需要显式声明基线;
 - **P3 主动保留(D2 决议)对 P5 的影响**——如果首个宿主选 P3 wasm build(iOS / seccomp 场景),P5 无法接管;P5 验收只在 P4 + P5 build 上进行,P3-only build 保留 P4 之前的状态。
 
 ---
@@ -265,7 +265,7 @@ v2 / v3 分别镜像 §5.1 的流程,每档独立判定。**v3 达标即 P5 全�
 - T 编号最终清单(§3.2 表现 T1-T12 是占位,实际的 T # 由 [./08-testing-strategy.md](./08-testing-strategy.md) 定稿时可能拆分或合并)——[./08-testing-strategy.md](./08-testing-strategy.md) 定稿时同步;
 - T5 fuzz 时长下限的具体数字(4h / 8h / 16h 是占位)——立项后按机器成本预算校准;
 - 「10x 下沿的验收 pass」是否可以对外声明「P5 v1 stable」——需要与项目版本策略协调,立项通过之后决定;
-- **coroutine 与 trace 的关系**——见 [./00-overview.md](./00-overview.md) §5.2 开放问题「LuaJIT 选择 trace 不跨 yield,望舒大概率也一样」,T11 就是这条决策的验收落点;如果立项之后决定放开 coroutine trace,T11 内容需要重新定义。
+- **coroutine 与 trace 的关系**——见 [./00-overview.md](./00-overview.md) §5.2 开放问题「LuaJIT 选择 trace 不跨 yield,望舒大概率也一样」,T11 就是这条决策对应的验收项;如果立项之后决定放开 coroutine trace,T11 内容需要重新定义。
 
 ---
 

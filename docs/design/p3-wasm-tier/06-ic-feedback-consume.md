@@ -1,10 +1,10 @@
 # P3-06 IC 与 TypeFeedback:非投机消费(与 P2 零 deopt 口径严格一致)
 
-> 状态:**详细设计**。本文是 P3 文档集 [00-overview](./00-overview.md) §0 文档地图中「feedback 非投机消费」单一事实源,承 p3-wasm-tier 单文件原稿 §3(8 行原稿)的全卷展开。
+> 状态:**详细设计**。本文是 P3 文档集 [00-overview](./00-overview.md) §0 文档地图中「feedback 非投机消费」单一事实源,承 p3-wasm-tier 单文件原稿 §3(8 行原稿)的完整展开。
 > **本文定位一句话**:**P3 是 try-compile,不依赖 feedback 正确性 — 在代码层落实为两条铁律:① 快路径检查 = 语义分发,不是投机 guard;② IC 快照编译期固化,失效自然降级到助手(慢但正确)**。
 >
 > 上游种子:p3-wasm-tier 单文件原稿 §3(行 202-209,8 行)+ §10 不变式 1。
-> 上游契约:
+> 上游约定:
 > - [00-overview](./00-overview.md)(P3 总览;§1 P3/P4 不对称消费 feedback、§3 关键耦合 5 IC 快照编译期固化、§9 不变式 1 语义分发非投机)
 > - [02-translation](./02-translation.md)(P3 翻译器;本文是其 IC 翻译形式的细化扩展)
 > - [04-trampoline](./04-trampoline.md)(慢路径 imported 助手回 Go,本文 IC miss 降级路径接入点)
@@ -17,7 +17,7 @@
 >
 > 下游衔接:[../p4-method-jit/04-osr-deopt](../p4-method-jit/04-osr-deopt.md) §5(P4 投机失败 deopt + 重训机制 — 本文「IC 失效是否重编译」的统一评估归属)。
 
-对应 Go 包:`internal/gibbous/wasm`(本文消费方);上游契约方 `internal/bridge`(`PointFeedback` 产出)、`internal/bytecode`(`ICSlot` 读取)。
+对应 Go 包:`internal/gibbous/wasm`(本文消费方);上游接口提供方 `internal/bridge`(`PointFeedback` 产出)、`internal/bytecode`(`ICSlot` 读取)。
 
 ---
 
@@ -106,7 +106,7 @@ P3 与 P4 后续路径的根本分野:
 
 > **物理同形 ≠ 语义同义**:不要因为两者都发了 `i64.lt_u` + `if` 就以为 P3 也在投机。投机的字面定义是「省略某些合法语义分支,赌它不发生」——P3 不省略,慢路径助手就在 if 的 else 分支里,完整覆盖 metamethod / coercion。P4 才省略(慢路径不在 JIT 代码里,在 crescent 解释器里)。
 
-**P4 视角对偶兑现**(2026-06-28,承 [../p4-method-jit/implementation-progress §2 RJ-19](../p4-method-jit/implementation-progress.md) 跨文档回填请求):本节「物理同形 ≠ 语义同义」从 P3 视角展开,P4 视角的对偶兑现(投机 guard 的字面定义 + IsNumber×2 在 P4 是裁剪版 + OSR exit 把剩余执行交还 crescent)详见 [../p4-method-jit/03-speculation-ic §0.2 + §5.3](../p4-method-jit/03-speculation-ic.md)。两个视角互补:本节定 "P3 不投机" 边界(防误判);P4 03 §0.2 / §5.3 定 "P4 投机" 边界(物理实证 OSR exit 协议)。本会话 PJ5 SELF spec template `TestPJ5_SelfCall_E2E_SpecTemplate_OSRExitToDeopt`(SpecP4DeoptHits +6 实证)是 P4 投机的实证标的。
+**P4 视角对偶兑现**(2026-06-28,承 [../p4-method-jit/implementation-progress §2 RJ-19](../p4-method-jit/implementation-progress.md) 跨文档回填请求):本节「物理同形 ≠ 语义同义」从 P3 视角展开,P4 视角的对偶兑现(投机 guard 的字面定义 + IsNumber×2 在 P4 是裁剪版 + OSR exit 把剩余执行交还 crescent)详见 [../p4-method-jit/03-speculation-ic §0.2 + §5.3](../p4-method-jit/03-speculation-ic.md)。两个视角互补:本节定 "P3 不投机" 边界(防误判);P4 03 §0.2 / §5.3 定 "P4 投机" 边界(实测验证 OSR exit 协议)。本会话 PJ5 SELF spec template `TestPJ5_SelfCall_E2E_SpecTemplate_OSRExitToDeopt`(SpecP4DeoptHits +6 实证)是验证 P4 投机的具体用例。
 
 ### 1.2 P3 ADD 翻译里 `IsNumber×2` 是语义分发
 
@@ -134,7 +134,7 @@ P3 与 P4 后续路径的根本分野:
 **论证「这是语义分发,不是投机 guard」的三个具体形式**:
 
 1. **else 分支永远存在**——无论 fb 给什么 kind,`(else (call $h_arith ...))` 都必发。如果 P3 像 P4 那样省掉 else 把它转给 OSR exit,**那才是投机**。但 P3 不省。
-2. **if 的判定与解释器一样的**——[../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md) §4.1 的 `value.IsNumber(b) && value.IsNumber(c)` 是**解释器的快路径前置检查**(同样含「失败走慢路径」语义);P3 把这个判定原样翻译成 Wasm `i64.lt_u + i32.and`。**同一组判定**,差别只在「P1 用 Go 函数实现,P3 用 Wasm 指令实现」。
+2. **if 的判定与解释器一样**——[../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md) §4.1 的 `value.IsNumber(b) && value.IsNumber(c)` 是**解释器的快路径前置检查**(同样含「失败走慢路径」语义);P3 把这个判定原样翻译成 Wasm `i64.lt_u + i32.and`。**同一组判定**,差别只在「P1 用 Go 函数实现,P3 用 Wasm 指令实现」。
 3. **慢路径助手得正确结果**——`$h_arith` 是 imported Go 函数(走 [04-trampoline](./04-trampoline.md) §3 helper 机制),内部调 `crescent.doArith` 慢路径(coercion + `__add` 元方法 + 错误抛出)。返回时 R(A) 已被正确写入,返回 status=0;Wasm 直线继续。**不存在「P3 算错」的可能**——慢路径就是 P1 慢路径同源。
 
 ### 1.3 P3 GETTABLE 翻译里「同表同代次」是语义分发
@@ -159,12 +159,12 @@ GETTABLE 的形式比 ADD 复杂(IC 快照固化是 §2 主题),但语义分发�
 
 **论证「同表同代次校验是语义分发,不是投机 guard」的对照**:
 
-| | P3 「同表 + 同 gen」校验 | P4 一样的校验(若做) |
+| | P3 「同表 + 同 gen」校验 | P4 同样的校验(若做) |
 |---|---|---|
 | 失败语义 | 「快照失效,该走完整查找了」(语义合法路径) | 「投机前提不成立,该 deopt 了」 |
 | 失败动作 | call `$h_gettable`(走 [../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md) §6.3 完整查找,含 metamethod) | OSR exit |
 | 失败时是否仍在 Wasm 函数 | **是**(call helper 是 imported 调用,Go 助手返回后继续 Wasm) | **否**(离开 JIT 函数,crescent 接管) |
-| 解释器一样的判定证据 | [../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md) §6.3 `slot.tableRef == ... && slot.shape == t.Gen()` 是**同一组判定** | (P4 复用此判定但语义异化为 guard) |
+| 与解释器相同判定的证据 | [../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md) §6.3 `slot.tableRef == ... && slot.shape == t.Gen()` 是**同一组判定** | (P4 复用此判定但语义异化为 guard) |
 
 **关键**:P3 的「同表同代次」就是把解释器 IC 命中流程([../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md) §6.3 doGetTable 中段)的判定逻辑,把里面的运行期 `slot.tableRef`/`slot.shape` 替换成编译期立即数 `SNAP_TABLEREF`/`SNAP_GEN`。**判定逻辑同构,只是数据来源从「运行期 slot」变成「编译期立即数」**。
 
@@ -408,7 +408,7 @@ Time T3..Tn: 同样比对失败(SNAP_GEN 永远是 42,t.gen() 永远 ≥43)
 
 1. **三层校验依次失败都走同一个 helper**(`$h_gettable`)——helper 内部走 [../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md) §6.3 完整 doGetTable(含哈希查找 + `__index` 元方法 + nil 处理)。**任何 IC miss 形式都正确**。
 2. **SNAP_KIND 编译期单态选定**——在 emit_gettable 内 `switch fb.kind { case 1: emit_array_at; case 2: emit_node_val_at; case 3: emit_meta_invoke }`,**不发 runtime switch**(代码体积省 + 分支预测无干扰)。
-3. **校验顺序遵循 [../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md) §6.3 的 doGetTable**:先 IsTable → 再 tableRef 同表 → 再 shape 同代次。**三层与解释器一样的,语义分发**。
+3. **校验顺序遵循 [../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md) §6.3 的 doGetTable**:先 IsTable → 再 tableRef 同表 → 再 shape 同代次。**三层与解释器一致,是语义分发**。
 
 #### 3.2.2 GETGLOBAL 的 FBGlobalStable 翻译形式
 
@@ -434,7 +434,7 @@ Time T3..Tn: 同样比对失败(SNAP_GEN 永远是 42,t.gen() 永远 ≥43)
     (br_if $err (call $h_getglobal (local.get $base) (i32.const PC)))))
 ```
 
-**简化处**:相对 §3.2.1 GETTABLE 形式,GETGLOBAL 省了 IsTable + tableRef 两层校验(globals 身份恒等,无需运行期校验)。这是 globals IC 的物理优势(命中代码更短、cache 更友好)。
+**简化处**:相对 §3.2.1 GETTABLE 形式,GETGLOBAL 省了 IsTable + tableRef 两层校验(globals 身份恒等,无需运行期校验)。这是 globals IC 的结构优势(命中代码更短、cache 更友好)。
 
 #### 3.2.3 SELF 的 FBSelfMono 翻译形式
 
@@ -471,7 +471,7 @@ Time T3..Tn: 同样比对失败(SNAP_GEN 永远是 42,t.gen() 永远 ≥43)
 | 缓存目标表已不是当前表 | tableRef 层(GETTABLE/SELF;GETGLOBAL 无此层) | `$h_gettable` / `$h_self` → 走完整哈希 |
 | 表已 rehash(gen bump) | shape 层 | `$h_gettable` / `$h_getglobal` / `$h_self` → 走完整哈希 |
 
-**helper 内部都是 [../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md) §6.3/§6.4 解释器完整流程**,语义层面与解释器逐字节一致([07-tests](./08-testing-strategy.md) 差分门保证)。
+**helper 内部都是 [../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md) §6.3/§6.4 解释器完整流程**,语义层面与解释器逐字节一致([07-tests](./08-testing-strategy.md) 差分检查保证)。
 
 ### 3.3 FBTableMega
 
@@ -530,7 +530,7 @@ Time T3..Tn: 同样比对失败(SNAP_GEN 永远是 42,t.gen() 永远 ≥43)
 
 **触发条件**:[../p2-bridge/02-ic-feedback](../p2-bridge/02-ic-feedback.md) §4.5 「P2 初版只聚合一次」可能让 P3 拿到 nil feedback——首次升层时聚合 + installFeedback,后续若 Proto 重新升层(理论上 P2 状态机不允许这个,但 P3 实现时可能遇到 P3Compiler.Compile 被调用时 fb=nil 的极端场景)P3 拿到的 fb 可能是 nil。
 
-[../p2-bridge/05-p3-p4-interface](../p2-bridge/05-p3-p4-interface.md) §2.1 P3Compiler.Compile 接口契约里明确:
+[../p2-bridge/05-p3-p4-interface](../p2-bridge/05-p3-p4-interface.md) §2.1 P3Compiler.Compile 接口约定里明确:
 
 > feedback:类型反馈快照……可能为 nil(实现方必须容忍 nil ⇒ 退化为「无 feedback 提示」编译,仍正确)。
 
@@ -638,13 +638,13 @@ func (e *Emitter) pointFeedbackOf(pc int32) bridge.PointFeedback {
 
 **关键设计**:
 
-1. **emit_<op> 函数只读 pf,不直接访问 e.fb**——这把 nil 容忍逻辑收口在 `pointFeedbackOf`,后续 emit 函数零特殊路径。
+1. **emit_<op> 函数只读 pf,不直接访问 e.fb**——这把 nil 容忍逻辑统一放在 `pointFeedbackOf`,后续 emit 函数零特殊路径。
 2. **PointFeedback 是值类型不是指针**——按值传递不引入 nil 检查心智负担,零值即 FBUnstable。
 3. **不同 opcode 族用不同 emit 函数**——按 op 类别分组(arith / compare / table / global / self / non-IC),每组内 switch fb.Kind 决定形式。
 
 ### 4.2 PointFeedback nil(非 IC 点)→ 跳过快路径分支
 
-**「nil PointFeedback」的物理形式**:实际不是 Go 的 nil(PointFeedback 是值类型),而是**零值**——`{PC: 0, Kind: FBUnstable, Confidence: 0, StableShape: 0, StableIndex: 0, Observations: 0}`。这是 [../p2-bridge/02-ic-feedback](../p2-bridge/02-ic-feedback.md) §6.4 aggregator.Aggregate 的输出协议:
+**「nil PointFeedback」的实际形式**:实际不是 Go 的 nil(PointFeedback 是值类型),而是**零值**——`{PC: 0, Kind: FBUnstable, Confidence: 0, StableShape: 0, StableIndex: 0, Observations: 0}`。这是 [../p2-bridge/02-ic-feedback](../p2-bridge/02-ic-feedback.md) §6.4 aggregator.Aggregate 的输出协议:
 
 > 非 IC 指令:fb.Points[pc] 保持零值(Kind=FBUnstable, Confidence=0)— P3/P4 应跳过此 pc。
 
@@ -794,25 +794,25 @@ T0+3: 该 Proto 跑 gibbous 代码,运行期表 t 现在的 gen=99(同 T0+1 的�
 
 P3 IC feedback 消费的实现期硬性约束,违反即设计失败:
 
-1. **P3 不依赖 feedback 正确性**(零 deopt)。承 [../p2-bridge/04-try-compile-fallback](../p2-bridge/04-try-compile-fallback.md) §1.3 + [../p2-bridge/05-p3-p4-interface](../p2-bridge/05-p3-p4-interface.md) §1.2 + 本文 §1.5。物理表现:即便 fb 完全错(全标 FBArithStableNumber 但实际全是 string),P3 翻译产物运行起来仍正确(只是性能不优)。**这是 P3 与 P4 的根本分野**——P4 投机错会触发 deopt 风暴,P3 投机错……P3 没投机所以无所谓「投机错」。
+1. **P3 不依赖 feedback 正确性**(零 deopt)。承 [../p2-bridge/04-try-compile-fallback](../p2-bridge/04-try-compile-fallback.md) §1.3 + [../p2-bridge/05-p3-p4-interface](../p2-bridge/05-p3-p4-interface.md) §1.2 + 本文 §1.5。具体表现:即便 fb 完全错(全标 FBArithStableNumber 但实际全是 string),P3 翻译产物运行起来仍正确(只是性能不优)。**这是 P3 与 P4 的根本分野**——P4 投机错会触发 deopt 风暴,P3 投机错……P3 没投机所以无所谓「投机错」。
 
-2. **快路径检查 = 语义分发,不是投机 guard**。承 §1。物理表现:每个 IC 翻译形式的 if-else 中,**else 分支永远存在且永远调 helper**——不省略 else,不省略 helper。如果某条 emit_<op> 函数有「fb=stable 时省略 else 分支」的优化,这条优化就是投机化,违反不变式。
+2. **快路径检查 = 语义分发,不是投机 guard**。承 §1。具体表现:每个 IC 翻译形式的 if-else 中,**else 分支永远存在且永远调 helper**——不省略 else,不省略 helper。如果某条 emit_<op> 函数有「fb=stable 时省略 else 分支」的优化,这条优化就是投机化,违反不变式。
 
-3. **IC 快照编译期固化,失效降级到 helper(慢但正确)**。承 §2。物理表现:gibbous 代码不重读 ICSlot,固化的 SNAP_* 立即数失效后(校验 fail)直接 helper,**不触发重编译 / 不切走 IC slot 副本 / 不走 deopt**。「正确但慢」是定式,helper 调用是稳态形式(不是异常)。
+3. **IC 快照编译期固化,失效降级到 helper(慢但正确)**。承 §2。具体表现:gibbous 代码不重读 ICSlot,固化的 SNAP_* 立即数失效后(校验 fail)直接 helper,**不触发重编译 / 不切走 IC slot 副本 / 不走 deopt**。「正确但慢」是定式,helper 调用是稳态形式(不是异常)。
 
-4. **P3 不读 confidence 字段**(那是 P4 的事)。承 §3.1 + [../p2-bridge/05-p3-p4-interface](../p2-bridge/05-p3-p4-interface.md) §1.4。物理表现:emit_<op> 函数只 switch `pf.Kind`,不读 `pf.Confidence`。confidence 是 P4 用来「投机激进度旋钮」的字段,P3 不投机所以不需要。**emit_<op> 函数签名层面甚至可以只接收 Kind,不接收 PointFeedback 整体**(实现上接收整体是为了未来扩展空间,但当前不读 confidence 字段)。
+4. **P3 不读 confidence 字段**(那是 P4 的事)。承 §3.1 + [../p2-bridge/05-p3-p4-interface](../p2-bridge/05-p3-p4-interface.md) §1.4。具体表现:emit_<op> 函数只 switch `pf.Kind`,不读 `pf.Confidence`。confidence 是 P4 用来「投机激进度旋钮」的字段,P3 不投机所以不需要。**emit_<op> 函数签名层面甚至可以只接收 Kind,不接收 PointFeedback 整体**(实现上接收整体是为了未来扩展空间,但当前不读 confidence 字段)。
 
-5. **nil feedback 容忍:退化为通用翻译**。承 §3.5 + [../p2-bridge/05-p3-p4-interface](../p2-bridge/05-p3-p4-interface.md) §2.1 P3Compiler.Compile 接口契约。物理表现:`pointFeedbackOf` 守卫将 nil/越界归一到零值 PointFeedback(Kind=FBUnstable),后续 emit_<op> 走通用翻译路径——零特殊处理逻辑。
+5. **nil feedback 容忍:退化为通用翻译**。承 §3.5 + [../p2-bridge/05-p3-p4-interface](../p2-bridge/05-p3-p4-interface.md) §2.1 P3Compiler.Compile 接口约定。具体表现:`pointFeedbackOf` 守卫将 nil/越界归一到零值 PointFeedback(Kind=FBUnstable),后续 emit_<op> 走通用翻译路径——零特殊处理逻辑。
 
-6. **race-tolerant 读不爆炸**。承 §4.3。物理表现:P3 编译期对 ICSlot 的读用 atomic.LoadUint32(为兼容 -race 标记)或裸读(性能最优),读到「半新半旧」组合时固化的 SNAP_* 立即数仍可用——校验失败走 helper,正确性兜底。
+6. **race-tolerant 读不爆炸**。承 §4.3。具体表现:P3 编译期对 ICSlot 的读用 atomic.LoadUint32(为兼容 -race 标记)或裸读(性能最优),读到「半新半旧」组合时固化的 SNAP_* 立即数仍可用——校验失败走 helper,正确性兜底。
 
-7. **双源选取:fb 决定路径,ICSlot 填立即数**。承 §4.4。物理表现:`fb.Points[pc].Kind` 决定 emit_<op> 走 Mono / Mega / Generic 哪条翻译路径;ICSlot 字段填 SNAP_TABLEREF / SNAP_GEN / SNAP_KIND / SNAP_INDEX 立即数。两者职责互补不冲突,即便不一致时 P3 兜底退化(`if slot.Kind == 0 → emitGettableGeneric`)。
+7. **双源选取:fb 决定路径,ICSlot 填立即数**。承 §4.4。具体表现:`fb.Points[pc].Kind` 决定 emit_<op> 走 Mono / Mega / Generic 哪条翻译路径;ICSlot 字段填 SNAP_TABLEREF / SNAP_GEN / SNAP_KIND / SNAP_INDEX 立即数。两者职责互补不冲突,即便不一致时 P3 兜底退化(`if slot.Kind == 0 → emitGettableGeneric`)。
 
-8. **六枚举值 + nil 全覆盖**。承 §3.6。物理表现:P3 翻译器对 PointFeedback 的所有可能输入(FBUnstable / FBArithStableNumber / FBTableMono / FBTableMega / FBGlobalStable / FBSelfMono + nil)都有对应翻译形式——**switch case 不留 default panic**,通用翻译是 fallback。
+8. **六枚举值 + nil 全覆盖**。承 §3.6。具体表现:P3 翻译器对 PointFeedback 的所有可能输入(FBUnstable / FBArithStableNumber / FBTableMono / FBTableMega / FBGlobalStable / FBSelfMono + nil)都有对应翻译形式——**switch case 不留 default panic**,通用翻译是 fallback。
 
-9. **解释器一样的判定证据**。承 §1.2 / §1.3。物理表现:P3 IC 翻译形式里的 IsNumber×2 / 同表同代次 / globals gen 校验,与 [../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md) §4.1 / §6.3 / §6.4 解释器原版判定**逐字节同构**(Wasm 指令是 Go 代码的直译)。差分 fuzz([08-testing-strategy](./08-testing-strategy.md))保证两层 byte-equal 输出。
+9. **与解释器相同的判定证据**。承 §1.2 / §1.3。具体表现:P3 IC 翻译形式里的 IsNumber×2 / 同表同代次 / globals gen 校验,与 [../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md) §4.1 / §6.3 / §6.4 解释器原版判定**逐字节同构**(Wasm 指令是 Go 代码的直译)。差分 fuzz([08-testing-strategy](./08-testing-strategy.md))保证两层 byte-equal 输出。
 
-10. **失效后无重编译机制**。承 §2.4 / §2.5。物理表现:P3 翻译产物对「失效后的 helper 调用频率」**不计数 / 不监控 / 不触发任何动作**——helper 调用就是合法运行形式。失效计数 → 重编译协议留 P4 一并评估([../p4-method-jit/04-osr-deopt](../p4-method-jit/04-osr-deopt.md) §5)。
+10. **失效后无重编译机制**。承 §2.4 / §2.5。具体表现:P3 翻译产物对「失效后的 helper 调用频率」**不计数 / 不监控 / 不触发任何动作**——helper 调用就是合法运行形式。失效计数 → 重编译协议留 P4 一并评估([../p4-method-jit/04-osr-deopt](../p4-method-jit/04-osr-deopt.md) §5)。
 
 ---
 
@@ -825,9 +825,9 @@ P3 IC feedback 消费的实现期硬性约束,违反即设计失败:
 - **现状**:P3 PW5 基线选择「失效后永久走 helper(等同解释器无 IC)」,不触发重编译。
 - **挂起原因**:重编译协议是 deopt 基建的一部分(失效计数器 + 重编译预算 + 旧码 disposal),P4 因投机失败 deopt 必然要建一套,P3 单独建不摊薄成本(本文 §2.5)。
 - **解决路径**:链 P4 §3.4「再训练机制」一并评估。P4 完成时统一处理「gibbous 代码片段过期」的两个来源(P3 IC 失效永久 miss + P4 投机 guard 反复失败)——同一套重编译触发器与状态机。
-- **影响范围**:P3 阶段的性能上限由「失效后退化到无 IC 解释器水平」框定;若负载形式对 IC 命中率敏感(如频繁 rehash 的工作集),性能可能不达 ≥2x 验收门([08-testing-strategy](./08-testing-strategy.md));若实测达不到,可能提前到 P4 评估时把 IC 失效重编译纳入。
+- **影响范围**:P3 阶段的性能上限由「失效后退化到无 IC 解释器水平」框定;若负载形式对 IC 命中率敏感(如频繁 rehash 的工作集),性能可能不达 ≥2x 验收标准([08-testing-strategy](./08-testing-strategy.md));若实测达不到,可能提前到 P4 评估时把 IC 失效重编译纳入。
 - **登记位置**:本文 §2.5 + [00-overview](./00-overview.md) §10 + [doc-gaps](../../../llmdoc/memory/doc-gaps.md)。
-- **P4 端重训练协议**(2026-06-28,承 [../p4-method-jit/implementation-progress §2 RJ-20](../p4-method-jit/implementation-progress.md) 跨文档回填请求):P3 IC 失效永久 miss 与 P4 投机 deopt 反复失败统一在 P4 RequestRefresh + 重编译协议处理,详见 [../p4-method-jit/03-speculation-ic §7.3 重训练协议](../p4-method-jit/03-speculation-ic.md) + [../p4-method-jit/04-osr-deopt §5 OSR exit 流程 + §6 重编译触发器](../p4-method-jit/04-osr-deopt.md)。本会话 PJ5 SELF spec template 已实证 p4SpecState 子状态机骨架(P4Speculative/P4Deoptimized/P4StuckSpeculation)+ DeoptThreshold=16 + MaxRecompileTries=2 + onOSRExit/onP4Install 转移函数 + SpecP4DeoptHits +6 真业务路径实证。
+- **P4 端重训练协议**(2026-06-28,承 [../p4-method-jit/implementation-progress §2 RJ-20](../p4-method-jit/implementation-progress.md) 跨文档回填请求):P3 IC 失效永久 miss 与 P4 投机 deopt 反复失败统一在 P4 RequestRefresh + 重编译协议处理,详见 [../p4-method-jit/03-speculation-ic §7.3 重训练协议](../p4-method-jit/03-speculation-ic.md) + [../p4-method-jit/04-osr-deopt §5 OSR exit 流程 + §6 重编译触发器](../p4-method-jit/04-osr-deopt.md)。本会话 PJ5 SELF spec template 已实证 p4SpecState 子状态机骨架(P4Speculative/P4Deoptimized/P4StuckSpeculation)+ DeoptThreshold=16 + MaxRecompileTries=2 + onOSRExit/onP4Install 转移函数 + SpecP4DeoptHits +6 真实业务路径实证。
 
 ### 6.2 IC 快照固化的两份快照(feedback + ICSlot)选取策略
 
@@ -872,7 +872,7 @@ P3 IC feedback 消费的实现期硬性约束,违反即设计失败:
 - [02-translation](./02-translation.md)(P3 翻译器,§6.5 emitter 入口接 fb;本文是其 IC 翻译形式的细化扩展)
 - [04-trampoline](./04-trampoline.md)(慢路径 imported 助手回 Go,本文 IC miss 降级路径接入点 `$h_arith`/`$h_gettable`/`$h_getglobal`/`$h_self`)
 - [05-safepoint-gc](./05-safepoint-gc.md)(分配点 safepoint,本文 helper 内调 alloc 时 GC 触发的协议)
-- [08-testing-strategy](./08-testing-strategy.md)(crescent vs gibbous 逐字节差分,本文 IC 翻译形式正确性的验收门)
+- [08-testing-strategy](./08-testing-strategy.md)(crescent vs gibbous 逐字节差分,本文 IC 翻译形式正确性的验收检查)
 - [../p2-bridge/02-ic-feedback](../p2-bridge/02-ic-feedback.md)(TypeFeedback shape 完整定义,本文是消费侧)
 - [../p2-bridge/04-try-compile-fallback](../p2-bridge/04-try-compile-fallback.md) §1(fallback ≠ deopt)+ §1.3(P2/P3 静态保证 vs P4 投机)
 - [../p2-bridge/05-p3-p4-interface](../p2-bridge/05-p3-p4-interface.md) §1(P3/P4 不对称消费 feedback;§1.4 P3 不读 confidence)

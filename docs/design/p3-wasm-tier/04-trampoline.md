@@ -2,7 +2,7 @@
 
 > 状态:**详细设计**(开工前置 spike 通过后完成,凡涉 wazero API 细节处标注「待 spike 验证」)。本文是 [00-overview](./00-overview.md) §0 文档地图所定的「跨层互调」单一事实源——CallInfo bit50 `callStatus_gibbous`(对 [../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §1.2 的回填请求)、crescent→gibbous 升层函数入口协议、gibbous→crescent/host imported 助手三向分派、status 链错误冒泡、参数/返回值经共见值栈、trampoline 实现骨架、升层日志接通。
 >
-> 上游契约:[00-overview](./00-overview.md)(P3 总览,本文严格遵守其章节番号与风格基线;§3 第 2 项耦合点 CallInfo bit50、§6 决策速查 trampoline 入口签名 / bit50 写入 / 错误传播、§9 不变式 3/4)、../p3-wasm-tier §5(原稿主体,本文按 §5.1→§1 / §5.2→§2 / §5.3→§3+§4 / §5.4→§5 / §10 不变式 3/4/6 → §8 章节映射展开)。
+> 上游约定:[00-overview](./00-overview.md)(P3 总览,本文严格遵守其章节番号与风格基线;§3 第 2 项耦合点 CallInfo bit50、§6 决策速查 trampoline 入口签名 / bit50 写入 / 错误传播、§9 不变式 3/4)、../p3-wasm-tier §5(原稿主体,本文按 §5.1→§1 / §5.2→§2 / §5.3→§3+§4 / §5.4→§5 / §10 不变式 3/4/6 → §8 章节映射展开)。
 >
 > P1 依赖面:[../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md)(§1.2 CallInfo word2 bit 布局 + §7 CALL/TAILCALL/RETURN 调用约定 + §7.3 reentry 边界 + §7.6 host 调用约定 + §9 错误冒泡)、[../p1-interpreter/08-coroutines](../p1-interpreter/08-coroutines.md)(§3 路线 B yield 冒泡 + §5 yield 不跨 host 边界)。
 >
@@ -24,7 +24,7 @@ P3 工作流是「P2 喂料 → P3 翻译 → wazero 执行」三段式([00-over
 
 > **调用链状态全住 arena 的 CallInfo([../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §1.2);gibbous 帧同样压 CallInfo;参数/返回值全经共见值栈;跨层只传 `base i32`。**
 
-物理含义三句:
+具体含义有三条:
 
 1. **不发明新调用记录**:gibbous 帧不在 Go 栈、不在 wazero 栈上额外维护一份「调用状态」——它压的 CallInfo 与 crescent 帧压的 CallInfo 是同一种结构、同一块 arena。这是 [00-overview](./00-overview.md) §9 不变式 3「CallInfo 唯一真相」的兑现。
 2. **不换 ABI**:从 crescent 帧到 gibbous 帧、从 gibbous 帧回 crescent 帧,调用约定不变——还是 [../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §7 的「被调 closure 在 `base-1`、参数在 `[base, base+nargs)`、返回值回填 `R(A..)`」那一套。trampoline 只是「换执行引擎」的薄层,不引入新的参数传递机制。
@@ -63,24 +63,24 @@ P4 **继承本文的全部跨层协议**,只换发射后端([../p4-method-jit/01
 - status 链错误冒泡协议 P4 原样继承（P4 多一个 `status=2 DEOPT` 出口，是 P4 独有的投机失败 OSR exit，[../p2-bridge/05](../p2-bridge/05-p3-p4-interface.md) §6.1；**P3 的 trampoline 永远不返回 2**，[00-overview](./00-overview.md) §1）；
 - imported 助手三向分派(§3)在 P4 退化为原生码直接 call Go 函数（无 wazero 中介），但分派语义同一。
 
-**所以本文是 P3/P4 共用的跨层协议规范**——把跨层协议一次定稳，P4 阶段不动协议,只换「进入执行引擎」与「从执行引擎调 Go」的两个物理桩。
+**所以本文是 P3/P4 共用的跨层协议规范**——把跨层协议一次定稳，P4 阶段不动协议,只换「进入执行引擎」与「从执行引擎调 Go」的两个底层桩。
 
 ### 0.5 章节 → P-Wasm 里程碑映射(实现者导航)
 
-本文各协议点落在哪个 P-Wasm 里程碑([00-overview](./00-overview.md) §4),供实现者按 PW 顺序施工时定位:
+本文各协议点对应哪个 P-Wasm 里程碑([00-overview](./00-overview.md) §4),供实现者按 PW 顺序实现时定位:
 
 | 协议点 | 本文章节 | 完成 PW | 验收关联([00-overview](./00-overview.md) §4) |
 |---|---|---|---|
 | 升层入口签名 + doCall gibbous 分支 + status 处理 | §2.1-§2.4 | **PW2** | 5-op Proto 升层后 byte-equal + 升层日志触发 |
 | 算术/IC 慢路径助手(h_arith / h_gettable) | §3.3 | **PW3 / PW5** | 混合类型走助手结果逐字节一致 / 形状变化走助手仍正确 |
-| 回边 safepoint 助手(h_safepoint) | §3.3 | **PW4** | 数值 for 编译后 ≥2x + 回边 GC byte-equal |
+| 循环回跳(back edge)safepoint 助手(h_safepoint) | §3.3 | **PW4** | 数值 for 编译后 ≥2x + back edge GC byte-equal |
 | CALL/TAILCALL/RETURN + 三向分派 + status 链错误冒泡 | §2.2 / §2.5 / §3.1-§3.2 / §4 | **PW6** | gibbous 内调未编译 Proto 经 trampoline 出去由 crescent 跑;错误穿越冒泡到 pcall 边界 |
 | bit50 写入(CallInfo struct 加字段)+ 对 P1 05 回填 | §1 | **PW6** | 与跨层协议同批完成 |
 | 线程级 tier 守卫(`th == mainThread`) | §5(链 07) | **PW8** | 协程内即便 hot + Compilable 也保持 TierInterp |
 | 升层日志接通 | §7 | **PW2 起** | 升层日志格式断言(promote/stuck/fail 三时点) |
 | 跨层差分(traceback 逐字节)+ panic 兜底实测 | §4.5 / §6.5 | **PW9** | V1-V18 全过 + 强制全升模式 + GC 压力 fuzz |
 
-**关键:跨层协议主体在 PW6 完成**(CALL 系列 + 三向分派 + status 链),与 [00-overview](./00-overview.md) §5 人月分解「PW6 是大头(1-2 人月,三路分派 + 错误冒泡 + pcall 边界清理)」一致。PW2 先落最小入口(单 i32 升层 + RETURN),PW6 补全调用与错误冒泡——这与 [02-translation](./02-translation.md) §1.3 的 opcode 渐进白名单同步(CALL/RETURN 在 PW6 才加入 supported 表)。
+**关键:跨层协议主体在 PW6 完成**(CALL 系列 + 三向分派 + status 链),与 [00-overview](./00-overview.md) §5 人月分解「PW6 是大头(1-2 人月,三路分派 + 错误冒泡 + pcall 边界清理)」一致。PW2 先做最小入口(单 i32 升层 + RETURN),PW6 补全调用与错误冒泡——这与 [02-translation](./02-translation.md) §1.3 的 opcode 渐进白名单同步(CALL/RETURN 在 PW6 才加入 supported 表)。
 
 ---
 
@@ -123,17 +123,17 @@ bit50 的「写入者 / 读取者」分工:
 
 **关键纪律**:P1 解释器主循环([../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §12 完整骨架)**从不读 bit50**。
 
-物理原因:解释器执行一帧时,它本身就是 crescent 执行引擎——它不需要问「这帧是不是 gibbous」,因为它只可能在自己执行的帧上跑(crescent 帧)。一个标了 bit50=1 的 gibbous 帧,根本不会被解释器主循环执行——它在 trampoline 跳进 wazero 后,由 Wasm 代码执行(§2.2 step3)。所以:
+原因:解释器执行一帧时,它本身就是 crescent 执行引擎——它不需要问「这帧是不是 gibbous」,因为它只可能在自己执行的帧上跑(crescent 帧)。一个标了 bit50=1 的 gibbous 帧,根本不会被解释器主循环执行——它在 trampoline 跳进 wazero 后,由 Wasm 代码执行(§2.2 step3)。所以:
 
 - **bit50 对解释器透明**:解释器读 CallInfo 时只读 base/protoID/nresults/savedPC 等它需要的字段,bit50 不在它的读取面。
-- **这是「P1 不感知 gibbous」原则的兑现**:P1 是独立完整交付的层,P3 是在其上叠加的可选加速面([00-overview](./00-overview.md) §1)。P1 代码不需要为 P3 的存在改任何执行逻辑——bit50 是 P3/P4 trampoline 之间的私有约定,只是物理上借住在 P1 定义的 CallInfo 结构里。
+- **这是「P1 不感知 gibbous」原则的兑现**:P1 是独立完整交付的层,P3 是在其上叠加的可选加速面([00-overview](./00-overview.md) §1)。P1 代码不需要为 P3 的存在改任何执行逻辑——bit50 是 P3/P4 trampoline 之间的私有约定,只是实际存放在 P1 定义的 CallInfo 结构里。
 - **回填的本质是「登记一位的语义」,不是「让 P1 读它」**:对 P1 05 的回填(§1.6)只是把 bit50 的语义从「预留」升级为「P3 trampoline 写,P1 不读」,P1 主循环代码零改动。
 
 ### 1.4 不在升层瞬间改现存帧的此字段
 
 **纪律(承 [../p2-bridge/04](../p2-bridge/04-try-compile-fallback.md) §4.4)**:installGibbous 把 Proto 升 gibbous 时,**不改任何现存 CallInfo 的 bit50**——现存 CallInfo 仍跑 crescent,新进帧的新 CallInfo 才标 1。
 
-物理原因:Proto 在升层瞬间可能正被某个 State 解释跑(其 CallInfo bit50=0)。如果升层那一刻强行把这一帧的 bit50 改成 1,会让 P1 解释器在执行中途「突然变成 gibbous 帧」——但解释器并不会因为 bit50 变了就跳去 wazero(它不读 bit50,§1.3),所以这一改只会制造一个「标了 gibbous 却在被解释器跑」的不一致帧。正确做法:
+原因:Proto 在升层瞬间可能正被某个 State 解释跑(其 CallInfo bit50=0)。如果升层那一刻强行把这一帧的 bit50 改成 1,会让 P1 解释器在执行中途「突然变成 gibbous 帧」——但解释器并不会因为 bit50 变了就跳去 wazero(它不读 bit50,§1.3),所以这一改只会制造一个「标了 gibbous 却在被解释器跑」的不一致帧。正确做法:
 
 ```
 升层瞬间的两种合法可观察态(installGibbous 后,[../p2-bridge/04] §4.4):
@@ -149,7 +149,7 @@ bit50 的「写入者 / 读取者」分工:
 **P4 OSR exit 后 bit50 倾向清 0**(2026-06-28,承 [../p4-method-jit/implementation-progress §2 RJ-21](../p4-method-jit/implementation-progress.md) 跨文档回填请求 + [../p4-method-jit/04-osr-deopt §7.2](../p4-method-jit/04-osr-deopt.md)):P4 投机段在 OSR exit 后,该帧剩余执行交还 crescent 解释器,**bit50 应清 0**(差分友好):
 - **清 0 优点**:差分 friendlier — 该帧再次被进入时若仍 gibbous(deopt 计数未达 stuck)bit50 重新置 1 是正确语义;若已切 P4Deoptimized 撤投机版,bit50 保持 0 = crescent 路径,自然正确
 - **保留 1 风险**:若 OSR exit 后 P4Deoptimized 撤投机版但 bit50 仍 1,下次该帧进入时 doCall 仍走 gibbous 分支(查 trampoline 表已无)→ fallback path 不清晰
-- **倾向清 0**(承 P4 04 §7.2):**P4 完成时实测确认**,本会话 PJ5 SELF spec template OSR exit 路径(SpecP4DeoptHits 实证)未直接涉 bit50 字段写入(因 P4 PJ5 简化形式 mmap 段不读 bit50);完整 OSR exit 接入(Spike 1 Compile/Run 真接通)时落实清 0 纪律。
+- **倾向清 0**(承 P4 04 §7.2):**P4 完成时实测确认**,本会话 PJ5 SELF spec template OSR exit 路径(已由 SpecP4DeoptHits 验证)未直接涉 bit50 字段写入(因 P4 PJ5 简化形式 mmap 段不读 bit50);完整 OSR exit 接入(Spike 1 Compile/Run 真正接通)时落实清 0 纪律。
 
 ### 1.5 P1 实代码现状:callInfo 是普通 Go struct
 
@@ -180,9 +180,9 @@ P3 完成时引入 bit50 有两种实现形式,**P3 完成时定**:
 | 形式 | 实现 | 优劣 |
 |---|---|---|
 | (a) 位打包(设计文档 word2 形式) | callInfo 改成 4-word arena 结构,bit50 是 word2 的真实位 | 与设计文档 §1.2 逐位对齐;arena 化(值栈/CallInfo 迁 arena 是 P3 前置,[03-memory-model](./03-memory-model.md) §1)同批完成 |
-| (b) bool 字段简化版 | callInfo 加 `gibbous bool` 字段,与现有 `tailcall/fresh bool` 一样的 | 实现最简;与 P1 现状(tailcall/fresh 都是 bool)一致;但与 word2 位布局形式上不对齐(语义等价) |
+| (b) bool 字段简化版 | callInfo 加 `gibbous bool` 字段,与现有 `tailcall/fresh bool` 写法一样 | 实现最简;与 P1 现状(tailcall/fresh 都是 bool)一致;但与 word2 位布局形式上不对齐(语义等价) |
 
-**P3 完成时定**——(b) 的简化版与 P1 现有 `tailcall/fresh bool` 一样的,完成阻力最小;(a) 的位打包要等值栈/CallInfo arena 化([03-memory-model](./03-memory-model.md) §1 收养 wazero memory)一起做。本文不预判,只登记两种形式都满足「§1.2-§1.4 的语义」即可。
+**P3 完成时定**——(b) 的简化版与 P1 现有 `tailcall/fresh bool` 写法一样,完成阻力最小;(a) 的位打包要等值栈/CallInfo arena 化([03-memory-model](./03-memory-model.md) §1 收养 wazero memory)一起做。本文不预判,只登记两种形式都满足「§1.2-§1.4 的语义」即可。
 
 ### 1.6 对 P1 05 的回填请求(本文不主动改)
 
@@ -215,7 +215,7 @@ P1 本期已在 `installGibbous` 注释里留语义指针(`internal/bridge/bridg
 )
 ```
 
-两个数字的语义钉死:
+两个数字的语义固定如下:
 
 - **入参 `$base i32`**:R0 在 `thread.valueStack` 的**字节偏移**(不是字索引,不是绝对指针)。gibbous 代码用 `$base + 8*reg` 寻址第 reg 个寄存器([03-memory-model](./03-memory-model.md) §2,NaN-box u64 = 8 字节,寄存器槽 8 对齐)。**为什么是字节偏移而不是字索引**:linear memory 的 `i64.load` 取字节地址,字节偏移直接做 load 的地址操作数,免一次 `<<3`。
 - **返回 `i32 status`**:`0 = OK`(返回值已回填 `R(A..)`,调用方弹 CallInfo 继续解释)、`1 = ERR`(`state.pendingErr` 已置,走 §4 错误冒泡)。**P3 永远不返回 2**(2=DEOPT 是 P4 OSR exit 专用,[../p2-bridge/05](../p2-bridge/05-p3-p4-interface.md) §6.1)——P3 零 deopt,[00-overview](./00-overview.md) §9 不变式 1。
@@ -309,10 +309,10 @@ step3 返回的 status 决定后续:
 
 | status | 含义 | trampoline 处理 |
 |---|---|---|
-| **0 = OK** | Wasm 函数正常 RETURN,返回值已按 nresults 回填 `R(A..)`(funcIdx 位起,[../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §7.2 moveResults 一样的语义) | 弹本帧 CallInfo,`return callReturnedGibbous`——主循环不重载 code(没切到新 crescent 帧,与 callReturnedHost 同位,[../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §7.6)。caller 期望可变返回时,caller 的 top 已被 Wasm 侧 RETURN 助手更新 |
-| **1 = ERR** | Wasm 函数遇到不可恢复错误(经 `h_call`/`h_raise` 把 `state.pendingErr` 置好后,自身 return 1) | 弹本帧 CallInfo(§4.6),`return vm.throwPending(f)`——把 `state.pendingErr` 作为 `*LuaError` 一路 return 出 execute([../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §9.2 throw),直到撞上 protected 边界(§4.3) |
+| **0 = OK** | Wasm 函数正常 RETURN,返回值已按 nresults 回填 `R(A..)`(funcIdx 位起,与 [../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §7.2 moveResults 语义一样) | 弹本帧 CallInfo,`return callReturnedGibbous`——主循环不重载 code(没切到新 crescent 帧,与 callReturnedHost 同位,[../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §7.6)。caller 期望可变返回时,caller 的 top 已被 Wasm 侧 RETURN 助手更新 |
+| **1 = ERR** | Wasm 函数遇到不可恢复错误(经 `h_call`/`h_raise` 把 `state.pendingErr` 置好后,自身 return 1) | 弹本帧 CallInfo(§4.6),`return vm.throwPending(f)`——把 `state.pendingErr` 作为 `*LuaError` 一路 return 出 execute([../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §9.2 throw),直到遇到 protected 边界(§4.3) |
 
-**OK 路径的返回值回填语义**:Wasm 侧的 RETURN opcode 翻译产物([02-translation](./02-translation.md) §3.6)负责「把 `R(A..A+nret)` 搬到 funcIdx 位起、按调用者 CallInfo 记录的 nresults 多退少补」——与解释器 `doReturn` 的 `moveResults`([../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §7.2)逐字节同构。返回值落点是共见栈槽,trampoline 弹 CallInfo 后,主循环看到的返回值已就位,与「调用了一个 crescent 函数返回」无可观察差异。
+**OK 路径的返回值回填语义**:Wasm 侧的 RETURN opcode 翻译产物([02-translation](./02-translation.md) §3.6)负责「把 `R(A..A+nret)` 搬到 funcIdx 位起、按调用者 CallInfo 记录的 nresults 多退少补」——与解释器 `doReturn` 的 `moveResults`([../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §7.2)逐字节同构。返回值的位置是共见栈槽,trampoline 弹 CallInfo 后,主循环看到的返回值已就位,与「调用了一个 crescent 函数返回」无可观察差异。
 
 **ERR 路径的错误传播**:见 §4(status 链)。关键是 trampoline 在 ERR 时也要弹本帧 CallInfo(gibbous 帧由 trampoline 负责弹出,§4.6),然后把 pendingErr 转成 throw 路径。
 
@@ -322,7 +322,7 @@ step3 返回的 status 决定后续:
 
 > **升层入口 `(param $base i32) (result i32)` 只有一个 i32 入参 + 一个 i32 返回——这正是 [01-spike-gate](./01-spike-gate.md) §1.2 spike S2 测的形状。**
 
-为什么钉死单 i32:
+为什么固定为单 i32:
 
 - **S2 测的就是这个形状**:[01-spike-gate](./01-spike-gate.md) §1.2 的 S2 样本是「Go 调一个 wazero 函数,传一个 i32 整数,函数读一次 linear memory 后返回一个 i32」。S2 < 150ns 是 P3 开工检查(PW0,[00-overview](./00-overview.md) §4)。如果实际入口签名偏离 S2(比如传 3 个参数、传指针、传结构),spike 实测值不再代表真实跨层成本,§1 摊销模型失效。
 - **一切都能从 base 自取**:[03-memory-model](./03-memory-model.md) §2 证明了「值世界全在共见 linear memory」——参数、常量、IC slot、CallInfo 全可经 `base` 与编译期立即数寻址到,**不需要再传任何东西**。多传参数是冗余,且每多一个参数都增加跨层成本(wazero 的参数 marshalling)。
@@ -381,7 +381,7 @@ func (t *Trampoline) tailEnterGibbous(st *State, f *frame, i Instruction, cl val
 - **不压新 CallInfo,改写当前 CallInfo**:与 §2.2 CALL 的 `pushCallInfo` 不同,TAILCALL 改写 `th.curCI()`——`for i=1,1e9 do return f() end` 式尾递归在 gibbous 路径下同样**栈深度恒定**(CallInfo 数不变,[../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §7.5)。
 - **bit50 在改写时设(不是新帧)**:TAILCALL 改写当前 CallInfo 的 bit50——本帧从 crescent 帧「原地变成」gibbous 帧。这是 §1.4「不改现存帧 bit50」的**唯一合法例外**:TAILCALL 语义本就是「当前帧被新函数完全替换」(关 upvalue、下移参数、改 protoID),所以改 bit50 是「替换帧的执行引擎」的一部分,与「执行中途换引擎」(§1.4 禁止)不同——TAILCALL 这一帧的旧函数已彻底退出,新函数从 pc=0 开始执行。
 - **gibbous → gibbous 的尾调用**:若 gibbous 代码内部发出 TAILCALL([02-translation](./02-translation.md) §3.6),它经 `h_call`(§3.2)分派,被调者升 gibbous 时同样走「改写当前 CallInfo + 再 fn.Call」——但「复用帧」语义在 Wasm 侧由 RETURN 翻译产物处理(尾调用的返回值透传调用者期望 nresults)。TAILCALL 的跨 gibbous 形式细节归 [02-translation](./02-translation.md) §3.6,本文只定「改写当前 CallInfo bit50、不压新帧」这一协议点。
-- **host 尾调用**:被尾调用者是 host fn 时,走 `tailCallHost`([../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §7.5),其结果作为本帧返回值——与 crescent 一样的,gibbous 不特殊处理。
+- **host 尾调用**:被尾调用者是 host fn 时,走 `tailCallHost`([../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §7.5),其结果作为本帧返回值——与 crescent 一样,gibbous 不特殊处理。
 
 ### 2.6 一次完整跨层调用的全景 trace(worked example)
 
@@ -457,7 +457,7 @@ trace(Go 栈深度 / wazero 栈 / CallInfo 链 三轴):
 
 ## 3. gibbous → crescent / host(imported 调度助手)
 
-本节是「慢路径出口」主线(§0.2)的单一事实源——gibbous 代码遇到需要 Go 介入的点(调用、算术慢路径、IC miss、分配、回边 GC)时,如何经 imported 助手回 Go。核心是 §3.1 的 `$h_call` 三向分派(gibbous/crescent/host)与 §3.3 的完整 helper 清单。一切 helper 都遵守「接受 base + pc 立即数,自取一切」——这是 §0.1「跨层只传 base」原则在出口方向的兑现(入口方向是 §2.1)。
+本节是「慢路径出口」主线(§0.2)的单一事实源——gibbous 代码遇到需要 Go 介入的点(调用、算术慢路径、IC miss、分配、back edge GC)时,如何经 imported 助手回 Go。核心是 §3.1 的 `$h_call` 三向分派(gibbous/crescent/host)与 §3.3 的完整 helper 清单。一切 helper 都遵守「接受 base + pc 立即数,自取一切」——这是 §0.1「跨层只传 base」原则在出口方向的兑现(入口方向是 §2.1)。
 
 ### 3.1 imported 助手 `$h_call` 三向分派
 
@@ -613,7 +613,7 @@ func (t *Trampoline) hCall(ctx context.Context, st *State, callBase, pc uint32) 
 | **`h_call`** | CALL / TAILCALL | 三向分派(§3.1) | [02-translation](./02-translation.md) §3.6 |
 | **`h_arith`** | 算术 opcode 慢路径 | 双 number 快路径(Wasm 内直发 f64,[02-translation](./02-translation.md) §3.2)失败 → 走元方法(`__add`/`__sub`/.../字符串强转 number) | [02-translation](./02-translation.md) §3.2 + [../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §4 |
 | **`h_gettable`** | GETTABLE / SETTABLE / SELF 的 IC miss | IC 快照命中(同表同代次,[06-ic-feedback-consume](./06-ic-feedback-consume.md) §1)直发;miss → 走完整哈希查找 + `__index`/`__newindex` 元方法链 | [02-translation](./02-translation.md) §3.4 + [06-ic-feedback-consume](./06-ic-feedback-consume.md) §3 |
-| **`h_safepoint`** | 回边(FORLOOP/JMP 回跳) | gcPending 检查 + 触发 GC([05-safepoint-gc](./05-safepoint-gc.md) §3);几乎恒不跳的分支 | [02-translation](./02-translation.md) §3.5 + [05-safepoint-gc](./05-safepoint-gc.md) §3 |
+| **`h_safepoint`** | back edge(FORLOOP/JMP 回跳) | gcPending 检查 + 触发 GC([05-safepoint-gc](./05-safepoint-gc.md) §3);几乎恒不跳的分支 | [02-translation](./02-translation.md) §3.5 + [05-safepoint-gc](./05-safepoint-gc.md) §3 |
 | **`h_alloc`** | NEWTABLE / CLOSURE / CONCAT / SETLIST(可能 rehash) | 分配对象(table/closure/string)——gibbous 代码自身从不分配([05-safepoint-gc](./05-safepoint-gc.md) §1),分配与 GC 都在助手内同步发生 | [02-translation](./02-translation.md) §3.4/§3.7 + [05-safepoint-gc](./05-safepoint-gc.md) §1 |
 | **`h_raise`** | 解释器内在错误点(对 nil 算术、table index is nil/NaN 等翻译产物检出错误) | 构造 `*LuaError` 设 `state.pendingErr`,返回非 0(让 Wasm 帧 status 链冒泡,§4) | [../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §9.4 |
 | **`h_concat`** | CONCAT(多值字符串拼接) | 拼接 + `__concat` 元方法;分配新字符串(经 h_alloc 语义) | [../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §4 |
@@ -675,9 +675,9 @@ func (t *Trampoline) hSafepoint(ctx context.Context, st *State, pc uint32) uint3
 
 要点(两个骨架共同体现的纪律):
 
-- **快路径在 Wasm 侧,慢路径才回 Go**:`h_arith` 只在双 number 快路径失败时才被调(Wasm 侧先尝试 f64 直算,[02-translation](./02-translation.md) §3.2);`h_safepoint` 只在 gcPending 标志非 0 时才被调(Wasm 侧先 `i32.load` 标志)。这是「helper 是慢路径出口」的兑现——热路径(双 number 算术、无 GC 的回边)根本不跨层。
+- **快路径在 Wasm 侧,慢路径才回 Go**:`h_arith` 只在双 number 快路径失败时才被调(Wasm 侧先尝试 f64 直算,[02-translation](./02-translation.md) §3.2);`h_safepoint` 只在 gcPending 标志非 0 时才被调(Wasm 侧先 `i32.load` 标志)。这是「helper 是慢路径出口」的兑现——热路径(双 number 算术、无 GC 的 back edge)根本不跨层。
 - **慢路径复用 crescent helper**:`h_arith` 调 `st.arithMeta`(crescent 的 arith 元方法 helper,[../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §4)——**不另写一份元方法逻辑**,保证 gibbous 慢路径与 crescent 逐字节同构。这是「正确性优先」的工程手法:慢路径不是性能瓶颈(罕见),复用 crescent 实现既省代码又保证一致。
-- **`h_safepoint` 是 context 取消 + GC 的双职责点**:回边是 gibbous 代码周期性回 Go 的唯一点,所以 context 取消检查(§6.2)与 GC 触发([05-safepoint-gc](./05-safepoint-gc.md) §3)都在这里顺带做——与解释器主循环的 opcode 末尾 safepoint([../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §5)同位。
+- **`h_safepoint` 是 context 取消 + GC 的双职责点**:back edge 是 gibbous 代码周期性回 Go 的唯一点,所以 context 取消检查(§6.2)与 GC 触发([05-safepoint-gc](./05-safepoint-gc.md) §3)都在这里顺带做——与解释器主循环的 opcode 末尾 safepoint([../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §5)同位。
 
 **helper 数量增长的拆分问题**:当前列了 7 个 helper,随 PW 推进可能增加(如 LEN 的 `h_len`、TEST 系列的辅助、RETURN 可变返回的 `h_return` §4.7)。「per-helper Go 函数 vs 单一 dispatcher」(一个 `h_dispatch(opcode, base, pc)` 统一入口,内部 switch)的取舍留 PW6 实测后定(§9)——单一 dispatcher 减少 imported 函数数量(每个 imported 函数有注册成本),但每次调用多一次 switch;per-helper 直达但 imported 表膨胀。
 
@@ -737,7 +737,7 @@ func (t *Trampoline) buildHostModule(ctx context.Context, rt wazero.Runtime, st 
 要点:
 
 - **`*State` 经闭包捕获,不经参数**:每个 helper callback 捕获 `st *State`(以及 `t *Trampoline`),所以 host module 是 per-State 构造的(§6.3)——多 State 各自的 helper callback 闭包捕获各自的 State,无锁、无共享可变状态。
-- **callback 签名是「i32 参数 + i32 返回」**:全部 helper 的参数与返回都是 i32(整数立即数:opcode/mode/kind/base/pc,返回 status)——与 §2.1 的入口签名一样的最廉价形式,使 helper 跨层成本最小([01-spike-gate](./01-spike-gate.md) §1 的 S3 样本测的就是「Wasm 调 imported Go 函数」的成本)。
+- **callback 签名是「i32 参数 + i32 返回」**:全部 helper 的参数与返回都是 i32(整数立即数:opcode/mode/kind/base/pc,返回 status)——与 §2.1 的入口签名一样,是最廉价的形式,使 helper 跨层成本最小([01-spike-gate](./01-spike-gate.md) §1 的 S3 样本测的就是「Wasm 调 imported Go 函数」的成本)。
 - **`context.Context` 经 wazero ctx 第一个参数透传**:每个 callback 的第一参数是 `ctx context.Context`(wazero 调用时传入,§6.2)——这是 P3 接通 `SetCancelHook`([../p2-bridge/04](../p2-bridge/04-try-compile-fallback.md) 相关,context 取消钩子)的通道(§6.2)。
 - **imported 数量与 §3.3 拆分问题**:这里列 7 个 imported 函数;若 PW6 实测发现 imported 注册/调用成本随数量线性增长,改成单一 `h_dispatch` dispatcher(§9 缺口)。
 
@@ -745,7 +745,7 @@ func (t *Trampoline) buildHostModule(ctx context.Context, rt wazero.Runtime, st 
 
 ## 4. 错误传播:status 链
 
-本节是「错误冒泡通道」主线(§0.2)的单一事实源——gibbous 帧内出错时,错误信号如何单向冒泡到 protected 边界。核心命题:status 链与 [../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §9 的「显式错误返回」结构同构(§4.2),错误可任意穿越 gibbous 帧因为冒泡是单向放弃(§4.4),清理责任在 pcall 边界一次性收口(§4.3)。这与 §5 的「yield 不可穿越」构成对偶:错误单向放弃可穿,yield 双向复原不可穿。
+本节是「错误冒泡通道」主线(§0.2)的单一事实源——gibbous 帧内出错时,错误信号如何单向冒泡到 protected 边界。核心命题:status 链与 [../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §9 的「显式错误返回」结构同构(§4.2),错误可任意穿越 gibbous 帧因为冒泡是单向放弃(§4.4),清理责任在 pcall 边界一次性统一处理(§4.3)。这与 §5 的「yield 不可穿越」构成对偶:错误单向放弃可穿,yield 双向复原不可穿。
 
 ### 4.1 `$h_call` 返回非 0 ⇒ Wasm 函数清理后自身返回非 0 ⇒ 上层继续冒泡
 
@@ -785,7 +785,7 @@ status 链冒泡(ASCII,以 gibbous→gibbous→crescent 三层调用链为例):
 机制要点:
 
 - **`$h_call` 返回非 0**:当被调者(任一类型)出错时,`h_call` callback 设 `state.pendingErr` 并返回 status=1 给 Wasm 侧。
-- **Wasm 函数清理后自身返回非 0**:Wasm 侧收到 `h_call` 的非 0 返回,**不继续执行后续指令**,而是跳到函数出口、return 自身的 status=1。「清理」在 P3 基线下通常是空操作(基线 memory-resident,无 Wasm locals 缓存需要落回,§4.4);若启用 locals 缓存优化([02-translation](./02-translation.md) §2 + [05-safepoint-gc](./05-safepoint-gc.md) §4),清理 = 把脏的 locals 写回栈槽(但出错路径下值已无意义,清理主要是为根可见性,且错误冒泡是单向放弃,§4.4)。
+- **Wasm 函数清理后自身返回非 0**:Wasm 侧收到 `h_call` 的非 0 返回,**不继续执行后续指令**,而是跳到函数出口、return 自身的 status=1。「清理」在 P3 基线下通常是空操作(基线 memory-resident,无 Wasm locals 缓存需要写回,§4.4);若启用 locals 缓存优化([02-translation](./02-translation.md) §2 + [05-safepoint-gc](./05-safepoint-gc.md) §4),清理 = 把脏的 locals 写回栈槽(但出错路径下值已无意义,清理主要是为根可见性,且错误冒泡是单向放弃,§4.4)。
 - **上层继续冒泡**:外层帧(crescent 或外层 Wasm)收到非 0 status,重复同一动作——单向向上,直到 crescent 的 doCall(enterGibbous)收到 status,转 `vm.throwPending` 走 [../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §9 错误冒泡。
 
 ### 4.2 与 P1 05 §9 显式错误返回同构
@@ -834,7 +834,7 @@ status 链与 [../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) �
 
 ### 4.4 错误可任意穿越 gibbous 帧:冒泡是单向放弃,无需复原 Wasm 帧
 
-**核心物理事实([00-overview](./00-overview.md) §9 不变式 4 上半)**:错误可以任意穿越 gibbous 帧,因为冒泡是**单向放弃**——错误一旦发生,这一帧及其上所有帧都被丢弃,**无需复原任何 Wasm 帧的执行状态**。
+**核心事实([00-overview](./00-overview.md) §9 不变式 4 上半)**:错误可以任意穿越 gibbous 帧,因为冒泡是**单向放弃**——错误一旦发生,这一帧及其上所有帧都被丢弃,**无需复原任何 Wasm 帧的执行状态**。
 
 对比 yield(§5,不可穿越):
 
@@ -842,7 +842,7 @@ status 链与 [../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) �
 |---|---|---|
 | 方向 | **单向放弃**:帧被丢弃,永不回来 | **双向**:挂起后要 resume 复原继续跑 |
 | Wasm 帧需求 | 无需复原——丢弃即可 | 需挂起后从中断点复原——core Wasm 做不到 |
-| 物理可行性 | ✅ Wasm 函数正常 return(status≠0)即放弃自身 | ❌ core Wasm 无 continuation,无法挂起后复原 |
+| 实际可行性 | ✅ Wasm 函数正常 return(status≠0)即放弃自身 | ❌ core Wasm 无 continuation,无法挂起后复原 |
 
 为什么单向放弃使 Wasm 帧无需复原:
 
@@ -894,9 +894,9 @@ gibbous 帧的 pc 物化(traceback 用,[02-translation] §4):
 
 - **gibbous 帧由 trampoline 弹出,对称于压入**:谁压的 CallInfo 谁弹——enterGibbous 压的(§2.2 step2),由 enterGibbous 的 status 分支弹(OK 与 ERR 都弹,§2.3);h_call 的 gibbous 分支压的,由 h_call 的 return 路径弹。这与 [../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §7.2 doReturn 的「正常返回弹 CallInfo」是类似流程——只是错误路径下弹完即继续冒泡(不 moveResults 返回值)。
 - **「类似 doReturn」的差异**:doReturn(正常返回)要 `moveResults`(搬返回值)+ `closeUpvals`(关闭本帧 upvalue);错误路径弹 CallInfo 时**不搬返回值**(无返回值,是错误),**upvalue 关闭延到 pcall 边界统一做**(§4.3,因为错误冒泡是单向放弃,中间帧的 upvalue 由边界 closeUpvals 一次性关)。所以错误路径的弹帧比 doReturn 更轻(只 popCallInfo)。
-- **三层级的统一收口在 pcall 边界**:无论错误穿越了几个 gibbous 帧、几个 crescent 帧,最终所有残余 CallInfo 由最近的 pcall 边界 ciTop 回退一次性清理(§4.3)——这是 [../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §9.3「清理责任在边界」的兑现,gibbous 帧的存在不改变这个收口点。
+- **三层级的统一清理点在 pcall 边界**:无论错误穿越了几个 gibbous 帧、几个 crescent 帧,最终所有残余 CallInfo 由最近的 pcall 边界 ciTop 回退一次性清理(§4.3)——这是 [../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §9.3「清理责任在边界」的兑现,gibbous 帧的存在不改变这个清理点。
 
-### 4.7 正常返回:RETURN 翻译产物按 nresults 回填 + 多值契约
+### 4.7 正常返回:RETURN 翻译产物按 nresults 回填 + 多值约定
 
 与错误路径(status≠0,单向放弃)对偶,正常返回(status=0)的 RETURN 翻译产物负责「把返回值按调用者期望 nresults 回填到 funcIdx 位起」——与解释器 `doReturn` 的 `moveResults`([../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §7.2)逐字节同构。RETURN 在 Wasm 侧的翻译产物(WAT 风格,完整归 [02-translation](./02-translation.md) §3.6,此处只示协议接口):
 
@@ -917,7 +917,7 @@ gibbous 帧的 pc 物化(traceback 用,[02-translation] §4):
   (return (i32.const 0))   ;; status=0 OK
 ```
 
-多值返回契约的三个层级:
+多值返回约定的三个层级:
 
 | 形式 | 编译期可知性 | 翻译形式 |
 |---|---|---|
@@ -928,8 +928,8 @@ gibbous 帧的 pc 物化(traceback 用,[02-translation] §4):
 要点:
 
 - **nresults 从调用者 CallInfo 读,不从被调 Proto 烧入**:同一个升 gibbous 的 Proto 可能被不同调用点以不同 `C`(期望返回数)调用——比如 `local a = dot(...)`(C=2,期望 1 个)与 `local a, b = dot(...)`(C=3,期望 2 个)。所以 RETURN 翻译产物不能把 nresults 烧成立即数,而是运行期从调用者 CallInfo word2 的 nresults 字段读(§1.1 word2 布局)。这与解释器 doReturn 读 `ci.nresults`([../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §7.2)同源。
-- **可变返回链(B=0/C=0)走 `h_return` 助手**:多值传播链(`CALL B=0`/`RETURN B=0`/`SETLIST B=0` 消费前一指令的可变返回,[../p1-interpreter/02](../p1-interpreter/02-bytecode-isa.md) §9-4)在 gibbous 侧由 `h_return` 助手处理——它读运行期 top、做 moveResults、更新 caller top,与解释器 `moveResults` 的 `nresults=0xFFFF` 分支逐字节同构。`h_return` 是 §3.3 helper 清单的隐含成员(归 RETURN 翻译,本文不单列,但它与 h_alloc 一样的经共见栈槽 + CallInfo 自取)。
-- **返回值回填落点是共见栈槽**:无论快/慢路径,返回值都落到 `funcIdx`(=base-1)位起的共见栈槽——trampoline 弹 CallInfo 后(§2.3 statusOK),主循环看到的返回值已就位,与「调用了 crescent 函数返回」无可观察差异([03-memory-model](./03-memory-model.md) §2)。
+- **可变返回链(B=0/C=0)走 `h_return` 助手**:多值传播链(`CALL B=0`/`RETURN B=0`/`SETLIST B=0` 消费前一指令的可变返回,[../p1-interpreter/02](../p1-interpreter/02-bytecode-isa.md) §9-4)在 gibbous 侧由 `h_return` 助手处理——它读运行期 top、做 moveResults、更新 caller top,与解释器 `moveResults` 的 `nresults=0xFFFF` 分支逐字节同构。`h_return` 是 §3.3 helper 清单的隐含成员(归 RETURN 翻译,本文不单列,但它与 h_alloc 一样经共见栈槽 + CallInfo 自取)。
+- **返回值回填位置是共见栈槽**:无论快/慢路径,返回值都落到 `funcIdx`(=base-1)位起的共见栈槽——trampoline 弹 CallInfo 后(§2.3 statusOK),主循环看到的返回值已就位,与「调用了 crescent 函数返回」无可观察差异([03-memory-model](./03-memory-model.md) §2)。
 
 ---
 
@@ -945,11 +945,11 @@ gibbous 帧的 pc 物化(traceback 用,[02-translation] §4):
 
 - [../p1-interpreter/08](../p1-interpreter/08-coroutines.md) 路线 B 下,yield 信号靠 return 冒泡且**之后要 resume 复原**(双向,§4.4 对比表)。
 - 错误穿 Wasm 帧可以(单向放弃,§4.4),**yield 不行**——core Wasm 无 continuation,Wasm 帧无法挂起后从中断点复原。
-- 这与「yield 不能跨 host(C)边界」是同一物理限制([../p1-interpreter/08](../p1-interpreter/08-coroutines.md) §5)——host 帧是真 Go 栈帧、gibbous 帧是 wazero 栈帧,两者都「不能挂起后复原」。
+- 这与「yield 不能跨 host(C)边界」是同一物理限制([../p1-interpreter/08](../p1-interpreter/08-coroutines.md) §5)——host 帧是真正的 Go 栈帧、gibbous 帧是 wazero 栈帧,两者都「不能挂起后复原」。
 
 ### 5.2 线程级 tier 规则使该情形不会发生(链 07)
 
-若放任,会出现「解释执行能 yield、升层后同代码报错」的语义分裂——差分必炸。**P3 定稿:线程级 tier 规则**——
+若放任,会出现「解释执行能 yield、升层后同代码报错」的语义分裂——差分测试必然失败。**P3 定稿:线程级 tier 规则**——
 
 > 只有主线程的执行进入 gibbous;协程线程上调用一律走 crescent(doCall 的 gibbous 分支多查一个 `th == mainThread`,见 §2.2 / §3.2 的 `th == st.mainThread` 守卫)。
 
@@ -1030,8 +1030,8 @@ func (c *p3Code) Run(st *State, base int32) int32 {
 机制:
 
 - **context 经 wazero ctx 一路传到 helper callback 的第一参数**:wazero 把 `fn.Call(ctx, ...)` 的 ctx 透传给 module 内所有 imported 函数 callback 的第一参数(§3.4 每个 callback 的 `ctx context.Context`)。所以 gibbous 代码调 helper 时,helper 能拿到当前 context。
-- **canceled hook 走 helper**:context 取消检查(`ctx.Err() != nil` 或 `SetCancelHook` 的钩子)在 helper 内做——典型在 `h_safepoint`(回边)里顺带检查 context 是否已取消([../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §5 safepoint 同位)。因为回边是 gibbous 代码周期性回 Go 的点,context 取消在那里检查能及时响应(类似 GC pending 检查,[05-safepoint-gc](./05-safepoint-gc.md) §3)。
-- **剥离接口签名避免直接依赖标准库 context**:P1 现状(`internal/crescent/state.go` 的 `ctxHolder`)已用「`err func() error`」抽象签名剥离 context 直接依赖,保持 internal 包零标准库非基础包依赖——P3 一样的机制可共用(`SetCancelHook(func() error)` 注入,context 在门面层包装,[00-overview](./00-overview.md) 相关纪律 + issue234 反思轮「internal 接口签名避免反向依赖标准库」)。
+- **canceled hook 走 helper**:context 取消检查(`ctx.Err() != nil` 或 `SetCancelHook` 的钩子)在 helper 内做——典型在 `h_safepoint`(back edge)里顺带检查 context 是否已取消([../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §5 safepoint 同位)。因为 back edge 是 gibbous 代码周期性回 Go 的点,context 取消在那里检查能及时响应(类似 GC pending 检查,[05-safepoint-gc](./05-safepoint-gc.md) §3)。
+- **剥离接口签名避免直接依赖标准库 context**:P1 现状(`internal/crescent/state.go` 的 `ctxHolder`)已用「`err func() error`」抽象签名剥离 context 直接依赖,保持 internal 包零标准库非基础包依赖——P3 可共用同样的机制(`SetCancelHook(func() error)` 注入,context 在门面层包装,[00-overview](./00-overview.md) 相关纪律 + issue234 反思轮「internal 接口签名避免反向依赖标准库」)。
 - **待 spike 验证**:wazero 是否把 ctx 透传给所有 imported callback、ctx 取消是否能中断正在执行的 Wasm 函数——这些 wazero API 行为细节待 [01-spike-gate](./01-spike-gate.md) §4 spike 验证。
 
 ### 6.3 多 State 并发:trampoline 每 State 一份
@@ -1045,11 +1045,11 @@ func (c *p3Code) Run(st *State, base int32) int32 {
   ★ 两个 State 各自独立的 Runtime / memory / trampoline,无共享可变状态,无锁。
 ```
 
-物理依据:
+具体依据:
 
 - **每 State 一个 wazero Runtime**:[03-memory-model](./03-memory-model.md) §1 已定 NewState 时即经 wazero 分配 memory(每 State 一份 arena = 一份 linear memory)。Runtime 也随之每 State 一份——State A 的 gibbous 代码在 Runtime A 跑、读 memory A;State B 在 Runtime B 跑、读 memory B,物理隔离。
 - **helper callback 闭包捕获各自的 State**:§3.4 的 host module 是 per-State 构造的(`buildHostModule(ctx, rt, st)` 捕获 `st`)——State A 的 h_call 捕获 State A,操作 State A 的 thread/arena;无跨 State 数据访问,故无锁。
-- **与 P1 多 State 隔离一致**:P1 已是「每 State 私有 arena/thread/globals」(`internal/crescent/state.go` 的 State struct),`-race` 硬门禁通过([00-overview](../p2-bridge/00-overview.md) P2 验收第四档「多 State `-race`」)。P3 的 per-State Runtime/Trampoline 延续这个隔离模型——多 State 并发跑各自的 gibbous 代码,不引入新的共享可变状态。
+- **与 P1 多 State 隔离一致**:P1 已是「每 State 私有 arena/thread/globals」(`internal/crescent/state.go` 的 State struct),`-race` 强制检查通过([00-overview](../p2-bridge/00-overview.md) P2 验收第四档「多 State `-race`」)。P3 的 per-State Runtime/Trampoline 延续这个隔离模型——多 State 并发跑各自的 gibbous 代码,不引入新的共享可变状态。
 
 ### 6.4 multi-State 共享 Proto:同一 GibbousCode 多 State 共享
 
@@ -1106,7 +1106,7 @@ func (t *Trampoline) enter(st *State, f *frame, i Instruction, cl value.GCRef) (
 要点:
 
 - **panic 理论不应发生**:gibbous 代码是 Wasm,类型安全(wazero 类型系统兜底,§9 缺口),不会有 Go 那种 nil deref / 越界 panic。真正可能 panic 的是 **helper callback(Go 代码)**——比如 h_alloc 内分配逻辑 bug、h_gettable 内 IC 处理 bug。
-- **兜底转 status=ERR**:与 [../p2-bridge/04](../p2-bridge/04-try-compile-fallback.md) §5.2「P3 后端 panic recover」一样的防御性纪律——P3 是新代码(P3 完成早期 helper 实现可能有 bug),panic 必须被 recover 转成可恢复错误,**绝不让 panic 穿越到 P1 主循环**(P1 主循环不应因 P3 bug 崩溃,与运行期 GibbousCode.Run 的兜底对偶,[../p2-bridge/05](../p2-bridge/05-p3-p4-interface.md) §6.1 Run 契约)。
+- **兜底转 status=ERR**:与 [../p2-bridge/04](../p2-bridge/04-try-compile-fallback.md) §5.2「P3 后端 panic recover」同样的防御性纪律——P3 是新代码(P3 完成早期 helper 实现可能有 bug),panic 必须被 recover 转成可恢复错误,**绝不让 panic 穿越到 P1 主循环**(P1 主循环不应因 P3 bug 崩溃,与运行期 GibbousCode.Run 的兜底对偶,[../p2-bridge/05](../p2-bridge/05-p3-p4-interface.md) §6.1 Run 接口约定)。
 - **LogPanic 接通 P2 诊断**:panic 兜底时调 `logger.LogPanic`([../p2-bridge/04](../p2-bridge/04-try-compile-fallback.md) §6.4),写独立诊断 channel(不刷主日志)——让开发者识别 P3 runtime helper 的实现 bug。
 - **gibbous 帧 panic 是否可达待 PW6 实测(§9 缺口)**:理论不应有(wazero 类型系统兜底),但 helper callback Go 代码的 panic 面真实存在——PW6 完成时实测 helper 在边角形式(F7 漏判类)下是否会 panic,决定这个兜底是否被真实触发。
 
@@ -1132,7 +1132,7 @@ GibbousCode + trampoline 表的生命期(承 [../p2-bridge/04] §4.6 + [../p2-br
 
 要点:
 
-- **trampoline 的 `Register` 是 installGibbous 的子步骤**:[../p2-bridge/04](../p2-bridge/04-try-compile-fallback.md) §4.4 的 installGibbous 三件事(注册 trampoline 表 / 挂 GibbousCode 引用防 GC / 写 bit50)中,「注册 trampoline 表」就是调 `t.Register(proto, code)`(§6.1)。当前 P2 实现(`internal/bridge/bridge.go`)的 installGibbous 简化版只挂 `gibbousCodes` map(因 P3 还没真存在),P3 完成时补上 `Register` 调用——这是 §6.4 末尾「对 P2 04 回填」的具体内容之一。
+- **trampoline 的 `Register` 是 installGibbous 的子步骤**:[../p2-bridge/04](../p2-bridge/04-try-compile-fallback.md) §4.4 的 installGibbous 三件事(注册 trampoline 表 / 挂 GibbousCode 引用防 GC / 写 bit50)中,「注册 trampoline 表」就是调 `t.Register(proto, code)`(§6.1)。当前 P2 实现(`internal/bridge/bridge.go`)的 installGibbous 简化版只挂 `gibbousCodes` map(因 P3 还没真正存在),P3 完成时补上 `Register` 调用——这是 §6.4 末尾「对 P2 04 回填」的具体内容之一。
 - **Dispose 幂等 + 仅 Program 销毁时调一次**:[../p2-bridge/05](../p2-bridge/05-p3-p4-interface.md) §6.4 定 Dispose 幂等(用 sync.Once 或 atomic CAS 守)、多 State 共享 Proto 时只在 Program 销毁调一次。trampoline 的 codes 表清理与 Dispose 同批——不存在「卸载 gibbous 回 interp」的运行期事件(单向 + 吸收态,[../p2-bridge/04](../p2-bridge/04-try-compile-fallback.md) §2.4),所以 codes 表只增不减(运行期),只在 Program 析构时整体清。
 - **GibbousCode 与 Program 同生命期**:[../p2-bridge/04](../p2-bridge/04-try-compile-fallback.md) §4.6——一旦升层不再卸载,直到 Program 整体释放。这让 trampoline 的 codes 表在运行期是「只读稳定」的(注册后不变),多 State 并发读它无锁(§6.3 各 State 自己的 trampoline,codes 表内容是注册时一次性写入的共享 GibbousCode)。
 - **多 State 下 Runtime 各关各的,GibbousCode 关一次**:回收时,每 State 的 wazero Runtime 各自关闭(§6.3 per-State Runtime);但 GibbousCode(wazero CompiledModule)是 Program 级共享对象([../p2-bridge/05](../p2-bridge/05-p3-p4-interface.md) §6.4),只 Dispose 一次。这个「Runtime per-State / CompiledModule per-Program」的二层结构是 wazero 的标准用法(CompiledModule 可被多个 Runtime 实例化)——待 spike 验证具体 API([01-spike-gate](./01-spike-gate.md) §4)。
@@ -1161,7 +1161,7 @@ gibbous 帧入口的诊断**复用 P2 升层日志格式**——本节链 [../p2
     日志会刷屏,且无诊断价值(升层后每次调用都进 gibbous 是预期行为)。
 ```
 
-物理原因:
+原因:
 
 - **进/出 gibbous 帧是热路径**:升层后的 Proto 被反复调用数千万次(列内核形状),每次进 gibbous 帧(enterGibbous)/ 每次 RETURN 都在热路径——打日志会刷屏 + 拖累性能。
 - **三个时点都是低频事件**:promote(一次性)/ stuck(一次性)/ fail(一次性)都是「Proto 生命周期内最多一次」的状态转移事件([../p2-bridge/04](../p2-bridge/04-try-compile-fallback.md) §2 状态机单向 + 吸收态),频次低,不刷屏。
@@ -1178,7 +1178,7 @@ gibbous 帧入口的诊断**复用 P2 升层日志格式**——本节链 [../p2
 3. **status 链可穿,yield 链不可穿**:错误经 status 链单向冒泡可任意穿越 gibbous 帧(单向放弃,无需复原);yield 不可穿越 gibbous 帧(物理限制 + 线程级 tier 规则使该情形不会发生)(§4.4 + §5)。映射 [00-overview](./00-overview.md) §9 不变式 4。
 4. **helper 接受 base + pc 立即数,自取一切**:所有 imported 助手从共见栈槽读操作数、从 pc 立即数物化错误位置(savedPC),返回 status i32,不依赖任何 Go/Wasm 栈上的额外上下文(§3.3 + §4.5)。
 5. **helper 可重入 wazero**:`h_call` 的 gibbous 分支再 `fn.Call`,形成 gibbous→helper→gibbous 调用链;helper 内可起新 execute(gibbous→helper→crescent)(§3.2)。
-6. **错误冒泡是单向放弃——无需复原 Wasm 帧**:错误发生时这一帧及其上所有帧被丢弃,Wasm 函数只需 return status≠0,栈帧由 wazero 自动销毁,无需恢复到一致状态;清理责任在 pcall 边界一次性收口(§4.3 + §4.4 + §4.6)。映射 [00-overview](./00-overview.md) §9 不变式 4(下半)。
+6. **错误冒泡是单向放弃——无需复原 Wasm 帧**:错误发生时这一帧及其上所有帧被丢弃,Wasm 函数只需 return status≠0,栈帧由 wazero 自动销毁,无需恢复到一致状态;清理责任在 pcall 边界一次性统一处理(§4.3 + §4.4 + §4.6)。映射 [00-overview](./00-overview.md) §9 不变式 4(下半)。
 
 ---
 
@@ -1186,7 +1186,7 @@ gibbous 帧入口的诊断**复用 P2 升层日志格式**——本节链 [../p2
 
 各项记入 [doc-gaps](../../../llmdoc/memory/doc-gaps.md),随实现推进收敛:
 
-| 缺口 | 内容 | 收口时机 |
+| 缺口 | 内容 | 完成时机 |
 |---|---|---|
 | **gibbous → gibbous 同 module 内 call_indirect 直调** | 批量 module([02-translation](./02-translation.md) §1.2 优化项)下,同 module 内的 gibbous→gibbous 调用用 `call_indirect` 直调,免 Go 往返(§3.1 表第一行的「优化」列)——能否兑现「免 Go 往返」收益取决于实测跨层成本与同 Program 内函数互调密度 | **PW10 spike 检查先行**(PW9 实测密度论据已坐实:call 核小叶函数每调经 `h_call` 双跨层 ~143ns → gibbous 比 crescent 慢 7x;loop 计算密集核 2.58x 达标。investigator 确认为里程碑级架构改(每 Proto 独立 module + Lua 帧住 Go `th.cis`),生死未知数 = wazero 增量 module 可行性,故 spike 先行验 call_indirect 成本 + 增量重编生命周期,绿则重写、红则退守拒升小叶函数启发式) |
 | **helper 数量增长后是否拆 trait** | per-helper Go 函数 vs 单一 dispatcher(`h_dispatch(opcode, base, pc)` 统一入口)——单一 dispatcher 减少 imported 函数数量但每次调用多一次 switch;per-helper 直达但 imported 表膨胀 | 留 PW6 实测后定(§3.3) |

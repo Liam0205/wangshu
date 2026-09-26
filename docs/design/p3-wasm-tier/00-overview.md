@@ -20,13 +20,13 @@
 | [02-translation](./02-translation.md) | 翻译器 | 翻译单位(每 Proto 一 module 基线 + 批量 module 优化项)、寄存器映射(基线 memory-resident + locals 缓存优化)、opcode 翻译表(WAT 风格伪码)、pc 物化、`SupportsAllOpcodes` 渐进白名单 |
 | [03-memory-model](./03-memory-model.md) | 共见内存 | arena 收养 wazero memory(对 06 的回填)、值编码两层逐位同一、GCRef offset 与 wasm32 寻址匹配、`memory.grow` 后视图重取协议 |
 | [04-trampoline](./04-trampoline.md) | 跨层互调 | CallInfo bit50 `callStatus_gibbous`(对 05 的回填)、crescent→gibbous 入口协议、gibbous→crescent/host imported 助手分派、status 链错误冒泡、参数/返回值经共见值栈 |
-| [05-safepoint-gc](./05-safepoint-gc.md) | 跨层 GC | 三类 safepoint 在 P3 的形式(分配点 / 层边界 / 回边)、收口 [06 §12](../p1-interpreter/06-memory-gc.md) 缺口、locals 缓存写回纪律、写屏障 P3 不动 |
+| [05-safepoint-gc](./05-safepoint-gc.md) | 跨层 GC | 三类 safepoint 在 P3 的形式(分配点 / 层边界 / 循环回跳(back edge))、补上 [06 §12](../p1-interpreter/06-memory-gc.md) 缺口、locals 缓存写回纪律、写屏障 P3 不动 |
 | [06-ic-feedback-consume](./06-ic-feedback-consume.md) | feedback 非投机消费 | IC 快照编译期固化、失效自然降级、快路径 = 语义分发非投机 guard、与 P2 零 deopt 口径一致、GETTABLE/CALL 的 feedback-aware 翻译形式 |
 | [07-coroutine-thread-rule](./07-coroutine-thread-rule.md) | 线程级 tier | yield 不能穿越 gibbous 帧的物理论证、线程级 tier 规则(主线程才升层)、协程线程一律走 crescent、对 [08](../p1-interpreter/08-coroutines.md) 与 P2 的回填请求 |
-| [08-testing-strategy](./08-testing-strategy.md) | 验收 | P3 验收口径总表、crescent vs gibbous 逐字节差分(CI 门禁)、强制全升模式、GC 压力 fuzz 上 gibbous、P3 性能门(循环密集 ≥2x over P1)、坐标系警告 |
-| [implementation-progress](./implementation-progress.md) | 进度 | 开工前置检查、P-Wasm 里程碑(预设占位)、设计期决策盘点(影响 × 不确定度三档)、跨文档回填请求收口表 |
+| [08-testing-strategy](./08-testing-strategy.md) | 验收 | P3 验收口径总表、crescent vs gibbous 逐字节差分(CI 必过检查)、强制全升模式、GC 压力 fuzz 上 gibbous、P3 性能门(循环密集 ≥2x over P1)、坐标系警告 |
+| [implementation-progress](./implementation-progress.md) | 进度 | 开工前置检查、P-Wasm 里程碑(预设占位)、设计期决策盘点(影响 × 不确定度三档)、跨文档回填请求汇总表 |
 
-阅读顺序建议:实现者先读 00→01(检查通过才动手)→03(内存模型,翻译器骨架的物理基础)→02(翻译器主体)→04(跨层协议,与 02 同期完成)→05(safepoint,跨层 GC)→06(feedback 消费,02 翻译细化)→07(coroutine 线程规则,边界场景)→08(验收口径,每步收口查)。
+阅读顺序建议:实现者先读 00→01(检查通过才动手)→03(内存模型,翻译器骨架的物理基础)→02(翻译器主体)→04(跨层协议,与 02 同期完成)→05(safepoint,跨层 GC)→06(feedback 消费,02 翻译细化)→07(coroutine 线程规则,边界场景)→08(验收口径,每步收尾时查)。
 
 ---
 
@@ -39,15 +39,15 @@
 | 字节码→Wasm 翻译 | — | — | ✅ [02-translation](./02-translation.md) | — |
 | 字节码→原生码翻译 | — | — | — | P4 自己 |
 | **linear memory 共见** | arena Go 堆 backing | — | ✅ 收养 wazero memory([03](./03-memory-model.md)) | 复用(原生码读同一份) |
-| **trampoline / 互调协议** | enterLuaFrame | — | ✅ [04-trampoline](./04-trampoline.md)(crescent↔gibbous↔host) | 继承一样的协议,换发射后端 |
-| **跨层 safepoint** | 解释器主循环 | — | ✅ [05-safepoint-gc](./05-safepoint-gc.md)(收口 [06 §12](../p1-interpreter/06-memory-gc.md)) | 同 P3(原生码自身回边检查点 +写屏障) |
+| **trampoline / 互调协议** | enterLuaFrame | — | ✅ [04-trampoline](./04-trampoline.md)(crescent↔gibbous↔host) | 继承同一套协议,换发射后端 |
+| **跨层 safepoint** | 解释器主循环 | — | ✅ [05-safepoint-gc](./05-safepoint-gc.md)(补上 [06 §12](../p1-interpreter/06-memory-gc.md) 缺口) | 同 P3(原生码自身 back edge 检查点 +写屏障) |
 | **CallInfo bit50 写入** | 不读不写 | 不写 | ✅ trampoline 在 gibbous 帧入口写 1([04 §1](./04-trampoline.md)) | 同 P3 |
 | **零 deopt(fallback 而非投机)** | 永久解释 | ✅ 单向状态机 | 严格遵守:快路径 = 语义分发,失败走助手非 deopt | ❌ 引入 deopt(投机失败 OSR exit 回 crescent) |
 | **GibbousCode 实现方** | — | 接口定义 | ✅ wazero `api.Function` 包装 | 原生码段包装(同接口) |
 | **解释执行(fallback 着陆点)** | ✅ 永不退役 | — | — | — |
 | **协程升层** | ✅ 跑 crescent | 升层判定加线程上下文 | ❌ **协程线程一律走 crescent**([07](./07-coroutine-thread-rule.md)) | 同 P3(继承线程级 tier 规则) |
 
-**一句话**:**P2 决策「编谁」+ 产「feedback 料」,P3 是 P2 决策的兑现机器(把 Proto 翻译成 Wasm 跑起来),不做任何运行期投机** —— 投机面 + deopt 全留 P4。
+**一句话**:**P2 决策「编谁」+ 产出 feedback,P3 是 P2 决策的兑现机器(把 Proto 翻译成 Wasm 跑起来),不做任何运行期投机** —— 投机面 + deopt 全留 P4。
 
 > **tier 坐标系警告**([evolution-roadmap](../../../llmdoc/architecture/evolution-roadmap.md)):月相 tier 比阶段粗一层。P1=tier-0(crescent),P3/P4=tier-1(gibbous),P5=tier-2(fullmoon)。**P3 与 P4 同属 tier-1 但发射后端不同**:P3 发 Wasm(wazero 执行)、P4 发原生码(自管 codegen)。代码包名据此:`internal/gibbous/wasm`(P3)、`internal/gibbous/jit`(P4)。日志统一是 `function promoted to gibbous`(不区分子档)。
 
@@ -147,14 +147,14 @@
 | PW1 | `internal/gibbous/wasm` 包骨架 + arena 收养 wazero memory + 零 opcode 翻译器(`SupportsAllOpcodes` 永远返 false) | [02](./02-translation.md) §1 + [03](./03-memory-model.md) §1 | bridge 注入 P3Compiler 后所有 Proto 仍走 crescent(F7 拦下);arena/wazero memory 共见验证(grow 不破 GCRef) |
 | PW2 | 翻译器骨架 + 5 条直线 opcode(MOVE/LOADK/LOADBOOL/LOADNIL/JMP)+ trampoline 入口 | [02](./02-translation.md) §2-§3 + [04](./04-trampoline.md) §2 | 一个 5-op Proto 升层后 byte-equal 解释结果;升层日志 `function promoted to gibbous` 触发 |
 | PW3 | 算术 opcode(ADD/SUB/MUL/DIV/MOD/POW/UNM)+ 比较(EQ/LT/LE)+ NaN 规范化 + 慢路径助手回 Go | [02 §3.2](./02-translation.md) + [04 §3](./04-trampoline.md) | 双 number 算术快路径直发 f64 指令;混合类型走助手且结果与解释器逐字节一致 |
-| PW4 | 控制流(FORPREP/FORLOOP/TFORLOOP)+ 回边 safepoint(gcPending 检查) | [02 §3.3](./02-translation.md) + [05 §3](./05-safepoint-gc.md) | 数值 for 循环编译后跑 ≥2x 解释器;回边 GC 触发 byte-equal |
+| PW4 | 控制流(FORPREP/FORLOOP/TFORLOOP)+ back edge safepoint(gcPending 检查) | [02 §3.3](./02-translation.md) + [05 §3](./05-safepoint-gc.md) | 数值 for 循环编译后跑 ≥2x 解释器;back edge 上 GC 触发时 byte-equal |
 | PW5 | 表 IC opcode(GETTABLE/SETTABLE/GETGLOBAL/SETGLOBAL/SELF)+ feedback 消费(IC 快照固化)+ 失效降级走助手 | [02 §3.4](./02-translation.md) + [06](./06-ic-feedback-consume.md) | 单态表访问编译后跳过哈希查找;形状变化(gen bump)后该点走助手仍正确 |
 | PW6 | CALL/TAILCALL/RETURN + 跨层互调协议(crescent↔gibbous↔host) + status 链错误冒泡 | [04](./04-trampoline.md) §2-§4 | gibbous 内调未编译 Proto 经 trampoline 出去由 crescent 跑;错误从 Wasm 帧穿越冒泡到 pcall 边界 |
 | PW7 | CLOSURE/CLOSE/VARARG + 闭包/upvalue 编译协议 | [02 §3.5](./02-translation.md) | 闭包构造 + 开放/关闭 upvalue 与解释器 byte-equal;vararg 函数已在 P2 F1 拦下,本步只验「不可达路径不被走到」 |
 | PW8 | 线程级 tier 规则 + 协程不升层 | [07](./07-coroutine-thread-rule.md) + 对 P2 04 的接线 | 协程内即便 hot + Compilable 也保持 TierInterp;主线程同 Proto 正常升层 |
 | PW9 | 端到端验收 + 测试套(crescent vs gibbous 逐字节差分 + 强制全升模式 + GC 压力 fuzz + 性能基准 ≥2x) | [08](./08-testing-strategy.md) | **P3 总验收**:V1-V18 全过(详见 [08 §1](./08-testing-strategy.md)) |
 
-> **PW0 启动条件**:P1 全卷已交付(M0-M14)+ P2 PB0-PB7 全过线 + 后续优化轮 #1-#4 全过线(2026-06-13 已达成);P3 PW0 spike 阻塞所有后续,先于一切翻译工作。
+> **PW0 启动条件**:P1 已全部交付(M0-M14)+ P2 PB0-PB7 全部达标 + 后续优化轮 #1-#4 全部达标(2026-06-13 已达成);P3 PW0 spike 阻塞所有后续,先于一切翻译工作。
 >
 > **PW1 阻塞验证**:bridge 当前 mock P3 装载形式(`internal/bridge/mock`)在 PW1 用真 P3 占位(SupportsAllOpcodes 全 false)替换,验证「无任何 Proto 升层」与 P1-only 等价。
 >
@@ -172,7 +172,7 @@
 | PW1 | 包骨架 + arena 收养 + 零 opcode | 0.5 - 1 人月 |
 | PW2 | 翻译器骨架 + 5 直线 opcode + trampoline 入口 | 0.5 - 1 人月 |
 | PW3 | 算术 + 比较 + NaN 规范化 + 慢路径助手 | 0.5 - 1 人月 |
-| PW4 | 控制流 + 回边 safepoint | 0.5 人月 |
+| PW4 | 控制流 + back edge safepoint | 0.5 人月 |
 | PW5 | 表 IC opcode + feedback 消费 + 失效降级 | 1 - 2 人月(IC 快照固化 + 同表同代次校验是 P3 翻译复杂度峰值) |
 | PW6 | CALL 系列 + 跨层协议 + status 链 | 1 - 2 人月(gibbous→gibbous / gibbous→crescent / gibbous→host 三路分派 + 错误冒泡 + pcall 边界清理) |
 | PW7 | CLOSURE + upvalue 编译 | 0.5 - 1 人月(开放/关闭 upvalue 协议是工程难点) |
@@ -198,7 +198,7 @@
 | trampoline 入口签名 | `(func $proto_N (param $base i32) (result i32))`,return 0=OK / 1=ERR | [04 §2](./04-trampoline.md) |
 | CallInfo bit50 写入 | trampoline 在新帧入口写 1;不改现存帧 | [04 §1](./04-trampoline.md) |
 | 错误传播 | status 链冒泡(可穿 gibbous 帧);yield 不可穿(线程级 tier 规则) | [04 §4](./04-trampoline.md) + [07](./07-coroutine-thread-rule.md) |
-| safepoint 三类 | 分配点(助手内)+ 层边界(trampoline)+ 回边(gcPending 检查);写屏障 P3 不动 | [05](./05-safepoint-gc.md) |
+| safepoint 三类 | 分配点(助手内)+ 层边界(trampoline)+ back edge(gcPending 检查);写屏障 P3 不动 | [05](./05-safepoint-gc.md) |
 | feedback 消费 | 非投机消费 — IC 快照固化 + 失效自然降级;P3 不依赖 feedback 正确性 | [06 §1](./06-ic-feedback-consume.md) + [../p2-bridge/05 §1.2](../p2-bridge/05-p3-p4-interface.md) |
 | 协程升层 | ❌ 不升层(线程级 tier 规则);P3 开工前向首个宿主确认列内核是否跑在协程里 | [07](./07-coroutine-thread-rule.md) + [memory/decisions](../../../llmdoc/memory/decisions/2026-06-11-design-review-decisions.md) 第 7 项 |
 | 性能验收 | 循环密集脚本 ≥2x over P1(以 P1 为基线,不是 gopher-lua) | [08 §1](./08-testing-strategy.md) |
@@ -209,11 +209,11 @@
 
 ## 7. P1/P2 已完成的前瞻义务对账(P3 启动前置)
 
-P1 全卷已交付 + P2 PB0-PB7 全过线 + P2 后续优化轮 #1-#4 全过线(2026-06-13)。P3 依赖的「前瞻留口」状态:
+P1 已全部交付 + P2 PB0-PB7 全部达标 + P2 后续优化轮 #1-#4 全部达标(2026-06-13)。P3 依赖的「前瞻预留接口」状态:
 
 | 前瞻义务 | 完成状态 | 出处 | P3 消费方式 |
 |---|---|---|---|
-| `arena.Options.NewBacking` 注入点 | ✅ P1 已完成 | [memory/doc-gaps](../../../llmdoc/memory/doc-gaps.md)(P3 迁移留口)、[../p1-interpreter/implementation-progress](../p1-interpreter/implementation-progress.md) | PW1 替换为 wazero memory adapter |
+| `arena.Options.NewBacking` 注入点 | ✅ P1 已完成 | [memory/doc-gaps](../../../llmdoc/memory/doc-gaps.md)(P3 迁移预留接口)、[../p1-interpreter/implementation-progress](../p1-interpreter/implementation-progress.md) | PW1 替换为 wazero memory adapter |
 | Proto 旁 IC slot 数组(按 pc 索引) | ✅ P1 已完成(02 §7) | [../p1-interpreter/02-bytecode-isa](../p1-interpreter/02-bytecode-isa.md) §7 | PW5 编译期读 IC slot 取快照固化 |
 | TypeFeedback shape(P3 可选消费) | ✅ P2 PB2 已完成 | [../p2-bridge/02-ic-feedback](../p2-bridge/02-ic-feedback.md) | PW5 读 PointFeedback 决定快路径形式(stable shape/index) |
 | `P3Compiler` 接口形状(SupportsAllOpcodes + Compile) | ✅ P2 PB6 已定义 | [../p2-bridge/05-p3-p4-interface](../p2-bridge/05-p3-p4-interface.md) §2 | PW1 起 Compiler struct 实现 |
@@ -236,11 +236,11 @@ P1 全卷已交付 + P2 PB0-PB7 全过线 + P2 后续优化轮 #1-#4 全过线(2
 | 税 | wazero 替我们解决的方式 | 望舒侧剩余义务 |
 |---|---|---|
 | GC 精确栈扫描 | Wasm 执行在 wazero 自管栈,Go GC 不扫生成码帧 | 无(值世界本就在 arena,[03](./03-memory-model.md)) |
-| 异步抢占 | wazero 生成码循环回边已有抢占检查点(roadmap §2「已验证」) | 无([05 §3](./05-safepoint-gc.md) 的 gcPending 检查是我们自己 GC 的事,另算) |
+| 异步抢占 | wazero 生成码循环 back edge 上已有抢占检查点(roadmap §2「已验证」) | 无([05 §3](./05-safepoint-gc.md) 的 gcPending 检查是我们自己 GC 的事,另算) |
 | 栈移动 | Wasm 栈不在 Go 栈上,morestack 与生成码无关 | 无 |
 | 写屏障 | 值世界在 linear memory,生成码无 Go 指针写 | 无(P1 已兑现,[03](./03-memory-model.md) 延续) |
 
-**P3 选 wazero 的本质 = 把四项税外包给已验证的实现**,自己专注「翻译 + 分层协议」。P4 收回这层外包(原生发射),四项税才需要自己全额兑付([../p4-method-jit/05-system-pipeline](../p4-method-jit/05-system-pipeline.md))——届时 wazero 转为采石场(参考实现)而非依赖。**P3 的去留**(退役 vs 可移植中层)在 P4 验收时用数据定([../p4-method-jit/07-p3-retirement](../p4-method-jit/07-p3-retirement.md) §2 决策矩阵,缺省倾向退役)。
+**P3 选 wazero 的本质 = 把四项税外包给已验证的实现**,自己专注「翻译 + 分层协议」。P4 收回这层外包(原生发射),四项税才需要自己全额兑付([../p4-method-jit/05-system-pipeline](../p4-method-jit/05-system-pipeline.md))——届时 wazero 转为参考实现而非依赖。**P3 的去留**(退役 vs 可移植中层)在 P4 验收时用数据定([../p4-method-jit/07-p3-retirement](../p4-method-jit/07-p3-retirement.md) §2 决策矩阵,缺省倾向退役)。
 
 ---
 
@@ -248,7 +248,7 @@ P1 全卷已交付 + P2 PB0-PB7 全过线 + P2 后续优化轮 #1-#4 全过线(2
 
 [01](./01-spike-gate.md)~[08](./08-testing-strategy.md) 各篇分别承担,本节聚合呈现:
 
-1. **语义分发非投机**:gibbous 快路径判定与解释器一样的(IsNumber/同表同代次),失败走助手而非 deopt — 零 deopt 在代码层的兑现([06 §1](./06-ic-feedback-consume.md))。
+1. **语义分发非投机**:gibbous 快路径判定与解释器相同(IsNumber/同表同代次),失败走助手而非 deopt — 零 deopt 在代码层的兑现([06 §1](./06-ic-feedback-consume.md))。
 2. **值编码/GCRef 两层逐位同一**:Wasm 侧不引入任何私有值表示([03 §2](./03-memory-model.md))。
 3. **CallInfo 唯一真相**:gibbous 帧压 CallInfo(bit50),跨层只传 `base i32`;traceback/错误定位与解释器逐字节一致([04 §1](./04-trampoline.md) + [02 §4](./02-translation.md) pc 物化)。
 4. **错误可穿越、yield 不可穿越**:status 链冒泡 vs 线程级 tier 规则([04 §4](./04-trampoline.md) / [07](./07-coroutine-thread-rule.md))。
@@ -264,7 +264,7 @@ P1 全卷已交付 + P2 PB0-PB7 全过线 + P2 后续优化轮 #1-#4 全过线(2
 
 各子文档 §缺口节 + [doc-gaps](../../../llmdoc/memory/doc-gaps.md):
 
-- **wazero call boundary 实测**:S2 < 150ns 是 P3 生死检查。spike 不达标直跳 P4(详见 [01 §1.4](./01-spike-gate.md))。
+- **wazero call boundary 实测**:S2 < 150ns 是决定 P3 能否开工的检查。spike 不达标直跳 P4(详见 [01 §1.4](./01-spike-gate.md))。
 - **wazero memory 共享 API 细节**(`memory.grow` 后 Go 视图稳定性 / import memory vs 读 module memory):待 spike 验证([03 §3](./03-memory-model.md))。
 - **协程升层语义**:P3 开工前向首个宿主确认列内核是否跑在协程里([07 §3](./07-coroutine-thread-rule.md))。
 - **批量 module 优化**:每 Proto 一 module 的实例化开销实测后定批量阈值([02 §1.2](./02-translation.md) + [11 缺口](#11))。
@@ -292,4 +292,4 @@ P1 全卷已交付 + P2 PB0-PB7 全过线 + P2 后续优化轮 #1-#4 全过线(2
 [../architecture.md](../architecture.md)(§3 包布局 + §4 不变式) ·
 [../../../llmdoc/architecture/evolution-roadmap](../../../llmdoc/architecture/evolution-roadmap.md)(tier 映射 + 坐标系警告) ·
 [../../../llmdoc/must/design-premises](../../../llmdoc/must/design-premises.md)(原则 1 解释器永不退役 / 原则 2 投机错误静默错果) ·
-[../../../llmdoc/memory/doc-gaps](../../../llmdoc/memory/doc-gaps.md)(P3 开工前置确认 / P3 迁移留口)
+[../../../llmdoc/memory/doc-gaps](../../../llmdoc/memory/doc-gaps.md)(P3 开工前置确认 / P3 迁移预留接口)

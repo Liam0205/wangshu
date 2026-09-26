@@ -3,7 +3,7 @@
 > 状态:**设计阶段,可实现深度**。本文是 Lua 5.1 **非对称协程**(coroutine)的单一事实源:
 > Thread 状态机、resume/yield 在 reentry 模型上的实现、参数/返回值跨 Thread 搬运、`coroutine.*`
 > 库语义、协程错误边界、与 GC 的根可达关系、主线程语义、yield-across-C-boundary 的 5.1 限制。
-> 上游契约:[05-interpreter-loop](./05-interpreter-loop.md) **§7 是本文全部可行性的地基**——
+> 上游约定:[05-interpreter-loop](./05-interpreter-loop.md) **§7 是本文全部可行性的地基**——
 > §7.1 Lua-call-Lua 用 reentry(不吃 Go 栈)、调用链状态全住 arena 的 CallInfo(§1.2),
 > 所以"切协程 = 切 Thread 指针 + 切 frame,不拷 Go 栈"(§7.1 末已点名协程);§7.3 reentry 边界
 > (`entryCi` / host→Lua 重入 / `callStatus_fresh`)是 resume 进入 `execute` 的机制;§7.4 `nCcalls`
@@ -11,11 +11,11 @@
 > **本文基于 05 的 reentry 模型实现 resume/yield,不引入与之冲突的机制**。
 > 值/对象侧:[01](./01-value-object-model.md) §5.6 Thread 布局(`word1 status` / `word2 valueStackRef`
 > / `word4 callInfoRef` / `word6 openUpvalRef` / `word7 errorJmp` / `word8 resumeFrom`)是核心数据结构,
-> 本文把每个字段的精确用法定死。错误跨 resume 边界:[09](./09-errors-pcall.md) §12(resume 边界 =
+> 本文把每个字段的精确用法确定下来。错误跨 resume 边界:[09](./09-errors-pcall.md) §12(resume 边界 =
 > 错误停靠站)已给定稿,本文呼应并展开机制侧。GC 根:[06](./06-memory-gc.md) §5.1 R3/R4/R5。
 > coroutine 库 host functions 的清单与注册在 [10-stdlib](./10-stdlib.md)(可能尚在起草,前向引用占位);
 > **本文定义协程机制,`coroutine.*` 是机制的消费者**。语言面锁 Lua 5.1(`docs/design/roadmap.md` (§6):
-> 不做 5.2+ 的"pcall/metamethod 内 yield",5.1 的 yield-across-C-boundary 限制硬记)。
+> 不做 5.2+ 的"pcall/metamethod 内 yield",5.1 的 yield-across-C-boundary 限制严格保留)。
 
 对应 Go 包:Thread 对象布局在 `internal/object`(承 [01](./01-value-object-model.md) §5.6);
 resume/yield 机制、Thread 状态机、跨 Thread 值搬运在 `internal/crescent`(与 [05](./05-interpreter-loop.md)
@@ -43,7 +43,7 @@ resume/yield 机制、Thread 状态机、跨 Thread 值搬运在 `internal/cresc
 本文的张力来自三条约束的夹击:
 
 1. **不背叛 05 的 reentry 模型**。05 §7 已经把"Lua 调用链不吃 Go 栈、host→Lua 才加 Go 栈、`entryCi`/`fresh` 边界、
-   `nCcalls` 上限"定死。本文实现 resume/yield **必须复用这套机制**,不能引入第二套独立的栈管理。具体地:resume
+   `nCcalls` 上限"定好了。本文实现 resume/yield **必须复用这套机制**,不能引入第二套独立的栈管理。具体地:resume
    = 在 reentry 模型上"多起一层 `execute` 跑目标 Thread"(类似 05 §7.3 的 host→Lua 重入);yield = 从那层
    `execute` 带信号 `return` 出来(类似 05 §9 的 `*LuaError` 冒泡,但冒泡的是 yield 而非 error)。
 
@@ -108,7 +108,7 @@ Lua 协程是**非对称的、有栈的**(asymmetric stackful coroutine):
 
 ### 1.4 关键优势:切协程不拷 Go 栈(扣 05 §7)
 
-把 05 §7.1 的链条补全,落到协程:
+把 05 §7.1 的链条补全,用到协程上:
 
 | 若 Lua 调用链住 Go 栈(gopher-lua 风格的假想纯解释) | 望舒:Lua 调用链住 arena CallInfo(05 §1.2) |
 |---|---|
@@ -267,7 +267,7 @@ yield(args):                           // host function(coroutine.yield)
 1. **架构纯粹性 / 与 05 的一致性是决定性因素**。05 §7 整套机制("Lua 调用链不吃 Go 栈、调用链全在 arena
    CallInfo、host→Lua 才加 Go 栈、`entryCi`/`fresh` 边界、`nCcalls` 上限")**就是为协程铺的路**——05 §7.1
    末明确点名"切协程不需要拷 Go 栈"。路线 (B) 是这套机制的**直接延伸**(resume = host→Lua 重入再叠一层,
-   yield = `*LuaError` 式冒泡换信号),**不引入任何与 05 冲突的新机制**(扣合任务硬约束"基于 05 的 reentry
+   yield = `*LuaError` 式冒泡换信号),**不引入任何与 05 冲突的新机制**(符合任务的硬约束"基于 05 的 reentry
    模型实现 resume/yield,不能引入与之冲突的机制")。路线 (A) 则在 05 的机制之外**另起一套**(goroutine 各自
    的 Go 栈),架构上两套栈管理并存,且作废了 05 §7 为协程铺的路。
 
@@ -376,7 +376,7 @@ func (vm *VM) execute(th *Thread) executeSignal {
 
 > **yield 冒泡为什么不弹 CallInfo**:正常 RETURN 是"这一帧干完了,弹掉它"。yield 是"这一帧(及它的整条
 > 调用链)暂停,稍后从原地继续"。所以 yield 信号冒泡出 `execute` 时,**co 的 CallInfo 链完整保留在 arena**
-> ——这正是"有栈协程能在任意深度 yield"的物理实现:整条栈(CallInfo 链 + 值栈)冻结在 arena,下次 resume
+> ——这正是"有栈协程能在任意深度 yield"的具体实现方式:整条栈(CallInfo 链 + 值栈)冻结在 arena,下次 resume
 > 解冻。"从 yield 的下一条指令继续"靠 §9 的 saveFrame/reloadFrame(把 yield 时的 pc 存回栈顶
 > CallInfo,恢复时重建)。
 
@@ -663,7 +663,7 @@ func (vm *VM) assembleErrorResult(resumer, co *Thread, lerr *LuaError) int {
 > 没有这套机制**,故 5.1 一律禁止跨 C 边界 yield。`docs/design/roadmap.md` (§6) 锁 5.1:**望舒 P1 不做
 > `*k` continuation,跨 C 边界 yield 一律报错**。这意味着 ① `pcall(coroutine.yield)` 在 5.1 里报错(5.2+ 可
 > 工作);② 元方法内不能 yield;③ stdlib 迭代器(如 `string.gmatch` 内部)不能 yield。**这些 5.2+ 放宽 P1
-> 全部不做,显式记 5.1 口径**(§11 缺口:若宿主生态需要 5.2 可恢复性,记为未来评估)。
+> 全部不做,显式按 5.1 记录**(§11 缺口:若宿主生态需要 5.2 可恢复性,记为未来评估)。
 
 ### 5.2 检测机制(nCcalls / host 帧标记,扣 05 §7.4)
 
@@ -696,15 +696,15 @@ P1 用 **nCcalls 基线比对**(O(1),简单):resume 时存基线(§3.5 step③ �
 在 §5.3),yield 时一次比较。若需更精确的错误定位(指出是哪个 host 函数挡了 yield),P2+ 可加 host 帧扫描
 (记缺口 §11)。
 
-> **nCcalls 的双重职责(扣 05 §7.4)**:05 §7.4 用 `nCcalls` 防"host↔Lua 无限交替重入打爆 Go 栈"
+> **nCcalls 的双重职责(对应 05 §7.4)**:05 §7.4 用 `nCcalls` 防"host↔Lua 无限交替重入打爆 Go 栈"
 > (`C stack overflow`,上限 200)。本文**复用同一个 nCcalls** 做 yield-across-C-boundary 检测——因为两件事
 > 同源:`nCcalls` 增长 = host→Lua 重入层数 = 当前执行点之上夹了几层 host Go 帧。yield 要求"co 本次 resume
-> 之后没夹 host 帧"(nCcalls 回到 resume 基线),正是"yield 信号能纯 return 冒泡到 resume 而不撞 host 帧"的
+> 之后没夹 host 帧"(nCcalls 回到 resume 基线),正是"yield 信号能纯 return 冒泡到 resume 而不碰到 host 帧"的
 > 充要条件。**一个计数器,两个用途**,无需新增机制(再次体现路线 B 复用 05 的纪律)。
 
 ### 5.3 yield 时的栈状态与 nCcalls 配平(细节)
 
-yield 经 `hostCoroutineYield`(host)触发,而 host 调用本身会 `nCcalls`... 这里有个**配平细节**必须定死:
+yield 经 `hostCoroutineYield`(host)触发,而 host 调用本身会 `nCcalls`... 这里有个**配平细节**必须确定:
 
 - `coroutine.yield` 是 host function,但它是**同步 host 调用**(05 §7.6 callHost),**不**起新 execute、**不**
   增 nCcalls(只有 host→Lua 重入即 `callLuaFromHost` 才 `nCcalls++`,05 §7.4)。所以 yield host 执行时,
@@ -893,7 +893,7 @@ Thread 的唯一区别:
 > **措辞区分(待 12 核对)**:主线程 yield → `attempt to yield from outside a coroutine`;协程内跨 C 边界
 > yield → `attempt to yield across C-call boundary`。两者都是"yield 非法",但措辞不同(前者"不在协程里",
 > 后者"在协程里但隔着 C 帧")。`canYield`(§5.2)先查主线程(给前者措辞),再查 nCcalls 基线(给后者)。
-> 精确措辞 [12](./12-testing-difftest.md) 钉死(09 §9.3 措辞纪律)。
+> 精确措辞由 [12](./12-testing-difftest.md) 最终确定(09 §9.3 措辞纪律)。
 
 ### 8.3 `coroutine.running()` 在主线程
 
@@ -1058,7 +1058,7 @@ coroutine.wrap(f):
 1. **路线 B:单 goroutine + reentry 加一层**(§3.2):resume = 在当前 Go 栈起一层 `execute(co)`;yield = 从那层
    execute 带 `sigYield` 信号 return 冒泡。**不开 goroutine、不拷 Go 栈**(§1.4)。P1 关键决策。
 2. **协程切换 O(1) 不拷 Go 栈**(§1.4):切换 = saveFrame(当前 co)+ 切 curThread 指针 + reloadFrame(目标 co)。
-   与 Lua 调用深度无关。扣合 05 §7.1 + roadmap §2 栈移动税。
+   与 Lua 调用深度无关。对应 05 §7.1 + roadmap §2 栈移动税。
 3. **每协程独立 Thread**(§1.2):独立值栈 + CallInfo 链 + openUpval 链 + 状态字段,全在 arena(01 §5.6)。
 4. **yield 信号冒泡与 *LuaError 冒泡同构**(§3.3/§3.4):yield 经 host(yield)→ callHost 返回 callYield →
    主循环 return sigYield,与 09 §9.4 的 error 冒泡共享"host 信号 + callHost 检查 + 主循环冒泡"通道。
@@ -1085,7 +1085,7 @@ coroutine.wrap(f):
     (§7.2,查环降为查 status==normal)。
 16. **saveFrame/reloadFrame 对称**(§9.3):reloadFrame(05 §1.3)恢复,saveFrame(本文)挂起;统一首次/后续
     resume 为"从栈顶 CallInfo 重建 frame"(§9.2)。
-17. **running() 主线程返回 nil**(§8.3,5.1 口径,非 5.2+ 的 mainthread+true)。
+17. **running() 主线程返回 nil**(§8.3,5.1 语义,非 5.2+ 的 mainthread+true)。
 
 ### 11.2 文档缺口 / 待决(记入 memory/doc-gaps)
 

@@ -20,7 +20,7 @@
 
 承 [00-overview](./00-overview.md) §4.1:
 
-> 「这个分析器是整个 P2 的安全核心:**它决定哪些 Proto 能被 P3/P4 编译。** 因为望舒走 try-compile-fallback-interpret(LuaJ luajc 一样的),编译层只编译『静态可保证能正确编译』的子集——分析器就是划这条线的人。**它判错的后果是灾难性的**:把一个不可编译形状判成可编译,P3 会编译出错误代码或运行期崩溃,而 fallback 机制根本不会被触发(因为没人知道这里该 fallback)。所以分析器的铁律是 **保守**:**宁可漏判(把可编译的判成不可编译,损失一点加速),绝不误判(把不可编译的判成可编译,出正确性事故)**。」
+> 「这个分析器是整个 P2 的安全核心:**它决定哪些 Proto 能被 P3/P4 编译。** 因为望舒走 try-compile-fallback-interpret(同 LuaJ luajc),编译层只编译『静态可保证能正确编译』的子集——分析器就是划这条线的人。**它判错的后果是灾难性的**:把一个不可编译形状判成可编译,P3 会编译出错误代码或运行期崩溃,而 fallback 机制根本不会被触发(因为没人知道这里该 fallback)。所以分析器的铁律是 **保守**:**宁可漏判(把可编译的判成不可编译,损失一点加速),绝不误判(把不可编译的判成可编译,出正确性事故)**。」
 
 ### 0.2 在 try-compile-fallback 流水线中的位置
 
@@ -98,7 +98,7 @@ P2 的本文判定与 [p4-method-jit](../p4-method-jit/00-overview.md) 的类型
 | 工程取向 | **保守第一,宁漏勿误**(本文) | **激进有度,deopt 兜底**(P4) |
 | 失败可观察 | 不可观察(系统会照常运行,只是结果是错的) | 可观察(deopt 着陆有日志,差分 fuzz 能抓) |
 
-**关键差异**:P4 的投机有「deopt」兜底——投机错了能回到解释器、用正确语义重算;而**P2 的可编译性误判没有兜底**——一旦放过去,P3 编译出来的错误代码就是终态,用户看到的是错的结果,系统自己根本不知道错了。这是「fallback ≠ deopt」(00 §6 决策表 / 04 §1)的另一面:fallback 是**静态决定永久解释**,要在 `analyzeProto` 这一步就闭环。
+**关键差异**:P4 的投机有「deopt」兜底——投机错了能回到解释器、用正确语义重算;而**P2 的可编译性误判没有兜底**——一旦放过去,P3 编译出来的错误代码就是终态,用户看到的是错的结果,系统自己根本不知道错了。这是「fallback ≠ deopt」(00 §6 决策表 / 04 §1)的另一面:fallback 是**静态决定永久解释**,要在 `analyzeProto` 这一步就了结。
 
 > **再说一遍**:本文不允许「投机判可编译 + 编译期 guard」这类构造。要么静态可保证可编译,要么判 `CompNotCompilable`。**没有第三态**。
 
@@ -148,7 +148,7 @@ P2 的本文判定与 [p4-method-jit](../p4-method-jit/00-overview.md) 的类型
 
 ### 2.3 「AST 主」的两条不变式
 
-主分析在 AST 上,但实现期必须守两条不变式以防失守:
+主分析在 AST 上,但实现期必须遵守两条不变式以防出错:
 
 1. **AST 与 Proto 必须语义对齐**(codegen 的正确性义务):任何 AST 上判「不可编译」的 Proto,在 Proto 层做交叉校验时(F1 / F5 / F7)结果必须**一致**(或更严格)。出现「AST 判可编译,Proto 判不可编译」(漏判,可接受)允许;出现「AST 判不可编译,Proto 判可编译」(误判,危险)直接 panic ——这是 codegen 把 AST 信息丢失的 bug,需立即修。
 2. **AST 用完即弃**(详见 §2.4 决策):Proto.compilable 一旦写入,AST 即可释放。运行期不持 AST,这是 P2「不在热路径」的物理保证(避免 AST 占用内存、防被运行期代码意外引用)。
@@ -780,7 +780,7 @@ func (b *Bridge) checkF7BackendSupport(proto *bytecode.Proto) bool {
 }
 ```
 
-**P1-only build 退化**:`b.p3 == nil` 时 F7 恒判不可编译——所有 Proto 永久解释,与无 P2 行为一致。这与 §2.6 的 P1-only fallback 闭环。
+**P1-only build 退化**:`b.p3 == nil` 时 F7 恒判不可编译——所有 Proto 永久解释,与无 P2 行为一致。这与 §2.6 的 P1-only fallback 前后衔接。
 
 ---
 
@@ -1378,15 +1378,15 @@ end
 
 | 不变式 | 含义 | 一旦违反的后果 |
 |---|---|---|
-| **I1 保守优先** | 任一 F1-F7 信号触发即判 NotCompilable;visitor 错误也走保守路径 | 失守即可能误判 → 正确性崩溃 |
-| **I2 不动 P1 公共 API** | P1→P2 升级 wangshu.go / Compile / Program 公共形式零变化 | 失守即破坏「每阶段独立交付」(原则 3) |
-| **I3 AST 用完即弃** | AnalyzeProto 返回后不再持有 fn 引用,Compile 完成 AST 即可 GC | 失守即 AST 内存常驻、运行期意外引用风险 |
-| **I4 缓存与运行期变化无关** | Compilable 字段编译期一次写,运行期只读,不依赖运行期任何状态 | 失守即引入并发写竞争、判定漂移 |
-| **I5 嵌套 Proto 独立判定** | 父函数判定不传染子函数;每个 Proto 独立 AnalyzeProto | 失守即主 chunk vararg 污染所有子函数,P3 加速面归零 |
-| **I6 AST/Proto 一致性** | AST.IsVararg 与 Proto.IsVararg 必须一致;不一致即 codegen bug,panic | 失守即可能漏掉 vararg(F1 误判) |
-| **I7 P1-only build 不引入 P2** | `!profile` build tag 下 bridge 包不存在,Compile 行为与 P1 完全一致 | 失守即破坏 P1-only byte-equal 差分 |
-| **I8 F7 在 F1-F6 全过后才查** | SupportsAllOpcodes 仅在 F1-F6 全 OK 时调用(性能 + 简化) | 失守即每个 Proto 都跑一遍 SupportsAllOpcodes(慢) |
-| **I9 visitor 不复用** | 每次 AnalyzeProto 新建 visitor,跑完即弃 | 失守即跨 Proto 信号污染(maxClosureDepth 残留等) |
+| **I1 保守优先** | 任一 F1-F7 信号触发即判 NotCompilable;visitor 错误也走保守路径 | 违反即可能误判 → 正确性崩溃 |
+| **I2 不动 P1 公共 API** | P1→P2 升级 wangshu.go / Compile / Program 公共形式零变化 | 违反即破坏「每阶段独立交付」(原则 3) |
+| **I3 AST 用完即弃** | AnalyzeProto 返回后不再持有 fn 引用,Compile 完成 AST 即可 GC | 违反即 AST 内存常驻、运行期意外引用风险 |
+| **I4 缓存与运行期变化无关** | Compilable 字段编译期一次写,运行期只读,不依赖运行期任何状态 | 违反即引入并发写竞争、判定漂移 |
+| **I5 嵌套 Proto 独立判定** | 父函数判定不传染子函数;每个 Proto 独立 AnalyzeProto | 违反即主 chunk vararg 污染所有子函数,P3 加速面归零 |
+| **I6 AST/Proto 一致性** | AST.IsVararg 与 Proto.IsVararg 必须一致;不一致即 codegen bug,panic | 违反即可能漏掉 vararg(F1 误判) |
+| **I7 P1-only build 不引入 P2** | `!profile` build tag 下 bridge 包不存在,Compile 行为与 P1 完全一致 | 违反即破坏 P1-only byte-equal 差分 |
+| **I8 F7 在 F1-F6 全过后才查** | SupportsAllOpcodes 仅在 F1-F6 全 OK 时调用(性能 + 简化) | 违反即每个 Proto 都跑一遍 SupportsAllOpcodes(慢) |
+| **I9 visitor 不复用** | 每次 AnalyzeProto 新建 visitor,跑完即弃 | 违反即跨 Proto 信号污染(maxClosureDepth 残留等) |
 
 ---
 

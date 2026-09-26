@@ -12,7 +12,7 @@
 
 ## 1. 什么住 arena,什么住 Go 堆(对 roadmap §3 的工程细化)
 
-roadmap §3 说「值世界放自管 arena」。落到实现,需精确区分**动态值世界**与**不可变代码**:
+roadmap §3 说「值世界放自管 arena」。具体到实现,需精确区分**动态值世界**与**不可变代码**:
 
 | 类别 | 住哪 | 理由 |
 |---|---|---|
@@ -45,7 +45,7 @@ GCRef = 48-bit 字节偏移(byte offset)进 arena.bytes
   - 字节访问:bytes[gcref : ...]
 ```
 
-48-bit 字节偏移 = 256 TB 寻址空间,远超实际需求(实际 arena 通常 < 4 GB)。**GCRef 不是 Go 指针**——它对 Go GC 是普通整数,这正是绕开「写屏障税」(§2)的物理手段:arena 内的对象互相引用用 GCRef,Go GC 看不到也不需要管。
+48-bit 字节偏移 = 256 TB 寻址空间,远超实际需求(实际 arena 通常 < 4 GB)。**GCRef 不是 Go 指针**——它对 Go GC 是普通整数,这正是绕开「写屏障税」(§2)的具体手段:arena 内的对象互相引用用 GCRef,Go GC 看不到也不需要管。
 
 ---
 
@@ -89,7 +89,7 @@ Lua 5.1 类型集是**封闭的**(roadmap §6 拒绝 5.2+/整数子类型),恰�
 | `0xFFFF` | thread | GCRef(Thread) | `"thread"` | **是** |
 | —(其余) | number | (整个 64-bit 是 double) | `"number"` | 否 |
 
-**契约性质(后续 tier 不得更改):**
+**约定性质(后续 tier 不得更改):**
 - 可回收类型 = tag ∈ `[0xFFFB, 0xFFFF]`,**连续**⇒ `isCollectable(v) = v >= 0xFFFB_0000_0000_0000`(配合 `v` 已是 boxed)。
 - 单类型检查恒为单次 16-bit 比较;`isNumber` 为单次 64-bit 比较。
 - lightuserdata 与 full userdata 的 `type()` 都返回 `"userdata"`(Lua 5.1 语义)。
@@ -202,7 +202,7 @@ word4: metaRef   (GCRef→ metatable Table,或 Nil)
 word5: [31:0] lastfree(哈希空闲槽搜索游标) | [63:32] gen(IC 代次,单调递增)
 ```
 
-**`gen` 代次字段**(承 [05](./05-interpreter-loop.md) §6.6 回填请求,IC 失效机制的物理载体):任何改变表"形状"的操作(rehash、增删 metatable、键的数组↔哈希迁移)递增 `gen`;已存在键改值**不**递增。`object.Table` 暴露 `Gen()`/`bumpGen()`。初始 0。详见 [05](./05-interpreter-loop.md) §6。
+**`gen` 代次字段**(承 [05](./05-interpreter-loop.md) §6.6 回填请求,IC 失效机制的实际载体):任何改变表"形状"的操作(rehash、增删 metatable、键的数组↔哈希迁移)递增 `gen`;已存在键改值**不**递增。`object.Table` 暴露 `Gen()`/`bumpGen()`。初始 0。详见 [05](./05-interpreter-loop.md) §6。
 
 **Node(哈希槽,3 字 = 24 字节):**
 ```
@@ -247,7 +247,7 @@ word1: 开放时: [31:0] stackIdx | [63:32] threadRef 低 32 位(定位 arena �
 word2: 开放时: nextOpen(GCRef→ 本 thread 开放 upvalue 降序链的下一节点,0=链尾);
        关闭时: value (Value,自持值)
 ```
-实现约定:**开放 upvalue** 不复制值,逻辑上指向 `thread.stack[idx]`。为避免 GCRef 指 Go 栈,thread 的值栈本身在 arena(见 5.6),故开放 upvalue 用 `(threadRef, stackIdx)` 定位 arena 内栈槽。同一栈槽的多个开放 upvalue 共享同一对象,所有开放 upvalue 按 `stackIdx` **降序**串成 thread 上的 openupval 链——链指针就是开放态的 `word2 nextOpen`(承 [05](./05-interpreter-loop.md) §8.6 回填:开放时 word2 不存值,正好承载链指针;关闭时拷值入 word2、脱链,nextOpen 失义)。`CLOSE`/作用域退出时把值拷入 word2 并置关闭。完整链算法与关闭流程见 [05-interpreter-loop](./05-interpreter-loop.md) §8.3。
+实现约定:**开放 upvalue** 不复制值,逻辑上指向 `thread.stack[idx]`。为避免 GCRef 指 Go 栈,thread 的值栈本身在 arena(见 5.6),故开放 upvalue 用 `(threadRef, stackIdx)` 定位 arena 内栈槽。同一栈槽的多个开放 upvalue 共享同一对象,所有开放 upvalue 按 `stackIdx` **降序**串成 thread 上的 openupval 链——链指针就是开放态的 `word2 nextOpen`(承 [05](./05-interpreter-loop.md) §8.6 回填:开放时 word2 不存值,正好承载链指针;关闭时拷值入 word2、脱链,nextOpen 不再有意义)。`CLOSE`/作用域退出时把值拷入 word2 并置关闭。完整链算法与关闭流程见 [05-interpreter-loop](./05-interpreter-loop.md) §8.3。
 
 ### 5.5 Userdata(full userdata)
 
@@ -273,7 +273,7 @@ word6: openUpvalRef (GCRef→ 本 thread 开放 upvalue 链头,或 0)
 word7: errorJmp / 状态机字段(pcall 保护点链,见 09-errors-pcall)
 word8: resumeFrom / caller thread ref(resume 链)
 ```
-**值栈即寄存器文件**:字节码的寄存器 `R(i)` = `thread.valueStack[base + i]`(`base` 为当前帧基址)。栈与 CallInfo 都在 arena,故跨界与 GC 都不触碰 Go 栈(扣合 §2 栈移动税)。栈扩容时整体搬迁并修正开放 upvalue 定位。详见 [08-coroutines](./08-coroutines.md)、[05-interpreter-loop](./05-interpreter-loop.md)。
+**值栈即寄存器文件**:字节码的寄存器 `R(i)` = `thread.valueStack[base + i]`(`base` 为当前帧基址)。栈与 CallInfo 都在 arena,故跨界与 GC 都不触碰 Go 栈(对应 §2 栈移动税)。栈扩容时整体搬迁并修正开放 upvalue 定位。详见 [08-coroutines](./08-coroutines.md)、[05-interpreter-loop](./05-interpreter-loop.md)。
 
 ### 5.7 Proto(住 Go 堆,经 ProtoID 引用)
 
@@ -338,10 +338,10 @@ type LocalVar struct { Name string; StartPC, EndPC int32 }
 
 ## 8. 文档缺口 / 待决(记入 memory/doc-gaps)
 
-- **字符串哈希算法**:已由 [06-memory-gc](./06-memory-gc.md) §9.3 定稿为 **Lua 5.1 JSHash 分段采样**(否决 FNV-1a,理由:把哈希环锁成与官方逐位一致,为 `pairs` 序严格差分口径创造必要条件)。`pairs` 序的最终验收口径已由 [12-testing-difftest](./12-testing-difftest.md) 收口(混合口径)。**本缺口已关闭。**
+- **字符串哈希算法**:已由 [06-memory-gc](./06-memory-gc.md) §9.3 定稿为 **Lua 5.1 JSHash 分段采样**(否决 FNV-1a,理由:把哈希环锁成与官方逐位一致,为 `pairs` 序严格差分口径创造必要条件)。`pairs` 序的最终验收口径已由 [12-testing-difftest](./12-testing-difftest.md) 确定(混合口径)。**本缺口已关闭。**
 - **arena/Proto 划分**对 roadmap §3「值世界全在 arena」是细化(代码走 Go 堆+整数 ID),应作为决策记录归档。
 - `lastfree` 与 Brent 变体的精确实现留给 [06-memory-gc](./06-memory-gc.md)/codegen,本文只定布局。
-- **已回填的字段增补**(原下游回填请求,均已落入本文布局):① Table `gen` 代次(§5.2,承 05 §6.6);② Upvalue 开放态 `nextOpen` 链指针(§5.4,承 05 §8.6);③ Proto `LocVars` 局部变量名表 + `UpvalDescs.name`(§5.7,承 04 §13 / 09 §8.4)。
+- **已回填的字段增补**(原下游回填请求,均已写进本文布局):① Table `gen` 代次(§5.2,承 05 §6.6);② Upvalue 开放态 `nextOpen` 链指针(§5.4,承 05 §8.6);③ Proto `LocVars` 局部变量名表 + `UpvalDescs.name`(§5.7,承 04 §13 / 09 §8.4)。
 
 ---
 

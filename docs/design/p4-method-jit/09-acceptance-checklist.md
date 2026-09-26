@@ -1,6 +1,6 @@
 # P4 §9: PJ11 验收 Checklist
 
-> 状态: **PJ11 已完成 (2026-07-01)**。V1-V22 三平台全部 ✅ + D2 决议已定下来 (主动保留) + 性能数字三平台归档 + 不一致处全部澄清 + nightly-diff-fuzz P4 variant 2026-07-01 挂钩 (V21/V22 30 天累积 timer 起跑, 长期健康监测)。V21/V22 30 天累积属时间窗依赖 (§10.5 doc-gaps 记录), 不阻塞 P4 已交付状态。
+> 状态: **PJ11 已完成 (2026-07-01)**。V1-V22 三平台全部 ✅ + D2 决议已定下来 (主动保留) + 性能数字三平台归档 + 不一致处全部澄清 + nightly-diff-fuzz P4 variant 2026-07-01 挂钩 (V21/V22 30 天累积 timer 开始计时, 长期健康监测)。V21/V22 30 天累积属时间窗依赖 (§10.5 doc-gaps 记录), 不阻塞 P4 已交付状态。
 >
 > 本文是 P4 PJ11 最终验收的可勾选清单, 与 [./08-testing-strategy.md](./08-testing-strategy.md) §2 V1-V22 一一对应。每一项在三个平台 (amd64 / linux-arm64 / darwin-arm64) 上独立勾。
 >
@@ -38,7 +38,7 @@ PR #29 三平台 9 个 P4 相关 job (test / difftest / fuzz-smoke × 三平台)
 - `test/difftest/gcstress_test.go` GC 压力下 byte-equal (V5/V13)
 - `test/difftest/corners_test.go` 角落语义 (V11 协程不升层等)
 - `test/difftest/errmsg_test.go` 错误消息 byte-equal (V9 traceback 部分)
-- ubuntu (amd64+arm64) `apt install lua5.1` 装 oracle, macos-latest 编译 5.1.5 源码 + cache, 三平台都真比对
+- ubuntu (amd64+arm64) `apt install lua5.1` 装 oracle, macos-latest 编译 5.1.5 源码 + cache, 三平台都真正做比对
 
 | # | 描述 | amd64 | linux/arm64 | darwin/arm64 | 如何验 |
 |---|---|---|---|---|---|
@@ -46,7 +46,7 @@ PR #29 三平台 9 个 P4 相关 job (test / difftest / fuzz-smoke × 三平台)
 | V2 | 算术快路径 (f64 + IsNumber guard) | ✅ | ✅ | ✅ | 同上; p4Corpus 8 个 case (算术 6 + 比较 2) |
 | V3 | 算术慢路径 (走 helper) | ✅ | ✅ | ✅ | 同上; helper 路径混在 force-all 语料里 |
 | V4 | 数值 for (FORPREP/FORLOOP) | ✅ | ✅ | ✅ | 同上; p4Corpus 2 个 case (`p4_for_empty/p4_for_accumulate`) |
-| V5 | 回边 GC (gcPending inline) | ✅ | ✅ | ✅ | `gcstress_test.go` 在 P4 build 下也跑 |
+| V5 | 循环回跳 (back edge) GC (gcPending inline) | ✅ | ✅ | ✅ | `gcstress_test.go` 在 P4 build 下也跑 |
 | V6 | 表 IC 命中 (单态跳哈希) | ✅ | ✅ | ✅ | 同上; p4Corpus 4 个表 IC case |
 | V7 | 表 IC 失效 (gen bump 走 helper) | ✅ | ✅ | ✅ | 同上; force-all 触发 gen bump |
 | V8 | 跨层 CALL 链 (jit→jit / jit→crescent / jit→host) | ✅ | ✅ | ✅ | 同上; p4Corpus 89 个 PJ5 调用族 case 全覆盖 |
@@ -92,7 +92,7 @@ CI 里 `test (p4 / <platform>)` + `difftest (p4 / <platform>)` + `fuzz-smoke (p4
 | # | 项 | 状态 | 备注 |
 |---|---|---|---|
 | D1 | bit50 OSR exit 后语义 (清 0 vs 保留 1) | ✅ 清 0 | 2026-06-29 用户确认, 见 [./04-osr-deopt.md](./04-osr-deopt.md) §7.2 |
-| D2 | P3 wasm 后端去留 (退役 / 保留为兜底) | ✅ 主动保留 | 2026-07-01 用户定下来走 [./07-p3-retirement.md](./07-p3-retirement.md) §10.2「主动保留」形式 (区别于 §6 退役 / §7 留中层): 保留 `internal/gibbous/wasm` 代码 + build tag deprecated + wazero 版本锁死不持续升级 + CI 不承诺双后端持续 byte-equal; P3 是设计资产不是产品能力, 若未来 iOS/seccomp 需求浮现再「捡回」。翻案条件 §4.1/§4.2 均未成立 (无档 B/C 实测支撑, 无真实宿主需求), 但选主动保留而非缺省退役, 是低成本对冲 §10.2 「需求时点滞后」风险 |
+| D2 | P3 wasm 后端去留 (退役 / 保留为兜底) | ✅ 主动保留 | 2026-07-01 用户定下来走 [./07-p3-retirement.md](./07-p3-retirement.md) §10.2「主动保留」形式 (区别于 §6 退役 / §7 留中层): 保留 `internal/gibbous/wasm` 代码 + build tag deprecated + wazero 版本锁死不持续升级 + CI 不承诺双后端持续 byte-equal; P3 是设计资产不是产品能力, 若未来 iOS/seccomp 需求浮现再「捡回」。推翻缺省结论的条件 §4.1/§4.2 均未成立 (无档 B/C 实测支撑, 无真实宿主需求), 但选主动保留而非缺省退役, 是低成本对冲 §10.2 「需求时点滞后」风险 |
 
 ---
 
@@ -137,7 +137,7 @@ spectralnorm 在 CI artifact 中未 dump P3 数字 (bench 触发方式对该行�
 
 **关键发现**:
 
-1. **fib / binarytrees P4 相对 P3 大幅胜出 (P4/P3 1.85x / 2.30x)**: P4 jit 在能真升的 realworld 脚本 (小函数 CALL 密集或递归) 上收益明显; PR #30 PJ10 native emit 交付前, fib 的自递归 kernel 会因 PJ7 shape 白名单不接而落回 P1, 交付后 CFG-based 原生 code 让 fib 从 P4 33ms 降到 18ms。
+1. **fib / binarytrees P4 相对 P3 大幅胜出 (P4/P3 1.85x / 2.30x)**: P4 jit 在能真正升层的 realworld 脚本 (小函数 CALL 密集或递归) 上收益明显; PR #30 PJ10 native emit 交付前, fib 的自递归 kernel 会因 PJ7 shape 白名单不接受而落回 P1, 交付后 CFG-based 原生 code 让 fib 从 P4 33ms 降到 18ms。
 2. **fannkuch / nbody P4/P3 ≈ 1x**: 表/数组重型 helper-bound, 两档都被 helper CALL 消耗大部分时间, 无 native emit 收益空间。
 3. **P4 geomean over gopher ~0.83x 三平台都不过 1.5x 门槛**: 五脚本工作量结构上不成立 (P3 历史就 0.79x, 表/字符串/CALL 重型脚本测的是 Lua 语义等价, 不是升层档收益)。「≥1.5x over gopher」 这条改到 V15b heavy 脚本上重新衡量 — 那是升层档真正能发挥的场景。
 
@@ -154,7 +154,7 @@ spectralnorm 在 CI artifact 中未 dump P3 数字 (bench 触发方式对该行�
 
 `benchmarks/heavy/` 三个 flat numeric kernel 脚本, 故意去除表 / 字符串 / 库 CALL / short-circuit `and-or` / `if-then-end` / `break` 等会让 P3 relooper 拒升或早期 P4 PJ7 shape 白名单不命中的元素。
 
-PR #30 交付 PJ10 native emit 后, P4 kernel proto 走 CFG-based 原生 code 路径 (35 opcode × amd64/arm64 双架构真原生 emit + mmap-safe 内联开关 18 op) + `execute()` TAILCALL 分支尾调用 gibbous dispatch, 三本 kernel 全接。
+PR #30 交付 PJ10 native emit 后, P4 kernel proto 走 CFG-based 原生 code 路径 (35 opcode × amd64/arm64 双架构真正的原生 emit + mmap-safe 内联开关 18 op) + `execute()` TAILCALL 分支尾调用 gibbous dispatch, 三本 kernel 全接。
 
 **三平台加速比 (gopher / X, >1 表示 X 比 gopher 快)**:
 
@@ -180,19 +180,19 @@ PR #30 交付 PJ10 native emit 后, P4 kernel proto 走 CFG-based 原生 code �
 
 **关键发现**:
 
-1. **PJ10 native emit 把 V15b P4 从「落回 P1」搬回「真原生 code」**: PR #30 之前 P4 PJ7 shape 白名单不接 heavy kernel, 走 crescent 后 P4 数字 ≈ P1 (1.60x); PR #30 交付后 P4 kernel proto 直接进 CFG-based 原生 code, 三本 kernel 全接。
+1. **PJ10 native emit 把 V15b P4 从「落回 P1」搬回「真正的原生 code」**: PR #30 之前 P4 PJ7 shape 白名单不接受 heavy kernel, 走 crescent 后 P4 数字 ≈ P1 (1.60x); PR #30 交付后 P4 kernel proto 直接进 CFG-based 原生 code, 三本 kernel 全接。
 2. **P4 heavy_floatloop 三平台 7-14x over gopher**: 嵌套 FORLOOP + 内层 while 单条件 + 浮点算术, PJ10 CFG 化 + native emit 后, 内层直接跑原生浮点算术 + 边界 label resolver 一次算好, 三平台都比 P3 wazero 翻译再快 ~3x。
 3. **P4 heavy_recursion 三平台约 1.2-1.5x, 略胜 P3**: 递归形式 CALL 边界成本占比高, 内层 kernel 计算量小, P4 native emit 的边际收益被 CALL 拖低; 但 P4 三平台每平台 P4/P3 ≥ 1.0, 未退化。
-4. **macos-latest 全档慢**: Apple M1 Virtual runner 虚拟化开销明显; 但达标口径仍双双满足。
+4. **macos-latest 全档慢**: Apple M1 Virtual runner 虚拟化开销明显; 但两项达标条件仍然都满足。
 5. **两条独立断言全部达标 (三平台)**:
    - **P4 geomean ≥ P3 geomean**: ✅ 三平台每本 P4/P3 均 ≥ 1.0 (P4/P3 geomean 三平台 2.7x / 2.7x / 1.9x)
    - **P4 geomean ≥ 1.5x over gopher-lua**: ✅ 三平台 P4 geomean 5.53x / 5.45x / 4.00x 均远超 1.5x 门槛
 
-**结论**: V15b 三平台 ✅ PASS。PJ10 native emit 是 V15b 三本 P4 native > P3 wasm 三平台达标的直接交付载体; V15 历史承诺 「P4 geomean ≥ P3 geomean ≥ 1.5x gopher」 在 heavy 升层档真发挥场景上第一次实测 P4 侧兑现 (三平台同时)。
+**结论**: V15b 三平台 ✅ PASS。PJ10 native emit 是 V15b 三本 P4 native > P3 wasm 三平台达标的直接交付载体; V15 历史承诺 「P4 geomean ≥ P3 geomean ≥ 1.5x gopher」 在 heavy 这类升层档真正发挥作用的场景上第一次实测 P4 侧兑现 (三平台同时)。
 
 ### V16 boundary 往返
 
-来源: bench-acceptance Run #28505893556 (2026-07-01) 三平台 CI (ubuntu-latest / ubuntu-24.04-arm / macos-latest) 跑一样的 `BenchmarkGibbousJIT_Const/Nil` (P4) 与 `BenchmarkConst_Gibbous/Nil_Gibbous` (P3), body = `return 42` / `return nil` (即 1 条 LOADK+RETURN / 1 条 LOADNIL+RETURN); wrap 形式: `local function kernel() return X end; for _=1,50 do t = kernel() end; return t`, 每 iteration 50 次边界往返。
+来源: bench-acceptance Run #28505893556 (2026-07-01) 三平台 CI (ubuntu-latest / ubuntu-24.04-arm / macos-latest) 跑同一组 `BenchmarkGibbousJIT_Const/Nil` (P4) 与 `BenchmarkConst_Gibbous/Nil_Gibbous` (P3), body = `return 42` / `return nil` (即 1 条 LOADK+RETURN / 1 条 LOADNIL+RETURN); wrap 形式: `local function kernel() return X end; for _=1,50 do t = kernel() end; return t`, 每 iteration 50 次边界往返。
 
 **单次边界往返 (ns, ns/op / 50) — 三平台**:
 
@@ -211,13 +211,13 @@ PR #30 交付 PJ10 native emit 后, P4 kernel proto 走 CFG-based 原生 code �
 - **arm64 两平台 P4 boundary 明显低于 amd64**: macos-latest Const 113 ns / Nil 101 ns 是三平台最低; ubuntu-24.04-arm Const/Nil 均 ~140 ns; ubuntu-latest amd64 Const/Nil ~145-150 ns。
 - 之前 amd64 本机 Bool_Gibbous 报 `⚠️ P3 没真升层` (3408 ns 跟 P1 一档) 的假象在 CI 三平台数据中未复现 (Bool 未在 bench-acceptance 里跑), 保留作 followup 观察点, 不影响 V16 三平台 Const/Nil 判定。
 
-**结论**: V16 三平台 ✅ PASS — P4 trampoline 边界开销三平台均比 P3 wazero 边界快 1.4-2.0x。这跟设计文档 [./00-overview.md](./00-overview.md) §0.3 「P4 自管 trampoline, 边界成本低于 P3 wazero」的物理预期一致。
+**结论**: V16 三平台 ✅ PASS — P4 trampoline 边界开销三平台均比 P3 wazero 边界快 1.4-2.0x。这跟设计文档 [./00-overview.md](./00-overview.md) §0.3 「P4 自管 trampoline, 边界成本低于 P3 wazero」的原理预期一致。
 
 ### 3.7 2026-07-02 复测与回归 (addendum, 承 README perf 表 f736c92)
 
 本节记录 PJ11 宣告 (2026-07-01) 之后的复测数字与已知回归; §1 表格与 §3.V14/V15b 归档的 bench-acceptance Run #28505893556 数字是**当时快照**, 本 addendum 提供后续跟进的当前视角, 不重写归档数据。
 
-**(a) P3 nbody auto 回归**: `internal/bridge/analyzer.go` safe stdlib alias dataflow 追踪的改进 (承 memory `project_pj10_native_longtask.md`「PJ10 must-beat-P3 op 集扩面」条目) 是 P4 侧的正向修复 — 让此前被误判 `ReasonUnknownCall` 的 hot proto 现在能真升 — 但这条改进 **在 P3 build 下也生效** (F2-b 分析器共享), 结果 P3 nbody 从 43.5ms → **89.7ms**, 而 P4 nbody 44.2ms。issue #39 已开单跟进 (per-backend 回归实证; 修复方向:对 P3 保留旧 alias 判定 / 或让 P3 侧同步接住新升的 proto 但不吃分析器 alias 改进的副作用)。
+**(a) P3 nbody auto 回归**: `internal/bridge/analyzer.go` safe stdlib alias dataflow 追踪的改进 (承 memory `project_pj10_native_longtask.md`「PJ10 must-beat-P3 op 集扩面」条目) 是 P4 侧的正向修复 — 让此前被误判 `ReasonUnknownCall` 的 hot proto 现在能真正升层 — 但这条改进 **在 P3 build 下也生效** (F2-b 分析器共享), 结果 P3 nbody 从 43.5ms → **89.7ms**, 而 P4 nbody 44.2ms。issue #39 已开单跟进 (per-backend 回归实证; 修复方向:对 P3 保留旧 alias 判定 / 或让 P3 侧同步接住新升层的 proto 但不受分析器 alias 改进的副作用影响)。
 
 - **对 §3.V15a 归档数字的影响**: §3.V15a 单脚本表 nbody 行 (P3 65.08ms / P4 65.65ms / P4/P3 ≈ 0.99x) 是分析器改进**之前**的形式, 之后 P3 65 → 90ms (即 P4 相对 P3 从平手变成显著胜出)。归档数字保留为历史快照, 当前 README perf 表 (f736c92, 2026-07-02) 是**权威现值**。
 - **判定不撤**: V15a 「P4 ≥ P3」 三平台 ✅ 判定不变 (P4 nbody 44.2ms < P3 nbody 89.7ms, 差距扩大而非缩小)。
@@ -227,7 +227,7 @@ PR #30 交付 PJ10 native emit 后, P4 kernel proto 走 CFG-based 原生 code �
 | 脚本 (arm64) | P3 | P4 | P4/P3 | 说明 |
 |---|---|---|---|---|
 | HeavyArith | ~118 ms | ~2.45 s (linux) / darwin 同档 | **~20x 慢** | arm64 fixed Run cost + 未接住扩面 op |
-| Fannkuch | 基线 | 3.5-7.4x 慢 + 13.7 MB/op allocs | 显著慢 + 分配爆表 | P4 侧 arm64 fallback 路径 alloc-heavy |
+| Fannkuch | 基线 | 3.5-7.4x 慢 + 13.7 MB/op allocs | 显著慢 + 分配量激增 | P4 侧 arm64 fallback 路径 alloc-heavy |
 | HeavyFloatloop | 基线 | 1.5-2.7x 慢 | 慢过 P3 | 同上 |
 
 issue #37 (arm64 exit-reason port) + issue #40 已开单跟进。**§3.V15b 归档的 arm64 ✅ 行** (ubuntu-24.04-arm P4 5.45x / macos-latest P4 4.00x, 5.56/1.05/3.22 与 2.83/1.01/3.29) **是 op 集扩面之前的快照**——扩面 amd64-only 后, arm64 上 P4 heavy 场景反而变慢; 归档 ✅ 行不撤 (它反映当时的三平台 pass 状态), 但阅读时须叠加本 addendum 的 arm64 回归事实。
@@ -245,33 +245,33 @@ issue #37 (arm64 exit-reason port) + issue #40 已开单跟进。**§3.V15b 归�
 - **V17 是「四 build」还是「三 build」?** 设计文档 [./08-testing-strategy.md](./08-testing-strategy.md) §2.3 写「四套 build: default + `wangshu_profile` + `wangshu_p3` + `wangshu_p4`」。当前 CI 的 `test` 矩阵跑 3 个 variant (p1 / p3 / p4): p1 = default 无 tag (覆盖 default), p3 = `wangshu_p3 wangshu_profile` 复合 tag, p4 = `wangshu_p4 wangshu_profile` 复合 tag。**`wangshu_profile` 单独 (无 p3/p4) 这一 variant 未跑**, 是严格四 build 读法下的小缺口; 但 p3+profile / p4+profile 两 job 已给 `wangshu_profile` 提供足够覆盖, V17 判 ✅。
 
 - **V15 「≥1.5x over gopher」 已经在 V15b heavy 上兑现 (三平台 P4 4-5.5x)**: 设计文档 [./08-testing-strategy.md](./08-testing-strategy.md) §2.2 V15 「P4 geomean ≥ P3 geomean ≥ 1.5x over gopher-lua」 拆成两条:
-  - V15a (realworld 5 脚本, 等价语义对照): **P4 ≥ P3** ✅ 三平台 CI 都过 (P4/P3 geomean 1.43x / 1.43x / 1.99x); **「≥1.5x over gopher」 这条都不过** (P4/gopher 0.83x / 0.84x / 0.84x) — 但这五个脚本是表 / 字符串 / CALL 重型 (helper-bound), 测的是 Lua 语义生态等价, 不是升层档真发挥场景
-  - V15b (heavy 3 脚本, 升层档真发挥): **P4 geomean ≥ 1.5x 三平台 ✅** (ubuntu-latest 5.53x / ubuntu-24.04-arm 5.45x / macos-latest 4.00x); **P4 ≥ P3 三平台 ✅** (三本每本 P4/P3 均 ≥ 1.0)
+  - V15a (realworld 5 脚本, 等价语义对照): **P4 ≥ P3** ✅ 三平台 CI 都过 (P4/P3 geomean 1.43x / 1.43x / 1.99x); **「≥1.5x over gopher」 这条都不过** (P4/gopher 0.83x / 0.84x / 0.84x) — 但这五个脚本是表 / 字符串 / CALL 重型 (helper-bound), 测的是 Lua 语义生态等价, 不是升层档真正发挥作用的场景
+  - V15b (heavy 3 脚本, 升层档真正发挥作用): **P4 geomean ≥ 1.5x 三平台 ✅** (ubuntu-latest 5.53x / ubuntu-24.04-arm 5.45x / macos-latest 4.00x); **P4 ≥ P3 三平台 ✅** (三本每本 P4/P3 均 ≥ 1.0)
 
-  **关键发现**: PR #30 PJ10 native emit 交付后, V15b P4 从「PJ7 shape 白名单不接 → 落回 P1」搬回「CFG-based 原生 code 真接」, V15 「P4 ≥ P3 ≥ 1.5x gopher」 两条独立断言在 heavy 升层档真发挥场景上三平台同时兑现 (bench-acceptance Run #28505893556)。realworld 上三平台 P4 都达不到 1.5x, 是工作量结构原因 (helper-bound), 不是 P4 引入退化。
+  **关键发现**: PR #30 PJ10 native emit 交付后, V15b P4 从「PJ7 shape 白名单不接 → 落回 P1」搬回「CFG-based 原生 code 真正接上」, V15 「P4 ≥ P3 ≥ 1.5x gopher」 两条独立断言在 heavy 这类升层档真正发挥作用的场景上三平台同时兑现 (bench-acceptance Run #28505893556)。realworld 上三平台 P4 都达不到 1.5x, 是工作量结构原因 (helper-bound), 不是 P4 引入退化。
 
   **PJ11 接收**: V15a (realworld) 保留 「P4 ≥ P3」 判 (三平台 ✅); V15b (heavy) 双条件全达标 (三平台 ✅)。详 §3.V15a + §3.V15b。
 
-- **V16 之前 bench 测量法不公平已修正**: 之前 P3 用 `simpleBody` (5 条指令) vs P4 用 `constBody` (1 条 LOADK+RETURN), 工作量差 5 倍。本批在 `benchmarks/baseline/baseline_gibbous_test.go` 加了 P3 一样的 Const/Nil body 的 bench, 三平台 CI 公平比较结果 ✅ V16 三平台全 PASS (P4 边界三平台 101-149 ns, P3 三平台 199-224 ns, P4 比 P3 快 1.4-2.0x)。原 amd64 本机 Bool_Gibbous ⚠️ (P3 早退) 现象在 CI 里未跑 Bool body (bench-acceptance 只跑 Const/Nil), 保留作 P3 followup, 不影响 V16 判定。
+- **V16 之前 bench 测量法不公平已修正**: 之前 P3 用 `simpleBody` (5 条指令) vs P4 用 `constBody` (1 条 LOADK+RETURN), 工作量差 5 倍。本批在 `benchmarks/baseline/baseline_gibbous_test.go` 加了 P3 端同样用 Const/Nil body 的 bench, 三平台 CI 公平比较结果 ✅ V16 三平台全 PASS (P4 边界三平台 101-149 ns, P3 三平台 199-224 ns, P4 比 P3 快 1.4-2.0x)。原 amd64 本机 Bool_Gibbous ⚠️ (P3 早退) 现象在 CI 里未跑 Bool body (bench-acceptance 只跑 Const/Nil), 保留作 P3 followup, 不影响 V16 判定。
 
-- **PJ10 交付 (2026-07-01)**: PJ0-PJ11 全交付。PJ1/PJ6 原始「single-line direct emit」范围通过 PJ3/PJ7/PJ10 栈达成。PR #29 交付 arm64 三平台 CI 矩阵 (linux/arm64 + darwin/arm64 真机 W^X); PR #30 交付 PJ10 native emit (CFG-based 35 op × amd64/arm64 双架构原生 emit + mmap-safe 内联开关 18 op + `execute()` TAILCALL 分支尾调用 gibbous dispatch), 直接把 V15b 三本 P4 从「落回 P1」搬回「真原生 code」, 恢复三本 P4 > P3 wasm 达标状态。详 [./implementation-progress.md](./implementation-progress.md)。
+- **PJ10 交付 (2026-07-01)**: PJ0-PJ11 全交付。PJ1/PJ6 原始「single-line direct emit」范围通过 PJ3/PJ7/PJ10 栈达成。PR #29 交付 arm64 三平台 CI 矩阵 (linux/arm64 + darwin/arm64 真机 W^X); PR #30 交付 PJ10 native emit (CFG-based 35 op × amd64/arm64 双架构原生 emit + mmap-safe 内联开关 18 op + `execute()` TAILCALL 分支尾调用 gibbous dispatch), 直接把 V15b 三本 P4 从「落回 P1」搬回「真正的原生 code」, 恢复三本 P4 > P3 wasm 达标状态。详 [./implementation-progress.md](./implementation-progress.md)。
 
 - **多 State 并发下 CodePage 引用计数 + 延迟 munmap 已完成 (2026-07-01)**: 原设计文档 [./05-system-pipeline.md](./05-system-pipeline.md) §2.1.3 承诺「留 PJ7 验收期完成引用计数 + 延迟 munmap」, 此前 `internal/gibbous/jit/amd64/codepage_linux.go::Munmap` 注释登记为 「多 State 并发下 UAF 开放缺口」。本批交付完成 refcount 协议:
   - `CodePage.refcount` (atomic.Int32) + `disposed` (atomic.Bool) 双字段生命周期协议
   - Enter (CAS-guarded bump, 拒绝 refcount==0 时递增) / Exit (refcount==0 时真 munmap) / Dispose (flip flag + drop constructor 初始 ref) 三 API
-  - **四个 Run 入口全部 wire**: `p4Code.Run` (code.go), `PerOpCode.Run` (peropcode.go), `nativeCode.Run` amd64 (translator_native.go), `nativeCode.Run` arm64 (translator_native_arm64.go) — **PJ10 native emit 主执行路径 (V15b heavy 达标载体) 也覆盖**。Enter 失败即返错 (不撞已释放段), defer `Exit` 保证 Run 出口 refcount 回归
+  - **四个 Run 入口全部 wire**: `p4Code.Run` (code.go), `PerOpCode.Run` (peropcode.go), `nativeCode.Run` amd64 (translator_native.go), `nativeCode.Run` arm64 (translator_native_arm64.go) — **PJ10 native emit 主执行路径 (V15b heavy 达标载体) 也覆盖**。Enter 失败即返错 (不会访问已释放的段), defer `Exit` 保证 Run 出口 refcount 回归
   - 四个 Dispose 入口全部转 `CodePage.Dispose`: p4Code, PerOpCode, nativeCode amd64, nativeCode arm64
-  - amd64 linux + arm64 linux + arm64 darwin (MAP_JIT + pthread_jit_write_protect_np) 三 real 变体一样的协议; other/nonarm64 stub 保持返 false
-  - 竞态测试 `TestCodePage_ConcurrentRunVsDispose` (32 goroutine × 1000 iter × Enter/Exit vs Dispose, `-race -count=100` 全绿) 撞过一次早版 double-check 竞态被 -race 抓到 → 定位后从 「plain Add + double-check」 改为 CAS-guarded bump 修复
+  - amd64 linux + arm64 linux + arm64 darwin (MAP_JIT + pthread_jit_write_protect_np) 三 real 变体使用同一套协议; other/nonarm64 stub 保持返 false
+  - 竞态测试 `TestCodePage_ConcurrentRunVsDispose` (32 goroutine × 1000 iter × Enter/Exit vs Dispose, `-race -count=100` 全绿) 遇到过一次早期版本的 double-check 竞态, 被 -race 抓到 → 定位后从 「plain Add + double-check」 改为 CAS-guarded bump 修复
   - 补测 `TestNativeCode_Run_RefusesAfterDispose` + `TestNativeCode_Dispose_Idempotent` 专门验证 nativeCode 层协议 wire 到位 (承 PR #31 bot review 追加发现)
   - V18 现有 8 goroutine -race 无回归; jit/amd64/arm64/peroptranslator 三包 `-race` 全绿
 
-  **物理保证**: 任一 Run 期间 mmap 段绝不会被 munmap, 任一 Dispose 后 mmap 段绝不会被后到的 Run 撞上, 任一 (Run + Dispose) 序列**最多**触发一次 munmap。
+  **硬性保证**: 任一 Run 期间 mmap 段绝不会被 munmap, 任一 Dispose 后 mmap 段绝不会被后到的 Run 访问到, 任一 (Run + Dispose) 序列**最多**触发一次 munmap。
 
 - **P3 build 下 method-call proto 升层是 F2-c 撤位模式的预期行为**: `internal/bridge/analyzer.go::visitMethodCallExpr` (承 memory `project_p4_placeholder_reason_pattern.md`) 从 `ReasonUnknownCall` (永不撤位) 改为 `ReasonSelfCall` (backend 注入后 `recheckCompilabilityRuntime` 撤位) 的一个副作用是: `wangshu_p3` build 下 method-call proto (SELF + CALL + RETURN 三段) 会经 `SupportsAllOpcodes` 重判, P3 白名单里 SELF (compiler.go:116) / CALL (:120) / TAILCALL (:121) 均 true → **method-call proto 现在 P3 build 下也可以升到 P3 wasm 层**, 不再永久拒。这是 F2-c 撤位模式**期望**的行为 (承 memory), 对 P3 主动保留 (D2 §10.2) 是收益。V21 三平台 byte-equal (TestP4_Tiered 116 case) 已实证 P3 build 下 method-call 升层的正确性。
 
 - **V19-V22 引用已统一到 codebase 里已有的等效测试** (2026-07-01 重扫): 原文档点名的四条测试 (`TestOSRStateEquivalence` / `TestDeoptStormToStuck` / `TestDualArchByteEqual` / `FuzzGuardOmission`) 均未以此命名存在, 但 P4 交付过程中在其它位置以更贴合工程节奏的命名 landed 了等效测试, §1 表格已 rewrite 指向真实测试路径:
-  - V19: `TestPJ5_SelfCall_E2E_SpecTemplate_OSRExitToDeopt` (真业务路径) + `p4state_test.go` 7 状态机单测
+  - V19: `TestPJ5_SelfCall_E2E_SpecTemplate_OSRExitToDeopt` (真实业务路径) + `p4state_test.go` 7 状态机单测
   - V20: `TestPJ5_SelfCall_E2E_SpecTemplate_DeoptStorm` + `TestP4SpecState_MaxRecompileTriesReachedStuck`
   - V21: `test/difftest/p4_test.go::TestP4_Tiered` (116 case tri-platform difftest, force-all P4 vs crescent byte-equal + 对 lua5.1 oracle byte-equal)
   - V22: `fuzz_p4_test.go::FuzzP4ForceAllPromote` (24 seeds + 1.5M execs, fuzz-smoke 三平台 CI 矩阵)

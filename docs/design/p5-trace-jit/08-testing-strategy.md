@@ -18,7 +18,7 @@
 > [../p1-interpreter/12-testing-difftest.md](../p1-interpreter/12-testing-difftest.md)(P1 差分测试矩阵
 > 单一事实源;§3.8 Runner 抽象 `WangshuFullmoon` slot 已注释预留 + §7 P5 行预留);
 > [../p4-method-jit/08-testing-strategy.md](../p4-method-jit/08-testing-strategy.md)(**P4 测试策略,本文
-> 直接对位继承**——V-numbered checklist 风格 + §5 deopt 注入设计 + `FuzzP4ForceAllPromote` 模式 + `-race`
+> 直接对照继承**——V-numbered checklist 风格 + §5 deopt 注入设计 + `FuzzP4ForceAllPromote` 模式 + `-race`
 > 与 mmap 不兼容的教训);
 > [../../../llmdoc/guides/prove-the-path-under-test.md](../../../llmdoc/guides/prove-the-path-under-test.md)
 > (测试通过 ≠ 在测的路径被走到——P5 是该 guide 的最大新用户,超越 P4)。
@@ -147,7 +147,7 @@ crescent 与其中一方一致,以 crescent 为准判另一方 bug。
 自动 skip——mmap+morestack 与 Go race detector 的 stack unwinder 物理不兼容(反思
 [2026-07-01-p4-pj10-native-round](../../../llmdoc/memory/reflections/) lesson 1)。
 
-**P5 一样的约束**:fullmoon trace 也在 mmap 段跑,`-race` 不兼容原样继承。含义:
+**P5 也有同样的约束**:fullmoon trace 也在 mmap 段跑,`-race` 不兼容原样继承。含义:
 
 - `FuzzP5ForceTrace` 在 `-race` 下 `t.Skip`(§5.4);
 - `-race` job 只覆盖 P5 的**非 mmap 子集**(anchor 表 + P2 桥扩展的 Go 侧逻辑 + host 接口 Go 端);
@@ -279,8 +279,8 @@ P5 侧更严:
 
 - fullmoon 的 snapshot 比 P4 复杂(依据 [06-snapshot-deopt §3](./06-snapshot-deopt.md) 表:P4 = 空;P5 = frames[1..N] +
   slots{稀疏} + sinks[]);
-- P4 的 OSR exit「栈槽即真相」,exit 序列几乎空——正常 e2e 撞到 deopt 也不测什么;
-- **P5 每次 deopt 都是「按 snapshot 逐帧物化 + unsink」,是一整套编译期烧入的 store 序列**——每条 exit
+- P4 的 OSR exit「栈槽即真相」,exit 序列几乎空——正常 e2e 遇到 deopt 也测不到什么;
+- **P5 每次 deopt 都是「按 snapshot 逐帧物化 + unsink」,是一整套编译期写死的 store 序列**——每条 exit
   的物化配方都不同,必须每条独立执行一次才验证得到。
 
 ### 3.2 每 guard 强制失败一次
@@ -474,10 +474,10 @@ func FuzzP5ForceTrace(f *testing.F) {
 P4 fuzz corpus 覆盖 F1-F7 边界与算术投机形式——对 P5 不够。**P5 独有关注的形式**(与
 [02 §NYI](./02-trace-recording.md) 协调):
 
-- **循环内跨函数调用**(trace 内联主场,依据 [01-launch-judgment §2 第一类负载](./01-launch-judgment.md));
+- **循环内跨函数调用**(trace 内联的主要场景,依据 [01-launch-judgment §2 第一类负载](./01-launch-judgment.md));
 - **循环内类型不稳定**(loop 里 var 时 number 时 string,触发多变态 guard);
 - **循环内 metamethod 触发**(force 走 helper vs sink 后合并);
-- **循环内分配密集**(触发 sink 优化的物理形式);
+- **循环内分配密集**(触发 sink 优化的具体形式);
 - **循环内表增删**(触发 gen bump + trace IC 失效);
 - **多层嵌套循环**(不同 anchor 交互);
 - **深递归 + 循环**(trace 内联导致 snapshot frames 深度 > 3)。
@@ -492,7 +492,7 @@ seed corpus 位置:`testdata/fuzz/FuzzP5ForceTrace/`(与 P1/P4 fuzz corpus 相�
 **建议实现方式**(共享机资源约束下的现实版本:fuzz 限并发、bench 串行、单个重任务):
 
 - **`-parallel=4`**(shared 机上限,不能打满);
-- **`-cpu=1`**(与共用户不打架);
+- **`-cpu=1`**(不与其他用户争抢资源);
 - 分片按 seed base 时间戳(与 [.github/workflows/nightly-diff-fuzz.yml](../../../.github/workflows/nightly-diff-fuzz.yml) 每日 rolling 方式一致)
 - **累积统计**入 `results/p5-fuzz-hours.md`(与 [09](./09-acceptance-checklist.md) 的 T-item 数字对齐);
 - **fuzz cluster 是逻辑概念,不是物理独立机器**——共享机上按时段调度 + 记账。
@@ -694,7 +694,7 @@ wangshu_p4 wangshu_p3 wangshu_profile`。
 [07-system-integration.md](./07-system-integration.md)(测试架构基于 host 接口扩展)·
 [09-acceptance-checklist.md](./09-acceptance-checklist.md)(**T-item 编号 + 数字所在**)·
 [../p4-method-jit/08-testing-strategy.md](../p4-method-jit/08-testing-strategy.md)(P4 测试策略,本文直
-接对位)·
+接对照)·
 [../p1-interpreter/12-testing-difftest.md](../p1-interpreter/12-testing-difftest.md)(P1 差分测试单一事
 实源,`WangshuFullmoon` slot 预留)·
 [../../../llmdoc/must/design-premises.md](../../../llmdoc/must/design-premises.md)(原则 2 层间差分主防

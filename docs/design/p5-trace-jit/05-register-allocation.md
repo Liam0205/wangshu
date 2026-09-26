@@ -1,6 +1,6 @@
 # P5 §5:trace 寄存器分配器——单遍逆序线性扫描
 
-> 状态:**未立项图纸(启动判定见 [01](./01-launch-judgment.md))**。本文把 00-overview §2 流水线 ③「寄存器分配」展开为可以直接施工的算法和寄存器池方案:包括线性 trace 上的单遍逆序扫描分配、望舒约束下的寄存器池具体切分、PHI 合并、跨调用点的寄存器约定,以及与 snapshot 的双向配合约定。P5 目前还没有一行代码,本文以「建议 / 推荐 / 待 PT-4 验证」的说法为准;引用的 P1/P4 事实项(寄存器约定、JITContext 字段、CallInfo 布局)已按 PR #42(post-2026-07-02 实现勘误)校准。
+> 状态:**未立项图纸(启动判定见 [01](./01-launch-judgment.md))**。本文把 00-overview §2 流水线 ③「寄存器分配」展开为可以直接照着实现的算法和寄存器池方案:包括线性 trace 上的单遍逆序扫描分配、望舒约束下的寄存器池具体切分、PHI 合并、跨调用点的寄存器约定,以及与 snapshot 的双向配合约定。P5 目前还没有一行代码,本文以「建议 / 推荐 / 待 PT-4 验证」的说法为准;引用的 P1/P4 事实项(寄存器约定、JITContext 字段、CallInfo 布局)已按 PR #42(post-2026-07-02 实现勘误)校准。
 >
 > 对应 Go 包:`internal/fullmoon/trace/regalloc`(建议命名,主包 `internal/fullmoon/trace`,见 [architecture](../architecture.md) §1)。
 >
@@ -32,7 +32,7 @@
 
 ### 0.2 与 P4 的对照:P5 首次引入「跨字节码边界的寄存器」
 
-P4 严格遵守「栈槽真相不变式」(见 [../p4-method-jit/04-osr-deopt.md](../p4-method-jit/04-osr-deopt.md) §3.1):**在每条字节码边界处,所有 Lua 活值都在 arena 值栈槽里**;模板内的寄存器只在单条模板内短暂持值,模板出口一定要 store 回栈槽。这是 P4 deopt 之所以简单的物理原因。
+P4 严格遵守「栈槽真相不变式」(见 [../p4-method-jit/04-osr-deopt.md](../p4-method-jit/04-osr-deopt.md) §3.1):**在每条字节码边界处,所有 Lua 活值都在 arena 值栈槽里**;模板内的寄存器只在单条模板内短暂持值,模板出口一定要 store 回栈槽。这是 P4 deopt 之所以简单的根本原因。
 
 P5 放弃了这个不变式——寄存器分配让 IR 值**跨多条 Lua 字节码**驻留在寄存器里,栈槽的内存来回读写没有了(00-overview §2:「IR 值驻留在机器寄存器里,栈槽的来回读写没有了——P4 的结构税终于卸掉」)。代价是:栈槽不再是真相,deopt 时必须依赖 snapshot 恢复。regalloc 和 snapshot 是同一枚硬币的两面(§6)。
 
@@ -148,7 +148,7 @@ xmm 系列全部是 caller-saved,P4/P5 不需要保存,直接 16 个全部可分
 - **保守方案(建议 v1 采用)**:不纳入 IR 池,回避与 Go ABI 的任何交互面。GPR 池 9 个已经够绝大多数 trace 使用。
 - **激进方案(v2 如果寄存器压力大再评估)**:纳入 IR 池,shim 调用前 spill,shim 调用后 reload——多出 3 个寄存器,但增加 shim 边界的 spill 序列。P4 backends §4.1.1 表把 r12/r13 标为「保留」,推荐 P5 v1 沿用。
 
-最终决定留给 PT-4 spike 实测——如果某类 trace(比如深层循环体带很多常量)频繁撞到 9 个 GPR 上限,再评估是否纳入 r12/r13。
+最终决定留给 PT-4 spike 实测——如果某类 trace(比如深层循环体带很多常量)频繁用满 9 个 GPR,再评估是否纳入 r12/r13。
 
 ### 2.2 arm64 寄存器池
 
@@ -193,7 +193,7 @@ v0..v31 全部是 caller-saved(实际上 v8..v15 在 AAPCS 里是 callee-saved �
 | helper 调用 clobber(§5) | 全部 caller-saved GPR + xmm | x0-x18 + v0-v7,v16-v31 |
 | arenaBase 寄存器 | 无(现算,scratch 一般用 r11) | 无(现算,scratch 一般用 x9) |
 
-**P5 的寄存器压力评估**:典型列内核 loop trace 长度 ~50-200 IR 指令、同时活值小于 20,GPR 池 9-16 就够用;如果个别 trace 撞到上限,首选 spill(§3.4)而不是扩池——扩池需要评估 shim 边界的成本。
+**P5 的寄存器压力评估**:典型列内核 loop trace 长度 ~50-200 IR 指令、同时活值小于 20,GPR 池 9-16 就够用;如果个别 trace 达到上限,首选 spill(§3.4)而不是扩池——扩池需要评估 shim 边界的成本。
 
 ---
 
@@ -453,7 +453,7 @@ P5 mmap 段调 Go 世界有两条通道(见 [../p4-method-jit/05-system-pipeline
 3. shim 调用后:emit `mov rbx, [r15+vsBaseOff]`(amd64)或 `ldr x26, [x27, #vsBaseOff]`(arm64)重新装载 vsBase。
 4. shim 调用后:需要用的活值从 spill reload 到 reg。
 
-**风险**:见 P4 backends §8.1 和 issue #38——shim 通道在嵌套 + 并发压力下已知易碎。**P5 建议:v1 完全不使用 shim 通道,所有 host 调用都走 exit-reason 通道**(与 PJ10 决定相同,见 P4 05 §4.3.1a 头注「新 op 一律走通道 (a)」)。这样 clobber 集就简化为「exit-reason 分段边界」一种。
+**风险**:见 P4 backends §8.1 和 issue #38——shim 通道在嵌套 + 并发压力下已知不稳定。**P5 建议:v1 完全不使用 shim 通道,所有 host 调用都走 exit-reason 通道**(与 PJ10 决定相同,见 P4 05 §4.3.1a 头注「新 op 一律走通道 (a)」)。这样 clobber 集就简化为「exit-reason 分段边界」一种。
 
 ### 5.3 clobber 集小结表
 
@@ -476,7 +476,7 @@ P5 mmap 段调 Go 世界有两条通道(见 [../p4-method-jit/05-system-pipeline
 
 > **guard 处,snapshot 引用的每个 IRRef 都必须「可以恢复」——即:该 IRRef 的 Assignment 在 guard 时是 {LocReg | LocSpill | LocConst | LocSunkRecipe} 之一,并且这个位置的物理状态在 guard 触发瞬间与 IR 语义一致**。
 
-这是 06 snapshot deopt 的物理前提。regalloc 的责任是**在整个逆序扫描过程中始终保持这个不变式成立**——从每个 guard 起,snapshot 引用的所有 IRRef 都视为「活到 guard 处的隐式使用」。
+这是 06 snapshot deopt 的基本前提。regalloc 的责任是**在整个逆序扫描过程中始终保持这个不变式成立**——从每个 guard 起,snapshot 引用的所有 IRRef 都视为「活到 guard 处的隐式使用」。
 
 ### 6.2 snapshot 扩展活性:逆序扫描的处理
 
@@ -632,7 +632,7 @@ fuzz 与差分主套(见 [08-testing-strategy.md](./08-testing-strategy.md))应�
 
 ## 9. 开放问题
 
-- **r12/r13/rbp(amd64)与 x19-x25(arm64)是否纳入 IR 池**(§2.1.1 / §2.2):v1 保守不使用;PT-4 spike 如果频繁撞到池空再评估。
+- **r12/r13/rbp(amd64)与 x19-x25(arm64)是否纳入 IR 池**(§2.1.1 / §2.2):v1 保守不使用;PT-4 spike 如果频繁遇到池空再评估。
 - **驱逐启发式**(§3.4):LuaJIT「lowest IRRef」在望舒 trace 形状下是否最优;或者改用「距离下次(执行方向)使用最远者」这类更精细的启发。留给 PT-4 微基准比较。
 - **spill 区大小与 GC 联动**(§3.5 末):spill 装 GCRef 时,GC 根扫描如何看见 spill——「spill live map @ safepoint」的具体表示形式与 06 §9 unsink-GC 联合评估。
 - **fused emit 何时值得**(§7.1):编译时间成为瓶颈时才启用;v1 不做。

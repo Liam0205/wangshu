@@ -42,12 +42,12 @@
 | per-item drop-in 子集 | `State.SetGlobal/GetGlobal/Call(fn,args...)` + `Register/RegisterModule` + 公共 `HostFn` 类型;`Value` 加 `kFunction` kind(外部不可构造,只能 GetGlobal 取);State pin 表 + GC 根接入(`PinRef/UnpinRef/visitExtraRefs`),globals 覆盖与 freelist 复用下旧 fn Value 仍安全可调;`Value.Release()` 显式释放 pin 槽 | 11 §7.1 / §9.1 (issue #1) | `87031c2` + `cb6e1ae` |
 | 公共 Table API | `State.NewTable` + `Value.AsTable` + `Table.Set/SetIndex/Get/GetIndex/Len`;`Value` 加 `kTable` kind(同 kFunction 经 pin 表挂 GC 根);`fromInner` 升级为 `fromInnerWithPin`,Program.Run/Call 与 State.Call 返回路径能携带 table/function 引用;支持嵌套 table 与 mixed-type list 作 Lua 表 round-trip | 11 §4.5 (issue #2) | `2b55e11` |
 | 严格沙箱模式 | `Options.HideFileLoaders bool`:从 globals 刮除 `loadfile`/`dofile`/`loadstring`/`load` 四件套(置 Nil);脚本调用 fatal `attempt to call global 'X' (a nil value)`,对位 gopher-lua 嵌入式沙箱传统;与 `AllowFileLoad=true` 同设 NewState panic fail-fast。默认行为不变(PUC 5.1.5 oracle 差分测试不退化) | 10 §12.1 LibsSafe 思路最小完成 (issue #3) | `09fdd72` |
-| context cancellation 钩子 | `State.SetContext(ctx)` / `RemoveContext`:VM 在 chargeStep 同一抢占点(回边 + 函数进帧 + TFORLOOP)检查 `ctx.Err()`,事件触发(wall-clock timeout / 上游 Cancel)中止 Run/Call 返回 Go error(pcall 可捕获);跨 goroutine 由 atomic.Pointer 保护;chargeStep 三处调用点合一(stepBudget 外层 if 拿掉,内部短路),零额外抢占点 | 11 §10 / 与 SetStepBudget 并存 (issue #4) | `27b4f2e` |
+| context cancellation 钩子 | `State.SetContext(ctx)` / `RemoveContext`:VM 在 chargeStep 同一抢占点(循环回跳(back edge) + 函数进帧 + TFORLOOP)检查 `ctx.Err()`,事件触发(wall-clock timeout / 上游 Cancel)中止 Run/Call 返回 Go error(pcall 可捕获);跨 goroutine 由 atomic.Pointer 保护;chargeStep 三处调用点合一(stepBudget 外层 if 拿掉,内部短路),零额外抢占点 | 11 §10 / 与 SetStepBudget 并存 (issue #4) | `27b4f2e` |
 | Table.ForEach 任意 key 迭代 | `func (t *Table) ForEach(fn func(key, val Value) bool) error`:转发 internal `RawNext` 循环(raw 迭代,与 stdlib next/pairs 同源,迭代序确定性);fn 返 false 提前终止;key/val 走 `fromInnerWithPin` 自动登记 pin 槽。issue #2 SetIndex 写入的对称读出能力,完整读写闭环 | 11 §4.5 (issue #5) | `4f855d2` |
-| globals baseline 状态隔离 | `State.MarkGlobalsBaseline` 拍当前 _G 字符串 key 快照、`ResetGlobalsToBaseline` 非 baseline key 清空 + baseline key 复原;baseline 复合值经 `visitExtraValues` 入 GC 根(与 pin 表是 GCRef-bearing value 契约级不变式两面:pin 管「公共 API 暴露的长持 GCRef」、baseline 管「内部状态恢复需要的长持 GCRef」);对位 gopher-lua statePool snapshotBaselineValues + resetToBaseline 模式 | 10 §12.1 hardening (issue #6) | `3d34839` |
-| CallInto 零分配边界路径 | `State.CallInto(dst []Value, fn, args...) (n int, err)`:返回值写进调用方拥有的 `dst`,标量(bool/number)整条 round-trip 0 alloc。消除旧 `Call` 的双拷贝地板成本(VM 栈→inner slice→public slice,72 B / 2 allocs/call,与脚本复杂度无关)——内部 `callOnStack` 零拷贝切 `th.stack` 活动区(runningThread 复位后 mainTh 仍是常驻根 → GC 下可达),门面层复用 `innerArgsBuf` + 写调用方 dst。`Call` 保留为独立拷贝便捷形(返回值跨下次 Call 仍可读),内部走 callOnStack 后 append 一次。⚠️ 契约:CallInto 返回值底层是复用栈,下次进入 VM 前消费完;string 仍拷 arena 字节、复合值仍经 pin 表 | boundary-dominated 嵌入优化 (issue #8) | `CallInto` |
-| step budget 按字节工作量记账 | 共享 `doConcat`(`internal/crescent/call.go`,fast path + slow-path plain fold)调 `chargeBulkWork(len)`(`internal/crescent/state.go` 新增),按 `len >> 6`(1 步 / 64 字节)把 CONCAT 拷贝 + intern 的字节工作量折算进 step budget,使预算成为**字节工作量的度量**而非仅指令条数。动机:`preempt()` 原本每指令边界只把 stepUsed 加 1,单条 CONCAT 能做与字符串长度成正比的无界工作 ⟹ `for i=1,N do glob=cat(i) end`(cat 内 `return "<~15KB 字面量>"..i`)每次迭代只扣约 2 步却拷贝约 15KB,1<<20 预算允许约 50 万次迭代、单次 prog.Run 约 2.7s wall-clock,4×run 撞 Go fuzz 10s per-input 看门狗(concat 风暴 crasher 家族 #166/#167 根因)。三层(P1 executeLoop / P3 wasm h_concat / P4 native host.Concat)全部路由同一 doConcat,单点记账覆盖所有 backend,差分对称性不破;<64B 记 0 步、1MiB concat 记约 16K 步(约 1.5% 预算),正常程序不受影响。比率 `>>6` 是按最慢的 CI runner(比本地慢约 10×)实测收紧后的值。**当时点名的下一批候选无界单指令算子(string.rep / string.format / table.concat)已于 2026-08-03 结算**,见下一行 | concat 风暴家族根因 (#166/#167,PR #168) | `88e724f` + `ab27936` |
-| 三个批量字符串构造函数按字节记账 | `internal/crescent/state.go` 把 `chargeBulkWork` 导出成 `ChargeBulkWork`,`string.rep`(`stdlib.go::stringFnRep`,`len(s)*n`)/ `string.format`(`stringlib.go::stringFnFormat`,`len(out)`)/ `table.concat`(`tablelib.go::tableFnConcat`,分隔符字节 + 各元素字节之和)各自按**产出字节数**走**同一个**计量器,于是「批量工作」在 step budget 里只有一个定义、而不是三个会互相漂移的阈值。动机:上一行点名的三个候选确实是同类风险——实测在 1<<20 step budget 内、且**完全没有触发预算**的情况下,三者各自的紧循环分别跑 **21 秒 / 20 秒 / 53 秒**,单次 `prog.Run` 就已超过 Go fuzz 的 10 秒 per-input 看门狗,而 `FuzzAutoPromote` 每个输入要跑**四次** Run(concat 风暴家族的一样的机制)。记账后 21/20/53 秒变 **46/90/70 毫秒**且预算正确触发;八种普通写法(含 1 MiB 的 `string.rep`、10000 元素的 `table.concat`)与 lua5.1 逐字节一致——1 步 / 64 字节的比率下 1 MiB 产出约记 16K 步、占 1<<20 预算约 1.5%。**`table.concat` 必须按字节而不是元素个数记账**:它的遍历本来就被表的长度界住,所以按个数看永远便宜——256 个元素听起来微不足道,而每个元素 2 KiB 时实际要 53 秒。这与 §4.9 那一类 hardening 上限(`string.rep` 的 1 GiB、`string.format` 的 width/precision)是**两件事**:那些是「宿主进程不可崩」的 fail-fast 上限,本行是预算记账,一次调用可以既在上限之内又把预算耗尽 | concat 风暴家族的下一批 (#222,commit `7119391`) | `7119391` |
+| globals baseline 状态隔离 | `State.MarkGlobalsBaseline` 拍当前 _G 字符串 key 快照、`ResetGlobalsToBaseline` 非 baseline key 清空 + baseline key 复原;baseline 复合值经 `visitExtraValues` 入 GC 根(与 pin 表是 GCRef-bearing value 必须遵守的不变式的两面:pin 管「公共 API 暴露的长持 GCRef」、baseline 管「内部状态恢复需要的长持 GCRef」);对位 gopher-lua statePool snapshotBaselineValues + resetToBaseline 模式 | 10 §12.1 hardening (issue #6) | `3d34839` |
+| CallInto 零分配边界路径 | `State.CallInto(dst []Value, fn, args...) (n int, err)`:返回值写进调用方拥有的 `dst`,标量(bool/number)整条 round-trip 0 alloc。消除旧 `Call` 的双拷贝地板成本(VM 栈→inner slice→public slice,72 B / 2 allocs/call,与脚本复杂度无关)——内部 `callOnStack` 零拷贝切 `th.stack` 活动区(runningThread 复位后 mainTh 仍是常驻根 → GC 下可达),门面层复用 `innerArgsBuf` + 写调用方 dst。`Call` 保留为独立拷贝的便捷写法(返回值跨下次 Call 仍可读),内部走 callOnStack 后 append 一次。⚠️ 约定:CallInto 返回值底层是复用栈,下次进入 VM 前消费完;string 仍拷 arena 字节、复合值仍经 pin 表 | boundary-dominated 嵌入优化 (issue #8) | `CallInto` |
+| step budget 按字节工作量记账 | 共享 `doConcat`(`internal/crescent/call.go`,fast path + slow-path plain fold)调 `chargeBulkWork(len)`(`internal/crescent/state.go` 新增),按 `len >> 6`(1 步 / 64 字节)把 CONCAT 拷贝 + intern 的字节工作量折算进 step budget,使预算成为**字节工作量的度量**而非仅指令条数。动机:`preempt()` 原本每指令边界只把 stepUsed 加 1,单条 CONCAT 能做与字符串长度成正比的无界工作 ⟹ `for i=1,N do glob=cat(i) end`(cat 内 `return "<~15KB 字面量>"..i`)每次迭代只扣约 2 步却拷贝约 15KB,1<<20 预算允许约 50 万次迭代、单次 prog.Run 约 2.7s wall-clock,4×run 触发 Go fuzz 10s per-input 看门狗(concat 风暴 crasher 家族 #166/#167 根因)。三层(P1 executeLoop / P3 wasm h_concat / P4 native host.Concat)全部路由同一 doConcat,单点记账覆盖所有 backend,差分对称性不破;<64B 记 0 步、1MiB concat 记约 16K 步(约 1.5% 预算),正常程序不受影响。比率 `>>6` 是按最慢的 CI runner(比本地慢约 10×)实测收紧后的值。**当时点名的下一批候选无界单指令算子(string.rep / string.format / table.concat)已于 2026-08-03 解决**,见下一行 | concat 风暴家族根因 (#166/#167,PR #168) | `88e724f` + `ab27936` |
+| 三个批量字符串构造函数按字节记账 | `internal/crescent/state.go` 把 `chargeBulkWork` 导出成 `ChargeBulkWork`,`string.rep`(`stdlib.go::stringFnRep`,`len(s)*n`)/ `string.format`(`stringlib.go::stringFnFormat`,`len(out)`)/ `table.concat`(`tablelib.go::tableFnConcat`,分隔符字节 + 各元素字节之和)各自按**产出字节数**走**同一个**计量器,于是「批量工作」在 step budget 里只有一个定义、而不是三个会互相漂移的阈值。动机:上一行点名的三个候选确实是同类风险——实测在 1<<20 step budget 内、且**完全没有触发预算**的情况下,三者各自的紧循环分别跑 **21 秒 / 20 秒 / 53 秒**,单次 `prog.Run` 就已超过 Go fuzz 的 10 秒 per-input 看门狗,而 `FuzzAutoPromote` 每个输入要跑**四次** Run(与 concat 风暴家族相同的机制)。记账后 21/20/53 秒变 **46/90/70 毫秒**且预算正确触发;八种普通写法(含 1 MiB 的 `string.rep`、10000 元素的 `table.concat`)与 lua5.1 逐字节一致——1 步 / 64 字节的比率下 1 MiB 产出约记 16K 步、占 1<<20 预算约 1.5%。**`table.concat` 必须按字节而不是元素个数记账**:它的遍历本来就被表的长度界住,所以按个数看永远便宜——256 个元素听起来微不足道,而每个元素 2 KiB 时实际要 53 秒。这与 §4.9 那一类 hardening 上限(`string.rep` 的 1 GiB、`string.format` 的 width/precision)是**两件事**:那些是「宿主进程不可崩」的 fail-fast 上限,本行是预算记账,一次调用可以既在上限之内又把预算耗尽 | concat 风暴家族的下一批 (#222,commit `7119391`) | `7119391` |
 
 ## P1 总验收结果(roadmap §4 / 12 §10)
 
@@ -59,7 +59,7 @@
   nbody 1.08x over gopher-lua——五项中四项反超(性能轮前 0.77x-1.17x,
   binary-trees/fannkuch/spectral-norm 曾落后)。剩余短板 fannkuch(表
   索引/交换密集):IC 命中仍付 accessor 间接层,直达偏移方案(DataOff)
-  实测因校验复杂度反噬被否决,记 P2 IC 演进输入。五脚本返回值与官方
+  实测因校验复杂度得不偿失被否决,记 P2 IC 演进输入。五脚本返回值与官方
   lua5.1 逐字节一致(TestRealWorld_OracleParity)。
 - **P1 性能轮**(同 commit 区间):closeUpvals maxOpenIdx 快路径
   (binary-trees -30%)、GC pacing 补附属块统计、根扫描免 map 分配、
@@ -79,11 +79,11 @@
   准确数字读 `test/luasuite/luasuite_test.go` 的 `stopAt` 表(**文件数与占比不在本文写死**,
   这类量写进文档就会变成陈旧计数);口径与判据见
   [12](./12-testing-difftest.md) §2.1a,反思 [[2026-08-29-conformance-coverage-and-tiered-oracle-diff]]。
-- **长稳承诺**:freelist 循环复用(22000 轮分配密集脚本 arena 稳定
+- **长时间稳定性承诺**:freelist 循环复用(22000 轮分配密集脚本 arena 稳定
   17.4KB);深递归 `stack overflow` 可恢复(LUAI_MAXCALLS=20000 等价);
   pcall 自递归 `C stack overflow`(LUAI_MAXCCALLS=200 等价)先于 Go 栈
   fatal;`-race` 下 Program 跨 16 goroutine 共享验证。
-- **`make all` 门禁**:✅ gofmt 空、golangci-lint 0 issues、`go test -race` 全绿;
+- **`make all` 检查**:✅ gofmt 空、golangci-lint 0 issues、`go test -race` 全绿;
   三平台交叉编译冒烟(386/windows-amd64/darwin-arm64)进 CI。
 
 ## 审查核销轮(外部逐提交审查 → 集中修复)
@@ -93,16 +93,16 @@
 
 - **DoS 级**:constFold 丢弃带跳转链的 eKNum(`(true and 7 or -1)+1` 一行
   Go panic 崩宿主,潜伏自 M8)→ isnumeral 同构 + Program.call recover 兜底;
-  SETLIST 批号超 9-bit 截断挂死 → 官方 C=0+裸批号路径;深嵌套/无限循环 →
-  parse 深度护栏 + 回边指令预算。
-- **静默错果**:lexer 数字非贪心(`return 1or 2` 被接受执行)→ 官方
+  SETLIST 批号超 9-bit 截断卡死 → 官方 C=0+裸批号路径;深嵌套/无限循环 →
+  parse 深度护栏 + back edge 指令预算。
+- **静默给出错误结果**:lexer 数字非贪心(`return 1or 2` 被接受执行)→ 官方
   read_numeral 贪心重写;`(a)=5` 被接受 → ParenExpr 全包;table.remove
   越界删末元素;math.max 首参吞错;Fb2Int 缺 &31 掩码。
 - **内存/资源**:arena 尺寸入口 uint32 回绕(4GiB 请求"成功"切 8 字节)→
   uint64 域检查 fail-fast;对象尺寸公式四处手写 → object.SizeOf 单源;
   hostFn 注册表无界增长(gmatch/mountArena)→ 引用计数槽回收。
 - **官方测试套驱动**(test/luasuite 移植扫出):break/repeat 漏发 CLOSE
-  (闭包捕获循环变量后 break 读脏值)、return 短路链快路径挂死、pattern
+  (闭包捕获循环变量后 break 读脏值)、return 短路链快路径卡死、pattern
   %z/未闭合捕获 panic/%q 格式、gsub/sort 走元方法、gmatch 空匹配推进、
   near 原文(txtToken)、luaO_chunkid 同构、错误措辞 luaL_checknumber
   格式、5.0 兼容别名(math.mod/foreach/gfind)。
@@ -111,12 +111,12 @@
 
 | 设计点 | 设计文档形式 | 实现形式 | 对账结论 |
 |---|---|---|---|
-| 值栈/CallInfo 位置 | 住 arena(05 §1.2),Thread 对象 word 字段 | Go slice(crescent.thread struct) | **接口等价、P3 迁移点已留**:backing 注入点(`arena.Options.NewBacking`,06 §1.1 唯一硬性前瞻义务)已就位;协程"状态冻结"语义已可工作(yield 保留 CallInfo 链)。物理搬迁是 P3 wazero memory 收养时的工作,届时 stack/cis 切 arena 视图不动 opcode 语义 |
+| 值栈/CallInfo 位置 | 住 arena(05 §1.2),Thread 对象 word 字段 | Go slice(crescent.thread struct) | **接口等价、P3 迁移点已留**:backing 注入点(`arena.Options.NewBacking`,06 §1.1 唯一硬性前瞻义务)已就位;协程"状态冻结"语义已可工作(yield 保留 CallInfo 链)。物理搬迁是 P3 wazero memory 接管时的工作,届时 stack/cis 切 arena 视图不动 opcode 语义 |
 | per-item API 栈机风格 | `PushNumber/ToNumber/Top/Pop/GetGlobalFn/CallFn` 等(11 §7.1 草图,gopher-lua 栈机) | `State.SetGlobal/GetGlobal/Call(fn,args...)` + `Register/RegisterModule`(列表风格) | **形式裁剪、能力等价**:pineapple 一类「fn 一次取出 + 循环 per-item Call」用法由 GetGlobal+Call 覆盖;Push/Pop 栈机风格未做(若未来 gopher-lua 迁移负载明确需要再补)。HostFn 收 args 中 table/function/userdata 仍映射 Nil(本期 fromInner 收紧)、host closure 从 Go 端直接 Call 仍未开 |
-| host closure 从 Go 端 Call | 任意 closure 一视同仁可被 `state.Call` 调起(11 §1.5) | internal `State.Call` 见 host closure 直接报错(`call.go:hostCheck`) | **裁口、不影响主线**:`Register` 注册的 host fn 仍由 Lua 内调用闭环工作;Go 端「state.Call(hostFn,…)」用法未开,等真有需求时补 callHost 入口的脚手架(临时栈帧) |
+| host closure 从 Go 端 Call | 任意 closure 一视同仁可被 `state.Call` 调起(11 §1.5) | internal `State.Call` 见 host closure 直接报错(`call.go:hostCheck`) | **有意裁剪、不影响主线**:`Register` 注册的 host fn 仍可由 Lua 内调用正常工作;Go 端「state.Call(hostFn,…)」用法未开,等真有需求时补 callHost 入口的脚手架(临时栈帧) |
 | 开放 upvalue 链 | 按 stackIdx 降序单链(05 §8.3) | Go map(stackIdx → uvRef)+ uvOwner(uv → thread) | 共享语义等价(同槽同 uv);降序链是值栈 arena 化的配套,一并留 P3 |
 | executeSignal 三态 | sigReturn/sigYield/sigError 枚举(08 §3.3) | 显式 *LuaError 返回 + errYieldSentinel 哨兵 | 同一冒泡通道,哨兵区分;08 §3.4 "yield↔error 对称"的最小实现 |
-| 协程对象 | Thread 对象住 arena(01 §5.6) | lightuserdata 句柄 + Go 注册表 | type() 返回 "thread" 语义一致;арena Thread 对象随值栈 arena 化一并做 |
+| 协程对象 | Thread 对象住 arena(01 §5.6) | lightuserdata 句柄 + Go 注册表 | type() 返回 "thread" 语义一致;arena Thread 对象随值栈 arena 化一并做 |
 | xpcall handler 时机 | 栈展开前调用(09) | 捕获后调用(栈已回滚) | **已知微差**:P1 不支持 handler 内 inspect 出错栈帧;traceback 仍可经 Traceback() 取 |
 | ephemeron | 键活则值无条件活(07 §13.5 P1 简化,自带) | 同设计 | 一致(设计本身即简化) |
 
@@ -131,7 +131,7 @@
   多值、break 双层块、多值 return 末位 eCall 的 A 覆盖。全部由 conformance/
   difftest 捕获后当步修复。
 - **oracle 差分巡检的 stdlib 语义修偏(2026-07-28,#192/#193/#194/#196 一轮六个根因)**:
-  四个 issue 报四处,实际修了六处,另有一处是本分支自己 45 秒 fuzz 冒烟撞出的。
+  四个 issue 报四处,实际修了六处,另有一处是本分支自己 45 秒 fuzz 冒烟跑出来的。
 
   | 根因 | 落点 | 修法要点 |
   |---|---|---|
@@ -140,7 +140,7 @@
   | `%d`/`%i` 精度 0 配值 0 丢符号(#196) | `internal/stdlib/stringlib.go` | C 转换出零个数字但仍输出 `+`/空格 flag 的符号,Go 连符号一起丢。新增 `cSignedFormat` 只在这个角落手写,与隔壁 `cUnsignedFormat` 同一手法(10 §5.2.1b) |
   | `table.insert` 的 5.1 语义本来没有边界检查(#194) | `internal/stdlib/tablelib.go` | `position out of bounds` 属 5.2+;5.1 的 `tinsert` 无检查,`e = #t+1`、`pos > e` 时抬 e(10 §7.2 真值表) |
   | `table.concat` 错误文本(#194) | `internal/stdlib/tablelib.go` | PUC 的 `addfield` 是 `"invalid value (%s) at index %d ..."`,`%s` 是元素的 `luaL_typename`;原先括号括错范围且丢了类型名 |
-  | `string.char` 的两步转换(#193) | `internal/stdlib/stringlib.go` + `internal/oracle/prelude.go` | `luaL_checkint` 是 `(int)luaL_checkinteger`;这是 C UB 且跨 arch 不一致,产品侧钉 x86-64、差分侧跳该区间(12 §4.9b,10 §5.4b) |
+  | `string.char` 的两步转换(#193) | `internal/stdlib/stringlib.go` + `internal/oracle/prelude.go` | `luaL_checkint` 是 `(int)luaL_checkinteger`;这是 C UB 且跨 arch 不一致,产品侧固定按 x86-64、差分侧跳该区间(12 §4.9b,10 §5.4b) |
   | `strtoul` 的无符号取反与溢出饱和(**无 issue,扫描发现**) | `internal/stdlib/stdlib.go` | 有定义的 C,所以对齐而非跳过。原有注释声称「已登记为 diff 豁免」但**没有任何代码实现它**,分歧一直是活的 |
   | table 库缺 `, got no value` 从句(**无 issue,fuzz 冒烟发现**) | `internal/stdlib/tablelib.go` | `luaL_typerror` 是 `"%s expected, got %s"`,`lua_typename` 把 `LUA_TNONE` 映射成 `"no value"`;显式 `nil` 与「没传」是两种情况(10 §2.4) |
 
@@ -173,7 +173,7 @@
   九种;另主动生成 296 个探针直接与 `lua5.1` 比对(`%g`/浮点 verb × 12 值 × 13 spec、
   gmatch/find/gsub × 9 pattern、assert × 7 消息、math × 9 值 × 7 函数、os.date × 16 格式、
   io.write),**289 个可比对项零真实分歧**(4 个差异是探针自身产物:地址文本、表里的
-  `tostring(nil)`、`io.write` 的副作用落到 stdout)。过程反思见
+  `tostring(nil)`、`io.write` 的副作用写到 stdout)。过程反思见
   `llmdoc/memory/reflections/2026-07-28-issue197-199-stdlib-semantics.md`。
 
 - **nightly crasher + 预存缺口对账(2026-07-28,#201/#202/#203 一轮)**:三个 issue 性质不同——#201 与 #203
@@ -210,13 +210,13 @@
 
   | 项 | 落点 | 结论与修法要点 |
   |---|---|---|
-  | 三个标准流做成真 file-handle userdata(#205) | `internal/crescent/alloc.go` + `internal/stdlib/tablelib.go` | 上一轮撤回的**根因只有一行**:原型直接调 `object.AllocUserdata`、**跳过了 collector 的 `LinkSweep`**,对象 header 里既没有颜色也没有 sweep 链,收集器根本看不见它;创建句柄后一次 `collectgarbage("collect")` 就以 arena 索引越界 panic 而句柄仍从 `io` 表可达。`alloc.go` 里每个分配器都是 `AllocX` + `LinkSweep` + `AllocCharge` **三件一起**,现在 `State.NewUserdata` 把它固定成唯一入口(06 §2.1.1,10 §10.2.1)。必须是真 userdata 而不是表,因为 PUC 报的是 `userdata`、`type()` 会露馅 |
+  | 三个标准流做成真 file-handle userdata(#205) | `internal/crescent/alloc.go` + `internal/stdlib/tablelib.go` | 上一轮撤回的**根因只有一行**:原型直接调 `object.AllocUserdata`、**跳过了 collector 的 `LinkSweep`**,对象 header 里既没有颜色也没有 sweep 链,收集器根本看不见它;创建句柄后一次 `collectgarbage("collect")` 就以 arena 索引越界 panic 而句柄仍从 `io` 表可达。`alloc.go` 里每个分配器都是 `AllocX` + `LinkSweep` + `AllocCharge` **三件一起**,现在 `State.NewUserdata` 把它固定成唯一入口(06 §2.1.1,10 §10.2.1)。必须是真 userdata 而不是表,因为 PUC 报的是 `userdata`、用表的话 `type()` 会暴露差异 |
   | 两处 VM 缺口 + `getmetatable`(#205) | `internal/crescent/meta.go` + `internal/stdlib/stdlib.go` | `metaFieldOfValue` 不认 userdata(所以 userdata 的 `__index` 从来没被查过)、`indexWithMeta` 压根没有 userdata 分支(userdata 没有裸字段,索引直接走 `__index`,无 metatable 时报 `attempt to index a userdata value`);`getmetatable` 对 userdata 原先无条件返回 nil,现在还会遵守 `__metatable`(07 §1.3) |
   | `io.read` / `io.lines` / file 方法(#205) | `internal/stdlib/tablelib.go` | `readFormats` 一份实现同时供 `io.read` 与 `file:read`;`stdinReader` 是**一个共享的** `bufio.Reader`(标准输入的位置是全局状态,两个 reader 各自持缓冲预读会静默丢字节);`"*a"` 在 EOF 返回 `""` 而不是 nil。`io.lines(filename)` **抬错**而不是静默返回空迭代器(10 §10.3) |
   | `debug` 表注册 traceback + getinfo(#205) | `internal/stdlib/tablelib.go` + `internal/crescent/errors.go` | `getinfo` 只填 P1 能诚实回答的字段(`currentline`/`source`/`short_src`/`what`/`func`),`nups`/`activelines`/`namewhat` **宁缺不假造**;`FrameInfo` 有一个 off-by-one——`getinfo` 是 host 函数、host 帧不进 `cis`,所以 level 1 是最内层 cis 帧,直接减 level 会让最常见的 `getinfo(1)` 返回 nil(09 §13.4) |
   | `string.byte` 缺 `lua_checkstack` 上限,而且消息被包了一层(#206) | `internal/stdlib/stringlib.go` | 原先**完全没有上限**,`string.byte(string.rep("a",9000),1,8000)` 返回 8000 个值而 PUC 抬错;上限与 `unpack` 一样是 `8000 - nargs`,但 `luaL_checkstack` 把调用者的文本套成 `stack overflow (%s)`,所以 PUC 输出的是 `stack overflow (string slice too long)`。第一版上限对了、文本照抄了裸串,65 个 oracle 用例里仍有 12 个分歧(10 §5.4c) |
   | 捕获累加器接上 file-handle 的 `:write` | `internal/oracle/prelude.go` | 加了 `io.stdout` 之后脚本可以经一条 harness **没有捕获**的路径输出,那段文本在**两侧**捕获里都不存在——两侧仍然一致、不报分歧,而比较已经不覆盖这条路径写出的任何东西。**这是「因为错误的原因而变绿」**(12 §3.1.1) |
-  | **#208 一行代码没改** | — | 它的 fuzz run 跑在 `cbd0512` 上,**早于**上一轮把 harness skip 降到 2^20 的 `c07ba58`;现在这个 seed 0.00 秒就跳过,作为回归防线留在 corpus 里。上一轮「该改的是被接受的区间,不是再挪一个 seed」的正向结算 |
+  | **#208 一行代码没改** | — | 它的 fuzz run 跑在 `cbd0512` 上,**早于**上一轮把 harness skip 降到 2^20 的 `c07ba58`;现在这个 seed 0.00 秒就跳过,作为回归防线留在 corpus 里。上一轮「该改的是被接受的区间,不是再挪一个 seed」的正面验证 |
 
   **仍然缺的**:`io.open` / `io.popen` / `io.tmpfile` / `f:seek` / `io.input` / `io.output` / `io.type`
   (需要真实文件,`__gc` 关文件那一环要跟 `io.open` 一起做);`debug` 的
@@ -242,7 +242,7 @@
   | 项 | 落点 | 结论与要点 |
   |---|---|---|
   | 拆分本身缺一个执行体 | `test/regression/insert_shift_cost_test.go` | 上一轮把产品上限(2^27,正确性)与 harness skip(2^20,资源)拆成两个数是对的,但**修完之后没有任何东西固定住「这两个阈值是两个数」**:入 corpus 的 seed 只能表达「这个输入不崩」,表达不了「那个决定还在」——合到 2^20 则产品开始拒绝一段 lua5.1 能完成的移位而昂贵区 seed 只是被 skip,合到 2^27 则昂贵那一段重新进并行重放而现有 seed 恰好都在跳过区(12 §4.9d) |
-  | `TestInsertShiftThresholdsStayDistinct` | 同上 | **按行为断言而不是比对字面量**:两个常数一个在 `internal/stdlib` 一个在 `internal/oracle/prelude.go`、都不导出也不同包,写死 `1<<20`/`1<<27` 只会与任一侧各自漂移。断的是区间里一个输入的行为——跨度约 2M 落在两个阈值**之间**,①必须由产品执行(`Run` 不返错)②必须便宜(耗时上界)。**两个方向都要断**:只断①时合到 2^27 仍然全绿,只断②时合到 2^20 也全绿 |
+  | `TestInsertShiftThresholdsStayDistinct` | 同上 | **按行为断言而不是比对字面量**:两个常数一个在 `internal/stdlib` 一个在 `internal/oracle/prelude.go`、都不导出也不同包,写死 `1<<20`/`1<<27` 只会与任一侧各自漂移。断言的是区间里一个输入的行为——跨度约 2M 落在两个阈值**之间**,①必须由产品执行(`Run` 不返错)②必须便宜(耗时上界)。**两个方向都要断言**:只断言①时合到 2^27 仍然全绿,只断言②时合到 2^20 也全绿 |
   | 昂贵的那一段只在「远低于索引 1」这一侧 | — | 五个 seed 同一写法,没有只确认 #209 那一个:大的**正**位置、`table.remove` 位置远低于 1、`table.remove` 位置远高于 `#t`、中等跨度实测都是 1-2 ms 且两侧对称,所以 skip 覆盖的就是**单次调用**里真实的那一类;摊到多次调用上的同一份工作是第二次审计补的缺口(见文末补记) |
   | corpus 没有按文件名模式清理 | `testdata/fuzz/FuzzOracleDiff/` | 四个 `table.insert(t,4...` 看起来同类,逐个算窄化值才发现 `4294967298 = 2^32 + 2` 模 2^32 之后是 **+2**——普通的正位置插入、根本不走 skip,其余三个都是约 -100M。按模式合并会删掉唯一的用例,最后全部保留(全量重放 0.62 秒) |
 
@@ -260,7 +260,7 @@
   | 项 | 落点 | 结论与要点 |
   |---|---|---|
   | `error()` 的 level 参数没做类型检查(#212/#213/#215) | `internal/stdlib/stdlib.go` | 原先写成「转换成功才用,失败静默保留默认值 1」,而 PUC 的 `luaL_optint` 对**显式传了一个转不动的值**是**抬错**的:`error("", 0>0)` 报空消息而 lua5.1 报 `bad argument #2 to 'error' (number expected, got boolean)`。`luaL_opt*` 是**两条**规则——缺省 / 显式 nil 取默认值,显式非法值抬错,而数字字符串仍然强制转换。差分细节:同一个错误在 Lua 函数**内部**抬出时带位置前缀,经 `pcall(error, ...)` 直接调用时不带、函数名退化成 `'?'`(09 §3.1a) |
-  | 调用的行号取了被调用表达式那一行(#214) | `internal/frontend/parse/expr.go` | `ast.CallExpr{Line: e.Pos()}` 用被调用表达式的起始行,而 PUC 记的是**参数列表**开始那一行:`(0\n)()` lua5.1 报第 2 行、望舒报第 1 行。改成在 `parseArgs` 之前取 `p.tok.Line`。**只有跨行的被调用表达式才有差别**,单行时两者相同,所以只能靠 fuzz 撞出来;第一版把 `Line` 整个挪到参数列表那一行,而它同时喂 callee 物化 / 参数物化 / CALL 三个点,于是 callee 的 GETTABLE 也被挪走(`t.x\n{1}` 把索引 nil 报到第 4 行)——审计发现。改成两个行号:`Line` 给物化、`ArgsLine` 只给 CALL。`MethodCallExpr` **同样有这个问题且早于本分支**(SELF 与 CALL 共用一行,`t:nope\n{}` 报第 2 行而非第 3 行),一并修好(09 §3.5.1) |
+  | 调用的行号取了被调用表达式那一行(#214) | `internal/frontend/parse/expr.go` | `ast.CallExpr{Line: e.Pos()}` 用被调用表达式的起始行,而 PUC 记的是**参数列表**开始那一行:`(0\n)()` lua5.1 报第 2 行、望舒报第 1 行。改成在 `parseArgs` 之前取 `p.tok.Line`。**只有跨行的被调用表达式才有差别**,单行时两者相同,所以只能靠 fuzz 发现;第一版把 `Line` 整个挪到参数列表那一行,而它同时喂 callee 物化 / 参数物化 / CALL 三个点,于是 callee 的 GETTABLE 也被挪走(`t.x\n{1}` 把索引 nil 报到第 4 行)——审计发现。改成两个行号:`Line` 给物化、`ArgsLine` 只给 CALL。`MethodCallExpr` **同样有这个问题且早于本分支**(SELF 与 CALL 共用一行,`t:nope\n{}` 报第 2 行而非第 3 行),一并修好(09 §3.5.1) |
   | `string.gsub` 的 repl 类型是惰性校验的(#216) | `internal/stdlib/stringlib.go` | 不是少了一个检查,是**检查放错了位置**:类型判断写在替换循环**里面**,而第 4 个参数把循环次数压成 0,于是循环一次都没跑、非法参数从来没被看到,`gsub("", "", nil, .0)` 成功返回而 lua5.1 抬 `bad argument #3`。PUC 是在循环**之前**用 `luaL_argcheck(tr)` 校验的。**是第 4 个参数让这条路径可达的**(10 §6.5.1) |
   | `math.mod` 不是产品缺陷,是 harness 的**别名漏网**(#217/#219) | `internal/oracle/prelude.go` | `mathFn2` 报第一个缺失参数是**刻意决定**:两个官方构建互相不一致(x86-64 报 #2、arm64 报 #1,C 不规定实参求值顺序),没有可对齐的对象。但 `__wrapArgOrder` 只包了 `math.fmod`,没包它的 `LUA_COMPAT_MOD` 别名 `math.mod`(同一个 C 函数),于是同一写法被开成**两个** issue;`math.atan2` 也从来没被包过。现在按「math 表里所有取两个数的入口」全部包上(12 §4.9e,10 §8.6) |
   | #218 不是缺陷,是**重 workload 进了 corpus** | `test/regression/p4_hot_loop_promote_test.go` | 一亿次迭代、既不崩也不分歧,只是 p4 corpus 里最重的一个 seed(1.8 秒,其余都在 0.3 秒以内,约 6 倍),而 coordinator 并行重放整个 corpus。按 triage guide 走显式回归测试。**第一版做错了**:只抄了脚本、没抄 harness 的 `SetStepBudget(1 << 20)`,跑到循环结束耗 **87 秒**(harness 的 50 倍)——那 1.8 秒不是一亿次迭代的代价,是一百万步预算的代价。镜像 budget 与 arena cap 之后是 1.82 秒。按 guide 规定没有自建 in-test deadline(失败模式是「永不返回」,交给包级 `go test -timeout`) |
@@ -271,7 +271,7 @@
   成本档不是缺陷档 / 豁免判据必须覆盖别名 / 参照实现在循环之前做的校验不能挪进循环 / 把 seed 转成回归
   测试时要连 harness 的限制一起抄)。
 
-- **concat 风暴家族点名的三个候选算子结算(2026-08-03,#221 / #222 一轮)**:#221 **过期**——seed 是
+- **concat 风暴家族点名的三个候选算子处理完(2026-08-03,#221 / #222 一轮)**:#221 **过期**——seed 是
   `print(pcall(math.mod))`,正是上一轮给 `__wrapArgOrder` 补上 `math.mod` 别名之后修掉的那个,它的 run
   跑在 `947fbda` 上、早于 `ac21b91`;但仍按上一轮的教训在当前 HEAD 上实际重放确认 PASS,一行代码没改。
   #222 是真的,而且是这个家族(#123–#167)的下一批:seed 是一个 777777776 次迭代的拼接循环,target
@@ -279,7 +279,7 @@
 
   | 项 | 落点 | 结论与要点 |
   |---|---|---|
-  | 死因不是「seed 太重」也不是内存 | — | 两条都被实测否掉:seed 本地重放只要 **0.77 秒**、在自己 corpus 里只是**第三重**的(1.22s / 1.21s / 0.77s),两个更重的早该先死;单 seed 峰值 RSS 只有 **106 MB**,而 CI 用的是 `GOMEMLIMIT=512MiB`(纯软限制),整个 corpus 并行重放峰值 525 MB。**定性靠的是读 `llmdoc/guides/unreproducible-crasher-triage.md` 里这个家族自己的结论**:#166 那轮已经查清死因是 **CPU wall-clock 撞 Go fuzz 的 10 秒 per-input 看门狗**、不是内存,而那一节还把剩下的候选按名字列了出来 |
+  | 死因不是「seed 太重」也不是内存 | — | 两条都被实测否掉:seed 本地重放只要 **0.77 秒**、在自己 corpus 里只是**第三重**的(1.22s / 1.21s / 0.77s),两个更重的早该先死;单 seed 峰值 RSS 只有 **106 MB**,而 CI 用的是 `GOMEMLIMIT=512MiB`(纯软限制),整个 corpus 并行重放峰值 525 MB。**定性靠的是读 `llmdoc/guides/unreproducible-crasher-triage.md` 里这个家族自己的结论**:#166 那轮已经查清死因是 **CPU wall-clock 触发 Go fuzz 的 10 秒 per-input 看门狗**、不是内存,而那一节还把剩下的候选按名字列了出来 |
   | 三个候选算子确实是同类风险 | `internal/stdlib/{stdlib,stringlib,tablelib}.go` | 在 1<<20 step budget 内、**并且完全没有触发预算**的情况下,`string.rep` / `string.format` / `table.concat` 各自的紧循环分别跑 **21 秒 / 20 秒 / 53 秒**——单次 `prog.Run` 就已超过看门狗,而 `FuzzAutoPromote` 每个输入要跑**四次** Run |
   | 三者走**同一个**计量器 | `internal/crescent/state.go::ChargeBulkWork` | `chargeBulkWork` 导出后三个函数各自按**产出字节数**记账,于是「批量工作」在预算里只有一个定义;各自定一个阈值的话它们迟早互相漂移,而**哪个先触发**会变得难以预测,并且预算本身是可加的量、多个阈值表达不了「几种批量操作叠加起来超了」。21/20/53 秒变 **46/90/70 毫秒**且预算正确触发 |
   | `table.concat` 按**字节**而不是元素个数 | `tablelib.go::tableFnConcat` | 它的遍历本来就被表的长度界住,所以按元素个数看永远便宜——**256 个元素**听起来微不足道,而每个元素 2 KiB 时实际要 **53 秒**。代价是拼出来的字节数,记账就要读那个量 |
@@ -301,16 +301,16 @@
   | 项 | 落点 | 结论与要点 |
   |---|---|---|
   | 「已被上一轮修好」这个归因是错的 | — | 两个 run 的 headSha 都是 `093f7d1`、早于 #222 那一轮的合并,按前几轮的流程就该判第一档结案。这一轮多做了一步:**把 seed 也拿到 `093f7d1` 上跑**,结果它们在**那里也已经被界住**——所以 #222 那一轮不是修好它们的原因,「过期、已修复」这个结论不成立;run 时间确实早于合并,但那个事实与这两个 issue 为什么被开出来无关 |
-  | 真正的问题是 harness 的**余量** | `internal/fuzzbudget` / `fuzz_auto_test.go` / `fuzz_p4_test.go` | `1<<20` 在 1 步 / 64 字节下允许约 **64 MiB** 的 concat,本地每个 fuzz 子测试 **0.7–1.3 秒**;而 **CI 运行器比本地慢约 10 倍**——这个倍率 `internal/crescent/state.go` 的 `chargeBulkWork` 注释里早就写着(`>>6` 那个比率本身就是按最慢的 CI runner 收紧出来的)。最慢的家族 seed 投射到 CI 是 **12–13 秒**对 **10 秒**看门狗:六个 seed **两个已经超过**、四个余量不到 **1.4 倍**。机制是日志印证的而非推断:nightly 日志里就是 `panic: deadlocked` |
+  | 真正的问题是 harness 的**余量** | `internal/fuzzbudget` / `fuzz_auto_test.go` / `fuzz_p4_test.go` | `1<<20` 在 1 步 / 64 字节下允许约 **64 MiB** 的 concat,本地每个 fuzz 子测试 **0.7–1.3 秒**;而 **CI 运行器比本地慢约 10 倍**——这个倍率 `internal/crescent/state.go` 的 `chargeBulkWork` 注释里早就写着(`>>6` 那个比率本身就是按最慢的 CI runner 收紧出来的)。最慢的家族 seed 推算到 CI 是 **12–13 秒**对 **10 秒**看门狗:六个 seed **两个已经超过**、四个余量不到 **1.4 倍**。机制是日志印证的而非推断:nightly 日志里就是 `panic: deadlocked` |
   | 修法:四处 `SetStepBudget` 共用一个常量,终值 `1<<16` | `internal/fuzzbudget.Steps` | build tag 与消费方一致(`(wangshu_p3 || wangshu_p4) && wangshu_profile`)——第一版没加 tag 被 golangci-lint 判 unused,因为消费方都在 tag 之后、默认构建看不见。corpus 全量重放 5.5 秒 → **0.85 秒** |
-  | **第一版的 `1<<19` 被审计推翻:上限要按「计费相同时最贵的写法」定** | `internal/fuzzbudget.Steps` | 减半到 `1<<19` 只修好了 corpus 里那六个 seed(它们确实都拿到 ≥1.8 倍余量),而**邻域仍在看门狗之上**——按四次 Run × 慢 10 倍投射,`1<<19` 下 `out=out.."x"` 循环 **14 秒**(余量 0.70 倍)、`t[tostring(i)]=i` 循环 **18 秒**(0.56 倍)、`s:gsub("%a","x")` 循环 **41 秒**(0.24 倍,是看门狗的四倍、比被修的 seed 还糟)。根因:`gsub` 每次调用按大约两倍主串计费,实际工作远多于等额计费的 concat——**等额计费不等于等额 wall-clock**。`1<<16` 让最坏那条降到 **5.2 秒**、余量 **1.93 倍**,是第一个满足数量级判据的值 |
+  | **第一版的 `1<<19` 被审计推翻:上限要按「计费相同时最贵的写法」定** | `internal/fuzzbudget.Steps` | 减半到 `1<<19` 只修好了 corpus 里那六个 seed(它们确实都拿到 ≥1.8 倍余量),而**邻域仍在看门狗之上**——按四次 Run × 慢 10 倍推算,`1<<19` 下 `out=out.."x"` 循环 **14 秒**(余量 0.70 倍)、`t[tostring(i)]=i` 循环 **18 秒**(0.56 倍)、`s:gsub("%a","x")` 循环 **41 秒**(0.24 倍,是看门狗的四倍、比被修的 seed 还糟)。根因:`gsub` 每次调用按大约两倍主串计费,实际工作远多于等额计费的 concat——**等额计费不等于等额 wall-clock**。`1<<16` 让最坏那条降到 **5.2 秒**、余量 **1.93 倍**,是第一个满足数量级判据的值 |
   | 覆盖不损失这次是**实测**的,不是断言 | — | harness 自己的 seed corpus 在 `1<<20` / `1<<19` / `1<<16` 三个预算下 `PromotionCount` **完全相同**——那些写法在几次调用之后就升层,从不接近任何一个上限。**注入一个真实的 P1-vs-P4 分歧**(把升层侧的返回值截断)确认 `1<<16` 下 harness 仍然 FAIL、撤掉注入后通过;90 秒引导式 fuzz 干净 |
   | 据实记下变窄的一处(收窄而不是空洞) | `test/regression/issue144_regression_test.go` | `1<<20` 时 corpus 里有两个 seed 会把 arena 推到上限,`1<<16` 时没有,所以那条 arena-cap 错误分支在这里覆盖到的写法变少了。issue144 的回归直接覆盖 arena cap;而且实测两个预算下 step budget 都**先于** arena cap 触发,所以这条路径本来就不是靠 step budget 到达的 |
-  | 回归测试原先并不防它声称防的东西 | `test/regression/issue224_watchdog_margin_test.go` | 它在 harness 自己的预算设定下量代价(不是量 corpus 的耗时),但审计实测把预算调回 `1<<20`(正是那个回归)时它**照旧通过**:上界写了 1 秒而它自己的注释里推导出的是 **250 毫秒**(`10 秒 / 10 倍 / 4 次 Run`),而且它拿「四次 Run 的投射」比「一次 Run 的测量」;只用被开成 issue 的那两个 seed 也分辨不出 `1<<16` 与 `1<<19`。现在上界改成推导出的 250 毫秒、用例表加进上面那三个真正约束预算的写法,能同时抓住 `1<<19` 与 `1<<20`,**已用变异实测确认** |
+  | 回归测试原先并不防它声称防的东西 | `test/regression/issue224_watchdog_margin_test.go` | 它在 harness 自己的预算设定下量代价(不是量 corpus 的耗时),但审计实测把预算调回 `1<<20`(正是那个回归)时它**照旧通过**:上界写了 1 秒而它自己的注释里推导出的是 **250 毫秒**(`10 秒 / 10 倍 / 4 次 Run`),而且它拿「四次 Run 的推算」比「一次 Run 的测量」;只用被开成 issue 的那两个 seed 也分辨不出 `1<<16` 与 `1<<19`。现在上界改成推导出的 250 毫秒、用例表加进上面那三个真正约束预算的写法,能同时抓住 `1<<19` 与 `1<<20`,**已用变异实测确认** |
 
   **验证规模**:两个 seed 入 `testdata/fuzz/FuzzAutoPromote/6ed94d7f9fe6248a` 与 `841bbefecf338b0d`;
   五种构建组合 vet 干净;3 个 commit(`4c89799` 第一版减半、`f844bf1` 文档、`d3928f5` 审计之后改按最贵
-  写法定值)。判据落点 [12](./12-testing-difftest.md) §4.9a2(一个预算「界住」还不够,它允许的量必须与
+  写法定值)。判据写在 [12](./12-testing-difftest.md) §4.9a2(一个预算「界住」还不够,它允许的量必须与
   外部看门狗差一个数量级;「可达的最坏」要按同一计费额度下最贵的写法量)与
   [../p4-method-jit/08-testing-strategy.md](../p4-method-jit/08-testing-strategy.md) §3.4(P4 fuzz
   harness 的 step budget 设定)。过程反思见
@@ -350,7 +350,7 @@
   | 项 | 落点 | 结论与要点 |
   |---|---|---|
   | 地址逃过了归一化(#232) | `internal/oracle/compare.go` | `addrRe` 用 `\b` 锚定类型名,而 `\b` 的 word 字符**包含数字和下划线**:`io.write` 不带换行,于是 `io.write(0)print(print)` 的输出是 `0function: 0x...`,`0` 与 `function` 之间没有 `\b`,地址整段逃过归一化——**凡是这种写法都必然分歧**。锚点本身有正当理由(防止把脚本自己的 hex 归一掉),坏在写法。改成「不是字母」,替换随之改成只重写匹配内部的 `0x...` 再把前导字符放回去(12 §4.3a) |
-  | 脚本**测量**地址的长度,归一化到不了(#233) | `internal/oracle/prelude.go` | `t={0}print(#tostring(t))`:PUC 21(`%p` 在本平台给 12 位)、望舒 17(`0x%08x` 给 8 位),**长度在归一化之前就分歧**,`NormalizeOutput` 拿到的字节流里只有 `21` 和 `17`——与 `string.len(0/0)` 4 对 3 完全一样的机制。修在**渲染处**:prelude 包一层 `tostring` 把 PUC 自己的地址渲染成望舒的 8 位,与 NaN 符号位是同一个选择;望舒侧的宽度成为契约。**归一化管值、渲染处管宽度**(12 §4.3a) |
+  | 脚本**测量**地址的长度,归一化到不了(#233) | `internal/oracle/prelude.go` | `t={0}print(#tostring(t))`:PUC 21(`%p` 在本平台给 12 位)、望舒 17(`0x%08x` 给 8 位),**长度在归一化之前就分歧**,`NormalizeOutput` 拿到的字节流里只有 `21` 和 `17`——与 `string.len(0/0)` 4 对 3 完全一样的机制。修在**渲染处**:prelude 包一层 `tostring` 把 PUC 自己的地址渲染成望舒的 8 位,与 NaN 符号位是同一个选择;望舒侧的宽度成为约定。**归一化管值、渲染处管宽度**(12 §4.3a) |
   | gsub 替换串里的 `%` 转义(#234) | `internal/stdlib/stringlib.go::st2gsubRepl` | PUC `add_s` 的 `%` 分支有三个出口加一个边界情况,望舒只对了两个:① **末尾的裸 `%`** 让它 `i++` 然后越过长度读 `news[i]`,读到 `lua_tolstring` 保证的 NUL、每次匹配吐一个 NUL 字节(`gsub("aaa","a","x%")` 是 `x\0x\0x\0`,hexdump 实测),望舒要求 `i+1 < len(rb)` 把它当成了字面量;② `%` 后**任何非数字**原样吐出,`gsub("a","a","%z")` 是 `"z"` 而不是报错——**这一半是既有缺陷**,在 base 上同样分歧、只是没有 issue 记它(10 §6.5.2) |
   | 「照抄一个越界读」的判据 | — | 这不是 C 的 UB(`lua_tolstring` 保证那里有 NUL,读它有定义)也不是参照实现自相矛盾,而是**有定义但可疑**;决定照抄的是**口径**——oracle 逐字节比较,不照抄的话凡是以 `%` 结尾的替换串就永远不可比,而且那个差的字节还会流进长度、比较、表键。注释里写清了这是怪癖不是规则 |
 
@@ -362,7 +362,7 @@
   `internal/oracle/normalize_addr_test.go::TestNormalizeAddrPrefixValidation`(六条必须归一 + 四条必须
   原样,**两侧都要有**:只写前半时「把锚点整个删掉」也会通过)、
   `fuzz_234_test.go::TestGsubReplacementEscapeMatchesPUC`(四条改了行为 + 三条必须不变:`%%`、`%1`、越界
-  下标仍抬错)、`fuzz_234_test.go::TestAddressLengthIsComparable`(望舒侧的宽度契约:`#tostring({})` 是
+  下标仍抬错)、`fuzz_234_test.go::TestAddressLengthIsComparable`(望舒侧的宽度约定:`#tostring({})` 是
   17、`#tostring(print)` 是 20)。三个 seed 入 `testdata/fuzz/FuzzOracleDiff/`。过程反思见
   `llmdoc/memory/reflections/2026-08-05-issue232-234-address-width-and-gsub-escape.md`(五条教训:一批
   crasher 里同一个根因可能以不同的**可见度**出现,不要按症状分成两件事 / 归一化只能救「被打印出来」的
@@ -378,14 +378,14 @@
   |---|---|---|
   | **诊断先判错了**(头条) | — | 失败步骤报 `exit code 28`,当天早上的巡检把它读成 **ENOSPC**(磁盘写满,errno 28)并据此提了「在 oracle 源码构建前腾空间或缓存构建产物」的建议。**28 是 `curl` 的 `CURLE_OPERATION_TIMEDOUT`**:那一步是 curl,shell 报的退出码来自 **curl 自己的退出码表**、不是 errno 表,两张表恰好在 28 这个数字上都有条目而且都在讲一种资源类失败(空间 / 时间),所以错的解释读起来完全自然。判据:**看到一个数字退出码,先定位是哪个命令退出的,再查那个命令自己的表** |
   | 两条免费的反证一开始就在日志里 | — | ① `apt` 在 16:55:03 成功结束,然后**沉默 2 分 15 秒**才报 exit 28——磁盘写满是**立刻**失败的,会先卡的只有等待类失败;② `no space left` / `ENOSPC` / `disk full` 在两个 run 的日志里出现次数都是 **0**。判据:**分类一个 CI 失败时先把时间戳减一遍**,时间形式往往比错误码更能定类,而且它在日志里免费 |
-  | 真根因 | `.github/workflows/nightly-diff-fuzz.yml` 等四处 | 裸的 `curl -sLO https://www.lua.org/ftp/lua-5.1.5.tar.gz`,**没有 `--max-time`、没有 `--connect-timeout`、没有 retry**,上游一次可达性抖动就挂到 shell 放弃 |
+  | 真根因 | `.github/workflows/nightly-diff-fuzz.yml` 等四处 | 裸的 `curl -sLO https://www.lua.org/ftp/lua-5.1.5.tar.gz`,**没有 `--max-time`、没有 `--connect-timeout`、没有 retry**,上游一次可达性抖动就一直卡到 shell 放弃 |
   | **后果比「一次红」更糟** | 同上 | 这一步失败让后面三个差分 fuzz 步骤被 **skip**(step 5/7/9 是 `skipped`),那一轮报 failure 而**实际什么都没测**、探索预算为零——而红色的默认含义是「跑了并且发现了问题」,两者在 Actions 页面上是同一个红叉(12 §8.1) |
   | 一次抖动开了六个 issue | 同上,triage 段 | infra issue 标题嵌了 `${{ matrix.variant }}`,而 **infra 失败天然横跨所有 tier**(divergence 失败才天然属于某个 tier),p1/p3/p4 三个标题让按标题去重看不出它们是同一件事:**两次抖动 × 三个 tier = 六个**。改成按 `${{ github.run_id }}`(三个 job 共享)去重,第二三个 job 改为评论,tier 挪进正文——**去重键与信息量是两件事**([engineering](../engineering.md) §3.2) |
-  | 取包收口 | `scripts/fetch-lua-tarball.sh`(新增) | 四处 call site(`ci.yml` ×2、`bench-acceptance.yml` ×1、`nightly-diff-fuzz.yml` ×1)统一改用它。四个性质:限时 / 重试(`--retry` 才是关键 —— 它的默认值是 0,所以旧的裸 curl 根本不重试。`--retry-all-errors` 只是额外放宽,**不是**超时重试的前提:curl 手册写的是「transient error means **either: a timeout**, an FTP 4xx ... 」,所以单靠 `--retry` 就能覆盖 #236–#241 那次失败。此前把它写成前提是错的,记在这里因为那曾是保留这个 flag 的唯一理由。|
-  | 自测本身不能是新的抖动源 | `scripts/test-fetch-lua-tarball.sh`(新增) | 挂进 `make test-scripts`(#179 定下的门禁纪律),五个用例**全部离线**(用 `file://` origin 冒充上游)——一个「防住外部抖动」的测试如果自己依赖上游,它加的是噪声不是防线。每个用例都用变异实测过 |
+  | 取包统一处理 | `scripts/fetch-lua-tarball.sh`(新增) | 四处 call site(`ci.yml` ×2、`bench-acceptance.yml` ×1、`nightly-diff-fuzz.yml` ×1)统一改用它。四个性质:限时 / 重试(`--retry` 才是关键 —— 它的默认值是 0,所以旧的裸 curl 根本不重试。`--retry-all-errors` 只是额外放宽,**不是**超时重试的前提:curl 手册写的是「transient error means **either: a timeout**, an FTP 4xx ... 」,所以单靠 `--retry` 就能覆盖 #236–#241 那次失败。此前把它写成前提是错的,记在这里因为那曾是保留这个 flag 的唯一理由。|
+  | 自测本身不能是新的抖动源 | `scripts/test-fetch-lua-tarball.sh`(新增) | 挂进 `make test-scripts`(#179 定下的检查纪律),五个用例**全部离线**(用 `file://` origin 冒充上游)——一个「防住外部抖动」的测试如果自己依赖上游,它加的是噪声不是防线。每个用例都用变异实测过 |
   | 那个自测第一版假绿 | 同上 | 「curl 调用带限时标志」这一条**第一版 grep 整个文件**:把 `--max-time` 从调用里删掉后照旧通过,因为那个词在脚本顶部的注释里还在(注释正好在解释「bounded: `--connect-timeout` and `--max-time`」)。现在只截取那条 curl 调用再检查。判据:**检查代码属性的测试要作用在代码本身上,一个注释就能满足的测试没有在测代码** |
 
-  **已知缺口(如实记)**:取包这一环收口了,去重也修好了,但**「本轮未执行任何差分」这句话仍然没有
+  **已知缺口(如实记)**:取包这一环已统一处理好,去重也修好了,但**「本轮未执行任何差分」这句话仍然没有
   出现在任何地方** —— infra issue 的 body 说的是失败原因的类别,不是「这一轮的探索预算为零」。
   记入 [engineering](../engineering.md) §7 文档缺口。
 
@@ -404,11 +404,11 @@
   | **崩的是 oracle,不是望舒**(头条) | — | 重放拿到 **SIGSEGV 且栈迹在 cgo 里**(`_Cfunc_wangshu_oracle_exec`),拿真的 `lua5.1` 二进制直接试同样 **dumped core**,而望舒对同一输入抬 `too many results to unpack`、行为正确、从不崩。判据:差分 harness 报 crash 时先读**栈迹属于哪一侧**再决定往哪边查——「fuzz 报了 crash」不等于「被测实现有 bug」,参照实现也会崩而且更容易被误判成我们的问题(拿真参照实现二进制跑一次最便宜、单独就能定性) |
     | 机制 | `internal/oracle/_lua515/src/lbaselib.c`(`luaB_unpack`)+ `lapi.c`(`lua_checkstack`) | `i`/`e` 经 `luaL_optint`/`luaL_checkint` 窄化成 **int**,`n = e - i + 1` 的减法是**有符号溢出 UB**;gcc `-O2` 把 `n <= 0` 检查当不可达删掉,`lua_checkstack` 收到负 `size` 而拒绝条件对负值两个都为假 → 段错误。**-O0 下同一份源码干净抬错,崩溃依赖优化等级**(此前记的「回绕成正的巨大值绕过检查」是错的:`i <= e` 时回绕恒 `<= 0`) |
   | 修法:差分侧跳过 | `internal/oracle/prelude.go` | prelude 包一层 `unpack`,索引落在崩溃窗口时抬 `LimitSentinel`,与其余 PUC UB range 一致(**会死的 oracle 不能当参照**,12 §4.9b 第三格)。望舒侧**零改动**——它本来就正确 |
-  | 望舒侧的行为契约 | `fuzz_244_test.go::TestUnpackAtInt32BoundaryDoesNotCrash` | 边界两侧 + `INT_MAX` 起点 + 小负起点 + 显式区间 + 整表 unpack:该抬干净错的抬、该给正确答案的给,从不崩(10 §4.5) |
-  | **守卫经六轮审计收口:区间读 `i` 与 `e`、窄化走 `__ckint0`、助手在脚本前捕获、非表首参不跳;用例见 `internal/oracle/unpack_guard_test.go`(13 skip / 12 compare,两向变异确认)。**补上 `e` 后规则完全可推导:**`i32 <= e32 且 (e32 - i32 + 1) > INT_MAX`**,10 组「先预测再实测」全部吻合。**太窄**:`A(unpack({1,2,3},-2147483646))` 经真实 `FuzzOracleDiff` 实测让**整个测试二进制 SIGSEGV**(家族还活着);**太宽**:`unpack({1,2,3},4294967297)` 窄化成 `i32 = 1`、两侧都返回 3,却拿到 sentinel 被 **SKIP**。口径见 12 **§4.9f**,待修 |
+  | 望舒侧的行为约定 | `fuzz_244_test.go::TestUnpackAtInt32BoundaryDoesNotCrash` | 边界两侧 + `INT_MAX` 起点 + 小负起点 + 显式区间 + 整表 unpack:该抬干净错的抬、该给正确答案的给,从不崩(10 §4.5) |
+  | **守卫经六轮审计后完成:区间读 `i` 与 `e`、窄化走 `__ckint0`、助手在脚本前捕获、非表首参不跳;用例见 `internal/oracle/unpack_guard_test.go`(13 skip / 12 compare,两向变异确认)。**补上 `e` 后规则完全可推导:**`i32 <= e32 且 (e32 - i32 + 1) > INT_MAX`**,10 组「先预测再实测」全部吻合。**太窄**:`A(unpack({1,2,3},-2147483646))` 经真实 `FuzzOracleDiff` 实测让**整个测试二进制 SIGSEGV**(这个问题家族仍未消失);**太宽**:`unpack({1,2,3},4294967297)` 窄化成 `i32 = 1`、两侧都返回 3,却拿到 sentinel 被 **SKIP**。口径见 12 **§4.9f**,待修 |
 
   **2026-08-11 那一轮本身是文档轮 + 复核轮,没有改任何代码或测试**;上面「已知缺口」那一行是复核的产出。
-  判据落点 [12](./12-testing-difftest.md) §4.9b 第三格(UB 且参照实现直接崩)与 §4.9f(一条 skip 的
+  判据写在 [12](./12-testing-difftest.md) §4.9b 第三格(UB 且参照实现直接崩)与 §4.9f(一条 skip 的
   **区间**要按机制定,不能按被报的那个写法实测出来)、[10](./10-stdlib.md) §4.5(`unpack` 的索引语义)、
   [engineering](../engineering.md) §3.2 与 §7。过程反思见
   `llmdoc/memory/reflections/2026-08-11-issue244-oracle-segv-unpack-int32.md`(三条教训:差分 harness 报的
@@ -425,22 +425,22 @@
   | 项 | 落点 | 结论与要点 |
   |---|---|---|
   | **问题一:作用域错**(头条 A) | 装 oracle 步骤 | #236–#241 那轮给取包脚本的 curl 加了限时,但同一步里 `apt-get`/`make`/`check-oracle.sh` 三条命令仍然无界——**只框住了当时报错的那一条命令,不是那一整步**。08-18 那轮 p1 腿在这一步卡了 **5 小时 50 分**被 job 超时掐掉,rolling-seed 与 auto-mode 被 skip、两个 go-fuzz 步骤根本没启动。普查后发现无界的步骤是**三个不是一个**(装 oracle、upload logs、triage) |
-  | 修法 | 三个步骤各加 step 级 `timeout-minutes`(12/15/10) | 选 step 级而不是逐条包 timeout,是因为它对**以后新加的命令同样生效**——这正是这次栽的地方 |
-  | **问题二:量错了成本中心**(头条 B) | native go-fuzz 步骤 | 连续五轮建议把 auto-mode 从 150m 压到 90m,**实测这个建议省不下任何时间**——auto-mode 只跑 2 分钟,150m 是从没接近过的挂死上限。真正的成本中心是 native go-fuzz 步骤,**312 分钟的 job 里它占 270 分钟(87%)**,而这一步从没被量过 |
+  | 修法 | 三个步骤各加 step 级 `timeout-minutes`(12/15/10) | 选 step 级而不是逐条包 timeout,是因为它对**以后新加的命令同样生效**——这正是这次出问题的地方 |
+  | **问题二:量错了成本中心**(头条 B) | native go-fuzz 步骤 | 连续五轮建议把 auto-mode 从 150m 压到 90m,**实测这个建议省不下任何时间**——auto-mode 只跑 2 分钟,150m 是从没接近过的防卡死超时上限。真正的成本中心是 native go-fuzz 步骤,**312 分钟的 job 里它占 270 分钟(87%)**,而这一步从没被量过 |
   | 270 分钟的原因 | `scripts/go-fuzz.sh` + workflow input description | `go-fuzz.sh` 按**源码扫描**发现目标、每个目标跑满 fuzztime;无 tag 可见目标是 **6 个**不是 description 里写着的「4 targets」——root 包 `FuzzCompileRun`/`FuzzAutoPromote`/`FuzzP4ForceAllPromote` + `internal/frontend/lex`/`internal/frontend/parse`/`internal/stdlib` 各一个(`FuzzOracleDiff` 被 `wangshu_oracle_cgo` gate、在自己的步骤里跑,不算在内)。`6 × 45m = 270(审计实测补正:各层实际跑到的目标数并不相同 —— p1 4 个、p3 5 个、p4 6 个 target-run,所以 45m 下三条腿分别约 180 / 225 / 270 分钟,p4 恰好 6 × 45;35m 之后约 140 / 175 / 210 分钟。另外 `go-fuzz.sh` 对 golang/go#75804 的假性 deadline 会把该目标重跑一次,于是最坏情形要再加一个 fuzztime —— 审计抓到一次 45m 下真实跑到 315 分钟的 run,所以 go-fuzz 那一步的 step 超时按「最坏腿 + 一次重试 + 余量」取 300 分钟,而不是按中位数取。)`,与实测吻合——这个过时的「4」正是这一步成本被长期低估的原因 |
 
 
 **审计逐轮补正**(三轮各修一处定值错误,保留过程):
 
-- 审计第二轮补正两点:(1)#75804 的重试是**按目标**而不是按腿的 —— `go-fuzz.sh` 对每个发现的目标各调一次 `run_target`、各有两次尝试,跨目标没有任何上限,所以 p4 那条腿可以有两个不同目标各重试一次,得 210 + 35 + 35 = 280;而先前把 go-fuzz 那步的上限正好取成 280,等于在一次**健康**运行上就把余量吃光 ——「按一次重试取」与「按中位数取」是同一个错误往外挪了一格。现取 **320**。(2)另外三步(rolling-seed、GC-stress、auto-mode)先前只靠内层 `go test -timeout`,而 `-timeout` 只看着 `go test` 那个进程,**以后往这一步新加的命令仍然无界** —— 那正是装 oracle 那步坐了 5 小时 50 分的成因。现在每个带 `run:` 的步骤都有 step 级上限,实测总时长约 215 / 217 / 252 分钟(p1/p3/p4),对 350 的 job 上限余量 98~135 分钟。
+- 审计第二轮补正两点:(1)#75804 的重试是**按目标**而不是按腿的 —— `go-fuzz.sh` 对每个发现的目标各调一次 `run_target`、各有两次尝试,跨目标没有任何上限,所以 p4 那条腿可以有两个不同目标各重试一次,得 210 + 35 + 35 = 280;而先前把 go-fuzz 那步的上限正好取成 280,等于在一次**健康**运行上就把余量吃光 ——「按一次重试取」与「按中位数取」是同一个错误往外挪了一格。现取 **320**。(2)另外三步(rolling-seed、GC-stress、auto-mode)先前只靠内层 `go test -timeout`,而 `-timeout` 只看着 `go test` 那个进程,**以后往这一步新加的命令仍然无界** —— 那正是装 oracle 那步卡了 5 小时 50 分的成因。现在每个带 `run:` 的步骤都有 step 级上限,实测总时长约 215 / 217 / 252 分钟(p1/p3/p4),对 350 的 job 上限余量 98~135 分钟。
 
-- 审计第三轮补正:step 上限是**两侧**约束,而我前两轮都只看了一侧 —— 下界要盖过合法最坏情形(p4 两次重试 280),上界要**在 job 上限之前触发**,即小于 350 减去这一步之前已消耗的时间(约 40 分钟)。取 320 时会在约 360 分钟触发,已在 350 之后,于是这个上限**永远不会生效**,真挂死时依旧退化成「cancelled、triage 被 skip、静默丢覆盖」—— 正是这次改动要消除的结果。窗口是 280 < bound < 310,现取 **300**(实测三层分别在 338 / 340 / 340 分钟触发)。oracle-diff 那步同理:合法最坏 70 分钟、窗口上界 172,取 120。
+- 审计第三轮补正:step 上限是**两侧**约束,而我前两轮都只看了一侧 —— 下界要盖过合法最坏情形(p4 两次重试 280),上界要**在 job 上限之前触发**,即小于 350 减去这一步之前已消耗的时间(约 40 分钟)。取 320 时会在约 360 分钟触发,已在 350 之后,于是这个上限**永远不会生效**,真卡死时依旧退化成「cancelled、triage 被 skip、静默丢覆盖」—— 正是这次改动要消除的结果。窗口是 280 < bound < 310,现取 **300**(实测三层分别在 338 / 340 / 340 分钟触发)。oracle-diff 那步同理:合法最坏 70 分钟、窗口上界 172,取 120。
 
 - 还有一处值得记的自查失误:我写脚本核验「每个 step 上限都能在 job 上限之前触发」时,用子串匹配去查每步的实测耗时,而 `auto-mode rolling-seed diff` 这个名字**同时**含有 `auto-mode` 与`rolling-seed`,匹配先命中后者,于是给它记了 36 分钟而不是 2 分钟 —— 前置耗时被算成 74 而不是 40,脚本因此报「300 也不可达」。改成按前缀精确匹配后三层都可达。判据:用名字做键去查表时,先确认**没有一个名字能匹配多个键**;这类错误不会报错,只会给出一个看似严谨的错数字。  | 修法 | `gofuzztime` 45m→35m | `6 × 35m = 210` 分钟,job 约 250 分钟,余量从约 38 分钟升到约 98 分钟。**真实减少约 22% 的每轮探索量**,选它而不是砍差分步骤是因为差分步骤实际便宜(rolling-seed 36 分钟、auto-mode 2 分钟)而这一步占 87%;description 里的「4 targets」改成「6 untagged targets」 |  | 自我纠正 ①:抬到 420 不可能 | — | 连提四轮把 job `timeout-minutes` 抬到 420,而 GitHub 托管 runner 单 job 硬上限是 **360 分钟**,推荐了四轮却从没查过这个平台限制 |  | 自我纠正 ②:求和框架本身是错的 | — | 曾按「所有 step 上限之和必须低于 job 上限」算出某 leg 最坏 548 分钟、判「只能大幅压缩」;**这个框架本身是错的**——job 超时才是总预算,step 上限只是防一条卡死的命令悄悄吃掉这个预算,两者不是同一件事,不该按求和去配 |
 
-- 五条判据落 `llmdoc/guides/unreproducible-crasher-triage.md`「给一条报错的命令加超时」与「job 超时  与 step 超时」两节、`llmdoc/guides/design-claims-vs-codebase-physics.md` §3.1(优化建议先量成本  分布)与 §5(陈旧计数);过程反思见  `llmdoc/memory/reflections/2026-08-19-nightly-step-timeouts-and-budget.md`。
+- 五条判据写进 `llmdoc/guides/unreproducible-crasher-triage.md`「给一条报错的命令加超时」与「job 超时  与 step 超时」两节、`llmdoc/guides/design-claims-vs-codebase-physics.md` §3.1(优化建议先量成本  分布)与 §5(陈旧计数);过程反思见  `llmdoc/memory/reflections/2026-08-19-nightly-step-timeouts-and-budget.md`。
 
-- **索引表达式跨行时报错行号钉错,两处独立错误各修一处(2026-08-27,#248 一轮,`1693a69`)**:nightly
+- **索引表达式跨行时报错行号标错,两处独立错误各修一处(2026-08-27,#248 一轮,`1693a69`)**:nightly
   开出的 p1 `FuzzOracleDiff` crasher,seed 带协程但**最小化之后协程是噪声**——剥掉协程与 `pcall` 之后
   `print(pcall(function() return A\n.A end))` 一样分歧,关键写法是**索引运算符与对象/键之间隔着换行**
   (`A\n.x`)。版本核对干净,失败 run 的 headSha 正好就是当时的 master,当前 HEAD 重放确实复现。
@@ -458,7 +458,7 @@
   错误叠加**——改完先核对整张中间数据结构(本例是 `LineInfo`),不能只看错误消息变没变
   ([[cross-backend-semantic-fix-sweep]]「一个症状可能是同一子系统内两处独立错误叠加」节);③**最小化
   要先剥掉「看起来相关」的外壳**——seed 里的协程是噪声,逐个删外层构造、每删一次重跑,别对着 seed 的
-  原始形式找因果([[unreproducible-crasher-triage]])。落点 [09](./09-errors-pcall.md) §3.5.2、
+  原始形式找因果([[unreproducible-crasher-triage]])。写进 [09](./09-errors-pcall.md) §3.5.2、
   [04](./04-frontend-parser-codegen.md) §5.2.1。过程反思见
   `llmdoc/memory/reflections/2026-08-27-issue248-index-line-across-newline.md`。
 
@@ -473,7 +473,7 @@
   | #248 的「运算符行」口径是近似 | `internal/oracle/_lua515/src/lcode.c` | `luaK_codeABC`/`luaK_codeABx` **不接收行号参数**,一律用 `fs->ls->lastline`;GETTABLE 记的是**它被 discharge 那一刻**的行。判别输入 `local v = A.x\n\n+1` **完全没有括号**、运算符在行 1,luac 记行 3(`+` 才是 discharge 点)——这排除了「括号特例」与「运算符行」两种模型 |
   | 修法 | `expdesc.go` / `codegen.go` / `stmt.go` / `parse/expr.go` / `parse/stmt.go` / `ast/ast.go` | 删 `expDesc.opLine`,改由调用方传 lastline 语义的行;`parseExprListEnds` 按元素返回物化行(表达式列表每个元素在**它后面那个分隔符**被消费后 discharge:`f(A.A\n,1\n)` 给出 2 和 3),末元素由调用方按闭合 token 填。新增 `ParenExpr.EndLine` / `{Local,Assign,Return,GenFor}Stmt.ExprEndLines` / `{Call,MethodCall}Expr.ArgEndLines` / `calleeEndLine` |
   | 同族缺陷共四格 | — | ① 括号与调用参数(主 case)② 赋值右侧 + `return` + 泛型 for(`ends` 参数接线时传了 `nil`,靠自查清单查出;三处**全都**偏且偏在会 raise 的 GETTABLE 上)③ 单目标赋值快速路径(`storeVar` 用**同一个** `line` 参数同时干「物化 RHS」与「发射 store」两件事,靠 PR #253 远端评审查出,已拆成 `rhsLine` + `line`) |
-  | 泛型 for 的时机陷阱 | `parse/stmt.go` | 末元素的行必须在 `check_match(DO)` **之前**取:`GenForStmt` 节点是循环体解析完才构造的,那时 `p.lastLine` 已指向 `end`,直接用会把迭代器的 GETTABLE 推到循环之外。`for k in A.x\n do end`(GETTABLE 归 1)与 `for k in A.x\n, 1 do end`(归 2)这一对钉住它 |
+  | 泛型 for 的时机陷阱 | `parse/stmt.go` | 末元素的行必须在 `check_match(DO)` **之前**取:`GenForStmt` 节点是循环体解析完才构造的,那时 `p.lastLine` 已指向 `end`,直接用会把迭代器的 GETTABLE 推到循环之外。`for k in A.x\n do end`(GETTABLE 归 1)与 `for k in A.x\n, 1 do end`(归 2)这一对用例锁定它 |
   | 第一版修法把 #248 自己的语料改红 | `testdata/fuzz/FuzzOracleDiff/8dff36b8bd115962` | `test-all`/`conformance-all`/`difftest-all` 全绿,只有 `make fuzz-oracle`(重放常驻语料)逮到——`difftest` **不重放** `testdata/fuzz/`,而同族回归最可能正落在那里 |
   | 仍未对齐的残留(不可见) | — | `storeVar` 的 store 行(`x = A\n.x` 的 SETGLOBAL 我们 1 / luac 2,已用能 raise 的 `__newindex` store 验证不产生用户可见差分)、`f{...}`/`f"..."` 糖式调用的单参数物化行(`t.x\n{1}` 的 NEWTABLE 我们 2 / luac 1)、数值 for 的 FORPREP/LOADK 行。已登记 `llmdoc/memory/doc-gaps.md` |
 
@@ -483,7 +483,7 @@
   写的 `x = A.x\n` 在两个模型下期望值相同、零区分力,难点不在知道要构造判别输入而在**每加一格都重新
   问一次**([[prove-the-path-under-test]] §2.1a);③**给共用 helper 加「缺失时回退」的可选参数时,每个
   仍传缺省值的调用点都要实测**——回退默认值让漏接线与不需要接线在测试结果上完全同形(同上 §4.7a);
-  ④**同族旧语料要和新语料一起当验收门**(同上 §9.6b)。落点
+  ④**同族旧语料要和新语料一起当验收检查**(同上 §9.6b)。写进
   [04](./04-frontend-parser-codegen.md) §5.2.2、[09](./09-errors-pcall.md) §3.5.2 订正块。过程反思见
   `llmdoc/memory/reflections/2026-09-03-issue252-discharge-line-is-lastline.md`。
 

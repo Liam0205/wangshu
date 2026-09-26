@@ -1,8 +1,8 @@
 # P3-03 共见内存模型:arena 收养 wazero memory + 两层逐位同一
 
-> 状态:**设计阶段,详细设计已齐备**(具体 wazero API 细节标注「待 spike 验证」,与 [01-spike-gate](./01-spike-gate.md) §4 共题完成)。本文是 P3 文档集对「值世界 = linear memory:两层共见的物理兑现」的单一事实源——把现稿 p3-wasm-tier §4 的 25 行结论,扩展为 arena 收养 wazero memory 的实代码骨架、值编码两层逐位同一的位级证据、grow 协议、GC 根零新增、Go 堆侧资产不进 linear memory 的精确划界、wazero memory 形式下的特殊场景(string/weak/finalizer/freelist),以及对 [06-memory-gc](../p1-interpreter/06-memory-gc.md) 与 [11-embedding-arena-abi](../p1-interpreter/11-embedding-arena-abi.md) 的回填请求。
+> 状态:**设计阶段,详细设计已齐备**(具体 wazero API 细节标注「待 spike 验证」,与 [01-spike-gate](./01-spike-gate.md) §4 一并完成)。本文是 P3 文档集对「值世界 = linear memory:两层共见的物理兑现」的单一事实源——把现稿 p3-wasm-tier §4 的 25 行结论,扩展为 arena 收养 wazero memory 的实代码骨架、值编码两层逐位同一的位级证据、grow 协议、GC 根零新增、Go 堆侧资产不进 linear memory 的精确划界、wazero memory 形式下的特殊场景(string/weak/finalizer/freelist),以及对 [06-memory-gc](../p1-interpreter/06-memory-gc.md) 与 [11-embedding-arena-abi](../p1-interpreter/11-embedding-arena-abi.md) 的回填请求。
 >
-> 上游契约:`docs/design/roadmap.md` (§3 值世界放自管 arena;§2 四项税);
+> 上游约定:`docs/design/roadmap.md` (§3 值世界放自管 arena;§2 四项税);
 > [00-overview](./00-overview.md)(§3 第 1 项耦合点 arena 收养、§9 不变式 8「arena = wazero memory」);
 > [value-representation](../../../llmdoc/architecture/value-representation.md)(主线 — P3 是其物理兑现节点);
 > [01-value-object-model](../p1-interpreter/01-value-object-model.md)(§2 arena 寻址 / §3 NaN-boxing / §3.4 canonicalize / §4 GCHeader / §5 各对象布局);
@@ -114,7 +114,7 @@ func NewArenaWithWazero(opts arena.Options, runtime wazero.Runtime) *arena.Arena
 
 **P1-only build 下的 `NewState`**:`opts.NewBacking == nil`,arena.New 走 `arena.DefaultBacking`(纯 Go 堆 `make`),完全不引入 wazero。这是 P1 至今的实际跑法——P1 已留好注入点,P3 实代码改动量集中在 `internal/gibbous/wasm/memadapter` 子包,arena 包零改动。
 
-### 1.4 backing 注入点 `arena.Options.NewBacking`(P1 已留口)
+### 1.4 backing 注入点 `arena.Options.NewBacking`(P1 已预留)
 
 P1 已经在 `internal/arena/arena.go` 实代码层完成了 `BackingFn` 注入点(承现稿 §11「对 06 的回填请求」与 [00-overview](./00-overview.md) §7 已完成义务表):
 
@@ -136,12 +136,12 @@ type Options struct {
 }
 ```
 
-**注入点的契约**(P3 实现时必须遵守):
+**注入点的约定**(P3 实现时必须遵守):
 
 1. **`NewBacking(words uint32)` 必须返回长度恰好为 `words` 的 `[]uint64`**;短了 arena.New 会 panic(P1 已写防御),长了被截断为 `words`(P3 适配器内部允许底层 buffer 长于请求,但要确保返回视图是请求长度——见 §1.5 实代码骨架)。
 2. **返回的 slice 必须保证起始 8 字节对齐**——这是 NaN-boxed `uint64` 字段读写的硬约束([01](../p1-interpreter/01-value-object-model.md) §2「GCRef 低 3 bit 恒为 0」与 [06](../p1-interpreter/06-memory-gc.md) §1.1「`[]byte` 起始地址不保证 8 对齐,在某些平台读 `uint64` 会触发非对齐访问」)。wazero memory 以 64 KiB 页为单位,起始天然 64 KiB 对齐,远超 8 字节门槛——本约束自动满足。
 3. **返回的 slice 元素初值必须为零**——arena 的 nullReserve(`words[0] = 0`)与 GCHeader 的 white 颜色字节都依赖此。wazero memory 新分配页的初值是 0(Wasm spec 要求),`memory.grow` 扩展的页同样零填充——本约束自动满足。
-4. **slice 在 arena 不主动调 `setBacking` 之前,其内容稳定**——也即 `NewBacking` 返回的视图在 wazero memory 不发生 `memory.grow` 之前不被替换。P3 适配器把视图替换严格收口在 `setBacking` 路径(§1.6),由 grow 协议触发。
+4. **slice 在 arena 不主动调 `setBacking` 之前,其内容稳定**——也即 `NewBacking` 返回的视图在 wazero memory 不发生 `memory.grow` 之前不被替换。P3 适配器把视图替换严格限定在 `setBacking` 路径(§1.6),由 grow 协议触发。
 
 ### 1.5 wazero memory adapter 实现骨架(P3 端)
 
@@ -337,7 +337,7 @@ func newArena(opts arena.Options) *arena.Arena {
 
 ### 2.1 NaN-box `uint64` 在两层逐位同一
 
-[01-value-object-model](../p1-interpreter/01-value-object-model.md) §3 的 NaN-boxing 是 P3 阶段唯一被「物理共见」承诺约束的位级契约。本节给出位级证据:解释器侧的判定与 Wasm 侧翻译产物**逐位同一**。
+[01-value-object-model](../p1-interpreter/01-value-object-model.md) §3 的 NaN-boxing 是 P3 阶段唯一被「物理共见」承诺约束的位级约定。本节给出位级证据:解释器侧的判定与 Wasm 侧翻译产物**逐位同一**。
 
 **解释器侧(承 [01](../p1-interpreter/01-value-object-model.md) §3.2 与 §3.5):**
 
@@ -453,13 +453,13 @@ func NumberValue(f float64) Value {
 
 | 对象 | word0 / word1 / ... 字段 | P3 翻译里的形式 |
 |---|---|---|
-| GCHeader([01](../p1-interpreter/01-value-object-model.md) §4) | `[7:0] otype \| [9:8] color \| [10] fixed \| [11] hasGCNext \| [15:12] flags \| [63:16] gcnext` | `i64.load $ref` 直接读;位字段提取经 `i64.shr_u`/`i64.and` 与解释器一样的 |
+| GCHeader([01](../p1-interpreter/01-value-object-model.md) §4) | `[7:0] otype \| [9:8] color \| [10] fixed \| [11] hasGCNext \| [15:12] flags \| [63:16] gcnext` | `i64.load $ref` 直接读;位字段提取经 `i64.shr_u`/`i64.and` 与解释器相同 |
 | Table 头([01](../p1-interpreter/01-value-object-model.md) §5.2) | `word0=hdr; word1=asize\|hmask; word2=arrayRef; word3=nodeRef; word4=metaRef; word5=lastfree\|gen` | `i64.load offset=8*N $tableRef` 直接读 |
 | Closure([01](../p1-interpreter/01-value-object-model.md) §5.3) | `word0=hdr; word1=protoID\|nupvals; word2..=upvalRef` | upvalue 读经 `i64.load offset=16+8*i $closureRef` |
 | Upvalue([01](../p1-interpreter/01-value-object-model.md) §5.4) | 开放/关闭两态,`word2` 在两态意义不同 | 翻译经助手回 Go(避免 Wasm 侧重复实现两态切换状态机,基线安全) |
 | Thread / 值栈 / CallInfo([01](../p1-interpreter/01-value-object-model.md) §5.6) | 值栈 `Value[stackCap]` | 寄存器 = 共见栈槽,P3 基线 memory-resident([02-translation](./02-translation.md) §2.2) |
 
-**Wasm 侧不会出现 P3 私有的对象布局或字段顺序**——这是 §7 不变式 4 的具体含义,也是 [02-translation](./02-translation.md) 的所有 opcode 翻译都用 `offset=8*N` 直接寻址的物理依据(N 为字段在对象内的字偏移,与解释器一样的)。
+**Wasm 侧不会出现 P3 私有的对象布局或字段顺序**——这是 §7 不变式 4 的具体含义,也是 [02-translation](./02-translation.md) 的所有 opcode 翻译都用 `offset=8*N` 直接寻址的物理依据(N 为字段在对象内的字偏移,与解释器相同)。
 
 ---
 
@@ -542,7 +542,7 @@ Program (Go 堆,跨 State 共享) ──┬──► State1 (主 arena1) ──�
 
 1. **arena 与 wazero memory 是 1:1**:每个 State 持一份独立 wazero memory(经独立 Runtime 实例化 holder module)。State 之间的值世界完全隔离——[11-embedding-arena-abi](../p1-interpreter/11-embedding-arena-abi.md) §8 的「State 不可跨 goroutine 并发」不变式延续到 wazero memory 层。
 2. **gibbous module 编译产物在 Program 内共享**:每 Proto 一 module 的 wazero `CompiledModule` 在 Program 持有(类似 P2 的 `GibbousCode` 缓存,见 [../p2-bridge/05](../p2-bridge/05-p3-p4-interface.md) §6),实例化时与各 State 的 Runtime 绑定。**这意味着「编译一次 Proto,N 个 State 各实例化一次该 module」**。实例化开销随 State 数线性增长,但分摊到长寿 State 上可忽略(P2 编译预算计入,见 [../p2-bridge/01-profiling](../p2-bridge/01-profiling.md) §5)。
-3. **wazero Runtime 为何不跨 State 共享**:wazero Runtime 持有 module 实例化状态;若多 State 共享 Runtime,则 holder module + gibbous modules 都被多 State 同时拿——孤立保证(每 State 私有 memory + 私有 module 实例)被破坏。**单 Runtime per State 是最简一致拓扑**。
+3. **wazero Runtime 为何不跨 State 共享**:wazero Runtime 持有 module 实例化状态;若多 State 共享 Runtime,则 holder module + gibbous modules 都被多 State 同时拿——隔离保证(每 State 私有 memory + 私有 module 实例)被破坏。**单 Runtime per State 是最简一致拓扑**。
 4. **wazero Runtime 复用 vs 新建**:工程上可让 `Program` 内嵌一个「编译-only」Runtime(只用于 `CompileModule`),实例化时再交各 State 的私有 Runtime。这是优化项,本期不展开;基线下每 State 一独立 Runtime,编译与实例化都本地完成。
 
 ### 3.4 P3 spike 在 PW0(本文)同时验证:memory 共享、grow 跨边界一致、NaN-box 读写一致
@@ -586,10 +586,10 @@ P3 不需要为 gibbous 帧新增任何 GC 根类:
 P1 选 NaN-boxed `uint64` + 自管 arena 时,「值表示一次定死」是核心承诺;基线 memory-resident 是这条承诺在「寄存器=共见栈槽」维度的兑现。**回报**:
 
 - **GC 根扫描代码零修改**——[06](../p1-interpreter/06-memory-gc.md) §5.1 / §5.2 / §5.3 的全部 mark 算法在 P3 阶段不动一行。
-- **shadow stack(R7)语义不变**——host function 经 imported 助手回 Go 时,执行的是 Go 代码,shadow stack 协议与 P1 一样的([06](../p1-interpreter/06-memory-gc.md) §6)。
-- **GC trigger 语义不变**——[06](../p1-interpreter/06-memory-gc.md) §7 的两类 safepoint(分配点 + 层边界)在 P3 [05-safepoint-gc](./05-safepoint-gc.md) 加入第三类(回边),但分配点完全在 imported 助手内,层边界(crescent↔gibbous trampoline)是天然 safepoint——三者都不要求改 mark 阶段。
+- **shadow stack(R7)语义不变**——host function 经 imported 助手回 Go 时,执行的是 Go 代码,shadow stack 协议与 P1 相同([06](../p1-interpreter/06-memory-gc.md) §6)。
+- **GC trigger 语义不变**——[06](../p1-interpreter/06-memory-gc.md) §7 的两类 safepoint(分配点 + 层边界)在 P3 [05-safepoint-gc](./05-safepoint-gc.md) 加入第三类(循环回跳(back edge)),但分配点完全在 imported 助手内,层边界(crescent↔gibbous trampoline)是天然 safepoint——三者都不要求改 mark 阶段。
 
-> **对比方案 (B) locals 缓存**(若启用,[02-translation](./02-translation.md) §2.2):缓存进 Wasm locals 的值对 GC **不可见**。任何可能触发 GC 的点(全部助手调用、回边 safepoint 命中)之前必须写回栈槽,详见 [05-safepoke-gc](./05-safepoint-gc.md) §4。这是 (B) 方案不被基线选中的物理原因——它把「零新增机制」的红利吃掉了。
+> **对比方案 (B) locals 缓存**(若启用,[02-translation](./02-translation.md) §2.2):缓存进 Wasm locals 的值对 GC **不可见**。任何可能触发 GC 的点(全部助手调用、back edge safepoint 命中)之前必须写回栈槽,详见 [05-safepoke-gc](./05-safepoint-gc.md) §4。这是 (B) 方案不被基线选中的物理原因——它把「零新增机制」的红利抵消了。
 
 ---
 
@@ -703,8 +703,8 @@ Go 堆内(crescent / gibbous 不共见,经整数 ID 桥接):
 **关键观察**:
 
 - **GC 是 STW**(P1 / P3 都是,[06](../p1-interpreter/06-memory-gc.md) §6 / [05-safepoint-gc](./05-safepoint-gc.md) §6)。GC 触发时,gibbous 帧已经让出执行(经 imported 助手回到 Go,而 GC 在 Alloc 内调,见 [05-safepoint-gc](./05-safepoint-gc.md) §3)。**gibbous 与 GC 不并发**。
-- **gibbous 读弱表**:GETTABLE 翻译的快路径([02-translation](./02-translation.md) §3.4)是「同表同代次直读 array/node」,与解释器快路径一样的([05](../p1-interpreter/05-interpreter-loop.md) §6.3)。读取的是 strong 引用——弱键 / 弱值的回收只在 GC 收割阶段处理,执行期间读出的引用都是当时存活的。
-- **gibbous 写弱表**:SETTABLE 翻译走助手(基线非快路径,因为写表涉及 metatable 调用与 rehash 触发,基线一律保守);助手内是普通 Go 代码,与 P1 写弱表一样的。
+- **gibbous 读弱表**:GETTABLE 翻译的快路径([02-translation](./02-translation.md) §3.4)是「同表同代次直读 array/node」,与解释器快路径相同([05](../p1-interpreter/05-interpreter-loop.md) §6.3)。读取的是 strong 引用——弱键 / 弱值的回收只在 GC 收割阶段处理,执行期间读出的引用都是当时存活的。
+- **gibbous 写弱表**:SETTABLE 翻译走助手(基线非快路径,因为写表涉及 metatable 调用与 rehash 触发,基线一律保守);助手内是普通 Go 代码,与 P1 写弱表相同。
 
 **结论**:gibbous 帧只读 strong 引用,不直接参与 weak 收割——weak 协议完全在 GC mark/sweep 阶段处理,P3 翻译产物不破坏其语义。
 
@@ -769,7 +769,7 @@ Go 堆内(crescent / gibbous 不共见,经整数 ID 桥接):
 
 **答案:成立,且零拷贝读路径不变**——理由:
 
-- 11 §3-§5 定义的「宿主写、VM 零拷贝读」契约只规定**字段二进制布局**(例如 float64 列起始偏移、字符串区编码、bitmap 位序),不规定 backing 物理来源。P3 build 下 backing 来自 wazero memory,但**布局完全不变**——宿主仍按 11 §3-§5 的格式往 arena 写,VM(crescent / gibbous)仍按同一格式读。
+- 11 §3-§5 定义的「宿主写、VM 零拷贝读」约定只规定**字段二进制布局**(例如 float64 列起始偏移、字符串区编码、bitmap 位序),不规定 backing 物理来源。P3 build 下 backing 来自 wazero memory,但**布局完全不变**——宿主仍按 11 §3-§5 的格式往 arena 写,VM(crescent / gibbous)仍按同一格式读。
 - 「零拷贝」的物理含义在 P3 下加强:不仅 crescent 经 `arena.bytes/words` 直接读,gibbous 也经 wazero memory 共见同一 buffer 直接读——**两层零拷贝**。
 - 宿主代码(在 Go 端)经 `arena.Bytes()` / `arena.Words()` 取视图写;P3 build 下这些视图来自 wazero memory 的 `UnsafeUnderlyingBuffer`。**写完之后 wazero 内部就能直接读到**——无需任何同步或刷新(因为 buffer 物理同一)。
 

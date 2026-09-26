@@ -1,4 +1,4 @@
-# P2-05 P3/P4 共享前端契约:接口定义 / 跨阶段消费协议 / mock P3
+# P2-05 P3/P4 共享前端约定:接口定义 / 跨阶段消费协议 / mock P3
 
 > 状态:**设计阶段,详细设计已齐备**。本文是 P2「分层桥」的**接口单一事实源**(承 [00-overview](./00-overview.md) §0 文档地图):
 > ① `P3Compiler` / `P4Feedback` 接口的字段级定义;
@@ -8,9 +8,9 @@
 > ⑤ **mock P3 实现**(供 PB6 引入,PB7 端到端验收时让 P2 不依赖真 P3 完成);
 > ⑥ 共享前端的版本演进协议(`TypeFeedback` shape 调整 / `FeedbackKind` 枚举追加的兼容策略)。
 >
-> 上游契约:[00-overview](./00-overview.md)(§1 边界、§4 PB6 mock 引入、§6 决策表 P3/P4 用 feedback 行、§9 风险);
+> 上游约定:[00-overview](./00-overview.md)(§1 边界、§4 PB6 mock 引入、§6 决策表 P3/P4 用 feedback 行、§9 风险);
 > [01-profiling](./01-profiling.md)(P2 不直接给 P3/P4 接口,但 ProfileData 是 considerPromotion 的状态机字段持有者);
-> [02-ic-feedback](./02-ic-feedback.md)(`TypeFeedback` shape 是 P3/P4 的核心契约,本文是消费侧对接);
+> [02-ic-feedback](./02-ic-feedback.md)(`TypeFeedback` shape 是 P3/P4 的核心接口约定,本文是消费侧对接);
 > [03-compilability-analysis](./03-compilability-analysis.md) §3.7(F7 P3 后端能力 / `SupportsAllOpcodes` 接口本文给出完整定义);
 > [04-try-compile-fallback](./04-try-compile-fallback.md)(状态机调本文 `P3Compiler.Compile` 是升层入口);
 > 下游:[../p3-wasm-tier/02-translation](../p3-wasm-tier/02-translation.md)(P3Compiler 的 wazero 实现);[../p4-method-jit](../p4-method-jit/00-overview.md)(P4 投机消费 P4Feedback,deopt 自管)。
@@ -34,7 +34,7 @@ P2 是**编译层的共享前端**——它把「该编译什么、什么类型�
 
 ### 0.2 「共享前端」的物理体现
 
-承 [../p2-bridge/00-overview](./00-overview.md) §7.3 末:**「P2 是所有编译层的共享前端」**。本文的存在理由就是把这条承诺落到接口层面——任何让 P3 / P4 各自重新设计「热度采样 / 类型反馈 / 升层判断」的实现都直接判否,**P2 一份接口,P3/P4 都吃**。
+承 [../p2-bridge/00-overview](./00-overview.md) §7.3 末:**「P2 是所有编译层的共享前端」**。本文的存在理由就是把这条承诺落实到接口层面——任何让 P3 / P4 各自重新设计「热度采样 / 类型反馈 / 升层判断」的实现都直接判否,**P2 一份接口,P3/P4 都用**。
 
 P2 与 P3/P4 的接口分两份:
 
@@ -59,8 +59,8 @@ P2 与 P3/P4 的接口分两份:
 
 | 关注点 | 本文(05)拥有 | 不属于本文 |
 |---|---|---|
-| **`P3Compiler` 接口形状** | ✅ 字段级签名 + 错误返回语义 + `SupportsAllOpcodes` 的契约规范 | 真 P3 实现细节(wazero 集成,字节码→Wasm)→ [../p3-wasm-tier/02-translation](../p3-wasm-tier/02-translation.md) |
-| **`P4Feedback` 接口形状** | ✅ `FeedbackFor` 取 feedback 的契约 + confidence 消费协议 | 真 P4 实现(模板编译 / OSR exit / 自管栈)→ [../p4-method-jit](../p4-method-jit/00-overview.md) |
+| **`P3Compiler` 接口形状** | ✅ 字段级签名 + 错误返回语义 + `SupportsAllOpcodes` 的接口约定规范 | 真 P3 实现细节(wazero 集成,字节码→Wasm)→ [../p3-wasm-tier/02-translation](../p3-wasm-tier/02-translation.md) |
+| **`P4Feedback` 接口形状** | ✅ `FeedbackFor` 取 feedback 的接口约定 + confidence 消费协议 | 真 P4 实现(模板编译 / OSR exit / 自管栈)→ [../p4-method-jit](../p4-method-jit/00-overview.md) |
 | **`GibbousCode` 抽象类型** | ✅ 共同接口(`Run` / `Dispose` / `GetTrampoline`) | P3 / P4 各自的具体类型(wazero `api.Function` / 原生码段)→ 各自后端文档 |
 | **mock P3 实现** | ✅ 完整代码骨架,PB6 引入 | — |
 | **共享前端的版本演进** | ✅ shape 字段追加 / `FeedbackKind` 枚举追加的兼容策略 | shape 字段实测后调整的具体内容 → [02-ic-feedback](./02-ic-feedback.md) §9 缺口 |
@@ -216,7 +216,7 @@ type P3Compiler interface {
 
 ### 2.2 接口字段语义详解
 
-#### 2.2.1 `SupportsAllOpcodes` 的契约
+#### 2.2.1 `SupportsAllOpcodes` 的接口约定
 
 承 [03-compilability-analysis](./03-compilability-analysis.md) §3.7 的 F7 兜底检查——`SupportsAllOpcodes` 是 P2 询问后端「这个 Proto 你都能编吗」的入口。
 
@@ -247,15 +247,15 @@ func (c *Compiler) SupportsAllOpcodes(proto *bytecode.Proto) bool {
 
 #### 2.2.2 `Compile` 的错误返回语义
 
-`Compile` 的错误返回是 P2 ↔ P3 的关键契约——它决定「编译失败如何 fallback」。错误分三类:
+`Compile` 的错误返回是 P2 ↔ P3 的关键约定——它决定「编译失败如何 fallback」。错误分三类:
 
 | 错误类型 | 触发场景 | 实现方应返回 | P2 应对 |
 |---|---|---|---|
-| **F7 边角**(SupportsAllOpcodes 漏拦) | 实现 bug;不应发生 | `panic(...)` 报 bug | 不应到达——若到达,实现方 panic 是 codegen 一致性的最后一道闸 |
+| **F7 边角**(SupportsAllOpcodes 漏拦) | 实现 bug;不应发生 | `panic(...)` 报 bug | 不应到达——若到达,实现方 panic 是 codegen 一致性的最后一道检查 |
 | **资源耗尽** | wazero 编译时 OOM、原生码段 mmap 失败、wazero module 实例化超限 | `error`(`bridge.ErrCompileResource`,详见 §2.4) | TierStuck,该 Proto 永久解释 |
 | **后端 panic 兜底** | wazero 内部 panic、generator panic、未预期 bug | `error`(`bridge.ErrCompilePanic` 包装),**不让 panic 穿透本接口** | TierStuck,该 Proto 永久解释,可记诊断日志报 bug |
 
-> **关键纪律**:**panic 不能穿透 `P3Compiler.Compile`**——P2 的状态机是单线程同步语义([04] §3),让一个 Proto 的编译 panic 把整个 VM 拽倒是工程灾难。实现方在 `Compile` 入口套 `defer recover()` 转 error,P2 拿到 error 后走 fallback 路径,VM 整体仍跑(只是该 Proto 永久解释)。
+> **关键纪律**:**panic 不能穿透 `P3Compiler.Compile`**——P2 的状态机是单线程同步语义([04] §3),让一个 Proto 的编译 panic 把整个 VM 拖垮是工程灾难。实现方在 `Compile` 入口套 `defer recover()` 转 error,P2 拿到 error 后走 fallback 路径,VM 整体仍跑(只是该 Proto 永久解释)。
 
 #### 2.2.3 `Compile` 入参 feedback 的可空性
 
@@ -288,9 +288,9 @@ var (
 
 实现方用 `fmt.Errorf("...: %w", ErrCompileResource)` 包装具体细节,P2 用 `errors.Is(err, ErrCompileResource)` 判类型分支处理(诊断日志格式略不同,详见 [04-try-compile-fallback](./04-try-compile-fallback.md) §6)。
 
-### 2.4 调用契约的不变式清单
+### 2.4 调用约定的不变式清单
 
-P2 调 `P3Compiler.Compile` 时守的契约:
+P2 调 `P3Compiler.Compile` 时遵守的约定:
 
 | # | 不变式 | 兑现处 |
 |---|---|---|
@@ -301,7 +301,7 @@ P2 调 `P3Compiler.Compile` 时守的契约:
 | C5 | 错误返回 ⇒ P2 标 TierStuck,不重试 | [04] §3 失败转移 + §3.3 不重试纪律 |
 | C6 | panic 不穿透接口 | §2.2.2(实现方 recover) |
 
-实现方守的契约:
+实现方遵守的约定:
 
 | # | 不变式 | 兑现处 |
 |---|---|---|
@@ -450,7 +450,7 @@ type P4Feedback interface {
 
 ### 4.2 接口字段语义详解
 
-#### 4.2.1 `FeedbackFor` 的契约
+#### 4.2.1 `FeedbackFor` 的接口约定
 
 `FeedbackFor` 是 P4 的「随时读」通道——P4 在编译某 Proto 时调一次,deopt 后想重编译再调一次。返回的 `*TypeFeedback` 是**只读快照**:
 
@@ -460,7 +460,7 @@ type P4Feedback interface {
 
 这与 [02-ic-feedback](./02-ic-feedback.md) §5.5 「CAS 安装 feedback」配套——P2 端的写入用 CAS,P4 端的读取用普通 LoadPointer,**无锁同步**。
 
-#### 4.2.2 `RequestRefresh` 的契约
+#### 4.2.2 `RequestRefresh` 的接口约定
 
 `RequestRefresh` 是 P4 → P2 的反向通道——deopt 风暴时 P4 想说「这份 feedback 已陈旧,请重新聚合」。**P2 初版可不实现**(P4 阶段才有意义,P2 PB6 mock + 真 P3 都不需要),接口预留。
 
@@ -699,9 +699,9 @@ P4 实现时**应**:
 
 > **P2 与 P4 解耦**:P2 的状态机只关心「升过没/卡死没」,P4 的投机状态完全自包含。这让 P2 PB6 mock 与真 P3 / P4 三阶段切换零修改 P2 实现(§0.3)。
 
-**P4 视角具体形式**(2026-06-28,承 [../p4-method-jit/implementation-progress §2 RJ-7](../p4-method-jit/implementation-progress.md) 跨文档回填请求):本节硬纪律的 P4 视角具体形式详见 [../p4-method-jit/03-speculation-ic §8 P4 自管 deopt 计数与 P4StuckSpeculation 状态机](../p4-method-jit/03-speculation-ic.md) — 该节直接复刻本节硬纪律(P4 自管 + P2 不参与),并具体化 P4 端的 p4SpecState[*Proto] 子状态机(P4Speculative/P4Deoptimized/P4StuckSpeculation)+ DeoptThreshold 阈值 + MaxRecompileTries 上限。本会话已实证(15+ commits)= p4SpecState 骨架 + 7 状态机单测 + SpecP4DeoptHits +6 真业务路径 + V20 DeoptStorm 5 caller +15 累积。
+**P4 视角具体形式**(2026-06-28,承 [../p4-method-jit/implementation-progress §2 RJ-7](../p4-method-jit/implementation-progress.md) 跨文档回填请求):本节硬纪律的 P4 视角具体形式详见 [../p4-method-jit/03-speculation-ic §8 P4 自管 deopt 计数与 P4StuckSpeculation 状态机](../p4-method-jit/03-speculation-ic.md) — 该节直接复刻本节硬纪律(P4 自管 + P2 不参与),并具体化 P4 端的 p4SpecState[*Proto] 子状态机(P4Speculative/P4Deoptimized/P4StuckSpeculation)+ DeoptThreshold 阈值 + MaxRecompileTries 上限。本会话已实证(15+ commits)= p4SpecState 骨架 + 7 状态机单测 + SpecP4DeoptHits +6 真实业务路径 + V20 DeoptStorm 5 caller +15 累积。
 
-**P2 端 CAS 装 feedback,P3 旧指针仍可读**(2026-06-28,承 RJ-5 同源化):P2 接受 RequestRefresh 后 CAS 装新 feedback(本文 §5.5 字面承诺),P3 旧指针仍可读直到下次执行重新加载——race-tolerant 设计。P4 视角对偶兑现:[../p4-method-jit/03-speculation-ic §7.3 + §7.4 deopt 兜底与重训练](../p4-method-jit/03-speculation-ic.md)。本会话 PJ5 SELF spec template 已实证 OSR exit 协议真业务路径(SpecP4DeoptHits +6)+ V20 DeoptStorm 多 Proto 独立累积。
+**P2 端 CAS 装 feedback,P3 旧指针仍可读**(2026-06-28,承 RJ-5 同源化):P2 接受 RequestRefresh 后 CAS 装新 feedback(本文 §5.5 字面承诺),P3 旧指针仍可读直到下次执行重新加载——race-tolerant 设计。P4 视角对偶兑现:[../p4-method-jit/03-speculation-ic §7.3 + §7.4 deopt 兜底与重训练](../p4-method-jit/03-speculation-ic.md)。本会话 PJ5 SELF spec template 已实证 OSR exit 协议真实业务路径(SpecP4DeoptHits +6)+ V20 DeoptStorm 多 Proto 独立累积。
 
 ---
 
@@ -836,7 +836,7 @@ func (c *p4Code) GetTrampoline() unsafe.Pointer {
 
 ### 6.4 GibbousCode 的释放协议
 
-`Dispose` 的契约要点:
+`Dispose` 的约定要点:
 
 1. **幂等**:多次调用不出错(实现方用 atomic.CompareAndSwap 或 sync.Once 守);
 2. **释放后 Run 不可调**:由调用方(P2 / crescent doCall)守纪律,接口不强制运行期检测;
@@ -1219,7 +1219,7 @@ if notifier, ok := b.p3.(P3DeoptNotifier); ok {
 | **N4** P4 不依赖 P2 状态机 | P4 自管 deopt 计数与 TierStuck-speculation;P2 状态机([04] §2)只看「升过没/卡死没」,不区分 P3 / P4 编译产物 | §5.6 |
 | **N5** mock 语义中性 | mock 不引入与真 P3 不同的隐式行为;Run 转给解释器,无新副作用 | §7.4 |
 | **N6** 共享前端不为单一阶段定制 | P2 产 feedback 时不知道下游是 P3 / P4 / P5,统一对称产出;消费方按各自策略不对称消费 | §1.5 |
-| **N7** panic 不穿透接口 | `P3Compiler.Compile` 实现方 recover 转 error,P2 状态机不被实现 bug 拽倒 | §2.2.2 |
+| **N7** panic 不穿透接口 | `P3Compiler.Compile` 实现方 recover 转 error,P2 状态机不被实现 bug 拖垮 | §2.2.2 |
 | **N8** GibbousCode 是只读共享 | 多 State 并发调 Run 安全;Dispose 由 Program 销毁触发,只一次 | §6.4 |
 | **N9** 版本演进向后兼容 | TypeFeedback / FeedbackKind / P3Compiler 接口的演进只追加,不修改不删除;旧消费方读到新字段 / 新枚举值 default 落 unstable / generic | §9.1-§9.4 |
 | **N10** 接口零修改保证测试可移植 | 同一份测试套对 mock 与真 P3 都跑通(切实现不切代码);PB7 验收通过后 P3 上线零回归 | §8.2 |
@@ -1233,7 +1233,7 @@ if notifier, ok := b.p3.(P3DeoptNotifier); ok {
 | # | 缺口 | 触发条件 | 计划处理 |
 |---|---|---|---|
 | GAP-1 | **P4 投机激进度的实测调标** | P4 阶段实现后用真实负载实测 | confidence 阈值(§5.2)、deopt 阈值、TierStuck-speculation 标准——P4 阶段定;不影响正确性 |
-| GAP-2 | **GibbousCode 释放协议在多 State 共享下的细节** | 多 State 并发使用同一 Program | Dispose 时机、Run 的并发安全契约的形式化测试;参见 §6.4 末尾 |
+| GAP-2 | **GibbousCode 释放协议在多 State 共享下的细节** | 多 State 并发使用同一 Program | Dispose 时机、Run 的并发安全约定的形式化测试;参见 §6.4 末尾 |
 | GAP-3 | **`RequestRefresh` 的 P2 实现策略**(§4.2.2) | P4 阶段才实现;P2 PB6 不需要 | (a) 立即重聚合 / (b) 异步标 stale / (c) 后台 worker 三选一,P4 阶段定 |
 | GAP-4 | **TypeFeedback 字段追加触发条件**(§9.1) | P4 实测发现表 IC 命中计数粒度不够 / LT/LE 区分缺失 | 演进 PR 上线时一并补,本文 §9 提供兼容策略 |
 | GAP-5 | **P3 / P4 同时存活时的优先级**([架构演进:P3 与 P4 并存] | P4 上线、P3 退役 / 留作中层未定 | 见 [../roadmap.md](../roadmap.md) §4 P4 验收末尾「Wasm 层退役,或留作可移植中层」;若并存,需要决定 considerPromotion 优先调谁——本文不预设,留 P4 上线时决策 |
@@ -1266,7 +1266,7 @@ if notifier, ok := b.p3.(P3DeoptNotifier); ok {
 |---|---|---|---|
 | RB-9 | [00-overview](./00-overview.md) | §6 决策表「P3 用 feedback / P4 用 feedback」两行 | 引用本文 §1 / §3 / §5 作为单一事实源 |
 | RB-10 | [04-try-compile-fallback](./04-try-compile-fallback.md) | §3 considerPromotion 入口 | considerPromotion 调用本文 §2 P3Compiler.Compile,错误返回时按本文 §2.3 错误常量分类记诊断日志 |
-| RB-11 | [02-ic-feedback](./02-ic-feedback.md) | §4.5 ProfileData.feedback 槽 | 本文 §4 P4Feedback 接口是该字段的反向读契约;`installFeedback` 用 atomic.CAS 与本文 §4.2.1 配套 |
+| RB-11 | [02-ic-feedback](./02-ic-feedback.md) | §4.5 ProfileData.feedback 槽 | 本文 §4 P4Feedback 接口是该字段的反向读约定;`installFeedback` 用 atomic.CAS 与本文 §4.2.1 配套 |
 | RB-12 | [06-testing-strategy](./06-testing-strategy.md) | §X mock P3 测试套 | 本文 §7.5 mock 测试场景全部进入 PB7 验收单测 |
 
 ### 12.3 接口稳定性的兑现承诺

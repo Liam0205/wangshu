@@ -1,7 +1,7 @@
 # P1 脊柱:字节码 ISA
 
 > 状态:**设计阶段,可实现深度**。本文是 codegen(`internal/frontend/compile`)与解释器
-> (`internal/crescent`)之间的**指令集契约**,也是 P3 字节码→Wasm 翻译的源 ISA。
+> (`internal/crescent`)之间的**指令集约定**,也是 P3 字节码→Wasm 翻译的源 ISA。
 > opcode 编号与语义以本文为单一事实源。值表示见 [01-value-object-model](./01-value-object-model.md)。
 
 对应 Go 包:`internal/bytecode`。
@@ -14,7 +14,7 @@ roadmap §4 选寄存器式 VM(对解释器友好,日后翻译 Wasm locals 也�
 
 - 指令数少(寄存器机典型比栈机少 ~50% 指令),dispatch 次数少 ⇒ 直接利好 roadmap §1 的「减少每指令开销」;
 - 寄存器 = thread 值栈槽(见 [01](./01-value-object-model.md) §5.6),`R(i)=stack[base+i]`,无独立操作数栈;
-- 翻译到 Wasm 时,寄存器可直接落为 Wasm `local` 或 linear-memory 槽,P3 翻译近乎直译(roadmap §4「翻译为 Wasm locals 也直白」)。
+- 翻译到 Wasm 时,寄存器可直接映射为 Wasm `local` 或 linear-memory 槽,P3 翻译近乎直译(roadmap §4「翻译为 Wasm locals 也直白」)。
 
 **与官方 Lua 5.1 的关系:** 我们**自定义 opcode 编号与编码宽度**(不二进制兼容官方 `.luc`),但**语义对齐 5.1**,以便复用官方 conformance 套并做差分(见 [12-testing-difftest](./12-testing-difftest.md))。
 
@@ -105,7 +105,7 @@ thread.valueStack:
 | 28 | `CALL` | ABC | 调用 `R(A)(R(A+1..A+B-1))`,返回回填 `R(A..A+C-2)`;B/C=0 见 §3 |
 | 29 | `TAILCALL` | ABC | 尾调用 `R(A)(R(A+1..A+B-1))`,复用当前帧(栈不增长) |
 | 30 | `RETURN` | ABC | 返回 `R(A..A+B-2)`;`B=0` 返回到 `top` |
-| 31 | `FORLOOP` | AsBx | 数值 for 回边:`R(A)+=R(A+2); if R(A)<?=R(A+1) then {pc+=sBx; R(A+3):=R(A)}` ** 热点回边** |
+| 31 | `FORLOOP` | AsBx | 数值 for 循环回跳(back edge):`R(A)+=R(A+2); if R(A)<?=R(A+1) then {pc+=sBx; R(A+3):=R(A)}` ** 热点 back edge** |
 | 32 | `FORPREP` | AsBx | 数值 for 准备:`R(A)-=R(A+2); pc+=sBx`(校验三槽为数字) |
 | 33 | `TFORLOOP` | ABC | 泛型 for:调用迭代器 `R(A)`,产出 `R(A+3..A+2+C)`;若首值非 nil 则 `R(A+2):=R(A+3)` 否则 `pc++` |
 | 34 | `SETLIST` | ABC | `R(A)[ (C-1)*FPF + i ] := R(A+i)`,i=1..B(表构造批量填数组;B=0 到 top;C=0 取下一指令为大批次号) |
@@ -116,7 +116,7 @@ thread.valueStack:
 记号补充:
 - `bool(A)` 在 EQ/LT/LE/TEST 中是比较期望布尔(用于把「比较+条件跳」编码成两指令对 `CMP; JMP`)。
 - ** IC**:该指令带 inline cache slot(见 §7)。
-- ** 热点回边**:`FORLOOP`(及循环里的 `JMP` 向后)是 P2 热度计数的 back-edge 采样点(见 [../p2-bridge/00-overview](../p2-bridge/00-overview.md))。
+- ** 热点 back edge**:`FORLOOP`(及循环里的 `JMP` 向后)是 P2 热度计数的 back-edge 采样点(见 [../p2-bridge/00-overview](../p2-bridge/00-overview.md))。
 - `*` `__len` 在 Lua 5.1 仅对 userdata 生效(table 的 `__len` 是 5.2+,roadmap §6 已排除);本表 `LEN` 对 table 直接取 border。
 - `FPF`(fields per flush)= `SETLIST` 每批字段数,定为 **50**(与 Lua 5.1 `LFIELDS_PER_FLUSH` 一致)。
 
@@ -141,7 +141,7 @@ thread.valueStack:
 - `FORPREP` 预减一个 step 并跳到 `FORLOOP`;`FORLOOP` 加 step、判界、回跳并刷新 `v`。三槽必须是 number,否则 `FORPREP` 报错 `'for' initial value must be a number`。
 
 **泛型 for**(`for k,v in iter,state,ctrl`)占 `R(A..A+2)`+循环变量:
-- `R(A)`=迭代函数,`R(A+1)`=状态,`R(A+2)`=控制变量;`TFORLOOP` 调用 `R(A)(R(A+1),R(A+2))`,结果落 `R(A+3..)`。
+- `R(A)`=迭代函数,`R(A+1)`=状态,`R(A+2)`=控制变量;`TFORLOOP` 调用 `R(A)(R(A+1),R(A+2))`,结果写入 `R(A+3..)`。
 
 **vararg**:`IsVararg` 函数的多余实参存在 `base` 之下;`VARARG` 指令按需拷回寄存器。`...` 个数 = `actualArgs - NumParams`,由 CallInfo 记录。
 
@@ -191,7 +191,7 @@ L1: FORLOOP R2  -> L0        ; i+=1; if i<=n goto L0  (热点回边)
 RETURN    R1  2              ; return s (B=2 ⇒ 返回 1 个值)
 RETURN    R0  1              ; 隐式 return(B=1 ⇒ 0 个值)
 ```
-这段就是 roadmap §1「Horner 风格计算密集脚本」的同类形状:循环体在 VM 内迭代(列内核形状),`FORLOOP` 回边是热度采样与未来 trace 录制起点。
+这段就是 roadmap §1「Horner 风格计算密集脚本」的同类形状:循环体在 VM 内迭代(列内核形状),`FORLOOP` back edge 是热度采样与未来 trace 录制起点。
 
 ---
 
@@ -202,13 +202,13 @@ RETURN    R0  1              ; 隐式 return(B=1 ⇒ 0 个值)
 3. **比较指令成对**:`EQ/LT/LE/TEST/TESTSET` 后必跟 `JMP`,codegen 必须保证;解释器对它们做「条件 pc++ 跳过 JMP」。
 4. **多值边界**:`CALL/RETURN/VARARG/SETLIST` 的 `B=0`/`C=0` 表示「到 top」,是多返回值传播的关键,实现时维护好 `top`。
 5. **MaxStack 静态已知**:每个 Proto 编译期算出寄存器水位,解释器进入帧时确保栈容量(见 [05](./05-interpreter-loop.md))。
-6. **语义对齐 5.1**:任何语义疑义以 Lua 5.1 参考实现为准,并由差分测试钉死(见 [12](./12-testing-difftest.md))。
+6. **语义对齐 5.1**:任何语义疑义以 Lua 5.1 参考实现为准,并由差分测试锁定(见 [12](./12-testing-difftest.md))。
 
 ---
 
 ## 10. 文档缺口 / 待决(记入 memory/doc-gaps)
 
-- **NEWTABLE 的 B/C 浮点编码**(Lua 用 `int2fb`/`fb2int` 把容量近似编码进 9-bit)沿用 5.1 算法,实现时落 `internal/bytecode` helper,本文未展开公式。
+- **NEWTABLE 的 B/C 浮点编码**(Lua 用 `int2fb`/`fb2int` 把容量近似编码进 9-bit)沿用 5.1 算法,实现时写进 `internal/bytecode` helper,本文未展开公式。
 - **opcode 是否需要 `GETTABLE_N`/`GETTABLE_S`(按键类型特化)** 这类 P1 提速变体待性能 spike 后决定,当前保持 5.1 最小集。
 - IC slot 的 `shape` 版本号生成机制**已在 [05](./05-interpreter-loop.md) §6 定稿**(per-table 单调代次,globals 是特例);§7 的 `tableRef` 字段与算术 IC 双计数挪用即其回填结果。**本缺口已关闭。**
 

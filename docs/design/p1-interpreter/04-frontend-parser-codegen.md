@@ -1,7 +1,7 @@
 # P1:语法分析 + 代码生成(寄存器分配)
 
 > 状态:**设计阶段,可实现深度**。本文定义前端的后两段——**parser**(token 流 → AST)
-> 与 **codegen**(AST → `bytecode.Proto`,含寄存器分配与常量折叠)。下游契约是
+> 与 **codegen**(AST → `bytecode.Proto`,含寄存器分配与常量折叠)。下游接口约定是
 > [02-bytecode-isa](./02-bytecode-isa.md)(本文产出的 `Proto.Code` 必须严格服从其
 > opcode 表、RK 编码、寄存器布局、比较指令成对、CLOSURE 伪指令、SETLIST/FPF=50);
 > 产物对象布局见 [01-value-object-model](./01-value-object-model.md) §5.7。上游 token
@@ -19,7 +19,7 @@ Lua 官方实现(`lparser.c`/`lcode.c`)是 **single-pass**:parser 一边消费 t
 codegen 独立消费),理由按本项目约束排序:
 
 1. **差分测试要稳定可预测的寄存器分配**(`architecture.md` §4 不变式 2、`roadmap.md`
-   (§5) 原则 2)。层间逐字节差分是 CI 必过门禁。AST 路线把"解析"与"分配寄存器"解耦,
+   (§5) 原则 2)。层间逐字节差分是 CI 必过检查。AST 路线把"解析"与"分配寄存器"解耦,
    codegen 成为一个**纯函数 `Proto = Gen(ast)`**,无 I/O、无 lexer 前瞻耦合,寄存器分配
    结果只取决于 AST 形状——更易写**黄金测试**(固定 AST → 固定字节码)与**可复现性断言**。
 2. **AST 利于 P2 可编译性分析**(`roadmap.md` (§4) P2「静态可编译性分析器」、(§5)
@@ -41,13 +41,13 @@ codegen 独立消费),理由按本项目约束排序:
 | AST 与字节码两份真相,需保证一致 | AST 只承载**语法结构**,不承载寄存器决策;寄存器是 codegen 独占职责,无双真相 |
 
 > **自洽承诺(软承诺 + 差异黑名单,经评审定稿)**:虽走 AST,但 codegen 的寄存器分配**算法**对齐 Lua 5.1
-> `lcode.c`(freereg 水位线、局部变量绑定到连续低位寄存器、临时值落 freereg、`exp2RK`
+> `lcode.c`(freereg 水位线、局部变量绑定到连续低位寄存器、临时值放在 freereg、`exp2RK`
 > 折叠常量)。**与官方 luac 寄存器分配同构是追求目标而非硬验收**:默认复刻官方算法;
 > 实现期若某边角(嵌套调用 discharge 时序、跳转回填序等)因 AST 双遍与单遍的本质差异
-> 难以对齐,**不扭曲代码结构死磕**,改为在「同构差异黑名单」登记差异样式与理由,
+> 难以对齐,**不为强求对齐而扭曲代码结构**,改为在「同构差异黑名单」登记差异样式与理由,
 > 黄金字节码测试([12](./12-testing-difftest.md))对该样式以望舒自身输出为基准(防回归),
-> 不阻塞里程碑。**运行期可观察输出的差分仍是硬门禁**(Proto 同构只是字节码层提前
-> 暴露偏差的自检手段,12 §2.5 已定其非 CI 硬门禁)。本文 §10 端到端示例
+> 不阻塞里程碑。**运行期可观察输出的差分仍是强制检查**(Proto 同构只是字节码层提前
+> 暴露偏差的自检手段,12 §2.5 已定其不是 CI 强制检查)。本文 §10 端到端示例
 > 与 [02-bytecode-isa](./02-bytecode-isa.md) §8 的 `f(n)` 寄存器分配**完全一致**即为自洽证据。
 
 ### 1.2 数据流总览
@@ -336,7 +336,7 @@ block 终结符(停止 `parseBlock` 循环):`end` / `else` / `elseif` / `until` 
 ### 4.3 表达式解析:优先级爬升(precedence climbing)
 
 不用为每个优先级层写一个函数(`orexpr→andexpr→...`),而用单个 `parseExpr(limit)` 带
-**绑定优先级表**(Lua 5.1 `subexpr` 一样的),更短且与官方完全对齐:
+**绑定优先级表**(与 Lua 5.1 `subexpr` 相同),更短且与官方完全对齐:
 
 ```go
 // 二元运算符的 (左结合优先级, 右结合优先级)。右<左 ⇒ 左结合;右>左 ⇒ 右结合。
@@ -484,7 +484,7 @@ GETTABLE 要等到这个 `expdesc` 被后续某个 `dischargeVars` 调用时才�
 > 括号**:`local v = A.x\n\n+1` 运算符在行 1,而 `luac5.1` 把 GETTABLE 记在行 **3**(`+` 才是 discharge
 > 点)。详见 §5.2.2。
 
-**四处代码路径,而我是一轮审计发现一处的** —— 这一点比结论更值得记:
+**四处代码路径,而我是每一轮审计才发现其中一处** —— 这一点比结论更值得记:
 
 | 路径 | 位置 | 修法 |
 |---|---|---|
@@ -503,7 +503,7 @@ discharge)在这条路径上都没有机会出现。测这一类性质要用全�
 
 #### 5.2.2 真正的规则:指令的行 = 它被发射那一刻的 lastline(#252,2026-09-03)
 
-§5.2.1 把 GETTABLE 的行定为「索引运算符的行」,那是**近似**。真规则来自 PUC 的
+§5.2.1 把 GETTABLE 的行定为「索引运算符的行」,那是**近似**。真正的规则来自 PUC 的
 `lcode.c`——`luaK_codeABC`/`luaK_codeABx` **根本不接收行号参数**:
 
 ```c
@@ -578,7 +578,7 @@ func (fs *funcState) dischargeVars(e *expDesc)  // 把 EGlobal/EUpval/ELocal/EIn
 
 **`exp2RK` 的常量折叠**(直接兑现 [02](./02-bytecode-isa.md) §2 的 RK 编码):
 - `ENil/ETrue/EFalse/EKNum/EK` → 调 `addConst` 取得 K 索引 `kidx`;若 `kidx < 256` 则返回
-  `256+kidx`(RK 常量形式),算术/比较/SETTABLE 等可直接吃常量,省一条 LOADK。
+  `256+kidx`(RK 常量形式),算术/比较/SETTABLE 等可直接使用常量,省一条 LOADK。
 - 若 `kidx ≥ 256`(常量太多)→ 退化为 `exp2AnyReg` 先 `LOADK` 进寄存器再用(见
   [02](./02-bytecode-isa.md) §5「超出部分改用 LOADK」)。
 - 非常量(变量/调用结果)→ `exp2AnyReg`。
@@ -602,7 +602,7 @@ func (fs *funcState) getLabel() int              // 返回当前 pc 并标记为
 
 **`jpc`(jump-to-pc)**:目标恰好是"下一条将要发射的指令"的待决跳转链。每次**真正发射**一条
 新指令前,`dischargeJpc` 把 `jpc` 链全部 `fixJump` 到当前 `pc` 再清空。这让"跳到这里"
-(`patchToHere`)无需知道未来 pc——延迟到那条指令真出现时自动落定。
+(`patchToHere`)无需知道未来 pc——延迟到那条指令真正出现时自动确定。
 
 **`fixJump` 越界检查**:`offset = dest-(pc+1)`,若 `|offset| > MaxArgSBx(131071)` 报
 `control structure too long`(对齐 Lua 5.1 措辞,§9)。
@@ -620,7 +620,7 @@ func (fs *funcState) getLabel() int              // 返回当前 pc 并标记为
 
 **算术**(`BinExpr{OpAdd..OpPow}` / `UnExpr{OpUnm,OpLen}`):后序遍历——先 codegen 左、右子
 表达式得 `el`/`er`,各调 `exp2RK` 得 RK 操作数,发对应指令,结果设为 `ERelocable`(指令 A
-待定,留给上层 `exp2NextReg` 决定落哪),并归还被吃掉的临时寄存器:
+待定,留给上层 `exp2NextReg` 决定放在哪),并归还被消耗的临时寄存器:
 
 ```
 // e = a + b
@@ -738,7 +738,7 @@ do local y = 2 end   -- y 复用 R0
 
 `removeVars(level)`:把 `locvars[actvar[level..]]` 的 `endpc = pc`(闭合活跃区间,供
 `LineInfo`/调试),`nactvar = level`。活跃区间 `[startpc,endpc)` 写入 Proto 调试信息
-([01](./01-value-object-model.md) §5.7 的 `LineInfo` 旁,局部变量表实现时落同一调试段)。
+([01](./01-value-object-model.md) §5.7 的 `LineInfo` 旁,局部变量表实现时写进同一调试段)。
 
 ---
 
@@ -813,7 +813,7 @@ JMP → L_top                       ; 回边
 leaveBlock()                      ; 释放 body 局部;patch break 到此
 patch exitList to here
 ```
-回边 `JMP → L_top` 是 [02](./02-bytecode-isa.md) §4「循环里向后 JMP」的 P2 热度采样点。
+循环回跳(back edge)`JMP → L_top` 是 [02](./02-bytecode-isa.md) §4「循环里向后 JMP」的 P2 热度采样点。
 
 **repeat-until**(`until` 条件在 body 作用域内):
 ```
@@ -873,8 +873,8 @@ loop: emit TFORLOOP base, C=nNames
       emit JMP → body 起点(回边)
 ```
 `TFORLOOP A C`:调 `R(A)(R(A+1),R(A+2))`,结果落 `R(A+3..A+2+C)`;若首值非 nil 则
-`R(A+2):=R(A+3)`(更新控制变量)并由其后 JMP 回到 body,否则 `pc++` 跳过回边、退出(语义见
-[02](./02-bytecode-isa.md) §4 行 33)。`TFORLOOP` 同样后随一条 JMP(回边),满足"成对"风格。
+`R(A+2):=R(A+3)`(更新控制变量)并由其后 JMP 回到 body,否则 `pc++` 跳过 back edge、退出(语义见
+[02](./02-bytecode-isa.md) §4 行 33)。`TFORLOOP` 同样后随一条 JMP(back edge),满足"成对"风格。
 
 ### 6.7 break
 
@@ -965,7 +965,7 @@ for (k,v) in zip(HKeys,HVals):
   (对齐 Lua 5.1 `SETLIST` 的 `C==0` 取下一指令为批号约定,[02](./02-bytecode-isa.md) §4 行
   34 已注明)。
 - `NEWTABLE` 的 `B`(数组预分配)、`C`(哈希预分配)用 Lua 的 `int2fb` 把容量近似编码进
-  9-bit(`int2fb`/`fb2int`,[02](./02-bytecode-isa.md) §10 缺口已标注公式落 `internal/bytecode`
+  9-bit(`int2fb`/`fb2int`,[02](./02-bytecode-isa.md) §10 缺口已标注公式写进 `internal/bytecode`
   helper)。codegen 据 AST 里数组项数、哈希项数估算后编码。
 
 ### 8.2 函数定义与闭包(CLOSURE + 后随 upvalue 伪指令)
@@ -1111,7 +1111,7 @@ Block[
 | `FORPREP` | `FORPREP R2 → L1` | nactvar 进 for 块后含 i=5 |
 | body:`i*i` | `MUL R6 R5 R5`(R5=i,临时落 R6) | freereg 暂到 7,算完归还 |
 | body:`s+tmp` | `ADD R1 R1 R6`(s=R1,结果回 R1) | R6 归还,freereg 回 6 |
-| `FORLOOP` | `FORLOOP R2 → L0`(回边) | |
+| `FORLOOP` | `FORLOOP R2 → L0`(back edge) | |
 | `return s` | `RETURN R1 2`(B=2 ⇒ 返回 1 值 R1) | |
 | 隐式 return | `RETURN R0 1`(B=1 ⇒ 0 值) | |
 
@@ -1158,7 +1158,7 @@ RETURN    R0  1           ; 隐式 return
 
 ## 12. 不变式清单(实现与差分须守)
 
-1. **寄存器分配同构**:freereg 水位线、局部绑定连续低位、临时落 freereg、`exp2RK` 折叠——产出
+1. **寄存器分配同构**:freereg 水位线、局部绑定连续低位、临时值放在 freereg、`exp2RK` 折叠——产出
    与 Lua 5.1 luac **逐字节可比**(§1.1、§10)。
 2. **块边界 `freereg==nactvar`**:进出任何 block 都成立(§5.1、§6.1)。
 3. **比较成对**:`EQ/LT/LE`/`TEST`/`TESTSET` 后**必跟 JMP**,codegen 保证(§5.5/§5.6,
@@ -1168,17 +1168,17 @@ RETURN    R0  1           ; 隐式 return
 5. **CLOSURE 后伪指令数 == 子 Proto nupvals**:逐个 `MOVE`/`GETUPVAL` 描述捕获(§8.2)。
 6. **MaxStack 静态算定**:= 编译期 freereg 峰值,写入 `Proto.MaxStack`(§5.3,
    [01](./01-value-object-model.md) §5.7)。
-7. **语义对齐 5.1**:任何疑义以 Lua 5.1 参考实现为准,由差分测试钉死(
+7. **语义对齐 5.1**:任何疑义以 Lua 5.1 参考实现为准,由差分测试锁定(
    [12-testing-difftest](./12-testing-difftest.md))。
 
 ---
 
 ## 13. 文档缺口 / 待决(记入 memory/doc-gaps)
 
-- ~~token 流契约依赖 03 未定稿~~:**已关闭**——[03-frontend-lexer](./03-frontend-lexer.md) 已定稿:lexer 产带行号 token、数字经 `value.NumberValue` 转 `float64`、字符串字面量为 Go string(intern 留 codegen,§11)、长注释已剥离;LL(2) 前瞻定为 **lexer 只供 `Next()`,parser 自缓存一格 `ahead`**(03 §2,与本文 §4.1 精确咬合)。
+- ~~token 流约定依赖 03 未定稿~~:**已关闭**——[03-frontend-lexer](./03-frontend-lexer.md) 已定稿:lexer 产带行号 token、数字经 `value.NumberValue` 转 `float64`、字符串字面量为 Go string(intern 留 codegen,§11)、长注释已剥离;LL(2) 前瞻定为 **lexer 只供 `Next()`,parser 自缓存一格 `ahead`**(03 §2,与本文 §4.1 精确对应)。
 - ~~局部变量调试表的精确布局~~:**已关闭**——[01](./01-value-object-model.md) §5.7 已增补 `LocVars []LocalVar`(Name + StartPC/EndPC,§5.9 的 `removeVars` 闭合后写入);upvalue 名复用 `UpvalDescs.name`(§8.3),不单列 `UpvalNames`。
 - **`int2fb`/`fb2int` 公式**:NEWTABLE 的 B/C 容量编码、SETLIST 大批号(C=0 取下一指令)沿用
-  Lua 5.1,公式落 `internal/bytecode` helper(与 [02](./02-bytecode-isa.md) §10 同一缺口)。
+  Lua 5.1,公式写进 `internal/bytecode` helper(与 [02](./02-bytecode-isa.md) §10 同一缺口)。
 - **常量折叠的边界口径**:`1/0`、`0/0`、`2^63` 等编译期折叠是否与运行期解释**逐字节同结果**
   (尤其 NaN/Inf 的 boxing 表示),需 [12-testing-difftest](./12-testing-difftest.md) 给口径;
   保守做法:codegen 折叠走与解释器**同一** `value.NumberValue`(含 canonicalize)即天然一致。

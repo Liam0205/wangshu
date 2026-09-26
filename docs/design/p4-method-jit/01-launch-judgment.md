@@ -2,11 +2,11 @@
 
 > 状态:**架构决策深度**(对齐 [../architecture.md](../architecture.md) §2 状态表:P4 是「架构决策」,比 P2/P3 详细设计粗一档——本文定方向、定边界、给立项判据;**不展开机器码模板细节**,那是 [./02-template-direction.md](./02-template-direction.md) 起的事)。本文是 P4 文档集 [./00-overview.md](./00-overview.md) §0 文档地图所定的「立项检查」单一事实源——P4 该不该做、何时做、达标即兑现什么、与 P3 的承接,与 P3 [../p3-wasm-tier/01-spike-gate.md](../p3-wasm-tier/01-spike-gate.md) 在「开工前置裁决」位置上平行。
 >
-> 上游契约:[../roadmap.md](../roadmap.md)(§1 校准测量——LuaJIT 154μs vs luajc 164μs 仅 6% 是 P4 验收锚点的论据、§2 四项税、§4 P4 阶段定义、§5 五条贯穿原则尤其原则 3「每阶段独立交付不亏」)、[../../../llmdoc/must/design-premises.md](../../../llmdoc/must/design-premises.md)(前提一 6% 校准 / 前提四 NaN-box 第一天承诺)、[../../../llmdoc/architecture/evolution-roadmap.md](../../../llmdoc/architecture/evolution-roadmap.md)(tier 映射:P3/P4 同 gibbous tier-1)。
+> 上游约定:[../roadmap.md](../roadmap.md)(§1 校准测量——LuaJIT 154μs vs luajc 164μs 仅 6% 是 P4 验收锚点的论据、§2 四项税、§4 P4 阶段定义、§5 五条贯穿原则尤其原则 3「每阶段独立交付不亏」)、[../../../llmdoc/must/design-premises.md](../../../llmdoc/must/design-premises.md)(前提一 6% 校准 / 前提四 NaN-box 第一天承诺)、[../../../llmdoc/architecture/evolution-roadmap.md](../../../llmdoc/architecture/evolution-roadmap.md)(tier 映射:P3/P4 同 gibbous tier-1)。
 >
-> P3 承接面:[../p3-wasm-tier/00-overview.md](../p3-wasm-tier/00-overview.md)(P3 总览,共享前端 / CallInfo / trampoline / 状态机 / 差分轨道——P4 直接继承)、[../p3-wasm-tier/01-spike-gate.md](../p3-wasm-tier/01-spike-gate.md)(P3 检查一样的定位的对位文档:开工前置裁决,§5 决策树「不达标走跳跃路径接 P4」即对应本文 §2.2 之背景)、[../p3-wasm-tier/implementation-progress.md](../p3-wasm-tier/implementation-progress.md)(P3 PW0-PW10 全卷已收口,实测基线见本文 §3.3)。
+> P3 承接面:[../p3-wasm-tier/00-overview.md](../p3-wasm-tier/00-overview.md)(P3 总览,共享前端 / CallInfo / trampoline / 状态机 / 差分轨道——P4 直接继承)、[../p3-wasm-tier/01-spike-gate.md](../p3-wasm-tier/01-spike-gate.md)(与 P3 检查定位相同的对位文档:开工前置裁决,§5 决策树「不达标走跳跃路径接 P4」即对应本文 §2.2 之背景)、[../p3-wasm-tier/implementation-progress.md](../p3-wasm-tier/implementation-progress.md)(P3 PW0-PW10 已全部完成,实测基线见本文 §3.3)。
 >
-> 下游协作(同子目录):[./02-template-direction.md](./02-template-direction.md)(方向裁决:per-function 模板编译为何选定,本文 §1 / §4 仅落锚不展开)、[./03-speculation-ic.md](./03-speculation-ic.md)(IC 反馈→f64 快路径 + guard,本文 §4 不涉)、[./04-osr-deopt.md](./04-osr-deopt.md)(deopt 状态机)、[./05-system-pipeline.md](./05-system-pipeline.md)(四项税兑现 + trampoline)、[./06-backends.md](./06-backends.md)(双后端)、[./07-p3-retirement.md](./07-p3-retirement.md)(P3 去留决策矩阵)、[./08-testing-strategy.md](./08-testing-strategy.md)(差分接入)、[./implementation-progress.md](./implementation-progress.md)(进度对账,立项数据归档点)。
+> 下游协作(同子目录):[./02-template-direction.md](./02-template-direction.md)(方向裁决:per-function 模板编译为何选定,本文 §1 / §4 仅给出锚点不展开)、[./03-speculation-ic.md](./03-speculation-ic.md)(IC 反馈→f64 快路径 + guard,本文 §4 不涉)、[./04-osr-deopt.md](./04-osr-deopt.md)(deopt 状态机)、[./05-system-pipeline.md](./05-system-pipeline.md)(四项税兑现 + trampoline)、[./06-backends.md](./06-backends.md)(双后端)、[./07-p3-retirement.md](./07-p3-retirement.md)(P3 去留决策矩阵)、[./08-testing-strategy.md](./08-testing-strategy.md)(差分接入)、[./implementation-progress.md](./implementation-progress.md)(进度对账,立项数据归档点)。
 >
 > **本文定位一句话**:**P4 不是从写模板开始,而是从一次立项判定开始**——校准测量 + P3 实测基线 + 真实宿主负载证据共同决定 P4 是开工、推迟还是跳过。
 
@@ -22,11 +22,11 @@ P4 的人力估算是 **+1-2 人年**——这是项目从人月级(P1/P2/P3)跨
 
 理由有三:
 
-1. **P4 是期权而非计划**。流水线上 P1/P2/P3 都有近似确定的人月预算与验收门槛;P4 不同,它的「该不该做」依赖于**之前各阶段实际兑现的收益**(尤其 P3 的实测基线是否已逼近近期目标)。把 P4 视作期权意味着:**条件未满足时不行权**——P3 现状 + 宿主真实需求未到位时强行立项,等于把 1-2 人年押在不必要的工程野心上。
+1. **P4 是备选方案而非计划**。流水线上 P1/P2/P3 都有近似确定的人月预算与验收门槛;P4 不同,它的「该不该做」依赖于**之前各阶段实际兑现的收益**(尤其 P3 的实测基线是否已逼近近期目标)。把 P4 视作备选方案意味着:**条件未满足时不启动这个备选方案**——P3 现状 + 宿主真实需求未到位时强行立项,等于把 1-2 人年押在不必要的工程野心上。
 
-2. **决策不可逆,大方向无回头**。一旦立项,P4 的核心实现路径(per-function 模板编译 + IC 投机 + amd64/arm64 双后端 + OSR exit)就锁定;实施过半再「不做了」等于 6+ 人月沉没成本。一样的不可逆纪律已在 P3 [../p3-wasm-tier/01-spike-gate.md](../p3-wasm-tier/01-spike-gate.md) §0.2 立过——P3 PW0 spike 通过即开工,中途回头违反原则 3。本文 §5 把这条不可逆纪律对位到 P4。
+2. **决策不可逆,大方向无回头**。一旦立项,P4 的核心实现路径(per-function 模板编译 + IC 投机 + amd64/arm64 双后端 + OSR exit)就锁定;实施过半再「不做了」等于 6+ 人月沉没成本。同一条不可逆纪律已在 P3 [../p3-wasm-tier/01-spike-gate.md](../p3-wasm-tier/01-spike-gate.md) §0.2 立过——P3 PW0 spike 通过即开工,中途回头违反原则 3。本文 §5 把这条不可逆纪律对位到 P4。
 
-3. **立项前先证负载证据,而非工程野心**(承 [../../../llmdoc/guides/design-claims-vs-codebase-physics.md](../../../llmdoc/guides/design-claims-vs-codebase-physics.md) 一样的纪律)。P4 的全部价值落在「列内核负载下兑现 luajc 档 / 逼近 LuaJIT 档」一句承诺上。但「列内核负载是否首个目标宿主的真实热路径形式」不是设计稿能凭空定下来的——它必须有来自宿主端的实证。本文 §3.1 把这一条写成立项硬前置,§3.4 把「无证据」明确列为「跳过 P4」的合法决策。
+3. **立项前先证负载证据,而非工程野心**(承 [../../../llmdoc/guides/design-claims-vs-codebase-physics.md](../../../llmdoc/guides/design-claims-vs-codebase-physics.md) 同样的纪律)。P4 的全部价值落在「列内核负载下兑现 luajc 档 / 逼近 LuaJIT 档」一句承诺上。但「列内核负载是否首个目标宿主的真实热路径形式」不是设计稿能凭空定下来的——它必须有来自宿主端的实证。本文 §3.1 把这一条写成立项硬前置,§3.4 把「无证据」明确列为「跳过 P4」的合法决策。
 
 ### 0.2 决策不可逆(立项后大方向无回头)
 
@@ -36,24 +36,24 @@ P4 的人力估算是 **+1-2 人年**——这是项目从人月级(P1/P2/P3)跨
 - 双后端 vs 单后端:amd64 + arm64 双后端共享骨架已锁定([./06-backends.md](./06-backends.md) §1),只做单架构 = 撤一半发射函数。
 - OSR exit 函数级 vs 跨指令 snapshot:函数级 OSR exit 已锁定([./04-osr-deopt.md](./04-osr-deopt.md) §3),改 snapshot 机器 = 重写 deopt。
 
-这三项都是 P4 设计核心,任何一项中途翻案都触发实质重写。**立项前的判定权与立项后的实施权是分离的**:本文 §5.2 把这条分工写成纪律。
+这三项都是 P4 设计核心,任何一项中途推翻原结论都触发实质重写。**立项前的判定权与立项后的实施权是分离的**:本文 §5.2 把这条分工写成纪律。
 
 ### 0.3 战略价值与判定的双向性(达标即兑现 / 不达标停在 P3 仍是检查胜利)
 
 承 [../p3-wasm-tier/01-spike-gate.md](../p3-wasm-tier/01-spike-gate.md) §0.3「检查双向性」同源逻辑——P3 spike 不通过本身仍是 [../roadmap.md](../roadmap.md) §5 原则 3 的胜利(数据建立在实测而非乐观估计上),P4 立项判定也是双向的:
 
-- **若立项判定通过**:P4 兑现 [../roadmap.md](../roadmap.md) §0「逼近 LuaJIT 档」近期目标(达标 = 列内核负载达 luajc 档,而 LuaJIT 仅比 luajc 快 6%),也是首天值表示承诺([../../../llmdoc/must/design-premises.md](../../../llmdoc/must/design-premises.md) 前提四 NaN-box 选型)兑现的最大现金流——值表示与 deopt 物化的红利在此变成可量化收益(详 [./04-osr-deopt.md](./04-osr-deopt.md) §3.2)。
-- **若立项判定不通过**:停在 P3,P3 PW0-PW10 已交付的子里程碑(包括架构边界文档化的 ④-ii 留口,详 [../p3-wasm-tier/implementation-progress.md](../p3-wasm-tier/implementation-progress.md) §14.10)继续作为 wangshu 的当前面;P4 立项凭据写入档案,后续条件成熟(宿主负载形式变化、P3 收益不够)时重新评估——这是「期权未行权」而非「项目失败」。
+- **若立项判定通过**:P4 兑现 [../roadmap.md](../roadmap.md) §0「逼近 LuaJIT 档」近期目标(达标 = 列内核负载达 luajc 档,而 LuaJIT 仅比 luajc 快 6%),也是首天值表示承诺([../../../llmdoc/must/design-premises.md](../../../llmdoc/must/design-premises.md) 前提四 NaN-box 选型)兑现的最大回报——值表示与 deopt 物化的红利在此变成可量化收益(详 [./04-osr-deopt.md](./04-osr-deopt.md) §3.2)。
+- **若立项判定不通过**:停在 P3,P3 PW0-PW10 已交付的子里程碑(包括架构边界文档化的 ④-ii 留下的扩展点,详 [../p3-wasm-tier/implementation-progress.md](../p3-wasm-tier/implementation-progress.md) §14.10)继续作为 wangshu 的当前面;P4 立项凭据写入档案,后续条件成熟(宿主负载形式变化、P3 收益不够)时重新评估——这是「备选方案未启动」而非「项目失败」。
 
 「达标即兑现 / 不达标停在 P3 仍是检查胜利」是 [../roadmap.md](../roadmap.md) §5 原则 3 在 P4 立项点的字面体现。
 
 ### 0.4 与 P1/P2/P3 完成状态的关系
 
-本文写于 P3 PW0-PW10 全卷收口之后(详 [../p3-wasm-tier/implementation-progress.md](../p3-wasm-tier/implementation-progress.md) §0 与本文 §3.3),这一现实强力影响 P4 立项判定的形式:
+本文写于 P3 PW0-PW10 全部完成之后(详 [../p3-wasm-tier/implementation-progress.md](../p3-wasm-tier/implementation-progress.md) §0 与本文 §3.3),这一现实强力影响 P4 立项判定的形式:
 
-- **P1 已交付(M0-M14 + 全卷)**:解释器作为 deopt 着陆点(原则 1 「解释器永不退役」)已是物理事实,P4 OSR exit 直接消费 P1 的 CallInfo / 值栈协议(详 [./04-osr-deopt.md](./04-osr-deopt.md) §3.1)。
+- **P1 已交付(M0-M14 全部)**:解释器作为 deopt 着陆点(原则 1 「解释器永不退役」)已是既成事实,P4 OSR exit 直接消费 P1 的 CallInfo / 值栈协议(详 [./04-osr-deopt.md](./04-osr-deopt.md) §3.1)。
 - **P2 已交付(PB0-PB7 + 后续优化轮 #1-#4)**:P4 共享 P2 前端(热度 / TypeFeedback / F1-F7 检查 / TierState),不重写决策机([./02-template-direction.md](./02-template-direction.md) §0.2)。
-- **P3 已交付(PW0-PW10 全卷)**:历史曾把「P3 被 spike 否决 ⇒ 跳跃路径」作为假设语气保留;**本文写实——P3 spike 已通过,跳跃路径不复存在**(§2.3)。这意味着本文 §2 的二路只剩常规一路,P4 立项时只面对「P3 之后」一种形式。
+- **P3 已交付(PW0-PW10 全部)**:历史曾把「P3 被 spike 否决 ⇒ 跳跃路径」作为假设语气保留;**本文写实——P3 spike 已通过,跳跃路径不复存在**(§2.3)。这意味着本文 §2 的二路只剩常规一路,P4 立项时只面对「P3 之后」一种形式。
 
 这一点必须明写:旧单文件的「跳跃路径」是 P3 不存在时的备用逻辑,P3 已交付即解除。本文不复述旧单文件已死的备用路径,§2.2 把它降为历史记录。
 
@@ -66,9 +66,9 @@ P4 的人力估算是 **+1-2 人年**——这是项目从人月级(P1/P2/P3)跨
 | **立项判据**(本文 §3) | 三档前置 + §3.2 反向问题 + §3.3 P3 现状 + §3.4 三档策略 | 本文是单一事实源 |
 | **决策记录** | 立项时点的具体档位决议(全启 / 部分前置 / 跳过)+ 用户裁决凭据 | [./implementation-progress.md](./implementation-progress.md)(立项时建立) |
 | **数据档案** | §3.3 P3 实测基线 + 宿主侧端到端数据 + 第二检查数据(若立项) + 验收数据(若立项) | [./implementation-progress.md](./implementation-progress.md) |
-| **回填请求** | 本文 §9 列出对 P1/P2/P3 现稿的回填请求 | 主助理收口在 [./implementation-progress.md](./implementation-progress.md) |
+| **回填请求** | 本文 §9 列出对 P1/P2/P3 现稿的回填请求 | 主助理汇总在 [./implementation-progress.md](./implementation-progress.md) |
 
-任何「P4 该不该做」的讨论,必须援引本文具体节号——没有具体节号支撑的立项主张,违反 [../../../llmdoc/guides/multi-doc-drafting.md](../../../llmdoc/guides/multi-doc-drafting.md) 「自包含契约」纪律。
+任何「P4 该不该做」的讨论,必须援引本文具体节号——没有具体节号支撑的立项主张,违反 [../../../llmdoc/guides/multi-doc-drafting.md](../../../llmdoc/guides/multi-doc-drafting.md) 「自包含约定」纪律。
 
 ---
 
@@ -103,7 +103,7 @@ P4 的人力估算是 **+1-2 人年**——这是项目从人月级(P1/P2/P3)跨
 
 这一事实有两层含义,共同锚定 P4 立项判定:
 
-1. **达标即「逼近 LuaJIT 档」**——P4 兑现 luajc 档 = 兑现 LuaJIT 档的 ~94%,[../roadmap.md](../roadmap.md) §0「项目近期目标」的字面体现。这是 P4 立项的战略价值(§0.3),也是「P4 不必复刻 trace JIT 的护城河」的物理论据。
+1. **达标即「逼近 LuaJIT 档」**——P4 兑现 luajc 档 = 兑现 LuaJIT 档的 ~94%,[../roadmap.md](../roadmap.md) §0「项目近期目标」的字面体现。这是 P4 立项的战略价值(§0.3),也是「P4 不必复刻 trace JIT 的护城河」的事实依据。
 
 2. **6% 差距是 P5 的边际,不是 P4 的边界**——这 6% 留给 P5 trace JIT(详 [../p5-trace-jit/00-overview.md](../p5-trace-jit/00-overview.md) §1),而不是把 P4 的目标拉到 154μs。把 P4 验收锚在 luajc 档,是「实现成本与收益曲线严重凸性」([./02-template-direction.md](./02-template-direction.md) §1.3)在阶段切分上的对位:**P4 用最少人年拿走最大一块,剩余边际是 P5 的开放式投资**。
 
@@ -124,7 +124,7 @@ P5 启动条件 = 「P4 收益不够」(详 [../p5-trace-jit/00-overview.md](../
 - 隔离脚本级 -37%(luajc 显著加速);
 - 宿主端到端 benchmark 前后对照全部落在 ±5-7% 噪声带内(端到端不可见)。
 
-这一测量是 P4 立项判定的**反面警示**:**VM 层加速若被宿主侧边界成本吃光,P4 1-2 人年投入即便兑现 luajc 档,业务价值也可能为零**——这是 §3.1 前置 2「真实宿主负载证据」与 §7.3「真实宿主需求待外部确认」风险的物理来源。
+这一测量是 P4 立项判定的**反面警示**:**VM 层加速若被宿主侧边界成本吃光,P4 1-2 人年投入即便兑现 luajc 档,业务价值也可能为零**——这是 §3.1 前置 2「真实宿主负载证据」与 §7.3「真实宿主需求待外部确认」风险的根源。
 
 校准测量 2 同时是 [../../../llmdoc/must/design-premises.md](../../../llmdoc/must/design-premises.md) 前提一「负载形状必须是列内核」的实证基础——若宿主侧不以列内核形式调用 VM,任何 VM 内本体加速(P3/P4/P5)都被边界稀释看不见。本节把这层逻辑对位到 P4 立项:**若首个目标宿主侧改造为列内核形式尚未完成,P4 立项的 ROI 同样面临稀释风险**。
 
@@ -136,7 +136,7 @@ P5 启动条件 = 「P4 收益不够」(详 [../p5-trace-jit/00-overview.md](../
 |---|---|---|---|
 | **JSC** | Baseline JIT | DFG → FTL | Baseline 把 dispatch + IC 投机做到位,DFG/FTL 是优化层(P5 对位) |
 | **V8** | Sparkplug | Maglev → TurboFan | Sparkplug 论文式自我定位「a compiler dispensing with the interpreter dispatch」与 P4 同形式 |
-| **望舒** | gibbous/jit (P4 本文) | fullmoon (P5) | 一样的分工:模板层兑现 luajc 档,优化层留 P5 兑现 LuaJIT 档剩余 6% |
+| **望舒** | gibbous/jit (P4 本文) | fullmoon (P5) | 同样的分工:模板层兑现 luajc 档,优化层留 P5 兑现 LuaJIT 档剩余 6% |
 
 prior art 给 P4 立项判定的两条工程参考:
 - **模板编译能跑到的档位是「dispatch 消除 + IC 投机」之和**——JSC Baseline / V8 Sparkplug 实测都在这一档位附近,与 P4 luajc 档锚定吻合。
@@ -178,11 +178,11 @@ prior art 给 P4 立项判定的两条工程参考:
 
 ### 2.2 跳跃路径:P3 被 spike 否决(已不复存在)
 
-「跳跃路径」是历史备用形式——P3 PW0 spike 不达标(wazero call boundary ≥150ns)⇒ 跳过 P3 直接做 P4。这一路径的设计由 [../p3-wasm-tier/01-spike-gate.md](../p3-wasm-tier/01-spike-gate.md) §5 决策树承接,P4 接管「首次跑通分层机器」的全部工作(原 P3 的战略价值——升层 / 降层 / fallback 骨架——移入 P4),人年估算从「仅换后端」上浮到「分层骨架 + 机器码后端同步啃」量级。
+「跳跃路径」是历史备用形式——P3 PW0 spike 不达标(wazero call boundary ≥150ns)⇒ 跳过 P3 直接做 P4。这一路径的设计由 [../p3-wasm-tier/01-spike-gate.md](../p3-wasm-tier/01-spike-gate.md) §5 决策树承接,P4 接管「首次跑通分层机器」的全部工作(原 P3 的战略价值——升层 / 降层 / fallback 骨架——移入 P4),人年估算从「仅换后端」上浮到「分层骨架 + 机器码后端同时做」量级。
 
 **跳跃路径的当前真实形式——已不复存在**:
 
-P3 PW0 spike 早已通过(wazero call boundary 实测 36.7ns,远低于 150ns 阈值,详 [../p3-wasm-tier/implementation-progress.md](../p3-wasm-tier/implementation-progress.md) §0.1 spike 报告),P3 PW1-PW10 全卷已交付。这意味着:
+P3 PW0 spike 早已通过(wazero call boundary 实测 36.7ns,远低于 150ns 阈值,详 [../p3-wasm-tier/implementation-progress.md](../p3-wasm-tier/implementation-progress.md) §0.1 spike 报告),P3 PW1-PW10 已全部交付。这意味着:
 
 - **跳跃路径在事实层面被消解**——P3 已存在,不存在「跳过 P3 直接做 P4」的现实选项。
 - **跳跃路径设计资产仍写在 [../p3-wasm-tier/01-spike-gate.md](../p3-wasm-tier/01-spike-gate.md) §5.4 表中**——若未来 P3 出现根本性退役决议(详 [./07-p3-retirement.md](./07-p3-retirement.md)),那是另一个语境;当前 P4 立项判定不需考虑跳跃路径。
@@ -206,18 +206,18 @@ P3 PW0 spike 早已通过(wazero call boundary 实测 36.7ns,远低于 150ns 阈
 
 | 继承项 | P3 落点(子文档) | P4 消费方式 |
 |---|---|---|
-| **共享前端**(P2 决策机) | [../p2-bridge/00-overview.md](../p2-bridge/00-overview.md)(P2 全卷)、[../p3-wasm-tier/00-overview.md](../p3-wasm-tier/00-overview.md) §1(P3/P4 同 tier 边界) | P4 复用 P2 的热度 / TypeFeedback / F1-F7 检查 / TierState,不重写决策机([./02-template-direction.md](./02-template-direction.md) §0.2) |
-| **CallInfo 协议** | [../p1-interpreter/05-interpreter-loop.md](../p1-interpreter/05-interpreter-loop.md) §1.2、[../p3-wasm-tier/04-trampoline.md](../p3-wasm-tier/04-trampoline.md) §1 bit50 | P4 跨层 trampoline 一样的使用 CallInfo,bit50 标识 gibbous 帧——P4 接管同一标识,trampoline 切到原生码后形式不变([./04-osr-deopt.md](./04-osr-deopt.md) §3.1 OSR 着陆面消费 CallInfo) |
-| **trampoline 入口签名** | [../p3-wasm-tier/04-trampoline.md](../p3-wasm-tier/04-trampoline.md) §2(`(func $proto_N (param $base i32) (result i32))`) | P4 原生码入口一样的只接 `base` 与 status,值/参数从共见 arena 自取——签名跨后端不变,详 [./05-system-pipeline.md](./05-system-pipeline.md) |
+| **共享前端**(P2 决策机) | [../p2-bridge/00-overview.md](../p2-bridge/00-overview.md)(P2 全部)、[../p3-wasm-tier/00-overview.md](../p3-wasm-tier/00-overview.md) §1(P3/P4 同 tier 边界) | P4 复用 P2 的热度 / TypeFeedback / F1-F7 检查 / TierState,不重写决策机([./02-template-direction.md](./02-template-direction.md) §0.2) |
+| **CallInfo 协议** | [../p1-interpreter/05-interpreter-loop.md](../p1-interpreter/05-interpreter-loop.md) §1.2、[../p3-wasm-tier/04-trampoline.md](../p3-wasm-tier/04-trampoline.md) §1 bit50 | P4 跨层 trampoline 同样使用 CallInfo,bit50 标识 gibbous 帧——P4 接管同一标识,trampoline 切到原生码后形式不变([./04-osr-deopt.md](./04-osr-deopt.md) §3.1 OSR 着陆面消费 CallInfo) |
+| **trampoline 入口签名** | [../p3-wasm-tier/04-trampoline.md](../p3-wasm-tier/04-trampoline.md) §2(`(func $proto_N (param $base i32) (result i32))`) | P4 原生码入口同样只接 `base` 与 status,值/参数从共见 arena 自取——签名跨后端不变,详 [./05-system-pipeline.md](./05-system-pipeline.md) |
 | **TierState 状态机** | [../p2-bridge/04-try-compile-fallback.md](../p2-bridge/04-try-compile-fallback.md) §2(P2/P3 单向无环) | P4 在状态机加一条 `gibbous→interp` 边表 deopt,但单向骨架不动,详 [./04-osr-deopt.md](./04-osr-deopt.md) §1 |
-| **差分轨道**(crescent vs gibbous byte-equal) | [../p1-interpreter/12-testing-difftest.md](../p1-interpreter/12-testing-difftest.md) §3.8 / §7、[../p3-wasm-tier/08-testing-strategy.md](../p3-wasm-tier/08-testing-strategy.md) §2 | P4 同槽位接入 `WangshuGibbousJIT` runner,逐字节差分测试——一样的 fuzz / GC 压力 / 强制全升模式,详 [./08-testing-strategy.md](./08-testing-strategy.md) |
+| **差分轨道**(crescent vs gibbous byte-equal) | [../p1-interpreter/12-testing-difftest.md](../p1-interpreter/12-testing-difftest.md) §3.8 / §7、[../p3-wasm-tier/08-testing-strategy.md](../p3-wasm-tier/08-testing-strategy.md) §2 | P4 同槽位接入 `WangshuGibbousJIT` runner,逐字节差分测试——同样的 fuzz / GC 压力 / 强制全升模式,详 [./08-testing-strategy.md](./08-testing-strategy.md) |
 | **可编译性检查(F1-F7)** | [../p2-bridge/03-compilability-analysis.md](../p2-bridge/03-compilability-analysis.md) §3 | P4 沿用同一检查,F7 后端能力面替换为 P4 后端版本——投机叠在子集**之内**(原则 4 不松动,详 [./03-speculation-ic.md](./03-speculation-ic.md) §2.3) |
 | **NaN-box 值表示** | [../p1-interpreter/01-value-object-model.md](../p1-interpreter/01-value-object-model.md) §3.2 | P4 原生码直接操作同一 u64 编码,deopt 物化 = memmove([./04-osr-deopt.md](./04-osr-deopt.md) §3.2 兑现 [../../../llmdoc/must/design-premises.md](../../../llmdoc/must/design-premises.md) 前提四) |
 | **arena 共见** | [../p1-interpreter/06-memory-gc.md](../p1-interpreter/06-memory-gc.md) §1.1、[../p3-wasm-tier/03-memory-model.md](../p3-wasm-tier/03-memory-model.md) §1 | P4 原生码读写同一 arena(linear memory 等价),无值表示转换——值世界跨 tier 一字不改 |
 | **慢路径助手协议** | [../p3-wasm-tier/04-trampoline.md](../p3-wasm-tier/04-trampoline.md) §3 | P4 trampoline 出去调 helper(算术 metamethod / arena 分配 / IC miss / 强制 safepoint)——形式延续,只是被调方从 wazero imported fn 换成本地 ABI([./05-system-pipeline.md](./05-system-pipeline.md)) |
-| **线程级 tier 规则**(协程不升层) | [../p3-wasm-tier/07-coroutine-thread-rule.md](../p3-wasm-tier/07-coroutine-thread-rule.md) | P4 一样的使用,协程线程一律走 crescent;不另外推一遍论证([../../../llmdoc/architecture/evolution-roadmap.md](../../../llmdoc/architecture/evolution-roadmap.md) tier-1 边界) |
-| **safepoint 三类**(分配点 / 层边界 / 回边) | [../p3-wasm-tier/05-safepoint-gc.md](../p3-wasm-tier/05-safepoint-gc.md) §3 | P4 一样的,但回边检查点改为原生码内 inline 序列(不再依赖 wazero 已自插的检查点)——形式延续,实施细节落 [./05-system-pipeline.md](./05-system-pipeline.md) §4.1 |
-| **status 链错误冒泡** | [../p3-wasm-tier/04-trampoline.md](../p3-wasm-tier/04-trampoline.md) §4 | P4 一样的,错误经 status 字穿越 gibbous 帧到 pcall 边界——形式延续 |
+| **线程级 tier 规则**(协程不升层) | [../p3-wasm-tier/07-coroutine-thread-rule.md](../p3-wasm-tier/07-coroutine-thread-rule.md) | P4 同样使用,协程线程一律走 crescent;不另外推一遍论证([../../../llmdoc/architecture/evolution-roadmap.md](../../../llmdoc/architecture/evolution-roadmap.md) tier-1 边界) |
+| **safepoint 三类**(分配点 / 层边界 / 循环回跳(back edge)) | [../p3-wasm-tier/05-safepoint-gc.md](../p3-wasm-tier/05-safepoint-gc.md) §3 | P4 相同,但 back edge 检查点改为原生码内 inline 序列(不再依赖 wazero 已自插的检查点)——形式延续,实施细节写在 [./05-system-pipeline.md](./05-system-pipeline.md) §4.1 |
+| **status 链错误冒泡** | [../p3-wasm-tier/04-trampoline.md](../p3-wasm-tier/04-trampoline.md) §4 | P4 相同,错误经 status 字穿越 gibbous 帧到 pcall 边界——形式延续 |
 
 **结论**:常规路径下 P4 不重做这些清单中任何一项;详细形式延续到 [./05-system-pipeline.md](./05-system-pipeline.md) / [./04-osr-deopt.md](./04-osr-deopt.md) / [./08-testing-strategy.md](./08-testing-strategy.md) 等子文档完成。本节只在立项判定层「点到名」——证明常规路径下 P4 是「纯后端替换」而非「全套重做」。
 
@@ -241,13 +241,13 @@ P3 PW0 spike 早已通过(wazero call boundary 实测 36.7ns,远低于 150ns 阈
 
 ### 3.1 立项的硬前置(三条必备条件)
 
-P4 立项不是「P3 收口后下一周自动启动」,而是有硬前置条件——任何一条不满足,立项就推迟或跳过。
+P4 立项不是「P3 完成后下一周自动启动」,而是有硬前置条件——任何一条不满足,立项就推迟或跳过。
 
 | 前置 | 内容 | 不满足时 |
 |---|---|---|
-| **前置 1:P3 已交付** | P3 PW0-PW10 全卷已收口(状态见 [../p3-wasm-tier/implementation-progress.md](../p3-wasm-tier/implementation-progress.md))——分层骨架在常规路径下提供给 P4 | 未满足意味着「P3 还没跑完」,立项 P4 等于跳跃路径(§2.2 已说不复存在);此情形不存在 |
+| **前置 1:P3 已交付** | P3 PW0-PW10 已全部完成(状态见 [../p3-wasm-tier/implementation-progress.md](../p3-wasm-tier/implementation-progress.md))——分层骨架在常规路径下提供给 P4 | 未满足意味着「P3 还没跑完」,立项 P4 等于跳跃路径(§2.2 已说不复存在);此情形不存在 |
 | **前置 2:真实宿主负载证据** | 首个目标宿主([../../../llmdoc/overview/project-overview.md](../../../llmdoc/overview/project-overview.md) 多运行时规则引擎)的实际热路径以列内核形式出现,且 P3 实测基线证明列内核类负载收益不够 | 没有宿主真实负载证据 = P4 立项凭工程野心,违反 [../../../llmdoc/guides/design-claims-vs-codebase-physics.md](../../../llmdoc/guides/design-claims-vs-codebase-physics.md) 同源纪律——推迟立项,等宿主侧实证 |
-| **前置 3:资源到位** | 1-2 人年的人力预算到位 + 双架构 CI 物理 runner 到位(详 [./06-backends.md](./06-backends.md) §5.2) | 资源未到位 ⇒ 推迟;勉强半人年开始 = 中途断档,违反 [../roadmap.md](../roadmap.md) §5 原则 3 |
+| **前置 3:资源到位** | 1-2 人年的人力预算到位 + 双架构 CI 真机 runner 到位(详 [./06-backends.md](./06-backends.md) §5.2) | 资源未到位 ⇒ 推迟;勉强半人年开始 = 中途断档,违反 [../roadmap.md](../roadmap.md) §5 原则 3 |
 
 三条前置共同决定立项时机:**只有当 P3 已上线 + 宿主有列内核负载且 P3 兑现不到 luajc 档 + 1-2 人年预算到位 + 双架构 CI 到位,P4 才正式立项**。任何一条不到位都按 §3.4 推迟或跳过。
 
@@ -265,7 +265,7 @@ P4 立项不是「P3 收口后下一周自动启动」,而是有硬前置条件�
 
 ### 3.3 P3 现状:实测基线对照 luajc 档
 
-P3 PW10 收口时的本机实测基线(详 [../p3-wasm-tier/implementation-progress.md](../p3-wasm-tier/implementation-progress.md) §0 / §14.10),硬件 16 核 Intel Xeon 6982P-C,2026-06-16,基准 `bench-all` 2s × 3 count:
+P3 PW10 结束时的本机实测基线(详 [../p3-wasm-tier/implementation-progress.md](../p3-wasm-tier/implementation-progress.md) §0 / §14.10),硬件 16 核 Intel Xeon 6982P-C,2026-06-16,基准 `bench-all` 2s × 3 count:
 
 | bench 核 | crescent (P1) | gibbous (P3) | gibbous/crescent 倍率 | 评估 |
 |---|---|---|---|---|
@@ -342,7 +342,7 @@ loop 核 P3 已 2.95x(7.2x over gopher-lua),距 luajc 档(4.4x over gopher-lua)�
 - 立项判定凭据(本文 + implementation-progress)写入档案,后续条件成熟时重新评估;
 - 若性能仍不够、且 P5 立项条件成立,**P5 直接接 P3**——这是 [../p5-trace-jit/01-launch-judgment.md](../p5-trace-jit/01-launch-judgment.md) §1 的另一进入形式(P5 不强制经 P4)。
 
-**三档策略的纪律**:由用户(项目主决策者)与主助理共同裁决,数据进 [./implementation-progress.md](./implementation-progress.md) 永久存档(§5.3)。本文不替用户定下来某档,只把判据列清楚——这是 [../../../llmdoc/guides/multi-doc-drafting.md](../../../llmdoc/guides/multi-doc-drafting.md) 「单点收口 + 用户裁决」工作流在立项检查处的体现。
+**三档策略的纪律**:由用户(项目主决策者)与主助理共同裁决,数据进 [./implementation-progress.md](./implementation-progress.md) 永久存档(§5.3)。本文不替用户定下来某档,只把判据列清楚——这是 [../../../llmdoc/guides/multi-doc-drafting.md](../../../llmdoc/guides/multi-doc-drafting.md) 「单点汇总 + 用户裁决」工作流在立项检查处的体现。
 
 ### 3.5 立项判定决策树
 
@@ -393,22 +393,22 @@ loop 核 P3 已 2.95x(7.2x over gopher-lua),距 luajc 档(4.4x over gopher-lua)�
            └─ minimal P4(amd64 + 算术投机)+ §4.3 第二检查
 ```
 
-**决策树的纪律**:每条边都有显式判据(本文具体节号),不允许凭直觉跳分支——这是 [../../../llmdoc/guides/multi-doc-drafting.md](../../../llmdoc/guides/multi-doc-drafting.md) 「自包含契约」纪律在立项检查处的对位。
+**决策树的纪律**:每条边都有显式判据(本文具体节号),不允许凭直觉跳分支——这是 [../../../llmdoc/guides/multi-doc-drafting.md](../../../llmdoc/guides/multi-doc-drafting.md) 「自包含约定」纪律在立项检查处的对位。
 
 ### 3.6 立项判据与 P3 PW0 spike 的对照
 
-P3 PW0 spike 与本文 P4 立项判定**形式平行但内容不同**(承 [../p3-wasm-tier/01-spike-gate.md](../p3-wasm-tier/01-spike-gate.md) §0.1 spike 检查一样的定位):
+P3 PW0 spike 与本文 P4 立项判定**形式平行但内容不同**(承 [../p3-wasm-tier/01-spike-gate.md](../p3-wasm-tier/01-spike-gate.md) §0.1 与 spike 检查定位相同):
 
 | 维度 | P3 PW0 spike([../p3-wasm-tier/01-spike-gate.md](../p3-wasm-tier/01-spike-gate.md)) | P4 立项判定(本文) |
 |---|---|---|
-| **检查形式** | 物理实测(wazero call boundary <150ns) | 综合判定(三档前置 + P3 现状 + 宿主负载证据) |
+| **检查形式** | 实际测量(wazero call boundary <150ns) | 综合判定(三档前置 + P3 现状 + 宿主负载证据) |
 | **判据数据** | spike 三档样本(S1/S2/S3)实测 ns/op | P3 实测基线(本文 §3.3)+ 宿主侧端到端数据 |
-| **判定时点** | P3 PW0 启动前(0.5-1 人月 spike) | P3 PW10 收口后,任意时点(可推迟无成本) |
+| **判定时点** | P3 PW0 启动前(0.5-1 人月 spike) | P3 PW10 结束后,任意时点(可推迟无成本) |
 | **决策不可逆性** | 通过 ⇒ 开工 P3 PW1-PW9;不通过 ⇒ 跳跃路径 | 通过 ⇒ 立项 P4 1-2 人年;不通过 ⇒ 推迟或跳过 |
 | **数据归档点** | [../p3-wasm-tier/implementation-progress.md](../p3-wasm-tier/implementation-progress.md) | [./implementation-progress.md](./implementation-progress.md)(立项时建立) |
 | **战略价值** | 即便不通过,数据建立在实测而非乐观估计上 | 即便不通过,立项凭据写档,后续阶段可援引 |
 
-**关键差异**:P3 spike 是单一物理指标(<150ns 二元判定),P4 立项判定是多维综合(三档前置 + 反向问题 + 关键追问 + 档位选择)。这一差异源自两阶段在流水线上的位置——P3 spike 的对象是「某项物理事实是否成立」,P4 立项的对象是「整个项目是否值得 1-2 人年投入」,后者天然更复杂。
+**关键差异**:P3 spike 是单一实测指标(<150ns 二元判定),P4 立项判定是多维综合(三档前置 + 反向问题 + 关键追问 + 档位选择)。这一差异源自两阶段在流水线上的位置——P3 spike 的对象是「某项实测事实是否成立」,P4 立项的对象是「整个项目是否值得 1-2 人年投入」,后者天然更复杂。
 
 形式相同处:**都是检查级单点决策不可绕过 + 都把数据进档作永久凭据 + 都接受双向结果(通过 / 不通过)作为合理产出**。
 
@@ -460,13 +460,13 @@ P4 验收基准必须是列内核形状([../p1-interpreter/12-testing-difftest.m
 「人年级投入的中途校验」风险。本文把该风险升格为 P4 内部第二检查,在立项后实施过半时启动:
 
 **第一检查**:本文承担,立项前判定(§3)。
-**第二检查**:P4 实施过半时承担,minimal P4(amd64 单架构 + 仅算术投机)先打通全管线并在 Horner 档位测一次。
+**第二检查**:P4 实施过半时承担,minimal P4(amd64 单架构 + 仅算术投机)先接通全管线并在 Horner 档位测一次。
 
 第二检查触发的判据:
 - minimal P4 跑通后实测列内核加速比未到 luajc 档(差距 > 30%);
 - profile 揭示瓶颈不在 dispatch 消除 / IC 投机本体(说明模板编译 + 类型投机的核心论证不成立)⇒ 立即停下重评。
 
-第二检查的存在是 [../roadmap.md](../roadmap.md) §5 原则 3「任何检查停下不亏」在 P4 内部的套用(承 PW9/PW10 一样的 spike 检查 precedent,详 [../../../llmdoc/memory/reflections/2026-06-15-p3-pw9-acceptance-perf-round.md](../../../llmdoc/memory/reflections/2026-06-15-p3-pw9-acceptance-perf-round.md))。
+第二检查的存在是 [../roadmap.md](../roadmap.md) §5 原则 3「任何检查停下不亏」在 P4 内部的套用(承 PW9/PW10 同样的 spike 检查 precedent,详 [../../../llmdoc/memory/reflections/2026-06-15-p3-pw9-acceptance-perf-round.md](../../../llmdoc/memory/reflections/2026-06-15-p3-pw9-acceptance-perf-round.md))。
 
 minimal P4 的具体形式由 [./02-template-direction.md](./02-template-direction.md) / [./03-speculation-ic.md](./03-speculation-ic.md) / [./06-backends.md](./06-backends.md) 完成——本文只在立项判定层声明该检查的存在与位置。
 
@@ -485,7 +485,7 @@ P5 立项判定的输入(§6.2)即「P4 是否兑现 luajc 档,以及距离 LuaJ
 
 ### 4.5 验收的四个分档(承 P3 PW9/PW10 实测形式)
 
-P4 验收不是「luajc 档过线即全部 pass」二元结果,承 P3 PW10 实测基线把负载分四档(详 §3.3):
+P4 验收不是「luajc 档达标即全部 pass」二元结果,承 P3 PW10 实测基线把负载分四档(详 §3.3):
 
 | 验收档 | 工作负载形式 | P4 目标(相对 P1) | P4 目标(相对 luajc 同基准) |
 |---|---|---|---|
@@ -525,7 +525,7 @@ P4 验收不是「luajc 档过线即全部 pass」二元结果,承 P3 PW10 实�
 | **立项后实施期** | 主助理 + 各子文档 | 不裁决「P4 该不该做」,只裁决具体实施细节(候选谱系内 vs 内部边界);超出范围(如要不要扩到 trace JIT)按 §0.2 不可逆纪律拒绝,转到 P5 立项 |
 | **验收期** | 本文 §4 + 用户裁决 | 验收 pass / fail——pass 进 P3 去留(详 [./07-p3-retirement.md](./07-p3-retirement.md));fail 触发反向决议(回滚或留作中层) |
 
-**反向决议的合法性边界**:fail 不是「P4 设计错了」,是「P4 在本码库 + 当前宿主负载下未兑现承诺」——这两种归因的差别决定后续做什么。详详细分析在 [./implementation-progress.md](./implementation-progress.md) 验收回顾节(待立项后建立)。
+**反向决议的合法性边界**:fail 不是「P4 设计错了」,是「P4 在本码库 + 当前宿主负载下未兑现承诺」——这两种归因的差别决定后续做什么。详细分析在 [./implementation-progress.md](./implementation-progress.md) 验收回顾节(待立项后建立)。
 
 ### 5.3 数据进档协议
 
@@ -552,7 +552,7 @@ P4 验收不是「luajc 档过线即全部 pass」二元结果,承 P3 PW10 实�
 | **关键风险标注** | §7 各项风险的当时状态(已缓解 / 已识别未缓解 / 残留) | 实施期出现问题时不能溯源 |
 | **回填请求清单** | §9 各项回填请求,主助理 / 用户裁决状态 | 立项后 P1/P2/P3 文档不同步,造成知识与实现脱节 |
 
-把这五项「写在前面」是立项报告的最低标准——少一项立项判定都不能视为完整完成。这是 [../p3-wasm-tier/01-spike-gate.md](../p3-wasm-tier/01-spike-gate.md) §6.6 spike 决策报告模板的一样的纪律,在 P4 立项点对位。
+把这五项「写在前面」是立项报告的最低标准——少一项立项判定都不能视为完整完成。这是 [../p3-wasm-tier/01-spike-gate.md](../p3-wasm-tier/01-spike-gate.md) §6.6 spike 决策报告模板的同一纪律,在 P4 立项点对位。
 
 ---
 
@@ -618,14 +618,14 @@ P4 验收(若立项 + 验收 pass)产出的实测数据(详 §4.1 + §5.3),作�
 
 ### 6.4 P5 立项条件与 P4 立项条件的形式对偶
 
-P4 立项判定(本文)与 P5 立项判定([../p5-trace-jit/01-launch-judgment.md](../p5-trace-jit/01-launch-judgment.md) §1)在形式上对偶——两者都是流水线下一阶段的开工检查,共享一样的判定结构:
+P4 立项判定(本文)与 P5 立项判定([../p5-trace-jit/01-launch-judgment.md](../p5-trace-jit/01-launch-judgment.md) §1)在形式上对偶——两者都是流水线下一阶段的开工检查,共享同一套判定结构:
 
 | 维度 | P4 立项判定(本文) | P5 立项判定([../p5-trace-jit/01-launch-judgment.md](../p5-trace-jit/01-launch-judgment.md) §1) |
 |---|---|---|
 | **硬前置** | P3 已交付 + 宿主负载证据 + 资源到位(§3.1) | P4 已交付(若走 P3→P4→P5)或 P3 已交付(若走 P3→P5)+ 宿主负载证据 + 资源到位(P5 自己定义) |
 | **反向问题** | P3 收益是否已够?(§3.2) | P4 / P3 收益是否已够? |
 | **关键追问** | P4 原生后端能否破除 P3 架构边界?(§3.3) | P5 trace JIT 能否破除 P4 / P3 架构边界?(P5 文档定义) |
-| **三档策略** | 全启 / 部分前置 / 跳过(§3.4) | 一样的形式 + 是否经 P4 中间层(§6.3 分支) |
+| **三档策略** | 全启 / 部分前置 / 跳过(§3.4) | 同样的形式 + 是否经 P4 中间层(§6.3 分支) |
 
 这道对偶面表明 wangshu 项目流水线后段(P3 之后)统一采用「立项判定先于实施」模式——这是 [../roadmap.md](../roadmap.md) §5 原则 3「每阶段独立交付不亏」在检查级的工程化体现。
 
@@ -633,13 +633,13 @@ P4 立项判定(本文)与 P5 立项判定([../p5-trace-jit/01-launch-judgment.m
 
 ## 7. 风险与开放问题
 
-本节聚焦立项判定层的风险(实施层风险落 [./02-template-direction.md](./02-template-direction.md) / [./04-osr-deopt.md](./04-osr-deopt.md) / [./05-system-pipeline.md](./05-system-pipeline.md) 等)。
+本节聚焦立项判定层的风险(实施层风险写在 [./02-template-direction.md](./02-template-direction.md) / [./04-osr-deopt.md](./04-osr-deopt.md) / [./05-system-pipeline.md](./05-system-pipeline.md) 等)。
 
 ### 7.1 人年级投入的中途校验检查
 
 **风险**:P4 +1-2 人年是 P1+P2+P3 总和级别的投入,中途无校验等于把全部预算押在初期估算上。
 
-**缓解**:§4.3 第二检查——minimal P4 单架构 + 仅算术投机先打通全管线 + Horner 档单测;不达预期立即停下重评。
+**缓解**:§4.3 第二检查——minimal P4 单架构 + 仅算术投机先接通全管线 + Horner 档单测;不达预期立即停下重评。
 
 **残留**:第二检查触发时机本身不易把握——「实施过半」是工程判断,具体什么时刻触发由实施期主助理与用户协商([./implementation-progress.md](./implementation-progress.md) 实施期里程碑节定义)。
 
@@ -695,15 +695,15 @@ P4 立项判定(本文)与 P5 立项判定([../p5-trace-jit/01-launch-judgment.m
 
 承 [./00-overview.md](./00-overview.md) §9 的全 P4 不变式(待 00 写时聚合呈现),本子文档承担以下三条立项检查级不变式:
 
-### 8.1 「P4 是期权而非计划」
+### 8.1 「P4 是备选方案而非计划」
 
-P4 不是流水线上 P3 之后的自动启动项,而是有硬前置的期权(承 §0.1):
+P4 不是流水线上 P3 之后的自动启动项,而是有硬前置的备选方案(承 §0.1):
 
-- **行权条件**:三条硬前置(§3.1)+ 三档判据(§3.4)同时满足。
-- **未行权代价**:零——立项判定凭据写档,不消耗实施预算。
-- **不可逆性**:行权后大方向锁定(§5.1),退出代价随实施时点上升。
+- **启动条件**:三条硬前置(§3.1)+ 三档判据(§3.4)同时满足。
+- **不启动的代价**:零——立项判定凭据写档,不消耗实施预算。
+- **不可逆性**:启动后大方向锁定(§5.1),退出代价随实施时点上升。
 
-任何「下一阶段就是 P4」的工程惯性思维,违反本条不变式——P3 收口后下一阶段是「立项判定」而非「立项实施」。
+任何「下一阶段就是 P4」的工程惯性思维,违反本条不变式——P3 完成后下一阶段是「立项判定」而非「立项实施」。
 
 ### 8.2 「立项前先证负载证据,而非工程野心」
 
@@ -745,7 +745,7 @@ P4 不是流水线上 P3 之后的自动启动项,而是有硬前置的期权(�
 
 ## 9. 回填请求(对 P1/P2/P3 现稿)
 
-本文不主动改 P1/P2/P3 现稿,以下回填请求由主助理收口在 [./implementation-progress.md](./implementation-progress.md):
+本文不主动改 P1/P2/P3 现稿,以下回填请求由主助理汇总在 [./implementation-progress.md](./implementation-progress.md):
 
 ### 9.1 对 [../p3-wasm-tier/01-spike-gate.md](../p3-wasm-tier/01-spike-gate.md) 的回填请求
 
@@ -758,7 +758,7 @@ P4 不是流水线上 P3 之后的自动启动项,而是有硬前置的期权(�
 
 ### 9.3 对 [../roadmap.md](../roadmap.md) 的回填请求
 
-- §4 P4 段「+1-2 人年」估算可补「立项前置 = 立项判定(本文)」,使 P4 启动节奏与 P3 一样的(spike 先于实施)显式化——目前 §4 P3 段有「开工前置 spike」措辞,P4 段无对位措辞,造成「P4 直接启动」的错误读感。
+- §4 P4 段「+1-2 人年」估算可补「立项前置 = 立项判定(本文)」,使 P4 启动节奏与 P3 一致(spike 先于实施)并明确写出——目前 §4 P3 段有「开工前置 spike」措辞,P4 段无对位措辞,造成「P4 直接启动」的错误印象。
 
 ### 9.4 对 [../../../llmdoc/architecture/evolution-roadmap.md](../../../llmdoc/architecture/evolution-roadmap.md) 的回填请求
 
@@ -767,11 +767,11 @@ P4 不是流水线上 P3 之后的自动启动项,而是有硬前置的期权(�
 
 ### 9.5 对 [../p2-bridge/00-overview.md](../p2-bridge/00-overview.md) 的回填请求(可选)
 
-- §6 跨文档定稿决策速查可加一行「P4 立项判定」,但 P2 是 P3/P4 共享前端,可能不需要——主助理裁决是否落入 P2 总览。
+- §6 跨文档定稿决策速查可加一行「P4 立项判定」,但 P2 是 P3/P4 共享前端,可能不需要——主助理裁决是否写进 P2 总览。
 
 ### 9.6 主动回填请求兑现纪律
 
-承 [../../../llmdoc/guides/multi-doc-drafting.md](../../../llmdoc/guides/multi-doc-drafting.md) 「单点收口」纪律,本文回填请求**不主动兑现**——主助理在写完 P4 文档集后统一收口:
+承 [../../../llmdoc/guides/multi-doc-drafting.md](../../../llmdoc/guides/multi-doc-drafting.md) 「单点汇总」纪律,本文回填请求**不主动兑现**——主助理在写完 P4 文档集后统一汇总:
 
 | 兑现时机 | 内容 |
 |---|---|
@@ -779,7 +779,7 @@ P4 不是流水线上 P3 之后的自动启动项,而是有硬前置的期权(�
 | **主助理收尾时** | 统一兑现 §9.1-§9.5 各项;不兑现的项保留在 [./implementation-progress.md](./implementation-progress.md) 的「待回填」节 |
 | **立项时** | 立项判定档位决议进档时,顺手再扫一遍回填请求是否仍有效——若 §9.4 evolution-roadmap 速查表已被其它子文档兑现,本节可去除该项 |
 
-这一纪律保证 P1/P2/P3 现稿不被多个 P4 子文档并行修改造成冲突——回填集中在主助理收口点,主助理负责最终一致性。
+这一纪律保证 P1/P2/P3 现稿不被多个 P4 子文档并行修改造成冲突——回填集中在主助理汇总点,主助理负责最终一致性。
 
 ---
 
@@ -794,10 +794,10 @@ P4 不是流水线上 P3 之后的自动启动项,而是有硬前置的期权(�
 - [../../../llmdoc/memory/reflections/2026-06-15-p3-pw9-acceptance-perf-round.md](../../../llmdoc/memory/reflections/2026-06-15-p3-pw9-acceptance-perf-round.md)(里程碑级架构改动配 spike 检查——本文 §4.3 第二检查 precedent)
 - [../../../llmdoc/memory/reflections/2026-06-16-p3-pw10-architectural-ceiling-round.md](../../../llmdoc/memory/reflections/2026-06-16-p3-pw10-architectural-ceiling-round.md)(profile 才是合同——本文 §3.3 关键追问 + §3.4 跳过档同源)
 - [../p3-wasm-tier/00-overview.md](../p3-wasm-tier/00-overview.md)(P3 总览,共享前端 / 分层骨架 / 验收口径——P4 继承入口)
-- [../p3-wasm-tier/01-spike-gate.md](../p3-wasm-tier/01-spike-gate.md)(P3 检查一样的定位的对位文档——本文形式参照)
+- [../p3-wasm-tier/01-spike-gate.md](../p3-wasm-tier/01-spike-gate.md)(与 P3 检查定位相同的对位文档——本文形式参照)
 - [../p3-wasm-tier/implementation-progress.md](../p3-wasm-tier/implementation-progress.md)(P3 PW0-PW10 实施现状 + §14.10 架构边界——本文 §3.3 数据来源)
 - [./00-overview.md](./00-overview.md)(P4 文档集总览,本文是其 §0 文档地图所定的「立项检查」单一事实源)
-- [./02-template-direction.md](./02-template-direction.md)(方向裁决,本文 §1 / §4 仅落锚不展开)
+- [./02-template-direction.md](./02-template-direction.md)(方向裁决,本文 §1 / §4 仅给出锚点不展开)
 - [./03-speculation-ic.md](./03-speculation-ic.md)(IC 反馈→f64 快路径 + guard,本文 §2.4 / §4.4 提对位)
 - [./04-osr-deopt.md](./04-osr-deopt.md)(OSR exit 物化与 deopt 状态机,本文 §0.3 / §2.4 提对位)
 - [./05-system-pipeline.md](./05-system-pipeline.md)(四项税兑现 + trampoline,本文 §2.4 提对位)

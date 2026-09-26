@@ -30,9 +30,9 @@
 > [06-snapshot-deopt.md](./06-snapshot-deopt.md)(exit stub 复用 ExitOSR + 寄存器 dump 区,本文 §4 引用);
 > [08-testing-strategy.md](./08-testing-strategy.md)(测试策略——本文 §8 GC + coroutine 联合验证的入口)。
 >
-> **本文定位一句话**:**P5 是叠在 P4 之上的第三执行层,系统管线一寸不重写——所有物理开销继承 P4
+> **本文定位一句话**:**P5 是叠在 P4 之上的第三执行层,系统管线完全不重写——所有物理开销继承 P4
 > 全套(mmap+RX / trampoline / preemptFlag / RefreshJitCtxAddrs / GCRef 偏移寻址),只在 P4 骨架里加
-> 「trace 段」这一种新的 mmap 段类型,以及扩展 host 接口一小把方法给 deopt 驱动用**。
+> 「trace 段」这一种新的 mmap 段类型,以及给 host 接口扩展少量方法给 deopt 驱动用**。
 
 ---
 
@@ -130,7 +130,7 @@
 
 ### 1.3 fullmoon guard 失败为什么落 crescent 而非 gibbous(依据 00-overview §3)
 
-00-overview §3 字面:**「fullmoon 的 deopt 落点是 crescent 而非 gibbous——deopt 语义以解释器为 oracle
+00-overview §3 原文:**「fullmoon 的 deopt 落点是 crescent 而非 gibbous——deopt 语义以解释器为 oracle
 (原则 1),落到 P4 码反而要二次映射状态,得不偿失」**。展开三条工程理由:
 
 1. **状态映射一次搞定**:fullmoon 的 snapshot 天然按「解释器视角」编码——slot 号 = R(i)、frames[] =
@@ -213,7 +213,7 @@ proto 已升 P4 后,P2 侧的 back edge 计数就停在升层时的值不再增�
 
 | 候选 | 机制 | 优点 | 缺点 |
 |---|---|---|---|
-| **A**:P4 段 back edge ping | P4 emit 时在 back edge 加一次「每 N 次自增 jitContext 里的一个计数字段,越阈值经 exit-reason 通道请求 trace 候选评估」 | 精确按 P4 段真实 back edge 计数 | 每 N 次 back edge 多一次 memory store + 阈值比较,吃紧循环性能;实测收益未必值得(06-snapshot-deopt §4 已说明「显式 guard 密集吃收益」);且要动 P4 emit 器,与「P5 不动 P4」相悖 |
+| **A**:P4 段 back edge ping | P4 emit 时在 back edge 加一次「每 N 次自增 jitContext 里的一个计数字段,越阈值经 exit-reason 通道请求 trace 候选评估」 | 精确按 P4 段真实 back edge 计数 | 每 N 次 back edge 多一次 memory store + 阈值比较,拖慢紧循环性能;实测收益未必值得(06-snapshot-deopt §4 已说明「显式 guard 过密会抵消收益」);且要动 P4 emit 器,与「P5 不动 P4」相悖 |
 | **B**:P2 提升期 profile 预判 | P2 从 TierInterp → TierGibbous 前,用当时的 backEdge 计数决定「顺便标 traceCandidate」;若已很热,先建 trace 锚点再升 P4 | 不动 P4 emit;复用 P2 已有计数 | 只覆盖「升 P4 时就已经跨过 trace 阈值」的 proto——如果一个循环是升 P4 之后才热起来的(常见),就抓不住 |
 | **C**:demote-to-record(**推荐 v1**) | 该 proto 的**入口计数**(不是内层 back edge 计数,是外层调用次数)仍在 P2 侧记(P4 段入口经 trampoline 进,`Bridge.Run` 是 Go 侧函数,天然可以 count);当入口计数 × N 后周期性一次调用**改从 crescent 起跑**(临时把 tierState 视为 TierInterp 但只此一次),同时录制器 armed → 拿到 trace 后建锚点 | 不动 P4 emit;只在极稀疏的「demote 时机」付成本;录制走 crescent 是 00-overview §3 已选路径 | 每次 demote 一次调用的性能损失(该次跑 crescent 慢);需要一个「一次性 demote」机制,状态机上是新增的短暂反向边(比 P4 的 P4Deoptimized 更轻,但仍打破 P2 单向不变式) |
 
@@ -229,7 +229,7 @@ proto 已升 P4 后,P2 侧的 back edge 计数就停在升层时的值不再增�
 
 **tradeoff 说清楚**(依据 [prove-the-path-under-test](../../../llmdoc/guides/prove-the-path-under-test.md)
 思路):C 的空测风险 = 「demote 触发了但录制器仍抓不到 trace(因为 NYI 或长度上限)」→ 锚点标 Blacklisted
-后不再 demote,损失就此吃掉;不会反复 demote 造成累积开销。
+后不再 demote,损失到此为止;不会反复 demote 造成累积开销。
 
 ### 2.4 阈值建议
 
@@ -242,8 +242,8 @@ proto 已升 P4 后,P2 侧的 back edge 计数就停在升层时的值不再增�
 | **TraceEntryDemoteInterval**(候选 C 用) | — | **建议 100000** 次入口一次 demote |
 | MaxTraceLength(SEED §6 缺口) | — | 待 PT2 校准(LuaJIT 默认 1000 IR nodes,望舒建议起步 500)|
 
-阈值不影响正确性(依据 P2 01 §5.3 相同结论),晚建 trace 只是少赚不出错——这是 P5 内部第二检查点的实现
-落点(06-snapshot-deopt §4「+2-4 人年」的中途校验)。
+阈值不影响正确性(依据 P2 01 §5.3 相同结论),晚建 trace 只是少赚不出错——这是 P5 内部第二检查点的具体
+体现(06-snapshot-deopt §4「+2-4 人年」的中途校验)。
 
 ---
 
@@ -273,7 +273,7 @@ demote 之间的 P4 段跑,fullmoon 加速面就是 10% 的 demote 那次——�
 向后 JMP)执行完成、执行下一条前,查一次 anchor 表。
 
 **性能担忧**:每 back edge 一次 map 查找(建议锚点表用 Proto 旁 side-map + `map[int32]*TraceAnchor`)对紧循环
-是几十 ns 的持续开销,吃 crescent 本身的性能。
+是几十 ns 的持续开销,拖慢 crescent 本身的性能。
 
 **优化方向(择一,待 PT2 实测)**:
 
@@ -322,7 +322,7 @@ jne  exit_to_safepoint    ;; 进 exit stub 走 ExitInlineHelper(HelperSafepoint)
 
 trace 侧相同——**每条 trace loop 的 back edge 必须 emit 一次**(依据 SEED §2 「trace back edge 零开销」的现实修正:
 零开销做不到,只能沿用 P4 全显式 guard 密度)。这是 SEED §6 风险 3「全 Go 约束对 trace 收益的折损」的
-物理成因,10-30x 加速带的上沿够不到的一部分就吃在这里。
+物理成因,10-30x 加速带的上沿够不到,有一部分原因就在这里。
 
 ### 4.3 jitContext 新增字段
 
@@ -480,7 +480,7 @@ lifecycle 五步(与 [P4 05 §2.1.1](../p4-method-jit/05-system-pipeline.md) 相
 |---|---|---|
 | `Live` | trace 有效,正常用 | — |
 | `Evicted` | trace 因资源被清 | **可以重新录制**(anchor 状态回 Recording)|
-| `Blacklisted` | 录制过一次撞 NYI / 长度超限 / 反复 deopt(依据 [08 §5](./08-testing-strategy.md) V20 对偶) | **永不再试**(依据 00-overview §3 原则 4)|
+| `Blacklisted` | 录制过一次且遇到 NYI / 长度超限 / 反复 deopt(依据 [08 §5](./08-testing-strategy.md) V20 对偶) | **永不再试**(依据 00-overview §3 原则 4)|
 
 `Blacklisted` 是原则 4 的 P5 实现,防抖动。若实测发现 Blacklisted 过度(大量 anchor 被拉黑损失覆盖面),
 PT7 校准阶段可考虑「跨 State 生命期清 Blacklisted」类工具,但**默认不做**——原则 4 是宁漏不误。
@@ -498,7 +498,7 @@ PT7 校准阶段可考虑「跨 State 生命期清 Blacklisted」类工具,但**
 - 协程线程即便触达某有 anchor 的 pc,anchor 检查(§3.2)加相同 `if th == mainThread` 守卫,协程线程直接
   跳过 anchor,走原 crescent 路径;
 - `considerPromotion` 与 trace 候选评估的入口(§2.3 候选 C 的 demote 触发点)同样加线程上下文守卫,依据
-  [P3 07 §2.4](../p3-wasm-tier/07-coroutine-thread-rule.md) 已开的接口口子。
+  [P3 07 §2.4](../p3-wasm-tier/07-coroutine-thread-rule.md) 已预留的接口。
 
 ### 7.2 trace 不跨 yield(SEED §6 开放问题)
 
@@ -568,7 +568,7 @@ deopt 期间 `UnsinkAlloc` 调 `Arena.Alloc`,若越 GC 阈值触发 collect—�
 
 **关键澄清**:trace 内联的 NodeHit 与 P4 直达槽 IC(依据 [P4 03 §6](../p4-method-jit/03-speculation-ic.md))
 一样依赖 gen 单调递增 + 不复用,producer 约定(依据 [P1 05 §6.5.1](../p1-interpreter/05-interpreter-loop.md))
-对 fullmoon 原样适用——**这是 trace 内联 IC 投机的物理前提**,若 gen 不遵守 BumpGen 约定,fullmoon 会撞
+对 fullmoon 原样适用——**这是 trace 内联 IC 投机的物理前提**,若 gen 不遵守 BumpGen 约定,fullmoon 会得
 到静默的错误结果(silent wrong result)。
 
 ---

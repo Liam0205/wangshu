@@ -2,13 +2,13 @@
 
 > 状态:**详细设计**(开工前置 spike 通过后完成)。本文是 [00-overview](./00-overview.md) §0 文档地图所定的「翻译器」单一事实源——翻译单位决策、寄存器映射、全 opcode 翻译表(WAT 风格伪码 + 解释器同构验证)、pc 物化协议、`P3Compiler` 接口实现、编译器内部架构、wazero API 适配层、`SupportsAllOpcodes` 渐进白名单。
 >
-> 上游契约:[00-overview](./00-overview.md)(P3 总览,本文遵守其章节番号与风格基线)、../p3-wasm-tier §2(原稿主体,本文按 §1→§1 / §2→§2 / §2.3→§3 / §2.4→§4 / §10 不变式 1/2/3 → §8 章节映射展开)。
+> 上游约定:[00-overview](./00-overview.md)(P3 总览,本文遵守其章节番号与风格基线)、../p3-wasm-tier §2(原稿主体,本文按 §1→§1 / §2→§2 / §2.3→§3 / §2.4→§4 / §10 不变式 1/2/3 → §8 章节映射展开)。
 >
 > P1 依赖面:[../p1-interpreter/02-bytecode-isa](../p1-interpreter/02-bytecode-isa.md)(源 ISA 完整定义,翻译器输入)、[../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md)(解释器主循环,P3 翻译器输出与之 byte-equal)、[../p1-interpreter/01-value-object-model](../p1-interpreter/01-value-object-model.md) §3(NaN-boxing 编码,Wasm 侧逐位同一)、[../p1-interpreter/06-memory-gc](../p1-interpreter/06-memory-gc.md) §5/§7(GC 根枚举与 safepoint 布点)。
 >
 > P2 依赖面:[../p2-bridge/02-ic-feedback](../p2-bridge/02-ic-feedback.md)(`TypeFeedback` shape,P3 可选消费)、[../p2-bridge/03-compilability-analysis](../p2-bridge/03-compilability-analysis.md) §3.7(F7 `SupportsAllOpcodes`)、[../p2-bridge/05-p3-p4-interface](../p2-bridge/05-p3-p4-interface.md) §2(`P3Compiler` 接口签名)、[../p2-bridge/04-try-compile-fallback](../p2-bridge/04-try-compile-fallback.md) §5.2(panic recover + `CompileError`)。
 >
-> 下游协作:[03-memory-model](./03-memory-model.md)(共见 linear memory,翻译器读写的物理基础)、[04-trampoline](./04-trampoline.md)(CALL/TAILCALL/RETURN 的跨层互调形式,本文 §3.6 链至 04)、[05-safepoint-gc](./05-safepoint-gc.md)(回边 safepoint 与 locals 写回纪律,本文 §3.5 / §6.5 链至 05)、[06-ic-feedback-consume](./06-ic-feedback-consume.md)(IC 快照固化,本文 §3.4 / §6.5 链至 06)。
+> 下游协作:[03-memory-model](./03-memory-model.md)(共见 linear memory,翻译器读写的物理基础)、[04-trampoline](./04-trampoline.md)(CALL/TAILCALL/RETURN 的跨层互调形式,本文 §3.6 链至 04)、[05-safepoint-gc](./05-safepoint-gc.md)(循环回跳(back edge) safepoint 与 locals 写回纪律,本文 §3.5 / §6.5 链至 05)、[06-ic-feedback-consume](./06-ic-feedback-consume.md)(IC 快照固化,本文 §3.4 / §6.5 链至 06)。
 
 对应 Go 包:`internal/gibbous/wasm`(字节码→Wasm 编译器主包,含 `compile.go`/`emit.go`/`opcodes.go`/`memory.go`/`trampoline.go`/`helpers.go`,详见 §6.1)。
 
@@ -32,7 +32,7 @@ P3 工作流是「P2 喂料 → P3 翻译 → wazero 执行」三段式([00-over
 
 「翻译单位」= 一次 `P3Compiler.Compile` 调用产出的 Wasm 编译实体形式。三档候选:
 
-| 候选 | 物理形式 | 优点 | 缺点 |
+| 候选 | 具体形式 | 优点 | 缺点 |
 |---|---|---|---|
 | **(A) 每 Proto 一 module**(P3 基线) | `Compile(proto)` → 一个 `wazero.CompiledModule`,内含一个导出的入口函数 `proto_N` | 隔离强(单 Proto 编译失败只 fallback 自己,§1.4 失败原子性);升层时机自然;不需要批次切分策略 | module 实例化有固定开销(数十微秒级,实测后定标);Proto 间直调需经 Go 中转(`gibbous→Go→gibbous`,两次跨层) |
 | **(B) N 个热 Proto 合一 module**(优化项) | 一组同 Program 的热 Proto 攒成批次,合成一个 `CompiledModule`,内部互相 `call`/`call_indirect` 直调 | gibbous→gibbous 调用免 Go 往返(§5.3 跨层助手退化为同 module 内部 call);摊薄实例化开销 | 升层时机不同步(批次内一个 Proto 还没到热度也得等 batch);批次划分引入策略复杂度;一损俱损(批内任一 Proto 编译失败,整批 fallback) |
@@ -60,21 +60,21 @@ P3 工作流是「P2 喂料 → P3 翻译 → wazero 执行」三段式([00-over
 | **PW1** | ∅(空集) | — | §5.2 SupportsAllOpcodes 永远返 false,验证「无 Proto 升层」与 P1-only 等价 |
 | **PW2** | + MOVE / LOADK / LOADBOOL / LOADNIL / GETUPVAL / SETUPVAL / JMP | 直线翻译 | §3.1 |
 | **PW3** | + ADD / SUB / MUL / DIV / MOD / POW / UNM / NOT / EQ / LT / LE / TEST / TESTSET | 双 number 快路径 + NaN 规范化 + 元方法慢路径助手 | §3.2 / §3.3 |
-| **PW4** | + FORPREP / FORLOOP / TFORLOOP | 回边 safepoint(§3.5 + [05-safepoint-gc](./05-safepoint-gc.md) §3) | §3.5 |
+| **PW4** | + FORPREP / FORLOOP / TFORLOOP | back edge safepoint(§3.5 + [05-safepoint-gc](./05-safepoint-gc.md) §3) | §3.5 |
 | **PW5** | + GETTABLE / SETTABLE / GETGLOBAL / SETGLOBAL / SELF / NEWTABLE / LEN / CONCAT / SETLIST | IC 快照固化 + 失效降级走助手(翻译复杂度峰值) | §3.4 + [06-ic-feedback-consume](./06-ic-feedback-consume.md) |
 | **PW6** | + CALL / TAILCALL / RETURN | 跨层互调协议 + status 链错误冒泡(经 [04-trampoline](./04-trampoline.md)) | §3.6 |
 | **PW7** | + CLOSURE / CLOSE | 闭包 + 开放/关闭 upvalue(VARARG 已被 P2 F1 拦下,本步只验「不可达路径不被走到」) | §3.7 |
 | PW8-PW9 | (全集 0..37 已支持,只剩 VARARG 的「不应到达」断言 + 验收测试) | — | [08-testing-strategy](./08-testing-strategy.md) |
 
-> **保守缺省的实现表达**(§5.2 详):`Compiler.supported [numOps]bool` 数组初值全 false,每个 PW 在初始化里把对应 opcode 标 true。`SupportsAllOpcodes` 单遍扫 `proto.Code`,任一 `OpCode` 不在 supported 即返 false。**未识别 opcode 编号(38..63 预留区)统一返 false**——违反契约的 panic 不发生,因为 supported 数组按 numOps 长度建,越界视作 false。
+> **保守缺省的实现表达**(§5.2 详):`Compiler.supported [numOps]bool` 数组初值全 false,每个 PW 在初始化里把对应 opcode 标 true。`SupportsAllOpcodes` 单遍扫 `proto.Code`,任一 `OpCode` 不在 supported 即返 false。**未识别 opcode 编号(38..63 预留区)统一返 false**——违反约定的 panic 不发生,因为 supported 数组按 numOps 长度建,越界视作 false。
 
-`SupportsAllOpcodes` 的接口契约见 [../p2-bridge/05](../p2-bridge/05-p3-p4-interface.md) §2.2.1:O(N) 单遍扫、纯只读、不修改 Proto、不持久化任何状态、**不应 panic**(遇到无法识别的 opcode 编号也走保守拒)。本文 §5.2 的实现严格遵守。
+`SupportsAllOpcodes` 的接口约定见 [../p2-bridge/05](../p2-bridge/05-p3-p4-interface.md) §2.2.1:O(N) 单遍扫、纯只读、不修改 Proto、不持久化任何状态、**不应 panic**(遇到无法识别的 opcode 编号也走保守拒)。本文 §5.2 的实现严格遵守。
 
 ### 1.4 失败原子性
 
 「失败」覆盖两个事件:① F7 漏判——`SupportsAllOpcodes` 返 true 但 `Compile` 实际编不了某 opcode 子情况(罕见,记 issue 修 §1.3 白名单);② 后端 panic——P3 编译器内部 bug 触发(由 §5.5 defer recover 兜底转 `*CompileError(Kind=BackendPanic)`)。
 
-不论哪种,**该 Proto 单独 fallback,不影响兄弟 Proto**。具体完成:
+不论哪种,**该 Proto 单独 fallback,不影响兄弟 Proto**。具体实现:
 
 ```go
 // internal/gibbous/wasm/compile.go —— 错误返回路径(§5.5 完整骨架)
@@ -102,14 +102,14 @@ func (c *Compiler) Compile(proto *bytecode.Proto, fb *bridge.TypeFeedback) (gc b
 
 ## 2. 寄存器映射
 
-P1 寄存器 `R(i)` 物理上是 thread 值栈槽 `stack[base+i]`(见 [../p1-interpreter/01](../p1-interpreter/01-value-object-model.md) §5.6 与 [../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §1.3)。Wasm 侧把 `R(i)` 放到哪里有两种候选:**linear memory 栈槽**(方案 A)与 **Wasm locals**(方案 B)。
+P1 寄存器 `R(i)` 实际上是 thread 值栈槽 `stack[base+i]`(见 [../p1-interpreter/01](../p1-interpreter/01-value-object-model.md) §5.6 与 [../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §1.3)。Wasm 侧把 `R(i)` 放到哪里有两种候选:**linear memory 栈槽**(方案 A)与 **Wasm locals**(方案 B)。
 
 ### 2.1 候选方案 A vs B 的成本分析
 
 | 方案 | 读写指令 | 访存成本(wazero 编译后) | GC 可见性 | 解释器可见性 | 跨层切换成本 |
 |---|---|---|---|---|---|
 | **(A) linear memory 栈槽**(基线) | `i64.load offset=8*i` / `i64.store offset=8*i` | 一次内存访问(wazero 编译为单条 load/store,与 Go 原生切片访问同档) | **天然共见**——值就在 thread 值栈,GC 根扫描复用 [../p1-interpreter/06](../p1-interpreter/06-memory-gc.md) §5.1 R5(running thread + CallInfo),零新增机制 | **天然共见**——同一字节偏移、同一 NaN-box 编码,无需翻译 | **零成本**——base 字节偏移就是入口入参 i32,trampoline 不物化任何寄存器值 |
-| (B) Wasm locals | `local.get $r_i` / `local.set $r_i` | 寄存器级(wazero 编译为机器寄存器或 Wasm 栈槽,比 memory load 快若干 ns) | **不可见**——locals 在 wazero 自管栈上,Go GC / 望舒 GC 扫不到 | **不可见**——解释器读 `stack[base+i]` 与 locals 不同源 | **每边界一次写回 + 一次读取**——所有跨层调用前要把 locals 落回 memory 栈槽(safepoint 写回纪律,§2.4) |
+| (B) Wasm locals | `local.get $r_i` / `local.set $r_i` | 寄存器级(wazero 编译为机器寄存器或 Wasm 栈槽,比 memory load 快若干 ns) | **不可见**——locals 在 wazero 自管栈上,Go GC / 望舒 GC 扫不到 | **不可见**——解释器读 `stack[base+i]` 与 locals 不同源 | **每边界一次写回 + 一次读取**——所有跨层调用前要把 locals 写回 memory 栈槽(safepoint 写回纪律,§2.4) |
 
 ### 2.2 基线决策:全 memory-resident
 
@@ -128,8 +128,8 @@ memory-resident 的「访存比 locals 慢若干 ns」代价,在「消灭 dispat
 
 (B) 不被基线采纳,但留作 spike 后的优化项,**只对循环局部热槽缓存**。最自然的候选:
 
-- **FORLOOP 三槽**(idx/limit/step,即 R(A)/R(A+1)/R(A+2),[../p1-interpreter/02](../p1-interpreter/02-bytecode-isa.md) §6):FORPREP 已校验三槽为 number(失败则报错前置),进入 FORLOOP 后整个循环体内三槽是 number 不变(§3.5),可缓存到三个 `f64` locals,回边判界完全在 locals 上做。
-- **R(A+3) 循环变量 v**:每次回边 `setReg(v, idx)` 后才被循环体读;若编译器静态分析循环体不读 v(纯递增),v 可不写回(进一步优化,PW9 未需——loop 核 memory-resident 已 2.58x 达标;留后续 locals 缓存类优化一并评估)。
+- **FORLOOP 三槽**(idx/limit/step,即 R(A)/R(A+1)/R(A+2),[../p1-interpreter/02](../p1-interpreter/02-bytecode-isa.md) §6):FORPREP 已校验三槽为 number(失败则报错前置),进入 FORLOOP 后整个循环体内三槽是 number 不变(§3.5),可缓存到三个 `f64` locals,back edge 判界完全在 locals 上做。
+- **R(A+3) 循环变量 v**:每次 back edge `setReg(v, idx)` 后才被循环体读;若编译器静态分析循环体不读 v(纯递增),v 可不写回(进一步优化,PW9 未需——loop 核 memory-resident 已 2.58x 达标;留后续 locals 缓存类优化一并评估)。
 
 非循环上下文不上 (B):一般直线代码里,每条指令产出会被随后指令读,locals 节省的只是「单次访存」,不值得引入写回纪律。
 
@@ -172,7 +172,7 @@ WriteBackPoints(emitContext):
 
 `$base` = 本帧 R0 在 linear memory 的**字节偏移**(由 trampoline 入口传入,详见 [04-trampoline](./04-trampoline.md) §2)。返回 status:`0=OK / 1=ERR`(P3 永远不返回 2;2 是 P4 的 DEOPT,见 [../p2-bridge/05](../p2-bridge/05-p3-p4-interface.md) §6.1)。
 
-A/B/C 是编译期常量,落为静态 offset 立即数——这正是 [../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §3.4 列举的「翻译 vs 解释」常数因子优势之一。
+A/B/C 是编译期常量,编码为静态 offset 立即数——这正是 [../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §3.4 列举的「翻译 vs 解释」常数因子优势之一。
 
 记号:
 - `$base` 是字节偏移,寄存器 i 的字节偏移 = `8*i`(NaN-box u64 = 8 bytes)。
@@ -280,12 +280,12 @@ A/B/C 是编译期常量,落为静态 offset 立即数——这正是 [../p1-int
 ```
 
 - 关键设计:**控制流在编译期解决**——sBx 是编译期常量,目标 pc 已知,翻译器为 Proto.Code 每个跳转目标建一个 Wasm 基本块标签 `$L_<pc>`,JMP 翻译为 `br $L_<target>`。运行期没有 pc 算术。
-- 回边 safepoint:回边是循环回跳,gcPending 检查在此触发(承 [05-safepoint-gc](./05-safepoint-gc.md) §3 三类 safepoint 之一)。FORLOOP 是热回边的主要形式,JMP 向后跳通常用于 while/repeat 循环。
+- back edge safepoint:back edge 是循环回跳,gcPending 检查在此触发(承 [05-safepoint-gc](./05-safepoint-gc.md) §3 三类 safepoint 之一)。FORLOOP 是热 back edge 的主要形式,JMP 向后跳通常用于 while/repeat 循环。
 - 与解释器同构验证(execute.go 201-210 行):`if SBx(i) < 0: preempt + OnBackEdge; ci.pc += SBx(i)`。
-  - `preempt`(异步抢占)→ wazero 自管(roadmap §2 税二「已验证」),P3 不发等价指令([00-overview](./00-overview.md) §8 第二行),编译产物借用 wazero 回边检查点。
+  - `preempt`(异步抢占)→ wazero 自管(roadmap §2 税二「已验证」),P3 不发等价指令([00-overview](./00-overview.md) §8 第二行),编译产物借用 wazero back edge 检查点。
   - `OnBackEdge`(热度计数)→ gibbous 帧已升层,**不再计热**(详见 §3.5 论证)。
   - `ci.pc += SBx(i)` → 静态 br,运行期不需要写 pc;但 traceback 仍需 pc 物化到 CallInfo.savedPC,见 §4。
-- **边角 case**:`JMP 0`(原地跳)在 codegen 中通常不出现,但若出现,翻译为无操作 + 回边 safepoint(因 sBx=0 ≥ 0 实际是「向前跳 0 步」,无回边)。
+- **边角 case**:`JMP 0`(原地跳)在 codegen 中通常不出现,但若出现,翻译为无操作 + back edge safepoint(因 sBx=0 ≥ 0 实际是「向前跳 0 步」,无 back edge)。
 
 ### 3.2 算术 opcode(PW3)—— ADD/SUB/MUL/DIV/MOD/POW/UNM
 
@@ -324,13 +324,13 @@ A/B/C 是编译期常量,落为静态 offset 立即数——这正是 [../p1-int
     (br_if $err (i32.eq (local.get $st) (i32.const 1)))))
 ```
 
-- 关键设计:快路径是**语义分发非投机 guard**(承 ../p3-wasm-tier §3.1 + [06-ic-feedback-consume](./06-ic-feedback-consume.md) §1)——`IsNumber(vb) && IsNumber(vc)` 是 [../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §4.1 解释器快路径的一样的判定,失败走慢路径助手得到正确结果,**不存在 deopt**。
+- 关键设计:快路径是**语义分发非投机 guard**(承 ../p3-wasm-tier §3.1 + [06-ic-feedback-consume](./06-ic-feedback-consume.md) §1)——`IsNumber(vb) && IsNumber(vc)` 与 [../p1-interpreter/05](../p1-interpreter/05-interpreter-loop.md) §4.1 解释器快路径的判定相同,失败走慢路径助手得到正确结果,**不存在 deopt**。
 - NaN 规范化是 byte-equal 必备:解释器侧 `value.NumberValue(r)` 内部对所有 NaN 强制为 canonical bit pattern(01 §3.4),Wasm 侧 `f64.add` 产生的 NaN 可能不是 canonical(IEEE 允许多种 NaN bit pattern,wazero 也不保证标准化),必须显式规范化。这条「显式规范化 NaN」是 §8 不变式 1 的具体执行点。
 - IsNumber 的 NaN-box 实现:[../p1-interpreter/01](../p1-interpreter/01-value-object-model.md) §3.2 定 `IsNumber(v) ⇔ v < 0xFFF8_0000_0000_0000`(因为 NaN-box 把非 number 编入 0xFFF8 起的 NaN 高 bits),Wasm 侧用 `i64.lt_u` 直接对应。
 - `<load_RK_B>` 占位的处理:RK 在编译期已知是寄存器还是常量(02 §2.1 RK 标志位)——若是寄存器(B<256),发 `i64.load offset=8*B`;若是常量(B≥256),发 `i64.const <K[B-256].rawU64>`。这是「编译期消化 RK 解码」的优势。
 - `$h_arith` 助手签名:`func(base int32, pc int32, op int32, rkb int32, rkc int32, dst int32) int32`,返回 0=OK / 1=ERR。Go 侧实现就是 execute.go 的 `doArithSlow` 复用——参数包含 op 让一个助手覆盖 ADD/SUB/MUL/DIV/MOD/POW 六个 opcode,代码量小且一致性强。
 - 与解释器同构验证(execute.go 141-148 行 + doArith 410-438 行):
-  - `value.IsNumber(b) && value.IsNumber(c)` 与 Wasm `i64.lt_u && i64.lt_u` 一样的判定。
+  - `value.IsNumber(b) && value.IsNumber(c)` 与 Wasm `i64.lt_u && i64.lt_u` 判定相同。
   - `setReg(... value.NumberValue(r))` ≡ Wasm 的 store + 显式 canonicalize。
   - 慢路径通过助手回 Go 跑 `doArithSlow`,完全复用解释器逻辑——同构是天然的。
 
@@ -353,7 +353,7 @@ POW:  没有 wasm 直发指令,需经助手 $h_pow:
 慢路径的 `$h_arith` 助手用 op 参数分流,无新 helper。
 
 - DIV 的特殊:`x/0` 在 Lua 语义返回 ±Inf(02 §4 注),IEEE 浮点除法直接得到 ±Inf,无须额外处理。NaN(0/0)经 §3.2.1 的规范化兜住。
-- MOD 的特殊:Lua 5.1 用 `a - floor(a/b)*b` 而非 C 的 `fmod`(差异在负数取模符号,见 [../p1-interpreter/02](../p1-interpreter/02-bytecode-isa.md) §4 OpCode MOD 注)。Wasm 翻译用 `f64.floor + f64.mul + f64.sub` 三步,与解释器 execute.go 427 行 `r = x - math.Floor(x/y)*y` 一样的。
+- MOD 的特殊:Lua 5.1 用 `a - floor(a/b)*b` 而非 C 的 `fmod`(差异在负数取模符号,见 [../p1-interpreter/02](../p1-interpreter/02-bytecode-isa.md) §4 OpCode MOD 注)。Wasm 翻译用 `f64.floor + f64.mul + f64.sub` 三步,与解释器 execute.go 427 行 `r = x - math.Floor(x/y)*y` 一致。
 - POW 不直发:Wasm 没有 `f64.pow` 指令;wazero 提供 `math.Pow` 经 imported intrinsic 调,基线就走 `$h_pow`(`func(x, y f64) f64`,内部 `math.Pow`)。同构性靠 Go math.Pow 与解释器 doArith 的 math.Pow 是同一个函数自然成立(execute.go 429 行)。
 
 #### 3.2.3 UNM A B —— `R(A) := -R(B)`
@@ -426,7 +426,7 @@ POW:  没有 wasm 直发指令,需经助手 $h_pow:
 ```
 
 - LEN 不带 IC(02 §1.2 注 2),三分支按 NaN-box tag 直接拣选。
-- 与解释器同构(execute.go 182-193 行):TagString → `object.StringLen`、TagTable → `st.rawBorder`、default → 报错。Wasm 侧三个 case 通过助手回 Go 完成具体计算,helper 实现直接复用 execute.go 一样的代码。
+- 与解释器同构(execute.go 182-193 行):TagString → `object.StringLen`、TagTable → `st.rawBorder`、default → 报错。Wasm 侧三个 case 通过助手回 Go 完成具体计算,helper 实现直接复用 execute.go 中同样的代码。
 - **为什么 string_len / table_border 走助手而不内联**:string 长度需要读 arena 内的 string header(`StringLen` 实现细节),table border 需要在 array 段做二分查找——这两个的 Wasm 内联翻译过于复杂(且边角较多),走助手更稳。spike 验证 helper 跨层 < 50ns 后基本无收益空间。
 
 #### 3.2.6 CONCAT A B C —— `R(A) := R(B) .. ... .. R(C)`(右结合)
@@ -487,7 +487,7 @@ POW:  没有 wasm 直发指令,需经助手 $h_pow:
 - 「比较 + JMP」合并是 P3 控制流翻译的精华:解释器是「比较算 res → 条件 pc++ → 下条 JMP 执行/跳过」三步两指令(execute.go 247-249 行);P3 在编译期已知后随 JMP 的目标与 bool(A),把三步压成一个 `if (res != boolA) br else br`——零运行期 pc 算术、零额外取指。
 - string 比较走助手而非内联:string 字典序比较需读 arena 内字符串字节做逐字节比较(execute.go 537-543 行 `stringCompare`),内联翻译复杂,走助手更稳。
 - 与解释器同构(execute.go 212-249 行 + doCompare 507-590 行):
-  - `value.IsNumber(b) && value.IsNumber(c)` → f64 比较,与 Wasm `f64.lt` 一样的。
+  - `value.IsNumber(b) && value.IsNumber(c)` → f64 比较,与 Wasm `f64.lt` 一致。
   - 否则 `st.doCompare` → 助手回 Go,完全复用解释器逻辑。
   - `res != (A != 0) → ci.pc++` → Wasm 的 `if (vt != boolA) br $L_after_jmp`。
 
@@ -553,7 +553,7 @@ POW:  没有 wasm 直发指令,需经助手 $h_pow:
   (else (br $L_jmp_target)))
 ```
 
-- 与解释器同构(execute.go 251-255 行):`Truthy(reg(A)) != (C != 0) → ci.pc++`,Wasm 一样的。
+- 与解释器同构(execute.go 251-255 行):`Truthy(reg(A)) != (C != 0) → ci.pc++`,Wasm 侧与之一致。
 - TEST 无慢路径(纯真值判定),全内联。
 
 #### 3.3.5 TESTSET A B C —— `if Truthy(R(B)) == bool(C) then R(A):=R(B) else pc++`
@@ -572,7 +572,7 @@ POW:  没有 wasm 直发指令,需经助手 $h_pow:
     (br $L_after_jmp)))
 ```
 
-- 与解释器同构(execute.go 257-263 行):`if Truthy(reg(B)) == (C != 0): setReg(A, b) else ci.pc++`,Wasm 一样的。
+- 与解释器同构(execute.go 257-263 行):`if Truthy(reg(B)) == (C != 0): setReg(A, b) else ci.pc++`,Wasm 侧与之一致。
 - TESTSET 无慢路径,全内联。
 
 ### 3.4 表 IC opcode(PW5)—— GETTABLE/SETTABLE/GETGLOBAL/SETGLOBAL/SELF
@@ -638,14 +638,14 @@ type ICSlot struct {
 (block $L_gettable_done)
 ```
 
-- 关键设计:快路径检查链是「IsTable + 同表 + 同代次 + 同键」,与 ic.go `icGetTable` 22-47 行的 IC 命中校验**完全一样的**——这是**语义分发非投机**(承 ../p3-wasm-tier §3.1),失败走 `$h_gettable` 助手得到正确结果(完整查找 + 回填 IC + __index 链),零 deopt。
+- 关键设计:快路径检查链是「IsTable + 同表 + 同代次 + 同键」,与 ic.go `icGetTable` 22-47 行的 IC 命中校验**完全一致**——这是**语义分发非投机**(承 ../p3-wasm-tier §3.1),失败走 `$h_gettable` 助手得到正确结果(完整查找 + 回填 IC + __index 链),零 deopt。
 - 三层校验对应 ic.go 的字段比对:
   - `slot.TableRef == uint32(t)` → Wasm `gcref_low32(vt) == SNAP_TABLEREF`。
   - `slot.Shape == object.TableGen(arena, t)` → Wasm `table_gen(vt) == SNAP_GEN`。
   - array hit: `arrayIndex(key) == slot.Index`;node hit: `keyEqual(NodeKey(slot.Index), key)` → Wasm `$ic_key_match`。
-- 「槽值 nil 退慢路径」对应 ic.go 33-36 行 / 43-46 行的 `if v != value.Nil` 守卫——槽位虽命中但值为 nil 时,Lua 语义要查 `__index`(可能 metatable 有此键),故退慢路径。Wasm 侧 `if (i64.ne vb nil)` 守卫一样的。
+- 「槽值 nil 退慢路径」对应 ic.go 33-36 行 / 43-46 行的 `if v != value.Nil` 守卫——槽位虽命中但值为 nil 时,Lua 语义要查 `__index`(可能 metatable 有此键),故退慢路径。Wasm 侧 `if (i64.ne vb nil)` 守卫与之相同。
 - `$h_gettable` 助手:`func(base int32, pc int32, a int32, b int32, c int32) int32`,内部 `tbl := reg(B); key := rk(C); v, e := st.icGetTable(...); setReg(A, v)`——完全复用 execute.go 98-108 行的 GETTABLE 段。助手内的 `icGetTable` 也会回填 IC slot(运行期 IC 持续更新),但 gibbous 固化的快照不变(失效后该点永久走助手 ≈ 解释器无 IC,正确但慢,[06-ic-feedback-consume](./06-ic-feedback-consume.md) §1)。
-- 与解释器同构(execute.go 98-108 行 + ic.go 22-73 行):快路径 = IC 命中校验一样的;慢路径 = 助手回 Go 跑 `icGetTable`,同构天然。
+- 与解释器同构(execute.go 98-108 行 + ic.go 22-73 行):快路径 = 与 IC 命中校验一致;慢路径 = 助手回 Go 跑 `icGetTable`,同构天然。
 
 #### 3.4.3 SETTABLE A B C —— `R(A)[RK(B)] := RK(C)`(IC 快照内联)
 
@@ -684,7 +684,7 @@ type ICSlot struct {
 - `vc != nil` 守卫对应 ic.go 83 行 `if val != value.Nil`(删除走慢路径,可能 rehash 语义)。
 - `$ic_key_match_nonnil` 比 GETTABLE 的 `$ic_key_match` 多一个「当前槽值非 nil」校验,对应 ic.go 88 行 `if object.TableArrayAt(...) != value.Nil` / 97 行 `object.NodeVal(...) != value.Nil`——改值快路径要求键已存在(槽值非 nil)。
 - 快路径无 safepoint:改值不分配不 rehash,无 GC 触发可能(execute.go 119 行的 safepoint 在助手内,快路径跳过)。这是 [05-safepoint-gc](./05-safepoint-gc.md) §3 「分配点 safepoint」在 P3 的精确兑现——只在真正可能分配的助手内 safepoint。
-- 与解释器同构(execute.go 110-119 行 + ic.go 77-127 行):快路径 = IC 改值命中一样的;慢路径 = 助手回 Go 跑 `icSetTable`。
+- 与解释器同构(execute.go 110-119 行 + ic.go 77-127 行):快路径 = 与 IC 改值命中一致;慢路径 = 助手回 Go 跑 `icSetTable`。
 
 #### 3.4.4 GETGLOBAL / SETGLOBAL —— globals 表的特例
 
@@ -720,7 +720,7 @@ GETGLOBAL/SETGLOBAL 是「目标表恒为 globals」的表访问特例(02 §4):
   - globals 恒为 node hit(globals 表无 array 段,02-ic-feedback §2.2),`SNAP_KIND` 恒为 `ICKindNodeHit`。
 - globals 失效:新增全局键触发 globals rehash → bump gen → 快照永久 miss → 该点走助手。这与 ic.go 的 globals IC 失效语义一致。
 - SETGLOBAL 对称(改已存在全局键走快路径;新增键 rehash 走慢路径)。execute.go 88-96 行 GETGLOBAL/SETGLOBAL 经 `icGetTable`/`icSetTable` 复用,Wasm 助手同样复用。
-- SETGLOBAL 后随 safepoint(execute.go 96 行),助手内收口。
+- SETGLOBAL 后随 safepoint(execute.go 96 行),在助手内统一处理。
 
 #### 3.4.5 SELF A B C —— `R(A+1) := R(B); R(A) := R(B)[RK(C)]`(方法调用优化)
 
@@ -755,7 +755,7 @@ GETGLOBAL/SETGLOBAL 是「目标表恒为 globals」的表访问特例(02 §4):
 
 - SELF 的第一步 `R(A+1) := R(B)` 必须在 IC 查找之前(execute.go 129-131 行先 `setReg(A+1, tbl)`),因为 IC 查找可能写 R(A),不能覆盖 obj。注意 A+1 与 A 是不同槽,无冲突。
 - 第二步与 GETTABLE 完全同构(execute.go 129-139 行的 SELF 段就是「setReg(A+1) + icGetTable」)。方法常驻 metatable 时命中率极高(02-ic-feedback §2.3),是 IC 快照固化收益最大的点。
-- 与解释器同构(execute.go 129-139 行):`setReg(A+1, tbl); v, e := st.icGetTable(...); setReg(A, v)`,Wasm 两步一样的。
+- 与解释器同构(execute.go 129-139 行):`setReg(A+1, tbl); v, e := st.icGetTable(...); setReg(A, v)`,Wasm 两步与之一致。
 
 #### 3.4.6 NEWTABLE A B C —— `R(A) := {}`(经助手分配)
 
@@ -810,7 +810,7 @@ GETGLOBAL/SETGLOBAL 是「目标表恒为 globals」的表访问特例(02 §4):
 - 与解释器同构(execute.go 323-341 行):助手内完全复用 FORPREP 段,同构天然。
 - 控制流:FORPREP 后必跳到对应 FORLOOP(02 §8 示例 `FORPREP R2 -> L1`),编译期目标已知,翻译为 `br $L_forloop`。
 
-#### 3.5.2 FORLOOP A sBx —— 数值 for 回边(热点)
+#### 3.5.2 FORLOOP A sBx —— 数值 for back edge(热点)
 
 ```wat
 ;; FORLOOP A sBx —— 热回边。三槽已被 FORPREP 保证 number(§3.5.1),快路径全 f64
@@ -837,14 +837,14 @@ GETGLOBAL/SETGLOBAL 是「目标表恒为 globals」的表访问特例(02 §4):
 ```
 
 - 关键红利:**三槽已被 FORPREP 保证 number**(execute.go 323-341 行 FORPREP 把三槽都规范化为 number),FORLOOP 快路径直发 f64 算术与比较,**零类型校验**——这是数值 for 编译后的最大常数因子优势。execute.go 299-321 行 FORLOOP 段也是直接 `value.AsNumber`(不校验,因 FORPREP 已保证)。
-- 方向敏感判界:`step >= 0 → idx <= limit` / `step < 0 → idx >= limit`,与 execute.go 306-310 行 `if step >= 0 { cont = idx <= limit } else { cont = idx >= limit }` 一样的。
+- 方向敏感判界:`step >= 0 → idx <= limit` / `step < 0 → idx >= limit`,与 execute.go 306-310 行 `if step >= 0 { cont = idx <= limit } else { cont = idx >= limit }` 一致。
 - **step 编译期常量特化**:绝大多数数值 for 是 `for i=1,n do`(step=1)或 `for i=n,1,-1 do`(step=-1),step 是常量。此时 `f64.ge step 0` 是编译期可判定的,翻译器直接发对应方向的单比较(`f64.le` 或 `f64.ge`),不发 step 符号判断分支。这是 §9 文档缺口提到的「locals 缓存槽选择」之外的另一个特化点。
-- 回边 safepoint:gcPending 检查覆盖「循环体内经助手分配置了 pending、但 collect 被推迟」的回收时机(承 [05-safepoint-gc](./05-safepoint-gc.md) §3 + 对齐 execute.go 的 opcode 末尾检查)。一次 `i32.load` + 几乎恒不跳的分支,开销极小。
-- 异步抢占借 wazero:execute.go 312 行的 `preempt()` 在 P3 不发等价指令(wazero 生成码回边已有抢占检查点,roadmap §2 税二「已验证」)。我们的 gcPending 检查是另一回事(自己 GC 的事),与 wazero 抢占互不相干、各管各的([00-overview](./00-overview.md) §8 第二行)。
-- **OnBackEdge 不调的论证**:execute.go 318-320 行在解释器 FORLOOP 回边调 `st.bridge.OnBackEdge(proto, pc)` 做热度计数。但 gibbous 帧是**已升层**的——热度计数的目的是「决定该不该升层」,已升层的 Proto 再计热没有意义(它已经是 gibbous 了,不会「再升」,P3 无更高层)。所以 P3 翻译**不发 OnBackEdge 调用**。这与 ../p3-wasm-tier §2.3 FORLOOP 示例的省略一致。
+- back edge safepoint:gcPending 检查覆盖「循环体内经助手分配置了 pending、但 collect 被推迟」的回收时机(承 [05-safepoint-gc](./05-safepoint-gc.md) §3 + 对齐 execute.go 的 opcode 末尾检查)。一次 `i32.load` + 几乎恒不跳的分支,开销极小。
+- 异步抢占借 wazero:execute.go 312 行的 `preempt()` 在 P3 不发等价指令(wazero 生成码的 back edge 已有抢占检查点,roadmap §2 税二「已验证」)。我们的 gcPending 检查是另一回事(自己 GC 的事),与 wazero 抢占互不相干、各管各的([00-overview](./00-overview.md) §8 第二行)。
+- **OnBackEdge 不调的论证**:execute.go 318-320 行在解释器 FORLOOP back edge 调 `st.bridge.OnBackEdge(proto, pc)` 做热度计数。但 gibbous 帧是**已升层**的——热度计数的目的是「决定该不该升层」,已升层的 Proto 再计热没有意义(它已经是 gibbous 了,不会「再升」,P3 无更高层)。所以 P3 翻译**不发 OnBackEdge 调用**。这与 ../p3-wasm-tier §2.3 FORLOOP 示例的省略一致。
   - 边角考量:若未来 P4 引入「gibbous → fullmoon 再升层」,热度计数可能要恢复——但那是 P4/P5 的事,P3 范围内 gibbous 是顶层,不计热。记入 §9 文档缺口的相关项(IC 快照失效重编译评估时一并考虑)。
-- locals 缓存优化点(§2.3):FORLOOP 三槽(idx/limit/step)是 locals 缓存的首选——上面伪码已经把它们 load 到 `$idx/$limit/$step` locals,若启用 §2.3 优化,这三个 locals 跨迭代保持(不每次 load/store memory),只在回边写回 idx/v 到 memory(GC 可见性纪律,§2.4)。基线先全 memory-resident(每次 load),优化项 spike 后定。
-- 与解释器同构(execute.go 299-321 行):idx+=step / 方向判界 / 写回 idx+v / 回跳,逐句一样的。
+- locals 缓存优化点(§2.3):FORLOOP 三槽(idx/limit/step)是 locals 缓存的首选——上面伪码已经把它们 load 到 `$idx/$limit/$step` locals,若启用 §2.3 优化,这三个 locals 跨迭代保持(不每次 load/store memory),只在 back edge 写回 idx/v 到 memory(GC 可见性纪律,§2.4)。基线先全 memory-resident(每次 load),优化项 spike 后定。
+- 与解释器同构(execute.go 299-321 行):idx+=step / 方向判界 / 写回 idx+v / 回跳,逐句一致。
 
 #### 3.5.3 TFORLOOP A C —— 泛型 for(经助手)
 
@@ -862,7 +862,7 @@ GETGLOBAL/SETGLOBAL 是「目标表恒为 globals」的表访问特例(02 §4):
 ```
 
 - TFORLOOP 经 imported 助手:它调用迭代器函数(execute.go 343-370 行 `callLuaFromHost(iter, [state, ctrl])`),涉及跨层调用(迭代器可能是 Lua closure / host 函数),全经助手回 Go 处理。跨层调用的具体形式归 [04-trampoline](./04-trampoline.md)(迭代器若是 gibbous 编译过的,助手内再 trampoline 进 Wasm)。
-- 助手返回三态:0=继续 / 1=ERR / 3=退出(首值 nil)。对应 execute.go 365-370 行:首值非 nil → `setReg(A+2, results[0])` 落到回边 JMP;首值 nil → `ci.pc++` 跳过回边退出循环。Wasm 侧用 status 区分两种控制流。
+- 助手返回三态:0=继续 / 1=ERR / 3=退出(首值 nil)。对应 execute.go 365-370 行:首值非 nil → `setReg(A+2, results[0])` 落到 back edge JMP;首值 nil → `ci.pc++` 跳过 back edge 退出循环。Wasm 侧用 status 区分两种控制流。
 - TFORLOOP 不带 IC(02 §1.2 注 3),是控制流指令。
 - 与解释器同构(execute.go 343-370 行):助手内完全复用,同构天然;控制流(继续/退出)经 status 映射到 Wasm 分支。
 
@@ -992,7 +992,7 @@ GETGLOBAL/SETGLOBAL 是「目标表恒为 globals」的表访问特例(02 §4):
 | 19 | NOT | 直线真值取反 | Truthy 双比较 | — | §3.2.4 |
 | 20 | LEN | tag 分支 + 助手计算 | tag 拣选 | `$h_string_len`/`$h_table_border`/`$h_err_len` | §3.2.5 |
 | 21 | CONCAT | 经助手 | — | `$h_concat` | §3.2.6 |
-| 22 | JMP | 静态 br(回边 safepoint) | — | `$h_safepoint`(回边) | §3.1.7 |
+| 22 | JMP | 静态 br(back edge safepoint) | — | `$h_safepoint`(back edge) | §3.1.7 |
 | 23 | EQ | 双 number f64.eq + raw eq | f64.eq / i64.eq | `$h_eq`(__eq) | §3.3.3 |
 | 24 | LT | 双 number f64.lt | f64.lt | `$h_compare`(op 分流) | §3.3.1 |
 | 25 | LE | 双 number f64.le | f64.le | `$h_compare`(op 分流) | §3.3.2 |
@@ -1001,7 +1001,7 @@ GETGLOBAL/SETGLOBAL 是「目标表恒为 globals」的表访问特例(02 §4):
 | 28 | CALL | 经调度助手 | — | `$h_call`(三路分派) | §3.6.1 |
 | 29 | TAILCALL | 经助手 | — | `$h_tailcall` | §3.6.2 |
 | 30 | RETURN | 经助手 + Wasm return | — | `$h_return` | §3.6.3 |
-| 31 | FORLOOP | f64 判界回边(热点) | 三槽 number 直发 f64 | `$h_safepoint`(回边) | §3.5.2 |
+| 31 | FORLOOP | f64 判界 back edge(热点) | 三槽 number 直发 f64 | `$h_safepoint`(back edge) | §3.5.2 |
 | 32 | FORPREP | 经助手(三槽校验) | — | `$h_forprep` | §3.5.1 |
 | 33 | TFORLOOP | 经助手(迭代器调用) | — | `$h_tforloop` | §3.5.3 |
 | 34 | SETLIST | 经助手 | — | `$h_setlist` | §3.4.7 |
@@ -1014,7 +1014,7 @@ GETGLOBAL/SETGLOBAL 是「目标表恒为 globals」的表访问特例(02 §4):
 - **快慢分叉**(ADD 系列/UNM/EQ/LT/LE/GETTABLE/SETTABLE/GETGLOBAL/SETGLOBAL/SELF/LEN):快路径内联(语义分发非投机),慢路径经助手回 Go。
 - **全经助手**(GETUPVAL/SETUPVAL/NEWTABLE/CONCAT/CALL/TAILCALL/RETURN/FORPREP/TFORLOOP/SETLIST/CLOSE/CLOSURE):涉及分配/跨层调用/复杂状态,内联收益低或复杂度过高,全交助手。
 
-> **设计一致性**:所有「快慢分叉」的快路径判定都是**语义分发非投机 guard**(承 ../p3-wasm-tier §3.1)——与解释器快路径一样的判定,失败走慢路径助手得到正确结果,零 deopt。这是 §8 不变式 1 的统一执行原则,跨所有 opcode 一致。
+> **设计一致性**:所有「快慢分叉」的快路径判定都是**语义分发非投机 guard**(承 ../p3-wasm-tier §3.1)——与解释器快路径的判定相同,失败走慢路径助手得到正确结果,零 deopt。这是 §8 不变式 1 的统一执行原则,跨所有 opcode 一致。
 
 ## 4. pc 物化协议
 
@@ -1054,10 +1054,10 @@ gibbous 帧的错误位置、traceback 与解释执行**逐字节一致**,论证
 
 1. **pc 同源**:解释器的 savedPC = 出错指令的 pc(pc++ 后回退或精确记录);gibbous 的 savedPC = 助手收到的编译期 pc 立即数。两者都是「出错指令在 Proto.Code 的下标」,同一个值。
 2. **chunkname:line 映射同源**:`chunkname:line:` 前缀由 `Proto.LineInfo[pc]` 映射([../p1-interpreter/09](../p1-interpreter/09-errors-pcall.md)),gibbous 与解释器用同一个 LineInfo 表 + 同一个 pc → 同一行号。
-3. **错误冒泡同构**:gibbous 帧的错误经 status 链冒泡([04-trampoline](./04-trampoline.md) §4),crescent 接到后走 `annotateError`(execute.go 25-31 行)加位置前缀——与纯解释执行走同一个 `annotateError`,前缀格式一样的。
+3. **错误冒泡同构**:gibbous 帧的错误经 status 链冒泡([04-trampoline](./04-trampoline.md) §4),crescent 接到后走 `annotateError`(execute.go 25-31 行)加位置前缀——与纯解释执行走同一个 `annotateError`,前缀格式一致。
 4. **差分口径不开豁免**:[08-testing-strategy](./08-testing-strategy.md) §2 的差分测试逐字节比对错误消息,gibbous 不开任何豁免(承 [../p1-interpreter/12](../p1-interpreter/12-testing-difftest.md) 口径)——pc 物化是这条比对通过的前提。
 
-> 这条「pc 物化让 traceback 一致」是 §8 不变式 3 的核心。没有它,gibbous 帧的错误会丢失行号(显示 `?:?:` 或错误行号),差分必炸。
+> 这条「pc 物化让 traceback 一致」是 §8 不变式 3 的核心。没有它,gibbous 帧的错误会丢失行号(显示 `?:?:` 或错误行号),差分测试必然失败。
 
 ---
 
@@ -1098,7 +1098,7 @@ func (c *Compiler) Compile(proto *bytecode.Proto, fb *bridge.TypeFeedback) (gc b
 
 - Compile 是同步语义(返回时编译完成,GibbousCode 立即可用,承 [../p2-bridge/05](../p2-bridge/05-p3-p4-interface.md) §I2)。
 - 不在热路径(只在升层时一次性调用,数毫秒级可接受,承 [../p2-bridge/05](../p2-bridge/05-p3-p4-interface.md) §2 性能要求)。
-- 并发安全:可被多 State 并发调用同一 Proto(承接口契约),`Compiler.rt`/`supported`/`helpers` 都是只读或线程安全的,翻译过程无共享可变状态。
+- 并发安全:可被多 State 并发调用同一 Proto(承接口约定),`Compiler.rt`/`supported`/`helpers` 都是只读或线程安全的,翻译过程无共享可变状态。
 
 ### 5.2 SupportsAllOpcodes 实现
 
@@ -1140,8 +1140,8 @@ func newCompiler(...) *Compiler {
 }
 ```
 
-- 严格遵守 [../p2-bridge/05](../p2-bridge/05-p3-p4-interface.md) §2.2.1 契约:O(N) 单遍扫、纯只读、不修改 Proto、不持久化、**不 panic**(越界/未识别编号走保守拒)。
-- 保守缺省的物理表达:`supported` 数组初值全 false,只把当前 PW 明确实现的 opcode 标 true。VARARG 永不标 true。
+- 严格遵守 [../p2-bridge/05](../p2-bridge/05-p3-p4-interface.md) §2.2.1 接口约定:O(N) 单遍扫、纯只读、不修改 Proto、不持久化、**不 panic**(越界/未识别编号走保守拒)。
+- 保守缺省的实现表达:`supported` 数组初值全 false,只把当前 PW 明确实现的 opcode 标 true。VARARG 永不标 true。
 - 与 F7 检查的关系:[../p2-bridge/03](../p2-bridge/03-compilability-analysis.md) §3.7 的 `AnalyzeProto` 在 F1-F6 全过后调 `SupportsAllOpcodes` 作 opcode 级兜底——任一 opcode 不支持 ⇒ F7 拒 ⇒ Proto `CompCompilable=false` ⇒ 不进升层路径。
 
 ### 5.3 GibbousCode wazero 包装
@@ -1300,7 +1300,7 @@ func emitGetTable(em *emitter, pc int32, instr bytecode.Instruction) {
 }
 ```
 
-- emit helper 一对一对应 §3 各 opcode 的 WAT 形式,把伪码落成 wasmBuilder 调用序列。
+- emit helper 一对一对应 §3 各 opcode 的 WAT 形式,把伪码写成 wasmBuilder 调用序列。
 - 跨层调用前的写回纪律(§2.4):`em.emitHelperCall(...)` 内部统一调 `em.writeBackLocals()`(若启用 §2.3 locals 缓存)——保证所有助手调用前 locals 已写回 memory。
 - emitter 持 `wasmBuilder`(底层 Wasm bytecode 编码器,可用现成库或自写),把高层 WAT 语义编成二进制 Wasm。
 
@@ -1392,7 +1392,7 @@ func newRuntime(ctx context.Context) wazero.Runtime {
 
 - arena 的 backing 在 P3 起改为「收养 wazero Memory 的底层 buffer」([03-memory-model](./03-memory-model.md) §1.2)——NewState 时即经 wazero 分配 memory,arena 的 words/bytes 视图从该 buffer 派生。
 - `memory.grow` 后偏移寻址不变(所有 GCRef/链表/bump 一字不改,只 Go 侧视图 slice 重取,[03-memory-model](./03-memory-model.md) §3.2)。
-- 这是「值世界 = linear memory」的物理兑现——gibbous 代码读写的 `i64.load/store offset=8*i` 直接落在 arena 同一块内存,与解释器共见(§2.2 红利)。
+- 这是「值世界 = linear memory」的具体兑现——gibbous 代码读写的 `i64.load/store offset=8*i` 直接落在 arena 同一块内存,与解释器共见(§2.2 红利)。
 
 ### 7.3 imported 函数注册的 Go 侧 binding
 
@@ -1439,7 +1439,7 @@ wazero 默认已开若干优化(闭包逃逸分析、内联等),**待 spike 验�
 
 承 ../p3-wasm-tier §10 不变式 1/2/3 在翻译器层的展开,本文新增 4/5/6:
 
-1. **翻译输出与解释器 byte-equal**:每个 opcode 的翻译形式(§3)与 execute.go 对应段逐句同构;快路径是语义分发非投机 guard(失败走慢路径助手,零 deopt);慢路径助手复用 execute.go 一样的 Go 代码(§7.3)。NaN 规范化(§3.2.1)、EQ 的 f64.eq(§3.3.3)等是 byte-equal 的精确执行点。
+1. **翻译输出与解释器 byte-equal**:每个 opcode 的翻译形式(§3)与 execute.go 对应段逐句同构;快路径是语义分发非投机 guard(失败走慢路径助手,零 deopt);慢路径助手复用 execute.go 中同样的 Go 代码(§7.3)。NaN 规范化(§3.2.1)、EQ 的 f64.eq(§3.3.3)等是 byte-equal 的精确执行点。
 2. **NaN-box 编码两层逐位同一**:Wasm 侧不引入任何私有值表示([../p1-interpreter/01](../p1-interpreter/01-value-object-model.md) §7「值表示一次定死」)——`IsNumber` 用 NaN-box 单比较(§3.2.1)、tag 提取用位移(§3.2.5)、常量烧 raw u64 立即数(§3.1.2),全是 P1 NaN-box 编码的逐位直译。
 3. **pc 物化让 traceback 一致**:直线代码无运行期 pc,编译期已知 pc 作为立即数传给助手,助手写回 CallInfo.savedPC(§4)——gibbous 帧的错误位置、traceback 与解释执行逐字节一致,差分不开豁免。
 4. **SupportsAllOpcodes 保守缺省**:不在白名单的 opcode 一律返 false(§5.2);未识别编号(38..63 预留区)返 false;VARARG 永不加入白名单(§3.7.3)。渐进白名单按 PW 扩充(§1.3)。
@@ -1465,7 +1465,7 @@ wazero 默认已开若干优化(闭包逃逸分析、内联等),**待 spike 验�
 [01-spike-gate](./01-spike-gate.md)(开工检查,编译模式 spike) ·
 [03-memory-model](./03-memory-model.md)(共见 linear memory,§7.2 arena 收养 wazero memory) ·
 [04-trampoline](./04-trampoline.md)(跨层互调,§3.6 CALL/TAILCALL/RETURN) ·
-[05-safepoint-gc](./05-safepoint-gc.md)(回边 safepoint 与 locals 写回纪律,§3.5 / §2.4) ·
+[05-safepoint-gc](./05-safepoint-gc.md)(back edge safepoint 与 locals 写回纪律,§3.5 / §2.4) ·
 [06-ic-feedback-consume](./06-ic-feedback-consume.md)(IC 快照固化与失效降级,§3.4) ·
 [07-coroutine-thread-rule](./07-coroutine-thread-rule.md)(线程级 tier 规则) ·
 [08-testing-strategy](./08-testing-strategy.md)(差分验收,byte-equal 口径) ·

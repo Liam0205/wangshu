@@ -309,7 +309,7 @@ type SunkRecipe struct {
 - **snapshot 机器正确性收敛**:~6-8 人月(fuzz 长时间运行 + 差分 bug 追修——**这一块无法通过 review / 单测缩短**,见 §9);
 - 系统集成 + 测试 + 文档:~2-3 人月。
 
-**上界 4 人年 = 下界 × 2**:主要膨胀在 snapshot 正确性收敛——LuaJIT 十几年间累积的 snapshot bug 修复表明,复杂 trace 形状加上 sink 组合下,静默的错误结果的衰减曲线不可计划;望舒可能会撞到类似的 bug 群。
+**上界 4 人年 = 下界 × 2**:主要膨胀在 snapshot 正确性收敛——LuaJIT 十几年间累积的 snapshot bug 修复表明,复杂 trace 形状加上 sink 组合下,静默的错误结果的衰减曲线不可计划;望舒可能会遇到类似的 bug 群。
 
 **为什么无处抄**:
 
@@ -695,7 +695,7 @@ main trace (v3):
 
 ### 8.4 v1 的兼容义务清单
 
-v1 必须保留下来的属性(让 v3 不必回炉):
+v1 必须保留下来的属性(让 v3 不必返工):
 
 - snapshot storage 支持追加(v3 side trace 可能生成新的 snapshot,加到 storage);
 - exitStubs table 支持 patch(每个 guard 的 jmp 目标可以运行期修改);

@@ -1,7 +1,7 @@
 # P1 前端:词法分析器(lexer)
 
 > 状态:**设计阶段,可实现深度**。本文定义前端第一段——**lexer**(源码字节流 → 带行号的
-> token 流),把原始 chunk 切成下游 parser 直接消费的 token。下游契约是
+> token 流),把原始 chunk 切成下游 parser 直接消费的 token。下游接口约定见
 > [04-frontend-parser-codegen](./04-frontend-parser-codegen.md)(其 §4.1 的 `Parser{tok,
 > ahead,hasAhead}` 与 §3.4 运算符枚举就是本文 token 接口的直接调用方;§13 第一条缺口
 > 「token 字段 / 种类枚举 / 字面量载荷 / LL(2) 前瞻归属」由本文兑现)。数字字面量经
@@ -33,10 +33,10 @@
 绑死」一致。
 
 > 设计注记:也可让 `lex` 完全不依赖 `value`,产出裸 `float64`,把 `NumberValue` 规范化推迟
-> 到 codegen 的 `addConst`。两种口径**结果等价**(都是「数字字面量最终走同一 `NumberValue`」)。
+> 到 codegen 的 `addConst`。两种做法**结果等价**(都是「数字字面量最终走同一 `NumberValue`」)。
 > 本文选**在 lexer 处即调 `NumberValue`** 装进 token 载荷(§2、§5.4),理由:① token 载荷
 > 自此就是「值世界合法的规范化 double」,parser/codegen 无需再操心 NaN 渗入;② 与 04 §13
-> 「数字已转 float64」的契约措辞最贴合。若实现期发现 `lex→value` 依赖不便,允许退化为
+> 「数字已转 float64」的约定措辞最贴合。若实现期发现 `lex→value` 依赖不便,允许退化为
 > 「lexer 产裸 float64 + codegen 处 `NumberValue`」,**载荷类型不变**(仍是 `float64`),
 > 仅规范化时机前后移,差分无可观察差异——记入 §13 缺口。
 
@@ -126,7 +126,7 @@ type Token struct {
 }
 ```
 
-设计注记与契约要点:
+设计注记与约定要点:
 
 - **载荷形式(回答 04 §13)**:
   - 数字 → `Num float64`(**已转 float64**:十进制/十六进制/指数都已归约;**已规范化**:
@@ -135,15 +135,15 @@ type Token struct {
   - 字符串 → `Str string`(**已解码**:短串转义已展开、长串首换行已丢弃且无转义;**未
     intern**)。parser 直接塞进 `ast.StringExpr{Val: tok.Str}`(04 §3.2 明确 `StringExpr`
     载荷是 Go `string`,**codegen 时才 intern**,见 [01](./01-value-object-model.md) §5.1、
-    04 §11)。⇒ **lexer 产 Go `string`,arena intern 不在本阶段**——这是本文与 01/04 的硬
-    自洽点。
+    04 §11)。⇒ **lexer 产 Go `string`,arena intern 不在本阶段**——这是本文与 01/04 必须
+    保持自洽的一点。
   - 标识符 → `Name string`(原文;关键字**不**走这里,见 §4.2)。
 - **`Str` 用 `string` 还是 `[]byte`**:Lua 字符串是**任意字节序列**(可含 `\0`),Go `string`
   恰好也是不可变字节序列、可含 `\0`、可作 map key(codegen `addConst` 去重要用),故选
   `string`。`[]byte` 会引入可变性与不可作 key 的麻烦。短串解码时在 `lx.buf`([]byte)累积,
   最后 `string(buf)` 一次拷出。
 - **`Line` 是起始行**:多行长字符串/长注释跨行时,token 行号记**开始**那一行(对齐 Lua 5.1
-  `LexState.linenumber` 在 token 起始处的快照),与 04 「带行号的 token」契约一致;行内累加
+  `LexState.linenumber` 在 token 起始处的快照),与 04 「带行号的 token」约定一致;行内累加
   见 §9。
 - **零值即 EOF 友好**:`Kind` 的 `EOF` 不必是 0(见 §3 枚举顺序),但 `Next()` 到结尾稳定
   反复产 `EOF`(parser 可安全多次 `peek`)。
@@ -367,7 +367,7 @@ Lua 5.1 的 `0x` 字面量**只有整数形式** `0x[0-9a-fA-F]+`,**没有** hex
 > 的 `p` 不是 hex 位、也不触发指数——hex 无 `e` 指数),随后由 parser 当作「数字紧跟标识符」
 > 处理(通常是语法错误,但**那是 parser 层的事,不是 lexer 的 malformed**)。`0x1.8` 同理切成
 > `0x1`(=1.0)+ `.8`(=0.8)?——实际 `.` 不被 hex 吃,留给后续:`0x1` 然后 `.8` 作数字
-> `0.8`,得相邻两数字(parser 报错)。**这些边界是 5.1 的真实行为,本文照搬,并由差分钉死**
+> `0.8`,得相邻两数字(parser 报错)。**这些边界是 5.1 的真实行为,本文照搬,并由差分测试锁定**
 > (§13)。
 >
 > 同样**排除**:八进制无前缀(Lua 无八进制字面量,`010` 就是十进制 `10`)、二进制 `0b`(Lua
@@ -427,7 +427,7 @@ func canonicalizeNaN(f float64) float64 {
   天然一致**,差分成立。
   - 注:正常数字字面量**不会**产生 NaN(NaN 无字面量写法);但 `1e400`(上溢 `+Inf`)、
     `-1e400` 等会产 `±Inf`,`ParseFloat` 对极端上溢返回 `±Inf` 且 `err` 为 `ErrRange`——
-    **此处口径**:Lua 5.1 把上溢读作 `inf`(不报错)。故 `parseLuaNumber` 对 `ErrRange` 且
+    **此处的处理**:Lua 5.1 把上溢读作 `inf`(不报错)。故 `parseLuaNumber` 对 `ErrRange` 且
     结果为 `±Inf` 应**接受**(返回该 Inf),仅对真正无法解析(语法错)才 `ok=false`。
     精确边界(下溢到 0、`ErrRange` 的处理)**待差分核对**,记入 §13。
 
@@ -485,7 +485,7 @@ ShortString ::= '"'  ( EscOrChar )* '"'
 
 `\<newline>` 续行细则(对齐 Lua 5.1 `read_string` 中对 `\` 后换行的处理):`\` 后若是
 `\n`/`\r`(含 `\r\n`/`\n\r` 组合),则:① 向字符串内容写入一个规范 `\n`(0x0A);② 调用与
-§9 一样的的 `incLineJoin`,把 `\r\n`/`\n\r`/`\n`/`\r` 当**一个**换行、`line += 1`。即续行既不在
+§9 一样的 `incLineJoin`,把 `\r\n`/`\n\r`/`\n`/`\r` 当**一个**换行、`line += 1`。即续行既不在
 结果里留 `\`,也正确累加行号。
 
 ```go
@@ -546,7 +546,7 @@ b = [==[ has ]] and ]=] inside ]==]   -- level 2;内部的 ]]、]=] 都是普通
 - 长字符串:内容可含任意多换行,扫描时每个换行(§9 四形式)`line += 1`;token `Line` 仍是
   **开括号**行。
 
-这样 04 拿到的每个 `String` token 的 `Line` 都指向其**字面量起点**,与「带行号的 token」契约
+这样 04 拿到的每个 `String` token 的 `Line` 都指向其**字面量起点**,与「带行号的 token」约定
 一致,后续 `ast.*Expr{Line}`(04 §3)即用此值。
 
 ---
@@ -704,7 +704,7 @@ Lua 5.1 的 `luaL_loadfile`:**若 chunk 首字符是 `#`,跳过首行**(到第�
 > 2. 望舒的入口是 `Compile`(`roadmap.md` (§8)、[11-embedding-arena-abi](./11-embedding-arena-abi.md)),
 >    源可能来自字符串/文件/嵌入。**shebang 只对「文件源」有意义**。
 >
-> **完成**:在**加载源码的边界**(未来 `cmd/wangshu` 脚本运行器读文件时,或 `Compile` 的文件
+> **实现方式**:在**加载源码的边界**(未来 `cmd/wangshu` 脚本运行器读文件时,或 `Compile` 的文件
 > 变体)做预处理:`if len(src)>0 && src[0]=='#' { 跳到第一个 \n(含),其余喂给 lexer }`。
 > **被跳过的首行仍占 1 行**:loader 跳行时应让 lexer 的初始 `line` 从 2 起(或在源里保留换行
 > 让 lexer 自然计行),使错误行号与原文件对齐。**`lex.New` 接受一个可选初始行号**或由 loader
@@ -754,11 +754,11 @@ func (lx *Lexer) errAt(line int32, format string, a ...any) error // 指定行(�
 
 > **凡标「待差分核对」的措辞,均以 [12-testing-difftest](./12-testing-difftest.md) 差分测试 Lua
 > 5.1 参考实现/gopher-lua 的实际输出为准**,本文不编造确定性文案(避免与差分基准不符)。错误
-> **种类与触发条件**是确定的;**精确字符串**待钉。
+> **种类与触发条件**是确定的;**精确字符串**待定。
 
 ---
 
-## 12. 对 04 的契约兑现(回应 04 §13 第一条缺口)
+## 12. 对 04 的约定兑现(回应 04 §13 第一条缺口)
 
 04 §13 第一条缺口原文要点:「lexer 产出**带行号的 token、数字已转 float64、长字符串/转义已解
 码、长注释已剥离**」,并问「token 字段、种类枚举、字面量载荷、**LL(2) 前瞻是 lexer peek 还是
@@ -806,7 +806,7 @@ parser 自缓存**」。逐条兑现:
   `invalid escape sequence`、`malformed number near '...'` 的 `near` 截断、
   `nesting of [[...]] is deprecated` 是否复刻——全部以
   [12-testing-difftest](./12-testing-difftest.md) 差分测试 Lua 5.1 实际输出为准(§11)。**错误
-  种类已定,精确字符串待钉。**
+  种类已定,精确字符串待定。**
 - **非 ASCII 标识符**:本文定死 ASCII-only(§4.3)。若差分基准在高位字节上与之不一致,需在
   [12](./12-testing-difftest.md) 固定口径(可能需放宽到「locale-free 的某确定集」)。
 - **shebang 归属的精确接口**:`#` 首行跳过归 loader/嵌入层(§10),但 `lex.New` 是否接受

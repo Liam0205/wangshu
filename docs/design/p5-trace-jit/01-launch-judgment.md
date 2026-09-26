@@ -4,9 +4,9 @@
 >
 > 对应 Go 包:未立项前不新建;如果立项则是 `internal/fullmoon/trace`(见 [./00-overview.md](./00-overview.md) §1)。
 >
-> 上游依据:[../roadmap.md](../roadmap.md)(§4 P5 定义、§0 终局目标;§1 校准测量——LuaJIT vs luajc 只差 6% 是本文所有判据的物理基础;§5 五条贯穿原则,尤其是原则 3「每阶段独立交付,不亏」);[../../../llmdoc/must/design-premises.md](../../../llmdoc/must/design-premises.md)(前提一 6% 校准、前提三五条原则);[../../../llmdoc/architecture/evolution-roadmap.md](../../../llmdoc/architecture/evolution-roadmap.md)(P5 = fullmoon tier-2,启动条件只有一个)。
+> 上游依据:[../roadmap.md](../roadmap.md)(§4 P5 定义、§0 终局目标;§1 校准测量——LuaJIT vs luajc 只差 6% 是本文所有判据的数据基础;§5 五条贯穿原则,尤其是原则 3「每阶段独立交付,不亏」);[../../../llmdoc/must/design-premises.md](../../../llmdoc/must/design-premises.md)(前提一 6% 校准、前提三五条原则);[../../../llmdoc/architecture/evolution-roadmap.md](../../../llmdoc/architecture/evolution-roadmap.md)(P5 = fullmoon tier-2,启动条件只有一个)。
 >
-> P4 承接面:[../p4-method-jit/00-overview.md](../p4-method-jit/00-overview.md) + [../p4-method-jit/01-launch-judgment.md](../p4-method-jit/01-launch-judgment.md)(P4 立项判定作为 P5 立项判定的形式参照——两者都是流水线下一阶段的开工检查点,共享同样的「立项判定先于实施」结构,见 [../p4-method-jit/01-launch-judgment.md](../p4-method-jit/01-launch-judgment.md) §6.4 对偶面);[../p4-method-jit/09-acceptance-checklist.md](../p4-method-jit/09-acceptance-checklist.md)(P4 验收数据是本文判定的核心输入);[../p4-method-jit/implementation-progress.md](../p4-method-jit/implementation-progress.md)(P4 交付现状与已知的结构性损失)。
+> 与 P4 的衔接:[../p4-method-jit/00-overview.md](../p4-method-jit/00-overview.md) + [../p4-method-jit/01-launch-judgment.md](../p4-method-jit/01-launch-judgment.md)(P4 立项判定作为 P5 立项判定的形式参照——两者都是流水线下一阶段的开工检查点,共享同样的「立项判定先于实施」结构,见 [../p4-method-jit/01-launch-judgment.md](../p4-method-jit/01-launch-judgment.md) §6.4 对偶面);[../p4-method-jit/09-acceptance-checklist.md](../p4-method-jit/09-acceptance-checklist.md)(P4 验收数据是本文判定的核心输入);[../p4-method-jit/implementation-progress.md](../p4-method-jit/implementation-progress.md)(P4 交付现状与已知的结构性损失)。
 >
 > 本文定位一句话:**P5 立项判定是双向的——通过则达到终局目标(10-30x over gopher-lua);不通过则 P4 已交付即项目达到近期目标,原则 3 得到实现**。
 
@@ -44,7 +44,7 @@ Horner 5 次多项式 1000 items 的校准测量([../roadmap.md](../roadmap.md) 
 [../roadmap.md](../roadmap.md) §5 原则 3「每阶段独立交付价值,任何验收处停下都不亏」在 P5 立项判定这里体现为「双向判定」:
 
 - **通过判定**:达到终局目标([../roadmap.md](../roadmap.md) §0 列内核 10-30x over gopher-lua);
-- **不通过判定**:P4 已交付即项目达到近期目标(逼近 LuaJIT 档 ~94%),立项凭据写档,以后条件成熟再启动判定;P5 未启动就不消耗资源。
+- **不通过判定**:P4 已交付即项目达到近期目标(逼近 LuaJIT 档 ~94%),立项凭据归档,以后条件成熟再启动判定;P5 未启动就不消耗资源。
 
 这一原则同时约束着判定内部:P5 启动后,内部仍然分 v1 / v2 / v3 三档独立验收,每档独立可停(见 [../roadmap.md](../roadmap.md) §5 原则 3 的递归运用,以及 [./09-acceptance-checklist.md](./09-acceptance-checklist.md) §2)——原则 3 从阶段级递归到 P5 内部子档。
 
@@ -63,7 +63,7 @@ P4 的编译单元是函数、虚拟寄存器是栈槽、调用走通用协议�
 | **分配密集的循环** | 每轮迭代都构造临时 table 或字符串(中间结果打包、闭包逃逸) | P4 不做逃逸分析,每轮都真的分配 + 增加 GC 压力(自管 mark-sweep,见 [../p1-interpreter/06-memory-gc.md](../p1-interpreter/06-memory-gc.md)) | 分配下沉(sink)和逃逸分析:不逃出 trace 的分配彻底消除,字段拆成 IR 值 |
 | **megamorphic 调用点的稳定子集** | 解释器 / 分发器型脚本:一个调用点有多个目标,但热路径上目标稳定 | P2 feedback 会标 `FBTableMega` 或 `FBUnstable`(见 [../p2-bridge/02-ic-feedback.md](../p2-bridge/02-ic-feedback.md) §4),P4 整点放弃投机 | trace 按**实际走过的路径**特化:每条 trace 只包含一个目标 + guard,多态点拆成多条单态 trace |
 
-**关键要点**:列内核的负载形式(前提一)和第一类高度相关。理想的列内核是「循环体纯标量算术」(P4 已经吃下),现实的列内核常常是「循环体调用一组小工具函数」——后者正是 trace 内联的主场。
+**关键要点**:列内核的负载形式(前提一)和第一类高度相关。理想的列内核是「循环体纯标量算术」(P4 已经能处理),现实的列内核常常是「循环体调用一组小工具函数」——后者正是 trace 内联的主场。
 
 ### 2.2 侦察任务:审计首个宿主的真实热脚本
 
@@ -74,7 +74,7 @@ P4 的编译单元是函数、虚拟寄存器是栈槽、调用走通用协议�
 - 每条热脚本的 profile 数据(采样级);
 - 按 §2.1 四类分档统计 CPU 时间占比;
 - 端到端(而不是 per-item)标准——前提一校准测量 2 的教训是:per-item 或者脚本级数据被端到端稀释之后可能就看不见了,只有端到端的占比才是 P5 立项的判定依据;
-- 数据落到 [../../../llmdoc/memory/decisions/](../../../llmdoc/memory/decisions/),格式对齐 P4 立项判定数据档([../p4-method-jit/09-acceptance-checklist.md](../p4-method-jit/09-acceptance-checklist.md) §3 归档模式)。
+- 数据写进 [../../../llmdoc/memory/decisions/](../../../llmdoc/memory/decisions/),格式对齐 P4 立项判定数据档([../p4-method-jit/09-acceptance-checklist.md](../p4-method-jit/09-acceptance-checklist.md) §3 归档模式)。
 
 ### 2.3 与 P4 的 call 核结构边界的关系
 
@@ -150,7 +150,7 @@ P4 的编译单元是函数、虚拟寄存器是栈槽、调用走通用协议�
 
 ## 4. Cheaper Alternatives Checklist
 
-P5 是 +2-4 人年的开放式投资,启动前必须证明**没有更便宜的方案能关闭同一个 gap**。本节列出四条 cheaper alternatives,每条都必须在 P5 立项之前**先做评估**,评估报告落到 §3.2 C 归档。
+P5 是 +2-4 人年的开放式投资,启动前必须证明**没有更便宜的方案能关闭同一个 gap**。本节列出四条 cheaper alternatives,每条都必须在 P5 立项之前**先做评估**,评估报告写进 §3.2 C 归档。
 
 ### 4.1 stdlib 内建化
 
@@ -179,8 +179,8 @@ P5 是 +2-4 人年的开放式投资,启动前必须证明**没有更便宜的�
 
 **如何评价**:
 
-1. 对 §2.1 第二类「循环内的冗余」profile 揭示的具体形式,考察 peephole 能否吃下(比如「同一个 table 的 x 字段每轮查」如果 IC 稳定,是否可以 peephole 缓存);
-2. 估算收益边界:peephole 不越过 P4 结构边界——不做跨函数、不做跨迭代——所以只能吃 [§2.1](#2-p4-结构上吃不下的负载类别) 第二类的部分份额,吃不下第一、第三、第四类;
+1. 对 §2.1 第二类「循环内的冗余」profile 揭示的具体形式,考察 peephole 能否处理(比如「同一个 table 的 x 字段每轮查」如果 IC 稳定,是否可以 peephole 缓存);
+2. 估算收益边界:peephole 不越过 P4 结构边界——不做跨函数、不做跨迭代——所以只能覆盖 [§2.1](#2-p4-结构上吃不下的负载类别) 第二类的部分份额,覆盖不了第一、第三、第四类;
 3. 如果估算收益能关闭 §3.2 A 阈值差距的显著份额,则本条可以推迟 P5,先做 P4 peephole 扩展。
 
 **决策**:评估报告需要给出「peephole 可展开的具体列表 + 每条估算收益 + 剩余不可 peephole 的份额」。
@@ -209,8 +209,8 @@ P5 是 +2-4 人年的开放式投资,启动前必须证明**没有更便宜的�
 
 1. 从宿主 profile 揭示,哪些 op 在热路径上频繁走 shim path;
 2. 逐个考察是否可以 mmap-safe 化(部分 op 因为 Lua 语义天然需要 helper,不能 mmap-safe);
-3. 估算收益边界:P4 op-set 扩展仍然不越过 P4 结构边界,只能吃 dispatch 层的成本份额,吃不下 §2.1 四类的核心结构损失;
-4. 如果估算收益能关闭 §3.2 A 阈值差距的显著份额,则本条可以推迟 P5,先扩 P4 op-set + 闭合 arm64。
+3. 估算收益边界:P4 op-set 扩展仍然不越过 P4 结构边界,只能削减 dispatch 层的成本份额,解决不了 §2.1 四类的核心结构损失;
+4. 如果估算收益能关闭 §3.2 A 阈值差距的显著份额,则本条可以推迟 P5,先扩 P4 op-set + 补齐 arm64。
 
 **决策**:评估报告需要给出「可 mmap-safe 化的 op 列表 + 每个估算收益 + arm64 端口成本」,并与 issue #37 / #40 状态挂钩。
 
@@ -235,15 +235,15 @@ P5 启动评审是决策会,不是设计评审。议程按以下顺序走(会前
 3. **§5.2 维护性议程**——承接 [./00-overview.md](./00-overview.md) §5.1 风险 4,显性化讨论;
 4. **§5.3 团队与资源议程**——人力预算 + fuzz 集群 + 双 arch CI(见 [./00-overview.md](./00-overview.md) §6 施工前置条件);
 5. **§5.4 v1-v3 内部阶段验收预览**——见 [./09-acceptance-checklist.md](./09-acceptance-checklist.md) §2 定义;
-6. **档位决议**——立项 / 推迟 / 不立项,写档到 [../../../llmdoc/memory/decisions/](../../../llmdoc/memory/decisions/) + [./implementation-progress.md](./implementation-progress.md) §3。
+6. **档位决议**——立项 / 推迟 / 不立项,归档到 [../../../llmdoc/memory/decisions/](../../../llmdoc/memory/decisions/) + [./implementation-progress.md](./implementation-progress.md) §3。
 
 ### 5.2 维护性议程(承接 [./00-overview.md](./00-overview.md) §5.1 风险 4)
 
-trace JIT 是永久性的负债——LuaJIT 社区的维护困境是前车之鉴,即便做成了,团队是否长期养得起这台机器?本议程项需要回答:
+trace JIT 是永久性的负债——LuaJIT 社区的维护困境是前车之鉴,即便做成了,团队是否长期维护得起这套系统?本议程项需要回答:
 
 - **正确性维护成本**:snapshot 机制的 bug 面在 §? 有讨论(见 [./06-snapshot-deopt.md](./06-snapshot-deopt.md) 复杂度评估),差分 fuzz 长时间运行是主防线,预算需要包含**长期 fuzz 集群运营**成本;
 - **性能回归防线**:每个 P4 / P3 侧的改动都可能通过共享分析器影响 P5(见 [../../../llmdoc/memory/reflections/2026-07-02-p4-beat-p3-opset-round.md](../../../llmdoc/memory/reflections/2026-07-02-p4-beat-p3-opset-round.md) 教训 5「共享分析器改进可能是 per-backend 的回归」)——P5 加入后回归风险面扩大;
-- **人员传承**:trace JIT 的复杂度使得人员离职后的接手成本极高,是否有明确的两人以上核心组来承担(而不是单人英雄工程)。
+- **人员传承**:trace JIT 的复杂度使得人员离职后的接手成本极高,是否有明确的两人以上核心组来承担(而不是靠单人独撑)。
 
 ### 5.3 团队与资源议程
 
@@ -280,7 +280,7 @@ P4 验收数据是 P5 立项判定的**输入 baseline**——具体来自 [../p
 以下已知的 P4 结构性损失可以作为 P5 立项 §1.1 条件 2 的证据(每一条都是「P4 在该形式上收益不足其标量内核收益」的实证):
 
 - **fannkuch / nbody 类 helper-bound 负载**:V15a 表显示 P4/P3 ≈ 1x——P4 native emit 在 helper-bound 上没有边际收益;如果宿主负载类似,P5 也无解(P5 同样是 VM 层加速),转到 cheaper alternative 4.3 宿主侧改造;
-- **arm64 P4 HeavyArith 主动回归**(issue #40):amd64 op 集扩面没有 port 到 arm64,arm64 P4 反而比 P3 慢 ~20x——与 P5 立项无关(单纯是 P4 amd64/arm64 分岔),但 P5 立项前需要先闭合(见 [./00-overview.md](./00-overview.md) §3.3);
+- **arm64 P4 HeavyArith 主动回归**(issue #40):amd64 op 集扩面没有 port 到 arm64,arm64 P4 反而比 P3 慢 ~20x——与 P5 立项无关(单纯是 P4 amd64/arm64 分岔),但 P5 立项前需要先解决(见 [./00-overview.md](./00-overview.md) §3.3);
 - **P3 nbody 回归**(issue #39):共享 analyzer alias 追踪改进的 per-backend 副作用(P3 43.5→89.7ms,慢了 2x)——与 P5 立项无关,但示范了「共享分析器修改是 per-backend 回归的来源」这一维护性风险(§5.2 议程项);
 - **F2-b 静态分析限制**:call 核 body 里包含 ReasonUnknownCall 时 P4 / P3 都不升(见 [../p3-wasm-tier/implementation-progress.md](../p3-wasm-tier/implementation-progress.md) §14.10);如果宿主的真实热脚本大量触发 F2-b,是 P5 立项 §2.1 第一类的关键证据,同时也是 cheaper alternative 4.1 stdlib 内建化 + 4.4 F2-b 放宽的候选目标。
 
@@ -310,7 +310,7 @@ P4 验收数据是 P5 立项判定的**输入 baseline**——具体来自 [../p
 | §2.1 四类负载在宿主端到端的实际占比 | 侦察任务完成之后(§2.2) |
 | §4 四条 cheaper alternatives 评估报告 | 各条评估执行之后 |
 | v1 / v2 / v3 阈值细节(见 [./09-acceptance-checklist.md](./09-acceptance-checklist.md) §2) | 立项通过之后设计定稿时 |
-| P5 与 P4 arm64 现状(issue #37 exit-reason 端口未闭)的兼容处理 | issue #37 闭合之后 |
+| P5 与 P4 arm64 现状(issue #37 exit-reason 移植未完成)的兼容处理 | issue #37 关闭之后 |
 | P5 与 P3 主动保留的差分矩阵扩展影响 | 立项后 [./08-testing-strategy.md](./08-testing-strategy.md) 完成时 |
 
 ### 7.1 元风险:立项判定本身的风险
@@ -318,7 +318,7 @@ P4 验收数据是 P5 立项判定的**输入 baseline**——具体来自 [../p
 承接 [../p4-method-jit/01-launch-judgment.md](../p4-method-jit/01-launch-judgment.md) §7.6 元风险模板,P5 立项判定的元风险:
 
 - **判据局部化**:只看标量内核数据(P4 已经很接近 luajc 档)或者只看合成 bench(P3/P4 bench 中 call 核 0.52x)就下结论,忽略 §2.2 宿主真实负载证据——决策树(§1.1 三条并集)强制不允许跳分支;
-- **乐观估算**:P5 收益估高了——把 P5 收益锚在 LuaJIT 档而不是真实 trace JIT 能吃到的份额(受到 §5.1 风险 3 纯 Go 全部显式 guard 折损的影响);
+- **乐观估算**:P5 收益估高了——把 P5 收益锚在 LuaJIT 档而不是真实 trace JIT 能拿到的份额(受到 §5.1 风险 3 纯 Go 全部显式 guard 折损的影响);
 - **悲观估算**:因为宿主负载证据不完整或 profile 数据有噪声就否决 P5——应该回补数据,而不是直接否决;
 - **不可逆性带来的过度谨慎**:立项后 +2-4 人年是大投入,倾向于「再等等」推迟到下一轮——但等到宿主已经适配了 gopher-lua 或 luajc,P5 立项的机会窗口可能已经关闭。
 
@@ -340,7 +340,7 @@ P4 验收数据是 P5 立项判定的**输入 baseline**——具体来自 [../p
 
 ### 8.3 「10-30x 是宽带,不是精确锚」
 
-承接 [./00-overview.md](./00-overview.md) §5.1 风险 3 + [../roadmap.md](../roadmap.md) §4「10-30x over gopher-lua」验收区间。P5 验收 10-30x 是一个宽区间,反映的是纯 Go 全部显式 guard 对 trace 收益折损的不确定性。任何「P5 必须做到 30x 上沿」的提案都违反本条不变式——上沿不达也不等于 P5 失败,达到 10x 就已经完成了 [../roadmap.md](../roadmap.md) §0 终局目标的下沿。
+承接 [./00-overview.md](./00-overview.md) §5.1 风险 3 + [../roadmap.md](../roadmap.md) §4「10-30x over gopher-lua」验收区间。P5 验收 10-30x 是一个宽区间,反映的是纯 Go 全部显式 guard 对 trace 收益折损的不确定性。任何「P5 必须做到 30x 上沿」的提案都违反本条不变式——达不到上沿也不等于 P5 失败,达到 10x 就已经完成了 [../roadmap.md](../roadmap.md) §0 终局目标的下沿。
 
 ---
 

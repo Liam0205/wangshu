@@ -23,7 +23,7 @@
 | [09-errors-pcall](./09-errors-pcall.md) | 语义 | error/pcall/xpcall、traceback 格式、getobjname P1 简化范围、错误信息目录 |
 | [10-stdlib](./10-stdlib.md) | 库 | host 调用约定 helper(luaL_* 等价)、七子库清单与 P1 裁剪表、pattern matcher、shadow stack 库级纪律 |
 | [11-embedding-arena-abi](./11-embedding-arena-abi.md) | 公共 API | wangshu.go 门面、arena ABI 字段级 spec(列/字符串区/presence bitmap)、per-item API、句柄表 |
-| [12-testing-difftest](./12-testing-difftest.md) | **验收收口** | 测试金字塔、三方差分 harness、验收口径总表(25 条)、GC 压力 fuzz、三档基准 |
+| [12-testing-difftest](./12-testing-difftest.md) | **验收汇总** | 测试金字塔、三方差分 harness、验收口径总表(25 条)、GC 压力 fuzz、三档基准 |
 
 阅读顺序建议:实现者先读 01→02→05(三脊柱),再按所做里程碑读对应文档;12 在每个里程碑收尾时查口径。
 
@@ -38,7 +38,7 @@
 3. **字符串 intern 是 codegen↔arena 的桥**(04 §11):字符串常量在编译期 intern 进 arena,`Proto.Consts` 的 GCRef 因此成为 GC 根(06 §5.1 R6)。
 4. **Table gen 代次的 bump 纪律**(05 §6.5):rehash / setmetatable / 数组哈希迁移三处必须 bump,改值不 bump——写侧职责分散在 object/crescent,漏 bump = IC 读脏(差分可捕)。
 5. **shadow stack 纪律只约束 host**(06 §6):解释器主循环零登记(栈即根);stdlib 每个分配中间对象的函数必须 Push/defer Pop(10 §3 范例)——GC 压力 fuzz 是主防线。
-6. **arena backing 注入点**(06 §1.1,承 P3 回填):P1 就要把 backing 分配收口为 `newBacking()`,P3 替换为 wazero memory——**P1 实现期的前瞻义务,只此一条**。
+6. **arena backing 注入点**(06 §1.1,承 P3 回填):P1 就要把 backing 分配统一到 `newBacking()` 这一处,P3 替换为 wazero memory——**P1 实现期的前瞻义务,只此一条**。
 
 ---
 
@@ -62,9 +62,9 @@
 | M11 | 元表/错误/协程:metamethod、pcall/traceback、coroutine | 07、09、08 | 官方语义用例(__index 链/__le 回退/yield 边界/错误目录);xpcall handler 在展开前调用 |
 | M12 | `stdlib`:base→string(含 pattern)→table→math→os/io 最小集 | 10 | P1 裁剪表「必做」列全绿;pattern 用例对官方;shadow stack 纪律过 GC 压力 fuzz |
 | M13 | `wangshu` 公共 API + arena ABI | 11 | Compile/Program.Call 端到端;arena 列读写 + presence bitmap;per-item API 对标用例 |
-| M14 | `test/conformance` + `test/difftest` + `benchmarks` | 12 | **P1 总验收**:三档 ≥2x over gopher-lua;差分 fuzz 逐字节一致(口径总表);CI 门禁就绪 |
+| M14 | `test/conformance` + `test/difftest` + `benchmarks` | 12 | **P1 总验收**:三档 ≥2x over gopher-lua;差分 fuzz 逐字节一致(口径总表);CI 必过检查就绪 |
 
-> **M0 先于一切**(工程地基:hooks/CI/Makefile,详见 [engineering](../engineering.md),估算 ≤0.25 人月);M1-M5 是「值世界地基」(architecture §5:必须在解释器前完全自洽);M9 故意先于 M10(先跑通无 GC 的快路径,再接 GC——错误隔离)。M14 不是最后才开始:difftest harness 应在 M9 后即搭建,随里程碑增量接入用例(12 §1 金字塔);其 CI 门禁占位 job 在 M0 已建,M5/M9/M14 逐步启用。
+> **M0 先于一切**(工程地基:hooks/CI/Makefile,详见 [engineering](../engineering.md),估算 ≤0.25 人月);M1-M5 是「值世界地基」(architecture §5:必须在解释器前完全自洽);M9 故意先于 M10(先跑通无 GC 的快路径,再接 GC——错误隔离)。M14 不是最后才开始:difftest harness 应在 M9 后即搭建,随里程碑增量接入用例(12 §1 金字塔);其 CI 检查占位 job 在 M0 已建,M5/M9/M14 逐步启用。
 
 ---
 
@@ -110,13 +110,13 @@
 
 ---
 
-## 5. P1 期间的前瞻义务(为 P2/P3 留口,成本≈0)
+## 5. P1 期间的前瞻义务(为 P2/P3 预留接口,成本≈0)
 
-P1 不实现分层,但四处「留口」让 P2/P3 成为纯增量(全部已写入对应文档):
+P1 不实现分层,但四处「预留接口」让 P2/P3 成为纯增量(全部已写入对应文档):
 
 1. **IC slot 旁路写**:算术 IC 双计数(numHits/metaHits)、表 IC 的 kind/megamorphic 位——P1 写不读(02 §7、05 §6.4)。
 2. **opcode 38..63 预留**:P2 profile 伪指令空间(02 §4)。
-3. **arena backing 注入点**(06 §1.1):P3 wazero memory 收养。
+3. **arena backing 注入点**(06 §1.1):P3 由 wazero memory 接管。
 4. **CallInfo bit50 gibbous 位**(05 §1.2):P3 跨层帧标记,P1 恒 0。
 
 此外 AST 在 P1 编译后即可丢弃,P2 的可编译性分析复用同一 parser 重新产出(04 §1)。

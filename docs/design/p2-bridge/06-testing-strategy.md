@@ -6,7 +6,7 @@
 > P1 依赖面:[../p1-interpreter/12-testing-difftest](../p1-interpreter/12-testing-difftest.md)(P1 验收口径总表 §10 是本文的形式参考;但 P1 是性能 + byte-equal 口径,P2 是决策正确 + 退化等价口径,**两者并行不替换**——见本文 §9)。
 > 上游原则面:[../roadmap.md](../roadmap.md) §5 原则 2(层间逐字节差分测试)+ 原则 3(每阶段独立交付)。
 >
-> **本文定位一句话**:**P2 不加速,所以没有性能门**——但 P2 的「成功」不是「跑得多快」而是「决策正确」(不漏报真热点 / IC 反馈忠实反映运行期 / **可编译性绝不误判**)。本文的核心是把 P2 的不变式翻成可执行的验收断言,每条口径都对应一组测试,**不留无法验证的承诺**。
+> **本文定位一句话**:**P2 不加速,所以没有性能门**——但 P2 的「成功」不是「跑得多快」而是「决策正确」(不漏报真热点 / IC 反馈忠实反映运行期 / **可编译性绝不误判**)。本文的核心是把 P2 的不变式转成可执行的验收断言,每条口径都对应一组测试,**不留无法验证的承诺**。
 
 ---
 
@@ -29,10 +29,10 @@ P1 的主防线是 byte-equal 差分——把「投机错误静默错果」(road
 
 ### 0.2 P2 验收三轴
 
-承 [00-overview](./00-overview.md) §8 末尾的「P2 验收三条主轴」,本文把它们翻成具体口径分类(本文 §1 总表的轴):
+承 [00-overview](./00-overview.md) §8 末尾的「P2 验收三条主轴」,本文把它们转成具体口径分类(本文 §1 总表的轴):
 
 1. **可编译性零误判**(本文 V1-V7,**主防线**)——F1-F7 形状的零误判注入 fuzz 是 P2 的安全核心。任何让「不可编译形状判成可编译」的代码或文档都直接判否。这一轴对应 P1 的 byte-equal 差分轴。
-2. **累积合理 + 阈值生效**(本文 V8-V10)——回边/入口计数累积非零、越阈值才触发 considerPromotion、单调上升不丢失;profile 开关切换 byte-equal、TierStuck 后停止累积。
+2. **累积合理 + 阈值生效**(本文 V8-V10)——循环回跳(back edge)/入口计数累积非零、越阈值才触发 considerPromotion、单调上升不丢失;profile 开关切换 byte-equal、TierStuck 后停止累积。
 3. **状态机不变量**(本文 V11-V13)——TierStuck 不再触发(防抖)、升层单向(无 Gibbous→Interp 边)、profileTable 跨 State `-race` 通过。
 
 外加三组横向轴(每条 P2 不变式都要可验证):
@@ -47,7 +47,7 @@ P1 的主防线是 byte-equal 差分——把「投机错误静默错果」(road
 
 本文的核心铁律(承 [00-overview](./00-overview.md) §8 不变式工程纪律):**每条 P2 不变式都必须对应一组可执行测试**——若一条不变式只有「设计期应当」的措辞而无运行期验证,该不变式视为**未交付**。
 
-这与 P1 [12 §0](../p1-interpreter/12-testing-difftest.md) 的「最终法庭」思想同构——P1 把所有「待 12 定」的口径在 [12 §10](../p1-interpreter/12-testing-difftest.md) 一张表收口;P2 把所有「不变式应当如何如何」的承诺在本文 §1 一张表收口,每条都给出测试入口、注入器、自动化检查方法。
+这与 P1 [12 §0](../p1-interpreter/12-testing-difftest.md) 的「最终法庭」思想同构——P1 把所有「待 12 定」的口径在 [12 §10](../p1-interpreter/12-testing-difftest.md) 一张表汇总;P2 把所有「不变式应当如何如何」的承诺在本文 §1 一张表汇总,每条都给出测试入口、注入器、自动化检查方法。
 
 ### 0.4 与下游的接口(本文产出什么)
 
@@ -90,9 +90,9 @@ test/p2/                           ← P2 测试套根目录(本文 §8 主管)
 
 ---
 
-## 1. P2 验收口径总表(本文最有价值的产出 —— 逐条收口)
+## 1. P2 验收口径总表(本文最有价值的产出 —— 逐条汇总)
 
-下表对应 P1 [12 §10 验收口径总表](../p1-interpreter/12-testing-difftest.md)的形式——把 P2 全部不变式拉成「类目 / 断言 / 单测对应 / 注入 fuzz / 自动化检查」五栏,逐条钉死。**这张表是本文存在的核心理由**:它把散落在 P2 各子文档的不变式(00 §1 / 01 §7 / 02 §8 / 03 §8 / 04 §6 / 05 §不变式)集中在一处,并给每条配可执行的检查路径。
+下表对应 P1 [12 §10 验收口径总表](../p1-interpreter/12-testing-difftest.md)的形式——把 P2 全部不变式拉成「类目 / 断言 / 单测对应 / 注入 fuzz / 自动化检查」五栏,逐条确定。**这张表是本文存在的核心理由**:它把散落在 P2 各子文档的不变式(00 §1 / 01 §7 / 02 §8 / 03 §8 / 04 §6 / 05 §不变式)集中在一处,并给每条配可执行的检查路径。
 
 ### 1.1 总表(V1-V22)
 
@@ -109,21 +109,21 @@ test/p2/                           ← P2 测试套根目录(本文 §8 主管)
 | **V9** | 阈值生效 | `pd.backEdge[pc] >= HotBackEdgeThreshold`(1000)时 `considerPromotion` 被调用一次;`<` 时不调用;`>=` 后再调入 onBackEdge,**considerPromotion 仅触发一次**(幂等) | `threshold_test.go`(边界值 999/1000/1001/2000) | — | mock considerPromotion 注入计数器,断言 callCount 等于预期 |
 | **V10** | 编译预算 / profile 开关切换 byte-equal | `vm.profileEnabled=false`(P1-only)与 `=true`(P2)跑同一脚本输出**逐字节相等**;且 P1 不调 onBackEdge / onEnter | `profiling/byte_equal_test.go` | — | 同输入两次跑,`bytes.Equal(out_p1only, out_p2)` 必为 true |
 | **V11** | 状态机单向 | TierState 只有边 `Interp→Gibbous` / `Interp→Stuck`,**无 `Gibbous→Interp` 或 `Stuck→*`**;table-driven 全部状态对断言无非法转移 | `tierstate/transition_test.go`(table-driven 9 状态对) | — | 状态机 visitor 列举所有 (from, to) 对,断言只允许定义中的 |
-| **V12** | TierStuck 不重试 | 一旦 `tierState=TierStuck`,后续 onBackEdge/onEnter 计数仍累积(直到守卫拦下;详见 §4)但 considerPromotion **永不被再调用** | `tierstate/stuck_no_retry_test.go`(脚本注入 F2,跑 N>10000 次,断言 considerPromotion callCount==1) | — | mock P3 注入失败,断言后续 N 次回边后 callCount 不再增 |
+| **V12** | TierStuck 不重试 | 一旦 `tierState=TierStuck`,后续 onBackEdge/onEnter 计数仍累积(直到守卫拦下;详见 §4)但 considerPromotion **永不被再调用** | `tierstate/stuck_no_retry_test.go`(脚本注入 F2,跑 N>10000 次,断言 considerPromotion callCount==1) | — | mock P3 注入失败,断言后续 N 次 back edge 后 callCount 不再增 |
 | **V13** | considerPromotion 幂等 | 多次调用 considerPromotion(同一 Proto)第二次起立刻 no-op(`pd.tierState != TierInterp` 守卫) | `tierstate/transition_test.go` 子测 | — | 直接调 considerPromotion 二次,断言第二次 no-op |
-| **V14** | profileTable `-race` 通过 | 多 goroutine 并发跑同一 Program(各自 State),`go test -race` 不报 race | `concurrency/race_test.go`(`go test -race -count=10`) | — | CI 跑 `-race`,失败即破 |
+| **V14** | profileTable `-race` 通过 | 多 goroutine 并发跑同一 Program(各自 State),`go test -race` 不报 race | `concurrency/race_test.go`(`go test -race -count=10`) | — | CI 跑 `-race`,失败即判不通过 |
 | **V15** | 多 State 累积独立 | 多个 State 跑同一 Program,各自 `pd.backEdge[pc]` 独立累积,**无跨 State 共享** | `concurrency/multi_state_test.go` | — | 两 State 各跑 N 次,断言两 profileTable 各自 N |
 | **V16** | sync.Pool 复用 State | State 经 Pool Reset/Get,profileTable 在 Reset 后清空(若按 §6.4 (B) 方案);(C) 启用后累积入 Proto 旁聚合表 | `concurrency/pool_reuse_test.go`(B 方案行为锁定 + (C) 启用前的限制行为) | — | Pool Get/Put 一轮后 profileTable 应空(B);(C) 启用后断言聚合表非空 |
 | **V17** | 升层日志格式(三类) | `function <name> promoted to gibbous` / `function <name> stays interpreted (not compilable: <reason>)` / `function <name> compile failed, stays interpreted: <err>` 三条文本格式逐字节匹配 | `promotion_log/log_format_test.go`(三场景注入 + 抓 diag 输出 + 正则) | — | 抓 `diag` 输出,逐字节匹配 |
-| **V18** | 升层落点是 gibbous 非 bridge | 日志里 `promoted to <X>` 的 X **永远是 `gibbous`,不是 `bridge`**(P2 不是执行层) | `promotion_log/log_target_test.go`(grep 全部日志,任一含 `promoted to bridge` 即破) | — | 跑全 P2 测试 + 抓 diag,grep `promoted to bridge` 必为空 |
+| **V18** | 升层落点是 gibbous 非 bridge | 日志里 `promoted to <X>` 的 X **永远是 `gibbous`,不是 `bridge`**(P2 不是执行层) | `promotion_log/log_target_test.go`(grep 全部日志,任一含 `promoted to bridge` 即判失败) | — | 跑全 P2 测试 + 抓 diag,grep `promoted to bridge` 必为空 |
 | **V19** | 诊断接口 race-safe | 多 goroutine 升层并发触发 diag 输出,`-race` 不报 race;diag 接口本身用 mutex 或 channel | `promotion_log/diag_race_test.go`(`-race -count=10`) | — | `-race` |
 | **V20** | 跨阶段差分:crescent-only vs P2-on-crescent | 同一 Lua 脚本在「P1-only」与「P2 启用但 mock P3 永远拒编译」两条路径下输出**逐字节相等** | `cross_phase_diff/crescent_only_vs_p2_test.go`(三档 + benchmark game 五项 + boundary mini) | — | 同输入两路径输出 byte-equal(承 P1 [12 §6](../p1-interpreter/12-testing-difftest.md) 三档 + 五项 + boundary mini)|
 | **V21** | mock P3 vs 真 P3 行为差异度量 | mock P3(返回 dummy GibbousCode 但实际仍走解释器)与真 P3 在「升层成功」分支上行为差异;**当前缺口**:真 P3 上线前 mock 的 dummy 应实现「立即返回错误强制 Stuck」与「返回 dummy 但走解释」两种行为,二者输出 byte-equal 于 P1-only | `cross_phase_diff/mock_p3_vs_real_p3_test.go`(P3 上线前部分跳过) | — | mock 两形式 + P1-only 三路径 byte-equal |
 | **V22** | P1-only build tag 退化等价 | `go test -tags '!profile'` 编译望舒,P2 整个包不存在(`internal/bridge` 不被引用),跑测试与 P1 行为完全等价 | `cross_phase_diff/build_tag_p1only_test.go` | — | `go build -tags '!profile'` 成功 + 跑差分套与 P1-only 一致 |
 
-### 1.2 收口统计
+### 1.2 汇总统计
 
-本表收口 **22 条**口径,覆盖:
+本表汇总 **22 条**口径,覆盖:
 
 - **V1-V7(7 条)**:可编译性零误判,P2 主防线(对应 [03](./03-compilability-analysis.md) F1-F7 + 综合)
 - **V8-V10(3 条)**:计数与阈值(对应 [01](./01-profiling.md) §1-§5)
@@ -132,20 +132,20 @@ test/p2/                           ← P2 测试套根目录(本文 §8 主管)
 - **V17-V19(3 条)**:升层日志(对应 [04 §6](./04-try-compile-fallback.md) 升层日志格式)
 - **V20-V22(3 条)**:跨阶段差分(P2 设计承诺的核心:**P2 不影响 P1 输出**)
 
-**P4 build 下 P2 V1-V22 仍跑**(承 [P4 08 §0.2](../p4-method-jit/08-testing-strategy.md) 字面承诺 + [P4 implementation-progress §2 RJ-13](../p4-method-jit/implementation-progress.md) 跨文档回填请求):P4 build(`wangshu_p4` + `wangshu_profile`)下本表 V1-V22 全套不豁免。P2 是 P3/P4 共享前端,P2 主防线纪律(可编译性零误判 / 状态机单向 / 计数累积合理 / 跨 State 并发 / 升层日志格式)在 P4 build 下仍是验收硬门。具体接入路径:`make test-p4` 套件含 P2 V1-V22 单测全过 + V14 -race 通过 + V17-V19 升层日志格式不变。
+**P4 build 下 P2 V1-V22 仍跑**(承 [P4 08 §0.2](../p4-method-jit/08-testing-strategy.md) 字面承诺 + [P4 implementation-progress §2 RJ-13](../p4-method-jit/implementation-progress.md) 跨文档回填请求):P4 build(`wangshu_p4` + `wangshu_profile`)下本表 V1-V22 全套不豁免。P2 是 P3/P4 共享前端,P2 主防线纪律(可编译性零误判 / 状态机单向 / 计数累积合理 / 跨 State 并发 / 升层日志格式)在 P4 build 下仍是验收的强制检查。具体接入路径:`make test-p4` 套件含 P2 V1-V22 单测全过 + V14 -race 通过 + V17-V19 升层日志格式不变。
 
 ### 1.3 与 P1 [12 §10] 验收口径总表的关系
 
-P1 [12 §10](../p1-interpreter/12-testing-difftest.md) 收口 26 条**口径问题 → 最终决策**(pairs 序 / 数字格式 / 措辞 / GC 透明性...)。它是**「不一致的各种现象如何处理」**的收口表。
+P1 [12 §10](../p1-interpreter/12-testing-difftest.md) 汇总 26 条**口径问题 → 最终决策**(pairs 序 / 数字格式 / 措辞 / GC 透明性...)。它是**「不一致的各种现象如何处理」**的汇总表。
 
-本文 §1 收口 22 条**断言 → 检查路径**。它是**「P2 设计承诺如何被验证」**的收口表。
+本文 §1 汇总 22 条**断言 → 检查路径**。它是**「P2 设计承诺如何被验证」**的汇总表。
 
 形式对偶,但内容互补:
 
 | 维度 | P1 [12 §10] | 本文 §1 |
 |---|---|---|
-| 收口对象 | 各种现象的口径决策 | 各条不变式的检查路径 |
-| 主防线 | byte-equal 差分(防投机错果) | 可编译性零误判注入 fuzz(防安全检查失守) |
+| 汇总对象 | 各种现象的口径决策 | 各条不变式的检查路径 |
+| 主防线 | byte-equal 差分(防投机产生错误结果) | 可编译性零误判注入 fuzz(防安全检查失守) |
 | 表项含义 | 「这种情况要 X」 | 「这条断言由 Y 测试覆盖」 |
 
 **两者并行不替换**——P2 上线后,P1 [12 §10] 的 26 条口径仍要在 P2 启用 build 下全部跑过(差分套不会因为 P2 引入而豁免);本文 §1 是 P2 新增的 22 条断言,只在 P2 启用 build 下被检查。详见 §9。
@@ -492,7 +492,7 @@ func TestF7BackendCapability(t *testing.T) {
 }
 ```
 
-### 2.8 综合注入 fuzz(inject_fuzz_test.go)—— V7 收口
+### 2.8 综合注入 fuzz(inject_fuzz_test.go)—— V7 汇总
 
 ```go
 // FuzzCombinedInject —— 主防线 fuzz:随机选 F1-F7 子集注入,断言任一注入即 NotCompilable
@@ -894,7 +894,7 @@ function <name> stays interpreted (not compilable: <reason>)
 function <name> compile failed, stays interpreted: <err>
 ```
 
-测试断言:**逐字节匹配**(format string 的稳定性是诊断契约)。
+测试断言:**逐字节匹配**(format string 的稳定性是诊断接口约定)。
 
 ```go
 // test/p2/promotion_log/log_format_test.go
@@ -974,7 +974,7 @@ func TestNoPromotedToBridge(t *testing.T) {
 }
 ```
 
-> **设计理由**(承 [00-overview](./00-overview.md) §1 末):bridge 是基建,不分配月相,不是执行层。日志写 `promoted to gibbous`(落到 P3 的 Wasm 层)是「P2 决策、P3 完成」分工的物理体现。
+> **设计理由**(承 [00-overview](./00-overview.md) §1 末):bridge 是基建,不分配月相,不是执行层。日志写 `promoted to gibbous`(落到 P3 的 Wasm 层)是「P2 决策、P3 完成」分工的具体体现。
 
 ### 6.3 V19 诊断接口 race-safe
 
@@ -1077,7 +1077,7 @@ func TestMockP3FormsByteEqual(t *testing.T) {
 }
 ```
 
-> **当前缺口**:真 P3 上线前,mock P3 vs 真 P3 的「行为差异度量」无运行期参考点(mock 永远 byte-equal 于 P1,真 P3 byte-equal 于 mock 是 P3 测试的承诺,不是本文)。**P3 上线时跑联动测试**:把本文 V21 与 P3 §测试 的「真 P3 vs P1 byte-equal」联起来,形成传递闭环。记 §11 缺口。
+> **当前缺口**:真 P3 上线前,mock P3 vs 真 P3 的「行为差异度量」无运行期参考点(mock 永远 byte-equal 于 P1,真 P3 byte-equal 于 mock 是 P3 测试的承诺,不是本文)。**P3 上线时跑联动测试**:把本文 V21 与 P3 §测试 的「真 P3 vs P1 byte-equal」联起来,形成完整的传递链。记 §11 缺口。
 
 ### 7.3 V22 P1-only build tag 退化等价
 
@@ -1184,7 +1184,7 @@ test-p2-pb7: test-p2 test-p2-race test-p2-build-tag
 | (c) 升层日志匹配预期 | V17-V19 | `TestPromotionLogFormat` + `TestNoPromotedToBridge` + `TestDiagRaceSafe` 全过 |
 | (d) 多 State 并发 profileTable `-race` 通过 | V14 | `make test-p2-race` 跑过 |
 
-四项**全过才算 PB7 验收**。任一项失败,PB7 不收单——P2 不交付。
+四项**全过才算 PB7 验收**。任一项失败,PB7 不算通过——P2 不交付。
 
 ### 8.3 测试套与 P2 各 PB 的对应
 
@@ -1193,7 +1193,7 @@ test-p2-pb7: test-p2 test-p2-race test-p2-build-tag
 | PB | 内容 | 本文测试入口 |
 |---|---|---|
 | PB0 | bridge 包骨架 + ProfileData + profileTable | `byte_equal_test.go` 验「关 profileEnabled byte-equal」 |
-| PB1 | 回边 / 入口采样点接入 | `accumulate_test.go` 验「计数累积非零」 |
+| PB1 | back edge / 入口采样点接入 | `accumulate_test.go` 验「计数累积非零」 |
 | PB2 | IC 反馈聚合器 | (本文不主管,详见 [02-ic-feedback](./02-ic-feedback.md) 测试节) |
 | PB3 | 静态可编译性分析器(F1-F7) | **`compilability_inject/` 全套**(本文 §2 主章) |
 | PB4 | TierState 状态机 + considerPromotion + TierStuck 不重试 | `tierstate/` 全套(本文 §4) |
@@ -1211,8 +1211,8 @@ test-p2-pb7: test-p2 test-p2-race test-p2-build-tag
 
 | 维度 | P1 [12-testing-difftest](../p1-interpreter/12-testing-difftest.md) | 本文 |
 |---|---|---|
-| 主防线 | byte-equal 差分(防投机错果) | 可编译性零误判注入(防安全检查失守) |
-| 验收口径形式 | 26 条「现象 → 决策」收口表 | 22 条「断言 → 检查路径」收口表 |
+| 主防线 | byte-equal 差分(防投机产生错误结果) | 可编译性零误判注入(防安全检查失守) |
+| 验收口径形式 | 26 条「现象 → 决策」汇总表 | 22 条「断言 → 检查路径」汇总表 |
 | 性能门 | ≥2x over gopher-lua 三档 + 五项 + boundary mini | 无 |
 | 正确性门 | 三方差分 byte-equal + GC 透明性 + 措辞对齐 | 决策正确(F1-F7 零误判 + 累积合理 + 状态机不变量) |
 | build tag | 单一 build(P1 实现) | 双 build(`!profile` 与 `profile`,V22) |
@@ -1227,7 +1227,7 @@ P2 上线后,**P1 [12 §10] 全部 26 条口径仍要在 `profile` build 下跑�
 - benchmark game 五项(nbody / fasta / mandelbrot / spectral-norm / binary-trees)
 - boundary mini(数字边界 / 字符串边界 / 表边界)
 
-这些脚本是「真实负载形状」的最小公约——P1 用它们验性能 + byte-equal,P2 用它们验「P2 启用不破坏 byte-equal」。**测试资源共享,验收维度互补**。
+这些脚本是「真实负载形状」的最小公共子集——P1 用它们验性能 + byte-equal,P2 用它们验「P2 启用不破坏 byte-equal」。**测试资源共享,验收维度互补**。
 
 ### 9.3 「P2 启用」如何融入 P1 差分套
 
@@ -1258,13 +1258,13 @@ P2 验收聚焦在第一行(「P2 启用与否的等价性」),不卷入第二/�
 
 | 不变式 | 含义 | 一旦违反的后果 |
 |---|---|---|
-| **T1 主防线零容忍** | V1-V7 任一假阴性即视为 P2 主防线失守,立即停 PR | 失守即可能误判 → P3 编译错误代码 → 静默错果 |
-| **T2 byte-equal 不可破** | V20 / V22 任一脚本输出不同即破 P2 设计承诺 | 失守即破坏「P2 不影响 P1 输出」核心承诺 |
-| **T3 测试与不变式一对一** | P2 各子文档(00-05)的每条不变式都有本文对应口径 | 失守即设计不变式无运行期验证(承诺空头) |
-| **T4 mock P3 不引入假等价** | mock P3 的 dummy 实现不能让 byte-equal 「巧合」成立(必须真等价) | 失守即 V21 假阳性,真 P3 上线时暴雷 |
+| **T1 主防线零容忍** | V1-V7 任一假阴性即视为 P2 主防线失守,立即停 PR | 失守即可能误判 → P3 编译错误代码 → 静默产生错误结果 |
+| **T2 byte-equal 不可破** | V20 / V22 任一脚本输出不同即违反 P2 设计承诺 | 失守即破坏「P2 不影响 P1 输出」核心承诺 |
+| **T3 测试与不变式一对一** | P2 各子文档(00-05)的每条不变式都有本文对应口径 | 失守即设计不变式无运行期验证(承诺无法兑现) |
+| **T4 mock P3 不引入假等价** | mock P3 的 dummy 实现不能让 byte-equal 「巧合」成立(必须真等价) | 失守即 V21 假阳性,真 P3 上线时才暴露问题 |
 | **T5 build tag 切换不依赖默认值** | V22 在 `!profile` 与 `profile` 两 build 下都跑过 | 失守即 P1-only 部署可能引入 P2 残留 |
 | **T6 race 套 `-count=10`** | V14 / V19 用 `-count=10` 而非 1,提高 race detector 命中率 | 失守即偶发 race 不被发现 |
-| **T7 fuzz 长跑预算** | CI 短 fuzz(30s)+ 夜间长 fuzz(10m)同时存在,任一缺失视为 fuzz 不充分 | 失守即覆盖不足,主防线稀释 |
+| **T7 fuzz 长时间运行预算** | CI 短 fuzz(30s)+ 夜间长 fuzz(10m)同时存在,任一缺失视为 fuzz 不充分 | 失守即覆盖不足,主防线被削弱 |
 | **T8 失败用例固化** | fuzz 找出的任一失败用例须立即入 table-driven 表(回归测试) | 失守即同 bug 反复出现 |
 | **T9 测试不依赖运行期阈值** | V8 / V9 用 mock 注入 considerPromotion,不依赖真实 1000 阈值的「调好后再过」 | 失守即阈值定标(01 §5.1)修改时大量测试连带失败 |
 | **T10 P1 差分套不豁免** | P2 上线后 P1 [12 §10] 26 条口径在 `profile` build 下全跑过 | 失守即 P2 引入静默改变了 P1 行为 |
@@ -1317,7 +1317,7 @@ P2 验收聚焦在第一行(「P2 启用与否的等价性」),不卷入第二/�
 | V8 | 计数累积 | `pd.backEdge[pc]` / `entryCount` 单调上升,Stuck 后停 | `accumulate_test.go` |
 | V9 | 阈值生效 | `>= 1000` 才触发 considerPromotion | `threshold_test.go` |
 | V10 | profile 切换 byte-equal | profileEnabled=false vs true 输出 byte-equal | `byte_equal_test.go` |
-| V11 | 状态机单向 | 仅 Interp→Gibbous / Interp→Stuck,无回边 | `transition_test.go` |
+| V11 | 状态机单向 | 仅 Interp→Gibbous / Interp→Stuck,无反向转移 | `transition_test.go` |
 | V12 | Stuck 不重试 | Stuck 后 considerPromotion callCount 不再增 | `stuck_no_retry_test.go` |
 | V13 | considerPromotion 幂等 | 多次调用从第二次 no-op | `transition_test.go` |
 | V14 | profileTable race-safe | `-race -count=10` 通过 | `race_test.go` |
@@ -1330,7 +1330,7 @@ P2 验收聚焦在第一行(「P2 启用与否的等价性」),不卷入第二/�
 | V21 | mock P3 形式间 byte-equal | reject vs dummy vs P1-only 三路径 byte-equal | `mock_p3_vs_real_p3_test.go` |
 | V22 | build tag 退化 | `!profile` 与 `profile` build 下 byte-equal | `build_tag_p1only_test.go` |
 
-任一失败 → PB7 验收不收单 → P2 不交付。
+任一失败 → PB7 验收不通过 → P2 不交付。
 
 ---
 

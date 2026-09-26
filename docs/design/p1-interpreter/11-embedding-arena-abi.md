@@ -8,7 +8,7 @@
 > **本文是全项目点名的最大文档缺口的完成**——[embedding-contract](../../../llmdoc/reference/embedding-contract.md)
 > 与 [doc-gaps](../../../llmdoc/memory/doc-gaps.md) 第一条均指出:roadmap §8 仅给 arena ABI 概念,
 > **字符串区编码、presence bitmap 位布局、`args` 与 arena 的精确关系未给 spec**;本文把它们定死到字段级。
-> 上游契约:`docs/design/roadmap.md` (§8 宿主嵌入契约、§1 两个校准测量、§6 非目标),
+> 上游约定:`docs/design/roadmap.md` (§8 宿主嵌入约定、§1 两个校准测量、§6 非目标),
 > [embedding-contract](../../../llmdoc/reference/embedding-contract.md)。
 > 值/对象侧:[01-value-object-model](./01-value-object-model.md)(§3 NaN-boxing、§3.4 canonicalize、
 > §3.5 lightuserdata 限制点名本文、§1 host 注册表)。执行侧:[05-interpreter-loop](./05-interpreter-loop.md)
@@ -23,13 +23,13 @@
 
 ## 0. 本文在 P1 中的位置:少数描述「公共 API」的文档
 
-P1 的绝大多数文档([01](./01-value-object-model.md)..[10](./10-stdlib.md))写的是 `internal/` 实现细节,**外部不可见**([architecture](../architecture.md) §1:公共 API 只在 root package)。本文相反——它定义**宿主开发者唯一能看到的那一层**:`wangshu.Compile`、`wangshu.Program`、`wangshu.NewState`、`wangshu.Arena`。这层 API 的形状是**第 1 天就要对的契约**:一旦宿主依赖了 `Program.Call(state, arena, args)` 的签名与 arena 的二进制布局,后续 P2-P5 升层就不能破坏它(否则宿主代码全废)。所以本文与 [01](./01-value-object-model.md)(值表示第 1 天承诺)同属「不可逆决定」一类。
+P1 的绝大多数文档([01](./01-value-object-model.md)..[10](./10-stdlib.md))写的是 `internal/` 实现细节,**外部不可见**([architecture](../architecture.md) §1:公共 API 只在 root package)。本文相反——它定义**宿主开发者唯一能看到的那一层**:`wangshu.Compile`、`wangshu.Program`、`wangshu.NewState`、`wangshu.Arena`。这层 API 的形状是**第 1 天就要定对的接口约定**:一旦宿主依赖了 `Program.Call(state, arena, args)` 的签名与 arena 的二进制布局,后续 P2-P5 升层就不能破坏它(否则宿主代码全废)。所以本文与 [01](./01-value-object-model.md)(值表示第 1 天承诺)同属「不可逆决定」一类。
 
 设计的全部张力来自一句话:**接口必须天然鼓励「列内核」形状,同时不牺牲 gopher-lua 级的易用性**。这两个目标拉向相反方向——列内核要求「批量数据经 arena、一次调用一次跨界」(高性能但需宿主改造),易用性要求「per-item 推栈、随手调用」(上手快但落在边界成本主导档)。本文的回答是**双轨 API**:arena 批量轨(§3-§5,主推)+ per-item 栈式轨(§7,对标 gopher-lua,明确标性能档位)。两轨共享同一个值世界([01](./01-value-object-model.md))与同一个解释器([05](./05-interpreter-loop.md))。
 
 > 为什么这是「最大缺口」:roadmap §8 与 [embedding-contract](../../../llmdoc/reference/embedding-contract.md) 把 arena ABI 说成「类型化扁平列 + 字符串区 + presence bitmap」——这是**概念**,不是 spec。宿主程序员要写「往 arena 填一列 float64、填一列字符串、标某些槽为 null」的代码,必须知道**每个字节放什么**:列头多少字节、字符串区 offset 表怎么编码、bitmap 哪个 bit 对应哪个槽、`Program.Call` 的 `args` 和 arena 列在脚本里怎么分别拿到。本文 §3-§5 逐一定死。
 
-设计意图回顾(不重复 [design-premises](../../../llmdoc/must/design-premises.md) 前提一的长论证,只给指针):两个校准测量(roadmap §1)钉死「per-item 跨界形式下边界成本主导,脚本本体再快也被吃光」;故接口被设计成**让宿主一次调用就把整批数据交给 VM,循环写在 Lua 内**。arena 是这个意图的物理载体——它让「整批列数据」有一个 VM 能零拷贝读的二进制形式。
+设计意图回顾(不重复 [design-premises](../../../llmdoc/must/design-premises.md) 前提一的长论证,只给指针):两个校准测量(roadmap §1)已经确证「per-item 跨界形式下边界成本主导,脚本本体再快也被吃光」;故接口被设计成**让宿主一次调用就把整批数据交给 VM,循环写在 Lua 内**。arena 是这个意图的物理载体——它让「整批列数据」有一个 VM 能零拷贝读的二进制形式。
 
 ---
 
@@ -205,7 +205,7 @@ func (e *LuaError) Error() string  // 返回 Value 的字符串形式 + tracebac
 
 > 与 roadmap §8 / [embedding-contract](../../../llmdoc/reference/embedding-contract.md)「arena 与 value-representation 的自管线性内存是同一份内存的不同视角」的关系——**澄清(本文定稿的细化)**:那句话的精确含义是「**逻辑上**两层共见同一批数据」,不是「**物理上**列数据躺在 VM arena 里」。P1 选 (B):列数据物理在宿主 buffer,VM 零拷贝读;「共见」体现在 VM 读列元素时直接装箱进值世界,无中间拷贝层。**P3 才把 arena 列映射进 Wasm linear memory**(§11),那时「物理同一块」更进一步(linear memory 既是 VM 值世界又承载列)。P1 的 (B) 与 P3 的映射不冲突:P1 定的**列布局 ABI**(下面 §3.1-§3.4)是「宿主如何组织一列数据」的逻辑 spec,P1 用 Go slice 承载、P3 用 linear memory 承载,**布局 spec 不变**(§11)。
 
-**ABI 的双重身份(为什么仍要定二进制布局,即使 P1 用 Go slice)**:`wangshu.Arena` 的公共 API 是「类型化的 Go 方法」(§3.5,如 `AddFloatColumn`),宿主**不直接写二进制**。但本节仍给**二进制布局 spec**,因为:① 它是 **P3 Wasm linear memory 的布局**(§11)——P3 把列搬进 linear memory 时按此字节布局;② 它定义了「一列 = 类型 tag + 长度 + 数据 + presence bitmap + (字符串列)字符串区」的**逻辑结构**,P1 的 Go slice 实现就是这个逻辑结构的内存化。即:**逻辑布局 spec 是 ABI 契约,P1/P3 是它的两种物理承载**。下面先给逻辑/二进制布局(§3.1-§3.4),再给 P1 的 Go 承载(§3.5)。
+**ABI 的双重身份(为什么仍要定二进制布局,即使 P1 用 Go slice)**:`wangshu.Arena` 的公共 API 是「类型化的 Go 方法」(§3.5,如 `AddFloatColumn`),宿主**不直接写二进制**。但本节仍给**二进制布局 spec**,因为:① 它是 **P3 Wasm linear memory 的布局**(§11)——P3 把列搬进 linear memory 时按此字节布局;② 它定义了「一列 = 类型 tag + 长度 + 数据 + presence bitmap + (字符串列)字符串区」的**逻辑结构**,P1 的 Go slice 实现就是这个逻辑结构的内存化。即:**逻辑布局 spec 是 ABI 约定,P1/P3 是它的两种物理承载**。下面先给逻辑/二进制布局(§3.1-§3.4),再给 P1 的 Go 承载(§3.5)。
 
 ### 3.1 一个 arena 的整体内存图
 
@@ -294,19 +294,19 @@ data[dataOff..]: nrows 个 float64(IEEE-754 double,小端),连续。
 data[dataOff..]: nrows 个 int64(小端补码),连续。
 ```
 
-**关键决策**(Lua number 是 double,int64 进 VM 转 double 会丢 >2^53 精度;**经评审定稿:超界报错,宁报错不错果**):
+**关键决策**(Lua number 是 double,int64 进 VM 转 double 会丢 >2^53 精度;**经评审定稿:超界报错,宁可报错也不给错误结果**):
 
-> **决策:P1 的 ColInt64 读出时检查 `|v| ≤ 2^53`——范围内转 double(`value.NumberValue(float64(v))`);超界抛运行期错误**(措辞建议 `int64 column value out of exact range (|v| > 2^53)`,带列名/行号,精确措辞待 [12](./12-testing-difftest.md) 登记——此错误是望舒扩展,官方/gopher 无对应,差分豁免)。Lua 5.1 无整数子类型(roadmap §6)是内在约束,但**静默丢精度对 ID 类数据(雪花 ID/纳秒时间戳,量级 2^63)意味着相等比较悄悄错果且差分测不出**——这违背贯穿原则 2 的精神(防静默错果),故 P1 选报错而非截断。
+> **决策:P1 的 ColInt64 读出时检查 `|v| ≤ 2^53`——范围内转 double(`value.NumberValue(float64(v))`);超界抛运行期错误**(措辞建议 `int64 column value out of exact range (|v| > 2^53)`,带列名/行号,精确措辞待 [12](./12-testing-difftest.md) 登记——此错误是望舒扩展,官方/gopher 无对应,差分豁免)。Lua 5.1 无整数子类型(roadmap §6)是内在约束,但**静默丢精度对 ID 类数据(雪花 ID/纳秒时间戳,量级 2^63)意味着相等比较悄悄出错且差分测不出**——这违背贯穿原则 2 的精神(防止静默给出错误结果),故 P1 选报错而非截断。
 
 理由与权衡(三条路):
 
 | 路 | 读出 | 优点 | 代价 |
 |---|---|---|---|
-| (i) 静默转 double | `NumberValue(float64(v))` | 实现最简 | `|v| > 2^53` 静默丢低位——ID 类数据**静默错果**,排查成本极高 |
-| **(ii) 超界报错(P1 选定)** | 范围内同 (i);超界抛错 | 范围内零额外语义负担;**超界宁报错不错果**,错误在首次读出即暴露 | 每元素读出多一次范围比较(可接受:与 NaN canonicalize 同级别的逐元素开销);宿主须为大整数列显式改道 |
+| (i) 静默转 double | `NumberValue(float64(v))` | 实现最简 | `|v| > 2^53` 静默丢低位——ID 类数据**静默出错**,排查成本极高 |
+| **(ii) 超界报错(P1 选定)** | 范围内同 (i);超界抛错 | 范围内零额外语义负担;**超界宁可报错也不给错误结果**,错误在首次读出即暴露 | 每元素读出多一次范围比较(可接受:与 NaN canonicalize 同级别的逐元素开销);宿主须为大整数列显式改道 |
 | (iii) 作为 lightuserdata 透传 | `LightUDValue(...)`,48-bit 截断 | 48-bit 内精确 | 脚本里不能直接算术(要 host 解包,per-item 跨界反前提一);48-bit 仍不够 full int64 |
 
-**对宿主的契约**:ColInt64 适合「值域在 ±2^53 内的整数」(行号、小计数、价格分、百分比)。若宿主的 int64 是**大 ID / 纳秒时间戳 / 哈希值**,**禁止**走 ColInt64(会在首次读出时报错),应改用 **ColString 列**(整数格式化为字符串,相等比较语义精确)或 **句柄表 + lightuserdata**(§6,宿主自管解包)。报错而非静默,使「选错列类型」在联调期即暴露,而非在生产数据撞上 2^53 时静默错果。
+**对宿主的约定**:ColInt64 适合「值域在 ±2^53 内的整数」(行号、小计数、价格分、百分比)。若宿主的 int64 是**大 ID / 纳秒时间戳 / 哈希值**,**禁止**走 ColInt64(会在首次读出时报错),应改用 **ColString 列**(整数格式化为字符串,相等比较语义精确)或 **句柄表 + lightuserdata**(§6,宿主自管解包)。报错而非静默,使「选错列类型」在联调期即暴露,而非在生产数据超过 2^53 时静默出错。
 
 > 记 §12 缺口:「ColInt64 是否需要 `ColInt64Exact` 变体(读出为不可直算的精确整数 box)」与「超界检查的批量优化(列级 min/max 预检替代逐元素比较)」待真实宿主反馈。
 
@@ -453,7 +453,7 @@ func (a *Arena) AddStringColumn(name string, vals []string, present []bool) erro
 func (a *Arena) Rows() int
 ```
 
-> 设计:宿主用 `AddFloatColumn` 等**类型化方法**构造列,把一个 Go `[]float64` 整体交给 arena(零拷贝引用 slice,不复制——`column.f64 = vals`)。`present []bool` 由 arena 内部打包成 §3.4 的 u64 bitmap(`AddFloatColumn` 里 `packPresence(present)`)。**宿主侧零二进制操作**,纯 Go slice;二进制布局(§3.1-§3.4)是 ABI 契约 + P3 形式,P1 宿主看不到它。
+> 设计:宿主用 `AddFloatColumn` 等**类型化方法**构造列,把一个 Go `[]float64` 整体交给 arena(零拷贝引用 slice,不复制——`column.f64 = vals`)。`present []bool` 由 arena 内部打包成 §3.4 的 u64 bitmap(`AddFloatColumn` 里 `packPresence(present)`)。**宿主侧零二进制操作**,纯 Go slice;二进制布局(§3.1-§3.4)是 ABI 约定 + P3 形式,P1 宿主看不到它。
 
 ---
 
@@ -661,7 +661,7 @@ P1 的 arena 列对脚本**只读**(`ColumnDesc.flags.bit1=1`,§3.2)。脚本 `a
 | **① `runtime.Pinner` 固定 + 传 uintptr** | 宿主 `pinner.Pin(obj)` 固定 Go 对象(防 GC 移动/回收),把 `uintptr(unsafe.Pointer(obj))` 存进 lightuserdata payload | 48-bit 地址(amd64/arm64 用户态地址在 48-bit 内) | 直接传地址,VM 取出 `uintptr` 还原指针(宿主侧 unsafe) | ① Pinner 生命周期管理(何时 Unpin)易错;② 5 级页表(57-bit 虚拟地址)罕见高地址超 48-bit,直存截断失效([01](./01-value-object-model.md) §3.5);③ `unsafe` 重 |
 | **② 句柄表索引(推荐默认)** | State 持一张 `handles []any`,宿主 `state.PinHandle(obj)` 返回索引 `idx`,把 `idx` 存进 lightuserdata payload | 48-bit 整数索引(进 `handles`) | 无 unsafe;无 Pinner 生命周期细节(索引一直有效直到显式释放);无地址位数问题 | 多一次间接(payload→idx→`handles[idx]`);`handles` 占内存(显式释放或随 State 销毁) |
 
-**定稿:默认走 ② 句柄表索引**(无 unsafe、无地址位数坑、生命周期清晰);① Pinner 作为「宿主已有 `*T` 且想零间接、且确信地址 48-bit 内」的高级选项(`state.PinPointer`)。这呼应 [01](./01-value-object-model.md) §3.5「以句柄表兜底」(5 级页表高地址直存不支持时,句柄表是兜底)。
+**定稿:默认走 ② 句柄表索引**(无 unsafe、无地址位数隐患、生命周期清晰);① Pinner 作为「宿主已有 `*T` 且想零间接、且确信地址 48-bit 内」的高级选项(`state.PinPointer`)。这呼应 [01](./01-value-object-model.md) §3.5「以句柄表兜底」(5 级页表高地址直存不支持时,句柄表是兜底)。
 
 ### 6.2 句柄表 API
 
@@ -743,9 +743,9 @@ for _, x := range items {                   // ⚠ 这个循环在 Go 里 = per-
 }
 ```
 
-### 7.2 性能档位的明确标注(契约)
+### 7.2 性能档位的明确标注(约定)
 
-> **per-item API 性能契约**(写进公共 godoc,宿主必读):上面那个 `for _, x := range items { state.CallGlobal("score", ...) }` 循环**每个 item 跨一次 Go→VM 边界**。由 [design-premises](../../../llmdoc/must/design-premises.md) 前提二,**边界跨越是几十~百 ns 的固定成本**;由前提一 / roadmap §1 的两个校准测量,**per-item 形式下边界成本主导,VM 本体再快也被钉死**(真 LuaJIT 只比 luajc 快 6% 就是这个效应)。
+> **per-item API 性能约定**(写进公共 godoc,宿主必读):上面那个 `for _, x := range items { state.CallGlobal("score", ...) }` 循环**每个 item 跨一次 Go→VM 边界**。由 [design-premises](../../../llmdoc/must/design-premises.md) 前提二,**边界跨越是几十~百 ns 的固定成本**;由前提一 / roadmap §1 的两个校准测量,**per-item 形式下边界成本主导,VM 本体再快也被边界成本封顶**(真 LuaJIT 只比 luajc 快 6% 就是这个效应)。
 >
 > **结论**:per-item API **方便但慢**(落在被边界成本主导档)。它适合:① 脚本调用频率低(每秒几千次以内,边界成本可忽略);② 原型/测试/REPL;③ gopher-lua drop-in 迁移期(§9)先跑通再优化。**高频热路径应改用 arena 批量轨**(§3-§5):把 Go 里的 `for item` 循环搬进 Lua(`for i=1,arena:rows()`),一次 `Program.Call(state, arena)` 处理整批——边界成本摊薄到每批一次。
 
@@ -905,7 +905,7 @@ func myHostFn(ctx *wangshu.HostCtx) int {
 - **P1**:arena 列数据物理住宿主 Go slice(§3.0 方案 B),VM 零拷贝读元素装箱(§4)。「共见」是逻辑的(VM 读列即时进值世界)。
 - **P3**(见 [../p3-wasm-tier](../p3-wasm-tier/03-memory-model.md)):值世界 = Wasm linear memory(roadmap §4 P3「P1 的 arena 直接映射,两层共见」)。此时 arena 列**序列化进 linear memory**——按 §3.1-§3.4 的**二进制布局**(ArenaHeader/ColumnDesc/数据区/字符串区/bitmap),Wasm 编译码直接 `i32.load`/`f64.load` 读列元素。**P1 定的字节布局就是 P3 的 linear memory 布局**,无需重新设计 ABI。
 
-> 这是「为什么 §3 即使 P1 用 Go slice 也要定二进制布局」的根本原因(§3.0 双重身份):**ABI 布局 spec 是 P1/P3 共同契约**。P1 用 Go slice 承载它(`wangshu.Arena` 的 column 字段是 §3.1-§3.4 逻辑结构的 Go 化),P3 用 linear memory 承载它(序列化成连续字节块)。**布局不变,承载不同**——这正是 [value-representation](../../../llmdoc/architecture/value-representation.md)「同一份内存的不同视角」「上编译层是纯增量」在 arena ABI 维度的兑现:P3 不重新定义列布局,只换承载介质。
+> 这是「为什么 §3 即使 P1 用 Go slice 也要定二进制布局」的根本原因(§3.0 双重身份):**ABI 布局 spec 是 P1/P3 共同约定**。P1 用 Go slice 承载它(`wangshu.Arena` 的 column 字段是 §3.1-§3.4 逻辑结构的 Go 化),P3 用 linear memory 承载它(序列化成连续字节块)。**布局不变,承载不同**——这正是 [value-representation](../../../llmdoc/architecture/value-representation.md)「同一份内存的不同视角」「上编译层是纯增量」在 arena ABI 维度的兑现:P3 不重新定义列布局,只换承载介质。
 
 - presence bitmap 的 u64 字数组布局(§3.4)、StrSlot{off,len}(§3.3.4)在 P3 直接是 linear memory 的字节,Wasm 读它们与 P1 读 Go slice **语义等价**(同 ABI)。
 - ColFloat64 的 canonicalize([01](./01-value-object-model.md) §3.4)在 P3 同样必须(Wasm 读 linear memory 的 f64 也要规范化负 NaN)——ABI 的语义约束(不止布局)P3 一并继承。
@@ -925,11 +925,11 @@ func myHostFn(ctx *wangshu.HostCtx) int {
 7. **lightuserdata 不直存 Go 指针**:经句柄表索引(§6.2,默认)或 Pinner 固定 uintptr(§6.1),绝不裸存 Go 堆指针([01](./01-value-object-model.md) §3.5)。
 8. **公共 Value 脱离 arena**:`Call` 返回的 results 不持悬垂 GCRef——标量值语义、string 持 Go string(§4.4 / §4.5)。
 9. **host 不 Go panic**:HostFn 出错走 `ctx.Raise`([05](./05-interpreter-loop.md) §9),顶层 recover 仅安全网(§2)。
-10. **arena ABI 布局 = P3 linear memory 布局**:§3.1-§3.4 的二进制布局是 P1/P3 共同契约,P3 直接映射(§11)。
+10. **arena ABI 布局 = P3 linear memory 布局**:§3.1-§3.4 的二进制布局是 P1/P3 共同约定,P3 直接映射(§11)。
 
 ### 12.2 文档缺口 / 待决(记入 [memory/doc-gaps](../../../llmdoc/memory/doc-gaps.md))
 
-- **ColInt64 精度处理**(§3.3.2):P1 定「转 double,精度边界 |v|>2^53 丢精度」。是否需 `ColInt64Exact` 变体(读出为不可直算的精确整数 box,或拆高低 32 位双列)待真实宿主反馈——若宿主大量用大整数 ID/纳秒时间戳且需精确,当前方案不足。**倾向:先转 double + 文档契约,按反馈再加变体。**
+- **ColInt64 精度处理**(§3.3.2):P1 定「转 double,精度边界 |v|>2^53 丢精度」。是否需 `ColInt64Exact` 变体(读出为不可直算的精确整数 box,或拆高低 32 位双列)待真实宿主反馈——若宿主大量用大整数 ID/纳秒时间戳且需精确,当前方案不足。**倾向:先转 double + 文档约定,按反馈再加变体。**
 - **字符串零拷贝口径**(§3.3.4 / §4.2):P1 定「拷贝进 arena intern + intern 缓存」;「特殊不可变 String 视图对象」(零拷贝读 arena 字符串区但破坏 string=GCRef 不变式)留 P3+ 评估。当前 string 列是次于数值列的性能档,**长期运行下 intern 缓存的命中率与内存**无数据,需实现后压测。
 - **字符串区编码 α vs β**(§3.3.4):P1 定方案 α(StrSlot{off,len}+ 共享字节池 + 去重);Arrow 标准 β(offsets[n+1]+values,4 字节/行,不共享)在 P3 linear memory 与 Arrow 互操作时是否更优,留 P3 评估。
 - **arena 列数据物理位置 A vs B**(§3.0):P1 定方案 B(宿主 Go slice,零拷贝读)。P3 转 linear memory(更接近 A 的「物理同一块」)。P1/P3 过渡的具体序列化时机与零拷贝边界(linear memory 与宿主 buffer 是否还需一次拷贝进 linear memory)留 [../p3-wasm-tier](../p3-wasm-tier/03-memory-model.md) 定。
@@ -952,6 +952,6 @@ func myHostFn(ctx *wangshu.HostCtx) int {
 [12-testing-difftest](./12-testing-difftest.md)(gopher-lua 差分基准 / drop-in 行为兼容) ·
 [../p3-wasm-tier](../p3-wasm-tier/03-memory-model.md)(arena ABI = linear memory 布局) ·
 [architecture](../architecture.md)(包布局:公共 API 在 root package) ·
-[embedding-contract](../../../llmdoc/reference/embedding-contract.md)(本文完成的上游契约) ·
+[embedding-contract](../../../llmdoc/reference/embedding-contract.md)(本文完成的上游约定) ·
 [design-premises](../../../llmdoc/must/design-premises.md)(前提一列内核 / 前提二边界成本) ·
 [value-representation](../../../llmdoc/architecture/value-representation.md)(两层共见同一块内存)

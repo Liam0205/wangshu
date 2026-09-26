@@ -1,14 +1,14 @@
 # P4 §6:双后端架构——共享骨架 + per-arch 发射器 + 双架构测试纪律
 
-> 状态:**详细设计**(P3 PW0-PW10 全卷收口后启动 P4 时完成)。本文是 P4 文档集的「双后端架构」单一事实源——为什么不用宏汇编、骨架/per-arch 切分、模板的分级表达、双架构 CI 矩阵、per-arch 寄存器约定。
+> 状态:**详细设计**(P3 PW0-PW10 全部完成后启动 P4 时完成)。本文是 P4 文档集的「双后端架构」单一事实源——为什么不用宏汇编、骨架/per-arch 切分、模板的分级表达、双架构 CI 矩阵、per-arch 寄存器约定。
 >
-> 上游契约:[../roadmap.md](../roadmap.md) §0「纯 Go / 禁 cgo」(不得依赖 cgo 汇编器)、[../roadmap.md](../roadmap.md) §7 prior art(wazero 共享骨架 + per-arch compiler 是组织模板)、[../architecture.md](../architecture.md) §1 包布局(`internal/gibbous/jit` 与 `internal/gibbous/wasm` 并列)、§2 月相 tier 映射(P3/P4 同属 gibbous tier-1)。
+> 上游约定:[../roadmap.md](../roadmap.md) §0「纯 Go / 禁 cgo」(不得依赖 cgo 汇编器)、[../roadmap.md](../roadmap.md) §7 prior art(wazero 共享骨架 + per-arch compiler 是组织模板)、[../architecture.md](../architecture.md) §1 包布局(`internal/gibbous/jit` 与 `internal/gibbous/wasm` 并列)、§2 月相 tier 映射(P3/P4 同属 gibbous tier-1)。
 >
 > P1 依赖面:[../p1-interpreter/02-bytecode-isa.md](../p1-interpreter/02-bytecode-isa.md)(38 个 opcode 完整表,本文 §3 按族归类的源)、[../p1-interpreter/01-value-object-model.md](../p1-interpreter/01-value-object-model.md) §3(NaN-box 编码)、[../p1-interpreter/05-interpreter-loop.md](../p1-interpreter/05-interpreter-loop.md) §1(CallInfo / 值栈布局)。
 >
 > P2 依赖面:[../p2-bridge/02-ic-feedback.md](../p2-bridge/02-ic-feedback.md)(`TypeFeedback`,§3.9 投机/通用二选)、[../p2-bridge/03-compilability-analysis.md](../p2-bridge/03-compilability-analysis.md)(F1-F7 检查,§3.8 渐进白名单)。
 >
-> 同集协作:[./04-osr-deopt.md](./04-osr-deopt.md) §3.3 / §6(OSR exit 物化序列与 exit stub 物理形式——本文 §3.x guard 行链至 04,§4 寄存器约定给 exit stub 着陆面)、[./05-system-pipeline.md](./05-system-pipeline.md) §2.2 / §3.3(W^X / 代码页 / jitContext / helper 表 / trampoline 协议骨架)、[./08-testing-strategy.md](./08-testing-strategy.md)(差分双架构双跑——本文 §5 给纪律,08 给口径)、[../p1-interpreter/12-testing-difftest.md](../p1-interpreter/12-testing-difftest.md) §8(CI 门禁)。
+> 同集协作:[./04-osr-deopt.md](./04-osr-deopt.md) §3.3 / §6(OSR exit 物化序列与 exit stub 物理形式——本文 §3.x guard 行链至 04,§4 寄存器约定给 exit stub 着陆面)、[./05-system-pipeline.md](./05-system-pipeline.md) §2.2 / §3.3(W^X / 代码页 / jitContext / helper 表 / trampoline 协议骨架)、[./08-testing-strategy.md](./08-testing-strategy.md)(差分双架构双跑——本文 §5 给纪律,08 给口径)、[../p1-interpreter/12-testing-difftest.md](../p1-interpreter/12-testing-difftest.md) §8(CI 必过检查)。
 
 对应 Go 包:`internal/gibbous/jit`(主包),子包 `internal/gibbous/jit/amd64` 与 `internal/gibbous/jit/arm64`。
 
@@ -20,9 +20,9 @@
 
 **P4 = 共享编译骨架 + per-arch 发射器,完成 amd64/arm64 双架构**——编译驱动、guard 语义、OSR 物化逻辑、jitContext 布局、helper 表、调用协议**只写一次**(架构无关);每 opcode 的发射函数、guard 比较/条件跳指令、寄存器约定、trampoline 汇编、指令编码器、icache flush(arm64)**写两份**(per-arch 各一)。
 
-这与 wazero wazevo backend 的组织一样的([../roadmap.md](../roadmap.md) §7)——共享骨架 + amd64/arm64 各自 backend——是「纯 Go 多架构机器码生成」的可行参照。
+这与 wazero wazevo backend 的组织方式相同([../roadmap.md](../roadmap.md) §7)——共享骨架 + amd64/arm64 各自 backend——是「纯 Go 多架构机器码生成」的可行参照。
 
-> **wazero v1.x 已切到 wazevo**:本文以及后续所有 wazero 采石场指针指的是当前一代 wazevo 引擎(SSA + per-ISA backend,位于 `internal/engine/wazevo/backend/isa/{amd64,arm64}/`),不是早期 `internal/engine/compiler` 子包(已不存在)。
+> **wazero v1.x 已切到 wazevo**:本文以及后续所有 wazero 参考代码指针指的是当前一代 wazevo 引擎(SSA + per-ISA backend,位于 `internal/engine/wazevo/backend/isa/{amd64,arm64}/`),不是早期 `internal/engine/compiler` 子包(已不存在)。
 
 ### 0.2 包布局
 
@@ -80,7 +80,7 @@ P4 立项决策表展开:
 
 1. **泄漏寻址模式差异**:amd64 复杂寻址(`[base+index*scale+disp]`)与 arm64 简单寻址(`[base, #imm]` / `[base, Xn, LSL #2]`)在中立层要么各自暴露(等于没抽象),要么压成最低公分母(amd64 浪费,arm64 凑活)。寻址模式恰恰是模板编译密度的关键。
 2. **泄漏标志位差异**:amd64 算术更新 EFLAGS,跳转读标志(`add` 后接 `jno`);arm64 显式标志(`adds` 才更新 NZCV)+ 条件指令(`b.cs`)。投机模板的 guard(§3.x「IsNumber 单比较 + 条件跳」)在两架构是不同指令组合,统一会多一条无用指令或走最复杂通路。
-3. **泄漏寄存器约定差异**:amd64 SystemV / Windows、arm64 AAPCS、Go ABI0 三套约定的被调方保存集 / 参数寄存器都不同(§4.3);中立层「N 个通用寄存器自由分配」与真实 ABI 合约割裂——trampoline 难看、helper 调用前后多余 spill。
+3. **泄漏寄存器约定差异**:amd64 SystemV / Windows、arm64 AAPCS、Go ABI0 三套约定的被调方保存集 / 参数寄存器都不同(§4.3);中立层「N 个通用寄存器自由分配」与真实 ABI 约定脱节——trampoline 难看、helper 调用前后多余 spill。
 4. **生成码质量与可调试性都受损**:disassembly 的产物与心智模型隔层映射,debug 投机错误要还原一层翻译。这与 [./02-template-direction.md](./02-template-direction.md) §1.3「P4 全部价值在生成码质量与系统管线正确性」直接冲突。
 5. **「写一次」是假命题**:即便有中立层,per-arch 仍需 lowering / 寄存器分配 / icache / trampoline——只是把工作量从「opcode 模板」推到「lowering 表」,总量不减只移位,且增加 IR 调试代价。
 
@@ -111,13 +111,13 @@ P4 立项决策表展开:
 | 系统管线正确性 | trampoline / Go ABI0 / icache / W^X 仍要 per-arch | per-arch 直接对接平台具体约定 |
 | 调试可达性 | disassembly 与心智模型隔层映射 | disassembly 即模板源码所写 |
 | 实现总成本 | opcode ×1 + lowering ×2 + IR 调试 | opcode ×2 + 编码器 ×2(更线性) |
-| 与 wazero 对照 | 无对应物 | 一样的组织(§1.4) |
+| 与 wazero 对照 | 无对应物 | 相同的组织方式(§1.4) |
 
 P4 全部价值在生成码质量与系统管线正确性,中立宏层在两点上都是负资产。
 
-### 1.4 与 wazero 一样的组织验证
+### 1.4 用 wazero 的相同组织作验证
 
-wazero wazevo backend([../roadmap.md](../roadmap.md) §7 prior art)是「纯 Go 运行时机器码生成可行」的存在性证明,内部组织正是「共享骨架 + amd64/arm64 各自 backend」:`internal/engine/wazevo/`(SSA IR、CFG、寄存器分配抽象、guard 语义)+ `internal/engine/wazevo/backend/isa/amd64/`(per-arch 发射函数 + 寄存器分配 + 寻址模式 + 立即数编码)+ `internal/engine/wazevo/backend/isa/arm64/`(一样的 arm64 一份)+ 各自的指令字节流编码器。
+wazero wazevo backend([../roadmap.md](../roadmap.md) §7 prior art)是「纯 Go 运行时机器码生成可行」的存在性证明,内部组织正是「共享骨架 + amd64/arm64 各自 backend」:`internal/engine/wazevo/`(SSA IR、CFG、寄存器分配抽象、guard 语义)+ `internal/engine/wazevo/backend/isa/amd64/`(per-arch 发射函数 + 寄存器分配 + 寻址模式 + 立即数编码)+ `internal/engine/wazevo/backend/isa/arm64/`(arm64 同样一份)+ 各自的指令字节流编码器。
 
 P4 直接对照这套组织,差异只在「P4 输入是 Lua 字节码,wazero 是 Wasm」——两者输出形式(原生机器码段 + 入口偏移 + 跨层 trampoline)与系统管线诉求(exec mmap / W^X / icache)完全同构。这不是抄设计,是同一约束下的同一最优解。
 
@@ -135,7 +135,7 @@ P4 直接对照这套组织,差异只在「P4 输入是 Lua 字节码,wazero 是
 
 ### 1.6 per-arch 是「分到本架构」非「重写一份」
 
-骨架(§2.2)与 per-arch(§2.3)在工作量上**各占一半**:骨架的「线性扫描 + 标签回填 + 模板选型」是字节码遍历框架(直接复用 P3 PW 的 `compile.go` 一样的驱动模式,只换发射目标);per-arch 是「每 opcode 选指令 + 编码 + 寄存器 + trampoline」。
+骨架(§2.2)与 per-arch(§2.3)在工作量上**各占一半**:骨架的「线性扫描 + 标签回填 + 模板选型」是字节码遍历框架(直接复用 P3 PW `compile.go` 的同一套驱动模式,只换发射目标);per-arch 是「每 opcode 选指令 + 编码 + 寄存器 + trampoline」。
 
 | 阶段 | 骨架(架构无关) | per-arch ×2 | amd64 / arm64 |
 |---|---|---|---|
@@ -157,9 +157,9 @@ P4 直接对照这套组织,差异只在「P4 输入是 Lua 字节码,wazero 是
 
 **承 [`2026-06-15-p3-pw10-r1-r2-callinfo-migration-round`](../../../llmdoc/memory/reflections/2026-06-15-p3-pw10-r1-r2-callinfo-migration-round.md) 教训 1「探未审视的 architecture FORK」纪律**——「里程碑级架构改动配 spike 检查」对应到 P4 双后端这一层时,具体落实是:
 
-- **§1.2 候选 (b) 选定基于定性理由(寻址 / 标志 / ABI 三处泄漏 + wazero 一样的组织验证),无 spike 数据**——但「共享骨架 + per-arch」抽象内部仍存在更细的 architecture FORK,设计期未显式审视:**emitter trait 粒度选 (i) 函数级 / (ii) opcode 族级 / (iii) 字节级编码层** 三个候选不等价,有泄漏方向不同。
+- **§1.2 候选 (b) 选定基于定性理由(寻址 / 标志 / ABI 三处泄漏 + 与 wazero 组织相同的验证),无 spike 数据**——但「共享骨架 + per-arch」抽象内部仍存在更细的 architecture FORK,设计期未显式审视:**emitter trait 粒度选 (i) 函数级 / (ii) opcode 族级 / (iii) 字节级编码层** 三个候选不等价,有泄漏方向不同。
 - **§2.4 emitter trait 签名完成前须经 PJ0 一次单 opcode 双架构原型(spike 检查)**:**ADD 投机模板 amd64 + arm64 各一份**(per-arch 全栈对位:guard 形式 + f64 快路径 + exit stub + ABI 寄存器 + 编码器调用),validate trait 不漏抽象 + 不污染骨架——若 arm64 完成时发现 trait 需变签名(典型:emit trait 把 amd64 寻址模式硬编码进抽象,arm64 没有 RIP-relative),**回炉重做 trait + 改 amd64 实现,不可绕过(不在 arm64 里 workaround)**。
-- **承 §5.5 / §5.6 一样的纪律**:「先 amd64 后 arm64 + 骨架先行 + arm64 校验」是平衡——ADD 投机模板双架构原型是这条纪律的 spike 兑现,**spike 不通过(trait 需大改)就不能进 PJ1**。
+- **承 §5.5 / §5.6 的同一条纪律**:「先 amd64 后 arm64 + 骨架先行 + arm64 校验」是平衡——ADD 投机模板双架构原型是这条纪律的 spike 兑现,**spike 不通过(trait 需大改)就不能进 PJ1**。
 
 这条纪律保住的是 P4 抽象层 emitter trait 在 amd64 实现时不留架构假设 / arm64 启动时不返工的工程边界——任何「先 amd64 写完 38 opcode 再抽 trait」的提案直接判否。
 
@@ -176,7 +176,7 @@ P4 直接对照这套组织,差异只在「P4 输入是 Lua 字节码,wazero 是
 | **编译驱动** | 线性扫字节码 / pc→机器地址映射 / 前向跳转回填 / IC feedback → 模板选型 / 守卫合并 | — |
 | **guard 与 OSR** | guard 语义(IsNumber / 同表同代次 / 单态 metatable) / OSR exit 物化序列**逻辑**(§3.3 承 04 §3.3) / exit 表(机器地址→字节码 pc + 寄存器→栈槽写回脚本) | guard 比较 + 条件跳的**指令** / exit stub 物理序列(承 04 §6) |
 | **jitContext / helper 表 / 调用协议** | jitContext 布局(承 05 §3.3) / helper 表入口枚举 / 调用协议(jit→jit / jit→interp / jit→host)逻辑分派(承 05 §3.4) | jitContext 固定寄存器(amd64 r15 / arm64 x28) / helper 调用前 spill 列表 / trampoline 汇编 |
-| **代码页管理** | exec mmap 池化策略 / per-Proto 段大小预估 / 释放回收 / W^X 翻面纪律(承 05 §2.2) | 平台 syscall 适配(linux mprotect / darwin MAP_JIT + pthread_jit_write_protect_np / windows VirtualProtect) |
+| **代码页管理** | exec mmap 池化策略 / per-Proto 段大小预估 / 释放回收 / W^X 切换纪律(承 05 §2.2) | 平台 syscall 适配(linux mprotect / darwin MAP_JIT + pthread_jit_write_protect_np / windows VirtualProtect) |
 | **指令编码** | — | per-arch 编码器:opcode 字节序、ModRM/REX(amd64) / 32-bit 定长(arm64) |
 | **icache 维护** | — | arm64:写码后 `IC IVAU` / `DC CVAU` / `DSB ISH` / `ISB` 序列(§4.2.8) / amd64:无操作 |
 | **常量池** | 常量发射策略(嵌指令流 vs 末尾池) | amd64:RIP-relative 立即数 / arm64:`adrp+ldr` 远立即数 |
@@ -246,9 +246,9 @@ helper 表入口枚举架构无关(`HelperArithSlow` / `HelperTableGrow` / `Help
 
 #### 2.2.4 代码页管理 / W^X 策略
 
-承 [./05-system-pipeline.md](./05-system-pipeline.md) §2.2:代码页池化、W^X 翻面纪律(任何时刻不持 RWX 页)是架构无关。per-arch 部分仅平台 syscall 适配:
+承 [./05-system-pipeline.md](./05-system-pipeline.md) §2.2:代码页池化、W^X 切换纪律(任何时刻不持 RWX 页)是架构无关。per-arch 部分仅平台 syscall 适配:
 
-| 平台 | 写入阶段 | 翻面 |
+| 平台 | 写入阶段 | 切换 |
 |---|---|---|
 | linux amd64/arm64 | `mmap(PROT_READ\|WRITE)` | `mprotect(PROT_READ\|EXEC)` |
 | darwin arm64 | `mmap(MAP_JIT \| RWX)` | `pthread_jit_write_protect_np(true)` |
@@ -276,7 +276,7 @@ func (e *amd64Emitter) emitAddSpec(pc int, instr bytecode.Instruction, tmpl Temp
 }
 ```
 
-per-arch 编码差异(一样的 ADD 模板的两架构对位见 §4.1.6 / §4.2.6)。
+per-arch 编码差异(同一个 ADD 模板的两架构对位见 §4.1.6 / §4.2.6)。
 
 #### 2.3.2 guard 比较 / 条件跳的指令
 
@@ -342,7 +342,7 @@ func newDefaultEmitter() Emitter { return arm64.NewEmitter() }
 | §3.1 算术 | ADD/SUB/MUL/DIV/MOD/POW/UNM/NOT/LEN/CONCAT | 10 | `FBArithStableNumber` | [P3 §3.2](../p3-wasm-tier/02-translation.md) |
 | §3.2 比较 | EQ/LT/LE/TEST/TESTSET | 5 | `FBArithStableNumber`(EQ/LT/LE) | [P3 §3.3](../p3-wasm-tier/02-translation.md) |
 | §3.3 表 IC | GETTABLE/SETTABLE/GETGLOBAL/SETGLOBAL/SELF/NEWTABLE/SETLIST | 7 | `FBTableMono` / `FBGlobalStable` / `FBSelfMono` | [P3 §3.4](../p3-wasm-tier/02-translation.md) |
-| §3.4 控制流 | JMP/FORLOOP/FORPREP/TFORLOOP | 4 | 无投机(回边 safepoint 是义务) | [P3 §3.5](../p3-wasm-tier/02-translation.md) |
+| §3.4 控制流 | JMP/FORLOOP/FORPREP/TFORLOOP | 4 | 无投机(循环回跳（back edge）safepoint 是义务) | [P3 §3.5](../p3-wasm-tier/02-translation.md) |
 | §3.5 调用 | CALL/TAILCALL/RETURN | 3 | jit→jit 直跳(同代次 fastCall) | [P3 §3.6](../p3-wasm-tier/02-translation.md) |
 | §3.6 闭包 | CLOSURE/CLOSE/GETUPVAL/SETUPVAL/VARARG | 5 | 无投机(VARARG F1 排除) | [P3 §3.7](../p3-wasm-tier/02-translation.md) |
 | §3.7 直线 | MOVE/LOADK/LOADBOOL/LOADNIL | 4 | 无投机(语义直翻) | [P3 §3.1](../p3-wasm-tier/02-translation.md) |
@@ -391,17 +391,17 @@ mov  rax, [tableArrayBase + 8*SNAP_INDEX]  ; 命中:直达槽 load
 mov  [rbx + 8*A], rax
 ```
 
-`SETTABLE` 一样的,但需多一步「写屏障」逻辑——望舒值世界全在 arena,无 Go GC 写屏障义务(承 [./05-system-pipeline.md](./05-system-pipeline.md) §1「白赚」),但**自管 GC 的 mark-sweep**仍可能要标记表为「脏」(承 [../p1-interpreter/06-memory-gc.md](../p1-interpreter/06-memory-gc.md) §7)。
+`SETTABLE` 同理,但需多一步「写屏障」逻辑——望舒值世界全在 arena,无 Go GC 写屏障义务(承 [./05-system-pipeline.md](./05-system-pipeline.md) §1「白赚」),但**自管 GC 的 mark-sweep**仍可能要标记表为「脏」(承 [../p1-interpreter/06-memory-gc.md](../p1-interpreter/06-memory-gc.md) §7)。
 
-**通用模板**:`FBTableMega` / IC 失效 → `h_gettable` helper(P3 一样的慢路径)。`NEWTABLE` 走 helper(分配是慢路径);`SETLIST` 多值边界(`B=0`/`C=0`)需跨 opcode 维护 top,直接走 helper。承 P3 PW5 一样的保守裁决。
+**通用模板**:`FBTableMega` / IC 失效 → `h_gettable` helper(与 P3 相同的慢路径)。`NEWTABLE` 走 helper(分配是慢路径);`SETLIST` 多值边界(`B=0`/`C=0`)需跨 opcode 维护 top,直接走 helper。沿用 P3 PW5 同样的保守裁决。
 
 **与 P3 翻译表对位**:P3 PW5([../p3-wasm-tier/02-translation.md](../p3-wasm-tier/02-translation.md) §3.4)是 P3 翻译复杂度峰值——表 IC inline 固化跳哈希、失效降级走助手。P4 把 P3 的 `i64.load offset=8*SNAP_INDEX` 换成 `mov rax, [tableArrayBase + 8*SNAP_INDEX]`,本质同构。P4 额外能力:`MetatableMono` 投机(承 §3.9)、多代次 polymorphic IC(2-4 个 shape)。
 
 ### 3.4 控制流族(JMP/FORLOOP/FORPREP/TFORLOOP,编号 22、31-33)
 
-**JMP**:翻译为机器跳。前向跳留 fixup(§2.2.1),反向跳直接发——反向跳是循环回边,**必须插回边 safepoint**。
+**JMP**:翻译为机器跳。前向跳留 fixup(§2.2.1),反向跳直接发——反向跳是循环 back edge,**必须插 back edge safepoint**。
 
-**FORPREP / FORLOOP**(数值 for):FORPREP 三槽校验 + 减一个 step 跳到 FORLOOP;FORLOOP 加 step、判界、回跳并刷新外部循环变量 R(A+3)——是热点回边。模板形式(投机:三槽 number 假设已由 FBArithStableNumber 暗示):
+**FORPREP / FORLOOP**(数值 for):FORPREP 三槽校验 + 减一个 step 跳到 FORLOOP;FORLOOP 加 step、判界、回跳并刷新外部循环变量 R(A+3)——是热点 back edge。模板形式(投机:三槽 number 假设已由 FBArithStableNumber 暗示):
 
 ```
 ;; FORLOOP 投机模板(amd64)
@@ -418,9 +418,9 @@ jmp  loop_body_start
 loop_exit:
 ```
 
-**TFORLOOP**(泛型 for):`R(A)(R(A+1), R(A+2))` 调迭代器,本质是调用族(§3.5)固定形式 → `HelperTForCall`(承 P3 一样的 h_tforloop)。迭代器调用可能 growStack 重定位值栈段——helper 返回新 valueStack base(承 P3 PW4b base 刷新机制,P4 同构)。
+**TFORLOOP**(泛型 for):`R(A)(R(A+1), R(A+2))` 调迭代器,本质是调用族(§3.5)固定形式 → `HelperTForCall`(沿用 P3 同样的 h_tforloop)。迭代器调用可能 growStack 重定位值栈段——helper 返回新 valueStack base(承 P3 PW4b base 刷新机制,P4 同构)。
 
-**回边 safepoint**(承 [./05-system-pipeline.md](./05-system-pipeline.md) §3.5):**所有反向跳都必须插 safepoint**(2-3 条:load preemptFlag + test + branch to exit_stub)。这是 [../roadmap.md](../roadmap.md) §2 异步抢占税兑现——直线段长度有界 ⇒ 不可抢占窗口有界。短直线段不插(P2 F5 的大函数检查已天然限制单函数尺寸)。
+**back edge safepoint**(承 [./05-system-pipeline.md](./05-system-pipeline.md) §3.5):**所有反向跳都必须插 safepoint**(2-3 条:load preemptFlag + test + branch to exit_stub)。这是 [../roadmap.md](../roadmap.md) §2 异步抢占税兑现——直线段长度有界 ⇒ 不可抢占窗口有界。短直线段不插(P2 F5 的大函数检查已天然限制单函数尺寸)。
 
 **与 P3 翻译表对位**:P3 PW4 用 wazero relooper 结构化生成(if/loop/br),P4 直接发机器跳——P3 的「结构化」约束在 native code 不存在(任意跳转都合法),P4 模板更直白。
 
@@ -438,7 +438,7 @@ call rcx                             ; jit→jit 直跳
 ;; emit Return Handling(从 CallInfo 拿 base、写回 R(A..A+C-2))
 ```
 
-**TAILCALL**:复用解释器一样的 helper(承 P3 PW6)——TAILCALL 在 BB 终结子位置(后随死代码 RETURN)→ jit 内不优化为直接跳目标(那要重写帧),走 `HelperTailCall` 把帧改造交解释器。收益:proper TCO 拿 O(1) 栈免费(承 P3 PW6 教训 2 红利)。
+**TAILCALL**:复用与解释器相同的 helper(承 P3 PW6)——TAILCALL 在 BB 终结子位置(后随死代码 RETURN)→ jit 内不优化为直接跳目标(那要重写帧),走 `HelperTailCall` 把帧改造交解释器。收益:proper TCO 拿 O(1) 栈免费(承 P3 PW6 教训 2 红利)。
 
 **RETURN**:把 R(A..A+B-2) 写到调用方期望位置(NaN-box memmove,承 04 §3.2)→ 跳回 trampoline 出口。
 
@@ -460,7 +460,7 @@ mov  [rbx + 8*A], rdx
 
 **VARARG**:**永不在白名单**(承 [./02-template-direction.md](./02-template-direction.md) §4 + [../p2-bridge/03-compilability-analysis.md](../p2-bridge/03-compilability-analysis.md) F1 排除)。F1 检查把 vararg 函数标 `CompCompilable=false`,Proto 永不升层。emit default 分支防御性 panic(`unreachable: VARARG`)。
 
-**与 P3 翻译表对位**:P3 PW7 一样的机制——闭包是 GC 对象、open upvalue 指栈槽、close upvalue 指 cell。P4 inline GETUPVAL 比 P3 紧凑(P3 走 helper,P4 直接寻址)。
+**与 P3 翻译表对位**:与 P3 PW7 相同的机制——闭包是 GC 对象、open upvalue 指栈槽、close upvalue 指 cell。P4 inline GETUPVAL 比 P3 紧凑(P3 走 helper,P4 直接寻址)。
 
 ### 3.7 直线族(MOVE/LOADK/LOADBOOL/LOADNIL,编号 0-3)
 
@@ -473,7 +473,7 @@ mov  [rbx + 8*A], rdx
 ;; LOADNIL R(A..R(B)) := nil:范围小展开 mov 序列;大区间走 helper
 ```
 
-**与 P3 翻译表对位**:P3 §3.1 一样的。差异:LOADK 把 NaN-box u64 直接烧成 64-bit 立即数(P3 用 `i64.const`)。
+**与 P3 翻译表对位**:与 P3 §3.1 相同。差异:LOADK 把 NaN-box u64 直接烧成 64-bit 立即数(P3 用 `i64.const`)。
 
 ### 3.8 渐进白名单(F7 检查 + per-arch 进度对账)
 
@@ -507,7 +507,7 @@ per-arch 进度对账(amd64 / arm64 各自一份白名单):amd64 先行(§5.4 / 
 | `FBUnstable` / `FBTableMega` | **不投机** | helper(等价解释器语义) |
 | feedback 缺失 | **不投机** | helper |
 
-裁决规则:① **confidence 阈值**:`fb[pc].Hits >= MinHits` 且 `fb[pc].MetaHits / fb[pc].Hits < MetaRatio` ⇒ 投机([../p2-bridge/01-profiling.md](../p2-bridge/01-profiling.md) §5 一样的待定);② **去投机重编译**:若 Proto deopt 计数超阈值(承 [./04-osr-deopt.md](./04-osr-deopt.md) §3.4),重编译时所有投机点降级为通用模板;③ **per-arch 一致**:投机/通用裁决在架构无关骨架完成(§2.2.1 `chooseTemplate`),per-arch emitter 只看 `tmpl` 枚举发对应模板——避免 amd64 / arm64 投机决策不同步导致差分破裂。
+裁决规则:① **confidence 阈值**:`fb[pc].Hits >= MinHits` 且 `fb[pc].MetaHits / fb[pc].Hits < MetaRatio` ⇒ 投机([../p2-bridge/01-profiling.md](../p2-bridge/01-profiling.md) §5,同样待定);② **去投机重编译**:若 Proto deopt 计数超阈值(承 [./04-osr-deopt.md](./04-osr-deopt.md) §3.4),重编译时所有投机点降级为通用模板;③ **per-arch 一致**:投机/通用裁决在架构无关骨架完成(§2.2.1 `chooseTemplate`),per-arch emitter 只看 `tmpl` 枚举发对应模板——避免 amd64 / arm64 投机决策不同步导致差分破裂。
 
 ---
 
@@ -623,11 +623,11 @@ nospill:
     RET
 ```
 
-mmap 段以普通 `ret` 返回,把 status 放 EAX 里——即 §4.3 exit-reason 协议里的 `exitReasonCode`(`ExitNormal=0` / `ExitError=1` / `ExitOSR=2` / `ExitInlineHelper=3`)。**除 W^X 翻面外没有独立的 exit stub 进出汇编**;自管机器栈 SP 切换由本入口/出口承担(issue #89,承 05 §7.5)——从 goroutine SP 切到 `spillBase` 进段、出段(弹 callee-saved 前)切回。两条硬约束:① 切 SP 前先读 codeAddr 到寄存器;② 出段恢复不覆写 RAX。这条接线把 `segToSegDepthCap` 从 PR #86 的保守值 16 抬回 128(承 §7 「自管世界」不变式,见 05 §7.5)。
+mmap 段以普通 `ret` 返回,把 status 放 EAX 里——即 §4.3 exit-reason 协议里的 `exitReasonCode`(`ExitNormal=0` / `ExitError=1` / `ExitOSR=2` / `ExitInlineHelper=3`)。**除 W^X 切换外没有独立的 exit stub 进出汇编**;自管机器栈 SP 切换由本入口/出口承担(issue #89,承 05 §7.5)——从 goroutine SP 切到 `spillBase` 进段、出段(弹 callee-saved 前)切回。两条硬约束:① 切 SP 前先读 codeAddr 到寄存器;② 出段恢复不覆写 RAX。这条接线把 `segToSegDepthCap` 从 PR #86 的保守值 16 抬回 128(承 §7 「自管世界」不变式,见 05 §7.5)。
 
 ### 4.2 arm64 寄存器分配方案
 
-**2026-07-02 实现勘误——arm64 native emit 只覆盖 18-op 线性子集,exit-reason 通道尚未完成**:PJ10 阶段 amd64 后端已完成 CFG + label resolver + 35 op 真原生 emit,arm64 后端(`internal/gibbous/jit/peroptranslator/translator_native_arm64.go` + `emit_arm64.go`)当前仅覆盖直线 + 简化算术共 18 op,`ExitInlineHelper` / `dispatchHelper` / `resumeOff` 这套协议(§4.3)在 arm64 上尚未实现(参 issue #37 / #40)。本节各寄存器约定给的是「双架构对位设计目标」,arm64 达到 amd64 完成度需按一样的结构补一遍 emit + dispatcher。
+**2026-07-02 实现勘误——arm64 native emit 只覆盖 18-op 线性子集,exit-reason 通道尚未完成**:PJ10 阶段 amd64 后端已完成 CFG + label resolver + 35 op 真正的原生 emit,arm64 后端(`internal/gibbous/jit/peroptranslator/translator_native_arm64.go` + `emit_arm64.go`)当前仅覆盖直线 + 简化算术共 18 op,`ExitInlineHelper` / `dispatchHelper` / `resumeOff` 这套协议(§4.3)在 arm64 上尚未实现(参 issue #37 / #40)。本节各寄存器约定给的是「双架构对位设计目标」,arm64 达到 amd64 完成度需按同样的结构补一遍 emit + dispatcher。
 
 #### 4.2.1 寄存器分类总表(arm64)
 
@@ -647,7 +647,7 @@ mmap 段以普通 `ret` 返回,把 status 放 EAX 里——即 §4.3 exit-reason
 
 **arenaBase 没有专属寄存器**:同 amd64 §4.1.1 勘误——arm64 arenaBase 也是「每次用时从 `[x27+arenaBaseOff]` 现算」,不占用一个跨 op 稳定的寄存器。旧稿把它分配给 x27 是把 amd64 假想的 r14 = arenaBase 方案一起搬到了 arm64,而实现的 amd64/arm64 都没这么做。
 
-> **x28 = Go G 寄存器**:Go arm64 ABIInternal 把 X28 定为永久 G 寄存器。Go 在函数调用间自动保留 X28,所以 P4 mmap 段调 Go shim 不需要像 amd64 那样先「恢复 R14」——X28 一直是 G,shim 直接进 shim 出都好使。这是 arm64 相对 amd64 少出的复杂度。
+> **x28 = Go G 寄存器**:Go arm64 ABIInternal 把 X28 定为永久 G 寄存器。Go 在函数调用间自动保留 X28,所以 P4 mmap 段调 Go shim 不需要像 amd64 那样先「恢复 R14」——X28 一直是 G,直接进 shim、出 shim 都没有问题。这是 arm64 相对 amd64 少出的复杂度。
 
 #### 4.2.2 两固定寄存器纪律(2026-07-02 实现勘误)
 
@@ -705,7 +705,7 @@ exit_pc_N:
 
 #### 4.2.5 与 Go ABI 兼容性(2026-07-02 实现勘误)
 
-Go arm64 ABI 把 X19-X28 视作 callee-saved 池,其中 X28 恒为 G 寄存器(见 §4.2.1 勘误)。P4 arm64 的两条 mmap 段独占寄存器是 X26 + X27——它们都在 callee-saved 池里,但 `emit_arm64.go` 头注实测过 X26 会被 shim 调用打掉(可能是 Go ABIInternal 里把 X26 用作某个非首八个 arg 的传参位),故 shim 后必须 `ldr x26, [x27, #valueStackBaseOff]` 重装;X27 可以靠 Go 保留。X28 完全归 Go 管、mmap 段绝不写它。
+Go arm64 ABI 把 X19-X28 视作 callee-saved 池,其中 X28 恒为 G 寄存器(见 §4.2.1 勘误)。P4 arm64 的两条 mmap 段独占寄存器是 X26 + X27——它们都在 callee-saved 池里,但 `emit_arm64.go` 头注实测过 X26 会被 shim 调用覆盖(可能是 Go ABIInternal 里把 X26 用作某个非首八个 arg 的传参位),故 shim 后必须 `ldr x26, [x27, #valueStackBaseOff]` 重装;X27 可以靠 Go 保留。X28 完全归 Go 管、mmap 段绝不写它。
 
 早前草稿画的「trampoline 入口 stp 一整套 x19-x30 + 换 x28=jitContext + 出口反向恢复」这套 **X28 交换** 方案确实没有采用(X28 归 Go G,不能覆写)。但自管 spill 栈的 SP 切换已由 issue #89 接线(arm64 镜像 amd64 §4.1.5):`CallJITSpec` 手动 STP 保存 X19-X27 到 goroutine 帧后,把 jitContext 装 X27、vsBase 装 X26;进段前若 `jitCtx.spillBase != 0` 则把 goroutine SP 暂存到 `jitCtx.savedGoSP` 再 `MOVD spillBase, RSP` 切到自管 spill 栈,`BL (R8)` 进段;段以普通 `ret` 出来后(手动 LDP 与 Go auto-epilogue 读 goroutine 帧之前)切回 goroutine SP。两条硬约束与 amd64 对称:① 切 SP 前先把 codeAddr 读进 R8(`+N(FP)` 切 SP 后会指向自管栈垃圾);② 出段恢复用 R9/R10 scratch,不覆写 R0(它带段的 exit-reason status)。X28 全程归 Go、mmap 段绝不写它。arm64 为镜像实现 + 交叉编译通过,执行正确性交 CI arm64 矩阵 + 另一台 arm64 机器。
 
@@ -737,7 +737,7 @@ nospill:
 
 #### 4.2.6 icache flush(arm64 独有)
 
-代码页 Seal(W^X 翻面前)调用:
+代码页 Seal(W^X 切换前)调用:
 
 ```asm
 ;; arm64 icache flush 序列(每 64 字节缓存行执行一次)
@@ -779,7 +779,7 @@ R14 / X28 归 Go,不是「P4 独占并 push/pop」的 callee-saved。P4 mmap 段
 | amd64 | `r15` `rbx` | `r14`(G,shim 前需 `mov r14, [r15+savedGoGOff]` 恢复) | `r15` | `rbx`(shim 后 `mov rbx, [r15+valueStackBaseOff]` 重装) |
 | arm64 | `x27` `x26` | `x28`(G,Go 自动保留) | `x27` | `x26`(shim 后 `ldr x26, [x27, #valueStackBaseOff]` 重装) |
 
-`CallJITSpec`(§4.1.5)入口保存 Go callee-saved(amd64 PUSHQ / arm64 手动 STP,落在 goroutine 帧)后装 R15/X27 与 RBX/X26 两条;issue #89 接线后进段前还把 SP 切到自管 spill 栈(见 §4.1.5 / §4.2.5),出段(弹 callee-saved 前)切回 goroutine SP。Go 自己的 callee-saved 契约在跨 Go 函数调用点保持;P4 另外管好「切 SP 前先读 codeAddr、出段恢复不覆写 RAX/R0」两条硬约束 + 「shim 前恢复 G,shim 后重装 vsBase」两个具体动作。
+`CallJITSpec`(§4.1.5)入口保存 Go callee-saved(amd64 PUSHQ / arm64 手动 STP,落在 goroutine 帧)后装 R15/X27 与 RBX/X26 两条;issue #89 接线后进段前还把 SP 切到自管 spill 栈(见 §4.1.5 / §4.2.5),出段(弹 callee-saved 前)切回 goroutine SP。Go 自己的 callee-saved 约定在跨 Go 函数调用点保持;P4 另外管好「切 SP 前先读 codeAddr、出段恢复不覆写 RAX/R0」两条硬约束 + 「shim 前恢复 G,shim 后重装 vsBase」两个具体动作。
 
 > Go arm64 X28 = G 是 ABIInternal 强制约束,P4 arm64 mmap 段绝不写 X28;这条与 amd64 R14 = G 完全对称。「切换 X28 = jitContext」的方案不成立——旧稿的这条设计目标被实现弃用了(见 §4.2.1 勘误)。
 
@@ -801,15 +801,15 @@ amd64 / arm64 在「locals 寄存器跨指令缓存」上的差异:amd64 xmm0-xm
 
 本节展开双后端 + 双架构的测试纪律。
 
-### 5.1 差分门禁双跑
+### 5.1 差分检查双跑
 
 P4 差分主防线是「同 Proto crescent vs gibbous-jit byte-equal」(承 [../p1-interpreter/12-testing-difftest.md](../p1-interpreter/12-testing-difftest.md) §3.8 Runner 抽象)——P4 启动时新增 `WangshuGibbousJIT` runner,与既有 `WangshuCrescent` 在同输入下输出 byte-equal。
 
-**CI 门禁要求**(承 [../p1-interpreter/12-testing-difftest.md](../p1-interpreter/12-testing-difftest.md) §8 + [../architecture.md](../architecture.md) §4 不变式 2):① 每次 PR 必跑 difftest 全套——同 Proto 经 crescent / gibbous-wasm / gibbous-jit 三 tier 各跑一遍,逐字节比对;② **amd64 与 arm64 物理 runner 各跑全套**(§5.3);③ nightly fuzz(承 [../p1-interpreter/12-testing-difftest.md](../p1-interpreter/12-testing-difftest.md) §5)叠加 P4 runner——P4 是望舒第一个会说谎的层(投机错误静默产错果),fuzz 是覆盖 deopt 路径的主要手段(承 [./08-testing-strategy.md](./08-testing-strategy.md) §7.2)。
+**CI 必过检查要求**(承 [../p1-interpreter/12-testing-difftest.md](../p1-interpreter/12-testing-difftest.md) §8 + [../architecture.md](../architecture.md) §4 不变式 2):① 每次 PR 必跑 difftest 全套——同 Proto 经 crescent / gibbous-wasm / gibbous-jit 三 tier 各跑一遍,逐字节比对;② **amd64 与 arm64 物理 runner 各跑全套**(§5.3);③ nightly fuzz(承 [../p1-interpreter/12-testing-difftest.md](../p1-interpreter/12-testing-difftest.md) §5)叠加 P4 runner——P4 是望舒第一个会说谎的层(投机错误静默产错果),fuzz 是覆盖 deopt 路径的主要手段(承 [./08-testing-strategy.md](./08-testing-strategy.md) §7.2)。
 
 ### 5.2 同 Proto crescent vs gibbous-jit byte-equal
 
-差分口径(承 [./08-testing-strategy.md](./08-testing-strategy.md) 待写):**输入相同**(同 Proto.Code、同输入参数、同初始 globals 表);**输出 byte-equal**(返回值 / globals 修改 / 错误消息含位置 / traceback);**不开豁免**(承 [../p3-wasm-tier/02-translation.md](../p3-wasm-tier/02-translation.md) §0 一样的)。
+差分口径(承 [./08-testing-strategy.md](./08-testing-strategy.md) 待写):**输入相同**(同 Proto.Code、同输入参数、同初始 globals 表);**输出 byte-equal**(返回值 / globals 修改 / 错误消息含位置 / traceback);**不开豁免**(承 [../p3-wasm-tier/02-translation.md](../p3-wasm-tier/02-translation.md) §0,做法相同)。
 
 amd64 与 arm64 互为对照——两架构在同输入下输出仍 byte-equal:
 
@@ -823,9 +823,9 @@ crescent (Go)  ←─ byte-equal ─→  gibbous-jit/arm64 (native)
 
 ### 5.3 交叉编译只能保证能构建,不能代跑差分
 
-**纪律**:CI 必须有真 arm64 物理 runner——交叉编译(`GOARCH=arm64 go build`)只验证「代码能编」。理由:① arm64 icache flush 序列(§4.2.6)、内存模型差异(LDR/STR 弱有序、需 dmb 屏障)、原子操作语义,在 amd64 上模拟不了——只有真硬件能跑出 race condition;② wazero 项目一样的 CI 矩阵(linux/amd64 + linux/arm64 + darwin/amd64 + darwin/arm64 全跑差分);③ **CI 不跑 = 实质未测**(承 [`prove-the-path-under-test`](../../../llmdoc/guides/prove-the-path-under-test.md) §1)。
+**纪律**:CI 必须有 arm64 真机 runner——交叉编译(`GOARCH=arm64 go build`)只验证「代码能编」。理由:① arm64 icache flush 序列(§4.2.6)、内存模型差异(LDR/STR 弱有序、需 dmb 屏障)、原子操作语义,在 amd64 上模拟不了——只有真硬件能跑出 race condition;② wazero 项目采用同样的 CI 矩阵(linux/amd64 + linux/arm64 + darwin/amd64 + darwin/arm64 全跑差分);③ **CI 不跑 = 实质未测**(承 [`prove-the-path-under-test`](../../../llmdoc/guides/prove-the-path-under-test.md) §1)。
 
-**配套口径**(承 [../p1-interpreter/12-testing-difftest.md](../p1-interpreter/12-testing-difftest.md) §8 CI 门禁):
+**配套口径**(承 [../p1-interpreter/12-testing-difftest.md](../p1-interpreter/12-testing-difftest.md) §8 CI 必过检查):
 
 | 平台 | 验收要求 |
 |---|---|
@@ -843,11 +843,11 @@ amd64 先行的理由:① **生态成熟度**(大部分 Go 开发机是 amd64,de
 
 ### 5.5 但骨架先行
 
-**第一架构完成时按 §2 切分好接口,避免「amd64 写完再抽象」返工**。完成:① **PJ0 启动时就定 §2.4 emitter trait**:`Emitter` interface 完整签名,amd64.NewEmitter 是第一个实现,arm64.NewEmitter 是空骨架(panic stub);② **PJ1-PJ7 每加一个 opcode 模板,同步在 arm64.go 留 stub**——不实现,但保留方法签名,给 arm64 启动一个完整的「待填表」;③ **避免反模式**:把 amd64 特异性(如 RIP-relative 寻址)硬编码进 emitter trait —— arm64 没有 RIP-relative,得另搞接口。trait 签名要架构无关(用「LoadConstant」而非「mov reg, [rip+disp]」)。
+**第一架构完成时按 §2 切分好接口,避免「amd64 写完再抽象」返工**。完成:① **PJ0 启动时就定 §2.4 emitter trait**:`Emitter` interface 完整签名,amd64.NewEmitter 是第一个实现,arm64.NewEmitter 是空骨架(panic stub);② **PJ1-PJ7 每加一个 opcode 模板,同步在 arm64.go 留 stub**——不实现,但保留方法签名,给 arm64 启动一个完整的「待填表」;③ **避免反模式**:把 amd64 特异性(如 RIP-relative 寻址)硬编码进 emitter trait —— arm64 没有 RIP-relative,得另设接口。trait 签名要架构无关(用「LoadConstant」而非「mov reg, [rip+disp]」)。
 
 ### 5.6 arm64 验证抽象是否真架构无关
 
-arm64 启动(PJ8)时,既有 amd64 实现是「镜子」——所有泄漏成本立即暴露:① 若 arm64 emitter 实现某 opcode 时发现 emitter trait 不够用(必须改签名),说明 amd64 实现时藏了架构假设——立刻回去修 trait + amd64,不在 arm64 里 workaround;② 若 arm64 实现某 opcode 比 amd64 少 / 多关键信息(如 NaN 规范化在 arm64 是 `fadd` 自动 / amd64 需手工)——这是 per-arch 模板该处理的,trait 不动;③ 若骨架的某机制(如 OSR exit 物化序列)在 arm64 性能不通(指令多 / 寄存器不够),回去改骨架的「物化逻辑」。
+arm64 启动(PJ8)时,既有 amd64 实现是「镜子」——所有泄漏成本立即暴露:① 若 arm64 emitter 实现某 opcode 时发现 emitter trait 不够用(必须改签名),说明 amd64 实现时藏了架构假设——立刻回去修 trait + amd64,不在 arm64 里 workaround;② 若 arm64 实现某 opcode 比 amd64 少 / 多关键信息(如 NaN 规范化在 arm64 是 `fadd` 自动 / amd64 需手工)——这是 per-arch 模板该处理的,trait 不动;③ 若骨架的某机制(如 OSR exit 物化序列)在 arm64 性能不达标(指令多 / 寄存器不够),回去改骨架的「物化逻辑」。
 
 这是「先 amd64 后 arm64」相对「同时双架构」的关键收益——双架构同时写容易因 amd64 进度快被 amd64 假设污染骨架,**先单后双 + 骨架先行 + arm64 校验**是平衡。
 
@@ -868,9 +868,9 @@ arm64 启动(PJ8)时,既有 amd64 实现是「镜子」——所有泄漏成本�
 | **PJ0** | 架构选定 + 包骨架 | `internal/gibbous/jit/{,amd64,arm64}` 包骨架 + emitter trait + 空 Compile(SupportsAllOpcodes 恒返 false) | P4 build tag 下编译通过;P3-only 等价 |
 | **PJ1** | amd64 trampoline + 直线模板 | trampoline 进出 stub + MOVE/LOADK/LOADBOOL/LOADNIL/RETURN | crescent vs gibbous-jit byte-equal(直线脚本) |
 | **PJ2** | amd64 算术 + 比较模板 | 全 §3.1 / §3.2 投机模板 + IsNumber × 2 guard + 通用模板 + helper 接线 | 算术/比较脚本差分;FBArithStableNumber 投机命中 + guard 失败 OSR exit 走通 |
-| **PJ3** | amd64 控制流 + FORLOOP + 回边 safepoint | JMP / FORLOOP / FORPREP / TFORLOOP + 反向跳 safepoint + 跳转回填 | 循环脚本差分;preemptFlag 触发 GC/调度 |
+| **PJ3** | amd64 控制流 + FORLOOP + back edge safepoint | JMP / FORLOOP / FORPREP / TFORLOOP + 反向跳 safepoint + 跳转回填 | 循环脚本差分;preemptFlag 触发 GC/调度 |
 | **PJ4** | amd64 表 IC 模板(投机版) | FBTableMono 直达槽 + 同表同代次 guard + 通用模板 helper | 表 IC 脚本差分;IC 失效 → OSR exit;IC 命中证明走 fastpath |
-| **PJ5** | amd64 CALL/TAILCALL + 跨层互调 + OSR exit | jit→jit 直跳 + jit→crescent 经 trampoline + jit→host helper + 错误冒泡 | 跨层调用脚本差分(承 P3 PW6 一样的语料);OSR exit 物化无损 |
+| **PJ5** | amd64 CALL/TAILCALL + 跨层互调 + OSR exit | jit→jit 直跳 + jit→crescent 经 trampoline + jit→host helper + 错误冒泡 | 跨层调用脚本差分(沿用 P3 PW6 同样的语料);OSR exit 物化无损 |
 | **PJ6** | amd64 CLOSURE/CLOSE + upvalue | CLOSURE / CLOSE / GETUPVAL / SETUPVAL inline + skip 协议(承 P3 PW7) | 闭包脚本差分 |
 | **PJ7** | amd64 端到端验收 + 性能基准 | 全 §3 模板 + V1-V13 差分语料 + V14-V18 性能/race 验收 | luasuite 全绿;Horner 校准 ≥ luajc 档 |
 | **PJ8** | arm64 后端启动 + 同框架渐进 | arm64.NewEmitter + arm64 trampoline + icache flush + 全 opcode arm64 对位 + 双架构 build 通过 | arm64 单架构差分通过(逐 PJ 对位 amd64) |
@@ -897,7 +897,7 @@ arm64 启动(PJ8)时,既有 amd64 实现是「镜子」——所有泄漏成本�
 
 时间分布:**前 6 个月** PJ0-PJ4 amd64 直跑通(端到端基本路径绿),用 Horner 校准做中途检查(承 [./01-launch-judgment.md](./01-launch-judgment.md) §4.3);**6-12 月** PJ5-PJ7 amd64 收尾 + 性能调优,通过 amd64 验收;**12-18 月** PJ8-PJ11 arm64 接入 + 双架构验收 + luajc 档收尾。
 
-中途检查(承 [./01-launch-judgment.md](./01-launch-judgment.md) §4.3):**单架构(amd64)+ 仅算术投机的最小 P4 先打通全管线并测 Horner 档位,若距 luajc 档仍远,立即停下重评**——这是「每阶段独立交付价值,任何检查停下不亏」原则在 P4 内部的套用。
+中途检查(承 [./01-launch-judgment.md](./01-launch-judgment.md) §4.3):**单架构(amd64)+ 仅算术投机的最小 P4 先接通全管线并测 Horner 档位,若距 luajc 档仍远,立即停下重评**——这是「每阶段独立交付价值,任何检查停下不亏」原则在 P4 内部的套用。
 
 ---
 
@@ -922,9 +922,9 @@ arm64 启动(PJ8)时,既有 amd64 实现是「镜子」——所有泄漏成本�
 ### 8.1 风险
 
 1. **arm64 维护矩阵长期固定成本**:双后端 + 双架构 CI 是长期固定成本——每 opcode 模板要双写、每性能优化要双跑、每 bug 修复要双 verify。缓解:严格执行 §5.5 骨架先行 + §5.6 arm64 校验,把「双写」收窄到 per-arch 模板内部。
-2. **暂存寄存器池策略实测不利**(承 §4.1.3 / §4.2.3):若按固定顺序分配的暂存在复杂模板里频繁冲突(如表 IC 投机 5 个暂存 + helper 调用前 spill),性能可能不抵预期。缓解:单模板内允许「人工分配」(模板作者按需指定暂存寄存器),不引入跨字节码边界的寄存器分配器(那是 P5 的活)。
+2. **暂存寄存器池策略实测不利**(承 §4.1.3 / §4.2.3):若按固定顺序分配的暂存在复杂模板里频繁冲突(如表 IC 投机 5 个暂存 + helper 调用前 spill),性能可能不抵预期。缓解:单模板内允许「人工分配」(模板作者按需指定暂存寄存器),不引入跨字节码边界的寄存器分配器(那是 P5 的工作)。
 3. **locals 寄存器跨指令缓存的两架构差异**(承 §4.4):amd64 / arm64 寄存器数量与 ABI 占用不同,locals 缓存策略可能两架构最优解不同。缓解:per-arch 各自决定缓存策略,只要 exit 物化序列对位即可(承 04 §3.3 注 + [./02-template-direction.md](./02-template-direction.md) §3.3 待写)。
-4. **arm64 平台子矩阵复杂**(承 §4.2.5 G 寄存器协议 + §4.2.6 icache + darwin MAP_JIT):arm64 有 linux / darwin / windows 三平台,每平台 syscall 适配 + W^X 翻面 + G 寄存器协议都不同。缓解:platform-specific 适配在 codepage_*.go 单独抽,emitter 不知道平台。
+4. **arm64 平台子矩阵复杂**(承 §4.2.5 G 寄存器协议 + §4.2.6 icache + darwin MAP_JIT):arm64 有 linux / darwin / windows 三平台,每平台 syscall 适配 + W^X 切换 + G 寄存器协议都不同。缓解:platform-specific 适配在 codepage_*.go 单独抽,emitter 不知道平台。
 5. **指令编码器 bug 长尾**(承 §2.3 末):编码器是「写汇编」最低层,bug 难发现(产物是字节流,需 disassemble 才能验)。缓解:编码器单测「字节级差分测试」(用 `golang.org/x/arch/x86/x86asm` 与 `arm64asm` 反汇编差分测试真实指令字节)。
 
 ### 8.2 开放问题(记入 [doc-gaps](../../../llmdoc/memory/doc-gaps.md))
@@ -960,7 +960,7 @@ PJ7 / PJ8 / PJ11 验收期发现具体收益/瓶颈数据,回填到 §6 PJ 验�
 [../p1-interpreter/02-bytecode-isa.md](../p1-interpreter/02-bytecode-isa.md)(38 opcode 完整表,本文 §3 按族归类的源) ·
 [../p1-interpreter/01-value-object-model.md](../p1-interpreter/01-value-object-model.md)(NaN-box 编码 / GC 根 R5——P4 寄存器持值的形式) ·
 [../p1-interpreter/05-interpreter-loop.md](../p1-interpreter/05-interpreter-loop.md)(CallInfo / 值栈布局——per-arch 寄存器映射的源) ·
-[../p1-interpreter/12-testing-difftest.md](../p1-interpreter/12-testing-difftest.md)(§3.8 Runner 抽象 / §8 CI 门禁 / §10 验收口径——双架构双跑接入点) ·
+[../p1-interpreter/12-testing-difftest.md](../p1-interpreter/12-testing-difftest.md)(§3.8 Runner 抽象 / §8 CI 必过检查 / §10 验收口径——双架构双跑接入点) ·
 [../p2-bridge/02-ic-feedback.md](../p2-bridge/02-ic-feedback.md)(TypeFeedback shape——§3.9 投机/通用二选的源) ·
 [../p2-bridge/03-compilability-analysis.md](../p2-bridge/03-compilability-analysis.md)(F1-F7 检查——§3.8 渐进白名单的对位) ·
 [../p3-wasm-tier/02-translation.md](../p3-wasm-tier/02-translation.md)(P3 翻译器主体——本文 §3 各族「与 P3 翻译表对位」的对位源) ·
