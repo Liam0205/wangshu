@@ -206,11 +206,21 @@ with tempfile.TemporaryDirectory() as tmp:
         'ci', 'nightly-fuzz infra failure (2026-09-07)')
     # A budget loosened far enough runs past -timeout (no FAIL line, only the panic) or past the step
     # cap (step cancelled, log cut off mid-run). Both must still be filed as this bug, not as infra.
-    run('watchdog-margin-test-timeout', {'watchdog-margin.log': 'panic: test timed out after 2m0s\n'},
+    started = '=== RUN   TestConcatStormKeepsWatchdogMargin\n'
+    run('watchdog-margin-test-timeout', {'watchdog-margin.log': started + 'panic: test timed out after 2m0s\n'},
         'bug', margin_title, margin_outcome='failure')
-    run('watchdog-margin-step-cancelled', {'watchdog-margin.log': '=== RUN   TestConcatStormKeepsWatchdogMargin\n'},
+    run('watchdog-margin-step-cancelled', {'watchdog-margin.log': started},
         'bug', margin_title, margin_outcome='cancelled', contains=('步骤结果:cancelled',))
-    run('watchdog-margin-step-failed-empty-log', {}, 'bug', margin_title, margin_outcome='failure')
+    # The step runs under always(), so an environment failure also leaves its outcome at failure. None of
+    # those start the test, and all of them must still be filed as infra, merged with p1/p3 by date.
+    infra_title_p4 = 'nightly-fuzz infra failure (2026-09-07)'
+    run('watchdog-margin-step-failed-empty-log', {}, 'ci', infra_title_p4, margin_outcome='failure')
+    run('watchdog-margin-module-download-failed',
+        {'watchdog-margin.log': 'go: downloading golang.org/x/sys v0.44.0\n'
+                                'go: golang.org/x/sys@v0.44.0: Get "https://proxy.golang.org/golang.org/x/sys/@v/v0.44.0.zip": dial tcp: i/o timeout\n'},
+        'ci', infra_title_p4, margin_outcome='failure')
+    run('watchdog-margin-cancelled-before-start', {'watchdog-margin.log': 'go: downloading golang.org/x/sys v0.44.0\n'},
+        'ci', infra_title_p4, margin_outcome='cancelled')
     # p1/p3 never run the step, so its outcome is empty there; that must not trigger the branch.
     run('watchdog-margin-skipped-on-p1', {}, 'ci', 'nightly-fuzz infra failure (2026-09-07)',
         variant='p1', margin_outcome='')
