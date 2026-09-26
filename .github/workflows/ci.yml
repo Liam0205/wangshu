@@ -399,7 +399,7 @@ jobs:
             'test/conformance/golden/**' '**/exemptions*' | tee changed-golden.txt
           if [ -s changed-golden.txt ]; then
             {
-              echo "## ⚠ golden / 豁免清单有改动,请 reviewer 显式确认(防掩盖真 bug,12 §8)"
+              echo "## ⚠ golden / 豁免清单有改动,请 reviewer 显式确认(防止掩盖真正的 bug,12 §8)"
               cat changed-golden.txt
             } >> "$GITHUB_STEP_SUMMARY"
           fi
