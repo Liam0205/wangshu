@@ -17,7 +17,7 @@
 
 「理论更快」不等于实测更快——校验复杂度、分支预测、缓存行为会反噬。实例:IC DataOff 直达偏移理论上把 IC 命中的 4 次内存读砍到 2 次,实测 binary-trees 28.2→31.8ms(+12% 回退,3 轮稳定),整体 revert(归因:同键校验复杂度反噬 + gen 全局序列维护成本)。纪律:
 
-- 任何优化(包括「显然合理」的)必须过 benchmark 门;
+- 任何优化(包括「显然合理」的)必须通过 benchmark 检验;
 - 回退确认后 **revert 决策要快**,沉没成本不进判断;
 - 否决结论与归因记入提交/反思,防止同一想法被反复重提。
 
@@ -42,11 +42,11 @@
 
 衔接 `06-memory-gc.md` 回填条款(doc-gaps 第 10 项)与长稳轮「良性→致命」升级清单纪律,池化/复用类优化每项完成时同批完成:
 
-1. **API 生命期契约入公共类型文档**(不能只在实现注释)——callHost 实参池的「args 仅本次调用有效」契约写入 `HostFn` 类型文档;
-2. **debug 构建毒值防护**——wangshu_trace 构建下归还时填毒值,违约保留立即显形;
+1. **API 生命期约定写入公共类型文档**(不能只在实现注释)——callHost 实参池的「args 仅本次调用有效」约定写入 `HostFn` 类型文档;
+2. **debug 构建毒值防护**——wangshu_trace 构建下归还时填毒值,违反约定继续持有时会立即暴露;
 3. **相关传值区改拷贝**——coroutine xfer 不得持有池切片引用;
 4. **归还时序**——defer 到消费完成之后(select 返回 args 子切片的场景);
-5. 复用对象的**复位路径覆盖异常退出**(State.Call 复用主 thread 须清错误退出残留的 openUvs;死协程清 xfer 同一卫生标准)。
+5. 复用对象的**复位路径覆盖异常退出**(State.Call 复用主 thread 须清错误退出残留的 openUvs;死协程清 xfer 同一清理标准)。
 
 ## 7. 立项数字目标 vs profile 实测瓶颈:profile 才是合同
 
@@ -57,14 +57,14 @@
 **触发场景**:
 - perf 里程碑完成中 profile 揭示「立项时假设的瓶颈块 ≠ 实测主导项」时;
 - profile 揭示「立项时数字目标在事实上不可达」(已实测的不可优化项 + 仍可优化项的上限和已确认 <立项目标)时;
-- /goal stop hook 强制不结束但 profile 证明数字不可达时(收口已完成子里程碑 + 文档化不可达边界,绝不硬上 UAF 代码追数字)。
+- /goal stop hook 强制不结束但 profile 证明数字不可达时(收尾已完成的子里程碑 + 文档化不可达边界,绝不硬上 UAF 代码追数字)。
 
-**判据**:做下一步优化前问「**这步打 profile 里哪块?预估能消多少?**」若答「不打主导块,即使做完数字也不达标」⟹ **止损 / 落档 / 换路径**,别为追原数字硬上高 UAF 实现。
+**判据**:做下一步优化前问「**这步打 profile 里哪块?预估能消多少?**」若答「不打主导块,即使做完数字也不达标」⟹ **止损 / 记录归档 / 换路径**,别为追原数字硬上高 UAF 实现。
 
 **纪律**:
 - 立项数字目标在 profile 揭示其事实上不可达时,**先重评目标可达性,再决定继续/止损/换路径**;
 - 不可达边界须**文档化为已知架构边界**(根因 + profile 证据 + 预估上限 + 触达条件),非作「未交付的失败」掩埋;
-- 「已完成子里程碑 + 架构边界文档化」是合法的里程碑收口形式,绝不为追立项数字硬上高 UAF 实现。
+- 「已完成子里程碑 + 架构边界文档化」是合法的里程碑完成形式,绝不为追立项数字硬上高 UAF 实现。
 
 **实例**(PW10 ④-ii):立项目标 `call 0.52x → ≥1x`。完成中 profile `/tmp/call.prof` 揭示:
 - call 核 52% 在 enterGibbous + 38% 在 wazero CallWithStack(R3.5 已消反射装箱后的残留固定开销);
@@ -72,20 +72,20 @@
 - ④-ii fast body 即使完成,预估上限 0.57x(仅消 0.52x 中 ~10% 的 h_call 建帧延迟)**仍 <1x**;
 - 实现复杂度 ~200 行 wasm 字节级 codegen,UAF 高(组帧 + 绑 ciTransferRef + IC mirror 写回 + 错误路径展开 + 跨守卫状态一致性)。
 
-**决策**:**止损 / 文档化为「call 0.52x 是 bench kernel 结构性架构边界」+ 留 followup**,而非硬上 200 行 wasm 字节级 codegen 追不可达数字。emit 原语 i64.add/i64.or 已保留供未来 ④-ii(若 bench kernel 形式调整或 F2-b 口径扩张),不需重新打通。
+**决策**:**止损 / 文档化为「call 0.52x 是 bench kernel 结构性架构边界」+ 留 followup**,而非硬上 200 行 wasm 字节级 codegen 追不可达数字。emit 原语 i64.add/i64.or 已保留供未来 ④-ii(若 bench kernel 形式调整或 F2-b 判定范围扩大),不需重新接通。
 
 **与四件套其他节的关系**:
 - **§1「profile 先行」**(立项侧)管「立项时拿什么数据立项」;
 - **§3「benchmark 否决门」**(单优化裁量侧)管「单项优化做完后实测不符就 revert」;
 - **§5「跨机器基线对照」**(时效性)管「数字判定回归/收益前同 commit 同硬件复测」;
-- **§7「立项数字目标 vs profile 实测瓶颈」**(完成中止损纪律)管「立项数字事实上不可达时的诚实收口」。
+- **§7「立项数字目标 vs profile 实测瓶颈」**(完成中止损纪律)管「立项数字事实上不可达时的诚实收尾」。
 
-四节互锁:§1 防立项盲打 → §3 防单步过度乐观 → §5 防跨时空对照失真 → §7 防为追不可达数字硬上 UAF。
+四节互锁:§1 防立项盲打 → §3 防单步过度乐观 → §5 防跨时间、跨机器对照失真 → §7 防为追不可达数字硬上 UAF。
 
 ## 落点文件参考
 
 - `internal/crescent/table.go` (`closeUpvals`) — maxOpenIdx 快路径。
-- `internal/crescent/host.go` (`callHost` / `HostFn`) — 实参池与契约文档。
+- `internal/crescent/host.go` (`callHost` / `HostFn`) — 实参池与约定文档。
 - `internal/crescent/state.go` (`mainTh`) — 主 thread 跨 Run 复用。
 - `internal/gc/sweep.go` (`objectBytes`) — pacing 统计含附属块。
 - `benchmarks/realworld/` — benchmark-game 五脚本(差分测试 + vs gopher-lua);`benchmarks/baseline/` 三档微基准。

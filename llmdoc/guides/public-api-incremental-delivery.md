@@ -1,17 +1,17 @@
 # Guide:公共 API 增量交付工作流
 
-> 适用:接到「扩公共 API 表面」的 issue / 需求 / 反馈时——尤其是 issue 字面边界看起来很小、或目标是给 drop-in 候选(gopher-lua / PUC 5.1 / 其它实现)补对位面。
+> 适用:接到「扩公共 API 表面」的 issue / 需求 / 反馈时——尤其是 issue 字面边界看起来很小、或目标是给 drop-in 候选(gopher-lua / PUC 5.1 / 其它实现)补齐与之对应的接口。
 > 来源:`memory/reflections/2026-06-12-issue1-api-gap-round.md`(per-item drop-in 子集 + Register/Module + 公共 HostFn + kFunction)与 `memory/reflections/2026-06-12-issue234-api-gap-round-2.md`(Table / HideFileLoaders / Context,一样的工作流第二轮),两轮共 8 条纪律全验证可复用。
 
 ## 1. 设计承诺源回看——三角验证
 
 接到「看起来很小」的 issue 时,**不要按字面做**。先做三角验证:① issue 字面边界 ② 设计承诺源(`docs/design/p1-interpreter/11-embedding-arena-abi.md` §7.1/§9.1 + [[embedding-contract]])③ issue 描述的真实业务场景。三者不自洽时(常见根因是 issue 提交者只想到了单点 API 没想清整个调用链),用 AskUserQuestion 给出**三档范围**(issue 字面 / drop-in 最小可用集 / 完整 spec)让用户定下来,不擅自扩大也不按字面交付。
 
-反例:issue #1 字面只补 SetGlobal/GetGlobal 标量,但 pineapple 真用法是「GetGlobal(fn) + CallByParam(fn)」,标量四类型解锁不了真闭环(`87031c2`)。
+反例:issue #1 字面只补 SetGlobal/GetGlobal 标量,但 pineapple 的实际用法是「GetGlobal(fn) + CallByParam(fn)」,只补四种标量类型,整条调用链仍然走不通(`87031c2`)。
 
 ## 2. 公共面 first-class GCRef-bearing value 必须接 GC 根
 
-机制级硬规则,已升为 [[embedding-contract]] 不变式条款。本节作为工作流完成的 checklist 指针:接到「让宿主长期持有某 GCRef 对象」类 issue(function / table / userdata / coroutine 等)时,**回头核对该 reference 条款**——pin 表(`pinnedRefs` + `freePins` + `visitExtraRefs`)是否覆盖该 kind,Release 是否配对,globals 覆盖 + GC 压力模式下能否复读。本 guide 不重复契约细节。
+机制级硬规则,已升为 [[embedding-contract]] 不变式条款。本节作为工作流完成的 checklist 指针:接到「让宿主长期持有某 GCRef 对象」类 issue(function / table / userdata / coroutine 等)时,**回头核对该 reference 条款**——pin 表(`pinnedRefs` + `freePins` + `visitExtraRefs`)是否覆盖该 kind,Release 是否配对,globals 覆盖 + GC 压力模式下能否复读。本 guide 不重复接口约定细节。
 
 锚点:`87031c2`(kFunction)/ `2b55e11`(kTable 复用一样的 pin 表零额外接根)。
 
@@ -35,17 +35,17 @@
 
 反例:`Run/Call` 返回路径从 `fromInner` → `fromInnerWithPin` 是静默扩面(table/function 此前映射 Nil,本期可读出),评审抓出后 `bb1e9a8` 补 godoc 行为变更段 + Release 调用提示。
 
-## 6. 范围扩张顺手收口——commit message 必须显式标注
+## 6. 范围扩张顺手补齐遗留缺口——commit message 必须显式标注
 
-完成新 issue 时若发现「上轮裁口的某条恰好阻挡本轮 spec 隐含期望」,**先把裁口收掉再做本轮**——代价为零(本来就要改桥接面)且对齐 spec 隐含期望;留个 trick 跨 issue 处理是 O(n) 特殊路径累积,迟早形成「公共 API 行为方阵 vs 内部桥接路径不一一对应」的反向不变式洞。
+完成新 issue 时若发现「上轮裁掉的某项恰好阻挡本轮 spec 隐含期望」,**先把这个缺口补上再做本轮**——代价为零(本来就要改桥接面)且对齐 spec 隐含期望;留个 trick 跨 issue 处理是 O(n) 特殊路径累积,迟早形成「公共 API 行为方阵 vs 内部桥接路径不一一对应」的反向不变式漏洞。
 
 **但**:范围扩张必须在 commit message 显式标注「顺手把 issue #N 留的口收了」否则 review 困惑「为什么 issue #2 改了 Run 返回路径」。
 
-反例:`2b55e11` 把 `fromInner → fromInnerWithPin` 升级,顺手收掉 issue #1 留的「Run/Call 返回 table 不可读」口,commit message 显式标注。
+反例:`2b55e11` 把 `fromInner → fromInnerWithPin` 升级,顺手补上 issue #1 留下的「Run/Call 返回 table 不可读」缺口,commit message 显式标注。
 
 ## 7. 对位测试断言文本——先 grep oracle,不凭印象
 
-写「对位 gopher-lua / 对位 PUC 5.1 / 对位某官方实现」类测试时,断言文本应**先 grep oracle 实现或跑一次得到实际输出**,不凭印象写。代价对账:先 grep 多一步,但少一轮全量跑测;且对位证据反而是测试断言本身——若印象与实际不符,修测试 = 验证实现已与官方对齐。
+写「对位 gopher-lua / 对位 PUC 5.1 / 对位某官方实现」类测试时,断言文本应**先 grep oracle 实现或跑一次得到实际输出**,不凭印象写。代价对比:先 grep 多一步,但少一轮全量跑测;且对位证据反而是测试断言本身——若印象与实际不符,修测试 = 验证实现已与官方对齐。
 
 反例:`09fdd72` 测试初版断言 `attempt to call a nil value`,实跑发现 PUC 5.1 给的是 `attempt to call global 'X' (a nil value)`(`luaG_typeerror` 走 `varinfo` 分支带变量名前缀),修测试断言反而验证了我们的措辞与官方完全对齐。
 
@@ -59,20 +59,20 @@ internal 包要接受「外部世界」对象(context / io / timer / net 等)时
 
 ## 9. 对称面检查——交付时扫读写/创建迭代/挂入取出闭环
 
-交付公共 API issue 时,检查该 API 触及的数据结构是否在**写入/读出、创建/迭代、挂入/取出**等对称面同时闭环。若某一面只做了一半(只有写入没有迭代读出,或只有创建没有遍历),要么在同 issue 补齐,要么在 commit message / issue 评论显式标注「X 面留口,后续 issue 补」——不允许静默留半闭环。
+交付公共 API issue 时,检查该 API 触及的数据结构是否在**写入/读出、创建/迭代、挂入/取出**等对称面同时闭环。若某一面只做了一半(只有写入没有迭代读出,或只有创建没有遍历),要么在同 issue 补齐,要么在 commit message / issue 评论显式标注「X 面暂缺,后续 issue 补」——不允许静默留半闭环。
 
-反例:issue #2 关闭时只有 `Set/SetIndex/Get/GetIndex/Len` 写入与单键读出能力,缺任意 key 迭代(`ForEach`),直到 issue #5 才补齐。脚本返回 map 的场景下宿主无法遍历——这是典型的「写入闭环但迭代读出缺失」半闭环。若 issue #2 交付时做过对称面检查,ForEach 可以提前识别为同批交付或显式留口。
+反例:issue #2 关闭时只有 `Set/SetIndex/Get/GetIndex/Len` 写入与单键读出能力,缺任意 key 迭代(`ForEach`),直到 issue #5 才补齐。脚本返回 map 的场景下宿主无法遍历——这是典型的「写入闭环但迭代读出缺失」半闭环。若 issue #2 交付时做过对称面检查,ForEach 可以提前识别为同批交付或显式标注为留待后续。
 
 ## 落点文件参考
 
 - 反思原始样本:
   - `llmdoc/memory/reflections/2026-06-12-issue1-api-gap-round.md`(纪律 1/2/3/4 首次样本)
   - `llmdoc/memory/reflections/2026-06-12-issue234-api-gap-round-2.md`(纪律 5/6/7/8 新增 + 纪律 1-4 复用验证)
-- 契约/不变式:[[embedding-contract]] §公共 first-class GCRef-bearing value 接 GC 根
+- 接口约定/不变式:[[embedding-contract]] §公共 first-class GCRef-bearing value 接 GC 根
 - 锚点 commit:
   - issue #1 三件套:`87031c2` feat / `cb6e1ae` Register / `5d8d2c2` doc / `031ec06` 评审跟进
   - issue #2/#3/#4 四件套:`2b55e11` Table / `09fdd72` HideFileLoaders / `27b4f2e` SetContext / `584db8e` doc / `bb1e9a8` 评审跟进
   - issue #5:`4f855d2` ForEach
   - issue #6:`3d34839` baseline
   - doc:`755d5ce`
-- 同族 guide:[[perf-optimization-workflow]]——「快路径家族审计」(优化扫同族)与本 guide 「范围扩张顺手收口」(裁口扫同族)是同一纪律在不同维度的两个完成。
+- 同族 guide:[[perf-optimization-workflow]]——「快路径家族审计」(优化扫同族)与本 guide 「范围扩张顺手补齐遗留缺口」(裁掉的范围扫同族)是同一纪律在不同维度的两种体现。

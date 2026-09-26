@@ -1,6 +1,6 @@
 # 参考:测试目录布局
 
-> 测试代码住在哪里、新测试往哪放、fuzz 语料和取证设施在哪。状态:2026-09-09 根目录测试整体迁入 `test/` 后的布局;此前根目录有 47 个 `_test.go`。
+> 测试代码放在哪里、新测试往哪放、fuzz 语料和取证设施在哪。状态:2026-09-09 根目录测试整体迁入 `test/` 后的布局;此前根目录有 47 个 `_test.go`。
 
 ## 一句话规则
 
@@ -14,16 +14,16 @@
 | `test/api/` | `api_test` | 宿主嵌入 API 面:State / Program 生命周期、arena 选项与 ABI、context 取消、io 句柄、沙箱与硬化、globals 槽、类型化数组表、预分配表 | 默认;`embedding_admin_default`(`!wangshu_p3`)/ `embedding_admin_p3`(p3+profile) |
 | `test/language/` | `language_test` | 语言与标准库语义:stdlib、table / table_puc51、meta、coroutine、global、register、getinfo、os.time isdst、baseline,以及 concurrency / longevity 压力测试 | 默认 |
 | `test/tiering/` | `tiering_test` | 分层与晋升:tier 开关、promotion 计数、P2 bridge 端到端与阈值校准 | `wangshu_profile` 系列(p1 / p3 / p4 各有专属文件) |
-| `test/regression/` | `regression` | issue 回归:某个 crasher / 分歧被修好后钉住的显式测试。命名 `issueNNN_*_test.go`;2026-09-09 从根目录并入的 5 个仍叫 `fuzz_NNN_test.go`,内容同类 | 按 issue 所在层各异 |
+| `test/regression/` | `regression` | issue 回归:某个 crasher / 分歧被修好后用来固定行为的显式测试。命名 `issueNNN_*_test.go`;2026-09-09 从根目录并入的 5 个仍叫 `fuzz_NNN_test.go`,内容同类 | 按 issue 所在层各异 |
 | `test/fuzz/` | `fuzz_test` | 五个 `Fuzz*` harness + `raceEnabled` 常量 + `main_test.go`(`TestMain`)+ **`testdata/fuzz/` 语料** | 每个 harness 一族,见下 |
 | `test/testutil/` | `testutil` | 跨包共用的测试辅助函数。**只有第二个包需要时才进这里**,单消费者的辅助函数留在自己包内 | 无 |
 | `test/conformance/` `test/difftest/` `test/luasuite/` | 各自 | 迁移前就在这里,未动 | 各自 |
-| `internal/fuzzforensics/` | `fuzzforensics` | fuzz worker 静默死亡的取证:fd 2 尸检 + 飞行记录仪。**非测试代码**,用内部测试包做单元测试 | 无 |
+| `internal/fuzzforensics/` | `fuzzforensics` | fuzz worker 静默死亡的取证:fd 2 崩溃栈迹 + 飞行记录仪。**非测试代码**,用内部测试包做单元测试 | 无 |
 | `internal/fuzzbudget/` | `fuzzbudget` | P4 fuzz harness 的 step budget 常量,harness 与回归测试共用 | 无 |
 
 ## test/fuzz 的 build tag 家族
 
-一个 package,文件按 tag 分家;默认 build 下只剩 `fuzz_test.go`(`FuzzCompileRun`)和 `main_test.go`。
+一个 package,文件按 tag 分开;默认 build 下只剩 `fuzz_test.go`(`FuzzCompileRun`)和 `main_test.go`。
 
 ```text
 fuzz_test.go                默认
@@ -53,7 +53,7 @@ race_on/off_test.go         race / !race,只定义 raceEnabled,供 fuzz_auto / f
 - **`Fuzz*` 靶点不只在 `test/fuzz`**:`internal/stdlib`(`FuzzPattern`)、`internal/frontend/lex`(`FuzzLexer`)、
   `internal/frontend/parse`(`FuzzParse`)各有自己的靶点,`go-fuzz.sh` 按源码扫描全部跑到。它们的语料(如有)在各自包目录
   的 `testdata/fuzz/` 下——今天只有 `internal/stdlib/testdata/fuzz/FuzzPattern` 存在,lex / parse 目录会在第一个 crasher
-  落盘时由 `go test` 创建。写涉及语料路径的脚本时不要假定前缀是 `test/fuzz/`。
+  写入磁盘时由 `go test` 创建。写涉及语料路径的脚本时不要假定前缀是 `test/fuzz/`。
 - 重 workload 的 crasher(深递归 / 长循环 / 大分配)**不入语料**,走 `test/regression/` 的显式测试;判据与原因见
   [[unreproducible-crasher-triage]]「入库位置的取舍」。
 - `scripts/go-fuzz.sh` 靶点发现靠源码扫描 `func Fuzz*`,语料与取证目录都相对包目录寻址,目录挪动不需要改它。
@@ -91,7 +91,7 @@ profile 拼成一份(`go tool cover` 对同位置的 block 按计数求和,这�
 
 ## 新增测试往哪放
 
-1. 钉某个 issue 的修复 → `test/regression/issueNNN_*_test.go`。
+1. 锁定某个 issue 的修复 → `test/regression/issueNNN_*_test.go`。
 2. 测公开 API 的行为 → `test/api/`;测 Lua 语言或标准库语义 → `test/language/`;测分层 / 晋升 → `test/tiering/`。
 3. 新的 `Fuzz*` 靶点 → `test/fuzz/`,回调里先做长度检查再调 `fuzzforensics.RecordExec`。
 4. 两个包都要用的辅助函数 → `test/testutil/`,导出名。
@@ -102,5 +102,5 @@ profile 拼成一份(`go tool cover` 对同位置的 block 按计数求和,这�
 迁移只改了 package 声明、`runOne` → `testutil.RunOne`(92 处)、`recordFuzzExec` → `fuzzforensics.RecordExec`
 (5 处)和语料路径。断言、Test/Fuzz 函数名、build tag、预算、超时、skip 条件一律未动。验证方式:五种 build
 (默认 / p3 / p4 / oracle / oracle+p4)下 `go test -list` 出的 Test/Fuzz 名集合与 master 根包逐一相同
-(219 / 241 / 235 / 220 / 238);186 个 seed 在新位置全部加载;3 秒真 fuzz 在 `test/fuzz/fuzz-forensics/` 下产出
+(219 / 241 / 235 / 220 / 238);186 个 seed 在新位置全部加载;3 秒实际 fuzz 运行在 `test/fuzz/fuzz-forensics/` 下产出
 worker 日志。

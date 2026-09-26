@@ -1,6 +1,6 @@
 # 架构:值表示与内存模型
 
-> 状态:**第 1 天架构承诺,已在 P1 完成**(NaN-boxed u64 + 自管 arena + mark-sweep GC + arena 原生表存储均已实现;长稳承诺轮后 **freelist 内存复用已完成**——20 个 size-class 定长桶 + LARGE 首次适配(`internal/arena/freelist.go`),sweep 真正归还字节供复用,并配套调用深度上限(Lua 20000 / host→Lua 重入 200,超限抛可恢复错误,proper tail call 不受限)与对象尺寸单一事实源(`internal/object/size.go`);值栈/CallInfo 仍为 Go slice,P3 迁移留口不变,清单见 `docs/design/p1-interpreter/implementation-progress.md`)。源:`docs/design/roadmap.md` (§3),硬约束背景见 (§2)。
+> 状态:**第 1 天架构承诺,已在 P1 完成**(NaN-boxed u64 + 自管 arena + mark-sweep GC + arena 原生表存储均已实现;长稳承诺轮后 **freelist 内存复用已完成**——20 个 size-class 定长桶 + LARGE 首次适配(`internal/arena/freelist.go`),sweep 真正归还字节供复用,并配套调用深度上限(Lua 20000 / host→Lua 重入 200,超限抛可恢复错误,proper tail call 不受限)与对象尺寸单一事实源(`internal/object/size.go`);值栈/CallInfo 仍为 Go slice,P3 迁移预留的接口不变,清单见 `docs/design/p1-interpreter/implementation-progress.md`)。源:`docs/design/roadmap.md` (§3),硬约束背景见 (§2)。
 > 这是整个分层 VM 的中枢决策——一块自管线性内存贯穿值表示、各执行层、宿主 ABI。前置约束见 [[design-premises]]。
 
 ## 岔路口决策:NaN-boxing vs Go tagged struct
@@ -12,7 +12,7 @@
 | Go 原生 tagged struct | Go 堆 | 上手快;但**日后上编译层等于重写整个对象层** |
 | **NaN-boxed u64 + 自管 arena**(**选定**) | 自管线性内存(`[]uint64` / `[]byte`) | 解释器与未来编译码**读写同一块内存**,编译层是**纯增量** |
 
-**选定理由**:NaN-boxed u64 + 自管 arena 让解释器和未来编译层**共见同一块线性内存**,使上编译层成为**纯增量而非重写**。这是分层架构能逐阶段独立交付的物理基础。
+**选定理由**:NaN-boxed u64 + 自管 arena 让解释器和未来编译层**共见同一块线性内存**,使上编译层成为**纯增量而非重写**。这是分层架构能逐阶段独立交付的底层基础。
 
 ## 自管 arena / 线性内存
 
@@ -30,7 +30,7 @@ NaN-boxing 不让值住 Go 堆,Go GC 就不再替我们管这块内存,因此**�
 ## 部分补偿
 
 - **NaN-boxing 数字零分配**,本身就显著快于 gopher-lua 的 interface 装箱——这部分性能是「自付代价」之外白赚的。
-- **P1 实测确认**:M14 时点 table 还走 Go map 旁路,仅靠去装箱三档基准已全数过 ≥2x 门槛(simple 2.28x / arith 2.40x / loop 2.30x);收尾轮完成 arena 原生表存储 + IC 后,simple/arith 升至 3.1-3.2x 而 loop 持平(FORLOOP 回边不走 IC)——两段数据共同印证「去装箱是主力、IC 是表访问档的辅力」的结构(05 §3)。P1 性能轮后现为 simple 9.0x / arith 7.0x / loop 2.45x,增量主因是固定开销消除(thread 复用、closeUpvals 快路径),不改变上述结构结论。
+- **P1 实测确认**:M14 时点 table 还走 Go map 旁路,仅靠去装箱三档基准已全部超过 ≥2x 门槛(simple 2.28x / arith 2.40x / loop 2.30x);收尾轮完成 arena 原生表存储 + IC 后,simple/arith 升至 3.1-3.2x 而 loop 持平(FORLOOP 的循环回跳（back edge）不走 IC)——两段数据共同印证「去装箱是主力、IC 是表访问档的辅力」的结构(05 §3)。P1 性能轮后现为 simple 9.0x / arith 7.0x / loop 2.45x,增量主因是固定开销消除(thread 复用、closeUpvals 快路径),不改变上述结构结论。
 
 ## 这块内存为什么使编译层成增量
 

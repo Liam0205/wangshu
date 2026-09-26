@@ -1,6 +1,6 @@
 # 参考:术语表
 
-> 项目术语速查。源:`docs/design/roadmap.md`。状态:P1 + P2 + P3 全卷已收口,P4 多 PJ 已完成(2026-07-01);术语定义不随实现进度变化。
+> 项目术语速查。源:`docs/design/roadmap.md`。状态:P1 + P2 + P3 已全部完成,P4 多 PJ 已完成(2026-07-01);术语定义不随实现进度变化。
 
 ## 核心概念
 
@@ -36,7 +36,7 @@
 
 | 项目 | 借鉴点 |
 |---|---|
-| **wazero** | 纯 Go 运行时 codegen **存在性证明**;exec mmap / W^X / 自管栈 / trampoline 参考实现;系统管线采石场 |
+| **wazero** | 纯 Go 运行时 codegen **存在性证明**;exec mmap / W^X / 自管栈 / trampoline 参考实现;系统管线代码的主要借鉴来源 |
 | **LuaJ luajc** | 「编译到宿主已有 codegen 引擎」范式(P3 精神来源);**try-compile-fallback 策略** |
 | **LuaJIT** | **NaN-boxing**、**trace JIT 架构**、**Lua 5.1 语义基准** |
 | **gopher-lua** | **反面教材**:interface 装箱 + switch dispatch 的成本上限;**P1 的性能基准与同生态参照**(语义 oracle 是官方 Lua 5.1.5,gopher 偏离官方处登记豁免) |
@@ -50,11 +50,11 @@
 
 | 术语 | 是什么 | 何时适用 | 落点 |
 |---|---|---|---|
-| **嵌入式 hardening 阈值** | **主动偏离对位 backend**,fail-fast 返 Lua 错误(可被 pcall 兜住);因为对位行为是**不可恢复 runtime 崩溃**(`out of memory` / stack overflow,`defer recover` 都兜不住) | **宿主进程不可崩优先于字节一致**(roadmap §0 / `12-testing-difftest.md §4.9`);仅性能/效率差异不触发 hardening | `string.rep` / `string.format` 等阻断;阈值口径分配类 1 GiB、循环类 1<<24;commit message 与 godoc 写明背景 |
+| **嵌入式 hardening 阈值** | **主动偏离对位 backend**,fail-fast 返 Lua 错误(可被 pcall 兜住);因为对位行为是**不可恢复 runtime 崩溃**(`out of memory` / stack overflow,`defer recover` 都兜不住) | **宿主进程不可崩优先于字节一致**(roadmap §0 / `12-testing-difftest.md §4.9`);仅性能/效率差异不触发 hardening | `string.rep` / `string.format` 等阻断;阈值取值为分配类 1 GiB、循环类 1<<24;commit message 与 godoc 写明背景 |
 | **豁免** | **合法的不比对**——某点本质不可比(地址脱敏 / random / locale / GC 数值 / libc 文本) | 差分 fuzz 不应对这些点失败(`12-testing-difftest.md §4.3-§4.7`) | `test/difftest/exemptions.go` 集中维护,15 项显式登记 |
 | **设计差异**(已知微差) | **语义上有意不同**,行为偏离对位但不算 bug(如 P1 xpcall handler 时机:对位栈展开前、望舒栈展开后) | 接受为永久差异,登记对账 | `docs/design/p1-interpreter/implementation-progress.md` 对账表 |
 
-**易混点**:hardening 与豁免的边界——hardening 是「我们主动偏离,因为对位的不防御不可接受」(底线优先级冲突),豁免是「不比对,因为该点本来就不可比」。前者主动改变行为(fail-fast 报错),后者从差分门禁中剔除该比较点。详细背景见 [[drift-audit-and-fuzz-hardening-round]] 教训 5。
+**易混点**:hardening 与豁免的边界——hardening 是「我们主动偏离,因为对位的不防御不可接受」(底线优先级冲突),豁免是「不比对,因为该点本来就不可比」。前者主动改变行为(fail-fast 报错),后者从差分检查中剔除该比较点。详细背景见 [[drift-audit-and-fuzz-hardening-round]] 教训 5。
 
 ---
 

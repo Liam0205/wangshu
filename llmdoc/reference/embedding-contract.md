@@ -1,6 +1,6 @@
-# 参考:宿主嵌入契约
+# 参考:宿主嵌入约定
 
-> 状态:字段级 spec 定稿于 `docs/design/p1-interpreter/11-embedding-arena-abi.md`;**收尾轮后 `Program.Call(state, arena, args)` 与 arena 列接口已完成,剩余差异见下「P1 实际完成差异」**。概念源:`docs/design/roadmap.md` (§8),量化背景见 (§1)。本文只保留契约形状,字段细节查 11。
+> 状态:字段级 spec 定稿于 `docs/design/p1-interpreter/11-embedding-arena-abi.md`;**收尾轮后 `Program.Call(state, arena, args)` 与 arena 列接口已完成,剩余差异见下「P1 实际完成差异」**。概念源:`docs/design/roadmap.md` (§8),量化背景见 (§1)。本文只保留接口约定的大致形式,字段细节查 11。
 > 这套接口**刻意设计为鼓励「列内核」形状**——为什么必须如此,见 [[design-premises]]。
 
 ## 设计意图:逼着宿主走列内核形状
@@ -17,21 +17,21 @@
 - `Compile` 在编译期就完成可编译性探测与升层决策(对应 [[evolution-roadmap]] P2 的静态可编译性分析)。
 - `Program.Call` 的设计要点是把「跨界」压缩到每批一次——这是列内核形状在 API 层面的完成。
 
-> **P1 实际完成差异**(长稳/审查修复轮后):`Program.Call(state *State, arena *Arena, args ...Value)` **已按 11 §1.5 签名完成**(`wangshu.go`),arena 列数据接口可用——`NewArena` + 四类型列(`AddFloatColumn`/`AddInt64Column`/`AddBoolColumn`/`AddStringColumn`,见 `arena_abi.go`)+ presence bitmap + VM 内只读访问;另有 `Program.Run(state, args...)`(无 arena 便捷形)与 `NewState(Options)`。增量更新:① **公共 Value API 更名**——`String_()` → `Str()`、`GoString()` → `Display()`;② **`Options.AllowFileLoad` 安全门控**——`loadfile`/`dofile` 默认禁用,须显式开启(豁免注册表已登记);③ **`State.SetStepBudget`**——执行工作量预算(非纯指令计数),超限抛可恢复 "instruction budget exceeded",宿主脚本配额的种子机制;每个 preempt 点(循环回跳/调用/TFORLOOP)计 1 单位,此外 CONCAT **与三个批量构造函数 `string.rep` / `string.format` / `table.concat`** 都按结果字节数额外计 `len>>6`(见 `internal/crescent` 的 `chargeBulkWork` 与导出形 `ChargeBulkWork`,issue #166/#167 concat 风暴根因 + #222 同族三个候选算子结算;`table.concat` 按**字节**而不是元素个数,因为它的遍历被表的长度界住而字节数不受界),即使没有循环回跳,单次大 CONCAT 或单次大字符串构造也可能触发,分档粒度见 `docs/embedding-tiers.md` §5;④ **同一 Program 多 State 多 goroutine 并发已验证**(`test/language/concurrency_test.go`,`-race` 通过);⑤ hostFn 注册表槽回收(引用计数 + GC 回调,长驻 State 不再泄漏);⑥ **per-item drop-in 子集已完成**(issue #1):`State.SetGlobal/GetGlobal/Call(fn, args...)` + `State.Register/RegisterModule` + 公共 `HostFn = func(*State,[]Value)([]Value,error)`;`Value` 加 `kFunction` kind(外部不可构造,只由 `GetGlobal` 取出,经 State pin 表登记为 GC 根;`v.Release()` 显式释放);⑦ **公共 Table API 已完成**(issue #2):`State.NewTable` + `Value.AsTable` + `Table.Set/SetIndex/Get/GetIndex/Len`;`Value` 加 `kTable` kind(同 kFunction 经 pin 表挂 GC 根);`Program.Run/Call` 与 `State.Call` 返回路径已升级到 `fromInnerWithPin` → 脚本返回 table/function 可在 Go 端读出;⑧ **`Options.HideFileLoaders` 严格沙箱**(issue #3):置 true 时从 globals 刮除 `loadfile`/`dofile`/`loadstring`/`load` 四件套(置 Nil),脚本调用 fatal `attempt to call global 'X' (a nil value)`,对位 gopher-lua;与 `AllowFileLoad=true` 同设 panic fail-fast;⑨ **`State.SetContext/RemoveContext` 取消钩子**(issue #4):context.Context 注入,VM 在 preempt 同一抢占点检查 `ctx.Err()`,事件触发(wall-clock timeout / 上游 Cancel)中止 Run/Call 返回包装 ctx.Err 的 Go error,pcall 可捕获,跨 goroutine 由 atomic.Pointer 保护;⑩ **`Table.ForEach` 任意 key 迭代**(issue #5):`func (t *Table) ForEach(fn func(key, val Value) bool) error`,转发 internal RawNext 循环(raw 迭代,与 stdlib next/pairs 同源,迭代序确定性),fn 返 false 提前终止;脚本返 map 的对称读出能力,与 issue #2 SetIndex 写入构成完整读写闭环;⑪ **`State.MarkGlobalsBaseline` / `ResetGlobalsToBaseline` 脚本级状态隔离**(issue #6):pineapple sync.Pool 复用 State 形式下,Mark 拍当前 _G 字符串 key 快照为基线、Reset 把非 baseline key 清空 + baseline key 复原。对位 gopher-lua statePool snapshotBaselineValues + resetToBaseline 模式;baseline 复合值经 visitExtraValues 入 GC 根(与 pin 表是契约级不变式的两面:pin 管「公共 API 暴露的长持 GCRef」、baseline 管「内部状态恢复需要的长持 GCRef」)。`§7.1` 草图里的 Push/Pop/CallFn 栈机风格未做(pineapple 实际用法不依赖,见 [memory/reflections/2026-06-12-official-suite-perf-round](../memory/reflections/2026-06-12-official-suite-perf-round.md));host closure 的 Go 端直接 Call(`state.Call(hostFn,…)`)仍未开(internal `State.Call` 拒);HostFn 收到的 args 中 table/function/userdata 仍映射为 Nil。可编译性探测/升层决策属 P2。实现形式与 11 的字段级差异见 `docs/design/p1-interpreter/implementation-progress.md` 对账表。
+> **P1 实际完成差异**(长稳/审查修复轮后):`Program.Call(state *State, arena *Arena, args ...Value)` **已按 11 §1.5 签名完成**(`wangshu.go`),arena 列数据接口可用——`NewArena` + 四类型列(`AddFloatColumn`/`AddInt64Column`/`AddBoolColumn`/`AddStringColumn`,见 `arena_abi.go`)+ presence bitmap + VM 内只读访问;另有 `Program.Run(state, args...)`(无 arena 便捷形)与 `NewState(Options)`。增量更新:① **公共 Value API 更名**——`String_()` → `Str()`、`GoString()` → `Display()`;② **`Options.AllowFileLoad` 安全开关**——`loadfile`/`dofile` 默认禁用,须显式开启(豁免注册表已登记);③ **`State.SetStepBudget`**——执行工作量预算(非纯指令计数),超限抛可恢复 "instruction budget exceeded",宿主脚本配额的种子机制;每个 preempt 点(循环回跳/调用/TFORLOOP)计 1 单位,此外 CONCAT **与三个批量构造函数 `string.rep` / `string.format` / `table.concat`** 都按结果字节数额外计 `len>>6`(见 `internal/crescent` 的 `chargeBulkWork` 与导出形 `ChargeBulkWork`,issue #166/#167 concat 风暴根因 + #222 同族三个候选算子结算;`table.concat` 按**字节**而不是元素个数,因为它的遍历被表的长度界住而字节数不受界),即使没有循环回跳,单次大 CONCAT 或单次大字符串构造也可能触发,分档粒度见 `docs/embedding-tiers.md` §5;④ **同一 Program 多 State 多 goroutine 并发已验证**(`test/language/concurrency_test.go`,`-race` 通过);⑤ hostFn 注册表槽回收(引用计数 + GC 回调,长驻 State 不再泄漏);⑥ **per-item drop-in 子集已完成**(issue #1):`State.SetGlobal/GetGlobal/Call(fn, args...)` + `State.Register/RegisterModule` + 公共 `HostFn = func(*State,[]Value)([]Value,error)`;`Value` 加 `kFunction` kind(外部不可构造,只由 `GetGlobal` 取出,经 State pin 表登记为 GC 根;`v.Release()` 显式释放);⑦ **公共 Table API 已完成**(issue #2):`State.NewTable` + `Value.AsTable` + `Table.Set/SetIndex/Get/GetIndex/Len`;`Value` 加 `kTable` kind(同 kFunction 经 pin 表挂 GC 根);`Program.Run/Call` 与 `State.Call` 返回路径已升级到 `fromInnerWithPin` → 脚本返回 table/function 可在 Go 端读出;⑧ **`Options.HideFileLoaders` 严格沙箱**(issue #3):置 true 时从 globals 刮除 `loadfile`/`dofile`/`loadstring`/`load` 四件套(置 Nil),脚本调用 fatal `attempt to call global 'X' (a nil value)`,对位 gopher-lua;与 `AllowFileLoad=true` 同设 panic fail-fast;⑨ **`State.SetContext/RemoveContext` 取消钩子**(issue #4):context.Context 注入,VM 在 preempt 同一抢占点检查 `ctx.Err()`,事件触发(wall-clock timeout / 上游 Cancel)中止 Run/Call 返回包装 ctx.Err 的 Go error,pcall 可捕获,跨 goroutine 由 atomic.Pointer 保护;⑩ **`Table.ForEach` 任意 key 迭代**(issue #5):`func (t *Table) ForEach(fn func(key, val Value) bool) error`,转发 internal RawNext 循环(raw 迭代,与 stdlib next/pairs 同源,迭代序确定性),fn 返 false 提前终止;脚本返 map 的对称读出能力,与 issue #2 SetIndex 写入构成完整读写闭环;⑪ **`State.MarkGlobalsBaseline` / `ResetGlobalsToBaseline` 脚本级状态隔离**(issue #6):pineapple sync.Pool 复用 State 形式下,Mark 拍当前 _G 字符串 key 快照为基线、Reset 把非 baseline key 清空 + baseline key 复原。对位 gopher-lua statePool snapshotBaselineValues + resetToBaseline 模式;baseline 复合值经 visitExtraValues 入 GC 根(与 pin 表是必须遵守的同一不变式的两面:pin 管「公共 API 暴露的长持 GCRef」、baseline 管「内部状态恢复需要的长持 GCRef」)。`§7.1` 草图里的 Push/Pop/CallFn 栈机风格未做(pineapple 实际用法不依赖,见 [memory/reflections/2026-06-12-official-suite-perf-round](../memory/reflections/2026-06-12-official-suite-perf-round.md));host closure 的 Go 端直接 Call(`state.Call(hostFn,…)`)仍未开(internal `State.Call` 拒);HostFn 收到的 args 中 table/function/userdata 仍映射为 Nil。可编译性探测/升层决策属 P2。实现形式与 11 的字段级差异见 `docs/design/p1-interpreter/implementation-progress.md` 对账表。
 
-## 公共 first-class GCRef-bearing value:必须接 GC 根(契约级不变式)
+## 公共 first-class GCRef-bearing value:必须接 GC 根(必须遵守的不变式)
 
-> 状态:**契约级硬规则**——任何让宿主 Go 端长期持有 VM 内部 `GCRef` 的公共 API,该 `GCRef` 必须经 `State` pin 表(`pinnedRefs` + `freePins` + `visitExtraRefs`)登记为 GC 根。两次样本(issue #1 kFunction / issue #2 kTable)用一样的机制零额外接根工作,验证为通用不变式而非一次性手法。
+> 状态:**接口约定层面的强制规则**——任何让宿主 Go 端长期持有 VM 内部 `GCRef` 的公共 API,该 `GCRef` 必须经 `State` pin 表(`pinnedRefs` + `freePins` + `visitExtraRefs`)登记为 GC 根。两次样本(issue #1 kFunction / issue #2 kTable)用一样的机制零额外接根工作,验证为通用不变式而非一次性手法。
 
 **覆盖面**:本期已完成 `kFunction`(issue #1)/ `kTable`(issue #2);未来若新增 `kUserdata`/`kThread`/`kCoroutine` 或其它公共 first-class kind,前置约束相同——实现前先核对 pin 表是否覆盖。
 
-**为什么是契约级而非工作流级**:
+**为什么属于接口约定而非工作流纪律**:
 
 - shadow stack 是 LIFO,公共 API 的持有期是任意的,LIFO 假设不适用;
 - `globals` 覆盖同名 + freelist 复用会把潜伏的根管理 bug 从良性(死对象躺 arena)升级为致命(UAF 或串台执行);
 - 两次样本用一样的 `pinnedRefs / freePins / visitExtraRefs` 通道零额外接根工作——是机制级保证,不是 kind 特殊路径。
 
-**如何识别违约**:Go 端取出 first-class 复合 Value 后,`globals` 覆盖同名 + GC 压力模式(`SetGCStressMode(true)`)→ 重新读 Value/调用 → 若访问 panic 或返回错值,即接根缺失。
+**如何识别违反约定**:Go 端取出 first-class 复合 Value 后,`globals` 覆盖同名 + GC 压力模式(`SetGCStressMode(true)`)→ 重新读 Value/调用 → 若访问 panic 或返回错值,即接根缺失。
 
 **释放纪律**:`Value.Release()` 显式释放可选——不释放仅累积少量 pin 槽,致命的是没接根。长驻 State 高吞吐场景应配对调用以防 pin 表无界增长。
 
@@ -58,7 +58,7 @@
 - **per-item 风格的简易 API 子集已完成**(对标 gopher-lua 易用性):`State.SetGlobal/GetGlobal/Call(fn, args...)` + `Register/RegisterModule`(见上差异标注 ⑥);
 - **Table 读写全闭环已完成**:`NewTable` / `Set/SetIndex/Get/GetIndex/Len` + `ForEach` 任意 key 迭代(见差异标注 ⑦ ⑩)——写入与迭代读出对称,宿主端完整操作 Lua table 无需 Push/Pop;
 - **globals baseline 状态隔离已完成**:`MarkGlobalsBaseline/ResetGlobalsToBaseline`(见差异标注 ⑪)——sync.Pool 复用 State 形式下宿主端一行调用恢复干净 _G,drop-in 配套能力;
-- **`CallInto` 零分配边界路径已完成**(issue #8):`State.CallInto(dst []Value, fn, args...) (n int, err)` 让调用方拥有返回值 buffer,标量(bool/number)round-trip 0 alloc。旧 `Call` 每次固定 72 B / 2 allocs(VM 栈→inner→public 双拷贝,与脚本复杂度无关),boundary-dominated 嵌入(per-item 短调用)被这地板成本主导、在对标场景反被 gopher-lua 超过;`CallInto` 消除双拷贝(内部零拷贝切复用栈 `th.stack`,门面复用 `innerArgsBuf` + 写调用方 dst),两档边界基准均反超 gopher-lua。⚠️ 契约:返回值底层是复用栈,下次进入 VM 前消费完;string 仍拷 arena 字节、复合值仍经 pin 表。**这是「实现浪费」的消除,非架构成本——不违背列内核前提(前提一仍成立:列内核完全摊薄边界成本是高吞吐首选),而是补上无法列内核化的 per-item 形式的零分配通道**;
+- **`CallInto` 零分配边界路径已完成**(issue #8):`State.CallInto(dst []Value, fn, args...) (n int, err)` 让调用方拥有返回值 buffer,标量(bool/number)round-trip 0 alloc。旧 `Call` 每次固定 72 B / 2 allocs(VM 栈→inner→public 双拷贝,与脚本复杂度无关),boundary-dominated 嵌入(per-item 短调用)被这地板成本主导、在对标场景反被 gopher-lua 超过;`CallInto` 消除双拷贝(内部零拷贝切复用栈 `th.stack`,门面复用 `innerArgsBuf` + 写调用方 dst),两档边界基准均反超 gopher-lua。⚠️ 约定:返回值底层是复用栈,下次进入 VM 前消费完;string 仍拷 arena 字节、复合值仍经 pin 表。**这是「实现浪费」的消除,非架构成本——不违背列内核前提(前提一仍成立:列内核完全摊薄边界成本是高吞吐首选),而是补上无法列内核化的 per-item 形式的零分配通道**;
 - **boundary-dominated 嵌入快路径已完成**(issue #13,parity-friendly,不破跨引擎 `lua_script` 字节对等):
   - **类型化 array table 族**:`State.NewFloatArrayTable / NewInt64ArrayTable / NewBoolArrayTable / NewStringArrayTable` —— 从 typed slice 一次性 NaN-box 进 arena 数组段,跳过 `[]Value` 中转。脚本侧看到普通 array table(`xs[i]` / `#xs` / `pairs`),**不是** arena 列轨的 `__index` 代理 —— pineapple 一类 common-mode 灌列形式(`SetGlobal(field, []any) → makeArrayTable`)的下层中转可消,无需脚本改动;Int64 承袭 `Arena.AddInt64Column` 的 |v|>2^53 报错规则。
   - **`GlobalsSlot` 预解析句柄**:`State.GlobalsSlot(name) → slot` + `SetBySlot(slot, v) / GetBySlot(slot) / slot.Release()` —— 把 `gc.Intern([]byte(name))` 摊销到 Init 期一次性,热循环里 SetGlobal 跳过 `[]byte` 分配 + intern 哈希查找。仅消除宿主端 intern 成本;globals rawtable 本身查找仍 per-key irreducible。跨 State 误用 panic fail-fast(同 `State.Call` 跨 State 函数实参风格)。
@@ -80,7 +80,7 @@
 
 - `State.Collect()`:强制一次 full sweep(对应 `collectgarbage("collect")`),免走脚本调用迂回。典型在 pool 归还点 / 批次完成点周期调用,保持 GCCountKB 有界。代价 ~微秒到毫秒级(取决 live 规模),不缩 backing 容量;
 - `State.MaybeCollectNow()`:按阈值条件触发(命中才 collect,否则 no-op),等价让 host 触发一次 safepoint 检查。比 Collect 廉价但不保证 sweep,强约束需 sweep 直接调 Collect;
-- `State.SetHostTriggeredCollect(on bool)`:**experimental opt-in,默认 off**。开启后任何 host alloc 跨 GC 阈直接 sweep。⚠️ **安全契约**:调用方须保证所有 transient GCRef 都 reachable from GC root——current stdlib + string intern 的 mid-construction transient GCRef 未全经 pin/shadow stack 登记,**未审计前生产开启有 UAF 风险**(已知 break:luasuite gc/literals/nextvar/pm/strings)。**推荐替代**:用 `Collect()` / `MaybeCollectNow()` 显式 cadence 控制(production-safe)。
+- `State.SetHostTriggeredCollect(on bool)`:**experimental opt-in,默认 off**。开启后任何 host alloc 跨 GC 阈直接 sweep。⚠️ **安全约定**:调用方须保证所有 transient GCRef 都 reachable from GC root——current stdlib + string intern 的 mid-construction transient GCRef 未全经 pin/shadow stack 登记,**未审计前生产开启有 UAF 风险**(已知 break:luasuite gc/literals/nextvar/pm/strings)。**推荐替代**:用 `Collect()` / `MaybeCollectNow()` 显式 cadence 控制(production-safe)。
 
 ## 分层执行运行期管理:kill switch 与观测(admin API)
 
@@ -88,7 +88,7 @@
 
 **运行期总开关**:
 
-- `State.SetTierEnabled(enabled bool)`:分层执行的运行期 kill switch(默认开启)。关闭后不再发生新升层(入口/回边采样短路、不再累积热度)、**已升层的 Proto 也回到解释器执行**(下一次分派决策起生效,正在段内执行的一次调用正常跑完);已编译产物保留在缓存,重新开启即恢复分层、**不重新编译**;
+- `State.SetTierEnabled(enabled bool)`:分层执行的运行期 kill switch(默认开启)。关闭后不再发生新升层(入口/循环回跳（back edge）采样短路、不再累积热度)、**已升层的 Proto 也回到解释器执行**(下一次分派决策起生效,正在段内执行的一次调用正常跑完);已编译产物保留在缓存,重新开启即恢复分层、**不重新编译**;
 - `State.TierEnabled() bool`:返回开关当前状态。
 
 **State 级观测**:
@@ -101,7 +101,7 @@
 
 - **首个目标宿主**:一个**多运行时规则引擎**(其 Go 运行时现用 gopher-lua);但接口**不绑定任何宿主**。
 - **P1 解释器即可作为 gopher-lua 的 drop-in 候选**(见 [[evolution-roadmap]] P1)。
-- **stdlib 默认面对齐 gopher-lua 的 OpenLibs 提供面**(兑现 drop-in 宣称);宿主收紧机制的设计承诺是三层:**LibsSafe 预设 / Libs 位掩码 / Exclude 函数级**——收紧能力是 VM 责任,收紧决策是宿主责任。**当前实际完成是双门控**:`Options.AllowFileLoad`(loadfile/dofile 默认禁用)+ `Options.HideFileLoaders`(issue #3,严格沙箱:从 globals 刮除 loadfile/dofile/loadstring/load 四件套,见差异标注 ⑧),完整三层机制留待宿主接入前完成(见 doc-gaps)。
+- **stdlib 默认面对齐 gopher-lua 的 OpenLibs 提供面**(兑现 drop-in 宣称);宿主收紧机制的设计承诺是三层:**LibsSafe 预设 / Libs 位掩码 / Exclude 函数级**——收紧能力是 VM 责任,收紧决策是宿主责任。**当前实际完成的是两个开关**:`Options.AllowFileLoad`(loadfile/dofile 默认禁用)+ `Options.HideFileLoaders`(issue #3,严格沙箱:从 globals 刮除 loadfile/dofile/loadstring/load 四件套,见差异标注 ⑧),完整三层机制留待宿主接入前完成(见 doc-gaps)。
 - **sync.Pool 复用 State 配套**:`MarkGlobalsBaseline/ResetGlobalsToBaseline`(issue #6)提供 pool 取出→跑脚本→重置→放回的状态隔离闭环,对位 gopher-lua statePool snapshotBaselineValues + resetToBaseline 模式(见差异标注 ⑪)。
 - 细节见 `docs/design/p1-interpreter/10-stdlib.md` §12.1、`11-embedding-arena-abi.md` §1.2;决策背景见 `memory/decisions/2026-06-11-design-review-decisions.md` 第 6 项。
 

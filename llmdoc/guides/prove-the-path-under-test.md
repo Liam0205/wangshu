@@ -1,7 +1,7 @@
 # Guide:证明在测的路径(绿色 ≠ 在测你以为在测的)
 
-> 适用:写差分 / 差分测试 / 性能 / IC 快路径 / wasm 快路径 / 错误冒泡类**任何对路径执行做断言的测试**时,以及加 e2e 语料 / 设计验收 oracle 前;**或写位置/行号类测试、要挑被测对象的写法时**(§2.1,先问这个写法会不会让编译器发射那条指令,不发射就测不到);**或给一个新 tier / 新后端 / 新 build tag 组合加差分或 fuzz harness 时**(§2.2,**能编译不等于进了那条路径** —— build tag 是累加的,老 harness 加上新 tag 会照旧通过而跑老路径,配的那条断言还要过「有读取点」与「换空 payload 也变红」两格);**或某两层的一致性是经第三层传递得来时**(§2.3,传递结论继承中间项的全部盲区,先问有没有直接比的路);**或修完一个 issue / crasher 报上来的那个具体输入、准备收工时**(§4.1,一个 reported case 只是接受面的一个采样,要枚举到达同一段代码的全部通道);**或读到 / 写下「已知差异 / 已登记豁免」这类注释时**(§4.2,必须指出哪一行代码或哪个测试执行了它);**或回归测试期望与实现冲突、要决定改哪一边时**(§4.3,先取事实,默认怀疑实现会诱导去「修」一个正确的实现);**或扩接受面 / 换硬件 / 改 fuzz 参数后要不要立刻跑 fuzz 时**(§5);**或调试机制叠加多档的崩点时**(§6);**或收到「某条路径导致 N 倍退化」类归因、动手写止血/修复计划前**(§7,诊断侧对偶);**或收到「某机制没生效」的指控、要写复现测试时**(§7,复现侧);**或读一个投机/inline 快路径的性能收益数字、或复查一个历史 perf 裁决时**(§8,度量单位/时间窗口);**或分诊某 P4 tier bug 时**(§7 同源:P4 build 有多种 code kind 并存,直接读某一种 emit 之前先用探针分类走的哪条);**或想在差分 harness 里接受 / 跳过某类平台差异时**(§9.0,**先判这个差异该在渲染侧消除还是在比较侧归一** —— 判在渲染侧就不要设计判据,反复冒 edge case 是选址错误的信号);**或已经确定要在比较侧写跳过判据 / 加前置检查时**(§9.1–§9.5,判据的每个输入 —— 含它花掉的时间、分配量、matcher 步数预算 —— 都必须两侧相同,否则后果是单侧 skip);**或给运行时新增了任何写外部世界的 API 之后**(§9.7,新路径要同时接进 harness 的捕获,否则它静默退出比较范围);**或差分比较报一致而输出是空的 / 是错误文本时**(§9.8,两侧在同一个错误上一致 ≠ 行为一致);**或被测功能依赖 stdin / tty / 信号 / 工作目录这类进程级环境时**(§4.10,测试驱动没提供它,测出来的「不工作」是假的);**或写一个「代码里有某个标志 / 字段 / 调用」的检查型测试时**(§9.1b,别 grep 整个文件——一个注释就能满足的测试没有在测代码);**或上游修掉了某个缺陷、要判断为它加的兜底机制能不能删时**(§4.6a,证据要与那层兜底的历史触发频率同量级,一次专门跑的验证时长通常远短于机制的触发周期)。
-> 来源:十六个独立实例聚合的家族纪律——`memory/reflections/2026-06-14-p3-pw5-table-ic-round.md`(inline-proof) + `2026-06-14-p3-pw6-crosslayer-call-round.md`(TierStuck no-op) + `2026-06-15-p3-pw9-acceptance-perf-round.md`(空测 vararg 顶层)+ `2026-06-15-p3-pw10-r3-call-indirect-round.md`(错误路径盲区)+ `2026-06-15-p3-pw10-r1-r2-callinfo-migration-round.md`(基准工作负载错配)+ `2026-06-15-p3-pw10-zerocross-stage3-round.md`(快路径命中盲区)+ `2026-06-16-vs0e-varargs-stack-underflow-round.md`(覆盖度先验证,正向侧)+ `2026-06-30-pr27-f3-3b-darwin-arm64-execute-roundup.md`(bypass 探针根因 isolate + CI runner 形式盲)+ `2026-07-03-issue40-arm64-stopbleed-round.md`(**诊断侧对偶**:退化归因前先证被怪罪的路径存在)+ `2026-07-02-p4-beat-p3-opset-round.md`/`2026-07-03-issue40-arm64-stopbleed-round.md`/`2026-07-03-issue45-issue39-round.md`(**fuzz 探索空间维度**:接受面 / 硬件 / 参数任一维动了就重探,§5 三实例)+ `2026-07-07-issue67-auto-mode-coverage-round.md`(**未强制测试静默退化**:auto 模式测试不带升层兜底断言,悄悄滑回纯解释器覆盖)+ `2026-07-08-issue67-amd64-nodehit-crossrun-round.md`(**度量单位/时间窗口**:单 Run 命中数 vs 跨 Run 稳态 dispatch,§8)+ `2026-07-18-review-p3-loopfuel-rearm-round.md`(**复现侧**:复现「机制没生效」的指控时,复现测试自己也要先证明走的是被指控的路径,§7.1)+ `2026-07-24-p4-template-forprep-deopt-round.md`(**分诊侧同源**:P4 tier bug 分诊必须先用探针分类 PerOpCode/nativeCode/p4Code 三大类 code kind 走的哪条,traceback 直觉只锁触发前提)。前八个实例在**测试侧**(证明「路径真被走到」);第九个在**诊断/归因侧**(证明「被怪罪的路径真的存在/被执行」)扩到止血/修复计划前;第十~十二个在**探索空间维度侧**(§5,证明「fuzz 覆盖度不是时长的单调函数」)扩到 fuzz 与接受面/硬件/参数联动;第十三个回到**测试侧**,贡献「自然触发路径(auto/natural)测试必须配白盒兜底断言」的具体解药形式;第十四个在**度量侧**(§8,证明「性能收益的度量单位/时间窗口选错,会把一个从没生效的优化误判成生效但太贵」);第十五个在**复现侧**(§7.1,证明「走错路径的复现失败是伪证据,会把真 bug 误判成不存在」);第十六个在**差分 harness 判据侧**(§9.1–§9.5,`2026-07-26-issue184-185-nan-coercion-noncomparable-round`:26 轮盲审、13 轮抓到的缺陷是修上一轮时引入的,证明「判据只在一侧命中会静默丢掉整条输入,而判据的输入不止是值,还包括它花掉的时间、分配量与 matcher 步数预算」);第十八个在**捕获面侧**(§9.7/§9.8 与 §4.10,`2026-07-29-issue205-206-208-io-userdata-debug`:新增 `io.stdout` 带来一条 harness 不捕获的输出通道 —— 两侧都不捕获、两侧都一致、连 skip 都不留;而给它写的捕获 wrapper 引用了一个不存在的 helper,两侧以完全相同的方式失败、比较照样报一致;同轮 `io.read` 的八个探针全返回 nil 是因为 `go test` 不转发 stdin,量到的是 harness 不是代码);第十七个在**选址侧**(§9.0,`2026-07-26-oracle-nan-render-redesign`:同一个问题走到第 31 轮后整体转向 —— 差异改在**产生它的地方**消除,前十六个实例都是「在某处证明某件事」,这一个是「先证明这件事该在哪里做」,证明「反复冒 edge case 是选址错误的信号,而一个否证结论的适用范围不写下来就会被悄悄外推」)。
+> 适用:写差分 / 差分测试 / 性能 / IC 快路径 / wasm 快路径 / 错误冒泡类**任何对路径执行做断言的测试**时,以及加 e2e 语料 / 设计验收 oracle 前;**或写位置/行号类测试、要挑被测对象的写法时**(§2.1,先问这个写法会不会让编译器发射那条指令,不发射就测不到);**或给一个新 tier / 新后端 / 新 build tag 组合加差分或 fuzz harness 时**(§2.2,**能编译不等于进了那条路径** —— build tag 是累加的,老 harness 加上新 tag 会照旧通过而跑老路径,配的那条断言还要过「有读取点」与「换空 payload 也变红」两格);**或某两层的一致性是经第三层传递得来时**(§2.3,传递结论继承中间项的全部盲区,先问有没有直接比的路);**或修完一个 issue / crasher 报上来的那个具体输入、准备收工时**(§4.1,一个 reported case 只是接受面的一个采样,要枚举到达同一段代码的全部通道);**或读到 / 写下「已知差异 / 已登记豁免」这类注释时**(§4.2,必须指出哪一行代码或哪个测试执行了它);**或回归测试期望与实现冲突、要决定改哪一边时**(§4.3,先取事实,默认怀疑实现会诱导去「修」一个正确的实现);**或扩接受面 / 换硬件 / 改 fuzz 参数后要不要立刻跑 fuzz 时**(§5);**或调试机制叠加多档的崩点时**(§6);**或收到「某条路径导致 N 倍退化」类归因、动手写止血/修复计划前**(§7,诊断侧对偶);**或收到「某机制没生效」的指控、要写复现测试时**(§7,复现侧);**或读一个投机/inline 快路径的性能收益数字、或复查一个历史 perf 裁决时**(§8,度量单位/时间窗口);**或分诊某 P4 tier bug 时**(§7 同源:P4 build 有多种 code kind 并存,直接读某一种 emit 之前先用探针分类走的哪条);**或想在差分 harness 里接受 / 跳过某类平台差异时**(§9.0,**先判这个差异该在渲染侧消除还是在比较侧归一** —— 判在渲染侧就不要设计判据,反复出现 edge case 是选址错误的信号);**或已经确定要在比较侧写跳过判据 / 加前置检查时**(§9.1–§9.5,判据的每个输入 —— 含它花掉的时间、分配量、matcher 步数预算 —— 都必须两侧相同,否则后果是单侧 skip);**或给运行时新增了任何写外部世界的 API 之后**(§9.7,新路径要同时接进 harness 的捕获,否则它静默退出比较范围);**或差分比较报一致而输出是空的 / 是错误文本时**(§9.8,两侧在同一个错误上一致 ≠ 行为一致);**或被测功能依赖 stdin / tty / 信号 / 工作目录这类进程级环境时**(§4.10,测试驱动没提供它,测出来的「不工作」是假的);**或写一个「代码里有某个标志 / 字段 / 调用」的检查型测试时**(§9.1b,别 grep 整个文件——一个注释就能满足的测试没有在测代码);**或上游修掉了某个缺陷、要判断为它加的兜底机制能不能删时**(§4.6a,证据要与那层兜底的历史触发频率同量级,一次专门跑的验证时长通常远短于机制的触发周期)。
+> 来源:十六个独立实例聚合的家族纪律——`memory/reflections/2026-06-14-p3-pw5-table-ic-round.md`(inline-proof) + `2026-06-14-p3-pw6-crosslayer-call-round.md`(TierStuck no-op) + `2026-06-15-p3-pw9-acceptance-perf-round.md`(空测 vararg 顶层)+ `2026-06-15-p3-pw10-r3-call-indirect-round.md`(错误路径盲区)+ `2026-06-15-p3-pw10-r1-r2-callinfo-migration-round.md`(基准工作负载错配)+ `2026-06-15-p3-pw10-zerocross-stage3-round.md`(快路径命中盲区)+ `2026-06-16-vs0e-varargs-stack-underflow-round.md`(覆盖度先验证,正向侧)+ `2026-06-30-pr27-f3-3b-darwin-arm64-execute-roundup.md`(bypass 探针根因 isolate + CI runner 形式盲)+ `2026-07-03-issue40-arm64-stopbleed-round.md`(**诊断侧对偶**:退化归因前先证被怪罪的路径存在)+ `2026-07-02-p4-beat-p3-opset-round.md`/`2026-07-03-issue40-arm64-stopbleed-round.md`/`2026-07-03-issue45-issue39-round.md`(**fuzz 探索空间维度**:接受面 / 硬件 / 参数任一维动了就重探,§5 三实例)+ `2026-07-07-issue67-auto-mode-coverage-round.md`(**未强制测试静默退化**:auto 模式测试不带升层兜底断言,悄悄滑回纯解释器覆盖)+ `2026-07-08-issue67-amd64-nodehit-crossrun-round.md`(**度量单位/时间窗口**:单 Run 命中数 vs 跨 Run 稳态 dispatch,§8)+ `2026-07-18-review-p3-loopfuel-rearm-round.md`(**复现侧**:复现「机制没生效」的指控时,复现测试自己也要先证明走的是被指控的路径,§7.1)+ `2026-07-24-p4-template-forprep-deopt-round.md`(**分诊侧同源**:P4 tier bug 分诊必须先用探针分类 PerOpCode/nativeCode/p4Code 三大类 code kind 走的哪条,traceback 直觉只锁触发前提)。前八个实例在**测试侧**(证明「路径真被走到」);第九个在**诊断/归因侧**(证明「被怪罪的路径真的存在/被执行」)扩到止血/修复计划前;第十~十二个在**探索空间维度侧**(§5,证明「fuzz 覆盖度不是时长的单调函数」)扩到 fuzz 与接受面/硬件/参数联动;第十三个回到**测试侧**,贡献「自然触发路径(auto/natural)测试必须配白盒兜底断言」的具体解药形式;第十四个在**度量侧**(§8,证明「性能收益的度量单位/时间窗口选错,会把一个从没生效的优化误判成生效但太贵」);第十五个在**复现侧**(§7.1,证明「走错路径的复现失败是伪证据,会把真 bug 误判成不存在」);第十六个在**差分 harness 判据侧**(§9.1–§9.5,`2026-07-26-issue184-185-nan-coercion-noncomparable-round`:26 轮盲审、13 轮抓到的缺陷是修上一轮时引入的,证明「判据只在一侧命中会静默丢掉整条输入,而判据的输入不止是值,还包括它花掉的时间、分配量与 matcher 步数预算」);第十八个在**捕获面侧**(§9.7/§9.8 与 §4.10,`2026-07-29-issue205-206-208-io-userdata-debug`:新增 `io.stdout` 带来一条 harness 不捕获的输出通道 —— 两侧都不捕获、两侧都一致、连 skip 都不留;而给它写的捕获 wrapper 引用了一个不存在的 helper,两侧以完全相同的方式失败、比较照样报一致;同轮 `io.read` 的八个探针全返回 nil 是因为 `go test` 不转发 stdin,量到的是 harness 不是代码);第十七个在**选址侧**(§9.0,`2026-07-26-oracle-nan-render-redesign`:同一个问题走到第 31 轮后整体转向 —— 差异改在**产生它的地方**消除,前十六个实例都是「在某处证明某件事」,这一个是「先证明这件事该在哪里做」,证明「反复出现 edge case 是选址错误的信号,而一个否证结论的适用范围不写下来就会被悄悄外推」)。
 
 **守卫要在两侧都做变异。** 一个「证明测到了 X」的守卫,通常只被验证过一侧:删掉修复、看它变红。但它还该在**它声称在量的东西**上被变异 —— 把 payload 换成空的,它也必须变红。2026-08-29 那轮的 tiered 提升守卫就栽在这里:删掉 `SetForceAllPromote` 它确实红,但换成空 payload 它照旧绿,因为 force-all 会提升输入自己的 main chunk,于是那条断言只证明了「开关开着」而不是「被测代码进了那条路径」。顺带一条:这类计数器还要问它是**编译侧还是执行侧** —— 一个编译了但从未调用的函数是否也让它增长。
 
@@ -9,7 +9,7 @@
 
 测试绿、性能数字不动、新机制就位三件套**单独任何一个都不证明在测路径被执行**。必须有**正交于输出**的路径执行证据。
 
-同一物理基础还有一个**诊断侧对偶**(§7):**退化数字 ≠ 慢在你以为的路径**。输出(测试绿 / 性能慢)本身不携带路径信息——不管是「路径真被走到」还是「路径真的存在并背锅」,都必须用独立于输出本身的证据反推。
+同一底层机理还有一个**诊断侧对偶**(§7):**退化数字 ≠ 慢在你以为的路径**。输出(测试绿 / 性能慢)本身不携带路径信息——不管是「路径真被走到」还是「路径真的存在并确实导致了退化」,都必须用独立于输出本身的证据反推。
 
 ## 1. 反模式三档
 
@@ -18,7 +18,7 @@
 | **空测 / 不公平基准** | 测的不是宣称在测的层 / 用相同负载形式对比不可比的两层 | PW9 loop `for` 写顶层 vararg chunk(F1 不升层),实测「crescent==crescent ≈1.0x」推出「memory-resident 根本限制」并准备立**错的**后续里程碑;PW10 R1-R2 bench 把 kernel 包内层函数调 50 次对裸顶层循环,工作负载错配致 loop「慢 20 倍」误读 |
 | **静默替身** | 路径有显式 fallback / 等价语义,绿色来自 fallback 而非 happy path | PW5 IC inline 与 helper 输出 byte-equal,普通 e2e 区分不了 inline 走没走;PW6 TierStuck 吸收态使 force-all promoteProto 静默 no-op,深 baseline 测试自然 `proto.tier != TierGibbous` 但测试套不抓;PW10 R3 错误路径漂移在全成功语料 difftest 下结构性失明 |
 | **覆盖度自欺** | 自行写 11 条语料看似全面,实则远不如已有官方/oracle 测试套 | VS0-e 子步 ⑥ 计划写 11 条 vararg 形式语料,但 `test/luasuite/testdata/vararg.lua`(官方 5.1 vararg 全套)+ `closure.lua`(NeedsArg + vararg + 协程多值 yield/resume 最复杂组合)已经字节级一致通过——**手写语料比官方测试权威性低 N 倍**。**反向的一格(2026-08-29)**:引用官方套件时也要给覆盖率,「套件通过」实际是 14/24 个文件、按行号 54%、只有 3 个完整跑完;而且**加进套件的文件不等于在跑** —— 加的四个文件里两个开头就 `if T == nil then ... return end`(官方 testC 库本仓不提供)、两个的断言被 `stopAt` 切在外面,合计执行 1 条断言而「已跑行数」涨了 331,判据与手法见 [[design-claims-vs-codebase-physics]] §7 |
-| **未强制测试静默退化** | 测试套自称覆盖某条自然触发路径(auto/natural),但实际条件永远不满足,悄悄滑向另一条更平凡的路径 | issue #67 auto-mode 覆盖轮:CI 里 P3/P4 的差分/一致性/fuzz 套长期只经 `SetForceAllPromote(true)` 驱动,未强制的测试脚本从没长到能在生产阈值(entry 200 / back edge 1000)下自然越线,auto 在这些测试里**退化成纯解释器**,与真正测「auto 决策链」是两回事。同一形式还有**静态门维度**:issue #77 math intrinsic 第一版 e2e 用直接 `math.sqrt(i)`,过不了 F2-b unknown-call ⟹ proto 根本不升 native、intrinsic 路径永远到不了,须 `local sqrt = math.sqrt` 别名才升层——不只 auto 阈值没到会退化,调用形式过不了静态门也会,两者同靠 §2(b) `PromotionCount>0` 兜底断言防住 |
+| **未强制测试静默退化** | 测试套自称覆盖某条自然触发路径(auto/natural),但实际条件永远不满足,悄悄滑向另一条更平凡的路径 | issue #67 auto-mode 覆盖轮:CI 里 P3/P4 的差分/一致性/fuzz 套长期只经 `SetForceAllPromote(true)` 驱动,未强制的测试脚本从没长到能在生产阈值(entry 200 / back edge 1000)下自然越过阈值,auto 在这些测试里**退化成纯解释器**,与真正测「auto 决策链」是两回事。同一形式还有**静态检查维度**:issue #77 math intrinsic 第一版 e2e 用直接 `math.sqrt(i)`,过不了 F2-b unknown-call ⟹ proto 根本不升 native、intrinsic 路径永远到不了,须 `local sqrt = math.sqrt` 别名才升层——不只 auto 阈值没到会退化,调用形式过不了静态检查也会,两者同靠 §2(b) `PromotionCount>0` 兜底断言防住 |
 
 ## 2. 反向侧解药(证「路径真被走到」)
 
@@ -28,18 +28,18 @@
 被测对象 inline 与 helper 输出等价时,把 helper 改成「无副作用但断言不该到」/「不写目标寄存器」/「返回 error」,使被测路径走到 helper 时**输出可分辨**。例:PW5 inline-proof 测试把 `h_getglobal` 改成毒化助手,inline 命中则 R(A) 写入正确值,inline 漏掉走 helper 时 R(A) 仍是 nil(哨兵不写),断言区分。
 
 **(b) 正向 tier / 命中计数器(升层 / 快路径类)**
-对 tier-vs-tier 基准 / wasm 快路径 / inline IC,加**白盒计数器**(`atomic.AddInt64(&fastCallHits, 1)` 等),测试断言计数器单调增。例:PW10 ③b emitReturn 守卫快路径加 `doReturnHits` 计数,`TestPW9_ZeroCross_ReturnFastHit` 经 helper→f 不增计数验快路径命中;PW10 顶层升层加 `TopLevelUplift` 探针(DoReturn 增量证 wasm 入口被走)。也包含**直接断言 tier 状态**:`TestPW9_ForceAllPromoteReal` 断言 proto 真到达 `TierGibbous` 不是 `TierStuck` no-op skip。同族解药还包括**自然触发路径的兜底断言**:测试套自称覆盖 auto/natural 升层(而非 force-all)时,配 `PromotionCount>0` 一类断言证明该 run 里确实发生过至少一次真实升层——否则短用例语料可能在收益门调整后悄悄退化成纯解释器覆盖而无人发现(issue #67 auto-mode 覆盖轮:第一版语料就当场挂在这条断言上,逼语料从短核换成能通过收益密度门的长纯算术核)。同一条 `PromotionCount>0` 断言也把**能力级静默回退**抓出来:issue #91 relooper diamond 修复配的白盒 `TestP3_TopLevelDiamondPromotes` 断言 `PromotionCount>0`——byte-equal 分不清「真升层了」和「静默 CFAIL 回退解释器仍产出正确值」,顶层 diamond 永远升不了 P3 这个 bug 藏了这么久正是因为全成功语料的 difftest 全绿、没人有正交证据看它到底升没升(fixture 随判据多维化演进的配套纪律见 [[backend-capability-vs-profitability]] §6)。
+对 tier-vs-tier 基准 / wasm 快路径 / inline IC,加**白盒计数器**(`atomic.AddInt64(&fastCallHits, 1)` 等),测试断言计数器单调增。例:PW10 ③b emitReturn 守卫快路径加 `doReturnHits` 计数,`TestPW9_ZeroCross_ReturnFastHit` 经 helper→f 不增计数验快路径命中;PW10 顶层升层加 `TopLevelUplift` 探针(DoReturn 增量证 wasm 入口被走)。也包含**直接断言 tier 状态**:`TestPW9_ForceAllPromoteReal` 断言 proto 真到达 `TierGibbous` 不是 `TierStuck` no-op skip。同族解药还包括**自然触发路径的兜底断言**:测试套自称覆盖 auto/natural 升层(而非 force-all)时,配 `PromotionCount>0` 一类断言证明该 run 里确实发生过至少一次真实升层——否则短用例语料可能在收益门调整后悄悄退化成纯解释器覆盖而无人发现(issue #67 auto-mode 覆盖轮:第一版语料立刻就没通过这条断言,逼语料从短核换成能通过收益密度门的长纯算术核)。同一条 `PromotionCount>0` 断言也把**能力级静默回退**抓出来:issue #91 relooper diamond 修复配的白盒 `TestP3_TopLevelDiamondPromotes` 断言 `PromotionCount>0`——byte-equal 分不清「真升层了」和「静默 CFAIL 回退解释器仍产出正确值」,顶层 diamond 永远升不了 P3 这个 bug 藏了这么久正是因为全成功语料的 difftest 全绿、没人有正交证据看它到底升没升(fixture 随判据多维化演进的配套纪律见 [[backend-capability-vs-profitability]] §6)。
 
-⚠️ **白盒命中计数器要按稳态窗口(跨 Run)统计,不按单 Run 统计**(详见 §8)。「命中 N 次」是「机制被触发过」的证据,不是「机制在稳态生效」的证据——若快路径带一道会被跨 Run 重建打穿的身份 guard,它可能在第一个 Run 里碰巧命中(表还是 promotion 那一刻的那张)、后续 Run 全落空,单 Run 计数器看着漂亮但稳态从没真生效。读命中计数器时选跨 Run 窗口,别拿单个 Run 的命中数下结论。
+⚠️ **白盒命中计数器要按稳态窗口(跨 Run)统计,不按单 Run 统计**(详见 §8)。「命中 N 次」是「机制被触发过」的证据,不是「机制在稳态生效」的证据——若快路径带一道会因跨 Run 重建而失效的身份 guard,它可能在第一个 Run 里碰巧命中(表还是 promotion 那一刻的那张)、后续 Run 全落空,单 Run 计数器看着漂亮但稳态下从没真正生效。读命中计数器时选跨 Run 窗口,别拿单个 Run 的命中数下结论。
 
-⚠️ **测「吸收态分类」的载体调用次数要过完 force-all 的 warm-up retry window**。`PromotionCount>0` 一类断言只证升层吸收(TierGibbous)真发生,吸收到 Stuck 分类(`StuckNotCompilable` / `StuckDeclined` / `StuckCompileFailed`)的断言另有陷阱:`considerPromotion` 对 not-compilable 的 proto 在 forceAll 下有 `pd.EntryCount < 64` 的显式 return(issue #40 留下的 warm-up retry window,给 IC-gated 后端几十次机会热起来再判死),载体调用次数少于 64 就永远停在 `TierInterp`、吸收态计数器保持 0、断言 `StuckNotCompilable != 0` 直接挂——测的是 Interp 状态不是 Stuck 状态,与真正想测的分类语义无关。可复用判据:**测 tier 状态机吸收态相关的断言时,载体的调用次数要显式跨过 retry window**(当前是 64,若阈值改动就跟着改)。实例 `TestTierAdmin_StatsClassifyStuck` 第一版载体只调 vararg 函数 20 次,`StuckNotCompilable == 0` 挂了才发现;改到 100 次并把这个约束在 Lua 注释里写清楚后过线。
+⚠️ **测「吸收态分类」的载体调用次数要过完 force-all 的 warm-up retry window**。`PromotionCount>0` 一类断言只证升层吸收(TierGibbous)真发生,吸收到 Stuck 分类(`StuckNotCompilable` / `StuckDeclined` / `StuckCompileFailed`)的断言另有陷阱:`considerPromotion` 对 not-compilable 的 proto 在 forceAll 下有 `pd.EntryCount < 64` 的显式 return(issue #40 留下的 warm-up retry window,给 IC-gated 后端几十次机会热起来再判死),载体调用次数少于 64 就永远停在 `TierInterp`、吸收态计数器保持 0、断言 `StuckNotCompilable != 0` 直接挂——测的是 Interp 状态不是 Stuck 状态,与真正想测的分类语义无关。可复用判据:**测 tier 状态机吸收态相关的断言时,载体的调用次数要显式跨过 retry window**(当前是 64,若阈值改动就跟着改)。实例 `TestTierAdmin_StatsClassifyStuck` 第一版载体只调 vararg 函数 20 次,`StuckNotCompilable == 0` 挂了才发现;改到 100 次并把这个约束在 Lua 注释里写清楚后通过。
 
 **(d) 运行期开关的三段式路径证明(kill switch 类)**
 测运行期状态切换(kill switch / `SetTierEnabled` 类)不能只断言「结果一致」——结果一致在切换语义测试里等价于**没测**(关掉 tier 之后跑对了不等于关成功了,可能根本没关或者关了又自己开回来)。三段式:
 
 1. **开启 + 驱动一遍**:断言路径命中(`NativeRunCount` / 相应 tier 的 dispatch 计数 delta > 0),否则后续两段测的是 vacuous 状态;
 2. **关闭 + 驱动**:断言 delta == 0 **且** 结果 byte-equal 于第一段——两条断言各证一件事,delta==0 证「真的关掉了」,byte-equal 证「关掉之后走的解释器路径产出同样的正确结果」;
-3. **重开 + 驱动**:断言 delta > 0 **且** 已有缓存指标(`TierStatsSnapshot().Promoted` 一类)相对第一段末尾不变——第二条把「重开不重编译」这个不在 issue 描述里的隐性约定钉死;如果实现把 tier off 意外拆掉了缓存表,Promoted 会掉到 0 再重新长回来,`==` 断言直接抓。
+3. **重开 + 驱动**:断言 delta > 0 **且** 已有缓存指标(`TierStatsSnapshot().Promoted` 一类)相对第一段末尾不变——第二条把「重开不重编译」这个不在 issue 描述里的隐性约定固定下来;如果实现把 tier off 意外拆掉了缓存表,Promoted 会掉到 0 再重新长回来,`==` 断言直接抓。
 
 三段式的价值在把开关切换的语义拆成三个独立可验的正交断言,任一环回退都能被单点抓到,而不是靠一个「关掉之后结果对」的整体判断兜住。实例 `TestTierAdmin_KillSwitchRoutesToInterpreter` 完成 PR #115 的 `SetTierEnabled` 三向验证。
 
@@ -51,7 +51,7 @@
 **适用场景**:测编译期给某条指令记的行号/位置(`LineInfo` 一类)时。
 
 **核心断言**:位置类 bug 只在「操作数被延迟物化」的路径上才有机会出现——已经在寄存器里的值(局部变量、
-已知常量)不需要 codegen 再发射任何新指令,行号参数传得对不对都没有一条指令可以被钉错。位置类测试若用
+已知常量)不需要 codegen 再发射任何新指令,行号参数传得对不对都没有一条指令的行号会被记错。位置类测试若用
 这种对象做载体,不管两个方向的实现各写成什么样,测试都测不出差别,因为**被测的那条指令压根没被发射**。
 这是 §2 的原始命题(路径没被走到)在一个更前置的层次上的形式:那边问「走了哪条实现」,本条问「这条指令
 有没有被发射」——指令都没发射,连「走了哪条」这个问题都不存在。
@@ -69,8 +69,8 @@ GETTABLE 用「之后由谁 discharge 就取谁的行」。仓库里早就有 `T
 要触发发射,用需要**加载**的对象(全局、另一层索引、函数调用结果)。反思
 [[2026-08-27-issue248-index-line-across-newline]] 教训 1。
 
-> **后续订正(2026-09-03,#252)**:上面实例里 #248 采用的修法(给 `expDesc` 加 `opLine`、把 GETTABLE 钉在
-> 「索引运算符所在行」)**口径本身是错的**,该字段已被删除。PUC 的 `luaK_codeABC`/`luaK_codeABx` 不接收行号
+> **后续订正(2026-09-03,#252)**:上面实例里 #248 采用的修法(给 `expDesc` 加 `opLine`、把 GETTABLE 固定在
+> 「索引运算符所在行」)**这个规则本身是错的**,该字段已被删除。PUC 的 `luaK_codeABC`/`luaK_codeABx` 不接收行号
 > 参数,一律用发射那一刻的 `fs->ls->lastline`,所以 GETTABLE 的行是「谁在哪一行 discharge 它」;「运算符行」
 > 只是它在「索引写完就地被消费」时的近似。本条**教训依然成立**(载体必须触发延迟加载),只是不要照抄那个
 > 修法。详见 [[2026-09-03-issue252-discharge-line-is-lastline]]。
@@ -83,7 +83,7 @@ GETTABLE 用「之后由谁 discharge 就取谁的行」。仓库里早就有 `T
 输入上恰好一致是常态(否则缺陷早就被发现了),所以随手挑一个「形状看起来对」的输入,很可能落在两者一致
 的区间里——它会稳定通过,既不证明实现对,也不会在实现错时变红。
 
-**实例(#252)**:对齐 PUC 的 lastline 口径时,主 case 用的是精心构造的判别输入 `local v = A.x<nl><nl>+1`
+**实例(#252)**:对齐 PUC 的 lastline 规则时,主 case 用的是精心构造的判别输入 `local v = A.x<nl><nl>+1`
 (运算符在第 1 行、luac 报第 3 行,「运算符行」模型与「discharge 行」模型给出不同答案)。但后来补单目标
 赋值那一格时,写的用例是 `x = A.x<nl>`——luac 在那里也报 1,**两个模型期望值相同**。于是这个用例对该格
 毫无区分力,`storeVar` 整条快速路径没接上 `ExprEndLines` 的事实被它掩盖过去,直到远端评审指出。判别输入
@@ -96,7 +96,7 @@ GETTABLE 用「之后由谁 discharge 就取谁的行」。仓库里早就有 `T
 
 #### 2.1b 候选模型不止两个:每个语法位置的每条指令,各问一遍「参照实现在哪一刻发射它」(2026-09-18,#262)
 
-**适用场景**:同 §2.1a,尤其是把一条已确认的口径(「行号 = 发射那一刻的 lastline」)推到**新的**语法位置时。
+**适用场景**:同 §2.1a,尤其是把一条已确认的规则(「行号 = 发射那一刻的 lastline」)推到**新的**语法位置时。
 
 **核心断言**:§2.1a 说用例要能区分两个候选模型,但候选往往不止两个。一条二元运算的行号至少有三个候选:
 表达式**起始**行、**运算符**行、**右操作数末 token** 行。PUC 对一个二元运算有**两个**发射点——`luaK_infix`
@@ -162,10 +162,10 @@ dispatch」是同一类单位选择错误 —— 这一条也是 §9.5「harness
 
 **同轮还有一个自己踩到的实例**,说明这条纪律对守护测试自己也适用(承 §9.5):
 那个守护测试的脚本调了 `__oracle_print`,而这个名字在全仓只出现在那一行、并不存在
-(prelude 提供的是 `__oracle_readout`),脚本第 2 行就抬 `attempt to call global ... (a nil value)`。
+(prelude 提供的是 `__oracle_readout`),脚本第 2 行就抛出 `attempt to call global ... (a nil value)`。
 它仍然通过,靠的是 Lua **先算实参再发现被调者是 nil** 这个巧合 —— 被断言的那次调用
 在报错之前执行了。自查:守护测试的日志里出现「input errored(not fatal for this probe)」
-这类被容忍的错误时,先确认被容忍的那个错误没有把被测动作一起吃掉。
+这类被容忍的错误时,先确认被容忍的那个错误没有让被测动作一起被跳过。
 
 **判据**:新增一个「测 X 路径」的目标时,配一条**能观测到进入 X 的断言**,
 用变异实测它(把进入 X 的那一行删掉,必须变红),并且再过两格 ——
@@ -185,7 +185,7 @@ payload,也必须变红);断言读的计数器要与「进入 X」同量纲(编�
 `FuzzAutoPromote` / `FuzzP4ForceAllPromote` 断言「分层结果 == p1 结果」,
 再靠 `FuzzOracleDiff` 的「p1 == PUC」传递过去。传递性没错,但它继承 p1 比较的所有盲区
 (p1 的比较跳过了什么,传递之后仍然跳过),而且两个 tier 互相之间的一致性不由这条链保证。
-`test/difftest` 确实按 tier 对真 `lua5.1` 二进制跑,但生成器只 451 行,
+`test/difftest` 确实按 tier 对真实的 `lua5.1` 二进制跑,但生成器只 451 行,
 `vararg` / `goto` / `pcall` / `error` 的生成计数都是 **0**,覆盖的写法远窄于 go-fuzz 变异。
 补的直接轴是 `FuzzOracleDiffTiered`(tier 对内嵌 5.1.5),**跳过集合与 p1 目标完全相同** ——
 加一个 tier 专属跳过是让它变绿最容易的办法,也是让它变得毫无价值的办法,
@@ -260,7 +260,7 @@ reported case 会留五条活着。同一轮的扫描还额外带出一处活着
 
 **核心断言**:**一个没有任何代码执行的「已豁免」声明比一个已知 bug 更糟,因为它读起来像
 已经处理过了。** 读到它的人(包括写下它的人自己)会跳过这一处不再核对,而 fuzz 不会跳过。
-物理基础与 §9 同族:绿灯 / skip / 一句注释本身都不携带「判据是否真的存在」的信息。
+底层机理与 §9 同族:绿灯 / skip / 一句注释本身都不携带「判据是否真的存在」的信息。
 
 **实例(2026-07-28,`strtoul`)**:`internal/stdlib/stdlib.go` 的 `tonumber` base 分支里有
 一句注释说负数回绕「已登记为 diff 豁免」——但仓库里没有任何代码实现那个豁免,分歧一直是
@@ -293,7 +293,7 @@ SETLIST 不可见」时,没有把同一语句里的 TFORLOOP(生成器不可调�
 (键为 nil/NaN 时在它上报错)单独拿出来问——独立审阅抓了出来,`for k in<nl>nil` PUC 2 / 我们 1,
 `{<nl>[nil]<nl>=<nl>1}` PUC 4 / 我们 1。第二轮独立审阅用更大的扫描面又抓出方括号键 `A[B<nl>.c]`(会
 raise)与 CLOSURE / 块退出 CLOSE / repeat CLOSE+JMP 三族(不会 raise),并在其中发现 while 体的 CLOSE
-发在回边之后从未执行——一个真实的闭包捕获 bug。最终那一轮把剩余 DIFF 全部修掉,不再维护「不可见」清单。
+发在循环回跳(back edge)之后从未执行——一个真实的闭包捕获 bug。最终那一轮把剩余 DIFF 全部修掉,不再维护「不可见」清单。
 
 **判据**:写「行号偏了但不可见」之前,列出该路径发射的**每一种**指令(按指令列,不按语句列),逐条
 回答「`lvm.c` 里它有没有 `luaG_*error` 调用」;再回答「activelines 为什么没覆盖」(通常是语料里没有那种
@@ -343,7 +343,7 @@ issue 列表里长得一样,但前者每一行只经过「看起来不对」这�
 ### 4.3b 做出来了但它破坏了别的东西 —— 撤回并写清「卡在哪」
 
 **适用场景**:一个改动功能上已经做对,但让**既有的**压力测试 / 回归测试失败,而失败点在你不
-熟悉的子系统契约上。
+熟悉的子系统约定上。
 
 **核心断言**:这时「再调一会儿」的成本是**不可估的**,因为不知道要调什么;而撤回的成本是确定
 的——一份「我做到哪、卡在哪、下一步要先搞清什么」的说明。功能正确的代码带着这种缺陷合进去比
@@ -362,16 +362,16 @@ rooting 的约定得先搞清楚——整段撤回、开 #205。
 
 **与「填 issue 而不是硬凑」是同一条纪律的两个时点**:那条在**动手前**(这个修法只在恰好如此的
 情况下成立,见 [[2026-07-28-issue197-199-stdlib-semantics]] 教训 1),本条在**做完之后**。两条
-共享同一个正向结算:#197 上一轮被主动填成 issue,那份「加个常数偏移只在中间恰好是 C 帧时才对」
+共享同一个事后印证:#197 上一轮被主动填成 issue,那份「加个常数偏移只在中间恰好是 C 帧时才对」
 的说明正是下一轮两层认识的入口。
 
 **手法**:写下的「卡在哪」要具体到**哪个约定没搞清**(本例:非 finalizer 路径创建 userdata 的
 分配与 rooting 约定),不要只写「GC 有问题」;把已经查明的证据一起写进去(哪几处 VM 缺口补了
 什么、证据指向构造侧还是收集器侧),那部分下一轮不用重新发现。撤回的理由不是「太贵」——是这个
-改动当前的形式会破坏某个不变式,而破坏原因是一份还没搞清楚的契约。反思实例
+改动当前的形式会破坏某个不变式,而破坏原因是一份还没搞清楚的约定。反思实例
 [[2026-07-28-issue201-203-unpack-skip-thresholds]] 教训 4。
 
-**正向结算(2026-07-29,#205)**:下一轮真去做时,**根因只有一行**——原型直接调
+**事后印证(2026-07-29,#205)**:下一轮真去做时,**根因只有一行**——原型直接调
 `object.AllocUserdata`、跳过了 collector 的 `LinkSweep`,所以对象 header 里既没有颜色也没有 sweep
 链、收集器根本看不见它;`internal/crescent/alloc.go` 里三个现成分配器每一个都写着
 `AllocX` + `LinkSweep` + `AllocCharge` 三步。撤回时写下的那句「卡在**非 finalizer 路径创建
@@ -427,9 +427,9 @@ internal/value/value.go::Nil」,值却是 `0xFFFE<<48`(TagUserdata);`value.Nil` 
 
 **适用场景**:机制叠加 N 档(本例 darwin/arm64 真机 JIT 执行 6 档:MAP_JIT mmap / W^X 翻面 `pthread_jit_write_protect_np` / `sys_icache_invalidate` / trampoline ABI / PAC 指针签名 / Hardened Runtime entitlement),崩点症状只有一种形式(一样的 SIGSEGV / SIGILL / wrong-result),症状无法区分是哪一档错位。PR comment / 调研报告把 N 个 hypothesis 并列时,**默认做法是穷举每条**(预估 1-2 天)——但若各档之间有干净的输入/输出 ABI 边界,**bypass 一档跳一层做 minimal payload 探针**可把 N 档收敛到一档,**20 行代码 + 5 分钟**。
 
-**手法**:写 minimal payload 直接调下一层(末档)bypass 当前调试层(次末档),让 payload 经过相同的前 N-1 档但 bypass 次末档——若 payload 过,锅锁定次末档(本例 trampoline ABI / H1);若 payload 仍崩,继续 bypass 倒数第二档跳一层,直到 minimal payload 过,即可锁定崩点档位。每跳一层成本 ~5 分钟 / ~20 行代码,远快于穷举诊断每档。
+**手法**:写 minimal payload 直接调下一层(末档)bypass 当前调试层(次末档),让 payload 经过相同的前 N-1 档但 bypass 次末档——若 payload 过,问题锁定在次末档(本例 trampoline ABI / H1);若 payload 仍崩,继续 bypass 倒数第二档跳一层,直到 minimal payload 过,即可锁定崩点档位。每跳一层成本 ~5 分钟 / ~20 行代码,远快于穷举诊断每档。
 
-**本会话证据(F3-#3b darwin/arm64 真机 execute 闭环)**:PR #27 留三 hypothesis(H1 trampoline ABI / H2 Apple Silicon PAC / H3 Hardened Runtime entitlement)。本机 M1 上写 `movz x0, #0x42 ; ret` 经 Go funcval 构造 BL 直接进 mmap 段(不经 `trampoline_arm64.s`),X0=0x42 成功返回 ⟹ MAP_JIT + W^X + icache + PAC + entitlement 全健康,**H2/H3 一次性排除,根因收敛到 H1**。后续 `lldb attach` 抓寄存器三相等指纹 `pc=lr=x19` 直接锁定 `STP (R19,R20), 0(RSP)` 覆盖 LR slot。
+**本会话证据(F3-#3b darwin/arm64 真机 execute 收尾)**:PR #27 留三 hypothesis(H1 trampoline ABI / H2 Apple Silicon PAC / H3 Hardened Runtime entitlement)。本机 M1 上写 `movz x0, #0x42 ; ret` 经 Go funcval 构造 BL 直接进 mmap 段(不经 `trampoline_arm64.s`),X0=0x42 成功返回 ⟹ MAP_JIT + W^X + icache + PAC + entitlement 全健康,**H2/H3 一次性排除,根因收敛到 H1**。后续 `lldb attach` 抓寄存器三相等指纹 `pc=lr=x19` 直接锁定 `STP (R19,R20), 0(RSP)` 覆盖 LR slot。
 
 **与 §2/§3 反向侧解药的对偶关系**:反向侧解药(毒化助手 / 命中计数器 / 错误路径用例)是「证一条已知路径真被走到」,本节正向侧解药是「机制叠加 N 档时,证前 N-1 档健康以锁定崩点在第 N 档」——前者解决「绿色 ≠ 在测你以为在测的」,本节解决「N 档崩点症状无法直接归因」。
 
@@ -441,9 +441,9 @@ internal/value/value.go::Nil」,值却是 `0xFFFE<<48`(TagUserdata);`value.Nil` 
 
 **适用场景**:收到「某条路径导致 N 倍退化」类归因——不管来自 issue、用户描述,还是自己的第一直觉——准备动手写止血/修复计划前。
 
-**核心断言**:**退化数字 ≠ 慢在你以为的路径**。这是 §1-§6 全部「测试侧」实例的对偶面:那些实例证明「路径真被走到」,本节证明「路径真的存在且被执行」。两者共享同一物理基础——输出(测试绿 / 性能慢)本身不携带路径信息,必须用独立于输出的证据反推路径。
+**核心断言**:**退化数字 ≠ 慢在你以为的路径**。这是 §1-§6 全部「测试侧」实例的对偶面:那些实例证明「路径真被走到」,本节证明「路径真的存在且被执行」。两者共享同一底层机理——输出(测试绿 / 性能慢)本身不携带路径信息,必须用独立于输出的证据反推路径。
 
-**实例(issue #40 arm64 P4 止血轮)**:issue 把 arm64 P4 HeavyArith 慢 ~20x 归因于「PerOpCode head-op replay 逐 op 跨界路径」,并据此制定止血计划「收紧 arm64 升层接受面拒收算术密集形状」。但该路径在 arm64 二进制里**根本不存在**——`internal/gibbous/jit/peroptranslator/peropcode.go`/`translator.go` 都是 `wangshu_p4 && amd64`-only build tag,`internal/gibbous/jit/peroptranslator/register_arm64.go` 头注明确 arm64 是 native-only、无 replay fallback;arm64 有效接受面本来就在拒收算术形状,「收紧」会是无效操作(收紧一个已经在拒收的东西不改变任何数字)。真实根因由 force/auto 探针矩阵差分 + cpuprofile 在 1 小时内定位:forceAll retry window 让每回边都重跑全量后端分析,`recheckCompilabilityRuntime` 占 22.38% CPU、HeavyArith 1.5 GB/op。force/auto 不对称直接排除了「emit 慢」「接受面放坏形状」两类会同时影响双模式的假设,把嫌疑收窄到 force 专属机制。修复 `f921626`,反思 [[2026-07-03-issue40-arm64-stopbleed-round]]。
+**实例(issue #40 arm64 P4 止血轮)**:issue 把 arm64 P4 HeavyArith 慢 ~20x 归因于「PerOpCode head-op replay 逐 op 跨界路径」,并据此制定止血计划「收紧 arm64 升层接受面拒收算术密集形状」。但该路径在 arm64 二进制里**根本不存在**——`internal/gibbous/jit/peroptranslator/peropcode.go`/`translator.go` 都是 `wangshu_p4 && amd64`-only build tag,`internal/gibbous/jit/peroptranslator/register_arm64.go` 头注明确 arm64 是 native-only、无 replay fallback;arm64 有效接受面本来就在拒收算术形状,「收紧」会是无效操作(收紧一个已经在拒收的东西不改变任何数字)。真实根因由 force/auto 探针矩阵差分 + cpuprofile 在 1 小时内定位:forceAll retry window 让每次 back edge 都重跑全量后端分析,`recheckCompilabilityRuntime` 占 22.38% CPU、HeavyArith 1.5 GB/op。force/auto 不对称直接排除了「emit 慢」「接受面放坏形状」两类会同时影响双模式的假设,把嫌疑收窄到 force 专属机制。修复 `f921626`,反思 [[2026-07-03-issue40-arm64-stopbleed-round]]。
 
 **手法**:动手修复前先用一个廉价动作验证该路径确实存在且会被执行——grep build tag、读函数头注、跑一次白盒探针(如 force-vs-auto 差分)。若验证失败(路径不存在,或存在但静态分析显示不该被触发),不要顺着错误归因去修,先重新定位。
 
@@ -457,7 +457,7 @@ internal/value/value.go::Nil」,值却是 `0xFFFE<<48`(TagUserdata);`value.Nil` 
 
 **核心断言**:复现测试与被指控路径是两回事——若复现测试实际走的是另一条路径,「budget 生效了 / 没复现」产出的是**伪证据**,会直接把一个真 bug 关掉。验证「机制 X 没生效」之前,必须先用白盒探针(`SafepointCalls` / `PromotionCount` 等)证明复现测试的执行路径就是被指控的那条路径。这是 §2「路径真被走到」在**复现方向**的应用:测试侧走错路径产出假绿,复现侧走错路径产出假「无 bug」——后者更危险,因为它以「验证过了」的姿态终结调查。
 
-**实例(2026-07-18 review 修复轮,PR #161)**:外部 review 指控「P3 loop fuel 在预算开启后不重新武装」(`Safepoint` 无预算时把 fuel 字填成 `loopFuelUnlimited`,`SetStepBudget` 只改 Go 侧字段,先无预算跑热 P3 循环再开预算,新预算要等约十亿次 back-edge(回边)后才被查询)。第一版复现测试用 `local function spin()` + FORLOOP 循环 + `SetForceAllPromote`,结果 budget 居然生效报错——差点据此把真问题判为「不存在」。原因是那个循环写法的 back-edge 没有在段内跑,预算走的是解释器路径,测的根本不是被指控的路径。换成既有 `test/regression/loop_stepbudget_p3_test.go` 已用 `SafepointCalls > 0` 证明「back-edge 在段内跑」的写法后,bug 稳定复现(warm 后 `SetStepBudget(10)`,100 万次段内循环照常跑完、err=nil、safepoints-delta=0)。反思 [[2026-07-18-review-p3-loopfuel-rearm-round]]。
+**实例(2026-07-18 review 修复轮,PR #161)**:外部 review 指控「P3 loop fuel 在预算开启后不重新武装」(`Safepoint` 无预算时把 fuel 字填成 `loopFuelUnlimited`,`SetStepBudget` 只改 Go 侧字段,先无预算跑热 P3 循环再开预算,新预算要等约十亿次 back-edge 后才被查询)。第一版复现测试用 `local function spin()` + FORLOOP 循环 + `SetForceAllPromote`,结果 budget 居然生效报错——差点据此把真问题判为「不存在」。原因是那个循环写法的 back-edge 没有在段内跑,预算走的是解释器路径,测的根本不是被指控的路径。换成既有 `test/regression/loop_stepbudget_p3_test.go` 已用 `SafepointCalls > 0` 证明「back-edge 在段内跑」的写法后,bug 稳定复现(warm 后 `SetStepBudget(10)`,100 万次段内循环照常跑完、err=nil、safepoints-delta=0)。反思 [[2026-07-18-review-p3-loopfuel-rearm-round]]。
 
 **手法**:写「验证机制没生效」的复现测试时,第一条断言不是「机制是否生效」,而是「本测试的执行路径就是被指控路径」的白盒证据(段内路径用 `SafepointCalls`、升层用 `PromotionCount`、快路径用命中计数器);优先复用仓内已经证明过路径的既有测试写法,而不是新造一个未证明的载体。复现失败时,先怀疑复现路径走错,再考虑「问题不存在」。
 
@@ -490,9 +490,9 @@ SETLIST 读到的不是表,不说明是谁让它不是表。
 恰恰是**唯一确定没有 bug** 的地方——它正确地发现了数据不对。所以第一个问题不是「X 自己哪里写错了」,
 而是**「X 读到的坏数据是谁写的」**。
 
-**实例(2026-08-04,#229)**:P4 抬 `SETLIST: not a table` 而 P1 成功,看起来是「JIT 怎么编译 SETLIST」
-的问题。在抬错点打栈迹拿到的是 `executeLoop -> doSetList`、**没有任何 JIT 帧**——这件事本身就是关键
-信息:抬错的是普通解释器,破坏发生在更早的某个已升层调用里,搜索范围于是从「JIT 的 emit」翻转成
+**实例(2026-08-04,#229)**:P4 抛出 `SETLIST: not a table` 而 P1 成功,看起来是「JIT 怎么编译 SETLIST」
+的问题。在报错点打栈迹拿到的是 `executeLoop -> doSetList`、**没有任何 JIT 帧**——这件事本身就是关键
+信息:报错的是普通解释器,破坏发生在更早的某个已升层调用里,搜索范围于是从「JIT 的 emit」翻转成
 「谁在 SETLIST 之前动了那个寄存器」。
 
 **两个可复用手法**:
@@ -514,13 +514,13 @@ SETLIST 读到的不是表,不说明是谁让它不是表。
 
 **度量教训**:任何投机 / inline 快路径的收益,度量单位必须是**跨 Run(稳态)的 exit-reason dispatch 计数**(或等价的稳态窗口指标),不是单个 Run 内的命中数。单 Run 命中数是「机制被触发过」的证据,不是「机制在稳态生效」的证据——两者的差就是一次假信号。选错度量单位会把「从没生效的优化」读成「生效但太贵」,再叠一个碰巧同向的噪声,就能推出完全错误的架构结论。
 
-**实例(issue #67 amd64 NodeHit 跨 Run inline 补齐轮,PR #82)**:PR #74 当年给 GETTABLE/SETTABLE 常量字符串 key 的段内 NodeHit inline 观察到「命中 17 万次」并据此认定 inline 机制在工作,却同时看到 ~3% 回归,推出「inline 生效但太贵」的结论,进而定下 arm64-only 的架构裁决。真相是那「命中 17 万次」是**单个 Run 内**的假信号——最初的 inline 用一道**身份 guard**(把编译期 IC 记录的表指针烤进段,运行期比对当前表指针),而 n-body 的 `bodies[i]` 这类局部表**每个 Run 都在新的 arena 偏移重建**、promotion 只烤一次快照,身份 guard 跨 Run 100% 落空:段里每次都发射 guard、每次都不通过、每次都照样 exit-reason 往返到 `host.GetTable`/`host.SetTable`。inline 快路径**跨 Run 从没真正生效过**,那 ~3% 是「每次都白发一遍身份 guard 又白退一次 host」叠出来的净开销,不是 inline 本身的成本。真正的度量单位是**跨 Run 稳态的 exit-reason dispatch 计数**,而它从来没有下降。修正(commit 6a10721)把身份 guard 换成两道与表地址无关的 guard(hmask 边界 `Index <= hmask` + `nodeRef != 0`,一个 node 自己的 key 字段就能唯一标识 entry,身份比较对正确性并不必要),跨 Run 重建的同 shape 表也能真命中,amd64 n-body auto 从 43.5ms 降到 7.0ms(~6.2×)、跨 Run dispatch 从 875k 降到 50k,PR #74 的 arm64-only 裁决被证伪。反思 [[2026-07-08-issue67-amd64-nodehit-crossrun-round]]。
+**实例(issue #67 amd64 NodeHit 跨 Run inline 补齐轮,PR #82)**:PR #74 当年给 GETTABLE/SETTABLE 常量字符串 key 的段内 NodeHit inline 观察到「命中 17 万次」并据此认定 inline 机制在工作,却同时看到 ~3% 回归,推出「inline 生效但太贵」的结论,进而定下 arm64-only 的架构裁决。真相是那「命中 17 万次」是**单个 Run 内**的假信号——最初的 inline 用一道**身份 guard**(把编译期 IC 记录的表指针固化进段,运行期比对当前表指针),而 n-body 的 `bodies[i]` 这类局部表**每个 Run 都在新的 arena 偏移重建**、promotion 只固化一次快照,身份 guard 跨 Run 100% 落空:段里每次都发射 guard、每次都不通过、每次都照样 exit-reason 往返到 `host.GetTable`/`host.SetTable`。inline 快路径**跨 Run 从没真正生效过**,那 ~3% 是「每次都白发一遍身份 guard 又白退一次 host」叠出来的净开销,不是 inline 本身的成本。真正的度量单位是**跨 Run 稳态的 exit-reason dispatch 计数**,而它从来没有下降。修正(commit 6a10721)把身份 guard 换成两道与表地址无关的 guard(hmask 边界 `Index <= hmask` + `nodeRef != 0`,一个 node 自己的 key 字段就能唯一标识 entry,身份比较对正确性并不必要),跨 Run 重建的同 shape 表也能真正命中,amd64 n-body auto 从 43.5ms 降到 7.0ms(~6.2×)、跨 Run dispatch 从 875k 降到 50k,PR #74 的 arm64-only 裁决被证伪。反思 [[2026-07-08-issue67-amd64-nodehit-crossrun-round]]。
 
-**解药**:`TestPJ10_TableNodeHit_CrossRunInline` 提升后的 kernel 每次调用重建一张同 shape 的表(新 arena 偏移,专门打身份 guard),断言**每 Run 的 exit-reason dispatch < 500**(身份 guard 时代 ~18000)。身份 guard 时代它稳在 ~18000、identity-free guard 时代降到 < 500,两条路径在这个断言上才可分辨。正确性 e2e 不能抓这个陷阱(inline 走没走都产出正确值,身份 guard 落空只是退 host 变慢不变错),单 Run 命中计数器又看着漂亮——缺的正交证据是「跨 Run 稳态的 dispatch 不下降」这一条。
+**解药**:`TestPJ10_TableNodeHit_CrossRunInline` 提升后的 kernel 每次调用重建一张同 shape 的表(新 arena 偏移,专门针对身份 guard),断言**每 Run 的 exit-reason dispatch < 500**(身份 guard 时代 ~18000)。身份 guard 时代它稳在 ~18000、identity-free guard 时代降到 < 500,两条路径在这个断言上才可分辨。正确性 e2e 不能抓这个陷阱(inline 走没走都产出正确值,身份 guard 落空只是退 host 变慢不变错),单 Run 命中计数器又看着漂亮——缺的正交证据是「跨 Run 稳态的 dispatch 不下降」这一条。
 
 **手法**:
-- 读加速收益时,度量单位选**跨 Run 稳态的 dispatch 计数**,不是单 Run 命中数;看到「命中 N 次」漂亮但整体数字反而回归,默认怀疑「机制被触发过但跨 Run 稳态从没真生效」,加跨 Run dispatch 断言而不是信单 Run 命中计数器。
-- 给 IC / inline 快路径写「把编译期身份快照烤进段」的 guard 前,先问「这个身份在段的存活窗口内会不会被跨 Run 重建打穿」(promotion 快照 vs 运行期重建,[[design-claims-vs-codebase-physics]] §5);若被测对象每 Run 在新 arena 偏移重建,身份 guard 会跨 Run 100% 落空,优先换成与对象地址无关的 key/shape 内容 guard。
+- 读加速收益时,度量单位选**跨 Run 稳态的 dispatch 计数**,不是单 Run 命中数;看到「命中 N 次」漂亮但整体数字反而回归,默认怀疑「机制被触发过但跨 Run 稳态从没真正生效」,加跨 Run dispatch 断言而不是信单 Run 命中计数器。
+- 给 IC / inline 快路径写「把编译期身份快照固化进段」的 guard 前,先问「这个身份在段的存活窗口内会不会因跨 Run 重建而失效」(promotion 快照 vs 运行期重建,[[design-claims-vs-codebase-physics]] §5);若被测对象每 Run 在新 arena 偏移重建,身份 guard 会跨 Run 100% 落空,优先换成与对象地址无关的 key/shape 内容 guard。
 - 遇到一个历史 perf 裁决(某优化「实测反而回归、故某平台 only / 故放弃」)时,先复查它当年的度量单位是不是单 Run 命中数 / 单窗口数,用跨 Run 稳态计数重测再决定要不要推翻。
 
 **与 §2(b)/§7 的关系**:§2(b) 是「白盒命中计数器证路径被走到」,本节补的是「命中计数器要按稳态窗口读,不按单 Run 读」——同一个计数器,窗口选错就从「证据」变成「假信号」。§7 是**诊断侧**(退化归因前先证被怪罪的路径存在),本节是**度量侧**(收益归因前先证收益来自稳态生效);两者都是「表面数字不携带路径信息」的对偶面,一个管退化、一个管收益。
@@ -572,7 +572,7 @@ width、precision、参数类别作为独立维度做笛卡尔扫描,并放入�
 表原先没有的。
 
 **核心断言**:**归一化的前提是那个值在输出里以它自己的形式出现;脚本可以不打印它而是测量它,而测量
-结果是一个普通数字、与那个值再无字面联系。** 这时归一化在物理上到不了——它拿到的字节流里已经只有一个
+结果是一个普通数字、与那个值再无字面联系。** 这时归一化实际上触及不到它——它拿到的字节流里已经只有一个
 数字。
 
 **实例(#233)**:引用值地址在那张表里一直被列在「两侧本来就是不同的东西」那一格(没有正确值可对齐 →
@@ -581,7 +581,7 @@ width、precision、参数类别作为独立维度做笛卡尔扫描,并放入�
 拿到的字节流里只有 `21` 和 `17`。这与 [[2026-07-26-oracle-nan-render-redesign]] 那一轮的
 `string.len(0/0)`(4 对 3)是**完全一样的机制**。修法因此回到渲染处:`internal/oracle/prelude.go` 的
 prelude 包一层 `tostring`,把 PUC 自己的地址渲染成望舒的 8 位宽度,与 NaN 符号位是同一个选择;望舒这一
-侧的宽度于是成为一份契约,由 `test/regression/fuzz_234_test.go::TestAddressLengthIsComparable` 钉住(`#tostring({})`
+侧的宽度于是成为一份约定,由 `test/regression/fuzz_234_test.go::TestAddressLengthIsComparable` 钉住(`#tostring({})`
 是 17、`#tostring(print)` 是 20)。**归一化管值、渲染处管宽度,两件事都要做。**
 
 **判据**:给差分 harness 加归一化时,问一句「脚本能不能**不打印它、而是测量它**」——能的话(`#`、
@@ -643,9 +643,9 @@ chunk 里重复三次，立刻复现。
 2026-07-28 那轮我把 host 帧计数写成 4 位，理由是「reentry 上限远低于 15」——那句话从来没被构造
 检验过，而它是假的：嵌套 15 层以上的 host 边界毫无阻碍，20 层尾调用链三行就能写出来。
 
-同时注意构造本身可能先撞上**别的**限制。我第一次验证时把 50 层 pcall 写成字面量嵌套，它先撞
+同时注意构造本身可能先碰到**别的**限制。我第一次验证时把 50 层 pcall 写成字面量嵌套，它先触发
 parser 的 syntax-level 上限，于是我量到「没有分歧」并差点据此驳回——深度必须在运行时构造。探针
-撞到无关限制时得到的「一致」是探针失效，不是结论。
+碰到无关限制时得到的「一致」是探针失效，不是结论。
 
 ### 4.4 与参照实现直接比对，往比再开一轮审计划算
 
@@ -753,9 +753,9 @@ skip 的取值本来就建立在「刚超过 skip 的这一段是便宜的」这
 **（a）计量单位要与真实成本同量纲，别用「个数」代替「字节」。** 一个批量操作的「规模」往往有好几个
 可读的量（元素个数、循环次数、输入长度、产出长度），它们只有一个与真实代价成正比，而**最容易拿到的
 那个常常不是它**。挑错量的后果不是记账偏小一点，而是**整类输入完全绕过记账**：只要那个量被别的东西
-界住，预算就再也拦不住成本沿另一个维度增长。
+限制住，预算就再也拦不住成本沿另一个维度增长。
 
-实例：`table.concat` 的遍历本来就被表的长度界住，所以按元素个数看它永远便宜——**256 个元素**听起来
+实例：`table.concat` 的遍历本来就被表的长度限制住，所以按元素个数看它永远便宜——**256 个元素**听起来
 微不足道，而每个元素 2 KiB 时实际要 **53 秒**（在 1<<20 step budget 内、且完全没有触发预算）。代价
 是拼出来的字节数，不是走过的元素个数。这与 §8「度量单位选错，把从没生效的优化读成生效但太贵」是同一
 个错误在**限流侧**的形式：那条讲读性能数字时选错单位，本条讲写预算时选错单位。
@@ -815,7 +815,7 @@ skip,覆盖**任何提到 error 第二参数的输入**(`errorLevelAtLeastTwo`,�
 没有区分能力 —— 它读起来像证据,实际只是采样太少。
 
 **实例(#180,Go 1.27 升级)**:`scripts/go-fuzz.sh` 里有一次只为 golang/go#75804 保留的条件
-重试(判据是「失败输出含 deadline 字样**且**无 `Failing input written to` crasher 落盘」)。
+重试(判据是「失败输出含 deadline 字样**且**无 `Failing input written to` crasher 写入磁盘」)。
 1.27 里那个修复已确认存在(核实手法见 [[design-claims-vs-codebase-physics]] §5.1),升上去之后
 七个 target 的 fuzz smoke 报 **#75804 重试 0 次**,#180 的 checklist 里也确实写着「评估并删除」。
 **本轮明确不删**:那次 smoke 是 30 秒级,而历史触发频率是**约 450 个 job 里 9 次** —— 两者不在
@@ -825,7 +825,7 @@ skip,覆盖**任何提到 error 第二参数的输入**(`errorLevelAtLeastTwo`,�
 **代价方向也进了这个判断**:这层兜底区分的是「真 crasher」与「工具链竞态」。删错之后的失效方向
 不是「多重试一次浪费时间」,是**真 bug 被当成噪声重试掉**,而重试成功之后什么痕迹都不留 ——
 一个「防误判」的机制被误撤之后的症状,恰好是「什么都没发生」。所以结论是:修复生效后这个数字
-应当在 nightly 上自然归零,**等实测归零再删,就有数据背书而不是靠推断**。(**但归零只是必要条件之一**:这个判据钉在**症状**上而不是钉在某个具体成因上,所以归零只说明那一条成因没再触发 —— 还要确认没有别的机制会产生同样的症状。这条是审计补上的,我原先只写了归零。)
+应当在 nightly 上自然归零,**等实测归零再删,就有数据背书而不是靠推断**。(**但归零只是必要条件之一**:这个判据针对的是**症状**而不是某个具体成因,所以归零只说明那一条成因没再触发 —— 还要确认没有别的机制会产生同样的症状。这条是审计补上的,我原先只写了归零。)
 
 **判据**:
 
@@ -841,7 +841,7 @@ skip,覆盖**任何提到 error 第二参数的输入**(`errorLevelAtLeastTwo`,�
   删掉一层还需要的保护划算。
 
 反思实例 [[2026-08-28-go127-upgrade-verification]] 教训 3。同轮的另两条教训(判断上游修复是否
-随某版本发布该拿什么当判据、「存在」与「引入」的区别)落在
+随某版本发布该拿什么当判据、「存在」与「引入」的区别)写在
 [[design-claims-vs-codebase-physics]] §5.1。
 
 ### 4.7 「不给可选参数」是一个独立的覆盖维度
@@ -867,7 +867,7 @@ skip,覆盖**任何提到 error 第二参数的输入**(`errorLevelAtLeastTwo`,�
 **适用场景**:给一个被多处调用的内部函数增加可选参数,并让它在参数缺失时保持原有行为——这是最自然、
 最安全的加参数手法,正因如此值得单列。
 
-**核心断言**:「缺失时回退旧行为」让**漏接线**与**不需要接线**在测试结果上**完全同形**:两者都编译通过、
+**核心断言**:「缺失时回退旧行为」让**漏接线**与**不需要接线**在测试结果上**完全一样**:两者都编译通过、
 既有测试都全绿、行为都与改动前一致。于是「这个调用点不在本 issue 报告的形状里」很容易被当成「这个调用点
 不需要接」,而前者是 issue 的属性、后者是代码的属性,两者无关。
 
@@ -963,7 +963,7 @@ skip,覆盖**任何提到 error 第二参数的输入**(`errorLevelAtLeastTwo`,�
 | 载体 | 漏掉的那个量 |
 |---|---|
 | needle 写成 `tostring(0/0)` | 判据直接读了一个两侧不同的**值**(PUC 找 `-nan`、wangshu 找 `nan`,于是 `print("banana")` 只在一侧被拦) |
-| 对称标记武装一次扫描 | 开关对称,但扫描**读取的对象**是运行时字符串内容,内容两侧不同(偏移差 1 就翻转方向) |
+| 用对称标记开启一次扫描 | 开关对称,但扫描**读取的对象**是运行时字符串内容,内容两侧不同(偏移差 1 就翻转方向) |
 | provenance 按字符串值索引 | 判据没问题,**查表用的键**两侧不同,于是两侧查的不是同一格 |
 | 剥符号的键只剥第 1 字节 | 归一化只对「token 紧贴串首」成立,fmt 带前缀或宽度 padding 时符号落到串中间 |
 | `#t` 作预扫上界 | 判据**遍历时猜的那个边界**两侧不同(带空洞的表 `#t` 在 Lua 5.1 未规定) |
@@ -981,7 +981,7 @@ skip,覆盖**任何提到 error 第二参数的输入**(`errorLevelAtLeastTwo`,�
 和下划线**:`io.write` 不带换行,于是 `io.write(0)print(print)` 的输出是 `0function: 0x...`,`0` 与
 `function` 之间没有 `\b`,整个地址逃过归一化——**凡是这种写法都必然分歧**。意图里的「单词」与 `\b` 里的
 「word」不是同一个集合,差的正好是数字和下划线,而这个差**只能从行为看出来,读注释永远发现不了**。改成
-用「不是字母」锚定左边之后两个目的同时满足;因为那一版锚点吃掉了前导那一个字符(最终实现不吃),替换
+用「不是字母」锚定左边之后两个目的同时满足;因为那一版锚点会消耗掉前导那一个字符(最终实现不消耗),替换
 也改成只重写匹配内部的 `0x...`(
 
 **判据**:锚点类的正则,除了「该匹配的」用例,还要专门构造「**紧贴各类字符**」的用例——数字、下划线、
@@ -1009,7 +1009,7 @@ skip,覆盖**任何提到 error 第二参数的输入**(`errorLevelAtLeastTwo`,�
 **判据**:检查代码属性的测试要作用在**代码本身**上,不是文件文本;**一个注释就能满足的测试没有在测
 代码**。自查办法:把被检查的那个属性从代码里删掉、**保留一切注释**,跑一次 —— 不变红就是没有在测代码。
 
-与 [[2026-07-25-issue179-test-go-fuzz-retry-revive-round]] 教训 1 的关系(同一个 `test-scripts` 门禁、
+与 [[2026-07-25-issue179-test-go-fuzz-retry-revive-round]] 教训 1 的关系(同一个 `test-scripts` 检查、
 同样是 shell 自测脚本):那条定下「shell 判据不能只用 `rc` + 反向 grep,必须配 positive marker」;本条
 补上它的另一半 —— **positive marker 的作用域也要证明**。本轮这个用例是有 marker 的(它查「必须出现」
 的字节串,不是反向断言),假绿的原因是那个 marker 的**搜索范围**里存在一个非代码的来源。所以那条纪律
@@ -1025,15 +1025,15 @@ grep 逻辑读起来完全正常。反思
 
 | 资源 | 为什么不对称 | 实测 | 表现 |
 |---|---|---|---|
-| **时间** | 检查在 wangshu 侧是解释执行的 Lua、在 PUC 侧是 C | 逐字节扫 80 KiB 的 fmt(不含 NaN、不含任何转换):PUC 392ms 判 OK,wangshu 1m22s 后 `instruction budget exceeded` | 一侧撞 step budget → 单侧 skip |
-| **分配量** | PUC 的 GC 在 alloc 帽内回收临时串,wangshu 的 arena 回收不了 | straddle walk 每个转换复制一次 fmt 前缀:**103 字节**的脚本耗尽 wangshu 的 arena,PUC **706ms** 跑完 | 一侧撞 `MaxArenaBytes` → 单侧 skip |
-| **matcher 步数预算** | 只有 wangshu 给 pattern 重试计步(`maxMatchSteps`),PUC 的 C matcher 没有预算 | 悬崖在 **1 MiB** 附近;含前导量词的模式约 **1024 字节**就撞上(量词在每个起始位置重试,代价是运行长度的平方) | 一侧报 `pattern too complex`;脚本用 pcall 包住时是**假分歧**而不只是丢输入 |
+| **时间** | 检查在 wangshu 侧是解释执行的 Lua、在 PUC 侧是 C | 逐字节扫 80 KiB 的 fmt(不含 NaN、不含任何转换):PUC 392ms 判 OK,wangshu 1m22s 后 `instruction budget exceeded` | 一侧触发 step budget → 单侧 skip |
+| **分配量** | PUC 的 GC 在 alloc 帽内回收临时串,wangshu 的 arena 回收不了 | straddle walk 每个转换复制一次 fmt 前缀:**103 字节**的脚本耗尽 wangshu 的 arena,PUC **706ms** 跑完 | 一侧触发 `MaxArenaBytes` → 单侧 skip |
+| **matcher 步数预算** | 只有 wangshu 给 pattern 重试计步(`maxMatchSteps`),PUC 的 C matcher 没有预算 | 悬崖在 **1 MiB** 附近;含前导量词的模式约 **1024 字节**就会触发(量词在每个起始位置重试,代价是运行长度的平方) | 一侧报 `pattern too complex`;脚本用 pcall 包住时是**假分歧**而不只是丢输入 |
 
 **三者需要三个测试,不能合并**。最反直觉的是 matcher 预算这一维**成本比值测不出来**:预算触发时失败的那一侧反而**更快**(提前放弃),比值缩小而不是增大。分配量这一维成本比值也测不出来,因为它量的是时间。
 
-三步过法:① 这个检查的复杂度随输入的哪个维度增长;② fuzz 能把那个维度推到多大;③ 更吃紧的那一侧推到那么大,会不会撞它自己的那道限制。合格的写法:让复杂度跟着「真正相关的东西」走(那一轮把扫描从「跟着 fmt 长度」改成「跟着转换个数」,plain find 跳到下一个 `%`,38s → 264ms);只在确实可能有东西被拦时才启动扫描(启动判据每参数 O(1) 且由参数类型推导,所以两侧一致);需要 pattern 的地方只在**固定长度的切片**上跑。
+三步检查法:① 这个检查的复杂度随输入的哪个维度增长;② fuzz 能把那个维度推到多大;③ 更吃紧的那一侧推到那么大,会不会触发它自己的那道限制。合格的写法:让复杂度跟着「真正相关的东西」走(那一轮把扫描从「跟着 fmt 长度」改成「跟着转换个数」,plain find 跳到下一个 `%`,38s → 264ms);只在确实可能有东西被拦时才启动扫描(启动判据每参数 O(1) 且由参数类型推导,所以两侧一致);需要 pattern 的地方只在**固定长度的切片**上跑。
 
-> **补记(2026-08-04,#224/#225):调紧 harness 的资源上限之后,要用「注入一个必须被发现的缺陷」证明检测能力还在。** 上表讲资源耗尽让输入被**单侧 skip**;反过来动那些上限(step budget、arena cap、输入长度、超时)时,风险是同一个物理现象的另一面——预算变小之后,某些输入可能在到达被测代码之前就退出,于是测试变绿的原因悄悄从「两侧一致」换成「这个输入根本没跑完」,而**表现是测试照旧通过**。所以「减半不损失覆盖」这句话不能只靠推理:那一轮把 p4 fuzz harness 的 step budget 从 `1<<20` 减到 `1<<16`(为什么是 `1<<16` 而不是减半的 `1<<19`,见 [[unreproducible-crasher-triage]]「上限的余量」),推理是「这一族每种写法在两个预算下都触发,fuzzer 走同样的路径、只是更早停下」,而检验分两步:**注入一个真实的 P1-vs-P4 分歧**(把升层侧的返回值截断)确认新预算下 harness 仍然 FAIL、撤掉注入之后通过——这一步管**检测能力**;再**读一个白盒计数器**——harness 自己的 seed corpus 在 `1<<20` / `1<<19` / `1<<16` 三个预算下 `PromotionCount` 完全相同——这一步管**覆盖**。判据:调紧一个 harness 的资源限制之后,注入一个必须被发现的缺陷跑两个方向、再用白盒计数器读一遍覆盖,不要只看现有用例是否仍然通过——只跑「仍然通过」这一半,等于用一个恒真的观测支撑一个具体结论(与 §9.5「只验一种时,通过的信息量几乎是零」同一条)。**变窄的地方要如实记下**:那一轮 `1<<20` 时有两个 seed 会把 arena 推到上限、`1<<16` 时没有,所以那条 arena-cap 错误分支覆盖到的写法变少了,这是收窄而不是空洞(`test/regression/issue144_regression_test.go` 直接覆盖 arena cap,且两个预算下 step budget 都先于 arena cap 触发)。反思 [[2026-08-04-issue224-225-watchdog-margin]] 教训 5。
+> **补记(2026-08-04,#224/#225):调紧 harness 的资源上限之后,要用「注入一个必须被发现的缺陷」证明检测能力还在。** 上表讲资源耗尽让输入被**单侧 skip**;反过来动那些上限(step budget、arena cap、输入长度、超时)时,风险是同一个现象的另一面——预算变小之后,某些输入可能在到达被测代码之前就退出,于是测试变绿的原因悄悄从「两侧一致」换成「这个输入根本没跑完」,而**表现是测试照旧通过**。所以「减半不损失覆盖」这句话不能只靠推理:那一轮把 p4 fuzz harness 的 step budget 从 `1<<20` 减到 `1<<16`(为什么是 `1<<16` 而不是减半的 `1<<19`,见 [[unreproducible-crasher-triage]]「上限的余量」),推理是「这一族每种写法在两个预算下都触发,fuzzer 走同样的路径、只是更早停下」,而检验分两步:**注入一个真实的 P1-vs-P4 分歧**(把升层侧的返回值截断)确认新预算下 harness 仍然 FAIL、撤掉注入之后通过——这一步管**检测能力**;再**读一个白盒计数器**——harness 自己的 seed corpus 在 `1<<20` / `1<<19` / `1<<16` 三个预算下 `PromotionCount` 完全相同——这一步管**覆盖**。判据:调紧一个 harness 的资源限制之后,注入一个必须被发现的缺陷跑两个方向、再用白盒计数器读一遍覆盖,不要只看现有用例是否仍然通过——只跑「仍然通过」这一半,等于用一个恒真的观测支撑一个具体结论(与 §9.5「只验一种时,通过的信息量几乎是零」同一条)。**变窄的地方要如实记下**:那一轮 `1<<20` 时有两个 seed 会把 arena 推到上限、`1<<16` 时没有,所以那条 arena-cap 错误分支覆盖到的写法变少了,这是收窄而不是空洞(`test/regression/issue144_regression_test.go` 直接覆盖 arena cap,且两个预算下 step budget 都先于 arena cap 触发)。反思 [[2026-08-04-issue224-225-watchdog-margin]] 教训 5。
 
 ### 9.3 「不比较那个量」往往比「把比较做对」更可行
 
@@ -1045,15 +1045,15 @@ grep 逻辑读起来完全正常。反思
 
 那一轮的「不可能相等」是**可证的**,不是「暂时没找到」:`..` 强制转换出来的 NaN 文本带一个符号字节,而 `#` 与 `==` 能把那个字节搬进一个**数字**(`("y"):rep(N + #(""..(0/0)))` 两侧长度必然差 1),这时输出里连一个 nan 字节都不剩,任何基于内容的例外都看不见它。
 
-**反面的代价也要记住**:规模上限只能限制 harness 自己的**循环次数**,一旦让它变成「这个输入可不可比」的判据,就会切掉一片覆盖面 —— 那一轮的 `__concat_scan_cap` 曾在上限处抬 sentinel,后果是**所有**超过 4096 元素的表整类不可比,`table.concat` 的边界处理与错误文本比对全丢掉。
+**反面的代价也要记住**:规模上限只能限制 harness 自己的**循环次数**,一旦让它变成「这个输入可不可比」的判据,就会切掉一片覆盖面 —— 那一轮的 `__concat_scan_cap` 曾在上限处抛出 sentinel,后果是**所有**超过 4096 元素的表整类不可比,`table.concat` 的边界处理与错误文本比对全丢掉。
 
 ### 9.4 同一处代码改到第三版还在出同类缺陷 = 抽象选错,不是实现没写对
 
 §9.1–§9.3 是判据的正确性;这一节是**改法**的纪律,它比前三节层级更高。
 
-那一轮 span recorder 的吸收逻辑改了**六版**才收敛,前五版的共同点是每一版都「修好了上一版暴露的那一个问题、又引入一个新的」:逐字节 walk 太慢 → 加 offset 上限 → offset 本身两侧差 1 → 换个基准点数 offset → 还是差 1 → 改用一次 pattern match → 量词重试是平方、撞 matcher 预算 → 换个锚定位置 → 还是平方。
+那一轮 span recorder 的吸收逻辑改了**六版**才收敛,前五版的共同点是每一版都「修好了上一版暴露的那一个问题、又引入一个新的」:逐字节 walk 太慢 → 加 offset 上限 → offset 本身两侧差 1 → 换个基准点数 offset → 还是差 1 → 改用一次 pattern match → 量词重试是平方、触发 matcher 预算 → 换个锚定位置 → 还是平方。
 
-收敛的那一版做法不同:**先把需要的性质当作约束列出来,再找同时满足全部约束的写法。** 那三条约束是**无重试**(否则撞 matcher 预算)、**无迭代**(否则一侧付解释执行成本)、**无 offset 运算**(否则那一个符号字节让两侧所有绝对位置差 1)。三条一起看答案几乎唯一;而单看任何一条,前五版里都有某一版是满足它的 —— 这正是逐个打补丁一定会来回震荡的机制。
+收敛的那一版做法不同:**先把需要的性质当作约束列出来,再找同时满足全部约束的写法。** 那三条约束是**无重试**(否则会触发 matcher 预算)、**无迭代**(否则一侧付解释执行成本)、**无 offset 运算**(否则那一个符号字节让两侧所有绝对位置差 1)。三条一起看答案几乎唯一;而单看任何一条,前五版里都有某一版是满足它的 —— 这正是逐个打补丁一定会来回震荡的机制。
 
 判据:**同一处代码第三次出现同类缺陷时,停下来把这段代码必须满足的全部性质列出来(包含前几版各自暴露的那条),再找同时满足全部性质的写法。** 有就直接写那一种,不要在当前版本上继续加分支;没有就说明这段职责本身分配错了,去问它的前提。
 
@@ -1072,7 +1072,7 @@ grep 逻辑读起来完全正常。反思
 
 **适用场景**:声称某个差分 crasher(`FuzzOracleDiff` 一类)已经修好之前。
 
-**核心断言**:差分 fuzz 里 **skip 也让测试变绿**,但含义与 equal 相反 —— equal 说明两侧输出逐字节相同,skip 说明这条输入被丢掉了,连同它这一次运行里可能携带的真差异。**绿灯本身不携带这个区别的信息**(与 §9 全节同一物理基础)。把 skip 读成「修好了」等于把这条输入又藏了一次,而不是修好了它。
+**核心断言**:差分 fuzz 里 **skip 也让测试变绿**,但含义与 equal 相反 —— equal 说明两侧输出逐字节相同,skip 说明这条输入被丢掉了,连同它这一次运行里可能携带的真差异。**绿灯本身不携带这个区别的信息**(与 §9 全节同一底层机理)。把 skip 读成「修好了」等于把这条输入又藏了一次,而不是修好了它。
 
 **判据(两个方向都要走)**:
 
@@ -1088,8 +1088,8 @@ grep 逻辑读起来完全正常。反思
 **适用场景**:修一个由语料驱动的 crasher / 差分 issue,而它触及的机制**以前被别的 issue 修过**。
 
 **核心断言**:`make difftest-all` 与 `make fuzz-oracle` 覆盖的输入集合**不同**:前者跑自己生成的形状,后者
-还会重放 `test/fuzz/testdata/fuzz/` 里那一百多个**历史上真实撞出来过**的常驻 seed。而「历史上撞出来过的形状」恰恰是
-同族回归最可能落在的地方——它们是同一段代码上已经付过代价的断言。只跑前者,会得到「四道门全绿」的假信号。
+还会重放 `test/fuzz/testdata/fuzz/` 里那一百多个**历史上真实暴露过问题**的常驻 seed。而「历史上暴露过问题的形状」恰恰是
+同族回归最可能落在的地方——它们是同一段代码上已经付过代价的断言。只跑前者,会得到「四项检查全绿」的假信号。
 
 **实例(#252)**:第一版修法让 #252 的语料通过,`test-all`(p1/p3/p4)、`conformance-all`、`difftest-all`
 全绿,读起来完全可以收工。它其实把 **#248 自己的常驻语料** `8dff36b8bd115962` 改红了(那个形状的索引在
@@ -1118,7 +1118,7 @@ grep 逻辑读起来完全正常。反思
 | 守卫**太宽** | 静默削掉合法输入的覆盖面(单侧 skip,§9 全节) | **测试通过** |
 | 守卫**太窄** | 该跳的没跳,那一族 crash 还活着 | 下一次 nightly 再开一个 issue,而它长得像一件新事情 |
 
-**实证(#244)**:`unpack` 索引落在 int32 崩溃窗口时抬 sentinel 跳过。两侧检查**做了**——确认了两个崩溃值
+**实例(#244)**:`unpack` 索引落在 int32 崩溃窗口时抛出 sentinel 跳过。两侧检查**做了**——确认了两个崩溃值
 被跳过,而 `-2147483646`、`-2`、`INT_MAX`、显式区间、整表 unpack 全都仍在比较。**守卫仍然两个方向都错**:
 两侧用例都取自 `unpack({}, i)`,于是「紧邻不该 skip 的」取到 `unpack({},-2147483646)`——它**确实**不该
 skip;而真正该跳却没跳的 `unpack({1,2,3},-2147483646)` 不在用例表里(崩溃条件里有 `e = #t`,`e` 一变窗口
@@ -1131,7 +1131,7 @@ skip;而真正该跳却没跳的 `unpack({1,2,3},-2147483646)` 不在用例表�
 每个维度各取两侧,而不是沿被报的那个写法取。自查办法:说「两侧用例都写了」之后再问一句「这两侧是沿哪个
 量取的两侧」。
 
-**与既有条目的关系**:§9.6 讲验证一个修复要**双向**(base 上 FAIL、HEAD 上 equal),§4.5c 讲钉两个阈值
+**与既有条目的关系**:§9.6 讲验证一个修复要**双向**(base 上 FAIL、HEAD 上 equal),§4.5c 讲固定两个阈值
 的关系要**两个方向都断**——本节是这两条的前置一格:两侧 / 两个方向这件事本身还有一个「沿哪些维度取」的
 问题。处置侧的对应条目见 [[unreproducible-crasher-triage]]「同一写法第三次被开成 issue 时」(守卫太窄
 的表现就是同族 crasher 继续被开出来)。反思
@@ -1153,7 +1153,7 @@ skip;而真正该跳却没跳的 `unpack({1,2,3},-2147483646)` 不在用例表�
 那段文本在**两侧**的捕获输出里都不存在,于是两侧仍然一致、不报分歧,而比较实际上已经不覆盖
 这条路径写出的任何东西。修法是在 `internal/oracle/prelude.go` 里把 file-handle 的 `:write`
 也接到 `io.write` 用的那个累加器上(`io.stderr` 的写入丢弃而不累积,与 harness 别处只比 stdout
-的口径一致)。
+的做法一致)。
 
 **手法**:加了任何写外部世界的 API 之后,写一个「经新路径输出 + 经老路径输出」的用例,确认
 捕获输出里**两段都在**。判据不是「测试绿了」,是能在捕获结果里逐字节看到新路径写出的那几个
@@ -1179,7 +1179,7 @@ bug 会**对称地**打坏两侧,于是「相等」这个结论仍然成立,只�
 上线时,至少跑一个**已知应当有输出**的用例并肉眼确认那段输出真的在捕获结果里。反思实例
 [[2026-07-29-issue205-206-208-io-userdata-debug]] 教训 4。
 
-**与 §2/§3/§8 的关系**:§2/§3 是「证明测试走到了被测路径」,§8 是「读收益时选对度量窗口」,本节 §9.1–§9.5 是「**证明 harness 的判据在两侧算的是同一件事、花的是两侧都付得起的代价**」,§9.6 是同一命题在**验证修复**这个时点的形式(断 equal 不是断绿 + 双向验证),§9.7/§9.8 管**捕获面**(新增的输出路径有没有进捕获 / 两侧一起坏掉时的假一致),而 §9.0 在这之上一层:**先证明这个判据该不该存在**。它们共享同一物理基础:绿灯 / skip / 数字本身不携带「判据是否成立」的信息。本节与 §3 还有一层直接相连 —— §3 说 harness 自身失效的默认表现是**假绿**(两侧同样地坏掉 → 输出相同 → 比较器判等),本节说的是判据**只在一侧**坏掉时更糟:输入被静默丢掉,连绿灯都不留。
+**与 §2/§3/§8 的关系**:§2/§3 是「证明测试走到了被测路径」,§8 是「读收益时选对度量窗口」,本节 §9.1–§9.5 是「**证明 harness 的判据在两侧算的是同一件事、花的是两侧都付得起的代价**」,§9.6 是同一命题在**验证修复**这个时点的形式(断 equal 不是断绿 + 双向验证),§9.7/§9.8 管**捕获面**(新增的输出路径有没有进捕获 / 两侧一起坏掉时的假一致),而 §9.0 在这之上一层:**先证明这个判据该不该存在**。它们共享同一底层机理:绿灯 / skip / 数字本身不携带「判据是否成立」的信息。本节与 §3 还有一层直接相连 —— §3 说 harness 自身失效的默认表现是**假绿**(两侧同样地坏掉 → 输出相同 → 比较器判等),本节说的是判据**只在一侧**坏掉时更糟:输入被静默丢掉,连绿灯都不留。
 
 ## 10. 触发场景速查
 
@@ -1197,9 +1197,9 @@ bug 会**对称地**打坏两侧,于是「相等」这个结论仍然成立,只�
 - **读到 / 写下「已知差异 / 已登记豁免 / 已接受偏离」这类注释时**(§4.2) → 立刻指出**哪一行代码或哪个测试执行了它**(本仓执行体在 `test/difftest/corners_test.go::exemptions` 与 `internal/oracle/prelude.go` 的 sentinel);指不出来就当成活着的 bug 处理——一句无执行体的豁免声明比一个已知 bug 更糟,因为它读起来像已经处理过了
 - **回归测试期望与实现冲突、要决定改哪一边时**(§4.3) → 先跑 oracle / 写 C 探测 / 读参照源码取事实,再决定;默认怀疑实现会诱导去「修」一个本来正确的实现,而且改坏之后有一条绿色测试替它背书。别用「另一处类似的地方是这样的」做类比。**同一陷阱的另一个入口**:issue 正文陈述的参照行为也要亲自跑一遍再实现,哪怕那个 issue 是自己开的(#199 说 `io.write` 返回文件句柄,实测 5.1 返回布尔,句柄是 5.2+)
 - **修一个「顺手记下的一组」式 issue 时**(§4.3) → 逐项**重新核对**而不是逐项直接修,「这项不成立」与「这项修好了」一样是完成;集合式 issue 的错误率明显高于专门查证过的单条(#202 七项里三项实测与 lua5.1 一致、根本不成立)。自己开这类 issue 时在正文写明**未逐项核实**
-- **一个改动功能上做对了、但让既有压力测试失败且失败点在不熟悉的子系统契约上时**(§4.3b) → 撤回并写清「做到哪、卡在哪、下一步要先搞清什么」,「卡在哪」要具体到**哪个约定没搞清**(#202 的 `io.stdout`:非 finalizer 路径创建 userdata 的分配与 rooting 约定;三处 VM 缺口已补、证据指向构造侧不是收集器)。撤回的理由不是「太贵」,是这个形式会破坏某个不变式
+- **一个改动功能上做对了、但让既有压力测试失败且失败点在不熟悉的子系统约定上时**(§4.3b) → 撤回并写清「做到哪、卡在哪、下一步要先搞清什么」,「卡在哪」要具体到**哪个约定没搞清**(#202 的 `io.stdout`:非 finalizer 路径创建 userdata 的分配与 rooting 约定;三处 VM 缺口已补、证据指向构造侧不是收集器)。撤回的理由不是「太贵」,是这个形式会破坏某个不变式
 - **给一个阈值定数值、或发现两处读同一个常数时**(§4.5/§4.5b) → 先跑参照实现在上限附近的耗时把数字写进注释;再问它防的是**正确性**还是**资源**,防的东西不同就该是两个常数(形状保持逐字对应、数值分开)。量参照实现的边界时,让**决定它的那个量**变化一格再测(`unpack` 的阈值随参数个数变化,这才排除了「硬编码 7997」)
-- **给一个批量操作(拼接 / 重复 / 格式化 / 序列化)定预算、或给一个新算子加资源限制时**(§4.5d) → 先写下「这次调用的代价 ≈ 什么的函数」再让记账读那个量,别用「个数」代替「字节」(`table.concat` 的遍历被表长界住,256 个 2 KiB 的元素按个数看很便宜、实际 53 秒);并且先 grep 同类资源已有的计量器接上去,不要自建第二个阈值(自查:两个限制同时被触碰时谁先触发,答不出来就说明只该有一个)
+- **给一个批量操作(拼接 / 重复 / 格式化 / 序列化)定预算、或给一个新算子加资源限制时**(§4.5d) → 先写下「这次调用的代价 ≈ 什么的函数」再让记账读那个量,别用「个数」代替「字节」(`table.concat` 的遍历被表长限制住,256 个 2 KiB 的元素按个数看很便宜、实际 53 秒);并且先 grep 同类资源已有的计量器接上去,不要自建第二个阈值(自查:两个限制同时被触碰时谁先触发,答不出来就说明只该有一个)
 - **把两个阈值拆开之后、要写测试钉住这件事时**(§4.5c) → 不要在测试里复制那两个数(不导出 / 跨包时尤其,复制品会与任一侧各自漂移而测试照旧绿);把两个阈值**之间**的区间做成用例,用「这个输入该被执行 / 该被拒绝」表达,并且**两个方向都断**(`TestInsertShiftThresholdsStayDistinct` 断「必须被执行」+「必须便宜」,只断前者时两个数合到高的那个仍然全绿)
 - **修完一个曾经被 skip 绕过的 bug 之后**(§4.6) → `grep` 为它加过的 skip / 豁免 / 已知边界,逐条撤或收窄,确认相应用例现在**零 skip** 参与比对(不是「测试绿了」);收窄剩下的那条要连名字一起改,旧名字描述的是已经不存在的理由。一个还活着的 skip 与一句无执行体的豁免声明读起来一样,区别只是前者真的在挡输入
 - **上游修掉了某个缺陷、要判断为它加的兜底机制(条件重试 / 宽松判据 / fallback / 额外守卫)能不能删时**(§4.6a) → 先算「按这层兜底的历史触发频率,这一轮跑这么久本来该出现几次」;答案接近 0 就说明这一轮什么都没证明(#180:一次 30 秒 fuzz smoke 报 0 次 #75804 重试,而历史频率是约 450 个 job 里 9 次,两者不在一个量级)。证据要与触发频率同量级,并优先取**生产环境的自然观测**(nightly)而不是一次专门跑的验证;再问撤错的失效方向 —— 失效是「真失败被当噪声吞掉」或「一类输入退出比对」时门槛要高,因为这两种错误都不会自己报出来。checklist 上的「评估并删除」,**「评估结论是证据还不够」也算合格执行**,把撤除条件(**两条**:历史同量级的归零观测,且确认没有别的机制会产生同样症状)写成一个可观测的量即可
@@ -1207,17 +1207,17 @@ bug 会**对称地**打坏两侧,于是「相等」这个结论仍然成立,只�
 - **写 force-all / 缓存裁决 / IC 命中类** → 同时 (a) 白盒断言「真到达加速 tier 不是 stuck no-op」+ (b) 输入侧也加结构盲区用例(vararg 顶层 / 字符串常量值 / 协程不升层)
 - **写「auto / 自然触发路径」测试套(不带 force-all)** → 配 `PromotionCount>0` 一类白盒兜底断言,证明该 run 里确实发生过真实升层;否则短用例语料可能悄悄退化成纯解释器覆盖(见 §1「未强制测试静默退化」)
 - **测 tier 状态机的吸收态分类断言**(`StuckNotCompilable` 类)→ 载体调用次数要显式跨过 force-all 的 warm-up retry window(当前 64),否则测的是 `TierInterp` 状态不是 Stuck 状态(见 §2 补丁)
-- **测运行期开关 / kill switch 类切换语义**(`SetTierEnabled` 一类)→ 三段式(promote→off→on),每段各配路径断言(`NativeRunCount` delta > 0 / == 0 / > 0)+ 第三段的「缓存指标不变」断言把「重开不重编译」隐性约定钉死(见 §2(d));只断言「结果一致」等价于没测
+- **测运行期开关 / kill switch 类切换语义**(`SetTierEnabled` 一类)→ 三段式(promote→off→on),每段各配路径断言(`NativeRunCount` delta > 0 / == 0 / > 0)+ 第三段的「缓存指标不变」断言把「重开不重编译」隐性约定固定下来(见 §2(d));只断言「结果一致」等价于没测
 - **机制叠加多档崩点诊断**(§6) → 第一步不是穷举 N 档分别诊断,是写 minimal payload bypass 末档跳一档,把 N 档收敛到一档;多后端/多平台首次「真机 execute」上线时配真机 runner
 - **收到「某条路径导致 N 倍退化」类归因,准备写止血/修复计划前**(§7) → 先 grep build tag / 读函数头注 / 跑白盒探针证该路径在当前二进制里真的存在且可达,再动手修
 - **分诊某 P4 tier bug 时**(§7 同源) → 先跑白盒探针(`NativeRunCount` / `DispatchHelperCount` / PerOpCode debug 打印)分类走的是 PerOpCode / nativeCode / p4Code 哪一类,再挖对应 emit;traceback 直觉锁定的是「触发前提」不是「代码路径」
 - **收到「某机制没生效」的指控,要写复现测试时**(§7.1) → 第一条断言是「复现测试走的就是被指控路径」的白盒证据(`SafepointCalls` / `PromotionCount` / 命中计数器),优先复用已证明路径的既有测试写法;复现失败先怀疑路径走错,再考虑「问题不存在」
 - **扩接受面(opSupported 加 op) / 换新硬件跑 fuzz / 改 fuzz 参数(-parallel、-race、GOMAXPROCS)时**(§5) → 立刻跑一轮 60~120s 相关 fuzz smoke,把它当 `go test` 必经步骤,不要延后到「专门的 fuzz 里程碑」;三个独立实例都在维度动的第一次 fuzz 里就抓到既有 bug
-- **读一个投机 / inline 快路径的性能收益数字、或复查一个历史 perf 裁决时**(§8) → 度量单位选跨 Run 稳态 dispatch 计数而非单 Run 命中数;看到「命中 N 次」漂亮但整体数字反而回归,默认怀疑「机制被触发过但稳态从没真生效」;给「把身份快照烤进段」的 guard 前先问会不会被跨 Run 重建打穿
+- **读一个投机 / inline 快路径的性能收益数字、或复查一个历史 perf 裁决时**(§8) → 度量单位选跨 Run 稳态 dispatch 计数而非单 Run 命中数;看到「命中 N 次」漂亮但整体数字反而回归,默认怀疑「机制被触发过但稳态下从没真正生效」;给「把身份快照固化进段」的 guard 前先问会不会因跨 Run 重建而失效
 - **想在差分 harness 里接受 / 跳过某类平台差异时**(§9.0,**先过这一条再看下面几条**) → 先判差异属于哪一类:「同一个抽象值的不同书写方式」(NaN 符号位)→ 在**渲染处**消除,别设计判据,因为这类差异会流入普通数据(`string.len(0/0)*100` 是 400 对 300,输出里没有可锚定的 token);「两侧本来就是不同的东西」(引用值地址、两侧独立选定的实现上限)→ 才在比较时归一或跳过。判在渲染侧时先查那一侧的**供给链**(源码在哪、谁编译的、已经打过什么补丁、改它会不会破坏它作为基准的意义)
 - **写下「我实测过了,这条路不行」时**(§9.0) → 同时写下它**没有**排除什么:被否证的是哪个**具体**选项,与它并列的其他选项各是什么状态(未查证 / 已查证不可行 / **未想到**)。实测保护的是那一个选项的结论,不保护由它推出的范围
 - **发现自己在为同一个机制反复补 edge case 时**(§9.0) → 先数缺陷密度有没有在降;没降就问「这个机制装在了正确的位置吗」,而不是继续想下一种情况。这与 §9.4 是两个尺度:§9.4 管一个机制内部该不该继续修,§9.0 管这个机制装在哪一层
-- **要给差分 harness 加一条归一化时**(§9.0a) → 问一句「脚本能不能**不打印它、而是测量它**」;能的话(`#`、`string.len`、比较、当表键、算术)归一化就不是完整的修法,那个会被测量的子量必须回到**渲染处**对齐。判去比较侧的那一类里仍可能有这样一个子量:地址的**值**只能归一,而地址的**宽度**被 `#tostring(t)` 量出来时归一化已经到不了(#233:PUC 21 对望舒 17)
+- **要给差分 harness 加一条归一化时**(§9.0a) → 问一句「脚本能不能**不打印它、而是测量它**」;能的话(`#`、`string.len`、比较、当表键、算术)归一化就不是完整的修法,那个会被测量的子量必须回到**渲染处**对齐。判去比较侧的那一类里仍可能有这样一个子量:地址的**值**只能归一,而地址的**宽度**被 `#tostring(t)` 量出来时归一化已经触及不到(#233:PUC 21 对望舒 17)
 - **改一个带锚点的正则时**(§9.1a) → 给锚点左右各能出现的字符类列一张表,每格一个用例(数字、下划线、字母、行首),别靠读注释判断意图是否被写法正确表达;并且**两侧都要有用例**,只写「该匹配的」那一半时「把锚点整个删掉」也会通过(#232:`\b` 的注释是对的,而 word 字符包含数字,`0function: 0x...` 整段逃过归一化)
 - **写一个「代码里有某个标志 / 字段 / 调用」的检查型测试时**(§9.1b) → 让它作用在**那段代码**上(先截取那条调用再查),不要 grep 整个文件;**一个注释就能满足的测试没有在测代码**,而这类脚本的注释里必然提到那些标志。自查:把属性从代码里删掉、保留一切注释跑一次,不变红就是没测到(#236–#241:`--max-time` 从 curl 调用里删掉后测试照旧通过,因为那个词在注释里还在)
 - **给差分 harness 写跳过 / 判定判据时**(§9.1,**前提是已经按 §9.0 判定该在比较侧处理**) → 把判据当表达式端到端求值,列出它读到的每一个量(字符串内容、长度、字节、**查表用的键**、**遍历时猜的边界**)逐个问「两侧一样吗」;只放过引擎无关的固定字面量和完全不接触被测差异的运行级标记;决定「是否去读某个量」的开关对称不代表判据对称;后果是**单侧 skip**,比误报严重
@@ -1232,11 +1232,11 @@ bug 会**对称地**打坏两侧,于是「相等」这个结论仍然成立,只�
 - **调紧一个 harness 的资源限制之后**(§9.2 补记) → 注入一个**必须被发现**的缺陷,确认新限制下仍然 FAIL、撤掉注入之后通过;「减小预算不损失覆盖」这句话不能只靠推理,因为它的失效方式是「输入根本没跑完」而表现是测试照旧通过。上限的余量怎么算见 [[unreproducible-crasher-triage]]「上限的余量」
 - **新增一个只被 build tag 化文件使用的标识符时**(§4.10d) → 给它**同样的** tag,并按消费方的每一种 tag 组合各 vet 一次;「有没有被用到」是每种构建组合各自的事实,可见范围比消费方宽就一定有一种组合让它孤立
 - **在仓里读到一段既有注释精确描述了手头症状时**(§7.2) → 先加一行打印或一个计数器证明那条路径真的被执行,再开始在那里查;症状相同不等于路径相同,而仓库自己写的注释比外部归因更难怀疑(#229:peroptranslator 那段注释逐字写着 `NEWTABLE head + SETLIST → "SETLIST: not a table"`,探针一行没打出来)
-- **拿到一个「X 报错 / X 断言失败」形式的缺陷时**(§7.3) → 第一个问题是「X 读到的坏数据是谁写的」,不是「X 自己哪里写错了」;把坏值打出来问「什么东西会写出这个值」(`tag=65528` = `value.TagNil`,nil 是**清理动作**的值不是任何指令的自然产物,线索直接指向 GC 的栈根扫描)。**栈迹里缺少哪一层也是证据**——没有 JIT 帧就说明抬错的是解释器、破坏在更早的已升层调用里
+- **拿到一个「X 报错 / X 断言失败」形式的缺陷时**(§7.3) → 第一个问题是「X 读到的坏数据是谁写的」,不是「X 自己哪里写错了」;把坏值打出来问「什么东西会写出这个值」(`tag=65528` = `value.TagNil`,nil 是**清理动作**的值不是任何指令的自然产物,线索直接指向 GC 的栈根扫描)。**栈迹里缺少哪一层也是证据**——没有 JIT 帧就说明报错的是解释器、破坏在更早的已升层调用里
 
 ## 11. 与本仓其他 guide 的关系
 
 - 与 [[design-claims-vs-codebase-physics]] 构成对偶双防线:那是**实现前**重验设计稿主张,本 guide 是**实现后**证明在测路径。两篇在「上游修复来了之后怎么办」这一点上接口:那篇 §5.1 负责判定**上游到底修没修**(判据取那份源码,并区分「存在」与「引入」),本篇 §4.6a 负责判定**为它加的兜底能不能撤**(证据要与触发频率同量级) —— 两个问题都会被同一轮升级触发,而两个答案可以不同(#180 就是「确认修了」+「兜底先留着」)。第二个接口在**覆盖度**上(2026-08-29):那篇 §7 管「引用外部权威套件时给的那个数量的是什么」(按行号算的占比 / 已跑行数不携带执行信息),本篇 §2/§4 管「那些行有没有被执行」—— 同一条元纪律的度量侧与测试侧,两侧都被同一轮的四个新套件文件同时踩到(行号数字涨了 331,实际执行 1 条断言)。
-- 与 [[perf-optimization-workflow]] §1「profile 先行」§3「benchmark 否决门」配:profile 先行决定**做什么**,本 guide 决定「机制就位后基准/测试**真的在测**什么」,数字完成前必过两关;§7 诊断侧对偶是 §1「profile 先行」的又一确认——不是「先假设瓶颈再优化」,是「先证明瓶颈在哪再优化」。
+- 与 [[perf-optimization-workflow]] §1「profile 先行」§3「benchmark 否决门」配:profile 先行决定**做什么**,本 guide 决定「机制就位后基准/测试**真的在测**什么」,数字被采信前必须过这两关;§7 诊断侧对偶是 §1「profile 先行」的又一确认——不是「先假设瓶颈再优化」,是「先证明瓶颈在哪再优化」。
 - 与 [[backend-capability-vs-profitability]] 配:那篇管「接受面按能力/收益分层」,本 guide §5 管「接受面动了立刻重跑 fuzz」;后端接受面每扩一格,能力层跑一轮 fuzz、收益层跑一轮 bench,是配对的两个廉价动作。
 - 与 [[multi-doc-drafting]] §"主动盘点不确定决策" 同源:都强调「绿色 / 通过」之外的正交证据维度。

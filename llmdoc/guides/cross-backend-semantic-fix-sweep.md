@@ -17,16 +17,16 @@
 
 同一语义风险在多个后端**以及同一后端内的多条 emit 通道**里各有一份**独立实现**的 inline 快路径。
 修 bug 时的心理边界停在「当前在改的那一份」,而 bug 的真实边界是「所有绕过 host 语义的独立实现」。
-修好一处、漏掉其余的结果是:同一个 bug 在另一处再潜伏数天到数周,直到 fuzz 或用户再撞一次。
+修好一处、漏掉其余的结果是:同一个 bug 在另一处再潜伏数天到数周,直到 fuzz 或用户再碰到一次。
 
 四个实证(时间线,前三例是**跨后端**不对称,第四例是**同后端内跨通道**不对称):
 
 | 轮次 | 修了哪份 | 漏了哪份 | 潜伏 |
 |---|---|---|---|
 | issue #67(2026-07-08) | arm64 NodeHit guard 改良 | 未移植回 amd64 | 跨 Run 身份 guard 全落空 |
-| issue #103(2026-07-09) | arm64 unordered 条件码(#37 端口轮修) | 未回查 amd64 裸 jcc | 带病一周+,fuzz 撞 tier divergence |
-| issue #107(2026-07-10) | P4 amd64+arm64 emitUNM(#37 端口轮修) | 未查 P3 wasm emitUnm | canonNaN sign-flip 成 Nil,nightly 撞 |
-| issue #117/#118(2026-07-11) | P4 amd64+arm64 per-op emitFORLOOP unordered(#103 轮修的) | 未查同架构 PJ3 spec 模板 FORLOOP | 潜伏约一周,nightly 两个 seed 同时撞死循环 |
+| issue #103(2026-07-09) | arm64 unordered 条件码(#37 端口轮修) | 未回查 amd64 裸 jcc | 带病一周+,fuzz 触发 tier divergence |
+| issue #107(2026-07-10) | P4 amd64+arm64 emitUNM(#37 端口轮修) | 未查 P3 wasm emitUnm | canonNaN sign-flip 成 Nil,nightly 发现 |
+| issue #117/#118(2026-07-11) | P4 amd64+arm64 per-op emitFORLOOP unordered(#103 轮修的) | 未查同架构 PJ3 spec 模板 FORLOOP | 潜伏约一周,nightly 两个 seed 同时触发死循环 |
 
 #107 最尖锐:#37 的修复注释明确写了 "fixed on both arches in the same change"——当时**以为**扫全了,
 但「后端」的枚举本身漏了 P3 wasm。#117/#118 再进一步:同一后端内的**另一条独立通道**(PJ3 spec
@@ -91,8 +91,8 @@ top 之上,GC 的栈根扫描(`visitThreadValues`)把 `[top, size)` 当陈旧残
 `th.setTop(... .base + int(st.protoOf(...).MaxStack))`,把命中站点与「所有会退出一层 Lua 帧的路径」
 两张清单对照即可。这是 [[design-claims-vs-codebase-physics]] §4.1「新对象类型的分配路径必须照抄同族
 分配器的每一步」的**恢复侧对偶**:那条讲同族分配器里出现三次的动作(`AllocX` + `LinkSweep` +
-`AllocCharge`)是契约,本条讲同族返回路径里出现三次的恢复动作也是契约;两者共享同一条元纪律——**同族
-里重复出现的动作是契约,不是那几个函数各自的选择**,而且两者的症状都离原因很远(那边 panic 在 GC 里、
+`AllocCharge`)是必须遵守的约定,本条讲同族返回路径里出现三次的恢复动作也是必须遵守的约定;两者共享同一条元纪律——**同族
+里重复出现的动作是必须遵守的约定,不是那几个函数各自的选择**,而且两者的症状都离原因很远(那边 panic 在 GC 里、
 错误在分配处;这边报错在 SETLIST、错误在 RETURN)。反思
 [[2026-08-04-issue228-229-lazy-capture-and-nested-tailcall-top]] 教训 5。
 
@@ -123,10 +123,10 @@ GETGLOBAL 仍然被运算符的行覆盖。
 「这条路径上每一条指令/每一个中间状态是不是都对了」逐一核对,不能只验证症状消失。反思
 [[2026-08-27-issue248-index-line-across-newline]] 教训 2。
 
-> **订正(2026-09-03,#252)**:上面 #248 实证里「GETTABLE 该取运算符自己的行」这个口径**是错的**。真规则
+> **订正(2026-09-03,#252)**:上面 #248 实证里「GETTABLE 该取运算符自己的行」这个说法**是错的**。真正的规则
 > 是 PUC 一律用发射那一刻的 `ls->lastline`,所以它取的是 discharge 点的行;「运算符行」只是「索引就地被
 > 消费」时的近似,`expDesc.opLine` 已随 #252 删除。**本节的纪律不受影响**(两处独立错误叠加、要 dump 整张
-> 表核对),失效的只是那个具体口径。详见 [[2026-09-03-issue252-discharge-line-is-lastline]]。
+> 表核对),失效的只是那个具体说法。详见 [[2026-09-03-issue252-discharge-line-is-lastline]]。
 
 ### 同一条数据流上,「谁来传」和「谁来用」可能都要改(2026-09-03,#252)
 
@@ -173,8 +173,8 @@ seed **都通过**。
 
 ### 参照实现能本地调用时,用 dump 比对表批量扫,seed 只是入口(2026-09-18,#262)
 
-前面几条讲怎么在**一个** seed 底下找出叠加的多处缺陷。本条讲另一个维度:同一条口径作用于**很多个语法
-位置**,每个位置各是一格,而 nightly 一次只撞出一格。前端行号这条口径三轮(#248 → #252 → #262)各修
+前面几条讲怎么在**一个** seed 底下找出叠加的多处缺陷。本条讲另一个维度:同一条规则作用于**很多个语法
+位置**,每个位置各是一格,而 nightly 一次只测出一格。前端行号这条规则三轮(#248 → #252 → #262)各修
 一到四格,每轮都等 seed 才开始,每轮的审计又各补一到两格——按 issue 逐格补,每格的成本是一轮完整分诊。
 
 **实证(#262)**:seed 只说「`%` 后面换行时 MOD 的行错了」。写一个把 `luac5.1 -p -l` 的逐指令行号与
@@ -184,7 +184,7 @@ seed **都通过**。
 形状**再扫一遍,在我没挑到的两个位置(泛型 for 生成器、构造器 `[k]=v` 键)各抓出一处会 raise 的差异;
 第二轮独立审阅把模板按 `lparser.c` 非终结符补到 **170 个、19538 个形状、连嵌套 proto 一起比**,又抓出
 我修复引入的一处、一处会 raise 的残留(方括号键)、三族不可见残留,以及一个 while 闭包捕获的**运行时
-语义 bug**(CLOSE 发在回边之后从未执行)。第三轮审阅在 19538 个形状都没覆盖的一格上再抓一处:方括号键
+语义 bug**(CLOSE 发在循环回跳(back edge)之后从未执行)。第三轮审阅在 19538 个形状都没覆盖的一格上再抓一处:方括号键
 带 `and`/`or` 短路链时的物化行——模板里方括号键只有三种写法,`exp` 的 and/or 产生式没有出现在键的位置。
 最终把全部 DIFF 修掉,补上短路键模板后 20154 形状逐指令行号 0 差异,opcode 序列差异集合与基线逐条相同。
 全范围终审又抓出一格:多目标赋值里**局部变量目标**的 MOVE 仍在语句首行——三套模板里没有一个「局部变量
@@ -193,7 +193,7 @@ seed **都通过**。
 opcode 对齐后再比行,20 个形状全是这一个根因;MOVE 不会 raise,但 `debug.getinfo(f, "L").activelines`
 让它用户可见。
 
-**为什么容易漏**:seed 给的是一个点,修复的自然边界也是那个点;而口径的作用域是一张表(语法位置 ×
+**为什么容易漏**:seed 给的是一个点,修复的自然边界也是那个点;而规则的作用域是一张表(语法位置 ×
 发射点)。没有工具把表摊开时,「同族还有哪些」只能凭记忆列,列不全是常态——**手挑形状同样是凭记忆**,
 只是记忆多了一点。
 
@@ -205,7 +205,7 @@ and/or 分支,19538 个形状就漏了一格),在每个 token 间隙插换行或
 **opcode 序列不同的形状也要比行号**——对两边都发出、且次数相同的每种 opcode 比较行号多重集(我们多发的
 LOADNIL 让整条语句掉进「序列不同、不比行」的桶里,20 个 MOVE 行号差异就藏在那里);
 按 DIFF 分类,能修就修,修完再扫到 0,并把 opcode 序列差异集合与基线逐条比对确认没有新增。自查办法:
-修完 seed 后问「同一条口径还作用于哪些语法位置,我扫过了吗」——答案应当是枚举生成的清单加每格红绿,
+修完 seed 后问「同一条规则还作用于哪些语法位置,我扫过了吗」——答案应当是枚举生成的清单加每格红绿,
 而不是「应该没了」;如果清单是手写的,再问一次「有哪个非终结符没有模板」,再问一次「比对脚本有没有
 哪个桶是不比的」。**模板要让参照实现里每一个 `if` 各为真一次,包括被调用 helper 内部、比较两个目标之间关系的那种**:#262 的三套模板
 没有「局部变量作多目标赋值目标」的形状;终审补的七条局部目标模板里三条进了 `check_conflict`(`assignment` 只对逗号后
@@ -234,7 +234,7 @@ MOVE 数量相抵、只差顺序,按 opcode 名和条数看不出;局部目标�
     (unordered 全 false);fcmpe 的 unordered 结果是 C=1、Z=0,HI(C=1 && Z=0)在此为真。
 - **位相等 ≠ 语义相等**:EQ 的位比较漏 NaN==NaN(canonNaN 规范化使两个 NaN 必然位相等)与 ±0(位不等
   但语义相等)(#103)。
-- **跨 Run 失效的身份 guard**:烤进段的对象身份(TableRef)跨 Run 重建后必落空(#67,换内容 guard)。
+- **跨 Run 失效的身份 guard**:编进段里的对象身份(TableRef)跨 Run 重建后必落空(#67,换内容 guard)。
 
 ## shape gate 按「拒绝侧默认」写
 
@@ -352,7 +352,7 @@ oracle 再决定是否补语料」是同一件事的另一个入口:那条讲补
 `i++` 之后越过长度读 `news[i]`。望舒只对了前两个:末尾的 `%` 被当成字面量(要求了 `i+1 < len(rb)`),
 而**任何非数字**被抬成 `invalid use of '%' in replacement string`,所以 `gsub("a","a","%z")` 在 lua5.1
 是 `"z"` 而望舒报错——**这一半在 base 上同样分歧、是既有缺陷**,只是没有 issue 记它。只修被报的那一半会
-留一个已知的洞。
+留下一个已知的漏洞。
 
 **判据**:定位到参照实现的某个分支之后,把**那个分支的每一个出口**写成一行「这个出口在望舒是什么行为」
 逐行核对,而不是只对 seed 走到的那个出口。这是 [[prove-the-path-under-test]] §4.1「一个 reported case
@@ -402,7 +402,7 @@ oracle 再决定是否补语料」是同一件事的另一个入口:那条讲补
 
 反思实例见 `memory/reflections/2026-07-12-cgo-oracle-fuzz-round.md` 教训 2(一轮里 35 处分歧全部经此手法定位)。与本 guide 已有的「跨后端 / 跨通道枚举」纪律同域:跨后端扫要枚举实现,与 PUC 差分要枚举权威源码。
 
-延伸(真值最终落在宿主 libc 时,读 C 源码只是第一步):PUC 语义不只由 C 源码定义,**非有限值(NaN/Inf)的格式化还由宿主 libc(glibc)定义**。`string.format` 的 `%f/%e/%g/%E/%G` 对 NaN/Inf 转发给 C `sprintf`,输出的大小写拼写(小写 verb → `nan`/`inf`,大写 → `NAN`/`INF`)、符号规则、以及 glibc 为 NaN 保留符号列导致的 width−1 quirk(见下),grep `_lua515/` 只能看到「转发给 `sprintf`」,真正的真值在 libc 里。这类分歧必须以 oracle 实测字节为准,不能照 Go `fmt` 或凭直觉。glibc 的确切规律:glibc 总为 NaN 保留 1 个符号列;小写 verb 符号不显示(那一列变空格被 width 吸收 → 有效 width = 声明 width−1),大写 verb 符号是可见的 `-`(已在 core 里占了那一列 → 完整 width);Inf 符号一直在 core 里 → 完整 width;precision 对 NaN/Inf 忽略。方法论要点:**对付「宿主 libc 定义的格式化」这类外部真值,不要从一两个样本外推规则,直接构造覆盖矩阵(verb × 符号 × flag × width)扫 oracle,规律要能解释矩阵里每一格才算定准**——本轮(#170/#171,PR #172)正是从单点「小写 NaN width−1」外推「所有非有限值 width−1」,一步把 Inf 全改错,靠 93 组覆盖矩阵实测才把完整真值表逼出来。实现落点:`internal/stdlib/stringlib.go` 的 `cFormatSpecialFloat` 在 NaN/Inf 时特判;反思实例见 `memory/reflections/2026-07-22-oracle-format-nan-inf-round.md` 教训 1/2。**2026-07-26 修订:模仿 glibc 的那两处已经撤掉**——`cFormatSpecialFloat` 现在让 NaN 在所有 verb 下都不带符号、都按完整声明宽度补齐(大写 verb 不再硬编码 `-NAN`,小写 NaN 不再按声明宽度减一补齐),Inf 的符号与宽度规则不变。原因:那两处只为让差分 oracle 一致而存在,却让望舒自身的 `%e` 与 `%E`、`%5f` 与 `%5E` 自相矛盾,而 arm64 的 glibc 与 x86 还不同,模仿本来就不可移植;NaN 符号差异现在在 oracle 渲染处消除(`internal/oracle/lua515.c`,详见 `docs/design/p1-interpreter/12-testing-difftest.md` §4.2)。方法论那条(外部真值面要建覆盖矩阵、不从单点外推)仍然成立;附加一条:**在产品代码里逐字节模仿一个宿主 libc 之前,先问这个模仿是为谁服务的**——如果只为让测试基准一致,那它同时会把不可移植性写进产品行为,应该改在基准侧消除差异。
+延伸(真值最终落在宿主 libc 时,读 C 源码只是第一步):PUC 语义不只由 C 源码定义,**非有限值(NaN/Inf)的格式化还由宿主 libc(glibc)定义**。`string.format` 的 `%f/%e/%g/%E/%G` 对 NaN/Inf 转发给 C `sprintf`,输出的大小写拼写(小写 verb → `nan`/`inf`,大写 → `NAN`/`INF`)、符号规则、以及 glibc 为 NaN 保留符号列导致的 width−1 quirk(见下),grep `_lua515/` 只能看到「转发给 `sprintf`」,真正的真值在 libc 里。这类分歧必须以 oracle 实测字节为准,不能照 Go `fmt` 或凭直觉。glibc 的确切规律:glibc 总为 NaN 保留 1 个符号列;小写 verb 符号不显示(那一列变空格被 width 吸收 → 有效 width = 声明 width−1),大写 verb 符号是可见的 `-`(已在 core 里占了那一列 → 完整 width);Inf 符号一直在 core 里 → 完整 width;precision 对 NaN/Inf 忽略。方法论要点:**对付「宿主 libc 定义的格式化」这类外部真值,不要从一两个样本外推规则,直接构造覆盖矩阵(verb × 符号 × flag × width)扫 oracle,规律要能解释矩阵里每一格才算定准**——本轮(#170/#171,PR #172)正是从单点「小写 NaN width−1」外推「所有非有限值 width−1」,一步把 Inf 全改错,靠 93 组覆盖矩阵实测才把完整真值表逼出来。实现位置:`internal/stdlib/stringlib.go` 的 `cFormatSpecialFloat` 在 NaN/Inf 时特判;反思实例见 `memory/reflections/2026-07-22-oracle-format-nan-inf-round.md` 教训 1/2。**2026-07-26 修订:模仿 glibc 的那两处已经撤掉**——`cFormatSpecialFloat` 现在让 NaN 在所有 verb 下都不带符号、都按完整声明宽度补齐(大写 verb 不再硬编码 `-NAN`,小写 NaN 不再按声明宽度减一补齐),Inf 的符号与宽度规则不变。原因:那两处只为让差分 oracle 一致而存在,却让望舒自身的 `%e` 与 `%E`、`%5f` 与 `%5E` 自相矛盾,而 arm64 的 glibc 与 x86 还不同,模仿本来就不可移植;NaN 符号差异现在在 oracle 渲染处消除(`internal/oracle/lua515.c`,详见 `docs/design/p1-interpreter/12-testing-difftest.md` §4.2)。方法论那条(外部真值面要建覆盖矩阵、不从单点外推)仍然成立;附加一条:**在产品代码里逐字节模仿一个宿主 libc 之前,先问这个模仿是为谁服务的**——如果只为让测试基准一致,那它同时会把不可移植性写进产品行为,应该改在基准侧消除差异。
 
 延伸(面级规则:先测绘整个行为面再实现):分歧涉及「派生逻辑」(名字从哪来、计数怎么减、回退到什么)而不是「输出格式」时,默认背后是 PUC 的一整个子系统,不是一条孤立措辞。先写探针套把完整行为面测绘成对照表,再一次性实现,避免「修一条、fuzz 再打穿一条」的逐点返工。实证:issue #133(2026-07-14,PR #134)——一个 fuzz 种子表面是 `coroutine.create(coroutine.resume)` 错误消息不同,实际是 `luaL_argerror` 的函数名派生规则整体分歧:PUC 的 `bad argument #N to 'name'` 中 name 来自**调用方的调用点**(ldebug.c `getfuncname` → `getobjname` 对 CALL/TAILCALL/TFORLOOP 的 A 操作数做 symbexec),推论包括别名命名(`local r = string.rep; r(nil)` 报 `'r'`)、method 调用 self 不计入 #N 且减到 0 时改报 `calling 'X' on bad self`、TFORLOOP 站点报 `"(for generator)"`、纯 C-to-C 边界保持 `'?'`;~70 条探针先测绘全部分支,然后一次实现(结构化 `NewArgError` + `resolveArgError` 在 Lua 调用边界统一改写,`callLuaFromHost` wrapper 冻结 `'?'`),全部探针逐字节一致。配套模式:错误消息依赖抛出点拿不到的上下文时,用「错误对象携带结构化字段 + 拥有上下文的边界层统一改写」,不要把上下文穿透传给每个抛出点(~84 个 stdlib 站点若改签名代价不可控);「解析权冻结」(wrapper 把结构化字段归零)防止错误穿越多层边界后被外层调用点错误重新命名。反思实例见 `memory/reflections/2026-07-14-issue133-argerror-caller-name-round.md`。
 
@@ -417,7 +417,7 @@ oracle 再决定是否补语料」是同一件事的另一个入口:那条讲补
 | 分类 | 处理 | 实证 |
 |---|---|---|
 | **有定义的 C** | **对齐**(把 C 的规则写进 wangshu) | `strtoul` 的无符号取反与溢出饱和:`tonumber("-7",8)` 得 2^64-7、`("-ff",16)` 得 2^64-255、20 个 `f` 配 base 16 饱和到 2^64-1(2026-07-28) |
-| **UB 且跨 arch 不一致** | 产品侧**钉参照平台**(x86-64)+ harness 侧**跳过那个区间** | `%u/%x/%o` 的 `(unsigned long long)(double)`(#158,`cUnsignedCast`);`string.char` 的 `luaL_checkint` 越界 double→int(#193,`cCharCast`)——x86-64 `cvttsd2si` 给 `INT64_MIN`(低 32 位 0,PUC 接受),arm64 `FCVTZS` 把 `+inf` 饱和到 `INT64_MAX`(低 32 位 -1,PUC 报错) |
+| **UB 且跨 arch 不一致** | 产品侧**固定参照平台**(x86-64)+ harness 侧**跳过那个区间** | `%u/%x/%o` 的 `(unsigned long long)(double)`(#158,`cUnsignedCast`);`string.char` 的 `luaL_checkint` 越界 double→int(#193,`cCharCast`)——x86-64 `cvttsd2si` 给 `INT64_MIN`(低 32 位 0,PUC 接受),arm64 `FCVTZS` 把 `+inf` 饱和到 `INT64_MAX`(低 32 位 -1,PUC 报错) |
 | **C 未指定(unspecified)** | **两侧都不对齐**——取可辩护的行为,harness 只跳歧义写法 | 函数实参求值顺序:PUC 写成 `f(luaL_checknumber(L,1), luaL_checknumber(L,2))`,gcc 在 x86-64 上从右往左、在 arm64 上从左往右,于是两个官方 build 对同一个调用报**不同的参数编号**。改成报第一个缺失 / 出错的参数,harness 只跳「多于一个坏参数」那种编号取决于顺序的写法;单个坏参数两边编号一致,照旧比对(2026-07-28,`f9425ab`) |
 | **参照实现自相矛盾** | 查**语言规范**怎么说,按规范选,把偏离记进注释 | `print` 对内嵌 NUL 截断而 `io.write` 不截断:两者都在 PUC 里、处理的是同一种字符串,`luaB_print` 用 `fputs`(停在第一个 NUL)而 `g_write` 用带长度的 `fwrite`(不截断)。5.1 手册明确字符串是 8-bit clean 可含 NUL,所以那个截断是 C 调用的产物不是语义,对齐它等于故意丢用户数据;wangshu 选**不截断**,理由记在 `internal/stdlib/stdlib.go::baseFnPrint`(2026-07-28,#199) |
 
@@ -463,9 +463,9 @@ oracle 再决定是否补语料」是同一件事的另一个入口:那条讲补
 
 反思实例见 `memory/reflections/2026-07-28-four-diff-divergence-issues.md` 教训 4(有定义 vs UB)、`memory/reflections/2026-07-28-issue197-199-stdlib-semantics.md` 教训 4(参照实现自相矛盾)与 `memory/reflections/2026-07-18-issue155-158-nightly-crasher-round.md` 教训 3。
 
-## fast-path template 与 deopt helper 的两条契约
+## fast-path template 与 deopt helper 的两条约定
 
-### 契约一：恢复 host helper 所需的 slot shape
+### 约定一：恢复 host helper 所需的 slot shape
 
 优化后的 fast-path template(为了性能省略 spill、把值烧成 imm64 或只留寄存器)必须显式**在 deopt 路径上恢复省掉的 slot 到 interpreter-shape**,再调 host helper。host helper 是共享层实现,入参约定就是 interpreter-shape slot 有值——不是它去嗅探 XMM 或 imm 位模式。快路径省 spill 是本地优化,deopt 是通往共享层的出口,出口处必须把状态还回共享层约定的形式。
 
@@ -475,11 +475,11 @@ oracle 再决定是否补语料」是同一件事的另一个入口:那条讲补
 
 **检查项**:审 fast-path template 时把「哪些 slot 在快路径里不写(imm 烧入 / 只进寄存器 / 编译期常量塞入)」与「哪些 slot 是对应 host helper 期望有值的」两个集合列出来,**交集就是 deopt 前必须显式 SetReg 恢复的 slot 集合**。fast-path template 里在 p4Code / nativeCode 结构上挂 imm 快照字段(如 `forLoopInitK` / `forLoopStepK` uint64 NaN-box),deopt 前透传给 host.SetReg。
 
-**实证**(issue #177,2026-07-24,PR #178):p4Code shape-template 的 MOVE-limit FORLOOP fast-path 把 init/step 烧成 imm64、limit 只进 XMM 从不写回 slot,R(A)/R(A+1)/R(A+2) 从未被写。deopt 路径直接调 `host.ForPrep(base, pc, forLoopA)`,helper 读到全 Nil,第一个失败的 Nil-non-number 检查落在 init 上,报错位落在 init 而不该报的 limit(触发形状:`function sum(n) for A=0,n do end end sum "7"` —— string limit 触发 deopt,P1 解释器正确 coerce `"7"` 通过)。修法:p4Code 增 `forLoopInitK` / `forLoopStepK` 两个 uint64 NaN-box 字段(compiler.go 构造时从 `shapeInfo.forInitK` / `forStepK` 传入),deopt 前 `SetReg(A, forLoopInitK)` / `SetReg(A+1, GetReg(limitReg))` / `SetReg(A+2, forLoopStepK)`,helper 于是能正确 coerce string limit 或对真非 number limit 报正确的「limit」错误(byte-equal 于 P1)。反思 [[2026-07-24-p4-template-forprep-deopt-round]] 教训 2、教训 4(改深层 JIT 数据流前先读字段定义与全部消费点,确认编码/语义与新用途一致——本轮确认 `shapeInfo.forInitK` 就是 `uint64(kInit)` 直传的 NaN-box u64,与 `SetReg(idx, u64)` 入参编码对上,可直接透传)。
+**实证**(issue #177,2026-07-24,PR #178):p4Code shape-template 的 MOVE-limit FORLOOP fast-path 把 init/step 烧成 imm64、limit 只进 XMM 从不写回 slot,R(A)/R(A+1)/R(A+2) 从未被写。deopt 路径直接调 `host.ForPrep(base, pc, forLoopA)`,helper 读到全 Nil,第一个失败的 Nil-non-number 检查落在 init 上,报错位落在 init 而不是该报的 limit(触发形状:`function sum(n) for A=0,n do end end sum "7"` —— string limit 触发 deopt,P1 解释器正确 coerce `"7"` 通过)。修法:p4Code 增 `forLoopInitK` / `forLoopStepK` 两个 uint64 NaN-box 字段(compiler.go 构造时从 `shapeInfo.forInitK` / `forStepK` 传入),deopt 前 `SetReg(A, forLoopInitK)` / `SetReg(A+1, GetReg(limitReg))` / `SetReg(A+2, forLoopStepK)`,helper 于是能正确 coerce string limit 或对真非 number limit 报正确的「limit」错误(byte-equal 于 P1)。反思 [[2026-07-24-p4-template-forprep-deopt-round]] 教训 2、教训 4(改深层 JIT 数据流前先读字段定义与全部消费点,确认编码/语义与新用途一致——本轮确认 `shapeInfo.forInitK` 就是 `uint64(kInit)` 直传的 NaN-box u64,与 `SetReg(idx, u64)` 入参编码对上,可直接透传)。
 
-**扩面动作**:审 p4Code 其他 shape-template 的 deopt 路径,同规则扫一遍——快路径为性能省略 spill 的 slot,deopt 路径都得显式 SetReg 补上;PJ10 native emit 侧 FORPREP / 其他 op 走 host helper 的 deopt 也按同一契约核对(本轮修 FORPREP 一条,其他 op 未系统检查,列入后续动作)。
+**扩面动作**:审 p4Code 其他 shape-template 的 deopt 路径,同规则扫一遍——快路径为性能省略 spill 的 slot,deopt 路径都得显式 SetReg 补上;PJ10 native emit 侧 FORPREP / 其他 op 走 host helper 的 deopt 也按同一约定核对(本轮修 FORPREP 一条,其他 op 未系统检查,列入后续动作)。
 
-### 契约二：补齐被替代字节码的全部可观察副作用
+### 约定二：补齐被替代字节码的全部可观察副作用
 
 deopt helper 不能只修复触发失败的那一步；如果 deopt 分支随后直接 return，必须逐条核对它替代的整段字节码，并保留每条指令的可观察副作用。检查集合至少包括 register / upvalue / global 写入、`preempt()` 的 step budget 与 cancel context 探测、GC safepoint、IC 记账、Lua call 的 frame 变化、stack shape 和 traceback PC。helper 覆盖矩阵有缺口时，结果值 byte-equal 仍可能掩盖资源限制或控制流语义已经被跳过。
 
@@ -491,13 +491,13 @@ deopt helper 不能只修复触发失败的那一步；如果 deopt 分支随后
 
 跨后端 / 跨通道扫的心理边界是「同一段语义在系统里的全部实现站点」,同样的原则也适用于测试与防护本身的「同类 harness」。当给一个 fuzz harness / smoke 脚本 / CI 检查加防护(资源上限帽、豁免规则、异常路径断言、artifact upload、种子清单等)时,不能只加在触发本次修复的那一个,要立刻横向问一句「兄弟 harness 有没有同样的暴露面」,一起加。心理边界停在「当前 harness」而不是「全部同类站点」就是欠账,下一次同类问题在没被防护到的兄弟 harness 上炸出来。
 
-实证:2026-07-13 处置的 issue #127(p3)/ #130(p4)两个 nightly crasher 是同根因 quadratic concat 风暴打爆默认 2 GiB arena 触发进程级 kill。上周 PR #128 给 FuzzOracleDiff 上线时明确考虑了资源问题、加了 `MaxArenaBytes: 64 << 20`,但没横向扫 `test/fuzz/` 下 fuzz_test.go / fuzz_auto_test.go / fuzz_p4_test.go 三个更老的 fuzz harness——它们全都没帽。两个 crasher 本质就是这次不对称欠下的债。修法把三个老 harness 一起补上帽,与 FuzzOracleDiff 对齐。触发场景:任何时候给一个 fuzz / smoke / CI 检查加防护时(资源上限、豁免规则、异常路径、artifact upload、种子清单),立刻 grep 同仓所有兄弟 harness,同一轮补齐;新 harness 上线时也要横向扫兄弟 harness 有没有该同步过来的既有防护。同族反思实例见 `memory/reflections/2026-07-13-nightly-concat-oom-and-format-hash-round.md` 教训 2。
+实证:2026-07-13 处置的 issue #127(p3)/ #130(p4)两个 nightly crasher 是同根因 quadratic concat 风暴打爆默认 2 GiB arena 触发进程级 kill。上周 PR #128 给 FuzzOracleDiff 上线时明确考虑了资源问题、加了 `MaxArenaBytes: 64 << 20`,但没横向扫 `test/fuzz/` 下 fuzz_test.go / fuzz_auto_test.go / fuzz_p4_test.go 三个更老的 fuzz harness——它们全都没有上限帽。两个 crasher 本质就是这次不对称欠下的债。修法把三个老 harness 一起补上上限帽,与 FuzzOracleDiff 对齐。触发场景:任何时候给一个 fuzz / smoke / CI 检查加防护时(资源上限、豁免规则、异常路径、artifact upload、种子清单),立刻 grep 同仓所有兄弟 harness,同一轮补齐;新 harness 上线时也要横向扫兄弟 harness 有没有该同步过来的既有防护。同族反思实例见 `memory/reflections/2026-07-13-nightly-concat-oom-and-format-hash-round.md` 教训 2。
 
 ## 相关
 
 - [[unreproducible-crasher-triage]]——差分 fuzz 报层间分歧信号(P1-vs-auto / P1-vs-force / 后端 A vs 后端 B),进入本 guide 的修复流程之前,先按该 guide「真 crasher 但失败形式是层间分歧」节的 oracle 归因步骤确认 bug 真的在 tier / 后端侧;若 oracle 与两层都不符,bug 在共享前端 / stdlib / VM 共享语义,不属于本 guide 的修复范围。共享前端 bug 伪装成层间分歧的实例见 [[2026-07-11-issue125-return-freereg-round]](`return f() or (f())` 的 RETURN 操作数计算读预捕获 freereg 拿栈垃圾,两个 tier 各自读到不同历史值让分歧显性化)。
 - [[prove-the-path-under-test]]——修复后证明每个后端的修复站点真被测试执行。
-- [[design-claims-vs-codebase-physics]]——「不产生新 NaN 所以不需规范化」这类头注主张要对位模式物理
+- [[design-claims-vs-codebase-physics]]——「不产生新 NaN 所以不需规范化」这类头注主张要按实际位模式
   重新验证(#107 的头注对了一半,结论错)。
 - 反思实例:`2026-07-08-issue67-amd64-nodehit-crossrun-round` /
   `2026-07-09-issue103-compare-ieee-round` / `2026-07-10-issue106-107-nightly-crashers-round` /

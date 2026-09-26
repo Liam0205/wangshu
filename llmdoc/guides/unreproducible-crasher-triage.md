@@ -26,7 +26,7 @@ fuzz / nightly / CI 报了一个 crasher,给出了一个落盘 input,但本地�
 ## 第一步永远是版本核对(不是复现矩阵)
 
 看到「落盘 input 无法复现」这个信号后,**第一件事是核对失败 run 使用的代码版本相对当前 master 是否
-已含相关修复**,不是撒复现矩阵。
+已含相关修复**,不是先铺开复现矩阵。
 
 **判据**:「撞的是已修复代码,当时的 headSha 还没含修复」是所有解释里**最便宜**的一条,一条命令就能
 排除,复现矩阵每条要几分钟到几十分钟。把最便宜的解释放到最后,是「先撒大网再省钱」的反模式。
@@ -41,18 +41,18 @@ git merge-base --is-ancestor <fix-commit> <headSha>; echo $?
 
 分三档:
 
-- 失败 headSha **早于**最近相关修复 → 判「已在 master 修好」,corpus 入库常驻回归,复现矩阵不撒;
+- 失败 headSha **早于**最近相关修复 → 判「已在 master 修好」,corpus 入库常驻回归,复现矩阵不跑;
 - 失败 headSha **已含**相关修复 → 便宜解释已排除,再走下面的分诊 + 复现矩阵;
 - 失败 headSha 与相关修复无明确因果 → 走分诊,顺带记「versions checked, no direct match」进 issue。
 
 **教训来源**:#123 轮走反了顺序——先精确重放 → 镜像 hammer → 恢复路径 → mmap 探针 → 定向 fuzz →
 GC 压力 → 最后才核 headSha,前六条都跑完再核版本。等排除掉「已修复代码」这条最平凡的解释后回头看,
-前六条至少有一半可以不撒。反思 [[2026-07-11-issue123-unreproducible-crasher-round]] 教训 1。
+前六条至少有一半可以不跑。反思 [[2026-07-11-issue123-unreproducible-crasher-round]] 教训 1。
 
 **又一个第一档命中(2026-07-29,#208)**:它是 `table.insert` 移位那一类的又一个 nightly crasher,
 fuzz run 跑在 `cbd0512` 上,**早于**上一轮把 harness skip 降到 2^20 的 `c07ba58`;核一次版本就
 结束,**一行代码没改**,seed 现在 0.00 秒就跳过、作为回归防线留在 corpus 里。这同时是下面
-「同一写法第三次被开成 issue 时该改被接受的区间」那条的**正向结算**:区间改窄之后,同族的下一个
+「同一写法第三次被开成 issue 时该改被接受的区间」那条的**正面印证**:区间改窄之后,同族的下一个
 crasher 不需要任何新动作就消失了——**「不需要新动作」本身就是那次改动改对了位置的事后确认**(与
 [[prove-the-path-under-test]] §9.6 推论同构:一批 crasher 被同一个改动一起解决,是根因修在正确
 位置的信号)。反思 [[2026-07-29-issue205-206-208-io-userdata-debug]]。
@@ -143,7 +143,7 @@ go test -run FuzzOracleDiff/<hash> ...
 这一条与 [[prove-the-path-under-test]] §9.0 互为印证:**正是因为根因被在产生处消除了,四个表现
 才一起消失**;如果当初走的是「在比较侧识别并豁免」那条路,四个 issue 会各自需要一条新的判据分支。
 反过来读:**一批 crasher 能被同一个改动一起解决,本身就是「根因修在了正确位置」的一个事后确认
-信号**;如果修完之后同族 crasher 还在一条一条冒出来,那是选址错误的信号(§9.0)。
+信号**;如果修完之后同族 crasher 还在一条一条冒出来,那是修复位置选错的信号(§9.0)。
 
 **在这之前还有一格更便宜的:先算 seed hash 去重(2026-08-02,#212–#219)**。nightly 是按 run 开
 issue 的,**同一个输入在两个夜晚各被最小化到同一个 hash,就会开出两个 issue**——#212 与 #215 是同一个
@@ -216,7 +216,7 @@ hash 与最小化后的 seed,三者都描述表现。两条表现差得越远,�
 crasher issue、一个落盘 seed)。自查办法:说「这个 seed 触发了一个缺陷」之前,先说出「崩的是**哪个**
 实现」。
 
-**手法**(三条证据,都便宜,拿真二进制那条单独就能定性):
+**手法**(三条证据,都便宜,拿真正的二进制那条单独就能定性):
 
 ```
 # ① 栈迹在哪一侧:cgo 帧(_Cfunc_wangshu_oracle_exec)= 参照实现
@@ -242,7 +242,7 @@ prelude 里跳过这一段(**会死的 oracle 不能当参照**,判据见
 ## 修完一条 fuzz 输入之后,扫它所属的维度
 
 fuzz 给出的是一条具体输入,但它是一个家族的采样点。**「这一条不再有差异」不等于「这个家族已经
-收口」**。
+处理完」**。
 
 **判据**:确认一条 fuzz 输入零差异之后,从 reproducer 的结构里读出它所属的维度,把那些维度枚举
 扫一遍再收工。维度怎么读:哪个 verb、哪些 flag、哪个运算符、值从哪来、文本被谁消费。
@@ -266,12 +266,12 @@ panic(input 决定),也可以是 worker 进程被 OS 因资源耗尽 kill(与 in
 |---|---|---|
 | `context deadline exceeded` + **无** failing input 文件 | fuzz 引擎 30s 窗口收尾时的工具链 flake(golang/go#75804 一类) | 单独复跑即过,不入 corpus,不开 issue(反复出现再入 doc-gaps) |
 | `Failing input written to testdata/...` + input **可精确重放** | 真 crasher,input 决定的 VM bug | 走常规调查,定位 VM 侧根因 |
-| `Failing input written to testdata/...` + input 精确重放**多次干净** + 几千万 execs 后才死一次 | 进程级资源耗尽嫌疑(内存 / mmap 数 / OS OOM killer / **CPU wall-clock 撞 fuzz 10 秒 per-input 看门狗**) | **本 guide 剩余各节** |
+| `Failing input written to testdata/...` + input 精确重放**多次干净** + 几千万 execs 后才死一次 | 进程级资源耗尽嫌疑(内存 / mmap 数 / OS OOM killer / **CPU wall-clock 触发 fuzz 10 秒 per-input 看门狗**) | **本 guide 剩余各节** |
 
 > **补记(2026-07-20)**:concat storm 家族此前落在这一行、被具体判为「内存」资源耗尽,后经取证栈迹
-> 证伪——真因是 CPU wall-clock 撞 Go fuzz 的 10 秒 per-input 看门狗(见下文「concat storm 家族已
+> 证伪——真因是 CPU wall-clock 触发 Go fuzz 的 10 秒 per-input 看门狗(见下文「concat storm 家族已
 > 根因定性并修复」一节)。教训:这一行的「资源耗尽」是一类候选而非单指内存;拿到取证栈迹后,看
-> panic 首行区分——`panic: deadlocked!` = CPU 撞 10 秒看门狗(单输入 CPU 时间),`signal: killed`
+> panic 首行区分——`panic: deadlocked!` = CPU 触发 10 秒看门狗(单输入 CPU 时间),`signal: killed`
 > 才是 OS 层内存 / OOM。
 
 **Why**:分诊纪律的价值就是把「进程级资源耗尽」和「input 决定的 VM bug」两类原因显式分开,让「无法
@@ -296,16 +296,16 @@ panic(input 决定),也可以是 worker 进程被 OS 因资源耗尽 kill(与 in
 
 ## 静默死亡先做两步分类(排在复现矩阵之前)
 
-worker「无声消失 / hung or terminated unexpectedly」类失败,在撒七角度复现矩阵之前,先做两个
+worker「无声消失 / hung or terminated unexpectedly」类失败,在铺开七角度复现矩阵之前,先做两个
 几分钟量级的分类检查——与「版本核对先行」同一量级,都是先用最便宜的检查排除最便宜的解释:
 
 1. **先分类退出方式**:失败消息里是 exit code 还是 signal?`exit status 2` 是 Go runtime 自身
    fatal(panic / fatal error)的退出码,worker 死时几乎必然打印了完整栈迹——死因不是「无声」,
-   是有一份完整的尸检报告没被看到;`signal: killed` 才是 OS 层的 SIGKILL(如 OOM killer),
+   是有一份完整的栈迹没被看到;`signal: killed` 才是 OS 层的 SIGKILL(如 OOM killer),
    那才是真的没有输出。这一步直接决定「有没有栈迹可找」。
 2. **再查子进程的 stdio 接线**:若第 1 步判定有输出,查它被父进程接到了哪里。internal/fuzz 的
    coordinator 用 `exec.Command` 起 worker 时 `cmd.Stderr` 留 nil,os/exec 把它接到
-   /dev/null——尸检报告每次都写了,每次都被系统性丢弃。
+   /dev/null——栈迹每次都写了,每次都被系统性丢弃。
 
 **教训来源**:concat storm 家族 10 例横跨 8 天,此前各轮全部在复现矩阵与内存限制上打转,没有
 一轮查过 `exit status 2` 的语义;这两步各花几分钟,合起来把问题性质从「查不到死因」翻译成
@@ -341,7 +341,7 @@ SIGKILL」(回答有没有栈迹可找),本步分「这个数字属于谁的表�
 同一轮的第二条免费证据,与退出码正交:**失败前有没有一段沉默**。
 
 **实例**:`apt` 在 16:55:03 成功结束,然后**沉默 2 分 15 秒**才报 exit 28。这一条直接排除磁盘
-写满 —— 写入撞上没有空间是**当次**返回错误,不会先卡两分钟;会先卡的只有等待类失败。配套的
+写满 —— 写入遇到没有空间是**当次**返回错误,不会先卡两分钟;会先卡的只有等待类失败。配套的
 反向检查同样免费且同样被忽略:那两个 run 的日志里 `no space left` / `ENOSPC` / `disk full`
 出现次数都是 **0**,真是磁盘满的话 `apt` / `tar` / `make` 里总有一个会把这句话打出来。
 
@@ -397,7 +397,7 @@ bug」不匹配,更像 fuzz worker 进程级资源耗尽(内存 / mmap 数 / OS 
 循环,行为正确),也保留常驻回归。理由:
 
 - 入库无成本;
-- 站岗有价值——若这段代码将来因某处改动真的变成 VM bug 触发点,这个种子会立刻抓到;
+- 长期保留有价值——若这段代码将来因某处改动真的变成 VM bug 触发点,这个种子会立刻抓到;
 - 常驻回归是「已经付过一次调查代价」的最便宜产出。
 
 **入库位置的取舍**(#123 轮踩过一次):默认把 corpus 放进 `test/fuzz/testdata/fuzz/FuzzXxx/<hash>`(fuzz
@@ -512,7 +512,7 @@ run 跑在 `cbd0512` 上、早于 `c07ba58`),但版本核对回答的是「**这
 kill 前 dump 系统状态快照**。#123 轮的两条硬化:
 
 - `GOMEMLIMIT=6GiB`(在 `scripts/go-fuzz.sh` 或等价脚本里):压低 heap 峰值、让 GC 更早更积极地
-  归还内存,降低撞上 OS OOM killer 的概率。**注意它是纯软限制**:`runtime/debug.SetMemoryLimit`
+  归还内存,降低触发 OS OOM killer 的概率。**注意它是纯软限制**:`runtime/debug.SetMemoryLimit`
   文档明确「the application may still make progress」,Go runtime 在任何情况下都不会因它主动
   fatal——#123 轮曾误以为它能把无声 kill 转成带栈的 Go OOM,这个理解是错的(2026-07-18 复核);
 - worker 无声死时 dump `free -m` + `vm.max_map_count`(以及等价的 OS 状态量)进上传 artifact,
@@ -523,8 +523,8 @@ kill 前 dump 系统状态快照**。#123 轮的两条硬化:
 
 **硬化层级的最新状态(2026-07-19)**:`GOMEMLIMIT` 软限制已被观察到接不住这族死亡——2026-07-18
 轮的 #156/#157/#159 三个 run 都已带上 PR #154 的 `GOMEMLIMIT=512MiB`,p4 worker 仍在约 4150 万
-execs 处无声消失;2026-07-19 轮的 #162(concat storm 家族第 10 例)同样在 `GOMEMLIMIT=512MiB`
-在场时于约 1240 万 execs 处静默死,本地重放 4.6 秒干净。软限制只影响 GC 节奏,既不会主动
+execs 处无声消失;2026-07-19 轮的 #162(concat storm 家族第 10 例)同样在设了 `GOMEMLIMIT=512MiB`
+的情况下于约 1240 万 execs 处静默死,本地重放 4.6 秒干净。软限制只影响 GC 节奏,既不会主动
 fatal,也防不住分配速率超过 GC 回收速度时
 RSS 冲过限制被 SIGKILL,更防不住非内存死因。
 
@@ -532,14 +532,14 @@ RSS 冲过限制被 SIGKILL,更防不住非内存死因。
 已被超集机制取代,交付两个机制(实现在 `internal/fuzzforensics`,由 `test/fuzz/main_test.go` 的
 `TestMain` 调 `SetupWorker()` 接上;2026-09-09 之前它们以 `fuzz_forensics_test.go` 的形式住在根包):
 
-- **机制 A(尸检)**:`SetupWorker` 检测到 `-test.fuzzworker` 时把 fd 2 dup 到
+- **机制 A(崩溃栈迹)**:`SetupWorker` 检测到 `-test.fuzzworker` 时把 fd 2 dup 到
   `fuzz-forensics/worker-<pid>-stderr.log` 并加 `debug.SetTraceback("all")`,接住此前被
   /dev/null 丢弃的 Go fatal 完整栈迹(合成 fatal 探针已验证栈迹确实进日志);
 - **机制 B(飞行记录仪)**:每次 fuzz 回调(在各 target 的长度/NUL 检查**之后**——被 skip
-  的输入不执行、不可能是真凶)把 seq / 时间戳 / target / 输入以单次 `WriteAt` 覆盖写进定长
+  的输入不执行、不可能是真正导致崩溃的输入)把 seq / 时间戳 / target / 输入以单次 `WriteAt` 覆盖写进定长
   20KiB 的 per-PID 记录文件(容量覆盖最大 gated 输入 16KiB + header,逐字节可恢复,有单元
-  测试钉住;热路径 0 alloc,`AllocsPerRun` 断言)。动机:不撞崩的 mutation 不会进任何
-  corpus,而 minimized 输入又屡次被证明不是真凶——飞行记录是恢复「进程死亡时刻真正在跑的
+  测试钉住;热路径 0 alloc,`AllocsPerRun` 断言)。动机:不导致崩溃的 mutation 不会进任何
+  corpus,而 minimized 输入又屡次被证明不是真正导致崩溃的输入——飞行记录是恢复「进程死亡时刻真正在跑的
   输入」的唯一手段;定长覆盖写,无 I/O 累积。
 
 配套:`scripts/go-fuzz.sh` 按 target 隔离目录 `fuzz-forensics/<FuzzTarget>/`(经
@@ -563,17 +563,17 @@ Go runtime 之外(如 coordinator 侧 pipe 断裂),同样是决定性的排除�
 
 上文各节把 concat storm 家族(#123-#167)当作「不可复现 / 疑似进程级资源耗尽(内存)」处理,
 历轮处置是 corpus 入库 + 诊断硬化。**这段历史叙事本身有价值**(它建立了正确的止损流程、并催生
-了下面结算的取证设施投资),保留;但它对死因性质的具体判断**后续被证伪**——真因是 CPU
+了下面讲到的取证设施投资),保留;但它对死因性质的具体判断**后续被证伪**——真因是 CPU
 wall-clock,不是内存。
 
 **取证栈迹给出的定性(2026-07-20)**:#166/#167 两个 nightly p3 crasher 的 headSha 都是 PR #165
 取证设施上线之后的 master HEAD——取证设施上线后家族**第一次复发**。两个 run 各有恰好一个长出
-header 的 worker stderr 日志(机制 A 尸检接住了此前被 /dev/null 丢弃的 fd 2),抓到完整栈迹:
+header 的 worker stderr 日志(机制 A 接住了此前被 /dev/null 丢弃的 fd 2),抓到完整栈迹:
 `panic: deadlocked!` + 一个 runnable goroutine 卡在
 `gc.Collector.stringMatches → Intern → crescent.doConcat → executeLoop`。关键定性:
 `panic: deadlocked!` 来自 Go fuzz 的 **per-input 看门狗**——`internal/fuzz/worker.go` 里
-`time.AfterFunc(10*time.Second, panic)`,即单个 fuzz 输入跑过 10 秒就被打死。**死因是 CPU
-wall-clock 撞 10 秒看门狗,不是内存 OOM**;历轮 `GOMEMLIMIT` / 降 arena cap 从来不奏效、最小化
+`time.AfterFunc(10*time.Second, panic)`,即单个 fuzz 输入跑过 10 秒就被强制终止。**死因是 CPU
+wall-clock 触发 10 秒看门狗,不是内存 OOM**;历轮 `GOMEMLIMIT` / 降 arena cap 从来不奏效、最小化
 corpus 本地重放永远干净,都因为死因根本不在内存这一维度。
 
 **根因**:`preempt()`(state.go)在每个指令边界只把 stepUsed 加 1,**不计 CONCAT / Intern 的字节
@@ -597,11 +597,11 @@ VM 行为侧的对账见 `docs/design/p1-interpreter/implementation-progress.md`
 **范围**:这解决的是这一族**已知形状**(byte-heavy concat 循环:单指令做与字节数成正比的无界工作、
 只扣常数步数)。它**不**代表所有不可复现 crasher 都已解决——本 guide 的止损流程、静默死亡两步
 分类、诊断硬化三层仍是遇到新的不可复现 crasher 时的默认路径。**当时点名的下一批候选**(string.rep /
-string.format / table.concat 尚未按工作量记账)**已在 2026-08-03 结算,见下一节**。
+string.format / table.concat 尚未按工作量记账)**已在 2026-08-03 处理完,见下一节**。
 
-**这印证了取证设施投资的价值**。PR #165 的赌注是「让复发时信息一次性够用」——取证设施上线到家族
+**这印证了取证设施投资的价值**。PR #165 的出发点是「让复发时信息一次性够用」——取证设施上线到家族
 复发之间隔了不到两天,而家族此前空转了数周。上文诊断硬化第三层的「每一层没接住都是新信息,不是
-浪费」这条纪律在本轮正面结算:机制 A 的 worker stderr 栈迹 + 机制 B 的飞行记录合起来一步定性,把
+浪费」这条纪律在本轮得到正面印证:机制 A 的 worker stderr 栈迹 + 机制 B 的飞行记录合起来一步定性,把
 横跨数周的「查不出死因」变成一行日志的「根因清晰」。反思
 `memory/reflections/2026-07-20-concat-storm-root-cause-round.md`(取证兑现 + 静默死亡两步分类直接
 给答案 + 家族级误分类可持续数周,真值来自第三方证据而非表象反推 + 指令预算须度量工作量而非条数)。
@@ -626,7 +626,7 @@ seed 是一个 777777776 次迭代的拼接循环(target `FuzzAutoPromote`,run �
 重放只要 **0.77 秒**,而且在自己那个 corpus 里只是**第三重**的(1.22s / 1.21s / 0.77s),两个更重的
 早就该先死,所以「太重」解释不了;又怀疑内存——单 seed 峰值 RSS 只有 **106 MB** 而 CI 用的是
 `GOMEMLIMIT=512MiB`,整个 corpus 并行重放峰值 525 MB 只是擦到一个软限制。两条都被自己的测量否掉,
-之后才回来读上一节——而上一节不但已经定性(CPU wall-clock 撞看门狗、**不是**内存),还把这三个算子
+之后才回来读上一节——而上一节不但已经定性(CPU wall-clock 触发看门狗、**不是**内存),还把这三个算子
 按名字列了出来。
 
 **判据**:**处理一个明显属于已知家族的新 issue 时,第一步是 grep 那个家族在 guide / 反思里的既有
@@ -638,15 +638,15 @@ Why:一个跨越数周、累计十几例的家族,它的既有结论是**已经�
 测量之前,先说出这个家族上一次的定性结论是什么;说不出来就说明还没读。
 
 **教训 4:「本地重放干净」对这个家族天然无效,不构成任何证据**。上文「minimized 输入本身往往不是
-死因」记的是这个**现象**,本条把它写成**判据**:这个家族的死因是单次 Run 的 wall-clock 撞 10 秒
-看门狗,而落盘的必然是最小化之后的**轻**输入(单次 Run 远低于 10 秒,否则最小化过程自己就会被打死),
+死因」记的是这个**现象**,本条把它写成**判据**:这个家族的死因是单次 Run 的 wall-clock 触发 10 秒
+看门狗,而落盘的必然是最小化之后的**轻**输入(单次 Run 远低于 10 秒,否则最小化过程自己就会被强制终止),
 所以「重放干净」是这类 artifact 的**必然属性**,它不含任何关于有没有缺陷的信息。判据:遇到
 `hung or terminated unexpectedly` / `panic: deadlocked!` 类死因时,不要用「单 seed 本地重放通过」
 结案;要去量「harness 每个输入跑几次 Run × 单次耗时」是否逼近看门狗,并且把 seed 的写法抽成一个
 **不最小化**的紧循环重新量(本轮那 21/20/53 秒就是这样量出来的)——轻输入量不出问题,重写法一量
 就出来。
 
-计量单位与「同类资源只该有一个计量器」这两条落在
+计量单位与「同类资源只该有一个计量器」这两条写在
 [[prove-the-path-under-test]] §4.5d。反思 [[2026-08-03-issue221-222-bulk-builder-budget]]。
 
 ## 上限的余量:界住不等于够快(2026-08-04,#224/#225)
@@ -854,7 +854,7 @@ job 级超时 / 总预算类量防的是前者,step 级超时 / 单点资源上�
 
 **判据**:先直接断言要保护的离散性质。只有已观察到的机器间波动小于断言余量时，wall-clock 才能
 决定测试成败；否则只用 `t.Logf` 保留退化可见度。发现一处计时断言测到 runner 后，立即搜索同包、
-同机制的兄弟断言，因为它们通常只是在等待下一台足够慢的机器。若时间本身就是产品契约，则仍应按
+同机制的兄弟断言，因为它们通常只是在等待下一台足够慢的机器。若时间本身就是产品约定，则仍应按
 前文的方法测量最慢可达写法并保留足够的跨机器余量。
 
 反思 [[2026-08-09-runner-wall-clock-assertion-audit]]。
@@ -880,7 +880,7 @@ job 级超时 / 总预算类量防的是前者,step 级超时 / 单点资源上�
   `2026-08-02-issue212-219-fuzz-crasher-batch`(版本核对的三档是成本档不是缺陷档:八个 run 与 #209
   一样全落在旧 commit 上,实际重放后五个如实复现、三个真缺陷;八个 issue 只有六个不同 seed hash;
   重 workload 挪进 `test/regression/` 时要连 harness 的 step budget 一起抄,漏抄让 1.8 秒变 87 秒) ·
-  `2026-08-03-issue221-222-bulk-builder-budget`(#221 是第一档但仍实际重放确认;#222 结算了 concat
+  `2026-08-03-issue221-222-bulk-builder-budget`(#221 是第一档但仍实际重放确认;#222 处理了 concat
   storm 家族点名的三个候选算子,而定下来的方式是**读家族自己的结论**而不是从现象推——先怀疑「太重」
   再怀疑内存,两条都被自己的测量否掉) ·
   `2026-08-04-issue224-225-watchdog-margin`(版本核对的第四步:把 seed 拿到旧 commit 上也跑一遍,
@@ -902,7 +902,7 @@ job 级超时 / 总预算类量防的是前者,step 级超时 / 单点资源上�
   `2026-08-11-issue244-oracle-segv-unpack-int32`(**崩的是参照实现那一轮**:版本核对干净——失败 run 的
   headSha 就是当时的 master,而重放拿到的 SIGSEGV 栈迹在 cgo 里、真的 `lua5.1` 二进制对同一输入也
   dumped core,望舒抬 `too many results to unpack` 行为正确。机制是 `luaB_unpack` 的 `n = e - i + 1` 在
-  int 上溢、`n <= 0` 只拦到回绕成非正的那一半。处置是 prelude 跳过;**而那个「实测出来的」窗口口径后来
+  int 上溢、`n <= 0` 只拦到回绕成非正的那一半。处置是 prelude 跳过;**而那个「实测出来的」窗口范围后来
   被推翻,两个方向都错**——测量全部取自 `unpack({}, i)` 即 `e = 0` 一格,而崩溃条件带着 `e`,所以
   `unpack({1,2,3},-2147483646)` 同样让整个测试二进制 SIGSEGV,同时 `i >= 2147483648` 一律跳过又把两侧都
   返回 3 的输入 skip 掉) ·
