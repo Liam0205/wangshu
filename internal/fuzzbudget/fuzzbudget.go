@@ -21,5 +21,7 @@ package fuzzbudget
 // 5s.
 //
 // Raising this costs margin on every CI runner. The regression test in
-// test/regression/issue224_watchdog_margin_test.go measures this exact constant, so it will fail.
+// test/regression/issue224_watchdog_margin_test.go runs its shapes at this exact constant and asserts
+// the loop count at which each one trips, so doubling it fails in every build. If the change is
+// intended, re-measure that test's table.
 const Steps = 1 << 16
