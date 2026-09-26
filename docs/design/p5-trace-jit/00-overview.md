@@ -120,7 +120,7 @@ P5 **不推倒任何已有层**,fullmoon 是叠在 gibbous 之上的第三个执
 | **amd64 + arm64 instruction encoders** | `internal/gibbous/jit/peroptranslator/emit_ops_amd64.go` + `emit_ops_arm64.go`(PJ10 交付) | 复用编码器;regalloc 之后的发射逻辑是新写的(trace 的代码形式和模板不一样) |
 | **exit-reason 协议**(mmap 段内不 call Go) | `jitCtx.exitArg0` 打包(helperCode, a, b, c, pc)+ `ExitInlineHelper` RET + Go 端 dispatcher 分派 + `RefreshJitCtxAddrs`(arena grow 之后)+ `codePage + resumeOff` 重入,详见 [../p4-method-jit/05-system-pipeline.md](../p4-method-jit/05-system-pipeline.md) §4.3 | 复用——P5 mmap 段内的所有 helper 通道(unsink 分配 / IC miss / arena 越界)都走这个协议;P5 不需要自建 |
 | **P4HostState 接口 + Go 端 dispatcher** | P4 shim path + R14=Go-G restore(PJ10 native emit 的 legacy 路径) | 复用——P5 全新的 host 通道仍然走同一个 host 接口签名(unsink 分配、snapshot 物化辅助、慢路径 metamethod 等) |
-| amd64 native op 已接入的清单(当前 26 op) | [../p4-method-jit/implementation-progress.md](../p4-method-jit/implementation-progress.md) §14.5(2026-07-02 PR #34 amd64 端扩到 26 op,arm64 仍是 18 op 线性子集,issue #37/#40 未闭) | P5 不共用「已接入的清单」——trace 覆盖的是「实际执行过的 opcode 组合」,不受 method-JIT 的接入限制;但 P5 参考其中「哪些 op 已经能 mmap-safe inline」的经验,作为 IR lowering 的参考 |
+| amd64 native op 已接入的清单(当前 26 op) | [../p4-method-jit/implementation-progress.md](../p4-method-jit/implementation-progress.md) §14.5(2026-07-02 PR #34 amd64 端扩到 26 op,arm64 仍是 18 op 线性子集,issue #37/#40 未关闭) | P5 不共用「已接入的清单」——trace 覆盖的是「实际执行过的 opcode 组合」,不受 method-JIT 的接入限制;但 P5 参考其中「哪些 op 已经能 mmap-safe inline」的经验,作为 IR lowering 的参考 |
 | 热度计数 / TypeFeedback / F1-F7 检查点 | [../p2-bridge/00-overview.md](../p2-bridge/00-overview.md) | 复用:trace 阈值另设;feedback 辅助录制期的类型决策;**NYI 黑名单沿用原则 4**——录制中遇到不可处理的形式(varargs / coroutine / debug 相同清单 + trace 特有的 NYI)就丢弃 trace 回到下层,不追求完备 |
 | NaN-box 值表示 / arena / GC 不变式 | [../p1-interpreter/01-value-object-model.md](../p1-interpreter/01-value-object-model.md) + [../architecture.md](../architecture.md) §4 | 值表示一次定死,IR 值的装箱拆箱就是 NaN-box 位操作;GC safepoint 纪律与 P4 相同 |
 | 差分测试 harness | [../p1-interpreter/12-testing-difftest.md](../p1-interpreter/12-testing-difftest.md) §3.8 已预留 `WangshuFullmoon` runner 注释槽 | 新增 P5 runner,接入同一个槽位,详见 [./08-testing-strategy.md](./08-testing-strategy.md) |
@@ -136,7 +136,7 @@ crescent(录制宿主 + 所有 deopt 的落回点)→ gibbous(P3 wasm / P4 nativ
 
 有两件当前的事实会影响 P5 的施工路径:
 
-1. **amd64 和 arm64 现在存在能力差距**([../p4-method-jit/implementation-progress.md](../p4-method-jit/implementation-progress.md) §0):amd64 native 接了 26 op(经 exit-reason 协议),arm64 仍然只有 18 op 的线性子集(issues #37/#40 未闭)。P5 施工前 arm64 的 exit-reason 端口应该先补齐——否则 P5 在 arm64 上会踩到相同的 helper 通道缺口。
+1. **amd64 和 arm64 现在存在能力差距**([../p4-method-jit/implementation-progress.md](../p4-method-jit/implementation-progress.md) §0):amd64 native 接了 26 op(经 exit-reason 协议),arm64 仍然只有 18 op 的线性子集(issues #37/#40 未关闭)。P5 施工前 arm64 的 exit-reason 端口应该先补齐——否则 P5 在 arm64 上会踩到相同的 helper 通道缺口。
 2. **P3 主动保留而不是退役**([../p4-method-jit/09-acceptance-checklist.md](../p4-method-jit/09-acceptance-checklist.md) §2 D2:2026-07-01 用户定下来):P3 是设计资产,不是产品能力;如果 iOS 或 seccomp 有需求再「捡回」。P5 立项时不需要与 P3 交互,但需要知道 P3 保留意味着「同一个 proto 有 crescent、gibbous-wasm、gibbous-jit、fullmoon-trace 四种执行形式」——差分矩阵会扩到四方,详见 [./08-testing-strategy.md](./08-testing-strategy.md) §3。
 
 ---
@@ -193,9 +193,9 @@ crescent(录制宿主 + 所有 deopt 的落回点)→ gibbous(P3 wasm / P4 nativ
 
 2. **人年开放式的失控面**——snapshot 机制的正确性收敛不能排期(见 [./06-snapshot-deopt.md](./06-snapshot-deopt.md) §? 复杂度评估)。对策:P5 内部分阶段(录制 + 基础优化 + regalloc + snapshot 为 v1;sink 和逃逸为 v2;side trace 树为 v3),每个阶段独立可停——这是原则 3 在 P5 内部的递归运用。详见 [./09-acceptance-checklist.md](./09-acceptance-checklist.md) §2 v1-v3 定义。
 
-3. **纯 Go 约束对 trace 收益的折损**——全部走显式 guard(没有信号陷阱,见 [../p4-method-jit/03-speculation-ic.md](../p4-method-jit/03-speculation-ic.md) §3)在 guard 密集的 trace 代码里成本占比比 method JIT 更高;trace 越长 guard 越多,10-30x 区间的上沿可能因此够不到——验收区间本身已经用「10-30x」这个宽带表达了这层不确定(见 [./09-acceptance-checklist.md](./09-acceptance-checklist.md) §1)。
+3. **纯 Go 约束对 trace 收益的折损**——全部走显式 guard(没有信号陷阱,见 [../p4-method-jit/03-speculation-ic.md](../p4-method-jit/03-speculation-ic.md) §3)在 guard 密集的 trace 代码里成本占比比 method JIT 更高;trace 越长 guard 越多,10-30x 区间的上沿可能因此够不到——验收区间本身已经用「10-30x」这个宽区间表达了这层不确定(见 [./09-acceptance-checklist.md](./09-acceptance-checklist.md) §1)。
 
-4. **维护性风险**——trace JIT 的复杂度是永久性的负债(LuaJIT 社区的维护困境是前车之鉴),即便做成了,团队是否长期养得起这台机器,应该作为启动评审的显性议题([./01-launch-judgment.md](./01-launch-judgment.md) §5 议程项)。
+4. **维护性风险**——trace JIT 的复杂度是永久性的负债(LuaJIT 社区的维护困境是前车之鉴),即便做成了,团队是否长期维护得起这套系统,应该作为启动评审的显性议题([./01-launch-judgment.md](./01-launch-judgment.md) §5 议程项)。
 
 ### 5.2 开放问题索引(分派到各章)
 

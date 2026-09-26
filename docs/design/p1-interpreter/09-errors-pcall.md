@@ -3,8 +3,8 @@
 > 状态:**设计阶段,可实现深度**。本文是 Lua 5.1 **错误传播 + 保护调用 + 错误对象 + 栈回溯**的单一事实源:
 > `LuaError` 对象细化、错误从产生到捕获的全景路径、`error`/`assert`/`pcall`/`xpcall` 语义、
 > `traceback` 生成、函数名符号推断、运行期错误信息目录、stack overflow 两类、host panic 兜底、
-> 协程错误边界、debug 库供料接口。
-> 上游契约:[05-interpreter-loop](./05-interpreter-loop.md) §9 已定稿**错误传播机制**(显式 `*LuaError` 返回,
+> 协程错误边界、debug 库的数据接口。
+> 上游约定:[05-interpreter-loop](./05-interpreter-loop.md) §9 已定稿**错误传播机制**(显式 `*LuaError` 返回,
 > **不用** panic/recover 跨主循环)——本文不推翻 05 的决策,而是**展开它留给本文的实现细节**:
 > §9.2 `LuaError` struct、§9.3 pcall 骨架、§9.4 错误来源与 host 协作、host panic 兜底;
 > 还承接 §7.3(reentry/fresh 边界 = 错误停靠站)、§7.4(stack overflow / C stack overflow 上限)、
@@ -29,7 +29,7 @@ host functions,在 `internal/stdlib`(与 [10-stdlib](./10-stdlib.md) 协作);位
 
 本文的全部张力来自三条约束的夹击:
 
-1. **不推翻 05,只展开**。05 §9 已经把「错误对象长什么样、怎么冒泡、谁清理 CallInfo」定死了。本文不重新
+1. **不推翻 05,只展开**。05 §9 已经把「错误对象长什么样、怎么冒泡、谁清理 CallInfo」定下来了。本文不重新
    论证「为什么不用 panic」(指针:[05](./05-interpreter-loop.md) §9.1 的方案对比表),而是把 05 留白的
    **traceback 怎么生成、函数名怎么推断、level 怎么算、xpcall handler 何时调、错误措辞精确到什么字**补全到
    可实现。函数/字段名与 05 **严格一致**(`LuaError`、`throw`、`callLuaFromHost`、`nCcalls`、`ci.tailcall`、`errfuncBase`)。
@@ -91,7 +91,7 @@ Lua 5.1 的 `error(v)` 接受**任意值** `v`,该值原样成为错误对象。
 | table `{code=42}` | table 的 GCRef | **不加** | 同一个 table 对象 |
 | nil / boolean | 原样 boxed | **不加** | 原样 |
 
-**关键 5.1 口径**:**位置前缀 `"<source>:<line>: "` 只在「错误值是 string 且 level≠0」时添加**(§3.2)。
+**关键 5.1 行为**:**位置前缀 `"<source>:<line>: "` 只在「错误值是 string 且 level≠0」时添加**(§3.2)。
 若 `v` 不是 string(table/number/...),`error` **不动它**,直接抛(`level` 被忽略)。理由:位置前缀是字符串
 拼接,对非字符串无意义,且会破坏脚本「用 table 传结构化错误」的用法。解释器**内在错误**(类型错误等,§9)
 产生的 `value` 恒为 string,所以它们总带位置前缀(在错误措辞前拼 `"<source>:<line>: "`,§9.1)。
@@ -105,7 +105,7 @@ Lua 5.1 的 `error(v)` 接受**任意值** `v`,该值原样成为错误对象。
 (`value` 字段),该 Value 若是可回收类型(string/table)则指向 arena。**关键 GC 纪律**:错误冒泡期间,
 `LuaError.value` 指向的 arena 对象必须存活,否则 traceback 还没生成、`pcall` 还没读到,对象就被回收了。
 
-完成:错误冒泡是**同步的、无分配的 return 链**(05 §9.1),从抛出点到 protected 边界之间**不触发 GC**
+实际上:错误冒泡是**同步的、无分配的 return 链**(05 §9.1),从抛出点到 protected 边界之间**不触发 GC**
 (冒泡路径上的 `return e` 不分配、不调用)。所以 `LuaError.value` 在冒泡途中天然安全。**唯一例外**:
 若 message handler(§6)在错误点被调用并分配(它会——`debug.traceback` 拼字符串),此时 `LuaError.value`
 必须作为 **GC 根**临时登记(把它压 shadow stack,05 §5.3)。详见 §6.3 的 handler 调用纪律。
@@ -117,7 +117,7 @@ Lua 5.1 的 `error(v)` 接受**任意值** `v`,该值原样成为错误对象。
 ### 2.1 决策回顾(不重复论证,给指针)
 
 05 §9.1 已定稿:**显式 `*LuaError` 返回,不用 panic/recover 跨主循环**。三条理由(与 reentry 模型冲突、
-panic 性能、可控性)详见 [05](./05-interpreter-loop.md) §9.1 的方案对比表,本文不复述。本节只把这条决策**落成
+panic 性能、可控性)详见 [05](./05-interpreter-loop.md) §9.1 的方案对比表,本文不复述。本节只把这条决策**画成
 一张端到端路径图**,标清每一跳谁负责什么。
 
 ### 2.2 错误从产生到捕获的完整路径图
@@ -210,7 +210,7 @@ error(message, level):           -- level 默认 1
 | `2` | 调用「调用 error 的函数」的**调用者**的位置 | 库函数把错误归咎于**调用者**(`luaL_argerror` 风格):`assert` 之外的参数检查 |
 | `n` | 沿调用链再上溯 `n-1` 层 | 罕见;深层库封装 |
 
-> **5.1 vs 5.4 口径**:`error` 的 level 语义在 5.1→5.4 **稳定不变**(都是「level 层向上取位置」)。5.4 对
+> **5.1 vs 5.4 行为**:`error` 的 level 语义在 5.1→5.4 **稳定不变**(都是「level 层向上取位置」)。5.4 对
 > `error` 无破坏性改动。所以本节无需版本分叉标注——这是错误模型里少数跨版本一致的部分。**唯一要锁 5.1 的是
 > 位置前缀格式**(`"<source>:<line>: "`,见 §3.2)与「非 string 不加前缀」,这两条 5.1/5.4 也一致,放心实现。
 
@@ -223,18 +223,18 @@ error(message, level):           -- level 默认 1
 | **缺省**(只传了一个参数) | 取默认值 1 |
 | **显式 `nil`** | 取默认值 1(`luaL_opt*` 把「不存在」与「是 nil」一视同仁,[10](./10-stdlib.md) §2.3) |
 | **数字,或可转成数字的字符串**(`"2"`) | 强制转换后使用(`luaL_optint` 内部走 `luaL_checkinteger`) |
-| **其它任何转不动的值**(boolean / table / function / 非数字串) | **抬** `bad argument #2 to 'error' (number expected, got X)` |
+| **其它任何无法转换的值**(boolean / table / function / 非数字串) | **抛出** `bad argument #2 to 'error' (number expected, got X)` |
 
 `internal/stdlib/stdlib.go::baseFnError` 原先写成「转换成功才用,失败静默保留默认值 1」,于是第四行整个
 丢了:`error("", 0>0)` 报的是**空消息**,而 lua5.1 报
-`bad argument #2 to 'error' (number expected, got boolean)`。这个写法由 nightly 开成三个 crasher
+`bad argument #2 to 'error' (number expected, got boolean)`。这个写法被 nightly 报成了三个 crasher
 (#212/#213/#215,其中 #212 与 #215 是同一个 seed)。
 
-**判据**:实现任何 `luaL_opt*` 语义时,「缺省 / 显式 nil 取默认值」与「显式传了一个转不动的值就抬错」
+**判据**:实现任何 `luaL_opt*` 语义时,「缺省 / 显式 nil 取默认值」与「显式传了一个无法转换的值就报错」
 是**两条独立的规则**;`if v, ok := convert(...); ok { use(v) }` 这种写法把后者静默吞掉,而它在正常输入
 上与正确实现完全等价——只有非法参数才暴露。
 
-**差分侧的一个细节**:同一个参数错误在 Lua 函数**内部**抬出时带位置前缀
+**差分侧的一个细节**:同一个参数错误在 Lua 函数**内部**抛出时带位置前缀
 (`[string "test"]:1: bad argument #2 to 'error' (...)`),经 `pcall(error, "m", {})` 直接调用时
 **不带**、函数名也退化成 `'?'`(§3.2.2:host raiser 那条路径)。两种写法各有一个用例钉住
 (`fuzz_212_219_test.go::TestErrorLevelMustBeANumber`)。
@@ -289,7 +289,7 @@ harness 侧原先为它加的 skip 已随修复撤掉,24 种 error level 写法�
 前缀于是完全丢失,`pcall(error,"m",2)` 得到裸的 `"m"`,而 PUC 命名的是 `pcall` 的调用者。
 
 修法是在那个边界上标注(`internal/crescent/meta.go::callLuaFromHostNamed`,`annotateError` 是
-幂等的,所以随后真的进了循环的错误不受影响)。除了「调用标注器」之外还要对两件事,**少任何一件
+幂等的,所以随后真的进了循环的错误不受影响)。除了「调用标注器」之外还要做对两件事,**少任何一件
 都会让整条 level 轴偏掉**:
 
 - **level 映射不同,因为 host raiser 不占 Lua 帧。** level 1 是它的**调用者**,也就是第一个
@@ -331,7 +331,7 @@ func (vm *VM) where(th *Thread, level int) string {
 **「当前 pc」的取法(关键细节,§3.5 详述)**:对**非栈顶帧**(level≥2 指向的调用者帧),其「当前 pc」是
 它**发出调用时保存的 savedPC 的前一条**——因为 savedPC 指向「调用返回后要执行的下一条」(05 §1.2 word1),
 报错位置应是「发出调用的那条 CALL」本身,故取 `savedPC - 1`。对栈顶活跃帧(若 level 能指到它),用 frame
-的当前 `pc - 1`(pc 已自增,05 §2.3)。这套「savedPC-1 / pc-1」的偏移是 traceback 行号正确的命脉(§7.4)。
+的当前 `pc - 1`(pc 已自增,05 §2.3)。这套「savedPC-1 / pc-1」的偏移是 traceback 行号正确的关键(§7.4)。
 
 **尾调用也消耗 level**。一串 N 个尾调用把 N 个帧折叠成了一个，被替换掉的调用者已经不在栈上，
 而 PUC 仍然把每个消失的帧算作一级、且 `luaL_where` 对尾调用帧给不出位置。所以 `callInfo`
@@ -378,7 +378,7 @@ Lua 5.1 把 `Proto.Source`(原始 chunk 名)转成 traceback/错误里显示的�
 - **字符串 chunk 的截断**:取源码首行,若过长截断并加 `...`,包进 `[string "..."]`。换行符在首行处截断。
   这套规则细节(`LUA_IDSIZE`=60、截断位置)**待 12 差分核对**与官方逐字节对齐——traceback 里的 `[string ...]`
   形式是高频差分点。
-- **P1 实现位置**:`internal/crescent` 的 `chunkID(source []byte, isFromSource bool) string`,或落 `bytecode`
+- **P1 实现位置**:`internal/crescent` 的 `chunkID(source []byte, isFromSource bool) string`,或放在 `bytecode`
   侧供 traceback 与 error 共用。Source 内容从 arena String 读([01](./01-value-object-model.md) §5.1)。
 
 ### 3.5 pc → line 与「当前 pc」的精确取值
@@ -391,9 +391,9 @@ Lua 5.1 把 `Proto.Source`(原始 chunk 名)转成 traceback/错误里显示的�
 | 非栈顶帧(已发出调用,在等返回) | `ci.savedPC - 1` | savedPC 指向「返回后下一条」(05 §1.2),报错位置是发出调用的 CALL 本身,故 -1 |
 | host(C)帧 | 无行号 | C 函数无 LineInfo;显示 `[C]` 不带行号 |
 
-> **这个 -1 偏移是 traceback 与 error 位置正确性的命脉**。漏掉它,所有非顶层帧的行号会偏到「下一条指令的行」
+> **这个 -1 偏移是 traceback 与 error 位置正确性的关键**。漏掉它,所有非顶层帧的行号会偏到「下一条指令的行」
 > (常常是错误的行,甚至下一个语句)。Lua 5.1 `lua_getinfo`/`currentline` 内部就是 `pc - 1`(`savedpc - 1`)。
-> **由 [12](./12-testing-difftest.md) 用多行脚本的 traceback 钉死行号逐字节一致**。
+> **由 [12](./12-testing-difftest.md) 用多行脚本的 traceback 验证行号逐字节一致**。
 
 #### 3.5.1 CALL 指令记的是参数列表那一行,不是被调用表达式那一行(#214,2026-08-02)
 
@@ -412,9 +412,9 @@ lua5.1 报第 **2** 行(`()` 所在的那一行),而 `internal/frontend/parse/ex
 `p.tok.Line`(那正是 `(` / 字符串 / `{` 所在的行,见 [04](./04-frontend-parser-codegen.md) §2 `CallExpr`
 的 `Line` 字段)。
 
-**只有跨行的被调用表达式才有差别**,单行时两者相同——这解释了为什么这个偏差活了很久、而且只能靠 fuzz
-撞出来:手写代码几乎不会把被调用表达式跨行写。方法调用(`MethodCallExpr`)**也有同一个问题、而且早于本分支就有**:SELF 与 CALL 共用一行,于是 `t:nope\n{}` 报第 2 行而 lua5.1 报第 3 行。现在两个节点各带两个行号——`Line` 给取值(callee 物化 / SELF),`ArgsLine` 只给 CALL,与 PUC 的 `primaryexp` + `funcargs` 里那次 `luaK_fixline` 一致。注意 `CallExpr.Line` 同时喂三个 codegen 点(callee 物化、参数物化、CALL),所以只改一个行号会把 callee 的 GETTABLE 一起挪走——审计实测 `t.x\n{1}` 因此把「索引 nil」报到了第 4 行。方法名那一行,
-与 PUC 一致,一并钉住防回退(`fuzz_212_219_test.go::TestCallLineIsTheArgumentList`)。
+**只有跨行的被调用表达式才有差别**,单行时两者相同——这解释了为什么这个偏差存在了很久、而且只能靠 fuzz
+发现:手写代码几乎不会把被调用表达式跨行写。方法调用(`MethodCallExpr`)**也有同一个问题、而且早于本分支就有**:SELF 与 CALL 共用一行,于是 `t:nope\n{}` 报第 2 行而 lua5.1 报第 3 行。现在两个节点各带两个行号——`Line` 给取值(callee 物化 / SELF),`ArgsLine` 只给 CALL,与 PUC 的 `primaryexp` + `funcargs` 里那次 `luaK_fixline` 一致。注意 `CallExpr.Line` 同时供三个 codegen 点使用(callee 物化、参数物化、CALL),所以只改一个行号会把 callee 的 GETTABLE 一起挪走——审计实测 `t.x\n{1}` 因此把「索引 nil」报到了第 4 行。方法名那一行,
+与 PUC 一致,一并用测试固定下来防止回退(`fuzz_212_219_test.go::TestCallLineIsTheArgumentList`)。
 
 **判据**:一个 AST 节点的 `Line` 该取哪个 token,要按参照实现在**哪一步**记录行号来定,不能默认取
 「这个节点从哪里开始」;跨行写法是唯一能区分两者的输入,所以行号类用例必须含跨行形式。
@@ -425,7 +425,7 @@ lua5.1 报第 **2** 行(`()` 所在的那一行),而 `internal/frontend/parse/ex
 
 `A\n.x` 里 lua5.1 报第 **2** 行(`.x` 所在的那一行,GETTABLE 出错的那一行),而望舒原先报第 1 行——
 `internal/frontend/compile/codegen.go::exprIndex` 把对象的物化行(`exp2AnyReg`)与 GETTABLE 的行都
-错误地取成了同一个来源。**这次是两处独立错误**,而不是像 §3.5.1 那样一处错误喂了多个 codegen 点:
+错误地取成了同一个来源。**这次是两处独立错误**,而不是像 §3.5.1 那样一处错误影响了多个 codegen 点:
 
 1. `exprIndex` 把**对象**交给 `exp2AnyReg(e.Line, &obj)` 时传了索引运算符的行(`e.Line`),而
    `e.Line` 该给的是 GETTABLE,不是对象自己的加载指令。延迟加载的对象(全局的 GETGLOBAL、另一层
@@ -436,12 +436,12 @@ lua5.1 报第 **2** 行(`()` 所在的那一行),而 `internal/frontend/parse/ex
    `opLine int32` 字段(§4 `expdesc` 定义同步增补),`dischargeVars` 发射 GETTABLE 时优先取
    `e.opLine`。
 
-> **口径订正(#252,2026-09-03)**:上面第 2 点的结论「GETTABLE 该记运算符自己的行」**是错的**,
+> **结论订正(#252,2026-09-03)**:上面第 2 点的结论「GETTABLE 该记运算符自己的行」**是错的**,
 > `opLine` 字段已删除。PUC 的 `luaK_codeABC`/`luaK_codeABx` 不接收行号参数,一律用发射那一刻的
 > `ls->lastline`,所以 GETTABLE 记的是**它被 discharge 那一刻**的行;「运算符的行」只是「索引就地被
 > 消费」时的近似。判别输入 `local v = A.x\n\n+1` 完全没有括号、运算符在行 1,而 `luac5.1` 记在行 3
 > (`+` 才是 discharge 点)。**本节其余内容不受影响**(两处独立错误、局部变量做对象测不出来、要核对
-> 整张 `LineInfo` 表),失效的只是这一个口径。最终模型与全部消费点见
+> 整张 `LineInfo` 表),失效的只是这一个结论。最终模型与全部消费点见
 > `04-frontend-parser-codegen.md` §5.2.2。
 
 **只有对象需要延迟加载时才有差别**:局部变量做对象时 `exprIndex` 不发射任何指令、GETTABLE 立即
@@ -480,7 +480,7 @@ assert(v, message, ...):
     argerror(2, "string expected, got X")  -- 【参数错误】,不是把 message 当错误值
 ```
 
-**关键 5.1 口径(易错)**:
+**关键 5.1 行为(易错)**:
 
 - **真值时返回**所有参数(`assert(io.open(f))` 惯用法:成功则透传 file handle,失败则抛第二个返回值作 message)。
   返回**全部**实参,不只 `v`(`local a, b = assert(f())` 能拿到 f 的多返回值)。
@@ -633,7 +633,7 @@ xpcall(f, handler):              -- Lua 5.1 签名
   出错:  return false, handler(errval)   -- handler 在【栈展开前】被调用,见 §6.2
 ```
 
-**关键 5.1 口径(版本差异,必须标注)**:
+**关键 5.1 行为(版本差异,必须标注)**:
 
 | 维度 | Lua 5.1 | Lua 5.2+ | P1 采用 |
 |---|---|---|---|
@@ -643,7 +643,7 @@ xpcall(f, handler):              -- Lua 5.1 签名
 
 > **P1 锁 5.1:`xpcall` 第三参起的 args 不传给 f**。若脚本写 `xpcall(f, h, 1, 2)`,5.1 里 `1, 2` 被**忽略**
 > (f 收不到)。本文按 5.1 实现(忽略额外参数);若宿主生态需要 5.2 行为,记 doc-gap(§14)但**默认 5.1**。
-> 任务口径明确:**以 5.1 为准并记口径**。这是与 `pcall`(任意版本都传 args)的关键差异。
+> 任务要求明确:**以 5.1 为准并记下这一选择**。这是与 `pcall`(任意版本都传 args)的关键差异。
 
 ### 6.2 机制:handler 在错误点的栈上下文调用(展开前!)
 
@@ -731,7 +731,7 @@ func (vm *VM) callHandlerOnErrorStack(th *Thread, handler, errval value.Value) (
 **纪律要点**:
 
 - **不动出错帧**:handler 在出错栈**之上**(当前 top 之上)压临时帧执行;出错的 CallInfo 链原封不动挂着,
-  供 `debug.traceback`/`debug.getinfo` 遍历(§7/§13)。这正是「展开前调」的物理实现。
+  供 `debug.traceback`/`debug.getinfo` 遍历(§7/§13)。这正是「展开前调」的具体实现。
 - **errval 登记 GC 根**:handler 必然分配(拼字符串),触发 GC;`errval` 此刻只被 `LuaError.value` 这个 Go
   指针引用(不在任何 Lua 栈槽里),GC 看不到 → 必须显式压 shadow root(§1.3)。
 - **handler 可能 reentry**:handler 是 Lua closure 时走 reentry 子循环(05 §7.1),在出错栈之上跑。这层
@@ -822,16 +822,16 @@ func (vm *VM) traceback(th *Thread, msg string, startLevel int) string {
 2. **顶层未捕获错误**:错误传到 `Program.Call`(§11),若宿主配置「附带 traceback」,在转 Go error 前生成。
 3. **`debug.traceback(msg, level)` 被显式调用**(§13):脚本主动要当前栈回溯(不一定在错误时)。
 
-**为什么不在抛出点生成**:① 多数错误被 `pcall` 静默捕获后丢弃(不看 traceback),抛出点生成是白做功;
+**为什么不在抛出点生成**:① 多数错误被 `pcall` 静默捕获后丢弃(不看 traceback),抛出点生成是白费功夫;
 ② 生成 traceback 要分配字符串、遍历栈,在错误路径上(虽冷)也无谓;③ `pcall`(无 handler)根本不需要
 traceback,只要错误值。**所以 traceback 是「按需生成」**——谁要谁调,默认不生成(`LuaError.traceback` 默认空)。
 
 ### 7.4 行号正确性:-1 偏移贯穿 traceback
 
 traceback 每帧的 `<line>` 都经 §3.5 的「当前 pc」取值:**栈顶帧 `pc-1`,非栈顶帧 `savedPC-1`**。这是
-traceback 行号与官方逐字节一致的命脉(§3.5 已强调)。**特别注意**:traceback 遍历的帧大多是**非栈顶帧**
+traceback 行号与官方逐字节一致的关键(§3.5 已强调)。**特别注意**:traceback 遍历的帧大多是**非栈顶帧**
 (它们都已发出调用在等返回),所以**几乎所有帧都用 `savedPC-1`**。漏掉 -1 会让整个 traceback 的行号系统性
-偏移。由 [12](./12-testing-difftest.md) 用「深调用链 + 错误」的脚本钉死每一行行号。
+偏移。由 [12](./12-testing-difftest.md) 用「深调用链 + 错误」的脚本验证每一行行号。
 
 ---
 
@@ -956,7 +956,7 @@ type Proto struct {
 
 **回填请求(本文强化,04 §13 已提同一缺口)——已兑现**:[01](./01-value-object-model.md) §5.7 已增补:
 
-1. **`LocVars []LocalVar`**:✅ 已落入 01 §5.7(`{Name string; StartPC, EndPC int32}`,Go 堆调试数据;Name 为 Go string 而非 GCRef,不入 arena 不参与 GC)。来源即 04 §5.9 的 `funcState.locvars`,codegen 期持久化。`getobjname` 的 local 分支按「pc 落在哪个 LocVar 的 `[StartPC,EndPC)` 且对应该寄存器」查名。
+1. **`LocVars []LocalVar`**:✅ 已写进 01 §5.7(`{Name string; StartPC, EndPC int32}`,Go 堆调试数据;Name 为 Go string 而非 GCRef,不入 arena 不参与 GC)。来源即 04 §5.9 的 `funcState.locvars`,codegen 期持久化。`getobjname` 的 local 分支按「pc 落在哪个 LocVar 的 `[StartPC,EndPC)` 且对应该寄存器」查名。
 2. **upvalue 名**:✅ 01 §5.7 定为**复用 `UpvalDescs.name`**(04 §8.3 的 `upvalDesc.name` 持久化到 Proto.UpvalDescs),不单列 `UpvalNames`。
 
 > 回填后 §8.3 的 `local`/`upvalue` 推断**可实现**;`global`/`field`/`method` 本就不依赖它们(从常量池 K 取名)。
@@ -1012,7 +1012,7 @@ type Proto struct {
   由各 host 构造([10](./10-stdlib.md))。
 
 > **所有精确措辞标 `待 12 差分核对`**:本目录给「说什么」(语义)与「骨架措辞」,精确到字符的标点/冠词/
-> 单复数由 [12](./12-testing-difftest.md) 拿官方 Lua 5.1 当 oracle 钉死。**不编造**(roadmap §5 原则 2:与官方
+> 单复数由 [12](./12-testing-difftest.md) 拿官方 Lua 5.1 当 oracle 确定下来。**不编造**(roadmap §5 原则 2:与官方
 > 5.1 逐字节一致)。措辞主体(`attempt to index a <type> value` 等)是 Lua 5.1 稳定文案,可信;边角标点存疑标注。
 
 ---
@@ -1023,19 +1023,19 @@ type Proto struct {
 
 | 维度 | `stack overflow` | `C stack overflow` |
 |---|---|---|
-| 含义 | **Lua 调用深度**超限(CallInfo 数 / 值栈深度) | **host↔Lua 重入深度**超限(真 Go 栈消耗) |
+| 含义 | **Lua 调用深度**超限(CallInfo 数 / 值栈深度) | **host↔Lua 重入深度**超限(实际的 Go 栈消耗) |
 | 触发点 | `enterLuaFrame` / `ensureStack`(05 §1.4) 超 `ciCap`/栈上限 | `callLuaFromHost` 时 `nCcalls` 超 `LUAI_MAXCCALLS`(=200,05 §7.4) |
-| 物理资源 | arena 内的 CallInfo 数组 / 值栈(**不是 Go 栈**) | 真 Go 栈(host→Lua 每层加一个 execute Go 帧,05 §7.3) |
+| 物理资源 | arena 内的 CallInfo 数组 / 值栈(**不是 Go 栈**) | 实际的 Go 栈(host→Lua 每层加一个 execute Go 帧,05 §7.3) |
 | 典型触发 | `local function f() return 1+f() end f()`(深 Lua 递归,非尾) | `pcall` 套 `pcall` 套...无限,或元方法无限互调经 host | 
 | 可恢复? | ✅ 可被 `pcall` 捕获(它是普通 Lua 错误) | ✅ 可被 `pcall` 捕获,但**保护边界自身也在消耗 C 栈**(见下) |
 | 措辞 | `stack overflow` | `C stack overflow` |
 
 **关键区别(为什么要两个上限)**:
 
-- **Lua 调用深度不吃 Go 栈**(05 §7.1:Lua-call-Lua 是 reentry,Go 栈深恒为 1)。所以 1000 层 Lua 递归
+- **Lua 调用深度不占用 Go 栈**(05 §7.1:Lua-call-Lua 是 reentry,Go 栈深恒为 1)。所以 1000 层 Lua 递归
   只是 1000 条 CallInfo(arena),不会爆 Go 栈——它由 `stack overflow`(arena 逻辑上限)拦截。
-- **host↔Lua 重入吃 Go 栈**(05 §7.3:只有 host→Lua 才加 execute Go 帧)。`pcall`/`coroutine`/元方法是
-  host 的反复 Lua 重入会真涨 Go 栈。Go 栈虽可增长但有 `maxstacksize`(~1GB)硬上限,**撞上是 fatal 不可恢复**。
+- **host↔Lua 重入占用 Go 栈**(05 §7.3:只有 host→Lua 才加 execute Go 帧)。`pcall`/`coroutine`/元方法是
+  host 的反复 Lua 重入会真的让 Go 栈增长。Go 栈虽可增长但有 `maxstacksize`(~1GB)硬上限,**达到这个上限就是 fatal,不可恢复**。
   所以必须在它之前用 `nCcalls`(=200)把 `C stack overflow` 作为**可恢复**错误拦下(05 §7.4)。
 
 > **`C stack overflow` 的微妙处**:它触发时,`pcall` 想捕获——但 `pcall` 捕获也要起一层 execute(消耗 C 栈)。
@@ -1049,7 +1049,7 @@ type Proto struct {
 
 ### 11.1 语义:顶层 recover,转 Lua 错误 + 标 Thread 损坏
 
-05 §9.4 定下:**host function 绝不该 Go panic**(panic 绕过 CallInfo 清理,破坏 §2.2 的边界清理契约)。
+05 §9.4 定下:**host function 绝不该 Go panic**(panic 绕过 CallInfo 清理,破坏 §2.2 的边界清理约定)。
 host 抛错走 `raise`(§3.3)。但**若 host 代码有 bug 真的 Go panic 了**(数组越界、nil 解引用等 Go 运行期
 panic),需要一个**最外层兜底**防止整个 Go 进程崩溃——这是**安全网,不是正常路径**(05 §9.4 明确)。本文定稿:
 
@@ -1089,7 +1089,7 @@ func (p *Program) Call(arena *Arena, args ...Value) (results []Value, err error)
 
 > **这是「安全网」而非「正常路径」的全部含义**(05 §9.4):正常的 Lua 错误(`error`、类型错误、stack overflow)
 > 都不经这条 recover——它们是 `*LuaError` 显式 return(§2),Thread 健康、可 pcall、可继续。recover 只兜
-> **不该发生的 Go panic**(代码 bug),并把 Thread 判死。P1 的 host functions([10](./10-stdlib.md))应严格
+> **不该发生的 Go panic**(代码 bug),并把 Thread 判定为不可用。P1 的 host functions([10](./10-stdlib.md))应严格
 > 用 `raise` 抛错、不 panic,使这条兜底永不触发(它存在只为「万一」)。
 
 ---
@@ -1152,7 +1152,7 @@ coroutine.resume(co, args...) 内:
 
 ## 13. debug 库接口(traceback / getinfo —— P1 简化范围记缺口)
 
-`debug` 库为错误处理与诊断供料。**P1 实现最小子集**(够 `xpcall` 用 + 基本 introspection),完整 debug 库记缺口。
+`debug` 库为错误处理与诊断提供数据。**P1 实现最小子集**(够 `xpcall` 用 + 基本 introspection),完整 debug 库记缺口。
 10 引用本节范围。
 
 ### 13.1 `debug.traceback([thread,] [message [, level]])`
@@ -1177,7 +1177,7 @@ debug.traceback(message, level):
 - **显式 `nil` 是一个值,不是「参数缺失」**(#205,2026-07-29 核对):`debug.traceback()` 返回 traceback,
   而 `debug.traceback(nil)` 返回 **nil**——`db_errorfb` 走的是同一条「非 string 非 number 就原样返回 arg 1」
   的分支,而它区分「有没有这个参数」而不是「参数是不是 nil」。第一版把两者当成一回事,于是
-  `debug.traceback(nil)` 错误地返回了裸 traceback。落点 `internal/stdlib/tablelib.go::debugFnTraceback`,
+  `debug.traceback(nil)` 错误地返回了裸 traceback。实现位置 `internal/stdlib/tablelib.go::debugFnTraceback`,
   回归在 `io_handles_test.go::TestDebugLibrary_MatchPUC`。
 - **string / number 的 message 拼在 traceback 前,用一个换行分隔**:`debug.traceback("m")` 的第 2 个字节是
   `\n`(byte 10)。
@@ -1187,7 +1187,7 @@ debug.traceback(message, level):
 
 ### 13.2 `debug.getinfo([thread,] f_or_level [, what])`
 
-返回一个 table,描述函数或栈帧的信息(给 traceback 供料 / 脚本 introspection)。Lua 5.1 字段:
+返回一个 table,描述函数或栈帧的信息(给 traceback 提供数据 / 脚本 introspection)。Lua 5.1 字段:
 
 | 字段 | 含义 | 来源 | P1 |
 |---|---|---|---|
@@ -1203,7 +1203,7 @@ debug.traceback(message, level):
 
 - **`what` 参数**:Lua 5.1 用字符串选要哪些字段(`"n"`=name,`"S"`=source,`"l"`=line,`"u"`=ups,`"f"`=func)。
   P1 可全填(忽略 `what` 选择,返回全部),或按 `what` 裁剪。
-- **给 traceback 供料**:`debug.traceback` 内部对每帧调 `getinfo`(等价)取 `short_src`/`currentline`/`name`。
+- **给 traceback 提供数据**:`debug.traceback` 内部对每帧调 `getinfo`(等价)取 `short_src`/`currentline`/`name`。
   P1 的 `traceback`(§7.2)直接遍历 CallInfo 不必经脚本可见的 `getinfo`,但 `getinfo` 暴露同样的信息给脚本。
 
 ### 13.3 P1 debug 库范围(记缺口,10 引用)
@@ -1234,7 +1234,7 @@ debug.traceback(message, level):
 (它会当成真值用,而缺失至少能被 `if info.nups then` 挡住)。
 
 **level 的 off-by-one 值得记**:`getinfo` 自己是 host 函数,而 host 帧**不进 `cis`**,所以 level 1 是
-**最内层**的 cis 帧;直接用 `ciDepth - level` 会多跳一帧,让最常见的 `getinfo(1)` 返回 nil。落点
+**最内层**的 cis 帧;直接用 `ciDepth - level` 会多跳一帧,让最常见的 `getinfo(1)` 返回 nil。实现位置
 `internal/crescent/errors.go::FrameInfo`。level 超出栈顶时返回 nil(与 PUC 一致),无参时报
 `bad argument #1 to '?' (function or level expected)`(**这个词序**,与 `lua5.1` 核对过)。
 
@@ -1279,20 +1279,20 @@ debug.traceback(message, level):
 5. **xpcall handler 在栈展开前调**(§6.2):捕获错误后、`recoverToProtectionPoint` 前,在**未清理的出错栈**上
    调 handler——这是 `debug.traceback` 能拿到完整栈的充要条件。**P1 关键决策**。
 6. **xpcall 5.1 不传 args 给 f**(§6.1):`xpcall(f, h, ...)` 的额外参数被忽略(5.2+ 才传)。锁 5.1。
-7. **pc→line 含 -1 偏移**(§3.5/§7.4):栈顶帧 `pc-1`,非栈顶帧 `savedPC-1`。traceback/error 行号正确性的命脉。
+7. **pc→line 含 -1 偏移**(§3.5/§7.4):栈顶帧 `pc-1`,非栈顶帧 `savedPC-1`。traceback/error 行号正确性的关键。
 7a. **CALL 记的是参数列表那一行**(§3.5.1):`CallExpr.ArgsLine` 取 `(`/字符串/`{` 那个 token 的行,不取被调用
     表达式的起始行;`MethodCallExpr` 的 SELF 取方法名那一行。两个节点的 CALL 都取 `ArgsLine`。只有跨行的被调用表达式能区分两者,而且 `(` 形式免疫(歧义语法规则不允许它前面有换行),所以要用 `{}` 或字符串参数形式才能测到(#214)。
-7b. **`error` 的 level 走 `luaL_optint` 的两条规则**(§3.1a):缺省 / 显式 nil 取默认值 1,显式传了转不动的
-    值要抬 `bad argument #2 (number expected, got X)`,数字字符串照旧强制转换(#212/#213/#215)。
+7b. **`error` 的 level 走 `luaL_optint` 的两条规则**(§3.1a):缺省 / 显式 nil 取默认值 1,显式传了无法转换的
+    值要抛出 `bad argument #2 (number expected, got X)`,数字字符串照旧强制转换(#212/#213/#215)。
 8. **位置前缀格式 `<source>:<line>: `**(§3.2):source 经 `chunkID`(§3.4),冒号后一空格。C 帧无前缀(`[C]`)。
 9. **变量名后缀由 09 定,类型名层由 07 定**(§8.2):完整错误 = `<src>:<line>: attempt to X a <type> value (<kind> '<name>')`。
 10. **函数名推断 P1 简化**(§8.3):必做 global/field/method(从常量池取名);应做 local(需 LocVars 回填);
     可选 upvalue/for-iter/metamethod;不做完整跨跳转 symbexec。退化为无后缀,类型名层仍完整。
 11. **traceback 按需生成**(§7.3):抛出点不生成;只在 xpcall handler / 顶层未捕获 / 显式 debug.traceback 时生成。
 12. **两类 stack overflow 分清**(§10):Lua 深度 → `stack overflow`(arena 上限);host↔Lua 重入 → `C stack overflow`
-    (`nCcalls`=200,真 Go 栈)。
+    (`nCcalls`=200,实际的 Go 栈)。
 13. **host 不 panic,经 raise 抛错**(§3.3/§11):host 用 `raise`→`pendingErr`→`callHost` 返回 callError 路径;
-    真 panic 只被顶层兜底捕获并报废 Thread。
+    真正的 panic 只被顶层兜底捕获并报废 Thread。
 14. **协程边界捕获错误**(§12):resume 是 protected 边界,co 内未捕获错误 → resume 返回 `(false, err)` + co 变 dead;
     `wrap` 则重抛(不捕获)。traceback 不跨 resume 缝合。
 15. **错误措辞与官方 5.1 逐字节一致**(§9.3):措辞主体可信,边角标点/冠词/单复数**待 12 差分核对**,不编造。

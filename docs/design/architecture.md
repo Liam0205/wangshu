@@ -1,6 +1,6 @@
 # Wangshu 跨阶段架构总览
 
-> 状态:**设计阶段,设计文档集已齐备**(P1 全卷 00-12 可实现深度;P2/P3 详细设计;P4/P5 架构决策)。
+> 状态:**设计阶段,设计文档集已齐备**(P1 的 00-12 全部写到可实现深度;P2/P3 详细设计;P4/P5 架构决策)。
 > 本文是详细设计集的根索引与共享词汇基线,定义 Go 包布局、
 > 组件依赖、月相 tier 与代码包的映射、P1 构建顺序。战略动机见 [roadmap.md](./roadmap.md)。
 > 所有 P1 子系统文档都以本文的包名与组件边界为准。P1 施工计划见 [p1-interpreter/00-overview](./p1-interpreter/00-overview.md)。
@@ -87,8 +87,8 @@ wangshu/
 设计要点:
 
 - **公共 API 只在 root package**(`wangshu`),其余全部 `internal/`,杜绝外部依赖实现细节、为重构与升层留自由度。
-- **执行层包名用月相**(`crescent`/`gibbous`/`fullmoon`),非执行层基础设施用功能名——这是 roadmap §4「代码与文档统一使用月相命名」的完成;诊断日志因此能输出 `function promoted to gibbous` 这类自释信息。
-- **跨 tier 共享的基础设施**(`value`/`arena`/`gc`/`object`/`bytecode`/`frontend`)不属于任何单个 tier,保证「编译层是纯增量」——上一个新 tier 只新增 `gibbous/`/`fullmoon/` 下的发射后端,不动共享层(见 [value-representation](../../llmdoc/architecture/value-representation.md))。
+- **执行层包名用月相**(`crescent`/`gibbous`/`fullmoon`),非执行层基础设施用功能名——这是 roadmap §4「代码与文档统一使用月相命名」的落实;诊断日志因此能输出 `function promoted to gibbous` 这类自释信息。
+- **跨 tier 共享的基础设施**(`value`/`arena`/`gc`/`object`/`bytecode`/`frontend`)不属于任何单个 tier,保证「编译层是纯增量」——加一个新 tier 时只新增 `gibbous/`/`fullmoon/` 下的发射后端,不动共享层(见 [value-representation](../../llmdoc/architecture/value-representation.md))。
 
 ---
 
@@ -96,7 +96,7 @@ wangshu/
 
 | tier | 月相名 | 阶段 | 代码包 | 状态 |
 |---|---|---|---|---|
-| tier-0 | **crescent**(新月) | P1 | `internal/crescent` | **详细设计齐备(00-12 全卷,可实现)** |
+| tier-0 | **crescent**(新月) | P1 | `internal/crescent` | **详细设计齐备(00-12 全部完成,可实现)** |
 | —(基建) | — | P2 | `internal/bridge` | 详细设计 |
 | tier-1 | **gibbous**(凸月) | P3 | `internal/gibbous/wasm` | 详细设计(开工前置 spike 检查) |
 | tier-1 | **gibbous**(凸月) | P4 | `internal/gibbous/jit` | 架构决策 |
@@ -140,7 +140,7 @@ P1 内部依赖(箭头 = 依赖方向,A → B 表示 A 依赖 B):
 源自 roadmap §5,在代码层面的约束(详见 [design-premises](../../llmdoc/must/design-premises.md)):
 
 1. **解释器(crescent)永不退役** —— 是所有上层的 deopt 着陆点与语义 oracle。任何 tier 的 `Proto` 必须始终保有可解释执行的字节码。
-2. **层间逐字节差分** —— `test/difftest` 对同一 Proto 在不同 tier 上执行,输出必须 byte-equal;这是 CI 必过门禁。
+2. **层间逐字节差分** —— `test/difftest` 对同一 Proto 在不同 tier 上执行,输出必须 byte-equal;这是 CI 必过检查。
 3. **值表示一次定死** —— `value` + `object` + `arena` 的 ABI 是第 1 天承诺,后续 tier 只增不改(见 §1 "纯增量")。
 
 ---

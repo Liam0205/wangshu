@@ -3,7 +3,7 @@
 > 状态:**设计阶段,可实现深度**。本文是 tier-0 解释器(`internal/crescent`)执行引擎的**单一事实源**:
 > dispatch 策略、执行帧/CallInfo 维护、逐 opcode 执行侧实现、inline cache 命中/失效机制、
 > Lua-call-Lua reentrant loop、safepoint 布点、错误传播机制。
-> 上游契约:[01-value-object-model](./01-value-object-model.md)(值/对象/Thread §5.6)、
+> 上游约定:[01-value-object-model](./01-value-object-model.md)(值/对象/Thread §5.6)、
 > [02-bytecode-isa](./02-bytecode-isa.md)(opcode 表/调用约定/IC slot)。战略动机见 `roadmap.md` (§1/§4/§5)。
 >
 > **本文定稿三件被其它文档引用的机制**(02/01 把它们留给本文):
@@ -17,7 +17,7 @@
 
 ## 0. 本文在 P1 中的位置与目标
 
-`crescent` 把前端产出的 `Proto`(见 [02](./02-bytecode-isa.md) §5)在 [01](./01-value-object-model.md) 的值世界上**跑起来**。它是 roadmap §5 原则 1「解释器永不退役」的物理载体——既是 P1 的唯一执行层,也是 P3/P4/P5 所有编译层的 **deopt 着陆点与语义 oracle**;`test/difftest` 把它当 byte-equal 基准(见 [12-testing-difftest](./12-testing-difftest.md))。
+`crescent` 把前端产出的 `Proto`(见 [02](./02-bytecode-isa.md) §5)在 [01](./01-value-object-model.md) 的值世界上**跑起来**。它是 roadmap §5 原则 1「解释器永不退役」的具体承载者——既是 P1 的唯一执行层,也是 P3/P4/P5 所有编译层的 **deopt 着陆点与语义 oracle**;`test/difftest` 把它当 byte-equal 基准(见 [12-testing-difftest](./12-testing-difftest.md))。
 
 设计的全部张力来自一句话:**用纯 Go 把每条指令的开销压到能 ≥2x over gopher-lua**(roadmap §4 验收)。gopher-lua 慢在两处——interface 装箱(每个值一次堆分配 + 类型断言)与 switch dispatch 的分支预测失败。我们已经在 [01](./01-value-object-model.md) 用 NaN-box 干掉了装箱;本文负责 dispatch 与执行侧的每一处常数因子。**≥2x 的可达性论证见 §3.4**。
 
@@ -78,7 +78,7 @@ type frame struct {
 
 `stk` 是对 arena 中 Thread 值栈那段 `words` 的 Go slice 别名(通过 `unsafe` 在 arena 层构造,见 [06-memory-gc](./06-memory-gc.md) 的 arena 视图)。**寄存器访问因此是 `f.stk[f.base+a]` 一次切片索引**,无边界外解引用、无装箱——这是相对 gopher-lua 的核心常数因子优势。
 
-> **关键纪律**:任何可能触发**栈扩容或 GC 搬迁**的操作(分配、CALL、CONCAT、可能 rehash 的 SETTABLE)之后,`f.stk` 必须从 Thread 重新取(因为 arena 整体搬迁会让旧 slice 失效)。本文在每个相关 opcode 标注「**重载 stk**」。实现上把「读 CallInfo.top/base 重建 frame」封装成 `reloadFrame(f)`;其对称操作 `saveFrame(f)`(把 frame 热字段 pc/top 写回当前 CallInfo)在协程挂起时使用(承 [08](./08-coroutines.md) §9.3 回填:yield 时 frame 缓存必须落回 arena,使挂起的 Thread 状态自包含)。
+> **关键纪律**:任何可能触发**栈扩容或 GC 搬迁**的操作(分配、CALL、CONCAT、可能 rehash 的 SETTABLE)之后,`f.stk` 必须从 Thread 重新取(因为 arena 整体搬迁会让旧 slice 失效)。本文在每个相关 opcode 标注「**重载 stk**」。实现上把「读 CallInfo.top/base 重建 frame」封装成 `reloadFrame(f)`;其对称操作 `saveFrame(f)`(把 frame 热字段 pc/top 写回当前 CallInfo)在协程挂起时使用(承 [08](./08-coroutines.md) §9.3 回填:yield 时 frame 缓存必须写回 arena,使挂起的 Thread 状态自包含)。
 
 ### 1.4 进入/退出帧 与 MaxStack 容量检查
 
@@ -138,7 +138,7 @@ for {
 - Go 编译器对**稠密、从 0 起的整数 case** 生成**跳转表**(jump table),不是线性 if 链——实测 `go tool compile -S` 可见 `JMP (AX)(CX*8)` 形式。我们的 opcode 是 `iota` 连续 0..37([02](./02-bytecode-isa.md) §4),正好命中跳转表条件。
 - 代价:每次循环一次间接跳转,CPU 分支目标预测器(BTB)对解释器这种「跳转目标几乎随机」的模式**预测命中率低**——这是 gopher-lua 也付的税。但 Go 的跳转表已经避免了「线性 if 链」的更坏情况。
 - 优点:**最简单、最易保证正确**;调试器友好;一个函数内所有指令逻辑可见,寄存器化的 `pc/base` 等局部不跨函数边界。
-- **这是 P1 的完成基线**。
+- **这是 P1 的实现基线**。
 
 **(b) closure-threading / direct-threading:预解码成 `[]func(*frame)`**
 
@@ -157,7 +157,7 @@ for {
 这就是 roadmap 说的「closure-compilation」雏形——把「取指 + 译码」从热循环移到装载期,热循环只剩「调用 + 取下一 pc」。
 
 - **真实代价(Go 特有)**:每条指令是一次**Go 函数间接调用**(`CALL (reg)`)。Go 的函数调用不是零成本——有调用帧建立、参数/返回值传递(虽然可内联部分,但闭包数组里的 `instrFn` 是**间接调用,Go 编译器无法内联**)。所以它用「一次间接 call」换掉「一次取指 + 一次 switch 间接跳转 + 操作数解码」。
-- **是否更快不确定**:在 C 里 direct-threading 赢在「每条指令末尾直接 `goto *next`」省掉 switch 的范围检查与单一回边的预测瓶颈;但 Go 里它退化成「间接 call」,而间接 call 与 switch 的间接 jmp **在现代 CPU 上预测代价相近**,却多了 call 的栈/ABI 开销。**净收益主要来自「译码外提」而非「dispatch 本身」**。
+- **是否更快不确定**:在 C 里 direct-threading 赢在「每条指令末尾直接 `goto *next`」省掉 switch 的范围检查与单一循环回跳(back edge)的预测瓶颈;但 Go 里它退化成「间接 call」,而间接 call 与 switch 的间接 jmp **在现代 CPU 上预测代价相近**,却多了 call 的栈/ABI 开销。**净收益主要来自「译码外提」而非「dispatch 本身」**。
 - **额外收益(为什么仍要保留它)**:① 译码外提对**操作数复杂的指令**(IC 指令、CALL)收益明显——闭包捕获里可以预存 `A/B/C` 解码结果、IC slot 指针,省掉每次执行的位运算;② **它是 P3 字节码→Wasm 翻译的中间形式**——把指令变成「可独立调用的单元」正是翻译的前一步,P1 做了等于给 P3 探了路(roadmap §4「翻译为 Wasm locals 也直白」的工程铺垫)。
 - 代价补充:闭包数组本身要内存(每 proto 一份 `[]instrFn`),且闭包捕获变量可能逃逸到堆——要小心设计成**捕获索引而非捕获指针**,减少 GC 压力。
 
@@ -181,11 +181,11 @@ for {
 
 **P1 基线选 (a) 大 switch**,理由:正确性优先(它是语义 oracle 与差分基准,bug 代价最高),且 Go 跳转表已避免最坏情况。**(b) closure-threading 作为 P1 内的提速 spike**,在基线 byte-equal 通过后再做 A/B,因为:① 它是 roadmap 点名的方向;② 它同时是 P3 翻译的中间形式,投入不浪费;③ 若 spike 证明 (b) 不够,(c) 是兜底。
 
-完成纪律(三方案共享、不被 dispatch 选择绑死):
+实现纪律(三方案共享、不被 dispatch 选择绑死):
 
 - **执行逻辑写成可复用的 helper**(如 `doArith`、`doGetTable`),switch case 与未来的 closure 都调它——换 dispatch 不改语义实现,保住 oracle 唯一性。
 - **IC slot、常量表在装帧时缓存进 frame**(§1.3 的 `ic/k`),三方案都受益。
-- spike 的成败口径写进 [12-testing-difftest](./12-testing-difftest.md) 的基准:**(b)/(c) 必须 byte-equal 于 (a),且在三档脚本(简单/算术/循环)上不慢于 (a)** 才采纳。
+- spike 的成败标准写进 [12-testing-difftest](./12-testing-difftest.md) 的基准:**(b)/(c) 必须 byte-equal 于 (a),且在三档脚本(简单/算术/循环)上不慢于 (a)** 才采纳。
 
 > doc-gap:closure-threading 的具体闭包签名、捕获策略、与 IC slot 指针的绑定方式,留到 P1 提速 spike 阶段定稿(§10)。本文先锁定基线 (a) 可实现。
 
@@ -266,7 +266,7 @@ gopher-lua 的 `LValue` 是 Go interface,每个数字值是 `LNumber(float64)` �
 
 ### 3.4 可达性结论
 
-三档:**简单**(MOVE/LOADK/比较/跳转为主)主要吃「去装箱 + 跳转表 dispatch」;**算术**额外吃「f64 直算零分配 + 算术 IC」;**循环**额外吃「FORLOOP 回边零开销 + 表/全局 IC 在循环内复用」。**去装箱单独大概率已接近或越过 2x,IC 与 dispatch 把循环/列内核档进一步拉开**。这与 roadmap §4「止步于此也成立:一个更好的 gopher-lua」自洽。若实测某档不达 2x,提速顺序是:先上 (c) 预解码省位运算 → 再上 (b) closure-threading,而**不是**改值表示(值表示是第 1 天不可逆承诺,[01](./01-value-object-model.md))。
+三档:**简单**(MOVE/LOADK/比较/跳转为主)主要受益于「去装箱 + 跳转表 dispatch」;**算术**额外受益于「f64 直算零分配 + 算术 IC」;**循环**额外受益于「FORLOOP back edge 零开销 + 表/全局 IC 在循环内复用」。**去装箱单独大概率已接近或越过 2x,IC 与 dispatch 把循环/列内核档进一步拉开**。这与 roadmap §4「止步于此也成立:一个更好的 gopher-lua」自洽。若实测某档不达 2x,提速顺序是:先上 (c) 预解码省位运算 → 再上 (b) closure-threading,而**不是**改值表示(值表示是第 1 天不可逆承诺,[01](./01-value-object-model.md))。
 
 ---
 
@@ -303,7 +303,7 @@ func (vm *VM) doArith(f *frame, i Instruction, op arithOp) *LuaError {
 要点:
 
 - **`canonicalizeNaN` 收敛在 `value.NumberValue`**([01](./01-value-object-model.md) §3.4):任何算术产生 NaN(如 `0/0`、`Inf-Inf`)都规范成 `0x7FF8…`,绝不让负 NaN 渗回值世界(否则会被误判成 boxed tag,破坏 [01](./01-value-object-model.md) §3.4 不变式)。x86/arm64 默认产正 qNaN,`NumberValue` 的 `f!=f` 兜底覆盖罕见来源。
-- **`MOD` 语义**:`luaMod(a,b) = a - math.Floor(a/b)*b`([02](./02-bytecode-isa.md) §4-16,Lua 5.1 语义,**不是** Go 的 `math.Mod` 截断取余)。`b==0` 时 `a/b` 为 ±Inf,`floor(±Inf)` 为 ±Inf,结果 NaN——与 Lua 5.1 一致,由差分测试钉死。
+- **`MOD` 语义**:`luaMod(a,b) = a - math.Floor(a/b)*b`([02](./02-bytecode-isa.md) §4-16,Lua 5.1 语义,**不是** Go 的 `math.Mod` 截断取余)。`b==0` 时 `a/b` 为 ±Inf,`floor(±Inf)` 为 ±Inf,结果 NaN——与 Lua 5.1 一致,由差分测试锁定。
 - **`POW`**:`math.Pow` 语义([02](./02-bytecode-isa.md) §4-17),`2^0.5` 等。
 - **算术 IC 不影响快路径取值**,只记录类型分布(命中即「都是 number」),是给上层供料的旁路写,P1 自身不读它做分支(P1 的快路径判定就是现场 `IsNumber`,无需 IC 加速——算术 IC 纯为 P2/P4),见 §6.4。
 
@@ -384,7 +384,7 @@ doConcat(f, i):  // B..C 是一段连续寄存器
 
 ### 5.1 布点原则(扣合 roadmap §3 与 [design-premises](../../../llmdoc/must/design-premises.md))
 
-roadmap §3 / 前提四锁定:**safepoint 限定在分配点与层边界,根放 shadow stack**。落到解释器主循环,GC 只可能在**两类边界**介入:
+roadmap §3 / 前提四锁定:**safepoint 限定在分配点与层边界,根放 shadow stack**。具体到解释器主循环,GC 只可能在**两类边界**介入:
 
 1. **分配指令**:执行后可能触发一次堆分配(arena bump 越过阈值)→ 该 opcode 末尾是 safepoint。
 2. **调用边界**:CALL/TAILCALL/RETURN 进出帧——天然是「层边界」,也是 GC 安全检查的自然位置。
@@ -422,7 +422,7 @@ if vm.gcPending {
 - **shadow stack 根**:GC 的根集合是 Thread 的值栈活跃区 + 所有 CallInfo + 全局表 + Proto 注册表常量(见 [01](./01-value-object-model.md) §1「Proto 常量 GCRef 是 GC 根」)+ 当前在途的 Go 局部里持有的 GCRef(如 CONCAT 半成品)。详尽根枚举与 mark/sweep 算法见 [06-memory-gc](./06-memory-gc.md);**本文只声明「解释器在分配 opcode 末尾与调用边界把 frame 暴露为根并允许 Collect」**。
 - **P1 是 STW**:主循环在 safepoint 同步 Collect,无并发,无写屏障复杂度(写屏障接口预留给增量 GC,P1 不启用)。这把 GC 正确性的难度压到最低,符合 roadmap §5 原则 3「每阶段独立交付」。
 
-> 与编译层的对照:roadmap §2 要求「JIT 代码在循环回边插抢占检查点」。解释器**没有异步抢占问题**(它就是 Go 代码,Go 调度器在函数调用处可抢占),所以 P1 不需要回边抢占点;但**它的 safepoint 布点哲学(分配点 + 层边界)与未来 JIT 的回边检查点同源**,都是「受控位置才允许 runtime 介入」。FORLOOP 回边在 P1 不是 safepoint(循环体若不分配就一路跑),但它是 P2 热度计数采样点([02](./02-bytecode-isa.md) §4「热点回边」)——两件事不要混。
+> 与编译层的对照:roadmap §2 要求「JIT 代码在循环 back edge 插抢占检查点」。解释器**没有异步抢占问题**(它就是 Go 代码,Go 调度器在函数调用处可抢占),所以 P1 不需要 back edge 抢占点;但**它的 safepoint 布点哲学(分配点 + 层边界)与未来 JIT 的 back edge 检查点同源**,都是「受控位置才允许 runtime 介入」。FORLOOP back edge 在 P1 不是 safepoint(循环体若不分配就一路跑),但它是 P2 热度计数采样点([02](./02-bytecode-isa.md) §4「热点 back edge」)——两件事不要混。
 
 ---
 
@@ -516,25 +516,25 @@ func (vm *VM) doGetTable(f *frame, i Instruction) *LuaError {
 | `setmetatable` / 清 metatable | 该表 | [07](./07-metatables-metamethods.md) |
 | SETTABLE 插入触发 rehash | 该表 | 本文 §7 之外的写路径 |
 | SETGLOBAL 插入新键触发 rehash | globals 表 | 本文 |
-| **`insertNewKey` Brent-style 重定位**(新键落主位、把占用者迁到 free 槽)| **该表**(承 `internal/crescent/rawtable.go`)| 本文 §6.5.1 gen 契约强度 |
+| **`insertNewKey` Brent-style 重定位**(新键落主位、把占用者迁到 free 槽)| **该表**(承 `internal/crescent/rawtable.go`)| 本文 §6.5.1 gen 约定强度 |
 | 已存在键改值(无 rehash) | **不递增** | 本文 |
 
 **纪律**:rehash 是唯一会让「array/node 槽位下标失效」的操作,所以代次必须且只须在「槽位下标可能变」时递增。「改值不动槽」不递增是性能关键(循环里反复 `t[k]=v` 改同一键不该废 IC)。
 
-#### 6.5.1 gen 契约强度:由最严 consumer 定义
+#### 6.5.1 gen 约定强度:由最严 consumer 定义
 
-**契约强度定义**:表的 gen invariant 的**强度**由所有 consumer 中**最严格**的那个定义——任何改变 key → slot 映射的写路径都必须 BumpGen,即便解释器自己的读路径「碰巧不敏感」。
+**约定强度定义**:表的 gen invariant 的**强度**由所有 consumer 中**最严格**的那个定义——任何改变 key → slot 映射的写路径都必须 BumpGen,即便解释器自己的读路径「碰巧不敏感」。
 
 **consumer 谱系**(按对 gen 的依赖强度排列):
 
 | Consumer | 命中路径 | 对 key→slot 稳定性的依赖 | 强度 |
 |---|---|---|---|
 | P1 解释器 `icGetTable` / `icGetNodeVal` | ICSlot cache 命中路径 | **每次访问都复验 NodeKey**(比对 IC 记录的 key 与该 slot 当前的 key)——若 key 已被 Brent 挪走,复验失败降级慢查找 | **弱**(自愈) |
-| P3 wasm `emitGetGlobal` NodeHit inline | 全局表 IC 直达 | **只查 gen 是否 match**,不复验 key——**node 索引编译期烧入 wasm 字节码**;若 gen 未 bump 而 key 已挪走,读到相邻新占用者 = **静默错果** | **严** |
-| P4 native `GETGLOBAL` NodeHit inline | 全局表 IC 直达(P4 exit-reason 协议) | **同上**——node 索引编译期烧入机器码立即数,只查 gen;缺 bump = 静默错果 | **严** |
+| P3 wasm `emitGetGlobal` NodeHit inline | 全局表 IC 直达 | **只查 gen 是否 match**,不复验 key——**node 索引编译期烧入 wasm 字节码**;若 gen 未 bump 而 key 已挪走,读到相邻新占用者 = **静默返回错误结果** | **严** |
+| P4 native `GETGLOBAL` NodeHit inline | 全局表 IC 直达(P4 exit-reason 协议) | **同上**——node 索引编译期烧入机器码立即数,只查 gen;缺 bump = 静默返回错误结果 | **严** |
 
-**发现现场**(承 memory `project_pj10_native_longtask.md`「PJ10 must-beat-P3 op 集扩面」条目 fuzz seed `4b3d10ff17c418d4`):
-`insertNewKey` 的 Brent 重定位分支 (`internal/crescent/rawtable.go:180-206`) 会**改 slot** 但历史上**没有 BumpGen**——P1 解释器的每次访问复验 NodeKey 掩盖了这条漏洞多年,直到 P3 wasm 与 P4 native 的 gen-only inline 快路径接入,才让静默错果浮现。修复:在 Brent 重定位后无条件 `object.BumpGen(st.arena, t)`(见 rawtable.go:204 附近注释)。
+**发现经过**(承 memory `project_pj10_native_longtask.md`「PJ10 must-beat-P3 op 集扩面」条目 fuzz seed `4b3d10ff17c418d4`):
+`insertNewKey` 的 Brent 重定位分支 (`internal/crescent/rawtable.go:180-206`) 会**改 slot** 但历史上**没有 BumpGen**——P1 解释器的每次访问复验 NodeKey 掩盖了这条漏洞多年,直到 P3 wasm 与 P4 native 的 gen-only inline 快路径接入,静默的错误结果才暴露出来。修复:在 Brent 重定位后无条件 `object.BumpGen(st.arena, t)`(见 rawtable.go:204 附近注释)。
 
 **推论**:任何未来引入的表变换,若可能改变 key → slot 映射(rehash、Brent 挪位、shrink、compact 等),**必须 BumpGen**——即便当时的 consumer 都是「自愈」型,也不能省略,因为**下一代 consumer 可能是「严」型**;省略等于给未来埋 UAF。这是**「invariant 的强度由最严 consumer 定义」**原则在 gen 上的兑现,与 llmdoc `memory/doc-gaps.md` 登记的相关缺口对应(具体登记项由 recorder 维护)。
 
@@ -542,7 +542,7 @@ func (vm *VM) doGetTable(f *frame, i Instruction) *LuaError {
 
 本节定稿要求的两处上游布局增字段**均已回填完成**:
 
-1. **[01](./01-value-object-model.md) §5.2 Table 布局**:`gen uint32` 代次字段已落入 word5 高 32 位(与 lastfree 同字),`object.Table` 暴露 `Gen()` / `bumpGen()`。
+1. **[01](./01-value-object-model.md) §5.2 Table 布局**:`gen uint32` 代次字段已放进 word5 高 32 位(与 lastfree 同字),`object.Table` 暴露 `Gen()` / `bumpGen()`。
 2. **[02](./02-bytecode-isa.md) §7 ICSlot**:`tableRef uint32` 已增补(目标表 arena 偏移低 32 位,仅作身份比对,非 GC 根);算术 IC 的字段挪用(双计数,P2 回填)也已一并登记。
 
 这两处不改语义、只增字段,与 [01](./01-value-object-model.md)/[02](./02-bytecode-isa.md) 的 ABI 承诺兼容(只增不改)。
@@ -623,7 +623,7 @@ func (vm *VM) doReturn(f *frame, i Instruction) returnResult {
 - **退到入口帧即终止**:`execute` 被调用时记下 `entryCi`(§7.3);RETURN 退到它之下就 return 出 Go 函数。
 - **定长 nresults 的返回路径必须把 top 恢复到帧逻辑顶**(对齐 5.1 `L->top = L->ci->top`):这一条在**终止分支上也成立**,见 §7.2.1。
 
-#### 7.2.1 top 恢复纪律在终止分支上也成立(嵌套 `executeFrom` 的契约,#229,2026-08-04)
+#### 7.2.1 top 恢复纪律在终止分支上也成立(嵌套 `executeFrom` 的约定,#229,2026-08-04)
 
 「退到入口帧即终止」这句话有一个前提:入口帧之下**没有还在解释执行的 Lua 帧**。顶层 `Program.Call`、
 host→Lua 重入(`callLuaFromHostNamed`)、协程 resume 三个真正的边界都满足它,而且它们一律传
@@ -635,26 +635,26 @@ host→Lua 重入(`callLuaFromHostNamed`)、协程 resume 三个真正的边界�
 **不等于**「离开最后一个 Lua 帧」——下面还压着一个活着的 caller 帧,它马上要继续解释执行。这条路径上
 `nresults` 是定长的,所以会走进终止分支里「按 `dst + wantedN` 收窄 top」那一支。
 
-**漏做恢复的后果**(#229 实证):caller 的活寄存器留在 top **之上**,而 GC 的栈根扫描
+**漏做恢复的后果**(#229 的实际案例):caller 的活寄存器留在 top **之上**,而 GC 的栈根扫描
 (`internal/crescent/state.go::visitThreadValues`)把 `[top, size)` 当陈旧残留**清成 nil**(这一步本身
 对齐官方 `lgc.c` 的 `traversestack`,防的是死引用被后来升高的 top 覆盖后又被当活根扫描)。于是
 `for A=0,70 do f(o2) A={0} end` 里 `A={0}` 的 NEWTABLE 结果被清成 nil,紧随其后的 SETLIST 报
-`SETLIST: not a table`——P1 成功、P4 抬错。诊断线索是坏值本身:`tag=65528` 就是 `value.TagNil`,
+`SETLIST: not a table`——P1 成功、P4 报错。诊断线索是坏值本身:`tag=65528` 就是 `value.TagNil`,
 而 nil 是**清理动作**的值、不是任何一条指令的自然产物。
 
 **修法**:终止分支里区分「真的没有 caller 了」(`th.ciDepth == 0`,保持 `dst + wantedN`)与「还有
 caller 在下面」(恢复成 `caller.base + MaxStack`)。对照 PUC `lvm.c` 的 `OP_RETURN`
 「`if (b) L->top = L->ci->top`」——PUC 从不为 Lua callee 重进一层 `luaV_execute`(Lua→Lua 是
 `goto reentry`),所以这笔恢复天然归 RETURN 自己做;望舒因为嵌套了 `executeFrom`,这笔在终止分支上
-漏了。落点 `internal/crescent/call.go::doReturn`;回归 `fuzz_229_test.go`。
+漏了。修复位置在 `internal/crescent/call.go::doReturn`;回归 `fuzz_229_test.go`。
 
-**这是同一条纪律的第四处**。前三处早就在做一样的恢复:
+**这是同一条纪律的第四处**。前三处早就在做同样的恢复:
 
 | 站点 | 文件 | 场景 |
 |---|---|---|
 | `doReturn` 的非终止分支 | `internal/crescent/call.go` | 定长 nresults,退到 caller 继续解释 |
 | gibbous `DoReturn` | `internal/crescent/gibbous_host.go` | 段内 RETURN 走 host helper |
-| `callHost` | `internal/crescent/host.go` | 定长结果的 host 返回路径(§7.6 的同一条款,2026-06-12 测试加固轮实证:多值 CALL 留下低 top → `callLuaFromHost` 脚手架覆写 TFORLOOP 三槽 → `pairs` 收到 number) |
+| `callHost` | `internal/crescent/host.go` | 定长结果的 host 返回路径(§7.6 的同一条款,2026-06-12 测试加固轮中实际遇到:多值 CALL 留下低 top → `callLuaFromHost` 脚手架覆写 TFORLOOP 三槽 → `pairs` 收到 number) |
 | **`doReturn` 的终止分支** | `internal/crescent/call.go` | **本轮补上** |
 
 **判据**(方法论见 `llmdoc/guides/cross-backend-semantic-fix-sweep.md`「共享层恢复动作的兄弟路径
@@ -688,8 +688,8 @@ host function 调 Lua(如 pcall(f)):
 
 两个上限:
 
-- **Lua 调用深度**(CallInfo 数 / 值栈深度):由 `ciCap` 与栈上限守。超限抛 `"stack overflow"`(Lua 语义)。这是 arena 内的逻辑上限,不是 Go 栈。
-- **host→Lua 重入深度**(真 Go 栈消耗):维护一个 `nCcalls` 计数(Lua `LUAI_MAXCCALLS=200` 等价物),每次 `callLuaFromHost` +1,返回 -1;超限抛 `"C stack overflow"`。这防止「Lua 调 host 调 Lua 调 host …」无限交替真把 Go 栈打爆(Go 栈虽可增长但有 `maxstacksize` 上限 ~1GB,撞上会 fatal 不可恢复——必须在它之前用我们的可恢复错误拦下)。
+- **Lua 调用深度**(CallInfo 数 / 值栈深度):由 `ciCap` 与栈上限约束。超限抛 `"stack overflow"`(Lua 语义)。这是 arena 内的逻辑上限,不是 Go 栈。
+- **host→Lua 重入深度**(真 Go 栈消耗):维护一个 `nCcalls` 计数(Lua `LUAI_MAXCCALLS=200` 等价物),每次 `callLuaFromHost` +1,返回 -1;超限抛 `"C stack overflow"`。这防止「Lua 调 host 调 Lua 调 host …」无限交替真把 Go 栈打爆(Go 栈虽可增长但有 `maxstacksize` 上限 ~1GB,超过会 fatal 不可恢复——必须在它之前用我们的可恢复错误拦下)。
 
 ### 7.5 TAILCALL:复用帧,栈不增长
 
@@ -755,7 +755,7 @@ func (vm *VM) callHost(f *frame, a, nargs, nresults int) callResult {
 - **定长结果路径必须把 top 恢复到当前帧的逻辑顶**(`ci.base + MaxStack`,对齐 5.1 `L->top = ci->top`)。
   这不是「清理性」语句而是调用约定的一部分:漏做时前一条多值 CALL(C=0)留下的低 top 会让后续
   `callLuaFromHost` 脚手架覆写活跃寄存器,TFORLOOP 的迭代器三槽被毁、`pairs` 收到 number——症状离根因
-  极远(2026-06-12 测试加固轮由生成器二期撞出,修复见 `internal/crescent/host.go::callHost`)。同一条
+  极远(2026-06-12 测试加固轮由生成器二期发现,修复见 `internal/crescent/host.go::callHost`)。同一条
   纪律在 RETURN 侧的四个站点见 §7.2.1,那里记的是第四处(`doReturn` 终止分支,#229)。
 - host **内部若回调 Lua**(`vm.callLuaFromHost`),才触发 §7.3 的 Go 栈重入。
 - host 可能**抛 Lua 错误**(`vm.raise`):它走 §9 的错误返回路径,被最近 protected 边界捕获。host 不该 Go `panic`(§9.4)。
@@ -858,7 +858,7 @@ case bytecode.CLOSE:
 
 - **显式 CLOSE**:codegen 在「捕获了局部变量的块」退出时发 CLOSE(如 `do local x; foo=function() return x end end` 块尾)。
 - **RETURN/TAILCALL 隐式关闭**:§7.2/§7.5 在退帧前 `closeUpvals(f, f.base)` 关闭本帧全部(level=base)——因为整帧栈槽都要释放。
-- **循环回边**:`for`/`while` 体内若有闭包捕获循环变量,每次迭代的变量是新实例(Lua 5.1 语义),codegen 在循环体尾发 CLOSE 关闭该次迭代捕获的 upvalue。这保证 `for i=1,3 do t[i]=function() return i end end` 里三个闭包捕获三个不同的 `i`(经差分验证)。
+- **循环 back edge**:`for`/`while` 体内若有闭包捕获循环变量,每次迭代的变量是新实例(Lua 5.1 语义),codegen 在循环体尾发 CLOSE 关闭该次迭代捕获的 upvalue。这保证 `for i=1,3 do t[i]=function() return i end end` 里三个闭包捕获三个不同的 `i`(经差分验证)。
 
 > **正确性纪律**:任何「栈槽即将被复用或失效」的点(退帧、块退出、循环迭代收尾),凡其上可能有开放 upvalue,就必须先 closeUpvals。漏关 = 闭包读到被覆盖的栈值(经典 use-after-scope bug)。codegen 与解释器对此有明确分工:codegen 发 CLOSE 标块边界,解释器在退帧时兜底全关。
 
@@ -950,7 +950,7 @@ pcall host 实现:
 
 要点:
 
-- **错误冒泡 = execute 一路 return *LuaError**,直到撞上一个「在 host 里调了 callLuaFromHost 且检查返回值」的 protected 边界(pcall),由它把 `*LuaError` 转成 `(false, errval)` 返回值并**清理 CallInfo + 关 upvalue + 恢复 top**。
+- **错误冒泡 = execute 一路 return *LuaError**,直到遇到一个「在 host 里调了 callLuaFromHost 且检查返回值」的 protected 边界(pcall),由它把 `*LuaError` 转成 `(false, errval)` 返回值并**清理 CallInfo + 关 upvalue + 恢复 top**。
 - **没有 pcall 保护时**:错误一路 return 到顶层 `Program.Call`,后者把 `*LuaError` 转成 Go 的 `error` 返回给宿主([11-embedding-arena-abi](./11-embedding-arena-abi.md))。中间所有 Lua 帧的 CallInfo 随 execute return 被一并放弃(因为整个 execute 失败,Thread 状态标 dead 或重置)。
 - **CallInfo 清理责任在 protected 边界**,不在每个出错帧——出错帧只管 `return e` 冒泡,**省掉了每帧的 defer/cleanup**(这正是显式返回 vs panic 的关键简化:panic 要在每帧 defer 关 upvalue,显式返回让边界一次性清理)。
 - **元方法/错误处理器**(`error` 的 message handler、`xpcall` 的 handler):在边界捕获后、返回前调用 handler(可能再 reentry execute);细节 [09](./09-errors-pcall.md)。
@@ -962,7 +962,7 @@ pcall host 实现:
 - **host function 出错**:host 调 `vm.raise` 同上;host **绝不该 Go panic**(Go panic 会绕过我们的 CallInfo 清理)。若 host 代码有 bug 真 panic 了,顶层 `Program.Call` 用一个**最外层 recover 兜底**转成 Lua 错误并标记 Thread 损坏——但这是**安全网,不是正常路径**([09](./09-errors-pcall.md) 定此兜底)。
 - **`assert`/`tonumber` 失败**等:走各自 host 逻辑,失败时 `vm.raise`。
 
-> 这与 §7.3 衔接:错误冒泡的「停靠站」就是 §7.3 标 `callStatus_fresh` 的 reentry 边界——每个 host→Lua 重入点都是潜在的错误捕获点(若该 host 是 pcall),否则错误穿过它继续向 Go 上层 return。
+> 这与 §7.3 衔接:错误冒泡停下的位置就是 §7.3 标 `callStatus_fresh` 的 reentry 边界——每个 host→Lua 重入点都是潜在的错误捕获点(若该 host 是 pcall),否则错误穿过它继续向 Go 上层 return。
 
 ### 9.5 错误传播与 ≥2x 验收的关系
 
@@ -976,7 +976,7 @@ pcall host 实现:
 - **OSR exit**(P4 新增):投机失败(IC NodeHit guard 不成立 / IsNumber 失败),GibbousCode.Run 返回 status=2 → doCall 走 `callDeoptResume`(§7.1 + RJ-3),**不动 pendingErr**
 - **同发情况**:若投机段中真发生语义错误(如 SELF method 调用 method=nil),**错误优先**:pendingErr 置位 + GibbousCode.Run 返回 status=1(ERR),不返 status=2
 
-**P4 验证形式**(承本会话实证):
+**P4 验证形式**(承本会话的实测):
 - `TestPJ5_SelfCall_E2E_SpecTemplate_ErrorBubbleUp_NilRecv`(语义错误冒泡正确)
 - `TestPJ5_SelfCall_E2E_SpecTemplate_ErrorBubbleUp_BadMethod`(method=number 时 attempt to call 冒泡)
 - `TestPJ5_SelfCall_E2E_SpecTemplate_OSRExitToDeopt`(投机失误纯 deopt,不动 pendingErr,byte-equal P1)
@@ -1008,9 +1008,9 @@ case bytecode.FORPREP:
 ```
 
 - **三槽校验**:init/limit/step 都必须能转 number,否则报 `"'for' initial/limit/step value must be a number"`([02](./02-bytecode-isa.md) §6)。校验通过后**回填规范化的数值**(把字符串 "1" 转成数字 1 存回),这样 FORLOOP 不必每次再转。
-- **预减一个 step**:FORPREP 先 `init -= step`,这样第一次 FORLOOP 加回 step 后正好是 init——把「进入循环体前的判界」与「回边判界」统一成 FORLOOP 一处逻辑。
+- **预减一个 step**:FORPREP 先 `init -= step`,这样第一次 FORLOOP 加回 step 后正好是 init——把「进入循环体前的判界」与「back edge 判界」统一成 FORLOOP 一处逻辑。
 
-**FORLOOP A sBx**(回边,[02](./02-bytecode-isa.md) §4-31,**热点回边**):
+**FORLOOP A sBx**(back edge,[02](./02-bytecode-isa.md) §4-31,**热点 back edge**):
 
 ```go
 case bytecode.FORLOOP:
@@ -1033,7 +1033,7 @@ case bytecode.FORLOOP:
 要点:
 
 - **方向敏感判界**:step≥0 用 `idx <= limit`,step<0 用 `idx >= limit`。这与 Lua 5.1 一致(`for i=10,1,-1`)。`step==0` 是 Lua 5.1 未定义/死循环,我们按 `step>=0` 分支处理(`idx<=limit` 恒可能真 → 死循环,与官方一致,不特判报错——除非选择更友好,见 doc-gap)。
-- **回边零额外开销**:三个 `AsNumber` 是 `math.Float64frombits`(无分支),加法、一次比较、两次写栈、一次 pc 加——**没有分配、没有类型断言、没有元方法检查**。这是 roadmap §1「Horner 循环」类负载的最热路径,直接决定循环档 ≥2x([02](./02-bytecode-isa.md) §8 示例就是这形状)。对比 gopher-lua:它的 for 循环变量是 interface,每次迭代要拆箱/装箱。
+- **back edge 零额外开销**:三个 `AsNumber` 是 `math.Float64frombits`(无分支),加法、一次比较、两次写栈、一次 pc 加——**没有分配、没有类型断言、没有元方法检查**。这是 roadmap §1「Horner 循环」类负载的最热路径,直接决定循环档 ≥2x([02](./02-bytecode-isa.md) §8 示例就是这形状)。对比 gopher-lua:它的 for 循环变量是 interface,每次迭代要拆箱/装箱。
 - **FORLOOP 不是 safepoint**(§5.2):它不分配。循环体若不分配,整个循环一路跑不进 GC——这是好事(热循环不被 GC 打断)。
 - **NaN limit**:若 limit 是 NaN,`idx <= NaN` 恒 false → 循环一次不执行就退出(IEEE 语义,与 Lua 一致)。
 
@@ -1041,7 +1041,7 @@ case bytecode.FORLOOP:
 
 ### 10.2 泛型 for:TFORLOOP
 
-[02](./02-bytecode-isa.md) §4-33 / §6:泛型 for `for k,v in iter,state,ctrl` 占 `R(A..A+2)`(迭代函数/状态/控制变量)+ 循环变量。`TFORLOOP A C`:调用 `R(A)(R(A+1), R(A+2))`,产出 `R(A+3..A+2+C)`;若首产出值非 nil 则 `R(A+2) := R(A+3)`(更新控制变量),否则 `pc++`(跳过紧随的回边 JMP,退出循环)。
+[02](./02-bytecode-isa.md) §4-33 / §6:泛型 for `for k,v in iter,state,ctrl` 占 `R(A..A+2)`(迭代函数/状态/控制变量)+ 循环变量。`TFORLOOP A C`:调用 `R(A)(R(A+1), R(A+2))`,产出 `R(A+3..A+2+C)`;若首产出值非 nil 则 `R(A+2) := R(A+3)`(更新控制变量),否则 `pc++`(跳过紧随的 back edge JMP,退出循环)。
 
 ```go
 case bytecode.TFORLOOP:
@@ -1206,16 +1206,16 @@ func (vm *VM) safepoint(f *frame) {
 }
 ```
 
-> **dispatch 与执行解耦**:所有 `vm.doXxx` 是可复用 helper(§2.2 纪律),换 closure-threading dispatch 时它们不变——保住语义 oracle 唯一性。`code` 局部变量 + `callEnteredLua`/`returnToCaller` 重载是 reentry 的全部魔法(§7)。
+> **dispatch 与执行解耦**:所有 `vm.doXxx` 是可复用 helper(§2.2 纪律),换 closure-threading dispatch 时它们不变——保住语义 oracle 唯一性。`code` 局部变量 + `callEnteredLua`/`returnToCaller` 重载就是 reentry 机制的全部内容(§7)。
 
 ---
 
 ## 13. 文档缺口 / 待决(记入 memory/doc-gaps)
 
 - **dispatch spike 定稿**:closure-threading 的具体闭包签名、操作数捕获策略、与 IC slot 指针绑定方式,留到 P1 提速 spike 阶段(§2.2)。基线 (a) 已可实现;(b)/(c) 的 A/B 口径见 [12](./12-testing-difftest.md)。
-- ~~对 [01](./01-value-object-model.md) / [02](./02-bytecode-isa.md) 的回填~~:**已兑现**(§6.6/§8.6)——01 §5.2 gen、01 §5.4 nextOpen、02 §7 tableRef 均已落入对应布局。
+- ~~对 [01](./01-value-object-model.md) / [02](./02-bytecode-isa.md) 的回填~~:**已兑现**(§6.6/§8.6)——01 §5.2 gen、01 §5.4 nextOpen、02 §7 tableRef 均已写进对应布局。
 - **`step==0` 数值 for**:当前按 Lua 5.1「未定义/可能死循环」处理(§10.1),是否改为友好报错待定(影响差分一致性——官方不报错,改了会与官方差分不一致,**倾向保持不报错**)。
-- **字符串→数字 coercion 的精确边界**:已由 [07](./07-metatables-metamethods.md) §5.2 收口(算术/数值 for/tonumber 共用一套 `parseLuaNumber`),精确边界(十六进制、空白)由差分基准钉死。
+- **字符串→数字 coercion 的精确边界**:已由 [07](./07-metatables-metamethods.md) §5.2 统一处理(算术/数值 for/tonumber 共用一套 `parseLuaNumber`),精确边界(十六进制、空白)由差分基准锁定。
 - **`%.14g` 数字格式**:CONCAT/tostring 的数字→字符串格式(§4.6)需与 gopher-lua/官方逐字节核对,口径已锁定在 [12](./12-testing-difftest.md) 验收口径总表。
 - **mono IC 是否够用**:P1 用 mono IC(§6.3),频繁多态访问点退化为无 IC。是否需要 P1 就上 2-4 路 polymorphic IC,待性能 spike(多数列内核负载是 mono,**倾向 P1 只做 mono**,polymorphic 留 P2 反馈驱动)。
 - **host panic 兜底语义**:§9.4 的顶层 recover 兜底(host 真 panic 时转 Lua 错误 + 标 Thread 损坏)的精确语义与可恢复性,已由 [09](./09-errors-pcall.md) 定稿。

@@ -1,9 +1,9 @@
 # P2-02 IC 反馈聚合子系统:从 P1 旁路写到 P3/P4 投机供料
 
 > 状态:**详细设计**。本文是 [../p2-bridge/00-overview §3](./00-overview.md) 的深度展开,所有跨文档接口以本文为准。
-> 单一事实源覆盖:P1 IC 写入复用契约、算术 IC 双计数挪用规约(P1 IC 字段共享方案)、`TypeFeedback` shape 与 `confidence` 计算、megamorphic 标记的 P2 完成。
+> 单一事实源覆盖:P1 IC 写入复用约定、算术 IC 双计数挪用规约(P1 IC 字段共享方案)、`TypeFeedback` shape 与 `confidence` 计算、megamorphic 标记的 P2 完成。
 > 上游:[00-overview](./00-overview.md) §1(P1/P2/P3 边界:IC 写读分离)/§3(算术 IC 双计数关键耦合点)/§7(P1 前瞻义务对账,IC 双计数 ✅)。
-> P1 依赖面:[02-bytecode-isa §7](../p1-interpreter/02-bytecode-isa.md)(`ICSlot` 结构 + 算术 IC 字段挪用登记)、[05-interpreter-loop §6](../p1-interpreter/05-interpreter-loop.md)(IC 执行机制定稿)、**[05-interpreter-loop §6.4](../p1-interpreter/05-interpreter-loop.md)(算术 IC「P1 写不读纯供料」是本文的核心契约)**、[01-value-object-model §3](../p1-interpreter/01-value-object-model.md)(NaN-box 数字识别)、[implementation-progress](../p1-interpreter/implementation-progress.md)(P1 已完成形式对账)。
+> P1 依赖面:[02-bytecode-isa §7](../p1-interpreter/02-bytecode-isa.md)(`ICSlot` 结构 + 算术 IC 字段挪用登记)、[05-interpreter-loop §6](../p1-interpreter/05-interpreter-loop.md)(IC 执行机制定稿)、**[05-interpreter-loop §6.4](../p1-interpreter/05-interpreter-loop.md)(算术 IC「P1 写不读纯供料」是本文的核心约定)**、[01-value-object-model §3](../p1-interpreter/01-value-object-model.md)(NaN-box 数字识别)、[implementation-progress](../p1-interpreter/implementation-progress.md)(P1 已完成形式对账)。
 > 下游:[03-compilability-analysis](./03-compilability-analysis.md)(可编译性检查,与 feedback 正交)、[04-try-compile-fallback](./04-try-compile-fallback.md)(状态机消费 feedback 决定何时升)、[05-p3-p4-interface](./05-p3-p4-interface.md)(`P3Compiler.feedback` 可选 / `P4Feedback` 核心)、[../p4-method-jit](../p4-method-jit/00-overview.md)(投机消费方,confidence 决定激进度)。
 
 ---
@@ -19,7 +19,7 @@ P2 IC 反馈子系统的存在理由,只用一句话表述:**把 P1 解释器执
 | **P3 gibbous**(P2+) | **可选消费**:稳定点的紧凑 Wasm 翻译(锦上添花,不依赖正确性)。详见 [05-p3-p4-interface](./05-p3-p4-interface.md) §2 | P3 阶段 |
 | **P4 fullmoon-method**(P4+) | **核心消费**:类型投机的输入,`confidence` 决定激进度,`FBArithStableNumber` 发 f64 快路径 + guard,`FBTableMono` 投机直达槽,`FBTableMega` 老实查哈希 | P4 阶段 |
 
-> 这与 [00-overview](./00-overview.md) §2 总数据流的"算术 IC 写不读"一脉相承:**信息在每一层被生产,在下一层被消费**。P1 写 IC 时不知道 P2 会怎么用,只是忠实记录;P2 读 IC 写 feedback 时不知道 P4 会用 confidence 挑哪些点投机,只是忠实聚合。每层只做自己那一棒,跨层零反向耦合 —— 这是 [roadmap.md §3](../roadmap.md) "编译层是纯增量"在反馈维度的物理兑现。
+> 这与 [00-overview](./00-overview.md) §2 总数据流的"算术 IC 写不读"一脉相承:**信息在每一层被生产,在下一层被消费**。P1 写 IC 时不知道 P2 会怎么用,只是忠实记录;P2 读 IC 写 feedback 时不知道 P4 会用 confidence 挑哪些点投机,只是忠实聚合。每层只做自己那一棒,跨层零反向耦合 —— 这是 [roadmap.md §3](../roadmap.md) "编译层是纯增量"在反馈维度的具体体现。
 
 **为什么 P2 不消费 feedback**(§7 详):因为 P2 不在执行热路径上([00-overview](./00-overview.md) §1 边界表),不发射代码、不跑 Proto;消费 feedback 的人是发射代码的人(P3/P4),不是产料的人(P2)。让 P2 消费 feedback 等于让 `internal/bridge` 出现"跑 Proto"逻辑,直接判否([00-overview](./00-overview.md) §1 末尾铁律)。
 
@@ -63,9 +63,9 @@ type ICSlot struct {
 >
 > 注 2:**LEN/CONCAT 不带 IC**——LEN 的字符串/表/userdata 三分支用 NaN-box tag 直接拣选,无 IC 价值;CONCAT 全 string/number 走线性快路径,混合操作数走两两折叠,IC 无信息可记。
 >
-> 注 3:**TFORLOOP / FORLOOP / FORPREP 不带 IC**——它们是控制流而非取值/运算指令,但 FORLOOP 回边是**热度采样点**而非 IC 点(详见 [01-profiling](./01-profiling.md) §2),与本文 IC 反馈是正交维度。
+> 注 3:**TFORLOOP / FORLOOP / FORPREP 不带 IC**——它们是控制流而非取值/运算指令,但 FORLOOP 循环回跳(back edge)是**热度采样点**而非 IC 点(详见 [01-profiling](./01-profiling.md) §2),与本文 IC 反馈是正交维度。
 
-### 1.3 P1 写入快路径绝对不动(本文核心契约)
+### 1.3 P1 写入快路径绝对不动(本文核心约定)
 
 [05-interpreter-loop §6.4](../p1-interpreter/05-interpreter-loop.md) 的原话:
 
@@ -76,7 +76,7 @@ type ICSlot struct {
 1. **写不读分支**:P1 的算术快路径用 `value.IsNumber(b) && value.IsNumber(c)` 现场判定(05 §4.1),不读 IC slot 决定走哪条路。算术 IC 是**纯旁路写**,被改成什么样都不影响 P1 的取值正确性。
 2. **P2 不写**:P2 是只读消费方(§0),不刷新 IC slot、不重置计数、不改 kind。这条铁律保证 P1 ↔ P2 的 IC 写入路径**单向**,P2 上线零回归 P1。
 
-这两条联合给出了 P2 实现的最严苛约束:**P2 的聚合器必须容忍 IC slot 被并发写**(P1 解释器仍在跑),读取时不加锁(`atomic.LoadUint32` 或非原子 race-tolerant 读)。读"脏"了顶多让某次 confidence 计算偏一点,不影响后续聚合的最终收敛——这是「反馈聚合是统计性的、不要求强一致」的物理体现。详见 §5.4 并发读策略。
+这两条联合给出了 P2 实现的最严苛约束:**P2 的聚合器必须容忍 IC slot 被并发写**(P1 解释器仍在跑),读取时不加锁(`atomic.LoadUint32` 或非原子 race-tolerant 读)。读"脏"了顶多让某次 confidence 计算偏一点,不影响后续聚合的最终收敛——这是「反馈聚合是统计性的、不要求强一致」的具体体现。详见 §5.4 并发读策略。
 
 ---
 
@@ -115,7 +115,7 @@ P1 解释器执行期(M10 IC 实现后):
 2. **第 2 ~ 1000 次**:GETTABLE 走 IC 命中(同表 + 同代次双校验通过),直达 node 槽,跳过 hash。**ICSlot 不再被写**(命中无需更新)。
 3. P1 不在循环内写 P2 任何反馈对象——仅 ICSlot 这一处状态自然驻留。
 
-P2 在 considerPromotion 触发时(假设 1000 次回边累积满阈值,01-profiling §5):
+P2 在 considerPromotion 触发时(假设 1000 次 back edge 累积满阈值,01-profiling §5):
 
 1. 调用 `aggregator.aggregate(proto)`,遍历 Proto.Code,在 GETTABLE 指令处 `extractTableFeedback(pc, slot, opGetTable)`。
 2. 读到 `slot.kind=2`,产出:
@@ -144,7 +144,7 @@ P2 在 considerPromotion 触发时(假设 1000 次回边累积满阈值,01-profi
 | 2 node hit | `FBGlobalStable`(globals 恒为 node hit,因 globals 表无数组段或全局键不走 array) | confidence=1.0;stableIndex=ICSlot.index 即 globals 节点槽 |
 | 4 megamorphic | (理论上 globals 不会 megamorphic) | globals 是单一表,无换表问题;kind=4 在 globals IC 上不应出现 |
 
-> **globals 不会 megamorphic 的直觉**:GETTABLE 的 megamorphic 来源是「同一指令多次访问不同表」。GETGLOBAL 的目标表恒为 globals(05 §6.4「目标表恒为 globals,tableRef 恒等」),不存在「换表」语义,kind 只在 {0, 2} 之间;实现侧 P1 不会写 kind=4 给 globals IC。**P2 聚合器对 GETGLOBAL/SETGLOBAL 见 kind=4 应当 panic**(违反 P1 写入契约),这是一条防护性不变式。
+> **globals 不会 megamorphic 的直觉**:GETTABLE 的 megamorphic 来源是「同一指令多次访问不同表」。GETGLOBAL 的目标表恒为 globals(05 §6.4「目标表恒为 globals,tableRef 恒等」),不存在「换表」语义,kind 只在 {0, 2} 之间;实现侧 P1 不会写 kind=4 给 globals IC。**P2 聚合器对 GETGLOBAL/SETGLOBAL 见 kind=4 应当 panic**(违反 P1 写入约定),这是一条防护性不变式。
 
 ### 2.3 SELF(`obj:m()` 方法查找)
 
@@ -235,7 +235,7 @@ P4 拿到 FBUnstable → 不发 f64 快路径,P3 发通用 ADD 翻译(完整类�
 - **方案 B**(选定):双计数 `numHits` / `metaHits`,记次数。
   - 给 P2 提供「比例」信息:99% number 的点 vs 50% number 的点的 confidence 截然不同,P4 可设阈值(如 ≥99% 才投机)精准筛选,落到稳定点投机命中率更高。
 
-> **比例信息的可调性**:这是 [roadmap.md §5](../roadmap.md) 原则 4「fallback 与投机的分水岭可调」在反馈维度的物理兑现——双计数让阈值是一个**实现期可调的旋钮**,不同负载可以有不同的稳定阈值(算术密集脚本可调激进,混合负载调保守)。单布尔则把这个旋钮焊死在「曾经过 = 投机」上。
+> **比例信息的可调性**:这是 [roadmap.md §5](../roadmap.md) 原则 4「fallback 与投机的分水岭可调」在反馈维度的具体体现——双计数让阈值是一个**实现期可调的旋钮**,不同负载可以有不同的稳定阈值(算术密集脚本可调激进,混合负载调保守)。单布尔则把这个旋钮焊死在「曾经过 = 投机」上。
 
 ### 3.2 字段挪用方案(P1 已完成形式)
 
@@ -281,8 +281,8 @@ func (s *ICSlot) recordArithMeta() {
 
 要点:
 
-1. **饱和而非回绕**:`numHits` 接近 2^32 时停止递增(`if != ~0 then ++`),不让计数回绕到 0 —— 否则某个超热点跑 2^32 次后 confidence 突变是难以诊断的 bug。饱和值 2^32-1 对 P2 计算 `numHits/total` 的影响完全可忽略(分子分母同尺度饱和,比例不变;若仅一边饱和,长期看 confidence 接近 1.0,符合「这点已经稳定到极致」的物理直觉)。
-2. **`kind` 在算术 IC 上的轻量用法**:0 是「未观测」(P2 跳过此点,§2.4 第一行),1 是「已观测过」(P2 检查比例)。算术 IC 永远不会写 kind∈{2,3,4}——这些值是表 IC 专用,P2 见到算术 pc 上 kind∈{2,3,4} 应当 panic(违反 P1 写入契约,与 §2.2 globals megamorphic 防护性不变式同性质)。
+1. **饱和而非回绕**:`numHits` 接近 2^32 时停止递增(`if != ~0 then ++`),不让计数回绕到 0 —— 否则某个超热点跑 2^32 次后 confidence 突变是难以诊断的 bug。饱和值 2^32-1 对 P2 计算 `numHits/total` 的影响完全可忽略(分子分母同尺度饱和,比例不变;若仅一边饱和,长期看 confidence 接近 1.0,符合「这点已经稳定到极致」的直觉)。
+2. **`kind` 在算术 IC 上的轻量用法**:0 是「未观测」(P2 跳过此点,§2.4 第一行),1 是「已观测过」(P2 检查比例)。算术 IC 永远不会写 kind∈{2,3,4}——这些值是表 IC 专用,P2 见到算术 pc 上 kind∈{2,3,4} 应当 panic(违反 P1 写入约定,与 §2.2 globals megamorphic 防护性不变式同性质)。
 3. **不区分快路径子分支**:Lua 5.1 算术快路径只有「双 number → f64 运算」一种(05 §4.1),所以 numHits 不需要细分;字符串自动转数字(`"10"+5`)走慢路径前置 coercion(05 §4.1 引文),会被记到 metaHits ——这是设计抉择(string→number coercion 不算"稳定 number"),P4 投机时把这种点判 `FBUnstable` 即可。
 
 ### 3.4 P2 算术 feedback 提取骨架
@@ -349,7 +349,7 @@ func (a *aggregator) extractArithFeedback(pc int32, slot *bytecode.ICSlot) Point
 |---|---|---|
 | 算术 IC 双计数(numHits/metaHits 挪用 shape/index/tableRef) | ✅ M10 IC 接入轮实现,P1 写不读 | 02 §7 / 05 §6.4 / [implementation-progress](../p1-interpreter/implementation-progress.md) IC 命中路径行 |
 
-**结论**:本节描述的所有 P1 端要求**已在 P1 全卷交付时同批兑现**,P2 PB2(IC 反馈聚合器,见 [00-overview](./00-overview.md) §4 里程碑)启动时直接读 ICSlot 即可,P1 端零新开发。
+**结论**:本节描述的所有 P1 端要求**已在 P1 全部交付时同批兑现**,P2 PB2(IC 反馈聚合器,见 [00-overview](./00-overview.md) §4 里程碑)启动时直接读 ICSlot 即可,P1 端零新开发。
 
 ---
 
@@ -494,7 +494,7 @@ type ProfileData struct {
 
 ### 5.1 confidence 在不同 FeedbackKind 上的语义
 
-`confidence` 字段的物理含义随 `FeedbackKind` 变化:
+`confidence` 字段的实际含义随 `FeedbackKind` 变化:
 
 | FeedbackKind | confidence 含义 | 计算方式 |
 |---|---|---|
@@ -527,7 +527,7 @@ type AggregatorConfig struct {
 }
 ```
 
-**阈值不影响正确性**——只影响何时投机。保住「P4 投机失败 deopt 必须正确回到 P1」(P4 的不变式),阈值高低只是性能调旋。
+**阈值不影响正确性**——只影响何时投机。保住「P4 投机失败 deopt 必须正确回到 P1」(P4 的不变式),阈值高低只是性能调优。
 
 ### 5.3 minObservations 样本量下限
 
@@ -623,7 +623,7 @@ func (pd *ProfileData) installFeedback(fb *TypeFeedback) {
 2. **方案 B/C 的复杂度溢出**:扩 ICSlot 字段 / 加 P1 旁路计数都是 P1 端改动,违反「P2 启动是纯增量,P1 零新开发」(00-overview §7 结论)。
 3. **真实负载里 mono IC 退化的占比待定**:若实测发现 P4 投机失败率高,再加方案 B/C(把识别 mega 当作"P2 演进 PB+"而非 PB2 强制特性)。
 
-> **方案 (A) 的物理体现**:`§3.4 extractTableFeedback`(对应算术 IC 骨架的表 IC 版本)的逻辑就是 `switch slot.kind { case 4: return FBTableMega; default: return FBTableMono }`——简洁明了,无识别复杂度。
+> **方案 (A) 的具体体现**:`§3.4 extractTableFeedback`(对应算术 IC 骨架的表 IC 版本)的逻辑就是 `switch slot.kind { case 4: return FBTableMega; default: return FBTableMono }`——简洁明了,无识别复杂度。
 
 ### 6.3 表 IC 聚合骨架(对应 §3.4 算术版本)
 
@@ -702,7 +702,7 @@ func (a *aggregator) aggregate(proto *bytecode.Proto) *TypeFeedback {
 
 - **O(N) 单遍**:N=Proto.Code 长度;每个 pc 一次 switch + 一次提取。冷热路径一视同仁。
 - **无副作用**:不写 ICSlot、不写 ProfileData(写入由 §5.5 `installFeedback` 单独负责)。
-- **可重入**:同一 Proto 多线程并发调用 aggregate 安全(都是只读 ICSlot)——`installFeedback` 的 CAS 把竞争收口。
+- **可重入**:同一 Proto 多线程并发调用 aggregate 安全(都是只读 ICSlot)——由 `installFeedback` 的 CAS 统一解决竞争。
 
 ---
 
@@ -741,7 +741,7 @@ P1 写 IC、P2 读 IC 写 feedback、P3/P4 读 feedback 投机——这是 [00-o
 | 不读方 | P1 解释器(自己) | P2(自己)|
 | 读消费方 | P2 聚合器 | P3/P4 编译器 |
 | 设计意图 | P1 不依赖算术 IC 取值 → IC 写入可被任意改 | P2 不依赖 feedback 决策 → feedback 仅供下游 |
-| 物理性质 | 旁路写,不影响 P1 性能(05 §4.1) | 旁路写,不影响 P2 决策正确性(本节) |
+| 实际性质 | 旁路写,不影响 P1 性能(05 §4.1) | 旁路写,不影响 P2 决策正确性(本节) |
 
 这种「跨层供料」模式是分层桥的本质——每一层只关心自己的输入与输出,不窥探下一层怎么用。
 
@@ -752,7 +752,7 @@ P1 写 IC、P2 读 IC 写 feedback、P3/P4 读 feedback 投机——这是 [00-o
 P2 IC 反馈子系统实现期必须保住的硬性约束,违反即设计失败:
 
 1. **P1 IC 写入快路径绝对不动**:[05-interpreter-loop §6.4](../p1-interpreter/05-interpreter-loop.md) 已立的「写不读」P2 不破坏;P1 算术快路径仍是 `IsNumber(b) && IsNumber(c)` 现场判定 + numHits++;P2 上线后 P1 端字节码、IC 写入逻辑零修改。
-2. **P2 只读 ICSlot 不写**:聚合器的所有路径都是纯读,不刷新 kind、不重置计数、不改 shape/index/tableRef。这是 P1↔P2 单向数据流的物理体现。
+2. **P2 只读 ICSlot 不写**:聚合器的所有路径都是纯读,不刷新 kind、不重置计数、不改 shape/index/tableRef。这是 P1↔P2 单向数据流的具体体现。
 3. **同一 feedback P3 选用 P4 必用**:P3 可选(锦上添花的紧凑翻译,不依赖正确性),P4 核心(类型投机的输入,依赖 confidence 决定激进度);**两者读同一份 `TypeFeedback`,字段定义稳定** —— P2 不为 P3 P4 各产一份(浪费),也不在 P3 升层时省略 feedback(把决策推给 P4)。
 4. **字段挪用按 kind 分流**:ICSlot.shape/index/tableRef 在算术 IC 与表 IC 上语义不同,所有访问方必须先看 kind 再决定字段含义;直接读字段在 lint 标红。
 5. **P2 不消费 feedback**:`internal/bridge` 内禁止读 `ProfileData.feedback`(only writers),违反就 lint 报错。这是 §7 的代码级兑现。
@@ -772,7 +772,7 @@ P2 IC 反馈子系统实现期必须保住的硬性约束,违反即设计失败:
 
 §5.1 已论证「表 IC confidence 恒 1.0」是粗粒度——P4 投机时拿不到「这个点过去命中 1 次还是 1 万次」的信息。当前权衡:**算术 IC 真比例,表 IC 布尔**。
 
-潜在升级:若 P4 实测发现表 IC 投机失败率高(mono IC 实际是「换表罕见但偶尔翻车」形式),需扩 ICSlot 字段或加旁路计数。**留 P2+ / P4 阶段补**,与「精确 yield 分析」(03-compilability-analysis F2 缺口)同性质。
+潜在升级:若 P4 实测发现表 IC 投机失败率高(mono IC 实际是「换表罕见但偶尔失效」形式),需扩 ICSlot 字段或加旁路计数。**留 P2+ / P4 阶段补**,与「精确 yield 分析」(03-compilability-analysis F2 缺口)同性质。
 
 ### 9.2 比较 LT/LE 的 number vs string 分流
 
@@ -800,7 +800,7 @@ P2 IC 反馈子系统实现期必须保住的硬性约束,违反即设计失败:
 
 §5.5 的 CAS 安装确保只有一份 feedback 写入,但**两个 State 同时聚合产生的内容是否完全一致**取决于 ICSlot 在聚合瞬间的状态——若 State A 聚合时 State B 仍在写 IC,A、B 各自看到的 ICSlot 快照可能不同。
 
-实际影响:即便 A 与 B 产出的 confidence 略有差异(例如 0.99 vs 0.995),CAS 抢到的版本胜出,另一个丢弃——下游消费一份就好。**这是 race-tolerant 的接受范围**(§5.4 已立),不视为缺口而是设计抉择;若实测发现 confidence 抖动让 P4 投机不稳定,再考虑「聚合期 P1 解释器暂停」(STW 风格)——代价大,目前无依据上。
+实际影响:即便 A 与 B 产出的 confidence 略有差异(例如 0.99 vs 0.995),CAS 抢到的版本胜出,另一个丢弃——下游消费一份就好。**这是 race-tolerant 的接受范围**(§5.4 已立),不视为缺口而是设计抉择;若实测发现 confidence 抖动让 P4 投机不稳定,再考虑「聚合期 P1 解释器暂停」(STW 风格)——代价大,目前没有依据支持这样做。
 
 ---
 
@@ -810,11 +810,11 @@ P2 IC 反馈子系统实现期必须保住的硬性约束,违反即设计失败:
 - [01-profiling](./01-profiling.md)(热度采样,与本文 IC 反馈是 P2 的两条供料线)
 - [03-compilability-analysis](./03-compilability-analysis.md)(可编译性检查,与 feedback 正交;检查开后才聚合 feedback)
 - [04-try-compile-fallback](./04-try-compile-fallback.md)(状态机,considerPromotion 调用本文 aggregator)
-- [05-p3-p4-interface](./05-p3-p4-interface.md)(P3 可选用 / P4 核心用 feedback 的接口契约)
+- [05-p3-p4-interface](./05-p3-p4-interface.md)(P3 可选用 / P4 核心用 feedback 的接口约定)
 - [06-testing-strategy](./06-testing-strategy.md)(IC 反馈聚合的合成脚本测试 + confidence 计算单测)
 - [../p2-bridge/00-overview](./00-overview.md) §3(本文的种子,深度展开)
 - [../p1-interpreter/02-bytecode-isa.md](../p1-interpreter/02-bytecode-isa.md) §7(ICSlot 结构 + 算术 IC 字段挪用登记)
-- [../p1-interpreter/05-interpreter-loop.md](../p1-interpreter/05-interpreter-loop.md) §6(IC 执行机制定稿,§6.4 算术 IC 写不读契约)
+- [../p1-interpreter/05-interpreter-loop.md](../p1-interpreter/05-interpreter-loop.md) §6(IC 执行机制定稿,§6.4 算术 IC 写不读约定)
 - [../p1-interpreter/01-value-object-model.md](../p1-interpreter/01-value-object-model.md) §3(NaN-box 数字识别,算术快路径基石)
 - [../p1-interpreter/implementation-progress.md](../p1-interpreter/implementation-progress.md)(P1 IC 已完成形式对账)
 - [../p4-method-jit](../p4-method-jit/00-overview.md)(投机消费方 / confidence 决定激进度的下游)

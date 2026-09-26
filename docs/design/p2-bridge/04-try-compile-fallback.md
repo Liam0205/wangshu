@@ -2,17 +2,17 @@
 
 > 状态:**设计阶段,详细设计已齐备**。本文是 [00-overview](./00-overview.md) §0 文档地图列出的 **P2 决策中枢单一事实源**——TierState 状态机(单向 + 吸收态)、升层决策入口 `considerPromotion`、TierStuck 不重试纪律、零 deopt 论证、`fallback ≠ deopt` 严格区分、升层日志格式(`promoted to gibbous`)。
 > 上游种子:[../p2-bridge/00-overview](./00-overview.md) §5(try-compile-fallback) + §6(状态机),本文大量扩展。
-> 上游契约:[00-overview](./00-overview.md) §1(P2 不在执行热路径)、§2(总数据流)、§3(关键耦合 5 CallInfo bit50)、§6(决策表)、§9(P3 后端跨版本升级 stuck 重评估缺口);
-> [01-profiling](./01-profiling.md) §0.2(`considerPromotion` 入口契约)、§4.3(调用契约)、§6.5(profileTable 持有 ProfileData);
+> 上游约定:[00-overview](./00-overview.md) §1(P2 不在执行热路径)、§2(总数据流)、§3(关键耦合 5 CallInfo bit50)、§6(决策表)、§9(P3 后端跨版本升级 stuck 重评估缺口);
+> [01-profiling](./01-profiling.md) §0.2(`considerPromotion` 入口约定)、§4.3(调用约定)、§6.5(profileTable 持有 ProfileData);
 > [02-ic-feedback](./02-ic-feedback.md) §0(P2 写 feedback 不消费,仅供 P3/P4)、§4.5(ProfileData.feedback 槽 / `installFeedback` CAS)、§6.4(`aggregator.aggregate(proto)` 入口);
 > [03-compilability-analysis](./03-compilability-analysis.md) §1(保守第一,宁漏勿误)、§5.1(`Compilability` 三态)、§5.2(`AnalyzeProto` 入口)、§5.5(P1 占位 `CompUnknown` 视同 `CompNotCompilable`);
 > P1 依赖面:[../p1-interpreter/05-interpreter-loop.md](../p1-interpreter/05-interpreter-loop.md) §1.2(CallInfo word2 bit50 `callStatus_gibbous`,P1 恒 0,P2 升层时写 1);
 > [../p1-interpreter/00-overview.md](../p1-interpreter/00-overview.md) §5(P1 前瞻义务对账,bit50 已完成);
-> 下游契约:[05-p3-p4-interface](./05-p3-p4-interface.md)(`P3Compiler.Compile` 接口本文 §4 调用,05 是其单一事实源);
+> 下游约定:[05-p3-p4-interface](./05-p3-p4-interface.md)(`P3Compiler.Compile` 接口本文 §4 调用,05 是其单一事实源);
 > [../p3-wasm-tier/04-trampoline.md](../p3-wasm-tier/04-trampoline.md)(跨层 trampoline 消费 CallInfo bit50);
 > 上游原则面:[../roadmap.md](../roadmap.md) §5 原则 1(解释器永不退役 / fallback 着陆点)、原则 3(每阶段独立交付不亏)、原则 4(不可编译形状走 fallback)、[../../llmdoc/must/design-premises.md](../../llmdoc/must/design-premises.md) 前提三原则 1 / 4。
 >
-> **本文定位一句话**:**P2 是「分层决策中枢」,这台决策机的状态空间由本文定稿——三个状态、两条边、零回边**。状态机的「单向 + 吸收态」是 P2/P3 「零 deopt」的形式化体现:任何 Proto 一旦升层(`TierGibbous`)或卡死(`TierStuck`),**都不会回到 `TierInterp`**——P2 不存在「降层」概念。这把分层 VM 最危险的 bug 类(投机错误静默错果,roadmap §5 原则 2)在 P2/P3 阶段从根上消除——**没有投机就没有投机错误**。
+> **本文定位一句话**:**P2 是「分层决策中枢」,这台决策机的状态空间由本文定稿——三个状态、两条边、零反向边**。状态机的「单向 + 吸收态」是 P2/P3 「零 deopt」的形式化体现:任何 Proto 一旦升层(`TierGibbous`)或卡死(`TierStuck`),**都不会回到 `TierInterp`**——P2 不存在「降层」概念。这把分层 VM 最危险的 bug 类(投机错误静默错果,roadmap §5 原则 2)在 P2/P3 阶段从根上消除——**没有投机就没有投机错误**。
 
 ---
 
@@ -57,7 +57,7 @@
 承 [../p2-bridge/00-overview §8](./00-overview.md) §8 的同源不变式与 [00-overview](./00-overview.md) §6 决策速查表,本子系统的三条铁律:
 
 1. **P2 只有 fallback,没有 deopt**(§1 详):fallback 是「编译前静态决定永久解释」,deopt 是「编译后运行期假设失败退回解释器」(P4 才有)。**P2 阶段一个 Proto 从不「升完又回」**——这是「零 deopt」的字面体现。
-2. **TierState 是单向 + 吸收**(§2 详):状态转移图无环、无回边;`TierGibbous` 与 `TierStuck` 都是吸收态(无出边);唯一起点 `TierInterp` 有两条出边(`→TierGibbous` 升层成功 / `→TierStuck` 不可编译或编译失败)。
+2. **TierState 是单向 + 吸收**(§2 详):状态转移图无环、无反向边;`TierGibbous` 与 `TierStuck` 都是吸收态(无出边);唯一起点 `TierInterp` 有两条出边(`→TierGibbous` 升层成功 / `→TierStuck` 不可编译或编译失败)。
 3. **TierStuck 是永久终态**(§7 详):一旦标 Stuck(无论是不可编译还是编译失败),**单次运行内永不再尝试**——`considerPromotion` 入口直接 no-op。这条纪律防住「不可编译热函数每次越阈值都重试」的抖动(§7.1)。
 
 这三条不变式共同形式化了 P2 与 P3 的「零 deopt」:**没有运行期事件能让一个 Proto 从 gibbous 回到 interp**(§8 形式化论证)。
@@ -89,7 +89,7 @@
 | try-compile 协议 | §5 暗含 | §4 全展开(`P3Compiler.Compile` 调用 + `installGibbous` 协议 + bit50 写 + recover 兜底) |
 | TierStuck 不重试 | §6.3 一段 | §7 完整(防抖论证 + 编译失败确定性 + P3 跨版本 stuck 重评估缺口) |
 | 升层日志 | §6.4 给三类格式 | §6 全展开(诊断接口 + 日志 helper + 失败 stuck 信息表) |
-| 接口承诺 | (无) | §9 P3 trampoline 共享前端契约 + 接口稳定保证 |
+| 接口承诺 | (无) | §9 P3 trampoline 共享前端的接口约定 + 接口稳定保证 |
 
 **单文件原稿 §5/§6 = 决策方向**;**本文 = 字段级 + 代码骨架 + 形式化论证 + 接口约定**。两者并存,后续维护以本详细设计为准。
 
@@ -247,7 +247,7 @@ func (t TierState) String() string {
                  └────无任何反向边(§8 形式化论证)──────┘
 ```
 
-**两条出边、零回边、两个吸收态**——这就是状态机的几何形状。下文逐项论证。
+**两条出边、零反向边、两个吸收态**——这就是状态机的几何形状。下文逐项论证。
 
 ### 2.3 转移条件表
 
@@ -272,7 +272,7 @@ func (t TierState) String() string {
 3. **不存在「跨版本兼容」事件**:本文 §7.4 论证 P3 后端跨版本升级(支持新 opcode)的 stuck 重评估留 P2+,在单次运行内**没有**「P3 后端能力变化」事件——所以单次运行内 Gibbous 永远是 Gibbous。
 4. **CallInfo bit50 写入的不可逆性**(§4.4):`installGibbous` 把 bit50 置 1 后,P3 trampoline 据此判该 Proto 走 gibbous 路径(P3 §5)。**bit50 不会被反向清零**——P2 没有任何路径写它回 0。
 
-**结论**:`TierGibbous` 是几何形状上的吸收态,也是物理上的不可逆态——**单次运行内不存在让它回 `TierInterp` 的机制**。
+**结论**:`TierGibbous` 是几何形状上的吸收态,也是实际运行上的不可逆态——**单次运行内不存在让它回 `TierInterp` 的机制**。
 
 ### 2.5 无 `Stuck → Interp` 边、无 `Stuck → Gibbous` 边的形式化论证
 
@@ -280,7 +280,7 @@ func (t TierState) String() string {
 
 证明(详 §7 不重试纪律):
 
-1. **回 `Interp` 无意义**:`Stuck` 自身的物理含义就是「解释执行」(走 crescent),与 `Interp` 行为等价。但**保留区分**有诊断价值——`Stuck` 表示「曾经评估过升层,失败」,`Interp` 表示「冷或还没评估」。日志/调试工具能据此区分两类「在解释器跑」的 Proto(§7.3)。
+1. **回 `Interp` 无意义**:`Stuck` 自身的实际含义就是「解释执行」(走 crescent),与 `Interp` 行为等价。但**保留区分**有诊断价值——`Stuck` 表示「曾经评估过升层,失败」,`Interp` 表示「冷或还没评估」。日志/调试工具能据此区分两类「在解释器跑」的 Proto(§7.3)。
 2. **去 `Gibbous` 在单次运行内不可能**:P3 后端能力在单次运行内不变(§7.4),编译失败原因在单次运行内不消失;`compileTried` 在转 `Stuck` 时已置 true,`considerPromotion` 入口的守卫直接 no-op(§3.2)。
 3. **不冲突 `compileTried` 字段**:`Stuck` 与 `compileTried=true` 同步设置——任何 `Stuck` 状态都意味着「编译曾被尝试过(可能没尝试,if `CompNotCompilable` 直接 Stuck)」或「不需要尝试(已知不可编)」。两种情况下都不重试。
 
@@ -313,15 +313,15 @@ func (t TierState) String() string {
 
 ## 3. 升层决策入口 considerPromotion
 
-### 3.1 调用契约(承 [01-profiling] §0.2 / §4.3)
+### 3.1 调用约定(承 [01-profiling] §0.2 / §4.3)
 
 `considerPromotion` 是 P2 状态机的**唯一入口**——onBackEdge / onEnter 越阈值时调用本函数,内部完成「检查可编译性 → try-compile → 安装 gibbous」全套流程。
 
-调用契约(承 [01-profiling §4.3](./01-profiling.md)):
+调用约定(承 [01-profiling §4.3](./01-profiling.md)):
 
 1. **幂等**:多次调用不出错——本函数自身用 `pd.tierState != TierInterp` 守卫(§3.2),第二次进入直接 no-op。
 2. **不重载 frame**:本函数是 P2 内部决策机,**不动当前 frame 的 stk/k/ic**——onBackEdge/onEnter 调用方无需 reloadFrame。
-3. **不在最热路径**:即便慢(数百 µs:AnalyzeProto 一次 + P3 Compile 一次),也只在阈值临界点发生——摊薄到每回边几十 ns(实测后调阈值)。
+3. **不在最热路径**:即便慢(数百 µs:AnalyzeProto 一次 + P3 Compile 一次),也只在阈值临界点发生——摊薄到每次循环回跳(back edge)几十 ns(实测后调阈值)。
 4. **无返回值**:升层成功/失败/不可编译都通过修改 `pd.tierState` 表达,onBackEdge/onEnter 调用方不读返回值。
 
 ### 3.2 完整 Go 代码骨架
@@ -383,9 +383,9 @@ func (b *Bridge) considerPromotion(proto *bytecode.Proto, pd *ProfileData) {
 > **addendum 2026-07-02(承 `internal/bridge/bridge.go` 与 P2 07 §2.4 / issue #18 / P4 08 §3.7 现状)**:骨架完成后 `considerPromotion` 已加入三处 non-trivial 演进,与本 §2 状态机语义 **完全兼容**——**没有引入新状态**,新增机制均是**在 TierInterp 上的延迟转移**或**入口守卫**:
 >
 > 1. **`onMain bool` 参数**:签名变为 `considerPromotion(proto, pd, onMain bool)`。协程线程(`onMain == false`)在函数首行直接 `return`——协程从不升层(承 [../p3-wasm-tier/07-coroutine-thread-rule.md](../p3-wasm-tier/07-coroutine-thread-rule.md)),profile 数据仍照常累积,只是决策入口 no-op;状态机看:TierInterp self-loop,不写 tierState。
-> 2. **`recheckCompilabilityRuntime` 占位撤位**(issue #18,承 memory `project_p4_placeholder_reason_pattern.md`):`comp != CompCompilable` 分支不再直接 → Stuck;若 `Reason` 属于「backend 注入后需要运行期重判」的占位类别(`ReasonBackendUnsupp | ReasonSelfCall`,后端注入前保守拒),先调 `recheckCompilabilityRuntime(proto)` 对当前 P3/P4 后端的 `SupportsAllOpcodes` 再问一遍——重判为 `CompCompilable` 就走 P4 路径,否则才转 Stuck;状态机看:相当于把 T2 从「入口即判」变为「入口重判后再判」,不新增转移边。
+> 2. **`recheckCompilabilityRuntime` 撤销占位**(issue #18,承 memory `project_p4_placeholder_reason_pattern.md`):`comp != CompCompilable` 分支不再直接 → Stuck;若 `Reason` 属于「backend 注入后需要运行期重判」的占位类别(`ReasonBackendUnsupp | ReasonSelfCall`,后端注入前保守拒),先调 `recheckCompilabilityRuntime(proto)` 对当前 P3/P4 后端的 `SupportsAllOpcodes` 再问一遍——重判为 `CompCompilable` 就走 P4 路径,否则才转 Stuck;状态机看:相当于把 T2 从「入口即判」变为「入口重判后再判」,不新增转移边。
 > 3. **`forceAll` retry window**(承 P4 08 §3.7 与 fuzz_p4_test.go):force-all 模式下,IC-gated 后端(P4 native `NodeHit` 等)需要**先跑几遍解释器让 IC 预热**再升,否则冷 IC 直接升层的 proto 立刻吸收为 P4Stuck;实现为 `if b.forceAll && pd.EntryCount < 4 { return }`——EntryCount<4 时 TierInterp 自循环(**不写 tierState**),第 4+ 次入口才继续原路径;状态机看:仍是 TierInterp self-loop 的**延迟转移**,不引入新状态。
->    - **per-entry recheck dedup**(issue #40,2026-07-02):retry window 让被拒收 proto 停留在 TierInterp,而 forceAll 下 OnBackEdge **每条回边**都会再进 considerPromotion → `recheckCompilabilityRuntime` 全量后端分析(CFG build + opcode 扫描)。升层只在**下一次进入**生效(无 OSR),同一次进入内重复分析不可能改变结果——单次进入 + 2M 回边的 HeavyArith 形式实测该路径占 22% CPU + 1.5 GB/op。修复:`pd.recheckedAtEntry` 记录「本 EntryCount 已 recheck 过」,同一进入内的后续回边直接 return;OnBackEdge 在每 pc 的 `count==1`(循环体首轮跑完,IC 已被观测——IC-gated 后端的最早改判点)与 `count==HotBackEdgeThreshold`(auto 模式自身的触发点,IC 到顶)两个升温里程碑清零该标记,各再授予一次 recheck。升层时机与修复前完全一致,只是去掉了中间每回边的重复分析;状态机看:仍是入口守卫层的条件细化,不动状态图。
+>    - **per-entry recheck dedup**(issue #40,2026-07-02):retry window 让被拒收 proto 停留在 TierInterp,而 forceAll 下 OnBackEdge **每条 back edge**都会再进 considerPromotion → `recheckCompilabilityRuntime` 全量后端分析(CFG build + opcode 扫描)。升层只在**下一次进入**生效(无 OSR),同一次进入内重复分析不可能改变结果——单次进入 + 2M 次 back edge 的 HeavyArith 形式实测该路径占 22% CPU + 1.5 GB/op。修复:`pd.recheckedAtEntry` 记录「本 EntryCount 已 recheck 过」,同一进入内的后续 back edge 直接 return;OnBackEdge 在每 pc 的 `count==1`(循环体首轮跑完,IC 已被观测——IC-gated 后端的最早改判点)与 `count==HotBackEdgeThreshold`(auto 模式自身的触发点,IC 到顶)两个升温里程碑清零该标记,各再授予一次 recheck。升层时机与修复前完全一致,只是去掉了中间每次 back edge 的重复分析;状态机看:仍是入口守卫层的条件细化,不动状态图。
 >
 > 4. **`PromotionGater` 收益门**(issue #39,2026-07-03):可编译性(F1-F7 + SupportsAllOpcodes)只回答「能不能编」;后端可选实现 `WorthPromoting(proto) bool` 回答「编了赚不赚」。auto 模式下 `considerPromotion` 在 comp==CompCompilable 之后、try-compile 之前问一次,拒绝 → 直接 TierStuck 吸收(判断是静态 op 组合密度,重复问不改变答案);**forceAll 绕过**——差分覆盖不因收益判断缩水。首个实现:P3 wasm Compiler 的 helper 密度地板(plain-op / helper-bound-op ≥ 7)——nbody advance/energy 类 helper 密集内核升层后比解释器慢 ~2x(45b8b53 解锁其升层后实测 43.5→89.7ms),收益门把它们留在解释器。与 `MinPromotableLener`(短 proto 地板)同族:都是 per-backend 可选接口 + auto-only;状态机看:T2/T3 之间的入口守卫,拒绝走既有 T2 → Stuck 边,不新增状态或反向边。
 >
@@ -436,7 +436,7 @@ func (b *Bridge) considerPromotion(proto *bytecode.Proto, pd *ProfileData) {
 
 ### 3.6 错误传播:considerPromotion 永不抛 panic / err
 
-承 §3.1 契约 4「无返回值」:本函数对调用方(onBackEdge/onEnter)永不抛 panic 或返回 error。所有内部错误都被吸收进 `tierState = TierStuck` + 日志。具体:
+承 §3.1 约定 4「无返回值」:本函数对调用方(onBackEdge/onEnter)永不抛 panic 或返回 error。所有内部错误都被吸收进 `tierState = TierStuck` + 日志。具体:
 
 - **`b.tryCompile` 返回 err**:转 Stuck + 日志,正常 return。
 - **`b.tryCompile` 内部 panic**:用 defer recover 捕获,转 Stuck + 日志,正常 return(§5.2 详)。
@@ -451,7 +451,7 @@ func (b *Bridge) considerPromotion(proto *bytecode.Proto, pd *ProfileData) {
 
 ### 4.1 P3Compiler.Compile 接口签名(承 [05-p3-p4-interface] §1)
 
-`P3Compiler` 是 P2 与 P3 之间的接口契约,**单一事实源是 [05-p3-p4-interface](./05-p3-p4-interface.md)**——本文只引用其形状供 §3 considerPromotion 调用:
+`P3Compiler` 是 P2 与 P3 之间的接口约定,**单一事实源是 [05-p3-p4-interface](./05-p3-p4-interface.md)**——本文只引用其形状供 §3 considerPromotion 调用:
 
 ```go
 // 引用 [05-p3-p4-interface] §1(实际定义在 internal/bridge 暴露,
@@ -476,7 +476,7 @@ type P3Compiler interface {
 }
 ```
 
-> **接口所属**:接口定义住 `internal/bridge`(P2 包),实现住 `internal/gibbous/wasm`(P3 包);P2 在 `Bridge` 结构体里持有 `p3 P3Compiler` 字段,启动时由 `wangshu.go` 公共 API 注入(P3 完成后)。P1-only build 下 `b.p3 == nil`,[03 F7](./03-compilability-analysis.md) 永远判不可编译,本函数 P4 路径不会被走到——这是 [03 §2.6](./03-compilability-analysis.md) 「P1-only fallback」的延伸。
+> **接口所属**:接口定义放在 `internal/bridge`(P2 包),实现放在 `internal/gibbous/wasm`(P3 包);P2 在 `Bridge` 结构体里持有 `p3 P3Compiler` 字段,启动时由 `wangshu.go` 公共 API 注入(P3 完成后)。P1-only build 下 `b.p3 == nil`,[03 F7](./03-compilability-analysis.md) 永远判不可编译,本函数 P4 路径不会被走到——这是 [03 §2.6](./03-compilability-analysis.md) 「P1-only fallback」的延伸。
 
 ### 4.2 GibbousCode 返回值形式(简版,详见 P3)
 
@@ -881,7 +881,7 @@ P4 上线后会引入 deopt 日志(`function <name> deopt: <reason>`),与本文�
 
 承 §7.1 的物理依据,即便允许「资源恢复后重试」,工程上仍选择「单次运行内绝不重试」——因为不重试有三层独立的工程价值:
 
-1. **防止「不可编译热函数」无限循环重试**:想象一个真实场景——脚本里有个用 `pcall` / `coroutine.wrap` 形式的热函数(F2 / F3 判不可编译,03 §3),它每次进入回边都越阈值。**若重试,每越一次阈值都要再走一遍 [03] AnalyzeProto + P3.Compile**——AnalyzeProto 数百 µs,P3.Compile 数百 ms 量级,被打到几百次/秒会打爆 CPU。**不重试**:`pd.tierState != TierInterp` 守卫直接 no-op,几个 ns 返回。
+1. **防止「不可编译热函数」无限循环重试**:想象一个真实场景——脚本里有个用 `pcall` / `coroutine.wrap` 形式的热函数(F2 / F3 判不可编译,03 §3),它每次执行到 back edge 都越阈值。**若重试,每越一次阈值都要再走一遍 [03] AnalyzeProto + P3.Compile**——AnalyzeProto 数百 µs,P3.Compile 数百 ms 量级,被打到几百次/秒会占满 CPU。**不重试**:`pd.tierState != TierInterp` 守卫直接 no-op,几个 ns 返回。
 2. **诊断清晰**:Stuck 是个稳定标签——「这个 Proto 我们试过,失败了,不再试」。日志只在转 Stuck 那一刻打一条(`stays interpreted` / `compile failed`),后续不再刷屏。**重试方案下日志会循环刷同一行**,污染诊断信号。
 3. **行为可预测**:**用户/调试者能根据「升层日志一条」预测「之后这个 Proto 永远走解释器」**,与 §2 状态机的 DFA 性质一致。重试方案下,Stuck 状态语义变成「也许永久,也许下次还试」,DFA 退化。
 
@@ -895,7 +895,7 @@ P4 上线后会引入 deopt 日志(`function <name> deopt: <reason>`),与本文�
 
 理由:
 
-- **P1 解释器对 ProfileData 的写入路径(`onBackEdge` / `onEnter`)与 `tierState` 解耦**:[01 §4](./01-profiling.md) 的回边采样不读 tierState——它只无条件累加 `backEdge[pc]`,然后调 `b.onBackEdge` 由 P2 决定怎么处理。**累加是 P1 的事,决策是 P2 的事**。
+- **P1 解释器对 ProfileData 的写入路径(`onBackEdge` / `onEnter`)与 `tierState` 解耦**:[01 §4](./01-profiling.md) 的 back edge 采样不读 tierState——它只无条件累加 `backEdge[pc]`,然后调 `b.onBackEdge` 由 P2 决定怎么处理。**累加是 P1 的事,决策是 P2 的事**。
 - **P2 的 `onBackEdge` 入口的简化路径**(承 [01 §4.1](./01-profiling.md)):
 
 ```go
@@ -1028,7 +1028,7 @@ P4 扩展状态机(P4 §X 主管,只示意):
 
 **P4 怎么引入投机**:P4 的方法 JIT 在 trace 出投机 fast path 时,在 wasm 代码里**新增** guard 检查(P4 §X 主管),guard 失败时抛 deopt 事件——这个事件让 P4 状态机的 T6 边触发(§8.2 图)。**这一切完全不影响 P2/P3 状态机**——P2 视角看到的还是「Proto 升 Gibbous(由 P4 编译)」与「Proto 卡 Stuck」两种结果。
 
-> **核心纪律完成**:Code review 要求——**P2 包(`internal/bridge`)与 P3 包(`internal/gibbous/wasm`)的代码里不应出现 `guard` / `speculate` / `deopt` 字眼**;若出现,reviewer 拒绝合并。这条纪律是 §8.4 的工程化体现,可入 [06-testing-strategy](./06-testing-strategy.md) §X 的 lint 规则。
+> **核心纪律的执行**:Code review 要求——**P2 包(`internal/bridge`)与 P3 包(`internal/gibbous/wasm`)的代码里不应出现 `guard` / `speculate` / `deopt` 字眼**;若出现,reviewer 拒绝合并。这条纪律是 §8.4 的工程化体现,可入 [06-testing-strategy](./06-testing-strategy.md) §X 的 lint 规则。
 
 ---
 
@@ -1074,7 +1074,7 @@ bit50 的语义在 P2 上线时定稿,**之后任何阶段不能修改**。三�
 
 **接口稳定的工程价值**:
 
-- P3 / P4 的 trampoline 实现可以**只读 bit50 一次**判流向,不需要回过头检查 P2 状态机——bit50 是 P2 状态机的**单一物化**。
+- P3 / P4 的 trampoline 实现可以**只读 bit50 一次**判流向,不需要回过头检查 P2 状态机——bit50 是 P2 状态机的**唯一具体表示**。
 - P1 永远不需要感知 bit50,它对 P1 是「设了等于没设」的位——这让 P1 实现保持极简(承原则 1「解释器永不退役」的工程化)。
 
 ### 9.3 与 GibbousCode 注册的协同(写入顺序 / 多 State 共享时 atomic / sync.Once)
@@ -1118,18 +1118,18 @@ func (b *Bridge) installGibbous(proto *bytecode.Proto, code *GibbousCode) {
 
 **当前定稿**:**(A) Bridge 持锁**(§4.5)——简单、与原则 3「每阶段独立交付」一致;待实测有性能压力再优化。
 
-### 9.4 跨层一致性的契约总结
+### 9.4 跨层一致性的接口约定总结
 
-P2 与 P3 trampoline 之间的接口契约,**当前定稿后不应再变**——任何修改触发 V13 验收(§8.3)的「文档代码一致性」 lint 失败:
+P2 与 P3 trampoline 之间的接口约定,**当前定稿后不应再变**——任何修改触发 V13 验收(§8.3)的「文档代码一致性」 lint 失败:
 
-| 契约项 | 提供方 | 消费方 | 不变式 |
+| 约定项 | 提供方 | 消费方 | 不变式 |
 |---|---|---|---|
 | `Bridge.gibbousCodes` map | P2(`installGibbous` 写) | P3 trampoline(read-only 查) | 单调增,不删除 |
 | `Bridge.trampoline.Register` | P2 调用 | P3 实现 | 同 Proto 不重复 register(`compileMu` + 双重检查保证) |
 | CallInfo bit50 | P3 trampoline(`enterLuaFrame` 写) | P3 trampoline(跨层切换读) | 一旦写 1,该 frame 不可回退 0 |
 | `P3Compiler.Compile` 接口签名 | P3 实现 | P2 调用 | 上线后不修改(§4.1 末尾) |
 
-> **契约稳定的回退预案**:P2 上线后若发现 bit50 / `gibbousCodes` 接口设计有缺陷,**新接口必须并存**——不能 break P1 / P3 现有约定。这是「每阶段独立交付不亏」(原则 3)在接口层的体现。
+> **约定稳定的回退预案**:P2 上线后若发现 bit50 / `gibbousCodes` 接口设计有缺陷,**新接口必须并存**——不能 break P1 / P3 现有约定。这是「每阶段独立交付不亏」(原则 3)在接口层的体现。
 
 ---
 
@@ -1200,7 +1200,7 @@ P2 与 P3 trampoline 之间的接口契约,**当前定稿后不应再变**——
 
 ### 11.3 lazy install 是否拆异步(wazero 实例化抖动)
 
-**问题**:§4 的 `installGibbous` 隐含一个假设——`wazero.CompiledModule` 的实例化是 in-memory 快操作。但实测可能 ~100ms,这会让回边触发 considerPromotion 时主循环阻塞(虽不在最热路径,但可能影响交互式场景的延迟分布)。
+**问题**:§4 的 `installGibbous` 隐含一个假设——`wazero.CompiledModule` 的实例化是 in-memory 快操作。但实测可能 ~100ms,这会让 back edge 触发 considerPromotion 时主循环阻塞(虽不在最热路径,但可能影响交互式场景的延迟分布)。
 
 **观察**:
 
@@ -1314,7 +1314,7 @@ CallInfo bit50:           P3 trampoline(enterLuaFrame §4.4)写;P3 trampoline �
 ---
 
 相关:[00-overview](./00-overview.md)(P2 §0 文档地图 + §6 决策速查) ·
-[01-profiling](./01-profiling.md)(P2 §1 回边采样 + ProfileData / §6 多 State profile 归属) ·
+[01-profiling](./01-profiling.md)(P2 §1 back edge 采样 + ProfileData / §6 多 State profile 归属) ·
 [02-ic-feedback](./02-ic-feedback.md)(P2 §2 IC 双计数 + TypeFeedback / §0 P2 写不消费) ·
 [03-compilability-analysis](./03-compilability-analysis.md)(P2 §3 F1-F7 / §5 Compilability 三态 / §5.5 P1-only 占位) ·
 [05-p3-p4-interface](./05-p3-p4-interface.md)(P3Compiler.Compile 单一事实源) ·

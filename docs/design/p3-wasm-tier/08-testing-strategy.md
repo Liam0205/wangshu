@@ -1,15 +1,15 @@
-# P3 §8:验收测试策略 —— 翻译正确口径总表 / 层间 byte-equal 差分 / 性能门 / GC 压力 / CI 门禁
+# P3 §8:验收测试策略 —— 翻译正确口径总表 / 层间 byte-equal 差分 / 性能门 / GC 压力 / CI 必过检查
 
-> 状态:**设计阶段,详细设计已齐备**(依赖 P1/P2 完成 + 开工前置 spike 通过后 PW9 实现;凡涉 wazero API 与 build tag 完成处标注「P3 实现时定」)。本文是 [00-overview](./00-overview.md) §0 文档地图列出的 **P3 验收单一事实源**——P3 验收口径总表(正确性 + 性能 + 工程三轴)、crescent vs gibbous 逐字节差分(CI 门禁)、强制全量升层模式、GC 压力 fuzz 上 gibbous、性能基准(循环密集 ≥2x over P1)、坐标系警告、测试机制实现收口、测试入口暴露纪律。
+> 状态:**设计阶段,详细设计已齐备**(依赖 P1/P2 完成 + 开工前置 spike 通过后 PW9 实现;凡涉 wazero API 与 build tag 完成处标注「P3 实现时定」)。本文是 [00-overview](./00-overview.md) §0 文档地图列出的 **P3 验收单一事实源**——P3 验收口径总表(正确性 + 性能 + 工程三轴)、crescent vs gibbous 逐字节差分(CI 必过检查)、强制全量升层模式、GC 压力 fuzz 上 gibbous、性能基准(循环密集 ≥2x over P1)、坐标系警告、测试机制实现汇总、测试入口暴露纪律。
 > 上游种子:本文是 p3-wasm-tier.md 原稿 §7(层间差分)+ §8(验收与坐标系)的扩展;承 [00-overview](./00-overview.md) §4 PW9 验收(完成定义两轴)、§9 不变式、§10 缺口。
 > 上游耦合面:[00-overview](./00-overview.md) §4 PW9(V1-V18 全过)、§4 末「PW9 verify 含两轴(正确性 byte-equal + 性能 ≥2x),任一不达标都不算 P3 交付完成」。
-> 同主题对偶面:[../p2-bridge/06-testing-strategy](../p2-bridge/06-testing-strategy.md)(**P2 验收单一事实源,本文是一样的「全 V 编号口径总表」形式对偶面**;P2 是「决策正确 + 退化等价」口径,P3 是「翻译正确 + 性能门」口径,**两者并行不替换**——见本文 §4.3 与 §6.6)。
+> 同主题对偶面:[../p2-bridge/06-testing-strategy](../p2-bridge/06-testing-strategy.md)(**P2 验收单一事实源,本文是采用同一「全 V 编号口径总表」形式的对偶面**;P2 是「决策正确 + 退化等价」口径,P3 是「翻译正确 + 性能门」口径,**两者并行不替换**——见本文 §4.3 与 §6.6)。
 > P1 依赖面:[../p1-interpreter/12-testing-difftest](../p1-interpreter/12-testing-difftest.md)(P1 差分测试矩阵 §3/§5 是 P3 接入的轨道;§10 验收口径总表对 gibbous 原样适用,**不为 gibbous 开新豁免**)。
-> P3 内部收口面:[02-translation](./02-translation.md) ~ [07-coroutine-thread-rule](./07-coroutine-thread-rule.md)(本文是各文档验收口径的**总收口**——每篇文档承诺的不变式都在本文 §1 总表配可执行检查)。
+> P3 内部汇总面:[02-translation](./02-translation.md) ~ [07-coroutine-thread-rule](./07-coroutine-thread-rule.md)(本文是各文档验收口径的**汇总处**——每篇文档承诺的不变式都在本文 §1 总表配可执行检查)。
 > 上游原则面:[../roadmap.md](../roadmap.md) §4(P3 验收「循环密集 ≥2x over P1」)+ §5 原则 2(层间逐字节差分)。
-> 坐标系警告源:[evolution-roadmap](../../../llmdoc/architecture/evolution-roadmap.md)(流水线图倍率 vs 阶段验收门槛**不在同一坐标系**——本文 §5.2 钉死)。
+> 坐标系警告源:[evolution-roadmap](../../../llmdoc/architecture/evolution-roadmap.md)(流水线图倍率 vs 阶段验收门槛**不在同一坐标系**——本文 §5.2 明确规定)。
 >
-> **本文定位一句话**:**P3 验收是双轴硬门**——正确性轴(crescent vs gibbous 逐字节差分,主防线)+ 性能轴(循环密集 ≥2x over P1,价值兑现门)。任一不达标 P3 不算交付完成([00-overview](./00-overview.md) §4 PW9)。本文把这双轴 + 工程轴翻成 **V1-V18 可执行验收口径**,每条都对应一组测试,**不留无法验证的承诺**(承 P1 [12 §0](../p1-interpreter/12-testing-difftest.md) 「最终法庭」 + P2 [06 §0.3](../p2-bridge/06-testing-strategy.md) 「不留无法验证的承诺」铁律)。
+> **本文定位一句话**:**P3 验收是双轴硬性检查**——正确性轴(crescent vs gibbous 逐字节差分,主防线)+ 性能轴(循环密集 ≥2x over P1,价值兑现门)。任一不达标 P3 不算交付完成([00-overview](./00-overview.md) §4 PW9)。本文把这双轴 + 工程轴翻成 **V1-V18 可执行验收口径**,每条都对应一组测试,**不留无法验证的承诺**(承 P1 [12 §0](../p1-interpreter/12-testing-difftest.md) 「最终法庭」 + P2 [06 §0.3](../p2-bridge/06-testing-strategy.md) 「不留无法验证的承诺」铁律)。
 
 对应目录:`test/difftest`(P3 接入层间差分,新增 `p3_test.go`)、`test/conformance`(P3 形状级单测,新增 `p3_test.go`)、`internal/gibbous/wasm`(翻译器内测)、`benchmarks/realworld`(P3 性能门实际脚本)。被测对象 `internal/gibbous/wasm`(翻译器 + wazero 执行)+ `internal/bridge`(P3Compiler 装载 + 强制全升模式测试入口)。
 
@@ -110,16 +110,16 @@ benchmarks/realworld/              ← P3 性能门(本文 §5)
 
 金字塔与 P1 [12 §1](../p1-interpreter/12-testing-difftest.md) 同形(底层最宽、差分 fuzz 宽腰、基准在顶),P3 特异处:
 - **差分 fuzz 宽腰加层间轴**:P1 的宽腰是「三方差分(不同实现各跑各的字节码)」,P3 在此**叠加层间轴**(crescent vs gibbous,同一份 Proto 走两层)。层间轴是 P3 的主防线(roadmap §5 原则 2 在 P3 第一次有「层间」含义)。
-- **基准在顶但权重升级**:P1 基准是「≥2x over gopher-lua」(辅助验收),P3 基准是「≥2x over P1」(**双硬门之一**,§6.8)——不达标 P3 不交付,验收权重等同正确性。
+- **基准在顶但权重升级**:P1 基准是「≥2x over gopher-lua」(辅助验收),P3 基准是「≥2x over P1」(**两道硬性检查之一**,§6.8)——不达标 P3 不交付,验收权重等同正确性。
 - **底层翻译器内测是 P3 新增地基**:P1 没有「翻译器」,P3 的 `internal/gibbous/wasm` 白盒内测(§6.3)是新增的最底层(翻译单位、WAT 发射黄金、memory 收养),它在「运行期差分」之前就提前暴露翻译/发射偏差。
 
-> **职责不重叠纪律**(承 P1 [12 §1](../p1-interpreter/12-testing-difftest.md) 末):同一个翻译 bug 应优先被**更低层、更快、更可定位**的测试抓住——翻译器内测(emit 黄金)能抓「某 opcode 发射的 WAT 错了」,不必等到层间差分跑出输出错才发现。层间差分 fuzz 撞出的翻译 bug,最小化后**优先固化为翻译器内测或 conformance 形状级用例**(§2.6),让回归在更低层兜住。
+> **职责不重叠纪律**(承 P1 [12 §1](../p1-interpreter/12-testing-difftest.md) 末):同一个翻译 bug 应优先被**更低层、更快、更可定位**的测试抓住——翻译器内测(emit 黄金)能抓「某 opcode 发射的 WAT 错了」,不必等到层间差分跑出输出错才发现。层间差分 fuzz 发现的翻译 bug,最小化后**优先固化为翻译器内测或 conformance 形状级用例**(§2.6),让回归在更低层兜住。
 
 ---
 
-## 1. P3 验收口径总表(本文最有价值的产出 —— 逐条收口)
+## 1. P3 验收口径总表(本文最有价值的产出 —— 逐条列明)
 
-下表对应 P2 [06 §1 验收口径总表](../p2-bridge/06-testing-strategy.md)与 P1 [12 §10](../p1-interpreter/12-testing-difftest.md)的形式——把 P3 全部不变式拉成「轴 / 断言 / 单测对应 / 差分 fuzz / 自动化检查」五栏,逐条钉死。**这张表是本文存在的核心理由**:它把散落在 P3 各子文档(02-07)的验收承诺集中在一处,每条配可执行检查路径。
+下表对应 P2 [06 §1 验收口径总表](../p2-bridge/06-testing-strategy.md)与 P1 [12 §10](../p1-interpreter/12-testing-difftest.md)的形式——把 P3 全部不变式拉成「轴 / 断言 / 单测对应 / 差分 fuzz / 自动化检查」五栏,逐条写明。**这张表是本文存在的核心理由**:它把散落在 P3 各子文档(02-07)的验收承诺集中在一处,每条配可执行检查路径。
 
 ### 1.1 正确性轴(V1-V13)—— 主防线,crescent vs gibbous 逐字节
 
@@ -129,7 +129,7 @@ benchmarks/realworld/              ← P3 性能门(本文 §5)
 | **V2** | PW3 算术快路径 | 双 number 算术(ADD/SUB/MUL/DIV/MOD/POW/UNM)直发 f64 指令 + NaN 规范化([01 §3.4](../p1-interpreter/01-value-object-model.md) canonicalizeNaN)与解释器**逐字节一致**(含 `-0.0`/`inf`/`0/0`) | `conformance/p3_test.go::TestArithFastPathByteEqual`(笛卡尔积浮点边界 × op) | `difftest/p3_test.go` 算术密集脚本 | crescent vs gibbous byte-equal;NaN 位型固定 `0x7FF8…`([02 §2.3](./02-translation.md) ADD 示例) |
 | **V3** | PW3 算术慢路径 | 算术慢路径(string coercion / `__add` 等元方法)走 imported 助手(`$h_arith`)仍 **byte-equal**;status 链错误位置(pc 物化)逐字节一致 | `conformance/p3_test.go::TestArithSlowPathByteEqual`(混合类型 + 元表) | `difftest/p3_test.go` 混合类型算术 | 慢路径助手回 Go 得正确结果([02 §2.3](./02-translation.md) else 分支 `$h_arith`) |
 | **V4** | PW4 数值 for | 数值 for 循环(FORPREP/FORLOOP)编译后跑结果 **byte-equal**(含 step<0 反向、step=0 错误形式、limit 非 number 错误) | `conformance/p3_test.go::TestNumForByteEqual`(正/反向 + 边界 step) | `difftest/p3_test.go` for 循环脚本 | crescent vs gibbous byte-equal([02 §2.3](./02-translation.md) FORLOOP 示例) |
-| **V5** | PW4 回边 GC | 回边 safepoint(`gcPending` 检查)触发 GC 时 **byte-equal**(GC 压力模式:每分配即 full GC) | `difftest/gcfuzz.go::TestGCStressGibbous`(本文 §3.2) | GC 压力 fuzz 上 gibbous | 高频 GC 下 gibbous 输出 == 正常 pacing gibbous 输出([05 §3](./05-safepoint-gc.md)) |
+| **V5** | PW4 循环回跳(back edge)上的 GC | back edge safepoint(`gcPending` 检查)触发 GC 时 **byte-equal**(GC 压力模式:每分配即 full GC) | `difftest/gcfuzz.go::TestGCStressGibbous`(本文 §3.2) | GC 压力 fuzz 上 gibbous | 高频 GC 下 gibbous 输出 == 正常 pacing gibbous 输出([05 §3](./05-safepoint-gc.md)) |
 | **V6** | PW5 表 IC 命中 | 表 IC 单态命中(同表同代次)**跳过哈希查找**,与解释器 **byte-equal** | `conformance/p3_test.go::TestTableICHitByteEqual`(单态表访问) | `difftest/p3_test.go` 表访问脚本 | gibbous 快路径直达槽 vs crescent 解释 byte-equal([02 §2.3](./02-translation.md) GETTABLE 示例 then 分支) |
 | **V7** | PW5 表 IC 失效 | 表 IC 失效(gen bump)走助手(`$h_gettable`)仍 **byte-equal**(含 `setmetatable` 触发的失效) | `conformance/p3_test.go::TestTableICMissByteEqual`(gen bump + setmetatable) | `difftest/p3_test.go` 表形状变化脚本 | 快照永久 miss 后每次走助手仍正确([06 §1](./06-ic-feedback-consume.md) 失效自然降级) |
 | **V8** | PW6 跨层 CALL 链 | 跨层调用链(crescent → gibbous → crescent → host → ...)错误冒泡 **byte-equal**(错误穿越 gibbous 帧) | `conformance/p3_test.go::TestCrossTierCallByteEqual`(深嵌套混合层) | `difftest/p3_test.go` 多层调用脚本 | status 链冒泡([04 §3/§4](./04-trampoline.md))与 crescent 显式错误返回同构 byte-equal |
@@ -137,7 +137,7 @@ benchmarks/realworld/              ← P3 性能门(本文 §5)
 | **V10** | PW7 闭包 upvalue | 闭包构造(CLOSURE)+ 开放/关闭 upvalue(CLOSE)与解释器 **byte-equal** | `conformance/p3_test.go::TestClosureUpvalByteEqual`(开放/关闭/共享 upval) | `difftest/p3_test.go` 闭包脚本 | gibbous 闭包语义 == crescent([02 §3.5](./02-translation.md)) |
 | **V11** | PW8 协程不升层 | 协程内代码**永远不升层**(TierState 恒 TierInterp 或 TierStuck);协程内同 Proto 即便 hot+Compilable 也不进 gibbous | `conformance/p3_test.go::TestCoroutineNoPromote`(协程内 hot Proto 断言 tier) | — | 协程线程上 `tierState != TierGibbous`([07](./07-coroutine-thread-rule.md) 线程级 tier 规则) |
 | **V12** | 强制全升 byte-equal | 强制全升模式下,所有 `CompCompilable` Proto 走 gibbous,结果与解释器 **byte-equal**(消除热度时序不确定性) | `difftest/p3_test.go::TestForceAllPromoteByteEqual`(差分套全脚本) | **核心 fuzz**:强制全升 + 语法制导生成(本文 §2.2) | crescent-only vs force-all-gibbous 全脚本 byte-equal(本文 §2.6) |
-| **V13** | GC 压力逼写回遗漏 | GC 压力模式跑 gibbous,逼出 locals 写回遗漏 / 助手内根登记缺漏(若 [PW9](./00-overview.md) 启用 [§2.2B](./02-translation.md) locals 缓存优化) | `difftest/gcfuzz.go::TestGCStressGibbous` 子测(locals 缓存开关 A/B 对照) | GC 压力 fuzz 上 gibbous | 漏写回必现为脏值/误回收([05 §4](./05-safepoint-gc.md) 写回纪律的兜捕) |
+| **V13** | GC 压力逼写回遗漏 | GC 压力模式跑 gibbous,逼出 locals 写回遗漏 / 助手内根登记缺漏(若 [PW9](./00-overview.md) 启用 [§2.2B](./02-translation.md) locals 缓存优化) | `difftest/gcfuzz.go::TestGCStressGibbous` 子测(locals 缓存开关 A/B 对照) | GC 压力 fuzz 上 gibbous | 漏写回必现为脏值/误回收([05 §4](./05-safepoint-gc.md) 写回纪律的兜底检查) |
 
 ### 1.2 性能轴(V14-V16)—— 价值兑现门,以 P1 为基线
 
@@ -154,9 +154,9 @@ benchmarks/realworld/              ← P3 性能门(本文 §5)
 | **V17** | 三套 build tag 零回归 | `make all` 在双 build tag(default / wangshu_profile)+ P3 实现的 `wangshu_p3` 下**零回归**(P1 差分套不豁免,P2 V1-V22 不豁免) | `make all` × 三 build 组合 | `go build`/`go test` × {default, wangshu_profile, wangshu_profile+wangshu_p3} | 三套 build 全绿(本文 §6.4) |
 | **V18** | -race 通过 | `-race` 通过(多 State 并发跑 gibbous;wazero Runtime 跨 State 共享或独立的并发约束) | `difftest/p3_test.go::TestGibbousRace`(`-race -count=10`) | `go test -race` | 多 State 并发 gibbous 无 race(本文 §6.3) |
 
-### 1.4 收口统计
+### 1.4 汇总统计
 
-本表收口 **18 条**口径,覆盖三轴:
+本表汇总 **18 条**口径,覆盖三轴:
 
 - **V1-V13(13 条)**:正确性轴,P3 主防线(对应 [02](./02-translation.md)~[07](./07-coroutine-thread-rule.md) 各 PW2-PW8 + 强制全升 + GC 压力)
 - **V14-V16(3 条)**:性能轴,价值兑现门(对应 [00-overview §4](./00-overview.md) PW9 性能门 + roadmap §4)
@@ -168,7 +168,7 @@ benchmarks/realworld/              ← P3 性能门(本文 §5)
 |---|---|---|
 | PW2 | 5 条直线 opcode + trampoline 入口 | V1 |
 | PW3 | 算术 + 比较 + NaN 规范化 + 慢路径助手 | V2 / V3 |
-| PW4 | 控制流 + 回边 safepoint | V4 / V5 |
+| PW4 | 控制流 + back edge safepoint | V4 / V5 |
 | PW5 | 表 IC opcode + feedback 消费 + 失效降级 | V6 / V7 |
 | PW6 | CALL 系列 + 跨层互调 + status 链 | V8 / V9 |
 | PW7 | CLOSURE + upvalue 编译 | V10 |
@@ -179,7 +179,7 @@ benchmarks/realworld/              ← P3 性能门(本文 §5)
 
 | 维度 | P1 [12 §10] | P2 [06 §1] | 本文 §1 |
 |---|---|---|---|
-| 收口对象 | 各种现象的口径决策(26 条) | 各条不变式的检查路径(V1-V22) | 各条不变式的检查路径(V1-V18) |
+| 汇总对象 | 各种现象的口径决策(26 条) | 各条不变式的检查路径(V1-V22) | 各条不变式的检查路径(V1-V18) |
 | 主防线 | byte-equal 三方差分(防投机错果) | 可编译性零误判注入 fuzz(防安全检查失守) | **层间 byte-equal 差分**(crescent vs gibbous,防翻译错果) |
 | 表项含义 | 「这种情况要 X」 | 「这条断言由 Y 测试覆盖」 | 「这条断言由 Y 测试覆盖」 |
 | build tag | 单一 build | 双 build(`!profile` / `profile`) | **三 build**(default / wangshu_profile / +wangshu_p3) |
@@ -195,7 +195,7 @@ benchmarks/realworld/              ← P3 性能门(本文 §5)
 
 ## 2. crescent vs gibbous 逐字节差分(本节核心)
 
-> p3-wasm-tier.md 原稿 §7:**「roadmap §5 原则 2 在 P3 第一次有了『层间』含义」**。本节是这条的工程化——把「同一 Proto 走两层、逐字节比对」落成可运行的 harness、可入 CI 的门禁。
+> p3-wasm-tier.md 原稿 §7:**「roadmap §5 原则 2 在 P3 第一次有了『层间』含义」**。本节是这条的工程化——把「同一 Proto 走两层、逐字节比对」落成可运行的 harness、可入 CI 的必过检查。
 
 ### 2.1 接入 P1 12 的 tier 矩阵:加一个 gibbous runner
 
@@ -344,7 +344,7 @@ P1 [12 §4](../p1-interpreter/12-testing-difftest.md) 定的全部豁免(地址�
 
 **核心论证**:gibbous **不引入任何私有值表示**([00-overview §9](./00-overview.md) 不变式 2)、**不自己分配**([05 §3](./05-safepoint-gc.md) 分配全经助手)、**不自己格式化**(tostring/format 全经助手回 Go)。所有「可能产生不确定性的操作」(分配、格式化、随机、地址)都**经 imported 助手回到 crescent 的同一份实现**——gibbous 只做「直线计算 + 共见栈槽读写」。因此 gibbous 的可观察输出**不可能引入 crescent 没有的不确定性源**,P1 §4 豁免表对它原样适用,**任何「想为 gibbous 加新豁免」的提案都要回到本文重新论证**(承 P1 [12 §4.8](../p1-interpreter/12-testing-difftest.md) 「严格口径项绝不豁免」纪律)。
 
-### 2.5 差分 fuzz 接 gibbous:从 P1 500 种子门禁扩到双轴
+### 2.5 差分 fuzz 接 gibbous:从 P1 500 种子的必过检查扩到双轴
 
 P1 [12 §3](../p1-interpreter/12-testing-difftest.md) 的差分 fuzz(语法制导生成 §3.7 + 三方比对 §3.3)在 P3 扩展为 **crescent vs gibbous 双轴**:
 
@@ -362,9 +362,9 @@ P3 扩展(加层间轴,同一份 Proto 走两层):
 
 **关键设计**:P3 层间轴里 **crescent 是 oracle**(它已被 P1 三方差分验证过对齐官方),gibbous 是被测。这让 P3 差分不必再三方比对——只需「gibbous vs crescent byte-equal」,因为 crescent 的正确性是 P1 已交付的前提。
 
-fuzz 预算(承 P1 [12 §11](../p1-interpreter/12-testing-difftest.md) 「PR 门禁固定时长 + nightly 长跑」分工 + 扩展):
-- **PR 门禁**:`make difftest` 一轮固定时长(`-fuzztime`,P1 已建,P3 加 gibbous runner);PR 门禁种子集([12 §11](../p1-interpreter/12-testing-difftest.md) 固定时长一轮)在 P3 扩为 crescent vs gibbous 双轴(每个种子既跑 P1 三方,也跑层间)。
-- **nightly**:P1/P2 已建的独立长跑任务(`.github/workflows/nightly-diff-fuzz.yml`,承 [12 §11](../p1-interpreter/12-testing-difftest.md) 「持续 fuzz 由 nightly / 专用 fuzz 机承担」)在 P3 扩到层间轴(本文 §4.2)。
+fuzz 预算(承 P1 [12 §11](../p1-interpreter/12-testing-difftest.md) 「PR 检查固定时长 + nightly 长时间运行」分工 + 扩展):
+- **PR 检查**:`make difftest` 一轮固定时长(`-fuzztime`,P1 已建,P3 加 gibbous runner);PR 检查种子集([12 §11](../p1-interpreter/12-testing-difftest.md) 固定时长一轮)在 P3 扩为 crescent vs gibbous 双轴(每个种子既跑 P1 三方,也跑层间)。
+- **nightly**:P1/P2 已建的独立长时间运行任务(`.github/workflows/nightly-diff-fuzz.yml`,承 [12 §11](../p1-interpreter/12-testing-difftest.md) 「持续 fuzz 由 nightly / 专用 fuzz 机承担」)在 P3 扩到层间轴(本文 §4.2)。
 - **生成器复用**:P1 [12 §3.7](../p1-interpreter/12-testing-difftest.md) 的语法制导生成器(`test/difftest/gen/grammar.go`)产出的脚本对两层通用——**但生成器需偏向「产生 Compilable Proto」**(避开 P2 F1-F7 排除的 vararg / coroutine / debug 等,否则强制全升下该 Proto 走不到 gibbous,差分退化为 crescent vs crescent 无意义)。这是 P3 对生成器的回填请求(本文 §7.2)。
 
 ### 2.5a 新增第三条轴:gibbous 直接对 PUC(2026-08-29,`FuzzOracleDiffTiered`)
@@ -479,7 +479,7 @@ func FuzzCrescentVsGibbous(f *testing.F) {
 }
 ```
 
-> **失败用例固化**(承 P1 [12 §3.6](../p1-interpreter/12-testing-difftest.md) 「fuzz 撒网 → conformance 固化」闭环):层间 fuzz 撞出的差异,最小化后固化为一条确定性 conformance 用例入 `test/conformance/own/`(P3 用例组),golden = crescent 输出。回归不再依赖随机种子撞中。
+> **失败用例固化**(承 P1 [12 §3.6](../p1-interpreter/12-testing-difftest.md) 「fuzz 撒网 → conformance 固化」闭环):层间 fuzz 发现的差异,最小化后固化为一条确定性 conformance 用例入 `test/conformance/own/`(P3 用例组),golden = crescent 输出。回归不再依赖随机种子碰巧命中。
 
 ---
 
@@ -503,7 +503,7 @@ P3 把 GC 压力模式套到 gibbous 执行层。**靶标从 P1 的「crescent s
 
 | gibbous 特有漏根 | 来源 | 高频 GC 如何必现 |
 |---|---|---|
-| **locals 缓存写回遗漏** | 若 [PW9](./00-overview.md) 启用 [§2.2B](./02-translation.md) locals 缓存优化:缓存进 Wasm locals 的值对 GC 不可见,任何 safepoint/助手调用前必须写回栈槽([05 §4](./05-safepoint-gc.md))。**漏写回** = GC 扫到的栈槽是陈旧值 → 缓存的活对象未被根登记 → 被误回收 | 每分配即 GC ⇒ 缓存活对象期间的任一分配点必撞 GC ⇒ 漏写回的对象必被回收 ⇒ 后续读栈槽是脏值/已回收 → 输出错(透明性破)或崩溃 |
+| **locals 缓存写回遗漏** | 若 [PW9](./00-overview.md) 启用 [§2.2B](./02-translation.md) locals 缓存优化:缓存进 Wasm locals 的值对 GC 不可见,任何 safepoint/助手调用前必须写回栈槽([05 §4](./05-safepoint-gc.md))。**漏写回** = GC 扫到的栈槽是陈旧值 → 缓存的活对象未被根登记 → 被误回收 | 每分配即 GC ⇒ 缓存活对象期间的任一分配点必然触发 GC ⇒ 漏写回的对象必被回收 ⇒ 后续读栈槽是脏值/已回收 → 输出错(透明性破)或崩溃 |
 | **助手内根登记缺漏** | imported 助手(`$h_call`/`$h_gettable`/`$h_arith`)内分配中间对象时,若漏 push shadow stack([06 §6.3](../p1-interpreter/06-memory-gc.md)),分配窗口内被回收 | 助手内分配触发 GC ⇒ 漏 Pin 的中间对象必被回收 ⇒ 助手返回后用必崩 |
 
 ```go
@@ -553,10 +553,10 @@ func TestGCStressGibbousLocalsCacheAB(t *testing.T) {
 
 ### 3.3 longevity 测试套接 gibbous
 
-承 P1 [12 §11](../p1-interpreter/12-testing-difftest.md) 的长跑任务形式(独立长跑、长时间随机撞角落)。P3 把 longevity 套接到 gibbous——长跑不仅撞「新角落」,还验「累积状态稳定」:
+承 P1 [12 §11](../p1-interpreter/12-testing-difftest.md) 的长时间运行任务形式(独立任务、长时间随机探索边角情况)。P3 把 longevity 套接到 gibbous——长时间运行不仅用来发现「新角落」,还验「累积状态稳定」:
 
-- **长跑 + 强制全升**:跑分配密集脚本数百万迭代,全程 gibbous + 中等 GC pacing,验证:① 无内存增长(arena live set 稳定,gibbous 不泄漏根)② 输出始终 == crescent(无累积性写回脏化)。
-- **gibbous 帧 + 跨层往返的累积验证**:longevity 重点轰炸跨层边界(gibbous → crescent → gibbous,[04 §3](./04-trampoline.md))——每次往返压/弹 CallInfo(bit50,[04 §1](./04-trampoline.md)),长跑验证 CallInfo 栈无泄漏、bit50 标志无残留污染。
+- **长时间运行 + 强制全升**:跑分配密集脚本数百万迭代,全程 gibbous + 中等 GC pacing,验证:① 无内存增长(arena live set 稳定,gibbous 不泄漏根)② 输出始终 == crescent(无累积性写回脏化)。
+- **gibbous 帧 + 跨层往返的累积验证**:longevity 重点反复测试跨层边界(gibbous → crescent → gibbous,[04 §3](./04-trampoline.md))——每次往返压/弹 CallInfo(bit50,[04 §1](./04-trampoline.md)),长时间运行验证 CallInfo 栈无泄漏、bit50 标志无残留污染。
 
 ### 3.4 freelist 复用 + gibbous(GCRef 偏移寻址使复用语义不变)
 
@@ -620,9 +620,9 @@ jobs:
 
 > **nightly triage**:承 [recent commit 9bc5154](../../../) (`nightly-fuzz triage 加 go-fuzz crash 第三档识别`)的 triage 形式——层间差分 fuzz 的 crash/mismatch 报告纳入同一 triage 流(自动最小化 + 分类:翻译 bug / 写回遗漏 / 跨层错误冒泡)。**层间 mismatch 单列一档**(与 P1 三方 mismatch、go-fuzz crash 区分),因为它必是翻译 bug(无实现噪声,§2.1)。
 
-### 4.2.1 PR 门禁 vs nightly 的时序分工
+### 4.2.1 PR 检查 vs nightly 的时序分工
 
-承 P1 [12 §11](../p1-interpreter/12-testing-difftest.md) 「PR 门禁防回归 + nightly 拓新」分工 + P2 [06 §11 GAP-T6](../p2-bridge/06-testing-strategy.md) 「CI 集成时序排期」。P3 把 build tag 维度叠进时序:
+承 P1 [12 §11](../p1-interpreter/12-testing-difftest.md) 「PR 检查防回归 + nightly 拓新」分工 + P2 [06 §11 GAP-T6](../p2-bridge/06-testing-strategy.md) 「CI 集成时序排期」。P3 把 build tag 维度叠进时序:
 
 | 阶段 | 跑什么 | 时间预算 | build tag |
 |---|---|---|---|
@@ -631,7 +631,7 @@ jobs:
 | **nightly** | 层间差分**长** fuzz(2h)+ GC 压力上 gibbous(`-count=20`)+ longevity(§3.3)+ 性能基准全档(V14-V16) | 数小时 | 同上 |
 | **release 前** | 全套 + benchmark 矩阵三档实测产出(§5.5 数据列) | 不限 | 三套 build 全跑 |
 
-**关键纪律**(承 P2 [06 §10 T7](../p2-bridge/06-testing-strategy.md) 「fuzz 长跑预算」):PR check 短 fuzz(30s)+ nightly 长 fuzz(2h)**同时存在**,任一缺失视为 fuzz 不充分。PR check 用短 fuzz 保反馈速度(防回归),nightly 用长 fuzz 拓新(撞角落)。**性能基准(V14-V16)不进 PR check**(基准噪声大、耗时长,放 nightly + release 前),只在 nightly 跑——但 nightly 性能回归(gibbous 加速跌破门槛)同样阻断(进 triage)。
+**关键纪律**(承 P2 [06 §10 T7](../p2-bridge/06-testing-strategy.md) 「fuzz 长时间运行预算」):PR check 短 fuzz(30s)+ nightly 长 fuzz(2h)**同时存在**,任一缺失视为 fuzz 不充分。PR check 用短 fuzz 保反馈速度(防回归),nightly 用长 fuzz 拓新(探索边角情况)。**性能基准(V14-V16)不进 PR check**(基准噪声大、耗时长,放 nightly + release 前),只在 nightly 跑——但 nightly 性能回归(gibbous 加速跌破门槛)同样阻断(进 triage)。
 
 ### 4.3 P3 是 try-compile 非投机,差分面比 P4 窄——风险阶梯
 
@@ -661,7 +661,7 @@ P3 的层间差分(同一 Proto 走两层逐字节比)与 P4 的投机正确性�
 | 失败的触发性 | **确定性**(翻译错则任何输入必现) | **条件性**(只在投机假设不成立的罕见输入触发) |
 | 差分够不够 | **够**(强制全升 + 语法制导生成即覆盖全部翻译路径) | **不够**(需专门构造「打破投机假设」的输入 + deopt 着陆点 fuzz) |
 
-**为什么 P3 验证面窄是好事**(承 §4.3 风险阶梯):P3 的翻译 bug 是**确定性**的——某 opcode 翻译错了,任何走到它的输入都会暴露(强制全升 + 充分 fuzz 必撞)。P4 的投机 bug 是**条件性**的——guard 漏了「x 可能不是 number」这个条件,只有当 x 真的不是 number 的罕见输入才暴露,普通输入下投机路径「碰巧对」。**条件性 bug 比确定性 bug 难撞几个数量级**——这是 JIT「投机错误静默错果」之所以是「最危险 bug 类」(roadmap §5 原则 2)的根源。
+**为什么 P3 验证面窄是好事**(承 §4.3 风险阶梯):P3 的翻译 bug 是**确定性**的——某 opcode 翻译错了,任何走到它的输入都会暴露(强制全升 + 充分 fuzz 必然触发)。P4 的投机 bug 是**条件性**的——guard 漏了「x 可能不是 number」这个条件,只有当 x 真的不是 number 的罕见输入才暴露,普通输入下投机路径「碰巧对」。**条件性 bug 比确定性 bug 难触发几个数量级**——这是 JIT「投机错误静默错果」之所以是「最危险 bug 类」(roadmap §5 原则 2)的根源。
 
 **先 P3 后 P4 的测试意义**:P3 把「同一 Proto 走两层 byte-equal」这套**机制**(Runner 抽象、强制全升、层间 fuzz、最小化固化)在**确定性 bug** 上验透——机制本身的正确性(差分管线没漏报、最小化收敛、固化回流)在 P3 阶段就被压力测试过。P4 接手这套已验证的机制,**只需把靶标从「翻译」换到「投机」**(加 deopt 着陆点专项 fuzz、构造打破投机假设的输入生成器)。**机制在 P3 验透,靶标在 P4 升级**——避免「P4 同时调试投机 bug + 调试差分机制本身」的双重不确定性。这是风险阶梯在测试机制维度的完整含义。
 
@@ -683,7 +683,7 @@ P3 的层间差分(同一 Proto 走两层逐字节比)与 P4 的投机正确性�
 - **基线 = P1 crescent**(纯解释,**不是 gopher-lua**)。
 - **被测 = gibbous**(强制全升,同机同脚本 A/B)。
 - **门槛**:`ns_op(crescent) / ns_op(gibbous) >= 2.0`,在 loop 档(循环密集形状)。
-- **同机 A/B**:固定 CPU 频率([01 §1.2](./01-spike-gate.md) spike 一样的方法论),同一进程内先跑 crescent 档再跑 gibbous 档,消除机器差异。
+- **同机 A/B**:固定 CPU 频率(与 [01 §1.2](./01-spike-gate.md) spike 相同的方法论),同一进程内先跑 crescent 档再跑 gibbous 档,消除机器差异。
 
 ```go
 // benchmarks/realworld/realworld_test.go —— P3 加 gibbous 档对照(示意)
@@ -699,11 +699,11 @@ func BenchmarkLoopHeavy(b *testing.B) {
 // 验收脚本读两档 ns/op,断言 speedup = crescent/gibbous >= 2.0
 ```
 
-**收益来源**(承 [02 §2.2](./02-translation.md)):≥2x 不靠寄存器提升,靠**消灭 dispatch 与译码**——解释器每条指令付「取指 + switch 间接跳 + 操作数位运算」([05 §2.1](../p1-interpreter/05-interpreter-loop.md)),gibbous 编译后是直线代码,操作数是编译期立即数。循环密集形状里这个差距被回边次数放大,故 ≥2x 在 loop 档最易兑现。
+**收益来源**(承 [02 §2.2](./02-translation.md)):≥2x 不靠寄存器提升,靠**消灭 dispatch 与译码**——解释器每条指令付「取指 + switch 间接跳 + 操作数位运算」([05 §2.1](../p1-interpreter/05-interpreter-loop.md)),gibbous 编译后是直线代码,操作数是编译期立即数。循环密集形状里这个差距被 back edge 次数放大,故 ≥2x 在 loop 档最易兑现。
 
 #### 5.1.1 同机 A/B 方法论(消除机器差异)
 
-承 [01 §1.2](./01-spike-gate.md) spike 一样的基准方法论(固定 CPU 频率、足量 `-benchtime`、wazero 编译模式非解释模式)。V14/V15 的 A/B 必须**同机同进程内对照**,而非「crescent 跑一台机、gibbous 跑另一台」:
+承 [01 §1.2](./01-spike-gate.md) spike 的同一套基准方法论(固定 CPU 频率、足量 `-benchtime`、wazero 编译模式非解释模式)。V14/V15 的 A/B 必须**同机同进程内对照**,而非「crescent 跑一台机、gibbous 跑另一台」:
 
 - **同一进程内先后跑**:`b.Run("crescent")` 与 `b.Run("gibbous")` 在同一 `go test -bench` 进程内顺序执行,共享同一 CPU 频率档、同一内存布局、同一 GC 设置——消除「不同机器主频/缓存差异」噪声。
 - **固定 CPU 频率**:禁用 turbo/频率调节(基准前 `cpupower frequency-set` 或等价),否则 gibbous 跑时若恰好降频会虚低加速比。
@@ -720,7 +720,7 @@ func BenchmarkLoopHeavy(b *testing.B) {
 ```
 
 - **loop 档(V14 ≥2x)= 低 k 形状**:循环体纯算术/表访问,k≈0(仅偶发分配/IC miss),`I·Δc` 主导,收益完整兑现 ⇒ ≥2x。基准脚本应选「自包含热循环」(列内核理想形状)。
-- **realworld 五脚本(V15 ≥1.5x)= 混合 k 形状**:fib/binarytrees 递归+分配密集,k≥1(每次递归调用/分配跨层),`k·T_cross` 吃掉部分收益 ⇒ 加速低于 loop 档。**这就是 V15 门槛(1.5x)低于 V14(2x)的摊销模型解释**——真实负载混入更多跨层,收益被摊薄。
+- **realworld 五脚本(V15 ≥1.5x)= 混合 k 形状**:fib/binarytrees 递归+分配密集,k≥1(每次递归调用/分配跨层),`k·T_cross` 抵消部分收益 ⇒ 加速低于 loop 档。**这就是 V15 门槛(1.5x)低于 V14(2x)的摊销模型解释**——真实负载混入更多跨层,收益被摊薄。
 - **基准矩阵验证摊销模型**:baseline 档(单 opcode)测 `c_wasm`(无跨层,纯指令开销),boundary 档测 `T_cross`(纯跨层,无指令),realworld 档测 `I·Δc − k·T_cross`(混合)——三档数据可反推摊销模型各项,定位「某脚本加速低是因为 k 高还是 Δc 低」。
 
 ### 5.2 坐标系警告:流水线图 4-8x vs 验收 ≥2x 不可混用
@@ -734,7 +734,7 @@ p3-wasm-tier.md 原稿 §8 末「坐标系警告」+ [evolution-roadmap](../../.
 
 **两者不可混用**——验收用 ≥2x(以 P1 为基线),流水线图的 4-8x(以 gopher-lua 为基线)是另一个坐标系。混用会导致「拿 gopher-lua 基线的 4-8x 去验收 gibbous」(门槛虚高,gibbous 永远过不了)或「拿 P1 基线的 2x 去宣传总加速」(数字虚低)。
 
-> **坐标系混用是 [evolution-roadmap](../../../llmdoc/architecture/evolution-roadmap.md) 点名的警告项**:流水线图(展示总演进倍率)与阶段验收门槛(展示单阶段增量)服务不同目的,**画在一起会被误读为同一坐标系**。本文 V14 钉死「以 P1 为基线」,任何性能讨论引用倍率时**必须标注基线**。
+> **坐标系混用是 [evolution-roadmap](../../../llmdoc/architecture/evolution-roadmap.md) 点名的警告项**:流水线图(展示总演进倍率)与阶段验收门槛(展示单阶段增量)服务不同目的,**画在一起会被误读为同一坐标系**。本文 V14 明确规定「以 P1 为基线」,任何性能讨论引用倍率时**必须标注基线**。
 
 ### 5.3 P1 自身 ≥2x over gopher-lua,链乘后量级自洽
 
@@ -756,11 +756,11 @@ P3:   gibbous  ≥ 2x over crescent      (本文 V14 验收)
 |---|---|---|
 | `fib.lua` | 深递归 + 整数算术 | 中(递归跨层调用频繁,但每帧算术少) |
 | `binarytrees.lua` | 分配密集(树节点)+ 递归 | 低-中(分配经助手回 Go,跨层多;GC 压力大) |
-| `spectralnorm.lua` | 浮点密集 + 嵌套循环 | **高**(浮点算术快路径 + 回边密集,gibbous 强项) |
+| `spectralnorm.lua` | 浮点密集 + 嵌套循环 | **高**(浮点算术快路径 + back edge 密集,gibbous 强项) |
 | `nbody.lua` | 浮点密集 + 固定循环 | **高**(同 spectralnorm) |
 | `fannkuch.lua` | 数组操作 + 整数算术 + 循环 | 中-高(表 IC + 循环) |
 
-**V15 门槛**:五脚本整体加速曲线 **≥1.5x**(几何均值),**部分脚本短板可接受**——分配密集(binarytrees)和深递归(fib)因跨层往返多,加速低于循环密集脚本是预期的([01 §1.3](./01-spike-gate.md) 摊销模型:k 次跨层每次 T_cross,跨层多则收益被吃)。门槛设 1.5x(低于 loop 档的 2x)反映「真实负载比纯循环代理混入更多跨层」。
+**V15 门槛**:五脚本整体加速曲线 **≥1.5x**(几何均值),**部分脚本短板可接受**——分配密集(binarytrees)和深递归(fib)因跨层往返多,加速低于循环密集脚本是预期的([01 §1.3](./01-spike-gate.md) 摊销模型:k 次跨层每次 T_cross,跨层多则收益被抵消)。门槛设 1.5x(低于 loop 档的 2x)反映「真实负载比纯循环代理混入更多跨层」。
 
 ```go
 // 验收:五脚本几何均值加速 >= 1.5
@@ -788,7 +788,7 @@ func TestRealworldSpeedupGeomean(t *testing.T) {
 | **realworld**(真实负载纯 VM) | `benchmarks/realworld` | **V14 / V15 主验收** | loop 档(V14 ≥2x)+ 五脚本(V15 ≥1.5x geomean) |
 | **boundary**(边界 mini) | `benchmarks/embedded` | **V16** | 空 Proto 单次调用往返,gibbous ≥ spike S2 的 95%(无退化) |
 
-V16 边界往返口径:gibbous 的边界往返(crescent → gibbous 空 Proto → 返回)实测值 **≥ [01 §1.2](./01-spike-gate.md) spike S2 实测值的 95%**——即 PW9 实现后的真实跨层成本不应比 spike 阶段测的劣化超过 5%。这是「spike 检查通过 ≠ 实现后仍达标」的回归防护(spike 测的是裸 wazero call boundary,实现后边界上要压 CallInfo + 写 bit50 + memory adapter 取视图,这些额外成本不应吃掉 spike 的余量)。
+V16 边界往返口径:gibbous 的边界往返(crescent → gibbous 空 Proto → 返回)实测值 **≥ [01 §1.2](./01-spike-gate.md) spike S2 实测值的 95%**——即 PW9 实现后的真实跨层成本不应比 spike 阶段测的劣化超过 5%。这是「spike 检查通过 ≠ 实现后仍达标」的回归防护(spike 测的是裸 wazero call boundary,实现后边界上要压 CallInfo + 写 bit50 + memory adapter 取视图,这些额外成本不应用掉 spike 的余量)。
 
 > **三档矩阵的具体数据列展开留 [PW9](./00-overview.md) 实测产出**(本文 §9 缺口):baseline 各 opcode 的 gibbous/crescent 比值、realworld 五脚本的实测 speedup、boundary 的实测 ns 值——这些数据列在 P3 build 下实测后填入 [implementation-progress](./implementation-progress.md)。本文只定**门槛与口径**,不预填数据(避免凭空捏造基线)。
 
@@ -812,9 +812,9 @@ V16 边界往返口径:gibbous 的边界往返(crescent → gibbous 空 Proto �
 > **隔离的工程后果**:`make test-p3`(正确性)与 `make test-p3-bench`(性能)是**两个独立目标**(§6.7),分别在不同 CI 阶段跑(正确性进 PR check,性能进 nightly)。**双轴验收(§6.8)是两套独立测量的 AND**——不存在「一次跑既验正确又验性能」的混合运行。这与 P1 [12](../p1-interpreter/12-testing-difftest.md) 把「差分套」与「基准套」分目录(`test/difftest` vs `benchmarks/baseline`)同一哲学:**正确性与性能是正交维度,测量配置必须隔离**。
 
 
-## 6. 测试机制实现(总收口)
+## 6. 测试机制实现(汇总)
 
-本节是 P3 各文档验收口径的**总收口** —— 给出每套测试机制的目录、build tag、测试入口。
+本节是 P3 各文档验收口径的**汇总处** —— 给出每套测试机制的目录、build tag、测试入口。
 
 ### 6.1 test/difftest/p3_test.go:差分主体
 
@@ -822,7 +822,7 @@ V16 边界往返口径:gibbous 的边界往返(crescent → gibbous 空 Proto �
 
 ### 6.2 test/conformance/p3_test.go:形状级单测
 
-承 P1 [12 §2](../p1-interpreter/12-testing-difftest.md) conformance 形式。职责:V1-V13 的**形状级单测**(table-driven,每条 PW 的代表形状)——不靠 fuzz 随机撞,而是人写「这个直线 op / 这个算术快路径 / 这个 IC 命中」的确定性用例,crescent vs gibbous 逐字节比。这是「已知形状」兜底(对应 P1 [12 §0](../p1-interpreter/12-testing-difftest.md) conformance 与 fuzz 互补)。
+承 P1 [12 §2](../p1-interpreter/12-testing-difftest.md) conformance 形式。职责:V1-V13 的**形状级单测**(table-driven,每条 PW 的代表形状)——不靠 fuzz 随机命中,而是人写「这个直线 op / 这个算术快路径 / 这个 IC 命中」的确定性用例,crescent vs gibbous 逐字节比。这是「已知形状」兜底(对应 P1 [12 §0](../p1-interpreter/12-testing-difftest.md) conformance 与 fuzz 互补)。
 
 ```go
 //go:build wangshu_p3
@@ -860,7 +860,7 @@ func TestLinearOpcodeByteEqual(t *testing.T) {        // V1
 |---|---|---|---|
 | PW2 | 5 直线 opcode + trampoline 入口 | `TestLinearOpcodeByteEqual`(V1) | 5-op Proto 升 gibbous 后 byte-equal + 升层日志触发 |
 | PW3 | 算术 + 比较 + NaN + 慢路径助手 | `TestArithFastPathByteEqual`(V2)+ `TestArithSlowPathByteEqual`(V3) | 双 number 快路径直发 f64;混合类型走助手 byte-equal |
-| PW4 | 控制流 + 回边 safepoint | `TestNumForByteEqual`(V4)+ `gcfuzz` 回边(V5) | for 循环 byte-equal + ≥2x 解释器 + 回边 GC byte-equal |
+| PW4 | 控制流 + back edge safepoint | `TestNumForByteEqual`(V4)+ `gcfuzz` back edge(V5) | for 循环 byte-equal + ≥2x 解释器 + back edge GC byte-equal |
 | PW5 | 表 IC opcode + feedback + 失效降级 | `TestTableICHitByteEqual`(V6)+ `TestTableICMissByteEqual`(V7) | 单态命中跳哈希查找;gen bump 后走助手仍正确 |
 | PW6 | CALL 系列 + 跨层 + status 链 | `TestCrossTierCallByteEqual`(V8)+ `TestGibbousTracebackByteEqual`(V9) | 跨层调用 + 错误冒泡 byte-equal |
 | PW7 | CLOSURE + upvalue | `TestClosureUpvalByteEqual`(V10) | 闭包 + 开放/关闭 upvalue byte-equal |
@@ -869,7 +869,7 @@ func TestLinearOpcodeByteEqual(t *testing.T) {        // V1
 
 **增量节奏的纪律**(承 [architecture](../architecture.md) §5「每步可独立编译 + 单测通过再进下一步」):
 - **每个 PW 的形状级单测在该 PW 完成时就必须过**——不是攒到 PW9 才验。这样翻译 bug 在引入它的 PW 就被抓住(更早、更可定位),而非堆到端到端阶段才暴露一堆混在一起的 bug。
-- **形状级单测先于 fuzz**:每个 PW 先写确定性形状级单测(人知道该测什么),PW9 的层间 fuzz(`FuzzCrescentVsGibbous`)再撒网撞「人没想到的」。两者互补(承 P1 [12 §0](../p1-interpreter/12-testing-difftest.md))。
+- **形状级单测先于 fuzz**:每个 PW 先写确定性形状级单测(人知道该测什么),PW9 的层间 fuzz(`FuzzCrescentVsGibbous`)再撒网找「人没想到的」。两者互补(承 P1 [12 §0](../p1-interpreter/12-testing-difftest.md))。
 - **`SupportsAllOpcodes` 白名单随 PW 扩**:PW2 只 supported 5 直线 op,PW3 加算术,……逐 PW 扩。**保守缺省**(承 [00-overview §3](./00-overview.md) 关键耦合点 3):未实现的 opcode 全返 false,含未支持 opcode 的 Proto 被 F7 拦下走 crescent——所以「翻译器只支持一半 opcode」的中间状态下,只有「全部 opcode 都支持」的 Proto 才升 gibbous,差分覆盖随白名单扩充自然增长,不会出现「翻译器拿到不支持的 opcode 翻译出错」。
 
 ### 6.3 internal/gibbous/wasm/{compile,emit,memory,trampoline,helpers}_test.go:翻译器内测
@@ -973,7 +973,7 @@ all-p3:
 
 ### 6.8 PW9 验收的「过/不过」判据(对偶 P2 06 §8.2)
 
-承 [00-overview §4](./00-overview.md) PW9 完成定义 + §4 末「两轴任一不达标都不算 P3 交付完成」。把 V1-V18 收口成 PW9 验收判据(对偶 P2 [06 §8.2](../p2-bridge/06-testing-strategy.md) PB7 四项判据):
+承 [00-overview §4](./00-overview.md) PW9 完成定义 + §4 末「两轴任一不达标都不算 P3 交付完成」。把 V1-V18 汇总成 PW9 验收判据(对偶 P2 [06 §8.2](../p2-bridge/06-testing-strategy.md) PB7 四项判据):
 
 | 验收轴 | 对应口径 | 判据 |
 |---|---|---|
@@ -984,7 +984,7 @@ all-p3:
 | (e) 工程:三套 build 零回归 | V17 | `all-p3` 三套 build 全绿(P1/P2 套不豁免) |
 | (f) 工程:-race 通过 | V18 | `test-p3-race` 无 race |
 
-**(a)-(f) 全过才算 PW9 验收**。任一项失败,PW9 不收单——P3 不交付。其中 **(a) 正确性轴与 (b)-(d) 性能轴是双硬门**(承 [00-overview §4](./00-overview.md) 末):正确性不达标(层间 mismatch)P3 翻译有 bug 不可交付;性能不达标(< 2x)P3 价值未兑现不可交付。**双轴是 AND 关系,不是 OR**——不能「正确但慢」也不能「快但错」。
+**(a)-(f) 全过才算 PW9 验收**。任一项失败,PW9 不予通过——P3 不交付。其中 **(a) 正确性轴与 (b)-(d) 性能轴是两道硬性检查**(承 [00-overview §4](./00-overview.md) 末):正确性不达标(层间 mismatch)P3 翻译有 bug 不可交付;性能不达标(< 2x)P3 价值未兑现不可交付。**双轴是 AND 关系,不是 OR**——不能「正确但慢」也不能「快但错」。
 
 ---
 
@@ -1022,7 +1022,7 @@ P2 [06 §11.1](../p2-bridge/06-testing-strategy.md) 已完成的测试入口(承
 - **testing-only 标记**:这些入口用 `// testing-only` godoc 标注,或放 `internal/.../testing` 子包,防被生产代码误用。
 - **`wangshu.NewState` 是唯一公共测试入口**:测试只经 `NewState`(P3 build 下自动注入真 P3,§6.6)+ `internal/bridge` 的 testing helper 驱动,不暴露任何「装配 P3」的公共 API。
 
-> **为什么纪律这么严**(承 P2 06 §11.1 的一样的理由):测试需要「钩子」碰 internal 状态(强制全升、注入 panic),但这些钩子若进公共 API,会让用户误以为「强制全升」是支持的运行模式(它不是,它是测试用消除时序不确定性的开关)。把它们锁在 `internal` 是「测试能力 vs 公共契约」的边界纪律——P2 已立此规(`NewState` 自动建 Bridge 而非暴露 `NewStateWithBridge` 公共入口),P3 原样遵守。
+> **为什么纪律这么严**(承 P2 06 §11.1 的同一理由):测试需要「钩子」碰 internal 状态(强制全升、注入 panic),但这些钩子若进公共 API,会让用户误以为「强制全升」是支持的运行模式(它不是,它是测试用消除时序不确定性的开关)。把它们锁在 `internal` 是「测试能力 vs 公共接口约定」的边界纪律——P2 已立此规(`NewState` 自动建 Bridge 而非暴露 `NewStateWithBridge` 公共入口),P3 原样遵守。
 
 ---
 
@@ -1036,7 +1036,7 @@ P2 [06 §11.1](../p2-bridge/06-testing-strategy.md) 已完成的测试入口(承
 | **2. 性能 ≥2x over P1**(性能门) | V14 循环密集脚本 gibbous/crescent < 2.0 即破;V15 五脚本 geomean < 1.5 即破 | 失守即「分层骨架没把 dispatch 收益兑现」,P3 价值落空([00-overview §4](./00-overview.md) PW9 性能轴) |
 | **3. GC 压力下 gibbous 不破坏 GC 协议** | V5/V13 任一脚本 gibbous 高频 GC 输出 ≠ 正常 pacing 即破(透明性) | 失守即 locals 写回遗漏 / 助手内根登记缺漏 → 误回收 / 脏读([05 §4](./05-safepoint-gc.md)) |
 | **4. 三套 build tag 全 CI 通过** | V17:default(P1-only)/ wangshu_profile(P2)/ +wangshu_p3(P3)三套 build 全绿,P1/P2 套不豁免(§1.5) | 失守即 P3 引入破坏了阶段独立交付(roadmap §5 原则 3)——某 build 下回归 |
-| **5. nightly fuzz 上 gibbous 永久跑** | 层间差分 fuzz + GC 压力上 gibbous 进 nightly,永久跑不下线(§4.2) | 失守即偶发翻译 bug / 写回遗漏不被持续撒网撞出(承 P1 [12](../p1-interpreter/12-testing-difftest.md) 「持续 fuzz」) |
+| **5. nightly fuzz 上 gibbous 永久跑** | 层间差分 fuzz + GC 压力上 gibbous 进 nightly,永久跑不下线(§4.2) | 失守即偶发翻译 bug / 写回遗漏不被持续撒网发现(承 P1 [12](../p1-interpreter/12-testing-difftest.md) 「持续 fuzz」) |
 | **6. gibbous 不开新豁免**(承 §2.4) | P1 [12 §4](../p1-interpreter/12-testing-difftest.md) 豁免表对 gibbous 原样适用;任何「为 gibbous 加新豁免」提案回本文重新论证 | 失守即掏空层间差分强度(gibbous 引入隐性不确定性被豁免掩盖) |
 | **7. 强制全升消除时序不确定性**(承 §2.2) | 层间差分必须用强制全升(`SetForceAllPromote`),不依赖自然热度 | 失守即差分不可复现(「这次 Proto 升了那次没升」) |
 | **8. crescent 是 P3 差分 oracle**(承 §2.5) | P3 层间差分以 crescent 为 oracle(P1 已验证),gibbous 为被测;不重复三方比对 | 失守即把未验证的 gibbous 当基准,差分失去判据 |
@@ -1072,7 +1072,7 @@ P2 [06 §11.1](../p2-bridge/06-testing-strategy.md) 已完成的测试入口(承
 | V2 | 正确性 | 双 number 算术直发 f64 + NaN 规范化 byte-equal | `TestArithFastPathByteEqual` |
 | V3 | 正确性 | 算术慢路径(coercion/元方法)走助手仍 byte-equal | `TestArithSlowPathByteEqual` |
 | V4 | 正确性 | 数值 for(含 step<0/step=0 错误)byte-equal | `TestNumForByteEqual` |
-| V5 | 正确性 | 回边 GC 触发时 byte-equal(GC 压力) | `gcfuzz.go::TestGCStressGibbous` |
+| V5 | 正确性 | back edge 上 GC 触发时 byte-equal(GC 压力) | `gcfuzz.go::TestGCStressGibbous` |
 | V6 | 正确性 | 表 IC 单态命中跳过哈希查找 byte-equal | `TestTableICHitByteEqual` |
 | V7 | 正确性 | 表 IC 失效(gen bump/setmetatable)走助手仍 byte-equal | `TestTableICMissByteEqual` |
 | V8 | 正确性 | 跨层 CALL 链错误冒泡 byte-equal(穿越 gibbous 帧) | `TestCrossTierCallByteEqual` |
@@ -1087,7 +1087,7 @@ P2 [06 §11.1](../p2-bridge/06-testing-strategy.md) 已完成的测试入口(承
 | V17 | 工程 | 三套 build tag 零回归(P1/P2 不豁免) | `make all-p3` |
 | V18 | 工程 | -race 通过(多 State 并发 gibbous) | `TestGibbousRace`(`-race -count=10`) |
 
-任一失败 → PW9 验收不收单 → P3 不交付。正确性轴(V1-V13)与性能轴(V14-V16)是**双硬门 AND 关系**(§6.8):不能「正确但慢」也不能「快但错」。
+任一失败 → PW9 验收不通过 → P3 不交付。正确性轴(V1-V13)与性能轴(V14-V16)是**两道硬性检查,AND 关系**(§6.8):不能「正确但慢」也不能「快但错」。
 
 
 [00-overview](./00-overview.md)(P3 总览 §4 PW9 验收双轴 / §9 不变式 / §10 缺口) ·
@@ -1095,11 +1095,11 @@ P2 [06 §11.1](../p2-bridge/06-testing-strategy.md) 已完成的测试入口(承
 [02-translation](./02-translation.md)(翻译器,V1-V10 翻译正确性来源 + pc 物化) ·
 [03-memory-model](./03-memory-model.md)(arena 收养 wazero memory,§2.4 不开新豁免 + §3.4 freelist 复用 + V18 并发约束) ·
 [04-trampoline](./04-trampoline.md)(跨层互调,V8/V9 跨层 CALL + status 链 + panic recover) ·
-[05-safepoint-gc](./05-safepoint-gc.md)(跨层 GC,V5/V13 回边 GC + locals 写回纪律) ·
+[05-safepoint-gc](./05-safepoint-gc.md)(跨层 GC,V5/V13 back edge GC + locals 写回纪律) ·
 [06-ic-feedback-consume](./06-ic-feedback-consume.md)(feedback 非投机消费,V6/V7 IC 命中/失效) ·
 [07-coroutine-thread-rule](./07-coroutine-thread-rule.md)(线程级 tier,V11 协程不升层) ·
 [implementation-progress](./implementation-progress.md)(进度对账,§5/§9 基准数据列 + 测试入口完成状态) ·
-[../p2-bridge/06-testing-strategy](../p2-bridge/06-testing-strategy.md)(**P2 验收单一事实源,本文一样的全 V 编号形式对偶面**;§1.5 三套并行不替换) ·
+[../p2-bridge/06-testing-strategy](../p2-bridge/06-testing-strategy.md)(**P2 验收单一事实源,本文是采用同一全 V 编号形式的对偶面**;§1.5 三套并行不替换) ·
 [../p2-bridge/implementation-progress](../p2-bridge/implementation-progress.md)(P2 测试入口 T1-T6 已完成,§7.1 P3 复用) ·
 [../p1-interpreter/12-testing-difftest](../p1-interpreter/12-testing-difftest.md)(P1 差分测试矩阵,§2 接入 + §3 GC 压力承接 + §4 豁免表原样适用) ·
 [../p4-method-jit](../p4-method-jit/00-overview.md)(P3 差分套是 P4 遗产,§4.3 风险阶梯) ·

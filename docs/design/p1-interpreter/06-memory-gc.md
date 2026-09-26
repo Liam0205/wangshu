@@ -21,7 +21,7 @@
 
 三条铁律(贯穿本文,源 [architecture](../architecture.md) §4 / `docs/design/roadmap.md` (§2)):
 
-1. **GCRef 不是 Go 指针**——arena 内对象互引用是 48-bit 字节偏移,对 Go GC 是普通整数。这正是绕开「写屏障税」的物理手段:Go GC 看不到也不需要管 arena 内部对象图。
+1. **GCRef 不是 Go 指针**——arena 内对象互引用是 48-bit 字节偏移,对 Go GC 是普通整数。这正是绕开「写屏障税」的具体手段:Go GC 看不到也不需要管 arena 内部对象图。
 2. **代码不参与 mark-sweep**——`Proto`/指令流/host 函数住 Go 堆,经整数 ID 引用([01](./01-value-object-model.md) §1)。GC 只回收 arena 内的 6 类动态对象。
 3. **GC 不改变可观察行为**——回收是透明的;但字符串 intern 哈希与表 rehash 影响 `pairs` 遍历序,这是**唯一**可被差分测试观察到的 GC 相关行为,§11 单列。
 
@@ -51,7 +51,7 @@ type Arena struct {
 **不要**反过来从 `[]byte` 派生 `[]uint64`——`[]byte` 不保证 8 对齐起始地址,在某些平台读 `uint64` 会触发非对齐访问。
 backing 本身是 Go 堆上的 `[]uint64`,但**其元素是纯整数**(NaN-boxed Value 与偏移),不含 Go 指针,故 Go GC 扫描这块 slice 时不追踪任何内部引用——这是 arena 对 Go GC「不可见对象图」的兑现。
 
-> **backing 来源抽象为注入点**(承 [../p3-wasm-tier](../p3-wasm-tier/03-memory-model.md) §1 回填请求):backing 的分配收口到一个可替换函数 `newBacking(minBytes uint32) []uint64`——P1 实现为 `make`;P3 替换为「收养 wazero linear memory 的 buffer」适配器(使 arena 与 Wasm 两层共见同一块内存)。§3 的 grow 同经此注入点。**P1 实现期就按此留口**,避免 P3 在固化的分配器里动手术。
+> **backing 来源抽象为注入点**(承 [../p3-wasm-tier](../p3-wasm-tier/03-memory-model.md) §1 回填请求):backing 的分配统一由一个可替换函数完成: `newBacking(minBytes uint32) []uint64`——P1 实现为 `make`;P3 替换为「收养 wazero linear memory 的 buffer」适配器(使 arena 与 Wasm 两层共见同一块内存)。§3 的 grow 同经此注入点。**P1 实现期就按此预留接口**,避免 P3 在已经定型的分配器里大改。
 
 ### 1.2 偏移 0 的保留(null GCRef)
 
@@ -142,7 +142,7 @@ func (a *Arena) Alloc(otype value.OBJType, words uint32) value.GCRef {
 
 `internal/crescent/alloc.go` 里的每个分配器都把三件事绑在一起:`object.AllocX`(拿内存 + 写头)、
 `st.gc.LinkSweep`(挂 sweep 链)、`st.gc.AllocCharge`(记账给 pacing,§8.3)。`allocLuaClosure` /
-`allocOpenUpvalue` / `allocTable` 三个都是这个形状——**同族分配器里出现三次的动作是契约,不是那几个函数
+`allocOpenUpvalue` / `allocTable` 三个都是这个形状——**同类分配器里出现三次的动作是约定,不是那几个函数
 各自的选择**;给一个新对象类型加分配路径时照抄这三步,并把新入口做成唯一入口。
 
 **漏掉 `LinkSweep` 的症状离原因很远**,这是 #205 的实测教训:io 三个标准流做成 file-handle userdata 时,
@@ -150,7 +150,7 @@ func (a *Arena) Alloc(otype value.OBJType, words uint32) value.GCRef {
 对象**。症状是创建句柄之后一次 `collectgarbage("collect")` 以 **arena 索引越界 panic**:panic 出现在 GC
 里而错误在分配处,而且那些句柄此时仍然从 `io` 表可达,所以第一眼像是收集器把可达对象清扫了(`mark.go`
 一直会把 `OBJ_USERDATA` 追到它的 meta 与 env ref,问题在构造侧)。这也意味着「功能全对」与「会破坏
-arena」可以同时成立:那个原型的 `:write`/`:close`/`getmetatable` 全对,一次收集就炸,上一轮为此整段撤回。
+arena」可以同时成立:那个原型的 `:write`/`:close`/`getmetatable` 全对,一次收集就崩溃,上一轮为此整段撤回。
 
 现在 userdata 的分配走 `State.NewUserdata`([10](./10-stdlib.md) §10.2.1),回归在
 `io_handles_test.go::TestIOHandles_SurviveGC`(反复收集 + 一万个表的分配压力下句柄仍在)。判据见
@@ -180,7 +180,7 @@ sizeClass(words):
 
 ### 2.3 freelist 与 bump 的协同
 
-一个 size-class 的内存来源有二:sweep 回填的死对象、bump 区从未分配过的处女地。分配优先 freelist(复用,热缓存友好),
+一个 size-class 的内存来源有二:sweep 回填的死对象、bump 区从未分配过的空间。分配优先 freelist(复用,热缓存友好),
 落空才 bump。**sweep 后** freelist 被各 size-class 的死对象填满,后续分配大量命中 freelist,bump 增长放缓——
 这是「回收后复用」的兑现:稳态下 arena 不必无限 grow,死对象空间被 freelist 循环利用。
 
@@ -224,7 +224,7 @@ realloc 后偏移语义不变(`words[ref>>3]` 自动指向新 backing 的同一�
 这把「整体扩容」从 O(对象数) 的指针修正降为 O(字节数) 的一次 memcpy,且无正确性风险。
 
 > 呼应 [01](./01-value-object-model.md) §2「GCRef 不是 Go 指针……这正是绕开写屏障税的物理手段」——
-> 偏移寻址的设计初衷是规避写屏障税,grow 免修正是顺带白赚的第二个好处。
+> 偏移寻址的设计初衷是规避写屏障税,grow 免修正是顺带得到的第二个好处。
 
 扩容策略:**翻倍**(`cap *= 2`),摊还 O(1)。初始容量可配(默认如 64 KiB);上限受 GCRef 48-bit 与 `bump uint32`(本设计 4 GiB)约束——
 单 arena 最大 4 GiB(`bump`/`cap` 用 uint32)。超 4 GiB 需求(罕见)留待把 bump/cap 升 uint64 + GCRef 用满 48-bit(256 TiB),P1 不做。
@@ -352,7 +352,7 @@ mark 的核心是「从一个对象出发,找出它引用的所有子 arena 对�
 
 **遍历原则:**
 - 只对 `value.IsCollectable(v)`(tag ∈ `[0xFFFB,0xFFFF]`,[01](./01-value-object-model.md) §3.3)的 Value 取其 GCRef 并标灰;
-  number / nil / bool / lightuserdata **不是对象,跳过**(`isCollectable` 区间判定是 mark 的快门,[01](./01-value-object-model.md) §7 不变式 6)。
+  number / nil / bool / lightuserdata **不是对象,跳过**(`isCollectable` 区间判定是 mark 的快速过滤,[01](./01-value-object-model.md) §7 不变式 6)。
 - 子引用字段是裸 GCRef(如 metaRef)时,`!=0` 即标灰(0 是 null)。
 - **String 是唯一的叶子类型**(无出边),标黑后无需入 gray stack 再处理——可优化为标记即黑(见 §5.3)。
 
@@ -408,7 +408,7 @@ mark 结束:存活对象全黑,死对象全保持 deadWhite,gray stack 空。
 
 为什么不统一用「显式 handle」(像某些 C 扩展的 `lua_pushvalue` 风格全程登记)?因为 Lua 解释器的活跃值**已经在被扫描的栈里**,
 再登记是冗余 + 拖慢热路径。为什么不统一用「栈即根」(让 host 也把临时值塞进 Lua 栈)?host 代码是任意 Go 逻辑,
-不总有现成 Lua 栈槽可塞(且塞了要管理 top,易错);显式 handle 更贴合 Go 代码的 `defer pop` 习惯。**二元形式是性能与人体工学的最优切分。**
+不总有现成 Lua 栈槽可塞(且塞了要管理 top,易错);显式 handle 更贴合 Go 代码的 `defer pop` 习惯。**二元形式是性能与易用性之间最好的划分。**
 
 ### 6.2 shadow stack 数据结构与接口
 
@@ -482,7 +482,7 @@ GC 只在 mutator 主动调 Alloc(或到达层边界检查点)时发生,故 GC �
   要么不存在这种情况。Lua opcode 的操作数都是寄存器(栈槽),天然在 R5 覆盖内——所以**多数 opcode 的 GC 安全是自动的**。
 - **例外:多步构造的中间结果**。如 `CONCAT R(B)..R(C)` 右结合逐对拼接,中间串 `tmp = R(C-1)..R(C)` 在拼下一对前是临时值。
   实现选择:① 把中间串**写回某个寄存器槽**(在 R5 覆盖内,GC 安全),或 ② 用 shadow stack 临时登记。
-  **P1 定稿:中间结果一律落寄存器槽**(CONCAT 把累积串写回 `R(A)` 或临时槽,逐步推进),不依赖 shadow stack——
+  **P1 定稿:中间结果一律写进寄存器槽**(CONCAT 把累积串写回 `R(A)` 或临时槽,逐步推进),不依赖 shadow stack——
   这样解释器主循环**完全不碰 shadow stack**(§6.1 形式 1),热路径零登记开销。详见 [05](./05-interpreter-loop.md) 的 CONCAT 实现。
 
 ### 7.3 STW 下的简单性
@@ -525,7 +525,7 @@ sweep():
 ```
 
 **存活对象翻白**:本轮存活对象(黑)在 sweep 时翻成 `currentWhite`(翻转**前**的当前白);随后 `flipWhite` 翻转,
-使下一轮的 `deadWhite` = 本轮的存活色——即「上轮存活、本轮再没被标记到」的对象成为下轮回收候选。这是双白翻转的闭环(§4.3)。
+使下一轮的 `deadWhite` = 本轮的存活色——即「上轮存活、本轮再没被标记到」的对象成为下轮回收候选。这样双白翻转就构成一个完整的循环(§4.3)。
 
 `freeObject` 按 otype 分派:
 - **String**:从 string table 摘除(§9.2 的特殊处理),再归还字节到 size-class/LARGE freelist。
@@ -560,8 +560,8 @@ func (c *Collector) maybeCollect(need uint32) {
 }
 ```
 
-注意 `maybeCollect` 的触发条件是 **`bump > threshold`**(分配量驱动 pacing,§8.3),不是「bump 撞 cap」——
-后者(撞 cap)是 grow 的条件(§3)。即:正常情况 GC 在 arena 用到 threshold 时主动回收(回收够则不 grow);
+注意 `maybeCollect` 的触发条件是 **`bump > threshold`**(分配量驱动 pacing,§8.3),不是「bump 触及 cap」——
+后者(触及 cap)是 grow 的条件(§3)。即:正常情况 GC 在 arena 用到 threshold 时主动回收(回收够则不 grow);
 只有 GC 后存活仍逼近 cap 才 grow。两个阈值分工:**threshold 控制 GC 频率,cap 控制物理扩容**。
 
 ### 8.3 GC pacing / 触发阈值(分配量驱动)
@@ -657,7 +657,7 @@ func (st *StringTable) Intern(b []byte) value.GCRef {
   在 mark 阶段经 R1..R9 被正常标黑;**没有任何引用的串**在 mark 后保持死白。**sweep 时,遍历 string table 的每个 bucket,
   把死白的串从 bucket 链里摘除并回收**(Lua 的 `sweepwholelist(strt.hash[i])` + `freeobj` 递减 `strt.nuse`)。
 
-**落到望舒实现:**
+**对应到望舒实现:**
 
 - string table **不参与 mark 的根枚举**(R1..R9 不含它)。串的存活完全由「是否被其它根可达」决定。
 - string table **参与 sweep**:sweep 不仅走 gcnext 全链(§8.1),对 String 类对象,回收时**额外**从其所在 bucket 摘除。
@@ -666,7 +666,7 @@ func (st *StringTable) Intern(b []byte) value.GCRef {
   逐个从 bucket 摘除即可——**无需单独遍历 string table 的所有 bucket**(Lua 5.1 单独遍历 strt 是因其 GC 分阶段;
   望舒 STW 单趟 sweep 顺着 gcnext 一次处理所有对象含 String,更简单)。
 
-> 一句话:**string table 是「弱可达索引」——不延长串的命，只在串死时负责把它从索引里摘掉。** 这是 Lua 5.1 字符串 GC 的精确语义。
+> 一句话:**string table 是「弱可达索引」——不延长串的生命期，只在串死时负责把它从索引里摘掉。** 这是 Lua 5.1 字符串 GC 的精确语义。
 
 ### 9.3 hash 算法定稿:Lua 5.1 JSHash 分段采样(否决 FNV-1a)
 
@@ -787,7 +787,7 @@ GC 主流程(§8.2)的两个终结相关步骤:
    - 把它**从死白救出**——标记它**及其经 `__gc` 终结器可达的对象图**为存活(复活,防 sweep 回收它和它要用的数据);
    - 移入一个「本轮待运行终结器」子列表 `toRunFinalizers`(保持创建序);
    - 从 `finalizeList` 移除(已终结的不再二次终结——除非终结器把它再次 `setmetatable` 带 `__gc`,见 Lua 多次终结语义,P1 可选不支持重复登记)。
-   仍可达的(未死)userdata 留在 `finalizeList` 等future轮。
+   仍可达的(未死)userdata 留在 `finalizeList` 等以后几轮。
 2. **`runFinalizers()`(sweep 后)**:**逆序**遍历 `toRunFinalizers`,对每个调 `__gc(ud)`:
    - 在**安全点**调用(此刻 GC 已完成 mark+sweep,处于一致状态);
    - 调用期间**禁止再触发 GC**(置 `c.gcRunning=false` 或等价标志,Alloc 内 `maybeCollect` 检查此标志跳过)——
@@ -831,7 +831,7 @@ GC 主流程(§8.2)的两个终结相关步骤:
 - **finalizer 顺序**:`__gc` 调用序(创建逆序,§10)若被测试观察(终结器打印),须与 Lua 5.1 一致——属差分用例。
 
 > 与 [01](./01-value-object-model.md) §8 / [02](./02-bytecode-isa.md) §10 的缺口呼应:`pairs` 是否逐字节一致是验收口径问题,
-> 本文把「哈希算法」这一可控变量锁成与官方一致(§9.3 定稿 JSHash),把口径决策的剩余变量缩到 rehash/Brent/遍历顺序(均已声明对齐),交 [12](./12-testing-difftest.md) 收口。
+> 本文把「哈希算法」这一可控变量锁成与官方一致(§9.3 定稿 JSHash),把口径决策的剩余变量缩到 rehash/Brent/遍历顺序(均已声明对齐),交 [12](./12-testing-difftest.md) 最终决定。
 
 ---
 
@@ -852,9 +852,9 @@ GC 主流程(§8.2)的两个终结相关步骤:
   **未定**:超大字符串集(百万串)下 Go 侧 bucket 内存与 rehash 开销是否需改「侵入式 + arena 内链」。记缺口。
 - **层边界 safepoint 的具体形式**:§7.1 说层边界是可选 GC 检查点,但 P1 只有解释器层,层边界退化为 VM↔host 边界。
   「长时间纯计算不分配的循环如何周期 GC」——P1 靠分配点,无分配的死循环不会 GC(也无需,因没产生垃圾)。
-  P3+ 跨层时 safepoint 形式(回边检查点 vs 调用边界,对齐 `docs/design/roadmap.md` (§2) 异步抢占税解法)在 [p3-wasm-tier](../p3-wasm-tier/03-memory-model.md) 定。
+  P3+ 跨层时 safepoint 形式(循环回跳(back edge)检查点 vs 调用边界,对齐 `docs/design/roadmap.md` (§2) 异步抢占税解法)在 [p3-wasm-tier](../p3-wasm-tier/03-memory-model.md) 定。
 - **与 [05-interpreter-loop](./05-interpreter-loop.md) 的接口**:本文假设 05 提供「running thread 寄存器」「CallInfo 帧布局(mark 需知帧内哪些字是 Value)」
-  「CONCAT/多步构造把中间结果落寄存器槽(§7.2)」。05 尚未创建,这些接口**待 05 定稿后回填校验**。
+  「CONCAT/多步构造把中间结果写进寄存器槽(§7.2)」。05 尚未创建,这些接口**待 05 定稿后回填校验**。
 
 ---
 
@@ -863,10 +863,10 @@ GC 主流程(§8.2)的两个终结相关步骤:
 | 决策 | 定稿 | 依据 |
 |---|---|---|
 | **hash 算法** | **Lua 5.1 JSHash 分段采样**(§9.3),否决 FNV-1a | 差分一致性:把哈希环锁成与官方逐位一致,为 `pairs` 序严格口径创造必要条件 |
-| **shadow stack 形式** | **二元**:Lua 执行现场「栈即根」(零登记)+ host 执行期「显式 push/pop handle」(§6.1) | 性能(热路径零开销)+ 人体工学(host 的 `defer pop`);补 Go 精确栈扫描看不见 arena 引用的盲区 |
+| **shadow stack 形式** | **二元**:Lua 执行现场「栈即根」(零登记)+ host 执行期「显式 push/pop handle」(§6.1) | 性能(热路径零开销)+ 易用性(host 的 `defer pop`);补 Go 精确栈扫描看不见 arena 引用的盲区 |
 | **根集合** | **R1..R9**(§5.1):全局表 / registry / 主线程 / 活跃 thread / running 线程的栈+CallInfo / Proto 常量+源名 GCRef / shadow stack / 临时根 | 漏一类即误回收;R5 自动可达,R7 显式登记 |
 | **STW 决策** | **P1 stop-the-world full GC**(§7.3),双白+三色+写屏障接口为 P3+ 增量预留(§4.3/§9.4) | 单 goroutine 解释器下 STW 天然无需停顿协调,正确性退化为单线程顺序逻辑 |
-| **string table 性质** | **弱可达索引**(§9.2):不延命,串死时从索引摘除(Lua 5.1 `GCSsweepstring` 语义);**非强根、非 Lua 弱表** | 核对 Lua 5.1 `lgc.c`/`lstring.c` |
+| **string table 性质** | **弱可达索引**(§9.2):不延长串的生命期,串死时从索引摘除(Lua 5.1 `GCSsweepstring` 语义);**非强根、非 Lua 弱表** | 核对 Lua 5.1 `lgc.c`/`lstring.c` |
 | **GC pacing** | 分配量驱动,`threshold = live * 200%`(§8.3),P1 仅 full GC | 对齐 Lua `LUAI_GCPAUSE=200` |
 | **写屏障** | P1 空实现占位(§9.4);不碰 Go `gcWriteBarrier`(`docs/design/roadmap.md` (§6) 非目标) | 我们自己的 arena 内逻辑屏障,增量 GC 才填充 |
 
@@ -874,7 +874,7 @@ GC 主流程(§8.2)的两个终结相关步骤:
 
 相关:[01-value-object-model](./01-value-object-model.md)(脊柱:位布局/对象布局) ·
 [02-bytecode-isa](./02-bytecode-isa.md)(分配类 opcode) ·
-[05-interpreter-loop](./05-interpreter-loop.md)(safepoint 在循环何处 / CallInfo 帧布局 / CONCAT 中间结果落槽) ·
+[05-interpreter-loop](./05-interpreter-loop.md)(safepoint 在循环何处 / CallInfo 帧布局 / CONCAT 中间结果写进寄存器槽) ·
 [07-metatables-metamethods](./07-metatables-metamethods.md)(`__gc`/`__index` 等) ·
 [09-errors-pcall](./09-errors-pcall.md)(终结器错误保护) ·
 [10-stdlib](./10-stdlib.md)(host function 调用约定 + shadow stack 使用纪律) ·

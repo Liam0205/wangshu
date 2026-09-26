@@ -4,7 +4,7 @@
 > 元表挂在哪、`getmetatable`/`setmetatable`/`__metatable` 语义、元方法事件总表、
 > `__index`/`__newindex` 链、算术/比较/连接/调用/长度元方法的查找顺序与触发条件、
 > 字符串→数字 coercion 归属、`__mode` 弱表语义。
-> 上游契约:[05-interpreter-loop](./05-interpreter-loop.md) 把多条**慢路径**显式下放给本文——
+> 上游约定:[05-interpreter-loop](./05-interpreter-loop.md) 把多条**慢路径**显式下放给本文——
 > §4.2 `arithMeta`、§4.3 `__unm`/`__len`、§4.4 `lessThan`/`__eq`/`__le`、§4.6 `__concat`、
 > §6.3 `indexMeta`(`__index` 链)、§6.4 `__newindex`、§7.1 `callMeta`(`__call`);
 > 本文逐一定义,**函数名与 05 严格一致**。值/对象侧:[01-value-object-model](./01-value-object-model.md)
@@ -134,7 +134,7 @@ setmetatable(t, mt):
 要点:
 
 - **`__metatable` 双重作用**(5.1 语义):① `getmetatable` 看到它就返回它的值而非真元表(对脚本隐藏真元表);② `setmetatable` 看到旧元表有它就**拒绝改元表**(报错保护)。这让库作者能「锁死」对象的元表。
-- **第 4 步 bump gen 是与 05 的关键耦合**:05 §6.1 定义 table 有单调代次 `gen`,IC 命中靠「同表 + 同代次」校验。改 metatable 会改变「该表查 `__index` 等的结果」,所以**必须 bump gen 让缓存了该表元方法查找的 IC 失效**(05 §6.5 表格已列「`setmetatable`/清 metatable → 递增该表 gen」并指向本文)。**这是本文对 05 IC 失效契约的兑现点**。
+- **第 4 步 bump gen 是与 05 的关键耦合**:05 §6.1 定义 table 有单调代次 `gen`,IC 命中靠「同表 + 同代次」校验。改 metatable 会改变「该表查 `__index` 等的结果」,所以**必须 bump gen 让缓存了该表元方法查找的 IC 失效**(05 §6.5 表格已列「`setmetatable`/清 metatable → 递增该表 gen」并指向本文)。**这是本文对 05 IC 失效约定的兑现点**。
 - `debug.setmetatable(v, mt)`(debug 库):对 table/userdata 写其 `metaRef`(并 bump gen);对其它类型写 `typeMetatables[typeIndexOf(v)]`;**不做 `__metatable` 保护**(debug 库是「绕过保护」的后门,5.1 语义)。返回值是 v(5.1)。
 
 ---
@@ -542,7 +542,7 @@ func toNumber(v value.Value) (float64, bool) {
 - **`-0.0`**:`"-0"` → `-0.0`(保留符号,Lua 语义)。
 - **与 tonumber(s, base) 的区别**:`tonumber` 带 base 参数时走**另一条**(任意进制整数解析,不接受小数/指数),那是 `tonumber` 专属,**不属于算术 coercion**([10](./10-stdlib.md) 定义)。算术 coercion 只用上面的无 base 形式。
 
-> **coercion 归属定稿**:`parseLuaNumber` 实现在 `internal/crescent`(或 `internal/object` 的数字工具),**算术/for/tonumber 三处共享同一函数**,保证三处对「什么字符串算数字」逐字节一致。这收口了 05 §13 与 §10.1 的「coercion 边界」缺口、以及 10 的 `tonumber` 行为。由 [12](./12-testing-difftest.md) 钉死(各种边界串)。
+> **coercion 归属定稿**:`parseLuaNumber` 实现在 `internal/crescent`(或 `internal/object` 的数字工具),**算术/for/tonumber 三处共享同一函数**,保证三处对「什么字符串算数字」逐字节一致。这补上了 05 §13 与 §10.1 的「coercion 边界」缺口、以及 10 的 `tonumber` 行为。由 [12](./12-testing-difftest.md) 用测试固定下来(各种边界串)。
 
 ### 5.3 `arithMeta` 实现
 
@@ -640,7 +640,7 @@ func (vm *VM) lenMeta(f *frame, i Instruction, a value.Value) *LuaError {
 
 **为什么 table 不查 `__len`(反复强调)**:这是 5.1 vs 5.2 最易踩的差异。5.2 起 `#t` 对有 `__len` 的表调元方法;**5.1 对 table 的 `#` 永远取 border,无视 `__len`**。P1 在 05 §4.3 的 LEN 分派中,**table 分支直接 border,根本不调 `lenMeta`**——`lenMeta` 只被 userdata 分支调用。若误让 table 走 `lenMeta`,带 `__len` 的表会与官方 5.1 差分失败(roadmap §6 锁 5.1)。
 
-> **arity 注意**:5.1 `__len` 传 `(a)` 单参(不像 `__unm` 传两次)?——Lua 5.1 `luaV_len`?**5.1 实际无 `luaV_len`**(`__len` on userdata 经 `luaL_*`/手动);5.2 才有 `luaV_objlen`。**待 12 差分核对** 5.1 userdata `__len` 的精确 arity。本文定 `(a)` 单参(最自然),由差分钉死。
+> **arity 注意**:5.1 `__len` 传 `(a)` 单参(不像 `__unm` 传两次)?——Lua 5.1 `luaV_len`?**5.1 实际无 `luaV_len`**(`__len` on userdata 经 `luaL_*`/手动);5.2 才有 `luaV_objlen`。**待 12 差分核对** 5.1 userdata `__len` 的精确 arity。本文定 `(a)` 单参(最自然),由差分测试最终确定。
 
 ---
 
@@ -981,7 +981,7 @@ tostring(v):                                  // base 库 host function
 
 **地址格式的差分问题**:`tostring({})` 含对象地址,**与官方/gopher-lua 必然不同**(arena 偏移 vs C 指针)。[12](./12-testing-difftest.md) 必须对「含 `0x...` 地址的 tostring 输出」做豁免(脱敏后比较,或排除此类用例)。本文标注此为**可观察但不可逐字节比的项**(类似 06 §11 的 `pairs` 序口径问题)。
 
-> **上表那个 `0x%08x` 的宽度是一份差分契约,不是自由选择(#233,2026-08-05)**:脱敏只能救**被打印出来**的地址,救不了**被测量**的地址——`#tostring({})` 的长度在脱敏之前就已经定了(PUC 的 `%p` 在 x86-64 Linux 给 12 个十六进制位、`#tostring(t)` 是 21;望舒这个 `0x%08x` 给 8 位、是 17)。差异因此在 cgo oracle 的 prelude 渲染处消除(把 PUC 自己的地址渲染成 8 位),而**望舒这一侧的 8 位宽度成了那份对齐的另一半**:改宽度会让 `fuzz_234_test.go::TestAddressLengthIsComparable` 变红。判据与实现见 [12](./12-testing-difftest.md) §4.3a。
+> **上表那个 `0x%08x` 的宽度是一份差分约定,不是自由选择(#233,2026-08-05)**:脱敏只能救**被打印出来**的地址,救不了**被测量**的地址——`#tostring({})` 的长度在脱敏之前就已经定了(PUC 的 `%p` 在 x86-64 Linux 给 12 个十六进制位、`#tostring(t)` 是 21;望舒这个 `0x%08x` 给 8 位、是 17)。差异因此在 cgo oracle 的 prelude 渲染处消除(把 PUC 自己的地址渲染成 8 位),而**望舒这一侧的 8 位宽度成了那份对齐的另一半**:改宽度会让 `fuzz_234_test.go::TestAddressLengthIsComparable` 变红。判据与实现见 [12](./12-testing-difftest.md) §4.3a。
 
 > **`__tostring` 返回非 string**:5.1 报错(`tostring` 要求元方法返回字符串)。5.4 放宽(允许返回任意值再转)。P1 按 5.1 严格(返回非 string 报错)。**待 12 差分核对**。
 
@@ -1126,7 +1126,7 @@ sweep 阶段(06 §8):
 | `callError` | `attempt to call a <type> value` | `(global 'f')` / `(method 'm')` 等 |
 | `compareError` | `attempt to compare two <type> values` / `attempt to compare <ta> with <tb>` | 一般无变量名 |
 
-> **待 12 差分核对**:所有措辞的精确格式(冠词 `a`/`an`、复数、标点)以 Lua 5.1 参考实现为准,由 [12](./12-testing-difftest.md) 钉死。本文给的是骨架,**不编造精确标点**。
+> **待 12 差分核对**:所有措辞的精确格式(冠词 `a`/`an`、复数、标点)以 Lua 5.1 参考实现为准,由 [12](./12-testing-difftest.md) 最终确定。本文给的是骨架,**不编造精确标点**。
 
 ---
 
@@ -1169,7 +1169,7 @@ sweep 阶段(06 §8):
 ### 对 01/02 的依赖确认(无新增字段)
 
 - 本文**复用** [01](./01-value-object-model.md) §5.2 Table `metaRef`(word4)+ `flags bit0`、§5.5 Userdata `metaRef`(word2)+ `flags bit0`,**不新增字段**。
-- 本文**复用** [01](./01-value-object-model.md) §5.2 的 `gen` 代次(05 的回填请求,**已落入 01 布局 word5 高 32 位**),`setmetatable` 调 `bumpGen()`。✅
+- 本文**复用** [01](./01-value-object-model.md) §5.2 的 `gen` 代次(05 的回填请求,**已写进 01 布局 word5 高 32 位**),`setmetatable` 调 `bumpGen()`。✅
 - `typeMetatables[9]`(§1.2)是 **State 字段**(crescent 侧),非 arena 对象布局,不需 01/02 回填;其 GC 根地位**已由 [06](./06-memory-gc.md) §5.1 增补为 R9**。✅
 
 ---

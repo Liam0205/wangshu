@@ -1,6 +1,6 @@
 # P5 §3:IR 设计——线性 SSA + 双数组布局 + 类型 lattice + guard 与 snapshot 配合
 
-> 状态:**未立项图纸**(P5 尚未立项,本文是启动检查点 [01-launch-judgment](./01-launch-judgment.md) 通过后可以逐步照做的施工设计,不代表任何已实现代码)。
+> 状态:**未立项图纸**(P5 尚未立项,本文是启动检查点 [01-launch-judgment](./01-launch-judgment.md) 通过后可以逐步照着实现的详细设计,不代表任何已实现代码)。
 >
 > 对应 Go 包:`internal/fullmoon/trace/ir`(IR 数据结构加编解码 helper;IR 打印器详见 §7)。IR 与录制器耦合但独立成包,方便 [04-optimization-passes](./04-optimization-passes.md) / [05-register-allocation](./05-register-allocation.md) / [06-snapshot-deopt](./06-snapshot-deopt.md) 分别引用而不循环依赖。
 >
@@ -75,7 +75,7 @@ type IRNode struct {
 }
 ```
 
-优点:直观、方便图上 rewrite、和教科书一致。缺点:§0.2 三条(GC 触及、cache miss、snapshot 编码贵)全踩。
+优点:直观、方便图上 rewrite、和教科书一致。缺点:§0.2 三条(GC 触及、cache miss、snapshot 编码贵)全都存在。
 
 ### 1.2 备选 B——LuaJIT 式双数组(定稿提议)
 
@@ -96,7 +96,7 @@ type IRNode struct {
 - fold engine 判「操作数是不是常量」= 一次 `ref < bias` 比较,极快;
 - **双向增长**:一条 trace 录制期,常量往前 push,指令往后 push;两侧都不会溢出对方——如果真溢出说明 trace 太大,走 §4.4 hardcap abort。
 
-这个布局是 LuaJIT 的核心 idea(06-snapshot-deopt §4 提到但没有文档);望舒采用一样的做法,用 Go 数据结构表达:
+这个布局是 LuaJIT 的核心 idea(06-snapshot-deopt §4 提到但没有文档);望舒采用同样的做法,用 Go 数据结构表达:
 
 ```go
 type IRBuf struct {
@@ -123,7 +123,7 @@ func (b *IRBuf) LookupInsRef(ref IRRef) *IRIns {
 
 ### 1.3 决策:选 B,标为提议,PT2 验证
 
-**决策**:双数组布局是**提议**,PT2(IR 加 fold)里程碑真跑起来后必须验证:
+**决策**:双数组布局是**提议**,PT2(IR 加 fold)里程碑实际运行起来后必须验证:
 
 - fold engine 判「操作数是常量」的实测成本(应该是一次 int 比较加一次 slice index,大约 1-2 cycle);
 - 一条 4000 ins trace 的两个 slice 总大小(4000 × 8 + 512 × 8 ≈ 36 KB,应该能全进 L1D);
@@ -463,7 +463,7 @@ interning 的目的是让 FOLD engine `cnst_a + cnst_b` 判定两个 IRRef 是�
 - **RETURN_INLINED 是否值得存在**——录制期真实的 return 已经 pop frameStack,RETURN_INLINED 只是 marker 供 snapshot 记录 exit pc;如果 snapshot 直接记 pc 不需要 marker 就可以去掉。PT2 早期决定。
 - **CALLN 的使用范围**——v1 主要是 abort,不用 CALLN 退,但如果 P5 引入 pure host fn 白名单(§8 [02-trace-recording](./02-trace-recording.md) 开放问题第 3 条),CALLN 就有用武之地,届时需要为 CALLN 定 helper 声明格式(纯 / 只读 / 有副作用)。
 - **IR emit 的 fold-on-emit 约定**——[04-optimization-passes §1] 承诺每次 emit 先过 fold,如果结果是已存在的 IRRef 就直接返回该 ref 不 emit 新 ins;fold 表本身的规模 PT2 定(LuaJIT fold table 大约 1500 行 C 规则,望舒不复制,按最常见的 f64 fold 加 Lua 特有 pattern 起步,大约 200 条起)。
-- **KGC 引用的 GCRef 是否需要接 GC 根**——kBuf 里的 GCRef 是 arena 里的对象,如果 trace 期间被 GC 掉,KGC 就悬垂了。目前设想是:录制期 GC safepoint 关闭,或者 kBuf 通过 State 常驻根接根,PT1 定。
+- **KGC 引用的 GCRef 是否需要接 GC 根**——kBuf 里的 GCRef 是 arena 里的对象,如果 trace 期间被 GC 掉,KGC 就悬垂了。目前设想是:录制期 GC safepoint 关闭,或者 kBuf 挂到 State 常驻根上,PT1 定。
 
 ---
 

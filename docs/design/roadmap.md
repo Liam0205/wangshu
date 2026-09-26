@@ -36,7 +36,7 @@ Go 生态目前唯一的主流纯 Go Lua 实现是 gopher-lua:树遍历前端 + 
 | LuaJIT(C++) | 154μs | 3-5x | trace JIT,NaN-boxing |
 
 关键事实一:**真 LuaJIT 只比 luajc 快 6%**(154 vs 164μs)。per-item 跨界形式下,
-边界跨越 + 值装箱主导成本,脚本本体再快也被钉死。
+边界跨越 + 值装箱主导成本,脚本本体再快,整体耗时也降不下来。
 
 **测量 2:编译收益在边界主导负载下的稀释**
 
@@ -56,14 +56,14 @@ per-item 反复跨界。宿主侧的配套改造不在本项目范围内,本项�
 | 税 | 问题 | 标准解法(wazero 已验证) |
 |---|---|---|
 | GC 精确栈扫描 | JIT 帧无 stack map | JIT 代码跑自管非 Go 栈,边界按 syscall 语义 |
-| 异步抢占 | 抢占信号可落在任意 PC | 生成代码在循环回边插抢占检查点 |
+| 异步抢占 | 抢占信号可落在任意 PC | 生成代码在循环回跳（back edge）处插抢占检查点 |
 | 栈移动 | morestack 拷贝 goroutine 栈 | JIT 代码不持有指向 Go 栈的指针 |
 | 写屏障 | 裸指针写破坏并发 GC 三色不变式 | 值世界放自管 arena/linear memory,边界拷贝 |
 
-推论:**VM 边界跨越是几十~百 ns 的固定成本**,短脚本会被吃光——再次印证
+推论:**VM 边界跨越是几十~百 ns 的固定成本**,短脚本的收益会被这笔成本抵消——再次印证
 §1 的负载形状前提。wazero(纯 Go Wasm 编译执行引擎,Apache 2.0)是
 "纯 Go 运行时机器码生成可行"的存在性证明,也是 exec-mmap / W^X /
-icache-flush / trampoline 等系统管线的采石场。
+icache-flush / trampoline 等系统管线的参考来源。
 
 ## 3. 第 1 天的架构承诺:值表示
 
@@ -114,7 +114,7 @@ P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 met
 - 函数级热度计数(loop back-edge 计数)
 - inline cache 反馈记录(类型 feedback,为编译层供料)
 - 静态可编译性分析器:varargs / coroutine / debug 等形状标记"不升层",
-  永远走解释——try-compile-fallback-interpret(LuaJ luajc 一样的策略),
+  永远走解释——try-compile-fallback-interpret(与 LuaJ luajc 相同的策略),
   换来零 deopt 机器
 
 ### P3:Wasm 编译层(6-12 人月)
@@ -132,7 +132,7 @@ P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 met
 
 - **立项前置 = 立项判定**(承 [design/p4-method-jit/01-launch-judgment](./p4-method-jit/01-launch-judgment.md)):
   P4 启动前先做立项判定(P3 实际表现 + 真实宿主负载证据 + 资源到位),三档决议产出
-  「常规推进 / 暂缓 / 跳过」三选一——与 P3 的「开工前置 spike」节奏对位
+  「常规推进 / 暂缓 / 跳过」三选一——与 P3 的「开工前置 spike」节奏对应
 - JSC Baseline 风格:per-function 模板编译,IC 反馈做类型投机
   (f64 快速路径 + guard),deopt 简单(函数级 OSR exit 回解释器)
 - 继承 P3 的全部分层结构,只换发射后端(Wasm 发射→原生发射)
@@ -145,7 +145,7 @@ P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 met
 ### P5:trace-based JIT(+2-4 人年到可信 v1,开放式)
 
 - trace 录制(从字节码)、IR 优化(CSE / 循环不变量外提 / 分配下沉)、
-  寄存器分配、snapshot + deopt 机器——LuaJIT 的真正护城河,无处抄
+  寄存器分配、snapshot + deopt 机器——LuaJIT 的真正护城河,没有现成实现可借鉴
 - 只在 P4 的收益不够时启动
 - **验收**:列内核负载 10-30x over gopher-lua
 
@@ -168,7 +168,7 @@ P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 met
   arena 内存布局 ABI(§8)。
 - **复刻 Go runtime 内部机制**:绝不 inline 复刻
   `runtime.gcWriteBarrier` / `runtime.mallocgc` 等内部符号
-  (`go:linkname`,每个 Go 版本都可能碎)。
+  (`go:linkname`,每个 Go 版本都可能失效)。
 - **Lua 5.2+ 特性**(goto / _ENV / 整数子类型 / 位运算符 / utf8 库等):
   5.1 核心是嵌入生态的事实标准,LuaJIT 同样停在这里。
 
@@ -184,7 +184,7 @@ P1 解释器 ──► P2 分层桥 ──► P3 Wasm 编译层 ──► P4 met
 | Pallene | typed-subset 编译 + fallback 的可行性先例 |
 | V8 Ignition→TurboFan / JSC Baseline→DFG→FTL | 分层 VM 的标准阶梯;解释器先行 |
 
-## 8. 宿主嵌入契约
+## 8. 宿主嵌入约定
 
 嵌入接口刻意设计为鼓励列内核形状:
 

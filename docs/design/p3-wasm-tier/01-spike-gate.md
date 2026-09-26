@@ -2,7 +2,7 @@
 
 > 状态:**设计阶段,详细设计**(本文是 P3 文档集 [00-overview](./00-overview.md) §0 列出的「开工检查」单一事实源;凡涉 wazero 具体 API 处标注「待 spike 验证」)。
 > 本文是 P3 的**生死检查**:wazero call boundary 实测 < 150ns 才允许 [02-translation](./02-translation.md) 起的 PW1 翻译器开工;不达标走 [../p4-method-jit/01-launch-judgment](../p4-method-jit/01-launch-judgment.md) §2 的「跳跃路径」(P4 自建分层骨架)。
-> 上游契约:[../roadmap.md](../roadmap.md) §1(校准测量——LuaJIT 154μs vs luajc 164μs 仅 6% 是 150ns 阈值的论据)、§2(四项税——wazero 已验证项是 spike 顺带验证的项)、§4(P3 阶段定义与前置 spike 措辞);[00-overview](./00-overview.md) §1(P3 边界——spike 验证的物理事实)、§4 PW0(本文承担)、§8(四项税外包是 P3 选 wazero 的本质)。
+> 上游约定:[../roadmap.md](../roadmap.md) §1(校准测量——LuaJIT 154μs vs luajc 164μs 仅 6% 是 150ns 阈值的论据)、§2(四项税——wazero 已验证项是 spike 顺带验证的项)、§4(P3 阶段定义与前置 spike 措辞);[00-overview](./00-overview.md) §1(P3 边界——spike 验证的实际情况)、§4 PW0(本文承担)、§8(四项税外包是 P3 选 wazero 的本质)。
 > P1 依赖面:[../p1-interpreter/06-memory-gc](../p1-interpreter/06-memory-gc.md) §1.1(arena backing 来源——spike 顺带验证 [03-memory-model](./03-memory-model.md) 的收养机制)。
 > P2 依赖面:[../p2-bridge/00-overview](../p2-bridge/00-overview.md)(P2 决策机产出——spike 通过即可消费 P2 的 try-compile 请求)。
 > 下游衔接:[02-translation](./02-translation.md)(spike 通过后 PW1 起的翻译器主体)、[../p4-method-jit/01-launch-judgment](../p4-method-jit/01-launch-judgment.md) §2(spike 不达标时的跳跃路径接管点)。
@@ -19,11 +19,11 @@
 
 [../roadmap.md](../roadmap.md) §4 的 P3 段落唯一一句加粗:**「开工前置 spike:wazero call boundary 实测(目标 <150ns),不达标则跳过本阶段直接做 P4」**。这是项目从立项第一天就定下的硬规则,不是后置补丁。理由有三:
 
-1. **P3 的全部价值挂在「跨层不贵」这一物理前提上**。[00-overview](./00-overview.md) §1 的一句话定位 P3:「在不用调试机器码的后端上,把 P2 决策机产出的 gibbous 代码请求兑现成 Wasm 可执行码,跑通整套分层骨架(升层 / fallback / trampoline / 跨层差分)」——若 trampoline(crescent↔gibbous)的成本与宿主边界([../roadmap.md §2](../roadmap.md) 的几十~百 ns 固定成本)同档,「解释↔编译交错执行」的形式死亡,P3 退化为「整程序编译」一条路,而那条路 P4 原生后端做得更好(无 Wasm 语义中介)。本文 §3 给出 150ns 阈值的精确论证。
+1. **P3 的全部价值挂在「跨层不贵」这一实际前提上**。[00-overview](./00-overview.md) §1 的一句话定位 P3:「在不用调试机器码的后端上,把 P2 决策机产出的 gibbous 代码请求兑现成 Wasm 可执行码,跑通整套分层骨架(升层 / fallback / trampoline / 跨层差分)」——若 trampoline(crescent↔gibbous)的成本与宿主边界([../roadmap.md §2](../roadmap.md) 的几十~百 ns 固定成本)同档,「解释↔编译交错执行」的形式就不成立,P3 退化为「整程序编译」一条路,而那条路 P4 原生后端做得更好(无 Wasm 语义中介)。本文 §3 给出 150ns 阈值的精确论证。
 
 2. **6-12 人月的人力投入不能押在未验证的假设上**([00-overview §5](./00-overview.md))。spike 0.5-1 人月的代价,换 P3 后续 PW1-PW9 是否值得投入的硬数据。即便 spike 不达标(走 P4 跳跃路径,[../p4-method-jit/01-launch-judgment §2](../p4-method-jit/01-launch-judgment.md)),这次投入仍**值得**——它把决策建立在实测而非乐观估计上,[../roadmap.md §5](../roadmap.md) 原则 3「每阶段独立交付价值,任何检查处停下都不亏」的字面体现。
 
-3. **wazero 是 P3 选型的物理前提,而不是细节**([00-overview §8](./00-overview.md) + [../roadmap.md §2](../roadmap.md))。P3 把四项税(GC 精确栈扫描 / 异步抢占 / 栈移动 / 写屏障)整体外包给 wazero。wazero 已验证四项税自身的解决方案,但**没有显式表态「跨边界往返成本」适配分层 VM 的频次**——分层 VM 的边界发生频率(列内核外每个慢路径助手 / 未编译被调一次)显著高于「应用→Wasm 模块」常规嵌入用法的边界频次。spike 就是替我们补这一项数据。
+3. **wazero 是 P3 选型的基本前提,而不是细节**([00-overview §8](./00-overview.md) + [../roadmap.md §2](../roadmap.md))。P3 把四项税(GC 精确栈扫描 / 异步抢占 / 栈移动 / 写屏障)整体外包给 wazero。wazero 已验证四项税自身的解决方案,但**没有显式表态「跨边界往返成本」适配分层 VM 的频次**——分层 VM 的边界发生频率(列内核外每个慢路径助手 / 未编译被调一次)显著高于「应用→Wasm 模块」常规嵌入用法的边界频次。spike 就是替我们补这一项数据。
 
 ### 0.2 检查是单点决策不可绕过
 
@@ -36,20 +36,20 @@
 | **决策不可逆** | 走开工(走 P3)还是走跳跃(走 P4),进入 PW1 后**无回头**——回头意味着推翻 PW1 投入,违反 [../roadmap.md §5](../roadmap.md) 原则 3 |
 | **数据进档** | spike 三档数据 + 决策报告进 [implementation-progress](./implementation-progress.md);P4 验收时若反向决议「P3 退役」,本检查数据是「P3 是否本就该跳过」的回顾依据 |
 
-**对偶面:P4 P3 去留检查形式平行**(2026-06-28,承 [P4 implementation-progress §2 RJ-18](../p4-method-jit/implementation-progress.md) 跨文档回填请求):本节 spike 检查(P3 开工前)与 [P4 07 §0.3 P3 去留检查](../p4-method-jit/07-p3-retirement.md)(P4 验收后)是 P3 生命周期上的两个检查,**形式平行**:都是 P3 阶段的「检查级单点决策不可绕过」纪律的一样的体现。两检查时点不同(P3 开工 vs P4 验收)但形式共享(单点决策 + 数据进档 + 决策不可逆)。两检查的数据进档共享同一文档(implementation-progress.md)。
+**对偶面:P4 P3 去留检查形式平行**(2026-06-28,承 [P4 implementation-progress §2 RJ-18](../p4-method-jit/implementation-progress.md) 跨文档回填请求):本节 spike 检查(P3 开工前)与 [P4 07 §0.3 P3 去留检查](../p4-method-jit/07-p3-retirement.md)(P4 验收后)是 P3 生命周期上的两个检查,**形式平行**:都是 P3 阶段的「检查级单点决策不可绕过」纪律的同样体现。两检查时点不同(P3 开工 vs P4 验收)但形式共享(单点决策 + 数据进档 + 决策不可逆)。两检查的数据进档共享同一文档(implementation-progress.md)。
 
 ### 0.3 战略价值与检查的双向性
 
-[00-overview §1](./00-overview.md) 引用 [../roadmap.md §4](../roadmap.md) 反复强调 P3「战略价值不在倍率,在跑通分层机器」——但这条战略价值的兑现**前提**仍是分层机器各部件能在合理代价下相互调用。spike 检查是这条前提的**物理校核**:
+[00-overview §1](./00-overview.md) 引用 [../roadmap.md §4](../roadmap.md) 反复强调 P3「战略价值不在倍率,在跑通分层机器」——但这条战略价值的兑现**前提**仍是分层机器各部件能在合理代价下相互调用。spike 检查是这条前提的**实测校核**:
 
-- **若检查通过**:P3 的「不用调试机器码就能跑通分层骨架」战略价值兑现路径打通,PW1-PW9 可启动;P4 接力时只换发射后端([../p4-method-jit/01-launch-judgment §2](../p4-method-jit/01-launch-judgment.md) 常规路径),节省「分层骨架 + 机器码后端」同步啃两块硬骨头的复杂度。
+- **若检查通过**:P3 的「不用调试机器码就能跑通分层骨架」战略价值兑现路径接通,PW1-PW9 可启动;P4 接手时只换发射后端([../p4-method-jit/01-launch-judgment §2](../p4-method-jit/01-launch-judgment.md) 常规路径),节省「分层骨架 + 机器码后端」同时解决两个难题的复杂度。
 - **若检查不通过**:跳跃路径下,P3 的战略价值移交 P4 自建([../p4-method-jit/01-launch-judgment §2](../p4-method-jit/01-launch-judgment.md));但本文 §2-§7 设计的分层协议(trampoline 入口签名、status 链错误冒泡、CallInfo bit50、线程级 tier 规则等)**不丢失**——P4 仍消费这套设计,只把发射后端从 wazero 替成原生 codegen。这是 [../roadmap.md §5](../roadmap.md) 原则 3 的另一面体现:**设计资产的复用性独立于执行后端选择**。
 
 **对偶面:P4 立项判定双向性**(2026-06-28,承 [P4 implementation-progress §2 RJ-15](../p4-method-jit/implementation-progress.md) 跨文档回填请求):P3 spike 检查双向性([../p4-method-jit/01-launch-judgment §0.3](../p4-method-jit/01-launch-judgment.md))与 P4 立项判定双向性同源逻辑——两者都是 P4 阶段的**检查级单点决策**,但承担不同时点的不同决策(spike 在 P3 开工前 / 立项在 P4 实施前 / 去留在 P4 验收后,详见 [P4 07 §0.3](../p4-method-jit/07-p3-retirement.md) 对偶面表)。
 
 ### 0.4 与 P1/P2 完成状态的关系
 
-[00-overview §7](./00-overview.md) 已对账过:P1 全卷已交付(M0-M14)+ P2 PB0-PB7 全过线 + P2 后续优化轮 #1-#4 全过线(2026-06-13)。这意味着:
+[00-overview §7](./00-overview.md) 已对账过:P1 全部已交付(M0-M14)+ P2 PB0-PB7 全部达标 + P2 后续优化轮 #1-#4 全部达标(2026-06-13)。这意味着:
 
 - **PW0 启动条件已具备**:P1/P2 不阻塞 spike;spike 只依赖 wazero 库本身可用(Apache 2.0,Go module 可直接 import)。
 - **spike 不依赖 P3 翻译器骨架**:三档样本均是手写 WAT(或直接编译好的 wasm 字节)+ 手写 Go 调用代码,**不经** [02-translation](./02-translation.md) 的 Compiler 路径。
@@ -211,7 +211,7 @@ for i := 0; i < b.N; i++ {
 
 | 项目 | spike 决策 | 与本文对照 |
 |---|---|---|
-| **wazero 自身** | 早期决策选「编译模式」而非「解释模式」时,做过类似 spike 验证「Go 进程内编译机器码可行 + 性能足以替代 cgo Wasm 引擎」 | wazero 的 spike 通过反过来给 P3 提供「四项税外包」的物理基础([00-overview §8](./00-overview.md)) |
+| **wazero 自身** | 早期决策选「编译模式」而非「解释模式」时,做过类似 spike 验证「Go 进程内编译机器码可行 + 性能足以替代 cgo Wasm 引擎」 | wazero 的 spike 通过反过来给 P3 提供「四项税外包」的实际基础([00-overview §8](./00-overview.md)) |
 | **V8 Sparkplug** | 设计阶段 spike 验证「单遍模板编译能否给到接近 Maglev 50% 的收益」——spike 通过才投入正式开发 | 同样是「先 spike 后开发」模式;Sparkplug spike 主要测「编译时间 + 加速比」,P3 spike 测「跨层成本」 |
 | **JSC LLInt** | 设计阶段 spike 验证「在 LLVM IR 之外手写汇编解释器能否比 C 解释器显著快」 | 类似的「先做最小测试论证关键假设」模式 |
 
@@ -249,7 +249,7 @@ P3 spike 的特殊性:**单一检查指标决定整阶段去留**(`S2 < 150ns` �
 - spectral-norm 循环体:点积 + 平方根,约 20-40 条 / 迭代。
 - 列内核典型 Horner 多项式([../roadmap.md §1](../roadmap.md) 校准测量 1):每次 evaluate 5 次乘加,约 15-20 条 / 迭代。
 
-`I ≈ 20`、`Δc ≈ 15ns` 时,每迭代净收益约 300ns,即便 `k = 1`、`T_cross = 150ns`,仍有 150ns 净收益(2x 加速)。**这正是「相对 P1 再 ≥2x」验收门槛([../roadmap.md §4](../roadmap.md))的物理基础**。
+`I ≈ 20`、`Δc ≈ 15ns` 时,每迭代净收益约 300ns,即便 `k = 1`、`T_cross = 150ns`,仍有 150ns 净收益(2x 加速)。**这正是「相对 P1 再 ≥2x」验收门槛([../roadmap.md §4](../roadmap.md))的量化依据**。
 
 ### 2.3 劣化形式(k ≥ 1):收益被吃光
 
@@ -257,13 +257,13 @@ P3 spike 的特殊性:**单一检查指标决定整阶段去留**(`S2 < 150ns` �
 
 - `k·T_cross = 150ns`(假设 `T_cross = 150ns`,`k = 1`)
 - `I·Δc ≈ 20 × 15ns = 300ns`
-- 净收益 ≈ 150ns,加速比仅 1.5x——**吃不到 2x 验收门槛**。
+- 净收益 ≈ 150ns,加速比仅 1.5x——**达不到 2x 验收门槛**。
 
 更糟的形式:若 `k ≥ 2` 或 `T_cross > 300ns`,净收益归零甚至为负——**编译反而比解释慢**。这正是:
 - [02-translation §1.1](./02-translation.md) 「翻译单位覆盖整个热闭包」(每 Proto 一个 module)——避免 Proto 间相互调用经 Go 中转产生不必要的跨层。
 - [06-ic-feedback-consume §1](./06-ic-feedback-consume.md) 「IC 快路径内联避免跨层」——单态点直接出表,失败才走助手。
 
-两条设计动机的物理来源。
+两条设计动机的实际来源。
 
 ### 2.4 边界形式(150 ± 30 ns)的混合策略
 
@@ -272,7 +272,7 @@ P3 spike 的特殊性:**单一检查指标决定整阶段去留**(`S2 < 150ns` �
 - 含若干跨层点的「非理想列内核」(`k = 1-2`)收益降到 1.2-1.8x,**部分兑现**。
 - 含密集跨层的「劣化形式」(`k ≥ 3`)无收益甚至负收益。
 
-这正是 §5.3 边缘混合策略的物理依据:**只编译「自包含热闭包」**(P2 可编译性分析加一条「调用密度」启发,识别 `k ≈ 0` 形状),交错形式(`k ≥ 1`)不升层。
+这正是 §5.3 边缘混合策略的量化依据:**只编译「自包含热闭包」**(P2 可编译性分析加一条「调用密度」启发,识别 `k ≈ 0` 形状),交错形式(`k ≥ 1`)不升层。
 
 ### 2.5 `T_cross` 在分层 VM 与常规嵌入用法的频次差
 
@@ -312,7 +312,7 @@ P4 的跨层成本档位需要 P4 自己的 spike 测——但「与宿主同档
 
 ### 3.1 上沿:与宿主边界同档则失败
 
-[../roadmap.md §2](../roadmap.md) 的「几十~百 ns 固定成本」是**宿主边界**的成本——应用 Go 代码 ↔ Wasm 模块的一次往返。150ns 是「百 ns 档」的**上沿**;若 wazero call boundary 实测达到甚至超过这一档,意味着分层 VM 的 `crescent ↔ gibbous` 边界**与宿主边界同档**,§2.5 的频次差被放大成成本灾难——分层 VM 的高频边界承担了与低频宿主边界相同的单次成本,加速比被吃光。
+[../roadmap.md §2](../roadmap.md) 的「几十~百 ns 固定成本」是**宿主边界**的成本——应用 Go 代码 ↔ Wasm 模块的一次往返。150ns 是「百 ns 档」的**上沿**;若 wazero call boundary 实测达到甚至超过这一档,意味着分层 VM 的 `crescent ↔ gibbous` 边界**与宿主边界同档**,§2.5 的频次差被放大成成本灾难——分层 VM 的高频边界承担了与低频宿主边界相同的单次成本,加速比被完全抵消。
 
 形式化:若 `T_cross_gibbous ≥ T_cross_host`,则
 - 「整程序在 gibbous 跑」与「整程序在 host 直接调一次 wasm 模块跑」无成本差异;
@@ -328,13 +328,13 @@ wazero 项目本身的 benchmark(其 README 与 release notes,**待 spike 实测
 
 ### 3.3 校准测量的支撑:154 vs 164μs 的 6%
 
-[../roadmap.md §1](../roadmap.md) 校准测量 1 的关键事实:**真 LuaJIT 只比 luajc 快 6%**(154 vs 164 μs,1000 items per-item 形式)。两者后端实现差距巨大(LuaJIT 是 trace JIT + 寄存器分配 + 类型投机;luajc 是「Lua→JVM bytecode + JVM C2 优化」),但 per-item 形式下两者数据仅差 6%——边界跨越 + 值装箱已是绝对主导成本。
+[../roadmap.md §1](../roadmap.md) 校准测量 1 的关键事实:**真正的 LuaJIT 只比 luajc 快 6%**(154 vs 164 μs,1000 items per-item 形式)。两者后端实现差距巨大(LuaJIT 是 trace JIT + 寄存器分配 + 类型投机;luajc 是「Lua→JVM bytecode + JVM C2 优化」),但 per-item 形式下两者数据仅差 6%——边界跨越 + 值装箱已是绝对主导成本。
 
 这一事实有两层含义:
 
 1. **边界成本主导,后端再快也有限**——这正是 [../roadmap.md §1](../roadmap.md) 「per-item 跨界形式下边界跨越主导成本」结论的实证。
 2. **如果我们的边界成本与 LuaJIT/luajc 同档(几十~百 ns,因为 Java JNI / LuaJIT C-Lua 边界类似),P3 的天花板就锁定在 luajc 档**——这是 [../p4-method-jit/08-testing-strategy](../p4-method-jit/08-testing-strategy.md) §1 验收门槛「列内核负载 ≥ LuaJ-luajc 档」的来源。
-3. **如果我们的边界成本显著高于这一档(>150ns),P3 连 luajc 档都摸不到**,那么[../roadmap.md §4](../roadmap.md) 的「P3 验收 ≥2x over P1」就成了空中楼阁——P1 已是 2-4x over gopher-lua,再 2x 等于 4-8x over gopher-lua,已经接近 luajc 档(luajc ≈ 4.4x over gopher-lua),边界成本必须在档才可能。
+3. **如果我们的边界成本显著高于这一档(>150ns),P3 连 luajc 档都摸不到**,那么[../roadmap.md §4](../roadmap.md) 的「P3 验收 ≥2x over P1」就无法实现——P1 已是 2-4x over gopher-lua,再 2x 等于 4-8x over gopher-lua,已经接近 luajc 档(luajc ≈ 4.4x over gopher-lua),边界成本必须在档才可能。
 
 ### 3.4 工程化阈值:为什么是 150 而不是 100 或 200
 
@@ -344,7 +344,7 @@ wazero 项目本身的 benchmark(其 README 与 release notes,**待 spike 实测
 |---|---|---|
 | **80ns**(过严) | 仅 wazero 自报档接近 + 参数处理零成本 | 可能误杀「能跑出 ≥2x 收益但跨层稍贵」的实际可行 P3 |
 | **150ns**(选定) | 「百 ns 档上沿」工程化阈值 | 列内核形式下 `T_cross/N` 完全可忽略;非理想形式(`k=1`)仍保留 1.5-2x 收益空间 |
-| **300ns**(过松) | 与 LuaJIT C-边界同档,与 hostcall 同档 | §2 模型预测 `k=1` 形式下净收益归零;P3 加速比天花板降到 1.5x 以下,值不回 6-12 人月 |
+| **300ns**(过松) | 与 LuaJIT C-边界同档,与 hostcall 同档 | §2 模型预测 `k=1` 形式下净收益归零;P3 加速比天花板降到 1.5x 以下,抵不上 6-12 人月的投入 |
 
 **选定 150ns 的两条具体论证**:
 
@@ -360,7 +360,7 @@ wazero 项目本身的 benchmark(其 README 与 release notes,**待 spike 实测
 | 税 | wazero 方案 | 与 spike 的关系 |
 |---|---|---|
 | GC 精确栈扫描 | Wasm 执行在 wazero 自管栈 | 与跨层成本无关,但 §4 顺带验证 |
-| 异步抢占 | 生成代码循环回边插抢占检查点 | 在 spike 函数体足够大时可观测,§4 顺带验证 |
+| 异步抢占 | 生成代码在循环回跳(back edge)处插抢占检查点 | 在 spike 函数体足够大时可观测,§4 顺带验证 |
 | 栈移动 | Wasm 栈不在 Go 栈 | 与跨层成本无关,但 §4 顺带验证 |
 | 写屏障 | 值世界放 linear memory | 与 spike 无关,§3 已不变(P3 不动) |
 
@@ -374,8 +374,8 @@ wazero 项目本身的 benchmark(其 README 与 release notes,**待 spike 实测
 |---|---|
 | **每 Proto 一个 module**([02-translation §1.1](./02-translation.md)) | 每次「gibbous Proto 调未编译 Proto」都跨 Go 中转,跨层成本叠加,加速比劣化更严重 |
 | **IC 快路径内联**([06-ic-feedback-consume §1](./06-ic-feedback-consume.md)) | 失效路径每次走 `$h_gettable` 助手,每次跨层 150ns+——形状变化频繁的程序加速比归零 |
-| **算术慢路径**([02-translation §2.3](./02-translation.md) ADD 示例) | 混合类型每次走 `$h_arith` 助手,150ns+ × 算术指令数;数值密集程序若有微量混合类型操作就废 |
-| **回边 safepoint**([05-safepoint-gc §3](./05-safepoint-gc.md)) | gcPending 检查命中(GC pending 时)经 `$h_safepoint` 跨层,GC 频次高时跨层频次也高 |
+| **算术慢路径**([02-translation §2.3](./02-translation.md) ADD 示例) | 混合类型每次走 `$h_arith` 助手,150ns+ × 算术指令数;数值密集程序若有微量混合类型操作就失去收益 |
+| **back edge safepoint**([05-safepoint-gc §3](./05-safepoint-gc.md)) | gcPending 检查命中(GC pending 时)经 `$h_safepoint` 跨层,GC 频次高时跨层频次也高 |
 | **CALL/TAILCALL/RETURN**([04-trampoline §3](./04-trampoline.md)) | 每次函数调用至少 1 次跨层,递归密集程序每次都付 |
 
 每一项都是 P3 设计的核心——若跨层成本超档,**P3 的整体加速比从「2-4x over P1」降到「<1.5x」甚至「无收益」**,P3 6-12 人月投入产出失衡,直接跳 P4 是合理选择。这正是 §0.1 论证「检查先于一切翻译工作」的延伸。
@@ -384,7 +384,7 @@ wazero 项目本身的 benchmark(其 README 与 release notes,**待 spike 实测
 
 ## 4. spike 三件事一次过(顺带验证项)
 
-PW0 的 spike 还要顺带验证两项与 P3 后续设计强耦合的物理事实——一次搭环境一次跑完,避免 PW1/PW2/PW3 时再单独验证(每次都要重搭 wazero 环境,浪费):
+PW0 的 spike 还要顺带验证两项与 P3 后续设计强耦合的实际情况——一次搭环境一次跑完,避免 PW1/PW2/PW3 时再单独验证(每次都要重搭 wazero 环境,浪费):
 
 ### 4.1 主项:call boundary < 150ns
 
@@ -392,7 +392,7 @@ PW0 的 spike 还要顺带验证两项与 P3 后续设计强耦合的物理事�
 
 ### 4.2 顺带项 A:linear memory 共享(§4 → 验证 [03-memory-model](./03-memory-model.md))
 
-[03-memory-model](./03-memory-model.md) 的核心设计是「arena backing 收养 wazero memory」——同一块物理内存、同一套 NaN-box 编码、同一套偏移寻址。这一设计的物理可行性需要 spike 顺带验证三件事:
+[03-memory-model](./03-memory-model.md) 的核心设计是「arena backing 收养 wazero memory」——同一块物理内存、同一套 NaN-box 编码、同一套偏移寻址。这一设计的实际可行性需要 spike 顺带验证三件事:
 
 | 验证点 | 操作 | 期望结果 |
 |---|---|---|
@@ -409,11 +409,11 @@ PW0 的 spike 还要顺带验证两项与 P3 后续设计强耦合的物理事�
 | 税 | 最小验证操作 | 期望结果 | 失败信号 |
 |---|---|---|---|
 | **GC 精确栈扫描** | spike 跑长时间(`-benchtime=60s`)后跑 `runtime.GC()`;之前在 Go 侧分配大量临时对象使其需要被 GC | GC 正常完成,无 panic / 数据损坏 | panic 或 Wasm 函数返回错误说明 wazero 自管栈出了问题 |
-| **异步抢占** | spike 中混入 long-running Wasm 函数(循环 1ms),期间 `runtime.Gosched()` 或并发触发 GC | Go 调度器能在 1ms 内中断 Wasm 函数让出 CPU | 若调度器无法抢占,wazero 回边检查点未生效 |
+| **异步抢占** | spike 中混入 long-running Wasm 函数(循环 1ms),期间 `runtime.Gosched()` 或并发触发 GC | Go 调度器能在 1ms 内中断 Wasm 函数让出 CPU | 若调度器无法抢占,wazero back edge 检查点未生效 |
 | **栈移动** | 同 § 4.3.1 GC 验证 | Go 侧 goroutine 栈被 morestack 拷贝,wazero 生成码不持有指向 Go 栈的指针——实测「跑大量并发 goroutine 调 wazero」无内存损坏 | 数据损坏说明栈移动破坏了生成码 |
 | **写屏障** | spike 中 wazero 生成码写 linear memory(S2 已涵盖),Go GC 跑期间无 panic | 无并发 GC 三色不变式破坏 | 极少触发,但若发生则 wazero 内部实现有 bug |
 
-**纪律**:这四项的「最小验证」目的不是穷尽测试 wazero(那是 wazero 项目的责任),而是确认我们具体使用形式下未踩到 wazero 已知的某个边角 bug。任何一项失败需查 wazero issue tracker / 升版本,不是 P3 自己的设计问题。
+**纪律**:这四项的「最小验证」目的不是穷尽测试 wazero(那是 wazero 项目的责任),而是确认我们具体使用形式下未触发 wazero 已知的某个边角 bug。任何一项失败需查 wazero issue tracker / 升版本,不是 P3 自己的设计问题。
 
 ### 4.3.1 GC 精确栈扫描的最小验证细节
 
@@ -449,7 +449,7 @@ func TestSpike_GCDuringWasm(t *testing.T) {
 
 ### 4.3.2 异步抢占的最小验证细节
 
-抢占信号路径:Go 运行时通过 SIGURG 信号向 goroutine 发抢占请求,goroutine 在循环回边的检查点处响应。wazero 生成码已在每个循环回边插了抢占检查点([../roadmap.md §2](../roadmap.md) 「已验证」)。
+抢占信号路径:Go 运行时通过 SIGURG 信号向 goroutine 发抢占请求,goroutine 在循环 back edge 的检查点处响应。wazero 生成码已在每个循环 back edge 插了抢占检查点([../roadmap.md §2](../roadmap.md) 「已验证」)。
 
 验证形式:
 
@@ -501,7 +501,7 @@ Go runtime 在 goroutine 栈接近用尽时调用 `morestack` 拷贝栈到更大
 
 Go 并发 GC 三色不变式要求堆指针写经写屏障。若 wazero 生成码绕过 Go 写屏障写堆指针,GC 可能漏标 / 误回收。
 
-但 P3 设计已避免这一情况:[03-memory-model](./03-memory-model.md) 的核心约束是**值世界全部住 linear memory(arena),wazero 生成码不写 Go 堆指针**。S2 spike 形式(`(i64.store offset=8 ...)`)正是写 linear memory,**不**触发 Go 写屏障——这是 [../roadmap.md §2](../roadmap.md) 表中「值世界放自管 arena/linear memory,边界拷贝」的物理体现。
+但 P3 设计已避免这一情况:[03-memory-model](./03-memory-model.md) 的核心约束是**值世界全部住 linear memory(arena),wazero 生成码不写 Go 堆指针**。S2 spike 形式(`(i64.store offset=8 ...)`)正是写 linear memory,**不**触发 Go 写屏障——这是 [../roadmap.md §2](../roadmap.md) 表中「值世界放自管 arena/linear memory,边界拷贝」的具体体现。
 
 **结论**:写屏障在 P3 整体设计层面已规避,无需独立测试;但 §4.3.1 GC 测试期间若数据损坏,可能间接揭示写屏障被绕过。
 
@@ -611,7 +611,7 @@ ProtoLevel 静态分析期间(03 §2-§3)新增一项:
 
 **边缘策略的本文承诺与回填请求边界**:
 - 本文 §8 缺口节登记「对 [../p2-bridge/03](../p2-bridge/03-compilability-analysis.md) 的回填请求:加 `callDensity` 启发」。
-- **本文不主动改 [../p2-bridge/03](../p2-bridge/03-compilability-analysis.md)**(回填纪律,见 [00-overview §3](./00-overview.md))——主助理收口在 [implementation-progress](./implementation-progress.md)。
+- **本文不主动改 [../p2-bridge/03](../p2-bridge/03-compilability-analysis.md)**(回填纪律,见 [00-overview §3](./00-overview.md))——主助理统一汇总在 [implementation-progress](./implementation-progress.md)。
 - `θ_high / θ_low` 精确阈值需 spike 实际数据后定,本文先记粗估值;PW1 启动前主助理与用户对齐后定稿。
 
 ### 5.4 跳跃路径下「设计资产不丢失」的细则
@@ -622,8 +622,8 @@ ProtoLevel 静态分析期间(03 §2-§3)新增一项:
 |---|---|---|
 | 跨层摊销模型(§2) | 论证 P3 收益边界 | 同样论证 P4 收益边界——P4 边界成本可能更低(原生 ABI),但模型不变 |
 | 跨层成本档位(§3) | 150ns 是 P3 检查 | P4 跳跃路径下成本档位由 P4 自己 spike 测——但「与宿主同档则失败」的论证仍适用 |
-| 三档样本(§1.2) | spike 形状 | P4 自建分层骨架时,trampoline 入口一样的形状(参数解包 / 返回 status / memory 共享) |
-| memory 共享设计([03-memory-model](./03-memory-model.md)) | wazero memory 收养 | P4 跳跃路径下 arena backing 直接是 Go 堆 + mmap 拼成的可执行内存,但「值世界与执行码共享一块内存」的物理形式延续 |
+| 三档样本(§1.2) | spike 形状 | P4 自建分层骨架时,trampoline 入口沿用同样的形状(参数解包 / 返回 status / memory 共享) |
+| memory 共享设计([03-memory-model](./03-memory-model.md)) | wazero memory 收养 | P4 跳跃路径下 arena backing 直接是 Go 堆 + mmap 拼成的可执行内存,但「值世界与执行码共享一块内存」的做法延续 |
 | 跨层协议([04-trampoline](./04-trampoline.md)) | crescent ↔ gibbous(wazero)↔ host | crescent ↔ gibbous(原生)↔ host,只换发射 |
 | 错误冒泡 / yield 不穿越([07](./07-coroutine-thread-rule.md)) | 线程级 tier 规则 | 同一规则,P4 自建时直接采纳 |
 
@@ -639,7 +639,7 @@ ProtoLevel 静态分析期间(03 §2-§3)新增一项:
 
 | 步骤 | 操作 | 完成定义 |
 |---|---|---|
-| **0** | 确认 P1/P2 完成状态(见 [00-overview §7](./00-overview.md)) | 全 PB 过线;`make test` 与 `make bench` 全绿 |
+| **0** | 确认 P1/P2 完成状态(见 [00-overview §7](./00-overview.md)) | 全部 PB 达标;`make test` 与 `make bench` 全绿 |
 | **1** | 创建临时 spike 目录 `internal/gibbous/wasm/spike/` | 目录与 `go.mod` 模块路径就位;后续清理时一并删除 |
 | **2** | `go get github.com/tetratelabs/wazero@<latest-stable>` | wazero version 锁定在 `go.mod`;记入 spike 报告 |
 | **3** | 准备物理环境:锁 CPU 频率 / 关后台进程 / 绑核 | `cpupower frequency-info` 显示锁定;`top` 无显著 CPU 占用 |
@@ -677,7 +677,7 @@ ProtoLevel 静态分析期间(03 §2-§3)新增一项:
 | **测量噪声 / 环境干扰** | 离散度 > 5% 时的常见原因 | 重测,确保锁频 + 绑核 + 静默环境 |
 | **测量方法本身** | 反向校验:跑一个「Go 直接调 Go 函数」的 baseline benchmark,确认 b.N / time 计算正确 | 若 baseline 数据异常,benchmark 框架有问题,排查 |
 
-**关键纪律**:即便 spike 不达标,**也要先排查上述各项再做检查决策**。「数据不好就直接跳 P4」是错误判断——可能只是配置问题,排查后能进档。但若排查后仍 ≥ 150ns,**真正不达标**,按 §5 决策表走跳跃路径。
+**关键纪律**:即便 spike 不达标,**也要先排查上述各项再做检查决策**。「数据不好就直接跳 P4」是错误判断——可能只是配置问题,排查后能达标。但若排查后仍 ≥ 150ns,**真正不达标**,按 §5 决策表走跳跃路径。
 
 ### 6.5 跨版本退化的防御
 
@@ -772,7 +772,7 @@ PW0 完成定义([00-overview §4](./00-overview.md)):
 
 ### 8.4 回填请求
 
-本文不主动改 P1/P2 现稿,以下回填请求由主助理收口在 [implementation-progress](./implementation-progress.md):
+本文不主动改 P1/P2 现稿,以下回填请求由主助理统一汇总在 [implementation-progress](./implementation-progress.md):
 
 - **对 [../p2-bridge/03-compilability-analysis](../p2-bridge/03-compilability-analysis.md) 的回填请求**(§5.3):加 `callDensity` 启发(边缘混合策略的核心);本回填**仅在 spike 数据落在边缘区(§5 决策表)时触发**——若检查主路径(< 150ns)通过,本回填无需执行。
 - **对 [00-overview §10 风险](./00-overview.md) 的回填请求**:本文 §6.5 的「跨版本退化防御」可作为新增风险条目;但属于运维纪律,本子文档已自含。

@@ -9,7 +9,7 @@
 > [../../../llmdoc/must/design-premises](../../../llmdoc/must/design-premises.md)(前提三原则 4「NYI 走下层不做完备性」——本文 §5 黑名单机制的依据;前提二的四项税——本文 §6 录制开销预算的根源)。
 >
 > P1 依赖面(录制器的宿主):
-> [../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md)(§1 CallInfo + Frame 布局、§1.2 word2 bit50 callStatus_gibbous、§1.3 reloadFrame、§2 dispatch 策略 = 大 switch on opcode、§6 IC 命中路径、§7 CALL/RETURN reentry 模型——本文 §1 录制模式挂钩的物理位置)、
+> [../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md)(§1 CallInfo + Frame 布局、§1.2 word2 bit50 callStatus_gibbous、§1.3 reloadFrame、§2 dispatch 策略 = 大 switch on opcode、§6 IC 命中路径、§7 CALL/RETURN reentry 模型——本文 §1 录制模式挂钩的具体位置)、
 > [../p1-interpreter/02-bytecode-isa](../p1-interpreter/02-bytecode-isa.md)(§4 38 opcode 语义表 + §7 IC slot——本文 §3 逐 opcode 录制表的输入 ISA)、
 > [../p1-interpreter/01-value-object-model](../p1-interpreter/01-value-object-model.md)(§3 NaN-box tag + §3.2 单比较判 number——录制观察类型时读的是 tag)。
 >
@@ -33,7 +33,7 @@
 
 ### 0.1 一句话
 
-trace 录制器是**运行在 crescent 解释器内的一个副产物层**:解释器该跑什么还跑什么(正常取值、正常 dispatch、正常调 IC 快路径),同时在每条指令执行前后**记录 IR、观察类型、记下选中的分支、跟进被调函数**;从热点 back edge 开始录,回到同一 pc 就闭环成 loop trace;录制中断就丢掉 IR,退回纯解释。
+trace 录制器是**运行在 crescent 解释器内的一个副产物层**:解释器该跑什么还跑什么(正常取值、正常 dispatch、正常调 IC 快路径),同时在每条指令执行前后**记录 IR、观察类型、记下选中的分支、跟进被调函数**;从热点 back edge 开始录,回到同一 pc 就闭合成 loop trace;录制中断就丢掉 IR,退回纯解释。
 
 一句话关键点:**「录制」不是「再解释一遍」,而是「在正在解释的同时把发生了什么写下来」**。录制器不改语义、不改控制流、不改栈状态——它只是把解释器已经在做的事情**观察并转写成 IR**,前提是这条正在跑的路径未来可能变成一条 trace。这跟 P4 模板编译期的「离线翻译」有本质区别:P4 编译期看的是 Proto 的静态 CFG,P5 录制期看的是运行期实际发生的动态直线。
 
@@ -77,7 +77,7 @@ trace 录制器是**运行在 crescent 解释器内的一个副产物层**:解�
 
 ### 1.1 两个备选方案
 
-录制器要在「解释器每条指令执行前后能看到操作数、结果、控制流选择、类型 tag」的位置观察数据。物理形式有两个备选方案:
+录制器要在「解释器每条指令执行前后能看到操作数、结果、控制流选择、类型 tag」的位置观察数据。具体实现形式有两个备选方案:
 
 **备选 A——复制一份解释器主循环作为「录制版」**。当录制开始时 crescent 切进 `executeLoopRecording(th, entryDepth)`,与 [`executeLoop`](../p1-interpreter/05-interpreter-loop.md#executeLoop) 逻辑一致,但每个 case 分支旁边插入 IR 发射加类型观察。录制结束再切回普通 `executeLoop`。
 
@@ -122,7 +122,7 @@ package crescent
 
 **挂在 State 上,不挂在 thread 上**。原因:录制是 process 级别的独占资源(§6 录制并发只允许一份),挂在 thread 级别会漏掉「一个 thread 触发录制,另一个 thread 想触发时怎么仲裁」——挂在 State 上直接由 State 级别的互斥仲裁。
 
-对协程的处理(沿用 P3/P4「协程不升层」的一致纪律,见 [../p3-wasm-tier/07-coroutine-thread-rule](../p3-wasm-tier/07-coroutine-thread-rule.md)):**录制只在主 thread 上做**;`th != mainTh` 时 recorder observe 直接短路返回。这跟 P4 `onMain` 判定同构([../p2-bridge/01-profiling](../p2-bridge/01-profiling.md) §6);跨 yield 的 trace 不在 P5 v1 目标里(见各章末尾开放问题第 5 条:LuaJIT 选择 trace 不跨 yield,望舒采用一样的做法)。
+对协程的处理(沿用 P3/P4「协程不升层」的一致纪律,见 [../p3-wasm-tier/07-coroutine-thread-rule](../p3-wasm-tier/07-coroutine-thread-rule.md)):**录制只在主 thread 上做**;`th != mainTh` 时 recorder observe 直接短路返回。这跟 P4 `onMain` 判定同构([../p2-bridge/01-profiling](../p2-bridge/01-profiling.md) §6);跨 yield 的 trace 不在 P5 v1 目标里(见各章末尾开放问题第 5 条:LuaJIT 选择 trace 不跨 yield,望舒采用同样的做法)。
 
 ### 1.4 与 P4 的共存
 
@@ -146,7 +146,7 @@ package crescent
 | **热 side exit(side trace)** | 某条已编译 fullmoon trace 的某个 guard 反复失败 | 该 guard 的 exit pc | 补丁:多态调用点的稳定子集(§4 末尾提到 stitching) |
 | **函数入口(up-recursion trace)** | 某 Proto 从入口被反复调用超过阈值,并且没有被内联到其他 trace 里 | Proto pc=0 | 递归形式(尾递归以外的深递归),v1 可以推后 |
 
-**loop trace 是 v1 主战场**,side trace 加 up-recursion 属于 P5 v1 内部的第二、第三个检查点(06-snapshot-deopt §4 末尾)。
+**loop trace 是 v1 的重点**,side trace 加 up-recursion 属于 P5 v1 内部的第二、第三个检查点(06-snapshot-deopt §4 末尾)。
 
 ### 2.2 阈值:TraceHotBackEdgeThreshold
 
@@ -169,7 +169,7 @@ P5 追加档(未立项):
 `TraceHotBackEdgeThreshold` 具体数值 **TBD,等 PT0 实测校准**。参考锚点:
 
 - **LuaJIT 默认 `hotloop=56`**——但那是叠在 LuaJIT 本身极快的解释器上,望舒 crescent 加 gibbous 已经消化了大部分冷路径和温路径,阈值应该更高。
-- **应该显著大于 `HotBackEdgeThreshold=1000`**(不然每个升到 P4 的 loop 都会被 P5 顺手录一遍,录制开销见 §6,会反噬 gibbous 的收益)。
+- **应该显著大于 `HotBackEdgeThreshold=1000`**(不然每个升到 P4 的 loop 都会被 P5 顺手录一遍,录制开销见 §6,会抵消 gibbous 的收益)。
 - 起始猜测:`TraceHotBackEdgeThreshold = 10 * HotBackEdgeThreshold = 10000`,等 PT0 spike 期间用真实宿主脚本校准(依据 [01-launch-judgment §1.3](./01-launch-judgment.md) 立项判定的标准预登记)。
 
 同样为 `TraceHotEntryThreshold`(up-recursion 起点)预留一档,起始锚 `10 * HotEntryThreshold`(=2000);LuaJIT 默认 `hotcall=200` 可以作为反向 sanity。
@@ -294,8 +294,8 @@ considerTraceRecording:
 
 | Op | 录制期动作 | Guard | Abort | 备注 |
 |---|---|---|---|---|
-| `CALL A B C` | ① `callee := SLOAD A`;② `GUARD_CALLEE_ID callee, observed_closure_gcref`(方法 identity guard);③ 如果被调是 Lua closure:**push 一个逻辑 frame 到录制器 frameStack(仅 recorder 状态,不是 crescent CallInfo)**,并递归进入被调 Proto 继续录;如果被调是 host function:abort v1(host fn 不透明,见各章末尾开放问题);④ 如果尾调用继续深挖,达到 `MaxInlineDepth`(§7)则 abort | callee identity | host fn、内联深度超限、`B=0` 到 top(多值传参无法静态展开) | 帧 push 数据留给 06-snapshot-deopt |
-| `TAILCALL A B` | 类似 CALL,但 record 复用父 frame(不 push 新 frame,pc 切到被调),避免帧栈无限增长 | 同 CALL | 同 CALL,加上 P4 已经用了的尾调用复用父帧一样的处理 | 与 05 §7.2 尾调用协议一致 |
+| `CALL A B C` | ① `callee := SLOAD A`;② `GUARD_CALLEE_ID callee, observed_closure_gcref`(方法 identity guard);③ 如果被调是 Lua closure:**push 一个逻辑 frame 到录制器 frameStack(仅 recorder 状态,不是 crescent CallInfo)**,并递归进入被调 Proto 继续录;如果被调是 host function:abort v1(host fn 不透明,见各章末尾开放问题);④ 如果尾调用继续加深,达到 `MaxInlineDepth`(§7)则 abort | callee identity | host fn、内联深度超限、`B=0` 到 top(多值传参无法静态展开) | 帧 push 数据留给 06-snapshot-deopt |
+| `TAILCALL A B` | 类似 CALL,但 record 复用父 frame(不 push 新 frame,pc 切到被调),避免帧栈无限增长 | 同 CALL | 同 CALL,加上与 P4 已经用了的尾调用复用父帧相同的处理 | 与 05 §7.2 尾调用协议一致 |
 | `RETURN A B` | 如果当前录制帧不是 root:pop 录制器 frame,pc 回到 caller 的 CALL 后一条;如果是 root:**线性 trace 结束**(§4)| — | `B=0` 到 top → abort(多值返回无法静态展开) | 返回值搬移展开成 ASTORE(常量 nresults) |
 | — | — | — | — | — |
 
@@ -334,7 +334,7 @@ considerTraceRecording:
 - 内联深度 > `MaxInlineDepth` abort
 - trace IR ins 数量 > `MaxTraceIns` abort
 
-与 P2 [03-compilability-analysis](../p2-bridge/03-compilability-analysis.md) 的 F1-F7 是**同一血脉但更严**——F1-F7 判「整个 Proto 能不能升 gibbous」,P5 NYI 判「trace 录制期遇到就 abort 这一条 trace」;粒度从 Proto 级降到指令级,原则 4「不做完备性」仍然成立(依据 [00-overview §3](./00-overview.md) 表格)。
+与 P2 [03-compilability-analysis](../p2-bridge/03-compilability-analysis.md) 的 F1-F7 是**同一套思路但更严**——F1-F7 判「整个 Proto 能不能升 gibbous」,P5 NYI 判「trace 录制期遇到就 abort 这一条 trace」;粒度从 Proto 级降到指令级,原则 4「不做完备性」仍然成立(依据 [00-overview §3](./00-overview.md) 表格)。
 
 ---
 

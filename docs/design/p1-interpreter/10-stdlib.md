@@ -1,14 +1,14 @@
 # P1:标准库清单 + host function 调用约定
 
-> 状态:**设计阶段,可实现深度**。本文是望舒**标准库(stdlib)**与 **host function 实现者 API 契约**的单一事实源:
-> host function 调用约定展开成 stdlib 实现者契约、`internal/stdlib` 的 luaL_* 等价 helper API、
+> 状态:**设计阶段,可实现深度**。本文是望舒**标准库(stdlib)**与 **host function 实现者 API 约定**的单一事实源:
+> host function 调用约定展开成 stdlib 实现者约定、`internal/stdlib` 的 luaL_* 等价 helper API、
 > shadow stack 纪律的库级完成、base/string/table/math/os/io/coroutine 七个子库的完整清单与语义、
 > Lua 5.1 模式匹配(pattern)matcher 设计、`string.format` 指令集、`table.sort` 比较器重入、
 > io 文件句柄(full userdata + `__gc`)设计、openlibs 库加载、P1 范围裁剪表。
-> 上游契约:[05-interpreter-loop](./05-interpreter-loop.md) §7.5/§7.6 **host function 调用约定**
+> 上游约定:[05-interpreter-loop](./05-interpreter-loop.md) §7.5/§7.6 **host function 调用约定**
 > (`type HostFn func(vm *VM, th *Thread) (nret int)`、host 进 Go 栈同步执行、host 帧压 CallInfo 带哨兵 protoID、
 > host 从栈读参写返回、host 内部回调 Lua 用 `callLuaFromHost` §7.3 重入、host 不 Go panic 走 `vm.raise` §9.4)——
-> 本文把这套调用约定**展开成 stdlib 实现者的完整 API 契约**。
+> 本文把这套调用约定**展开成 stdlib 实现者的完整 API 约定**。
 > 内存侧:[06-memory-gc](./06-memory-gc.md) §6.3 **shadow stack 使用约定**(新分配的中间对象写回 Lua 栈前必须
 > `Push`/`defer Pop`;「下一次可能触发 GC 的分配之前,所有已持有但未上 Lua 栈/表的 arena 引用都要在 shadow stack 上」)——
 > 本文把这条纪律具体化到每类会分配的库函数。
@@ -33,14 +33,14 @@ host 调用机制、`luaL_*` 等价 helper 与解释器同 `internal/crescent`(h
 
 ## 0. 本文在 P1 中的位置与设计张力
 
-标准库是 Lua「可用」的下半身:语言核心(解释器 + 元方法 + 错误)提供**机制**,stdlib 提供**能用的内建函数**——
+标准库是 Lua「可用」的另一半:语言核心(解释器 + 元方法 + 错误)提供**机制**,stdlib 提供**能用的内建函数**——
 `print`/`type`/`pairs`/`string.format`/`table.insert`/`math.floor`/`os.time` 这些是任何真实脚本的地基。
 roadmap §4 把 stdlib 定为 P1 的一部分(「stdlib 也是 host function 形式提供」),[architecture](../architecture.md) §5
 构建顺序第 10 步「base 库 → 逐步补齐 string/table/math/...」。
 
 本文的全部张力来自三条约束的夹击:
 
-1. **stdlib 是「host function 的最大用户」,必须先把 host 调用约定展开成可实现的契约**。05 §7.5/§7.6 给了 host
+1. **stdlib 是「host function 的最大用户」,必须先把 host 调用约定展开成可实现的约定**。05 §7.5/§7.6 给了 host
    调用的**机制**(签名、进 Go 栈、压 CallInfo、读参写返回);但「stdlib 实现者怎么写一个库函数」需要一层
    **lauxlib 等价的 helper API**(`luaL_checknumber`/`luaL_checkstring`/`luaL_argerror`/...)——这是 C Lua 写库
    的标准脚手架,本文 §1/§2 定稿望舒版。**没有这层,每个库函数都要手写类型检查 + 错误构造,既啰嗦又不一致。**
@@ -53,28 +53,28 @@ roadmap §4 把 stdlib 定为 P1 的一部分(「stdlib 也是 host function 形
 3. **shadow stack 纪律必须具体化到每类会分配的库函数**(06 §6.3)。Lua 解释器执行字节码时「栈即根」零登记
    (06 §6.1),但 **host function 在 Go 栈持有 arena 引用的窗口期必须显式 Push/Pop**。`string.format`/`table.concat`/
    `string.rep` 这些拼接新串的函数是纪律的高发区——本文 §3 给范例伪码,把「漏 Push 偶发崩溃」(最难调的 bug 类,
-   06 §6.3)的风险点钉死。
+   06 §6.3)的风险点逐一写明。
 
 > 一句话定位:本文是 **host 调用约定的实现者视角展开 + stdlib 全清单 + 差分敏感行为的口径锁定**。05 定「host 怎么
 > 被调」,06 定「host 的 GC 纪律」,07 定「tostring/coercion 元方法」,09 定「error/pcall 机制」;本文把它们**收束成
-> 「写一个 stdlib 库函数要遵守的完整契约」**,并逐库列出 P1 要实现什么、简化什么、缺什么。
+> 「写一个 stdlib 库函数要遵守的完整约定」**,并逐库列出 P1 要实现什么、简化什么、缺什么。
 
 ---
 
-## 1. host function 调用约定:实现者 API 契约(展开 05 §7.5/§7.6)
+## 1. host function 调用约定:实现者 API 约定(展开 05 §7.5/§7.6)
 
 ### 1.1 签名与执行模型回顾(指针 05,不重复论证)
 
-05 §7.6 定稿 host function 签名与机制,本文复述**实现者必须知道的契约面**(论证见 05):
+05 §7.6 定稿 host function 签名与机制,本文复述**实现者必须知道的约定**(论证见 05):
 
 ```go
 // host function 签名(05 §7.6):从 thread 取参数,push 返回值,返回返回值个数。
 type HostFn func(vm *VM, th *Thread) (nret int)
 ```
 
-实现者契约(每条都是 05 的机制在「写库函数」视角的完成):
+实现者约定(每条都是 05 的机制在「写库函数」视角的完成):
 
-| 契约 | 内容 | 来源 |
+| 约定 | 内容 | 来源 |
 |---|---|---|
 | **同步 Go 调用** | host 被 `CALL` 调用时**进 Go 调用栈**(与 Lua-call-Lua 的 reentry 相反),执行完返回值就位,主循环不切 code、不 reentry(`callReturnedHost`) | 05 §7.5/§7.6 |
 | **参数在栈上** | 调用时实参已在 thread 值栈 `[base, base+nargs)`;host 用栈式 API 读(§2 的 `arg(i)`/`checkNumber(i)`) | 05 §7.6 步骤 1 |
@@ -177,7 +177,7 @@ func (vm *VM) argError(th *Thread, argn int, extramsg string) int  // 返回 0(�
 ## 2. `internal/stdlib` 的 luaL_* 等价 helper API(对标 lauxlib)
 
 写一个 stdlib 库函数的 99% 是「检查参数类型 + 取值 + 算 + push 结果」。Lua C 用 lauxlib(`luaL_*`)提供这层脚手架。
-本节定稿望舒版——**这层 helper 让每个库函数短小一致,且把参数错误措辞收口到一处**(差分一致性,§2.4)。
+本节定稿望舒版——**这层 helper 让每个库函数短小一致,且把参数错误措辞统一放到一处**(差分一致性,§2.4)。
 
 ### 2.1 helper API 全景(挂在 Thread / HostCtx 上)
 
@@ -255,9 +255,9 @@ func (th *Thread) OptInt(i int, def int64) int64 {
 - **典型用途**:`string.sub(s, i, j)` 的 `j` 默认 -1;`string.rep(s, n, sep)` 的 `sep` 默认空串;`tonumber(s, base)`
   的 `base` 默认「无 base」(走 `parseLuaNumber`)。
 
-### 2.4 参数错误措辞:`bad argument #n to 'fname' (...)`(差分敏感,收口一处)
+### 2.4 参数错误措辞:`bad argument #n to 'fname' (...)`(差分敏感,统一在一处构造)
 
-**这是 stdlib 差分一致性的关键收口点**(09 §9.3 #17 列「`bad argument` 系列由各 host 构造」,本文定稿统一格式):
+**这是 stdlib 差分一致性的关键统一处理点**(09 §9.3 #17 列「`bad argument` 系列由各 host 构造」,本文定稿统一格式):
 
 ```go
 // luaL_argerror 等价。格式与 Lua 5.1 lauxlib 逐字节对齐(待 12 核对标点)。
@@ -289,7 +289,7 @@ func (vm *VM) TypeError(th *Thread, argn int, expected string) int {
   `"%s expected, got %s"`,`%s` 取参数的 `luaL_typename`,而 `lua_typename` 把 `LUA_TNONE`(压根没传的参数)
   映射成字面量 `"no value"`。**2026-07-28 更正**:table 库的 `tblArg` 原先整个 `, got X` 从句都没有,于是
   `table.insert()` / `concat()` / `remove()` / `sort()` 不带参数或传错类型时都与官方分歧(45 秒 fuzz 冒烟
-  撞出,已确认是既有问题)。现在带类型名,缺参数时是 `no value`,显式 `nil` 时是 `nil`。
+  测试发现,已确认是既有问题)。现在带类型名,缺参数时是 `no value`,显式 `nil` 时是 `nil`。
 - **位置前缀归咎调用者**:`argError` 用 `where(th, 1)`——level=1 指向**调用 stdlib 函数的那个 Lua 帧**(因为
   错的是调用者传的参数)。这与 Lua 5.1 `luaL_argerror` 一致(它内部 `luaL_where(L, 1)`)。
 
@@ -349,7 +349,7 @@ func (th *Thread) CheckString(i int) []byte {
 ## 3. shadow stack 纪律的库级完成(具体化 06 §6.3)
 
 06 §6.3 给了 host function 的 shadow stack 使用约定;本节**具体化到每类会分配的库函数**,给 2-3 个范例伪码,
-把「漏 Push 偶发崩溃」(06 §6.3:最难调的 bug 类)的风险点钉死。
+把「漏 Push 偶发崩溃」(06 §6.3:最难调的 bug 类)的风险点逐一写明。
 
 ### 3.1 哪些库函数分配 arena 对象(纪律高发区)
 
@@ -397,7 +397,7 @@ func (th *Thread) CheckString(i int) []byte {
    **256 个元素**听起来微不足道,而每个元素 2 KiB 时实际要 53 秒。代价是拼出来的字节数。
 3. **这与 §5.3 / [12](./12-testing-difftest.md) §4.9 的 hardening 上限是两件事。** 那些上限
    (`string.rep` 的 1 GiB、`string.format` 的 width/precision 1<<30)是「宿主进程不可崩」的 fail-fast
-   门,答的是「这次调用会不会把进程搞死」;记账答的是「这次调用花掉多少预算」。一次调用完全可以既在
+   检查,答的是「这次调用会不会把进程搞死」;记账答的是「这次调用花掉多少预算」。一次调用完全可以既在
    上限之内、又把预算耗尽,两者都要有。
 
 普通写法不受影响:1 步 / 64 字节的比率下 1 MiB 产出约记 16K 步、占 1<<20 预算约 1.5%,八种常规写法
@@ -628,7 +628,7 @@ func hostPrint(vm *VM, th *Thread) int {
 - **默认格式的差分豁免**:`tostring({})`/`tostring(print)` 含对象地址(`table: 0x...`),与官方/gopher-lua 必然
   不同(arena 偏移 vs C 指针)——07 §11 已标「含地址的 tostring 输出差分需豁免」,本文 `print` 同此口径,指向
   [12](./12-testing-difftest.md) 定脱敏比较。**脱敏只管地址的值,地址的宽度是另一件事**:`0x%08x` 的 8 位是
-  一份差分契约(脚本可以不打印地址而是 `#tostring(t)` 量它的长度,那个长度在脱敏之前就分歧),见
+  一份差分约定(脚本可以不打印地址而是 `#tostring(t)` 量它的长度,那个长度在脱敏之前就分歧),见
   [12](./12-testing-difftest.md) §4.3a 与 07 §11 的补记(#233,2026-08-05)。
 - **内嵌 NUL 照写,不截断——刻意偏离 PUC**(2026-07-28,#199):PUC 的 `luaB_print` 用 `fputs`,停在第一个 NUL,
   所以 `print("a\0b")` 只输出 `"a"`、后面静默丢掉。**这是 C 调用的产物而不是 Lua 语义**:5.1 手册明确字符串是
@@ -677,7 +677,7 @@ func hostTonumber(vm *VM, th *Thread) int {
 
 - **无 base 用 `parseLuaNumber`**(07 §5.2):**与算术 coercion、数值 for 共用同一套数字解析**(07 §5.2 定稿,
   本文兑现)。接受十进制整数/小数/指数 + 十六进制整数(`0x`),前后空白;**不支持** `0x1p4` 十六进制浮点(5.2+,
-  07 §5.2 排除)、`inf`/`nan` 字面量。差分由 12 钉死。
+  07 §5.2 排除)、`inf`/`nan` 字面量。差分由 12 锁定。
 - **带 base 是另一条**(2..36 进制**整数**):`tonumber("ff", 16) == 255`,`tonumber("z", 36) == 35`。**仅整数**
   (不接受小数/指数),前后空白,大小写字母都认(`a-z`/`A-Z` = 10..35)。这是 `tonumber` 专属,**不属于算术
   coercion**(07 §5.2 已声明)。
@@ -689,7 +689,7 @@ func hostTonumber(vm *VM, th *Thread) int {
   (`baseToNumberStandard`),不会再各自漂移;回归在
   `stdlib_test.go::TestStdlib_ToNumberBase10IsStandardConversion`。
 - **非 10 的 base 继承 C `strtoul` 的两个行为**(2026-07-28 更正,原先是有意取「直觉语义」但那个豁免
-  从未被任何代码实现,所以分歧一直是活的):① 负号在**无符号**算术里取反——`tonumber("-7",8)` 得
+  从未被任何代码实现,所以分歧一直存在):① 负号在**无符号**算术里取反——`tonumber("-7",8)` 得
   2^64-7、`tonumber("-ff",16)` 得 2^64-255;② 溢出**饱和**到 `ULONG_MAX`——20 个 `f` 配 base 16 得
   2^64-1(原先按 float64 累加得 1.2e24)。这是**有定义的 C**(不同于别处 double→int 的 UB),所以对齐
   而不是跳过。实现在 uint64 里累加与取反、最后只转一次 float64:2^64-7 不是 float64 可表示的,先转
@@ -777,8 +777,8 @@ func hostUnpack(vm *VM, th *Thread) int {
   与推导一致:**`i32 <= e32 且 (e32 - i32 + 1) > INT_MAX`**,所以窗口随 `e`(默认 `#t`)平移 ——
   `unpack({},-2147483647)` 崩,而同一个 `i` 配 `{1,2,3}` 时崩到 `-2147483644`。**望舒不复制这个行为**:
   它对整段抬 `too many results to unpack`(`internal/stdlib/tablelib.go::baseFnUnpackImpl` 在 int64 上算,
-  不存在这个回绕),**行为正确且从不崩**,契约由 `fuzz_244_test.go::TestUnpackAtInt32BoundaryDoesNotCrash`
-  钉住(边界两侧 + 显式区间 + 整表 unpack)。差分侧只能**跳过**这一段(会死的 oracle 不能当参照),执行体
+  不存在这个回绕),**行为正确且从不崩**,这一点由 `fuzz_244_test.go::TestUnpackAtInt32BoundaryDoesNotCrash`
+  锁定(边界两侧 + 显式区间 + 整表 unpack)。差分侧只能**跳过**这一段(会死的 oracle 不能当参照),执行体
   与区间口径见 [12](./12-testing-difftest.md) §4.9b 第三格与 **§4.9f**(现行守卫区间两个方向都不对,已知
   缺口)。
 
@@ -970,7 +970,7 @@ string 库**操作字节**(Lua string 是字节串,01 §5.1),索引 1-based,负�
 
 - **5.1 的 `%q` 精确转义集**:双引号、反斜杠、换行(5.1 把换行转成 `\` + 真换行符)、`\0`、`\r`、其它控制字符
   转 `\ddd`。**这套转义是差分敏感的**(每个特殊字符的转义形式须与 5.1 逐字节一致),P1 **不编造**,以 Lua 5.1
-  `addquoted` 为准,指向 12 钉死。
+  `addquoted` 为准,由 12 锁定。
 
 ### 5.3 `string.rep` / `string.sub`(shadow stack 纪律范例)
 
@@ -1013,7 +1013,7 @@ func hostStringRep(vm *VM, th *Thread) int {
 
 这个转换在 C 里是**未定义行为**,两个官方 build 自己就不一致:arm64 的 `FCVTZS` 把 `+inf` 饱和到
 `INT64_MAX`,低 32 位是 -1,`uchar` 检查失败而报错。按仓库既有先例处理(与 `%u`/`%x`/`%o` 的
-`cUnsignedCast` 一样):**产品侧钉住 x86-64 结果**(`internal/stdlib/stringlib.go::cCharCast`),
+`cUnsignedCast` 一样):**产品侧固定采用 x86-64 结果**(`internal/stdlib/stringlib.go::cCharCast`),
 **harness 侧把这段 UB 区间加进 skip**(`internal/oracle/prelude.go` 的 sentinel)——比对一段两个官方
 build 互相不一致的区间没有意义。**只跳 UB 区间**:in-range 的值照旧逐字节比对,包括 `2^53`(大但
 int64 可表示,截断有定义),以及小数、负数、`[0,255]` 边界。回归在
@@ -1050,7 +1050,7 @@ stack overflow (string slice too long)
 
 `find`/`match`/`gmatch`/`gsub` 用 **Lua patterns**(模式),**不是 POSIX/PCRE 正则**。Lua pattern 是一套更小、
 更快、无回溯灾难担忧的自有语法(Lua 5.1 `lstrlib.c` 的 `match`/`do_match` 递归回溯)。**这是 string 库最复杂、
-最差分敏感的部分**——matcher 必须与 5.1 `lstrlib.c` 语义逐字节一致(roadmap §5 原则 2),钉死在 12。
+最差分敏感的部分**——matcher 必须与 5.1 `lstrlib.c` 语义逐字节一致(roadmap §5 原则 2),由 12 锁定。
 
 ### 6.1 Lua pattern 语法(完整,对齐 5.1)
 
@@ -1252,7 +1252,7 @@ func (ms *matchState) doMatch(init int) (matchStart, matchEnd int, ok bool) {
 | `string.gmatch(s,p)` | 迭代器函数 | 迭代器每次调返回下一个匹配的捕获(无则整体);**持状态**(下次搜索起点);**前导 `^` 是普通字符不是锚**(§6.3) |
 | `string.gsub(s,p,repl,n)` | `(result, count)` | 每个匹配用 repl 替换(repl 是串/表/函数,§6.5);最多 n 次;返回结果串 + 替换次数 |
 
-- **捕获子串分配**:每个捕获子串从 `src` 切出并 **intern 进 arena**(成为真 String)。这是 string 库的分配点
+- **捕获子串分配**:每个捕获子串从 `src` 切出并 **intern 进 arena**(成为真正的 String)。这是 string 库的分配点
   (§3.1)——`match`/`gmatch`/`gsub` 产捕获串。**纪律**:多个捕获在 push 进 Lua 栈前持有于 Go slice → 若中间
   有分配(如下一个捕获 intern 或调 repl 函数),已持有的要 Pin(§3.4 gsub 范例)。
 - **`gmatch` 迭代器是 host closure 持状态**:`gmatch(s, p)` 返回一个 host closure(01 §5.3 host 闭包),其
@@ -1283,7 +1283,7 @@ string.find("abc", "(")        -- 抬错
 ```
 
 `internal/stdlib/pattern.go::collectCaptures` 原先在**收集**阶段就 `return nil, err`,于是所有消费者
-都变成早抬,`gsub` 那三种写法与 PUC 分歧(fuzz 从 `gsub("","(",0)` 撞出)。现在 `capResult` 带一个
+都变成早抬,`gsub` 那三种写法与 PUC 分歧(fuzz 在 `gsub("","(",0)` 上发现)。现在 `capResult` 带一个
 `unfinished` 标记,`collectCaptures` 只打标记;`internal/stdlib/stringlib.go::capsToValues`(这个文件里
 对应 PUC `push_onecapture` 的函数)在**读取时**返回错误,`find` / `match` / `gmatch` 与 gsub 的三条
 repl 路径各自把它转成 Lua 错误。**表替换那条路径要单独判一次**——它在 `lua_gettable` 之前无条件读
@@ -1483,7 +1483,7 @@ func hostTableSort(vm *VM, th *Thread) int {
   顺序」是否与 5.1 一致(差分敏感,§7.6)。
 - **默认比较用 `lessThan`**(07 §9.2):`a < b`,可触发 `__lt` 元方法(对象排序)。number 走 IEEE `<`,string 走
   字典序(05 §4.4)。
-- **比较器 `comp` 的契约**:`comp(a, b)` 返回真 = 「a 在 b 前」。**comp 必须定义严格弱序**(5.1 不检查,若 comp
+- **比较器 `comp` 的约定**:`comp(a, b)` 返回真 = 「a 在 b 前」。**comp 必须定义严格弱序**(5.1 不检查,若 comp
   不一致 Lua 5.1 可能报 `"invalid order function for sorting"` 或行为未定义)。**待 12 核对**:5.1 对无效比较器的
   检测(`auxsort` 有「partition 越界」检查报错)。
 
@@ -1534,7 +1534,7 @@ func (vm *VM) sortLess(th *Thread, a, b value.Value, comp value.Value) (bool, *L
 > **定稿:sort 比较的纪律是「比较时两元素保持在表槽内(R5 可达),partition 移动在比较之后」**——这样默认情形
 > **无需显式 Pin**(元素经表可达)。仅当算法实现把元素读出到 Go 局部并跨 comp 调用时,才 Pin(§3)。`quicksort`
 > 实现应优先采用「先比较定序、后交换」的结构(5.1 `auxsort` 即如此:`sort_comp` 只读两元素,交换是独立步骤),
-> 把 Pin 需求降到最低。**这是 sort 重入纪律的占优结构。**
+> 把 Pin 需求降到最低。**这是 sort 重入纪律下更优的结构。**
 
 ### 7.5 `table.maxn` / `getn` / `setn`(5.1 口径)
 
@@ -1738,7 +1738,7 @@ os 库**纯 Go 实现**(roadmap §0 禁 cgo),用 Go `time`/`os` 包。跨平台�
 >
 > **补充（审计发现）**：只用 `TZ=Europe/London` 的普通日期作证据是不够的。真正暴露问题的是两类边界：① **春季跳变的缺口小时**（该本地时间不存在，Go 的 `time.Date` 向前归一并报 `IsDST()==true`，而 `mktime` 用相反的符号解析它）；② **完全没有 DST 规则的时区**（glibc 仍然按默认 1 小时响应 `isdst=true`，所以 `TZ=UTC` 与 `Asia/Shanghai` 也会偏移）。现在的实现是按请求的偏移直接算 epoch 秒，而不是去调整 Go 给出的答案，并且两个偏移是**从请求的那个时刻向外由近及远搜索**、找第一个 `IsDST()` 不同的时刻得到的（步长与探测顺序都照 glibc `mktime` 抄：601200 秒（约 6.96 天）一步、每步先后再前、最多 447 步（`delta_bound = duration_max/2 + stride`，约 8.5 年）——**步长也要一样**，因为它会跨过更近的 transition 落到更远的那条 zone 记录上，按一天扫会找到更近的那个（`Asia/Anadyr` 2010 年就差一小时，而那是个真正两状态的年份）；从一月一日向前扫会在年内偏移变更过的时区里挑错邻居——`America/Vancouver` 2026 年 11 月转成 MST，其偏移量与 PDT 相同，全 tzdata 扫描下这类有 55 个时区共 65 例），而不是比较一月与七月的偏移大小——按大小判断会把常年 DST 的时区（`Africa/Casablanca` 全年 +01/isdst=1）标错，也会把年中一次性的永久偏移变更（`Asia/Almaty`）读成 DST 规则。
 
-> **搜不到邻居时按默认 1 小时处理，找到的邻居偏移与基准**相同**时 delta 取 0（该字段无效果），而兜底还要看基准时刻本身是不是 DST——如果是，基准就是**夏令**偏移、标准时在它下面一小时（Go 的 tzdata extend 串把 `Africa/Casablanca` 在约 2088 年之后收成常年 +01/isdst=true，正是这个形式）。这几条与 `maxStrides` 相互耦合：equal-offset 的 delta 取错时，把上限从 447 收到 381 实测是"持平到略差"，所以前几轮都没能单独定下其中任何一条。这套规则**在所有平台上都用 glibc 的**，是一个刻意选择的可移植契约：同一脚本在各平台答案一致，代价是在非 glibc 宿主（macOS/BSD，它们的 `mktime` 搜索步长与顺序不同）上，少数贴着 transition 的输入会与**本地编译的** PUC 不同。逐平台实现被否决了——解释器按设计是纯 Go（cgo 只在 `internal/oracle` 的 build tag 后面），调不到宿主 `mktime`，而重写各家 libc 的搜索会把一个可验证的答案换成几个无法验证的答案。已登记豁免。用 C 写的 `mktime` 参照程序在 glibc 上实测**零不一致**：598 个时区 × 1850/1960/1985/2005/2024/2038/2050/2100/2199 九个年份 × 两个月份 × `isdst` 真假共 21528 例，另加一个完全独立的 6600 例留出集。原先登记的豁免因此撤掉了。 glibc 对其中一部分（`UTC`、`Asia/Shanghai`、`Asia/Kolkata`）仍按默认 1 小时响应 `isdst=true`，对另一部分（`Africa/Windhoek`、`Asia/Damascus`，它们是靠保留夏令偏移废除 DST 的）则不响应；区别来自 `mktime` 在 tzdata 历史里对附近 transition 的有界搜索，而 Go 不暴露 transition 表。先前那版无条件 `+3600` 的兜底让前一组对了、把后一组**弄坏了**，所以现在取更窄的行为并登记为豁免（`corners_test.go::exemptions`）。实测：9 个有 DST 的时区零差异，5 个无 DST 的时区在 `isdst=true` 上偏移 1 小时。
+> **搜不到邻居时按默认 1 小时处理，找到的邻居偏移与基准**相同**时 delta 取 0（该字段无效果），而兜底还要看基准时刻本身是不是 DST——如果是，基准就是**夏令**偏移、标准时在它下面一小时（Go 的 tzdata extend 串把 `Africa/Casablanca` 在约 2088 年之后收成常年 +01/isdst=true，正是这个形式）。这几条与 `maxStrides` 相互耦合：equal-offset 的 delta 取错时，把上限从 447 收到 381 实测是"持平到略差"，所以前几轮都没能单独定下其中任何一条。这套规则**在所有平台上都用 glibc 的**，是一个刻意选择的可移植约定：同一脚本在各平台答案一致，代价是在非 glibc 宿主（macOS/BSD，它们的 `mktime` 搜索步长与顺序不同）上，少数贴着 transition 的输入会与**本地编译的** PUC 不同。逐平台实现被否决了——解释器按设计是纯 Go（cgo 只在 `internal/oracle` 的 build tag 后面），调不到宿主 `mktime`，而重写各家 libc 的搜索会把一个可验证的答案换成几个无法验证的答案。已登记豁免。用 C 写的 `mktime` 参照程序在 glibc 上实测**零不一致**：598 个时区 × 1850/1960/1985/2005/2024/2038/2050/2100/2199 九个年份 × 两个月份 × `isdst` 真假共 21528 例，另加一个完全独立的 6600 例留出集。原先登记的豁免因此撤掉了。 glibc 对其中一部分（`UTC`、`Asia/Shanghai`、`Asia/Kolkata`）仍按默认 1 小时响应 `isdst=true`，对另一部分（`Africa/Windhoek`、`Asia/Damascus`，它们是靠保留夏令偏移废除 DST 的）则不响应；区别来自 `mktime` 在 tzdata 历史里对附近 transition 的有界搜索，而 Go 不暴露 transition 表。先前那版无条件 `+3600` 的兜底让前一组对了、把后一组**弄坏了**，所以现在取更窄的行为并登记为豁免（`corners_test.go::exemptions`）。实测：9 个有 DST 的时区零差异，5 个无 DST 的时区在 `isdst=true` 上偏移 1 小时。
   都与 `lua5.1` 一致。
 
 ### 9.2 `os.date` 格式串(strftime 子集)
@@ -1794,7 +1794,7 @@ os 库的部分函数有**进程级副作用或安全风险**,在嵌入式宿主
 
 > **定稿口径(经评审)**:**默认完整 os 库,对齐 gopher-lua 提供面**(drop-in 宣称要求默认面与 gopher 一致,
 > gopher-lua 的 os 库含 execute/exit)。**下游禁用走 §12.1 的三层机制**:`Libs` 位掩码整库关(`^LibOS`)、
-> `LibsSafe` 预设(无 os/io/package 的计算沙箱)、`Exclude` 函数级拔点(`{"os.execute","os.exit"}`)——
+> `LibsSafe` 预设(无 os/io/package 的计算沙箱)、`Exclude` 函数级移除(`{"os.execute","os.exit"}`)——
 > 跑不可信脚本的宿主一行配置即可收紧,无需逐函数自己写包装。
 >
 > - **`os.exit` 的特别处理**:即便注册,嵌入场景的 `os.exit` 应**改为「抛一个特殊 Lua 错误 / 返回控制权给宿主」**
@@ -1938,7 +1938,7 @@ file handle 设计:
 **约定**:userdata 的分配走 `internal/crescent/alloc.go` 的 `State.NewUserdata`,它把
 `object.AllocUserdata` + `st.gc.LinkSweep` + `st.gc.AllocCharge` 三步**绑在一起**——这与该文件里
 `allocLuaClosure` / `allocOpenUpvalue` / `allocTable` 三个既有分配器的写法一致([06](./06-memory-gc.md) §2.1
-的 `Alloc` 就是「写头 + 挂 sweep 链」这一对)。**同族分配器里出现三次的动作是契约,不是那几个函数各自的
+的 `Alloc` 就是「写头 + 挂 sweep 链」这一对)。**同族分配器里出现三次的动作是约定,不是那几个函数各自的
 选择。**
 
 **漏掉 `LinkSweep` 的症状离原因很远**:直接调 `object.AllocUserdata` 时对象 header 里既没有颜色也没有
@@ -2030,7 +2030,7 @@ coroutine 库的**机制全在 [08-coroutines](./08-coroutines.md)** 定稿(Thre
 - **`wrap` 的错误处理异于 resume**(09 §12.3):wrap 的函数**重抛**协程内错误(不捕获),让调用者的 pcall 捕获。
 - **`yield` 不能跨 host call 边界**(08 §5,Lua 5.1 硬限制):协程不能在 stdlib host function 内部(如 `table.sort`
   的比较器、`string.gsub` 的替换函数)yield——会报 `"attempt to yield across metamethod/C-call boundary"`(5.1)。
-  这影响 stdlib 实现:**stdlib host 内调 `callLuaFromHost`(§1.4)时,被调 Lua 函数若 yield,会撞这个限制**。
+  这影响 stdlib 实现:**stdlib host 内调 `callLuaFromHost`(§1.4)时,被调 Lua 函数若 yield,会触发这个限制**。
   机制 08 §5,本文标注:**stdlib 的回调点(sort comparator / gsub repl / pcall f)若被 yield 穿越,按 08 §5 报错**。
 - **coroutine 库函数本身是 host functions**(与其它 stdlib 同机制),但 resume/yield 的**内部实现不是普通
   callLuaFromHost**——它切换 Thread 的 CallInfo 链(08 §3),机制特殊,本文指向 08。
@@ -2170,7 +2170,7 @@ wangshu.NewState(wangshu.Options{Exclude: []string{"os.execute", "os.exit"}})
 | **os.date 格式** | `os.date` | 各指令的输出、`%c/%x/%X`、月/星期名、时区、`*t` 字段集 | **指令输出严格**(2026-07-28 已与 `lua5.1` 逐字节核对,§9.2);**仅 locale 相关项部分豁免**(纯 Go 无 C locale,月名锁英文,§9.4) | 12 |
 | **collectgarbage count** | `collectgarbage("count")`、`gcinfo` | KB 数(arena ≠ C 堆) | **豁免**(数值脱敏,§4.6) | 12 |
 | **库存在性** | 全部 | 5.1 有的存在、5.2+ 的不存在 | **严格**(§12.3) | 12 |
-| **数字 coercion 边界** | `tonumber`、`CheckNumber` | `parseLuaNumber` 接受的串:十六进制整数、前后空白,以及 C99 `strtod` 的 hex float / `inf` / `nan` / `nan(n-char-sequence)`(接受面在 #128 那一轮改为对齐 C99 `strtod`,本行早期写的「不接受 0x1p4/inf/nan」已作废;`nan(...)` 是 #192 补的) | **严格**(与 07 §5.2 共用,12 钉死) | 12 |
+| **数字 coercion 边界** | `tonumber`、`CheckNumber` | `parseLuaNumber` 接受的串:十六进制整数、前后空白,以及 C99 `strtod` 的 hex float / `inf` / `nan` / `nan(n-char-sequence)`(接受面在 #128 那一轮改为对齐 C99 `strtod`,本行早期写的「不接受 0x1p4/inf/nan」已作废;`nan(...)` 是 #192 补的) | **严格**(与 07 §5.2 共用,12 锁定) | 12 |
 
 ### 13.2 差分敏感的根因分类
 
@@ -2193,7 +2193,7 @@ stdlib 的 shadow stack 纪律(§3)漏 Pin 是**最难调的 bug 类**(06 §6.3:
 - **机制**:把 GCPAUSE 设到极小(06 §8.3,每次/每几次分配就 full GC),反复跑大量 stdlib 调用(尤其分配类:
   format/concat/rep/gsub/match,§3.1),验证:① 输出与正常 pacing byte-equal;② 不崩溃。
 - **为什么有效**:漏 Pin 的中间对象在正常 pacing 下偶发被回收(GC 恰好在持有窗口触发的概率低),高频 GC 下
-  **必现**(每次分配都 GC,持有窗口必然撞上)。这是 §3 纪律的**主要自动化防线**(06 §11)。
+  **必现**(每次分配都 GC,必然会在持有窗口内触发)。这是 §3 纪律的**主要自动化防线**(06 §11)。
 - **指向 12**:GC 压力 fuzz 的具体 harness(强制高频 GC + stdlib 调用矩阵)在 12 定稿;本文 §3 的纪律范例
   (concat/format/gsub)是它的测试对象。
 
@@ -2240,7 +2240,7 @@ stdlib 的 shadow stack 纪律(§3)漏 Pin 是**最难调的 bug 类**(06 §6.3:
    1-based 参数索引(§1.2),push 返回值后 `return nret`(§1.3)。stdlib 与宿主 `Register` 一视同仁(11 §10)。
 2. **host 出错走 raise,不 Go panic**(§1.5 / §1.4):stdlib 出错用 `vm.raise`/`argError`/`Errorf`(09 §3.3 机制);
    回调 Lua(comparator/repl/f)的错误必须上抛不吞;host 真 panic 只被顶层兜底(09 §11)。
-3. **luaL_* helper 收口参数检查与错误**(§2):`Check*`/`Opt*`/`argError` 统一类型检查与 `bad argument` 措辞
+3. **luaL_* helper 统一处理参数检查与错误**(§2):`Check*`/`Opt*`/`argError` 统一类型检查与 `bad argument` 措辞
    (§2.4),保差分一致。`CheckNumber`/`tonumber` 共用 `parseLuaNumber`(07 §5.2)。
 4. **shadow stack 纪律**(§3):分配类 stdlib(format/concat/rep/gsub/match,§3.1)优先 Go 缓冲累积 + 末尾一次
    intern(§3.2/§3.3);不可避免地在 arena 持有中间引用跨分配/跨重入时 Pin/defer Unpin(§3.4 gsub);能尽早送
@@ -2282,7 +2282,7 @@ stdlib 的 shadow stack 纪律(§3)漏 Pin 是**最难调的 bug 类**(06 §6.3:
   是否复刻某 C rand 算法(无意义,C rand 平台相关)已否决。记口径。
 - **os.date / os.setlocale 的 locale 差异**(§9.2/§9.4):纯 Go 无 C locale,`string.upper`/`%a`/`os.date` 月名锁
   ASCII/英文,与 C Lua 非 C locale 行为有差。已知 P1 限制。**`%c`/`%x`/`%X` 的格式已核对**(2026-07-28,#199:
-  九种格式与系统 `lua5.1` 逐字节一致,`%c` 是 glibc 的 `"%a %b %e %H:%M:%S %Y"`),此项从「待 12 核对」收口。
+  九种格式与系统 `lua5.1` 逐字节一致,`%c` 是 glibc 的 `"%a %b %e %H:%M:%S %Y"`),此项的「待 12 核对」已完成。
 - **io 完整度**(§10.1,2026-07-29 收窄):三个标准流、`io.read`、`io.lines`(无参)与标准流的
   `:write`/`:close`/`:read`/`:lines`/`:flush` **已交付**(#205,§10.1.1);仍缺的是需要真实文件的
   `io.open`/`io.popen`/`io.tmpfile`/`f:seek`,以及 `io.input`/`io.output`/`io.type`。`__gc` 关文件那一环

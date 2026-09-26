@@ -14,7 +14,7 @@
 > [../p1-interpreter/06-memory-gc](../p1-interpreter/06-memory-gc.md)(GC safepoint 位置——决定 §3 CSE 的 FENCE 点)、
 > [../p1-interpreter/07-metatables-metamethods](../p1-interpreter/07-metatables-metamethods.md)(元方法可见副作用——§9 red line 的主要来源)。
 >
-> P4 对位:
+> P4 对照:
 > [../p4-method-jit/03-speculation-ic](../p4-method-jit/03-speculation-ic.md)(P4 没有跨指令优化——§1 单 pass fold-on-emit 相对 P4 的核心增益就在这里;guard 硬约束继承)。
 >
 > 下游协作(同一子目录):
@@ -41,9 +41,9 @@
 
 **核心决策——优化不是「emit → 多轮 rewrite → 最优」,而是「每次 emit 先过 fold 加 CSE」**(依据 06-snapshot-deopt §4「LuaJIT 折叠引擎」):
 
-- 录制器 emit IR ins 之前,fold engine 先看能不能折成常量或者复用已存在的 ins;如果成功就不真 emit,返回已有的 IRRef;
+- 录制器 emit IR ins 之前,fold engine 先看能不能折成常量或者复用已存在的 ins;如果成功就不真正 emit,返回已有的 IRRef;
 - fold miss 就 CSE hash 表查是否有等价 ins;命中就返回旧 IRRef;
-- CSE miss 就真 emit;写入 CSE hash 表加更新类型 lattice。
+- CSE miss 就真正 emit;写入 CSE hash 表加更新类型 lattice。
 
 这就是「FOLD-on-emit」——单趟录制期加单趟录制后清理(DCE 加 guard dedup),没有多轮 iterative rewrite。这个策略的哲学是:**trace 是线性的,已经把控制流拍平了;一趟顺 emit 加一趟逆 sweep 拿走 80% 的静态收益,剩下的 20% 需要 alias 分析、CFG 图算法、iterative worklist 的重优化就不做**——它们该属于 v2 或永远不做。
 
@@ -52,7 +52,7 @@
 三条:
 
 1. **投机层不应该背静态编译器的复杂度**——种子 §5 说「投机最重的层,主防线在此最关键」,pass 越多越难保证 §9 semantic red line;
-2. **trace 一次性使用**——不像 P4 method JIT 一份代码常驻服役,trace 编完之后 side exit 会不断催生新 trace(v2/v3),把优化时间花在单条 trace 上边际收益递减;
+2. **trace 一次性使用**——不像 P4 method JIT 一份代码长期常驻,trace 编完之后 side exit 会不断催生新 trace(v2/v3),把优化时间花在单条 trace 上边际收益递减;
 3. **fold-on-emit 单趟已经足够**——LuaJIT 十几年的实践证明,单趟 fold 加 peeling 加 DCE 就能拿到多 pass 传统编译器 80-90% 的收益。
 
 **唯一的例外是 loop peeling**——它需要在录制结束、知道整条 loop trace 之后才能做(§6),是一次「跨 IR ins 的结构性 rewrite」;但它也只跑一次,不是 iterative。
@@ -143,7 +143,7 @@ fold 表(实际实现大约 200 条起,按 emit 频率排序;LuaJIT fold table �
 
 ### 2.3 NaN 规范化不变式的具体实现
 
-依据 [../p1-interpreter/01-value-object-model §3.4](../p1-interpreter/01-value-object-model.md):**值世界中任何 NaN 必须是规范正 qNaN `0x7FF8_0000_0000_0000`**。这条不变式在 P5 FOLD 引擎有具体落点:
+依据 [../p1-interpreter/01-value-object-model §3.4](../p1-interpreter/01-value-object-model.md):**值世界中任何 NaN 必须是规范正 qNaN `0x7FF8_0000_0000_0000`**。这条不变式在 P5 FOLD 引擎有具体的实现位置:
 
 ```go
 func canonicalizeNaN(x float64) float64 {
@@ -266,7 +266,7 @@ guard failure 时物化到 slot r 拿不到 ins 15 的运行期值(regalloc 也�
 ⇒ slot r 里是垃圾 ⇒ 静默的错误结果
 ```
 
-这是种子 §4.3 P4 与 P5 复杂度对照表「映射数据 = 每个 guard 一份 snapshot」的直接体现:snapshot 不是「记录 exit 时状态」的旁挂标签,**snapshot IS a use**——它对 IR value 施加保留义务。
+这是种子 §4.3 P4 与 P5 复杂度对照表「映射数据 = 每个 guard 一份 snapshot」的直接体现:snapshot 不是「记录 exit 时状态」的附带标签,**snapshot IS a use**——它对 IR value 施加保留义务。
 
 ### 4.3 DCE 不真删,只标 NOP
 
@@ -459,7 +459,7 @@ end
 
 ### 8.1 为什么是硬要求
 
-**差分 fuzz 抓到「wangshu fullmoon 与 crescent 输出不一致」时,必须能定位到「哪个 pass 引入了错误结果」**。如果所有 pass 是一个开关(启用或禁用整个 fullmoon),定位只能靠人肉逐 pass 复现;pass toggle 就是自动化的一阶手段。
+**差分 fuzz 抓到「wangshu fullmoon 与 crescent 输出不一致」时,必须能定位到「哪个 pass 引入了错误结果」**。如果所有 pass 是一个开关(启用或禁用整个 fullmoon),定位只能靠人工逐 pass 复现;pass toggle 就是自动化的一阶手段。
 
 依据 memory reflection `2026-06-15-p3-pw9-acceptance-perf-round` 教训 2「prove-the-path-under-test」家族已经在望舒工程被反复确认——p5 的每一个 pass 都是投机层,静默的错误结果的第一防线是差分,差分能否收敛到根因取决于 pass 是否可以独立关闭。
 
@@ -492,7 +492,7 @@ type OptConfig struct {
 - **G**:fullmoon,全 pass
 - **H**(v2):fullmoon,全 pass 加 sink
 
-差分要求 A vs B vs C..H 逐字节等价。如果某一档挂了,直接把「wrong result」归到最后加入的 pass。这是 [../p1-interpreter/12-testing-difftest](../p1-interpreter/12-testing-difftest.md) 差分套的一次结构性增强,依据种子 §5「优化 pass 分级差分」直接完成。
+差分要求 A vs B vs C..H 逐字节等价。如果某一档出错,直接把「wrong result」归到最后加入的 pass。这是 [../p1-interpreter/12-testing-difftest](../p1-interpreter/12-testing-difftest.md) 差分套的一次结构性增强,依据种子 §5「优化 pass 分级差分」直接完成。
 
 ### 8.4 与 pass 顺序不变式(§1.2)的关系
 
@@ -508,7 +508,7 @@ type OptConfig struct {
 |---|---|---|---|
 | 1 | **不 reassoc f64**:`(a+b)+c ≠ a+(b+c)` in general | FOLD | 结果与 crescent 不一致,静默的错误结果 |
 | 2 | **不合并 -0 与 +0** | FOLD / CSE | `1/(-0) = -Inf` 而 `1/(+0) = +Inf`,合并后产生错误结果 |
-| 3 | **不生成 non-canonical NaN**(依据 §2.3) | FOLD | 结果 u64 与 NaN-box tag 空间碰撞,tag 系统崩 |
+| 3 | **不生成 non-canonical NaN**(依据 §2.3) | FOLD | 结果 u64 与 NaN-box tag 空间碰撞,tag 系统崩溃 |
 | 4 | **不把 `x*0` fold 为 `0`** | FOLD | NaN * 0 = NaN,Inf * 0 = NaN,不是 0 |
 | 5 | **不把 `x-x` fold 为 `0`** | FOLD | NaN - NaN = NaN |
 | 6 | **不 reorder 有可观察副作用的 op** | CSE / DCE / peeling | metamethod 打印顺序变化,用户可见 |
@@ -543,6 +543,6 @@ type OptConfig struct {
 [./05-register-allocation](./05-register-allocation.md)(逆序扫描消费本文 DCE 之后的 IR;LOOP marker 与 PHI 是路标) ·
 [./06-snapshot-deopt](./06-snapshot-deopt.md)(§4 snapshot IS a use 硬耦合;v2 unsink 由 06 补章拥有) ·
 [./08-testing-strategy](./08-testing-strategy.md)(§8 pass toggle = pass matrix 差分的一阶手段) ·
-[../p1-interpreter/01-value-object-model](../p1-interpreter/01-value-object-model.md)(§3.4 NaN 规范化 = §2.3 落点) ·
+[../p1-interpreter/01-value-object-model](../p1-interpreter/01-value-object-model.md)(§3.4 NaN 规范化 = §2.3 实现位置) ·
 [../p1-interpreter/07-metatables-metamethods](../p1-interpreter/07-metatables-metamethods.md)(§9 red line 6 副作用可见性) ·
 [../p4-method-jit/03-speculation-ic](../p4-method-jit/03-speculation-ic.md)(P4 没有跨指令优化 = 本文 §1 相对增益的对偶面)

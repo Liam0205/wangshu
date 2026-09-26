@@ -2,22 +2,22 @@
 
 > 状态:**架构决策深度,系统管线单一事实源**(对齐 P4 子文档「设计阶段,架构决策深度」基线;具体 amd64/arm64 asm 与 jitContext/自管机器栈精确布局留 [./06-backends](./06-backends.md) 详细设计阶段;wazero 对应 API 与 platform 子包细节标注「待 spike 验证」与「采石场参考」)。本文是 **P4 子目录第五篇**,展开系统管线的完整设计:**P4 收回 P3 外包给 wazero 的四项税后,如何全额自付**——逐税方案 + W^X/icache/trampoline 四件套 + JIT 执行上下文 + 世界边界 + trampoline 三出口协议 + arena base 重载协议 + 两个 safepoint 在 P4 的物理形式。
 >
-> 上游契约(本文严格遵守):
+> 上游约定(本文严格遵守):
 > [./00-overview.md](./00-overview.md)(P4 定位、tier 映射、跳跃路径);
 > [../roadmap.md](../roadmap.md) §2(四项税完整定义 + 标准解法「wazero 已验证」);
 > [../../../llmdoc/must/design-premises.md](../../../llmdoc/must/design-premises.md)(前提二 Go runtime 四项税 / 前提四 NaN-box 第一天承诺);
 > [../../../llmdoc/architecture/evolution-roadmap.md](../../../llmdoc/architecture/evolution-roadmap.md)(tier 映射:P3/P4 同属 gibbous tier-1)。
 >
-> P3 物理基础(P4 复用):
+> P3 已有基础(P4 复用):
 > [../p3-wasm-tier/03-memory-model](../p3-wasm-tier/03-memory-model.md)(arena 收养 wazero memory:P3 时段 backing 来源 wazero;§0.4 已写明 P4 build 下 backing 切回 Go 堆 `make`,GCRef 偏移寻址语义同一);
 > [../p3-wasm-tier/04-trampoline](../p3-wasm-tier/04-trampoline.md)(跨层互调协议:bit50 / 升层入口签名 `(base i32) → status i32` / status 链错误冒泡 / 三向分派——本文 §3.6/§4 直接继承,只换物理通道);
-> [../p3-wasm-tier/05-safepoint-gc](../p3-wasm-tier/05-safepoint-gc.md)(三类 safepoint:分配点 / 层边界 / 回边——本文 §6 一样的,只是「物理形式」从 wazero 内部机制切换为自管原生码)。
+> [../p3-wasm-tier/05-safepoint-gc](../p3-wasm-tier/05-safepoint-gc.md)(三类 safepoint:分配点 / 层边界 / 循环回跳(back edge)——本文 §6 与之相同,只是「物理形式」从 wazero 内部机制切换为自管原生码)。
 >
-> P1 已铺垫的料:
+> P1 已做好的铺垫:
 > [../p1-interpreter/01-value-object-model](../p1-interpreter/01-value-object-model.md) §2(GCRef 非 Go 指针纪律,源头不变式——P4 写屏障税白赚的根因);
 > [../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md) §1(CallInfo + Frame 双层概念)、§7(Lua 调用链状态全在 arena,Lua 调用不吃 Go 栈——P4 帧沿用同一 CallInfo 协议);
-> [../p1-interpreter/06-memory-gc](../p1-interpreter/06-memory-gc.md) §1.3(reloadFrame stk 重载纪律——P4 一样的的 arena base 重载);
-> [../p2-bridge/01-profiling](../p2-bridge/01-profiling.md) §3 路线 B(回边检查点为 P3/P4 翻译时自插)。
+> [../p1-interpreter/06-memory-gc](../p1-interpreter/06-memory-gc.md) §1.3(reloadFrame stk 重载纪律——P4 沿用同样的 arena base 重载);
+> [../p2-bridge/01-profiling](../p2-bridge/01-profiling.md) §3 路线 B(back edge 检查点为 P3/P4 翻译时自插)。
 >
 > 下游对位:
 > [./04-osr-deopt](./04-osr-deopt.md)(trampoline 三出口共用——本文 §4.2 给协议骨架,具体物化语义引用 04);
@@ -25,7 +25,7 @@
 >
 > **本文定位一句话**:**P3 把四项税外包给 wazero,P4 收回这层外包,全额自付。本文是 P4 系统管线的单一事实源——wazero 从依赖转角色为采石场(参考实现指针)**。
 
-对应 Go 包:`internal/gibbous/jit`(系统管线主体:trampoline.go / mmap.go / icache.go / context.go / helpers.go,与 [./00-overview.md](./00-overview.md) §0.1 共题)、`internal/gibbous/jit/<arch>`(per-arch 发射器与 asm stub,详见 [./06-backends](./06-backends.md))。
+对应 Go 包:`internal/gibbous/jit`(系统管线主体:trampoline.go / mmap.go / icache.go / context.go / helpers.go,与 [./00-overview.md](./00-overview.md) §0.1 一致)、`internal/gibbous/jit/<arch>`(per-arch 发射器与 asm stub,详见 [./06-backends](./06-backends.md))。
 
 ---
 
@@ -33,7 +33,7 @@
 
 ### 0.1 一句话:P3 把四项税外包给 wazero,P4 收回这层外包,全额自付
 
-P3 阶段([../p3-wasm-tier/00-overview](../p3-wasm-tier/00-overview.md) §8 共述):**Go runtime 四项税(GC 精确栈扫描 / 异步抢占 / 栈移动 / 写屏障,[../roadmap.md](../roadmap.md) §2)被外包给 wazero**——wazero 自带 exec mmap、自管栈、回边抢占检查点、linear memory 隔离,P3 翻译产物只需「翻译到 Wasm」即可,所有跨 Go runtime 边界的物理代价由 wazero 承担。
+P3 阶段([../p3-wasm-tier/00-overview](../p3-wasm-tier/00-overview.md) §8 共述):**Go runtime 四项税(GC 精确栈扫描 / 异步抢占 / 栈移动 / 写屏障,[../roadmap.md](../roadmap.md) §2)被外包给 wazero**——wazero 自带 exec mmap、自管栈、back edge 抢占检查点、linear memory 隔离,P3 翻译产物只需「翻译到 Wasm」即可,所有跨 Go runtime 边界的物理代价由 wazero 承担。
 
 P4 阶段:wazero 不再上场,P4 直接发射原生机器码 ⇒ 四项税**整笔账由 P4 自付**。这不是「重做 wazero」——本文 §1 逐项给出 P4 的概念方案,其每一项的物理可行性在 wazero 当前实现中已被验证,wazero 的 platform 子包、wazevo backend、`internal/engine/wazevo/backend/isa/{amd64,arm64}/` 入口 asm 等是采石场(参考实现的代码出处)。
 
@@ -47,7 +47,7 @@ P4 阶段:wazero 不再上场,P4 直接发射原生机器码 ⇒ 四项税**整�
 | **P3** | **依赖**:作为 Wasm 运行时,P3 翻译产物经 wazero 的 wazevo backend 跑成原生码;arena 收养 wazero memory 作为共见物理内存([../p3-wasm-tier/03-memory-model](../p3-wasm-tier/03-memory-model.md));四项税由 wazero 内部机制承担 | 四项税外包 |
 | **P4** | **采石场**:wazero 不在 P4 build 链路上(若 §6 决定退役 P3,则连构建产物也不带),但其 platform / wazevo backend(`internal/engine/wazevo/backend/isa/*`)是 P4 系统管线每件套的参考实现来源 | 四项税自付 |
 
-「采石场」是工程上的精确含义——**P4 的 trampoline asm、mmap+mprotect 翻面序列、icache flush 序列、自管栈切换 SP 序列,都从 wazero 同位实现移植/借鉴**(Apache 2.0,license 兼容)。每税/件,本文都给出 wazero 对应实现位置的指针。
+「采石场」是工程上的精确含义——**P4 的 trampoline asm、mmap+mprotect 翻面序列、icache flush 序列、自管栈切换 SP 序列,都从 wazero 同位实现移植/借鉴**(Apache 2.0,license 兼容)。每项税、每件套,本文都给出 wazero 对应实现位置的指针。
 
 ### 0.3 P4 物理可行性的核心:Go runtime 四项税 + 三件套(W^X/icache/trampoline)逐项可解
 
@@ -55,11 +55,11 @@ P4 的存在性证明分两步走:
 
 **第一步:四项税逐项可解**——本文 §1 给概念方案,每项都满足两个条件:
 - (a) 在纯 Go 约束下可实现(不依赖 cgo,不复刻 Go runtime 内部符号,[../roadmap.md](../roadmap.md) §6 非目标);
-- (b) wazero 已完成一样的机制,作为存在性证明 + 移植蓝本。
+- (b) wazero 已实现同样的机制,作为存在性证明 + 移植蓝本。
 
 **第二步:系统管线四件套(exec mmap / W^X / icache flush / trampoline)逐件可解**——本文 §2 给概念方案,每件同样满足 (a)(b)。
 
-二者合起来,对齐 [../../../llmdoc/must/design-premises.md](../../../llmdoc/must/design-premises.md) 前提二:「VM 边界跨越是几十~百 ns 的固定成本」是 P4 收益模型的硬约束(per-item 短脚本被吃光),而四项税的物理可行性是 P4 收益模型的硬前提(没有合规的运行时机器码,谈不上收益)。
+二者合起来,对齐 [../../../llmdoc/must/design-premises.md](../../../llmdoc/must/design-premises.md) 前提二:「VM 边界跨越是几十~百 ns 的固定成本」是 P4 收益模型的硬约束(per-item 短脚本的收益被完全抵消),而四项税的物理可行性是 P4 收益模型的硬前提(没有合规的运行时机器码,谈不上收益)。
 
 ### 0.4 章节路标
 
@@ -97,7 +97,7 @@ JIT 代码不在 goroutine 栈上跑,而是跑在「自管机器栈」上——�
 
 #### 1.1.3 边界纪律:进入 JIT = Go 栈停在已知点(扫描点边界)
 
-进 JIT 前,trampoline 把所有 caller-saved Go 寄存器 spill 到 goroutine 栈的固定位置(per-arch 调用约定,留 [./06-backends](./06-backends.md));进入 JIT 后 goroutine 栈对 GC 看到的就是「trampoline 进入 stub 的栈帧 + 其上若干 Go 调用方栈帧」,全部 stack map 完整。**这就是 [../roadmap.md](../roadmap.md) §2「边界按 syscall 语义」的物理含义**:JIT 世界对 Go runtime 等价于一次同步系统调用——边界处栈一致,内部不可见。
+进 JIT 前,trampoline 把所有 caller-saved Go 寄存器 spill 到 goroutine 栈的固定位置(per-arch 调用约定,留 [./06-backends](./06-backends.md));进入 JIT 后 goroutine 栈对 GC 看到的就是「trampoline 进入 stub 的栈帧 + 其上若干 Go 调用方栈帧」,全部 stack map 完整。**这就是 [../roadmap.md](../roadmap.md) §2「边界按 syscall 语义」的实际含义**:JIT 世界对 Go runtime 等价于一次同步系统调用——边界处栈一致,内部不可见。
 
 #### 1.1.4 Lua 值帧本就在 arena + CallInfo(承 [../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md) §7)
 
@@ -117,11 +117,11 @@ JIT 代码不在 goroutine 栈上跑,而是跑在「自管机器栈」上——�
 
 Go 1.14+ 启用基于信号的抢占——runtime 经 SIGURG 异步打断 goroutine,落点是「下一条 Go 指令」。**抢占信号若落在生成码 PC 上,runtime 完全不认识这个 PC**(无 funcInfo / 无 unwinding 信息),栈展开失败,fatal。
 
-> **承 [../p3-wasm-tier/implementation-progress.md §0.1](../p3-wasm-tier/implementation-progress.md) PW0 spike 修正的关键事实**:wazero 在 spike 时被一同测出**也是 async-preemption-unsafe**——抢占信号落在 wazero 生成码上同样不可恢复,wazero 靠 context cancellation 协作终止(`WithCloseOnContextDone`)而非依赖抢占。这是 P3 时段四项税「外包给 wazero」措辞的精确含义:wazero 解决方式与 P4 一样的,不是真有什么魔法。**P4 没有更难的问题,只是要把一样的解法自付一次**。
+> **承 [../p3-wasm-tier/implementation-progress.md §0.1](../p3-wasm-tier/implementation-progress.md) PW0 spike 修正的关键事实**:wazero 在 spike 时被一同测出**也是 async-preemption-unsafe**——抢占信号落在 wazero 生成码上同样不可恢复,wazero 靠 context cancellation 协作终止(`WithCloseOnContextDone`)而非依赖抢占。这是 P3 时段四项税「外包给 wazero」措辞的精确含义:wazero 的解决方式与 P4 相同,并没有什么特殊手段。**P4 没有更难的问题,只是要把同样的解法自付一次**。
 
-#### 1.2.2 P4 解法:回边插抢占检查点(load preemptFlag + 置位则经 exit stub 退到边界)
+#### 1.2.2 P4 解法:在 back edge 插抢占检查点(load preemptFlag + 置位则经 exit stub 退到边界)
 
-P4 在生成码的**循环回边**(FORLOOP / TFORLOOP / 向后 JMP)插入抢占检查点——一段固定几条指令的「检查 + 条件跳」序列:
+P4 在生成码的**循环 back edge**(FORLOOP / TFORLOOP / 向后 JMP)插入抢占检查点——一段固定几条指令的「检查 + 条件跳」序列:
 
 ```
 ;; 概念伪码,具体 asm 在 06-backends
@@ -135,25 +135,25 @@ jnz    exit_to_preempt_handler          ;; 置位 ⇒ 跳到 exit stub,经 tramp
 
 #### 1.2.3 直线段长度有界 ⇒ 不可抢占窗口有界
 
-「不可抢占窗口」= 两次回边检查点之间的最长直线段长度。Lua 字节码的直线段(回边到回边、调用到调用)长度天然有界([../p2-bridge/03-compilability-analysis](../p2-bridge/03-compilability-analysis.md) F5 大函数检查已限编译单元尺寸),且每次跨层调用 / 助手调用 / 分配点都是隐式抢占点(都经 trampoline 出 ⇒ 回 Go 世界 ⇒ Go runtime 可抢占)。所以抢占延迟有上界,符合 Go runtime 对协作式抢占的隐含约定(等价 STW 延迟数十微秒到毫秒级,与 wazero 同档)。
+「不可抢占窗口」= 两次 back edge 检查点之间的最长直线段长度。Lua 字节码的直线段(back edge 到 back edge、调用到调用)长度天然有界([../p2-bridge/03-compilability-analysis](../p2-bridge/03-compilability-analysis.md) F5 大函数检查已限编译单元尺寸),且每次跨层调用 / 助手调用 / 分配点都是隐式抢占点(都经 trampoline 出 ⇒ 回 Go 世界 ⇒ Go runtime 可抢占)。所以抢占延迟有上界,符合 Go runtime 对协作式抢占的隐含约定(等价 STW 延迟数十微秒到毫秒级,与 wazero 同档)。
 
 #### 1.2.4 与 P3 PW9-a gcPending inline 的对位
 
-P3 在 [../p3-wasm-tier/05-safepoint-gc](../p3-wasm-tier/05-safepoint-gc.md) §1.3 已定:回边 inline 一次 `i32.load $gcPending` + 条件跳助手——一样的形式,只是物理通道是 wazero linear memory 加一次条件分支,P4 是机器寄存器加一次条件分支。`gcPending` 与 `preemptFlag` 在 §3.3 的 jitContext 是相邻字段(都是 i32),回边检查点可一次 load 两字 + 单次 test(per-arch 优化,留 [./06-backends](./06-backends.md))。
+P3 在 [../p3-wasm-tier/05-safepoint-gc](../p3-wasm-tier/05-safepoint-gc.md) §1.3 已定:back edge 处 inline 一次 `i32.load $gcPending` + 条件跳助手——形式相同,只是物理通道是 wazero linear memory 加一次条件分支,P4 是机器寄存器加一次条件分支。`gcPending` 与 `preemptFlag` 在 §3.3 的 jitContext 是相邻字段(都是 i32),back edge 检查点可一次 load 两字 + 单次 test(per-arch 优化,留 [./06-backends](./06-backends.md))。
 
 跨层退出语义对位:
 - **P3 PW9-a**:gcPending 命中 ⇒ 调 imported helper $h_safepoint ⇒ 经 wazero ↔ Go 边界出去 ⇒ Go 侧 collect ⇒ 回 wazero 续跑;
 - **P4**:preemptFlag/gcPending 命中 ⇒ 经 trampoline 出 ⇒ Go 侧 helper(Gosched 或 collect)⇒ trampoline 进回 JIT 续跑。
 
-**两层在「回边检查 + 跨层让出」语义上同构**,只是 P4 把 wazero 内部的边界跨越展开成自管 trampoline 的进出。
+**两层在「back edge 检查 + 跨层让出」语义上同构**,只是 P4 把 wazero 内部的边界跨越展开成自管 trampoline 的进出。
 
-#### 1.2.5 与 context cancellation(WithCloseOnContextDone 一样的)的协作终止
+#### 1.2.5 与 context cancellation(同 WithCloseOnContextDone)的协作终止
 
-宿主侧的取消(`Program.Call(ctx, ...)` 的 ctx done)在 P4 经同一通道生效:当 ctx 被取消,Go 侧的取消钩子置 `jitContext.preemptFlag` ⇒ 下一次回边检查点命中 ⇒ JIT 退到边界 ⇒ Go 侧助手发现 ctx 已 done ⇒ 抛 cancel error 经 status 链冒泡。这是 issue #4 完成的 `SetCancelHook` 机制([../p1-interpreter/12-testing-difftest.md](../p1-interpreter/12-testing-difftest.md) 公共面契约)在 P4 的物理兑现——P3 经 wazero 的 `WithCloseOnContextDone`(wazero API),P4 自付一样的机制,通道是 jitContext.preemptFlag。
+宿主侧的取消(`Program.Call(ctx, ...)` 的 ctx done)在 P4 经同一通道生效:当 ctx 被取消,Go 侧的取消钩子置 `jitContext.preemptFlag` ⇒ 下一次 back edge 检查点命中 ⇒ JIT 退到边界 ⇒ Go 侧助手发现 ctx 已 done ⇒ 抛 cancel error 经 status 链冒泡。这是 issue #4 完成的 `SetCancelHook` 机制([../p1-interpreter/12-testing-difftest.md](../p1-interpreter/12-testing-difftest.md) 公共接口约定)在 P4 的具体实现——P3 经 wazero 的 `WithCloseOnContextDone`(wazero API),P4 自付同样的机制,通道是 jitContext.preemptFlag。
 
 #### 1.2.6 wazero 采石场:epoch interruption / checkexit 标志检查
 
-参考实现:wazero `internal/engine/wazevo` 的 epoch interruption / `checkExit` 机制——同样在循环回边 emit 一次 load 标志 + 条件分支跳到 exit handler。wazero 的标志位住 wazevo 的 ExecutionContext / module instance 字段,P4 的住 `jitContext`,语义同位。
+参考实现:wazero `internal/engine/wazevo` 的 epoch interruption / `checkExit` 机制——同样在循环 back edge 处 emit 一次 load 标志 + 条件分支跳到 exit handler。wazero 的标志位住 wazevo 的 ExecutionContext / module instance 字段,P4 的住 `jitContext`,语义同位。
 
 ### 1.3 栈移动——morestack 拷 goroutine 栈
 
@@ -180,11 +180,11 @@ mov  rbx, [r15 + offset_helperTab]     ;; 读 helper 表起点
 ;; ...
 ```
 
-这条「固定寄存器存 jitContext」纪律是「JIT 不持 Go 栈指针」的**结构性兑现**——jitContext 自身不在 Go 栈、固定寄存器恒指向同一 Go 堆对象、Go 堆对象不被 morestack 搬,三件事合起来让「持指针」从「需小心避免」升级为「物理上不可能」。
+这条「固定寄存器存 jitContext」纪律是「JIT 不持 Go 栈指针」的**结构性保证**——jitContext 自身不在 Go 栈、固定寄存器恒指向同一 Go 堆对象、Go 堆对象不被 morestack 搬,三件事合起来让「持指针」从「需小心避免」升级为「物理上不可能」。
 
 #### 1.3.5 与 [../p1-interpreter/01-value-object-model](../p1-interpreter/01-value-object-model.md) §2 GCRef 非 Go 指针纪律同源
 
-P1 第一天就定:**arena 内对象互引用是 GCRef = 48-bit 字节偏移,不是 Go 指针**([../p1-interpreter/01-value-object-model](../p1-interpreter/01-value-object-model.md) §2 与本文 §1.4 写屏障白赚的一样的根因)。这条纪律本就为「不让 Go GC 看到 arena 内部图」设计,顺便让 arena 内部引用对栈移动也免疫——arena 对象间用偏移寻址,arena 整体在 Go 堆上的地址变化(grow 后 realloc 到新 backing)不影响内部引用,只需 Go 侧重取一次 backing slice 视图([../p1-interpreter/06-memory-gc](../p1-interpreter/06-memory-gc.md) §3)。
+P1 第一天就定:**arena 内对象互引用是 GCRef = 48-bit 字节偏移,不是 Go 指针**([../p1-interpreter/01-value-object-model](../p1-interpreter/01-value-object-model.md) §2 与本文 §1.4 写屏障白赚是同一个根因)。这条纪律本就为「不让 Go GC 看到 arena 内部图」设计,顺便让 arena 内部引用对栈移动也免疫——arena 对象间用偏移寻址,arena 整体在 Go 堆上的地址变化(grow 后 realloc 到新 backing)不影响内部引用,只需 Go 侧重取一次 backing slice 视图([../p1-interpreter/06-memory-gc](../p1-interpreter/06-memory-gc.md) §3)。
 
 P4 把这条纪律延伸到机器寄存器层:JIT 生成码持有的「arena 内位置」全部是相对 jitContext.arenaBase 的偏移(R(i) 槽 = arenaBase + valueStackByteOffset + 8*i),从 jitContext 重读 arenaBase 即可在 grow 后续跑(§5)。**P4 没有「指针失效」概念,只有「偏移基址重读」概念**。
 
@@ -206,7 +206,7 @@ Go 的并发 GC 经写屏障维护三色不变式——所有「黑色对象写�
 
 由此推论:**JIT 生成码所有写操作的目标都是「自管内存里的一个 u64 槽」**——值栈槽 `R(i) = arena.words[base + i]`(写 NaN-boxed u64)、表槽(写 GCRef = u48 偏移)、upvalue 槽(同上)。这些写**对 Go GC 完全不可见**——Go GC 看到的只是一段 `[]uint64` backing(无指针),内部偏移无意义。**写屏障义务在物理上不存在**。
 
-这条「白赚」是第一天承诺的最大现金红利,也是 P4 系统管线最不需要操心的一项。它的兑现条件:严格遵守 [../p1-interpreter/01-value-object-model](../p1-interpreter/01-value-object-model.md) §7 不变式 1「值即 8 字节,跨 tier 拷贝是 memmove」——P4 生成码与 P1 解释器、P3 wazero 生成码读写**完全同一字节布局的同一块物理内存**,无格式转换。
+这条「白赚」是第一天承诺带来的最大直接收益,也是 P4 系统管线最不需要操心的一项。它成立的条件:严格遵守 [../p1-interpreter/01-value-object-model](../p1-interpreter/01-value-object-model.md) §7 不变式 1「值即 8 字节,跨 tier 拷贝是 memmove」——P4 生成码与 P1 解释器、P3 wazero 生成码读写**完全同一字节布局的同一块物理内存**,无格式转换。
 
 #### 1.4.3 与 P1 第一天承诺的红利(承 [../../../llmdoc/must/design-premises.md](../../../llmdoc/must/design-premises.md) 前提四)
 
@@ -214,11 +214,11 @@ Go 的并发 GC 经写屏障维护三色不变式——所有「黑色对象写�
 
 > **代价(必须自付)**:**自写 mark-sweep GC**,纪律约束是 **safepoint 限定在分配点与层边界**、**根放 shadow stack**。
 
-「自写 GC」的代价是真的(P1 06 已付),但它换来的是「写屏障税在 P4 物理上不存在」——这是当年那个不可逆决策最直接的 P4 兑现。若 P1 当年选了 Go tagged struct,这里 P4 的写屏障要么走 Go runtime 内部符号(被 [../roadmap.md](../roadmap.md) §6 非目标禁掉),要么 P4 直接做不了。**写屏障税从「四项税之一」变成「白赚」**,是前提四在 P4 兑付的现金。
+「自写 GC」的代价是真的(P1 06 已付),但它换来的是「写屏障税在 P4 物理上不存在」——这是当年那个不可逆决策在 P4 最直接的回报。若 P1 当年选了 Go tagged struct,这里 P4 的写屏障要么走 Go runtime 内部符号(被 [../roadmap.md](../roadmap.md) §6 非目标禁掉),要么 P4 直接做不了。**写屏障税从「四项税之一」变成「白赚」**,是前提四在 P4 带来的实际收益。
 
-#### 1.4.4 wazero 采石场:linear memory 即一样的自管值世界
+#### 1.4.4 wazero 采石场:linear memory 即同一种自管值世界
 
-参考实现:wazero linear memory 是 `[]byte` backing,Wasm 生成码所有 i32.store/i64.store 指令的目标都是该 backing 内偏移——Go GC 完全不可见。P4 arena 与 wazero linear memory 在「自管值世界 ⇒ 写屏障白赚」这条上**物理同源**:都是「Go 堆上一段不含指针的字节数组」,Go GC 把它当普通整数数组看,内部如何被 JIT 写入与 Go GC 无关。这也是 [../p3-wasm-tier/03-memory-model](../p3-wasm-tier/03-memory-model.md) §1.2「为什么是『收养』而非『双份』」的对偶面——值世界一旦统一,写屏障同时对两个执行层都白赚。
+参考实现:wazero linear memory 是 `[]byte` backing,Wasm 生成码所有 i32.store/i64.store 指令的目标都是该 backing 内偏移——Go GC 完全不可见。P4 arena 与 wazero linear memory 在「自管值世界 ⇒ 写屏障白赚」这条上**本质同源**:都是「Go 堆上一段不含指针的字节数组」,Go GC 把它当普通整数数组看,内部如何被 JIT 写入与 Go GC 无关。这也是 [../p3-wasm-tier/03-memory-model](../p3-wasm-tier/03-memory-model.md) §1.2「为什么是『收养』而非『双份』」的对偶面——值世界一旦统一,写屏障同时对两个执行层都白赚。
 
 ### 1.5 总结:四项税的物理可行性已被 wazero 验证(采石场可逐项参考)
 
@@ -227,11 +227,11 @@ Go 的并发 GC 经写屏障维护三色不变式——所有「黑色对象写�
 | 税 | P4 概念方案 | 在 P1 已付的代价 | 在 P4 自付的成本 | wazero 采石场 |
 |---|---|---|---|---|
 | **GC 精确栈扫描** | 自管机器栈 + trampoline 切 SP,边界 syscall 语义 | 调用链状态全在 arena(P1 05 §7) | trampoline 进出 asm + 自管栈池化 | wazevo backend native call 栈切换 |
-| **异步抢占** | 回边插 preemptFlag 检查 + 经 trampoline 让出 | 解释器 opcode 末尾检查机制(P1 05 §5.3) | 回边检查点指令(几条)+ exit stub | epoch interruption / checkexit 标志 |
+| **异步抢占** | back edge 插 preemptFlag 检查 + 经 trampoline 让出 | 解释器 opcode 末尾检查机制(P1 05 §5.3) | back edge 检查点指令(几条)+ exit stub | epoch interruption / checkexit 标志 |
 | **栈移动** | jitContext 经固定寄存器,Go 堆对象不移动 | GCRef 非 Go 指针(P1 01 §2) | 固定寄存器约定 + 间接寻址纪律 | trampoline 只传执行上下文指针(wazevo ExecutionContext)|
-| **写屏障** | **白赚**:值世界已在 arena,Go GC 不可见 | 自写 mark-sweep GC(P1 06 全卷) | 0(物理上不存在) | linear memory 同源 |
+| **写屏障** | **白赚**:值世界已在 arena,Go GC 不可见 | 自写 mark-sweep GC(P1 06 全篇) | 0(物理上不存在) | linear memory 同源 |
 
-**关键结论:四项税在 P4 不是新发明的难题,而是 P1 第一天承诺 + wazero 已验证的存在性 + 一笔系统管线工程**——逐项可解,且每项都有现成蓝本。这是 [./02-template-direction.md](./02-template-direction.md) §1.3 「实现成本与收益在曲线上严重凸性」论证的物理依据:四项税自付的工程量是固定的(几千行 trampoline + 系统管线),不会因 P4 后端复杂度而成倍数增加;P4 真正的人年级投入(+1-2 人年)在生成码质量与 IC 投机的微调上。
+**关键结论:四项税在 P4 不是新发明的难题,而是 P1 第一天承诺 + wazero 已验证的存在性 + 一笔系统管线工程**——逐项可解,且每项都有现成蓝本。这是 [./02-template-direction.md](./02-template-direction.md) §1.3 「实现成本与收益在曲线上严重凸性」论证的事实依据:四项税自付的工程量是固定的(几千行 trampoline + 系统管线),不会因 P4 后端复杂度而成倍数增加;P4 真正的人年级投入(+1-2 人年)在生成码质量与 IC 投机的微调上。
 
 ---
 
@@ -445,7 +445,7 @@ status 码区分三出口(承 [../p3-wasm-tier/04-trampoline](../p3-wasm-tier/04
 
 trampoline 的两段 stub 是 P4 中**唯二**完全 per-arch 的代码段:每架构一份 `jitEnter` + `jitExit`,寄存器约定、SP 切换、callee-saved 保存集合全按该架构 ABI 写。
 
-但 trampoline 之外,JIT 生成码内部「该用哪个寄存器存 jitContext / 该用哪个寄存器存 base」这些 ABI 约定一旦在 trampoline 定下,生成码侧就照该约定发射,**架构无关骨架(发射驱动 / 模板选型 / OSR 接线)零变更**。这是 [./06-backends.md](./06-backends.md) §5.1 候选 (b)「共享骨架 + per-arch 发射器」的物理体现。
+但 trampoline 之外,JIT 生成码内部「该用哪个寄存器存 jitContext / 该用哪个寄存器存 base」这些 ABI 约定一旦在 trampoline 定下,生成码侧就照该约定发射,**架构无关骨架(发射驱动 / 模板选型 / OSR 接线)零变更**。这是 [./06-backends.md](./06-backends.md) §5.1 候选 (b)「共享骨架 + per-arch 发射器」的具体体现。
 
 #### 2.4.5 wazero 采石场:wazevo backend abi_entry asm 等
 
@@ -517,7 +517,7 @@ P4 运行时存在两个泾渭分明的世界,以 trampoline 为唯一边界:
 
 `jitContext` 是 P4 系统管线的核心数据结构——Go 堆对象,生命周期与 Thread 同(每 Thread 一份,与 P3 wazero 的 ExecutionContext 同位)。
 
-**2026-07-02 实现勘误——字段以 `internal/gibbous/jit/jitcontext.go` 为准**:早前草稿列的 `callInfoBase` / `gcPending` / `helperTab` / `exitPC` / `exitHelperID` / `exitArg1` / `machineStack` / `savedGoSP` 等字段并未完成,当前实现用不同的机制承担同一职责(见 §4.3 exit-reason 协议 + `RefreshJitCtxAddrs` 批量刷新)。真实字段如下:
+**2026-07-02 实现勘误——字段以 `internal/gibbous/jit/jitcontext.go` 为准**:早前草稿列的 `callInfoBase` / `gcPending` / `helperTab` / `exitPC` / `exitHelperID` / `exitArg1` / `machineStack` / `savedGoSP` 等字段并未实现,当前实现用不同的机制承担同一职责(见 §4.3 exit-reason 协议 + `RefreshJitCtxAddrs` 批量刷新)。真实字段如下:
 
 ```go
 // internal/gibbous/jit/jitcontext.go(P4 build,//go:build wangshu_p4)
@@ -588,9 +588,9 @@ const HelperCodeMask uint64 = 0xFFFF
 
 字段分组说明:
 - **第 1 组**:JIT 段经 `[r15+arenaBaseOff]` / `[r15+valueStackBaseOff]` 间接寻址;这两字段的刷新走 `P4HostState.RefreshJitCtxAddrs`(§3.5),Run 入口与每次 exit-reason 回段前各刷一次。
-- **第 2 组**:回边 inline 一次 byte-load + jne(§1.2.2 + §6.3);`preemptFlag` 是 `atomic.Uint32` 但只取 0/1,故字节比较正确。
+- **第 2 组**:back edge 处 inline 一次 byte-load + jne(§1.2.2 + §6.3);`preemptFlag` 是 `atomic.Uint32` 但只取 0/1,故字节比较正确。
 - **第 3 组**:exit-reason 协议(§4.3)——JIT 段把 helper code + 打包参数写 `exitArg0`,把续跑偏移写 `resumeOff`,`ret` 出段;`nativeCode.Run` 的 dispatcher 读这些字段决定下一步,并经 `codePageAddr + resumeOff` 重入段。旧稿的独立字段 `helperTab` / `exitPC` / `exitHelperID` / `exitArg1` 都由这个统一通道承担。
-- **第 4 组**:自管 spill 栈的 backing 字段(issue #89 已接线)。`NewJITContext` 调 `AllocSpillStack` 从 Go 堆分配 64 KiB `[]byte`,`spillBase` = 对齐后的高地址端,`spillTop` = 低地址端;trampoline 进段前把 goroutine SP 暂存到 `savedGoSP` 再把 SP 切到 `spillBase`,出段后切回。深度 seg2seg 递归的每层 `sub sp` 消耗这块自管栈,不再吃 goroutine 栈的 ~800 B NOSPLIT 余量,因此 `segToSegDepthCap` 从 PR #86 的保守值 16 抬回 128(承 §7.5 + [06 §4.1.5](./06-backends.md))。偏移常量 `JITContextSpillBaseOffset` / `JITContextSavedGoSPOffset` + `TestSpillStackLayout` 断言 `.s` 文件里硬编码的偏移与 struct 一致。
+- **第 4 组**:自管 spill 栈的 backing 字段(issue #89 已接线)。`NewJITContext` 调 `AllocSpillStack` 从 Go 堆分配 64 KiB `[]byte`,`spillBase` = 对齐后的高地址端,`spillTop` = 低地址端;trampoline 进段前把 goroutine SP 暂存到 `savedGoSP` 再把 SP 切到 `spillBase`,出段后切回。深度 seg2seg 递归的每层 `sub sp` 消耗这块自管栈,不再占用 goroutine 栈的 ~800 B NOSPLIT 余量,因此 `segToSegDepthCap` 从 PR #86 的保守值 16 抬回 128(承 §7.5 + [06 §4.1.5](./06-backends.md))。偏移常量 `JITContextSpillBaseOffset` / `JITContextSavedGoSPOffset` + `TestSpillStackLayout` 断言 `.s` 文件里硬编码的偏移与 struct 一致。
 - **第 5 组**:承 P3 PW10 R2 的镜像字机制(`crescent.State.ciDepthRef` / `ciSegBaseRef` / `topRef`),这里存的是 host 绝对字节地址,mmap 段解引后直接 inc/dec/写。
 - **第 6 组**:PJ10 native emit 引入。`savedGoG` 承 Go ABIInternal 对 R14 = G 的不变约束——mmap 段调 Go shim 前必须先把 R14 恢复成 G,否则 Go 函数序言 `morestack` / `getg` / stack-guard 会读到垃圾。`hostRef` 是把 `P4HostState` 接口头以 `[2]uintptr` 存放,shim 反构后做方法分派,以免 `jit` 包硬 import `peroptranslator`。
 
@@ -633,11 +633,11 @@ const HelperCodeMask uint64 = 0xFFFF
 
 P4 阶段的 arena 物理形式:
 - **P3 退役场景**(参 [./07-p3-retirement.md](./07-p3-retirement.md) §3 缺省倾向):arena backing 切回 P1 形式,纯 Go 堆 `make([]uint64, n)`(承 [../p3-wasm-tier/03-memory-model](../p3-wasm-tier/03-memory-model.md) §0.4「P4 唯一的差异是不再经 wazero memory 中介」),`BackingFn` 切回 `DefaultBacking`;
-- **P3 留作可移植中层场景**(同上,翻案条件留下):P3 build 与 P4 build 共存,arena backing 仍走 wazero memory(P3 build 路径),P4 与 P3 共见同一块 wazero memory——这是**结构允许共存**的物理体现([./07-p3-retirement.md](./07-p3-retirement.md) §3)。
+- **P3 留作可移植中层场景**(同上,保留推翻原结论的条件):P3 build 与 P4 build 共存,arena backing 仍走 wazero memory(P3 build 路径),P4 与 P3 共见同一块 wazero memory——这是**结构允许共存**的具体体现([./07-p3-retirement.md](./07-p3-retirement.md) §3)。
 
-无论哪种形式,**P4 生成码读写 arena 的语义同一**:经 jitContext.arenaBase 间接寻址,GCRef 偏移寻址语义同一。这是 P3 P4 同 tier「只换发射后端」的物理含义。
+无论哪种形式,**P4 生成码读写 arena 的语义同一**:经 jitContext.arenaBase 间接寻址,GCRef 偏移寻址语义同一。这是 P3 P4 同 tier「只换发射后端」的实际含义。
 
-**2026-07-02 实现勘误——jitCtx 地址刷新时机**:实现里 arena 相关的五个字段(`arenaBase` / `valueStackBase` / `ciDepthAddr` / `ciSegBaseAddr` / `topAddr`)由 `P4HostState.RefreshJitCtxAddrs(ctx, base)` 批量写入,统一调用点两处:(a) `nativeCode.Run`(以及 `p4Code.Run` / `PerOpCode.Run`)入口——保证首次进入 mmap 段前地址反映当前 arena backing;(b) 每次 exit-reason 出口回来后、再次进入 mmap 段前(§4.3 循环里)——因为任一 host 方法都可能触发 arena grow / 值栈搬家。「批量刷新」是把之前每字段单独一次 host 调用(五次 arena.Words() slice header 派生)合成一次,减轻边界重的 op 的 host 调用成本。这条纪律正是本文 §3.6 不变式 2 与 §5 arena base 重载协议的完成路径。
+**2026-07-02 实现勘误——jitCtx 地址刷新时机**:实现里 arena 相关的五个字段(`arenaBase` / `valueStackBase` / `ciDepthAddr` / `ciSegBaseAddr` / `topAddr`)由 `P4HostState.RefreshJitCtxAddrs(ctx, base)` 批量写入,统一调用点两处:(a) `nativeCode.Run`(以及 `p4Code.Run` / `PerOpCode.Run`)入口——保证首次进入 mmap 段前地址反映当前 arena backing;(b) 每次 exit-reason 出口回来后、再次进入 mmap 段前(§4.3 循环里)——因为任一 host 方法都可能触发 arena grow / 值栈搬家。「批量刷新」是把之前每字段单独一次 host 调用(五次 arena.Words() slice header 派生)合成一次,减轻边界重的 op 的 host 调用成本。这条纪律正是本文 §3.6 不变式 2 与 §5 arena base 重载协议的实现方式。
 
 ### 3.6 边界纪律(三条不变式)
 
@@ -656,7 +656,7 @@ JIT 生成码的「调用」指令只允许:
 
 arena 整体可能在分配慢路径触发 grow ⇒ realloc 到 Go 堆新地址 ⇒ arena.bytes 起始指针变化。但这种重定位**只在分配慢路径(出 JIT 世界)发生**:
 
-- JIT 内联的 bump 分配(若启用,留 [./06-backends](./06-backends.md))只做「base + bump 比对 cap」并落槽,**越界即出去**(经 helper $h_alloc_slow);
+- JIT 内联的 bump 分配(若启用,留 [./06-backends](./06-backends.md))只做「base + bump 比对 cap」并写入槽位,**越界即出去**(经 helper $h_alloc_slow);
 - 越界出去 ⇒ Go 侧 helper 触发 arena.grow ⇒ helper 把新 arenaBase 写入 jitContext ⇒ helper 返回 ⇒ trampoline 进回 JIT ⇒ JIT 重新 load jitContext.arenaBase。
 
 **两个 safepoint 之间(无 helper 出)arenaBase 恒定**——JIT 生成码可以一次 load arenaBase 到机器寄存器,在直线段内复用(per-基本块,跨 helper 调用必须重 load)。详见 §5。
@@ -669,7 +669,7 @@ P4 帧与 crescent 帧、P3 wazero 帧共享同一 CallInfo 结构([../p1-interp
 - gibbous-jit 帧 CALL 一个 host fn ⇒ 经 trampoline 出到 callHost,host shadow stack 纪律不变;
 - gibbous-jit 帧 CALL 另一个 gibbous-jit Proto ⇒ 同世界内直跳(若启用 P4 内 inline 跨调用优化,留 [./06-backends](./06-backends.md))或经 trampoline 出到 helper 再 dispatch。
 
-**P3 与 P4 在「跨层调用走统一 CallInfo」这条上同形式**(承 [../p3-wasm-tier/04-trampoline](../p3-wasm-tier/04-trampoline.md) §0.4 协议规范);P4 唯一差异是「同世界内直跳」可优化(P3 PW10 R3 已完成的 call_indirect 一样的优化的 P4 对位,留 [./06-backends](./06-backends.md))。
+**P3 与 P4 在「跨层调用走统一 CallInfo」这条上同形式**(承 [../p3-wasm-tier/04-trampoline](../p3-wasm-tier/04-trampoline.md) §0.4 协议规范);P4 唯一差异是「同世界内直跳」可优化(P3 PW10 R3 已完成的同类 call_indirect 优化在 P4 的对应做法,留 [./06-backends](./06-backends.md))。
 
 ---
 
@@ -730,7 +730,7 @@ Go 侧 trampoline 出口处理:
 
 **触发**:JIT 生成码内嵌的快路径需要回 Go 侧执行慢路径——元方法分派 / arena 扩容 / 抛错 / host call / collect / 全局表 rehash 等。
 
-**2026-07-02 实现勘误——helper 协议早已从「helperTab 三段式跳板」演进为两条通道并存**:早前草稿把 helper 调用画成「JIT 写 exitReason=3 + helperID → jitExit stub → Go 侧 dispatcher 读 helperTab[helperID] indirect call → helper 跑完 → jitEnter 续跑」的三段式,同时 jitContext 里挂一个函数指针表 `helperTab`。这套「helperTab + jitExit_stub」在实现里从未完成。真正在跑的是两条通道:
+**2026-07-02 实现勘误——helper 协议早已从「helperTab 三段式跳板」演进为两条通道并存**:早前草稿把 helper 调用画成「JIT 写 exitReason=3 + helperID → jitExit stub → Go 侧 dispatcher 读 helperTab[helperID] indirect call → helper 跑完 → jitEnter 续跑」的三段式,同时 jitContext 里挂一个函数指针表 `helperTab`。这套「helperTab + jitExit_stub」在实现里从未写出来。实际在运行的是两条通道:
 
 - **(a) exit-reason 协议(主通道,PJ10 native emit 起做为默认路径)**:承 §4.3.1a 详解。适用 op:`GETTABLE` / `SETTABLE` / `NEWTABLE` / `SETLIST` / `CALL` / `UNM` / `GETUPVAL` / `SETUPVAL` / `GETGLOBAL` / `SETGLOBAL`,以及多返值 Proto 的 `RETURN`。此路径不走 SP 切换、不走 shim 调用,mmap 段直接 `ret` 到 Go 世界,由 `nativeCode.Run` 里的 dispatcher 循环处理并重入段。这就是 §4.3 的实际主协议。
 - **(b) shim 调用路径(次通道,历史遗留)**:承 §4.3.1b 详解。适用 op:`LEN` / `CONCAT` / `SELF` / `TAILCALL` / `CLOSURE` / `CLOSE` / `TFORLOOP` / `MOD` / `POW` 的算术慢路径,以及 `EQ` / `LT` / `LE` 比较的 shim 尾巴。此路径直接从 mmap 段 emit 一段 ABIInternal `call` 序列跳进 Go shim,shim 完成后返回 mmap 段续跑。在嵌套 + 并发压力下已知易碎(issue #38),故新 op 一律走通道 (a);现存 shim op 待后续渐进迁移。
@@ -739,7 +739,7 @@ Go 侧 trampoline 出口处理:
 
 #### 4.3.1a exit-reason 协议(主通道)
 
-物理流程:
+实际流程:
 
 ```
 JIT 生成码(mmap 段,一次某个 op 的 exit-reason 尾部):
@@ -784,7 +784,7 @@ Go 侧 nativeCode.Run 的 dispatcher 循环(translator_native.go):
 
 #### 4.3.1b shim 调用路径(次通道)
 
-这条路径 PJ0-PJ9 阶段的所有 op 都走过,PJ10 native emit 只对下述 op 保留:`LEN` / `CONCAT` / `SELF` / `TAILCALL` / `CLOSURE` / `CLOSE` / `TFORLOOP`,以及 `MOD` / `POW` 算术慢路径尾巴和 `EQ` / `LT` / `LE` 比较 shim 尾巴。物理流程:
+这条路径 PJ0-PJ9 阶段的所有 op 都走过,PJ10 native emit 只对下述 op 保留:`LEN` / `CONCAT` / `SELF` / `TAILCALL` / `CLOSURE` / `CLOSE` / `TFORLOOP`,以及 `MOD` / `POW` 算术慢路径尾巴和 `EQ` / `LT` / `LE` 比较 shim 尾巴。实际流程:
 
 ```
 ;; mmap 段内(shim 调用序列,一处约 12-30 字节,视 arg 数而定):
@@ -802,20 +802,20 @@ mov rbx, [r15 + valueStackBaseOff]     ;; ★ 恢复 RBX = vsBase(ABIInternal �
 
 #### 4.3.2 helper 表:metamethod 分派 / arena 扩容 / 抛错 / host call
 
-helper 表(jitContext.helperTab)的典型条目(承 [../p3-wasm-tier/04-trampoline](../p3-wasm-tier/04-trampoline.md) §3.3 helper 列举,P4 一样的集):
+helper 表(jitContext.helperTab)的典型条目(承 [../p3-wasm-tier/04-trampoline](../p3-wasm-tier/04-trampoline.md) §3.3 helper 列举,P4 沿用同样的集合):
 
 | helper | 触发 | Go 侧逻辑 | 对应 P3 imported helper |
 |---|---|---|---|
 | `h_arith` | 算术快路径 guard 失败(混合类型 / 元方法) | [../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md) §6.4 metamethod | $h_arith |
 | `h_gettable` / `h_settable` | 表 IC miss(形状变化、键非 number/string) | [../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md) §6.2/§6.3 | $h_gettable / $h_settable |
 | `h_alloc_slow` | bump 分配越界 → grow + alloc | [../p1-interpreter/06-memory-gc](../p1-interpreter/06-memory-gc.md) §3 | $h_newtable / 等(每对象类型一个) |
-| `h_safepoint` | 回边检查命中(gcPending / preemptFlag) | [../p1-interpreter/06-memory-gc](../p1-interpreter/06-memory-gc.md) §8.2 collect / Gosched | $h_safepoint |
+| `h_safepoint` | back edge 检查命中(gcPending / preemptFlag) | [../p1-interpreter/06-memory-gc](../p1-interpreter/06-memory-gc.md) §8.2 collect / Gosched | $h_safepoint |
 | `h_throw` | 抛错(运行期错误如 nil 算术 / 索引非表) | [../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md) §9 错误冒泡 | (P3 经 status=1) |
 | `h_call_unknown` | CALL 目标未升层(crescent / host) | [../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md) §7 doCall | $h_call(P3 三向分派的对位) |
 | `h_close_upvals` | CLOSE / RETURN 时 close upvalues | [../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md) §8.3 closeUpvals | $h_close |
-| ...其它 | (per-opcode 慢路径) | (P1 一样的) | (per-opcode 一样的) |
+| ...其它 | (per-opcode 慢路径) | (与 P1 相同) | (per-opcode 相同) |
 
-helper 集与 P3 一样的,正反映 [./02-template-direction.md](./02-template-direction.md) §4 P4 边界:**只换执行引擎,不重新发明慢路径逻辑**。Go 侧的 helper 函数与 P3 imported helpers 是同一份代码(同样调 P1 的 `Arena.Alloc` / `metamethodCall` / 等),区别仅在「物理通道」:
+helper 集与 P3 相同,正反映 [./02-template-direction.md](./02-template-direction.md) §4 P4 边界:**只换执行引擎,不重新发明慢路径逻辑**。Go 侧的 helper 函数与 P3 imported helpers 是同一份代码(同样调 P1 的 `Arena.Alloc` / `metamethodCall` / 等),区别仅在「物理通道」:
 
 | | P3 通道 | P4 通道 |
 |---|---|---|
@@ -827,14 +827,14 @@ helper 集与 P3 一样的,正反映 [./02-template-direction.md](./02-template-
 
 #### 4.3.3 helper 表 → `P4HostState` 接口(2026-07-02 实现勘误)
 
-旧稿说 helper 表本身是 Go 堆分配的 `[NumHelpers]unsafe.Pointer` 数组、放 `jitContext.helperTab` 字段、JIT 段经该字段 indirect call。这份「函数指针表」在实现里从未完成——它被 `P4HostState` 接口(`internal/gibbous/jit/host.go`)替代:
+旧稿说 helper 表本身是 Go 堆分配的 `[NumHelpers]unsafe.Pointer` 数组、放 `jitContext.helperTab` 字段、JIT 段经该字段 indirect call。这份「函数指针表」在实现里从未写出来——它被 `P4HostState` 接口(`internal/gibbous/jit/host.go`)替代:
 
 - **exit-reason 通道**(§4.3.1a):mmap 段完全不引用任何 Go 函数指针,只写打包好的 `helper code + args`;dispatcher 端 `switch helperCode` 后直接 `c.host.<Method>(...)` 走 Go 接口方法调用。因为 helper 集是编译期就完全枚举的常量集合(见第 3 组常量 `HelperGetTable=10..HelperCall=24`),`switch` 走静态分派开销可忽略。
 - **shim 通道**(§4.3.1b):mmap 段的确直接 `call <shimAddr>` 跳进 Go 函数;但 shim 函数是编译期就烧进的立即数(`internal/gibbous/jit/peroptranslator/shims.go` 里几个 ABI0 包装),不是从 jitContext 表里查——jitContext 里连这个表都没有。
 
-`P4HostState` 里的方法名与 P3 `HostState`(`internal/gibbous/wasm/helpers.go`)几乎逐个对齐(`GetTable` / `SetTable` / `NewTable` / `Arith` / `DoReturn` / `Safepoint` / `CallBaseline` / `TailCall` / `Self` / …),这是 P3/P4 helper 集一样的的实现体现——interface 方法替代了 helperTab 索引,概念上仍是「helper 集是通用语义层,通道是物理层」,只是「通道」现在是「接口方法调用 + exit-reason 通信」而非「imported function / 函数指针表」。
+`P4HostState` 里的方法名与 P3 `HostState`(`internal/gibbous/wasm/helpers.go`)几乎逐个对齐(`GetTable` / `SetTable` / `NewTable` / `Arith` / `DoReturn` / `Safepoint` / `CallBaseline` / `TailCall` / `Self` / …),这是 P3/P4 helper 集相同在实现上的体现——interface 方法替代了 helperTab 索引,概念上仍是「helper 集是通用语义层,通道是物理层」,只是「通道」现在是「接口方法调用 + exit-reason 通信」而非「imported function / 函数指针表」。
 
-另外,`P4HostState.GlobalsRaw() uint64` 在 PJ10 native emit 的 `GETGLOBAL` / `SETGLOBAL` `NodeHit` 快路径里被用来在编译期把 globals 表的 NaN-boxed u64 直接烧进指令流——同一个 State 生命周期内 globals 表身份不变、arena 对象不移动,承 P3 wasm 编译器一样的保守铺垫。
+另外,`P4HostState.GlobalsRaw() uint64` 在 PJ10 native emit 的 `GETGLOBAL` / `SETGLOBAL` `NodeHit` 快路径里被用来在编译期把 globals 表的 NaN-boxed u64 直接烧进指令流——同一个 State 生命周期内 globals 表身份不变、arena 对象不移动,承 P3 wasm 编译器同样的保守铺垫。
 
 #### 4.3.4 P3 / P4 helper 集对位(2026-07-02 实现勘误)
 
@@ -851,7 +851,7 @@ helper 集与 P3 一样的,正反映 [./02-template-direction.md](./02-template-
 
 ### 4.4 三出口共用同一段恢复代码(节省码段 + 一致性)
 
-三出口共用 jitExit asm stub 的物理体现:
+三出口共用 jitExit asm stub 的具体体现:
 
 ```asm
 ;; 概念伪码,具体 asm 在 06-backends
@@ -914,14 +914,14 @@ arena 扩容(grow)在 P4 build 下与 P1 一致([../p1-interpreter/06-memory-gc]
 
 P4 阶段 grow 触发点:
 - (a) JIT 内联的 bump 分配快路径越界(若启用,留 [./06-backends](./06-backends.md));
-- (b) helper 内的 Alloc 调用越界(常见,与 P3/P1 一样的触发)。
+- (b) helper 内的 Alloc 调用越界(常见,与 P3/P1 相同的触发)。
 
 ### 5.2 扩容期间 = JIT 必出去:JIT 内不直接持 backing slice
 
 **关键纪律**:JIT 生成码**不直接持 backing 起始指针**——只持 jitContext 的指针,经 jitContext.arenaBase 间接寻址。原因:
 
 - arena.grow 后 arenaBase 变(新 Go 堆地址),若 JIT 缓存了旧 arenaBase 到机器寄存器并跨 helper 调用复用,则 helper 出去 grow 完回来后旧寄存器值是 stale,UAF;
-- 解法是「**每次 helper 调用后从 jitContext 重 load arenaBase 到寄存器**」——这是不变式 2(§3.6.2)的工程兑现。
+- 解法是「**每次 helper 调用后从 jitContext 重 load arenaBase 到寄存器**」——这是不变式 2(§3.6.2)的工程实现。
 
 JIT 编译器(具体留 [./06-backends](./06-backends.md))实施:
 - 每个基本块入口 load arenaBase 到固定寄存器(per-arch);
@@ -972,7 +972,7 @@ JIT 生成码续跑入口:
 
 ### 5.4 与 [../p3-wasm-tier/03-memory-model](../p3-wasm-tier/03-memory-model.md) §1.7 grow 后视图重取的对位
 
-P3 wazero memory grow 后 Go 侧需重取 backing slice 视图([../p3-wasm-tier/03-memory-model](../p3-wasm-tier/03-memory-model.md) §1.7);P4 一样的机制——只是「视图」是机器寄存器中的 arenaBase 值。两层在「grow 后须重取基址」这条物理上同源。
+P3 wazero memory grow 后 Go 侧需重取 backing slice 视图([../p3-wasm-tier/03-memory-model](../p3-wasm-tier/03-memory-model.md) §1.7);P4 是同样的机制——只是「视图」是机器寄存器中的 arenaBase 值。两层在「grow 后须重取基址」这条上本质同源。
 
 具体对位:
 - **P3**:wazero `memory.grow` 后 Go 侧重取 `mem.UnsafeUnderlyingBuffer()` ⇒ 新 `[]byte` 起点 ⇒ 重取 `[]uint64` 别名视图;
@@ -992,7 +992,7 @@ P3 PW6 完成了「`h_call` 返回 i64 同载新 base 刷新 + 错误负哨兵�
 
 ## 6. 两个 safepoint 的协议(承 [../p3-wasm-tier/05-safepoint-gc](../p3-wasm-tier/05-safepoint-gc.md) + P4 自付)
 
-### 6.1 三类 safepoint(承 P3 05):分配点 + 层边界 + 回边
+### 6.1 三类 safepoint(承 P3 05):分配点 + 层边界 + back edge
 
 [../p3-wasm-tier/05-safepoint-gc](../p3-wasm-tier/05-safepoint-gc.md) §1 已定的三类 safepoint 模型在 P4 一字不改,只是物理形式从「Wasm 直线代码 + imported helper」切换为「原生码 + trampoline + helper」。
 
@@ -1000,7 +1000,7 @@ P3 PW6 完成了「`h_call` 返回 i64 同载新 base 刷新 + 错误负哨兵�
 |---|---|---|
 | **分配点** | gibbous 直线代码自身从不分配,经 imported `$h_alloc_*` 助手 | gibbous-jit 自身从不分配(快路径 bump 越界即出),经 trampoline + `h_alloc_slow` helper |
 | **层边界** | crescent ↔ gibbous 经 wazero `$h_call` imported helper | crescent ↔ gibbous-jit 经 trampoline + `h_call_unknown` helper |
-| **回边** | `(if (i32.load $gcPending) (call $h_safepoint))` Wasm 序列 | 几条机器指令的 load preemptFlag/gcPending + test + 条件跳到 exit stub |
+| **back edge** | `(if (i32.load $gcPending) (call $h_safepoint))` Wasm 序列 | 几条机器指令的 load preemptFlag/gcPending + test + 条件跳到 exit stub |
 
 ### 6.2 P4 自付:每类 safepoint 在 P4 的物理形式
 
@@ -1018,9 +1018,9 @@ P4 trampoline 经 jitContext 的 exit/enter 通道实现这一边界:
 - **进**:Go 调用方栈一致(trampoline 进入 stub 是普通 Go 函数,有正常 stack map);
 - **出**:经 jitExit stub 后,SP 恢复到 Go 世界,Go 侧自由 collect/Gosched/抛错。
 
-#### 6.2.3 回边
+#### 6.2.3 back edge
 
-P4 在每个循环回边发射一组「检查 + 跳」序列:
+P4 在每个循环 back edge 处发射一组「检查 + 跳」序列:
 
 ```
 ;; 概念伪码,具体 asm 在 06-backends
@@ -1048,27 +1048,27 @@ exit_for_safepoint:
 - 若 `preemptFlag`:经 ctx 取消钩子检查 ctx.Done(若 done 则置 STATUS_ERR + 抛 cancel error),否则等价 Gosched(让出当前 P);
 - 完成后 helper 返回,trampoline 进回 JIT 续跑(§4.3.1)。
 
-### 6.3 回边检查点的密度与吃性能权衡(本文 §8 风险节)
+### 6.3 back edge 检查点的密度与性能开销权衡(本文 §8 风险节)
 
-回边检查点的成本:每次循环回跳付几条指令(2 次 load + 1 次 test + 1 次条件跳)。在分支预测器友好(check 几乎恒不跳)情况下,这是几条 cycle 的开销;紧循环里(几十 ns/iter)占比仍可观。
+back edge 检查点的成本:每次循环回跳付几条指令(2 次 load + 1 次 test + 1 次条件跳)。在分支预测器友好(check 几乎恒不跳)情况下,这是几条 cycle 的开销;紧循环里(几十 ns/iter)占比仍可观。
 
 权衡:
-- **密度过高**(每 op 一次回边检查):成本主导循环开销;
-- **密度过低**(每 N 次回边一检查):抢占延迟 / GC 延迟变长,与 Go runtime 协作式抢占的隐含期望不一致(预期数十微秒级响应)。
+- **密度过高**(每 op 一次 back edge 检查):成本主导循环开销;
+- **密度过低**(每 N 次 back edge 检查一次):抢占延迟 / GC 延迟变长,与 Go runtime 协作式抢占的隐含期望不一致(预期数十微秒级响应)。
 
-**默认策略**:每个回边一次检查(per-iter 一次),与 [../p3-wasm-tier/05-safepoint-gc](../p3-wasm-tier/05-safepoint-gc.md) §1.3 P3 一样的。若实测吃性能(amd64 实测后定),可优化:
-- (a) 多重循环嵌套时,内层循环周期性触发外层回边时机检查(减少内层频率);
+**默认策略**:每个 back edge 一次检查(per-iter 一次),与 [../p3-wasm-tier/05-safepoint-gc](../p3-wasm-tier/05-safepoint-gc.md) §1.3 P3 相同。若实测性能开销过大(amd64 实测后定),可优化:
+- (a) 多重循环嵌套时,内层循环周期性触发外层 back edge 时机检查(减少内层频率);
 - (b) 短直线循环可放宽到 N 次一查,但 N 必须有上界(确保抢占延迟有界)。
 
 具体调优留 [./06-backends](./06-backends.md) per-arch tuning。
 
-### 6.4 与 Go GC STW 的协调:JIT 长循环不阻塞 STW(回边经 helper 让出)
+### 6.4 与 Go GC STW 的协调:JIT 长循环不阻塞 STW(back edge 经 helper 让出)
 
-Go 的 STW(即便是 sub-ms 级 short STW)需要所有 goroutine 在 safepoint 停止。**JIT 长循环若没有回边检查就是「无 safepoint 直线段」**,可能阻塞 STW 数十毫秒甚至更长(取决于循环 N)。
+Go 的 STW(即便是 sub-ms 级 short STW)需要所有 goroutine 在 safepoint 停止。**JIT 长循环若没有 back edge 检查就是「无 safepoint 直线段」**,可能阻塞 STW 数十毫秒甚至更长(取决于循环 N)。
 
-回边检查机制的本质就是在长循环里**周期性给 Go runtime 一个让出窗口**:任何 STW 请求经 `preemptFlag` 置位 ⇒ 下一次回边命中 ⇒ JIT 经 trampoline 出去 ⇒ Go 侧 helper 立即响应 STW 请求(在 helper 内 Go runtime 自由介入)。
+back edge 检查机制的本质就是在长循环里**周期性给 Go runtime 一个让出窗口**:任何 STW 请求经 `preemptFlag` 置位 ⇒ 下一次 back edge 命中 ⇒ JIT 经 trampoline 出去 ⇒ Go 侧 helper 立即响应 STW 请求(在 helper 内 Go runtime 自由介入)。
 
-**P4 不直接处理 Go runtime 的抢占信号**——它经 `preemptFlag` 的协作机制让出。这条与 [../p3-wasm-tier/implementation-progress.md](../p3-wasm-tier/implementation-progress.md) §0.1 PW0 spike 修正的事实(wazero 一样的不可被异步抢占,靠 ctx 协作)同源:**P4 在这条上不弱于 wazero,只是把一样的解法自付了一次**。
+**P4 不直接处理 Go runtime 的抢占信号**——它经 `preemptFlag` 的协作机制让出。这条与 [../p3-wasm-tier/implementation-progress.md](../p3-wasm-tier/implementation-progress.md) §0.1 PW0 spike 修正的事实(wazero 同样不可被异步抢占,靠 ctx 协作)同源:**P4 在这条上不弱于 wazero,只是把同样的解法自付了一次**。
 
 ---
 
@@ -1080,33 +1080,33 @@ Go 的 STW(即便是 sub-ms 级 short STW)需要所有 goroutine 在 safepoint �
 
 > JIT 生成码的「调用」指令只允许调另一段 JIT 代码、调 helper 表中的 Go 函数、退到 trampoline 出口三种;**绝对禁止 JIT 直接 call 任何普通 Go 函数地址**。
 
-物理后果:四项税防线由 trampoline 边界保住,JIT 内不需要为每税单独发明对策。违反此不变式的提案直接判否——它会让 GC 精确栈扫描税(§1.1)与栈移动税(§1.3)同时失效。
+实际后果:四项税防线由 trampoline 边界保住,JIT 内不需要为每税单独发明对策。违反此不变式的提案直接判否——它会让 GC 精确栈扫描税(§1.1)与栈移动税(§1.3)同时失效。
 
 ### 7.2 「arena base safepoint 间稳定」(聚合 §3.6.2 + §5)
 
 > arena 整体重定位(grow)只在分配慢路径(出 JIT 世界)发生;两个 safepoint 之间(无 helper 出)arenaBase 恒定,JIT 可缓存到机器寄存器。每次 helper 调用后必须重 load arenaBase。
 
-物理后果:JIT 生成码可以在直线段内复用 arenaBase 寄存器,无需每条访存指令都重 load——这是 P4 收益的一部分(避免 helper 边界不必要的 load 风暴)。违反此不变式(JIT 持 stale base)= UAF。
+实际后果:JIT 生成码可以在直线段内复用 arenaBase 寄存器,无需每条访存指令都重 load——这是 P4 收益的一部分(避免 helper 边界不必要的 load 风暴)。违反此不变式(JIT 持 stale base)= UAF。
 
 ### 7.3 「混层走统一 CallInfo 协议」(聚合 §3.6.3)
 
-> P4 帧与 crescent 帧、P3 wazero 帧共享同一 CallInfo 结构(bit50 `callStatus_gibbous` 在 P4 同样标 1);跨层调用走 [../p3-wasm-tier/04-trampoline](../p3-wasm-tier/04-trampoline.md) 一样的协议,只换物理通道。
+> P4 帧与 crescent 帧、P3 wazero 帧共享同一 CallInfo 结构(bit50 `callStatus_gibbous` 在 P4 同样标 1);跨层调用走 [../p3-wasm-tier/04-trampoline](../p3-wasm-tier/04-trampoline.md) 同样的协议,只换物理通道。
 
-物理后果:错误 traceback / pcall 边界清理 / 协程切换在 P4 与 P1/P3 完全对位,差分测试([./04-osr-deopt](./04-osr-deopt.md) + [../p1-interpreter/12-testing-difftest.md](../p1-interpreter/12-testing-difftest.md))逐字节一致。
+实际后果:错误 traceback / pcall 边界清理 / 协程切换在 P4 与 P1/P3 完全对位,差分测试([./04-osr-deopt](./04-osr-deopt.md) + [../p1-interpreter/12-testing-difftest.md](../p1-interpreter/12-testing-difftest.md))逐字节一致。
 
 ### 7.4 「W^X 任何时刻不持 RWX」(承 §2.2)
 
 > 任何时刻 P4 不持有同时 PROT_WRITE + PROT_EXEC 的代码页;翻面经 mprotect 单点完成,翻面前不可执行,翻面后不可写。
 
-物理后果:macOS arm64 / iOS / Android / 严格 Linux 等强制 W^X 平台可部署。违反此不变式 = 部分平台直接 deploy 不出去。
+实际后果:macOS arm64 / iOS / Android / 严格 Linux 等强制 W^X 平台可部署。违反此不变式 = 部分平台直接 deploy 不出去。
 
 ### 7.5 「自管机器栈不持 Go 栈指针」(承 §1.3.2,聚合 §3.4)
 
 > 自管机器栈上存放的所有字均为「机器寄存器溢出 / 返址 / 对齐填充」,**绝不持有指向 goroutine 栈的指针**。所有外部入口(arena base / helper 表 / 标志位)经 jitContext 间接寻址。
 
-物理后果:morestack 栈移动对 P4 物理透明——goroutine 栈如何重定位,JIT 世界都不受影响。违反此不变式(JIT 把 Go 栈地址写到自管栈或机器寄存器跨 helper 复用)= 栈移动税复发 = UAF。
+实际后果:morestack 栈移动对 P4 完全透明——goroutine 栈如何重定位,JIT 世界都不受影响。违反此不变式(JIT 把 Go 栈地址写到自管栈或机器寄存器跨 helper 复用)= 栈移动税复发 = UAF。
 
-**issue #89 接线状态(2026-07-08)**:此不变式此前只是设计原则,自管 spill 栈曾长期未接线——mmap 段直接跑在 goroutine 栈上,深度 seg2seg 递归的每层 `sub sp` 吃 goroutine 栈的 NOSPLIT 余量,`segToSegDepthCap` 因此被 PR #86 收紧到保守值 16。issue #89 把 SP 切到 per-jitCtx 的 64 KiB 自管 spill 栈(Go 堆 `[]byte`,`spillBase` = 对齐后的高地址端 / `spillTop` = 低地址端):trampoline 进段前把 goroutine SP 暂存到 `savedGoSP` 再切到 `spillBase`,出段后(恢复 callee-saved 之前)切回。深度递归的 `sub sp` 从此消耗自管栈而非 goroutine 栈的 ~800 B NOSPLIT 余量,`segToSegDepthCap` 抬回 128。两条汇编硬约束:① 切 SP 前先把 codeAddr 读进寄存器(`+N(FP)` 是 SP 相对寻址,切 SP 后会指向自管栈垃圾);② 出段恢复时不能覆写 RAX/R0(它带段的 exit-reason status)。空 jitCtx 要保护(底层模板单元测试传 jitCtx=0 时 `spillBase==0` 则跳过切换)。实现见 `internal/gibbous/jit/jitcontext.go`(`AllocSpillStack` / `JITContextSpillBaseOffset` / `JITContextSavedGoSPOffset` / `TestSpillStackLayout`)+ `internal/gibbous/jit/amd64/trampoline_spec_amd64.s` + `internal/gibbous/jit/arm64/trampoline_arm64.s`。amd64 端 `TestI86_DeepRecursionGCStress`(cap=128 GOGC=1)3/3 不崩、全 p4 单元 + difftest + conformance 绿、FuzzAutoPromote 90s 干净;arm64 为镜像实现 + 交叉编译通过,执行正确性交 CI arm64 矩阵。
+**issue #89 接线状态(2026-07-08)**:此不变式此前只是设计原则,自管 spill 栈曾长期未接线——mmap 段直接跑在 goroutine 栈上,深度 seg2seg 递归的每层 `sub sp` 占用 goroutine 栈的 NOSPLIT 余量,`segToSegDepthCap` 因此被 PR #86 收紧到保守值 16。issue #89 把 SP 切到 per-jitCtx 的 64 KiB 自管 spill 栈(Go 堆 `[]byte`,`spillBase` = 对齐后的高地址端 / `spillTop` = 低地址端):trampoline 进段前把 goroutine SP 暂存到 `savedGoSP` 再切到 `spillBase`,出段后(恢复 callee-saved 之前)切回。深度递归的 `sub sp` 从此消耗自管栈而非 goroutine 栈的 ~800 B NOSPLIT 余量,`segToSegDepthCap` 抬回 128。两条汇编硬约束:① 切 SP 前先把 codeAddr 读进寄存器(`+N(FP)` 是 SP 相对寻址,切 SP 后会指向自管栈垃圾);② 出段恢复时不能覆写 RAX/R0(它带段的 exit-reason status)。空 jitCtx 要保护(底层模板单元测试传 jitCtx=0 时 `spillBase==0` 则跳过切换)。实现见 `internal/gibbous/jit/jitcontext.go`(`AllocSpillStack` / `JITContextSpillBaseOffset` / `JITContextSavedGoSPOffset` / `TestSpillStackLayout`)+ `internal/gibbous/jit/amd64/trampoline_spec_amd64.s` + `internal/gibbous/jit/arm64/trampoline_arm64.s`。amd64 端 `TestI86_DeepRecursionGCStress`(cap=128 GOGC=1)3/3 不崩、全 p4 单元 + difftest + conformance 绿、FuzzAutoPromote 90s 干净;arm64 为镜像实现 + 交叉编译通过,执行正确性交 CI arm64 矩阵。
 
 ---
 
@@ -1121,9 +1121,9 @@ P4 模板展开比 Wasm 字节码膨胀一个量级(每条 Lua 字节码 → 几
 - per-Proto 段池化(§2.1.2)使热函数与冷函数不混占 icache 行;
 - 进一步的 icache 友好优化(模板复用、热代码紧凑布局)留 [./06-backends](./06-backends.md) tuning。
 
-#### 8.1.2 Go 调度交互(回边检查点密度)
+#### 8.1.2 Go 调度交互(back edge 检查点密度)
 
-回边检查点的密度调优是 Go runtime 版本敏感的——Go 1.x 系列的抢占机制随版本演进(1.14 引入异步抢占、1.21 调度器优化等),P4 行为可能随 Go 版本漂移。wazero 的跟进历史(一样的问题)是预警源:每次 Go 大版本升级前,P4 须跑 GC 压力 fuzz + 长循环抢占测试,确认行为未漂移。
+back edge 检查点的密度调优是 Go runtime 版本敏感的——Go 1.x 系列的抢占机制随版本演进(1.14 引入异步抢占、1.21 调度器优化等),P4 行为可能随 Go 版本漂移。wazero 的跟进历史(遇到过同样的问题)是预警源:每次 Go 大版本升级前,P4 须跑 GC 压力 fuzz + 长循环抢占测试,确认行为未漂移。
 
 #### 8.1.3 多 State 并发下的 Dispose 安全
 
@@ -1132,7 +1132,7 @@ P4 模板展开比 Wasm 字节码膨胀一个量级(每条 Lua 字节码 → 几
 - (b) 全 State quiesce(STW)后做 Dispose;
 - (c) 锁定 Dispose 时机到「无活跃 JIT 调用」窗口。
 
-承 [../p2-bridge/00-overview](../p2-bridge/00-overview.md) §9 一样的并发缺口。
+承 [../p2-bridge/00-overview](../p2-bridge/00-overview.md) §9 同样的并发缺口。
 
 ### 8.2 开放问题(留 [./06-backends](./06-backends.md) 详细设计阶段或记入 [../../../llmdoc/memory/doc-gaps.md](../../../llmdoc/memory/doc-gaps.md))
 
@@ -1153,7 +1153,7 @@ P4 模板展开比 Wasm 字节码膨胀一个量级(每条 Lua 字节码 → 几
 - P1 [01](../p1-interpreter/01-value-object-model.md) §2 GCRef 非 Go 指针纪律 ⇒ 本文 §1.3.5 / §1.4.2 直接复用,源头不变式不动;
 - P1 [05](../p1-interpreter/05-interpreter-loop.md) §1 CallInfo 与 §7 Lua 调用不吃 Go 栈 ⇒ 本文 §3.6.3 / §1.1.4 直接复用;
 - P1 [06](../p1-interpreter/06-memory-gc.md) §1.3 reloadFrame 纪律 ⇒ 本文 §5 直接复用;
-- P2 [01](../p2-bridge/01-profiling.md) §3 路线 B 回边检查点 ⇒ 本文 §1.2.2 + §6.3 直接复用;
+- P2 [01](../p2-bridge/01-profiling.md) §3 路线 B back edge 检查点 ⇒ 本文 §1.2.2 + §6.3 直接复用;
 - P2 [05](../p2-bridge/05-p3-p4-interface.md) §6 GibbousCode 接口 + status 码体系 ⇒ 本文 §2.1.3 + §4.2 直接复用;
 - P3 [03](../p3-wasm-tier/03-memory-model.md) §0.4 P4 build 切回 Go 堆 backing ⇒ 本文 §3.5 直接复用;
 - P3 [04](../p3-wasm-tier/04-trampoline.md) §0.4 P3/P4 共用跨层协议 ⇒ 本文 §3.6.3 / §4.3.4 直接复用;
@@ -1168,12 +1168,12 @@ P4 模板展开比 Wasm 字节码膨胀一个量级(每条 Lua 字节码 → 几
 [./06-backends](./06-backends.md)(amd64/arm64 后端实现 / per-arch trampoline asm / jitContext 精确字段 layout / 自管机器栈精确布局 / helper 表 ABI / icache flush asm / MAP_JIT 调用骨架) ·
 [../p3-wasm-tier/03-memory-model](../p3-wasm-tier/03-memory-model.md)(arena 收养 wazero memory / §0.4 P4 backing 切回) ·
 [../p3-wasm-tier/04-trampoline](../p3-wasm-tier/04-trampoline.md)(P3/P4 共用跨层协议 / bit50 / status 链) ·
-[../p3-wasm-tier/05-safepoint-gc](../p3-wasm-tier/05-safepoint-gc.md)(三类 safepoint 模型,P4 一样的) ·
-[../p3-wasm-tier/implementation-progress.md](../p3-wasm-tier/implementation-progress.md)(§0.1 PW0 spike 修正:wazero async-preemption-unsafe,P4 一样的) ·
+[../p3-wasm-tier/05-safepoint-gc](../p3-wasm-tier/05-safepoint-gc.md)(三类 safepoint 模型,P4 相同) ·
+[../p3-wasm-tier/implementation-progress.md](../p3-wasm-tier/implementation-progress.md)(§0.1 PW0 spike 修正:wazero async-preemption-unsafe,P4 同样如此) ·
 [../p1-interpreter/01-value-object-model](../p1-interpreter/01-value-object-model.md)(§2 GCRef 非 Go 指针 / §3 NaN-boxing / §7 值表示不变式) ·
 [../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md)(§1 CallInfo / §7 Lua 调用不吃 Go 栈) ·
 [../p1-interpreter/06-memory-gc](../p1-interpreter/06-memory-gc.md)(§3 grow / §5 GC 根 / §8.2 collect) ·
-[../p2-bridge/01-profiling](../p2-bridge/01-profiling.md)(§3 回边检查点路线 B) ·
+[../p2-bridge/01-profiling](../p2-bridge/01-profiling.md)(§3 back edge 检查点路线 B) ·
 [../p2-bridge/05-p3-p4-interface](../p2-bridge/05-p3-p4-interface.md)(GibbousCode 接口 / status 码 / jitTrampolineEnter) ·
 [../roadmap.md](../roadmap.md)(§2 四项税 / §6 不复刻 Go runtime 内部符号) ·
 [../../../llmdoc/must/design-premises.md](../../../llmdoc/must/design-premises.md)(前提二 Go runtime 四项税 / 前提四 NaN-box 第一天承诺)

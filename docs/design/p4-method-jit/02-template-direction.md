@@ -2,7 +2,7 @@
 
 > 状态:**架构决策深度**(对齐 [../architecture.md](../architecture.md) §2 状态表:P4 是「架构决策」,比 P2/P3 详细设计粗一档——本文定方向、定边界、给候选谱系否决论证;**不逐 opcode 展开模板形式**,逐 opcode 模板留 [./03-speculation-ic.md](./03-speculation-ic.md) / [./06-backends.md](./06-backends.md) 完成)。本文是 P4 文档集 [./00-overview.md](./00-overview.md) §0 文档地图所定的「方向裁决」单一事实源——P4 为何是模板编译、为何不是优化编译器、为何不直接做 trace JIT、做什么 / 不做什么的边界、prior art 阶梯对照。
 >
-> 上游契约:[../roadmap.md](../roadmap.md)(§4 P4 定义、§7 prior art:V8 Sparkplug / JSC Baseline JIT、§5 五条贯穿原则)、[../../../llmdoc/must/design-premises.md](../../../llmdoc/must/design-premises.md)(前提一负载形状 / 前提三五原则 / 前提四值表示承诺)、[../../../llmdoc/architecture/evolution-roadmap.md](../../../llmdoc/architecture/evolution-roadmap.md)(tier 映射:P4=gibbous tier-1,与 P3 同层)。
+> 上游约定:[../roadmap.md](../roadmap.md)(§4 P4 定义、§7 prior art:V8 Sparkplug / JSC Baseline JIT、§5 五条贯穿原则)、[../../../llmdoc/must/design-premises.md](../../../llmdoc/must/design-premises.md)(前提一负载形状 / 前提三五原则 / 前提四值表示承诺)、[../../../llmdoc/architecture/evolution-roadmap.md](../../../llmdoc/architecture/evolution-roadmap.md)(tier 映射:P4=gibbous tier-1,与 P3 同层)。
 >
 > P1 依赖面:[../p1-interpreter/02-bytecode-isa.md](../p1-interpreter/02-bytecode-isa.md)(源 ISA 38 个 opcode + §7 IC slot——P4 模板的输入面)、[../p1-interpreter/05-interpreter-loop.md](../p1-interpreter/05-interpreter-loop.md)(§1.3 arena 值栈槽寻址 / §2 主循环与 dispatch 形式 / §7 调用协议——P4 模板编译要消除的解释器恒定税与要保留的 CallInfo 协议)、[../p1-interpreter/01-value-object-model.md](../p1-interpreter/01-value-object-model.md) §3.2(NaN-box 位布局——P4 生成码直接操作的同一编码)。
 >
@@ -10,7 +10,7 @@
 >
 > P3 依赖面(同 tier 对位):[../p3-wasm-tier/02-translation.md](../p3-wasm-tier/02-translation.md)(P3 翻译器主体——P4 与之共享 P2 前端,只换发射后端)。
 >
-> 下游协作(同子目录):[./03-speculation-ic.md](./03-speculation-ic.md)(IC 反馈→f64 快路径 + guard,本文 §2.4 / §4.1 提对位 + §4.4 的「子集内投机」由其落具体)、[./04-osr-deopt.md](./04-osr-deopt.md)(OSR exit 物化与 deopt 状态机,本文 §6 第 2 条「栈槽真相」由其落具体形式)、[./05-system-pipeline.md](./05-system-pipeline.md)(四项税兑现与 trampoline)、[./06-backends.md](./06-backends.md)(amd64/arm64 双后端发射函数与寄存器约定)、[../p5-trace-jit/01-launch-judgment.md](../p5-trace-jit/01-launch-judgment.md) §2(P5 = P4 收益不够时的下一站,本文 §4.3 落对位)。
+> 下游协作(同子目录):[./03-speculation-ic.md](./03-speculation-ic.md)(IC 反馈→f64 快路径 + guard,本文 §2.4 / §4.1 提对位 + §4.4 的「子集内投机」由其给出具体设计)、[./04-osr-deopt.md](./04-osr-deopt.md)(OSR exit 物化与 deopt 状态机,本文 §6 第 2 条「栈槽真相」由其给出具体形式)、[./05-system-pipeline.md](./05-system-pipeline.md)(四项税兑现与 trampoline)、[./06-backends.md](./06-backends.md)(amd64/arm64 双后端发射函数与寄存器约定)、[../p5-trace-jit/01-launch-judgment.md](../p5-trace-jit/01-launch-judgment.md) §2(P5 = P4 收益不够时的下一站,本文 §4.3 给出对位)。
 
 对应 Go 包:`internal/gibbous/jit`(`internal/gibbous/wasm` 的兄弟包,P4 后端发射函数主包,详见 [../architecture.md](../architecture.md) §1)。
 
@@ -36,7 +36,7 @@ P3 与 P4 **同属 gibbous(tier-1)**——同一个 tier、同一套分层结构
 | 字节码源 | `Proto.Code`(P1 ISA 38 opcode) | 同 P1 ISA |
 | 翻译形式 | 字节码 → Wasm 函数(WAT 形式,详 [../p3-wasm-tier/02-translation.md](../p3-wasm-tier/02-translation.md) §3) | 字节码 → 原生机器码(per-opcode 模板贴出,§1.1) |
 | 执行后端 | wazero(Apache 2.0 纯 Go Wasm 引擎) | 自管 codegen + amd64/arm64 双后端 |
-| 四项税应对 | 全套外包给 wazero([../roadmap.md](../roadmap.md) §2 标准解法的现成实现) | 自付,wazero 是采石场参考(详 [./05-system-pipeline.md](./05-system-pipeline.md)) |
+| 四项税应对 | 全套外包给 wazero([../roadmap.md](../roadmap.md) §2 标准解法的现成实现) | 自付,wazero 是可借鉴的参考实现(详 [./05-system-pipeline.md](./05-system-pipeline.md)) |
 | 投机 | 否(P3 是非投机翻译,逐字节同构,零 deopt) | **是**(P4 是首层投机:f64 快路径 + guard,详 [./03-speculation-ic.md](./03-speculation-ic.md)) |
 | 升层目的地 | 「热且可编译且无投机风险」 | 「热且可编译且有稳定 feedback」 |
 | Deopt 边 | 不存在(状态机单向无环,详 [../p2-bridge/04-try-compile-fallback.md](../p2-bridge/04-try-compile-fallback.md) §2) | 存在(状态机加一条 `gibbous→interp` 边,详 [./04-osr-deopt.md](./04-osr-deopt.md)) |
@@ -67,7 +67,7 @@ P5(fullmoon tier-2)是「P4 收益不够时」的下一站([../p5-trace-jit/00-o
 
 P4 与 P5 的分工依据 [../p5-trace-jit/01-launch-judgment.md](../p5-trace-jit/01-launch-judgment.md) §2 的「method JIT 结构性吃不下的负载类别」表:
 
-| 负载类别 | P4 是否吃得下 | 落点 |
+| 负载类别 | P4 是否吃得下 | 归属 |
 |---|---|---|
 | 标量算术内核(列内核循环体纯计算) | **是**(dispatch 消除 + f64 快路径主场) | P4 验收的目标负载 |
 | 跨函数热循环(循环体每轮调小函数) | **否**(函数边界 = 编译单元边界,调用税付不掉) | P5 trace 内联的主场 |
@@ -75,20 +75,20 @@ P4 与 P5 的分工依据 [../p5-trace-jit/01-launch-judgment.md](../p5-trace-ji
 | 分配密集循环 | **否**(P4 不做逃逸分析) | P5 分配下沉 |
 | megamorphic 的稳定子集 | **否**(P2 标 `FBTableMega` 即放弃投机) | P5 按实际路径特化 |
 
-**P4 的合法猎物只是第一行,但第一行就是 [../roadmap.md](../roadmap.md) §0 近期目标(「列内核负载 ≥ luajc 档」)的承载者**——前提一([../../../llmdoc/must/design-premises.md](../../../llmdoc/must/design-premises.md))校准测量 1 显示真 LuaJIT 仅比 luajc 快 6%,P4 达标即「逼近 LuaJIT 档」,项目近期目标在此兑现,是否启动 P5 由验收后实测裁决,本文不做预设。
+**适合 P4 的负载只是第一行,但第一行就是 [../roadmap.md](../roadmap.md) §0 近期目标(「列内核负载 ≥ luajc 档」)的承载者**——前提一([../../../llmdoc/must/design-premises.md](../../../llmdoc/must/design-premises.md))校准测量 1 显示真 LuaJIT 仅比 luajc 快 6%,P4 达标即「逼近 LuaJIT 档」,项目近期目标在此兑现,是否启动 P5 由验收后实测裁决,本文不做预设。
 
 ### 0.4 章节 → 后续详细设计映射
 
-本文承担「方向裁决」单一事实源,不展开任何机制的具体形式;具体形式由本目录后续子文档接力。映射表(每节点出本文章节 → 下游详细设计):
+本文承担「方向裁决」单一事实源,不展开任何机制的具体形式;具体形式由本目录后续子文档接着展开。映射表(每节点出本文章节 → 下游详细设计):
 
-| 本文节 | 主题 | 下游落具体的位置 |
+| 本文节 | 主题 | 下游给出具体设计的位置 |
 |---|---|---|
 | §1.1-1.3 | per-opcode 模板形式 / 虚拟寄存器 = 栈槽 / 控制流直译 | [./03-speculation-ic.md](./03-speculation-ic.md) §1(模板与 IC 的接缝) + [./06-backends.md](./06-backends.md) §3(per-arch 发射函数实现) |
 | §1.4 编译时间线性 | 微秒级编译 → 同步编译可行 | [./05-system-pipeline.md](./05-system-pipeline.md) §3(编译执行线程模型) |
 | §1.5 消除什么 | dispatch / 译码 / pc 维护的具体消除点 | [./03-speculation-ic.md](./03-speculation-ic.md) §1.4(模板内部短寿寄存器约定) |
-| §1.6 不消除什么 | 栈槽内存往返保留 → 「栈槽真相」不变式 | [./04-osr-deopt.md](./04-osr-deopt.md) §3.3(由它落具体不变式形式与 exit 物化) |
+| §1.6 不消除什么 | 栈槽内存往返保留 → 「栈槽真相」不变式 | [./04-osr-deopt.md](./04-osr-deopt.md) §3.3(由它给出不变式的具体形式与 exit 物化) |
 | §2.4 IC 投机的对位 | per-opcode 模板 + 内联 IC 形式 | [./03-speculation-ic.md](./03-speculation-ic.md) §2-§4(feedback 种类 → 投机模板 → guard 形式) |
-| §3 候选谱系否决 | 否决理由的「简单性向下传导」 | [./04-osr-deopt.md](./04-osr-deopt.md) §3(deopt 不需要 snapshot 的具体落点) |
+| §3 候选谱系否决 | 否决理由的「简单性向下传导」 | [./04-osr-deopt.md](./04-osr-deopt.md) §3(deopt 不需要 snapshot 的具体论述) |
 | §4.1 做(P4 边界内)| 沿用 P2 F1-F7 检查 | [../p2-bridge/03-compilability-analysis.md](../p2-bridge/03-compilability-analysis.md) §3(F7 由 P4 后端实现替换 P3) |
 | §4.2 不做(留 P5)| 跨函数内联 / snapshot / LICM/CSE / 寄存器分配 | [../p5-trace-jit/01-launch-judgment.md](../p5-trace-jit/01-launch-judgment.md) §2 / §3 |
 | §5.1 模板总量 | 38 opcode + guard/exit/trampoline 胶水 | [./06-backends.md](./06-backends.md) §3 / §5(每架构数十段发射函数) |
@@ -114,7 +114,7 @@ P4 与 P5 的分工依据 [../p5-trace-jit/01-launch-judgment.md](../p5-trace-ji
 
 **没有 IR,没有跨指令的寄存器分配,没有指令调度**——这三个「没有」是 §3 否决方法级优化编译器的结构性来源,也是 §1.4 编译时间线性的物理基础。
 
-JSC Baseline / V8 Sparkplug 的一样的工序见 §2,本节先把工序与解释器的对位关系说清:
+JSC Baseline / V8 Sparkplug 里同样的工序见 §2,本节先把工序与解释器的对位关系说清:
 
 ```
 解释器主循环                                  P4 模板编译产出
@@ -165,7 +165,7 @@ P4 模板的「虚拟寄存器」与解释器**完全一致**:`R(i)` = `valueSta
 |---|---|
 | `JMP sBx`(无条件跳) | 机器 `jmp imm32`(立即数偏移),目标 = 模板表内 `pc+1+sBx` 对应模板起始地址 |
 | `EQ`/`LT`/`LE`/`TEST`/`TESTSET` 后随 `JMP`(条件跳) | 比较结果 → 机器 `jz/jnz/je/jne` 等条件跳,目标同上 |
-| `FORLOOP`/`FORPREP` 回边 | 算术 + 比较 + 条件跳到 FORLOOP 模板起始(回边处插 safepoint 检查,详 §1.5 与 [./05-system-pipeline.md](./05-system-pipeline.md) §3) |
+| `FORLOOP`/`FORPREP` 循环回跳(back edge) | 算术 + 比较 + 条件跳到 FORLOOP 模板起始(back edge 处插 safepoint 检查,详 §1.5 与 [./05-system-pipeline.md](./05-system-pipeline.md) §3) |
 | `CALL`/`TAILCALL`/`RETURN` | 经 trampoline 出 JIT 世界(若被调方非 JIT)或同 JIT 世界内 call(若被调方有 JIT 码),详 [./05-system-pipeline.md](./05-system-pipeline.md) §4 |
 
 关键工程细节是**前向跳转的回填**:线性扫描时若 `JMP sBx` 的目标 pc 尚未发射,该 jmp 的目标偏移记不到,先发射占位 `jmp imm32(=0)` 并把回填请求登记到 fixup 表;扫到目标 pc 时把对应模板起始机器地址写回 fixup 表里所有等待者。这是 [../p3-wasm-tier/02-translation.md](../p3-wasm-tier/02-translation.md) §3.5 wat 形式 `relooper` 算法的机器码同构——只是 wat 那边是结构化控制流(`block`/`loop`/`br`),P4 这边是一遍扫 + fixup 的传统模板编译做法,两种做法各自匹配各自后端的语义。
@@ -173,11 +173,11 @@ P4 模板的「虚拟寄存器」与解释器**完全一致**:`R(i)` = `valueSta
 | 对照维度 | P3(wasm 翻译) | P4(机器码模板) |
 |---|---|---|
 | 控制流结构 | 结构化(Wasm 强制 `block`/`loop`/`br_table`) | 线性(机器码任意 jmp,无结构化约束) |
-| 回边表达 | `loop` + `br` 回到块起 | `jcc`/`jmp imm32` 到回边模板地址 |
+| back edge 表达 | `loop` + `br` 回到块起 | `jcc`/`jmp imm32` 到 back edge 模板地址 |
 | 前向跳转 | wazero 自处理 | 自前向 fixup 表回填 |
-| safepoint 插入点 | 回边由翻译器自插([../p3-wasm-tier/05-safepoint-gc.md](../p3-wasm-tier/05-safepoint-gc.md)) | 同样回边自插(详 [./05-system-pipeline.md](./05-system-pipeline.md) §3) |
+| safepoint 插入点 | back edge 由翻译器自插([../p3-wasm-tier/05-safepoint-gc.md](../p3-wasm-tier/05-safepoint-gc.md)) | 同样在 back edge 自插(详 [./05-system-pipeline.md](./05-system-pipeline.md) §3) |
 
-(具体 jmp 编码、fixup 表数据结构、回边 safepoint 形式由 [./06-backends.md](./06-backends.md) §3 与 [./05-system-pipeline.md](./05-system-pipeline.md) §3 完成。)
+(具体 jmp 编码、fixup 表数据结构、back edge safepoint 形式由 [./06-backends.md](./06-backends.md) §3 与 [./05-system-pipeline.md](./05-system-pipeline.md) §3 完成。)
 
 ### 1.4 编译时间线性 = 升层停顿可忽略
 
@@ -189,7 +189,7 @@ per-opcode 模板贴出 + 单遍扫描 ⇒ **编译时间与字节码长度严�
 | 中等函数(50-300 opcode) | 几十微秒 | 列内核典型循环体加调用助手 |
 | 上限(F5 大函数检查内的最大值) | 数百微秒 | F5 检查保证不会有更大 |
 
-(具体常数待 P4 原型 spike 后定标,本表是「一样的工序的一样的数量级」推断,基于 wazero 编译模式的一样的经验数字与 V8 Sparkplug 论文报告的「单次编译微秒级」。)
+(具体常数待 P4 原型 spike 后定标,本表是「同样的工序、同样的数量级」推断,基于 wazero 编译模式的同类经验数字与 V8 Sparkplug 论文报告的「单次编译微秒级」。)
 
 伪码:
 
@@ -234,11 +234,11 @@ per-opcode 模板形式(NASM 风格,amd64 ADD 投机模板示意):
   ; 落到下条字节码模板(直线,无 dispatch)
 ```
 
-(具体寄存器约定、`r_base` 选什么、guard 序列、NaN 规范化由 [./06-backends.md](./06-backends.md) §3 + [./03-speculation-ic.md](./03-speculation-ic.md) §2 完成;本节伪码仅说明形式。一样的形式在 arm64 上对应 `ldr`/`str`/`fmov`/`fadd`,接近 1:1 翻译。)
+(具体寄存器约定、`r_base` 选什么、guard 序列、NaN 规范化由 [./06-backends.md](./06-backends.md) §3 + [./03-speculation-ic.md](./03-speculation-ic.md) §2 完成;本节伪码仅说明形式。同样的形式在 arm64 上对应 `ldr`/`str`/`fmov`/`fadd`,接近 1:1 翻译。)
 
 **红利:升层停顿可忽略,无需后台编译流水线**——升层时刻直接同步编译该 Proto,几十微秒级开销摊到列内核数千万次调用上不可见。这与 V8 Maglev/TurboFan、JSC DFG/FTL 等优化编译层「必须后台编译 + 安装屏障」形成鲜明对比([../roadmap.md](../roadmap.md) §7 prior art 阶梯,§2.1 详)——后者编译耗时数百毫秒到秒级,同步编译会卡主线程。
 
-工程含义:编译执行的线程模型继承 P3 ([../p3-wasm-tier/02-translation.md](../p3-wasm-tier/02-translation.md) §1)一样的决策——升层时机由 P2 决策机驱动,同步编译装载到 `Proto.gibbousJITCode`,不引入异步编译屏障。具体决策落点与 P3 同处,由 [./05-system-pipeline.md](./05-system-pipeline.md) §3 守(若 P3 后置实测推翻,P4 同步翻案)。
+工程含义:编译执行的线程模型继承 P3 ([../p3-wasm-tier/02-translation.md](../p3-wasm-tier/02-translation.md) §1)同样的决策——升层时机由 P2 决策机驱动,同步编译装载到 `Proto.gibbousJITCode`,不引入异步编译屏障。具体决策的记录位置与 P3 相同,由 [./05-system-pipeline.md](./05-system-pipeline.md) §3 负责(若 P3 后置实测推翻,P4 同步推翻原结论)。
 
 ### 1.5 模板编译消除什么
 
@@ -285,7 +285,7 @@ P4 vs P5 的边界由这条「保留 vs 消除」清单划定:**P4 在「单条�
 
 **重要观察一**:V8 与 JSC 都采用了**四层阶梯**(解释 + 模板 + 中等 + 顶档),望舒选了**三层阶梯**(解释 + 模板 + trace)——跳过了「中等优化层」(Maglev / DFG 的对应层)。这是 §3 否决方法级优化编译器的体现:把投入放在「dispatch 消除 + IC 投机」与「trace 投机」两端,中间的「方法级 SSA + regalloc」一档因边际收益过低被跳过。
 
-**重要观察二**:V8 Sparkplug 与 JSC Baseline 都明确把自己定位成**「dispatch 消除器 + IC 注入器」**而非「优化编译器」——两个引擎在公开材料中强调的口径与 P4 的 §0.1 决定式一样的:
+**重要观察二**:V8 Sparkplug 与 JSC Baseline 都明确把自己定位成**「dispatch 消除器 + IC 注入器」**而非「优化编译器」——两个引擎在公开材料中强调的说法与 P4 的 §0.1 决定式是一样的:
 
 > "Sparkplug is a non-optimizing JIT compiler. ... It does **just one pass** over the function ... and **emits Sparkplug code** ... a stripped-down version of the bytecode handler, **dispensing with the interpreter dispatch**." —— V8 Sparkplug 公开介绍的精神
 
@@ -327,7 +327,7 @@ Sparkplug 的工序更具体的形式(公开材料 + V8 源码可观察):
   3. 跳转(JmpIfTrue 等)用机器条件跳到下条字节码模板地址
 ```
 
-**P4 与之的差别**:V8 Sparkplug 大量使用 **builtin 复用**(builtin 是预编译的机器码助手,Sparkplug 函数体里 jmp/call builtin 而非把代码拷过来),代码体积小;望舒 P4 在「调用 Go 慢路径助手」上用一样的思路(慢路径助手是 Go 函数,经 trampoline 出 JIT 世界 → 调用 → 回来,详 [./05-system-pipeline.md](./05-system-pipeline.md) §4),但**快路径**(算术 f64 计算、IC 命中槽 load/store)展开为 inline 机器码而非 jmp builtin——这是 P3 在 [../p3-wasm-tier/02-translation.md](../p3-wasm-tier/02-translation.md) §3.2 / §3.4 一样的的 inline 决定的对应:把热路径 inline 到本函数体里,避免 jmp builtin 的间接跳转开销。两者都对,选 inline 是因为 P4 的「热路径密度高、guard 多」形式下 inline 收益更稳。
+**P4 与之的差别**:V8 Sparkplug 大量使用 **builtin 复用**(builtin 是预编译的机器码助手,Sparkplug 函数体里 jmp/call builtin 而非把代码拷过来),代码体积小;望舒 P4 在「调用 Go 慢路径助手」上用同样的思路(慢路径助手是 Go 函数,经 trampoline 出 JIT 世界 → 调用 → 回来,详 [./05-system-pipeline.md](./05-system-pipeline.md) §4),但**快路径**(算术 f64 计算、IC 命中槽 load/store)展开为 inline 机器码而非 jmp builtin——这与 P3 在 [../p3-wasm-tier/02-translation.md](../p3-wasm-tier/02-translation.md) §3.2 / §3.4 的 inline 决定相对应:把热路径 inline 到本函数体里,避免 jmp builtin 的间接跳转开销。两者都对,选 inline 是因为 P4 的「热路径密度高、guard 多」形式下 inline 收益更稳。
 
 **为什么 P4 不学 V8 builtin 复用**:V8 的 builtin 是 V8 团队多年优化的预编译机器码、跨 Sparkplug 与其它层共享(Maglev/TurboFan 也调同套 builtin),投入与摊销基础完全不同。望舒在 +1-2 人年内不具备 builtin 体系的投入预算,选 inline 是单层最简形式。
 
@@ -341,7 +341,7 @@ JSC Baseline JIT 的形式(WebKit 设计文档):
 
 **P4 与 P3 的对位**(三引擎共有的 IC 形式):
 
-| 形式 | JSC Baseline | V8 Sparkplug | 望舒 P3 [../p3-wasm-tier/02-translation.md](../p3-wasm-tier/02-translation.md) §3.4 | 望舒 P4(本目录 03 落) |
+| 形式 | JSC Baseline | V8 Sparkplug | 望舒 P3 [../p3-wasm-tier/02-translation.md](../p3-wasm-tier/02-translation.md) §3.4 | 望舒 P4(本目录 03 给出) |
 |---|---|---|---|---|
 | 表访问 IC 命中路径 | inline 「形状比较 + 直达槽偏移」机器码 | inline 「shape 比较 + 直达槽 load」机器码 | inline 「同表 + 同代次 + 直达槽 load」 wasm | inline「同表 + 同代次 + 直达槽 load」机器码 |
 | 失效降级 | inline IC 不命中走 IC stub 重新填 | 同上 | inline 不命中走 helper(降级稳定后永久走 helper,详 06) | 同 P3:不命中走 helper,失效阈值后该点降级永久走通用模板(详 03 §3 / §4) |
@@ -396,7 +396,7 @@ V8 Sparkplug 是 V8 第一个引入分层骨架的层(此前 Ignition/TurboFan �
 |---|---|---|---|---|
 | **(a) 模板编译 + IC 投机(选定,P4 本文)** | +1-2 人年(模板 ×2 架构 + 系统管线 + OSR exit + 双架构 CI) | 消除 dispatch/译码 + 热点 f64 直算 + IC 内联 → 拿到「trace 收益的 ~70%」(流水线图) | 后端工程为主:per-arch 发射函数、自管栈、exec mmap、icache flush、trampoline | **选定**(§3.2 论证) |
 | (b) 方法级优化编译器(SSA IR + regalloc + 调度,DFG/Maglev/TurboFan 档) | 数人年起(IR 设计 + regalloc + 调度 + 与 deopt 耦合 + 双架构) | 在 (a) 之上的边际:跨指令栈槽→寄存器、跨基本块优化、cross-opcode CSE | 双重投入:全套 SSA 工具链 + 与 deopt 机器(snapshot)的耦合(§3.3) | **否决**(§3.3 论证) |
-| (c) 直接做 trace JIT(跳过 P4) | +2-4 人年开放式(P5) | 上限最高(剩余 ~30% 全拿,前提是真存在 P5 的负载) | trace 录制 + IR 优化 + 寄存器分配 + snapshot + side trace(无处抄,LuaJIT 真护城河,详 [../p5-trace-jit/00-overview.md](../p5-trace-jit/00-overview.md)) | **否决**(§3.4 论证) |
+| (c) 直接做 trace JIT(跳过 P4) | +2-4 人年开放式(P5) | 上限最高(剩余 ~30% 全拿,前提是真存在 P5 的负载) | trace 录制 + IR 优化 + 寄存器分配 + snapshot + side trace(无处抄,LuaJIT 真正的护城河,详 [../p5-trace-jit/00-overview.md](../p5-trace-jit/00-overview.md)) | **否决**(§3.4 论证) |
 
 核心论证:**实现成本与收益在这条曲线上严重凸性**——(a) 用最少的人年拿走最大的一块(dispatch 税 + 类型投机),且其简单性**向下传导**(§3.3 详)。这是 §0.1「P4 = dispatch 消除器 + IC 投机注入器」决定式的成本侧支撑。
 
@@ -463,7 +463,7 @@ OSR exit = 写回 pc + 退出 JIT 世界                 OSR exit = 按 snapshot
 | Deopt 物化复杂度 | memmove(§2.5.2 / 04 §3.2) | IR 值 → 栈槽,寄存器 → 栈槽,可能多帧 | 同 (b) + 跨 trace 边界 |
 | 与上游优化的耦合 | 无(模板独立选型) | 强(每条优化都要算 snapshot 影响) | 强 + trace 黑名单 |
 
-**这条「简单性向下传导」的对偶面**:[./04-osr-deopt.md](./04-osr-deopt.md) §3.3 把它落为 P4 第二条不变式「栈槽真相」,由其守。
+**这条「简单性向下传导」的对偶面**:[./04-osr-deopt.md](./04-osr-deopt.md) §3.3 把它定为 P4 第二条不变式「栈槽真相」,由其负责保证。
 
 ### 3.4 拒绝跳过 P4 直接做 trace 的理由
 
@@ -471,7 +471,7 @@ OSR exit = 写回 pc + 退出 JIT 世界                 OSR exit = 按 snapshot
 
 **第一,违反原则 3「每阶段独立交付」**([../roadmap.md](../roadmap.md) §5)。原则 3 字面:「每阶段独立交付价值,任何检查处停下都不亏」。(c) 把 P4 与 P5 合并成一档「+3-6 人年到可信 v1」的开放式投入,违反原则 3——若 P5 中途因技术风险或人力转移停滞,望舒退到 P3 档,跳过 P4 = 永远没有 luajc 档的兑现路径。原则 3 的反面就是 (c)。
 
-**第二,P5 启动条件「P4 不够时」自反约束**([../roadmap.md](../roadmap.md) §4 / [../p5-trace-jit/00-overview.md](../p5-trace-jit/00-overview.md) §1)。P5 文档自身明确:「**P5 不是计划,是期权**」「只在 P4 的收益不够时启动」——这条启动条件在 (c) 下变成自反:既然没有 P4,「P4 不够」永远不可观测,P5 是否值得做永远没有数据决定。
+**第二,P5 启动条件「P4 不够时」自反约束**([../roadmap.md](../roadmap.md) §4 / [../p5-trace-jit/00-overview.md](../p5-trace-jit/00-overview.md) §1)。P5 文档自身明确:「**P5 不是既定计划,而是一个备选方案**」「只在 P4 的收益不够时启动」——这条启动条件在 (c) 下变成自反:既然没有 P4,「P4 不够」永远不可观测,P5 是否值得做永远没有数据决定。
 
 **第三,P4 的全部代码资产(模板表、guard、OSR exit、双架构发射函数)是 P5 的基建**(详 [../p5-trace-jit/00-overview.md](../p5-trace-jit/00-overview.md) §3 「与 P4 的关系:基建全复用,新增四件套」)——P5 复用 P4 的 exec mmap/W^X/icache/trampoline/自管栈/helper 表全套,只新增 trace 录制 + IR 优化 + 寄存器分配 + snapshot 四件套。即使 P5 终将启动,跳过 P4 ≠ 节省 P4 那 1-2 人年,而是把 P4 的工作并入 P5 第一阶段。**(c) 不省时间,只增加风险**。
 
@@ -485,14 +485,14 @@ OSR exit = 写回 pc + 退出 JIT 世界                 OSR exit = 按 snapshot
 
 ### 4.1 做(P4 边界内,展开)
 
-| 项 | 形式 | 落具体的子文档 |
+| 项 | 形式 | 给出具体设计的子文档 |
 |---|---|---|
 | **per-opcode 模板发射** | 单遍扫 + 模板贴出(§1.1);函数为编译单元;每架构数十段发射函数(§5.1) | [./06-backends.md](./06-backends.md) §3(发射函数实现) |
 | **IC 反馈类型投机** | 消费 P2 `TypeFeedback`(详 [../p2-bridge/02-ic-feedback.md](../p2-bridge/02-ic-feedback.md));feedback 高置信度 → 发投机模板(f64 快路径 + guard);低置信度 / mega → 发通用模板(等价解释器语义) | [./03-speculation-ic.md](./03-speculation-ic.md) §2-§4(feedback 种类 → 投机模板 → guard 形式) |
 | **OSR exit 回解释器** | guard 失败 / 抢占检查 / 错误冒泡时,经 trampoline 退出 JIT 世界,从 exit 对应字节码 pc 起由 crescent 续跑;函数级粒度,不跨帧 | [./04-osr-deopt.md](./04-osr-deopt.md) §3 |
 | **栈槽直存直取** | 虚拟寄存器 = arena 值栈槽(§1.2);机器寄存器只在单条模板内部短寿;字节码边界处全部活值物化在栈槽 | [./04-osr-deopt.md](./04-osr-deopt.md) §3.3「栈槽真相」不变式 |
-| **amd64 + arm64 双后端** | 共享骨架(线性扫、IC feedback 决策、OSR exit 逻辑、`jitContext` 布局)+ per-arch 发射函数;wazero 一样的组织 | [./06-backends.md](./06-backends.md) §1-§4(后端抽象与切分) |
-| **沿用 P2 F1-F7 检查** | P4 仍只编译静态可编译子集;F7 检查`SupportsAllOpcodes`由 P4 后端实现替换 P3,渐进白名单一样的保守缺省 | [../p2-bridge/03-compilability-analysis.md](../p2-bridge/03-compilability-analysis.md) §3 + [../p3-wasm-tier/02-translation.md](../p3-wasm-tier/02-translation.md) §1.3(P-Wasm 渐进表的 P-JIT 对位由 [./00-overview.md](./00-overview.md) 接力,本文不展开) |
+| **amd64 + arm64 双后端** | 共享骨架(线性扫、IC feedback 决策、OSR exit 逻辑、`jitContext` 布局)+ per-arch 发射函数;与 wazero 相同的组织方式 | [./06-backends.md](./06-backends.md) §1-§4(后端抽象与切分) |
+| **沿用 P2 F1-F7 检查** | P4 仍只编译静态可编译子集;F7 检查`SupportsAllOpcodes`由 P4 后端实现替换 P3,与渐进白名单相同的保守缺省 | [../p2-bridge/03-compilability-analysis.md](../p2-bridge/03-compilability-analysis.md) §3 + [../p3-wasm-tier/02-translation.md](../p3-wasm-tier/02-translation.md) §1.3(P-Wasm 渐进表的 P-JIT 对位由 [./00-overview.md](./00-overview.md) 接着给出,本文不展开) |
 
 每项的详细形式由各引用子文档完成;本节只列「P4 边界内做」清单。
 
@@ -511,7 +511,7 @@ OSR exit = 写回 pc + 退出 JIT 世界                 OSR exit = 按 snapshot
 
 ### 4.3 与 P5 §1.2 的对位
 
-[../p5-trace-jit/01-launch-judgment.md](../p5-trace-jit/01-launch-judgment.md) §2 列出的「method JIT 结构性吃不下的负载类别」表是 P4 不做清单的负载侧表达——本表的「不做项」对应该表的「P5 的猎物范围」:
+[../p5-trace-jit/01-launch-judgment.md](../p5-trace-jit/01-launch-judgment.md) §2 列出的「method JIT 结构性吃不下的负载类别」表是 P4 不做清单的负载侧表达——本表的「不做项」对应该表中「适合 P5 的负载范围」:
 
 | §4.2 「不做」项 | [../p5-trace-jit/01-launch-judgment.md](../p5-trace-jit/01-launch-judgment.md) §2 类别 | 对应负载形状 |
 |---|---|---|
@@ -520,7 +520,7 @@ OSR exit = 写回 pc + 退出 JIT 世界                 OSR exit = 按 snapshot
 | 分配下沉 / 逃逸分析 | 第 3 类「分配密集循环」 | 每轮迭代构造临时 table/字符串(中间结果打包、闭包逃逸) |
 | (无对应,P4 也不做)| 第 4 类「megamorphic 调用点的稳定子集」 | P4 整点放弃投机(`FBTableMega` → 通用模板),P5 按实际路径特化 |
 
-**P4 验收「列内核 ≥ luajc 档」**([../roadmap.md](../roadmap.md) §4)——验收负载是「循环体纯标量算术」,正是 [../p5-trace-jit/01-launch-judgment.md](../p5-trace-jit/01-launch-judgment.md) §2 表外的第 0 类(P4 已吃下)。**项目近期目标在 P4 兑现**;若验收后真实宿主负载主要落在 P5 §1.2 表内(尤其第 1 类),则 P5 立项评审开启,否则维持 P4 终态(详 [../p5-trace-jit/01-launch-judgment.md](../p5-trace-jit/01-launch-judgment.md) §3 量化口径预登记)。
+**P4 验收「列内核 ≥ luajc 档」**([../roadmap.md](../roadmap.md) §4)——验收负载是「循环体纯标量算术」,正是 [../p5-trace-jit/01-launch-judgment.md](../p5-trace-jit/01-launch-judgment.md) §2 表外的第 0 类(P4 已覆盖)。**项目近期目标在 P4 兑现**;若验收后真实宿主负载主要落在 P5 §1.2 表内(尤其第 1 类),则 P5 立项评审开启,否则维持 P4 终态(详 [../p5-trace-jit/01-launch-judgment.md](../p5-trace-jit/01-launch-judgment.md) §3 量化口径预登记)。
 
 ### 4.4 P4 仍编译可编译子集 + 投机叠在之内
 
@@ -569,7 +569,7 @@ P4 模板总量的来源:
 
 **每架构数十段发射函数**——上限粗估:opcode 模板 37 + 投机分支 10-15 + 胶水 5-10 + 系统管线 5 ≈ **60-70 段**。两架构 = ~120-140 段。这是「人年级」工程量但**不是失控量级**——每段发射函数的复杂度是「写汇编 + 写测试」,人月级可承担。
 
-对比 P3:[../p3-wasm-tier/02-translation.md](../p3-wasm-tier/02-translation.md) §3 的 opcode 翻译表加各分支与助手胶水也在同档量级,P3 PW1-PW9 在 6-12 人月内交付,P4 双架构一样的工序 +1-2 人年估算合理。
+对比 P3:[../p3-wasm-tier/02-translation.md](../p3-wasm-tier/02-translation.md) §3 的 opcode 翻译表加各分支与助手胶水也在同档量级,P3 PW1-PW9 在 6-12 人月内交付,P4 双架构用同样的工序,+1-2 人年估算合理。
 
 ### 5.2 编译时间预算
 
@@ -591,11 +591,11 @@ P4 模板总量的来源:
 | 族 | opcode 集 | 模板特点 | 工程难度 |
 |---|---|---|---|
 | **算术族** | ADD / SUB / MUL / DIV / MOD / POW / UNM / NOT / EQ / LT / LE / TEST / TESTSET | 双 number 投机快路径(SSE/NEON 浮点)+ NaN 规范化 + guard;失败走慢路径助手 | 中(NaN 规范化是 byte-equal 关键,详 [./03-speculation-ic.md](./03-speculation-ic.md) §2.1) |
-| **表 IC 族** | GETTABLE / SETTABLE / GETGLOBAL / SETGLOBAL / SELF / NEWTABLE / SETLIST | IC 命中:同表 + 同代次 + 直达槽 inline(JSC Baseline 一样的,§2.4);失效降级走助手 | 高(翻译复杂度峰值,详 [./03-speculation-ic.md](./03-speculation-ic.md) §3) |
-| **控制流族** | JMP / FORPREP / FORLOOP / TFORLOOP / LOADBOOL / LOADNIL / MOVE / LOADK / GETUPVAL / SETUPVAL / LEN / CONCAT / CLOSURE / CLOSE | 直线翻译 + 跳转回填 + 回边 safepoint | 低-中 |
-| **调用族** | CALL / TAILCALL / RETURN | 跨层互调 + status 链错误冒泡(经 trampoline,详 [./05-system-pipeline.md](./05-system-pipeline.md) §4) | 高(协议复杂,P3 PW6 一样的工程难点) |
+| **表 IC 族** | GETTABLE / SETTABLE / GETGLOBAL / SETGLOBAL / SELF / NEWTABLE / SETLIST | IC 命中:同表 + 同代次 + 直达槽 inline(与 JSC Baseline 相同,§2.4);失效降级走助手 | 高(翻译复杂度峰值,详 [./03-speculation-ic.md](./03-speculation-ic.md) §3) |
+| **控制流族** | JMP / FORPREP / FORLOOP / TFORLOOP / LOADBOOL / LOADNIL / MOVE / LOADK / GETUPVAL / SETUPVAL / LEN / CONCAT / CLOSURE / CLOSE | 直线翻译 + 跳转回填 + back edge safepoint | 低-中 |
+| **调用族** | CALL / TAILCALL / RETURN | 跨层互调 + status 链错误冒泡(经 trampoline,详 [./05-system-pipeline.md](./05-system-pipeline.md) §4) | 高(协议复杂,与 P3 PW6 是同样的工程难点) |
 
-「分级表达」的工程价值:**P-JIT 渐进里程碑可按族铺**(详 [./00-overview.md](./00-overview.md) 里程碑节展开,与 P3 PW1-PW7 的渐进白名单一样的)——每个里程碑落一族,每族完成后跑全套差分套验证 byte-equal。失败原子性([../p3-wasm-tier/02-translation.md](../p3-wasm-tier/02-translation.md) §1.4)一样的保留:F7 检查(`SupportsAllOpcodes`)由 P4 后端实现替换 P3,在白名单未覆盖某 opcode 时返 false,该 Proto 不进入 P4 升层路径(可降级到 P3 wasm 层或解释器,具体降级路径由 [./00-overview.md](./00-overview.md) 落)。
+「分级表达」的工程价值:**P-JIT 渐进里程碑可按族铺**(详 [./00-overview.md](./00-overview.md) 里程碑节展开,与 P3 PW1-PW7 的渐进白名单相同)——每个里程碑完成一族,每族完成后跑全套差分套验证 byte-equal。失败原子性([../p3-wasm-tier/02-translation.md](../p3-wasm-tier/02-translation.md) §1.4)同样保留:F7 检查(`SupportsAllOpcodes`)由 P4 后端实现替换 P3,在白名单未覆盖某 opcode 时返 false,该 Proto 不进入 P4 升层路径(可降级到 P3 wasm 层或解释器,具体降级路径由 [./00-overview.md](./00-overview.md) 确定)。
 
 ### 5.4 与 P3 翻译器的相互独立性
 
@@ -628,7 +628,7 @@ P3 与 P4 共享的部分仍清晰:
 
 ## 6. 不变式清单(本文承担)
 
-本节是本文的事实主张总册。每条不变式由本文承担,具体落点要么本文章节要么下游子文档落实物——不变式的「形式化」由各落点守。
+本节是本文的事实主张总册。每条不变式由本文承担,具体落实之处要么是本文章节,要么是下游子文档中的具体设计——不变式的「形式化」由各落实之处负责保证。
 
 ### 6.1 P4 = dispatch 消除器 + IC 投机注入器,不是优化编译器
 
@@ -644,7 +644,7 @@ P3 与 P4 共享的部分仍清晰:
 
 **承本节**:§1.2 虚拟寄存器 = 栈槽 + §1.6 不消除栈槽往返。
 
-**落具体**:[./04-osr-deopt.md](./04-osr-deopt.md) §3.3 由其守(具体形式、exit 物化序列、局部缓存自由度的边界条件)。本文不在此重复落点的具体形式;本文只声明「这条不变式由 P4 承担」。
+**具体设计**:[./04-osr-deopt.md](./04-osr-deopt.md) §3.3 负责保证(具体形式、exit 物化序列、局部缓存自由度的边界条件)。本文不在此重复那里的具体形式;本文只声明「这条不变式由 P4 承担」。
 
 **违反检测**:P4 模板中若有任何跨字节码边界的「寄存器内活值」(除 [./04-osr-deopt.md](./04-osr-deopt.md) §3.3 注允许的 FORLOOP idx/limit/step 等局部缓存,且 exit 物化序列必须编译期静态生成),即违反此不变式。
 
@@ -672,35 +672,35 @@ P3 与 P4 共享的部分仍清晰:
 
 **风险:**
 
-1. **模板设计反复(算术 NaN 规范化、guard 合并)的工程不确定度**——算术族模板的 NaN 规范化保证(IEEE 754 与解释器 byte-equal,详 [../p1-interpreter/05-interpreter-loop.md](../p1-interpreter/05-interpreter-loop.md) §4.1)在机器码层完成的指令序列首版可能反复;guard 合并(同一操作数在直线段内只查一次)是不引入 IR 前提下可做的窥孔级优化,但合并范围与边界需实测调。具体完成由 [./03-speculation-ic.md](./03-speculation-ic.md) §2 / §5 守,本文留口。
+1. **模板设计反复(算术 NaN 规范化、guard 合并)的工程不确定度**——算术族模板的 NaN 规范化保证(IEEE 754 与解释器 byte-equal,详 [../p1-interpreter/05-interpreter-loop.md](../p1-interpreter/05-interpreter-loop.md) §4.1)在机器码层完成的指令序列首版可能反复;guard 合并(同一操作数在直线段内只查一次)是不引入 IR 前提下可做的窥孔级优化,但合并范围与边界需实测调。具体完成由 [./03-speculation-ic.md](./03-speculation-ic.md) §2 / §5 负责,本文不展开,留作开放点。
 
-2. **双架构维护矩阵**——双后端(amd64/arm64) × 双架构 CI(物理 runner)是长期固定成本。若资源紧张,**arm64 滞后交付不阻塞 P4 验收**(验收平台定 amd64),但发布口径须如实标注「arm64 维护中」。详 [./06-backends.md](./06-backends.md) §5.2 落 arm64 滞后的应急方案。
+2. **双架构维护矩阵**——双后端(amd64/arm64) × 双架构 CI(物理 runner)是长期固定成本。若资源紧张,**arm64 滞后交付不阻塞 P4 验收**(验收平台定 amd64),但发布说明须如实标注「arm64 维护中」。详 [./06-backends.md](./06-backends.md) §5.2 给出 arm64 滞后的应急方案。
 
-3. **locals 寄存器跨指令缓存的开放**——§1.2 / §6 第 2 条「栈槽真相」允许 FORLOOP idx/limit/step 等循环局部热槽的短暂寄存器驻留(承 [./04-osr-deopt.md](./04-osr-deopt.md) §3.3 注),但具体允许范围(只 FORLOOP 三槽 vs 扩展到其它循环局部热槽)与 exit 物化序列的具体形式留 [./06-backends.md](./06-backends.md) 后再评估。**P3 一样的决议**([../p3-wasm-tier/02-translation.md](../p3-wasm-tier/02-translation.md) §2.3 / §9 文档缺口):loop 核 memory-resident 已 2.58x over 解释器达标,真实瓶颈是跨层调用税而非寄存器访问;P4 一样的保留「全栈槽直存直取 + 局部缓存预留扩展」,实测后再评估。
+3. **locals 寄存器跨指令缓存的开放**——§1.2 / §6 第 2 条「栈槽真相」允许 FORLOOP idx/limit/step 等循环局部热槽的短暂寄存器驻留(承 [./04-osr-deopt.md](./04-osr-deopt.md) §3.3 注),但具体允许范围(只 FORLOOP 三槽 vs 扩展到其它循环局部热槽)与 exit 物化序列的具体形式留 [./06-backends.md](./06-backends.md) 后再评估。**P3 的同类决议**([../p3-wasm-tier/02-translation.md](../p3-wasm-tier/02-translation.md) §2.3 / §9 文档缺口):loop 核 memory-resident 已 2.58x over 解释器达标,真实瓶颈是跨层调用税而非寄存器访问;P4 同样保留「全栈槽直存直取 + 局部缓存预留扩展」,实测后再评估。
 
-**开放问题(由后续子文档收口):**
+**开放问题(由后续子文档解决):**
 
 - **F7 检查的 P4 实现**:`SupportsAllOpcodes` 的 P-JIT 渐进白名单(对位 P3 PW1-PW7)由 [./00-overview.md](./00-overview.md) 给里程碑表,本文不展开。
-- **deopt 计数阈值与去投机重编策略**:由 [./04-osr-deopt.md](./04-osr-deopt.md) §3 / §4 落具体。
-- **同步编译 vs 后台编译的最终决议**:继承 P3 ([../p3-wasm-tier/02-translation.md](../p3-wasm-tier/02-translation.md) §1) 一样的决策(基线同步),由 [./05-system-pipeline.md](./05-system-pipeline.md) §3 守,实现期可推翻。
-- **多 State 并发下 P4 代码与 profile 的共享语义**:承 [../p2-bridge/00-overview.md](../p2-bridge/00-overview.md) §9 一样的并发缺口,P4 不引入新约束。
+- **deopt 计数阈值与去投机重编策略**:由 [./04-osr-deopt.md](./04-osr-deopt.md) §3 / §4 给出具体设计。
+- **同步编译 vs 后台编译的最终决议**:继承 P3 ([../p3-wasm-tier/02-translation.md](../p3-wasm-tier/02-translation.md) §1) 同样的决策(基线同步),由 [./05-system-pipeline.md](./05-system-pipeline.md) §3 负责,实现期可推翻。
+- **多 State 并发下 P4 代码与 profile 的共享语义**:承 [../p2-bridge/00-overview.md](../p2-bridge/00-overview.md) §9 同样的并发缺口,P4 不引入新约束。
 
 ## 8. 回填请求(若有)
 
-本文为方向裁决,无回填请求穿越本文向上游传递——上游契约(roadmap §4 / §7、design-premises 前提一/二/三/四、evolution-roadmap tier 映射、P1 02/05、P2 03/04、P3 02、P5 §1)已稳定,本文是其在 P4 子目录的展开,不要求修改。
+本文为方向裁决,无回填请求穿越本文向上游传递——上游约定(roadmap §4 / §7、design-premises 前提一/二/三/四、evolution-roadmap tier 映射、P1 02/05、P2 03/04、P3 02、P5 §1)已稳定,本文是其在 P4 子目录的展开,不要求修改。
 
 ---
 
 相关:
 [./00-overview.md](./00-overview.md)(P4 总览,本文遵守其章节番号与风格基线) ·
 [./03-speculation-ic.md](./03-speculation-ic.md)(IC 反馈→f64 快路径 + guard,本文 §2.4 / §4.1 / §5.3 对位) ·
-[./04-osr-deopt.md](./04-osr-deopt.md)(OSR exit 物化与 deopt 状态机,本文 §6 第 2 条「栈槽真相」由其落具体) ·
+[./04-osr-deopt.md](./04-osr-deopt.md)(OSR exit 物化与 deopt 状态机,本文 §6 第 2 条「栈槽真相」由其给出具体设计) ·
 [./05-system-pipeline.md](./05-system-pipeline.md)(四项税兑现 + trampoline + 编译执行线程模型) ·
-[./06-backends.md](./06-backends.md)(amd64/arm64 双后端发射函数与寄存器约定,本文 §5.1 / §7 风险 2/3 落具体) ·
+[./06-backends.md](./06-backends.md)(amd64/arm64 双后端发射函数与寄存器约定,本文 §5.1 / §7 风险 2/3 给出具体设计) ·
 [../p3-wasm-tier/02-translation.md](../p3-wasm-tier/02-translation.md)(P3 翻译器主体,本文 §0.2 / §2.4 / §5.4 对位) ·
 [../p3-wasm-tier/01-spike-gate.md](../p3-wasm-tier/01-spike-gate.md)(P3 检查,本文 §0.2 跳跃路径触发参照) ·
 [../p5-trace-jit/00-overview.md](../p5-trace-jit/00-overview.md)(P5 trace JIT,本文 §0.3 / §3.4 / §4.3 对位) ·
-[../roadmap.md](../roadmap.md)(§4 P4 定义 / §7 prior art / §5 五原则,本文上游契约) ·
+[../roadmap.md](../roadmap.md)(§4 P4 定义 / §7 prior art / §5 五原则,本文上游约定) ·
 [../p1-interpreter/02-bytecode-isa.md](../p1-interpreter/02-bytecode-isa.md)(源 ISA 38 opcode + IC slot,本文 §5.1 / §5.3 对位) ·
 [../p1-interpreter/05-interpreter-loop.md](../p1-interpreter/05-interpreter-loop.md)(主循环 + dispatch 形式 + arena 值栈槽寻址 + 调用协议,本文 §1 / §2.5 对位) ·
 [../p1-interpreter/01-value-object-model.md](../p1-interpreter/01-value-object-model.md)(NaN-box 编码,本文 §2.5.2 对位) ·

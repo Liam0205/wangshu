@@ -2,7 +2,7 @@
 
 > 状态:**详细设计**(PJ10 启动文档,2026-06-30)。本文是 PJ10 工程的单一事实源——把 P4 从「按函数样子识别 + 写死字节级模板」彻底换成「逐 opcode 翻译,任意形式的 Proto 都能升 P4」。
 >
-> 上游契约:[00-overview](./00-overview.md)(P4 总览;本文是 §0 文档地图新增一行 10)、[01-launch-judgment](./01-launch-judgment.md)(P4 立项判定依然成立,本文是「方向修正」非「立项再议」)、[02-template-direction](./02-template-direction.md)(原方向裁决:JSC Baseline / V8 Sparkplug per-function 模板编译;本文承认其大方向,**对「形式识别 + 字节级模板」的具体完成方式做修正**——§1.3 详)。
+> 上游约定:[00-overview](./00-overview.md)(P4 总览;本文是 §0 文档地图新增一行 10)、[01-launch-judgment](./01-launch-judgment.md)(P4 立项判定依然成立,本文是「方向修正」非「立项再议」)、[02-template-direction](./02-template-direction.md)(原方向裁决:JSC Baseline / V8 Sparkplug per-function 模板编译;本文承认其大方向,**对「形式识别 + 字节级模板」的具体完成方式做修正**——§1.3 详)。
 >
 > P1 依赖面:[../p1-interpreter/02-bytecode-isa](../p1-interpreter/02-bytecode-isa.md)(源 ISA 完整定义,本文输入)、[../p1-interpreter/05-interpreter-loop](../p1-interpreter/05-interpreter-loop.md)(解释器主循环,P4 翻译产物与之 byte-equal)。
 >
@@ -18,7 +18,7 @@
 
 ## 0. 一句话定位
 
-**把每条 Lua opcode 单独翻译成原生机器码,串成函数体——任意形状的 Proto 都能升 P4,不再受「字节级模板」白名单限制。** 这与 P3 wasm 翻译器([../p3-wasm-tier/02-translation](../p3-wasm-tier/02-translation.md))一样的思路,只是发射目标从 wasm 字节码换成 x86-64 / aarch64 原生码。
+**把每条 Lua opcode 单独翻译成原生机器码,串成函数体——任意形状的 Proto 都能升 P4,不再受「字节级模板」白名单限制。** 这与 P3 wasm 翻译器([../p3-wasm-tier/02-translation](../p3-wasm-tier/02-translation.md))思路相同,只是发射目标从 wasm 字节码换成 x86-64 / aarch64 原生码。
 
 ---
 
@@ -54,7 +54,7 @@ PJ0-PJ9 的设计是 **「按函数样子识别 + 写死字节级模板」**:`an
 2. **自递归 + 多 `if-then-end` 分支** — 不在 PJ5 CALL void / TAILCALL / SELF 形式白名单内
 3. **`while` 单条件循环 + 嵌套 FORLOOP** — 没有对应字节级模板
 
-字节级模板每加一种,工程量 1-3 天(写 amd64 模板 + arm64 模板 + 字节级单测 + 双轨 byte-equal + difftest 角落语料)。Lua 函数样子组合无穷,**这条路有天花板,而且天花板比想象中低**——heavy 三个脚本是写得很普通的浮点循环,就已经全跌穿。真实宿主代码里更复杂的循环嵌套、多分支、表/字符串混合操作,几乎全跌。
+字节级模板每加一种,工程量 1-3 天(写 amd64 模板 + arm64 模板 + 字节级单测 + 双轨 byte-equal + difftest 角落语料)。Lua 函数样子组合无穷,**这条路有天花板,而且天花板比想象中低**——heavy 三个脚本是写得很普通的浮点循环,就已经全都升不上去。真实宿主代码里更复杂的循环嵌套、多分支、表/字符串混合操作,几乎全都升不上去。
 
 ### 1.3 PJ0-PJ9 的物理基础保留,只换发射策略
 
@@ -63,7 +63,7 @@ PJ0-PJ9 的设计是 **「按函数样子识别 + 写死字节级模板」**:`an
 | PJ0-PJ9 交付物 | PJ10 复用方式 |
 |---|---|
 | `internal/gibbous/jit` 包骨架 + build tag 互斥 + bridge.P3Compiler 注入接口 | 完全保留(P4 还是「一个 P3Compiler 实现」) |
-| amd64 mmap / W^X / icache flush / trampoline 四件套([05-system-pipeline](./05-system-pipeline.md))| 完全保留 — per-op 翻译产物还是一段可执行字节码,落进一样的 mmap 段 |
+| amd64 mmap / W^X / icache flush / trampoline 四件套([05-system-pipeline](./05-system-pipeline.md))| 完全保留 — per-op 翻译产物还是一段可执行字节码,放进同样的 mmap 段 |
 | arm64 codepage + trampoline + MAP_JIT([06-backends](./06-backends.md))| 完全保留 |
 | `p4Code` / `Run` 接口([../p2-bridge/05](../p2-bridge/05-p3-p4-interface.md))| 完全保留 |
 | 14 个 host helper([implementation-progress §7](./implementation-progress.md))| **大部分保留**,逐 op 翻译时直接 call 这些 helper 处理类型多态慢路径 |
@@ -97,7 +97,7 @@ P3 wasm `internal/gibbous/wasm/translate.go` 已经实现了「逐 op 翻译」�
 | **逐 op emit** | `translate.go::translateOp` switch on `bytecode.Op` | **完全复用 switch 结构**;每个 case 调对应 emit 函数 |
 | **emit 函数** | `emit_*.go` — 一个 op 一个文件,产 wazero 字节码序列(api.ValueType 操作数 + opcode 字节)| **per-arch 各一份**:`amd64/emit_*.go` 产 x86-64 字节;`arm64/emit_*.go` 产 aarch64 字节 |
 | **value stack 抽象** | P3 用 wasm 内嵌的 value stack(`local.get`/`local.set` 读写)| P4 直接用 **`R(A)` 槽内存地址寻址**(寄存器+偏移,不缓存值到 cpu reg),与 P1 解释器一样的槽语义 |
-| **safepoint 布点** | 回边 + 调用前后([../p3-wasm-tier/05](../p3-wasm-tier/05-safepoint-gc.md))| 一样的规则,emit 时按 op 类型插入 safepoint check(已有 EmitSafepointCheck) |
+| **safepoint 布点** | 循环回跳(back edge)+ 调用前后([../p3-wasm-tier/05](../p3-wasm-tier/05-safepoint-gc.md))| 规则相同,emit 时按 op 类型插入 safepoint check(已有 EmitSafepointCheck) |
 | **跨层互调** | `h_call` / `h_tailcall` helper(已实现)| 仍走 host helper,emit `CALL` 时发一段「准备参数 + call 助手」的字节序列 |
 | **IC 快照固化** | `emit_table.go` 经 P2 IC slot 直达槽 | 复用 PJ4 字节级 IC 模板(`emitter_pj4.go`)作 fast path,具体见 §6 |
 | **`SupportsAllOpcodes`** | `compiler.go::SupportsAllOpcodes` — 渐进白名单 + 字符串常量拒 + 死代码不数 + reducible 校验 | **完全相同的算法**,只是 supported 数组随 PJ10a..d 扩张节奏不一样 |
@@ -161,7 +161,7 @@ P3 wasm `internal/gibbous/wasm/translate.go` 已经实现了「逐 op 翻译」�
 
 ## 4. 寄存器 ABI(amd64 端)
 
-承 [05-system-pipeline §4](./05-system-pipeline.md) + [06-backends §3](./06-backends.md) 已有的寄存器约定,PJ10 通用 per-op 翻译沿用一样的 ABI,无新增:
+承 [05-system-pipeline §4](./05-system-pipeline.md) + [06-backends §3](./06-backends.md) 已有的寄存器约定,PJ10 通用 per-op 翻译沿用同一套 ABI,无新增:
 
 | 寄存器 | 用途 | 跨 op 稳定性 |
 |---|---|---|
@@ -199,7 +199,7 @@ arm64 端寄存器映射(承 PJ8):`X26 = vsBase`,`X27 = jitCtx`,`X0-X7` 调用�
 | JMP | pc += sBx | 由 BB terminator 处理 — emit `jmp <bb_label_of_target>` |
 | RETURN | 出口 | call host.DoReturn(A, B);ret |
 
-**关键**:这一档全是「值在内存里搬来搬去」+ 偶尔调 helper,不涉及类型判断、不涉及 guard。是 PJ10 最简单的一档,先打通 fully end-to-end pipeline。
+**关键**:这一档全是「值在内存里搬来搬去」+ 偶尔调 helper,不涉及类型判断、不涉及 guard。是 PJ10 最简单的一档,先接通 fully end-to-end pipeline。
 
 ### 5.2 PJ10b 算术 + 比较(ADD/SUB/MUL/DIV/MOD/POW/UNM/LEN/CONCAT/NOT/EQ/LT/LE/TEST/TESTSET)
 
@@ -303,7 +303,7 @@ P4 原生码没有结构化指令,直接发条件跳(`jcc`)和无条件跳(`jmp`
 2. **绑定 BB label**:emit BB 的第一条 op 前,记录「BB X 的入口偏移 = 当前 buf 长度」到 `labelMap[X]`
 3. **第二遍 resolve**:遍历 `fixupList`,把占位偏移填成 `labelMap[targetBB] - (jmpInstrEnd)`(32-bit 有符号偏移)
 
-这是经典的 **two-pass assembler** 套路,工程量小,1-2 天就能写好框架(amd64 端,arm64 端一样的思路用 4-byte 立即数)。
+这是经典的 **two-pass assembler** 套路,工程量小,1-2 天就能写好框架(amd64 端,arm64 端思路相同,用 4-byte 立即数)。
 
 P4 不需要 relooper,因为原生码不要求结构化 — **比 P3 简单**。但仍要求 CFG reducible:reducible 是「跳目标都是 leader」的等价条件,non-reducible 意味着「跳到 BB 中间」,这种情况只发生在 Lua 的 `goto`,而 luac 5.1.5 不生成 `goto`(5.2+ 才支持),所以 wangshu 的 luac 编出的所有 CFG 都 reducible,F7 把关即可。
 
@@ -318,7 +318,7 @@ P4 不需要 relooper,因为原生码不要求结构化 — **比 P3 简单**。
 | **PJ10a** | 直线 opcode(8 个):MOVE / LOADK / LOADBOOL / LOADNIL / GETUPVAL / SETUPVAL / JMP / RETURN | 1-2 周 | end-to-end pipeline:从 `Compile` 到 `wireToCodepage` 到 `Run`,跑通最简 Proto(`return 42`)+ byte-equal P1 |
 | **PJ10b** | 算术 + 比较 + UNM/NOT/LEN/CONCAT(15 个):ADD/SUB/MUL/DIV/MOD/POW/UNM/NOT/LEN/CONCAT/EQ/LT/LE/TEST/TESTSET | 3-4 周 | heavy_arith / heavy_floatloop 升 P4 + byte-equal P1 + 比 P1 快 |
 | **PJ10c** | 控制流 + 循环(3 个):FORPREP / FORLOOP / TFORLOOP | 2-3 周 | 含 FORLOOP 的脚本全升 P4(realworld fib 等 + heavy 全套)+ byte-equal |
-| **PJ10d** | 表 + 函数调用(10 个):GETTABLE/SETTABLE/GETGLOBAL/SETGLOBAL/SELF/NEWTABLE/SETLIST/CALL/TAILCALL/CLOSURE/CLOSE | 4-6 周 | realworld 五脚本全升 P4 + byte-equal,V15a P4 ≥ P3 真兑现 |
+| **PJ10d** | 表 + 函数调用(10 个):GETTABLE/SETTABLE/GETGLOBAL/SETGLOBAL/SELF/NEWTABLE/SETLIST/CALL/TAILCALL/CLOSURE/CLOSE | 4-6 周 | realworld 五脚本全升 P4 + byte-equal,V15a P4 ≥ P3 真正兑现 |
 
 **总工程量估算:10-15 周**(约 2.5-4 人月)。比 [02-template-direction §1.4](./02-template-direction.md) 自估「P4 全栈 +1-2 人年」中的「单架构后端」部分 0.5-1 人年范围内,与 P3 PW0-PW10 总耗时(约 4 个月)相当。
 
@@ -328,7 +328,7 @@ PJ10b/c/d 同时启用 fast path(承 PJ0-PJ9 全套),即使本 sub-PJ 通用路�
 
 ## 9. 与 PJ11 的关系
 
-PJ11 是原 PJ10 的「luajc 档验收 + 性能调优」,**判定门没变**:V14 列内核负载 ≥ 4.4× over gopher-lua。该门 PJ3 阶段早已突破(实测 12-25×),PJ11 只是把 V14 数字定稿、配套调优(locals 寄存器缓存可能展开 / guard 合并窥孔等,见 [00-overview §11](./00-overview.md))。
+PJ11 是原 PJ10 的「luajc 档验收 + 性能调优」,**判定门槛没变**:V14 列内核负载 ≥ 4.4× over gopher-lua。该门槛 PJ3 阶段早已突破(实测 12-25×),PJ11 只是把 V14 数字定稿、配套调优(locals 寄存器缓存可能展开 / guard 合并窥孔等,见 [00-overview §11](./00-overview.md))。
 
 PJ10 完成后 PJ11 的工作量 **比原计划下降**——通用 per-op 翻译路径让 V15 / V15b 的数字稳健,不再需要为每种新形式写字节级模板。PJ11 的「性能调优」聚焦在两件事:
 
@@ -361,7 +361,7 @@ PJ10 是 P5 立项的关键基础设施 — 没有 PJ10,P5 trace JIT 是空中�
 | 通用 per-op 翻译性能不及预期(< P3 wasm)| 中 | fast path 兜底已有 V14 数字;通用路径只需 ≥ P1 解释器即可算「升对了」 |
 | emit 函数 38 个,工程量超估 | 中 | 直接借鉴 P3 wasm 同名 emit 函数(P3 已实现 30 个,差别只在「发 wasm 字节 → 发原生字节」),逻辑结构可整段照搬 |
 | double-emit(fast path 已生效,通用路径仍写一份)增加维护负担 | 低 | 通用路径作为 fallback,fast path 不命中时才用;两条路径单独 byte-equal 测;且通用路径的 emit 函数 PJ10d 完成后就稳定了 |
-| arm64 端 per-op emit 与 amd64 完全对齐工作量翻倍 | 中 | 同 P3 PW0-PW10:amd64 先打通,arm64 跟上;两份 emit 函数签名一致,逻辑结构对应,只是字节序列不同 |
+| arm64 端 per-op emit 与 amd64 完全对齐工作量翻倍 | 中 | 同 P3 PW0-PW10:amd64 先接通,arm64 跟上;两份 emit 函数签名一致,逻辑结构对应,只是字节序列不同 |
 | 通用路径暴露新 byte-equal bug(P1 解释器某条角落语义 P4 通用路径没复制对)| 中 | 全套 difftest / conformance / luasuite 已就绪;每个 sub-PJ 完成后跑全套 |
 
 ---
@@ -373,7 +373,7 @@ PJ10 是 P5 立项的关键基础设施 — 没有 PJ10,P5 trace JIT 是空中�
 | D10-1 | PJ10 是否启动 | ✅ 已决议 | 2026-06-30 用户确认 |
 | D10-2 | fast path 是否保留 | ✅ 保留 | 见 §6 — PJ0-PJ9 所有 spec templates 作 fast path |
 | D10-3 | sub-PJ 拆分(PJ10a-d)是否按 §8 节奏 | ⬜ | PJ10a 启动前确认 |
-| D10-4 | amd64 / arm64 并行还是串行 | ⬜ | 倾向串行(amd64 先打通 PJ10a-d,arm64 跟上一样的节奏),与 P3 PW0-PW10 节奏对位;并行风险是 arm64 物理 runner 还在 PJ8 工程中 |
+| D10-4 | amd64 / arm64 并行还是串行 | ⬜ | 倾向串行(amd64 先接通 PJ10a-d,arm64 按同样节奏跟上),与 P3 PW0-PW10 节奏对位;并行风险是 arm64 真机 runner 还在 PJ8 工程中 |
 | D10-5 | PJ11 V14 / V15 验收数字是否在 PJ10 完成时一并刷 | ⬜ | PJ10d 完成时实测 |
 
 ---
@@ -384,8 +384,8 @@ PJ10 接续 PJ0-PJ9 的所有不变式,新增本档独有:
 
 1. **fast path 不动**:PJ0-PJ9 字节级模板的 byte-equal P1 与 byte 序列**不能因 PJ10 通用路径接入而改变**(回归测试把关)
 2. **per-op 通用路径与 P1 解释器 byte-equal**:每个 emit 函数的产物执行结果与 P1 解释器对应 op 完全一致(逐字节,含 NaN bit pattern / 错误消息 / traceback pc)
-3. **OSR exit 仍生效**:通用路径里的 guard 失败(若有,主要在 fast path 内嵌投机时)走 OSR exit 协议,与 PJ0-PJ9 一样的
-4. **safepoint 不漏**:回边、call 前后、长直线段后(每 N 条指令)都插 safepoint check,纪律承 [05-system-pipeline §6](./05-system-pipeline.md)
+3. **OSR exit 仍生效**:通用路径里的 guard 失败(若有,主要在 fast path 内嵌投机时)走 OSR exit 协议,与 PJ0-PJ9 一样
+4. **safepoint 不漏**:back edge、call 前后、长直线段后(每 N 条指令)都插 safepoint check,纪律承 [05-system-pipeline §6](./05-system-pipeline.md)
 5. **不引入 IR**:emit 函数直接发字节,不经 SSA / 中间值 / 任何抽象层
 
 ---
@@ -410,13 +410,13 @@ PJ10 首版完成采取「正确性 floor 优先」路径:不真正发射多 BB 
 | **PJ10d 函数调用** | CALL / TAILCALL / SELF | `local r = f(x)` / `return f(x)` / `obj:method()` |
 | **PJ10d 闭包** | CLOSURE(读 `Proto.SubNUps[Bx]` 跳 pseudo 伪指令)/ CLOSE | `local f = function() return x end` |
 
-**38 个核心 opcode 中回放骨架接住 35 个**(VARARG 设计上永不接;JMP / TEST / LOADBOOL C!=0 留待真 CFG)。回放阶段架构图对应 §3 的**正确性 floor**——语义前提,性能前提留下一轮。
+**38 个核心 opcode 中回放骨架接住 35 个**(VARARG 设计上永不接;JMP / TEST / LOADBOOL C!=0 留待真正的 CFG)。回放阶段架构图对应 §3 的**正确性 floor**——语义前提,性能前提留下一轮。
 
 ---
 
 ### 14.2 第二轮:真 amd64 / arm64 原生码 emit(2026-07-01,ed2235b..0c9db3a ~17 commits,分支 `feat/pj10-native`,承 [[2026-07-01-p4-pj10-native-round]])
 
-承 §14.1 回放骨架的 floor,本轮把 mmap 段的占位 stub 换成真原生 codegen——CFG builder + 两遍 label resolver + 35 opcode 每 arch 一份 emit(amd64 / arm64)。
+承 §14.1 回放骨架的 floor,本轮把 mmap 段的占位 stub 换成真正的原生 codegen——CFG builder + 两遍 label resolver + 35 opcode 每 arch 一份 emit(amd64 / arm64)。
 
 **opcode emit 覆盖(每 arch 独立发射,2026-07-01 状态)**:
 
@@ -484,7 +484,7 @@ CALL  RETURN
 
 **Multi-return 分流**:`codeBufProto.MultiReturn` 为 true 时,每条 RETURN 都被 lower 成 `HelperReturn` exit-reason(由 Go dispatcher 完整跑弹帧 + 多值回填);single-return 走 xor-eax 快出口 + Go 端 `DoReturn`。
 
-**为什么两级门 = 硬约束**:mmap 段是 Go runtime 未登记的 code page,`morestack` prologue 走进这段无法从 `_func` 表回溯栈帧——并发 + 嵌套负载下 Go stack unwinder 撞死。这是 Go runtime 层面对 unregistered code page 的物理限制,不是 emit 顺序问题,只能在 emit 侧 fork 出「安全可 inline」子集,冷路径退 Go 端 dispatch。详见 [[2026-07-01-p4-pj10-native-round]] 教训 1。
+**为什么两级门 = 硬约束**:mmap 段是 Go runtime 未登记的 code page,`morestack` prologue 走进这段无法从 `_func` 表回溯栈帧——并发 + 嵌套负载下 Go stack unwinder 崩溃。这是 Go runtime 层面对 unregistered code page 的硬性限制,不是 emit 顺序问题,只能在 emit 侧 fork 出「安全可 inline」子集,冷路径退 Go 端 dispatch。详见 [[2026-07-01-p4-pj10-native-round]] 教训 1。
 
 **saveGoG shim tail 仍存在**:LEN/CONCAT/SELF/TAILCALL/CLOSURE/CLOSE/TFORLOOP/MOD/POW 以及 compare shim tails 走原有 `saveGoG` 协议把 G/vsBase 交还 Go 端调 helper——这条路径与 exit-reason 协议并存,分别覆盖「编译期就拒 inline」和「运行期从段内暂停回 Go」两种场景。
 
@@ -516,7 +516,7 @@ CALL  RETURN
 
 **为什么不用 AnalyzeNative 直接进 native**:AnalyzeNative 能接住的形式是 shape-spec 也能接住的**超集**——其中「shape-spec 快路径能干」的部分 shape-spec 干得更快(spec 直接 head-op 回放不用 CFG / label resolve / codegen 开销)。Compile 入口把 shape-spec 的地盘抢过来是负收益。
 
-`PreferNative` 精确匹配「shape-spec 天生打不着的形式」:shape-spec 的 FORLOOP-with-body 模板只 inline 1-2 op 的 reg-K body(见 `shapeInfo.hasBody` / `hasBody2`),3+ op body 的 FORLOOP 在 shape-spec 下回退 per-op 回放而 native 可以发全 inline SSE 主循环——**多 BB + big BB**  正是这条边界的精确指纹。
+`PreferNative` 精确匹配「shape-spec 天生覆盖不到的形式」:shape-spec 的 FORLOOP-with-body 模板只 inline 1-2 op 的 reg-K body(见 `shapeInfo.hasBody` / `hasBody2`),3+ op body 的 FORLOOP 在 shape-spec 下回退 per-op 回放而 native 可以发全 inline SSE 主循环——**多 BB + big BB**  正好精确对应这条边界。
 
 初版 `4b5abf8` 曾把入口判据放宽成「AnalyzeNative 就走 native」,立刻压掉 25 个 PJ3 / PJ5 / PJ7 已调优 shape-spec 测试;`0c9db3a` 收窄。详见 [[2026-07-01-p4-pj10-native-round]] 教训 3。
 
@@ -540,7 +540,7 @@ CALL  RETURN
 
 TAILCALL 在 native 段完成 `SetTailcall` 复用父帧后,execute() 主循环的 TAILCALL case **在 `doTailCall` 返回正常 cci 之后**再检查 callee proto 是否有 GibbousCode:有则在 tail-call 帧上直接跑 `code.Run`,DoReturn 会按标准语义弹帧写返值。
 
-**首版尝试**(commit `4b5abf8`)是把 dispatch 塞进 `doTailCall` 内部、返回 `(nil, nil)` 作 sentinel。这个方案两处出问题:(a) 破坏了 `doTailCall` 的返回契约(P3 wasm `TailCall` 直接把 `doTailCall` 的结果透传出去,不认 `(nil, nil)` sentinel);(b) 与 `SetTailcall` / `Fresh` flag / `funcIdx = parent.FuncIdx` 的 tail-call 帧 lifecycle 组合出双压帧。已 revert `a5bdb63`,并在 `0adaae6` 用「execute() 主循环内 dispatch」的对称写法真正修好——ci / proto / code 都是 switch 局部变量,gibbous 返回后自由重载即可。详见 [[2026-07-01-p4-pj10-native-round]] 教训 4(含证伪 → 二版正确修法闭环)。
+**首版尝试**(commit `4b5abf8`)是把 dispatch 塞进 `doTailCall` 内部、返回 `(nil, nil)` 作 sentinel。这个方案两处出问题:(a) 破坏了 `doTailCall` 的返回约定(P3 wasm `TailCall` 直接把 `doTailCall` 的结果透传出去,不认 `(nil, nil)` sentinel);(b) 与 `SetTailcall` / `Fresh` flag / `funcIdx = parent.FuncIdx` 的 tail-call 帧 lifecycle 组合出双压帧。已 revert `a5bdb63`,并在 `0adaae6` 用「execute() 主循环内 dispatch」的对称写法真正修好——ci / proto / code 都是 switch 局部变量,gibbous 返回后自由重载即可。详见 [[2026-07-01-p4-pj10-native-round]] 教训 4(含证伪 → 第二版正确修法的完整过程)。
 
 ---
 
@@ -562,7 +562,7 @@ TAILCALL 在 native 段完成 `SetTailcall` 复用父帧后,execute() 主循环�
 
 ### 14.8 arm64 端
 
-`GOARCH=arm64 CGO_ENABLED=0 go build` 对 `wangshu_p4` / `wangshu_p4 wangshu_profile` 两 tag 组合都过。arm64 runtime e2e 留 CI followup——需 linux/arm64 host,QEMU 用户模式不真支持 mmap RWX→RX 翻面,darwin/arm64 通过 jitcgo forward 模式接。
+`GOARCH=arm64 CGO_ENABLED=0 go build` 对 `wangshu_p4` / `wangshu_p4 wangshu_profile` 两 tag 组合都过。arm64 runtime e2e 留 CI followup——需 linux/arm64 host,QEMU 用户模式并不真正支持 mmap RWX→RX 切换,darwin/arm64 通过 jitcgo forward 模式接。
 
 ---
 

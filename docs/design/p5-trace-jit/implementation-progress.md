@@ -25,12 +25,12 @@
 | 前置 | 状态 |
 |---|---|
 | [./01-launch-judgment.md](./01-launch-judgment.md) §1 三条并集条件同时满足 + 档位决议归档 [../../../llmdoc/memory/decisions/](../../../llmdoc/memory/decisions/) | ⏳ 未开始判定(P4 已经在 2026-07-01 交付,判定可以启动但还没启动) |
-| P4 amd64 + arm64 双 arch 都达到 luajc 档并且性能归档 | 🟡 amd64 已达标(V14 14.08x);arm64 分岔中(issue #37 exit-reason 端口 + issue #40 arm64 P4 HeavyArith 回归未闭) |
+| P4 amd64 + arm64 双 arch 都达到 luajc 档并且性能归档 | 🟡 amd64 已达标(V14 14.08x);arm64 分岔中(issue #37 exit-reason 端口 + issue #40 arm64 P4 HeavyArith 回归未关闭) |
 | 首个目标宿主的真实热脚本 profile 到位 | ⏳ 等宿主侧提供 |
 | Cheaper alternatives 已经系统评估(§4)——stdlib 内建化、P4 peephole 扩展、宿主侧改造、P4 op-set 扩展,这四条至少已经尝试三条 | ⏳ 未开始评估 |
 | +2-4 人年的人力预算 + fuzz 集群资源到位 | ⏳ 未预算 |
 
-**结论**:目前 P5 立项判定的**前置条件本身还没齐备**(宿主侧 profile 未到 + P4 arm64 未闭 + cheaper alternatives 未评估)——所以 P5 立项判定不能启动,更不能施工。
+**结论**:目前 P5 立项判定的**前置条件本身还没齐备**(宿主侧 profile 未到 + P4 arm64 问题未关闭 + cheaper alternatives 未评估)——所以 P5 立项判定不能启动,更不能施工。
 
 ### 0.2 P5 立项凭据归档点
 
@@ -62,8 +62,8 @@
 
 | PT | 内容 | 目标 | 交付物 | 验收 | 依赖章节 | 预估规模 | v-阶段映射 |
 |---|---|---|---|---|---|---|---|
-| **PT0** | Spike 阶段验收:最小端到端 trace 打通 | 证明「trace 录制 + 编译 + 执行 + guard-fail deopt」全链路物理上可行(参照 [../p3-wasm-tier/01-spike-gate.md](../p3-wasm-tier/01-spike-gate.md) 的精神) | 一条最简单的数值循环 trace,在 crescent 内录制、经复用的 P4 codebuf/encoders 编译、mmap RX 执行、一次 guard-fail 走 exit-reason 协议物化 → 与解释器逐字节一致 | 端到端 byte-equal + deopt 之后续跑 byte-equal + 复核 spike 打通没有留下隐性依赖(见 [../p3-wasm-tier/01-spike-gate.md](../p3-wasm-tier/01-spike-gate.md) §0.2 spike 阶段纪律)| [./00-overview.md](./00-overview.md) §3 复用清单 / [./02-trace-recording.md](./02-trace-recording.md) 最小录制原型 / [./07-system-integration.md](./07-system-integration.md) codebuf 复用 | 0.5-1 人月(go/no-go 质量阶段验收,参照 [../p3-wasm-tier/01-spike-gate.md](../p3-wasm-tier/01-spike-gate.md) 先例) | v1 起点 |
-| **PT1** | Recorder 骨架 + NYI / abort / 黑名单 | 解释器内嵌录制模式;录制过程中遇到 NYI(varargs、coroutine yield、debug、特殊 metamethod 等)就丢弃 trace 并记入黑名单 | recorder 状态机 + 录制期 IR trace 缓冲 + 三种终止路径(闭环 loop trace / 长度超限 abort / NYI abort);黑名单集持久化 | fuzz 撞随机脚本,录制不崩溃,fallback 到解释器仍然 byte-equal([./09-acceptance-checklist.md](./09-acceptance-checklist.md) T9)| [./02-trace-recording.md](./02-trace-recording.md) §? NYI 清单 + 黑名单 + 长度上限 | 1-2 人月 | v1 |
+| **PT0** | Spike 阶段验收:最小端到端 trace 接通 | 证明「trace 录制 + 编译 + 执行 + guard-fail deopt」全链路实际可行(参照 [../p3-wasm-tier/01-spike-gate.md](../p3-wasm-tier/01-spike-gate.md) 的精神) | 一条最简单的数值循环 trace,在 crescent 内录制、经复用的 P4 codebuf/encoders 编译、mmap RX 执行、一次 guard-fail 走 exit-reason 协议物化 → 与解释器逐字节一致 | 端到端 byte-equal + deopt 之后续跑 byte-equal + 复核 spike 接通时没有留下隐性依赖(见 [../p3-wasm-tier/01-spike-gate.md](../p3-wasm-tier/01-spike-gate.md) §0.2 spike 阶段纪律)| [./00-overview.md](./00-overview.md) §3 复用清单 / [./02-trace-recording.md](./02-trace-recording.md) 最小录制原型 / [./07-system-integration.md](./07-system-integration.md) codebuf 复用 | 0.5-1 人月(go/no-go 质量阶段验收,参照 [../p3-wasm-tier/01-spike-gate.md](../p3-wasm-tier/01-spike-gate.md) 先例) | v1 起点 |
+| **PT1** | Recorder 骨架 + NYI / abort / 黑名单 | 解释器内嵌录制模式;录制过程中遇到 NYI(varargs、coroutine yield、debug、特殊 metamethod 等)就丢弃 trace 并记入黑名单 | recorder 状态机 + 录制期 IR trace 缓冲 + 三种终止路径(闭环 loop trace / 长度超限 abort / NYI abort);黑名单集持久化 | fuzz 跑随机脚本,录制不崩溃,fallback 到解释器仍然 byte-equal([./09-acceptance-checklist.md](./09-acceptance-checklist.md) T9)| [./02-trace-recording.md](./02-trace-recording.md) §? NYI 清单 + 黑名单 + 长度上限 | 1-2 人月 | v1 |
 | **PT2** | IR + folding 引擎 | 定义 SSA IR 骨架:类型系统、opcode 分层(算术 / load-store / guard / call / meta)、常量折叠 pass | IR 定义包 + `builder` API + folding pass v0(f64 常量算术折叠、NaN-box tag guard 折叠)| pass-toggle 差分测试:只录 + folding 与只录无 folding byte-equal([./09-acceptance-checklist.md](./09-acceptance-checklist.md) T4)| [./03-ir-design.md](./03-ir-design.md) 全篇 | 2-3 人月(设计定案 + 实现) | v1 |
 | **PT3** | 基础 pass:CSE / DCE / guard-dedup | 循环内冗余计算消除;死代码消除;同操作数 guard 沿 trace 去重 | 三个 pass 独立开关,pass 管道装配 | pass-toggle 差分测试:每个 pass 独立开 / 关组合下 byte-equal([./09-acceptance-checklist.md](./09-acceptance-checklist.md) T4);perf 微基准显示 pass 收益 | [./04-optimization-passes.md](./04-optimization-passes.md) §CSE / §DCE / §guard-dedup | 1-2 人月 | v1 |
 | **PT4** | 逆序线性扫描 regalloc | 在线性 trace 上单遍逆序扫描分配 IR 值到机器寄存器;spill 策略;callee-save 对齐 P4 encoders 的 ABI | regalloc pass + spill 表 + 与 [./05-register-allocation.md](./05-register-allocation.md) §? snapshot 耦合协议对接 | v1 subset 端到端 byte-equal;寄存器分配无冲突;spill 数量合理不飙升(perf 微基准验证)| [./05-register-allocation.md](./05-register-allocation.md) 全篇 | 2-3 人月(P5 的第一个真正的硬骨头) | v1 |
@@ -90,7 +90,7 @@
 
 | 决策点 | 触发条件 |
 |---|---|
-| PT0 后停止 | Spike 阶段 fail——物理层不可行,停下重新评估 |
+| PT0 后停止 | Spike 阶段 fail——实际不可行,停下重新评估 |
 | PT2/PT3 后停止 | IR 或基础 pass 无法收敛(bug 泛滥 / 抽象基础不成立)——重新评估 IR 形式或者降级为「只录制不优化」形式 |
 | PT4 后停止 | Regalloc 严重阻塞——见 [./00-overview.md](./00-overview.md) §5.1 风险 3,纯 Go 全部显式 guard 折损的假设成真 |
 | PT5 后停止 | Snapshot 机制正确性收敛不可达——见 §5.1 风险 2,fuzz 发现的 bug 曲线不收敛 |
@@ -103,7 +103,7 @@
 
 ## 2. 开放问题合并台账
 
-见 [./00-overview.md](./00-overview.md) §5.2 开放问题索引——各章节的「开放问题」节是详细讨论的落点,本节聚合成台账,标注承接章节 + 待解时点。
+见 [./00-overview.md](./00-overview.md) §5.2 开放问题索引——各章节的「开放问题」节是详细讨论的位置,本节汇总成台账,标注承接章节 + 待解时点。
 
 | # | 问题 | 承接章节 | 待解时点 |
 |---|---|---|---|
@@ -125,7 +125,7 @@
 | Q16 | **fullmoon 版本策略**(v1 stable 是否对外发布 wangshu v1.0) | 项目级决策 | v3 收尾判定会 |
 | Q17 | **Cheaper alternatives 四条评估执行分工**(谁做 stdlib 内建化调研 / peephole 扩展设计 / 宿主对齐 / op-set 扩展 issue port) | [./01-launch-judgment.md](./01-launch-judgment.md) §4 | 立项判定启动之前分派 |
 
-**统一原则**:每个问题标注承接章节后,该章节的「开放问题」节是详细讨论的落点。本文台账不复制详细内容,只作索引 + 待解时点;如果章节之间引用同一个问题不同步,以本表**待解时点**列为准。
+**统一原则**:每个问题标注承接章节后,该章节的「开放问题」节是详细讨论的位置。本文台账不复制详细内容,只作索引 + 待解时点;如果章节之间引用同一个问题不同步,以本表**待解时点**列为准。
 
 ### 2.1 与 [../../../llmdoc/memory/doc-gaps.md](../../../llmdoc/memory/doc-gaps.md) 的关系
 
