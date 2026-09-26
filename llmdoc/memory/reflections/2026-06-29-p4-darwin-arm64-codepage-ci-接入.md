@@ -69,7 +69,7 @@ f[37] = 41.45, want 41.449999999999996    (Go 少 1 ULP)
 
 **家族关系**:与 ci.yml L94-99 test-arm64 QEMU job 注释「范围裁决」是**同一家族第二实例**(QEMU job 也跑 jit/arm64 子包字节级而非全仓);两实例共同支撑「新平台接入先调度侧裁决」纪律。
 
-**Promotion 候选**:**第二实例**(QEMU job + macos-latest job 一样的手法),建议作 CI process pattern 候选。但两实例都在 ci.yml 注释里完成了,**暂不升 guide**,若第三个平台接入(如未来加 linux/arm64 真机 GH Actions runner 或 windows/amd64)再次复用,升入 [[multi-doc-drafting]] 类工作流 guide 或新建「跨平台 CI 接入纪律」guide。
+**Promotion 候选**:**第二实例**(QEMU job + macos-latest job 用的是同样的手法),建议作 CI process pattern 候选。但两实例都在 ci.yml 注释里完成了,**暂不升 guide**,若第三个平台接入(如未来加 linux/arm64 真机 GH Actions runner 或 windows/amd64)再次复用,升入 [[multi-doc-drafting]] 类工作流 guide 或新建「跨平台 CI 接入纪律」guide。
 
 ### 4. runtime.GOOS / GOARCH 编译期常量 + Go 编译器 DCE 跨平台分流,胜过多文件 build tag 拆分
 

@@ -153,7 +153,7 @@ harness 上带的资源上限、超时、错误豁免等防护是一份「隐性
 之间对称性被破坏,并在与该防护相关的 fuzz 上放大成 crasher。
 
 **How to apply**:给某个 fuzz / 差分测试 harness 加新防护(资源上限、超时、
-豁免规则、错误恢复路径等)时,同 PR 内 grep 所有兄弟 harness 是否需要一样的
+豁免规则、错误恢复路径等)时,同 PR 内 grep 所有兄弟 harness 是否需要同样的
 防护——判据「兄弟 harness 是否存在同类暴露面」,不是「兄弟 harness 是否碰巧
 出过问题」。grep 手法:按 harness 类别列表(fuzz_*_test.go / diff_*_test.go 等),
 对每个 harness 检查新加防护相关的 State option / 错误豁免规则是否需要同步。
@@ -201,7 +201,7 @@ budget / arena cap / stack overflow / 输出上限等),用统一 helper 判定;�
   同一 site 被同类失败打穿到第二次以上,想再补下一个补丁之前(教训 1:先问路径是否
   收敛、能触发但还没触发的情况集合是不是开放的,是就换手写直接实现);
 - 给某个 fuzz / 差分测试 harness 加新防护(资源上限、超时、豁免规则等)时(教训
-  2:同 PR 内 grep 兄弟 harness 是否需要一样的防护);
+  2:同 PR 内 grep 兄弟 harness 是否需要同样的防护);
 - 写差分测试豁免规则时(教训 3:资源尽头按「类」组织统一 helper 判定,不按字符
   串精确匹配区分个体);
 - nightly / CI 报 crasher 但本地重放不出、几千万 execs 后无声死时(承

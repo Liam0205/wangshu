@@ -61,7 +61,7 @@
    invalid capture(对齐 5.1);crash 输入 `()%1` 入库 testdata 防回归。
 4. **parser 深嵌套打爆 Go 栈(go-fuzz 捕获)**:2M 层括号直接 fatal——Go 栈溢出
    不是 panic、recover 接不住,fuzz 一触发整个进程就退出。修复 `maxParseDepth=200`
-   (parseExpr/parseBlock 进出计数,超限报 5.1 一样的 "chunk has too many syntax levels")。
+   (parseExpr/parseBlock 进出计数,超限报与 5.1 相同的 "chunk has too many syntax levels")。
    教训:**递归下降 parser 在 Go 里必须有显式深度护栏**,这不是优化是生存条件。
 5. **clearWeakTables 清死条目截断冲突链(GC 压力捕获)**:清 key/val 时顺手把
    next 重置 -1,链上后续**存活**条目从此查不到(物理还在、逻辑丢失,「强引用的值

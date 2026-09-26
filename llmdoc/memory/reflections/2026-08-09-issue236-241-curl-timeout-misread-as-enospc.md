@@ -323,4 +323,4 @@ tooling 脚本接检查那条纪律让本轮的新测试有地方挂)·
 `.github/workflows/ci.yml`(test 与 difftest 两个 job 的 macOS cache-miss 分支)·
 `.github/workflows/bench-acceptance.yml` · `Makefile`(`test-scripts`)·
 `docs/design/engineering.md` §3.2 / §4(nightly 机制与 oracle 的 CI 供给)·
-`docs/design/p1-interpreter/12-testing-difftest.md` §8(CI 门禁)
+`docs/design/p1-interpreter/12-testing-difftest.md` §8(CI 必过检查)

@@ -2,7 +2,7 @@
 
 > 范围:承 PR #27 「P4 method-JIT amd64 端完整可达工程 + darwin/arm64 真实现闭环」。前期在 Linux 服务器开发,arm64 端调试遇 SIGSEGV 失败,留 F3-#3b 调试尾巴——PR #27 留 5 处「darwin/arm64 暂 false」+ `.github/workflows/ci.yml` 范围裁决跑安全子集,17/17 CI 全绿但 P4 真机路径关闭。本会话在 macOS M1(Apple Silicon)本地完成 F3-#3b 全套闭环:**3 commits 解决 4 个独立 bug**,**PR #28 已开**(base `feat/p4-reworded`,非 master,详 https://github.com/Liam0205/wangshu/pull/28)。
 > commit 链:`8639eb5`(trampoline_arm64.s LR slot 覆盖根因)→ `bc43650`(arch_arm64 检查改为 true + macos-latest CI 跑全套)→ `a485ab8`(arm64 spec emit 三 bug 联合修)。
-> 关联:P4 method-JIT 设计文档集 `docs/design/p4-method-jit/05-system-pipeline.md` §6 W^X / icache / trampoline / PAC 四件套 + `06-backends.md` §4 双后端骨架 + per-arch 发射器 + 共享模板族;[[2026-06-15-p3-pw10-r3-call-indirect-round]] 头条「spike 只量延迟未量分配让里程碑追错机制」家族延伸——本轮一样的形式在「机制叠加多档」崩点诊断侧出现。
+> 关联:P4 method-JIT 设计文档集 `docs/design/p4-method-jit/05-system-pipeline.md` §6 W^X / icache / trampoline / PAC 四件套 + `06-backends.md` §4 双后端骨架 + per-arch 发射器 + 共享模板族;[[2026-06-15-p3-pw10-r3-call-indirect-round]] 头条「spike 只量延迟未量分配让里程碑追错机制」家族延伸——本轮同样的形式在「机制叠加多档」崩点诊断侧出现。
 
 ## 任务
 
@@ -11,15 +11,15 @@ PR #27 已在 amd64 端把 P4 method-JIT 全工程组件做齐,但 arm64 端因 
 ## 预期 vs 实际
 
 - **预期**:PR #27 注释把三 hypothesis 并列,默认主导项是 H2(PAC)或 H3(entitlement),因为这两条在 Apple Silicon 生态里是公认坑;预计需要逐 hypothesis 穷举验证、可能需要折腾 `codesign --entitlements`、可能要研究 PAC pacia/autia 指令。预估 1-2 天调试周期。
-- **实际**:**bypass trampoline 探针**(20 行代码 + 5 分钟)直接在三 hypothesis 中收敛到 H1(trampoline ABI),H2/H3 一次性排除。**真正主导项是 trampoline_arm64.s 的 `STP (R19,R20), 0(RSP)` 覆盖 Go arm64 auto-prologue 写在 `[SP+0]` 的 LR slot**——一个纯汇编侧 ABI 不匹配 bug,与 PAC/entitlement 完全无关。修完头号 bug 开关 true 后,**又接连暴露出 3 个独立 bug**——其中 2 个是 amd64 端 §9.20.9 commit-5l 已修过的一样的 bug(arm64 端 PJ8 接入时漏改),1 个是 arch_arm64 stub 注释承诺与检查状态解耦的潜伏陷阱。**3 commits / 4 bugs / 5 小时**完成,远短于预期。
+- **实际**:**bypass trampoline 探针**(20 行代码 + 5 分钟)直接在三 hypothesis 中收敛到 H1(trampoline ABI),H2/H3 一次性排除。**真正主导项是 trampoline_arm64.s 的 `STP (R19,R20), 0(RSP)` 覆盖 Go arm64 auto-prologue 写在 `[SP+0]` 的 LR slot**——一个纯汇编侧 ABI 不匹配 bug,与 PAC/entitlement 完全无关。修完头号 bug 开关 true 后,**又接连暴露出 3 个独立 bug**——其中 2 个是 amd64 端 §9.20.9 commit-5l 已修过的同类 bug(arm64 端 PJ8 接入时漏改),1 个是 arch_arm64 stub 注释承诺与检查状态解耦的潜伏陷阱。**3 commits / 4 bugs / 5 小时**完成,远短于预期。
 
 ## 4 个 bug 一览
 
 | # | 表现 | 根因 | 修复 commit |
 |---|---|---|---|
 | **1** | `TestPJ8_CallJITFull/Spec_RoundTrip` 段 RET 后 SIGSEGV at 栈/低地址(CI 现场 PC=0x2000) | user STP `(R19,R20), 0(RSP)` 覆盖 Go arm64 auto-prologue 写在 `[SP+0]` 的 LR slot,RET 取回 X19 当 LR | `8639eb5` |
-| **2** | PJ5 SelfCall SpecTemplate 段内 0x108 处 SIGSEGV at addr=0x3c8 | `*ciSegBaseAddrPtr` 是 `ciBaseW*8`(P3 PW10 wasm 协议 byte offset),`LoadCISlotAddrArm64` 算的 x0 不是绝对地址——需 + arena base(amd64 端 §9.20.9 commit-5l 已修一样的) | `a485ab8` |
-| **3** | resume entry 跳进段后 SIGILL at PC=0x...01b0,instruction bytes=0x0×16 | `EmitFrameInlinePopVoid0ArgSkeletonArm64` 段尾缺 ret,段后 fall-through 到 mmap 0 字节区,arm64 把 0 当 `udf #0`(amd64 端 §9.20.9 commit-5l 已修一样的:xor eax,eax + ret) | `a485ab8` |
+| **2** | PJ5 SelfCall SpecTemplate 段内 0x108 处 SIGSEGV at addr=0x3c8 | `*ciSegBaseAddrPtr` 是 `ciBaseW*8`(P3 PW10 wasm 协议 byte offset),`LoadCISlotAddrArm64` 算的 x0 不是绝对地址——需 + arena base(amd64 端 §9.20.9 commit-5l 已修过同样的问题) | `a485ab8` |
+| **3** | resume entry 跳进段后 SIGILL at PC=0x...01b0,instruction bytes=0x0×16 | `EmitFrameInlinePopVoid0ArgSkeletonArm64` 段尾缺 ret,段后 fall-through 到 mmap 0 字节区,arm64 把 0 当 `udf #0`(amd64 端 §9.20.9 commit-5l 已修过同样的问题:xor eax,eax + ret) | `a485ab8` |
 | **4** | `TestPJ2_SpecRegK / SpecChain` 全 6 个 0 命中 | `arch_arm64.go::archSseOpForArith` 是 stub `_ = op; return 0, false`,注释「当前 archSupportsSpec 返 false,本函数不会被调用」过期 — 检查改为 true 后本函数被真的调用,stub 静默返 (0, false) 让所有 PJ2 spec 测试 0 命中 | `a485ab8` |
 
 ## 调试方法学:Phase 0 三步根因 isolate
@@ -76,9 +76,9 @@ darwin/arm64 真机 JIT 执行的崩点位于 6 档机制叠加的最末端—�
 
 1. **时间维度**:PJ8 arm64 接入是 amd64 端 commit-5l 数月后,commit-5l 的修复历史不在 PJ8 实施者视野内。
 2. **测试维度**:arm64 端测试用 byte-equal 单测对比固定模板字节,**不真机 execute**,故 bug latent;darwin/arm64 真机 execute 是 PR #27 才上线,F3-#3b 是这个机制的第一次完整跑。
-3. **机制维度**:多后端镜像类工程(amd64/arm64 双 backend 共享骨架 + per-arch 发射器),后端 N 共享前端的协议约定(本例 `ciSegBaseAddrPtr` byte offset 是 P3 PW10 wasm 协议、Pop 段必须 ret 是 ABI 约定),前端协议在 amd64 接入期发现的 bug 在 arm64 接入期会**结构性复发**(两个后端按一样的骨架在不同点接入一样的协议)。
+3. **机制维度**:多后端镜像类工程(amd64/arm64 双 backend 共享骨架 + per-arch 发射器),后端 N 共享前端的协议约定(本例 `ciSegBaseAddrPtr` byte offset 是 P3 PW10 wasm 协议、Pop 段必须 ret 是 ABI 约定),前端协议在 amd64 接入期发现的 bug 在 arm64 接入期会**结构性复发**(两个后端按同一套骨架在不同点接入同一套协议)。
 
-**Why**:多后端镜像类工程的同源 bug 不是「再犯一次同样的错」,而是**协议约定本身在不同接入点的不同 emit 路径上结构性复发**。前端协议(`ciSegBase` byte offset / 段必须 ret 才能正确 RET 而非 fall-through 到 mmap 0 字节区)是后端无关的,但 emit 路径是后端相关的——amd64 端 emit 在 `arch_amd64.go::EmitFrameInlineLoadCISlotAddrAbsolute` + `add rax, r14`,arm64 端 emit 在 `arch_arm64.go::LoadCISlotAddrArm64`,虽是一样的协议但代码路径完全独立,**修了 A 不会自动修 B**。
+**Why**:多后端镜像类工程的同源 bug 不是「再犯一次同样的错」,而是**协议约定本身在不同接入点的不同 emit 路径上结构性复发**。前端协议(`ciSegBase` byte offset / 段必须 ret 才能正确 RET 而非 fall-through 到 mmap 0 字节区)是后端无关的,但 emit 路径是后端相关的——amd64 端 emit 在 `arch_amd64.go::EmitFrameInlineLoadCISlotAddrAbsolute` + `add rax, r14`,arm64 端 emit 在 `arch_arm64.go::LoadCISlotAddrArm64`,虽是同一套协议但代码路径完全独立,**修了 A 不会自动修 B**。
 
 **How to apply**:多后端镜像类工程的「后端 N 接入前」必须做**同源 bug 历史 grep**——
 
@@ -113,11 +113,11 @@ bug #4(`arch_arm64.go::archSseOpForArith` stub)的注释:
 2. **stub 默认应 panic 而非保底**——「保底」是默契承诺(信本函数不会被调用所以静默),panic 是显式约定(若被调用立刻报错);panic 让检查改为 true 时此类 bug 立刻可见,sentinel 让其潜伏;
 3. **「sentinel 静默」+「测试断言命中率」是配对纪律**——若必须用 sentinel(性能敏感不能 panic),配套的测试必须断言「该路径被走到」(本轮 PJ2 spec 测试断言命中率 > 0 抓到了 #4 bug),否则就是结构盲区。
 
-### 4. linux/arm64 QEMU + linux 无 self-hosted arm64 物理机的 CI 形式,让 trampoline LR slot bug 长期 latent——darwin/arm64 macos-latest CI 是真机 BL 跳段执行的第一次实测,bug 实际 linux+darwin 一样的只是 CI 没覆盖到
+### 4. linux/arm64 QEMU + linux 无 self-hosted arm64 物理机的 CI 形式,让 trampoline LR slot bug 长期 latent——darwin/arm64 macos-latest CI 是真机 BL 跳段执行的第一次实测,bug 在 linux 和 darwin 上其实一样,只是 CI 没覆盖到
 
 承 `prove-the-path-under-test` 家族**第 8 个独立实例**(前 7 实例:PW5 inline-proof / PW6 TierStuck no-op / PW9 vararg 空测 / PW10 R3 错误路径盲区 / PW10 R1-R2 工作负载错配 / PW10 ③b 快路径命中盲区 / VS0-e 覆盖度先验证)。**新形式**:**CI 形式本身对「真机 execute」结构盲**——linux/arm64 QEMU 模拟 + linux 无 self-hosted arm64 self-runner + arm64 字节级单测对比固定模板字节(不真机 execute),三件叠加让 trampoline LR slot bug 长期 latent。
 
-darwin/arm64 macos-latest CI 是真机 BL 跳段执行的**第一次实测**——bug 实际 linux+darwin 一样的(都是 `STP (R19,R20), 0(RSP)` 覆盖 LR slot),但 linux/arm64 因 QEMU + 无 self-hosted runner 长期未触发。这与「fuzz 目标空转」「全成功语料对错误路径结构性失明」是一样的形式——**CI 套在它形式边界外结构性失明,全绿对盲区零信号**。
+darwin/arm64 macos-latest CI 是真机 BL 跳段执行的**第一次实测**——bug 在 linux 和 darwin 上其实一样(都是 `STP (R19,R20), 0(RSP)` 覆盖 LR slot),但 linux/arm64 因 QEMU + 无 self-hosted runner 长期未触发。这与「fuzz 目标空转」「全成功语料对错误路径结构性失明」是一样的形式——**CI 套在它形式边界外结构性失明,全绿对盲区零信号**。
 
 **How to apply**:
 
@@ -127,10 +127,10 @@ darwin/arm64 macos-latest CI 是真机 BL 跳段执行的**第一次实测**—�
 
 ## 其它(较小的过程点)
 
-- **PR #28 base 不是 master 而是 `feat/p4-reworded`**:P4 method-JIT 是 feature branch 上的多 commit 集成开发,本轮 F3-#3b 是 feature branch 内的子 PR,base 接 `feat/p4-reworded` 而非 master——避免 master 上 P4 还未对齐时被一系列 fix commit 污染;承 [[2026-06-24-p4-doc-review-round]] 工作流确认 4「大文档审查任务的分阶段汇总」纪律的一样的模式用到 feature branch 开发侧。
+- **PR #28 base 不是 master 而是 `feat/p4-reworded`**:P4 method-JIT 是 feature branch 上的多 commit 集成开发,本轮 F3-#3b 是 feature branch 内的子 PR,base 接 `feat/p4-reworded` 而非 master——避免 master 上 P4 还未对齐时被一系列 fix commit 污染;承 [[2026-06-24-p4-doc-review-round]] 工作流确认 4「大文档审查任务的分阶段汇总」纪律的同一模式用到 feature branch 开发侧。
 - **bug #1 → #2/#3/#4 是顺序接连暴露**:bug #1 不修则任何 arm64 spec 路径都崩,无法验证下游 bug;bug #1 修完开关 true 后,bug #2/#3/#4 同时浮现——这是「机制级 gate bug」与「应用级 emit bug」的关系,gate bug 是下游 bug 的前置门;修 gate bug 前看不见下游 bug,**这也是「真机 execute 首次跑」的高风险特征**:不是一次暴露一个,而是一次暴露一批。
 - **trampoline_arm64.s LR slot 偏移 0→8 的具体选择**:[SP+0..8) 是 Go auto-prologue 写 LR(`STR.W X30, [SP, #-96]!` 把 LR 写在新 SP 顶);FP 由 `STUR X29, [SP, #-8]` 写 user space **外** SP 下方故不占 user 区;user 第一个可用 slot 从 [SP+8) 起,framesize `$80` 让 9 个 callee-saved 寄存器 × 8B = 72B + LR slot 8B = 80B 严格充满,无 padding。
-- **PJ5 SelfCall 修复同步刷新 wasm 端 P3 PW10 R2 协议文档锚点**:bug #2 根因是 `ciSegBaseAddrPtr` byte offset 协议在 wasm 端(P3 PW10 R2 完成)与 jit 端(P4 PJ5 接入)的接入点不同——前者经 wazero linear memory base 自动加,后者需 emit `add rax, r14` 显式加。这个差异未在 `docs/design/p4-method-jit/06-backends.md` §4 emit 协议注里显式标注,本轮顺手补一行——避免后续 P4 PJ-N 接入时再次踩一样的。
+- **PJ5 SelfCall 修复同步刷新 wasm 端 P3 PW10 R2 协议文档锚点**:bug #2 根因是 `ciSegBaseAddrPtr` byte offset 协议在 wasm 端(P3 PW10 R2 完成)与 jit 端(P4 PJ5 接入)的接入点不同——前者经 wazero linear memory base 自动加,后者需 emit `add rax, r14` 显式加。这个差异未在 `docs/design/p4-method-jit/06-backends.md` §4 emit 协议注里显式标注,本轮顺手补一行——避免后续 P4 PJ-N 接入时再次踩同样的坑。
 
 ## 验证
 
@@ -144,7 +144,7 @@ darwin/arm64 macos-latest CI 是真机 BL 跳段执行的**第一次实测**—�
 
 ### 候选 1:`prove-the-path-under-test` 家族新实例 + bypass 探针根因 isolate 三档分流手法(强,跨过提升阈值)
 
-**新形式**:**linux/arm64 QEMU + linux 无 self-hosted runner 让 trampoline LR bug 长期 latent**。darwin/arm64 macos-latest CI 是真机 BL 跳段执行的第一次实测。bug 实际 linux+darwin 一样的,只是 CI 没覆盖到。家族第 8 实例(承 PW5 inline-proof / PW6 TierStuck no-op / PW9 vararg 空测 / PW10 R3 错误路径盲区 / PW10 R1-R2 工作负载错配 / PW10 ③b 快路径命中盲区 / VS0-e 覆盖度先验证)。
+**新形式**:**linux/arm64 QEMU + linux 无 self-hosted runner 让 trampoline LR bug 长期 latent**。darwin/arm64 macos-latest CI 是真机 BL 跳段执行的第一次实测。bug 在 linux 和 darwin 上其实一样,只是 CI 没覆盖到。家族第 8 实例(承 PW5 inline-proof / PW6 TierStuck no-op / PW9 vararg 空测 / PW10 R3 错误路径盲区 / PW10 R1-R2 工作负载错配 / PW10 ③b 快路径命中盲区 / VS0-e 覆盖度先验证)。
 
 **新解药**:**bypass trampoline 探针作根因 isolate 三档分流手法**(已完成):在「机制叠加多档」(codepage / W^X / icache / trampoline / PAC / entitlement)的崩溃面前,用 minimal payload 直接调下一层 bypass 跳一档,把 N 档崩点收敛到一档。20 行代码 + 5 分钟 vs 盲改 PR comment 列的三 hypothesis。
 

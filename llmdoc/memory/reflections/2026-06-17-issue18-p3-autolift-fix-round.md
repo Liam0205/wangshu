@@ -108,7 +108,7 @@
 - 提 issue 时直接复用 reflection 段落(issue body 大段拷自 reflection)
 - 修复时直接对照 issue body 中的"方案 B"段实施
 
-这跟 [[2026-06-13-issue8-boundary-cost-round]] / [[2026-06-16-issue13-parity-friendly-fastpath-round]] 一样的工作流:**调研轮的 reflection 直接做 issue 提案稿用**。
+这跟 [[2026-06-13-issue8-boundary-cost-round]] / [[2026-06-16-issue13-parity-friendly-fastpath-round]] 是同一套工作流:**调研轮的 reflection 直接做 issue 提案稿用**。
 
 **修正纪律**:
 - **写 reflection 时,主动标注哪些教训具备"直接转 issue"的成熟度**(file:line 级根因 + 复现路径 + 修复方向)。本反思教训 1 写得就**足够 issue ready**,issue 提交时大段拷过

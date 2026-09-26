@@ -56,7 +56,7 @@ P3 不在编译期注入,故 `AnalyzeProto` 把每个 proto 标 `NotCompilable`�
 
 ## 其它(较小)
 
-- **命名冲突再现**:HostState 的 `Call`/`GetGlobal`/`SetGlobal`/`Globals` 全撞既有 `State` 公共 API,改名 `DoCall`/`DoGetGlobal`/`DoSetGlobal`/`GlobalsRaw`。这已是**复发模式**(PW5 一样的)——HostState 接口里**镜像 opcode 名**的方法天然会撞嵌入 API(`State` 的公共面也按这些动词命名)。接口方法若与宿主 opcode 同名,默认预期会撞,起手就用 `Do*`/`*Raw` 前缀。
+- **命名冲突再现**:HostState 的 `Call`/`GetGlobal`/`SetGlobal`/`Globals` 全撞既有 `State` 公共 API,改名 `DoCall`/`DoGetGlobal`/`DoSetGlobal`/`GlobalsRaw`。这已是**复发模式**(与 PW5 相同)——HostState 接口里**镜像 opcode 名**的方法天然会撞嵌入 API(`State` 的公共面也按这些动词命名)。接口方法若与宿主 opcode 同名,默认预期会撞,起手就用 `Do*`/`*Raw` 前缀。
 - **多值窗口保守回退**:CALL B=0/C=0、TAILCALL B=0(到 top 的多值窗口)需要跨 opcode 维护 `th.top`,而 gibbous 直线代码不做 top 维护 → 在 `SupportsAllOpcodes` 被拒(暂缓),与 PW5 的 SETLIST C=0/B=0 一样的保守回退纪律。
 - **`h_call` 返回 i64**(非 i32+status):单个值同时承载「刷新后的 base」与「错误负哨兵」,需要新建 wasm 模块类型(i32×5→i64)+ 用 `i64.lt_s` 判负哨兵。返回值兼载数据与错误信号是「base 必须刷新」这条物理约束逼出来的编码,不是风格选择。
 
@@ -80,4 +80,4 @@ P3 不在编译期注入,故 `AnalyzeProto` 把每个 proto 标 `NotCompilable`�
 
 ## 关联
 
-[[p3-pw5-table-ic-round]](设计稿热路径记法须按预算重判,教训 1 同家族前一实例;凡不可证 → 退助手,教训 2 单 opcode 形式;命名冲突 / 多值窗口保守回退一样的)· [[issue8-boundary-cost-round]](实现浪费 vs 架构成本,教训 1 家族奠基)· [[test-hardening-round]](绿色≠在测你以为在测的,教训 4 同源)· [[official-suite-perf-round]](快路径家族审计,教训 3 同源)· `feedback_arena_view_aliasing`(arena=linear memory 段可重定位,教训 1 物理基础)· `must/design-premises`(解释器永不退役,教训 2 兑现)· `docs/design/p3-wasm-tier/04-trampoline.md` §2-§4 · `implementation-progress.md` §VS0-c / §8 PW6 对账
+[[p3-pw5-table-ic-round]](设计稿热路径记法须按预算重判,教训 1 同家族前一实例;凡不可证 → 退助手,教训 2 单 opcode 形式;命名冲突 / 多值窗口保守回退也相同)· [[issue8-boundary-cost-round]](实现浪费 vs 架构成本,教训 1 家族奠基)· [[test-hardening-round]](绿色≠在测你以为在测的,教训 4 同源)· [[official-suite-perf-round]](快路径家族审计,教训 3 同源)· `feedback_arena_view_aliasing`(arena=linear memory 段可重定位,教训 1 物理基础)· `must/design-premises`(解释器永不退役,教训 2 兑现)· `docs/design/p3-wasm-tier/04-trampoline.md` §2-§4 · `implementation-progress.md` §VS0-c / §8 PW6 对账

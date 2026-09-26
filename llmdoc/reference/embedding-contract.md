@@ -21,7 +21,7 @@
 
 ## 公共 first-class GCRef-bearing value:必须接 GC 根(必须遵守的不变式)
 
-> 状态:**接口约定层面的强制规则**——任何让宿主 Go 端长期持有 VM 内部 `GCRef` 的公共 API,该 `GCRef` 必须经 `State` pin 表(`pinnedRefs` + `freePins` + `visitExtraRefs`)登记为 GC 根。两次样本(issue #1 kFunction / issue #2 kTable)用一样的机制零额外接根工作,验证为通用不变式而非一次性手法。
+> 状态:**接口约定层面的强制规则**——任何让宿主 Go 端长期持有 VM 内部 `GCRef` 的公共 API,该 `GCRef` 必须经 `State` pin 表(`pinnedRefs` + `freePins` + `visitExtraRefs`)登记为 GC 根。两次样本(issue #1 kFunction / issue #2 kTable)用同一套机制零额外接根工作,验证为通用不变式而非一次性手法。
 
 **覆盖面**:本期已完成 `kFunction`(issue #1)/ `kTable`(issue #2);未来若新增 `kUserdata`/`kThread`/`kCoroutine` 或其它公共 first-class kind,前置约束相同——实现前先核对 pin 表是否覆盖。
 
@@ -29,7 +29,7 @@
 
 - shadow stack 是 LIFO,公共 API 的持有期是任意的,LIFO 假设不适用;
 - `globals` 覆盖同名 + freelist 复用会把潜伏的根管理 bug 从良性(死对象躺 arena)升级为致命(UAF 或串台执行);
-- 两次样本用一样的 `pinnedRefs / freePins / visitExtraRefs` 通道零额外接根工作——是机制级保证,不是 kind 特殊路径。
+- 两次样本用同一条 `pinnedRefs / freePins / visitExtraRefs` 通道零额外接根工作——是机制级保证,不是 kind 特殊路径。
 
 **如何识别违反约定**:Go 端取出 first-class 复合 Value 后,`globals` 覆盖同名 + GC 压力模式(`SetGCStressMode(true)`)→ 重新读 Value/调用 → 若访问 panic 或返回错值,即接根缺失。
 

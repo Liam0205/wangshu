@@ -24,7 +24,7 @@
 
 - **列内核(column-kernel,与负载形状同义)** —— 见上「列内核负载形状」。
 
-- **try-compile-fallback-interpret** —— P2 分层桥策略(LuaJ luajc 一样的):尝试编译,不可编译/不可升层形状走 fallback 永远解释,换来**零 deopt 机器**。对应贯穿原则 4「走 fallback,不做完备性」。
+- **try-compile-fallback-interpret** —— P2 分层桥策略(同 LuaJ luajc):尝试编译,不可编译/不可升层形状走 fallback 永远解释,换来**零 deopt 机器**。对应贯穿原则 4「走 fallback,不做完备性」。
 
 - **inline cache(IC)** —— 全局/表访问的内联缓存;P2 记录其类型 feedback 为编译层供料,P4 据此做类型投机(f64 快速路径 + guard)。
 

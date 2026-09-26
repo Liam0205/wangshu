@@ -48,7 +48,7 @@ TForLoop 复用 `callLuaFromHost`(所以一个**本身被升层到 gibbous** 的
 
 - **VARARG 不需要任何发射代码**:它不在白名单 → `SupportsAllOpcodes` 返回 false → 整 proto 回退。设计稿写的「Wasm unreachable 防御翻译」是多余的,因为白名单**已经在 emit 之前**就挡住了到达。加了一个测试(`TestPW7_VarargRejected`)把这条锁死。
 - **TFORLOOP e2e 不能用 ipairs/pairs**:crescent 测试里没有 stdlib(用了会造成 import cycle),改用**自定义 Lua 迭代器**(基于闭包的 range、无状态 iter+state+control 三元组),它们走**完全相同的 TFORLOOP 路径**(`R(A)(R(A+1),R(A+2))`)——执行机制相同,无 stdlib 依赖。
-- **一样的 TierStuck-on-deep-baseline 陷阱**(承 PW6-b):深迭代测试用**独立 State** + **深跑前先 promote**。
+- **同样的 TierStuck-on-deep-baseline 陷阱**(承 PW6-b):深迭代测试用**独立 State** + **深跑前先 promote**。
 - **i64Const 负哨兵**:`uint64(int64(-1))` 是 Go 编译错误(常量溢出);用 `^uint64(0)` 和 `^uint64(0)-1` 表示 -1/-2 的位模式。
 - **两个机械 Edit 失手**:old_string 里残留 heredoc `EOF` 痕迹、替换函数体时留了个游离 `}`——都被 build 抓到。(轻微,PW5「Edit 吞掉相邻声明」同族。)
 

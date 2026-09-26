@@ -69,7 +69,7 @@ stop-hook 强制不结束后实测发现这个判断是**错的**——这些 op
 
 ### 3. CLOSURE SubNUps 跳 pseudo 数据字 idiom 第 2 实例复发——已跨过 2-实例阈值,建议反引
 
-CLOSURE A Bx 后随 `proto.SubNUps[Bx]` 条 pseudo MOVE/GETUPVAL 指令(描述每个 upvalue 怎么捕获,是数据不是可执行 opcode)。两条发射循环按 pc 迭代会把这些数据字误译成寄存器拷贝。**一样的现象在 P3 PW7 已遇过**:
+CLOSURE A Bx 后随 `proto.SubNUps[Bx]` 条 pseudo MOVE/GETUPVAL 指令(描述每个 upvalue 怎么捕获,是数据不是可执行 opcode)。两条发射循环按 pc 迭代会把这些数据字误译成寄存器拷贝。**同样的现象在 P3 PW7 已遇过**:
 
 - [[p3-pw7-pw4b-closure-tforloop-round]] 教训 2:`emitOpcode` 改签名返回 `(skip, err)` + CLOSURE 返回 `SubNUps[Bx]` + 循环 `pc += 1 + skip`;
 - 本轮 P4 PJ10:peroptranslator 同一面,用 `pseudoSkip map[pc]int` 记录每个 CLOSURE pc 后跳过几条 + `proto.SubNUps[Bx]` 长度。
